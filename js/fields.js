@@ -265,7 +265,9 @@ export class FieldIndex {
    * @returns {Array<{className:string, field:object}>}
    */
   findFields(query, limit = 200) {
-    const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
+    const re = query instanceof RegExp
+      ? (query.global || query.sticky ? new RegExp(query.source, query.flags) : query)
+      : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
     const maxResults = resultLimit(limit, 200);
     if (maxResults <= 0) return out;
@@ -290,7 +292,9 @@ export class FieldIndex {
 
   /** クラスを名前で探す。 */
   findClasses(query, limit = 200) {
-    const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
+    const re = query instanceof RegExp
+      ? (query.global || query.sticky ? new RegExp(query.source, query.flags) : query)
+      : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
     const maxResults = resultLimit(limit, 200);
     if (maxResults <= 0) return out;

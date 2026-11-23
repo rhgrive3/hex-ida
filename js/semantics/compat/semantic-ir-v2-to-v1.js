@@ -502,12 +502,41 @@ function preserveExactStateWriteSourceIdentity(ir, producerByValueId, stateProje
   }
 }
 
+const compatBlockInstIndexCache = new WeakMap();
+function compatBlockInstIndexOf(blockInsts, inst) {
+  if (!Array.isArray(blockInsts) || !inst) return -1;
+  let entry = compatBlockInstIndexCache.get(blockInsts);
+  if (!entry || entry.length !== blockInsts.length) {
+    const map = new Map();
+    for (let i = 0; i < blockInsts.length; i += 1) {
+      if (!map.has(blockInsts[i])) map.set(blockInsts[i], i);
+    }
+    entry = { length: blockInsts.length, map };
+    compatBlockInstIndexCache.set(blockInsts, entry);
+  }
+  const idx = entry.map.get(inst);
+  if (idx !== undefined && blockInsts[idx] === inst) return idx;
+  return blockInsts.indexOf(inst);
+}
+
 function valueDominatesInstruction(value, inst, projected) {
   if (!value || !inst) return false;
   if (value.kind === V1_VK.ARG) return true;
   const definition = value.def;
   if (!definition || definition === inst) return false;
-  if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);
+  if (definition.block === inst.block) {
+    if (inst.op === V1_OP.PHI) return false;
+    if (definition.op === V1_OP.PHI) return true;
+    const defRow = Number(definition.row);
+    const instRow = Number(inst.row);
+    if (defRow !== instRow) return defRow < instRow;
+    const blockInsts = projected.blocks?.[inst.block]?.insts;
+    if (!Array.isArray(blockInsts)) return false;
+    const defIdx = compatBlockInstIndexOf(blockInsts, definition);
+    const instIdx = compatBlockInstIndexOf(blockInsts, inst);
+    if (defIdx < 0 || instIdx < 0) return false;
+    return defIdx < instIdx;
+  }
   const dominators = projected.dominators?.[inst.block];
   return dominators instanceof Set && dominators.has(definition.block);
 }
@@ -538,17 +567,19 @@ function dominanceRankForArgument(value, inst, projected, targetBits) {
   const version = value.version ?? 0;
   const id = value.id ?? 0;
   if (value.kind === V1_VK.ARG || !value.def) {
-    return { scope: 0, depth: 0, row: Number.NEGATIVE_INFINITY, nonPhi: 0, width, version, id };
+    return { scope: 0, depth: 0, row: Number.NEGATIVE_INFINITY, nonPhi: 0, instIndex: -1, width, version, id };
   }
   const definition = value.def;
   const nonPhi = definition.op === V1_OP.PHI ? 0 : 1;
+  const blockInsts = projected.blocks?.[definition.block]?.insts;
+  const instIndex = nonPhi ? compatBlockInstIndexOf(blockInsts, definition) : -1;
   const row = Number(definition.row ?? Number.NEGATIVE_INFINITY);
   if (definition.block === inst.block) {
-    return { scope: 2, depth: Number.MAX_SAFE_INTEGER, row, nonPhi, width, version, id };
+    return { scope: 2, depth: Number.MAX_SAFE_INTEGER, row, nonPhi, instIndex, width, version, id };
   }
   const defDominators = projected.dominators?.[definition.block];
   const depth = defDominators instanceof Set ? defDominators.size : 0;
-  return { scope: 1, depth, row, nonPhi, width, version, id };
+  return { scope: 1, depth, row, nonPhi, instIndex, width, version, id };
 }
 
 function isBetterDominanceRank(candidate, best) {
@@ -557,6 +588,7 @@ function isBetterDominanceRank(candidate, best) {
   if (candidate.depth !== best.depth) return candidate.depth > best.depth;
   if (candidate.row !== best.row) return candidate.row > best.row;
   if (candidate.nonPhi !== best.nonPhi) return candidate.nonPhi > best.nonPhi;
+  if (candidate.instIndex !== best.instIndex) return candidate.instIndex > best.instIndex;
   if (candidate.width !== best.width) return candidate.width > best.width;
   if (candidate.version !== best.version) return candidate.version > best.version;
   return candidate.id > best.id;
@@ -617,12 +649,12 @@ function resolveTailCallBranchTarget(inst, projected, options) {
  * for variadic calls, so dropping them because one explicit argument already
  * exists would sever the real def-use edge and allow its producer to disappear.
  */
-function attachAbiProjectedArguments(projected, ir = null, valuesById = null, options = {}) {
-  let valuesByReg = null;
+function attachAbiProjectedArguments(projected, ir = null, valuesById = null, blockIndexById = null, options = {}) {
+  const targets = [];
+  let cfgMutated = false;
   for (const inst of projected.instructions) {
-    let callArguments = null;
     if (inst.op === V1_OP.CALL && Array.isArray(inst.callArguments)) {
-      callArguments = inst.callArguments;
+      targets.push({ inst, callArguments: inst.callArguments });
     } else if (inst.op === V1_OP.BR) {
       const tailTarget = resolveTailCallBranchTarget(inst, projected, options);
       if (!tailTarget) continue;
@@ -640,7 +672,9 @@ function attachAbiProjectedArguments(projected, ir = null, valuesById = null, op
         }
         block.succ = [];
         block.isExit = true;
+        cfgMutated = true;
       }
+      let callArguments = null;
       if (Array.isArray(inst.callArguments)) {
         callArguments = inst.callArguments;
       } else {
@@ -660,11 +694,37 @@ function attachAbiProjectedArguments(projected, ir = null, valuesById = null, op
           inst.callArguments = callArguments;
         }
       }
-      if (!Array.isArray(callArguments)) continue;
-    } else {
-      continue;
+      if (Array.isArray(callArguments)) targets.push({ inst, callArguments });
     }
-    if (valuesByReg == null) valuesByReg = buildValuesByRegIndex(projected);
+  }
+
+  if (cfgMutated && Array.isArray(projected.blocks) && projected.blocks.length) {
+    const resolvedBlockIndex = blockIndexById instanceof Map
+      ? blockIndexById
+      : new Map(projected.blocks.map((block, index) => [block.semanticBlockId, index]));
+    for (const block of projected.blocks) block.isLoopHeader = false;
+    const updatedGraph = graphFacts(
+      projected.blocks,
+      resolvedBlockIndex,
+      projected.entry ?? 0,
+      ir?.functionId ?? projected.functionId ?? 'semantic-v2-v1-compat',
+      null,
+    );
+    for (const block of projected.blocks) block.isExit = block.succ.length === 0;
+    projected.reachable = updatedGraph.reachable;
+    projected.loops = updatedGraph.loops;
+    projected.backEdges = updatedGraph.backEdges;
+    projected.idom = updatedGraph.idom;
+    projected.dominators = updatedGraph.dominators;
+    if (projected.compat) {
+      projected.compat.controlEdges = updatedGraph.edges;
+      projected.compat.canonicalCfg = false;
+    }
+  }
+
+  if (!targets.length) return;
+  const valuesByReg = buildValuesByRegIndex(projected);
+  for (const { inst, callArguments } of targets) {
     const existing = (inst.args || []).map((argument) => argument?.value).filter(Boolean);
     const seen = new Set(existing.map((value) => value.id));
     const values = existing.slice();
@@ -974,7 +1034,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     if (!list) list = projected.compat.semanticNodeToLegacyInstructionIds[semanticId] = [];
     list.push(inst.id);
   }
-  attachAbiProjectedArguments(projected, ir, valuesById, options);
+  attachAbiProjectedArguments(projected, ir, valuesById, blockIndexById, options);
   finalizeLegacyProjection(projected, constantObserver, stateObserver);
   populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);

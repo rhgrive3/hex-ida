@@ -476,14 +476,14 @@ function installMultiRegionShapes(app) {
                 (error) => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(error); },
               );
             });
-            if (value && !value.cancelled && epoch === demandAnalysisEpoch(app)) regionCache.set(cacheKey, value);
+            if (value && !value.cancelled && epoch === demandAnalysisEpoch(app) && artifact === demandArtifactIdentity(app)) regionCache.set(cacheKey, value);
           } catch (error) { if (producerController.signal.aborted || error?.name === 'AbortError') throw error; reasons.push(`${region.id}:shape-scan-failed`); continue; }
           finally { producerController.signal.removeEventListener('abort', onAbort); }
         }
         if (!value || value.cancelled) { reasons.push(`${region.id}:shape-scan-cancelled`); continue; }
         folded.push(foldShapes(value));
       }
-      if (epoch !== demandAnalysisEpoch(app)) return null;
+      if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) return null;
       const merged = mergeShapeMaps(folded, reasons);
       // Partial results remain visible to this caller but are not pinned as the
       // epoch-wide canonical shapes. Missing regions can therefore be retried.
@@ -512,7 +512,9 @@ function installCancellableFunctionDiscovery(app) {
       const symbols = app.symbols;
       if (!symbols) return symbols;
       const targets = executableRegions(app);
-      if (region?.exec === true && canonicalRegionId(region) != null && !targets.some((item) => item.id === region.id)) targets.push(region);
+      let regionPositiveSize = false;
+      try { regionPositiveSize = region?.exec === true && canonicalRegionId(region) != null && BigInt(region.size ?? 0) > 0n; } catch { regionPositiveSize = false; }
+      if (regionPositiveSize && !targets.some((item) => item.id === region.id)) targets.push(region);
       const unique = dedupeRegions(targets);
       if (!unique.length) return symbols;
       const regionSetKey = unique.map((item) => item.id).join('|');
@@ -532,12 +534,12 @@ function installCancellableFunctionDiscovery(app) {
       }
       if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.discoveryKey === discoveryKey) return symbols;
       let entry = producers.get(key);
-      if (entry?.cancelled) entry = null;
+      if (entry?.cancelled || entry?.symbols !== symbols) entry = null;
       if (!entry) {
         const producerController = new AbortController();
         entry = {
           request:{ cancel:() => producerController.abort('function-discovery-no-consumers') },
-          promise:null, settled:false, waiters:0,
+          promise:null, settled:false, waiters:0, symbols,
           // Every consumer's progress observer is registered here so the
           // shared producer notifies all of them, not only the consumer that
           // happened to create the entry (#5860).
@@ -756,9 +758,15 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const cumulativeLimit = cumulativePageLimit(offset, limit);
       if (cumulativeLimit == null) return paged([], page, 'unsupported', { reason:'page-range-overflow', scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
       const source = program.callersOf(addressOf(id), cumulativeLimit);
-      const relationReason=source?.incompleteReason ?? reason ?? null;
-      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
+      const queryLimited = source?.queryLimited === true;
+      const relationReason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : null) ?? reason ?? null;
+      const incomplete = source?.complete === false || queryLimited || !!reason;
+      const sourceRows = Array.from(source || []);
+      const result = paged(sourceRows, page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      if (queryLimited && result.page.next == null && sourceRows.length >= result.page.offset) {
+        result.page.next = result.page.offset + (result.page.returned > 0 ? result.page.returned : result.page.limit);
+      }
+      return result;
     },
     async callees(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id); const range = address == null ? null : app.validatedFunctionRange?.(address);

@@ -4,13 +4,16 @@ importScripts('./words.js', './worker-budget.js', './address-provenance.js', './
 
 let currentEpoch = 0;
 const cancelledRequests = new Set();
+const activeJobIds = new Set();
+const cancelledJobIds = new Set();
 
 function requestKey(epoch, requestId) {
   return `${epoch ?? 0}:${requestId ?? ''}`;
 }
 
-function isCancelled(requestId, epoch) {
+function isCancelled(requestId, epoch, id) {
   if (epoch != null && epoch < currentEpoch) return true;
+  if (id != null && cancelledJobIds.has(id)) return true;
   if (requestId != null && cancelledRequests.has(requestKey(epoch, requestId))) return true;
   return false;
 }
@@ -20,8 +23,11 @@ async function handleTask(msg) {
   if (epoch != null && epoch > currentEpoch) {
     currentEpoch = epoch;
     cancelledRequests.clear();
+    cancelledJobIds.clear();
   }
-  const checkCancelled = () => isCancelled(requestId, epoch);
+  if (id != null) activeJobIds.add(id);
+  try {
+  const checkCancelled = () => isCancelled(requestId, epoch, id);
   if (checkCancelled()) {
     self.postMessage({ t: 'res', id, epoch, requestId, ok: true, result: { cancelled: true } });
     return;
@@ -42,6 +48,7 @@ async function handleTask(msg) {
       chunkIndex: msg.chunkIndex,
       functionStarts: msg.functionStarts,
       isCancelled: checkCancelled,
+      onProgress,
     });
   } else if (t === 'scanProgramChunk') {
     result = await globalThis.HexScanCore.scanProgramChunk({
@@ -82,6 +89,12 @@ async function handleTask(msg) {
     delete result.__transfer;
   }
   self.postMessage({ t: 'res', id, epoch, requestId, ok: true, result }, transfer);
+  } finally {
+    if (id != null) {
+      activeJobIds.delete(id);
+      cancelledJobIds.delete(id);
+    }
+  }
 }
 
 self.onmessage = function onScanWorkerMessage(event) {
@@ -89,16 +102,22 @@ self.onmessage = function onScanWorkerMessage(event) {
   if (!msg || typeof msg !== 'object') return;
 
   if (msg.t === 'cancel') {
-    if (msg.requestId != null) {
+    if (msg.id != null) {
+      if (activeJobIds.has(msg.id)) {
+        cancelledJobIds.add(msg.id);
+      }
+    } else if (msg.requestId != null) {
       cancelledRequests.add(requestKey(msg.epoch, msg.requestId));
     } else if (msg.epoch != null) {
       if (msg.epoch + 1 > currentEpoch) {
         currentEpoch = msg.epoch + 1;
         cancelledRequests.clear();
+        cancelledJobIds.clear();
       }
     } else {
       currentEpoch++;
       cancelledRequests.clear();
+      cancelledJobIds.clear();
     }
     return;
   }

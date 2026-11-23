@@ -1,7 +1,7 @@
 import {
   h, uiButton, screen, card, listRow, sectionTitle, emptyState,
 } from './primitives.js';
-import { pick } from '../i18n.js';
+import { pick, lang } from '../i18n.js';
 import { CHAPTERS, loadProgress, saveProgress, chapterById } from '../learn.js';
 import { GLOSSARY, searchGlossary } from '../glossary.js';
 import { toast } from '../ui.js';
@@ -148,7 +148,7 @@ function renderSettings(app, router) {
     for (const [key, label] of [['ja', '日本語'], ['en', 'English']]) {
       languageRows.append(choiceRow({
         title: label,
-        selected: (app.prefs.lang || 'ja') === key,
+        selected: (app.prefs?.lang || lang() || 'ja') === key,
         onClick: () => { app.setLanguage(key); router.navigate('/settings?lang=' + key, { replace: true }); },
       }));
     }

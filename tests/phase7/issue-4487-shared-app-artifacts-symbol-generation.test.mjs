@@ -120,7 +120,7 @@ function makeApp(scanProgram, ensureFunctions = async () => {}) {
   const refreshed = await current;
   assert.equal(refreshed.gen, symbols.gen);
   assert.equal(refreshed.functionStartOf(0x1200n), 0x1200n);
-  assert.equal(scans, 2, 'the stale generation must not publish or satisfy the current generation');
+  assert.equal(scans, 1, 'the stale generation aborts before scanning once a newer generation claims the key');
 }
 
 {

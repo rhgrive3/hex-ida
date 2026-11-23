@@ -765,7 +765,8 @@ function uniq(arr) {
 /* 負の数は `0x-60` ではなく `-0x60`。16 進の中に符号を混ぜない。 */
 const hex = (v) => {
   if (v == null) return '';
-  const n = typeof v === 'bigint' ? v : BigInt(v);
+  const n = safeBigInt(v);
+  if (n == null) return String(v);
   return (n < 0n ? '-0x' : '0x') + (n < 0n ? -n : n).toString(16).toUpperCase();
 };
 
@@ -777,8 +778,8 @@ const hex = (v) => {
  */
 const atOffset = (base, disp) => {
   if (disp == null) return String(base);
-  const n = typeof disp === 'bigint' ? disp : BigInt(disp);
-  if (n === 0n) return String(base);
+  const n = safeBigInt(disp);
+  if (n == null || n === 0n) return String(base);
   return base + (n < 0n ? ' - 0x' : ' + 0x') + (n < 0n ? -n : n).toString(16).toUpperCase();
 };
 
@@ -875,6 +876,16 @@ export function plainOpName(op) {
     case 'csel': case 'csinc': case 'csinv': case 'csneg': return pick('条件による値の選択', 'conditional selection');
     default: return pick('計算', 'computation');
   }
+}
+
+function safeCountText(v) {
+  if (typeof v === 'bigint') return v.toLocaleString();
+  if (typeof v === 'number' && Number.isFinite(v)) return v.toLocaleString();
+  if (typeof v === 'string' && v.trim() !== '') {
+    const parsed = Number(v);
+    if (Number.isFinite(parsed)) return parsed.toLocaleString();
+  }
+  return '0';
 }
 
 function safeBigInt(v) {
@@ -976,9 +987,11 @@ export function reasonText(r) {
     case 'popular':
       return pick('あちこちから呼ばれている（' + d.n + ' か所）— アプリの本筋に近い',
         'it is called from ' + d.n + ' places — close to the main flow');
-    case 'size-penalty':
-      return pick('命令が ' + d.n.toLocaleString() + ' 個と大きすぎて、目的の計算そのものとは考えにくい',
-        'it is very large (' + d.n.toLocaleString() + ' instructions), so it is unlikely to be the calculation itself');
+    case 'size-penalty': {
+      const n = safeCountText(d.n);
+      return pick('命令が ' + n + ' 個と大きすぎて、目的の計算そのものとは考えにくい',
+        'it is very large (' + n + ' instructions), so it is unlikely to be the calculation itself');
+    }
     case 'vendor': {
       const who = d.vendor || pick('外部のライブラリ', 'a third-party library');
       const proof = d.where === 'string'
@@ -1207,8 +1220,14 @@ export function changeVerb(step) {
     case 'fmul': return pick('小数の掛け算で書き換える', 'multiply (float)');
     case 'fadd': return pick('小数の足し算で増やす', 'add (float)');
     case 'fsub': return pick('小数の引き算で減らす', 'subtract (float)');
-    case 'lsl': return n ? pick((2 ** Number(n)) + ' 倍にする', 'multiply by ' + (2 ** Number(n))) : pick('倍にする', 'scale up');
-    case 'lsr': case 'asr': return n ? pick((2 ** Number(n)) + ' で割る', 'divide by ' + (2 ** Number(n))) : pick('割る', 'scale down');
+    case 'lsl': {
+      const f = safeShiftFactor(step.imm);
+      return f ? pick(f + ' 倍にする', 'multiply by ' + f) : pick('倍にする', 'scale up');
+    }
+    case 'lsr': case 'asr': {
+      const f = safeShiftFactor(step.imm);
+      return f ? pick(f + ' で割る', 'divide by ' + f) : pick('割る', 'scale down');
+    }
     case 'and': case 'orr': case 'eor': case 'bic':
       return pick('ビット単位で書き換える', 'change bit by bit');
     case 'mov': case 'movz': return pick('別の値に入れ替える', 'replace');
@@ -1217,13 +1236,35 @@ export function changeVerb(step) {
   }
 }
 
+const ONE_LINER_ARITH_OPS = new Set([
+  'add', 'adds', 'fadd',
+  'sub', 'subs', 'fsub', 'msub',
+  'mul', 'madd', 'fmul', 'lsl',
+  'sdiv', 'udiv', 'fdiv', 'lsr', 'asr',
+]);
+
+function selectPrimaryEditStep(steps) {
+  if (!Array.isArray(steps) || !steps.length) return null;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (!s || s.signMaskClampPart || s.signMaskClamp) continue;
+    if (ONE_LINER_ARITH_OPS.has(s.op)) return s;
+  }
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (!s || s.signMaskClampPart || s.signMaskClamp) continue;
+    return s;
+  }
+  return steps[steps.length - 1];
+}
+
 /** 関数レポートから、1 行の要約を作る。 */
 export function oneLiner(report, name) {
   if (!report) return '';
   const edit = report.editTargets && report.editTargets[0];
   if (edit) {
     const where = plainPlaceName(edit.field, edit.location.base, edit.location.disp);
-    const step = edit.steps && edit.steps.length ? edit.steps[edit.steps.length - 1] : null;
+    const step = selectPrimaryEditStep(edit.steps);
     const verb = changeVerb(step);
     return pick(where + ' を' + verb + '処理です。', 'It will ' + verb + ' ' + where + '.');
   }
@@ -1398,7 +1439,8 @@ export function flowPlaceName(loc, slotName) {
 
 function offsetText(disp) {
   if (disp == null) return pick('不明な位置', 'an unknown offset');
-  const v = typeof disp === 'bigint' ? disp : BigInt(disp);
+  const v = safeBigInt(disp);
+  if (v == null) return pick('不明な位置', 'an unknown offset');
   const abs = v < 0n ? -v : v;
   return (v < 0n ? '-' : '+') + '0x' + abs.toString(16).toUpperCase();
 }
@@ -1645,8 +1687,19 @@ export function notableReasonText(r) {
       return pick('名前が残っている', 'it still has a name');
     case 'compare':
       return pick('値を ' + d.n + ' か所で比べている', 'compares values in ' + d.n + ' places');
-    case 'huge':
-      return pick('命令が ' + d.n.toLocaleString() + ' 個と大きい', 'very large (' + d.n.toLocaleString() + ' instructions)');
+    case 'huge': {
+      const n = safeCountText(d.n);
+      return pick('命令が ' + n + ' 個と大きい', 'very large (' + n + ' instructions)');
+    }
+    case 'recognition': {
+      const pct = typeof d.confidence === 'number' && Number.isFinite(d.confidence)
+        ? Math.round(Math.max(0, Math.min(1, d.confidence)) * 100) + '%'
+        : null;
+      return pick(
+        'アプリ本体の処理と判定された' + (pct ? '（確信度 ' + pct + '）' : ''),
+        'identified as application code' + (pct ? ' (' + pct + ' confidence)' : ''),
+      );
+    }
     default: return '';
   }
 }
@@ -2113,7 +2166,12 @@ function topicObject(id) {
 /** 数の言い方。1000000 のような即値は 10 進のままだと読めないので添える。 */
 function amountText(amount) {
   if (amount == null) return null;
-  const n = typeof amount === 'bigint' ? amount : BigInt(amount);
+  const n = safeBigInt(amount);
+  if (n == null) {
+    if (typeof amount === 'number') return Number.isFinite(amount) ? String(amount) : null;
+    const text = String(amount).trim();
+    return text || null;
+  }
   const abs = n < 0n ? -n : n;
   if (abs >= 4096n) return n.toString() + '（0x' + abs.toString(16).toUpperCase() + '）';
   return n.toString();
@@ -2234,7 +2292,7 @@ export function fnRoleTitle(role, { icon = true } = {}) {
   if (role.subject && role.subject.kind === 'computed') {
     const n = role.subject.steps || 0;
     const topic0 = role.topicSettled !== false ? topicLabel(role.topic) : null;
-    const of = topic0 ? pick(topicObject(role.topic) + 'を', topicObject(role.topic) + ' ') : '';
+    const of = topic0 ? pick(topicObject(role.topic) + 'を', topicObject(role.topic)) : '';
     const mark0 = icon && topic0 ? (topicIcon(role.topic) + ' ') : '';
     return pick(
       mark0 + of + '元の値から ' + n + ' 段の計算で 1 つの数に組み立てる処理',
@@ -2447,10 +2505,12 @@ export function roleProofText(item) {
       return pick('打ち込まれた複数の言葉が、すべてこの値の名前に入っている（' +
         trim(d.name, 40) + '）',
       'all words you typed are present in this field’s name (' + trim(d.name, 40) + ')');
-    case 'role-subject-field':
-      return pick('書き換えている値の名前が「' + trim(d.name, 32) + '」で、' +
+    case 'role-subject-field': {
+      const isRead = d.kind === 'read';
+      return pick((isRead ? '読み出している値の名前が「' : '書き換えている値の名前が「') + trim(d.name, 32) + '」で、' +
         '探している機能の言葉（' + trim(d.term, 16) + '）が入っている',
-      'the field it writes is called “' + trim(d.name, 32) + '”, which contains “' + trim(d.term, 16) + '”');
+      (isRead ? 'the field it reads is called “' : 'the field it writes is called “') + trim(d.name, 32) + '”, which contains “' + trim(d.term, 16) + '”');
+    }
     case 'role-subject-prop':
       return pick('宣言されたプロパティの名前も一致している', 'the declared property name matches too');
     case 'role-subject-unnamed':

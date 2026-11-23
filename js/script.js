@@ -553,15 +553,27 @@ export function createApi(app, out, options = {}) {
       return emulatorState(emu);
     },
 
-    async emulatorStep(id) {
+    async emulatorStep(id, ...rest) {
+      const last = rest.length > 0 ? rest[rest.length - 1] : null;
+      const signal = signalOf(isExecutionContext(last) ? last : null);
+      throwIfAborted(signal);
       const emu = emulatorOf(id);
-      const result = await emu.step();
+      const result = await emu.step({ signal });
       return { result, state: emulatorState(emu) };
     },
 
-    async emulatorRun(id, maxSteps = 20000) {
+    async emulatorRun(id, maxSteps = 20000, ...rest) {
+      let context = null;
+      if (rest.length > 0 && isExecutionContext(rest[rest.length - 1])) {
+        context = rest[rest.length - 1];
+      } else if (isExecutionContext(maxSteps)) {
+        context = maxSteps;
+        maxSteps = 20000;
+      }
+      const signal = signalOf(context);
+      throwIfAborted(signal);
       const emu = emulatorOf(id);
-      const result = await emu.run(boundedSteps(maxSteps));
+      const result = await emu.run(boundedSteps(maxSteps), { signal });
       return { result, state: emulatorState(emu) };
     },
 

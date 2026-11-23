@@ -1170,17 +1170,18 @@ describe('Backend integration & lifecycle', () => {
       assert.equal(workers.length, 1, 'only 1 worker active while hidden');
       workers[0].emitMessage({ t: 'res', ok: true, id: workers[0].sent[0].msg.id, result: { ok: 1 } });
       await h1;
-      assert.equal(workers[0].terminated, true);
-      workers[1].emitMessage({ t: 'res', ok: true, id: workers[1].sent[0].msg.id, result: { ok: 2 } });
+      assert.equal(workers.length, 1, 'hidden worker must be reused for queued work without thrashing');
+      assert.equal(workers[0].terminated, false, 'hidden worker must stay alive while draining queued work');
+      workers[0].emitMessage({ t: 'res', ok: true, id: workers[0].sent[1].msg.id, result: { ok: 2 } });
       await h2;
-      assert.equal(workers[1].terminated, true);
+      assert.equal(workers[0].terminated, true, 'hidden worker must terminate once queue drains');
 
       fakeDoc.hidden = false;
       const f1 = pool.runTask({ t: 'scanStage1', epoch: 0, requestId: 2 });
       const f2 = pool.runTask({ t: 'scanStage1', epoch: 0, requestId: 2 });
       const f3 = pool.runTask({ t: 'scanStage1', epoch: 0, requestId: 2 });
       assert.equal(pool.activeWorkerCount, 3, 'returning to foreground must scale back up past 1 worker');
-      for (let i = 2; i < workers.length; i++) {
+      for (let i = 1; i < workers.length; i++) {
         workers[i].emitMessage({ t: 'res', ok: true, id: workers[i].sent[0].msg.id, result: { ok: i } });
       }
       await Promise.all([f1, f2, f3]);

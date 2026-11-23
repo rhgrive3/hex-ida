@@ -703,8 +703,15 @@ function storeSource(inst, ctx) {
 
 function callSource(inst, call, ctx) {
   const parts = [sourceForInst(inst, 'call')];
-  for (const index of call?.sourceArgIndices || []) {
-    parts.push(dependencySource(reachingRegisterValue(ctx.ir, inst, `x${index}`), ctx));
+  if (Array.isArray(call?.resolvedArgs)) {
+    for (const arg of call.resolvedArgs) {
+      if (arg?.value) parts.push(dependencySource(arg.value, ctx));
+    }
+  } else {
+    const isAArch64 = isAArch64Context(ctx.ir, ctx.opts);
+    for (const index of call?.sourceArgIndices || []) {
+      parts.push(dependencySource(reachingRegisterValue(ctx.ir, inst, `x${index}`, isAArch64), ctx));
+    }
   }
   return mergeSource(...parts);
 }
@@ -747,10 +754,29 @@ function renderValueAt(value, atInst, ctx) {
   return storedValueAlias(value, atInst, ctx) || renderValue(value, ctx);
 }
 
-function canonicalRegister(reg) {
+function isAArch64Context(ir, opts = null) {
+  const adapter = opts?.abiAdapter || null;
+  if (adapter) {
+    const id = String(adapter.id || adapter.name || '').toLowerCase();
+    const archId = String(adapter.architectureId || adapter.arch || '').toLowerCase();
+    return id === 'aapcs64' || archId === 'arm64' || archId === 'aarch64'
+      || /^(?:aapcs64|arm64|aarch64)/.test(id);
+  }
+  const arch = String(ir?.arch || ir?.architecture || ir?.architectureId || ir?.compat?.architectureId || '').toLowerCase();
+  if (arch) return /^(?:arm64|aarch64|aapcs64)/.test(arch);
+  if (ir?.compat?.projection === 'semantic-ir-v2-to-v1') return false;
+  return true;
+}
+
+function canonicalRegister(reg, isAArch64 = false) {
   const text = String(reg || '').toLowerCase();
   const m = /^[wx](\d+)$/.exec(text);
-  return m ? `r${m[1]}` : text;
+  if (m) return `r${m[1]}`;
+  if (isAArch64) {
+    const fp = /^[bhsdqv]([0-9]|[12][0-9]|3[01])$/.exec(text);
+    if (fp) return `v${fp[1]}`;
+  }
+  return text;
 }
 
 function loadReachedByStore(load, store, ctx) {
@@ -814,7 +840,7 @@ function returnValueAt(ret, ctx) {
   const explicit=valueOf(ret?.args?.[0]);
   if (explicit) return explicit;
   const reg=returnRegisterForContext(ctx);
-  return reg ? reachingRegisterValue(ctx.ir, ret, reg) : null;
+  return reg ? reachingRegisterValue(ctx.ir, ret, reg, isAArch64Context(ctx.ir, ctx.opts)) : null;
 }
 
 function feedsReturn(value, ctx) {
@@ -990,7 +1016,7 @@ function readOnlyShortCStringAt(addr, ctx) {
     if (matchedEnd != null && pos >= matchedEnd) return null;
     const byte = readByteFromSection(matched, pos, matchedStart, ctx);
     if (byte == null) return null;
-    if (byte === 0) return cStringLiteral(String.fromCharCode(...bytes));
+    if (byte === 0) return JSON.stringify(String.fromCharCode(...bytes));
     if (byte < 0x20 || byte > 0x7e) return null;
     bytes.push(byte);
   }
@@ -1003,8 +1029,10 @@ function isAddressDerivedValue(value, depth = 0) {
   if (op === OP.ADDR) return true;
   if (op === OP.MOV) return isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1);
   if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
-    if (isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1)) return true;
-    if (value.def.sub === 'add' && isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1)) return true;
+    const leftAddr = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1);
+    const rightAddr = isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1);
+    if (value.def.sub === 'sub') return leftAddr && !rightAddr;
+    return leftAddr || rightAddr;
   }
   return false;
 }
@@ -1129,19 +1157,26 @@ function getReachableBlockSet(ir, from) {
   return seen;
 }
 
-function getValuesByReg(ir) {
+function getValuesByReg(ir, isAArch64 = false) {
   const values = ir?.values || [];
+  const flag = Boolean(isAArch64);
   let cached = VALUES_BY_REG_CACHE.get(ir);
-  if (cached && cached.length === values.length) return cached.byReg;
+  if (!cached || cached.length !== values.length) {
+    cached = { length: values.length, std: null, aarch64: null };
+    VALUES_BY_REG_CACHE.set(ir, cached);
+  }
+  const existing = flag ? cached.aarch64 : cached.std;
+  if (existing) return existing;
   const byReg = new Map();
   for (const v of values) {
     if (!v?.reg || !v.def) continue;
-    const key = canonicalRegister(v.reg);
+    const key = canonicalRegister(v.reg, flag);
     let list = byReg.get(key);
     if (!list) { list = []; byReg.set(key, list); }
     list.push(v);
   }
-  VALUES_BY_REG_CACHE.set(ir, { length: values.length, byReg });
+  if (flag) cached.aarch64 = byReg;
+  else cached.std = byReg;
   return byReg;
 }
 
@@ -1191,19 +1226,22 @@ function definitionMayOverrideCandidate(ir, definition, candidateDefinition) {
   return blockCanReach(ir, candidateDefinition.block, definition.block);
 }
 
-export function reachingRegisterValue(ir, atInst, reg) {
+export function reachingRegisterValue(ir, atInst, reg, optsOrIsAArch64 = undefined) {
   if (!ir || !atInst || !reg) return null;
-  const canonReg = canonicalRegister(reg);
-  const regValues = getValuesByReg(ir).get(canonReg) || [];
+  const isAArch64 = typeof optsOrIsAArch64 === 'boolean'
+    ? optsOrIsAArch64
+    : isAArch64Context(ir, optsOrIsAArch64);
+  const canonReg = canonicalRegister(reg, isAArch64);
+  const regValues = getValuesByReg(ir, isAArch64).get(canonReg) || [];
   let best = ir.args?.get?.(reg) || null;
   if (!best && ir.args?.entries) {
     for (const [argReg, argVal] of ir.args.entries()) {
-      if (canonicalRegister(argReg) === canonReg) { best = argVal; break; }
+      if (canonicalRegister(argReg, isAArch64) === canonReg) { best = argVal; break; }
     }
   }
   let bestDepth = -1, bestRow = -Infinity, bestPos = -Infinity, bestSameBlock = false;
   for (const v of regValues) {
-    if (canonicalRegister(v.reg) !== canonReg || !v.def) continue;
+    if (canonicalRegister(v.reg, isAArch64) !== canonReg || !v.def) continue;
     const d = v.def;
     if (d === atInst) continue;
     if (d.block === atInst.block) {
@@ -1234,7 +1272,7 @@ export function reachingRegisterValue(ir, atInst, reg) {
   if (Array.isArray(blockPhis)) {
     for (const phi of blockPhis) {
       const dst = phi?.dst;
-      if (dst && !dst.clobbered && canonicalRegister(dst.reg) === canonReg) {
+      if (dst && !dst.clobbered && canonicalRegister(dst.reg, isAArch64) === canonReg) {
         return dst;
       }
     }
@@ -1242,7 +1280,7 @@ export function reachingRegisterValue(ir, atInst, reg) {
 
   const candidateDefinition = best?.def ?? null;
   for (const v of regValues) {
-    if (v === best || canonicalRegister(v.reg) !== canonReg || !v.def) continue;
+    if (v === best || canonicalRegister(v.reg, isAArch64) !== canonReg || !v.def) continue;
     const d = v.def;
     if (d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;
     if (definitionMayOverrideCandidate(ir, d, candidateDefinition)) return null;
@@ -1414,6 +1452,17 @@ export function memoryElementType(inst, sizeBytes, types = null) {
   return `${prefix}${bytes * 8}_t`;
 }
 
+function shouldSuppressRodataStringForMem(inst, loc, types, defaultSize = 0) {
+  const size = Number(inst?.addr?.size || inst?.size || loc?.size || defaultSize);
+  if (size > 1) return true;
+  if (inst?.extra?.float === true || inst?.dst?.kind === 'float') return true;
+  const dstType = types?.values?.get?.(inst?.dst?.id);
+  if (dstType && (dstType.kind === 'float' || dstType.name === 'float' || dstType.name === 'double')) return true;
+  const elem = size > 0 ? memoryElementType(inst, size, types) : null;
+  if (elem === 'float' || elem === 'double') return true;
+  return false;
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
   if (loc.kind === MK.STACK) return stackName(ctx, loc);
@@ -1424,7 +1473,8 @@ export function renderMemoryLocation(loc, inst, ctx) {
   const addr = inst?.addr || {};
   if (loc.kind === MK.UNKNOWN) {
     if (addr.base && addr.index) {
-      const base = renderValue(addr.base, ctx);
+      const suppressStr = shouldSuppressRodataStringForMem(inst, loc, ctx.types, 0);
+      const base = renderValue(addr.base, ctx, suppressStr ? { suppressRodataString: true } : {});
       const index = renderValue(addr.index, ctx);
       const scale = Number(addr.scale || 0);
       const size = Number(addr.size || inst?.size || loc?.size || 0);
@@ -1461,7 +1511,8 @@ export function renderMemoryLocation(loc, inst, ctx) {
       }
     }
     if (addr.base && ctx.opts?.phase8Optimize !== true) {
-      const base = renderValue(addr.base, ctx);
+      const suppressStr = shouldSuppressRodataStringForMem(inst, loc, ctx.types, 8);
+      const base = renderValue(addr.base, ctx, suppressStr ? { suppressRodataString: true } : {});
       const size = Number(addr.size || inst?.size || loc?.size || 8);
       const elemType = memoryElementType(inst, size, ctx.types);
       const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
@@ -1479,7 +1530,8 @@ export function renderMemoryLocation(loc, inst, ctx) {
     const off = loc.disp ?? 0n;
     const cxxRec = ctx.opts?.cxxEvidence?.receiver;
     const isReceiver = isReceiverAlias(base, cxxRec, ctx);
-    const rawBaseText = isReceiver ? 'this' : renderValue(base, ctx, { asBase: true });
+    const suppressStr = shouldSuppressRodataStringForMem(inst, loc, ctx.types, 0);
+    const rawBaseText = isReceiver ? 'this' : renderValue(base, ctx, suppressStr ? { asBase: true, suppressRodataString: true } : { asBase: true });
     const baseText = /^[A-Za-z_][A-Za-z0-9_]*$/.test(rawBaseText) ? rawBaseText : `(${rawBaseText})`;
     let known = null;
     try { known = ctx.opts.fieldFor?.(addr.baseReg || base?.reg || null, off, inst?.row); } catch { known = null; }
@@ -1495,6 +1547,20 @@ function argName(v, ctx) {
   const cxxRec = ctx.opts?.cxxEvidence?.receiver;
   if (isReceiverAlias(v, cxxRec, ctx)) return 'this';
   if (!v?.reg) return `v${v?.id ?? 0}`;
+  const isAArch64 = isAArch64Context(ctx.ir, ctx.opts);
+  const typeArgs = Array.isArray(ctx.types?.args) ? ctx.types.args : [];
+  if (typeArgs.length) {
+    let matched = v.id != null ? typeArgs.find((a) => a && a.valueId === v.id) : null;
+    if (!matched && v.reg) {
+      const canon = canonicalRegister(v.reg, isAArch64);
+      matched = typeArgs.find((a) => a?.reg && canonicalRegister(a.reg, isAArch64) === canon) || null;
+    }
+    if (matched && Number.isInteger(matched.index) && matched.index >= 0) {
+      const n = matched.index;
+      if (n === 0 && (ctx.opts.receiverType || ctx.opts.methodKind === 'objc')) return 'self';
+      return ctx.opts.argNames?.[n] || `a${n + 1}`;
+    }
+  }
   const m = /^x([0-7])$/.exec(v.reg);
   if (!m) return safeIdent(v.label || v.reg);
   const n = Number(m[1]);
@@ -1563,11 +1629,11 @@ function selectAsMinMax(inst, ctx) {
   // but their strings are not selected by this min/max producer.
   selectInitialValueTickets(cursor);
   const aa = renderValue(a, ctx), bb = renderValue(b, ctx);
-  if (cond === 'gt' || cond === 'hi') {
+  if (cond === 'gt') {
     if (sameValue(t, b) && sameValue(f, a)) return initialValueForm(ctx, 'select-min', `min(${aa}, ${bb})`);
     if (sameValue(t, a) && sameValue(f, b)) return initialValueForm(ctx, 'select-max', `max(${aa}, ${bb})`);
   }
-  if (cond === 'lt' || cond === 'lo') {
+  if (cond === 'lt') {
     if (sameValue(t, b) && sameValue(f, a)) return initialValueForm(ctx, 'select-max', `max(${aa}, ${bb})`);
     if (sameValue(t, a) && sameValue(f, b)) return initialValueForm(ctx, 'select-min', `min(${aa}, ${bb})`);
   }
@@ -1594,7 +1660,11 @@ function unaryText(inst, ctx) {
   if (inst.sub === 'not') return `~${paren(a)}`;
   if (inst.sub === 'is-zero' || inst.sub === 'is_zero') return `(${a}) == 0`;
   if (inst.sub === 'is-nonzero' || inst.sub === 'is_nonzero') return `(${a}) != 0`;
-  if (inst.sub === 'abs' || inst.sub === 'fabs') return `abs(${a})`;
+  if (inst.sub === 'abs') return `abs(${a})`;
+  if (inst.sub === 'fabs') {
+    const fBits = Number(inst.bits ?? inst.dst?.bits ?? valueOf(inst.args?.[0])?.bits ?? 64);
+    return `${fBits === 32 ? 'fabsf' : 'fabs'}(${a})`;
+  }
   if (inst.sub === 'sqrt' || inst.sub === 'fsqrt') return `sqrt(${a})`;
   const extMap = { sxtb: 'int8', sxth: 'int16', sxtw: 'int32', uxtb: 'uint8', uxth: 'uint16', uxtw: 'uint32' };
   if (extMap[inst.sub]) return `(${extMap[inst.sub]})${paren(a)}`;
@@ -1603,13 +1673,15 @@ function unaryText(inst, ctx) {
   const castBits = inst.bits ?? inst.dst?.bits;
   if (inst.sub === 'fcvtzs' || inst.sub === 'f2i') return `((${castBits === 32 ? 'int32_t' : 'int64_t'})(double)${paren(a)})`;
   if (inst.sub === 'fcvtzu' || inst.sub === 'f2u') return `((${castBits === 32 ? 'uint32_t' : 'uint64_t'})(double)${paren(a)})`;
-  if (inst.sub === 'scvtf' || inst.sub === 'i2f') return `((${castBits === 32 ? 'float' : 'double'})(int64_t)${paren(a)})`;
-  if (inst.sub === 'ucvtf' || inst.sub === 'u2f') return `((${castBits === 32 ? 'float' : 'double'})(uint64_t)${paren(a)})`;
+  const srcArg = inst.args?.[0];
+  const srcBits = Number(srcArg?.bits ?? valueOf(srcArg)?.bits ?? 64);
+  if (inst.sub === 'scvtf' || inst.sub === 'i2f') return `((${castBits === 32 ? 'float' : 'double'})(${srcBits === 32 ? 'int32_t' : 'int64_t'})${paren(a)})`;
+  if (inst.sub === 'ucvtf' || inst.sub === 'u2f') return `((${castBits === 32 ? 'float' : 'double'})(${srcBits === 32 ? 'uint32_t' : 'uint64_t'})${paren(a)})`;
   if (inst.sub === 'fcvt') return `((${castBits === 32 ? 'float' : 'double'})${paren(a)})`;
   return `${safeIdent(inst.sub || 'un')}(${a})`;
 }
 
-function explicitCallArgByReg(inst) {
+function explicitCallArgByReg(inst, isAArch64 = false) {
   const byReg = new Map();
   if (!inst) return byReg;
   const callArgs = Array.isArray(inst.callArguments) ? inst.callArguments : null;
@@ -1619,7 +1691,7 @@ function explicitCallArgByReg(inst) {
       const desc = callArgs[k];
       const reg = desc?.reg ?? desc?.location?.registerId ?? null;
       if (!reg) continue;
-      const canon = canonicalRegister(reg);
+      const canon = canonicalRegister(reg, isAArch64);
       const directVal = desc?.value?.value ?? desc?.value ?? (desc?.kind && Array.isArray(desc?.uses) ? desc : null);
       if (directVal && directVal.def !== inst && !directVal.clobbered && directVal.kind !== VK.UNDEF && !byReg.has(canon)) {
         byReg.set(canon, directVal);
@@ -1630,7 +1702,7 @@ function explicitCallArgByReg(inst) {
         const desc = callArgs[k];
         const reg = desc?.reg ?? desc?.location?.registerId ?? null;
         if (!reg) continue;
-        const canon = canonicalRegister(reg);
+        const canon = canonicalRegister(reg, isAArch64);
         const v = valueOf(args[k]);
         if (v && v.def !== inst && !v.clobbered && v.kind !== VK.UNDEF && !byReg.has(canon)) {
           byReg.set(canon, v);
@@ -1642,7 +1714,7 @@ function explicitCallArgByReg(inst) {
     for (const arg of args) {
       const v = valueOf(arg);
       if (!v || v.def === inst || v.clobbered || v.kind === VK.UNDEF || !v.reg) continue;
-      const canon = canonicalRegister(v.reg);
+      const canon = canonicalRegister(v.reg, isAArch64);
       if (!byReg.has(canon)) byReg.set(canon, v);
     }
   }
@@ -1665,11 +1737,12 @@ function callRecord(inst, ctx) {
   // legacy renderer (`sub_<HEX>`), and leaves genuinely indirect calls untouched.
   if (!name && target != null) name = `sub_${hex(target)}`;
 
-  const explicitArgs = explicitCallArgByReg(inst);
+  const isAArch64 = isAArch64Context(ctx.ir, ctx.opts);
+  const explicitArgs = explicitCallArgByReg(inst, isAArch64);
   const values = [];
   for (let i = 0; i < 8; i++) {
     const reg = 'x' + i;
-    values.push(explicitArgs.get(canonicalRegister(reg)) ?? reachingRegisterValue(ctx.ir, inst, reg));
+    values.push(explicitArgs.get(canonicalRegister(reg, isAArch64)) ?? reachingRegisterValue(ctx.ir, inst, reg, isAArch64));
   }
   const slotEv = currentCppVirtualSlot(ctx.opts, ctx.ir, inst, values[0]);
 
@@ -1700,6 +1773,7 @@ function callRecord(inst, ctx) {
 
   let logicalArgs = [];
   let sourceArgIndices = [];
+  let resolvedArgs = null;
   let arityKnown = true;
   let variadicPrefixOnly = false;
   if (objc) {
@@ -1715,41 +1789,83 @@ function callRecord(inst, ctx) {
   } else {
     let override = null;
     try { override = ctx.opts.callPrototypeFor?.(target, name, inst) || null; } catch { override = null; }
+    const knownSig = knownCallSignature(name);
     const knownProto = knownCallPrototype(name);
-    let indexes = callArgumentIndices({ name, modelCall, override, defaultCallArgs: ctx.opts.defaultCallArgs });
-    if (knownProto && !knownProto.variadic && Array.isArray(indexes) && indexes.length > knownProto.arity) {
-      indexes = indexes.slice(0, knownProto.arity);
-    }
-    if (indexes == null) {
-      if (slotEv) {
-        if (slotEv.argumentCount != null) {
-          logicalArgs = Array.from({ length: slotEv.argumentCount }, (_, i) => argText[i] ?? 'unknown');
-          sourceArgIndices = Array.from({ length: slotEv.argumentCount }, (_, i) => i).filter((i) => values[i]);
-          arityKnown = true;
+    const hasFpSigParams = !override && isAArch64
+      && Array.isArray(knownSig?.paramTypes)
+      && knownSig.paramTypes.some((t) => t === 'float' || t === 'double');
+    if (hasFpSigParams) {
+      resolvedArgs = [];
+      let gpIdx = 0;
+      let fpIdx = 0;
+      for (const paramType of knownSig.paramTypes) {
+        if (paramType === 'float' || paramType === 'double') {
+          const idx = fpIdx++;
+          const reg = paramType === 'float' ? `s${idx}` : `d${idx}`;
+          const val = explicitArgs.get(canonicalRegister(reg, true)) ?? reachingRegisterValue(ctx.ir, inst, reg, true);
+          const input = initialValueCursor(ctx);
+          const text = val ? renderValue(val, ctx) : null;
+          const tickets = input ? input.list.slice(input.start) : [];
+          resolvedArgs.push({ reg, value: val || null, text: text ?? 'unknown', tickets });
         } else {
-          // The virtual-dispatch proof establishes the receiver, not the full
-          // callee prototype. Preserve receiver readability as a lower bound
-          // but keep arity unknown so additional arguments are never erased.
-          logicalArgs = values[0] ? [argText[0] || 'this'] : [];
-          sourceArgIndices = values[0] ? [0] : [];
+          const idx = gpIdx++;
+          const reg = `x${idx}`;
+          if (idx < 8) {
+            resolvedArgs.push({
+              reg,
+              value: values[idx] || null,
+              text: argText[idx] ?? 'unknown',
+              tickets: argumentTickets[idx] || [],
+            });
+          } else {
+            const val = explicitArgs.get(canonicalRegister(reg, true)) ?? reachingRegisterValue(ctx.ir, inst, reg, true);
+            const input = initialValueCursor(ctx);
+            const text = val ? renderValue(val, ctx) : null;
+            const tickets = input ? input.list.slice(input.start) : [];
+            resolvedArgs.push({ reg, value: val || null, text: text ?? 'unknown', tickets });
+          }
+        }
+      }
+      logicalArgs = resolvedArgs.map((a) => a.text);
+      sourceArgIndices = [];
+      arityKnown = true;
+      variadicPrefixOnly = !!knownProto?.variadic;
+    } else {
+      let indexes = callArgumentIndices({ name, modelCall, override, defaultCallArgs: ctx.opts.defaultCallArgs });
+      if (knownProto && !knownProto.variadic && Array.isArray(indexes) && indexes.length > knownProto.arity) {
+        indexes = indexes.slice(0, knownProto.arity);
+      }
+      if (indexes == null) {
+        if (slotEv) {
+          if (slotEv.argumentCount != null) {
+            logicalArgs = Array.from({ length: slotEv.argumentCount }, (_, i) => argText[i] ?? 'unknown');
+            sourceArgIndices = Array.from({ length: slotEv.argumentCount }, (_, i) => i).filter((i) => values[i]);
+            arityKnown = true;
+          } else {
+            // The virtual-dispatch proof establishes the receiver, not the full
+            // callee prototype. Preserve receiver readability as a lower bound
+            // but keep arity unknown so additional arguments are never erased.
+            logicalArgs = values[0] ? [argText[0] || 'this'] : [];
+            sourceArgIndices = values[0] ? [0] : [];
+            arityKnown = false;
+            ctx.unknownCallArities++;
+          }
+        } else {
           arityKnown = false;
           ctx.unknownCallArities++;
         }
       } else {
-        arityKnown = false;
-        ctx.unknownCallArities++;
+        logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
+        sourceArgIndices = indexes.filter((i) => values[i]);
+        variadicPrefixOnly = !!knownProto?.variadic && !override;
       }
-    } else {
-      logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
-      sourceArgIndices = indexes.filter((i) => values[i]);
-      variadicPrefixOnly = !!knownCallPrototype(name)?.variadic && !override;
     }
   }
 
   const objcCMode = ctx.opts?.objcSyntax === 'c';
   const objcCallee = /objc_msgSendSuper2/.test(name || '') ? 'objc_msgSendSuper2' : 'objc_msgSend';
   const info = {
-    name, target, runtime: origin, args: logicalArgs, arityKnown, variadicPrefixOnly, sourceArgIndices,
+    name, target, runtime: origin, args: logicalArgs, arityKnown, variadicPrefixOnly, sourceArgIndices, resolvedArgs,
     receiver: argText[0] || 'receiver', receiverType, selector,
     ...(objcCMode ? { style: 'c', callee: objcCallee } : {}),
     stubAddress: target, callingConvention: ctx.opts.swiftCallingConventionFor?.(target, name) || null,
@@ -1762,7 +1878,9 @@ function callRecord(inst, ctx) {
   ctx.callCache.set(inst.id, rec);
   const trace = initialValueTraces.get(ctx);
   if (trace) {
-    const selected = sourceArgIndices.flatMap(index => argumentTickets[index]);
+    const selected = Array.isArray(resolvedArgs)
+      ? resolvedArgs.flatMap((a) => a.tickets || [])
+      : sourceArgIndices.flatMap(index => argumentTickets[index]);
     if (selected.length) trace.calls.set(inst.id, Object.freeze(selected));
     selectInitialValueTickets(cursor, selected);
   }
@@ -1842,7 +1960,7 @@ function renderValueText(value, ctx, flags) {
     if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) return initialValueForm(ctx, 'cxx-this-receiver', 'this');
     return initialValueForm(ctx, 'materialized-reference', ctx.materialNames.get(value.id));
   }
-  const key = `${value.id}:${flags.asBase ? 'b' : 'v'}`;
+  const key = `${value.id}:${flags.asBase ? 'b' : 'v'}${flags.suppressRodataString ? ':noStr' : ''}`;
   if (ctx.exprCache.has(key)) {
     const trace = initialValueTraces.get(ctx), cached = trace?.memo.get(key);
     if (trace?.active) {
@@ -1852,20 +1970,26 @@ function renderValueText(value, ctx, flags) {
     return initialValueForm(ctx, 'memo-reuse', ctx.exprCache.get(key));
   }
   const topLevel = ctx.exprActive.size === 0;
-  if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) return initialValueForm(ctx, 'bounded-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
+  if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) {
+    ctx.exprFallbackHit = true;
+    return initialValueForm(ctx, 'bounded-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
+  }
+  const prevFallbackHit = ctx.exprFallbackHit === true;
+  ctx.exprFallbackHit = false;
   ctx.exprActive.add(value.id);
   let out = null;
+  let fallbackHit = false;
   try {
   if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) out = initialValueForm(ctx, 'cxx-this-receiver', 'this');
   if (!out && (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null))) out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(value.floatConst ?? value.float, value.bits));
-  if (!out && value.const != null && value.def?.op !== OP.ADDR) out = initialValueForm(ctx, 'precomputed-integer-or-literal', stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits));
+  if (!out && value.const != null && value.def?.op !== OP.ADDR) out = initialValueForm(ctx, 'precomputed-integer-or-literal', (!flags.suppressRodataString ? stringLiteralForValue(value, ctx) : null) || formatConst(value.const, value.bits));
   if (!out && value.kind === VK.ARG) out = initialValueForm(ctx, 'argument', argName(value, ctx));
   const d = value.def;
   if (!out && d) {
     if (d.op === OP.CONST) out = initialValueForm(ctx, 'constant-definition', (value.constKind === 'float' || value.floatConst != null || value.float != null)
       ? formatFloatConst(value.floatConst ?? value.float, value.bits)
       : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null));
-    else if (d.op === OP.MOV) out = initialValueForm(ctx, 'mov-operand', renderValue(valueOf(d.args?.[0]), ctx));
+    else if (d.op === OP.MOV) out = initialValueForm(ctx, 'mov-operand', renderValue(valueOf(d.args?.[0]), ctx, flags.suppressRodataString ? { suppressRodataString: true } : {}));
     else if (d.op === OP.BIN) out = initialValueForm(ctx, 'binary', binText(d, ctx));
     else if (d.op === OP.UN) out = initialValueForm(ctx, 'unary', unaryText(d, ctx));
     else if (d.op === OP.MAC) {
@@ -1898,7 +2022,7 @@ function renderValueText(value, ctx, flags) {
       }
     } else if (d.op === OP.ADDR) {
       const addr = value.const ?? d.extra?.value ?? d.extra?.target;
-      const literal = stringLiteralForValue(value, ctx) || stringLiteralAt(addr, ctx);
+      const literal = flags.suppressRodataString ? null : (stringLiteralForValue(value, ctx) || stringLiteralAt(addr, ctx));
       out = initialValueForm(ctx, 'address', literal || (addr != null ? (ctx.opts.symbolFor?.(addr) ? safeIdent(ctx.opts.symbolFor(addr)) : `&global_${hex(addr)}`) : 'address_unknown'));
     } else if (d.op === OP.CALL) {
       const canonical = d.dst || ctx.callResultByInst?.get(d) || null;
@@ -1927,12 +2051,16 @@ function renderValueText(value, ctx, flags) {
   }
   if (!out) out = initialValueForm(ctx, 'register-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
   } finally {
+    fallbackHit = ctx.exprFallbackHit === true;
+    ctx.exprFallbackHit = topLevel ? false : Boolean(prevFallbackHit || fallbackHit);
     ctx.exprActive.delete(value.id);
     if (topLevel) ctx.exprNodes = 0;
   }
-  ctx.exprCache.set(key, out);
-  const trace = initialValueTraces.get(ctx);
-  if (trace?.active) trace.memo.set(key, trace.active);
+  if (!fallbackHit) {
+    ctx.exprCache.set(key, out);
+    const trace = initialValueTraces.get(ctx);
+    if (trace?.active) trace.memo.set(key, trace.active);
+  }
   return out;
 }
 
@@ -2551,14 +2679,7 @@ function materialization(ctx) {
               }
             }
           } else {
-            const useRange = blockRange.get(use.block);
-            if (useRange && barrierBetween(def, current, useRange.start - 1, ui)) return true;
-            const between = blocksBetween(originBlock, use.block, false);
-            if (between) {
-              for (const bi of between) {
-                if (blockHasAliasingBarrier(def, bi)) return true;
-              }
-            }
+            return true;
           }
         }
         // Follow pure SSA transforms transitively. A load feeding add/cmp/select
@@ -3430,7 +3551,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
       out.push(node); ctx.evidence.push(evidenceOf(term2, 'return')); return;
     }
     if (term2.op === OP.BR) {
-      if (term2.extra?.isTailCall && term2.extra?.name) {
+      if (term2.extra?.isTailCall && (term2.extra?.name || term2.extra?.target != null)) {
         emitTailCallBranch(term2, out, ctx, indent);
         return;
       }
@@ -3712,7 +3833,9 @@ export function hasUnbalancedBracesInLines(nodes) {
 function emitTailCallBranch(term, out, ctx, indent) {
   const c = callRecord(term, ctx);
   const callText = renderCall(term, ctx);
-  const text = knownVoidCall(term, ctx.opts) ? `${callText}; return;` : `return ${callText};`;
+  const callerRetType = String(ctx.opts?.returnType || ctx.opts?.functionPrototype?.returnType || ctx.opts?.prototype?.returnType || ctx.types?.ret?.type || '').trim().toLowerCase();
+  const callerIsVoid = callerRetType === 'void';
+  const text = (callerIsVoid || knownVoidCall(term, ctx.opts)) ? `${callText}; return;` : `return ${callText};`;
   const node = line('stmt', indent, text, term.row, term.address, {
     source: mergeSource(controlSource(term, ctx), sourceForInst(term, 'tail-call')),
   });
@@ -3774,7 +3897,7 @@ function faithfulCfg(ctx, indent = 1) {
         out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }),
           term, 'cfg-false-goto', { yes, no }, ctx));
       }
-    } else if (term.op === OP.BR && term.extra?.isTailCall && term.extra?.name) {
+    } else if (term.op === OP.BR && term.extra?.isTailCall && (term.extra?.name || term.extra?.target != null)) {
       emitTailCallBranch(term, out, ctx, indent + 1);
     } else if (term.op === OP.BR && block.succ[0] != null) {
       const next = block.succ[0];

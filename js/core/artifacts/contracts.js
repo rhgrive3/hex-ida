@@ -224,6 +224,37 @@ function randomViewToken(index) {
   return `${index}-${noise}`;
 }
 
+function isArrayIndexKey(key) {
+  const len = key.length;
+  if (len === 0 || len > 10) return false;
+  const c0 = key.charCodeAt(0);
+  if (c0 < 0x30 || c0 > 0x39) return false;
+  if (c0 === 0x30) return len === 1;
+  let n = c0 - 0x30;
+  for (let i = 1; i < len; i += 1) {
+    const c = key.charCodeAt(i);
+    if (c < 0x30 || c > 0x39) return false;
+    n = n * 10 + (c - 0x30);
+  }
+  return n < 0xffffffff;
+}
+
+function canonicalJsonKeys(value) {
+  const keys = Object.keys(value);
+  const len = keys.length;
+  if (len <= 1) return keys;
+  const indexKeys = [];
+  const otherKeys = [];
+  for (let i = 0; i < len; i += 1) {
+    const k = keys[i];
+    if (isArrayIndexKey(k)) indexKeys.push(k);
+    else otherKeys.push(k);
+  }
+  indexKeys.sort((a, b) => Number(a) - Number(b));
+  otherKeys.sort();
+  return [...indexKeys, ...otherKeys];
+}
+
 function payloadViewSlice(value) {
   if (value instanceof Uint8Array) return value;
   try { return new Uint8Array(value.buffer, value.byteOffset, value.byteLength); }
@@ -262,7 +293,7 @@ function scanForStreamedViews(value, refs, seen, sorted) {
   }
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return false;
-  for (const key of Object.keys(value)) {
+  for (const key of canonicalJsonKeys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || !('value' in descriptor)) return false;
     if (!scanForStreamedViews(value[key], refs, seen, sorted)) return false;
@@ -291,7 +322,14 @@ function insertViewMarkers(value, tokens, slot) {
   if (value instanceof Set) return new Set([...value].map((entry) => insertViewMarkers(entry, tokens, slot)));
   if (Array.isArray(value)) return value.map((entry) => insertViewMarkers(entry, tokens, slot));
   const out = {};
-  for (const key of Object.keys(value)) out[key] = insertViewMarkers(value[key], tokens, slot);
+  for (const key of canonicalJsonKeys(value)) {
+    Object.defineProperty(out, key, {
+      value: insertViewMarkers(value[key], tokens, slot),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
   return out;
 }
 

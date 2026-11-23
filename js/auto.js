@@ -463,15 +463,25 @@ export async function autoAnalyze(opts) {
   const recognized = Array.isArray(o.recognition?.records) ? o.recognition.records : [];
   const regionLo = region && typeof region.vmAddr === 'bigint' ? region.vmAddr : null;
   const regionHi = regionLo != null && typeof region.size === 'bigint' ? regionLo + region.size : null;
-  const inRegion = (addr) => {
-    if (regionLo == null || regionHi == null) return true;
-    let a = null;
-    if (typeof addr === 'bigint') a = addr;
-    else if (typeof addr === 'number' && Number.isSafeInteger(addr)) a = BigInt(addr);
-    else if (typeof addr === 'string' && /^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(addr.trim())) {
-      try { a = BigInt(addr.trim()); } catch { a = null; }
+  const toBigIntAddress = (addr) => {
+    if (typeof addr === 'bigint') return addr >= 0n ? addr : null;
+    if (typeof addr === 'number') return Number.isSafeInteger(addr) && addr >= 0 ? BigInt(addr) : null;
+    if (typeof addr === 'string') {
+      const text = addr.trim();
+      if (/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(text)) {
+        try {
+          const v = BigInt(text);
+          return v >= 0n ? v : null;
+        } catch { return null; }
+      }
     }
-    return a != null && a >= regionLo && a < regionHi;
+    return null;
+  };
+  const inRegion = (addr) => {
+    const a = toBigIntAddress(addr);
+    if (a == null) return false;
+    if (regionLo == null || regionHi == null) return true;
+    return a >= regionLo && a < regionHi;
   };
   const compareNotable = (a, b) => {
     const scoreDiff = (b.score || 0) - (a.score || 0);
@@ -484,9 +494,10 @@ export async function autoAnalyze(opts) {
   const recognizedNotable = recognized
     .filter((item) => item && item.classification === 'APPLICATION' && inRegion(item.address))
     .map((item) => {
+      const addr = toBigIntAddress(item.address);
       const score = Number.isFinite(item.score) ? Math.round(item.score * 100) : 0;
       return {
-        addr: item.address,
+        addr,
         name: item.name || null,
         score,
         reasons: [{ code: 'recognition', points: score, detail: { classification: item.classification, confidence: item.confidence, knowledge: !!item.knowledge } }],
@@ -498,10 +509,17 @@ export async function autoAnalyze(opts) {
   const structuralNotable = notableFunctions(program, symbols, region);
   const seen = new Set();
   report.notable = [...recognizedNotable, ...structuralNotable]
+    .map((item) => {
+      if (!item) return null;
+      const norm = toBigIntAddress(item.addr);
+      if (norm == null) return null;
+      return item.addr === norm ? item : Object.assign({}, item, { addr: norm });
+    })
+    .filter(Boolean)
     .sort(compareNotable)
     .filter((item) => {
-      const key = item?.addr == null ? '' : item.addr.toString();
-      if (!key || seen.has(key)) return false;
+      const key = item.addr.toString();
+      if (seen.has(key)) return false;
       seen.add(key);
       return true;
     })

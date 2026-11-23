@@ -225,8 +225,10 @@
    * CAFEBABE turns out to be something else (e.g. a Java class file).
    */
   function parseFat(buf, fileSize) {
+    if (!buf || buf.byteLength < 8) return null;
     const dv = new DataView(buf);
     const magic = dv.getUint32(0, false);
+    if (magic !== FAT_MAGIC && magic !== FAT_MAGIC_64) return null;
     const is64 = magic === FAT_MAGIC_64;
     const n = dv.getUint32(4, false);
     if (n === 0 || n > 32) return null;
@@ -354,16 +356,17 @@
     const det = detect(buf);
     if (det.kind !== 'macho') throw new Error('Not a Mach-O image.');
     if (det.bigEndian) throw new Error('Big-endian Mach-O images are not supported.');
+    const is64 = det.is64;
+    const hdrSize = is64 ? 32 : 28;
+    if (buf.byteLength < hdrSize) throw new Error('Truncated Mach-O header');
     const dv = new DataView(buf);
     const u8 = new Uint8Array(buf);
-    const is64 = det.is64;
     const cputype = dv.getInt32(4, true);
     const cpusubtype = dv.getInt32(8, true);
     const filetype = dv.getUint32(12, true);
     const ncmds = dv.getUint32(16, true);
     const sizeofcmds = dv.getUint32(20, true);
     const flags = dv.getUint32(24, true);
-    const hdrSize = is64 ? 32 : 28;
     if (ncmds > 10000 || sizeofcmds > 64 * 1024 * 1024) throw new Error('Mach-O header looks corrupt (bad load command count).');
     if (hdrSize + sizeofcmds > buf.byteLength) throw new Error('Mach-O load command area is truncated.');
 
@@ -1424,12 +1427,17 @@
      * mapping, marking the result truncated rather than over-allocating.
      */
     for (const seg of info.segments) {
+      if (seg.validMapping === false) continue;
       for (const sec of seg.sections) {
+        if (sec.validMapping === false) continue;
         if (!sec.stubs && !sec.pointers) continue;
         const entSize = sec.stubs ? (sec.reserved2 || 12) : pointerSize;
-        if (entSize <= 0) continue;
-        if (sec.reserved1 >= total) continue;                  // window starts outside the table
-        const count = Math.min(Number(sec.size / BigInt(entSize)), total - sec.reserved1);
+        if (!Number.isSafeInteger(entSize) || entSize <= 0) continue;
+        if (!Number.isSafeInteger(sec.reserved1) || sec.reserved1 < 0 || sec.reserved1 >= total) continue;
+        const remaining = total - sec.reserved1;
+        const maxEntriesBig = sec.size > 0n ? (sec.size / BigInt(entSize)) : 0n;
+        const count = maxEntriesBig >= BigInt(remaining) ? remaining : Number(maxEntriesBig);
+        const entSizeBig = BigInt(entSize);
         for (let i = 0; i < count; i++) {
           const idx = sec.reserved1 + i;
           if (idx >= total) break;
@@ -1438,7 +1446,7 @@
           const name = sym.names[symIdx];
           if (!name) continue;
           if (out.length >= STUB_SYMBOLS_MAX) { out.truncated = true; return out; }
-          out.push({ addr: sec.addr + BigInt(i * entSize), name, stub: !!sec.stubs });
+          out.push({ addr: sec.addr + BigInt(i) * entSizeBig, name, stub: !!sec.stubs });
         }
       }
     }

@@ -270,7 +270,7 @@ function buildContext(model, o) {
    * どの値を変数として残し、どの値を式に埋め込むかは decideMaterial が決める。
    */
   let values = null;
-  try { values = buildValues(model, { symbolFor: o.symbolFor }); } catch { values = null; }
+  try { values = buildValues(model, { symbolFor: o.symbolFor, knownCallSignature }); } catch { values = null; }
 
   /*
    * 持ち回っている値には `result` という名前を付ける。
@@ -428,7 +428,10 @@ function decideMaterial(model, vg) {
     for (const r of insn.reads) bump(vg.at(insn.row, r), insn.row);
   }
   for (const w of vg.memWrites || []) bump(w.value, w.row);
-  for (const r of vg.returns || []) bump(r.value, r.row);
+  for (const r of vg.returns || []) {
+    bump(r.value, r.row);
+    if (r.fpValue) bump(r.fpValue, r.row);
+  }
   /*
    * 引数は数に入れない。呼び出しの行が中身をそのまま書き出すので、
    * `x1 = a4;` という行を別に立てる必要がない。
@@ -442,13 +445,21 @@ function decideMaterial(model, vg) {
    * 12 行並んでいた。
    */
   const lastInBlock = new Map();
+  const lastInBlockRow = new Map();
   const lastCallRow = new Map();
   const defRows = new Map();       // ノード → そのノードを置いた行の一覧
   for (const insn of insns) {
     const bi = blockOf.get(insn.row);
     const made = vg.defs.get(insn.row) || {};
+    for (const w of insn.writes || []) {
+      if (!(w in made)) {
+        lastInBlock.delete(bi + ':' + w);
+        lastInBlockRow.delete(bi + ':' + w);
+      }
+    }
     for (const reg of Object.keys(made)) {
       lastInBlock.set(bi + ':' + reg, made[reg]);
+      lastInBlockRow.set(bi + ':' + reg, insn.row);
       const list = defRows.get(made[reg]) || [];
       list.push({ row: insn.row, reg });
       defRows.set(made[reg], list);
@@ -487,7 +498,7 @@ function decideMaterial(model, vg) {
    * すぐ下の呼び出しの行に同じ中身が書いてある、という重複はここで消える。
    */
   const killedByCall = (def) => {
-    if (!/^x([0-9]|1[0-7])$/.test(def.reg)) return false;
+    if (!/^(?:x([0-9]|1[0-7])|v([0-7]|1[6-9]|2[0-9]|3[01]))$/.test(def.reg)) return false;
     const bi = blockOf.get(def.row);
     const call = lastCallRow.get(bi);
     return call != null && call > def.row;
@@ -620,10 +631,16 @@ function decideMaterial(model, vg) {
     };
     for (const nodeValue of material) mark(nodeValue, nodeValue);
     for (const w of vg.memWrites || []) mark(w.value, null);
-    for (const r of vg.returns || []) mark(r.value, null);
+    for (const r of vg.returns || []) {
+      mark(r.value, null);
+      if (r.fpValue) mark(r.fpValue, null);
+    }
     for (const insn of insns) {
       if (!insn.isCall) continue;
-      for (let a = 0; a <= 7; a++) mark(vg.at(insn.row, 'x' + a), null);
+      for (let a = 0; a <= 7; a++) {
+        mark(vg.at(insn.row, 'x' + a), null);
+        mark(vg.at(insn.row, 'v' + a), null);
+      }
     }
     let dropped = 0;
     for (const nodeValue of Array.from(material)) {
@@ -681,10 +698,16 @@ function decideMaterial(model, vg) {
     };
     for (const nodeValue of material) tally(nodeValue, nodeValue);
     for (const w of vg.memWrites || []) tally(w.value, null);
-    for (const r of vg.returns || []) tally(r.value, null);
+    for (const r of vg.returns || []) {
+      tally(r.value, null);
+      if (r.fpValue) tally(r.fpValue, null);
+    }
     for (const insn of insns) {
       if (!insn.isCall) continue;
-      for (let a = 0; a <= 7; a++) tally(vg.at(insn.row, 'x' + a), null);
+      for (let a = 0; a <= 7; a++) {
+        tally(vg.at(insn.row, 'x' + a), null);
+        tally(vg.at(insn.row, 'v' + a), null);
+      }
     }
     let merged = 0;
     for (const nodeValue of Array.from(material)) {
@@ -729,6 +752,18 @@ function decideMaterial(model, vg) {
       if (at && at.k === 'reg' && at.reg === r) lost.add(r);
     }
   }
+  const hasV0LostRet = (vg.returns || []).some((r) => {
+    if (r.fpValue != null) return false;
+    const bi = blockOf.get(r.row);
+    return bi == null || lastInBlock.get(bi + ':v0') == null;
+  });
+  if (hasV0LostRet) {
+    const hasV0JoinKill = vg.joins instanceof Map
+      && Array.from(vg.joins.values()).some((j) => j && (j.all || j.killed?.has('v0')));
+    const hasV0Def = Array.from(lastInBlock.keys()).some((k) => k.endsWith(':v0'))
+      || Array.from(defRows.values()).some((list) => list.some((d) => d.reg === 'v0'));
+    if (hasV0JoinKill && hasV0Def) lost.add('v0');
+  }
 
   const names = new Map();
   const perReg = new Map();
@@ -769,7 +804,7 @@ function decideMaterial(model, vg) {
       if (isDefLiveOut(d, nodeValue)) liveOutNonCanonical.add(d.row + ':' + d.reg);
     }
   }
-  return { material, uses, crossed, blockOf, names, lost, canonical, liveOutNonCanonical };
+  return { material, uses, crossed, blockOf, names, lost, canonical, liveOutNonCanonical, lastInBlock, lastInBlockRow, killedByCall };
 }
 
 /** 変数として残したところで止めた、見た目の大きさ。 */
@@ -808,10 +843,19 @@ function liveOutSets(model, blocks, blockOf) {
       const insn = byRow.get(row);
       if (!insn) continue;
       for (const r of insn.reads) if (!d.has(r)) u.add(r);
-      if (insn.isCall) for (let a = 0; a <= 7; a++) if (!d.has('x' + a)) u.add('x' + a);
+      if (insn.isCall) {
+        for (let a = 0; a <= 7; a++) {
+          if (!d.has('x' + a)) u.add('x' + a);
+          if (!d.has('v' + a)) u.add('v' + a);
+        }
+      }
       if (insn.isReturn && !d.has('v0')) u.add('v0');
       for (const w of insn.writes) d.add(w);
-      if (insn.isCall) for (let a = 0; a <= 17; a++) d.add('x' + a);
+      if (insn.isCall) {
+        for (let a = 0; a <= 17; a++) d.add('x' + a);
+        for (let a = 0; a <= 7; a++) d.add('v' + a);
+        for (let a = 16; a <= 31; a++) d.add('v' + a);
+      }
     }
     const last = byRow.get(blocks[i].endRow);
     if (last && last.isBranch && !last.isCall && !last.isReturn) {
@@ -1826,7 +1870,16 @@ function statementFor(insn, ctx, node, state) {
   if (base === 'ret' || base === 'retab' || base === 'retaa') {
     const ret = ctx.types && ctx.types.ret && ctx.types.ret.type !== 'void';
     if (ret && ctx.fpReturnReg) {
-      const fpNode = ctx.values ? ctx.values.at(row, ctx.fpReturnReg) : null;
+      let fpNode = ctx.values ? ctx.values.at(row, ctx.fpReturnReg) : null;
+      if (!fpNode && ctx.material?.lastInBlock && ctx.material?.blockOf) {
+        const bi = ctx.material.blockOf.get(row);
+        const key = bi != null ? bi + ':' + ctx.fpReturnReg : null;
+        const fallbackNode = key ? ctx.material.lastInBlock.get(key) : null;
+        const fallbackRow = key && ctx.material.lastInBlockRow ? ctx.material.lastInBlockRow.get(key) : null;
+        if (fallbackNode && (fallbackRow == null || !ctx.material.killedByCall?.({ row: fallbackRow, reg: ctx.fpReturnReg }))) {
+          fpNode = fallbackNode;
+        }
+      }
       const fpVal = (fpNode ? exprText(ctx, fpNode, null) : null) || varOf(ctx.fpReturnReg, ctx);
       const fpType = ctx.fpReturnType || 'double';
       const castExpr = '(' + fpType + ')' + (needsParens(fpVal) ? '(' + fpVal + ')' : fpVal);
@@ -2250,9 +2303,15 @@ function memoryStatement(insn, ctx, mk, base) {
       : (wbMode === 'pre' ? (m.disp != null ? m.disp : (mem && mem.disp && mem.disp.value != null ? mem.disp.value : null)) : null));
   const hasWb = !!(wbMode && baseReg && baseReg !== 'sp' && !m.stack && rawWbDisp != null && rawWbDisp !== 0n);
   const wbBaseName = hasWb ? varOf(baseReg, ctx) : null;
+  const wbPtrType = hasWb ? pointerTypeForReg(baseReg, ctx) : null;
+  const wbSign = hasWb ? (rawWbDisp < 0n ? '-' : '+') : '+';
+  const wbAbsOff = hasWb ? hexImm(rawWbDisp < 0n ? -rawWbDisp : rawWbDisp) : '0';
+  const wbExpr = wbPtrType
+    ? '(' + wbPtrType + ')((uint8_t *)' + wbBaseName + ' ' + wbSign + ' ' + wbAbsOff + ')'
+    : wbBaseName + ' ' + wbSign + ' ' + wbAbsOff;
   const wbStmt = hasWb
     ? mk(
-        wbBaseName + ' = ' + wbBaseName + (rawWbDisp < 0n ? ' - ' + hexImm(-rawWbDisp) : ' + ' + hexImm(rawWbDisp)) + ';',
+        wbBaseName + ' = ' + wbExpr + ';',
         { dst: baseReg, reads: [baseReg], pure: false }
       )
     : null;
@@ -2406,12 +2465,15 @@ function callStatement(insn, ctx, mk) {
     if (!reads.includes(r)) reads.push(r);
   }
   /* 末尾呼び出し（b で別の関数へ跳んで終わる）は、そのまま return になる */
-  const isVoidCall = knownCallSignature(name || cleanName)?.retType === 'void';
+  const callSig = knownCallSignature(name || cleanName);
+  const isVoidCall = callSig?.retType === 'void';
+  const isFpRet = callSig?.retType === 'float' || callSig?.retType === 'double';
+  const retReg = isFpRet ? 'v0' : 'x0';
   const text = insn.isTailCall
     ? (isVoidCall ? callExpr + '; return;' : 'return ' + callExpr + ';')
-    : (isVoidCall ? callExpr + ';' : nameForDef(ctx, insn.row, 'x0') + ' = ' + callExpr + ';');
+    : (isVoidCall ? callExpr + ';' : nameForDef(ctx, insn.row, retReg) + ' = ' + callExpr + ';');
   return mk(text, {
-    dst: (insn.isTailCall || isVoidCall) ? null : 'x0', call: true, target, reads,
+    dst: (insn.isTailCall || isVoidCall) ? null : retReg, call: true, target, reads,
     kind: insn.isTailCall ? 'ctrl' : 'stmt',
     note: name ? null : '行き先が固定でない呼び出しです（関数ポインタ）。',
   });
@@ -2450,18 +2512,52 @@ const VARIADIC_FORMAT_ARG = {
   snprintf_chk: 4,
 };
 
-function countFormatSpecifiers(fmt) {
-  if (typeof fmt !== 'string') return 0;
-  const re = /%%|%[-+ #0']*(\*|\d+)?(?:\.(\*|\d+))?(?:hh|h|ll|l|L|j|z|t)?[diouxXeEfFgGaAcspn]/g;
-  let count = 0;
+const SCANF_VARIADIC_NAMES = new Set([
+  'scanf', 'isoc99_scanf', 'fscanf', 'sscanf', 'isoc99_fscanf', 'isoc99_sscanf',
+]);
+
+function parsePrintfSpecifiers(fmt) {
+  if (typeof fmt !== 'string') return [];
+  const re = /%%|%[-+ #0']*(\*|\d+)?(?:\.(\*|\d+))?(?:hh|h|ll|l|L|j|z|t)?([diouxXeEfFgGaAcspn])/g;
+  const specs = [];
   let m;
   while ((m = re.exec(fmt)) !== null) {
     if (m[0] === '%%') continue;
-    count++;
-    if (m[1] === '*') count++;
-    if (m[2] === '*') count++;
+    if (m[1] === '*') specs.push('gp');
+    if (m[2] === '*') specs.push('gp');
+    specs.push(/^[fFeEgGaA]$/.test(m[3]) ? 'fp' : 'gp');
   }
-  return count;
+  return specs;
+}
+
+function parseScanfSpecifiers(fmt) {
+  if (typeof fmt !== 'string') return [];
+  const re = /%%|%(\*)?(?:\d+)?(?:hh|h|ll|l|L|j|z|t)?(?:\[\^?\]?[^\]]*\]|[diuoxXeEfFgGaAcspn])/g;
+  const specs = [];
+  let m;
+  while ((m = re.exec(fmt)) !== null) {
+    if (m[0] === '%%') continue;
+    if (m[1] === '*') continue;
+    specs.push('gp');
+  }
+  return specs;
+}
+
+function pointerTypeForReg(reg, ctx) {
+  if (!reg || !ctx?.types) return null;
+  const args = Array.isArray(ctx.types.args) ? ctx.types.args : [];
+  let matched = args.find((a) => a && a.reg === reg);
+  if (!matched && ctx.aliases) {
+    const alias = ctx.aliases.get(reg);
+    const m = typeof alias === 'string' ? /^a(\d+)$/.exec(alias) : null;
+    if (m) {
+      const idx = Number(m[1]) - 1;
+      matched = args.find((a) => a && a.index === idx);
+    }
+  }
+  const t = typeof matched?.type === 'string' ? matched.type.trim() : '';
+  if (!t || !t.includes('*')) return null;
+  return t;
 }
 
 function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null, call = null) {
@@ -2484,6 +2580,18 @@ function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null
     return isIncoming ? argName(gpIdx, ctx) : varOf('x' + gpIdx, ctx);
   };
 
+  const fpArgAt = (fpIdx) => {
+    const reg = 'v' + fpIdx;
+    if (row != null && ctx.values) {
+      const node = ctx.values.at(row, reg);
+      if (node && !(node.k === 'call' && node.row === row)) {
+        const text = exprText(ctx, node, null);
+        if (text) return text;
+      }
+    }
+    return varOf(reg, ctx);
+  };
+
   if (proto.variadic) {
     let maxRawArgIdx = -1;
     if (rawArgMap) {
@@ -2495,9 +2603,8 @@ function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null
     const fmtArgIdx = Number.isInteger(callInfo?.api?.formatArg)
       ? callInfo.api.formatArg
       : (VARIADIC_FORMAT_ARG[proto.name] ?? null);
-    let formatSpecArgCount = 0;
+    let fmtText = null;
     if (fmtArgIdx != null && fmtArgIdx >= 0 && fmtArgIdx <= 7) {
-      let fmtText = null;
       if (row != null && ctx.values) {
         const fmtNode = ctx.values.at(row, 'x' + fmtArgIdx);
         if (fmtNode && fmtNode.k === 'str' && typeof fmtNode.text === 'string') fmtText = fmtNode.text;
@@ -2513,11 +2620,39 @@ function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null
         const lit = typeof rawFmt === 'string' ? /^"(.*)"$/.exec(rawFmt.trim()) : null;
         if (lit) fmtText = lit[1];
       }
-      if (fmtText != null) {
-        formatSpecArgCount = fmtArgIdx + 1 + countFormatSpecifiers(fmtText);
-      }
     }
-    const needed = Math.min(8, Math.max(proto.arity, maxRawArgIdx + 1, formatSpecArgCount));
+    if (fmtText != null && fmtArgIdx != null) {
+      const isScanf = SCANF_VARIADIC_NAMES.has(proto.name);
+      const specs = isScanf ? parseScanfSpecifiers(fmtText) : parsePrintfSpecifiers(fmtText);
+      const fixedCount = Math.min(8, Math.max(proto.arity, fmtArgIdx + 1));
+      const out = [];
+      for (let i = 0; i < fixedCount; i++) {
+        const text = gpArgAt(i);
+        out.push(text);
+        if (readRegs && text === varOf('x' + i, ctx)) readRegs.push('x' + i);
+      }
+      let gpIdx = fixedCount;
+      let fpIdx = 0;
+      for (const kind of specs) {
+        if (kind === 'fp') {
+          if (fpIdx > 7) continue;
+          const reg = 'v' + fpIdx;
+          const text = fpArgAt(fpIdx);
+          out.push('(double)' + (needsParens(text) ? '(' + text + ')' : text));
+          if (readRegs && text === varOf(reg, ctx)) readRegs.push(reg);
+          fpIdx++;
+        } else {
+          if (gpIdx > 7) continue;
+          const reg = 'x' + gpIdx;
+          const text = gpArgAt(gpIdx);
+          out.push(text);
+          if (readRegs && text === varOf(reg, ctx)) readRegs.push(reg);
+          gpIdx++;
+        }
+      }
+      return out;
+    }
+    const needed = Math.min(8, Math.max(proto.arity, maxRawArgIdx + 1));
     const out = [];
     for (let i = 0; i < needed; i++) {
       const text = gpArgAt(i);
@@ -2536,8 +2671,9 @@ function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null
       const pt = paramTypes[k];
       if (pt === 'float' || pt === 'double') {
         const reg = 'v' + fpIdx;
-        out.push('(' + pt + ')' + varOf(reg, ctx));
-        if (readRegs) readRegs.push(reg);
+        const text = fpArgAt(fpIdx);
+        out.push('(' + pt + ')' + (needsParens(text) ? '(' + text + ')' : text));
+        if (readRegs && text === varOf(reg, ctx)) readRegs.push(reg);
         fpIdx++;
       } else {
         const text = gpArgAt(gpIdx);
@@ -2670,9 +2806,11 @@ function augmentLegacyFpSignature(model, types, ctx) {
       }
       if (reads.includes('x0')) {
         const isCompare = /^(?:cmp|cmn|tst|cbz|cbnz|tbz|tbnz)\b/.test(base);
-        const isStore = insn.memory?.kind === 'store';
+        const isStoreAddrOnly = insn.memory?.kind === 'store'
+          && (insn.memory.base === 'x0' || insn.memory.index === 'x0')
+          && !(insn.ops || []).some((op) => op && op.k === 'reg' && op.cls === 'gp' && op.num === 0);
         const isFpFromX0 = /^(?:fmov|scvtf|ucvtf)\b/.test(base) && writes.includes('v0');
-        if (isCompare || isStore || isFpFromX0) x0Consumed = true;
+        if (isCompare || isStoreAddrOnly || isFpFromX0) x0Consumed = true;
       }
     }
     if (!x0Unconsumed) checkFpRet = true;
@@ -2713,7 +2851,8 @@ function augmentLegacyFpSignature(model, types, ctx) {
         const isStore = insn.memory?.kind === 'store' || /^(?:str|stp|stur|stlr|stnp|st1|st2|st3|st4)\b/.test(base);
         const isCompare = /^(?:fcmp|fcmpe|fccmp|fccmpe)\b/.test(base);
         const isMove = /^(?:fmov|mov|umov|smov|ins|dup)\b/.test(base);
-        if (isStore || isCompare || isMove) v0Consumed = true;
+        const isConvert = /^fcvt/.test(base);
+        if (isStore || isCompare || isMove || isConvert) v0Consumed = true;
       }
     }
   }
@@ -2910,8 +3049,31 @@ function rightHandSide(text, reg) {
   return m[1];
 }
 
+function isWrappedInBalancedParens(expr) {
+  if (typeof expr !== 'string' || expr.length < 2 || expr[0] !== '(' || expr[expr.length - 1] !== ')') return false;
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0 && i < expr.length - 1) return false;
+      if (depth < 0) return false;
+    }
+  }
+  return depth === 0;
+}
+
 function needsParens(expr) {
-  return /[+\-*/&|^<>?]/.test(expr) && !/^\(.*\)$/.test(expr) && !/^\*\(/.test(expr) && !/^"/.test(expr);
+  if (typeof expr !== 'string') return false;
+  return /[+\-*/&|^<>?]/.test(expr) && !isWrappedInBalancedParens(expr) && !/^\*\(/.test(expr) && !/^"/.test(expr);
 }
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }

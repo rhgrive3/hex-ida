@@ -18,9 +18,15 @@ function originalHasImmediate(sourceByRow, row) {
   return !!(insn && (insn.ops || []).some((o) => o && o.k === 'imm' && (o.value != null || o.float != null)));
 }
 
+function validBits(bits) {
+  return Number.isInteger(bits) && bits >= 1 && bits <= 64 ? bits : null;
+}
+
 function mask(v, bits) {
   if (v == null) return null;
-  return BigInt.asUintN(bits || 64, BigInt(v));
+  const w = bits == null ? 64 : validBits(bits);
+  if (w == null) return null;
+  return BigInt.asUintN(w, BigInt(v));
 }
 
 /**
@@ -39,7 +45,23 @@ function provenConstant(value, memo, active = new Set()) {
   let result = null;
   const def = value.def;
   if (def && def.op === OP.MOV && def.args && def.args[0]) {
-    result = provenConstant(def.args[0].value, memo, active);
+    const srcVal = def.args[0].value;
+    const inner = provenConstant(srcVal, memo, active);
+    if (inner != null) {
+      const dstBits = value.bits != null ? validBits(value.bits) : (srcVal?.bits != null ? validBits(srcVal.bits) : 64);
+      if (dstBits != null) {
+        const sub = def.sub;
+        if (sub == null || sub === 'copy' || sub === 'memory-forward' || sub === 'trunc') {
+          result = mask(inner, dstBits);
+        } else if (sub === 'zext') {
+          const srcBits = validBits(def.extra?.srcBits ?? srcVal?.bits);
+          if (srcBits != null) result = mask(BigInt.asUintN(srcBits, BigInt(inner)), dstBits);
+        } else if (sub === 'sext') {
+          const srcBits = validBits(def.extra?.srcBits ?? srcVal?.bits);
+          if (srcBits != null) result = mask(BigInt.asIntN(srcBits, BigInt(inner)), dstBits);
+        }
+      }
+    }
   } else if (def && def.op === OP.PHI && def.args && def.args.length) {
     const vals = def.args.map((a) => provenConstant(a && a.value, memo, active));
     if (vals.length && vals.every((v) => v != null && v === vals[0])) result = vals[0];

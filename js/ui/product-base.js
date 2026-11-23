@@ -8,7 +8,7 @@ import {
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
 import { addrHex, parseAddress, sizeText } from '../format.js';
-import { pick } from '../i18n.js';
+import { pick, isJa as i18nIsJa } from '../i18n.js';
 import { menu, copyText, toast, closeAllSheets, closeMenu } from '../ui.js';
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals, showPatches,
@@ -41,8 +41,12 @@ const showClass = lazyProductPanel('showClass');
 const showJump = lazyProductPanel('showJump');
 const showSearchPanel = lazyProductPanel('showSearch');
 
-const ja = () => (uiRoot()?.lang || globalThis.navigator?.language || 'ja').toLowerCase().startsWith('ja');
-const text = (j, e) => ja() ? j : e;
+const ja = () => {
+  const rootLang = uiRoot()?.lang;
+  if (rootLang) return String(rootLang).toLowerCase().startsWith('ja');
+  return i18nIsJa();
+};
+const text = (j, e) => (uiRoot()?.lang ? (ja() ? j : e) : pick(j, e));
 
 function addressText(value) {
   try { return addrHex(typeof value === 'bigint' ? value : BigInt(value)); } catch { return String(value || '—'); }
@@ -860,7 +864,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       ...(assistant ? [askAiMenuItem(assistant, functionAiItems(assistant, { address: addr, name: functionName(app, addr) }), { x: r.left + r.width / 2, y: r.bottom + 4 })] : []),
       { label: text('名前を付ける', 'Rename'), action: () => showRename(app, addr) },
       { label: text('メモを書く', 'Comment'), action: () => showComment(app, addr) },
-      { label: text('パッチ（命令の書き換え）', 'Patch instructions'), action: () => showPatches(app, addr) },
+      { label: text('パッチ（命令の書き換え）', 'Patch instructions'), action: () => requireFile(app, () => showPatches(app, addr)) },
       { label: text('アセンブリへ', 'Open assembly'), action: () => router.navigate('/code/' + addr.toString()) },
     ], r.left + r.width / 2, r.bottom + 4);
   } }));
@@ -1522,7 +1526,10 @@ function addressIsMapped(app, addr) {
 }
 
 function installAddressBar(app, router, addrbar) {
-  if (!addrbar) return () => {};
+  if (!addrbar) return { refreshLanguage() {}, destroy() {} };
+  const ac = typeof AbortController === 'function' ? new AbortController() : null;
+  const sigOpts = ac ? { signal: ac.signal } : undefined;
+  const detachFns = [];
   const cur = addrbar.querySelector('#addr-cur');
   const regionLabel = addrbar.querySelector('#addr-region');
   const actionable = (node, label, onActivate) => {
@@ -1532,9 +1539,14 @@ function installAddressBar(app, router, addrbar) {
     node.tabIndex = 0;
     node.setAttribute('aria-label', label);
     node.title = label;
-    node.addEventListener('click', onActivate);
-    node.addEventListener('keydown', (event) => {
+    const onKeyDown = (event) => {
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onActivate(event); }
+    };
+    node.addEventListener('click', onActivate, sigOpts);
+    node.addEventListener('keydown', onKeyDown, sigOpts);
+    detachFns.push(() => {
+      node.removeEventListener?.('click', onActivate);
+      node.removeEventListener?.('keydown', onKeyDown);
     });
   };
   actionable(cur, text('アドレスへジャンプ', 'Jump to address'), () => requireFile(app, () => showJump(app)));
@@ -1556,7 +1568,9 @@ function installAddressBar(app, router, addrbar) {
   fn.hidden = true;
   cur?.after(fn);
   let fnStart = null;
-  fn.addEventListener('click', () => { if (fnStart != null) router.navigate('/function/' + fnStart.toString() + '/overview'); });
+  const onFnClick = () => { if (fnStart != null) router.navigate('/function/' + fnStart.toString() + '/overview'); };
+  fn.addEventListener('click', onFnClick, sigOpts);
+  detachFns.push(() => fn.removeEventListener?.('click', onFnClick));
 
   const pseudo = uiButton(text('疑似C', 'Pseudo-C'), {
     cls: 'addr-pseudo',
@@ -1580,6 +1594,22 @@ function installAddressBar(app, router, addrbar) {
   });
   search.title = text('命令・バイト列・数値を検索（コード内）', 'Search instructions, bytes, or numbers in code');
   addrbar.append(pseudo, search);
+
+  const refreshLanguage = () => {
+    const jumpLabel = text('アドレスへジャンプ', 'Jump to address');
+    if (cur) { cur.setAttribute('aria-label', jumpLabel); cur.title = jumpLabel; }
+    const sectionLabel = text('区画を切り替える', 'Switch section');
+    if (regionLabel) { regionLabel.setAttribute('aria-label', sectionLabel); regionLabel.title = sectionLabel; }
+    fn.setAttribute('aria-label', text('この関数を開く', 'Open this function'));
+    const pseudoTitle = text('現在の関数を疑似Cで開く', 'Open current function as pseudocode');
+    pseudo.textContent = text('疑似C', 'Pseudo-C');
+    pseudo.setAttribute('aria-label', pseudoTitle);
+    pseudo.title = pseudoTitle;
+    const searchTitle = text('命令・バイト列・数値を検索（コード内）', 'Search instructions, bytes, or numbers in code');
+    search.textContent = text('バイト検索', 'Find bytes');
+    search.setAttribute('aria-label', searchTitle);
+    search.title = searchTitle;
+  };
 
   let frame = 0;
   const update = () => {
@@ -1614,7 +1644,16 @@ function installAddressBar(app, router, addrbar) {
     if (!frame) frame = requestAnimationFrame(update);
   });
   update();
-  return () => { unsubscribe(); if (frame) cancelAnimationFrame(frame); fn.remove(); pseudo.remove(); search.remove(); };
+  const destroy = () => {
+    ac?.abort();
+    for (const off of detachFns) off();
+    unsubscribe();
+    if (frame) cancelAnimationFrame(frame);
+    fn.remove();
+    pseudo.remove();
+    search.remove();
+  };
+  return { refreshLanguage, destroy };
 }
 
 function symbolAddress(app, name) {
@@ -1721,7 +1760,17 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   });
   host.append(form);
   actions.register('command.focus', () => { input.focus(); input.select(); });
-  return input;
+  const refreshLanguage = () => {
+    setPlaceholder();
+    input.setAttribute('aria-label', text('検索と移動', 'Search and navigate'));
+    go.textContent = text('実行', 'Go');
+    refreshHint();
+  };
+  const destroy = () => {
+    narrow?.removeEventListener?.('change', setPlaceholder);
+    form.remove();
+  };
+  return { input, refreshLanguage, destroy };
 }
 
 export function installProductUI(app) {
@@ -1865,7 +1914,7 @@ export function installProductUI(app) {
       return originalGoToAddress.call(this, addr, options);
     };
   }
-  installCommandCenter(app, router, actions, chrome, () => assistant);
+  const commandCenter = installCommandCenter(app, router, actions, chrome, () => assistant);
   const more = uiButton('•••', { cls: 'ui-more-button', ariaLabel: text('その他', 'More'), onClick: (event) => {
     const r = event.currentTarget.getBoundingClientRect();
     menu([
@@ -1883,7 +1932,8 @@ export function installProductUI(app) {
   chrome.append(more);
 
   for (const item of PRIMARY_NAV) {
-    const b = uiButton(item.icon + '\n' + item.label, { cls: 'ui-nav-item', onClick: () => router.navigate(item.route) });
+    const navLabel = !ja() && item.labelEn ? item.labelEn : item.label;
+    const b = uiButton(item.icon + '\n' + navLabel, { cls: 'ui-nav-item', onClick: () => router.navigate(item.route) });
     b.dataset.routeId = item.routeId;
     nav.append(b);
   }
@@ -1895,7 +1945,7 @@ export function installProductUI(app) {
   actions.register('function.open', (addr, tab = 'overview') => router.navigate('/function/' + BigInt(addr).toString() + '/' + tab));
 
   const cleanupViewport = installViewportBridge();
-  const cleanupAddressBar = installAddressBar(app, router, appRoot.querySelector('.addrbar'));
+  const addressBar = installAddressBar(app, router, appRoot.querySelector('.addrbar'));
   const shortcut = (event) => {
     const target = event.target;
     const typing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
@@ -1921,21 +1971,41 @@ export function installProductUI(app) {
   };
   document.addEventListener('hex:file-opened', onFileOpened);
 
+  const onLanguageChanged = () => {
+    nav.setAttribute('aria-label', text('主要ナビゲーション', 'Primary navigation'));
+    backBtn.textContent = text('← 戻る', '← Back');
+    backBtn.setAttribute('aria-label', text('前の画面へ戻る', 'Go back'));
+    more.setAttribute('aria-label', text('その他', 'More'));
+    for (const item of PRIMARY_NAV) {
+      const btn = nav.querySelector(`[data-route-id="${item.routeId}"]`);
+      if (btn) btn.textContent = item.icon + '\n' + (!ja() && item.labelEn ? item.labelEn : item.label);
+    }
+    commandCenter.refreshLanguage();
+    addressBar.refreshLanguage();
+    if (router.current?.route?.id === 'code') updateScreenTitle(null);
+    else if (router.current?.fullPath) router._render(router.current.fullPath, { replace: true, restoredState: null });
+  };
+  document.addEventListener('hex:language-changed', onLanguageChanged);
+
+  const onPageHide = () => { router.capture(); app.saveWorkspace?.(); };
+  window.addEventListener('pagehide', onPageHide, { passive: true });
+
   assistant = installAssistant(app, { router, actions });
   actions.register('ai.open', () => assistant?.open());
   actions.register('ai.ask', (question, options) => assistant?.ask(question, options));
 
   const destroy = () => {
-    router.stop(); cleanupViewport(); cleanupAddressBar();
+    router.stop(); cleanupViewport(); addressBar.destroy(); commandCenter.destroy();
     document.removeEventListener('keydown', shortcut, true);
     document.removeEventListener('hex:file-opened', onFileOpened);
+    document.removeEventListener('hex:language-changed', onLanguageChanged);
+    window.removeEventListener('pagehide', onPageHide);
     assistant?.destroy();
     if (originalSelectSlice) app.selectSlice = originalSelectSlice;
     if (originalGoToAddress) app.goToAddress = originalGoToAddress;
     chrome.remove(); nav.remove(); routeHost.remove();
     uiRoot()?.classList.remove('product-ui-ready');
   };
-  window.addEventListener('pagehide', () => { router.capture(); app.saveWorkspace?.(); }, { passive: true });
   window.__hexUi = { router, actions, destroy, routes: ROUTES, assistant };
   return window.__hexUi;
 }

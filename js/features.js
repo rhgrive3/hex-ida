@@ -36,7 +36,7 @@ const FEATURES = [
   },
   {
     id: 'gacha', ja: 'ガチャ・抽選・報酬', en: 'Gacha and rewards',
-    re: /gacha|lottery|draw|reward|bonus|present|gift|login_?bonus|ガチャ|抽選|報酬|ボーナス|プレゼント|received|受け取|排出|確率|レア/i,
+    re: /gacha|lottery|draw(?!er|able|ing|call|rect)|reward|bonus|present(?!er|ation|view|controller|modal|sheet|dialog)|gift|login_?bonus|ガチャ|抽選|報酬|ボーナス|プレゼント|received|受け取|排出|確率|レア/i,
   },
   {
     id: 'save', ja: 'セーブ・データ保存', en: 'Save data',

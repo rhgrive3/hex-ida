@@ -256,13 +256,21 @@ export function normalizeFieldName(name) {
   return s.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-/** 開いた名前 haystack の中に、開いた語の並び needle がそのまま入っているか。 */
-function wordSequenceAt(haystack, needle) {
+/** 開いた名前 haystack の中に、開いた語の並び needle がそのまま入っている全位置を返す。 */
+function wordSequenceMatches(haystack, needle) {
   const h = ' ' + haystack + ' ';
   const n = ' ' + needle + ' ';
-  return h.indexOf(n);
+  const out = [];
+  let pos = 0;
+  while (pos <= h.length - n.length) {
+    const idx = h.indexOf(n, pos);
+    if (idx < 0) break;
+    out.push(idx);
+    pos = idx + 1;
+    if (out.length >= 8) break;
+  }
+  return out;
 }
-function wordSequence(haystack, needle) { return wordSequenceAt(haystack, needle) >= 0; }
 
 /** needle の語のうち、avoid 範囲の外で何割が haystack に入っているか。 */
 function wordCoverage(haystack, needle, blocked = []) {
@@ -401,7 +409,7 @@ const FIELD_VOCAB = {
   },
 };
 
-export function fieldVocab(goalId) { return FIELD_VOCAB[goalId] || null; }
+export function fieldVocab(goalId) { return Object.hasOwn(FIELD_VOCAB, goalId) ? FIELD_VOCAB[goalId] : null; }
 
 /**
  * 変数の名前が、その目的にどれだけ当てはまるか。
@@ -413,7 +421,7 @@ export function matchField(goal, name) {
   const norm = normalizeFieldName(name);
   if (!norm) return null;
   const role = fieldRole(name);
-  const vocab = FIELD_VOCAB[goal.id];
+  const vocab = Object.hasOwn(FIELD_VOCAB, goal.id) ? FIELD_VOCAB[goal.id] : null;
   let best = null;
   /*
    * 変数名にも「同じつづりの別の言葉」は出る。normalizeFieldName が
@@ -459,9 +467,14 @@ export function matchField(goal, name) {
   if (asked && asked.length >= 2) {
     if (norm === asked) consider(1.2, goal.text, true, true, false, 0, false, asked.length);
     else {
-      const askedAt = wordSequenceAt(norm, asked);
-      if (askedAt >= 0) consider(1.0, goal.text, false, true, true, askedAt, false, asked.length);
-      else {
+      let matchedSeq = false;
+      for (const askedAt of wordSequenceMatches(norm, asked)) {
+        if (overlaps(blocked, askedAt, asked.length)) continue;
+        consider(1.0, goal.text, false, true, true, askedAt, false, asked.length);
+        matchedSeq = true;
+        break;
+      }
+      if (!matchedSeq) {
         const cover = wordCoverage(norm, asked, blocked);
         if (cover >= 0.99) consider(0.95, goal.text, false, true, false, null, true);
         else if (cover >= 0.6) consider(0.45 * cover, goal.text, false, true);
@@ -473,8 +486,11 @@ export function matchField(goal, name) {
   for (const term of goal.extraTerms || []) {
     const w = normalizeFieldName(term.word);
     if (!w || w.length < 2) continue;
-    const at = wordSequenceAt(norm, w);
-    if (at >= 0) consider((norm === w ? 0.95 : 0.7) * (term.weight || 1), term.word, norm === w, false, false, at, false, w.length);
+    for (const at of wordSequenceMatches(norm, w)) {
+      if (overlaps(blocked, at, w.length)) continue;
+      consider((norm === w ? 0.95 : 0.7) * (term.weight || 1), term.word, norm === w, false, false, at, false, w.length);
+      break;
+    }
   }
   if (!best && !vocab) {
     // プリセットの文言用の語彙でも一応見る（日本語名の変数など）
@@ -505,7 +521,7 @@ export function matchField(goal, name) {
  */
 export function typeFits(goal, type) {
   if (!goal || !type) return 'unknown';
-  const want = (FIELD_VOCAB[goal.id] || {}).type || 'any';
+  const want = (Object.hasOwn(FIELD_VOCAB, goal.id) ? FIELD_VOCAB[goal.id].type : null) || 'any';
   if (want === 'any') return 'unknown';
   const kind = type.kind;
   if (want === 'number') {

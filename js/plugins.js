@@ -110,6 +110,19 @@ function saveRegistryOrRollback(host, snapshot) {
   return saved;
 }
 
+function validatePluginUrl(raw) {
+  let parsed;
+  try {
+    parsed = new URL(String(raw ?? '').trim());
+  } catch {
+    return { ok: false, error: '有効な HTTPS URL を指定してください。' };
+  }
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, error: 'プラグインの URL は https:// のみ使用できます。' };
+  }
+  return { ok: true, href: parsed.href };
+}
+
 async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
   const rawLength = res.headers?.get?.('content-length');
   if (rawLength != null && rawLength !== '') {
@@ -344,6 +357,8 @@ export class PluginHost {
   }
 
   async installFromUrl(url, options = {}) {
+    const checked = validatePluginUrl(url);
+    if (!checked.ok) return { error: checked.error };
     // #8940: the byte cap only advances when the server actually produces bytes,
     // so a host that never returns headers, or returns headers then stalls the
     // body stream, left the returned Promise pending forever and pinned the
@@ -374,9 +389,20 @@ export class PluginHost {
       }, deadlineMs);
     }
     const exchange = (async () => {
-      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal });
-      if (!res.ok) return { error: '取り寄せられませんでした（' + res.status + '）。' };
-      return { ok: true, source: await boundedResponseText(res), origin: url, needsConfirmation: true };
+      const res = await fetch(checked.href, { credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal });
+      const finalUrl = typeof res?.url === 'string' && res.url.trim() !== '' ? res.url.trim() : '';
+      if (finalUrl) {
+        const finalChecked = validatePluginUrl(finalUrl);
+        if (!finalChecked.ok) {
+          try { await res.body?.cancel?.(); } catch {}
+          return { error: 'リダイレクト先の URL は https:// のみ使用できます。' };
+        }
+      }
+      if (!res.ok) {
+        try { await res.body?.cancel?.(); } catch {}
+        return { error: '取り寄せられませんでした（' + res.status + '）。' };
+      }
+      return { ok: true, source: await boundedResponseText(res), origin: finalUrl || checked.href, needsConfirmation: true };
     })();
     // Never leave the losing side of the race as an unhandled rejection: a
     // deadline/caller abort aborts the fetch, but a stalled reader that ignores

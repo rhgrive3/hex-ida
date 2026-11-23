@@ -223,6 +223,7 @@ function subjectOfChain(chain) {
 }
 
 const SHIFT_OPS = new Set(['lsl', 'lsr', 'asr']);
+const NON_COMMUTATIVE_OPS = new Set(['sub', 'subs', 'fsub', 'sdiv', 'udiv', 'fdiv', 'lsl', 'lsr', 'asr']);
 const ARITH_PRIMARY_OPS = new Set([
   'add', 'adds', 'fadd',
   'sub', 'subs', 'fsub', 'msub',
@@ -269,18 +270,21 @@ function actionOfUpdate(u) {
     // 読んだ値をそのまま別の場所へ置いている（値の移動）
     return { action: ACTION.SET, amount: null, op: null };
   }
-  let action = OP_ACTION[primary.op] || ACTION.SET;
-  let amount = primary.imm != null ? primary.imm : null;
-  if (SHIFT_OPS.has(primary.op) && amount != null) {
+  const inverted = NON_COMMUTATIVE_OPS.has(primary.op) && primary.sourceOnLeft === false;
+  let action = inverted ? ACTION.SET : (OP_ACTION[primary.op] || ACTION.SET);
+  let amount = inverted ? null : (primary.imm != null ? primary.imm : null);
+  if (!inverted && SHIFT_OPS.has(primary.op) && amount != null) {
     amount = shiftImmToFactor(amount);
   }
   // 0 を入れているならリセット。「設定する」より、こちらの方が伝わる。
   if (action === ACTION.SET && amount != null && (amount === 0n || amount === 0)) action = ACTION.CLEAR;
-  return { action, amount, op: primary.op, float: primary.immFloat != null ? primary.immFloat : null };
+  return { action, amount, op: primary.op, float: !inverted && primary.immFloat != null ? primary.immFloat : null };
 }
 
-const WRITE_IO_RE = /(?:^|[_:\s])(write|fwrite|pwrite|fputs|fputc|save|store|put|insert|replace|delete|remove|sync(?:hronize)?|flush|commit|writeToFile|CFPreferencesSet|set[A-Z_])/i;
-const READ_IO_RE = /(?:^|[_:\s])(read|fread|pread|fgets|fgetc|load|fetch|select|query|get[A-Z_]|objectForKey|stringForKey|integerForKey|boolForKey|floatForKey|doubleForKey|dataForKey|arrayForKey|dictionaryForKey|valueForKey|contentsOfFile|CFPreferencesCopy|sqlite3_column)/i;
+const WRITE_IO_RE = /(?:^|[_:\s])(write|fwrite|pwrite|fputs|fputc|save|put|insert|replace|delete|remove|sync(?:hronize)?|flush|commit|writeToFile|CFPreferencesSet)/i;
+const WRITE_IO_CS_RE = /(?:^|[_:\s])(?:[Ss]tore(?!d(?:\b|[A-Z_])|[Ff]ront|::)|STORE(?!D(?:\b|_)|FRONT|::)|set[A-Z_])/;
+const READ_IO_RE = /(?:^|[_:\s])(read|fread|pread|fgets|fgetc|load|fetch|select|query|objectForKey|stringForKey|integerForKey|boolForKey|floatForKey|doubleForKey|dataForKey|arrayForKey|dictionaryForKey|valueForKey|contentsOfFile|CFPreferencesCopy|sqlite3_column)/i;
+const READ_IO_CS_RE = /(?:^|[_:\s])get(?:[A-Z_]|(?=[(:\s]|$))/;
 
 function classifyStorageAction(input, api) {
   const hints = [];
@@ -292,9 +296,9 @@ function classifyStorageAction(input, api) {
     const n = typeof c === 'string' ? c : (c && c.name);
     if (n) hints.push(String(n));
   }
-  const hasWriteHint = hints.some((h) => WRITE_IO_RE.test(h));
+  const hasWriteHint = hints.some((h) => WRITE_IO_RE.test(h) || WRITE_IO_CS_RE.test(h));
   if (hasWriteHint) return ACTION.SAVE;
-  const hasReadHint = hints.some((h) => READ_IO_RE.test(h));
+  const hasReadHint = hints.some((h) => READ_IO_RE.test(h) || READ_IO_CS_RE.test(h));
   if (hasReadHint) return ACTION.LOAD;
   // 非スタックへの書き込み更新がある場合は保存とみなす
   const hasNonStackWrite = (input.updates || []).some(
@@ -510,6 +514,7 @@ function buildCandidates(input, topics) {
         if (m) {
           items.push(evidence('role-subject-field', clamp01(m.score), {
             name: subject.name, className: subject.className, term: m.term, exact: m.exact,
+            kind: u?.kind ?? null,
           }));
           if (goal && subject.type) {
             const fit = typeFits(goal, subject.type);
