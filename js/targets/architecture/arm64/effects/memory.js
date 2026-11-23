@@ -782,8 +782,8 @@ function prefetch(decoded, context, mnemonic) {
     operations:[
       ...addressing.readOperations,
       prefetchIntrinsic(prfop, addressValue, addressing.addressExpr, [
-        addressing.base.physicalId, ...(addressing.index ? [addressing.index.physicalId] : []),
-      ]),
+        addressing.base.physicalId, addressing.index?.physicalId,
+      ].filter(Boolean)),
     ],
     possibleFaults:[],
     completeness:'exact-with-intrinsic',

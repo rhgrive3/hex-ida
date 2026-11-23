@@ -816,8 +816,8 @@ function createClassifier(profile) {
          * A fixed-length vector routed through the integer convention is not
          * an FP-flattening candidate at all (#5713). */
         const needed = bytes > XLEN / 8 ? 2 : 1;
-        const flattening = hardFloat && !classified.fixedVectorAggregate ? flattenAggregate(parameter, abiFlen) : null;
-        if (hardFloat && flattening == null && !classified.fixedVectorAggregate) {
+        const flattening = hardFloat && !variadicArgument && !classified.fixedVectorAggregate ? flattenAggregate(parameter, abiFlen) : null;
+        if (hardFloat && !variadicArgument && flattening == null && !classified.fixedVectorAggregate) {
           aggregatePartial = true;
           unknownArgument(index, classified, 'aggregate-hard-float-layout-unproven', { candidates:['fp-flattening','integer-convention'] });
           return;
@@ -1102,8 +1102,8 @@ function createClassifier(profile) {
       arguments:arguments_,
       stackArguments,
       possibleRegisterInputs,
-      stackArgsUnknown:variadic,
-      stackArgsMayContainPointers:stackArgsMayContainPointers || variadic,
+      stackArgsUnknown:variadic || allocationUnknown,
+      stackArgsMayContainPointers:stackArgsMayContainPointers || variadic || allocationUnknown,
       aggregateClassification:aggregatePartial ? 'partial-unproven' : aggregateProven ? 'proven' : 'not-required',
       variadicClassification:variadic ? 'proven-named-then-integer-varargs' : 'not-variadic',
       anonymousArgumentFrontier:variadic ? {

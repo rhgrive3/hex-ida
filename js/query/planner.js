@@ -61,6 +61,7 @@ function sourceComponent(pool) {
 }
 const STAGED_PENDING = Symbol('planner-staged-pending');
 const PROBATION_PENDING = Symbol('planner-probation-pending');
+const POOL_DROPPED_COUNT = Symbol('planner-pool-dropped-count');
 
 function stagedPool(map) {
   if (!map[STAGED_PENDING]) map[STAGED_PENDING] = new Map();
@@ -70,6 +71,18 @@ function stagedPool(map) {
 function probationPool(map) {
   if (!map[PROBATION_PENDING]) map[PROBATION_PENDING] = new Map();
   return map[PROBATION_PENDING];
+}
+
+function notePoolDrop(map) {
+  map[POOL_DROPPED_COUNT] = (map[POOL_DROPPED_COUNT] || 0) + 1;
+}
+
+function poolObservedSupplied(map) {
+  if (!map) return 0;
+  return map.size
+    + (map[STAGED_PENDING]?.size || 0)
+    + (map[PROBATION_PENDING]?.size || 0)
+    + (map[POOL_DROPPED_COUNT] || 0);
 }
 
 function worstEntry(map) {
@@ -140,8 +153,12 @@ function addCandidate(pools, pool, address, source, term, weight, coverage = 1, 
       // full, do not evict a stronger pending aggregate for a weaker single
       // arrival. A candidate can still accumulate while retained.
       const weakestProbation = worstEntry(probation);
-      if (weakestProbation.worstKey == null || amount <= weakestProbation.worstScore) return;
+      if (weakestProbation.worstKey == null || amount <= weakestProbation.worstScore) {
+        notePoolDrop(map);
+        return;
+      }
       probation.delete(weakestProbation.worstKey);
+      notePoolDrop(map);
       c = newCandidate(addr);
       c[PROBATION_PENDING] = true;
       probation.set(key, c);
@@ -163,6 +180,7 @@ function addCandidate(pools, pool, address, source, term, weight, coverage = 1, 
     const weakestStored = worstEntry(map);
     if (weakestStored.worstKey != null && c.score > weakestStored.worstScore) {
       map.delete(weakestStored.worstKey);
+      notePoolDrop(map);
       pendingBucket.delete(key);
       delete c[pendingMarker];
       map.set(key, c);
@@ -658,7 +676,7 @@ async function candidatePools(query, tools, ctx, b) {
       sourcePoolCap(b, pool),
     );
   }
-  for (const pool of POOL_ORDER) b.sourceTotals[pool] = Math.max(b.sourceTotals[pool], pools[pool].size);
+  for (const pool of POOL_ORDER) b.sourceTotals[pool] = Math.max(b.sourceTotals[pool], poolObservedSupplied(pools[pool]));
   return pools;
 }
 function seedCandidates(pools, limit) {
@@ -703,7 +721,7 @@ async function expandCallNeighborhood(pools, tools, b) {
       );
     }
   }
-  b.sourceTotals.graph = Math.max(b.sourceTotals.graph, pools.graph.size);
+  b.sourceTotals.graph = Math.max(b.sourceTotals.graph, poolObservedSupplied(pools.graph));
 }
 function quotaCounts(pools, total) {
   const available = POOL_ORDER.filter((pool) => pools[pool].size > 0);
@@ -755,7 +773,7 @@ function sourceCompleteness(pools, b) {
   let supplied = 0;
   let stored = 0;
   for (const pool of POOL_ORDER) {
-    const suppliedCount = Math.max(Number(b.sourceTotals[pool] || 0), pools[pool].size);
+    const suppliedCount = Math.max(Number(b.sourceTotals[pool] || 0), poolObservedSupplied(pools[pool]));
     const storedCount = pools[pool].size;
     supplied += suppliedCount;
     stored += Math.min(storedCount, suppliedCount);

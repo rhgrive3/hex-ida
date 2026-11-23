@@ -2,6 +2,8 @@ import { fingerprintFunction, FUNCTION_FINGERPRINT_VERSION } from '../fingerprin
 
 export const SYMMETRIC_CODE_PROFILE = `canonical-code-evidence/v${FUNCTION_FINGERPRINT_VERSION}`;
 const DEFAULT_CHUNK_BYTES = 2 * 1024 * 1024;
+const MIN_CHUNK_BYTES = 64 * 1024;
+const MAX_CHUNK_BYTES = 8 * 1024 * 1024;
 const DEFAULT_FUNCTION_LIMIT = 350000;
 
 // These options are discrete resource budgets.  Accept primitive finite
@@ -21,7 +23,7 @@ function normalizeChunkBytes(value) {
   // Preserve the historical `chunkBytes: 0` -> default semantics before the
   // lower/upper clamp is applied.
   const effective = finite === 0 ? DEFAULT_CHUNK_BYTES : finite;
-  return Math.floor(Math.max(64 * 1024, Math.min(8 * 1024 * 1024, effective)));
+  return Math.floor(Math.max(MIN_CHUNK_BYTES, Math.min(MAX_CHUNK_BYTES, effective)));
 }
 
 function abortError(signal) {
@@ -171,13 +173,15 @@ export async function createSymmetricCodeFunctionSet({
       const bytes = rawBytes && (rawBytes.subarray ? rawBytes : new Uint8Array(rawBytes));
       const observedLength = bytes ? Math.min(length, bytes.length) : 0;
       const observedEnd = cursor + BigInt(observedLength);
+      const clampedShortRead = observedLength > 0 && observedLength < length && observedLength >= MIN_CHUNK_BYTES;
+      const stepEnd = clampedShortRead ? observedEnd : chunkEnd;
 
       while (rowIndex < rows.length && rows[rowIndex].end <= cursor) rowIndex++;
       for (let index = rowIndex; index < rows.length; index++) {
         const row = rows[index];
-        if (row.address >= chunkEnd) break;
+        if (row.address >= stepEnd) break;
         const overlapStart = row.address > cursor ? row.address : cursor;
-        const overlapEnd = row.end < chunkEnd ? row.end : chunkEnd;
+        const overlapEnd = row.end < stepEnd ? row.end : stepEnd;
         if (overlapEnd <= overlapStart) continue;
         if (!bytes) row.missing = true;
         else {
@@ -188,14 +192,14 @@ export async function createSymmetricCodeFunctionSet({
           }
           if (observedOverlapEnd < overlapEnd) row.missing = true;
         }
-        if (row.end <= chunkEnd && !output[row.index]) {
+        if (row.end <= stepEnd && !output[row.index]) {
           finalize(row, output);
           if (row.missing) missing++;
           completed++;
           try { onProgress?.({ phase:'diff-fingerprint', done:completed, all:count, region:region.id }); } catch { /* observer only */ }
         }
       }
-      cursor = chunkEnd;
+      cursor = stepEnd;
     }
   }
 

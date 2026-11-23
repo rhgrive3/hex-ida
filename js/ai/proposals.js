@@ -439,6 +439,7 @@ function restoredPendingRecord(store, persisted) {
     if (fingerprint(binding) !== persisted.bindingRevision) return null;
     if (typeof persisted.executionPayload === 'string' && persisted.executionPayload) {
       payload = decodePersistedExecutionPayload(persisted.executionPayload);
+      admitBoundedProposalState([payload.target, payload.before, payload.after]);
       // The persisted representation itself must be canonical. This prevents an
       // alternate decoder spelling from becoming a second authority for the same
       // target/after values on reload.
@@ -448,9 +449,12 @@ function restoredPendingRecord(store, persisted) {
       // backward/simple persistence carrier when creation proved that all three
       // displayed mutation fields are byte-for-byte authority-equivalent.
       if (persisted.executionDisplayExact !== true) return null;
+      admitBoundedProposalState([persisted.target, persisted.before, persisted.after]);
       rejectUnstableProposalState(persisted);
       payload = snapshotProposalPayload(persisted);
     }
+    if (kind === 'struct-field') rejectStructFieldTargetOverride(payload.after);
+    if (kind === 'project-annotation' && !hasProjectAnnotationTargetId(payload.target)) return null;
     if (fingerprint(payload.before) !== persisted.revision) return null;
     if (persistedValueRevision(payload.target) !== persisted.targetRevision) return null;
     if (persistedValueRevision(payload.after) !== persisted.afterRevision) return null;
@@ -634,12 +638,13 @@ function admitBoundedProposalState(values) {
   let binaryBytes = 0;
   let nodes = 0;
   const seen = new WeakSet();
+  const rejectNodeBudget = () => {
+    throw new AIError('tool_failed',
+      'Proposal state exceeds the admitted snapshot work budget and cannot be snapshotted or fingerprinted safely.');
+  };
   const spendNode = () => {
     nodes += 1;
-    if (nodes > PROPOSAL_STATE_MAX_NODES) {
-      throw new AIError('tool_failed',
-        'Proposal state exceeds the admitted snapshot work budget and cannot be snapshotted or fingerprinted safely.');
-    }
+    if (nodes > PROPOSAL_STATE_MAX_NODES) rejectNodeBudget();
   };
   const visit = (value, depth) => {
     if (value === null || typeof value !== 'object') return;
@@ -660,24 +665,30 @@ function admitBoundedProposalState(values) {
       return;
     }
     if (value instanceof Map) {
-      for (const [key, item] of value) { visit(key, depth + 1); visit(item, depth + 1); }
+      const entryNodes = value.size * 2;
+      if (value.size > PROPOSAL_STATE_MAX_NODES || entryNodes > PROPOSAL_STATE_MAX_NODES || nodes + entryNodes > PROPOSAL_STATE_MAX_NODES) rejectNodeBudget();
+      for (const [key, item] of value) { spendNode(); spendNode(); visit(key, depth + 1); visit(item, depth + 1); }
       return;
     }
     if (value instanceof Set) {
-      for (const item of value) visit(item, depth + 1);
+      if (value.size > PROPOSAL_STATE_MAX_NODES || nodes + value.size > PROPOSAL_STATE_MAX_NODES) rejectNodeBudget();
+      for (const item of value) { spendNode(); visit(item, depth + 1); }
       return;
     }
     if (Array.isArray(value)) {
       // Bounded by length before touching any element; never materializes keys.
-      if (nodes + value.length > PROPOSAL_STATE_MAX_NODES) spendNode();
+      if (nodes + value.length > PROPOSAL_STATE_MAX_NODES) rejectNodeBudget();
       for (let i = 0; i < value.length; i += 1) { spendNode(); visit(value[i], depth + 1); }
       return;
     }
     const keys = Object.keys(value);
-    if (nodes + keys.length > PROPOSAL_STATE_MAX_NODES) spendNode();
+    if (nodes + keys.length > PROPOSAL_STATE_MAX_NODES) rejectNodeBudget();
     for (const key of keys) { spendNode(); visit(value[key], depth + 1); }
   };
-  for (const value of values) visit(value, 0);
+  for (const value of values) {
+    if (value === null || typeof value !== 'object') spendNode();
+    else visit(value, 0);
+  }
 }
 
 function rejectUnstableProposalState(value, seen = new Set()) {
@@ -899,6 +910,10 @@ function canonicalIdentity(value, stack = new Set()) {
       }
     }
     if (Array.isArray(value)) {
+      if (value.length > PROPOSAL_STATE_MAX_NODES) {
+        throw new AIError('tool_failed',
+          'Proposal state exceeds the admitted snapshot work budget and cannot be snapshotted or fingerprinted safely.');
+      }
       // Preserve sparse holes explicitly so array length/state changes cannot alias.
       const items = [];
       for (let index = 0; index < value.length; index++) {
@@ -940,10 +955,11 @@ function decodePersistedExecutionPayload(text) {
     || !Object.hasOwn(envelope, 'target') || !Object.hasOwn(envelope, 'before') || !Object.hasOwn(envelope, 'after')) {
     throw new AIError('tool_failed', 'Persisted proposal execution payload is invalid.');
   }
+  const budget = { nodes: 0, binaryBytes: 0 };
   return {
-    target: decodePersistedValue(envelope.target),
-    before: decodePersistedValue(envelope.before),
-    after: decodePersistedValue(envelope.after),
+    target: decodePersistedValue(envelope.target, budget),
+    before: decodePersistedValue(envelope.before, budget),
+    after: decodePersistedValue(envelope.after, budget),
   };
 }
 
@@ -998,9 +1014,20 @@ function encodePersistedValue(root) {
   return encode(root);
 }
 
-function decodePersistedValue(root) {
+function decodePersistedValue(root, budget = null) {
   const refs = new Map();
-  const decode = (node) => {
+  const state = budget || { nodes: 0, binaryBytes: 0 };
+  const spendNodes = (count = 1) => {
+    state.nodes += count;
+    if (state.nodes > PROPOSAL_STATE_MAX_NODES) {
+      throw new AIError('tool_failed', 'Persisted proposal execution payload exceeds the admitted node budget.');
+    }
+  };
+  const decode = (node, depth = 0) => {
+    if (depth > PROPOSAL_STATE_MAX_DEPTH) {
+      throw new AIError('tool_failed', 'Persisted proposal execution payload exceeds the admitted nesting depth.');
+    }
+    spendNodes(1);
     if (!Array.isArray(node) || typeof node[0] !== 'string') throw new AIError('tool_failed', 'Persisted proposal execution value is invalid.');
     const tag = node[0];
     if (tag === 'null' && node.length === 1) return null;
@@ -1026,6 +1053,10 @@ function decodePersistedValue(root) {
       return value;
     }
     if (tag === 'buffer' && node.length === 3) {
+      if (!Array.isArray(node[2]) || state.binaryBytes + node[2].length > PROPOSAL_STATE_MAX_BINARY_BYTES) {
+        throw new AIError('tool_failed', 'Persisted proposal execution binary payload exceeds the admitted size budget.');
+      }
+      state.binaryBytes += node[2].length;
       const bytes = decodePersistedBytes(node[2]);
       const value = Uint8Array.from(bytes).buffer;
       refs.set(id, value);
@@ -1033,7 +1064,7 @@ function decodePersistedValue(root) {
     }
     if (tag === 'view' && node.length === 6 && typeof node[2] === 'string'
       && Number.isSafeInteger(node[3]) && node[3] >= 0 && Number.isSafeInteger(node[4]) && node[4] >= 0) {
-      const buffer = decode(node[5]);
+      const buffer = decode(node[5], depth + 1);
       if (!(buffer instanceof ArrayBuffer) || node[3] + node[4] > buffer.byteLength) {
         throw new AIError('tool_failed', 'Persisted proposal execution view is invalid.');
       }
@@ -1049,35 +1080,48 @@ function decodePersistedValue(root) {
       return value;
     }
     if (tag === 'map' && node.length === 3 && Array.isArray(node[2])) {
+      const entryNodes = node[2].length * 2;
+      if (node[2].length > PROPOSAL_STATE_MAX_NODES || entryNodes > PROPOSAL_STATE_MAX_NODES || state.nodes + entryNodes > PROPOSAL_STATE_MAX_NODES) {
+        spendNodes(entryNodes);
+      }
       const value = new Map();
       refs.set(id, value);
       for (const entry of node[2]) {
         if (!Array.isArray(entry) || entry.length !== 2) throw new AIError('tool_failed', 'Persisted proposal execution map is invalid.');
-        value.set(decode(entry[0]), decode(entry[1]));
+        value.set(decode(entry[0], depth + 1), decode(entry[1], depth + 1));
       }
       return value;
     }
     if (tag === 'set' && node.length === 3 && Array.isArray(node[2])) {
+      if (state.nodes + node[2].length > PROPOSAL_STATE_MAX_NODES) spendNodes(node[2].length);
       const value = new Set();
       refs.set(id, value);
-      for (const item of node[2]) value.add(decode(item));
+      for (const item of node[2]) value.add(decode(item, depth + 1));
       return value;
     }
     if (tag === 'array' && node.length === 4 && Number.isSafeInteger(node[2]) && node[2] >= 0 && Array.isArray(node[3])) {
+      if (node[2] > PROPOSAL_STATE_MAX_NODES || node[3].length > PROPOSAL_STATE_MAX_NODES
+        || state.nodes + Math.max(node[2], node[3].length) > PROPOSAL_STATE_MAX_NODES) {
+        throw new AIError('tool_failed', 'Persisted proposal execution array exceeds the admitted node budget.');
+      }
+      if (node[2] > node[3].length) spendNodes(node[2] - node[3].length);
       const value = new Array(node[2]);
       refs.set(id, value);
-      decodePersistedEntries(value, node[3], decode, { arrayLength: node[2] });
+      decodePersistedEntries(value, node[3], (child) => decode(child, depth + 1), { arrayLength: node[2] });
       return value;
     }
     if (tag === 'object' && node.length === 4 && (node[2] === 0 || node[2] === 1) && Array.isArray(node[3])) {
+      if (node[3].length > PROPOSAL_STATE_MAX_NODES || state.nodes + node[3].length > PROPOSAL_STATE_MAX_NODES) {
+        throw new AIError('tool_failed', 'Persisted proposal execution object exceeds the admitted node budget.');
+      }
       const value = node[2] === 0 ? Object.create(null) : {};
       refs.set(id, value);
-      decodePersistedEntries(value, node[3], decode);
+      decodePersistedEntries(value, node[3], (child) => decode(child, depth + 1));
       return value;
     }
     throw new AIError('tool_failed', 'Persisted proposal execution value is invalid.');
   };
-  return decode(root);
+  return decode(root, 0);
 }
 
 function decodePersistedEntries(target, entries, decode, { arrayLength = null } = {}) {

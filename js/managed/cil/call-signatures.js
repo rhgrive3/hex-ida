@@ -13,6 +13,7 @@ import {
   parseCilMethodSignature,
   parseCilLocalVarSignature,
   parseCilFieldSignature,
+  parseCilTypeSpecSignature,
   parseCilMethodSpecInstantiation,
   substituteCilMethodGeneric,
 } from './call-signature-types.js';
@@ -374,7 +375,9 @@ function resolveFieldIndexed(index, token) {
     } else {
       const parentTag = row.parent & 0x7;
       const parentRid = row.parent >>> 3;
-      if (parentTag > 2 || parentRid < 1) fail('cil-memberref-parent-invalid');
+      if ((parentTag !== 0 && parentTag !== 1 && parentTag !== 2 && parentTag !== 4) || parentRid < 1) {
+        fail('cil-memberref-parent-invalid');
+      }
       if (parentTag === 0) {
         if (parentRid > index.typeDefs.length) fail('cil-memberref-parent-out-of-range');
         const typeRow = index.typeDefs[parentRid - 1];
@@ -384,6 +387,27 @@ function resolveFieldIndexed(index, token) {
         owner = {
           declaringTypeToken: tokenFor(TYPE_DEF_TABLE, parentRid),
           declaringType: `${namespace ? `${namespace}.` : ''}${name}`,
+        };
+      } else if (parentTag === 4) {
+        if (parentRid > index.typeSpecs.length) fail('cil-memberref-parent-out-of-range');
+        const typeSpecRow = index.typeSpecs[parentRid - 1];
+        const typeSpecBlob = readCilMetadataBlob(index.blobHeap, typeSpecRow.signatureBlobIndex,
+          'cil-field-owner-typespec-blob-invalid');
+        const typeSpec = parseCilTypeSpecSignature(typeSpecBlob, index.typeDefOrRefRowCounts);
+        let declaringType = null;
+        if (Number.isSafeInteger(typeSpec?.typeToken) && (typeSpec.typeToken & 0x03) === 0) {
+          const typeDefRid = typeSpec.typeToken >>> 2;
+          const typeRow = index.typeDefs[typeDefRid - 1];
+          if (typeRow) {
+            const name = readOptionalString(index.stringsHeap, typeRow.nameIndex, 'cil-field-owner-name-invalid');
+            const namespace = readOptionalString(index.stringsHeap, typeRow.namespaceIndex,
+              'cil-field-owner-namespace-invalid');
+            declaringType = `${namespace ? `${namespace}.` : ''}${name}`;
+          }
+        }
+        owner = {
+          declaringTypeToken: tokenFor(OWNER_TYPE_SPEC, parentRid),
+          declaringType,
         };
       }
     }

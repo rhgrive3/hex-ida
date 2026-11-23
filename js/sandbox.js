@@ -222,49 +222,55 @@ const WORKER_PRELUDE = String.raw`
   try { Object.defineProperty(globalThis,'postMessage',{value:sendOutput,writable:false,configurable:false}); } catch {}
 
   const measure = (value, seen = new NativeSet(), limit = MAX_ARGUMENT_UNITS + 1, buffers = new NativeSet()) => {
-    if (limit <= 0 || value == null) return 0;
     const minUnits = typeof nativeMathMin === 'function' ? nativeMathMin : ((a, b) => (a < b ? a : b));
-    const type = typeof value;
-    if (type === 'string') return minUnits(limit, value.length * 2);
-    if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
-    if (type !== 'object') return 0;
-    const binary = binaryTransportBytes(value, buffers, BINARY_TRANSPORT_NATIVES_FOR_WORKER);
-    if (binary !== null) return binary < 0 ? limit : minUnits(limit, binary);
-    if (nativeSetHas(seen, value)) return 0;
-    nativeSetAdd(seen, value);
-    let n = 16;
-    const isArray = nativeArrayIsArray(value);
-    if (!isArray) {
-      let proto;
-      try { proto = nativeGetPrototypeOf(value); }
-      catch { nativeSetDelete(seen, value); return limit; }
-      if (proto !== NativeObjectPrototype && proto !== null) {
-        nativeSetDelete(seen, value);
-        return limit;
+    let zeroSlots = 0;
+    const chargeZeroSlot = (rem) => (++zeroSlots > 16 ? minUnits(rem, 8) : 0);
+    const walk = (val, rem) => {
+      if (rem <= 0 || val == null) return 0;
+      const type = typeof val;
+      if (type === 'string') return minUnits(rem, val.length * 2);
+      if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
+      if (type !== 'object') return 0;
+      const binary = binaryTransportBytes(val, buffers, BINARY_TRANSPORT_NATIVES_FOR_WORKER);
+      if (binary !== null) return binary < 0 ? rem : minUnits(rem, binary);
+      if (nativeSetHas(seen, val)) return 0;
+      nativeSetAdd(seen, val);
+      let n = 16;
+      const isArray = nativeArrayIsArray(val);
+      if (!isArray) {
+        let proto;
+        try { proto = nativeGetPrototypeOf(val); }
+        catch { nativeSetDelete(seen, val); return rem; }
+        if (proto !== NativeObjectPrototype && proto !== null) {
+          nativeSetDelete(seen, val);
+          return rem;
+        }
       }
-    }
-    let keys;
-    try { keys = nativeKeys(value); }
-    catch { nativeSetDelete(seen, value); return limit; }
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      let descriptor;
-      try { descriptor = nativeDescriptor(value, key); }
-      catch { nativeSetDelete(seen, value); return limit; }
-      if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
-        nativeSetDelete(seen, value);
-        return limit;
+      let keys;
+      try { keys = nativeKeys(val); }
+      catch { nativeSetDelete(seen, val); return rem; }
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        let descriptor;
+        try { descriptor = nativeDescriptor(val, key); }
+        catch { nativeSetDelete(seen, val); return rem; }
+        if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+          nativeSetDelete(seen, val);
+          return rem;
+        }
+        const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
+        if (!isIndex) {
+          n += minUnits(rem - n, key.length * 2);
+          if (n >= rem) break;
+        }
+        const childCost = walk(descriptor.value, rem - n);
+        n += childCost > 0 ? childCost : chargeZeroSlot(rem - n);
+        if (n >= rem) break;
       }
-      const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
-      if (!isIndex) {
-        n += minUnits(limit - n, key.length * 2);
-        if (n >= limit) break;
-      }
-      n += measure(descriptor.value, seen, limit - n, buffers);
-      if (n >= limit) break;
-    }
-    nativeSetDelete(seen, value);
-    return n;
+      nativeSetDelete(seen, val);
+      return n;
+    };
+    return walk(value, limit);
   };
 
   const prepareRpcArgs = (args, remainingUnits) => {
@@ -676,40 +682,47 @@ const FRAME = `<!doctype html><meta charset="utf-8">
 </script>`;
 
 function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1, buffers = new Set()) {
-  if (limit <= 0 || value == null) return 0;
-  const type = typeof value;
-  if (type === 'string') return Math.min(limit, value.length * 2);
-  if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
-  const binary = binaryTransportBytes(value, buffers, BINARY_TRANSPORT_NATIVES);
-  if (binary !== null) return binary < 0 ? limit : Math.min(limit, binary);
-  if (type !== 'object' || seen.has(value)) return 0;
-  seen.add(value);
-  let n = 16;
-  const isArray = Array.isArray(value);
-  if (isArray) {
-    for (const key of Object.keys(value)) {
-      const isIndex = key !== '4294967295' && key === '' + (key >>> 0);
-      if (!isIndex) {
-        n += Math.min(limit - n, key.length * 2);
-        if (n >= limit) break;
+  let zeroSlots = 0;
+  const chargeZeroSlot = (rem) => (++zeroSlots > 16 ? Math.min(rem, 8) : 0);
+  const walk = (val, rem) => {
+    if (rem <= 0 || val == null) return 0;
+    const type = typeof val;
+    if (type === 'string') return Math.min(rem, val.length * 2);
+    if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
+    const binary = binaryTransportBytes(val, buffers, BINARY_TRANSPORT_NATIVES);
+    if (binary !== null) return binary < 0 ? rem : Math.min(rem, binary);
+    if (type !== 'object' || seen.has(val)) return 0;
+    seen.add(val);
+    let n = 16;
+    const isArray = Array.isArray(val);
+    if (isArray) {
+      for (const key of Object.keys(val)) {
+        const isIndex = key !== '4294967295' && key === '' + (key >>> 0);
+        if (!isIndex) {
+          n += Math.min(rem - n, key.length * 2);
+          if (n >= rem) break;
+        }
+        const childCost = walk(val[key], rem - n);
+        n += childCost > 0 ? childCost : chargeZeroSlot(rem - n);
+        if (n >= rem) break;
       }
-      n += valueSize(value[key], seen, limit - n, buffers);
-      if (n >= limit) break;
-    }
-  } else {
-    for (const key of Object.keys(value)) {
-      n += Math.min(limit - n, key.length * 2);
-      if (n >= limit) break;
-    }
-    if (n < limit) {
-      for (const item of Object.values(value)) {
-        n += valueSize(item, seen, limit - n, buffers);
-        if (n >= limit) break;
+    } else {
+      for (const key of Object.keys(val)) {
+        n += Math.min(rem - n, key.length * 2);
+        if (n >= rem) break;
+      }
+      if (n < rem) {
+        for (const item of Object.values(val)) {
+          const childCost = walk(item, rem - n);
+          n += childCost > 0 ? childCost : chargeZeroSlot(rem - n);
+          if (n >= rem) break;
+        }
       }
     }
-  }
-  seen.delete(value);
-  return n;
+    seen.delete(val);
+    return n;
+  };
+  return walk(value, limit);
 }
 
 function sandboxOutputSize(value) {

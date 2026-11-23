@@ -35,7 +35,7 @@ export function x86VectorEncodingInfo(instruction){
 }
 
 const SIMD_VECTOR_PP=new Map([
-  ['movaps',0],['movups',0],['movapd',1],['movupd',1],['movdqa',1],['movdqu',2],['movd',1],['movq',1],
+  ['movaps',0],['movups',0],['movapd',1],['movupd',1],['movdqa',1],['movdqu',2],['movd',1],['movq',[1,2]],
   ['andps',0],['andpd',1],['pand',1],['orps',0],['orpd',1],['por',1],['xorps',0],['xorpd',1],['pxor',1],
   ...[...PACKED_ARITHMETIC.keys(),...PACKED_COMPARE.keys(),...PACKED_SHIFT.keys(),'pshufd','punpckldq','pandn'].map((name)=>[name,1]),
 ]);
@@ -51,7 +51,8 @@ function rawVectorPrefixMatches(instruction,encoding){
 export function x86VectorFamilyEncodingMatches(instruction,family,encoding=x86VectorEncodingInfo(instruction)){
   if(encoding.kind!=='vex'||!rawVectorPrefixMatches(instruction,encoding))return true;
   const base=baseFamily(String(family||'').toLowerCase()),expectedPp=family==='vzeroupper'||family==='vzeroall'?0:SIMD_VECTOR_PP.get(base);
-  return expectedPp!=null&&encoding.opcodeMap===1&&encoding.mandatoryPrefixCode===expectedPp;
+  if(expectedPp==null||encoding.opcodeMap!==1)return false;
+  return Array.isArray(expectedPp)?expectedPp.includes(encoding.mandatoryPrefixCode):encoding.mandatoryPrefixCode===expectedPp;
 }
 
 function validateEncoding(ctx,family,scalar=false){

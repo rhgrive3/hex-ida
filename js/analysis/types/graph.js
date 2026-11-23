@@ -95,7 +95,7 @@ function exactStructuralInteger(value, fallback = null) {
   return null;
 }
 
-const ARRAY_NUMERIC_FIELDS = new Set(['sizeBytes', 'alignBytes', 'strideBytes', 'length']);
+const ARRAY_NUMERIC_FIELDS = new Set(['sizeBytes', 'totalSizeBytes', 'alignBytes', 'strideBytes', 'length']);
 const POINTER_NUMERIC_FIELDS = new Set(['sizeBytes', 'alignBytes']);
 
 function needsStructuralReconstruction(descriptor) {
@@ -138,8 +138,8 @@ function mergeCompatibleArrayDescriptors(entityId, descriptors, sccContext = nul
   const merged = {};
   for (const descriptor of descriptors) {
     for (const [key, value] of Object.entries(descriptor)) {
-      if (!(key in merged)) {
-        merged[key] = value;
+      if (!Object.hasOwn(merged, key)) {
+        Object.defineProperty(merged, key, { value, enumerable: true, writable: true, configurable: true });
         continue;
       }
       if (ARRAY_NUMERIC_FIELDS.has(key)) {
@@ -150,6 +150,36 @@ function mergeCompatibleArrayDescriptors(entityId, descriptors, sccContext = nul
       if (stableStringify(merged[key]) !== stableStringify(value)) return null;
     }
   }
+  const hasSize = Object.hasOwn(merged, 'sizeBytes') && merged.sizeBytes != null;
+  const hasTotal = Object.hasOwn(merged, 'totalSizeBytes') && merged.totalSizeBytes != null;
+  const parsedSize = hasSize ? exactStructuralInteger(merged.sizeBytes) : null;
+  const parsedTotal = hasTotal ? exactStructuralInteger(merged.totalSizeBytes) : null;
+  if ((hasSize && parsedSize == null) || (hasTotal && parsedTotal == null)) return null;
+  if (parsedSize != null && parsedTotal != null && parsedSize !== parsedTotal) return null;
+  const explicit = parsedTotal ?? parsedSize;
+  const hasStride = Object.hasOwn(merged, 'strideBytes') && merged.strideBytes != null;
+  const hasLength = Object.hasOwn(merged, 'length') && merged.length != null;
+  const stride = hasStride ? exactStructuralInteger(merged.strideBytes) : null;
+  const length = hasLength ? exactStructuralInteger(merged.length) : null;
+  if ((hasStride && stride == null) || (hasLength && length == null)) return null;
+  if (stride != null && length != null) {
+    const size = stride * length;
+    if (explicit != null && explicit !== size) return null;
+    const wireSize = structuralIntegerWire(size);
+    merged.sizeBytes = wireSize;
+    merged.totalSizeBytes = wireSize;
+  } else if (explicit != null) {
+    const wireSize = structuralIntegerWire(explicit);
+    merged.sizeBytes = wireSize;
+    merged.totalSizeBytes = wireSize;
+  }
+  const rawElementSize = merged.elementType?.sizeBytes;
+  const rawElementTotal = merged.elementType?.totalSizeBytes;
+  const parsedElementSize = rawElementSize != null ? exactStructuralInteger(rawElementSize) : null;
+  const parsedElementTotal = rawElementTotal != null ? exactStructuralInteger(rawElementTotal) : null;
+  if (parsedElementSize != null && parsedElementTotal != null && parsedElementSize !== parsedElementTotal) return null;
+  const elementSize = parsedElementSize ?? parsedElementTotal;
+  if (stride != null && elementSize != null && stride < elementSize) return null;
   if (sccContext?.isRecursive) {
     merged.isRecursive = true;
     merged.recursiveIdentity = entityId;
@@ -331,11 +361,20 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
         Object.defineProperty(merged,key,{value,enumerable:true,writable:true,configurable:true});
       }
       if (kind === 'array') {
+        const hasSize = merged.sizeBytes != null;
+        const hasTotal = merged.totalSizeBytes != null;
+        const parsedSize = hasSize ? exactStructuralInteger(merged.sizeBytes) : null;
+        const parsedTotal = hasTotal ? exactStructuralInteger(merged.totalSizeBytes) : null;
+        if ((hasSize && parsedSize == null) || (hasTotal && parsedTotal == null)) return null;
+        if (parsedSize != null && parsedTotal != null && parsedSize !== parsedTotal) return null;
+        const explicit = parsedTotal ?? parsedSize;
         const stride = exactStructuralInteger(merged.strideBytes), length = exactStructuralInteger(merged.length);
         if (stride != null && length != null) {
-          const size = stride * length, explicit = exactStructuralInteger(merged.totalSizeBytes ?? merged.sizeBytes);
+          const size = stride * length;
           if (explicit != null && explicit !== size) return null;
           merged.sizeBytes = structuralIntegerWire(size);merged.totalSizeBytes = merged.sizeBytes;
+        } else if (explicit != null) {
+          merged.sizeBytes = structuralIntegerWire(explicit);merged.totalSizeBytes = merged.sizeBytes;
         }
       }
       const dependencies = extractDependencies({ entityId, descriptor: merged });
@@ -360,13 +399,24 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       } else if (desc.offset != null && desc.sizeBytes != null) {
         rawMembers.push(desc);
       }
-      if (isExplicitAggregateDescriptor(desc) && desc.sizeBytes != null) {
-        explicitSize = exactStructuralInteger(desc.sizeBytes);
-        if (explicitSize == null) return null;
-      }
-      if (isExplicitAggregateDescriptor(desc) && desc.alignBytes != null) {
-        explicitAlign = exactStructuralInteger(desc.alignBytes);
-        if (explicitAlign == null) return null;
+      if (isExplicitAggregateDescriptor(desc)) {
+        const hasSize = desc.sizeBytes != null;
+        const hasTotal = desc.totalSizeBytes != null;
+        if (hasSize || hasTotal) {
+          const parsedSize = hasSize ? exactStructuralInteger(desc.sizeBytes) : null;
+          const parsedTotal = hasTotal ? exactStructuralInteger(desc.totalSizeBytes) : null;
+          if ((hasSize && parsedSize == null) || (hasTotal && parsedTotal == null)) return null;
+          if (parsedSize != null && parsedTotal != null && parsedSize !== parsedTotal) return null;
+          const nextSize = parsedTotal ?? parsedSize;
+          if (explicitSize != null && explicitSize !== nextSize) return null;
+          explicitSize = nextSize;
+        }
+        if (desc.alignBytes != null) {
+          const nextAlign = exactStructuralInteger(desc.alignBytes);
+          if (nextAlign == null) return null;
+          if (explicitAlign != null && explicitAlign !== nextAlign) return null;
+          explicitAlign = nextAlign;
+        }
       }
     }
 

@@ -111,7 +111,7 @@ export class DomSkillRegistry {
       throw skillError('candidate-not-validated', 'DOM Skill candidate must pass live read-only validation before running.');
     }
     const name = normalizeProgramName(program);
-    const base = manifest.programs[name];
+    const base = Object.hasOwn(manifest.programs, name) ? manifest.programs[name] : null;
     if (!base) throw skillError('program-missing', `DOM Skill program is unavailable: ${name}`);
     const bound = bindProgramArgs(base, args);
     if (isCandidate) validateAutomationProgram(bound, { requireReadOnly: true });
@@ -160,7 +160,7 @@ export function normalizeSkillManifest(manifest) {
   if (!plainRecord(programsInput)) throw new TypeError('DOM Skill manifest programs must be an object.');
   const names = Object.keys(programsInput);
   if (!names.length || names.length > MAX_PROGRAMS) throw new TypeError(`DOM Skill must contain 1-${MAX_PROGRAMS} programs.`);
-  const programs = {};
+  const programs = Object.create(null);
   for (const name of names) {
     const normalizedName = normalizeProgramName(name);
     programs[normalizedName] = validateAutomationProgram(programsInput[name]);
@@ -181,7 +181,7 @@ function normalizeValidationPrograms(manifest, requested) {
   if (!Array.isArray(names) || !names.length) throw skillError('validation-programs-missing', 'DOM Skill validation requires at least one read-only program.');
   return names.map((name) => {
     const normalized = normalizeProgramName(name);
-    if (!manifest.programs[normalized]) throw skillError('program-missing', `Validation program is unavailable: ${normalized}`);
+    if (!Object.hasOwn(manifest.programs, normalized)) throw skillError('program-missing', `Validation program is unavailable: ${normalized}`);
     return normalized;
   });
 }
@@ -193,7 +193,7 @@ function normalizeValidationNames(value, programs) {
   const names = [...new Set(source.map(normalizeProgramName))];
   if (!names.length) throw new TypeError('DOM Skill requires at least one read-only validation program.');
   for (const name of names) {
-    if (!programs[name]) throw new TypeError(`Validation program is unavailable: ${name}`);
+    if (!Object.hasOwn(programs, name)) throw new TypeError(`Validation program is unavailable: ${name}`);
     validateAutomationProgram(programs[name], { requireReadOnly: true });
   }
   return names;

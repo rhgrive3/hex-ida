@@ -142,10 +142,16 @@ export async function verifyBoundedEquivalence({
     throw new TypeError('verifyBoundedEquivalence: beforeTarget and afterTarget are required');
   }
 
+  const ownsSession = !session && Boolean(backend);
   const activeSession = session || (backend ? backend.createSession(options) : null);
   if (!activeSession || typeof activeSession.check !== 'function') {
+    if (ownsSession) {
+      try { await activeSession?.dispose?.(); } catch { /* best effort */ }
+    }
     throw new TypeError('verifyBoundedEquivalence: a valid backend or session is required');
   }
+
+  try {
 
   // 1. Translate beforeTarget and afterTarget into Expr DAG
   let beforeExpr = null;
@@ -365,12 +371,31 @@ export async function verifyBoundedEquivalence({
   const solverResult = await activeSession.check(query, options);
 
   const lifecycle = solverResult?.lifecycle || {};
-  if (lifecycle.publishable === false || lifecycle.timedOut || lifecycle.cancelled || lifecycle.stale || lifecycle.disposed) {
+  const isTimedOut = lifecycle.timedOut === true || solverResult.status === SOLVER_STATUS.TIMEOUT;
+  const isCancelled = lifecycle.cancelled === true || solverResult.status === SOLVER_STATUS.CANCELLED;
+  const isStale = lifecycle.stale === true;
+  const isDisposed = lifecycle.disposed === true;
+  if (isTimedOut || isCancelled || isStale || isDisposed) {
     return Object.freeze({
       verdict: VERDICT.UNKNOWN,
       claimKind: CLAIM_KIND.EQUIVALENT,
-      reasonCode: lifecycle.timedOut ? 'timeout' : lifecycle.stale ? 'stale-result' : lifecycle.disposed ? 'disposed-session' : 'cancelled',
+      reasonCode: isTimedOut ? 'timeout' : isStale ? 'stale-result' : isDisposed ? 'disposed-session' : 'cancelled',
       proofStatement: 'Solver result was invalidated by timeout, cancellation, disposal, or stale query replacement',
+      solverStatus: solverResult.status,
+      assumptions: Object.freeze(allAssumptions),
+      completeness,
+      queryHash: query.queryHash,
+      query,
+      solverResult,
+      evidence: null,
+    });
+  }
+  if (lifecycle.publishable === false && (solverResult.status === SOLVER_STATUS.SAT || solverResult.status === SOLVER_STATUS.UNSAT)) {
+    return Object.freeze({
+      verdict: VERDICT.UNKNOWN,
+      claimKind: CLAIM_KIND.EQUIVALENT,
+      reasonCode: lifecycle.budgetExceeded ? 'budget-exceeded' : lifecycle.late ? 'late-result' : 'unpublishable-result',
+      proofStatement: 'Solver result was marked non-publishable and cannot be promoted',
       solverStatus: solverResult.status,
       assumptions: Object.freeze(allAssumptions),
       completeness,
@@ -569,4 +594,9 @@ export async function verifyBoundedEquivalence({
     solverResult,
     evidence: null,
   });
+  } finally {
+    if (ownsSession) {
+      try { await activeSession.dispose?.(); } catch { /* best effort */ }
+    }
+  }
 }

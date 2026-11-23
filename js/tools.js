@@ -6,7 +6,11 @@ import { isMangled, shortName, readableName } from './rtti.js';
 let _toolsBasePromise = null;
 function loadToolsBase() {
   if (!_toolsBasePromise) {
-    _toolsBasePromise = import('./tools-base.js');
+    const pending = import('./tools-base.js').catch((err) => {
+      if (_toolsBasePromise === pending) _toolsBasePromise = null;
+      throw err;
+    });
+    _toolsBasePromise = pending;
   }
   return _toolsBasePromise;
 }

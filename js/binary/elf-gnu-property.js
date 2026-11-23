@@ -273,8 +273,8 @@ export function parseAarch64GnuProperty(input, options = {}) {
       const descsz = r.u32(cursor + 4);
       const noteType = r.u32(cursor + 8);
       const nameStart = cursor + 12;
-      const descStart = align(nameStart + namesz, 4);
-      const next = align(descStart + descsz, 4);
+      const descStart = cursor + align(12 + namesz, requiredPropertyAlignment);
+      const next = descStart + align(descsz, requiredPropertyAlignment);
       if (!boundedSpan(nameStart, namesz, end) || !boundedSpan(descStart, descsz, end) || next <= cursor || next > end) {
         propertyIncomplete = true;
         warnings.push(`malformed GNU property note at file offset ${cursor}`);
@@ -312,7 +312,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
                 break scanProgramHeaders;
               }
               const value = r.u32(dataStart);
-              featureBits = featureBits == null ? value : (featureBits & value);
+              featureBits = featureBits == null ? (value >>> 0) : ((featureBits & value) >>> 0);
               evidence.push(Object.freeze({
                 source:'PT_GNU_PROPERTY',
                 programHeaderIndex:span.programHeaderIndex,
@@ -323,7 +323,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
               }));
             }
           }
-          const advanced = align(dataStart + dataSize, propertyAlignment);
+          const advanced = propertyCursor + align(8 + dataSize, propertyAlignment);
           if (advanced <= propertyCursor || advanced > descEnd) {
             propertyIncomplete = true;
             break;
@@ -335,8 +335,8 @@ export function parseAarch64GnuProperty(input, options = {}) {
       cursor = next;
     }
     if (cursor < end && cursor + 12 > end) {
-      // Sub-4-byte trailing padding; must be zero to keep the note bounded.
-      let zeroPadding = (end - cursor) < 4;
+      // Sub-alignment trailing padding; must be zero to keep the note bounded.
+      let zeroPadding = (end - cursor) < requiredPropertyAlignment;
       for (let pad = cursor; zeroPadding && pad < end; pad++) {
         if (r.u8(pad) !== 0) zeroPadding = false;
       }

@@ -573,6 +573,7 @@ function parseProgramHeaders(r, h, image, bits, budget) {
     markELFMetadataPartial(image, 'program-headers:truncated', `ELF program header table declares ${count} entries of ${h.phentsize} bytes at offset ${off} but only ${capacity} fit in the file`);
     count = capacity;
   }
+  const entries = [];
   let parsed = 0;
   for (let i = 0; i < count; i++) {
     if (!budget.take({ inputBytes: h.phentsize, objects: 1, operations: 4, estimatedHeapBytes: 288 }, 'program-header')) break;
@@ -584,6 +585,28 @@ function parseProgramHeaders(r, h, image, bits, budget) {
     } else {
       ph = { type: r.u32(p), offset: BigInt(r.u32(p + 4)), vaddr: BigInt(r.u32(p + 8)), filesz: BigInt(r.u32(p + 16)), memsz: BigInt(r.u32(p + 20)), flags: r.u32(p + 24), align: BigInt(r.u32(p + 28)) };
     }
+    entries.push(ph);
+  }
+  // Normalize non-ascending PT_LOAD order in memory without cloning or mutating
+  // the original binary bytes (#8665).
+  const loadSlots = [];
+  let previousVaddr = null;
+  let inverted = false;
+  for (let i = 0; i < entries.length; i++) {
+    const ph = entries[i];
+    if (ph.type !== PT_LOAD) continue;
+    loadSlots.push({ slot: i, ph, ordinal: loadSlots.length });
+    if (previousVaddr !== null && ph.vaddr < previousVaddr) inverted = true;
+    previousVaddr = ph.vaddr;
+  }
+  if (inverted && loadSlots.length >= 2) {
+    const sorted = [...loadSlots].sort((a, b) => (a.ph.vaddr < b.ph.vaddr ? -1 : a.ph.vaddr > b.ph.vaddr ? 1 : a.ordinal - b.ordinal));
+    for (let i = 0; i < loadSlots.length; i++) {
+      entries[loadSlots[i].slot] = sorted[i].ph;
+    }
+  }
+  for (let i = 0; i < entries.length; i++) {
+    const ph = entries[i];
     if (ph.type === PT_LOAD) {
       const fileLength = BigInt(r.length);
       const invalidSize = ph.filesz > ph.memsz;
@@ -770,6 +793,8 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     budget.partial(`symbols:${table.index}:xindex-malformed`, `ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`);
   }
 
+  const failedNameOffsets = new Set();
+  const scan = { scanned: 0 };
   for (let i=0;i<count;i++) {
     if (!budget.take({inputBytes:ent,records:1,objects:1,operations:2,estimatedHeapBytes:224},`symbols-${table.index}`)) { authoritative = false; break; }
     const p=tableStart+i*ent;
@@ -782,7 +807,20 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       continue;
     }
     const maxName=Math.min(strBytes-nameOff,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1));
-    const name=terminatedStringInTable(r,strStart,strBytes,nameOff,maxName);
+    let name;
+    if (failedNameOffsets.has(nameOff)) {
+      name = null;
+    } else {
+      scan.scanned = 0;
+      name = terminatedStringInTable(r,strStart,strBytes,nameOff,maxName,scan);
+      if (name == null) {
+        failedNameOffsets.add(nameOff);
+        authoritative = false;
+        budget.partial(`symbols:${table.index}:unterminated-name`,`ELF symbol ${i} in table ${table.index} references a string without a NUL terminator in its string table`);
+        if (scan.scanned > 0 && !budget.take({ inputBytes: scan.scanned, operations: 1 }, 'symbol-name-scan')) break;
+        continue;
+      }
+    }
     if(name==null){authoritative=false;budget.partial(`symbols:${table.index}:unterminated-name`,`ELF symbol ${i} in table ${table.index} references a string without a NUL terminator in its string table`);continue;}
     const bind=info>>>4,type=info&0xf;
     const isAnonymousSectionSym = !name && type === 3 && i > 0;
@@ -1071,6 +1109,8 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
   let sawNull = false;
   let dtInitHandled = false;
   let dtFiniHandled = false;
+  const failedStringOffsets = new Set();
+  const scan = { scanned: 0 };
   for (let i = 0; i < count; i++) {
     if (!budget.take({ inputBytes: ent, records: 1, operations: 1, estimatedHeapBytes: 32 }, 'SHT_DYNAMIC')) break;
     const p = start + i * ent;
@@ -1126,7 +1166,22 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
           1 << 20,
           Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1),
         );
-        const name = terminatedStringInTable(r, strStart, strSize, off, max);
+        let name;
+        if (failedStringOffsets.has(off)) {
+          name = null;
+        } else {
+          scan.scanned = 0;
+          name = terminatedStringInTable(r, strStart, strSize, off, max, scan);
+          if (name == null) {
+            failedStringOffsets.add(off);
+            budget.partial(
+              `dynamic-section:${sec.index}:unterminated-string`,
+              `ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`,
+            );
+            if (scan.scanned > 0 && !budget.take({ inputBytes: scan.scanned, operations: 1 }, 'SHT_DYNAMIC-string-scan')) break;
+            continue;
+          }
+        }
         if (name == null && off < strSize) {
           budget.partial(
             `dynamic-section:${sec.index}:unterminated-string`,
@@ -1153,7 +1208,7 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
   }
 }
 function findImageBase(image) {
-  const loads = image.segments.filter((s) => s.address != null);
+  const loads = image.segments.filter((s) => s.address != null && s.fileOffset != null && s.address >= s.fileOffset);
   if (!loads.length) return 0n;
   let base = loads[0].address - loads[0].fileOffset;
   for (const s of loads) {

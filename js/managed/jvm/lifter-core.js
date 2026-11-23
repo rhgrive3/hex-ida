@@ -626,7 +626,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           else {
             locationReads.push({ kind: 'local', index: locIdx, bits: 32 });
             locationWrites.push({ kind: 'local', index: locIdx, bits: 32 });
-            producedValues.push({ bits: 32, constant: imm });
+            producedValues.push({ bits: 32, constant: imm, stackNeutral: true });
           }
         }
         break;
@@ -981,7 +981,11 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     }
 
     for (let i = 0; i < consumedValues.length; i += 1) stackCategories.pop();
-    for (const value of producedValues) stackCategories.push(jvmProducedValueCategory(value));
+    if (opcode !== 0x84) {
+      for (const value of producedValues) {
+        if (!value?.stackNeutral) stackCategories.push(jvmProducedValueCategory(value));
+      }
+    }
     if (completeness !== 'exact') stackModelTrusted = false;
     if (controlEffects.some((effect) =>
       effect?.kind === 'branch' || effect?.kind === 'return' || effect?.kind === 'throw')) {

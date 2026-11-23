@@ -505,7 +505,9 @@ function lift(insn, opts = {}) {
       stack: !!insn.memory.stack,
       size: insn.memory.size,
     };
-    const pair = base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp' || base === 'ldpsw';
+    const isExclusiveStore = /^(stxr|stlxr|stxrb|stxrh|stlxrb|stlxrh|stxp|stlxp)$/.test(base);
+    const pair = base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp' || base === 'ldpsw' ||
+      base === 'stxp' || base === 'stlxp';
     const each = insn.memory.size && pair ? insn.memory.size / 2 : insn.memory.size;
     const signedLoad = /^(ldrs|ldurs|ldpsw)/.test(base);
     if (insn.memory.kind === 'load') {
@@ -518,8 +520,33 @@ function lift(insn, opts = {}) {
           size: each, signed: signedLoad, srcs: [],
         });
       });
+    } else if (insn.memory.kind === 'atomic') {
+      for (const w of insn.writes || []) {
+        if (mem && (mem.mode === 'pre' || mem.mode === 'post') && w === addr.base) continue;
+        const wOp = ops.find((o) => o.k === 'reg' && regKeyOf(o) === w) || null;
+        push({
+          op: OP.LOAD,
+          dstReg: w,
+          dstBits: wOp ? regBits(wOp) : (each ? each * 8 : 64),
+          addr: Object.assign({}, addr, { size: each }),
+          size: each,
+          signed: false,
+          srcs: [],
+          deferDef: true,
+        });
+      }
+      const isCas = /^cas(?:al|a|l)?(?:b|h)?$/.test(base);
+      const srcRegs = isCas ? [ops[1], ops[0]] : [ops[0]];
+      push({
+        op: OP.STORE,
+        addr: Object.assign({}, addr, { size: each }),
+        size: each,
+        srcs: srcRegs.map((r) => opnd(r)).filter(Boolean),
+      });
     } else {
-      const regs = pair ? [ops[0], ops[1]] : [ops[0]];
+      const regs = isExclusiveStore
+        ? (pair ? [ops[1], ops[2]] : [ops[1]])
+        : (pair ? [ops[0], ops[1]] : [ops[0]]);
       regs.forEach((r, i) => {
         push({
           op: OP.STORE,
@@ -527,6 +554,15 @@ function lift(insn, opts = {}) {
           size: each, srcs: [opnd(r)].filter(Boolean),
         });
       });
+      if (isExclusiveStore && ops[0] && ops[0].k === 'reg' && ops[0].cls !== 'zr') {
+        push({
+          op: OP.UNKNOWN,
+          mnemonic: base,
+          dstReg: regKeyOf(ops[0]),
+          dstBits: regBits(ops[0]) || 32,
+          srcs: [],
+        });
+      }
     }
     // 事前 / 事後インデックス付きは、ベースレジスタ自身も書き換わる
     const writebackDisp = writebackDispOp && writebackDispOp.value != null ? writebackDispOp.value : null;
@@ -959,7 +995,7 @@ export function buildIR(model, opts) {
     return null;
   };
 
-  const emit = (p) => {
+  const emit = (p, marks = null, deferredDefs = null) => {
     const inst = {
       id: ir.instructions.length,
       op: p.op, sub: p.sub || null, block: p.block,
@@ -996,11 +1032,17 @@ export function buildIR(model, opts) {
     if (p.dstReg) {
       const v = newValue(VK.DEF, { def: inst, bits: p.dstBits || 64 });
       inst.dst = v;
-      pushDef(p.dstReg, v);
+      if (p.deferDef && deferredDefs) {
+        deferredDefs.push({ reg: p.dstReg, value: v });
+      } else {
+        pushDef(p.dstReg, v);
+        if (marks) marks.push(p.dstReg);
+      }
     }
     for (const w of p.extraWrites || []) {
       const v = newValue(VK.DEF, { def: inst, bits: 64 });
       pushDef(w, v);
+      if (marks) marks.push(w);
     }
     for (const c of p.clobbers || []) {
       // Result registers carry real return-value definitions from this
@@ -1008,6 +1050,7 @@ export function buildIR(model, opts) {
       if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
       const v = newValue(VK.DEF, { def: inst, bits: 64, clobbered: true });
       pushDef(c, v);
+      if (marks) marks.push(c);
     }
     for (const c of p.wideClobbers || []) {
       // A CALL keeps only the callee-saved low 64 bits of v8–v15 (#4979): a
@@ -1017,6 +1060,14 @@ export function buildIR(model, opts) {
       if (!wideSimdDefReaches(stacks, c)) continue;
       const v = newValue(VK.DEF, { def: inst, bits: 64, clobbered: true });
       pushDef(c, v);
+      if (marks) marks.push(c);
+    }
+    if (!p.deferDef && deferredDefs && deferredDefs.length) {
+      for (const d of deferredDefs) {
+        pushDef(d.reg, d.value);
+        if (marks) marks.push(d.reg);
+      }
+      deferredDefs.length = 0;
     }
     ir.instructions.push(inst);
     ir.blocks[p.block].insts.push(inst);
@@ -1081,21 +1132,16 @@ function renameIterative(ir, children, phiSites, lifted, stacks, emit, topOf, pu
       }
     }
 
+    const deferredDefs = [];
     for (const p of lifted[bi]) {
-      emit(p);
-      if (p.dstReg) marks.push(p.dstReg);
-      for (const w of p.extraWrites || []) marks.push(w);
-      for (const c of p.clobbers || []) {
-        if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
-        marks.push(c);
+      emit(p, marks, deferredDefs);
+    }
+    if (deferredDefs.length) {
+      for (const d of deferredDefs) {
+        pushDef(d.reg, d.value);
+        marks.push(d.reg);
       }
-      for (const c of p.wideClobbers || []) {
-        // Must stay 1:1 with the conditional clobber def in emit(): a marked
-        // register without a pushed value would pop a foreign definition.
-        if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
-        if (!wideSimdDefReaches(stacks, c)) continue;
-        marks.push(c);
-      }
+      deferredDefs.length = 0;
     }
 
     for (const s of block.succ) {
@@ -1123,6 +1169,7 @@ function livenessOf(ir, lifted, allRegs) {
   const use = Array.from({ length: n }, () => new Set());
   const def = Array.from({ length: n }, () => new Set());
   for (let b = 0; b < n; b++) {
+    const deferredDefs = [];
     for (const p of lifted[b]) {
       for (const s of p.srcs || []) {
         if (s && s.t === 'reg' && s.reg && !def[b].has(s.reg)) use[b].add(s.reg);
@@ -1131,10 +1178,18 @@ function livenessOf(ir, lifted, allRegs) {
         if (p.addr.base && !def[b].has(p.addr.base)) use[b].add(p.addr.base);
         if (p.addr.index && !def[b].has(p.addr.index)) use[b].add(p.addr.index);
       }
-      if (p.dstReg) def[b].add(p.dstReg);
+      if (p.dstReg) {
+        if (p.deferDef) deferredDefs.push(p.dstReg);
+        else def[b].add(p.dstReg);
+      }
       for (const w of p.extraWrites || []) def[b].add(w);
       for (const c of p.clobbers || []) def[b].add(c);
+      if (!p.deferDef && deferredDefs.length) {
+        for (const r of deferredDefs) def[b].add(r);
+        deferredDefs.length = 0;
+      }
     }
+    for (const r of deferredDefs) def[b].add(r);
   }
   const liveIn = Array.from({ length: n }, () => new Set());
   const liveOut = Array.from({ length: n }, () => new Set());
@@ -1581,7 +1636,7 @@ function buildMemorySSA(ir, df, idom, children) {
       const sphis = phiFor.get(s);
       if (!sphis) continue;
       for (const [key, phi] of sphis) {
-        if (phi.node) phi.node.incoming.push({ from: bi, node: top(key) });
+        phi.incoming.push({ from: bi, node: top(key) });
       }
     }
 

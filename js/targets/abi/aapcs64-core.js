@@ -235,16 +235,19 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       arguments_.push(entry);unsupported.push(entry);return;
     }
     if (c.scalableClass) {
+      allocationUncertain = true;
       const entry={index,location:'unsupported',abiClass:c.scalableClass,pointer:false,scalable:true,evidence:'unsupported-aapcs64-sve'};
       arguments_.push(entry);unsupported.push(entry);return;
     }
     if (c.aggregateMetadataInvalid) {
+      allocationUncertain = true;
       const entry={index,location:'unknown',abiClass:'aggregate-metadata-unproven',aggregate:true,
         partial:true,possible:true,mustUse:false,exact:false,certainty:'unknown',
         reason:'aggregate-hfa-hva-metadata-invalid'};
       arguments_.push(entry);unsupported.push(entry);return;
     }
     if (c.homogeneous && !c.homogeneousLayoutProven) {
+      allocationUncertain = true;
       const entry={
         index, location:'unknown', abiClass:c.hfa ? 'hfa-unproven' : 'hva-unproven',
         aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
@@ -253,6 +256,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       arguments_.push(entry); unsupported.push(entry); return;
     }
     if (c.aggregate && !c.aggregateLayoutProven) {
+      allocationUncertain = true;
       const entry={
         index, location:'unknown', abiClass:'aggregate-unproven', aggregate:true,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
@@ -338,6 +342,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       // no GP register remains, but fail closed rather than publishing bits
       // copied into a padding lane when a register path would be selected.
       if (c.aggregateBytes > Math.ceil(c.bits / 8) && gp < 8) {
+        allocationUncertain = true;
         const entry={ index, location:'unknown', abiClass:'aggregate-padding-register-layout-unproven',
           aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
           reason:'aggregate-physical-padding-register-layout-not-represented' };
@@ -358,29 +363,8 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
         }),possible:false,mustUse:true});
         return;
       }
-      const registerPieces = stackOffset === 0 ? Math.max(0, 8 - gp) : 0;
-      if (registerPieces > 0) {
-        const regs=[];
-        const pieces=[];
-        for(let n=0;n<registerPieces;n++){
-          const reg=`x${gp++}`;
-          regs.push(reg);
-          srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-piece',possible:false,mustUse:true});
-          pieces.push({pieceIndex:n,order:n,reg,bits:64,bytes:8,byteOffset:n*8,abiClass:'aggregate'});
-        }
-        gp=8;
-        const stackBytes=bytes-registerPieces*8;
-        stackOffset = c.alignment >= 16 ? Math.ceil(stackOffset / 16) * 16 : stackOffset;
-        const stackPieceBits = Math.max(1, c.bits - registerPieces * 64);
-        const stackEntry={index,location:'stack-fragment',offset:stackOffset,bytes:stackBytes,abiClass:'aggregate',aggregate:true,pointer:false,bits:stackPieceBits,alignment:8,mayContainPointers:c.mayContainPointers,pieceOffsetBytes:registerPieces*8,
-          pieces:[{pieceIndex:registerPieces,order:registerPieces,stackOffset,bytes:stackBytes,bits:stackPieceBits,byteOffset:registerPieces*8,abiClass:'aggregate'}],
-          possible:false,mustUse:true};
-        stackArguments.push(stackEntry);
-        arguments_.push({index,location:'register-stack',regs,reg:regs[0],offset:stackOffset,stackBytes,bytes,abiClass:'aggregate',aggregate:true,pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:[...pieces,{pieceIndex:registerPieces,order:registerPieces,stackOffset,bytes:stackBytes,bits:stackPieceBits,byteOffset:registerPieces*8,abiClass:'aggregate'}],possible:false,mustUse:true});
-        stackOffset+=stackBytes;
-        if(c.mayContainPointers) stackArgsMayContainPointers=true;
-        return;
-      }
+      // AAPCS64 Rules C.11-C.15: when 8 - gp < needed, set NGRN = 8 and place
+      // the entire composite on the stack (never split across x7 and stack).
       gp = 8;
       stackOffset = c.alignment >= 16 ? Math.ceil(stackOffset / 16) * 16 : stackOffset;
       const entry={index,location:'stack',offset:stackOffset,bytes,aggregate:true,abiClass:'aggregate',pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:[{pieceIndex:0,order:0,stackOffset:stackOffset,bits:c.bits,bytes,byteOffset:0,abiClass:'aggregate'}],possible:false,mustUse:true};
@@ -405,8 +389,11 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     // in its canonical member packing, so members keep their logical element
     // span and offsets instead of being widened to one 8-byte slot per member
     // (stack HFAs have "exactly the same layout" as any other composite).
-    const stackAlignmentBytes = c.homogeneous ? Math.max(8, Math.min(16, c.alignment ?? homogeneousElementBytes ?? 8)) : null;
-    if (c.homogeneous) stackOffset = Math.ceil(stackOffset / stackAlignmentBytes) * stackAlignmentBytes;
+    const naturalAlignment = c.homogeneous
+      ? (c.alignment ?? homogeneousElementBytes ?? 8)
+      : (c.bits >= 128 ? Math.max(16, c.alignment ?? 16) : (c.alignment ?? 8));
+    const stackAlignmentBytes = Math.max(8, Math.min(16, naturalAlignment));
+    stackOffset = Math.ceil(stackOffset / stackAlignmentBytes) * stackAlignmentBytes;
     const stackBytes=c.homogeneous ? Math.ceil((homogeneousElementBytes * c.members) / 8) * 8 : slots * 8;
     const entry={index,location:'stack',offset:stackOffset,bytes:stackBytes,abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true,
       ...(c.homogeneous ? {
@@ -420,7 +407,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
           bits:c.elementBits, bytes:homogeneousElementBytes,
           byteOffset:piece * homogeneousElementBytes, abiClass:c.hfa?'hfa':'hva',
         })),
-      } : {}),
+      } : stackAlignmentBytes > 8 ? { alignment:stackAlignmentBytes } : {}),
     };
     stackArguments.push(entry);arguments_.push(entry);stackOffset+=stackBytes;
     if(c.pointer || c.mayContainPointers) stackArgsMayContainPointers=true;
@@ -448,7 +435,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     stackArgsMayContainPointers:stackArgsMayContainPointers||variadic||allocationUncertain,
     possibleRegisterInputs,
     partial:variadic||unsupported.length>0,
-    evidence:allocationUncertain?'partial-aapcs64-unproven-layout':unsupported.length?'partial-aapcs64-unsupported-sve':variadic?'prototype-aapcs64-variadic':'prototype-aapcs64',
+    evidence:unsupported.some((entry)=>entry.scalable)?'partial-aapcs64-unsupported-sve':allocationUncertain?'partial-aapcs64-unproven-layout':unsupported.length?'partial-aapcs64-unsupported-sve':variadic?'prototype-aapcs64-variadic':'prototype-aapcs64',
     unsupported:unsupported.length>0,
     unsupportedArguments:unsupported,
   };

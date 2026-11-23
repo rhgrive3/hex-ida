@@ -158,7 +158,7 @@ function scoreBuckets(rows) {
   }
   return output;
 }
-function evidenceSummary(rows) {
+export function evidenceSummary(rows) {
   const perGroup = {};
   const codes = {};
   for (const row of rows) {
@@ -176,7 +176,7 @@ function evidenceSummary(rows) {
   return {
     combinations: mapCount(rows, (row) => (row.groups || []).slice().sort().join('+') || 'none'),
     individualGroups: Object.fromEntries(Object.entries(perGroup).sort(([a], [b]) => a.localeCompare(b))),
-    topEvidenceCodes: Object.fromEntries(Object.entries(codes).sort(([, a], [, b]) => b.occurrences - a.occurrences || a.group.localeCompare(b.group))),
+    topEvidenceCodes: Object.fromEntries(Object.entries(codes).sort(([, a], [, b]) => b.occurrences - a.occurrences || (a.group || '').localeCompare(b.group || ''))),
   };
 }
 function rankSummary(rows) {
@@ -403,149 +403,151 @@ function currentPolicyDelta(policies) {
   };
 }
 
-const rows = jsonLines(path.join(DIR, 'rows.jsonl'));
-const field = rows.filter((row) => row.kind === 'field');
-const dsda = rows.filter((row) => row.kind === 'location');
-const queries = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/fixtures/pinpoint-confidence-queries.json'), 'utf8'));
-const manifest = JSON.parse(fs.readFileSync(path.join(DIR, 'measurement.json'), 'utf8'));
-if (!manifest.complete) die('measurement manifest is not complete');
-if (field.length !== queries.length) die(`field denominator ${field.length} differs from fixture ${queries.length}`);
-if (field.some((row) => row.error)) die('field measurement has errors');
-if (field.some((row) => row.replayFidelity !== 'match')) die('current production/P4 replay fidelity mismatch');
-for (const row of field) {
-  if (!Array.isArray(row.candidates) || !row.candidates.length) die(`candidate snapshot missing for ${keyOf(row)}`);
-  for (const policy of POLICIES) if (typeof row[policy.column] !== 'string') die(`policy ${policy.id} missing for ${keyOf(row)}`);
-}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const rows = jsonLines(path.join(DIR, 'rows.jsonl'));
+  const field = rows.filter((row) => row.kind === 'field');
+  const dsda = rows.filter((row) => row.kind === 'location');
+  const queries = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/fixtures/pinpoint-confidence-queries.json'), 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(DIR, 'measurement.json'), 'utf8'));
+  if (!manifest.complete) die('measurement manifest is not complete');
+  if (field.length !== queries.length) die(`field denominator ${field.length} differs from fixture ${queries.length}`);
+  if (field.some((row) => row.error)) die('field measurement has errors');
+  if (field.some((row) => row.replayFidelity !== 'match')) die('current production/P4 replay fidelity mismatch');
+  for (const row of field) {
+    if (!Array.isArray(row.candidates) || !row.candidates.length) die(`candidate snapshot missing for ${keyOf(row)}`);
+    for (const policy of POLICIES) if (typeof row[policy.column] !== 'string') die(`policy ${policy.id} missing for ${keyOf(row)}`);
+  }
 
-const subsets = subsetsOf(field);
-const policies = metricsForPolicies(subsets);
-const rankOracle = rankingOracle(field);
-const taxonomy = failureTaxonomy(field);
-const jev = jevEligibilityAnalysis(field, taxonomy);
-const selected = policies[SELECTED_POLICY].subsets.all;
-const candidateOracle = subsets.candidatePresent.length;
-const confidenceOracle = selected.top1Correct;
-const oracle = {
-  schema: 'hex-pinpoint-confidence-oracle-ceiling/v1',
-  denominator: field.length,
-  candidateOracle: {
-    definition: 'If the truth candidate is present, choose it.',
-    correctTop1: candidateOracle, coverage: percent(candidateOracle, field.length),
-    candidateRecallLoss: field.length - candidateOracle,
-  },
-  rankingOracle: {
-    definition: 'A finite evidence-signature diagnostic over the candidates already generated; it does not create an ML model or new binary evidence.',
-    observedTop1Correct: rankOracle.observedTop1Correct,
-    observedTop1Accuracy: percent(rankOracle.observedTop1Correct, field.length),
-    diagnosticFeatureCeiling: rankOracle.diagnosticFeatureCeiling,
-    diagnosticFeatureCeilingAccuracy: percent(rankOracle.diagnosticFeatureCeiling, field.length),
-    classification: {
-      definition: rankOracle.definition, counts: rankOracle.counts,
-      rowsPath: 'ranking-oracle-classification.json',
-    },
-  },
-  confidenceOracle: {
-    definition: 'Know whether the existing top-1 is correct and mark only correct top-1 rows strong.',
-    correctStrongCeiling: confidenceOracle,
-    strongCoverageCeiling: percent(confidenceOracle, field.length),
-    falseStrongCeiling: 0,
-    selectedPolicyCorrectStrong: selected.correctStrong,
-    calibrationAbstentionGap: confidenceOracle - selected.correctStrong,
-    selectedPolicyFalseStrong: selected.falseStrong,
-  },
-  lossDecomposition: {
+  const subsets = subsetsOf(field);
+  const policies = metricsForPolicies(subsets);
+  const rankOracle = rankingOracle(field);
+  const taxonomy = failureTaxonomy(field);
+  const jev = jevEligibilityAnalysis(field, taxonomy);
+  const selected = policies[SELECTED_POLICY].subsets.all;
+  const candidateOracle = subsets.candidatePresent.length;
+  const confidenceOracle = selected.top1Correct;
+  const oracle = {
+    schema: 'hex-pinpoint-confidence-oracle-ceiling/v1',
     denominator: field.length,
-    candidateRecallLoss: field.length - candidateOracle,
-    rankingLossAfterCandidateRecall: candidateOracle - rankOracle.observedTop1Correct,
-    confidenceCalibrationLossAfterCorrectTop1: rankOracle.observedTop1Correct - selected.correctStrong,
-    residualFalseStrong: selected.falseStrong,
-  },
-};
+    candidateOracle: {
+      definition: 'If the truth candidate is present, choose it.',
+      correctTop1: candidateOracle, coverage: percent(candidateOracle, field.length),
+      candidateRecallLoss: field.length - candidateOracle,
+    },
+    rankingOracle: {
+      definition: 'A finite evidence-signature diagnostic over the candidates already generated; it does not create an ML model or new binary evidence.',
+      observedTop1Correct: rankOracle.observedTop1Correct,
+      observedTop1Accuracy: percent(rankOracle.observedTop1Correct, field.length),
+      diagnosticFeatureCeiling: rankOracle.diagnosticFeatureCeiling,
+      diagnosticFeatureCeilingAccuracy: percent(rankOracle.diagnosticFeatureCeiling, field.length),
+      classification: {
+        definition: rankOracle.definition, counts: rankOracle.counts,
+        rowsPath: 'ranking-oracle-classification.json',
+      },
+    },
+    confidenceOracle: {
+      definition: 'Know whether the existing top-1 is correct and mark only correct top-1 rows strong.',
+      correctStrongCeiling: confidenceOracle,
+      strongCoverageCeiling: percent(confidenceOracle, field.length),
+      falseStrongCeiling: 0,
+      selectedPolicyCorrectStrong: selected.correctStrong,
+      calibrationAbstentionGap: confidenceOracle - selected.correctStrong,
+      selectedPolicyFalseStrong: selected.falseStrong,
+    },
+    lossDecomposition: {
+      denominator: field.length,
+      candidateRecallLoss: field.length - candidateOracle,
+      rankingLossAfterCandidateRecall: candidateOracle - rankOracle.observedTop1Correct,
+      confidenceCalibrationLossAfterCorrectTop1: rankOracle.observedTop1Correct - selected.correctStrong,
+      residualFalseStrong: selected.falseStrong,
+    },
+  };
 
-const oldRaw = execFileSync('git', ['show', `${OLD_COMMIT}:${OLD_ROWS_PATH}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-const oldRows = oldRaw.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
-const oldField = oldRows.filter((row) => row.kind === 'field' && !row.error);
-if (oldField.length !== field.length) die(`historical field denominator ${oldField.length} differs from current ${field.length}`);
-const oldVsCurrent = {
-  schema: 'hex-pinpoint-confidence-old-vs-current/v1',
-  historical: {
-    commit: OLD_COMMIT,
-    subject: git('show', '-s', '--format=%s', OLD_COMMIT),
-    artifactPath: OLD_ROWS_PATH,
-    rowsSha256: sha256(oldRaw),
-    policyColumn: 'newVerdict',
-  },
-  current: {
-    manifestPath: path.relative(ROOT, path.join(DIR, 'measurement.json')),
-    productCommit: manifest.productCommit,
-    productTree: manifest.productTree,
-    policyColumn: 'policyAVerdict',
-  },
-  comparison: compareCurrentAndHistorical(field, oldField),
-};
+  const oldRaw = execFileSync('git', ['show', `${OLD_COMMIT}:${OLD_ROWS_PATH}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const oldRows = oldRaw.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
+  const oldField = oldRows.filter((row) => row.kind === 'field' && !row.error);
+  if (oldField.length !== field.length) die(`historical field denominator ${oldField.length} differs from current ${field.length}`);
+  const oldVsCurrent = {
+    schema: 'hex-pinpoint-confidence-old-vs-current/v1',
+    historical: {
+      commit: OLD_COMMIT,
+      subject: git('show', '-s', '--format=%s', OLD_COMMIT),
+      artifactPath: OLD_ROWS_PATH,
+      rowsSha256: sha256(oldRaw),
+      policyColumn: 'newVerdict',
+    },
+    current: {
+      manifestPath: path.relative(ROOT, path.join(DIR, 'measurement.json')),
+      productCommit: manifest.productCommit,
+      productTree: manifest.productTree,
+      policyColumn: 'policyAVerdict',
+    },
+    comparison: compareCurrentAndHistorical(field, oldField),
+  };
 
-const summary = {
-  schema: 'hex-pinpoint-confidence-plan-a-summary/v1',
-  selectedPolicy: { id: SELECTED_POLICY, name: POLICIES.find((policy) => policy.id === SELECTED_POLICY).name },
-  measurement: manifest,
-  denominatorContract: {
-    totalRows: rows.length, fieldRows: field.length, dsdaHoldoutRows: dsda.length,
-    exactRows: subsets.exact.length, partialRows: subsets.partial.length,
-    fieldOnly: true,
-  },
-  candidateRecall: {
-    all: { present: subsets.candidatePresent.length, notFound: subsets.candidateNotFound.length, rate: percent(subsets.candidatePresent.length, field.length) },
-    exact: { present: subsets.exact.filter((row) => row.candidatePresent).length, denominator: subsets.exact.length },
-    partial: { present: subsets.partial.filter((row) => row.candidatePresent).length, denominator: subsets.partial.length },
-  },
-  ranking: {
-    all: rankSummary(field), exact: rankSummary(subsets.exact), partial: rankSummary(subsets.partial),
-    score: numericSummary(field.map((row) => row.probability)),
-    margin: { finite: numericSummary(field.map((row) => row.margin)), infinity: field.filter((row) => row.marginInfinite).length },
-    marginRatio: numericSummary(field.map((row) => row.marginRatio)),
-    scoreBuckets: scoreBuckets(field),
-  },
-  independentGroups: {
-    distribution: Object.fromEntries(['0', '1', '2', '3+'].map((bucket) => [bucket, field.filter((row) => groupsBucket(row.independentGroups) === bucket).length])),
-    evidence: evidenceSummary(field),
-  },
-  policyComparison: policies,
-  selectedPolicyDeltaFromA: currentPolicyDelta(policies),
-  failureTaxonomy: {
-    currentPolicyA: taxonomy.currentPolicyA.counts,
-    selectedPolicyD: taxonomy.selectedPolicyD.counts,
-    mutuallyExclusivePriority: taxonomy.mutuallyExclusivePriority,
-  },
-  oracle,
-  oldVsCurrent: {
-    path: 'old-vs-current.json',
-    recoveredPartialRows: oldVsCurrent.comparison.recoveredPartialRows.length,
-  },
-  jevEligibility: {
-    path: 'jev-eligibility-analysis.json', eligibleCount: jev.eligibleCount,
-    notImprovedByThisJevBoundary: jev.notImprovedByThisJevBoundary,
-  },
-  performance: {
-    collection: { singleAnalysisPerQuery: manifest.singleAnalysisPerQuery, replayAddsNoAnalysis: manifest.replayAddsNoAnalysis },
-    runtimeHotPathChange: 'no candidate generation/ranking/analysis change; selected production rule inspects only the already-fused top evidence list after existing likely score/margin gates',
-    selectedPolicyComplexity: 'O(top fusion evidence items), never O(candidate set) or global analysis',
-  },
-};
+  const summary = {
+    schema: 'hex-pinpoint-confidence-plan-a-summary/v1',
+    selectedPolicy: { id: SELECTED_POLICY, name: POLICIES.find((policy) => policy.id === SELECTED_POLICY).name },
+    measurement: manifest,
+    denominatorContract: {
+      totalRows: rows.length, fieldRows: field.length, dsdaHoldoutRows: dsda.length,
+      exactRows: subsets.exact.length, partialRows: subsets.partial.length,
+      fieldOnly: true,
+    },
+    candidateRecall: {
+      all: { present: subsets.candidatePresent.length, notFound: subsets.candidateNotFound.length, rate: percent(subsets.candidatePresent.length, field.length) },
+      exact: { present: subsets.exact.filter((row) => row.candidatePresent).length, denominator: subsets.exact.length },
+      partial: { present: subsets.partial.filter((row) => row.candidatePresent).length, denominator: subsets.partial.length },
+    },
+    ranking: {
+      all: rankSummary(field), exact: rankSummary(subsets.exact), partial: rankSummary(subsets.partial),
+      score: numericSummary(field.map((row) => row.probability)),
+      margin: { finite: numericSummary(field.map((row) => row.margin)), infinity: field.filter((row) => row.marginInfinite).length },
+      marginRatio: numericSummary(field.map((row) => row.marginRatio)),
+      scoreBuckets: scoreBuckets(field),
+    },
+    independentGroups: {
+      distribution: Object.fromEntries(['0', '1', '2', '3+'].map((bucket) => [bucket, field.filter((row) => groupsBucket(row.independentGroups) === bucket).length])),
+      evidence: evidenceSummary(field),
+    },
+    policyComparison: policies,
+    selectedPolicyDeltaFromA: currentPolicyDelta(policies),
+    failureTaxonomy: {
+      currentPolicyA: taxonomy.currentPolicyA.counts,
+      selectedPolicyD: taxonomy.selectedPolicyD.counts,
+      mutuallyExclusivePriority: taxonomy.mutuallyExclusivePriority,
+    },
+    oracle,
+    oldVsCurrent: {
+      path: 'old-vs-current.json',
+      recoveredPartialRows: oldVsCurrent.comparison.recoveredPartialRows.length,
+    },
+    jevEligibility: {
+      path: 'jev-eligibility-analysis.json', eligibleCount: jev.eligibleCount,
+      notImprovedByThisJevBoundary: jev.notImprovedByThisJevBoundary,
+    },
+    performance: {
+      collection: { singleAnalysisPerQuery: manifest.singleAnalysisPerQuery, replayAddsNoAnalysis: manifest.replayAddsNoAnalysis },
+      runtimeHotPathChange: 'no candidate generation/ranking/analysis change; selected production rule inspects only the already-fused top evidence list after existing likely score/margin gates',
+      selectedPolicyComplexity: 'O(top fusion evidence items), never O(candidate set) or global analysis',
+    },
+  };
 
-write('summary.json', summary);
-write('policy-comparison.json', { schema: 'hex-pinpoint-confidence-policy-comparison/v1', denominator: field.length, policies, selectedPolicy: SELECTED_POLICY, deltaFromA: currentPolicyDelta(policies) });
-write('failure-taxonomy.json', { schema: 'hex-pinpoint-confidence-failure-taxonomy/v1', denominator: field.length, ...taxonomy });
-write('oracle-ceiling.json', oracle);
-write('old-vs-current.json', oldVsCurrent);
-write('ranking-oracle-classification.json', { schema: 'hex-pinpoint-ranking-oracle-classification/v1', denominator: field.length, ...rankOracle });
-write('jev-eligibility-analysis.json', jev);
-fs.writeFileSync(path.join(DIR, 'failure-rows.jsonl'), taxonomy.currentPolicyA.rows.map((row, index) => JSON.stringify({ ...row, selectedCategory: taxonomy.selectedPolicyD.rows[index].category })).join('\n') + '\n');
+  write('summary.json', summary);
+  write('policy-comparison.json', { schema: 'hex-pinpoint-confidence-policy-comparison/v1', denominator: field.length, policies, selectedPolicy: SELECTED_POLICY, deltaFromA: currentPolicyDelta(policies) });
+  write('failure-taxonomy.json', { schema: 'hex-pinpoint-confidence-failure-taxonomy/v1', denominator: field.length, ...taxonomy });
+  write('oracle-ceiling.json', oracle);
+  write('old-vs-current.json', oldVsCurrent);
+  write('ranking-oracle-classification.json', { schema: 'hex-pinpoint-ranking-oracle-classification/v1', denominator: field.length, ...rankOracle });
+  write('jev-eligibility-analysis.json', jev);
+  fs.writeFileSync(path.join(DIR, 'failure-rows.jsonl'), taxonomy.currentPolicyA.rows.map((row, index) => JSON.stringify({ ...row, selectedCategory: taxonomy.selectedPolicyD.rows[index].category })).join('\n') + '\n');
 
-process.stdout.write(JSON.stringify({
-  fieldRows: field.length,
-  candidateRecall: summary.candidateRecall.all,
-  rankingTop1: policies.A.subsets.all.rankingAccuracy,
-  selected: policies.D.subsets.all,
-  delta: summary.selectedPolicyDeltaFromA,
-  historicRecoveredPartial: oldVsCurrent.comparison.recoveredPartialRows.length,
-}, null, 2) + '\n');
+  process.stdout.write(JSON.stringify({
+    fieldRows: field.length,
+    candidateRecall: summary.candidateRecall.all,
+    rankingTop1: policies.A.subsets.all.rankingAccuracy,
+    selected: policies.D.subsets.all,
+    delta: summary.selectedPolicyDeltaFromA,
+    historicRecoveredPartial: oldVsCurrent.comparison.recoveredPartialRows.length,
+  }, null, 2) + '\n');
+}

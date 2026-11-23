@@ -53,21 +53,30 @@ export class ScopedAnalysisWork {
     this.#limits = normalizeQueryLimits(limits);
     this.#controller = new AbortController();
     this.#externalSignal = signal;
-    this.#abortListener = () => this.#controller.abort(signal.reason ?? new AnalysisWorkStopped('cancelled', 'query-cancelled'));
-    if (signal?.aborted) this.#abortListener();
-    else signal?.addEventListener('abort', this.#abortListener, { once: true });
     const resourceLimits = Object.fromEntries(Object.entries(this.#limits).filter(([key]) => !['deadlineMs', 'yieldEvery'].includes(key)));
     this.#name = `${name}.${++nextScope}`;
     this.#parent = parentBudget;
-    this.#parentAbortListener = () => this.#controller.abort(parentBudget.signal.reason
-      ?? new AnalysisWorkStopped('cancelled', 'parent-query-cancelled'));
-    if (parentBudget?.signal?.aborted) this.#parentAbortListener();
-    else parentBudget?.signal?.addEventListener('abort', this.#parentAbortListener, { once: true });
     this.#budget = new ResourceBudget(resourceLimits, { parent: parentBudget, name: this.#name, signal: this.#controller.signal });
     this.#started = now();
+    this.#abortListener = () => {
+      const reason = signal.reason instanceof AnalysisWorkStopped
+        ? (signal.reason.cost ? signal.reason : new AnalysisWorkStopped(signal.reason.status, signal.reason.message, this.cost()))
+        : (signal.reason ?? new AnalysisWorkStopped('cancelled', 'query-cancelled', this.cost()));
+      this.#controller.abort(reason);
+    };
+    if (signal?.aborted) this.#abortListener();
+    else signal?.addEventListener('abort', this.#abortListener, { once: true });
+    this.#parentAbortListener = () => {
+      const reason = parentBudget.signal.reason instanceof AnalysisWorkStopped
+        ? (parentBudget.signal.reason.cost ? parentBudget.signal.reason : new AnalysisWorkStopped(parentBudget.signal.reason.status, parentBudget.signal.reason.message, this.cost()))
+        : (parentBudget.signal.reason ?? new AnalysisWorkStopped('cancelled', 'parent-query-cancelled', this.cost()));
+      this.#controller.abort(reason);
+    };
+    if (parentBudget?.signal?.aborted) this.#parentAbortListener();
+    else parentBudget?.signal?.addEventListener('abort', this.#parentAbortListener, { once: true });
     this.#timer = this.#controller.signal.aborted
       ? null
-      : setTimeout(() => this.#controller.abort(new AnalysisWorkStopped('timeout', 'query-deadline')), this.#limits.deadlineMs);
+      : setTimeout(() => this.#controller.abort(new AnalysisWorkStopped('timeout', 'query-deadline', this.cost())), this.#limits.deadlineMs);
     // Kept referenced while work is active: a hung provider Promise alone does
     // not keep a Node host alive long enough to observe an unref'ed deadline.
     SCOPES.add(this);
@@ -77,7 +86,10 @@ export class ScopedAnalysisWork {
   checkpoint() {
     if (this.#disposed) throw new AnalysisWorkStopped('cancelled', 'query-work-disposed', this.cost());
     if (this.signal.aborted) {
-      if (this.signal.reason instanceof AnalysisWorkStopped) throw this.signal.reason;
+      if (this.signal.reason instanceof AnalysisWorkStopped) {
+        if (!this.signal.reason.cost) throw new AnalysisWorkStopped(this.signal.reason.status, this.signal.reason.message, this.cost());
+        throw this.signal.reason;
+      }
       throw new AnalysisWorkStopped('cancelled', 'query-cancelled', this.cost());
     }
     this.#parent?.checkCancelled();
@@ -117,7 +129,13 @@ export class ScopedAnalysisWork {
     const signal = this.signal;
     let cancel;
     const stopped = new Promise((_, reject) => {
-      cancel = () => reject(signal.reason instanceof AnalysisWorkStopped ? signal.reason : new AnalysisWorkStopped('cancelled', 'query-cancelled', this.cost()));
+      cancel = () => {
+        if (signal.reason instanceof AnalysisWorkStopped) {
+          reject(signal.reason.cost ? signal.reason : new AnalysisWorkStopped(signal.reason.status, signal.reason.message, this.cost()));
+        } else {
+          reject(new AnalysisWorkStopped('cancelled', 'query-cancelled', this.cost()));
+        }
+      };
       signal.addEventListener('abort', cancel, { once: true });
       if (signal.aborted) cancel();
     });
@@ -136,7 +154,7 @@ export class ScopedAnalysisWork {
     clearTimeout(this.#timer);
     this.#externalSignal?.removeEventListener('abort', this.#abortListener);
     this.#parent?.signal?.removeEventListener('abort', this.#parentAbortListener);
-    if (!this.signal.aborted) this.#controller.abort(new AnalysisWorkStopped('cancelled', 'query-work-disposed'));
+    if (!this.signal.aborted) this.#controller.abort(new AnalysisWorkStopped('cancelled', 'query-work-disposed', this.cost()));
     // Parent totals remain charged; only the finished child registry entry is released.
     if (this.#parent?.children.get(this.#name) === this.#budget) this.#parent.children.delete(this.#name);
   }

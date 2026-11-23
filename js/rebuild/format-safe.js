@@ -120,6 +120,15 @@ function bytesDigestMasked(bytes, offset, length) {
   return stableDigestBytes(masked, 0, masked.length, offset, offset + length);
 }
 
+function bytesDigestMaskedRanges(bytes, ranges) {
+  const masked = bytesOf(bytes);
+  for (const { offset, length } of ranges) {
+    ensureRange(masked, offset, length);
+    masked.fill(0, offset, offset + length);
+  }
+  return stableDigestBytes(masked);
+}
+
 function elfSections(bytes, header) {
   const sections = [];
   for (let index = 0; index < header.sectionCount; index++) {
@@ -778,8 +787,26 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
       if (stableDigest(sourceImage.sections.slice(0, -1)) !== stableDigest(outputImage.sections.slice(0, -2))) return reject('format-safe-elf-existing-sections-changed');
       const sourceNames = sourceImage.sections[sourceImage.header.sectionNameIndex];
       const outputNames = outputImage.sections[outputImage.header.sectionNameIndex];
+      const appendedNameBytes = expected.operations[1].after;
+      if (!sourceNames || !outputNames
+        || outputNames.size !== sourceNames.size + appendedNameBytes.length
+        || outputNames.data.length < sourceNames.size
+        || !sameBytes(sourceNames.data.subarray(0, sourceNames.size), outputNames.data.subarray(0, sourceNames.size))
+        || !sameBytes(outputNames.data.subarray(sourceNames.size), appendedNameBytes)) {
+        return reject('format-safe-elf-name-table-mismatch');
+      }
       const comparableSourceNames = { ...sourceNames, size: outputNames.size, data: outputNames.data };
       if (stableDigest(comparableSourceNames) !== stableDigest(outputNames)) return reject('format-safe-elf-name-table-mismatch');
+      const inPlaceRanges = expected.operations.slice(0, 3).map((operation) => ({
+        offset: operation.offset,
+        length: operation.after.length,
+      }));
+      if (bytesDigestMaskedRanges(source, inPlaceRanges) !== bytesDigestMaskedRanges(candidate.subarray(0, source.length), inPlaceRanges)) {
+        return reject('format-safe-elf-unchanged-bytes-differ');
+      }
+      if (!sameBytes(candidate.subarray(source.length), expected.operations[3].after)) {
+        return reject('format-safe-elf-nobits-section-mismatch');
+      }
       if (digestBytes(source) !== transaction.sourceHash) return reject('format-safe-source-hash-mismatch');
       return Object.freeze({
         ok: true,

@@ -111,11 +111,11 @@ export function costOf(sequence) {
   };
 }
 
-function estimatedCostOf(sequence) {
+function estimatedProbeCost(probe) {
   return {
-    probes: sequence.length,
-    calls: sequence.reduce((n, p) => n + (p.estimatedAnalyzeCalls ?? (p.family === 'scan-access' ? 1 : 1)), 0),
-    elapsedMs: sequence.reduce((n, p) => n + (p.estimatedElapsedMs ?? 0), 0),
+    probes: 1,
+    calls: probe.estimatedAnalyzeCalls ?? (probe.family === 'scan-access' ? 1 : 1),
+    elapsedMs: probe.estimatedElapsedMs ?? 0,
   };
 }
 
@@ -125,10 +125,12 @@ export function withinBudget(sequence, budget = BUDGET) {
     && c.elapsedMs <= budget.maxElapsedMs;
 }
 
-function withinEstimatedBudget(sequence, budget = BUDGET) {
-  const c = estimatedCostOf(sequence);
-  return c.probes <= budget.maxProbeCount && c.calls <= budget.maxAnalyzeCalls
-    && c.elapsedMs <= budget.maxElapsedMs;
+function withinEstimatedBudget(sequence, candidate, budget = BUDGET) {
+  const actual = costOf(sequence);
+  const est = estimatedProbeCost(candidate);
+  return actual.probes + est.probes <= budget.maxProbeCount
+    && actual.calls + est.calls <= budget.maxAnalyzeCalls
+    && actual.elapsedMs + est.elapsedMs <= budget.maxElapsedMs;
 }
 
 export function evaluateSequence(row, sequence, budget = null) {
@@ -177,13 +179,19 @@ export function runHeuristic(row, probes, kind, rates = {}, budget = BUDGET) {
   while (remaining.length) {
     const state = productionReplay(row, sequence);
     if (strong(state.verdict)) { stopReason = STOP.RESOLVED; break; }
-    const affordable = remaining.filter((p) => withinEstimatedBudget([...sequence, p], budget));
+    const affordable = remaining.filter((p) => withinEstimatedBudget(sequence, p, budget));
     if (!affordable.length) { stopReason = STOP.BUDGET; break; }
     affordable.sort((a, b) => scoreProbe(b, row, state, kind, rates, sequence) - scoreProbe(a, row, state, kind, rates, sequence)
       || a.probeId.localeCompare(b.probeId));
     const next = affordable[0];
     if (!next) { stopReason = STOP.NO_USEFUL; break; }
-    const remainingElapsedMs = Math.max(0, budget.maxElapsedMs - costOf(sequence).elapsedMs);
+    const actual = costOf(sequence);
+    const remainingAnalyzeCalls = Math.max(0, budget.maxAnalyzeCalls - actual.calls);
+    if (Number.isFinite(next.analysisCalls) && next.analysisCalls > remainingAnalyzeCalls) {
+      stopReason = STOP.BUDGET;
+      break;
+    }
+    const remainingElapsedMs = Math.max(0, budget.maxElapsedMs - actual.elapsedMs);
     if (Number.isFinite(next.elapsedMs) && next.elapsedMs > remainingElapsedMs) {
       sequence.push({ ...next, timedOut: true, observations: [], actualElapsedMs: next.elapsedMs, elapsedMs: remainingElapsedMs });
       decisions.push({ action: STOP.NEXT_PROBE, probeId: next.probeId });
@@ -194,7 +202,10 @@ export function runHeuristic(row, probes, kind, rates = {}, budget = BUDGET) {
     decisions.push({ action: STOP.NEXT_PROBE, probeId: next.probeId });
     sequence.push(next);
     remaining = remaining.filter((p) => p.probeId !== next.probeId);
-    if (sequence.length >= budget.maxProbeCount) { stopReason = STOP.BUDGET; break; }
+    if (sequence.length >= budget.maxProbeCount || costOf(sequence).calls >= budget.maxAnalyzeCalls) {
+      stopReason = STOP.BUDGET;
+      break;
+    }
   }
   if (strong(productionReplay(row, sequence).verdict)) stopReason = STOP.RESOLVED;
   else if (stopReason !== STOP.TIMEOUT && !remaining.length) stopReason = STOP.NO_USEFUL;

@@ -319,7 +319,7 @@ test('C4-03 rejected recovery does not spend history capacity or leak transforms
 
 test('C4-03 failed nested condition recovery rolls back tentative histories while the outer return succeeds', () => {
   const f = fixture({ diamond:true });
-  const location = { kind:'stack', key:'stack:condition:s8', size:8 };
+  const location = { kind:'stack', key:'stack:-24', size:8 };
   const input = { id:106, bits:128 };
   f.result.ir.values.push(input);
   f.result.semanticAst.values.push({ valueId:input.id, expression:expr.unary('zext', f.aExpr, 128, false) });

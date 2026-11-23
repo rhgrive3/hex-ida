@@ -357,11 +357,11 @@ export const FEATURE_OF_CATEGORY = {
  * destination write. The AdvSIMD structure register-list family belongs here
  * too (#3601). */
 const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldtr|ldtrb|ldtrh|ldtrsb|ldtrsh|ldtrsw|ld1|ld2|ld3|ld4)$/;
-const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|sttrb|sttrh|stxr|stlxr|st1|st2|st3|st4)$/;
+const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|sttrb|sttrh|stxr|stlxr|stxrb|stxrh|stlxrb|stlxrh|stxp|stlxp|st1|st2|st3|st4)$/;
 const STRUCTURE_MN = /^(ld1|ld2|ld3|ld4|st1|st2|st3|st4)$/;
 /* Exclusive stores are memory stores that still define a 32-bit status result
  * in operand 0; the data operand after it carries the access width (#3592). */
-const EXCLUSIVE_STORE_MN = /^(stxr|stlxr)$/;
+const EXCLUSIVE_STORE_MN = /^(stxr|stlxr|stxrb|stxrh|stlxrb|stlxrh|stxp|stlxp)$/;
 
 /* Authenticated indirect branches and calls. `arm64.js` already classifies
  * these as flow/call, so the local surface must agree or the target register is
@@ -463,14 +463,15 @@ function targetOf(base, ops) {
 
 /** アクセスするバイト数（分かる範囲で）。 */
 function accessSize(base, ops) {
-  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb|ldtrb|ldtrsb|sttrb)$/.test(base)) return 1;
-  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh|ldtrh|ldtrsh|sttrh)$/.test(base)) return 2;
+  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb|ldtrb|ldtrsb|sttrb|stxrb|stlxrb)$/.test(base)) return 1;
+  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh|ldtrh|ldtrsh|sttrh|stxrh|stlxrh)$/.test(base)) return 2;
   if (/^(ldrsw|ldursw|ldtrsw)$/.test(base)) return 4;
   // Exclusive stores move the data operand (operand 1), never the 32-bit
   // status result that comes first (#3592).
   if (EXCLUSIVE_STORE_MN.test(base)) {
     const data = ops.find((o, i) => i > 0 && o.k === 'reg');
-    return data && data.bits ? data.bits / 8 : 4;
+    const w = data && data.bits ? data.bits / 8 : 4;
+    return (base === 'stxp' || base === 'stlxp') ? w * 2 : w;
   }
   // LSE atomic size suffixes override the register width (byte/halfword forms
   // move 1 or 2 bytes even though the source/result registers are 32-bit).
@@ -1015,7 +1016,7 @@ export function analyzeDataFlow(insns, opts) {
         slot = m.base + '+' + (frameDelta + accessDisp).toString();
       }
       const isPair = base === 'ldp' || base === 'ldpsw' || base === 'ldnp' ||
-        base === 'stp' || base === 'stnp';
+        base === 'stp' || base === 'stnp' || base === 'stxp' || base === 'stlxp';
       const stride = isPair && accessDisp != null ? BigInt(Math.floor(m.size / 2)) : 0n;
       const elemWidth = Number.isInteger(m.size) ? (isPair ? Math.floor(m.size / 2) : m.size) : null;
       const elemSlot = (idx) => (slot && idx > 0
@@ -1082,9 +1083,11 @@ export function analyzeDataFlow(insns, opts) {
           flow('mem->reg', insn.row, m.base, dst, v);
         }
       } else {
+        const isExclusiveStore = EXCLUSIVE_STORE_MN.test(base);
+        const srcOffset = isExclusiveStore ? 1 : 0;
         const srcCount = isPair ? 2 : 1;
         for (let idx = 0; idx < srcCount; idx++) {
-          const src = insn.ops[idx] ? regKey(insn.ops[idx]) : null;
+          const src = insn.ops[srcOffset + idx] ? regKey(insn.ops[srcOffset + idx]) : null;
           const v = src ? get(src) : null;
           const sSlot = isPair ? elemSlot(idx) : slot;
           flow('reg->mem', insn.row, src, sSlot || (m.base || 'mem'), v);
@@ -1093,6 +1096,12 @@ export function analyzeDataFlow(insns, opts) {
             else stack.set(sSlot, unknownValue(ev('untracked', insn.row)));
             const absOff = elemAbs(idx);
             if (absOff != null) writeStackBytes(m.base, absOff, elemWidth, v);
+          }
+        }
+        if (isExclusiveStore) {
+          for (const dst of insn.writes) {
+            if (dst === m.base && insn.ops.some((x) => x.k === 'mem' && (x.mode === 'pre' || x.mode === 'post'))) continue;
+            set(dst, unknownValue(ev('exclusive-store-status', insn.row)));
           }
         }
       }

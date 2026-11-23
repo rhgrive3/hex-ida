@@ -83,13 +83,14 @@ function instructionFact(view, start, pc, op, w, image) {
   else if (op >= 0x32 && op <= 0x37) { reg(fmt & 15); reg((fmt >> 4) & 15); }
   else if (op >= 0x38 && op <= 0x3d) reg(fmt);
   else if (op >= 0x52 && op <= 0x5f) { const wide = op === 0x53 || op === 0x5a ? 2 : 1; reg(fmt & 15, wide); reg((fmt >> 4) & 15); }
+  else if (op >= 0x60 && op <= 0x6d) { reg(fmt, op === 0x61 || op === 0x68 ? 2 : 1); }
   else if (op >= 0x90 && op <= 0x9a) { const r = word(1); reg(fmt); reg(r & 255); reg(r >> 8); }
   else if (op >= 0xb0 && op <= 0xba) { reg(fmt & 15); reg((fmt >> 4) & 15); }
   else if (op >= 0xd8 && op <= 0xdf) { const r = word(1); reg(fmt); reg(r & 255); }
 
   if (op === 0x1a) reference = { kind: 'string', index: word(1) };
   else if (op === 0x1f || op === 0x20 || op === 0x22 || op === 0x23 || op === 0x24 || op === 0x25) reference = { kind: 'type', index: word(1) };
-  else if (op >= 0x52 && op <= 0x5f) reference = { kind: 'field', index: word(1) };
+  else if (op >= 0x52 && op <= 0x6d) reference = { kind: 'field', index: word(1) };
   else if (op >= 0x6e && op <= 0x72) reference = { kind: 'method', index: word(1) };
 
   if (op === 0x28) branch = (pc + (fmt >= 128 ? fmt - 256 : fmt)) * 2;

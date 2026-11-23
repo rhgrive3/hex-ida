@@ -262,15 +262,32 @@ export class AnalysisResumeStore {
     const prefix = `${SESSION_PREFIX}${String(binaryId)}:`;
     const tx = db.transaction(STORE, 'readwrite');
     const store = tx.objectStore(STORE);
+    const txPromise = txDone(tx);
     const request = store.openKeyCursor();
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) return;
-      if (String(cursor.primaryKey).startsWith(prefix)) cursor.delete();
-      cursor.continue();
-    };
-    request.onerror = () => { try { tx.abort(); } catch {} };
-    await txDone(tx);
+    const cursorDone = new Promise((resolve, reject) => {
+      request.onsuccess = () => {
+        try {
+          const cursor = request.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          const key = cursor.primaryKey !== undefined ? cursor.primaryKey : cursor.key;
+          if (key != null && String(key).startsWith(prefix)) {
+            store.delete(key);
+          }
+          cursor.continue();
+        } catch (error) {
+          try { tx.abort(); } catch {}
+          reject(error);
+        }
+      };
+      request.onerror = () => {
+        try { tx.abort(); } catch {}
+        reject(request.error || new Error('indexeddb-request-failed'));
+      };
+    });
+    await Promise.all([cursorDone, txPromise]);
     return true;
   }
 

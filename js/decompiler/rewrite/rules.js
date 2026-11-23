@@ -352,11 +352,13 @@ const selectRules = [{
     // the result bitvector. This keeps WZR and #0 equivalent after width-aware
     // operand reconstruction while retaining strict structural matching for
     // non-constant expressions.
-    const unwrapCast = (x) => x?.kind === 'cast' ? unwrapCast(x.arg) : x;
-    const sameArm = (a,b) => {
-      const ua = unwrapCast(a), ub = unwrapCast(b);
-      return sameExpr(a,b) || sameExpr(ua, ub) || (isConst(a) && isConst(b)
-        && BigInt.asUintN(Number(n.bits || q.left?.bits || 64), a.value) === BigInt.asUintN(Number(n.bits || q.left?.bits || 64), b.value));
+    const unwrapSameWidthCast = (x) => x?.kind === 'cast' && sameWidthDomain(x, x.arg) ? unwrapSameWidthCast(x.arg) : x;
+    const sameArm = (a, b) => {
+      const ua = unwrapSameWidthCast(a), ub = unwrapSameWidthCast(b);
+      if (sameExpr(a, b) && sameWidthDomain(n, a, b)) return true;
+      if (sameExpr(ua, ub) && sameWidthDomain(n, a, b, ua, ub)) return true;
+      return isConst(a) && isConst(b)
+        && BigInt.asUintN(Number(n.bits || q.left?.bits || 64), a.value) === BigInt.asUintN(Number(n.bits || q.left?.bits || 64), b.value);
     };
     const ta = sameArm(n.whenTrue, q.left), tb = sameArm(n.whenTrue, q.right);
     const fa = sameArm(n.whenFalse, q.left), fb = sameArm(n.whenFalse, q.right);
@@ -367,6 +369,11 @@ const selectRules = [{
     if ((q.op === 'lt' || q.op === 'le') && tb && fa) return { name: 'max' };
     return null;
   },
+  precondition: (n) => widthOf(n) != null
+    && (isConst(n.condition.left) || sameWidthDomain(n, n.condition.left))
+    && (isConst(n.condition.right) || sameWidthDomain(n, n.condition.right))
+    && (isConst(n.whenTrue) || sameWidthDomain(n, n.whenTrue))
+    && (isConst(n.whenFalse) || sameWidthDomain(n, n.whenFalse)),
   // The ordering semantics come from the compare that guards the select, not
   // from the result storage type. This matters at -O0 where Clang spills both
   // arms to stack slots whose recovered value type can remain unsigned/unknown.
@@ -381,16 +388,28 @@ const selectRules = [{
     const q = n.condition;
     if (q.compareSigned !== true) return null;
     if (!isConst(q.right, 0) || !isStable(q.left)) return null;
-    const unwrapCast = (x) => x?.kind === 'cast' ? unwrapCast(x.arg) : x;
+    if (!sameWidthDomain(n, q.left, n.whenTrue, n.whenFalse)) return null;
+    const unwrapSameWidthCast = (x) => x?.kind === 'cast' && sameWidthDomain(x, x.arg) ? unwrapSameWidthCast(x.arg) : x;
+    const uleft = unwrapSameWidthCast(q.left);
     const neg = (x) => {
-      const ux = unwrapCast(x);
-      return ux?.kind === 'unary' && ux.op === 'neg' && (sameExpr(ux.arg, q.left) || sameExpr(unwrapCast(ux.arg), unwrapCast(q.left)));
+      if (!sameWidthDomain(n, x)) return false;
+      const ux = unwrapSameWidthCast(x);
+      if (ux?.kind !== 'unary' || ux.op !== 'neg' || !sameWidthDomain(n, ux, ux.arg)) return false;
+      const uarg = unwrapSameWidthCast(ux.arg);
+      return (sameExpr(ux.arg, q.left) && sameWidthDomain(n, ux.arg, q.left))
+        || (sameExpr(uarg, uleft) && sameWidthDomain(n, ux.arg, uarg, q.left, uleft));
     };
-    const sameL = (x) => sameExpr(x, q.left) || sameExpr(unwrapCast(x), unwrapCast(q.left));
+    const sameL = (x) => {
+      if (!sameWidthDomain(n, x)) return false;
+      const ux = unwrapSameWidthCast(x);
+      return (sameExpr(x, q.left) && sameWidthDomain(n, x, q.left))
+        || (sameExpr(ux, uleft) && sameWidthDomain(n, x, ux, q.left, uleft));
+    };
     if ((q.op === 'lt' || q.op === 'le') && neg(n.whenTrue) && sameL(n.whenFalse)) return {};
     if ((q.op === 'ge' || q.op === 'gt') && sameL(n.whenTrue) && neg(n.whenFalse)) return {};
     return null;
   },
+  precondition: (n) => sameWidthDomain(n, n.condition.left, n.whenTrue, n.whenFalse),
   rewrite: (n) => expr.intrinsic('abs', [n.condition.left], n.bits, true, n.source),
   proof: (before) => ({ kind: 'select-comparison-equivalence', detail: 'two-arm signed absolute value',
     comparisonDomain: before.condition.comparisonDomain, bits: widthOf(before) ?? null }), cost,

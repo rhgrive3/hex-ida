@@ -560,7 +560,12 @@ function readForm(cursor, form, unit, sections, implicitConst, strings) {
     case DW_FORM.implicit_const: return { value: implicitConst };
     case DW_FORM.indirect: {
       const actual = Number(cursor.uleb());
-      return readForm(cursor, actual, unit, sections, null, strings);
+      // DWARF 5 §7.5.3: when DW_FORM_indirect resolves to DW_FORM_implicit_const,
+      // the implicit constant value is encoded as a SLEB128 immediately following
+      // the form code in .debug_info.
+      const resolvedImplicit = actual === DW_FORM.implicit_const ? cursor.sleb() : null;
+      const inner = readForm(cursor, actual, unit, sections, resolvedImplicit, strings);
+      return { ...inner, form: inner.form ?? actual };
     }
     default:
       // An unrecognised form has an unknown length, so the DIE stream cannot be
@@ -1094,14 +1099,15 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           // retained per-DIE state as a wide form, so they are charged too.
           attributeBudget.charge(1);
           const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst, strings);
+          const resolvedForm = read.form ?? spec.form;
           if (read.unsupported) {
             dieComplete = false;
-            diagnostics.push(`unsupported form 0x${spec.form.toString(16)} at 0x${dieOffset.toString(16)}`);
+            diagnostics.push(`unsupported form 0x${resolvedForm.toString(16)} at 0x${dieOffset.toString(16)}`);
             if (read.fatal) { unitComplete = false; break; }
           }
           // strx forms need the unit's str_offsets base, which may appear in this
           // very DIE, so they are resolved after the whole attribute list is read.
-          attributes.set(spec.attribute, { form: spec.form, value: read.value });
+          attributes.set(spec.attribute, { form: resolvedForm, value: read.value });
         }
       } catch (error) {
         if (pushBudgetDiagnostic(diagnostics, error)) {

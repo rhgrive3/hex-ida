@@ -170,15 +170,14 @@ function signedBounds(widthBits) {
 export function addRange(range, delta, widthBits) {
   const d = big(delta);
   if (d == null) return { range: UNBOUNDED_RANGE, lost: 'non-linear-arithmetic' };
-  if (rangeIsUnbounded(range)) {
-    const min = range.min == null ? null : range.min + d;
-    const max = range.max == null ? null : range.max + d;
-    return { range: createOffsetRange(min, max), lost: null };
-  }
-  const min = range.min + d;
-  const max = range.max + d;
   const bounds = signedBounds(widthBits);
-  if (!bounds || min < bounds.min || max > bounds.max) {
+  if (!bounds) {
+    return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
+  }
+  const min = range.min == null ? null : range.min + d;
+  const max = range.max == null ? null : range.max + d;
+  if ((min != null && (min < bounds.min || min > bounds.max))
+      || (max != null && (max < bounds.min || max > bounds.max))) {
     return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
   }
   return { range: createOffsetRange(min, max), lost: null };
@@ -480,7 +479,7 @@ function canonicalProofForTarget(target) {
   return targetMatchesCanonicalProof(target, proof) ? proof : null;
 }
 
-function mergeSameRootTargets(prior, target) {
+function mergeSameRootTargets(prior, target, offsetRange = joinRange(prior.offsetRange, target.offsetRange)) {
   const priorProof = canonicalProofForTarget(prior);
   const targetProof = canonicalProofForTarget(target);
   // A genuine root-descriptor proof is evidence about the shared storage, so a
@@ -490,15 +489,22 @@ function mergeSameRootTargets(prior, target) {
   const proof = priorProof && targetProof
     ? (priorProof.separationClass === targetProof.separationClass ? priorProof : null)
     : (priorProof ?? targetProof);
+  const priorStorage = prior.canonicalRootStorageClass ?? null;
+  const targetStorage = target.canonicalRootStorageClass ?? null;
+  const canonicalRootStorageClass = priorStorage && targetStorage
+    ? (priorStorage === targetStorage ? priorStorage : null)
+    : (priorStorage ?? targetStorage);
   const merged = {
     ...prior,
     separationClass: proof?.separationClass
       ?? (prior.separationClass === target.separationClass ? prior.separationClass : null),
     separationAuthority: proof ? 'root-descriptor' : null,
-    offsetRange: joinRange(prior.offsetRange, target.offsetRange),
+    offsetRange,
     widthBits: prior.widthBits === target.widthBits ? prior.widthBits : null,
     evidenceIds: [...prior.evidenceIds, ...target.evidenceIds],
   };
+  if (canonicalRootStorageClass != null) merged.canonicalRootStorageClass = canonicalRootStorageClass;
+  else delete merged.canonicalRootStorageClass;
   if (proof) merged[ROOT_DESCRIPTOR_PROOF] = proof;
   else delete merged[ROOT_DESCRIPTOR_PROOF];
   return createPointsToTarget(merged);
@@ -532,10 +538,13 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
       seenRoots.add(left.rootKey);
       const leftProof = canonicalProofForTarget(left);
       const rightProof = canonicalProofForTarget(right);
+      const leftStorage = left.canonicalRootStorageClass ?? null;
+      const rightStorage = right.canonicalRootStorageClass ?? null;
       if ((leftProof == null) !== (rightProof == null)
         || (leftProof != null && leftProof.separationClass !== rightProof.separationClass)
         || (leftProof == null && (left.separationClass !== right.separationClass
-          || left.separationAuthority !== right.separationAuthority))) {
+          || left.separationAuthority !== right.separationAuthority))
+        || leftStorage !== rightStorage) {
         reusable = false;
         break;
       }
@@ -584,7 +593,7 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
     if (widenedRange.min !== target.offsetRange.min || widenedRange.max !== target.offsetRange.max) {
       anyWidened = true;
     }
-    return createPointsToTarget({ ...target, offsetRange: widenedRange });
+    return mergeSameRootTargets(prior, target, widenedRange);
   });
   if (rootsOnlyInPrevious.length) anyWidened = true;
   const merged = [...targets, ...rootsOnlyInPrevious];

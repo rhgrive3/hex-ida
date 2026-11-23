@@ -295,7 +295,7 @@ function validateStructuralDescriptorValue(value, seen = new WeakSet()) {
   if (value.kind === 'array') {
     const stride = toBigInt(value.strideBytes, null);
     const length = toBigInt(value.length, null);
-    const elementSize = toBigInt(value.elementType?.sizeBytes, null);
+    const elementSize = toBigInt(value.elementType?.sizeBytes ?? value.elementType?.totalSizeBytes, null);
     if (stride != null && elementSize != null && stride < elementSize) fail('structural-array-stride-conflict');
     const size = toBigInt(value.totalSizeBytes ?? value.sizeBytes, null);
     if (size != null && stride != null && length != null && size !== stride * length) {
@@ -641,15 +641,14 @@ function aggregateMembersConflict(aMembers, bMembers) {
     }
 
     if (aEntry.canonical !== bEntry.canonical) {
-      if (aEntry.start === bEntry.start) {
-        if (aEntry.size !== bEntry.size) return true;
-        if (aEntry.member.alignBytes != null && bEntry.member.alignBytes != null
-          && numericValuesDiffer(aEntry.member.alignBytes, bEntry.member.alignBytes)) return true;
-        // Same-slot members are merged recursively by graph.js. Make the
-        // contradiction detector reject exactly the overlapping fact keys
-        // that merger cannot reconcile, while still allowing one-sided facts.
-        if (memberFactsConflict(aEntry.member, bEntry.member)) return true;
-      }
+      if (aEntry.start !== bEntry.start) return true;
+      if (aEntry.size !== bEntry.size) return true;
+      if (aEntry.member.alignBytes != null && bEntry.member.alignBytes != null
+        && numericValuesDiffer(aEntry.member.alignBytes, bEntry.member.alignBytes)) return true;
+      // Same-slot members are merged recursively by graph.js. Make the
+      // contradiction detector reject exactly the overlapping fact keys
+      // that merger cannot reconcile, while still allowing one-sided facts.
+      if (memberFactsConflict(aEntry.member, bEntry.member)) return true;
 
       if (aEntry.member.memberType == null || bEntry.member.memberType == null) return true;
       if (memberTypesConflict(aEntry.member.memberType, bEntry.member.memberType)) return true;
@@ -703,6 +702,16 @@ export function claimsConflict(left, right) {
       return true;
     }
 
+    const SIZE_CONFLICT = Symbol('structural-size-conflict');
+    const normalizedTotalSize = (descriptor) => {
+      const hasSize = descriptor.sizeBytes != null;
+      const hasTotal = descriptor.totalSizeBytes != null;
+      if (hasSize && hasTotal && numericValuesDiffer(descriptor.sizeBytes, descriptor.totalSizeBytes)) {
+        return SIZE_CONFLICT;
+      }
+      return hasTotal ? descriptor.totalSizeBytes : (hasSize ? descriptor.sizeBytes : null);
+    };
+
     // Top-level array claims are complete structural candidates, not field
     // fragments. Keep their identity intact and compare the array contract
     // directly before the aggregate interval rules below.
@@ -710,16 +719,44 @@ export function claimsConflict(left, right) {
       if (aKind !== bKind) return true;
       if (a.strideBytes != null && b.strideBytes != null && numericValuesDiffer(a.strideBytes, b.strideBytes)) return true;
       if (a.length != null && b.length != null && numericValuesDiffer(a.length, b.length)) return true;
-      if (a.sizeBytes != null && b.sizeBytes != null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+      const aArraySize = normalizedTotalSize(a);
+      const bArraySize = normalizedTotalSize(b);
+      if (aArraySize === SIZE_CONFLICT || bArraySize === SIZE_CONFLICT) return true;
+      if (aArraySize != null && bArraySize != null && numericValuesDiffer(aArraySize, bArraySize)) return true;
+      const aStride = a.strideBytes != null ? toBigInt(a.strideBytes, null) : null;
+      const bStride = b.strideBytes != null ? toBigInt(b.strideBytes, null) : null;
+      const aLength = a.length != null ? toBigInt(a.length, null) : null;
+      const bLength = b.length != null ? toBigInt(b.length, null) : null;
+      const stride = aStride ?? bStride;
+      const length = aLength ?? bLength;
+      const arraySizeRaw = aArraySize ?? bArraySize;
+      if (stride != null && length != null && arraySizeRaw != null) {
+        const arraySize = toBigInt(arraySizeRaw, null);
+        if (arraySize != null && stride * length !== arraySize) return true;
+      }
+      const aElementSize = a.elementType != null && typeof a.elementType === 'object' ? normalizedTotalSize(a.elementType) : null;
+      const bElementSize = b.elementType != null && typeof b.elementType === 'object' ? normalizedTotalSize(b.elementType) : null;
+      if (aElementSize === SIZE_CONFLICT || bElementSize === SIZE_CONFLICT) return true;
+      if (aElementSize != null && bElementSize != null && numericValuesDiffer(aElementSize, bElementSize)) return true;
+      const elementSizeRaw = aElementSize ?? bElementSize;
+      if (stride != null && elementSizeRaw != null) {
+        const elementSize = toBigInt(elementSizeRaw, null);
+        if (elementSize != null && stride < elementSize) return true;
+      }
       if (a.alignBytes != null && b.alignBytes != null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
       if (a.elementEntityId != null && b.elementEntityId != null && a.elementEntityId !== b.elementEntityId) return true;
       if (a.elementType != null && b.elementType != null && memberTypesConflict(a.elementType, b.elementType)) return true;
       return false;
     }
 
-    // Check total size or alignment mismatch
-    if (a.sizeBytes != null && b.sizeBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
-    if (a.alignBytes != null && b.alignBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+    // Check total size or alignment mismatch (normalizing both sizeBytes and totalSizeBytes)
+    if (a.offset == null && b.offset == null) {
+      const aTotalSize = normalizedTotalSize(a);
+      const bTotalSize = normalizedTotalSize(b);
+      if (aTotalSize === SIZE_CONFLICT || bTotalSize === SIZE_CONFLICT) return true;
+      if (aTotalSize != null && bTotalSize != null && numericValuesDiffer(aTotalSize, bTotalSize)) return true;
+      if (a.alignBytes != null && b.alignBytes != null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+    }
 
     // A member extent must fit inside a co-claimed whole-aggregate size (#5819):
     // hard aggregate size N + hard field [offset, offset+size) with
@@ -727,19 +764,33 @@ export function claimsConflict(left, right) {
     // Only an explicitly typed aggregate can supply a whole-object bound.
     // Offset-less structural-field metadata is member evidence, not a bound.
     const isExplicitAggregateDescriptor = (descriptor) => (
-      descriptor.kind === 'struct'
+      (descriptor.kind === 'struct' || descriptor.kind === 'union')
       && descriptor.offset == null
       && descriptor.fieldName == null
       && descriptor.memberType == null
     );
+    const memberExceedsTotal = (member, total, isUnion = false) => {
+      if (member == null || typeof member !== 'object') return false;
+      const start = member.offset == null ? (isUnion ? 0n : null) : toBigInt(member.offset, null);
+      if (start == null) return false;
+      const memberSizeRaw = member.sizeBytes ?? member.totalSizeBytes;
+      if (memberSizeRaw == null) return start > total;
+      const size = toBigInt(memberSizeRaw, null);
+      if (size == null) return false;
+      return start + size > total;
+    };
     const extentBeyondAggregate = (aggregate, field) => {
       if (!isExplicitAggregateDescriptor(aggregate)) return false;
-      if (field.offset == null || field.sizeBytes == null) return false;
-      const start = toBigInt(field.offset, null);
-      const size = toBigInt(field.sizeBytes, null);
-      const total = toBigInt(aggregate.sizeBytes, null);
-      if (start == null || size == null || total == null) return false;
-      return start + size > total;
+      const totalRaw = normalizedTotalSize(aggregate);
+      if (totalRaw === SIZE_CONFLICT) return true;
+      if (totalRaw == null) return false;
+      const total = toBigInt(totalRaw, null);
+      if (total == null) return false;
+      if (Array.isArray(field.members)) {
+        const isUnion = aggregate.kind === 'union' || field.kind === 'union';
+        return field.members.some((member) => memberExceedsTotal(member, total, isUnion));
+      }
+      return memberExceedsTotal(field, total);
     };
     if (extentBeyondAggregate(a, b) || extentBeyondAggregate(b, a)) return true;
 
@@ -767,6 +818,14 @@ export function claimsConflict(left, right) {
     }
     if (a.members != null && b.members != null) {
       return aggregateMembersConflict(a.members, b.members);
+    }
+    if (a.members != null && b.offset != null) {
+      if (Array.isArray(a.members) && a.members.length === 0) return false;
+      return aggregateMembersConflict(a.members, [b]);
+    }
+    if (b.members != null && a.offset != null) {
+      if (Array.isArray(b.members) && b.members.length === 0) return false;
+      return aggregateMembersConflict([a], b.members);
     }
     if (a.offset != null && b.offset != null && !numericValuesDiffer(a.offset, b.offset)) {
       return canonicalDescriptorString('structural', a) !== canonicalDescriptorString('structural', b);

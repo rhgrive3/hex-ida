@@ -51,10 +51,16 @@ export async function verifyConditionalEdgeFeasibility({
     });
   }
 
+  const ownsSession = !session && Boolean(backend);
   const activeSession = session || (backend ? backend.createSession(options) : null);
   if (!activeSession || typeof activeSession.check !== 'function') {
+    if (ownsSession) {
+      try { await activeSession?.dispose?.(); } catch { /* best effort */ }
+    }
     throw new TypeError('verifyConditionalEdgeFeasibility: a valid backend or session is required');
   }
+
+  try {
 
   // Keep the translator's bit-width normalization authoritative for every IR
   // translation in this verification. This prevents coercible structured values
@@ -173,12 +179,32 @@ export async function verifyConditionalEdgeFeasibility({
   const solverResult = await activeSession.check(query, options);
 
   const lifecycle = solverResult?.lifecycle || {};
-  if (lifecycle.publishable === false || lifecycle.timedOut || lifecycle.cancelled || lifecycle.stale || lifecycle.disposed) {
+  const isTimedOut = lifecycle.timedOut === true || solverResult.status === SOLVER_STATUS.TIMEOUT;
+  const isCancelled = lifecycle.cancelled === true || solverResult.status === SOLVER_STATUS.CANCELLED;
+  const isStale = lifecycle.stale === true;
+  const isDisposed = lifecycle.disposed === true;
+  if (isTimedOut || isCancelled || isStale || isDisposed) {
     return Object.freeze({
       verdict: VERDICT.UNKNOWN,
       claimKind,
-      reasonCode: lifecycle.timedOut ? 'timeout' : lifecycle.stale ? 'stale-result' : lifecycle.disposed ? 'disposed-session' : 'cancelled',
+      reasonCode: isTimedOut ? 'timeout' : isStale ? 'stale-result' : isDisposed ? 'disposed-session' : 'cancelled',
       proofStatement: 'Solver result was invalidated by timeout, cancellation, disposal, or stale query replacement',
+      solverStatus: solverResult.status,
+      preconditionStatus: 'unknown',
+      assumptions: Object.freeze(translationRes.assumptions || []),
+      completeness: translationRes.completeness,
+      queryHash: query.queryHash,
+      query,
+      solverResult,
+      evidence: null,
+    });
+  }
+  if (lifecycle.publishable === false && (solverResult.status === SOLVER_STATUS.SAT || solverResult.status === SOLVER_STATUS.UNSAT)) {
+    return Object.freeze({
+      verdict: VERDICT.UNKNOWN,
+      claimKind,
+      reasonCode: lifecycle.budgetExceeded ? 'budget-exceeded' : lifecycle.late ? 'late-result' : 'unpublishable-result',
+      proofStatement: 'Solver result was marked non-publishable and cannot be promoted',
       solverStatus: solverResult.status,
       preconditionStatus: 'unknown',
       assumptions: Object.freeze(translationRes.assumptions || []),
@@ -360,4 +386,9 @@ export async function verifyConditionalEdgeFeasibility({
     query,
     solverResult,
   });
+  } finally {
+    if (ownsSession) {
+      try { await activeSession.dispose?.(); } catch { /* best effort */ }
+    }
+  }
 }

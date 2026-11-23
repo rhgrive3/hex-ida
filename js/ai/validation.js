@@ -45,6 +45,7 @@ function visit(value, schema, path, errors) {
     if (schema.pattern && !(new RegExp(schema.pattern).test(value))) errors.push(`${path} has an invalid format`);
   }
   if (Array.isArray(value)) {
+    if (schema.minItems != null && value.length < schema.minItems) errors.push(`${path} has too few items`);
     if (schema.maxItems != null && value.length > schema.maxItems) errors.push(`${path} has too many items`);
     if (schema.items) value.forEach((item, index) => visit(item, schema.items, `${path}[${index}]`, errors));
   } else if (value && typeof value === 'object') {

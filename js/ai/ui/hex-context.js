@@ -73,7 +73,7 @@ export function createHexAIContext(app) {
   if (context?.analysisAuthority !== QUERY_AUTHORITY || !app?.analysisQueries) return context;
 
   const scopedMethods = new Set(['taskIdiomView', 'inspectConditionalModel', 'checkLoopInvariant', 'asyncEventOrder', 'portableIntegerChecks', 'blockCaptures', 'investigationFrontier', 'typeEvidence', 'interproceduralQuery', 'abiInputBindings', 'abiPlacementEvidence', 'explainTransformChain', 'runtimeObservations', 'scopedCapabilities', 'semanticQuery', 'resumeSemanticQuery', 'dispatchTargets',
-    'applePointerView', 'knowledgeMatches', 'objectMemory', 'rangeValueCatalog', 'callGraphSlice', 'resumeCallGraphSlice', 'referenceSlice', 'replayReferenceSlice', 'refineValueFacts', 'summarySlice', 'resumeSummarySlice', 'proofSlice', 'replayProof', 'cancelScopedQuery']);
+    'applePointerView', 'knowledgeMatches', 'objectMemory', 'rangeValueCatalog', 'callGraphSlice', 'resumeCallGraphSlice', 'referenceSlice', 'replayReferenceSlice', 'refineValueFacts', 'summarySlice', 'resumeSummarySlice', 'proofSlice', 'replayProof', 'cancelScopedQuery', 'demandInvestigationFrontier', 'investigateDemand', 'demandQuery', 'resumeDemandQuery', 'explainDemandResult', 'replayDemandResult']);
   define(context, 'runScopedAnalysis', async (method, request, options = {}) => {
     if (!scopedMethods.has(method)) throw new TypeError('scoped-ai-method-not-allowed');
     abortIfNeeded(options.signal);

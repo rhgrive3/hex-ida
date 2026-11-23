@@ -684,10 +684,23 @@ export function demangleRustLegacy(symbol, budgetOverrides, budgetCeilings = nul
   const original = String(symbol || '');
   const s = stripLegacyRustPrefix(original);
   if (s == null) {
-    return { original, demangled: original, parsed: false, reason: 'not-legacy-rust-symbol' };
+    return {
+      original,
+      demangled: original,
+      parsed: false,
+      reason: 'not-legacy-rust-symbol',
+      stats: { ops: 0, outputChars: 0, scalars: 0, encodedBytes: 0, spliceWork: 0 },
+    };
   }
 
   const budget = createDemangleBudget(budgetOverrides, budgetCeilings);
+  const stats = () => ({
+    ops: budget.ops,
+    outputChars: budget.outputChars,
+    scalars: budget.scalars,
+    encodedBytes: budget.encodedBytes,
+    spliceWork: budget.spliceWork,
+  });
   const maxComponents = positiveBudget(budgetOverrides?.maxComponents, RUST_LEGACY_DEFAULT_MAX_COMPONENTS);
   const components = [];
   let i = 2;
@@ -703,7 +716,7 @@ export function demangleRustLegacy(symbol, budgetOverrides, budgetCeilings = nul
     }
     if (budget.ops >= budget.maxOps || components.length >= maxComponents) {
       budget.exceeded = true;
-      return { original, demangled: original, parsed: false, reason: 'legacy-resource-budget-exceeded', resourceLimited: true };
+      return { original, demangled: original, parsed: false, reason: 'legacy-resource-budget-exceeded', resourceLimited: true, stats: stats() };
     }
     budget.ops++;
     const digitStart = i;
@@ -731,7 +744,7 @@ export function demangleRustLegacy(symbol, budgetOverrides, budgetCeilings = nul
       const sepLen = components.length > 0 ? 2 : 0;
       if (part.length + sepLen > budget.maxOutputChars - outputChars) {
         budget.exceeded = true;
-        return { original, demangled: original, parsed: false, reason: 'legacy-resource-budget-exceeded', resourceLimited: true };
+        return { original, demangled: original, parsed: false, reason: 'legacy-resource-budget-exceeded', resourceLimited: true, stats: stats() };
       }
       // Decode $ characters
       const clean = part.includes('$')
@@ -754,10 +767,10 @@ export function demangleRustLegacy(symbol, budgetOverrides, budgetCeilings = nul
   }
 
   if (!terminated || components.length === 0) {
-    return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
+    return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure', stats: stats() };
   }
   if (i !== s.length) {
-    return { original, demangled: original, parsed: false, reason: 'unconsumed-legacy-trailing-bytes' };
+    return { original, demangled: original, parsed: false, reason: 'unconsumed-legacy-trailing-bytes', stats: stats() };
   }
 
   const demangled = components.join('::');
@@ -769,6 +782,7 @@ export function demangleRustLegacy(symbol, budgetOverrides, budgetCeilings = nul
     hash,
     crate: components[0] || null,
     generation: 'legacy',
+    stats: stats(),
   };
 }
 
@@ -786,6 +800,13 @@ export function demangleRustSymbol(symbol, budgetOverrides, budgetCeilings = nul
   if (stripLegacyRustPrefix(text) != null) {
     const leg = demangleRustLegacy(text, budgetOverrides, budgetCeilings);
     if (leg.parsed || leg.resourceLimited) return leg;
+    return {
+      original: text,
+      demangled: text,
+      parsed: false,
+      reason: 'not-rust-symbol',
+      ...(leg.stats ? { stats: leg.stats } : {}),
+    };
   }
   return { original: text, demangled: text, parsed: false, reason: 'not-rust-symbol' };
 }

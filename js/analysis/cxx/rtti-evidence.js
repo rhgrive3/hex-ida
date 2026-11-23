@@ -618,7 +618,10 @@ export function createCxxEvidenceCache({ maxEntries = 4 } = {}) {
       const key = String(cacheKey);
       const cached = entries.get(key);
       if (cached) return cached;
-      const pending = buildCxxClassEvidence(input);
+      const pending = buildCxxClassEvidence(input).catch((err) => {
+        if (entries.get(key) === pending) entries.delete(key);
+        throw err;
+      });
       entries.set(key, pending);
       while (entries.size > limit) entries.delete(entries.keys().next().value);
       return pending;
