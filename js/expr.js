@@ -298,6 +298,8 @@ export function un(op, a) {
       case 'uxt8': return constNode(c & 0xffn);
       case 'uxt16': return constNode(c & 0xffffn);
       case 'uxt32': return constNode(c & 0xffffffffn);
+      case 'sxt64': return constNode(wrap(c, 64));
+      case 'uxt64': return constNode(c & MASK[64]);
       default: break;
     }
   }
@@ -538,8 +540,16 @@ export function buildValues(model, opts) {
       stack.clear();
       flags = null;               // どの道を通って来たか分からない ＝ 比較の結果も分からない
       const keepSp = spStable ? regs.get('sp') : null;
-      if (join.all) regs.clear();
-      else for (const k of Array.from(regs.keys())) if (join.killed.has(k)) regs.delete(k);
+      if (join.all) {
+        regs.clear();
+        if (join.loopWritten) {
+          for (let a = 0; a <= 7; a++) {
+            if (join.loopWritten.has('x' + a)) everWritten.add('x' + a);
+          }
+        }
+      } else {
+        for (const k of Array.from(regs.keys())) if (join.killed.has(k)) regs.delete(k);
+      }
       if (keepSp) regs.set('sp', keepSp);
     }
 
@@ -638,7 +648,8 @@ export function buildValues(model, opts) {
       const t = insn.pcRelTarget;
       const dst = insn.writes[0];
       if (dst && t != null) {
-        emit(dst, node('addr', { addr: t, partial: base === 'adrp' }));
+        const txt = base === 'adr' ? textOf.get(row) : null;
+        emit(dst, txt ? node('str', { addr: t, text: txt.text }) : node('addr', { addr: t, partial: base === 'adrp' }));
       } else if (dst) regs.delete(dst);
       defs.set(row, made);
       continue;
@@ -666,7 +677,7 @@ export function buildValues(model, opts) {
           const step = pair ? BigInt(k * elemSize) : 0n;
           const effectiveDisp = (m.disp ?? 0n) + step;
           let v = null;
-          if (txt && k === 0) v = node('str', { addr: txt.addr, text: txt.text });
+          if (txt && k === 0 && dop.cls !== 'fp' && dop.cls !== 'vec') v = node('str', { addr: txt.addr, text: txt.text });
           else if (slot) {
             v = stackRead(m, effectiveDisp, elemSize);
           }
@@ -743,6 +754,7 @@ export function buildValues(model, opts) {
     const A = () => valueOf(insn.ops[1], row, bits);
     const B = () => valueOf(insn.ops[2], row, bits);
     /* 末尾に s の付く演算（subs / adds / ands / adcs / sbcs …）もフラグを立てる。 */
+    const prevFlags = flags;
     const knownFlagWriter = /^(subs|adds|ands|bics|negs|adcs|sbcs|ngcs|cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn)$/.test(base);
     const unsupportedFlagWriter = /^(rmif|setf8|setf16)$/.test(base);
     if (unsupportedFlagWriter) flags = null;
@@ -755,7 +767,8 @@ export function buildValues(model, opts) {
 
     if (base === 'mov' || base === 'fmov' || base === 'movz') {
       const txt = textOf.get(row);
-      emit(dst, txt ? node('str', { addr: txt.addr, text: txt.text }) : valueOf(insn.ops[1], row, bits));
+      const isFpOrVecDst = dstOp && (dstOp.cls === 'fp' || dstOp.cls === 'vec');
+      emit(dst, (txt && !isFpOrVecDst) ? node('str', { addr: txt.addr, text: txt.text }) : valueOf(insn.ops[1], row, bits));
     } else if (base === 'movn') {
       emit(dst, un('not', valueOf(insn.ops[1], row, bits)));
     } else if (base === 'movk') {
@@ -781,6 +794,29 @@ export function buildValues(model, opts) {
         emit(dst, txt ? node('str', { addr: full, text: txt.text })
           : node('addr', { addr: full, partial: false, sym: o.symbolFor ? o.symbolFor(full) : null }));
       } else emit(dst, bin('add', A(), B(), bits));
+    } else if (base === 'sbc' || base === 'sbcs' || base === 'adc' || base === 'adcs') {
+      const isSub = base === 'sbc' || base === 'sbcs';
+      const op = isSub ? 'sub' : 'add';
+      const a = A(), b = B();
+      let expr = null;
+      if (prevFlags && prevFlags.a && prevFlags.b) {
+        const cc = isSub ? 'lo' : 'hs';
+        const known = conditionFromNzcv(nzcvForConstants(prevFlags), cc);
+        if (known != null) {
+          expr = bin(op, bin(op, a, b, bits), known ? constNode(1n) : ZERO, bits);
+        } else {
+          const cmp = compareCompatible(prevFlags);
+          if (cmp) {
+            const carryTerm = node('sel', { cc, cmp, predicate: null, a: constNode(1n), b: ZERO });
+            expr = bin(op, bin(op, a, b, bits), carryTerm, bits);
+          } else if (prevFlags.op === 'adds' || prevFlags.op === 'cmn') {
+            const sum = bin('add', prevFlags.a, prevFlags.b, prevFlags.bits);
+            const carryTerm = node('sel', { cc: isSub ? 'hs' : 'lo', cmp: { a: sum, b: prevFlags.a }, predicate: null, a: constNode(1n), b: ZERO });
+            expr = bin(op, bin(op, a, b, bits), carryTerm, bits);
+          }
+        }
+      }
+      emit(dst, expr || bin(op, a, b, bits));
     } else if (BIN_MN[base]) {
       const variableShift = /^(lslv|lsrv|asrv|rorv)$/.test(base);
       const rhs = variableShift ? bin('and', B(), constNode(BigInt(bits - 1)), bits) : B();
@@ -809,15 +845,18 @@ export function buildValues(model, opts) {
       emit(dst, un('neg', bin('mul', A(), B(), bits)));
     } else if (base === 'smull' || base === 'umull') {
       const ext = base === 'smull' ? 'sxt32' : 'uxt32';
-      emit(dst, bin('mul', un(ext, valueOf(insn.ops[1], row, 32)), un(ext, valueOf(insn.ops[2], row, 32)), 64));
+      const wide = base === 'smull' ? 'sxt64' : 'uxt64';
+      emit(dst, bin('mul', un(wide, un(ext, valueOf(insn.ops[1], row, 32))), un(wide, un(ext, valueOf(insn.ops[2], row, 32))), 64));
     } else if (base === 'smaddl' || base === 'umaddl') {
       const ext = base === 'smaddl' ? 'sxt32' : 'uxt32';
+      const wide = base === 'smaddl' ? 'sxt64' : 'uxt64';
       emit(dst, bin('add', valueOf(insn.ops[3], row, 64),
-        bin('mul', un(ext, valueOf(insn.ops[1], row, 32)), un(ext, valueOf(insn.ops[2], row, 32)), 64), 64));
+        bin('mul', un(wide, un(ext, valueOf(insn.ops[1], row, 32))), un(wide, un(ext, valueOf(insn.ops[2], row, 32))), 64), 64));
     } else if (base === 'smsubl' || base === 'umsubl') {
       const ext = base === 'smsubl' ? 'sxt32' : 'uxt32';
+      const wide = base === 'smsubl' ? 'sxt64' : 'uxt64';
       emit(dst, bin('sub', valueOf(insn.ops[3], row, 64),
-        bin('mul', un(ext, valueOf(insn.ops[1], row, 32)), un(ext, valueOf(insn.ops[2], row, 32)), 64), 64));
+        bin('mul', un(wide, un(ext, valueOf(insn.ops[1], row, 32))), un(wide, un(ext, valueOf(insn.ops[2], row, 32))), 64), 64));
     } else if (base === 'smulh' || base === 'umulh') {
       // 積の上位 64 ビット。単体では意味を持たないので、印を付けて持ち回る。
       emit(dst, node('bin', { op: base === 'smulh' ? 'smulh' : 'umulh', a: A(), b: B() }));
@@ -943,12 +982,21 @@ function joinInfo(model, insns) {
     const from = sources.get(row) || [];
     if (!from.length || hasIndirect) { out.set(row, { all: true }); continue; }
     let lo = row;
+    let hi = row;
     let backwards = false;
     for (const s of from) {
-      if (s >= row) { backwards = true; break; }
+      if (s >= row) { backwards = true; hi = Math.max(hi, s); }
       lo = Math.min(lo, s);
     }
-    if (backwards) { out.set(row, { all: true }); continue; }
+    if (backwards) {
+      const loopWritten = new Set();
+      const a = rowOf.get(row), b = rowOf.get(hi);
+      if (a != null && b != null) {
+        for (let i = a; i <= b; i++) for (const k of kills[i]) loopWritten.add(k);
+      }
+      out.set(row, { all: true, loopWritten });
+      continue;
+    }
     const a = rowOf.get(lo), b = rowOf.get(row);
     if (a == null || b == null || b - a > 400) { out.set(row, { all: true }); continue; }
     const killed = new Set();
@@ -1350,11 +1398,11 @@ function magicHigh(n) {
 const PREC = {
   min: 14, max: 14, umin: 14, umax: 14,
   or: 4, xor: 5, and: 6, shl: 8, shr: 8, sar: 8, ror: 8,
-  add: 9, sub: 9, fadd: 9, fsub: 9, mul: 10, fmul: 10, fdiv: 10, sdiv: 10, udiv: 10, smod: 10, umod: 10, srem: 10, urem: 10,
+  add: 9, sub: 9, adc: 9, sbc: 9, fadd: 9, fsub: 9, mul: 10, fmul: 10, fdiv: 10, sdiv: 10, udiv: 10, smod: 10, umod: 10, srem: 10, urem: 10,
   smulh: 10, umulh: 10,
 };
 const SYM = {
-  add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', fdiv: '/', sdiv: '/', udiv: '/', smod: '%', umod: '%', srem: '%', urem: '%',
+  add: '+', sub: '-', adc: '+', sbc: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', fdiv: '/', sdiv: '/', udiv: '/', smod: '%', umod: '%', srem: '%', urem: '%',
   and: '&', or: '|', xor: '^', shl: '<<', shr: '>>', sar: '>>',
 };
 
@@ -1432,6 +1480,8 @@ function emitUn(n, prec, o, depth) {
     case 'uxt8': return '(uint8)' + inner;
     case 'uxt16': return '(uint16)' + inner;
     case 'uxt32': return '(uint32)' + inner;
+    case 'sxt64': return '(int64)' + inner;
+    case 'uxt64': return '(uint64)' + inner;
     default: void prec; return n.op + '(' + inner + ')';
   }
 }

@@ -237,7 +237,14 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
         const type = n.op === 'sext' ? exactSignedType(n.bits) : exactUnsignedType(n.bits);
         return wrap(`(${type})${printExpression(n.arg, PREC.unary, opts)}`, PREC.unary, parentPrec);
       }
-      return `${n.op}(${printExpression(n.arg, 0, opts)})`;
+      const arg = printExpression(n.arg, 0, opts);
+      const is32 = Number(n.bits) === 32;
+      if (n.op === 'fcvtzs' || n.op === 'f2i') return `((${is32 ? 'int32_t' : 'int64_t'})(double)(${arg}))`;
+      if (n.op === 'fcvtzu' || n.op === 'f2u') return `((${is32 ? 'uint32_t' : 'uint64_t'})(double)(${arg}))`;
+      if (n.op === 'scvtf' || n.op === 'i2f') return `((${is32 ? 'float' : 'double'})(int64_t)(${arg}))`;
+      if (n.op === 'ucvtf' || n.op === 'u2f') return `((${is32 ? 'float' : 'double'})(uint64_t)(${arg}))`;
+      if (n.op === 'fcvt') return `((${is32 ? 'float' : 'double'})(${arg}))`;
+      return `${n.op}(${arg})`;
     }
     case 'compare': {
       const p = PREC[n.op] || 8;

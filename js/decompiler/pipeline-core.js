@@ -324,6 +324,199 @@ function safeIdent(s, fallback = 'value') {
   return x || fallback;
 }
 function constNode(v, value = v?.const ?? 0n) { return expr.constant(value, v?.bits || 64, v?.signed ?? null, origin(v?.def, v)); }
+const PRIMITIVE_POINTER_RE = /^(?:const\s+)?(?:void|char|signed\s+char|unsigned\s+char|short|unsigned\s+short|int|unsigned\s+int|long|unsigned\s+long|long\s+long|unsigned\s+long\s+long|float|double|bool|_Bool|size_t|ssize_t|ptrdiff_t|intptr_t|uintptr_t|u?int(?:8|16|32|64|128)(?:_t)?)\s*\*+$/i;
+
+function isKnownStructPointerType(baseType) {
+  if (!baseType || typeof baseType !== 'object') return false;
+  if (baseType.kind === 'struct' || baseType.pointee?.kind === 'struct') return true;
+  if (baseType.className || baseType.semanticType?.className || baseType.pointee?.className) return true;
+  if (baseType.kind === 'pointer') {
+    const label = String(baseType.cType || baseType.name || '').trim();
+    if (label && /\*$/.test(label) && !PRIMITIVE_POINTER_RE.test(label)) return true;
+  }
+  return false;
+}
+
+function cStringLiteral(text) {
+  return JSON.stringify(text).replace(/\\\\([nrt])/g, '\\$1');
+}
+
+function isProvablyReadOnlyDataSection(sec) {
+  if (!sec || typeof sec !== 'object') return false;
+  if (sec.exec === true || sec.executable === true || sec.writable === true || sec.write === true
+      || sec.zerofill === true || sec.nobits === true) return false;
+  const permRaw = sec.perm ?? sec.perms ?? sec.prot;
+  if (typeof permRaw === 'string') {
+    const perm = permRaw.trim().toLowerCase();
+    if (/[wx]/.test(perm) || !/r/.test(perm)) return false;
+  }
+  const shFlags = sec.shFlags ?? sec.sh_flags;
+  if (typeof shFlags === 'number' || typeof shFlags === 'bigint') {
+    const f = BigInt(shFlags);
+    if ((f & 1n) !== 0n || (f & 4n) !== 0n) return false;
+  }
+  const name = String(sec.name ?? sec.section ?? sec.sectname ?? '').trim();
+  if (/^(?:\.[st]?bss(?:\.|$)|__bss$|__common$|\.[st]?data(?:\.|$)|__data$|\.text(?:\.|$)|__text$|\.plt(?:\.|$)|\.got(?:\.|$))/i.test(name)) {
+    return false;
+  }
+  if (/^(?:\.rodata(?:\.|$)|\.rdata(?:\.|$)|__cstring$|__const$|__ustring$|__TEXT,__cstring$|__TEXT,__const$)/i.test(name)) {
+    return true;
+  }
+  if (sec.readOnly === true || sec.readonly === true) return true;
+  if (sec.readable === true && sec.writable === false && sec.executable === false) return true;
+  if (typeof permRaw === 'string' && /^r-?-$/i.test(permRaw.trim())) return true;
+  return false;
+}
+
+function sectionAddressBounds(sec) {
+  if (!sec || typeof sec !== 'object') return null;
+  const rawStart = sec.addr ?? sec.vaddr ?? sec.va ?? sec.start ?? sec.address;
+  if (rawStart == null) return null;
+  let start;
+  try { start = BigInt(rawStart); } catch { return null; }
+  const rawSize = sec.size ?? sec.memsz ?? sec.length ?? sec.bytes?.length ?? sec.data?.length;
+  if (rawSize == null) return null;
+  let size;
+  try { size = BigInt(rawSize); } catch { return null; }
+  if (size <= 0n) return null;
+  return { start, end: start + size };
+}
+
+function readBytesFromSection(sec, target, start, maxLen, state) {
+  const rel = Number(target - start);
+  const inlineBytes = sec.bytes ?? sec.data;
+  if (inlineBytes && rel >= 0 && rel < inlineBytes.length) {
+    const end = Math.min(inlineBytes.length, rel + maxLen);
+    return inlineBytes.slice(rel, end);
+  }
+  const fileOffset = sec.offset ?? sec.fileOffset;
+  const fileBytes = state.opts?.fileBytes ?? state.opts?.bytes ?? state.opts?.binary?.bytes;
+  if (fileOffset != null && fileBytes) {
+    const pos = Number(BigInt(fileOffset) + (target - start));
+    if (pos >= 0 && pos < fileBytes.length) {
+      const end = Math.min(fileBytes.length, pos + maxLen);
+      return fileBytes.slice(pos, end);
+    }
+  }
+  try {
+    const buf = state.opts?.readBytes?.(target, maxLen) ?? state.opts?.binary?.readBytes?.(target, maxLen);
+    if (buf && buf.length >= 1) return buf;
+    const readByte = state.opts?.readByte ?? state.opts?.byteAt ?? state.opts?.binary?.readByte;
+    if (typeof readByte === 'function') {
+      const out = [];
+      for (let i = 0; i < maxLen; i += 1) {
+        const b = readByte(target + BigInt(i));
+        if (typeof b !== 'number') break;
+        out.push(b);
+        if (b === 0) break;
+      }
+      return out.length ? out : null;
+    }
+  } catch { /* optional reader */ }
+  return null;
+}
+
+function readOnlyCStringAt(addr, state) {
+  let target;
+  try { target = BigInt(addr); } catch { return null; }
+  let matched = null;
+  let matchedStart = null;
+  let matchedEnd = null;
+  try {
+    const directSec = state.opts?.sectionFor?.(target) ?? state.opts?.regionFor?.(target);
+    if (directSec) {
+      const bounds = sectionAddressBounds(directSec);
+      if (!bounds || (target >= bounds.start && target < bounds.end)) {
+        matched = directSec;
+        matchedStart = bounds ? bounds.start : target;
+        matchedEnd = bounds ? bounds.end : null;
+      }
+    }
+  } catch { /* optional lookup */ }
+  if (!matched) {
+    const lists = [
+      state.opts?.sections, state.opts?.segments, state.opts?.regions,
+      state.opts?.binary?.sections, state.opts?.binary?.segments, state.opts?.binary?.regions,
+      state.model?.sections, state.model?.regions,
+    ];
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue;
+      for (const sec of list) {
+        const bounds = sectionAddressBounds(sec);
+        if (bounds && target >= bounds.start && target < bounds.end) {
+          matched = sec;
+          matchedStart = bounds.start;
+          matchedEnd = bounds.end;
+          break;
+        }
+      }
+      if (matched) break;
+    }
+  }
+  if (!matched || !isProvablyReadOnlyDataSection(matched)) return null;
+  const maxLen = matchedEnd != null ? Number(matchedEnd - target < 256n ? matchedEnd - target : 256n) : 256;
+  if (maxLen <= 0) return null;
+  const bytes = readBytesFromSection(matched, target, matchedStart, maxLen, state);
+  if (!bytes || !bytes.length) return null;
+  const chars = [];
+  let terminated = false;
+  for (let i = 0; i < bytes.length; i += 1) {
+    const b = Number(bytes[i]) & 0xff;
+    if (b === 0) { terminated = true; break; }
+    if ((b >= 0x20 && b <= 0x7e) || b === 0x09 || b === 0x0a || b === 0x0d) {
+      chars.push(b);
+    } else {
+      return null;
+    }
+  }
+  if (!terminated) return null;
+  return cStringLiteral(String.fromCharCode(...chars));
+}
+
+function isAddressDerivedConstant(v, depth = 0, seen = null) {
+  if (!v || depth > 8) return false;
+  const visited = seen || new Set();
+  if (v.id != null) {
+    if (visited.has(v.id)) return false;
+    visited.add(v.id);
+  }
+  const d = v.def;
+  if (!d) return false;
+  if (d.op === 'addr') return true;
+  if (d.op === 'mov') return isAddressDerivedConstant(valueOf(d.args?.[0]), depth + 1, visited);
+  if (d.op === 'bin' && (d.sub === 'add' || d.sub === 'sub')) {
+    if (isAddressDerivedConstant(valueOf(d.args?.[0]), depth + 1, visited)) return true;
+    if (d.sub === 'add' && isAddressDerivedConstant(valueOf(d.args?.[1]), depth + 1, visited)) return true;
+  }
+  return false;
+}
+
+function stringLiteralAt(addr, state) {
+  if (addr == null) return null;
+  let target;
+  try { target = BigInt(addr); } catch { return null; }
+  try {
+    const direct = state.opts?.stringFor?.(target);
+    if (typeof direct === 'string') return cStringLiteral(direct);
+  } catch { /* optional resolver */ }
+  for (const ref of state.model?.addressRefs || []) {
+    if (ref?.addr == null || typeof ref.text !== 'string') continue;
+    try { if (BigInt(ref.addr) === target) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
+  }
+  return readOnlyCStringAt(target, state);
+}
+
+function stringLiteralForValue(v, state, addressDerived = false) {
+  if (v?.const == null) return null;
+  let target;
+  try { target = BigInt(v.const); } catch { return null; }
+  const defRow = v.def?.row;
+  for (const ref of state.model?.addressRefs || []) {
+    if (ref?.row !== defRow || ref?.addr == null || typeof ref.text !== 'string') continue;
+    try { if (BigInt(ref.addr) === target) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
+  }
+  return (v.def?.op === 'addr' || addressDerived) ? stringLiteralAt(target, state) : null;
+}
 function typeFor(state, v) { return state.types?.values?.get?.(v?.id) || null; }
 function signedFor(state, v) { const t = typeFor(state, v); return t?.signed ?? v?.signed ?? null; }
 function origin(inst, v = null, reason = null) {
@@ -447,6 +640,22 @@ function memoryLocation(inst, state) {
     const isReceiver = Boolean(cxxRec && isCppReceiverAlias(baseVal, cxxRec, state.ir));
     if (isReceiver) {
       base = expr.variable('this', 64, false, origin(inst));
+    }
+    if (!known && !isReceiver && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
+      const baseType = typeFor(state, baseVal);
+      const effBytes = Number(addr.size || inst?.size || loc?.size || 0);
+      const elemType = effBytes > 0 ? memoryElementType(inst, effBytes, state.types) : null;
+      const losesWidthOrType = effBytes === 1 || effBytes === 2 || effBytes === 4
+        || effBytes === 16 || (effBytes === 8 && elemType === 'double');
+      if (losesWidthOrType && elemType && !isKnownStructPointerType(baseType)) {
+        const baseText = printExpression(base);
+        const text = off !== 0n
+          ? (off < 0n
+            ? `*(${elemType} *)((uintptr_t)(${baseText}) - ${(-off).toString()})`
+            : `*(${elemType} *)((uintptr_t)(${baseText}) + ${off.toString()})`)
+          : `*(${elemType} *)(uintptr_t)(${baseText})`;
+        return { kind: 'deref', key: loc.key || `memory:${inst?.id || '?'}`, base, disp: off, text };
+      }
     }
     const offsetText = off < 0n
       ? `-0x${(-off).toString(16).toUpperCase()}`
@@ -1325,7 +1534,16 @@ function buildValueRaw(v, state, flags = {}) {
   }
   if (!out && v.const != null && d?.op !== 'addr') {
     const selected = constantValueSelection(v, state);
-    out = constNode(v);
+    const addressDerived = isAddressDerivedConstant(v);
+    const literal = stringLiteralForValue(v, state, addressDerived);
+    if (literal) {
+      out = expr.variable(literal, 64, false, origin(d, v), { address: v.const, stringLiteral: true });
+    } else if (addressDerived && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true && BigInt(v.const) !== 0n) {
+      const name = state.opts?.symbolFor?.(v.const) || null;
+      out = expr.variable(name ? safeIdent(name) : `&global_${BigInt(v.const).toString(16).toUpperCase()}`, 64, false, origin(d, v), { address: v.const });
+    } else {
+      out = constNode(v);
+    }
     recordConstantValueSelection(v, out, selected, state);
   }
   if (!out && (v.kind === 'arg' || !d)) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
@@ -1387,8 +1605,16 @@ function buildValueRaw(v, state, flags = {}) {
     } else if (d.op === 'sel') out = selectExpression(d, state);
     else if (d.op === 'addr') {
       const address = v.const ?? d.extra?.value ?? d.extra?.target;
-      const name = address != null ? state.opts?.symbolFor?.(address) : null;
-      out = expr.variable(name ? safeIdent(name) : `global_${BigInt(address || 0).toString(16).toUpperCase()}`, 64, false, origin(d, v), { address });
+      const literal = address != null ? (stringLiteralForValue(v, state, true) || stringLiteralAt(address, state)) : null;
+      if (literal) {
+        out = expr.variable(literal, 64, false, origin(d, v), { address, stringLiteral: true });
+      } else {
+        const name = address != null ? state.opts?.symbolFor?.(address) : null;
+        const fallbackGlobal = (state.preservePhase8Unknown || state.opts?.phase8Optimize === true)
+          ? `global_${BigInt(address || 0).toString(16).toUpperCase()}`
+          : `&global_${BigInt(address || 0).toString(16).toUpperCase()}`;
+        out = expr.variable(name ? safeIdent(name) : fallbackGlobal, 64, false, origin(d, v), { address });
+      }
     } else if (d.op === 'load') {
       const loc = memoryLocation(d, state);
       if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
@@ -2186,8 +2412,13 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
     let text = `${location.text} = ${printExpression(e)};`, rendered = null, form = 'assignment';
     if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && compoundStoreLeftOperand(e.left, location, store, state)) {
       const rhs = printExpression(e.right);
-      if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}++;`; form = 'post-increment'; }
-      else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}--;`; form = 'post-decrement'; }
+      if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) {
+        if (location.kind === 'deref') { text = `${location.text} += 1;`; form = 'add-assignment'; }
+        else { text = `${location.text}++;`; form = 'post-increment'; }
+      } else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) {
+        if (location.kind === 'deref') { text = `${location.text} -= 1;`; form = 'sub-assignment'; }
+        else { text = `${location.text}--;`; form = 'post-decrement'; }
+      }
       else { text = `${location.text} ${{add:'+=',sub:'-=',mul:'*='}[e.op]} ${rhs};`; form = `${e.op}-assignment`; }
       rendered = compoundStoreHistory(store, value, e, location, form, state);
     }

@@ -3098,10 +3098,72 @@ export function closeFunctionOutput(result, options = {}) {
       .replace(/\/\/[^\n]*/g, ' ')
       .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
       .replace(/'(?:[^'\\]|\\.)*'/g, ' ');
-    const isGlobalDereferenced = (globalName) => {
-      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const extractCopySourceIdent = (rawRhs) => {
+      let s = String(rawRhs || '').trim();
+      for (let i = 0; i < 8; i += 1) {
+        let changed = false;
+        while (s.startsWith('(') && s.endsWith(')')) {
+          let depth = 0;
+          let wrapsAll = true;
+          for (let j = 0; j < s.length - 1; j += 1) {
+            if (s[j] === '(') depth += 1;
+            else if (s[j] === ')') {
+              depth -= 1;
+              if (depth === 0) {
+                wrapsAll = false;
+                break;
+              }
+            }
+          }
+          if (!wrapsAll) break;
+          s = s.slice(1, -1).trim();
+          changed = true;
+        }
+        const castMatch = /^\(\s*(?:(?:const|volatile|restrict|unsigned|signed|long|short|struct|enum|union)\s+)*[A-Za-z_][A-Za-z0-9_]*(?:\s*\*+)*\s*\)\s*(.+)$/s.exec(s);
+        if (castMatch) {
+          s = castMatch[1].trim();
+          changed = true;
+        }
+        if (!changed) break;
+      }
+      s = s.replace(/\s*[+-]\s*(?:0[xX][0-9A-Fa-f]+|\d+)[uUlL]*$/, '').trim();
+      while (s.startsWith('(') && s.endsWith(')')) {
+        let depth = 0;
+        let wrapsAll = true;
+        for (let j = 0; j < s.length - 1; j += 1) {
+          if (s[j] === '(') depth += 1;
+          else if (s[j] === ')') {
+            depth -= 1;
+            if (depth === 0) {
+              wrapsAll = false;
+              break;
+            }
+          }
+        }
+        if (!wrapsAll) break;
+        s = s.slice(1, -1).trim();
+      }
+      const identMatch = /^([A-Za-z_][A-Za-z0-9_]*)$/.exec(s);
+      return identMatch ? identMatch[1] : null;
+    };
+    const copyTargetsBySource = new Map();
+    for (const rawSeg of cleanedBodyForGlobals.split(/[;{}]/)) {
+      const stmt = rawSeg.trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*\s*:\s*)+/, '').trim();
+      if (!stmt) continue;
+      const assignMatch = /^(?:(?:const|volatile|restrict|static|register|unsigned|signed|long|short|struct|enum|union)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\s*(?:\*+\s*|\s+))?([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*(.+)$/s.exec(stmt);
+      if (!assignMatch) continue;
+      const lhs = assignMatch[1];
+      const src = extractCopySourceIdent(assignMatch[2]);
+      if (!src || lhs === src) continue;
+      if (!copyTargetsBySource.has(src)) copyTargetsBySource.set(src, new Set());
+      copyTargetsBySource.get(src).add(lhs);
+    }
+    const isIdentDereferenced = (ident) => {
+      const esc = ident.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const arrowRe = new RegExp(`\\b${esc}\\s*->`);
       if (arrowRe.test(cleanedBodyForGlobals)) return true;
+      const subscriptRe = new RegExp(`\\b${esc}\\s*\\[`);
+      if (subscriptRe.test(cleanedBodyForGlobals)) return true;
       const castDerefRe = new RegExp(
         `\\*\\s*\\([^;{}()]*\\*\\s*\\)\\s*\\(?\\s*(?:\\(\\s*(?:uintptr_t|intptr_t|[A-Za-z_][A-Za-z0-9_\\s]*\\*)\\s*\\)\\s*)?\\(?\\s*${esc}\\b`,
       );
@@ -3109,9 +3171,29 @@ export function closeFunctionOutput(result, options = {}) {
       const unaryDerefRe = new RegExp(`(?:^|[=({[,;:!?&|^~+\-<>]|\\breturn\\b)\\s*\\*\\s*\\(?\\s*${esc}\\b`);
       if (unaryDerefRe.test(cleanedBodyForGlobals)) return true;
       const castArrowRe = new RegExp(
-        `\\(\\s*\\([^;{}()]*\\*\\s*\\)\\s*(?:\\(\\s*uintptr_t\\s*\\)\\s*)?\\(?\\s*${esc}\\b[^;{}]*\\)\\s*->`,
+        `\\(\\s*\\([^;{}()]*\\*\\s*\\)\\s*(?:\\(\\s*(?:uintptr_t|intptr_t)\\s*\\)\\s*)?\\(?\\s*${esc}\\b[^;{}]*\\)\\s*(?:->|\\[)`,
       );
       return castArrowRe.test(cleanedBodyForGlobals);
+    };
+    const isGlobalDereferenced = (globalName) => {
+      if (isIdentDereferenced(globalName)) return true;
+      const visited = new Set([globalName]);
+      let frontier = [globalName];
+      for (let hop = 0; hop < 2 && frontier.length > 0; hop += 1) {
+        const next = [];
+        for (const name of frontier) {
+          const targets = copyTargetsBySource.get(name);
+          if (!targets) continue;
+          for (const alias of targets) {
+            if (visited.has(alias)) continue;
+            visited.add(alias);
+            if (isIdentDereferenced(alias)) return true;
+            next.push(alias);
+          }
+        }
+        frontier = next;
+      }
+      return false;
     };
     globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
     for (const entry of standaloneGlobals) {

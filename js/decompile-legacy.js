@@ -135,6 +135,18 @@ export function decompile(model, opts) {
   for (const d of decls) out.push(d);
   if (decls.length) out.push(line('blank', 0, ''));
 
+  const bodyText = body.map((l) => l.text).join('\n');
+  for (const arg of (types && Array.isArray(types.args)) ? types.args : []) {
+    const m = arg && /^x([0-7])$/.exec(arg.reg || '');
+    if (!m || (ctx.aliases && ctx.aliases.has(arg.reg))) continue;
+    if (!ctx.material || !ctx.material.lost || !ctx.material.lost.has(arg.reg)) continue;
+    const lhs = varOf(arg.reg, ctx);
+    const rhs = argName(Number(m[1]), ctx);
+    if (lhs !== rhs && hasWholeWord(bodyText, lhs)) {
+      out.push(line('stmt', 1, lhs + ' = ' + rhs + ';', insns[0].row));
+    }
+  }
+
   for (const l of body) {
     if (l.kind === 'label' && !state.labels.has(l.text.replace(/:$/, ''))) continue;
     out.push(l);
@@ -480,6 +492,17 @@ function decideMaterial(model, vg) {
     const call = lastCallRow.get(bi);
     return call != null && call > def.row;
   };
+  const isDefLiveOut = (def, nodeValue) => {
+    if (!def) return false;
+    const bi = blockOf.get(def.row);
+    return bi != null && !!(liveOut[bi] && liveOut[bi].has(def.reg)) &&
+      lastInBlock.get(bi + ':' + def.reg) === nodeValue && !killedByCall(def);
+  };
+  const hasAnyLiveOutDef = (nodeValue, fallbackDef) => {
+    const list = defRows.get(nodeValue);
+    if (list && list.length) return list.some((d) => isDefLiveOut(d, nodeValue));
+    return isDefLiveOut(fallbackDef, nodeValue);
+  };
 
   /*
    * 「あとで名前として出てくるのに、その行を消してしまった」を絶対に起こさない。
@@ -548,9 +571,7 @@ function decideMaterial(model, vg) {
     const def = canonical.get(nodeValue) || first;
     const n = uses.get(nodeValue) || 0;
     const big = visibleSize(nodeValue, material) > INLINE_MAX;
-    const bi = blockOf.get(def.row);
-    const live = bi != null && liveOut[bi] && liveOut[bi].has(def.reg) &&
-      lastInBlock.get(bi + ':' + def.reg) === nodeValue && !killedByCall(def);
+    const live = hasAnyLiveOutDef(nodeValue, def);
     /* 呼び出しは、結果を使っていなくても必ず行として残す（呼んだこと自体が処理）。 */
     if (nodeValue.k === 'call') { material.add(nodeValue); continue; }
     if (opaqueInputs.has(nodeValue)) { material.add(nodeValue); continue; }
@@ -609,7 +630,6 @@ function decideMaterial(model, vg) {
       if (nodeValue.k === 'call') continue;                 // 呼び出しは残す（副作用）
       if (opaqueInputs.has(nodeValue)) continue;              // raw/builtin renderer still names this register
       const def = canonical.get(nodeValue) || vg.nodeDef.get(nodeValue);
-      const bi = def ? blockOf.get(def.row) : null;
       /*
        * 「掛け算の上位だけ」は、割り算に戻すためだけに作られる中間値。
        *
@@ -620,8 +640,7 @@ function decideMaterial(model, vg) {
        * 誰の式にも出てこないなら、落としてよい。
        */
       const magicOnly = nodeValue.k === 'bin' && (nodeValue.op === 'smulh' || nodeValue.op === 'umulh');
-      if (!magicOnly && bi != null && liveOut[bi] && liveOut[bi].has(def.reg) &&
-          lastInBlock.get(bi + ':' + def.reg) === nodeValue && !killedByCall(def)) continue;
+      if (!magicOnly && hasAnyLiveOutDef(nodeValue, def)) continue;
       if (seen.has(nodeValue)) continue;
       material.delete(nodeValue);
       dropped++;
@@ -674,9 +693,7 @@ function decideMaterial(model, vg) {
       if (crossed.has(nodeValue)) continue;             // 別のブロックから使われている
       if ((refs.get(nodeValue) || 0) !== 1) continue;
       const def = canonical.get(nodeValue) || vg.nodeDef.get(nodeValue);
-      const bi = def ? blockOf.get(def.row) : null;
-      if (bi != null && liveOut[bi] && liveOut[bi].has(def.reg) &&
-          lastInBlock.get(bi + ':' + def.reg) === nodeValue && !killedByCall(def)) continue;
+      if (hasAnyLiveOutDef(nodeValue, def)) continue;
       if (visibleSize(nodeValue, material) > MERGE_MAX) continue;
       material.delete(nodeValue);
       merged++;
@@ -742,7 +759,17 @@ function decideMaterial(model, vg) {
   for (const [reg, list] of perReg) {
     if (list.length === 1 && !lost.has(reg)) names.set(list[0], reg);
   }
-  return { material, uses, crossed, blockOf, names, lost, canonical };
+  const liveOutNonCanonical = new Set();
+  for (const [nodeValue, list] of defRows) {
+    const magicOnly = nodeValue.k === 'bin' && (nodeValue.op === 'smulh' || nodeValue.op === 'umulh');
+    if (magicOnly) continue;
+    const can = canonical.get(nodeValue);
+    for (const d of list) {
+      if (can && d.row === can.row && d.reg === can.reg) continue;
+      if (isDefLiveOut(d, nodeValue)) liveOutNonCanonical.add(d.row + ':' + d.reg);
+    }
+  }
+  return { material, uses, crossed, blockOf, names, lost, canonical, liveOutNonCanonical };
 }
 
 /** 変数として残したところで止めた、見た目の大きさ。 */
@@ -842,12 +869,12 @@ function exprText(ctx, nodeValue, self) {
         const label = callLabel(c, ctx);
         const calleeKey = c.name || label;
         const proto = knownCallPrototype(calleeKey);
-        if (!proto || proto.variadic) return null;
+        if (!proto) return null;
         const rawArgs = new Map();
         for (const a of c.args || []) {
           if (a && a.index != null && a.value) rawArgs.set(a.index, renderExpr(a.value, opts));
         }
-        const args = normalizeKnownCallArgs(calleeKey, rawArgs, ctx, null);
+        const args = normalizeKnownCallArgs(calleeKey, rawArgs, ctx, c.row != null ? c.row : null);
         return args ? label + '(' + args.join(', ') + ')' : null;
       };
       if (n === self) {
@@ -2106,11 +2133,16 @@ function valueStatement(insn, ctx, mk) {
    */
   if (value.k === 'arg' && (ctx.aliases.has(dst) || !ctx.material.lost.has(dst))) return null;
 
+  const isLiveOutCopy = !!(ctx.material.liveOutNonCanonical && ctx.material.liveOutNonCanonical.has(insn.row + ':' + dst));
   if (!ctx.material.material.has(value)) {
     /*
      * 誰も変数として使っていない中間の値。行ごと落とす。
      * これが「5 行の割り算が 1 行になる」の中身。
      */
+    if (isLiveOutCopy) {
+      const text = exprText(ctx, value, value);
+      if (text != null) return mk(varOf(dst, ctx) + ' = ' + text + ';', { dst, pure: false, fromValues: true });
+    }
     return null;
   }
   /*
@@ -2120,13 +2152,24 @@ function valueStatement(insn, ctx, mk) {
    *
    * 名前は値に付いているので、以後 x24 を使う式にも同じ名前が出る。
    * 写しの行を残すと、同じ値に 2 つの名前が付いて、必ず読み間違いのもとになる。
+   * ただし、このブロックの外へ生きて出るレジスタへの写しは落とせない。
    */
   const can = ctx.material.canonical.get(value);
-  if (can) {
-    if (can.row !== insn.row || can.reg !== dst) return null;
-  } else {
-    const def = vg.nodeDef.get(value);
-    if (def && def.row !== insn.row) return null;
+  const nonCanonical = can ? (can.row !== insn.row || can.reg !== dst)
+    : (() => { const def = vg.nodeDef.get(value); return !!(def && def.row !== insn.row); })();
+  if (nonCanonical) {
+    if (isLiveOutCopy) {
+      const matName = ctx.material.names.get(value);
+      const canUseMatName = !!(matName && (!can || insn.row > can.row));
+      const rhs = canUseMatName ? matName : exprText(ctx, value, value);
+      if (rhs != null) {
+        if (canUseMatName) ctx.usedVars.add(matName);
+        const lhs = varOf(dst, ctx);
+        if (lhs === rhs) return null;
+        return mk(lhs + ' = ' + rhs + ';', { dst, pure: false, fromValues: true });
+      }
+    }
+    return null;
   }
   const text = exprText(ctx, value, value);
   if (text == null) return undefined;
@@ -2247,7 +2290,9 @@ function memoryStatement(insn, ctx, mk, base) {
       return wrapWb(mk(d0 + ' = ' + place + ';   ' + d1 + ' = ' + (place2 || nextSlot(place, m)) + ';',
         { dst: insn.writes[0], pure: false }));
     }
-    const text = ctx.textOf.get(insn.row);
+    const dstOp0 = insn.ops[0];
+    const isFpOrVecDst = fpRegWidth(dstOp0) != null || dstOp0?.cls === 'fp' || dstOp0?.cls === 'vec';
+    const text = isFpOrVecDst ? null : ctx.textOf.get(insn.row);
     if (text != null) {
       return wrapWb(mk(d0 + ' = "' + escapeText(text) + '";', { dst: insn.writes[0], pure: !hasWb }));
     }
@@ -2397,13 +2442,34 @@ function registerValueText(ctx, row, reg) {
  * 引数。呼ぶ直前に用意された x0〜x7 のうち、実際に値が入っているものだけ。
  * 数が分からないときに 8 個並べても嘘になるので、途切れたところで止める。
  */
-function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null) {
+const VARIADIC_FORMAT_ARG = {
+  printf: 0, scanf: 0, isoc99_scanf: 0,
+  fprintf: 1, sprintf: 1, fscanf: 1, sscanf: 1, isoc99_fscanf: 1, isoc99_sscanf: 1, dprintf: 1, asprintf: 1,
+  snprintf: 2,
+  sprintf_chk: 3,
+  snprintf_chk: 4,
+};
+
+function countFormatSpecifiers(fmt) {
+  if (typeof fmt !== 'string') return 0;
+  const re = /%%|%[-+ #0']*(\*|\d+)?(?:\.(\*|\d+))?(?:hh|h|ll|l|L|j|z|t)?[diouxXeEfFgGaAcspn]/g;
+  let count = 0;
+  let m;
+  while ((m = re.exec(fmt)) !== null) {
+    if (m[0] === '%%') continue;
+    count++;
+    if (m[1] === '*') count++;
+    if (m[2] === '*') count++;
+  }
+  return count;
+}
+
+function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null, call = null) {
   const proto = calleeName ? knownCallPrototype(calleeName) : null;
-  if (!proto || proto.variadic) return null;
-  const arity = proto.arity;
+  if (!proto) return null;
   const sig = knownCallSignature(calleeName);
   const paramTypes = Array.isArray(sig?.paramTypes) ? sig.paramTypes : null;
-  const hasFpParam = !!(paramTypes && paramTypes.some((t) => t === 'float' || t === 'double'));
+  const hasFpParam = !proto.variadic && !!(paramTypes && paramTypes.some((t) => t === 'float' || t === 'double'));
 
   const gpArgAt = (gpIdx) => {
     if (rawArgMap && rawArgMap.has(gpIdx)) return rawArgMap.get(gpIdx);
@@ -2418,6 +2484,50 @@ function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null
     return isIncoming ? argName(gpIdx, ctx) : varOf('x' + gpIdx, ctx);
   };
 
+  if (proto.variadic) {
+    let maxRawArgIdx = -1;
+    if (rawArgMap) {
+      for (const idx of rawArgMap.keys()) {
+        if (Number.isInteger(idx) && idx >= 0 && idx <= 7 && idx > maxRawArgIdx) maxRawArgIdx = idx;
+      }
+    }
+    const callInfo = call || (row != null && ctx?.callOf ? ctx.callOf.get(row) : null);
+    const fmtArgIdx = Number.isInteger(callInfo?.api?.formatArg)
+      ? callInfo.api.formatArg
+      : (VARIADIC_FORMAT_ARG[proto.name] ?? null);
+    let formatSpecArgCount = 0;
+    if (fmtArgIdx != null && fmtArgIdx >= 0 && fmtArgIdx <= 7) {
+      let fmtText = null;
+      if (row != null && ctx.values) {
+        const fmtNode = ctx.values.at(row, 'x' + fmtArgIdx);
+        if (fmtNode && fmtNode.k === 'str' && typeof fmtNode.text === 'string') fmtText = fmtNode.text;
+      }
+      if (fmtText == null && Array.isArray(callInfo?.args)) {
+        const callFmt = callInfo.args.find((a) => a && a.index === fmtArgIdx);
+        if (callFmt?.value?.kind === 'string' && typeof callFmt.value.text === 'string') {
+          fmtText = callFmt.value.text;
+        }
+      }
+      if (fmtText == null) {
+        const rawFmt = gpArgAt(fmtArgIdx);
+        const lit = typeof rawFmt === 'string' ? /^"(.*)"$/.exec(rawFmt.trim()) : null;
+        if (lit) fmtText = lit[1];
+      }
+      if (fmtText != null) {
+        formatSpecArgCount = fmtArgIdx + 1 + countFormatSpecifiers(fmtText);
+      }
+    }
+    const needed = Math.min(8, Math.max(proto.arity, maxRawArgIdx + 1, formatSpecArgCount));
+    const out = [];
+    for (let i = 0; i < needed; i++) {
+      const text = gpArgAt(i);
+      out.push(text);
+      if (readRegs && text === varOf('x' + i, ctx)) readRegs.push('x' + i);
+    }
+    return out;
+  }
+
+  const arity = proto.arity;
   if (hasFpParam) {
     const out = [];
     let gpIdx = 0;
@@ -2561,7 +2671,8 @@ function augmentLegacyFpSignature(model, types, ctx) {
       if (reads.includes('x0')) {
         const isCompare = /^(?:cmp|cmn|tst|cbz|cbnz|tbz|tbnz)\b/.test(base);
         const isStore = insn.memory?.kind === 'store';
-        if (isCompare || isStore) x0Consumed = true;
+        const isFpFromX0 = /^(?:fmov|scvtf|ucvtf)\b/.test(base) && writes.includes('v0');
+        if (isCompare || isStore || isFpFromX0) x0Consumed = true;
       }
     }
     if (!x0Unconsumed) checkFpRet = true;
@@ -2617,7 +2728,7 @@ function callArguments(call, ctx, calleeName, readRegs = null) {
     const text = node ? exprText(ctx, node, null) : null;
     rawArgMap.set(idx, text || valueText(a.value, ctx, idx));
   }
-  const normalized = normalizeKnownCallArgs(calleeName, rawArgMap, ctx, call ? call.row : null, readRegs);
+  const normalized = normalizeKnownCallArgs(calleeName, rawArgMap, ctx, call ? call.row : null, readRegs, call);
   if (normalized) return normalized;
 
   const out = [];
