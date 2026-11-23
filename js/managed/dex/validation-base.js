@@ -141,7 +141,7 @@ function exceptionFacts(bytes, view, meta) {
         targets.push({ typeIndex: type.value, target: addr.value * 2 });
       }
       if (size.value <= 0) { const addr = uleb(bytes, pos); pos = addr.next; targets.push({ typeIndex: null, target: addr.value * 2 }); }
-      byOffset.set(relative, targets); handlers.push(...targets);
+      byOffset.set(relative, targets); for (const t of targets) handlers.push(t);
     }
     for (const item of rawTries) tries.push({ ...item, targets: byOffset.get(item.handlerOff) ?? null });
     return { tries, handlers, complete: true, errors };

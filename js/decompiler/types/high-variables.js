@@ -34,6 +34,54 @@ function legacyAArch64Path(ir, opts = {}) {
     || opts.abiAdapter?.architectureId === 'arm64';
 }
 
+function canonicalArgReg(reg, isAArch64) {
+  const text = String(reg || '').toLowerCase();
+  const gp = /^[wx](\d+)$/.exec(text);
+  if (gp) return `r${gp[1]}`;
+  if (isAArch64) {
+    const fp = /^[bhsdqv]([0-9]|[12][0-9]|3[01])$/.exec(text);
+    if (fp) return `v${fp[1]}`;
+  }
+  return text;
+}
+
+function buildRecoveredArgMap(recoveredTypes, isAArch64) {
+  const list = Array.isArray(recoveredTypes?.args) ? recoveredTypes.args : [];
+  if (!list.length) return null;
+  const byValueId = new Map();
+  const byCanonReg = new Map();
+  const ownerByIndex = new Map();
+  for (const a of list) {
+    if (!a || !Number.isInteger(a.index) || a.index < 0) continue;
+    if (a.valueId != null && !byValueId.has(a.valueId)) byValueId.set(a.valueId, a.index);
+    if (a.reg) {
+      const canon = canonicalArgReg(a.reg, isAArch64);
+      if (!byCanonReg.has(canon)) byCanonReg.set(canon, a.index);
+      if (!ownerByIndex.has(a.index)) ownerByIndex.set(a.index, canon);
+    }
+  }
+  return { byValueId, byCanonReg, ownerByIndex };
+}
+
+function recoveredArgIndex(v, opts = {}) {
+  const map = opts.recoveredArgs;
+  if (!map || !v) return null;
+  if (v.kind !== 'arg' && v.def) return null;
+  if (v.id != null && map.byValueId.has(v.id)) return map.byValueId.get(v.id);
+  if (v.reg) {
+    const canon = canonicalArgReg(v.reg, opts.isAArch64 === true);
+    if (map.byCanonReg.has(canon)) return map.byCanonReg.get(canon);
+  }
+  return null;
+}
+
+function collidesWithRecoveredArg(idx, v, opts = {}) {
+  const ownerByIndex = opts.recoveredArgs?.ownerByIndex;
+  if (!ownerByIndex || !ownerByIndex.has(idx)) return false;
+  const canon = v?.reg ? canonicalArgReg(v.reg, opts.isAArch64 === true) : null;
+  return ownerByIndex.get(idx) !== canon;
+}
+
 function argIndex(v, opts = {}) {
   if (!v) return null;
   const explicit = v.argIndex ?? v.argumentIndex ?? v.abiArgIndex;
@@ -42,13 +90,38 @@ function argIndex(v, opts = {}) {
   const originKind = origin?.kind || origin?.type;
   const originIndex = origin?.index ?? origin?.argIndex;
   if ((originKind === 'arg' || originKind === 'argument') && Number.isInteger(originIndex) && originIndex >= 0) return originIndex;
+  const fromRecovered = recoveredArgIndex(v, opts);
+  if (fromRecovered != null) return fromRecovered;
+  const isAArch64 = opts.isAArch64 ?? legacyAArch64Path(opts.ir, opts);
+  const isAArch64FpReg = isAArch64 && /^[bhsdqv][0-7]$/i.test(String(v.reg || ''));
   const canonical = canonicalArgumentIndex(v, opts);
-  if (canonical != null) return canonical;
+  if (canonical != null) {
+    if (isAArch64FpReg && opts.recoveredArgs) return null;
+    if (!collidesWithRecoveredArg(canonical, v, opts)) return canonical;
+  }
   if (v.kind !== 'arg') return null;
-  if (Number.isInteger(v.n) && v.n >= 0) return v.n;
+  if (Number.isInteger(v.n) && v.n >= 0 && !collidesWithRecoveredArg(v.n, v, opts)) return v.n;
   if (!legacyAArch64Path(opts.ir, opts)) return null;
   const m = /^x([0-7])$/.exec(v.reg || '');
-  return m ? Number(m[1]) : null;
+  if (m) {
+    const idx = Number(m[1]);
+    return collidesWithRecoveredArg(idx, v, opts) ? null : idx;
+  }
+  if (isAArch64FpReg && !opts.recoveredArgs) {
+    const fpIdx = Number(String(v.reg).slice(1));
+    let gpCount = 0;
+    if (opts.ir?.args && typeof opts.ir.args.keys === 'function') {
+      for (const k of opts.ir.args.keys()) {
+        const gm = /^x([0-7])$/.exec(String(k));
+        if (gm) {
+          const gv = opts.ir.args.get(k);
+          if (gv && (gv.uses || []).length > 0) gpCount = Math.max(gpCount, Number(gm[1]) + 1);
+        }
+      }
+    }
+    return gpCount + fpIdx;
+  }
+  return null;
 }
 function isArg(v) { return argIndex(v) != null; }
 function addressTaken(v, stackAddressBaseIds) {
@@ -83,7 +156,19 @@ function candidateName(group, index, opts = {}) {
   // later hold a call result or an unrelated temporary. This preserves `self`
   // readability without reintroducing the register-reuse coalescing bug.
   const liveInIndex = !v?.def
-    ? (canonicalArgumentIndex(v, opts) ?? (legacyAArch64Path(opts.ir, opts) && /^x([0-7])$/.test(v?.reg || '') ? Number(/^x([0-7])$/.exec(v.reg)[1]) : null))
+    ? (() => {
+        const rec = recoveredArgIndex(v, opts);
+        if (rec != null) return rec;
+        const isAArch64 = opts.isAArch64 ?? legacyAArch64Path(opts.ir, opts);
+        if (isAArch64 && /^[bhsdqv][0-7]$/i.test(String(v?.reg || '')) && opts.recoveredArgs) return null;
+        const can = canonicalArgumentIndex(v, opts);
+        if (can != null && !collidesWithRecoveredArg(can, v, opts)) return can;
+        if (legacyAArch64Path(opts.ir, opts) && /^x([0-7])$/.test(v?.reg || '')) {
+          const idx = Number(/^x([0-7])$/.exec(v.reg)[1]);
+          return collidesWithRecoveredArg(idx, v, opts) ? null : idx;
+        }
+        return null;
+      })()
     : null;
   if (liveInIndex != null) {
     const n = liveInIndex;
@@ -117,6 +202,9 @@ export function recoverHighVariables(ir, recoveredTypes, opts = {}) {
     if (address?.stack) stackAddressBaseIds.add(address?.base?.id);
   }
   const types = recoveredTypes?.values || new Map();
+  const isAArch64 = legacyAArch64Path(ir, opts);
+  const recoveredArgs = buildRecoveredArgMap(recoveredTypes, isAArch64);
+  const argOpts = { ...opts, ir, isAArch64, recoveredArgs };
   const groups = [];
   const byKey = new Map();
   const valueToGroup = new Map();
@@ -130,7 +218,7 @@ export function recoverHighVariables(ir, recoveredTypes, opts = {}) {
     // Register allocation is not source-variable identity: unrelated SSA values that
     // merely reuse xN must never be coalesced. Only an explicit ABI argument origin,
     // a stable stack slot, or an explicit MOV lineage is eligible for grouping.
-    const ai = isReserved ? null : argIndex(v, { ...opts, ir });
+    const ai = isReserved ? null : argIndex(v, argOpts);
     const key = unsafe ? `v:${v.id}` : ai != null ? `arg:${ai}` : v.stackSlot?.key ? `stack:${v.stackSlot.key}` : `v:${v.id}`;
     let g = !unsafe && originGroup ? groups[originGroup - 1] : byKey.get(key);
     if (g && (!compatibleType(g.type, t) || g.unsafeMerge)) g = null;
@@ -144,7 +232,7 @@ export function recoverHighVariables(ir, recoveredTypes, opts = {}) {
   }
 
   for (let i = 0; i < groups.length; i++) {
-    const naming = candidateName(groups[i], i, { ...opts, ir });
+    const naming = candidateName(groups[i], i, argOpts);
     groups[i].name = naming.name;
     groups[i].nameConfidence = naming.confidence;
     groups[i].nameEvidence = naming.reason;

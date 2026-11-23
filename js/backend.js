@@ -1197,17 +1197,16 @@ export class Backend {
 
   scanProgram(regionId, onProgress, limits = {}) {
     if (this.disposed) return rejectedDisposedRequest();
-    const architecture = String(limits?.architecture || '').toLowerCase();
+    const effectiveArch = this._resolveScanEffectiveArch(limits);
     const payload = { regionId, ...limits };
-    if (this.formatId === 'macho' && architecture) {
-      if (!isLegacyMachArchitecture(architecture)) {
+    if (this.formatId === 'macho' && effectiveArch) {
+      if (!isLegacyMachArchitecture(effectiveArch)) {
         return this._callTo('platform', 'scanProgram', payload, null, onProgress);
       }
     } else if (this._engineWorker('scanProgram') !== 'legacy') {
       return this._callTo('platform', 'scanProgram', payload, null, onProgress);
     }
 
-    const effectiveArch = this._resolveScanEffectiveArch(limits);
     if (!this._canUseParallelScan(effectiveArch)) {
       return this._callTo('legacy', 'scanProgram', payload, null, onProgress);
     }
@@ -1534,11 +1533,14 @@ export class Backend {
 
   valueShapes(regionId, onProgress) {
     if (this.disposed) return rejectedDisposedRequest();
+    const effectiveArch = this._resolveScanEffectiveArch(null);
+    if (this.formatId === 'macho' && effectiveArch && !isLegacyMachArchitecture(effectiveArch)) {
+      return this._callTo('platform', 'valueShapes', { regionId }, null, onProgress);
+    }
     if (this._engineWorker('valueShapes') !== 'legacy') {
       return this._callTo('platform', 'valueShapes', { regionId }, null, onProgress);
     }
 
-    const effectiveArch = this._resolveScanEffectiveArch(null);
     if (!this._canUseParallelScan(effectiveArch)) {
       return this._callTo('legacy', 'valueShapes', { regionId }, null, onProgress);
     }
@@ -1860,10 +1862,17 @@ export class Backend {
   }
   memoryStats() { return this._callTo('platform', 'memoryStats', {}); }
   cleanupMemory() {
+    if (this.disposed) return rejectedDisposedRequest();
     this.resetCache();
     this._releaseDisassembly(new Error('disassembly worker released for memory pressure'));
     this._scanPool?.onMemoryPressure();
-    return this._callTo('platform', 'cleanupMemory', {});
+    if (!this._platformWorker) {
+      const promise = Promise.resolve(null);
+      promise.requestId = null;
+      promise.cancel = () => false;
+      return promise;
+    }
+    return this._callTo('platform', 'cleanupMemory', {}, null, null, { trackLastRequest: false });
   }
 
   dispose() {

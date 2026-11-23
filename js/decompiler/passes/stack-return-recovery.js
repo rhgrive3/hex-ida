@@ -135,7 +135,7 @@ function branchCondition(ir, term, values) {
 
   if (kind === 'tbz' || kind === 'tbnz') {
     const select = tested?.def;
-    if (select?.op === 'sel' && (select.sub === 'set' || select.sub === 'setm')) {
+    if (select?.op === 'sel' && (select.sub === 'setm' || (select.sub === 'set' && Number(term.extra?.bit) === 0))) {
       const flags = valueOf(select.args?.[select.args.length - 1]);
       const materialized = compareFromFlags(ir, flags, select.cond, values);
       if (materialized) return kind === 'tbz' ? invert(materialized) : materialized;

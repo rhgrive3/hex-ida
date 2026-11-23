@@ -25,9 +25,9 @@ export function parseCHPELoadConfig(
     : image;
 
   const is64 = image.bits === 64;
-  // Offset of CHPEMetadataPointer: 200 (0xC8) in 64-bit, 140 or 124 in 32-bit
+  // Offset of CHPEMetadataPointer: 200 (0xC8) in 64-bit, 124 (0x7C) in 32-bit
   const ptrSize = is64 ? 8 : 4;
-  const chpeOffset = is64 ? 200 : (declared >= 144 ? 140 : 124);
+  const chpeOffset = is64 ? 200 : 124;
 
   if (declared < chpeOffset + ptrSize) return;
 
@@ -153,8 +153,10 @@ export function parseCHPELoadConfig(
     });
   }
 
-  image.arch = 'arm64ec';
-  targetImage.arch = 'arm64ec';
+  if (is64) {
+    image.arch = 'arm64ec';
+    targetImage.arch = 'arm64ec';
+  }
   image.chpeCodeMap = codeMapEntries;
   targetImage.chpeCodeMap = codeMapEntries;
   image.metadata.loadConfig = {

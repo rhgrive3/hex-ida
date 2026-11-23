@@ -31,7 +31,7 @@
  * recovery later — the merge blocker this artifact exists to prevent.
  */
 
-import { maxSigned, maxUnsigned, minSigned, signedOf, unsignedOf } from './bitvector.js';
+import { isSupportedWidth, maxSigned, maxUnsigned, minSigned, signedOf, unsignedOf } from './bitvector.js';
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { analysisIdentityMatches, canonicalAnalysisIdentity, isValidatedAnalysisIdentity } from './analysis-identity.js';
 
@@ -289,8 +289,8 @@ export function resolveStep(incomingValue, phiValue, {
     return { step: null, reason: 'the step is a variable value', origins: updateOrigins, copies: chain.length, update: resolved };
   }
   const bits = phiValue?.bits ?? resolved?.bits ?? null;
-  if (bits == null) {
-    return { step: null, reason: 'the loop variable has no declared width', origins: updateOrigins, copies: chain.length, update: resolved };
+  if (bits == null || !isSupportedWidth(bits)) {
+    return { step: null, reason: bits == null ? 'the loop variable has no declared width' : `the loop variable width ${bits} is not supported`, origins: updateOrigins, copies: chain.length, update: resolved };
   }
   const magnitude = signedOf(constant, bits);
   const step = definition.sub === 'sub' ? -magnitude : magnitude;

@@ -120,7 +120,7 @@ function requireIndex(length,index,code){if(!Number.isSafeInteger(index)||index<
 function readFunctionBlockType(bytes,offset){if(offset>=bytes.length)fail('wasm-truncated-blocktype');const first=bytes[offset];if(first===0x40||WASM_VALUE_TYPES.has(first))return offset+1;return decodeSleb128(bytes,offset).nextOffset;}
 function requireFunctionBytes(bytes,offset,count,code){const end=offset+count;if(!Number.isSafeInteger(end)||end>bytes.length)fail(code);return end;}
 function readFunctionU32(bytes,offset){return decodeUleb128(bytes,offset).nextOffset;}
-function readFunctionMemarg(bytes,offset){return readFunctionU32(bytes,readFunctionU32(bytes,offset));}
+function readFunctionMemarg(bytes,offset){const flags=decodeUleb128(bytes,offset);if(flags.value>=0x80)fail('wasm-invalid-memarg-flags');let pos=flags.nextOffset;if((flags.value&0x40)!==0)pos=readFunctionU32(bytes,pos);return readFunctionU32(bytes,pos);}
 function readFunctionInstructionImmediate(bytes,offset,opcode,dataCount=null,heapTypeIndices=null,budget=null){
   if(opcode===0x0c||opcode===0x0d||opcode===0x10||opcode===0x12||opcode===0x14||opcode===0x15||(opcode>=0x20&&opcode<=0x26)||opcode===0xd2)return readFunctionU32(bytes,offset);
   if(opcode===0x11||opcode===0x13)return readFunctionU32(bytes,readFunctionU32(bytes,offset));

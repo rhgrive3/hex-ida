@@ -189,7 +189,7 @@ export function buildCilCallMetadataIndex(bytes) {
           nameIndex: readIndex(view, rowPos + 4, stringIndexSize, 'cil-call-signature-typedef-truncated'),
           namespaceIndex: readIndex(view, rowPos + 4 + stringIndexSize, stringIndexSize,
             'cil-call-signature-typedef-truncated'),
-          fieldList: readIndex(view, rowPos + 6 + 2 * stringIndexSize + extendsSize,
+          fieldList: readIndex(view, rowPos + 4 + 2 * stringIndexSize + extendsSize,
             tableIndexSize(rowCounts, FIELD_DEF_TABLE),
             'cil-call-signature-typedef-truncated'),
         }));

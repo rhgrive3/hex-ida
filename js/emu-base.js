@@ -1075,8 +1075,8 @@ export class Emulator {
     const a=this.fget(ops[1]), b=ops[2] ? this.fget(ops[2]) : 0;
     if (mn === 'fmov') {
       if (ops[1]?.k === 'imm') this.fset(ops[0], ops[1].float != null ? ops[1].float : Number(ops[1].value || 0n));
-      else if (isFloatReg(ops[0]) && (ops[1]?.cls === 'gp' || ops[1]?.cls === 'sp')) this.setFpBits(ops[0], this.get(ops[1].text));
-      else if ((ops[0]?.cls === 'gp' || ops[0]?.cls === 'sp') && isFloatReg(ops[1])) this.set(ops[0].text, this.fpBits(ops[1]));
+      else if (isFloatReg(ops[0]) && (ops[1]?.cls === 'gp' || ops[1]?.cls === 'sp' || ops[1]?.cls === 'zr')) this.setFpBits(ops[0], this.get(ops[1].text));
+      else if ((ops[0]?.cls === 'gp' || ops[0]?.cls === 'sp' || ops[0]?.cls === 'zr') && isFloatReg(ops[1])) this.set(ops[0].text, this.fpBits(ops[1]));
       else if (isFloatReg(ops[0]) && isFloatReg(ops[1])) this.setFpBits(ops[0], this.fpBits(ops[1]));
       else throw new EmulatorFault('invalid-fmov-form', 'unsupported FMOV operand form');
       return null;

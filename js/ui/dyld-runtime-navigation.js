@@ -56,10 +56,14 @@ export function installDyldRuntimeNavigation(app) {
   button.id = 'btn-dyld-runtime';
   button.type = 'button';
   button.className = open?.className || 'tb-btn';
-  button.textContent = pick('実行時アドレス', 'Runtime address');
-  button.title = pick('dyld共有キャッシュの実行時アドレスを開く', 'Open a runtime address in a dyld shared cache');
+  const updateLabels = () => {
+    if (!button.disabled) button.textContent = pick('実行時アドレス', 'Runtime address');
+    button.title = pick('dyld共有キャッシュの実行時アドレスを開く', 'Open a runtime address in a dyld shared cache');
+  };
+  updateLabels();
   button.hidden = !isDyldCache(app);
   host.insertBefore(button, open?.nextSibling || null);
+  document.addEventListener('hex:language-changed', updateLabels);
 
   let lastSlide = 0n;
   let lastFile = app.store.get('file');
@@ -74,7 +78,7 @@ export function installDyldRuntimeNavigation(app) {
   const unsubscribe = app.store.subscribe(sync);
   sync();
 
-  button.addEventListener('click', async () => {
+  const onClick = async () => {
     const file = app.store.get('file');
     if (!file || !isDyldCache(app)) return;
     let slide;
@@ -99,7 +103,6 @@ export function installDyldRuntimeNavigation(app) {
       return;
     }
 
-    const previousText = button.textContent;
     button.disabled = true;
     button.textContent = pick('照合中…', 'Mapping…');
     try {
@@ -132,9 +135,17 @@ export function installDyldRuntimeNavigation(app) {
       alertDialog(pick('実行時アドレスを開けません', 'Could not open runtime address'), String(error?.message || error));
     } finally {
       button.disabled = false;
-      button.textContent = previousText;
+      updateLabels();
     }
-  });
+  };
+  button.addEventListener('click', onClick);
 
-  return Object.freeze({ button, sync, dispose:unsubscribe });
+  const dispose = () => {
+    unsubscribe?.();
+    document.removeEventListener('hex:language-changed', updateLabels);
+    button.removeEventListener('click', onClick);
+    button.remove();
+  };
+
+  return Object.freeze({ button, sync, dispose });
 }

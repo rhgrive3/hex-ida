@@ -155,7 +155,32 @@ export function findIrConstantComparisons(model, opts) {
     const variables = evaluated.filter((x) => x.constant == null);
     if (constants.length !== 1 || variables.length !== 1) continue;
 
-    const c = constants[0].constant;
+    const varShift = variables[0].arg.shift;
+    if (varShift != null) {
+      const varOp = typeof varShift.op === 'string' ? varShift.op.toLowerCase() : '';
+      const varAmt = typeof varShift.amount === 'bigint' ? Number(varShift.amount) : varShift.amount;
+      if (!['lsl', 'lsr', 'asr', 'ror'].includes(varOp) || varAmt !== 0) continue;
+    }
+
+    let c = constants[0].constant;
+    const constArg = constants[0].arg;
+    if (constArg.shift != null) {
+      const rawBits = constArg.bits ?? constArg.value?.bits ?? inst.bits;
+      const bits = rawBits == null ? 64 : validBits(rawBits);
+      if (bits == null) continue;
+      const shiftOp = typeof constArg.shift.op === 'string' ? constArg.shift.op.toLowerCase() : '';
+      const rawAmt = constArg.shift.amount;
+      const amt = typeof rawAmt === 'bigint'
+        ? (rawAmt >= 0n && rawAmt < BigInt(bits) ? rawAmt : null)
+        : (typeof rawAmt === 'number' && Number.isSafeInteger(rawAmt) && rawAmt >= 0 && rawAmt < bits ? BigInt(rawAmt) : null);
+      if (amt == null) continue;
+      const u = BigInt.asUintN(bits, BigInt(c));
+      if (shiftOp === 'lsl') c = BigInt.asUintN(bits, u << amt);
+      else if (shiftOp === 'lsr') c = u >> amt;
+      else if (shiftOp === 'asr') c = BigInt.asUintN(bits, BigInt.asIntN(bits, u) >> amt);
+      else if (shiftOp === 'ror') c = amt === 0n ? u : BigInt.asUintN(bits, (u >> amt) | (u << (BigInt(bits) - amt)));
+      else continue;
+    }
     const v = variables[0].arg.value;
     out.push({
       row: inst.row,

@@ -386,19 +386,41 @@ export class AnalysisResumeStore {
   async load(binaryId, sliceIndex) {
     if (!binaryId || !validSliceIndex(sliceIndex)) return null;
     const key = sessionKey(binaryId, sliceIndex);
+    const isValid = (record) => record?.schemaVersion === SESSION_SCHEMA
+      && record.analysisIdentity === this.analysisIdentity
+      && record.binaryId === String(binaryId)
+      && record.sliceIndex === sliceIndex;
     const value = await this.get(key);
-    const valid = value?.schemaVersion === SESSION_SCHEMA
-      && value.analysisIdentity === this.analysisIdentity
-      && value.binaryId === String(binaryId)
-      && value.sliceIndex === sliceIndex;
-    if (valid) return value;
-    if (value != null) await this.deleteKey(key).catch(() => false);
+    if (isValid(value)) return value;
+    if (value != null) {
+      const task = async () => {
+        const latest = await this.get(key);
+        if (latest == null || isValid(latest)) return false;
+        if (
+          latest.savedAt !== value.savedAt
+          || latest.schemaVersion !== value.schemaVersion
+          || latest.analysisIdentity !== value.analysisIdentity
+          || latest.binaryId !== value.binaryId
+          || latest.sliceIndex !== value.sliceIndex
+        ) {
+          return false;
+        }
+        return this.deleteKey(key);
+      };
+      const pending = this.writeChain.then(task, task);
+      this.writeChain = pending.catch(() => false);
+      await pending.catch(() => false);
+    }
     return null;
   }
 
   async delete(binaryId, sliceIndex) {
     if (!binaryId || !validSliceIndex(sliceIndex)) return false;
-    return this.deleteKey(sessionKey(binaryId, sliceIndex));
+    const key = sessionKey(binaryId, sliceIndex);
+    const task = () => this.deleteKey(key);
+    const pending = this.writeChain.then(task, task);
+    this.writeChain = pending.catch(() => false);
+    return pending;
   }
 
 }

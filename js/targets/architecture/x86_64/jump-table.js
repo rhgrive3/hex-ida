@@ -46,15 +46,25 @@ function initialRegister(registerValue) {
 function readRegister(registerValue, state) {
   let value = state.registers.get(registerValue.physicalId) ?? initialRegister(registerValue);
   if (registerValue.viewBits < registerValue.physicalBits) {
-    value = { kind:'truncate', value, widthBits:registerValue.viewBits };
+    const lsb = Number.isSafeInteger(registerValue.lsb) && registerValue.lsb >= 0 ? registerValue.lsb : 0;
+    value = lsb > 0
+      ? { kind:'extract', value, lsb, widthBits:registerValue.viewBits }
+      : { kind:'truncate', value, widthBits:registerValue.viewBits };
   }
   return value;
 }
 
 function writeRegister(registerValue, value, state) {
-  const fullValue = registerValue.viewBits < registerValue.physicalBits
-    ? { kind:'zero-extend', value, fromBits:registerValue.viewBits, toBits:registerValue.physicalBits }
-    : value;
+  let fullValue = value;
+  if (registerValue.viewBits < registerValue.physicalBits) {
+    const lsb = Number.isSafeInteger(registerValue.lsb) && registerValue.lsb >= 0 ? registerValue.lsb : 0;
+    if (registerValue.viewBits === 32 && registerValue.physicalBits === 64 && lsb === 0) {
+      fullValue = { kind:'zero-extend', value, fromBits:registerValue.viewBits, toBits:registerValue.physicalBits };
+    } else {
+      const prior = state.registers.get(registerValue.physicalId) ?? initialRegister(registerValue);
+      fullValue = { kind:'insert', into:prior, value, lsb, widthBits:registerValue.viewBits, physicalBits:registerValue.physicalBits };
+    }
+  }
   state.registers.set(registerValue.physicalId, fullValue);
 }
 

@@ -758,6 +758,8 @@ export class App {
       this.schemasBusyGeneration = -1;
       this.stringsBusy = null;
       this.stringsBusyEpoch = -1;
+      this.objcBusyState?.controller?.abort('objc-reset');
+      this.objcBusyState = null;
       this.objcBusy = null;
       this.objcBusyEpoch = -1;
       this.symbolsReady = null;
@@ -1235,7 +1237,7 @@ export class App {
     const slice=this.currentSlice();
     if (slice && slice.info && slice.info.encrypted) alertDialog(t('err.encryptedTitle'),t('err.encryptedText'));
     document.dispatchEvent(new CustomEvent('hex:file-opened',{detail:{name:info.name,sample:this.sampleOpen}}));
-    if (this.sampleOpen) setTimeout(()=>showSampleGuide(this),250);
+    if (this.sampleOpen) setTimeout(() => { if (openEpoch === this.backend.gen && this.sampleOpen) showSampleGuide(this); }, 250);
   }
 
   async attachNotes(file, info, sliceIndex, epoch = this.backend.gen) {

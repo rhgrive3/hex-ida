@@ -551,6 +551,8 @@ function rawSection(app, sheet, res, name, region) {
 export function showFeatures(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
+  const epoch = app.backend?.gen;
+  const sliceIndex = app.store?.get?.('sliceIndex');
   const controller = new AbortController();
   let activeRequest = null;
   const sheet = new Sheet(pick('機能から探す', 'Find by feature'), {
@@ -612,22 +614,28 @@ export function showFeatures(app) {
     if (!p.all) return;
     fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
   };
+  const isCurrent = () => (
+    !controller.signal.aborted
+    && sheet.root.isConnected
+    && epoch === app.backend?.gen
+    && sliceIndex === app.store?.get?.('sliceIndex')
+  );
   const req = collectStrings(app, progress);
   activeRequest = req;
   req.then(async (strings) => {
     if (activeRequest === req) activeRequest = null;
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (!isCurrent()) return;
     const index = await classifyFeaturesAndEngineAsync(strings, {
       signal: controller.signal,
       onProgress: (done, all) => {
-        if (all) fill.style.width = Math.min(100, Math.round((done / all) * 100)) + '%';
+        if (all && isCurrent()) fill.style.width = Math.min(100, Math.round((done / all) * 100)) + '%';
       },
     });
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (!isCurrent()) return;
     app.featureIndex = index;
     render(index);
   }).catch((err) => {
-    if (controller.signal.aborted) return;
+    if (!isCurrent() || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') return;
     bar.remove();
     status.textContent = '';
     alertDialog(t('search.failed'), userError(err));

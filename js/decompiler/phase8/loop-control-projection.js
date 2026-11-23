@@ -614,6 +614,21 @@ function projectOneLoop(body, proof, ctx) {
   const after = spanEnd + 1 < body.length ? body[spanEnd + 1] : null;
   if (after == null || blockOf(after) !== proof.exitTarget) return null;
 
+  const nestedRanges = [];
+  for (let index = spanStart; index <= spanEnd; index += 1) {
+    const node = body[index];
+    if (node?.kind !== 'ctrl' || typeof node.text !== 'string') continue;
+    const text = node.text.trim();
+    if (!LOOP_NODE_TEXT.test(text) && !SWITCH_NODE_TEXT.test(text)) continue;
+    if (blockOf(node) === proof.header) continue;
+    const nested = findAlreadyProjectedSpan(body, index);
+    if (!nested) continue;
+    nestedRanges.push(nested);
+    index = nested.end;
+  }
+  const insideNestedConstruct = (index) =>
+    nestedRanges.some((range) => index >= range.start && index <= range.end);
+
   const removeIndices = new Set();
   const rewrites = [];
   const guardNodes = [];
@@ -653,6 +668,7 @@ function projectOneLoop(body, proof, ctx) {
         record.from === owner && record.to === targetBlock) ?? null;
       if (!edge) return null;
       if (targets.length > 1) continue;
+      if (insideNestedConstruct(index)) continue;
       if (edge.construct === 'loop-break') {
         if (!proof.breakUsable || !proof.breakEdgeKeys.has(`${edge.from}->${edge.to}`)) continue;
         rewrites.push({ index, text: 'break', edge, targetBlock });

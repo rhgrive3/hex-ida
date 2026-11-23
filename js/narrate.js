@@ -1063,7 +1063,7 @@ export function factText(f) {
       if (d.div) parts.push(pick('割り算 ' + d.div + ' 回', d.div + ' divisions'));
       if (d.fmul) parts.push(pick('小数の掛け算 ' + d.fmul + ' 回', d.fmul + ' float multiplications'));
       if (d.farith) parts.push(pick('小数の足し引き ' + d.farith + ' 回', d.farith + ' float add/subs'));
-      return parts.join('・');
+      return parts.join(pick('・', ', '));
     }
     case 'value-update': {
       const op = d.ops && d.ops.length ? d.ops[d.ops.length - 1] : null;
@@ -1283,7 +1283,10 @@ export function oneLiner(report, name) {
 
   const purpose = (report.inferences || []).find((i) => i.code === 'purpose-feature');
   if (purpose && purpose.detail && purpose.detail.features && purpose.detail.features.length) {
-    const label = purpose.detail.features.map(featureLabel).filter(Boolean).join('と');
+    const labels = purpose.detail.features.map(featureLabel).filter(Boolean);
+    const label = labels.length <= 2
+      ? labels.join(pick('と', ' and '))
+      : pick(labels.join('と'), labels.slice(0, -1).join(', ') + ', and ' + labels[labels.length - 1]);
     if (label) return pick(label + ' に関わる処理です。', 'It deals with ' + label + '.');
   }
 
@@ -2173,7 +2176,10 @@ function amountText(amount) {
     return text || null;
   }
   const abs = n < 0n ? -n : n;
-  if (abs >= 4096n) return n.toString() + '（0x' + abs.toString(16).toUpperCase() + '）';
+  if (abs >= 4096n) {
+    const hexStr = '0x' + abs.toString(16).toUpperCase();
+    return pick(n.toString() + '（' + hexStr + '）', n.toString() + ' (' + hexStr + ')');
+  }
   return n.toString();
 }
 

@@ -747,13 +747,11 @@ function argumentName(v, state) {
   if (v?.reg === 'sp') return 'sp';
   const cxxRec = currentCppReceiver(state.opts, state.ir);
   if (cxxRec && isCppReceiverAlias(v, cxxRec, state.ir)) return 'this';
-  const groupId = state.highVariables?.valueToGroup?.get(v?.id);
-  const group = highVariableGroupById(state.highVariables, groupId);
-  if (group?.name) return group.name;
   const reg = String(v?.reg || '');
   const isAArch64 = isAArch64PipelineContext(state.ir, state.opts);
   const typeArgs = Array.isArray(state.types?.args) ? state.types.args : [];
-  if (typeArgs.length) {
+  const isEntryArg = v?.kind === 'arg' || !v?.def;
+  if (typeArgs.length && isEntryArg) {
     let matched = v?.id != null ? typeArgs.find((a) => a && a.valueId === v.id) : null;
     if (!matched && reg) {
       const canon = canonicalPipelineRegister(reg, isAArch64);
@@ -765,6 +763,9 @@ function argumentName(v, state) {
       return state.opts?.argNames?.[index] || `a${index + 1}`;
     }
   }
+  const groupId = state.highVariables?.valueToGroup?.get(v?.id);
+  const group = highVariableGroupById(state.highVariables, groupId);
+  if (group?.name) return group.name;
   const location = abiArgumentLocationForRegister(state, reg);
   if (!location) return safeIdent(reg || `value_${v?.id}`);
   const index = location.index;
@@ -1019,6 +1020,36 @@ function stackFrameOffset(loc, addr) {
   return null;
 }
 
+function pointerPointeeByteSize(cType) {
+  const m = /^(?:(?:const|volatile|restrict)\s+)*(.+?)\s*\*$/.exec(String(cType || '').trim());
+  if (!m || m[1].includes('*')) return null;
+  const pointee = m[1].replace(/\b(?:const|volatile|restrict)\b/g, '').replace(/\s+/g, ' ').trim();
+  switch (pointee) {
+    case 'uint8_t': case 'int8_t': case 'uint8': case 'int8':
+    case 'char': case 'signed char': case 'unsigned char':
+    case 'bool': case '_Bool':
+      return 1;
+    case 'uint16_t': case 'int16_t': case 'uint16': case 'int16':
+    case 'short': case 'unsigned short': case 'signed short':
+    case 'short int': case 'unsigned short int':
+      return 2;
+    case 'uint32_t': case 'int32_t': case 'uint32': case 'int32':
+    case 'int': case 'unsigned int': case 'signed int': case 'unsigned':
+    case 'float':
+      return 4;
+    case 'uint64_t': case 'int64_t': case 'uint64': case 'int64':
+    case 'long': case 'unsigned long': case 'long long': case 'unsigned long long':
+    case 'uintptr_t': case 'intptr_t': case 'size_t': case 'ssize_t': case 'ptrdiff_t':
+    case 'double':
+      return 8;
+    case 'uint128': case 'int128': case 'uint128_t': case 'int128_t':
+    case '__uint128_t': case '__int128_t': case '__int128':
+      return 16;
+    default:
+      return null;
+  }
+}
+
 function memoryLocation(inst, state) {
   const loc = inst?.loc || {};
   const addr = inst?.addr || {};
@@ -1103,18 +1134,27 @@ function memoryLocation(inst, state) {
   if (addr.base && addr.index) {
     const suppressStr = shouldSuppressRodataStringForMem(inst, loc, state.types, 0);
     const base = buildValue(addr.base, state, suppressStr ? { forAddress: true, suppressRodataString: true } : { forAddress: true });
-    const index = buildValue(addr.index, state, { forAddress: true });
+    let index = buildValue(addr.index, state, { forAddress: true });
+    if (addr.extend) {
+      index = applyShift(index, { op: String(addr.extend).toLowerCase(), amount: 0 });
+    }
     const rawScale = Number(addr.scale || 0);
-    const validScale = Number.isInteger(rawScale) && rawScale >= 0 && rawScale <= 3;
+    const validScale = Number.isInteger(rawScale) && rawScale >= 0 && rawScale <= 4;
     const scale = validScale ? (1 << rawScale) : -1;
     const elemBytes = Number(addr.size || inst?.size || loc?.size || 0);
     const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
     if (validScale && elemBytes > 0 && elemBytes === scale && disp === 0n) {
-      const baseType = state.types?.values?.get?.(addr.base.id);
-      const indexBaseIsPointer = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && base?.kind === 'var';
-      const elemBits = elemBytes * 8;
       const elemType = memoryElementType(inst, elemBytes, state.types);
-      const access = { ...expr.index(base, index, scale, elemBits, origin(inst)), elemType };
+      const baseType = state.types?.values?.get?.(addr.base.id);
+      const baseCType = String(baseType?.cType || '').trim();
+      const basePointeeBytes = pointerPointeeByteSize(baseCType);
+      const baseCTypeUnqual = baseCType.replace(/\b(?:const|volatile|restrict)\b/g, '').replace(/\s+/g, ' ').trim();
+      const indexBaseIsPointer = baseType?.kind === 'pointer' && baseCType && baseCType !== 'void *' && base?.kind === 'var'
+        && basePointeeBytes === elemBytes
+        && ((elemType !== 'float' && elemType !== 'double') || baseCTypeUnqual.startsWith(elemType))
+        && (!elemType.startsWith('int') || baseCTypeUnqual.startsWith('int'));
+      const elemBits = elemBytes * 8;
+      const access = expr.index(base, index, scale, elemBits, origin(inst), { elemType });
       return { kind: 'index', key: loc.key, base, index, scale, expression: access, text: printExpression(access, 0, exprPrintOpts(state, { indexBaseIsPointer })) };
     }
     if (validScale && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
@@ -1125,7 +1165,7 @@ function memoryLocation(inst, state) {
       const offsetText = scale === 1 ? `(${idxText})` : `(${idxText}) * ${scale}`;
       const dispText = disp !== 0n ? (disp < 0n ? ` - ${(-disp).toString()}` : ` + ${disp.toString()}`) : '';
       const text = `*(${elemType} *)((uintptr_t)(${baseText}) + ${offsetText}${dispText})`;
-      const access = expr.index(base, index, scale, effBytes * 8, origin(inst));
+      const access = expr.index(base, index, scale, effBytes * 8, origin(inst), { elemType });
       return { kind: 'index', key: loc.key, base, index, scale, expression: access, text };
     }
   }
@@ -2049,6 +2089,8 @@ function buildCanonicalExpressions(state) {
 }
 
 function canonicalPhiName(v, state) {
+  const inductionName = v?.id != null ? state.inductionNames?.get?.(v.id) : null;
+  if (inductionName) return inductionName;
   return state.opts?.phase8Optimize === true ? `local_phi_${v.id}` : `phi_${v.id}`;
 }
 
@@ -2163,15 +2205,38 @@ function buildValueRaw(v, state, flags = {}) {
       if (d.sub === 'bic') out = expr.binary('and', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
       else if (d.sub === 'orn') out = expr.binary('or', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
       else if (d.sub === 'eon') out = expr.unary('not', expr.binary('xor', a, b, v.bits || 64, signedFor(state, v)), v.bits || 64, signedFor(state, v), origin(d, v));
-      else out = expr.binary(d.sub, a, b, v.bits || 64, signedFor(state, v), origin(d, v));
+      else if (d.sub === 'ror') out = expr.intrinsic('ror', [a, b], v.bits || 64, false, origin(d, v));
+      else if (d.sub === 'smull' || d.sub === 'umull') {
+        out = expr.binary(d.sub, a, b, v.bits || 64, d.sub === 'smull', origin(d, v));
+      } else out = expr.binary(d.sub, a, b, v.bits || 64, signedFor(state, v), origin(d, v));
       if (d.extra?.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));
       }
     } else if (d.op === 'un') {
       const a = buildArg(d.args?.[0], state);
       const sub = String(d.sub || '');
-      if (/^sxt/.test(sub)) out = expr.unary('sext', a, v.bits || 64, true, origin(d, v), { fromBits: Number(sub.slice(3)) || a.bits });
-      else if (/^uxt/.test(sub)) out = expr.unary('zext', a, v.bits || 64, false, origin(d, v), { fromBits: Number(sub.slice(3)) || a.bits });
-      else out = expr.unary(sub, a, v.bits || 64, signedFor(state, v), origin(d, v));
+      const subLower = sub.toLowerCase();
+      const extWidthMap = { b: 8, h: 16, w: 32, '8': 8, '16': 16, '32': 32 };
+      if (subLower === 'is-zero' || subLower === 'is_zero') {
+        out = expr.compare('eq', a, expr.constant(0, a.bits || 64, false, origin(d, v)), origin(d, v));
+      } else if (subLower === 'is-nonzero' || subLower === 'is_nonzero') {
+        out = expr.compare('ne', a, expr.constant(0, a.bits || 64, false, origin(d, v)), origin(d, v));
+      } else if (/^sxt/i.test(sub)) {
+        const suffix = subLower.slice(3);
+        const fromBits = extWidthMap[suffix] || Number(suffix) || a.bits || 32;
+        const dstBits = v.bits || 64;
+        const narrowed = fromBits < (a.bits || 64) ? expr.unary('trunc', a, fromBits, true, origin(d, v)) : a;
+        out = expr.unary('sext', narrowed, dstBits, true, origin(d, v), { fromBits });
+      } else if (/^uxt/i.test(sub)) {
+        const suffix = subLower.slice(3);
+        const fromBits = extWidthMap[suffix] || Number(suffix) || a.bits || 32;
+        const dstBits = v.bits || 64;
+        const narrowed = fromBits < (a.bits || 64) ? expr.unary('trunc', a, fromBits, false, origin(d, v)) : a;
+        out = expr.unary('zext', narrowed, dstBits, false, origin(d, v), { fromBits });
+      } else {
+        const srcBits = d.args?.[0]?.bits ?? valueOf(d.args?.[0])?.bits;
+        const extra = srcBits != null ? { fromBits: Number(srcBits) } : {};
+        out = expr.unary(sub, a, v.bits || d.bits || 64, signedFor(state, v), origin(d, v), extra);
+      }
     } else if (d.op === 'mac') {
       const addend = buildArg(d.args?.[0], state);
       let a = buildArg(d.args?.[1], state), b = buildArg(d.args?.[2], state);
@@ -2190,7 +2255,9 @@ function buildValueRaw(v, state, flags = {}) {
         let inserted=expr.binary('shl', expr.binary('and', src, expr.constant(maskValue, bits, false), bits, false), expr.constant(lsb, bits, false), bits, false, origin(d,v));
         if (d.extra?.signed) { const fieldBits=Math.min(bits, lsb + width); inserted=expr.unary('sext', expr.unary('trunc', inserted, fieldBits, true, origin(d,v)), bits, true, origin(d,v), { fromBits:fieldBits }); }
         out=inserted;
-      } else out=expr.intrinsic('bit_extract', [src, expr.constant(lsb,64), expr.constant(width,64)], bits, d.extra?.signed ?? d.signed ?? false, origin(d,v));
+      } else if (d.extra?.signed === true || d.signed === true) {
+        out = expr.intrinsic('__arm64_sbfx', [src, expr.constant(lsb, 64), expr.constant(width, 64)], bits, true, origin(d, v));
+      } else out = expr.intrinsic('bit_extract', [src, expr.constant(lsb, 64), expr.constant(width, 64)], bits, false, origin(d, v));
     } else if (d.op === 'bfi') {
       const old=buildArg(d.args?.[0], state), src=buildArg(d.args?.[1], state), lsb=Number(d.extra?.lsb ?? 0), width=Math.max(1,Number(d.extra?.width ?? 16)), bits=Number(v.bits || 64);
       if (d.extra?.bitfieldKind === 'bfxil') {
@@ -2241,14 +2308,19 @@ function buildValueRaw(v, state, flags = {}) {
         out = expr.variable(`call_${v.id ?? d.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { materializedCall: true });
       }
     } else if (d.op === 'phi') {
-      const nonSelf = (d.incoming || []).filter((x) => !(v.id != null && x?.value?.id === v.id));
-      const incoming = nonSelf.map((x) => buildValue(x.value, state));
-      const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
-      const phiName = canonicalPhiName(v, state);
-      out = unique.size === 1
-        ? incoming[0]
-        : expr.variable(phiName, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, ssaId: v.id, incoming });
-      if (unique.size === 1) recordPhiCollapse(v, d, incoming, out, state);
+      const inductionName = v.id != null ? state.inductionNames?.get?.(v.id) : null;
+      if (inductionName) {
+        out = expr.variable(inductionName, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, ssaId: v.id, induction: true });
+      } else {
+        const nonSelf = (d.incoming || []).filter((x) => !(v.id != null && x?.value?.id === v.id));
+        const incoming = nonSelf.map((x) => buildValue(x.value, state));
+        const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
+        const phiName = canonicalPhiName(v, state);
+        out = unique.size === 1
+          ? incoming[0]
+          : expr.variable(phiName, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, ssaId: v.id, incoming });
+        if (unique.size === 1) recordPhiCollapse(v, d, incoming, out, state);
+      }
     }
   }
   if (!out) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
@@ -2498,22 +2570,25 @@ function getInstsByEntityId(ir, id) {
   return idx.instsByEntityId.get(id) || EMPTY_LIST;
 }
 
-function getValuesByReg(ir, reg) {
+function getValuesByReg(ir, reg, isAArch64 = true) {
   const idx = getIrQueryIndex(ir);
   if (!idx) return EMPTY_LIST;
-  if (!idx.valuesByReg) {
+  const cacheKey = isAArch64 ? 'valuesByRegAArch64' : 'valuesByRegGeneric';
+  if (!idx[cacheKey]) {
     const map = new Map();
     const values = idx.valuesRef;
     for (let i = 0; i < values.length; i++) {
       const v = values[i];
       if (!v || !v.reg || !v.def) continue;
-      let list = map.get(v.reg);
-      if (!list) { list = []; map.set(v.reg, list); }
+      const canon = canonicalPipelineRegister(v.reg, isAArch64);
+      let list = map.get(canon);
+      if (!list) { list = []; map.set(canon, list); }
       list.push(v);
     }
-    idx.valuesByReg = map;
+    idx[cacheKey] = map;
   }
-  return idx.valuesByReg.get(reg) || EMPTY_LIST;
+  const canonQuery = canonicalPipelineRegister(reg, isAArch64);
+  return idx[cacheKey].get(canonQuery) || EMPTY_LIST;
 }
 
 function blockCanReachFallback(ir, from, to) {
@@ -2612,16 +2687,26 @@ function definitionMayOverrideCandidate(ir, definition, candidateDefinition) {
 // precede the use; foreign-block defs qualify only when their block dominates
 // the use. A branch-local write after the selected candidate makes the merge
 // ambiguous unless a later same-block definition overwrites it on every path.
-function reachingRegisterValue(ir, atInst, reg) {
+function reachingRegisterValue(ir, atInst, reg, optsOrIsAArch64 = undefined) {
   if (!ir || !atInst || !reg) return null;
+  const isAArch64 = typeof optsOrIsAArch64 === 'boolean'
+    ? optsOrIsAArch64
+    : isAArch64PipelineContext(ir, optsOrIsAArch64);
+  const canonReg = canonicalPipelineRegister(reg, isAArch64);
   let best = ir.args?.get?.(reg) || null;
+  if (!best && ir.args?.entries) {
+    for (const [argReg, argVal] of ir.args.entries()) {
+      if (canonicalPipelineRegister(argReg, isAArch64) === canonReg) { best = argVal; break; }
+    }
+  }
   let bestDepth = -1, bestRow = -Infinity, bestSameBlock = false;
-  const candidates = getValuesByReg(ir, reg);
+  const candidates = getValuesByReg(ir, reg, isAArch64);
   for (let i = 0; i < candidates.length; i++) {
     const v = candidates[i];
     const d = v.def;
     if (!d || d === atInst) continue;
     if (d.block === atInst.block) {
+      if (d.op === 'phi') continue;
       if (d.row == null || atInst.row == null || d.row >= atInst.row) continue;
       if (!bestSameBlock || d.row > bestRow) {
         best = v;
@@ -2638,9 +2723,19 @@ function reachingRegisterValue(ir, atInst, reg) {
       bestRow = d.row ?? -Infinity;
     }
   }
-  if (best?.clobbered) return null;
-  if (bestSameBlock) return best;
+  if (bestSameBlock) return best?.clobbered ? null : best;
 
+  const blockPhis = ir.blocks?.[atInst.block]?.phis;
+  if (Array.isArray(blockPhis)) {
+    for (const phi of blockPhis) {
+      const dst = phi?.dst;
+      if (dst && canonicalPipelineRegister(dst.reg, isAArch64) === canonReg) {
+        return dst.clobbered ? null : dst;
+      }
+    }
+  }
+
+  if (best?.clobbered) return null;
   const candidateDefinition = best?.def ?? null;
   for (let i = 0; i < candidates.length; i++) {
     const v = candidates[i];
@@ -2761,7 +2856,7 @@ function returnValueAt(inst, state) {
   const explicit=valueOf(inst?.args?.[0]);
   if (explicit) return explicit;
   const reg=returnRegisterForState(state);
-  return reg ? reachingRegisterValue(state.ir, inst, reg) : null;
+  return reg ? reachingRegisterValue(state.ir, inst, reg, state.opts) : null;
 }
 
 function semanticFacts(state, result) {
@@ -3355,9 +3450,27 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
     }
   }
   const preservePhase8Unknown = opts.phase8Optimize === true || result?.ctx?.phase8Optimize === true;
+  const inductionNames = new Map();
+  if (result?.ctx?.emittedInductionNames instanceof Map) {
+    for (const [id, name] of result.ctx.emittedInductionNames) {
+      if (id != null && name) inductionNames.set(id, name);
+    }
+  } else if (Array.isArray(result?.ctx?.inductions)) {
+    const lineTexts = (result.lines || []).map((l) => String(l?.text || ''));
+    for (const iv of result.ctx.inductions) {
+      if (iv?.value?.id != null && iv?.name) {
+        const esc = iv.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const forRe = new RegExp(`^for\\s*\\([^;]*\\b${esc}\\s*=`);
+        if (lineTexts.some((t) => forRe.test(t.trim()))) {
+          inductionNames.set(iv.value.id, iv.name);
+        }
+      }
+    }
+  }
   const state = {
     ir: result.ir, model, opts, types: result.types || null,
     preservePhase8Unknown,
+    inductionNames,
     orderedMaterializations,
     localDeclarations,
     declPointerVarNames: extractDeclaredPointerVarNames(result.lines),
@@ -3527,8 +3640,8 @@ export function buildExpressionForTesting(value, state) {
   return buildValue(value, s);
 }
 
-export function reachingRegisterValueForTesting(ir, atInst, reg) {
-  return reachingRegisterValue(ir, atInst, reg);
+export function reachingRegisterValueForTesting(ir, atInst, reg, optsOrIsAArch64 = undefined) {
+  return reachingRegisterValue(ir, atInst, reg, optsOrIsAArch64);
 }
 
 export function directSameLocationLoadForTesting(node, location) {

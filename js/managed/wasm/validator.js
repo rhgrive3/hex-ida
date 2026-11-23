@@ -195,6 +195,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         break;
       }
       case 0x0f:
+        budget.chargeValues(funcType.results.length);
         assertSuffix(funcType.results, 'wasm-stack-underflow-return');
         markUnreachable();
         break;

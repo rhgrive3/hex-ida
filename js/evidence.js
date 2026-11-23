@@ -163,12 +163,14 @@ export function independentGroupCount(fusion) {
 }
 
 /* 1 つの系統だけで到達できる尤度比の上限。
-   名前がどれだけ当たっても、それだけでは 60 倍を超えられない。 */
+   role-accessor-metadata (70) / role-accessor-match (80) / role-verb-selector (80)
+   の単一証拠を切り捨てない水準としつつ、名前＋サイズのみの未検証候補が
+   単独で likely (p >= 0.85) へ跳ねない範囲（NAME <= 120）に抑える。 */
 const FAMILY_CAP = {
-  [FAMILY.NAME]: 60,
+  [FAMILY.NAME]: 120,
   [FAMILY.TYPE]: 6,
   [FAMILY.CONTEXT]: 25,
-  [FAMILY.USAGE]: 30,
+  [FAMILY.USAGE]: 80,
   [FAMILY.STRUCT]: 12,
   [FAMILY.VERIFIED]: 4000,   // 実測だけは強い。ただし後述のとおり単独では確定にしない
   /*
@@ -561,6 +563,7 @@ export function exclusiveLR(total, users, score, text) {
   const totalC = observationCount(total, 0);
   const usersC = observationCount(users, 1);
   if (totalC === null || usersC === null) return 0;
+  if (totalC > 0 && users === 0) return 0;
   const n = Math.max(2, totalC);
   const k = Math.max(1, usersC);
   if (totalC > 0 && k >= totalC) return 0;

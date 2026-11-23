@@ -298,9 +298,9 @@ function devToolContractLines(availableTools) {
     .map((contract) => `- ${contract.publicName}: arguments=${contract.argumentContract}`);
 }
 
-function safeJson(value) {
+export function safeJson(value) {
   return JSON.stringify(value)
-    .replace(/&/g, '\u0026')
-    .replace(/</g, '\u003c')
-    .replace(/>/g, '\u003e');
+    .replace(/&/g, '\\u0026')
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
 }

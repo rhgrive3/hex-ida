@@ -54,17 +54,21 @@ export function backwardDependencySlice(target, options = {}) {
 
   const activeValues = new Set();
   const activeInstructions = new Set();
+  const activeValueNodes = new WeakSet();
+  const reachedValueNodes = new WeakSet();
+  const activeInstructionNodes = new WeakSet();
+  const reachedInstructionNodes = new WeakSet();
 
   function visitValue(val, depth) {
     if (!val) return;
     const valId = val.id != null ? String(val.id) : null;
-    if (valId && activeValues.has(valId)) {
+    if (activeValueNodes.has(val) || (valId && activeValues.has(valId))) {
       hasCycle = true;
       assumptions.push(
         createAssumption({
-          id: `cycle_assumption_${valId}`,
+          id: `cycle_assumption_${valId || 'anonymous'}`,
           kind: 'phi-cycle-unroll-boundary',
-          statement: `SSA dependency graph contains cycle at value ${valId}`,
+          statement: `SSA dependency graph contains cycle at value ${valId || '(anonymous)'}`,
           source: 'slice',
           originIds: val.origin != null ? [String(val.origin)] : [],
           trust: ASSUMPTION_TRUST.BOUNDED_UNROLL,
@@ -72,7 +76,7 @@ export function backwardDependencySlice(target, options = {}) {
       );
       return;
     }
-    if (valId && reachedValues.has(valId)) return;
+    if (reachedValueNodes.has(val) || (valId && reachedValues.has(valId))) return;
 
     if (depth > maxDepth) {
       hitDepthLimit = true;
@@ -89,6 +93,7 @@ export function backwardDependencySlice(target, options = {}) {
       return;
     }
 
+    activeValueNodes.add(val);
     if (valId) {
       activeValues.add(valId);
     }
@@ -98,6 +103,8 @@ export function backwardDependencySlice(target, options = {}) {
       visitInstruction(val.def, depth + 1);
     }
 
+    activeValueNodes.delete(val);
+    reachedValueNodes.add(val);
     if (valId) {
       activeValues.delete(valId);
       reachedValues.add(valId);
@@ -107,12 +114,28 @@ export function backwardDependencySlice(target, options = {}) {
   function visitInstruction(inst, depth) {
     if (!inst) return;
     const instId = inst.id != null ? String(inst.id) : null;
-    if (instId && activeInstructions.has(instId)) {
+    if (activeInstructionNodes.has(inst) || (instId && activeInstructions.has(instId))) {
       hasCycle = true;
       return;
     }
-    if (instId && reachedInstructions.has(instId)) return;
+    if (reachedInstructionNodes.has(inst) || (instId && reachedInstructions.has(instId))) return;
 
+    if (depth > maxDepth) {
+      hitDepthLimit = true;
+      assumptions.push(
+        createAssumption({
+          id: `depth_limit_${instId || depth}`,
+          kind: 'slicing-depth-boundary',
+          statement: `Backward slice reached depth limit ${maxDepth}`,
+          source: 'slice',
+          originIds: inst?.origin != null ? [String(inst.origin)] : [],
+          trust: ASSUMPTION_TRUST.BOUNDED_UNROLL,
+        })
+      );
+      return;
+    }
+
+    activeInstructionNodes.add(inst);
     if (instId) activeInstructions.add(instId);
     if (inst.origin != null) reachedOrigins.add(String(inst.origin));
     if (inst.row != null) reachedOrigins.add(`row:${inst.row}`);
@@ -159,6 +182,15 @@ export function backwardDependencySlice(target, options = {}) {
       }
     }
 
+    if (inst.op === OP.SEL) {
+      if (inst.conditionValue && typeof inst.conditionValue === 'object') {
+        visitValue(inst.conditionValue, depth + 1);
+      } else if (inst.cond && typeof inst.cond === 'object') {
+        if (inst.cond.op != null) visitInstruction(inst.cond, depth + 1);
+        else visitValue(inst.cond, depth + 1);
+      }
+    }
+
     // Traverse only stores named by the canonical capability. A structural
     // reachingStore link is intentionally ignored, including when no IR map
     // is supplied to resolve the canonical definition IDs.
@@ -168,6 +200,8 @@ export function backwardDependencySlice(target, options = {}) {
       }
     }
 
+    activeInstructionNodes.delete(inst);
+    reachedInstructionNodes.add(inst);
     if (instId) {
       activeInstructions.delete(instId);
       reachedInstructions.add(instId);

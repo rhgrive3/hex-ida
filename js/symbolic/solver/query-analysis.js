@@ -52,7 +52,7 @@ function validateExprNode(expr) {
         ? null : 'invalid-compare-expression';
     case EXPR_KIND.CONNECTIVE: {
       if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args)) return 'invalid-connective-expression';
-      if (expr.args.length === 0 || expr.args.some((arg) => !isBoolSort(arg?.sort))) return 'invalid-connective-expression';
+      if (expr.args.length === 0) return 'invalid-connective-expression';
       if (expr.op === BOOL_CONNECTIVE_OP.NOT && expr.args.length !== 1) return 'invalid-connective-arity';
       if ([BOOL_CONNECTIVE_OP.IMPLIES, BOOL_CONNECTIVE_OP.EQ, BOOL_CONNECTIVE_OP.NE].includes(expr.op) && expr.args.length !== 2) return 'invalid-connective-arity';
       return null;
@@ -78,40 +78,57 @@ function validateExprNode(expr) {
 }
 
 export function analyzeSolverExpressions(expressions, { maxExprNodes = 100000, maxExprDepth = 1024 } = {}) {
-  if (!Array.isArray(expressions)) return Object.freeze({ unsupportedReason: 'malformed-expression-roots', symbols: [], nodeCount: 0, maxDepth: 0, maxBvWidth: 0 });
+  if (!Array.isArray(expressions)) return Object.freeze({ unsupportedReason: 'malformed-expression-roots', symbols: [], nodeCount: 0, maxDepth: 0, maxBvWidth: 0, traversalCount: 0 });
   const symbols = new Map();
   const colors = new WeakMap();
+  const heights = new WeakMap();
   let nodeCount = 0;
   let maxDepth = 0;
   let maxBvWidth = 0;
+  let traversalCount = 0;
   for (const root of expressions) {
-    if (!root || typeof root !== 'object') return Object.freeze({ unsupportedReason: 'malformed-expression-node', symbols: [], nodeCount, maxDepth, maxBvWidth });
-    if (colors.get(root) === 2) continue;
-    const stack = [{ node: root, entered: false, children: null, index: 0 }];
+    traversalCount++;
+    if (traversalCount > maxExprNodes) return Object.freeze({ limitExceeded: true, depthExceeded: false, unsupportedReason: null, symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
+    if (!root || typeof root !== 'object') return Object.freeze({ unsupportedReason: 'malformed-expression-node', symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
+    if (colors.get(root) === 2) {
+      const rootHeight = heights.get(root) || 1;
+      maxDepth = Math.max(maxDepth, rootHeight);
+      if (rootHeight > maxExprDepth) return Object.freeze({ depthExceeded: true, limitExceeded: false, unsupportedReason: null, symbols: [], nodeCount, maxDepth: rootHeight, maxBvWidth, traversalCount });
+      continue;
+    }
+    const stack = [{ node: root, entered: false, children: null, index: 0, childHeight: 0 }];
     while (stack.length) {
-      if (stack.length > maxExprDepth) return Object.freeze({ depthExceeded: true, symbols: [], nodeCount, maxDepth: stack.length, maxBvWidth });
+      if (stack.length > maxExprDepth) return Object.freeze({ depthExceeded: true, limitExceeded: false, unsupportedReason: null, symbols: [], nodeCount, maxDepth: stack.length, maxBvWidth, traversalCount });
       maxDepth = Math.max(maxDepth, stack.length);
       const frame = stack[stack.length - 1];
       if (!frame.entered) {
-        if (colors.get(frame.node) === 1) return Object.freeze({ unsupportedReason: 'cyclic-expression-dag', symbols: [], nodeCount, maxDepth, maxBvWidth });
-        if (colors.get(frame.node) === 2) { stack.pop(); continue; }
+        if (colors.get(frame.node) === 1) return Object.freeze({ unsupportedReason: 'cyclic-expression-dag', symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
+        if (colors.get(frame.node) === 2) {
+          const height = heights.get(frame.node) || 1;
+          const combinedDepth = stack.length - 1 + height;
+          maxDepth = Math.max(maxDepth, combinedDepth);
+          if (combinedDepth > maxExprDepth) return Object.freeze({ depthExceeded: true, limitExceeded: false, unsupportedReason: null, symbols: [], nodeCount, maxDepth: combinedDepth, maxBvWidth, traversalCount });
+          stack.pop();
+          if (stack.length > 0) stack[stack.length - 1].childHeight = Math.max(stack[stack.length - 1].childHeight, height);
+          continue;
+        }
         colors.set(frame.node, 1);
         nodeCount++;
-        if (nodeCount > maxExprNodes) return Object.freeze({ limitExceeded: true, symbols: [], nodeCount, maxDepth, maxBvWidth });
+        if (nodeCount > maxExprNodes) return Object.freeze({ limitExceeded: true, depthExceeded: false, unsupportedReason: null, symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
         const invalid = validateExprNode(frame.node);
-        if (invalid) return Object.freeze({ unsupportedReason: invalid, symbols: [], nodeCount, maxDepth, maxBvWidth });
+        if (invalid) return Object.freeze({ unsupportedReason: invalid, symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
         if (isBvSort(frame.node.sort)) maxBvWidth = Math.max(maxBvWidth, frame.node.sort.width);
         if (frame.node.kind === EXPR_KIND.FRESH_SYMBOL) {
           const key = frame.node.symbolId ?? frame.node.name;
           if (typeof frame.node.name !== 'string' || !frame.node.name || typeof key !== 'string' || !key) {
-            return Object.freeze({ unsupportedReason: 'malformed-symbol', symbols: [], nodeCount, maxDepth, maxBvWidth });
+            return Object.freeze({ unsupportedReason: 'malformed-symbol', symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
           }
           const existing = symbols.get(key);
           if (existing && stableDigest(existing.sort) !== stableDigest(frame.node.sort)) {
-            return Object.freeze({ unsupportedReason: 'symbol-sort-conflict', symbols: [], nodeCount, maxDepth, maxBvWidth });
+            return Object.freeze({ unsupportedReason: 'symbol-sort-conflict', symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
           }
           if (existing && existing.name !== frame.node.name) {
-            return Object.freeze({ unsupportedReason: 'symbol-identity-conflict', symbols: [], nodeCount, maxDepth, maxBvWidth });
+            return Object.freeze({ unsupportedReason: 'symbol-identity-conflict', symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
           }
           symbols.set(key, Object.freeze({ key, name: frame.node.name, symbolId: key, sort: frame.node.sort }));
         }
@@ -119,14 +136,33 @@ export function analyzeSolverExpressions(expressions, { maxExprNodes = 100000, m
         frame.entered = true;
       }
       if (frame.index < frame.children.length) {
+        traversalCount++;
+        if (traversalCount > maxExprNodes) return Object.freeze({ limitExceeded: true, depthExceeded: false, unsupportedReason: null, symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
         const child = frame.children[frame.index++];
-        if (!child || typeof child !== 'object') return Object.freeze({ unsupportedReason: 'malformed-expression-node', symbols: [], nodeCount, maxDepth, maxBvWidth });
-        if (colors.get(child) === 1) return Object.freeze({ unsupportedReason: 'cyclic-expression-dag', symbols: [], nodeCount, maxDepth, maxBvWidth });
-        if (colors.get(child) !== 2) stack.push({ node: child, entered: false, children: null, index: 0 });
+        if (!child || typeof child !== 'object') return Object.freeze({ unsupportedReason: 'malformed-expression-node', symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
+        if (frame.node.kind === EXPR_KIND.CONNECTIVE && !isBoolSort(child.sort)) {
+          return Object.freeze({ unsupportedReason: 'invalid-connective-expression', symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
+        }
+        if (colors.get(child) === 1) return Object.freeze({ unsupportedReason: 'cyclic-expression-dag', symbols: [], nodeCount, maxDepth, maxBvWidth, traversalCount });
+        if (colors.get(child) === 2) {
+          const childHeight = heights.get(child) || 1;
+          const combinedDepth = stack.length + childHeight;
+          maxDepth = Math.max(maxDepth, combinedDepth);
+          if (combinedDepth > maxExprDepth) return Object.freeze({ depthExceeded: true, limitExceeded: false, unsupportedReason: null, symbols: [], nodeCount, maxDepth: combinedDepth, maxBvWidth, traversalCount });
+          frame.childHeight = Math.max(frame.childHeight, childHeight);
+        } else {
+          stack.push({ node: child, entered: false, children: null, index: 0, childHeight: 0 });
+        }
         continue;
       }
+      const height = frame.childHeight + 1;
+      heights.set(frame.node, height);
+      const combinedDepth = stack.length - 1 + height;
+      maxDepth = Math.max(maxDepth, combinedDepth);
+      if (combinedDepth > maxExprDepth) return Object.freeze({ depthExceeded: true, limitExceeded: false, unsupportedReason: null, symbols: [], nodeCount, maxDepth: combinedDepth, maxBvWidth, traversalCount });
       colors.set(frame.node, 2);
       stack.pop();
+      if (stack.length > 0) stack[stack.length - 1].childHeight = Math.max(stack[stack.length - 1].childHeight, height);
     }
   }
   return Object.freeze({
@@ -134,6 +170,7 @@ export function analyzeSolverExpressions(expressions, { maxExprNodes = 100000, m
     nodeCount,
     maxDepth,
     maxBvWidth,
+    traversalCount,
     unsupportedReason: null,
     limitExceeded: false,
     depthExceeded: false,

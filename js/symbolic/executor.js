@@ -272,9 +272,17 @@ function evalValue(value, state, ir, opts, memo, active) {
       out = chosen ? evalValue(chosen, state, ir, opts, memo, active) : unknown('ambiguous-phi', { instruction: d.id });
     } else if (d.op === OP.BIN && d.args.length >= 2 && ['add', 'sub', 'and', 'or', 'xor', 'orr', 'eor', 'shl', 'lshr', 'ashr', 'mul'].includes(d.sub)) {
       const resolved = resolveWidth([d.dst?.bits, value?.bits]);
-      const lhs = evalValue(d.args[0].value, state, ir, opts, memo, active);
-      const rhs = evalValue(d.args[1].value, state, ir, opts, memo, active);
-      out = unsupportedWidth(resolved) || binOp(d.sub, lhs, rhs, resolved.width);
+      const rejected = unsupportedWidth(resolved);
+      if (rejected) out = rejected;
+      else {
+        const rawLhs = evalValue(d.args[0].value, state, ir, opts, memo, active);
+        const rawRhs = evalValue(d.args[1].value, state, ir, opts, memo, active);
+        const lhs = applyOperandShift(rawLhs, d.args[0].shift, resolved.width);
+        const rhs = applyOperandShift(rawRhs, d.args[1].shift, resolved.width);
+        if (d.args[0].shift && lhs.kind === SYM.UNKNOWN) out = lhs;
+        else if (d.args[1].shift && rhs.kind === SYM.UNKNOWN) out = rhs;
+        else out = binOp(d.sub, lhs, rhs, resolved.width);
+      }
     } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
       const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
       const m = /^(sxt|uxt)(8|16|32|64)?/.exec(d.sub || '');
@@ -318,20 +326,101 @@ function evalValue(value, state, ir, opts, memo, active) {
   return out;
 }
 
+function applyOperandShift(expr, shift, width) {
+  if (!shift) return expr;
+  if (!expr || expr.kind === SYM.UNKNOWN) return expr;
+  if (expr.sort) return unknown('unsupported-operand-shift', { shift });
+  const shiftOp = typeof shift.op === 'string' ? shift.op.toLowerCase() : '';
+  const rawAmount = shift.amount;
+  const amount = typeof rawAmount === 'bigint'
+    ? (rawAmount >= 0n && rawAmount < BigInt(width) ? Number(rawAmount) : null)
+    : (typeof rawAmount === 'number' && Number.isSafeInteger(rawAmount) && rawAmount >= 0 && rawAmount < width ? rawAmount : null);
+  if (amount == null || !['lsl', 'lsr', 'asr', 'ror'].includes(shiftOp)) {
+    return unknown('unsupported-operand-shift', { shift });
+  }
+  if (amount === 0) {
+    return expr.kind === SYM.CONST ? c(BigInt.asUintN(width, expr.value)) : expr;
+  }
+  if (shiftOp === 'lsl') return binOp('shl', expr, c(BigInt(amount)), width);
+  if (shiftOp === 'lsr') return binOp('lshr', expr, c(BigInt(amount)), width);
+  if (shiftOp === 'asr') return binOp('ashr', expr, c(BigInt(amount)), width);
+  if (expr.kind === SYM.CONST) {
+    const v = BigInt.asUintN(width, expr.value);
+    const a = BigInt(amount);
+    const w = BigInt(width);
+    return c(BigInt.asUintN(width, (v >> a) | (v << (w - a))));
+  }
+  const right = binOp('lshr', expr, c(BigInt(amount)), width);
+  const left = binOp('shl', expr, c(BigInt(width - amount)), width);
+  if (right.kind === SYM.UNKNOWN) return right;
+  if (left.kind === SYM.UNKNOWN) return left;
+  return binOp('or', right, left, width);
+}
+
 function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
   if (!cmpInst || cmpInst.op !== OP.CMP || cmpInst.args.length < 2) return unknown('unsupported-compare');
-  const info = COND[condCode];
-  if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
-  const a = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
-  const b = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
+  if (cmpInst.float || cmpInst.extra?.float || cmpInst.sub === 'fsub') {
+    return unknown('unsupported-float-compare', { sub: cmpInst.sub || null });
+  }
+  if (cmpInst.conditional || cmpInst.extra?.conditional) {
+    return unknown('unsupported-conditional-compare', { cond: cmpInst.cond || cmpInst.extra?.cond || null });
+  }
+  const sub = cmpInst.sub == null ? 'sub' : String(cmpInst.sub).toLowerCase();
+  if (!['sub', 'cmp', 'and', 'add'].includes(sub)) {
+    return unknown('unsupported-compare', { sub });
+  }
   const resolved = resolveWidth([
     cmpInst.args[0]?.bits,
     cmpInst.args[0]?.value?.bits,
     cmpInst.args[1]?.bits,
     cmpInst.args[1]?.value?.bits,
+    cmpInst.bits,
   ]);
   const rejected = unsupportedWidth(resolved);
   if (rejected) return rejected;
+  const rawA = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
+  const rawB = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
+  const a = applyOperandShift(rawA, cmpInst.args[0].shift, resolved.width);
+  const b = applyOperandShift(rawB, cmpInst.args[1].shift, resolved.width);
+  if (cmpInst.args[0].shift && a.kind === SYM.UNKNOWN) return a;
+  if (cmpInst.args[1].shift && b.kind === SYM.UNKNOWN) return b;
+  const code = typeof condCode === 'string' ? condCode.toLowerCase() : '';
+  if (sub === 'and') {
+    // tst: N = (a & b)[w-1], Z = ((a & b) == 0), C = 0, V = 0
+    const tstMap = {
+      eq: { op: '==', signed: null },
+      ne: { op: '!=', signed: null },
+      mi: { op: '<', signed: true },
+      pl: { op: '>=', signed: true },
+      lt: { op: '<', signed: true },
+      ge: { op: '>=', signed: true },
+      le: { op: '<=', signed: true },
+      gt: { op: '>', signed: true },
+    };
+    const mapped = tstMap[code];
+    if (!mapped) return unknown('unsupported-condition', { condition: condCode, sub });
+    const masked = a?.sort || b?.sort
+      ? translateMemoryScalar({ op: OP.BIN, sub: 'and' }, [a.sort ? a : createBv(resolved.width, a.value), b.sort ? b : createBv(resolved.width, b.value)], resolved.width)
+      : binOp('and', a, b, resolved.width);
+    return cmp(mapped.op, masked, c(0n), { bits: resolved.width, signed: mapped.signed });
+  }
+  if (sub === 'add') {
+    // cmn: flags from (a + b). Only Z/N-only conditions avoid V/C overflow ambiguity.
+    const cmnMap = {
+      eq: { op: '==', signed: null },
+      ne: { op: '!=', signed: null },
+      mi: { op: '<', signed: true },
+      pl: { op: '>=', signed: true },
+    };
+    const mapped = cmnMap[code];
+    if (!mapped) return unknown('unsupported-condition', { condition: condCode, sub });
+    const sum = a?.sort || b?.sort
+      ? translateMemoryScalar({ op: OP.BIN, sub: 'add' }, [a.sort ? a : createBv(resolved.width, a.value), b.sort ? b : createBv(resolved.width, b.value)], resolved.width)
+      : binOp('add', a, b, resolved.width);
+    return cmp(mapped.op, sum, c(0n), { bits: resolved.width, signed: mapped.signed });
+  }
+  const info = COND[condCode];
+  if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
   return cmp(info.op, a, b, { bits: resolved.width, signed: info.signed });
 }
 
@@ -367,8 +456,11 @@ function branchCondition(inst, state, ir, opts, memo) {
     return foldMemoryScalarExpression(condition, expression.sort.width);
   }
   if ((kind === 'cbz' || kind === 'cbnz') && inst.args[0]) {
+    const resolved = resolveWidth([inst.args[0].bits, inst.args[0].value?.bits]);
+    const rejected = unsupportedWidth(resolved);
+    if (rejected) return rejected;
     const a = evalValue(inst.args[0].value, state, ir, opts, memo, new Set());
-    return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n));
+    return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n), { bits: resolved.width });
   }
   if (kind === 'tbz' || kind === 'tbnz') {
     const a = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-test-value');
@@ -668,8 +760,14 @@ export function symbolicExecute(ir, opts = {}) {
     const timeoutMs = Math.min(
       boundedLimit(opts.timeoutMs, 250, 5000, 'timeoutMs'),
       boundedLimit(opts.byteMemory.timeoutMs, 250, 5000, 'byteMemory.timeoutMs'));
-    const memoryOptions = { ...opts.byteMemory, timeoutMs, signal: opts.signal ?? opts.byteMemory.signal,
-      isCancelled: opts.isCancelled ?? opts.byteMemory.isCancelled };
+    const memoryOptions = {
+      ...opts.byteMemory,
+      timeoutMs,
+      signal: opts.signal ?? opts.byteMemory.signal,
+      isCancelled: opts.isCancelled ?? opts.byteMemory.isCancelled,
+      ...(opts.deterministic !== undefined ? { deterministic: opts.deterministic } : {}),
+      ...(opts.deterministicTransforms !== undefined ? { deterministicTransforms: opts.deterministicTransforms } : {}),
+    };
     memory = opts.byteMemory.initialState == null ? createByteMemory(memoryOptions)
       : forkByteMemoryForExecution(opts.byteMemory.initialState, memoryOptions);
     // The caller cannot change canonical argument bindings during execution.

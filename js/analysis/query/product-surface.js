@@ -5,6 +5,8 @@ import { jsonSafe, stableDigest } from '../../core/identity/index.js';
 
 const REPORT_BINDINGS = new WeakMap();
 const STRING_STATES = new WeakMap();
+const BACKEND_IDS = new WeakMap();
+let nextBackendId = 1;
 const CANONICAL_VERDICTS = new Set(['confirmed','supported','likely','unverified','contradicted','unknown']);
 
 function abortError(signal) {
@@ -107,24 +109,35 @@ function stringPriority(region) {
   return 2;
 }
 
-function canonicalSliceStateDimension(app) {
-  // The state key must track the same identity dimensions the snapshot uses.
-  // `Number(['1'])` aliased a structured slice index onto the canonical `1`
-  // and let one snapshot's string state be served to a different snapshot
-  // (#5585). Type-preserving spelling instead of numeric coercion.
-  const raw = app.store?.get?.('sliceIndex');
-  const gen = Number(app.backend?.gen ?? 0);
-  let slice;
-  if (raw == null || (typeof raw === 'string' && !raw)) slice = '-1';
-  else if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'bigint' || typeof raw === 'boolean') {
-    slice = `p:${typeof raw}:${String(raw)}`;
-  } else {
-    try { slice = `s:${stableDigest(jsonSafe(raw))}`; } catch { slice = `s:opaque:${typeof raw}`; }
-  }
-  return `${gen}:${slice}`;
+function backendInstanceId(backend) {
+  if (!backend || (typeof backend !== 'object' && typeof backend !== 'function')) return 'none';
+  let id = BACKEND_IDS.get(backend);
+  if (!id) { id = nextBackendId++; BACKEND_IDS.set(backend, id); }
+  return `b${id}`;
 }
 
-function newStringState(app) {
+function canonicalDimensionToken(value, fallback) {
+  if (value == null || (typeof value === 'string' && !value)) return fallback;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
+    const text = String(value);
+    return `p:${typeof value}:${text.length}:${text}`;
+  }
+  try { return `s:${stableDigest(jsonSafe(value))}`; } catch { return `s:opaque:${typeof value}`; }
+}
+
+function canonicalSliceStateDimension(app, snapshot = null) {
+  // The state key must track the same identity dimensions the snapshot uses:
+  // backend instance, binaryId, analysis generation, and type-preserving slice
+  // index (#5585). Omitting binaryId or backend identity lets a newly loaded
+  // binary at the same gen/slice inherit stale string rows.
+  const backendId = backendInstanceId(app?.backend);
+  const binaryId = canonicalDimensionToken(snapshot?.binaryId ?? app?.backend?.binaryId ?? null, 'unbound');
+  const gen = canonicalDimensionToken(app?.backend?.gen ?? snapshot?.analysisEpoch ?? 0, '0');
+  const slice = canonicalDimensionToken(app?.store?.get?.('sliceIndex'), '-1');
+  return `${backendId}|${binaryId}|${gen}|${slice}`;
+}
+
+function newStringState(app, snapshot = null) {
   const regions = app.store?.get?.('regions') || [];
   const targets = regions.filter((region) => region?.size > 0n &&
     (region.cstrings || /string|cstring|objc_methname|objc_method|objc_classname|objc_class|oslogstring|const|ustring|swift5_reflstr/i.test(region.section || '')))
@@ -144,7 +157,7 @@ function newStringState(app) {
     }
   }
   return {
-    key: canonicalSliceStateDimension(app),
+    key: canonicalSliceStateDimension(app, snapshot),
     budget,
     plan,
     skipped,
@@ -159,11 +172,11 @@ function newStringState(app) {
   };
 }
 
-function stringState(app) {
-  const key = canonicalSliceStateDimension(app);
+function stringState(app, snapshot = null) {
+  const key = canonicalSliceStateDimension(app, snapshot);
   let state = STRING_STATES.get(app);
   if (!state || state.key !== key) {
-    state = newStringState(app);
+    state = newStringState(app, snapshot);
     STRING_STATES.set(app, state);
   }
   return state;
@@ -175,7 +188,10 @@ function waitForShared(entry, signal) {
     // entry may be a just-started producer with no other consumer (#5793):
     // leaving it running would keep a zero-waiter backend request alive with
     // nobody able to cancel it.
-    if (entry.waiters === 0 && !entry.settled) entry.cancel?.();
+    if (entry.waiters === 0 && !entry.settled) {
+      void Promise.resolve(entry.promise).catch(() => {});
+      entry.cancel?.();
+    }
     throw abortError(signal);
   }
   entry.waiters++;
@@ -230,7 +246,7 @@ async function scanNextStringRegion(app, state, options = {}) {
         : null,
     );
     const cancelRequest = typeof request?.cancel === 'function' ? () => request.cancel() : null;
-    const entry = { waiters:0, retired:false, cancel:null, promise:null };
+    const entry = { waiters:0, retired:false, settled:false, cancel:null, promise:null };
     entry.cancel = () => {
       if (entry.retired) return;
       entry.retired = true;
@@ -249,13 +265,15 @@ async function scanNextStringRegion(app, state, options = {}) {
       state.cursor = Math.max(state.cursor, index + 1);
       if (state.cursor >= state.plan.length) state.complete = !state.backendIncomplete && !state.truncationReason && !state.budget.truncationReason;
     }).finally(() => {
+      entry.settled = true;
       if (state.inFlight === entry) state.inFlight = null;
     });
     state.inFlight = entry;
     if (options.signal?.aborted) {
       // The consumer aborted between the outer check and waiter registration:
-      // cancel the just-started request and detach it, so no zero-waiter
-      // producer survives the race window (#5793).
+      // observe the detached promise before cancelling so a cancellation
+      // rejection cannot escape as an unhandled promise rejection (#5793).
+      void Promise.resolve(entry.promise).catch(() => {});
       entry.cancel?.();
       if (state.inFlight === entry) state.inFlight = null;
     }
@@ -379,7 +397,7 @@ export function createProductSurfaceQueries(app) {
 
     async strings(snapshot, query = {}, page = {}, options = {}) {
       await assertCurrentSnapshot(app, snapshot, options);
-      const state = stringState(app);
+      const state = stringState(app, snapshot);
       const needle = queryText(query.text ?? query.query ?? '');
       const { offset, limit } = pageOf(page);
       while (true) {

@@ -8,6 +8,8 @@ const MAX_WAIT_MS = 15000;
 const MUTATION_OPS = new Set(['focus', 'click', 'setValue', 'dispatchEvent', 'navigate']);
 const EVENT_TYPES = new Set(['input', 'change', 'click', 'keydown', 'keyup', 'pointerdown', 'pointerup']);
 const ALLOWED_PROPERTY_READS = new Set(['disabled', 'checked', 'selected', 'value', 'type', 'name', 'href', 'pathname']);
+const NON_READABLE_TEXT_TAGS = new Set(['script', 'style', 'noscript', 'template']);
+const SENSITIVE_FIELD_RE = /(?:token|auth|session|csrf|nonce|secret|password|passwd|credential|cookie|api[-_]?key|one-time-code|cc-number|cc-csc)/i;
 
 export const AUTOMATION_PROGRAM_VERSION = PROGRAM_VERSION;
 
@@ -98,7 +100,7 @@ async function runStep(step, state, depth) {
     const caseSensitive = step.caseSensitive === true;
     const wanted = caseSensitive ? needle : needle.toLowerCase();
     const found = items.find((node) => {
-      const raw = String(node?.textContent || '').replace(/\s+/g, ' ').trim();
+      const raw = readSafeText(node, MAX_VALUE).replace(/\s+/g, ' ').trim();
       const value = caseSensitive ? raw : raw.toLowerCase();
       return exact ? value === wanted : value.includes(wanted);
     }) || null;
@@ -107,7 +109,7 @@ async function runStep(step, state, depth) {
   }
   if (op === 'readText') {
     const node = resolveNode(state, step.target);
-    setVar(state, step.as, boundedString(node?.textContent || '', boundedInteger(step.maxChars, 1, MAX_VALUE, 2048)));
+    setVar(state, step.as, readSafeText(node, boundedInteger(step.maxChars, 1, MAX_VALUE, 2048)));
     return;
   }
   if (op === 'readAttribute') {
@@ -119,8 +121,7 @@ async function runStep(step, state, depth) {
   if (op === 'readProperty') {
     const node = resolveNode(state, step.target);
     const name = String(step.name || '');
-    if (!ALLOWED_PROPERTY_READS.has(name)) throw programError('property-not-allowed', `Property read is not allowed: ${name}`);
-    setVar(state, step.as, primitive(node?.[name]));
+    setVar(state, step.as, readSafeProperty(node, name));
     return;
   }
   if (op === 'collect') {
@@ -324,16 +325,16 @@ function conditionValue(condition, state) {
   if (type === 'equals') return primitive(resolveValue(state, condition.left)) === primitive(resolveValue(state, condition.right));
   if (type === 'textIncludes') {
     const node = resolveNode(state, condition.target);
-    return String(node?.textContent || '').includes(String(resolveValue(state, condition.text) || ''));
+    return readSafeText(node, MAX_VALUE).includes(String(resolveValue(state, condition.text) || ''));
   }
   throw programError('condition-unsupported', `Unsupported AutomationProgram condition: ${type}`);
 }
 function collectNode(node, fields) {
   const out = {};
   for (const field of fields) {
-    if (field.kind === 'text') out[field.as] = boundedString(node?.textContent || '', field.maxChars);
+    if (field.kind === 'text') out[field.as] = readSafeText(node, field.maxChars);
     else if (field.kind === 'attribute') out[field.as] = boundedString(node?.getAttribute?.(field.name) ?? '', field.maxChars) || null;
-    else if (field.kind === 'property') out[field.as] = primitive(node?.[field.name]);
+    else if (field.kind === 'property') out[field.as] = readSafeProperty(node, field.name);
   }
   return out;
 }
@@ -354,12 +355,79 @@ function normalizeCollectFields(value) {
     throw new TypeError(`Unsupported collect field kind: ${kind}`);
   });
 }
+function nodeTagName(node) {
+  return String(node?.tagName || node?.nodeName || '').toLowerCase();
+}
+function isSensitiveValueNode(node) {
+  if (!node) return false;
+  const tag = nodeTagName(node);
+  const type = String(node.type || node.getAttribute?.('type') || '').trim().toLowerCase();
+  if (type === 'password' || (tag === 'input' && type === 'hidden')) return true;
+  const identifiers = [
+    node.name,
+    node.id,
+    node.getAttribute?.('name'),
+    node.getAttribute?.('id'),
+    node.getAttribute?.('autocomplete'),
+    node.getAttribute?.('data-testid'),
+    node.getAttribute?.('aria-label'),
+  ];
+  for (const item of identifiers) {
+    if (typeof item === 'string' && SENSITIVE_FIELD_RE.test(item)) return true;
+  }
+  return false;
+}
+function readSafeProperty(node, name) {
+  if (!ALLOWED_PROPERTY_READS.has(name)) {
+    throw programError('property-not-allowed', `Property read is not allowed: ${name}`);
+  }
+  if (name === 'value' && isSensitiveValueNode(node)) {
+    throw programError('property-not-allowed', 'Sensitive value property read is not allowed.');
+  }
+  return primitive(node?.[name]);
+}
+function readSafeText(node, maxChars) {
+  if (!node) return '';
+  const tag = nodeTagName(node);
+  if (NON_READABLE_TEXT_TAGS.has(tag)) return '';
+  if (node.nodeType === 3) return boundedString(node.nodeValue ?? node.textContent ?? '', maxChars);
+  if (node.childNodes && typeof node.childNodes.length === 'number' && node.childNodes.length > 0) {
+    const parts = [];
+    let total = 0;
+    const walk = (current) => {
+      if (!current || total >= maxChars) return;
+      if (current.nodeType === 3) {
+        const chunk = String(current.nodeValue ?? current.textContent ?? '');
+        if (chunk) {
+          parts.push(chunk.slice(0, maxChars - total));
+          total += chunk.length;
+        }
+        return;
+      }
+      if (current.nodeType === 8) return;
+      if (NON_READABLE_TEXT_TAGS.has(nodeTagName(current))) return;
+      const children = current.childNodes;
+      if (children && typeof children.length === 'number' && children.length > 0) {
+        for (let i = 0; i < children.length && total < maxChars; i++) walk(children[i]);
+      } else if (typeof current.textContent === 'string') {
+        const chunk = current.textContent;
+        if (chunk) {
+          parts.push(chunk.slice(0, maxChars - total));
+          total += chunk.length;
+        }
+      }
+    };
+    walk(node);
+    return boundedString(parts.join(''), maxChars);
+  }
+  return boundedString(node.textContent || '', maxChars);
+}
 function safeAttributeName(value) {
   const name = String(value || '').trim();
   if (!/^(?:id|class|role|title|name|type|placeholder|href|for|tabindex|disabled|checked|selected|aria-[\w-]+|data-[\w-]+)$/i.test(name)) {
     throw programError('attribute-not-allowed', `Attribute read is not allowed: ${name}`);
   }
-  if (/(?:token|auth|session|csrf|nonce|secret|password|credential|cookie)/i.test(name)) throw programError('attribute-not-allowed', `Sensitive attribute is not allowed: ${name}`);
+  if (SENSITIVE_FIELD_RE.test(name)) throw programError('attribute-not-allowed', `Sensitive attribute is not allowed: ${name}`);
   return name;
 }
 function setEditableValue(node, value) {

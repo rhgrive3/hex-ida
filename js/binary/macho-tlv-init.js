@@ -29,7 +29,7 @@ export function applyMachOTlvInitializers(thinInput, image) {
   const seeds = [];
   image.metadata.tlvInitializers ||= [];
 
-  for (const section of sections) {
+  scan: for (const section of sections) {
     if (section.size % ptrSizeBig !== 0n) {
       budget.partial(
         'tlv-init:truncated-section',
@@ -59,7 +59,7 @@ export function applyMachOTlvInitializers(thinInput, image) {
     }
 
     for (let index = 0; index < safeCount; index++) {
-      if (!budget.take({ inputBytes:ptrSize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'tlv-init')) return image;
+      if (!budget.take({ inputBytes:ptrSize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'tlv-init')) break scan;
       const slotAddress = section.address + BigInt(index * ptrSize);
       const slotOffset = sectionFileOffset + index * ptrSize;
       const raw = ptrSize === 8 ? r.u64(slotOffset) : BigInt(r.u32(slotOffset));

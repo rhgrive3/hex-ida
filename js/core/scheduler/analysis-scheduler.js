@@ -48,7 +48,7 @@ function canonicalDependencies(request, artifactId) {
     const id = rawId;
     if (!byId.has(id)) byId.set(id, dependency);
   }
-  const dependencies = [...byId.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, dependency]) => dependency);
+  const dependencies = [...byId.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, dependency]) => dependency);
   const actual = dependencies.map((dependency) => requireArtifactId(dependency.descriptor.artifactId, 'artifact-dependency-id-invalid'));
   const upstream = request.descriptor?.upstreamArtifactIds;
   if (upstream != null && !Array.isArray(upstream)) throw new SchedulerDependencyIdentityError(artifactId, ['<invalid-upstream-list>'], actual);
@@ -220,14 +220,14 @@ export class AnalysisScheduler {
 
   #request(request, ancestry, parentSignal, options = {}) {
     const descriptor=request?.descriptor;
-    let artifactId;
+    let artifactId, priority;
     try {
       artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required');
       assertCanonicalArtifactDescriptor(descriptor);
+      priority=priorityValue(request.priority);
     } catch (error) { return Promise.reject(error); }
     const firstAttempt=options.retry!==true;
     if (firstAttempt) this.metrics.requests++;
-    const priority = priorityValue(request.priority);
     // Lifecycle contract (#1189 / #3313): request.received fires exactly once
     // per externally visible request() call. Dependency recursion re-enters
     // this path internally and must not re-announce the request.

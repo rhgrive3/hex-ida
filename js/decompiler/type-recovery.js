@@ -386,6 +386,14 @@ function dominatedByEarlierCall(ir, atInst, callIndex = null) {
   return false;
 }
 
+function phiIncomingValues(inst) {
+  if (!inst) return [];
+  const raw = (Array.isArray(inst.incoming) && inst.incoming.length > 0)
+    ? inst.incoming.map((inc) => (inc && typeof inc === 'object' && 'value' in inc ? (inc.value?.value ?? inc.value) : valueOf(inc)))
+    : (inst.args || []).map(valueOf);
+  return raw.filter(Boolean);
+}
+
 function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = null, callCtx = null, allowPhi = true, viaMixedPhi = false) {
   if (!value || visited.has(value)) return false;
   visited.add(value);
@@ -396,7 +404,7 @@ function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = nul
     if (inst.op === OP.RET && viaMixedPhi) continue;
     if (inst.op === OP.PHI) {
       if (!allowPhi) continue;
-      const hasDefinedBranch = (inst.args || []).some((a) => valueOf(a)?.def != null);
+      const hasDefinedBranch = phiIncomingValues(inst).some((a) => a.def != null);
       const nextMixedPhi = viaMixedPhi || (!value.def && hasDefinedBranch);
       if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName, callCtx, true, nextMixedPhi)) return true;
       continue;
@@ -928,7 +936,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         }
       } else if (inst.op === OP.PHI && inst.dst) {
         const de = eFor(inst.dst);
-        const args = (inst.args || []).map(valueOf).filter(Boolean);
+        const args = phiIncomingValues(inst);
         if (de && args.length) {
           const floatArgs = args.filter((a) => (eFor(a)?.floating || 0) > 0);
           if (floatArgs.length > 0 && de.floating === 0) {
@@ -1118,7 +1126,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     const def = val.def;
     if (!def) return false;
     if (def.op === OP.MOV) return isFloatOrFloatChain(valueOf(def.args?.[0]), seen);
-    if (def.op === OP.PHI) return (def.args || []).some((a) => isFloatOrFloatChain(valueOf(a), seen));
+    if (def.op === OP.PHI) return phiIncomingValues(def).some((a) => isFloatOrFloatChain(a, seen));
     return false;
   };
   const findFpReturnVals = () => {
@@ -1174,7 +1182,12 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       const maxFpRow = Math.max(...fpVals.map((v) => v.def?.row ?? -1));
       const allGpVoidCall = allGpFromHelperCall && vals.every((v) => knownCallSignature(calleeNameOf(v.def))?.retType === 'void');
       const isStateReadOfUninit = (v) => v?.def?.op === OP.MOV && v.def.extra?.stateRead != null && !valueOf(v.def.args?.[0])?.def;
-      const allGpUninitOrConst = vals.every((v) => !v?.def || isStateReadOfUninit(v) || v.def.op === OP.CONST || (v.def.op === OP.PHI && (v.def.args || []).every((a) => !valueOf(a)?.def || isStateReadOfUninit(valueOf(a)) || valueOf(a).def.op === OP.CONST)));
+      const allGpUninitOrConst = vals.every((v) => {
+        if (!v?.def || isStateReadOfUninit(v) || v.def.op === OP.CONST) return true;
+        if (v.def.op !== OP.PHI) return false;
+        const incoming = phiIncomingValues(v.def);
+        return incoming.length > 0 && incoming.every((a) => !a.def || isStateReadOfUninit(a) || a.def.op === OP.CONST);
+      });
       if (allGpVoidCall || allGpUninitOrConst || (maxFpRow > maxGpRow && (allGpFromHelperCall || (allGpConsumedInternally && allFpFreshReturn)))) {
         vals = fpVals;
       }
@@ -1198,7 +1211,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         return src ? is32BitIntReturnValue(src, seen) : false;
       }
       if (def.op === OP.PHI) {
-        const incoming = (def.args || []).map(valueOf).filter((arg) => arg && !seen.has(arg));
+        const incoming = phiIncomingValues(def).filter((arg) => !seen.has(arg));
         return incoming.length > 0 && incoming.every((arg) => is32BitIntReturnValue(arg, new Set(seen)));
       }
       if (def.op === OP.SEL) {

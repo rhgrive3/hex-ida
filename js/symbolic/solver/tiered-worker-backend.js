@@ -93,7 +93,10 @@ class WorkerSolverSession extends SolverSession {
     };
     const onError = (event) => {
       const reason = event?.message || 'solver-worker-failure';
-      for (const pending of this.pending.values()) {
+      const pendingList = [...this.pending.values()];
+      this.pending.clear();
+      this._terminateWorker();
+      for (const pending of pendingList) {
         pending.resolve(createSolverResult({
           status: SOLVER_STATUS.PROVIDER_FAILURE,
           reason,
@@ -103,7 +106,6 @@ class WorkerSolverSession extends SolverSession {
           lifecycle: { publishable: false },
         }));
       }
-      this.pending.clear();
     };
     if (typeof worker.addEventListener === 'function') {
       worker.addEventListener('message', onMessage);

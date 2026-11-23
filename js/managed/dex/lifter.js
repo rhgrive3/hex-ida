@@ -7,7 +7,7 @@ import { dexDefinitionCodeError, dexMethodDefinitions } from './method-definitio
 import { decodeDexInstructionBoundary } from './instruction-boundary.js';
 import { buildDexControlFlowIndex, decodeDexControlFlow } from './control-flow.js';
 import { createManagedMethodId, createVMOperationId } from '../shared/identity.js';
-import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { createVMEffectBudgetTracker, createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 
 function unavailable(methodIdx,image,reason,options){
  const method=image?.methods?.[methodIdx],methodId=createManagedMethodId(image.moduleId,methodIdx,method?.name??`m_${methodIdx}`);
@@ -26,9 +26,10 @@ export function liftDexMethod(methodIdx,image,options={}){
  const registersSize=view.getUint16(codeOff,true),outsSize=view.getUint16(codeOff+4,true),triesSize=view.getUint16(codeOff+6,true),insnsSize=view.getUint32(codeOff+12,true),insnsStart=codeOff+16;
  if(insnsStart+insnsSize*2>raw.length)return unavailable(methodIdx,image,'dex-truncated-instructions',options);
  let controlIndex;try{controlIndex=buildDexControlFlowIndex(view,insnsStart,insnsSize)}catch(error){return unavailable(methodIdx,image,error?.message??'dex-invalid-instruction-boundary',options)}
- const boundaries=controlIndex.instructionOffsets,controlEntries=new Set();
- for(const byteOffset of boundaries){const at=byteOffset/2,word=view.getUint16(insnsStart+byteOffset,true),op=word&255,fmt=word>>>8;let flow;try{flow=decodeDexControlFlow({view,insnsStart,insnsSize,pc:at,opcode:op,formatByte:fmt,index:controlIndex})}catch(error){return unavailable(methodIdx,image,error?.message??'dex-invalid-control-flow',options)}for(const target of flow?.controlEntries??[])controlEntries.add(target)}
- let exceptionRegions=[],handlerOffsets=new Set(),exceptionFailure=null;try{const ex=decodeDexExceptionTable(raw,{methodId:base.methodId,insnsStart,insnsSize,triesSize,types:image.types,boundaries});exceptionRegions=ex.regions;handlerOffsets=ex.handlerOffsets}catch(error){exceptionFailure=error?.message??'dex-invalid-exception-table'}
+ const budget=createVMEffectBudgetTracker(options);
+ const boundaries=controlIndex.instructionOffsets,controlEntries=new Set(),controlFlows=new Map();
+ for(const byteOffset of boundaries){const at=byteOffset/2,word=view.getUint16(insnsStart+byteOffset,true),op=word&255,fmt=word>>>8;let flow;try{flow=decodeDexControlFlow({view,insnsStart,insnsSize,pc:at,opcode:op,formatByte:fmt,index:controlIndex,budget})}catch(error){return unavailable(methodIdx,image,error?.message??'dex-invalid-control-flow',options)}if(flow)controlFlows.set(byteOffset,flow);for(const target of flow?.controlEntries??[])controlEntries.add(target)}
+ let exceptionRegions=[],handlerOffsets=new Set(),exceptionFailure=null;try{const ex=decodeDexExceptionTable(raw,{methodId:base.methodId,insnsStart,insnsSize,triesSize,types:image.types,boundaries,...(options?.maxExceptionRegions!==undefined?{maxExceptionRegions:options.maxExceptionRegions}:{})});exceptionRegions=ex.regions;handlerOffsets=ex.handlerOffsets}catch(error){exceptionFailure=error?.message??'dex-invalid-exception-table'}
  let pendingResult=null;const bundles=[];
  for(const original of base.bundles){let b={...original},failure=registersSize<view.getUint16(codeOff+2,true)?'dex-register-file-size-invalid':null,nextResult=null;const byteOff=b.bytecodeOffset,pc=byteOff/2,word=view.getUint16(insnsStart+byteOff,true),op=word&255,fmt=word>>>8;let bd;try{bd=decodeDexInstructionBoundary(view,insnsStart,pc,insnsSize)}catch(error){bundles.push(partial(b,error?.message??'dex-invalid-instruction-boundary'));pendingResult=null;continue}const len=bd.length;
   /* The base lift already resolved this unit's boundary: a payload or an
@@ -38,7 +39,7 @@ export function liftDexMethod(methodIdx,image,options={}){
      re-publish them as `exact` effects (#5389). Only a real instruction may
      be enhanced. */
   if(bd.kind!=='instruction'){bundles.push(b);pendingResult=null;continue}
-  let controlFlow=null;try{controlFlow=decodeDexControlFlow({view,insnsStart,insnsSize,pc,opcode:op,formatByte:fmt,index:controlIndex})}catch(error){controlFlow={mnemonic:b.mnemonic,locationReads:[],controlEffects:[],reason:error?.message??'dex-invalid-control-flow'}}
+  const controlFlow=controlFlows.get(byteOff)??null;
   let arrayType=null;if(!controlFlow){try{arrayType=dexArrayTypeEffects({opcode:op,formatByte:fmt,view,insnsStart,insnsSize,pc,image,operationId:b.operationId,instructionLength:len,controlIndex})}catch(error){failure=error?.message??'dex-invalid-array-type-effect'}}
   if(controlFlow){b={...b,mnemonic:controlFlow.mnemonic,consumedValues:[],producedValues:[],locationReads:controlFlow.locationReads,locationWrites:[],memoryEffects:[],callEffects:[],controlEffects:controlFlow.controlEffects,completeness:controlFlow.reason?'partial':'exact',unknownEffects:controlFlow.reason?[{category:'control',categories:['control'],reason:controlFlow.reason}]:[]};}
   else if(arrayType&&!failure){b={...b,...arrayType.effect};nextResult=arrayType.nextResult??null;}

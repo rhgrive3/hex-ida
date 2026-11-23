@@ -11,7 +11,7 @@ export function recoverArm64ClangIdiom(root) {
   }
   if (root.kind === 'binary' && root.op === 'and' && root.left?.kind === 'binary' && root.left.op === 'lshr' && root.right?.kind === 'const') {
     const mask = root.right.value;
-    if (mask >= 0n && (mask & (mask + 1n)) === 0n && root.left.right?.kind === 'const') {
+    if (mask > 0n && (mask & (mask + 1n)) === 0n && root.left.right?.kind === 'const') {
       let width = 0n; for (let x = mask; x; x >>= 1n) width++;
       return expr.intrinsic('bit_extract', [root.left.left, root.left.right, expr.constant(width, root.bits)], root.bits, false, root.source);
     }
@@ -57,7 +57,15 @@ export function recognizeClamp(root) {
   // for the value role, so retain the established result.
   const shared = root.args.find((a) => other.args.some((b) => sameExpr(a, b)));
   if (shared) {
-    return { kind: 'clamp', value: shared, low: root.name === 'max' ? root.args.find((a) => a !== shared) : other.args.find((a) => a !== shared), high: root.name === 'min' ? root.args.find((a) => a !== shared) : other.args.find((a) => a !== shared) };
+    const outerOther = root.args.find((a) => !sameExpr(a, shared));
+    const innerOther = other.args.find((a) => !sameExpr(a, shared));
+    if (!outerOther || !innerOther || innerOther.kind !== 'const') return null;
+    return {
+      kind: 'clamp',
+      value: shared,
+      low: root.name === 'max' ? outerOther : innerOther,
+      high: root.name === 'min' ? outerOther : innerOther,
+    };
   }
   // A nested min/max is commutative, so operand position cannot identify the
   // clamped value. Mint a clamp only when exactly one inner operand is proven to

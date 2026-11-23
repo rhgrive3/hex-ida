@@ -496,7 +496,7 @@ function makeDescriptor(node, role, sourceKind, index, memory, extra = {}) {
  * registers-core tables; this set only re-states the frame/stack root names
  * those tables already normalize.
  */
-const STACK_POINTER_REGISTER_IDS = new Set(['sp', 'fp', 'x29', 'rsp', 'rbp']);
+const STACK_POINTER_REGISTER_IDS = new Set(['sp', 'fp', 'x29', 'rsp', 'rbp', 'esp', 'ebp']);
 const STACK_POINTER_REGISTER_SUFFIXES = ['_sp', '_fp'];
 
 /*
@@ -535,6 +535,39 @@ function expressionContainsStackRegister(expression, active = new Set()) {
 function stackDerivedValueIds(irFunction) {
   const valuesById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
   const nodesById = new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
+  const stateWritesByVarKey = new Map();
+  const stateWritesByRegisterId = new Map();
+  for (const node of irFunction.nodes ?? []) {
+    if (node?.kind !== 'state-write') continue;
+    const varKey = node.variable?.key;
+    if (varKey != null) {
+      let list = stateWritesByVarKey.get(varKey);
+      if (!list) { list = []; stateWritesByVarKey.set(varKey, list); }
+      list.push(node);
+    }
+    const regId = String(node.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
+    if (regId) {
+      let list = stateWritesByRegisterId.get(regId);
+      if (!list) { list = []; stateWritesByRegisterId.set(regId, list); }
+      list.push(node);
+    }
+  }
+  const stackStores = [];
+  for (const node of irFunction.nodes ?? []) {
+    if (node?.kind === 'store') {
+      stackStores.push({
+        addressValueId: memoryAddressExpr(node.memory)?.valueId ?? node.inputs?.[0],
+        storedValueId: node.inputs?.[1],
+      });
+    } else if (node?.intrinsic?.memoryWrite?.accesses) {
+      for (const access of node.intrinsic.memoryWrite.accesses) {
+        stackStores.push({
+          addressValueId: access.addressExpr?.valueId,
+          storedValueId: access.valueId ?? null,
+        });
+      }
+    }
+  }
   const memo = new Map();
   const active = new Set();
   const derives = (valueId) => {
@@ -552,6 +585,24 @@ function stackDerivedValueIds(irFunction) {
     if (!result && definition?.variable?.physicalIdentity) {
       const registerId = definition.variable.physicalIdentity.registerId;
       result = STACK_POINTER_REGISTER_IDS.has(String(registerId ?? '').toLowerCase());
+    }
+    if (!result && definition?.kind === 'state-read') {
+      const varKey = definition.variable?.key;
+      const regId = String(definition.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
+      const writes = [
+        ...(varKey != null ? (stateWritesByVarKey.get(varKey) ?? []) : []),
+        ...(regId ? (stateWritesByRegisterId.get(regId) ?? []) : []),
+      ];
+      result = writes.some((sw) => Array.isArray(sw.inputs) && sw.inputs.some((input) => derives(input)));
+    }
+    if (!result && definition?.kind === 'load') {
+      const loadAddrId = memoryAddressExpr(definition.memory)?.valueId ?? definition.inputs?.[0];
+      if (loadAddrId != null && derives(loadAddrId)) {
+        result = stackStores.some((st) => st.storedValueId != null
+          && derives(st.storedValueId)
+          && st.addressValueId != null
+          && derives(st.addressValueId));
+      }
     }
     if (!result && Array.isArray(definition?.inputs)) {
       result = definition.inputs.some((input) => derives(input));
@@ -577,17 +628,23 @@ function stackDerivedValueIds(irFunction) {
   };
 }
 
+const FP_SIMD_ARGUMENT_REGISTER_PATTERN = /^(?:v|d|s|q|h|b|f|fa|xmm|ymm|zmm)([0-7])$/;
+const INT_ARGUMENT_REGISTER_PATTERN = /^(?:arg|param|[a-z])([0-7])$/;
+
 function argumentRegisterSlot(candidate) {
   if (candidate?.kind !== 'state-write') return null;
   const rawRegisterId = String(candidate.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
-  // legacy `argN`/`paramN`/`xN` spellings map to `argN`; x86-64 SysV
-  // argument registers map to their positional slot. Unrecognized register
-  // names never authorize a no-escape claim — they are skipped as
-  // non-argument state so the conservative outcome survives.
-  const slot = X86_64_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId)
-    ?? rawRegisterId.match(/^(?:arg|param|[a-z])([0-7])$/)?.[1];
-  if (slot == null) return null;
-  return typeof slot === 'string' && slot.startsWith('arg') ? slot : `arg${slot}`;
+  // legacy `argN`/`paramN`/`xN` spellings map to `int:argN`; FP/SIMD registers
+  // (`v0`..`v7`, `d0`..`d7`, `xmm0`..`xmm7`, etc.) map to `fp:argN` so they
+  // never collide with or kill integer argument slots; x86-64 SysV integer
+  // argument registers map to their positional `int:argN` slot.
+  const x86IntSlot = X86_64_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId);
+  if (x86IntSlot != null) return `int:${x86IntSlot}`;
+  const fpMatch = rawRegisterId.match(FP_SIMD_ARGUMENT_REGISTER_PATTERN);
+  if (fpMatch) return `fp:arg${fpMatch[1]}`;
+  const intMatch = rawRegisterId.match(INT_ARGUMENT_REGISTER_PATTERN);
+  if (intMatch) return `int:arg${intMatch[1]}`;
+  return null;
 }
 
 function stateWriteMayExposeStack(candidate, stackValues) {
@@ -743,6 +800,67 @@ function callMayExposeStackAddress(node, stackValues, escapeCfgIndex) {
   return finish(false);
 }
 
+function constantSignedOffset(valueId, stackValues) {
+  const value = stackValues.valuesById.get(String(valueId ?? ''));
+  const def = value?.definitionNodeId == null ? null : stackValues.nodesById.get(String(value.definitionNodeId));
+  if (def?.kind !== 'const') return null;
+  const raw = def.attributes?.bitvectorValue?.value;
+  if (raw == null) return null;
+  const widthBits = def.attributes?.bitvectorValue?.widthBits ?? value?.machineType?.widthBits;
+  if (!Number.isInteger(widthBits) || widthBits <= 0) return null;
+  try {
+    return BigInt.asIntN(widthBits, BigInt(raw));
+  } catch {
+    return null;
+  }
+}
+
+function isStackPointerRegisterIdentity(identity) {
+  if (!identity || typeof identity !== 'object') return false;
+  const role = String(identity.role ?? identity.storageRole ?? '').toLowerCase();
+  const registerId = String(identity.physicalId ?? identity.registerId ?? identity.name ?? '').toLowerCase();
+  return role === 'stack-pointer'
+    || role === 'frame-pointer'
+    || STACK_POINTER_REGISTER_IDS.has(registerId)
+    || STACK_POINTER_REGISTER_SUFFIXES.some((suffix) => registerId.endsWith(suffix));
+}
+
+function provenStackRootOffset(valueId, stackValues, active = new Set()) {
+  if (valueId == null) return null;
+  const id = String(valueId);
+  if (!id || active.has(id)) return null;
+  const value = stackValues.valuesById.get(id);
+  if (!value) return null;
+  const def = value.definitionNodeId == null ? null : stackValues.nodesById.get(String(value.definitionNodeId));
+  if (def == null) {
+    if (value.kind === 'entry'
+      && value.metadata?.machineValue?.kind === 'register'
+      && isStackPointerRegisterIdentity(value.metadata.machineValue)) {
+      return 0n;
+    }
+    return null;
+  }
+  if (def.kind === 'state-read' && isStackPointerRegisterIdentity(def.variable?.physicalIdentity)) {
+    return 0n;
+  }
+  if (def.kind === 'binary' && Array.isArray(def.inputs) && def.inputs.length === 2
+    && (def.operator === 'add' || def.operator === 'sub')) {
+    const offset = constantSignedOffset(def.inputs[1], stackValues);
+    if (offset == null) return null;
+    active.add(id);
+    const baseOffset = provenStackRootOffset(def.inputs[0], stackValues, active);
+    active.delete(id);
+    if (baseOffset == null) return null;
+    return def.operator === 'add' ? baseOffset + offset : baseOffset - offset;
+  }
+  return null;
+}
+
+function isProvenLocalFrameSlot(addressValueId, stackValues) {
+  const offset = provenStackRootOffset(addressValueId, stackValues);
+  return offset != null && offset < 0n;
+}
+
 function nodePublishesStackAddress(upstream, stackValues) {
   if (!upstream) return false;
   const stores = [
@@ -755,7 +873,9 @@ function nodePublishesStackAddress(upstream, stackValues) {
   for (const store of stores) {
     const stored = store.storedValueId;
     if (stored == null || !stackValues.derives(stored)) continue;
-    if (!stackValues.derives(store.addressValueId)) return true;
+    if (!stackValues.derives(store.addressValueId) || !isProvenLocalFrameSlot(store.addressValueId, stackValues)) {
+      return true;
+    }
   }
   return false;
 }
@@ -1907,7 +2027,9 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       origin: jsonSafe(event.descriptor.node.origin),
       ...(() => {
         const eventRegion = regionById.get(event.regionId);
-        const byteRange = memoryByteRange(eventRegion, event.descriptor.memory, event.descriptor.node);
+        const byteRange = event.aliasRelation === 'may'
+          ? null
+          : memoryByteRange(eventRegion, event.descriptor.memory, event.descriptor.node);
         return {
           byteRange,
           rangeProof: memoryRangeProof(

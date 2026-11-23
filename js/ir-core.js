@@ -1246,8 +1246,11 @@ function exactLegacyConstant(value, active = new Set(), observation = null) {
       else if (def.sub === 'and') result = left & right;
       else if (def.sub === 'or') result = left | right;
       else if (def.sub === 'xor') result = left ^ right;
-      else if (def.sub === 'shl') result = left << right;
-      else if (def.sub === 'lshr') result = BigInt.asUintN(bits, left) >> right;
+      else if (def.sub === 'shl' || def.sub === 'lshr') {
+        if (Number.isSafeInteger(bits) && bits > 0 && right >= 0n && right < BigInt(bits)) {
+          result = def.sub === 'shl' ? (left << right) : (BigInt.asUintN(bits, left) >> right);
+        }
+      }
       if (result != null) result = BigInt.asUintN(bits, result);
     }
   }

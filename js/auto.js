@@ -185,6 +185,21 @@ function producerByteExtentWindow(text) {
 // Returns the authoritative raw byte span, or null when the entry carries no
 // provable extent (missing byteLength falls back to the provable minimum; a
 // malformed/forged carried value gets no xref authority at all).
+function toBigIntAddress(addr) {
+  if (typeof addr === 'bigint') return addr >= 0n ? addr : null;
+  if (typeof addr === 'number') return Number.isSafeInteger(addr) && addr >= 0 ? BigInt(addr) : null;
+  if (typeof addr === 'string') {
+    const text = addr.trim();
+    if (/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(text)) {
+      try {
+        const v = BigInt(text);
+        return v >= 0n ? v : null;
+      } catch { return null; }
+    }
+  }
+  return null;
+}
+
 function stringByteSpan(s) {
   if (typeof s?.text !== 'string') return null;
   const carried = s.byteLength;
@@ -227,12 +242,13 @@ export function findings(strings, program, symbols, limit = 40) {
       // visible as data but get no xref authority (no over-inclusive
       // display-derived span), so they cannot be marked referenced.
       const span = stringByteSpan(s);
-      const users = span == null
+      const addr = toBigIntAddress(s.addr);
+      const users = (span == null || addr == null)
         ? { length: 0, complete: false, map: () => [] }
-        : program.functionsReferencing(s.addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
+        : program.functionsReferencing(addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
       const actionable = users.length > 0;
       out.push({
-        id: sig.id, level: sig.level, text: s.text, addr: s.addr,
+        id: sig.id, level: sig.level, text: s.text, addr: addr ?? s.addr,
         actionable,
         status: actionable ? 'referenced' : 'unreferenced',
         xrefsComplete: users.complete !== false,
@@ -350,9 +366,9 @@ export async function autoAnalyze(opts) {
     if (vv) return vv > 0;
     return pinIdentifying(next) > pinIdentifying(cur);
   };
-  const runWithBudget = async (max, fn, phase) => {
-    if (budget.left <= 0 || max <= 0 || perGoal <= 0) return null;
-    const purse = { left: Math.max(0, Math.min(max, perGoal, budget.left)) };
+  const runWithBudget = async (goalBudget, max, fn, phase) => {
+    if (budget.left <= 0 || goalBudget.left <= 0 || max <= 0) return null;
+    const purse = { left: Math.max(0, Math.min(max, goalBudget.left, budget.left)) };
     const before = purse.left;
     try {
       return await fn(purse);
@@ -360,7 +376,9 @@ export async function autoAnalyze(opts) {
       diagnose(phase || 'pinpoint', error);
       return null;
     } finally {
-      budget.left -= (before - purse.left);
+      const spent = Math.max(0, before - purse.left);
+      budget.left = Math.max(0, budget.left - spent);
+      goalBudget.left = Math.max(0, goalBudget.left - spent);
     }
   };
 
@@ -393,11 +411,12 @@ export async function autoAnalyze(opts) {
         shapes: o.shapes || null, analyze: memo, scanAccess: o.scanAccess || null,
         isCancelled: cancelled, limit: 12,
       };
+      const goalBudget = { left: perGoal };
       const alternatives = [];
       let best = null;
 
       if (hasClasses) {
-        const fieldPin = await runWithBudget(fieldBudget,
+        const fieldPin = await runWithBudget(goalBudget, fieldBudget,
           (purse) => {
             report.stats.pinpointModes.field++;
             return pinpointField({ ...common, budget: purse });
@@ -408,7 +427,7 @@ export async function autoAnalyze(opts) {
 
       const canLocate = memo && ((common.shapes && common.shapes.size) || ranked.length);
       if (canLocate && !((best && best.verdict === VERDICT.CONFIRMED) && best.kind === 'field')) {
-        const locPin = await runWithBudget(locationBudget,
+        const locPin = await runWithBudget(goalBudget, locationBudget,
           (purse) => {
             report.stats.pinpointModes.location++;
             return pinpointLocation({ ...common, ranked, budget: purse });
@@ -422,7 +441,7 @@ export async function autoAnalyze(opts) {
         let fieldHint = null;
         const named = alternatives.find((p) => p && p.kind === 'field' && p.top && p.top.source !== 'cxx' && settledPin(p));
         if (named) fieldHint = { offset: named.top.offset, className: named.top.className, plain: named.top.plain, name: named.top.field?.name };
-        const fnPin = await runWithBudget(functionBudget,
+        const fnPin = await runWithBudget(goalBudget, functionBudget,
           (purse) => {
             report.stats.pinpointModes.function++;
             return pinpointFunction({ ...common, ranked, budget: purse, functionCount: symbols ? symbols.functionCount : 0, field: fieldHint });
@@ -463,20 +482,6 @@ export async function autoAnalyze(opts) {
   const recognized = Array.isArray(o.recognition?.records) ? o.recognition.records : [];
   const regionLo = region && typeof region.vmAddr === 'bigint' ? region.vmAddr : null;
   const regionHi = regionLo != null && typeof region.size === 'bigint' ? regionLo + region.size : null;
-  const toBigIntAddress = (addr) => {
-    if (typeof addr === 'bigint') return addr >= 0n ? addr : null;
-    if (typeof addr === 'number') return Number.isSafeInteger(addr) && addr >= 0 ? BigInt(addr) : null;
-    if (typeof addr === 'string') {
-      const text = addr.trim();
-      if (/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(text)) {
-        try {
-          const v = BigInt(text);
-          return v >= 0n ? v : null;
-        } catch { return null; }
-      }
-    }
-    return null;
-  };
   const inRegion = (addr) => {
     const a = toBigIntAddress(addr);
     if (a == null) return false;

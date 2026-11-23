@@ -238,8 +238,11 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   }
 
   const validators = required.map((validator) => results.get(validator) || validatorResult(validator, 'unavailable', 'validator-not-run'));
+  if (independentDifferential === 'failed' && !required.includes('independent-differential')) {
+    validators.push(results.get('independent-differential'));
+  }
   const failures = validators.filter((entry) => entry.status !== 'passed').map((entry) => ({ validator: entry.validator, reason: entry.reason || `validator-${entry.status}` }));
-  const valid = validators.length === required.length && validators.every((entry) => entry.status === 'passed');
+  const valid = validators.length >= required.length && validators.every((entry) => entry.status === 'passed');
   return canonicalValidation({
     status: valid ? 'valid' : 'invalid',
     planId: plan.planId,

@@ -84,6 +84,7 @@ function numericValue(value) {
   }
   if (typeof value === 'string') {
     const text = value.trim();
+    if (!text) return null;
     if (/^-?\d+$/.test(text)) {
       try { return { kind: 'bigint', value: BigInt(text) }; } catch { return null; }
     }

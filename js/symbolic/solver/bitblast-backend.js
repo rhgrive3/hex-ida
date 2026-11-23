@@ -17,8 +17,13 @@ import {
   BOOL_CONNECTIVE_OP,
   CAST_OP,
 } from '../expr/kinds.js';
+import { ownDataEntries } from '../expr/data-boundary.js';
 import { validateSatModel } from '../verify/validate-model.js';
-import { validateVerificationQuery } from '../verify/query.js';
+import {
+  QUERY_METADATA_MAX_DEPTH,
+  QUERY_METADATA_MAX_NODES,
+  validateVerificationQuery,
+} from '../verify/query.js';
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
 import { analyzeSolverExpressions } from './query-analysis.js';
 import { effectivePositiveSafeInteger, requirePositiveSafeInteger } from './limits.js';
@@ -53,12 +58,66 @@ function monotonicNow() {
   return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
 }
 
-function deadlineFrom(options) {
-  const timeoutMs = options?.timeoutMs;
-  if (options?.deterministic === true && typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0) return Infinity;
-  return typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0
-    ? monotonicNow() + timeoutMs
-    : Infinity;
+function deadlineFrom(options, sessionOptions = null) {
+  const timeoutMs = options?.timeoutMs !== undefined ? options.timeoutMs : sessionOptions?.timeoutMs;
+  const hasPositiveTimeout = typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0;
+  const deterministic = options?.deterministic !== undefined
+    ? options.deterministic === true
+    : sessionOptions?.deterministic === true;
+  if (deterministic && hasPositiveTimeout) return Infinity;
+  return hasPositiveTimeout ? monotonicNow() + timeoutMs : Infinity;
+}
+
+function scaledSnapshotBudget(value, multiplier, extra) {
+  const ceiling = Number.MAX_SAFE_INTEGER;
+  return value > Math.floor((ceiling - extra) / multiplier)
+    ? ceiling
+    : value * multiplier + extra;
+}
+
+function snapshotCanonicalQuery(query, maxExprNodes) {
+  const maxNodes = scaledSnapshotBudget(maxExprNodes, 8, QUERY_METADATA_MAX_NODES + 64);
+  const maxEdges = scaledSnapshotBudget(maxExprNodes, 16, QUERY_METADATA_MAX_NODES * 4 + 256);
+  const maxDepth = scaledSnapshotBudget(maxExprNodes, 1, QUERY_METADATA_MAX_DEPTH + 16);
+  const cloneContainer = (value) => Array.isArray(value)
+    ? []
+    : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
+  const root = cloneContainer(query);
+  const copies = new WeakMap([[query, root]]);
+  const pending = [{ source: query, target: root, depth: 0 }];
+  let nodeCount = 1;
+  let edgeCount = 0;
+
+  while (pending.length) {
+    const frame = pending.pop();
+    if (frame.depth > maxDepth) throw new RangeError('solver-query-snapshot-budget-exceeded');
+    const entries = ownDataEntries(frame.source, Math.max(0, maxEdges - edgeCount));
+    edgeCount += entries.length;
+    if (edgeCount > maxEdges) throw new RangeError('solver-query-snapshot-budget-exceeded');
+
+    for (const [key, value] of entries) {
+      let snapshot = value;
+      if (value && typeof value === 'object') {
+        snapshot = copies.get(value);
+        if (!snapshot) {
+          if (nodeCount >= maxNodes) throw new RangeError('solver-query-snapshot-budget-exceeded');
+          const depth = frame.depth + 1;
+          if (depth > maxDepth) throw new RangeError('solver-query-snapshot-budget-exceeded');
+          snapshot = cloneContainer(value);
+          copies.set(value, snapshot);
+          nodeCount++;
+          pending.push({ source: value, target: snapshot, depth });
+        }
+      }
+      Object.defineProperty(frame.target, key, {
+        value: snapshot,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+  return root;
 }
 
 class CnfBuilder {
@@ -618,30 +677,54 @@ class BitBlastSolverSession extends SolverSession {
         lifecycle: { budgetExceeded: queryValidation.limitExceeded === true, publishable: false },
       });
     }
-    const constraints = query.constraints;
-    const expressions = [...constraints, ...(query.assertion ? [query.assertion] : [])];
+    let querySnapshot;
+    try {
+      querySnapshot = snapshotCanonicalQuery(query, limits.maxExprNodes);
+    } catch (error) {
+      const limitExceeded = error instanceof RangeError && error.message === 'solver-query-snapshot-budget-exceeded';
+      return createSolverResult({
+        ...resultBase,
+        queryHash: null,
+        status: limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: limitExceeded ? 'solver-query-snapshot-budget-exceeded' : 'solver-query-snapshot-failed',
+        lifecycle: { budgetExceeded: limitExceeded, publishable: false },
+      });
+    }
+    const snapshotValidation = validateVerificationQuery(querySnapshot, { maxExprNodes: limits.maxExprNodes });
+    if (!snapshotValidation.valid || snapshotValidation.recomputedHash !== queryValidation.recomputedHash) {
+      return createSolverResult({
+        ...resultBase,
+        queryHash: null,
+        status: snapshotValidation.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: snapshotValidation.valid ? 'solver-query-snapshot-identity-mismatch' : snapshotValidation.reason,
+        lifecycle: { budgetExceeded: snapshotValidation.limitExceeded === true, publishable: false },
+      });
+    }
+    const snapshotResultBase = { ...resultBase, queryHash: querySnapshot.queryHash };
+    const constraints = querySnapshot.constraints;
+    const expressions = [...constraints, ...(querySnapshot.assertion ? [querySnapshot.assertion] : [])];
     if (constraints.length > limits.maxConstraints) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }
     const collected = analyzeSolverExpressions(expressions, { maxExprNodes: limits.maxExprNodes, maxExprDepth: limits.maxExprDepth });
     if (collected.limitExceeded) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }
     if (collected.depthExceeded) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-depth-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-depth-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }
     if (collected.unsupportedReason) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: collected.unsupportedReason, lifecycle: { publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: collected.unsupportedReason, lifecycle: { publishable: false } });
     }
     if (constraints.some((constraint) => constraint?.sort?.kind !== SORT_KIND.BOOL) ||
-        (query.assertion && query.assertion.sort?.kind !== SORT_KIND.BOOL)) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', lifecycle: { publishable: false } });
+        (querySnapshot.assertion && querySnapshot.assertion.sort?.kind !== SORT_KIND.BOOL)) {
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', lifecycle: { publishable: false } });
     }
     if (collected.maxBvWidth > limits.maxBvWidth) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${limits.maxBvWidth}`, lifecycle: { publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${limits.maxBvWidth}`, lifecycle: { publishable: false } });
     }
 
-    const deadline = deadlineFrom(options);
+    const deadline = deadlineFrom(options, this.options);
     let builder;
     try {
       builder = new CnfBuilder(limits, signal, deadline);
@@ -653,7 +736,7 @@ class BitBlastSolverSession extends SolverSession {
           : error.reason.startsWith('unsupported-') ? SOLVER_STATUS.UNSUPPORTED
             : SOLVER_STATUS.RESOURCE_LIMIT;
       return createSolverResult({
-        ...resultBase,
+        ...snapshotResultBase,
         status,
         reason: error.reason,
         stats: { solveTimeMs: monotonicNow() - startedAt },
@@ -675,20 +758,20 @@ class BitBlastSolverSession extends SolverSession {
       const model = extractModel(collected.symbols, builder, solved.assignment);
       const bindingValidation = validateExactModelBindings(collected.symbols, model);
       if (!bindingValidation.valid) {
-        return createSolverResult({ ...resultBase, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: `exact-model-binding-validation-failed:${bindingValidation.reason}`, stats, lifecycle: { publishable: false } });
+        return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: `exact-model-binding-validation-failed:${bindingValidation.reason}`, stats, lifecycle: { publishable: false } });
       }
-      const validation = validateSatModel(query, model);
+      const validation = validateSatModel(querySnapshot, model);
       if (!validation.valid) {
-        return createSolverResult({ ...resultBase, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: `independent-model-validation-failed:${validation.reason}`, stats, lifecycle: { publishable: false } });
+        return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: `independent-model-validation-failed:${validation.reason}`, stats, lifecycle: { publishable: false } });
       }
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.SAT, model, stats });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.SAT, model, stats });
     }
-    if (solved.status === 'unsat') return createSolverResult({ ...resultBase, status: SOLVER_STATUS.UNSAT, stats });
+    if (solved.status === 'unsat') return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.UNSAT, stats });
     const status = solved.status === 'cancelled' ? SOLVER_STATUS.CANCELLED
       : solved.status === 'timeout' ? SOLVER_STATUS.TIMEOUT
         : SOLVER_STATUS.RESOURCE_LIMIT;
     return createSolverResult({
-      ...resultBase,
+      ...snapshotResultBase,
       status,
       reason: solved.status,
       stats,

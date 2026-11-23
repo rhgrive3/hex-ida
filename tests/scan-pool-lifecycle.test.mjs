@@ -850,7 +850,7 @@ describe('Backend integration & lifecycle', () => {
     b.formatId = 'macho';
     b._activeMachArchitecture = 'x86_64';
     b.file = makeFakeFile(4096);
-    b.legacyWorker = new MockWorker((worker, msg) => {
+    b.platformWorker = new MockWorker((worker, msg) => {
       if (msg.t === 'scanProgram') {
         worker.emitMessage({ t: 'ok', id: msg.id, epoch: msg.epoch, result: { regionId: msg.regionId, singleWorker: true } });
       } else if (msg.t === 'valueShapes') {

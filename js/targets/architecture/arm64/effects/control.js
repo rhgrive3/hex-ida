@@ -73,7 +73,7 @@ function strictTargetInteger(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === 'string') {
     const text = value.trim();
-    if (/^-?(?:0x[0-9a-f]+|\\d+)$/i.test(text)) {
+    if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
       try { return BigInt(text); } catch { return null; }
     }
   }

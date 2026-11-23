@@ -16,6 +16,7 @@ const MAX_SANDBOX_OUTPUT_BYTES = 256 * 1024;
 const MAX_SANDBOX_OUTPUT_PER_SECOND = 96;
 const MAX_PLUGIN_DEFINITIONS = 64;
 const MAX_PLUGIN_METADATA_BYTES = 8192;
+const SANDBOX_EXECUTION_CONTEXT = Symbol('hex.sandbox.executionContext');
 
 /*
  * One binary transport-size contract for every sandbox estimator (#8668/#8694).
@@ -82,6 +83,10 @@ const WORKER_PRELUDE = String.raw`
   const nativeStructuredClone = globalThis.structuredClone.bind(globalThis);
   const NativeObjectPrototype = Object.prototype;
   const NativeSet = Set;
+  const NativeMap = Map;
+  const NativePromise = Promise;
+  const NativeError = Error;
+  const nativeMathMin = Math.min.bind(Math);
   const nativeArrayIsArray = Array.isArray.bind(Array);
   const nativeArrayBufferIsView = ArrayBuffer.isView.bind(ArrayBuffer);
   const nativeGetPrototypeOf = Object.getPrototypeOf.bind(Object);
@@ -91,6 +96,12 @@ const WORKER_PRELUDE = String.raw`
   const nativeSetHas = Function.prototype.call.bind(Set.prototype.has);
   const nativeSetAdd = Function.prototype.call.bind(Set.prototype.add);
   const nativeSetDelete = Function.prototype.call.bind(Set.prototype.delete);
+  const nativeMapGet = Function.prototype.call.bind(Map.prototype.get);
+  const nativeMapSet = Function.prototype.call.bind(Map.prototype.set);
+  const nativeMapDelete = Function.prototype.call.bind(Map.prototype.delete);
+  const nativeMapSize = Function.prototype.call.bind(
+    Object.getOwnPropertyDescriptor(Map.prototype, 'size').get
+  );
   const nativeArrayPop = Function.prototype.call.bind(Array.prototype.pop);
   const nativeArrayPush = Function.prototype.call.bind(Array.prototype.push);
   const nativeArrayBufferByteLength = Function.prototype.call.bind(
@@ -120,7 +131,7 @@ const WORKER_PRELUDE = String.raw`
   let seq = 1;
   let totalRpc = 0;
   let argumentUnits = 0;
-  const waiting = new Map();
+  const waiting = new NativeMap();
   let controlPostMessage = null;
   const OUTPUT_MAX_MESSAGES = 256;
   const OUTPUT_MAX_BYTES = 256 * 1024;
@@ -212,12 +223,13 @@ const WORKER_PRELUDE = String.raw`
 
   const measure = (value, seen = new NativeSet(), limit = MAX_ARGUMENT_UNITS + 1, buffers = new NativeSet()) => {
     if (limit <= 0 || value == null) return 0;
+    const minUnits = typeof nativeMathMin === 'function' ? nativeMathMin : ((a, b) => (a < b ? a : b));
     const type = typeof value;
-    if (type === 'string') return Math.min(limit, value.length * 2);
+    if (type === 'string') return minUnits(limit, value.length * 2);
     if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
     if (type !== 'object') return 0;
     const binary = binaryTransportBytes(value, buffers, BINARY_TRANSPORT_NATIVES_FOR_WORKER);
-    if (binary !== null) return binary < 0 ? limit : Math.min(limit, binary);
+    if (binary !== null) return binary < 0 ? limit : minUnits(limit, binary);
     if (nativeSetHas(seen, value)) return 0;
     nativeSetAdd(seen, value);
     let n = 16;
@@ -234,7 +246,8 @@ const WORKER_PRELUDE = String.raw`
     let keys;
     try { keys = nativeKeys(value); }
     catch { nativeSetDelete(seen, value); return limit; }
-    for (const key of keys) {
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
       let descriptor;
       try { descriptor = nativeDescriptor(value, key); }
       catch { nativeSetDelete(seen, value); return limit; }
@@ -244,7 +257,7 @@ const WORKER_PRELUDE = String.raw`
       }
       const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
       if (!isIndex) {
-        n += Math.min(limit - n, key.length * 2);
+        n += minUnits(limit - n, key.length * 2);
         if (n >= limit) break;
       }
       n += measure(descriptor.value, seen, limit - n, buffers);
@@ -267,30 +280,30 @@ const WORKER_PRELUDE = String.raw`
     return { args: ownedArgs, units };
   };
 
-  const rpc = (method, args) => new Promise((resolve, reject) => {
+  const rpc = (method, args) => new NativePromise((resolve, reject) => {
     if (typeof method !== 'string' || method.length === 0 || method.length > MAX_METHOD_LENGTH) {
-      reject(new Error('RPCメソッド名が無効です。'));
+      reject(new NativeError('RPCメソッド名が無効です。'));
       return;
     }
-    if (waiting.size >= MAX_OUTSTANDING_RPC) {
+    if (nativeMapSize(waiting) >= MAX_OUTSTANDING_RPC) {
       send({ t: 'budgetExceeded', error: 'RPC同時実行数の上限を超えました。' });
-      reject(new Error('RPC同時実行数の上限を超えました。'));
+      reject(new NativeError('RPC同時実行数の上限を超えました。'));
       return;
     }
     if (++totalRpc > MAX_TOTAL_RPC) {
       send({ t: 'budgetExceeded', error: 'RPC総数の上限を超えました。' });
-      reject(new Error('RPC総数の上限を超えました。'));
+      reject(new NativeError('RPC総数の上限を超えました。'));
       return;
     }
     const prepared = prepareRpcArgs(args, MAX_ARGUMENT_UNITS - argumentUnits);
     if (!prepared) {
       send({ t: 'budgetExceeded', error: 'RPC引数サイズの上限を超えました。' });
-      reject(new Error('RPC引数サイズの上限を超えました。'));
+      reject(new NativeError('RPC引数サイズの上限を超えました。'));
       return;
     }
     argumentUnits += prepared.units;
     const id = seq++;
-    waiting.set(id, { resolve, reject });
+    nativeMapSet(waiting, id, { resolve, reject });
     send({ t: 'rpc', id, method, args: prepared.args });
   });
 
@@ -389,10 +402,10 @@ const WORKER_PRELUDE = String.raw`
       try { close(); } catch {}
       return;
     }
-    const p = waiting.get(m.id);
+    const p = nativeMapGet(waiting, m.id);
     if (!p) return;
-    waiting.delete(m.id);
-    m.error ? p.reject(new Error(m.error)) : p.resolve(m.value);
+    nativeMapDelete(waiting, m.id);
+    m.error ? p.reject(new NativeError(m.error)) : p.resolve(m.value);
   };
 
   const errorText = (err) => String(err && err.message ? err.message : err).slice(0, MAX_ERROR_LENGTH);
@@ -1004,10 +1017,14 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
           const allowed = api && typeof m.method === 'string' && Object.prototype.hasOwnProperty.call(api, m.method);
           const fn = allowed ? api[m.method] : null;
           if (typeof fn !== 'function') throw new Error('許可されていないAPIです: ' + m.method);
-          // All host APIs receive a final execution context. Existing JS APIs
-          // harmlessly ignore the extra argument; long-running adapters can
-          // observe signal and cancel backend/worker work immediately.
-          value = await fn(...m.args, { signal: runController.signal });
+          // All host APIs receive a final branded execution context that
+          // cannot be forged across structuredClone or shadowed by untrusted
+          // positional arguments.
+          const hostContext = Object.freeze({
+            [SANDBOX_EXECUTION_CONTEXT]: true,
+            signal: runController.signal,
+          });
+          value = await fn(...m.args, hostContext);
           if (runController.signal.aborted) return;
           rpcOutputBytes += valueSize(value, new Set(), MAX_RPC_OUTPUT_BYTES + 1);
           if (rpcOutputBytes > MAX_RPC_OUTPUT_BYTES) return failBudget('RPC返却データ量の上限を超えたため停止しました。');
@@ -1044,4 +1061,4 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
   });
 }
 
-export { MAX_PLUGIN_DEFINITIONS, MAX_PLUGIN_METADATA_BYTES, buildFrameSrcdoc, inheritedCspNonce };
+export { MAX_PLUGIN_DEFINITIONS, MAX_PLUGIN_METADATA_BYTES, SANDBOX_EXECUTION_CONTEXT, buildFrameSrcdoc, inheritedCspNonce };

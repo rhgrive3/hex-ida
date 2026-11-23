@@ -597,8 +597,12 @@ function chargeWorkerPayloadMaterialization(budget, envelope) {
   if (typeof budget?.consume !== 'function') return;
   const state = { viewBytes:0, textBytes:0, nodes:0, stopped:false };
   walkWorkerEnvelopeForCharge(envelope, state, new WeakSet());
-  if (state.stopped || state.viewBytes < PAYLOAD_CHARGE_MIN_VIEW_BYTES) return;
-  budget.consume('residentBytes', 4096 + state.viewBytes * 4 + state.textBytes * 4);
+  if (state.viewBytes >= PAYLOAD_CHARGE_MIN_VIEW_BYTES) {
+    budget.consume('residentBytes', 4096 + state.viewBytes * 4 + state.textBytes * 4);
+  }
+  if (state.stopped) {
+    throw new TypeError('analysis-artifact-payload-charge-aborted');
+  }
 }
 
 /**

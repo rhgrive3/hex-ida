@@ -258,11 +258,18 @@ function foldConst(op, a, b, w) {
     case 'and': return a & b;
     case 'or': return a | b;
     case 'xor': return a ^ b;
-    case 'shl': return b >= 0n && b < 64n ? a << b : null;
-    case 'sar': return b >= 0n && b < 64n ? a >> b : null;
+    case 'shl': {
+      const width = w || 64;
+      return b >= 0n && b < BigInt(width) ? a << b : null;
+    }
+    case 'sar': {
+      const width = w || 64;
+      return b >= 0n && b < BigInt(width) ? BigInt.asIntN(width, a) >> b : null;
+    }
     case 'shr': {
-      if (!(b >= 0n && b < 64n)) return null;
-      const m = MASK[w] || MASK[64];
+      const width = w || 64;
+      if (!(b >= 0n && b < BigInt(width))) return null;
+      const m = MASK[width] || MASK[64];
       return (a & m) >> b;
     }
     case 'sdiv': {
@@ -274,9 +281,16 @@ function foldConst(op, a, b, w) {
       return rhs === 0n ? 0n : lhs / rhs;
     }
     case 'smod':
-    case 'srem': return b === 0n ? null : a - truncDiv(a, b) * b;
+    case 'srem': {
+      const width = w || 64;
+      const lhs = BigInt.asIntN(width, a), rhs = BigInt.asIntN(width, b);
+      return rhs === 0n ? null : lhs - truncDiv(lhs, rhs) * rhs;
+    }
     case 'umod':
-    case 'urem': return b === 0n ? null : a % b;
+    case 'urem': {
+      const lhs = BigInt.asUintN(w, a), rhs = BigInt.asUintN(w, b);
+      return rhs === 0n ? null : lhs % rhs;
+    }
     default: return null;
   }
 }
@@ -675,7 +689,13 @@ export function buildValues(model, opts) {
       for (let a = 16; a <= 31; a++) everWritten.add('v' + a);
     }
 
-    if (insn.data) { for (const w of insn.writes) regs.delete(w); continue; }
+    if (insn.data) {
+      for (const w of insn.writes) {
+        regs.delete(w);
+        invalidateDependents(w, row);
+      }
+      continue;
+    }
 
     const made = {};
     const emit = (key, v, skipInvalidate) => {
@@ -762,7 +782,10 @@ export function buildValues(model, opts) {
       if (dst && t != null) {
         const txt = base === 'adr' ? textOf.get(row) : null;
         emit(dst, txt ? node('str', { addr: t, text: txt.text }) : node('addr', { addr: t, partial: base === 'adrp' }));
-      } else if (dst) regs.delete(dst);
+      } else if (dst) {
+        regs.delete(dst);
+        invalidateDependents(dst, row);
+      }
       defs.set(row, made);
       continue;
     }
@@ -920,7 +943,10 @@ export function buildValues(model, opts) {
       if (prev && prev.k === 'const' && imm && imm.value != null) {
         const cleared = prev.v & ~(0xffffn << sh);
         emit(dst, constNode(wrap(cleared | ((imm.value & 0xffffn) << sh), 64)));
-      } else regs.delete(dst);
+      } else if (dst) {
+        regs.delete(dst);
+        invalidateDependents(dst, row);
+      }
     } else if (base === 'add' && insn.ops[2] && insn.ops[2].k === 'imm') {
       // adrp と組でアドレスを完成させる形
       const src = regs.get(regKeyOf(insn.ops[1]));
@@ -1006,7 +1032,10 @@ export function buildValues(model, opts) {
       const width = insn.ops[3] && insn.ops[3].value != null ? insn.ops[3].value : 0n;
       const destinationWidth = BigInt(bits);
       if (lsb < 0n || width <= 0n || lsb >= destinationWidth || width > destinationWidth - lsb) {
-        if (dst) regs.delete(dst);
+        if (dst) {
+          regs.delete(dst);
+          invalidateDependents(dst, row);
+        }
       } else {
         const shifted = bin('shr', A(), constNode(lsb), bits);
         const extracted = width === destinationWidth ? shifted : bin('and', shifted, constNode((1n << width) - 1n), bits);

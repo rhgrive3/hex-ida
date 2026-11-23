@@ -128,11 +128,23 @@ function readIndexedSymbol(r, st, bits, index, budget) {
   if (ntype!==0 || !external) return { symbol:null };
   if (strx>=st.strsize) return { error:'symbol-name-invalid' };
   const start=st.stroff+strx;
-  const span=r.slice(start, st.strsize-strx);
-  let nul=-1;
-  for (let i=0;i<span.length;i++) if (span[i]===0) { nul=i; break; }
-  if (nul<0) return { error:'symbol-name-invalid' };
-  const name=new TextDecoder().decode(span.subarray(0,nul));
+  const tableEnd=st.stroff+st.strsize;
+  const maxNameScan=Math.min(tableEnd-start, budget.remaining('inputBytes'), budget.remaining('stringBytes')*2+1);
+  const nul=maxNameScan>0 ? r.findZero(start, start+maxNameScan) : -1;
+  if (nul<0) {
+    if (maxNameScan>0) budget.take({ inputBytes:maxNameScan }, 'indirect-symbol-name-scan');
+    if (start+maxNameScan<tableEnd || budget.stopped) {
+      if (!budget.stopped) {
+        if (budget.remaining('inputBytes')===0) budget.take({ inputBytes:1 }, 'indirect-symbol-name-scan');
+        else budget.take({ stringBytes:budget.remaining('stringBytes')+1 }, 'indirect-symbol-name');
+      }
+      return { error:'metadata-budget' };
+    }
+    return { error:'symbol-name-invalid' };
+  }
+  const rawLen=nul-start;
+  if (!budget.take({ inputBytes:rawLen+1 }, 'indirect-symbol-name-scan')) return { error:'metadata-budget' };
+  const name=r.decodeString(start, nul);
   if (!name) return { error:'symbol-name-invalid' };
   if (!budget.take({ stringBytes:name.length*2, estimatedHeapBytes:name.length*2+32 }, 'indirect-symbol-name')) return { error:'metadata-budget' };
   return { symbol:{ name, ordinal:(desc>>>8)&0xff, weak:!!(desc&0x40) } };

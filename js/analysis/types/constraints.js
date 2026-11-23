@@ -759,6 +759,7 @@ export function claimsConflict(left, right) {
     }
     const overlap = intervalsOverlap(a, b);
     if (!overlap) return false;
+    if (a.offset != null && b.offset != null && numericValuesDiffer(a.offset, b.offset)) return true;
 
     if (a.memberType != null && b.memberType != null) {
       if (memberTypesConflict(a.memberType, b.memberType)) return true;

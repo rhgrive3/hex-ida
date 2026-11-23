@@ -1018,7 +1018,8 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       const right = irGet(node.inputs[1]);
       if (left.top || right.top) return topPointsTo('non-linear-arithmetic');
       const merged = joinPointsTo(left, right, budget);
-      if (merged.top || pointsToIsBottom(merged)) return topPointsTo('non-linear-arithmetic');
+      if (merged.top) return topPointsTo('non-linear-arithmetic');
+      if (pointsToIsBottom(merged)) return BOTTOM_POINTS_TO;
       // The displacement is unbounded, so every surviving root keeps its
       // identity and loses its offset.
       return createPointsToSet({
@@ -1095,7 +1096,8 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
           let candidate;
           if (prov.kind === 'arg' && prov.argIndex != null && argumentIds?.[prov.argIndex] != null) {
             const argSet = irGet(argumentIds[prov.argIndex]);
-            if (argSet.top || pointsToIsBottom(argSet)) return topPointsTo('unresolved-call');
+            if (argSet.top) return topPointsTo('unresolved-call');
+            if (pointsToIsBottom(argSet)) return BOTTOM_POINTS_TO;
             let offset;
             try { offset = BigInt(prov.offset ?? 0n); }
             catch { return topPointsTo('unresolved-call'); }

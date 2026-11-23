@@ -928,6 +928,7 @@ export function parseSerializedAppleKnowledge(text) {
       || parsed.complete !== false
       || parsed.identity.authoritative !== false
       || parsed.serializedEvidence?.authority !== 'untrusted'
+      || typeof parsed.serializedEvidence?.assertedComplete !== 'boolean'
       || Object.values(sourceCells).some((value) => value.status !== 'unknown' || value.complete !== false)) {
     throw new TypeError('apple-knowledge-contract-invalid');
   }
@@ -954,6 +955,6 @@ export function parseSerializedAppleKnowledge(text) {
       ...(Array.isArray(parsed.reasons) ? parsed.reasons.filter((reason) => typeof reason === 'string') : []),
       'serialized-evidence-requires-source-reparse',
     ]),
-    serializedEvidence: { authority: 'untrusted', assertedComplete: parsed.complete },
+    serializedEvidence: { authority: 'untrusted', assertedComplete: parsed.serializedEvidence.assertedComplete },
   });
 }

@@ -31,7 +31,7 @@ import { architectureAdapter, unsupportedArchitectureResult, UnsupportedArchitec
 import { Emulator } from './emu.js';
 
 export { UnsupportedArchitectureError } from './architecture/index.js';
-import { runInSandbox } from './sandbox.js';
+import { runInSandbox, SANDBOX_EXECUTION_CONTEXT } from './sandbox.js';
 import { investigationServiceFor } from './analysis/investigation-service.js';
 
 function executableRegionForAddress(app, address) {
@@ -47,8 +47,12 @@ function executableRegionForAddress(app, address) {
 }
 
 
+function isHostExecutionContext(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && value[SANDBOX_EXECUTION_CONTEXT] === true;
+}
 function isExecutionContext(value) {
-  return !!value && typeof value === 'object' && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, 'signal');
+  return isHostExecutionContext(value)
+    || (!!value && typeof value === 'object' && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, 'signal'));
 }
 function scriptPage(result) {
   const status = result?.status || {};
@@ -104,7 +108,32 @@ export function createApi(app, out, options = {}) {
   const print = (...args) => {
     out(args.map((a) => format(a)).join(' '));
   };
-  const signalOf = (context) => isExecutionContext(context) ? context.signal : (options.signal ?? null);
+  const MAX_STRING_SCAN = 10_000;
+  const signalOf = (context) => (isExecutionContext(context) && context.signal != null)
+    ? context.signal
+    : (options.signal ?? null);
+  const resolveExecution = (rawArgs, maxPositional) => {
+    const args = Array.from(rawArgs);
+    if (args.length > 0 && isHostExecutionContext(args[args.length - 1])) {
+      const hostContext = args.pop();
+      return {
+        args,
+        context: hostContext,
+        signal: hostContext.signal ?? (options.signal ?? null),
+        hasHostContext: true,
+      };
+    }
+    let context = null;
+    if (args.length > maxPositional && isExecutionContext(args[args.length - 1])) {
+      context = args.pop();
+    }
+    return {
+      args,
+      context,
+      signal: signalOf(context),
+      hasHostContext: false,
+    };
+  };
 
   const region = () => app.codeRegion();
   const architecture = () => String(
@@ -169,9 +198,12 @@ export function createApi(app, out, options = {}) {
     /* ── 関数 ─────────────────────────────────────────── */
 
     /** 関数の一覧。legacy Array shapeを維持しつつpartial/capを明示する。 */
-    functions(limit = 100000, context = null) {
-      if (isExecutionContext(limit)) { context = limit; limit = 100000; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    functions(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 1);
+      let [limit = 100000, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 100000; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const max=Math.max(1,Math.min(400000,Math.trunc(Number(limit)||100000)));
       const regions = app.store?.get?.('regions') || [];
       const execRegions = regions.filter((r) => r && r.exec);
@@ -197,10 +229,15 @@ export function createApi(app, out, options = {}) {
     },
 
     /** Paged canonical function query for >100k automation. */
-    async queryFunctions(page = {}, query = {}, context = null) {
-      if (isExecutionContext(page)) { context=page; page={}; query={}; }
-      else if (isExecutionContext(query)) { context=query; query={}; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async queryFunctions(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [page = {}, query = {}, userContext = null] = args;
+      if (!hasHostContext && !trailingContext) {
+        if (isExecutionContext(page)) { userContext = page; page = {}; query = {}; }
+        else if (isExecutionContext(query)) { userContext = query; query = {}; }
+      }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const snapshot=await app.analysisQueries.snapshot({signal});
       const result=await app.analysisQueries.functions(snapshot,query,page,{signal});
       return scriptPage(result);
@@ -242,23 +279,32 @@ export function createApi(app, out, options = {}) {
     /* ── 中身を読む ───────────────────────────────────── */
 
     /** 生バイトを読む。 */
-    async bytes(addr, len = 16, context = null) {
-      if (isExecutionContext(len)) { context=len; len=16; }
-      const r = await awaitRequest(app.backend.readAt(BigInt(addr), len), signalOf(context));
+    async bytes(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, len = 16, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(len)) { userContext = len; len = 16; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      const r = await awaitRequest(app.backend.readAt(BigInt(addr), len), signal);
       return r && r.found ? r.bytes : null;
     },
 
     /** 0 終端の文字列として読む。 */
-    async string(addr, max = 200, context = null) {
-      if (isExecutionContext(max)) { context=max; max=200; }
-      const r = await awaitRequest(app.backend.readAt(BigInt(addr), max, true), signalOf(context));
+    async string(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, max = 200, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(max)) { userContext = max; max = 200; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      const r = await awaitRequest(app.backend.readAt(BigInt(addr), max, true), signal);
       return r && r.found ? (r.text || null) : null;
     },
 
     /** 逆アセンブル。[{addr, mn, ops}] */
-    async disasm(addr, count = 16, context = null) {
-      if (isExecutionContext(count)) { context=count; count=16; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async disasm(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, count = 16, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(count)) { userContext = count; count = 16; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const a = BigInt(addr);
       const r = executableRegionForAddress(app, a);
       if (!r) return [];
@@ -304,8 +350,10 @@ export function createApi(app, out, options = {}) {
     },
 
     /** 逆コンパイル結果（文字列）。 */
-    async decompile(addr, context = null) {
-      const signal=signalOf(context); throwIfAborted(signal);
+    async decompile(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 1);
+      const [addr] = args;
+      throwIfAborted(signal);
       const a = BigInt(addr);
       const arch = architecture();
       const archAdapter = adapter();
@@ -334,53 +382,75 @@ export function createApi(app, out, options = {}) {
     },
 
     /** 引数・戻り値・ローカル変数の推定。 */
-    async types(addr, context = null) {
-      const res = await app.analyzeFunctionAt(BigInt(addr), { signal:signalOf(context) });
+    async types(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 1);
+      const [addr] = args;
+      throwIfAborted(signal);
+      const res = await app.analyzeFunctionAt(BigInt(addr), { signal });
       return res ? inferTypes(res.model) : null;
     },
 
     /** 構造体の自動復元。 */
-    async struct(addr, reg, context = null) {
-      if (isExecutionContext(reg)) { context=reg; reg=null; }
-      const res = await app.analyzeFunctionAt(BigInt(addr), { signal:signalOf(context) });
+    async struct(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, reg, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(reg)) { userContext = reg; reg = null; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
+      const res = await app.analyzeFunctionAt(BigInt(addr), { signal });
       return res ? recoverStruct(res.model, reg) : null;
     },
 
     /* ── 参照関係 ─────────────────────────────────────── */
 
     /** Canonical typed incoming references. */
-    async queryXrefsTo(addr, page = {}, context = null) {
-      if (isExecutionContext(page)) { context=page; page={}; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async queryXrefsTo(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, page = {}, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(page)) { userContext = page; page = {}; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const snapshot=await app.analysisQueries.snapshot({signal});
       return scriptPage(await app.analysisQueries.xrefs(snapshot,BigInt(addr),page,{signal}));
     },
 
     /** Legacy Array compatibility; completeness is preserved as metadata. */
-    async xrefsTo(addr, limit = 200, context = null) {
-      if (isExecutionContext(limit)) { context=limit; limit=200; }
+    async xrefsTo(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, limit = 200, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 200; }
+      const context = hasHostContext ? trailingContext : (trailingContext ?? userContext);
       const page=await api.queryXrefsTo(addr,{offset:0,limit:Math.max(1,Math.min(5000,Number(limit)||200))},context);
       return legacyRows(page);
     },
 
     /** Canonical typed outgoing calls. */
-    async queryXrefsFrom(addr, page = {}, context = null) {
-      if (isExecutionContext(page)) { context=page; page={}; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async queryXrefsFrom(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, page = {}, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(page)) { userContext = page; page = {}; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const snapshot=await app.analysisQueries.snapshot({signal});
       return scriptPage(await app.analysisQueries.callees(snapshot,BigInt(addr),page,{signal}));
     },
 
-    async xrefsFrom(addr, limit = 200, context = null) {
-      if (isExecutionContext(limit)) { context=limit; limit=200; }
+    async xrefsFrom(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, limit = 200, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 200; }
+      const context = hasHostContext ? trailingContext : (trailingContext ?? userContext);
       const page=await api.queryXrefsFrom(addr,{offset:0,limit:Math.max(1,Math.min(5000,Number(limit)||200))},context);
       return legacyRows(page);
     },
 
     /** Global statistic: demand-start the shared Program producer, never read warm-cache presence. */
-    async queryMostCalled(limit = 20, context = null) {
-      if (isExecutionContext(limit)) { context=limit; limit=20; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async queryMostCalled(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 1);
+      let [limit = 20, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 20; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const program=await investigationServiceFor(app).buildProgram({signal});
       throwIfAborted(signal);
       if (!program) return {results:[],complete:false,completeness:'unsupported',reason:'program-index-unavailable',page:null};
@@ -389,8 +459,11 @@ export function createApi(app, out, options = {}) {
       return {results,complete,completeness:complete?'complete':'partial',reason:complete?null:(program.queryIncompleteReason||program.graphCompleteness?.reasons?.[0]||'program-partial'),page:null};
     },
 
-    async mostCalled(limit = 20, context = null) {
-      if (isExecutionContext(limit)) { context=limit; limit=20; }
+    async mostCalled(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 1);
+      let [limit = 20, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 20; }
+      const context = hasHostContext ? trailingContext : (trailingContext ?? userContext);
       return legacyRows(await api.queryMostCalled(limit,context));
     },
 
@@ -399,23 +472,33 @@ export function createApi(app, out, options = {}) {
     /** 集めた文字列（あらかじめ「文字列」画面を開くか、await hex.loadStrings() が要る）。 */
     strings() { return app.stringIndex || []; },
 
-    async loadStrings(context = null) { return investigationServiceFor(app).collectStrings({ signal:signalOf(context) }); },
+    async loadStrings(...rawArgs) {
+      const { signal } = resolveExecution(rawArgs, 0);
+      throwIfAborted(signal);
+      return investigationServiceFor(app).collectStrings({ signal });
+    },
 
     /** 文字列を検索する。既定で最大10,000件を走査し、256件ごとにyieldする。 */
-    async findStrings(query, limit = 200, context = null) {
+    async findStrings(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [query, limit = 200, userContext = null] = args;
+      let userOptions = userContext;
       if (limit && typeof limit === 'object' && !Array.isArray(limit)) {
-        context = limit;
+        userOptions = limit;
         limit = limit.limit ?? 200;
       }
-      const signal = signalOf(context);
+      const signal = hasHostContext
+        ? (trailingContext.signal ?? (options.signal ?? null))
+        : signalOf(trailingContext ?? userOptions);
       throwIfAborted(signal);
       const q = String(query ?? '').toLowerCase();
       const max = Math.max(1, Math.min(5000, Number(limit) || 200));
       const source = app.stringIndex || (app.strings?.items) || [];
       const results = [];
-      const maxScanned = Number.isSafeInteger(context?.maxScanned) && context.maxScanned > 0
-        ? context.maxScanned
-        : 10_000;
+      const requestedScan = userOptions?.maxScanned ?? trailingContext?.maxScanned;
+      const maxScanned = Number.isSafeInteger(requestedScan) && requestedScan > 0
+        ? Math.min(MAX_STRING_SCAN, requestedScan)
+        : MAX_STRING_SCAN;
       const total = source.length;
       let scanned = 0;
       while (scanned < total && scanned < maxScanned) {
@@ -466,7 +549,10 @@ export function createApi(app, out, options = {}) {
     },
 
     /** 書き換えを登録する（保存するまでファイルは変わりません）。 */
-    async patch(addr, textOrHex, context = null) {
+    async patch(...rawArgs) {
+      const { args, context, signal } = resolveExecution(rawArgs, 2);
+      const [addr, textOrHex] = args;
+      throwIfAborted(signal);
       const a = BigInt(addr);
       const r = executableRegionForAddress(app, a);
       if (!r) return { error: 'セクションが選ばれていません。' };
@@ -509,19 +595,26 @@ export function createApi(app, out, options = {}) {
      * 関数を動かしてみる。
      * @returns {{x0, steps, stopped, log}}
      */
-    async run(addr, args = [], maxSteps = 20000, context = null) {
-      if (isExecutionContext(args)) {
-        context = args;
-        args = [];
-        maxSteps = 20000;
-      } else if (isExecutionContext(maxSteps)) {
-        context = maxSteps;
-        maxSteps = 20000;
+    async run(...rawArgs) {
+      const { args: callArgs, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 3);
+      let [addr, args = [], maxSteps = 20000, userContext = null] = callArgs;
+      if (!hasHostContext && !trailingContext) {
+        if (isExecutionContext(args)) {
+          userContext = args;
+          args = [];
+          maxSteps = 20000;
+        } else if (isExecutionContext(maxSteps)) {
+          userContext = maxSteps;
+          maxSteps = 20000;
+        }
       }
       if (!Array.isArray(args)) throw new TypeError('run args must be an array');
-      const signal = signalOf(context);
+      const signal = hasHostContext
+        ? (trailingContext.signal ?? (options.signal ?? null))
+        : signalOf(trailingContext ?? userContext);
       throwIfAborted(signal);
-      const emu = makeEmulator(app, { applyPatches: context?.applyPatches !== false });
+      const applyPatches = (userContext?.applyPatches ?? trailingContext?.applyPatches) !== false;
+      const emu = makeEmulator(app, { applyPatches });
       emu.setup(BigInt(addr), args.map((v) => BigInt(v)));
       await emu.run(boundedSteps(maxSteps), { signal });
       return {
@@ -553,24 +646,25 @@ export function createApi(app, out, options = {}) {
       return emulatorState(emu);
     },
 
-    async emulatorStep(id, ...rest) {
-      const last = rest.length > 0 ? rest[rest.length - 1] : null;
-      const signal = signalOf(isExecutionContext(last) ? last : null);
+    async emulatorStep(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 1);
+      const [id] = args;
       throwIfAborted(signal);
       const emu = emulatorOf(id);
       const result = await emu.step({ signal });
       return { result, state: emulatorState(emu) };
     },
 
-    async emulatorRun(id, maxSteps = 20000, ...rest) {
-      let context = null;
-      if (rest.length > 0 && isExecutionContext(rest[rest.length - 1])) {
-        context = rest[rest.length - 1];
-      } else if (isExecutionContext(maxSteps)) {
-        context = maxSteps;
+    async emulatorRun(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [id, maxSteps = 20000, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(maxSteps)) {
+        userContext = maxSteps;
         maxSteps = 20000;
       }
-      const signal = signalOf(context);
+      const signal = hasHostContext
+        ? (trailingContext.signal ?? (options.signal ?? null))
+        : signalOf(trailingContext ?? userContext);
       throwIfAborted(signal);
       const emu = emulatorOf(id);
       const result = await emu.run(boundedSteps(maxSteps), { signal });

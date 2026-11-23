@@ -1387,11 +1387,29 @@ function referencedType(die, dies) {
  * type graphs can be cyclic through pointer members and a naive walk would not
  * terminate.
  */
+function nonNegativeSafeInteger(value) {
+  if (typeof value === 'bigint') {
+    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(value);
+  }
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    return value;
+  }
+  return null;
+}
+
+function byteSizeToWidthBits(byteSize) {
+  if (byteSize == null) return null;
+  const widthBits = byteSize * 8;
+  return Number.isSafeInteger(widthBits) && widthBits >= 0 ? widthBits : null;
+}
+
 function describeType(die, dies, depth = 0, seen = new Set()) {
   if (!die || depth > 32 || seen.has(die.offset)) return { name: 'unknown', complete: false };
   seen.add(die.offset);
-  const name = attributeName(die);
-  const byteSize = attributeValue(die, DW_AT.byte_size);
+  const name = attributeName(die, dies);
+  const rawByteSize = attributeValue(die, DW_AT.byte_size);
+  const byteSize = nonNegativeSafeInteger(rawByteSize);
 
   switch (die.tag) {
     case DW_TAG.base_type: {
@@ -1401,17 +1419,20 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
         && Object.prototype.hasOwnProperty.call(ENCODING_CLASS, encoding)
         ? ENCODING_CLASS[encoding]
         : 'unknown';
+      const widthBits = byteSizeToWidthBits(byteSize);
       return {
         name: name ?? 'base',
-        widthBits: byteSize == null ? null : Number(byteSize) * 8,
+        widthBits,
         class: encodingClass,
-        complete: byteSize != null && encodingClass !== 'unknown' && die.complete,
+        complete: widthBits != null && encodingClass !== 'unknown' && die.complete,
       };
     }
     case DW_TAG.pointer_type: {
       const specificationComplete = specificationResolved(die, dies);
       const effectiveType = effectiveAttribute(die, DW_AT.type, dies);
-      const widthBits = byteSize == null ? die.unit.addressSize * 8 : Number(byteSize) * 8;
+      const explicitWidthBits = byteSizeToWidthBits(byteSize);
+      const byteSizeValid = rawByteSize == null || explicitWidthBits != null;
+      const widthBits = rawByteSize == null ? die.unit.addressSize * 8 : explicitWidthBits;
 
       // DW_AT_type may be omitted for a genuine void pointer.  That absence is
       // authoritative only when the specification chain itself is resolved;
@@ -1422,7 +1443,7 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
           name: specificationComplete ? 'void *' : 'unknown *',
           widthBits,
           class: 'pointer',
-          complete: die.complete && specificationComplete,
+          complete: die.complete && specificationComplete && byteSizeValid,
         };
       }
 
@@ -1432,7 +1453,7 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
         name: `${target.name} *`,
         widthBits,
         class: 'pointer',
-        complete: die.complete && specificationComplete && target.complete,
+        complete: die.complete && specificationComplete && byteSizeValid && target.complete,
       };
     }
     case DW_TAG.typedef: {
@@ -1454,7 +1475,7 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
       const keyword = die.tag === DW_TAG.union_type ? 'union' : die.tag === DW_TAG.class_type ? 'class' : 'struct';
       return {
         name: name ? `${keyword} ${name}` : `${keyword} <anonymous>`,
-        sizeBytes: byteSize == null ? null : Number(byteSize),
+        sizeBytes: byteSize,
         // A DW_AT_declaration DIE is a forward declaration: it names the type
         // but says nothing about its layout, so it is not a complete fact.
         complete: die.complete && !attributeFlag(die, DW_AT.declaration) && byteSize != null,
@@ -1462,8 +1483,11 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
         isUnion: die.tag === DW_TAG.union_type,
       };
     }
-    case DW_TAG.enumeration_type:
-      return { name: name ? `enum ${name}` : 'enum <anonymous>', widthBits: byteSize == null ? null : Number(byteSize) * 8, class: 'integer', complete: die.complete };
+    case DW_TAG.enumeration_type: {
+      const widthBits = byteSizeToWidthBits(byteSize);
+      const byteSizeValid = rawByteSize == null || widthBits != null;
+      return { name: name ? `enum ${name}` : 'enum <anonymous>', widthBits, class: 'integer', complete: die.complete && byteSizeValid };
+    }
     case DW_TAG.array_type: {
       const element = describeType(referencedType(die, dies), dies, depth + 1, seen);
       return { name: `${element.name}[]`, class: 'array', complete: false };
@@ -1775,7 +1799,7 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
           layer: 'nominal',
           claim: { name: described.name, aliases: described.aliases ?? [] },
           machine: described.widthBits == null ? null : { widthBits: described.widthBits, class: described.class },
-          complete: described.complete && specificationResolved(die, dies),
+          complete: Boolean(die.complete && described.complete && specificationResolved(die, dies)),
         },
         providerId: result.providerId,
         providerVersion: result.providerVersion,

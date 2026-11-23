@@ -283,16 +283,54 @@ export function validateCilEffectFunction(decoded, context = {}) {
   if (!returnShapeKnown) warnings.push({ code:'cil-return-stack-shape-unavailable' });
 
   const processed = new Set();
+  const stackShapeIdByArray = new WeakMap();
+  const stackShapesByHash = new Map();
+  let nextShapeId = 1;
+  const resolveStackShapeId = (stack) => {
+    if (!Array.isArray(stack) || stack.length === 0) return 0;
+    const cached = stackShapeIdByArray.get(stack);
+    if (cached !== undefined) return cached;
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < stack.length; i++) {
+      hash = Math.imul(hash ^ (stack[i]?.bits ?? 0), 0x01000193) >>> 0;
+    }
+    const bucketKey = `${stack.length}:${hash}`;
+    let bucket = stackShapesByHash.get(bucketKey);
+    if (!bucket) {
+      bucket = [];
+      stackShapesByHash.set(bucketKey, bucket);
+    }
+    for (const entry of bucket) {
+      if (entry.stack.length !== stack.length) continue;
+      let same = true;
+      for (let i = 0; i < stack.length; i++) {
+        if ((entry.stack[i]?.bits ?? null) !== (stack[i]?.bits ?? null)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) {
+        stackShapeIdByArray.set(stack, entry.id);
+        return entry.id;
+      }
+    }
+    const id = nextShapeId++;
+    bucket.push({ id, stack });
+    stackShapeIdByArray.set(stack, id);
+    return id;
+  };
   const unanalyzedAfterCall = new Set();
   while (queueHead < queue.length && !stateBudget.exceeded) {
     const offset = queue[queueHead++];
-    const stateKey = `${offset}:${JSON.stringify(states.get(offset))}`;
+    const storedState = states.get(offset) || [];
+    const shapeId = resolveStackShapeId(storedState);
+    const stateKey = `${offset}:${shapeId}`;
     if (processed.has(stateKey)) continue;
+    if (!stateBudget.chargeWork(stateKey.length)) break;
     processed.add(stateKey);
     const index = offsets.get(offset);
     const bundle = bundles[index];
     if (!bundle) continue;
-    const storedState = states.get(offset) || [];
     let stack = cloneStack(storedState);
     const consumed = Array.isArray(bundle.consumedValues) ? bundle.consumedValues : [];
     const produced = Array.isArray(bundle.producedValues) ? bundle.producedValues : [];

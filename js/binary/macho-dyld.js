@@ -289,10 +289,29 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
       addend = r.u64(p + 8);
     }
     const strp = stringsBase + nameOffset;
-    if (strp < base || strp >= base + dc.size) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-name-offset';continue; }
-    const span = r.bytes.subarray(strp, base + dc.size);
-    if (span.indexOf(0) === -1) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'non-terminated-import-name';continue; }
-    const name = r.cstring(strp, base + dc.size - strp);
+    const poolEnd = base + dc.size;
+    if (strp < base || strp >= poolEnd) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-name-offset';continue; }
+    const maxNameScan = Math.min(poolEnd - strp, budget.remaining('inputBytes'), budget.remaining('stringBytes') * 2 + 1);
+    const nul = maxNameScan > 0 ? r.findZero(strp, strp + maxNameScan) : -1;
+    if (nul < 0) {
+      if (maxNameScan > 0) budget.take({ inputBytes: maxNameScan }, 'chained-import-name-scan');
+      if (strp + maxNameScan < poolEnd || budget.stopped) {
+        if (!budget.stopped) {
+          if (budget.remaining('inputBytes') === 0) budget.take({ inputBytes: 1 }, 'chained-import-name-scan');
+          else budget.take({ stringBytes: budget.remaining('stringBytes') + 1 }, 'chained-import-name');
+        }
+        status.complete = false; status.importsComplete = false; status.importsPartialReason = 'metadata-budget';
+        break;
+      }
+      status.complete = false; status.importsComplete = false; status.importsPartialReason ||= 'non-terminated-import-name';
+      continue;
+    }
+    const rawLen = nul - strp;
+    if (!budget.take({ inputBytes: rawLen + 1 }, 'chained-import-name-scan')) {
+      status.complete = false; status.importsComplete = false; status.importsPartialReason = 'metadata-budget';
+      break;
+    }
+    const name = r.decodeString(strp, nul);
     if (!name) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-import-name';continue; }
     if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
     // A positive library ordinal is a 1-based index into the dependent dylib
@@ -722,10 +741,15 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   const status = { source, complete: true, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [] };
   image.metadata.dyldBindings ||= { complete: true, streams: {} };
   image.metadata.dyldBindings.streams[source] = status;
+  const seenWarnings = new Set(image.warnings || []);
   const fail = (message, opcode = null) => {
     status.complete = false; image.metadata.dyldBindings.complete = false;
     if (opcode != null && !status.unsupportedOpcodes.includes(opcode)) status.unsupportedOpcodes.push(opcode);
-    image.warnings.push(`${source}: ${message}`);
+    const warning = `${source}: ${message}`;
+    if (!seenWarnings.has(warning) && seenWarnings.size < budget.limits.warnings) {
+      seenWarnings.add(warning);
+      image.warnings.push(warning);
+    }
   };
   const validDylibOrdinal = () => {
     if (!Number.isSafeInteger(libOrdinal)) { fail('dylib ordinal exceeds safe integer range'); return false; }
@@ -740,25 +764,31 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     return !!seg && segOffset >= 0n && segOffset <= seg.size && width <= seg.size - segOffset;
   };
   const bind = () => {
-    if (!symbol) { fail('bind encountered before a symbol was set'); return; }
-    if (!validDylibOrdinal()) return;
+    if (!budget.take({ operations: 1 }, 'classic-bind-step')) { fail('shared metadata budget exhausted while recording bind'); return false; }
+    if (!symbol) { fail('bind encountered before a symbol was set'); return false; }
+    if (!validDylibOrdinal()) return false;
     if (threadedTable) {
-      if (type !== 1) { fail(`unknown threaded bind type ${type}`); return; }
-      if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
+      if (type !== 1) { fail(`unknown threaded bind type ${type}`); return false; }
+      if (threadedTable.length < threadedTableLimit) {
+        if (!budget.take({ objects: 1, estimatedHeapBytes: 256 }, 'classic-bind-threaded-entry')) { fail('shared metadata budget exhausted while recording threaded bind'); return false; }
+        threadedTable.push(snapshotImport());
+        return true;
+      }
       fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);
-      return;
+      return false;
     }
-    if (type !== 1 && type !== 2 && type !== 3) { fail(`unknown bind type ${type} at bind site`); return; }
-    if (!libraryOrdinalSet) { fail('missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL'); return; }
-    if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return; }
+    if (type !== 1 && type !== 2 && type !== 3) { fail(`unknown bind type ${type} at bind site`); return false; }
+    if (!libraryOrdinalSet) { fail('missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL'); return false; }
+    if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return false; }
     const seg = segments[segIndex];
     const address = seg.address + segOffset;
     const imp = snapshotImport();
     imp.sites.push({ address, offset: image.addressToOffset(address), kind: source, type, addend, weak: imp.weak });
     // The retained import name is resident metadata: account its string bytes
     // alongside the fixed object cost (issue #6303).
-    if(!budget.take({objects:2,operations:1,stringBytes:symbol.length*2,estimatedHeapBytes:320+symbol.length*2},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
+    if(!budget.take({objects:2,stringBytes:symbol.length*2,estimatedHeapBytes:320+symbol.length*2},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return false;}
     image.imports.push(imp); status.decodedBinds++;
+    return true;
   };
   const threadedPointerFileOffset = (address) => {
     const width = 8n;
@@ -884,8 +914,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       const maxBySegment=owner&&step>0n&&segOffset>=0n&&segOffset+ptrSize<=owner.size?Number(((owner.size-segOffset-ptrSize)/step)+1n):0;
       const maxByBudget=Math.min(budget.remaining('operations'),Math.floor(budget.remaining('objects')/2));
       const allowed=Math.max(0,Math.min(repeat,maxBySegment,maxByBudget));
-      for(let i=0;i<allowed;i++){bind();addSegOffset(step);}
-      if(allowed<repeat){fail(`bind repeat count ${repeat} exceeds segment/shared metadata capacity ${allowed}`);break;}
+      let stoppedByError = false;
+      for(let i=0;i<allowed;i++){const ok=bind();addSegOffset(step);if(!ok){stoppedByError=true;break;}}
+      if(budget.stopped)break;
+      if(!stoppedByError && allowed<repeat){fail(`bind repeat count ${repeat} exceeds segment/shared metadata capacity ${allowed}`);break;}
     } else if (op === 0xd0) {
       if (imm === 0) {
         const x = r.uleb(p, 10, end); p = x.next;

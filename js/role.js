@@ -834,12 +834,64 @@ function utf8ByteLength(text) {
   return bytes;
 }
 
+function toBigIntAddress(addr) {
+  if (typeof addr === 'bigint') return addr >= 0n ? addr : null;
+  if (typeof addr === 'number') return Number.isSafeInteger(addr) && addr >= 0 ? BigInt(addr) : null;
+  if (typeof addr === 'string') {
+    const text = addr.trim();
+    if (/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(text)) {
+      try {
+        const v = BigInt(text);
+        return v >= 0n ? v : null;
+      } catch { return null; }
+    }
+  }
+  return null;
+}
+
+function producerByteExtentWindow(text) {
+  let minRaw = 0;
+  let maxRaw = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 0x5c && (text[i + 1] === 't' || text[i + 1] === 'r' || text[i + 1] === 'n')) {
+      minRaw += 1;
+      maxRaw += 2;
+      i++;
+      continue;
+    }
+    const unit = text.codePointAt(i);
+    if (unit > 0xffff) i++;
+    const width = unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+    minRaw += width;
+    maxRaw += width;
+  }
+  return { minRaw, maxRaw };
+}
+
+function validatedStringByteLength(s) {
+  const text = typeof s?.text === 'string' ? s.text : '';
+  const carried = s?.byteLength;
+  if (typeof carried === 'number' && Number.isSafeInteger(carried) && carried > 0) {
+    const { minRaw, maxRaw } = producerByteExtentWindow(text);
+    if (carried >= minRaw && carried <= maxRaw) return carried;
+  }
+  return utf8ByteLength(text);
+}
+
 /** 文字列一覧（{addr,text} の配列）を、アドレスから引ける形にする。1 回だけ作る。 */
 export function stringLookup(list) {
   if (!list) return () => null;
   if (list.__lookup) return list.__lookup;
-  const sorted = list.slice().sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
-  const fn = (addr) => {
+  const sorted = [];
+  for (const s of list) {
+    if (!s) continue;
+    const addr = toBigIntAddress(s.addr);
+    if (addr == null) continue;
+    sorted.push({ addr, entry: s });
+  }
+  sorted.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
+  const fn = (rawAddr) => {
+    const addr = toBigIntAddress(rawAddr);
     if (addr == null) return null;
     let lo = 0, hi = sorted.length - 1, best = -1;
     while (lo <= hi) {
@@ -848,13 +900,11 @@ export function stringLookup(list) {
       else hi = mid - 1;
     }
     if (best < 0) return null;
-    const s = sorted[best];
+    const hit = sorted[best];
     // 文字列の途中を指していることもある。UTF-8 バイト長の外なら別物。
-    const bytes = Number.isSafeInteger(s.byteLength) && s.byteLength > 0
-      ? s.byteLength
-      : utf8ByteLength(s.text || '');
+    const bytes = validatedStringByteLength(hit.entry);
     const len = BigInt(bytes + 1);
-    return addr < s.addr + len ? s : null;
+    return addr < hit.addr + len ? hit.entry : null;
   };
   try { Object.defineProperty(list, '__lookup', { value: fn, enumerable: false }); } catch { /* 凍結配列なら諦める */ }
   return fn;

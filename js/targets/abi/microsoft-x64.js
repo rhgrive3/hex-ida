@@ -56,9 +56,10 @@ export function typeBits(type, fallback = 64) {
    * specifier and must be resolved before the 32-bit `long` token can match
    * its first token (issue #5977). */
   const text = String(type || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (/\*|\b(?:pointer|ptr)\b/.test(text)) return 64;
   if (/\b(?:bool|char|int8|uint8)\b/.test(text)) return 8;
   if (/\b(?:short|int16|uint16)\b/.test(text)) return 16;
-  if (/\b(?:unsigned\s+)?long long\b|\b(?:double|int64|uint64|pointer|ptr)\b|\*/.test(text)) return 64;
+  if (/\b(?:unsigned\s+)?long long\b|\b(?:double|int64|uint64)\b/.test(text)) return 64;
   if (/\b(?:int|unsigned int|long|unsigned long|int32|uint32|float)\b/.test(text)) return 32;
   return fallback;
 }
@@ -73,10 +74,10 @@ export function parameterClass(parameter) {
     || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   /* AVX-512 intrinsics are vector types exactly like `__m128`/`__m256`;
    * omitting `__m512` sent 512-bit values down the integer scalar path. */
-  const intrinsicBits = /__m512/.test(type) ? 512 : /__m256/.test(type) ? 256 : /__m128/.test(type) ? 128 : null;
-  const vector = parameter?.vector === true || intrinsicBits != null
-    || /vector|simd|sse|__m128|__m256|__m512/.test(`${type} ${abiClass}`);
-  const floating = !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
+  const intrinsicBits = !pointer ? (/__m512/.test(type) ? 512 : /__m256/.test(type) ? 256 : /__m128/.test(type) ? 128 : null) : null;
+  const vector = !pointer && (parameter?.vector === true || intrinsicBits != null
+    || /vector|simd|sse|__m128|__m256|__m512/.test(`${type} ${abiClass}`));
+  const floating = !aggregate && !pointer && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
   const aggregateLayoutPresent = aggregate && aggregateLayoutDescriptorPresent(parameter);
   const aggregateLayout = aggregate && aggregateLayoutPresent ? canonicalAggregateLayout(parameter) : null;
   const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
@@ -262,7 +263,8 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
       reason:'microsoft-x64-aggregate-return-layout-not-proven' };
   }
   if (explicitlyIndirect) return { kind:'indirect', bits:64, reason:'explicit-indirect-result' };
-  const isPointerType = /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
+  const isPointerType = prototype.pointer === true || prototype.isPointer === true || options.pointer === true || options.isPointer === true
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
   const aggregate = !isPointerType && (prototype.aggregate === true || prototype.isAggregate === true
     || aggregateLayoutDescriptorPresent(prototype)
     || (prototype.returnAggregate && typeof prototype.returnAggregate === 'object')
@@ -275,8 +277,8 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   // The return-side vector recognizer matches the parameter-side one (#5997):
   // `__m256*` spellings are 256-bit vectors, not 128-bit or integer scalars.
   const typeAndClass = `${type} ${abiClass}`;
-  const vector = prototype?.vector === true || /vector|simd|sse|__m128|__m256|__m512/.test(typeAndClass);
-  const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(typeAndClass);
+  const vector = !isPointerType && (prototype?.vector === true || /vector|simd|sse|__m128|__m256|__m512/.test(typeAndClass));
+  const floating = !isPointerType && (vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(typeAndClass));
   // A call-site options.returnBits is a return-width override with the same
   // authority as options.returnType/returnClass (#5636): it must outrank the
   // prototype's own (possibly stale/coarser) width metadata, matching the

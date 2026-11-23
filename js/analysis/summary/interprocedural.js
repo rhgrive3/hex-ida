@@ -399,7 +399,16 @@ function mergeEscapes(values, limit, charge) {
   for (const escape of values) {
     const evidence = boundedUnion([], escape.evidenceIds, limit, (value) => value, charge);
     if (evidence.truncated) truncated = true;
-    const key = JSON.stringify([escape.kind, escape.target ?? null]);
+    const key = escape.rootKey != null
+      ? JSON.stringify([
+        'canonical',
+        escape.rootKey,
+        escape.rootOrigin ?? 'unknown',
+        escape.reason ?? null,
+        escape.boundary ?? null,
+        escape.siteId ?? null,
+      ])
+      : JSON.stringify(['legacy', escape.kind ?? null, escape.target ?? null]);
     const prior = byKey.get(key);
     if (!prior) {
       byKey.set(key, Object.freeze({ ...escape, evidenceIds: evidence.values }));
@@ -950,6 +959,10 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   const calleeStatuses = [];
   const registerEffects = new Set();
   takeSetRows(registerEffects, local.registerEffects);
+  const allocations = new Set();
+  takeSetRows(allocations, local.allocations);
+  const frees = new Set();
+  takeSetRows(frees, local.frees);
   const noreturn = [local.noreturn];
   const mayThrow = [local.mayThrow];
   const escapes = [];
@@ -961,6 +974,8 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     chargeMergeRows(callee.memoryReadRegions.length + callee.memoryWriteRegions.length);
     takeRows(escapes, callee.escapes);
     takeSetRows(registerEffects, callee.registerEffects);
+    takeSetRows(allocations, callee.allocations);
+    takeSetRows(frees, callee.frees);
     // Keep provenance-bearing unresolved effects and control-flow knowledge in
     // lockstep with the memory dimensions for every resolved call edge.
     takeRows(unknowns, callee.unknownCallEffects);
@@ -1129,7 +1144,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   // copy before invoking the constructor so nested provenance cannot escape the
   // work ledger merely because it dedupes to one logical top-level escape.
   let detachRows = mergedEscapes.values.length + dedupedUnknowns.length + registerEffects.size
-    + mergedReads.length + mergedWrites.length;
+    + allocations.size + frees.size + mergedReads.length + mergedWrites.length;
   for (const escape of mergedEscapes.values) detachRows += escape.evidenceIds?.length || 0;
   for (const unknown of dedupedUnknowns) {
     detachRows += unknown.targetEntityIds?.length || 0;
@@ -1171,8 +1186,8 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     memoryReadRegions: mergedReads,
     memoryWriteRegions: mergedWrites,
     escapes: mergedEscapes.values,
-    allocations: local.allocations,
-    frees: local.frees,
+    allocations: [...allocations],
+    frees: [...frees],
     directCalls: publishedDirectCalls,
     indirectCallSets: local.indirectCallSets,
     unknownCallEffects: dedupedUnknowns,

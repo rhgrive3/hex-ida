@@ -367,6 +367,34 @@ class TieredSolverSession extends SolverSession {
         });
       }
     }
+    const hasCancelCallback = Boolean(sessionIsCancelled || queryIsCancelled);
+    if (hasCancelCallback) {
+      if (isCancelledNow()) onParentAbort();
+      const pollTimer = setInterval(() => {
+        if (!childController.signal.aborted && isCancelledNow()) {
+          onParentAbort();
+          clearInterval(pollTimer);
+        }
+      }, 5);
+      pollTimer.unref?.();
+      detachListeners.push(() => clearInterval(pollTimer));
+    }
+    const childSignal = hasCancelCallback
+      ? {
+          get aborted() {
+            if (!childController.signal.aborted && isCancelledNow()) onParentAbort();
+            return childController.signal.aborted;
+          },
+          get reason() { return childController.signal.reason; },
+          throwIfAborted() {
+            if (!childController.signal.aborted && isCancelledNow()) onParentAbort();
+            if (typeof childController.signal.throwIfAborted === 'function') childController.signal.throwIfAborted();
+            else if (childController.signal.aborted) throw childController.signal.reason || new Error('Aborted');
+          },
+          addEventListener(type, listener, opts) { return childController.signal.addEventListener(type, listener, opts); },
+          removeEventListener(type, listener, opts) { return childController.signal.removeEventListener(type, listener, opts); },
+        }
+      : childController.signal;
     const forwardedOptions = {};
     for (const [key, value] of Object.entries(options)) {
       if (key === 'isCancelled' || value === undefined) continue;
@@ -414,7 +442,7 @@ class TieredSolverSession extends SolverSession {
             ...childLimits,
             deterministic: effectiveDeterministic,
             timeoutMs: remaining,
-            signal: childController.signal,
+            signal: childSignal,
           });
         } catch (error) {
           attempts.push({ backend: captured.id, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: error?.message || 'provider-unavailable' });

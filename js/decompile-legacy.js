@@ -1629,6 +1629,20 @@ function emitRange(cfg, from, to, indent, out, ctx, state, loop) {
         state.labels.add(targetLabel); state.gotos++;
       }
       if (n.fall == null) return -1;
+      if (loop && loop.exit != null && n.fall === loop.exit) {
+        out.push(line('ctrl', indent, 'break;', n.endRow, addrOf(ctx, n.endRow)));
+        return -1;
+      }
+      if (loop && n.fall === loop.header) {
+        out.push(line('ctrl', indent, 'continue;', n.endRow, addrOf(ctx, n.endRow)));
+        return -1;
+      }
+      if (loop && loop.members && !loop.members.has(n.fall)) {
+        const fallLabel = labelOf(cfg.nodes[n.fall], ctx);
+        out.push(line('ctrl', indent, 'goto ' + fallLabel + ';', n.endRow, addrOf(ctx, n.endRow)));
+        state.labels.add(fallLabel); state.gotos++;
+        return -1;
+      }
       i = n.fall;
       continue;
     }
@@ -1649,6 +1663,16 @@ function emitRange(cfg, from, to, indent, out, ctx, state, loop) {
       return -1;
     }
     if (n.tail || !n.succ.length) return -1;             // ret / 末尾呼び出し
+    if (loop && loop.exit != null && n.fall === loop.exit) {
+      out.push(line('ctrl', indent, 'break;', n.endRow, addrOf(ctx, n.endRow)));
+      return -1;
+    }
+    if (loop && n.fall != null && loop.members && !loop.members.has(n.fall)) {
+      const fallLabel = labelOf(cfg.nodes[n.fall], ctx);
+      out.push(line('ctrl', indent, 'goto ' + fallLabel + ';', n.endRow, addrOf(ctx, n.endRow)));
+      state.labels.add(fallLabel); state.gotos++;
+      return -1;
+    }
     i = n.fall != null ? n.fall : i + 1;
   }
   return i;
@@ -1957,7 +1981,7 @@ function conditionOf(insn, ctx) {
 
 function parseFlagProducer(p, ctx) {
   const b = (p.mnemonic || '').toLowerCase();
-  if (!/^(cmp|cmn|tst|subs|adds|ands|bics|fcmp|fcmpe|ccmp)$/.test(b)) return null;
+  if (!/^(cmp|cmn|tst|subs|adds|ands|bics|fcmp|fcmpe)$/.test(b)) return null;
   const isTwoOp = b === 'cmp' || b === 'cmn' || b === 'tst' || b === 'fcmp' || b === 'fcmpe';
   const a = p.ops[isTwoOp ? 0 : 1];
   const c = p.ops[isTwoOp ? 1 : 2];
@@ -1981,6 +2005,20 @@ function parseFlagProducer(p, ctx) {
   };
 }
 
+function clobbersNzcv(p) {
+  if (!p) return false;
+  if (p.isCall || p.isReturn) return true;
+  const b = (p.mnemonic || '').toLowerCase();
+  if (/^(ccmp|ccmn|fccmp|fccmpe|negs|adcs|sbcs|ngcs|rmif|setf8|setf16|cfinv|axflag|xaflag)$/.test(b)) return true;
+  if (b === 'msr') {
+    if (/^\s*nzcv\b/i.test(String(p.operands || ''))) return true;
+    const op0 = p.ops?.[0];
+    if (op0 && String(op0.reg || op0.name || op0.text || '').toLowerCase() === 'nzcv') return true;
+  }
+  if (Array.isArray(p.writes) && p.writes.includes('nzcv')) return true;
+  return false;
+}
+
 /** フラグを作った直前の cmp / subs / tst を探す（基本ブロック内→CFG前任者）。 */
 function findCompare(insn, ctx) {
   const scanRows = (rows, beforeRow) => {
@@ -1991,7 +2029,7 @@ function findCompare(insn, ctx) {
       if (!p || p.data) continue;
       const hit = parseFlagProducer(p, ctx);
       if (hit) return hit;
-      if (p.isCall || p.isReturn) return 'CLOBBERED';
+      if (clobbersNzcv(p)) return 'CLOBBERED';
     }
     return null;
   };
@@ -2049,7 +2087,7 @@ function findCompare(insn, ctx) {
     if (!p) continue;
     const hit = parseFlagProducer(p, ctx);
     if (hit) return hit;
-    if (p.isCall || p.isReturn) break;
+    if (clobbersNzcv(p)) break;
   }
   return null;
 }
@@ -2064,7 +2102,10 @@ function negate(cond) {
 function condText(cond, ctx) {
   if (!cond) return '1';
   if (cond.kind === 'zero') return cond.reg + (cond.neg ? ' != 0' : ' == 0');
-  if (cond.kind === 'bit') return '(' + cond.reg + ' & (1 << ' + cond.bit + '))' + (cond.neg ? ' != 0' : ' == 0');
+  if (cond.kind === 'bit') {
+    const one = Number(cond.bit) >= 31 ? '1ULL' : '1';
+    return '(' + cond.reg + ' & (' + one + ' << ' + cond.bit + '))' + (cond.neg ? ' != 0' : ' == 0');
+  }
   if (cond.kind === 'flag') {
     const op = COND_OPS[cond.cc] || cond.cc;
     if (cond.cc === 'al') return '1';
@@ -2088,8 +2129,14 @@ function condText(cond, ctx) {
         return sum + ' ' + op + ' 0';
       }
       if (cond.cc === 'mi' || cond.cc === 'pl') return sum + ' ' + op;
-      if (cond.cc === 'cs' || cond.cc === 'hs') return '((uint64)' + sum + ' < (uint64)(' + cond.cmp.left + '))';
-      if (cond.cc === 'cc' || cond.cc === 'lo') return '((uint64)' + sum + ' >= (uint64)(' + cond.cmp.left + '))';
+      if (cond.cc === 'cs' || cond.cc === 'hs') {
+        const uTy = cond.cmp.bits === 32 ? 'uint32' : 'uint64';
+        return '((' + uTy + ')' + sum + ' < (' + uTy + ')(' + cond.cmp.left + '))';
+      }
+      if (cond.cc === 'cc' || cond.cc === 'lo') {
+        const uTy = cond.cmp.bits === 32 ? 'uint32' : 'uint64';
+        return '((' + uTy + ')' + sum + ' >= (' + uTy + ')(' + cond.cmp.left + '))';
+      }
     }
     if ((cond.cmp.op === 'fcmp' || cond.cmp.op === 'fcmpe') && (cond.cc === 'mi' || cond.cc === 'pl')) {
       return cond.cmp.left + (cond.cc === 'mi' ? ' < ' : ' >= ') + cond.cmp.right;
