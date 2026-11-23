@@ -2,6 +2,8 @@ import { currentCppReceiver, isCppReceiverAlias } from '../cxx-evidence.js';
 
 /* Conservative SSA coalescing. It prefers false negatives over false source variables. */
 
+const RESERVED_SPECIAL_REGS = new Set(['sp', 'xzr', 'wzr', 'nzcv']);
+
 function typeName(t) { return t?.name || t?.type || t?.kind || 'unknown'; }
 function compatibleType(a, b) {
   const x = typeName(a), y = typeName(b);
@@ -57,6 +59,10 @@ function phiSensitive(v) { return v?.def?.op === 'phi' || (v?.uses || []).some((
 
 function candidateName(group, index, opts = {}) {
   const v = group.values[0];
+  const reservedReg = String(v?.reg || '').toLowerCase();
+  if (RESERVED_SPECIAL_REGS.has(reservedReg)) {
+    return { name: reservedReg, confidence: 1.0, reason: 'reserved architectural register' };
+  }
   if (group.kind === 'argument') {
     const n = group.argIndex ?? argIndex(v, opts) ?? index;
     const explicit = opts.argNames?.[n] || null;
@@ -117,13 +123,14 @@ export function recoverHighVariables(ir, recoveredTypes, opts = {}) {
 
   for (const v of values) {
     const t = types.get?.(v.id) || null;
-    const unsafe = addressTaken(v, stackAddressBaseIds) || phiSensitive(v);
-    const origin = v.def?.op === 'mov' && v.def?.args?.[0]?.value ? v.def.args[0].value : null;
+    const isReserved = RESERVED_SPECIAL_REGS.has(String(v.reg || '').toLowerCase());
+    const unsafe = isReserved || addressTaken(v, stackAddressBaseIds) || phiSensitive(v);
+    const origin = !isReserved && v.def?.op === 'mov' && v.def?.args?.[0]?.value ? v.def.args[0].value : null;
     const originGroup = origin ? valueToGroup.get(origin.id) : null;
     // Register allocation is not source-variable identity: unrelated SSA values that
     // merely reuse xN must never be coalesced. Only an explicit ABI argument origin,
     // a stable stack slot, or an explicit MOV lineage is eligible for grouping.
-    const ai = argIndex(v, { ...opts, ir });
+    const ai = isReserved ? null : argIndex(v, { ...opts, ir });
     const key = unsafe ? `v:${v.id}` : ai != null ? `arg:${ai}` : v.stackSlot?.key ? `stack:${v.stackSlot.key}` : `v:${v.id}`;
     let g = !unsafe && originGroup ? groups[originGroup - 1] : byKey.get(key);
     if (g && (!compatibleType(g.type, t) || g.unsafeMerge)) g = null;

@@ -2566,9 +2566,30 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
 /* ── 任意のアドレスを読む ───────────────────────────────────── */
 
 /** 仮想アドレス → ファイル内の位置。見つからなければ null。 */
+function isNonAllocableRegion(region) {
+  if (!region) return true;
+  if (region.alloc === true) return false;
+  if (region.alloc === false || region.source === 'unmapped-section') return true;
+  if (region.source === 'section-header' && region.flags != null) {
+    return (BigInt(region.flags) & 0x2n) === 0n;
+  }
+  if (region.kind === 'section' && region.read === false && region.write === false && region.exec === false) {
+    return true;
+  }
+  if (region.kind === 'section' && BigInt(region.vmAddr ?? 0) === 0n
+    && region.read !== true && region.write !== true && region.exec !== true) {
+    const name = String(region.section || region.name || '');
+    if (/^\.(?:symtab|strtab|shstrtab|comment|debug(?:_|$)|gnu_debug|note\.)/i.test(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function vmToFile(addr) {
   for (const r of regions.values()) {
     if (r.id === 'raw' || r.zerofill) continue;
+    if (isNonAllocableRegion(r)) continue;
     if (addr >= r.vmAddr && addr < r.vmAddr + r.size) {
       return { offset: r.fileOffset + (addr - r.vmAddr), region: r };
     }
@@ -2606,7 +2627,9 @@ async function readAtAddress({ addr, len, text }) {
     const end = result.bytes.indexOf(0);
     const body = end >= 0 ? result.bytes.subarray(0, end) : result.bytes;
     result.text = decodeUtf8Text(body);
-    result.terminated = end >= 0;
+    // Distinguish a true 0-char NUL-terminated string (end === 0) from non-printable binary
+    // bytes before the first NUL that decodeUtf8Text() rejected to empty string.
+    result.terminated = end >= 0 && (end === 0 || result.text.length > 0);
   }
   result.__transfer = [result.bytes.buffer];
   return result;

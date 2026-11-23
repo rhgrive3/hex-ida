@@ -121,7 +121,13 @@ function compactProjectedState(projected, observer = null) {
     const lineage = observer && stateAliasLineage(rawSource, aliases, aliasEvents);
     const history = output => ({ causes:lineage?.causes, unavailable:lineage?.unavailable,
       beforeInputs:[...new Set([rawSource, source, output, ...(lineage?.values || [])])] });
-    if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {
+    const isCallReturnStateWrite = Boolean(inst.extra?.stateWrite)
+      && inst.extra?.publicStateIdentity != null
+      && source.def?.op === V1_OP.CALL
+      && source.reg == null
+      && inst.dst.reg === inst.extra.publicStateIdentity
+      && Number(source.bits || 0) === Number(inst.dst.bits || 0);
+    if (inst.extra?.stateWrite && (samePublicState(inst, source, inst.dst) || isCallReturnStateWrite)) {
       const shadow = inst.dst;
       const provenExactLoadSource = source.compatDerived === 'exact-state-write-source' && source.def?.op === V1_OP.LOAD;
       if (provenExactLoadSource || feedsAddressOrCall(shadow)) {
@@ -132,6 +138,13 @@ function compactProjectedState(projected, observer = null) {
           source.stateKey = shadow.stateKey;
           describeStateOperation(observer, { source:inst, output:source, input:shadow, identity:true,
             kind:'state-key-transfer', before:sourceBefore, after:observer && stateIdentity(source),
+            ...history(shadow) });
+        }
+        if (source.reg == null && shadow.reg != null) {
+          const sourceBefore = observer && stateIdentity(source);
+          source.reg = shadow.reg;
+          describeStateOperation(observer, { source:inst, output:source, input:shadow, identity:true,
+            kind:'state-reg-transfer', before:sourceBefore, after:observer && stateIdentity(source),
             ...history(shadow) });
         }
         shadow.compatPublicIdentity = shadow.reg;
@@ -145,7 +158,7 @@ function compactProjectedState(projected, observer = null) {
           kind:'state-write-address-shadow', before, after:observer && stateIdentity(shadow),
           ...history(shadow) });
         if (observer && event) aliasEvents.set(shadow.id, event);
-      } else if (source.kind !== V1_VK.ARG && source.def && source !== shadow) {
+      } else if (!isCallReturnStateWrite && source.kind !== V1_VK.ARG && source.def && source !== shadow) {
         const before = observer && stateIdentity(source);
         source.compatPublicIdentity = source.reg;
         source.reg = null;
@@ -330,11 +343,27 @@ function foldInstruction(inst) {
   if (!dst) return null;
   const args = (inst.args || []).map((arg) => arg?.value?.const ?? null);
   const bits = Math.max(1, Number(dst.bits || 64));
+  if (bits > 64) return null;
   if (inst.op === V1_OP.CONST) {
     const raw = inst.extra?.value;
     return raw == null ? dst.const : uint(raw, bits);
   }
-  if (inst.op === V1_OP.MOV && args.length === 1 && args[0] != null) return uint(args[0], bits);
+  if (inst.op === V1_OP.MOV && args.length === 1) {
+    if (args[0] != null) return uint(args[0], bits);
+    if (inst.sub === 'trunc') {
+      let cur = inst.args?.[0]?.value ?? null;
+      for (let step = 0; cur && step < 6; step++) {
+        if (cur.const != null) return uint(cur.const, bits);
+        const def = cur.def;
+        if (def?.op === V1_OP.CONST && def.extra?.value != null) return uint(def.extra.value, bits);
+        if (def?.op === V1_OP.MOV && (def.sub == null || def.sub === 'zext') && def.args?.length === 1) {
+          cur = def.args[0]?.value ?? null;
+          continue;
+        }
+        break;
+      }
+    }
+  }
   if (inst.op === V1_OP.UN && args.length === 1 && args[0] != null) {
     if (inst.sub === 'neg') return uint(-args[0], bits);
     if (inst.sub === 'not') return uint(~args[0], bits);

@@ -226,11 +226,27 @@ function comparisonCarrier(valueId, context, active = new Set()) {
           && producer.outputs.every(id => context.valuesById.get(id)?.bits === 1)) {
         result = { value: comparison, compareNode: numeric };
       }
-    } else if (producer.kind === 'select' || producer.kind === 'intrinsic'
+    } else if (producer.kind === 'select') {
+      const bundle = bundleMetadata(producer);
+      const cc = conditionCode(producer);
+      if (producer.inputs?.length === 3
+          && (bundle.operation === 'ccmp' || bundle.operation === 'ccmn')
+          && cc != null && bundle.fallbackNzcv != null) {
+        // Preserve the conditional-compare carrier produced by the ccmp/ccmn
+        // inner add-with-carry compare (whose OP.CMP carries conditional
+        // metadata) rather than returning null or borrowing the older guard.
+        const inner = comparisonCarrier(producer.inputs[1], context, active);
+        if (inner?.value) result = inner;
+      } else {
+        // Other conditional selects (e.g., FCCMP, CSEL) must not borrow an
+        // older unconditional display CMP.
+        result = null;
+      }
+    } else if (producer.kind === 'intrinsic'
         && !['extract-bit','is-zero','not-bool','and-bool','or-bool','equal-bool'].includes(producer.operator)) {
-      // A conditional/opaque producer does not mean its incoming comparison.
-      // In particular, dynamic carry, CCMP fallback flags and FCCMP results
-      // must not borrow an older unconditional display CMP.
+      // An opaque producer does not mean its incoming comparison.
+      // In particular, dynamic carry and FCCMP results must not borrow an
+      // older unconditional display CMP.
       result = null;
     } else if (producer.kind === 'state-read') {
       const use = context.stateProjection.readUseByNodeId.get(producer.id) ?? null;
@@ -467,7 +483,25 @@ const ARM64_SCALAR_FP_UNARY_OPS = Object.freeze({
   'arm64.fp.ucvtf': 'ucvtf',
   'arm64.fp.fcvtzs': 'fcvtzs',
   'arm64.fp.fcvtzu': 'fcvtzu',
+  'arm64.fp.fcvtps': 'fcvtps',
+  'arm64.fp.fcvtms': 'fcvtms',
+  'arm64.fp.fcvtns': 'fcvtns',
+  'arm64.fp.fcvtas': 'fcvtas',
+  'arm64.fp.fcvtpu': 'fcvtpu',
+  'arm64.fp.fcvtmu': 'fcvtmu',
+  'arm64.fp.fcvtnu': 'fcvtnu',
+  'arm64.fp.fcvtau': 'fcvtau',
+  'arm64.fp.frinta': 'frinta',
+  'arm64.fp.frintm': 'frintm',
+  'arm64.fp.frintn': 'frintn',
+  'arm64.fp.frintp': 'frintp',
+  'arm64.fp.frintz': 'frintz',
+  'arm64.fp.fcvt': 'fcvt',
+  'arm64.fp.fsqrt': 'fsqrt',
 });
+
+const ARM64_SCALAR_FP_TO_SIGNED_INT = new Set(['fcvtzs', 'fcvtps', 'fcvtms', 'fcvtns', 'fcvtas']);
+const ARM64_SCALAR_FP_TO_UNSIGNED_INT = new Set(['fcvtzu', 'fcvtpu', 'fcvtmu', 'fcvtnu', 'fcvtau']);
 
 function projectLegacyAddressWithTruncView(addressValueId, memory, context) {
   const direct = projectLegacyAddress(addressValueId, memory, context);
@@ -489,30 +523,78 @@ function projectLegacyAddressWithTruncView(addressValueId, memory, context) {
   return retried.precise ? retried : direct;
 }
 
-function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues) {
+function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues, outputValues = [], representedExtraValueIds = null) {
   const intrinsic = node.intrinsic;
   if (!intrinsic || typeof intrinsic !== 'object') return false;
   if (intrinsic.memoryRead?.scope != null && intrinsic.memoryRead.scope !== 'none') return false;
   if (intrinsic.memoryWrite?.scope != null && intrinsic.memoryWrite.scope !== 'none') return false;
   if ((intrinsic.controlEffects?.length ?? 0) > 0) return false;
 
+  const suppressSecondaryFpsr = () => {
+    if (!representedExtraValueIds || outputValues.length < 2) return;
+    const secondary = outputValues[1];
+    if (secondary?.semanticValueId != null && secondary.bits === 32) {
+      secondary.kind = 'undef';
+      secondary.compatOmitted = 'projected-arm64-scalar-fp-fpsr';
+      representedExtraValueIds.add(secondary.semanticValueId);
+    }
+  };
+
   const op = node.operator;
+  if (op === 'arm64.simd.movi' && inputValues.length === 1) {
+    const shift = operationMetadata(node).shift;
+    const imm = constForValue(node.inputs?.[0], context) ?? inputValues[0]?.const ?? null;
+    if (imm === 0n && (!shift || shift.op === 'lsl')) {
+      const primaryOutput = outputValues[0] ?? null;
+      setBasic(V1_OP.CONST, null, []);
+      inst.extra.value = null;
+      inst.extra.float = 0;
+      inst.extra.constKind = 'float';
+      inst.extra.intrinsic = intrinsic;
+      inst.extra.compatSource = 'exact-arm64-simd-zero-splat';
+      if (primaryOutput) {
+        primaryOutput.float = 0;
+        primaryOutput.floatConst = 0;
+        primaryOutput.constKind = 'float';
+      }
+      for (const state of intrinsic.stateWrites || []) clearPhysicalState(state, context);
+      return true;
+    }
+  }
+
   const binSub = ARM64_SCALAR_FP_BINARY_OPS[op];
   if (binSub && inputValues.length === 4) {
     setBasic(V1_OP.BIN, binSub, inputValues.slice(0, 2));
     inst.extra.float = true;
     inst.extra.intrinsic = intrinsic;
     inst.extra.compatSource = 'exact-arm64-scalar-fp-intrinsic';
+    suppressSecondaryFpsr();
     for (const state of intrinsic.stateWrites || []) clearPhysicalState(state, context);
     return true;
   }
 
   const unSub = ARM64_SCALAR_FP_UNARY_OPS[op];
   if (unSub && inputValues.length === 3) {
+    const primaryOutput = outputValues[0] ?? null;
     setBasic(V1_OP.UN, unSub, inputValues.slice(0, 1));
+    inst.bits = primaryOutput?.bits ?? inst.bits;
     inst.extra.float = true;
+    inst.extra.sourceBits = inputValues[0]?.bits ?? null;
+    inst.extra.targetBits = primaryOutput?.bits ?? null;
+    if (ARM64_SCALAR_FP_TO_SIGNED_INT.has(unSub)) {
+      inst.extra.signed = true;
+      if (primaryOutput) primaryOutput.signed = true;
+    } else if (ARM64_SCALAR_FP_TO_UNSIGNED_INT.has(unSub)) {
+      inst.extra.signed = false;
+      if (primaryOutput) primaryOutput.signed = false;
+    } else if (unSub === 'scvtf') {
+      inst.extra.signed = true;
+    } else if (unSub === 'ucvtf') {
+      inst.extra.signed = false;
+    }
     inst.extra.intrinsic = intrinsic;
     inst.extra.compatSource = 'exact-arm64-scalar-fp-intrinsic';
+    suppressSecondaryFpsr();
     for (const state of intrinsic.stateWrites || []) clearPhysicalState(state, context);
     return true;
   }
@@ -526,6 +608,7 @@ function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues)
     inst.extra.comparison = 'semantic-flag-result';
     inst.extra.intrinsic = intrinsic;
     inst.extra.compatSource = 'exact-arm64-scalar-fp-intrinsic';
+    suppressSecondaryFpsr();
     for (const state of intrinsic.stateWrites || []) clearPhysicalState(state, context);
     return true;
   }
@@ -695,6 +778,18 @@ export function projectNode(node, context) {
       setBasic(V1_OP.CONST, null, []);
       inst.extra.value = c.value;
       if (c.float != null) { inst.extra.float = c.float; inst.extra.constKind = c.constKind || 'float'; }
+      const constBundleOp = bundleMetadata(node).operation;
+      const isAddressConst = c.value != null && c.float == null && (
+        ((constBundleOp === 'adrp' || constBundleOp === 'adr') && (primaryOutput?.bits ?? widthBits) === 64)
+        || attrs.address != null
+        || opMeta.address != null
+        || node.metadata?.address != null
+        || attrs.addressDerived === true
+        || opMeta.addressDerived === true
+      );
+      if (isAddressConst) {
+        inst.extra = { ...(inst.extra || {}), addressDerived: true };
+      }
       if (primaryOutput && c.value != null) primaryOutput.const = BigInt.asUintN(primaryOutput.bits || 64, c.value);
       if (primaryOutput && c.float != null) { primaryOutput.float = c.float; primaryOutput.floatConst = c.float; primaryOutput.constKind = c.constKind || 'float'; }
       break;
@@ -838,6 +933,7 @@ export function projectNode(node, context) {
       if (c.value != null) {
         setBasic(V1_OP.ADDR, node.operator || 'address', []);
         inst.extra.value = c.value;
+        inst.extra = { ...(inst.extra || {}), addressDerived: true };
         if (primaryOutput) primaryOutput.const = BigInt.asUintN(primaryOutput.bits || 64, c.value);
       } else if (['add', 'sub'].includes(node.operator) && inputValues.length === 2
         && inputValues.every(value => value.bits === primaryOutput?.bits)) {
@@ -1105,7 +1201,7 @@ export function projectNode(node, context) {
         appendAddWithCarryResults(node, context, primaryOutput, outputValues,
           extraInstructions, representedExtraValueIds);
       } else if (!deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues)
-          && !scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues)) {
+          && !scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues, outputValues, representedExtraValueIds)) {
         setBasic(V1_OP.CLOBBER, null);
         inst.extra.intrinsic = node.intrinsic;
         inst.intrinsicId = attrs.intrinsicId ?? node.operator ?? node.id;
@@ -1129,11 +1225,35 @@ export function projectNode(node, context) {
   if (undefinedResult != null) inst.extra = { ...(inst.extra || {}), undefinedResult };
   const conditionalCompare = conditionCode(node);
   if (conditionalCompare != null && bundle.fallbackNzcv != null) {
+    const nodeInsnIds = new Set(sourceInstructionIds(node.origin));
+    let guardCarrier = null;
+    if (nodeInsnIds.size > 0 && Array.isArray(ir?.nodes)) {
+      for (const sibling of ir.nodes) {
+        if (sibling.kind !== 'select' || sibling.inputs?.length !== 3) continue;
+        const sibIds = sourceInstructionIds(sibling.origin);
+        if (!sibIds.some((id) => nodeInsnIds.has(id))) continue;
+        guardCarrier = comparisonCarrier(sibling.inputs[0], context);
+        if (guardCarrier?.value) break;
+      }
+    }
+    const defaultInnerOp = bundle.operation === 'ccmn' ? 'cmn' : 'cmp';
     for (const candidate of [inst, ...extraInstructions]) {
       if (candidate.op !== V1_OP.CMP) continue;
+      const innerLhs = candidate.args?.[0]?.value?.id ?? null;
+      const innerRhs = candidate.args?.[1]?.value?.id ?? null;
       candidate.cond = conditionalCompare;
       candidate.extra.conditional = true;
+      candidate.extra.cond = conditionalCompare;
+      candidate.extra.guardCond = conditionalCompare;
+      candidate.extra.guardCmp = guardCarrier?.value?.id ?? null;
+      candidate.extra.innerOp = candidate.sub === 'add' ? 'cmn' : defaultInnerOp;
+      candidate.extra.innerLhs = innerLhs;
+      candidate.extra.innerRhs = innerRhs;
       candidate.extra.fallbackNzcv = Number(bundle.fallbackNzcv);
+      if (guardCarrier?.value && candidate.args.length === 2) {
+        candidate.args.push({ value: guardCarrier.value, bits: guardCarrier.value.bits || 1 });
+        addUse(guardCarrier.value, candidate);
+      }
     }
   }
   if (primaryOutput && primaryOutput.def == null && inst.dst === primaryOutput) primaryOutput.def = inst;

@@ -50,6 +50,8 @@
  *   sel     条件で選ぶ      cc, a, b, cmp
  */
 
+import { knownCallSignature } from './decompiler/call-prototypes.js';
+
 const MAX_DEPTH = 22;      // これより深い木は読めないので、途中で切って reg に戻す
 const MAX_NODES = 160;     // 1 つの式が抱えてよいノード数
 
@@ -427,9 +429,35 @@ export function buildValues(model, opts) {
   const callRows = new Map();
   for (const c of (model && model.calls) || []) callRows.set(c.row, c);
   const textOf = new Map();
+  const rodataRows = new Set();
   for (const r of (model && model.addressRefs) || []) {
     if (r.text != null) textOf.set(r.row, { text: r.text, addr: r.addr });
+    if (r.load && r.bytes) rodataRows.add(r.row);
   }
+  const lastRow = insns.length ? insns[insns.length - 1].row : 0;
+  const savedSlots = new Set();
+  const calleeSavedOnly = (insn) => {
+    const r = (insn.ops || []).filter((x) => x.k === 'reg');
+    return r.length > 0 && r.every((x) => x.cls === 'gp' && x.num >= 19 && x.num <= 30);
+  };
+  for (const insn of insns) {
+    const m = insn.memory;
+    if (!m || !m.stack || m.kind !== 'store' || m.disp == null) continue;
+    if (!/^(stp|str|stur)$/.test((insn.mnemonic || '').toLowerCase())) continue;
+    if (calleeSavedOnly(insn)) savedSlots.add((m.base || m.baseReg || 'sp') + ':' + m.disp.toString());
+  }
+  const isEpilogueCalleeRestore = (insn) => {
+    const b = (insn.mnemonic || '').toLowerCase();
+    const m = insn.memory;
+    if (!m || !m.stack || m.kind !== 'load' || !/^(ldp|ldr|ldur)$/.test(b)) return false;
+    if (!calleeSavedOnly(insn)) return false;
+    const r = (insn.ops || []).filter((x) => x.k === 'reg');
+    const atEdge = insn.row >= lastRow - 8;
+    const frameish = m.mode === 'pre' || m.mode === 'post' ||
+      r.some((x) => x.cls === 'gp' && (x.num === 29 || x.num === 30));
+    const restoring = m.disp != null && savedSlots.has((m.base || m.baseReg || 'sp') + ':' + m.disp.toString());
+    return atEdge || frameish || restoring;
+  };
 
   const regs = new Map();          // regKey -> ノード
   const stack = new Map();         // 'x29+16' -> ノード
@@ -482,13 +510,60 @@ export function buildValues(model, opts) {
     regs.set(key, fresh);
     return fresh;
   };
-  const set = (key, v, row) => {
+  const dependsOnRegOrCall = (val, targetReg) => {
+    if (!val) return false;
+    let hit = false;
+    walk(val, (x) => {
+      if (hit) return;
+      if (x.k === 'reg' && x.reg === targetReg) { hit = true; return; }
+      if (x.k === 'call') {
+        const d = nodeDef.get(x);
+        if (d && d.reg === targetReg) hit = true;
+      }
+    });
+    return hit;
+  };
+  const hasNonRodataMem = (val) => {
+    if (!val) return false;
+    let hit = false;
+    walk(val, (x) => {
+      if (hit) return;
+      if (x.k === 'mem' && !(x.row != null && rodataRows.has(x.row))) hit = true;
+    });
+    return hit;
+  };
+  const evictReg = (otherKey, otherVal, row) => {
+    const replacement = regNode(otherKey, row);
+    if (otherVal && otherVal.k !== 'reg') replacement.prevDef = otherVal;
+    else if (otherVal && otherVal.prevDef) replacement.prevDef = otherVal.prevDef;
+    regs.set(otherKey, replacement);
+  };
+  const invalidateDependents = (writtenKey, row) => {
+    if (!writtenKey || writtenKey === 'zr') return;
+    if (writtenKey === 'sp' && spStable) return;
+    for (const [otherKey, otherVal] of Array.from(regs.entries())) {
+      if (otherKey === writtenKey) continue;
+      if (dependsOnRegOrCall(otherVal, writtenKey)) {
+        evictReg(otherKey, otherVal, row);
+      }
+    }
+  };
+  const invalidateMemDependents = (row) => {
+    for (const [otherKey, otherVal] of Array.from(regs.entries())) {
+      if (!otherVal || otherVal.k === 'reg') continue;
+      if (hasNonRodataMem(otherVal)) {
+        evictReg(otherKey, otherVal, row);
+      }
+    }
+  };
+  const set = (key, v, row, skipInvalidate) => {
     if (!key || key === 'zr') return;
     /*
      * 割り算の定型は 3〜5 命令にまたがるので、値を置く直前にたたむ。
      * ここでたたんでおくと、その先の式にも割り算の形のまま伝わる。
      */
     regs.set(key, bounded(foldMagic(v, 0), key, row));
+    if (!skipInvalidate) invalidateDependents(key, row);
   };
 
   /** オペランド 1 つを式にする。 */
@@ -571,7 +646,7 @@ export function buildValues(model, opts) {
      * x0〜x7 を読む。ここで記録しておかないと、「この呼び出しに何を渡したか」に
      * 誰も答えられない — 擬似 C の引数がレジスタ名のままになる。
      */
-    if (insn.isCall) {
+    if (insn.isCall || insn.isTailCall || insn.tailCall) {
       for (let a = 0; a <= 7; a++) {
         snapshot['x' + a] = get('x' + a, row);
         snapshot['v' + a] = get('v' + a, row);
@@ -589,7 +664,7 @@ export function buildValues(model, opts) {
     if (insn.data) { for (const w of insn.writes) regs.delete(w); continue; }
 
     const made = {};
-    const emit = (key, v) => {
+    const emit = (key, v, skipInvalidate) => {
       if (!key || key === 'zr' || !v) return;
       // A write to Wn architecturally clears Xn[63:32]. Keep that fact in the
       // value graph instead of letting stale upper bits survive.
@@ -597,7 +672,7 @@ export function buildValues(model, opts) {
       if (writtenOp && writtenOp.k === 'reg' && writtenOp.cls === 'gp' && writtenOp.bits === 32 && key === regKeyOf(writtenOp)) {
         v = un('uxt32', v);
       }
-      set(key, v, row);
+      set(key, v, row, skipInvalidate);
       made[key] = regs.get(key);
       // どの命令がこの値を作ったか。擬似 C が「変数として残すか、埋め込むか」を決めるのに要る。
       if (!nodeDef.has(made[key])) nodeDef.set(made[key], { row, reg: key });
@@ -650,8 +725,14 @@ export function buildValues(model, opts) {
        * 番地が外へ出た時点で置き場の記憶は捨てる。
        */
       if (args.some((a) => escapesStack(a.value))) stack.clear();
-      for (const k of Array.from(regs.keys())) if (CALL_CLOBBER.test(k)) regs.delete(k);
-      emit(isFpRet ? 'v0' : 'x0', ret);
+      const clobbered = [];
+      for (const k of Array.from(regs.keys())) {
+        if (CALL_CLOBBER.test(k)) { regs.delete(k); clobbered.push(k); }
+      }
+      for (const k of clobbered) invalidateDependents(k, row);
+      invalidateMemDependents(row);
+      const retReg = isFpRet ? 'v0' : 'x0';
+      emit(retReg, ret);
       defs.set(row, made);
       continue;
     }
@@ -684,6 +765,7 @@ export function buildValues(model, opts) {
         // the address registers.
         const baseValBefore = m.base ? regs.get(m.base) : null;
         const indexValBefore = m.index ? regs.get(m.index) : null;
+        const skipInv = isEpilogueCalleeRestore(insn);
         list.forEach((dop, k) => {
           const key = regKeyOf(dop);
           if (!key || key === m.base && memOp && (memOp.mode === 'pre' || memOp.mode === 'post')) return;
@@ -722,14 +804,16 @@ export function buildValues(model, opts) {
               stack: !!m.stack, addr: absolute, row,
             });
           }
-          emit(key, v);
+          emit(key, v, skipInv);
         });
         // 後置・前置インデックスはベースも進む
         if (memOp && (memOp.mode === 'pre' || memOp.mode === 'post') && m.base && m.writebackDisp != null) {
-          emit(m.base, bin('add', baseValBefore || regNode(m.base, row), constNode(m.writebackDisp), 64));
+          emit(m.base, bin('add', baseValBefore || regNode(m.base, row), constNode(m.writebackDisp), 64), skipInv);
         }
       } else {
         memoryEpoch++;
+        const baseValBefore = m.base ? get(m.base, row) : null;
+        const indexValBefore = m.index ? get(m.index, row) : null;
         const srcs = insn.ops.filter((x) => x.k === 'reg' && (!insn.writes.includes(regKeyOf(x)) || insn.reads.includes(regKeyOf(x))));
         const pair = base === 'stp' || base === 'stnp';
         const list = pair ? srcs.slice(0, 2) : srcs.slice(0, 1);
@@ -741,14 +825,18 @@ export function buildValues(model, opts) {
           if (slot) stackWrite(m, effectiveDisp, elemSize, v);
           memWrites.push({
             row, address: insn.address, baseReg: m.base,
+            base: baseValBefore,
             disp: effectiveDisp === 0n ? null : effectiveDisp,
             size: elemSize, stack: !!m.stack,
-            index: m.index || null, value: v,
+            index: m.index || null,
+            indexVal: indexValBefore,
+            value: v,
           });
         });
         if (memOp && (memOp.mode === 'pre' || memOp.mode === 'post') && m.base && m.writebackDisp != null) {
-          emit(m.base, bin('add', get(m.base, row), constNode(m.writebackDisp), 64));
+          emit(m.base, bin('add', baseValBefore || get(m.base, row), constNode(m.writebackDisp), 64));
         }
+        invalidateMemDependents(row);
       }
       defs.set(row, made);
       continue;
@@ -785,8 +873,20 @@ export function buildValues(model, opts) {
 
     if (base === 'mov' || base === 'fmov' || base === 'movz') {
       const txt = textOf.get(row);
-      const isFpOrVecDst = dstOp && (dstOp.cls === 'fp' || dstOp.cls === 'vec');
-      emit(dst, (txt && !isFpOrVecDst) ? node('str', { addr: txt.addr, text: txt.text }) : valueOf(insn.ops[1], row, bits));
+      const srcOp = insn.ops[1];
+      const isFpOrVecDst = !!(dstOp && (dstOp.cls === 'fp' || dstOp.cls === 'vec'));
+      const isFpOrVecSrc = !!(srcOp && srcOp.k === 'reg' && (srcOp.cls === 'fp' || srcOp.cls === 'vec'));
+      const isGpDst = !!(dstOp && dstOp.cls === 'gp');
+      const isGpSrc = !!(srcOp && srcOp.k === 'reg' && (srcOp.cls === 'gp' || srcOp.cls === 'zr'));
+      if (base === 'fmov' && isFpOrVecDst && isGpSrc) {
+        const w = (regBits(srcOp) === 32 || regBits(dstOp) === 32) ? 32 : 64;
+        emit(dst, un(w === 32 ? 'bitcast_u32_f32' : 'bitcast_u64_f64', valueOf(srcOp, row, w)));
+      } else if (base === 'fmov' && isGpDst && isFpOrVecSrc) {
+        const w = (regBits(dstOp) === 32 || regBits(srcOp) === 32) ? 32 : 64;
+        emit(dst, un(w === 32 ? 'bitcast_f32_u32' : 'bitcast_f64_u64', valueOf(srcOp, row, w)));
+      } else {
+        emit(dst, (txt && !isFpOrVecDst) ? node('str', { addr: txt.addr, text: txt.text }) : valueOf(srcOp, row, bits));
+      }
     } else if (base === 'movn') {
       emit(dst, un('not', valueOf(insn.ops[1], row, bits)));
     } else if (base === 'movk') {
@@ -894,8 +994,23 @@ export function buildValues(model, opts) {
         const extracted = width === destinationWidth ? shifted : bin('and', shifted, constNode((1n << width) - 1n), bits);
         emit(dst, base === 'sbfx' ? signExtendExtractedField(extracted, width, bits) : extracted);
       }
+    } else if (base === 'fsqrt') {
+      const isF32 = dstOp && (dstOp.bits === 32 || /^s\d+$/i.test(String(dstOp.text || '').trim()));
+      emit(dst, node('un', { op: isF32 ? 'sqrtf' : 'sqrt', a: A() }));
+    } else if (/^frint[anmpz]$/.test(base)) {
+      const isF32 = dstOp && (dstOp.bits === 32 || /^s\d+$/i.test(String(dstOp.text || '').trim()));
+      const fnBase = { frinta: 'round', frintn: 'round', frintm: 'floor', frintp: 'ceil', frintz: 'trunc' }[base];
+      emit(dst, node('un', { op: isF32 ? fnBase + 'f' : fnBase, a: A() }));
+    } else if (/^fcvt[mpna][su]$/.test(base)) {
+      const srcOp = insn.ops[1];
+      const isSrcF32 = srcOp && (srcOp.bits === 32 || /^s\d+$/i.test(String(srcOp.text || '').trim()));
+      const fnBase = { m: 'floor', p: 'ceil', n: 'round', a: 'round' }[base[4]];
+      const fn = isSrcF32 ? fnBase + 'f' : fnBase;
+      const isSigned = base[5] === 's';
+      const castOp = (isSigned ? 'sxt' : 'uxt') + (bits === 32 ? '32' : '64');
+      emit(dst, un(castOp, node('un', { op: fn, a: valueOf(srcOp, row, isSrcF32 ? 32 : 64) })));
     } else if (base === 'csel' || base === 'csinc' || base === 'csinv' || base === 'csneg' ||
-               base === 'cset' || base === 'csetm' || base === 'cinc') {
+               base === 'cset' || base === 'csetm' || base === 'cinc' || base === 'cinv' || base === 'cneg') {
       emit(dst, selectNode(insn, row, valueOf, bits, flags));
     } else if (base === 'ccmp' || base === 'ccmn') {
       // CCMP/CCMN writes compare flags only when its condition is true and an
@@ -920,7 +1035,10 @@ export function buildValues(model, opts) {
         bits: cbits,
       };
     } else if (insn.writes.length) {
-      for (const w of insn.writes) regs.delete(w);
+      for (const w of insn.writes) {
+        regs.delete(w);
+        invalidateDependents(w, row);
+      }
     }
 
     defs.set(row, made);
@@ -1114,6 +1232,16 @@ function selectNode(insn, row, valueOf, bits, flags) {
     if (known != null) return known ? inc : a;
     return node('sel', { cc:cond, cmp, predicate, a:inc, b:a });
   }
+  if (base === 'cinv') {
+    const inv = un('not', a);
+    if (known != null) return known ? inv : a;
+    return node('sel', { cc:cond, cmp, predicate, a:inv, b:a });
+  }
+  if (base === 'cneg') {
+    const neg = un('neg', a);
+    if (known != null) return known ? neg : a;
+    return node('sel', { cc:cond, cmp, predicate, a:neg, b:a });
+  }
   let alt = b;
   if (base === 'csinc') alt = bin('add', b, constNode(1n), bits);
   else if (base === 'csinv') alt = un('not', b);
@@ -1134,9 +1262,11 @@ function minMaxOf(cc, cmp, a, b) {
   if (!op) return null;
   if (isFp && (op === 'umin' || op === 'umax')) return null;
   const flip = { min: 'max', max: 'min', umin: 'umax', umax: 'umin' };
+  const isSigned32 = (op === 'min' || op === 'max') && cmp.bits === 32 && cmp.op !== 'fcmp' && cmp.op !== 'fcmpe';
+  const signed32 = (x) => (isSigned32 && constOf(x) == null ? un('sxt32', stripPatternUxt32(x)) : x);
   /* 「小さければ左」なら min、「小さければ右」なら max（大小が入れ替わる）。 */
-  if (same(cmp.a, a) && same(cmp.b, b)) return node('bin', { op, a, b });
-  if (same(cmp.a, b) && same(cmp.b, a)) return node('bin', { op: flip[op], a: b, b: a });
+  if (same(cmp.a, a) && same(cmp.b, b)) return node('bin', { op, a: signed32(a), b: signed32(b) });
+  if (same(cmp.a, b) && same(cmp.b, a)) return node('bin', { op: flip[op], a: signed32(b), b: signed32(a) });
   return null;
 }
 
@@ -1509,6 +1639,10 @@ function emitUn(n, prec, o, depth) {
     case 'uxt32': return '(uint32)' + inner;
     case 'sxt64': return '(int64)' + inner;
     case 'uxt64': return '(uint64)' + inner;
+    case 'bitcast_u32_f32': return '((union { uint32_t u; float f; }){ .u = (uint32_t)(' + inner + ') }.f)';
+    case 'bitcast_u64_f64': return '((union { uint64_t u; double f; }){ .u = (uint64_t)(' + inner + ') }.f)';
+    case 'bitcast_f32_u32': return '((union { float f; uint32_t u; }){ .f = (float)(' + inner + ') }.u)';
+    case 'bitcast_f64_u64': return '((union { double f; uint64_t u; }){ .f = (double)(' + inner + ') }.u)';
     default: void prec; return n.op + '(' + inner + ')';
   }
 }
@@ -1545,6 +1679,29 @@ function emitFlagCondition(predicate, o, depth) {
   if (!predicate || predicate.k !== 'flagcond') return 'flag_unknown';
   const producer = String(predicate.producer || 'unknown'), bits = Number(predicate.bits || 64);
   const a = emit(predicate.a, 0, o, depth + 1), b = emit(predicate.b, 0, o, depth + 1);
+  if (producer === 'cmn') {
+    const sum = `(${a} + ${b})`;
+    switch (predicate.cc) {
+      case 'eq': return `${sum} == 0`;
+      case 'ne': return `${sum} != 0`;
+      case 'mi': case 'lt': return `${sum} < 0`;
+      case 'pl': case 'ge': return `${sum} >= 0`;
+      case 'le': return `${sum} <= 0`;
+      case 'gt': return `${sum} > 0`;
+      default: break;
+    }
+  }
+  if (producer === 'ands' || producer === 'tst' || producer === 'bics') {
+    const res = producer === 'bics' ? `((${a}) & ~(${b}))` : `((${a}) & (${b}))`;
+    const signedTy = bits === 32 ? 'int32' : 'int64';
+    switch (predicate.cc) {
+      case 'eq': return `(${res} == 0)`;
+      case 'ne': return `(${res} != 0)`;
+      case 'mi': return `((${signedTy})${res} < 0)`;
+      case 'pl': return `((${signedTy})${res} >= 0)`;
+      default: break;
+    }
+  }
   const stem = `${producer}${bits}(${a}, ${b})`;
   const n=`N_${stem}`, z=`Z_${stem}`, c=`C_${stem}`, v=`V_${stem}`;
   switch (predicate.cc) {
@@ -1567,6 +1724,7 @@ function condSymbol(cc, cmp, o, depth) {
   if (cmp && cmp.a) {
     const isFp = cmp.op === 'fcmp' || cmp.op === 'fcmpe';
     const bits = Number(cmp.bits) === 32 ? 32 : 64;
+    const is32 = bits === 32 && !isFp;
     if (cc === 'mi' || cc === 'pl') {
       if (isFp) {
         const lhs = emit(cmp.a, 7, o, depth + 1);
@@ -1583,6 +1741,11 @@ function condSymbol(cc, cmp, o, depth) {
       const lhs = unsignedCast + emit(cmp.a, 11, o, depth + 1);
       const rhs = unsignedCast + (cmp.b ? emit(cmp.b, 11, o, depth + 1) : '0');
       return lhs + ' ' + unsignedOps[cc] + ' ' + rhs;
+    }
+    if (is32 && (cc === 'lt' || cc === 'le' || cc === 'gt' || cc === 'ge')) {
+      const aStr = constOf(cmp.a) != null ? emit(cmp.a, 7, o, depth + 1) : '(int32)(' + emit(cmp.a, 0, o, depth + 1) + ')';
+      const bStr = !cmp.b ? '0' : (constOf(cmp.b) != null ? emit(cmp.b, 8, o, depth + 1) : '(int32)(' + emit(cmp.b, 0, o, depth + 1) + ')');
+      return aStr + ' ' + ops[cc] + ' ' + bStr;
     }
     return emit(cmp.a, 7, o, depth + 1) + ' ' + (ops[cc] || cc) + ' ' +
       (cmp.b ? emit(cmp.b, 8, o, depth + 1) : '0');

@@ -391,10 +391,14 @@ export function isStandaloneGlobalPreludeComment(text) {
 export function isStandaloneGlobalPreludeDeclaration(text) {
   const trimmed = String(text ?? '').trim();
   if (/^static\s+uint8_t\s+global_[A-Za-z0-9_]+\s*\[\s*\d+\s*\]\s*=\s*\{\s*0\s*\}\s*;$/.test(trimmed)) return true;
-  const match = /^(?:extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+|__hex_global_[A-Za-z0-9_]+_backing)\s*=\s*0\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*&\s*(__hex_global_[A-Za-z0-9_]+_backing)\s*;)$/.exec(trimmed);
+  const bufDef = /^#define\s+(global_[A-Za-z0-9_]+)\s+\(\s*(?:\*\s*\(\s*uint128\s*\*\s*\)\s*&\s*)?(__hex_global_[A-Za-z0-9_]+_buf)\s*\[\s*0\s*\]\s*\)$/.exec(trimmed);
+  if (bufDef) return bufDef[2] === `__hex_${bufDef[1]}_buf`;
+  const bufArr = /^static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(__hex_global_[A-Za-z0-9_]+_buf)\s*\[\s*\d+\s*\]\s*=\s*\{[\s\S]*\}\s*;$/.exec(trimmed);
+  if (bufArr) return FIXED_WIDTH_TYPES.has(bufArr[1]);
+  const match = /^(?:extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+|__hex_global_[A-Za-z0-9_]+_backing)\s*=\s*0\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*&\s*(__hex_global_[A-Za-z0-9_]+_backing)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*(?:0|0x[0-9a-fA-F]+ULL|\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*"(?:[^"\\]|\\.)*"|\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL|\(\s*\(\s*\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL\s*<<\s*64\s*\)\s*\|\s*\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL\s*\))\s*;)$/.exec(trimmed);
   if (!match) return false;
   if (match[6] && match[7] !== `__hex_${match[6]}_backing`) return false;
-  const typeName = match[1] || match[3] || match[5];
+  const typeName = match[1] || match[3] || match[5] || match[8];
   return !!typeName && FIXED_WIDTH_TYPES.has(typeName);
 }
 
@@ -612,7 +616,7 @@ export function declarationBearingSource(text) {
             break;
           }
         }
-        out += ' '.repeat(j - i);
+        out += '0'.repeat(j - i);
         i = j - 1;
         lineStart = false;
         continue;
@@ -828,7 +832,7 @@ export function scanIdentifierUses(text) {
     const gotoLabel = previousWord(source, start) === 'goto';
     const isNonPointerCast = (() => {
       if (before !== '(' || after !== ')') return false;
-      if (registerType(name) != null || /^(?:var|local|tmp|call|load|arg)_/.test(name)) return false;
+      if (registerType(name) != null || /^(?:var|local|tmp|call|load|arg|phi)_/.test(name)) return false;
       let openIdx = start - 1;
       while (openIdx >= 0 && /\s/.test(source[openIdx])) openIdx--;
       const wordBeforeOpen = previousWord(source, openIdx);
@@ -843,7 +847,10 @@ export function scanIdentifierUses(text) {
       if (ch === '!' && source[afterClose + 1] !== '=') return true;
       return false;
     })();
-    const isPointerCast = before === '(' && /^\s*\*+\s*\)/.test(source.slice(end));
+    const isPointerCast = before === '('
+      && registerType(name) == null
+      && !/^(?:var|local|tmp|call|load|arg|phi)_/.test(name)
+      && /^\s*\*+\s*\)/.test(source.slice(end));
     const castType = isPointerCast || isNonPointerCast;
     const tag = ['struct', 'union', 'enum'].includes(previousWord(source, start));
     const isValueUse = !callTarget && !memberName && !label && !gotoLabel && !castType && !tag && !objcSelector;
@@ -1025,6 +1032,8 @@ function declaredNamesFromLines(lines) {
   for (const item of lines || []) {
     const cleanedRaw = declarationBearingSource(item?.text ?? '');
     if (item?.kind === 'decl') {
+      const defineGlobal = /^\s*#define\s+(global_[A-Za-z0-9_]+)\s+\(\s*(?:\*\s*\(\s*uint128\s*\*\s*\)\s*&\s*)?__hex_global_[A-Za-z0-9_]+_buf\s*\[\s*0\s*\]\s*\)\s*$/.exec(String(item?.text ?? ''));
+      if (defineGlobal) declared.add(defineGlobal[1]);
       extractDeclaredNamesFromDeclText(cleanedRaw, declared);
     } else if (item?.kind === 'stmt') {
       const cleaned = cleanedRaw.trim();
@@ -3040,6 +3049,299 @@ function applyScalarArrowRewrites(lines, bodyOpen, arrowRewriteBases) {
   return { lines: out, changed };
 }
 
+function parseGlobalHexAddress(name) {
+  const m = /^global_([0-9A-Fa-f]+)$/.exec(String(name ?? ''));
+  if (!m) return null;
+  try { return BigInt(`0x${m[1]}`); } catch { return null; }
+}
+
+function formatCStringLiteral(str) {
+  let out = '"';
+  for (let i = 0; i < str.length; i += 1) {
+    const ch = str[i];
+    const code = str.charCodeAt(i);
+    if (ch === '\\') out += '\\\\';
+    else if (ch === '"') out += '\\"';
+    else if (ch === '\n') out += '\\n';
+    else if (ch === '\r') out += '\\r';
+    else if (ch === '\t') out += '\\t';
+    else if (code >= 0x20 && code <= 0x7e) out += ch;
+    else out += `\\${(code & 0xff).toString(8).padStart(3, '0')}`;
+  }
+  out += '"';
+  return out;
+}
+
+function sectionBoundsForGlobal(sec) {
+  if (!sec || typeof sec !== 'object') return null;
+  const rawStart = sec.addr ?? sec.vaddr ?? sec.va ?? sec.start ?? sec.address;
+  if (rawStart == null) return null;
+  let start;
+  try { start = BigInt(rawStart); } catch { return null; }
+  const rawSize = sec.size ?? sec.memsz ?? sec.length ?? sec.bytes?.length ?? sec.data?.length;
+  if (rawSize == null) return null;
+  let size;
+  try { size = BigInt(rawSize); } catch { return null; }
+  if (size <= 0n) return null;
+  return { start, end: start + size };
+}
+
+function isUninitializedBssSection(sec) {
+  if (!sec || typeof sec !== 'object') return false;
+  if (sec.nobits === true || sec.type === 8 || sec.type === 'SHT_NOBITS') return true;
+  const name = String(sec.name ?? sec.region ?? '');
+  return /^\.bss(?:\.|$)/i.test(name);
+}
+
+function isReadOnlyDataSection(sec) {
+  if (!sec || typeof sec !== 'object') return false;
+  if (sec.readOnly === true || sec.readonly === true) return true;
+  if (sec.readable === true && sec.writable === false && sec.executable === false) return true;
+  const name = String(sec.name ?? sec.region ?? '');
+  return /(?:^|,)\.(?:rodata|rdata)(?:\.|\$|$)|(?:^|,)__(?:cstring|const|ustring|oslog)(?:$|\b)/i.test(name);
+}
+
+function isRelativeRelocation(rel) {
+  if (!rel || typeof rel !== 'object') return false;
+  const t = rel.type ?? rel.r_type ?? rel.typeName;
+  if (t === 1027 || t === 8) return true;
+  if (typeof t === 'string' && /^(?:R_AARCH64_RELATIVE|R_X86_64_RELATIVE|RELATIVE)$/i.test(t.trim())) return true;
+  if (typeof rel.typeName === 'string' && /^(?:R_AARCH64_RELATIVE|R_X86_64_RELATIVE)$/i.test(rel.typeName.trim())) return true;
+  return rel.kind === 'relative';
+}
+
+function createGlobalDataResolver(result, options) {
+  const ctx = options?.context;
+  const bin = options?.binary ?? options?.image ?? ctx?.binary ?? ctx?.image ?? result?.binary ?? null;
+  const model = options?.model ?? ctx?.model ?? result?.model ?? result?.ir?.model ?? null;
+  const sectionLists = [
+    options?.sections, options?.segments, options?.regions,
+    bin?.sections, bin?.segments, bin?.regions,
+    ctx?.sections, ctx?.segments, ctx?.regions,
+    model?.sections, model?.regions,
+    result?.sections,
+  ];
+  const sections = [];
+  for (const list of sectionLists) {
+    if (!Array.isArray(list)) continue;
+    for (const sec of list) {
+      const bounds = sectionBoundsForGlobal(sec);
+      if (bounds) sections.push({ sec, start: bounds.start, end: bounds.end });
+    }
+  }
+  const fileBytes = options?.fileBytes ?? options?.bytes
+    ?? bin?.bytes ?? bin?.raw
+    ?? ctx?.fileBytes ?? ctx?.bytes
+    ?? result?.fileBytes ?? null;
+  const directReadBytes = options?.readBytes ?? bin?.readBytes ?? ctx?.readBytes ?? null;
+  const directReadByte = options?.readByte ?? options?.byteAt ?? bin?.readByte ?? ctx?.readByte ?? null;
+  const stringFor = options?.stringFor ?? ctx?.stringFor ?? null;
+
+  const relativeRelocs = new Map();
+  const relocLists = [
+    options?.relocations, bin?.relocations, ctx?.relocations, model?.relocations, result?.relocations,
+  ];
+  for (const list of relocLists) {
+    if (!Array.isArray(list)) continue;
+    for (const rel of list) {
+      if (!isRelativeRelocation(rel)) continue;
+      const rawAddr = rel.address ?? rel.offset ?? rel.r_offset ?? rel.addr;
+      const rawTarget = rel.target ?? rel.addend ?? rel.r_addend;
+      if (rawAddr == null || rawTarget == null) continue;
+      try {
+        relativeRelocs.set(BigInt(rawAddr), BigInt(rawTarget));
+      } catch { /* ignore malformed relocation */ }
+    }
+  }
+
+  const directStringRefs = new Map();
+  const indirectStringRefs = new Map();
+  const addrRefLists = [
+    options?.addressRefs, model?.addressRefs, ctx?.addressRefs, result?.addressRefs,
+  ];
+  for (const list of addrRefLists) {
+    if (!Array.isArray(list)) continue;
+    for (const ref of list) {
+      if (ref?.addr == null || typeof ref.text !== 'string') continue;
+      try {
+        const a = BigInt(ref.addr);
+        if (ref.viaPointer) {
+          if (!indirectStringRefs.has(a)) indirectStringRefs.set(a, ref.text);
+        } else if (!directStringRefs.has(a)) {
+          directStringRefs.set(a, ref.text);
+        }
+      } catch { /* ignore malformed addressRef */ }
+    }
+  }
+
+  const hasData = sections.length > 0
+    || Boolean(directReadBytes)
+    || Boolean(directReadByte)
+    || relativeRelocs.size > 0
+    || indirectStringRefs.size > 0;
+
+  const findSection = (addr) => {
+    for (const entry of sections) {
+      if (addr >= entry.start && addr < entry.end) return entry;
+    }
+    return null;
+  };
+
+  const readBytesAt = (addr, maxLen) => {
+    const entry = findSection(addr);
+    if (entry) {
+      if (isUninitializedBssSection(entry.sec)) return null;
+      const avail = Number(entry.end - addr);
+      const count = Math.min(maxLen, avail);
+      if (count <= 0) return null;
+      const inlineBytes = entry.sec.bytes ?? entry.sec.data;
+      const rel = Number(addr - entry.start);
+      if (inlineBytes && rel >= 0 && rel < inlineBytes.length) {
+        const n = Math.min(count, inlineBytes.length - rel);
+        const out = new Uint8Array(n);
+        for (let i = 0; i < n; i += 1) out[i] = inlineBytes[rel + i];
+        return { bytes: out, section: entry.sec, sectionEnd: entry.end };
+      }
+      const fileOffset = entry.sec.offset ?? entry.sec.fileOffset;
+      if (fileOffset != null && fileBytes) {
+        const pos = Number(BigInt(fileOffset) + (addr - entry.start));
+        if (pos >= 0 && pos < fileBytes.length) {
+          const n = Math.min(count, fileBytes.length - pos);
+          const out = new Uint8Array(n);
+          for (let i = 0; i < n; i += 1) out[i] = fileBytes[pos + i];
+          return { bytes: out, section: entry.sec, sectionEnd: entry.end };
+        }
+      }
+    }
+    try {
+      if (typeof directReadBytes === 'function') {
+        const buf = directReadBytes(addr, maxLen);
+        if (buf && buf.length > 0) {
+          const out = buf instanceof Uint8Array ? buf : Uint8Array.from(buf);
+          return { bytes: out, section: entry?.sec ?? null, sectionEnd: entry?.end ?? null };
+        }
+      }
+      if (typeof directReadByte === 'function') {
+        const arr = [];
+        for (let i = 0; i < maxLen; i += 1) {
+          const b = directReadByte(addr + BigInt(i));
+          if (typeof b !== 'number') break;
+          arr.push(b & 0xff);
+        }
+        if (arr.length > 0) {
+          return { bytes: Uint8Array.from(arr), section: entry?.sec ?? null, sectionEnd: entry?.end ?? null };
+        }
+      }
+    } catch { /* optional reader */ }
+    return null;
+  };
+
+  const resolveCStringAt = (addr) => {
+    try {
+      if (typeof stringFor === 'function') {
+        const s = stringFor(addr);
+        if (typeof s === 'string') return s;
+      }
+    } catch { /* optional resolver */ }
+    if (directStringRefs.has(addr)) return directStringRefs.get(addr);
+    const read = readBytesAt(addr, 256);
+    if (!read || !read.bytes.length) return null;
+    const chars = [];
+    for (let i = 0; i < read.bytes.length; i += 1) {
+      const b = read.bytes[i];
+      if (b === 0) {
+        if (chars.length === 0 && !isReadOnlyDataSection(read.section)) return null;
+        return String.fromCharCode(...chars);
+      }
+      if ((b >= 0x20 && b <= 0x7e) || b === 0x09 || b === 0x0a || b === 0x0d) {
+        chars.push(b);
+      } else {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  const decodeLE = (bytes, offset, count) => {
+    let v = 0n;
+    for (let i = count - 1; i >= 0; i -= 1) {
+      v = (v << 8n) | BigInt(bytes[offset + i]);
+    }
+    return v;
+  };
+
+  const resolveWord64 = (addr) => {
+    if (addr == null) return null;
+    if (relativeRelocs.has(addr)) {
+      const target = relativeRelocs.get(addr);
+      const str = resolveCStringAt(target);
+      if (str !== null) {
+        return { expr: `(uint64)(uintptr_t)${formatCStringLiteral(str)}`, isPointer: true, isNonZero: true };
+      }
+    }
+    if (indirectStringRefs.has(addr)) {
+      const str = indirectStringRefs.get(addr);
+      return { expr: `(uint64)(uintptr_t)${formatCStringLiteral(str)}`, isPointer: true, isNonZero: true };
+    }
+    const read = readBytesAt(addr, 8);
+    if (!read || read.bytes.length < 4) return null;
+    const width = Math.min(8, read.bytes.length);
+    const val = decodeLE(read.bytes, 0, width);
+    if (val === 0n) return { expr: '0', isPointer: false, isNonZero: false, value: 0n };
+    return { expr: `0x${val.toString(16)}ULL`, isPointer: false, isNonZero: true, value: val };
+  };
+
+  const resolveUint128 = (addr) => {
+    if (addr == null) return null;
+    const w0 = resolveWord64(addr);
+    const w1 = resolveWord64(addr + 8n);
+    if (!w0 && !w1) return null;
+    if (w0?.isPointer || w1?.isPointer) {
+      return { kind: 'words', words: [w0?.expr ?? '0', w1?.expr ?? '0'] };
+    }
+    const lo = w0?.value ?? 0n;
+    const hi = w1?.value ?? 0n;
+    if (hi === 0n && lo === 0n) return { kind: 'scalar', expr: '0' };
+    if (hi === 0n) return { kind: 'scalar', expr: `(uint128)0x${lo.toString(16)}ULL` };
+    return { kind: 'scalar', expr: `(((uint128)0x${hi.toString(16)}ULL << 64) | (uint128)0x${lo.toString(16)}ULL)` };
+  };
+
+  const resolveBufferWords = (addr, maxWords = 512) => {
+    if (addr == null || !hasData) return null;
+    const entry = findSection(addr);
+    let maxScan = 0;
+    if (entry && !isUninitializedBssSection(entry.sec)) {
+      const remBytes = Number(entry.end - addr);
+      maxScan = Math.min(maxWords, Math.ceil(remBytes / 8));
+    }
+    for (const relAddr of relativeRelocs.keys()) {
+      if (relAddr >= addr && relAddr < addr + BigInt(maxWords * 8)) {
+        const diff = Number(relAddr - addr);
+        if (diff % 8 === 0) {
+          const idx = diff / 8 + 1;
+          if (idx > maxScan) maxScan = Math.min(maxWords, idx);
+        }
+      }
+    }
+    if (maxScan === 0 && (directReadBytes || directReadByte || indirectStringRefs.has(addr))) {
+      maxScan = Math.min(maxWords, 16);
+    }
+    if (maxScan <= 0) return null;
+    const words = [];
+    let lastNonZero = -1;
+    for (let i = 0; i < maxScan; i += 1) {
+      const w = resolveWord64(addr + BigInt(i * 8));
+      const expr = w?.isNonZero ? w.expr : '0';
+      words.push(expr);
+      if (w?.isNonZero) lastNonZero = i;
+    }
+    if (lastNonZero < 0) return null;
+    return words.slice(0, lastNonZero + 1);
+  };
+
+  return { hasData, resolveWord64, resolveUint128, resolveBufferWords };
+}
+
 export function closeFunctionOutput(result, options = {}) {
   if (!result || !Array.isArray(result.lines) || !result.lines.length) return result;
   const render = typeof options.render === 'function' ? options.render : renderedText;
@@ -3260,22 +3562,69 @@ export function closeFunctionOutput(result, options = {}) {
       return sawAny;
     };
     const align16 = (v) => Math.ceil(v / 16) * 16;
+    const isCastBeforeIndex = (text, idx) => {
+      let closeIdx = idx - 1;
+      while (closeIdx >= 0 && /\s/.test(text[closeIdx])) closeIdx -= 1;
+      if (closeIdx < 0 || text[closeIdx] !== ')') return false;
+      let depth = 0;
+      let openIdx = -1;
+      for (let j = closeIdx; j >= 0; j -= 1) {
+        if (text[j] === ')') depth += 1;
+        else if (text[j] === '(') {
+          depth -= 1;
+          if (depth === 0) {
+            openIdx = j;
+            break;
+          }
+        }
+      }
+      if (openIdx < 0) return false;
+      const inner = text.slice(openIdx + 1, closeIdx).trim();
+      if (!inner) return false;
+      if (/\*\s*(?:const|volatile|restrict)?\s*$/.test(inner)) return true;
+      const stripped = inner.replace(/\b(?:const|volatile|restrict|unsigned|signed|short|long|struct|union|enum)\b/g, ' ').trim();
+      if (!stripped) return true;
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(stripped)) {
+        return FIXED_WIDTH_TYPES.has(stripped)
+          || STANDARD_KNOWN_TYPES.has(stripped)
+          || C_PRIMITIVE_TYPE_KEYWORDS.has(stripped)
+          || stripped === 'id'
+          || /^hex_struct_/.test(stripped)
+          || existingTypes.has(stripped);
+      }
+      return false;
+    };
+    const isGlobalAddressTaken = (globalName) => {
+      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(?<!&)&\\s*\\(?\\s*${esc}\\b`, 'g');
+      for (let m = re.exec(cleanedBodyForGlobals); m; m = re.exec(cleanedBodyForGlobals)) {
+        const idx = m.index;
+        if (/^\s*\)\s*->/.test(cleanedBodyForGlobals.slice(idx + m[0].length))) continue;
+        const prev = previousChar(cleanedBodyForGlobals, idx);
+        if (!prev || '=({[,;:!?|^~+-<>*/%'.includes(prev)) return true;
+        if (prev === ')' && isCastBeforeIndex(cleanedBodyForGlobals, idx)) return true;
+        if (/[A-Za-z0-9_]/.test(prev) && previousWord(cleanedBodyForGlobals, idx) === 'return') return true;
+      }
+      return false;
+    };
+    const isGlobalUsedAsUint128 = (globalName) => {
+      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const u128Type = '(?:uint128|int128|vector128|(?:unsigned\\s+)?__int128)';
+      const patterns = [
+        new RegExp(`\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)[^;{}]*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`),
+        new RegExp(`\\(\\s*${u128Type}\\s*\\)\\s*\\(?\\s*(?<!&)${esc}\\b`),
+        new RegExp(`(?:\\b${u128Type}\\s+[A-Za-z_][A-Za-z0-9_]*|\\b[qQvV]\\d+(?:_\\d+)?)\\s*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`),
+        new RegExp(`\\b${esc}\\s*=(?!=)\\s*(?:\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)|\\b[qQvV]\\d+(?:_\\d+)?\\b)`),
+      ];
+      return patterns.some((re) => re.test(cleanedBodyForGlobals));
+    };
+    const globalData = createGlobalDataResolver(result, options);
     globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
     for (const entry of standaloneGlobals) {
       const access = memberBaseAccesses.get(entry.name);
-      if (isGlobalDereferenced(entry.name)) {
-        const backingName = `__hex_${entry.name}_backing`;
-        globalPrelude.push(
-          {
-            kind: 'decl', indent: 0, text: `static uint64 ${backingName} = 0;`,
-            row: null, addr: null, note: null, source: entrySource,
-          },
-          {
-            kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = (uint64)(uintptr_t)&${backingName};`,
-            row: null, addr: null, note: null, source: entrySource,
-          },
-        );
-      } else if (access?.hasAddrOfArrow && access.fields.size && hasOnlyAddressOfUses(entry.name)) {
+      const globalAddr = parseGlobalHexAddress(entry.name);
+      const usedAsUint128 = isGlobalUsedAsUint128(entry.name);
+      if (access?.hasAddrOfArrow && access.fields.size && hasOnlyAddressOfUses(entry.name)) {
         let maxFieldOffset = 0;
         for (const field of access.fields) {
           const fm = /^field_(?:0[xX])?([0-9A-Fa-f]+)$/.exec(field);
@@ -3290,9 +3639,65 @@ export function closeFunctionOutput(result, options = {}) {
           kind: 'decl', indent: 0, text: `static uint8_t ${entry.name}[${byteSize}] = {0};`,
           row: null, addr: null, note: null, source: entrySource,
         });
+      } else if (isGlobalAddressTaken(entry.name)) {
+        const bufName = `__hex_${entry.name}_buf`;
+        const bufWords = globalData.hasData ? globalData.resolveBufferWords(globalAddr, 512) : null;
+        const initText = bufWords && bufWords.length ? `{ ${bufWords.join(', ')} }` : '{0}';
+        const macroTarget = usedAsUint128 ? `*(uint128 *)&${bufName}[0]` : `${bufName}[0]`;
+        globalPrelude.push(
+          {
+            kind: 'decl', indent: 0, text: `static uint64 ${bufName}[512] = ${initText};`,
+            row: null, addr: null, note: null, source: entrySource,
+          },
+          {
+            kind: 'decl', indent: 0, text: `#define ${entry.name} (${macroTarget})`,
+            row: null, addr: null, note: null, source: entrySource,
+          },
+        );
+      } else if (usedAsUint128) {
+        const u128Init = globalData.hasData ? globalData.resolveUint128(globalAddr) : null;
+        if (u128Init?.kind === 'words') {
+          const bufName = `__hex_${entry.name}_buf`;
+          globalPrelude.push(
+            {
+              kind: 'decl', indent: 0, text: `static uint64 ${bufName}[2] = { ${u128Init.words[0]}, ${u128Init.words[1]} };`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+            {
+              kind: 'decl', indent: 0, text: `#define ${entry.name} (*(uint128 *)&${bufName}[0])`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+          );
+        } else {
+          globalPrelude.push({
+            kind: 'decl', indent: 0, text: `static uint128 ${entry.name} = ${u128Init?.expr ?? '0'};`,
+            row: null, addr: null, note: null, source: entrySource,
+          });
+        }
+      } else if (isGlobalDereferenced(entry.name)) {
+        const wordInit = globalData.hasData ? globalData.resolveWord64(globalAddr) : null;
+        if (wordInit?.isPointer) {
+          globalPrelude.push({
+            kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = ${wordInit.expr};`,
+            row: null, addr: null, note: null, source: entrySource,
+          });
+        } else {
+          const backingName = `__hex_${entry.name}_backing`;
+          globalPrelude.push(
+            {
+              kind: 'decl', indent: 0, text: `static uint64 ${backingName} = 0;`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+            {
+              kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = (uint64)(uintptr_t)&${backingName};`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+          );
+        }
       } else {
+        const wordInit = globalData.hasData ? globalData.resolveWord64(globalAddr) : null;
         globalPrelude.push({
-          kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = 0;`,
+          kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = ${wordInit?.isNonZero ? wordInit.expr : '0'};`,
           row: null, addr: null, note: null, source: entrySource,
         });
       }

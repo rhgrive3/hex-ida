@@ -13,6 +13,137 @@ const INTEGER_NAMES = new Map([
   ['32:s', 'int32'], ['32:u', 'uint32'], ['64:s', 'int64'], ['64:u', 'uint64'],
 ]);
 
+// Known standard-library callees whose GP argument slots accept `const char *`.
+const VARIADIC_FORMAT_SPECS = new Map([
+  ['printf', { fmtArgIdx: 0, fixedArgs: 1, family: 'printf' }],
+  ['fprintf', { fmtArgIdx: 1, fixedArgs: 2, family: 'printf' }],
+  ['sprintf', { fmtArgIdx: 1, fixedArgs: 2, family: 'printf' }],
+  ['snprintf', { fmtArgIdx: 2, fixedArgs: 3, family: 'printf' }],
+  ['dprintf', { fmtArgIdx: 1, fixedArgs: 2, family: 'printf' }],
+  ['asprintf', { fmtArgIdx: 1, fixedArgs: 2, family: 'printf' }],
+  ['sprintf_chk', { fmtArgIdx: 3, fixedArgs: 4, family: 'printf' }],
+  ['snprintf_chk', { fmtArgIdx: 4, fixedArgs: 5, family: 'printf' }],
+  ['scanf', { fmtArgIdx: 0, fixedArgs: 1, family: 'scanf' }],
+  ['fscanf', { fmtArgIdx: 1, fixedArgs: 2, family: 'scanf' }],
+  ['sscanf', { fmtArgIdx: 1, fixedArgs: 2, family: 'scanf' }],
+  ['isoc99_scanf', { fmtArgIdx: 0, fixedArgs: 1, family: 'scanf' }],
+  ['isoc99_fscanf', { fmtArgIdx: 1, fixedArgs: 2, family: 'scanf' }],
+  ['isoc99_sscanf', { fmtArgIdx: 1, fixedArgs: 2, family: 'scanf' }],
+]);
+
+function countFormatSpecifiers(fmt, family = 'printf') {
+  if (typeof fmt !== 'string') return null;
+  let gp = 0;
+  let fp = 0;
+  let i = 0;
+  while (i < fmt.length) {
+    if (fmt[i] !== '%') { i++; continue; }
+    i++;
+    if (i >= fmt.length) return null;
+    if (fmt[i] === '%') { i++; continue; }
+    if (family === 'scanf') {
+      let suppressed = false;
+      if (fmt[i] === '*') { suppressed = true; i++; }
+      // Reject positional arguments (%1$d)
+      if (i < fmt.length && fmt[i] >= '1' && fmt[i] <= '9') {
+        let j = i;
+        while (j < fmt.length && fmt[j] >= '0' && fmt[j] <= '9') j++;
+        if (fmt[j] === '$') return null;
+      }
+      while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+      if (i + 1 < fmt.length && (fmt.slice(i, i + 2) === 'hh' || fmt.slice(i, i + 2) === 'll')) i += 2;
+      else if (i < fmt.length && 'hljztL'.includes(fmt[i])) i++;
+      if (i >= fmt.length) return null;
+      const conv = fmt[i++];
+      if (conv === '[') {
+        if (i < fmt.length && fmt[i] === '^') i++;
+        if (i < fmt.length && fmt[i] === ']') i++;
+        while (i < fmt.length && fmt[i] !== ']') i++;
+        if (i >= fmt.length) return null;
+        i++;
+        if (!suppressed) gp++;
+      } else if ('diuoxXaAeEfFgGcspn'.includes(conv)) {
+        if (!suppressed) gp++;
+      } else {
+        return null;
+      }
+      continue;
+    }
+    while (i < fmt.length && "-+ #0'".includes(fmt[i])) i++;
+    if (i < fmt.length && fmt[i] >= '1' && fmt[i] <= '9') {
+      let j = i;
+      while (j < fmt.length && fmt[j] >= '0' && fmt[j] <= '9') j++;
+      if (fmt[j] === '$') return null;
+    }
+    if (i < fmt.length && fmt[i] === '*') {
+      gp++;
+      i++;
+    } else {
+      while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+    }
+    if (i < fmt.length && fmt[i] === '.') {
+      i++;
+      if (i < fmt.length && fmt[i] === '*') {
+        gp++;
+        i++;
+      } else {
+        while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+      }
+    }
+    if (i + 1 < fmt.length && (fmt.slice(i, i + 2) === 'hh' || fmt.slice(i, i + 2) === 'll')) i += 2;
+    else if (i < fmt.length && 'hljztL'.includes(fmt[i])) i++;
+    if (i >= fmt.length) return null;
+    const conv = fmt[i++];
+    if ('aAeEfFgG'.includes(conv)) fp++;
+    else if ('diuoxXcspn'.includes(conv)) gp++;
+    else return null;
+  }
+  return { gp, fp };
+}
+
+function resolveConstantAddressOfValue(val, depth = 0, seen = null) {
+  if (!val || depth > 8) return null;
+  const visited = seen || new Set();
+  if (val.id != null) {
+    if (visited.has(val.id)) return null;
+    visited.add(val.id);
+  }
+  if (val.const != null) {
+    try { return BigInt(val.const); } catch { /* ignore */ }
+  }
+  const def = val.def;
+  if (!def) return null;
+  if (def.op === OP.ADDR || def.op === OP.CONST) {
+    const raw = def.extra?.value ?? def.extra?.target ?? null;
+    if (raw != null) {
+      try { return BigInt(raw); } catch { /* ignore */ }
+    }
+  }
+  if (def.op === OP.MOV) {
+    return resolveConstantAddressOfValue(valueOf(def.args?.[0]), depth + 1, visited);
+  }
+  if (def.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub')) {
+    const a = resolveConstantAddressOfValue(valueOf(def.args?.[0]), depth + 1, visited);
+    const b = resolveConstantAddressOfValue(valueOf(def.args?.[1]), depth + 1, visited);
+    if (a != null && b != null) return def.sub === 'add' ? a + b : a - b;
+  }
+  return null;
+}
+
+const CONST_CHAR_PTR_PARAMS = new Map([
+  ['strlen', [0]],
+  ['strcmp', [0, 1]],
+  ['strncmp', [0, 1]],
+  ['strchr', [0]],
+  ['strrchr', [0]],
+  ['strstr', [0, 1]],
+  ['strtod', [0]],
+  ['strtol', [0]],
+  ['atoi', [0]],
+  ['strcpy', [1]],
+  ['strdup', [0]],
+]);
+
 function evidence() {
   return {
     widths: new Map(), signed: 0, unsigned: 0, bool: 0, floating: 0,
@@ -255,15 +386,20 @@ function dominatedByEarlierCall(ir, atInst, callIndex = null) {
   return false;
 }
 
-function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = null, callCtx = null) {
+function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = null, callCtx = null, allowPhi = true) {
   if (!value || visited.has(value)) return false;
   visited.add(value);
   const uses = Array.isArray(value.uses) ? value.uses : [];
   for (const inst of uses) {
     if (!inst) continue;
     if (inst.op === OP.CLOBBER) continue;
-    if (inst.op === OP.PHI || inst.op === OP.MOV) {
-      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName, callCtx)) return true;
+    if (inst.op === OP.PHI) {
+      if (!allowPhi) continue;
+      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName, callCtx, true)) return true;
+      continue;
+    }
+    if (inst.op === OP.MOV) {
+      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName, callCtx, allowPhi)) return true;
       continue;
     }
     if (inst.op === OP.CALL) {
@@ -272,17 +408,42 @@ function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = nul
         ? resolveCalleeName(inst)
         : String((inst.extra && inst.extra.name) || (inst.insn && inst.insn.callName) || '');
       const proto = knownCallPrototype(name);
-      if (proto && !proto.variadic && !inst.extra?.indirect) {
-        const callArgs = Array.isArray(inst.args) ? inst.args : [];
-        const matchedIdx = callArgs.findIndex((a) => valueOf(a) === value);
-        if (matchedIdx >= proto.arity) continue;
-        if (matchedIdx < 0 && typeof value.reg === 'string') {
-          if (callCtx ? callCtx.isAArch64ArgSet : true) {
-            const rm = /^[xdsvq](\d+)$/.exec(value.reg);
-            if (rm && Number(rm[1]) >= proto.arity) continue;
-          } else if (Array.isArray(callCtx.argumentRegisters) && callCtx.argumentRegisters.length) {
-            const argIdx = callCtx.argumentRegisters.indexOf(value.reg);
-            if (argIdx >= proto.arity) continue;
+      if (proto && !inst.extra?.indirect) {
+        if (!proto.variadic) {
+          const callArgs = Array.isArray(inst.args) ? inst.args : [];
+          const matchedIdx = callArgs.findIndex((a) => valueOf(a) === value);
+          if (matchedIdx >= proto.arity) continue;
+          if (matchedIdx < 0 && typeof value.reg === 'string') {
+            if (callCtx ? callCtx.isAArch64ArgSet : true) {
+              const rm = /^[xdsvq](\d+)$/.exec(value.reg);
+              if (rm && Number(rm[1]) >= proto.arity) continue;
+            } else if (Array.isArray(callCtx.argumentRegisters) && callCtx.argumentRegisters.length) {
+              const argIdx = callCtx.argumentRegisters.indexOf(value.reg);
+              if (argIdx >= proto.arity) continue;
+            }
+          }
+        } else if (callCtx?.variadicArity) {
+          const bounds = callCtx.variadicArity(inst, proto);
+          if (bounds) {
+            const isA64 = callCtx.isAArch64ArgSet;
+            if (typeof value.reg === 'string') {
+              if (isA64) {
+                const fpM = /^[dsvq](\d+)$/.exec(value.reg);
+                if (fpM) {
+                  if (Number(fpM[1]) >= bounds.fpArity) continue;
+                } else {
+                  const gpM = /^[xw](\d+)$/.exec(value.reg);
+                  if (gpM && Number(gpM[1]) >= bounds.gpArity) continue;
+                }
+              } else if (Array.isArray(callCtx.argumentRegisters) && callCtx.argumentRegisters.length) {
+                const argIdx = callCtx.argumentRegisters.indexOf(value.reg);
+                if (argIdx >= bounds.gpArity) continue;
+              }
+            } else {
+              const callArgs = Array.isArray(inst.args) ? inst.args : [];
+              const matchedIdx = callArgs.findIndex((a) => valueOf(a) === value);
+              if (matchedIdx >= bounds.gpArity) continue;
+            }
           }
         }
       }
@@ -357,7 +518,48 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     );
   };
   const callIndex = buildCallDominanceIndex(ir);
-  const callUseCtx = { isAArch64ArgSet, argumentRegisters, callIndex };
+  const variadicArityCache = new Map();
+  const resolveStaticFormatString = (val) => {
+    if (!val) return null;
+    if (typeof val.extra?.stringLiteral === 'string') return val.extra.stringLiteral;
+    if (typeof val.def?.extra?.stringLiteral === 'string') return val.def.extra.stringLiteral;
+    if (typeof val.def?.extra?.string === 'string') return val.def.extra.string;
+    const addr = resolveConstantAddressOfValue(val);
+    if (addr != null) {
+      try {
+        const direct = opts?.stringFor?.(addr);
+        if (typeof direct === 'string') return direct;
+      } catch { /* optional resolver */ }
+      for (const ref of model?.addressRefs || []) {
+        if (ref?.addr == null || typeof ref.text !== 'string') continue;
+        try { if (BigInt(ref.addr) === addr) return ref.text; } catch { /* malformed ref */ }
+      }
+    }
+    const defRow = val.def?.row;
+    if (defRow != null) {
+      for (const ref of model?.addressRefs || []) {
+        if (ref?.row === defRow && typeof ref.text === 'string') return ref.text;
+      }
+    }
+    return null;
+  };
+  const variadicArity = (inst, proto) => {
+    if (!inst || !proto) return null;
+    if (variadicArityCache.has(inst)) return variadicArityCache.get(inst);
+    const spec = VARIADIC_FORMAT_SPECS.get(proto.name);
+    if (!spec) { variadicArityCache.set(inst, null); return null; }
+    const fmtReg = argumentRegisters[spec.fmtArgIdx] ?? null;
+    const fmtVal = (fmtReg ? reachingRegisterTypeValue(ir, inst, fmtReg) : null)
+      ?? valueOf(inst.args?.[spec.fmtArgIdx]);
+    const fmtStr = resolveStaticFormatString(fmtVal);
+    const counts = fmtStr != null ? countFormatSpecifiers(fmtStr, spec.family) : null;
+    const result = counts
+      ? { gpArity: spec.fixedArgs + counts.gp, fpArity: counts.fp }
+      : null;
+    variadicArityCache.set(inst, result);
+    return result;
+  };
+  const callUseCtx = { isAArch64ArgSet, argumentRegisters, callIndex, variadicArity };
   const callRetTypeToSemantic = (retType) => {
     if (retType === 'void') return 'void';
     if (retType === 'double') return 'double';
@@ -401,6 +603,26 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   const passThroughGpArgs = new Map();
   const passThroughFpArgs = new Map();
   const passThroughRegs = new Set();
+  const constCharPtrValueIds = new Set();
+  const traceMovRoot = (val) => {
+    let cur = val;
+    const seen = new Set();
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      if (cur.def?.op === OP.MOV && !cur.def.sub && cur.def.args?.[0]?.value) {
+        cur = cur.def.args[0].value;
+      } else {
+        break;
+      }
+    }
+    return cur;
+  };
+  const markConstCharPtrArg = (val) => {
+    if (!val) return;
+    if (val.id != null) constCharPtrValueIds.add(val.id);
+    const root = traceMovRoot(val);
+    if (root && root.id != null) constCharPtrValueIds.add(root.id);
+  };
   const recordPassThroughForCall = (inst, name) => {
     if (!argumentRegisters.length || dominatedByEarlierCall(ir, inst, callIndex)) return;
     const callSig = knownCallSignature(name);
@@ -442,9 +664,12 @@ export function inferSemanticTypes(ir, model, opts = {}) {
           const isIncoming = !hasEarlierOrNonDomRegDef(inst, gpAliases)
             && (gpVal ? (!gpVal.def && ir.args?.get?.(gpRegName) === gpVal) : true);
           if (isIncoming) {
+            const constCharIndices = CONST_CHAR_PTR_PARAMS.get(proto.name);
+            const semanticParamType = constCharIndices?.includes(gpIdx) ? 'const char *' : callParamTypeToSemantic(pType);
+            if (constCharIndices?.includes(gpIdx) && gpVal) markConstCharPtrArg(gpVal);
             passThroughRegs.add(gpRegName);
             if (!passThroughGpArgs.has(gpIdx)) {
-              passThroughGpArgs.set(gpIdx, { reg: gpRegName, type: callParamTypeToSemantic(pType), callName: proto.name, value: gpVal });
+              passThroughGpArgs.set(gpIdx, { reg: gpRegName, type: semanticParamType, callName: proto.name, value: gpVal });
             }
           }
         }
@@ -497,8 +722,8 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       const unSub = inst.sub || '';
       const isI2F = /^(?:i2f|scvtf)/.test(unSub);
       const isU2F = /^(?:u2f|ucvtf)/.test(unSub);
-      const isF2I = /^(?:f2i|fcvtzs)/.test(unSub);
-      const isF2U = /^(?:f2u|fcvtzu)/.test(unSub);
+      const isF2I = /^(?:f2i|fcvt[zpmna]s)/.test(unSub);
+      const isF2U = /^(?:f2u|fcvt[zpmna]u)/.test(unSub);
       if (!isF2I && !isF2U && /^f(abs|neg|sqrt|cvt|rint|floor|ceil|round|trunc)/.test(unSub)) {
         if (a) score(a, 'floating', 5, `row ${inst.row}: ${unSub}`);
         if (dst) score(dst, 'floating', 5, `row ${inst.row}: ${unSub}`);
@@ -572,12 +797,14 @@ export function inferSemanticTypes(ir, model, opts = {}) {
             } else {
               const gpRegName = argumentRegisters[gpIdx];
               if (gpRegName) {
-                const gpVal = reachingRegisterTypeValue(ir, inst, gpRegName);
+                const gpVal = reachingRegisterTypeValue(ir, inst, gpRegName) ?? valueOf(inst.args?.[gpIdx]);
                 const pe = eFor(gpVal);
                 if (pe) {
                   if (pType === 'ptr') score(pe, 'pointer', 4, `row ${inst.row}: ${callSig.name} ptr arg`);
                   else if (pType === 'size') score(pe, 'unsigned', 2, `row ${inst.row}: ${callSig.name} size arg`);
                 }
+                const constCharIndices = CONST_CHAR_PTR_PARAMS.get(callSig.name);
+                if (constCharIndices?.includes(gpIdx) && gpVal) markConstCharPtrArg(gpVal);
               }
               gpIdx++;
             }
@@ -608,11 +835,13 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     ? argumentRegisters.filter((reg) => /^x[0-7]$/.test(reg))
     : argumentRegisters;
   const args = [];
+  const acceptedGpIndices = new Set();
   gpArgumentRegisters.forEach((reg, i) => {
     const v = ir.args && ir.args.get ? ir.args.get(reg) : null;
     const pt = passThroughGpArgs.get(i) || null;
     if (!v) {
       if (pt) {
+        acceptedGpIndices.add(i);
         args.push({
           reg,
           index: i,
@@ -629,9 +858,23 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       ? (hasRealValueUse(v, ir, new Set(), calleeNameOf, callUseCtx) || pt != null)
       : (pt != null || (!anyUseTracked && ((model && model.argRegs) || []).includes(i)));
     if (!used) return;
-    const resolvedType = t.name === 'unknown' && pt?.type ? pt.type : t.name;
-    const resolvedConf = t.name === 'unknown' && pt?.type ? Math.max(t.confidence || 0.2, 0.65) : t.confidence;
-    args.push({ reg, index:i, valueId:v.id, type:resolvedType, conf:resolvedConf, why:t.evidence || [], semanticType:t });
+    // Reject discontiguous uninitialized-PHI parameter seeds: do not promote xK (K > 0)
+    // when x(K-1) has no real use and xK only enters via a PHI without a direct non-PHI read.
+    if (i > 0 && !acceptedGpIndices.has(i - 1) && pt == null && (v.uses || []).length > 0) {
+      const hasDirectRead = hasRealValueUse(v, ir, new Set(), calleeNameOf, callUseCtx, false);
+      if (!hasDirectRead) return;
+    }
+    acceptedGpIndices.add(i);
+    const wantsConstCharPtr = constCharPtrValueIds.has(v.id) || pt?.type === 'const char *';
+    const canAdoptConstCharPtr = wantsConstCharPtr && (t.kind === 'unknown' || t.name === 'unknown' || t.name === 'void *');
+    let resolvedType = canAdoptConstCharPtr ? 'const char *' : (t.name === 'unknown' && pt?.type ? pt.type : t.name);
+    let resolvedConf = canAdoptConstCharPtr
+      ? Math.max(t.confidence || 0.2, 0.78)
+      : (t.name === 'unknown' && pt?.type ? Math.max(t.confidence || 0.2, 0.65) : t.confidence);
+    const resolvedSemanticType = canAdoptConstCharPtr
+      ? { ...t, name: 'const char *', kind: 'pointer', pointee: 'const char', confidence: resolvedConf }
+      : t;
+    args.push({ reg, index:i, valueId:v.id, type:resolvedType, conf:resolvedConf, why:t.evidence || [], semanticType:resolvedSemanticType });
   });
 
   // Fill positional parameter gaps for GP arguments (e.g., unused x0 when x1 is used).
@@ -775,9 +1018,55 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         vals = fpVals;
       }
     }
+    const is32BitIntReturnValue = (val, seen = new Set()) => {
+      if (!val || seen.has(val)) return false;
+      seen.add(val);
+      const vt = values.get(val.id);
+      if (vt && vt.kind !== 'unknown' && vt.name !== 'int32' && vt.name !== 'uint32' && vt.name !== 'bool') return false;
+      if (vt?.name === 'int32') return true;
+      if (typeof val.reg === 'string' && /^w\d+$/.test(val.reg)) return true;
+      if (val.bits === 32) return true;
+      const def = val.def;
+      if (!def) return false;
+      if (def.op === OP.CONST) return val.bits === 32 || val.const === 0xffffffffn;
+      if (def.op === OP.MOV) {
+        if (def.sub === 'zext' && Number(def.extra?.sourceBits) === 32) return true;
+        if (def.sub === 'trunc' && (Number(def.extra?.targetBits) === 32 || val.bits === 32)) return true;
+        if (val.const === 0xffffffffn) return true;
+        const src = valueOf(def.args?.[0]);
+        return src ? is32BitIntReturnValue(src, seen) : false;
+      }
+      if (def.op === OP.PHI) {
+        const incoming = (def.args || []).map(valueOf).filter((arg) => arg && !seen.has(arg));
+        return incoming.length > 0 && incoming.every((arg) => is32BitIntReturnValue(arg, new Set(seen)));
+      }
+      if (def.op === OP.SEL) {
+        const arms = (def.args || []).slice(0, 2).map(valueOf).filter(Boolean);
+        return arms.length === 2 && arms.every((arg) => is32BitIntReturnValue(arg, new Set(seen)));
+      }
+      if (def.op === OP.LOAD) {
+        return Number(def.extra?.size) === 4 || Number(def.extra?.widthBits) === 32 || val.bits === 32;
+      }
+      if (def.op === OP.CALL) {
+        const sig = knownCallSignature(calleeNameOf(def));
+        return sig?.retType === 'int';
+      }
+      return false;
+    };
     if (vals.length) {
       let picked = null;
       for (const v of vals) picked = mergeRecoveredTypes(picked, values.get(v.id));
+      if ((!picked || picked.kind === 'unknown' || picked.name === 'unknown')
+          && vals.every((v) => is32BitIntReturnValue(v))) {
+        picked = {
+          name: 'int32',
+          kind: 'integer',
+          bits: 32,
+          signed: true,
+          confidence: Math.max(picked?.confidence || 0.25, 0.72),
+          evidence: [...(picked?.evidence || []), { source: '32-bit integer return value', weight: 3 }],
+        };
+      }
       if (picked) ret = { type:picked.name, conf:picked.confidence, why:picked.evidence || [], semanticType:picked };
     }
   } else {

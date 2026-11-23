@@ -1,0 +1,82 @@
+name: BattleCats Recompilation Benchmark (16-way)
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_sample:
+        description: 'Total stratified function sample across all 16 shards (0 = all functions)'
+        required: false
+        default: '4000'
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+
+jobs:
+  shard:
+    name: recomp-shard-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Ensure clang is available
+        run: |
+          if ! command -v clang >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq clang
+          fi
+          clang --version | head -n 2
+      - name: Fetch and verify pinned BattleCats fixture
+        run: |
+          node scripts/fetch-real-fixtures.mjs battlecats
+          node scripts/fetch-real-fixtures.mjs battlecats --check
+      - name: Run recompilation benchmark shard ${{ matrix.shard }}/16
+        run: |
+          node scripts/measure-battlecats-recomp.mjs \
+            --binary tests/.real-fixtures/battlecats \
+            --shard-index "${{ matrix.shard }}" \
+            --shard-total 16 \
+            --total-sample "${{ github.event.inputs.total_sample || '4000' }}" \
+            --compiler clang \
+            --out "artifacts/shard-${{ matrix.shard }}.json"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: battlecats-recomp-shard-${{ matrix.shard }}
+          path: artifacts/shard-${{ matrix.shard }}.json
+          retention-days: 7
+
+  aggregate:
+    name: aggregate-battlecats-recomp
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: battlecats-recomp-shard-*
+          path: shard-results
+      - name: Aggregate all 16 shards
+        run: |
+          node scripts/measure-battlecats-recomp.mjs \
+            --aggregate \
+            --input-dir shard-results \
+            --out artifacts/battlecats-recomp-summary.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: battlecats-recomp-summary
+          path: artifacts/battlecats-recomp-summary.json
+          retention-days: 14

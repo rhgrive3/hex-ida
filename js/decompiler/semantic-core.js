@@ -1023,18 +1023,60 @@ function readOnlyShortCStringAt(addr, ctx) {
   return null;
 }
 
-function isAddressDerivedValue(value, depth = 0) {
+function isAddressDerivedValue(value, depth = 0, seen = null) {
   if (!value || depth > 8) return false;
-  const op = value.def?.op;
-  if (op === OP.ADDR) return true;
-  if (op === OP.MOV) return isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1);
-  if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
-    const leftAddr = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1);
-    const rightAddr = isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1);
-    if (value.def.sub === 'sub') return leftAddr && !rightAddr;
-    return leftAddr || rightAddr;
+  if (value.addressDerived === true || value.def?.extra?.addressDerived === true) return true;
+  const visited = seen || new Set();
+  if (value.id != null) {
+    if (visited.has(value.id)) return false;
+    visited.add(value.id);
+  }
+  try {
+    const op = value.def?.op;
+    if (op === OP.ADDR) return true;
+    if (op === OP.MOV) return isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1, visited);
+    if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
+      const leftAddr = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1, visited);
+      const rightAddr = isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1, visited);
+      if (value.def.sub === 'sub') return leftAddr && !rightAddr;
+      return leftAddr || rightAddr;
+    }
+    return false;
+  } finally {
+    if (value.id != null) visited.delete(value.id);
+  }
+}
+
+function hasAddressRefForAddr(addr, defRow, ctx, { anyRow = false } = {}) {
+  if (addr == null) return false;
+  let target;
+  try { target = BigInt(addr); } catch { return false; }
+  for (const ref of ctx?.model?.addressRefs || []) {
+    if (ref?.addr == null) continue;
+    if (!anyRow && ref.row !== defRow) continue;
+    try { if (BigInt(ref.addr) === target) return true; } catch { /* malformed ref */ }
   }
   return false;
+}
+
+function foldedAddressOfBin(inst) {
+  if (!inst || inst.op !== OP.BIN || (inst.sub !== 'add' && inst.sub !== 'sub')) return null;
+  const lv = valueOf(inst.args?.[0]);
+  const rv = valueOf(inst.args?.[1]);
+  const lc = lv?.const ?? (lv?.def?.op === OP.ADDR ? (lv.def.extra?.value ?? lv.def.extra?.target ?? null) : null);
+  const rc = rv?.const ?? (rv?.def?.op === OP.ADDR ? (rv.def.extra?.value ?? rv.def.extra?.target ?? null) : null);
+  if (lc == null || rc == null) return null;
+  try {
+    return inst.sub === 'add' ? BigInt(lc) + BigInt(rc) : BigInt(lc) - BigInt(rc);
+  } catch {
+    return null;
+  }
+}
+
+function formatAddressOrGlobal(addr, ctx) {
+  const target = BigInt(addr);
+  const sym = ctx.opts?.symbolFor?.(target);
+  return sym ? safeIdent(sym) : `&global_${hex(target)}`;
 }
 
 function stringLiteralAt(addr, ctx) {
@@ -1066,6 +1108,24 @@ function stringLiteralForValue(value, ctx) {
   // backed by an exact row+addr entry in model.addressRefs, is provably address-like.
   // Plain arithmetic constants without addressRef proof never query stringFor.
   return (hasAddressRefProof || isAddressDerivedValue(value)) ? stringLiteralAt(value.const, ctx) : null;
+}
+
+function resolveAddressConstForValue(value, ctx, { allowAnyAddressRef = false, forceAddress = false } = {}) {
+  if (!value) return null;
+  const rawAddr = value.const ?? (value.def?.op === OP.CONST ? value.def.extra?.value : null);
+  if (rawAddr == null) return null;
+  let target;
+  try { target = BigInt(rawAddr); } catch { return null; }
+  const defRow = value.def?.row;
+  const derived = isAddressDerivedValue(value);
+  const hasRef = hasAddressRefForAddr(target, defRow, ctx, { anyRow: allowAnyAddressRef });
+  if (!derived && !hasRef && !forceAddress) return null;
+  const literal = stringLiteralForValue(value, ctx) || stringLiteralAt(target, ctx);
+  if (literal) return { kind: 'string', text: literal };
+  if (target !== 0n && (derived || hasRef)) {
+    return { kind: 'address', text: formatAddressOrGlobal(target, ctx) };
+  }
+  return null;
 }
 
 function formatFloatConst(v, bits = 64) {
@@ -1382,12 +1442,27 @@ function semanticLocalDeclarations(types, body, ctx) {
   }
   for (const [id, name] of ctx.materialNames || []) {
     const value = (ctx.ir.values || []).find((candidate) => candidate.id === id);
-    if (value?.def?.op !== OP.LOAD || seen.has(name) || !text.includes(name)) continue;
-    const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
-    const bits = [8, 16, 32, 64].includes(Number(value.bits)) ? Number(value.bits) : 64;
-    const type = recovered || `${value.signed === true ? 'int' : 'uint'}${bits}`;
-    seen.add(name);
-    out.push(line('decl', 1, `${type} ${name};`, null));
+    if (!value?.def || seen.has(name) || !text.includes(name)) continue;
+    if (value.def.op === OP.LOAD) {
+      const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
+      const bits = [8, 16, 32, 64].includes(Number(value.bits)) ? Number(value.bits) : 64;
+      const type = recovered || `${value.signed === true ? 'int' : 'uint'}${bits}`;
+      seen.add(name);
+      out.push(line('decl', 1, `${type} ${name};`, null));
+    } else if (value.def.op === OP.CALL) {
+      const callOpts = ctx.callByRow ? { ...(ctx.opts || {}), callByRow: ctx.callByRow } : ctx.opts;
+      const calleeName = callCalleeNameForOrder(value.def, callOpts);
+      const sig = calleeName ? knownCallSignature(calleeName) : null;
+      const retType = sig?.retType;
+      const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
+      const fpType = (retType === 'double' || retType === 'float')
+        ? retType
+        : ((recovered === 'double' || recovered === 'float') ? recovered : null);
+      if (fpType) {
+        seen.add(name);
+        out.push(line('decl', 1, `${fpType} ${name};`, null));
+      }
+    }
   }
   const phiLowering = ctx.phiLowering;
   if (phiLowering) {
@@ -1463,9 +1538,122 @@ function shouldSuppressRodataStringForMem(inst, loc, types, defaultSize = 0) {
   return false;
 }
 
+function isSpDerivedValue(v, memo = new Map(), depth = 0) {
+  if (!v || depth > 12) return false;
+  if (v.id != null && memo.has(v.id)) return memo.get(v.id);
+  if (v.id != null) memo.set(v.id, false);
+  let res = false;
+  if (String(v.reg || '').toLowerCase() === 'sp') {
+    res = true;
+  } else if (v.def) {
+    const d = v.def;
+    if (d.op === OP.MOV) {
+      res = isSpDerivedValue(valueOf(d.args?.[0]), memo, depth + 1);
+    } else if (d.op === OP.BIN && (d.sub === 'add' || d.sub === 'sub')) {
+      res = isSpDerivedValue(valueOf(d.args?.[0]), memo, depth + 1)
+        || (d.sub === 'add' && isSpDerivedValue(valueOf(d.args?.[1]), memo, depth + 1));
+    } else if (d.op === OP.PHI) {
+      res = (d.incoming || []).some((inc) => isSpDerivedValue(inc?.value, memo, depth + 1));
+    }
+  }
+  if (v.id != null) memo.set(v.id, res);
+  return res;
+}
+
+function hasEscapedStackFrame(ctx) {
+  if (!ctx?.ir) return false;
+  if (ctx._hasEscapedStackFrame !== undefined) return ctx._hasEscapedStackFrame;
+  const memo = new Map();
+  let escaped = false;
+  const checkCallArg = (v) => {
+    if (!v) return false;
+    const reg = String(v.reg || '').toLowerCase();
+    if (reg === 'sp' || reg === 'x29' || reg === 'fp') return false;
+    return isSpDerivedValue(v, memo);
+  };
+  for (const inst of ctx.ir.instructions || []) {
+    if (!inst) continue;
+    if (inst.op === OP.CALL) {
+      if ((inst.args || []).some((a) => checkCallArg(valueOf(a)))) { escaped = true; break; }
+      if (Array.isArray(inst.callArguments)) {
+        for (const desc of inst.callArguments) {
+          const directVal = desc?.value?.value ?? desc?.value ?? (desc?.kind && Array.isArray(desc?.uses) ? desc : null);
+          if (checkCallArg(directVal)) { escaped = true; break; }
+        }
+        if (escaped) break;
+      }
+      for (let i = 0; i < 8; i++) {
+        if (checkCallArg(reachingRegisterValue(ctx.ir, inst, 'x' + i))) { escaped = true; break; }
+      }
+      if (escaped) break;
+    } else if (inst.op === OP.PHI) {
+      const dstReg = String(inst.dst?.reg || '').toLowerCase();
+      if (dstReg !== 'sp' && (inst.incoming || []).some((inc) => isSpDerivedValue(inc?.value, memo))) {
+        escaped = true;
+        break;
+      }
+    } else if (inst.op === OP.STORE) {
+      if (isSpDerivedValue(valueOf(inst.args?.[0]), memo)) { escaped = true; break; }
+      if (inst.loc?.kind !== MK.STACK && (isSpDerivedValue(inst.addr?.base, memo) || isSpDerivedValue(inst.loc?.base, memo))) {
+        escaped = true;
+        break;
+      }
+    } else if (inst.op === OP.LOAD) {
+      if (inst.loc?.kind !== MK.STACK && (isSpDerivedValue(inst.addr?.base, memo) || isSpDerivedValue(inst.loc?.base, memo))) {
+        escaped = true;
+        break;
+      }
+    } else if (inst.op === OP.RET) {
+      if ((inst.args || []).some((a) => isSpDerivedValue(valueOf(a), memo))) { escaped = true; break; }
+    }
+  }
+  ctx._hasEscapedStackFrame = escaped;
+  return escaped;
+}
+
+const PRIMITIVE_POINTER_RE = /^(?:const\s+)?(?:void|char|signed\s+char|unsigned\s+char|short|unsigned\s+short|int|unsigned\s+int|long|unsigned\s+long|long\s+long|unsigned\s+long\s+long|float|double|bool|_Bool|size_t|ssize_t|ptrdiff_t|intptr_t|uintptr_t|u?int(?:8|16|32|64|128)(?:_t)?)\s*\*+$/i;
+
+function isKnownStructPointerType(baseType) {
+  if (!baseType || typeof baseType !== 'object') return false;
+  if (baseType.kind === 'struct' || baseType.pointee?.kind === 'struct') return true;
+  if (baseType.className || baseType.semanticType?.className || baseType.pointee?.className) return true;
+  if (baseType.kind === 'pointer') {
+    const label = String(baseType.cType || baseType.name || '').trim();
+    if (label && /\*$/.test(label) && !PRIMITIVE_POINTER_RE.test(label)) return true;
+  }
+  return false;
+  return false;
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
-  if (loc.kind === MK.STACK) return stackName(ctx, loc);
+  if (loc.kind === MK.STACK) {
+    if (ctx?.opts?.phase8Optimize !== true && hasEscapedStackFrame(ctx)) {
+      const size = Number(inst?.addr?.size || inst?.size || loc.size || 8);
+      const elemType = memoryElementType(inst, size, ctx.types);
+      if (loc.frameEpoch === 0 && (loc.baseReg === 'sp' || !loc.baseReg)) {
+        const disp = loc.disp != null ? BigInt(loc.disp) : 0n;
+        if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
+        return disp < 0n
+          ? `*(${elemType} *)(uintptr_t)(sp - ${(-disp).toString()})`
+          : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
+      }
+      if (inst?.addr?.base) {
+        const base = renderValue(inst.addr.base, ctx);
+        const disp = inst.addr.disp != null ? BigInt(inst.addr.disp) : (loc.disp != null ? BigInt(loc.disp) : 0n);
+        if (disp === 0n) return `*(${elemType} *)(uintptr_t)(${base})`;
+        return disp < 0n
+          ? `*(${elemType} *)(uintptr_t)((${base}) - ${(-disp).toString()})`
+          : `*(${elemType} *)(uintptr_t)((${base}) + ${disp.toString()})`;
+      }
+      const disp = loc.disp != null ? BigInt(loc.disp) : 0n;
+      if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
+      return disp < 0n
+        ? `*(${elemType} *)(uintptr_t)(sp - ${(-disp).toString()})`
+        : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
+    }
+    return stackName(ctx, loc);
+  }
   if (loc.kind === MK.GLOBAL) {
     const name = ctx.opts.symbolFor?.(loc.address);
     return name ? safeIdent(name, `global_${hex(loc.address)}`) : `global_${hex(loc.address)}`;
@@ -1527,7 +1715,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
   }
   if (loc.kind === MK.FIELD) {
     const base = loc.base || addr.base;
-    const off = loc.disp ?? 0n;
+    const off = BigInt(loc.disp ?? addr.disp ?? 0);
     const cxxRec = ctx.opts?.cxxEvidence?.receiver;
     const isReceiver = isReceiverAlias(base, cxxRec, ctx);
     const suppressStr = shouldSuppressRodataStringForMem(inst, loc, ctx.types, 0);
@@ -1536,6 +1724,21 @@ export function renderMemoryLocation(loc, inst, ctx) {
     let known = null;
     try { known = ctx.opts.fieldFor?.(addr.baseReg || base?.reg || null, off, inst?.row); } catch { known = null; }
     if (!known) known = objcIvar(ctx, base, off);
+    if (!known && !isReceiver && ctx.opts?.phase8Optimize !== true) {
+      const baseType = ctx.types?.values?.get?.(base?.id) || null;
+      const effBytes = Number(addr.size || inst?.size || loc?.size || 0);
+      const elemType = effBytes > 0 ? memoryElementType(inst, effBytes, ctx.types) : null;
+      const losesWidthOrType = effBytes === 1 || effBytes === 2 || effBytes === 4
+        || effBytes === 16 || (effBytes === 8 && elemType === 'double');
+      if (losesWidthOrType && elemType && !isKnownStructPointerType(baseType)) {
+        if (off !== 0n) {
+          return off < 0n
+            ? `*(${elemType} *)((uintptr_t)(${rawBaseText}) - ${(-off).toString()})`
+            : `*(${elemType} *)((uintptr_t)(${rawBaseText}) + ${off.toString()})`;
+        }
+        return `*(${elemType} *)(uintptr_t)(${rawBaseText})`;
+      }
+    }
     const field = safeIdent(known?.name || `field_${hex(off)}`, `field_${hex(off)}`);
     const typeSuffix = isReceiver ? cppMemberTypeSuffix(base, off, ctx) : '';
     return `${baseText}->${field}${typeSuffix}`;
@@ -1573,14 +1776,109 @@ function cmpFromFlags(flagValue) {
   return d && d.op === OP.CMP ? d : null;
 }
 
-function renderCmp(cmp, cond, ctx, atInst = cmp) {
+function nzcvMatchesCond(nzcv, cond) {
+  const bits = Number(nzcv || 0) & 0xf;
+  const n = (bits & 8) !== 0;
+  const z = (bits & 4) !== 0;
+  const c = (bits & 2) !== 0;
+  const v = (bits & 1) !== 0;
+  switch (String(cond || '').toLowerCase()) {
+    case 'eq': return z;
+    case 'ne': return !z;
+    case 'hs': case 'cs': return c;
+    case 'lo': case 'cc': return !c;
+    case 'mi': return n;
+    case 'pl': return !n;
+    case 'vs': return v;
+    case 'vc': return !v;
+    case 'hi': return c && !z;
+    case 'ls': return !c || z;
+    case 'ge': return n === v;
+    case 'lt': return n !== v;
+    case 'gt': return !z && n === v;
+    case 'le': return z || n !== v;
+    case 'al': case 'nv': return true;
+    default: return null;
+  }
+}
+
+const irValueByIdCache = new WeakMap();
+
+function lookupIrValueById(ir, id) {
+  if (!ir || id == null) return null;
+  let byId = irValueByIdCache.get(ir);
+  if (!byId || byId.size < (ir.values?.length || 0)) {
+    byId = new Map();
+    for (const v of ir.values || []) {
+      if (v && v.id != null) byId.set(v.id, v);
+    }
+    irValueByIdCache.set(ir, byId);
+  }
+  return byId.get(id) || null;
+}
+
+function resolveConditionalArg(ref, fallbackArg, ctx) {
+  if (ref == null) return valueOf(fallbackArg);
+  if (typeof ref === 'object') return valueOf(ref) ?? (ref && (ref.id != null || ref.reg != null || ref.const != null || ref.kind != null) ? ref : null);
+  const fb = valueOf(fallbackArg);
+  if (fb && fb.id === ref) return fb;
+  return lookupIrValueById(ctx?.ir, ref) ?? fb;
+}
+
+function resolveConditionalGuard(ref, fallbackArg, ctx) {
+  if (ref != null && typeof ref === 'object') {
+    if (ref.op === OP.CMP) return ref;
+    if (ref.def) return cmpFromFlags(ref);
+    return cmpFromFlags(valueOf(ref));
+  }
+  if (ref != null) {
+    const fb = valueOf(fallbackArg);
+    if (fb && fb.id === ref) return cmpFromFlags(fb);
+    const found = lookupIrValueById(ctx?.ir, ref);
+    if (found) return cmpFromFlags(found);
+  }
+  return cmpFromFlags(valueOf(fallbackArg));
+}
+
+function normalizeConditionalInnerOp(op) {
+  const s = String(op || 'sub').toLowerCase();
+  if (s === 'sub' || s === 'subs' || s === 'cmp' || s === 'ccmp') return 'sub';
+  if (s === 'add' || s === 'adds' || s === 'cmn' || s === 'ccmn') return 'add';
+  if (s === 'and' || s === 'ands' || s === 'tst') return 'and';
+  if (s === 'bic' || s === 'bics') return 'bic';
+  if (s === 'fsub' || s === 'fcmp' || s === 'fcmpe' || s === 'fccmp' || s === 'fccmpe') return 'fsub';
+  return s;
+}
+
+function renderCmp(cmp, cond, ctx, atInst = cmp, depth = 0) {
   if (!cmp) return cond ? `condition_${cond}` : 'condition';
+  if (cmp.extra?.conditional === true && depth < 8) {
+    const extra = cmp.extra;
+    const guardCmp = resolveConditionalGuard(extra.guardCmp, cmp.args?.[2], ctx);
+    const guardExpr = renderCmp(guardCmp, extra.guardCond ?? extra.cond, ctx, atInst, depth + 1);
+    const innerLhsVal = resolveConditionalArg(extra.innerLhs, cmp.args?.[0], ctx);
+    const innerRhsVal = resolveConditionalArg(extra.innerRhs, cmp.args?.[1], ctx);
+    const innerA = renderValueAt(innerLhsVal, atInst, ctx);
+    const innerB = renderValueAt(innerRhsVal, atInst, ctx);
+    const innerBits = Number(extra.innerBits || cmp.bits || innerLhsVal?.bits || innerRhsVal?.bits || 64);
+    const innerOp = normalizeConditionalInnerOp(extra.innerOp || cmp.sub || 'sub');
+    const innerExpr = renderNZCVCondition(innerOp, cond, innerA, innerB, innerBits, {
+      address: cmp.address,
+      row: cmp.row,
+      ir: cmp.id,
+      evidence: [{ reason: `AArch64 conditional ${innerOp} NZCV semantics` }],
+    }) || `${innerA} /* ${cond || 'flags'} */`;
+    const fallbackBool = nzcvMatchesCond(extra.fallbackNzcv, cond);
+    if (fallbackBool === false) return `(${guardExpr} && ${innerExpr})`;
+    if (fallbackBool === true) return `(!(${guardExpr}) || ${innerExpr})`;
+  }
   const aValue = valueOf(cmp.args?.[0]);
   const bValue = valueOf(cmp.args?.[1]);
   const a = renderValueAt(aValue, atInst, ctx);
   const b = renderValueAt(bValue, atInst, ctx);
   const bits = Number(cmp.bits || aValue?.bits || bValue?.bits || 64);
-  const rendered = renderNZCVCondition(cmp.sub || 'sub', cond, a, b, bits, {
+  const subOp = normalizeConditionalInnerOp(cmp.sub || 'sub');
+  const rendered = renderNZCVCondition(subOp, cond, a, b, bits, {
     address: cmp.address,
     row: cmp.row,
     ir: cmp.id,
@@ -1594,7 +1892,8 @@ export function renderBranchCondition(inst, ctx, invert = false) {
   const kind = inst.extra?.kind || inst.sub || '';
   let s;
   if (kind === 'cbz' || kind === 'cbnz') {
-    s = `${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} ${kind === 'cbz' ? '==' : '!='} 0`;
+    const val = renderValueAt(valueOf(inst.args?.[0]), inst, ctx);
+    s = `${paren(val)} ${kind === 'cbz' ? '==' : '!='} 0`;
   } else if (kind === 'tbz' || kind === 'tbnz') {
     const bit = inst.extra?.bit ?? 0;
     s = `((${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} >> ${bit}) & 1) ${kind === 'tbz' ? '==' : '!='} 0`;
@@ -1655,29 +1954,45 @@ function binText(inst, ctx) {
 }
 
 function unaryText(inst, ctx) {
-  const a = renderValue(valueOf(inst.args?.[0]), ctx);
-  if (inst.sub === 'neg' || inst.sub === 'fneg') return `-${paren(a)}`;
-  if (inst.sub === 'not') return `~${paren(a)}`;
-  if (inst.sub === 'is-zero' || inst.sub === 'is_zero') return `(${a}) == 0`;
-  if (inst.sub === 'is-nonzero' || inst.sub === 'is_nonzero') return `(${a}) != 0`;
-  if (inst.sub === 'abs') return `abs(${a})`;
-  if (inst.sub === 'fabs') {
-    const fBits = Number(inst.bits ?? inst.dst?.bits ?? valueOf(inst.args?.[0])?.bits ?? 64);
+  const srcVal = valueOf(inst.args?.[0]);
+  const a = renderValue(srcVal, ctx);
+  const sub = String(inst.sub || '').toLowerCase();
+  const castBits = inst.bits ?? inst.dst?.bits;
+  const srcBits = srcVal?.bits ?? inst.args?.[0]?.bits ?? (/^s\d+$/i.test(String(srcVal?.reg || '')) ? 32 : 64);
+  const srcIsFloat = Number(srcBits) === 32;
+  const dstIsFloat = Number(castBits) === 32 || (castBits == null && srcIsFloat);
+  if (sub === 'neg' || sub === 'fneg') return `-${paren(a)}`;
+  if (sub === 'not') return `~${paren(a)}`;
+  if (sub === 'is-zero' || sub === 'is_zero') return `(${a}) == 0`;
+  if (sub === 'is-nonzero' || sub === 'is_nonzero') return `(${a}) != 0`;
+  if (sub === 'abs') return `abs(${a})`;
+  if (sub === 'fabs') {
+    const fBits = Number(inst.bits ?? inst.dst?.bits ?? srcVal?.bits ?? (srcIsFloat ? 32 : 64));
     return `${fBits === 32 ? 'fabsf' : 'fabs'}(${a})`;
   }
-  if (inst.sub === 'sqrt' || inst.sub === 'fsqrt') return `sqrt(${a})`;
+  if (sub === 'sqrt' || sub === 'fsqrt') return `${dstIsFloat ? 'sqrtf' : 'sqrt'}(${a})`;
+  if (sub === 'frinta' || sub === 'frintn') return `${dstIsFloat ? 'roundf' : 'round'}(${a})`;
+  if (sub === 'frintm') return `${dstIsFloat ? 'floorf' : 'floor'}(${a})`;
+  if (sub === 'frintp') return `${dstIsFloat ? 'ceilf' : 'ceil'}(${a})`;
+  if (sub === 'frintz') return `${dstIsFloat ? 'truncf' : 'trunc'}(${a})`;
   const extMap = { sxtb: 'int8', sxth: 'int16', sxtw: 'int32', uxtb: 'uint8', uxth: 'uint16', uxtw: 'uint32' };
   if (extMap[inst.sub]) return `(${extMap[inst.sub]})${paren(a)}`;
   if (/^sxt/.test(inst.sub || '')) return `(${inst.sub.replace('sxt', 'int')})${paren(a)}`;
   if (/^uxt/.test(inst.sub || '')) return `(${inst.sub.replace('uxt', 'uint')})${paren(a)}`;
-  const castBits = inst.bits ?? inst.dst?.bits;
-  if (inst.sub === 'fcvtzs' || inst.sub === 'f2i') return `((${castBits === 32 ? 'int32_t' : 'int64_t'})(double)${paren(a)})`;
-  if (inst.sub === 'fcvtzu' || inst.sub === 'f2u') return `((${castBits === 32 ? 'uint32_t' : 'uint64_t'})(double)${paren(a)})`;
-  const srcArg = inst.args?.[0];
-  const srcBits = Number(srcArg?.bits ?? valueOf(srcArg)?.bits ?? 64);
-  if (inst.sub === 'scvtf' || inst.sub === 'i2f') return `((${castBits === 32 ? 'float' : 'double'})(${srcBits === 32 ? 'int32_t' : 'int64_t'})${paren(a)})`;
-  if (inst.sub === 'ucvtf' || inst.sub === 'u2f') return `((${castBits === 32 ? 'float' : 'double'})(${srcBits === 32 ? 'uint32_t' : 'uint64_t'})${paren(a)})`;
-  if (inst.sub === 'fcvt') return `((${castBits === 32 ? 'float' : 'double'})${paren(a)})`;
+  const sintType = castBits === 32 ? 'int32_t' : 'int64_t';
+  const uintType = castBits === 32 ? 'uint32_t' : 'uint64_t';
+  const intSrcBits = Number(inst.args?.[0]?.bits ?? srcVal?.bits ?? 64);
+  if (sub === 'fcvtzs' || sub === 'f2i') return `((${sintType})(double)${paren(a)})`;
+  if (sub === 'fcvtzu' || sub === 'f2u') return `((${uintType})(double)${paren(a)})`;
+  if (sub === 'fcvtps') return `((${sintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${a}))`;
+  if (sub === 'fcvtms') return `((${sintType})${srcIsFloat ? 'floorf' : 'floor'}(${a}))`;
+  if (sub === 'fcvtas' || sub === 'fcvtns') return `((${sintType})${srcIsFloat ? 'roundf' : 'round'}(${a}))`;
+  if (sub === 'fcvtpu') return `((${uintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${a}))`;
+  if (sub === 'fcvtmu') return `((${uintType})${srcIsFloat ? 'floorf' : 'floor'}(${a}))`;
+  if (sub === 'fcvtau' || sub === 'fcvtnu') return `((${uintType})${srcIsFloat ? 'roundf' : 'round'}(${a}))`;
+  if (sub === 'scvtf' || sub === 'i2f') return `((${castBits === 32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'int32_t' : 'int64_t'})${paren(a)})`;
+  if (sub === 'ucvtf' || sub === 'u2f') return `((${castBits === 32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'uint32_t' : 'uint64_t'})${paren(a)})`;
+  if (sub === 'fcvt') return `((${castBits === 32 ? 'float' : 'double'})${paren(a)})`;
   return `${safeIdent(inst.sub || 'un')}(${a})`;
 }
 
@@ -1721,6 +2036,168 @@ function explicitCallArgByReg(inst, isAArch64 = false) {
   return byReg;
 }
 
+const PRINTF_FORMAT_ARG_INDEX = new Map([
+  ['printf', 0],
+  ['fprintf', 1],
+  ['sprintf', 1],
+  ['snprintf', 2],
+  ['dprintf', 1],
+  ['asprintf', 1],
+  ['sprintf_chk', 3],
+  ['snprintf_chk', 4],
+]);
+
+function decodeCStringLiteral(text) {
+  if (typeof text !== 'string' || text.length < 2 || text[0] !== '"' || text[text.length - 1] !== '"') return null;
+  let out = '';
+  for (let i = 1; i < text.length - 1; i++) {
+    const ch = text[i];
+    if (ch === '\\') {
+      if (i + 1 >= text.length - 1) return null;
+      const esc = text[++i];
+      if (esc === 'n') out += '\n';
+      else if (esc === 'r') out += '\r';
+      else if (esc === 't') out += '\t';
+      else if (esc === '\\') out += '\\';
+      else if (esc === '"') out += '"';
+      else if (esc === "'") out += "'";
+      else if (esc === '0') out += '\0';
+      else if (esc === 'x') {
+        const hexM = /^[0-9a-fA-F]{1,2}/.exec(text.slice(i + 1, text.length - 1));
+        if (!hexM) return null;
+        out += String.fromCharCode(parseInt(hexM[0], 16));
+        i += hexM[0].length;
+      } else {
+        out += esc;
+      }
+    } else if (ch === '"') {
+      return null;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function parsePrintfFormatSpecifiers(fmt) {
+  const specs = [];
+  let i = 0;
+  while (i < fmt.length) {
+    if (fmt[i] !== '%') { i++; continue; }
+    i++;
+    if (i >= fmt.length) return null;
+    if (fmt[i] === '%') { i++; continue; }
+    // Flags
+    while (i < fmt.length && "-+ #0'".includes(fmt[i])) i++;
+    // Reject positional arguments (%1$d)
+    if (i < fmt.length && fmt[i] >= '1' && fmt[i] <= '9') {
+      let j = i;
+      while (j < fmt.length && fmt[j] >= '0' && fmt[j] <= '9') j++;
+      if (fmt[j] === '$') return null;
+    }
+    // Width
+    if (i < fmt.length && fmt[i] === '*') {
+      specs.push('gp');
+      i++;
+    } else {
+      while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+    }
+    // Precision
+    if (i < fmt.length && fmt[i] === '.') {
+      i++;
+      if (i < fmt.length && fmt[i] === '*') {
+        specs.push('gp');
+        i++;
+      } else {
+        while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+      }
+    }
+    // Length modifiers
+    if (i + 1 < fmt.length && (fmt.slice(i, i + 2) === 'hh' || fmt.slice(i, i + 2) === 'll')) {
+      i += 2;
+    } else if (i < fmt.length && 'hljztL'.includes(fmt[i])) {
+      i++;
+    }
+    if (i >= fmt.length) return null;
+    const conv = fmt[i++];
+    if ('aAeEfFgG'.includes(conv)) specs.push('fp');
+    else if ('diuoxXcspn'.includes(conv)) specs.push('gp');
+    else return null;
+  }
+  return specs;
+}
+
+function resolveConstantCString(value, ctx, seen = new Set()) {
+  if (!value) return null;
+  if (value.id != null) {
+    if (seen.has(value.id)) return null;
+    seen.add(value.id);
+  }
+  try {
+    if (value.const != null) {
+      const lit = stringLiteralForValue(value, ctx);
+      if (lit) return decodeCStringLiteral(lit);
+    }
+    const d = value.def;
+    if (!d) return null;
+    if (d.op === OP.ADDR) {
+      const addr = value.const ?? d.extra?.value ?? d.extra?.target;
+      const lit = stringLiteralForValue(value, ctx) || stringLiteralAt(addr, ctx);
+      if (lit) return decodeCStringLiteral(lit);
+      return null;
+    }
+    if (d.op === OP.CONST && d.extra?.value != null) {
+      const resolved = resolveAddressConstForValue(value, ctx);
+      if (resolved?.kind === 'string') return decodeCStringLiteral(resolved.text);
+      return null;
+    }
+    if (d.op === OP.BIN && (d.sub === 'add' || d.sub === 'sub') && isAddressDerivedValue(value)) {
+      const folded = foldedAddressOfBin(d);
+      if (folded != null) {
+        const lit = stringLiteralAt(folded, ctx);
+        if (lit) return decodeCStringLiteral(lit);
+      }
+      return null;
+    }
+    if (d.op === OP.MOV || d.op === OP.CAST || d.op === 'cast') {
+      return resolveConstantCString(valueOf(d.args?.[0]), ctx, seen);
+    }
+    if (d.op === OP.PHI) {
+      const rawIncoming = Array.isArray(d.incoming) && d.incoming.length
+        ? d.incoming.map((x) => valueOf(x))
+        : (d.args || []).map((x) => valueOf(x));
+      const nonSelf = rawIncoming.filter((v) => v && v !== value && (value.id == null || v.id !== value.id));
+      if (!nonSelf.length) return null;
+      let common = null;
+      for (const inc of nonSelf) {
+        const s = resolveConstantCString(inc, ctx, seen);
+        if (s == null) return null;
+        if (common == null) common = s;
+        else if (common !== s) return null;
+      }
+      return common;
+    }
+    return null;
+  } finally {
+    if (value.id != null) seen.delete(value.id);
+  }
+}
+
+function resolveFpCallArg(explicitArgs, ir, inst, fpIdx, isFloat) {
+  const order = isFloat
+    ? [`s${fpIdx}`, `d${fpIdx}`, `v${fpIdx}`, `q${fpIdx}`]
+    : [`d${fpIdx}`, `v${fpIdx}`, `q${fpIdx}`, `s${fpIdx}`];
+  for (const reg of order) {
+    const v = explicitArgs.get(reg);
+    if (v) return v;
+  }
+  for (const reg of order) {
+    const v = reachingRegisterValue(ir, inst, reg);
+    if (v) return v;
+  }
+  return null;
+}
+
 function callRecord(inst, ctx) {
   if (ctx.callCache.has(inst.id)) {
     const trace = initialValueTraces.get(ctx), cursor = initialValueCursor(ctx);
@@ -1752,7 +2229,7 @@ function callRecord(inst, ctx) {
       name = resolved;
     }
   }
-  const cursor = initialValueCursor(ctx), argumentTickets = [];
+  const cursor = initialValueCursor(ctx), argumentTickets = [], extraArgTickets = [];
   const argText = values.map((v) => {
     const input = initialValueCursor(ctx);
     const text = v ? renderValue(v, ctx) : null;
@@ -1855,9 +2332,83 @@ function callRecord(inst, ctx) {
           ctx.unknownCallArities++;
         }
       } else {
-        logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
-        sourceArgIndices = indexes.filter((i) => values[i]);
+        const knownSig = knownCallSignature(name);
+        const fpParamTypes = !override && Array.isArray(knownSig?.paramTypes)
+          && knownSig.paramTypes.length === indexes.length
+          && knownSig.paramTypes.some((t) => t === 'double' || t === 'float')
+          ? knownSig.paramTypes
+          : null;
+        if (fpParamTypes) {
+          let nextGp = 0;
+          let nextFp = 0;
+          logicalArgs = [];
+          sourceArgIndices = [];
+          for (const pType of fpParamTypes) {
+            if (pType === 'double' || pType === 'float') {
+              const fpVal = nextFp < 8 ? resolveFpCallArg(explicitArgs, ctx.ir, inst, nextFp, pType === 'float') : null;
+              if (fpVal) {
+                const fpInput = initialValueCursor(ctx);
+                logicalArgs.push(renderValue(fpVal, ctx));
+                if (fpInput) extraArgTickets.push(...fpInput.list.slice(fpInput.start));
+              } else {
+                logicalArgs.push('unknown');
+              }
+              nextFp++;
+            } else {
+              logicalArgs.push(nextGp < argText.length && argText[nextGp] != null ? argText[nextGp] : 'unknown');
+              if (nextGp < values.length && values[nextGp]) sourceArgIndices.push(nextGp);
+              nextGp++;
+            }
+          }
+        } else {
+          logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
+          sourceArgIndices = indexes.filter((i) => values[i]);
+        }
         variadicPrefixOnly = !!knownProto?.variadic && !override;
+        if (variadicPrefixOnly) {
+          const normName = knownProto?.name || String(name || '').replace(/^_+/, '').replace(/@.*$/, '');
+          const fmtArgIdx = PRINTF_FORMAT_ARG_INDEX.get(normName);
+          if (fmtArgIdx != null && fmtArgIdx < argText.length) {
+            const fmtStr = resolveConstantCString(values[fmtArgIdx], ctx) ?? decodeCStringLiteral(argText[fmtArgIdx]);
+            const specs = fmtStr != null ? parsePrintfFormatSpecifiers(fmtStr) : null;
+            if (specs) {
+              let nextGp = indexes.length;
+              let nextFp = 0;
+              const recoveredArgs = [];
+              const recoveredGpIndices = [];
+              const recoveredFpTickets = [];
+              let allResolved = true;
+              for (const kind of specs) {
+                if (kind === 'fp') {
+                  if (nextFp >= 8) { allResolved = false; break; }
+                  const fpVal = explicitArgs.get(`d${nextFp}`)
+                    ?? explicitArgs.get(`v${nextFp}`)
+                    ?? explicitArgs.get(`q${nextFp}`)
+                    ?? explicitArgs.get(`s${nextFp}`)
+                    ?? reachingRegisterValue(ctx.ir, inst, `d${nextFp}`)
+                    ?? reachingRegisterValue(ctx.ir, inst, `v${nextFp}`)
+                    ?? reachingRegisterValue(ctx.ir, inst, `s${nextFp}`);
+                  if (!fpVal) { allResolved = false; break; }
+                  const fpInput = initialValueCursor(ctx);
+                  recoveredArgs.push(renderValue(fpVal, ctx));
+                  if (fpInput) recoveredFpTickets.push(...fpInput.list.slice(fpInput.start));
+                  nextFp++;
+                } else {
+                  if (nextGp >= 8 || !values[nextGp] || argText[nextGp] == null) { allResolved = false; break; }
+                  recoveredArgs.push(argText[nextGp]);
+                  recoveredGpIndices.push(nextGp);
+                  nextGp++;
+                }
+              }
+              if (allResolved) {
+                logicalArgs = [...logicalArgs, ...recoveredArgs];
+                sourceArgIndices = [...sourceArgIndices, ...recoveredGpIndices];
+                if (recoveredFpTickets.length) extraArgTickets.push(...recoveredFpTickets);
+                variadicPrefixOnly = false;
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -1880,7 +2431,7 @@ function callRecord(inst, ctx) {
   if (trace) {
     const selected = Array.isArray(resolvedArgs)
       ? resolvedArgs.flatMap((a) => a.tickets || [])
-      : sourceArgIndices.flatMap(index => argumentTickets[index]);
+      : [...sourceArgIndices.flatMap(index => argumentTickets[index]), ...extraArgTickets];
     if (selected.length) trace.calls.set(inst.id, Object.freeze(selected));
     selectInitialValueTickets(cursor, selected);
   }
@@ -1982,15 +2533,42 @@ function renderValueText(value, ctx, flags) {
   try {
   if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) out = initialValueForm(ctx, 'cxx-this-receiver', 'this');
   if (!out && (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null))) out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(value.floatConst ?? value.float, value.bits));
-  if (!out && value.const != null && value.def?.op !== OP.ADDR) out = initialValueForm(ctx, 'precomputed-integer-or-literal', (!flags.suppressRodataString ? stringLiteralForValue(value, ctx) : null) || formatConst(value.const, value.bits));
+  if (!out && value.const != null && value.def?.op !== OP.ADDR) {
+    const resolvedAddr = !flags.suppressRodataString ? resolveAddressConstForValue(value, ctx) : null;
+    if (resolvedAddr?.kind === 'string') {
+      out = initialValueForm(ctx, 'precomputed-integer-or-literal', resolvedAddr.text);
+    } else if (resolvedAddr?.kind === 'address') {
+      out = initialValueForm(ctx, 'address', resolvedAddr.text);
+    } else {
+      out = initialValueForm(ctx, 'precomputed-integer-or-literal', formatConst(value.const, value.bits));
+    }
+  }
   if (!out && value.kind === VK.ARG) out = initialValueForm(ctx, 'argument', argName(value, ctx));
   const d = value.def;
   if (!out && d) {
-    if (d.op === OP.CONST) out = initialValueForm(ctx, 'constant-definition', (value.constKind === 'float' || value.floatConst != null || value.float != null)
-      ? formatFloatConst(value.floatConst ?? value.float, value.bits)
-      : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null));
-    else if (d.op === OP.MOV) out = initialValueForm(ctx, 'mov-operand', renderValue(valueOf(d.args?.[0]), ctx, flags.suppressRodataString ? { suppressRodataString: true } : {}));
-    else if (d.op === OP.BIN) out = initialValueForm(ctx, 'binary', binText(d, ctx));
+    if (d.op === OP.CONST) {
+      const isFloatConst = value.constKind === 'float' || value.floatConst != null || value.float != null;
+      const resolvedAddr = (!isFloatConst && !flags.suppressRodataString) ? resolveAddressConstForValue(value, ctx) : null;
+      if (resolvedAddr?.kind === 'string') out = initialValueForm(ctx, 'constant-definition', resolvedAddr.text);
+      else if (resolvedAddr?.kind === 'address') out = initialValueForm(ctx, 'address', resolvedAddr.text);
+      else out = initialValueForm(ctx, 'constant-definition', isFloatConst
+        ? formatFloatConst(value.floatConst ?? value.float, value.bits)
+        : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null));
+    } else if (d.op === OP.MOV) out = initialValueForm(ctx, 'mov-operand', renderValue(valueOf(d.args?.[0]), ctx, flags.suppressRodataString ? { suppressRodataString: true } : {}));
+    else if (d.op === OP.BIN) {
+      let foldedText = null;
+      if ((d.sub === 'add' || d.sub === 'sub') && isAddressDerivedValue(value)) {
+        const foldedAddr = foldedAddressOfBin(d);
+        if (foldedAddr != null) {
+          const literal = !flags.suppressRodataString ? stringLiteralAt(foldedAddr, ctx) : null;
+          if (literal) foldedText = literal;
+          else if (foldedAddr !== 0n) foldedText = formatAddressOrGlobal(foldedAddr, ctx);
+        }
+      }
+      out = foldedText
+        ? initialValueForm(ctx, 'address', foldedText)
+        : initialValueForm(ctx, 'binary', binText(d, ctx));
+    }
     else if (d.op === OP.UN) out = initialValueForm(ctx, 'unary', unaryText(d, ctx));
     else if (d.op === OP.MAC) {
       const a = renderValue(valueOf(d.args?.[0]), ctx), b0 = renderValue(valueOf(d.args?.[1]), ctx), c0 = renderValue(valueOf(d.args?.[2]), ctx);
@@ -2016,7 +2594,22 @@ function renderValueText(value, ctx, flags) {
     } else if (d.op === OP.SEL) {
       out = selectAsMinMax(d, ctx);
       if (!out) {
-        const t = renderValue(valueOf(d.args?.[0]), ctx), f = renderValue(valueOf(d.args?.[1]), ctx);
+        const tVal = valueOf(d.args?.[0]), fVal = valueOf(d.args?.[1]);
+        const renderSelArm = (armVal, siblingIsAddr = false) => {
+          if (armVal && !(ctx.materialNames?.has(armVal.id))) {
+            const resolved = resolveAddressConstForValue(armVal, ctx, {
+              allowAnyAddressRef: true,
+              forceAddress: siblingIsAddr,
+            });
+            if (resolved) return resolved.text;
+          }
+          return renderValue(armVal, ctx);
+        };
+        let t = renderSelArm(tVal, false);
+        let f = renderSelArm(fVal, false);
+        const looksAddrOrStr = (s) => typeof s === 'string' && (s.startsWith('"') || s.startsWith('&global_'));
+        if (looksAddrOrStr(t) && !looksAddrOrStr(f)) f = renderSelArm(fVal, true);
+        else if (looksAddrOrStr(f) && !looksAddrOrStr(t)) t = renderSelArm(tVal, true);
         const cond = renderCmp(cmpFromFlags(valueOf(d.args?.[2])), d.cond, ctx);
         out = initialValueForm(ctx, 'select-conditional', `(${cond} ? ${t} : ${f})`);
       }
@@ -2315,7 +2908,7 @@ function earlyExitConditionalContinuation(header, yes, no, ctx, state, stop = nu
       if (!closed) break;
     }
     if (!closed) continue;
-    return { ...candidate, bodyBlocks:done, loopContinuation };
+    return { ...candidate, bodyBlocks:done, loopContinuation, bodyReachesContinuation: reachedContinuation };
   }
   return null;
 }
@@ -3698,13 +4291,20 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
         ? earlyExitConditionalContinuation(bi, yes, no, ctx, state, stop, allowed) : null;
       if (earlyExit) {
         const cond = renderBranchCondition(term2, ctx, earlyExit.invert);
+        const needsElseForPhi = earlyExit.bodyReachesContinuation && hasPhiCopiesForEdge(bi, earlyExit.continuation, ctx);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
-          term2, 'one-sided-if', { yes, no, join:earlyExit.continuation, invert:earlyExit.invert,
+          term2, needsElseForPhi ? 'if-else' : 'one-sided-if', { yes, no, join:earlyExit.continuation, invert:earlyExit.invert,
             bodyStart:earlyExit.bodyStart, earlyExit:true }, ctx));
         emitPhiCopiesForEdge(bi, earlyExit.bodyStart, out, ctx, indent + 1, term2);
         emitRegion(earlyExit.bodyStart, earlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
-        out.push(line('ctrl', indent, '}'));
-        emitPhiCopiesForEdge(bi, earlyExit.continuation, out, ctx, indent, term2);
+        if (needsElseForPhi) {
+          out.push(line('ctrl', indent, '} else {'));
+          emitPhiCopiesForEdge(bi, earlyExit.continuation, out, ctx, indent + 1, term2);
+          out.push(line('ctrl', indent, '}'));
+        } else {
+          out.push(line('ctrl', indent, '}'));
+          emitPhiCopiesForEdge(bi, earlyExit.continuation, out, ctx, indent, term2);
+        }
         prevTerm = null; bi = earlyExit.continuation; continue;
       }
       const sharedEarlyExit = join == null && branch.exact
@@ -4011,6 +4611,25 @@ export function decompileSemantic(model, rawOpts = {}) {
     callByRow: ctx.callByRow,
     symbolFor: ctx.opts?.symbolFor,
   });
+  if (ctx.types?.values instanceof Map) {
+    const callTypeOpts = { callByRow: ctx.callByRow, symbolFor: ctx.opts?.symbolFor };
+    for (const [callInst, canonical] of ctx.callResultByInst) {
+      if (!canonical || canonical.id == null) continue;
+      const calleeName = callCalleeNameForOrder(callInst, callTypeOpts);
+      const sig = calleeName ? knownCallSignature(calleeName) : null;
+      if (sig?.retType === 'double' || sig?.retType === 'float') {
+        const curType = typeNameOf(ctx.types.values.get(canonical.id));
+        if (curType !== 'double' && curType !== 'float') {
+          ctx.types.values.set(canonical.id, {
+            kind: 'float',
+            bits: sig.retType === 'float' ? 32 : 64,
+            name: sig.retType,
+            cType: sig.retType,
+          });
+        }
+      }
+    }
+  }
   for (const v of ir.values || []) {
     const def = v?.def;
     if (!def || def.op !== OP.CALL || !ctx.materialNames.has(v.id)) continue;
