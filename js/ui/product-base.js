@@ -516,7 +516,17 @@ function getExternalEntities(app) {
   const slice = app.currentSlice?.();
   const fileInfo = app.store?.get?.('fileInfo');
   const symbols = app.symbols;
-  if (cachedExternalDescriptor && cachedExternalDescriptor.fileInfo === fileInfo && cachedExternalDescriptor.slice === slice && cachedExternalDescriptor.symbols === symbols && cachedExternalItems) {
+  const program = app.program || null;
+  const isJapanese = ja();
+  if (
+    cachedExternalDescriptor
+    && cachedExternalDescriptor.fileInfo === fileInfo
+    && cachedExternalDescriptor.slice === slice
+    && cachedExternalDescriptor.symbols === symbols
+    && cachedExternalDescriptor.program === program
+    && cachedExternalDescriptor.isJapanese === isJapanese
+    && cachedExternalItems
+  ) {
     return cachedExternalItems;
   }
   const descriptor = productDescriptor(fileInfo, slice);
@@ -569,7 +579,7 @@ function getExternalEntities(app) {
       }
     }
   }
-  cachedExternalDescriptor = { fileInfo, slice, symbols };
+  cachedExternalDescriptor = { fileInfo, slice, symbols, program, isJapanese };
   cachedExternalItems = items;
   return items;
 }
@@ -770,6 +780,10 @@ function codeViewState(app) {
     }),
     restoreState: (state) => {
       if (!state) return;
+      if (state.regionId && app.store?.get?.('currentRegion')?.id !== state.regionId) {
+        const region = (app.store?.get?.('regions') || []).find((r) => r?.id === state.regionId);
+        if (region) app.selectRegion?.(region, { silent: true });
+      }
       if (state.mode) app.setMode(state.mode);
       if (Number.isFinite(state.topRow)) app.viewer.goToRow(state.topRow, 'top');
       if (Number.isFinite(state.selectedRow) && state.selectedRow >= 0) app.viewer.select(state.selectedRow, false);
@@ -1420,37 +1434,46 @@ function renderDiff(app,router,routeContext = {}) {
   const fallbackRouteController=routeContext.signal?null:new AbortController();
   const routeSignal=routeContext.signal||fallbackRouteController.signal;
   const compareScope=createChildTaskScope(routeSignal);
-  if(!app.store.get('fileInfo')){host.append(emptyState(text('先に現在のバイナリを開いてください','Open the current binary first'),'',uiButton(text('コードへ','Go to Code'),{onClick:()=>router.navigate('/code')})));return {root:s.root};}
-  const state=app.getBinaryDiff?.(); const baseline=app.workspace?.baseline;
-  const controls=h('div','ui-actions');
-  controls.append(uiButton(baseline?text('比較元を変更','Change baseline'):text('前のバージョンを選ぶ','Choose previous version'),{cls:'ui-primary-action',onClick:async()=>{
-    const file=await pickOneFile();if(!file||routeSignal.aborted)return;
-    const signal=compareScope.spawn('diff-baseline-replaced');
-    host.replaceChildren(loadingState(text('比較元を解析しています…','Analysing baseline…')));
-    try{
-      await app.workspace.loadBaseline(file,{signal});
-      await app.workspace.diff({signal});
-      if(!signal.aborted&&!routeSignal.aborted)router.navigate('/diff',{replace:true});
-    } catch(error){if(!signal.aborted&&!routeSignal.aborted)host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}
-  }}));
-  if(baseline)controls.append(uiButton(text('再比較','Compare again'),{onClick:async()=>{
-    const signal=compareScope.spawn('diff-rerun-replaced');
-    host.replaceChildren(loadingState(text('比較しています…','Comparing…')));
-    try{await app.workspace.diff({signal});if(!signal.aborted&&!routeSignal.aborted)router.navigate('/diff',{replace:true});}
-    catch(error){if(!signal.aborted&&!routeSignal.aborted)host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}
-  }}));
-  host.append(controls);
-  if(!state){host.append(emptyState(text('比較元を選ぶと変更された関数を抽出します','Choose a baseline to find changed functions'),text('同じ CPU 向けのファイルどうしだけを比べます。比較が途中までのときは「新しい」「削除された」と決めつけません。','Only matching architectures/slices are compared; incomplete matching never invents new/deleted certainty.')));return {root:s.root};}
-  const counts={same:0,moved:0,changed:0,rewritten:0,new:0,deleted:0,unresolved:0};
-  for(const c of state.changes||[])counts[c.changeType]=(counts[c.changeType]||0)+1;
-  const summary=card(text('比較結果','Diff summary'));
-  summary.body.append(h('p','ui-body',text(`変更 ${counts.changed||0} · 書き直し ${counts.rewritten||0} · 移動 ${counts.moved||0} · 新規 ${counts.new||0} · 削除 ${counts.deleted||0} · 未確定 ${counts.unresolved||0}`,`${counts.changed||0} changed · ${counts.rewritten||0} rewritten · ${counts.moved||0} moved · ${counts.new||0} new · ${counts.deleted||0} deleted · ${counts.unresolved||0} unresolved`)));
-  summary.body.append(h('p',state.completeness?.complete?'ui-sub':'ui-warning',state.completeness?.complete?text('すべての関数を比較しました。','Function sets and matching are complete.'):text('部分結果です: ','Partial result: ')+(state.completeness?.reasons||[]).join(', ')));
-  host.append(summary.root);
-  const interesting=(state.changes||[]).filter((c)=>c.changeType!=='same').slice(0,5000);
-  const render=(c)=>{const current=c.after?.address??null;const previous=c.before?.address??null;const title=c.after?.name||c.before?.name||(current!=null?functionName(app,current):text('削除された関数','Deleted function'));const tags=c.semanticChange?.tags?.join(', ')||'';return listRow({title,subtitle:[c.changeType,current!=null?addressText(current):previous!=null?'old '+addressText(previous):'',tags].filter(Boolean).join(' · '),badge:evidenceBadge(c.changeType==='unresolved'?'unverified':c.confidence>=0.82?'confirmed':'likely'),onClick:current!=null?()=>router.navigate('/function/'+BigInt(current).toString()+'/overview'):null});};
-  if(interesting.length>100)host.append(new VirtualList({items:interesting,rowHeight:64,ariaLabel:text('変更関数','Changed functions'),renderRow:render}).root);else{const list=h('div','ui-list');for(const c of interesting)list.append(render(c));host.append(list);}
-  return {root:s.root,dispose:()=>{compareScope.abort('diff-route-disposed');fallbackRouteController?.abort('diff-route-disposed');}};
+  let virtual=null;
+  const disposeVirtual=()=>{virtual?.dispose();virtual=null;};
+  const renderContent=()=>{
+    disposeVirtual();
+    host.replaceChildren();
+    if(!app.store.get('fileInfo')){host.append(emptyState(text('先に現在のバイナリを開いてください','Open the current binary first'),'',uiButton(text('コードへ','Go to Code'),{onClick:()=>router.navigate('/code')})));return;}
+    const state=app.getBinaryDiff?.(); const baseline=app.workspace?.baseline;
+    const controls=h('div','ui-actions');
+    controls.append(uiButton(baseline?text('比較元を変更','Change baseline'):text('前のバージョンを選ぶ','Choose previous version'),{cls:'ui-primary-action',onClick:async()=>{
+      const file=await pickOneFile();if(!file||routeSignal.aborted)return;
+      const signal=compareScope.spawn('diff-baseline-replaced');
+      disposeVirtual();
+      host.replaceChildren(loadingState(text('比較元を解析しています…','Analysing baseline…')));
+      try{
+        await app.workspace.loadBaseline(file,{signal});
+        await app.workspace.diff({signal});
+        if(!signal.aborted&&!routeSignal.aborted)renderContent();
+      } catch(error){if(!signal.aborted&&!routeSignal.aborted)host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}
+    }}));
+    if(baseline)controls.append(uiButton(text('再比較','Compare again'),{onClick:async()=>{
+      const signal=compareScope.spawn('diff-rerun-replaced');
+      disposeVirtual();
+      host.replaceChildren(loadingState(text('比較しています…','Comparing…')));
+      try{await app.workspace.diff({signal});if(!signal.aborted&&!routeSignal.aborted)renderContent();}
+      catch(error){if(!signal.aborted&&!routeSignal.aborted)host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}
+    }}));
+    host.append(controls);
+    if(!state){host.append(emptyState(text('比較元を選ぶと変更された関数を抽出します','Choose a baseline to find changed functions'),text('同じ CPU 向けのファイルどうしだけを比べます。比較が途中までのときは「新しい」「削除された」と決めつけません。','Only matching architectures/slices are compared; incomplete matching never invents new/deleted certainty.')));return;}
+    const counts={same:0,moved:0,changed:0,rewritten:0,new:0,deleted:0,unresolved:0};
+    for(const c of state.changes||[])counts[c.changeType]=(counts[c.changeType]||0)+1;
+    const summary=card(text('比較結果','Diff summary'));
+    summary.body.append(h('p','ui-body',text(`変更 ${counts.changed||0} · 書き直し ${counts.rewritten||0} · 移動 ${counts.moved||0} · 新規 ${counts.new||0} · 削除 ${counts.deleted||0} · 未確定 ${counts.unresolved||0}`,`${counts.changed||0} changed · ${counts.rewritten||0} rewritten · ${counts.moved||0} moved · ${counts.new||0} new · ${counts.deleted||0} deleted · ${counts.unresolved||0} unresolved`)));
+    summary.body.append(h('p',state.completeness?.complete?'ui-sub':'ui-warning',state.completeness?.complete?text('すべての関数を比較しました。','Function sets and matching are complete.'):text('部分結果です: ','Partial result: ')+(state.completeness?.reasons||[]).join(', ')));
+    host.append(summary.root);
+    const interesting=(state.changes||[]).filter((c)=>c.changeType!=='same').slice(0,5000);
+    const render=(c)=>{const current=c.after?.address??null;const previous=c.before?.address??null;const title=c.after?.name||c.before?.name||(current!=null?functionName(app,current):text('削除された関数','Deleted function'));const tags=c.semanticChange?.tags?.join(', ')||'';return listRow({title,subtitle:[c.changeType,current!=null?addressText(current):previous!=null?'old '+addressText(previous):'',tags].filter(Boolean).join(' · '),badge:evidenceBadge(c.changeType==='unresolved'?'unverified':c.confidence>=0.82?'confirmed':'likely'),onClick:current!=null?()=>router.navigate('/function/'+BigInt(current).toString()+'/overview'):null});};
+    if(interesting.length>100){virtual=new VirtualList({items:interesting,rowHeight:64,ariaLabel:text('変更関数','Changed functions'),renderRow:render});host.append(virtual.root);}else{const list=h('div','ui-list');for(const c of interesting)list.append(render(c));host.append(list);}
+  };
+  renderContent();
+  return {root:s.root,dispose:()=>{disposeVirtual();compareScope.abort('diff-route-disposed');fallbackRouteController?.abort('diff-route-disposed');}};
 }
 
 function renderAdvanced(app) {

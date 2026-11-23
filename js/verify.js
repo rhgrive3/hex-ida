@@ -94,7 +94,7 @@ function regNorm(reg) {
   const s = String(reg || '').toLowerCase();
   const gp = /^[wx](\d+)$/.exec(s);
   if (gp) return 'x' + gp[1];
-  const fp = /^[sdqv](\d+)$/.exec(s);
+  const fp = /^[bhsdqv](\d+)(?:\.[0-9]+[bhsd])?$/.exec(s);
   if (fp) return 'v' + fp[1];
   return null;
 }
@@ -107,8 +107,10 @@ function gpView(value) {
 
 function fpView(value) {
   const text = typeof value === 'string' ? value : value?.text;
-  const m = /^([sd])(\d+)$/.exec(String(text || '').toLowerCase());
-  return m ? { cls: 'fp', key: 'v' + m[2], bits: m[1] === 'd' ? 64 : 32 } : null;
+  const m = /^([bhsdqv])(\d+)(?:\.[0-9]+[bhsd])?$/.exec(String(text || '').toLowerCase());
+  if (!m) return null;
+  const bits = m[1] === 'b' ? 8 : m[1] === 'h' ? 16 : m[1] === 's' ? 32 : m[1] === 'd' ? 64 : 128;
+  return { cls: 'fp', key: 'v' + m[2], bits };
 }
 
 function zeroView(value) {
@@ -159,7 +161,7 @@ function sameWidthCopyPair(insn) {
 
 function flowsToReturn(insns, load) {
   const dst = regView(load.ops?.[0]) || regView(load.writes?.[0]);
-  if (!dst) return true;
+  if (!dst) return false;
   const start = insns.findIndex((x) => x.row === load.row);
   if (start < 0) return isReturnReg(dst);
   let cur = dst;

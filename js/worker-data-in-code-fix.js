@@ -20,20 +20,33 @@ function __dicContains(region, address, width = 1n) {
 }
 function __dicCodeSpans(region, reasons = null) {
   const lo = BigInt(region.vmAddr), hi = lo + BigInt(region.size);
-  const spans = [];
+  const rawSpans = [];
   let cursor = lo;
   for (const range of __dicRanges(region)) {
     const start = range.start < lo ? lo : range.start;
     const end = range.end > hi ? hi : range.end;
     if (end <= lo || start >= hi) continue;
-    if (cursor < start) spans.push({ start:cursor, end:start });
+    if (cursor < start) rawSpans.push({ start:cursor, end:start });
     if (end > cursor) cursor = end;
   }
-  if (cursor < hi) spans.push({ start:cursor, end:hi });
-  for (const span of spans) {
-    if (span.end - span.start < 4n && reasons && !reasons.includes('aarch64-code-span-not-word-aligned')) reasons.push('aarch64-code-span-not-word-aligned');
+  if (cursor < hi) rawSpans.push({ start:cursor, end:hi });
+  const spans = [];
+  for (const span of rawSpans) {
+    const startDelta = span.start - lo;
+    const startRem = startDelta % 4n;
+    const alignedStart = startRem === 0n ? span.start : span.start + (4n - startRem);
+    const endDelta = span.end - lo;
+    const endRem = endDelta % 4n;
+    const alignedEnd = endRem === 0n ? span.end : span.end - endRem;
+    if ((startRem !== 0n || endRem !== 0n || alignedEnd - alignedStart < 4n)
+        && reasons && !reasons.includes('aarch64-code-span-not-word-aligned')) {
+      reasons.push('aarch64-code-span-not-word-aligned');
+    }
+    if (alignedEnd - alignedStart >= 4n) {
+      spans.push({ start: alignedStart, end: alignedEnd });
+    }
   }
-  return spans.filter((span) => span.end - span.start >= 4n);
+  return spans;
 }
 
 getChunk = async function getChunkDataInCode(args) {
@@ -75,16 +88,37 @@ scanProgram = async function scanProgramDataInCode(args) {
   const callCap = capOf(args.callLimit, MAX_EDGES);
   const refCap = capOf(args.refLimit, MAX_REFS);
   const kindCap = capOf(args.kindLimit, MAX_KIND_WORDS);
+  const budgetBytes = (typeof PROGRAM_INDEX_BUDGET_BYTES === 'number' && Number.isFinite(PROGRAM_INDEX_BUDGET_BYTES) && PROGRAM_INDEX_BUDGET_BYTES > 0)
+    ? PROGRAM_INDEX_BUDGET_BYTES
+    : 96 * 1024 * 1024;
+  const CALL_ENTRY_BYTES = 16;
+  const REF_ENTRY_BYTES = 17;
   const kinds = new Uint8Array(Math.min(words, kindCap)); // OTHER=0 is the fail-closed value.
-  const calls = [], refs = [];
+  const callParts = [];
+  const refParts = [];
+  let totalCalls = 0, totalRefs = 0;
+  let usedBytes = kinds.byteLength;
   let callsCapped = false, refsCapped = false, cancelledResult = false;
   const original = region;
+  const ownSlice = (typed, count) => (
+    typed.length === count && typed.byteOffset === 0 && typed.byteLength === typed.buffer.byteLength
+      ? typed
+      : typed.slice(0, count)
+  );
   for (let n = 0; n < spans.length; n++) {
-    const span = spans[n], delta = span.start - BigInt(original.vmAddr);
+    const span = spans[n];
+    const delta = span.start - BigInt(original.vmAddr);
+    if (delta < 0n || delta % 4n !== 0n) {
+      if (!reasons.includes('aarch64-code-span-not-word-aligned')) reasons.push('aarch64-code-span-not-word-aligned');
+      continue;
+    }
     const wordBase = Number(delta / 4n);
     const remainingKinds = Math.max(0, kinds.length - wordBase);
-    const remainingCalls = Math.max(0, callCap - calls.length);
-    const remainingRefs = Math.max(0, refCap - refs.length);
+    const subWords = Math.floor(Number(span.end - span.start) / 4);
+    const subKindsBytes = Math.min(subWords, remainingKinds);
+    const remainingDataBytes = Math.max(0, budgetBytes - usedBytes - subKindsBytes);
+    const remainingCalls = Math.min(Math.max(0, callCap - totalCalls), Math.floor(remainingDataBytes / CALL_ENTRY_BYTES));
+    const remainingRefs = Math.min(Math.max(0, refCap - totalRefs), Math.floor(remainingDataBytes / REF_ENTRY_BYTES));
     const sub = { ...original, fileOffset:BigInt(original.fileOffset) + delta, vmAddr:span.start, size:span.end - span.start, dataInCode:[] };
     const tempKey = __dicTempRegionKey(args.regionId);
     regions.set(tempKey, sub);
@@ -101,28 +135,96 @@ scanProgram = async function scanProgramDataInCode(args) {
       regions.delete(tempKey);
     }
     if (part?.cancelled) { cancelledResult = true; break; }
-    for (let i = 0; i < Number(part.callCount || 0) && calls.length < callCap; i++) calls.push([part.callFrom[i], part.callTo[i]]);
-    for (let i = 0; i < Number(part.refCount || 0) && refs.length < refCap; i++) refs.push([part.refFrom[i], part.refTo[i], part.refKind[i]]);
-    for (let i = 0; i < part.kinds.length && wordBase + i < kinds.length; i++) kinds[wordBase + i] = part.kinds[i];
+    if (part.kinds?.length && wordBase < kinds.length) {
+      const copyLen = Math.min(part.kinds.length, kinds.length - wordBase);
+      if (copyLen > 0) {
+        kinds.set(copyLen === part.kinds.length ? part.kinds : part.kinds.subarray(0, copyLen), wordBase);
+      }
+      part.kinds = null;
+    }
+    const partCallCount = Math.min(Number(part.callCount || 0), part.callFrom?.length || 0, part.callTo?.length || 0);
+    const maxCallsByBudget = Math.floor(Math.max(0, budgetBytes - usedBytes) / CALL_ENTRY_BYTES);
+    const takeCalls = Math.min(partCallCount, Math.max(0, callCap - totalCalls), maxCallsByBudget);
+    if (takeCalls < partCallCount) {
+      callsCapped = true;
+      if (!reasons.includes('call-edge-memory-budget')) reasons.push('call-edge-memory-budget');
+    }
+    if (takeCalls > 0) {
+      callParts.push({
+        from: ownSlice(part.callFrom, takeCalls),
+        to: ownSlice(part.callTo, takeCalls),
+        count: takeCalls,
+      });
+      totalCalls += takeCalls;
+      usedBytes += takeCalls * CALL_ENTRY_BYTES;
+    }
+    const partRefCount = Math.min(Number(part.refCount || 0), part.refFrom?.length || 0, part.refTo?.length || 0, part.refKind?.length || 0);
+    const maxRefsByBudget = Math.floor(Math.max(0, budgetBytes - usedBytes) / REF_ENTRY_BYTES);
+    const takeRefs = Math.min(partRefCount, Math.max(0, refCap - totalRefs), maxRefsByBudget);
+    if (takeRefs < partRefCount) {
+      refsCapped = true;
+      if (!reasons.includes('reference-memory-budget')) reasons.push('reference-memory-budget');
+    }
+    if (takeRefs > 0) {
+      refParts.push({
+        from: ownSlice(part.refFrom, takeRefs),
+        to: ownSlice(part.refTo, takeRefs),
+        kind: ownSlice(part.refKind, takeRefs),
+        count: takeRefs,
+      });
+      totalRefs += takeRefs;
+      usedBytes += takeRefs * REF_ENTRY_BYTES;
+    }
     callsCapped ||= part.callsCapped === true;
     refsCapped ||= part.refsCapped === true;
     for (const reason of part.completeness?.reasons || []) if (!reasons.includes(reason)) reasons.push(reason);
   }
   if (cancelledResult) return { cancelled:true, __transfer:[] };
-  if (calls.length > callCap) { calls.length = callCap; callsCapped = true; if (!reasons.includes('call-edge-memory-budget')) reasons.push('call-edge-memory-budget'); }
-  if (refs.length > refCap) { refs.length = refCap; refsCapped = true; if (!reasons.includes('reference-memory-budget')) reasons.push('reference-memory-budget'); }
   if (kinds.length < words && !reasons.includes('kind-stat-budget')) reasons.push('kind-stat-budget');
-  const callFrom = new BigUint64Array(calls.length), callTo = new BigUint64Array(calls.length);
-  for (let i = 0; i < calls.length; i++) { callFrom[i] = calls[i][0]; callTo[i] = calls[i][1]; }
-  const refFrom = new BigUint64Array(refs.length), refTo = new BigUint64Array(refs.length), refKind = new Uint8Array(refs.length);
-  for (let i = 0; i < refs.length; i++) { refFrom[i] = refs[i][0]; refTo[i] = refs[i][1]; refKind[i] = refs[i][2]; }
+  let callFrom, callTo;
+  if (callParts.length === 1) {
+    callFrom = callParts[0].from;
+    callTo = callParts[0].to;
+    callParts[0] = null;
+  } else {
+    callFrom = new BigUint64Array(totalCalls);
+    callTo = new BigUint64Array(totalCalls);
+    let callOff = 0;
+    for (let i = 0; i < callParts.length; i++) {
+      const p = callParts[i];
+      callFrom.set(p.from, callOff);
+      callTo.set(p.to, callOff);
+      callOff += p.count;
+      callParts[i] = null;
+    }
+  }
+  let refFrom, refTo, refKind;
+  if (refParts.length === 1) {
+    refFrom = refParts[0].from;
+    refTo = refParts[0].to;
+    refKind = refParts[0].kind;
+    refParts[0] = null;
+  } else {
+    refFrom = new BigUint64Array(totalRefs);
+    refTo = new BigUint64Array(totalRefs);
+    refKind = new Uint8Array(totalRefs);
+    let refOff = 0;
+    for (let i = 0; i < refParts.length; i++) {
+      const p = refParts[i];
+      refFrom.set(p.from, refOff);
+      refTo.set(p.to, refOff);
+      refKind.set(p.kind, refOff);
+      refOff += p.count;
+      refParts[i] = null;
+    }
+  }
   return {
     regionId:args.regionId, vmAddr:original.vmAddr, words,
-    callFrom, callTo, callCount:calls.length,
-    refFrom, refTo, refKind, refCount:refs.length,
+    callFrom, callTo, callCount:totalCalls,
+    refFrom, refTo, refKind, refCount:totalRefs,
     kinds, kindsCovered:kinds.length, callsCapped, refsCapped, cancelled:false,
     complete:reasons.length===0, truncated:reasons.length>0, truncationReason:reasons[0]||null,
-    completeness:{ complete:reasons.length===0, reasons },
+    completeness:{ complete:reasons.length===0, reasons, memoryBudgetBytes:budgetBytes, allocatedBytes:usedBytes },
     __transfer:[callFrom.buffer,callTo.buffer,refFrom.buffer,refTo.buffer,refKind.buffer,kinds.buffer],
   };
 };

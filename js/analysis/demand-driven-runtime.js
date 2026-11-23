@@ -429,6 +429,7 @@ function installDemandRecognition(app) {
 };
 if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
     const epoch = demandAnalysisEpoch(app); beginBootstrap(epoch);
+    acceptedKey = null;
     try {
       const result = originalApplySlice(...args); const clearBootstrap = () => endBootstrap(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
     } catch (error) {
@@ -436,7 +437,11 @@ if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
       throw error;
     }
   };
-  return () => `${RUNTIME_VERSION}:${acceptedKey ?? recognitionInputKey(app)}`;
+  return () => {
+    const currentKey = recognitionInputKey(app);
+    if (acceptedKey !== null && acceptedKey !== currentKey) acceptedKey = null;
+    return `${RUNTIME_VERSION}:${currentKey}`;
+  };
 }
 function installMultiRegionShapes(app) {
   if (!app?.backend || typeof app.backend.valueShapes !== 'function') return;

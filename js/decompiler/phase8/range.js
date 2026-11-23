@@ -1212,7 +1212,19 @@ function castFact(factInputValue, toBits, cast) {
     if ((fact.knownZero & signBit) !== 0n) knownZero |= high;
     if ((fact.knownOne & signBit) !== 0n) knownOne |= high;
   }
-  const congruence = cast === 'trunc' && result.exact ? fact.congruence : NO_CONGRUENCE;
+  let congruence = NO_CONGRUENCE;
+  if (cast === 'trunc' && result.exact && fact.congruence != null) {
+    const targetWidth = 1n << BigInt(toBits);
+    const modulus = scalarEvidenceBigInt(fact.congruence.modulus);
+    const remainder = scalarEvidenceBigInt(fact.congruence.remainder);
+    if (modulus != null && modulus > 0n && remainder != null) {
+      const reducedModulus = gcd(modulus, targetWidth);
+      if (reducedModulus > 1n) {
+        const reducedRemainder = ((remainder % reducedModulus) + reducedModulus) % reducedModulus;
+        congruence = Object.freeze({ remainder: reducedRemainder, modulus: reducedModulus });
+      }
+    }
+  }
   return factFromRange(result.range, {
     knownZero,
     knownOne,

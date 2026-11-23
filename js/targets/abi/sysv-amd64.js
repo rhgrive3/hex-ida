@@ -65,17 +65,15 @@ function isInt128(type) {
 
 function typeBits(type, fallback = 64, pointerBits = 64) {
   type = normalizedType(type);
+  if (/\b(?:pointer|ptr)\b|\*/.test(type)) return pointerBits === 32 ? 32 : 64;
   if (isComplexLongDouble(type)) return 256;
   if (isLongDouble(type)) return 128;
   if (isInt128(type)) return 128;
+  if (/\b(?:unsigned\s+)?long\s+long\b/.test(type)) return 64;
+  if (/\blong\b/.test(type)) return pointerBits === 32 ? 32 : 64;
   if (/\b(?:bool|char|int8|uint8)\b/.test(type)) return 8;
   if (/\b(?:short|int16|uint16)\b/.test(type)) return 16;
   if (/\b(?:int|unsigned int|int32|uint32|float)\b/.test(type)) return 32;
-  // x86-64 ILP32 (x32 ABI): C `long` / `unsigned long` and pointer/`ptr`/`*`
-  // carry a 32-bit logical width; the physical carrier remains the AMD64 GP
-  // bank. In LP64 (`pointerBits = 64`, the default) this branch is byte-identical
-  // to the previous behavior, so the supported LP64 profile is unchanged (#8885).
-  if (/\b(?:long|pointer|ptr)\b|\*/.test(type)) return pointerBits === 32 ? 32 : 64;
   if (/\b(?:double|int64|uint64)\b/.test(type)) return 64;
   return fallback;
 }
@@ -83,14 +81,14 @@ function typeBits(type, fallback = 64, pointerBits = 64) {
 function parameterClass(parameter, pointerBits = 64) {
   const type = normalizedType(parameter?.type || parameter?.name || '');
   const abiClass = normalizedType(parameter?.abiClass || parameter?.class || parameter?.kind || '');
-  const complexX87 = parameter?.complexX87 === true || isComplexLongDouble(type, abiClass);
-  const x87 = complexX87 || parameter?.x87 === true || isLongDouble(type, abiClass);
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
     || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
+  const complexX87 = !pointer && (parameter?.complexX87 === true || isComplexLongDouble(type, abiClass));
+  const x87 = !pointer && (complexX87 || parameter?.x87 === true || isLongDouble(type, abiClass));
   const aggregate = !x87 && !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
-  const vector = !x87 && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
-  const floating = !x87 && !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
+  const vector = !x87 && !pointer && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
+  const floating = !x87 && !aggregate && !pointer && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
   const aggregateLayoutPresent = aggregate && aggregateLayoutDescriptorPresent(parameter);
   const aggregateLayout = aggregate && aggregateLayoutPresent ? canonicalAggregateLayout(parameter) : null;
   const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
@@ -647,10 +645,11 @@ function classifyReturn(prototype, options = {}) {
       hiddenResultPointer:{ input:'rdi', returned:'rax' },
     };
   }
-  if (isComplexLongDouble(type, abiClass) || isLongDouble(type, abiClass)) {
+  const isPointerType = prototype.pointer === true || prototype.isPointer === true || options.pointer === true || options.isPointer === true
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
+  if (!isPointerType && (isComplexLongDouble(type, abiClass) || isLongDouble(type, abiClass))) {
     return { reg:null, partial:true, unsupported:true, reason:'sysv-amd64-x87-return-outside-claimed-scope' };
   }
-  const isPointerType = /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
   const aggregate = !isPointerType && (prototype.aggregate === true || prototype.isAggregate === true
     || aggregateLayoutDescriptorPresent(prototype)
     || (prototype.returnAggregate && typeof prototype.returnAggregate === 'object')
@@ -694,9 +693,9 @@ function classifyReturn(prototype, options = {}) {
     }
     return { reg:pieces[0]?.reg || null, regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, bits:returnBits, bytes:physicalBytes, aggregate:true };
   }
-  const vector = prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`);
-  const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
-  const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, vector ? 128 : 64, pointerBits));
+  const vector = !isPointerType && (prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`));
+  const floating = !isPointerType && (vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
+  const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? (isPointerType ? pointerBits : typeBits(type, vector ? 128 : 64, pointerBits)));
   const saneBits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   if (vector && saneBits > 128) {
     const reg = vectorRegisterView(0, saneBits, options);

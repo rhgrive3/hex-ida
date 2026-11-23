@@ -1601,6 +1601,11 @@ function semanticLocalDeclarations(types, body, ctx) {
       out.push(line('decl', 1, `${entry.type || 'uint64'} ${name};`, null));
     }
   }
+  for (const [name, type] of ctx.hoistedInductionDecls || []) {
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(line('decl', 1, `${type || 'int64'} ${name};`, null));
+  }
   return out;
 }
 
@@ -4160,6 +4165,32 @@ export function recoverInductionVariables(ir, ctx = null) {
   return out;
 }
 
+function inductionUsedOutsideLoop(iv, loop, ctx) {
+  if (!iv?.value || !loop?.nodes) return false;
+  const queue = [iv.value];
+  const visited = new Set([iv.value.id]);
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const u of cur.uses || []) {
+      if (!u) continue;
+      if (u.block != null && !loop.nodes.has(u.block)) return true;
+      if (u.dst && !visited.has(u.dst.id)) {
+        if (u.op === OP.PHI && u.block != null && loop.nodes.has(u.block)) continue;
+        if (ctx?.materialNames?.has?.(u.dst.id)) continue;
+        visited.add(u.dst.id);
+        queue.push(u.dst);
+      }
+    }
+  }
+  for (const ret of ctx?.returnInsts || []) {
+    if (ret?.block != null && !loop.nodes.has(ret.block)) {
+      const rv = returnValueAt(ret, ctx);
+      if (rv && visited.has(rv.id)) return true;
+    }
+  }
+  return false;
+}
+
 function blockHasObservableStatements(block, ctx) {
   const term = blockTerm(block);
   for (const inst of block?.insts || []) {
@@ -4242,12 +4273,19 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
   let head, form = 'while-loop';
   if (iv && iv.init && iv.conditionInst === term && (!ctx.phiLowering || ctx.phiLowering.skippedPhiIds.has(iv.value.id))) {
     form = 'for-loop';
+    (ctx.emittedInductionNames ??= new Map()).set(iv.value.id, iv.name);
     ctx.materialNames.set(iv.value.id, iv.name);
     ctx.exprCache.clear();
     const init = renderValue(iv.init, ctx, { ignoreMaterial: true });
     let cond = renderBranchCondition(term, ctx, invert);
     const step = iv.step === 1n ? `${iv.name}++` : iv.step === -1n ? `${iv.name}--` : `${iv.name} += ${iv.step}`;
-    head = `for (${typeNameOf(ctx.types.values.get(iv.value.id)) === 'unknown' ? 'int64' : typeNameOf(ctx.types.values.get(iv.value.id))} ${iv.name} = ${init}; ${cond}; ${step})`;
+    const ivType = typeNameOf(ctx.types.values.get(iv.value.id)) === 'unknown' ? 'int64' : typeNameOf(ctx.types.values.get(iv.value.id));
+    if (inductionUsedOutsideLoop(iv, loop, ctx)) {
+      (ctx.hoistedInductionDecls ??= new Map()).set(iv.name, ivType);
+      head = `for (${iv.name} = ${init}; ${cond}; ${step})`;
+    } else {
+      head = `for (${ivType} ${iv.name} = ${init}; ${cond}; ${step})`;
+    }
   } else head = `while (${renderBranchCondition(term, ctx, invert)})`;
   const lines = [retainControlRenderLine(line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) }),
     term, form, { header:loop.header, bodyStart, exit, invert, inductionValueId:form === 'for-loop' ? iv.value.id : null }, ctx)];
@@ -5169,7 +5207,7 @@ export function decompileSemantic(model, rawOpts = {}) {
   const result = bindConditionalRegionHistory(bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
-    coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown, phase8Optimize: opts.phase8Optimize === true },
+    coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, emittedInductionNames: ctx.emittedInductionNames || new Map(), irPrimary: true, unknownInstructions: ctx.unknown, phase8Optimize: opts.phase8Optimize === true },
     semantic: true,
   }, ctx), ctx), ctx), ctx, true), ctx);
   const bindings = new Map();

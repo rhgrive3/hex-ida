@@ -272,6 +272,7 @@ export class AiSession {
 
   /** Re-run the previous question with the current mode/style/scope. */
   retry(options = {}) {
+    if (this.busy) return null;
     const conversation = this.current;
     const turns = conversation.turns;
     if (!turns.length) return null;

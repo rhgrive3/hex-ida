@@ -50,7 +50,7 @@ function visit(value, schema, path, errors) {
   } else if (value && typeof value === 'object') {
     for (const key of schema.required || []) if (!Object.prototype.hasOwnProperty.call(value, key)) errors.push(`${path}.${key} is required`);
     for (const [key, item] of Object.entries(value)) {
-      if (schema.properties && schema.properties[key]) visit(item, schema.properties[key], `${path}.${key}`, errors);
+      if (schema.properties && Object.hasOwn(schema.properties, key)) visit(item, schema.properties[key], `${path}.${key}`, errors);
       else if (schema.additionalProperties === false) errors.push(`${path}.${key} is not allowed`);
     }
   }

@@ -403,7 +403,14 @@ function foldInstruction(inst) {
     const lsb = Number(inst.extra?.lsb);
     const width = Number(inst.extra?.width);
     if (Number.isInteger(lsb) && lsb >= 0 && Number.isInteger(width) && width > 0) {
-      const field = (uint(args[0], inst.args?.[0]?.value?.bits ?? bits) >> BigInt(lsb)) & mask(width);
+      const src = uint(args[0], inst.args?.[0]?.value?.bits ?? bits);
+      if (inst.extra?.toward === 'left') {
+        if (!Number.isSafeInteger(bits) || bits <= 0 || lsb >= bits) return null;
+        const field = src & mask(width);
+        const placed = (inst.extra?.signed === true ? BigInt.asIntN(width, field) : field) << BigInt(lsb);
+        return uint(placed, bits);
+      }
+      const field = (src >> BigInt(lsb)) & mask(width);
       if (inst.extra?.signed === true) return uint(BigInt.asIntN(width, field), bits);
       return uint(field, bits);
     }

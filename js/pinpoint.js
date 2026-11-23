@@ -584,14 +584,62 @@ function batchedScanAccess(scanAccess, opts) {
       if (waiterAborted || isAborted()) return emptyGroups();
     }
     if (isAborted()) return emptyGroups();
-    const groups = state.groups || emptyGroups();
+    const groups = state.groups;
     const out = new Map();
+    if (!groups) return out;
     for (const item of requested || []) {
-      const key = safeOffsetKey(item?.offset);
-      if (key == null) continue;
-      out.set(key, groupAt(groups, key).filter((site) => sizeMatches(site, item.size)));
+      const offKey = safeOffsetKey(item?.offset);
+      if (offKey == null || !state.scannedOffsets.has(offKey)) continue;
+      const size = Number(item?.size) || 0;
+      const compKey = size > 0 ? `${offKey}:${size}` : offKey;
+      const filtered = groupAt(groups, offKey).filter((site) => sizeMatches(site, size));
+      out.set(compKey, filtered);
+      if (compKey !== offKey && !out.has(offKey)) {
+        out.set(offKey, filtered);
+      }
     }
     return out;
+  };
+}
+
+function guardedScanAccess(scanAccess, opts) {
+  if (typeof scanAccess !== 'function') return scanAccess;
+  const isAborted = () => Boolean(opts?.signal?.aborted || opts?.isCancelled?.());
+  return async (requested = []) => {
+    if (isAborted()) return emptyGroups();
+    const ms = accessTimeoutMs(opts);
+    const controller = new AbortController();
+    const unlinkParent = linkParentSignal(controller, opts?.signal || null);
+    let timer = null;
+    let operation = null;
+    let timedOut = false;
+    let onControllerAbort = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        if (!controller.signal.aborted) controller.abort('pinpoint-access-timeout');
+        try { operation?.cancel?.(); } catch { /* timeout remains authoritative */ }
+        reject(accessTimeoutError(ms));
+      }, ms);
+      onControllerAbort = () => {
+        if (timedOut) return;
+        try { operation?.cancel?.(); } catch { /* abort remains authoritative */ }
+        reject(abortError(controller.signal.reason));
+      };
+      controller.signal.addEventListener('abort', onControllerAbort, { once: true });
+    });
+    try {
+      operation = scanAccess(requested, { signal: controller.signal });
+      const groups = await Promise.race([Promise.resolve(operation), timeout]);
+      if (isAborted()) return emptyGroups();
+      return groups;
+    } catch {
+      return emptyGroups();
+    } finally {
+      if (timer != null) clearTimeout(timer);
+      if (onControllerAbort) controller.signal.removeEventListener('abort', onControllerAbort);
+      unlinkParent();
+    }
   };
 }
 
@@ -611,7 +659,9 @@ function preparedOptions(opts) {
   return {
     ...effectiveOpts,
     analyze: guardedAnalyze(o.analyze, effectiveOpts),
-    scanAccess: deferScan ? null : (automaticBatch ? batchedScanAccess(o.scanAccess, effectiveOpts) : o.scanAccess),
+    scanAccess: deferScan
+      ? null
+      : (automaticBatch ? batchedScanAccess(o.scanAccess, effectiveOpts) : guardedScanAccess(o.scanAccess, effectiveOpts)),
   };
 }
 
@@ -719,15 +769,16 @@ function bestVerdict(field, fn) {
 
 export async function pinpoint(opts = {}) {
   const o = opts || {};
+  const cancelled = () => Boolean(o.signal?.aborted || o.isCancelled?.());
   let field = await pinpointField(o);
 
-  if (!field.top && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size))) {
+  if (!cancelled() && !field.top && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size))) {
     const loc = await pinpointLocation(o);
     if (loc.top) field = loc;
   }
 
   let fn = null;
-  if (o.ranked && o.ranked.length) {
+  if (!cancelled() && o.ranked && o.ranked.length) {
     fn = await pinpointFunction(Object.assign({}, o, {
       // Offset-only function verification cannot establish a C++ owner.
       field: field.top && field.top.source !== 'cxx' ? {

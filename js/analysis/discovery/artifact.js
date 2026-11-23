@@ -633,13 +633,18 @@ export function functionDiscoveryArtifact({
   for (const producer of GENERIC_PRODUCERS) registry.register(producer);
   for (const producer of producers) registry.register(producer);
   const artifactBudgetNormalized = normalizeDiscoveryArtifactBudget(artifactBudget);
-  const { evidence, producerIds } = registry.collect(input, architectureId, { ...options, snapshotId });
+  const { evidence, producerIds, truncated, stopReason } = registry.collect(input, architectureId, { ...options, snapshotId });
   const applicable = new Map(registry.for(architectureId).map((producer) => [producer.id, producer]));
   if (evidence.some((item) => item.authority === 'authoritative'
       && !isCanonicalDiscoveryProducer(applicable.get(item.producerId)))) {
     throw new TypeError('discovery-artifact-authoritative-evidence-untrusted');
   }
-  const fused = fuseFunctionCandidates(evidence, { architectureId, ...options, snapshotId });
+  const fused = fuseFunctionCandidates(evidence, {
+    architectureId,
+    ...options,
+    snapshotId,
+    producerStatus: { truncated, stopReason },
+  });
   const evidenceCountByProducer = new Map();
   for (const item of evidence) {
     evidenceCountByProducer.set(item.producerId, (evidenceCountByProducer.get(item.producerId) ?? 0) + 1);

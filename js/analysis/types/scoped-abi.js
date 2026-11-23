@@ -227,7 +227,7 @@ export async function queryScopedAbiPlacement(request, { world, assumptions, sna
       graph.addHardConstraint({ kind: 'abi-location', origin: 'abi-boundary', claim: { entityId, layer: 'abi',
         descriptor: { kind: 'physical-placement', widthBits: entry.bits, sizeBytes: entry.bytes, pieces: entry.pieces } },
         evidenceIds: [binding.producerArtifactId], providerVersion: raw.abiSemanticVersion,
-        abiProfile: raw.abiId, buildIdentity: { snapshotId, binaryId: binding.binaryId, functionId } });
+        abiProfile: raw.abiId, buildIdentity: stableDigest({ snapshotId, binaryId: binding.binaryId, functionId }) });
     }
     results.push({ ...entry, entityId, graph: graph.solveEntity(entityId, { signal: work.signal }), staticExact: false });
     await work.yieldIfNeeded();

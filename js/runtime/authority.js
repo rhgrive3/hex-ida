@@ -538,11 +538,14 @@ function typeTagged(value, seen = new WeakSet(), control = null) {
   }
   const binaryInfo = canonicalBinaryInfo(value, control);
   if (binaryInfo) return canonicalBinaryIdentityMaterial(binaryInfo, control);
-  if (seen.has(value)) fail('runtime-observation-cyclic-payload');
+  if (seen.has(value)) throw new TypeError('runtime-observation-cyclic-payload');
   seen.add(value);
   const nested = (item) => typeTagged(item, seen, control);
   let out;
-  if (value instanceof Date) out = { $t: 'date', v: value.toISOString() };
+  if (value instanceof Date) {
+    const time = value.getTime();
+    out = { $t: 'date', v: Number.isFinite(time) ? value.toISOString() : 'Invalid Date' };
+  }
   else if (ArrayBuffer.isView(value)) {
     out = binaryIdentityMaterial(value.constructor?.name ?? 'view', new Uint8Array(value.buffer, value.byteOffset, value.byteLength), control);
   } else if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) {

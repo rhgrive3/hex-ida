@@ -87,6 +87,8 @@ export class ArtifactStore {
   #quarantined = new Map();
   #maxIdentityProofs;
   #maxEpochs;
+  #nextEpoch = 0;
+  #prunedEpoch = 0;
 
   constructor({
     backend = createArtifactBackend(),
@@ -206,23 +208,26 @@ export class ArtifactStore {
 
   #pruneEpochs() {
     if (this.epochs.size <= this.#maxEpochs) return;
-    for (const key of this.epochs.keys()) {
+    for (const [key, value] of this.epochs) {
       if (this.epochs.size <= this.#maxEpochs) break;
       if (this.mutations.has(key)) continue;
       this.epochs.delete(key);
+      if (value > this.#prunedEpoch) this.#prunedEpoch = value;
     }
   }
 
   #epoch(artifactId) {
-    return this.epochs.get(requireArtifactId(artifactId)) || 0;
+    const id = requireArtifactId(artifactId);
+    return this.epochs.get(id) ?? this.#prunedEpoch;
   }
 
   #bumpEpoch(artifactId) {
     const id = requireArtifactId(artifactId);
-    const next = this.#epoch(id) + 1;
+    const next = ++this.#nextEpoch;
     this.epochs.delete(id);
     this.epochs.set(id, next);
     this.#pruneEpochs();
+    return next;
   }
 
   async #waitForMutation(artifactId) {
@@ -236,8 +241,9 @@ export class ArtifactStore {
     const previous = this.mutations.get(id);
     const priorSettled = previous ? previous.catch(() => {}) : Promise.resolve();
     const current = priorSettled.then(async () => {
+      const epochBefore = this.#epoch(id);
       this.#bumpEpoch(id);
-      try { return await operation(); }
+      try { return await operation(epochBefore); }
       finally { this.#bumpEpoch(id); }
     });
     this.mutations.set(id, current);
@@ -369,11 +375,12 @@ export class ArtifactStore {
     const { artifactId, epoch, record, payloadBytes } = observed;
     if (this.#quarantined.has(artifactId)) return { status:'quarantined', artifactId, ...this.#quarantined.get(artifactId) };
     if (this.#quarantined.size >= 1024) throw new ArtifactStorageError('artifact-quarantine-cap');
-    return this.#withMutation(artifactId, async () => {
+    return this.#withMutation(artifactId, async (epochBefore) => {
       aborted(signal);
-      // withMutation increments once on entry. A newer publish/delete must not
-      // be removed because an older read happened to fail its replay.
-      if (this.#epoch(artifactId) !== epoch + 1) return { status:'stale', artifactId, reason:'quarantine-observation-superseded' };
+      // Compare the pre-entry epoch against the observed read epoch so a newer
+      // publish/delete (even after epoch-map pruning) cannot be withdrawn by
+      // an older read, while unrelated mutations never cause false staleness.
+      if (epochBefore !== epoch) return { status:'stale', artifactId, reason:'quarantine-observation-superseded' };
       this.#quarantined.set(artifactId, Object.freeze({ reason, persistentWithdrawal:false }));
       this.#hotCacheHooks.delete(artifactId); this.#identityProofs.delete(artifactId);
       this.metrics.quarantines++;
@@ -695,6 +702,7 @@ export class ArtifactStore {
     this.#hotCacheHooks.clear();
     this.#identityProofs.clear();
     this.epochs.clear();
+    this.#prunedEpoch = ++this.#nextEpoch;
     this.#quarantined.clear();
     this.#dependencyRegistries.clear();
     this.#retiredDependencyRegistries.clear();

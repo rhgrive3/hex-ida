@@ -94,16 +94,19 @@ class WorkerSolverSession extends SolverSession {
     };
     const onError = (event) => {
       const reason = event?.message || 'solver-worker-failure';
-      for (const pending of this.pending.values()) {
+      const pendingList = [...this.pending.values()];
+      this.pending.clear();
+      this._terminateWorker();
+      for (const pending of pendingList) {
         pending.resolve(createSolverResult({
           status: SOLVER_STATUS.PROVIDER_FAILURE,
           reason,
           backend: this.backend.id,
           backendVersion: this.backend.version,
+          queryHash: pending.queryHash,
           lifecycle: { publishable: false },
         }));
       }
-      this.pending.clear();
     };
     if (typeof worker.addEventListener === 'function') {
       worker.addEventListener('message', onMessage);
@@ -293,6 +296,7 @@ export class WorkerSolverBackend extends SolverBackend {
         })
       : new TieredBvBackend({
           maxBvWidth: this.maxBvWidth,
+          exhaustiveMaxBvWidth: this.exhaustiveMaxBvWidth,
           exhaustiveMaxAssignments: this.maxAssignments,
           maxConstraints: this.maxConstraints,
           maxExprNodes: this.maxExprNodes,

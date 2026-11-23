@@ -149,7 +149,7 @@ export function createSemanticCallSummary(input) {
   const out = {
     targetValueIds: sortedUniqueStrings(input.targetValueIds ?? [], 'semantic-ir-invalid-call-target-values'),
     targetEntityIds: sortedUniqueStrings(input.targetEntityIds ?? [], 'semantic-ir-invalid-call-target-entities'),
-    arguments: uniqueStrings(input.arguments ?? [], 'semantic-ir-invalid-call-arguments', false),
+    arguments: array(input.arguments ?? [], 'semantic-ir-invalid-call-arguments').map((value) => nonEmpty(value, 'semantic-ir-invalid-call-arguments')),
     returns: uniqueStrings(input.returns ?? [], 'semantic-ir-invalid-call-returns', false),
     stateReads: array(input.stateReads ?? [], 'semantic-ir-invalid-call-state-reads').map(createSemanticVariableRef).sort((a, b) => a.key.localeCompare(b.key)),
     stateWrites: array(input.stateWrites ?? [], 'semantic-ir-invalid-call-state-writes').map(createSemanticVariableRef).sort((a, b) => a.key.localeCompare(b.key)),

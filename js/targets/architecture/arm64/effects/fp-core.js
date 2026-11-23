@@ -374,8 +374,8 @@ function exactBitwise(instruction, context, mnemonic, ops) {
   const srcBits = scalarWidth(src) || dstBits;
   const dstGp = dst?.cls === 'gp' || dst?.cls === 'zr';
   const srcGp = src?.cls === 'gp' || src?.cls === 'zr';
-  const fpToGpHalf = mnemonic === 'fmov' && src?.cls === 'fp' && srcBits === 16 && dstGp && dstBits === 32;
-  const gpToFpHalf = mnemonic === 'fmov' && srcGp && srcBits === 32 && dst?.cls === 'fp' && dstBits === 16;
+  const fpToGpHalf = mnemonic === 'fmov' && src?.cls === 'fp' && srcBits === 16 && dstGp && (dstBits === 32 || dstBits === 64);
+  const gpToFpHalf = mnemonic === 'fmov' && srcGp && (srcBits === 32 || srcBits === 64) && dst?.cls === 'fp' && dstBits === 16;
   const sameWidthFp = dst?.cls === 'fp' && src?.cls === 'fp' && dstBits === srcBits && [16,32,64].includes(dstBits);
   const sameWidthTransfer = mnemonic === 'fmov'
     && ((dstGp && src?.cls === 'fp') || (dst?.cls === 'fp' && srcGp))

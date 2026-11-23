@@ -109,7 +109,7 @@ export function overlayCilMetadata(bytes,parsed,context,options={}){
    offset=length.next+length.value;
   }
  }
- const genericMetadata=readCilGenericMetadata(u8,view,layout,ctx.stringsStream,defs);validateParamAuthority(u8,defs,layout,blobStream,admission);const properties=decodePropertyAuthority(u8,defs,layout,blobStream,admission);validateManagedEntryAuthority(u8,parsed,defs,layout,blobStream);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
+ const genericMetadata=readCilGenericMetadata(u8,view,layout,ctx.stringsStream,defs,admission);validateParamAuthority(u8,defs,layout,blobStream,admission);const properties=decodePropertyAuthority(u8,defs,layout,blobStream,admission);validateManagedEntryAuthority(u8,parsed,defs,layout,blobStream);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
  for(const method of defs.methods){admission?.chargeOperations(1);const out={...method,bodyIndex:null};if(method.rva!==0){const off=pe.mapRva(method.rva,1,'cil-method-rva-unmapped'),body=byOffset.get(off);if(!body)fail('cil-method-rva-unmapped');out.bodyIndex=methodBodies.length;methodBodies.push({...body,token:method.token,rid:method.rid})}methods.push(out)}
  // ECMA-335 II.22.28: Implementation == null resources live inside the CLI
  // Resources directory at the recorded Offset. Each blob is a 4-byte length
@@ -119,6 +119,7 @@ export function overlayCilMetadata(bytes,parsed,context,options={}){
  const manifestResources=defs.manifestResources.map((row)=>{
   if(row.implementation!=null)return row;
   admission?.chargeOperations(1);
+  if(!dir||!Number.isSafeInteger(dir.offset)||!Number.isSafeInteger(dir.size))fail('cil-manifest-resource-directory-missing');
   const start=dir.offset+row.offset;
   if(!Number.isSafeInteger(row.offset)||row.offset<0||row.offset+4>dir.size)fail('cil-manifest-resource-offset-invalid');
   const length=view.getUint32(start,true);

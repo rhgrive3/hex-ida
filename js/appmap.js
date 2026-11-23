@@ -355,6 +355,21 @@ function producerByteExtentWindow(text) {
 // Returns the authoritative raw byte span, or null when the entry carries no
 // provable extent (missing byteLength falls back to the provable minimum; a
 // malformed/forged carried value gets no xref authority at all).
+function toBigIntAddress(addr) {
+  if (typeof addr === 'bigint') return addr >= 0n ? addr : null;
+  if (typeof addr === 'number') return Number.isSafeInteger(addr) && addr >= 0 ? BigInt(addr) : null;
+  if (typeof addr === 'string') {
+    const text = addr.trim();
+    if (/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(text)) {
+      try {
+        const v = BigInt(text);
+        return v >= 0n ? v : null;
+      } catch { return null; }
+    }
+  }
+  return null;
+}
+
 function stringByteSpan(s) {
   if (typeof s?.text !== 'string') return null;
   const carried = s.byteLength;
@@ -400,7 +415,9 @@ export function buildStringMap(opts) {
     // authority rather than an over-inclusive display-derived span.
     const span = stringByteSpan(s);
     if (span == null) continue;
-    const users = program.functionsReferencing(s.addr, BigInt(Math.min(span, 128)), 8);
+    const addr = toBigIntAddress(s.addr);
+    if (addr == null) continue;
+    const users = program.functionsReferencing(addr, BigInt(Math.min(span, 128)), 8);
     if (!users.length) continue;
     for (const hit of hits) {
       if (!groups.has(hit.id)) groups.set(hit.id, { id: hit.id, funcs: new Map(), score: 0 });

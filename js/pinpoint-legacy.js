@@ -732,10 +732,36 @@ export function pickMethodsToRead(methods, goal, n) {
    決まった値について、コード全体からその位置を触っている命令を集め、
    関数ごとにまとめる。同じクラスのメソッドの中にあるものが本命。 */
 
+function accessGroupKey(offset, size) {
+  const offKey = offset.toString();
+  const wanted = Number(size) || 0;
+  return wanted > 0 ? `${offKey}:${wanted}` : offKey;
+}
+
+function readAccessGroup(groups, offset, size) {
+  if (!groups) return null;
+  const offKey = offset.toString();
+  const wanted = Number(size) || 0;
+  const compKey = wanted > 0 ? `${offKey}:${wanted}` : offKey;
+  const hasKey = (k) => (groups.has ? groups.has(k) : Object.hasOwn(groups, k));
+  const getKey = (k) => (groups.get ? groups.get(k) : groups[k]);
+  if (hasKey(compKey)) {
+    const hit = getKey(compKey);
+    return Array.isArray(hit) ? hit : null;
+  }
+  if (compKey !== offKey && hasKey(offKey)) {
+    const hit = getKey(offKey);
+    if (!Array.isArray(hit)) return null;
+    if (wanted <= 0) return hit;
+    return hit.filter((site) => site?.size == null || site.size === wanted || (wanted > 8 && site.size === 8));
+  }
+  return null;
+}
+
 async function collectChangeSites(top, o) {
-  const res = await o.scanAccess([{ offset: top.offset, size: top.size || 0 }]);
-  const offKey = String(top.offset);
-  const list = (res && (res.get ? res.get(offKey) : (Object.hasOwn(res, offKey) ? res[offKey] : null))) || [];
+  const req = [{ offset: top.offset, size: top.size || 0 }];
+  const res = o.signal ? await o.scanAccess(req, { signal: o.signal }) : await o.scanAccess(req);
+  const list = readAccessGroup(res, top.offset, top.size || 0) || [];
   return groupSites(list, o.program, o.fields, top.className);
 }
 
@@ -915,15 +941,14 @@ export async function pinpointLocation(opts) {
   if (o.scanAccess && !cancelled()) {
     try {
       const toScan = list.slice(0, 8);
-      const scannedOffsets = new Set(toScan.map((e) => e.offset.toString()));
-      const groups = await o.scanAccess(toScan.map((e) => ({
-        offset: e.offset, size: e.size || 0,
-      })));
+      const scannedKeys = new Set(toScan.map((e) => accessGroupKey(e.offset, e.size || 0)));
+      const req = toScan.map((e) => ({ offset: e.offset, size: e.size || 0 }));
+      const groups = o.signal ? await o.scanAccess(req, { signal: o.signal }) : await o.scanAccess(req);
       for (const e of list) {
-        const offKey = e.offset.toString();
-        if (!scannedOffsets.has(offKey)) continue;
-        const sites = (groups && (groups.get ? groups.get(offKey)
-          : (Object.hasOwn(groups, offKey) ? groups[offKey] : null))) || [];
+        const key = accessGroupKey(e.offset, e.size || 0);
+        if (!scannedKeys.has(key)) continue;
+        const sites = readAccessGroup(groups, e.offset, e.size || 0);
+        if (sites == null) continue;
         e.siteCount = sites.length;
         e.sites = groupSites(sites, program, o.fields, null);
       }
@@ -1419,7 +1444,7 @@ function buildFunctionCandidate(c, goal, o) {
     const seenText = new Set();
     const named = [];
     for (const s of c.strings || []) {
-      if (!s || s.users == null || seenText.has(s.text)) continue;
+      if (!s || s.users == null || s.users <= 0 || seenText.has(s.text)) continue;
       seenText.add(s.text);
       const lr = exclusiveLR(total, s.users, s.score || 0, s.text);
       if (lr <= 1) continue;
@@ -1746,19 +1771,20 @@ async function verifyFunctionCandidate(c, goal, o) {
  */
 export async function pinpoint(opts) {
   const o = opts || {};
+  const cancelled = () => Boolean(o.signal?.aborted || o.isCancelled?.());
   let field = await pinpointField(o);
 
   /*
    * クラス表がなくて名前から特定できなかったときは、形から場所を特定しにいく。
    * ここで諦めると、Swift だけのアプリや名前を潰したアプリで何も言えなくなる。
    */
-  if (!field.top && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size))) {
+  if (!cancelled() && !field.top && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size))) {
     const loc = await pinpointLocation(o);
     if (loc.top) field = loc;
   }
 
   let fn = null;
-  if (o.ranked && o.ranked.length) {
+  if (!cancelled() && o.ranked && o.ranked.length) {
     fn = await pinpointFunction(Object.assign({}, o, {
       // Offset-only function verification cannot establish a C++ owner.
       field: field.top && field.top.source !== 'cxx' ? {

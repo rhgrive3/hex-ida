@@ -185,6 +185,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         if (kind === 'if') { consumedValues.push({ id: 'cond', bits: 32 }); consume(1); }
         if (currentStackHeight < bt.params.length && !currentFrame().polymorphic) fail('wasm-stack-underflow-block-params');
         const baseHeight = Math.max(0, currentStackHeight - bt.params.length);
+        currentStackHeight = baseHeight + bt.params.length;
         const frame = { id: `frame_${frameSeq++}`, kind, startOffset: opOffset, bodyOffset: pos, stackHeight: baseHeight, params: bt.params, results: bt.results, pendingBranches: [], polymorphic: false, elseSeen: false, ifEffect: null, elseEffect: null };
         controlStack.push(frame);
         if (kind === 'if') {

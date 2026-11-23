@@ -408,7 +408,7 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
         const run = uiButton(text('自動解析を実行する', 'Run automatic analysis'), { cls:'ui-primary-action', onClick:() => runAutomaticAnalysis(app, router) });
         host.replaceChildren(emptyState(
           text('まだ結果がありません', 'No results yet'),
-          text('ここには自動解析で見つかった結果が並びます。ファイル全体を調べて、HP・攻撃力などの目的ごとに答えを探します。', 'Investigate a goal to create claims.'),
+          text('ここには自動解析で見つかった結果が並びます。ファイル全体を調べて、HP・攻撃力などの目的ごとに答えを探します。', 'Automatic analysis findings appear here. Run automatic analysis to scan the binary for goals such as HP and attack.'),
           run,
         ));
         return;

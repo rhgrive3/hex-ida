@@ -363,7 +363,7 @@ export class TraceProvider {
         sliceId: hasVerifiedStaticIdentity ? (module.sliceId ?? null) : null,
         imageId: hasVerifiedStaticIdentity ? (module.imageId ?? null) : null,
         buildIdentity: module.buildIdentity ?? module.uuid ?? null,
-        identityState: hasVerifiedStaticIdentity ? (module.identityState ?? 'resolved') : 'unresolved',
+        identityState: hasVerifiedStaticIdentity ? (module.identityState ?? 'resolved') : (module.identityState === 'mismatch' ? 'mismatch' : 'unresolved'),
         identityEvidenceIds,
         loadedSequence: module.loadedSequence,
       });

@@ -35,6 +35,10 @@ function isDeepFrozen(value, seen = new WeakSet()) {
 }
 
 export function dexMethodDefinitions(image) {
+  if (image != null && typeof image === 'object') {
+    const cached = definitionIndexByFrozenImage.get(image);
+    if (cached) return cached;
+  }
   const methods = image != null && typeof image === 'object'
     ? Object.getOwnPropertyDescriptor(image, 'methods') : null;
   const classes = image != null && typeof image === 'object'
@@ -42,10 +46,6 @@ export function dexMethodDefinitions(image) {
   const cacheable = image != null && typeof image === 'object' && Object.isFrozen(image)
     && methods && 'value' in methods && Array.isArray(methods.value) && isDeepFrozen(methods.value)
     && classes && 'value' in classes && Array.isArray(classes.value) && isDeepFrozen(classes.value);
-  if (cacheable) {
-    const cached = definitionIndexByFrozenImage.get(image);
-    if (cached) return cached;
-  }
   const out = new Map();
   for (const cls of image?.classes ?? []) {
     for (const kind of ['directMethods', 'virtualMethods']) {

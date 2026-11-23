@@ -1,4 +1,5 @@
 import { createAppAnalysisQueryAdapter as createBaseAdapter } from './app-adapter.js';
+import { scopedImmutableSourceIdentity } from './scoped-host.js';
 import { stableDigest, jsonSafe } from '../../core/identity/index.js';
 import { runtimeEvidenceForApp } from '../../runtime/app-runtime.js';
 
@@ -151,25 +152,39 @@ async function canonicalIdentity(app, options = {}) {
   const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.activeProject ?? app?.project ?? null;
   let binaryId = backend?.binaryId ?? null;
 
-  // A live Backend can derive a content-addressed identity, so parser/project
-  // metadata must never short-circuit it. Metadata is only a compatibility
-  // fallback for adapter-shaped consumers without Backend identity support.
-  if (!binaryId && typeof backend?.ensureBinaryId === 'function') {
-    binaryId = await backend.ensureBinaryId({
-      signal: options.signal ?? null,
-      onProgress: options.onIdentityProgress ?? options.onProgress,
-    });
-  }
-  if (!binaryId) {
-    binaryId = fileInfo?.binaryId
-      ?? fileInfo?.sha256
-      ?? fileInfo?.hash
-      ?? project?.binaryHash
-      ?? project?.binary?.hash
-      ?? null;
-  }
-  if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
-    binaryId = await app.ensureAnalysisIdentity(options);
+  if (options.scopedSourceIdentity === true) {
+    // Scoped queries never force a full-file hash and do not treat a
+    // display/project hash or unverified backend.binaryId as proof of the
+    // current source's contents.
+    const local = scopedImmutableSourceIdentity(app, backend?.file ?? storeValue(app, 'file'));
+    if (!local) {
+      const error = new Error('scoped-analysis-disabled-or-source-unavailable');
+      error.code = 'ANALYSIS_QUERY_SCOPED_SOURCE_UNAVAILABLE';
+      throw error;
+    }
+    const verified = backend?.binaryId;
+    binaryId = typeof verified === 'string' && /^bin_sha256_[0-9a-f]{64}$/.test(verified) ? verified : local;
+  } else {
+    // A live Backend can derive a content-addressed identity, so parser/project
+    // metadata must never short-circuit it. Metadata is only a compatibility
+    // fallback for adapter-shaped consumers without Backend identity support.
+    if (!binaryId && typeof backend?.ensureBinaryId === 'function') {
+      binaryId = await backend.ensureBinaryId({
+        signal: options.signal ?? null,
+        onProgress: options.onIdentityProgress ?? options.onProgress,
+      });
+    }
+    if (!binaryId) {
+      binaryId = fileInfo?.binaryId
+        ?? fileInfo?.sha256
+        ?? fileInfo?.hash
+        ?? project?.binaryHash
+        ?? project?.binary?.hash
+        ?? null;
+    }
+    if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
+      binaryId = await app.ensureAnalysisIdentity(options);
+    }
   }
   abortIfNeeded(options.signal);
   if (!binaryId) {

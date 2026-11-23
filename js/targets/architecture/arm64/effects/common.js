@@ -11,7 +11,7 @@ export const ARM64_ARCHITECTURE_ID = 'arm64';
 export const ARM64_MODE = 'a64';
 export const ARM64_INSTRUCTION_BYTES = 4n;
 
-const REGISTER_EXTEND_MNEMONICS = new Set(['add','adds','sub','subs']);
+const REGISTER_EXTEND_MNEMONICS = new Set(['add','adds','sub','subs','cmp','cmn']);
 
 // Canonical MachineEffects identity is a primitive string. Values that merely
 // survive `String()` coercion (arrays, objects, malformed wrappers) are

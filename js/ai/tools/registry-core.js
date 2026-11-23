@@ -188,7 +188,8 @@ export class ToolRegistry {
       if (execution.timedOut()) throw new AIError("tool_failed", `${name} timed out.`, { timeoutMs });
       if (error instanceof AIError) throw error;
       const message = error?.message || String(error);
-      if (message === "cancelled" || options.signal?.aborted) throw new AIError("cancelled", "AI investigation was cancelled.");
+      if (options.signal?.aborted) throw abortError(options.signal);
+      if (message === "cancelled") throw new AIError("cancelled", "AI investigation was cancelled.");
       if (message === "timeout") throw new AIError("tool_failed", `${name} timed out.`, { cause: message });
       if (message === "scope_violation") throw new AIError("scope_violation", `${name} is outside the current scope boundary.`);
       if (/^(invalid-cursor|stale-cursor|cursor-|unknown-detail-ref|stale-detail-ref|detail-path|invalid-detail-path)/.test(message)) {

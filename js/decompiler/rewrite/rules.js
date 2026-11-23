@@ -379,6 +379,7 @@ const selectRules = [{
     if (n?.kind !== 'select' || n.condition?.kind !== 'compare') return null;
     if (!integerComparison(n.condition)) return null;
     const q = n.condition;
+    if (q.compareSigned !== true) return null;
     if (!isConst(q.right, 0) || !isStable(q.left)) return null;
     const unwrapCast = (x) => x?.kind === 'cast' ? unwrapCast(x.arg) : x;
     const neg = (x) => {

@@ -11,7 +11,7 @@ export const ARM64_BTYPE_REGISTER_ID = 'pstate.btype';
 export const ARM64_BTYPE_WIDTH_BITS = 2;
 export const ARM64_BTYPE_REGISTER = createRegisterValue(ARM64_BTYPE_REGISTER_ID, ARM64_BTYPE_WIDTH_BITS);
 
-const DIRECT_RESET = /^(?:b|bl|cbz|cbnz|tbz|tbnz|ret|retaa|retab|b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv))$/;
+const DIRECT_RESET = /^(?:b|bl|cbz|cbnz|tbz|tbnz|ret|retaa|retab|retaasppc[a-z0-9]*|retabsppc[a-z0-9]*|bc?\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv))$/;
 const INDIRECT_JUMP = new Set(['br','braa','brab','braaz','brabz']);
 const INDIRECT_CALL = new Set(['blr','blraa','blrab','blraaz','blrabz']);
 

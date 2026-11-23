@@ -74,7 +74,7 @@ function aggregateAlignmentEvidence(parameter, layoutEvidence) {
     if (!evidence.present || evidence.value == null) return { proven:false, alignment:1 };
     memberAlignments.push(evidence.value);
   }
-  return { proven:true, alignment:Math.max(8, ...memberAlignments) };
+  return { proven:true, alignment:Math.max(1, ...memberAlignments) };
 }
 
 function pointerSpelling(value) {
@@ -95,15 +95,15 @@ function parameterClass(param) {
   const hvaMeta = descriptorBoolean(param, 'hva');
   const aggregateMetadataInvalid = (hfaMeta.present && hfaMeta.value === null)
     || (hvaMeta.present && hvaMeta.value === null);
-  const hfa = hfaMeta.value === true || param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
-  const hva = hvaMeta.value === true || cls.includes('hva');
+  const hfa = !pointer && (hfaMeta.value === true || param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous'));
+  const hva = !pointer && (hvaMeta.value === true || cls.includes('hva'));
   const homogeneous = hfa || hva;
   const aggregateDescriptorPresent = aggregateLayoutDescriptorPresent(param);
   const aggregateHint = param?.aggregate === true || param?.isAggregate === true
     || aggregateDescriptorPresent || /aggregate|struct|union|record|array|composite/.test(`${type} ${cls}`);
-  const vector = !aggregateHint && (param?.vector === true || cls.includes('vector') || /vector|simd/.test(type));
+  const vector = !pointer && !aggregateHint && (param?.vector === true || cls.includes('vector') || /vector|simd/.test(type));
   const aggregate = !pointer && !homogeneous && !appleLongDouble && aggregateHint;
-  const fp = !aggregate && (appleLongDouble || hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
+  const fp = !pointer && !aggregate && (appleLongDouble || hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
   // A nested layout descriptor is the canonical aggregate source.  Resolve it
   // before reading legacy aliases so a classifier cannot publish bits/member
   // lanes from one descriptor while the validated physical layout comes from
@@ -384,6 +384,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
         });
         continue;
       }
+      gp = 8;
     }
 
     const naturalStackAlignmentBytes = c.homogeneous

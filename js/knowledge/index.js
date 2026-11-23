@@ -168,7 +168,7 @@ export class KnowledgeDB {
       const confirmationBoost = record.confirmation === 'user-confirmed' || record.confirmation === 'debugger-confirmed' ? 1 : record.confirmation === 'metadata-confirmed' ? 0.98 : 0.92;
       const confidence = clamp(cmp.confidence * (0.55 + 0.45 * clamp(record.confidence)) * confirmationBoost);
       if (confidence < (options.threshold ?? 0.55) || cmp.identity === 'unrelated') continue;
-      const rejected = await this.isRejected({ candidateIdentity:record.identityKey, candidateName:record.names[0], fingerprint });
+      const rejected = await this.isRejected({ candidateIdentity:record.identityKey, candidateName:record.names[0], fingerprint, sourceBinaryHash:input?.sourceBinaryHash || options.sourceBinaryHash || null });
       if (rejected) continue;
       matches.push({ record:clone(record), confidence, identity:cmp.identity, reasons:cmp.reasons, evidence:cmp.evidence });
     }
@@ -234,7 +234,8 @@ export class KnowledgeDB {
             const cmp = compareFingerprints(record.fingerprint, fps[candidateIndex]);
             if (cmp.confidence < 0.7 || !['exact','normalized-identical','semantic-equivalent','probable-same'].includes(cmp.identity)) continue;
             const candidateName = record.names?.[0] || null;
-            if (await this.isRejected({ candidateIdentity:record.identityKey, candidateName, fingerprint:fps[candidateIndex] })) continue;
+            const sourceBinaryHash = functions[candidateIndex]?.sourceBinaryHash || options.sourceBinaryHash || null;
+            if (await this.isRejected({ candidateIdentity:record.identityKey, candidateName, fingerprint:fps[candidateIndex], sourceBinaryHash })) continue;
             const knowledge = { id:record.id, names:record.names || [], roles:record.roles || [], confirmation:record.confirmation, confidence:cmp.confidence, identity:cmp.identity, reasons:cmp.reasons };
             addScore(candidateIndex, 0.25 * cmp.confidence, 'prior-knowledge', knowledge);
           }

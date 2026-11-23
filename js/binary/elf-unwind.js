@@ -538,8 +538,15 @@ function decodeEhValue(r, p0, enc, ctx, end = r.length) {
     if (!Number.isSafeInteger(p) || !Number.isSafeInteger(end) || p < 0 || n < 0 || p > end || n > end - p)
       throw new Error('DW_EH_PE value crosses bounded record');
   };
+  const isRelative = application === 0x10 || application === 0x20 || application === 0x30 || application === 0x40;
   let raw, next;
-  if (format === 0x00) { requireSpan(ptrBytes); raw = ctx.bits === 64 ? r.u64(p) : BigInt(r.u32(p)); next = p + ptrBytes; }
+  if (format === 0x00) {
+    requireSpan(ptrBytes);
+    raw = isRelative
+      ? (ctx.bits === 64 ? r.i64(p) : BigInt(r.i32(p)))
+      : (ctx.bits === 64 ? r.u64(p) : BigInt(r.u32(p)));
+    next = p + ptrBytes;
+  }
   else if (format === 0x01) { const x = r.uleb(p, 10, end); raw = x.value; next = x.next; }
   else if (format === 0x02) { requireSpan(2); raw = BigInt(r.u16(p)); next = p + 2; }
   else if (format === 0x03) { requireSpan(4); raw = BigInt(r.u32(p)); next = p + 4; }

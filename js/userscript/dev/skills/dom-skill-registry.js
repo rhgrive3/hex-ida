@@ -104,18 +104,28 @@ export class DomSkillRegistry {
 
   async run({ skillId, program, candidate = false, args = {}, signal = null } = {}) {
     const record = this.requireRecord(skillId);
-    const manifest = candidate ? record.candidate : record.active;
-    if (!manifest) throw skillError(candidate ? 'candidate-missing' : 'active-skill-missing', candidate ? 'DOM Skill candidate is not installed.' : 'DOM Skill is not active.');
+    const isCandidate = !!candidate;
+    const manifest = isCandidate ? record.candidate : record.active;
+    if (!manifest) throw skillError(isCandidate ? 'candidate-missing' : 'active-skill-missing', isCandidate ? 'DOM Skill candidate is not installed.' : 'DOM Skill is not active.');
+    if (isCandidate && (!record.candidateValidation?.ok || record.candidateValidation.version !== manifest.version)) {
+      throw skillError('candidate-not-validated', 'DOM Skill candidate must pass live read-only validation before running.');
+    }
     const name = normalizeProgramName(program);
     const base = manifest.programs[name];
     if (!base) throw skillError('program-missing', `DOM Skill program is unavailable: ${name}`);
     const bound = bindProgramArgs(base, args);
+    if (isCandidate) validateAutomationProgram(bound, { requireReadOnly: true });
     return {
       skillId: manifest.skillId,
       version: manifest.version,
       program: name,
-      candidate: !!candidate,
-      result: await executeAutomationProgram(bound, { document: this.document, location: this.location, signal }),
+      candidate: isCandidate,
+      result: await executeAutomationProgram(bound, {
+        document: this.document,
+        location: this.location,
+        signal,
+        requireReadOnly: isCandidate,
+      }),
     };
   }
 

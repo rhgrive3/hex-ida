@@ -225,6 +225,51 @@ export function compileGoal(text) {
 
   const expect = expectationOf(action ? action.id : null, entityGoal ? entityGoal.id : null);
 
+  const mergedExpects = Object.assign(
+    {},
+    entityGoal ? entityGoal.expects : (parsedGoal ? parsedGoal.expects : null),
+  );
+  if (expect.memory.includes('store')) mergedExpects.store = true;
+  if (expect.control.includes('compare')) mergedExpects.compare = true;
+  if (expect.calls.length) mergedExpects.call = true;
+  if (expect.steps && expect.steps.includes('arithmetic')) mergedExpects.numeric = true;
+
+  let compiledGoal = null;
+  if (parsedGoal) {
+    const mergedExtraTerms = (parsedGoal.extraTerms || []).slice();
+    const seenTerm = new Map();
+    for (let i = 0; i < mergedExtraTerms.length; i++) {
+      const lower = String(mergedExtraTerms[i]?.word || '').toLowerCase();
+      if (!seenTerm.has(lower)) seenTerm.set(lower, i);
+    }
+    for (const term of entityTerms) {
+      const lower = term.toLowerCase();
+      if (seenTerm.has(lower)) {
+        const idx = seenTerm.get(lower);
+        const existing = mergedExtraTerms[idx];
+        if (!existing || typeof existing !== 'object') {
+          mergedExtraTerms[idx] = { word: term, weight: 1 };
+        } else if (existing.weight == null || existing.weight < 1) {
+          mergedExtraTerms[idx] = Object.assign({}, existing, { weight: 1 });
+        }
+        continue;
+      }
+      seenTerm.set(lower, mergedExtraTerms.length);
+      mergedExtraTerms.push({ word: term, weight: 1 });
+    }
+    compiledGoal = entityGoal
+      ? Object.assign({}, entityGoal, {
+          text: raw,
+          extraTerms: mergedExtraTerms,
+          free: false,
+          expects: mergedExpects,
+        })
+      : Object.assign({}, parsedGoal, {
+          extraTerms: mergedExtraTerms,
+          expects: mergedExpects,
+        });
+  }
+
   const query = {
     text: raw,
     entity: {
@@ -241,7 +286,7 @@ export function compileGoal(text) {
     sink: sinkOf(action ? action.id : null, entityGoal ? entityGoal.id : null),
     expect: { calls: expect.calls, control: expect.control, memory: expect.memory, constants: expect.constants },
     /* 既存の探索系（rank.js / pinpoint.js）にそのまま渡せる形も添える */
-    goal: parsedGoal,
+    goal: compiledGoal,
     confident: !missing.length,
     missing,
   };

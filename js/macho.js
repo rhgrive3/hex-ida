@@ -1006,10 +1006,15 @@
     const local = entries.filter((e) => e && e.lsda >= vm && e.lsda < secEnd)
       .slice().sort((a, b) => (a.lsda < b.lsda ? -1 : a.lsda > b.lsda ? 1 : 0));
 
+    let groupEndIdx = 0;
     for (let i = 0; i < local.length; i++) {
       const e = local[i];
+      if (groupEndIdx <= i) {
+        groupEndIdx = i + 1;
+        while (groupEndIdx < local.length && local[groupEndIdx].lsda === e.lsda) groupEndIdx++;
+      }
       let p = Number(e.lsda - vm);
-      const end = i + 1 < local.length ? Number(local[i + 1].lsda - vm) : buf.length;
+      const end = groupEndIdx < local.length ? Number(local[groupEndIdx].lsda - vm) : buf.length;
       if (p < 0 || p + 3 > end || end > buf.length) continue;
       try {
         const lpEncoding = u8[p++];
@@ -1329,7 +1334,13 @@
     const regions = Array.isArray(options.regions) ? options.regions : [];
     const index = objcRegionIndex(options.regionIndex || regions);
     const imageBase = options.imageBase == null ? null : BigInt(options.imageBase);
-    const align = instructionAlignment(options.architecture || 'arm64');
+    const arch = options.architecture || 'arm64';
+    const is32 = options.pointerBits === 32 || options.bits === 32
+      || arch === 'arm64_32' || arch === 'arm' || arch === 'armv7' || arch === 'armv7s' || arch === 'armv7k'
+      || arch === 'x86' || arch === 'i386' || arch === 'ppc';
+    const ptrSize = is32 ? 4 : 8;
+    const minNonRelativeStride = ptrSize * 3;
+    const align = instructionAlignment(arch);
     const inside = (addr, rs) => {
       /* #8798: the authority sets are sorted disjoint interval lists, so an
        * address membership check is a binary search instead of a linear
@@ -1344,6 +1355,7 @@
       return found >= 0 && addr < rs[found][1];
     };
      const i32 = (p) => BigInt(dv.getInt32(p, true));
+     const u32 = (p) => BigInt(dv.getUint32(p, true));
      const u64 = (p) => dv.getBigUint64(p, true);
      const vm = BigInt(sectionVM);
 
@@ -1356,7 +1368,7 @@
        const relative = !!(raw & 0x80000000);
        const directSelector = !!(raw & 0x40000000);
        const stride = raw & 0xfffc;
-       if (relative ? (stride < 12 || stride > 256) : (stride < 24 || stride > 256)) continue;
+       if (relative ? (stride < 12 || stride > 256) : (stride < minNonRelativeStride || stride > 256)) continue;
        const bytes = 8 + count * stride;
        if (!Number.isSafeInteger(bytes) || p + bytes > buf.length) continue;
 
@@ -1377,9 +1389,10 @@
            const nameRanges = directSelector ? index.selectorText : index.selrefs;
            if (!inside(nameAddr, nameRanges)) { valid = false; break; }
          } else {
-           nameAddr = objcMethodPointer(u64(q), imageBase);
-           typeAddr = objcMethodPointer(u64(q + 8), imageBase);
-           imp = objcMethodPointer(u64(q + 16), imageBase);
+           const readPtr = is32 ? u32 : u64;
+           nameAddr = objcMethodPointer(readPtr(q), imageBase);
+           typeAddr = objcMethodPointer(readPtr(q + ptrSize), imageBase);
+           imp = objcMethodPointer(readPtr(q + ptrSize * 2), imageBase);
            if (!inside(nameAddr, index.selectorText)) { valid = false; break; }
          }
          if (!inside(typeAddr, index.typeText) || !inside(imp, index.exec) || (imp % align) !== 0n) {

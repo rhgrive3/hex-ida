@@ -298,6 +298,7 @@ function validateNormalizedFunction(out, options) {
       ...node.inputs,
       ...(node.metadata?.returnControlTarget?.state === 'resolved' ? [node.metadata.returnControlTarget.valueId] : []),
       ...(node.memory ? [node.memory.addressExpr.valueId] : []),
+      ...(node.call?.targetValueIds ?? []),
       ...(node.call ? (node.call.memoryRead.accesses ?? []).concat(node.call.memoryWrite.accesses ?? []).map((access) => access.addressExpr.valueId) : []),
       ...(node.intrinsic ? (node.intrinsic.memoryRead.accesses ?? []).concat(node.intrinsic.memoryWrite.accesses ?? []).map((access) => access.addressExpr.valueId) : []),
     ];

@@ -47,7 +47,7 @@ function parseBitScanEncoding(bytes, modrmOffset, rex) {
       sibBase = sib & 7;
       const sibIndex = (sib >>> 3) & 7;
       scale = 1 << (sib >>> 6);
-      if (sibIndex !== 4) index = ENCODED_GPRS[sibIndex + ((rex & 0x02) !== 0 ? 8 : 0)];
+      if (sibIndex !== 4 || (rex & 0x02) !== 0) index = ENCODED_GPRS[sibIndex + ((rex & 0x02) !== 0 ? 8 : 0)];
       if (mod !== 0 || sibBase !== 5) base = ENCODED_GPRS[sibBase + ((rex & 0x01) !== 0 ? 8 : 0)];
       end++;
     } else if (mod === 0 && rm === 5) {

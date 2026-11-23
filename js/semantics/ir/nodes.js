@@ -155,7 +155,7 @@ export function createSemanticNode(input) {
     id: nonEmpty(input.id, 'semantic-ir-node-id-required'),
     kind,
     blockId: nonEmpty(input.blockId, 'semantic-ir-node-block-required'),
-    inputs: uniqueStrings(input.inputs ?? [], 'semantic-ir-invalid-node-inputs', false),
+    inputs: array(input.inputs ?? [], 'semantic-ir-invalid-node-inputs').map((value) => nonEmpty(value, 'semantic-ir-invalid-node-inputs')),
     outputs: uniqueStrings(input.outputs ?? [], 'semantic-ir-invalid-node-outputs', false),
     operator: input.operator == null ? null : nonEmpty(input.operator, 'semantic-ir-invalid-operator'),
     variable: input.variable == null ? null : createSemanticVariableRef(input.variable),

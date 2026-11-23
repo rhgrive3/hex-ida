@@ -2721,7 +2721,7 @@ function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, 
               let lastWasOffsetDeref = false;
               let hopCount = 0;
               while (true) {
-                const offsetMatch = /^field_([0-9A-Fa-f]+)$/.exec(curField);
+                const offsetMatch = /^field_(?:0[xX])?([0-9A-Fa-f]+)$/.exec(curField);
                 if (offsetMatch) {
                   expr = `*(uint64 *)((uintptr_t)(${expr}) + 0x${offsetMatch[1]})`;
                   lastWasOffsetDeref = true;

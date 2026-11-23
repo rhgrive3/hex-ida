@@ -1,11 +1,11 @@
 import { effectOf } from '../ast/nodes.js';
 
-const PREC = { select: 2, oror: 3, '||': 3, andand: 4, '&&': 4, or: 5, '|': 5, xor: 6, '^': 6, and: 7, '&': 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, shr: 10, add: 11, sub: 11, fadd: 11, fsub: 11, mul: 12, div: 12, fmul: 12, fdiv: 12, sdiv: 12, udiv: 12, mod: 12, rem: 12, smod: 12, umod: 12, srem: 12, urem: 12, unary: 13, primary: 15 };
-const OP_TEXT = { add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', and: '&', or: '|', xor: '^', andand: '&&', oror: '||', shl: '<<', lshr: '>>', ashr: '>>', shr: '>>', div: '/', fdiv: '/', sdiv: '/', udiv: '/', mod: '%', rem: '%', smod: '%', umod: '%', srem: '%', urem: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
+const PREC = { select: 2, oror: 3, '||': 3, andand: 4, '&&': 4, or: 5, '|': 5, xor: 6, '^': 6, and: 7, '&': 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, shr: 10, add: 11, sub: 11, fadd: 11, fsub: 11, mul: 12, smull: 12, umull: 12, div: 12, fmul: 12, fdiv: 12, sdiv: 12, udiv: 12, mod: 12, rem: 12, smod: 12, umod: 12, srem: 12, urem: 12, unary: 13, primary: 15 };
+const OP_TEXT = { add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', smull: '*', umull: '*', fmul: '*', and: '&', or: '|', xor: '^', andand: '&&', oror: '||', shl: '<<', lshr: '>>', ashr: '>>', shr: '>>', div: '/', fdiv: '/', sdiv: '/', udiv: '/', mod: '%', rem: '%', smod: '%', umod: '%', srem: '%', urem: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
 const INTEGER_ONLY_BINARY_OPS = new Set([
   'and', 'or', 'xor',
-  'shl', 'lshr', 'ashr', 'shr',
-  'mul', 'div', 'udiv', 'sdiv',
+  'shl', 'lshr', 'ashr', 'shr', 'ror',
+  'mul', 'smull', 'umull', 'div', 'udiv', 'sdiv',
   'mod', 'rem', 'umod', 'smod', 'urem', 'srem',
 ]);
 
@@ -308,6 +308,18 @@ function signedBinaryOperands(n, p, opts) {
       return [printIntegerBinaryOperand(n.left, bits, false, p, opts), printIntegerBinaryOperand(n.right, bits, false, p + 1, opts)];
     case 'sdiv': case 'smod': case 'srem':
       return [printIntegerBinaryOperand(n.left, bits, true, p, opts), printIntegerBinaryOperand(n.right, bits, true, p + 1, opts)];
+    case 'smull':
+    case 'umull': {
+      const isSigned = n.op === 'smull';
+      const castPrefix = isSigned ? '(int64_t)(int32_t)' : '(uint64_t)(uint32_t)';
+      const formatOp = (operand) => {
+        const inner = exprIsPointerTyped(operand, opts?.pointerVarNames)
+          ? printPointerAsUintptr(operand, opts)
+          : printExpression(operand, PREC.unary, opts);
+        return wrap(`${castPrefix}${inner}`, PREC.unary, p);
+      };
+      return [formatOp(n.left), formatOp(n.right)];
+    }
     default:
       return null;
   }
@@ -343,8 +355,11 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       if (!mustCast) {
         return `${printExpression(n.base, PREC.primary, opts)}[${idxText}]`;
       }
-      const elemBits = [8, 16, 32, 64].includes(Number(n.bits)) ? Number(n.bits) : (Number(n.bits) === 128 ? 128 : 8);
-      const elemType = elemBits === 128 ? 'uint128' : `uint${elemBits}_t`;
+      const elemBits = [8, 16, 32, 64, 128].includes(Number(n.bits)) ? Number(n.bits) : 8;
+      const elemType = n.elemType
+        || (n.isFloat
+          ? (elemBits === 32 ? 'float' : 'double')
+          : (elemBits === 128 ? 'uint128' : `${n.signed === true ? 'int' : 'uint'}${elemBits}_t`));
       return `((${elemType} *)(uintptr_t)(${printExpression(n.base, 0, opts)}))[${idxText}]`;
     }
     case 'load': return n.location?.text || n.location?.name || `memory_${String(n.location?.key || 'unknown').replace(/[^A-Za-z0-9_]/g, '_')}`;
@@ -361,18 +376,44 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return `${sanitizeCallableIdent(n.name, 'unknown_intrinsic')}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
     }
     case 'unary': {
-      const op = { neg: '-', fneg: '-', not: '~', lnot: '!' }[n.op];
+      const opLower = String(n.op || '').toLowerCase();
+      const op = { neg: '-', fneg: '-', not: '~', lnot: '!' }[opLower];
       if (op) {
-        if ((n.op === 'not' || n.op === 'neg') && exprIsPointerTyped(n.arg, opts.pointerVarNames)) {
+        if ((opLower === 'not' || opLower === 'neg') && exprIsPointerTyped(n.arg, opts.pointerVarNames)) {
           return wrap(`${op}${printPointerAsUintptr(n.arg, opts)}`, PREC.unary, parentPrec);
         }
         return wrap(`${op}${printExpression(n.arg, PREC.unary, opts)}`, PREC.unary, parentPrec);
       }
-      if (n.op === 'trunc' || n.op === 'zext' || n.op === 'sext') {
-        const type = n.op === 'sext' ? exactSignedType(n.bits) : exactUnsignedType(n.bits);
+      if (opLower === 'is-zero' || opLower === 'is_zero') {
+        const inner = parenthesizeBitwiseOperand(printExpression(n.arg, PREC.eq, opts));
+        return wrap(`${inner} == 0`, PREC.eq, parentPrec);
+      }
+      if (opLower === 'is-nonzero' || opLower === 'is_nonzero') {
+        const inner = parenthesizeBitwiseOperand(printExpression(n.arg, PREC.ne, opts));
+        return wrap(`${inner} != 0`, PREC.ne, parentPrec);
+      }
+      if (opLower === 'trunc' || opLower === 'zext' || opLower === 'sext') {
+        const dstBits = normalizedIntegerWidth(n.bits);
+        const type = opLower === 'sext'
+          ? exactSignedType(dstBits)
+          : (opLower === 'trunc' && n.signed === true ? exactSignedType(dstBits) : exactUnsignedType(dstBits));
         const argText = exprIsPointerTyped(n.arg, opts.pointerVarNames)
           ? printPointerAsUintptr(n.arg, opts)
           : printExpression(n.arg, PREC.unary, opts);
+        if ((opLower === 'sext' || opLower === 'zext') && n.fromBits != null) {
+          const fromBits = normalizedIntegerWidth(n.fromBits);
+          if (fromBits < dstBits) {
+            const wantSigned = opLower === 'sext';
+            const alreadyNarrowed = n.arg?.kind === 'unary'
+              && n.arg.op === 'trunc'
+              && normalizedIntegerWidth(n.arg.bits) === fromBits
+              && (wantSigned ? n.arg.signed === true : n.arg.signed !== true);
+            if (!alreadyNarrowed) {
+              const narrowType = wantSigned ? exactSignedType(fromBits) : exactUnsignedType(fromBits);
+              return wrap(`(${type})(${narrowType})${argText}`, PREC.unary, parentPrec);
+            }
+          }
+        }
         return wrap(`(${type})${argText}`, PREC.unary, parentPrec);
       }
       const arg = printExpression(n.arg, 0, opts);
@@ -382,26 +423,26 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       const dstIsFloat = n.bits != null ? is32 : srcIsFloat;
       const sintType = is32 ? 'int32_t' : 'int64_t';
       const uintType = is32 ? 'uint32_t' : 'uint64_t';
-      if (n.op === 'fabs') return `${dstIsFloat ? 'fabsf' : 'fabs'}(${arg})`;
-      if (n.op === 'abs') return `abs(${arg})`;
-      if (n.op === 'fsqrt' || n.op === 'sqrt') return `${dstIsFloat ? 'sqrtf' : 'sqrt'}(${arg})`;
-      if (n.op === 'frinta' || n.op === 'frintn') return `${dstIsFloat ? 'roundf' : 'round'}(${arg})`;
-      if (n.op === 'frintm') return `${dstIsFloat ? 'floorf' : 'floor'}(${arg})`;
-      if (n.op === 'frintp') return `${dstIsFloat ? 'ceilf' : 'ceil'}(${arg})`;
-      if (n.op === 'frintz') return `${dstIsFloat ? 'truncf' : 'trunc'}(${arg})`;
-      if (n.op === 'fcvtzs' || n.op === 'f2i') return `((${sintType})(double)(${arg}))`;
-      if (n.op === 'fcvtzu' || n.op === 'f2u') return `((${uintType})(double)(${arg}))`;
-      if (n.op === 'fcvtps') return `((${sintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${arg}))`;
-      if (n.op === 'fcvtms') return `((${sintType})${srcIsFloat ? 'floorf' : 'floor'}(${arg}))`;
-      if (n.op === 'fcvtas' || n.op === 'fcvtns') return `((${sintType})${srcIsFloat ? 'roundf' : 'round'}(${arg}))`;
-      if (n.op === 'fcvtpu') return `((${uintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${arg}))`;
-      if (n.op === 'fcvtmu') return `((${uintType})${srcIsFloat ? 'floorf' : 'floor'}(${arg}))`;
-      if (n.op === 'fcvtau' || n.op === 'fcvtnu') return `((${uintType})${srcIsFloat ? 'roundf' : 'round'}(${arg}))`;
+      if (opLower === 'fabs') return `${dstIsFloat ? 'fabsf' : 'fabs'}(${arg})`;
+      if (opLower === 'abs') return `abs(${arg})`;
+      if (opLower === 'fsqrt' || opLower === 'sqrt') return `${dstIsFloat ? 'sqrtf' : 'sqrt'}(${arg})`;
+      if (opLower === 'frinta' || opLower === 'frintn') return `${dstIsFloat ? 'roundf' : 'round'}(${arg})`;
+      if (opLower === 'frintm') return `${dstIsFloat ? 'floorf' : 'floor'}(${arg})`;
+      if (opLower === 'frintp') return `${dstIsFloat ? 'ceilf' : 'ceil'}(${arg})`;
+      if (opLower === 'frintz') return `${dstIsFloat ? 'truncf' : 'trunc'}(${arg})`;
+      if (opLower === 'fcvtzs' || opLower === 'f2i') return `((${sintType})(double)(${arg}))`;
+      if (opLower === 'fcvtzu' || opLower === 'f2u') return `((${uintType})(double)(${arg}))`;
+      if (opLower === 'fcvtps') return `((${sintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${arg}))`;
+      if (opLower === 'fcvtms') return `((${sintType})${srcIsFloat ? 'floorf' : 'floor'}(${arg}))`;
+      if (opLower === 'fcvtas' || opLower === 'fcvtns') return `((${sintType})${srcIsFloat ? 'roundf' : 'round'}(${arg}))`;
+      if (opLower === 'fcvtpu') return `((${uintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${arg}))`;
+      if (opLower === 'fcvtmu') return `((${uintType})${srcIsFloat ? 'floorf' : 'floor'}(${arg}))`;
+      if (opLower === 'fcvtau' || opLower === 'fcvtnu') return `((${uintType})${srcIsFloat ? 'roundf' : 'round'}(${arg}))`;
       const intSrcBits = Number(n.fromBits ?? n.arg?.bits ?? 64);
-      if (n.op === 'scvtf' || n.op === 'i2f') return `((${is32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'int32_t' : 'int64_t'})(${arg}))`;
-      if (n.op === 'ucvtf' || n.op === 'u2f') return `((${is32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'uint32_t' : 'uint64_t'})(${arg}))`;
-      if (n.op === 'fcvt') return `((${is32 ? 'float' : 'double'})(${arg}))`;
-      return `${n.op}(${arg})`;
+      if (opLower === 'scvtf' || opLower === 'i2f') return `((${is32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'int32_t' : 'int64_t'})(${arg}))`;
+      if (opLower === 'ucvtf' || opLower === 'u2f') return `((${is32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'uint32_t' : 'uint64_t'})(${arg}))`;
+      if (opLower === 'fcvt') return `((${is32 ? 'float' : 'double'})(${arg}))`;
+      return `${sanitizeCallableIdent(n.op, 'unknown_unary')}(${arg})`;
     }
     case 'compare': {
       const p = PREC[n.op] || 8;
@@ -409,6 +450,15 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return wrap(`${left} ${OP_TEXT[n.op] || n.op} ${right}`, p, parentPrec);
     }
     case 'binary': {
+      if (n.op === 'ror') {
+        const left = exprIsPointerTyped(n.left, opts.pointerVarNames)
+          ? printPointerAsUintptr(n.left, opts)
+          : printExpression(n.left, 0, opts);
+        const right = exprIsPointerTyped(n.right, opts.pointerVarNames)
+          ? printPointerAsUintptr(n.right, opts)
+          : printExpression(n.right, 0, opts);
+        return `ror(${left}, ${right})`;
+      }
       const guarded = guardedDivision(n, opts, parentPrec);
       if (guarded) return guarded;
       const exact = moduloArithmeticExpression(n, opts, parentPrec);

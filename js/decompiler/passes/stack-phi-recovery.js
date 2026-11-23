@@ -324,6 +324,7 @@ function materializedFlagCondition(term, maps, ir) {
   const tested = valueOf(term.args?.[0]);
   const select = tested?.def;
   if (select?.op !== 'sel' || !['set', 'setm'].includes(select.sub)) return null;
+  if ((kind === 'tbz' || kind === 'tbnz') && select.sub === 'set' && Number(term.extra?.bit) !== 0) return null;
 
   const flagsValue = valueOf(select.args?.at?.(-1));
   const condition = repairedFlagComparison(flagsValue, select.cond, maps, ir);

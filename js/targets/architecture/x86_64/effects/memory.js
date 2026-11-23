@@ -177,7 +177,9 @@ function liftCrossLaneShiftRotate(ctx, family) {
   const relationshipId = rmwId(ctx,family);
   const value = ctx.readMemory(address.expression,destination.widthBits,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'read',sameInstructionRelationship:true}));
   const faults = x86MemoryFaults('read-write',destination.widthBits);
-  if (count.knownCount === 0) {
+  const knownFlagCount = rotate ? (count.knownFlagCount ?? count.knownCount) : count.knownCount;
+  const flagCountValue = rotate ? (count.flagValue ?? count.value) : count.value;
+  if (knownFlagCount === 0) {
     return ctx.finish({
       family:'memory', possibleFaults:x86MemoryFaults('read',destination.widthBits),
       metadata:{operation:family,widthBits:destination.widthBits,effectiveCount:0,flagsPreserved:true,destinationPreserved:true,memoryReadForFaultSemantics:true,rmwId:relationshipId,address:address.metadata},
@@ -187,10 +189,10 @@ function liftCrossLaneShiftRotate(ctx, family) {
     determinism:'input-dependent',symbolicDetail:'summary-only',
     metadata:{operation,widthBits:destination.widthBits,effectiveCountMask:Number(x86ShiftCountMask(destination.widthBits)),...(rotate?{effectiveCountModuloWidth:destination.widthBits}:{}),semanticRules:Object.freeze({result:x86ShiftResultRule(operation)}),exactArchitecturalSummary:true,rmwId:relationshipId},
   });
-  if (rotate) emitX86RotateFlags(ctx,operation,result,count.value,destination.widthBits,{knownCount:count.knownCount});
-  else emitX86ShiftFlags(ctx,operation,value,result,count.value,destination.widthBits,{knownCount:count.knownCount});
-  if (count.knownCount == null) {
-    ctx.intrinsic('x86.memory.conditional-rmw-write',[count.value,result],[],{
+  if (rotate) emitX86RotateFlags(ctx,operation,result,flagCountValue,destination.widthBits,{knownCount:knownFlagCount});
+  else emitX86ShiftFlags(ctx,operation,value,result,flagCountValue,destination.widthBits,{knownCount:knownFlagCount});
+  if (knownFlagCount == null) {
+    ctx.intrinsic('x86.memory.conditional-rmw-write',[flagCountValue,result],[],{
       determinism:'input-dependent', symbolicDetail:'summary-only',
       memoryWrite:{ scope:'accesses', accesses:[{
         space:address.space, addressExpr:address.expression, widthBits:destination.widthBits, endian:'little',
@@ -483,7 +485,7 @@ function liftSetcc(ctx, family) {
 function liftCmovcc(ctx, family) {
   const [destination, source] = ctx.operands;
   if (destination?.type !== 'register' || source?.type !== 'memory' || memoryOperands(ctx.operands).length !== 1
-    || !supportedWidth(destination.widthBits) || destination.widthBits !== source.widthBits) {
+    || ![16,32,64].includes(Number(destination.widthBits)) || destination.widthBits !== source.widthBits) {
     return ctx.partial('x86-cmovcc-memory-shape-unmodelled', ['memory','registers','flags']);
   }
   const read = readMemoryOperand(ctx, source, { operation:family, conditionalMoveSource:true });

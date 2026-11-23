@@ -669,8 +669,13 @@ async function readAtAddress(msg, signal) {
   const hit = vmToFile(msg.addr);
   if (!hit) return { found: false };
   const requested = Math.min(Math.max(0, Number(msg.len) || 256), 1 << 20);
-  let available = image.fileSize - hit.offset;
-  if (hit.region) available = BigInt(hit.region.fileOffset) + BigInt(hit.region.size) - hit.offset;
+  const fileSize = BigInt(image?.fileSize ?? source?.size ?? 0n);
+  let available = fileSize - hit.offset;
+  if (hit.region) {
+    const regionAvailable = BigInt(hit.region.fileOffset) + BigInt(hit.region.size) - hit.offset;
+    if (regionAvailable < available) available = regionAvailable;
+  }
+  if (hit.offset < 0n || available <= 0n) return { found: false };
   const length = Number(available < BigInt(requested) ? available : BigInt(requested));
   const rawBytes = await readFileRange(hit.offset, length, signal);
   const bytes = rawBytes.byteOffset === 0 && rawBytes.byteLength === rawBytes.buffer.byteLength ? rawBytes : rawBytes.slice();

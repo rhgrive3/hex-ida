@@ -241,18 +241,27 @@ function validateType(type, depth = 0, names = new Set()) {
 export function typeCheckPattern(parsed) {
   const input = parsed?.ast ? parsed : parsePattern(parsed);
   const ast = input.ast;
-  const structs = ast.kind === 'module' ? list(ast.structs) : [ast];
-  if (ast.kind === 'module' && structs.length > PATTERN_SHAPE_MAX_CHILDREN) fail('pattern-module-structs-invalid');
+  if (!ast || typeof ast !== 'object' || Array.isArray(ast)) fail('pattern-root-must-be-struct');
+  let structs;
+  if (ast.kind === 'module') {
+    if (!Array.isArray(ast.structs) || !ast.structs.length || ast.structs.length > PATTERN_SHAPE_MAX_CHILDREN) {
+      fail('pattern-module-structs-invalid');
+    }
+    structs = ast.structs;
+  } else {
+    structs = [ast];
+  }
   // Named types form one namespace: the evaluator resolves duplicates
   // last-wins, so accepting them here would let definition order silently
   // decide the canonical layout of a shared type name.
   const names = new Set();
   for (const item of structs) {
-    if (item.kind !== 'struct' || !item.name) continue;
+    if (!item || typeof item !== 'object' || Array.isArray(item) || item.kind !== 'struct') fail('pattern-root-must-be-struct');
+    if (!item.name) continue;
     if (names.has(item.name)) fail(`pattern-duplicate-struct:${item.name}`);
     names.add(item.name);
   }
-  for (const item of structs) { if (item.kind !== 'struct') fail('pattern-root-must-be-struct'); validateType(item, 0, names); }
+  for (const item of structs) { validateType(item, 0, names); }
   if (ast.kind === 'module' && ast.root != null && !names.has(ast.root)) fail('pattern-module-root-unknown');
   return deepFreeze(input);
 }
@@ -289,7 +298,7 @@ function createSource(input, options = {}) {
 function safeNumber(value, code = 'pattern-integer-overflow') { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) fail(code); return number; }
 function isArrayCountNumber(value) { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
 function arrayCountNumber(value) { if (!isArrayCountNumber(value)) fail('pattern-array-count-invalid'); return value; }
-function primitiveValue(raw, name) { return typeof raw === 'bigint' && raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : raw; }
+function primitiveValue(raw, name) { return typeof raw === 'bigint' && raw >= BigInt(Number.MIN_SAFE_INTEGER) && raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : raw; }
 function provenance(ctx, offset, length, space = 'file') { return { patternId: ctx.patternId, snapshotId: ctx.source.snapshotId, space, offset: String(offset), length: String(length) }; }
 function fieldValue(type, value, ctx, offset, length, space = 'file', extra = {}) { return { type: type.kind === 'primitive' ? type.name : type.kind, value, provenance: provenance(ctx, offset, length, space), ...extra }; }
 function valueAt(values, path) { let current = values; for (const part of String(path || '').split('.').filter(Boolean)) { if (current == null) return undefined; current = current[part]?.value ?? current[part]; } return current; }

@@ -205,7 +205,14 @@ function canonicalImmutableContent(value, path = []) {
   try {
     if (Array.isArray(value)) return value.map((item) => canonicalImmutableContent(item, path));
     const out = {};
-    for (const key of Object.keys(value)) out[key] = canonicalImmutableContent(value[key], path);
+    for (const key of Object.keys(value)) {
+      Object.defineProperty(out, key, {
+        value: canonicalImmutableContent(value[key], path),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
     return out;
   } finally {
     path.pop();

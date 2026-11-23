@@ -96,7 +96,7 @@ export async function recognizeWithKnowledgeDB({ db, input, packageEnvelope = nu
   const candidates = matches.map((match) => ({
     sourceEntityId: input.sourceEntityId || input.entityId || input.address || 'unknown-entity',
     packageEntryId: match.record.identityKey || match.record.id,
-    tier: match.identity === 'exact' ? 'exact-content' : match.identity === 'normalized' ? 'relocation-normalized' : match.identity === 'structural' ? 'structural' : 'semantic',
+    tier: match.identity === 'exact' ? 'exact-content' : match.identity === 'normalized-identical' ? 'relocation-normalized' : match.identity === 'structural' ? 'structural' : 'semantic',
     score: match.confidence,
     confidence: match.confidence,
     featuresUsed: match.reasons,

@@ -60,11 +60,29 @@ export async function gmFetch(input, init = {}, requestInput = null) {
         headers: Object.fromEntries(headers.entries()),
         data: body == null ? undefined : body,
         responseType: 'arraybuffer',
+        anonymous: true,
+        redirect: 'error',
         onload: (response) => {
           const status = Number(response?.status) || 0;
           if (!status) {
             finish(reject, new TypeError(`Hex request failed before an HTTP response was received: ${url}`));
             return;
+          }
+          if (response.finalUrl != null && response.finalUrl !== '') {
+            let requestedOrigin = null;
+            let finalOrigin = null;
+            try {
+              const baseHref = globalThis.location?.href;
+              requestedOrigin = new URL(url, baseHref).origin;
+              finalOrigin = new URL(String(response.finalUrl), baseHref).origin;
+            } catch {
+              finish(reject, new TypeError(`Hex request returned an invalid finalUrl: ${url}`));
+              return;
+            }
+            if (!requestedOrigin || requestedOrigin === 'null' || finalOrigin !== requestedOrigin) {
+              finish(reject, new TypeError(`Hex request redirected across origins: ${url}`));
+              return;
+            }
           }
           const raw = response.response ?? response.responseText;
           const responseBody = raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)
@@ -105,8 +123,10 @@ function targetFor(input, base) {
     return { useBridge: url.origin === base.origin, url: url.href };
   }
   const raw = String(input);
-  if (!ABSOLUTE_SCHEME.test(raw) && !raw.startsWith('//')) {
-    return { useBridge: true, url: new URL(raw, base).href };
+  const trimmed = raw.trim();
+  if (!ABSOLUTE_SCHEME.test(trimmed) && !/^[\\/]{2}/.test(trimmed)) {
+    const url = new URL(raw, base);
+    return { useBridge: url.origin === base.origin, url: url.href };
   }
   const url = new URL(raw, location.href);
   return { useBridge: url.origin === base.origin, url: url.href };

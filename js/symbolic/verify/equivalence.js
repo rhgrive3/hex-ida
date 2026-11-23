@@ -63,10 +63,7 @@ function resolveSymbol(symbols, key) {
 function replaceSymbols(expr, replacements, seen = new Map()) {
   if (!expr || typeof expr !== 'object') return expr;
   if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
-    const direct = replacements.get(expr);
-    if (direct) return direct;
-    const byName = [...replacements.entries()].find(([candidate]) => candidate.name === expr.name && candidate.sort.kind === expr.sort.kind && candidate.sort.width === expr.sort.width);
-    return byName?.[1] || expr;
+    return replacements.get(expr) || expr;
   }
   if (seen.has(expr)) return seen.get(expr);
   const children = {};

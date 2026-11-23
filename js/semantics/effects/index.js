@@ -386,10 +386,19 @@ function normalizeFloatValue(input) {
   return out;
 }
 
+const MAX_MACHINE_VALUE_DEPTH = 64;
+
 export function createMachineValue(input, options = {}) {
+  return createMachineValueInternal(input, options, new Set(), 0);
+}
+
+function createMachineValueInternal(input, options = {}, seen = new Set(), depth = 0) {
   assertNotAborted(options);
+  if (depth > MAX_MACHINE_VALUE_DEPTH) fail('machine-effects-value-nesting-too-deep');
   if (CANONICAL_VALUES.has(input) && usesDefaultBudget(options)) return input;
   input = object(input, 'machine-effects-invalid-value');
+  if (seen.has(input)) fail('machine-effects-cyclic-value');
+  seen.add(input);
   const kind = enumValue(input.kind, SETS.values, 'machine-effects-invalid-value-kind');
   let out;
 
@@ -406,7 +415,7 @@ export function createMachineValue(input, options = {}) {
       if (!['bitvector', 'float', 'predicate'].includes(elementInput.kind)) {
         fail('machine-effects-invalid-vector-element-type');
       }
-      const elementType = createMachineValue(elementInput, options);
+      const elementType = createMachineValueInternal(elementInput, options, seen, depth + 1);
       if (!['bitvector', 'float', 'predicate'].includes(elementType.kind)) fail('machine-effects-invalid-vector-element-type');
       out = { kind, laneCount, elementType };
       break;
@@ -439,7 +448,7 @@ export function createMachineValue(input, options = {}) {
       out = {
         kind,
         temporaryId: nonEmpty(input.temporaryId ?? input.id, 'machine-effects-temporary-id-required'),
-        valueType: createMachineValue(input.valueType, options),
+        valueType: createMachineValueInternal(input.valueType, options, seen, depth + 1),
       };
       break;
     case 'memory':
@@ -457,6 +466,7 @@ export function createMachineValue(input, options = {}) {
       fail('machine-effects-invalid-value-kind');
   }
 
+  seen.delete(input);
   const frozen = deepFreeze(out);
   CANONICAL_VALUES.add(frozen);
   return frozen;

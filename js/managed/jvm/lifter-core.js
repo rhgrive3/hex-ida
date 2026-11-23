@@ -269,7 +269,7 @@ function collectJvmControlFlowJoins(bytecode, exceptionTable) {
       joinOffsets.add(offset + view.getInt32(pos, false));
       const pairs = view.getInt32(pos + 4, false);
       if (Number.isSafeInteger(pairs) && pairs > 0) {
-        for (let i = 0; i < pairs; i += 1) joinOffsets.add(offset + view.getInt32(pos + 8 + i * 8, false));
+        for (let i = 0; i < pairs; i += 1) joinOffsets.add(offset + view.getInt32(pos + 12 + i * 8, false));
       }
     } else if (opcode === 0xc4 && bytecode[offset + 1] === 0xa9) {
       dynamicJump = true;

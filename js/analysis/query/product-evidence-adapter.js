@@ -6,6 +6,25 @@ const CANONICAL_VERDICTS = new Set([
   'confirmed', 'supported', 'likely', 'unverified', 'contradicted', 'unknown', 'inconclusive',
 ]);
 const MAX_EVIDENCE_ROWS = 5_000;
+const MAX_UPSTREAM_TOTAL_CACHE = 64;
+
+function abortIfNeeded(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error('AbortError');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function upstreamTotalCacheKey(snapshot, query) {
+  const snapshotId = typeof snapshot?.snapshotId === 'string' && snapshot.snapshotId ? snapshot.snapshotId : null;
+  if (!snapshotId) return null;
+  try {
+    return `${snapshotId}:${JSON.stringify(query ?? {}, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v))}`;
+  } catch {
+    return null;
+  }
+}
 
 function addressOf(value) {
   if (typeof value === 'bigint') return value >= 0n ? value : null;
@@ -67,6 +86,58 @@ function combinedCompleteness(base, functionResult, baseHasNext) {
 
 export function createAppAnalysisQueryAdapter(app) {
   const base = createProductAdapter(app);
+  const upstreamTotals = new Map();
+  const rememberUpstreamTotal = (key, total) => {
+    if (!key || total == null) return;
+    upstreamTotals.delete(key);
+    upstreamTotals.set(key, total);
+    while (upstreamTotals.size > MAX_UPSTREAM_TOTAL_CACHE) {
+      const oldest = upstreamTotals.keys().next().value;
+      if (oldest === undefined) break;
+      upstreamTotals.delete(oldest);
+    }
+  };
+  const resolveUnknownUpstreamTotal = async (snapshot, query, upperBound, options) => {
+    const key = upstreamTotalCacheKey(snapshot, query);
+    if (key && upstreamTotals.has(key)) {
+      const cached = upstreamTotals.get(key);
+      if (cached <= upperBound) return { total: cached, invalid: false };
+    }
+    // Upstream omitted page.total and returned an empty page past the end of
+    // its stream (upstreamOffset > 0). Binary-search [0, upperBound] with
+    // limit=1 probes to find the exact upstream boundary so suffixOffset
+    // advances monotonically instead of resetting to 0.
+    let lo = 0;
+    let hi = upperBound;
+    while (lo < hi) {
+      abortIfNeeded(options?.signal);
+      const mid = Math.floor((lo + hi) / 2);
+      const probe = await base.evidence(snapshot, query, { offset: mid, limit: 1 }, options);
+      const probeTotal = pageOffset(probe?.page?.total);
+      if (probeTotal != null) {
+        rememberUpstreamTotal(key, probeTotal);
+        return { total: probeTotal, invalid: false };
+      }
+      const probeRows = Array.isArray(probe?.value) ? probe.value : [];
+      const rawProbeNext = probe?.page?.next ?? null;
+      const parsedProbeNext = rawProbeNext == null ? null : pageOffset(rawProbeNext);
+      if (rawProbeNext != null && (parsedProbeNext == null || parsedProbeNext <= mid)) {
+        return { total: null, invalid: true };
+      }
+      if (probeRows.length > 0) {
+        if (parsedProbeNext == null) {
+          const exact = mid + probeRows.length;
+          rememberUpstreamTotal(key, exact);
+          return { total: exact, invalid: false };
+        }
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    rememberUpstreamTotal(key, lo);
+    return { total: lo, invalid: false };
+  };
   return {
     ...base,
     async evidence(snapshot, query = {}, page = {}, options = {}) {
@@ -95,7 +166,7 @@ export function createAppAnalysisQueryAdapter(app) {
 
       const rawBaseNext = baseResult?.page?.next ?? null;
       const parsedBaseNext = rawBaseNext == null ? null : pageOffset(rawBaseNext);
-      const baseContinuationInvalid = rawBaseNext != null && (parsedBaseNext == null || parsedBaseNext <= upstreamOffset);
+      let baseContinuationInvalid = rawBaseNext != null && (parsedBaseNext == null || parsedBaseNext <= upstreamOffset);
       const baseNext = baseContinuationInvalid ? null : parsedBaseNext;
       const baseHasNext = baseNext != null;
       const baseTotal = pageOffset(baseResult?.page?.total);
@@ -110,9 +181,21 @@ export function createAppAnalysisQueryAdapter(app) {
         remaining = requested.limit - value.length;
       }
 
-      const upstreamTotal = (!baseHasNext && !baseContinuationInvalid)
-        ? (baseTotal ?? (upstreamOffset + baseRows.length))
-        : null;
+      let upstreamTotal = null;
+      if (!baseHasNext && !baseContinuationInvalid) {
+        const cacheKey = upstreamTotalCacheKey(snapshot, query);
+        if (baseTotal != null) {
+          upstreamTotal = baseTotal;
+          rememberUpstreamTotal(cacheKey, upstreamTotal);
+        } else if (upstreamOffset === 0 || baseRows.length > 0) {
+          upstreamTotal = upstreamOffset + baseRows.length;
+          rememberUpstreamTotal(cacheKey, upstreamTotal);
+        } else {
+          const resolved = await resolveUnknownUpstreamTotal(snapshot, query, upstreamOffset, options);
+          if (resolved.invalid) baseContinuationInvalid = true;
+          else upstreamTotal = resolved.total;
+        }
+      }
       const localCursorBeforeSuffix = requested.offset + value.length;
       const needsSuffix = address != null
         && !baseHasNext

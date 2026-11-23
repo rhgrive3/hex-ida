@@ -679,9 +679,17 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     // their closing `}` brace and closing the function early. Fail closed.
     if (stripTrailingComments(existingBranchNode.text).endsWith('{')) continue;
     if (!condText) {
-      const match = existingBranchNode.text?.match(/^if\s*\((.+)\)\s*(?:goto\s+\w+;|\{)/);
+      const match = existingBranchNode.text?.match(/^if\s*\((.+)\)\s*goto\s+loc_[0-9a-fA-F]+\s*;/);
       const expression = match?.[1]?.trim();
-      if (expression) condText = invert ? `!(${expression})` : expression;
+      if (expression) {
+        const trueAddr = blockAddress(projIndex.blockByIndex.get(trueTarget), result.ir, opts, projIndex);
+        const falseAddr = blockAddress(projIndex.blockByIndex.get(falseTarget), result.ir, opts, projIndex);
+        if (textJumpsToAddress(existingBranchNode.text, trueAddr)) {
+          condText = invert ? `!(${expression})` : expression;
+        } else if (textJumpsToAddress(existingBranchNode.text, falseAddr)) {
+          condText = invert ? expression : `!(${expression})`;
+        }
+      }
     }
     // Missing condition text is not permission to invent a placeholder.
     if (!condText) continue;
@@ -711,7 +719,25 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       return b != null && blocks.has(b);
     };
 
+    const isEntryBranchOrJumpNode = (node) => {
+      const b = blockOfNode(node, result.ir, opts, projIndex);
+      if (b !== entry || (node.kind !== 'ctrl' && node.kind !== 'stmt')) return false;
+      return Boolean(node.text?.startsWith('if ') || node.text?.includes('goto loc_'));
+    };
+
+    let firstAfterStructured = null;
+    for (let i = branchIndex + 1; i < workingBody.length; i++) {
+      const candidateNode = workingBody[i];
+      if (isEntryBranchOrJumpNode(candidateNode)) continue;
+      if (isArmNode(candidateNode, armBlocks)) continue;
+      firstAfterStructured = candidateNode;
+      break;
+    }
+    const fallthroughIsJoin = firstAfterStructured != null
+      && blockOfNode(firstAfterStructured, result.ir, opts, projIndex) === join;
+
     const isRemovableTailJumpToJoin = (node) => {
+      if (!fallthroughIsJoin) return false;
       if (node.kind !== 'stmt' || typeof node.text !== 'string') return false;
       if (!textJumpsToAddress(node.text, joinAddress)) return false;
       const blockIndex = blockOfNode(node, result.ir, opts, projIndex);
@@ -803,7 +829,9 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     const nodesToRemove = new Set();
     // 1. Entry branch and false jump
     let entryHasBlockBranch = false;
-    for (const node of workingBody) {
+    let keptEntryJumpToJoin = false;
+    for (let i = 0; i < workingBody.length; i++) {
+      const node = workingBody[i];
       const b = blockOfNode(node, result.ir, opts, projIndex);
       if (b === entry && (node.kind === 'ctrl' || node.kind === 'stmt')) {
         if (node.text?.startsWith('if ') || node.text?.includes('goto loc_')) {
@@ -811,11 +839,17 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
             entryHasBlockBranch = true;
             break;
           }
+          if (!fallthroughIsJoin && i > branchIndex && node.kind === 'stmt'
+              && !node.text?.startsWith('if ') && textJumpsToAddress(node.text, joinAddress)) {
+            keptEntryJumpToJoin = true;
+            continue;
+          }
           nodesToRemove.add(node);
         }
       }
     }
     if (entryHasBlockBranch) continue;
+    if (isOneSided && !fallthroughIsJoin && !keptEntryJumpToJoin) continue;
     // 2. Arm nodes (statements were extracted and will be re-inserted)
     for (const node of workingBody) {
       if (isArmNode(node, armBlocks)) {
@@ -823,7 +857,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       }
     }
     // 3. Join label only when no rewritten or external jump still references it.
-    if (!otherJumpsToJoin && !retainedArmJumpToJoin) {
+    if (!otherJumpsToJoin && !retainedArmJumpToJoin && !keptEntryJumpToJoin) {
       for (const node of workingBody) {
         if (isBlockLabel(node, join)) {
           nodesToRemove.add(node);
@@ -834,11 +868,13 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     // Splice new structured nodes into workingBody at branchIndex
     const nextBody = [];
     let inserted = false;
+    let insertedEndIndex = -1;
     for (let i = 0; i < workingBody.length; i++) {
       const node = workingBody[i];
       if (i === branchIndex) {
         nextBody.push(...structuredNodes);
         inserted = true;
+        insertedEndIndex = nextBody.length;
       }
       if (!nodesToRemove.has(node)) {
         nextBody.push(node);
@@ -846,6 +882,16 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     }
     if (!inserted) {
       nextBody.push(...structuredNodes);
+      insertedEndIndex = nextBody.length;
+    }
+
+    if (fallthroughIsJoin) {
+      const afterInserted = insertedEndIndex >= 0 && insertedEndIndex < nextBody.length
+        ? nextBody[insertedEndIndex]
+        : null;
+      if (afterInserted == null || blockOfNode(afterInserted, result.ir, opts, projIndex) !== join) {
+        continue;
+      }
     }
 
     if (hasBalancedBodyBraces(workingBody) && !hasBalancedBodyBraces(nextBody)) {

@@ -160,7 +160,7 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   const segments = [];
   let programHeaderBytes = null;
   const phTableSize = phnum * phentsize;
-  if (phoff !== 0n && phentsize >= minProgram && phnum > 0 && phnum <= 100000 && phoff + BigInt(phTableSize) <= source.size) {
+  if (phoff !== 0n && phentsize >= minProgram && phnum > 0 && phnum <= 100000 && Number.isSafeInteger(phTableSize) && phTableSize > 0 && phTableSize <= maxCachedBytes && phoff + BigInt(phTableSize) <= source.size) {
     programHeaderBytes = await readChunk(phoff, phTableSize);
     const pr = new ByteView(programHeaderBytes, { littleEndian });
     for (let i = 0; i < phnum; i++) {
@@ -192,7 +192,7 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   const sections = [];
   let sectionHeaderBytes = null;
   const shTableSize = shnum * shentsize;
-  if (shoff !== 0n && shentsize >= minSection && shnum > 0 && shnum <= 100000 && shoff + BigInt(shTableSize) <= source.size) {
+  if (shoff !== 0n && shentsize >= minSection && shnum > 0 && shnum <= 100000 && Number.isSafeInteger(shTableSize) && shTableSize > 0 && shTableSize <= maxCachedBytes && shoff + BigInt(shTableSize) <= source.size) {
     sectionHeaderBytes = await readChunk(shoff, shTableSize);
     const sr = new ByteView(sectionHeaderBytes, { littleEndian });
     for (let i = 0; i < shnum; i++) {
@@ -239,18 +239,30 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
     if (s.type === SHT_STRTAB && s.offset + s.size <= source.size) {
       shstrSec = s;
       const sizeNum = toSafeNumber(s.size);
-      if (sizeNum != null && sizeNum > 0 && sizeNum <= 10 * 1024 * 1024) {
+      if (sizeNum != null && sizeNum > 0 && sizeNum <= Math.min(10 * 1024 * 1024, maxCachedBytes)) {
         shstrtabBytes = await readChunk(s.offset, sizeNum);
         const strBytes = shstrtabBytes;
+        const MAX_SECTION_NAME_LEN = 1024;
+        const MAX_SHSTRTAB_SCAN_BYTES = Math.min(maxCachedBytes, 1024 * 1024);
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        const nameCache = new Map();
+        let scannedBytes = 0;
         for (const sec of sections) {
           const off = sec.nameOffset;
-          if (off < strBytes.length) {
-            let end = off;
-            while (end < strBytes.length && strBytes[end] !== 0) end++;
-            let name = '';
-            for (let k = off; k < end; k++) name += String.fromCharCode(strBytes[k]);
-            sec.name = name;
+          if (off >= strBytes.length) continue;
+          if (nameCache.has(off)) {
+            sec.name = nameCache.get(off);
+            continue;
           }
+          if (scannedBytes >= MAX_SHSTRTAB_SCAN_BYTES) break;
+          const remaining = Math.min(MAX_SECTION_NAME_LEN, strBytes.length - off, MAX_SHSTRTAB_SCAN_BYTES - scannedBytes);
+          const slice = strBytes.subarray(off, off + remaining);
+          const nul = slice.indexOf(0);
+          const len = nul >= 0 ? nul : remaining;
+          scannedBytes += len + (nul >= 0 ? 1 : 0);
+          const name = decoder.decode(slice.subarray(0, len));
+          nameCache.set(off, name);
+          sec.name = name;
         }
       }
     }
@@ -262,7 +274,7 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   const tags = new Map();
   if (dynamicSegment && dynamicSegment.offset + dynamicSegment.filesz <= source.size) {
     const dynSize = toSafeNumber(dynamicSegment.filesz);
-    if (dynSize != null && dynSize > 0 && dynSize <= 10 * 1024 * 1024) {
+    if (dynSize != null && dynSize > 0 && dynSize <= Math.min(10 * 1024 * 1024, maxCachedBytes)) {
       dynamicBytes = await readChunk(dynamicSegment.offset, dynSize);
       const dr = new ByteView(dynamicBytes, { littleEndian });
       const entSize = bits === 64 ? 16 : 8;
@@ -400,28 +412,45 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
               const pr = new ByteView(probe, { littleEndian });
               const nbuckets = pr.u32(0), symOffset = pr.u32(4), bloomSize = pr.u32(8);
               const word = bits === 64 ? 8 : 4;
+              const MAX_GNU_HASH_BUCKETS = 1_000_000;
+              const MAX_GNU_HASH_CHAIN_STEPS = 100_000;
+              const bucketsByteLen = nbuckets * 4;
               const bucketsOff = gnuHashOff + 16 + bloomSize * word;
-              const chainsOff = bucketsOff + nbuckets * 4;
-              // read buckets
-              const bucketsBytes = await readChunk(BigInt(bucketsOff), nbuckets * 4);
-              const br = new ByteView(bucketsBytes, { littleEndian });
-              let max = null;
-              for (let i = 0; i < nbuckets; i++) {
-                const b = br.u32(i * 4);
-                if (b > 0 && (max == null || b > max)) max = b;
-              }
-              if (max != null) {
-                // read chain starting at max
-                let idx = max;
-                let cp = chainsOff + (idx - symOffset) * 4;
-                while (cp + 4 <= Number(source.size)) {
-                  const chainBytes = await readChunk(BigInt(cp), 4);
-                  const cr = new ByteView(chainBytes, { littleEndian });
-                  const chain = cr.u32(0);
-                  if (chain & 1) break;
-                  idx++; cp += 4;
+              const chainsOff = bucketsOff + bucketsByteLen;
+              if (
+                nbuckets > 0
+                && nbuckets <= MAX_GNU_HASH_BUCKETS
+                && Number.isSafeInteger(bucketsByteLen)
+                && bucketsByteLen <= maxCachedBytes
+                && Number.isSafeInteger(bucketsOff)
+                && Number.isSafeInteger(chainsOff)
+                && bucketsOff >= 0
+                && BigInt(bucketsOff) + BigInt(bucketsByteLen) <= source.size
+              ) {
+                // read buckets
+                const bucketsBytes = await readChunk(BigInt(bucketsOff), bucketsByteLen);
+                const br = new ByteView(bucketsBytes, { littleEndian });
+                let max = null;
+                for (let i = 0; i < nbuckets; i++) {
+                  const b = br.u32(i * 4);
+                  if (b > 0 && (max == null || b > max)) max = b;
                 }
-                count = idx + 1;
+                if (max != null && max >= symOffset) {
+                  // read chain starting at max
+                  let idx = max;
+                  let cp = chainsOff + (idx - symOffset) * 4;
+                  let steps = 0;
+                  let terminated = false;
+                  while (steps < MAX_GNU_HASH_CHAIN_STEPS && Number.isSafeInteger(cp) && cp >= 0 && BigInt(cp) + 4n <= source.size) {
+                    const chainBytes = await readChunk(BigInt(cp), 4);
+                    const cr = new ByteView(chainBytes, { littleEndian });
+                    const chain = cr.u32(0);
+                    steps++;
+                    if (chain & 1) { terminated = true; break; }
+                    idx++; cp += 4;
+                  }
+                  if (terminated) count = idx + 1;
+                }
               }
             } catch {
               // ignore

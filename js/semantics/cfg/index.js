@@ -387,7 +387,7 @@ export function analyzeSemanticDominance(cfg, options = {}) {
   for (const block of cfg.blocks) {
     if (!reachable.has(block.id)) continue;
     const predecessors = reachablePredsById.get(block.id);
-    if (!predecessors || predecessors.length < 2) continue;
+    if (!predecessors || predecessors.length === 0 || (predecessors.length < 2 && block.id !== entry)) continue;
     for (const pred of predecessors) {
       let runner = pred;
       let guard = cfg.blocks.length + 2;

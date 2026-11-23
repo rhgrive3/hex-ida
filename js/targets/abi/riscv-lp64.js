@@ -265,8 +265,8 @@ function parameterClass(parameter) {
     || /\*|\b(?:pointer|ptr|object)\b/.test(`${type} ${abiClass}`);
   const aggregate = !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
-  const vector = !aggregate ? vectorDescriptor(parameter) : null;
-  const floating = !aggregate && !vector && (parameter?.floating === true || isFloatingType(type) || /\bfp\b/.test(abiClass));
+  const vector = !pointer && !aggregate ? vectorDescriptor(parameter) : null;
+  const floating = !pointer && !aggregate && !vector && (parameter?.floating === true || isFloatingType(type) || /\bfp\b/.test(abiClass));
   const declaredBits = parameter?.bits ?? parameter?.sizeBits;
   // Width aliases must agree when several are declared: a silent `bits`-wins
   // pick would launder conflicting evidence into an exact placement (#5713).
@@ -1134,9 +1134,11 @@ function createClassifier(profile) {
     const malformedReturnAggregate = Object.hasOwn(prototype, 'returnAggregate')
       && prototype.returnAggregate != null && typeof prototype.returnAggregate !== 'boolean'
       && !returnAggregate;
-    const aggregate = prototype.aggregate === true || !!returnAggregate || malformedReturnAggregate
+    const isPointer = prototype.pointer === true || prototype.isPointer === true || options.pointer === true || options.isPointer === true
+      || /\*|\b(?:pointer|ptr|object)\b/.test(`${type} ${abiClass}`);
+    const aggregate = !isPointer && (prototype.aggregate === true || !!returnAggregate || malformedReturnAggregate
       || aggregateLayoutDescriptorPresent(prototype)
-      || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
+      || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
     // A call-site options.returnBits is a return-width override (#5636): it
     // outranks the prototype's own (possibly stale/coarser) width metadata,
     // matching the scalar override order used by the other ABI surfaces.
@@ -1168,7 +1170,7 @@ function createClassifier(profile) {
     if (prototype.indirectResult === true || abiClass === 'indirect') return indirectResult();
     const rawBits = aggregate
       ? aggregateLayoutProven ? canonicalDeclaredBits : 0
-      : Number(declaredBits ?? riscvTypeBits(type, XLEN));
+      : Number(declaredBits ?? (isPointer ? XLEN : riscvTypeBits(type, XLEN)));
     const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 0;
     // The C++ non-trivial rule is authoritative even when aggregate layout
     // evidence is absent or padded: the return still uses caller memory.
@@ -1184,7 +1186,7 @@ function createClassifier(profile) {
       return { reg:null, bits, bytes:aggregateExtent.bytes, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
     }
-    const returnVector = vectorDescriptor({ type, abiClass, ...(prototype.returnVector || {}), vector:prototype.vectorReturn === true || prototype.returnVector?.vector === true, mask:prototype.returnVector?.mask, lmul:prototype.returnVector?.lmul, tupleCount:prototype.returnVector?.tupleCount, fixedLengthVector:prototype.returnVector?.fixedLengthVector });
+    const returnVector = !isPointer ? vectorDescriptor({ type, abiClass, ...(prototype.returnVector || {}), vector:prototype.vectorReturn === true || prototype.returnVector?.vector === true, mask:prototype.returnVector?.mask, lmul:prototype.returnVector?.lmul, tupleCount:prototype.returnVector?.tupleCount, fixedLengthVector:prototype.returnVector?.fixedLengthVector }) : null;
     const vectorVariant = canonicalRiscvVectorCallingConvention(
       prototype.callingConvention || options.callingConvention,
     ) === 'riscv-vector-variant';
@@ -1290,7 +1292,7 @@ function createClassifier(profile) {
       }));
       return { reg:regs[0], regs, pieces, bytes:regs.length * 8, abiNames:regs.map((reg) => ABI_ALIAS[reg]), bits, aggregate:true };
     }
-    const floating = isFloatingType(type) || /\bfp\b/.test(abiClass);
+    const floating = !isPointer && (isFloatingType(type) || /\bfp\b/.test(abiClass));
     if (hardFloat && floating && bits <= abiFlen) return { reg:'f10', abiName:'fa0', bits };
     if (bits > 2 * XLEN) return { reg:null, bits, indirect:true, hiddenResultPointer:{ input:'x10', returned:null }, memoryResult:true };
     if (bits > XLEN) {

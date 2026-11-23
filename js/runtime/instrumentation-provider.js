@@ -142,10 +142,15 @@ function materializeRuntimeValue(value, state) {
       return output;
     }
 
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new DebugAdapterError('runtime-event-unsupported-value', 'runtime event payload contains an unsupported non-plain object value');
+    }
+
     const output = {};
     state.seen.set(value, output);
     for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== 'string' || key === 'length') continue;
+      if (typeof key !== 'string') continue;
       state.bytes += key.length + 8; overBudget();
       const item = materializeRuntimeValue(value[key], state);
       if (typeof item === 'string') { state.bytes += item.length; overBudget(); }
@@ -563,20 +568,49 @@ export class InstrumentationProvider {
       }
       return committed;
     };
-    const endHandoffWindow = () => {
-      epochTransitionPending = false;
+    const endHandoffWindow = (prevEpoch) => {
       const capture = epochHandoffCapture;
       epochHandoffCapture = null;
       if (capture != null && capture.overflowed) {
+        let rb = null;
+        let syncFailed = false;
+        if (typeof this.backend.setEpoch === 'function') {
+          try {
+            rb = this.backend.setEpoch(prevEpoch);
+          } catch {
+            syncFailed = true;
+          }
+        } else {
+          syncFailed = true;
+        }
+        if (rb && typeof rb.then === 'function') {
+          return Promise.resolve(rb)
+            .catch(async () => {
+              await Promise.resolve(session.close()).catch(() => {});
+            })
+            .finally(() => {
+              epochTransitionPending = false;
+            })
+            .then(() => {
+              throw new DebugAdapterError('runtime-epoch-handoff-overflow',
+                'next-generation events exceeded the handoff buffer; the epoch transition fails closed');
+            });
+        }
+        epochTransitionPending = false;
+        if (syncFailed) {
+          Promise.resolve(session.close()).catch(() => {});
+        }
         throw new DebugAdapterError('runtime-epoch-handoff-overflow',
           'next-generation events exceeded the handoff buffer; the epoch transition fails closed');
       }
+      epochTransitionPending = false;
       return capture;
     };
     session.newProviderEpoch = (reason = 'instrumentation-provider-epoch-changed') => {
       if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
       if (epochTransitionPending) throw new DebugAdapterError('runtime-epoch-transition-active', 'instrumentation provider epoch transition is already in progress');
-      const next = session.epoch + 1;
+      const prevEpoch = session.epoch;
+      const next = prevEpoch + 1;
       if (typeof this.backend.setEpoch !== 'function') return commitEpoch(reason);
       // #9008: the handoff admission window spans the whole supported
       // transition, including an asynchronous setEpoch pending.
@@ -591,10 +625,15 @@ export class InstrumentationProvider {
         throw err;
       }
       if (!backendResult || typeof backendResult.then !== 'function') {
-        return commitEpoch(reason, endHandoffWindow());
+        const capture = endHandoffWindow(prevEpoch);
+        if (capture && typeof capture.then === 'function') {
+          return capture.then((resolvedCapture) => commitEpoch(reason, resolvedCapture));
+        }
+        return commitEpoch(reason, capture);
       }
       return Promise.resolve(backendResult)
-        .then(() => commitEpoch(reason, endHandoffWindow()))
+        .then(() => endHandoffWindow(prevEpoch))
+        .then((capture) => commitEpoch(reason, capture))
         .catch((err) => {
           epochHandoffCapture = null;
           epochTransitionPending = false;

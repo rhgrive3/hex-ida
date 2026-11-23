@@ -1175,19 +1175,30 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
     return true;
   };
   const signatureIdentityBuckets = new Map();
+  const signatureBlobCache = new Map();
+  const readCachedSignatureBlob = (blobIndex, blobCode) => {
+    const cached = signatureBlobCache.get(blobIndex);
+    if (cached) return cached;
+    const raw = readCilMetadataBlob(blobHeap, blobIndex, blobCode);
+    admission?.chargeOperations(raw.length);
+    let hash = 0x811c9dc5;
+    for (const byte of raw) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+    const entry = { raw, hash };
+    signatureBlobCache.set(blobIndex, entry);
+    return entry;
+  };
   const assertUniqueSignatureRows = (rows, prefixOf, blobIndexOf, code, blobCode) => {
     for (const row of rows ?? []) {
+      admission?.chargeOperations(1);
       const prefix = prefixOf(row);
       if (prefix === null) continue;
       if (!blobHeap) fail(blobCode);
-      const raw = readCilMetadataBlob(blobHeap, blobIndexOf(row), blobCode);
+      const { raw, hash } = readCachedSignatureBlob(blobIndexOf(row), blobCode);
       // The hash only narrows the exact-byte candidates; a collision never
       // becomes duplicate authority without the byte-for-byte comparison.
-      let hash = 0x811c9dc5;
-      for (const byte of raw) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
       const bucketKey = `${prefix}\u0000${raw.length}\u0000${hash}`;
       const bucket = signatureIdentityBuckets.get(bucketKey);
-      if (bucket?.some((previous) => sameDefinitionBlob(previous, raw))) fail(code);
+      if (bucket?.some((previous) => previous === raw || sameDefinitionBlob(previous, raw))) fail(code);
       if (bucket) bucket.push(raw);
       else signatureIdentityBuckets.set(bucketKey, [raw]);
     }

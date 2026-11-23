@@ -356,6 +356,7 @@ function parseV0Const(str, state, depth = 0) {
   if (!v0ChargeOp(state)) return null;
   if (str[state.pos] === 'p') {
     state.pos++;
+    if (!v0ChargeOutput(state, 1)) return null;
     return '_';
   }
   if (str[state.pos] === 'B') {
@@ -373,16 +374,30 @@ function parseV0Const(str, state, depth = 0) {
     isNegative = true;
     state.pos++;
   }
-  let hexStr = '';
-  while (state.pos < str.length && /[0-9a-fA-F]/.test(str[state.pos])) {
-    hexStr += str[state.pos++];
+  const MAX_CONST_HEX_DIGITS = 64;
+  const hexStart = state.pos;
+  while (state.pos < str.length) {
+    const cc = str.charCodeAt(state.pos);
+    const isHex = (cc >= 0x30 && cc <= 0x39) || (cc >= 0x61 && cc <= 0x66) || (cc >= 0x41 && cc <= 0x46);
+    if (!isHex) break;
+    state.pos++;
+    if (state.pos - hexStart > MAX_CONST_HEX_DIGITS) {
+      state.budget.exceeded = true;
+      return null;
+    }
   }
   if (state.pos >= str.length || str[state.pos] !== '_') return null;
+  const hexStr = str.slice(hexStart, state.pos);
   state.pos++;
-  if (hexStr === '') return '0';
+  if (hexStr === '') {
+    if (!v0ChargeOutput(state, 1)) return null;
+    return '0';
+  }
   try {
     const val = BigInt('0x' + hexStr);
-    return isNegative ? `-${val.toString()}` : val.toString();
+    const text = isNegative ? `-${val.toString()}` : val.toString();
+    if (!v0ChargeOutput(state, text.length)) return null;
+    return text;
   } catch {
     return null;
   }
@@ -663,17 +678,22 @@ export function isRustCandidateSymbol(text) {
 /**
  * Demangles a Rust legacy symbol, including the single Mach-O decoration.
  */
-export function demangleRustLegacy(symbol) {
+const RUST_LEGACY_DEFAULT_MAX_COMPONENTS = 512;
+
+export function demangleRustLegacy(symbol, budgetOverrides, budgetCeilings = null) {
   const original = String(symbol || '');
   const s = stripLegacyRustPrefix(original);
   if (s == null) {
     return { original, demangled: original, parsed: false, reason: 'not-legacy-rust-symbol' };
   }
 
+  const budget = createDemangleBudget(budgetOverrides, budgetCeilings);
+  const maxComponents = positiveBudget(budgetOverrides?.maxComponents, RUST_LEGACY_DEFAULT_MAX_COMPONENTS);
   const components = [];
   let i = 2;
   let hash = null;
   let terminated = false;
+  let outputChars = 0;
 
   while (i < s.length) {
     if (s[i] === 'E') {
@@ -681,32 +701,54 @@ export function demangleRustLegacy(symbol) {
       terminated = true;
       break;
     }
-    const match = s.slice(i).match(/^(\d+)/);
-    if (!match) break;
-    const len = Number(match[1]);
-    i += match[1].length;
-    if (i + len > s.length) break;
+    if (budget.ops >= budget.maxOps || components.length >= maxComponents) {
+      budget.exceeded = true;
+      return { original, demangled: original, parsed: false, reason: 'legacy-resource-budget-exceeded', resourceLimited: true };
+    }
+    budget.ops++;
+    const digitStart = i;
+    let len = 0;
+    while (i < s.length) {
+      const cc = s.charCodeAt(i);
+      if (cc < 0x30 || cc > 0x39) break;
+      len = len * 10 + (cc - 0x30);
+      i++;
+      if (!Number.isSafeInteger(len) || len > s.length - i) {
+        len = -1;
+        break;
+      }
+    }
+    if (i === digitStart || len < 0 || i + len > s.length) break;
 
     const part = s.slice(i, i + len);
     i += len;
 
     // Check if this part is the trailing Rust hash (e.g. `17h<16 hex digits>`)
-    const hashMatch = part.match(/^17h([0-9a-f]{16})$/i) || part.match(/^h([0-9a-f]{16})$/i);
+    const hashMatch = part.length <= 20 && (part.match(/^17h([0-9a-f]{16})$/i) || part.match(/^h([0-9a-f]{16})$/i));
     if (hashMatch) {
       hash = hashMatch[1];
     } else {
+      const sepLen = components.length > 0 ? 2 : 0;
+      if (part.length + sepLen > budget.maxOutputChars - outputChars) {
+        budget.exceeded = true;
+        return { original, demangled: original, parsed: false, reason: 'legacy-resource-budget-exceeded', resourceLimited: true };
+      }
       // Decode $ characters
-      const clean = part
-        .replace(/\$SP\$/g, '@')
-        .replace(/\$BP\$/g, '*')
-        .replace(/\$RF\$/g, '&')
-        .replace(/\$LT\$/g, '<')
-        .replace(/\$GT\$/g, '>')
-        .replace(/\$LP\$/g, '(')
-        .replace(/\$RP\$/g, ')')
-        .replace(/\$C\$/g, ',')
-        .replace(/\$u20\$/g, ' ')
-        .replace(/\$u27\$/g, "'");
+      const clean = part.includes('$')
+        ? part
+          .replace(/\$SP\$/g, '@')
+          .replace(/\$BP\$/g, '*')
+          .replace(/\$RF\$/g, '&')
+          .replace(/\$LT\$/g, '<')
+          .replace(/\$GT\$/g, '>')
+          .replace(/\$LP\$/g, '(')
+          .replace(/\$RP\$/g, ')')
+          .replace(/\$C\$/g, ',')
+          .replace(/\$u20\$/g, ' ')
+          .replace(/\$u27\$/g, "'")
+        : part;
+      outputChars += clean.length + sepLen;
+      budget.outputChars = outputChars;
       components.push(clean);
     }
   }
@@ -742,8 +784,8 @@ export function demangleRustSymbol(symbol, budgetOverrides, budgetCeilings = nul
     return demangleRustV0(text, 32, budgetOverrides, budgetCeilings);
   }
   if (stripLegacyRustPrefix(text) != null) {
-    const leg = demangleRustLegacy(text);
-    if (leg.parsed) return leg;
+    const leg = demangleRustLegacy(text, budgetOverrides, budgetCeilings);
+    if (leg.parsed || leg.resourceLimited) return leg;
   }
   return { original: text, demangled: text, parsed: false, reason: 'not-rust-symbol' };
 }

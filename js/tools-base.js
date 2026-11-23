@@ -38,7 +38,7 @@ import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
 import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
 import { parseMetadataFileInWorker } from './il2cpp-runtime.js';
 import { brief } from './arm64.js';
-import { pick } from './i18n.js';
+import { pick, lang } from './i18n.js';
 
 function captureAppEpoch(app) {
   return { epoch: app?.backend?.gen, sliceIndex: app?.store?.get?.('sliceIndex') };
@@ -105,7 +105,7 @@ function fnName(app, addr) {
 function needFunction(app) {
   const addr = currentFunctionAddr(app);
   if (addr == null) {
-    toast('先に関数を選んでください（「関数」から選ぶか、命令をタップします）。');
+    toast(pick('先に関数を選んでください（「関数」から選ぶか、命令をタップします）。', 'Select a function first (from Functions or by tapping an instruction).'));
     return null;
   }
   return addr;
@@ -143,12 +143,12 @@ function rowMapper(app) {
 export function parseDebuggerArgument(value) {
   const raw = String(value ?? '').trim();
   if (!raw || !/^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
-    return { ok: false, value: null, error: '10進整数か0x付き16進整数を入力してください。' };
+    return { ok: false, value: null, error: pick('10進整数か0x付き16進整数を入力してください。', 'Enter a decimal integer or a 0x-prefixed hex integer.') };
   }
   try {
     if (/^-0[xX]/.test(raw)) return { ok: true, value: -BigInt(raw.slice(1)), error: null };
     return { ok: true, value: BigInt(raw), error: null };
-  } catch { return { ok: false, value: null, error: '整数として読み取れません。' }; }
+  } catch { return { ok: false, value: null, error: pick('整数として読み取れません。', 'Could not parse as an integer.') }; }
 }
 
 export function explainEmulatorFault(code, message) {
@@ -156,10 +156,13 @@ export function explainEmulatorFault(code, message) {
   const msg = String(message || '');
   const low = msg.toLowerCase();
   if (c === 'program-return' || msg.includes('最初の呼び出し元まで戻ってきました')) {
-    return '関数が正常に終了して戻ってきました。';
+    return pick('関数が正常に終了して戻ってきました。', 'The function returned normally.');
   }
   if (c === 'max-steps' || c === 'step-limit' || c === 'invalid-step-budget' || msg.includes('命令ぶん進んだので、いったん止めました')) {
-    return '実行命令数の上限に達したため停止しました（無限ループ、または処理が長すぎる可能性があります）。\nヒント: 下の「通った道」で同じ場所を繰り返していないか確認し、分岐命令にパッチを当てて試してみてください。';
+    return pick(
+      '実行命令数の上限に達したため停止しました（無限ループ、または処理が長すぎる可能性があります）。\nヒント: 下の「通った道」で同じ場所を繰り返していないか確認し、分岐命令にパッチを当てて試してみてください。',
+      'Stopped after reaching the instruction step limit (possible infinite loop or long execution).\nHint: Check the trace below for repeating addresses, or patch a branch instruction to test.',
+    );
   }
   if (c === 'unmapped-memory' || c === 'memory-read-failed'
       || low.includes('no backing memory') || low.includes('outside backed memory')
@@ -168,24 +171,39 @@ export function explainEmulatorFault(code, message) {
     const addrMatch = /0x([0-9a-f]+)/i.exec(msg);
     const faultAddr = addrMatch ? BigInt('0x' + addrMatch[1]) : null;
     if (faultAddr != null && faultAddr < 0x1000n) {
-      return `NULL（0）付近のアドレス（0x${faultAddr.toString(16)}）を読み書きしようとして停止しました。ポインタ（アドレス）を引数に取る関数かもしれません。\nヒント: 「ダミー領域を引数にセット」を押して x0 などに仮のメモリ番地を入れてからもう一度試してみてください。`;
+      return pick(
+        `NULL（0）付近のアドレス（0x${faultAddr.toString(16)}）を読み書きしようとして停止しました。ポインタ（アドレス）を引数に取る関数かもしれません。\nヒント: 「ダミー領域を引数にセット」を押して x0 などに仮のメモリ番地を入れてからもう一度試してみてください。`,
+        `Stopped on a memory access near NULL (0x${faultAddr.toString(16)}). This function may expect a pointer argument.\nHint: Use "Set dummy buffer as arg" to place a temporary address into x0 (or another register) and try again.`,
+      );
     }
-    return `割り当てられていないメモリ領域${faultAddr != null ? `（0x${faultAddr.toString(16)}）` : ''}への読み書きが起きたため停止しました。\nヒント: 引数に不正なアドレスが入っていないか確認し、ポインタ引数には「ダミー領域を引数にセット」を試してください。`;
+    return pick(
+      `割り当てられていないメモリ領域${faultAddr != null ? `（0x${faultAddr.toString(16)}）` : ''}への読み書きが起きたため停止しました。\nヒント: 引数に不正なアドレスが入っていないか確認し、ポインタ引数には「ダミー領域を引数にセット」を試してください。`,
+      `Stopped on an access to unmapped memory${faultAddr != null ? ` (0x${faultAddr.toString(16)})` : ''}.\nHint: Check whether an argument holds an invalid address, or try "Set dummy buffer as arg" for pointer arguments.`,
+    );
   }
   if (c === 'unsupported-instruction' || c === 'pointer-authentication-unsupported'
       || c === 'unsupported-operand' || c === 'unsupported-shift'
       || c === 'unsupported-arrangement' || c === 'invalid-fmov-form'
       || msg.includes('まだ実行できません') || low.includes('not modelled') || low.includes('unsupported')) {
-    return `このエミュレータがまだ対応していない命令に到達したため停止しました（${msg || c}）。\nヒント: 該当命令をパッチで nop に置き換えるか、直前にブレークポイントを置いて途中までの値を確認してみてください。`;
+    return pick(
+      `このエミュレータがまだ対応していない命令に到達したため停止しました（${msg || c}）。\nヒント: 該当命令をパッチで nop に置き換えるか、直前にブレークポイントを置いて途中までの値を確認してみてください。`,
+      `Stopped on an instruction not yet supported by this emulator (${msg || c}).\nHint: Patch that instruction to nop, or set a breakpoint right before it to inspect intermediate values.`,
+    );
   }
   if (c === 'instruction-fetch-failed' || c === 'unmapped-tail-branch' || c === 'unknown-executable'
       || msg.includes('の命令が読めませんでした') || msg.includes('間接分岐先')) {
-    return `実行できないアドレスへジャンプしたため停止しました（${msg || c}）。\nヒント: 分岐先や関数ポインタ（引数やメモリ上の値）が正しく設定されているか確認してください。`;
+    return pick(
+      `実行できないアドレスへジャンプしたため停止しました（${msg || c}）。\nヒント: 分岐先や関数ポインタ（引数やメモリ上の値）が正しく設定されているか確認してください。`,
+      `Stopped after jumping to a non-executable address (${msg || c}).\nHint: Verify the branch target or function pointer values in registers and memory.`,
+    );
   }
   if (c === 'heap-exhausted' || c === 'allocation-overflow') {
-    return 'エミュレータ内の仮想ヒープ容量を超えたため停止しました。\nヒント: 引数に渡しているサイズ値が大きすぎないか確認してください。';
+    return pick(
+      'エミュレータ内の仮想ヒープ容量を超えたため停止しました。\nヒント: 引数に渡しているサイズ値が大きすぎないか確認してください。',
+      'Stopped because the emulator virtual heap was exhausted.\nHint: Check whether a size argument is unusually large.',
+    );
   }
-  return msg || 'ブレークポイントで止まりました。';
+  return msg || pick('ブレークポイントで止まりました。', 'Stopped at a breakpoint.');
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -211,15 +229,19 @@ const FACT = 'fact';
 const INFER = 'infer';
 const HINT = 'hint';
 
-const LEVEL_WORD = { fact: '事実', infer: '推定', hint: '参考' };
+const levelWord = (level) => (
+  level === FACT ? pick('事実', 'Fact')
+    : level === INFER ? pick('推定', 'Inferred')
+      : pick('参考', 'Hint')
+);
 const LEVEL_CLASS = { fact: 'tag-fact', infer: 'tag-infer', hint: 'tag-hint' };
 
 export function showTools(app) {
-  const sheet = new Sheet('解析');
+  const sheet = new Sheet(pick('解析', 'Analysis Tools'));
   const addr = currentFunctionAddr(app);
 
   if (addr != null) {
-    const b = block('いま見ている関数');
+    const b = block(pick('いま見ている関数', 'Current function'));
     b.append(el('div', 'bigval mono', fnName(app, addr)));
     b.append(el('div', 'hint', addrHex(addr)));
     sheet.body.append(b);
@@ -228,7 +250,7 @@ export function showTools(app) {
   /** 1 行。level は「その結果をどこまで信じていいか」。 */
   const rowIn = (ul) => (level, label, sub, fn) => ul.append(tapRow(label, {
     sub,
-    tag: LEVEL_WORD[level],
+    tag: levelWord(level),
     tagClass: LEVEL_CLASS[level],
     right: '›',
     onTap: () => { sheet.close(); fn(); },
@@ -236,83 +258,102 @@ export function showTools(app) {
 
   /* ── 1. まず何をすればいいか ── */
   const first = list();
-  first.append(groupRow('まず、ここから'));
+  first.append(groupRow(pick('まず、ここから', 'Start here')));
   const item0 = rowIn(first);
-  item0(INFER, '自動解析（ぜんぶ自動で調べる）',
-    '開いてから終わるまで待つだけ。何が分かって、何が分からなかったかを最後にまとめて言います。',
+  item0(INFER, pick('自動解析（ぜんぶ自動で調べる）', 'Automatic analysis'),
+    pick('開いてから終わるまで待つだけ。何が分かって、何が分からなかったかを最後にまとめて言います。',
+      'Scan the whole binary automatically and summarise what was proved and what remained unknown.'),
     () => app.openOverview());
-  item0(INFER, '目的から探す（HP・所持金・攻撃力…）',
-    '探したいものを選ぶか、ふつうの言葉で書きます。名前・参照・命令の 3 方向から絞ります。',
+  item0(INFER, pick('目的から探す（HP・所持金・攻撃力…）', 'Investigate by goal (HP, currency, attack…)'),
+    pick('探したいものを選ぶか、ふつうの言葉で書きます。名前・参照・命令の 3 方向から絞ります。',
+      'Pick a goal or describe what you are looking for. Narrows candidates by names, xrefs, and instructions.'),
     () => app.openInvestigate());
-  item0(HINT, '使っている言葉から見る（機能一覧）',
-    '文字列を機能ごとに分けたものです。ここに出るのは手がかりで、答えではありません。',
+  item0(HINT, pick('使っている言葉から見る（機能一覧）', 'Browse by feature words'),
+    pick('文字列を機能ごとに分けたものです。ここに出るのは手がかりで、答えではありません。',
+      'Strings grouped by feature. Treat these as starting clues rather than final proof.'),
     () => app.openFeatures());
   sheet.body.append(first);
 
   /* ── 2. いま見ている関数 ── */
   const perFunction = list();
-  perFunction.append(groupRow('いま見ている関数を調べる'));
+  perFunction.append(groupRow(pick('いま見ている関数を調べる', 'Inspect current function')));
   const item = rowIn(perFunction);
   const withFn = (fn) => () => { const a = needFunction(app); if (a != null) fn(a); };
 
-  item(INFER, '逆コンパイル（C 風に読む）',
-    'アセンブリを if / while / 代入の形に直します。いちばん読みやすい形です。訳なので、元のソースそのものではありません。',
+  item(INFER, pick('逆コンパイル（C 風に読む）', 'Decompile (pseudo-C)'),
+    pick('アセンブリを if / while / 代入の形に直します。いちばん読みやすい形です。訳なので、元のソースそのものではありません。',
+      'Rewrite assembly into readable if / while / assignment form. This is a translation, not original source.'),
     withFn((a) => showDecompiler(app, a)));
-  item(FACT, '制御フロー図（分かれ道を絵にする）',
-    '命令の並びをそのまま絵にしたものです。ループの位置がひと目で分かります。',
+  item(FACT, pick('制御フロー図（分かれ道を絵にする）', 'Control-flow graph (CFG)'),
+    pick('命令の並びをそのまま絵にしたものです。ループの位置がひと目で分かります。',
+      'Visualise branches and basic blocks directly from the instruction stream.'),
     withFn((a) => showCfg(app, a)));
-  item(FACT, '呼び出し図（誰が誰を呼ぶか）',
-    'この関数を呼ぶ側・この関数が呼ぶ相手を、上下に広げて描きます。',
+  item(FACT, pick('呼び出し図（誰が誰を呼ぶか）', 'Call graph'),
+    pick('この関数を呼ぶ側・この関数が呼ぶ相手を、上下に広げて描きます。',
+      'Show callers above and callees below this function.'),
     withFn((a) => showCallGraphPanel(app, a)));
-  item(INFER, '引数・戻り値・変数の型',
-    '使われ方からの推定です。「4 バイトで比較されている」以上のことは言えません。',
+  item(INFER, pick('引数・戻り値・変数の型', 'Types & variables'),
+    pick('使われ方からの推定です。「4 バイトで比較されている」以上のことは言えません。',
+      'Inferred from how registers and stack slots are used.'),
     withFn((a) => showTypes(app, a)));
-  item(INFER, '構造体を組み立てる',
-    '[x0, #0x20] のような使い方から、オブジェクトの中身の並びを起こします。触られていない場所は空きのままです。',
+  item(INFER, pick('構造体を組み立てる', 'Recover struct layout'),
+    pick('[x0, #0x20] のような使い方から、オブジェクトの中身の並びを起こします。触られていない場所は空きのままです。',
+      'Reconstruct object fields from offset accesses such as [x0, #0x20]. Unaccessed gaps stay unknown.'),
     withFn((a) => showStructRecover(app, a)));
-  item(FACT, '実行してみる（1 命令ずつ・デバッガ）',
-    '命令のとおりに動かして、レジスタとメモリの変化を見ます。実機は使いません。',
+  item(FACT, pick('実行してみる（1 命令ずつ・デバッガ）', 'Emulate / Debugger (step by step)'),
+    pick('命令のとおりに動かして、レジスタとメモリの変化を見ます。実機は使いません。',
+      'Step through instructions in the browser emulator to inspect registers and memory.'),
     withFn((a) => showDebugger(app, a)));
-  item(FACT, '名前を付ける / メモを書く',
-    '分かったことにその場で名前を付けます。次に見たときに思い出せます。',
+  item(FACT, pick('名前を付ける / メモを書く', 'Rename / Add note'),
+    pick('分かったことにその場で名前を付けます。次に見たときに思い出せます。',
+      'Label symbols and attach notes as you analyse.'),
     withFn((a) => showRename(app, a)));
   sheet.body.append(perFunction);
 
   /* ── 3. ファイル全体 ── */
   const whole = list();
-  whole.append(groupRow('ファイル全体を調べる'));
+  whole.append(groupRow(pick('ファイル全体を調べる', 'Inspect whole binary')));
   const item2 = rowIn(whole);
-  item2(FACT, '外とのつながり（インポート / ライブラリ）',
-    'リンカの表をそのまま読んだものです。借りている関数から、アプリの性格が見えます。',
+  item2(FACT, pick('外とのつながり（インポート / ライブラリ）', 'External linkage (imports / libraries)'),
+    pick('リンカの表をそのまま読んだものです。借りている関数から、アプリの性格が見えます。',
+      'Read linker tables directly to see imported APIs and linked libraries.'),
     () => showLinkage(app));
-  item2(FACT, 'グローバル変数',
-    'どこからでも触れる置き場。所持金やログイン状態はここにあります。', () => showGlobals(app));
-  item2(FACT, 'C++ のクラス（RTTI / vtable）',
-    'バイナリに残っている型情報から、クラス名と仮想関数の並びを取り出します。', () => showCxxClasses(app));
-  item2(FACT, 'Unity（IL2CPP）の名前を戻す',
-    'global-metadata.dat を読み込むと、C# のクラス名とメソッド名が戻ります。', () => showIl2cpp(app));
+  item2(FACT, pick('グローバル変数', 'Global variables'),
+    pick('どこからでも触れる置き場。所持金やログイン状態はここにあります。',
+      'Shared static storage referenced across functions.'), () => showGlobals(app));
+  item2(FACT, pick('C++ のクラス（RTTI / vtable）', 'C++ classes (RTTI / vtable)'),
+    pick('バイナリに残っている型情報から、クラス名と仮想関数の並びを取り出します。',
+      'Extract class names and virtual method tables from binary RTTI.'), () => showCxxClasses(app));
+  item2(FACT, pick('Unity（IL2CPP）の名前を戻す', 'Restore Unity (IL2CPP) names'),
+    pick('global-metadata.dat を読み込むと、C# のクラス名とメソッド名が戻ります。',
+      'Load global-metadata.dat to recover C# class and method names.'), () => showIl2cpp(app));
   sheet.body.append(whole);
 
   /* ── 4. 書き換える・ためる・自動化する ── */
   const work = list();
-  work.append(groupRow('書き換える・自動化する'));
+  work.append(groupRow(pick('書き換える・自動化する', 'Patch & automate')));
   const item3 = rowIn(work);
-  item3(FACT, 'パッチ（命令の書き換え）',
-    '命令を書き換えて、結果を新しいファイルとして保存します。', () => showPatches(app));
-  item3(FACT, '自分で付けた名前とメモ',
-    '書き溜めたものの一覧・書き出し・読み込み。', () => showNotes(app));
-  item3(FACT, '構造体（自分で作ったもの）',
-    '作った型の一覧と、C のヘッダとしての書き出し。', () => showStructs(app));
-  item3(FACT, 'スクリプト（自動化）',
-    '同じ作業を何百回も繰り返すときに。IDAPython にあたるものです。', () => showScript(app));
-  item3(FACT, 'プラグイン', '自分で書いた機能を足します。', () => showPlugins(app));
+  item3(FACT, pick('パッチ（命令の書き換え）', 'Patches (edit instructions)'),
+    pick('命令を書き換えて、結果を新しいファイルとして保存します。',
+      'Modify instructions and export a patched binary.'), () => showPatches(app));
+  item3(FACT, pick('自分で付けた名前とメモ', 'Saved names & notes'),
+    pick('書き溜めたものの一覧・書き出し・読み込み。',
+      'View, export, and import your annotations.'), () => showNotes(app));
+  item3(FACT, pick('構造体（自分で作ったもの）', 'Custom structs'),
+    pick('作った型の一覧と、C のヘッダとしての書き出し。',
+      'List your struct definitions and export C headers.'), () => showStructs(app));
+  item3(FACT, pick('スクリプト（自動化）', 'Scripting (automation)'),
+    pick('同じ作業を何百回も繰り返すときに。IDAPython にあたるものです。',
+      'Automate repetitive analysis tasks with JavaScript.'), () => showScript(app));
+  item3(FACT, pick('プラグイン', 'Plugins'), pick('自分で書いた機能を足します。', 'Load and run custom extensions.'), () => showPlugins(app));
   sheet.body.append(work);
 
   /* ── 5. 札の意味 ── */
   const about = list();
-  about.append(groupRow('札の意味'));
-  about.append(tapRow('この結果はどこまで信用できるか', {
-    sub: '「事実」「推定」「参考」の違いと、機能ごとに測った精度。',
+  about.append(groupRow(pick('札の意味', 'Confidence labels')));
+  about.append(tapRow(pick('この結果はどこまで信用できるか', 'How much can I trust these results?'), {
+    sub: pick('「事実」「推定」「参考」の違いと、機能ごとに測った精度。',
+      'Differences between Fact, Inferred, and Hint, plus measured accuracy per tool.'),
     right: '›',
     onTap: () => { sheet.close(); app.openAccuracyNotes(); },
   }));
@@ -894,12 +935,13 @@ export function showCxxClasses(app) {
 }
 
 async function showVtable(app, cls) {
+  const snap = captureAppEpoch(app);
   const sheet = new Sheet(cls.name);
   if (cls.vtable == null) {
-    sheet.body.append(noteBox('このクラスには仮想関数の表がありません。'));
+    sheet.body.append(noteBox(pick('このクラスには仮想関数の表がありません。', 'This class has no virtual method table.')));
     return;
   }
-  const status = el('div', 'hint', '読み込んでいます…');
+  const status = el('div', 'hint', pick('読み込んでいます…', 'Loading…'));
   sheet.body.append(status);
   const read = (a, len) => app.backend.readAt(a, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
   const pointerContext = rttiPointerContextForSlice(
@@ -907,7 +949,8 @@ async function showVtable(app, cls) {
     app.pointerResolutionContextFor?.(cls.vtable) ?? {},
   );
   const vt = await readVtable(read, cls.vtable, app.symbols, 64, pointerContext);
-  if (!vt || !vt.slots.length) { status.textContent = '仮想関数の表を読めませんでした。'; return; }
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
+  if (!vt || !vt.slots.length) { status.textContent = pick('仮想関数の表を読めませんでした。', 'Could not read the virtual method table.'); return; }
   status.remove();
 
   const sampleOffset = 0x10;
@@ -1453,7 +1496,7 @@ export function showDebugger(app, addr) {
     if (activeRun && !activeRun.signal.aborted) activeRun.abort(reason);
     activeRun = null;
   };
-  const sheet = new Sheet('実行してみる', { onClose:() => abortRun('debugger-sheet-closed') });
+  const sheet = new Sheet(pick('実行してみる', 'Emulate / Debugger'), { onClose:() => abortRun('debugger-sheet-closed') });
   const stagedPatchCount = () => (app?.patches?.size || 0);
   let applyPatches = stagedPatchCount() > 0;
   let emu = makeEmulator(app, { applyPatches });
@@ -1463,12 +1506,14 @@ export function showDebugger(app, addr) {
 
   sheet.body.append(el('div', 'hint',
     fnName(app, addr) + '\n' +
-    'この関数を、ブラウザの中で 1 命令ずつ動かします。実機のアプリは起動しません。\n' +
-    '危ないことは何も起きないので、安心して何度でも試せます。'));
-  sheet.body.append(noteBox(
-    'iOS のライブラリ（UIKit など）の中身はこのファイルに入っていないので、\n' +
-    'そこへ出たら「戻り値 0 で帰ってきた」ことにして先へ進みます。\n' +
-    '何をそう扱ったかは、下の「メモ」に出ます。'));
+    pick(
+      'この関数を、ブラウザの中で 1 命令ずつ動かします。実機のアプリは起動しません。\n危ないことは何も起きないので、安心して何度でも試せます。',
+      'Step through this function in the browser emulator without running the real app.\nNothing runs on a real device, so you can experiment safely.',
+    )));
+  sheet.body.append(noteBox(pick(
+    'iOS のライブラリ（UIKit など）の中身はこのファイルに入っていないので、\nそこへ出たら「戻り値 0 で帰ってきた」ことにして先へ進みます。\n何をそう扱ったかは、下の「メモ」に出ます。',
+    'External system libraries (such as UIKit) are not inside this binary, so calls to them return 0 and continue.\nStubbed calls are recorded in Notes below.',
+  )));
 
   /* 引数 */
   const argWrap = el('div', 'field wrap');
@@ -1481,14 +1526,14 @@ export function showDebugger(app, addr) {
     argWrap.append(n);
   }
   const argPresetBar = el('div', 'chips');
-  argPresetBar.append(button('ダミー領域を引数にセット', 'chip', () => {
+  argPresetBar.append(button(pick('ダミー領域を引数にセット', 'Set dummy buffer as arg'), 'chip', () => {
     const targetIdx = focusedArgIndex >= 0 && focusedArgIndex < argInputs.length ? focusedArgIndex : 0;
     const dummyAddr = '0x' + emu.heapBase.toString(16);
     argInputs[targetIdx].value = dummyAddr;
     start();
-    toast(`x${targetIdx} にダミー領域（${dummyAddr}）をセットしました`);
+    toast(pick(`x${targetIdx} にダミー領域（${dummyAddr}）をセットしました`, `Set x${targetIdx} to dummy buffer (${dummyAddr})`));
   }));
-  sheet.body.append(heading('引数（x0〜x3）'), argWrap, argPresetBar);
+  sheet.body.append(heading(pick('引数（x0〜x3）', 'Arguments (x0–x3)')), argWrap, argPresetBar);
 
   if (stagedPatchCount() > 0) {
     const patchToggleWrap = el('label', 'chip');
@@ -1499,7 +1544,7 @@ export function showDebugger(app, addr) {
     const patchCheckbox = el('input');
     patchCheckbox.type = 'checkbox';
     patchCheckbox.checked = applyPatches;
-    const patchLabelText = el('span', '', `パッチ適用状態で試す（${stagedPatchCount()} 件）`);
+    const patchLabelText = el('span', '', pick(`パッチ適用状態で試す（${stagedPatchCount()} 件）`, `Run with staged patches (${stagedPatchCount()})`));
     patchToggleWrap.append(patchCheckbox, patchLabelText);
     patchCheckbox.addEventListener('change', () => {
       applyPatches = !!patchCheckbox.checked;
@@ -1507,7 +1552,9 @@ export function showDebugger(app, addr) {
       emu = makeEmulator(app, { applyPatches });
       emu.breakpoints = keep;
       start();
-      toast(applyPatches ? 'パッチ適用状態で実行します' : '元の状態（パッチ無効）で実行します');
+      toast(applyPatches
+        ? pick('パッチ適用状態で実行します', 'Running with staged patches enabled')
+        : pick('元の状態（パッチ無効）で実行します', 'Running original bytes (patches disabled)'));
     });
     const patchBar = el('div', 'chips');
     patchBar.append(patchToggleWrap);
@@ -1515,7 +1562,7 @@ export function showDebugger(app, addr) {
   }
 
   const chips = el('div', 'chips');
-  const status = el('div', 'hint', 'まだ動かしていません。');
+  const status = el('div', 'hint', pick('まだ動かしていません。', 'Not started yet.'));
   const regTable = el('div', 'regs mono');
   const traceBox = el('div', 'codeview small');
   const logBox = el('div');
@@ -1531,7 +1578,7 @@ export function showDebugger(app, addr) {
       if (!result.ok) invalid = true;
     });
     if (invalid) {
-      status.textContent = '引数に読み取れない値があります。赤く示した欄を直してください。';
+      status.textContent = pick('引数に読み取れない値があります。赤く示した欄を直してください。', 'Some arguments are invalid. Fix the highlighted fields.');
       return null;
     }
     return parsed.map((result) => result.value);
@@ -1547,7 +1594,7 @@ export function showDebugger(app, addr) {
     emu.reset();
     emu.breakpoints = keep;
     emu.setup(addr, args);
-    status.textContent = '準備しました。「1 命令進む」か「最後まで走らせる」を押してください。';
+    status.textContent = pick('準備しました。「1 命令進む」か「最後まで走らせる」を押してください。', 'Ready. Choose "Step 1" or "Run to end".');
     render();
     return true;
   };
@@ -1562,41 +1609,71 @@ export function showDebugger(app, addr) {
     return true;
   };
 
-  chips.append(button('はじめから', 'chip', start));
-  chips.append(button('1 命令進む', 'chip', async () => {
+  chips.append(button(pick('はじめから', 'Reset'), 'chip', start));
+  chips.append(button(pick('1 命令進む', 'Step 1'), 'chip', async () => {
     if (!ensureReadyForRun()) return;
-    const r = await emu.step();
-    status.textContent = r.text ? ('実行: ' + r.text) : '';
-    if (r.reason || emu.stopped) {
-      const explained = explainEmulatorFault(r.code || emu.faultCode || emu.stopCode, r.reason || emu.stopped);
-      status.textContent = status.textContent ? (status.textContent + '\n' + explained) : explained;
+    abortRun('debugger-step-replaced');
+    const controller = new AbortController();
+    activeRun = controller;
+    try {
+      const r = await emu.step({ signal: controller.signal });
+      if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
+      status.textContent = r.text ? (pick('実行: ', 'Executed: ') + r.text) : '';
+      if (r.reason || emu.stopped) {
+        const explained = explainEmulatorFault(r.code || emu.faultCode || emu.stopCode, r.reason || emu.stopped);
+        status.textContent = status.textContent ? (status.textContent + '\n' + explained) : explained;
+      }
+      render();
+    } catch (error) {
+      if (!controller.signal.aborted && error?.name !== 'AbortError' && sheet.root.isConnected) {
+        status.textContent = explainEmulatorFault(error?.code, error?.message || String(error));
+      }
+    } finally {
+      if (activeRun === controller) activeRun = null;
     }
-    render();
   }));
-  chips.append(button('10 命令進む', 'chip', async () => {
+  chips.append(button(pick('10 命令進む', 'Step 10'), 'chip', async () => {
     if (!ensureReadyForRun()) return;
-    for (let i = 0; i < 10 && !emu.stopped; i++) await emu.step();
-    status.textContent = emu.stopped
-      ? explainEmulatorFault(emu.faultCode || emu.stopCode, emu.stopped)
-      : (emu.steps + ' 命令まで進みました。');
-    render();
+    abortRun('debugger-step10-replaced');
+    const controller = new AbortController();
+    activeRun = controller;
+    try {
+      for (let i = 0; i < 10 && !emu.stopped; i++) {
+        if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
+        await emu.step({ signal: controller.signal });
+      }
+      if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
+      status.textContent = emu.stopped
+        ? explainEmulatorFault(emu.faultCode || emu.stopCode, emu.stopped)
+        : pick(emu.steps + ' 命令まで進みました。', 'Stepped to ' + emu.steps + ' instructions.');
+      render();
+    } catch (error) {
+      if (!controller.signal.aborted && error?.name !== 'AbortError' && sheet.root.isConnected) {
+        status.textContent = explainEmulatorFault(error?.code, error?.message || String(error));
+      }
+    } finally {
+      if (activeRun === controller) activeRun = null;
+    }
   }));
-  chips.append(button('最後まで走らせる', 'chip strong', async () => {
+  chips.append(button(pick('最後まで走らせる', 'Run to end'), 'chip strong', async () => {
     if (!ensureReadyForRun()) return;
     abortRun('debugger-run-replaced');
     const controller = new AbortController();
     activeRun = controller;
-    status.textContent = '走らせています…';
+    status.textContent = pick('走らせています…', 'Running…');
     try {
       await emu.run(50000, (n) => {
-        if (!controller.signal.aborted && sheet.root.isConnected) status.textContent = n + ' 命令…';
+        if (!controller.signal.aborted && sheet.root.isConnected) status.textContent = pick(n + ' 命令…', n + ' instructions…');
       }, { signal:controller.signal });
       if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
       const summary = emu.stopped
         ? explainEmulatorFault(emu.faultCode || emu.stopCode, emu.stopped)
-        : 'ブレークポイントで止まりました。';
+        : pick('ブレークポイントで止まりました。', 'Stopped at a breakpoint.');
       status.textContent = summary +
-        '\n合計 ' + emu.steps + ' 命令、戻り値 x0 = ' + hexBig(emu.x[0]) + '（10 進で ' + emu.x[0].toString() + '）';
+        pick(
+          '\n合計 ' + emu.steps + ' 命令、戻り値 x0 = ' + hexBig(emu.x[0]) + '（10 進で ' + emu.x[0].toString() + '）',
+          '\nTotal ' + emu.steps + ' instructions, return x0 = ' + hexBig(emu.x[0]) + ' (decimal ' + emu.x[0].toString() + ')',
+        );
       render();
     } catch (error) {
       if (!controller.signal.aborted && error?.name !== 'AbortError' && sheet.root.isConnected) {
@@ -1609,27 +1686,28 @@ export function showDebugger(app, addr) {
   sheet.body.append(chips, status);
 
   /* ブレークポイント: そこへ来たら止まる目印 */
-  const bpInput = input('0x… 止めたい場所', '');
-  sheet.body.append(heading('ブレークポイント'), el('div', 'hint',
-    'そこへ来たら止まる目印です。「最後まで走らせる」で、ここに着いた時点で止まります。'));
-  sheet.body.append(field(bpInput, '置く', () => {
+  const bpInput = input(pick('0x… 止めたい場所', '0x… breakpoint address'), '');
+  sheet.body.append(heading(pick('ブレークポイント', 'Breakpoints')), el('div', 'hint',
+    pick('そこへ来たら止まる目印です。「最後まで走らせる」で、ここに着いた時点で止まります。',
+      'Execution pauses here when using "Run to end".')));
+  sheet.body.append(field(bpInput, pick('置く', 'Add'), () => {
     let a;
-    try { a = BigInt(bpInput.value.trim()); } catch { toast('アドレスの形が違います'); return; }
+    try { a = BigInt(bpInput.value.trim()); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
     emu.breakpoints.add(a.toString());
     bpInput.value = '';
     renderBreakpoints();
-    toast(addrHex(a) + ' に置きました');
+    toast(pick(addrHex(a) + ' に置きました', 'Added breakpoint at ' + addrHex(a)));
   }));
   sheet.body.append(bpBox);
 
   function renderBreakpoints() {
     bpBox.replaceChildren();
     const l = list();
-    if (!emu.breakpoints.size) l.append(tapRow('まだありません', { disabled: true }));
+    if (!emu.breakpoints.size) l.append(tapRow(pick('まだありません', 'None yet'), { disabled: true }));
     for (const key of emu.breakpoints) {
       const a = BigInt(key);
       l.append(tapRow(addrHex(a), {
-        sub: 'タップすると外します',
+        sub: pick('タップすると外します', 'Tap to remove'),
         onTap: () => { emu.breakpoints.delete(key); renderBreakpoints(); },
       }));
     }
@@ -1637,22 +1715,31 @@ export function showDebugger(app, addr) {
   }
   renderBreakpoints();
 
-  sheet.body.append(heading('レジスタ'), regTable);
-  sheet.body.append(heading('通った道（最後の 40 命令）'), traceBox);
-  sheet.body.append(heading('メモ'), logBox);
+  sheet.body.append(heading(pick('レジスタ', 'Registers')), regTable);
+  sheet.body.append(heading(pick('通った道（最後の 40 命令）', 'Trace (last 40 instructions)')), traceBox);
+  sheet.body.append(heading(pick('メモ', 'Notes')), logBox);
 
   const memWrap = el('div');
-  sheet.body.append(heading('メモリを覗く'), memWrap);
-  const memAddr = input('0x… または x0', '');
-  memWrap.append(field(memAddr, '見る', async () => {
+  sheet.body.append(heading(pick('メモリを覗く', 'Inspect memory')), memWrap);
+  const memAddr = input(pick('0x… または x0', '0x… or x0'), '');
+  memWrap.append(field(memAddr, pick('見る', 'Inspect'), async () => {
     let a;
     const v = memAddr.value.trim();
-    if (/^x\d+$/.test(v)) a = emu.get(v);
-    else { try { a = BigInt(v); } catch { toast('アドレスの形が違います'); return; } }
+    if (/^[xw]\d+$/i.test(v) || /^(sp|wsp|pc|xzr|wzr)$/i.test(v)) {
+      try { a = emu.get(v); } catch (err) {
+        toast(pick('レジスタ名が正しくありません', 'Invalid register name'));
+        memOut.replaceChildren(noteBox(explainEmulatorFault(err?.code, err?.message || String(err))));
+        return;
+      }
+    } else {
+      try { a = BigInt(v); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
+    }
     try {
       const bytes = await emu.dump(a, 64);
+      if (!sheet.root.isConnected) return;
       memOut.replaceChildren(codeBlock(dumpText(a, bytes)));
     } catch (err) {
+      if (!sheet.root.isConnected) return;
       memOut.replaceChildren(noteBox(explainEmulatorFault(err?.code, err?.message || String(err))));
     }
   }));
@@ -1681,7 +1768,7 @@ export function showDebugger(app, addr) {
     }
 
     logBox.replaceChildren();
-    if (!emu.log.length) logBox.append(el('div', 'hint', '（まだありません）'));
+    if (!emu.log.length) logBox.append(el('div', 'hint', pick('（まだありません）', '(None yet)')));
     for (const l of emu.log.slice(-20)) {
       logBox.append(el('div', 'hint', '· ' + l.call + ' — ' + l.note));
     }
@@ -1710,8 +1797,15 @@ function dumpText(addr, bytes) {
    ══════════════════════════════════════════════════════════ */
 
 export function showScript(app) {
-  const controller = new AbortController();
-  const sheet = new Sheet('スクリプト', { onClose:() => controller.abort('script-sheet-closed') });
+  const sheetController = new AbortController();
+  let runController = null;
+  const sheet = new Sheet(pick('スクリプト', 'Script'), {
+    onClose: () => {
+      sheetController.abort('script-sheet-closed');
+      runController?.abort('script-sheet-closed');
+      runController = null;
+    },
+  });
   sheet.body.append(el('div', 'hint',
     '同じ作業を何百回も繰り返すときの道具です（IDAPython にあたります）。\n' +
     '言語は JavaScript。hex.〜 で解析結果に触れて、print(…) で下に出します。'));
@@ -1735,21 +1829,37 @@ export function showScript(app) {
   sheet.body.append(heading('結果'), out);
 
   async function run() {
+    if (sheetController.signal.aborted || !sheet.root.isConnected) return;
+    runController?.abort('script-run-replaced');
+    const localController = new AbortController();
+    runController = localController;
+    const isCurrent = () => (
+      !sheetController.signal.aborted
+      && !localController.signal.aborted
+      && runController === localController
+      && sheet.root.isConnected
+    );
     out.replaceChildren();
     const write = (line) => {
+      if (!isCurrent()) return;
       const row = el('div', 'cl');
       row.append(el('span', 'cl-text mono', line));
       out.append(row);
       out.scrollTop = out.scrollHeight;
     };
-    write('— 実行しています —');
-    const res = await runScript(ta.value, app, write, { signal:controller.signal });
-    if (res.error) {
-      const row = el('div', 'cl warn');
-      row.append(el('span', 'cl-text mono', '⚠ ' + res.error));
-      out.append(row);
-    } else {
-      write('— おわり —');
+    write(pick('— 実行しています —', '— Running —'));
+    try {
+      const res = await runScript(ta.value, app, write, { signal: localController.signal });
+      if (!isCurrent()) return;
+      if (res.error) {
+        const row = el('div', 'cl warn');
+        row.append(el('span', 'cl-text mono', '⚠ ' + res.error));
+        out.append(row);
+      } else {
+        write(pick('— おわり —', '— Done —'));
+      }
+    } finally {
+      if (runController === localController) runController = null;
     }
   }
 }
@@ -1886,20 +1996,34 @@ export function showPlugins(app) {
   }
 
   function runPlugin(p) {
-    const s = new Sheet(p.name);
+    runController?.abort('plugin-run-replaced');
+    const controller = runController = new AbortController();
+    const s = new Sheet(p.name, {
+      onClose: () => {
+        if (!controller.signal.aborted) controller.abort('plugin-output-sheet-closed');
+        if (runController === controller) runController = null;
+      },
+    });
     const out = el('div', 'codeview small');
-    s.body.append(el('div', 'hint', '実行しています…'), out);
+    s.body.append(el('div', 'hint', pick('実行しています…', 'Running…')), out);
+    const isCurrent = () => (
+      !controller.signal.aborted
+      && runController === controller
+      && s.root.isConnected
+      && sheet.root.isConnected
+    );
     const write = (line) => {
+      if (!isCurrent()) return;
       const row = el('div', 'cl');
       row.append(el('span', 'cl-text mono', line));
       out.append(row);
     };
-    runController?.abort('plugin-run-replaced');
-    const controller = runController = new AbortController();
     app.plugins.run(p.id, write, { signal:controller.signal }).then((res) => {
-      if (controller.signal.aborted || !sheet.root.isConnected) return;
+      if (!isCurrent()) return;
       if (res.error) write('⚠ ' + res.error);
-      else write('— おわり —');
+      else write(pick('— おわり —', '— Done —'));
+    }).finally(() => {
+      if (runController === controller) runController = null;
     });
   }
 
@@ -1951,31 +2075,32 @@ export function showIl2cpp(app) {
         return;
       }
       abortActive();
+      const snap = captureAppEpoch(app);
       const controller = new AbortController();
       activeController = controller;
       body.replaceChildren(el('div', 'hint', '読み込んでいます…'));
       try {
         const meta = await parseMetadataFileInWorker(f, { signal:controller.signal });
-        if (controller.signal.aborted || !sheet.root.isConnected) return;
+        if (controller.signal.aborted || !isAppEpochCurrent(app, snap, sheet)) return;
         await bindMethodAddresses(meta, {
           regions: app.store.get('regions') || [], signal: controller.signal,
           read: (addr, len) => app.backend.readAt(addr, len)
             .then((r) => (r && r.found ? r.bytes : null)),
         });
-        if (controller.signal.aborted || !sheet.root.isConnected) return;
+        if (controller.signal.aborted || !isAppEpochCurrent(app, snap, sheet)) return;
         const named = meta.methods.filter((m) => m.address != null)
           .map((m) => ({ addr: m.address, name: m.full }));
-        if (named.length && !controller.signal.aborted && sheet.root.isConnected) {
+        if (named.length && !controller.signal.aborted && isAppEpochCurrent(app, snap, sheet)) {
           app.symbols.addNames(named);
           app.symbols.addFunctions(named.map((n) => n.addr));
           app.viewer.setSymbols(app.symbols);
         }
-        if (!controller.signal.aborted && sheet.root.isConnected) {
+        if (!controller.signal.aborted && isAppEpochCurrent(app, snap, sheet)) {
           show(meta);
         }
       } catch (err) {
         if (controller.signal.aborted || err?.code === 'ABORT_ERR' || err?.name === 'AbortError') return;
-        if (!sheet.root.isConnected) return;
+        if (!isAppEpochCurrent(app, snap, sheet)) return;
         body.replaceChildren(el('div', 'hint warn', userError(err,
           'IL2CPPメタデータを解析できませんでした。別の解析ツールは引き続き利用できます。')));
       } finally {

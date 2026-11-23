@@ -569,7 +569,7 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
       const fieldList = view.getUint32(body + 4, true);
       const sizeOffset = leaf === LF_UNION ? body + 8 : body + 16;
       const numeric = readNumeric(view, bytes, sizeOffset, end);
-      if (!numeric) break;
+      if (!numeric || !Number.isSafeInteger(numeric.value) || numeric.value < 0) break;
       const { value: sizeBytes, next } = numeric;
       // Type names are NUL-terminated: a record that ends without one is
       // truncated, not a complete type with a shorter name (#5265).
@@ -601,7 +601,7 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
       });
     } else if (leaf === LF_ARRAY) {
       const numeric = readNumeric(view, bytes, body + 8, end);
-      if (!numeric) break;
+      if (!numeric || !Number.isSafeInteger(numeric.value) || numeric.value < 0) break;
       const { value: sizeBytes } = numeric;
       types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes });
     } else if (leaf === LF_ENUM) {
@@ -772,7 +772,7 @@ function parseFieldList(view, bytes, start, end, unmodelled) {
       if (offset + 8 > end) { complete = false; break; }
       const typeIndex = view.getUint32(offset + 4, true);
       const numeric = readNumeric(view, bytes, offset + 8, end);
-      if (!numeric || numeric.value == null) { complete = false; break; }
+      if (!numeric || !Number.isSafeInteger(numeric.value) || numeric.value < 0) { complete = false; break; }
       const { value: fieldOffset, next } = numeric;
       nameEntry = cstringWithNext(bytes, next, end);
       if (!nameEntry) { complete = false; break; }

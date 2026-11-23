@@ -293,13 +293,27 @@ function skipItaniumTemplate(s, pos) {
   return depth === 0 ? i : -1;
 }
 
+const ITANIUM_OPERATOR_CODES = new Set([
+  'nw', 'na', 'dl', 'da', 'aw',
+  'ps', 'ng', 'ad', 'de', 'co',
+  'pl', 'mi', 'ml', 'dv', 'rm',
+  'an', 'or', 'eo',
+  'aS', 'pL', 'mI', 'mL', 'dV', 'rM', 'aN', 'oR', 'eO',
+  'ls', 'rs', 'lS', 'rS',
+  'eq', 'ne', 'lt', 'gt', 'le', 'ge', 'ss',
+  'nt', 'aa', 'oo',
+  'pp', 'mm',
+  'cm', 'pm', 'pt', 'cl', 'ix', 'qu',
+  'cv', 'li',
+]);
+
 /** Itanium C++ マングル名 `_ZN...` / `__ZN...` から所有者クラス名を取り出す。 */
 function itaniumOwnerOf(name) {
   const m = /^_?_ZN[rVK]*[RO]?/.exec(name);
   if (!m) return null;
   let i = m[0].length;
   const parts = [];
-  let isCtorDtor = false;
+  let isSpecialMember = false;
   while (i < name.length) {
     const ch = name[i];
     if (ch === 'E') break;
@@ -335,7 +349,7 @@ function itaniumOwnerOf(name) {
     }
     if ((ch === 'C' && (name[i + 1] === '1' || name[i + 1] === '2' || name[i + 1] === '3')) ||
         (ch === 'D' && (name[i + 1] === '0' || name[i + 1] === '1' || name[i + 1] === '2'))) {
-      isCtorDtor = true;
+      isSpecialMember = true;
       i += 2;
       if (i < name.length && name[i] === 'I') {
         i = skipItaniumTemplate(name, i);
@@ -344,8 +358,13 @@ function itaniumOwnerOf(name) {
       break;
     }
     if (ch === 'C' && name[i + 1] === 'I' && (name[i + 2] === '1' || name[i + 2] === '2')) {
-      isCtorDtor = true;
+      isSpecialMember = true;
       i += 3;
+      break;
+    }
+    if (i + 1 < name.length && ITANIUM_OPERATOR_CODES.has(name.slice(i, i + 2))) {
+      isSpecialMember = true;
+      i += 2;
       break;
     }
     if (ch === 'I') {
@@ -355,7 +374,7 @@ function itaniumOwnerOf(name) {
     }
     break;
   }
-  if (isCtorDtor) return parts.length >= 1 ? parts.join('::') : null;
+  if (isSpecialMember) return parts.length >= 1 ? parts.join('::') : null;
   return parts.length >= 2 ? parts.slice(0, -1).join('::') : null;
 }
 

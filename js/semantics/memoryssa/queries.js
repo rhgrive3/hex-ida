@@ -1158,7 +1158,14 @@ function forwardingGateOptionKey(options) {
 }
 
 function forwardingValidationBudgetKey(options) {
-  return options.validationBudget == null ? '\u0000default' : String(options.validationBudget);
+  if (options.validationBudget == null) return '\u0000default';
+  try {
+    return typeof options.validationBudget === 'object'
+      ? stableStringify(options.validationBudget)
+      : `${typeof options.validationBudget}:${String(options.validationBudget)}`;
+  } catch {
+    return null;
+  }
 }
 
 function forwardingStatusFromArtifactFull(memorySsa, options) {
@@ -2212,6 +2219,9 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
           throw new ForwardingStop('unknown', 'memory-forwarding-store-memory-mismatch');
         }
       }
+      if (MEMORY_BARRIER_KINDS.has(definition.kind)) {
+        throw new ForwardingStop('unknown', `memory-forwarding-${definition.kind}-barrier`);
+      }
       const range = forwardingRange(region, memory, metadata, source, options);
       if (!range) {
         // An unknown-range clobber can touch any load byte.  A missing range
@@ -2219,9 +2229,6 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
         throw new ForwardingStop('unknown', `memory-forwarding-${definition.kind}-range-unproven`);
       }
       if (!forwardingOverlap(range, context.loadRange)) continue;
-      if (MEMORY_BARRIER_KINDS.has(definition.kind)) {
-        throw new ForwardingStop('unknown', `memory-forwarding-${definition.kind}-barrier`);
-      }
       if (definition.kind !== 'memory-def' || definition.aliasRelation !== 'must'
           || !forwardingObject(definition.proof)
           || definition.proof.kind !== 'must-alias-memory-write'
@@ -2338,7 +2345,7 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
     const validationCfg = options.cfg ?? NO_FORWARDING_CFG;
     let validated;
     if (pre != null && pre.validatedOk && pre.validatedCfg === validationCfg
-        && pre.validatedBudget === validationKey) {
+        && validationKey != null && pre.validatedBudget === validationKey) {
       validated = memorySsa;
     } else {
       validated = validateMemorySsa(memorySsa, {

@@ -175,6 +175,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   // Anchor only unique, very strong matches before contextual refinement.
   // Ambiguous strong candidates are deliberately excluded to prevent graph feedback loops.
   const anchors = new Map();
+  const anchoredAfter = new Set();
   const byBefore = new Map(); const byAfter = new Map();
   for (const c of all) {
     let left=byBefore.get(c.i); if (!left) byBefore.set(c.i,left=[]); left.push(c);
@@ -185,7 +186,14 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     const reverse=(byAfter.get(top.j)||[]).slice().sort((a,b)=>b.baseConfidence-a.baseConfidence || a.i-b.i); const reverseSecond=reverse.find((x)=>x.i!==i);
     const uniqueLeft=!second || top.baseConfidence-second.baseConfidence>0.06;
     const uniqueRight=!reverseSecond || top.baseConfidence-reverseSecond.baseConfidence>0.06;
-    if (top.baseConfidence>=0.9 && uniqueLeft && uniqueRight && before[top.i].address!=null && after[top.j].address!=null) anchors.set(String(before[top.i].address),String(after[top.j].address));
+    if (top.baseConfidence>=0.9 && uniqueLeft && uniqueRight && before[top.i].address!=null && after[top.j].address!=null) {
+      const fromKey = String(before[top.i].address);
+      const toKey = String(after[top.j].address);
+      if (!anchors.has(fromKey) && !anchoredAfter.has(toKey)) {
+        anchors.set(fromKey, toKey);
+        anchoredAfter.add(toKey);
+      }
+    }
   }
   const iterations = Math.max(0, Math.min(3, options.neighborhoodIterations ?? 2));
   for (let iter = 0; iter < iterations; iter++) {
@@ -196,7 +204,35 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
       const next = Math.min(0.97, c.baseConfidence + bonus);
       if (next > c.confidence) { c.confidence = next; if (bonus > 0 && !c.reasons.includes('call-neighborhood')) c.reasons.push('call-neighborhood'); changed = true; }
     }
-    if (!changed) break;
+    if (!changed || iter + 1 >= iterations) break;
+    let anchorsAdded = false;
+    for (const [i, choices] of byBefore) {
+      if (before[i].address == null) continue;
+      const fromKey = String(before[i].address);
+      if (anchors.has(fromKey)) continue;
+      let top = null, secondConf = -Infinity;
+      for (const c of choices) {
+        if (!top || c.confidence > top.confidence || (c.confidence === top.confidence && c.j < top.j)) {
+          if (top) secondConf = Math.max(secondConf, top.confidence);
+          top = c;
+        } else if (c.confidence > secondConf) {
+          secondConf = c.confidence;
+        }
+      }
+      if (!top || top.confidence < 0.82 || after[top.j].address == null) continue;
+      const toKey = String(after[top.j].address);
+      if (anchoredAfter.has(toKey)) continue;
+      if (secondConf > -Infinity && top.confidence - secondConf <= 0.06) continue;
+      let reverseMaxOther = -Infinity;
+      for (const x of (byAfter.get(top.j) || [])) {
+        if (x.i !== i && x.confidence > reverseMaxOther) reverseMaxOther = x.confidence;
+      }
+      if (reverseMaxOther > -Infinity && top.confidence - reverseMaxOther <= 0.06) continue;
+      anchors.set(fromKey, toKey);
+      anchoredAfter.add(toKey);
+      anchorsAdded = true;
+    }
+    if (!anchorsAdded) break;
   }
   const eligible = all.filter((c) => {
     if (c.identity !== 'similar' || options.allowSimilar === true) return true;
@@ -212,7 +248,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   for (const list of eligibleByAfter.values()) list.sort((a,b)=>b.confidence-a.confidence || b.baseConfidence-a.baseConfidence || a.i-b.i);
 
   const solved = solveCandidateMatching(eligible, budget);
-  const selected = solved.selected;
+  const selected = budget.candidateGraphIncomplete ? [] : solved.selected;
   const truncatedComponents = solved.truncatedComponents.slice(0, 32);
   const incompletePostprocessing = () => {
     const matchingBudget = budget.snapshot();
@@ -286,7 +322,6 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
       match: { before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates },
     });
     usedBefore.add(c.i); usedAfter.add(c.j);
-    if (!ambiguous && c.confidence >= 0.82 && before[c.i].address != null && after[c.j].address != null) anchors.set(String(before[c.i].address), String(after[c.j].address));
     if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
   }
   try {
@@ -315,8 +350,15 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   }
   if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
   const matchingBudget = budget.snapshot();
+  const candidateGraphIncomplete = !!matchingBudget.candidateGraphIncomplete;
   const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
   const hasMatchAmbiguity = matches.some((match) => match.ambiguous);
+  const unresolvedBefore = candidateGraphIncomplete
+    ? deleted.slice()
+    : (truncated ? before.filter((_x, i) => solved.ambiguousLeft.has(i)) : []);
+  const unresolvedAfter = candidateGraphIncomplete
+    ? added.slice()
+    : (truncated ? after.filter((_x, i) => solved.ambiguousRight.has(i)) : []);
   return {
     matches, deleted, new: added,
     candidatesEvaluated: all.length,
@@ -324,14 +366,14 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     indexBuckets: index.buckets.size,
     truncated,
     ambiguous: truncated || hasMatchAmbiguity,
-    unresolvedBefore: truncated ? before.filter((_x, i) => solved.ambiguousLeft.has(i)) : [],
-    unresolvedAfter: truncated ? after.filter((_x, i) => solved.ambiguousRight.has(i)) : [],
+    unresolvedBefore,
+    unresolvedAfter,
     matching: {
       truncated,
-      candidateGraphIncomplete: false,
-      preprocessingIncomplete: false,
-      ambiguousBefore: solved.ambiguousLeft.size,
-      ambiguousAfter: solved.ambiguousRight.size,
+      candidateGraphIncomplete,
+      preprocessingIncomplete: !!matchingBudget.preprocessingIncomplete,
+      ambiguousBefore: candidateGraphIncomplete ? unresolvedBefore.length : solved.ambiguousLeft.size,
+      ambiguousAfter: candidateGraphIncomplete ? unresolvedAfter.length : solved.ambiguousRight.size,
       truncatedComponents,
       omittedTruncatedComponents: Math.max(0, solved.truncatedComponents.length - truncatedComponents.length),
       budget: matchingBudget,
