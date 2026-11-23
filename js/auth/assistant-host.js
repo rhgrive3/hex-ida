@@ -1,8 +1,8 @@
 import { getAuthContext } from './runtime-context.js';
 /** The Standard graph knows only this small extension interface, not Dev code. */
 export function createAssistantExtensionHost(standardEngine, context = getAuthContext()) {
-  let mounted = null;
-  const unsubscribe = context.auth.subscribe((identity) => { if (!identity.capabilities.canUseDevAgent) { mounted?.destroy(); mounted = null; } });
+  let mounted = null, destroyed = false;
+  const unsubscribe = context.auth.subscribe((identity) => { if (!identity.capabilities.canUseDevAgent) { try { mounted?.destroy?.(); } catch {} mounted = null; } });
   // A fresh facade preserves frozen-property Proxy invariants of the delegate.
   const engine = {};
   for (const key of Reflect.ownKeys(standardEngine)) {
@@ -16,11 +16,12 @@ export function createAssistantExtensionHost(standardEngine, context = getAuthCo
     engine,
     get dev() { return mounted ? Object.freeze({ settings: mounted.settings, supervisor: mounted.supervisor }) : null; },
     mount(panel, session) {
-      if (!context.childExtension || !context.auth.getIdentity().capabilities.canUseDevAgent) return;
+      if (mounted) { try { mounted.destroy?.(); } catch {} mounted = null; }
+      if (destroyed || !context.childExtension || !context.auth.getIdentity().capabilities.canUseDevAgent) return;
       try { mounted = context.childExtension.mountAssistant({ standardEngine, panel, session }); }
-      catch { mounted?.destroy(); mounted = null; }
+      catch { try { mounted?.destroy?.(); } catch {} mounted = null; }
     },
-    destroy() { unsubscribe(); mounted?.destroy(); mounted = null; },
+    destroy() { destroyed = true; unsubscribe(); try { mounted?.destroy?.(); } catch {} mounted = null; },
   });
 }
 export function installAccountControl(panel, context = getAuthContext()) {
@@ -43,5 +44,5 @@ export function installAccountControl(panel, context = getAuthContext()) {
     finally { button.disabled = false; render(); }
   };
   const unsubscribe = context.auth.subscribe(render); render();
-  return { destroy() { unsubscribe(); root.remove(); } };
+  return { destroy() { unsubscribe(); button.onclick = null; root.remove(); } };
 }

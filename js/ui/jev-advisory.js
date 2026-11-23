@@ -18,11 +18,17 @@ export function appendJevAlternativeAction(app, goal, current, host, parentSigna
     onTap: () => {
       const controller = new AbortController();
       let keyInput;
-      const cancel = () => controller.abort();
-      parentSignal?.addEventListener('abort', cancel, { once: true });
+      const cancel = () => controller.abort(parentSignal?.reason);
+      if (parentSignal?.aborted) {
+        controller.abort(parentSignal.reason);
+      } else if (typeof parentSignal?.addEventListener === 'function') {
+        parentSignal.addEventListener('abort', cancel, { once: true });
+      }
       const sheet = new Sheet(pick('Jevの参考案', 'Jev alternative'), { onClose: () => {
         controller.abort(); if (keyInput) keyInput.value = '';
-        parentSignal?.removeEventListener('abort', cancel);
+        if (typeof parentSignal?.removeEventListener === 'function') {
+          parentSignal.removeEventListener('abort', cancel);
+        }
       } });
       sheet.body.append(para(pick(
         '質問と、クラス名・位置・型・関連する処理名をOpenJevへ送ります。バイナリ本体は送りません。参考案は正解の証明ではありません。',
@@ -32,7 +38,7 @@ export function appendJevAlternativeAction(app, goal, current, host, parentSigna
       sheet.body.append(keyInput, para(pick('キーは保存しません。', 'The key is not saved.')));
       const status = el('div'); let running = false;
       const submit = button(pick('候補を比較する', 'Compare candidates'), 'chip', async () => {
-        if (running || !keyInput.value.trim() || controller.signal.aborted) return;
+        if (running || !keyInput.value.trim() || controller.signal.aborted || parentSignal?.aborted) return;
         running = true; submit.disabled = true;
         const apiKey = keyInput.value; keyInput.value = '';
         status.textContent = pick('候補を比較しています…', 'Comparing candidates…');
@@ -56,8 +62,9 @@ export function appendJevAlternativeAction(app, goal, current, host, parentSigna
           }
         } catch (_) {
           if (isCurrent()) status.textContent = pick('参考案を取得できませんでした。いまの結果は変更していません。', 'Alternative unavailable. The current result is unchanged.');
-        } finally { running = false; submit.disabled = false; }
+        } finally { running = false; submit.disabled = controller.signal.aborted; }
       });
+      if (controller.signal.aborted) submit.disabled = true;
       sheet.body.append(submit, status);
     },
   }));

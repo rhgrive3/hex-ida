@@ -61,8 +61,15 @@ export function showJump(app) {
 export function showSearch(app) {
   const region = app.store.get("currentRegion");
   if (!region) return;
+  let runSeq = 0;
+  let closed = false;
   const sheet = new Sheet(t("search.title"), {
-    onClose: () => { if (running) app.backend.cancelSearch(running); app.backend.onSearchProgress = null; },
+    onClose: () => {
+      closed = true;
+      runSeq++;
+      if (running) { app.backend.cancelSearch(running); running = false; }
+      app.backend.onSearchProgress = null;
+    },
   });
 
   let kind = app.store.get("searchKind") || "asm";
@@ -128,6 +135,7 @@ export function showSearch(app) {
       app.goToAddress(v, { announce: true });
       return;
     }
+    const seq = ++runSeq;
     if (running) app.backend.cancelSearch(running);
 
     results.replaceChildren();
@@ -152,7 +160,7 @@ export function showSearch(app) {
     }
 
     const progress = (p) => {
-      if (!p.all) return;
+      if (closed || seq !== runSeq || !sheet.root.isConnected || !p.all) return;
       fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + "%";
       status.textContent = t("search.searchingN", { n: p.hits });
     };
@@ -160,6 +168,7 @@ export function showSearch(app) {
     const request = app.backend.search(params, progress);
     running = request;
     request.then((res) => {
+      if (closed || seq !== runSeq || !sheet.root.isConnected) return;
       running = false;
       goBtn.textContent = t("btn.find");
       fill.style.width = "100%";
@@ -171,6 +180,7 @@ export function showSearch(app) {
       }
       render(res.results);
     }).catch((err) => {
+      if (closed || seq !== runSeq || !sheet.root.isConnected) return;
       const cancelled = err?.name === "AbortError" || err?.code === "ABORT_ERR";
       running = false;
       goBtn.textContent = t("btn.find");
@@ -180,7 +190,8 @@ export function showSearch(app) {
   }
 
   function stop() {
-    app.backend.cancelSearch(running);
+    runSeq++;
+    if (running) app.backend.cancelSearch(running);
     running = false;
     goBtn.textContent = t("btn.find");
     status.textContent = t("search.stopped", { n: 0 });

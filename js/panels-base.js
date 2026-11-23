@@ -63,7 +63,7 @@ import { VERDICT, verdictRank } from './evidence.js';
 import { roleFromReport, sketchRole, changesValue, stringLookup } from './role.js';
 import { describePurpose } from './purpose.js';
 import {
-  showDecompiler, showCfg, showCallGraphPanel, showTypes, showDebugger,
+  showTools, showDecompiler, showCfg, showCallGraphPanel, showTypes, showDebugger,
   showRename, showComment, showPatchEditor, showStructRecover, prettyName,
 } from './tools.js';
 import { purposeText, changeText } from './narrate.js';
@@ -75,7 +75,8 @@ import { functionViews, openFunctionView } from './ui/next-views.js';
 import { buildGeminiPayload, streamGemini } from './gemini.js';
 import { productDescriptor } from './platform/product-descriptor.js';
 
-export { showFileInfo, showSections, showStructure } from './ui/panels/file.js';
+import { showFileInfo, showSections, showStructure } from './ui/panels/file.js';
+export { showFileInfo, showSections, showStructure };
 export { showJump, showSearch } from './ui/panels/navigation.js';
 export { showSettings } from './ui/panels/settings.js';
 
@@ -3647,10 +3648,17 @@ export function showCandidates(app, goal) {
   }).catch((err) => {
     box.done();
     if (sheet.root.isConnected) {
-      beginnerFailure(results, err, {
+      const codeRegion = app.codeRegion();
+      beginnerFailure(results, err, codeRegion && codeRegion.vmAddr != null ? {
         actionLabel: pick('逆アセンブリを見る', 'Show disassembly'),
-        onAction: () => { sheet.close(); app.goToAddress(app.codeRegion().vmAddr, { announce: true }); },
-      });
+        onAction: () => {
+          sheet.close();
+          const targetRegion = app.codeRegion();
+          if (targetRegion && targetRegion.vmAddr != null) {
+            app.goToAddress(targetRegion.vmAddr, { announce: true });
+          }
+        },
+      } : {});
     }
   });
 }

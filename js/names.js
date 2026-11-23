@@ -380,10 +380,10 @@ export class NoteStore {
       if (!legacyRaw) continue;
       try {
         const payload = JSON.parse(legacyRaw);
-        if (!payload || payload.cleared === true) continue;
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload.cleared === true) continue;
         this.legacyCandidate = { sourceId: old, payload };
-      } catch { }
-      return;
+        return;
+      } catch { continue; }
     }
   }
 
@@ -859,6 +859,8 @@ export class NoteStore {
       this._snapshotState = SNAPSHOT_TOMBSTONE;
       this._snapshotGeneration = generation;
       this._snapshotLoadError = null;
+      this._deltaScanComplete = true;
+      this._unreadableDeltaKeys.clear();
       const cleanup = this._clearDeltas();
       this._cleanupPending = !cleanup.ok;
       this.dirty = false;

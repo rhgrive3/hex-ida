@@ -50,15 +50,21 @@ export function createUserscriptLogin({ auth, apiOrigin, windowRef = globalThis.
       open.disabled = false; complete.disabled = false; status.textContent = 'Open Discord, then return here. Do not share the completion code.';
       const poll = async () => {
         if (active !== state || state.controller.signal.aborted) return;
+        if (state.completing) { state.timer = setTimeout(poll, Math.max(500, intervalMs)); return; }
         if (Date.now() >= state.expiresAt) { failure('Login expired. Cancel and start again.'); return; }
         try {
           const result = await auth.pollPairing(state.id, state.pollSecret, state.controller.signal);
-          if (active !== state) return;
+          if (active !== state || state.controller.signal.aborted) return;
+          if (state.completing) { state.timer = setTimeout(poll, Math.max(500, intervalMs)); return; }
           if (!result || Object.keys(result).length !== 1 || !['pending', 'completed', 'expired', 'consumed'].includes(result.status)) throw new Error('invalid status');
-          if (result.status === 'expired' || result.status === 'consumed') { if (!state.completing) failure('Login expired or already used.'); return; }
-          if (result.status === 'completed' && !state.completing) status.textContent = 'Discord confirmed. Paste the completion code if login did not finish automatically.';
+          if (result.status === 'expired' || result.status === 'consumed') { failure('Login expired or already used.'); return; }
+          if (result.status === 'completed') status.textContent = 'Discord confirmed. Paste the completion code if login did not finish automatically.';
           state.timer = setTimeout(poll, Math.max(500, intervalMs));
-        } catch { if (!state.controller.signal.aborted) failure('Status check failed. Cancel and start again.'); }
+        } catch {
+          if (active !== state || state.controller.signal.aborted) return;
+          if (state.completing) { state.timer = setTimeout(poll, Math.max(500, intervalMs)); return; }
+          failure('Status check failed. Cancel and start again.');
+        }
       };
       void poll();
     } catch { failure('Unable to start login. Check the Worker configuration and retry.'); }

@@ -96,10 +96,23 @@ export function elideItem(item, options = {}) {
     try {
       // Group by session so an operator can wipe one session's stash, and key by
       // the item's decision digest so re-stashing the same content is idempotent.
-      const safeScope = String(options.scope || "default").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
-      const dir = path.join(root, safeScope);
+      const resolvedRoot = path.resolve(root);
+      const rawScope = String(options.scope || "default")
+        .replace(/[^A-Za-z0-9._-]/g, "_")
+        .replace(/^\.+/, "_")
+        .slice(0, 80);
+      const safeScope = rawScope && rawScope !== "." && rawScope !== ".." ? rawScope : "default";
+      const dir = path.resolve(resolvedRoot, safeScope);
+      if (dir !== resolvedRoot && !dir.startsWith(`${resolvedRoot}${path.sep}`)) {
+        return { ok: false, reason: "invalid-stash-path" };
+      }
+      const rawDigest = String(item.digest || "item").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 24);
+      const safeDigest = rawDigest || "item";
+      const file = path.resolve(dir, `${safeDigest}.txt`);
+      if (!file.startsWith(`${dir}${path.sep}`)) {
+        return { ok: false, reason: "invalid-stash-path" };
+      }
       fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, `${String(item.digest || "item").slice(0, 24)}.txt`);
       if (!fs.existsSync(file)) {
         const tmp = `${file}.${process.pid}.tmp`;
         fs.writeFileSync(tmp, original, { mode: 0o600 });

@@ -3,6 +3,12 @@ import { addrHex } from '../format.js';
 import { pick } from '../i18n.js';
 import { alertDialog, toast } from '../ui.js';
 
+function abortError() {
+  const error = new Error('dyld runtime lookup aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
 function askExactInteger(message, initial, normalize) {
   if (typeof globalThis.prompt !== 'function') throw new Error('browser prompt is unavailable');
   const value = globalThis.prompt(message, initial);
@@ -10,21 +16,49 @@ function askExactInteger(message, initial, normalize) {
   return normalize(value);
 }
 
-function workerLookup(file, slide, runtimeAddress) {
+function workerLookup(file, slide, runtimeAddress, { signal } = {}) {
+  if (signal?.aborted) return Promise.reject(abortError());
   const worker = new Worker(new URL('./dyld-runtime-worker.js', import.meta.url), { type:'module' });
   return new Promise((resolve, reject) => {
-    const cleanup = () => worker.terminate();
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      cleanup();
+      reject(abortError());
+    };
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener?.('abort', onAbort);
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.onmessageerror = null;
+      worker.terminate();
+    };
+    signal?.addEventListener?.('abort', onAbort, { once:true });
     worker.onmessage = (event) => {
+      if (settled) return;
       const message = event.data || {};
       cleanup();
       if (message.ok) resolve(message);
       else reject(new Error(message.error || 'dyld runtime lookup failed'));
     };
     worker.onerror = (event) => {
+      if (settled) return;
       cleanup();
       reject(event?.error || new Error(event?.message || 'dyld runtime worker failed'));
     };
-    worker.postMessage({ id:1, file, slide:String(slide), address:String(runtimeAddress) });
+    worker.onmessageerror = () => {
+      if (settled) return;
+      cleanup();
+      reject(new Error('dyld runtime worker message error'));
+    };
+    try {
+      worker.postMessage({ id:1, file, slide:String(slide), address:String(runtimeAddress) });
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
   });
 }
 
@@ -67,9 +101,16 @@ export function installDyldRuntimeNavigation(app) {
 
   let lastSlide = 0n;
   let lastFile = app.store.get('file');
+  let activeController = null;
+  let disposed = false;
+  const cancelActiveLookup = () => {
+    activeController?.abort();
+    activeController = null;
+  };
   const sync = (_state, patch = {}) => {
     const file = app.store.get('file');
     if (Object.hasOwn(patch, 'file') && file !== lastFile) {
+      cancelActiveLookup();
       lastFile = file;
       lastSlide = 0n;
     }
@@ -79,6 +120,7 @@ export function installDyldRuntimeNavigation(app) {
   sync();
 
   const onClick = async () => {
+    if (disposed) return;
     const file = app.store.get('file');
     if (!file || !isDyldCache(app)) return;
     let slide;
@@ -103,11 +145,15 @@ export function installDyldRuntimeNavigation(app) {
       return;
     }
 
+    if (disposed || app.store.get('file') !== file) return;
+    cancelActiveLookup();
+    const controller = new AbortController();
+    activeController = controller;
     button.disabled = true;
     button.textContent = pick('照合中…', 'Mapping…');
     try {
-      const response = await workerLookup(file, slide, runtimeAddress);
-      if (app.store.get('file') !== file) return;
+      const response = await workerLookup(file, slide, runtimeAddress, { signal:controller.signal });
+      if (disposed || controller.signal.aborted || app.store.get('file') !== file) return;
       lastSlide = slide;
       const result = response.result;
       if (!result?.mapped) {
@@ -132,15 +178,21 @@ export function installDyldRuntimeNavigation(app) {
       const extra = cache.uuid ? ` · UUID ${cache.uuid}` : '';
       toast(`${runtimeLabel(result)}${extra}`);
     } catch (error) {
+      if (disposed || controller.signal.aborted || error?.name === 'AbortError' || app.store.get('file') !== file) return;
       alertDialog(pick('実行時アドレスを開けません', 'Could not open runtime address'), String(error?.message || error));
     } finally {
-      button.disabled = false;
-      updateLabels();
+      if (activeController === controller) activeController = null;
+      if (!disposed) {
+        button.disabled = false;
+        updateLabels();
+      }
     }
   };
   button.addEventListener('click', onClick);
 
   const dispose = () => {
+    disposed = true;
+    cancelActiveLookup();
     unsubscribe?.();
     document.removeEventListener('hex:language-changed', updateLabels);
     button.removeEventListener('click', onClick);

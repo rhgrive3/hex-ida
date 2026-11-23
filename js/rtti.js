@@ -295,8 +295,9 @@ async function resolveVtablePointer(raw,address,opts,pointerBytes=8){
 export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   if(maxSlots&&typeof maxSlots==='object'){opts=maxSlots;maxSlots=opts.maxSlots||64;}
   maxSlots=Math.max(1,Math.min(4096,Number(maxSlots)||64));
-  const exactSlotCount=Number(opts?.slotCount);
-  const slotLimit=Number.isSafeInteger(exactSlotCount)&&exactSlotCount>=0?Math.min(4096,exactSlotCount):maxSlots;
+  const rawSlotCount=opts?.slotCount;
+  const isExactMode=typeof rawSlotCount==='number'&&Number.isSafeInteger(rawSlotCount)&&rawSlotCount>=0;
+  const slotLimit=isExactMode?Math.min(4096,rawSlotCount):maxSlots;
   const pointerBytes=rttiPointerBytesFor(opts||{});
   if(pointerBytes==null)return rttiUnreadablePointerAbi(vtableAddr,'unknown-pointer-abi');
   if(pointerBytes===4&&(opts||{}).pointerFormat!=null)return rttiUnreadablePointerAbi(vtableAddr,'ilp32-chained-pointer-format-unsupported',4);
@@ -307,7 +308,7 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   const offsetToTop=BigInt.asIntN(pointerBytes*8,wordAt(0));
   const typeinfoRaw=wordAt(pointerBytes);
   const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+BigInt(pointerBytes),opts||{},pointerBytes);
-  const isExactMode=Number.isSafeInteger(exactSlotCount)&&exactSlotCount>=0;
+  // isExactMode computed above from validated opts.slotCount
   const isExecutable=typeof opts?.isExecutable==='function'
     ? opts.isExecutable
     : (typeof opts?.isCodeAddress==='function' ? opts.isCodeAddress : null);

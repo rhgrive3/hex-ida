@@ -52,24 +52,46 @@ export function parseWasm(bytes, options = {}) {
     }
   }
 
+  const isIndex64 = (descriptor) => (
+    descriptor?.is64 === true
+    || descriptor?.addressType === 'i64'
+    || descriptor?.addressType === 0x7e
+    || descriptor?.indexType === 'i64'
+    || descriptor?.indexType === 0x7e
+    || (Number.isSafeInteger(descriptor?.flags) && (descriptor.flags & 0x04) !== 0)
+  );
+  const importedTables = (module.imports || [])
+    .filter((entry) => entry?.desc?.kind === 1)
+    .map((entry) => entry.desc);
+  const importedMemories = (module.imports || [])
+    .filter((entry) => entry?.desc?.kind === 2)
+    .map((entry) => entry.desc);
   const importedGlobals = (module.imports || [])
     .filter((entry) => entry?.desc?.kind === 3)
     .map((entry) => entry.desc);
   const importedFunctions = (module.imports || []).filter((entry) => entry?.desc?.kind === 0);
   const functionCount = importedFunctions.length + (module.functions?.length || 0);
+  const allTables = [...importedTables, ...(module.tables || [])];
+  const allMemories = [...importedMemories, ...(module.memories || [])];
   const globalContext = [...importedGlobals];
   for (const global of module.globals || []) {
     validateConstExpr(global?.init, global?.valType, globalContext, functionCount);
     globalContext.push(global);
   }
   for (const element of module.elements || []) {
-    if (element?.mode === 'active') validateConstExpr(element.offsetExpr, 0x7f, importedGlobals, functionCount);
+    if (element?.mode === 'active') {
+      const expectedOffsetType = isIndex64(allTables[element.tableIndex]) ? 0x7e : 0x7f;
+      validateConstExpr(element.offsetExpr, expectedOffsetType, globalContext, functionCount);
+    }
     for (const initializer of element?.initializers || []) {
-      validateConstExpr(initializer, element.refType, importedGlobals, functionCount);
+      validateConstExpr(initializer, element.refType, globalContext, functionCount);
     }
   }
   for (const segment of module.dataSegments || []) {
-    if (segment?.mode === 'active') validateConstExpr(segment.offsetExpr, 0x7f, importedGlobals, functionCount);
+    if (segment?.mode === 'active') {
+      const expectedOffsetType = isIndex64(allMemories[segment.memoryIndex]) ? 0x7e : 0x7f;
+      validateConstExpr(segment.offsetExpr, expectedOffsetType, globalContext, functionCount);
+    }
   }
   return module;
 }

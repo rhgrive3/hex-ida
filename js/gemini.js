@@ -86,16 +86,24 @@ async function streamGeminiAttempt(payload, handlers, signal) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffered += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      buffered = (buffered + decoder.decode(value, { stream: true }))
+        .replace(/\r\n/g, '\n')
+        .replace(/\r(?!$)/g, '\n');
       const parsed = takeEvents(buffered);
       buffered = parsed.rest;
       for (const event of parsed.events) {
         if (consumeEvent(event, handlers)) completed = true;
       }
     }
-    buffered += decoder.decode();
-    if (buffered.trim()) {
-      if (consumeEvent(buffered, handlers)) completed = true;
+    buffered = (buffered + decoder.decode())
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n');
+    const tail = takeEvents(buffered);
+    for (const event of tail.events) {
+      if (consumeEvent(event, handlers)) completed = true;
+    }
+    if (tail.rest.trim()) {
+      if (consumeEvent(tail.rest, handlers)) completed = true;
     }
   } finally {
     reader.releaseLock();

@@ -126,6 +126,7 @@ async function handlePostToolUse(payload, context) {
     allowBlockingRequests: worthBlocking,
     taskText: context.taskText,
   });
+  context.pipeline.cache.save();
 
   const decision = pass.decisions[0];
   if (!decision || decision.action !== "drop") {

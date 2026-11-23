@@ -897,6 +897,9 @@ export class App {
    */
   async ensureShapes(onProgress) {
     if (this.analysisResumeReady) { try { await this.analysisResumeReady; } catch { /* best effort */ } }
+    const progressFn = typeof onProgress === 'function'
+      ? onProgress
+      : (onProgress && typeof onProgress === 'object' && typeof onProgress.onProgress === 'function' ? onProgress.onProgress : null);
     if (this.shapes) return this.shapes;
     const epoch = this.backend.gen;
     if (this.shapesBusy && this.shapesBusyEpoch === epoch) return this.shapesBusy;
@@ -906,7 +909,7 @@ export class App {
     this.shapesBusy = (async () => {
       try {
         const scan = await this.backend.valueShapes(region.id,
-          onProgress && ((p) => onProgress({ phase: 'shapes', done: p.done, all: p.all })));
+          progressFn && ((p) => progressFn({ phase: 'shapes', done: p.done, all: p.all })));
         if (epoch === this.backend.gen && scan && !scan.cancelled) {
           this.shapes = foldShapes(scan);
           void this.persistAnalysisSession(['shapes']);
@@ -1356,9 +1359,10 @@ export class App {
    * 裏で走らせて、できたところで画面を差し替える。失敗しても表示は続く。
    */
   async ensureObjc(sliceIndex, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
     const epoch = this.backend.gen;
     if (this.objcModel && this.objcRuntime) return this.fields;
-    if (this.objcBusy && this.objcBusyEpoch === epoch && this.objcBusyState) return waitForAppProducer(this.objcBusyState, options.signal ?? null);
+    if (this.objcBusy && this.objcBusyEpoch === epoch && this.objcBusyState) return waitForAppProducer(this.objcBusyState, opts.signal ?? null);
     const regions = this.store.get('regions') || [];
     const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n) || null;
     const protocolList = regions.find((r) => r.section === '__objc_protolist' && r.size > 0n) || null;
@@ -1373,7 +1377,7 @@ export class App {
     this.objcBusyEpoch = epoch;
     const producerController = new AbortController();
     const producerState = { controller:producerController, waiters:0, settled:false, promise:null };
-    const producerOptions = { ...options, signal:producerController.signal };
+    const producerOptions = { ...opts, signal:producerController.signal };
     producerState.promise = (async () => {
       const read = async (addr, len) => {
         if (producerController.signal.aborted) throw appProducerAbortError(producerController.signal, 'Objective-C metadata read aborted');
@@ -1398,12 +1402,16 @@ export class App {
         const executableRanges=regions.filter((r)=>r?.exec===true&&r.size>0n).map((r)=>({vmAddr:r.vmAddr,size:r.size}));
         const architecture=sl?.name||sl?.info?.arch||sl?.info?.architecture||null;
         const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList, executableRanges, architecture }, null, imageBase, null, producerOptions);
+        if (this.analysisBaseSymbolsReady) { try { await this.analysisBaseSymbolsReady; } catch { /* best effort */ } }
         if (producerController.signal.aborted || epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
         model.runtimeIndex = model.runtimeIndex || buildObjcRuntimeIndex(model);
         this.objcModel = model;
         this.objcRuntime = model.runtimeIndex || null;
         this.fields = new FieldIndex(model);
         if (model.names.length) {
+          if (!this.symbols || this.symbols === EMPTY_INDEX) {
+            this.symbols = new SymbolIndex({ regions: this.store.get('regions') || [] });
+          }
           const added = this.symbols.addNames(model.names, { source: 'objc-runtime', confidence: 1, confirmed: true });
           this.symbols.addFunctions(model.names.map((n) => n.addr), { source: 'objc-runtime', confidence: 1, confirmed: true });
           this.viewer.setSymbols(this.symbols);
@@ -1427,14 +1435,15 @@ export class App {
     producerState.promise = producerState.promise.finally(() => { producerState.settled = true; });
     this.objcBusyState = producerState;
     this.objcBusy = producerState.promise;
-    return waitForAppProducer(producerState, options.signal ?? null);
+    return waitForAppProducer(producerState, opts.signal ?? null);
   }
 
   async ensureSwift(options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
     if (this.analysisResumeReady) { try { await this.analysisResumeReady; } catch { /* best effort */ } }
     const epoch = this.backend.gen;
     if (this.swiftModel && this.swiftRuntime) return this.swiftModel;
-    if (this.swiftBusy && this.swiftBusyEpoch === epoch && this.swiftBusyState) return waitForAppProducer(this.swiftBusyState, options.signal ?? null);
+    if (this.swiftBusy && this.swiftBusyEpoch === epoch && this.swiftBusyState) return waitForAppProducer(this.swiftBusyState, opts.signal ?? null);
     const regions = this.store.get('regions') || [];
     if (!regions.some((r) => /^__swift5_/.test(r.section || ''))) return null;
     const slice = this.store.get('sliceIndex');
@@ -1446,7 +1455,7 @@ export class App {
     producerState.promise = (async () => {
       const read = async (addr, len) => {
         if (controller.signal.aborted) throw appProducerAbortError(controller.signal, 'Swift metadata read aborted');
-        const request = this.backend.readAt(addr, len, false, { priority:options.priority === 'background' ? 'background' : 'current' });
+        const request = this.backend.readAt(addr, len, false, { priority:opts.priority === 'background' ? 'background' : 'current' });
         const onAbort = () => request.cancel?.();
         controller.signal.addEventListener('abort', onAbort, { once:true });
         try {
@@ -1469,13 +1478,22 @@ export class App {
           // architecture is the canonical ABI authority for Swift pointer reads (#8309).
           architecture:this.store.get('architecture'),
         });
+        if (this.analysisBaseSymbolsReady) { try { await this.analysisBaseSymbolsReady; } catch { /* best effort */ } }
         if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return null;
         this.swiftModel = model; this.swiftRuntime = buildSwiftRuntimeIndex(model);
         const exec = this.executableRegions(); const names = [];
         for (const type of model?.types || []) for (const method of type.methods || type.vtable || []) {
           if (method?.impl != null && exec.some((r) => method.impl >= r.vmAddr && method.impl < r.vmAddr + r.size)) names.push({ addr: method.impl, name: `${type.name || 'SwiftType'}::method_${method.index}`, source: 'swift-metadata' });
         }
-        if (names.length) { this.symbols.addNames(names); this.symbols.addFunctions(names.map((x) => x.addr)); this.viewer.setSymbols(this.symbols); void this.persistAnalysisSession(['symbols']); }
+        if (names.length) {
+          if (!this.symbols || this.symbols === EMPTY_INDEX) {
+            this.symbols = new SymbolIndex({ regions: this.store.get('regions') || [] });
+          }
+          this.symbols.addNames(names);
+          this.symbols.addFunctions(names.map((x) => x.addr));
+          this.viewer.setSymbols(this.symbols);
+          void this.persistAnalysisSession(['symbols']);
+        }
         return model;
       } catch (error) {
         if (controller.signal.aborted || error?.name === 'AbortError') throw error;
@@ -1489,7 +1507,7 @@ export class App {
     producerState.promise = producerState.promise.finally(() => { producerState.settled = true; });
     this.swiftBusyState = producerState;
     this.swiftBusy = producerState.promise;
-    return waitForAppProducer(producerState, options.signal ?? null);
+    return waitForAppProducer(producerState, opts.signal ?? null);
   }
 
   resolveSwiftCall(call) { return this.swiftRuntime ? resolveSwiftDispatch(this.swiftRuntime, call || {}) : {resolved:null,candidates:[],confidence:0,reason:'swift-runtime-unavailable'}; }

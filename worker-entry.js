@@ -32,6 +32,7 @@ const BOOTSTRAP_MAX_BYTES = 16 * 1024;
 const SESSION_TTL_MS = 2 * 60 * 1000;
 const PRIVATE_PREFIXES = ['/.runtime-build/', '/migrations/', '/.wrangler/', '/.git/', '/node_modules/', '/auth-assets/', '/.runtime/', '/userscript-assets/', '/js/', '/css/', '/scripts/', '/tests/', '/.github/', '/userscript/'];
 const PRIVATE_FILES = new Set(['/package.json', '/package-lock.json', '/worker-entry.js', '/worker.js', '/wrangler.jsonc']);
+const AUTH_ALIAS_PREFIX_RE = /^\/(?:admin|auth|_privileged|_runtime|api)(?:\/|$)/;
 
 export class AIQuota extends DurableObject {
   constructor(ctx, env) { super(ctx, env); this.ctx = ctx; }
@@ -99,9 +100,13 @@ export default {
     // decoding its opaque build identifier. Keep the generic private-path
     // prefilter off that route so malformed bytes receive its stable 400 only
     // after the route's authorization boundary.
-    if (!url.pathname.startsWith('/_runtime/') && url.pathname.includes('%')) {
-      let decoded; try { decoded = decodeURIComponent(url.pathname); } catch { return new Response('Not Found', { status: 404 }); }
-      if (decoded !== url.pathname && (isPrivatePath(decoded) || /^\/(?:admin|auth|_privileged|api\/(?:admin|auth))(?:\/|$)/.test(decoded))) return new Response('Not Found', { status: 404, headers: securityHeaders() });
+    if (!url.pathname.startsWith('/_runtime/')) {
+      const normalized = normalizePathForProtection(url.pathname);
+      if (normalized === null) return new Response('Not Found', { status: 404, headers: securityHeaders() });
+      const canonicalRaw = url.pathname.length > 1 && url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
+      if (isPrivateNormalizedPath(normalized) || (normalized !== canonicalRaw && AUTH_ALIAS_PREFIX_RE.test(normalized))) {
+        return new Response('Not Found', { status: 404, headers: securityHeaders() });
+      }
     }
     const authResponse = await handleAuth(request, env);
     if (authResponse) return authResponse;
@@ -116,21 +121,22 @@ export default {
       if (request.method === 'OPTIONS') return apiPreflight(origin);
       if (isProviderSpendPath(url.pathname)) {
         const capability = request.headers.get(AI_CAPABILITY_HEADER);
-        let subject = null;
-        const authHeader = request.headers.get('authorization');
-        if (authHeader) {
-          const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authHeader);
-          if (match) {
-            const raw = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(match[1])));
-            let hex = ''; for (let i = 0; i < raw.length; i++) hex += raw[i].toString(16).padStart(2, '0');
-            subject = hex;
-          }
-        }
-        const authorized = AI_CAPABILITY_SIGNING_KEY && await verifyAICapability(capability, {
+        const verifyOptions = {
           signingKey: AI_CAPABILITY_SIGNING_KEY,
           buildId: RUNTIME_BUILD.manifest.buildId,
-          subject,
-        });
+        };
+        const authHeader = request.headers.get('authorization');
+        if (authHeader !== null) {
+          const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authHeader);
+          if (!match) {
+            return withApiCors(json({ error: { code: 'unauthorized', message: 'A valid Hex AI capability is required.' } }, 401), origin);
+          }
+          const raw = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(match[1])));
+          let hex = ''; for (let i = 0; i < raw.length; i++) hex += raw[i].toString(16).padStart(2, '0');
+          verifyOptions.subject = hex;
+          verifyOptions.requireSubject = true;
+        }
+        const authorized = AI_CAPABILITY_SIGNING_KEY && await verifyAICapability(capability, verifyOptions);
         if (!authorized) return withApiCors(json({ error: { code: 'unauthorized', message: 'A valid Hex AI capability is required.' } }, 401), origin);
       }
       return withApiCors(await worker.fetch(request, env, executionCtx), origin);
@@ -301,11 +307,29 @@ async function scheduleRuntimeBootstrapCleanup(storage, when, replace = false) {
 }
 
 function runtimeState(env) { if (!env.RUNTIME_BOOTSTRAP) throw new Error('RUNTIME_BOOTSTRAP binding is unavailable'); return env.RUNTIME_BOOTSTRAP.get(env.RUNTIME_BOOTSTRAP.idFromName('runtime-v1')); }
-function isPrivatePath(path) {
+function normalizePathForProtection(path) {
+  if (typeof path !== 'string') return null;
   let decoded;
-  try { decoded = decodeURIComponent(path); } catch { return true; }
-  if (decoded.includes('%') || decoded.includes('\\') || decoded.includes('\0')) return true;
-  return PRIVATE_FILES.has(decoded) || PRIVATE_PREFIXES.some((prefix) => decoded === prefix.slice(0, -1) || decoded.startsWith(prefix));
+  try { decoded = decodeURIComponent(path); } catch { return null; }
+  if (decoded.includes('%') || decoded.includes('\\') || decoded.includes('\0')) return null;
+  const segments = [];
+  for (const segment of decoded.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (segments.length > 0) segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return '/' + segments.join('/');
+}
+function isPrivateNormalizedPath(normalized) {
+  return PRIVATE_FILES.has(normalized) || PRIVATE_PREFIXES.some((prefix) => normalized === prefix.slice(0, -1) || normalized.startsWith(prefix));
+}
+function isPrivatePath(path) {
+  const normalized = normalizePathForProtection(path);
+  if (normalized === null) return true;
+  return isPrivateNormalizedPath(normalized);
 }
 async function asset(env, url, path) { if (!env.ASSETS?.fetch) return new Response(null, { status: 503 }); return env.ASSETS.fetch(new Request(new URL(path, url.origin), { method: 'GET' })); }
 function methodNotAllowed(allow) { return new Response('Method Not Allowed', { status: 405, headers: { ...securityHeaders(), allow } }); }

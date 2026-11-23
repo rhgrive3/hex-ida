@@ -44,21 +44,10 @@ export class SymbolIndex {
   static canonicalizeFunctionStarts(raw) {
     if (raw == null) return new BigUint64Array(0);
     if (raw instanceof BigUint64Array) return raw;
-    const canonicalElement = (value) => {
-      if (typeof value === 'bigint') return value;
-      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
-      if (typeof value === 'string') {
-        const text = value.trim();
-        if (/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(text)) {
-          try { return BigInt(text); } catch { return null; }
-        }
-      }
-      return null;
-    };
     if (Array.isArray(raw)) {
       const out = new BigUint64Array(raw.length);
       for (let index = 0; index < raw.length; index++) {
-        const canonical = canonicalElement(raw[index]);
+        const canonical = canonicalMetadataAddress(raw[index]);
         if (canonical == null) throw new TypeError('symbol-function-start-transport-invalid');
         out[index] = canonical;
       }
@@ -355,10 +344,16 @@ export class SymbolIndex {
    * 末尾関数など次が無い場合は null。
    */
   nextFunctionStart(addr) {
-    const i = this._floor(this.funcs, addr);
-    if (i < 0 || i + 1 >= this.funcs.length) return null;
-    const next = this.funcs[i + 1];
-    return next > addr ? next : null;
+    if (canonicalAddressKey(addr) == null) return null;
+    const nextIndex = this._floor(this.funcs, addr) + 1;
+    if (nextIndex >= this.funcs.length) return null;
+    const next = this.funcs[nextIndex];
+    if (next <= addr) return null;
+    if (this.functionRegions.length) {
+      const region = this._functionRegion(addr);
+      if (!region || this._functionRegion(next) !== region) return null;
+    }
+    return next;
   }
 
   /**

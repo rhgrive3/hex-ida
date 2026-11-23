@@ -31,7 +31,8 @@ function noFileActions(app) {
     uiButton(text('ファイルを開く', 'Open file'), {
       cls: 'ui-primary-action',
       onClick: () => {
-        if (window.__hexUi?.actions?.run) window.__hexUi.actions.run('file.open');
+        const registry = window.__hexUi?.actions;
+        if (registry?.has?.('file.open') && typeof registry.run === 'function') registry.run('file.open');
         else document.getElementById('file-input')?.click();
       },
     }),
@@ -276,10 +277,11 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
   content.append(loadingState(text('分類根拠を統合しています…', 'Combining classification evidence…')));
   s.body.append(content);
 
+  const signal = signalOf(meta);
   (async () => {
     try {
-      const result = await withCurrentSnapshot(queries, meta.signal, (snapshot) => queries.classification(snapshot, address, { signal:meta.signal }));
-      if (meta.signal.aborted) return;
+      const result = await withCurrentSnapshot(queries, signal, (snapshot) => queries.classification(snapshot, address, { signal }));
+      if (signal?.aborted) return;
       const value = result.value || {};
       const grid = h('div', 'ui-card-grid');
       const identity = card(text('コードの分類', 'Code identity'), {
@@ -346,7 +348,7 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
       grid.append(next.root);
       content.replaceChildren(grid);
     } catch (error) {
-      if (!meta.signal.aborted) content.replaceChildren(errorState(text('分類を表示できませんでした', 'Could not render classification'), String(error?.message || error)));
+      if (!signal?.aborted) content.replaceChildren(errorState(text('分類を表示できませんでした', 'Could not render classification'), String(error?.message || error)));
     }
   })();
 
@@ -372,10 +374,11 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
   host.append(loadingState(text('結果を確認しています…', 'Loading results…')));
   s.body.append(host);
 
+  const signal = signalOf(meta);
   (async () => {
     try {
-      const result = await withCurrentSnapshot(queries, meta.signal, (snapshot) => loadCanonicalClaims(queries, snapshot, detailId, { signal:meta.signal }));
-      if (meta.signal.aborted) return;
+      const result = await withCurrentSnapshot(queries, signal, (snapshot) => loadCanonicalClaims(queries, snapshot, detailId, { signal }));
+      if (signal?.aborted) return;
       const claims = result.value || [];
       if (detailId) {
         const claim = claims[0];
@@ -428,21 +431,29 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
       }
       if (result.completeness !== 'complete') host.prepend(h('p', 'ui-partial-note', text('結果は一部だけです。まだ処理していない結果を「無い」とは判断しません。', 'The claim set is partial; unprocessed claims are not treated as absent.')));
     } catch (error) {
-      if (!meta.signal.aborted) host.replaceChildren(errorState(text('結果を表示できませんでした', 'Could not show results'), String(error?.message || error)));
+      if (!signal?.aborted) host.replaceChildren(errorState(text('結果を表示できませんでした', 'Could not show results'), String(error?.message || error)));
     }
   })();
   return { root:s.root };
 }
 
+function signalOf(meta) {
+  const signal = meta && typeof meta === 'object' ? meta.signal : null;
+  return signal && typeof signal === 'object' ? signal : undefined;
+}
+
 function linkedController(parentSignal) {
   const controller = new AbortController();
-  if (parentSignal?.aborted) {
-    controller.abort(parentSignal.reason);
-  } else if (parentSignal) {
-    const onParentAbort = () => controller.abort(parentSignal.reason);
-    parentSignal.addEventListener('abort', onParentAbort, { once:true });
+  const signal = parentSignal && typeof parentSignal === 'object' ? parentSignal : null;
+  if (signal?.aborted) {
+    controller.abort(signal.reason);
+  } else if (typeof signal?.addEventListener === 'function') {
+    const onParentAbort = () => controller.abort(signal.reason);
+    signal.addEventListener('abort', onParentAbort, { once:true });
     controller.signal.addEventListener('abort', () => {
-      parentSignal.removeEventListener('abort', onParentAbort);
+      if (typeof signal.removeEventListener === 'function') {
+        signal.removeEventListener('abort', onParentAbort);
+      }
     }, { once:true });
   }
   return controller;
@@ -473,8 +484,8 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
   search.type = 'search';
   search.placeholder = text('文字列を検索', 'Search strings');
   search.setAttribute('aria-label', text('文字列を検索', 'Search strings'));
-  search.value = meta.restoredState?.query ?? route.query.get('q') ?? '';
-  let pendingVirtualState = meta.restoredState?.virtual ?? null;
+  search.value = meta?.restoredState?.query ?? route.query.get('q') ?? '';
+  let pendingVirtualState = meta?.restoredState?.virtual ?? null;
   controls.append(scopes, search);
   s.body.append(controls);
   const host = tabPanel(scopes, 'ui-explorer-content');
@@ -495,7 +506,7 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
       ));
       return;
     }
-    queryController = linkedController(meta.signal);
+    queryController = linkedController(signalOf(meta));
     const signal = queryController.signal;
     const filter = { text:search.value.trim() };
     host.replaceChildren(loadingState(text('文字列を検索しています…', 'Searching string artifact…')));
@@ -553,16 +564,17 @@ export function installHardenedProductUI(app) {
   if (!appRoot || !routeHost) return installed;
 
   router.onRoute = (route, meta = {}) => {
+    const safeMeta = meta && typeof meta === 'object' ? meta : {};
     const targetOverview = route.route.id === 'function' && (!route.params.tab || route.params.tab === 'overview');
     const targetClaims = route.route.id === 'results' || route.route.id === 'finding';
     const targetStrings = route.route.id === 'explorer' && route.params.scope === 'strings';
-    if (!targetOverview && !targetClaims && !targetStrings) return originalOnRoute(route, meta);
+    if (!targetOverview && !targetClaims && !targetStrings) return originalOnRoute(route, safeMeta);
     prepareRouteShell(appRoot, routeHost, route);
     const view = targetOverview
-      ? renderCanonicalFunctionOverview(app, router, route, meta, queries)
+      ? renderCanonicalFunctionOverview(app, router, route, safeMeta, queries)
       : targetClaims
-        ? renderCanonicalClaims(app, router, route, meta, queries)
-        : renderCanonicalStrings(app, router, route, meta, queries);
+        ? renderCanonicalClaims(app, router, route, safeMeta, queries)
+        : renderCanonicalStrings(app, router, route, safeMeta, queries);
     routeHost.append(view.root);
     updateScreenTitle(view.root);
     requestAnimationFrame(() => routeHost.focus({ preventScroll:true }));
