@@ -356,8 +356,9 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
         return `${printExpression(n.base, PREC.primary, opts)}[${idxText}]`;
       }
       const elemBits = [8, 16, 32, 64, 128].includes(Number(n.bits)) ? Number(n.bits) : 8;
-      const elemType = n.elemType
-        || (n.isFloat
+      const elemType = (typeof n.elemType === 'string' && n.elemType)
+        ? n.elemType
+        : (n.isFloat
           ? (elemBits === 32 ? 'float' : 'double')
           : (elemBits === 128 ? 'uint128' : `${n.signed === true ? 'int' : 'uint'}${elemBits}_t`));
       return `((${elemType} *)(uintptr_t)(${printExpression(n.base, 0, opts)}))[${idxText}]`;
@@ -393,6 +394,11 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
         return wrap(`${inner} != 0`, PREC.ne, parentPrec);
       }
       if (opLower === 'trunc' || opLower === 'zext' || opLower === 'sext') {
+        if (n.arg?.floating === true || n.arg?.float === true
+          || n.arg?.kind === 'float-const' || n.arg?.kind === 'float'
+          || n.arg?.type === 'float' || n.arg?.type === 'double') {
+          return printExpression(n.arg, parentPrec, opts);
+        }
         const dstBits = normalizedIntegerWidth(n.bits);
         const type = opLower === 'sext'
           ? exactSignedType(dstBits)
@@ -416,7 +422,9 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
         }
         return wrap(`(${type})${argText}`, PREC.unary, parentPrec);
       }
-      const arg = printExpression(n.arg, 0, opts);
+      const isFpUnary = ['fabs', 'fsqrt', 'sqrt', 'frinta', 'frintn', 'frintm', 'frintp', 'frintz', 'fcvtzs', 'f2i', 'fcvtzu', 'f2u', 'fcvtps', 'fcvtms', 'fcvtas', 'fcvtns', 'fcvtpu', 'fcvtmu', 'fcvtau', 'fcvtnu', 'fcvt'].includes(n.op);
+      const effectiveArg = (isFpUnary && n.arg?.kind === 'unary' && (n.arg.op === 'trunc' || n.arg.op === 'zext')) ? n.arg.arg : n.arg;
+      const arg = printExpression(effectiveArg, 0, opts);
       const is32 = Number(n.bits) === 32;
       const srcBits = n.arg?.bits ?? (/^s\d+$/i.test(String(n.arg?.name || '')) ? 32 : 64);
       const srcIsFloat = Number(srcBits) === 32;
@@ -476,10 +484,13 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
         || (n.op === 'sub' && !leftIsPtr && rightIsPtr)
         || (n.op === 'add' && leftIsPtr && rightIsPtr)
       );
-      const left = semanticOperands?.[0] ?? (castLeft ? printPointerAsUintptr(n.left, opts) : printExpression(n.left, p, opts));
+      const isFpBin = ['fadd', 'fsub', 'fmul', 'fdiv'].includes(n.op);
+      const effLeft = (isFpBin && n.left?.kind === 'unary' && (n.left.op === 'trunc' || n.left.op === 'zext')) ? n.left.arg : n.left;
+      const effRight = (isFpBin && n.right?.kind === 'unary' && (n.right.op === 'trunc' || n.right.op === 'zext')) ? n.right.arg : n.right;
+      const left = semanticOperands?.[0] ?? (castLeft ? printPointerAsUintptr(effLeft, opts) : printExpression(effLeft, p, opts));
       const right = semanticOperands?.[1] ?? (castRight
-        ? printPointerAsUintptr(n.right, opts)
-        : printExpression(n.right, p + (['sub','fsub','div','fdiv','sdiv','udiv','mod','rem','smod','umod','srem','urem','shl','lshr','ashr','shr'].includes(n.op) ? 1 : 0), opts));
+        ? printPointerAsUintptr(effRight, opts)
+        : printExpression(effRight, p + (['sub','fsub','div','fdiv','sdiv','udiv','mod','rem','smod','umod','srem','urem','shl','lshr','ashr','shr'].includes(n.op) ? 1 : 0), opts));
       return wrap(`${left} ${OP_TEXT[n.op] || n.op} ${right}`, p, parentPrec);
     }
     case 'select': {

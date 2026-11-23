@@ -34,6 +34,10 @@ const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
 // replaced while an app object or source wrapper is reused.
 const SLICE_CXX_PROVIDERS = new WeakMap();
 const CXX_QUERY_PLANNERS = new WeakMap();
+const FILE_BYTES_CACHE = new WeakMap();
+const ELF_RELATIVE_RELOCATIONS_CACHE = new WeakMap();
+const MAX_ELF_RELOCATIONS = 200_000;
+const MAX_ELF_DYNAMIC_ENTRIES = 16_384;
 
 // An explicit interactive operation, separate from ordinary Fast decompilation
 // and candidate enumeration. It reuses the scoped query owner's existing
@@ -231,21 +235,282 @@ function ensureCxxEvidenceProviderForApp(app) {
   return entry;
 }
 
+function fileSourceForApp(app) {
+  return app?.backend?.file ?? storeValue(app, 'file') ?? null;
+}
+
+function cachedFileBytesForApp(app) {
+  const file = fileSourceForApp(app);
+  if (!file) return null;
+  if (file instanceof Uint8Array) return file;
+  if (file instanceof ArrayBuffer) return new Uint8Array(file);
+  if (typeof file === 'object' || typeof file === 'function') {
+    const cached = FILE_BYTES_CACHE.get(file);
+    if (cached instanceof Uint8Array) return cached;
+  }
+  return null;
+}
+
+async function ensureFileBytesForApp(app, options = {}) {
+  const explicit = options.fileBytes ?? options.bytes ?? null;
+  if (explicit instanceof Uint8Array) return explicit;
+  const file = fileSourceForApp(app);
+  if (!file) return null;
+  if (file instanceof Uint8Array) return file;
+  if (file instanceof ArrayBuffer) return new Uint8Array(file);
+  if ((typeof file !== 'object' && typeof file !== 'function') || typeof file.arrayBuffer !== 'function') {
+    return null;
+  }
+  const cached = FILE_BYTES_CACHE.get(file);
+  if (cached instanceof Uint8Array) return cached;
+  if (cached && typeof cached.then === 'function') return cached;
+  const task = Promise.resolve()
+    .then(() => file.arrayBuffer())
+    .then((buf) => {
+      let bytes = null;
+      if (buf instanceof Uint8Array) bytes = buf;
+      else if (buf instanceof ArrayBuffer) bytes = new Uint8Array(buf);
+      else if (ArrayBuffer.isView(buf)) bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      if (bytes) FILE_BYTES_CACHE.set(file, bytes);
+      else FILE_BYTES_CACHE.delete(file);
+      return bytes;
+    })
+    .catch(() => {
+      FILE_BYTES_CACHE.delete(file);
+      return null;
+    });
+  FILE_BYTES_CACHE.set(file, task);
+  return task;
+}
+
+function currentPlatformSlice(app) {
+  const slices = app?.backend?.platformInfo?.slices;
+  if (!Array.isArray(slices) || !slices.length) return null;
+  const index = validSliceIndex(storeValue(app, 'sliceIndex'));
+  if (index !== null && index >= 0 && slices[index]) return slices[index];
+  return slices[0] ?? null;
+}
+
+function normalizeRegionAsSection(region) {
+  if (!region || typeof region !== 'object') return null;
+  const addr = region.addr ?? region.vaddr ?? region.va ?? region.start ?? region.address ?? region.vmAddr ?? null;
+  const zerofill = region.zerofill === true || region.nobits === true;
+  const size = (zerofill && (region.size == null || region.size === 0 || region.size === 0n))
+    ? (region.declaredSize ?? region.memsz ?? region.size)
+    : (region.size ?? region.memsz ?? region.declaredSize ?? region.length ?? null);
+  if (addr == null || size == null) return region;
+  const fileOffset = region.offset ?? region.fileOffset ?? null;
+  const readOnly = region.readOnly === true || region.readonly === true
+    || (region.read === true && region.write === false && region.exec === false);
+  return {
+    ...region,
+    addr,
+    size,
+    ...(fileOffset != null ? { offset: fileOffset, fileOffset } : {}),
+    ...(zerofill ? { nobits: true, zerofill: true } : {}),
+    ...(readOnly ? { readOnly: true } : {}),
+  };
+}
+
+function parseElfRelativeRelocations(fileBytes) {
+  if (!(fileBytes instanceof Uint8Array)) return [];
+  const cached = ELF_RELATIVE_RELOCATIONS_CACHE.get(fileBytes);
+  if (cached) return cached;
+  const relocations = [];
+  try {
+    const byteLen = fileBytes.byteLength;
+    if (byteLen < 64) {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+    if (fileBytes[0] !== 0x7f || fileBytes[1] !== 0x45 || fileBytes[2] !== 0x4c || fileBytes[3] !== 0x46) {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+    if (fileBytes[4] !== 2) {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+    const dataEncoding = fileBytes[5];
+    if (dataEncoding !== 1 && dataEncoding !== 2) {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+    const le = dataEncoding === 1;
+    const view = new DataView(fileBytes.buffer, fileBytes.byteOffset, byteLen);
+    const machine = view.getUint16(18, le);
+    let targetRelocType = null;
+    let targetTypeName = null;
+    if (machine === 183) {
+      targetRelocType = 1027;
+      targetTypeName = 'R_AARCH64_RELATIVE';
+    } else if (machine === 62) {
+      targetRelocType = 8;
+      targetTypeName = 'R_X86_64_RELATIVE';
+    } else {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+
+    const byteLenBig = BigInt(byteLen);
+    const seen = new Set();
+    const scanRelaTable = (tableOffset, tableSize, entSize) => {
+      if (relocations.length >= MAX_ELF_RELOCATIONS) return;
+      if (tableOffset < 0n || tableSize <= 0n || entSize < 24n) return;
+      if (tableOffset > byteLenBig || tableSize > byteLenBig - tableOffset) return;
+      const countBig = tableSize / entSize;
+      const remaining = BigInt(MAX_ELF_RELOCATIONS - relocations.length);
+      const limit = Number(countBig < remaining ? countBig : remaining);
+      for (let i = 0; i < limit; i += 1) {
+        const entryOffBig = tableOffset + BigInt(i) * entSize;
+        if (entryOffBig + 24n > byteLenBig) break;
+        const off = Number(entryOffBig);
+        const rInfo = view.getBigUint64(off + 8, le);
+        const rType = Number(rInfo & 0xffffffffn);
+        if (rType !== targetRelocType) continue;
+        const rOffset = view.getBigUint64(off, le);
+        if (seen.has(rOffset)) continue;
+        seen.add(rOffset);
+        const rAddend = view.getBigUint64(off + 16, le);
+        relocations.push({ type: targetTypeName, address: rOffset, target: rAddend });
+      }
+    };
+
+    const ePhoff = view.getBigUint64(32, le);
+    const eShoff = view.getBigUint64(40, le);
+    const ePhentsize = view.getUint16(54, le);
+    const ePhnum = view.getUint16(56, le);
+    const eShentsize = view.getUint16(58, le);
+    const eShnum = view.getUint16(60, le);
+
+    if (eShoff > 0n && eShnum > 0 && eShentsize >= 64) {
+      const shTableSize = BigInt(eShnum) * BigInt(eShentsize);
+      if (eShoff <= byteLenBig && shTableSize <= byteLenBig - eShoff) {
+        for (let i = 0; i < eShnum; i += 1) {
+          const shOffBig = eShoff + BigInt(i) * BigInt(eShentsize);
+          if (shOffBig + 64n > byteLenBig) break;
+          const sh = Number(shOffBig);
+          const shType = view.getUint32(sh + 4, le);
+          if (shType !== 4) continue; // SHT_RELA
+          const secOffset = view.getBigUint64(sh + 24, le);
+          const secSize = view.getBigUint64(sh + 32, le);
+          const rawEntSize = view.getBigUint64(sh + 56, le);
+          const entSize = rawEntSize === 0n ? 24n : rawEntSize;
+          scanRelaTable(secOffset, secSize, entSize);
+        }
+      }
+    }
+
+    if (ePhoff > 0n && ePhnum > 0 && ePhentsize >= 56) {
+      const phTableSize = BigInt(ePhnum) * BigInt(ePhentsize);
+      if (ePhoff <= byteLenBig && phTableSize <= byteLenBig - ePhoff) {
+        const ptLoads = [];
+        let dynSeg = null;
+        for (let i = 0; i < ePhnum; i += 1) {
+          const phOffBig = ePhoff + BigInt(i) * BigInt(ePhentsize);
+          if (phOffBig + 56n > byteLenBig) break;
+          const ph = Number(phOffBig);
+          const pType = view.getUint32(ph, le);
+          const pOffset = view.getBigUint64(ph + 8, le);
+          const pVaddr = view.getBigUint64(ph + 16, le);
+          const pFilesz = view.getBigUint64(ph + 32, le);
+          if (pType === 1 && pFilesz > 0n && pOffset <= byteLenBig && pFilesz <= byteLenBig - pOffset) {
+            ptLoads.push({ pOffset, pVaddr, pFilesz });
+          } else if (pType === 2 && !dynSeg && pFilesz >= 16n && pOffset <= byteLenBig && pFilesz <= byteLenBig - pOffset) {
+            dynSeg = { pOffset, pFilesz };
+          }
+        }
+        if (dynSeg && ptLoads.length > 0) {
+          let relaVaddr = null;
+          let relaSize = null;
+          let relaEnt = 24n;
+          const dynCountBig = dynSeg.pFilesz / 16n;
+          const dynLimit = Number(dynCountBig < BigInt(MAX_ELF_DYNAMIC_ENTRIES) ? dynCountBig : BigInt(MAX_ELF_DYNAMIC_ENTRIES));
+          for (let i = 0; i < dynLimit; i += 1) {
+            const dynOffBig = dynSeg.pOffset + BigInt(i) * 16n;
+            if (dynOffBig + 16n > byteLenBig) break;
+            const off = Number(dynOffBig);
+            const dTag = view.getBigInt64(off, le);
+            if (dTag === 0n) break; // DT_NULL
+            const dVal = view.getBigUint64(off + 8, le);
+            if (dTag === 7n) relaVaddr = dVal; // DT_RELA
+            else if (dTag === 8n) relaSize = dVal; // DT_RELASZ
+            else if (dTag === 9n && dVal >= 24n) relaEnt = dVal; // DT_RELAENT
+          }
+          if (relaVaddr != null && relaSize != null && relaSize > 0n) {
+            for (const seg of ptLoads) {
+              if (relaVaddr >= seg.pVaddr && relaVaddr < seg.pVaddr + seg.pFilesz) {
+                const delta = relaVaddr - seg.pVaddr;
+                const fileOff = seg.pOffset + delta;
+                const maxAvail = seg.pFilesz - delta;
+                if (relaSize <= maxAvail) {
+                  scanRelaTable(fileOff, relaSize, relaEnt);
+                }
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // Fail closed on malformed ELF bytes.
+  }
+  ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+  return relocations;
+}
+
+function normalizeArchitectureId(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return null;
+  if (trimmed === 'aarch64') return 'arm64';
+  if (trimmed === 'amd64') return 'x86_64';
+  return trimmed;
+}
+
+function architectureDecompilerOptions(app, model, resultValue = null, options = {}) {
+  const slice = currentSlice(app);
+  const platformSlice = currentPlatformSlice(app);
+  const rawArch = options.architectureId ?? options.architecture ?? options.arch
+    ?? resultValue?.architectureId ?? resultValue?.architecture ?? resultValue?.arch
+    ?? model?.architectureId ?? model?.architecture ?? model?.arch
+    ?? (architectureOf(app) || null)
+    ?? slice?.arch ?? slice?.architecture ?? slice?.architectureId
+    ?? platformSlice?.capability?.architecture ?? platformSlice?.arch ?? platformSlice?.architecture
+    ?? app?.backend?.platformInfo?.capability?.architecture
+    ?? app?.architectureId ?? app?.architecture ?? app?.arch ?? null;
+  const architectureId = normalizeArchitectureId(rawArch);
+  const abiAdapter = options.abiAdapter ?? resultValue?.abiAdapter ?? model?.abiAdapter ?? app?.abiAdapter ?? null;
+  return {
+    ...(architectureId ? { architectureId } : {}),
+    ...(abiAdapter ? { abiAdapter } : {}),
+  };
+}
+
 function imageDecompilerOptions(app, model, options = {}) {
   const slice = currentSlice(app);
+  const platformSlice = currentPlatformSlice(app);
   const info = currentInfo(app);
   const image = app?.image ?? app?.backend?.image ?? storeValue(app, 'image') ?? null;
-  const sections = options.sections ?? model?.sections ?? slice?.sections ?? info?.sections
-    ?? storeValue(app, 'sections') ?? image?.sections ?? app?.backend?.sections ?? app?.sections ?? null;
-  const regions = options.regions ?? model?.regions ?? slice?.regions
+  const regions = options.regions ?? model?.regions ?? slice?.regions ?? platformSlice?.regions
     ?? storeValue(app, 'regions') ?? image?.regions ?? app?.backend?.regions ?? app?.regions ?? null;
-  const relocations = options.relocations ?? model?.relocations ?? slice?.relocations ?? info?.relocations
-    ?? storeValue(app, 'relocations') ?? image?.relocations ?? app?.backend?.relocations ?? app?.relocations ?? null;
+  const explicitSections = options.sections ?? model?.sections ?? slice?.sections ?? platformSlice?.sections ?? info?.sections
+    ?? storeValue(app, 'sections') ?? image?.sections ?? app?.backend?.sections ?? app?.sections ?? null;
+  const sections = explicitSections
+    ?? (Array.isArray(regions) && regions.length ? regions.map(normalizeRegionAsSection).filter(Boolean) : null);
   const fileBytes = options.fileBytes ?? options.bytes ?? model?.fileBytes ?? model?.bytes
-    ?? slice?.fileBytes ?? slice?.bytes ?? info?.fileBytes ?? info?.bytes
+    ?? slice?.fileBytes ?? slice?.bytes ?? platformSlice?.fileBytes ?? platformSlice?.bytes
+    ?? info?.fileBytes ?? info?.bytes
     ?? storeValue(app, 'fileBytes') ?? storeValue(app, 'bytes')
     ?? image?.fileBytes ?? image?.bytes ?? app?.backend?.fileBytes ?? app?.backend?.bytes
-    ?? app?.fileBytes ?? app?.bytes ?? null;
+    ?? app?.fileBytes ?? app?.bytes ?? cachedFileBytesForApp(app) ?? null;
+  const explicitRelocations = options.relocations ?? model?.relocations ?? slice?.relocations ?? platformSlice?.relocations ?? info?.relocations
+    ?? storeValue(app, 'relocations') ?? image?.relocations ?? app?.backend?.relocations ?? app?.relocations ?? null;
+  const parsedRelocations = explicitRelocations == null && fileBytes instanceof Uint8Array
+    ? parseElfRelativeRelocations(fileBytes)
+    : null;
+  const relocations = explicitRelocations ?? (parsedRelocations?.length ? parsedRelocations : null);
   const readBytes = options.readBytes
     ?? (typeof model?.readBytes === 'function' ? model.readBytes.bind(model) : null)
     ?? (typeof image?.readBytes === 'function' ? image.readBytes.bind(image) : null)
@@ -261,7 +526,7 @@ function imageDecompilerOptions(app, model, options = {}) {
     ?? (typeof image?.stringFor === 'function' ? image.stringFor.bind(image) : null)
     ?? (typeof app?.stringFor === 'function' ? app.stringFor.bind(app) : null)
     ?? (typeof app?.backend?.stringFor === 'function' ? app.backend.stringFor.bind(app.backend) : null);
-  const addressRefs = options.addressRefs ?? model?.addressRefs ?? slice?.addressRefs ?? app?.addressRefs ?? null;
+  const addressRefs = options.addressRefs ?? model?.addressRefs ?? slice?.addressRefs ?? platformSlice?.addressRefs ?? app?.addressRefs ?? null;
   return {
     ...(sections != null ? { sections } : {}),
     ...(regions != null ? { regions } : {}),
@@ -968,7 +1233,7 @@ export function createAppAnalysisQueryAdapter(app) {
     const returnsValue=(result?.value?.setsReturnValue??result?.value?.model?.facts?.setsReturnValue)===true?true:undefined;
     let projectionIr=null,cxxEvidence=null;
     if(result?.value?.model&&supportsArm64SemanticAnalysis(architectureOf(app))){
-      try {projectionIr=irFor(result.value.model,{...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
+      try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
       if(projectionIr){
         const entry=ensureCxxEvidenceProviderForApp(app);
         if(entry){
@@ -1413,8 +1678,17 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
         ({projectionIr,cxxEvidence}=await projectCxxFunction(result,id,options));
       }
+      const cachedFileBytes = await ensureFileBytesForApp(app, options);
+      throwIfAborted(options.signal);
+      const imageOptions = imageDecompilerOptions(
+        app,
+        result.value.model,
+        cachedFileBytes ? { ...options, fileBytes:options.fileBytes ?? cachedFileBytes } : options,
+      );
+      const archOptions = architectureDecompilerOptions(app, result.value.model, result.value, options);
       const projection = decompile(result.value.model, {
-        ...imageDecompilerOptions(app, result.value.model, options),
+        ...imageOptions,
+        ...archOptions,
         ...decompilerOptionsFromQuery(options),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
@@ -1441,6 +1715,8 @@ export function createAppAnalysisQueryAdapter(app) {
         }
       };
 
+      const cachedFileBytes = await ensureFileBytesForApp(app, options);
+      throwIfAborted(options.signal);
       const functions = [];
       const completenesses = [];
       let functionReason = null;
@@ -1473,7 +1749,7 @@ export function createAppAnalysisQueryAdapter(app) {
                 throw new Error('C++ recovery binding changed');
               }
               try {
-                projectionIr = irFor(result.value.model, { ...(returnsValue ? { returnsValue } : {}), symbolFor });
+                projectionIr = irFor(result.value.model, { ...architectureDecompilerOptions(app, result.value.model, result.value, options), ...(returnsValue ? { returnsValue } : {}), symbolFor });
                 cxxEvidence = entry.provider.projectForFunction({
                   functionAddress: address != null ? BigInt(address) : null,
                   functionName: name,
@@ -1484,8 +1760,15 @@ export function createAppAnalysisQueryAdapter(app) {
               }
             }
           }
+          const imageOptions = imageDecompilerOptions(
+            app,
+            result.value.model,
+            cachedFileBytes ? { ...options, fileBytes:options.fileBytes ?? cachedFileBytes } : options,
+          );
+          const archOptions = architectureDecompilerOptions(app, result.value.model, result.value, options);
           producer = decompile(result.value.model, {
-            ...imageDecompilerOptions(app, result.value.model, options),
+            ...imageOptions,
+            ...archOptions,
             ...decompilerOptionsFromQuery(options),
             name,
             addr:address,

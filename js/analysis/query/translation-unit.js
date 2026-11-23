@@ -570,6 +570,8 @@ function hasRawObjcMessageSyntax(codeText) {
       }
     }
     if (close < 0) continue;
+    const afterClose = codeText.slice(close + 1).trimStart();
+    if (afterClose.startsWith('=') && !afterClose.startsWith('==')) continue;
     const inner = codeText.slice(i + 1, close).trim();
     if (!inner) continue;
     // Detect `[receiver selector]` or `[receiver sel:arg ...]` at top level.
@@ -586,7 +588,7 @@ function hasRawObjcMessageSyntax(codeText) {
     }
     const compact = topLevel.trim();
     if (/[A-Za-z0-9_]+\s*:/.test(compact) && !compact.includes('?')) return true;
-    if (/^(?:[A-Za-z_][A-Za-z0-9_]*|_P_|_B_)\s+[A-Za-z0-9_]+(?:\s+[A-Za-z0-9_]+)*(?:\s*,|\s*$)/.test(compact)) return true;
+    if (/^(?:[*&!~+-]\s*)*(?:(?:[A-Za-z_][A-Za-z0-9_]*|_P_|_B_)(?:\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*|\s+_P_)*)\s+[A-Za-z0-9_][A-Za-z0-9_-]*(?:\s+[A-Za-z0-9_][A-Za-z0-9_-]*)*(?:\s*,|\s*$)/.test(compact)) return true;
   }
   return false;
 }
@@ -676,6 +678,7 @@ function faithfulBodyEligibility(fn, context) {
   if (/\?\s*=/.test(codeText) || /=\s*\?\b/.test(codeText) || /\(\s*\?\s*[,)]/.test(codeText)) return { eligible:false, reason:'producer-placeholder-expression' };
   if (hasRawObjcMessageSyntax(codeText)) return { eligible:false, reason:'objc-message-syntax-unavailable' };
   if (/\b(?:__asm__|__asm|asm)\b/.test(codeText)) return { eligible:false, reason:'asm-syntax-unavailable' };
+  if (codeText.includes('$')) return { eligible:false, reason:'dollar-identifier-unavailable' };
   // Local declarations inside the body are part of the body's own evidence;
   // accept the spellings the producer emits for them and mark them covered.
   const declaredLocals = context.declaredLocals;
@@ -909,7 +912,7 @@ function globalAddressForName(globalMap, name) {
 function callLikeCallees(source) {
   const text = declarationBearingText(source);
   const names = new Set();
-  for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+  for (const match of text.matchAll(/(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
     const name = match[1];
     if (!C_IDENTIFIER.test(name)) continue;
     if (KEYWORDS.has(name)) continue;

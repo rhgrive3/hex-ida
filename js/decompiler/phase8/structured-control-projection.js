@@ -674,10 +674,11 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     if (branchIndex < 0) continue;
 
     const existingBranchNode = workingBody[branchIndex];
-    // Multi-line block branches (e.g. faithfulCfg PHI-copy blocks `if (cond) { ... }`)
-    // cannot be spliced by removing only the header/goto lines without stranding
-    // their closing `}` brace and closing the function early. Fail closed.
-    if (stripTrailingComments(existingBranchNode.text).endsWith('{')) continue;
+    // Braced conditional branches (multi-line or single-line inline faithfulCfg
+    // PHI-copy blocks like `if (cond) { phi_X = ...; goto loc_Y; }`) cannot be
+    // spliced by removing only the header/goto lines without stranding braces or
+    // silently dropping inline PHI copies. Fail closed.
+    if (stripTrailingComments(existingBranchNode.text).includes('{')) continue;
     if (!condText) {
       const match = existingBranchNode.text?.match(/^if\s*\((.+)\)\s*goto\s+loc_[0-9a-fA-F]+\s*;/);
       const expression = match?.[1]?.trim();
@@ -835,7 +836,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       const b = blockOfNode(node, result.ir, opts, projIndex);
       if (b === entry && (node.kind === 'ctrl' || node.kind === 'stmt')) {
         if (node.text?.startsWith('if ') || node.text?.includes('goto loc_')) {
-          if (stripTrailingComments(node.text).endsWith('{')) {
+          if (stripTrailingComments(node.text).includes('{')) {
             entryHasBlockBranch = true;
             break;
           }

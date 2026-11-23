@@ -865,6 +865,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   const registerStateWriteValueIds = new Set();
   const firstConsumerNodeByValueId = new Map();
   const multiConsumerNodeValueIds = new Set();
+  const consumersByValueId = new Map();
   for (const node of ir.nodes) {
     for (const valueId of node.outputs || []) producerByValueId.set(valueId, node);
     if (node.kind === 'state-write' && node.variable?.physicalIdentity?.kind === 'register' && node.inputs?.[0] != null) {
@@ -873,6 +874,9 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     for (const valueId of node.inputs || []) {
       if (!firstConsumerNodeByValueId.has(valueId)) firstConsumerNodeByValueId.set(valueId, node.id);
       else if (firstConsumerNodeByValueId.get(valueId) !== node.id) multiConsumerNodeValueIds.add(valueId);
+      let list = consumersByValueId.get(valueId);
+      if (!list) { list = []; consumersByValueId.set(valueId, list); }
+      list.push(node);
     }
   }
   const orderedBlocks = blockOrder(ir);
@@ -918,9 +922,34 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     if (use.semanticValueId) canonicalValueUseIds.add(use.semanticValueId);
     if (use.proof?.sourceSemanticValueId) canonicalValueUseIds.add(use.proof.sourceSemanticValueId);
   }
+  let projectedArch = ir.architectureId
+    ?? ir.origin?.architectureId
+    ?? options.architectureId
+    ?? options.arch
+    ?? options.architecture
+    ?? options.abiAdapter?.architectureId
+    ?? options.abiAdapter?.targetArchitecture
+    ?? options.abiAdapter?.arch
+    ?? null;
+  if (typeof projectedArch !== 'string' || !projectedArch.trim()) {
+    projectedArch = null;
+    for (const node of ir.nodes) {
+      const candidate = node?.attributes?.machineEffects?.architectureId
+        ?? node?.attributes?.machineEffects?.operationMetadata?.architecture
+        ?? node?.attributes?.machineEffects?.bundleMetadata?.architecture
+        ?? null;
+      if (typeof candidate === 'string' && candidate.trim()) {
+        projectedArch = candidate.trim();
+        break;
+      }
+    }
+  } else {
+    projectedArch = projectedArch.trim();
+  }
   const projected = {
     name: options.name ?? ir.functionId,
     functionId: ir.functionId,
+    ...(projectedArch ? { arch: projectedArch, architectureId: projectedArch } : {}),
     startAddress: firstAddress(ir.origin),
     truncated: ir.completeness !== 'complete',
     values,
@@ -942,6 +971,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
       projection: 'semantic-ir-v2-to-v1',
       version: '1.3.0',
       semanticFunctionId: ir.functionId,
+      ...(projectedArch ? { architectureId: projectedArch } : {}),
       scalarSsa: !!ssa,
       memorySsa: !!memorySsa,
       canonicalCfg: canonicalCfg != null,
@@ -993,6 +1023,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
         registerStateWriteValueIds,
         firstConsumerNodeByValueId,
         multiConsumerNodeValueIds,
+        consumersByValueId,
         physicalStateCurrent,
         stateReadComparisonCarrierByValueId,
         blockBySemanticId,
