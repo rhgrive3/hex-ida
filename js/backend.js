@@ -22,6 +22,17 @@ import {
 import { RISCV64_DECODER_SEMANTIC_VERSION } from './targets/architecture/riscv64/decoded-instruction.js';
 import { RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './targets/architecture/riscv64/effects/common.js';
 import { resolveRiscvIsaProfile } from './binary/riscv-isa.js';
+import { ScanWorkerPool } from './scan-pool.js';
+import {
+  isMobileDevice,
+  computeMaxScanWorkers,
+  planProgramChunks,
+  planShapeChunks,
+  routeCrossChunkForwardTargets,
+  mergeChunkProgramScans,
+  mergeChunkShapeScans,
+  computeWaveConcurrency,
+} from './scan-planner.js';
 
 /*
  * Per-architecture inputs to the shared semantic-function route.
@@ -65,6 +76,61 @@ function semanticFunctionTarget(architecture) {
 const LEGACY_MACHO_ARCHITECTURES = Object.freeze(['arm64', 'arm64e', 'arm64_32']);
 function isLegacyMachArchitecture(architecture) {
   return LEGACY_MACHO_ARCHITECTURES.includes(String(architecture || '').toLowerCase());
+}
+
+const AARCH64_ARCHITECTURES = Object.freeze(['arm64', 'arm64e', 'arm64ec', 'aarch64', 'aarch64_be']);
+function isAarch64Architecture(architecture) {
+  return AARCH64_ARCHITECTURES.includes(String(architecture || '').toLowerCase());
+}
+
+const DEFAULT_PARALLEL_SCAN_THRESHOLD_BYTES = 16 * 1024 * 1024;
+const PROGRAM_INDEX_BUDGET_BYTES = 96 * 1024 * 1024;
+const MAX_PROGRAM_EDGES = 8_000_000;
+const MAX_PROGRAM_REFS = 8_000_000;
+const MAX_PROGRAM_KIND_WORDS = 16 * 1024 * 1024;
+const MAX_SHAPE_EVENTS = 200_000;
+const SCAN_PROGRESS_THROTTLE_MS = 50;
+
+function capOf(value, hard) {
+  return value == null ? hard : Math.max(0, Math.min(hard, Math.floor(Number(value) || 0)));
+}
+
+function disposedBackendError() {
+  const error = new Error('Backend has been disposed.');
+  error.code = 'BACKEND_DISPOSED';
+  return error;
+}
+
+function rejectedDisposedRequest() {
+  const promise = Promise.reject(disposedBackendError());
+  promise.requestId = null;
+  promise.cancel = () => {};
+  return promise;
+}
+
+function isFatalScanError(error) {
+  if (!error) return false;
+  return error.code === 'WORKER_FAILED'
+    || error.code === 'BACKEND_DISPOSED'
+    || error.stale === true
+    || error.name === 'StaleRequestError'
+    || error.name === 'AbortError'
+    || error.code === 'ABORT_ERR';
+}
+
+function isPoolNonFallbackError(error) {
+  if (!error) return false;
+  return error.code === 'BACKEND_DISPOSED'
+    || error.stale === true
+    || error.name === 'StaleRequestError'
+    || error.name === 'AbortError'
+    || error.code === 'ABORT_ERR';
+}
+
+function cancelJobList(jobs) {
+  for (const job of jobs) {
+    try { job?.cancel?.(); } catch { /* best effort */ }
+  }
 }
 
 function requirePrimitiveSafeInteger(value, code) {
@@ -164,6 +230,7 @@ export class Backend {
     this.seq = 1;
     this.analysisEpoch = 0;
     this.transportEpoch = 0;
+    this._scanEpoch = 0;
     this.pending = new Map();
     this.cache = new LRU(CHUNK_CACHE);
     this.inflight = new Map();
@@ -196,6 +263,9 @@ export class Backend {
     this._artifactStoreOptions = options.artifactStoreOptions ?? {};
     this._artifactSchedulerOptions = options.artifactSchedulerOptions ?? {};
     this.analysisCache = options.analysisCache || new AnalysisCache(options.analysisCacheOptions);
+    this._scanWorkerFactory = options.scanWorkerFactory ?? null;
+    this._parallelScanThresholdBytes = options.parallelScanThresholdBytes ?? DEFAULT_PARALLEL_SCAN_THRESHOLD_BYTES;
+    this._scanPool = null;
 
     if (typeof document !== 'undefined') {
       this._memoryPressureHandler = () => {
@@ -280,9 +350,14 @@ export class Backend {
   }
 
   _rejectWorkerPending(workerName, error) {
+    const matched = [];
     for (const [id, pending] of this.pending) {
       if (pending.workerName !== workerName) continue;
-      this.pending.delete(id);
+      matched.push([id, pending]);
+    }
+    for (const [id] of matched) this.pending.delete(id);
+    for (const [, pending] of matched) {
+      try { pending.onCancel?.(); } catch { /* best effort */ }
       pending.reject(error);
     }
   }
@@ -338,13 +413,12 @@ export class Backend {
     throw new Error(`Unknown worker: ${name}`);
   }
 
-  _callTo(workerName, t, payload = {}, transfer, onProgress) {
+  _callTo(workerName, t, payload = {}, transfer, onProgress, options = {}) {
     if (this.disposed) {
-      const error = new Error('Backend has been disposed.'); error.code = 'BACKEND_DISPOSED';
-      const promise = Promise.reject(error); promise.requestId = null; promise.cancel = () => {}; return promise;
+      return rejectedDisposedRequest();
     }
     const id = this.seq++;
-    this.lastRequestId = id;
+    if (options?.trackLastRequest !== false) this.lastRequestId = id;
     const uiEpoch = this.gen;
     const transportEpoch = this.transportEpoch;
     const promise = new Promise((resolve, reject) => {
@@ -387,9 +461,17 @@ export class Backend {
     for (const worker of [this._legacyWorker, this._platformWorker]) {
       if (worker) worker.postMessage({ t: 'cancel', epoch: this.transportEpoch });
     }
+    const previousScanEpoch = this._scanEpoch;
+    this._scanEpoch++;
+    this._scanPool?.cancelEpoch(previousScanEpoch);
+    const stale = [];
     for (const [id, pending] of this.pending) {
       if (pending.uiEpoch === this.gen) continue;
-      this.pending.delete(id);
+      stale.push([id, pending]);
+    }
+    for (const [id] of stale) this.pending.delete(id);
+    for (const [, pending] of stale) {
+      try { pending.onCancel?.(); } catch { /* best effort */ }
       pending.reject(new StaleRequestError());
     }
     return this.analysisEpoch;
@@ -402,9 +484,12 @@ export class Backend {
     }
     const previousTransportEpoch = this.transportEpoch;
     const openTransportEpoch = ++this.transportEpoch;
+    const previousScanEpoch = this._scanEpoch;
+    this._scanEpoch++;
     for (const worker of [this._legacyWorker, this._platformWorker]) {
       if (worker) worker.postMessage({ t: 'cancel', epoch: previousTransportEpoch });
     }
+    this._scanPool?.cancelEpoch(previousScanEpoch);
     const assertCurrent = () => {
       if (this.transportEpoch !== openTransportEpoch) throw new StaleRequestError();
     };
@@ -557,6 +642,7 @@ export class Backend {
     this.advanceEpoch();
     this.file=file;
     this.formatId=nextFormat;
+    this._activeMachArchitecture=null;
     this.platformInfo=nextPlatform;
     this.legacyInfo=nextLegacy;
     this.arm64Bridge=nextBridge;
@@ -630,7 +716,11 @@ export class Backend {
     const pending = this.pending.get(requestId);
     if (!pending) return false;
     this.pending.delete(requestId);
-    try { this._worker(pending.workerName).postMessage({ t: 'cancel', requestId, epoch: pending.transportEpoch }); } catch { /* local settlement is authoritative */ }
+    if (typeof pending.onCancel === 'function') {
+      try { pending.onCancel(); } catch { /* local settlement is authoritative */ }
+    } else {
+      try { this._worker(pending.workerName).postMessage({ t: 'cancel', requestId, epoch: pending.transportEpoch }); } catch { /* local settlement is authoritative */ }
+    }
     pending.reject(cancelledRequestError());
     return true;
   }
@@ -962,16 +1052,671 @@ export class Backend {
     }
     return this.call('guessFunctions', { regionId, limit }, null, onProgress);
   }
+  _ensureScanPool() {
+    if (!this._scanPool) {
+      this._scanPool = new ScanWorkerPool({
+        maxWorkers: computeMaxScanWorkers({ document: { hidden: false } }),
+        workerFactory: this._scanWorkerFactory || undefined,
+      });
+    }
+    return this._scanPool;
+  }
+
+  _resolveScanEffectiveArch(limits = null) {
+    const machArch = this.formatId === 'macho'
+      ? (this._activeMachArchitecture || this.legacyInfo?.slices?.[0]?.capability?.architecture || '')
+      : '';
+    return String(limits?.architecture || machArch || this.platformInfo?.capability?.architecture || '').toLowerCase();
+  }
+
+  _canUseParallelScan(effectiveArch) {
+    return (!effectiveArch || isLegacyMachArchitecture(effectiveArch))
+      && !!(this.file && typeof this.file.slice === 'function')
+      && (typeof Worker !== 'undefined' || typeof this._scanWorkerFactory === 'function')
+      && !(typeof document !== 'undefined' && document.hidden);
+  }
+
+  _orchestrateParallelScan(onProgress, executor) {
+    const outerId = this.seq++;
+    this.lastRequestId = outerId;
+    const uiEpoch = this.gen;
+    const transportEpoch = this.transportEpoch;
+    const scanEpoch = this._scanEpoch;
+    const sourceFile = this.file;
+
+    let settled = false;
+    let aborted = false;
+    let activeChild = null;
+    let outerResolve = null;
+    let outerReject = null;
+
+    const isCurrent = () => !aborted
+      && !this.disposed
+      && uiEpoch === this.gen
+      && transportEpoch === this.transportEpoch
+      && scanEpoch === this._scanEpoch
+      && sourceFile === this.file;
+
+    const currentAbortError = () => {
+      if (this.disposed) return disposedBackendError();
+      if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || scanEpoch !== this._scanEpoch || sourceFile !== this.file) {
+        return new StaleRequestError();
+      }
+      return cancelledRequestError();
+    };
+
+    const setActiveChild = (child) => {
+      activeChild = child;
+      if (aborted && child) {
+        activeChild = null;
+        try {
+          if (typeof child.cancel === 'function') child.cancel();
+          else if (typeof child === 'function') child();
+        } catch { /* best effort */ }
+      }
+    };
+
+    const clearActiveChild = (child) => {
+      if (child == null || activeChild === child) activeChild = null;
+    };
+
+    const cancelActiveChild = () => {
+      const child = activeChild;
+      activeChild = null;
+      if (!child) return;
+      try {
+        if (typeof child.cancel === 'function') child.cancel();
+        else if (typeof child === 'function') child();
+      } catch { /* best effort */ }
+    };
+
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      this.pending.delete(outerId);
+      outerResolve(value);
+    };
+
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      this.pending.delete(outerId);
+      outerReject(error);
+    };
+
+    const promise = new Promise((resolve, reject) => {
+      outerResolve = resolve;
+      outerReject = reject;
+      this.pending.set(outerId, {
+        resolve: finishResolve,
+        reject: finishReject,
+        uiEpoch,
+        transportEpoch,
+        workerName: 'scan-pool',
+        onProgress: typeof onProgress === 'function' ? onProgress : null,
+        onCancel: () => {
+          aborted = true;
+          cancelActiveChild();
+        },
+      });
+    });
+    promise.requestId = outerId;
+    promise.cancel = () => this.cancel(outerId);
+
+    (async () => {
+      try {
+        return await executor({
+          outerId,
+          uiEpoch,
+          transportEpoch,
+          scanEpoch,
+          sourceFile,
+          isCurrent,
+          currentAbortError,
+          setActiveChild,
+          clearActiveChild,
+        });
+      } finally {
+        activeChild = null;
+        this.pending.delete(outerId);
+      }
+    })().then(finishResolve, finishReject);
+
+    return promise;
+  }
+
+  classifyExecutableCoverage({ gaps, regionIds, architecture, endian } = {}) {
+    if (this._engineWorker('readAt') !== 'legacy' || !isAarch64Architecture(architecture)) {
+      const promise = Promise.resolve(null);
+      promise.requestId = null;
+      promise.cancel = () => {};
+      return promise;
+    }
+    return this._callTo('legacy', 'classifyExecutableCoverage', { gaps, regionIds, endian });
+  }
+
   scanProgram(regionId, onProgress, limits = {}) {
+    if (this.disposed) return rejectedDisposedRequest();
     const architecture = String(limits?.architecture || '').toLowerCase();
     const payload = { regionId, ...limits };
     if (this.formatId === 'macho' && architecture) {
-      return this._callTo(isLegacyMachArchitecture(architecture) ? 'legacy' : 'platform', 'scanProgram', payload, null, onProgress);
+      if (!isLegacyMachArchitecture(architecture)) {
+        return this._callTo('platform', 'scanProgram', payload, null, onProgress);
+      }
+    } else if (this._engineWorker('scanProgram') !== 'legacy') {
+      return this._callTo('platform', 'scanProgram', payload, null, onProgress);
     }
-    return this.call('scanProgram', payload, null, onProgress);
+
+    const effectiveArch = this._resolveScanEffectiveArch(limits);
+    if (!this._canUseParallelScan(effectiveArch)) {
+      return this._callTo('legacy', 'scanProgram', payload, null, onProgress);
+    }
+
+    return this._orchestrateParallelScan(onProgress, async ({
+      outerId,
+      uiEpoch,
+      transportEpoch,
+      scanEpoch,
+      sourceFile,
+      isCurrent,
+      currentAbortError,
+      setActiveChild,
+      clearActiveChild,
+    }) => {
+      const runLegacyFallback = async () => {
+        if (!isCurrent()) throw currentAbortError();
+        const fallbackReq = this._callTo('legacy', 'scanProgram', payload, null, onProgress, { trackLastRequest: false });
+        setActiveChild(fallbackReq);
+        try {
+          return await fallbackReq;
+        } finally {
+          clearActiveChild(fallbackReq);
+        }
+      };
+
+      let meta = null;
+      const metaReq = this._callTo('legacy', 'getScanMeta', { regionId }, null, null, { trackLastRequest: false });
+      setActiveChild(metaReq);
+      try {
+        meta = await metaReq;
+      } catch (error) {
+        clearActiveChild(metaReq);
+        if (!isCurrent()) throw currentAbortError();
+        if (isFatalScanError(error)) throw error;
+        return await runLegacyFallback();
+      }
+      clearActiveChild(metaReq);
+      if (!isCurrent()) throw currentAbortError();
+
+      const region = meta?.region;
+      const regionSize = region ? Number(region.size) : 0;
+      const thresholdBytes = Math.max(0, Number(this._parallelScanThresholdBytes ?? DEFAULT_PARALLEL_SCAN_THRESHOLD_BYTES));
+      if (!region || meta.hasDataInCode || !Number.isFinite(regionSize) || regionSize < thresholdBytes) {
+        return await runLegacyFallback();
+      }
+
+      const isMobile = isMobileDevice();
+      const maxWorkers = computeMaxScanWorkers();
+      if (maxWorkers < 2) {
+        return await runLegacyFallback();
+      }
+
+      const chunks = planProgramChunks({
+        region,
+        functionStarts: meta.functionStarts,
+        maxWorkers,
+        isMobile,
+        parallelThresholdBytes: thresholdBytes,
+      });
+      if (!Array.isArray(chunks) || chunks.length < 2) {
+        return await runLegacyFallback();
+      }
+
+      const pool = this._ensureScanPool();
+      const totalBytes = regionSize;
+      const stage1DoneByChunk = new Float64Array(chunks.length);
+      const stage2DoneByChunk = new Float64Array(chunks.length);
+      const stage2HitsByChunk = new Float64Array(chunks.length);
+      let lastProgressAt = 0;
+
+      const emitProgress = (force = false) => {
+        if (!isCurrent()) return;
+        const handler = typeof onProgress === 'function' ? onProgress : this.onScanProgress;
+        if (typeof handler !== 'function') return;
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (!force && now - lastProgressAt < SCAN_PROGRESS_THROTTLE_MS) return;
+        lastProgressAt = now;
+        let stage1Done = 0;
+        let stage2Done = 0;
+        let hits = 0;
+        for (let i = 0; i < chunks.length; i++) {
+          stage1Done += stage1DoneByChunk[i];
+          stage2Done += stage2DoneByChunk[i];
+          hits += stage2HitsByChunk[i];
+        }
+        const done = Math.min(totalBytes, Math.floor(stage1Done * 0.2 + stage2Done * 0.8));
+        try {
+          handler({ t: 'scanProgress', requestId: outerId, epoch: transportEpoch, done, all: totalBytes, hits });
+        } catch { /* progress observers cannot own the producer */ }
+      };
+
+      // Stage 1: parallel local backward loop kills + cross-chunk forward targets
+      const stage1Jobs = [];
+      const cancelStage1 = () => cancelJobList(stage1Jobs);
+      setActiveChild(cancelStage1);
+      for (const chunk of chunks) {
+        const job = pool.runTask({
+          t: 'scanStage1',
+          payload: {
+            file: sourceFile,
+            region,
+            chunkIndex: chunk.chunkIndex,
+            chunkStart: chunk.chunkStart,
+            chunkEnd: chunk.chunkEnd,
+            functionStarts: chunk.functionStarts,
+          },
+          epoch: scanEpoch,
+          requestId: outerId,
+          onProgress: (msg) => {
+            if (!isCurrent()) return;
+            stage1DoneByChunk[chunk.chunkIndex] = Math.min(chunk.chunkEnd - chunk.chunkStart, Number(msg?.done || 0));
+            emitProgress(false);
+          },
+        });
+        job.catch(() => {});
+        stage1Jobs.push(job);
+      }
+
+      let stage1Results;
+      try {
+        stage1Results = await Promise.all(stage1Jobs);
+      } catch (error) {
+        cancelStage1();
+        clearActiveChild(cancelStage1);
+        stage1Jobs.length = 0;
+        if (!isCurrent()) throw currentAbortError();
+        if (isPoolNonFallbackError(error)) throw error;
+        return await runLegacyFallback();
+      }
+      clearActiveChild(cancelStage1);
+      if (!isCurrent()) throw currentAbortError();
+      for (let i = 0; i < chunks.length; i++) {
+        stage1DoneByChunk[i] = chunks[i].chunkEnd - chunks[i].chunkStart;
+      }
+      emitProgress(false);
+
+      const incomingByChunk = routeCrossChunkForwardTargets(chunks, stage1Results);
+
+      // Stage 2: strictly ascending chunkIndex waves with adaptive concurrency & fail-fast
+      const words = Math.floor(regionSize / 4);
+      const globalCallCap = capOf(limits?.callLimit, MAX_PROGRAM_EDGES);
+      const globalRefCap = capOf(limits?.refLimit, MAX_PROGRAM_REFS);
+      const globalKindCap = capOf(limits?.kindLimit, MAX_PROGRAM_KIND_WORDS);
+
+      let kinds = new Uint8Array(Math.min(words, globalKindCap));
+      const liveByteCeiling = isMobile ? PROGRAM_INDEX_BUDGET_BYTES : Math.floor(PROGRAM_INDEX_BUDGET_BYTES * 1.5);
+      const stage2Results = new Array(chunks.length).fill(null);
+      let callsSoFar = 0;
+      let refsSoFar = 0;
+      let accumulatedChunkBytes = 0;
+      let needLegacyFallback = false;
+
+      const releaseParallelBuffers = () => {
+        kinds = null;
+        for (let i = 0; i < stage2Results.length; i++) {
+          const res = stage2Results[i];
+          if (res) {
+            res.callFrom = null;
+            res.callTo = null;
+            res.refFrom = null;
+            res.refTo = null;
+            res.refKind = null;
+            res.kinds = null;
+            stage2Results[i] = null;
+          }
+        }
+        for (let i = 0; i < stage1Results.length; i++) {
+          const s1 = stage1Results[i];
+          if (s1) {
+            s1.crossChunkForwardTargets = null;
+            s1.loopKillAddrs = null;
+            s1.loopKillMasks = null;
+            stage1Results[i] = null;
+          }
+        }
+        if (Array.isArray(incomingByChunk)) incomingByChunk.fill(null);
+      };
+
+      let nextChunkIdx = 0;
+      while (nextChunkIdx < chunks.length) {
+        if (!isCurrent()) {
+          releaseParallelBuffers();
+          throw currentAbortError();
+        }
+        const remainingBudget = Math.max(0, liveByteCeiling - (kinds ? kinds.byteLength : 0) - accumulatedChunkBytes);
+        const hiddenCap = (typeof document !== 'undefined' && document.hidden) ? 1 : maxWorkers;
+        const waveMax = Math.min(hiddenCap, chunks.length - nextChunkIdx);
+        const waveInfo = computeWaveConcurrency({
+          remainingBudget,
+          maxWaveWorkers: waveMax,
+          isMobile,
+          hidden: typeof document !== 'undefined' && !!document.hidden,
+        });
+        const activeWaveWorkers = Math.max(1, Math.min(waveMax, waveInfo));
+        const chunkBudgetBytes = Math.floor(remainingBudget / activeWaveWorkers);
+
+        const waveCallLimit = Math.max(0, globalCallCap - callsSoFar);
+        const waveRefLimit = Math.max(0, globalRefCap - refsSoFar);
+        const waveChunks = chunks.slice(nextChunkIdx, nextChunkIdx + activeWaveWorkers);
+        nextChunkIdx += waveChunks.length;
+
+        const waveJobs = [];
+        const cancelWave = () => cancelJobList(waveJobs);
+        setActiveChild(cancelWave);
+        let waveFailed = false;
+        let waveError = null;
+
+        const wavePromises = waveChunks.map((chunk) => {
+          const s1 = stage1Results[chunk.chunkIndex];
+          const job = pool.runTask({
+            t: 'scanProgramChunk',
+            payload: {
+              file: sourceFile,
+              region,
+              chunkIndex: chunk.chunkIndex,
+              chunkStart: chunk.chunkStart,
+              chunkEnd: chunk.chunkEnd,
+              functionStarts: chunk.functionStarts,
+              stringRanges: meta.stringRanges,
+              incomingForwardTargets: incomingByChunk[chunk.chunkIndex],
+              loopKillAddrs: s1?.loopKillAddrs,
+              loopKillMasks: s1?.loopKillMasks,
+              callLimit: waveCallLimit,
+              refLimit: waveRefLimit,
+              globalKindCap,
+              chunkBudgetBytes,
+            },
+            epoch: scanEpoch,
+            requestId: outerId,
+            onProgress: (msg) => {
+              if (!isCurrent()) return;
+              stage2DoneByChunk[chunk.chunkIndex] = Math.min(chunk.chunkEnd - chunk.chunkStart, Number(msg?.done || 0));
+              stage2HitsByChunk[chunk.chunkIndex] = Number(msg?.hits || 0);
+              emitProgress(false);
+            },
+          });
+          job.catch(() => {});
+          waveJobs.push(job);
+          if (s1) {
+            s1.crossChunkForwardTargets = null;
+            s1.loopKillAddrs = null;
+            s1.loopKillMasks = null;
+            stage1Results[chunk.chunkIndex] = null;
+          }
+          return job.then((res) => {
+            if (waveFailed || needLegacyFallback || !isCurrent()) return;
+            if (res?.kinds && kinds) {
+              const wordBase = chunk.wordBase ?? Math.floor(chunk.chunkStart / 4);
+              const copyLen = Math.min(res.kinds.length, Math.max(0, kinds.length - wordBase));
+              if (copyLen > 0) {
+                kinds.set(copyLen === res.kinds.length ? res.kinds : res.kinds.subarray(0, copyLen), wordBase);
+              }
+              res.kinds = null;
+            }
+            stage2Results[chunk.chunkIndex] = res;
+            const cCount = Number(res?.callCount ?? res?.callFrom?.length ?? 0);
+            const rCount = Number(res?.refCount ?? res?.refFrom?.length ?? 0);
+            callsSoFar += cCount;
+            refsSoFar += rCount;
+            accumulatedChunkBytes += (res?.callFrom?.byteLength || 0)
+              + (res?.callTo?.byteLength || 0)
+              + (res?.refFrom?.byteLength || 0)
+              + (res?.refTo?.byteLength || 0)
+              + (res?.refKind?.byteLength || 0);
+            stage2DoneByChunk[chunk.chunkIndex] = chunk.chunkEnd - chunk.chunkStart;
+            stage2HitsByChunk[chunk.chunkIndex] = cCount + rCount;
+            emitProgress(false);
+
+            const clampedBytes = Math.min(callsSoFar, globalCallCap) * 16
+              + Math.min(refsSoFar, globalRefCap) * 17
+              + (kinds ? kinds.byteLength : 0);
+            if (res?.budgetCapped === true || clampedBytes > PROGRAM_INDEX_BUDGET_BYTES) {
+              needLegacyFallback = true;
+              cancelWave();
+            }
+          }, (error) => {
+            if (needLegacyFallback) return;
+            if (!waveFailed) {
+              waveFailed = true;
+              waveError = error;
+              cancelWave();
+            }
+          });
+        });
+
+        await Promise.all(wavePromises);
+        clearActiveChild(cancelWave);
+
+        if (!isCurrent()) {
+          releaseParallelBuffers();
+          throw currentAbortError();
+        }
+        if (needLegacyFallback) {
+          releaseParallelBuffers();
+          return await runLegacyFallback();
+        }
+        if (waveFailed) {
+          releaseParallelBuffers();
+          if (isPoolNonFallbackError(waveError)) throw waveError;
+          return await runLegacyFallback();
+        }
+      }
+
+      if (!isCurrent()) {
+        releaseParallelBuffers();
+        throw currentAbortError();
+      }
+      emitProgress(true);
+      return mergeChunkProgramScans({
+        region,
+        chunks,
+        chunkResults: stage2Results,
+        kinds,
+        callLimit: globalCallCap,
+        refLimit: globalRefCap,
+        kindLimit: globalKindCap,
+        memoryBudgetBytes: PROGRAM_INDEX_BUDGET_BYTES,
+      });
+    });
   }
+
   fieldAccess(params, onProgress) { return this.call('fieldAccess', params, null, onProgress); }
-  valueShapes(regionId, onProgress) { return this.call('valueShapes', { regionId }, null, onProgress); }
+
+  valueShapes(regionId, onProgress) {
+    if (this.disposed) return rejectedDisposedRequest();
+    if (this._engineWorker('valueShapes') !== 'legacy') {
+      return this._callTo('platform', 'valueShapes', { regionId }, null, onProgress);
+    }
+
+    const effectiveArch = this._resolveScanEffectiveArch(null);
+    if (!this._canUseParallelScan(effectiveArch)) {
+      return this._callTo('legacy', 'valueShapes', { regionId }, null, onProgress);
+    }
+
+    return this._orchestrateParallelScan(onProgress, async ({
+      outerId,
+      uiEpoch,
+      transportEpoch,
+      scanEpoch,
+      sourceFile,
+      isCurrent,
+      currentAbortError,
+      setActiveChild,
+      clearActiveChild,
+    }) => {
+      const runLegacyFallback = async () => {
+        if (!isCurrent()) throw currentAbortError();
+        const fallbackReq = this._callTo('legacy', 'valueShapes', { regionId }, null, onProgress, { trackLastRequest: false });
+        setActiveChild(fallbackReq);
+        try {
+          return await fallbackReq;
+        } finally {
+          clearActiveChild(fallbackReq);
+        }
+      };
+
+      let meta = null;
+      const metaReq = this._callTo('legacy', 'getScanMeta', { regionId }, null, null, { trackLastRequest: false });
+      setActiveChild(metaReq);
+      try {
+        meta = await metaReq;
+      } catch (error) {
+        clearActiveChild(metaReq);
+        if (!isCurrent()) throw currentAbortError();
+        if (isFatalScanError(error)) throw error;
+        return await runLegacyFallback();
+      }
+      clearActiveChild(metaReq);
+      if (!isCurrent()) throw currentAbortError();
+
+      const region = meta?.region;
+      const regionSize = region ? Number(region.size) : 0;
+      const thresholdBytes = Math.max(0, Number(this._parallelScanThresholdBytes ?? DEFAULT_PARALLEL_SCAN_THRESHOLD_BYTES));
+      if (!region || !Number.isFinite(regionSize) || regionSize < thresholdBytes) {
+        return await runLegacyFallback();
+      }
+
+      const isMobile = isMobileDevice();
+      const maxWorkers = computeMaxScanWorkers();
+      if (maxWorkers < 2) {
+        return await runLegacyFallback();
+      }
+
+      const chunks = await planShapeChunks({
+        file: sourceFile,
+        region,
+        maxWorkers,
+        isMobile,
+        parallelThresholdBytes: thresholdBytes,
+      });
+      if (!isCurrent()) throw currentAbortError();
+      if (!Array.isArray(chunks) || chunks.length < 2) {
+        return await runLegacyFallback();
+      }
+
+      const pool = this._ensureScanPool();
+      const totalBytes = regionSize;
+      const doneByChunk = new Float64Array(chunks.length);
+      const hitsByChunk = new Float64Array(chunks.length);
+      let lastProgressAt = 0;
+
+      const emitProgress = (force = false) => {
+        if (!isCurrent()) return;
+        const handler = typeof onProgress === 'function' ? onProgress : this.onScanProgress;
+        if (typeof handler !== 'function') return;
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (!force && now - lastProgressAt < SCAN_PROGRESS_THROTTLE_MS) return;
+        lastProgressAt = now;
+        let done = 0;
+        let hits = 0;
+        for (let i = 0; i < chunks.length; i++) {
+          done += doneByChunk[i];
+          hits += hitsByChunk[i];
+        }
+        try {
+          handler({ t: 'scanProgress', requestId: outerId, epoch: transportEpoch, done: Math.min(totalBytes, Math.floor(done)), all: totalBytes, hits });
+        } catch { /* progress observers cannot own the producer */ }
+      };
+
+      const shapeResults = new Array(chunks.length).fill(null);
+      let eventsSoFar = 0;
+      const releaseShapeBuffers = () => {
+        for (let i = 0; i < shapeResults.length; i++) shapeResults[i] = null;
+      };
+
+      let nextChunkIdx = 0;
+      while (nextChunkIdx < chunks.length && eventsSoFar < MAX_SHAPE_EVENTS) {
+        if (!isCurrent()) {
+          releaseShapeBuffers();
+          throw currentAbortError();
+        }
+        const hiddenCap = (typeof document !== 'undefined' && document.hidden) ? 1 : maxWorkers;
+        const waveSize = Math.max(1, Math.min(hiddenCap, chunks.length - nextChunkIdx));
+        const waveChunks = chunks.slice(nextChunkIdx, nextChunkIdx + waveSize);
+        nextChunkIdx += waveChunks.length;
+
+        const shapeLimit = Math.max(0, MAX_SHAPE_EVENTS - eventsSoFar);
+        const waveJobs = [];
+        const cancelWave = () => cancelJobList(waveJobs);
+        setActiveChild(cancelWave);
+        let waveFailed = false;
+        let waveError = null;
+
+        const wavePromises = waveChunks.map((chunk) => {
+          const job = pool.runTask({
+            t: 'scanShapesChunk',
+            payload: {
+              file: sourceFile,
+              region,
+              chunkIndex: chunk.chunkIndex,
+              chunkStart: chunk.chunkStart,
+              chunkEnd: chunk.chunkEnd,
+              shapeLimit,
+            },
+            epoch: scanEpoch,
+            requestId: outerId,
+            onProgress: (msg) => {
+              if (!isCurrent()) return;
+              doneByChunk[chunk.chunkIndex] = Math.min(chunk.chunkEnd - chunk.chunkStart, Number(msg?.done || 0));
+              hitsByChunk[chunk.chunkIndex] = Number(msg?.hits || 0);
+              emitProgress(false);
+            },
+          });
+          job.catch(() => {});
+          waveJobs.push(job);
+          return job.then((res) => {
+            if (waveFailed || !isCurrent()) return;
+            shapeResults[chunk.chunkIndex] = res;
+            const count = Number(res?.count ?? res?.addr?.length ?? 0);
+            eventsSoFar += count;
+            doneByChunk[chunk.chunkIndex] = chunk.chunkEnd - chunk.chunkStart;
+            hitsByChunk[chunk.chunkIndex] = count;
+            emitProgress(false);
+          }, (error) => {
+            if (!waveFailed) {
+              waveFailed = true;
+              waveError = error;
+              cancelWave();
+            }
+          });
+        });
+
+        await Promise.all(wavePromises);
+        clearActiveChild(cancelWave);
+
+        if (!isCurrent()) {
+          releaseShapeBuffers();
+          throw currentAbortError();
+        }
+        if (waveFailed) {
+          releaseShapeBuffers();
+          if (isPoolNonFallbackError(waveError)) throw waveError;
+          return await runLegacyFallback();
+        }
+      }
+
+      if (!isCurrent()) {
+        releaseShapeBuffers();
+        throw currentAbortError();
+      }
+      emitProgress(true);
+      return mergeChunkShapeScans({
+        region,
+        chunkResults: shapeResults.filter(Boolean),
+        maxEvents: MAX_SHAPE_EVENTS,
+      });
+    });
+  }
   fieldAccessMany(regionId, offsets) {
     const request = this.call('fieldAccess', { regionId, offsets });
     const mapped = request.then((res) => {
@@ -1117,6 +1862,7 @@ export class Backend {
   cleanupMemory() {
     this.resetCache();
     this._releaseDisassembly(new Error('disassembly worker released for memory pressure'));
+    this._scanPool?.onMemoryPressure();
     return this._callTo('platform', 'cleanupMemory', {});
   }
 
@@ -1124,15 +1870,23 @@ export class Backend {
     if (this.disposed) return;
     this.disposed = true;
     const failure = new Error('Backend has been disposed.'); failure.code = 'BACKEND_DISPOSED';
-    this.analysisEpoch++; this.transportEpoch++;
+    this.analysisEpoch++; this.transportEpoch++; this._scanEpoch++;
     this._binaryIdFlight?.controller.abort(cancelledRequestError('Backend disposed.'));
     this.binaryId = null; this._binaryIdPromise = null; this._binaryIdFlight = null;
     this.resetCache();
     this._releaseDisassembly(failure);
     this._archProbeFinish?.({ ok:false, error:failure.message, support:{ arm64:false, x86_64:false } });
     this._archProbeFinish = null; this._archProbeWorker = null; this._archProbeResult = null;
-    for (const pending of this.pending.values()) pending.reject(failure);
+    const allPending = Array.from(this.pending.values());
     this.pending.clear();
+    for (const pending of allPending) {
+      try { pending.onCancel?.(); } catch { /* best effort */ }
+      pending.reject(failure);
+    }
+    if (this._scanPool) {
+      try { this._scanPool.dispose(); } catch { /* best effort */ }
+      this._scanPool = null;
+    }
     for (const worker of [this._legacyWorker, this._platformWorker]) {
       if (worker) { try { worker.terminate(); } catch { /* best effort */ } }
     }

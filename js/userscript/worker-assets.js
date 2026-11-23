@@ -1,5 +1,7 @@
 import { gmFetch } from './network.js';
 
+const NON_CAPSTONE_CLASSIC_WORKERS = new Set(['js/scan-worker.js']);
+
 export async function prepareUserscriptWorkers({
   origin = globalThis.__HEX_API_BASE__,
   manifest = globalThis.__HEX_WORKER_MANIFEST__,
@@ -32,7 +34,9 @@ export async function prepareUserscriptWorkers({
        local dependencies preserve their execution order when expanded in place. */
     for (const path of manifest.classicEntries || []) {
       let source = inlineImportScripts(path, sources);
-      source = capstonePrelude(wasmBlobURL) + '\n' + source;
+      if (!NON_CAPSTONE_CLASSIC_WORKERS.has(path)) {
+        source = capstonePrelude(wasmBlobURL) + '\n' + source;
+      }
       const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
       createdBlobURLs.push(url);
       workerURLs.set(path, url);

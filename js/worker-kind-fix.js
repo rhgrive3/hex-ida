@@ -32,6 +32,9 @@ function __crossBinaryExactKind(w) {
 scanProgram = async function scanProgramWithCanonicalKinds(args) {
   const result = await __kindBaseScanProgram(args);
   if (!result || result.cancelled || !result.kinds) return result;
+  if (typeof __inlineCanonicalKindsResults !== 'undefined' && __inlineCanonicalKindsResults.has(result)) {
+    return result;
+  }
 
   const region = regions.get(args.regionId);
   if (!region) return result;
@@ -54,7 +57,7 @@ scanProgram = async function scanProgramWithCanonicalKinds(args) {
   const CHUNK = 1024 * 1024;
   const byteLimit = count * 4;
   for (let pos = 0; pos < byteLimit; pos += CHUNK) {
-    if (cancelled(args.requestId)) return { cancelled:true, __transfer:[] };
+    if (cancelled(args.requestId, args.epoch)) return { cancelled:true, __transfer:[] };
     const want = Math.min(CHUNK, byteLimit - pos);
     const raw = await readRange(region.fileOffset + BigInt(pos), want);
     const words = Math.floor(raw.length / 4);

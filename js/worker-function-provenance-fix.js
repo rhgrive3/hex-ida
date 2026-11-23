@@ -31,7 +31,7 @@ function __hasIndependentFunctionEvidence(ev, target) {
     ev.denseAddressLeafStarts?.has?.(target);
 }
 
-async function __imageRelativeProvenance(region, slice, requestId) {
+async function __imageRelativeProvenance(region, slice, requestId, epoch) {
   const broad = new Set();
   const layoutBacked = new Set();
   const imageBase = slice?.info?.textVM;
@@ -39,11 +39,14 @@ async function __imageRelativeProvenance(region, slice, requestId) {
   const lo = region.vmAddr;
   const hi = region.vmAddr + region.size;
   const occurrences = new Map();
+  const readMeta = typeof readMetadataRange === 'function'
+    ? (off, len) => readMetadataRange(off, len, requestId, epoch)
+    : readRange;
 
   for (const r of slice.regions || []) {
     if (r.segment !== '__DATA_CONST' || r.section !== '__const' || r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
     try {
-      const buf = await readRange(r.fileOffset, Number(r.size));
+      const buf = await readMeta(r.fileOffset, Number(r.size));
       const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
       const count = Math.floor(buf.byteLength / 4);
       const words = new Array(count).fill(null);
@@ -66,7 +69,7 @@ async function __imageRelativeProvenance(region, slice, requestId) {
         i = j;
       }
     } catch { /* malformed/raw data is not evidence */ }
-    if (cancelled(requestId)) return { broad, layoutBacked };
+    if (cancelled(requestId, epoch)) return { broad, layoutBacked };
   }
 
   // A target repeated independently in the raw metadata is also source-layout
@@ -77,12 +80,15 @@ async function __imageRelativeProvenance(region, slice, requestId) {
   return { broad, layoutBacked };
 }
 
-async function __independentStructuredCandidates(region, slice, ev, requestId) {
+async function __independentStructuredCandidates(region, slice, ev, requestId, epoch) {
   const out = new Set();
   const imageBase = slice?.info?.textVM;
   if (imageBase == null) return out;
   const lo = region.vmAddr;
   const hi = region.vmAddr + region.size;
+  const readMeta = typeof readMetadataRange === 'function'
+    ? (off, len) => readMetadataRange(off, len, requestId, epoch)
+    : readRange;
 
   // Field-relative Swift/runtime metadata is a distinct physical source from
   // image-relative raw u32s. Preserve it under the same boundary contract as
@@ -94,7 +100,7 @@ async function __independentStructuredCandidates(region, slice, ev, requestId) {
       (sec === '__const' && (r.segment === '__TEXT' || r.segment === '__DATA_CONST'));
     if (!relativeMetadata) continue;
     try {
-      const buf = await readRange(r.fileOffset, Number(r.size));
+      const buf = await readMeta(r.fileOffset, Number(r.size));
       const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
       for (let p = 0; p + 4 <= buf.byteLength; p += 4) {
         const target = r.vmAddr + BigInt(p) + BigInt(dv.getInt32(p, true));
@@ -105,7 +111,7 @@ async function __independentStructuredCandidates(region, slice, ev, requestId) {
         }
       }
     } catch { /* malformed metadata is not evidence */ }
-    if (cancelled(requestId)) return out;
+    if (cancelled(requestId, epoch)) return out;
   }
 
   // Reconstruct the validated Itanium-vtable rule. These pointers are backed
@@ -114,7 +120,7 @@ async function __independentStructuredCandidates(region, slice, ev, requestId) {
     if (r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
     if (!/^__(const|data|objc_const|cfstring)$/.test(r.section || '')) continue;
     try {
-      const buf = await readRange(r.fileOffset, Number(r.size));
+      const buf = await readMeta(r.fileOffset, Number(r.size));
       const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
       const q = Math.floor(buf.byteLength / 8);
       const raw = new Array(q);
@@ -139,20 +145,23 @@ async function __independentStructuredCandidates(region, slice, ev, requestId) {
         i = Math.max(i, j - 1);
       }
     } catch { /* unreadable metadata is not evidence */ }
-    if (cancelled(requestId)) return out;
+    if (cancelled(requestId, epoch)) return out;
   }
   return out;
 }
 
-__functionEvidence = async function functionEvidenceWithProvenance(region, slice, requestId) {
-  const ev = await __functionEvidenceBeforeImageRelativeHardening(region, slice, requestId);
-  if (!ev?.structured || cancelled(requestId)) return ev;
+__functionEvidence = async function functionEvidenceWithProvenance(region, slice, requestId, ...rest) {
+  const epoch = rest[1] !== undefined
+    ? rest[1]
+    : ((typeof __activeGuessEpochByReq !== 'undefined' && requestId != null ? __activeGuessEpochByReq.get(requestId) : undefined) ?? (typeof currentEpoch !== 'undefined' ? currentEpoch : undefined));
+  const ev = await __functionEvidenceBeforeImageRelativeHardening(region, slice, requestId, ...rest);
+  if (!ev?.structured || cancelled(requestId, epoch)) return ev;
 
   const [imageRelative, independentStructured] = await Promise.all([
-    __imageRelativeProvenance(region, slice, requestId),
-    __independentStructuredCandidates(region, slice, ev, requestId),
+    __imageRelativeProvenance(region, slice, requestId, epoch),
+    __independentStructuredCandidates(region, slice, ev, requestId, epoch),
   ]);
-  if (cancelled(requestId)) return ev;
+  if (cancelled(requestId, epoch)) return ev;
 
   let removedCircularImageRelative = 0;
   for (const target of imageRelative.broad) {

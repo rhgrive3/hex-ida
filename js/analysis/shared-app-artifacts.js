@@ -243,14 +243,14 @@ function dataRanges(app) {
   ranges.sort((a, b) => a.lo < b.lo ? -1 : a.lo > b.lo ? 1 : 0);
   return { ranges, complete };
 }
-function dataRegionFor(ranges, address) {
+function dataRangeFor(ranges, address) {
   let lo = 0, hi = ranges.length - 1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     const range = ranges[mid];
     if (address < range.lo) hi = mid - 1;
     else if (address >= range.hi) lo = mid + 1;
-    else return range.region;
+    else return range;
   }
   return null;
 }
@@ -258,20 +258,45 @@ function boundedRefCount(scan) {
   const requested = Number.isSafeInteger(scan?.refCount) ? scan.refCount : (scan?.refTo?.length || 0);
   return Math.max(0, Math.min(requested, scan?.refFrom?.length || 0, scan?.refTo?.length || 0, scan?.refKind?.length || 0));
 }
-async function accumulateGlobalRefs(counts, scan, ranges, { signal = null, yieldEvery = REF_YIELD_EVERY } = {}) {
+async function accumulateGlobalRefs(counts, scan, ranges, { signal = null, yieldEvery = null } = {}) {
   const count = boundedRefCount(scan);
-  const cadence = Math.max(1, Number(yieldEvery) || REF_YIELD_EVERY);
+  if (!ranges?.length) {
+    if (count > 0) throwIfAborted(signal);
+    return count;
+  }
+  const explicitCadence = yieldEvery != null ? Math.max(1, Number(yieldEvery) || REF_YIELD_EVERY) : null;
+  const now = explicitCadence == null
+    ? (typeof performance !== 'undefined' && typeof performance.now === 'function' ? () => performance.now() : Date.now)
+    : null;
+  let lastYield = now ? now() : 0;
+  let cachedRange = null;
+  const refTo = scan.refTo;
   for (let index = 0; index < count; index++) {
-    throwIfAborted(signal);
-    const address = BigInt(scan.refTo[index]);
-    const region = dataRegionFor(ranges, address);
+    if (signal?.aborted) throw abortError(signal);
+    const raw = refTo[index];
+    const address = typeof raw === 'bigint' ? raw : BigInt(raw);
+    let region = null;
+    if (cachedRange && address >= cachedRange.lo && address < cachedRange.hi) {
+      region = cachedRange.region;
+    } else {
+      const matched = dataRangeFor(ranges, address);
+      if (matched) {
+        cachedRange = matched;
+        region = matched.region;
+      }
+    }
     if (region) {
       const key = address.toString();
       const previous = counts.get(key);
       if (previous) previous.refs++;
       else counts.set(key, { addr:address, refs:1, region:region.name || region.section || region.id || '' });
     }
-    if (index > 0 && index % cadence === 0) await yieldMainRealm(signal);
+    if (explicitCadence != null) {
+      if (index > 0 && index % explicitCadence === 0) await yieldMainRealm(signal);
+    } else if (index > 0 && (index & 0xfff) === 0 && (now() - lastYield) >= 16) {
+      await yieldMainRealm(signal);
+      lastYield = now();
+    }
   }
   return count;
 }

@@ -598,6 +598,18 @@ function installCancellableFunctionDiscovery(app) {
             architecture:architectureOf(app),
             endian:endiannessOf(app),
             signal:producerController.signal,
+            classifyGaps:typeof app.backend?.classifyExecutableCoverage === 'function'
+              ? async ({ gaps, architecture, endian }) => {
+                const request = app.backend.classifyExecutableCoverage({
+                  gaps,
+                  regionIds:unique.map((r) => r.id),
+                  architecture,
+                  endian,
+                });
+                if (request == null) return null;
+                return waitForSearchRequest(request, producerController.signal);
+              }
+              : null,
             readBytes:async (address, size) => {
               if (typeof app.backend.readAt !== 'function') return null;
               const read = await waitForSearchRequest(app.backend.readAt(address, Number(size), false), producerController.signal);
