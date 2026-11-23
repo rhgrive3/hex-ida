@@ -407,7 +407,7 @@ test('Fix 5A: callRecord uses AAPCS64 FP arg registers for pow/ldexp and types F
 
   const res = decompileSemantic(model, { ir, addr: 0x5000n });
   assert.match(res.pseudocode, /double call_4;/, res.pseudocode);
-  assert.match(res.pseudocode, /call_4 = pow\(d0, d1\);/, res.pseudocode);
+  assert.match(res.pseudocode, /call_4 = pow\(a1, a2\);/, res.pseudocode);
   assert.match(res.pseudocode, /call_5 = ldexp\(call_4, a1\);/, res.pseudocode);
   assert.equal(res.types.values.get(powRet.id)?.name, 'double');
   assert.equal(res.types.values.get(ldexpRet.id)?.name, 'double');

@@ -765,13 +765,14 @@ export function isJa() { return current === 'ja'; }
 
 /** 既定の言語を端末の設定から推測する（日本語以外は英語）。 */
 export function detectLang() {
-  const list = (navigator.languages && navigator.languages.length)
-    ? navigator.languages : [navigator.language || 'ja'];
+  const nav = typeof navigator !== 'undefined' ? navigator : null;
+  const list = (nav?.languages && nav.languages.length)
+    ? nav.languages : [nav?.language || 'en'];
   for (const l of list) {
     if (/^ja/i.test(l)) return 'ja';
     if (/^en/i.test(l)) return 'en';
   }
-  return 'ja';
+  return 'en';
 }
 
 /** t('key', {n: 3}) → '3 行' */

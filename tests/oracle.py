@@ -19,8 +19,51 @@
 import json, struct, sys, gzip, os, random, re
 from collections import defaultdict
 
-import lief
-from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
+lief = None
+Cs = None
+CS_ARCH_ARM64 = None
+CS_MODE_ARM = None
+
+PLACEHOLDER_MARKER = b'HEX_LARGE_FIXTURE_PLACEHOLDER'
+
+
+def _require_deps():
+    global lief, Cs, CS_ARCH_ARM64, CS_MODE_ARM
+    if lief is not None and Cs is not None:
+        return
+    try:
+        import lief as _lief
+        from capstone import Cs as _Cs, CS_ARCH_ARM64 as _ARCH, CS_MODE_ARM as _MODE
+    except ImportError as exc:
+        print(
+            f'error: missing Python dependency ({exc}). Install lief and capstone to generate an oracle.',
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    lief = _lief
+    Cs = _Cs
+    CS_ARCH_ARM64 = _ARCH
+    CS_MODE_ARM = _MODE
+
+
+def _ensure_fixture(path):
+    if not os.path.isfile(path):
+        print(
+            f"error: fixture binary not found: '{path}'\n"
+            "hint: run `npm run fixtures:large` to download large test fixtures, "
+            "or pass a local Mach-O binary path: `python3 tests/oracle.py <binary> [out.json.gz]`",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    with open(path, 'rb') as f:
+        head = f.read(len(PLACEHOLDER_MARKER))
+    if head == PLACEHOLDER_MARKER:
+        print(
+            f"error: '{path}' is a placeholder fixture, not a Mach-O binary.\n"
+            "hint: run `npm run fixtures:large` to fetch the real fixture before running tests/oracle.py.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 # ── Mach-O の素読み ──────────────────────────────────────────
 
@@ -328,6 +371,8 @@ def disasm_text(img):
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else 'tests/battlecats'
     out_path = sys.argv[2] if len(sys.argv) > 2 else 'tests/oracle.%s.json.gz' % os.path.basename(path)
+    _ensure_fixture(path)
+    _require_deps()
     img = Image(path)
     say = lambda *a: print(*a, file=sys.stderr)
 

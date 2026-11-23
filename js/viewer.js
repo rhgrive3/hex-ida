@@ -78,9 +78,13 @@ export class CodeViewer {
       onPublish:() => this._variablePublished(),
     });
 
+    this._listenerController = typeof AbortController === 'function' ? new AbortController() : null;
+    this._scrubberController = null;
+    this._resetPointerGesture = null;
     this._onScroll = this._onScroll.bind(this);
     this._render = this._render.bind(this);
-    this.vp.addEventListener('scroll', this._onScroll, { passive:true });
+    const scrollOpts = this._listenerController ? { passive:true, signal:this._listenerController.signal } : { passive:true };
+    this.vp.addEventListener('scroll', this._onScroll, scrollOpts);
     this._bindPointer();
     this.measure();
   }
@@ -714,12 +718,15 @@ export class CodeViewer {
   }
 
   attachScrubber(track,thumb) {
+    this._scrubberController?.abort();
+    this._scrubberController = typeof AbortController === 'function' ? new AbortController() : null;
+    const sigOpts = this._scrubberController ? { signal: this._scrubberController.signal } : undefined;
     this.track=track;this.thumb=thumb;let dragging=false;
     const navigate=(clientY)=>{const rect=track.getBoundingClientRect(),thumbH=this._thumbHeight(rect.height),usable=Math.max(1,rect.height-thumbH),y=Math.max(0,Math.min(usable,clientY-rect.top-thumbH/2)),frac=y/usable;
       if(this.isVariableAsm()&&this.region){const span=this.region.size>0n?this.region.size-1n:0n;const scaled=BigInt(Math.floor(frac*1_000_000));const target=this.region.vmAddr+(span*scaled)/1_000_000n;this.goToAddress(target);}
       else {const span=Math.max(0,this.totalRows-this.visibleRows());this.goToRow(Math.round(frac*span),'top');}}
-    track.addEventListener('pointerdown',(e)=>{if(!this.region)return;dragging=true;track.classList.add('dragging');track.setPointerCapture(e.pointerId);navigate(e.clientY);e.preventDefault();});
-    track.addEventListener('pointermove',(e)=>{if(!dragging)return;navigate(e.clientY);e.preventDefault();});const end=()=>{dragging=false;track.classList.remove('dragging');};track.addEventListener('pointerup',end);track.addEventListener('pointercancel',end);
+    track.addEventListener('pointerdown',(e)=>{if(!this.region)return;dragging=true;track.classList.add('dragging');track.setPointerCapture(e.pointerId);navigate(e.clientY);e.preventDefault();},sigOpts);
+    track.addEventListener('pointermove',(e)=>{if(!dragging)return;navigate(e.clientY);e.preventDefault();},sigOpts);const end=()=>{dragging=false;track.classList.remove('dragging');};track.addEventListener('pointerup',end,sigOpts);track.addEventListener('pointercancel',end,sigOpts);
   }
   _thumbHeight(trackH, visible = this.visibleRows()) { if(this.isVariableAsm())return Math.max(28,Math.round(trackH*0.08));if(!this.totalRows)return 28;const frac=Math.min(1,visible/this.totalRows);return Math.max(28,Math.round(trackH*frac)); }
   _updateScrubber(measuredTrackH = null, measuredVisible = null, measuredTop = null) {
@@ -753,6 +760,7 @@ export class CodeViewer {
       clearTimer();
       gesture = null;
     };
+    this._resetPointerGesture = reset;
     const focus = (row) => {
       if (this.rangeMode) this.extendTo(row);
       else this.select(row, false);
@@ -765,6 +773,10 @@ export class CodeViewer {
       focus(row);
       this.onLongPress(row, x, y);
     };
+
+    const signal = this._listenerController?.signal;
+    const passiveOpts = signal ? { passive: true, signal } : { passive: true };
+    const plainOpts = signal ? { signal } : undefined;
 
     this.vp.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -780,19 +792,19 @@ export class CodeViewer {
         timer: 0,
       };
       gesture.timer = setTimeout(() => {
-        if (!gesture || gesture.pointerId !== e.pointerId) return;
+        if (this.disposed || !gesture || gesture.pointerId !== e.pointerId) return;
         gesture.timer = 0;
         gesture.longFired = true;
         suppressContextUntil = Date.now() + CONTEXT_SUPPRESS_MS;
         openContext(gesture.row, gesture.x, gesture.y);
       }, LONG_PRESS_MS);
-    }, { passive: true });
+    }, passiveOpts);
 
     this.vp.addEventListener('pointermove', (e) => {
       if (!gesture || e.pointerId !== gesture.pointerId || !gesture.timer) return;
       if (Math.abs(e.clientX - gesture.x) > MOVE_TOLERANCE ||
           Math.abs(e.clientY - gesture.y) > MOVE_TOLERANCE) clearTimer();
-    }, { passive: true });
+    }, passiveOpts);
 
     this.vp.addEventListener('pointerup', (e) => {
       if (!gesture || e.pointerId !== gesture.pointerId) return;
@@ -807,9 +819,9 @@ export class CodeViewer {
       if (row >= 0 && row === active.row &&
           Math.abs(e.clientX - active.x) < MOVE_TOLERANCE &&
           Math.abs(e.clientY - active.y) < MOVE_TOLERANCE) activate(row);
-    }, { passive: true });
+    }, passiveOpts);
 
-    this.vp.addEventListener('pointercancel', reset);
+    this.vp.addEventListener('pointercancel', reset, plainOpts);
     this.vp.addEventListener('contextmenu', (e) => {
       const row = rowFrom(e.target);
       if (row < 0) return;
@@ -817,7 +829,7 @@ export class CodeViewer {
       if (Date.now() < suppressContextUntil) return;
       reset();
       openContext(row, e.clientX, e.clientY);
-    });
+    }, plainOpts);
   }
 
   chunkArrived(regionId,chunk) {
@@ -828,6 +840,6 @@ export class CodeViewer {
   }
 
   dispose() {
-    if(this.disposed)return;this.disposed=true;this.variableNavigation++;this._abortVariableNavigation('viewer-disposed');this.variablePending=false;this.variablePendingAddress=null;this.variableIndex.dispose();clearTimeout(this.idleTimer);if(this.frame)cancelAnimationFrame(this.frame);this.frame=0;this.vp.removeEventListener('scroll',this._onScroll);
+    if(this.disposed)return;this.disposed=true;this.variableNavigation++;this._abortVariableNavigation('viewer-disposed');this.variablePending=false;this.variablePendingAddress=null;this.variableIndex.dispose();clearTimeout(this.idleTimer);if(this.frame)cancelAnimationFrame(this.frame);this.frame=0;this._resetPointerGesture?.();this._resetPointerGesture=null;this._scrubberController?.abort();this._scrubberController=null;this._listenerController?.abort();this.__disposeDragReturnGuard?.();this.vp.removeEventListener('scroll',this._onScroll);
   }
 }

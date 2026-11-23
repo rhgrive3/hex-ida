@@ -573,30 +573,40 @@ export class Emulator {
       throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication命令はまだ実行できません: ${mn}`, { instruction: mn });
     }
 
-    if (mn === 'b') return this.branchTarget(ops);
+    if (mn === 'b') {
+      const target = this.branchTarget(ops, 0);
+      if (target == null) throw new EmulatorFault('unknown-branch-target', '分岐先が分かりませんでした。');
+      return target;
+    }
     if (/^b\.(\w+)$/.test(mn)) {
       const cc = /^b\.(\w+)$/.exec(mn)[1];
       const taken = this.cond(cc);
-      this._recordConditionalBranch(ops, taken);
-      return taken ? this.branchTarget(ops) : null;
+      const target = this.branchTarget(ops, 0);
+      if (taken && target == null) throw new EmulatorFault('unknown-branch-target', '分岐先が分かりませんでした。');
+      this._recordConditionalBranch(ops, taken, 0);
+      return taken ? target : null;
     }
     if (mn === 'cbz' || mn === 'cbnz') {
       const v = R(ops[0]);
       const zero = v === 0n;
       const taken = mn === 'cbz' ? zero : !zero;
-      this._recordConditionalBranch(ops, taken);
-      return taken ? this.branchTarget(ops) : null;
+      const target = this.branchTarget(ops, 1);
+      if (taken && target == null) throw new EmulatorFault('unknown-branch-target', '分岐先が分かりませんでした。');
+      this._recordConditionalBranch(ops, taken, 1);
+      return taken ? target : null;
     }
     if (mn === 'tbz' || mn === 'tbnz') {
       const v = R(ops[0]);
       const bit = ops[1] && ops[1].value != null ? ops[1].value : 0n;
       const set = ((v >> bit) & 1n) === 1n;
       const taken = mn === 'tbnz' ? set : !set;
-      this._recordConditionalBranch(ops, taken);
-      return taken ? this.branchTarget(ops) : null;
+      const target = this.branchTarget(ops, 2);
+      if (taken && target == null) throw new EmulatorFault('unknown-branch-target', '分岐先が分かりませんでした。');
+      this._recordConditionalBranch(ops, taken, 2);
+      return taken ? target : null;
     }
     if (mn === 'bl' || mn === 'blr') {
-      const target = mn === 'bl' ? this.branchTarget(ops) : R(ops[0]);
+      const target = mn === 'bl' ? this.branchTarget(ops, 0) : R(ops[0]);
       if (target != null && this.trace.length < 4000) {
         this.trace.push({ type:'call', addr:at, address:at, target, indirect:mn === 'blr', text:(mn + ' ' + opsStr).trim() });
       }
@@ -808,7 +818,14 @@ export class Emulator {
     return this.x[30];
   }
 
-  branchTarget(ops) {
+  branchTarget(ops, expectedIndex = null) {
+    if (!Array.isArray(ops)) return null;
+    if (expectedIndex != null) {
+      if (!Number.isInteger(expectedIndex) || expectedIndex < 0 || expectedIndex >= ops.length) return null;
+      const op = ops[expectedIndex];
+      if (op && op.k === 'imm' && op.value != null) return BigInt.asUintN(64, op.value);
+      return null;
+    }
     for (let i = ops.length - 1; i >= 0; i--) {
       if (ops[i].k === 'imm' && ops[i].value != null) return BigInt.asUintN(64, ops[i].value);
       if (ops[i].k === 'reg') return this.get(ops[i].text);
@@ -816,10 +833,10 @@ export class Emulator {
     return null;
   }
 
-  _recordConditionalBranch(ops, taken) {
+  _recordConditionalBranch(ops, taken, expectedIndex = null) {
     const event = this._branchTraceEvent;
     if (!event) return;
-    event.branch = { conditional: true, taken, target: taken ? this.branchTarget(ops) : null };
+    event.branch = { conditional: true, taken, target: taken ? this.branchTarget(ops, expectedIndex) : null };
   }
 
   valueOf(op) {

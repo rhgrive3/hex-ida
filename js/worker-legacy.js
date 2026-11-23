@@ -108,6 +108,7 @@ self.onmessage = async (e) => {
 };
 
 function cancelled(requestId, epoch = currentEpoch) {
+  if (epoch != null && epoch !== currentEpoch) return true;
   return requestId != null && cancelledRequests.has(requestKey(epoch, requestId));
 }
 function scanProgress(requestId, epoch, done, all, hits) {
@@ -554,7 +555,7 @@ async function getChunk({ regionId, chunk, wantAsm }) {
  *
  * 結果は転送可能な型付き配列で返す。数十万件あっても main 側でコピーが起きない。
  */
-async function analyzeSlice({ sliceIndex, id: requestId }) {
+async function analyzeSlice({ sliceIndex, id: requestId, epoch }) {
   const slice = slices[sliceIndex];
   if (!slice || !slice.info) {
     return {
@@ -732,7 +733,7 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
       try {
         const list = MachO.parseFunctionStarts(buf, info.textVM,
           { regions: slice.regions || [], architecture: info.architecture || 'arm64',
-            dataInCode: dataInCodeRanges, shouldCancel: () => cancelled(requestId) });
+            dataInCode: dataInCodeRanges, shouldCancel: () => cancelled(requestId, epoch) });
         // Positive ULEB deltas make `list` strictly increasing. Insert the entry
         // seed in place instead of copy + linear membership scan + full re-sort.
         if (info.entry != null) {
@@ -2258,7 +2259,7 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
   let found = 0;
   let pos = 0;
   while (pos < total && !allFull()) {
-    if (cancelled(requestId)) return { results: firstOf(), groups: groupsOf(), cancelled: true, capped: false, complete: false };
+    if (cancelled(requestId, epoch)) return { results: firstOf(), groups: groupsOf(), cancelled: true, capped: false, complete: false };
     const wantBytes = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
     if (blk.length < 4) break;
@@ -2409,7 +2410,7 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   let carry = new Uint8Array(0);
   let carryAt = 0;
   while (pos < total && out.length < cap) {
-    if (cancelled(requestId)) return { results: out, cancelled: true, capped: false, scannedBytes: pos, complete: false };
+    if (cancelled(requestId, epoch)) return { results: out, cancelled: true, capped: false, scannedBytes: pos, complete: false };
     const want = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), want);
     if (!blk.length) break;
@@ -2482,7 +2483,7 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
 
   let pos = 0;
   while (pos < total && out.length < cap) {
-    if (cancelled(requestId)) return { results: out, cancelled: true, capped: false };
+    if (cancelled(requestId, epoch)) return { results: out, cancelled: true, capped: false };
     const wantBytes = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
     if (blk.length < 4) break;
@@ -2837,7 +2838,7 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
-      if (cancelled(requestId)) return { cancelled: true, results, scanned };
+      if (cancelled(requestId, epoch)) return { cancelled: true, results, scanned };
       const want = Math.min(SEARCH_BLOCK_HEX, total - pos);
       const blk = await readRange(region.fileOffset + BigInt(pos), want);
       if (!blk.length) break;
@@ -2874,7 +2875,7 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
-      if (cancelled(requestId)) return { cancelled: true, results, scanned };
+      if (cancelled(requestId, epoch)) return { cancelled: true, results, scanned };
       const want = Math.min(SEARCH_BLOCK_HEX, total - pos);
       const blk = await readRange(region.fileOffset + BigInt(pos), want);
       if (!blk.length) break;
@@ -2911,7 +2912,7 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     if (!needle) throw new Error('Enter text to search for.');
     let pos = Math.floor(startByte / INSN_SIZE) * INSN_SIZE;
     while (pos < total) {
-      if (cancelled(requestId)) return { cancelled: true, results, scanned };
+      if (cancelled(requestId, epoch)) return { cancelled: true, results, scanned };
       const want = Math.min(SEARCH_BLOCK_ASM, total - pos);
       const blk = await readRange(region.fileOffset + BigInt(pos), want);
       if (!blk.length) break;

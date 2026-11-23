@@ -652,9 +652,14 @@ export function buildValues(model, opts) {
         snapshot['v' + a] = get('v' + a, row);
       }
     }
+    if (insn.isReturn && regs.has('v0')) snapshot['v0'] = regs.get('v0');
     reads.set(row, snapshot);
     for (const w of insn.writes) everWritten.add(w);
-    if (insn.isCall) for (let a = 0; a <= 17; a++) everWritten.add('x' + a);
+    if (insn.isCall) {
+      for (let a = 0; a <= 17; a++) everWritten.add('x' + a);
+      for (let a = 0; a <= 7; a++) everWritten.add('v' + a);
+      for (let a = 16; a <= 31; a++) everWritten.add('v' + a);
+    }
 
     if (insn.data) { for (const w of insn.writes) regs.delete(w); continue; }
 
@@ -701,6 +706,10 @@ export function buildValues(model, opts) {
         args.pop();
       }
       const name = call ? call.name : null;
+      const resolvedName = name || (insn.callTarget != null && typeof o.symbolFor === 'function' ? o.symbolFor(insn.callTarget) : null);
+      const resolveSig = typeof o.knownCallSignature === 'function' ? o.knownCallSignature : knownCallSignature;
+      const sig = resolvedName ? resolveSig(resolvedName) : null;
+      const isFpRet = !!(sig && (sig.retType === 'float' || sig.retType === 'double'));
       const ret = node('call', {
         row, name: name || null,
         target: insn.callTarget != null ? insn.callTarget : null,
@@ -723,8 +732,7 @@ export function buildValues(model, opts) {
       }
       for (const k of clobbered) invalidateDependents(k, row);
       invalidateMemDependents(row);
-      const callSig = name ? knownCallSignature(name) : null;
-      const retReg = callSig && (callSig.retType === 'float' || callSig.retType === 'double') ? 'v0' : 'x0';
+      const retReg = isFpRet ? 'v0' : 'x0';
       emit(retReg, ret);
       defs.set(row, made);
       continue;
@@ -836,7 +844,12 @@ export function buildValues(model, opts) {
     }
 
     if (insn.isReturn) {
-      returns.push({ row, address: insn.address, value: regs.get('x0') || null });
+      returns.push({
+        row,
+        address: insn.address,
+        value: regs.get('x0') || null,
+        fpValue: regs.has('v0') ? regs.get('v0') : null,
+      });
       defs.set(row, made);
       continue;
     }
@@ -916,13 +929,14 @@ export function buildValues(model, opts) {
             const carryTerm = node('sel', { cc, cmp, predicate: null, a: constNode(1n), b: ZERO });
             expr = bin(op, bin(op, a, b, bits), carryTerm, bits);
           } else if (prevFlags.op === 'adds' || prevFlags.op === 'cmn') {
-            const sum = bin('add', prevFlags.a, prevFlags.b, prevFlags.bits);
-            const carryTerm = node('sel', { cc: isSub ? 'hs' : 'lo', cmp: { a: sum, b: prevFlags.a }, predicate: null, a: constNode(1n), b: ZERO });
+            const prevBits = Math.max(1, Math.min(64, Number(prevFlags.bits) || 64));
+            const sum = bin('add', prevFlags.a, prevFlags.b, prevBits);
+            const carryTerm = node('sel', { cc: isSub ? 'hs' : 'lo', cmp: { op: 'cmp', a: sum, b: prevFlags.a, bits: prevBits }, predicate: null, a: constNode(1n), b: ZERO });
             expr = bin(op, bin(op, a, b, bits), carryTerm, bits);
           }
         }
       }
-      emit(dst, expr || bin(op, a, b, bits));
+      emit(dst, expr || bin(BIN_MN[base] || op, a, b, bits));
     } else if (BIN_MN[base]) {
       const variableShift = /^(lslv|lsrv|asrv|rorv)$/.test(base);
       const rhs = variableShift ? bin('and', B(), constNode(BigInt(bits - 1)), bits) : B();
@@ -1035,7 +1049,7 @@ export function buildValues(model, opts) {
   for (const insn of insns) if (insn.address != null) rowAddress.set(insn.row, insn.address);
 
   return {
-    reads, defs, memWrites, returns, nodeDef, rowAddress,
+    reads, defs, memWrites, returns, nodeDef, rowAddress, joins,
     /** その行に入る時点での reg の値。 */
     at(row, reg) {
       const s = reads.get(row);
@@ -1098,7 +1112,11 @@ function joinInfo(model, insns) {
   /* 各行が書き換えるレジスタ（呼び出しは壊すレジスタも含める）。 */
   const kills = insns.map((insn) => {
     const set = new Set(insn.writes);
-    if (insn.isCall) for (let a = 0; a <= 17; a++) { set.add('x' + a); set.add('v' + (a < 8 ? a : 0)); }
+    if (insn.isCall) {
+      for (let a = 0; a <= 17; a++) set.add('x' + a);
+      for (let a = 0; a <= 7; a++) set.add('v' + a);
+      for (let a = 16; a <= 31; a++) set.add('v' + a);
+    }
     return set;
   });
 
@@ -1155,9 +1173,9 @@ function nzcvForConstants(flags) {
   const width = BigInt(bits), mask = (1n << width) - 1n, sign = 1n << (width - 1n);
   const a = BigInt.asUintN(bits, av), b = BigInt.asUintN(bits, bv);
   let result = 0n, c = false, v = false;
-  if (flags.op === 'adds' || flags.op === 'cmn' || flags.op === 'adcs') {
+  if (flags.op === 'adds' || flags.op === 'cmn') {
     const full = a + b; result = full & mask; c = full > mask; v = ((~(a ^ b) & (a ^ result) & sign) !== 0n);
-  } else if (flags.op === 'subs' || flags.op === 'cmp' || flags.op === 'negs' || flags.op === 'sbcs' || flags.op === 'ngcs') {
+  } else if (flags.op === 'subs' || flags.op === 'cmp' || flags.op === 'negs') {
     result = (a - b) & mask; c = a >= b; v = (((a ^ b) & (a ^ result) & sign) !== 0n);
   } else if (flags.op === 'ands' || flags.op === 'tst') {
     result = a & b;
@@ -1184,7 +1202,7 @@ function conditionFromNzcv(f, cc) {
 function compareCompatible(flags) {
   if (!flags || !flags.a || !flags.b) return null;
   if (['cmp','subs','negs','fcmp','fcmpe'].includes(flags.op)) {
-    return { a: flags.a, b: flags.b, op: flags.op, bits: flags.bits || 64 };
+    return { op: flags.op, a: flags.a, b: flags.b, bits: Math.max(1, Math.min(64, Number(flags.bits) || 64)) };
   }
   return null;
 }
@@ -1239,9 +1257,11 @@ function selectNode(insn, row, valueOf, bits, flags) {
 /** cond ? a : b が min / max の形になっていれば、その 1 つのノードにする。 */
 function minMaxOf(cc, cmp, a, b) {
   if (!cc || !cmp || !cmp.a || !cmp.b) return null;
+  const isFp = cmp.op === 'fcmp' || cmp.op === 'fcmpe';
   const LOW = { lt: 'min', le: 'min', gt: 'max', ge: 'max', lo: 'umin', ls: 'umin', hi: 'umax', hs: 'umax' };
   const op = LOW[cc];
   if (!op) return null;
+  if (isFp && (op === 'umin' || op === 'umax')) return null;
   const flip = { min: 'max', max: 'min', umin: 'umax', umax: 'umin' };
   const isSigned32 = (op === 'min' || op === 'max') && cmp.bits === 32 && cmp.op !== 'fcmp' && cmp.op !== 'fcmpe';
   const signed32 = (x) => (isSigned32 && constOf(x) == null ? un('sxt32', stripPatternUxt32(x)) : x);
@@ -1701,25 +1721,27 @@ function condSymbol(cc, cmp, o, depth) {
     eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=',
     lo: '<', ls: '<=', hi: '>', hs: '>=', cc: '<', cs: '>=',
   };
+  const unsignedOps = { lo: '<', ls: '<=', hi: '>', hs: '>=', cc: '<', cs: '>=' };
   if (cmp && cmp.a) {
     const isFp = cmp.op === 'fcmp' || cmp.op === 'fcmpe';
-    const is32 = cmp.bits === 32 && !isFp;
+    const bits = Number(cmp.bits) === 32 ? 32 : 64;
+    const is32 = bits === 32 && !isFp;
     if (cc === 'mi' || cc === 'pl') {
-      const rel = cc === 'mi' ? '<' : '>=';
       if (isFp) {
-        return emit(cmp.a, 7, o, depth + 1) + ' ' + rel + ' ' +
-          (cmp.b ? emit(cmp.b, 8, o, depth + 1) : '0.0');
+        const lhs = emit(cmp.a, 7, o, depth + 1);
+        const rhs = cmp.b ? emit(cmp.b, 8, o, depth + 1) : '0';
+        return cc === 'mi' ? (lhs + ' < ' + rhs) : ('!(' + lhs + ' < ' + rhs + ')');
       }
-      const bZero = !cmp.b || constOf(cmp.b) === 0n;
-      const castSigned = (nodeVal, prec) => {
-        const s = emit(nodeVal, prec, o, depth + 1);
-        if (constOf(nodeVal) != null) return s;
-        return is32 ? '(int32)(' + s + ')' : '(int64)(' + s + ')';
-      };
-      if (bZero) {
-        return castSigned(cmp.a, 0) + ' ' + rel + ' 0';
-      }
-      return '(' + castSigned(cmp.a, 0) + ' - ' + castSigned(cmp.b, 0) + ') ' + rel + ' 0';
+      const lhs = emit(cmp.a, 9, o, depth + 1);
+      const rhs = cmp.b ? emit(cmp.b, 10, o, depth + 1) : '0';
+      const signedCast = bits === 32 ? 'int32' : 'int64';
+      return '((' + signedCast + ')(' + lhs + ' - ' + rhs + ') ' + (cc === 'mi' ? '< 0' : '>= 0') + ')';
+    }
+    if (!isFp && unsignedOps[cc]) {
+      const unsignedCast = bits === 32 ? '(uint32)' : '(uint64)';
+      const lhs = unsignedCast + emit(cmp.a, 11, o, depth + 1);
+      const rhs = unsignedCast + (cmp.b ? emit(cmp.b, 11, o, depth + 1) : '0');
+      return lhs + ' ' + unsignedOps[cc] + ' ' + rhs;
     }
     if (is32 && (cc === 'lt' || cc === 'le' || cc === 'gt' || cc === 'ge')) {
       const aStr = constOf(cmp.a) != null ? emit(cmp.a, 7, o, depth + 1) : '(int32)(' + emit(cmp.a, 0, o, depth + 1) + ')';

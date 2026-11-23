@@ -212,14 +212,19 @@ function decodePunycode(input, state) {
   const damp = 700;
   const initialBias = 72;
   const initialN = 128;
+  const maxInt = 0x7fffffff;
 
   if (!v0ChargePunycode(state, { encodedBytes: input.length })) return null;
 
   function adapt(delta, numpoints, firsttime) {
+    if (!Number.isSafeInteger(delta) || delta < 0 || !Number.isSafeInteger(numpoints) || numpoints <= 0) {
+      return null;
+    }
     let d = firsttime ? Math.floor(delta / damp) : Math.floor(delta / 2);
     d += Math.floor(d / numpoints);
     let k = 0;
     while (d > Math.floor(((base - tmin) * tmax) / 2)) {
+      if (!Number.isFinite(d)) return null;
       d = Math.floor(d / (base - tmin));
       k += base;
     }
@@ -256,16 +261,23 @@ function decodePunycode(input, state) {
       else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41;
       else return null;
 
+      if (digit > Math.floor((maxInt - i) / w)) return null;
       i += digit * w;
       const t = k <= bias ? tmin : k >= bias + tmax ? tmax : k - bias;
       if (digit < t) break;
-      w *= (base - t);
+      const factor = base - t;
+      if (w > Math.floor(maxInt / factor)) return null;
+      w *= factor;
       k += base;
     }
     const outLen = output.length + 1;
-    bias = adapt(i - oldi, outLen, oldi === 0);
-    n += Math.floor(i / outLen);
-    if (n > 0x10ffff) return null;
+    const nextBias = adapt(i - oldi, outLen, oldi === 0);
+    if (nextBias == null) return null;
+    bias = nextBias;
+    const deltaN = Math.floor(i / outLen);
+    if (deltaN > 0x10ffff - n) return null;
+    n += deltaN;
+    if (n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff)) return null;
     i = i % outLen;
     if (!v0ChargePunycode(state, { scalars: 1, spliceWork: outLen })) return null;
     output.splice(i, 0, String.fromCodePoint(n));

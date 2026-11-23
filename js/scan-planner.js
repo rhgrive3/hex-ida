@@ -366,6 +366,7 @@ export function mergeChunkProgramScans({
   // Strict > matches js/worker-legacy.js:1605, 1708.
   const callsCapped = totalCalls > globalCallCap || anyChunkCallsLimitCapped;
   const refsCapped = totalRefs > globalRefCap || anyChunkRefsLimitCapped;
+  const budgetCapped = ordered.some((c) => Boolean(c?.budgetCapped));
 
   const targetKindLen = Math.min(words, globalKindCap);
   let outKinds = kinds;
@@ -399,6 +400,7 @@ export function mergeChunkProgramScans({
   const truncationReasons = [];
   if (callsCapped) truncationReasons.push('call-edge-memory-budget');
   if (refsCapped) truncationReasons.push('reference-memory-budget');
+  if (budgetCapped) truncationReasons.push('program-index-memory-budget');
   if (outKinds.length < words) truncationReasons.push('kind-stat-budget');
 
   const allocatedBytes =
@@ -421,6 +423,7 @@ export function mergeChunkProgramScans({
     kindsCovered: Math.min(words, outKinds.length),
     callsCapped,
     refsCapped,
+    budgetCapped,
     cancelled: false,
     complete: truncationReasons.length === 0,
     truncated: truncationReasons.length > 0,

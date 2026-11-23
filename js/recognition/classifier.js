@@ -48,6 +48,15 @@ function boundedConfidence(value) {
   return Math.max(0, Math.min(1, value));
 }
 
+function vendorConfidenceOf(vendor) {
+  const v = vendor?.confidence;
+  if (typeof v === 'number') return boundedConfidence(v);
+  if (v === 'high') return 0.85;
+  if (v === 'medium') return 0.6;
+  if (v === 'low') return 0.3;
+  return 0;
+}
+
 function classifyFingerprint(fp, context = {}) {
   const evidence = [];
   const signature = context.signature?.classification && FUNCTION_CLASSES.includes(context.signature.classification) ? context.signature : null;
@@ -62,7 +71,7 @@ function classifyFingerprint(fp, context = {}) {
   if (GENERATED.some((rx) => rx.test(name))) return { classification:'GENERATED', confidence:0.9, evidence:['compiler-generated-name'], hardSuppress:true };
   if (RUNTIME_NAMES.some((rx) => rx.test(name))) return { classification:'RUNTIME', confidence:0.88, evidence:['runtime-symbol-name'], hardSuppress:true };
   const runtimeImports = fp.imports.filter((x) => RUNTIME_IMPORTS.some((rx) => rx.test(String(x))));
-  const vendorConfidence = boundedConfidence(context.vendor?.confidence ?? 0);
+  const vendorConfidence = vendorConfidenceOf(context.vendor);
   if (context.vendor && vendorConfidence >= 0.8) {
     const classification = FUNCTION_CLASSES.includes(context.vendor.classification) ? context.vendor.classification : context.vendor.kind === 'runtime' ? 'RUNTIME' : context.vendor.kind === 'library' ? 'LIBRARY' : 'SDK';
     return { classification, confidence: vendorConfidence, evidence: context.vendor.evidence || [], hardSuppress:true };
@@ -94,7 +103,7 @@ function scoreFingerprint(fp, cls, context = {}) {
   const penalties = { SYSTEM:0.7, RUNTIME:0.7, SDK:0.65, LIBRARY:0.65, GENERATED:0.75 };
   const hard = cls.hardSuppress === true && cls.confidence >= 0.8;
   score -= hard ? (penalties[cls.classification] || 0) : (['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) ? 0.08 * Math.max(0,Math.min(1,cls.confidence || 0)) : 0);
-  if (boundedConfidence(context.vendor?.confidence ?? 0) >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
+  if (vendorConfidenceOf(context.vendor) >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
   return Math.max(0, Math.min(1, score));
 }
 
@@ -107,12 +116,12 @@ export function applicationCodeScore(input = {}, context = {}) {
 const SUBSYSTEM_RULES = {
   UI: { strings: [/button|view|screen|menu|dialog|label/i], calls: [/ui(view|button|label)|presentview|layout/i] },
   network: { strings: [/https?:|api\.|socket|request|response/i], calls: [/urlsession|http|socket|connect|(?<!objc_msg)send|recv/i] },
-  persistence: { strings: [/database|sqlite|save|load|preferences|keychain/i], calls: [/sqlite|write|(?<!pth)read|serialize|deserialize|userdefaults|keychain/i] },
+  persistence: { strings: [/database|sqlite|save|load|preferences|keychain/i], calls: [/sqlite|write|serialize|deserialize|userdefaults|keychain/i, /(?:^|[_:\s])[fp]?[Rr]ead(?:[A-Z_:\]\(\s]|$)/] },
   gameplay: { strings: [/player|enemy|battle|stage|damage|attack/i], calls: [/update|tick|physics|collision/i] },
-  'economy/reward': { strings: [/coin|gem|reward|currency|purchase|gacha|\bxp\b|experience/i], calls: [/purchase|reward|inventory|wallet/i] },
+  'economy/reward': { strings: [/coin(?!cid)|gem(?!ent)|reward|currency|purchase|gacha|\bxp\b|experience/i], calls: [/purchase|reward|inventory|wallet/i] },
   'security/integrity': { strings: [/integrity|jailbreak|tamper|signature|checksum|receipt/i], calls: [/seccode|crypto|hash|verify|attest/i] },
   ads: { strings: [/rewarded.?ad|interstitial|admob|applovin|ironsource|unityads/i], calls: [/loadad|showad|adrequest/i] },
-  analytics: { strings: [/analytics|event|telemetry|firebase|appsflyer|adjust/i], calls: [/logevent|track|telemetry/i] },
+  analytics: { strings: [/analytics|event|telemetry|firebase|appsflyer|adjust(?:sdk|\.com|attribution)/i], calls: [/logevent|track|telemetry/i] },
 };
 function discoverSubsystemsFromFingerprint(fp) {
   const hayStrings = fp.strings, hayCalls = [...fp.calls, ...fp.imports];
@@ -120,7 +129,7 @@ function discoverSubsystemsFromFingerprint(fp) {
   for (const [name, rule] of Object.entries(SUBSYSTEM_RULES)) {
     const stringHits = hayStrings.filter((s) => rule.strings.some((rx) => rx.test(s)));
     const callHits = hayCalls.filter((s) => rule.calls.some((rx) => rx.test(s)));
-    const semanticHit = name === 'economy/reward' && fp.semantic.writes.length && fp.semantic.thresholds.length;
+    const semanticHit = name === 'economy/reward' && (stringHits.length > 0 || callHits.length > 0) && fp.semantic.writes.length > 0 && fp.semantic.thresholds.length > 0;
     const independent = Number(stringHits.length > 0) + Number(callHits.length > 0) + Number(semanticHit);
     if (!independent) continue;
     const confidence = independent >= 2 ? Math.min(0.92, 0.6 + 0.12 * independent) : 0.48;

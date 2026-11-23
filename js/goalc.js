@@ -193,14 +193,10 @@ export function compileGoal(text) {
     if (!entityTerms.some((x) => x.toLowerCase() === s.toLowerCase())) entityTerms.push(s);
   };
 
-  let entityGoal = null;
-  let goalHits = 0;
-  for (const g of GOALS) {
-    let hit = 0;
-    for (const re of g.strong) if (re.test(raw)) hit += 2;
-    for (const re of g.weak) if (re.test(raw)) hit += 1;
-    if (hit > goalHits) { goalHits = hit; entityGoal = g; }
-  }
+  const parsedGoal = parseGoal(raw);
+  let entityGoal = parsedGoal && !parsedGoal.free
+    ? (GOALS.find((g) => g.id === parsedGoal.id) || null)
+    : null;
   for (const extra of ENTITY_EXTRA) {
     if (!extra.re.test(raw)) continue;
     for (const t of extra.terms) pushTerm(t);
@@ -245,7 +241,7 @@ export function compileGoal(text) {
     sink: sinkOf(action ? action.id : null, entityGoal ? entityGoal.id : null),
     expect: { calls: expect.calls, control: expect.control, memory: expect.memory, constants: expect.constants },
     /* 既存の探索系（rank.js / pinpoint.js）にそのまま渡せる形も添える */
-    goal: parseGoal(raw),
+    goal: parsedGoal,
     confident: !missing.length,
     missing,
   };
@@ -281,7 +277,7 @@ const GOAL_TERMS = {
   anticheat: ['cheat', 'tamper', 'jailbreak', 'integrity'],
 };
 
-function goalTerms(id) { return GOAL_TERMS[id] || null; }
+function goalTerms(id) { return Object.hasOwn(GOAL_TERMS, id) ? GOAL_TERMS[id] : null; }
 
 /**
  * 問い合わせを一文で説明する。「そう受け取りました」を利用者に見せるため。

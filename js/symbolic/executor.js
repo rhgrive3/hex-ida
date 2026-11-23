@@ -190,6 +190,7 @@ function cloneState(s) {
     memory: new Map(s.memory),
     byteMemory: s.byteMemory?.fork(),
     scalarCache: new Map(s.scalarCache), inputExpressions: s.inputExpressions, valueIdentities: s.valueIdentities, semanticIdentities: s.semanticIdentities,
+    comparisonCarriers: s.comparisonCarriers,
     taint: s.taint, control: s.control,
     enforceExecutionOrder: s.enforceExecutionOrder, executingInstruction: null,
     values: new Map(s.values),

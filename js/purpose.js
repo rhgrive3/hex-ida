@@ -133,12 +133,14 @@ function changeWeight(c) {
 }
 
 /* 書式文字列。「%d」を埋めて文を組み立てる関数は、値そのものは触らない。 */
-const FORMAT_RE = /%[-+ #0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|j|z|t|L)?[diouxXeEfFgGaAcspn@]/;
+const FORMAT_RE = /%(?:[-+#0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|j|z|t|L)?[diouxXeEfFgGaAcspn@]| +[-+#0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|j|z|t|L)?[diouxXeEfFgGaA](?![A-Za-z]))/;
 
 function isFormatString(text) {
   if (typeof text !== 'string' || !text.includes('%')) return false;
-  // エスケープ済み %% を取り除き、URL 中のパーセントエンコード（%20, %2F 等）も除外してから判定する
+  // エスケープ済み %% を取り除き、数値直後の割合表記（50% off 等）や
+  // URL 中のパーセントエンコード（%20, %2F 等）を除外してから判定する
   let stripped = text.replace(/%%/g, '');
+  stripped = stripped.replace(/(\d)%(?=\s|$|[,.;:!?\)\]）」。、])/g, '$1');
   if (/https?:\/\//i.test(stripped)) {
     stripped = stripped.replace(/%[0-9A-Fa-f]{2}/g, '');
   }
@@ -240,15 +242,23 @@ export function describePurpose(o) {
   }));
 
   const callNames = [];
+  const seenCallNames = new Set();
+  const seenSelectors = new Set();
   const apis = [];
+  const seenApis = new Set();
   for (const c of (f.calledNames || [])) {
-    if (!c.name || callNames.some((x) => x.name === c.name)) continue;
+    if (!c.name || seenCallNames.has(c.name)) continue;
+    seenCallNames.add(c.name);
     callNames.push({ name: c.name, row: c.row });
     const api = apiInfo(c.name);
-    if (api && !apis.some((a) => a.id === api.id)) apis.push({ id: api.id, cat: api.cat });
+    if (api && !seenApis.has(api.id)) {
+      seenApis.add(api.id);
+      apis.push({ id: api.id, cat: api.cat });
+    }
   }
   for (const c of (model.calls || [])) {
-    if (c.selector && !callNames.some((x) => x.selector === c.selector)) {
+    if (c.selector && !seenSelectors.has(c.selector)) {
+      seenSelectors.add(c.selector);
       callNames.push({ selector: c.selector, row: c.row });
     }
   }
@@ -262,7 +272,9 @@ export function describePurpose(o) {
    */
   const textAt = o.textAt || null;
   const texts = [];
+  const seenTexts = new Set();
   const formatTexts = [];
+  const seenFormatTexts = new Set();
   let formats = 0;
   for (const s of (f.stringRefs || [])) {
     let text = s.text || null;
@@ -273,11 +285,13 @@ export function describePurpose(o) {
     if (!text) continue;
     if (isFormatString(text)) {
       formats++;
-      if (formatTexts.length < 6 && !formatTexts.some((x) => x.text === text)) {
+      if (formatTexts.length < 6 && !seenFormatTexts.has(text)) {
+        seenFormatTexts.add(text);
         formatTexts.push({ text, addr: s.addr, row: s.row });
       }
     }
-    if (texts.length < 6 && !texts.some((x) => x.text === text)) {
+    if (texts.length < 6 && !seenTexts.has(text)) {
+      seenTexts.add(text);
       texts.push({ text, addr: s.addr, row: s.row });
     }
   }
