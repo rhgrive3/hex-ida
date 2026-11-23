@@ -90,6 +90,9 @@ export function decompile(model, opts) {
   const types = inferTypes(model);
   ctx.types = types;
   augmentLegacyFpSignature(model, types, ctx);
+  const rt = (o.notes && o.notes.typeOf(o.addr, 'ret')) || (types.ret ? types.ret.type : 'void');
+  ctx.callerReturnType = rt === 'unknown' ? 'int64' : rt;
+  ctx.callerIsVoid = /^void\s*$/i.test(ctx.callerReturnType);
   const cfg = buildFlow(model, ctx);
 
   /* どのラベルが本当に要るかは、構造化してみないと分からない。
@@ -2451,7 +2454,9 @@ function statementFor(insn, ctx, node, state) {
   const fromValues = valueStatement(insn, ctx, mk);
   if (fromValues !== undefined) return fromValues;
   if (base === 'ret' || base === 'retab' || base === 'retaa') {
-    const ret = ctx.types && ctx.types.ret && ctx.types.ret.type !== 'void';
+    const ret = ctx.callerIsVoid !== undefined
+      ? !ctx.callerIsVoid
+      : Boolean(ctx.types && ctx.types.ret && ctx.types.ret.type !== 'void');
     if (ret && ctx.fpReturnReg) {
       let fpNode = ctx.values ? ctx.values.at(row, ctx.fpReturnReg) : null;
       if (!fpNode && ctx.material?.lastInBlock && ctx.material?.blockOf) {
@@ -2477,7 +2482,7 @@ function statementFor(insn, ctx, node, state) {
   }
 
   /* 呼び出し */
-  if (insn.isCall || insn.tailCall) return callStatement(insn, ctx, mk);
+  if (insn.isCall || insn.isTailCall || insn.tailCall) return callStatement(insn, ctx, mk);
 
   /* スタックへの退避・復帰は「後片付け」なので隠す（読みやすさ優先） */
   if (isFrameHousekeeping(insn, ctx)) return null;
@@ -3088,6 +3093,7 @@ function nextSlot(place, m) {
 
 function callStatement(insn, ctx, mk) {
   const call = ctx.callOf.get(insn.row);
+  const isTail = Boolean(insn.isTailCall || insn.tailCall);
   const target = insn.callTarget;
   let name = call && call.name ? shortName(call.name) : (target != null ? ctx.symbolFor(target) : null);
   const custom = ctx.notes && target != null ? ctx.notes.nameOf(target) : null;
@@ -3106,12 +3112,12 @@ function callStatement(insn, ctx, mk) {
       const stripAt = (v) => (typeof v === 'string' && /^@"/.test(v) ? v.slice(1) : v);
       const callArgs = [stripAt(receiverValue), JSON.stringify(sel), ...argv.map(stripAt)];
       const callExpr = callee + '(' + callArgs.join(', ') + ')';
-      const text = insn.isTailCall
-        ? 'return ' + callExpr + ';'
+      const text = isTail
+        ? (ctx.callerIsVoid ? callExpr + '; return;' : 'return ' + callExpr + ';')
         : nameForDef(ctx, insn.row, 'x0') + ' = ' + callExpr + ';';
       return mk(text,
-        { dst: insn.isTailCall ? null : 'x0', call: true,
-          kind: insn.isTailCall ? 'ctrl' : 'stmt',
+        { dst: isTail ? null : 'x0', call: true,
+          kind: isTail ? 'ctrl' : 'stmt',
           reads: ['x0'].concat(parts.map((_, i) => 'x' + (i + 2))),
           note: 'Objective-C のメソッド「' + sel + '」を呼びます。' });
     }
@@ -3137,15 +3143,20 @@ function callStatement(insn, ctx, mk) {
   }
   /* 末尾呼び出し（b で別の関数へ跳んで終わる）は、そのまま return になる */
   const callSig = knownCallSignature(name || cleanName);
-  const isVoidCall = callSig?.retType === 'void';
+  const isVoidCall = callSig?.retType === 'void'
+    || call?.prototype?.returnsValue === false
+    || /^void\s*$/i.test(String(call?.prototype?.returnType || '').trim());
   const isFpRetCall = callSig?.retType === 'float' || callSig?.retType === 'double';
   const retReg = isFpRetCall ? 'v0' : 'x0';
-  const text = insn.isTailCall
-    ? (isVoidCall ? callExpr + '; return;' : 'return ' + callExpr + ';')
+  const zeroRet = /^(?:float|double)\b/i.test(String(ctx.callerReturnType || '').trim()) ? '0.0' : '0';
+  const text = isTail
+    ? (ctx.callerIsVoid
+        ? callExpr + '; return;'
+        : (isVoidCall ? callExpr + '; return ' + zeroRet + ';' : 'return ' + callExpr + ';'))
     : (isVoidCall ? callExpr + ';' : nameForDef(ctx, insn.row, retReg) + ' = ' + callExpr + ';');
   return mk(text, {
-    dst: (insn.isTailCall || isVoidCall) ? null : retReg, call: true, target, reads,
-    kind: insn.isTailCall ? 'ctrl' : 'stmt',
+    dst: (isTail || isVoidCall) ? null : retReg, call: true, target, reads,
+    kind: isTail ? 'ctrl' : 'stmt',
     note: name ? null : '行き先が固定でない呼び出しです（関数ポインタ）。',
   });
 }

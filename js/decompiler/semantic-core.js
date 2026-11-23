@@ -789,9 +789,39 @@ function loadReachedByStore(load, store, ctx) {
   return definitionId != null && fact.contributingDefinitionIds.includes(String(definitionId));
 }
 
+function resolveEffectiveReturnType(opts, types, funcAddr) {
+  const explicit = String(opts?.returnType || opts?.functionPrototype?.returnType || opts?.prototype?.returnType || '').trim();
+  const sigRet = String(opts?.notes?.typeOf?.(funcAddr, 'ret') || types?.ret?.type || 'void').trim() || 'void';
+  const sigReturnType = sigRet === 'unknown' ? 'uint64' : sigRet;
+  const abiReturnType = explicit || sigReturnType;
+  return { sigReturnType, abiReturnType };
+}
+
+function isRenderableReturnValue(rv) {
+  return Boolean(rv && ((rv.uses || []).length || rv.const != null || rv.def));
+}
+
+function zeroReturnLiteralForContext(ctx) {
+  return /^(?:float|double|__fp16)\b/i.test(String(ctx?.callerReturnType || '').trim()) ? '0.0' : '0';
+}
+
+function renderReturnStatement(rv, ctx) {
+  if (ctx?.callerIsVoid) return 'return;';
+  if (isRenderableReturnValue(rv)) return `return ${renderValue(rv, ctx)};`;
+  if (ctx?.callerIsVoid === false) return `return ${zeroReturnLiteralForContext(ctx)};`;
+  return 'return;';
+}
+
+function isVoidCalleeTailCall(term, opts) {
+  if (knownVoidCall(term, opts)) return true;
+  if (term?.callPrototype?.returnsValue === false || term?.extra?.callPrototype?.returnsValue === false) return true;
+  const protoReturnType = String(term?.callPrototype?.returnType || term?.extra?.callPrototype?.returnType || '').trim();
+  return /^void\s*$/i.test(protoReturnType);
+}
+
 function returnRegisterForContext(ctx) {
-  const type=String(ctx.opts?.returnType || ctx.opts?.functionPrototype?.returnType || ctx.opts?.prototype?.returnType || ctx.types?.ret?.type || '').toLowerCase();
-  if (!type || type === 'void') return null;
+  const type = String(ctx.abiReturnType || ctx.opts?.returnType || ctx.opts?.functionPrototype?.returnType || ctx.opts?.prototype?.returnType || ctx.callerReturnType || ctx.types?.ret?.type || '').toLowerCase();
+  if (!type || /^void\s*$/i.test(type)) return null;
   // The calling convention owns this, not the decompiler. Assuming `x0` is the
   // result register is an AArch64 fact; on RISC-V `x0` is hardwired zero, so a
   // hardcoded name would read the wrong location entirely. Callers that supply
@@ -892,6 +922,7 @@ function valueClobberedBeforeRet(explicit, ret, canonReg, ir) {
 }
 
 function returnValueAt(ret, ctx) {
+  if (ctx?.callerIsVoid) return null;
   const explicit=valueOf(ret?.args?.[0]);
   const reg=returnRegisterForContext(ctx);
   if (explicit) {
@@ -4421,7 +4452,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
     }
     if (term2.op === OP.RET) {
       const rv = returnValueAt(term2, ctx);
-      const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
+      const text = renderReturnStatement(rv, ctx);
       const node = line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) });
       retainStatementRenderLine(node, term2, rv, ctx);
       out.push(node); ctx.evidence.push(evidenceOf(term2, 'return')); return;
@@ -4716,9 +4747,16 @@ export function hasUnbalancedBracesInLines(nodes) {
 function emitTailCallBranch(term, out, ctx, indent) {
   const c = callRecord(term, ctx);
   const callText = renderCall(term, ctx);
-  const callerRetType = String(ctx.opts?.returnType || ctx.opts?.functionPrototype?.returnType || ctx.opts?.prototype?.returnType || ctx.types?.ret?.type || '').trim().toLowerCase();
-  const callerIsVoid = callerRetType === 'void';
-  const text = (callerIsVoid || knownVoidCall(term, ctx.opts)) ? `${callText}; return;` : `return ${callText};`;
+  let text;
+  if (ctx?.callerIsVoid) {
+    text = `${callText}; return;`;
+  } else if (isVoidCalleeTailCall(term, ctx?.opts)) {
+    text = ctx?.callerIsVoid === false
+      ? `${callText}; return ${zeroReturnLiteralForContext(ctx)};`
+      : `${callText}; return;`;
+  } else {
+    text = `return ${callText};`;
+  }
   const node = line('stmt', indent, text, term.row, term.address, {
     source: mergeSource(controlSource(term, ctx), sourceForInst(term, 'tail-call')),
   });
@@ -4752,7 +4790,7 @@ function faithfulCfg(ctx, indent = 1) {
     }
     if (term.op === OP.RET) {
       const rv = returnValueAt(term, ctx);
-      const node = line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) });
+      const node = line('stmt', indent + 1, renderReturnStatement(rv, ctx), term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) });
       retainStatementRenderLine(node, term, rv, ctx);
       out.push(node);
     } else if (term.op === OP.CBR) {
@@ -4846,8 +4884,14 @@ export function decompileSemantic(model, rawOpts = {}) {
       }
     }
   }
+  const funcAddr = opts.addr ?? firstAddr;
+  const { sigReturnType, abiReturnType } = resolveEffectiveReturnType(opts, types, funcAddr);
   const ctx = {
     ir, model, opts, runtime, types, graph, rmw,
+    funcAddr,
+    callerReturnType: sigReturnType,
+    callerIsVoid: /^void\s*$/i.test(sigReturnType),
+    abiReturnType,
     projectionIrObserver:createProjectionIrObserver({ deterministicTransforms:opts.deterministicTransforms === true }),
     rmwByStore: new Map(rmw.map((r) => [r.store.id, r])),
     storedValueAliases: buildStoredValueAliases(ir),
