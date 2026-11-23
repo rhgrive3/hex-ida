@@ -77,11 +77,11 @@ function frozenQueryIndex(ssa) {
   const byDefinitionPosition = (a, b) =>
     String(a.blockId ?? '').localeCompare(String(b.blockId ?? '')) || a.valueId.localeCompare(b.valueId);
   const byValueId = (a, b) => a.valueId.localeCompare(b.valueId);
-  for (const list of usesByValue.values()) list.sort(byUseId);
-  for (const list of usesBySourceEntity.values()) list.sort(byUseId);
-  for (const list of definitionsByVariable.values()) list.sort(byDefinitionPosition);
-  phiDefinitions.sort(byValueId);
-  for (const list of phiDefinitionsByBlock.values()) list.sort(byValueId);
+  for (const list of usesByValue.values()) Object.freeze(list.sort(byUseId));
+  for (const list of usesBySourceEntity.values()) Object.freeze(list.sort(byUseId));
+  for (const list of definitionsByVariable.values()) Object.freeze(list.sort(byDefinitionPosition));
+  Object.freeze(phiDefinitions.sort(byValueId));
+  for (const list of phiDefinitionsByBlock.values()) Object.freeze(list.sort(byValueId));
 
   index = { definitionByValue, definitionById, useById, usesByValue, definitionsByVariable,
     phiDefinitions, phiDefinitionsByBlock, usesBySourceEntity, useBySemanticValue, definitionBySemanticValue };
@@ -178,7 +178,41 @@ export function getSsaDefinitionForSemanticValue(ssa, semanticValueId) {
     : definitions(ssa).find((definition) => definition.proof?.sourceSemanticValueId === id) ?? null;
 }
 
+const EMPTY_FROZEN_LIST = Object.freeze([]);
+const ssaQueryIndexCache = new WeakMap();
+
 export function createSsaQueryIndex(ssa) {
+  const canonical = frozenQueryIndex(ssa);
+  if (canonical) {
+    const cached = ssaQueryIndexCache.get(ssa);
+    if (cached) return cached;
+    const facade = Object.freeze({
+      definition(valueId) {
+        const id = exactStringOrNull(valueId);
+        return id == null ? null : canonical.definitionByValue.get(id) ?? null;
+      },
+      definitionById(definitionId) {
+        const id = exactStringOrNull(definitionId);
+        return id == null ? null : canonical.definitionById.get(id) ?? null;
+      },
+      use(useId) {
+        const id = exactStringOrNull(useId);
+        return id == null ? null : canonical.useById.get(id) ?? null;
+      },
+      definitionForUse(useId) {
+        const id = exactStringOrNull(useId);
+        if (id == null) return null;
+        const use = canonical.useById.get(id);
+        return use ? canonical.definitionByValue.get(use.valueId) ?? null : null;
+      },
+      usesForValue(valueId) {
+        const id = exactStringOrNull(valueId);
+        return id == null ? EMPTY_FROZEN_LIST : canonical.usesByValue.get(id) ?? EMPTY_FROZEN_LIST;
+      },
+    });
+    ssaQueryIndexCache.set(ssa, facade);
+    return facade;
+  }
   const definitionByValue = new Map(definitions(ssa).map((definition) => [definition.valueId, definition]));
   const definitionById = new Map(definitions(ssa).map((definition) => [definition.definitionId, definition]));
   const useById = new Map(uses(ssa).map((use) => [use.useId, use]));
@@ -188,6 +222,7 @@ export function createSsaQueryIndex(ssa) {
     list.push(use);
     usesByValue.set(use.valueId, list);
   }
+  const sortedUsesByValue = new Map();
   return Object.freeze({
     definition(valueId) {
       const id = exactStringOrNull(valueId);
@@ -209,7 +244,14 @@ export function createSsaQueryIndex(ssa) {
     },
     usesForValue(valueId) {
       const id = exactStringOrNull(valueId);
-      return Object.freeze((id == null ? [] : usesByValue.get(id) ?? []).slice().sort((a, b) => a.useId.localeCompare(b.useId)));
+      if (id == null) return EMPTY_FROZEN_LIST;
+      let sorted = sortedUsesByValue.get(id);
+      if (sorted === undefined) {
+        const list = usesByValue.get(id);
+        sorted = list ? Object.freeze(list.slice().sort((a, b) => a.useId.localeCompare(b.useId))) : EMPTY_FROZEN_LIST;
+        sortedUsesByValue.set(id, sorted);
+      }
+      return sorted;
     },
   });
 }

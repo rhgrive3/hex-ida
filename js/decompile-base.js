@@ -32,10 +32,13 @@ function asmCount(result) {
 
 function normalizeCompatibility(result) {
   if (!result) return result;
+  let changed = false;
   for (const l of result.lines || []) {
+    const before = l?.text;
     normalizeProjectedCompatibilityLine(l, result.ir);
+    if (l?.text !== before) changed = true;
   }
-  if (result.semantic) result.pseudocode = textOf(result.lines);
+  if (result.semantic && (changed || !result.pseudocode)) result.pseudocode = textOf(result.lines);
   return result;
 }
 
@@ -62,23 +65,41 @@ function augmentLegacy(fallback, reason, semantic = null) {
 
 function finalize(result, model, opts) {
   opts = applyDecompilerProfile(opts);
-  result = normalizeCompatibility(structureKnownSwitches(result, model, opts));
-  if (result?.semantic) result = enhanceSemanticDecompilation(result, model, { ...opts, renderProvenance:true });
+  result = structureKnownSwitches(result, model, opts);
   result = normalizeCompatibility(result);
-  if (!result?.semantic && result?.switchRenderHistory) {
-    // No semantic-mode promotion or invented analysis snapshot for fallback
-    // output. Missing snapshot identity remains explicit in the shared map.
-    try { result.renderProvenance = buildRenderProvenance({ result, budget:opts.renderProvenanceBudget, shouldAbort:opts.shouldAbort }); }
-    catch {
-      result.renderProvenance = null;
-      result.expressionHistoryBinding = Object.freeze({ scope:'producer-consumer-observations',
-        completeness:'incomplete', reasons:Object.freeze(['switch-map-unavailable']) });
-    }
+  let deferredProvenance = false;
+  let deferredSnapshotId = null;
+  if (result?.semantic) {
+    result = enhanceSemanticDecompilation(result, model, {
+      ...opts,
+      renderProvenance: true,
+      deferRenderProvenance: true,
+      _onDeferRenderProvenance: (snapshotId) => {
+        deferredProvenance = true;
+        deferredSnapshotId = snapshotId ?? null;
+      },
+    });
   }
+  result = normalizeCompatibility(result);
   const prevLowerings = result?.ctx?.exactArm64FallbackLowerings || 0;
   result = lowerArm64RawAssembly(result);
   const loweredArm64 = (result?.ctx?.exactArm64FallbackLowerings || 0) > prevLowerings;
-  return closePublicCOutput(result, opts, { forceRefreshProvenance: loweredArm64 });
+  const closed = closePublicCOutput(result, opts, {
+    forceRefreshProvenance: loweredArm64 || deferredProvenance,
+    deferredProvenance,
+    deferredSnapshotId,
+  });
+  if (!closed?.semantic && closed?.switchRenderHistory) {
+    // No semantic-mode promotion or invented analysis snapshot for fallback
+    // output. Missing snapshot identity remains explicit in the shared map.
+    try { closed.renderProvenance = buildRenderProvenance({ result: closed, budget: opts.renderProvenanceBudget, shouldAbort: opts.shouldAbort }); }
+    catch {
+      closed.renderProvenance = null;
+      closed.expressionHistoryBinding = Object.freeze({ scope:'producer-consumer-observations',
+        completeness:'incomplete', reasons:Object.freeze(['switch-map-unavailable']) });
+    }
+  }
+  return closed;
 }
 
 /*
@@ -93,25 +114,36 @@ function finalize(result, model, opts) {
  * keys stay aligned with the published lines instead of a shifted pre-closure
  * index space.
  */
-function refreshRenderProvenance(closed, opts) {
+function isAbortError(error) {
+  return Boolean(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR'));
+}
+
+function refreshRenderProvenance(closed, opts, internal = {}) {
   const previous = closed.renderProvenance ?? null;
-  if (!previous) return;
+  if (!previous && !internal.deferredProvenance) return;
+  const snapshotId = internal.deferredProvenance
+    ? (internal.deferredSnapshotId ?? previous?.snapshotId ?? null)
+    : (previous?.snapshotId ?? null);
   try {
     closed.renderProvenance = buildRenderProvenance({
       result: closed,
-      snapshotId: previous.snapshotId ?? null,
+      snapshotId,
       budget: opts.renderProvenanceBudget,
       shouldAbort: opts.shouldAbort,
     });
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     // Keep the previous observation rather than publishing a silently
     // unbound map for the changed line array.
-    closed.renderProvenance = previous;
+    closed.renderProvenance = previous ?? null;
   }
 }
 
 function closePublicCOutput(result, opts = {}, internal = {}) {
-  if (!result?.lines?.length) return result;
+  if (!result?.lines?.length) {
+    if (result && internal.deferredProvenance) refreshRenderProvenance(result, opts, internal);
+    return result;
+  }
   // Provably redundant jumps go first: the declaration closure below must
   // declare storage for the text that will actually be published, and a jump
   // that is gone cannot leave an address nobody reads behind.  Either closure
@@ -125,7 +157,7 @@ function closePublicCOutput(result, opts = {}, internal = {}) {
     onLinesChanged: noteLinesChanged,
   });
   const closed = closeFunctionOutput(withoutJumps, { render: textOf, onLinesChanged: noteLinesChanged });
-  if (linesChanged || internal.forceRefreshProvenance) refreshRenderProvenance(closed, opts);
+  if (linesChanged || internal.forceRefreshProvenance) refreshRenderProvenance(closed, opts, internal);
   return closed;
 }
 
@@ -497,7 +529,7 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
   if (!classification.components.length || !classification.allException) return null;
   const closeCheck = semantic.lines?.findLastIndex?.((l) => l.kind === 'ctrl' && l.text === '}') ?? -1;
   if (closeCheck < 0) return null;
-  const legacy = getLegacy ? getLegacy() : legacyDecompile(model, opts);
+  const legacy = getLegacy ? getLegacy({ readOnly: true }) : legacyDecompile(model, opts);
   const detachedBlocks = new Set(classification.components.flatMap((c) => c.blocks));
   const regionLines = [];
 
@@ -592,7 +624,8 @@ function legacyWithIrCleanupEdges(model, semanticModel, opts, semantic, edges, g
 function preferLegacyForUnsupported(model, opts, semantic, getLegacy) {
   const unsupported = semantic?.ctx?.unknownInstructions || 0;
   if (!unsupported) return semantic;
-  if (asmCount(semantic) === 0) return semantic;
+  const semanticAsm = asmCount(semantic);
+  if (semanticAsm === 0) return semantic;
   const legacy = augmentLegacy(
     getLegacy ? getLegacy() : legacyDecompile(model, opts),
     `Semantic IR has ${unsupported} unsupported instruction(s); only this unsupported function uses the isolated legacy expression fallback.`,
@@ -600,7 +633,7 @@ function preferLegacyForUnsupported(model, opts, semantic, getLegacy) {
   );
   // The legacy path is a fallback, not an unconditional preference. If it is
   // actually less faithful (more raw assembly), keep the Semantic IR result.
-  return asmCount(legacy) < asmCount(semantic) ? legacy : semantic;
+  return asmCount(legacy) < semanticAsm ? legacy : semantic;
 }
 
 export function decompile(model, opts = {}) {
@@ -610,8 +643,14 @@ export function decompile(model, opts = {}) {
   const semanticModel = semanticModelForDecompiler(model);
   const semanticOpts = semanticOptionsForModel(semanticModel, opts);
   let cachedLegacy = null;
-  const getLegacy = () => {
+  const getLegacy = ({ readOnly = false, consume = false } = {}) => {
     if (!cachedLegacy) cachedLegacy = legacyDecompile(model, opts);
+    if (readOnly) return cachedLegacy;
+    if (consume) {
+      const owned = cachedLegacy;
+      cachedLegacy = null;
+      return owned;
+    }
     return cloneLegacyResult(cachedLegacy);
   };
   try {
@@ -626,14 +665,14 @@ export function decompile(model, opts = {}) {
           if (mixed) result = mixed;
           else {
             return finalize(augmentLegacy(
-              getLegacy(),
+              getLegacy({ consume: true }),
               `Semantic IR covers ${reachable}/${total} Basic Blocks; detached exception regions could not be preserved losslessly, so the isolated faithful fallback was used.`,
               result,
             ), model, opts);
           }
         } else {
           return finalize(augmentLegacy(
-            getLegacy(),
+            getLegacy({ consume: true }),
             `Semantic IR covers ${reachable}/${total} Basic Blocks; disconnected or indirect targets use the isolated faithful fallback.`,
             result,
           ), model, opts);
@@ -659,9 +698,9 @@ export function decompile(model, opts = {}) {
     }
   } catch (error) {
     return finalize(augmentLegacy(
-      getLegacy(),
+      getLegacy({ consume: true }),
       `Semantic IR decompiler fallback: ${error && error.message ? error.message : 'unknown error'}`,
     ), model, opts);
   }
-  return finalize(augmentLegacy(getLegacy(), 'Semantic IR is unavailable for this function.'), model, opts);
+  return finalize(augmentLegacy(getLegacy({ consume: true }), 'Semantic IR is unavailable for this function.'), model, opts);
 }

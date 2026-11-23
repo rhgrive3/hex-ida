@@ -369,6 +369,7 @@ export class VariableInstructionIndex {
 
   async navigate(address,{signal=null,trusted=false}={}){
     const target=BigInt(address); this._assertInRegion(target);
+    if(signal?.aborted)throw abortError(signal.reason);
     this.cancelExcept([target]);
     const exact=this.knownEntry(target);
     if(exact){this.currentAddress=exact.address;return Object.freeze({status:'exact',address:exact.address,entry:exact,page:this._pageContaining(exact.address)});}
@@ -376,15 +377,18 @@ export class VariableInstructionIndex {
     if(containing){this.currentAddress=containing.address;return Object.freeze({status:'inside-known',address:containing.address,entry:containing,page:this._pageContaining(containing.address)});}
     if(trusted||target===this.region.start){
       const page=await this.ensurePage(target,{signal,priority:'current',protect:true}),entry=page.entries[0]||null;
+      if(signal?.aborted)throw abortError(signal.reason);
       if(!entry||entry.address!==target)return Object.freeze({status:page.status==='undecodable'?'undecodable':'unknown',address:target,entry:null,page});
-      this.currentAddress=target; void this.prefetchForward(page).catch(()=>{});
+      this.currentAddress=target; void this.prefetchForward(page,{signal}).catch(()=>{});
       return Object.freeze({status:'decoded',address:target,entry,page});
     }
     const proven=await this.resynchronize(target,{signal});
+    if(signal?.aborted)throw abortError(signal.reason);
     if(proven.status!=='proven')return proven;
     const page=await this.ensurePage(proven.address,{signal,priority:'current',protect:true}),entry=page.entries[0]||null;
+    if(signal?.aborted)throw abortError(signal.reason);
     if(!entry||entry.address!==proven.address)return Object.freeze({status:'unknown',address:target,entry:null,page});
-    this.currentAddress=proven.address; void this.prefetchForward(page).catch(()=>{});
+    this.currentAddress=proven.address; void this.prefetchForward(page,{signal}).catch(()=>{});
     return Object.freeze({status:target===proven.address?'decoded':'resynchronized',address:proven.address,requestedAddress:target,entry,page});
   }
 
@@ -392,6 +396,7 @@ export class VariableInstructionIndex {
 
   async previousBoundary(targetAddress,{signal=null}={}){
     const target=BigInt(targetAddress); this._assertInRegion(target,{allowEnd:true});
+    if(signal?.aborted)throw abortError(signal.reason);
     const rows=this.localRows(target),knownIndex=rows.findIndex((entry)=>entry.kind==='instruction'&&entry.address===target);
     if(knownIndex>0){
       for(let i=knownIndex-1;i>=0;i--)if(rows[i].kind==='instruction')return Object.freeze({status:'proven',address:rows[i].address,entry:rows[i],source:'known-page'});
@@ -401,18 +406,23 @@ export class VariableInstructionIndex {
 
   async resynchronize(targetAddress,{signal=null,requirePredecessor=false}={}){
     const target=BigInt(targetAddress); this._assertInRegion(target,{allowEnd:true});
-    const lower=target-BigInt(Math.min(this.resyncBytes,Number(target-this.region.start)));
+    if(signal?.aborted)throw abortError(signal.reason);
+    const generation=this.generation, region=this.region;
+    const lower=target-BigInt(Math.min(this.resyncBytes,Number(target-region.start)));
     const candidateFloor=target-BigInt(X86_MAX_INSTRUCTION_BYTES);
-    const first=lower>candidateFloor?lower:(candidateFloor>this.region.start?candidateFloor:this.region.start);
+    const first=lower>candidateFloor?lower:(candidateFloor>region.start?candidateFloor:region.start);
     const candidates=[];
     for(let start=first;start<target;start++){
       if(signal?.aborted)throw abortError(signal.reason);
-      const remaining=this.region.end-start;
+      if(generation!==this.generation||this.region!==region)throw abortError('region-changed');
+      const remaining=region.end-start;
       const length=Math.min(this.resyncBytes,Number(remaining>BigInt(this.resyncBytes)?BigInt(this.resyncBytes):remaining));
       if(length<=0)continue;
       this._metrics.decodeRequestCount++; this._metrics.requestedDecodeBytes+=length;
       let response;
       try{response=await this.disassembleAt(start,{architecture:this.architecture,length,signal,priority:'current'});}catch(error){if(isAbort(error))throw error;continue;}
+      if(signal?.aborted)throw abortError(signal.reason);
+      if(generation!==this.generation||this.region!==region)throw abortError('region-changed');
       let cursor=start,predecessor=null,valid=true;
       for(const instruction of Array.isArray(response?.instructions)?response.instructions:[]){
         let addr,size;

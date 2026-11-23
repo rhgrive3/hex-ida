@@ -140,7 +140,8 @@ export function renderGraph(nodes, edges, opts) {
   }
 
   wrap.append(svg);
-  attachPanZoom(wrap, svg, layout);
+  const panZoom = attachPanZoom(wrap, svg, layout);
+  wrap.dispose = panZoom.dispose;
   return wrap;
 }
 
@@ -156,7 +157,14 @@ function attachPanZoom(wrap, svg, layout) {
     if (pctBtn) pctBtn.textContent = Math.round(scale * 100) + '%';
   };
 
+  let rafId = 0;
+  let fitRafId = 0;
+  let pendingPanX = 0;
+  let pendingPanY = 0;
+  let pendingZoom = null;
+
   const zoomTo = (next, cx, cy) => {
+    pendingZoom = null;
     const box = wrap.getBoundingClientRect();
     const px = (cx == null ? box.width / 2 : cx - box.left);
     const py = (cy == null ? box.height / 2 : cy - box.top);
@@ -168,7 +176,41 @@ function attachPanZoom(wrap, svg, layout) {
     wrap.scrollTop = gy * scale - py;
   };
 
+  const flushFrame = () => {
+    rafId = 0;
+    if (pendingZoom) {
+      const z = pendingZoom;
+      pendingZoom = null;
+      zoomTo(z.nextScale, z.cx, z.cy);
+    }
+    if (pendingPanX || pendingPanY) {
+      wrap.scrollLeft += pendingPanX;
+      wrap.scrollTop += pendingPanY;
+      pendingPanX = 0;
+      pendingPanY = 0;
+    }
+  };
+
+  const scheduleFrame = () => {
+    if (!rafId) rafId = requestAnimationFrame(flushFrame);
+  };
+
+  const queueZoom = (factor, cx, cy) => {
+    const base = pendingZoom ? pendingZoom.nextScale : scale;
+    pendingZoom = { nextScale: Math.max(MIN, Math.min(MAX, base * factor)), cx, cy };
+    scheduleFrame();
+  };
+
+  const queuePan = (dx, dy) => {
+    pendingPanX += dx;
+    pendingPanY += dy;
+    scheduleFrame();
+  };
+
   const fit = () => {
+    pendingZoom = null;
+    pendingPanX = 0;
+    pendingPanY = 0;
     const w = wrap.clientWidth || 320;
     const h = wrap.clientHeight || 320;
     scale = Math.max(MIN, Math.min(1, Math.min((w - 24) / layout.width, (h - 24) / layout.height)));
@@ -224,7 +266,7 @@ function attachPanZoom(wrap, svg, layout) {
       const now = spread(points);
       if (pinch > 0 && now > 0) {
         const c = centre(points);
-        zoomTo(scale * (now / pinch), c.x, c.y);
+        queueZoom(now / pinch, c.x, c.y);
       }
       pinch = now;
       e.preventDefault();
@@ -237,8 +279,7 @@ function attachPanZoom(wrap, svg, layout) {
       last.moved = true;
       try { wrap.setPointerCapture(last.pointerId); } catch { /* pointer already released */ }
     }
-    wrap.scrollLeft -= dx;
-    wrap.scrollTop -= dy;
+    queuePan(-dx, -dy);
     last.x = e.clientX;
     last.y = e.clientY;
     e.preventDefault();
@@ -264,17 +305,32 @@ function attachPanZoom(wrap, svg, layout) {
 
   wrap.addEventListener('wheel', (e) => {
     if (e.ctrlKey || e.metaKey) {
-      zoomTo(scale * (e.deltaY > 0 ? 0.9 : 1.1), e.clientX, e.clientY);
+      queueZoom(e.deltaY > 0 ? 0.9 : 1.1, e.clientX, e.clientY);
       e.preventDefault();
       return;
     }
-    wrap.scrollLeft += e.deltaX;
-    wrap.scrollTop += e.deltaY;
+    queuePan(e.deltaX, e.deltaY);
     e.preventDefault();
   }, { passive: false });
 
-  requestAnimationFrame(fit);
-  return { apply, fit, zoomTo };
+  fitRafId = requestAnimationFrame(() => {
+    fitRafId = 0;
+    fit();
+  });
+  const dispose = () => {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    if (fitRafId) {
+      cancelAnimationFrame(fitRafId);
+      fitRafId = 0;
+    }
+    pendingZoom = null;
+    pendingPanX = 0;
+    pendingPanY = 0;
+  };
+  return { apply, fit, zoomTo, dispose };
 }
 
 function spread(points) {

@@ -1374,6 +1374,8 @@ function unaryText(inst, ctx) {
   const a = renderValue(valueOf(inst.args?.[0]), ctx);
   if (inst.sub === 'neg' || inst.sub === 'fneg') return `-${paren(a)}`;
   if (inst.sub === 'not') return `~${paren(a)}`;
+  if (inst.sub === 'is-zero' || inst.sub === 'is_zero') return `(${a}) == 0`;
+  if (inst.sub === 'is-nonzero' || inst.sub === 'is_nonzero') return `(${a}) != 0`;
   if (inst.sub === 'abs' || inst.sub === 'fabs') return `abs(${a})`;
   if (inst.sub === 'sqrt' || inst.sub === 'fsqrt') return `sqrt(${a})`;
   const extMap = { sxtb: 'int8', sxth: 'int16', sxtw: 'int32', uxtb: 'uint8', uxth: 'uint16', uxtw: 'uint32' };

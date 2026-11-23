@@ -51,7 +51,7 @@ const CLASS_NAME_HINTS = [
   { id: 'character', points: 3, re: /character|chara|hero|avatar|actor|unit(?!test)|player(?!prefs)|party|team/i },
   { id: 'item', points: 3, re: /item|inventory|equip|bag|gear|material|consumable/i },
   { id: 'gacha', points: 3, re: /gacha|lottery|draw|reward|bonus|present|gift|loot|treasure/i },
-  { id: 'purchase', points: 3, re: /shop|store(?!kit)|purchase|payment|billing|\biap\b|receipt|product|price|checkout|wallet|currency|coin|gem/i },
+  { id: 'purchase', points: 3, re: /shop|storekit|store|purchase|payment|billing|\biap\b|in[\s_-]?app|\bsku\b|entitlement|receipt|product|price|checkout|wallet|currency|coin|gem|diamond|crystal|gold/i },
   { id: 'login', points: 3, re: /login|logout|auth(?!or)|account|credential|token|signin|signup|register/i },
   { id: 'login', points: 1, re: /session|profile(?:manager)?|\buser\b/i },
   { id: 'network', points: 3, re: /\bapi\b|api[a-z]*(client|manager|service)|http|network|request|response|socket|connection|endpoint|\burl\b|urlsession|session(task|manager|delegate|config)|download|upload|sync/i },
@@ -60,7 +60,7 @@ const CLASS_NAME_HINTS = [
   { id: 'social', points: 3, re: /friend|guild|clan|chat|message|mail|social|invite|follow/i },
   { id: 'ranking', points: 3, re: /rank|leaderboard|score|record|achievement/i },
   { id: 'ads', points: 3, re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adcolony|interstitial|rewarded|banner|\bads?[a-z]*(manager|helper|view|unit)/i },
-  { id: 'anticheat', points: 3, re: /jailbreak|tamper|integrity|antichea|cheat|security|crypt|cipher|hash|keychain|obfusc|protect|guard(?!ian)/i },
+  { id: 'anticheat', points: 3, re: /jailbreak|frida|magisk|ptrace|ssl[\s_-]?pinning|root(?:detect|check|ed|guard|jail)|tamper|integrity|antichea|cheat|security|crypt|cipher|hash|keychain|obfusc|protect|guard(?!ian)/i },
   { id: 'audio', points: 3, re: /audio|sound|\bbgm\b|music|voice|\bse\b(?:manager|player)/i },
   { id: 'tutorial', points: 3, re: /tutorial|onboard|guide|walkthrough/i },
   { id: 'settings', points: 2, re: /setting|config|option|preference|locale|language/i },
@@ -190,10 +190,18 @@ function classifyClass(cls, ctx) {
     }
   }
 
-  let best = null;
+  let bestSpecific = null;
+  let bestGeneric = null;
   for (const [id, points] of votes) {
-    if (!best || points > best.points) best = { id, points };
+    if (id === 'ui' || id === 'system') {
+      if (!bestGeneric || points > bestGeneric.points) bestGeneric = { id, points };
+    } else if (!bestSpecific || points > bestSpecific.points) {
+      bestSpecific = { id, points };
+    }
   }
+  const best = bestSpecific && (bestSpecific.points >= 3 || !bestGeneric || bestSpecific.points >= bestGeneric.points)
+    ? bestSpecific
+    : (bestGeneric || bestSpecific);
   if (!best) return { category: 'unknown', score: 0, why: [] };
   return {
     category: best.id,
@@ -367,10 +375,21 @@ export function buildStringMap(opts) {
   const groups = new Map();
   if (!program) return { subsystems: [], hasClasses: false, classCount: 0, byStrings: true };
 
-  let inspected = 0;
-  for (const s of o.strings || []) {
-    if (inspected >= MAX_STRINGS_TO_SCAN) break;
-    inspected++;
+  const sourceStrings = Array.isArray(o.strings) ? o.strings : Array.from(o.strings || []);
+  const selectedStrings = [];
+  if (sourceStrings.length <= MAX_STRINGS_TO_SCAN) {
+    for (let i = 0; i < sourceStrings.length; i++) selectedStrings.push(sourceStrings[i]);
+  } else {
+    const head = Math.floor(MAX_STRINGS_TO_SCAN / 2);
+    for (let i = 0; i < head; i++) selectedStrings.push(sourceStrings[i]);
+    const tailSlots = MAX_STRINGS_TO_SCAN - head;
+    const tailSize = sourceStrings.length - head;
+    for (let i = 0; i < tailSlots; i++) {
+      const idx = head + Math.min(tailSize - 1, Math.floor((i + 0.5) * tailSize / tailSlots));
+      selectedStrings.push(sourceStrings[idx]);
+    }
+  }
+  for (const s of selectedStrings) {
     const hits = classifyString(s.text);
     if (!hits.length) continue;
     // The xref span is a virtual-address byte range (#5698): use the string's

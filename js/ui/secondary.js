@@ -161,7 +161,8 @@ function renderSettings(app, router) {
       subtitle: pick('ブラウザ内で解析します。開いたバイナリを解析のために外部へ送信しません。', 'Analysis runs in the browser; opened binaries are not uploaded for analysis.'),
       meta: 'Capstone ' + (app.capstoneVersion || '5'),
     }));
-    about.body.append(uiButton(pick('初回ガイドをもう一度表示する', 'Show onboarding again'), {
+    const aboutActions = h('div', 'ui-actions');
+    aboutActions.append(uiButton(pick('初回ガイドをもう一度表示する', 'Show onboarding again'), {
       cls: 'ui-secondary-action',
       onClick: () => {
         app.prefs.guideSeen = false;
@@ -169,6 +170,7 @@ function renderSettings(app, router) {
         toast(pick('次にアプリを開いたとき、初回ガイドを表示します。', 'The onboarding guide will appear next time the app is opened.'));
       },
     }));
+    about.body.append(aboutActions);
     s.body.append(about.root);
     if (focusedGroup) s.body.querySelector(`[data-setting-group="${focusedGroup}"] [aria-checked="true"]`)?.focus({ preventScroll: true });
     else if (focusedToggle) s.body.querySelector('.ui-choice-row.toggle')?.focus({ preventScroll: true });
@@ -401,10 +403,12 @@ function renderLearn(app, router, route) {
   const progressCard = card(pick('進み具合', 'Progress'), {
     subtitle: pick(`${CHAPTERS.length}章中 ${done}章を読了`, `${done} of ${CHAPTERS.length} chapters complete`),
   });
-  progressCard.body.append(uiButton(pick('用語集を開く', 'Open glossary'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/learn?mode=glossary') }));
-  if (done) progressCard.body.append(uiButton(pick('進捗をリセット', 'Reset progress'), {
+  const progressActions = h('div', 'ui-actions');
+  progressActions.append(uiButton(pick('用語集を開く', 'Open glossary'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/learn?mode=glossary') }));
+  if (done) progressActions.append(uiButton(pick('進捗をリセット', 'Reset progress'), {
     cls: 'ui-secondary-action', onClick: () => { saveProgress({}); router.navigate('/learn?reset=' + Date.now(), { replace: true }); },
   }));
+  progressCard.body.append(progressActions);
   s.body.append(progressCard.root);
 
   const rows = list();

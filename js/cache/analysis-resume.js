@@ -6,6 +6,7 @@ const DB_NAME = 'hex-analysis-resume-v1';
 const DB_VERSION = 1;
 const STORE = 'kv';
 const LAST_FILE_KEY = 'last-file';
+const LAST_FILE_META_KEY = 'last-file-meta';
 const SESSION_PREFIX = 'session:';
 const SESSION_SCHEMA = 2;
 const LAST_FILE_SCHEMA = 1;
@@ -223,6 +224,16 @@ export class AnalysisResumeStore {
     return true;
   }
 
+  async putMany(entries) {
+    const db = await this.db();
+    if (!db) return false;
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    for (const [key, value] of entries) store.put(value, key);
+    await txDone(tx);
+    return true;
+  }
+
   async deleteKey(key) {
     const db = await this.db();
     if (!db) return false;
@@ -266,20 +277,28 @@ export class AnalysisResumeStore {
   async saveLastFile(file, meta = {}) {
     if (!file || typeof file.slice !== 'function') return false;
     const task = async () => {
-      const previous = await this.get(LAST_FILE_KEY).catch(() => null);
+      const previous = await this.get(LAST_FILE_META_KEY).catch(() => null)
+        || await this.get(LAST_FILE_KEY).catch(() => null);
       const supersededBinaryId = previous?.binaryId || previous?.supersededBinaryId || null;
-      const record = {
+      const savedAt = Date.now();
+      const baseMeta = {
         schemaVersion:LAST_FILE_SCHEMA,
         name:String(file.name || 'binary'),
         type:String(file.type || ''),
         lastModified:Number(file.lastModified || Date.now()),
         size:Number(file.size || 0),
-        blob:file.slice(0, file.size, file.type || 'application/octet-stream'),
         ...meta,
         supersededBinaryId:meta.binaryId ? null : supersededBinaryId,
-        savedAt:Date.now(),
+        savedAt,
       };
-      const saved = await this.put(LAST_FILE_KEY, record);
+      const record = {
+        ...baseMeta,
+        blob:file.slice(0, file.size, file.type || 'application/octet-stream'),
+      };
+      const saved = await this.putMany([
+        [LAST_FILE_KEY, record],
+        [LAST_FILE_META_KEY, baseMeta],
+      ]);
       if (saved) void this.requestPersistentStorage();
       return saved;
     };
@@ -290,11 +309,20 @@ export class AnalysisResumeStore {
 
   async updateLastFileMeta(meta = {}) {
     const task = async () => {
-      const previous = await this.get(LAST_FILE_KEY).catch(() => null);
-      if (!previous?.blob || previous.schemaVersion !== LAST_FILE_SCHEMA) return false;
-      const supersededBinaryId = previous.supersededBinaryId || null;
-      const next = { ...previous, ...meta, supersededBinaryId:null, savedAt:Date.now() };
-      const saved = await this.put(LAST_FILE_KEY, next);
+      let previousMeta = await this.get(LAST_FILE_META_KEY).catch(() => null);
+      if (!previousMeta || previousMeta.schemaVersion !== LAST_FILE_SCHEMA) {
+        const previous = await this.get(LAST_FILE_KEY).catch(() => null);
+        if (!previous?.blob || previous.schemaVersion !== LAST_FILE_SCHEMA) return false;
+        const { blob: _ignoredBlob, ...extracted } = previous;
+        previousMeta = extracted;
+      }
+      const supersededBinaryId = previousMeta.supersededBinaryId || null;
+      const entries = Object.entries(meta || {});
+      const unchanged = !supersededBinaryId
+        && entries.every(([key, value]) => previousMeta[key] === value);
+      if (unchanged) return true;
+      const nextMeta = { ...previousMeta, ...meta, supersededBinaryId:null, savedAt:Date.now() };
+      const saved = await this.put(LAST_FILE_META_KEY, nextMeta);
       if (saved && meta.binaryId && supersededBinaryId && supersededBinaryId !== meta.binaryId) {
         await this.writeChain.catch(() => false);
         await this.deleteSessionsForBinary(supersededBinaryId).catch(() => false);
@@ -307,16 +335,25 @@ export class AnalysisResumeStore {
   }
 
   async loadLastFile() {
-    const record = await this.get(LAST_FILE_KEY);
+    const [record, meta] = await Promise.all([
+      this.get(LAST_FILE_KEY),
+      this.get(LAST_FILE_META_KEY).catch(() => null),
+    ]);
     if (!record?.blob || record.schemaVersion !== LAST_FILE_SCHEMA) return null;
+    const metaMatches = meta
+      && meta.schemaVersion === LAST_FILE_SCHEMA
+      && meta.name === record.name
+      && meta.size === record.size
+      && meta.lastModified === record.lastModified;
+    const merged = metaMatches ? { ...record, ...meta, blob:record.blob } : record;
     let file;
     if (typeof File === 'function') {
-      file = new File([record.blob], record.name || 'binary', { type:record.type || '', lastModified:record.lastModified || Date.now() });
+      file = new File([merged.blob], merged.name || 'binary', { type:merged.type || '', lastModified:merged.lastModified || Date.now() });
     } else {
-      file = record.blob;
-      try { Object.defineProperty(file, 'name', { value:record.name || 'binary', configurable:true }); } catch { /* test/runtime fallback */ }
+      file = merged.blob;
+      try { Object.defineProperty(file, 'name', { value:merged.name || 'binary', configurable:true }); } catch { /* test/runtime fallback */ }
     }
-    return { ...record, file };
+    return { ...merged, file };
   }
 
   async save(binaryId, sliceIndex, patch) {

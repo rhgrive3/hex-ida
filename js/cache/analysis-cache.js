@@ -189,12 +189,17 @@ export class AnalysisCache {
       updatedAt:Date.now(),
       data:snapshot,
     };
-    if (this.memory) this.memory.set(record.key, record);
-    else {
-      try { await this.#idbPut(record); }
-      catch (error) { this.#fallback(error).set(record.key, record); }
+    if (this.memory) {
+      this.memory.set(record.key, record);
+      return cloneWithoutSharedCheck(snapshot);
     }
-    return structuredCloneSafe(snapshot);
+    try {
+      await this.#idbPut(record);
+      return snapshot;
+    } catch (error) {
+      this.#fallback(error).set(record.key, record);
+      return cloneWithoutSharedCheck(snapshot);
+    }
   }
 
   async delete(hash, options = {}) {
@@ -358,7 +363,7 @@ function fallbackClone(value, seen = new WeakMap(), sharedBuffers = new WeakMap(
 }
 
 function containsSharedBuffer(value, seen = new WeakSet()) {
-  if (value == null || typeof value !== 'object') return false;
+  if (typeof SharedArrayBuffer === 'undefined' || value == null || typeof value !== 'object') return false;
   if (seen.has(value)) return false;
   seen.add(value);
   if (isSharedArrayBuffer(value)) return true;
@@ -368,6 +373,11 @@ function containsSharedBuffer(value, seen = new WeakSet()) {
   if (Array.isArray(value)) { for (const v of value) if (containsSharedBuffer(v, seen)) return true; return false; }
   for (const k of Object.keys(value)) if (containsSharedBuffer(value[k], seen)) return true;
   return false;
+}
+
+function cloneWithoutSharedCheck(value) {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return fallbackClone(value);
 }
 
 function structuredCloneSafe(value) {

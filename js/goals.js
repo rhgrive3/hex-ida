@@ -34,6 +34,7 @@ export const GOALS = [
     avoid: [
       /health[\s_-]*(check|monitor|status|state|report|percentile|kit)/i,
       /life[\s_-]*(cycle|time|span|line)/i,
+      /(?:hp|health)[\s_-]*(bar|label|gauge|view|icon|meter|slider|text|ui)\b/i,
     ],
     expects: { numeric: true, store: true, compare: true },
   },
@@ -59,7 +60,7 @@ export const GOALS = [
   },
   {
     id: 'money', ja: '所持金・コイン', en: 'Money and coins', icon: '🪙',
-    strong: [/\bcoin/i, /\bgold\b/i, /\bgem\b/i, /jewel/i, /money/i, /currency/i, /wallet/i,
+    strong: [/\bcoin/i, /\bgold\b/i, /\bgems?\b/i, /diamond/i, /crystal/i, /jewel/i, /money/i, /currency/i, /wallet/i,
       /コイン/, /ゴールド/, /所持金/, /ジェム/, /石/, /通貨/],
     weak: [/balance/i, /amount/i, /price/i, /cost/i, /残高/, /金額/],
     /*
@@ -80,7 +81,8 @@ export const GOALS = [
   },
   {
     id: 'purchase', ja: '購入・課金', en: 'Purchases', icon: '💳',
-    strong: [/purchase/i, /payment/i, /billing/i, /receipt/i, /storekit/i, /transaction/i,
+    strong: [/purchase/i, /payment/i, /billing/i, /receipt/i, /storekit/i, /\biap\b/i,
+      /in[\s_-]?app/i, /\bsku\b/i, /entitlement/i, /transaction/i,
       /subscription/i, /課金/, /購入/, /決済/, /レシート/],
     weak: [/price/i, /product/i, /restore/i, /価格/, /商品/],
     expects: { call: true, compare: true },
@@ -141,8 +143,10 @@ export const GOALS = [
   {
     id: 'anticheat', ja: 'チート対策・改造検知', en: 'Anti-cheat', icon: '🚨',
     strong: [/jailbreak|jailbroken/i, /cydia/i, /frida/i, /substrate/i, /tamper/i,
+      /\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b/i, /magisk/i, /ptrace/i, /ssl[\s_-]*pinning/i,
       /integrity/i, /debugger/i, /cheat/i, /改造/, /不正/],
     weak: [/detect/i, /verify/i, /signature/i, /検知/],
+    avoid: [/secure[\s_-]*text[\s_-]*entry/i],
     expects: { compare: true, call: true },
   },
 ];
@@ -253,7 +257,7 @@ const FIELD_VOCAB = {
     type: 'number', prefer: ['plain', 'delta'],
   },
   money: {
-    strong: [/\bcoins?\b/, /\bgold\b/, /\bgems?\b/, /\bjewels?\b/, /\bmoney\b/, /\bcurrency\b/,
+    strong: [/\bcoins?\b/, /\bgold\b/, /\bgems?\b/, /\bdiamonds?\b/, /\bcrystals?\b/, /\bjewels?\b/, /\bmoney\b/, /\bcurrency\b/,
       /\bwallet\b/, /\bcash\b/, /\bcredits?\b/, /\bbalance\b/,
       /コイン/, /ゴールド/, /所持金/, /ジェム/, /通貨/],
     weak: [/\bamount\b/, /\bprice\b/, /\bcost\b/, /\bstone\b/],
@@ -265,7 +269,8 @@ const FIELD_VOCAB = {
     type: 'number', prefer: ['plain'],
   },
   purchase: {
-    strong: [/\bpurchase\b/, /\bpayment\b/, /\bbilling\b/, /\breceipt\b/, /\btransaction\b/,
+    strong: [/\bpurchase\b/, /\bpayment\b/, /\bbilling\b/, /\breceipt\b/, /\bstore ?kit\b/,
+      /\biap\b/, /\bin ?app\b/, /\bsku\b/, /\bentitlements?\b/, /\btransaction\b/,
       /\bproduct\b/, /\bsubscription\b/, /課金/, /購入/],
     weak: [/\bprice\b/, /\bstore\b/, /\bpaid\b/],
     type: 'any', prefer: ['plain'],
@@ -314,8 +319,9 @@ const FIELD_VOCAB = {
     type: 'any', prefer: ['plain'],
   },
   anticheat: {
-    strong: [/\bjailbroken?\b/, /\btamper(ed)?\b/, /\bintegrity\b/, /\bcheat(ing)?\b/,
-      /\bdebugger\b/, /\bsecure\b/, /改造/, /不正/],
+    strong: [/\bjailbreak\b/, /\bjailbroken?\b/, /\bfrida\b/, /\btamper(ed)?\b/, /\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b/i,
+      /\bmagisk\b/, /\bptrace\b/, /\bssl ?pinning\b/, /\bintegrity\b/, /\bcheat(ing)?\b/,
+      /\bdebugger\b/, /改造/, /不正/],
     weak: [/\bdetect(ed)?\b/, /\bverified\b/, /\bvalid\b/],
     type: 'bool', prefer: ['flag', 'plain'],
   },
@@ -375,7 +381,7 @@ export function matchField(goal, name) {
    * 比較は normalizeFieldName どうしで行う。`adController` は
    * 「ad controller」に開かれるので、文字列のまま比べても永久に一致しない。
    */
-  const asked = normalizeFieldName(goal.text);
+  const asked = goal.isPreset ? '' : normalizeFieldName(goal.text);
   if (asked && asked.length >= 2) {
     if (norm === asked) consider(1.2, goal.text, true, true, false, 0, false, asked.length);
     else {
@@ -486,10 +492,11 @@ const SYNONYMS = [
   [/攻撃|こうげき|attack|atk/i, ['attack', 'atk', 'attk', '攻撃']],
   [/防御|ぼうぎょ|defense|defence/i, ['defense', 'defence', 'def', '防御']],
   [/体力|hp|ヒットポイント|health/i, ['hp', 'health', 'life', '体力']],
-  [/所持金|お金|金|コイン|coin|money|gold/i, ['coin', 'gold', 'money', 'currency', '所持金']],
-  [/ジェム|石|gem|jewel/i, ['gem', 'jewel', 'crystal', 'ジェム']],
+  [/所持金|お金|金|コイン|coins?|money|gold|wallet/i, ['coin', 'coins', 'gold', 'money', 'currency', 'wallet', '所持金']],
+  [/ジェム|石|gems?|jewel|diamond|crystal/i, ['gem', 'jewel', 'diamond', 'crystal', 'ジェム']],
   [/ガチャ|gacha|抽選|召喚/i, ['gacha', 'lottery', 'draw', 'summon', 'ガチャ']],
-  [/課金|購入|買|purchase|payment/i, ['purchase', 'payment', 'billing', 'receipt', '購入']],
+  [/課金|購入|買|purchase|payment|iap|in-?app|sku|entitlement|storekit|receipt/i, ['purchase', 'payment', 'billing', 'receipt', 'iap', 'inapp', 'sku', 'entitlement', 'storekit', '購入']],
+  [/チート|改造|不正|cheat|jailbreak|frida|tamper|\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b|magisk|ptrace|sslpinning/i, ['jailbreak', 'frida', 'tamper', 'cheat', 'rooted', 'rooting', 'magisk', 'ptrace', 'sslpinning', '改造', '不正']],
   [/ログイン|login|認証|auth/i, ['login', 'auth', 'signin', 'ログイン']],
   [/広告|ad\b|ads\b/i, ['ad', 'ads', 'interstitial', 'rewarded', '広告']],
   [/セーブ|保存|save/i, ['save', 'store', 'persist', 'セーブ']],
@@ -563,7 +570,7 @@ export function parseGoal(text) {
 export function goalFromPreset(id) {
   const g = goalById(id);
   if (!g) return null;
-  return Object.assign({}, g, { text: pick(g.ja, g.en), extraTerms: [], free: false });
+  return Object.assign({}, g, { text: pick(g.ja, g.en), extraTerms: [], free: false, isPreset: true });
 }
 
 /* ── 「同じつづりだが、別の言葉」を外す ──────────────────────
@@ -573,10 +580,22 @@ export function goalFromPreset(id) {
  * 目的の avoid に当たった範囲を先に取っておき、そこに重なった一致だけを捨てる。
  * 「attack と healthcheck が両方書いてある文字列」の attack までは捨てない。 */
 
+const GLOBAL_RE_CACHE = new WeakMap();
+function globalRegExp(re) {
+  let g = GLOBAL_RE_CACHE.get(re);
+  if (!g) {
+    const flags = re.flags.includes('g') ? re.flags : re.flags + 'g';
+    g = new RegExp(re.source, flags);
+    GLOBAL_RE_CACHE.set(re, g);
+  }
+  g.lastIndex = 0;
+  return g;
+}
+
 function avoidSpans(goal, s) {
   const spans = [];
   for (const re of (goal && goal.avoid) || []) {
-    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    const g = globalRegExp(re);
     let m;
     while ((m = g.exec(s)) !== null) {
       spans.push([m.index, m.index + m[0].length]);
@@ -601,7 +620,7 @@ function allMatches(re, s, hasAvoid) {
     const m = s.match(re);
     return m ? [{ text: m[0], at: m.index }] : [];
   }
-  const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  const g = globalRegExp(re);
   const out = [];
   let m;
   while ((m = g.exec(s)) !== null) {

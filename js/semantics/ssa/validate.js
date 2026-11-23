@@ -10,6 +10,9 @@ import {
 
 const DEFAULT_MAX_WORK_ITEMS = 4194304;
 const ORDINARY_DEFINITION_KIND = 'definition';
+// Cache validated (ssa, ir, cfg) triples for deeply frozen canonical producer
+// artifacts when no custom budget or sub-options are supplied.
+const validatedCanonicalSsaCache = new WeakMap();
 
 function fail(code) { throw new TypeError(code); }
 function positiveInteger(value, code) {
@@ -278,6 +281,18 @@ function computeExpectedPhiBlocks(definitions, dominance, reachable, tick) {
 
 export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
   assertNotAborted(options);
+  const canFastPath = isCanonicalSemanticSsaProducerArtifact(ssaInput)
+    && Object.isFrozen(ssaInput)
+    && isCanonicalSemanticIrProducerArtifact(irInput)
+    && Object.isFrozen(irInput)
+    && cfgInput != null && typeof cfgInput === 'object' && Object.isFrozen(cfgInput)
+    && options.budget == null
+    && options.irOptions == null
+    && options.cfgOptions == null
+    && options.dominanceOptions == null;
+  if (canFastPath && validatedCanonicalSsaCache.get(ssaInput)?.get(irInput)?.has(cfgInput)) {
+    return ssaInput;
+  }
   const tick = workCounter(options);
   const ir = isCanonicalSemanticIrProducerArtifact(irInput) && options.irOptions == null
     ? irInput
@@ -421,6 +436,13 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     const incoming = definition.incoming.map((item) => item.predecessorBlockId).sort();
     if (stableStringify(predecessors) !== stableStringify(incoming)) fail('semantic-ssa-phi-predecessor-set-incomplete');
     if (!irByBlock.has(definition.blockId)) fail('semantic-ssa-phi-block-not-in-ir');
+  }
+  if (canFastPath && ssa === ssaInput && ir === irInput && cfg === cfgInput) {
+    let byIr = validatedCanonicalSsaCache.get(ssaInput);
+    if (!byIr) { byIr = new WeakMap(); validatedCanonicalSsaCache.set(ssaInput, byIr); }
+    let byCfg = byIr.get(irInput);
+    if (!byCfg) { byCfg = new WeakSet(); byIr.set(irInput, byCfg); }
+    byCfg.add(cfgInput);
   }
   return ssa;
 }

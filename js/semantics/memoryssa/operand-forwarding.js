@@ -255,7 +255,7 @@ function coverageFor(memorySsa, index, use, exactStore, exactStoreMetadata) {
       || !Array.isArray(aliases)
       || aliases.length !== memorySsa.regions.length
       || !uniqueBy(aliases, (item) => String(item?.regionId ?? ''))) return null;
-  const regionIds = new Set(memorySsa.regions.map((region) => String(region?.id ?? '')));
+  const regionIds = index.regionById;
   if (regionIds.has('') || aliases.some((item) => !regionIds.has(String(item?.regionId ?? ''))
       || !['must', 'no', 'may'].includes(String(item?.aliasRelation ?? '')))) return null;
   const relevant = aliases.filter((item) => item.aliasRelation !== 'no');

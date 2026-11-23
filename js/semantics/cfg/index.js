@@ -122,6 +122,12 @@ function normalizeBlock(input) {
 }
 
 const immutableCfgIndexes = new WeakMap();
+const canonicalSemanticCfgs = new WeakSet();
+const canonicalDominanceCache = new WeakMap();
+
+export function isCanonicalSemanticCfg(cfg) {
+  return Boolean(cfg && typeof cfg === 'object' && canonicalSemanticCfgs.has(cfg));
+}
 function cfgIndex(cfg) {
   // Canonical CFGs are deeply frozen. Reuse their block index across point
   // queries and dominance helpers, but preserve live reads for mutable
@@ -146,6 +152,9 @@ function cfgIndex(cfg) {
 
 export function createSemanticCfg(input, options = {}) {
   assertNotAborted(options);
+  if (input && typeof input === 'object' && canonicalSemanticCfgs.has(input) && options?.budget == null) {
+    return input;
+  }
   input = object(input, 'semantic-cfg-invalid-graph');
   assertAllowedKeys(input, new Set(['contractVersion', 'functionId', 'entryBlockId', 'blocks']), 'semantic-cfg-unexpected-graph-field');
   if (input.contractVersion != null
@@ -185,12 +194,14 @@ export function createSemanticCfg(input, options = {}) {
     return deepFreeze({ id: block.id, predecessors, successors: block.successors });
   });
 
-  return deepFreeze({
+  const published = deepFreeze({
     contractVersion: SEMANTIC_CFG_CONTRACT_VERSION,
     functionId: nonEmpty(input.functionId, 'semantic-cfg-function-id-required'),
     entryBlockId,
     blocks: normalizedBlocks,
   });
+  canonicalSemanticCfgs.add(published);
+  return published;
 }
 
 export function successorsOf(cfg, blockId) {
@@ -225,14 +236,16 @@ export function reachableBlocks(cfg, startBlockId = cfg.entryBlockId, options = 
   return reachableBlocksWithTick(cfg, startBlockId, workCounter(options));
 }
 
-function reversePostOrderWithTick(cfg, tick) {
+function reachabilityAndReversePostOrderWithTick(cfg, tick) {
   const byId = cfgIndex(cfg);
-  const seen = new Set([cfg.entryBlockId]);
+  const entry = String(cfg.entryBlockId);
+  if (!byId.has(entry)) fail('semantic-cfg-invalid-reachability-start');
+  const seen = new Set([entry]);
   const post = [];
   const stack = [{
-    id: cfg.entryBlockId,
+    id: entry,
     next: 0,
-    successors: byId.get(cfg.entryBlockId).successors.map((edge) => edge.to).slice().sort(),
+    successors: byId.get(entry).successors.map((edge) => edge.to).slice().sort(),
   }];
   while (stack.length) {
     tick();
@@ -251,7 +264,11 @@ function reversePostOrderWithTick(cfg, tick) {
     post.push(frame.id);
     stack.pop();
   }
-  return post.reverse();
+  return { reachable: seen, rpo: post.reverse() };
+}
+
+function reversePostOrderWithTick(cfg, tick) {
+  return reachabilityAndReversePostOrderWithTick(cfg, tick).rpo;
 }
 
 function reversePostOrder(cfg, options = {}) {
@@ -268,10 +285,22 @@ export function deterministicTraversal(cfg, options = {}) {
 
 export function analyzeSemanticDominance(cfg, options = {}) {
   assertNotAborted(options);
-  const tick = workCounter(options);
+  const maxWork = limit(options, 'maxWorkItems');
+  const cacheable = Boolean(cfg && typeof cfg === 'object' && canonicalSemanticCfgs.has(cfg));
+  if (cacheable) {
+    const cached = canonicalDominanceCache.get(cfg);
+    if (cached !== undefined) {
+      if (cached.workUsed > maxWork) fail('semantic-cfg-budget-exceeded-maxWorkItems');
+      return cached.result;
+    }
+  }
+  let workUsed = 0;
+  const tick = () => {
+    assertNotAborted(options);
+    if (++workUsed > maxWork) fail('semantic-cfg-budget-exceeded-maxWorkItems');
+  };
   const byId = cfgIndex(cfg);
-  const reachable = new Set(reachableBlocksWithTick(cfg, cfg.entryBlockId, tick));
-  const rpo = reversePostOrderWithTick(cfg, tick);
+  const { reachable, rpo } = reachabilityAndReversePostOrderWithTick(cfg, tick);
   const entry = cfg.entryBlockId;
 
   // Immediate dominators are computed directly over the reverse postorder
@@ -282,7 +311,13 @@ export function analyzeSemanticDominance(cfg, options = {}) {
   // sets are then recovered from the idom tree, which is the definition of a
   // dominator, so the published result is unchanged.
   const order = new Map();
-  for (let index = 0; index < rpo.length; index += 1) order.set(rpo[index], index);
+  const reachablePredsById = new Map();
+  for (let index = 0; index < rpo.length; index += 1) {
+    tick();
+    const id = rpo[index];
+    order.set(id, index);
+    reachablePredsById.set(id, byId.get(id).predecessors.filter((pred) => reachable.has(pred)));
+  }
   const idom = new Map([[entry, entry]]);
   const intersect = (a, b) => {
     while (a !== b) {
@@ -300,7 +335,7 @@ export function analyzeSemanticDominance(cfg, options = {}) {
     for (const id of rpo) {
       tick();
       if (id === entry) continue;
-      const predecessors = byId.get(id).predecessors.filter((pred) => reachable.has(pred));
+      const predecessors = reachablePredsById.get(id);
       let next = null;
       for (const pred of predecessors) {
         if (!idom.has(pred)) continue;
@@ -351,8 +386,8 @@ export function analyzeSemanticDominance(cfg, options = {}) {
   const frontier = new Map(cfg.blocks.map((block) => [block.id, new Set()]));
   for (const block of cfg.blocks) {
     if (!reachable.has(block.id)) continue;
-    const predecessors = block.predecessors.filter((pred) => reachable.has(pred));
-    if (predecessors.length < 2) continue;
+    const predecessors = reachablePredsById.get(block.id);
+    if (!predecessors || predecessors.length < 2) continue;
     for (const pred of predecessors) {
       let runner = pred;
       let guard = cfg.blocks.length + 2;
@@ -371,11 +406,13 @@ export function analyzeSemanticDominance(cfg, options = {}) {
     immediateDominators[block.id] = idomOut.get(block.id);
     dominanceFrontier[block.id] = [...frontier.get(block.id)].sort();
   }
-  return deepFreeze({
+  const result = deepFreeze({
     reachable: [...reachable].sort(),
     reversePostOrder: rpo,
     dominators,
     immediateDominators,
     dominanceFrontier,
   });
+  if (cacheable) canonicalDominanceCache.set(cfg, { result, workUsed });
+  return result;
 }

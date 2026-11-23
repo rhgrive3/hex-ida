@@ -3,12 +3,15 @@ import { createProductSurfaceQueries } from '../analysis/query/product-surface.j
 import { FUNCTION_TABS, EXPLORER_SCOPES } from './registry.js';
 import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, tabPanel, updateScreenTitle, listRow, VirtualList, scrollStrip } from './primitives.js';
 import { addrHex } from '../format.js';
+import { menu } from '../ui.js';
+import { showRename, showComment, showPatches } from '../tools.js';
+import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 
 import { uiRoot } from '../ui-root.js';
 
 // Follow the in-app language setting (the UI root's lang), not only the
 // browser locale, so these screens switch language with the rest of Hex.
-const ja = () => (uiRoot()?.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
+const ja = () => (uiRoot()?.lang || globalThis.navigator?.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
 const CLAIM_PAGE_SIZE = 500;
 const STRING_PAGE_SIZE = 200;
@@ -20,6 +23,24 @@ function addressText(value) {
 
 function currentFunctionName(app, address) {
   return app.symbols?.nameAt?.(address) || `sub_${BigInt(address).toString(16).toUpperCase()}`;
+}
+
+function noFileActions(app) {
+  const actions = h('div', 'ui-actions');
+  actions.append(
+    uiButton(text('ファイルを開く', 'Open file'), {
+      cls: 'ui-primary-action',
+      onClick: () => {
+        if (window.__hexUi?.actions?.run) window.__hexUi.actions.run('file.open');
+        else document.getElementById('file-input')?.click();
+      },
+    }),
+    uiButton(text('サンプルで試す', 'Try sample'), {
+      cls: 'ui-secondary-action',
+      onClick: () => app.openSample?.(),
+    }),
+  );
+  return actions;
 }
 
 function verdictBadge(verdict) {
@@ -216,8 +237,9 @@ function wrapRouteView(view, routeHost) {
 function prepareRouteShell(appRoot, routeHost, route) {
   appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
   appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
+  const activeNavId = route.route.id === 'finding' ? 'results' : route.route.id;
   for (const button of appRoot.querySelectorAll('.ui-bottom-nav [data-route-id]')) {
-    button.setAttribute('aria-current', button.dataset.routeId === route.route.id ? 'page' : 'false');
+    button.setAttribute('aria-current', button.dataset.routeId === activeNavId ? 'page' : 'false');
   }
   routeHost.hidden = false;
   routeHost.replaceChildren();
@@ -231,7 +253,23 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
     s.body.append(errorState(text('関数アドレスが不正です', 'Invalid function address'), String(route.params.address || '')));
     return { root:s.root };
   }
-  const s = screen(currentFunctionName(app, address), { id:'function', subtitle:addressText(address) });
+  const actions = h('div', 'ui-screen-actions');
+  actions.append(uiButton('•••', {
+    cls: 'ui-icon-action',
+    ariaLabel: text('関数の操作', 'Function actions'),
+    onClick: (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      const assistant = window.__hexAi;
+      menu([
+        ...(assistant ? [askAiMenuItem(assistant, functionAiItems(assistant, { address, name: currentFunctionName(app, address) }), { x: r.left + r.width / 2, y: r.bottom + 4 })] : []),
+        { label: text('名前を付ける', 'Rename'), action: () => showRename(app, address) },
+        { label: text('メモを書く', 'Comment'), action: () => showComment(app, address) },
+        { label: text('パッチ（命令の書き換え）', 'Patch instructions'), action: () => showPatches(app, address) },
+        { label: text('アセンブリへ', 'Open assembly'), action: () => router.navigate(`/code/${address.toString()}`) },
+      ], r.left + r.width / 2, r.bottom + 4);
+    },
+  }));
+  const s = screen(currentFunctionName(app, address), { id:'function', subtitle:addressText(address), actions });
   const tabbar = tabs(FUNCTION_TABS, 'overview', (next) => router.navigate(`/function/${address.toString()}/${next}`), { panelId:'ui-function-panel', label:text('関数の表示', 'Function views') });
   s.body.append(tabbar);
   const content = tabPanel(tabbar, 'ui-workspace-content');
@@ -253,20 +291,27 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
         subtitle:[evidenceList(value.evidence) || text('十分な分類根拠がありません', 'Not enough classification evidence'), text('確からしさ ', 'confidence ') + confidenceText(value.confidence)].join(' · '),
         badge:evidenceBadge(value.classification === 'UNKNOWN' ? 'unverified' : 'likely'),
       }));
-      if (value.base) {
-        identity.body.append(listRow({
-          title:text('基本の分類', 'Base classification'),
-          subtitle:classificationLabel(value.base.classification),
-          meta:value.base.knowledgeSourceId ? `knowledge ${value.base.knowledgeSourceId}` : '',
-          badge:evidenceBadge(baseClassificationBadge(value, result)),
-        }));
-      }
-      if (value.refinement) {
-        identity.body.append(listRow({
-          title:text('意味解析による確認', 'Semantic refinement'),
-          subtitle:[refinementLabel(value.refinementReason), evidenceList(value.refinement.evidence)].filter(Boolean).join(' — '),
-          badge:evidenceBadge(result.completeness === 'complete' ? 'confirmed' : 'likely'),
-        }));
+      if (value.base || value.refinement) {
+        const diagnostics = h('details', 'ui-diagnostics-disclosure');
+        diagnostics.append(h('summary', null, text('分類の詳しい内訳（技術情報）', 'Classification details (diagnostics)')));
+        const diagList = h('div', 'ui-list');
+        if (value.base) {
+          diagList.append(listRow({
+            title:text('基本の分類', 'Base classification'),
+            subtitle:classificationLabel(value.base.classification),
+            meta:value.base.knowledgeSourceId ? `knowledge ${value.base.knowledgeSourceId}` : '',
+            badge:evidenceBadge(baseClassificationBadge(value, result)),
+          }));
+        }
+        if (value.refinement) {
+          diagList.append(listRow({
+            title:text('意味解析による確認', 'Semantic refinement'),
+            subtitle:[refinementLabel(value.refinementReason), evidenceList(value.refinement.evidence)].filter(Boolean).join(' — '),
+            badge:evidenceBadge(result.completeness === 'complete' ? 'confirmed' : 'likely'),
+          }));
+        }
+        diagnostics.append(diagList);
+        identity.body.append(diagnostics);
       }
       grid.append(identity.root);
 
@@ -290,12 +335,14 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
       grid.append(facts.root);
 
       const next = card(text('次に見る', 'Next steps'));
-      for (const [tabId, label] of [
-        ['pseudocode', text('疑似Cで読む', 'Read pseudocode')],
-        ['flow', text('分岐とループを見る', 'Inspect branches and loops')],
-        ['evidence', text('なぜそう言えるか', 'Review evidence')],
-        ['runtime', text('実行して確かめる', 'Verify at runtime')],
-      ]) next.body.append(listRow({ title:label, onClick:() => router.navigate(`/function/${address.toString()}/${tabId}`) }));
+      for (const [dest, label] of [
+        [`/function/${address.toString()}/pseudocode`, text('疑似Cで読む', 'Read pseudocode')],
+        [`/code/${address.toString()}`, text('アセンブリへ', 'Open assembly')],
+        [`/function/${address.toString()}/flow`, text('分岐とループを見る', 'Inspect branches and loops')],
+        [`/function/${address.toString()}/calls`, text('呼び出し', 'Call graph')],
+        [`/function/${address.toString()}/evidence`, text('なぜそう言えるか', 'Review evidence')],
+        [`/function/${address.toString()}/runtime`, text('実行して確かめる', 'Verify at runtime')],
+      ]) next.body.append(listRow({ title:label, onClick:() => router.navigate(dest) }));
       grid.append(next.root);
       content.replaceChildren(grid);
     } catch (error) {
@@ -313,6 +360,15 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
     subtitle:detailId ? text('見つかった結果と、その根拠の状態です。', 'Shows the canonical claim and evidence verdict.') : text('自動解析で見つかった結果です。状態は解析エンジンの判定をそのまま表示します。', 'Shows analysed claims using canonical verdicts without UI confidence thresholds.'),
   });
   const host = h('div', 'ui-stack');
+  if (!detailId && !app.store?.get?.('fileInfo')) {
+    host.append(emptyState(
+      text('ファイルが開かれていません', 'No binary open'),
+      text('バイナリを開いて自動解析を実行すると、見つかった結果と根拠がここに並びます。', 'Open a binary or try the sample to see analysis findings and evidence here.'),
+      noFileActions(app),
+    ));
+    s.body.append(host);
+    return { root:s.root };
+  }
   host.append(loadingState(text('結果を確認しています…', 'Loading results…')));
   s.body.append(host);
 
@@ -430,6 +486,15 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
 
   const run = async () => {
     queryController?.abort('query-replaced');
+    if (!app.store?.get?.('fileInfo')) {
+      virtual?.dispose(); virtual = null;
+      host.replaceChildren(emptyState(
+        text('ファイルが開かれていません', 'No binary open'),
+        text('バイナリを開くと、ファイル内の文字列を一覧から検索できます。', 'Open a binary or try the sample to search strings in the file.'),
+        noFileActions(app),
+      ));
+      return;
+    }
     queryController = linkedController(meta.signal);
     const signal = queryController.signal;
     const filter = { text:search.value.trim() };

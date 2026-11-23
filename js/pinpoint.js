@@ -70,8 +70,9 @@ export function narrowedPriorCount(candidates, universe) {
    */
   const exact = candidates.filter((c) => c && c.askedByName);
   if (exact.length) return exact.length;
-  const literal = candidates.filter((c) => c && (c.askedBySequence || c.askedByWords));
-  if (literal.length && literal.length === candidates.length) return literal.length;
+  const primary = candidates.filter((c) => c && !(c.source === 'cxx' && c.recallLane));
+  const literal = primary.filter((c) => c.askedBySequence || c.askedByWords);
+  if (literal.length && literal.length === primary.length) return literal.length;
   return Math.max(1, universe || candidates.length);
 }
 
@@ -101,20 +102,24 @@ export function jevShortlist(candidates, opts = {}) {
   if (!Array.isArray(candidates) || !candidates.length) return [];
   const max = Math.max(1, Math.min(255, Number.isSafeInteger(opts?.max) ? opts.max : 64));
   return candidates.slice().sort((a, b) => {
-    // If candidates have an explicit input index, preserve existing rank order as primary
+    const laneA = a?.recallLane ? 1 : 0;
+    const laneB = b?.recallLane ? 1 : 0;
+    if (laneA !== laneB) return laneA - laneB;
+
+    // If candidates have an explicit input index, preserve existing rank order within the lane
     const idxA = Number.isInteger(a?.index) ? a.index : null;
     const idxB = Number.isInteger(b?.index) ? b.index : null;
     if (idxA !== null && idxB !== null && idxA !== idxB) return idxA - idxB;
 
-    const scoreA = Number.isFinite(a?.fusion?.logOdds) ? a.fusion.logOdds : (Number.isFinite(a?.score) ? a.score : 0);
-    const scoreB = Number.isFinite(b?.fusion?.logOdds) ? b.fusion.logOdds : (Number.isFinite(b?.score) ? b.score : 0);
+    const scoreA = Number.isFinite(a?.fusion?.logOdds) ? a.fusion.logOdds
+      : (Number.isFinite(a?.probability) ? a.probability : (Number.isFinite(a?.score) ? a.score : 0));
+    const scoreB = Number.isFinite(b?.fusion?.logOdds) ? b.fusion.logOdds
+      : (Number.isFinite(b?.probability) ? b.probability : (Number.isFinite(b?.score) ? b.score : 0));
     if (scoreB !== scoreA) return scoreB - scoreA;
-    const laneA = a?.recallLane ? 1 : 0;
-    const laneB = b?.recallLane ? 1 : 0;
-    if (laneA !== laneB) return laneA - laneB;
+
     const keyA = String(a?.key ?? a?.id ?? a?.addr ?? a?.fieldName ?? '');
     const keyB = String(b?.key ?? b?.id ?? b?.addr ?? b?.fieldName ?? '');
-    return keyA.localeCompare(keyB);
+    return keyA < keyB ? -1 : keyA > keyB ? 1 : 0;
   }).slice(0, max);
 }
 
@@ -426,6 +431,7 @@ function batchedScanAccess(scanAccess, opts) {
   const state = burstScopedState(ACCESS_BATCHES, scanAccess, opts,
     () => ({ promise: null, groups: null }));
   return async (requested = []) => {
+    if (opts?.signal?.aborted) return emptyGroups();
     if (!state.groups && !state.promise) {
       const all = automaticOffsets(opts, requested);
       const ms = accessTimeoutMs(opts);
@@ -449,17 +455,25 @@ function batchedScanAccess(scanAccess, opts) {
       }
       state.promise = Promise.race([Promise.resolve(operation), timeout])
         .then((groups) => {
-          state.groups = groups || emptyGroups();
-          return state.groups;
-        }, (error) => {
-          state.groups = emptyGroups();
-          throw error;
+          const resolved = groups || emptyGroups();
+          if (!opts?.signal?.aborted) state.groups = resolved;
+          return resolved;
+        })
+        .catch(() => {
+          const fallback = emptyGroups();
+          if (!opts?.signal?.aborted) state.groups = fallback;
+          return fallback;
         })
         .finally(() => {
           if (timer != null) clearTimeout(timer);
           unlinkParent();
           state.promise = null;
         });
+    }
+    if (opts?.deferAccessScan === true && !state.groups) {
+      // Avoid stalling the initial interactive query on a whole-binary scan.
+      state.promise?.catch(() => {});
+      return emptyGroups();
     }
     let groups;
     try { groups = state.groups || await state.promise; }
@@ -476,10 +490,11 @@ function batchedScanAccess(scanAccess, opts) {
 
 function preparedOptions(opts) {
   const automaticBatch = opts?.shapes != null && opts?.forceAccessScan !== true;
+  const deferScan = opts?.deferAccessScan === true && !automaticBatch;
   return {
     ...(opts || {}),
     analyze: guardedAnalyze(opts?.analyze, opts),
-    scanAccess: automaticBatch ? batchedScanAccess(opts?.scanAccess, opts) : opts?.scanAccess,
+    scanAccess: deferScan ? null : (automaticBatch ? batchedScanAccess(opts?.scanAccess, opts) : opts?.scanAccess),
   };
 }
 

@@ -259,7 +259,14 @@ export function showStrings(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
   const controller = new AbortController();
-  const sheet = new Sheet(t('strings.title'), { onClose:() => controller.abort('strings-sheet-closed') });
+  let queryController = null;
+  const sheet = new Sheet(t('strings.title'), {
+    onClose:() => {
+      queryController?.abort('strings-sheet-closed');
+      queryController = null;
+      controller.abort('strings-sheet-closed');
+    },
+  });
   const regions = app.store.get('regions') || [];
   const candidates = regions.filter((r) => r.size > 0n &&
     (r.cstrings || /string|cstring|objc_method|objc_class|__const/i.test(r.section || '')));
@@ -285,11 +292,15 @@ export function showStrings(app) {
 
   const renderRows = async () => {
     const serial = ++renderSerial;
-    if (!collection || !active) return;
+    queryController?.abort('strings-query-superseded');
+    queryController = null;
+    if (!collection || !active || controller.signal.aborted) return;
+    const activeQuery = new AbortController();
+    queryController = activeQuery;
     const rows = rowsByRegion.get(active.id) || [];
     try {
-      const filtered = await queryStrings(rows, input.value, { signal:controller.signal, limit:600 });
-      if (controller.signal.aborted || serial !== renderSerial || !sheet.root.isConnected) return;
+      const filtered = await queryStrings(rows, input.value, { signal:activeQuery.signal, limit:600 });
+      if (controller.signal.aborted || activeQuery.signal.aborted || serial !== renderSerial || !sheet.root.isConnected) return;
       results.replaceChildren();
       const pageSize = 120;
       let shown = 0;
@@ -333,7 +344,7 @@ export function showStrings(app) {
         updateStatus();
       }
     } catch (error) {
-      if (controller.signal.aborted || error?.name === 'AbortError') return;
+      if (controller.signal.aborted || activeQuery.signal.aborted || error?.name === 'AbortError') return;
       alertDialog(t('search.failed'), userError(error));
     }
   };
