@@ -124,6 +124,10 @@ function normalizeBlock(input) {
 const immutableCfgIndexes = new WeakMap();
 const canonicalSemanticCfgs = new WeakSet();
 const canonicalDominanceCache = new WeakMap();
+
+export function isCanonicalSemanticCfg(cfg) {
+  return Boolean(cfg && typeof cfg === 'object' && canonicalSemanticCfgs.has(cfg));
+}
 function cfgIndex(cfg) {
   // Canonical CFGs are deeply frozen. Reuse their block index across point
   // queries and dominance helpers, but preserve live reads for mutable

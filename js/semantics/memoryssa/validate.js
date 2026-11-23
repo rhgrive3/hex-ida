@@ -4,6 +4,7 @@ import {
   isCanonicalMemorySsaProducerArtifact,
   MEMORY_SSA_BUILD_VERSION,
 } from './build.js';
+import { isCanonicalSemanticCfg } from '../cfg/index.js';
 
 const validatedMemorySsa = new WeakSet();
 const validatedMemorySsaByCfg = new WeakMap();
@@ -28,7 +29,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
     && (isCanonicalMemorySsaProducerArtifact(memorySsa) || validatedMemorySsa.has(memorySsa));
   if (isTrustedFrozen && options.budget == null) {
     if (options.cfg == null) return memorySsa;
-    if (typeof options.cfg === 'object' && Object.isFrozen(options.cfg)
+    if (isCanonicalSemanticCfg(options.cfg)
         && validatedMemorySsaByCfg.get(memorySsa)?.has(options.cfg)) {
       return memorySsa;
     }
@@ -175,7 +176,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
   if (options.budget == null) {
     if (options.cfg == null) {
       validatedMemorySsa.add(validated);
-    } else if (typeof options.cfg === 'object' && Object.isFrozen(options.cfg)) {
+    } else if (isCanonicalSemanticCfg(options.cfg)) {
       let byCfg = validatedMemorySsaByCfg.get(validated);
       if (!byCfg) { byCfg = new WeakSet(); validatedMemorySsaByCfg.set(validated, byCfg); }
       byCfg.add(options.cfg);

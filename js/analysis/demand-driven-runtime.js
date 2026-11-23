@@ -336,6 +336,7 @@ function installWorkerBackedIdentity(app) {
         cancel:() => { if (!controller.signal.aborted) controller.abort('binary-id-no-consumers'); },
       };
       const foreground = options.priority === 'current' || options.priority === 'foreground';
+      const digestPriority = foreground ? 'current' : 'background';
       const schedule = foreground
         ? Promise.resolve().then(() => abortIfNeeded(controller.signal))
         : scheduleBackgroundIdentity(controller.signal);
@@ -349,7 +350,7 @@ function installWorkerBackedIdentity(app) {
           // worker is available or a non-SHA-256 contentHash is already present,
           // derive the canonical SHA-256 directly via worker / subtle.digest.
           if ((typeof this._callTo === 'function' && this.platformWorker) || this.contentHash != null) {
-            return canonicalContentDigest(this, this.contentHash, controller.signal, options.onProgress);
+            return canonicalContentDigest(this, this.contentHash, controller.signal, options.onProgress, { priority: digestPriority });
           }
           return this.ensureContentHash(options.onProgress, controller.signal)
             .then((hash) => {
@@ -358,7 +359,7 @@ function installWorkerBackedIdentity(app) {
               // The platform content hash is an FNV cache key; `bin_sha256_` identities
               // must bind an exact SHA-256 digest, so re-derive from the canonical
               // full-content producer instead of laundering the cache hash (#7054).
-              return canonicalContentDigest(this, hash, controller.signal, options.onProgress);
+              return canonicalContentDigest(this, hash, controller.signal, options.onProgress, { priority: digestPriority });
             });
         })
         .then((digest) => {

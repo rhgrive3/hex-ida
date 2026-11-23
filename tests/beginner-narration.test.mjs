@@ -20,6 +20,7 @@ import { findAccumulators, shapeOfStep, findSink, STEP } from '../js/comprehend.
 import { regNode, floatNode } from '../js/expr.js';
 import { GLOSSARY, GLOSSARY_ORDER, glossaryEntry, searchGlossary } from '../js/glossary.js';
 import { describeOperandPlain, explainOperandsForBeginner } from '../js/ui/explain/arm64-operands.js';
+import { setLang } from '../js/i18n.js';
 import { buildBeginnerFunctionCard, decorateFunctionAnalysisForUi } from '../js/ui/function-analysis-presentation.js';
 
 test('narrate: placeName preserves 3-arg compat while beginner mode & plainPlaceName use plain Japanese', () => {
@@ -37,6 +38,10 @@ test('narrate: placeName preserves 3-arg compat while beginner mode & plainPlace
   const argData = plainPlaceName(null, 'x1', 0n);
   assert.match(argData, /2番目の入力データ/);
   assert.doesNotMatch(argData, /x1/);
+
+  const invalidDisp = plainPlaceName(null, 'x1', 'not-a-number');
+  assert.match(invalidDisp, /2番目の入力データ/);
+  assert.doesNotMatch(invalidDisp, /属性/);
 });
 
 test('narrate: comprehensionHeadline and roleProofText do not leak raw register tags', () => {
@@ -105,6 +110,10 @@ test('narrate: proofText emits zero literal Markdown asterisks', () => {
     assert.ok(s.length > 0);
     assert.equal(s.includes('**'), false, `unexpected raw markdown asterisks in: ${s}`);
   }
+  assert.doesNotMatch(samples[1], /0x10|0x1000/i);
+  assert.match(samples[1], /16 バイト目/);
+  assert.doesNotMatch(samples[2], /0x24/i);
+  assert.match(samples[2], /36 バイト目/);
 });
 
 test('narrate: shortName shortens mangled C++ symbol names in beginner prose', () => {
@@ -315,4 +324,11 @@ test('function-analysis-presentation: builds beginner-first summary card and sep
 
   const directCard = buildBeginnerFunctionCard(decorated);
   assert.equal(directCard.headline, decorated.beginnerSummary.headline);
+
+  setLang('en');
+  try {
+    assert.match(decorated.beginnerSummary.headline, /branch/i);
+  } finally {
+    setLang('ja');
+  }
 });

@@ -128,15 +128,18 @@ function installViewportBridge() {
     for (let el = node; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
       const pos = getComputedStyle(el).position;
       if (pos === 'sticky') return true;
-      if (pos === 'fixed') return !node.closest('.sheet-body, .ai-messages');
+      if (pos === 'fixed') return !node.closest('.sheet-body, .ai-messages, .ai-composer, .ai-panel-foot');
     }
     return false;
   };
+  let focusTimer = 0;
   const focus = (event) => {
     const target = event.target;
     if (!target || !/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
     if (isStickyOrFixedChrome(target)) return;
-    setTimeout(() => {
+    if (focusTimer) clearTimeout(focusTimer);
+    focusTimer = setTimeout(() => {
+      focusTimer = 0;
       if (document.activeElement !== target) return;
       const rect = target.getBoundingClientRect();
       const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -146,6 +149,7 @@ function installViewportBridge() {
   };
   document.addEventListener('focusin', focus);
   return () => {
+    if (focusTimer) { clearTimeout(focusTimer); focusTimer = 0; }
     window.removeEventListener('resize', sync);
     window.removeEventListener('orientationchange', sync);
     viewport?.removeEventListener('resize', sync);
@@ -1663,16 +1667,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   input.addEventListener('input', refreshHint);
 
   const runCommand = (intent) => {
-    const rawCmd = String(intent.value || '').trim().toLowerCase();
-    const cmd = intent.command || (
-      /^(patch|patches|パッチ|書き換え)$/.test(rawCmd) ? 'patch'
-      : /^(export|hexproj|save|書き出し|書き出す|保存)$/.test(rawCmd) ? 'export'
-      : /^(import|load|読み込み|読み込む|復元)$/.test(rawCmd) ? 'import'
-      : /^(pseudo|pseudocode|decompile|疑似c|逆コンパイル)$/.test(rawCmd) ? 'pseudocode'
-      : /^(diff|差分)$/.test(rawCmd) ? 'diff'
-      : null
-    );
-    switch (cmd) {
+    switch (intent.command) {
       case 'code': router.navigate('/code'); return true;
       case 'explorer': router.navigate('/explorer/functions'); return true;
       case 'results': router.navigate('/results'); return true;

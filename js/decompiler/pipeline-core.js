@@ -1428,17 +1428,26 @@ function rewriteAll(state, budget) {
 
 function walkIdiom(n, state, records, memo = new Map()) {
   if (!n) return n;
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
   const cached = memo.get(n);
   if (cached !== undefined) {
-    if (cached.records.length) records.push(...cached.records);
+    if (cached.records.length) {
+      for (const rec of cached.records) {
+        if ((state.idiomHistoryCount || 0) >= maximum || state.opts?.shouldAbort?.()) {
+          consumerObservationBudget(state).reasons.add('idiom-history-unavailable');
+          break;
+        }
+        records.push(rec);
+        state.idiomHistoryCount = (state.idiomHistoryCount || 0) + 1;
+      }
+    }
     return cached.node;
   }
   const localRecords = [];
   const mapped = mapChildren(n, child => walkIdiom(child, state, localRecords, memo));
   const recovered = recoverArm64ClangIdiom(mapped);
   if (recovered !== mapped) {
-    const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
-    const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
     if ((state.idiomHistoryCount || 0) >= maximum || state.opts?.shouldAbort?.()) {
       consumerObservationBudget(state).reasons.add('idiom-history-unavailable');
     } else {

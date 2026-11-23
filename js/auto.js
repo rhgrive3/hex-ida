@@ -82,6 +82,7 @@ function fairFunctionList(symbols, region, max = 20000) {
     if (name == null) {
       if (hasDirectAddrs) {
         while (symCursor < symbols.addrs.length && symbols.addrs[symCursor] < addr) symCursor++;
+        while (symCursor + 1 < symbols.addrs.length && symbols.addrs[symCursor + 1] === addr) symCursor++;
         if (symCursor < symbols.addrs.length && symbols.addrs[symCursor] === addr) {
           name = symbols.names[symCursor] || null;
         }

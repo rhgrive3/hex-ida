@@ -110,11 +110,10 @@ export function createActionRunner(app, { ui, assistant } = {}) {
           }
           const row = app?.viewer?.rowOfAddress ? app.viewer.rowOfAddress(targetAddr) : null;
           const insn = row != null && app?.viewer?.rowData ? app.viewer.rowData(row) : null;
-          await showPatchEditor(
-            app,
-            targetAddr,
-            insn ? { mnemonic: insn.mnemonic, operands: insn.operands, address: targetAddr } : undefined,
-          );
+          const insnArg = insn && insn.mnemonic
+            ? { mnemonic: insn.mnemonic, operands: insn.operands || '', address: targetAddr }
+            : undefined;
+          await showPatchEditor(app, targetAddr, insnArg);
         }
         if (narrow() && assistant) assistant.collapse();
         return;

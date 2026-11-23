@@ -183,3 +183,77 @@ test('pipeline-core abiArgumentLocationForRegister and argumentName use O(1) ind
   assert.equal(built.right.name, 'named_arg');
   assert.equal(adapterCalls, 1, 'ABI argumentLocations should be queried once per (state, adapter, prototype)');
 });
+
+import { createSemanticCfg, isCanonicalSemanticCfg } from '../../js/semantics/cfg/index.js';
+import { validateMemorySsa } from '../../js/semantics/memoryssa/validate.js';
+import { MEMORY_SSA_CONTRACT_VERSION } from '../../js/semantics/memoryssa/contract.js';
+
+test('Review fixes: runPhase8Stage checks custom clock every step without &63 stride', () => {
+  let reads = 0;
+  const baseIr = {
+    blocks: [{ index: 0, startRow: 0, endRow: 0, insts: [], phis: [], succ: [], pred: [] }],
+    instructions: [],
+    values: [],
+    args: new Map(),
+    entry: 0,
+  };
+  const outcome = runPhase8Stage(
+    { ir: baseIr, opts: {} },
+    {
+      stages: INTERACTIVE_STAGES,
+      timeBudgetMs: 10,
+      clock: () => {
+        reads += 1;
+        // First read is started=100; second read is 105 (within budget); third read exceeds deadline=110.
+        if (reads === 1) return 100;
+        if (reads === 2) return 105;
+        return 120;
+      },
+    },
+  );
+  assert.equal(outcome.ledger.published, false);
+  assert.equal(outcome.budget.deadlineExceeded, true);
+  assert.ok(reads >= 3, 'custom clock must be consulted on subsequent work checks without waiting for 64 checks');
+});
+
+test('Review fixes: isCanonicalSemanticCfg gates validateMemorySsa CFG cache against shallow-frozen CFGs', () => {
+  const canonicalCfg = createSemanticCfg({
+    functionId: 'fn_cfg_cache',
+    entryBlockId: 'b0',
+    blocks: [{ id: 'b0', successors: [] }],
+  });
+  assert.equal(isCanonicalSemanticCfg(canonicalCfg), true);
+
+  const mutableBlocks = [{ id: 'b0', successors: [] }];
+  const shallowFrozenCfg = Object.freeze({
+    functionId: 'fn_cfg_cache',
+    entryBlockId: 'b0',
+    blocks: mutableBlocks,
+  });
+  assert.equal(isCanonicalSemanticCfg(shallowFrozenCfg), false);
+
+  const memorySsa = validateMemorySsa({
+    contractVersion: MEMORY_SSA_CONTRACT_VERSION,
+    functionId: 'fn_cfg_cache',
+    regions: [{ id: 'r0', kind: 'stack-fixed', functionId: 'fn_cfg_cache', offset: '-8', origin: { addresses: ['0x1000'] } }],
+    definitions: [{ id: 'd0', regionId: 'r0', blockId: 'b0', kind: 'entry', origin: { addresses: ['0x1000'] } }],
+    uses: [],
+    blockStates: [{
+      blockId: 'b0',
+      entry: [{ regionId: 'r0', definitionId: 'd0' }],
+      exit: [{ regionId: 'r0', definitionId: 'd0' }],
+    }],
+  }, { cfg: shallowFrozenCfg });
+
+  // Mutating the nested blocks array of the shallow-frozen CFG must be observed on re-validation.
+  mutableBlocks.length = 0;
+  assert.throws(
+    () => validateMemorySsa(memorySsa, { cfg: shallowFrozenCfg }),
+    /memory-ssa-invalid-definition-block/,
+  );
+
+  // Canonical CFG remains cacheable and valid for trusted frozen artifacts.
+  const baseValidated = validateMemorySsa(memorySsa);
+  validateMemorySsa(baseValidated, { cfg: canonicalCfg });
+  assert.equal(validateMemorySsa(baseValidated, { cfg: canonicalCfg }), baseValidated);
+});

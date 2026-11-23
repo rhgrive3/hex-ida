@@ -533,7 +533,9 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
         projected = applyStructuredControlProjection(projected, structuringStage.analysis,
           structuredControlProjectionOptions(model, structOpts));
         if (opts.deferRenderProvenance === true && projected !== beforeStructuring) {
-          opts._onDeferRenderProvenance?.(projected.renderProvenance?.snapshotId ?? beforeStructuring.renderProvenance?.snapshotId ?? null);
+          const identity = boundAnalysisIdentityForIr(structuringStage.analysisIdentityBinding, projected.ir)
+            ?? canonicalAnalysisIdentity({ ir: projected.ir, analysis: structuringStage.analysis });
+          opts._onDeferRenderProvenance?.(identity?.valid === true ? identity.identity.snapshotId : null);
         }
       }
     }
@@ -617,7 +619,9 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
       : projectionOpts;
     updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, structOpts));
     if (opts.deferRenderProvenance === true && updated !== beforeStructuring) {
-      opts._onDeferRenderProvenance?.(updated.renderProvenance?.snapshotId ?? beforeStructuring.renderProvenance?.snapshotId ?? null);
+      const identity = boundAnalysisIdentityForIr(stage.analysisIdentityBinding, updated.ir)
+        ?? canonicalAnalysisIdentity({ ir: updated.ir, analysis: stage.analysis });
+      opts._onDeferRenderProvenance?.(identity?.valid === true ? identity.identity.snapshotId : null);
     }
   }
   return updated;

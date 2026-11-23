@@ -18,11 +18,15 @@ import { streamGemini } from '../../gemini.js';
 import { addrHex } from '../../format.js';
 import { pick } from '../../i18n.js';
 import { compactGuidance, composePrompt } from '../prompts/compose.js';
+import { detectTask } from '../prompts/task.js';
 import { analyzeModelAt } from './hex-context.js';
 
 const MAX_ASSEMBLY_LINES = 240;
 const FUNCTION_QUESTION_RE = /\b(function|method|caller|callee|call graph|xref|basic block)\b|関数|メソッド|呼び出し元|呼び出し先|コールグラフ|基本ブロック/i;
 const ASSEMBLY_QUESTION_RE = /\b(assembly|disassembly|instruction|instructions|opcode|mnemonic|arm64|aarch64)\b|アセンブリ|逆アセンブル|逆アセンブリ|命令|オペコード|ニーモニック/i;
+const FUNCTION_SCOPED_TASKS = new Set([
+  'explain_function', 'explain_instruction', 'patch_suggestion', 'rename_suggestion', 'trace_value', 'runtime_verification',
+]);
 
 export function localChatDependencies({ question, scope, hasFunction = false } = {}) {
   if (!hasFunction) return { functionContext: false, assembly: false };
@@ -30,10 +34,14 @@ export function localChatDependencies({ question, scope, hasFunction = false } =
   if (normalizedScope === 'file' || normalizedScope === 'project') {
     return { functionContext: false, assembly: false };
   }
-  const functionContext = normalizedScope === 'function' || FUNCTION_QUESTION_RE.test(String(question || ''));
+  const text = String(question || '');
+  const detectedTask = detectTask(text);
+  const functionContext = normalizedScope === 'function'
+    || FUNCTION_QUESTION_RE.test(text)
+    || (detectedTask != null && FUNCTION_SCOPED_TASKS.has(detectedTask));
   return {
     functionContext,
-    assembly: functionContext && ASSEMBLY_QUESTION_RE.test(String(question || '')),
+    assembly: functionContext && ASSEMBLY_QUESTION_RE.test(text),
   };
 }
 
@@ -132,16 +140,16 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
     followups: [],
   };
 
-  if (!assembly) {
-    const reason = !model ? 'missing-context' : 'unreachable';
-    return { ...base, answer: localChatAnswer({ name, address, model, selection: context.selection, reason }) };
+  if (!activeFn) {
+    return { ...base, answer: localChatAnswer({ name, address, model, selection: context.selection, reason: 'missing-context' }) };
   }
 
+  const functionAssembly = assembly || assemblyText(model);
   const payload = {
     question: (compactGuidance(prompt) + '\n\n' + question).slice(0, 6000),
     thinkingLevel: style === 'analyst' ? 'high' : 'medium',
     untrustedTarget: compactUntrustedTarget(context.untrustedTarget),
-    currentFunction: { address, name: activeFn ? activeFn.name : null, assembly, pseudocode: null },
+    currentFunction: { address, name: activeFn.name || null, assembly: functionAssembly, pseudocode: null },
     xrefs: [], callers: [], callees: [], strings: [], globals: [],
   };
   let streamed = '';

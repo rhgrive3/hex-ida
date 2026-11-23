@@ -10,6 +10,7 @@ import {
   createWorkerAnalysisArtifactDescriptor,
 } from '../js/cache/artifact-orchestration.js';
 import { createArtifactStore } from '../js/core/artifacts/index.js';
+import { AnalysisScheduler } from '../js/core/scheduler/analysis-scheduler.js';
 import { AnalysisResumeStore } from '../js/cache/analysis-resume.js';
 import { SymbolIndex } from '../js/symbols.js';
 import { findings, notableFunctions } from '../js/auto.js';
@@ -17,6 +18,7 @@ import { findings, notableFunctions } from '../js/auto.js';
 function createKeyValueIndexedDB() {
   const records = new Map();
   const putKeys = [];
+  const writeTransactions = [];
   let created = false;
   function request(result, tx = null) {
     const req = { result: undefined, error: null, onsuccess: null, onerror: null };
@@ -31,12 +33,15 @@ function createKeyValueIndexedDB() {
     objectStoreNames: { contains: () => created },
     createObjectStore() { created = true; return {}; },
     close() {},
-    transaction() {
+    transaction(_storeName, mode = 'readonly') {
+      const txKeys = [];
+      if (mode === 'readwrite') writeTransactions.push(txKeys);
       const tx = { error: null, oncomplete: null, onabort: null, onerror: null };
       tx.objectStore = () => ({
         get(key) { return request(records.has(key) ? structuredClone(records.get(key)) : undefined, tx); },
         put(value, key) {
           putKeys.push(key);
+          txKeys.push(key);
           records.set(key, structuredClone(value));
           return request(key, tx);
         },
@@ -70,6 +75,7 @@ function createKeyValueIndexedDB() {
   return {
     records,
     putKeys,
+    writeTransactions,
     open() {
       const req = { result: db, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
       queueMicrotask(() => {
@@ -170,7 +176,7 @@ test('Goal 1: demand-driven ensureBinaryId skips background deferral on foregrou
   }
 });
 
-test('Goal 2: ArtifactAnalysisOrchestrator avoids double decode on cold publish and validate', async () => {
+test('Goal 2: ArtifactAnalysisOrchestrator isolates cold publish payload and avoids double decode on validate', async () => {
   const store = createArtifactStore({ indexedDB: null, allowMemoryFallback: true });
   const orchestrator = new ArtifactAnalysisOrchestrator({ store });
   const descriptor = createWorkerAnalysisArtifactDescriptor({
@@ -184,14 +190,19 @@ test('Goal 2: ArtifactAnalysisOrchestrator avoids double decode on cold publish 
     abiSemanticVersion: '1.0.0',
     semanticSchemaVersion: '1.0.0',
   });
-  const produced = { value: 42n, bytes: new Uint8Array([1, 2, 3]) };
+  const largeBytes = new Uint8Array(65536);
+  largeBytes[0] = 7;
+  const produced = { value: 42n, bytes: largeBytes };
   const cold = await orchestrator.request({
     descriptor,
     produce: async () => produced,
   });
   assert.equal(cold.reused, false);
-  // Cold publish returns the produced value directly without decode round-trip
-  assert.equal(cold.payload, produced);
+  assert.notEqual(cold.payload, produced, 'cold publish must return decoded isolated payload');
+  assert.notEqual(cold.payload.bytes, produced.bytes, 'cold publish must not alias >=64 KiB Uint8Array view');
+  produced.bytes[0] = 99;
+  assert.equal(cold.payload.bytes[0], 7);
+  cold.payload.bytes[0] = 55;
 
   // Warm hit with validate returns the validated decoded payload directly
   let validatedRef = null;
@@ -206,6 +217,7 @@ test('Goal 2: ArtifactAnalysisOrchestrator avoids double decode on cold publish 
   assert.equal(warm.reused, true);
   assert.equal(warm.payload, validatedRef);
   assert.equal(warm.payload.value, 42n);
+  assert.equal(warm.payload.bytes[0], 7, 'mutating cold payload must not corrupt stored artifact');
   await orchestrator.close();
 });
 
@@ -490,4 +502,114 @@ test('Goal 6: platform worker sha256/digest, scanStrings, search, vmToFile, and 
     if (prevSelf === undefined) delete globalThis.self;
     else globalThis.self = prevSelf;
   }
+});
+
+test('Review fixes: atomic saveLastFile, priority forwarding, duplicate-address symbol order, and scheduler toJSON/non-index array safety', async () => {
+  // Finding 9: saveLastFile writes both keys in a single readwrite transaction
+  const indexedDB = createKeyValueIndexedDB();
+  const resumeStore = new AnalysisResumeStore({ indexedDB, analysisIdentity: 'build-atomic', storage: null });
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const file = {
+    name: 'atomic.bin',
+    type: 'application/octet-stream',
+    size: bytes.byteLength,
+    lastModified: 1234,
+    slice(start, end, type) { return new Blob([bytes.slice(start, end)], { type }); },
+  };
+  assert.equal(await resumeStore.saveLastFile(file, { sliceIndex: 0 }), true);
+  assert.equal(indexedDB.writeTransactions.length, 1, 'saveLastFile must use a single readwrite transaction');
+  assert.deepEqual(indexedDB.writeTransactions[0], ['last-file', 'last-file-meta']);
+
+  // Finding 10: priority is forwarded into worker sha256 payload
+  const expectedSha = createHash('sha256').update(bytes).digest('hex');
+  const seenPayloads = [];
+  const priorScheduler = globalThis.scheduler;
+  globalThis.scheduler = { postTask: (fn) => Promise.resolve().then(fn) };
+  try {
+    const backend = {
+      platformWorker: {},
+      file,
+      gen: 1,
+      binaryId: null,
+      contentHash: null,
+      async ensureContentHash() { return 'fnv1a64:4:0000000000000000'; },
+      _callTo(_workerName, _type, payload) {
+        seenPayloads.push(payload);
+        return Promise.resolve({ hex: expectedSha });
+      },
+    };
+    const app = { backend, store: { get: () => null }, ensureRecognition: async () => null };
+    installDemandDrivenAnalysis(app);
+    await backend.ensureBinaryId({ priority: 'background' });
+    assert.deepEqual(seenPayloads[0], { priority: 'background' });
+
+    const directDigest = await canonicalContentDigest(backend, null, null, null, { priority: 'current' });
+    assert.equal(directDigest, expectedSha);
+    assert.deepEqual(seenPayloads[1], { priority: 'current' });
+  } finally {
+    if (priorScheduler === undefined) delete globalThis.scheduler;
+    else globalThis.scheduler = priorScheduler;
+  }
+
+  // Finding 2: fairFunctionList picks the rightmost duplicate-address symbol matching SymbolIndex.nameAt
+  const region = { id: 'text', exec: true, vmAddr: 0x1000n, size: 0x1000n };
+  const dupSymbols = new SymbolIndex({
+    addrs: new BigUint64Array([0x1000n, 0x1000n, 0x1040n]),
+    kinds: new Uint8Array([0, 0, 0]),
+    names: ['_first_dup', '_rightmost_dup', '_second'],
+    flags: new Uint8Array([1, 1, 1]),
+    funcs: new BigUint64Array([0x1000n, 0x1040n]),
+    funcEnds: new BigUint64Array([0x1030n, 0x1080n]),
+    regions: [region],
+    functionStartsComplete: true,
+    allSeedsExact: true,
+  });
+  const dupProgram = {
+    functionRange(addr) {
+      const fn = dupSymbols.functionAt(addr);
+      return fn ? { start: fn.start, end: fn.end } : null;
+    },
+    statsOf() { return { total: 10, numeric: 1, mul: 1, div: 0, fmul: 0, store: 0, load: 0, cmp: 0 }; },
+    callCountOf() { return 2; },
+  };
+  const notable = notableFunctions(dupProgram, dupSymbols, region, 10);
+  assert.equal(notable.find((f) => f.addr === 0x1000n)?.name, dupSymbols.nameAt(0x1000n));
+  assert.equal(notable.find((f) => f.addr === 0x1000n)?.name, '_rightmost_dup');
+
+  // Finding 13: AnalysisScheduler rejects toJSON objects and arrays with non-index own keys from structuredClone fast path
+  const artStore = createArtifactStore({ indexedDB: null, allowMemoryFallback: true });
+  const scheduler = new AnalysisScheduler({ store: artStore });
+  const toJsonDesc = createWorkerAnalysisArtifactDescriptor({
+    binaryId: `bin_sha256_${'c'.repeat(64)}`,
+    sliceIndex: 0,
+    architecture: 'arm64',
+    artifactKind: 'tojson-test',
+    producerVersion: '1.0.0',
+    loaderVersion: '1.0.0',
+    architectureSemanticVersion: '1.0.0',
+    abiSemanticVersion: '1.0.0',
+    semanticSchemaVersion: '1.0.0',
+  });
+  const withToJson = Object.freeze({ raw: 1, toJSON() { return { serialized: true }; } });
+  const toJsonRes = await scheduler.request({ descriptor: toJsonDesc, produce: async () => withToJson });
+  assert.deepEqual(toJsonRes.payload, { raw: 1 });
+
+  const arrDesc = createWorkerAnalysisArtifactDescriptor({
+    binaryId: `bin_sha256_${'d'.repeat(64)}`,
+    sliceIndex: 0,
+    architecture: 'arm64',
+    artifactKind: 'arr-extra-key-test',
+    producerVersion: '1.0.0',
+    loaderVersion: '1.0.0',
+    architectureSemanticVersion: '1.0.0',
+    abiSemanticVersion: '1.0.0',
+    semanticSchemaVersion: '1.0.0',
+  });
+  const weirdArr = [1, 2];
+  weirdArr.extra = 'dropped-by-json';
+  Object.freeze(weirdArr);
+  const arrRes = await scheduler.request({ descriptor: arrDesc, produce: async () => weirdArr });
+  assert.deepEqual(arrRes.payload, [1, 2]);
+  assert.equal('extra' in arrRes.payload, false);
+  await artStore.close();
 });

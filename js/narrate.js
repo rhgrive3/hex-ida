@@ -867,6 +867,22 @@ export function plainOpName(op) {
   }
 }
 
+function safeBigInt(v) {
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number') return Number.isSafeInteger(v) ? BigInt(v) : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    try { return BigInt(v.trim()); } catch { return null; }
+  }
+  return null;
+}
+
+function plainOffset(v) {
+  const n = safeBigInt(v);
+  if (n == null) return '';
+  const abs = (n < 0n ? -n : n).toString(10);
+  return pick('先頭から ' + abs + ' バイト目', 'byte ' + abs);
+}
+
 /** 初心者向けの場所の呼び名。生レジスタや +0x20 を直接出さない。 */
 export function plainPlaceName(field, base, disp) {
   const named = fieldName(field);
@@ -881,7 +897,8 @@ export function plainPlaceName(field, base, disp) {
     const n = Number(gp[1]);
     if (n === 0) return pick('このオブジェクトの属性', 'a property of this object');
     if (n >= 1 && n <= 7) {
-      const hasDisp = disp != null && BigInt(disp) !== 0n;
+      const dispVal = safeBigInt(disp);
+      const hasDisp = dispVal != null && dispVal !== 0n;
       return hasDisp
         ? pick((n + 1) + '番目の入力データの属性', 'a property of input data ' + (n + 1))
         : pick((n + 1) + '番目の入力データ', 'input data ' + (n + 1));
@@ -1918,13 +1935,17 @@ export function proofText(item) {
         'the draining — neither role can be claimed');
 
     /* 形から立てた候補を、命令まで降りて確かめたもの */
-    case 'loc-drain-verified':
-      return pick('実際に開いて確かめた: ' + (d.address != null ? hex(d.address) + ' で' : '') +
-        '別のオブジェクトの' + (d.from && d.from.disp != null ? ' ' + hexOffset(d.from.disp) : '') +
-        'の値ぶん、この場所を増減し、同じ場所へ書き戻している' +
+    case 'loc-drain-verified': {
+      const fromPos = d.from && d.from.disp != null ? plainOffset(d.from.disp) : '';
+      return pick('実際に開いて確かめた: 別のオブジェクトの値' +
+        (fromPos ? '（' + fromPos + '）' : '') +
+        'ぶん、この場所を増減し、同じ場所へ書き戻している' +
         (d.n > 1 ? '（同じ形が ' + d.n + ' 個の処理にある）' : ''),
-      'checked in the instructions: another object’s field is what this location is ' +
-        'changed by' + (d.n > 1 ? ', in ' + d.n + ' separate routines' : ''));
+      'checked in the instructions: another object’s field' +
+        (fromPos ? ' (' + fromPos + ')' : '') +
+        ' is what this location is changed by' +
+        (d.n > 1 ? ', in ' + d.n + ' separate routines' : ''));
+    }
     case 'loc-amount-verified':
       return pick('実際に開いて確かめた: この場所の値が、ほかの値を減らす量として使われている' +
         (d.address != null ? '（' + hex(d.address) + '）' : ''),
@@ -1933,12 +1954,15 @@ export function proofText(item) {
       return pick('実際に開いて確かめた: 書き戻す前に下限で止めている' +
         (d.address != null ? '（' + hex(d.address) + '）' : '') + ' — 残量として扱われている',
       'checked in the instructions: the value is held at its floor before being written back');
-    case 'loc-capped-by-field':
-      return pick('実際に開いて確かめた: 上限が別の値（同じオブジェクトの ' +
-        hexOffset(d.cap) + '）で決まっている — 「今の値」と「上限」の組になっている。' +
+    case 'loc-capped-by-field': {
+      const capPos = plainOffset(d.cap);
+      return pick('実際に開いて確かめた: 上限が別の値（同じオブジェクトの' +
+        (capPos ? ' ' + capPos : '別項目') + '）で決まっている — 「今の値」と「上限」の組になっている。' +
         '所持金やスコアはこの形を持たない',
-      'checked in the instructions: the ceiling comes from another field (' + hexOffset(d.cap) +
-        ') — a current/maximum pair, which money and score never have');
+      'checked in the instructions: the ceiling comes from another field' +
+        (capPos ? ' (' + capPos + ')' : '') +
+        ' — a current/maximum pair, which money and score never have');
+    }
     case 'loc-counter-verified':
       return pick('開いて確かめた ' + (d.n || 0) + ' か所のうち ' + (d.byOne || 0) +
         ' か所が 1 ずつの増減で、よそから来た量は 1 度も無かった — ' +
@@ -2003,8 +2027,8 @@ export function proofText(item) {
 }
 
 function hexOffset(v) {
-  if (v == null) return '';
-  const n = typeof v === 'bigint' ? v : BigInt(v);
+  const n = safeBigInt(v);
+  if (n == null) return '';
   return (n < 0n ? '-0x' : '+0x') + (n < 0n ? -n : n).toString(16).toUpperCase();
 }
 
@@ -2603,12 +2627,14 @@ function amountShort(a, base) {
   switch (a.kind) {
     case 'imm':
       return String(a.value);
-    case 'field':
+    case 'field': {
+      const pos = plainOffset(a.disp);
       return a.base && base && a.base !== base
-        ? pick('別のオブジェクトの ' + hexOffset(a.disp) + ' の値',
-          'another object’s ' + hexOffset(a.disp))
-        : pick('同じオブジェクトの ' + hexOffset(a.disp) + ' の値',
-          'this object’s own ' + hexOffset(a.disp));
+        ? pick('別のオブジェクトの値' + (pos ? '（' + pos + '）' : ''),
+          'another object’s field' + (pos ? ' (' + pos + ')' : ''))
+        : pick('同じオブジェクトの別の値' + (pos ? '（' + pos + '）' : ''),
+          'this object’s own field' + (pos ? ' (' + pos + ')' : ''));
+    }
     case 'call':
       return a.name
         ? pick(trim(shortName(a.name), 24) + ' が返した値', 'what ' + trim(shortName(a.name), 24) + ' returned')

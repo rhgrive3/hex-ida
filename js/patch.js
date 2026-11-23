@@ -99,8 +99,8 @@ export function assemble(text, at) {
   const raw = String(text || '');
   const parts = raw.split(/[;\n]+/).map((s) => s.trim()).filter(Boolean);
   if (!parts.length) return { error: '命令が空です。' };
-  if (parts.length === 1) return assembleOne(parts[0], at);
-  const base = BigInt(at || 0n);
+  const base = BigInt(at ?? 0n);
+  if (parts.length === 1) return assembleOne(parts[0], base);
   const out = new Uint8Array(parts.length * 4);
   for (let i = 0; i < parts.length; i++) {
     const built = assembleOne(parts[i], base + BigInt(i * 4));
@@ -219,6 +219,7 @@ export function decodeArm64PatchWord(wordVal, at = 0n) {
     const isMovz = (u & 0x7F800000) === 0x52800000;
     const sf = (u >>> 31) & 1;
     const hw = (u >>> 21) & 3;
+    if (!sf && hw >= 2) return null;
     const imm16 = (u >>> 5) & 0xFFFF;
     const rd = u & 0x1F;
     const p = sf ? 'x' : 'w';
@@ -342,7 +343,7 @@ export function suggestPatches(mn, opsStr, addr, options = {}) {
     const ops = parseOperands(String(opsStr || '').toLowerCase());
     const reg = ops[0] && ops[0].k === 'reg' ? ops[0].text : null;
     const bit = immOf(ops[1]);
-    const target = immOf(ops[2]) ?? targetOf(opsStr);
+    const target = immOf(ops[2]) ?? targetOf(ops[2]?.text);
     const inv = base === 'tbz' ? 'tbnz' : 'tbz';
     if (reg && bit != null && target != null) {
       out.push({ id: 'invert', label: `条件を反対にする（${base} → ${inv}）`, why: 'ビットが立っているかどうかの分岐条件を逆転させます。', text: `${inv} ${reg}, #${bit}, 0x${target.toString(16)}` });

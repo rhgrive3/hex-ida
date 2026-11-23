@@ -155,9 +155,9 @@ export class CodeViewer {
 
   topRow() {
     if (!this.totalRows) return 0;
-    const local = this.baseRow + Math.floor(this.vp.scrollTop / this.rowH);
-    if (this._bigRows()) return rowIdentity(bigMin(this.totalRowsBig - 1n, this.pageRow + BigInt(local)));
-    return Math.min(Math.max(0, this.totalRows - 1), local);
+    const local = Math.max(0, this.baseRow + Math.floor(this.vp.scrollTop / this.rowH));
+    if (this._bigRows()) return rowIdentity(bigMax(0n, bigMin(this.totalRowsBig - 1n, this.pageRow + BigInt(local))));
+    return Math.max(0, Math.min(this.totalRows - 1, local));
   }
 
   rowOfAddress(addr) {
@@ -402,6 +402,8 @@ export class CodeViewer {
       this._variableNavController.abort(reason);
     }
     this._variableNavController = null;
+    this.variablePending = false;
+    this.variablePendingAddress = null;
   }
 
   _beginVariableNavigation(reason = 'superseded-navigation') {
@@ -612,7 +614,7 @@ export class CodeViewer {
         this._selLo=-1; this._selHi=-1;
         this._ensurePool(skeletonCount);
         for(let i=0;i<skeletonCount;i++){
-          this._paintBase(this.pool[i],i,i*rowH,i===0?this.variablePendingAddress:null,null,'…','',null);
+          this._paintBase(this.pool[i],-1,i*rowH,i===0?this.variablePendingAddress:null,null,'…','',null);
         }
         for(let i=skeletonCount;i<this.pool.length;i++) if(this.pool[i].style.display!=='none')this.pool[i].style.display='none';
         return;
@@ -637,10 +639,10 @@ export class CodeViewer {
     if(this.isVariableAsm()) this._renderVariable(startRow,endRow);
     else this._renderFixed(startRow,endRow);
     for(let i=rowCount;i<this.pool.length;i++) if(this.pool[i].style.display!=='none')this.pool[i].style.display='none';
-    const localTop=this.baseRow+Math.floor(scrollTop/rowH);
+    const localTop=Math.max(0,this.baseRow+Math.floor(scrollTop/rowH));
     const top=this._bigRows()
-      ? rowIdentity(bigMin(this.totalRowsBig-1n,this.pageRow+BigInt(localTop)))
-      : Math.min(Math.max(0,this.totalRows-1),localTop);
+      ? rowIdentity(bigMax(0n,bigMin(this.totalRowsBig-1n,this.pageRow+BigInt(localTop))))
+      : Math.max(0,Math.min(this.totalRows-1,localTop));
     if(top!==this.lastTopRow){this.lastTopRow=top;this.onTopChange(top,this.rowAddress(top));}
     this._updateScrubber(trackH,visible,top);
   }
@@ -697,14 +699,14 @@ export class CodeViewer {
     const placeholder=this.isVariableAsm()?'··':'·· ·· ·· ··',hexText=hex===null?placeholder:hex;if(el._hex!==hexText){el._h.textContent=hexText;el._hex=hexText;}
     if(this.mode==='hex'){const t=ascii===null?'':ascii;if(el._ascii!==t){el._s.textContent=t;el._ascii=t;}}
     if(this.mode==='asm'){if(el._mn!==mn){el._m.textContent=mn;el._mn=mn;}this._setOps(el,ops);}else if(el._mn!==''){el._m.textContent='';el._mn='';this._setOps(el,'');}
-    const isFnStart=address!=null&&this.symbols.functionCount>0&&this.symbols.isFunctionStart(address);const blk=this.mode==='asm'?this.blockAt(row):null;
+    const isFnStart=address!=null&&this.symbols.functionCount>0&&this.symbols.isFunctionStart(address);const blk=this.mode==='asm'&&row>=0?this.blockAt(row):null;
     if(this.showNotes&&this.mode==='asm'){
       const fnName=isFnStart?(this.symbols.nameAt(address)||''):'';if(el._fn!==fnName){el._f.textContent=fnName?'▼ '+fnName:'';el._fn=fnName;}
       const blkName=blk?.title||'';if(el._sblkName!==blkName){el._bt.textContent=blkName?'▼ '+blkName:'';el._sblkName=blkName;}
       let note='';if(mn&&mn!=='…'&&mn!=='???'&&fixedCtx)note=this._noteFor(row,fixedCtx.idx,mn,ops,fixedCtx.asmEntry);if(el._note!==note){el._nt.nodeValue=note;el._note=note;}
     }else if(el._note!==''){el._nt.nodeValue='';el._note='';el._f.textContent='';el._fn='';el._bt.textContent='';el._sblkName='';}
     let cls='row';if(this.mode==='asm'){const k=mnemonicClass(mn);if(k)cls+=' '+k;if(!mn||mn==='…')cls+=' pending';const cg=instructionCategory(this.architectureId(),mn);if(cg)cls+=' cat-'+cg;if(isFnStart)cls+=' fnstart';if(blk)cls+=' sblk sblk-'+blk.pos+' sblk-lv-'+blk.level;}else if(!bytes?.length)cls+=' pending';
-    if(row>=this._selLo&&row<=this._selHi){cls+=' sel';if(this._selLo!==this._selHi){if(row===this._selLo)cls+=' sel-first';if(row===this._selHi)cls+=' sel-last';}}if(row===this.markedRow)cls+=' hit';if(el._cls!==cls){el.className=cls;el._cls=cls;}
+    if(row>=0&&row>=this._selLo&&row<=this._selHi){cls+=' sel';if(this._selLo!==this._selHi){if(row===this._selLo)cls+=' sel-first';if(row===this._selHi)cls+=' sel-last';}}if(row>=0&&row===this.markedRow)cls+=' hit';if(el._cls!==cls){el.className=cls;el._cls=cls;}
   }
 
   _setOps(el,str) {
@@ -738,6 +740,7 @@ export class CodeViewer {
     let suppressContextUntil = 0;
 
     const rowFrom = (target) => {
+      if (!this.totalRows) return -1;
       const el = target?.closest ? target.closest('.row') : null;
       return !el || el._row == null ? -1 : el._row;
     };

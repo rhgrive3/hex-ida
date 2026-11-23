@@ -25,6 +25,7 @@ import {
   canonicalStoreValueProofDigest,
 } from './proof.js';
 import { snapshotIdIdentity } from './contract.js';
+import { isCanonicalSemanticIrProducerArtifact } from '../ir/index.js';
 
 function fail(code) { throw new TypeError(code); }
 function assertNotAborted(options) {
@@ -70,6 +71,7 @@ function canonicalQueryIndex(memorySsa) {
     for (const item of state.exit ?? []) if (!exit.has(item.regionId)) exit.set(item.regionId, item.definitionId);
     blockVersions.set(state.blockId, { entry, exit });
   }
+  const uses = new Map(memorySsa.uses.map((use) => [use.id, use]));
   let byteCoverageByUseId = null;
   let byteCoverageMalformedReason = null;
   if (Array.isArray(memorySsa.byteCoverage)) {
@@ -84,13 +86,17 @@ function canonicalQueryIndex(memorySsa) {
         byteCoverageMalformedReason = 'memory-forwarding-coverage-use-duplicate';
         break;
       }
+      if (!uses.has(coverageUseId)) {
+        byteCoverageMalformedReason = 'memory-forwarding-coverage-use-missing';
+        break;
+      }
       byteCoverageByUseId.set(coverageUseId, coverage);
     }
   }
   index = {
     regions: new Map((memorySsa.regions ?? []).map((region) => [String(region.id), region])),
     definitions: new Map(memorySsa.definitions.map((definition) => [definition.id, definition])),
-    uses: new Map(memorySsa.uses.map((use) => [use.id, use])),
+    uses,
     defUseLinks: new Map((memorySsa.defUseLinks ?? []).map((link) => [link.definitionId, link.useIds])),
     definitionsByRegion,
     accessMetadata: new Map((memorySsa.accessMetadata ?? []).map((item) => [item.memorySsaEntityId, item])),
@@ -1603,9 +1609,7 @@ function forwardingCheckRangeWidth(range, widthBits, code) {
 const frozenIrDigestCache = new WeakMap();
 function forwardingIrDigest(ir) {
   if (ir == null) return null;
-  if (forwardingObject(ir) && Object.isFrozen(ir)
-      && (ir.nodes == null || (Array.isArray(ir.nodes) && Object.isFrozen(ir.nodes)))
-      && (ir.values == null || (Array.isArray(ir.values) && Object.isFrozen(ir.values)))) {
+  if (isCanonicalSemanticIrProducerArtifact(ir)) {
     let digest = frozenIrDigestCache.get(ir);
     if (digest !== undefined) return digest;
     digest = stableDigest(ir);

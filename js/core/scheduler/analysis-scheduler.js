@@ -105,10 +105,13 @@ function isDeeplyFrozenJsonSafe(value, seen = new Set()) {
   if (typeof value !== 'object') return false;
   if (knownDeeplyFrozenJsonSafe.has(value)) return true;
   if (!Object.isFrozen(value) || seen.has(value)) return false;
+  if ('toJSON' in value) return false;
   if (Array.isArray(value)) {
+    const ownKeys = Object.keys(value);
+    if (ownKeys.length !== value.length || Object.getOwnPropertyNames(value).length !== value.length + 1) return false;
     seen.add(value);
     for (let i = 0; i < value.length; i++) {
-      if (!(i in value)) { seen.delete(value); return false; }
+      if (ownKeys[i] !== String(i)) { seen.delete(value); return false; }
       const desc = Object.getOwnPropertyDescriptor(value, i);
       if (!desc || desc.get || desc.set || !isDeeplyFrozenJsonSafe(desc.value, seen)) {
         seen.delete(value);

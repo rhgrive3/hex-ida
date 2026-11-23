@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { GOALS, goalFromPreset, matchField, matchText, parseGoal } from '../js/goals.js';
+import { GOALS, expandTerms, goalFromPreset, matchField, matchText, parseGoal } from '../js/goals.js';
 import {
   narrowedPriorCount,
   jevShortlist,
@@ -235,7 +235,7 @@ test('3. Domain vocabulary gaps: IAP, Anti-cheat, HP UI-widget avoid, Currency/C
   const anticheat = goalFromPreset('anticheat');
   assert.equal(matchField(anticheat, 'isSecureTextEntry'), null, 'anticheat must not match UI isSecureTextEntry');
   assert.equal(matchField(anticheat, 'secureTextEntry'), null);
-  for (const term of ['root', 'magisk', 'ptrace', 'sslpinning', 'frida', 'jailbreak', 'tamper']) {
+  for (const term of ['rooted', 'rooting', 'root_detect', 'rootCheck', 'magisk', 'ptrace', 'sslpinning', 'frida', 'jailbreak', 'tamper']) {
     assert.ok(matchText(anticheat, term), `anticheat should match "${term}"`);
   }
 
@@ -389,4 +389,148 @@ test('4c. appmap.js classifies game subsystems before generic ui/system and samp
   });
   assert.ok(xrefCalls > 0 && xrefCalls <= 4000, 'stratified sampling stays bounded while reaching deep strings');
   assert.ok(smap.subsystems.some((s) => s.id === 'gacha'), 'gacha strings past index 4000 are discovered');
+});
+
+test('5. Findings 7, 8, 12: scoped root-detection, coinCount/coin_count matching, and hp avoid trailing word boundary', () => {
+  // Finding 7: unscoped root must NOT falsely match anticheat
+  const anticheat = goalFromPreset('anticheat');
+  for (const benign of ['_rootViewController', '_rootNode', '_rootLayer', '_rootPath', '_squareRoot']) {
+    assert.equal(matchField(anticheat, benign), null, `anticheat must not match field "${benign}"`);
+    assert.equal(matchText(anticheat, benign), null, `anticheat must not match text "${benign}"`);
+  }
+  for (const realRoot of ['_isRooted', '_rootingCheck', '_rootDetect', '_rootBypass', '_rootAccess']) {
+    assert.ok(matchField(anticheat, realRoot), `anticheat should match field "${realRoot}"`);
+  }
+  const expandedBenign = expandTerms('rootViewController').map((t) => t.word);
+  assert.ok(!expandedBenign.includes('jailbreak'), 'rootViewController must not trigger anticheat synonyms');
+
+  // Finding 8: /\bcoin/i matches coinCount and coin_count
+  const money = goalFromPreset('money');
+  assert.ok(matchText(money, '-[Player coinCount]'), 'money should match -[Player coinCount]');
+  assert.ok(matchText(money, 'coin_count'), 'money should match coin_count');
+  assert.ok(matchField(money, '_coinCount'), 'money field should match _coinCount');
+  assert.ok(matchField(money, 'coin_count'), 'money field should match coin_count');
+
+  // Finding 12: trailing \b in hp UI-widget avoid does not drop hp_uid or hp_texture
+  const hp = goalFromPreset('hp');
+  for (const okName of ['hp_uid', 'hp_texture', '_hpUid', '_hpTexture']) {
+    assert.ok(matchField(hp, okName), `hp must NOT falsely avoid "${okName}"`);
+  }
+  for (const uiName of ['hp_ui', 'hp_text', 'health_bar']) {
+    assert.equal(matchField(hp, uiName), null, `hp must still avoid UI widget "${uiName}"`);
+  }
+});
+
+test('6. Finding 9: batchedScanAccess caches emptyGroups() on timeout/error but NOT on in-flight parent abort', async () => {
+  const BASE = 0x100000000n;
+  const shapes = foldShapes({
+    count: 1, capped: false,
+    disp: Int32Array.of(0x20),
+    size: Uint8Array.of(4),
+    flags: Uint8Array.of(SHAPE.DECREASE | SHAPE.CROSS),
+    amtKind: Uint8Array.of(AMOUNT.FIELD),
+    amtDisp: Int32Array.of(0x30),
+    addr: BigUint64Array.of(BASE + 16n),
+    span: Int32Array.of(0x100),
+    amtSize: Uint8Array.of(4),
+    amtSpan: Int32Array.of(0x100),
+  });
+  const model = makeModel([
+    'mov x19, x0',
+    'ldr w9, [x20, #0x30]',
+    'ldr w8, [x19, #0x20]',
+    'sub w8, w8, w9',
+    'str w8, [x19, #0x20]',
+    'ret',
+  ], BASE);
+  const program = { functionRange: () => ({ start: BASE, end: BASE + 24n }), functionStartOf: () => BASE };
+
+  // Case A: worker timeout caches emptyGroups() so second call in same burst does NOT re-hammer worker
+  let timeoutCalls = 0;
+  const slowScan = () => {
+    timeoutCalls++;
+    return new Promise(() => {}); // never resolves -> triggers timeout
+  };
+  await pinpointLocation({
+    goal: goalFromPreset('hp'),
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: [{ text: 'hp' }] }],
+    program, shapes, analyze: async () => model, scanAccess: slowScan, accessScanTimeoutMs: 15,
+  });
+  await pinpointLocation({
+    goal: goalFromPreset('hp'),
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: [{ text: 'hp' }] }],
+    program, shapes, analyze: async () => model, scanAccess: slowScan, accessScanTimeoutMs: 15,
+  });
+  assert.equal(timeoutCalls, 1, 'timed-out scanAccess must cache emptyGroups() for burst-backoff');
+
+  // Case B: worker rejection caches emptyGroups() for burst-backoff
+  let errCalls = 0;
+  const failingScan = async () => {
+    errCalls++;
+    throw new Error('worker crashed');
+  };
+  await pinpointLocation({
+    goal: goalFromPreset('hp'),
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: [{ text: 'hp' }] }],
+    program, shapes, analyze: async () => model, scanAccess: failingScan,
+  });
+  await pinpointLocation({
+    goal: goalFromPreset('hp'),
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: [{ text: 'hp' }] }],
+    program, shapes, analyze: async () => model, scanAccess: failingScan,
+  });
+  assert.equal(errCalls, 1, 'rejected scanAccess must cache emptyGroups() for burst-backoff');
+
+  // Case C: in-flight parent abort must NOT poison cache
+  let abortCalls = 0;
+  const abortableScan = (requested, { signal }) => {
+    abortCalls++;
+    if (abortCalls === 1) {
+      return new Promise((_, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('parent aborted')), { once: true });
+      });
+    }
+    const groups = new Map();
+    for (const item of requested) {
+      groups.set(BigInt(item.offset).toString(), [{ addr: BASE + 16n, kind: 'store', size: 4 }]);
+    }
+    return Promise.resolve(groups);
+  };
+  const parentCtrl = new AbortController();
+  const firstPromise = pinpointLocation({
+    goal: goalFromPreset('hp'),
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: [{ text: 'hp' }] }],
+    program, shapes, analyze: async () => model, scanAccess: abortableScan, signal: parentCtrl.signal,
+  });
+  setTimeout(() => parentCtrl.abort('user-cancelled'), 5);
+  await firstPromise;
+  const secondRes = await pinpointLocation({
+    goal: goalFromPreset('hp'),
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: [{ text: 'hp' }] }],
+    program, shapes, analyze: async () => model, scanAccess: abortableScan,
+  });
+  assert.equal(abortCalls, 2, 'in-flight parent abort must not poison batchedScanAccess cache');
+  assert.ok(secondRes.changeSites.length >= 1, 'follow-up call after parent abort populates changeSites');
+});
+
+test('7. Finding 10: buildStringMap stratified sampling covers indices 4000..7999', () => {
+  // 6,000 strings (between MAX_STRINGS_TO_SCAN=4000 and 2*MAX_STRINGS_TO_SCAN=8000)
+  // with target strings exclusively in 5000..5020
+  const strings = Array.from({ length: 6_000 }, (_, i) => ({
+    addr: BigInt(i * 16),
+    text: i >= 5000 && i < 5020 ? 'gacha_summon_rate' : 'plain_padding_string',
+    byteLength: i >= 5000 && i < 5020 ? 17 : 20,
+  }));
+  let xrefCalls = 0;
+  const smap = buildStringMap({
+    strings,
+    program: {
+      functionsReferencing(addr) {
+        xrefCalls++;
+        return [{ addr: 0x5000n + addr }];
+      },
+    },
+  });
+  assert.ok(xrefCalls > 0 && xrefCalls <= 4000, 'stratified sampling stays bounded');
+  assert.ok(smap.subsystems.some((s) => s.id === 'gacha'), 'gacha strings in 4000..7999 must be discovered');
 });

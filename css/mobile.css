@@ -6,6 +6,8 @@
   .product-ui-ready .statusbar { padding-bottom: calc(var(--ui-safe-bottom) + 58px); }
   .product-ui-ready .ui-card-grid { grid-template-columns: 1fr; }
   .product-ui-ready .ui-screen { max-width: 760px; }
+  .product-ui-ready .addrbar .addr-fn { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .product-ui-ready .addrbar .addr-pseudo { min-height: var(--ui-touch); padding: 6px 12px; }
 }
 
 @media (max-width: 599px) {
@@ -64,6 +66,8 @@
   .product-ui-ready .ui-code-route .addrbar { min-height: 34px; padding-block: 3px; }
   .product-ui-ready .ui-code-route .addr-range { display: none; }
   /* The range is hidden here, so the quick action pills take the free space. */
+  .product-ui-ready .ui-code-route .addrbar .addr-fn { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .product-ui-ready .ui-code-route .addrbar .addr-pseudo { min-height: var(--ui-touch); padding: 6px 12px; }
   .product-ui-ready .ui-code-route .addrbar .addr-pseudo:not([hidden]) { margin-left: auto; }
   .product-ui-ready .ui-code-route .addrbar .addr-search { margin-left: auto; }
   .product-ui-ready .ui-code-route .addrbar .addr-pseudo:not([hidden]) + .addr-search { margin-left: 4px; }

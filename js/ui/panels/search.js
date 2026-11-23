@@ -148,7 +148,7 @@ export function showSearch(app) {
       more.disabled=isLoading;
       more.setAttribute('aria-busy',isLoading?'true':'false');
       if(isLoading){
-        more.replaceChildren(el('div',null,'読み込み中...'));
+        more.replaceChildren(el('div',null,t('status.loading')));
         if(!more.isConnected)results.append(more);
       }
     };
@@ -170,12 +170,18 @@ export function showSearch(app) {
           const response=await pager.next({ signal:controller.signal, onProgress:progressFor(controller) });
           if(!runs.runIfActive(controller, () => {
             items.push(...response.value); fill.style.width='100%'; updateStatus(items,pager);
-          }))return;
+          })){
+            if(controller.signal.aborted&&controller.signal.reason==='search-stopped'&&sheet.root.isConnected&&more.isConnected)addMore();
+            return;
+          }
         } catch(error) {
-          if(!runs.runIfActive(controller, () => {
+          const wasActive=runs.runIfActive(controller, () => {
             if(!isAbort(error))alertDialog(t('search.failed'),userError(error));
             addMore();
-          }))return;
+          });
+          if(!wasActive&&controller.signal.aborted&&controller.signal.reason==='search-stopped'&&sheet.root.isConnected&&more.isConnected){
+            addMore();
+          }
           return;
         } finally {
           loading=false;

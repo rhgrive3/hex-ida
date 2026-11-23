@@ -27,6 +27,11 @@ export const COMMANDS = Object.freeze([
   { id: 'advanced', ja: '高度な機能', en: 'Advanced', match: /^(advanced|lab|高度)$/i },
   { id: 'search', ja: '命令・バイト列を検索', en: 'Search', match: /^(search|find|検索|探す)$/i },
   { id: 'jump', ja: 'アドレスへジャンプ', en: 'Jump', match: /^(jump|goto|go|ジャンプ|移動)$/i },
+  { id: 'patch', ja: 'パッチ一覧を開く', en: 'Patches', match: /^(patch|patches|パッチ|書き換え)$/i },
+  { id: 'export', ja: 'プロジェクトを書き出す', en: 'Export', match: /^(export|hexproj|save|書き出し|書き出す|保存)$/i },
+  { id: 'import', ja: 'プロジェクトを読み込む', en: 'Import', match: /^(import|load|読み込み|読み込む|復元)$/i },
+  { id: 'pseudocode', ja: '疑似Cを開く', en: 'Pseudocode', match: /^(pseudo|pseudocode|decompile|疑似c|逆コンパイル)$/i },
+  { id: 'diff', ja: 'バイナリを比較', en: 'Diff', match: /^(diff|差分)$/i },
   { id: 'ai', ja: 'AIに聞く', en: 'Ask AI', match: /^(ai|ask|聞く|質問)$/i },
   { id: 'agent', ja: 'エージェントで調べる', en: 'Investigate with Agent', match: /^(agent|investigate|調査|調べる)$/i },
 ]);

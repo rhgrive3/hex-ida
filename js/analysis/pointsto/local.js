@@ -1179,8 +1179,10 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   let iterations = 0;
   let changed = true;
   let stopReason = null;
-  let prevChangedSsa = [];
-  let prevChangedIr = [];
+  const everChangedSsa = new Uint8Array(ssaOrder.length);
+  const everChangedSsaList = [];
+  const everChangedIr = new Uint8Array(irOrder.length);
+  const everChangedIrList = [];
   while (changed) {
     if (options.signal?.aborted) { stopReason = 'cancelled'; break; }
     if (iterations >= budget.maxIterations) { stopReason = 'iteration-limit'; break; }
@@ -1188,19 +1190,17 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     changed = false;
     const widening = iterations > budget.widenAfterIterations;
     if (iterations === budget.widenAfterIterations + 1) {
-      for (let i = 0; i < prevChangedSsa.length; i += 1) {
-        const idx = prevChangedSsa[i];
+      for (let i = 0; i < everChangedSsaList.length; i += 1) {
+        const idx = everChangedSsaList[i];
         if (!inSsaHeap[idx]) { inSsaHeap[idx] = 1; ssaHeap.push(idx); }
       }
-      for (let i = 0; i < prevChangedIr.length; i += 1) {
-        const idx = prevChangedIr[i];
+      for (let i = 0; i < everChangedIrList.length; i += 1) {
+        const idx = everChangedIrList[i];
         if (!inIrHeap[idx]) { inIrHeap[idx] = 1; irHeap.push(idx); }
       }
     }
-    const thisChangedSsa = [];
-    const thisChangedIr = [];
 
-    const step = (order, heap, inHeap, nextDirty, inNext, kindPrefix, dependentsTable, state, previous, transfer, changedOut) => {
+    const step = (order, heap, inHeap, nextDirty, inNext, kindPrefix, dependentsTable, state, previous, transfer, everChangedFlags, everChangedList) => {
       while (heap.size > 0) {
         if (options.signal?.aborted) {
           stopReason = 'cancelled';
@@ -1223,7 +1223,10 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
           previous.set(id, current);
           state.set(id, next);
           changed = true;
-          changedOut.push(idx);
+          if (!widening && !everChangedFlags[idx]) {
+            everChangedFlags[idx] = 1;
+            everChangedList.push(idx);
+          }
           markDependentsDirty(dependentsTable, id, kindPrefix, idx);
         }
       }
@@ -1234,10 +1237,8 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       }
       nextDirty.length = 0;
     };
-    step(ssaOrder, ssaHeap, inSsaHeap, ssaNextDirty, inSsaNext, 's', ssaDependents, ssaState, ssaPrevious, transferSsa, thisChangedSsa);
-    step(irOrder, irHeap, inIrHeap, irNextDirty, inIrNext, 'i', irDependents, irState, irPrevious, transferIr, thisChangedIr);
-    prevChangedSsa = thisChangedSsa;
-    prevChangedIr = thisChangedIr;
+    step(ssaOrder, ssaHeap, inSsaHeap, ssaNextDirty, inSsaNext, 's', ssaDependents, ssaState, ssaPrevious, transferSsa, everChangedSsa, everChangedSsaList);
+    step(irOrder, irHeap, inIrHeap, irNextDirty, inIrNext, 'i', irDependents, irState, irPrevious, transferIr, everChangedIr, everChangedIrList);
   }
 
   // Bottom is the fixed-point seed, never an answer. A value the solve never

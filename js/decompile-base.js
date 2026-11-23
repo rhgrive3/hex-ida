@@ -66,6 +66,7 @@ function augmentLegacy(fallback, reason, semantic = null) {
 function finalize(result, model, opts) {
   opts = applyDecompilerProfile(opts);
   result = structureKnownSwitches(result, model, opts);
+  result = normalizeCompatibility(result);
   let deferredProvenance = false;
   let deferredSnapshotId = null;
   if (result?.semantic) {
@@ -75,7 +76,7 @@ function finalize(result, model, opts) {
       deferRenderProvenance: true,
       _onDeferRenderProvenance: (snapshotId) => {
         deferredProvenance = true;
-        if (snapshotId != null) deferredSnapshotId = snapshotId;
+        deferredSnapshotId = snapshotId ?? null;
       },
     });
   }
@@ -113,20 +114,28 @@ function finalize(result, model, opts) {
  * keys stay aligned with the published lines instead of a shifted pre-closure
  * index space.
  */
+function isAbortError(error) {
+  return Boolean(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR'));
+}
+
 function refreshRenderProvenance(closed, opts, internal = {}) {
   const previous = closed.renderProvenance ?? null;
   if (!previous && !internal.deferredProvenance) return;
+  const snapshotId = internal.deferredProvenance
+    ? (internal.deferredSnapshotId ?? previous?.snapshotId ?? null)
+    : (previous?.snapshotId ?? null);
   try {
     closed.renderProvenance = buildRenderProvenance({
       result: closed,
-      snapshotId: previous?.snapshotId ?? internal.deferredSnapshotId ?? null,
+      snapshotId,
       budget: opts.renderProvenanceBudget,
       shouldAbort: opts.shouldAbort,
     });
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     // Keep the previous observation rather than publishing a silently
     // unbound map for the changed line array.
-    if (previous) closed.renderProvenance = previous;
+    closed.renderProvenance = previous ?? null;
   }
 }
 

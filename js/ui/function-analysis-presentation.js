@@ -136,7 +136,13 @@ export function decorateFunctionAnalysisForUi(result) {
       analysisAuthority:'AnalysisQueryAPI',
     }),
   };
-  decorated.beginnerSummary = Object.freeze(buildBeginnerFunctionCard(decorated));
+  Object.defineProperty(decorated, 'beginnerSummary', {
+    enumerable:true,
+    configurable:true,
+    get() {
+      return Object.freeze(buildBeginnerFunctionCard(decorated));
+    },
+  });
   return decorated;
 }
 

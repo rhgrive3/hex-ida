@@ -140,7 +140,8 @@ export function renderGraph(nodes, edges, opts) {
   }
 
   wrap.append(svg);
-  attachPanZoom(wrap, svg, layout);
+  const panZoom = attachPanZoom(wrap, svg, layout);
+  wrap.dispose = panZoom.dispose;
   return wrap;
 }
 
@@ -157,6 +158,7 @@ function attachPanZoom(wrap, svg, layout) {
   };
 
   let rafId = 0;
+  let fitRafId = 0;
   let pendingPanX = 0;
   let pendingPanY = 0;
   let pendingZoom = null;
@@ -311,8 +313,24 @@ function attachPanZoom(wrap, svg, layout) {
     e.preventDefault();
   }, { passive: false });
 
-  requestAnimationFrame(fit);
-  return { apply, fit, zoomTo };
+  fitRafId = requestAnimationFrame(() => {
+    fitRafId = 0;
+    fit();
+  });
+  const dispose = () => {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    if (fitRafId) {
+      cancelAnimationFrame(fitRafId);
+      fitRafId = 0;
+    }
+    pendingZoom = null;
+    pendingPanX = 0;
+    pendingPanY = 0;
+  };
+  return { apply, fit, zoomTo, dispose };
 }
 
 function spread(points) {

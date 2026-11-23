@@ -49,11 +49,12 @@ function awaitWorkerRequest(request, signal) {
   });
 }
 
-async function workerSha256Digest(backend, signal, onProgress) {
+async function workerSha256Digest(backend, signal, onProgress, priority = null) {
   if (typeof backend?._callTo !== 'function' || !backend.platformWorker) return null;
   try {
+    const payload = priority ? { priority } : {};
     const result = await awaitWorkerRequest(
-      backend._callTo('platform', 'sha256', {}, null, onProgress),
+      backend._callTo('platform', 'sha256', payload, null, onProgress),
       signal,
     );
     return canonicalSha256DigestOrNull(result?.hex ?? result?.sha256 ?? result?.digest ?? result);
@@ -106,11 +107,12 @@ export function canonicalSha256DigestOrNull(hash) {
   return SHA256_HEX_DIGEST.test(normalized) ? normalized : null;
 }
 
-export async function canonicalContentDigest(backend, hash, signal, onProgress) {
+export async function canonicalContentDigest(backend, hash, signal, onProgress, options = null) {
   const digest = canonicalSha256DigestOrNull(hash);
   if (digest != null) return digest;
   throwIfAborted(signal);
-  const fromWorker = await workerSha256Digest(backend, signal, onProgress);
+  const priority = typeof options === 'string' ? options : options?.priority ?? null;
+  const fromWorker = await workerSha256Digest(backend, signal, onProgress, priority);
   if (fromWorker != null) return fromWorker;
   throwIfAborted(signal);
   const fromSubtle = await subtleSha256BlobHex(backend?.file, signal, onProgress);

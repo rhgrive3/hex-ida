@@ -34,7 +34,7 @@ export const GOALS = [
     avoid: [
       /health[\s_-]*(check|monitor|status|state|report|percentile|kit)/i,
       /life[\s_-]*(cycle|time|span|line)/i,
-      /(?:hp|health)[\s_-]*(bar|label|gauge|view|icon|meter|slider|text|ui)/i,
+      /(?:hp|health)[\s_-]*(bar|label|gauge|view|icon|meter|slider|text|ui)\b/i,
     ],
     expects: { numeric: true, store: true, compare: true },
   },
@@ -58,7 +58,7 @@ export const GOALS = [
   },
   {
     id: 'money', ja: '所持金・コイン', en: 'Money and coins', icon: '🪙',
-    strong: [/\bcoins?\b/i, /\bgold\b/i, /\bgems?\b/i, /diamond/i, /crystal/i, /jewel/i, /money/i, /currency/i, /wallet/i,
+    strong: [/\bcoin/i, /\bgold\b/i, /\bgems?\b/i, /diamond/i, /crystal/i, /jewel/i, /money/i, /currency/i, /wallet/i,
       /コイン/, /ゴールド/, /所持金/, /ジェム/, /石/, /通貨/],
     weak: [/balance/i, /amount/i, /price/i, /cost/i, /残高/, /金額/],
     /*
@@ -140,7 +140,7 @@ export const GOALS = [
   {
     id: 'anticheat', ja: 'チート対策・改造検知', en: 'Anti-cheat', icon: '🚨',
     strong: [/jailbreak|jailbroken/i, /cydia/i, /frida/i, /substrate/i, /tamper/i,
-      /\broot(ed|ing)?\b/i, /magisk/i, /ptrace/i, /ssl[\s_-]*pinning/i,
+      /\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b/i, /magisk/i, /ptrace/i, /ssl[\s_-]*pinning/i,
       /integrity/i, /debugger/i, /cheat/i, /改造/, /不正/],
     weak: [/detect/i, /verify/i, /signature/i, /検知/],
     avoid: [/secure[\s_-]*text[\s_-]*entry/i],
@@ -316,7 +316,7 @@ const FIELD_VOCAB = {
     type: 'any', prefer: ['plain'],
   },
   anticheat: {
-    strong: [/\bjailbreak\b/, /\bjailbroken?\b/, /\bfrida\b/, /\btamper(ed)?\b/, /\broot(ed|ing)?\b/,
+    strong: [/\bjailbreak\b/, /\bjailbroken?\b/, /\bfrida\b/, /\btamper(ed)?\b/, /\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b/i,
       /\bmagisk\b/, /\bptrace\b/, /\bssl ?pinning\b/, /\bintegrity\b/, /\bcheat(ing)?\b/,
       /\bdebugger\b/, /改造/, /不正/],
     weak: [/\bdetect(ed)?\b/, /\bverified\b/, /\bvalid\b/],
@@ -493,7 +493,7 @@ const SYNONYMS = [
   [/ジェム|石|gems?|jewel|diamond|crystal/i, ['gem', 'jewel', 'diamond', 'crystal', 'ジェム']],
   [/ガチャ|gacha|抽選|召喚/i, ['gacha', 'lottery', 'draw', 'summon', 'ガチャ']],
   [/課金|購入|買|purchase|payment|iap|in-?app|sku|entitlement|storekit|receipt/i, ['purchase', 'payment', 'billing', 'receipt', 'iap', 'inapp', 'sku', 'entitlement', 'storekit', '購入']],
-  [/チート|改造|不正|cheat|jailbreak|frida|tamper|root|magisk|ptrace|sslpinning/i, ['jailbreak', 'frida', 'tamper', 'cheat', 'root', 'magisk', 'ptrace', 'sslpinning', '改造', '不正']],
+  [/チート|改造|不正|cheat|jailbreak|frida|tamper|\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b|magisk|ptrace|sslpinning/i, ['jailbreak', 'frida', 'tamper', 'cheat', 'rooted', 'rooting', 'magisk', 'ptrace', 'sslpinning', '改造', '不正']],
   [/ログイン|login|認証|auth/i, ['login', 'auth', 'signin', 'ログイン']],
   [/広告|ad\b|ads\b/i, ['ad', 'ads', 'interstitial', 'rewarded', '広告']],
   [/セーブ|保存|save/i, ['save', 'store', 'persist', 'セーブ']],

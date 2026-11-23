@@ -499,6 +499,7 @@ export function createApi(app, out, options = {}) {
       if (!before || before.length !== built.bytes.length) return { error: '元のバイトを読み取れません。' };
       const mode = raw ? 'raw' : 'assembly';
       app.patches.add(valid.fileOffset, before, built.bytes, { addr:a, text:textOrHex, mode, architecture:arch });
+      app.store?.set?.({ patches: app.patches.size });
       return { ok:true, bytes:built.bytes, mode, architecture:arch };
     },
 
@@ -615,10 +616,11 @@ function patchVirtualAddress(item, regions) {
   if (item.offset == null) return null;
   const off = BigInt(item.offset);
   for (const r of regions || []) {
-    if (!r || r.fileOffset == null || r.vmAddr == null || r.size == null) continue;
+    if (!r || r.zerofill || r.fileOffset == null || r.vmAddr == null || r.size == null) continue;
     try {
+      if (r.fileSize != null && BigInt(r.fileSize) <= 0n) continue;
       const fileStart = BigInt(r.fileOffset);
-      const size = BigInt(r.size);
+      const size = r.fileSize != null ? BigInt(r.fileSize) : BigInt(r.size);
       if (size > 0n && off >= fileStart && off < fileStart + size) {
         return BigInt(r.vmAddr) + (off - fileStart);
       }
@@ -661,9 +663,11 @@ function patchedTextSlot(item, patchStart, addr) {
   return sp < 0 ? { mn: line.toLowerCase(), ops: '' } : { mn: line.slice(0, sp).toLowerCase(), ops: line.slice(sp + 1).trim() };
 }
 
-async function patchedInstructionAt(app, regions, addr, readMemory) {
+async function patchedInstructionAt(app, regions, addr, readMemory, adapter = null) {
   const patches = app?.patches;
-  if (!patches || typeof patches.list !== 'function' || !(patches.size > 0)) return null;
+  if (!patches || typeof patches.list !== 'function' || !(patches.size > 0)) {
+    return { patched: false, insn: null };
+  }
   const target = BigInt(addr);
   const targetEnd = target + 4n;
   let overlapping = null;
@@ -682,7 +686,7 @@ async function patchedInstructionAt(app, regions, addr, readMemory) {
       break;
     }
   }
-  if (!overlapping) return null;
+  if (!overlapping) return { patched: false, insn: null };
   let four = null;
   if (covering && coveringStart != null) {
     const off = Number(target - coveringStart);
@@ -693,13 +697,21 @@ async function patchedInstructionAt(app, regions, addr, readMemory) {
   if (four && four.length === 4) {
     const word = (four[0] | (four[1] << 8) | (four[2] << 16) | (four[3] << 24)) >>> 0;
     const decoded = decodeArm64PatchWord(word, target);
-    if (decoded) return decoded;
+    if (decoded) return { patched: true, insn: decoded };
+    if (typeof adapter?.disassemble === 'function') {
+      try {
+        const dis = await adapter.disassemble(four, target);
+        const first = Array.isArray(dis) ? dis[0] : dis?.instructions?.[0] || dis;
+        const mn = first?.mn || first?.mnemonic || '';
+        if (mn) return { patched: true, insn: { mn, ops: first?.ops ?? first?.operands ?? '' } };
+      } catch { /* fall through to fail closed */ }
+    }
   }
   if (covering && coveringStart != null) {
     const fallback = patchedTextSlot(covering, coveringStart, target);
-    if (fallback) return fallback;
+    if (fallback) return { patched: true, insn: fallback };
   }
-  return null;
+  return { patched: true, insn: null };
 }
 
 /** app からエミュレータを作る（画面側でも使う）。 */
@@ -726,8 +738,8 @@ export function makeEmulator(app, options = {}) {
       const r = regionAt(addr);
       if (!r) return null;
       if (applyPatches && app?.patches?.size > 0) {
-        const patched = await patchedInstructionAt(app, allRegions, BigInt(addr), readMemory);
-        if (patched) return patched;
+        const result = await patchedInstructionAt(app, allRegions, BigInt(addr), readMemory, adapter);
+        if (result.patched) return result.insn;
       }
       const row = adapter.rowForAddress(r, addr);
       if (row == null) return null;

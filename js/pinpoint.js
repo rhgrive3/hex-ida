@@ -456,8 +456,13 @@ function batchedScanAccess(scanAccess, opts) {
       state.promise = Promise.race([Promise.resolve(operation), timeout])
         .then((groups) => {
           const resolved = groups || emptyGroups();
-          if (!controller.signal.aborted) state.groups = resolved;
+          if (!opts?.signal?.aborted) state.groups = resolved;
           return resolved;
+        })
+        .catch(() => {
+          const fallback = emptyGroups();
+          if (!opts?.signal?.aborted) state.groups = fallback;
+          return fallback;
         })
         .finally(() => {
           if (timer != null) clearTimeout(timer);

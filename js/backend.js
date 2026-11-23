@@ -444,9 +444,10 @@ export class Backend {
     }
     const awaitLegacyOpen = async () => {
       if (speculativeLegacyOutcome) {
-        const outcome = await speculativeLegacyOutcome;
+        const pending = speculativeLegacyOutcome;
         speculativeLegacyOutcome = null;
         speculativeLegacyReq = null;
+        const outcome = await pending;
         assertCurrent();
         if (outcome.ok) return outcome.value;
         throw outcome.error;
@@ -461,6 +462,7 @@ export class Backend {
       }
     };
 
+    try {
     let detection = null;
     let platformError = null;
     let initialPlatformInfo = null;
@@ -564,6 +566,9 @@ export class Backend {
     this._binaryIdFlight=null;
     this._binaryIdPromise=null;
     return result;
+    } finally {
+      cancelSpeculativeLegacy();
+    }
   }
 
   probe() {

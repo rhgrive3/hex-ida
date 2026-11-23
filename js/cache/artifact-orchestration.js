@@ -752,8 +752,6 @@ export class ArtifactAnalysisOrchestrator {
     if (typeof produce !== 'function') return Promise.reject(new TypeError('analysis-artifact-producer-required'));
     this.metrics.requests++;
 
-    let hasProduced = false;
-    let producedPayload;
     let hasValidated = false;
     let validatedPayload;
 
@@ -785,8 +783,6 @@ export class ArtifactAnalysisOrchestrator {
         const raw = await produce(context);
         const envelope = encodeWorkerAnalysisPayload(raw, { rejectSparseArrays:true });
         chargeWorkerPayloadMaterialization(context.budget, envelope);
-        producedPayload = raw;
-        hasProduced = true;
         return envelope;
       },
     });
@@ -794,15 +790,9 @@ export class ArtifactAnalysisOrchestrator {
     return request.then((result) => {
       if (result.reused) this.metrics.warmReuses++;
       else this.metrics.coldPublishes++;
-      let payload;
-      if (!result.reused && hasProduced && !hasValidated) {
-        payload = producedPayload;
-      } else if (hasValidated) {
-        payload = validatedPayload;
-      } else {
-        payload = decodeWorkerAnalysisPayload(result.payload, { rejectSparseArrays:true });
-      }
-      producedPayload = undefined;
+      const payload = hasValidated
+        ? validatedPayload
+        : decodeWorkerAnalysisPayload(result.payload, { rejectSparseArrays:true });
       validatedPayload = undefined;
       return { ...result, payload };
     }, (error) => {

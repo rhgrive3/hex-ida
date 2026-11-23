@@ -224,6 +224,16 @@ export class AnalysisResumeStore {
     return true;
   }
 
+  async putMany(entries) {
+    const db = await this.db();
+    if (!db) return false;
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    for (const [key, value] of entries) store.put(value, key);
+    await txDone(tx);
+    return true;
+  }
+
   async deleteKey(key) {
     const db = await this.db();
     if (!db) return false;
@@ -285,11 +295,11 @@ export class AnalysisResumeStore {
         ...baseMeta,
         blob:file.slice(0, file.size, file.type || 'application/octet-stream'),
       };
-      const saved = await this.put(LAST_FILE_KEY, record);
-      if (saved) {
-        await this.put(LAST_FILE_META_KEY, baseMeta).catch(() => false);
-        void this.requestPersistentStorage();
-      }
+      const saved = await this.putMany([
+        [LAST_FILE_KEY, record],
+        [LAST_FILE_META_KEY, baseMeta],
+      ]);
+      if (saved) void this.requestPersistentStorage();
       return saved;
     };
     const pending = this.fileWriteChain.then(task, task);

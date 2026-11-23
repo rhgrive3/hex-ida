@@ -284,3 +284,185 @@ test('4. structured-control-projection fails closed on multi-line block branches
   const closed = closeFunctionOutput({ lines: projected.lines.map((l) => ({ ...l })), pseudocode: projected.pseudocode });
   assertStrictCSyntax(closed.pseudocode, 'multi-line PHI-copy block preserved with balanced braces');
 });
+
+test('5. Finding 1: recursive self-calls with function-pointer and array params decay arrays and skip fn-ptr casts', () => {
+  const res = makeResult([
+    { kind: 'sig', indent: 0, text: 'uint64 walk_cb(int (*cb)(int, int), char buf[16], uint64 raw_n)', row: 0, addr: 0x6000n },
+    { kind: 'ctrl', indent: 0, text: '{' },
+    { kind: 'decl', indent: 1, text: 'void *p_arg = buf;' },
+    { kind: 'stmt', indent: 1, text: 'uint64 next_buf = raw_n + 16;' },
+    { kind: 'ctrl', indent: 1, text: 'if (raw_n > 0) return walk_cb(cb, next_buf, p_arg);' },
+    { kind: 'ctrl', indent: 1, text: 'return raw_n;' },
+    { kind: 'ctrl', indent: 0, text: '}' },
+  ]);
+
+  closeFunctionOutput(res);
+
+  // Array param decays to char *, fn-ptr param is NOT spliced into a broken cast, arg2 pointer coerces to uintptr_t
+  assert.match(res.pseudocode, /walk_cb\(cb, \(char \*\)\(uintptr_t\)\(next_buf\), \(uintptr_t\)\(p_arg\)\)/);
+  assert.doesNotMatch(res.pseudocode, /\(int \(\*\)/);
+  assertStrictCSyntax(res.pseudocode, 'Finding 1: recursive self-call with fn-ptr and array param');
+  assertIdempotent(res, 'Finding 1: recursive self-call with fn-ptr and array param');
+});
+
+test('6. Finding 2: inferMutablePtrReturnLocals avoids void * on +/+= arithmetic, compound RHS, and commented assignments', () => {
+  const res = makeResult([
+    { kind: 'sig', indent: 0, text: 'uint64 alloc_arith(uint64 x, uint64 cond)', row: 0, addr: 0x6100n },
+    { kind: 'ctrl', indent: 0, text: '{' },
+    { kind: 'stmt', indent: 1, text: 'p_plus = malloc(64);' },
+    { kind: 'stmt', indent: 1, text: 'p_plus += 8;' },
+    { kind: 'stmt', indent: 1, text: 'p_expr = malloc(64) + (x);' },
+    { kind: 'stmt', indent: 1, text: 'p_tern = cond ? malloc(64) : (x);' },
+    { kind: 'stmt', indent: 1, text: 'p_tern2 = malloc(64) ? x : (x + 1);' },
+    { kind: 'stmt', indent: 1, text: '// p_cmt = malloc(64);' },
+    { kind: 'stmt', indent: 1, text: 'p_cmt = x + 4;' },
+    { kind: 'ctrl', indent: 1, text: 'return p_plus + p_expr + p_tern + p_tern2 + p_cmt;' },
+    { kind: 'ctrl', indent: 0, text: '}' },
+  ]);
+
+  closeFunctionOutput(res);
+
+  assert.match(res.pseudocode, /uint64 p_plus;/);
+  assert.match(res.pseudocode, /uint64 p_expr;/);
+  assert.match(res.pseudocode, /uint64 p_tern;/);
+  assert.match(res.pseudocode, /uint64 p_tern2;/);
+  assert.match(res.pseudocode, /uint64 p_cmt;/);
+  assert.doesNotMatch(res.pseudocode, /void \* p_plus;/);
+  assert.doesNotMatch(res.pseudocode, /void \* p_expr;/);
+  assert.doesNotMatch(res.pseudocode, /void \* p_tern2;/);
+  assertStrictCSyntax(res.pseudocode, 'Finding 2: inferMutablePtrReturnLocals no void * arithmetic');
+  assertIdempotent(res, 'Finding 2: inferMutablePtrReturnLocals no void * arithmetic');
+});
+
+test('7. Finding 3 & 6: chained non-struct arrow accesses and pre-existing hex_struct_<ident> typedef collision', () => {
+  const res = makeResult([
+    { kind: 'decl', indent: 0, text: 'typedef __UINT64_TYPE__ uint64;' },
+    { kind: 'decl', indent: 0, text: 'typedef struct { uint64 old_field; } hex_struct_a1;' },
+    { kind: 'sig', indent: 0, text: 'uint64 chained_arrows(uint64 a1, void *a2)', row: 0, addr: 0x6200n },
+    { kind: 'ctrl', indent: 0, text: '{' },
+    { kind: 'stmt', indent: 1, text: 'v_off = a1->field_8->field_10;' },
+    { kind: 'stmt', indent: 1, text: 'v_named = a1->foo->bar;' },
+    { kind: 'stmt', indent: 1, text: 'v_mix = a2->field_8->baz;' },
+    { kind: 'ctrl', indent: 1, text: 'return v_off + v_named + v_mix;' },
+    { kind: 'ctrl', indent: 0, text: '}' },
+  ]);
+
+  closeFunctionOutput(res);
+
+  // Chained field_<HEX>->field_<HEX>
+  assert.match(res.pseudocode, /\(\*\(uint64 \*\)\(\(uintptr_t\)\(\*\(uint64 \*\)\(\(uintptr_t\)\(a1\) \+ 0x8\)\) \+ 0x10\)\)/);
+  // Pre-existing hex_struct_a1 lacks foo, so non-colliding struct typedef is allocated
+  assert.match(res.pseudocode, /typedef struct \{ uint64 foo; \} hex_struct_a1_arrow;/);
+  assert.match(res.pseudocode, /typedef struct \{ uint64 bar; \} hex_struct_a1_foo;/);
+  assert.match(res.pseudocode, /typedef struct \{ uint64 baz; \} hex_struct_a2_field_8;/);
+  assertStrictCSyntax(res.pseudocode, 'Finding 3 & 6: chained arrows and struct collision');
+  assertIdempotent(res, 'Finding 3 & 6: chained arrows and struct collision');
+});
+
+test('8. Finding 4: translation-unit strips bitfield helper #endif without stripping unrelated #ifndef __hex_atomic_load_defined #endif', () => {
+  const f1 = makeResult([
+    { kind: 'sig', indent: 0, text: 'uint64 atomic_and_bits(uint64 *p, uint64 a2)', row: 0, addr: 0x6300n },
+    { kind: 'ctrl', indent: 0, text: '{' },
+    { kind: 'stmt', indent: 1, text: 'v = __atomic_load(p);' },
+    { kind: 'ctrl', indent: 1, text: 'return bit_extract(v ^ a2, 4, 8);' },
+    { kind: 'ctrl', indent: 0, text: '}' },
+  ]);
+
+  closeFunctionOutput(f1);
+  assert.match(f1.pseudocode, /#ifndef __hex_atomic_load_defined/);
+  assert.match(f1.pseudocode, /#ifndef __hex_bit_extract_defined/);
+  assertStrictCSyntax(f1.pseudocode, 'Finding 4: single function with atomic + bit_extract');
+
+  const unit = buildCTranslationUnit([
+    { address: 0x6300n, name: 'atomic_and_bits', pseudocode: f1.pseudocode },
+  ]);
+  // Atomic #ifndef/#endif pair must remain balanced in the packaged translation unit
+  const ifndefCount = (unit.source.match(/^#ifndef\b/gm) || []).length;
+  const ifCount = (unit.source.match(/^#if\b/gm) || []).length;
+  const endifCount = (unit.source.match(/^#endif\b/gm) || []).length;
+  assert.equal(endifCount, ifndefCount + ifCount, 'preprocessor #ifndef/#if and #endif directives must stay balanced');
+  assertStrictCSyntax(unit.source, 'Finding 4: translation unit with atomic + bit_extract');
+});
+
+test('9. Finding 5: bit_extract and bit_insert coerce pointer arguments with (uintptr_t)', () => {
+  const res = makeResult([
+    { kind: 'sig', indent: 0, text: 'uint64 ptr_bits(void *a1, const char *a2)', row: 0, addr: 0x6400n },
+    { kind: 'ctrl', indent: 0, text: '{' },
+    { kind: 'stmt', indent: 1, text: 'lo = bit_extract(a1, 0, 12);' },
+    { kind: 'ctrl', indent: 1, text: 'return bit_insert(a1, a2, 12, 16) | lo;' },
+    { kind: 'ctrl', indent: 0, text: '}' },
+  ]);
+
+  closeFunctionOutput(res);
+
+  assert.match(res.pseudocode, /bit_extract\(\(uintptr_t\)\(a1\), 0, 12\)/);
+  assert.match(res.pseudocode, /bit_insert\(\(uintptr_t\)\(a1\), \(uintptr_t\)\(a2\), 12, 16\)/);
+  assertStrictCSyntax(res.pseudocode, 'Finding 5: bit_extract/bit_insert with pointer args');
+  assertIdempotent(res, 'Finding 5: bit_extract/bit_insert with pointer args');
+});
+
+test('10. Finding 11: structured-control-projection handles trailing comments on block branches and embedded newlines in // comments', () => {
+  const cbr = { id: 1, row: 0, address: 0x7000n, block: 0, op: 'cbr', cond: 'eq', args: [], extra: { targetBlock: 1 } };
+  const br1 = { id: 2, row: 1, address: 0x7004n, block: 1, op: 'br', args: [] };
+  const ret = { id: 3, row: 2, address: 0x7008n, block: 2, op: 'ret', args: [] };
+
+  const blocks = [
+    { index: 0, startRow: 0, endRow: 0, address: 0x7000n, succ: [1, 2], pred: [], insts: [cbr], successorEdges: [{ to: 1, kind: 'conditional-true' }, { to: 2, kind: 'conditional-false' }] },
+    { index: 1, startRow: 1, endRow: 1, address: 0x7004n, succ: [2], pred: [0], insts: [br1] },
+    { index: 2, startRow: 2, endRow: 2, address: 0x7008n, succ: [], pred: [0, 1], insts: [ret] },
+  ];
+  const ir = {
+    entry: 0,
+    blocks,
+    instructions: [cbr, br1, ret],
+    idom: [0, 0, 0],
+    ipdom: [2, 2, null],
+  };
+
+  for (const branchHeader of ['if (a1 == 0) { // phi copy', 'if (a1 == 0) { /* phi copy */']) {
+    const body = [
+      { kind: 'sig', indent: 0, text: 'uint64 phi_comment_fn(uint64 a1)', row: 0, addr: 0x7000n },
+      { kind: 'ctrl', indent: 0, text: '{', row: 0, addr: 0x7000n },
+      { kind: 'ctrl', indent: 1, text: branchHeader, block: 0, row: 0, addr: 0x7000n },
+      { kind: 'stmt', indent: 2, text: '// embedded comment\nphi_1 = 1;', block: 0, row: 0, addr: 0x7000n },
+      { kind: 'stmt', indent: 2, text: 'goto loc_7004;', block: 0, row: 0, addr: 0x7000n },
+      { kind: 'ctrl', indent: 1, text: '}', block: 0, row: 0, addr: 0x7000n },
+      { kind: 'stmt', indent: 1, text: 'phi_1 = 2;', block: 0, row: 0, addr: 0x7000n },
+      { kind: 'stmt', indent: 1, text: 'goto loc_7008;', block: 0, row: 0, addr: 0x7000n },
+      { kind: 'label', indent: 0, text: 'loc_7004:', block: 1, row: 1, addr: 0x7004n },
+      { kind: 'stmt', indent: 1, text: 'phi_1 = phi_1 + 10;', block: 1, row: 1, addr: 0x7004n },
+      { kind: 'stmt', indent: 1, text: 'goto loc_7008;', block: 1, row: 1, addr: 0x7004n },
+      { kind: 'label', indent: 0, text: 'loc_7008:', block: 2, row: 2, addr: 0x7008n },
+      { kind: 'ctrl', indent: 1, text: 'return phi_1;', block: 2, row: 2, addr: 0x7008n },
+      { kind: 'ctrl', indent: 0, text: '}', row: 2, addr: 0x7008n },
+    ];
+    const result = {
+      ir,
+      cAst: { kind: 'program', body },
+      lines: body,
+      pseudocode: body.map((n) => `${'    '.repeat(n.indent)}${n.text}`).join('\n'),
+    };
+    const facts = {
+      completeness: 'complete',
+      regions: [{ kind: 'conditional', entry: 0, exits: [2], members: [1], constraints: [], residualGotos: [] }],
+      edges: [
+        { from: 0, to: 1, construct: 'conditional-true' },
+        { from: 0, to: 2, construct: 'conditional-false' },
+        { from: 1, to: 2, construct: 'conditional-join' },
+      ],
+    };
+    const dominators = {
+      idom: [0, 0, 0],
+      ipdom: [2, 2, null],
+      dominators: [new Set([0]), new Set([0, 1]), new Set([0, 2])],
+      postDominators: [new Set([0, 2]), new Set([1, 2]), new Set([2])],
+    };
+    const analysis = new Map([
+      ['structuredRegions', facts],
+      ['cfg', { blocks }],
+      ['dominators', dominators],
+    ]);
+    const projected = applyStructuredControlProjection(result, analysis, {});
+    assert.equal(projected, result, `must fail closed on commented block branch: ${branchHeader}`);
+  }
+});

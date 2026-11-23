@@ -703,6 +703,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
  */
 export function runPhase8Stage(context = {}, options = {}) {
   const stages = options.stages ?? INTERACTIVE_STAGES;
+  const hasCustomClock = typeof options.clock === 'function' || typeof context.opts?.transformClock === 'function';
   const readClock = typeof options.clock === 'function' ? options.clock
     : typeof context.opts?.transformClock === 'function' ? context.opts.transformClock : clock;
   const started = readClock();
@@ -750,7 +751,7 @@ export function runPhase8Stage(context = {}, options = {}) {
         }
       }
       if (deadlineExceeded) return true;
-      if (hasDeadline && (workChecks & 63) === 0 && readClock() >= deadline) { deadlineExceeded = true; return true; }
+      if (hasDeadline && (hasCustomClock || (workChecks & 63) === 0) && readClock() >= deadline) { deadlineExceeded = true; return true; }
       if (workChecks >= maxWorkItems) { workBudgetExceeded = true; return true; }
       workChecks += 1;
       return false;

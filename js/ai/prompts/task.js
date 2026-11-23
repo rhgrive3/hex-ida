@@ -62,7 +62,7 @@ Propose a name that describes what the routine does, justified by evidence. A re
 </task>`,
 
   patch_suggestion: `<task name="patch_suggestion">
-The user wants to modify, bypass, or change a value or behaviour in this code. Explain what the change does in plain, everyday Japanese without assuming C or assembly knowledge. Identify the exact address and instruction to change, mention any side effects or risks, and present any concrete binary edit as a proposal for approval rather than applying it automatically.
+The user wants to modify, bypass, or change a value or behaviour in this code. Explain what the change does in plain, everyday language matching the user's language without assuming C or assembly knowledge. Identify the exact address and instruction to change, mention any side effects or risks, and present any concrete binary edit as a proposal for approval rather than applying it automatically.
 </task>`,
 
   runtime_verification: `<task name="runtime_verification">
@@ -79,7 +79,7 @@ const PATTERNS = [
   ['runtime_verification', /\b(run(time)?|execute|emulat|trace at runtime|observe)\b.*\b(verify|check|confirm)\b|実行して(確|試)|動かして(確|試)|実行時に/i],
   ['compare_functions', /\b(compare|difference between|same as)\b.*\b(function|routine|sub_)|比較|どこが違/i],
   ['rename_suggestion', /\b(rename|suggest a? ?name|better name|name this)\b|名前を(付|つ|提案)|命名/i],
-  ['patch_suggestion', /\b(patch|bypass|nop\s*out|disable\s+this|skip\s+this|force\s+return|always\s+(return|succeed|pass|true|false)|how\s+(do\s+i|to)\s+(modify|change|alter|edit|bypass|patch))\b|書き換える方法|書き換えたい|書き換えて|パッチ(を|提案|案|で)|バイパス|回避(する|したい|方法)|無効化|常に(成功|true|false|通)|スキップ(する|したい|させ)|(値|結果|判定|条件)を(変え|変更)(る|たい|て)/i],
+  ['patch_suggestion', /\b(patch|bypass|nop\s*out|disable\s+this|skip\s+this|force\s+return|always\s+(return|succeed|pass|true|false)|how\s+(do\s+i|to)\s+(modify|change|alter|edit|bypass|patch))\b|書き換える方法|書き換えたい|書き換えて(?!い[るた]|お)|パッチ(を|提案|案|で)|バイパス|回避(する|したい|方法)|無効化|常に(成功|true|false|通)|スキップ(する|したい|させ)|(値|結果|判定|条件)を(変え|変更)(る|たい|て(?!い[るた]|お))/i],
   ['verify_hypothesis', /\b(verify|confirm|is it true|prove|check whether)\b|本当に|確かめ|検証/i],
   /* 「書き込んでいる処理」「書き換えている場所」「更新しているのは」。活用は
      追わず、動詞の語幹と直後の名詞だけを見る。 */

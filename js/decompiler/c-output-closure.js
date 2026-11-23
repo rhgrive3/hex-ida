@@ -296,7 +296,6 @@ export function isBitfieldHelperPreludeDeclaration(text) {
     || trimmed === '#define __hex_bit_extract_defined'
     || trimmed === '#ifndef __hex_bit_insert_defined'
     || trimmed === '#define __hex_bit_insert_defined'
-    || trimmed === '#endif'
     || parseBitfieldHelperDefinition(trimmed) !== null;
 }
 
@@ -1080,15 +1079,16 @@ function inferPointerTypedLocals(renderedBody, sigText) {
 
 function inferMutablePtrReturnLocals(renderedBody) {
   const source = declarationBearingSource(renderedBody);
-  const rawText = String(renderedBody ?? '');
   const assignPattern = /(?:^|(?<=[;{}]))\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?!=)([^;{}]+);/gm;
   const stats = new Map();
   const isPtrRetCall = (expr) => {
     const t = stripOuterParens(expr);
     const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(t);
-    return !!(m && t.endsWith(')') && STDLIB_PTR_RETURN_FUNCTIONS.has(m[1]));
+    if (!m || !t.endsWith(')') || !STDLIB_PTR_RETURN_FUNCTIONS.has(m[1])) return false;
+    const openIdx = t.indexOf('(', m[1].length);
+    return openIdx >= 0 && findMatchingDelimRaw(t, openIdx, '(', ')') === t.length - 1;
   };
-  for (let m = assignPattern.exec(rawText); m; m = assignPattern.exec(rawText)) {
+  for (let m = assignPattern.exec(source); m; m = assignPattern.exec(source)) {
     const lhs = m[1];
     const rhs = m[2].trim();
     if (/^\s*(?:return|if|while|for|switch|typedef|extern)\b/.test(lhs)) continue;
@@ -1097,12 +1097,30 @@ function inferMutablePtrReturnLocals(renderedBody) {
     if (isPtrRetCall(rhs)) st.ptrRetAssigns++;
     else st.otherAssigns++;
   }
-  const result = new Set();
+  const candidates = new Set();
   for (const [name, st] of stats.entries()) {
     if (st.ptrRetAssigns > 0 && st.otherAssigns === 0) {
-      const badOpRe = new RegExp('\\b' + escapeRegExp(name) + '\\b\\s*(?:[*&|^%/-]|<<|>>|\\[)|(?:[*&|^%/-]|<<|>>)\\s*\\b' + escapeRegExp(name) + '\\b');
-      if (!badOpRe.test(source)) result.add(name);
+      const esc = escapeRegExp(name);
+      const badOpRe = new RegExp('\\b' + esc + '\\b\\s*(?:\\+=|[*&|^%/-]|<<|>>|\\[)|(?:[*&|^%/-]|<<|>>)\\s*\\b' + esc + '\\b');
+      if (!badOpRe.test(source)) candidates.add(name);
     }
+  }
+  // Reject pointer+pointer additions (e.g. p + q), which are hard C errors on void */char *
+  for (const name of [...candidates]) {
+    const esc = escapeRegExp(name);
+    const addRe = new RegExp('\\b' + esc + '\\b\\s*\\+\\s*(?:\\([^)]*\\)\\s*)?([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*)\\s*\\+\\s*(?:\\([^)]*\\)\\s*)?\\b' + esc + '\\b', 'g');
+    let hasPtrPtr = false;
+    for (let m = addRe.exec(source); m; m = addRe.exec(source)) {
+      const other = m[1] || m[2];
+      if (other && (other === name || candidates.has(other))) { hasPtrPtr = true; break; }
+    }
+    if (hasPtrPtr) candidates.delete(name);
+  }
+  const result = new Map();
+  for (const name of candidates) {
+    const esc = escapeRegExp(name);
+    const plusRe = new RegExp('\\b' + esc + '\\b\\s*\\+|\\+\\s*\\b' + esc + '\\b');
+    result.set(name, plusRe.test(source) ? 'char *' : 'void *');
   }
   return result;
 }
@@ -1723,14 +1741,33 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals) {
     const close = findMatchingDelimiter(cleanSig, open, '(', ')');
     if (close > open) {
       let paramIdx = 0;
-      for (const rawGroup of cleanSig.slice(open + 1, close).split(',')) {
+      for (const rawGroup of splitTopLevelCommas(cleanSig.slice(open + 1, close))) {
         const group = rawGroup.trim();
         if (!group || group === 'void' || group === '...') continue;
-        const isPtr = group.includes('*') || /^(?:const\s+|volatile\s+)?id\b/.test(group) || /\[[^\]]*\]\s*$/.test(group);
-        const nameMatch = /([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^\]]*\])?\s*$/.exec(group);
-        const paramType = nameMatch && !KEYWORDS.has(nameMatch[1])
+        if (group.includes('(*')) {
+          const fpNameMatch = /\(\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/.exec(group);
+          selfParams.push({
+            index: paramIdx++,
+            type: null,
+            kind: 'other',
+          });
+          if (fpNameMatch && !KEYWORDS.has(fpNameMatch[1])) {
+            ptrNames.add(fpNameMatch[1]);
+            intNames.delete(fpNameMatch[1]);
+            floatNames.delete(fpNameMatch[1]);
+          }
+          continue;
+        }
+        const isArray = /\[[^\]]*\]\s*$/.test(group);
+        const isPtr = group.includes('*') || /^(?:const\s+|volatile\s+)?id\b/.test(group) || isArray;
+        const nameMatch = /([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^\]]*\])*\s*$/.exec(group);
+        const hasParamName = !!(nameMatch && !KEYWORDS.has(nameMatch[1]) && !FIXED_WIDTH_TYPES.has(nameMatch[1]));
+        let paramType = hasParamName
           ? group.slice(0, nameMatch.index).trim().replace(/\s+/g, ' ')
-          : group.replace(/\s+/g, ' ');
+          : group.replace(/(?:\s*\[[^\]]*\])+\s*$/, '').trim().replace(/\s+/g, ' ');
+        if (isArray && paramType) {
+          paramType = paramType.endsWith('*') ? `${paramType}*` : `${paramType} *`;
+        }
         const isFloat = !isPtr && /\b(?:float|double)\b/.test(group);
         const isInt = !isPtr && !isFloat && !/\b(?:struct|union)\b/.test(group);
         selfParams.push({
@@ -1738,7 +1775,7 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals) {
           type: paramType || (isPtr ? 'void *' : 'uint64'),
           kind: isPtr ? 'ptr' : isFloat ? 'float' : isInt ? 'int' : 'other',
         });
-        if (!nameMatch || KEYWORDS.has(nameMatch[1])) continue;
+        if (!hasParamName) continue;
         if (isPtr) {
           ptrNames.add(nameMatch[1]);
           if (isNonStructPointerTypeText(paramType)) nonStructPtrNames.add(nameMatch[1]);
@@ -1824,6 +1861,11 @@ function splitCallArgs(argStr) {
   return args;
 }
 
+const BUILTIN_INT_ARGS = Object.freeze({
+  bit_extract: new Set([0]),
+  bit_insert: new Set([0, 1]),
+});
+
 function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
   let out = '';
   let i = 0;
@@ -1846,8 +1888,9 @@ function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null, self
       while (j < text.length && /[A-Za-z0-9_]/.test(text[j])) j++;
       const ident = text.slice(i, j);
       const spec = LP64_SIZE_T_BUILTIN_PTR_ARGS[ident] || null;
-      const isSelfCall = !spec && selfCallSpec && ident === selfCallSpec.name && selfCallSpec.params.length > 0;
-      if (spec || isSelfCall) {
+      const intArgSpec = !spec ? (BUILTIN_INT_ARGS[ident] || null) : null;
+      const isSelfCall = !spec && !intArgSpec && selfCallSpec && ident === selfCallSpec.name && selfCallSpec.params.length > 0;
+      if (spec || intArgSpec || isSelfCall) {
         let k = j;
         while (k < text.length && /\s/.test(text[k])) k++;
         if (text[k] === '(') {
@@ -1876,8 +1919,15 @@ function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null, self
                 }
                 return nested;
               }
+              if (intArgSpec) {
+                if (!intArgSpec.has(idx)) return nested;
+                if (classifyExprType(trimmed, ptrNames, intNames, floatNames, selfCallSpec) === 'ptr') {
+                  return `${lead}(uintptr_t)(${trimmed})${trail}`;
+                }
+                return nested;
+              }
               const param = selfCallSpec.params[idx];
-              if (!param) return nested;
+              if (!param || !param.type) return nested;
               const argType = classifyExprType(trimmed, ptrNames, intNames, floatNames, selfCallSpec);
               if (param.kind === 'ptr' && argType === 'int') {
                 return `${lead}(${param.type})(uintptr_t)(${trimmed})${trail}`;
@@ -2193,7 +2243,33 @@ function classifyLhsDeclType(lhsText) {
   return null;
 }
 
-function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs) {
+function allocSyntheticArrowStructType(baseKey, field, existingTypes, existingStructFields, syntheticArrowStructs) {
+  const baseName = `hex_struct_${baseKey}`;
+  const compatible = (name) => {
+    if (!existingTypes || !existingTypes.has(name)) return true;
+    const knownFields = existingStructFields && existingStructFields.get(name);
+    return !!(knownFields && knownFields.has(field));
+  };
+  let structType = baseName;
+  if (!compatible(structType)) {
+    structType = `${baseName}_arrow`;
+    let suffix = 2;
+    while (!compatible(structType)) {
+      structType = `${baseName}_arrow_${suffix++}`;
+    }
+  }
+  if (!existingTypes || !existingTypes.has(structType)) {
+    let fields = syntheticArrowStructs.get(structType);
+    if (!fields) {
+      fields = new Set();
+      syntheticArrowStructs.set(structType, fields);
+    }
+    fields.add(field);
+  }
+  return structType;
+}
+
+function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, existingTypes = null, existingStructFields = null) {
   if (!code.includes('->') || !badArrowBases.size) return code;
   let out = '';
   let i = 0;
@@ -2234,27 +2310,48 @@ function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs) 
             while (fEnd < code.length && /[A-Za-z0-9_]/.test(code[fEnd])) fEnd++;
             const field = code.slice(fStart, fEnd);
             if (!KEYWORDS.has(field)) {
-              const offsetMatch = /^field_([0-9A-Fa-f]+)$/.exec(field);
-              if (offsetMatch) {
-                let after = fEnd;
+              let expr = ident;
+              let chainKey = ident;
+              let curEnd = fEnd;
+              let curField = field;
+              let lastWasOffsetDeref = false;
+              let hopCount = 0;
+              while (true) {
+                const offsetMatch = /^field_([0-9A-Fa-f]+)$/.exec(curField);
+                if (offsetMatch) {
+                  expr = `*(uint64 *)((uintptr_t)(${expr}) + 0x${offsetMatch[1]})`;
+                  lastWasOffsetDeref = true;
+                } else {
+                  const structType = allocSyntheticArrowStructType(chainKey, curField, existingTypes, existingStructFields, syntheticArrowStructs);
+                  expr = `((${structType} *)(uintptr_t)(${expr}))->${curField}`;
+                  lastWasOffsetDeref = false;
+                }
+                chainKey = `${chainKey}_${curField}`;
+                hopCount++;
+                let nextArrow = curEnd;
+                while (nextArrow < code.length && /\s/.test(code[nextArrow])) nextArrow++;
+                if (code[nextArrow] !== '-' || code[nextArrow + 1] !== '>') break;
+                let nfStart = nextArrow + 2;
+                while (nfStart < code.length && /\s/.test(code[nfStart])) nfStart++;
+                if (nfStart >= code.length || !/[A-Za-z_]/.test(code[nfStart])) break;
+                let nfEnd = nfStart;
+                while (nfEnd < code.length && /[A-Za-z0-9_]/.test(code[nfEnd])) nfEnd++;
+                const nextField = code.slice(nfStart, nfEnd);
+                if (KEYWORDS.has(nextField)) break;
+                curField = nextField;
+                curEnd = nfEnd;
+              }
+              if (lastWasOffsetDeref) {
+                let after = curEnd;
                 while (after < code.length && /\s/.test(code[after])) after++;
                 const nextTwo = code.slice(after, after + 2);
-                const needsWrap = nextTwo === '++' || nextTwo === '--' || nextTwo === '->'
+                const needsWrap = hopCount > 1 || nextTwo === '++' || nextTwo === '--' || nextTwo === '->'
                   || code[after] === '[' || code[after] === '.';
-                const deref = `*(uint64 *)((uintptr_t)(${ident}) + 0x${offsetMatch[1]})`;
-                out += needsWrap ? `(${deref})` : deref;
-                i = fEnd;
-                continue;
+                out += needsWrap ? `(${expr})` : expr;
+              } else {
+                out += expr;
               }
-              const structType = `hex_struct_${ident}`;
-              let fields = syntheticArrowStructs.get(structType);
-              if (!fields) {
-                fields = new Set();
-                syntheticArrowStructs.set(structType, fields);
-              }
-              fields.add(field);
-              out += `((${structType} *)(uintptr_t)(${ident}))->${field}`;
-              i = fEnd;
+              i = curEnd;
               continue;
             }
           }
@@ -2270,7 +2367,7 @@ function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs) 
   return out;
 }
 
-function rewriteNonStructArrowAccesses(lines, bodyOpen, symTable) {
+function rewriteNonStructArrowAccesses(lines, bodyOpen, symTable, existingTypes = null, existingStructFields = null) {
   const syntheticArrowStructs = new Map();
   if (bodyOpen < 0) return { lines, changed: false, syntheticArrowStructs };
   const badArrowBases = new Set([...symTable.intNames, ...(symTable.nonStructPtrNames || [])]);
@@ -2281,7 +2378,7 @@ function rewriteNonStructArrowAccesses(lines, bodyOpen, symTable) {
     const raw = String(item.text ?? '');
     if (!raw.includes('->')) return item;
     const { code, comment } = splitTrailingComment(raw);
-    const rewritten = rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs);
+    const rewritten = rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, existingTypes, existingStructFields);
     if (rewritten === code) return item;
     changed = true;
     return { ...item, text: rewritten + comment };
@@ -2473,7 +2570,7 @@ export function closeFunctionOutput(result, options = {}) {
       kind: 'decl', indent: 1, text: `${(() => {
         if (entry.subscriptBase && (entry.name === 'memory' || !entry.nonSubscriptValue)) return 'uint8_t *';
         const t = localDeclarationTypeFor(entry.name, result);
-        if (t === 'uint64' && mutablePtrReturnLocals.has(entry.name)) return 'void *';
+        if (t === 'uint64' && mutablePtrReturnLocals.has(entry.name)) return mutablePtrReturnLocals.get(entry.name);
         return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'const void *' : t;
       })()} ${entry.name};`,
       row: null, addr: null, note: null, source: entrySource,
@@ -2484,8 +2581,20 @@ export function closeFunctionOutput(result, options = {}) {
     ? [...lines.slice(0, bodyOpen + 1), ...allBodyDeclarations, ...lines.slice(bodyOpen + 1)]
     : lines;
 
+  const existingStructFields = new Map();
+  for (const item of [...lines, ...structPrelude]) {
+    const parsed = parseSynthesizedStructPreludeDeclaration(item?.text);
+    if (!parsed) continue;
+    let fset = existingStructFields.get(parsed.name);
+    if (!fset) {
+      fset = new Set();
+      existingStructFields.set(parsed.name, fset);
+    }
+    for (const f of parsed.fields) fset.add(f.name);
+    existingTypes.add(parsed.name);
+  }
   const symTable = buildSymbolTypeTable(sigText, withDeclarationsRaw, standaloneGlobals);
-  const { lines: withArrowRewrites, changed: arrowChanged, syntheticArrowStructs } = rewriteNonStructArrowAccesses(withDeclarationsRaw, bodyOpen, symTable);
+  const { lines: withArrowRewrites, changed: arrowChanged, syntheticArrowStructs } = rewriteNonStructArrowAccesses(withDeclarationsRaw, bodyOpen, symTable, existingTypes, existingStructFields);
   for (const structType of [...syntheticArrowStructs.keys()].sort(compareAscii)) {
     if (existingTypes.has(structType)) continue;
     const fields = syntheticArrowStructs.get(structType);

@@ -379,8 +379,6 @@ export function buildStringMap(opts) {
   const selectedStrings = [];
   if (sourceStrings.length <= MAX_STRINGS_TO_SCAN) {
     for (let i = 0; i < sourceStrings.length; i++) selectedStrings.push(sourceStrings[i]);
-  } else if (sourceStrings.length <= MAX_STRINGS_TO_SCAN * 2) {
-    for (let i = 0; i < MAX_STRINGS_TO_SCAN; i++) selectedStrings.push(sourceStrings[i]);
   } else {
     const head = Math.floor(MAX_STRINGS_TO_SCAN / 2);
     for (let i = 0; i < head; i++) selectedStrings.push(sourceStrings[i]);

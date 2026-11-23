@@ -143,7 +143,7 @@ export function explainEmulatorFault(code, message) {
   if (c === 'program-return' || msg.includes('最初の呼び出し元まで戻ってきました')) {
     return '関数が正常に終了して戻ってきました。';
   }
-  if (c === 'step-limit' || c === 'invalid-step-budget' || msg.includes('命令ぶん進んだので、いったん止めました')) {
+  if (c === 'max-steps' || c === 'step-limit' || c === 'invalid-step-budget' || msg.includes('命令ぶん進んだので、いったん止めました')) {
     return '実行命令数の上限に達したため停止しました（無限ループ、または処理が長すぎる可能性があります）。\nヒント: 下の「通った道」で同じ場所を繰り返していないか確認し、分岐命令にパッチを当てて試してみてください。';
   }
   if (c === 'unmapped-memory' || c === 'memory-read-failed'
@@ -1215,7 +1215,7 @@ export function showPatches(app) {
         onTap: () => {
           menu([
             { label: 'この場所へ移動', action: () => { sheet.close(); if (it.addr != null) app.goToAddress(it.addr, { announce: true }); } },
-            { label: 'この書き換えを取り消す', action: () => { app.patches.remove(it.offset); render(); toast('取り消しました'); } },
+            { label: 'この書き換えを取り消す', action: () => { app.patches.remove(it.offset); app.store?.set?.({ patches: app.patches.size }); render(); toast('取り消しました'); } },
           ], window.innerWidth / 2, 200);
         },
       }));
@@ -1241,7 +1241,7 @@ export function showPatches(app) {
     }
     if (items.length) {
       chips.append(button('書き換えたファイルを保存', 'chip strong', () => savePatched(app)));
-      chips.append(button('全部取り消す', 'chip danger', () => { app.patches.clear(); render(); }));
+      chips.append(button('全部取り消す', 'chip danger', () => { app.patches.clear(); app.store?.set?.({ patches: app.patches.size }); render(); }));
     }
     body.append(chips);
   };
@@ -1308,6 +1308,7 @@ export async function showPatchEditor(app, addr, insnArg) {
     const undoBar = el('div', 'chips');
     undoBar.append(button('元に戻す (Undo)', 'chip danger', () => {
       app.patches.remove(activePatch.offset);
+      app.store?.set?.({ patches: app.patches.size });
       sheet.close();
       toast('パッチを元に戻しました');
     }));
@@ -1362,6 +1363,7 @@ export async function showPatchEditor(app, addr, insnArg) {
     }
     try {
       app.patches.add(valid.fileOffset, before, bytes, { addr, text });
+      app.store?.set?.({ patches: app.patches.size });
     } catch (err) {
       alertDialog('登録できません', userError(err, '既存のパッチと重なっています。先のパッチを元に戻してからお試しください。'));
       return;

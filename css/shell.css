@@ -134,8 +134,19 @@
   cursor: pointer;
   white-space: nowrap;
 }
+.product-ui-ready .addrbar .addr-fn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .product-ui-ready .addrbar .addr-range + .addr-pseudo { margin-left: 8px; }
 .product-ui-ready .addrbar .addr-pseudo:not([hidden]) + .addr-search { margin-left: 4px; }
+@media (max-width: 899px), (pointer: coarse) {
+  .product-ui-ready .addrbar .addr-pseudo {
+    min-height: var(--ui-touch);
+    padding: 6px 12px;
+  }
+}
 .product-ui-ready .ui-diagnostics-disclosure {
   margin-top: var(--ui-space-3);
   border: 1px solid var(--ui-border);

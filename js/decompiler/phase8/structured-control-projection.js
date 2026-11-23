@@ -476,6 +476,47 @@ function isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, cAst, ir, 
   return false;
 }
 
+function stripTrailingComments(text) {
+  const raw = String(text ?? '');
+  let out = '';
+  let state = 'code';
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    const next = raw[i + 1];
+    if (state === 'code') {
+      if (ch === '/' && next === '/') {
+        const nl = raw.indexOf('\n', i + 2);
+        if (nl < 0) break;
+        out += '\n';
+        i = nl;
+        continue;
+      }
+      if (ch === '/' && next === '*') { state = 'block'; i++; continue; }
+      if (ch === '"') { state = 'string'; out += ch; continue; }
+      if (ch === "'") { state = 'char'; out += ch; continue; }
+      out += ch;
+      continue;
+    }
+    if (state === 'block') {
+      if (ch === '*' && next === '/') { state = 'code'; i++; }
+      continue;
+    }
+    if (state === 'string') {
+      out += ch;
+      if (ch === '\\' && i + 1 < raw.length) { out += raw[++i]; continue; }
+      if (ch === '"') state = 'code';
+      continue;
+    }
+    if (state === 'char') {
+      out += ch;
+      if (ch === '\\' && i + 1 < raw.length) { out += raw[++i]; continue; }
+      if (ch === "'") state = 'code';
+      continue;
+    }
+  }
+  return out.trim();
+}
+
 function hasBalancedBodyBraces(nodes) {
   let depth = 0;
   let state = 'code';
@@ -485,7 +526,12 @@ function hasBalancedBodyBraces(nodes) {
       const ch = text[i];
       const next = text[i + 1];
       if (state === 'code') {
-        if (ch === '/' && next === '/') { break; }
+        if (ch === '/' && next === '/') {
+          const nl = text.indexOf('\n', i + 2);
+          if (nl < 0) break;
+          i = nl;
+          continue;
+        }
         if (ch === '/' && next === '*') { state = 'block'; i++; continue; }
         if (ch === '"') { state = 'string'; continue; }
         if (ch === "'") { state = 'char'; continue; }
@@ -631,7 +677,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     // Multi-line block branches (e.g. faithfulCfg PHI-copy blocks `if (cond) { ... }`)
     // cannot be spliced by removing only the header/goto lines without stranding
     // their closing `}` brace and closing the function early. Fail closed.
-    if (existingBranchNode.text?.trim().endsWith('{')) continue;
+    if (stripTrailingComments(existingBranchNode.text).endsWith('{')) continue;
     if (!condText) {
       const match = existingBranchNode.text?.match(/^if\s*\((.+)\)\s*(?:goto\s+\w+;|\{)/);
       const expression = match?.[1]?.trim();
@@ -761,7 +807,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       const b = blockOfNode(node, result.ir, opts, projIndex);
       if (b === entry && (node.kind === 'ctrl' || node.kind === 'stmt')) {
         if (node.text?.startsWith('if ') || node.text?.includes('goto loc_')) {
-          if (node.text.trim().endsWith('{')) {
+          if (stripTrailingComments(node.text).endsWith('{')) {
             entryHasBlockBranch = true;
             break;
           }
@@ -886,9 +932,11 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
   // an abort that lands after the loop stage returned.
   if (loopOutcome === LOOP_PROJECTION_CANCELLED || opts.shouldAbort?.() === true) return result;
   if (loopOutcome && loopOutcome.records.length > 0) {
-    workingBody = loopOutcome.body;
-    adoptedRecords.push(...loopOutcome.records);
-    adoptedRegions.push(...loopOutcome.adopted);
+    if (!hasBalancedBodyBraces(workingBody) || hasBalancedBodyBraces(loopOutcome.body)) {
+      workingBody = loopOutcome.body;
+      adoptedRecords.push(...loopOutcome.records);
+      adoptedRegions.push(...loopOutcome.adopted);
+    }
   }
 
   if (adoptedRecords.length === 0) {

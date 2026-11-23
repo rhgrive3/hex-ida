@@ -222,6 +222,7 @@ function stripStandaloneGlobalPreludeLines(text) {
   let inStandaloneGlobals = false;
   let inStandalonePrototypes = false;
   let inBitfieldHelpers = false;
+  let inBitfieldGuard = false;
   let sawSignature = false;
   for (const line of lines) {
     const trimmed = line.trim();
@@ -230,16 +231,19 @@ function stripStandaloneGlobalPreludeLines(text) {
         inStandaloneGlobals = true;
         inStandalonePrototypes = false;
         inBitfieldHelpers = false;
+        inBitfieldGuard = false;
         continue;
       }
       if (isStandalonePrototypePreludeComment(trimmed)) {
         inStandalonePrototypes = true;
         inStandaloneGlobals = false;
         inBitfieldHelpers = false;
+        inBitfieldGuard = false;
         continue;
       }
       if (isBitfieldHelperPreludeComment(trimmed)) {
         inBitfieldHelpers = true;
+        inBitfieldGuard = false;
         inStandaloneGlobals = false;
         inStandalonePrototypes = false;
         continue;
@@ -252,9 +256,23 @@ function stripStandaloneGlobalPreludeLines(text) {
         if (isStandalonePrototypePreludeDeclaration(trimmed)) continue;
         inStandalonePrototypes = false;
       }
-      if (inBitfieldHelpers) {
+      if (inBitfieldHelpers || inBitfieldGuard) {
+        if (trimmed === '#ifndef __hex_bit_extract_defined' || trimmed === '#ifndef __hex_bit_insert_defined') {
+          inBitfieldGuard = true;
+          continue;
+        }
+        if (inBitfieldGuard && trimmed === '#endif') {
+          inBitfieldGuard = false;
+          continue;
+        }
         if (isBitfieldHelperPreludeDeclaration(trimmed)) continue;
         inBitfieldHelpers = false;
+        inBitfieldGuard = false;
+      }
+      if (trimmed === '#ifndef __hex_bit_extract_defined' || trimmed === '#ifndef __hex_bit_insert_defined') {
+        inBitfieldHelpers = true;
+        inBitfieldGuard = true;
+        continue;
       }
       if (isStandardHeaderInclude(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) continue;
       if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed) && !isBitfieldHelperPreludeDeclaration(trimmed))) {
@@ -323,6 +341,7 @@ function isAccountedBodyPrefix(prefix) {
   let sawStandaloneGlobalsMarker = false;
   let sawStandalonePrototypesMarker = false;
   let sawBitfieldHelpersMarker = false;
+  let inBitfieldGuard = false;
   while (pos < prefix.length) {
     const triviaStart = pos;
     pos = skipBodyTrivia(prefix, pos);
@@ -339,14 +358,25 @@ function isAccountedBodyPrefix(prefix) {
     const lineEnd = prefix.indexOf('\n', pos);
     const end = lineEnd < 0 ? prefix.length : lineEnd;
     const line = prefix.slice(pos, end);
-    const ok = isReemittedPreludeDeclaration(line)
+    const trimmedLine = line.trim();
+    let ok = isReemittedPreludeDeclaration(line)
       || isSynthesizedStructPreludeDeclaration(line)
       || (sawStandaloneGlobalsMarker && isStandaloneGlobalPreludeDeclaration(line))
       || (sawStandalonePrototypesMarker && isStandalonePrototypePreludeDeclaration(line))
-      || (sawBitfieldHelpersMarker && isBitfieldHelperPreludeDeclaration(line))
       || parseBitfieldHelperDefinition(line) !== null
       || isIdTypedefPreludeDeclaration(line)
       || isStandardHeaderInclude(line);
+    if (!ok && (sawBitfieldHelpersMarker || inBitfieldGuard)) {
+      if (trimmedLine === '#ifndef __hex_bit_extract_defined' || trimmedLine === '#ifndef __hex_bit_insert_defined') {
+        inBitfieldGuard = true;
+        ok = true;
+      } else if (inBitfieldGuard && trimmedLine === '#endif') {
+        inBitfieldGuard = false;
+        ok = true;
+      } else if (isBitfieldHelperPreludeDeclaration(line)) {
+        ok = true;
+      }
+    }
     if (!ok) return false;
     pos = end;
   }

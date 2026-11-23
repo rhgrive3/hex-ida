@@ -1801,8 +1801,8 @@ async function describeAnswer(app, region, program, strings, addr, into) {
     'What this routine does: ' + text), 'sub'));
 }
 
-async function fillPurpose(app, region, program, strings, rows) {
-  const analyze = makeAnalyzer(app, region);
+async function fillPurpose(app, region, program, strings, rows, signal = null) {
+  const analyze = makeAnalyzer(app, region, signal);
   if (!analyze || !rows || !rows.length) return;
   const lookup = stringLookup(strings || []);
   const targets = rows.slice(0, PURPOSE_ROWS);
@@ -1810,11 +1810,11 @@ async function fillPurpose(app, region, program, strings, rows) {
   const worker = async () => {
     while (cursor < targets.length) {
       const r = targets[cursor++];
-      if (!r.row.isConnected) return;                 // 閉じられた。追いかけない。
+      if (signal?.aborted || !r.row.isConnected) return; // 閉じられた。追いかけない。
       const range = program ? program.functionRange(r.addr) : null;
       let model = null;
       try { model = await analyze(r.addr, range ? range.end : null); } catch { model = null; }
-      if (!model || !r.row.isConnected) continue;
+      if (signal?.aborted || !model || !r.row.isConnected) continue;
       let text = '';
       try {
         const owner = app.fields ? app.fields.ownerOf(r.addr) : null;
@@ -3636,7 +3636,7 @@ export function showCandidates(app, goal) {
      * 一覧を出したあとに 1 個ずつ開いて、言えたものから差し替えていく
      * （待たせないために、描画のあとで走らせる）。
      */
-    fillPurpose(app, region, program, strings, rows);
+    fillPurpose(app, region, program, strings, rows, controller.signal);
   }).catch((err) => {
     box.done();
     if (sheet.root.isConnected) {
@@ -4055,7 +4055,10 @@ export function showFunctionReport(app, addr, goal) {
     if (controller.signal.aborted || !sheet.root.isConnected) return;
     applySemantic(app, region, res);
     let loadingNote = null;
+    let currentReport = null;
     let callBlkRef = null;
+    let nextStepsBlkRef = null;
+    const getReport = () => currentReport;
     const renderInitial = () => {
       if (controller.signal.aborted || !sheet.root.isConnected) return;
       const report = buildFunctionReport({
@@ -4063,8 +4066,11 @@ export function showFunctionReport(app, addr, goal) {
         fields:app.fields, owner:app.ownerOf(start),
       });
       report.role = roleFromReport(report, { apis:res.model.facts.apis });
+      currentReport = report;
       later.replaceChildren();
-      callBlkRef = renderFunctionReport(app, sheet, later, report, res, region, goal, controller.signal);
+      const refs = renderFunctionReport(app, sheet, later, getReport, res, region, goal, controller.signal);
+      callBlkRef = refs.callBlk;
+      nextStepsBlkRef = refs.nextStepsBlk;
       loadingNote = para(pick(
         '呼び出し関係は別に取得中です。ここまでの内容はこの関数自身の命令から得た結果です。',
         'Call relationships are loading separately; the report shown now comes from this function itself.'), 'sub');
@@ -4082,14 +4088,22 @@ export function showFunctionReport(app, addr, goal) {
         model:res.model, region, symbols:sym, program, goal, name,
         fields:app.fields, owner:app.ownerOf(start),
       });
+      updated.role = currentReport?.role ?? roleFromReport(updated, { apis:res.model.facts.apis });
+      currentReport = updated;
       const nextCallBlk = buildCallRelationshipsBlock(app, sheet, updated, goal);
       if (callBlkRef && callBlkRef.parentNode) {
         callBlkRef.replaceWith(nextCallBlk);
         callBlkRef = nextCallBlk;
       }
+      const nextSteps = buildNextStepsBlock(updated);
+      if (nextStepsBlkRef && nextStepsBlkRef.parentNode) {
+        nextStepsBlkRef.replaceWith(nextSteps);
+        nextStepsBlkRef = nextSteps;
+      }
     }).catch(() => { /* relationship enrichment is optional */ });
   }).catch((err) => {
     box.done();
+    if (controller.signal.aborted || err?.name === 'AbortError') return;
     if (sheet.root.isConnected) {
       beginnerFailure(later, err, {
         actionLabel: pick('逆アセンブリを見る', 'Show disassembly'),
@@ -4099,7 +4113,9 @@ export function showFunctionReport(app, addr, goal) {
   });
 }
 
-function renderFunctionReport(app, sheet, body, report, res, region, goal, signal = null) {
+function renderFunctionReport(app, sheet, body, reportOrGetter, res, region, goal, signal = null) {
+  const getReport = typeof reportOrGetter === 'function' ? reportOrGetter : () => reportOrGetter;
+  const report = getReport();
   const id = report.identity;
 
   const head = el('div', 'fn-head');
@@ -4153,19 +4169,20 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal, signa
     if (cs) body.append(cs);
   }
 
-  body.append(geminiAnalysisSection(report, res, signal));
+  body.append(geminiAnalysisSection(getReport, res, signal));
 
   /* 3. 詳しく — 事実 / 推測 / 分からないこと。既定では畳んでおく。 */
   body.append(disclosure(pick('詳しく見る（事実・推測・分からないこと）',
     'Show the detail (facts, inferences, unknowns)'), {
     build: (into) => {
+      const latestReport = getReport();
       into.append(storySection(app, res.model, id.name, sheet));
 
       const factBlk = block(pick('確かなこと（バイナリから直接読めたこと）',
         'Facts — read directly from the binary'));
       const ful = list();
       let shown = 0;
-      for (const f of report.facts) {
+      for (const f of latestReport.facts) {
         const text = factText(f);
         if (!text) continue;
         shown++;
@@ -4189,7 +4206,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal, signa
       const infBlk = block(pick('ここから推測できること', 'What can be inferred from that'));
       const iul = list();
       let inferred = 0;
-      for (const i of report.inferences) {
+      for (const i of latestReport.inferences) {
         const text = inferenceText(i);
         if (!text) continue;
         inferred++;
@@ -4209,7 +4226,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal, signa
 
       const unkBlk = block(pick('このツールでは分からないこと', 'What this tool cannot tell you'));
       const uul = list();
-      for (const u of report.unknowns) {
+      for (const u of latestReport.unknowns) {
         const text = unknownText(u);
         if (text) {
           uul.append(tapRow(text, {
@@ -4268,18 +4285,8 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal, signa
   }));
 
   /* 9. 次に何をすればいいか */
-  const nb = block(pick('次に確認すること', 'What to check next'));
-  const nl = el('ul', 'story-steps');
-  report.nextSteps.forEach((s, i) => {
-    const text = nextStepText(s);
-    if (!text) return;
-    const li = el('li');
-    li.append(el('i', null, String(i + 1) + '.'));
-    li.append(el('span', null, text));
-    nl.append(li);
-  });
-  nb.append(nl);
-  body.append(nb);
+  const nextStepsBlk = buildNextStepsBlock(report);
+  body.append(nextStepsBlk);
 
   /* 10. どこからでも降りられるようにする */
   const views = nextViewsRow(app, id.startAddr, { sheet, goal, exclude: ['report'], primary: 'pseudocode' });
@@ -4298,7 +4305,22 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal, signa
     copyText(body.innerText, pick('関数レポート', 'function report'));
   }));
   body.append(actions);
-  return callBlk;
+  return { callBlk, nextStepsBlk };
+}
+
+function buildNextStepsBlock(report) {
+  const nb = block(pick('次に確認すること', 'What to check next'));
+  const nl = el('ul', 'story-steps');
+  report.nextSteps.forEach((s, i) => {
+    const text = nextStepText(s);
+    if (!text) return;
+    const li = el('li');
+    li.append(el('i', null, String(i + 1) + '.'));
+    li.append(el('span', null, text));
+    nl.append(li);
+  });
+  nb.append(nl);
+  return nb;
 }
 
 function buildCallRelationshipsBlock(app, sheet, report, goal) {
@@ -4452,7 +4474,9 @@ function renderGeminiMarkdown(target, source) {
 }
 
 /** Geminiへ送るのは、この関数に関係する上限付きの根拠だけにする。 */
-function geminiAnalysisSection(report, res, parentSignal = null) {
+function geminiAnalysisSection(reportOrGetter, res, parentSignal = null) {
+  const getReport = typeof reportOrGetter === 'function' ? reportOrGetter : () => reportOrGetter;
+  const initialReport = getReport();
   const section = block(pick('AIにこの関数を聞く', 'Ask AI about this function'));
   section.classList.add('gemini-analysis');
   section.append(para(pick(
@@ -4470,7 +4494,7 @@ function geminiAnalysisSection(report, res, parentSignal = null) {
   question.value = pick(
     'この関数の役割と、値が書き込まれる経路を根拠となるARM64命令とともに説明してください。',
     'Explain this function’s role and the path by which it writes values, citing the relevant ARM64 instructions.');
-  label.htmlFor = 'gemini-question-' + String(report.identity.startAddr);
+  label.htmlFor = 'gemini-question-' + String(initialReport.identity.startAddr);
   question.id = label.htmlFor;
   section.append(label, question);
 
@@ -4538,7 +4562,7 @@ function geminiAnalysisSection(report, res, parentSignal = null) {
     }
     let payload;
     try {
-      payload = buildGeminiPayload(report, res.model, text, thinking.value);
+      payload = buildGeminiPayload(getReport(), res.model, text, thinking.value);
     } catch (err) {
       console.error('[hex] could not prepare Gemini context', err);
       status.textContent = pick('解析対象を準備できませんでした。逆コンパイル結果は引き続き確認できます。',

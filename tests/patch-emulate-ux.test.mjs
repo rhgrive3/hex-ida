@@ -217,3 +217,101 @@ test('tools-base.js and sandbox.js wire up beginner patch/emulation UX controls'
   const sandboxSrc = await fs.readFile(new URL('../js/sandbox.js', import.meta.url), 'utf8');
   assert.match(sandboxSrc, /emulatorCreate', options == null \? \[addr, args\] : \[addr, args, options\]/);
 });
+
+test('Review Finding 1: staged raw-hex and partial patches fail closed instead of executing unpatched instructions', async () => {
+  const originalBytes = new Uint8Array(0x40);
+  const patches = new PatchSet();
+  const app = makeMockApp({
+    insns: [
+      { mn: 'mov', ops: 'w0, #42' },
+      { mn: 'ret', ops: '' },
+    ],
+    dataBytes: originalBytes,
+    patches,
+  });
+
+  // Full 4-byte raw hex patch that decodeArm64PatchWord cannot decode (0x00000000 = UDF #0)
+  patches.add(0n, new Uint8Array(4), new Uint8Array([0x00, 0x00, 0x00, 0x00]), { addr: 0x1000n, text: '00 00 00 00', mode: 'raw' });
+  const emuRaw = makeEmulator(app);
+  emuRaw.setup(0x1000n, []);
+  await emuRaw.run(20);
+  assert.notEqual(emuRaw.x[0], 42n);
+  assert.equal(emuRaw.stopCode, 'instruction-fetch-failed');
+
+  // Partial 1-byte patch overlapping [0x1000, 0x1004) must also fail closed, never fall back to fetchChunk
+  patches.clear();
+  patches.add(1n, new Uint8Array([0x00]), new Uint8Array([0xFF]), { addr: 0x1001n, text: 'FF', mode: 'raw' });
+  const emuPartial = makeEmulator(app);
+  emuPartial.setup(0x1000n, []);
+  await emuPartial.run(20);
+  assert.notEqual(emuPartial.x[0], 42n);
+  assert.equal(emuPartial.stopCode, 'instruction-fetch-failed');
+});
+
+test('Review Finding 6: script patch API and tools-base emit store.set({ patches }) on mutation', async () => {
+  const storeSets = [];
+  const patches = new PatchSet();
+  const app = makeMockApp({
+    insns: [{ mn: 'nop', ops: '' }],
+    dataBytes: new Uint8Array(0x40),
+    patches,
+  });
+  app.store.set = (patch) => storeSets.push(patch);
+
+  const { api } = createApi(app, () => {});
+  const res = await api.patch(0x1000n, 'nop');
+  assert.equal(res.ok, true);
+  assert.deepEqual(storeSets, [{ patches: 1 }]);
+
+  const toolsSrc = await fs.readFile(new URL('../js/tools-base.js', import.meta.url), 'utf8');
+  const setMatches = toolsSrc.match(/app\.store\?\.set\?\.\(\{\s*patches:\s*app\.patches\.size\s*\}\)/g) || [];
+  assert.ok(setMatches.length >= 4, `expected >= 4 store patch notifications in tools-base.js, got ${setMatches.length}`);
+});
+
+test('Review Finding 7: decodeArm64PatchWord rejects unallocated 32-bit MOVZ/MOVN (sf=0, hw>=2)', () => {
+  // 32-bit MOVZ with hw=2 (lsl #32) and hw=3 (lsl #48) are UNALLOCATED
+  assert.equal(decodeArm64PatchWord(0x52C00020, 0x1000n), null);
+  assert.equal(decodeArm64PatchWord(0x52E00020, 0x1000n), null);
+  // 32-bit MOVN with hw=2 and hw=3 are UNALLOCATED
+  assert.equal(decodeArm64PatchWord(0x12C00020, 0x1000n), null);
+  assert.equal(decodeArm64PatchWord(0x12E00020, 0x1000n), null);
+  // Valid 32-bit hw=1 (lsl #16) and 64-bit hw=2 (lsl #32) still decode
+  assert.deepEqual(decodeArm64PatchWord(0x52A00020, 0x1000n), { mn: 'movz', ops: 'w0, #0x1, lsl #16' });
+  assert.deepEqual(decodeArm64PatchWord(0xD2C00020, 0x1000n), { mn: 'movz', ops: 'x0, #0x1, lsl #32' });
+});
+
+test('Review Finding 9: assemble() coerces numeric and string `at` consistently for single-instruction assembly', () => {
+  const expected = assemble('b 0x1008', 0x1000n);
+  const fromNum = assemble('b 0x1008', 0x1000);
+  const fromStr = assemble('b 0x1008', '0x1000');
+  assert.deepEqual(Array.from(fromNum.bytes), Array.from(expected.bytes));
+  assert.deepEqual(Array.from(fromStr.bytes), Array.from(expected.bytes));
+  assert.ok(assemble('nop').bytes);
+});
+
+test('Review Finding 10: explainEmulatorFault handles max-steps stopCode', () => {
+  const maxSteps = explainEmulatorFault('max-steps', 'stopped');
+  assert.match(maxSteps, /上限/);
+  assert.match(maxSteps, /ヒント/);
+});
+
+test('Review Finding 11: overlayStagedPatches skips zero-fill sections during file-offset fallback', () => {
+  const patches = new PatchSet();
+  patches.add(0n, new Uint8Array([0x00, 0x00]), new Uint8Array([0xDE, 0xAD]), {});
+  const regions = [
+    { id: 'bss', name: '__bss', vmAddr: 0x9000n, fileOffset: 0n, size: 0x100n, zerofill: true },
+    { id: 'bss2', name: '__common', vmAddr: 0xA000n, fileOffset: 0n, size: 0x100n, fileSize: 0 },
+    { id: 'data', name: '__data', vmAddr: 0x2000n, fileOffset: 0n, size: 0x100n, fileSize: 0x100n },
+  ];
+  // Should NOT overlay onto zerofill/fileSize===0 regions
+  assert.deepEqual(Array.from(overlayStagedPatches(patches, regions, 0x9000n, new Uint8Array([0x00, 0x00]))), [0x00, 0x00]);
+  assert.deepEqual(Array.from(overlayStagedPatches(patches, regions, 0xA000n, new Uint8Array([0x00, 0x00]))), [0x00, 0x00]);
+  // Should overlay onto the real file-backed region
+  assert.deepEqual(Array.from(overlayStagedPatches(patches, regions, 0x2000n, new Uint8Array([0x00, 0x00]))), [0xDE, 0xAD]);
+});
+
+test('Review Finding 12: suggestPatches does not capture hex bit index as tbz/tbnz branch target', () => {
+  const recipes = suggestPatches('tbz', 'w0, #0x1f, sub_1020', 0x1000n);
+  assert.equal(recipes.some((r) => r.id === 'invert'), false);
+  assert.equal(recipes.some((r) => r.id === 'always'), false);
+});
