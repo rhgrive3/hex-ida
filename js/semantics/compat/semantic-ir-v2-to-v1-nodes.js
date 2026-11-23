@@ -777,7 +777,7 @@ function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues,
     inst.extra.intrinsic = intrinsic;
     inst.extra.compatSource = 'exact-arm64-scalar-fp-intrinsic';
     suppressSecondaryFpsr();
-    const fcmpCarrier = context.comparisonCarrierByNodeId?.get(node.id) ?? primaryOutput ?? null;
+    const fcmpCarrier = context.comparisonCarrierByNodeId?.get(node.id) ?? outputValues[0] ?? null;
     for (const state of intrinsic.stateWrites || []) {
       const identity = legacyPublicStateIdentity(state);
       if (identity === 'nzcv' && fcmpCarrier && context.physicalStateCurrent) {

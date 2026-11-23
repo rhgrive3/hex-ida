@@ -67,7 +67,10 @@ function op(name, ...args) {
       if (name === 'or' || name === 'orr') return c(a | b);
       if (name === 'xor' || name === 'eor') return c(a ^ b);
       if (name === 'shl') return c(a << b);
-      if (name === 'lshr') return c(a >> b);
+      if (name === 'lshr') {
+        if (b < 0n) throw new RangeError('negative-shift');
+        return c(BigInt.asUintN(MAX_EXECUTOR_WIDTH, a) >> b);
+      }
       if (name === 'mul') return c(a * b);
     } catch { /* symbolic fallback */ }
   }
@@ -463,10 +466,17 @@ function branchCondition(inst, state, ir, opts, memo) {
     return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n), { bits: resolved.width });
   }
   if (kind === 'tbz' || kind === 'tbnz') {
+    const resolved = resolveWidth([inst.args[0]?.bits, inst.args[0]?.value?.bits]);
+    const rejected = unsupportedWidth(resolved);
+    if (rejected) return rejected;
+    const width = resolved.width;
     const a = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-test-value');
     const bit = BigInt(inst.extra && inst.extra.bit != null ? inst.extra.bit : 0);
-    const masked = op('and', op('lshr', a, c(bit)), c(1n));
-    return cmp(kind === 'tbz' ? '==' : '!=', masked, c(0n));
+    const shifted = a?.kind === SYM.CONST && bit >= 0n
+      ? c(BigInt.asUintN(width, a.value) >> bit)
+      : op('lshr', a, c(bit));
+    const masked = op('and', shifted, c(1n));
+    return cmp(kind === 'tbz' ? '==' : '!=', masked, c(0n), { bits: width });
   }
   return conditionFromFlags(inst, state, ir, opts, memo, new Set());
 }

@@ -20,7 +20,7 @@ function nonEmpty(value) {
 }
 
 function freshRateState(now, policy) {
-  return { windowStart: now, globalCount: 0, buckets: {} };
+  return { windowStart: now, globalCount: 0, buckets: Object.create(null) };
 }
 
 function normalizeRateState(value, now, policy) {
@@ -30,7 +30,7 @@ function normalizeRateState(value, now, policy) {
     return freshRateState(now, policy);
   }
   if (now - value.windowStart >= policy.windowMs || now < value.windowStart) return freshRateState(now, policy);
-  const buckets = {};
+  const buckets = Object.create(null);
   for (const [key, entry] of Object.entries(value.buckets)) {
     if (Object.keys(buckets).length >= policy.maxTrackedBuckets) break;
     if (!entry || typeof entry !== 'object' || !Number.isSafeInteger(entry.count) || entry.count < 0) continue;
@@ -70,7 +70,7 @@ export async function beginRuntimeBootstrapIssuance(storage, input, {
   return storage.transaction(async (tx) => {
     const rate = normalizeRateState(await tx.get(RATE_KEY), now, policy);
     if (rate.globalCount >= policy.maxGlobalPerWindow) return admissionFailure('bootstrap-global-rate-limit');
-    const existingBucket = rate.buckets[bucket];
+    const existingBucket = Object.hasOwn(rate.buckets, bucket) ? rate.buckets[bucket] : null;
     if (!existingBucket && Object.keys(rate.buckets).length >= policy.maxTrackedBuckets) {
       return admissionFailure('bootstrap-bucket-capacity');
     }

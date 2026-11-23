@@ -197,6 +197,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
   let stackOffset = 0;
   let stackArgsMayContainPointers = false;
   let aggregatePartial = false;
+  let allocationUncertain = false;
 
   if (!params) {
     for (let i = 0; i < 8; i++) {
@@ -230,8 +231,18 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       || (fixedCount != null && index >= fixedCount)
     );
     const forceStack = anonymousVararg === true;
+    if (allocationUncertain) {
+      aggregatePartial = true;
+      arguments_.push({
+        index, location:'unknown', abiClass:'argument-layout-unproven',
+        partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+        reason:'preceding-argument-layout-not-proven',
+      });
+      continue;
+    }
     if (c.appleLongDoubleWidthConflict) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({ index, location:'unknown', abiClass:'darwin-long-double-width-conflict',
         bits:c.bits, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'darwin-arm64-long-double-width-conflicts-with-apple-binary64' });
@@ -239,6 +250,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.aggregateMetadataInvalid) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({ index, location:'unknown', abiClass:'aggregate-metadata-unproven', aggregate:true,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'aggregate-hfa-hva-metadata-invalid' });
@@ -246,6 +258,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.homogeneous && !c.homogeneousLayoutProven) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({
         index, location:'unknown', abiClass:c.hfa ? 'hfa-unproven' : 'hva-unproven',
         aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
@@ -255,6 +268,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.aggregate && !c.aggregateLayoutProven) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({
         index, location:'unknown', abiClass:'aggregate-unproven', aggregate:true,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
@@ -290,6 +304,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.aggregate && !c.aggregateAlignmentProven) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({
         index, location:'unknown', abiClass:'aggregate-alignment-unproven', aggregate:true,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
@@ -340,13 +355,15 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       if (c.homogeneous) fp = 8;
     } else {
       const regsNeeded = Math.max(1, Math.ceil(c.bits / 64));
+      if (!forceStack && c.alignmentBytes >= 16 && (gp & 1) !== 0) gp += 1;
       // A padded aggregate needs a physical lane proof that differs from its
       // logical bit width.  Do not publish an invented register split until a
       // dedicated register-padding representation exists; the stack path
       // below carries the complete canonical extent exactly.
       if (c.aggregate && c.aggregateBytes > Math.ceil(c.bits / 8)
-        && gp + regsNeeded <= 8) {
+        && gp + regsNeeded <= 8 && !forceStack) {
         aggregatePartial = true;
+        allocationUncertain = true;
         arguments_.push({ index, location:'unknown', abiClass:'aggregate-padding-register-layout-unproven',
           aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
           reason:'aggregate-physical-padding-register-layout-not-represented' });
@@ -458,8 +475,8 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     srcs,
     arguments:arguments_,
     stackArguments,
-    stackArgsUnknown:variadic,
-    stackArgsMayContainPointers:stackArgsMayContainPointers || variadic,
+    stackArgsUnknown:variadic || allocationUncertain,
+    stackArgsMayContainPointers:stackArgsMayContainPointers || variadic || allocationUncertain,
     possibleRegisterInputs:[],
     variadicTail:variadic ? {
       location:'stack',

@@ -204,7 +204,11 @@ export function applyJvmObjectIdentitySemantics(lifted, jvmClass, options = {}) 
     bundles.push(bundle);
 
     for (let index = 0; index < bundle.consumedValues.length; index += 1) stackFacts.pop();
-    for (const value of bundle.producedValues) stackFacts.push(allocationFact(value));
+    if (bundle.mnemonic !== 'iinc') {
+      for (const value of bundle.producedValues) {
+        if (!value?.stackNeutral) stackFacts.push(allocationFact(value));
+      }
+    }
 
     const freshNew = bundle.mnemonic === 'new'
       && bundle.producedValues.some((value) => allocationFact(value)?.allocationState === 'uninitialized');

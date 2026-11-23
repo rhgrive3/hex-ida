@@ -311,6 +311,7 @@ export function createCxxEvidenceProvider(input = {}) {
 
   let index = null;
   let pending = null;
+  let epoch = 0;
   let builds = 0;
   let attempts = 0;
   let provided = 0;
@@ -349,17 +350,20 @@ export function createCxxEvidenceProvider(input = {}) {
         return index;
       }
       builds++;
-      pending = (async () => {
+      const buildEpoch = epoch;
+      const buildPending = (async () => {
         const report = cache
           ? await cache.get(producerInput(), cacheKey)
           : await buildCxxClassEvidence(producerInput());
-        index = report ? indexFromReport(report,symbols,architecture,snapshotId) : EMPTY_INDEX;
-        return index;
+        const built = report ? indexFromReport(report, symbols, architecture, snapshotId) : EMPTY_INDEX;
+        if (epoch === buildEpoch) index = built;
+        return built;
       })();
+      pending = buildPending;
       try {
-        return await pending;
+        return await buildPending;
       } finally {
-        pending = null;
+        if (pending === buildPending) pending = null;
       }
     },
 
@@ -561,6 +565,7 @@ export function createCxxEvidenceProvider(input = {}) {
     },
 
     clear() {
+      epoch++;
       index = null;
       pending = null;
       lastAttempt = null;

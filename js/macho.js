@@ -1136,6 +1136,23 @@
     return { value, raw, next };
   }
 
+  function ehEncodedAdvance(u8, p, end, encoding, options = {}) {
+    if (encoding === 0xff) return p;
+    const format = encoding & 0x0f;
+    const application = encoding & 0x70;
+    if (application !== 0 && application !== 0x10 && application !== 0x20 &&
+        application !== 0x30 && application !== 0x40 && application !== 0x50) return null;
+    const ptrBytes = options.pointerSize === 4 ? 4 : 8;
+    if (application === 0x50) p = Math.ceil(p / ptrBytes) * ptrBytes;
+    if (format === 0x00) return p >= 0 && p + ptrBytes <= end ? p + ptrBytes : null;
+    if (format === 0x01) { const x = ehReadULEB(u8, p, end); return x ? x.next : null; }
+    if (format === 0x02 || format === 0x0a) return p >= 0 && p + 2 <= end ? p + 2 : null;
+    if (format === 0x03 || format === 0x0b) return p >= 0 && p + 4 <= end ? p + 4 : null;
+    if (format === 0x04 || format === 0x0c) return p >= 0 && p + 8 <= end ? p + 8 : null;
+    if (format === 0x09) { const x = ehReadSLEB(u8, p, end); return x ? x.next : null; }
+    return null;
+  }
+
   function fdeInExecutableMapping(start, end, options) {
     const align = options && options.align;
     if (align && align > 1n && (start % align) !== 0n) return false;
@@ -1185,7 +1202,7 @@
           const version = u8[q++];
           let augmentation = '';
           while (q < recordEnd && u8[q] !== 0 && augmentation.length < 64) augmentation += String.fromCharCode(u8[q++]);
-          if (q >= recordEnd) { p = recordEnd; continue; }
+          if (q >= recordEnd || u8[q] !== 0) { p = recordEnd; continue; }
           q++; // NUL
           // CIE version 4 inserts address_size and segment_selector_size
           // between the augmentation string and code_alignment_factor; in the
@@ -1207,22 +1224,22 @@
             const augEnd = q + Number(augLen.value);
             if (!Number.isSafeInteger(augEnd) || augEnd > recordEnd) { p = recordEnd; continue; }
             for (const ch of augmentation.slice(1)) {
-              if (ch === 'L') { if (q >= augEnd) break; q++; }
-              else if (ch === 'R') { if (q >= augEnd) break; fdeEncoding = u8[q++]; }
+              if (ch === 'L') { if (q >= augEnd) { fdeEncoding = null; break; } q++; }
+              else if (ch === 'R') { if (q >= augEnd) { fdeEncoding = null; break; } fdeEncoding = u8[q++]; }
               else if (ch === 'P') {
-                if (q >= augEnd) break;
+                if (q >= augEnd) { fdeEncoding = null; break; }
                 const enc = u8[q++];
-                const x = ehEncodedValue(dv, u8, q, augEnd, enc, vm, options);
-                if (!x) { q = augEnd; break; }
-                q = x.next;
+                const nextQ = ehEncodedAdvance(u8, q, augEnd, enc, options);
+                if (nextQ == null) { fdeEncoding = null; q = augEnd; break; }
+                q = nextQ;
               } else if (ch !== 'S') {
                 // Unknown augmentation data has no self-describing size. The
                 // outer z-length still lets us skip this CIE safely.
-                q = augEnd; break;
+                fdeEncoding = null; q = augEnd; break;
               }
             }
           }
-          cies.set(recordStart, { fdeEncoding });
+          if (fdeEncoding != null) cies.set(recordStart, { fdeEncoding });
         } catch { /* malformed CIE: keep scanning the next bounded record */ }
       } else {
         try {

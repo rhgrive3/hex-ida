@@ -545,6 +545,7 @@ function helperLocation(offsetValue) {
 const PROPERTY_HELPER_ABI = Object.freeze({
   getProperty: Object.freeze({ kind: 'read', offsetReg: 'x2', valueReg: 'x0' }),
   setProperty: Object.freeze({ kind: 'write', offsetReg: 'x2', valueReg: 'x3' }),
+  setProperty4: Object.freeze({ kind: 'write', offsetReg: 'x3', valueReg: 'x2' }),
 });
 
 const PROPERTY_HELPER_FAMILY_BY_SYMBOL = new Map([
@@ -552,14 +553,14 @@ const PROPERTY_HELPER_FAMILY_BY_SYMBOL = new Map([
   ['_objc_getProperty', 'getProperty'],
   ['objc_setProperty', 'setProperty'],
   ['_objc_setProperty', 'setProperty'],
-  ['objc_setProperty_atomic', 'setProperty'],
-  ['_objc_setProperty_atomic', 'setProperty'],
-  ['objc_setProperty_nonatomic', 'setProperty'],
-  ['_objc_setProperty_nonatomic', 'setProperty'],
-  ['objc_setProperty_atomic_copy', 'setProperty'],
-  ['_objc_setProperty_atomic_copy', 'setProperty'],
-  ['objc_setProperty_nonatomic_copy', 'setProperty'],
-  ['_objc_setProperty_nonatomic_copy', 'setProperty'],
+  ['objc_setProperty_atomic', 'setProperty4'],
+  ['_objc_setProperty_atomic', 'setProperty4'],
+  ['objc_setProperty_nonatomic', 'setProperty4'],
+  ['_objc_setProperty_nonatomic', 'setProperty4'],
+  ['objc_setProperty_atomic_copy', 'setProperty4'],
+  ['_objc_setProperty_atomic_copy', 'setProperty4'],
+  ['objc_setProperty_nonatomic_copy', 'setProperty4'],
+  ['_objc_setProperty_nonatomic_copy', 'setProperty4'],
 ]);
 
 function propertyHelperUpdates(model, ir) {

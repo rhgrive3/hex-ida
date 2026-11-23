@@ -631,7 +631,7 @@ function resolveGoTypeLayout(version) {
   const patch = match[2] == null ? 0 : Number(match[2]);
   if (!Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)) return null;
   if (minor < GO_TYPE_LAYOUT_MIN_MINOR || minor > GO_TYPE_LAYOUT_MAX_MINOR) return null;
-  return GO_TYPE_LAYOUT_CURRENT;
+  return { ...GO_TYPE_LAYOUT_CURRENT, minor };
 }
 
 /**
@@ -662,13 +662,27 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   let name = null;
   if (Number.isSafeInteger(options.typesBase) && nameOff != null) {
     const strPos = options.typesBase + nameOff;
-    if (Number.isSafeInteger(strPos) && strPos >= 0 && strPos <= buf.length - 2) {
-      // Go name structure has 1 byte header flag followed by length varint
-      const lenInfo = readUvarint(buf, strPos + 1);
-      if (lenInfo && strPos + 1 + lenInfo.bytesRead + lenInfo.value <= buf.length) {
+    if (Number.isSafeInteger(strPos) && strPos >= 0) {
+      let nameOffset = null;
+      let nameLength = null;
+      if (layout.minor === 16) {
+        // Go 1.16 reflect.name has a 1-byte header flag followed by a 2-byte big-endian length.
+        if (strPos <= buf.length - 3) {
+          nameLength = (buf[strPos + 1] << 8) | buf[strPos + 2];
+          nameOffset = strPos + 3;
+        }
+      } else if (strPos <= buf.length - 2) {
+        // Go 1.17+ reflect.name has a 1-byte header flag followed by a uvarint length.
+        const lenInfo = readUvarint(buf, strPos + 1);
+        if (lenInfo) {
+          nameLength = lenInfo.value;
+          nameOffset = strPos + 1 + lenInfo.bytesRead;
+        }
+      }
+      if (nameOffset != null && nameLength != null && nameOffset + nameLength <= buf.length) {
         try {
           name = new TextDecoder('utf-8', { fatal: true }).decode(
-            buf.subarray(strPos + 1 + lenInfo.bytesRead, strPos + 1 + lenInfo.bytesRead + lenInfo.value)
+            buf.subarray(nameOffset, nameOffset + nameLength)
           );
         } catch {
           name = null;

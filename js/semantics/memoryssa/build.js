@@ -496,7 +496,9 @@ function makeDescriptor(node, role, sourceKind, index, memory, extra = {}) {
  * registers-core tables; this set only re-states the frame/stack root names
  * those tables already normalize.
  */
-const STACK_POINTER_REGISTER_IDS = new Set(['sp', 'fp', 'x29', 'rsp', 'rbp', 'esp', 'ebp']);
+const FRAME_POINTER_REGISTER_IDS = new Set(['fp', 'x29', 'rbp', 'ebp']);
+const STACK_POINTER_ONLY_REGISTER_IDS = new Set(['sp', 'rsp', 'esp']);
+const STACK_POINTER_REGISTER_IDS = new Set([...STACK_POINTER_ONLY_REGISTER_IDS, ...FRAME_POINTER_REGISTER_IDS]);
 const STACK_POINTER_REGISTER_SUFFIXES = ['_sp', '_fp'];
 
 /*
@@ -630,6 +632,7 @@ function stackDerivedValueIds(irFunction) {
 
 const FP_SIMD_ARGUMENT_REGISTER_PATTERN = /^(?:v|d|s|q|h|b|f|fa|xmm|ymm|zmm)([0-7])$/;
 const INT_ARGUMENT_REGISTER_PATTERN = /^(?:arg|param|[a-z])([0-7])$/;
+const INDIRECT_RESULT_REGISTER_PATTERN = /^[xw]8$/;
 
 function argumentRegisterSlot(candidate) {
   if (candidate?.kind !== 'state-write') return null;
@@ -637,9 +640,12 @@ function argumentRegisterSlot(candidate) {
   // legacy `argN`/`paramN`/`xN` spellings map to `int:argN`; FP/SIMD registers
   // (`v0`..`v7`, `d0`..`d7`, `xmm0`..`xmm7`, etc.) map to `fp:argN` so they
   // never collide with or kill integer argument slots; x86-64 SysV integer
-  // argument registers map to their positional `int:argN` slot.
+  // argument registers map to their positional `int:argN` slot; indirect
+  // result buffer pointer registers (`x8` and its 32-bit lower alias) map to
+  // `int:sret` so passing a local stack buffer address blocks no-escape.
   const x86IntSlot = X86_64_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId);
   if (x86IntSlot != null) return `int:${x86IntSlot}`;
+  if (INDIRECT_RESULT_REGISTER_PATTERN.test(rawRegisterId)) return 'int:sret';
   const fpMatch = rawRegisterId.match(FP_SIMD_ARGUMENT_REGISTER_PATTERN);
   if (fpMatch) return `fp:arg${fpMatch[1]}`;
   const intMatch = rawRegisterId.match(INT_ARGUMENT_REGISTER_PATTERN);
@@ -815,14 +821,15 @@ function constantSignedOffset(valueId, stackValues) {
   }
 }
 
-function isStackPointerRegisterIdentity(identity) {
-  if (!identity || typeof identity !== 'object') return false;
+function stackRootRegisterKind(identity) {
+  if (!identity || typeof identity !== 'object') return null;
   const role = String(identity.role ?? identity.storageRole ?? '').toLowerCase();
+  if (role === 'frame-pointer') return 'frame-pointer';
+  if (role === 'stack-pointer') return 'stack-pointer';
   const registerId = String(identity.physicalId ?? identity.registerId ?? identity.name ?? '').toLowerCase();
-  return role === 'stack-pointer'
-    || role === 'frame-pointer'
-    || STACK_POINTER_REGISTER_IDS.has(registerId)
-    || STACK_POINTER_REGISTER_SUFFIXES.some((suffix) => registerId.endsWith(suffix));
+  if (FRAME_POINTER_REGISTER_IDS.has(registerId) || registerId.endsWith('_fp')) return 'frame-pointer';
+  if (STACK_POINTER_ONLY_REGISTER_IDS.has(registerId) || registerId.endsWith('_sp')) return 'stack-pointer';
+  return null;
 }
 
 function provenStackRootOffset(valueId, stackValues, active = new Set()) {
@@ -833,32 +840,41 @@ function provenStackRootOffset(valueId, stackValues, active = new Set()) {
   if (!value) return null;
   const def = value.definitionNodeId == null ? null : stackValues.nodesById.get(String(value.definitionNodeId));
   if (def == null) {
-    if (value.kind === 'entry'
-      && value.metadata?.machineValue?.kind === 'register'
-      && isStackPointerRegisterIdentity(value.metadata.machineValue)) {
-      return 0n;
+    if (value.kind === 'entry' && value.metadata?.machineValue?.kind === 'register') {
+      const rootKind = stackRootRegisterKind(value.metadata.machineValue);
+      if (rootKind != null) return { rootKind, offset: 0n };
     }
     return null;
   }
-  if (def.kind === 'state-read' && isStackPointerRegisterIdentity(def.variable?.physicalIdentity)) {
-    return 0n;
+  if (def.kind === 'state-read') {
+    const rootKind = stackRootRegisterKind(def.variable?.physicalIdentity);
+    if (rootKind != null) return { rootKind, offset: 0n };
   }
   if (def.kind === 'binary' && Array.isArray(def.inputs) && def.inputs.length === 2
     && (def.operator === 'add' || def.operator === 'sub')) {
     const offset = constantSignedOffset(def.inputs[1], stackValues);
     if (offset == null) return null;
     active.add(id);
-    const baseOffset = provenStackRootOffset(def.inputs[0], stackValues, active);
+    const base = provenStackRootOffset(def.inputs[0], stackValues, active);
     active.delete(id);
-    if (baseOffset == null) return null;
-    return def.operator === 'add' ? baseOffset + offset : baseOffset - offset;
+    if (base == null) return null;
+    return {
+      rootKind: base.rootKind,
+      offset: def.operator === 'add' ? base.offset + offset : base.offset - offset,
+    };
   }
   return null;
 }
 
 function isProvenLocalFrameSlot(addressValueId, stackValues) {
-  const offset = provenStackRootOffset(addressValueId, stackValues);
-  return offset != null && offset < 0n;
+  const root = provenStackRootOffset(addressValueId, stackValues);
+  if (root == null) return false;
+  // On downward-growing stacks, only negative offsets from a frame pointer
+  // (fp/rbp/ebp/x29) are proven to lie inside the current local frame.
+  // Negative offsets from a stack pointer (sp/rsp/esp, i.e. sp - k) reach
+  // below the active stack top into callee/red-zone/push space, and
+  // non-negative offsets (sp + k) can reach outgoing stack arguments.
+  return root.rootKind === 'frame-pointer' && root.offset < 0n;
 }
 
 function nodePublishesStackAddress(upstream, stackValues) {

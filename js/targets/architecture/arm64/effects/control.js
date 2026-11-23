@@ -428,8 +428,27 @@ export function decorateArm64GcsEffects(instruction, options = {}, bundle) {
 
   if (gcsEnabled === true || (gcsRequested === true && gcsEnabled === true)) {
     if (mnemonic === 'bl' || mnemonic === 'blr') {
-      const address = instruction?.address == null ? 0n : BigInt(instruction.address);
-      const linkAddress = address + 4n;
+      const address = instructionAddress(instruction);
+      if (address == null) {
+        const categories = [...new Set([
+          ...(Array.isArray(bundle.unknownEffects?.categories) ? bundle.unknownEffects.categories : []),
+          'faults',
+          'memory',
+          'registers',
+        ])].sort();
+        return createMachineEffectBundle({
+          ...bundle,
+          completeness: 'partial',
+          unknownEffects: { categories, reason: 'arm64-gcs-link-address-unavailable' },
+          metadata: {
+            ...bundle.metadata,
+            gcs: true,
+            gcsEffect: 'push',
+            gcsEnabled: true,
+          },
+        }, options?.machineEffectsOptions);
+      }
+      const linkAddress = BigInt.asUintN(64, address + 4n);
       const gcsprVal = createTemporaryValue('gcspr_el0:read', createBitVectorValue(64));
       const newGcsprVal = createTemporaryValue('gcspr_el0:next', createBitVectorValue(64));
       const gcsOperations = [

@@ -7,7 +7,7 @@ export const CAPABILITY_SCOPES = Object.freeze(['instruction', 'basic-block', 'f
 const FORBIDDEN_PATH_PARTS = new Set(['__proto__', 'prototype', 'constructor']);
 
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
-function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
+function list(value) { return [...new Set((Array.isArray(value) ? value : []).filter((item) => item != null).map(String).filter(Boolean))].sort(); }
 function getPath(root, path) {
   let value = root;
   for (const part of String(path || '').split('.').filter(Boolean)) {
@@ -229,7 +229,7 @@ export function evaluateCapabilityRule(rule, snapshot = {}, options = {}) {
   const verdict = !result.complete || partialUpstream ? 'partial' : result.value ? 'supported' : 'not-detected';
   return deepFreeze({
     id: `capability-fact:${stable({ rule: compiled.compiledId, snapshotId: snapshot.snapshotId || null, evidenceIds, verdict })}`,
-    capabilityId: compiled.capabilityId, scope: compiled.scope, targetEntityIds: list(snapshot.targetEntityIds || [snapshot.entityId]).filter(Boolean),
+    capabilityId: compiled.capabilityId, scope: compiled.scope, targetEntityIds: list(snapshot.targetEntityIds || (snapshot.entityId != null ? [snapshot.entityId] : [])).filter(Boolean),
     ruleId: compiled.id, ruleVersion: compiled.version, packageContentHash: compiled.packageContentHash,
     dependencyRuleIds: Object.freeze([...compiled.dependencies]), requiredFeatures: Object.freeze([...compiled.requiredFeatures]),
     evidenceIds, contradictingEvidenceIds: list(snapshot.contradictingEvidenceIds), assumptions,

@@ -275,7 +275,7 @@ export class ByteView {
       const remaining = endBig - p;
       const winEnd = p + (scanStepBig < remaining ? scanStepBig : remaining);
       const nul = this.bytes.subarray(exposedOffset(p), exposedOffset(winEnd)).indexOf(0);
-      if (nul >= 0) return Number(p) + nul;
+      if (nul >= 0) return exposedOffset(p + BigInt(nul));
     }
     return -1;
   }

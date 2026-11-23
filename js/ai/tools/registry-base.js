@@ -17,7 +17,7 @@ import {
   verifyPatchEquivalence,
 } from '../../symbolic/verify/index.js';
 import { defaultSolverRegistry } from '../../symbolic/solver/registry.js';
-import { ToolRegistry } from './registry-core.js';
+import { ToolRegistry, resultCount } from './registry-core.js';
 import {
   cursorProperty,
   searchSchema,
@@ -74,7 +74,8 @@ export function createHexToolRegistry(context = {}, options = {}) {
         signal: registry.executionSignal || callerOptions.signal || null,
       });
       const cost = Array.isArray(model?.instructions) ? model.instructions.length : 0;
-      if (cost > remaining) throw new Error('disassembly-budget');
+      const latestRemaining = Math.max(0, maxDisassembly - disassembly);
+      if (cost > latestRemaining) throw new Error('disassembly-budget');
       disassembly += cost;
       return model;
     },
@@ -598,7 +599,7 @@ function pageResult(base, total, offset, returned, cursor) {
 
 function attachContinuation(value, offset, cursorFactory) {
   const out = { ...(value || {}), offset };
-  const returned = Number.isFinite(Number(out.returned)) ? Number(out.returned) : resultCount(out) || 0;
+  const returned = out.returned != null && Number.isFinite(Number(out.returned)) ? Number(out.returned) : resultCount(out) || 0;
   const complete = out.complete === true || out.truncated === false && Number.isFinite(Number(out.total)) && offset + returned >= Number(out.total);
   out.returned = returned;
   out.complete = Boolean(complete);

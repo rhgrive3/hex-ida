@@ -567,8 +567,9 @@ export function amountOf(model, update) {
  * この形のとき、フィールドの位置は命令の中の即値としてそのまま書いてある。
  */
 const PROPERTY_HELPERS = [
-  { re: /objc_getProperty/, kind: 'read', reg: 'x2' },
-  { re: /objc_setProperty/, kind: 'write', reg: 'x2' },
+  { re: /objc_getProperty/, kind: 'read', reg: 'x2', valueReg: 'x0' },
+  { re: /objc_setProperty_(?:atomic|nonatomic)(?:_copy)?\b/, kind: 'write', reg: 'x3', valueReg: 'x2' },
+  { re: /objc_setProperty/, kind: 'write', reg: 'x2', valueReg: 'x3' },
 ];
 
 /*
@@ -677,14 +678,14 @@ function propertyHelperUpdates(model, insns, self) {
     if (at < 0) continue;
     const disp = immediateArg(insns, at, hit.reg);
     if (disp == null) continue;
-    out.push(helperUpdate(hit.kind, { disp }, c));
+    out.push(helperUpdate(hit.kind, { disp }, c, hit.valueReg));
   }
   return out;
 }
 
 /** 代行関数ごしのフィールド操作を、ふつうの読み書きと同じ形にそろえる。 */
-function helperUpdate(kind, where, call) {
-  const reg = kind === 'read' ? 'x0' : 'x3';
+function helperUpdate(kind, where, call, valueReg = null) {
+  const reg = valueReg ?? (kind === 'read' ? 'x0' : 'x3');
   const disp = where.disp != null ? where.disp : null;
   const indexAddr = where.indexAddr != null ? where.indexAddr : null;
   const key = 'x0@' + (indexAddr != null ? 'iv' + indexAddr.toString() : String(disp));

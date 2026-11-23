@@ -207,7 +207,7 @@ export function bin(op, a, b, bits) {
     if (inner != null) {
       const lhs = a.op === 'add' ? inner : -inner;
       const rhs = op === 'add' ? cb : -cb;
-      const sum = lhs + rhs;
+      const sum = wrap(lhs + rhs, w);
       if (sum === 0n) return a.a;
       return sum > 0n ? node('bin', { op: 'add', a: a.a, b: constNode(sum) })
         : node('bin', { op: 'sub', a: a.a, b: constNode(-sum) });
@@ -301,6 +301,11 @@ function truncDiv(a, b) {
   return q;                     // BigInt の / はすでに 0 方向へ切り捨てる
 }
 
+const IDEMPOTENT_UN_OPS = new Set([
+  'sxt8', 'sxt16', 'sxt32', 'sxt64',
+  'uxt8', 'uxt16', 'uxt32', 'uxt64',
+]);
+
 export function un(op, a) {
   if (!a) return null;
   const c = constOf(a);
@@ -319,11 +324,11 @@ export function un(op, a) {
       default: break;
     }
   }
-  // 同じ幅への変換を重ねても意味は増えない
-  if (a.k === 'un' && a.op === op) return a;
-  if (op === 'sxt32' && a.k === 'un' && (a.op === 'sxt32' || a.op === 'sxt16' || a.op === 'sxt8')) return a;
   if (op === 'neg' && a.k === 'un' && a.op === 'neg') return a.a;
   if (op === 'not' && a.k === 'un' && a.op === 'not') return a.a;
+  // 同じ幅への変換を重ねても意味は増えない（冪等な幅変換のみ重複吸収）
+  if (IDEMPOTENT_UN_OPS.has(op) && a.k === 'un' && a.op === op) return a;
+  if (op === 'sxt32' && a.k === 'un' && (a.op === 'sxt32' || a.op === 'sxt16' || a.op === 'sxt8')) return a;
   return node('un', { op, a });
 }
 
@@ -1728,13 +1733,13 @@ function emitFlagCondition(predicate, o, depth) {
   const a = emit(predicate.a, 0, o, depth + 1), b = emit(predicate.b, 0, o, depth + 1);
   if (producer === 'cmn') {
     const sum = `(${a} + ${b})`;
+    const unsignedTy = bits === 32 ? 'uint32' : 'uint64';
+    const signedTy = bits === 32 ? 'int32' : 'int64';
     switch (predicate.cc) {
-      case 'eq': return `${sum} == 0`;
-      case 'ne': return `${sum} != 0`;
-      case 'mi': case 'lt': return `${sum} < 0`;
-      case 'pl': case 'ge': return `${sum} >= 0`;
-      case 'le': return `${sum} <= 0`;
-      case 'gt': return `${sum} > 0`;
+      case 'eq': return `((${unsignedTy})${sum} == 0)`;
+      case 'ne': return `((${unsignedTy})${sum} != 0)`;
+      case 'mi': return `((${signedTy})${sum} < 0)`;
+      case 'pl': return `((${signedTy})${sum} >= 0)`;
       default: break;
     }
   }

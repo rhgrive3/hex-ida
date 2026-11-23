@@ -30,11 +30,48 @@ function metadataCost(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+export const ELF_MAX_PARTIAL_REASONS = 256;
+export const ELF_MAX_PARTIAL_WARNINGS = 256;
+
+const partialTrackingByImage = new WeakMap();
+
+function partialTrackingOf(image, meta) {
+  let state = partialTrackingByImage.get(image);
+  if (!state) {
+    state = {
+      reasons: new Set(meta.reasons),
+      warnings: new Set(Array.isArray(image.warnings) ? image.warnings : []),
+      warningsAdded: 0,
+      warningsCapped: false,
+    };
+    partialTrackingByImage.set(image, state);
+  }
+  return state;
+}
+
 export function markELFMetadataPartial(image, reason, warning = null) {
   const meta = metadataOf(image);
   meta.complete = false;
-  if (!meta.reasons.includes(reason)) meta.reasons.push(reason);
-  if (warning && !image.warnings.includes(warning)) image.warnings.push(warning);
+  const state = partialTrackingOf(image, meta);
+  if (reason && !state.reasons.has(reason) && state.reasons.size < ELF_MAX_PARTIAL_REASONS) {
+    state.reasons.add(reason);
+    meta.reasons.push(reason);
+  }
+  if (warning && Array.isArray(image.warnings) && !state.warnings.has(warning)) {
+    if (state.warningsAdded < ELF_MAX_PARTIAL_WARNINGS - 1) {
+      state.warnings.add(warning);
+      state.warningsAdded++;
+      image.warnings.push(warning);
+    } else if (!state.warningsCapped) {
+      state.warningsCapped = true;
+      const capMessage = `ELF metadata partial warnings exceeded limit (${ELF_MAX_PARTIAL_WARNINGS}); further warnings suppressed`;
+      if (!state.warnings.has(capMessage)) {
+        state.warnings.add(capMessage);
+        state.warningsAdded++;
+        image.warnings.push(capMessage);
+      }
+    }
+  }
 }
 
 /** Shared budget for SHT symbols/relocations/unwind decoded JS output. */

@@ -76,10 +76,17 @@ let fallbackInstallSeq = 1;
 let scriptSandboxPromise = null;
 function loadScriptSandbox() {
   if (!scriptSandboxPromise) {
-    scriptSandboxPromise = Promise.all([
+    const pending = Promise.all([
       import('./script.js'),
       import('./sandbox.js'),
-    ]).then(([script, sandbox]) => ({ createApi: script.createApi, runInSandbox: sandbox.runInSandbox }));
+    ]).then(
+      ([script, sandbox]) => ({ createApi: script.createApi, runInSandbox: sandbox.runInSandbox }),
+      (err) => {
+        if (scriptSandboxPromise === pending) scriptSandboxPromise = null;
+        throw err;
+      },
+    );
+    scriptSandboxPromise = pending;
   }
   return scriptSandboxPromise;
 }

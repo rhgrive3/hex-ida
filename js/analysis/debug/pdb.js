@@ -1280,14 +1280,15 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     }
     for (const module of modules) {
       const declaredSize = module.symbolByteSize;
-      if (declaredSize < 4) {
-        symbols.complete = false;
+      if (module.streamIndex === 0xffff) {
+        // A nil ModuleSymStream is valid for modules with no private symbols
+        // (declaredSize === 0 or 4-byte signature only); any other declared
+        // size is malformed or missing evidence.
+        if (declaredSize !== 0 && declaredSize !== 4) symbols.complete = false;
         continue;
       }
-      if (module.streamIndex === 0xffff) {
-        // A nil ModuleSymStream is valid for modules with no private symbols;
-        // a nonempty declared range is still missing evidence.
-        if (declaredSize > 4) symbols.complete = false;
+      if (declaredSize < 4) {
+        symbols.complete = false;
         continue;
       }
       if (module.streamIndex >= msf.streams.length) {

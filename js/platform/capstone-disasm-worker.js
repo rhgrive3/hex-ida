@@ -11,10 +11,22 @@ let modulePromise = null;
 const handles = new Map();
 
 async function getModule() {
-  if (!modulePromise) modulePromise = MCapstone({
-    locateFile: (p) => new URL('../../' + p, self.location.href).href,
-    print: () => {}, printErr: () => {},
-  }).catch((error) => { throw new Error(`Capstone disassembler initialization: ${error?.message || String(error)}`); });
+  if (!modulePromise) {
+    let pending;
+    try {
+      pending = Promise.resolve(MCapstone({
+        locateFile: (p) => new URL('../../' + p, self.location.href).href,
+        print: () => {}, printErr: () => {},
+      }));
+    } catch (error) {
+      throw new Error(`Capstone disassembler initialization: ${error?.message || String(error)}`);
+    }
+    pending = pending.catch((error) => {
+      if (modulePromise === pending) modulePromise = null;
+      throw new Error(`Capstone disassembler initialization: ${error?.message || String(error)}`);
+    });
+    modulePromise = pending;
+  }
   return modulePromise;
 }
 

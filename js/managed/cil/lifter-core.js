@@ -932,12 +932,13 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               compare = subOp === 0x01
                 ? { predicate: 'eq', operandBits, arity: 2 }
                 : { predicate: subOp === 0x02 ? 'gt' : 'lt', signedness: 'signed', operandBits, arity: 2 };
+              consumedValues.push({ id: 'rhs', bits: operandBits }, { id: 'lhs', bits: operandBits });
             } else {
               completeness = 'partial';
               unknownEffects.push({ category: 'types', reason: 'cil-compare-operand-authority-unresolved' });
+              consumedValues.push({ id: 'rhs' }, { id: 'lhs' });
             }
           }
-          consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
           // III.1.5: the result is an int32 0/1 flag, which is itself integral
           // authority for a chained comparison.
           producedValues.push({ bits: 32, stackType: 'int32' });

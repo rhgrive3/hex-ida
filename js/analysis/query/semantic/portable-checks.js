@@ -27,7 +27,7 @@ export async function queryPortableChecks(input, { world, assumptions, snapshotI
     for (const candidate of candidates) {
       const fragment = candidate.fragment, offset = fragment.source.start, length = Number(BigInt(fragment.source.boundary) - BigInt(offset));
       work.charge('bytesRead', length);
-      const got = await work.await(signal => readRange({ worldId: world.id, binaryId: projection.inputIdentity.binaryId, offset, length, signal }));
+      const got = await work.await(signal => readRange({ worldId: world.id, binaryId: projection.inputIdentity.binaryId, offset, length }, { signal }));
       work.checkpoint(); if (isCurrent?.() !== true) contractFail('portable-source-stale');
       if (got?.worldId !== world.id || got.binaryId !== projection.inputIdentity.binaryId || String(got.offset) !== offset
         || !(got.bytes instanceof Uint8Array) || got.bytes.length !== length) contractFail('portable-source-read-binding');

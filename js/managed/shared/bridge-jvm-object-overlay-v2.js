@@ -68,13 +68,13 @@ function machineTypeKey(machineType) {
 // explicit alias authority (`duplicatedValueId` plus group membership) and the
 // source value's evidence, instead of an invented unary computation.
 const DUPLICATED_VALUE_EVIDENCE = Object.freeze(
-  ['constant', 'isNull', 'valueType', 'referenceKind', 'stringRef'],
+  ['constant', 'isNull', 'valueType', 'referenceKind', 'stringRef', 'allocationId', 'allocatedClass', 'allocationState', 'fresh'],
 );
 
 function applyDupIdentityAuthority({ dupPlans, nodeReplacements, valueReplacements, valuesById }) {
   for (const plan of dupPlans) {
     if (!plan.inputId || plan.duplicates.length === 0) continue;
-    const source = valuesById.get(plan.inputId);
+    const source = valueReplacements.get(plan.inputId) ?? valuesById.get(plan.inputId);
     if (!source) continue;
     const resultIds = [plan.surviving, ...plan.duplicates];
     const machineType = machineTypeKey(source.machineType);
@@ -102,8 +102,10 @@ function applyDupIdentityAuthority({ dupPlans, nodeReplacements, valueReplacemen
       },
     });
     for (const resultId of resultIds) {
-      valueReplacements.set(resultId, replaceValueMetadata(valuesById.get(resultId), {
+      const current = valueReplacements.get(resultId) ?? valuesById.get(resultId);
+      valueReplacements.set(resultId, replaceValueMetadata(current, {
         ...evidence,
+        ...(current.metadata ?? {}),
         duplicatedValueId: plan.inputId,
         duplicateValueIds: resultIds,
       }));

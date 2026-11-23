@@ -420,9 +420,11 @@ export function parsePE(input, options = {}) {
     const previous = prevSectionLayout;
     const misaligned = sectionAlignment > 0 && virtualAddress % sectionAlignment !== 0;
     const outOfOrder = previous !== null && startRva < previous.end;
-    prevSectionLayout = previous === null || endRva > previous.end
-      ? { start: startRva, end: endRva }
-      : { start: startRva, end: previous.end };
+    if (!virtualRangeInvalid) {
+      prevSectionLayout = previous === null || endRva > previous.end
+        ? { start: startRva, end: endRva }
+        : { start: startRva, end: previous.end };
+    }
     const violatesLayout = misaligned || outOfOrder;
     if (violatesLayout) {
       const layoutReason = misaligned ? 'pe:section-virtual-address-misaligned'

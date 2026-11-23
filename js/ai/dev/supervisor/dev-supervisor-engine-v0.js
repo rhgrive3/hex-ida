@@ -379,7 +379,7 @@ export class DevSupervisorEngineV0 {
 
           try {
             if (decision.tool === DEV_RUNTIME_ACTIVATION_TOOL) {
-              const result = this.selfUpdateGate.requireActivation(decision.arguments);
+              const result = this.selfUpdateGate.requireActivation(decision.arguments, { allowOverwrite: false });
               history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
               continue;
             }

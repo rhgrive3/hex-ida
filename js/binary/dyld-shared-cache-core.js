@@ -178,15 +178,17 @@ function parseSlideInfo2Structure(bytes, mapping, totalSize) {
   return { version, pageSize, starts, extras, deltaMask, valueAdd, deltaShift };
 }
 
-function pageStarts(info, pageIndex) {
+function pageStarts(info, pageIndex, maxRecords = Infinity) {
   const start = info.starts[pageIndex];
   if (start === PAGE_ATTR_NO_REBASE) return [];
   if ((start & PAGE_ATTR_EXTRA) === 0) return [start * 4];
+  const limit = Number.isFinite(maxRecords) ? Math.max(0, maxRecords) : Infinity;
   const offsets = [];
   let index = start & 0x3fff;
   let guard = 0;
   while (true) {
     if (index >= info.extras.length) throw new Error('dyld shared cache slide page extra index is out of bounds');
+    if (offsets.length >= limit) throw new Error('dyld shared cache rebase record budget exceeded');
     const entry = info.extras[index++];
     offsets.push((entry & 0x3fff) * 4);
     if ((entry & PAGE_ATTR_END) !== 0) break;
@@ -224,7 +226,7 @@ function walkSlideInfo2Sync(bytes, mapping, info, slide, mappings, maxRecords) {
   const r = new ByteView(bytes, { littleEndian: true, base: mapping.fileOffset });
   const rebases = [];
   for (let page = 0; page < info.starts.length; page++) {
-    for (const initial of pageStarts(info, page)) {
+    for (const initial of pageStarts(info, page, maxRecords - rebases.length)) {
       let offset = page * info.pageSize + initial;
       let chainGuard = 0;
       while (true) {
@@ -246,7 +248,7 @@ function walkSlideInfo2Sync(bytes, mapping, info, slide, mappings, maxRecords) {
 async function walkSlideInfo2Source(source, mapping, info, slide, mappings, maxRecords, signal) {
   const rebases = [];
   for (let page = 0; page < info.starts.length; page++) {
-    for (const initial of pageStarts(info, page)) {
+    for (const initial of pageStarts(info, page, maxRecords - rebases.length)) {
       let offset = page * info.pageSize + initial;
       let chainGuard = 0;
       while (true) {

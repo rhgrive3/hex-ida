@@ -23,7 +23,10 @@ function continuationCondition(iv) {
 
   let cond = term.cond || term.extra?.cond || null;
   if (!cond) return null;
-  if (!branchContinues) cond = inverseCondition(cond) || cond;
+  if (!branchContinues) {
+    cond = inverseCondition(cond);
+    if (!cond) return null;
+  }
   if (!COND[cond]) return null;
 
   const flags = valueOf(term.args?.[term.args.length - 1]);

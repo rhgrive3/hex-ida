@@ -717,6 +717,7 @@ export function decompile(model, opts = {}) {
       return finalize(result, semanticModel, semanticOpts);
     }
   } catch (error) {
+    if (isAbortError(error)) throw error;
     return finalize(augmentLegacy(
       getLegacy({ consume: true }),
       `Semantic IR decompiler fallback: ${error && error.message ? error.message : 'unknown error'}`,

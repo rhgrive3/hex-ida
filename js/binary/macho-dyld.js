@@ -892,12 +892,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     }
     else if (op === 0x40) {
       if ((imm & ~BIND_SYMBOL_FLAGS_KNOWN_MASK) !== 0) { fail(`reserved symbol flags 0x${imm.toString(16)}`); break; }
-      const x = rawCString(r, p, end);
-      // The symbol C-string is a variable-length cost: charge its raw bytes to
-      // inputBytes and the decoded string to the shared string budget before
-      // retaining it, otherwise a crafted stream routes unbounded metadata
-      // past the declared stringBytes ceiling (issue #6303).
-      if (!budget.take({ inputBytes:x.bytes, stringBytes:x.text.length*2, estimatedHeapBytes:x.text.length*2+32 }, 'classic-bind-symbol')) { fail('shared metadata budget exhausted while decoding bind symbol'); break; }
+      // Bound the symbol C-string scan by remaining budget before allocating or
+      // decoding any slice, mirroring readBudgetedExportTrieCString().
+      const x = readBudgetedExportTrieCString(r, p, end, budget, 'classic-bind-symbol');
+      if (!x) { fail('shared metadata budget exhausted while decoding bind symbol'); break; }
       symbol = x.text; symbolFlags = imm; p = x.next;
     }
     else if (op === 0x50) type = imm;

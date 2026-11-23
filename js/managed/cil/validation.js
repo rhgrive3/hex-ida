@@ -151,6 +151,9 @@ function branchEdges(bundle) {
   for (const effect of bundle.controlEffects || []) {
     if (effect?.kind === 'branch' || effect?.kind === 'conditional-branch' || effect?.kind === 'leave') {
       if (safeInteger(effect.targetOffset)) edges.push({ kind:effect.kind, targetOffset:effect.targetOffset });
+      if (effect?.kind === 'conditional-branch' && safeInteger(effect.falseTargetOffset)) {
+        edges.push({ kind:effect.kind, targetOffset:effect.falseTargetOffset });
+      }
     } else if (effect?.kind === 'switch' && Array.isArray(effect.targetOffsets)) {
       for (const targetOffset of effect.targetOffsets) {
         if (safeInteger(targetOffset)) edges.push({ kind:'switch', targetOffset });
@@ -356,10 +359,15 @@ export function validateCilEffectFunction(decoded, context = {}) {
 
     const controls = Array.isArray(bundle.controlEffects) ? bundle.controlEffects : [];
     for (const effect of controls) {
-      if ((effect?.kind === 'branch' || effect?.kind === 'conditional-branch' || effect?.kind === 'leave')
-        && !safeInteger(effect.targetOffset)) {
-        errors.push({ code:'cil-invalid-branch-target', operationId:bundle.operationId ?? null,
-          sourceOffset:offset, targetOffset:effect?.targetOffset ?? null });
+      if (effect?.kind === 'branch' || effect?.kind === 'conditional-branch' || effect?.kind === 'leave') {
+        if (!safeInteger(effect.targetOffset)) {
+          errors.push({ code:'cil-invalid-branch-target', operationId:bundle.operationId ?? null,
+            sourceOffset:offset, targetOffset:effect?.targetOffset ?? null });
+        }
+        if (effect.kind === 'conditional-branch' && effect.falseTargetOffset !== undefined && !safeInteger(effect.falseTargetOffset)) {
+          errors.push({ code:'cil-invalid-branch-target', operationId:bundle.operationId ?? null,
+            sourceOffset:offset, targetOffset:effect.falseTargetOffset ?? null });
+        }
       } else if (effect?.kind === 'switch') {
         if (!Array.isArray(effect.targetOffsets)) {
           errors.push({ code:'cil-invalid-branch-target', operationId:bundle.operationId ?? null,
