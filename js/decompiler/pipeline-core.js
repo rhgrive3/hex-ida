@@ -2095,10 +2095,41 @@ function initialStoreExpansion(initialStore, instruction, value, expression, loc
   return [record];
 }
 
+function isPhiCopyLine(line) {
+  const evidence = line?.source?.evidence;
+  if (Array.isArray(evidence) && evidence.some((e) => e?.reason === 'phi-out-of-ssa' || e?.reason === 'phi-edge')) {
+    return true;
+  }
+  const text = String(line?.text || '').trim();
+  return /^phi_[A-Za-z0-9_]+\s*=/.test(text);
+}
+
+function resolveStoreForLine(line, insts, initialStore) {
+  if (isPhiCopyLine(line)) return null;
+  if (initialStore?.instruction?.op === 'store') return initialStore.instruction;
+  const sourceIr = line?.source?.ir;
+  if (Array.isArray(sourceIr) && sourceIr.length) {
+    const idSet = new Set(sourceIr);
+    const matching = insts.filter((i) => i?.op === 'store' && i.id != null && idSet.has(i.id));
+    return matching.length === 1 ? matching[0] : null;
+  }
+  if (sourceIr != null && !Array.isArray(sourceIr)) {
+    const matching = insts.filter((i) => i?.op === 'store' && i.id != null && i.id === sourceIr);
+    return matching.length === 1 ? matching[0] : null;
+  }
+  if (line?.source == null) {
+    const stores = insts.filter((i) => i?.op === 'store');
+    if (stores.length === 1 && !/^(?:return|goto)\b/.test(String(line?.text || '').trim())) {
+      return stores[0];
+    }
+  }
+  return null;
+}
+
 function knownStatementForLine(line, state, lineIndex, initialStore = null, initialStatement = null) {
-  if (line?.row == null || line.kind !== 'stmt') return null;
+  if (line?.row == null || line.kind !== 'stmt' || isPhiCopyLine(line)) return null;
   const insts = getIrQueryIndex(state.ir)?.instsByRow.get(line.row) || EMPTY_LIST;
-  const store = insts.find((i) => i.op === 'store');
+  const store = resolveStoreForLine(line, insts, initialStore);
   if (store) {
     const elision = isElidableReturnSpillStore(store, state);
     if (elision) {

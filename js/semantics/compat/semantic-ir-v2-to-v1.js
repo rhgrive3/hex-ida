@@ -4,6 +4,7 @@ import { createMemorySsaContract } from '../memoryssa/contract.js';
 import {
   V1_OP, V1_VK, V1_MK, firstAddress, sourceInstructionIds, blockOrder, explicitTargetsForBlock,
   graphFacts, buildLegacyValues, buildStateProjectionIndex, legacyPublicStateIdentity, makeArg, addUse,
+  classifyCallWithAbi, safeBigInt,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectNode } from './semantic-ir-v2-to-v1-nodes.js';
 import { finalizeLegacyProjection } from './semantic-ir-v2-to-v1-finalize.js';
@@ -529,13 +530,36 @@ function buildValuesByRegIndex(projected) {
     }
     bucket.push(value);
   }
-  for (const bucket of valuesByReg.values()) {
-    bucket.sort((left, right) => {
-      if ((left.version ?? 0) !== (right.version ?? 0)) return (right.version ?? 0) - (left.version ?? 0);
-      return (right.id ?? 0) - (left.id ?? 0);
-    });
-  }
   return valuesByReg;
+}
+
+function dominanceRankForArgument(value, inst, projected, targetBits) {
+  const width = targetBits == null || value.bits === targetBits ? 1 : 0;
+  const version = value.version ?? 0;
+  const id = value.id ?? 0;
+  if (value.kind === V1_VK.ARG || !value.def) {
+    return { scope: 0, depth: 0, row: Number.NEGATIVE_INFINITY, nonPhi: 0, width, version, id };
+  }
+  const definition = value.def;
+  const nonPhi = definition.op === V1_OP.PHI ? 0 : 1;
+  const row = Number(definition.row ?? Number.NEGATIVE_INFINITY);
+  if (definition.block === inst.block) {
+    return { scope: 2, depth: Number.MAX_SAFE_INTEGER, row, nonPhi, width, version, id };
+  }
+  const defDominators = projected.dominators?.[definition.block];
+  const depth = defDominators instanceof Set ? defDominators.size : 0;
+  return { scope: 1, depth, row, nonPhi, width, version, id };
+}
+
+function isBetterDominanceRank(candidate, best) {
+  if (!best) return true;
+  if (candidate.scope !== best.scope) return candidate.scope > best.scope;
+  if (candidate.depth !== best.depth) return candidate.depth > best.depth;
+  if (candidate.row !== best.row) return candidate.row > best.row;
+  if (candidate.nonPhi !== best.nonPhi) return candidate.nonPhi > best.nonPhi;
+  if (candidate.width !== best.width) return candidate.width > best.width;
+  if (candidate.version !== best.version) return candidate.version > best.version;
+  return candidate.id > best.id;
 }
 
 function projectedAbiArgumentValue(argument, inst, projected, valuesByReg) {
@@ -546,16 +570,38 @@ function projectedAbiArgumentValue(argument, inst, projected, valuesByReg) {
   for (const descriptor of descriptors) {
     const bucket = valuesByReg.get(descriptor.reg);
     if (!bucket) continue;
-    let fallback = null;
+    let bestValue = null;
+    let bestRank = null;
     for (let i = 0; i < bucket.length; i += 1) {
       const value = bucket[i];
       if (!valueDominatesInstruction(value, inst, projected)) continue;
-      if (descriptor.bits == null || value.bits === descriptor.bits) return value;
-      if (fallback == null) fallback = value;
+      const rank = dominanceRankForArgument(value, inst, projected, descriptor.bits);
+      if (isBetterDominanceRank(rank, bestRank)) {
+        bestRank = rank;
+        bestValue = value;
+      }
     }
-    if (fallback != null) return fallback;
+    if (bestValue != null) return bestValue;
   }
   return null;
+}
+
+function resolveTailCallBranchTarget(inst, projected, options) {
+  const targetBlock = inst.extra?.targetBlock;
+  const isExternalTarget = targetBlock == null || (projected.blocks?.[targetBlock]?.insts?.length ?? 0) === 0;
+  if (!isExternalTarget) return null;
+  const machineTarget = inst.extra?.attributes?.machineControlEffect?.target ?? null;
+  const symbolicTarget = machineTarget?.kind === 'symbolic-code-reference'
+    && typeof machineTarget.name === 'string'
+    && /^[A-Za-z_.$][A-Za-z0-9_.$@]{0,255}$/.test(machineTarget.name)
+    ? machineTarget.name : null;
+  const target = inst.extra?.target ?? safeBigInt(machineTarget);
+  let symbolName = inst.extra?.name || symbolicTarget || null;
+  if (!symbolName && target != null && typeof options?.symbolFor === 'function') {
+    try { symbolName = options.symbolFor(target) || null; } catch { symbolName = null; }
+  }
+  if (!symbolName) return null;
+  return { target, symbolName };
 }
 
 /**
@@ -571,15 +617,46 @@ function projectedAbiArgumentValue(argument, inst, projected, valuesByReg) {
  * for variadic calls, so dropping them because one explicit argument already
  * exists would sever the real def-use edge and allow its producer to disappear.
  */
-function attachAbiProjectedArguments(projected) {
+function attachAbiProjectedArguments(projected, ir = null, valuesById = null, options = {}) {
   let valuesByReg = null;
   for (const inst of projected.instructions) {
-    if (inst.op !== V1_OP.CALL || !Array.isArray(inst.callArguments)) continue;
+    let callArguments = null;
+    if (inst.op === V1_OP.CALL && Array.isArray(inst.callArguments)) {
+      callArguments = inst.callArguments;
+    } else if (inst.op === V1_OP.BR) {
+      const tailTarget = resolveTailCallBranchTarget(inst, projected, options);
+      if (!tailTarget) continue;
+      inst.extra = inst.extra || {};
+      inst.extra.name = tailTarget.symbolName;
+      if (inst.extra.target == null && tailTarget.target != null) inst.extra.target = tailTarget.target;
+      if (Array.isArray(inst.callArguments)) {
+        callArguments = inst.callArguments;
+      } else {
+        const abi = classifyCallWithAbi({
+          id: inst.semanticNodeId,
+          call: {
+            target: tailTarget.target,
+            targetValueIds: [],
+            targetEntityIds: [],
+            arguments: [],
+            returns: [],
+            stateWrites: [],
+          },
+        }, ir, valuesById, options);
+        if (Array.isArray(abi?.callArguments) && abi.callArguments.length) {
+          callArguments = abi.callArguments;
+          inst.callArguments = callArguments;
+        }
+      }
+      if (!Array.isArray(callArguments)) continue;
+    } else {
+      continue;
+    }
     if (valuesByReg == null) valuesByReg = buildValuesByRegIndex(projected);
     const existing = (inst.args || []).map((argument) => argument?.value).filter(Boolean);
     const seen = new Set(existing.map((value) => value.id));
     const values = existing.slice();
-    for (const argument of inst.callArguments) {
+    for (const argument of callArguments) {
       const value = projectedAbiArgumentValue(argument, inst, projected, valuesByReg);
       if (!value || seen.has(value.id)) continue;
       seen.add(value.id);
@@ -629,7 +706,9 @@ function addComparisonCarriers(ir, values, valuesById) {
 
   const byNodeId = new Map();
   for (const node of ir.nodes) {
-    if (node.kind === 'compare' && node.outputs[0]) {
+    if ((node.kind === 'compare'
+        || (node.kind === 'intrinsic' && (node.operator === 'arm64.fp.fcmp' || node.operator === 'arm64.fp.fcmpe')))
+        && node.outputs[0]) {
       const value = valuesById.get(node.outputs[0]);
       if (value) byNodeId.set(node.id, value);
       continue;
@@ -883,7 +962,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     if (!list) list = projected.compat.semanticNodeToLegacyInstructionIds[semanticId] = [];
     list.push(inst.id);
   }
-  attachAbiProjectedArguments(projected);
+  attachAbiProjectedArguments(projected, ir, valuesById, options);
   finalizeLegacyProjection(projected, constantObserver, stateObserver);
   populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);

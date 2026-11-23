@@ -394,6 +394,18 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
     inst.extra.signed = false;
     return true;
   }
+  if (op === 'arm64.fp.clear-sign-bit' && inputValues.length === 1) {
+    setBasic(V1_OP.UN, 'fabs');
+    inst.extra.float = true;
+    inst.extra.compatSource = 'exact-arm64-scalar-fp-bitwise';
+    return true;
+  }
+  if (op === 'arm64.fp.toggle-sign-bit' && inputValues.length === 1) {
+    setBasic(V1_OP.UN, 'fneg');
+    inst.extra.float = true;
+    inst.extra.compatSource = 'exact-arm64-scalar-fp-bitwise';
+    return true;
+  }
   if (inputValues.length >= 1) {
     const metadata = operationMetadata(node);
     const alias = typeof metadata.alias === 'string' ? metadata.alias.toLowerCase() : null;
@@ -412,6 +424,24 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
       inst.extra.compatSource = 'exact-machine-bitfield-metadata';
       return true;
     }
+    if (alias === 'ubfiz' || alias === 'sbfiz') {
+      const immr = metadata.immr;
+      const imms = metadata.imms;
+      const outputBits = primaryOutput?.bits;
+      if (!Number.isSafeInteger(immr) || immr < 0 || !Number.isSafeInteger(imms) || imms < 0
+          || !Number.isSafeInteger(outputBits) || outputBits <= 0 || immr >= outputBits) return false;
+      const lsb = (outputBits - immr) % outputBits;
+      const fieldWidth = imms + 1;
+      if (!Number.isSafeInteger(fieldWidth) || fieldWidth <= 0 || lsb + fieldWidth > outputBits) return false;
+      setBasic(V1_OP.BFX, 'extract');
+      inst.extra.lsb = lsb;
+      inst.extra.width = fieldWidth;
+      inst.extra.signed = alias === 'sbfiz';
+      inst.extra.toward = 'left';
+      inst.extra.bitfieldKind = alias;
+      inst.extra.compatSource = 'exact-machine-bitfield-metadata';
+      return true;
+    }
   }
   if (op === 'insert-bits' && inputValues.length >= 2) {
     setBasic(V1_OP.BFI, 'insert');
@@ -422,6 +452,84 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
     return inst.extra.lsb != null && inst.extra.width != null;
   }
   void context; void primaryOutput;
+  return false;
+}
+
+const ARM64_SCALAR_FP_BINARY_OPS = Object.freeze({
+  'arm64.fp.fadd': 'fadd',
+  'arm64.fp.fsub': 'fsub',
+  'arm64.fp.fmul': 'fmul',
+  'arm64.fp.fdiv': 'fdiv',
+});
+
+const ARM64_SCALAR_FP_UNARY_OPS = Object.freeze({
+  'arm64.fp.scvtf': 'scvtf',
+  'arm64.fp.ucvtf': 'ucvtf',
+  'arm64.fp.fcvtzs': 'fcvtzs',
+  'arm64.fp.fcvtzu': 'fcvtzu',
+});
+
+function projectLegacyAddressWithTruncView(addressValueId, memory, context) {
+  const direct = projectLegacyAddress(addressValueId, memory, context);
+  if (direct.precise) return direct;
+  const baseProducerMap = context.producerByValueId;
+  const truncAwareProducers = {
+    get(valueId) {
+      const producer = baseProducerMap.get(valueId);
+      if (producer?.kind === 'trunc' && producer.inputs?.length === 1) {
+        const inner = baseProducerMap.get(producer.inputs[0]);
+        if (!inner || inner.kind === 'state-read' || inner.kind === 'copy' || inner.kind === 'bitcast') {
+          return null;
+        }
+      }
+      return producer;
+    },
+  };
+  const retried = projectLegacyAddress(addressValueId, memory, { ...context, producerByValueId: truncAwareProducers });
+  return retried.precise ? retried : direct;
+}
+
+function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues) {
+  const intrinsic = node.intrinsic;
+  if (!intrinsic || typeof intrinsic !== 'object') return false;
+  if (intrinsic.memoryRead?.scope != null && intrinsic.memoryRead.scope !== 'none') return false;
+  if (intrinsic.memoryWrite?.scope != null && intrinsic.memoryWrite.scope !== 'none') return false;
+  if ((intrinsic.controlEffects?.length ?? 0) > 0) return false;
+
+  const op = node.operator;
+  const binSub = ARM64_SCALAR_FP_BINARY_OPS[op];
+  if (binSub && inputValues.length === 4) {
+    setBasic(V1_OP.BIN, binSub, inputValues.slice(0, 2));
+    inst.extra.float = true;
+    inst.extra.intrinsic = intrinsic;
+    inst.extra.compatSource = 'exact-arm64-scalar-fp-intrinsic';
+    for (const state of intrinsic.stateWrites || []) clearPhysicalState(state, context);
+    return true;
+  }
+
+  const unSub = ARM64_SCALAR_FP_UNARY_OPS[op];
+  if (unSub && inputValues.length === 3) {
+    setBasic(V1_OP.UN, unSub, inputValues.slice(0, 1));
+    inst.extra.float = true;
+    inst.extra.intrinsic = intrinsic;
+    inst.extra.compatSource = 'exact-arm64-scalar-fp-intrinsic';
+    for (const state of intrinsic.stateWrites || []) clearPhysicalState(state, context);
+    return true;
+  }
+
+  if ((op === 'arm64.fp.fcmp' || op === 'arm64.fp.fcmpe') && inputValues.length === 4) {
+    const args = inputValues.slice(0, 2);
+    setBasic(V1_OP.CMP, 'fsub', args);
+    inst.bits = Math.max(1, ...args.map((value) => value.bits || 1));
+    inst.extra.float = true;
+    inst.extra.signalingNaN = op === 'arm64.fp.fcmpe';
+    inst.extra.comparison = 'semantic-flag-result';
+    inst.extra.intrinsic = intrinsic;
+    inst.extra.compatSource = 'exact-arm64-scalar-fp-intrinsic';
+    for (const state of intrinsic.stateWrites || []) clearPhysicalState(state, context);
+    return true;
+  }
+
   return false;
 }
 
@@ -751,9 +859,12 @@ export function projectNode(node, context) {
       const nonAddressInputs = inputValues.filter((value) => value !== addressValue);
       attachArgs(inst, nonAddressInputs);
       if (addressValue) addUse(addressValue, inst);
-      inst.addr = projectLegacyAddress(addressValueId, node.memory, context);
+      inst.addr = projectLegacyAddressWithTruncView(addressValueId, node.memory, context);
       const exactAddressDisplacement = safeBigInt(opMeta.addressing?.addressDisplacement);
-      if (inst.addr.precise && inst.addr.index == null && exactAddressDisplacement != null) {
+      const isPairLoad = opMeta.pair === true || bundleMetadata(node).transfer === 'pair' || opMeta.pairIndex != null;
+      const hasDistinctLoadDisp = inst.addr.disp != null && inst.addr.disp !== 0n && inst.addr.disp !== exactAddressDisplacement;
+      if (inst.addr.precise && inst.addr.index == null && exactAddressDisplacement != null
+          && !isPairLoad && !hasDistinctLoadDisp) {
         inst.addr.disp = exactAddressDisplacement;
         inst.addr.compatDisplacementEvidence = 'machine-effects-addressing-metadata';
       }
@@ -771,9 +882,12 @@ export function projectNode(node, context) {
       const stored = inputValues.filter((value) => value !== addressValue);
       attachArgs(inst, stored);
       if (addressValue) addUse(addressValue, inst);
-      inst.addr = projectLegacyAddress(addressValueId, node.memory, context);
+      inst.addr = projectLegacyAddressWithTruncView(addressValueId, node.memory, context);
       const exactAddressDisplacement = safeBigInt(opMeta.addressing?.addressDisplacement);
-      if (inst.addr.precise && inst.addr.index == null && exactAddressDisplacement != null) {
+      const isPairStore = opMeta.pair === true || bundleMetadata(node).transfer === 'pair' || opMeta.pairIndex != null;
+      const hasDistinctStoreDisp = inst.addr.disp != null && inst.addr.disp !== 0n && inst.addr.disp !== exactAddressDisplacement;
+      if (inst.addr.precise && inst.addr.index == null && exactAddressDisplacement != null
+          && !isPairStore && !hasDistinctStoreDisp) {
         inst.addr.disp = exactAddressDisplacement;
         inst.addr.compatDisplacementEvidence = 'machine-effects-addressing-metadata';
       }
@@ -990,7 +1104,8 @@ export function projectNode(node, context) {
         }
         appendAddWithCarryResults(node, context, primaryOutput, outputValues,
           extraInstructions, representedExtraValueIds);
-      } else if (!deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues)) {
+      } else if (!deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues)
+          && !scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues)) {
         setBasic(V1_OP.CLOBBER, null);
         inst.extra.intrinsic = node.intrinsic;
         inst.intrinsicId = attrs.intrinsicId ?? node.operator ?? node.id;

@@ -940,11 +940,49 @@ function observePreservedStateSelection(projected) {
  * recover only a callee-preserved physical register state. Memory effects are
  * not changed.
  */
+function valueStillUsedByInstruction(inst, value) {
+  if (!inst || !value) return false;
+  if (Array.isArray(inst.args) && inst.args.some((arg) => arg?.value === value)) return true;
+  if (Array.isArray(inst.incoming) && inst.incoming.some((edge) => edge?.value === value)) return true;
+  if (inst.addr?.base === value || inst.addr?.index === value) return true;
+  if (inst.conditionValue === value || inst.returnTargetValue === value) return true;
+  return false;
+}
+
+function captureFieldSnapshots(entries, history) {
+  if (!history || history.unavailable) return null;
+  return entries.map(([object, key]) => {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    return { object, key, before:descriptor?.value, beforePresent:descriptor != null };
+  });
+}
+
 function restoreCanonicalPreservedStateReads(projected, adapter, history = null) {
   const observer = { records:[], sources:new WeakSet(), count:0, selection:null };
   let callerSaved = [];
   try { callerSaved = adapter?.callerSaved?.() ?? []; } catch { callerSaved = []; }
   const callerSavedSet = new Set(callerSaved.map(String));
+  const evidence = `canonical-${adapter?.id || 'abi'}-callee-preserved`;
+  const ensureSelection = () => {
+    if (observer.count === 0) {
+      try { observer.selection = observePreservedStateSelection(projected); } catch { /* bounded observation unavailable */ }
+    }
+  };
+  const recordPreservedStateEvent = (inst, unknown, reaching, call, reg, selection, extra = {}) => {
+    observer.count++;
+    observer.sources.add(inst);
+    if (!selection.unavailable) {
+      const inputs = Object.freeze([unknown, reaching].map(value => Object.freeze({ value, definition:value.def })));
+      observer.records.push(Object.freeze({ source:inst, output:inst.dst, input:reaching, call,
+        op:inst.op, sub:inst.sub, stage:'facade-preserved-state', ordinal:observer.count - 1,
+        before:unknown, after:reaching, registerId:reg, abiId:String(adapter?.id || 'abi'), evidence,
+        callerSaved:Object.freeze([...callerSavedSet]), candidates:selection.candidates, inputs,
+        beforeInputs:Object.freeze([...new Set([unknown, reaching, ...selection.candidates.map(item => item.value)])]),
+        ...extra }));
+    }
+  };
+
+  // 1. Existing MOV state-read restoration.
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.MOV || !inst.extra?.stateRead || inst.args?.length !== 1) continue;
     const identity = inst.extra.stateRead?.physicalIdentity;
@@ -957,29 +995,127 @@ function restoreCanonicalPreservedStateReads(projected, adapter, history = null)
     const selection = { candidates:[], unavailable:observer.records.length >= 1024 || callerSavedSet.size > 512 };
     const reaching = selectReachingRegisterValue(projected, call, reg, inst.dst?.bits ?? unknown.bits, unknown, selection);
     if (!reaching) continue;
-    if (observer.count === 0) {
-      try { observer.selection = observePreservedStateSelection(projected); } catch { /* bounded observation unavailable */ }
-    }
+    ensureSelection();
     const argument = inst.args[0], beforeBits = argument.bits;
-    const fields = history && !history.unavailable ? [[argument, 'value'], [argument, 'bits'], [unknown, 'uses'],
-      [reaching, 'uses'], [inst.extra, 'abiPreservedState'], [inst.extra, 'abiPreservedStateEvidence']].map(([object, key]) => {
-      const descriptor = Object.getOwnPropertyDescriptor(object, key);
-      return { object, key, before:descriptor?.value, beforePresent:descriptor != null };
-    }) : null;
+    const fields = captureFieldSnapshots([[argument, 'value'], [argument, 'bits'], [unknown, 'uses'],
+      [reaching, 'uses'], [inst.extra, 'abiPreservedState'], [inst.extra, 'abiPreservedStateEvidence']], history);
     replaceLegacyArg(inst, unknown, reaching);
     inst.extra.abiPreservedState = true;
-    inst.extra.abiPreservedStateEvidence = `canonical-${adapter?.id || 'abi'}-callee-preserved`;
+    inst.extra.abiPreservedStateEvidence = evidence;
     retainFacadeArgumentWrites(fields, history);
-    observer.count++;
-    observer.sources.add(inst);
-    if (!selection.unavailable) {
-      const inputs = Object.freeze([unknown, reaching].map(value => Object.freeze({ value, definition:value.def })));
-      observer.records.push(Object.freeze({ source:inst, output:inst.dst, input:reaching, call,
-        op:inst.op, sub:inst.sub, stage:'facade-preserved-state', ordinal:observer.count - 1,
-        argument, before:unknown, after:reaching, beforeBits, afterBits:argument.bits,
-        registerId:reg, abiId:String(adapter?.id || 'abi'), evidence:inst.extra.abiPreservedStateEvidence,
-        callerSaved:Object.freeze([...callerSavedSet]), candidates:selection.candidates, inputs,
-        beforeInputs:Object.freeze([...new Set([unknown, reaching, ...selection.candidates.map(item => item.value)])]) }));
+    recordPreservedStateEvent(inst, unknown, reaching, call, reg, selection, {
+      kind:'state-read-mov', argument, beforeBits, afterBits:argument.bits,
+    });
+  }
+
+  // 2. PHI incoming edges across block.phis and OP.PHI in block.insts / projected.instructions.
+  const phiSet = new Set();
+  for (const block of projected.blocks ?? []) {
+    for (const phi of block?.phis ?? []) if (phi) phiSet.add(phi);
+    for (const inst of block?.insts ?? []) if (inst?.op === LEGACY_OP.PHI) phiSet.add(inst);
+  }
+  for (const inst of projected.instructions ?? []) {
+    if (inst?.op === LEGACY_OP.PHI) phiSet.add(inst);
+  }
+  for (const phi of phiSet) {
+    if (!Array.isArray(phi.incoming)) continue;
+    for (let edgeIdx = 0; edgeIdx < phi.incoming.length; edgeIdx += 1) {
+      const edge = phi.incoming[edgeIdx];
+      const unknown = edge?.value;
+      const call = unknown?.def;
+      if (unknown?.kind !== LEGACY_VK.UNDEF || call?.op !== LEGACY_OP.CALL) continue;
+      const reg = String(unknown.reg || phi.dst?.reg || phi.reg || '');
+      if (!reg || callerSavedSet.has(reg)) continue;
+      const selection = { candidates:[], unavailable:observer.records.length >= 1024 || callerSavedSet.size > 512 };
+      const reaching = selectReachingRegisterValue(projected, call, reg, phi.dst?.bits ?? unknown.bits, unknown, selection);
+      if (!reaching) continue;
+      ensureSelection();
+      if (!phi.extra) phi.extra = {};
+      const matchingArg = (phi.args?.[edgeIdx]?.value === unknown)
+        ? phi.args[edgeIdx]
+        : (phi.args ?? []).find((arg) => arg?.value === unknown) ?? null;
+      const beforeBits = matchingArg?.bits;
+      const snapshotPairs = [[edge, 'value'], [unknown, 'uses'], [reaching, 'uses'],
+        [phi.extra, 'abiPreservedState'], [phi.extra, 'abiPreservedStateEvidence']];
+      if (matchingArg) snapshotPairs.push([matchingArg, 'value'], [matchingArg, 'bits']);
+      const fields = captureFieldSnapshots(snapshotPairs, history);
+      edge.value = reaching;
+      if (matchingArg) {
+        matchingArg.value = reaching;
+        matchingArg.bits = reaching.bits || matchingArg.bits;
+      }
+      if (Array.isArray(unknown.uses) && !valueStillUsedByInstruction(phi, unknown)) {
+        unknown.uses = unknown.uses.filter((use) => use !== phi);
+      }
+      if (!Array.isArray(reaching.uses)) reaching.uses = [];
+      if (!reaching.uses.includes(phi)) reaching.uses.push(phi);
+      phi.extra.abiPreservedState = true;
+      phi.extra.abiPreservedStateEvidence = evidence;
+      retainFacadeArgumentWrites(fields, history);
+      recordPreservedStateEvent(phi, unknown, reaching, call, reg, selection, {
+        kind:'phi-edge', edge, argument:matchingArg, beforeBits, afterBits:matchingArg?.bits,
+      });
+    }
+  }
+
+  // 3. Direct uses of call-clobbered callee-saved UNDEF values in other instructions.
+  for (const inst of projected.instructions ?? []) {
+    if (!inst || inst.op === LEGACY_OP.PHI) continue;
+    for (const argument of inst.args ?? []) {
+      const unknown = argument?.value;
+      const call = unknown?.def;
+      if (unknown?.kind !== LEGACY_VK.UNDEF || call?.op !== LEGACY_OP.CALL) continue;
+      const reg = String(unknown.reg || '');
+      if (!reg || callerSavedSet.has(reg)) continue;
+      const selection = { candidates:[], unavailable:observer.records.length >= 1024 || callerSavedSet.size > 512 };
+      const reaching = selectReachingRegisterValue(projected, call, reg, argument.bits ?? unknown.bits, unknown, selection);
+      if (!reaching) continue;
+      ensureSelection();
+      if (!inst.extra) inst.extra = {};
+      const beforeBits = argument.bits;
+      const fields = captureFieldSnapshots([[argument, 'value'], [argument, 'bits'], [unknown, 'uses'],
+        [reaching, 'uses'], [inst.extra, 'abiPreservedState'], [inst.extra, 'abiPreservedStateEvidence']], history);
+      argument.value = reaching;
+      argument.bits = reaching.bits || argument.bits;
+      if (Array.isArray(unknown.uses) && !valueStillUsedByInstruction(inst, unknown)) {
+        unknown.uses = unknown.uses.filter((use) => use !== inst);
+      }
+      if (!Array.isArray(reaching.uses)) reaching.uses = [];
+      if (!reaching.uses.includes(inst)) reaching.uses.push(inst);
+      inst.extra.abiPreservedState = true;
+      inst.extra.abiPreservedStateEvidence = evidence;
+      retainFacadeArgumentWrites(fields, history);
+      recordPreservedStateEvent(inst, unknown, reaching, call, reg, selection, {
+        kind:'direct-arg', argument, beforeBits, afterBits:argument.bits,
+      });
+    }
+    if (inst.addr) {
+      for (const addrKey of ['base', 'index']) {
+        const unknown = inst.addr[addrKey];
+        const call = unknown?.def;
+        if (unknown?.kind !== LEGACY_VK.UNDEF || call?.op !== LEGACY_OP.CALL) continue;
+        const reg = String(unknown.reg || '');
+        if (!reg || callerSavedSet.has(reg)) continue;
+        const selection = { candidates:[], unavailable:observer.records.length >= 1024 || callerSavedSet.size > 512 };
+        const reaching = selectReachingRegisterValue(projected, call, reg, unknown.bits, unknown, selection);
+        if (!reaching) continue;
+        ensureSelection();
+        if (!inst.extra) inst.extra = {};
+        const fields = captureFieldSnapshots([[inst.addr, addrKey], [unknown, 'uses'],
+          [reaching, 'uses'], [inst.extra, 'abiPreservedState'], [inst.extra, 'abiPreservedStateEvidence']], history);
+        inst.addr[addrKey] = reaching;
+        if (Array.isArray(unknown.uses) && !valueStillUsedByInstruction(inst, unknown)) {
+          unknown.uses = unknown.uses.filter((use) => use !== inst);
+        }
+        if (!Array.isArray(reaching.uses)) reaching.uses = [];
+        if (!reaching.uses.includes(inst)) reaching.uses.push(inst);
+        inst.extra.abiPreservedState = true;
+        inst.extra.abiPreservedStateEvidence = evidence;
+        retainFacadeArgumentWrites(fields, history);
+        recordPreservedStateEvent(inst, unknown, reaching, call, reg, selection, {
+          kind:'direct-addr', addrKey,
+        });
+      }
     }
   }
   return observer;
@@ -995,8 +1131,15 @@ function sealFacadePreservedStateHistory(projected, observer, constants, typedRe
     if (!observer.selection?.(typedResults)) return;
     const written = new Map(constants.records.map(event => [event.output, event.afterConstant]));
     const valid = observer.records.filter(event => event.source.op === event.op && event.source.sub === event.sub
-      && event.source.dst === event.output && event.source.args?.length === 1 && event.source.args[0] === event.argument
-      && event.argument.value === event.after && event.argument.bits === event.afterBits
+      && event.source.dst === event.output
+      && (event.kind === 'phi-edge'
+        ? (event.edge?.value === event.after && (!event.argument || (event.argument.value === event.after && event.argument.bits === event.afterBits)))
+        : event.kind === 'direct-addr'
+          ? (event.source.addr?.[event.addrKey] === event.after)
+          : event.kind === 'direct-arg'
+            ? (event.source.args?.includes(event.argument) && event.argument.value === event.after && event.argument.bits === event.afterBits)
+            : (event.source.args?.length === 1 && event.source.args[0] === event.argument
+              && event.argument.value === event.after && event.argument.bits === event.afterBits))
       && event.source.extra?.abiPreservedState === true && event.source.extra?.abiPreservedStateEvidence === event.evidence
       && event.before.def === event.call && event.call.op === LEGACY_OP.CALL
       && event.inputs.every(input => input.value.def === input.definition)
@@ -1828,6 +1971,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
         const instruction = row == null ? null : instructionByRow.get(row);
         return instruction ? `${instruction.mnemonic} ${instruction.operands ?? ''}`.trim() : `semantic-v2 ${node.kind}`;
       },
+      ...(typeof opts.symbolFor === 'function' ? { symbolFor: opts.symbolFor } : {}),
       ...(opts.compatOptions ?? {}),
     },
   });

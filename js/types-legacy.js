@@ -263,7 +263,9 @@ export function inferTypes(model) {
     const insn = insns[i];
     if (!insn.writes.includes('x0')) continue;
     const base = (insn.mnemonic || '').toLowerCase();
-    if (/^f/.test(base)) { retEvi.float++; noteSize(retEvi, 8); }
+    if (/^f/.test(base) && !/^fcvt(?:[mpznas][su]|zs|zu)/.test(base)) { retEvi.float++; noteSize(retEvi, 8); }
+    else if (/^fcvt(?:[mpzna]s|zs)$/.test(base)) { retEvi.signed++; const w = insn.ops[0] && insn.ops[0].text ? widthOfRegisterName(insn.ops[0].text) : null; noteSize(retEvi, w ? w.bytes : 4); }
+    else if (/^fcvt(?:[mpzna]u|zu)$/.test(base)) { retEvi.unsigned++; const w = insn.ops[0] && insn.ops[0].text ? widthOfRegisterName(insn.ops[0].text) : null; noteSize(retEvi, w ? w.bytes : 4); }
     else if (insn.memory) noteSize(retEvi, insn.memory.size || 8);
     else if (insn.ops[0] && insn.ops[0].text) {
       const w = widthOfRegisterName(insn.ops[0].text);
