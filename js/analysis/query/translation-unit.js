@@ -194,6 +194,20 @@ function signatureFromText(text) {
 const HEADER_PROVIDED_ALIASES = new Set(['int8_t', 'uint8_t', 'int16_t', 'uint16_t', 'int32_t', 'uint32_t',
   'int64_t', 'uint64_t', 'intptr_t', 'uintptr_t', 'size_t', 'ptrdiff_t']);
 
+const TYPE_LIKE_IDENTIFIERS = new Set([
+  ...FIXED_WIDTH_ALIASES.keys(),
+  ...FIXED_WIDTH_ALIASES.values(),
+  ...HEADER_PROVIDED_ALIASES,
+  'uint128', 'int128', 'vector128', '__int128', '__fp16',
+  'id', 'bool', 'void', 'char', 'short', 'int', 'long', 'float', 'double',
+  'signed', 'unsigned', 'const', 'volatile', 'restrict', 'static', 'extern', 'inline',
+  'struct', 'union', 'enum', 'typedef', 'sizeof', 'offsetof', '_Alignof', '_Bool',
+]);
+
+function isFunctionPointerCastOrDeclAfterParen(after) {
+  return /^\s*\*+\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*\)\s*\(/.test(String(after ?? ''));
+}
+
 /* An exact prelude line is accounted for only when the packager re-emits an
  * identical definition of that alias; other prelude aliases stay unaccounted. */
 function isReemittedPreludeDeclaration(text) {
@@ -571,8 +585,8 @@ function hasRawObjcMessageSyntax(codeText) {
       if (paren === 0 && bracket === 0) topLevel += c;
     }
     const compact = topLevel.trim();
-    if (/[A-Za-z_][A-Za-z0-9_]*\s*:/.test(compact) && !compact.includes('?')) return true;
-    if (/^(?:[A-Za-z_][A-Za-z0-9_]*|_P_|_B_)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,|\s*$)/.test(compact)) return true;
+    if (/[A-Za-z0-9_]+\s*:/.test(compact) && !compact.includes('?')) return true;
+    if (/^(?:[A-Za-z_][A-Za-z0-9_]*|_P_|_B_)\s+[A-Za-z0-9_]+(?:\s+[A-Za-z0-9_]+)*(?:\s*,|\s*$)/.test(compact)) return true;
   }
   return false;
 }
@@ -661,6 +675,7 @@ function faithfulBodyEligibility(fn, context) {
   if (/\bgoto\b/.test(codeText)) return { eligible:false, reason:'goto-syntax-unavailable' };
   if (/\?\s*=/.test(codeText) || /=\s*\?\b/.test(codeText) || /\(\s*\?\s*[,)]/.test(codeText)) return { eligible:false, reason:'producer-placeholder-expression' };
   if (hasRawObjcMessageSyntax(codeText)) return { eligible:false, reason:'objc-message-syntax-unavailable' };
+  if (/\b(?:__asm__|__asm|asm)\b/.test(codeText)) return { eligible:false, reason:'asm-syntax-unavailable' };
   // Local declarations inside the body are part of the body's own evidence;
   // accept the spellings the producer emits for them and mark them covered.
   const declaredLocals = context.declaredLocals;
@@ -675,8 +690,10 @@ function faithfulBodyEligibility(fn, context) {
       if (param?.[2]) declaredLocals.add(param[2]);
     }
   }
-  for (const match of codeText.matchAll(/(^|\n)\s*(?:(?:const|volatile|unsigned|signed)\s+)*[A-Za-z_][A-Za-z0-9_]*\s*\*?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^=]|;)/g)) {
-    if (match[2]) declaredLocals.add(match[2]);
+  const NON_TYPE_KEYWORDS = new Set(['return', 'else', 'case', 'goto', 'do', 'sizeof', 'break', 'continue', 'default']);
+  for (const match of codeText.matchAll(/(^|\n)\s*(?:(?:const|volatile|unsigned|signed)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\*?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^=]|;)/g)) {
+    if (NON_TYPE_KEYWORDS.has(match[2])) continue;
+    if (match[3]) declaredLocals.add(match[3]);
   }
   // A `/* arguments unknown */` call site has no recovered argument count.
   // declarationBearingText erases that comment, so an arity-unknown site
@@ -718,11 +735,29 @@ function faithfulBodyEligibility(fn, context) {
   }
   for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
     const name = match[1];
-    if (identifierIsCovered(name, context)) continue;
     const before = codeText.slice(0, match.index).trimEnd();
-    if ((before.endsWith('->') || before.endsWith('.')) && context.synthesizedStructFields?.has(name)) continue;
+    const after = codeText.slice(match.index + name.length);
+    const isMemberAccess = before.endsWith('->') || before.endsWith('.');
+    const isPureCallPos = /^\s*\(/.test(after)
+      && !isFunctionPointerCastOrDeclAfterParen(after.replace(/^\s*\(/, ''))
+      && !isMemberAccess
+      && !context.keywordsLike.has(name)
+      && !TYPE_LIKE_IDENTIFIERS.has(name);
+    if (isPureCallPos) {
+      if (
+        context.selectedNames.has(name)
+        || context.prototypeNames.has(name)
+        || context.fallbackNames.has(name)
+        || context.hoistedHelperNames?.has(name)
+        || context.stdlibHeaderFunctions?.has(name)
+      ) {
+        continue;
+      }
+      return { eligible:false, reason:`uncovered-identifier:${name}` };
+    }
+    if (identifierIsCovered(name, context)) continue;
+    if (isMemberAccess && context.synthesizedStructFields?.has(name)) continue;
     if (context.stdlibHeaderFunctions?.has(name)) {
-      const after = codeText.slice(match.index + name.length);
       const isCallPos = /^\s*\(/.test(after);
       const isAddrOfPos = before.endsWith('&') && !before.endsWith('&&');
       const isFnPtrCastPos = /\(\s*[^()]*\(\s*\*\s*\)\s*\([^()]*\)\s*\)$/.test(before);
@@ -872,11 +907,15 @@ function globalAddressForName(globalMap, name) {
 }
 
 function callLikeCallees(source) {
+  const text = declarationBearingText(source);
   const names = new Set();
-  for (const match of declarationBearingText(source).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+  for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
     const name = match[1];
     if (!C_IDENTIFIER.test(name)) continue;
     if (KEYWORDS.has(name)) continue;
+    if (TYPE_LIKE_IDENTIFIERS.has(name)) continue;
+    const after = text.slice(match.index + match[0].length);
+    if (isFunctionPointerCastOrDeclAfterParen(after)) continue;
     names.add(name);
   }
   return [...names];
@@ -899,6 +938,7 @@ function unresolved(kind, subject, reason, extra = {}) {
 
 function fallbackPrototypeFor(name) {
   if (!C_IDENTIFIER.test(String(name ?? ''))) return null;
+  if (TYPE_LIKE_IDENTIFIERS.has(name)) return null;
   if (String(name).startsWith('global_')) return null;
   return `uint64_t ${name}(); /* hex-tu-fallback: unresolved prototype evidence unavailable; syntax-only fallback. */`;
 }
@@ -910,6 +950,7 @@ function fallbackGlobalFor(name) {
 
 function fallbackHelperFor(name) {
   if (!C_IDENTIFIER.test(String(name ?? ''))) return null;
+  if (TYPE_LIKE_IDENTIFIERS.has(name)) return null;
   if (name === 'unknown_call') return 'uint64_t unknown_call(); /* hex-tu-fallback: unresolved call sentinel; syntax-only fallback. */';
   return `uint64_t ${name}(); /* hex-tu-fallback: helper without evidence-backed declaration; syntax-only fallback. */`;
 }
