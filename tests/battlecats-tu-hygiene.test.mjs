@@ -151,3 +151,66 @@ test('existing uint128 prelude contract remains body-prefix-unaccounted', () => 
     JSON.stringify(unit.unresolved),
   );
 });
+
+test('Swift dollar-mangled callee _$s... forces syntaxOnly without emitting split fallback prototype', () => {
+  const source = [
+    'int32 sample(uint64 a1)',
+    '{',
+    '  uint64 r = _$s10Foundation3URLVMa(a1);',
+    '  return (int32)r;',
+    '}',
+  ].join('\n');
+  const unit = buildCTranslationUnit([fn(source)]);
+  assert.equal(unit.functions[0].syntaxOnly, true);
+  assert.ok(
+    unit.unresolved.some((u) => u.subject === 'sample' && u.reason === 'dollar-identifier-unavailable'),
+    JSON.stringify(unit.unresolved),
+  );
+  assert.ok(!unit.source.includes('$'), 'dollar identifier must not leak into emitted source');
+  assert.ok(
+    !unit.fallbackDeclarations.some((d) => d.includes('s10Foundation3URLVMa')),
+    'split suffix after $ must not generate a bogus fallback prototype',
+  );
+});
+
+test('dollar sign inside string literal or comment does not trigger dollar-identifier-unavailable', () => {
+  const source = [
+    'int sample(void)',
+    '{',
+    '  /* $comment */',
+    '  const char *s = "$100";',
+    '  return s != 0;',
+    '}',
+  ].join('\n');
+  const unit = buildCTranslationUnit([fn(source)]);
+  assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
+});
+
+test('ObjC message with unary/cast receiver and hyphenated selector [*(uint64 *)(a1 + 8) w-O] is caught', () => {
+  const source = [
+    'uint64 sample(void * a1)',
+    '{',
+    '  uint64 x0;',
+    '  x0 = [*(uint64 *)(a1 + 8) w-O];',
+    '  return x0;',
+    '}',
+  ].join('\n');
+  const unit = buildCTranslationUnit([fn(source)]);
+  assert.equal(unit.functions[0].syntaxOnly, true);
+  assert.ok(
+    unit.unresolved.some((u) => u.subject === 'sample' && u.reason === 'objc-message-syntax-unavailable'),
+    JSON.stringify(unit.unresolved),
+  );
+});
+
+test('C11 designated initializer with cast index { [(int)0] = 1 } is not misclassified as ObjC message syntax', () => {
+  const source = [
+    'int sample(int * out)',
+    '{',
+    '  *out = ((int[2]){ [(int)0] = 1 })[0];',
+    '  return *out;',
+    '}',
+  ].join('\n');
+  const unit = buildCTranslationUnit([fn(source)]);
+  assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
+});
