@@ -203,7 +203,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   const expects = goal.expects || {};
   for (const c of byAddr.values()) {
     if (!hasProgram) break;
-    if (c.score <= 0 && c.vendor && vendorConflicts(goal.id, c.vendor)) continue;
+    if (c.score <= 10 && c.vendor && vendorConflicts(goal.id, c.vendor)) continue;
     const range = program.functionRange(c.addr);
     if (!range || range.start !== c.addr || range.end == null) continue;
     const stats = program.statsOf(range.start, range.end);

@@ -257,7 +257,7 @@ function stripStandaloneGlobalPreludeLines(text) {
         inStandalonePrototypes = false;
       }
       if (inBitfieldHelpers || inBitfieldGuard) {
-        if (trimmed === '#ifndef __hex_bit_extract_defined' || trimmed === '#ifndef __hex_bit_insert_defined') {
+        if (/^#ifndef\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmed)) {
           inBitfieldGuard = true;
           continue;
         }
@@ -269,7 +269,7 @@ function stripStandaloneGlobalPreludeLines(text) {
         inBitfieldHelpers = false;
         inBitfieldGuard = false;
       }
-      if (trimmed === '#ifndef __hex_bit_extract_defined' || trimmed === '#ifndef __hex_bit_insert_defined') {
+      if (/^#ifndef\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmed)) {
         inBitfieldHelpers = true;
         inBitfieldGuard = true;
         continue;
@@ -366,8 +366,8 @@ function isAccountedBodyPrefix(prefix) {
       || parseBitfieldHelperDefinition(line) !== null
       || isIdTypedefPreludeDeclaration(line)
       || isStandardHeaderInclude(line);
-    if (!ok && (sawBitfieldHelpersMarker || inBitfieldGuard)) {
-      if (trimmedLine === '#ifndef __hex_bit_extract_defined' || trimmedLine === '#ifndef __hex_bit_insert_defined') {
+    if (!ok && (sawBitfieldHelpersMarker || inBitfieldGuard || /^#ifndef\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmedLine))) {
+      if (/^#ifndef\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmedLine)) {
         inBitfieldGuard = true;
         ok = true;
       } else if (inBitfieldGuard && trimmedLine === '#endif') {

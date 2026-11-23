@@ -361,16 +361,15 @@ export function parseBitfieldHelperDefinition(text) {
   const trimmed = String(text ?? '').trim();
   if (trimmed === BIT_EXTRACT_HELPER_DEF) return 'bit_extract';
   if (trimmed === BIT_INSERT_HELPER_DEF) return 'bit_insert';
-  return null;
+  const m = /^static\s+inline\s+uint64(?:_t)?\s+(bit_extract|bit_insert)\s*\(/.exec(trimmed);
+  return m ? m[1] : null;
 }
 
 export function isBitfieldHelperPreludeDeclaration(text) {
   const trimmed = String(text ?? '').trim();
-  return trimmed === '#ifndef __hex_bit_extract_defined'
-    || trimmed === '#define __hex_bit_extract_defined'
-    || trimmed === '#ifndef __hex_bit_insert_defined'
-    || trimmed === '#define __hex_bit_insert_defined'
-    || parseBitfieldHelperDefinition(trimmed) !== null;
+  return /^#(?:ifndef|define)\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmed)
+    || parseBitfieldHelperDefinition(trimmed) !== null
+    || /^static\s+inline\s+uint64(?:_t)?\s+bit_(?:extract|insert)\s*\(/.test(trimmed);
 }
 
 export function bitfieldHelperBlockText(name) {
@@ -3005,7 +3004,7 @@ export function closeFunctionOutput(result, options = {}) {
       });
     }
   }
-  const postFixedPrelude = [...idTypedefPrelude, ...structPrelude, ...globalPrelude, ...prototypePrelude, ...atomicPrelude, ...bitfieldHelperPrelude, ...glibcAliasPrelude, ...intrinsicPrelude];
+  const postFixedPrelude = [...idTypedefPrelude, ...structPrelude, ...globalPrelude, ...prototypePrelude, ...atomicPrelude, ...glibcAliasPrelude, ...intrinsicPrelude];
   if (postFixedPrelude.length) withPostFixedPrelude.splice(sigIndex, 0, ...postFixedPrelude);
 
   const prelude = fixedWidthPreludeLines(render(withPostFixedPrelude), existingTypes)

@@ -117,8 +117,8 @@ test('2. invalid type argument of -> on uint64 / int64 / void * rewrites field_<
   assert.match(res.pseudocode, /\*\(uint64 \*\)\(\(uintptr_t\)\(v1\) \+ 0x18\) = x;/);
 
   // Synthetic struct cast + typedef for non-offset named fields
-  assert.match(res.pseudocode, /typedef struct \{ uint64 count; \} hex_struct_a2;/);
-  assert.match(res.pseudocode, /typedef struct \{ uint64 tag; \} hex_struct_a1;/);
+  assert.match(res.pseudocode, /typedef struct (?:hex_struct_a2 )?\{[^}]*uint64 count;[^}]*\} hex_struct_a2;/);
+  assert.match(res.pseudocode, /typedef struct (?:hex_struct_a1 )?\{[^}]*uint64 tag;[^}]*\} hex_struct_a1;/);
   assert.match(res.pseudocode, /\(\(hex_struct_a2 \*\)\(uintptr_t\)\(a2\)\)->count/);
   assert.match(res.pseudocode, /\(\(hex_struct_a1 \*\)\(uintptr_t\)\(a1\)\)->tag/);
 
@@ -192,10 +192,10 @@ test('3b. c-output-closure emits guarded static inline bit_extract/bit_insert he
   // Raw call spelling preserved + guarded static inline helpers defined
   assert.match(f1.pseudocode, /\bbit_extract\(a2, 4, 8\)/);
   assert.match(f1.pseudocode, /\bbit_insert\(a1,/);
-  assert.match(f1.pseudocode, /#ifndef __hex_bit_extract_defined/);
-  assert.match(f1.pseudocode, /static inline uint64 bit_extract\(/);
-  assert.match(f1.pseudocode, /#ifndef __hex_bit_insert_defined/);
-  assert.match(f1.pseudocode, /static inline uint64 bit_insert\(/);
+  assert.match(f1.pseudocode, /#ifndef __hex_(?:helper_)?bit_extract_defined/);
+  assert.match(f1.pseudocode, /static inline uint64(?:_t)? bit_extract\(/);
+  assert.match(f1.pseudocode, /#ifndef __hex_(?:helper_)?bit_insert_defined/);
+  assert.match(f1.pseudocode, /static inline uint64(?:_t)? bit_insert\(/);
   assert.doesNotMatch(f1.pseudocode, /uint64 bit_extract \(__HEX_ANY_ARGS\);/);
 
   assertStrictCSyntax(f1.pseudocode, 'single-function bit_extract/bit_insert');
@@ -208,8 +208,8 @@ test('3b. c-output-closure emits guarded static inline bit_extract/bit_insert he
   ]);
   assert.equal(unit.functions[0].syntaxOnly, false, 'fn_bits_a should be emitted faithfully');
   assert.equal(unit.functions[1].syntaxOnly, false, 'fn_bits_b should be emitted faithfully');
-  assert.equal((unit.source.match(/static inline uint64 bit_extract\(/g) || []).length, 1, 'bit_extract helper should be hoisted exactly once');
-  assert.equal((unit.source.match(/static inline uint64 bit_insert\(/g) || []).length, 1, 'bit_insert helper should be hoisted exactly once');
+  assert.equal((unit.source.match(/static inline uint64(?:_t)? bit_extract\(/g) || []).length, 1, 'bit_extract helper should be hoisted exactly once');
+  assert.equal((unit.source.match(/static inline uint64(?:_t)? bit_insert\(/g) || []).length, 1, 'bit_insert helper should be hoisted exactly once');
   assert.equal(unit.unresolved.length, 0, `expected zero unresolved entries, got: ${JSON.stringify(unit.unresolved)}`);
   assertStrictCSyntax(unit.source, 'translation unit with hoisted bitfield helpers');
 });
@@ -370,7 +370,7 @@ test('8. Finding 4: translation-unit strips bitfield helper #endif without strip
 
   closeFunctionOutput(f1);
   assert.match(f1.pseudocode, /#ifndef __hex_atomic_load_defined/);
-  assert.match(f1.pseudocode, /#ifndef __hex_bit_extract_defined/);
+  assert.match(f1.pseudocode, /#ifndef __hex_(?:helper_)?bit_extract_defined/);
   assertStrictCSyntax(f1.pseudocode, 'Finding 4: single function with atomic + bit_extract');
 
   const unit = buildCTranslationUnit([
