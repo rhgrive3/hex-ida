@@ -944,11 +944,12 @@ function readByteFromSection(sec, target, start, ctx) {
   return null;
 }
 
-function readOnlyEmptyCStringAt(addr, ctx) {
+function readOnlyShortCStringAt(addr, ctx) {
   let target;
   try { target = BigInt(addr); } catch { return null; }
   let matched = null;
   let matchedStart = null;
+  let matchedEnd = null;
   try {
     const directSec = ctx.opts?.sectionFor?.(target) ?? ctx.opts?.regionFor?.(target);
     if (directSec) {
@@ -956,6 +957,7 @@ function readOnlyEmptyCStringAt(addr, ctx) {
       if (!bounds || (target >= bounds.start && target < bounds.end)) {
         matched = directSec;
         matchedStart = bounds ? bounds.start : target;
+        matchedEnd = bounds ? bounds.end : null;
       }
     }
   } catch { /* optional lookup */ }
@@ -972,6 +974,7 @@ function readOnlyEmptyCStringAt(addr, ctx) {
         if (bounds && target >= bounds.start && target < bounds.end) {
           matched = sec;
           matchedStart = bounds.start;
+          matchedEnd = bounds.end;
           break;
         }
       }
@@ -979,8 +982,31 @@ function readOnlyEmptyCStringAt(addr, ctx) {
     }
   }
   if (!matched || !isProvablyReadOnlyDataSection(matched)) return null;
-  const byte = readByteFromSection(matched, target, matchedStart, ctx);
-  return byte === 0 ? cStringLiteral('') : null;
+  // Recover empty ("") and short 1-3 byte NUL-terminated printable ASCII literals
+  // (e.g. "-1", "NO", "YES", "No", "Yes") that string scanners with min-length 4 skip.
+  const bytes = [];
+  for (let i = 0; i <= 3; i++) {
+    const pos = target + BigInt(i);
+    if (matchedEnd != null && pos >= matchedEnd) return null;
+    const byte = readByteFromSection(matched, pos, matchedStart, ctx);
+    if (byte == null) return null;
+    if (byte === 0) return cStringLiteral(String.fromCharCode(...bytes));
+    if (byte < 0x20 || byte > 0x7e) return null;
+    bytes.push(byte);
+  }
+  return null;
+}
+
+function isAddressDerivedValue(value, depth = 0) {
+  if (!value || depth > 8) return false;
+  const op = value.def?.op;
+  if (op === OP.ADDR) return true;
+  if (op === OP.MOV) return isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1);
+  if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
+    if (isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1)) return true;
+    if (value.def.sub === 'add' && isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1)) return true;
+  }
+  return false;
 }
 
 function stringLiteralAt(addr, ctx) {
@@ -993,19 +1019,25 @@ function stringLiteralAt(addr, ctx) {
     if (ref?.addr == null || typeof ref.text !== 'string') continue;
     try { if (BigInt(ref.addr) === BigInt(addr)) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
   }
-  return readOnlyEmptyCStringAt(addr, ctx);
+  return readOnlyShortCStringAt(addr, ctx);
 }
 
 function stringLiteralForValue(value, ctx) {
   if (value?.const == null) return null;
   const defRow = value.def?.row;
+  let hasAddressRefProof = false;
   for (const ref of ctx.model.addressRefs || []) {
-    if (ref?.row !== defRow || ref?.addr == null || typeof ref.text !== 'string') continue;
-    try { if (BigInt(ref.addr) === BigInt(value.const)) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
+    if (ref?.row !== defRow || ref?.addr == null) continue;
+    let matchesAddr = false;
+    try { matchesAddr = BigInt(ref.addr) === BigInt(value.const); } catch { /* malformed ref */ }
+    if (!matchesAddr) continue;
+    if (typeof ref.text === 'string') return cStringLiteral(ref.text);
+    hasAddressRefProof = true;
   }
-  // A direct ADR/ADRP value is intrinsically address-like. For arithmetic
-  // constants require the exact row+addressRef proof above.
-  return value.def?.op === OP.ADDR ? stringLiteralAt(value.const, ctx) : null;
+  // A direct ADR/ADRP value (or folded adrp+add derived from OP.ADDR), or a value
+  // backed by an exact row+addr entry in model.addressRefs, is provably address-like.
+  // Plain arithmetic constants without addressRef proof never query stringFor.
+  return (hasAddressRefProof || isAddressDerivedValue(value)) ? stringLiteralAt(value.const, ctx) : null;
 }
 
 function formatFloatConst(v, bits = 64) {
@@ -1819,9 +1851,11 @@ function renderValueText(value, ctx, flags) {
     }
     return initialValueForm(ctx, 'memo-reuse', ctx.exprCache.get(key));
   }
+  const topLevel = ctx.exprActive.size === 0;
   if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) return initialValueForm(ctx, 'bounded-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
   ctx.exprActive.add(value.id);
   let out = null;
+  try {
   if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) out = initialValueForm(ctx, 'cxx-this-receiver', 'this');
   if (!out && (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null))) out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(value.floatConst ?? value.float, value.bits));
   if (!out && value.const != null && value.def?.op !== OP.ADDR) out = initialValueForm(ctx, 'precomputed-integer-or-literal', stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits));
@@ -1892,7 +1926,10 @@ function renderValueText(value, ctx, flags) {
     }
   }
   if (!out) out = initialValueForm(ctx, 'register-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
-  ctx.exprActive.delete(value.id);
+  } finally {
+    ctx.exprActive.delete(value.id);
+    if (topLevel) ctx.exprNodes = 0;
+  }
   ctx.exprCache.set(key, out);
   const trace = initialValueTraces.get(ctx);
   if (trace?.active) trace.memo.set(key, trace.active);
@@ -2320,15 +2357,85 @@ function terminalConditionalPartition(header, yes, no, ctx, state, allowed = nul
 function materialization(ctx) {
   const names = new Map();
   const instructions = ctx.ir.instructions || [];
+  const blocks = ctx.ir.blocks || [];
   const position = new Map(instructions.map((inst, index) => [inst, index]));
   const strongPrefix = new Array(instructions.length + 1).fill(0);
   const storePositions = [];
+  const blockRange = new Map();
+  const blockHasStrong = new Set();
+  const blockStores = new Map();
   const strongOrderingBarrier = (inst) => inst?.op === OP.CALL ||
     inst?.op === OP.CLOBBER || inst?.op === OP.UNKNOWN;
   for (let i = 0; i < instructions.length; i++) {
-    strongPrefix[i + 1] = strongPrefix[i] + (strongOrderingBarrier(instructions[i]) ? 1 : 0);
-    if (instructions[i]?.op === OP.STORE) storePositions.push(i);
+    const inst = instructions[i];
+    const isStrong = strongOrderingBarrier(inst);
+    strongPrefix[i + 1] = strongPrefix[i] + (isStrong ? 1 : 0);
+    const bi = inst?.block;
+    if (bi != null) {
+      const range = blockRange.get(bi);
+      if (range) {
+        if (i < range.start) range.start = i;
+        if (i > range.end) range.end = i;
+      } else {
+        blockRange.set(bi, { start: i, end: i });
+      }
+      if (isStrong) blockHasStrong.add(bi);
+      if (inst?.op === OP.STORE) {
+        let list = blockStores.get(bi);
+        if (!list) { list = []; blockStores.set(bi, list); }
+        list.push(inst);
+      }
+    }
+    if (inst?.op === OP.STORE) storePositions.push(i);
   }
+  const preds = new Map();
+  for (let bi = 0; bi < blocks.length; bi++) {
+    for (const s of blocks[bi]?.succ || []) {
+      let list = preds.get(s);
+      if (!list) { list = []; preds.set(s, list); }
+      list.push(bi);
+    }
+  }
+  const cycleBlocksCache = new Map();
+  const cycleBlocksFor = (originBlock) => {
+    if (originBlock == null || !blocks[originBlock]) return null;
+    if (cycleBlocksCache.has(originBlock)) return cycleBlocksCache.get(originBlock);
+    const fwd = new Set();
+    const stack = [...(blocks[originBlock].succ || [])];
+    while (stack.length) {
+      const b = stack.pop();
+      if (fwd.has(b)) continue;
+      fwd.add(b);
+      for (const s of blocks[b]?.succ || []) {
+        if (!fwd.has(s)) stack.push(s);
+      }
+    }
+    if (!fwd.has(originBlock)) {
+      cycleBlocksCache.set(originBlock, null);
+      return null;
+    }
+    const cycle = new Set();
+    const bstack = [originBlock];
+    while (bstack.length) {
+      const b = bstack.pop();
+      if (cycle.has(b)) continue;
+      cycle.add(b);
+      for (const p of preds.get(b) || []) {
+        if (fwd.has(p) && !cycle.has(p)) bstack.push(p);
+      }
+    }
+    cycleBlocksCache.set(originBlock, cycle);
+    return cycle;
+  };
+  const blockHasAliasingBarrier = (load, bi) => {
+    if (blockHasStrong.has(bi)) return true;
+    const stores = blockStores.get(bi);
+    if (!stores) return false;
+    for (const store of stores) {
+      if (mayAliasProvenance(load?.loc, store?.loc)) return true;
+    }
+    return false;
+  };
   const barrierBetween = (load, current, from, to) => {
     if (to <= from + 1) return false;
     if (strongPrefix[to] - strongPrefix[from + 1] > 0) return true;
@@ -2351,6 +2458,41 @@ function materialization(ctx) {
     }
     return false;
   };
+  const pathBlocksCache = new Map();
+  const blocksBetween = (fromBlock, toBlock, includeTarget) => {
+    if (fromBlock == null || toBlock == null || !blocks[fromBlock] || !blocks[toBlock]) return null;
+    const key = `${fromBlock}:${toBlock}:${includeTarget ? 1 : 0}`;
+    if (pathBlocksCache.has(key)) return pathBlocksCache.get(key);
+    const fwd = new Set();
+    const stack = [...(blocks[fromBlock].succ || [])];
+    while (stack.length) {
+      const b = stack.pop();
+      if (fwd.has(b)) continue;
+      fwd.add(b);
+      for (const s of blocks[b]?.succ || []) {
+        if (!fwd.has(s)) stack.push(s);
+      }
+    }
+    if (!fwd.has(toBlock)) {
+      pathBlocksCache.set(key, null);
+      return null;
+    }
+    const between = new Set();
+    const bstack = includeTarget ? [toBlock] : [...(preds.get(toBlock) || [])];
+    while (bstack.length) {
+      const b = bstack.pop();
+      if (!fwd.has(b) || between.has(b)) continue;
+      between.add(b);
+      if (b === fromBlock) continue;
+      for (const p of preds.get(b) || []) {
+        if (fwd.has(p) && !between.has(p)) bstack.push(p);
+      }
+    }
+    between.delete(fromBlock);
+    if (!includeTarget) between.delete(toBlock);
+    pathBlocksCache.set(key, between);
+    return between;
+  };
   const crossesBarrier = (value) => {
     const def = value?.def;
     const di = position.get(def);
@@ -2364,19 +2506,65 @@ function materialization(ctx) {
       seenValues.add(current.id);
       for (const use of current.uses || []) {
         if (use === current.def || use?.clobbered) continue;
+        if (use.op === OP.PHI && !(use.dst?.uses || []).some((u) => u !== use && !u.clobbered)) continue;
         const ui = position.get(use);
-        if (ui == null || ui <= di) continue;
-        // Moving an observation into another Basic Block can make it conditional
-        // (or move it to another path), changing faults/MMIO semantics even if
-        // no explicit store/call sits between the two textual rows.
-        if (use.block !== originBlock) return true;
-        const currentDef = current.def || def;
-        const currentIndex = position.get(currentDef);
-        if (currentIndex != null && barrierBetween(def, current, currentIndex, ui)) return true;
+        if (ui == null) continue;
+        if (ui > di) {
+          // Moving an observation into another Basic Block can make it conditional
+          // (or move it to another path), changing faults/MMIO semantics even if
+          // no explicit store/call sits between the two textual rows.
+          if (use.block !== originBlock) return true;
+          const currentDef = current.def || def;
+          const currentIndex = position.get(currentDef);
+          const fromIndex = currentIndex != null && currentIndex < ui ? currentIndex : di;
+          if (barrierBetween(def, current, fromIndex, ui)) return true;
+        } else if (use.block === originBlock) {
+          // Same-block use at or before `def` (e.g. loop back-edge / PHI):
+          // check barriers after `di`, before `ui`, or in any cycle block.
+          const cycle = cycleBlocksFor(originBlock);
+          if (cycle) {
+            const range = blockRange.get(originBlock);
+            if (range) {
+              if (barrierBetween(def, current, di, range.end + 1)) return true;
+              if (barrierBetween(def, current, range.start - 1, ui)) return true;
+            }
+            for (const bi of cycle) {
+              if (bi === originBlock) continue;
+              if (blockHasAliasingBarrier(def, bi)) return true;
+            }
+          }
+        } else {
+          // Cross-block use with ui <= di (e.g. loop header PHI or consumer block
+          // ordered before def block in linear IR): check tail of originBlock,
+          // head of use.block (for non-PHI), and all intermediate/loop blocks.
+          const originRange = blockRange.get(originBlock);
+          if (originRange && barrierBetween(def, current, di, originRange.end + 1)) return true;
+          if (use.op === OP.PHI) {
+            for (const inc of use.incoming || []) {
+              if (inc?.value !== current || inc.from == null) continue;
+              if (inc.from === originBlock) continue;
+              const between = blocksBetween(originBlock, inc.from, true);
+              if (between) {
+                for (const bi of between) {
+                  if (blockHasAliasingBarrier(def, bi)) return true;
+                }
+              }
+            }
+          } else {
+            const useRange = blockRange.get(use.block);
+            if (useRange && barrierBetween(def, current, useRange.start - 1, ui)) return true;
+            const between = blocksBetween(originBlock, use.block, false);
+            if (between) {
+              for (const bi of between) {
+                if (blockHasAliasingBarrier(def, bi)) return true;
+              }
+            }
+          }
+        }
         // Follow pure SSA transforms transitively. A load feeding add/cmp/select
         // can otherwise appear safe at its direct use while the derived value is
         // finally consumed only after a side-effect barrier.
-        if (use.dst && use.op !== OP.CALL && use.op !== OP.LOAD &&
+        if (use.dst && use.op !== OP.PHI && use.op !== OP.CALL && use.op !== OP.LOAD &&
             use.op !== OP.STORE && use.op !== OP.CLOBBER && use.op !== OP.UNKNOWN) {
           queue.push(use.dst);
         }
