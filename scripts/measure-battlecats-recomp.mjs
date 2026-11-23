@@ -252,7 +252,7 @@ async function runShard(args) {
     let resp;
     try {
       const snap = await product.query.snapshot();
-      resp = await product.query.decompile(snap, fn.address);
+      resp = await product.query.decompile(snap, fn.address, { objcSyntax: 'c' });
     } catch {
       stats.decompileCrash++;
       continue;

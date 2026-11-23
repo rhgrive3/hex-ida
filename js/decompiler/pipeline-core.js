@@ -320,7 +320,7 @@ function bindStoreSpelling(node, known, state) {
   } catch { budget.edges = 0; budget.reasons.add('store-spelling-observation-unavailable'); }
 }
 function safeIdent(s, fallback = 'value') {
-  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
+  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
 }
 function constNode(v, value = v?.const ?? 0n) { return expr.constant(value, v?.bits || 64, v?.signed ?? null, origin(v?.def, v)); }

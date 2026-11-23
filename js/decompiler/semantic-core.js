@@ -550,7 +550,7 @@ function line(kind, indent, text, row = null, addr = null, extra = null) {
 function valueOf(a) { return a && a.value ? a.value : null; }
 function hex(v) { return BigInt(v).toString(16).toUpperCase(); }
 function safeIdent(s, fallback = 'value') {
-  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
+  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
 }
 function paren(s) { return /^[-+]?\w+(?:->\w+|\.\w+|\[[^\]]+\])*$/.test(s) || /^0x[0-9A-F]+$/.test(s) ? s : `(${s})`; }
@@ -2742,7 +2742,8 @@ function callRecord(inst, ctx) {
   const info = {
     name, target, runtime: origin, args: logicalArgs, arityKnown, variadicPrefixOnly, sourceArgIndices, resolvedArgs,
     receiver: argText[0] || 'receiver', receiverType, selector,
-    ...(objcCMode ? { style: 'c', callee: objcCallee } : {}),
+    callee: objcCallee,
+    ...(objcCMode ? { style: 'c' } : {}),
     stubAddress: target, callingConvention: ctx.opts.swiftCallingConventionFor?.(target, name) || null,
     kind: ctx.opts.swiftDispatchFor?.(inst)?.kind || (inst.extra?.indirect ? 'indirect' : 'direct'),
     virtualSlot: slotEv,
@@ -2767,12 +2768,20 @@ function renderCall(inst, ctx) {
   if (c.resolved.runtime === 'objc' && c.resolved.message) {
     if (ctx.opts?.objcSyntax === 'c' && /^\[/.test(c.resolved.message.text || '')) {
       const callee = c.callee || 'objc_msgSend';
-      const cArgs = [c.receiver, JSON.stringify(c.selector), ...(c.args || []).map((a) => String(a).replace(/^@(?=")/, ''))];
+      const stripAt = (v) => String(v).replace(/^@(?=")/, '');
+      const cArgs = [stripAt(c.receiver), JSON.stringify(c.selector), ...(c.args || []).map(stripAt)];
       return `${callee}(${cArgs.join(', ')})`;
     }
     return c.resolved.message.text;
   }
-  if (c.resolved.runtime === 'swift' && c.resolved.text) return c.resolved.text;
+  if (c.resolved.runtime === 'swift' && c.resolved.text) {
+    return c.resolved.text.replace(/^([A-Za-z_$][A-Za-z0-9_$]*)(\s*\()/, (_, ident, tail) => {
+      if (!ident.includes('$')) return `${ident}${tail}`;
+      let sanitized = ident.replace(/\$/g, '_');
+      if (!sanitized || /^[0-9]/.test(sanitized)) sanitized = `swift_${sanitized}`;
+      return `${sanitized}${tail}`;
+    });
+  }
   const name = c.name ? safeIdent(c.name, 'unknown_call') : null;
   if (name) {
     const args = !c.arityKnown
@@ -3920,18 +3929,27 @@ function samePhiIncomingValue(a, b) {
 
 function phiVariableType(value, ctx) {
   const safeDeclType = (t) => (t && !/[\[\]()]/.test(t) ? t : null);
+  const isPtrType = (t) => Boolean(t && (/\*$/.test(t) || t === 'id'));
+  const incomingTypes = new Set();
+  let hasNonSelfIncoming = false;
+  let allIncomingPtr = true;
+  for (const edge of value.def?.incoming || []) {
+    if (!edge?.value || edge.value.id === value.id) continue;
+    hasNonSelfIncoming = true;
+    const t = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(edge.value.id)));
+    if (t) incomingTypes.add(t);
+    if (!isPtrType(t) && !isZeroVal(edge.value)) allIncomingPtr = false;
+  }
+  const ptrSafe = hasNonSelfIncoming && allIncomingPtr;
   const recovered = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(value.id)));
-  if (recovered) return recovered;
+  if (recovered && (!isPtrType(recovered) || ptrSafe)) return recovered;
   if (floatConstValueOf(value) != null) {
     return Number(value.bits) === 32 ? 'float' : 'double';
   }
-  const incomingTypes = new Set();
-  for (const edge of value.def?.incoming || []) {
-    if (!edge?.value || edge.value.id === value.id) continue;
-    const t = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(edge.value.id)));
-    if (t) incomingTypes.add(t);
+  if (incomingTypes.size === 1) {
+    const only = [...incomingTypes][0];
+    if (!isPtrType(only) || ptrSafe) return only;
   }
-  if (incomingTypes.size === 1) return [...incomingTypes][0];
   const bits = [8, 16, 32, 64, 128].includes(Number(value.bits)) ? Number(value.bits) : 64;
   return `${value.signed === true ? 'int' : 'uint'}${bits}`;
 }
@@ -4994,6 +5012,14 @@ function faithfulCfg(ctx, indent = 1) {
         term, 'cfg-branch-goto', { target:next }, ctx));
     }
   }
+  for (let i = out.length - 1; i >= 0; i--) {
+    const cur = out[i];
+    if (!cur || cur.kind === 'comment' || !String(cur.text || '').trim()) continue;
+    if (cur.kind === 'label') {
+      out.push(line('stmt', indent + 1, ';', cur.row, cur.addr));
+    }
+    break;
+  }
   return out;
 }
 
@@ -5338,6 +5364,7 @@ export function decompileSemantic(model, rawOpts = {}) {
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
     coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, emittedInductionNames: ctx.emittedInductionNames || new Map(), irPrimary: true, unknownInstructions: ctx.unknown, phase8Optimize: opts.phase8Optimize === true },
     semantic: true,
+    objcSyntax: opts?.objcSyntax === 'c' ? 'c' : 'objc',
   }, ctx), ctx), ctx), ctx, true), ctx);
   const bindings = new Map();
   for (const [id, name] of ctx.materialNames) {

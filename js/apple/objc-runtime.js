@@ -488,10 +488,12 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   };
 }
 
+const isMalformedObjcSelector = (s) => typeof s !== 'string' || !s.length || !/^[A-Za-z_][A-Za-z0-9_:]*$/.test(s);
+
 export function formatObjcMessage({ receiver = 'receiver', selector, args = [], style = 'objc', callee = 'objc_msgSend' } = {}) {
   const safeArgs = Array.isArray(args) ? args : [];
   if (typeof selector !== 'string' || !selector) return `unknown_call(${[receiver, ...safeArgs].join(', ')})`;
-  if (style === 'c') {
+  if (style === 'c' || isMalformedObjcSelector(selector)) {
     const fn = typeof callee === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(callee) ? callee : 'objc_msgSend';
     const stripAt = (v) => (typeof v === 'string' && /^@"/.test(v) ? v.slice(1) : v);
     const cleanReceiver = stripAt(receiver);

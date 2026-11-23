@@ -83,7 +83,7 @@ export function decompile(model, opts) {
   const out = [];
   const warnings = [];
   if (!insns.length) {
-    return { lines: [line('comment', 0, '// 命令が読み取れませんでした。', null)], signature: '', types: null, warnings: ['命令なし'], labels: new Set() };
+    return { lines: [line('comment', 0, '// 命令が読み取れませんでした。', null)], signature: '', types: null, warnings: ['命令なし'], labels: new Set(), objcSyntax: o?.objcSyntax === 'c' ? 'c' : 'objc' };
   }
 
   const ctx = buildContext(model, o);
@@ -150,11 +150,28 @@ export function decompile(model, opts) {
     }
   }
 
+  const emittedBody = [];
   for (const l of body) {
     if (l.kind === 'label' && !state.labels.has(l.text.replace(/:$/, ''))) continue;
-    out.push(l);
+    emittedBody.push(l);
   }
-  out.push(line('ctrl', 0, '}', insns[insns.length - 1].row));
+  emittedBody.push(line('ctrl', 0, '}', insns[insns.length - 1].row));
+  for (let i = 0; i < emittedBody.length; i++) {
+    const l = emittedBody[i];
+    out.push(l);
+    if (l.kind === 'label') {
+      let next = null;
+      for (let j = i + 1; j < emittedBody.length; j++) {
+        const cand = emittedBody[j];
+        if (!cand || cand.kind === 'blank' || cand.kind === 'comment' || !String(cand.text || '').trim()) continue;
+        next = cand;
+        break;
+      }
+      if (next && next.kind === 'ctrl' && String(next.text || '').trim() === '}') {
+        out.push(line('stmt', (l.indent || 1) + 1, ';', l.row, l.addr));
+      }
+    }
+  }
 
   dedupeNotes(out);
   breatheOut(out);
@@ -174,7 +191,7 @@ export function decompile(model, opts) {
     warnings.push('訳せなかった命令が ' + ctx.unknown.size + ' 種類あります（__asm として残しています）。');
   }
 
-  return { lines: out, signature, types, warnings, labels: state.labels, ctx, coverage };
+  return { lines: out, signature, types, warnings, labels: state.labels, ctx, coverage, objcSyntax: o?.objcSyntax === 'c' ? 'c' : 'objc' };
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -1470,10 +1487,12 @@ function memNodeName(m, ctx) {
   return null;
 }
 
+const isMalformedObjcSelector = (s) => typeof s !== 'string' || !s.length || !/^[A-Za-z_][A-Za-z0-9_:]*$/.test(s);
+
 function callLabel(c, ctx) {
   const custom = ctx.notes && c.target != null ? ctx.notes.nameOf(c.target) : null;
   if (custom) return sanitizeLegacyCallLabel(custom);
-  if (c.sel) return ctx.opts?.objcSyntax === 'c' ? 'objc_msgSend' : '[' + (c.sel) + ']';
+  if (c.sel) return (ctx.opts?.objcSyntax === 'c' || isMalformedObjcSelector(c.sel)) ? 'objc_msgSend' : '[' + (c.sel) + ']';
   if (c.name) return sanitizeLegacyCallLabel(shortName(c.name));
   return c.target != null ? 'sub_' + c.target.toString(16).toUpperCase() : 'unknown_call';
 }
@@ -3281,12 +3300,13 @@ function callStatement(insn, ctx, mk) {
   /* Objective-C のメソッド呼び出しは [obj method:…] で書く */
   const sel = call && call.selector ? call.selector : (name ? (/objc_msgSend(?:Super2?)?\$(.+)$/.exec(name) || [])[1] : null);
   if (sel) {
-    const argc = (sel.match(/:/g) || []).length;
+    const malformedSel = isMalformedObjcSelector(sel);
+    const argc = malformedSel ? 0 : (sel.match(/:/g) || []).length;
     const parts = argc ? sel.split(':').slice(0, argc) : [];
     const argv = [];
     for (let i = 0; i < argc; i++) argv.push(registerValueText(ctx, insn.row, 'x' + (i + 2)));
     const receiverValue = registerValueText(ctx, insn.row, 'x0');
-    if (ctx.opts?.objcSyntax === 'c') {
+    if (ctx.opts?.objcSyntax === 'c' || malformedSel) {
       const callee = /objc_msgSendSuper2/.test(name || '') ? 'objc_msgSendSuper2' : 'objc_msgSend';
       const stripAt = (v) => (typeof v === 'string' && /^@"/.test(v) ? v.slice(1) : v);
       const callArgs = [stripAt(receiverValue), JSON.stringify(sel), ...argv.map(stripAt)];
