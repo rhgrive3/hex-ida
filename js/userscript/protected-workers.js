@@ -31,12 +31,11 @@ export function installProtectedWorkers() {
     revoke.push(wasmURL);
 
     for (const [path, source] of Object.entries(PROTECTED_WORKER_ASSETS.classic)) {
+      const parts = [logicalWorkerPrelude(path)];
+      if (CAPSTONE_CLASSIC_WORKERS.has(path)) parts.push(capstonePrelude(wasmURL));
+      parts.push(source);
       const url = workerStage(`protected classic worker Blob (${path})`, () =>
-        URL.createObjectURL(new Blob([
-          logicalWorkerPrelude(path),
-          capstonePrelude(wasmURL),
-          source,
-        ], { type: 'text/javascript' })));
+        URL.createObjectURL(new Blob(parts, { type: 'text/javascript' })));
       urls.set(path, url);
       revoke.push(url);
     }

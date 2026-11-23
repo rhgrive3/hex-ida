@@ -19,7 +19,7 @@ const deploymentIdentityStamp = resolve(root, 'js/userscript/deployment-identity
 const ORIGIN_TOKEN = '__HEX_ORIGIN__';
 const releaseStatePath = resolve(root, 'userscript/release-version.json');
 const MAX_LOADER_BYTES = 64 * 1024;
-const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
+const CLASSIC_ENTRIES = ['js/worker.js', 'js/scan-worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 const OPTIONAL_BUNDLED_CLASSIC_ENTRIES = ['js/targets/architecture/x86_64/semantic-revalidation-worker.js'];
 const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js'];
 

@@ -65,7 +65,7 @@ function __noteLoopProvenanceState(word, kind, pc, lastWrite, values = null) {
   if (WRITES_LOW_REG[kind]) unknown(word & 0x1f);
 }
 
-async function __backwardLoopEntryKills(region, requestId) {
+async function __backwardLoopEntryKills(region, requestId, epoch) {
   const entries = new Map();
   const total = Number(region?.size ?? 0n);
   if (!Number.isSafeInteger(total) || total <= 0) return { entries, cancelled:false };
@@ -80,6 +80,9 @@ async function __backwardLoopEntryKills(region, requestId) {
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const edgeTargets = new Map();
   const targetSet = new Set();
+  const reader = typeof readScanBlock === 'function' ? readScanBlock : readRange;
+  const blockSize = typeof STREAM_SCAN_BLOCK === 'number' ? STREAM_SCAN_BLOCK : 1024 * 1024;
+  const maybeYield = typeof createYielder === 'function' ? createYielder(16) : yieldToQueue;
   let nextFunctionStart = 0;
   let currentFunctionStart = null;
   let pos = 0;
@@ -89,9 +92,9 @@ async function __backwardLoopEntryKills(region, requestId) {
   // target and distinguish a same-value re-materialization from a real
   // clobber.
   while (pos < total) {
-    if (cancelled(requestId)) return { entries, cancelled:true };
-    const want = Math.min(1024 * 1024, total - pos);
-    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (cancelled(requestId, epoch)) return { entries, cancelled:true };
+    const want = Math.min(blockSize, total - pos);
+    const blk = await reader(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
     const count = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, count * 4);
@@ -112,7 +115,7 @@ async function __backwardLoopEntryKills(region, requestId) {
     }
     pos += count * 4;
     if (count * 4 < want) break;
-    await yieldToQueue();
+    await maybeYield();
   }
 
   if (!targetSet.size) return { entries, cancelled:false };
@@ -124,9 +127,9 @@ async function __backwardLoopEntryKills(region, requestId) {
   currentFunctionStart = null;
   pos = 0;
   while (pos < total) {
-    if (cancelled(requestId)) return { entries, cancelled:true };
-    const want = Math.min(1024 * 1024, total - pos);
-    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (cancelled(requestId, epoch)) return { entries, cancelled:true };
+    const want = Math.min(blockSize, total - pos);
+    const blk = await reader(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
     const count = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, count * 4);
@@ -137,6 +140,7 @@ async function __backwardLoopEntryKills(region, requestId) {
         currentFunctionStart = functionStarts[nextFunctionStart++];
         values.fill(null);
         lastWrite.fill(null);
+        targetValues.clear();
       }
       if (targetSet.has(pc)) targetValues.set(pc, values.slice());
 
@@ -177,7 +181,7 @@ async function __backwardLoopEntryKills(region, requestId) {
     }
     pos += count * 4;
     if (count * 4 < want) break;
-    await yieldToQueue();
+    await maybeYield();
   }
   return { entries, cancelled:false };
 }
@@ -192,7 +196,7 @@ const __scanProgramBeforeLoopProvenanceFix = scanProgram;
 scanProgram = async function scanProgramWithLoopProvenance(args) {
   const region = regions.get(args.regionId);
   if (!region) throw new Error('Unknown region.');
-  const prepass = await __backwardLoopEntryKills(region, args.requestId);
+  const prepass = await __backwardLoopEntryKills(region, args.requestId, args.epoch);
   if (prepass.cancelled) return { cancelled:true, __transfer:[] };
   if (!prepass.entries.size) return __scanProgramBeforeLoopProvenanceFix(args);
 
@@ -227,7 +231,7 @@ scanProgram = async function scanProgramWithLoopProvenance(args) {
 findXrefs = async function findXrefsLoopSafe({ regionId, target, limit, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const prepass = await __backwardLoopEntryKills(region, requestId);
+  const prepass = await __backwardLoopEntryKills(region, requestId, epoch);
   if (prepass.cancelled) return { results:[], cancelled:true, capped:false };
 
   const want = canonicalAddress(target);
@@ -244,7 +248,7 @@ findXrefs = async function findXrefsLoopSafe({ regionId, target, limit, requestI
   };
 
   while (pos < total && out.length < cap) {
-    if (cancelled(requestId)) return { results:out, cancelled:true, capped:false };
+    if (cancelled(requestId, epoch)) return { results:out, cancelled:true, capped:false };
     const blk = await readRange(region.fileOffset + BigInt(pos), Math.min(1024 * 1024, total - pos));
     if (blk.length < 4) break;
     const words = Math.floor(blk.length / 4);

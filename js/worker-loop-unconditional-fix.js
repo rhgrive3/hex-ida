@@ -1,7 +1,7 @@
 'use strict';
 
 /* #2117: extend the #1900 backward-loop prepass to unconditional direct B edges. */
-async function __backwardLoopEntryKills(region, requestId) {
+async function __backwardLoopEntryKills(region, requestId, epoch) {
   const entries = new Map();
   const total = Number(region?.size ?? 0n);
   if (!Number.isSafeInteger(total) || total <= 0) return { entries, cancelled:false };
@@ -12,14 +12,18 @@ async function __backwardLoopEntryKills(region, requestId) {
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const edgeTargets = new Map();
   const targetSet = new Set();
+  const fastBranch = typeof Words.isCondBranch === 'function' && typeof Words.isBranchImm === 'function';
+  const reader = typeof readScanBlock === 'function' ? readScanBlock : readRange;
+  const blockSize = typeof STREAM_SCAN_BLOCK === 'number' ? STREAM_SCAN_BLOCK : 1024 * 1024;
+  const maybeYield = typeof createYielder === 'function' ? createYielder(16) : yieldToQueue;
   let nextFunctionStart = 0;
   let currentFunctionStart = null;
   let pos = 0;
 
   while (pos < total) {
-    if (cancelled(requestId)) return { entries, cancelled:true };
-    const want = Math.min(1024 * 1024, total - pos);
-    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (cancelled(requestId, epoch)) return { entries, cancelled:true };
+    const want = Math.min(blockSize, total - pos);
+    const blk = await reader(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
     const count = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, count * 4);
@@ -29,11 +33,17 @@ async function __backwardLoopEntryKills(region, requestId) {
       while (nextFunctionStart < functionStarts.length && functionStarts[nextFunctionStart] <= pc) {
         currentFunctionStart = functionStarts[nextFunctionStart++];
       }
-      const kind = Words.classifyWord(word);
       let target = null;
-      if (kind === Words.KIND.CONDBR) target = Words.condBranchTarget(word, pc);
-      else if (kind === Words.KIND.BRANCH) target = Words.wordTarget(word, pc);
-      else continue;
+      if (fastBranch) {
+        if (Words.isCondBranch(word)) target = Words.condBranchTarget(word, pc);
+        else if (Words.isBranchImm(word)) target = Words.wordTarget(word, pc);
+        else continue;
+      } else {
+        const kind = Words.classifyWord(word);
+        if (kind === Words.KIND.CONDBR) target = Words.condBranchTarget(word, pc);
+        else if (kind === Words.KIND.BRANCH) target = Words.wordTarget(word, pc);
+        else continue;
+      }
       if (target == null || target > pc) continue;
       if (target < region.vmAddr || target >= region.vmAddr + region.size) continue;
       if (currentFunctionStart != null && target < currentFunctionStart) continue;
@@ -42,7 +52,7 @@ async function __backwardLoopEntryKills(region, requestId) {
     }
     pos += count * 4;
     if (count * 4 < want) break;
-    await yieldToQueue();
+    await maybeYield();
   }
 
   if (!targetSet.size) return { entries, cancelled:false };
@@ -54,9 +64,9 @@ async function __backwardLoopEntryKills(region, requestId) {
   currentFunctionStart = null;
   pos = 0;
   while (pos < total) {
-    if (cancelled(requestId)) return { entries, cancelled:true };
-    const want = Math.min(1024 * 1024, total - pos);
-    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (cancelled(requestId, epoch)) return { entries, cancelled:true };
+    const want = Math.min(blockSize, total - pos);
+    const blk = await reader(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
     const count = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, count * 4);
@@ -67,6 +77,7 @@ async function __backwardLoopEntryKills(region, requestId) {
         currentFunctionStart = functionStarts[nextFunctionStart++];
         values.fill(null);
         lastWrite.fill(null);
+        targetValues.clear();
       }
       if (targetSet.has(pc)) targetValues.set(pc, values.slice());
 
@@ -101,7 +112,7 @@ async function __backwardLoopEntryKills(region, requestId) {
     }
     pos += count * 4;
     if (count * 4 < want) break;
-    await yieldToQueue();
+    await maybeYield();
   }
   return { entries, cancelled:false };
 }

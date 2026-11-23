@@ -71,6 +71,9 @@ async function __isSupplementalMemoryRef(region, site) {
 scanProgram = async function scanProgramCanonicalStringRefs(args) {
   const result = await __scanProgramWithExtendedMemoryRefs(args);
   if (!result || result.cancelled || !result.refCount) return result;
+  if (typeof __inlineStringRefFilteredResults !== 'undefined' && __inlineStringRefFilteredResults.has(result)) {
+    return result;
+  }
 
   const region = regions.get(args.regionId);
   const stringRanges = __programStringRanges();
@@ -88,7 +91,7 @@ scanProgram = async function scanProgramCanonicalStringRefs(args) {
   let kept = 0;
   let changed = false;
   for (let i = 0; i < count; i++) {
-    if (cancelled(args.requestId)) return { cancelled:true, __transfer:[] };
+    if (cancelled(args.requestId, args.epoch)) return { cancelled:true, __transfer:[] };
     const target = result.refTo[i];
     let drop = false;
     if (__inProgramStringRange(target, stringRanges)) {
@@ -143,7 +146,7 @@ findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, r
   };
 
   while (pos < total && out.length < cap) {
-    if (cancelled(requestId)) return { results:out, cancelled:true, capped:false };
+    if (cancelled(requestId, epoch)) return { results:out, cancelled:true, capped:false };
     const blk = await readRange(region.fileOffset + BigInt(pos), Math.min(1024 * 1024, total - pos));
     if (blk.length < 4) break;
     const words = Math.floor(blk.length / 4);
