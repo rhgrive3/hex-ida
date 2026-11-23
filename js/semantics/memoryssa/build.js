@@ -702,23 +702,6 @@ function buildStackEscapeCfgIndex(irFunction, cfg, stackValues) {
   };
 }
 
-function predecessorBlockClosure(startBlockId, cfgBlockById) {
-  const visited = new Set();
-  const stack = [...(cfgBlockById.get(startBlockId)?.predecessors ?? [])].map(String);
-  while (stack.length > 0) {
-    const blockId = stack.pop();
-    if (visited.has(blockId)) continue;
-    visited.add(blockId);
-    const block = cfgBlockById.get(blockId);
-    if (!block) continue;
-    for (const pred of block.predecessors ?? []) {
-      const predId = String(pred);
-      if (!visited.has(predId)) stack.push(predId);
-    }
-  }
-  return visited;
-}
-
 function callMayExposeStackAddress(node, stackValues, escapeCfgIndex) {
   if (node?.kind !== 'call') return false;
   const nodeKey = String(node.id);

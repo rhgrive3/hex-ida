@@ -148,7 +148,7 @@ function make(lines, opts = {}) {
   // The clamp's zero store goes through the reloaded receiver spill. It must stay
   // explicit — an unknown memory target or a store through the reloaded local —
   // and must never be laundered back into the receiver field `self->hp`.
-  const zeroStore = r.lines.find((l) => /(?:\bmemory_unknown|\b(?:var|local)_\w+->hp|\*\(uint\d+_t \*\)\(\(uintptr_t\)\((?:var|local)_\w+\) \+ 32\))\s*=\s*0;/.test(l.text));
+  const zeroStore = r.lines.find((l) => /(?:\bmemory_unknown|\b(?:var|local)_\w+->hp|\(\(hex_struct_(?:var|local)_\w+ \*\)\(uintptr_t\)\((?:var|local)_\w+\)\)->hp|\*\(uint\d+_t \*\)\(\(uintptr_t\)\((?:var|local)_\w+\) \+ 32\))\s*=\s*0;/.test(l.text));
   assert.ok(zeroStore, r.pseudocode);
   assert.doesNotMatch(r.pseudocode, /\bself->hp\s*=\s*0;/, r.pseudocode);
   assert.equal(formatDecompilerSource(zeroStore, { digits: 0 }), '1000004B8–1000004C0');

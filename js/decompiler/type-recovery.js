@@ -220,22 +220,42 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
  * bookkeeping (self-looping/dead PHIs, dead register copies, clobber markers,
  * or live-through argument slots past a known fixed-arity callee's signature).
  */
-function dominatedByEarlierCall(ir, atInst) {
-  if (!ir || !atInst) return false;
-  for (const other of ir.instructions || []) {
-    if (!other || other === atInst || other.op !== OP.CALL) continue;
-    if (other.block === atInst.block) {
-      if (other.row != null && atInst.row != null && other.row < atInst.row) return true;
-      continue;
+function buildCallDominanceIndex(ir) {
+  const firstCallRowByBlock = new Map();
+  const callBlocks = [];
+  const callBlockSet = new Set();
+  for (const inst of ir?.instructions || []) {
+    if (!inst || inst.op !== OP.CALL) continue;
+    const blk = inst.block ?? null;
+    if (inst.row != null) {
+      const prev = firstCallRowByBlock.get(blk);
+      if (prev == null || inst.row < prev) firstCallRowByBlock.set(blk, inst.row);
     }
-    if (other.block != null && atInst.block != null && blockDominates(ir, other.block, atInst.block)) {
-      return true;
+    if (blk != null && !callBlockSet.has(blk)) {
+      callBlockSet.add(blk);
+      callBlocks.push(blk);
+    }
+  }
+  return { firstCallRowByBlock, callBlocks };
+}
+
+function dominatedByEarlierCall(ir, atInst, callIndex = null) {
+  if (!ir || !atInst) return false;
+  const { firstCallRowByBlock, callBlocks } = callIndex || buildCallDominanceIndex(ir);
+  const blk = atInst.block ?? null;
+  if (atInst.row != null) {
+    const firstRow = firstCallRowByBlock.get(blk);
+    if (firstRow != null && firstRow < atInst.row) return true;
+  }
+  if (atInst.block != null) {
+    for (const cb of callBlocks) {
+      if (cb !== atInst.block && blockDominates(ir, cb, atInst.block)) return true;
     }
   }
   return false;
 }
 
-function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = null) {
+function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = null, callCtx = null) {
   if (!value || visited.has(value)) return false;
   visited.add(value);
   const uses = Array.isArray(value.uses) ? value.uses : [];
@@ -243,11 +263,11 @@ function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = nul
     if (!inst) continue;
     if (inst.op === OP.CLOBBER) continue;
     if (inst.op === OP.PHI || inst.op === OP.MOV) {
-      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName)) return true;
+      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName, callCtx)) return true;
       continue;
     }
     if (inst.op === OP.CALL) {
-      if (!value.def && dominatedByEarlierCall(ir, inst)) continue;
+      if (!value.def && dominatedByEarlierCall(ir, inst, callCtx?.callIndex)) continue;
       const name = resolveCalleeName
         ? resolveCalleeName(inst)
         : String((inst.extra && inst.extra.name) || (inst.insn && inst.insn.callName) || '');
@@ -257,8 +277,13 @@ function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = nul
         const matchedIdx = callArgs.findIndex((a) => valueOf(a) === value);
         if (matchedIdx >= proto.arity) continue;
         if (matchedIdx < 0 && typeof value.reg === 'string') {
-          const rm = /^[xdsvq](\d+)$/.exec(value.reg);
-          if (rm && Number(rm[1]) >= proto.arity) continue;
+          if (callCtx ? callCtx.isAArch64ArgSet : true) {
+            const rm = /^[xdsvq](\d+)$/.exec(value.reg);
+            if (rm && Number(rm[1]) >= proto.arity) continue;
+          } else if (Array.isArray(callCtx.argumentRegisters) && callCtx.argumentRegisters.length) {
+            const argIdx = callCtx.argumentRegisters.indexOf(value.reg);
+            if (argIdx >= proto.arity) continue;
+          }
         }
       }
       return true;
@@ -306,7 +331,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     if (v.signed === true) score(e, 'signed', 3, 'IR signedness');
     if (v.signed === false) score(e, 'unsigned', 3, 'IR unsignedness');
     if (v.nullable != null) e.nullable = !!v.nullable;
-    if (typeof v.reg === 'string') {
+    if (isAArch64ArgSet && typeof v.reg === 'string') {
       if (/^d\d+$/.test(v.reg)) {
         score(e, 'floating', 2, 'scalar double register');
         width(e, 64, 1, 'scalar double register width');
@@ -331,12 +356,15 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       || ''
     );
   };
+  const callIndex = buildCallDominanceIndex(ir);
+  const callUseCtx = { isAArch64ArgSet, argumentRegisters, callIndex };
   const callRetTypeToSemantic = (retType) => {
     if (retType === 'void') return 'void';
     if (retType === 'double') return 'double';
     if (retType === 'float') return 'float';
     if (retType === 'ptr') return 'void *';
     if (retType === 'size') return 'uint64';
+    if (retType === 'long') return 'int64';
     if (retType === 'int') return 'int32';
     return 'uint64';
   };
@@ -345,14 +373,36 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     if (pType === 'float') return 'float';
     if (pType === 'ptr') return 'void *';
     if (pType === 'size') return 'uint64';
+    if (pType === 'long') return 'int64';
     if (pType === 'int') return 'int32';
     return 'uint64';
+  };
+  const hasEarlierOrNonDomRegDef = (atInst, regNames) => {
+    const { valuesByReg } = getTypeReachIndex(ir);
+    for (const rn of regNames) {
+      const list = valuesByReg.get(rn);
+      if (!list) continue;
+      for (const v of list) {
+        if (!v?.def || v.clobbered) continue;
+        const def = v.def;
+        if (def === atInst) continue;
+        if (def.block === atInst.block) {
+          if (def.row != null && atInst.row != null && def.row < atInst.row) return true;
+          continue;
+        }
+        if (atInst.block != null && def.block != null && blockDominates(ir, atInst.block, def.block)) {
+          continue;
+        }
+        return true;
+      }
+    }
+    return false;
   };
   const passThroughGpArgs = new Map();
   const passThroughFpArgs = new Map();
   const passThroughRegs = new Set();
   const recordPassThroughForCall = (inst, name) => {
-    if (!argumentRegisters.length || dominatedByEarlierCall(ir, inst)) return;
+    if (!argumentRegisters.length || dominatedByEarlierCall(ir, inst, callIndex)) return;
     const callSig = knownCallSignature(name);
     const proto = callSig || knownCallPrototype(name);
     if (!proto || !proto.arity) return;
@@ -365,13 +415,15 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       if (pType === 'double' || pType === 'float') {
         if (isAArch64ArgSet && fpIdx < 8) {
           const fpNames = pType === 'float' ? [`s${fpIdx}`, `d${fpIdx}`, `v${fpIdx}`] : [`d${fpIdx}`, `v${fpIdx}`];
+          const fpAliases = [`d${fpIdx}`, `s${fpIdx}`, `v${fpIdx}`, `q${fpIdx}`];
           let fpVal = null;
           let matchedReg = fpNames[0];
           for (const rn of fpNames) {
             const rv = reachingRegisterTypeValue(ir, inst, rn);
             if (rv) { fpVal = rv; matchedReg = rn; break; }
           }
-          const isIncoming = fpVal ? (!fpVal.def && ir.args?.get?.(matchedReg) === fpVal) : true;
+          const isIncoming = !hasEarlierOrNonDomRegDef(inst, fpAliases)
+            && (fpVal ? (!fpVal.def && ir.args?.get?.(matchedReg) === fpVal) : true);
           if (isIncoming) {
             passThroughRegs.add(matchedReg);
             if (!passThroughFpArgs.has(fpIdx)) {
@@ -383,8 +435,12 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       } else {
         const gpRegName = argumentRegisters[gpIdx];
         if (gpRegName) {
+          const gpAliases = isAArch64ArgSet && /^x(\d+)$/.test(gpRegName)
+            ? [gpRegName, `w${gpRegName.slice(1)}`]
+            : [gpRegName];
           const gpVal = reachingRegisterTypeValue(ir, inst, gpRegName);
-          const isIncoming = gpVal ? (!gpVal.def && ir.args?.get?.(gpRegName) === gpVal) : true;
+          const isIncoming = !hasEarlierOrNonDomRegDef(inst, gpAliases)
+            && (gpVal ? (!gpVal.def && ir.args?.get?.(gpRegName) === gpVal) : true);
           if (isIncoming) {
             passThroughRegs.add(gpRegName);
             if (!passThroughGpArgs.has(gpIdx)) {
@@ -489,6 +545,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
           else if (callSig.retType === 'float') { score(dst, 'floating', 5, `row ${inst.row}: ${callSig.name} return`); width(dst, 32, 2, `row ${inst.row}: ${callSig.name} return width`); }
           else if (callSig.retType === 'ptr') score(dst, 'pointer', 4, `row ${inst.row}: ${callSig.name} return`);
           else if (callSig.retType === 'size') { score(dst, 'unsigned', 3, `row ${inst.row}: ${callSig.name} return`); width(dst, 64, 1, `row ${inst.row}: ${callSig.name} return width`); }
+          else if (callSig.retType === 'long') { score(dst, 'signed', 3, `row ${inst.row}: ${callSig.name} return`); width(dst, 64, 2, `row ${inst.row}: ${callSig.name} return width`); }
         }
         if (Array.isArray(callSig.paramTypes) && argumentRegisters.length) {
           let gpIdx = 0;
@@ -560,7 +617,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     }
     const t = values.get(v.id) || { name:'unknown', confidence:0.2 };
     const used = (v.uses || []).length > 0
-      ? (hasRealValueUse(v, ir, new Set(), calleeNameOf) || pt != null)
+      ? (hasRealValueUse(v, ir, new Set(), calleeNameOf, callUseCtx) || pt != null)
       : (pt != null || (!anyUseTracked && ((model && model.argRegs) || []).includes(i)));
     if (!used) return;
     const resolvedType = t.name === 'unknown' && pt?.type ? pt.type : t.name;
@@ -599,7 +656,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       if (ir.args && typeof ir.args.get === 'function') {
         for (const candidateReg of [`d${k}`, `s${k}`, `v${k}`, `q${k}`]) {
           const v = ir.args.get(candidateReg);
-          if (v && (hasRealValueUse(v, ir, new Set(), calleeNameOf) || passThroughRegs.has(candidateReg))) {
+          if (v && (hasRealValueUse(v, ir, new Set(), calleeNameOf, callUseCtx) || passThroughRegs.has(candidateReg))) {
             pickedReg = candidateReg;
             pickedVal = v;
             break;

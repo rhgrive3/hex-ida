@@ -23,10 +23,11 @@ import {
   isIdTypedefPreludeDeclaration,
   isStandardHeaderInclude,
   parseStandardHeaderInclude,
+  isHelperPreludeLine,
+  extractHelperPreludeBlocks,
   isBitfieldHelperPreludeComment,
   isBitfieldHelperPreludeDeclaration,
   parseBitfieldHelperDefinition,
-  bitfieldHelperBlockText,
 } from '../../decompiler/c-output-closure.js';
 
 const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
@@ -49,7 +50,7 @@ const KEYWORDS = new Set([
 ]);
 const PSEUDO_INTRINSIC = /^(?:phi|bit_extract|bit_insert|sext|zext|trunc|__arm64_[A-Za-z0-9_]*|__a64_[A-Za-z0-9_]*)$/;
 const SIMPLE_C_TYPE = /^(?:(?:const|volatile|restrict)\s+)*(?:void|bool|id|float|double|u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|uintptr_t|intptr_t|__int128|unsigned\s+__int128|(?:(?:signed|unsigned)\s+)?(?:char|short|int|long|long\s+long))(?:\s*\*)*$/;
-const ID_TYPE_USAGE = /(?:^|[\n;(,])\s*(?:(?:const|volatile|restrict)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*|\(\s*(?:(?:const|volatile|restrict)\s+)*id(?:\s*\*)*\s*\)|typedef\s+void\s*\*\s*id\s*;/;
+const ID_TYPE_USAGE = /(?:^|[\n;({,])\s*(?:(?:const|volatile|restrict|static|extern)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*|\(\s*(?:(?:const|volatile|restrict)\s+)*id\s*\*+\s*\)|(?:^|[=(,:?+\-*/%&|^<>!~;{]|\breturn\b)\s*\(\s*(?:(?:const|volatile|restrict)\s+)*id\s*\)\s*(?:[A-Za-z_0-9("'\[]|&(?!&)|\*(?!\*)|[~!](?!=))|typedef\s+void\s*\*\s*id\s*;/;
 
 function addressKey(value) {
   if (value == null) return null;
@@ -210,6 +211,8 @@ function isAllowedBodyPrefixLine(trimmed) {
     || isStandalonePrototypePreludeDeclaration(trimmed)
     || isIdTypedefPreludeDeclaration(trimmed)
     || isStandardHeaderInclude(trimmed)
+    || isHelperPreludeLine(trimmed)
+    || isBitfieldHelperPreludeComment(trimmed)
     || isBitfieldHelperPreludeDeclaration(trimmed);
 }
 
@@ -256,25 +259,8 @@ function stripStandaloneGlobalPreludeLines(text) {
         if (isStandalonePrototypePreludeDeclaration(trimmed)) continue;
         inStandalonePrototypes = false;
       }
-      if (inBitfieldHelpers || inBitfieldGuard) {
-        if (/^#ifndef\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmed)) {
-          inBitfieldGuard = true;
-          continue;
-        }
-        if (inBitfieldGuard && trimmed === '#endif') {
-          inBitfieldGuard = false;
-          continue;
-        }
-        if (isBitfieldHelperPreludeDeclaration(trimmed)) continue;
-        inBitfieldHelpers = false;
-        inBitfieldGuard = false;
-      }
-      if (/^#ifndef\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmed)) {
-        inBitfieldHelpers = true;
-        inBitfieldGuard = true;
-        continue;
-      }
-      if (isStandardHeaderInclude(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) continue;
+      if (isStandardHeaderInclude(trimmed)) continue;
+      if (isHelperPreludeLine(trimmed) || isBitfieldHelperPreludeComment(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) continue;
       if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed) && !isBitfieldHelperPreludeDeclaration(trimmed))) {
         sawSignature = true;
       }
@@ -296,7 +282,7 @@ function extractSynthesizedStructTypedefs(text) {
       structs.push(parsed);
       continue;
     }
-    if (isBitfieldHelperPreludeDeclaration(trimmed)) continue;
+    if (isHelperPreludeLine(trimmed) || isBitfieldHelperPreludeComment(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) continue;
     if (looksLikeSignature(trimmed) || trimmed === '{' || trimmed.endsWith('{')) break;
   }
   return structs;
@@ -312,23 +298,7 @@ function extractStandardHeaderIncludes(text) {
       found.push(header);
       continue;
     }
-    if (isBitfieldHelperPreludeDeclaration(trimmed)) continue;
-    if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) break;
-  }
-  return found;
-}
-
-function extractBitfieldHelperNames(text) {
-  const found = [];
-  for (const rawLine of String(text ?? '').split(/\r?\n/)) {
-    const trimmed = rawLine.trim();
-    if (!trimmed) continue;
-    const helper = parseBitfieldHelperDefinition(trimmed);
-    if (helper) {
-      found.push(helper);
-      continue;
-    }
-    if (isBitfieldHelperPreludeDeclaration(trimmed)) continue;
+    if (isHelperPreludeLine(trimmed) || isBitfieldHelperPreludeComment(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) continue;
     if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) break;
   }
   return found;
@@ -365,18 +335,10 @@ function isAccountedBodyPrefix(prefix) {
       || (sawStandalonePrototypesMarker && isStandalonePrototypePreludeDeclaration(line))
       || parseBitfieldHelperDefinition(line) !== null
       || isIdTypedefPreludeDeclaration(line)
-      || isStandardHeaderInclude(line);
-    if (!ok && (sawBitfieldHelpersMarker || inBitfieldGuard || /^#ifndef\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmedLine))) {
-      if (/^#ifndef\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmedLine)) {
-        inBitfieldGuard = true;
-        ok = true;
-      } else if (inBitfieldGuard && trimmedLine === '#endif') {
-        inBitfieldGuard = false;
-        ok = true;
-      } else if (isBitfieldHelperPreludeDeclaration(line)) {
-        ok = true;
-      }
-    }
+      || isStandardHeaderInclude(line)
+      || isHelperPreludeLine(line)
+      || isBitfieldHelperPreludeComment(line)
+      || isBitfieldHelperPreludeDeclaration(line);
     if (!ok) return false;
     pos = end;
   }
@@ -625,12 +587,11 @@ function identifierIsCovered(name, context) {
   if (context.declaredLocals.has(name)) return true;
   if (context.knownAliases.has(name)) return true;
   if (context.fallbackNames.has(name)) return true;
-  if (context.stdlibHeaderFunctions?.has(name)) return true;
-  if (context.hoistedBitfieldHelpers?.has(name)) return true;
+  if (context.hoistedHelperNames?.has(name)) return true;
   return false;
 }
 
-function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames, synthesizedStructs = new Map(), headers = new Set(), hoistedBitfieldHelpers = new Set() }) {
+function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames, synthesizedStructs = new Map(), headers = new Set(), hoistedHelperNames = new Set() }) {
   const keywordsLike = new Set([...KEYWORDS, ...FIXED_TYPELIKE_OPERATORS, '__asm', 'asm']);
   const prototypeNames = new Set();
   const variadicPrototypes = new Set();
@@ -675,7 +636,7 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
   for (const [fnName, header] of STANDARD_C_LIBRARY_HEADERS) {
     if (headers.has(header)) stdlibHeaderFunctions.add(fnName);
   }
-  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedBitfieldHelpers };
+  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
 }
 
 function faithfulBodyEligibility(fn, context) {
@@ -760,6 +721,13 @@ function faithfulBodyEligibility(fn, context) {
     if (identifierIsCovered(name, context)) continue;
     const before = codeText.slice(0, match.index).trimEnd();
     if ((before.endsWith('->') || before.endsWith('.')) && context.synthesizedStructFields?.has(name)) continue;
+    if (context.stdlibHeaderFunctions?.has(name)) {
+      const after = codeText.slice(match.index + name.length);
+      const isCallPos = /^\s*\(/.test(after);
+      const isAddrOfPos = before.endsWith('&') && !before.endsWith('&&');
+      const isFnPtrCastPos = /\(\s*[^()]*\(\s*\*\s*\)\s*\([^()]*\)\s*\)$/.test(before);
+      if (isCallPos || isAddrOfPos || isFnPtrCastPos) continue;
+    }
     return { eligible:false, reason:`uncovered-identifier:${name}` };
   }
   return { eligible:true, reason:null, bodyText, signature };
@@ -980,7 +948,8 @@ export function buildCTranslationUnit(functions, options = {}) {
   const headers = new Set();
   const typeDeclarations = new Set();
   const synthesizedStructs = new Map();
-  const hoistedBitfieldHelpers = new Set();
+  const hoistedHelperBlocks = new Map();
+  const hoistedHelperNames = new Set();
   const fallbackDeclarations = [];
   const fallbackNames = new Set();
   const selectedDefinitionRows = [];
@@ -1013,8 +982,13 @@ export function buildCTranslationUnit(functions, options = {}) {
     for (const header of extractStandardHeaderIncludes(originalPseudocode)) {
       headers.add(header);
     }
-    for (const helperName of extractBitfieldHelperNames(originalPseudocode)) {
-      hoistedBitfieldHelpers.add(helperName);
+    for (const helperBlock of extractHelperPreludeBlocks(originalPseudocode)) {
+      const blockText = helperBlock.lines.join('\n');
+      if (!hoistedHelperBlocks.has(helperBlock.key)) {
+        hoistedHelperBlocks.set(helperBlock.key, blockText);
+      }
+      for (const helperName of helperBlock.names) hoistedHelperNames.add(helperName);
+      headersForText(blockText, headers);
     }
     const strippedPseudocode = stripStandaloneGlobalPreludeLines(originalPseudocode);
     // A function's own typedef lines are never emitted (a faithful body is
@@ -1114,7 +1088,7 @@ export function buildCTranslationUnit(functions, options = {}) {
       if (selectedNames.has(name)) continue;
       if ([...prototypeMap.values()].some((row) => row.name === name)) continue;
       if (helperMap.has(name)) continue;
-      if (hoistedBitfieldHelpers.has(name)) continue;
+      if (hoistedHelperNames.has(name)) continue;
       if (STANDARD_C_LIBRARY_HEADERS.has(name)) {
         headers.add(STANDARD_C_LIBRARY_HEADERS.get(name));
         continue;
@@ -1230,18 +1204,16 @@ export function buildCTranslationUnit(functions, options = {}) {
     headersForText(structDeclText, headers);
   }
 
-  const hoistedBitfieldHelperDecls = [...hoistedBitfieldHelpers]
-    .sort()
-    .map((name) => bitfieldHelperBlockText(name))
-    .filter(Boolean);
-  if (hoistedBitfieldHelperDecls.length) {
-    aliasContractsForText('uint64', headers, typeDeclarations, { ownTypedefsEmitted:false });
+  if (hoistedHelperBlocks.size) {
+    for (const blockText of hoistedHelperBlocks.values()) {
+      aliasContractsForText(blockText, headers, typeDeclarations, { ownTypedefsEmitted: false });
+    }
   }
 
   const eligibilityContext = bodyEligibilityContext({
     prototypes, globals,
     fallbackDeclarations, selectedNames,
-    synthesizedStructs, headers, hoistedBitfieldHelpers,
+    synthesizedStructs, headers, hoistedHelperNames,
   });
   // A selected definition whose recovered signature carries no parameter
   // spellings is emitted unprototyped; an arity-unknown call to it cannot
@@ -1281,10 +1253,13 @@ export function buildCTranslationUnit(functions, options = {}) {
   const fallbacks = fallbackDeclarations.slice().sort();
   const orderedFunctions = normalizedFunctions.slice().sort((a, b) => compareAddressThenName(a, b) || a.index - b.index);
 
+  const hoistedHelpers = [...hoistedHelperBlocks.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, blockText]) => blockText);
   const sections = [];
   if (includes.length) sections.push(includes.map((header) => `#include ${header}`).join('\n'));
   if (typeDecls.length) sections.push(typeDecls.join('\n'));
-  if (hoistedBitfieldHelperDecls.length) sections.push(hoistedBitfieldHelperDecls.join('\n'));
+  if (hoistedHelpers.length) sections.push(hoistedHelpers.join('\n'));
   const declaredPrototypes = prototypes.filter((row) => row.declaration);
   if (declaredPrototypes.length) sections.push(declaredPrototypes.map((row) => row.declaration).join('\n'));
   const declaredGlobals = globals.filter((row) => row.declaration);

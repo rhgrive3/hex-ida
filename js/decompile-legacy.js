@@ -1671,17 +1671,17 @@ function statementFor(insn, ctx, node) {
   if (fromValues !== undefined) return fromValues;
   if (base === 'ret' || base === 'retab' || base === 'retaa') {
     const ret = ctx.types && ctx.types.ret && ctx.types.ret.type !== 'void';
+    if (ret && ctx.fpReturnReg) {
+      const fpNode = ctx.values ? ctx.values.at(row, ctx.fpReturnReg) : null;
+      const fpVal = (fpNode ? exprText(ctx, fpNode, null) : null) || varOf(ctx.fpReturnReg, ctx);
+      const fpType = ctx.fpReturnType || 'double';
+      const castExpr = '(' + fpType + ')' + (needsParens(fpVal) ? '(' + fpVal + ')' : fpVal);
+      return mk('return ' + castExpr + ';', { kind: 'ctrl', reads: [ctx.fpReturnReg] });
+    }
     let value = null;
     if (ret && ctx.values && ctx.material) {
       const returned = (ctx.values.returns || []).find((item) => item.row === row);
       if (returned?.value) value = exprText(ctx, returned.value, null);
-    }
-    if (ret && ctx.fpReturnReg) {
-      const fpNode = ctx.values ? ctx.values.at(row, ctx.fpReturnReg) : null;
-      const fpVal = value || (fpNode ? exprText(ctx, fpNode, null) : null) || varOf(ctx.fpReturnReg, ctx);
-      const fpType = ctx.fpReturnType || 'double';
-      const castExpr = '(' + fpType + ')' + (needsParens(fpVal) ? '(' + fpVal + ')' : fpVal);
-      return mk('return ' + castExpr + ';', { kind: 'ctrl', reads: [ctx.fpReturnReg] });
     }
     return mk(ret ? 'return ' + (value || varOf('x0', ctx)) + ';' : 'return;', { kind: 'ctrl' });
   }
@@ -2161,16 +2161,15 @@ function callStatement(insn, ctx, mk) {
 
   const cleanName = name ? sanitizeLegacyCallLabel(name) : null;
   const label = cleanName || (target != null ? 'sub_' + target.toString(16).toUpperCase() : indirectName(insn, ctx));
-  const args = callArguments(call, ctx, name || cleanName);
+  const argReads = [];
+  const args = callArguments(call, ctx, name || cleanName, argReads);
   const callExpr = label + '(' + args.join(', ') + ')';
   /* 値が分かっている引数（"文字列" や 0x50）は、そのまま書けているので
      「x0 を読んだ」ことにしない。手前の準備の行を消せるようにするため。 */
   const reads = insn.reads.slice();          // blr x8 の x8 など、命令自身が読むもの
-  args.forEach((text, i) => {
-    if (text === varOf('x' + i, ctx)) reads.push('x' + i);
-    const fpMatch = /^\((?:float|double)\)v([0-7])$/.exec(text);
-    if (fpMatch) reads.push('v' + fpMatch[1]);
-  });
+  for (const r of argReads) {
+    if (!reads.includes(r)) reads.push(r);
+  }
   /* 末尾呼び出し（b で別の関数へ跳んで終わる）は、そのまま return になる */
   const text = insn.isTailCall
     ? 'return ' + callExpr + ';'
@@ -2207,7 +2206,7 @@ function registerValueText(ctx, row, reg) {
  * 引数。呼ぶ直前に用意された x0〜x7 のうち、実際に値が入っているものだけ。
  * 数が分からないときに 8 個並べても嘘になるので、途切れたところで止める。
  */
-function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row) {
+function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null) {
   const proto = calleeName ? knownCallPrototype(calleeName) : null;
   if (!proto || proto.variadic) return null;
   const arity = proto.arity;
@@ -2235,10 +2234,14 @@ function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row) {
     for (let k = 0; k < arity; k++) {
       const pt = paramTypes[k];
       if (pt === 'float' || pt === 'double') {
-        out.push('(' + pt + ')' + varOf('v' + fpIdx, ctx));
+        const reg = 'v' + fpIdx;
+        out.push('(' + pt + ')' + varOf(reg, ctx));
+        if (readRegs) readRegs.push(reg);
         fpIdx++;
       } else {
-        out.push(gpArgAt(gpIdx));
+        const text = gpArgAt(gpIdx);
+        out.push(text);
+        if (readRegs && text === varOf('x' + gpIdx, ctx)) readRegs.push('x' + gpIdx);
         gpIdx++;
       }
     }
@@ -2246,7 +2249,11 @@ function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row) {
   }
 
   const out = [];
-  for (let i = 0; i < arity; i++) out.push(gpArgAt(i));
+  for (let i = 0; i < arity; i++) {
+    const text = gpArgAt(i);
+    out.push(text);
+    if (readRegs && text === varOf('x' + i, ctx)) readRegs.push('x' + i);
+  }
   return out;
 }
 
@@ -2296,47 +2303,63 @@ function augmentLegacyFpSignature(model, types, ctx) {
     for (const [fpIdx, fpType] of [...incomingFp.entries()].sort((a, b) => a[0] - b[0])) {
       const reg = 'v' + fpIdx;
       if (existingRegs.has(reg)) continue;
+      const assignedIndex = nextIndex++;
       existingArgs.push({
         reg,
-        index: nextIndex++,
+        index: assignedIndex,
         type: fpType,
         conf: 0.75,
         why: [{ why: '入口で ' + (fpType === 'float' ? 's' : 'd') + fpIdx + ' を読み出している' }],
       });
+      if (ctx.aliases && !ctx.aliases.has(reg)) {
+        ctx.aliases.set(reg, 'a' + (assignedIndex + 1));
+      }
     }
     types.args = existingArgs;
   }
 
   if (!types.ret || types.ret.type === 'void') {
+    let v0Consumed = false;
     for (let i = insns.length - 1; i >= 0; i--) {
       const insn = insns[i];
-      if (!(insn.writes || []).includes('v0')) continue;
-      let fpRetType = null;
-      for (const op of insn.ops || []) {
-        if (op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec') && op.num === 0) {
-          fpRetType = fpRegWidth(op);
-          if (fpRetType) break;
+      const base = (insn.mnemonic || '').toLowerCase();
+      if (insn.isCall || base === 'bl' || base === 'blr') break;
+      const writes = insn.writes || [];
+      const reads = insn.reads || [];
+      if (writes.includes('v0')) {
+        if (v0Consumed) break;
+        let fpRetType = null;
+        for (const op of insn.ops || []) {
+          if (op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec') && op.num === 0) {
+            fpRetType = fpRegWidth(op);
+            if (fpRetType) break;
+          }
         }
+        if (!fpRetType) {
+          if (/^f/.test(base) || base === 'scvtf' || base === 'ucvtf') fpRetType = 'double';
+        }
+        if (fpRetType) {
+          types.ret = {
+            type: fpRetType,
+            conf: 0.75,
+            why: [{ row: insn.row, why: '帰る直前に v0 を作っている行' }],
+          };
+          ctx.fpReturnReg = 'v0';
+          ctx.fpReturnType = fpRetType;
+        }
+        break;
       }
-      if (!fpRetType) {
-        const base = (insn.mnemonic || '').toLowerCase();
-        if (/^f/.test(base) || base === 'scvtf' || base === 'ucvtf') fpRetType = 'double';
+      if (reads.includes('v0')) {
+        const isStore = insn.memory?.kind === 'store' || /^(?:str|stp|stur|stlr|stnp|st1|st2|st3|st4)\b/.test(base);
+        const isCompare = /^(?:fcmp|fcmpe|fccmp|fccmpe)\b/.test(base);
+        const isMove = /^(?:fmov|mov|umov|smov|ins|dup)\b/.test(base);
+        if (isStore || isCompare || isMove) v0Consumed = true;
       }
-      if (fpRetType) {
-        types.ret = {
-          type: fpRetType,
-          conf: 0.75,
-          why: [{ row: insn.row, why: '帰る直前に v0 を作っている行' }],
-        };
-        ctx.fpReturnReg = 'v0';
-        ctx.fpReturnType = fpRetType;
-      }
-      break;
     }
   }
 }
 
-function callArguments(call, ctx, calleeName) {
+function callArguments(call, ctx, calleeName, readRegs = null) {
   const known = new Map((call && Array.isArray(call.args) ? call.args : []).map((a) => [a.index, a]));
   const rawArgMap = new Map();
   for (const [idx, a] of known) {
@@ -2345,7 +2368,7 @@ function callArguments(call, ctx, calleeName) {
     const text = node ? exprText(ctx, node, null) : null;
     rawArgMap.set(idx, text || valueText(a.value, ctx, idx));
   }
-  const normalized = normalizeKnownCallArgs(calleeName, rawArgMap, ctx, call ? call.row : null);
+  const normalized = normalizeKnownCallArgs(calleeName, rawArgMap, ctx, call ? call.row : null, readRegs);
   if (normalized) return normalized;
 
   const out = [];
@@ -2357,7 +2380,9 @@ function callArguments(call, ctx, calleeName) {
      * `sub_10041A334(1, a4, …)` と `sub_10041A334(x0, x1, …)` では、
      * 読む人が受け取るものがまったく違う。
      */
-    out.push(rawArgMap.get(i));
+    const text = rawArgMap.get(i);
+    out.push(text);
+    if (readRegs && text === varOf('x' + i, ctx)) readRegs.push('x' + i);
   }
   return out;
 }
