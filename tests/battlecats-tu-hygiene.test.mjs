@@ -214,3 +214,40 @@ test('C11 designated initializer with cast index { [(int)0] = 1 } is not misclas
   const unit = buildCTranslationUnit([fn(source)]);
   assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
 });
+
+test('arc4random_uniform resolves to <stdlib.h> without emitting conflicting fallback prototype', () => {
+  const source = [
+    'uint32 sample(uint32 n)',
+    '{',
+    '  return arc4random_uniform(n);',
+    '}',
+  ].join('\n');
+  const unit = buildCTranslationUnit([fn(source)]);
+  assert.ok(unit.includes.includes('<stdlib.h>'), JSON.stringify(unit.includes));
+  assert.ok(!unit.fallbackDeclarations.some((d) => d.includes('arc4random_uniform')), JSON.stringify(unit.fallbackDeclarations));
+  assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
+});
+
+test('combined TU catches integer-to-pointer argument mismatch against selected sibling function', () => {
+  const callee = fn(
+    'uint64 callee_ptr(uint64 a1, void * a2)\n{\n  return a1 + (a2 != 0);\n}',
+    { address: 0x100n, name: 'callee_ptr' },
+  );
+  const badCaller = fn(
+    'uint64 bad_caller(uint64 x19)\n{\n  return callee_ptr(x19, *(uint64 *)(x19 + 8));\n}',
+    { address: 0x200n, name: 'bad_caller' },
+  );
+  const goodCaller = fn(
+    'uint64 good_caller(uint64 x19, void * p)\n{\n  uint64 r1 = callee_ptr(x19, p);\n  uint64 r2 = callee_ptr(x19, (void *)(uintptr_t)(*(uint64 *)(x19 + 8)));\n  return r1 + r2 + callee_ptr(x19, 0);\n}',
+    { address: 0x300n, name: 'good_caller' },
+  );
+  const unit = buildCTranslationUnit([callee, badCaller, goodCaller]);
+  const badRow = unit.functions.find((r) => r.name === 'bad_caller');
+  const goodRow = unit.functions.find((r) => r.name === 'good_caller');
+  assert.equal(badRow.syntaxOnly, true);
+  assert.ok(
+    unit.unresolved.some((u) => u.subject === 'bad_caller' && u.reason === 'call-pointer-arg-mismatch:callee_ptr'),
+    JSON.stringify(unit.unresolved),
+  );
+  assert.equal(goodRow.syntaxOnly, false, JSON.stringify(unit.unresolved));
+});
