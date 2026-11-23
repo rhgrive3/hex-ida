@@ -217,6 +217,8 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
       case 'ls': return directCompare('le', left, right, true, bits, source, 'floating');
       case 'ge': return directCompare('ge', left, right, true, bits, source, 'floating');
       case 'gt': return directCompare('gt', left, right, true, bits, source, 'floating');
+      case 'hi': return expr.unary('lnot', directCompare('le', left, right, true, bits, source, 'floating'), 1, false, source);
+      case 'pl': case 'hs': case 'cs': return expr.unary('lnot', directCompare('lt', left, right, true, bits, source, 'floating'), 1, false, source);
       default: return intrinsicCondition(sub, cond, left, right, bits, source);
     }
   }

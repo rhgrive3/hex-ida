@@ -545,10 +545,11 @@ export function buildValues(model, opts) {
     });
     return hit;
   };
-  const evictReg = (otherKey, otherVal, row) => {
+  const evictReg = (otherKey, otherVal, row, clobberedReg = null) => {
     const replacement = regNode(otherKey, row);
     if (otherVal && otherVal.k !== 'reg') replacement.prevDef = otherVal;
     else if (otherVal && otherVal.prevDef) replacement.prevDef = otherVal.prevDef;
+    if (clobberedReg) replacement.clobberedReg = clobberedReg;
     regs.set(otherKey, replacement);
   };
   const invalidateDependents = (writtenKey, row) => {
@@ -557,7 +558,7 @@ export function buildValues(model, opts) {
     for (const [otherKey, otherVal] of Array.from(regs.entries())) {
       if (otherKey === writtenKey) continue;
       if (dependsOnRegOrCall(otherVal, writtenKey)) {
-        evictReg(otherKey, otherVal, row);
+        evictReg(otherKey, otherVal, row, writtenKey);
       }
     }
   };
@@ -744,7 +745,7 @@ export function buildValues(model, opts) {
       }
       for (const [otherKey, otherVal] of Array.from(regs.entries())) {
         if (dependsOnCallClobber(otherVal)) {
-          evictReg(otherKey, otherVal, row);
+          evictReg(otherKey, otherVal, row, 'call');
         }
       }
       invalidateMemDependents(row);

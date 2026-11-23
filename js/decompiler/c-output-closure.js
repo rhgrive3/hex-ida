@@ -3613,6 +3613,13 @@ export function closeFunctionOutput(result, options = {}) {
       }
       return false;
     };
+    const u128LocalNames = new Set();
+    {
+      const u128DeclRe = /\b(?:uint128|int128|vector128|(?:unsigned\s+)?__int128)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/g;
+      for (let m = u128DeclRe.exec(cleanedBodyForGlobals); m; m = u128DeclRe.exec(cleanedBodyForGlobals)) {
+        u128LocalNames.add(m[1]);
+      }
+    }
     const isGlobalUsedAsUint128 = (globalName) => {
       const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const u128Type = '(?:uint128|int128|vector128|(?:unsigned\\s+)?__int128)';
@@ -3622,7 +3629,14 @@ export function closeFunctionOutput(result, options = {}) {
         new RegExp(`(?:\\b${u128Type}\\s+[A-Za-z_][A-Za-z0-9_]*|\\b[qQvV]\\d+(?:_\\d+)?)\\s*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`),
         new RegExp(`\\b${esc}\\s*=(?!=)\\s*(?:\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)|\\b[qQvV]\\d+(?:_\\d+)?\\b)`),
       ];
-      return patterns.some((re) => re.test(cleanedBodyForGlobals));
+      if (patterns.some((re) => re.test(cleanedBodyForGlobals))) return true;
+      if (u128LocalNames.size > 0) {
+        const assignRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`, 'g');
+        for (let m = assignRe.exec(cleanedBodyForGlobals); m; m = assignRe.exec(cleanedBodyForGlobals)) {
+          if (u128LocalNames.has(m[1])) return true;
+        }
+      }
+      return false;
     };
     const globalData = createGlobalDataResolver(result, options);
     globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });

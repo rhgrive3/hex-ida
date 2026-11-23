@@ -36,7 +36,7 @@ import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
   projectedStateTransitionCandidates, projectedStateTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
-import { readFacadeConstantTransitions, facadeConstantTransitionExpected, facadeStateTransitionCandidates, facadeProjectedConstantTransitionCandidate,
+import { abiAdapterForIr, readFacadeConstantTransitions, facadeConstantTransitionExpected, facadeStateTransitionCandidates, facadeProjectedConstantTransitionCandidate,
   readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
   readFacadeLocationHistory, facadeLocationTransitionExpected,
   readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
@@ -684,17 +684,37 @@ function highVariableGroupById(highVariables, groupId) {
 }
 
 function isAArch64PipelineContext(ir, opts) {
-  const adapter = opts?.abiAdapter || null;
+  const adapter = opts?.abiAdapter || abiAdapterForIr(ir) || null;
   if (adapter) {
     const id = String(adapter.id || adapter.name || '').toLowerCase();
     const archId = String(adapter.architectureId || adapter.arch || '').toLowerCase();
     return id === 'aapcs64' || archId === 'arm64' || archId === 'aarch64'
       || /^(?:aapcs64|arm64|aarch64)/.test(id);
   }
-  const arch = String(ir?.arch || ir?.architecture || ir?.architectureId || ir?.compat?.architectureId || opts?.arch || opts?.architecture || opts?.architectureId || '').toLowerCase();
+  const arch = String(ir?.compat?.architectureId || ir?.architectureId || ir?.arch || ir?.architecture || opts?.arch || opts?.architecture || opts?.architectureId || '').toLowerCase();
   if (arch) return /^(?:arm64|aarch64|aapcs64)/.test(arch);
   if (ir?.compat?.projection === 'semantic-ir-v2-to-v1') return false;
   return true;
+}
+
+function isFloatingPipelineValue(val, state) {
+  if (!val) return false;
+  const t = state?.types?.values?.get?.(val.id);
+  if (t && (t.kind === 'float' || t.name === 'float' || t.name === 'double')) return true;
+  return val.float != null
+    || val.floatConst != null
+    || val.constKind === 'float'
+    || val.kind === 'float'
+    || val.machineType?.kind === 'float';
+}
+
+function isFloatingAstNode(node) {
+  return node?.floating === true
+    || node?.float === true
+    || node?.kind === 'float-const'
+    || node?.kind === 'float'
+    || node?.type === 'float'
+    || node?.type === 'double';
 }
 
 function canonicalPipelineRegister(reg, isAArch64 = false) {
@@ -1093,7 +1113,8 @@ function memoryLocation(inst, state) {
       const baseType = state.types?.values?.get?.(addr.base.id);
       const indexBaseIsPointer = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && base?.kind === 'var';
       const elemBits = elemBytes * 8;
-      const access = expr.index(base, index, scale, elemBits, origin(inst));
+      const elemType = memoryElementType(inst, elemBytes, state.types);
+      const access = { ...expr.index(base, index, scale, elemBits, origin(inst)), elemType };
       return { kind: 'index', key: loc.key, base, index, scale, expression: access, text: printExpression(access, 0, exprPrintOpts(state, { indexBaseIsPointer })) };
     }
     if (validScale && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
@@ -2061,9 +2082,17 @@ function buildValueRaw(v, state, flags = {}) {
   const d = v.def;
   const compatSelection = compatMemorySelection(v, state);
   const compatOperations = compatOperationSelection(v, state);
-  if (v.constKind === 'float' || v.floatConst != null || (v.float != null && v.const == null)) {
+  const defFloatConst = d?.op === 'const'
+    ? (d.extra?.floatConst ?? (typeof d.extra?.float === 'number' ? d.extra.float : ((d.extra?.constKind === 'float' || d.extra?.float === true) ? (d.extra?.value ?? null) : null)))
+    : null;
+  const valFloatConst = v.floatConst ?? (typeof v.float === 'number' ? v.float : null) ?? defFloatConst;
+  const isFloatConst = v.constKind === 'float'
+    || v.floatConst != null
+    || (typeof v.float === 'number' && v.const == null)
+    || (d?.op === 'const' && (d.extra?.constKind === 'float' || d.extra?.floatConst != null || typeof d.extra?.float === 'number' || d.extra?.float === true));
+  if (isFloatConst && valFloatConst != null) {
     const selected = constantValueSelection(v, state);
-    out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
+    out = expr.floatConstant(valFloatConst, v.bits || 64, origin(d, v));
     recordConstantValueSelection(v, out, selected, state);
   }
   const foldedConst = v.const ?? (d?.op === 'const' ? d.extra?.value ?? null : null);
@@ -2083,17 +2112,25 @@ function buildValueRaw(v, state, flags = {}) {
   }
   if (!out && (v.kind === 'arg' || !d)) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
   if (!out && d) {
-    if (d.op === 'const') out = (v.constKind === 'float' || v.floatConst != null || v.float != null)
-      ? expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v))
+    if (d.op === 'const') out = isFloatConst
+      ? expr.floatConstant(valFloatConst ?? v.const ?? d.extra?.value ?? 0, v.bits || 64, origin(d, v))
       : constNode(v, v.const ?? d.extra?.value ?? 0n);
     else if (d.op === 'mov') {
       const selection = observeBuildSelection(v, d, state);
       out = buildArg(d.args?.[0], state, flags);
       const operandBits = out.bits;
+      const isFloatingMov = isFloatingPipelineValue(v, state)
+        || isFloatingPipelineValue(valueOf(d.args?.[0]), state)
+        || d.extra?.float === true
+        || typeof d.extra?.float === 'number'
+        || d.extra?.constKind === 'float'
+        || d.extra?.attributes?.machineEffects?.operationMetadata?.purpose === 'arm64-fp-register-view'
+        || d.extra?.attributes?.machineEffects?.operationMetadata?.purpose === 'arm64-fp-register-view-type'
+        || isFloatingAstNode(out);
       // A width-changing MOV must retain its own observed endpoint in proof
       // preparation. Reusing the operand root loses the target width and can
       // alias unrelated consumers. Ordinary legacy rendering stays unchanged.
-      const cast = state.proofOnlyRewrites ? renderBitvectorCast(out,d.sub,v.bits) : null;
+      const cast = (state.proofOnlyRewrites && !isFloatingMov) ? renderBitvectorCast(out,d.sub,v.bits) : null;
       if (cast) out = {...cast,source:mergeSource(cast.source,origin(d,v))};
       recordMovSelection(v, d, out, selection, state, flags, cast ? d.sub : null, cast ? operandBits : null);
     }

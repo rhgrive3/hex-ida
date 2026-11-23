@@ -685,12 +685,38 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     const dst = eFor(inst.dst);
     if (dst && inst.dst) width(dst, inst.dst.bits || 64, 1, `row ${inst.row}: result width`);
 
+    if (inst.op === OP.CONST && dst && (inst.extra?.constKind === 'float' || typeof inst.extra?.float === 'number' || inst.dst?.constKind === 'float')) {
+      score(dst, 'floating', 5, `row ${inst.row}: float constant`);
+      const constBits = Number(inst.dst?.bits || inst.extra?.widthBits || 0);
+      if (constBits === 32 || constBits === 64) width(dst, constBits, 2, `row ${inst.row}: float constant width`);
+    }
+
     if (inst.op === OP.LOAD || inst.op === OP.STORE) {
       const le = lFor(inst.loc);
-      const bits = Number(((inst.loc && inst.loc.size) || (inst.addr && inst.addr.size) || 8) * 8);
+      const sizeBytes = (inst.loc && inst.loc.size) || (inst.addr && inst.addr.size) || (inst.extra && inst.extra.size) || null;
+      const bits = Number(sizeBytes != null ? sizeBytes * 8 : (inst.extra?.widthBits || 64));
       width(le, bits, 3, `row ${inst.row}: memory access width`);
-      if (inst.op === OP.LOAD && dst) width(dst, bits, 3, `row ${inst.row}: load width`);
-      if (inst.op === OP.STORE) { const ve = eFor(valueOf(inst.args && inst.args[0])); if (ve) width(ve, bits, 2, `row ${inst.row}: store width`); }
+      if (inst.op === OP.LOAD && dst) {
+        width(dst, bits, 3, `row ${inst.row}: load width`);
+        if (inst.extra?.float === true) {
+          score(dst, 'floating', 5, `row ${inst.row}: scalar float load`);
+          if (bits === 32 || bits === 64) width(dst, bits, 2, `row ${inst.row}: scalar float load width`);
+        }
+      }
+      if (inst.op === OP.STORE) {
+        const ve = eFor(valueOf(inst.args && inst.args[0]));
+        if (ve) {
+          width(ve, bits, 2, `row ${inst.row}: store width`);
+          if (inst.extra?.float === true) {
+            score(ve, 'floating', 5, `row ${inst.row}: scalar float store`);
+            if (bits === 32 || bits === 64) width(ve, bits, 2, `row ${inst.row}: scalar float store width`);
+          }
+        }
+      }
+      if (inst.extra?.float === true && le) {
+        score(le, 'floating', 5, `row ${inst.row}: scalar float memory access`);
+        if (bits === 32 || bits === 64) width(le, bits, 2, `row ${inst.row}: scalar float memory width`);
+      }
       const base = inst.addr && inst.addr.base, be = eFor(base);
       if (be && !(inst.loc && inst.loc.kind === MK.STACK)) score(be, 'pointer', 5, `row ${inst.row}: used as memory base`);
       if (inst.addr && inst.addr.index) {
@@ -745,7 +771,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
 
     if (inst.op === OP.CMP) {
       const args = (inst.args || []).map(valueOf).filter(Boolean);
-      const isFloatCmp = /^fcmp/i.test(inst.sub || '');
+      const isFloatCmp = /^f(?:cmp|sub)/i.test(inst.sub || '') || inst.extra?.float === true;
       const signedBranch = branches.signedCmpIds.has(inst.id), unsignedBranch = branches.unsignedCmpIds.has(inst.id);
       for (const a of args) {
         if (isFloatCmp) score(eFor(a), 'floating', 5, `row ${inst.row}: floating comparison`);
@@ -825,38 +851,79 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   // Propagate floating-point evidence and scalar 32/64-bit float widths across
   // register-view MOV/bitcast/trunc/zext and PHI nodes so vN/qN <-> sN/dN chains
   // recover float/double arguments and return types.
-  for (let pass = 0; pass < 4; pass++) {
+  for (let pass = 0; pass < 6; pass++) {
     let changed = false;
     for (const inst of ir.instructions || []) {
       if (inst.op === OP.MOV && inst.dst) {
         const src = valueOf(inst.args && inst.args[0]);
         if (!src) continue;
-        const isScalarFpView = !inst.sub || inst.sub === 'trunc' || inst.sub === 'zext' || inst.extra?.castKind === 'bitcast';
+        const isScalarFpView = !inst.sub || inst.sub === 'trunc' || inst.sub === 'zext' || inst.sub === 'fmov' || inst.extra?.castKind === 'bitcast';
         if (!isScalarFpView) continue;
         const se = eFor(src);
         const de = eFor(inst.dst);
         if (se && de) {
-          if (se.floating > 0 && de.floating === 0) {
-            score(de, 'floating', Math.min(5, se.floating), `row ${inst.row}: mov float prop`);
-            changed = true;
+          if (inst.sub === 'fmov' && inst.extra?.float === true && inst.extra?.bitcopy !== true) {
+            if (de.floating === 0) {
+              score(de, 'floating', 5, `row ${inst.row}: fmov float dst`);
+              changed = true;
+            }
+            if (se.floating === 0) {
+              score(se, 'floating', 5, `row ${inst.row}: fmov float src`);
+              changed = true;
+            }
           }
-          if (de.floating > 0 && se.floating === 0) {
-            score(se, 'floating', Math.min(5, de.floating), `row ${inst.row}: mov float back-prop`);
-            changed = true;
+          if (inst.extra?.bitcopy !== true) {
+            if (se.floating > 0 && de.floating === 0) {
+              score(de, 'floating', Math.min(5, se.floating), `row ${inst.row}: mov float prop`);
+              changed = true;
+            }
+            if (de.floating > 0 && se.floating === 0) {
+              score(se, 'floating', Math.min(5, de.floating), `row ${inst.row}: mov float back-prop`);
+              changed = true;
+            }
           }
           const srcScalarBits = bestWidth(se, src.bits || 64);
-          if (se.floating > 0 && (srcScalarBits === 32 || srcScalarBits === 64) && (inst.dst.bits === 128 || inst.sub === 'zext')) {
+          if (se.floating > 0 && inst.extra?.bitcopy !== true && (srcScalarBits === 32 || srcScalarBits === 64)
+              && (inst.dst.bits === 128 || inst.sub === 'zext' || inst.sub === 'fmov')) {
             if ((de.widths.get(srcScalarBits) || 0) < 3) {
               width(de, srcScalarBits, 3, `row ${inst.row}: fp scalar width prop`);
               changed = true;
             }
           }
           const dstScalarBits = bestWidth(de, inst.dst.bits || 64);
-          if (de.floating > 0 && (dstScalarBits === 32 || dstScalarBits === 64) && (src.bits === 128 || inst.sub === 'trunc')) {
+          if (de.floating > 0 && inst.extra?.bitcopy !== true && (dstScalarBits === 32 || dstScalarBits === 64)
+              && (src.bits === 128 || inst.sub === 'trunc' || inst.sub === 'fmov')) {
             if ((se.widths.get(dstScalarBits) || 0) < 3) {
               width(se, dstScalarBits, 3, `row ${inst.row}: fp scalar width back-prop`);
               changed = true;
             }
+          }
+        }
+      } else if (inst.op === OP.LOAD && inst.dst) {
+        const de = eFor(inst.dst);
+        const le = lFor(inst.loc);
+        if (de && le) {
+          if (de.floating > 0 && le.floating === 0) {
+            score(le, 'floating', Math.min(5, de.floating), `row ${inst.row}: load loc float prop`);
+            changed = true;
+          }
+          if (le.floating > 0 && de.floating === 0) {
+            score(de, 'floating', Math.min(5, le.floating), `row ${inst.row}: loc load float prop`);
+            changed = true;
+          }
+        }
+      } else if (inst.op === OP.STORE) {
+        const src = valueOf(inst.args && inst.args[0]);
+        const se = eFor(src);
+        const le = lFor(inst.loc);
+        if (se && le) {
+          if (se.floating > 0 && le.floating === 0) {
+            score(le, 'floating', Math.min(5, se.floating), `row ${inst.row}: store loc float prop`);
+            changed = true;
+          }
+          if (le.floating > 0 && se.floating === 0) {
+            score(se, 'floating', Math.min(5, le.floating), `row ${inst.row}: loc store float prop`);
+            changed = true;
           }
         }
       } else if (inst.op === OP.PHI && inst.dst) {
@@ -1106,7 +1173,8 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       const maxGpRow = Math.max(...vals.map((v) => v.def?.row ?? -1));
       const maxFpRow = Math.max(...fpVals.map((v) => v.def?.row ?? -1));
       const allGpVoidCall = allGpFromHelperCall && vals.every((v) => knownCallSignature(calleeNameOf(v.def))?.retType === 'void');
-      const allGpUninitOrConst = vals.every((v) => !v?.def || v.def.op === OP.CONST || (v.def.op === OP.PHI && (v.def.args || []).every((a) => !valueOf(a)?.def || valueOf(a).def.op === OP.CONST)));
+      const isStateReadOfUninit = (v) => v?.def?.op === OP.MOV && v.def.extra?.stateRead != null && !valueOf(v.def.args?.[0])?.def;
+      const allGpUninitOrConst = vals.every((v) => !v?.def || isStateReadOfUninit(v) || v.def.op === OP.CONST || (v.def.op === OP.PHI && (v.def.args || []).every((a) => !valueOf(a)?.def || isStateReadOfUninit(valueOf(a)) || valueOf(a).def.op === OP.CONST)));
       if (allGpVoidCall || allGpUninitOrConst || (maxFpRow > maxGpRow && (allGpFromHelperCall || (allGpConsumedInternally && allFpFreshReturn)))) {
         vals = fpVals;
       }

@@ -7,6 +7,7 @@
  */
 
 import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition, mayAliasProvenance } from '../ir.js';
+import { abiAdapterForIr } from '../ir-core.js';
 import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
 import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
@@ -755,14 +756,17 @@ function renderValueAt(value, atInst, ctx) {
 }
 
 function isAArch64Context(ir, opts = null) {
-  const adapter = opts?.abiAdapter || null;
+  const adapter = opts?.abiAdapter || abiAdapterForIr(ir) || null;
   if (adapter) {
     const id = String(adapter.id || adapter.name || '').toLowerCase();
     const archId = String(adapter.architectureId || adapter.arch || '').toLowerCase();
     return id === 'aapcs64' || archId === 'arm64' || archId === 'aarch64'
       || /^(?:aapcs64|arm64|aarch64)/.test(id);
   }
-  const arch = String(ir?.arch || ir?.architecture || ir?.architectureId || ir?.compat?.architectureId || opts?.arch || opts?.architecture || opts?.architectureId || '').toLowerCase();
+  const arch = String(
+    ir?.compat?.architectureId || ir?.architectureId || ir?.arch || ir?.architecture
+    || opts?.architectureId || opts?.arch || opts?.architecture || '',
+  ).toLowerCase();
   if (arch) return /^(?:arm64|aarch64|aapcs64)/.test(arch);
   if (ir?.compat?.projection === 'semantic-ir-v2-to-v1') return false;
   return true;
@@ -826,7 +830,7 @@ function returnRegisterForContext(ctx) {
   // result register is an AArch64 fact; on RISC-V `x0` is hardwired zero, so a
   // hardcoded name would read the wrong location entirely. Callers that supply
   // no ABI adapter are the legacy AArch64 IR facade, whose behaviour is kept.
-  const adapter = ctx.opts?.abiAdapter || null;
+  const adapter = ctx.opts?.abiAdapter || abiAdapterForIr(ctx.ir) || null;
   // A scalar compatibility value is publishable only when the canonical ABI
   // reports exactly one complete register location.  Aggregate returns must
   // remain represented by their complete physical pieces downstream.
@@ -1093,7 +1097,7 @@ function isKnownDataOrDeclaredGlobal(target, ctx) {
   const secInfo = findSectionForAddress(target, ctx);
   if (secInfo?.sec) {
     const name = String(secInfo.sec.name ?? secInfo.sec.section ?? secInfo.sec.sectname ?? '').trim();
-    if (/^(?:\.[st]?(?:data|bss|rodata)(?:\.|$)|__(?:data|bss|common|const|cstring|rodata)(?:$|\.))|\.(?:data|bss|rodata)/i.test(name)) {
+    if (/^(?:\.[st]?(?:data|bss|rodata)(?:\.|$)|__(?:data|bss|common|const|cstring|rodata)(?:$|\.))|\.(?:data|bss|rodata)\b/i.test(name)) {
       return true;
     }
   }
@@ -1144,17 +1148,19 @@ function readOnlyShortCStringAt(addr, ctx) {
 }
 
 function isAddressDerivedValue(value, depth = 0, seen = null) {
-  if (!value || depth > 8) return false;
+  if (!value || depth > 64) return false;
   if (value.addressDerived === true || value.def?.extra?.addressDerived === true) return true;
   const visited = seen || new Set();
-  if (value.id != null) {
-    if (visited.has(value.id)) return false;
-    visited.add(value.id);
-  }
+  const visitKey = value.id != null ? value.id : value;
+  if (visited.has(visitKey)) return false;
+  visited.add(visitKey);
   try {
     const op = value.def?.op;
+    if (!op) return false;
     if (op === OP.ADDR) return true;
-    if (op === OP.MOV) return isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1, visited);
+    if (op === OP.MOV || (OP.CAST != null && op === OP.CAST) || op === 'cast') {
+      return isAddressDerivedValue(valueOf(value.def.args?.[0]), depth, visited);
+    }
     if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
       const leftAddr = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1, visited);
       const rightAddr = isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1, visited);
@@ -1163,7 +1169,7 @@ function isAddressDerivedValue(value, depth = 0, seen = null) {
     }
     return false;
   } finally {
-    if (value.id != null) visited.delete(value.id);
+    visited.delete(visitKey);
   }
 }
 
@@ -1261,8 +1267,27 @@ function formatFloatConst(v, bits = 64) {
   return Number(bits || 64) <= 32 ? text + 'f' : text;
 }
 
-function formatConst(v, bits = 64, signed = null) {
+function floatConstValueOf(value) {
+  if (!value) return null;
+  if (value.floatConst != null) return value.floatConst;
+  if (typeof value.float === 'number') return value.float;
+  const d = value.def;
+  if (d?.op === OP.CONST) {
+    if (d.extra?.floatConst != null) return d.extra.floatConst;
+    if (typeof d.extra?.float === 'number') return d.extra.float;
+    if (d.extra?.constKind === 'float' && (value.const != null || d.extra?.value != null)) {
+      return value.const ?? d.extra.value;
+    }
+  }
+  if (value.constKind === 'float' && (value.const != null || d?.extra?.value != null)) {
+    return value.const ?? d?.extra?.value;
+  }
+  return null;
+}
+
+function formatConst(v, bits = 64, signed = null, constKind = null) {
   if (v == null) return 'unknown';
+  if (constKind === 'float') return formatFloatConst(v, bits);
   return integerText(v, bits, signed);
 }
 
@@ -1461,9 +1486,26 @@ export function reachingRegisterValue(ir, atInst, reg, optsOrIsAArch64 = undefin
     }
   }
 
+  const stripCopyChain = (val) => {
+    let cur = val;
+    const seen = new Set();
+    while (cur && cur.def && cur.def.op === OP.MOV
+      && (!cur.def.sub || cur.def.sub === 'mov' || cur.def.sub === 'copy')
+      && cur.def.args?.length === 1) {
+      const next = valueOf(cur.def.args[0]);
+      if (!next || next === cur) break;
+      const key = cur.id != null ? cur.id : cur;
+      if (seen.has(key)) break;
+      seen.add(key);
+      cur = next;
+    }
+    return cur;
+  };
+  const bestRoot = best ? stripCopyChain(best) : null;
   const candidateDefinition = best?.def ?? null;
   for (const v of regValues) {
     if (v === best || canonicalRegister(v.reg, isAArch64) !== canonReg || !v.def) continue;
+    if (bestRoot && stripCopyChain(v) === bestRoot) continue;
     const d = v.def;
     if (d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;
     if (definitionMayOverrideCandidate(ir, d, candidateDefinition)) return null;
@@ -1568,8 +1610,10 @@ function semanticLocalDeclarations(types, body, ctx) {
     if (!value?.def || seen.has(name) || !text.includes(name)) continue;
     if (value.def.op === OP.LOAD) {
       const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
-      const bits = [8, 16, 32, 64].includes(Number(value.bits)) ? Number(value.bits) : 64;
-      const type = recovered || `${value.signed === true ? 'int' : 'uint'}${bits}`;
+      const bits = [8, 16, 32, 64, 128].includes(Number(value.bits)) ? Number(value.bits) : 64;
+      const elemType = memoryElementType(value.def, bits / 8, ctx.types);
+      const fpLoadType = (elemType === 'float' || elemType === 'double') ? elemType : null;
+      const type = recovered || fpLoadType || `${value.signed === true ? 'int' : 'uint'}${bits}`;
       seen.add(name);
       out.push(line('decl', 1, `${type} ${name};`, null));
     } else if (value.def.op === OP.CALL) {
@@ -1619,7 +1663,13 @@ export function memoryElementType(inst, sizeBytes, types = null) {
   const raw = Number(sizeBytes || 0);
   const bytes = (raw === 1 || raw === 2 || raw === 4 || raw === 8 || raw === 16) ? raw : 8;
   const val = inst?.op === OP.STORE ? inst?.args?.[0]?.value : inst?.dst;
-  const inferred = val && types?.values?.get?.(val.id);
+  const unwrappedVal = val ? unwrapValue(val) : null;
+  const inferred = (val && types?.values?.get?.(val.id))
+    || (unwrappedVal && types?.values?.get?.(unwrappedVal.id))
+    || (inst?.loc?.key && types?.locations?.get?.(inst.loc.key))
+    || null;
+  const inferredName = typeNameOf(inferred);
+  const valTypeName = typeNameOf(val?.type || val?.semanticType || unwrappedVal?.type || unwrappedVal?.semanticType);
   const isFp = inst?.float === true
     || inst?.isFloat === true
     || inst?.extra?.float === true
@@ -1627,14 +1677,25 @@ export function memoryElementType(inst, sizeBytes, types = null) {
     || inst?.addr?.float === true
     || val?.constKind === 'float'
     || val?.floatConst != null
+    || typeof val?.float === 'number'
     || (val?.float != null && val?.const == null)
+    || unwrappedVal?.constKind === 'float'
+    || unwrappedVal?.floatConst != null
+    || typeof unwrappedVal?.float === 'number'
+    || val?.def?.extra?.float === true
+    || typeof val?.def?.extra?.float === 'number'
     || (val?.reg != null && /^[sd]\d+$/i.test(String(val.reg)))
+    || (unwrappedVal?.reg != null && /^[sd]\d+$/i.test(String(unwrappedVal.reg)))
     || inferred?.kind === 'float'
     || inferred?.kind === 'floating'
     || inferred?.cType === 'float'
     || inferred?.cType === 'double'
     || inferred?.name === 'float'
     || inferred?.name === 'double'
+    || inferredName === 'float'
+    || inferredName === 'double'
+    || valTypeName === 'float'
+    || valTypeName === 'double'
     || (typeof inst?.sub === 'string' && /^(?:fldr|fstr|fload|fstore|movss|movsd|vmovss|vmovsd)/i.test(inst.sub))
     || (typeof inst?.mnemonic === 'string' && /^(?:fldr|fstr|movss|movsd|vmovss|vmovsd)/i.test(inst.mnemonic));
   if (isFp && bytes === 4) return 'float';
@@ -2198,6 +2259,7 @@ function binText(inst, ctx) {
   let b = renderValue(bVal, ctx);
   const aPtr = isPointerTypedOperand(aVal, a, ctx);
   const bPtr = isPointerTypedOperand(bVal, b, ctx);
+  const isGlobalAddrText = (text) => /^&global_[0-9a-fA-F]+$/.test(String(text || '').trim());
   if (INTEGER_ONLY_BIN_OPS.has(inst.sub)) {
     if (aPtr) a = wrapPtrAsUintptr(a);
     if (bPtr) b = wrapPtrAsUintptr(b);
@@ -2205,9 +2267,13 @@ function binText(inst, ctx) {
     if (aPtr && bPtr) {
       a = wrapPtrAsUintptr(a);
       b = wrapPtrAsUintptr(b);
+    } else {
+      if (isGlobalAddrText(a)) a = wrapPtrAsUintptr(a);
+      if (isGlobalAddrText(b)) b = wrapPtrAsUintptr(b);
     }
   } else if (inst.sub === 'sub') {
-    if (!aPtr && bPtr) {
+    if (isGlobalAddrText(a)) a = wrapPtrAsUintptr(a);
+    if ((!aPtr && bPtr) || isGlobalAddrText(b)) {
       b = wrapPtrAsUintptr(b);
     }
   }
@@ -2785,7 +2851,10 @@ function renderValueText(value, ctx, flags) {
   let fallbackHit = false;
   try {
   if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) out = initialValueForm(ctx, 'cxx-this-receiver', 'this');
-  if (!out && (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null))) out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(value.floatConst ?? value.float, value.bits));
+  const floatConstVal = floatConstValueOf(value);
+  if (!out && floatConstVal != null) {
+    out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(floatConstVal, value.bits ?? value.def?.bits ?? 64));
+  }
   if (!out && value.const != null && value.def?.op !== OP.ADDR) {
     const resolvedAddr = !flags.suppressRodataString ? resolveAddressConstForValue(value, ctx) : null;
     if (resolvedAddr?.kind === 'string') {
@@ -2800,12 +2869,13 @@ function renderValueText(value, ctx, flags) {
   const d = value.def;
   if (!out && d) {
     if (d.op === OP.CONST) {
-      const isFloatConst = value.constKind === 'float' || value.floatConst != null || value.float != null;
+      const constFloat = floatConstValueOf(value);
+      const isFloatConst = constFloat != null;
       const resolvedAddr = (!isFloatConst && !flags.suppressRodataString) ? resolveAddressConstForValue(value, ctx) : null;
       if (resolvedAddr?.kind === 'string') out = initialValueForm(ctx, 'constant-definition', resolvedAddr.text);
       else if (resolvedAddr?.kind === 'address') out = initialValueForm(ctx, 'address', resolvedAddr.text);
       else out = initialValueForm(ctx, 'constant-definition', isFloatConst
-        ? formatFloatConst(value.floatConst ?? value.float, value.bits)
+        ? formatFloatConst(constFloat, value.bits ?? d.bits ?? 64)
         : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null));
     } else if (d.op === OP.MOV) out = initialValueForm(ctx, 'mov-operand', renderValue(valueOf(d.args?.[0]), ctx, flags.suppressRodataString ? { suppressRodataString: true } : {}));
     else if (d.op === OP.BIN) {
@@ -3485,6 +3555,23 @@ function materialization(ctx) {
       list.push(ret);
     }
   }
+  const phiHasLiveUse = (phiInst) => {
+    const seenPhis = new Set();
+    const stack = [phiInst];
+    while (stack.length) {
+      const p = stack.pop();
+      const dst = p?.dst;
+      if (!dst || seenPhis.has(dst.id)) continue;
+      seenPhis.add(dst.id);
+      if (implicitRetUses.has(dst.id)) return true;
+      for (const u of dst.uses || []) {
+        if (!u || u === p || u.clobbered) continue;
+        if (u.op === OP.PHI) stack.push(u);
+        else return true;
+      }
+    }
+    return false;
+  };
   const crossesBarrier = (value) => {
     const def = value?.def;
     const di = position.get(def);
@@ -3500,7 +3587,7 @@ function materialization(ctx) {
       const uses = [...(current.uses || []), ...(implicitRetUses.get(current.id) || [])];
       for (const use of uses) {
         if (use === current.def || use?.clobbered) continue;
-        if (use.op === OP.PHI && !(use.dst?.uses || []).some((u) => u !== use && !u.clobbered)) continue;
+        if (use.op === OP.PHI && !phiHasLiveUse(use)) continue;
         const ui = position.get(use);
         if (use.op !== OP.PHI && use.block != null && use.block !== originBlock) return true;
         if (use.op === OP.PHI) {
@@ -3568,11 +3655,20 @@ function materialization(ctx) {
             return true;
           }
         }
-        // Follow pure SSA transforms transitively. A load feeding add/cmp/select
-        // can otherwise appear safe at its direct use while the derived value is
-        // finally consumed only after a side-effect barrier.
-        if (use.dst && use.op !== OP.PHI && use.op !== OP.CALL && use.op !== OP.LOAD &&
-            use.op !== OP.STORE && use.op !== OP.CLOBBER && use.op !== OP.UNKNOWN) {
+        // Follow pure SSA transforms transitively — and trivial PHIs (e.g.
+        // loop-invariant self-loop PHIs like phi(x, self)) which buildPhiLowering
+        // collapses back to their single non-self incoming value instead of
+        // materializing a PHI variable on the incoming edge.
+        const isTrivialPhiUse = use.op === OP.PHI && use.dst && (() => {
+          const nonSelf = (use.incoming || [])
+            .map((e) => e?.value)
+            .filter((val) => val != null && val.id !== use.dst.id);
+          if (!nonSelf.length) return false;
+          const first = nonSelf[0];
+          return nonSelf.every((val) => val === first || samePhiIncomingValue(val, first));
+        })();
+        if (use.dst && (isTrivialPhiUse || (use.op !== OP.PHI && use.op !== OP.CALL && use.op !== OP.LOAD &&
+            use.op !== OP.STORE && use.op !== OP.CLOBBER && use.op !== OP.UNKNOWN))) {
           queue.push(use.dst);
         }
       }
@@ -3821,7 +3917,7 @@ function phiVariableType(value, ctx) {
   const safeDeclType = (t) => (t && !/[\[\]()]/.test(t) ? t : null);
   const recovered = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(value.id)));
   if (recovered) return recovered;
-  if (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null)) {
+  if (floatConstValueOf(value) != null) {
     return Number(value.bits) === 32 ? 'float' : 'double';
   }
   const incomingTypes = new Set();
@@ -3831,7 +3927,7 @@ function phiVariableType(value, ctx) {
     if (t) incomingTypes.add(t);
   }
   if (incomingTypes.size === 1) return [...incomingTypes][0];
-  const bits = [8, 16, 32, 64].includes(Number(value.bits)) ? Number(value.bits) : 64;
+  const bits = [8, 16, 32, 64, 128].includes(Number(value.bits)) ? Number(value.bits) : 64;
   return `${value.signed === true ? 'int' : 'uint'}${bits}`;
 }
 
@@ -3878,7 +3974,7 @@ function buildPhiLowering(ctx) {
 
       const v = phi.dst;
       const meaningfulUses = (v.uses || []).filter((u) => u !== phi && !u?.clobbered);
-      if (!meaningfulUses.length) continue;
+      if (!meaningfulUses.length && !feedsReturn(v, ctx)) continue;
 
       const rawIncoming = Array.isArray(phi.incoming) ? phi.incoming.filter((e) => e && e.value != null) : [];
       if (rawIncoming.length < 2) continue;
@@ -3990,7 +4086,8 @@ function emitPhiCopiesForEdge(fromBi, toBi, out, ctx, indent, anchorInst = null)
       dependencySource(incomingValue, ctx),
       anchorInst ? sourceForInst(anchorInst, 'phi-edge') : sourceOf(),
     );
-    return line('stmt', indent, `${lhs} = ${rhs};`, fallbackRow, fallbackAddr, { source });
+    const extra = typeof fromBi === 'number' ? { source, block: fromBi } : { source };
+    return line('stmt', indent, `${lhs} = ${rhs};`, fallbackRow, fallbackAddr, extra);
   };
 
   let emitted = 0;
@@ -4194,6 +4291,38 @@ function backedgePhisConflictWithConditionOrExit(loop, exit, cond, ctx) {
     }
   }
   resetInitialValueOwner(ctx);
+  const outsideRetValIds = new Set();
+  for (const ret of ctx.returnInsts || []) {
+    if (!ret || ret.args?.length || ret.block == null || loop.nodes.has(ret.block)) continue;
+    const rv = returnValueAt(ret, ctx);
+    if (rv?.id != null) outsideRetValIds.add(rv.id);
+  }
+  for (const c of backedgeCopies) {
+    const phiDst = c.phi?.dst || (ctx.ir?.values || []).find((v) => v?.id === c.dstId);
+    if (!phiDst) continue;
+    const seen = new Set();
+    const queue = [phiDst];
+    while (queue.length) {
+      const cur = queue.pop();
+      if (!cur || seen.has(cur.id)) continue;
+      seen.add(cur.id);
+      if (outsideRetValIds.has(cur.id)) return true;
+      for (const use of cur.uses || []) {
+        if (!use || use === cur.def || use.clobbered) continue;
+        if (use.op === OP.PHI) {
+          for (const inc of use.incoming || []) {
+            if (inc?.value !== cur) continue;
+            if (inc.from != null && !loop.nodes.has(inc.from)) return true;
+          }
+          continue;
+        }
+        if (use.block != null && !loop.nodes.has(use.block)) return true;
+        if (use.dst && !ctx.materialNames?.has(use.dst.id)) {
+          queue.push(use.dst);
+        }
+      }
+    }
+  }
   return false;
 }
 

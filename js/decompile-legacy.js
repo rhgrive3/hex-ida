@@ -320,6 +320,8 @@ function buildContext(model, o) {
     blocks.forEach((b, i) => { for (const r of b.rows) bOf.set(r, i); });
     liveOut = liveOutSets(model, blocks, bOf);
   }
+  const symbolFor = nameReader(o.symbolFor);
+  const { scalarFpKinds, vecRegs } = computeFpVecKinds(model, callOf, symbolFor);
 
   return {
     model,
@@ -334,6 +336,8 @@ function buildContext(model, o) {
     frame,
     escapedStackRanges,
     liveOut,
+    scalarFpKinds,
+    vecRegs,
     values,
     material,
     carry,
@@ -349,7 +353,7 @@ function buildContext(model, o) {
      * ここで std::operator+ / std::string::append まで短くしてから渡す。
      * 元の名前は、その行を押したときに出す（消してしまわない）。
      */
-    symbolFor: nameReader(o.symbolFor),
+    symbolFor,
     rawSymbolFor: o.symbolFor || (() => null),
     fieldFor: o.fieldFor || (() => null),
     notes: o.notes || null,
@@ -534,6 +538,13 @@ function decideMaterial(model, vg) {
    * （x8 という使い捨てではなく、result という持ち回りの名前で出るため）。
    * ただし、途中でその値が使われているなら、使われるより前に出さないといけない。
    */
+  const wbBaseRegs = new Set();
+  for (const insn of insns) {
+    if (insn.memory && (insn.memory.mode === 'post' || insn.memory.mode === 'pre') &&
+        insn.memory.base && insn.memory.base !== 'sp' && !insn.memory.stack) {
+      wbBaseRegs.add(insn.memory.base);
+    }
+  }
   const canonical = new Map();
   for (const [nodeValue, list] of defRows) {
     /*
@@ -544,7 +555,9 @@ function decideMaterial(model, vg) {
     if (nodeValue.k === 'call') { canonical.set(nodeValue, list[0]); continue; }
     const limit = firstUse.has(nodeValue) ? firstUse.get(nodeValue) : Infinity;
     let pick = list[0];
-    for (const d of list) if (d.row <= limit) pick = d;
+    for (const d of list) {
+      if (d.row <= limit && (!wbBaseRegs.has(d.reg) || wbBaseRegs.has(pick.reg))) pick = d;
+    }
     canonical.set(nodeValue, pick);
   }
   /*
@@ -592,7 +605,6 @@ function decideMaterial(model, vg) {
    * not be inlined away or the output would reference an undefined register.
    */
   const opaqueInputs = new Set();
-  const wbBaseRegs = new Set();
   const rawFallbackRegs = new Set();
   const rawReadNodes = new Set();
   for (const insn of insns) {
@@ -704,7 +716,7 @@ function decideMaterial(model, vg) {
   for (let round = 0; round < 3; round++) {
     const seen = new Set();
     const visited = new Set();
-    const mark = (n, self, pinPrev = true) => {
+    const mark = (n, self) => {
       if (!n) return;
       const stack = [n];
       while (stack.length) {
@@ -716,12 +728,12 @@ function decideMaterial(model, vg) {
         }
         if (cur !== self) visited.add(cur);
         if (cur.k === 'reg' && cur.prevDef) {
-          if (pinPrev && vg.nodeDef.has(cur.prevDef)) {
+          if (vg.nodeDef.has(cur.prevDef)) {
             material.add(cur.prevDef);
             pinnedPrevDefs.add(cur.prevDef);
             seen.add(cur.prevDef);
           }
-          if (pinPrev) stack.push(cur.prevDef);
+          stack.push(cur.prevDef);
           continue;
         }
         if (cur !== self && material.has(cur)) { seen.add(cur); continue; }
@@ -738,10 +750,9 @@ function decideMaterial(model, vg) {
     }
     for (const insn of insns) {
       if (insn.isCall || insn.isTailCall || insn.tailCall) {
-        const pinCall = !insn.isCall;
         for (let a = 0; a <= 7; a++) {
-          mark(vg.at(insn.row, 'x' + a), null, pinCall);
-          mark(vg.at(insn.row, 'v' + a), null, pinCall);
+          mark(vg.at(insn.row, 'x' + a), null);
+          mark(vg.at(insn.row, 'v' + a), null);
         }
       } else {
         const b = (insn.mnemonic || '').toLowerCase();
@@ -951,13 +962,40 @@ function decideMaterial(model, vg) {
     if (list.length === 1 && !lost.has(reg)) names.set(list[0], reg);
   }
   const liveOutNonCanonical = new Set();
+  const byRowLocal = new Map();
+  for (const insn of insns) byRowLocal.set(insn.row, insn);
+  const callerClobberRe = /^(?:x([0-9]|1[0-7])|v([0-7]|1[6-9]|2[0-9]|3[01]))$/;
+  const copyReadAfterClobber = (d, matName) => {
+    if (!matName || !isBareRegName(matName) || matName === d.reg) return false;
+    const bi = blockOf.get(d.row);
+    if (bi == null || !blocks[bi]) return false;
+    const isCaller = callerClobberRe.test(matName);
+    let clobbered = false;
+    for (const row of blocks[bi].rows) {
+      if (row <= d.row) continue;
+      const insn = byRowLocal.get(row);
+      if (!insn) continue;
+      if (clobbered) {
+        if ((insn.reads || []).includes(d.reg)) return true;
+        if ((insn.isCall || insn.isTailCall || insn.tailCall) && /^(?:x[0-7]|v[0-7])$/.test(d.reg)) return true;
+        if (insn.isReturn && (d.reg === 'x0' || d.reg === 'v0')) return true;
+      }
+      if ((insn.writes || []).includes(d.reg)) return false;
+      if (insn.isCall && callerClobberRe.test(d.reg)) return false;
+      if ((insn.writes || []).includes(matName) || (isCaller && insn.isCall)) clobbered = true;
+    }
+    return false;
+  };
   for (const [nodeValue, list] of defRows) {
     const magicOnly = nodeValue.k === 'bin' && (nodeValue.op === 'smulh' || nodeValue.op === 'umulh');
     if (magicOnly) continue;
     const can = canonical.get(nodeValue);
+    const matName = names.get(nodeValue);
     for (const d of list) {
       if (can && d.row === can.row && d.reg === can.reg) continue;
-      if (isDefLiveOut(d, nodeValue) || wbBaseRegs.has(d.reg)) liveOutNonCanonical.add(d.row + ':' + d.reg);
+      if (isDefLiveOut(d, nodeValue) || wbBaseRegs.has(d.reg) || copyReadAfterClobber(d, matName)) {
+        liveOutNonCanonical.add(d.row + ':' + d.reg);
+      }
     }
   }
   return { material, uses, crossed, blockOf, names, lost, canonical, liveOutNonCanonical, liveOut, lastInBlock, lastInBlockRow, killedByCall };
@@ -1048,7 +1086,78 @@ function liveOutSets(model, blocks, blockOf) {
  * 式を C の文にする。ほかの行で変数として残した値は、その名前で止める。
  * 止めないと、同じ計算が何行にも重複して出てしまう。
  */
-function exprText(ctx, nodeValue, self) {
+function isBareRegName(name) {
+  return typeof name === 'string' && /^(?:x(?:[0-9]|[12][0-9]|30)|v(?:[0-9]|[12][0-9]|3[01]))$/.test(name);
+}
+
+function isClobberedMatName(ctx, matName, targetNode, atRow, sourceReg = null, regNode = null) {
+  if (!matName || !isBareRegName(matName)) return false;
+  if (sourceReg && matName === sourceReg) return false;
+  if (!ctx || !ctx.values) return false;
+  const callerClobbered = /^(?:x([0-9]|1[0-7])|v([0-7]|1[6-9]|2[0-9]|3[01]))$/.test(matName);
+  if (regNode && regNode.clobberedReg) {
+    if (regNode.clobberedReg === matName) return true;
+    if (regNode.clobberedReg === 'call' && callerClobbered) return true;
+  }
+  if (atRow != null) {
+    const liveAt = ctx.values.at(atRow, matName);
+    if (liveAt && liveAt !== targetNode) return true;
+  }
+  const can = ctx.material && ctx.material.canonical ? ctx.material.canonical.get(targetNode) : null;
+  const def = can || (ctx.values.nodeDef ? ctx.values.nodeDef.get(targetNode) : null);
+  if (!def || def.row == null) return false;
+  const limitRow = atRow != null ? atRow : (regNode && regNode.row != null && regNode.row >= 0 ? regNode.row + 1 : null);
+  if (limitRow == null) return false;
+  const insns = (ctx.model && ctx.model.instructions) || [];
+  for (const i of insns) {
+    if (i.row <= def.row) continue;
+    if (i.row >= limitRow) break;
+    if ((i.writes || []).includes(matName)) return true;
+    if (callerClobbered && i.isCall) return true;
+  }
+  return false;
+}
+
+function computeFpVecKinds(model, callOf, symbolFor) {
+  const scalarFpKinds = new Map();
+  for (const insn of (model && model.instructions) || []) {
+    const mn = (insn.mnemonic || '').toLowerCase();
+    if (insn.isCall) {
+      const c = callOf && callOf.get(insn.row);
+      const cname = (c && c.name) || (insn.callTarget != null && symbolFor ? symbolFor(insn.callTarget) : null);
+      const csig = cname ? knownCallSignature(cname) : null;
+      if (csig && (csig.retType === 'float' || csig.retType === 'double')) {
+        if (!scalarFpKinds.has('v0')) scalarFpKinds.set('v0', new Set());
+        scalarFpKinds.get('v0').add(csig.retType);
+      }
+    }
+    for (const op of insn.ops || []) {
+      if (!op || op.k !== 'reg' || (op.cls !== 'fp' && op.cls !== 'vec')) continue;
+      const reg = 'v' + op.num;
+      const w = fpRegWidth(op);
+      if (w) {
+        if (!scalarFpKinds.has(reg)) scalarFpKinds.set(reg, new Set());
+        scalarFpKinds.get(reg).add(w);
+      } else if (!(mn === 'movi' && insn.ops[1]?.k === 'imm' && insn.ops[1].value === 0n)) {
+        if (!scalarFpKinds.has(reg)) scalarFpKinds.set(reg, new Set());
+        scalarFpKinds.get(reg).add('vec');
+      }
+    }
+  }
+  const vecRegs = new Set();
+  for (const [reg, kinds] of scalarFpKinds) {
+    if (kinds.has('vec')) vecRegs.add(reg);
+  }
+  return { scalarFpKinds, vecRegs };
+}
+
+function scalarFpRegWidth(op, ctx) {
+  if (!op || op.k !== 'reg') return null;
+  if ((op.cls === 'fp' || op.cls === 'vec') && ctx && ctx.vecRegs && ctx.vecRegs.has('v' + op.num)) return null;
+  return fpRegWidth(op);
+}
+
+function exprText(ctx, nodeValue, self, atRow = null, sourceReg = null) {
   if (!nodeValue) return null;
   const mat = ctx.material;
   const opts = {
@@ -1073,8 +1182,10 @@ function exprText(ctx, nodeValue, self) {
       if (n.k === 'reg') {
         if (n.prevDef && mat && mat.names.has(n.prevDef)) {
           const pn = mat.names.get(n.prevDef);
-          ctx.usedVars.add(pn);
-          return pn;
+          if (!isClobberedMatName(ctx, pn, n.prevDef, atRow, n.reg, n)) {
+            ctx.usedVars.add(pn);
+            return pn;
+          }
         }
         return varOf(n.reg, ctx);
       }
@@ -1103,8 +1214,12 @@ function exprText(ctx, nodeValue, self) {
       }
       if (n.k === 'arg') return argName(n.n, ctx);
       if (mat && mat.names.has(n)) {
-        ctx.usedVars.add(mat.names.get(n));
-        return mat.names.get(n);
+        const mn = mat.names.get(n);
+        if (atRow != null && sourceReg && n === nodeValue && isClobberedMatName(ctx, mn, n, atRow, sourceReg)) {
+          return varOf(sourceReg, ctx);
+        }
+        ctx.usedVars.add(mn);
+        return mn;
       }
       if (n.k === 'call') {
         const formatted = formatCallNode(n);
@@ -1120,7 +1235,7 @@ function exprText(ctx, nodeValue, self) {
       if (named != null) return named;
       const loadInsn = m && m.row != null ? ctx.byRow.get(m.row) : null;
       const fpW = loadInsn && loadInsn.memory && loadInsn.memory.kind === 'load'
-        ? fpRegWidth(loadInsn.ops && loadInsn.ops[0])
+        ? scalarFpRegWidth(loadInsn.ops && loadInsn.ops[0], ctx)
         : null;
       if (!fpW) return null;
       const raw = renderExpr(m, { ...opts, memName: (sub) => (sub === m ? null : opts.memName(sub)) });
@@ -1271,7 +1386,7 @@ function memNodeName(m, ctx) {
   if (!m.stack && !m.index && m.row != null) {
     const loadInsn = ctx.byRow.get(m.row);
     const fpW = loadInsn && loadInsn.memory && loadInsn.memory.kind === 'load'
-      ? fpRegWidth(loadInsn.ops && loadInsn.ops[0])
+      ? scalarFpRegWidth(loadInsn.ops && loadInsn.ops[0], ctx)
       : null;
     const ref = ctx.refOf.get(m.row);
     if (fpW) {
@@ -1347,7 +1462,7 @@ function memNodeName(m, ctx) {
   if (m.baseReg && m.disp != null && !m.index && ctx.fieldFor) {
     const named = ctx.fieldFor(m.baseReg, Number(m.disp), m.row);
     if (named && named.name) {
-      const resolvedBase = m.base ? exprText(ctx, m.base, null) : null;
+      const resolvedBase = m.base ? exprText(ctx, m.base, null, m.row != null ? m.row : null) : null;
       const baseText = resolvedBase || varOf(m.baseReg, ctx);
       return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
     }
@@ -2065,7 +2180,7 @@ function operandText(op, ctx, insn) {
   if (op.k === 'reg') {
     const reg = regOf(op);
     const value = insn && ctx.values ? ctx.values.at(insn.row, reg) : null;
-    const resolved = value ? exprText(ctx, value, null) : null;
+    const resolved = value ? exprText(ctx, value, null, insn ? insn.row : null, reg) : null;
     const base = resolved || varOf(reg, ctx);
     return op.bits === 32 && op.cls === 'gp' ? '(int32)' + (resolved ? '(' + base + ')' : base) : base;
   }
@@ -2086,7 +2201,10 @@ function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
   const rawDisp = op.disp && op.disp.value != null ? op.disp.value : 0n;
   const disp = rawDisp + BigInt(extraDisp || 0n);
   const size = insn && insn.memory ? (insn.memory.size || 8) : 8;
-  const float = insn && insn.ops[0] && insn.ops[0].k === 'reg' && (insn.ops[0].cls === 'fp' || insn.ops[0].cls === 'vec');
+  const op0 = insn && insn.ops && insn.ops[0];
+  const op0Vec = !!(op0 && op0.k === 'reg' && (op0.cls === 'fp' || op0.cls === 'vec') &&
+    ctx && ctx.vecRegs && ctx.vecRegs.has('v' + op0.num));
+  const float = !op0Vec && !!(op0 && op0.k === 'reg' && (op0.cls === 'fp' || op0.cls === 'vec'));
 
   if (base === 'sp' || base === 'x29') {
     const spDisp = toSpDisp(base, disp, ctx);
@@ -2468,7 +2586,7 @@ function statementFor(insn, ctx, node, state) {
           fpNode = fallbackNode;
         }
       }
-      const fpVal = (fpNode ? exprText(ctx, fpNode, null) : null) || varOf(ctx.fpReturnReg, ctx);
+      const fpVal = (fpNode ? exprText(ctx, fpNode, null, row, ctx.fpReturnReg) : null) || varOf(ctx.fpReturnReg, ctx);
       const fpType = ctx.fpReturnType || 'double';
       const castExpr = '(' + fpType + ')' + (needsParens(fpVal) ? '(' + fpVal + ')' : fpVal);
       return mk('return ' + castExpr + ';', { kind: 'ctrl', reads: [ctx.fpReturnReg] });
@@ -2476,7 +2594,7 @@ function statementFor(insn, ctx, node, state) {
     let value = null;
     if (ret && ctx.values && ctx.material) {
       const returned = (ctx.values.returns || []).find((item) => item.row === row);
-      if (returned?.value) value = exprText(ctx, returned.value, null);
+      if (returned?.value) value = exprText(ctx, returned.value, null, row, 'x0');
     }
     return mk(ret ? 'return ' + (value || varOf('x0', ctx)) + ';' : 'return;', { kind: 'ctrl' });
   }
@@ -2852,7 +2970,7 @@ function valueStatement(insn, ctx, mk) {
      * これが「5 行の割り算が 1 行になる」の中身。
      */
     if (isLiveOutCopy) {
-      const text = exprText(ctx, value, value);
+      const text = exprText(ctx, value, value, insn.row);
       if (text != null) return mk(varOf(dst, ctx) + ' = ' + text + ';', { dst, pure: false, fromValues: true });
     }
     return null;
@@ -2872,8 +2990,13 @@ function valueStatement(insn, ctx, mk) {
   if (nonCanonical) {
     if (isLiveOutCopy) {
       const matName = ctx.material.names.get(value);
-      const canUseMatName = !!(matName && (!can || insn.row > can.row));
-      const rhs = canUseMatName ? matName : exprText(ctx, value, value);
+      const matClobbered = !!(matName && isClobberedMatName(ctx, matName, value, insn.row));
+      const canUseMatName = !!(matName && (!can || insn.row > can.row) && !matClobbered);
+      const rhs = canUseMatName
+        ? matName
+        : (matClobbered && base === 'mov' && insn.ops?.[1]?.k === 'reg'
+          ? varOf(regOf(insn.ops[1]), ctx)
+          : exprText(ctx, value, value, insn.row));
       if (rhs != null) {
         if (canUseMatName) ctx.usedVars.add(matName);
         const lhs = varOf(dst, ctx);
@@ -2883,7 +3006,7 @@ function valueStatement(insn, ctx, mk) {
     }
     return null;
   }
-  const text = exprText(ctx, value, value);
+  const text = exprText(ctx, value, value, insn.row);
   if (text == null) return undefined;
   const name = ctx.material.names.get(value);
   if (name) {
@@ -2973,8 +3096,17 @@ function memoryStatement(insn, ctx, mk, base) {
   let wbBaseName = null;
   if (hasWb) {
     const bv = ctx.values ? ctx.values.at(insn.row, baseReg) : null;
-    const matBv = bv && ctx.material && ctx.material.names
-      ? ctx.material.names.get(bv.k === 'reg' && bv.prevDef ? bv.prevDef : bv)
+    const bvTarget = bv && bv.k === 'reg' && bv.prevDef ? bv.prevDef : bv;
+    const bvCan = bvTarget && ctx.material && ctx.material.canonical
+      ? ctx.material.canonical.get(bvTarget)
+      : null;
+    const rawMatBv = bvTarget && ctx.material && ctx.material.names
+      ? ctx.material.names.get(bvTarget)
+      : null;
+    const matBv = rawMatBv &&
+      (!bvCan || bvCan.reg === baseReg) &&
+      (rawMatBv === baseReg || rawMatBv.startsWith(baseReg + '_'))
+      ? rawMatBv
       : null;
     wbBaseName = matBv || varOf(baseReg, ctx);
     if (matBv) ctx.usedVars.add(matBv);
@@ -3037,8 +3169,8 @@ function memoryStatement(insn, ctx, mk, base) {
      * レジスタ名ではなく中身で書く。
      */
     const node = !hasWb && ctx.values ? ctx.values.defAt(insn.row, insn.writes[0]) : null;
-    let viaExpr = node && node.k === 'mem' ? exprText(ctx, node, node) : null;
-    const fpW = fpRegWidth(insn.ops[0]);
+    let viaExpr = node && node.k === 'mem' ? exprText(ctx, node, node, insn.row) : null;
+    const fpW = scalarFpRegWidth(insn.ops[0], ctx);
     if (viaExpr && fpW === 'float') viaExpr = viaExpr.replace(/^\*\(\s*uint32\s*\*\)/, '*(float *)');
     else if (viaExpr && fpW === 'double') viaExpr = viaExpr.replace(/^\*\(\s*uint64\s*\*\)/, '*(double *)');
     return wrapWb(mk(d0 + ' = ' + (viaExpr || place) + ';', { dst: insn.writes[0], pure: !hasWb }));
@@ -3072,7 +3204,7 @@ function storedValues(insn, ctx) {
   const out = [];
   for (const w of vg.memWrites || []) {
     if (w.row !== insn.row) continue;
-    const text = w.value ? exprText(ctx, w.value, null) : null;
+    const text = w.value ? exprText(ctx, w.value, null, w.row) : null;
     out.push(text || null);
   }
   return out;
@@ -3178,7 +3310,7 @@ function indirectName(insn, ctx) {
 
 function registerValueText(ctx, row, reg) {
   const value = ctx.values ? ctx.values.at(row, reg) : null;
-  const text = value ? exprText(ctx, value, null) : null;
+  const text = value ? exprText(ctx, value, null, row, reg) : null;
   return text || varOf(reg, ctx);
 }
 
@@ -3254,7 +3386,7 @@ function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null
     if (row != null && ctx.values) {
       const node = ctx.values.at(row, 'x' + gpIdx);
       if (node && !(node.k === 'call' && node.row === row)) {
-        const text = exprText(ctx, node, null);
+        const text = exprText(ctx, node, null, row, 'x' + gpIdx);
         if (text) return text;
       }
     }
@@ -3267,7 +3399,7 @@ function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row, readRegs = null
     if (row != null && ctx.values) {
       const node = ctx.values.at(row, reg);
       if (node && !(node.k === 'call' && node.row === row)) {
-        const text = exprText(ctx, node, null);
+        const text = exprText(ctx, node, null, row, reg);
         if (text) return text;
       }
     }
@@ -3562,7 +3694,7 @@ function callArguments(call, ctx, calleeName, readRegs = null) {
   for (const [idx, a] of known) {
     if (idx < 0 || idx > 7) continue;
     const node = ctx.values ? ctx.values.at(call.row, 'x' + idx) : null;
-    const text = node ? exprText(ctx, node, null) : null;
+    const text = node ? exprText(ctx, node, null, call.row, 'x' + idx) : null;
     rawArgMap.set(idx, text || valueText(a.value, ctx, idx));
   }
   const normalized = normalizeKnownCallArgs(calleeName, rawArgMap, ctx, call ? call.row : null, readRegs, call);
@@ -3892,31 +4024,7 @@ function declarations(ctx, types, o, body) {
     out.push(line('decl', 1, declText, null));
   }
   /* Scalar FP registers (sN -> float, dN -> double) used in body: declare with accurate FP type instead of uint128 fallback */
-  const scalarFpKinds = new Map();
-  for (const insn of (ctx.model && ctx.model.instructions) || []) {
-    const mn = (insn.mnemonic || '').toLowerCase();
-    if (insn.isCall) {
-      const c = ctx.callOf && ctx.callOf.get(insn.row);
-      const cname = (c && c.name) || (insn.callTarget != null ? ctx.symbolFor(insn.callTarget) : null);
-      const csig = cname ? knownCallSignature(cname) : null;
-      if (csig && (csig.retType === 'float' || csig.retType === 'double')) {
-        if (!scalarFpKinds.has('v0')) scalarFpKinds.set('v0', new Set());
-        scalarFpKinds.get('v0').add(csig.retType);
-      }
-    }
-    for (const op of insn.ops || []) {
-      if (!op || op.k !== 'reg' || (op.cls !== 'fp' && op.cls !== 'vec')) continue;
-      const reg = 'v' + op.num;
-      const w = fpRegWidth(op);
-      if (w) {
-        if (!scalarFpKinds.has(reg)) scalarFpKinds.set(reg, new Set());
-        scalarFpKinds.get(reg).add(w);
-      } else if (!(mn === 'movi' && insn.ops[1]?.k === 'imm' && insn.ops[1].value === 0n)) {
-        if (!scalarFpKinds.has(reg)) scalarFpKinds.set(reg, new Set());
-        scalarFpKinds.get(reg).add('vec');
-      }
-    }
-  }
+  const scalarFpKinds = ctx.scalarFpKinds || computeFpVecKinds(ctx.model, ctx.callOf, ctx.symbolFor).scalarFpKinds;
   const fpVarMatches = text.match(/\bv\d+(?:_\d+)?\b/g) || [];
   for (const name of fpVarMatches) {
     if (seen.has(name)) continue;
