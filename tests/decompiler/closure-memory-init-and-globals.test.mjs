@@ -91,7 +91,7 @@ test('memory[a1 + phi_idx] integer-address form and extern global_<HEX> contract
   closeFunctionOutput(result);
 
   assert.match(result.pseudocode, /uint8_t \* memory = \(uint8_t \*\)0;/);
-  assert.match(result.pseudocode, /extern uint64 global_B10;/);
+  assert.match(result.pseudocode, /static uint64 global_B10 = 0;/);
 
   // Strictly idempotent on second pass.
   const once = result.pseudocode;
@@ -102,8 +102,8 @@ test('memory[a1 + phi_idx] integer-address form and extern global_<HEX> contract
 #include <stdint.h>
 #include <stdio.h>
 ${result.pseudocode}
-uint64 global_B10 = 100ULL;
 int main(void) {
+  global_B10 = 100ULL;
   const uint8_t buf[4] = { 3, 7, 11, 19 };
   uint64 r = read_at_addr_plus_global((uint64)(uintptr_t)buf, 2ULL);
   printf("%llu\\n", (unsigned long long)r);

@@ -19,6 +19,7 @@
  */
 import { parseOperands, categoryOf, arm64ReadsDestination } from './arm64.js';
 import { analyzeGraph } from './controlflow.js';
+import { knownCallSignature } from './decompiler/call-prototypes.js';
 
 /* ────────────────────────────────────────────────────────────
    確からしさ
@@ -801,6 +802,7 @@ export function analyzeDataFlow(insns, opts) {
   const calls = [];
   const argsRead = new Set();        // 自分で書く前に読んだ x0〜x7 = 引数
   const written = new Set();
+  let priorCallSeen = false;
   const cfgKills = computeEntryKillSets(insns, o);
   const rowKills = cfgKills ? cfgKills.rowKills : null;
   const blockStartRows = cfgKills ? cfgKills.blockStartRows : null;
@@ -1119,6 +1121,22 @@ export function analyzeDataFlow(insns, opts) {
     if (insn.isCall) {
       const name = insn.callTarget != null && o.symbolFor ? o.symbolFor(insn.callTarget) : null;
       const api = apiInfo(name);
+      const sig = name ? knownCallSignature(name) : null;
+      if (!priorCallSeen && sig && !sig.variadic && Number.isInteger(sig.arity) && sig.arity > 0) {
+        const gpArity = Array.isArray(sig.paramTypes)
+          ? sig.paramTypes.filter((t) => t !== 'float' && t !== 'double').length
+          : sig.arity;
+        const limit = Math.min(8, gpArity);
+        for (let a = 0; a < limit; a++) {
+          const r = 'x' + a;
+          if (!written.has(r) && !(pathKilled && pathKilled.has(r))) {
+            argsRead.add(a);
+            if (!regs.has(r)) {
+              set(r, value('arg', { index: a }, SCORE.high, [ev('argreg', insn.row, { index: a })], -1));
+            }
+          }
+        }
+      }
       const args = [];
       for (let a = 0; a <= 7; a++) {
         const v = get('x' + a);
@@ -1162,6 +1180,7 @@ export function analyzeDataFlow(insns, opts) {
         [ev(name ? 'call-named' : 'call-unknown', insn.row, { name, api: api ? api.id : null })], insn.row);
       set('x0', ret);
       flow('call->reg', insn.row, name || 'call', 'x0', ret);
+      priorCallSeen = true;
       for (let a = 0; a <= 7; a++) written.add('x' + a);
       markWritten(insn, written);
       continue;

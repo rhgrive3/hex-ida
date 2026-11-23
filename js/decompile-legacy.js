@@ -177,7 +177,44 @@ function nameReader(fn) {
 
 function buildContext(model, o) {
   const byRow = new Map();
-  for (const i of model.instructions) byRow.set(i.row, i);
+  const byAddr = new Map();
+  for (const i of model.instructions) {
+    byRow.set(i.row, i);
+    if (i.address != null) {
+      try { byAddr.set(BigInt(i.address), i); } catch { /* ignore */ }
+    }
+  }
+  const fallbackRowOfAddress = (addr) => {
+    if (addr == null) return null;
+    try {
+      const hit = byAddr.get(BigInt(addr));
+      return hit ? hit.row : null;
+    } catch {
+      return null;
+    }
+  };
+  const resolvedRowOfAddress = (addr) => {
+    if (o.rowOfAddress) {
+      const r = o.rowOfAddress(addr);
+      if (r != null) return r;
+    }
+    return fallbackRowOfAddress(addr);
+  };
+  const branchTargetRows = new Set();
+  for (const i of model.instructions) {
+    if (i.isCall || i.isReturn) continue;
+    const mn = (i.mnemonic || '').toLowerCase();
+    if (!isPcRelBranchMnemonic(mn)) continue;
+    const tAddr = parseBranchImmTarget(i);
+    if (tAddr == null) continue;
+    const hit = byAddr.get(tAddr);
+    if (hit) {
+      branchTargetRows.add(hit.row);
+    } else {
+      const r = resolvedRowOfAddress(tAddr);
+      if (r != null && byRow.has(r)) branchTargetRows.add(r);
+    }
+  }
 
   const textOf = new Map();       // row -> 文字列リテラル
   const refOf = new Map();        // row -> {addr, load} 命令が指している絶対アドレス
@@ -255,6 +292,8 @@ function buildContext(model, o) {
     model,
     opts: o,
     byRow,
+    byAddr,
+    branchTargetRows,
     textOf,
     refOf,
     callOf,
@@ -264,7 +303,7 @@ function buildContext(model, o) {
     material,
     carry,
     aliases,
-    rowOfAddress: o.rowOfAddress || (() => null),
+    rowOfAddress: resolvedRowOfAddress,
     addrOfRow: o.addrOfRow || (() => null),
     /*
      * 名前は、必ずここを通してから行に置く。
@@ -908,20 +947,23 @@ function buildFlow(model, ctx) {
     if (last.isCall) { n.fall = next; if (next != null) n.succ.push(next); continue; }
 
     if (last.isConditional || /^b\./.test(base) || /^(cbz|cbnz|tbz|tbnz)$/.test(base)) {
-      const trow = last.branchTarget != null ? ctx.rowOfAddress(last.branchTarget) : null;
+      const tAddr = parseBranchImmTarget(last);
+      const trow = tAddr != null ? ctx.rowOfAddress(tAddr) : null;
       const ti = trow != null ? nodeOfRow(trow) : -1;
+      const exactBlockStart = ti >= 0 && nodes[ti].startRow === trow;
       n.cond = conditionOf(last, ctx);
-      n.condTarget = ti >= 0 ? ti : null;
+      n.condTarget = exactBlockStart ? ti : null;
       n.fall = next;
-      if (ti >= 0) n.succ.push(ti);
+      if (exactBlockStart) n.succ.push(ti);
       if (next != null) n.succ.push(next);
       continue;
     }
     if (base === 'b') {
-      const trow = last.branchTarget != null ? ctx.rowOfAddress(last.branchTarget) : null;
+      const tAddr = parseBranchImmTarget(last);
+      const trow = tAddr != null ? ctx.rowOfAddress(tAddr) : null;
       const ti = trow != null ? nodeOfRow(trow) : -1;
-      if (ti >= 0) { n.succ.push(ti); n.jump = ti; }
-      else n.tail = true;                              // 関数の外へ跳ぶ（末尾呼び出し）
+      if (ti >= 0 && nodes[ti].startRow === trow) { n.succ.push(ti); n.jump = ti; }
+      else if (ti < 0) n.tail = true;                  // 関数の外へ跳ぶ（末尾呼び出し）
       continue;
     }
     if (base === 'br') { n.tail = true; continue; }    // レジスタ経由の飛び先
@@ -1270,6 +1312,44 @@ function recoverUnemittedBlocks(cfg, out, ctx, state) {
   const reachableMissing = Array.from(cfg.reachable).filter((i) => !state.emitted.has(i)).length;
   return { total: cfg.nodes.length, reachable: cfg.reachable.size, emitted: state.emitted.size,
     recovered: state.recovered, missing, reachableMissing };
+}
+
+function isPcRelBranchMnemonic(base) {
+  return base === 'b' || /^b\.\w+$/.test(base) || /^(cbz|cbnz|tbz|tbnz)$/.test(base);
+}
+
+function parseBranchImmTarget(insn) {
+  if (!insn) return null;
+  if (insn.branchTarget != null) {
+    try { return BigInt(insn.branchTarget); } catch { /* ignore */ }
+  }
+  const ops = insn.ops || [];
+  for (let i = ops.length - 1; i >= 0; i--) {
+    const op = ops[i];
+    if (op && op.k === 'imm' && op.value != null) {
+      try { return BigInt(op.value); } catch { /* ignore */ }
+    }
+  }
+  const raw = String(insn.operands || '').trim();
+  const m = /#?(0x[0-9a-fA-F]+)\s*$/.exec(raw);
+  if (m) {
+    try { return BigInt(m[1]); } catch { /* ignore */ }
+  }
+  return null;
+}
+
+function resolveInFunctionBranchTarget(insn, ctx) {
+  const targetAddr = parseBranchImmTarget(insn);
+  if (targetAddr == null) return null;
+  let targetInsn = ctx.byAddr ? ctx.byAddr.get(targetAddr) : null;
+  if (!targetInsn) {
+    const trow = ctx.rowOfAddress(targetAddr);
+    if (trow != null) targetInsn = ctx.byRow.get(trow) || null;
+  }
+  if (!targetInsn) return null;
+  const addr = targetInsn.address != null ? targetInsn.address : targetAddr;
+  const label = 'loc_' + addr.toString(16).toUpperCase();
+  return { insn: targetInsn, row: targetInsn.row, addr, label };
 }
 
 function labelOf(node, ctx) {
@@ -1621,10 +1701,15 @@ function emitBlockBody(node, indent, out, ctx, state, opts) {
   for (const row of node.rows) {
     const insn = ctx.byRow.get(row);
     if (!insn) continue;
+    if (row !== node.startRow && ctx.branchTargetRows && ctx.branchTargetRows.has(row)) {
+      const a = addrOf(ctx, row);
+      const lbl = 'loc_' + (a != null ? a.toString(16).toUpperCase() : row);
+      stmts.push({ kind: 'label', text: lbl + ':', row, addr: a, dst: null, reads: [], pure: false });
+    }
     /* 分岐そのものは if / while / goto として書くので、ここでは出さない */
     if (insn === node.terminator && insn.isBranch && !insn.isCall && !insn.isReturn &&
         (node.jump != null || node.condTarget != null)) continue;
-    const st = statementFor(insn, ctx, node);
+    const st = statementFor(insn, ctx, node, state);
     if (st) stmts.push(st);
   }
 
@@ -1637,7 +1722,8 @@ function emitBlockBody(node, indent, out, ctx, state, opts) {
 
   for (const st of stmts) {
     if (st.dropped) continue;
-    const l = line(st.kind || 'stmt', indent, st.text, st.row, st.addr);
+    const lIndent = st.kind === 'label' ? Math.max(0, indent - 1) : indent;
+    const l = line(st.kind || 'stmt', lIndent, st.text, st.row, st.addr);
     l.note = st.note || null;
     out.push(l);
   }
@@ -1647,7 +1733,7 @@ function emitBlockBody(node, indent, out, ctx, state, opts) {
  * 命令 1 つを文にする。
  * @returns {{text, row, addr, dst, reads, note, kind, pure}|null}
  */
-function statementFor(insn, ctx, node) {
+function statementFor(insn, ctx, node, state) {
   const base = (insn.mnemonic || '').toLowerCase();
   const row = insn.row, addr = insn.address;
   const mk = (text, extra) => Object.assign({ text, row, addr, dst: null, reads: insn.reads.slice(), pure: false }, extra || {});
@@ -1825,6 +1911,25 @@ function statementFor(insn, ctx, node) {
     const rawSvc = String(insn.operands ?? '').trim();
     const svcArg = immOp || (/^#?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(rawSvc) ? rawSvc.replace(/^#/, '') : (rawSvc ? JSON.stringify(rawSvc) : '0'));
     return mk('__syscall(' + svcArg + ');', { note: 'OS を直接呼びます（システムコール）。' });
+  }
+
+  /* 関数内の PC 相対分岐 (b, b.<cond>, cbz, cbnz, tbz, tbnz) は有効な C の goto に下げる */
+  if (!insn.isCall && !insn.isReturn && isPcRelBranchMnemonic(base)) {
+    const resolved = resolveInFunctionBranchTarget(insn, ctx);
+    if (resolved) {
+      if (state && state.labels) {
+        state.labels.add(resolved.label);
+        state.gotos++;
+      }
+      if (base === 'b') {
+        return mk('goto ' + resolved.label + ';', { kind: 'ctrl', reads: [] });
+      }
+      const cond = conditionOf(insn, ctx);
+      return mk('if (' + condText(cond, ctx) + ') goto ' + resolved.label + ';', {
+        kind: 'ctrl',
+        reads: insn.reads.slice(),
+      });
+    }
   }
 
   /* 訳せなかったもの。嘘を書かず、そのまま残す */
@@ -2171,11 +2276,12 @@ function callStatement(insn, ctx, mk) {
     if (!reads.includes(r)) reads.push(r);
   }
   /* 末尾呼び出し（b で別の関数へ跳んで終わる）は、そのまま return になる */
+  const isVoidCall = knownCallSignature(name || cleanName)?.retType === 'void';
   const text = insn.isTailCall
-    ? 'return ' + callExpr + ';'
-    : nameForDef(ctx, insn.row, 'x0') + ' = ' + callExpr + ';';
+    ? (isVoidCall ? callExpr + '; return;' : 'return ' + callExpr + ';')
+    : (isVoidCall ? callExpr + ';' : nameForDef(ctx, insn.row, 'x0') + ' = ' + callExpr + ';');
   return mk(text, {
-    dst: insn.isTailCall ? null : 'x0', call: true, target, reads,
+    dst: (insn.isTailCall || isVoidCall) ? null : 'x0', call: true, target, reads,
     kind: insn.isTailCall ? 'ctrl' : 'stmt',
     note: name ? null : '行き先が固定でない呼び出しです（関数ポインタ）。',
   });
@@ -2485,6 +2591,11 @@ function inlineTemporaries(stmts, ctx) {
       }
       if (blocked) continue;
     } else {
+      let crossesCtrl = false;
+      for (let k = i + 1; k < j; k++) {
+        if (!stmts[k].dropped && (stmts[k].kind === 'label' || stmts[k].kind === 'ctrl')) { crossesCtrl = true; break; }
+      }
+      if (crossesCtrl) continue;
       const interveningDef = (defs.get(reg) || []).some((k) => k > i && k < j && !stmts[k].dropped);
       if (interveningDef) continue;
       const clobberedRead = (st.reads || []).some((r) =>
@@ -2527,6 +2638,7 @@ function removeDeadStores(stmts) {
     for (let j = i + 1; j < stmts.length; j++) {
       const other = stmts[j];
       if (other.dropped) continue;
+      if (other.kind === 'label' || other.kind === 'ctrl') break;
       if ((other.reads || []).includes(st.dst)) { read = true; break; }
       if (other.dst === st.dst) { redefined = true; break; }
     }

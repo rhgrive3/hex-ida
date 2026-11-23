@@ -308,11 +308,29 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
 
   if (index) {
     if (addressDisp && addressDisp !== 0n) fail('arm64-register-offset-cannot-have-immediate-displacement');
-    const indexRead = createArm64RegisterRead(index, `${prefix}.index`, index.bits);
+    const indexRead = createArm64RegisterRead(index, `${prefix}.index`, 64);
     readOperations.push(indexRead.operation);
     const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.trim().toLowerCase() : '';
     const accessWidthBits = options.accessWidthBits ?? (mnemonic === 'prfm' ? 64 : null);
-    offsetExpr = extendIndex(arm64TemporaryExpr(`${prefix}.index`, index.bits), index, mem.shift || mem.extend || null, accessWidthBits);
+    let indexExpr = arm64TemporaryExpr(`${prefix}.index`, 64);
+    if (index.bits === 32) {
+      const indexView = arm64Temporary(`${prefix}.index.view`, 32);
+      readOperations.push(createMachineOperation({
+        kind: 'value',
+        opcode: 'truncate',
+        inputs: [indexRead.value],
+        outputs: [indexView],
+        metadata: {
+          architecture: 'arm64',
+          fromBits: 64,
+          toBits: 32,
+          purpose: 'arm64-address-index-view',
+          reason: 'a64-w-register-read-is-low-32-of-physical-x',
+        },
+      }));
+      indexExpr = arm64TemporaryExpr(`${prefix}.index.view`, 32);
+    }
+    offsetExpr = extendIndex(indexExpr, index, mem.shift || mem.extend || null, accessWidthBits);
     offsetKind = 'register';
   }
 
