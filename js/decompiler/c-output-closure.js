@@ -390,6 +390,10 @@ export function isStandaloneGlobalPreludeComment(text) {
 
 export function isStandaloneGlobalPreludeDeclaration(text) {
   const trimmed = String(text ?? '').trim();
+  const bufDef = /^#define\s+(global_[A-Za-z0-9_]+)\s+\(\s*(__hex_global_[A-Za-z0-9_]+_buf)\s*\[\s*0\s*\]\s*\)$/.exec(trimmed);
+  if (bufDef) return bufDef[2] === `__hex_${bufDef[1]}_buf`;
+  const bufArr = /^static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(__hex_global_[A-Za-z0-9_]+_buf)\s*\[\s*\d+\s*\]\s*=\s*\{\s*0\s*\}\s*;$/.exec(trimmed);
+  if (bufArr) return FIXED_WIDTH_TYPES.has(bufArr[1]);
   const match = /^(?:extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+|__hex_global_[A-Za-z0-9_]+_backing)\s*=\s*0\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*&\s*(__hex_global_[A-Za-z0-9_]+_backing)\s*;)$/.exec(trimmed);
   if (!match) return false;
   if (match[6] && match[7] !== `__hex_${match[6]}_backing`) return false;
@@ -611,7 +615,7 @@ export function declarationBearingSource(text) {
             break;
           }
         }
-        out += ' '.repeat(j - i);
+        out += '0'.repeat(j - i);
         i = j - 1;
         lineStart = false;
         continue;
@@ -827,7 +831,7 @@ export function scanIdentifierUses(text) {
     const gotoLabel = previousWord(source, start) === 'goto';
     const isNonPointerCast = (() => {
       if (before !== '(' || after !== ')') return false;
-      if (registerType(name) != null || /^(?:var|local|tmp|call|load|arg)_/.test(name)) return false;
+      if (registerType(name) != null || /^(?:var|local|tmp|call|load|arg|phi)_/.test(name)) return false;
       let openIdx = start - 1;
       while (openIdx >= 0 && /\s/.test(source[openIdx])) openIdx--;
       const wordBeforeOpen = previousWord(source, openIdx);
@@ -842,7 +846,10 @@ export function scanIdentifierUses(text) {
       if (ch === '!' && source[afterClose + 1] !== '=') return true;
       return false;
     })();
-    const isPointerCast = before === '(' && /^\s*\*+\s*\)/.test(source.slice(end));
+    const isPointerCast = before === '('
+      && registerType(name) == null
+      && !/^(?:var|local|tmp|call|load|arg|phi)_/.test(name)
+      && /^\s*\*+\s*\)/.test(source.slice(end));
     const castType = isPointerCast || isNonPointerCast;
     const tag = ['struct', 'union', 'enum'].includes(previousWord(source, start));
     const isValueUse = !callTarget && !memberName && !label && !gotoLabel && !castType && !tag && !objcSelector;
@@ -1010,6 +1017,8 @@ function declaredNamesFromLines(lines) {
   for (const item of lines || []) {
     const cleanedRaw = declarationBearingSource(item?.text ?? '');
     if (item?.kind === 'decl') {
+      const defineGlobal = /^\s*#define\s+(global_[A-Za-z0-9_]+)\s+\(\s*__hex_global_[A-Za-z0-9_]+_buf\s*\[\s*0\s*\]\s*\)\s*$/.exec(String(item?.text ?? ''));
+      if (defineGlobal) declared.add(defineGlobal[1]);
       extractDeclaredNamesFromDeclText(cleanedRaw, declared);
     } else if (item?.kind === 'stmt') {
       const cleaned = cleanedRaw.trim();
@@ -3195,9 +3204,36 @@ export function closeFunctionOutput(result, options = {}) {
       }
       return false;
     };
+    const isGlobalAddressTaken = (globalName) => {
+      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(?<!&)&\\s*\\(?\\s*${esc}\\b`, 'g');
+      for (let m = re.exec(cleanedBodyForGlobals); m; m = re.exec(cleanedBodyForGlobals)) {
+        const idx = m.index;
+        const prev = previousChar(cleanedBodyForGlobals, idx);
+        if (!prev || '=({[,;:!?|^~+-<>*/%'.includes(prev)) return true;
+        if (prev === ')') {
+          const nextCh = cleanedBodyForGlobals[idx + 1] || '';
+          if (nextCh === globalName[0] || nextCh === '(') return true;
+        }
+        if (/[A-Za-z0-9_]/.test(prev) && previousWord(cleanedBodyForGlobals, idx) === 'return') return true;
+      }
+      return false;
+    };
     globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
     for (const entry of standaloneGlobals) {
-      if (isGlobalDereferenced(entry.name)) {
+      if (isGlobalAddressTaken(entry.name)) {
+        const bufName = `__hex_${entry.name}_buf`;
+        globalPrelude.push(
+          {
+            kind: 'decl', indent: 0, text: `static uint64 ${bufName}[512] = {0};`,
+            row: null, addr: null, note: null, source: entrySource,
+          },
+          {
+            kind: 'decl', indent: 0, text: `#define ${entry.name} (${bufName}[0])`,
+            row: null, addr: null, note: null, source: entrySource,
+          },
+        );
+      } else if (isGlobalDereferenced(entry.name)) {
         const backingName = `__hex_${entry.name}_backing`;
         globalPrelude.push(
           {

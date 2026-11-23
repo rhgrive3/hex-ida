@@ -1,7 +1,7 @@
 import { effectOf } from '../ast/nodes.js';
 
-const PREC = { select: 2, oror: 3, andand: 4, or: 5, xor: 6, and: 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, add: 11, sub: 11, mul: 12, sdiv: 12, udiv: 12, smod: 12, umod: 12, srem: 12, urem: 12, unary: 13, primary: 15 };
-const OP_TEXT = { add: '+', sub: '-', mul: '*', and: '&', or: '|', xor: '^', shl: '<<', lshr: '>>', ashr: '>>', sdiv: '/', udiv: '/', smod: '%', umod: '%', srem: '%', urem: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
+const PREC = { select: 2, oror: 3, '||': 3, andand: 4, '&&': 4, or: 5, '|': 5, xor: 6, '^': 6, and: 7, '&': 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, add: 11, sub: 11, mul: 12, sdiv: 12, udiv: 12, smod: 12, umod: 12, srem: 12, urem: 12, unary: 13, primary: 15 };
+const OP_TEXT = { add: '+', sub: '-', mul: '*', and: '&', or: '|', xor: '^', andand: '&&', oror: '||', shl: '<<', lshr: '>>', ashr: '>>', sdiv: '/', udiv: '/', smod: '%', umod: '%', srem: '%', urem: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
 
 export function integerText(v, bits = 64, signed = null) {
   const n = BigInt(v);
@@ -152,6 +152,42 @@ function printIntegerView(n, bits, signed, parentPrec, opts, forceCast = false) 
   return wrap(`(${type})${text}`, PREC.unary, parentPrec);
 }
 
+function hasTopLevelBitwiseOp(text) {
+  if (typeof text !== 'string' || !/[&|^]/.test(text)) return false;
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') { depth += 1; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') { depth = Math.max(0, depth - 1); continue; }
+    if (depth === 0) {
+      if (ch === '&') {
+        if (text[i + 1] === '&') { i += 1; continue; }
+        const prev = text.slice(0, i).trimEnd();
+        if (prev.length > 0 && /[A-Za-z0-9_)\]]$/.test(prev)) return true;
+      } else if (ch === '|') {
+        if (text[i + 1] === '|') { i += 1; continue; }
+        return true;
+      } else if (ch === '^') {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function parenthesizeBitwiseOperand(text) {
+  return hasTopLevelBitwiseOp(text) ? `(${text})` : text;
+}
+
 function compareOperands(n, p, opts) {
   // A floating-domain comparison compares the operands' values as-is; the
   // integer signed/unsigned views would assert a different domain and change
@@ -159,14 +195,17 @@ function compareOperands(n, p, opts) {
   if (n.comparisonDomain === 'floating') {
     return [printExpression(n.left, p, opts), printExpression(n.right, p + 1, opts)];
   }
+  let leftText;
+  let rightText;
   if (n.compareSigned !== true && n.compareSigned !== false) {
-    return [printExpression(n.left, p, opts), printExpression(n.right, p + 1, opts)];
+    leftText = printExpression(n.left, p, opts);
+    rightText = printExpression(n.right, p + 1, opts);
+  } else {
+    const bits = integerWidth(n.left, n.right);
+    leftText = printIntegerView(n.left, bits, n.compareSigned, p, opts);
+    rightText = printIntegerView(n.right, bits, n.compareSigned, p + 1, opts);
   }
-  const bits = integerWidth(n.left, n.right);
-  return [
-    printIntegerView(n.left, bits, n.compareSigned, p, opts),
-    printIntegerView(n.right, bits, n.compareSigned, p + 1, opts),
-  ];
+  return [parenthesizeBitwiseOperand(leftText), parenthesizeBitwiseOperand(rightText)];
 }
 
 function signedBinaryOperands(n, p, opts) {

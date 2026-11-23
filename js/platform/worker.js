@@ -50,10 +50,45 @@ function notifyForegroundWaiters() {
   for (const wake of waiters) wake();
 }
 
+function isNonAllocableRegion(region) {
+  if (!region) return true;
+  if (region.alloc === true) return false;
+  if (region.alloc === false || region.source === 'unmapped-section') return true;
+  if (region.source === 'section-header' && region.flags != null) {
+    return (BigInt(region.flags) & 0x2n) === 0n;
+  }
+  if (image?.format === 'elf' && region.kind === 'section' && Array.isArray(image.sections)) {
+    const start = BigInt(region.vmAddr ?? 0);
+    const size = BigInt(region.size ?? 0);
+    const fileOffset = BigInt(region.fileOffset ?? 0);
+    const matched = image.sections.find((sec) =>
+      sec?.name === region.name
+      && BigInt(sec.address ?? 0) === start
+      && BigInt(sec.fileOffset ?? 0) === fileOffset
+      && BigInt(sec.fileSize ?? sec.size ?? 0) === size);
+    if (matched) {
+      if (matched.source === 'unmapped-section') return true;
+      if (matched.source === 'section-header') return (BigInt(matched.flags || 0) & 0x2n) === 0n;
+    }
+  }
+  if (region.kind === 'section' && region.read === false && region.write === false && region.exec === false) {
+    return true;
+  }
+  if (region.kind === 'section' && BigInt(region.vmAddr ?? 0) === 0n
+    && region.read !== true && region.write !== true && region.exec !== true) {
+    const name = String(region.section || region.name || '');
+    if (/^\.(?:symtab|strtab|shstrtab|comment|debug(?:_|$)|gnu_debug|note\.)/i.test(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function rebuildVmRegionIndex() {
   const list = [];
   for (const region of regions.values()) {
     if (!region || region.id === 'raw' || region.zerofill) continue;
+    if (isNonAllocableRegion(region)) continue;
     const start = BigInt(region.vmAddr);
     const size = BigInt(region.size);
     if (size <= 0n) continue;
@@ -616,11 +651,13 @@ function vmToFile(address) {
       const entry = vmRegionIndex[mid];
       if (at < entry.start) hi = mid - 1;
       else if (at >= entry.end) lo = mid + 1;
-      else return { region: entry.region, offset: entry.fileOffset + (at - entry.start) };
+      else if (!isNonAllocableRegion(entry.region)) return { region: entry.region, offset: entry.fileOffset + (at - entry.start) };
+      else break;
     }
   } else {
     for (let i = 0; i < vmRegionList.length; i++) {
       const entry = vmRegionList[i];
+      if (isNonAllocableRegion(entry.region)) continue;
       if (at >= entry.start && at < entry.end) return { region: entry.region, offset: entry.fileOffset + (at - entry.start) };
     }
   }
