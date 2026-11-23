@@ -835,12 +835,12 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   const deref = [];
   got.forEach((g, i) => {
     const key = wanted[i].toString();
+    if (hasLoadRef.has(key) && isReadOnlyRead(g) && g.bytes && g.bytes.length >= 4) {
+      rawBytesByKey.set(key, Array.from(g.bytes.slice(0, 8)));
+    }
     if (looksLikeText(g, { allowShortRoData: hasDirectRef.has(key) })) {
       texts.set(key, g.text);
       return;
-    }
-    if (hasLoadRef.has(key) && isReadOnlyRead(g) && g.bytes && g.bytes.length >= 4) {
-      rawBytesByKey.set(key, Array.from(g.bytes.slice(0, 8)));
     }
     if (pointerWidth != null && g && g.found && g.bytes && g.bytes.length >= pointerWidth) deref.push({ i, bytes: g.bytes });
   });
@@ -875,7 +875,8 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
         r.value.text = text;
         r.value.viaPointer = indirect.has(key);
       }
-    } else if (r.load && !texts.has(key)) {
+    }
+    if (r.load) {
       const raw = rawBytesByKey.get(key);
       if (raw && raw.length >= 4) r.bytes = raw;
     }
