@@ -2008,6 +2008,9 @@ export function proofText(item) {
           'this function really writes the field that was identified')
         : pick('自分が持っている値へ ' + d.n + ' 回書き込んでいる',
           'it writes its own fields ' + d.n + ' times');
+    case 'fn-store-observed':
+      return pick('オブジェクト領域への書き込み命令が ' + d.n + ' 回ある',
+        'it performs ' + d.n + ' non-stack store(s)');
     case 'fn-owner-class':
       return pick('この処理を持っているクラスの名前が目的に合う', 'the owning class name fits');
     case 'fn-numeric':

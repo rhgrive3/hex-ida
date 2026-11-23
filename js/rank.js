@@ -1,4 +1,4 @@
-import { matchText, matchName } from './goals.js';
+import { matchText, matchName, numericSymbolRole, isDiagnosticString } from './goals.js';
 import { vendorOf, vendorInText, vendorConflicts, classFromSymbol } from './vendors.js';
 
 export const REASON = {
@@ -105,7 +105,8 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       const nth = c.strings.length;
       const factor = nth === 0 ? 1 : nth === 1 ? 0.6 : nth === 2 ? 0.35 : 0;
       c.strings.push({ addr: ms.addr, text: ms.text, site: u.site, kind: u.kind, users: users.length, score: ms.score, complete: users.complete !== false });
-      if (factor > 0) addReason(c, REASON.STRING_REF, POINTS[REASON.STRING_REF] * ms.score * factor, {
+      const diagFactor = isDiagnosticString(ms.text) ? 0.45 : 1;
+      if (factor > 0) addReason(c, REASON.STRING_REF, POINTS[REASON.STRING_REF] * ms.score * factor * diagFactor, {
         text: ms.text, addr: ms.addr, site: u.site, term: ms.term, refKind: u.kind,
         users: users.length, complete: users.complete !== false,
       });
@@ -124,16 +125,21 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       const name = symbols.names[i];
       if (!name || !matcher.test(name)) continue;
       const m = matchName(goal, name);
-      if (m) matches.push({ a, name, m });
+      if (m) {
+        const role = numericSymbolRole(goal, name);
+        const roleRank = role === 'value' ? 2 : role === 'neutral' ? 1 : 0;
+        matches.push({ a, name, m, role, roleRank });
+      }
     }
-    matches.sort((a, b) => b.m.score - a.m.score || String(a.name).localeCompare(String(b.name)));
+    matches.sort((a, b) => b.roleRank - a.roleRank || b.m.score - a.m.score || String(a.name).localeCompare(String(b.name)));
     if (matches.length > 400) notes.push('name-matches-capped');
-    for (const { a, name, m } of matches.slice(0, 400)) {
+    for (const { a, name, m, role } of matches.slice(0, 400)) {
       const start = symbols.functionCount ? (symbols.isFunctionStart(a) ? a : null) : a;
       const c = candidate(start != null ? start : a, a);
       if (!c) continue;
       c.name = c.name || name;
-      addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score, { name, term: m.term });
+      const roleMult = role === 'value' ? 1.6 : role === 'non-value' ? 0.4 : 1;
+      addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score * roleMult, { name, term: m.term, role });
     }
   }
 

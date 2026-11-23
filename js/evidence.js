@@ -346,6 +346,7 @@ export const EVIDENCE = deepFreeze({
   // すでに特定できている値を触っている＝目的に結びついている
   'fn-touches-field':   { lr: 14,   family: FAMILY.VERIFIED, kind: 'verified', id: true },
   'fn-writes-field':    { lr: 26,   family: FAMILY.VERIFIED, kind: 'verified', id: true },
+  'fn-store-observed':  { lr: 1.9,  family: FAMILY.USAGE,    kind: 'fact' },
   'fn-owner-class':     { lr: 3.4,  family: FAMILY.CONTEXT,  kind: 'fact', id: true },
   'fn-numeric':         { lr: 2.2,  family: FAMILY.USAGE,    kind: 'fact' },
   'fn-called-often':    { lr: 1.7,  family: FAMILY.USAGE,    kind: 'fact' },
@@ -581,11 +582,17 @@ export function exclusiveLR(total, users, score, text) {
  *                    拡張子付きの識別子。何をするかは何も言っていない。
  */
 function namesBehaviour(text) {
-  const s = String(text == null ? '' : text);
+  const s = String(text == null ? '' : text).trim();
   if (!s) return true;                     // 文言が渡っていないなら判定しない
+  // 英語のエラー・アサートログ接頭辞は、排他的な機能名指しではない（計算式表記は残す）
+  if (/^(?:error|warning|warn|assert|assertion|fatal|debug|info|trace|undefined|invalid|failed|cannot|unable)\b/i.test(s) && !/[×÷]/.test(s)) return false;
   if (/%[-+ 0-9.#]*[@a-zA-Z]/.test(s)) return true;   // 書式指定があれば人に見せる文言
   // 拡張子付きの識別子＝素材（.maanim / .mamodel のように長い拡張子もある）
   if (/^[\w./\\-]+\.[a-zA-Z][a-zA-Z0-9]{1,7}$/.test(s)) return false;
+  // 配列添字付きコード識別子（例: cdef_y_pri_strength[i]）
+  if (/^[A-Za-z_][\w.]*\[[^\]]+\]$/.test(s)) return false;
+  // 空白も日本語も書式指定も持たない単一のコード識別子・ドット/スラッシュキー・マングル名
+  if (!/[\s%]/.test(s) && !/[ぁ-んァ-ヶ一-龥]/.test(s) && /^[A-Za-z0-9_.:/$+-]+$/.test(s)) return false;
   return true;
 }
 

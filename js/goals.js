@@ -42,6 +42,7 @@ export const GOALS = [
     id: 'attack', ja: '攻撃力', en: 'Attack power', icon: '⚔️',
     strong: [/attack/i, /\batk\b/i, /power/i, /strength/i, /攻撃/, /こうげき/, /威力/],
     weak: [/damage/i, /weapon/i, /skill/i, /武器/, /スキル/],
+    avoid: [/power[\s_-]*(info|state|mode|sav(?:e|ing)|supply|management|battery|adapter|source)/i],
     expects: { numeric: true, store: true },
   },
   {
@@ -54,6 +55,7 @@ export const GOALS = [
     id: 'damage', ja: 'ダメージ計算', en: 'Damage calculation', icon: '💥',
     strong: [/damage/i, /\bdmg\b/i, /ダメージ/, /被弾/],
     weak: [/critical/i, /hit/i, /attack/i, /クリティカル/, /命中/],
+    avoid: [/hit[\s_-]*test/i],
     expects: { numeric: true, store: true, compare: true },
   },
   {
@@ -123,6 +125,7 @@ export const GOALS = [
     id: 'level', ja: 'レベル・経験値', en: 'Level and EXP', icon: '⬆️',
     strong: [/level_?up/i, /\blevel\b/i, /\bexp\b/i, /experience/i, /レベル/, /経験値/, /ランクアップ/],
     weak: [/upgrade/i, /grow/i, /rank/i, /強化/, /育成/],
+    avoid: [/log[\s_-]*level/i, /verbosity[\s_-]*level/i],
     expects: { numeric: true, store: true, compare: true },
   },
   {
@@ -437,7 +440,7 @@ export function typeFits(goal, type) {
       if (type.bool && type.bytes === 1) return 'conflict';
       return 'fit';
     }
-    if (kind === 'object' || kind === 'cstring' || kind === 'class' ||
+    if (kind === 'bool' || kind === 'object' || kind === 'cstring' || kind === 'class' ||
         kind === 'selector' || kind === 'block' || kind === 'pointer') return 'conflict';
     return 'unknown';
   }
@@ -650,8 +653,9 @@ export function matchText(goal, text) {
     for (const m of allMatches(re, s, blocked.length)) consider(0.5, m.text, m.at);
   }
   for (const term of goal.extraTerms || []) {
-    const i = s.toLowerCase().indexOf(term.word.toLowerCase());
-    if (i >= 0) consider(0.85 * term.weight, term.word, i);
+    for (const i of findExtraTermMatches(s, term.word)) {
+      consider(0.85 * term.weight, term.word, i);
+    }
   }
   if (!best) return null;
 
@@ -665,6 +669,180 @@ export function matchText(goal, text) {
   if (/[ぁ-んァ-ヶ一-龥]/.test(s)) quality += 0.1;
   best.score *= Math.max(0.2, Math.min(1.1, quality));
   return best;
+}
+
+function isAsciiAlnum(ch) {
+  if (!ch) return false;
+  const c = ch.charCodeAt(0);
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+}
+function isAsciiUpper(ch) {
+  if (!ch) return false;
+  const c = ch.charCodeAt(0);
+  return c >= 65 && c <= 90;
+}
+function isAsciiLowerOrDigit(ch) {
+  if (!ch) return false;
+  const c = ch.charCodeAt(0);
+  return (c >= 48 && c <= 57) || (c >= 97 && c <= 122);
+}
+function isTokenBoundaryStart(s, i) {
+  if (i <= 0) return true;
+  const prev = s[i - 1], cur = s[i];
+  if (!isAsciiAlnum(prev)) return true;
+  if (isAsciiLowerOrDigit(prev) && isAsciiUpper(cur)) return true;
+  if (isAsciiUpper(prev) && isAsciiUpper(cur) && i + 1 < s.length && isAsciiLowerOrDigit(s[i + 1])) return true;
+  return false;
+}
+function isTokenBoundaryEnd(s, end) {
+  if (end >= s.length) return true;
+  const prev = s[end - 1], next = s[end];
+  if (!isAsciiAlnum(next)) return true;
+  if (isAsciiLowerOrDigit(prev) && isAsciiUpper(next)) return true;
+  if (isAsciiUpper(prev) && isAsciiUpper(next) && end + 1 < s.length && isAsciiLowerOrDigit(s[end + 1])) return true;
+  return false;
+}
+function findExtraTermMatches(s, word) {
+  if (typeof word !== 'string' || !word.length) return [];
+  const lower = s.toLowerCase();
+  const needle = word.toLowerCase();
+  const asciiWord = /^[a-z0-9]+$/i.test(word);
+  const requireEnd = asciiWord && word.length <= 4;
+  const out = [];
+  let pos = 0;
+  while (pos <= lower.length - needle.length) {
+    const i = lower.indexOf(needle, pos);
+    if (i < 0) break;
+    pos = i + 1;
+    if (asciiWord) {
+      if (!isTokenBoundaryStart(s, i)) continue;
+      if (requireEnd && !isTokenBoundaryEnd(s, i + needle.length)) continue;
+    }
+    out.push(i);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+const ACCESSOR_PREFIX_RE = /^(?:get|set|calc|calculate|compute|estimate|base|current|cur|total|effective|final|raw|actual|real|mod|modify|update|add|sub|apply|battle)\s+/;
+const PREDICATE_OR_UI_HEAD_RE = /^(?:is|can|has|should|was|format|render|draw|show|paint|print|log|dump|debug|trace|visit|serialize|deserialize)$/;
+const NON_VALUE_ROLE_TOKEN_RE = /^(?:animation|animator|panel|dialog|window|icon|tooltip|label|widget|controller|keyboard|visitor|hex|hexes|direction|projectile|climax|frame|swipe|cursor|click|log|logger|logging|logcat|configurator)$/;
+const DIAGNOSTIC_PREFIX_RE = /^(?:error|warning|warn|assert|assertion|fatal|debug|info|trace|undefined|invalid|failed|cannot|unable)\b/i;
+
+/**
+ * 関数シンボル（ObjC / Itanium C++ / 通常関数）から末尾のメソッド名（葉）を取り出す。
+ * @returns {{ leaf: string, owner: string|null, isConst: boolean, isCtorOrDtor: boolean }}
+ */
+export function extractCallableLeaf(name) {
+  if (typeof name !== 'string' || !name) {
+    return { leaf: '', owner: null, isConst: false, isCtorOrDtor: false, isStdGlue: false };
+  }
+  const objc = /^[-+]\[([^\s\]]+)\s+([^\]]+)\]$/.exec(name);
+  if (objc) {
+    return { leaf: objc[2].split(':')[0], owner: objc[1], isConst: false, isCtorOrDtor: false, isStdGlue: false };
+  }
+  const cxx = /^_?_Z(N?)(K?)(.*)$/.exec(name);
+  if (cxx) {
+    const nested = cxx[1] === 'N';
+    const isConst = cxx[2] === 'K';
+    const body = cxx[3];
+    const isStdGlue = nested && /^St/.test(body);
+    if (nested) {
+      const parts = [];
+      let i = 0;
+      let isCtorOrDtor = false;
+      while (i < body.length && body[i] !== 'E') {
+        if (body[i] === 'K' || body[i] === 'V' || body[i] === 'r' || body[i] === 'L') { i++; continue; }
+        if ((body[i] === 'C' || body[i] === 'D') && /[0-5]/.test(body[i + 1] || '')) {
+          isCtorOrDtor = true;
+          i += 2;
+          continue;
+        }
+        // Itanium copy/move assignment operator (aS) right after class name
+        if (parts.length && body.slice(i, i + 2) === 'aS' && body[i + 2] === 'E') {
+          isCtorOrDtor = true;
+          i += 2;
+          continue;
+        }
+        const dm = /^(\d+)/.exec(body.slice(i));
+        if (!dm) break;
+        const len = Number(dm[1]);
+        i += dm[1].length;
+        if (!(len > 0) || i + len > body.length) break;
+        parts.push(body.slice(i, i + len));
+        i += len;
+      }
+      if (parts.length) {
+        return {
+          leaf: parts[parts.length - 1],
+          owner: parts.length >= 2 ? parts[parts.length - 2] : null,
+          isConst,
+          isCtorOrDtor,
+          isStdGlue,
+        };
+      }
+    } else {
+      const lm = /^L?(\d+)/.exec(body);
+      if (lm) {
+        const len = Number(lm[1]);
+        const start = lm[0].length;
+        if (len > 0 && start + len <= body.length) {
+          return { leaf: body.slice(start, start + len), owner: null, isConst, isCtorOrDtor: false, isStdGlue: false };
+        }
+      }
+    }
+    if (isStdGlue) {
+      return { leaf: '', owner: 'std', isConst, isCtorOrDtor: false, isStdGlue: true };
+    }
+  }
+  return { leaf: name.replace(/^_+/, ''), owner: null, isConst: false, isCtorOrDtor: false, isStdGlue: false };
+}
+
+/**
+ * 数値・ステータス系クエリ（expects.numeric）に対する関数シンボルの一般的な役割分類。
+ * @returns {'value'|'non-value'|'neutral'}
+ */
+export function numericSymbolRole(goal, name) {
+  if (!goal || !goal.expects || !goal.expects.numeric || typeof name !== 'string' || !name) return 'neutral';
+  const info = extractCallableLeaf(name);
+  if (info.isStdGlue) return 'non-value';
+  const leafNorm = normalizeFieldName(info.leaf);
+  if (!leafNorm) return 'neutral';
+  const leafTokens = leafNorm.split(' ');
+  const ownerTokens = info.owner ? normalizeFieldName(info.owner).split(' ') : [];
+  const askedTokens = new Set(normalizeFieldName(goal.text || '').split(' ').filter(Boolean));
+
+  const isNonValueToken = (tok) => NON_VALUE_ROLE_TOKEN_RE.test(tok) && !askedTokens.has(tok);
+  const isPredicateHead = (tok) => PREDICATE_OR_UI_HEAD_RE.test(tok) && !askedTokens.has(tok);
+
+  if (isPredicateHead(leafTokens[0])) return 'non-value';
+  if (leafTokens.length >= 2 && /^(?:is|can|has|should)$/.test(leafTokens[1]) && !askedTokens.has(leafTokens[1])) {
+    return 'non-value';
+  }
+
+  let core = leafNorm;
+  for (let i = 0; i < 3; i++) {
+    const next = core.replace(ACCESSOR_PREFIX_RE, '');
+    if (next === core) break;
+    core = next;
+  }
+  const coreHit = core ? matchField(goal, core) : null;
+  const hasNonValueToken = leafTokens.some(isNonValueToken) || ownerTokens.some(isNonValueToken);
+  if (hasNonValueToken && !(coreHit && coreHit.exact)) return 'non-value';
+  if (info.isCtorOrDtor) return 'non-value';
+  if (coreHit && (coreHit.exact || coreHit.score >= 0.7)) return 'value';
+  return 'neutral';
+}
+
+/** 文字列がエラー・アサートログまたは純粋なコード識別子かどうか（汎用判定）。 */
+export function isDiagnosticString(text) {
+  if (typeof text !== 'string' || !text) return false;
+  const s = text.trim();
+  if (!s) return false;
+  if (DIAGNOSTIC_PREFIX_RE.test(s) && !/[×÷]/.test(s)) return true;
+  if (/^[A-Za-z_][\w.]*\[[^\]]+\]$/.test(s)) return true;
+  if (!/[\s%]/.test(s) && !/[ぁ-んァ-ヶ一-龥]/.test(s) && /^[A-Za-z0-9_.:/$+-]+$/.test(s)) return true;
+  return false;
 }
 
 /** 名前（シンボル・Objective-C メソッド）との当てはまり。 */
