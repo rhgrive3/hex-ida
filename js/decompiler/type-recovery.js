@@ -14,6 +14,122 @@ const INTEGER_NAMES = new Map([
 ]);
 
 // Known standard-library callees whose GP argument slots accept `const char *`.
+const VARIADIC_FORMAT_SPECS = new Map([
+  ['printf', { fmtArgIdx: 0, fixedArgs: 1, family: 'printf' }],
+  ['fprintf', { fmtArgIdx: 1, fixedArgs: 2, family: 'printf' }],
+  ['sprintf', { fmtArgIdx: 1, fixedArgs: 2, family: 'printf' }],
+  ['snprintf', { fmtArgIdx: 2, fixedArgs: 3, family: 'printf' }],
+  ['dprintf', { fmtArgIdx: 1, fixedArgs: 2, family: 'printf' }],
+  ['asprintf', { fmtArgIdx: 1, fixedArgs: 2, family: 'printf' }],
+  ['sprintf_chk', { fmtArgIdx: 3, fixedArgs: 4, family: 'printf' }],
+  ['snprintf_chk', { fmtArgIdx: 4, fixedArgs: 5, family: 'printf' }],
+  ['scanf', { fmtArgIdx: 0, fixedArgs: 1, family: 'scanf' }],
+  ['fscanf', { fmtArgIdx: 1, fixedArgs: 2, family: 'scanf' }],
+  ['sscanf', { fmtArgIdx: 1, fixedArgs: 2, family: 'scanf' }],
+  ['isoc99_scanf', { fmtArgIdx: 0, fixedArgs: 1, family: 'scanf' }],
+  ['isoc99_fscanf', { fmtArgIdx: 1, fixedArgs: 2, family: 'scanf' }],
+  ['isoc99_sscanf', { fmtArgIdx: 1, fixedArgs: 2, family: 'scanf' }],
+]);
+
+function countFormatSpecifiers(fmt, family = 'printf') {
+  if (typeof fmt !== 'string') return null;
+  let gp = 0;
+  let fp = 0;
+  let i = 0;
+  while (i < fmt.length) {
+    if (fmt[i] !== '%') { i++; continue; }
+    i++;
+    if (i >= fmt.length) return null;
+    if (fmt[i] === '%') { i++; continue; }
+    if (family === 'scanf') {
+      let suppressed = false;
+      if (fmt[i] === '*') { suppressed = true; i++; }
+      // Reject positional arguments (%1$d)
+      if (i < fmt.length && fmt[i] >= '1' && fmt[i] <= '9') {
+        let j = i;
+        while (j < fmt.length && fmt[j] >= '0' && fmt[j] <= '9') j++;
+        if (fmt[j] === '$') return null;
+      }
+      while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+      if (i + 1 < fmt.length && (fmt.slice(i, i + 2) === 'hh' || fmt.slice(i, i + 2) === 'll')) i += 2;
+      else if (i < fmt.length && 'hljztL'.includes(fmt[i])) i++;
+      if (i >= fmt.length) return null;
+      const conv = fmt[i++];
+      if (conv === '[') {
+        if (i < fmt.length && fmt[i] === '^') i++;
+        if (i < fmt.length && fmt[i] === ']') i++;
+        while (i < fmt.length && fmt[i] !== ']') i++;
+        if (i >= fmt.length) return null;
+        i++;
+        if (!suppressed) gp++;
+      } else if ('diuoxXaAeEfFgGcspn'.includes(conv)) {
+        if (!suppressed) gp++;
+      } else {
+        return null;
+      }
+      continue;
+    }
+    while (i < fmt.length && "-+ #0'".includes(fmt[i])) i++;
+    if (i < fmt.length && fmt[i] >= '1' && fmt[i] <= '9') {
+      let j = i;
+      while (j < fmt.length && fmt[j] >= '0' && fmt[j] <= '9') j++;
+      if (fmt[j] === '$') return null;
+    }
+    if (i < fmt.length && fmt[i] === '*') {
+      gp++;
+      i++;
+    } else {
+      while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+    }
+    if (i < fmt.length && fmt[i] === '.') {
+      i++;
+      if (i < fmt.length && fmt[i] === '*') {
+        gp++;
+        i++;
+      } else {
+        while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+      }
+    }
+    if (i + 1 < fmt.length && (fmt.slice(i, i + 2) === 'hh' || fmt.slice(i, i + 2) === 'll')) i += 2;
+    else if (i < fmt.length && 'hljztL'.includes(fmt[i])) i++;
+    if (i >= fmt.length) return null;
+    const conv = fmt[i++];
+    if ('aAeEfFgG'.includes(conv)) fp++;
+    else if ('diuoxXcspn'.includes(conv)) gp++;
+    else return null;
+  }
+  return { gp, fp };
+}
+
+function resolveConstantAddressOfValue(val, depth = 0, seen = null) {
+  if (!val || depth > 8) return null;
+  const visited = seen || new Set();
+  if (val.id != null) {
+    if (visited.has(val.id)) return null;
+    visited.add(val.id);
+  }
+  if (val.const != null) {
+    try { return BigInt(val.const); } catch { /* ignore */ }
+  }
+  const def = val.def;
+  if (!def) return null;
+  if (def.op === OP.ADDR || def.op === OP.CONST) {
+    const raw = def.extra?.value ?? def.extra?.target ?? null;
+    if (raw != null) {
+      try { return BigInt(raw); } catch { /* ignore */ }
+    }
+  }
+  if (def.op === OP.MOV) {
+    return resolveConstantAddressOfValue(valueOf(def.args?.[0]), depth + 1, visited);
+  }
+  if (def.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub')) {
+    const a = resolveConstantAddressOfValue(valueOf(def.args?.[0]), depth + 1, visited);
+    const b = resolveConstantAddressOfValue(valueOf(def.args?.[1]), depth + 1, visited);
+    if (a != null && b != null) return def.sub === 'add' ? a + b : a - b;
+  }
+  return null;
+}
+
 const CONST_CHAR_PTR_PARAMS = new Map([
   ['strlen', [0]],
   ['strcmp', [0, 1]],
@@ -292,17 +408,42 @@ function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = nul
         ? resolveCalleeName(inst)
         : String((inst.extra && inst.extra.name) || (inst.insn && inst.insn.callName) || '');
       const proto = knownCallPrototype(name);
-      if (proto && !proto.variadic && !inst.extra?.indirect) {
-        const callArgs = Array.isArray(inst.args) ? inst.args : [];
-        const matchedIdx = callArgs.findIndex((a) => valueOf(a) === value);
-        if (matchedIdx >= proto.arity) continue;
-        if (matchedIdx < 0 && typeof value.reg === 'string') {
-          if (callCtx ? callCtx.isAArch64ArgSet : true) {
-            const rm = /^[xdsvq](\d+)$/.exec(value.reg);
-            if (rm && Number(rm[1]) >= proto.arity) continue;
-          } else if (Array.isArray(callCtx.argumentRegisters) && callCtx.argumentRegisters.length) {
-            const argIdx = callCtx.argumentRegisters.indexOf(value.reg);
-            if (argIdx >= proto.arity) continue;
+      if (proto && !inst.extra?.indirect) {
+        if (!proto.variadic) {
+          const callArgs = Array.isArray(inst.args) ? inst.args : [];
+          const matchedIdx = callArgs.findIndex((a) => valueOf(a) === value);
+          if (matchedIdx >= proto.arity) continue;
+          if (matchedIdx < 0 && typeof value.reg === 'string') {
+            if (callCtx ? callCtx.isAArch64ArgSet : true) {
+              const rm = /^[xdsvq](\d+)$/.exec(value.reg);
+              if (rm && Number(rm[1]) >= proto.arity) continue;
+            } else if (Array.isArray(callCtx.argumentRegisters) && callCtx.argumentRegisters.length) {
+              const argIdx = callCtx.argumentRegisters.indexOf(value.reg);
+              if (argIdx >= proto.arity) continue;
+            }
+          }
+        } else if (callCtx?.variadicArity) {
+          const bounds = callCtx.variadicArity(inst, proto);
+          if (bounds) {
+            const isA64 = callCtx.isAArch64ArgSet;
+            if (typeof value.reg === 'string') {
+              if (isA64) {
+                const fpM = /^[dsvq](\d+)$/.exec(value.reg);
+                if (fpM) {
+                  if (Number(fpM[1]) >= bounds.fpArity) continue;
+                } else {
+                  const gpM = /^[xw](\d+)$/.exec(value.reg);
+                  if (gpM && Number(gpM[1]) >= bounds.gpArity) continue;
+                }
+              } else if (Array.isArray(callCtx.argumentRegisters) && callCtx.argumentRegisters.length) {
+                const argIdx = callCtx.argumentRegisters.indexOf(value.reg);
+                if (argIdx >= bounds.gpArity) continue;
+              }
+            } else {
+              const callArgs = Array.isArray(inst.args) ? inst.args : [];
+              const matchedIdx = callArgs.findIndex((a) => valueOf(a) === value);
+              if (matchedIdx >= bounds.gpArity) continue;
+            }
           }
         }
       }
@@ -377,7 +518,48 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     );
   };
   const callIndex = buildCallDominanceIndex(ir);
-  const callUseCtx = { isAArch64ArgSet, argumentRegisters, callIndex };
+  const variadicArityCache = new Map();
+  const resolveStaticFormatString = (val) => {
+    if (!val) return null;
+    if (typeof val.extra?.stringLiteral === 'string') return val.extra.stringLiteral;
+    if (typeof val.def?.extra?.stringLiteral === 'string') return val.def.extra.stringLiteral;
+    if (typeof val.def?.extra?.string === 'string') return val.def.extra.string;
+    const addr = resolveConstantAddressOfValue(val);
+    if (addr != null) {
+      try {
+        const direct = opts?.stringFor?.(addr);
+        if (typeof direct === 'string') return direct;
+      } catch { /* optional resolver */ }
+      for (const ref of model?.addressRefs || []) {
+        if (ref?.addr == null || typeof ref.text !== 'string') continue;
+        try { if (BigInt(ref.addr) === addr) return ref.text; } catch { /* malformed ref */ }
+      }
+    }
+    const defRow = val.def?.row;
+    if (defRow != null) {
+      for (const ref of model?.addressRefs || []) {
+        if (ref?.row === defRow && typeof ref.text === 'string') return ref.text;
+      }
+    }
+    return null;
+  };
+  const variadicArity = (inst, proto) => {
+    if (!inst || !proto) return null;
+    if (variadicArityCache.has(inst)) return variadicArityCache.get(inst);
+    const spec = VARIADIC_FORMAT_SPECS.get(proto.name);
+    if (!spec) { variadicArityCache.set(inst, null); return null; }
+    const fmtReg = argumentRegisters[spec.fmtArgIdx] ?? null;
+    const fmtVal = (fmtReg ? reachingRegisterTypeValue(ir, inst, fmtReg) : null)
+      ?? valueOf(inst.args?.[spec.fmtArgIdx]);
+    const fmtStr = resolveStaticFormatString(fmtVal);
+    const counts = fmtStr != null ? countFormatSpecifiers(fmtStr, spec.family) : null;
+    const result = counts
+      ? { gpArity: spec.fixedArgs + counts.gp, fpArity: counts.fp }
+      : null;
+    variadicArityCache.set(inst, result);
+    return result;
+  };
+  const callUseCtx = { isAArch64ArgSet, argumentRegisters, callIndex, variadicArity };
   const callRetTypeToSemantic = (retType) => {
     if (retType === 'void') return 'void';
     if (retType === 'double') return 'double';
@@ -540,8 +722,8 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       const unSub = inst.sub || '';
       const isI2F = /^(?:i2f|scvtf)/.test(unSub);
       const isU2F = /^(?:u2f|ucvtf)/.test(unSub);
-      const isF2I = /^(?:f2i|fcvtzs)/.test(unSub);
-      const isF2U = /^(?:f2u|fcvtzu)/.test(unSub);
+      const isF2I = /^(?:f2i|fcvt[zpmna]s)/.test(unSub);
+      const isF2U = /^(?:f2u|fcvt[zpmna]u)/.test(unSub);
       if (!isF2I && !isF2U && /^f(abs|neg|sqrt|cvt|rint|floor|ceil|round|trunc)/.test(unSub)) {
         if (a) score(a, 'floating', 5, `row ${inst.row}: ${unSub}`);
         if (dst) score(dst, 'floating', 5, `row ${inst.row}: ${unSub}`);

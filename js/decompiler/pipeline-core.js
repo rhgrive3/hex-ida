@@ -416,43 +416,73 @@ function readBytesFromSection(sec, target, start, maxLen, state) {
   return null;
 }
 
-function readOnlyCStringAt(addr, state) {
-  let target;
-  try { target = BigInt(addr); } catch { return null; }
-  let matched = null;
-  let matchedStart = null;
-  let matchedEnd = null;
+const DATA_SECTION_NAME_RE = /\.(?:rodata|data|bss|tdata|tbss|sdata|sbss|got|const|cstring)\b|^__(?:const|data|bss|common|cstring)\b/i;
+
+function findSectionForAddress(target, state) {
+  if (!state) return null;
   try {
     const directSec = state.opts?.sectionFor?.(target) ?? state.opts?.regionFor?.(target);
     if (directSec) {
       const bounds = sectionAddressBounds(directSec);
       if (!bounds || (target >= bounds.start && target < bounds.end)) {
-        matched = directSec;
-        matchedStart = bounds ? bounds.start : target;
-        matchedEnd = bounds ? bounds.end : null;
+        return { section: directSec, start: bounds ? bounds.start : target, end: bounds ? bounds.end : null };
       }
     }
   } catch { /* optional lookup */ }
-  if (!matched) {
-    const lists = [
-      state.opts?.sections, state.opts?.segments, state.opts?.regions,
-      state.opts?.binary?.sections, state.opts?.binary?.segments, state.opts?.binary?.regions,
-      state.model?.sections, state.model?.regions,
-    ];
-    for (const list of lists) {
-      if (!Array.isArray(list)) continue;
-      for (const sec of list) {
-        const bounds = sectionAddressBounds(sec);
-        if (bounds && target >= bounds.start && target < bounds.end) {
-          matched = sec;
-          matchedStart = bounds.start;
-          matchedEnd = bounds.end;
-          break;
-        }
+  const lists = [
+    state.opts?.sections, state.opts?.segments, state.opts?.regions,
+    state.opts?.binary?.sections, state.opts?.binary?.segments, state.opts?.binary?.regions,
+    state.model?.sections, state.model?.regions,
+  ];
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const sec of list) {
+      const bounds = sectionAddressBounds(sec);
+      if (bounds && target >= bounds.start && target < bounds.end) {
+        return { section: sec, start: bounds.start, end: bounds.end };
       }
-      if (matched) break;
     }
   }
+  return null;
+}
+
+function isDataLikeSection(sec) {
+  if (!sec || typeof sec !== 'object') return false;
+  if (isProvablyReadOnlyDataSection(sec)) return true;
+  const name = String(sec.name ?? sec.section ?? '').trim();
+  if (name && DATA_SECTION_NAME_RE.test(name)) return true;
+  const perm = String(sec.perm ?? sec.perms ?? sec.prot ?? '').toLowerCase();
+  return Boolean(perm && perm.includes('r') && !perm.includes('x'));
+}
+
+function hasAnySectionMetadata(state) {
+  if (!state) return false;
+  if (typeof state.opts?.sectionFor === 'function' || typeof state.opts?.regionFor === 'function') return true;
+  const lists = [
+    state.opts?.sections, state.opts?.segments, state.opts?.regions,
+    state.opts?.binary?.sections, state.opts?.binary?.segments, state.opts?.binary?.regions,
+    state.model?.sections, state.model?.regions,
+  ];
+  return lists.some((list) => Array.isArray(list) && list.length > 0);
+}
+
+function isDataAddressRef(ref, target, state) {
+  if (!ref || target == null || target === 0n) return false;
+  if (typeof ref.text === 'string') return true;
+  const refSecName = String(ref.section ?? ref.sectionName ?? '').trim();
+  if (refSecName && DATA_SECTION_NAME_RE.test(refSecName)) return true;
+  const found = findSectionForAddress(target, state);
+  if (found) return isDataLikeSection(found.section);
+  return !hasAnySectionMetadata(state);
+}
+
+function readOnlyCStringAt(addr, state) {
+  let target;
+  try { target = BigInt(addr); } catch { return null; }
+  const found = findSectionForAddress(target, state);
+  const matched = found?.section || null;
+  const matchedStart = found?.start ?? null;
+  const matchedEnd = found?.end ?? null;
   if (!matched || !isProvablyReadOnlyDataSection(matched)) return null;
   const maxLen = matchedEnd != null ? Number(matchedEnd - target < 256n ? matchedEnd - target : 256n) : 256;
   if (maxLen <= 0) return null;
@@ -473,20 +503,39 @@ function readOnlyCStringAt(addr, state) {
   return cStringLiteral(String.fromCharCode(...chars));
 }
 
-function isAddressDerivedConstant(v, depth = 0, seen = null) {
+function isAddressDerivedConstant(v, state = null, depth = 0, seen = null) {
   if (!v || depth > 8) return false;
   const visited = seen || new Set();
   if (v.id != null) {
     if (visited.has(v.id)) return false;
     visited.add(v.id);
   }
+  if (v.addressDerived === true) return true;
   const d = v.def;
   if (!d) return false;
   if (d.op === 'addr') return true;
-  if (d.op === 'mov') return isAddressDerivedConstant(valueOf(d.args?.[0]), depth + 1, visited);
+  if (d.extra?.addressDerived === true) return true;
+  const rawConst = v.const ?? (d.op === 'const' ? d.extra?.value ?? null : null);
+  if (rawConst != null && state?.model?.addressRefs?.length) {
+    let target = null;
+    try { target = BigInt(rawConst); } catch { target = null; }
+    if (target != null && target !== 0n) {
+      for (const ref of state.model.addressRefs) {
+        if (ref?.addr == null) continue;
+        let refAddr;
+        try { refAddr = BigInt(ref.addr); } catch { continue; }
+        if (refAddr !== target) continue;
+        if (d.row != null && ref.row != null && ref.row === d.row) return true;
+        if (d.op === 'const' && isDataAddressRef(ref, target, state)) return true;
+      }
+    }
+  }
+  if (d.op === 'mov' || d.op === 'cast' || (d.op === 'un' && ['zext', 'sext', 'trunc', 'cast'].includes(d.sub))) {
+    return isAddressDerivedConstant(valueOf(d.args?.[0]), state, depth + 1, visited);
+  }
   if (d.op === 'bin' && (d.sub === 'add' || d.sub === 'sub')) {
-    if (isAddressDerivedConstant(valueOf(d.args?.[0]), depth + 1, visited)) return true;
-    if (d.sub === 'add' && isAddressDerivedConstant(valueOf(d.args?.[1]), depth + 1, visited)) return true;
+    if (isAddressDerivedConstant(valueOf(d.args?.[0]), state, depth + 1, visited)) return true;
+    if (d.sub === 'add' && isAddressDerivedConstant(valueOf(d.args?.[1]), state, depth + 1, visited)) return true;
   }
   return false;
 }
@@ -507,15 +556,17 @@ function stringLiteralAt(addr, state) {
 }
 
 function stringLiteralForValue(v, state, addressDerived = false) {
-  if (v?.const == null) return null;
+  const rawConst = v?.const ?? (v?.def?.op === 'const' ? v.def.extra?.value ?? null : null);
+  if (rawConst == null) return null;
   let target;
-  try { target = BigInt(v.const); } catch { return null; }
+  try { target = BigInt(rawConst); } catch { return null; }
   const defRow = v.def?.row;
   for (const ref of state.model?.addressRefs || []) {
     if (ref?.row !== defRow || ref?.addr == null || typeof ref.text !== 'string') continue;
     try { if (BigInt(ref.addr) === target) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
   }
-  return (v.def?.op === 'addr' || addressDerived) ? stringLiteralAt(target, state) : null;
+  const derived = addressDerived || v.def?.op === 'addr' || isAddressDerivedConstant(v, state);
+  return derived ? stringLiteralAt(target, state) : null;
 }
 function typeFor(state, v) { return state.types?.values?.get?.(v?.id) || null; }
 function signedFor(state, v) { const t = typeFor(state, v); return t?.signed ?? v?.signed ?? null; }
@@ -592,6 +643,143 @@ function argumentName(v, state) {
   const index = location.index;
   if (index === 0 && (state.opts?.receiverType || state.opts?.methodKind === 'objc')) return 'self';
   return state.opts?.argNames?.[index] || `a${index + 1}`;
+}
+
+function isPointerCTypeString(t) {
+  return typeof t === 'string' && t.includes('*');
+}
+
+function isPointerTypeDescriptor(t) {
+  if (!t || typeof t !== 'object') return false;
+  if (t.kind === 'pointer') return true;
+  if (isPointerCTypeString(t.cType) || isPointerCTypeString(t.name) || isPointerCTypeString(t.type)) return true;
+  const sem = t.semanticType;
+  if (sem && typeof sem === 'object') {
+    if (sem.kind === 'pointer') return true;
+    if (isPointerCTypeString(sem.cType) || isPointerCTypeString(sem.name) || isPointerCTypeString(sem.type)) return true;
+  }
+  return false;
+}
+
+function splitTopLevelParams(paramList) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < paramList.length; i += 1) {
+    const ch = paramList[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    else if (ch === ',' && depth === 0) {
+      parts.push(paramList.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(paramList.slice(start));
+  return parts;
+}
+
+function extractDeclaredPointerVarNames(lines) {
+  const names = new Set();
+  if (!Array.isArray(lines)) return names;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const text = String(line?.text ?? '').trim();
+    if (!text) continue;
+    if (line?.kind === 'sig' || (i === 0 && !text.endsWith(';') && text.includes('(') && text.endsWith(')'))) {
+      const open = text.indexOf('(');
+      const close = text.lastIndexOf(')');
+      if (open >= 0 && close > open) {
+        const inner = text.slice(open + 1, close).trim();
+        if (inner && inner !== 'void') {
+          for (const rawParam of splitTopLevelParams(inner)) {
+            const param = rawParam.trim();
+            if (!param.includes('*')) continue;
+            const fnPtrMatch = /\(\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/.exec(param);
+            if (fnPtrMatch) { names.add(fnPtrMatch[1]); continue; }
+            const ptrMatch = /\*\s*(?:(?:const|volatile|restrict)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?$/.exec(param);
+            if (ptrMatch) names.add(ptrMatch[1]);
+          }
+        }
+      }
+      continue;
+    }
+    if (line?.kind === 'decl' || ((line?.indent ?? 0) > 0 && text.endsWith(';') && !/^(?:return|if|else|while|for|switch|goto|case|default)\b/.test(text))) {
+      const declMatch = /^(?:(?:const|volatile|static|register|unsigned|signed|struct|union|enum)\s+)*[A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*\s*\*+(?:\s*(?:const|volatile|restrict|\*))*\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/.exec(text);
+      if (declMatch) names.add(declMatch[1]);
+    }
+  }
+  return names;
+}
+
+const statePointerVarNamesCache = new WeakMap();
+
+function pointerVarNamesForState(state) {
+  if (!state) return undefined;
+  const cached = statePointerVarNamesCache.get(state);
+  if (cached && cached.prototype === state.prototype && cached.highVariables === state.highVariables && cached.types === state.types) {
+    return cached.names;
+  }
+  const names = new Set();
+  if (state.declPointerVarNames instanceof Set) {
+    for (const n of state.declPointerVarNames) if (n) names.add(n);
+  }
+  const explicit = state.opts?.pointerVarNames;
+  if (explicit instanceof Set || Array.isArray(explicit)) {
+    for (const n of explicit) if (typeof n === 'string' && n) names.add(n);
+  }
+  const irValuesById = new Map();
+  for (const v of state.ir?.values || []) {
+    if (v?.id != null) irValuesById.set(v.id, v);
+  }
+  for (const list of [state.types?.args, state.types?.params, state.prototype?.arguments]) {
+    if (!Array.isArray(list)) continue;
+    for (const a of list) {
+      if (!a) continue;
+      if (!isPointerCTypeString(a.type) && !isPointerCTypeString(a.cType) && !isPointerTypeDescriptor(a.semanticType) && !isPointerTypeDescriptor(a)) continue;
+      if (typeof a.name === 'string' && a.name) names.add(a.name);
+      if (Number.isInteger(a.index)) {
+        if (a.index === 0 && currentCppReceiver(state.opts, state.ir)) names.add('this');
+        else if (a.index === 0 && (state.opts?.receiverType || state.opts?.methodKind === 'objc')) names.add('self');
+        else names.add(state.opts?.argNames?.[a.index] || `a${a.index + 1}`);
+      }
+      if (a.valueId != null) {
+        const v = irValuesById.get(a.valueId);
+        if (v) names.add(argumentName(v, state));
+      }
+    }
+  }
+  if (state.types?.values instanceof Map) {
+    for (const v of state.ir?.values || []) {
+      if (!v) continue;
+      const isEntryArg = v.kind === 'arg' || (!v.def && state.ir?.args?.get?.(v.reg) === v);
+      if (!isEntryArg) continue;
+      if (isPointerTypeDescriptor(state.types.values.get(v.id))) {
+        names.add(argumentName(v, state));
+      }
+    }
+  }
+  if (state.localDeclarations instanceof Map) {
+    for (const owner of state.localDeclarations.values()) {
+      if (owner?.name && (isPointerCTypeString(owner.type) || isPointerCTypeString(owner.cType) || isPointerTypeDescriptor(owner.semanticType))) {
+        names.add(owner.name);
+      }
+    }
+  }
+  const result = names.size ? names : undefined;
+  statePointerVarNamesCache.set(state, {
+    prototype: state.prototype,
+    highVariables: state.highVariables,
+    types: state.types,
+    names: result,
+  });
+  return result;
+}
+
+function exprPrintOpts(state, extra = null) {
+  const pointerVarNames = pointerVarNamesForState(state);
+  if (!pointerVarNames && !extra) return undefined;
+  if (!pointerVarNames) return extra;
+  return extra ? { ...extra, pointerVarNames } : { pointerVarNames };
 }
 
 function encodedLocationIdentity(value) {
@@ -755,7 +943,7 @@ function memoryLocation(inst, state) {
       const losesWidthOrType = effBytes === 1 || effBytes === 2 || effBytes === 4
         || effBytes === 16 || (effBytes === 8 && elemType === 'double');
       if (losesWidthOrType && elemType && !isKnownStructPointerType(baseType)) {
-        const baseText = printExpression(base);
+        const baseText = printExpression(base, 0, exprPrintOpts(state));
         const text = off !== 0n
           ? (off < 0n
             ? `*(${elemType} *)((uintptr_t)(${baseText}) - ${(-off).toString()})`
@@ -779,7 +967,7 @@ function memoryLocation(inst, state) {
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
     const member = isReceiver ? currentCppMember(state.opts, state.ir, baseVal, off) : null;
     const memberType = cppMemberTypeLabel(member);
-    const text = `${printExpression(access)}${memberType ? ` /* ${memberType} */` : ''}`;
+    const text = `${printExpression(access, 0, exprPrintOpts(state))}${memberType ? ` /* ${memberType} */` : ''}`;
     const location = { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text };
     (state.fieldLocations ??= new Map()).set(location, { instruction:inst, access });
     return location;
@@ -797,13 +985,13 @@ function memoryLocation(inst, state) {
       const indexBaseIsPointer = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && base?.kind === 'var';
       const elemBits = elemBytes * 8;
       const access = expr.index(base, index, scale, elemBits, origin(inst));
-      return { kind: 'index', key: loc.key, base, index, scale, expression: access, text: printExpression(access, 0, { indexBaseIsPointer }) };
+      return { kind: 'index', key: loc.key, base, index, scale, expression: access, text: printExpression(access, 0, exprPrintOpts(state, { indexBaseIsPointer })) };
     }
     if (validScale && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
       const effBytes = elemBytes > 0 ? elemBytes : 8;
       const elemType = memoryElementType(inst, effBytes, state.types);
-      const baseText = printExpression(base);
-      const idxText = printExpression(index);
+      const baseText = printExpression(base, 0, exprPrintOpts(state));
+      const idxText = printExpression(index, 0, exprPrintOpts(state));
       const offsetText = scale === 1 ? `(${idxText})` : `(${idxText}) * ${scale}`;
       const dispText = disp !== 0n ? (disp < 0n ? ` - ${(-disp).toString()}` : ` + ${disp.toString()}`) : '';
       const text = `*(${elemType} *)((uintptr_t)(${baseText}) + ${offsetText}${dispText})`;
@@ -815,7 +1003,7 @@ function memoryLocation(inst, state) {
     const base = buildValue(addr.base, state, { forAddress: true });
     const effBytes = Number(addr.size || inst?.size || loc?.size || 8);
     const elemType = memoryElementType(inst, effBytes, state.types);
-    const baseText = printExpression(base);
+    const baseText = printExpression(base, 0, exprPrintOpts(state));
     const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
     const text = disp !== 0n
       ? (disp < 0n
@@ -889,8 +1077,9 @@ function compareFromFlags(flagValue, cond, state) {
       }
       if (lowered.length === 1) return lowered[0];
       if (lowered.length > 1) {
-        const firstText = printExpression(lowered[0]);
-        if (lowered.every((c) => printExpression(c) === firstText)) return lowered[0];
+        const printOpts = exprPrintOpts(state);
+        const firstText = printExpression(lowered[0], 0, printOpts);
+        if (lowered.every((c) => printExpression(c, 0, printOpts) === firstText)) return lowered[0];
       }
       return expr.variable('condition_' + (cond || 'flags'), 1, false);
     } finally {
@@ -1033,7 +1222,7 @@ function buildArg(arg, state, flags = {}) {
 function resolveSelectArmAddress(arm, rawArg, state, peerIsString) {
   if (!arm || arm.kind !== 'const' || arm.value === 0n) return arm;
   const v = valueOf(rawArg);
-  const addrDerived = isAddressDerivedConstant(v);
+  const addrDerived = isAddressDerivedConstant(v, state);
   if (!addrDerived && !peerIsString) return arm;
   const literal = stringLiteralAt(arm.value, state);
   if (literal) {
@@ -1083,7 +1272,7 @@ function semanticBranchCondition(inst, state) {
   const direct = ['cbz', 'cbnz', 'tbz', 'tbnz'].includes(kind);
   if (direct) {
     const e = branchCondition(inst, state);
-    const semantic = semanticExpressionConsumer({ expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id },
+    const semantic = semanticExpressionConsumer({ expression:e, text:printExpression(e, 0, exprPrintOpts(state)), row:inst.row, address:inst.address, ir:inst.id },
       valueOf(inst.args?.[0]), inst, state, true);
     // A branch proposal exists even when no display rewrite fired. Observe its
     // actual construction without inventing a rewrite or equivalence record.
@@ -1098,7 +1287,7 @@ function semanticBranchCondition(inst, state) {
   state.buildHistoryFrame = frame;
   try {
     const e = branchCondition(inst, state);
-    const semantic = { expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id };
+    const semantic = { expression:e, text:printExpression(e, 0, exprPrintOpts(state)), row:inst.row, address:inst.address, ir:inst.id };
     recordCompatOperationSelection(flags, e, compatOperationSelection(flags, state, [inst], false), state);
     const built = [...(frame.records || [])].map(record => valueHistoryRecord(record, null));
     (state.rewriteProof ??= []).push(...built);
@@ -1767,17 +1956,18 @@ function buildValueRaw(v, state, flags = {}) {
     out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
     recordConstantValueSelection(v, out, selected, state);
   }
-  if (!out && v.const != null && d?.op !== 'addr') {
+  const foldedConst = v.const ?? (d?.op === 'const' ? d.extra?.value ?? null : null);
+  if (!out && foldedConst != null && d?.op !== 'addr') {
     const selected = constantValueSelection(v, state);
-    const addressDerived = isAddressDerivedConstant(v);
+    const addressDerived = isAddressDerivedConstant(v, state);
     const literal = stringLiteralForValue(v, state, addressDerived);
     if (literal) {
-      out = expr.variable(literal, 64, false, origin(d, v), { address: v.const, stringLiteral: true });
-    } else if (addressDerived && BigInt(v.const) !== 0n) {
-      const name = state.opts?.symbolFor?.(v.const) || null;
-      out = expr.variable(name ? safeIdent(name) : `&global_${BigInt(v.const).toString(16).toUpperCase()}`, 64, false, origin(d, v), { address: v.const });
+      out = expr.variable(literal, 64, false, origin(d, v), { address: foldedConst, stringLiteral: true });
+    } else if (addressDerived && BigInt(foldedConst) !== 0n) {
+      const name = state.opts?.symbolFor?.(foldedConst) || null;
+      out = expr.variable(name ? safeIdent(name) : `&global_${BigInt(foldedConst).toString(16).toUpperCase()}`, 64, false, origin(d, v), { address: foldedConst });
     } else {
-      out = constNode(v);
+      out = constNode(v, foldedConst);
     }
     recordConstantValueSelection(v, out, selected, state);
   }
@@ -1798,7 +1988,7 @@ function buildValueRaw(v, state, flags = {}) {
       recordMovSelection(v, d, out, selection, state, flags, cast ? d.sub : null, cast ? operandBits : null);
     }
     else if (d.op === 'bin') {
-      if ((d.sub === 'add' || d.sub === 'sub') && isAddressDerivedConstant(v)) {
+      if ((d.sub === 'add' || d.sub === 'sub') && isAddressDerivedConstant(v, state)) {
         const lv = valueOf(d.args?.[0]);
         const rv = valueOf(d.args?.[1]);
         const lc = lv?.const ?? (lv?.def?.op === 'addr' ? (lv.def.extra?.value ?? lv.def.extra?.target ?? null) : null);
@@ -2436,10 +2626,10 @@ function semanticFacts(state, result) {
       const clampSub = expression?.kind === 'intrinsic' && expression.name === 'max' && expression.args?.[1]?.kind === 'const' && expression.args[1].value === 0n && expression.args[0]?.kind === 'binary' && expression.args[0].op === 'sub' ? expression.args[0] : null;
       const clampOperand = clampSub && readsSameLocation(clampSub.left, location) ? clampSub.right : null;
       if (clampOperand != null) {
-        store.readModifyWrite = { kind: 'clamp-zero-sub', operand: printExpression(clampOperand) };
+        store.readModifyWrite = { kind: 'clamp-zero-sub', operand: printExpression(clampOperand, 0, exprPrintOpts(state)) };
       } else if (expression?.kind === 'binary' && expression.op === 'add') {
         const operand = sameLocationRmwOperand(expression, location, ['add']);
-        if (operand != null) store.readModifyWrite = { kind: 'add', operand: printExpression(operand) };
+        if (operand != null) store.readModifyWrite = { kind: 'add', operand: printExpression(operand, 0, exprPrintOpts(state)) };
       }
       facts.stores.push(store); facts.outputs.push({ name: location.text, type: state.types?.locations?.get?.(inst.loc?.key) || null });
       facts.evidence.push({ row: inst.row, address: inst.address, ir: inst.id, reason: 'Memory SSA store' });
@@ -2660,9 +2850,9 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
       };
     }
     const location = memoryLocation(store, state), value = valueOf(store.args?.[0]), e = expressionFor(value, state);
-    let text = `${location.text} = ${printExpression(e)};`, rendered = null, form = 'assignment';
+    let text = `${location.text} = ${printExpression(e, 0, exprPrintOpts(state))};`, rendered = null, form = 'assignment';
     if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && compoundStoreLeftOperand(e.left, location, store, state)) {
-      const rhs = printExpression(e.right);
+      const rhs = printExpression(e.right, 0, exprPrintOpts(state));
       if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) {
         if (location.kind === 'deref') { text = `${location.text} += 1;`; form = 'add-assignment'; }
         else { text = `${location.text}++;`; form = 'post-increment'; }
@@ -2686,7 +2876,7 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
   const ret = insts.find((i) => i.op === 'ret');
   if (ret && /^return\b/.test(String(line.text || ''))) {
     const rv = returnValueAt(ret, state);
-    if (rv) { const e = expressionFor(rv, state); return { text: `return ${printExpression(e)};`, semantic: semanticExpressionConsumer({ op: 'return', expression: e, ir: ret.id }, rv, ret, state, false,
+    if (rv) { const e = expressionFor(rv, state); return { text: `return ${printExpression(e, 0, exprPrintOpts(state))};`, semantic: semanticExpressionConsumer({ op: 'return', expression: e, ir: ret.id }, rv, ret, state, false,
       initialStatement?.instruction === ret ? initialStatement : null), source: mergeSource(line.source, e?.source, origin(ret, rv)) }; }
   }
   return null;
@@ -3016,6 +3206,7 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
     preservePhase8Unknown,
     orderedMaterializations,
     localDeclarations,
+    declPointerVarNames: extractDeclaredPointerVarNames(result.lines),
     proofOnlyRewrites:opts.phase8ProofOnlyRewrites === true,
     expressionMemo: new Map(), expressionActive: new Set(),
     warnings: [],
@@ -3069,6 +3260,7 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
       'aggregateLayouts',
       'orderedMaterializations',
       'localDeclarations',
+      'declPointerVarNames',
       'phase8',
       'phase8Timings',
       'passMetrics',
