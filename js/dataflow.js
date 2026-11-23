@@ -53,6 +53,7 @@ export function findValueUpdates(model, opts) {
   try { ir = irFor(model, opts && opts.ir); } catch { ir = null; }
   if (!ir) return rememberUpdates(model, legacyFindValueUpdates(model, opts), opts);
 
+  const includeGlobals = opts?.includeGlobals === true;
   let rmw = [];
   let direct = [];
   try {
@@ -64,13 +65,14 @@ export function findValueUpdates(model, opts) {
       readModifyWriteProofs: readModifyWrite(ir),
     };
     rmw = findIrValueUpdates(model, opts, precomputed)
-      .filter((u) => !(u.location && u.location.irKind === MK.GLOBAL));
+      .filter((u) => includeGlobals || !(u.location && u.location.irKind === MK.GLOBAL));
     direct = findIrSemanticUpdates(model, opts, rmw, precomputed)
-      .filter((u) => !(u.location && u.location.irKind === MK.GLOBAL));
+      .filter((u) => includeGlobals || !(u.location && u.location.irKind === MK.GLOBAL));
   } catch {
     // IR existed but a consumer adapter failed. Do not silently replace a proven
-    // semantic model with a different heuristic truth; expose the safe subset.
-    return rememberUpdates(model, rmw, opts);
+    // semantic model with a different heuristic truth; expose the safe subset
+    // without caching the partial failure result.
+    return rmw;
   }
 
   const out = [...rmw, ...direct];
@@ -133,7 +135,10 @@ export function constantComparisons(model, opts) {
 
 const AMOUNT_OPS = new Set(['add', 'adds', 'sub', 'subs', 'mul', 'madd', 'msub',
   'smull', 'umull', 'sdiv', 'udiv', 'fadd', 'fsub', 'fmul', 'fdiv', 'lsl', 'lsr', 'asr']);
-const CLAMP_OPS = new Set(['bic', 'csel', 'csinc', 'csneg', 'csinv', 'smax', 'smin', 'umax', 'umin']);
+const CLAMP_OPS = new Set([
+  'bic', 'csel', 'csinc', 'csneg', 'csinv', 'smax', 'smin', 'umax', 'umin',
+  'fmax', 'fmin', 'fmaxnm', 'fminnm',
+]);
 const SCALE_OPS = new Set(['mul', 'madd', 'msub', 'smull', 'umull', 'sdiv', 'udiv',
   'fmul', 'fdiv', 'lsl', 'lsr', 'asr']);
 const DIRECT_ORIGIN = new Set(['field', 'stack', 'global', 'imm', 'call', 'arg']);
@@ -150,9 +155,10 @@ export function amountOf(model, update) {
   const ops = [];
   for (const step of update.steps || []) {
     if (!step || !step.op) continue;
+    if (step.signMaskClampPart) continue;
     ops.push(step.op);
     const origin = step.otherOrigin;
-    if (CLAMP_OPS.has(step.op)) {
+    if (step.signMaskClamp === true || (step.op !== 'bic' && CLAMP_OPS.has(step.op))) {
       clamped = true;
       if (!cappedBy && origin && origin.kind === 'field') cappedBy = origin;
     }

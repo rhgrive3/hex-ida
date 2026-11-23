@@ -17,9 +17,9 @@ const SIGNALS = [
   { id: 'endpoint', level: 'high', re: /^https?:\/\/[^\s"']{4,}/i, max: 12 },
   { id: 'anticheat', level: 'high', re: /jailbr|jailbroken|cydia|frida|substrate|tamper|integrity|debugger|ptrace|sandbox_?check|不正|改造|チート/i, max: 8 },
   { id: 'crypto', level: 'normal', re: /\baes\b|\bsha(1|256|512)\b|\bhmac\b|\brsa\b|encrypt|decrypt|cipher|keychain|private_?key/i, max: 8 },
-  { id: 'ads', level: 'normal', re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adjust\.com|appsflyer|interstitial|rewarded/i, max: 6 },
+  { id: 'ads', level: 'normal', re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adjust\.com|appsflyer|interstitial|rewarded[\s_-]?(?:ads?|video|interstitial)/i, max: 6 },
   { id: 'purchase', level: 'high', re: /storekit|skpayment|receipt|verifyreceipt|subscription|in_?app_?purchase/i, max: 6 },
-  { id: 'debuglog', level: 'low', re: /\bdebug\b|verbose|assert|\bTODO\b|FIXME/i, max: 4 },
+  { id: 'debuglog', level: 'low', re: /\bdebug\b|verbose|assert|FIXME/i, caseRe: /\bTODO\b/, max: 4 },
   { id: 'path', level: 'low', re: /^\/(Users|var|private|tmp|Applications)\/[^\s"']{4,}/, max: 6 },
 ];
 
@@ -130,7 +130,7 @@ export function notableFunctions(program, symbols, region, limit = 12) {
     if (score <= 6) continue;
     out.push({ addr: f.addr, name: f.name, score, reasons, stats, called, range, sampleComplete: list.complete !== false });
   }
-  out.sort((a, b) => b.score - a.score || (a.addr < b.addr ? -1 : 1));
+  out.sort((a, b) => b.score - a.score || (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
   const normalizedLimit = (typeof limit === 'number' && Number.isFinite(limit) && Number.isInteger(limit))
     ? Math.max(0, limit)
     : 12;
@@ -186,6 +186,7 @@ function producerByteExtentWindow(text) {
 // provable extent (missing byteLength falls back to the provable minimum; a
 // malformed/forged carried value gets no xref authority at all).
 function stringByteSpan(s) {
+  if (typeof s?.text !== 'string') return null;
   const carried = s.byteLength;
   if (carried === undefined || carried === null) {
     const { minRaw } = producerByteExtentWindow(s.text);
@@ -206,12 +207,13 @@ export function findings(strings, program, symbols, limit = 40) {
   let activeSignals = SIGNALS.length;
   for (const s of strings || []) {
     if (activeSignals === 0) break;
+    if (typeof s?.text !== 'string') continue;
     const text = s.text;
     for (let si = 0; si < SIGNALS.length; si++) {
       const sig = SIGNALS[si];
       const bucket = buckets[si];
       if (bucket.length >= sig.max) continue;
-      if (!sig.re.test(text)) continue;
+      if (!sig.re.test(text) && !(sig.caseRe && sig.caseRe.test(text))) continue;
       bucket.push(s);
       if (bucket.length >= sig.max) activeSignals--;
     }
@@ -349,7 +351,7 @@ export async function autoAnalyze(opts) {
     return pinIdentifying(next) > pinIdentifying(cur);
   };
   const runWithBudget = async (max, fn, phase) => {
-    if (budget.left <= 0 || max <= 0) return null;
+    if (budget.left <= 0 || max <= 0 || perGoal <= 0) return null;
     const purse = { left: Math.max(0, Math.min(max, perGoal, budget.left)) };
     const before = purse.left;
     try {
@@ -396,8 +398,10 @@ export async function autoAnalyze(opts) {
 
       if (hasClasses) {
         const fieldPin = await runWithBudget(fieldBudget,
-          (purse) => pinpointField({ ...common, budget: purse }), `pinpoint-field:${goal.id}`);
-        report.stats.pinpointModes.field++;
+          (purse) => {
+            report.stats.pinpointModes.field++;
+            return pinpointField({ ...common, budget: purse });
+          }, `pinpoint-field:${goal.id}`);
         if (fieldPin) alternatives.push(fieldPin);
         if (beatsPin(fieldPin, best)) best = fieldPin;
       }
@@ -405,8 +409,10 @@ export async function autoAnalyze(opts) {
       const canLocate = memo && ((common.shapes && common.shapes.size) || ranked.length);
       if (canLocate && !((best && best.verdict === VERDICT.CONFIRMED) && best.kind === 'field')) {
         const locPin = await runWithBudget(locationBudget,
-          (purse) => pinpointLocation({ ...common, ranked, budget: purse }), `pinpoint-location:${goal.id}`);
-        report.stats.pinpointModes.location++;
+          (purse) => {
+            report.stats.pinpointModes.location++;
+            return pinpointLocation({ ...common, ranked, budget: purse });
+          }, `pinpoint-location:${goal.id}`);
         if (locPin) alternatives.push(locPin);
         if (beatsPin(locPin, best)) best = locPin;
       }
@@ -417,9 +423,11 @@ export async function autoAnalyze(opts) {
         const named = alternatives.find((p) => p && p.kind === 'field' && p.top && p.top.source !== 'cxx' && settledPin(p));
         if (named) fieldHint = { offset: named.top.offset, className: named.top.className, plain: named.top.plain, name: named.top.field?.name };
         const fnPin = await runWithBudget(functionBudget,
-          (purse) => pinpointFunction({ ...common, ranked, budget: purse, functionCount: symbols ? symbols.functionCount : 0, field: fieldHint }),
+          (purse) => {
+            report.stats.pinpointModes.function++;
+            return pinpointFunction({ ...common, ranked, budget: purse, functionCount: symbols ? symbols.functionCount : 0, field: fieldHint });
+          },
           `pinpoint-function:${goal.id}`);
-        report.stats.pinpointModes.function++;
         if (fnPin) alternatives.push(fnPin);
         if (beatsPin(fnPin, best)) best = fnPin;
       }
@@ -453,15 +461,51 @@ export async function autoAnalyze(opts) {
 
   progress({ phase: 'notable', done: 0, all: 1 });
   const recognized = Array.isArray(o.recognition?.records) ? o.recognition.records : [];
+  const regionLo = region && typeof region.vmAddr === 'bigint' ? region.vmAddr : null;
+  const regionHi = regionLo != null && typeof region.size === 'bigint' ? regionLo + region.size : null;
+  const inRegion = (addr) => {
+    if (regionLo == null || regionHi == null) return true;
+    let a = null;
+    if (typeof addr === 'bigint') a = addr;
+    else if (typeof addr === 'number' && Number.isSafeInteger(addr)) a = BigInt(addr);
+    else if (typeof addr === 'string' && /^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(addr.trim())) {
+      try { a = BigInt(addr.trim()); } catch { a = null; }
+    }
+    return a != null && a >= regionLo && a < regionHi;
+  };
+  const compareNotable = (a, b) => {
+    const scoreDiff = (b.score || 0) - (a.score || 0);
+    if (scoreDiff) return scoreDiff;
+    if (a.addr === b.addr) return 0;
+    if (typeof a.addr === 'bigint' && typeof b.addr === 'bigint') return a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0;
+    const sa = String(a.addr ?? ''), sb = String(b.addr ?? '');
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  };
   const recognizedNotable = recognized
-    .filter((item) => item && (item.classification === 'APPLICATION' || item.classification === 'UNKNOWN'))
-    .slice(0, 24)
-    .map((item) => ({ addr:item.address, name:item.name||null, score:Math.round((item.score||0)*100), reasons:[{code:'recognition',points:Math.round((item.score||0)*100),detail:{classification:item.classification,confidence:item.confidence,knowledge:!!item.knowledge}}], recognition:item }));
+    .filter((item) => item && item.classification === 'APPLICATION' && inRegion(item.address))
+    .map((item) => {
+      const score = Number.isFinite(item.score) ? Math.round(item.score * 100) : 0;
+      return {
+        addr: item.address,
+        name: item.name || null,
+        score,
+        reasons: [{ code: 'recognition', points: score, detail: { classification: item.classification, confidence: item.confidence, knowledge: !!item.knowledge } }],
+        recognition: item,
+      };
+    })
+    .sort(compareNotable)
+    .slice(0, 24);
   const structuralNotable = notableFunctions(program, symbols, region);
   const seen = new Set();
-  report.notable = [...recognizedNotable, ...structuralNotable].filter((item) => {
-    const key=item?.addr==null?'':item.addr.toString(); if(!key||seen.has(key))return false; seen.add(key); return true;
-  }).slice(0, 24);
+  report.notable = [...recognizedNotable, ...structuralNotable]
+    .sort(compareNotable)
+    .filter((item) => {
+      const key = item?.addr == null ? '' : item.addr.toString();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 24);
   Object.defineProperties(report.notable, {
     complete:{value:o.recognition ? o.recognition.complete===true && structuralNotable.complete!==false : structuralNotable.complete!==false,enumerable:false},
     sampled:{value:o.recognition?.complete===false || structuralNotable.sampled===true,enumerable:false},

@@ -212,10 +212,14 @@ export function describeValue(v) {
   if (!v) return pick('不明な値', 'an unknown value');
   switch (v.kind) {
     case 'imm':
-      return pick(v.value + ' という数値', 'the number ' + v.value);
+      return v.value != null
+        ? pick(v.value + ' という数値', 'the number ' + v.value)
+        : pick('数値', 'a number');
     case 'arg':
-      return pick((v.index + 1) + ' 番目の引数（呼び出し元から渡された値）',
-        'argument ' + (v.index + 1) + ' from the caller');
+      return v.index != null
+        ? pick((v.index + 1) + ' 番目の引数（呼び出し元から渡された値）',
+          'argument ' + (v.index + 1) + ' from the caller')
+        : pick('呼び出し元から渡された値', 'an argument from the caller');
     case 'string':
       return v.viaPointer
         ? pick('「' + trim(v.text) + '」という名前', 'the name “' + trim(v.text) + '”')
@@ -223,8 +227,10 @@ export function describeValue(v) {
     case 'address':
       return v.partial
         ? pick('アドレスの上半分（次の行と組で完成します）', 'the top half of an address (completed by the next line)')
-        : pick('0x' + v.addr.toString(16).toUpperCase() + ' に置かれたデータの場所',
-          'data at 0x' + v.addr.toString(16).toUpperCase());
+        : (v.addr != null
+          ? pick('0x' + v.addr.toString(16).toUpperCase() + ' に置かれたデータの場所',
+            'data at 0x' + v.addr.toString(16).toUpperCase())
+          : pick('データの場所', 'a data address'));
     case 'loaded':
       return v.addr != null
         ? pick('0x' + v.addr.toString(16).toUpperCase() + ' から読み出した値',
@@ -291,10 +297,14 @@ export function evidenceText(e) {
     case 'string':
       return pick('文字列「' + trim(d.text) + '」を参照している', 'references the text “' + trim(d.text) + '”');
     case 'address':
-      return pick('0x' + d.addr.toString(16).toUpperCase() + ' のデータを指している',
-        'points at data at 0x' + d.addr.toString(16).toUpperCase());
+      return d.addr != null
+        ? pick('0x' + d.addr.toString(16).toUpperCase() + ' のデータを指している',
+          'points at data at 0x' + d.addr.toString(16).toUpperCase())
+        : pick('あるデータを指している', 'points at data');
     case 'imm':
-      return pick('定数 ' + d.value + ' を使っている', 'uses the constant ' + d.value);
+      return d.value != null
+        ? pick('定数 ' + d.value + ' を使っている', 'uses the constant ' + d.value)
+        : pick('定数を使っている', 'uses a constant');
     case 'branch':
       return d.conditional
         ? pick('条件によって進む先が分かれている', 'branches depending on a condition')
@@ -321,7 +331,7 @@ export function evidenceText(e) {
     case 'leaf':
       return pick('ほかの処理をひとつも呼んでいない', 'calls nothing else');
     case 'instructions':
-      return pick('命令が ' + d.n + ' 個並んでいる', d.n + ' instructions in a row');
+      return pick('命令が ' + (d.n ?? 0) + ' 個並んでいる', (d.n ?? 0) + ' instructions in a row');
     default:
       return '';
   }
@@ -999,26 +1009,31 @@ export function factText(f) {
   if (!f) return '';
   const d = f.detail || {};
   switch (f.code) {
-    case 'instructions':
-      return pick('命令が ' + d.n.toLocaleString() + ' 個ある', d.n.toLocaleString() + ' instructions');
+    case 'instructions': {
+      const n = Number(d.n || 0).toLocaleString();
+      return pick('命令が ' + n + ' 個ある', n + ' instructions');
+    }
     case 'calls':
-      return pick('ほかの処理を ' + d.n + ' 回呼んでいる（うち名前が分かるのは ' + d.named + ' 回）',
-        'calls other routines ' + d.n + ' times (' + d.named + ' of them have names)');
+      return pick('ほかの処理を ' + (d.n ?? 0) + ' 回呼んでいる（うち名前が分かるのは ' + (d.named ?? 0) + ' 回）',
+        'calls other routines ' + (d.n ?? 0) + ' times (' + (d.named ?? 0) + ' of them have names)');
     case 'call-named':
-      return pick('「' + trim(shortName(d.name), 40) + '」を呼んでいる', 'calls “' + trim(shortName(d.name), 40) + '”');
+      return pick('「' + trim(shortName(d.name || ''), 40) + '」を呼んでいる', 'calls “' + trim(shortName(d.name || ''), 40) + '”');
     case 'selector':
-      return pick('「' + d.selector + '」というメソッドを呼んでいる',
-        'sends the message “' + d.selector + '”');
-    case 'string-ref':
-      return pick('文字列「' + trim(d.text, 32) + '」（' + hex(d.addr) + '）を参照している',
-        'references the text “' + trim(d.text, 32) + '” at ' + hex(d.addr));
+      return d.selector
+        ? pick('「' + trim(d.selector, 40) + '」というメソッドを呼んでいる', 'sends the message “' + trim(d.selector, 40) + '”')
+        : pick('メソッドを呼んでいる', 'sends a message');
+    case 'string-ref': {
+      const at = hex(d.addr);
+      return pick('文字列「' + trim(d.text, 32) + '」' + (at ? '（' + at + '）' : '') + 'を参照している',
+        'references the text “' + trim(d.text, 32) + '”' + (at ? ' at ' + at : ''));
+    }
     case 'loops':
-      return pick('前へ戻る分岐が ' + d.n + ' か所ある（＝繰り返し）', d.n + ' backward branches — loops');
+      return pick('前へ戻る分岐が ' + (d.n ?? 0) + ' か所ある（＝繰り返し）', (d.n ?? 0) + ' backward branches — loops');
     case 'conditionals':
-      return pick('条件分岐が ' + d.n + ' か所ある', d.n + ' conditional branches');
+      return pick('条件分岐が ' + (d.n ?? 0) + ' か所ある', (d.n ?? 0) + ' conditional branches');
     case 'memory':
-      return pick('メモリの読み出し ' + d.loads + ' 回、書き込み ' + d.stores + ' 回',
-        d.loads + ' loads and ' + d.stores + ' stores');
+      return pick('メモリの読み出し ' + (d.loads ?? 0) + ' 回、書き込み ' + (d.stores ?? 0) + ' 回',
+        (d.loads ?? 0) + ' loads and ' + (d.stores ?? 0) + ' stores');
     case 'returns-value':
       return pick('関数の終わりで返り値を用意している（＝呼び出し元へ結果を返している）',
         'prepares a return value before exiting');
@@ -1040,6 +1055,9 @@ export function factText(f) {
     case 'value-update': {
       const op = d.ops && d.ops.length ? d.ops[d.ops.length - 1] : null;
       const where = plainPlaceName(d.field, d.base, d.disp);
+      if (d.kind === 'read') {
+        return pick(where + 'から値を読み出している', 'reads a value from ' + where);
+      }
       if (d.kind === 'read-modify-write') {
         return pick(where + 'を読み、' + (op ? '「' + opWord(op) + '」という計算をして、' : '') + '書き戻している',
           'reads ' + where + (op ? ', ' + opWord(op) : '') + ', and writes it back');
@@ -1048,17 +1066,20 @@ export function factText(f) {
     }
     case 'compare-const': {
       const subject = d.register ? plainRegName(d.register) : pick('ある値', 'a value');
-      const target = d.value != null ? d.value.toString() : d.float;
+      const target = d.value != null ? d.value.toString() : (d.float != null ? String(d.float) : null);
+      if (target == null) {
+        return pick(subject + 'を定数と比べている', 'compares ' + subject + ' with a constant');
+      }
       return pick(subject + 'を ' + target + ' と比べている', 'compares ' + subject + ' with ' + target);
     }
     case 'callers':
-      return pick('この関数を呼んでいる場所が ' + d.n + ' か所ある', 'called from ' + d.n + ' places');
+      return pick('この関数を呼んでいる場所が ' + (d.n ?? 0) + ' か所ある', 'called from ' + (d.n ?? 0) + ' places');
     case 'no-callers':
       return pick('この関数を呼んでいる場所は、このセクションの中には見つからなかった',
         'nothing in this section calls it');
     case 'indirect-calls':
-      return pick('行き先が実行時に決まる呼び出しが ' + d.n + ' か所ある',
-        d.n + ' calls whose target is decided at run time');
+      return pick('行き先が実行時に決まる呼び出しが ' + (d.n ?? 0) + ' か所ある',
+        (d.n ?? 0) + ' calls whose target is decided at run time');
     default:
       return '';
   }
@@ -1079,8 +1100,14 @@ function opWord(op) {
     case 'fadd': return pick('小数の足し算をする', 'add (float)');
     case 'fsub': return pick('小数の引き算をする', 'subtract (float)');
     case 'and': case 'orr': case 'eor': case 'bic': return pick('ビット単位の演算をする', 'do bit operations');
-    case 'lsl': return n ? pick(2 ** Number(n) + ' 倍する', 'multiply by ' + (2 ** Number(n))) : pick('左へずらす', 'shift left');
-    case 'lsr': case 'asr': return n ? pick(2 ** Number(n) + ' で割る', 'divide by ' + (2 ** Number(n))) : pick('右へずらす', 'shift right');
+    case 'lsl': {
+      const f = safeShiftFactor(op && op.imm);
+      return f ? pick(f + ' 倍する', 'multiply by ' + f) : pick('左へずらす', 'shift left');
+    }
+    case 'lsr': case 'asr': {
+      const f = safeShiftFactor(op && op.imm);
+      return f ? pick(f + ' で割る', 'divide by ' + f) : pick('右へずらす', 'shift right');
+    }
     case 'mov': case 'movz': return pick('別の値に入れ替える', 'replace with another value');
     case 'csel': case 'csinc': return pick('条件によって値を選ぶ', 'pick a value depending on a condition');
     default: return pick('計算する', 'compute');
@@ -2176,8 +2203,10 @@ export function fnRoleSubject(role, withClass = true) {
     return pick('この関数の中だけで使う一時的な値', 'a temporary value inside this function');
   }
   if (s.kind === 'location') {
-    return pick('オブジェクトの ' + hexOffset(s.disp) + ' にある値',
-      'the value at ' + hexOffset(s.disp) + ' of the object');
+    const at = hexOffset(s.disp);
+    return at
+      ? pick('オブジェクトの ' + at + ' にある値', 'the value at ' + at + ' of the object')
+      : pick('オブジェクトの中の値', 'a value inside the object');
   }
   return null;
 }
@@ -2240,7 +2269,7 @@ export function fnRoleTitle(role, { icon = true } = {}) {
 /** 一覧の行に添える最短の札。「🎒 アイテム +1」 */
 export function fnRoleShort(role) {
   if (!role || role.action === 'unknown') return '';
-  const topic = topicLabel(role.topic);
+  const topic = role.topicSettled !== false ? topicLabel(role.topic) : null;
   const mark = actionMark(role);
   if (topic) return (topicIcon(role.topic) + ' ' + topic + (mark ? ' ' + mark : '')).trim();
   const subject = fnRoleSubject(role, false);
@@ -2262,9 +2291,14 @@ export function fnRoleTargetLine(role) {
    * 名前が読めないときの呼び名は、それ自体が「オブジェクトの +0x20 にある値」。
    * そこへ「先頭から +0x20」を足すと、同じことを 2 回言うことになる。
    */
-  const at = (s.disp != null && s.kind === 'field')
-    ? pick('先頭から ' + hexOffset(s.disp), hexOffset(s.disp) + ' from the start') : null;
+  const offsetText = (s.disp != null && s.kind === 'field') ? hexOffset(s.disp) : '';
+  const at = offsetText
+    ? pick('先頭から ' + offsetText, offsetText + ' from the start') : null;
   const tail = [type, at].filter(Boolean).join(pick('・', ', '));
+  if (role.action === 'get') {
+    return pick('読み出しているのは ' + where + (tail ? '（' + tail + '）' : '') + 'です。',
+      'What it reads is ' + where + (tail ? ' (' + tail + ')' : '') + '.');
+  }
   return pick('変えているのは ' + where + (tail ? '（' + tail + '）' : '') + 'です。',
     'What it changes is ' + where + (tail ? ' (' + tail + ')' : '') + '.');
 }
@@ -2361,9 +2395,13 @@ export function roleProofText(item) {
       return pick('増減の量が命令に直接書かれている（' + (d.imm != null ? d.imm.toString() : '?') + '）ので、' +
         'どれだけ変わるかまで読み取れる',
       'the amount is written straight into the instruction (' + (d.imm != null ? d.imm.toString() : '?') + ')');
-    case 'role-verb-api':
-      return pick(apiShort(d.api) + 'にあたる処理を実際に呼んでいる',
-        'it really calls something that does: ' + apiShort(d.api));
+    case 'role-verb-api': {
+      const apiLabel = apiShort(d.api);
+      return apiLabel
+        ? pick(apiLabel + 'にあたる処理を実際に呼んでいる',
+          'it really calls something that does: ' + apiLabel)
+        : pick('外部の処理を実際に呼んでいる', 'it really calls an external routine');
+    }
     case 'role-verb-shape':
       return pick('命令の形（比べて分岐する・値を移す）が、この動作と合っている',
         'the instruction shape fits this action');
@@ -2629,7 +2667,7 @@ function amountShort(a, base) {
   if (!a) return '';
   switch (a.kind) {
     case 'imm':
-      return String(a.value);
+      return a.value != null ? String(a.value) : '';
     case 'field': {
       const pos = plainOffset(a.disp);
       return a.base && base && a.base !== base
@@ -2652,12 +2690,41 @@ function amountShort(a, base) {
   }
 }
 
+const SHIFT_OPS = new Set(['lsl', 'lsr', 'asr']);
+
+function safeShiftFactor(v) {
+  if (v == null) return null;
+  if (typeof v !== 'bigint' && !Number.isSafeInteger(v)) return null;
+  const imm = BigInt(v);
+  if (imm < 0n || imm > 53n) return null;
+  return (1n << imm).toString();
+}
+
+function resolveShiftInfo(c) {
+  if (!c || (c.work !== 'scale' && c.work !== 'shrink')) return { isShift: false, factor: null };
+  if (!c.amount || c.amount.kind !== 'imm') return { isShift: false, factor: null };
+  let op = c.amount.op;
+  if (op == null && Array.isArray(c.ops)) {
+    for (let i = c.ops.length - 1; i >= 0; i--) {
+      const o = c.ops[i];
+      if ((c.work === 'scale' && o === 'lsl') ||
+          (c.work === 'shrink' && (o === 'lsr' || o === 'asr'))) {
+        op = o;
+        break;
+      }
+    }
+  }
+  if (!SHIFT_OPS.has(op)) return { isShift: false, factor: null };
+  return { isShift: true, factor: safeShiftFactor(c.amount.value) };
+}
+
 const WORK_VERB = {
   drain: ['減らす', 'takes away'],
   feed: ['増やす', 'adds to'],
   decrease: ['減らす', 'decreases'],
   increase: ['増やす', 'increases'],
   scale: ['倍率を掛ける', 'scales'],
+  shrink: ['割り算で減らす', 'divides'],
   set: ['入れる', 'sets'],
   clear: ['0 にする', 'clears'],
   read: ['読み出す', 'reads'],
@@ -2671,19 +2738,48 @@ export function changeText(c) {
   const amt = amountShort(c.amount, c.base);
   const tail = [];
   if (c.cappedBy) {
-    tail.push(pick('上限は ' + hexOffset(c.cappedBy.disp) + ' の値',
-      'capped by ' + hexOffset(c.cappedBy.disp)));
-  } else if (c.clamped) {
+    const capAt = hexOffset(c.cappedBy.disp);
+    tail.push(capAt
+      ? pick('上限は ' + capAt + ' の値', 'capped by ' + capAt)
+      : pick('別の値で上限止め', 'capped by another value'));
+  }
+  if (c.clamped) {
     tail.push(pick('下限で止める', 'held at its floor'));
   }
   if (c.n > 1) tail.push(pick('同じ形が ' + c.n + ' か所', c.n + ' places'));
   const note = tail.length ? pick('（' + tail.join('・') + '）', ' (' + tail.join(', ') + ')') : '';
 
   if (c.work === 'read') return pick(place + 'を読み出す' + note, 'reads ' + place + note);
-  if (c.work === 'set' || c.work === 'clear') {
-    return amt
+  if (c.work === 'clear') {
+    return pick(place + 'を 0 にする' + note, 'clears ' + place + note);
+  }
+  if (c.work === 'set') {
+    return amt && c.amount?.sourceOnLeft !== false
       ? pick(place + 'に ' + amt + ' を入れる' + note, 'puts ' + amt + ' into ' + place + note)
       : pick(place + 'を書き換える' + note, 'writes ' + place + note);
+  }
+  if (c.work === 'scale') {
+    const shift = resolveShiftInfo(c);
+    if (shift.isShift) {
+      return shift.factor
+        ? pick(place + 'を ' + shift.factor + ' 倍にする' + note, 'multiplies ' + place + ' by ' + shift.factor + note)
+        : pick(place + 'に倍率を掛ける' + note, 'scales ' + place + note);
+    }
+    if (!amt) return pick(place + 'に倍率を掛ける' + note, 'scales ' + place + note);
+    if (c.amount && c.amount.kind === 'imm') {
+      return pick(place + 'を ' + amt + ' 倍にする' + note, 'multiplies ' + place + ' by ' + amt + note);
+    }
+    return pick(place + 'に ' + amt + ' を掛ける' + note, 'multiplies ' + place + ' by ' + amt + note);
+  }
+  if (c.work === 'shrink') {
+    const shift = resolveShiftInfo(c);
+    if (shift.isShift) {
+      return shift.factor
+        ? pick(place + 'を ' + shift.factor + ' で割る' + note, 'divides ' + place + ' by ' + shift.factor + note)
+        : pick(place + 'を割り算で減らす' + note, 'divides ' + place + note);
+    }
+    if (!amt) return pick(place + 'を割り算で減らす' + note, 'divides ' + place + note);
+    return pick(place + 'を ' + amt + ' で割る' + note, 'divides ' + place + ' by ' + amt + note);
   }
   if (!amt) return pick(place + 'を' + pick(verb[0], verb[1]) + note, verb[1] + ' ' + place + note);
   return pick(place + 'を、' + amt + ' ぶん' + verb[0] + note,
@@ -2703,24 +2799,32 @@ export function purposeText(purpose) {
     case 'work-accessor':
       return pick(placeShort(h.change) + 'を読んで返すだけの処理',
         'just reads ' + placeShort(h.change) + ' and returns it');
-    case 'work-format':
-      return pick('文言に数値を差し込んで文を組み立てる処理' +
-        (h.texts && h.texts.length ? '（「' + trim(h.texts[0].text, 22) + '」など ' + h.n + ' 本）' : ''),
-      'builds text by filling numbers into ' + h.n + ' format strings');
+    case 'work-format': {
+      const n = Number(h.n || 0);
+      const sample = h.texts && h.texts[0] && h.texts[0].text ? trim(h.texts[0].text, 22) : '';
+      const jaDetail = sample
+        ? (n > 1 ? '（「' + sample + '」など ' + n + ' 本）' : '（「' + sample + '」）')
+        : (n > 0 ? '（' + n + ' 本）' : '');
+      const enCount = n === 1 ? '1 format string' : (n + ' format strings');
+      return pick('文言に値を差し込んで文を組み立てる処理' + jaDetail,
+        'builds text by filling values into ' + enCount);
+    }
     case 'work-fill':
-      return pick('並びを最後まで回して、値を詰めていく処理（繰り返し ' + h.loops + ' か所）',
-        'walks a list and fills values in (' + h.loops + ' loops)');
+      return pick('並びを最後まで回して、値を詰めていく処理（繰り返し ' + (h.loops ?? 0) + ' か所）',
+        'walks a list and fills values in (' + (h.loops ?? 0) + ' loops)');
     case 'work-dispatch':
-      return pick('自分では値を変えず、ほかの処理へ渡すだけ（' + h.calls + ' 回の呼び出し）',
-        'changes nothing itself — hands off to other routines (' + h.calls + ' calls)');
-    case 'work-too-big':
-      return pick('1 つの処理と呼ぶには大きすぎる（' + h.n.toLocaleString() + ' 命令・' +
-        h.calls + ' 回の呼び出し）— 複数の処理がまとめて埋め込まれている',
-      'too large to be one routine (' + h.n.toLocaleString() + ' instructions) — ' +
+      return pick('自分では値を変えず、ほかの処理へ渡すだけ（' + (h.calls ?? 0) + ' 回の呼び出し）',
+        'changes nothing itself — hands off to other routines (' + (h.calls ?? 0) + ' calls)');
+    case 'work-too-big': {
+      const n = Number(h.n || 0).toLocaleString();
+      return pick('1 つの処理と呼ぶには大きすぎる（' + n + ' 命令・' +
+        (h.calls ?? 0) + ' 回の呼び出し）— 複数の処理がまとめて埋め込まれている',
+      'too large to be one routine (' + n + ' instructions) — ' +
         'several routines were inlined together');
+    }
     case 'work-check':
-      return pick('決まった数と比べて分かれるだけの処理（分岐 ' + h.n + ' 個）',
-        'only compares against constants and branches (' + h.n + ' branches)');
+      return pick('決まった数と比べて分かれるだけの処理（分岐 ' + (h.n ?? 0) + ' 個）',
+        'only compares against constants and branches (' + (h.n ?? 0) + ' branches)');
     default: return '';
   }
 }

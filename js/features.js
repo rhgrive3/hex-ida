@@ -28,7 +28,7 @@ import { pick } from './i18n.js';
 const FEATURES = [
   {
     id: 'login', ja: 'ログイン・アカウント', en: 'Login and accounts',
-    re: /login|logout|signin|sign_in|sign-up|signup|account|auth|oauth|token|password|passwd|credential|session|ログイン|ログアウト|アカウント|パスワード|認証|会員|引き継ぎ|連携/i,
+    re: /login|logout|signin|sign_in|sign-up|signup|account|auth(?!or)|oauth|token|password|passwd|credential|session|ログイン|ログアウト|アカウント|パスワード|認証|会員|引き継ぎ|連携/i,
   },
   {
     id: 'purchase', ja: '課金・購入', en: 'Purchases',
@@ -44,11 +44,11 @@ const FEATURES = [
   },
   {
     id: 'battle', ja: 'バトル・戦闘', en: 'Battle',
-    re: /battle|combat|damage|attack|defen[cs]e|\bhp\b|\bmp\b|skill|buff|debuff|critical|enemy|boss|バトル|戦闘|ダメージ|攻撃|防御|敵|ボス|スキル|必殺|勝利|敗北/i,
+    re: /battle|combat|damage|attack|defen[cs]e|\bhp\b|\bmp\b|skill|buff(?!er)|debuff|critical|enemy|boss|バトル|戦闘|ダメージ|攻撃|防御|敵|ボス|スキル|必殺|勝利|敗北/i,
   },
   {
     id: 'character', ja: 'キャラクター・育成', en: 'Characters',
-    re: /character|chara|hero|unit|avatar|level_?up|exp\b|evolve|awaken|キャラ|ユニット|育成|レベル|経験値|進化|覚醒|強化/i,
+    re: /character|chara|hero|unit(?!y|test)|avatar|level_?up|exp\b|evolve|awaken|キャラ|ユニット|育成|レベル|経験値|進化|覚醒|強化/i,
   },
   {
     id: 'item', ja: 'アイテム・所持品', en: 'Items and inventory',
@@ -56,11 +56,11 @@ const FEATURES = [
   },
   {
     id: 'quest', ja: 'クエスト・ステージ', en: 'Quests and stages',
-    re: /quest|stage|mission|chapter|dungeon|area_?id|difficulty|クエスト|ステージ|ミッション|章|難易度|挑戦/i,
+    re: /quest|stage|(?<!per|sub|trans|ad|com|inter)mission|chapter|dungeon|area_?id|difficulty|クエスト|ステージ|ミッション|章|難易度|挑戦/i,
   },
   {
     id: 'social', ja: 'フレンド・ギルド・チャット', en: 'Social',
-    re: /friend|guild|clan|party|chat|message|mail|follow|フレンド|ギルド|チャット|メッセージ|メール|仲間/i,
+    re: /friend|guild|clan(?!g)|(?<!(?:third|first|second|1st|2nd|3rd)[\s_-])party|chat|message|mail|follow|フレンド|ギルド|チャット|メッセージ|メール|仲間/i,
   },
   {
     id: 'ranking', ja: 'ランキング・スコア', en: 'Ranking',
@@ -76,7 +76,7 @@ const FEATURES = [
   },
   {
     id: 'ads', ja: '広告', en: 'Advertising',
-    re: /admob|unityads|applovin|ironsource|adcolony|vungle|tapjoy|adjust|appsflyer|firebase_?analytics|banner_?ad|interstitial|rewarded|広告/i,
+    re: /admob|unityads|applovin|ironsource|adcolony|vungle|tapjoy|adjust(?:\.com|[\s_-]?(?:sdk|event|token|config|tracker|attribution|analytics))|appsflyer|firebase_?analytics|banner_?ad|interstitial|rewarded|広告/i,
   },
   {
     id: 'ui', ja: '画面・UI', en: 'Screens and UI',
@@ -108,7 +108,7 @@ const ENGINES = [
   { id: 'unity', re: /il2cpp|UnityEngine|libunity|mono_|Assembly-CSharp/i,
     ja: 'Unity 製の可能性が高いです。ゲームのロジックの大半は libil2cpp.so / UnityFramework 側にあり、この実行ファイルにはほとんど入っていないことがあります。',
     en: 'Looks like a Unity app; most game logic lives in the il2cpp binary, not here.' },
-  { id: 'unreal', re: /UnrealEngine|UE4|FEngineLoop|\.uasset/i,
+  { id: 'unreal', re: /UnrealEngine|\bUE4\b|FEngineLoop|\.uasset/i,
     ja: 'Unreal Engine 製の可能性が高いです。',
     en: 'Looks like an Unreal Engine app.' },
   { id: 'flutter', re: /flutter|dart_vm|libapp\.so/i,
@@ -141,7 +141,7 @@ export function classifyString(text) {
 /** エンジンの見当。分からなければ null。 */
 export function detectEngine(strings) {
   for (const e of ENGINES) {
-    for (const s of strings) {
+    for (const s of strings || []) {
       if (typeof s?.text !== 'string') continue;
       if (e.re.test(s.text)) {
         return { id: e.id, note: pick(e.ja, e.en), sample: s.text, addr: s.addr };
@@ -219,6 +219,7 @@ export function groupByFeature(strings, perFeature = 200, options = {}) {
   // evaluation bound: a late strong hit must be able to evict an early weak hit.
   for (const s of strings || []) {
     if (signal?.aborted) break;
+    if (typeof s?.text !== 'string') continue;
     const hits = classifyString(s.text);
     for (const h of hits) {
       const list = buckets.get(h.id);
@@ -251,6 +252,7 @@ export async function classifyFeaturesAndEngineAsync(strings, options = {}) {
   const buckets = new Map();
   for (const f of FEATURES) buckets.set(f.id, []);
   let detectedEngine = null;
+  let detectedEngineRank = ENGINES.length;
 
   const total = strings?.length || 0;
   for (let i = 0; i < total; i++) {
@@ -261,11 +263,13 @@ export async function classifyFeaturesAndEngineAsync(strings, options = {}) {
       if (signal?.aborted) break;
     }
     const s = strings[i];
-    if (!detectedEngine) {
-      for (const e of ENGINES) {
-        if (typeof s?.text !== 'string') continue;
+    if (typeof s?.text !== 'string') continue;
+    if (detectedEngineRank > 0) {
+      for (let ei = 0; ei < detectedEngineRank; ei++) {
+        const e = ENGINES[ei];
         if (e.re.test(s.text)) {
           detectedEngine = { id: e.id, note: pick(e.ja, e.en), sample: s.text, addr: s.addr };
+          detectedEngineRank = ei;
           break;
         }
       }

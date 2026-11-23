@@ -11,19 +11,34 @@ function libraryBasename(value) {
   return text.slice(text.lastIndexOf('/') + 1);
 }
 
+const APPLE_SYSTEM_FRAMEWORKS = [
+  'Foundation', 'CoreFoundation', 'UIKit', 'AppKit', 'CoreGraphics', 'QuartzCore',
+  'Security', 'CFNetwork', 'AVFoundation', 'AVFAudio', 'CoreAudio', 'AudioToolbox',
+  'CoreData', 'CoreMedia', 'CoreVideo', 'CoreText', 'CoreImage', 'CoreLocation',
+  'CoreMotion', 'CoreServices', 'Metal', 'MetalKit', 'SpriteKit', 'SceneKit',
+  'GameKit', 'StoreKit', 'WebKit', 'SystemConfiguration', 'ImageIO', 'Accelerate',
+  'SwiftUI', 'Combine', 'CloudKit', 'UserNotifications', 'CryptoKit', 'IOKit',
+  'OpenGLES', 'GLKit',
+].join('|');
+const APPLE_FRAMEWORK_BASE_RE = new RegExp(`^(?:${APPLE_SYSTEM_FRAMEWORKS})$`, 'i');
+const APPLE_FRAMEWORK_PATH_RE = new RegExp(`(?:^|/)(${APPLE_SYSTEM_FRAMEWORKS})\\.framework/(?:Versions/[A-Za-z0-9._-]+/)?\\1$`, 'i');
+
 function isAppleSystemLibrary(value) {
   const text = String(value || '').replace(/\\/g, '/');
   const base = libraryBasename(text);
   /* #5438: macOS keeps every framework binary under
      <Name>.framework/Versions/<V>/<Name> (otool -L output), so the version
-     segment must not disqualify the canonical Foundation pair. */
-  if (/^(Foundation|CoreFoundation)$/i.test(base)) {
-    return /(?:^|\/)(?:Foundation|CoreFoundation)\.framework\/(?:Versions\/[A-Za-z0-9._-]+\/)?(?:Foundation|CoreFoundation)$/i.test(text) || !text.includes('/');
+     segment must not disqualify canonical Apple frameworks; \1 enforces
+     that the framework bundle name and binary name match. */
+  if (APPLE_FRAMEWORK_BASE_RE.test(base)) {
+    return APPLE_FRAMEWORK_PATH_RE.test(text) || !text.includes('/');
   }
   if (/^libobjc(?:\.A)?\.dylib$/i.test(base)) return true;
   // Accept canonical Darwin libSystem names such as libSystem.B.dylib and
   // libsystem_kernel.dylib without restoring the old loose substring match.
   if (/^libsystem(?:(?:\.[a-z0-9]+)|(?:_[a-z0-9]+))?\.dylib$/i.test(base)) return true;
+  if (/^libc\+\+(?:abi)?(?:\.[0-9]+)?\.dylib$/i.test(base)) return true;
+  if (/^libdispatch\.dylib$/i.test(base)) return true;
   if (/^libswift[a-z0-9_]*\.dylib$/i.test(base)) return true;
   return false;
 }
@@ -33,8 +48,7 @@ function boundedConfidence(value) {
   return Math.max(0, Math.min(1, value));
 }
 
-export function classifyFunction(input = {}, context = {}) {
-  const fp = fingerprintFunction(input);
+function classifyFingerprint(fp, context = {}) {
   const evidence = [];
   const signature = context.signature?.classification && FUNCTION_CLASSES.includes(context.signature.classification) ? context.signature : null;
   const signatureConfidence = boundedConfidence(signature?.confidence ?? 0);
@@ -54,8 +68,8 @@ export function classifyFunction(input = {}, context = {}) {
     return { classification, confidence: vendorConfidence, evidence: context.vendor.evidence || [], hardSuppress:true };
   }
   let appScore = 0;
-  if (fp.objc.class && !context.vendor) { appScore += 0.22; evidence.push('custom-objc-type'); }
-  if (fp.swift.typeDescriptor && !context.vendor) { appScore += 0.22; evidence.push('custom-swift-type'); }
+  if (fp.objc.class && !context.vendor) { appScore += 0.24; evidence.push('custom-objc-type'); }
+  if (fp.swift.typeDescriptor && !context.vendor) { appScore += 0.24; evidence.push('custom-swift-type'); }
   if (fp.strings.some((s) => context.appStrings?.has?.(s))) { appScore += 0.18; evidence.push('app-specific-string'); }
   if (fp.semantic.writes.length) { appScore += 0.16; evidence.push('state-writes'); }
   if (context.calledFromApplication) { appScore += 0.16; evidence.push('application-entry-path'); }
@@ -66,8 +80,11 @@ export function classifyFunction(input = {}, context = {}) {
   return { classification:'UNKNOWN', confidence:0.35, evidence, hardSuppress:false };
 }
 
-export function applicationCodeScore(input = {}, context = {}) {
-  const fp = fingerprintFunction(input); const cls = classifyFunction(fp, context);
+export function classifyFunction(input = {}, context = {}) {
+  return classifyFingerprint(fingerprintFunction(input), context);
+}
+
+function scoreFingerprint(fp, cls, context = {}) {
   let score = cls.classification === 'APPLICATION' ? 0.45 : cls.classification === 'UNKNOWN' ? 0.2 : 0;
   if (context.notKnownVendor) score += 0.12;
   if (fp.objc.class || fp.swift.typeDescriptor) score += 0.1;
@@ -81,18 +98,24 @@ export function applicationCodeScore(input = {}, context = {}) {
   return Math.max(0, Math.min(1, score));
 }
 
+export function applicationCodeScore(input = {}, context = {}) {
+  const fp = fingerprintFunction(input);
+  const cls = classifyFingerprint(fp, context);
+  return scoreFingerprint(fp, cls, context);
+}
+
 const SUBSYSTEM_RULES = {
   UI: { strings: [/button|view|screen|menu|dialog|label/i], calls: [/ui(view|button|label)|presentview|layout/i] },
-  network: { strings: [/https?:|api\.|socket|request|response/i], calls: [/urlsession|http|socket|connect|send|recv/i] },
-  persistence: { strings: [/database|sqlite|save|load|preferences|keychain/i], calls: [/sqlite|write|read|serialize|deserialize|userdefaults|keychain/i] },
+  network: { strings: [/https?:|api\.|socket|request|response/i], calls: [/urlsession|http|socket|connect|(?<!objc_msg)send|recv/i] },
+  persistence: { strings: [/database|sqlite|save|load|preferences|keychain/i], calls: [/sqlite|write|(?<!pth)read|serialize|deserialize|userdefaults|keychain/i] },
   gameplay: { strings: [/player|enemy|battle|stage|damage|attack/i], calls: [/update|tick|physics|collision/i] },
-  'economy/reward': { strings: [/coin|gem|reward|currency|purchase|gacha|xp|experience/i], calls: [/purchase|reward|inventory|wallet/i] },
+  'economy/reward': { strings: [/coin|gem|reward|currency|purchase|gacha|\bxp\b|experience/i], calls: [/purchase|reward|inventory|wallet/i] },
   'security/integrity': { strings: [/integrity|jailbreak|tamper|signature|checksum|receipt/i], calls: [/seccode|crypto|hash|verify|attest/i] },
   ads: { strings: [/rewarded.?ad|interstitial|admob|applovin|ironsource|unityads/i], calls: [/loadad|showad|adrequest/i] },
   analytics: { strings: [/analytics|event|telemetry|firebase|appsflyer|adjust/i], calls: [/logevent|track|telemetry/i] },
 };
-export function discoverSubsystems(input = {}) {
-  const fp = fingerprintFunction(input), hayStrings = fp.strings, hayCalls = [...fp.calls, ...fp.imports];
+function discoverSubsystemsFromFingerprint(fp) {
+  const hayStrings = fp.strings, hayCalls = [...fp.calls, ...fp.imports];
   const out = [];
   for (const [name, rule] of Object.entries(SUBSYSTEM_RULES)) {
     const stringHits = hayStrings.filter((s) => rule.strings.some((rx) => rx.test(s)));
@@ -106,14 +129,19 @@ export function discoverSubsystems(input = {}) {
   return out.sort((a,b) => b.confidence - a.confidence);
 }
 
+export function discoverSubsystems(input = {}) {
+  return discoverSubsystemsFromFingerprint(fingerprintFunction(input));
+}
+
 export function clusterFunctions(functions = []) {
   const groups = new Map();
   for (const raw of functions) {
     const fp = fingerprintFunction(raw);
-    const cls = classifyFunction(fp, raw.context || {});
-    const subs = discoverSubsystems(fp);
+    const cls = classifyFingerprint(fp, raw.context || {});
+    const subs = discoverSubsystemsFromFingerprint(fp);
     const suppressed = ['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) && cls.hardSuppress === true && cls.confidence >= 0.8;
-    const key = suppressed ? `class:${cls.classification}` : subs[0]?.confidence >= 0.6 ? `sub:${subs[0].subsystem}` : fp.cfgHash ? `cfg:${fp.cfgHash}` : cls.classification === 'APPLICATION' ? 'class:APPLICATION' : `unknown:size:${Math.floor(Math.log2(Math.max(1,fp.size)))}`;
+    const safeSize = typeof fp.size === 'number' && Number.isFinite(fp.size) && fp.size > 0 ? fp.size : 1;
+    const key = suppressed ? `class:${cls.classification}` : subs[0]?.confidence >= 0.6 ? `sub:${subs[0].subsystem}` : fp.cfgHash ? `cfg:${fp.cfgHash}` : cls.classification === 'APPLICATION' ? 'class:APPLICATION' : `unknown:size:${Math.floor(Math.log2(Math.max(1,safeSize)))}`;
     let group = groups.get(key); if (!group) groups.set(key, group = { key, classification: cls.classification, subsystem: subs[0]?.subsystem || null, functions: [] });
     group.functions.push(fp);
   }
@@ -123,7 +151,10 @@ export function clusterFunctions(functions = []) {
 export function rankApplicationFunctions(functions = [], contextFor = () => ({})) {
   return functions.map((fn, index) => {
     const context = contextFor(fn, index);
-    return { function: fingerprintFunction(fn), index, score: applicationCodeScore(fn, context), classification: classifyFunction(fn, context) };
+    const fp = fingerprintFunction(fn);
+    const classification = classifyFingerprint(fp, context);
+    const score = scoreFingerprint(fp, classification, context);
+    return { function: fp, index, score, classification };
   }).sort((a,b) => b.score - a.score);
 }
 

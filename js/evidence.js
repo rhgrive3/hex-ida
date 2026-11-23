@@ -98,6 +98,7 @@ const CODE_GROUP = [
   [/^cfg-|^control-|^branch-|^loop-/, GROUP.CONTROLFLOW],
   [/^ai-|^gemini-|^plugin-/, GROUP.EXTERNAL],
   [/formula|comprehend|purpose/, GROUP.SEMANTIC],
+  [/^role-(?:verb-selector|topic-agree)$/, GROUP.METADATA],
 ];
 
 /** その証拠はどの出どころから来ているか。 */
@@ -131,7 +132,10 @@ export function independentGroupCount(fusion) {
   if (!fusion) return 0;
   if (Array.isArray(fusion.items)) {
     const seen = new Set();
-    for (const it of fusion.items) if (it && it.applied > 0) seen.add(groupOf(it));
+    for (const it of fusion.items) {
+      const g = canonicalAppliedGroup(it);
+      if (g) seen.add(g);
+    }
     return seen.size;
   }
   if (Array.isArray(fusion.groups)) {
@@ -213,7 +217,7 @@ export const EVIDENCE = deepFreeze({
   /* 値（フィールド）を特定するための証拠 */
   /* 打ち込まれた名前が、そのまま変数の名前だった。名前で探した人への直球の答え。 */
   'field-name-asked':   { lr: 400,  family: FAMILY.NAME,     kind: 'fact', id: true },
-  'field-name-contains':{ lr: 120,  family: FAMILY.NAME,     kind: 'fact', id: true },
+  'field-name-contains':{ lr: 58,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-words': { lr: 45, family: FAMILY.NAME, kind: 'fact', id: true },
   'field-name-exact':   { lr: 55,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-strong':  { lr: 16,   family: FAMILY.NAME,     kind: 'fact', id: true },
@@ -279,9 +283,9 @@ export const EVIDENCE = deepFreeze({
    * 「他のオブジェクトの、0 で止められる値を減らすための量として使われている」は
    * 攻撃力そのものの定義になっている。名前が無くても、これは名指しになる。
    */
-  'loc-damage-source':  { lr: 8,    family: FAMILY.USAGE,    kind: 'verified', id: true },
-  'loc-resource-drain': { lr: 7,    family: FAMILY.USAGE,    kind: 'verified', id: true },
-  'loc-self-resource':  { lr: 5,    family: FAMILY.USAGE,    kind: 'verified', id: true },
+  'loc-damage-source':  { lr: 8,    family: FAMILY.USAGE,    kind: 'fact', id: true },
+  'loc-resource-drain': { lr: 7,    family: FAMILY.USAGE,    kind: 'fact', id: true },
+  'loc-self-resource':  { lr: 5,    family: FAMILY.USAGE,    kind: 'fact', id: true },
   /*
    * 同じ位置が「減らされる側」とも「減らす量の側」とも読める。
    *
@@ -553,6 +557,7 @@ export function exclusiveLR(total, users, score, text) {
   if (totalC === null || usersC === null) return 0;
   const n = Math.max(2, totalC);
   const k = Math.max(1, usersC);
+  if (totalC > 0 && k >= totalC) return 0;
   if (typeof score !== 'number' || !Number.isFinite(score)) return 0;
   if (k > EXCLUSIVE_MAX_USERS) return 0;        // 何十か所からも使われる語は名指しではない
   if (!namesBehaviour(text)) return 0;
@@ -582,17 +587,32 @@ export function exclusiveLR(total, users, score, text) {
  *                    拡張子付きの識別子。何をするかは何も言っていない。
  */
 function namesBehaviour(text) {
-  const s = String(text == null ? '' : text).trim();
-  if (!s) return true;                     // 文言が渡っていないなら判定しない
+  if (text == null) return true;           // 文言が渡っていないなら判定しない
+  if (typeof text !== 'string') return false;
+  const s = text.trim();
+  if (!s) return false;
+  // 拡張子付きの識別子・パス＝素材（%d 付き素材パス・.maanim / .mamodel のように長い拡張子も含む）
+  if (/^[\w./\\%+-]+\.[a-zA-Z][a-zA-Z0-9]{1,7}$/.test(s)) return false;
+  if (/^(?:\/|\.\.?\/|[\w.%+-]+\/[\w.%+-]+\/)[\w./\\%+-]*$/.test(s)) return false;
+  // 先頭 [TAG] / <TAG> を除去してログ・診断文言を検査する
+  const stripped = s.replace(/^(?:\s*(?:\[[^\]]{1,40}\]|<[^>]{1,40}>)\s*[:\-]?\s*)+/, '').trim();
+  if (!stripped) return false;
   // 英語のエラー・アサートログ接頭辞は、排他的な機能名指しではない（計算式表記は残す）
-  if (/^(?:error|warning|warn|assert|assertion|fatal|debug|info|trace|undefined|invalid|failed|cannot|unable)\b/i.test(s) && !/[×÷]/.test(s)) return false;
-  if (/%[-+ 0-9.#]*[@a-zA-Z]/.test(s)) return true;   // 書式指定があれば人に見せる文言
-  // 拡張子付きの識別子＝素材（.maanim / .mamodel のように長い拡張子もある）
-  if (/^[\w./\\-]+\.[a-zA-Z][a-zA-Z0-9]{1,7}$/.test(s)) return false;
+  if (/^(?:error|warning|warn|assert|assertion|fatal|debug|info|trace|log|err|crit|critical|panic|exception|undefined|invalid|failed|cannot|unable)\b/i.test(stripped) && !/[×÷]/.test(stripped)) return false;
+  if (/\bassertion\s+failed\b/i.test(stripped)) return false;
+  if (/\b[\w./\\-]+\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|m|mm|swift|java|kt|cs|js|mjs|ts|py|rs|go|lua|rb|php):\d+\b/i.test(stripped)) return false;
+  if (/https?:\/\//i.test(stripped)) return false;
+  if (/(?:->|::|=)/.test(stripped)) return false;
+  if (/^\/(?:\\.|[^/\\\r\n])+\/[gimsuyvd]*$/.test(stripped)) return false;
+  // C++ 関数シグネチャ・Qt Signal/Slot
+  if (/^(?:(?:virtual|static|inline|const|constexpr|extern|unsigned|signed|volatile|override)\s+)*(?:void|bool|char|short|int|long|float|double|size_t|u?int(?:8|16|32|64)_t|auto|[A-Z]\w*(?:<[^>]+>)?)\s*[*&]?\s*[A-Za-z_~]\w*\s*\([^)]*\)(?:\s*(?:const|noexcept|override|final))*\s*;?$/.test(stripped)) return false;
+  if (/^(?:[12][A-Za-z_]\w*\([^)]*\)|(?:SIGNAL|SLOT)\s*\(.+\))$/.test(stripped)) return false;
+  // 実 printf / ObjC 書式指定子があれば人に見せる文言（%20p 等の URL エンコード・ポインタ指定子は除外）
+  if (/(?<!%)%(?:[1-9]\d*\$)?[-+#0]*(?:\*|\d+)?(?:\.(?:\*|\d+))?(?:(?:hh|ll|[hlztjL])?[diuoxXfFeEgGsc]|@)(?![A-Za-z0-9_])/.test(s)) return true;
   // 配列添字付きコード識別子（例: cdef_y_pri_strength[i]）
   if (/^[A-Za-z_][\w.]*\[[^\]]+\]$/.test(s)) return false;
-  // 空白も日本語も書式指定も持たない単一のコード識別子・ドット/スラッシュキー・マングル名
-  if (!/[\s%]/.test(s) && !/[ぁ-んァ-ヶ一-龥]/.test(s) && /^[A-Za-z0-9_.:/$+-]+$/.test(s)) return false;
+  // 空白も日本語も持たない単一のコード識別子・ドット/スラッシュキー・マングル名・URL エンコード片
+  if (!/\s/.test(s) && !/[ぁ-んァ-ヶ一-龥]/.test(s) && /^[A-Za-z0-9_.:/$+%-]+$/.test(s)) return false;
   return true;
 }
 
@@ -610,6 +630,7 @@ export function rarityLR(total, matching) {
   const totalC = observationCount(total, 0);
   const matchingC = observationCount(matching, 1);
   if (totalC === null || matchingC === null) return 0;
+  if (totalC > 0 && matching === 0) return 0;
   const n = Math.max(2, totalC);
   const k = Math.max(1, matchingC);
   if (k >= n) return 0;
@@ -675,14 +696,15 @@ export function fuse(items, opts) {
   const absent = countAuthority(o.absent, 40);
   const candidates = countAuthority(o.candidates, 200);
   const n = Math.max(2, candidates + absent);
-  const prior = o.prior != null
+  const prior = typeof o.prior === 'number' && Number.isFinite(o.prior)
     ? Math.max(1e-9, Math.min(0.5, o.prior))
     : 1 / n;
   let logOdds = LN(prior / (1 - prior));
 
-  // 系統ごとに、割引を掛けながら足す
+  // 系統ごとに、割引を掛けながら足す（正の寄与上限は負の証拠と分離して管理する）
   const perFamily = new Map();
-  const counted = new Map();          // 同じ code が何回目か
+  const posPerFamily = new Map();
+  const counted = new Map();          // 同じ code が何回目か（正の寄与のみ進める）
   const detailed = [];
 
   const byEffect = (a, b) => {
@@ -737,22 +759,23 @@ export function fuse(items, opts) {
     const lr = Math.max(1e-6, it.lr);
     const family = it.family || FAMILY.CONTEXT;
     const key = family + ':' + it.code;
-    const nth = counted.get(key) || 0;
-    counted.set(key, nth + 1);
 
-    // 1 件の効き（対数オッズ）。濃さで指数を落とし、重複で割り引く。
-    let delta = LN(lr) * (it.strength == null ? 1 : it.strength) * damping(nth, family);
-    // 打ち消す証拠（尤度比が 1 未満）は割り引かない。危険側に倒さないため。
-    if (delta > 0) delta *= scale;
-
-    // 系統ごとの上限。名前だけで確定させないための歯止め。
-    const cap = LN(FAMILY_CAP[family] != null ? FAMILY_CAP[family] : 20);
-    const already = perFamily.get(family) || 0;
+    // 1 件の効き（対数オッズ）。打ち消す証拠（delta <= 0）は重複割引・上限の消費を行わない。
+    let delta = LN(lr) * (it.strength == null ? 1 : it.strength);
+    let nth = 0;
     if (delta > 0) {
-      const room = Math.max(0, cap - already);
+      nth = counted.get(key) || 0;
+      counted.set(key, nth + 1);
+      delta *= damping(nth, family) * scale;
+
+      // 系統ごとの上限。正の寄与だけで管理し、負の証拠が上限枠を水増ししないようにする。
+      const cap = LN(FAMILY_CAP[family] != null ? FAMILY_CAP[family] : 20);
+      const posAlready = posPerFamily.get(family) || 0;
+      const room = Math.max(0, cap - posAlready);
       if (delta > room) delta = room;
+      posPerFamily.set(family, posAlready + delta);
     }
-    perFamily.set(family, already + delta);
+    perFamily.set(family, (perFamily.get(family) || 0) + delta);
 
     if (delta !== 0) {
       logOdds += delta;
@@ -795,8 +818,8 @@ export function fuse(items, opts) {
   for (const d of detailed) {
     if (d.applied > 0) {
       families.add(d.family);
-      const g = groupOf(d);
-      groups.set(g, (groups.get(g) || 0) + d.applied);
+      const g = canonicalAppliedGroup(d);
+      if (g) groups.set(g, (groups.get(g) || 0) + d.applied);
     }
     if (d.kind === 'verified' && d.applied > 0) verified++;
   }
@@ -816,11 +839,13 @@ export function fuse(items, opts) {
   if (!verified) logOdds = Math.min(logOdds, UNVERIFIED_CEIL);
 
   const rawProbability = 1 / (1 + Math.exp(-logOdds));
-  const probability = o.calibration ? calibrateProbability(rawProbability, o.calibration) : rawProbability;
+  const calPts = validCalibrationPoints(o.calibration);
+  const calibrated = calPts.length > 0;
+  const probability = calibrated ? calibrateProbability(rawProbability, calPts) : rawProbability;
 
   return {
     logOdds,
-    probability, rawProbability, calibrated: !!o.calibration,
+    probability, rawProbability, calibrated,
     prior,
     items: detailed.sort((a, b) => b.applied - a.applied),
     families: Array.from(families),
@@ -891,7 +916,7 @@ const AMBIGUOUS_FLOOR = 0.05;
 const VERDICT_ORDER = { none: 0, ambiguous: 1, likely: 2, confirmed: 3 };
 
 /** 決着の強さを比べる。UI と auto.js の並び替えはこれ 1 本に寄せる。 */
-export function verdictRank(v) { return VERDICT_ORDER[v] || 0; }
+export function verdictRank(v) { return Object.hasOwn(VERDICT_ORDER, v) ? VERDICT_ORDER[v] : 0; }
 
 function finiteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -951,7 +976,7 @@ const TRUSTED_LIKELY_GROUPS = Object.freeze([GROUP.METADATA, GROUP.STRUCTURAL]);
  * fallback as authority. Resolve only registered evidence codes here.
  */
 function canonicalAppliedGroup(it) {
-  if (!it || !(it.applied > 0) || typeof it.code !== 'string') return null;
+  if (!it || typeof it.applied !== 'number' || !Number.isFinite(it.applied) || !(it.applied > 0) || typeof it.code !== 'string') return null;
   const info = Object.hasOwn(EVIDENCE, it.code)
     ? EVIDENCE[it.code]
     : (Object.hasOwn(ADAPTER_EVIDENCE, it.code) ? ADAPTER_EVIDENCE[it.code] : null);
@@ -1018,9 +1043,11 @@ function likelyGroupsGate(fusion, independent, opts) {
 export function verdictForFusions(topFusion, runnerFusion, opts) {
   const authority = fusionAuthority(topFusion);
   const rivalAuthority = runnerFusion ? fusionAuthority(runnerFusion) : null;
-  const margin = !runnerFusion ? Infinity
-    : (authority.logOdds !== null && rivalAuthority.logOdds !== null
-      ? authority.logOdds - rivalAuthority.logOdds : -Infinity);
+  const margin = authority.logOdds === null
+    ? -Infinity
+    : (!runnerFusion ? Infinity
+      : (rivalAuthority.logOdds !== null
+        ? authority.logOdds - rivalAuthority.logOdds : -Infinity));
   const marginRatio = margin === Infinity ? Infinity : Math.exp(margin);
   const probability = authority.probability === null ? 0 : authority.probability;
 
@@ -1114,7 +1141,7 @@ export function decide(ranked, opts) {
    * 「足りないもの」なので、天井に当たったかどうかに関わらず必ず書き残す。
    */
   const cap = opts && opts.maxVerdict;
-  if (cap && verdict !== VERDICT.NONE) {
+  if (typeof cap === 'string' && Object.hasOwn(VERDICT_ORDER, cap) && verdict !== VERDICT.NONE) {
     if (verdictRank(verdict) > verdictRank(cap)) verdict = cap;
     if (!missing.includes('no-name')) missing.push('no-name');
   }
@@ -1168,10 +1195,18 @@ export function explain(fusion, limit = 12) {
     .slice(0, limit);
 }
 
+function validCalibrationPoints(curve) {
+  if (!Array.isArray(curve)) return [];
+  return curve
+    .filter((p) => p && typeof p.score === 'number' && Number.isFinite(p.score)
+      && typeof p.observed === 'number' && Number.isFinite(p.observed))
+    .sort((a, b) => a.score - b.score);
+}
+
 /** Apply a monotone hold-out calibration curve [{score, observed}]. */
 export function calibrateProbability(score, curve) {
-  const pts = (curve || []).filter((p) => Number.isFinite(p.score) && Number.isFinite(p.observed))
-    .slice().sort((a, b) => a.score - b.score);
+  if (typeof score !== 'number' || !Number.isFinite(score)) return 0;
+  const pts = validCalibrationPoints(curve);
   if (!pts.length) return Math.max(0, Math.min(1, score));
   if (score <= pts[0].score) return Math.max(0, Math.min(1, pts[0].observed));
   for (let i = 1; i < pts.length; i++) {
@@ -1185,8 +1220,10 @@ export function calibrateProbability(score, curve) {
 
 /** Brier score and reliability bins for a labelled hold-out corpus. */
 export function calibrationReport(samples, binCount = 10) {
-  const valid = (samples || []).filter((x) => Number.isFinite(x.score) && (x.outcome === 0 || x.outcome === 1));
-  const bins = Array.from({ length: Math.max(2, binCount) }, () => ({ count: 0, predicted: 0, observed: 0 }));
+  const list = Array.isArray(samples) ? samples : [];
+  const valid = list.filter((x) => x && typeof x.score === 'number' && Number.isFinite(x.score) && (x.outcome === 0 || x.outcome === 1));
+  const count = typeof binCount === 'number' && Number.isSafeInteger(binCount) && binCount >= 2 && binCount <= 100 ? binCount : 10;
+  const bins = Array.from({ length: count }, () => ({ count: 0, predicted: 0, observed: 0 }));
   let sum = 0;
   for (const x of valid) {
     const p = Math.max(0, Math.min(1, x.score));

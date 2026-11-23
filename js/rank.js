@@ -16,9 +16,33 @@ const KIND_OF = {
   [REASON.CALLS_MATCH]: 'inference', [REASON.CALLED_BY_MATCH]: 'inference', [REASON.NUMERIC]: 'fact', [REASON.STORE]: 'fact',
   [REASON.COMPARE]: 'fact', [REASON.POPULAR]: 'fact', [REASON.SIZE_PENALTY]: 'inference', [REASON.VENDOR]: 'fact',
 };
+const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
 export function reasonKind(code) { return KIND_OF[code] || 'inference'; }
 export function scoreToConfidence(score) { return score > 0 ? 1 - Math.exp(-score / 45) : 0; }
 export function stars(confidence) { return confidence >= 0.85 ? 5 : confidence >= 0.7 ? 4 : confidence >= 0.5 ? 3 : confidence >= 0.3 ? 2 : 1; }
+
+function utf8ByteLength(text) {
+  if (typeof text !== 'string' || !text.length) return 0;
+  if (UTF8_ENCODER) return UTF8_ENCODER.encode(text).byteLength;
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i++; }
+      else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+function compareAddr(a, b) {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
 
 function combinedMatcher(goal) {
   const parts = [];
@@ -66,37 +90,74 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   const hasProgram = !!program;
   if (!hasProgram) notes.push('no-program-index');
 
+  const renames = symbols?.renames instanceof Map && symbols.renames.size > 0 ? symbols.renames : null;
+  const symbolNameAt = (addr) => {
+    if (!symbols || addr == null) return null;
+    if (renames) {
+      const renamed = renames.get(addr.toString());
+      if (renamed) return renamed;
+    }
+    return typeof symbols.nameAt === 'function' ? (symbols.nameAt(addr) || null) : null;
+  };
+
   const candidate = (addr, site) => {
     if (addr == null) return null;
     const key = addr.toString();
     let c = byAddr.get(key);
     if (!c) {
-      c = { addr, name: symbols ? (symbols.nameAt(addr) || null) : null, score: 0, reasons: [], strings: [], stats: null, firstSite: site != null ? site : addr };
+      c = { addr, name: symbolNameAt(addr), score: 0, reasons: [], strings: [], stats: null, firstSite: site != null ? site : addr };
       byAddr.set(key, c);
     }
     return c;
   };
   const addReason = (c, code, points, detail) => {
-    if (!c) return;
+    if (!c || !Number.isFinite(points) || points === 0) return;
     c.reasons.push({ code, points: Math.round(points), kind: reasonKind(code), detail: detail || null });
     c.score += points;
   };
 
   const matcher = combinedMatcher(goal);
   const matchedStrings = [];
+  const seenStrings = new Set();
   for (const s of strings || []) {
+    if (!s || typeof s.text !== 'string') continue;
     if (matcher && !matcher.test(s.text)) continue;
+    const dedupKey = `${s.addr}:${s.text}`;
+    if (seenStrings.has(dedupKey)) continue;
     const m = matchText(goal, s.text);
-    if (m) matchedStrings.push({ addr: s.addr, text: s.text, score: m.score, term: m.term, region: s.region });
+    if (m) {
+      seenStrings.add(dedupKey);
+      const diagFactor = isDiagnosticString(s.text) ? 0.45 : 1;
+      matchedStrings.push({
+        addr: s.addr,
+        text: s.text,
+        score: m.score,
+        diagFactor,
+        effectiveScore: m.score * diagFactor,
+        byteLength: s.byteLength,
+        term: m.term,
+        region: s.region,
+      });
+    }
   }
-  matchedStrings.sort((a, b) => b.score - a.score);
+  matchedStrings.sort((a, b) => (
+    b.effectiveScore - a.effectiveScore
+    || b.diagFactor - a.diagFactor
+    || a.text.length - b.text.length
+    || compareAddr(a.addr, b.addr)
+  ));
   const STRING_EXPANSION_BUDGET = 1200;
-  const selectedStrings = fairPrefix(matchedStrings, STRING_EXPANSION_BUDGET);
+  const selectedStrings = hasProgram
+    ? fairPrefix(matchedStrings, STRING_EXPANSION_BUDGET)
+    : { values: [], complete: true };
   if (!selectedStrings.complete) notes.push(`string-matches-sampled:${selectedStrings.values.length}/${matchedStrings.length}`);
   let referenced = 0;
   for (const ms of selectedStrings.values) {
     if (!hasProgram) break;
-    const span = BigInt(Math.max(1, Math.min(ms.text.length, 256)));
+    const bytes = Number.isSafeInteger(ms.byteLength) && ms.byteLength > 0
+      ? ms.byteLength
+      : utf8ByteLength(ms.text);
+    const span = BigInt(Math.max(1, Math.min(bytes, 256)));
     const users = program.functionsReferencing(ms.addr, span, 60);
     if (users.length) referenced++;
     for (const u of users) {
@@ -105,8 +166,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       const nth = c.strings.length;
       const factor = nth === 0 ? 1 : nth === 1 ? 0.6 : nth === 2 ? 0.35 : 0;
       c.strings.push({ addr: ms.addr, text: ms.text, site: u.site, kind: u.kind, users: users.length, score: ms.score, complete: users.complete !== false });
-      const diagFactor = isDiagnosticString(ms.text) ? 0.45 : 1;
-      if (factor > 0) addReason(c, REASON.STRING_REF, POINTS[REASON.STRING_REF] * ms.score * factor * diagFactor, {
+      if (factor > 0) addReason(c, REASON.STRING_REF, POINTS[REASON.STRING_REF] * ms.effectiveScore * factor, {
         text: ms.text, addr: ms.addr, site: u.site, term: ms.term, refKind: u.kind,
         users: users.length, complete: users.complete !== false,
       });
@@ -116,29 +176,97 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
 
   /* Preserve latest-main behaviour: collect all name matches, sort by match
      quality, then cap. An address-order first-400 cap is biased. */
-  if (matcher && symbols?.symbolCount) {
+  if (symbols && (symbols.symbolCount > 0 || (symbols.renames?.size > 0))) {
     const lo = region ? region.vmAddr : null, hi = region ? region.vmAddr + region.size : null;
-    const matches = [];
-    for (let i = 0; i < symbols.addrs.length; i++) {
-      const a = symbols.addrs[i];
-      if (lo != null && (a < lo || a >= hi)) continue;
-      const name = symbols.names[i];
-      if (!name || !matcher.test(name)) continue;
+    const resolveCandAddr = (a) => {
+      if (!symbols.functionCount) return a;
+      if (typeof symbols.functionStartAt === 'function') {
+        const start = symbols.functionStartAt(a);
+        return start != null ? start : a;
+      }
+      if (typeof symbols.isFunctionStart === 'function') {
+        const start = symbols.isFunctionStart(a) ? a : null;
+        return start != null ? start : a;
+      }
+      return a;
+    };
+    const compareNameMatch = (a, b) => (
+      (a.vendorConflict ? 1 : 0) - (b.vendorConflict ? 1 : 0)
+      || b.effScore - a.effScore
+      || b.roleRank - a.roleRank
+      || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+      || compareAddr(a.candAddr, b.candAddr)
+      || compareAddr(a.a, b.a)
+    );
+    const bestByCand = new Map();
+    const considerSymbol = (a, name) => {
+      if (!name || typeof name !== 'string') return;
+      if (matcher && !matcher.test(name)) return;
       const m = matchName(goal, name);
-      if (m) {
-        const role = numericSymbolRole(goal, name);
-        const roleRank = role === 'value' ? 2 : role === 'neutral' ? 1 : 0;
-        matches.push({ a, name, m, role, roleRank });
+      if (!m) return;
+      const role = numericSymbolRole(goal, name);
+      const roleRank = role === 'value' ? 2 : role === 'neutral' ? 1 : 0;
+      const roleMult = role === 'value' ? 1.6 : role === 'non-value' ? 0.4 : 1;
+      const effScore = m.score * roleMult;
+      const v = vendorOf(classFromSymbol(name) || name, vendors);
+      const vendorConflict = !!(v && vendorConflicts(goal.id, v));
+      const candAddr = resolveCandAddr(a);
+      const candKey = candAddr.toString();
+      const entry = { a, candAddr, candKey, name, m, role, roleRank, roleMult, effScore, vendorConflict };
+      const prev = bestByCand.get(candKey);
+      if (!prev || compareNameMatch(entry, prev) < 0) bestByCand.set(candKey, entry);
+    };
+
+    const seenRenameKeys = renames ? new Set() : null;
+    const symAddrs = symbols.addrs || [];
+    const symNames = symbols.names || [];
+    for (let i = 0; i < symAddrs.length; i++) {
+      const a = symAddrs[i];
+      const key = a.toString();
+      let name = symNames[i];
+      if (renames && renames.has(key)) {
+        seenRenameKeys.add(key);
+        name = renames.get(key);
+      }
+      if (lo != null && (a < lo || a >= hi)) continue;
+      considerSymbol(a, name);
+    }
+    if (renames) {
+      for (const [key, name] of renames.entries()) {
+        if (seenRenameKeys.has(key)) continue;
+        if (typeof key !== 'string' && typeof key !== 'bigint') continue;
+        if (typeof key === 'string' && !key.trim()) continue;
+        let a;
+        try {
+          a = BigInt(key);
+          if (a < 0n) continue;
+        } catch {
+          continue;
+        }
+        if (lo != null && (a < lo || a >= hi)) continue;
+        considerSymbol(a, name);
       }
     }
-    matches.sort((a, b) => b.roleRank - a.roleRank || b.m.score - a.m.score || String(a.name).localeCompare(String(b.name)));
-    if (matches.length > 400) notes.push('name-matches-capped');
-    for (const { a, name, m, role } of matches.slice(0, 400)) {
-      const start = symbols.functionCount ? (symbols.isFunctionStart(a) ? a : null) : a;
-      const c = candidate(start != null ? start : a, a);
+
+    const matches = Array.from(bestByCand.values()).sort(compareNameMatch);
+    const kept = [];
+    let newMatchCount = 0;
+    let capped = false;
+    for (const entry of matches) {
+      if (byAddr.has(entry.candKey)) {
+        kept.push(entry);
+      } else if (newMatchCount < 400) {
+        kept.push(entry);
+        newMatchCount++;
+      } else {
+        capped = true;
+      }
+    }
+    if (capped) notes.push('name-matches-capped');
+    for (const { candAddr, a, name, m, role, roleMult } of kept) {
+      const c = candidate(candAddr, a);
       if (!c) continue;
       c.name = c.name || name;
-      const roleMult = role === 'value' ? 1.6 : role === 'non-value' ? 0.4 : 1;
       addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score * roleMult, { name, term: m.term, role });
     }
   }
@@ -158,23 +286,36 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   };
   for (const c of byAddr.values()) applyVendorPenalty(c);
 
-  const tainted = (name) => {
+  const taintedName = (name) => {
     if (!name) return false;
     const v = vendorOf(classFromSymbol(name) || name, vendors);
     return !!v && vendorConflicts(goal.id, v);
   };
+  const tainted = (c) => {
+    if (!c) return false;
+    const v = vendorOfCandidate(c, vendors);
+    return !!v && vendorConflicts(goal.id, v);
+  };
   if (hasProgram) {
-    const seeds = Array.from(byAddr.values()).sort((a, b) => b.score - a.score).slice(0, 40);
+    const seeds = Array.from(byAddr.values())
+      .sort((a, b) => b.score - a.score || compareAddr(a.addr, b.addr))
+      .slice(0, 40);
+    const baseScores = new Map(seeds.map((s) => [s, s.score]));
     for (const seed of seeds) {
+      const seedBaseScore = baseScores.get(seed);
+      const seedTainted = tainted(seed);
       const range = program.functionRange(seed.addr);
       /* Unknown end means "unknown body", never "from here to EOF". Callee
          evidence is valid only for an exact, bounded containing function. */
       if (range && range.start === seed.addr && range.end != null) {
         for (const callee of program.calleesOf(range.start, range.end, 40)) {
-          const name = symbols ? symbols.nameAt(callee.addr) : null;
-          const m = name && !tainted(name) ? matchName(goal, name) : null;
+          if (callee.addr == null || callee.addr === seed.addr) continue;
+          const name = symbolNameAt(callee.addr);
+          const existingCallee = byAddr.get(callee.addr.toString());
+          const calleeTainted = existingCallee ? tainted(existingCallee) : taintedName(name);
+          const m = name && !calleeTainted ? matchName(goal, name) : null;
           if (m) addReason(seed, REASON.CALLEE_NAME, POINTS[REASON.CALLEE_NAME] * m.score, { name, addr: callee.addr, site: callee.site });
-          if (seed.score >= 20 && !tainted(seed.name)) {
+          if (seedBaseScore >= 20 && !seedTainted) {
             const c = candidate(callee.addr, callee.site);
             if (c && c !== seed && !c.reasons.some((r) => r.code === REASON.CALLED_BY_MATCH)) {
               addReason(c, REASON.CALLED_BY_MATCH, POINTS[REASON.CALLED_BY_MATCH], { from: seed.addr, fromName: seed.name, site: callee.site });
@@ -184,11 +325,13 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       } else notes.push('callee-range-unknown:' + seed.addr.toString());
 
       for (const caller of program.callersOf(seed.addr, 40)) {
-        if (caller.addr == null) continue;
-        const name = symbols ? symbols.nameAt(caller.addr) : null;
-        const m = name && !tainted(name) ? matchName(goal, name) : null;
+        if (caller.addr == null || caller.addr === seed.addr) continue;
+        const name = symbolNameAt(caller.addr);
+        const existingCaller = byAddr.get(caller.addr.toString());
+        const callerTainted = existingCaller ? tainted(existingCaller) : taintedName(name);
+        const m = name && !callerTainted ? matchName(goal, name) : null;
         if (m) addReason(seed, REASON.CALLER_NAME, POINTS[REASON.CALLER_NAME] * m.score, { name, addr: caller.addr, site: caller.site });
-        if (seed.score >= 20 && !tainted(seed.name)) {
+        if (seedBaseScore >= 20 && !seedTainted) {
           const c = candidate(caller.addr, caller.site);
           if (c && c !== seed && !c.reasons.some((r) => r.code === REASON.CALLS_MATCH)) {
             addReason(c, REASON.CALLS_MATCH, POINTS[REASON.CALLS_MATCH], { to: seed.addr, toName: seed.name, site: caller.site });
@@ -204,6 +347,9 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   for (const c of byAddr.values()) {
     if (!hasProgram) break;
     if (c.score <= 10 && c.vendor && vendorConflicts(goal.id, c.vendor)) continue;
+    const called = program.callCountOf(c.addr);
+    if (called >= 3) addReason(c, REASON.POPULAR, POINTS[REASON.POPULAR], { n: called, complete: !program.callsCapped });
+    c.calledCount = called;
     const range = program.functionRange(c.addr);
     if (!range || range.start !== c.addr || range.end == null) continue;
     const stats = program.statsOf(range.start, range.end);
@@ -212,9 +358,6 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     if (expects.numeric && stats.numeric > 0) addReason(c, REASON.NUMERIC, Math.min(POINTS[REASON.NUMERIC], 4 * stats.numeric), { mul: stats.mul, div: stats.div, fmul: stats.fmul, farith: stats.farith, complete: stats.covered !== false });
     if (expects.store && stats.store > 0) addReason(c, REASON.STORE, POINTS[REASON.STORE], { n: stats.store, complete: stats.covered !== false });
     if (expects.compare && stats.cmp > 0) addReason(c, REASON.COMPARE, POINTS[REASON.COMPARE], { n: stats.cmp, complete: stats.covered !== false });
-    const called = program.callCountOf(c.addr);
-    if (called >= 3) addReason(c, REASON.POPULAR, POINTS[REASON.POPULAR], { n: called, complete: !program.callsCapped });
-    c.calledCount = called;
     if (stats.total > 1500) addReason(c, REASON.SIZE_PENALTY, POINTS[REASON.SIZE_PENALTY], { n: stats.total, complete: stats.covered !== false });
   }
 
@@ -224,7 +367,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     c.confidence = scoreToConfidence(c.score); c.stars = stars(c.confidence);
     c.reasons.sort((a, b) => b.points - a.points); out.push(c);
   }
-  out.sort((a, b) => b.score - a.score || (a.addr < b.addr ? -1 : 1));
+  out.sort((a, b) => b.score - a.score || compareAddr(a.addr, b.addr));
   return {
     candidates: out.slice(0, resultLimit), matchedStrings, notes, total: out.length,
     matchedStringsComplete: selectedStrings.complete,

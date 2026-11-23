@@ -16,6 +16,7 @@ const BIN_NAME = {
   and: 'and', or: 'orr', xor: 'eor', bic: 'bic', orn: 'orn', eon: 'eon',
   shl: 'lsl', lshr: 'lsr', ashr: 'asr', ror: 'ror',
   fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
+  fmax: 'fmax', fmin: 'fmin', fmaxnm: 'fmaxnm', fminnm: 'fminnm',
 };
 
 const UN_NAME = {
@@ -25,6 +26,89 @@ const UN_NAME = {
 };
 
 const PASS_UN = new Set(['sxt8', 'sxt16', 'sxt32', 'uxt8', 'uxt16', 'uxt32', 'fmov']);
+
+function unwrapMov(val) {
+  let cur = val;
+  const seen = new Set();
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    const def = cur.def;
+    if (def && def.op === OP.MOV && (def.sub == null || def.sub === 'trunc' || def.sub === 'zext') && def.args?.[0]?.value) {
+      cur = def.args[0].value;
+      continue;
+    }
+    break;
+  }
+  return cur || null;
+}
+
+function isSignMaskShiftConst(val) {
+  return val != null && (val.const === 31n || val.const === 63n || val.const === 31 || val.const === 63);
+}
+
+function matchAshrSignMask(val) {
+  const def = unwrapMov(val)?.def;
+  if (!def || def.op !== OP.BIN || def.sub !== 'ashr') return null;
+  const args = (def.args || []).filter((a) => a && a.value);
+  if (args.length < 2 || !isSignMaskShiftConst(args[1].value)) return null;
+  return { ashrInst: def, source: args[0].value };
+}
+
+function matchSignMaskClamp(inst) {
+  if (!inst || inst.op !== OP.BIN) return null;
+  const args = (inst.args || []).filter((a) => a && a.value);
+  if (args.length !== 2) return null;
+
+  if (inst.sub === 'and') {
+    for (let i = 0; i < 2; i++) {
+      const maskArg = args[i].value;
+      const otherArg = args[1 - i].value;
+      const notDef = unwrapMov(maskArg)?.def;
+      if (!notDef || notDef.op !== OP.UN || notDef.sub !== 'not' || !notDef.args?.[0]?.value) continue;
+      const ashr = matchAshrSignMask(notDef.args[0].value);
+      if (!ashr) continue;
+      const srcId = unwrapMov(ashr.source)?.id;
+      const otherId = unwrapMov(otherArg)?.id;
+      if (srcId != null && srcId === otherId) {
+        return {
+          sourceArgIndex: 1 - i,
+          partInsts: [notDef, ashr.ashrInst],
+          partValueIds: [notDef.dst?.id, ashr.ashrInst.dst?.id].filter((id) => id != null),
+        };
+      }
+    }
+    return null;
+  }
+
+  if (inst.sub === 'bic') {
+    const id0 = unwrapMov(args[0].value)?.id;
+    const id1 = unwrapMov(args[1].value)?.id;
+    const isAsrShift = (a) => a?.shift?.op === 'asr' && (Number(a.shift.amount) === 31 || Number(a.shift.amount) === 63);
+    if (id0 != null && id0 === id1 && (isAsrShift(args[0]) || isAsrShift(args[1]))) {
+      return {
+        sourceArgIndex: isAsrShift(args[1]) ? 0 : 1,
+        partInsts: [],
+        partValueIds: [],
+      };
+    }
+    for (let i = 0; i < 2; i++) {
+      const maskArg = args[i].value;
+      const otherArg = args[1 - i].value;
+      const ashr = matchAshrSignMask(maskArg);
+      if (!ashr) continue;
+      const srcId = unwrapMov(ashr.source)?.id;
+      const otherId = unwrapMov(otherArg)?.id;
+      if (srcId != null && srcId === otherId) {
+        return {
+          sourceArgIndex: 1 - i,
+          partInsts: [ashr.ashrInst],
+          partValueIds: [ashr.ashrInst.dst?.id].filter((id) => id != null),
+        };
+      }
+    }
+  }
+  return null;
+}
 
 function valueDependsOn(value, targetId, memo = new Map(), active = new Set()) {
   if (!value) return false;
@@ -134,7 +218,7 @@ function stableOrigin(value, callByRow, memo = new Map(), active = new Set()) {
   return out;
 }
 
-function stepFrom(inst, loadValue, callByRow, originMemo) {
+function stepFrom(inst, loadValue, callByRow, originMemo, signMaskInsts, clampPartNodes, clampPartIds) {
   if (inst?.op === OP.MOV && (
     inst.extra?.stateRead || inst.extra?.stateWrite ||
     ['trunc', 'zext', 'sext', 'bitcast'].includes(inst.sub)
@@ -143,9 +227,12 @@ function stepFrom(inst, loadValue, callByRow, originMemo) {
   if (!op) return null;
   const otherValue = otherInput(inst, loadValue);
   const otherOrigin = stableOrigin(otherValue, callByRow, originMemo);
-  return { op, imm: otherValue && otherValue.const != null ? otherValue.const : null, immFloat: null,
+  const step = { op, imm: otherValue && otherValue.const != null ? otherValue.const : null, immFloat: null,
     other: otherValue && otherValue.reg ? otherValue.reg : null, otherOrigin,
     row: inst.row, address: inst.address, engine: 'ir-ssa' };
+  if (signMaskInsts?.has(inst)) step.signMaskClamp = true;
+  else if (clampPartNodes?.has(inst) || (inst.dst && clampPartIds?.has(inst.dst.id))) step.signMaskClampPart = true;
+  return step;
 }
 
 function locationShape(rmw) {
@@ -200,10 +287,21 @@ export function findIrValueUpdates(model, opts, precomputed = null) {
     if (!location) continue;
     const load = rmw.load, store = rmw.store;
     if (!load || !store || !load.dst) continue;
+    const chain = rmw.chain || [];
+    const signMaskInsts = new Set();
+    const clampPartNodes = new Set();
+    const clampPartIds = new Set();
+    for (const inst of chain) {
+      const m = matchSignMaskClamp(inst);
+      if (!m) continue;
+      signMaskInsts.add(inst);
+      for (const p of m.partInsts) clampPartNodes.add(p);
+      for (const id of m.partValueIds) clampPartIds.add(id);
+    }
     // Preserve the proof chain exactly as constructed by readModifyWrite(); row
     // sorting is invalid across branches and loops.
-    const steps = (rmw.chain || [])
-      .map((inst) => stepFrom(inst, load.dst, callByRow, originMemo))
+    const steps = chain
+      .map((inst) => stepFrom(inst, load.dst, callByRow, originMemo, signMaskInsts, clampPartNodes, clampPartIds))
       .filter(Boolean);
     // One machine instruction may project into several exact v1 compatibility
     // nodes (for example state-read -> trunc -> add -> state-write). Those are

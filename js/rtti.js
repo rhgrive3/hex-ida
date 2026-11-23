@@ -41,9 +41,9 @@ function readNested(p,isSub=true){
     finalRole='ordinary';
     if(/\d/.test(c)){part=readSourceName(p,false);updatesName=true;}
     else if(c==='S'){part=readSubstitution(p);isSubst=true;updatesName=true;}
-    else if(c==='C'){if(p.i+2>p.s.length||captureRole&&!/[123]/.test(p.s[p.i+1]))return null;p.i+=2;part=lastUnqualified||'ctor';finalRole='constructor';}
-    else if(c==='D'){if(p.i+2>p.s.length||captureRole&&!/[012]/.test(p.s[p.i+1]))return null;p.i+=2;part='~'+(lastUnqualified||'dtor');finalRole='destructor';}
-    else if(OPERATORS[p.s.slice(p.i,p.i+2)]){part=OPERATORS[p.s.slice(p.i,p.i+2)];p.i+=2;}
+    else if(c==='C'){if(p.i+2>p.s.length||captureRole&&!/[123]/.test(p.s[p.i+1]))return null;p.i+=2;if(!skipAbiTags(p))return null;part=lastUnqualified||'ctor';finalRole='constructor';}
+    else if(c==='D'){if(p.i+2>p.s.length||captureRole&&!/[012]/.test(p.s[p.i+1]))return null;p.i+=2;if(!skipAbiTags(p))return null;part='~'+(lastUnqualified||'dtor');finalRole='destructor';}
+    else if(OPERATORS[p.s.slice(p.i,p.i+2)]){part=OPERATORS[p.s.slice(p.i,p.i+2)];p.i+=2;if(!skipAbiTags(p))return null;}
     else if(c==='I')part=readTemplateArgs(p);
     else return null;
     if(!part)return null;
@@ -90,7 +90,8 @@ export function cxxAbiFunctionIdentity(name){
     return Object.freeze({...p.functionRole,...p.functionIdentity});
   }catch{return null;}
 }
-function readSourceName(p,isSub=true){let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length)return null;const out=p.s.slice(p.i,p.i+len);p.i+=len;if(isSub)p.subs.push(out);return out;}
+function skipAbiTags(p){while(p.i<p.s.length&&p.s[p.i]==='B'){const saved=p.i;p.i++;let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!n||!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length){p.i=saved;return false;}p.i+=len;}return true;}
+function readSourceName(p,isSub=true){let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length)return null;const out=p.s.slice(p.i,p.i+len);p.i+=len;if(!skipAbiTags(p))return null;if(isSub)p.subs.push(out);return out;}
 function readSubstitution(p){const two=p.s.slice(p.i,p.i+2);if(SUBSTITUTIONS[two]){p.i+=2;return SUBSTITUTIONS[two];}p.i++;let idx='';while(p.i<p.s.length&&p.s[p.i]!=='_')idx+=p.s[p.i++];if(p.s[p.i]!=='_'||(idx&&!/^[0-9A-Z]+$/i.test(idx)))return null;p.i++;const n=idx===''?0:parseInt(idx,36)+1;return Number.isSafeInteger(n)?(p.subs[n]||null):null;}
 function readTemplateArgs(p){p.i++;const args=[];for(let guard=0;p.i<p.s.length&&p.s[p.i]!=='E'&&guard<64;guard++){const before=p.i,t=p.s[p.i]==='L'?readIntegralTemplateArgument(p):readType(p);if(!t||p.i<=before)return null;args.push(t);}if(p.s[p.i]!=='E'||!args.length)return null;p.i++;return `<${args.join(', ')}>`;}
 // Itanium ABI 5.1.6.1: L <type> <number> E. Support only bounded
@@ -120,7 +121,7 @@ function readIntegralTemplateArgument(p){
   return suffix?value+suffix:`(${type})${value}`;
 }
 function readArgs(p){const args=[];for(let guard=0;p.i<p.s.length;guard++){if(guard>=64)return null;const before=p.i,t=readType(p);if(!t||p.i<=before)return null;args.push(t);}if(!args.length)return null;return args.length===1&&args[0]==='void'?'':args.join(', ');}
-function readType(p){const c=p.s[p.i];if(!c)return null;if(c==='P'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} *`;p.subs.push(res);return res;}if(c==='R'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} &`;p.subs.push(res);return res;}if(c==='O'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} &&`;p.subs.push(res);return res;}if(c==='K'){p.i++;const t=readType(p);if(!t)return null;const res=`const ${t}`;p.subs.push(res);return res;}if(c==='V'){p.i++;const t=readType(p);if(!t)return null;const res=`volatile ${t}`;p.subs.push(res);return res;}if(c==='N'){p.i++;return readNested(p,true);}if(c==='S')return readSubstitution(p);if(c==='I')return readTemplateArgs(p);if(/\d/.test(c))return readSourceName(p,true);const two=p.s.slice(p.i,p.i+2);if(two.length===2&&BUILTIN[two]){p.i+=2;return BUILTIN[two];}if(BUILTIN[c]){p.i++;return BUILTIN[c];}return null;}
+function readType(p){const c=p.s[p.i];if(!c)return null;if(c==='P'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} *`;p.subs.push(res);return res;}if(c==='R'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} &`;p.subs.push(res);return res;}if(c==='O'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} &&`;p.subs.push(res);return res;}if(c==='K'){p.i++;const t=readType(p);if(!t)return null;const res=`const ${t}`;p.subs.push(res);return res;}if(c==='V'){p.i++;const t=readType(p);if(!t)return null;const res=`volatile ${t}`;p.subs.push(res);return res;}if(c==='N'){p.i++;return readNested(p,true);}if(c==='S'){let res;if(p.s.slice(p.i,p.i+2)==='St'){p.i+=2;const tail=readName(p,false);if(!tail)return null;res=`std::${tail}`;p.subs.push(res);}else{res=readSubstitution(p);if(!res)return null;}if(p.s[p.i]==='I'){const ta=readTemplateArgs(p);if(!ta)return null;res+=ta;p.subs.push(res);}return res;}if(c==='I')return readTemplateArgs(p);if(/\d/.test(c))return readSourceName(p,true);const two=p.s.slice(p.i,p.i+2);if(two.length===2&&BUILTIN[two]){p.i+=2;return BUILTIN[two];}if(BUILTIN[c]){p.i++;return BUILTIN[c];}return null;}
 
 const SWIFT_KIND={C:'class',V:'struct',O:'enum',P:'protocol',F:'func',vg:'getter',vs:'setter',fC:'init',fD:'deinit'};
 const SWIFT_KIND_LENGTHS=[...new Set(Object.keys(SWIFT_KIND).map((k)=>k.length))].sort((a,b)=>b-a);
@@ -134,12 +135,8 @@ export function demangleSwift(name){
     const m=acceptIdentifiers?/^(\d+)/.exec(body.slice(i)):null;
     if(m){
       const len=Number(m[1]);i+=m[1].length;if(!Number.isSafeInteger(len)||len<=0)return null;
-      let word=body.slice(i,i+len);if(word.length!==len)return null;i+=len;
-      if(i===body.length){
-        let split=false;
-        for(const klen of SWIFT_KIND_LENGTHS){const token=word.slice(-klen);if(SWIFT_KIND[token]){const stem=word.slice(0,-klen);if(stem)parts.push(stem);parts.push(`(${SWIFT_KIND[token]})`);split=true;break;}}
-        if(!split)parts.push(word);
-      }else if(word)parts.push(word);
+      const word=body.slice(i,i+len);if(word.length!==len)return null;i+=len;
+      if(word)parts.push(word);
       continue;
     }
     const rest=body.slice(i);let kind=null;
@@ -152,15 +149,15 @@ export function demangleSwift(name){
   if(!words.length)return null;
   return words.join('.')+(kind?`   [${kind}]`:'');
 }
-function stripInline(s){return s.replace(/std::__[0-9]+::/g,'std::').replace(/(^|[^\w:])__[0-9]+::/g,'$1std::');}
+function stripInline(s){return s.replace(/std::__(?:[0-9]+|ndk1|cxx11)::/g,'std::').replace(/(^|[^\w:])__(?:[0-9]+|ndk1|cxx11)::/g,'$1std::');}
 function splitArgs(s){const out=[];let depth=0,cur='';for(const ch of s){if(ch==='<'||ch==='(')depth++;if(ch==='>'||ch===')')depth--;if(ch===','&&depth===0){out.push(cur.trim());cur='';continue;}cur+=ch;}if(cur.trim())out.push(cur.trim());return out;}
 function findTemplate(s,from=0){const open=s.indexOf('<',from);if(open<0)return null;let depth=0;for(let i=open;i<s.length;i++){if(s[i]==='<')depth++;else if(s[i]==='>'&&!--depth)return{open,close:i};}return null;}
 const ALIAS=new Map([['std::basic_string|char','std::string'],['std::basic_string|wchar_t','std::wstring'],['std::basic_ostream|char','std::ostream'],['std::basic_istream|char','std::istream'],['std::basic_stringstream|char','std::stringstream']]);
-function simplifyStd(s){let out=s;for(let guard=0;guard<40;guard++){const t=findTemplate(out);if(!t)break;const head=/[\w:~]+$/.exec(out.slice(0,t.open));if(!head)break;const base=head[0],args=splitArgs(out.slice(t.open+1,t.close)).map(simplifyStd),alias=ALIAS.get(`${base}|${args[0]}`);let repl=alias||`${base}<${args.join(', ')}>`;if(!alias&&/^std::(vector|list|deque|set|multiset|forward_list|stack|queue)$/.test(base)&&args.length>1)repl=`${base}<${args[0]}>`;if(!alias&&/^std::(map|multimap|unordered_map|unordered_set)$/.test(base)&&args.length>2)repl=`${base}<${args.slice(0,2).join(', ')}>`;const start=t.open-base.length;out=out.slice(0,start)+repl+out.slice(t.close+1);if(out.indexOf('<',start+repl.length)<0)break;}return out;}
+function simplifyStd(s){let out=s,cursor=0;for(let guard=0;guard<40;guard++){const t=findTemplate(out,cursor);if(!t)break;const head=/[\w:~]+$/.exec(out.slice(0,t.open));if(!head){cursor=t.open+1;continue;}const base=head[0],args=splitArgs(out.slice(t.open+1,t.close)).map(simplifyStd),alias=ALIAS.get(`${base}|${args[0]}`);let repl=alias||`${base}<${args.join(', ')}>`;if(!alias&&/^std::(vector|list|deque|set|multiset|unordered_set|unordered_multiset|forward_list|stack|queue)$/.test(base)&&args.length>1)repl=`${base}<${args[0]}>`;if(!alias&&/^std::(map|multimap|unordered_map|unordered_multimap)$/.test(base)&&args.length>2)repl=`${base}<${args.slice(0,2).join(', ')}>`;const start=t.open-base.length;out=out.slice(0,start)+repl+out.slice(t.close+1);cursor=start+repl.length;if(out.indexOf('<',cursor)<0)break;}return out;}
 export function readableName(name){if(typeof name!=='string'||!name)return name;const cxx=demangleCxx(name);return cxx?simplifyStd(stripInline(cxx)):(demangleSwift(name)||name);}
-export function shortName(name,opts){if(typeof name!=='string'||!name)return name;const o=opts||{};let s=readableName(name);if(s===name)return name.replace(/^_+/,'')||name;const paren=s.indexOf('(');if(paren>0)s=s.slice(0,paren);for(let guard=0;guard<40;guard++){const t=findTemplate(s);if(!t)break;s=s.slice(0,t.open)+s.slice(t.close+1);}s=s.replace(/\s+/g,' ').replace(/ const$/,'').trim();if(!o.keepNamespace){const parts=s.split('::');if(parts.length>2&&parts[0]!=='std')s=parts.slice(-2).join('::');}return s||name;}
+export function shortName(name,opts){if(typeof name!=='string'||!name)return name;const o=opts||{};let s=readableName(name);if(s===name)return name.replace(/^_+/,'')||name;const opCallIdx=s.indexOf('operator()');const paren=opCallIdx>=0?s.indexOf('(',opCallIdx+10):s.indexOf('(');if(paren>0)s=s.slice(0,paren);for(let guard=0;guard<40;guard++){const t=findTemplate(s);if(!t)break;s=s.slice(0,t.open)+s.slice(t.close+1);}s=s.replace(/\s+/g,' ').replace(/ const$/,'').trim();if(!o.keepNamespace){const parts=s.split('::');if(parts.length>2&&parts[0]!=='std')s=parts.slice(-2).join('::');}return s||name;}
 export function isMangled(name){return typeof name==='string'&&!!name&&(/^_?_Z/.test(name)||/^_?\$s/.test(name)||/^_?\$S/.test(name));}
-export function findCxxClasses(symbols,limit=5000){const out=new Map();if(!symbols?.names)return[];for(let i=0;i<symbols.names.length&&out.size<limit;i++){const raw=symbols.names[i],m=raw&&/^_?_Z(TV|TI|TS)(.+)$/.exec(raw);if(!m)continue;const cls=demangleCxx('_Z'+m[2].replace(/^N?/,(s)=>s))||demangleCxx('_ZN'+m[2])||m[2];if(!out.has(cls))out.set(cls,{name:cls,vtable:null,typeinfo:null,typeName:null,raw});const e=out.get(cls);if(m[1]==='TV')e.vtable=symbols.addrs[i];if(m[1]==='TI')e.typeinfo=symbols.addrs[i];if(m[1]==='TS')e.typeName=symbols.addrs[i];}return[...out.values()].sort((a,b)=>a.name.localeCompare(b.name));}
+export function findCxxClasses(symbols,limit=5000){const out=new Map();if(!symbols?.names)return[];for(let i=0;i<symbols.names.length;i++){const raw=symbols.names[i],m=raw&&/^_?_Z(TV|TI|TS)(.+)$/.exec(raw);if(!m)continue;const cls=demangleCxx('_Z'+m[2].replace(/^N?/,(s)=>s))||demangleCxx('_ZN'+m[2])||m[2];if(!out.has(cls)){if(out.size>=limit)continue;out.set(cls,{name:cls,vtable:null,typeinfo:null,typeName:null,raw});}const e=out.get(cls);if(m[1]==='TV')e.vtable=symbols.addrs[i];if(m[1]==='TI')e.typeinfo=symbols.addrs[i];if(m[1]==='TS')e.typeName=symbols.addrs[i];}return[...out.values()].sort((a,b)=>a.name.localeCompare(b.name));}
 
 // Resolver results and chained-pointer options are authority inputs. Validate
 // their raw representation before converting anything into a canonical address.
