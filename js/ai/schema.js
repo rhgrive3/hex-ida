@@ -23,6 +23,7 @@ export const PROPOSAL_DRAFT_SCHEMA = Object.freeze({
 export const AI_ACTION_KINDS = Object.freeze([
   'open-function', 'open-address', 'show-xrefs', 'show-callers', 'show-callees',
   'show-cfg', 'show-pseudocode', 'open-evidence', 'trace-value', 'run-agent', 'review-proposal',
+  'emulate-function', 'open-patch-editor',
 ]);
 const AI_NON_AGENT_ACTION_KINDS = Object.freeze(AI_ACTION_KINDS.filter((kind) => kind !== 'run-agent'));
 export const AI_ERROR_TYPES = Object.freeze([

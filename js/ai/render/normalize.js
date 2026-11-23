@@ -178,6 +178,7 @@ export function parseAnswer(value) {
 const ACTION_KINDS = new Set([
   'open-function', 'open-address', 'show-xrefs', 'show-callers', 'show-callees',
   'show-cfg', 'show-pseudocode', 'open-evidence', 'trace-value', 'run-agent', 'review-proposal',
+  'emulate-function', 'open-patch-editor',
 ]);
 
 const ACTION_LABELS = Object.freeze({
@@ -192,6 +193,8 @@ const ACTION_LABELS = Object.freeze({
   'trace-value': { ja: '値を追う', en: 'Trace value' },
   'run-agent': { ja: 'エージェントで調べる', en: 'Investigate with Agent' },
   'review-proposal': { ja: '変更案を確認', en: 'Review proposal' },
+  'emulate-function': { ja: 'この関数を試す', en: 'Try this function' },
+  'open-patch-editor': { ja: 'ここを書き換える', en: 'Edit this instruction' },
 });
 
 export function actionLabel(kind, ja = true) {

@@ -25,6 +25,9 @@ import {
   parseStandardHeaderInclude,
   isHelperPreludeLine,
   extractHelperPreludeBlocks,
+  isBitfieldHelperPreludeComment,
+  isBitfieldHelperPreludeDeclaration,
+  parseBitfieldHelperDefinition,
 } from '../../decompiler/c-output-closure.js';
 
 const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
@@ -208,7 +211,9 @@ function isAllowedBodyPrefixLine(trimmed) {
     || isStandalonePrototypePreludeDeclaration(trimmed)
     || isIdTypedefPreludeDeclaration(trimmed)
     || isStandardHeaderInclude(trimmed)
-    || isHelperPreludeLine(trimmed);
+    || isHelperPreludeLine(trimmed)
+    || isBitfieldHelperPreludeComment(trimmed)
+    || isBitfieldHelperPreludeDeclaration(trimmed);
 }
 
 /* Strip standalone external global prelude blocks emitted by c-output-closure
@@ -219,6 +224,8 @@ function stripStandaloneGlobalPreludeLines(text) {
   const out = [];
   let inStandaloneGlobals = false;
   let inStandalonePrototypes = false;
+  let inBitfieldHelpers = false;
+  let inBitfieldGuard = false;
   let sawSignature = false;
   for (const line of lines) {
     const trimmed = line.trim();
@@ -226,11 +233,22 @@ function stripStandaloneGlobalPreludeLines(text) {
       if (isStandaloneGlobalPreludeComment(trimmed)) {
         inStandaloneGlobals = true;
         inStandalonePrototypes = false;
+        inBitfieldHelpers = false;
+        inBitfieldGuard = false;
         continue;
       }
       if (isStandalonePrototypePreludeComment(trimmed)) {
         inStandalonePrototypes = true;
         inStandaloneGlobals = false;
+        inBitfieldHelpers = false;
+        inBitfieldGuard = false;
+        continue;
+      }
+      if (isBitfieldHelperPreludeComment(trimmed)) {
+        inBitfieldHelpers = true;
+        inBitfieldGuard = false;
+        inStandaloneGlobals = false;
+        inStandalonePrototypes = false;
         continue;
       }
       if (inStandaloneGlobals) {
@@ -242,8 +260,8 @@ function stripStandaloneGlobalPreludeLines(text) {
         inStandalonePrototypes = false;
       }
       if (isStandardHeaderInclude(trimmed)) continue;
-      if (isHelperPreludeLine(trimmed)) continue;
-      if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) {
+      if (isHelperPreludeLine(trimmed) || isBitfieldHelperPreludeComment(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) continue;
+      if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed) && !isBitfieldHelperPreludeDeclaration(trimmed))) {
         sawSignature = true;
       }
     }
@@ -264,7 +282,7 @@ function extractSynthesizedStructTypedefs(text) {
       structs.push(parsed);
       continue;
     }
-    if (isHelperPreludeLine(trimmed)) continue;
+    if (isHelperPreludeLine(trimmed) || isBitfieldHelperPreludeComment(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) continue;
     if (looksLikeSignature(trimmed) || trimmed === '{' || trimmed.endsWith('{')) break;
   }
   return structs;
@@ -280,7 +298,7 @@ function extractStandardHeaderIncludes(text) {
       found.push(header);
       continue;
     }
-    if (isHelperPreludeLine(trimmed)) continue;
+    if (isHelperPreludeLine(trimmed) || isBitfieldHelperPreludeComment(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) continue;
     if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) break;
   }
   return found;
@@ -292,6 +310,8 @@ function isAccountedBodyPrefix(prefix) {
   let pos = 0;
   let sawStandaloneGlobalsMarker = false;
   let sawStandalonePrototypesMarker = false;
+  let sawBitfieldHelpersMarker = false;
+  let inBitfieldGuard = false;
   while (pos < prefix.length) {
     const triviaStart = pos;
     pos = skipBodyTrivia(prefix, pos);
@@ -301,19 +321,24 @@ function isAccountedBodyPrefix(prefix) {
       for (const rawLine of skipped.split(/\r?\n/)) {
         if (isStandaloneGlobalPreludeComment(rawLine)) sawStandaloneGlobalsMarker = true;
         if (isStandalonePrototypePreludeComment(rawLine)) sawStandalonePrototypesMarker = true;
+        if (isBitfieldHelperPreludeComment(rawLine)) sawBitfieldHelpersMarker = true;
       }
     }
     if (pos >= prefix.length) return true;
     const lineEnd = prefix.indexOf('\n', pos);
     const end = lineEnd < 0 ? prefix.length : lineEnd;
     const line = prefix.slice(pos, end);
-    const ok = isReemittedPreludeDeclaration(line)
+    const trimmedLine = line.trim();
+    let ok = isReemittedPreludeDeclaration(line)
       || isSynthesizedStructPreludeDeclaration(line)
       || (sawStandaloneGlobalsMarker && isStandaloneGlobalPreludeDeclaration(line))
       || (sawStandalonePrototypesMarker && isStandalonePrototypePreludeDeclaration(line))
+      || parseBitfieldHelperDefinition(line) !== null
       || isIdTypedefPreludeDeclaration(line)
       || isStandardHeaderInclude(line)
-      || isHelperPreludeLine(line);
+      || isHelperPreludeLine(line)
+      || isBitfieldHelperPreludeComment(line)
+      || isBitfieldHelperPreludeDeclaration(line);
     if (!ok) return false;
     pos = end;
   }
@@ -1177,6 +1202,12 @@ export function buildCTranslationUnit(functions, options = {}) {
     const structDeclText = synthesizedStructDecls.join('\n');
     aliasContractsForText(structDeclText, headers, typeDeclarations, { ownTypedefsEmitted:false });
     headersForText(structDeclText, headers);
+  }
+
+  if (hoistedHelperBlocks.size) {
+    for (const blockText of hoistedHelperBlocks.values()) {
+      aliasContractsForText(blockText, headers, typeDeclarations, { ownTypedefsEmitted: false });
+    }
   }
 
   const eligibilityContext = bodyEligibilityContext({

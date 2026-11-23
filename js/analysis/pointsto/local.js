@@ -133,6 +133,48 @@ const WIDTH_PRESERVING_CASTS = new Set(['copy', 'bitcast']);
 const WIDTH_CHANGING_CASTS = new Set(['zext', 'sext', 'trunc']);
 const ADDRESS_INTEGER_MACHINE_KINDS = new Set(['bitvector', 'address']);
 const INTEGER_CONSTANT_KINDS = new Set(['bitvector', 'integer']);
+const CANONICAL_PROOF_NODE_KINDS = new Set(['state-read', 'const', 'copy', 'address', 'binary', 'intrinsic']);
+const CANONICAL_BINARY_OPS = new Set(['add', 'sub', 'add-with-carry']);
+const NON_POINTER_MACHINE_KINDS = new Set(['float', 'boolean', 'predicate', 'flags', 'void']);
+
+function createIndexMinHeap() {
+  const heap = [];
+  const push = (value) => {
+    heap.push(value);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      if (heap[index] >= heap[parent]) break;
+      const tmp = heap[index];
+      heap[index] = heap[parent];
+      heap[parent] = tmp;
+      index = parent;
+    }
+  };
+  const pop = () => {
+    if (heap.length === 0) return -1;
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && heap[left] < heap[smallest]) smallest = left;
+        if (right < heap.length && heap[right] < heap[smallest]) smallest = right;
+        if (smallest === index) break;
+        const tmp = heap[index];
+        heap[index] = heap[smallest];
+        heap[smallest] = tmp;
+        index = smallest;
+      }
+    }
+    return top;
+  };
+  return { push, pop, get size() { return heap.length; } };
+}
 
 function parseInteger(candidate) {
   if (candidate == null) return null;
@@ -751,10 +793,31 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const canonicalOptions = options.canonicalOptions ?? {};
   const configuredAddressSpace = canonicalOptions?.addressSpace ?? null;
   for (const id of values.keys()) {
+    const value = values.get(id);
+    if (!value || value.kind === 'unknown' || value.kind === 'undef') {
+      canonical.set(id, null);
+      continue;
+    }
+    const machineKind = value.machineType?.kind;
+    if (NON_POINTER_MACHINE_KINDS.has(machineKind)) {
+      canonical.set(id, null);
+      continue;
+    }
+    const defNode = value.definitionNodeId == null ? null : nodes.get(String(value.definitionNodeId));
+    if (defNode != null) {
+      if (!CANONICAL_PROOF_NODE_KINDS.has(defNode.kind)
+          || (defNode.kind === 'intrinsic' && String(defNode.operator ?? '').toLowerCase() !== 'add-with-carry')
+          || (defNode.kind === 'binary' && !CANONICAL_BINARY_OPS.has(String(defNode.operator ?? '').toLowerCase()))
+          || (defNode.kind === 'const' && value.machineType != null && typeof value.machineType === 'object'
+            && !Array.isArray(value.machineType) && Object.hasOwn(value.machineType, 'kind')
+            && !ADDRESS_INTEGER_MACHINE_KINDS.has(machineKind))) {
+        canonical.set(id, null);
+        continue;
+      }
+    }
     let proof;
     try {
-      const value = values.get(id);
-      const valueSpace = value?.machineType?.kind === 'address' && value.machineType.addressSpace != null
+      const valueSpace = machineKind === 'address' && value.machineType.addressSpace != null
         ? value.machineType.addressSpace
         : null;
       // A global caller authority and the per-value machine type are both
@@ -791,6 +854,7 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const irPrevious = new Map();
   const ssaPrevious = new Map();
 
+  const summaryEvalCache = new Map();
   const irDependents = new Map();
   const ssaDependents = new Map();
   let activeConsumer = null;
@@ -988,21 +1052,31 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
           ?? (typeof options.summaryProvider === 'function' ? options.summaryProvider(calleeId) : null);
         if (options.signal?.aborted) return topPointsTo('unresolved-call');
         if (calleeSummary == null) return topPointsTo('unresolved-call');
-        const dependencyIds = summaryDependencyIds(options, calleeId, calleeSummary);
+        let summaryEval = summaryEvalCache.get(calleeId);
+        if (!summaryEval || summaryEval.summary !== calleeSummary) {
+          const computedDependencyIds = summaryDependencyIds(options, calleeId, calleeSummary);
+          const computedIdentityMatches = computedDependencyIds == null ? false : summaryIdentityMatches(calleeSummary, {
+            functionId: calleeId,
+            snapshotId: options.snapshotId ?? 'snapshot-unbound',
+            analyzerId: options.summaryAnalyzerId ?? options.expectedSummaryAnalyzerId ?? summaryIdentity.analyzerId ?? null,
+            analyzerVersion: options.summaryAnalyzerVersion
+              ?? options.expectedSummaryAnalyzerVersion
+              ?? summaryIdentity.analyzerVersion
+              ?? null,
+          });
+          summaryEval = {
+            summary: calleeSummary,
+            dependencyIds: computedDependencyIds,
+            identityMatches: computedIdentityMatches,
+          };
+          summaryEvalCache.set(calleeId, summaryEval);
+        }
+        const { dependencyIds, identityMatches } = summaryEval;
         if (dependencyIds == null) {
           markSummaryDependencyFailure();
           return topPointsTo('unresolved-call');
         }
         for (const dependencyId of dependencyIds) calleeSummaryDependencyIds.add(dependencyId);
-        const identityMatches = summaryIdentityMatches(calleeSummary, {
-          functionId: calleeId,
-          snapshotId: options.snapshotId ?? 'snapshot-unbound',
-          analyzerId: options.summaryAnalyzerId ?? options.expectedSummaryAnalyzerId ?? summaryIdentity.analyzerId ?? null,
-          analyzerVersion: options.summaryAnalyzerVersion
-            ?? options.expectedSummaryAnalyzerVersion
-            ?? summaryIdentity.analyzerVersion
-            ?? null,
-        });
         if (!identityMatches) {
           // A supplied summary for a different function/snapshot/analyzer is a
           // dependency mismatch, not an ordinary unresolved call. Keep the
@@ -1059,20 +1133,56 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     return topPointsTo('unsupported-operation');
   }
 
-  const dirtySsa = new Set(ssaOrder);
-  const dirtyIr = new Set(irOrder);
-  const markDependentsDirty = (table, id) => {
+  const ssaIndexById = new Map(ssaOrder.map((id, index) => [id, index]));
+  const irIndexById = new Map(irOrder.map((id, index) => [id, index]));
+  const ssaHeap = createIndexMinHeap();
+  const irHeap = createIndexMinHeap();
+  const inSsaHeap = new Uint8Array(ssaOrder.length);
+  const inIrHeap = new Uint8Array(irOrder.length);
+  const inSsaNext = new Uint8Array(ssaOrder.length);
+  const inIrNext = new Uint8Array(irOrder.length);
+  let ssaNextDirty = [];
+  let irNextDirty = [];
+  for (let i = 0; i < ssaOrder.length; i += 1) { inSsaHeap[i] = 1; ssaHeap.push(i); }
+  for (let i = 0; i < irOrder.length; i += 1) { inIrHeap[i] = 1; irHeap.push(i); }
+
+  const enqueueSsa = (idx, activeKind, activeIdx) => {
+    if (activeKind === 's' && idx <= activeIdx) {
+      if (!inSsaNext[idx]) { inSsaNext[idx] = 1; ssaNextDirty.push(idx); }
+    } else if (!inSsaHeap[idx]) {
+      inSsaHeap[idx] = 1;
+      ssaHeap.push(idx);
+    }
+  };
+  const enqueueIr = (idx, activeKind, activeIdx) => {
+    if (activeKind === 'i' && idx <= activeIdx) {
+      if (!inIrNext[idx]) { inIrNext[idx] = 1; irNextDirty.push(idx); }
+    } else if (!inIrHeap[idx]) {
+      inIrHeap[idx] = 1;
+      irHeap.push(idx);
+    }
+  };
+  const markDependentsDirty = (table, id, activeKind, activeIdx) => {
     const bucket = table.get(id);
     if (!bucket) return;
     for (const consumer of bucket) {
-      if (consumer.charCodeAt(0) === 115) dirtySsa.add(consumer.slice(2));
-      else dirtyIr.add(consumer.slice(2));
+      if (consumer.charCodeAt(0) === 115) {
+        const idx = ssaIndexById.get(consumer.slice(2));
+        if (idx !== undefined) enqueueSsa(idx, activeKind, activeIdx);
+      } else {
+        const idx = irIndexById.get(consumer.slice(2));
+        if (idx !== undefined) enqueueIr(idx, activeKind, activeIdx);
+      }
     }
   };
 
   let iterations = 0;
   let changed = true;
   let stopReason = null;
+  const everChangedSsa = new Uint8Array(ssaOrder.length);
+  const everChangedSsaList = [];
+  const everChangedIr = new Uint8Array(irOrder.length);
+  const everChangedIrList = [];
   while (changed) {
     if (options.signal?.aborted) { stopReason = 'cancelled'; break; }
     if (iterations >= budget.maxIterations) { stopReason = 'iteration-limit'; break; }
@@ -1080,18 +1190,25 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     changed = false;
     const widening = iterations > budget.widenAfterIterations;
     if (iterations === budget.widenAfterIterations + 1) {
-      for (const id of ssaOrder) dirtySsa.add(id);
-      for (const id of irOrder) dirtyIr.add(id);
+      for (let i = 0; i < everChangedSsaList.length; i += 1) {
+        const idx = everChangedSsaList[i];
+        if (!inSsaHeap[idx]) { inSsaHeap[idx] = 1; ssaHeap.push(idx); }
+      }
+      for (let i = 0; i < everChangedIrList.length; i += 1) {
+        const idx = everChangedIrList[i];
+        if (!inIrHeap[idx]) { inIrHeap[idx] = 1; irHeap.push(idx); }
+      }
     }
 
-    const step = (order, dirtySet, kindPrefix, dependentsTable, state, previous, transfer) => {
-      for (const id of order) {
+    const step = (order, heap, inHeap, nextDirty, inNext, kindPrefix, dependentsTable, state, previous, transfer, everChangedFlags, everChangedList) => {
+      while (heap.size > 0) {
         if (options.signal?.aborted) {
           stopReason = 'cancelled';
           return;
         }
-        if (!dirtySet.has(id)) continue;
-        dirtySet.delete(id);
+        const idx = heap.pop();
+        inHeap[idx] = 0;
+        const id = order[idx];
         const current = state.get(id);
         activeConsumer = `${kindPrefix}:${id}`;
         let transferred;
@@ -1106,12 +1223,22 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
           previous.set(id, current);
           state.set(id, next);
           changed = true;
-          markDependentsDirty(dependentsTable, id);
+          if (!widening && !everChangedFlags[idx]) {
+            everChangedFlags[idx] = 1;
+            everChangedList.push(idx);
+          }
+          markDependentsDirty(dependentsTable, id, kindPrefix, idx);
         }
       }
+      for (let i = 0; i < nextDirty.length; i += 1) {
+        const idx = nextDirty[i];
+        inNext[idx] = 0;
+        if (!inHeap[idx]) { inHeap[idx] = 1; heap.push(idx); }
+      }
+      nextDirty.length = 0;
     };
-    step(ssaOrder, dirtySsa, 's', ssaDependents, ssaState, ssaPrevious, transferSsa);
-    step(irOrder, dirtyIr, 'i', irDependents, irState, irPrevious, transferIr);
+    step(ssaOrder, ssaHeap, inSsaHeap, ssaNextDirty, inSsaNext, 's', ssaDependents, ssaState, ssaPrevious, transferSsa, everChangedSsa, everChangedSsaList);
+    step(irOrder, irHeap, inIrHeap, irNextDirty, inIrNext, 'i', irDependents, irState, irPrevious, transferIr, everChangedIr, everChangedIrList);
   }
 
   // Bottom is the fixed-point seed, never an answer. A value the solve never

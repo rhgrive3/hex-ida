@@ -111,18 +111,11 @@ function isDeepImmutable(value) {
       if (proto !== Object.prototype && proto !== null) continue;
     }
     if (!Object.isFrozen(current)) { immutable = false; mutableWitness = current; break; }
-    const keys = Reflect.ownKeys(current);
-    for (let i = 0; i < keys.length; i += 1) {
-      const key = keys[i];
-      if (isArr && key === 'length') continue;
-      const descriptor = Object.getOwnPropertyDescriptor(current, key);
-      if (descriptor && 'value' in descriptor) {
-        const child = descriptor.value;
-        if (child !== null && typeof child === 'object') {
-          if (!parent.has(child) && child !== value) parent.set(child, current);
-          stack.push(child);
-        }
-      }
+    const children = getFrozenDataChildren(current);
+    for (let i = 0; i < children.length; i += 1) {
+      const child = children[i];
+      if (!parent.has(child) && child !== value) parent.set(child, current);
+      stack.push(child);
     }
   }
   if (immutable) {
@@ -148,6 +141,26 @@ function isDeepImmutable(value) {
     deepImmutableCache.set(value, false);
   }
   return immutable;
+}
+
+function effectiveReadOnlyRoots(state, budget, pass) {
+  const baseRoots = pass.readOnlyRoots instanceof Set
+    ? pass.readOnlyRoots
+    : (budget.readOnlyRoots instanceof Set ? budget.readOnlyRoots : null);
+  const budgetKeys = budget.readOnlyKeys;
+  const passKeys = pass.readOnlyKeys;
+  if (!budgetKeys && !passKeys) return baseRoots;
+  const roots = baseRoots ? new Set(baseRoots) : new Set();
+  const addKeys = (keys) => {
+    if (!keys) return;
+    for (const key of keys) {
+      const value = Object.getOwnPropertyDescriptor(state, key)?.value;
+      if (value !== null && typeof value === 'object') roots.add(value);
+    }
+  };
+  addKeys(budgetKeys);
+  addKeys(passKeys);
+  return roots.size > 0 ? roots : baseRoots;
 }
 
 function captureShallowState(state) {
@@ -443,9 +456,7 @@ export class PassManager {
           // Run synchronously on the real graph; retain descriptors and collection
           // entries so a failure restores pass-owned data in place (including
           // aliases/cycles). This does not roll back external adapter side effects.
-          const readOnlyRoots = pass.readOnlyRoots instanceof Set
-            ? pass.readOnlyRoots
-            : (this.budget.readOnlyRoots instanceof Set ? this.budget.readOnlyRoots : null);
+          const readOnlyRoots = effectiveReadOnlyRoots(state, this.budget, pass);
           const restore = pass.shallowStateOnly === true
             ? captureShallowState(state)
             : capturePassState(state, passBudget.shouldAbort, readOnlyRoots);

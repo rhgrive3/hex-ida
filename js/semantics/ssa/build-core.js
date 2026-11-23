@@ -386,13 +386,10 @@ function collectModel(ir, options, tick) {
     const dedup = new Map();
     for (const event of expanded) {
       tick();
-      const eventKey = stableStringify({
-        nodeId: event.node.id,
-        phase: event.phase,
-        kind: event.kind,
-        variableKey: event.variant.key,
-        sourceSemanticValueId: event.kind === 'read' ? event.sourceSemanticValueId : null,
-      });
+      const ssv = event.kind === 'read' && event.sourceSemanticValueId != null
+        ? `s:${event.sourceSemanticValueId}`
+        : 'n';
+      const eventKey = `${event.node.id}\u0000${event.phase}\u0000${event.kind}\u0000${event.variant.key}\u0000${ssv}`;
       const prior = dedup.get(eventKey);
       if (!prior) dedup.set(eventKey, event);
       else if (event.broadUnknown && event.kind === 'write') dedup.set(eventKey, { ...prior, broadUnknown: true, definitionKind: 'unknown' });
@@ -693,9 +690,11 @@ function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {
       if (definition.kind === 'phi') { if (!phiIds.has(definition.valueId)) fail('semantic-ssa-dangling-phi-value-id'); dependents.get(definition.valueId).add(phi.valueId); } else set.add(addOrigin('definition:' + definition.valueId, definition.origin)); }
     roots.set(phi.valueId, set);
   }
+  const sortedDependents = new Map();
+  for (const [phiId, depSet] of dependents) sortedDependents.set(phiId, [...depSet].sort());
   const queue = sorted.map((phi) => phi.valueId); const queued = new Set(queue);
   for (let cursor = 0; cursor < queue.length; cursor++) { tick(); const sourceId = queue[cursor]; queued.delete(sourceId); const source = roots.get(sourceId);
-    for (const targetId of [...dependents.get(sourceId)].sort()) { tick(); const target = roots.get(targetId); const before = target.size; for (const index of source) target.add(index); if (target.size !== before && !queued.has(targetId)) { queue.push(targetId); queued.add(targetId); } }
+    for (const targetId of sortedDependents.get(sourceId)) { tick(); const target = roots.get(targetId); const before = target.size; for (const index of source) target.add(index); if (target.size !== before && !queued.has(targetId)) { queue.push(targetId); queued.add(targetId); } }
   }
   const resolved = new Map();
   const mergedByRootKey = new Map();

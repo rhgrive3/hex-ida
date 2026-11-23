@@ -33,8 +33,9 @@ export function layoutNodes(nodes, edges, byId) {
   for (const id of queue) rank.set(id, 0);
   let guard = 0;
   const work = queue.slice();
-  while (work.length && guard++ < 20000) {
-    const id = work.shift();
+  let head = 0;
+  while (head < work.length && guard++ < 20000) {
+    const id = work[head++];
     for (const s of succ.get(id) || []) {
       const r = (rank.get(id) || 0) + 1;
       if (!rank.has(s) || rank.get(s) < r) {

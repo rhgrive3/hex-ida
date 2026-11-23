@@ -629,9 +629,8 @@ function buildStackEscapeCfgIndex(irFunction, cfg, stackValues) {
     nodePosByBlock.set(blockId, posMap);
     if (writes.size > 0) lastArgWriteByBlock.set(blockId, writes);
   }
-  const stackPublishReachesBlockEntry = new Set();
-  if (blockHasStackPublish.size > 0) {
-    const forwardSuccessors = new Map();
+  const forwardSuccessors = new Map();
+  if (blockHasStackPublish.size > 0 || writtenArgRegisters.size > 0) {
     for (const [blockId, cfgBlock] of cfgBlockById) {
       for (const pred of cfgBlock.predecessors ?? []) {
         const predId = String(pred);
@@ -640,6 +639,9 @@ function buildStackEscapeCfgIndex(irFunction, cfg, stackValues) {
         list.push(blockId);
       }
     }
+  }
+  const stackPublishReachesBlockEntry = new Set();
+  if (blockHasStackPublish.size > 0) {
     const queue = [];
     for (const publisherBlockId of blockHasStackPublish) {
       for (const succId of forwardSuccessors.get(publisherBlockId) ?? []) {
@@ -659,6 +661,34 @@ function buildStackEscapeCfgIndex(irFunction, cfg, stackValues) {
       }
     }
   }
+  const argExposeAtEntryByRegister = new Map();
+  const getArgExposeAtEntry = (register) => {
+    let exposed = argExposeAtEntryByRegister.get(register);
+    if (exposed) return exposed;
+    exposed = new Set();
+    const queue = [];
+    for (const [blockId, writes] of lastArgWriteByBlock) {
+      if (writes.get(register) === true) {
+        for (const succId of forwardSuccessors.get(blockId) ?? []) {
+          if (!exposed.has(succId)) {
+            exposed.add(succId);
+            if (!lastArgWriteByBlock.get(succId)?.has(register)) queue.push(succId);
+          }
+        }
+      }
+    }
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const current = queue[cursor];
+      for (const succId of forwardSuccessors.get(current) ?? []) {
+        if (!exposed.has(succId)) {
+          exposed.add(succId);
+          if (!lastArgWriteByBlock.get(succId)?.has(register)) queue.push(succId);
+        }
+      }
+    }
+    argExposeAtEntryByRegister.set(register, exposed);
+    return exposed;
+  };
   return {
     cfgBlockById,
     irBlockById,
@@ -667,23 +697,32 @@ function buildStackEscapeCfgIndex(irFunction, cfg, stackValues) {
     nodePosByBlock,
     firstStackPublishPosByBlock,
     stackPublishReachesBlockEntry,
+    getArgExposeAtEntry,
+    callExposeCache: new Map(),
   };
 }
 
 function callMayExposeStackAddress(node, stackValues, escapeCfgIndex) {
   if (node?.kind !== 'call') return false;
+  const nodeKey = String(node.id);
+  const cached = escapeCfgIndex.callExposeCache.get(nodeKey);
+  if (cached !== undefined) return cached;
+  const finish = (result) => {
+    escapeCfgIndex.callExposeCache.set(nodeKey, result);
+    return result;
+  };
   const explicitArguments = [
     ...(node.call?.arguments ?? []),
     ...(node.call?.memoryRead?.accesses ?? []).map((access) => access.addressExpr?.valueId),
     ...(node.call?.memoryWrite?.accesses ?? []).map((access) => access.addressExpr?.valueId),
   ];
-  if (explicitArguments.some((valueId) => stackValues.derives(valueId))) return true;
-  if (escapeCfgIndex.writtenArgRegisters.size === 0) return false;
+  if (explicitArguments.some((valueId) => stackValues.derives(valueId))) return finish(true);
+  if (escapeCfgIndex.writtenArgRegisters.size === 0) return finish(false);
   const callBlockId = node.blockId == null ? null : String(node.blockId);
   const callCfgBlock = callBlockId == null ? null : escapeCfgIndex.cfgBlockById.get(callBlockId);
   const callIrBlock = callBlockId == null ? null : escapeCfgIndex.irBlockById.get(callBlockId);
-  const callPos = escapeCfgIndex.nodePosByBlock.get(callBlockId)?.get(String(node.id)) ?? -1;
-  if (!callCfgBlock || !callIrBlock || callPos < 0) return true;
+  const callPos = callBlockId == null ? -1 : (escapeCfgIndex.nodePosByBlock.get(callBlockId)?.get(nodeKey) ?? -1);
+  if (!callCfgBlock || !callIrBlock || callPos < 0) return finish(true);
   // A canonical call summary may omit ABI arguments.  Recover only the
   // reaching argument definitions from canonical Semantic IR + scalar SSA
   // state-write nodes along CFG predecessors; this is still producer
@@ -695,30 +734,13 @@ function callMayExposeStackAddress(node, stackValues, escapeCfgIndex) {
     const register = argumentRegisterSlot(candidate);
     if (register == null || killedInCallBlock.has(register)) continue;
     killedInCallBlock.add(register);
-    if (stateWriteMayExposeStack(candidate, stackValues)) return true;
+    if (stateWriteMayExposeStack(candidate, stackValues)) return finish(true);
   }
   for (const register of escapeCfgIndex.writtenArgRegisters) {
     if (killedInCallBlock.has(register)) continue;
-    const visited = new Set();
-    const stack = (callCfgBlock.predecessors ?? []).map(String);
-    while (stack.length > 0) {
-      const blockId = stack.pop();
-      if (visited.has(blockId)) continue;
-      visited.add(blockId);
-      const blockWrites = escapeCfgIndex.lastArgWriteByBlock.get(blockId);
-      if (blockWrites?.has(register)) {
-        if (blockWrites.get(register)) return true;
-        continue;
-      }
-      const block = escapeCfgIndex.cfgBlockById.get(blockId);
-      if (!block) continue;
-      for (const pred of block.predecessors ?? []) {
-        const predId = String(pred);
-        if (!visited.has(predId)) stack.push(predId);
-      }
-    }
+    if (escapeCfgIndex.getArgExposeAtEntry(register).has(callBlockId)) return finish(true);
   }
-  return false;
+  return finish(false);
 }
 
 function nodePublishesStackAddress(upstream, stackValues) {
@@ -1166,7 +1188,17 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const proof = memoryAccessProof(descriptor, options, identity);
     if (!proof
         || proof.volatility !== false || proof.atomic !== false
-        || (proof.ordering != null && proof.ordering !== 'unknown')) continue;
+        || (proof.ordering != null && proof.ordering !== 'unknown')) {
+      accessProofCache.set(descriptor, proof);
+      continue;
+    }
+    const alreadyNormalized = descriptor.memory.volatility === false
+      && descriptor.memory.atomic === false
+      && descriptor.memory.ordering != null;
+    if (alreadyNormalized) {
+      accessProofCache.set(descriptor, proof);
+      continue;
+    }
     descriptor.memory = {
       ...descriptor.memory,
       volatility: false,
@@ -1181,9 +1213,11 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     byteRange: memoryRegionByteRange(region),
   }]));
   const aliasCache = new Map();
+  const aliasNoProofCache = new Map();
   const queryAlias = (left, right, purpose, skipProofIfNo = false) => {
     const key = `${left.key}\u0000${right.key}\u0000${purpose}`;
     if (aliasCache.has(key)) return aliasCache.get(key);
+    if (skipProofIfNo && aliasNoProofCache.has(key)) return aliasNoProofCache.get(key);
     aliasTick();
     let raw = null;
     if (typeof options.querySpecialAlias === 'function') {
@@ -1216,6 +1250,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const result = normalizeAliasResult(raw);
     if (skipProofIfNo && result.relation === 'no') {
       result.proof = null;
+      aliasNoProofCache.set(key, result);
       return result;
     }
     const canonicalProof = canonicalAliasProof({
@@ -1412,6 +1447,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const inCurrent = new Uint8Array(blockCount);
   const inNext = new Uint8Array(blockCount);
   const currentHeap = createIndexMinHeap();
+  const phiSentinels = Array.from({ length: blockCount }, (_, b) => Symbol(b));
 
   for (let rIdx = 0; rIdx < regionCount; rIdx += 1) {
     const regionId = regionIds[rIdx];
@@ -1469,7 +1505,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             if (firstVal === null) firstVal = seed;
             else if (seed !== firstVal) hasMultiple = true;
           }
-          const merged = hasMultiple ? phiId(traversal[b], regionId) : firstVal;
+          const merged = hasMultiple ? phiSentinels[b] : firstVal;
           inDefs[b] = merged;
           const nextOut = writes.get(b) ?? merged;
           if (nextOut !== outDefs[b]) {
@@ -1506,13 +1542,22 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       }
       if (!converged) fail('memory-ssa-build-did-not-converge');
     }
-    regionInDefs[rIdx] = inDefs;
-    regionOutDefs[rIdx] = outDefs;
+    const phiIdBySentinel = new Map();
     for (let b = 0; b < blockCount; b += 1) {
-      if (inDefs[b] === phiId(traversal[b], regionId)) {
+      if (inDefs[b] === phiSentinels[b]) {
+        const canonicalId = phiId(traversal[b], regionId);
+        phiIdBySentinel.set(phiSentinels[b], canonicalId);
         phiRegionsByBlock[b].push(rIdx);
       }
     }
+    if (phiIdBySentinel.size > 0) {
+      for (let b = 0; b < blockCount; b += 1) {
+        if (typeof inDefs[b] === 'symbol') inDefs[b] = phiIdBySentinel.get(inDefs[b]);
+        if (typeof outDefs[b] === 'symbol') outDefs[b] = phiIdBySentinel.get(outDefs[b]);
+      }
+    }
+    regionInDefs[rIdx] = inDefs;
+    regionOutDefs[rIdx] = outDefs;
   }
   const getInDef = (bIdx, rIdx) => (regionInDefs[rIdx] ? regionInDefs[rIdx][bIdx] : seedDefForIndex(bIdx, rIdx));
   const getOutDef = (bIdx, rIdx) => (regionOutDefs[rIdx] ? regionOutDefs[rIdx][bIdx] : seedDefForIndex(bIdx, rIdx));
@@ -1576,7 +1621,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     for (let p = 0; p < phiRegions.length; p += 1) {
       const rIdx = phiRegions[p];
       const regionId = regionIds[rIdx];
-      const expectedPhiId = phiId(blockId, regionId);
+      const expectedPhiId = getInDef(bIdx, rIdx);
       const incoming = block.predecessors.map((pred) => ({
         predecessorBlockId: pred,
         definitionId: getOutDef(blockIndexById.get(pred), rIdx),
@@ -1804,14 +1849,6 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             aliasProof: reaching.proof ?? null,
             aliasRelation: reaching.relation === 'no' ? 'unknown' : reaching.relation,
             accessProof: cachedMemoryAccessProof(descriptor),
-            ...(descriptor.sourceKind === 'load' || descriptor.sourceKind === 'store'
-              ? (() => {
-                const canonicalValue = descriptor.role === 'write'
-                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id, options.ssa, irNodeById, scalarSsaIndex)
-                  : null;
-                return canonicalValue == null ? {} : { canonicalValue };
-              })()
-              : {}),
             origin: jsonSafe(descriptor.node.origin),
             byteRange,
             rangeProof: memoryRangeProof(

@@ -1,6 +1,13 @@
 import { deepFreeze, stableStringify } from '../../core/identity/index.js';
 import { createMemorySsaContract } from './contract.js';
-import { MEMORY_SSA_BUILD_VERSION } from './build.js';
+import {
+  isCanonicalMemorySsaProducerArtifact,
+  MEMORY_SSA_BUILD_VERSION,
+} from './build.js';
+import { isCanonicalSemanticCfg } from '../cfg/index.js';
+
+const validatedMemorySsa = new WeakSet();
+const validatedMemorySsaByCfg = new WeakMap();
 
 function fail(code) { throw new TypeError(code); }
 function assertNotAborted(options) {
@@ -18,6 +25,15 @@ function hasTransformProvenance(entity) {
 export function validateMemorySsa(memorySsa, options = {}) {
   assertNotAborted(options);
   if (!memorySsa || typeof memorySsa !== 'object') fail('memory-ssa-validate-analysis-required');
+  const isTrustedFrozen = Object.isFrozen(memorySsa)
+    && (isCanonicalMemorySsaProducerArtifact(memorySsa) || validatedMemorySsa.has(memorySsa));
+  if (isTrustedFrozen && options.budget == null) {
+    if (options.cfg == null) return memorySsa;
+    if (isCanonicalSemanticCfg(options.cfg)
+        && validatedMemorySsaByCfg.get(memorySsa)?.has(options.cfg)) {
+      return memorySsa;
+    }
+  }
   const contract = createMemorySsaContract({
     contractVersion: memorySsa.contractVersion,
     functionId: memorySsa.functionId,
@@ -148,7 +164,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
     }
   }
 
-  return deepFreeze({
+  const validated = deepFreeze({
     ...memorySsa,
     contractVersion: contract.contractVersion,
     functionId: contract.functionId,
@@ -157,4 +173,19 @@ export function validateMemorySsa(memorySsa, options = {}) {
     uses: contract.uses,
     reachingDefinitionLinks: contract.reachingDefinitionLinks,
   });
+  if (options.budget == null) {
+    if (options.cfg == null) {
+      validatedMemorySsa.add(validated);
+    } else if (isCanonicalSemanticCfg(options.cfg)) {
+      let byCfg = validatedMemorySsaByCfg.get(validated);
+      if (!byCfg) { byCfg = new WeakSet(); validatedMemorySsaByCfg.set(validated, byCfg); }
+      byCfg.add(options.cfg);
+      if (isTrustedFrozen) {
+        let srcByCfg = validatedMemorySsaByCfg.get(memorySsa);
+        if (!srcByCfg) { srcByCfg = new WeakSet(); validatedMemorySsaByCfg.set(memorySsa, srcByCfg); }
+        srcByCfg.add(options.cfg);
+      }
+    }
+  }
+  return validated;
 }

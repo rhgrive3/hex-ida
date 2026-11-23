@@ -256,11 +256,13 @@ export async function pinpointField(opts) {
         .slice(0, VERIFY_ROUND);
       if (!targets.length) break;
 
+      const dirty = [];
       for (let i = 0; i < targets.length; i++) {
         if (cancelled() || spent(o)) break;
         progress({ phase: 'verify', done: checked, all: checked + targets.length - i });
         const c = targets[i];
         verified.add(c.key);
+        const beforeLen = c.evidence.length;
         try {
           /*
            * アクセサを読むのは 2 命令ぶんなので全員に対してやるが、
@@ -269,11 +271,14 @@ export async function pinpointField(opts) {
            */
           await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 2 });
         } catch { /* 1 個読めなくても、ほかは確かめる */ }
+        if (c.evidence.length !== beforeLen) dirty.push(c);
         checked++;
       }
-      for (const c of ranked) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
-      ranked.sort(byRecallLane);
-      result = decide(ranked, FIELD_LIKELY_OPTS);
+      if (dirty.length) {
+        for (const c of dirty) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
+        ranked.sort(byRecallLane);
+        result = decide(ranked, FIELD_LIKELY_OPTS);
+      }
     }
   }
 
@@ -375,25 +380,27 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
   const cxx = isCxxMemberField(iv, cls);
 
   /* 名前 — いちばん直接的だが、これだけでは確定にしない（evidence.js が上限を掛ける） */
+  const isPreset = !!(goal && goal.isPreset);
   if (nameHit) {
     /*
      * 打ち込まれた名前と、変数の名前が、そっくりそのまま同じ。
      * 探しものの名前を知っている人が名前で探しているのだから、
      * これ以上の手がかりは無い。語彙ごしの一致とは別格に扱う。
+     * プリセット選択（goal.isPreset）はラベル文字のリテラル一致にしない。
      */
-    if (nameHit.literal && nameHit.exact) {
+    if (!isPreset && nameHit.literal && nameHit.exact) {
       ev.push(evidence('field-name-asked', 1, { name: iv.name, term: nameHit.term }));
-    } else if (nameHit.literal && nameHit.sequence) {
+    } else if (!isPreset && nameHit.literal && nameHit.sequence) {
       ev.push(evidence('field-name-contains', 1, { name: iv.name, term: nameHit.term }));
-    } else if (nameHit.literal && nameHit.words) {
+    } else if (!isPreset && nameHit.literal && nameHit.words) {
       ev.push(evidence('field-name-words', 1, { name: iv.name, term: nameHit.term }));
     } else if (nameHit.exact) ev.push(evidence('field-name-exact', nameHit.score, { name: iv.name, term: nameHit.term }));
     else if (nameHit.score >= 0.6) ev.push(evidence('field-name-strong', nameHit.score, { name: iv.name, term: nameHit.term }));
     else ev.push(evidence('field-name-weak', Math.max(0.3, nameHit.score), { name: iv.name, term: nameHit.term }));
   }
-  const askedByName = !!(nameHit && nameHit.literal && nameHit.exact);
-  const askedBySequence = !!(nameHit && nameHit.literal && nameHit.sequence);
-  const askedByWords = !!(nameHit && nameHit.literal && nameHit.words);
+  const askedByName = !isPreset && !!(nameHit && nameHit.literal && nameHit.exact);
+  const askedBySequence = !isPreset && !!(nameHit && nameHit.literal && nameHit.sequence);
+  const askedByWords = !isPreset && !!(nameHit && nameHit.literal && nameHit.words);
 
   /*
    * プロパティとして宣言された名前。ivar 名とは別の場所に書いてあるので、
@@ -439,7 +446,7 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
    * 組み込んだ SDK のクラスなら、ここで打ち消す。
    * 名前がどれだけ完璧に一致していても、それはゲームの値ではない。
    */
-  if (ctx.vendorConflict && !askedByName) {
+  if (ctx.vendorConflict && (!askedByName || isPreset)) {
     const sure = ctx.vendor.confidence === 'high';
     ev.push(evidence(sure ? 'third-party-class' : 'library-prefix-class', 1, {
       className: cls.name, vendor: ctx.vendor.vendor, kind: ctx.vendor.kind,
@@ -1018,7 +1025,7 @@ export async function pinpointLocation(opts) {
   const result = decide(list, { maxVerdict: VERDICT.LIKELY });
   for (const e of list) {
     e.probability = e.fusion.probability;
-    e.stars = starsOf(e.fusion.probability, null);
+    e.stars = starsOf(e.fusion.probability, e === result.top ? result.verdict : null);
     e.why = explain(e.fusion);
   }
 
@@ -1077,17 +1084,22 @@ export async function pinpointFunction(opts) {
       if (cancelled() || spent(o)) break;
       const targets = candidates.filter((c) => !seen.has(c.key)).slice(0, VERIFY_ROUND);
       if (!targets.length) break;
+      const dirty = [];
       for (const c of targets) {
         if (cancelled() || spent(o)) break;
         seen.add(c.key);
         progress({ phase: 'verify-fn', done: checked, all: checked + targets.length });
         charge(o);
+        const beforeLen = c.evidence.length;
         try { await verifyFunctionCandidate(c, goal, o); } catch { /* 読めなくても続ける */ }
+        if (c.evidence.length !== beforeLen) dirty.push(c);
         checked++;
       }
-      for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: universe });
-      candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
-      result = decide(candidates);
+      if (dirty.length) {
+        for (const c of dirty) c.fusion = fuse(c.evidence, { candidates: universe });
+        candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+        result = decide(candidates);
+      }
     }
   }
 
@@ -1260,6 +1272,7 @@ const REASON_TO_EVIDENCE = {
   numeric: 'fn-numeric',
   popular: 'fn-called-often',
   'size-penalty': 'fn-too-large',
+  vendor: 'third-party-class',
 };
 
 function buildFunctionCandidate(c, goal, o) {
@@ -1267,8 +1280,15 @@ function buildFunctionCandidate(c, goal, o) {
   const owner = o.fields ? o.fields.ownerOf(c.addr) : null;
 
   for (const r of c.reasons || []) {
-    const code = REASON_TO_EVIDENCE[r.code];
+    let code = REASON_TO_EVIDENCE[r.code];
     if (!code) continue;
+    if (r.code === 'vendor') {
+      code = c.vendor && c.vendor.confidence && c.vendor.confidence !== 'high'
+        ? 'library-prefix-class'
+        : 'third-party-class';
+      ev.push(evidence(code, 1, r.detail));
+      continue;
+    }
     // 元の配点を 0..1 の濃さに直す（配点の最大で割る）
     const strength = Math.max(0.2, Math.min(1, Math.abs(r.points) / 25));
     ev.push(evidence(code, strength, r.detail));

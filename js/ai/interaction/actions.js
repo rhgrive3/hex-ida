@@ -10,6 +10,7 @@
 import { toast } from '../../ui.js';
 import { pick } from '../../i18n.js';
 import { showXrefs, showValueFlow } from '../../panels.js';
+import { showDebugger, showPatchEditor } from '../../tools.js';
 
 function narrow() {
   return typeof window !== 'undefined' && window.innerWidth < 900;
@@ -20,6 +21,15 @@ function addressesEqual(a, b) {
     return BigInt(a) === BigInt(b);
   } catch {
     return false;
+  }
+}
+
+function toAddressBigInt(value) {
+  if (value == null) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
   }
 }
 
@@ -62,6 +72,48 @@ export function createActionRunner(app, { ui, assistant } = {}) {
         if (!goToCode(app, ui, addr, { select: true })) {
           toast(pick('そのアドレスは開けませんでした。', 'That address could not be opened.'));
           return;
+        }
+        if (narrow() && assistant) assistant.collapse();
+        return;
+      }
+      case 'emulate-function': {
+        const targetAddr = toAddressBigInt(addr);
+        if (targetAddr == null) return;
+        if (ui?.actions?.has?.('emulate.function')) {
+          await ui.actions.run('emulate.function', targetAddr);
+        } else if (typeof app?.emulateFunction === 'function') {
+          await app.emulateFunction(targetAddr);
+        } else if (typeof ui?.onEmulateFunction === 'function') {
+          await ui.onEmulateFunction(targetAddr);
+        } else if (ui?.router) {
+          ui.router.navigate('/function/' + targetAddr.toString() + '/runtime');
+        } else {
+          await showDebugger(app, targetAddr);
+        }
+        if (narrow() && assistant) assistant.collapse();
+        return;
+      }
+      case 'open-patch-editor': {
+        const targetAddr = toAddressBigInt(addr);
+        if (targetAddr == null) return;
+        if (ui?.actions?.has?.('patch.open')) {
+          await ui.actions.run('patch.open', targetAddr, action);
+        } else if (ui?.actions?.has?.('showPatchEditor')) {
+          await ui.actions.run('showPatchEditor', targetAddr, action);
+        } else if (typeof app?.openPatchEditor === 'function') {
+          await app.openPatchEditor(targetAddr, action);
+        } else if (typeof ui?.onOpenPatchEditor === 'function') {
+          await ui.onOpenPatchEditor(targetAddr, action);
+        } else {
+          if (typeof app?.goToAddress === 'function') {
+            goToCode(app, ui, targetAddr, { select: true });
+          }
+          const row = app?.viewer?.rowOfAddress ? app.viewer.rowOfAddress(targetAddr) : null;
+          const insn = row != null && app?.viewer?.rowData ? app.viewer.rowData(row) : null;
+          const insnArg = insn && insn.mnemonic
+            ? { mnemonic: insn.mnemonic, operands: insn.operands || '', address: targetAddr }
+            : undefined;
+          await showPatchEditor(app, targetAddr, insnArg);
         }
         if (narrow() && assistant) assistant.collapse();
         return;

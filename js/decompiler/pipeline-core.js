@@ -350,16 +350,47 @@ function abiArgumentLocationsForState(state) {
   } catch { return []; }
 }
 
+const stateAbiArgLocCache = new WeakMap();
+const highVarGroupByIdCache = new WeakMap();
+
 function abiArgumentLocationForRegister(state, reg) {
   const name = String(reg || '');
-  return abiArgumentLocationsForState(state).find((location) => location.reg === name) || null;
+  const adapter = state.opts?.abiAdapter ?? null;
+  const functionPrototype = state.opts?.functionPrototype || state.opts?.prototype || state.prototype || null;
+  let cached = stateAbiArgLocCache.get(state);
+  if (!cached || cached.adapter !== adapter || cached.functionPrototype !== functionPrototype) {
+    const byReg = new Map();
+    for (const location of abiArgumentLocationsForState(state)) {
+      if (!byReg.has(location.reg)) byReg.set(location.reg, location);
+    }
+    cached = { adapter, functionPrototype, byReg };
+    stateAbiArgLocCache.set(state, cached);
+  }
+  return cached.byReg.get(name) || null;
+}
+
+function highVariableGroupById(highVariables, groupId) {
+  if (groupId == null) return null;
+  const groups = highVariables?.groups;
+  if (!Array.isArray(groups) || groups.length === 0) return null;
+  let cached = highVarGroupByIdCache.get(groups);
+  if (!cached || cached.length !== groups.length) {
+    const byId = new Map();
+    for (let i = 0; i < groups.length; i += 1) {
+      const g = groups[i];
+      if (g && !byId.has(g.id)) byId.set(g.id, g);
+    }
+    cached = { length: groups.length, byId };
+    highVarGroupByIdCache.set(groups, cached);
+  }
+  return cached.byId.get(groupId) || null;
 }
 
 function argumentName(v, state) {
   const cxxRec = currentCppReceiver(state.opts, state.ir);
   if (cxxRec && isCppReceiverAlias(v, cxxRec, state.ir)) return 'this';
   const groupId = state.highVariables?.valueToGroup?.get(v?.id);
-  const group = state.highVariables?.groups?.find((g) => g.id === groupId);
+  const group = highVariableGroupById(state.highVariables, groupId);
   if (group?.name) return group.name;
   const reg = String(v?.reg || '');
   const location = abiArgumentLocationForRegister(state, reg);
@@ -717,13 +748,48 @@ function observeBuildSelection(value, instruction, state, kind = 'mov', related 
   if (reserve && !reserveBuildSelection(state, kind)) return null;
   try {
     if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
-    const values = state.ir.values, valueIndex = values?.indexOf(value);
-    const blocks = state.ir.blocks, flat = state.ir.instructions;
+    const values = state.ir.values, blocks = state.ir.blocks, flat = state.ir.instructions;
+    const selIdx = getSelectionIndex(state.ir);
+    let valueIndex = -1;
+    if (value != null && values) {
+      const cachedVi = selIdx?.valueIndex.get(value);
+      valueIndex = cachedVi !== undefined && values[cachedVi] === value ? cachedVi : values.indexOf(value);
+    }
     const locations = [instruction, ...related].map(selected => {
-      const block = blocks?.find(item => item.index === selected.block);
-      const blockIndex = blocks?.indexOf(block), listKey = block?.phis?.includes(selected) ? 'phis' : 'insts';
-      const instructions = block?.[listKey];
-      const instructionIndex = instructions?.indexOf(selected), flatIndex = flat?.indexOf(selected);
+      const cachedBlock = blocks ? selIdx?.blockById.get(selected.block) : undefined;
+      let block, blockIndex, listKey, instructions, instructionIndex;
+      if (cachedBlock && blocks[cachedBlock.blockIndex] === cachedBlock.block && cachedBlock.block.index === selected.block) {
+        block = cachedBlock.block;
+        blockIndex = cachedBlock.blockIndex;
+        const cachedPhiIdx = cachedBlock.phiIndex.get(selected);
+        if (cachedPhiIdx !== undefined && block.phis?.[cachedPhiIdx] === selected) {
+          listKey = 'phis';
+          instructions = block.phis;
+          instructionIndex = cachedPhiIdx;
+        } else {
+          const cachedInstIdx = cachedBlock.instIndex.get(selected);
+          if (cachedInstIdx !== undefined && block.insts?.[cachedInstIdx] === selected) {
+            listKey = 'insts';
+            instructions = block.insts;
+            instructionIndex = cachedInstIdx;
+          } else {
+            listKey = block?.phis?.includes(selected) ? 'phis' : 'insts';
+            instructions = block?.[listKey];
+            instructionIndex = instructions?.indexOf(selected);
+          }
+        }
+      } else {
+        block = blocks?.find(item => item.index === selected.block);
+        blockIndex = blocks?.indexOf(block);
+        listKey = block?.phis?.includes(selected) ? 'phis' : 'insts';
+        instructions = block?.[listKey];
+        instructionIndex = instructions?.indexOf(selected);
+      }
+      let flatIndex;
+      if (flat != null) {
+        const cachedFi = selIdx?.instIndex.get(selected);
+        flatIndex = cachedFi !== undefined && flat[cachedFi] === selected ? cachedFi : flat.indexOf(selected);
+      }
       if (value != null && !(valueIndex >= 0) || !(instructionIndex >= 0) || flat != null && !(flatIndex >= 0)) throw new Error('build-definition-unavailable');
       return { selected, block, blockIndex, blockId:block.index, listKey, instructions, instructionIndex, flatIndex };
     });
@@ -871,7 +937,9 @@ function selectedValueOrigins(value, state) {
       // Only the existing proof issuer can supply store dependencies. A bare
       // reachingStore link is not a source certificate for a numeric constant.
       for (const id of fact.provenance.sourceEntityIds) {
-        const matches = (state.ir.instructions || []).filter(inst => inst.semanticNodeId === id || inst.sourceEntityId === id);
+        const matches = id === undefined
+          ? (state.ir.instructions || []).filter(inst => inst.semanticNodeId === id || inst.sourceEntityId === id)
+          : getInstsByEntityId(state.ir, id);
         if (matches.length !== 1) { incomplete = true; continue; }
         const store = matches[0];
         definitions.add(store); sources.push(origin(store));
@@ -1369,10 +1437,11 @@ function rewriteAll(state, budget) {
     state.rewriteProof = [...new Set(state.rewriteProof)];
     return state;
   }
+  const idiomMemo = new Map();
   for (const v of state.ir.values || []) {
     let root = buildValue(v, state);
     const idiomRecords = [];
-    root = walkIdiom(root, state, idiomRecords);
+    root = walkIdiom(root, state, idiomRecords, idiomMemo);
     // `deterministicTransforms` is an opt-in measurement mode: it removes the
     // rewrite engine's wall-clock cutoff so the fixed point depends only on the
     // input and the rules. Work bounds still apply. Production leaves it unset.
@@ -1396,20 +1465,35 @@ function rewriteAll(state, budget) {
   return state;
 }
 
-function walkIdiom(n, state, records) {
+function walkIdiom(n, state, records, memo = new Map()) {
   if (!n) return n;
-  const mapped = mapChildren(n, child => walkIdiom(child, state, records));
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  const cached = memo.get(n);
+  if (cached !== undefined) {
+    if (cached.records.length) {
+      for (const rec of cached.records) {
+        if ((state.idiomHistoryCount || 0) >= maximum || state.opts?.shouldAbort?.()) {
+          consumerObservationBudget(state).reasons.add('idiom-history-unavailable');
+          break;
+        }
+        records.push(rec);
+        state.idiomHistoryCount = (state.idiomHistoryCount || 0) + 1;
+      }
+    }
+    return cached.node;
+  }
+  const localRecords = [];
+  const mapped = mapChildren(n, child => walkIdiom(child, state, localRecords, memo));
   const recovered = recoverArm64ClangIdiom(mapped);
   if (recovered !== mapped) {
-    const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
-    const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
     if ((state.idiomHistoryCount || 0) >= maximum || state.opts?.shouldAbort?.()) {
       consumerObservationBudget(state).reasons.add('idiom-history-unavailable');
     } else {
       // This is an observed legacy display transformation, not an independently
       // verified rewrite. Shape labels are descriptive, never semantic IDs or
       // equivalence certificates. The existing consumer owns the actual edge.
-      records.push(Object.freeze({ rule:`recognize-${recovered.name}`, phase:'idiom',
+      localRecords.push(Object.freeze({ rule:`recognize-${recovered.name}`, phase:'idiom',
         before:`${mapped.kind}:${mapped.op}`, after:`${recovered.kind}:${recovered.name}`,
         evidence:Object.freeze({ kind:'legacy-idiom-recognition-not-equivalence',
           detail:'actual existing recognizer application; no independent equivalence proof is claimed' }),
@@ -1418,6 +1502,8 @@ function walkIdiom(n, state, records) {
       state.idiomHistoryCount = (state.idiomHistoryCount || 0) + 1;
     }
   }
+  memo.set(n, { node: recovered, records: localRecords });
+  if (localRecords.length) records.push(...localRecords);
   return recovered;
 }
 
@@ -1494,12 +1580,77 @@ function getIrQueryIndex(ir) {
     callInsts,
     retInsts,
     valuesByReg: null,
+    selectionIndex: null,
+    instsByEntityId: null,
     domDepth: new Int32Array(blocks.length).fill(-1),
     domDepthExtra: null,
     reachabilityBits: new Array(blocks.length).fill(null),
   };
   IR_QUERY_INDEX.set(ir, entry);
   return entry;
+}
+
+function getSelectionIndex(ir) {
+  const idx = getIrQueryIndex(ir);
+  if (!idx) return null;
+  if (!idx.selectionIndex) {
+    const valueIndex = new Map();
+    const values = idx.valuesRef;
+    for (let i = 0; i < values.length; i += 1) {
+      const v = values[i];
+      if (v != null && !valueIndex.has(v)) valueIndex.set(v, i);
+    }
+    const blockById = new Map();
+    const blocks = idx.blocksRef;
+    for (let i = 0; i < blocks.length; i += 1) {
+      const b = blocks[i];
+      if (!b || blockById.has(b.index)) continue;
+      const phiIndex = new Map();
+      const phis = b.phis;
+      if (Array.isArray(phis)) {
+        for (let j = 0; j < phis.length; j += 1) {
+          if (phis[j] != null && !phiIndex.has(phis[j])) phiIndex.set(phis[j], j);
+        }
+      }
+      const instIndex = new Map();
+      const insts = b.insts;
+      if (Array.isArray(insts)) {
+        for (let j = 0; j < insts.length; j += 1) {
+          if (insts[j] != null && !instIndex.has(insts[j])) instIndex.set(insts[j], j);
+        }
+      }
+      blockById.set(b.index, { block: b, blockIndex: i, phiIndex, instIndex });
+    }
+    idx.selectionIndex = { valueIndex, blockById, instIndex: idx.instIndex };
+  }
+  return idx.selectionIndex;
+}
+
+function getInstsByEntityId(ir, id) {
+  const idx = getIrQueryIndex(ir);
+  if (!idx) return EMPTY_LIST;
+  if (!idx.instsByEntityId) {
+    const map = new Map();
+    const insts = idx.instsRef;
+    for (let i = 0; i < insts.length; i += 1) {
+      const inst = insts[i];
+      if (!inst) continue;
+      const semId = inst.semanticNodeId;
+      const srcId = inst.sourceEntityId;
+      if (semId !== undefined) {
+        let list = map.get(semId);
+        if (!list) { list = []; map.set(semId, list); }
+        list.push(inst);
+      }
+      if (srcId !== undefined && srcId !== semId) {
+        let list = map.get(srcId);
+        if (!list) { list = []; map.set(srcId, list); }
+        list.push(inst);
+      }
+    }
+    idx.instsByEntityId = map;
+  }
+  return idx.instsByEntityId.get(id) || EMPTY_LIST;
 }
 
 function getValuesByReg(ir, reg) {
@@ -2043,6 +2194,10 @@ function explicitProvenCppFieldOffsets(text, state) {
 }
 
 function beginConditionalRegionCopy(result, state) {
+  const proofRequested = state.opts?.phase8PrepareProof === true
+    || state.opts?.phase8PrepareRegionProof === true
+    || resolveDecompilerProfile(state.opts?.profile).name !== 'fast';
+  if (!proofRequested) return null;
   try {
     const original = readSemanticConditionalRegions(result);
     if (original?.completeness !== 'complete' || result.ir !== state.ir) return null;
@@ -2360,9 +2515,9 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
     { name: 'aggregate-layout-recovery', shallowStateOnly: true, run(s) { s.aggregateLayouts = recoverAggregateLayouts(s.ir, s.types, opts); return s; } },
     { name: 'canonical-expression-build', run:buildCanonicalExpressions },
     { name: 'semantic-rewrite', run: validatedRewriteAll },
-    { name: 'semantic-facts', run(s) { s.facts = validatedSemanticFacts(s, result); return s; } },
+    { name: 'semantic-facts', readOnlyKeys: ['rewriteStats'], run(s) { s.facts = validatedSemanticFacts(s, result); return s; } },
     { name: 'typed-semantic-ast', shallowStateOnly: true, run(s) { s.semanticAst = validatedSemanticAstOf(s, s.facts); return s; } },
-    { name: 'c-ast', run(s) { s.cAst = validatedCAstFromLines(result, s); return s; } },
+    { name: 'c-ast', readOnlyKeys: ['facts', 'semanticAst', 'rewriteStats'], run(s) { s.cAst = validatedCAstFromLines(result, s); return s; } },
     { name: 'pretty-print', shallowStateOnly: true, run(s) { s.printed = printProgram(s.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 }); return s; } },
   ], {
     timeBudgetMs: Number(opts.decompilerTimeBudgetMs ?? opts.transformSafetyCeilingMs ?? 250),
@@ -2371,6 +2526,16 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
     clock: opts.transformClock,
     nodeBudget: Number(opts.decompilerNodeBudget ?? 12000),
     maxIterations: Number(opts.decompilerIterationCap ?? 16),
+    readOnlyKeys: [
+      'highVariables',
+      'prototype',
+      'aggregateLayouts',
+      'orderedMaterializations',
+      'localDeclarations',
+      'phase8',
+      'phase8Timings',
+      'passMetrics',
+    ],
     readOnlyRoots: (() => {
       const roots = new Set([state.ir, state.model, state.types, state.opts].filter(Boolean));
       const ir = state.ir;

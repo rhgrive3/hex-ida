@@ -1213,12 +1213,12 @@ export class App {
       .then((project)=>{if(project)this.activeProject=project; return project;})
       .catch(()=>null);
     const baseSymbolsReady = this.analysisBaseSymbolsReady || this.symbolsReady || Promise.resolve();
-    if (!sampleOpen) void this.analysisResume.saveLastFile(file, { sliceIndex }).catch(() => {});
+    if (!sampleOpen && !restoredOpen) void this.analysisResume.saveLastFile(file, { sliceIndex }).catch(() => {});
     this.analysisResumeReady = Promise.allSettled([projectReady, baseSymbolsReady]).then(async () => {
       if (openEpoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
       let binaryId = this.backend.binaryId;
       if (!binaryId) {
-        try { binaryId = await this.backend.ensureBinaryId(); } catch { return false; }
+        try { binaryId = await this.backend.ensureBinaryId({ priority: 'current' }); } catch { return false; }
       }
       if (openEpoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
       if (!sampleOpen) void this.analysisResume.updateLastFileMeta({ binaryId, sliceIndex }).catch(() => {});
@@ -1240,7 +1240,7 @@ export class App {
     this.noteAttachController=controller;
     try {
       const [binaryId, legacyV2] = await Promise.all([
-        this.backend.ensureBinaryId({ signal:controller.signal }),
+        this.backend.ensureBinaryId({ signal:controller.signal, priority:'current' }),
         legacyV2NoteKeyFor(file,info,sliceIndex),
       ]);
       if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('file') !== file || this.store.get('sliceIndex') !== sliceIndex) return null;
@@ -1329,7 +1329,7 @@ export class App {
         // Swift metadata may warm in the background, but recognition only starts
         // from an explicit consumer (Overview/Explorer/etc.).
         return Promise.allSettled([
-          this.ensureSwift(),
+          this.ensureSwift({ priority: 'background' }),
         ]);
       }).catch(() => { /* シンボルがなくても読める */ });
     }

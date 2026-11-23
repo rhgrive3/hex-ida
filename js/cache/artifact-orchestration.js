@@ -752,6 +752,9 @@ export class ArtifactAnalysisOrchestrator {
     if (typeof produce !== 'function') return Promise.reject(new TypeError('analysis-artifact-producer-required'));
     this.metrics.requests++;
 
+    let hasValidated = false;
+    let validatedPayload;
+
     const request = this.scheduler.request({
       descriptor,
       signal,
@@ -759,7 +762,15 @@ export class ArtifactAnalysisOrchestrator {
       priority,
       completeness,
       validate:typeof validate === 'function'
-        ? (encodedPayload, record, context) => validate(decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true }), record, context)
+        ? async (encodedPayload, record, context) => {
+          const decoded = decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true });
+          const verdict = await validate(decoded, record, context);
+          if (verdict === true) {
+            validatedPayload = decoded;
+            hasValidated = true;
+          }
+          return verdict;
+        }
         : null,
       creation:{
         ...(creation || {}),
@@ -769,7 +780,8 @@ export class ArtifactAnalysisOrchestrator {
       },
       produce:async (context) => {
         this.metrics.producerInvocations++;
-        const envelope = encodeWorkerAnalysisPayload(await produce(context), { rejectSparseArrays:true });
+        const raw = await produce(context);
+        const envelope = encodeWorkerAnalysisPayload(raw, { rejectSparseArrays:true });
         chargeWorkerPayloadMaterialization(context.budget, envelope);
         return envelope;
       },
@@ -778,7 +790,11 @@ export class ArtifactAnalysisOrchestrator {
     return request.then((result) => {
       if (result.reused) this.metrics.warmReuses++;
       else this.metrics.coldPublishes++;
-      return { ...result, payload:decodeWorkerAnalysisPayload(result.payload, { rejectSparseArrays:true }) };
+      const payload = hasValidated
+        ? validatedPayload
+        : decodeWorkerAnalysisPayload(result.payload, { rejectSparseArrays:true });
+      validatedPayload = undefined;
+      return { ...result, payload };
     }, (error) => {
       this.metrics.failures++;
       if (error?.name === 'AbortError') this.metrics.cancellations++;

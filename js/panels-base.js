@@ -215,7 +215,10 @@ export function showFunctionSummary(app, row) {
     endRow = Math.min(app.viewer.totalRows - 1, row + 512);
   }
 
-  const sheet = new Sheet(t('functions.summaryTitle'));
+  const controller = new AbortController();
+  const sheet = new Sheet(t('functions.summaryTitle'), {
+    onClose: () => controller.abort('function-summary-closed'),
+  });
   const status = el('div', 'hint', t('functions.analyzing'));
   const bar = el('div', 'progress');
   const fill = el('i');
@@ -225,10 +228,12 @@ export function showFunctionSummary(app, row) {
   const epoch = app.backend.gen;
   analyzeFunctionCached(app.backend, region, startRow, endRow, sym,
     (p) => {
+      if (controller.signal.aborted) return;
       if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
       fill.style.width = Math.round(p * 100) + '%';
-    }, { architecture })
+    }, { architecture, signal: controller.signal })
     .then((res) => {
+      if (controller.signal.aborted) return;
       if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
       status.remove();
       bar.remove();
@@ -236,6 +241,7 @@ export function showFunctionSummary(app, row) {
       renderFunctionSummary(app, sheet, res, name, region);
     })
     .catch((err) => {
+      if (controller.signal.aborted || err?.name === 'AbortError') return;
       if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
       status.textContent = '';
       alertDialog(t('search.failed'), userError(err));
@@ -1795,33 +1801,40 @@ async function describeAnswer(app, region, program, strings, addr, into) {
     'What this routine does: ' + text), 'sub'));
 }
 
-async function fillPurpose(app, region, program, strings, rows) {
-  const analyze = makeAnalyzer(app, region);
+async function fillPurpose(app, region, program, strings, rows, signal = null) {
+  const analyze = makeAnalyzer(app, region, signal);
   if (!analyze || !rows || !rows.length) return;
   const lookup = stringLookup(strings || []);
-  for (const r of rows.slice(0, PURPOSE_ROWS)) {
-    if (!r.row.isConnected) return;                 // 閉じられた。追いかけない。
-    const range = program ? program.functionRange(r.addr) : null;
-    let model = null;
-    try { model = await analyze(r.addr, range ? range.end : null); } catch { model = null; }
-    if (!model) continue;
-    let text = '';
-    try {
-      const owner = app.fields ? app.fields.ownerOf(r.addr) : null;
-      text = purposeText(describePurpose({
-        model, addr: r.addr, fields: app.fields, owner, textAt: lookup,
-      }));
-    } catch { text = ''; }
-    if (!text) continue;
-    const sub = r.row.querySelector('.sub');
-    if (!sub) continue;
-    /*
-     * 「たぶん 🎒 アイテムに関わる処理（判定）」のような下見は、ここで消す。
-     * 命令から確かめた文と、名前から当てた推測を並べると、読む人は
-     * どちらを信じればいいのか分からなくなる。確かめたほうだけを残す。
-     */
-    sub.textContent = text + '\n' + r.rest;
-  }
+  const targets = rows.slice(0, PURPOSE_ROWS);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < targets.length) {
+      const r = targets[cursor++];
+      if (signal?.aborted || !r.row.isConnected) return; // 閉じられた。追いかけない。
+      const range = program ? program.functionRange(r.addr) : null;
+      let model = null;
+      try { model = await analyze(r.addr, range ? range.end : null); } catch { model = null; }
+      if (signal?.aborted || !model || !r.row.isConnected) continue;
+      let text = '';
+      try {
+        const owner = app.fields ? app.fields.ownerOf(r.addr) : null;
+        text = purposeText(describePurpose({
+          model, addr: r.addr, fields: app.fields, owner, textAt: lookup,
+        }));
+      } catch { text = ''; }
+      if (!text) continue;
+      const sub = r.row.querySelector('.sub');
+      if (!sub) continue;
+      /*
+       * 「たぶん 🎒 アイテムに関わる処理（判定）」のような下見は、ここで消す。
+       * 命令から確かめた文と、名前から当てた推測を並べると、読む人は
+       * どちらを信じればいいのか分からなくなる。確かめたほうだけを残す。
+       */
+      sub.textContent = text + '\n' + r.rest;
+    }
+  };
+  const concurrency = Math.min(3, targets.length);
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 }
 
 /** 自動解析の深掘り用。関数 1 つを解析してモデルだけ返す。 */
@@ -3623,7 +3636,7 @@ export function showCandidates(app, goal) {
      * 一覧を出したあとに 1 個ずつ開いて、言えたものから差し替えていく
      * （待たせないために、描画のあとで走らせる）。
      */
-    fillPurpose(app, region, program, strings, rows);
+    fillPurpose(app, region, program, strings, rows, controller.signal);
   }).catch((err) => {
     box.done();
     if (sheet.root.isConnected) {
@@ -4036,34 +4049,61 @@ export function showFunctionReport(app, addr, goal) {
   const later = el('div');
   body.append(later);
 
-  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done:p, all:1 }), { architecture })
+  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done:p, all:1 }), { architecture, signal: controller.signal })
   .then((res) => {
     box.done();
     if (controller.signal.aborted || !sheet.root.isConnected) return;
     applySemantic(app, region, res);
-    const render = (program) => {
+    let loadingNote = null;
+    let currentReport = null;
+    let callBlkRef = null;
+    let nextStepsBlkRef = null;
+    const getReport = () => currentReport;
+    const renderInitial = () => {
       if (controller.signal.aborted || !sheet.root.isConnected) return;
       const report = buildFunctionReport({
-        model:res.model, region, symbols:sym, program, goal, name,
+        model:res.model, region, symbols:sym, program:null, goal, name,
         fields:app.fields, owner:app.ownerOf(start),
       });
       report.role = roleFromReport(report, { apis:res.model.facts.apis });
+      currentReport = report;
       later.replaceChildren();
-      renderFunctionReport(app, sheet, later, report, res, region, goal);
-      if (!program) later.prepend(para(pick(
+      const refs = renderFunctionReport(app, sheet, later, getReport, res, region, goal, controller.signal);
+      callBlkRef = refs.callBlk;
+      nextStepsBlkRef = refs.nextStepsBlk;
+      loadingNote = para(pick(
         '呼び出し関係は別に取得中です。ここまでの内容はこの関数自身の命令から得た結果です。',
-        'Call relationships are loading separately; the report shown now comes from this function itself.'), 'sub'));
+        'Call relationships are loading separately; the report shown now comes from this function itself.'), 'sub');
+      later.prepend(loadingNote);
     };
     // First useful paint is function-local and cannot be failed by global graph work.
-    render(null);
+    renderInitial();
     Promise.resolve().then(() => {
       if (controller.signal.aborted) return null;
       return app.ensureProgram();
     }).then((program) => {
-      if (program) render(program);
+      if (!program || controller.signal.aborted || !sheet.root.isConnected) return;
+      if (loadingNote && loadingNote.parentNode) loadingNote.remove();
+      const updated = buildFunctionReport({
+        model:res.model, region, symbols:sym, program, goal, name,
+        fields:app.fields, owner:app.ownerOf(start),
+      });
+      updated.role = currentReport?.role ?? roleFromReport(updated, { apis:res.model.facts.apis });
+      currentReport = updated;
+      const nextCallBlk = buildCallRelationshipsBlock(app, sheet, updated, goal);
+      if (callBlkRef && callBlkRef.parentNode) {
+        callBlkRef.replaceWith(nextCallBlk);
+        callBlkRef = nextCallBlk;
+      }
+      const nextSteps = buildNextStepsBlock(updated);
+      if (nextStepsBlkRef && nextStepsBlkRef.parentNode) {
+        nextStepsBlkRef.replaceWith(nextSteps);
+        nextStepsBlkRef = nextSteps;
+      }
     }).catch(() => { /* relationship enrichment is optional */ });
   }).catch((err) => {
     box.done();
+    if (controller.signal.aborted || err?.name === 'AbortError') return;
     if (sheet.root.isConnected) {
       beginnerFailure(later, err, {
         actionLabel: pick('逆アセンブリを見る', 'Show disassembly'),
@@ -4073,7 +4113,9 @@ export function showFunctionReport(app, addr, goal) {
   });
 }
 
-function renderFunctionReport(app, sheet, body, report, res, region, goal) {
+function renderFunctionReport(app, sheet, body, reportOrGetter, res, region, goal, signal = null) {
+  const getReport = typeof reportOrGetter === 'function' ? reportOrGetter : () => reportOrGetter;
+  const report = getReport();
   const id = report.identity;
 
   const head = el('div', 'fn-head');
@@ -4108,10 +4150,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
    * 命令をまたいで式に戻したものは、数え上げとはまるで別の情報量を持つので、
    * 事実・推測より **先に** 出す。
    */
-  if (report.comprehension) {
-    const cs = comprehensionSection(app, report.comprehension, sheet, region);
-    if (cs) body.append(cs);
-  }
+  /* 1 段目 — まずは C やアセンブリを知らなくても読める 1 文要約と箇条書き */
   body.append(el('div', 'lead', oneLiner(report, id.name)));
   const what = whatItDoes(report);
   if (what.length) {
@@ -4124,20 +4163,26 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     }
     body.append(ul0);
   }
+  /* 2 段目 — 復元した計算式（必要な人向けの詳細） */
+  if (report.comprehension) {
+    const cs = comprehensionSection(app, report.comprehension, sheet, region);
+    if (cs) body.append(cs);
+  }
 
-  body.append(geminiAnalysisSection(report, res));
+  body.append(geminiAnalysisSection(getReport, res, signal));
 
   /* 3. 詳しく — 事実 / 推測 / 分からないこと。既定では畳んでおく。 */
   body.append(disclosure(pick('詳しく見る（事実・推測・分からないこと）',
     'Show the detail (facts, inferences, unknowns)'), {
     build: (into) => {
+      const latestReport = getReport();
       into.append(storySection(app, res.model, id.name, sheet));
 
       const factBlk = block(pick('確かなこと（バイナリから直接読めたこと）',
         'Facts — read directly from the binary'));
       const ful = list();
       let shown = 0;
-      for (const f of report.facts) {
+      for (const f of latestReport.facts) {
         const text = factText(f);
         if (!text) continue;
         shown++;
@@ -4161,7 +4206,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
       const infBlk = block(pick('ここから推測できること', 'What can be inferred from that'));
       const iul = list();
       let inferred = 0;
-      for (const i of report.inferences) {
+      for (const i of latestReport.inferences) {
         const text = inferenceText(i);
         if (!text) continue;
         inferred++;
@@ -4181,7 +4226,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
 
       const unkBlk = block(pick('このツールでは分からないこと', 'What this tool cannot tell you'));
       const uul = list();
-      for (const u of report.unknowns) {
+      for (const u of latestReport.unknowns) {
         const text = unknownText(u);
         if (text) {
           uul.append(tapRow(text, {
@@ -4203,8 +4248,12 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
       'Here a value is read, changed and written back — the first place to look if you want to change it.')));
     const eul = list();
     for (const e of report.editTargets) {
-      eul.append(tapRow(addrHex(e.address), {
-        sub: updateLines(e).join('\n'),
+      const lines = updateLines(e);
+      const primaryTitle = lines[0] || pick('値の書き換え箇所', 'Value write location');
+      const subParts = lines.slice(1);
+      subParts.push(addrHex(e.address));
+      eul.append(tapRow(primaryTitle, {
+        sub: subParts.join('\n'),
         tag: certaintyWord(e.level === 'confirmed' ? 'fact' : 'inference'),
         tagClass: e.level === 'confirmed' ? 'tag-fact' : 'tag-infer',
         onTap: () => { sheet.close(); showValueFlow(app, res.model, e.row, region); },
@@ -4219,6 +4268,63 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
   }
 
   /* 6. 呼び出し関係 */
+  const callBlk = buildCallRelationshipsBlock(app, sheet, report, goal);
+  body.append(callBlk);
+
+  /* 7. 処理の流れ（制御フロー） */
+  body.append(disclosure(pick('処理の流れを見る（条件分岐とループ）', 'Show the flow (branches and loops)'), {
+    build: (into) => into.append(cfgSection(app, report, region, sheet)),
+  }));
+
+  /* 8. 処理のまとまり → ARM64（従来の道筋をそのまま残す） */
+  body.append(disclosure(pick('処理のまとまりを見る', 'Show the steps'), {
+    build: (into) => into.append(blockListSection(app, res.model, sheet, region)),
+  }));
+  body.append(disclosure(pick('ARM64 を見る（命令と数字）', 'Show the ARM64 details'), {
+    build: (into) => into.append(rawSection(app, sheet, res, id.name, region)),
+  }));
+
+  /* 9. 次に何をすればいいか */
+  const nextStepsBlk = buildNextStepsBlock(report);
+  body.append(nextStepsBlk);
+
+  /* 10. どこからでも降りられるようにする */
+  const views = nextViewsRow(app, id.startAddr, { sheet, goal, exclude: ['report'], primary: 'pseudocode' });
+  if (views) body.append(views);
+
+  const actions = el('div', 'detail-actions');
+  actions.append(button(pick('アドレスの対応を見る', 'Show address mapping'), 'chip', () => {
+    showAddressInfo(app, id.startAddr);
+  }));
+  actions.append(button(pick('16 進で見る', 'Show the raw bytes'), 'chip', () => {
+    sheet.close();
+    app.goToAddress(id.startAddr, { announce: true });
+    app.setMode('hex');
+  }));
+  actions.append(button(pick('レポートをコピー', 'Copy report'), 'chip', () => {
+    copyText(body.innerText, pick('関数レポート', 'function report'));
+  }));
+  body.append(actions);
+  return { callBlk, nextStepsBlk };
+}
+
+function buildNextStepsBlock(report) {
+  const nb = block(pick('次に確認すること', 'What to check next'));
+  const nl = el('ul', 'story-steps');
+  report.nextSteps.forEach((s, i) => {
+    const text = nextStepText(s);
+    if (!text) return;
+    const li = el('li');
+    li.append(el('i', null, String(i + 1) + '.'));
+    li.append(el('span', null, text));
+    nl.append(li);
+  });
+  nb.append(nl);
+  return nb;
+}
+
+function buildCallRelationshipsBlock(app, sheet, report, goal) {
+  const id = report.identity;
   const callBlk = block(pick('呼び出し関係', 'Call relationships'));
   const cul = list();
   cul.append(groupRow(pick('この関数を呼んでいる (' + report.callers.length + ')',
@@ -4257,52 +4363,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     sheet.close();
     showCallGraph(app, id.startAddr);
   }));
-  body.append(callBlk);
-
-  /* 7. 処理の流れ（制御フロー） */
-  body.append(disclosure(pick('処理の流れを見る（条件分岐とループ）', 'Show the flow (branches and loops)'), {
-    build: (into) => into.append(cfgSection(app, report, region, sheet)),
-  }));
-
-  /* 8. 処理のまとまり → ARM64（従来の道筋をそのまま残す） */
-  body.append(disclosure(pick('処理のまとまりを見る', 'Show the steps'), {
-    build: (into) => into.append(blockListSection(app, res.model, sheet, region)),
-  }));
-  body.append(disclosure(pick('ARM64 を見る（命令と数字）', 'Show the ARM64 details'), {
-    build: (into) => into.append(rawSection(app, sheet, res, id.name, region)),
-  }));
-
-  /* 9. 次に何をすればいいか */
-  const nb = block(pick('次に確認すること', 'What to check next'));
-  const nl = el('ul', 'story-steps');
-  report.nextSteps.forEach((s, i) => {
-    const text = nextStepText(s);
-    if (!text) return;
-    const li = el('li');
-    li.append(el('i', null, String(i + 1) + '.'));
-    li.append(el('span', null, text));
-    nl.append(li);
-  });
-  nb.append(nl);
-  body.append(nb);
-
-  /* 10. どこからでも降りられるようにする */
-  const views = nextViewsRow(app, id.startAddr, { sheet, goal, exclude: ['report'], primary: 'pseudocode' });
-  if (views) body.append(views);
-
-  const actions = el('div', 'detail-actions');
-  actions.append(button(pick('アドレスの対応を見る', 'Show address mapping'), 'chip', () => {
-    showAddressInfo(app, id.startAddr);
-  }));
-  actions.append(button(pick('16 進で見る', 'Show the raw bytes'), 'chip', () => {
-    sheet.close();
-    app.goToAddress(id.startAddr, { announce: true });
-    app.setMode('hex');
-  }));
-  actions.append(button(pick('レポートをコピー', 'Copy report'), 'chip', () => {
-    copyText(body.innerText, pick('関数レポート', 'function report'));
-  }));
-  body.append(actions);
+  return callBlk;
 }
 
 /** GeminiのMarkdownを、HTML文字列を使わず安全なDOMとして組み立てる。 */
@@ -4413,7 +4474,9 @@ function renderGeminiMarkdown(target, source) {
 }
 
 /** Geminiへ送るのは、この関数に関係する上限付きの根拠だけにする。 */
-function geminiAnalysisSection(report, res) {
+function geminiAnalysisSection(reportOrGetter, res, parentSignal = null) {
+  const getReport = typeof reportOrGetter === 'function' ? reportOrGetter : () => reportOrGetter;
+  const initialReport = getReport();
   const section = block(pick('AIにこの関数を聞く', 'Ask AI about this function'));
   section.classList.add('gemini-analysis');
   section.append(para(pick(
@@ -4431,7 +4494,7 @@ function geminiAnalysisSection(report, res) {
   question.value = pick(
     'この関数の役割と、値が書き込まれる経路を根拠となるARM64命令とともに説明してください。',
     'Explain this function’s role and the path by which it writes values, citing the relevant ARM64 instructions.');
-  label.htmlFor = 'gemini-question-' + String(report.identity.startAddr);
+  label.htmlFor = 'gemini-question-' + String(initialReport.identity.startAddr);
   question.id = label.htmlFor;
   section.append(label, question);
 
@@ -4499,7 +4562,7 @@ function geminiAnalysisSection(report, res) {
     }
     let payload;
     try {
-      payload = buildGeminiPayload(report, res.model, text, thinking.value);
+      payload = buildGeminiPayload(getReport(), res.model, text, thinking.value);
     } catch (err) {
       console.error('[hex] could not prepare Gemini context', err);
       status.textContent = pick('解析対象を準備できませんでした。逆コンパイル結果は引き続き確認できます。',
@@ -4549,6 +4612,11 @@ function geminiAnalysisSection(report, res) {
   cancel.addEventListener('click', () => {
     if (controller) controller.abort();
   });
+  if (parentSignal) {
+    const onParentAbort = () => { if (controller) controller.abort(); };
+    if (parentSignal.aborted) onParentAbort();
+    else parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  }
   return section;
 }
 

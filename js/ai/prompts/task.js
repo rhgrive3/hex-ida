@@ -19,6 +19,7 @@ export const TASKS = Object.freeze([
   'compare_functions',
   'verify_hypothesis',
   'rename_suggestion',
+  'patch_suggestion',
   'runtime_verification',
   'binary_diff',
 ]);
@@ -60,6 +61,10 @@ Test the stated hypothesis against evidence. Report supporting evidence, contrad
 Propose a name that describes what the routine does, justified by evidence. A rename changes project state, so present it as a proposal for approval rather than applying it.
 </task>`,
 
+  patch_suggestion: `<task name="patch_suggestion">
+The user wants to modify, bypass, or change a value or behaviour in this code. Explain what the change does in plain, everyday language matching the user's language without assuming C or assembly knowledge. Identify the exact address and instruction to change, mention any side effects or risks, and present any concrete binary edit as a proposal for approval rather than applying it automatically.
+</task>`,
+
   runtime_verification: `<task name="runtime_verification">
 Prefer observed runtime facts over static inference, and label which is which. Say what the observation does and does not prove.
 </task>`,
@@ -74,6 +79,7 @@ const PATTERNS = [
   ['runtime_verification', /\b(run(time)?|execute|emulat|trace at runtime|observe)\b.*\b(verify|check|confirm)\b|実行して(確|試)|動かして(確|試)|実行時に/i],
   ['compare_functions', /\b(compare|difference between|same as)\b.*\b(function|routine|sub_)|比較|どこが違/i],
   ['rename_suggestion', /\b(rename|suggest a? ?name|better name|name this)\b|名前を(付|つ|提案)|命名/i],
+  ['patch_suggestion', /\b(patch|bypass|nop\s*out|disable\s+this|skip\s+this|force\s+return|always\s+(return|succeed|pass|true|false)|how\s+(do\s+i|to)\s+(modify|change|alter|edit|bypass|patch))\b|書き換える方法|書き換えたい|書き換えて(?!い[るた]|お)|パッチ(を|提案|案|で)|バイパス|回避(する|したい|方法)|無効化|常に(成功|true|false|通)|スキップ(する|したい|させ)|(値|結果|判定|条件)を(変え|変更)(る|たい|て(?!い[るた]|お))/i],
   ['verify_hypothesis', /\b(verify|confirm|is it true|prove|check whether)\b|本当に|確かめ|検証/i],
   /* 「書き込んでいる処理」「書き換えている場所」「更新しているのは」。活用は
      追わず、動詞の語幹と直後の名詞だけを見る。 */
@@ -83,7 +89,7 @@ const PATTERNS = [
   ['understand_string', /\b(string|文字列)\b.*\b(used|usage|referenc|where)\b|この文字列|文字列.*(使わ|参照)/i],
   ['locate_behavior', /\b(where|find|locate|which function)\b|どこ|探し|見つけ|どの関数/i],
   ['explain_instruction', /\b(this instruction|this line|this opcode|what does .* do here)\b|この命令|この行/i],
-  ['explain_function', /\b(what does this (function|routine)|explain this (function|routine)|purpose of)\b|この関数|何をして|役割/i],
+  ['explain_function', /\b(what does this (function|routine)|explain this (function|routine)|explain this simply|purpose of)\b|この関数|何をして|役割|わかりやすく説明|やさしく説明|簡単に説明/i],
 ];
 
 /**
