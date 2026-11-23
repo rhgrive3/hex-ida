@@ -108,6 +108,7 @@ export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
   ['exit', '<stdlib.h>'], ['_Exit', '<stdlib.h>'], ['quick_exit', '<stdlib.h>'], ['atexit', '<stdlib.h>'],
   ['abort', '<stdlib.h>'], ['system', '<stdlib.h>'], ['getenv', '<stdlib.h>'],
   ['rand', '<stdlib.h>'], ['srand', '<stdlib.h>'],
+  ['arc4random', '<stdlib.h>'], ['arc4random_buf', '<stdlib.h>'], ['arc4random_uniform', '<stdlib.h>'],
   ['mblen', '<stdlib.h>'], ['mbtowc', '<stdlib.h>'], ['wctomb', '<stdlib.h>'],
   ['mbstowcs', '<stdlib.h>'], ['wcstombs', '<stdlib.h>'],
   // <string.h>
