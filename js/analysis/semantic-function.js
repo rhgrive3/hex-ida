@@ -8,6 +8,11 @@ import {
   normalizeCxxEvidenceInput,
 } from './cxx/project.js';
 import {
+  getEngineMode,
+  isWasmEngineAvailable,
+  recordFallback,
+} from '../core/hex-engine-bridge.js';
+import {
   SEMANTIC_FUNCTION_ROUTE,
   canonicalDecodedInstructions,
   decompilerSnapshot,
@@ -510,6 +515,19 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     }),
     switches:[],
   };
+  // Record explicit structured fallback reason for the canonical semantic-v2
+  // projection path so no silent fallback occurs while preserving 0-bit
+  // provenance/evidence fidelity.
+  const requestedEngine = projectionOptions?._engine ? String(projectionOptions._engine).toLowerCase() : null;
+  if (requestedEngine === 'js' || getEngineMode() === 'js') {
+    recordFallback('decompile:wasm_disabled');
+  } else if (!isWasmEngineAvailable()) {
+    recordFallback('decompile:wasm_unavailable');
+  } else if (pipeline.architectureId !== 'arm64') {
+    recordFallback(`decompile:non_arm64_arch:${pipeline.architectureId}`);
+  } else {
+    recordFallback('decompile:semantic_v2_canonical_projection');
+  }
   const cxxEvidence = cxxEvidenceForProjection(input, pipeline, orderedInstructions, projectionOptions);
   const decompiler = decompileSemanticProjection(model, {
     ...projectionOptions,
