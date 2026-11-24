@@ -1813,6 +1813,16 @@ function isKnownStructPointerType(baseType) {
   return false;
 }
 
+const INT64_MAX_DISP = 9223372036854775807n;
+
+function normalizeSignedDisp64(raw) {
+  return BigInt.asIntN(64, BigInt(raw));
+}
+
+function formatSignedDispMagnitude(negDisp) {
+  return negDisp > INT64_MAX_DISP ? `${negDisp.toString()}ULL` : negDisp.toString();
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
   if (loc.kind === MK.STACK) {
@@ -1820,24 +1830,26 @@ export function renderMemoryLocation(loc, inst, ctx) {
       const size = Number(inst?.addr?.size || inst?.size || loc.size || 8);
       const elemType = memoryElementType(inst, size, ctx.types);
       if (loc.frameEpoch === 0 && (loc.baseReg === 'sp' || !loc.baseReg)) {
-        const disp = loc.disp != null ? BigInt(loc.disp) : 0n;
+        const disp = loc.disp != null ? normalizeSignedDisp64(loc.disp) : 0n;
         if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
         return disp < 0n
-          ? `*(${elemType} *)(uintptr_t)(sp - ${(-disp).toString()})`
+          ? `*(${elemType} *)(uintptr_t)(sp - ${formatSignedDispMagnitude(-disp)})`
           : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
       }
       if (inst?.addr?.base) {
         const base = renderValue(inst.addr.base, ctx);
-        const disp = inst.addr.disp != null ? BigInt(inst.addr.disp) : (loc.disp != null ? BigInt(loc.disp) : 0n);
+        const disp = inst.addr.disp != null
+          ? normalizeSignedDisp64(inst.addr.disp)
+          : (loc.disp != null ? normalizeSignedDisp64(loc.disp) : 0n);
         if (disp === 0n) return `*(${elemType} *)(uintptr_t)(${base})`;
         return disp < 0n
-          ? `*(${elemType} *)(uintptr_t)((${base}) - ${(-disp).toString()})`
+          ? `*(${elemType} *)(uintptr_t)((${base}) - ${formatSignedDispMagnitude(-disp)})`
           : `*(${elemType} *)(uintptr_t)((${base}) + ${disp.toString()})`;
       }
-      const disp = loc.disp != null ? BigInt(loc.disp) : 0n;
+      const disp = loc.disp != null ? normalizeSignedDisp64(loc.disp) : 0n;
       if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
       return disp < 0n
-        ? `*(${elemType} *)(uintptr_t)(sp - ${(-disp).toString()})`
+        ? `*(${elemType} *)(uintptr_t)(sp - ${formatSignedDispMagnitude(-disp)})`
         : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
     }
     return stackName(ctx, loc);
@@ -1854,7 +1866,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
       const index = renderValue(addr.index, ctx);
       const scale = Number(addr.scale || 0);
       const size = Number(addr.size || inst?.size || loc?.size || 0);
-      const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
+      const disp = addr.disp != null ? normalizeSignedDisp64(addr.disp) : 0n;
       const indexed = renderIndexedMemory(base, index, {
         extend: addr.extend || null,
         scale,
@@ -1870,7 +1882,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
       }
       if (size > 0 && scaleBytes > 0 && ((!isPtr && (scaleBytes !== size || disp !== 0n)) || (isPtr && disp !== 0n)) && ctx.opts?.phase8Optimize !== true) {
         const offsetExpr = scaleBytes === 1 ? `(${idxExpr})` : `(${idxExpr}) * ${scaleBytes}`;
-        const dispExpr = disp !== 0n ? (disp < 0n ? ` - ${(-disp).toString()}` : ` + ${disp.toString()}`) : '';
+        const dispExpr = disp !== 0n ? (disp < 0n ? ` - ${formatSignedDispMagnitude(-disp)}` : ` + ${disp.toString()}`) : '';
         return `*(${elemType} *)((uintptr_t)(${base}) + ${offsetExpr}${dispExpr})`;
       }
       return indexed;
@@ -1891,10 +1903,10 @@ export function renderMemoryLocation(loc, inst, ctx) {
       const base = renderValue(addr.base, ctx, suppressStr ? { suppressRodataString: true } : {});
       const size = Number(addr.size || inst?.size || loc?.size || 8);
       const elemType = memoryElementType(inst, size, ctx.types);
-      const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
+      const disp = addr.disp != null ? normalizeSignedDisp64(addr.disp) : 0n;
       if (disp !== 0n) {
         return disp < 0n
-          ? `*(${elemType} *)((uintptr_t)(${base}) - ${(-disp).toString()})`
+          ? `*(${elemType} *)((uintptr_t)(${base}) - ${formatSignedDispMagnitude(-disp)})`
           : `*(${elemType} *)((uintptr_t)(${base}) + ${disp.toString()})`;
       }
       return `*(${elemType} *)(uintptr_t)(${base})`;
@@ -1903,7 +1915,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
   }
   if (loc.kind === MK.FIELD) {
     const base = loc.base || addr.base;
-    const off = BigInt(loc.disp ?? addr.disp ?? 0);
+    const off = normalizeSignedDisp64(loc.disp ?? addr.disp ?? 0);
     const cxxRec = ctx.opts?.cxxEvidence?.receiver;
     const isReceiver = isReceiverAlias(base, cxxRec, ctx);
     const suppressStr = shouldSuppressRodataStringForMem(inst, loc, ctx.types, 0);
@@ -1921,7 +1933,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
       if (losesWidthOrType && elemType && !isKnownStructPointerType(baseType)) {
         if (off !== 0n) {
           return off < 0n
-            ? `*(${elemType} *)((uintptr_t)(${rawBaseText}) - ${(-off).toString()})`
+            ? `*(${elemType} *)((uintptr_t)(${rawBaseText}) - ${formatSignedDispMagnitude(-off)})`
             : `*(${elemType} *)((uintptr_t)(${rawBaseText}) + ${off.toString()})`;
         }
         return `*(${elemType} *)(uintptr_t)(${rawBaseText})`;

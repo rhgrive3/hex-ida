@@ -297,6 +297,81 @@ function parsePointerParameterIndices(declaration) {
   return pointerIndices.size ? pointerIndices : null;
 }
 
+function parseSignatureArity(declaration, name) {
+  if (typeof declaration !== 'string' || typeof name !== 'string' || !name) return null;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const nameMatch = new RegExp(`\\b${escaped}\\s*\\(`).exec(declaration);
+  if (!nameMatch) return null;
+  const openIdx = nameMatch.index + nameMatch[0].length - 1;
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openIdx; i < declaration.length; i++) {
+    const ch = declaration[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) { closeIdx = i; break; }
+    }
+  }
+  if (closeIdx < 0) return null;
+  const paramsText = declaration.slice(openIdx + 1, closeIdx).trim();
+  if (!paramsText || paramsText === '__HEX_ANY_ARGS') return null;
+  if (/^void$/i.test(paramsText)) return { min: 0, max: 0 };
+  const parts = splitTopLevelCommas(paramsText);
+  if (!parts.length) return null;
+  if (parts[parts.length - 1] === '...') {
+    return { min: parts.length - 1, max: Infinity };
+  }
+  return { min: parts.length, max: parts.length };
+}
+
+function hasNonCommentContent(rawText) {
+  const s = String(rawText ?? '');
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n' || ch === '\f' || ch === '\v') {
+      i++;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '*') {
+      const end = s.indexOf('*/', i + 2);
+      if (end < 0) return false;
+      i = end + 2;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '/') {
+      const end = s.indexOf('\n', i + 2);
+      if (end < 0) return false;
+      i = end + 1;
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function extractCallArgCount(codeText, rawBodyText, openIdx) {
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openIdx; i < codeText.length; i++) {
+    if (codeText[i] === '(') depth++;
+    else if (codeText[i] === ')') {
+      depth--;
+      if (depth === 0) { closeIdx = i; break; }
+    }
+  }
+  if (closeIdx < 0) return null;
+  const codeInner = codeText.slice(openIdx + 1, closeIdx);
+  const rawInner = rawBodyText.slice(openIdx + 1, closeIdx);
+  if (codeInner.trim().length === 0) {
+    if (ARGUMENTS_UNKNOWN.test(rawInner)) return { argCount: null, argumentsUnknown: true };
+    if (hasNonCommentContent(rawInner)) return { argCount: 1, argumentsUnknown: false };
+    return { argCount: 0, argumentsUnknown: false };
+  }
+  return { argCount: splitTopLevelCommas(codeInner).length, argumentsUnknown: false };
+}
+
 function extractCallArguments(codeText, openParenIdx) {
   let depth = 0;
   let closeIdx = -1;
@@ -1293,16 +1368,20 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
   // Selected definitions with a known recovered arity, filled by the caller.
   const knownAritySelected = new Set();
   const pointerParamPositions = new Map();
+  const knownArityBounds = new Map();
   for (const row of prototypes) {
     if (!row?.declaration || !C_IDENTIFIER.test(String(row.name ?? ''))) continue;
+    const protoName = String(row.name);
     const ptrIdx = parsePointerParameterIndices(row.declaration);
-    if (ptrIdx) pointerParamPositions.set(String(row.name), ptrIdx);
+    if (ptrIdx) pointerParamPositions.set(protoName, ptrIdx);
+    const bounds = parseSignatureArity(row.declaration, protoName);
+    if (bounds) knownArityBounds.set(protoName, bounds);
   }
   const stdlibHeaderFunctions = new Set();
   for (const [fnName, header] of STANDARD_C_LIBRARY_HEADERS) {
     if (headers.has(header)) stdlibHeaderFunctions.add(fnName);
   }
-  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, pointerParamPositions, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
+  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, knownArityBounds, pointerParamPositions, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
 }
 
 function faithfulBodyEligibility(fn, context) {
@@ -1361,7 +1440,11 @@ function faithfulBodyEligibility(fn, context) {
     if (ARGUMENTS_UNKNOWN.test(match[2])) arityUnknownCalls.add(match[1]);
   }
   for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)/g)) {
-    if (!context.keywordsLike.has(match[1])) arityUnknownCalls.add(match[1]);
+    if (context.keywordsLike.has(match[1])) continue;
+    const openIdx = match.index + match[0].indexOf('(');
+    const closeIdx = match.index + match[0].length - 1;
+    const rawInner = bodyText.slice(openIdx + 1, closeIdx);
+    if (!hasNonCommentContent(rawInner)) arityUnknownCalls.add(match[1]);
   }
   for (const callee of arityUnknownCalls) {
     if (context.unprototypedFallbacks.has(callee)) continue;
@@ -1370,6 +1453,23 @@ function faithfulBodyEligibility(fn, context) {
     }
     if (context.knownAritySelected.has(callee)) {
       return { eligible:false, reason:`arity-unknown-call-contradicts-selected-signature:${callee}` };
+    }
+  }
+  if (context.knownArityBounds?.size) {
+    for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const callee = match[1];
+      if (context.keywordsLike.has(callee) || TYPE_LIKE_IDENTIFIERS.has(callee)) continue;
+      const bounds = context.knownArityBounds.get(callee);
+      if (!bounds) continue;
+      const before = codeText.slice(0, match.index).trimEnd();
+      if (before.endsWith('->') || before.endsWith('.')) continue;
+      const openIdx = match.index + match[0].length - 1;
+      if (isFunctionPointerCastOrDeclAfterParen(codeText.slice(openIdx + 1))) continue;
+      const callInfo = extractCallArgCount(codeText, bodyText, openIdx);
+      if (!callInfo || callInfo.argCount === null) continue;
+      if (callInfo.argCount < bounds.min || callInfo.argCount > bounds.max) {
+        return { eligible:false, reason:`call-arity-mismatch:${callee}` };
+      }
     }
   }
   if (context.pointerParamPositions?.size) {
@@ -1990,16 +2090,23 @@ export function buildCTranslationUnit(functions, options = {}) {
   // emitted faithfully, because its published declaration would reject the
   // call.
   for (const fn of normalizedFunctions) {
-    if (!C_IDENTIFIER.test(String(fn?.renderedName ?? ''))) continue;
+    const fnName = String(fn?.renderedName ?? '');
+    if (!C_IDENTIFIER.test(fnName)) continue;
+    const emittedDecl = safeSignatureDeclaration(fn?.signature);
+    if (emittedDecl) {
+      const bounds = parseSignatureArity(emittedDecl, fnName);
+      if (bounds) eligibilityContext.knownArityBounds.set(fnName, bounds);
+      else eligibilityContext.knownArityBounds.delete(fnName);
+    }
     const declaration = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature);
     if (!declaration) continue;
-    if (isUnprototypedDeclaration(declaration, String(fn.renderedName))) {
-      eligibilityContext.unprototypedFallbacks.add(String(fn.renderedName));
+    if (isUnprototypedDeclaration(declaration, fnName)) {
+      eligibilityContext.unprototypedFallbacks.add(fnName);
     } else {
-      eligibilityContext.knownAritySelected.add(String(fn.renderedName));
+      eligibilityContext.knownAritySelected.add(fnName);
     }
     const ptrIdx = parsePointerParameterIndices(declaration);
-    if (ptrIdx) eligibilityContext.pointerParamPositions.set(String(fn.renderedName), ptrIdx);
+    if (ptrIdx) eligibilityContext.pointerParamPositions.set(fnName, ptrIdx);
   }
   for (const fn of normalizedFunctions) {
     const verdict = faithfulBodyEligibility(fn, eligibilityContext);
@@ -2077,4 +2184,4 @@ export function buildCTranslationUnit(functions, options = {}) {
   });
 }
 
-export { normalizedType as normalizeCType };
+export { normalizedType as normalizeCType, parseSignatureArity };
