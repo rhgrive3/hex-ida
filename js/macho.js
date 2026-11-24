@@ -193,11 +193,25 @@
   // the first NUL inside the table and fail closed when the entry is not
   // terminated, instead of laundering a fixed-length prefix as a complete name
   // (#3806).
+  const MAX_U64 = 0xffffffffffffffffn;
+  const MAX_UNTERMINATED_SCAN = 64 * 1024;
+
   function cstrNul(u8, off, budget) {
     if (off < 0 || off >= u8.length) return null;
     let end = off;
-    while (end < u8.length && u8[end] !== 0) end++;
-    if (end >= u8.length) return null;
+    const scanCap = budget ? Math.min(u8.length, off + Math.max(1, budget.limit - budget.retained)) : Math.min(u8.length, off + MAX_UNTERMINATED_SCAN);
+    while (end < scanCap && u8[end] !== 0) end++;
+    if (end >= u8.length || u8[end] !== 0) {
+      if (budget) {
+        const scanned = end - off + SYMBOL_NAME_ROW_OVERHEAD;
+        if (budget.retained + scanned > budget.limit) {
+          budget.capped = true;
+          if (!budget.reason) budget.reason = 'decoded-name-budget';
+        }
+        budget.retained += scanned;
+      }
+      return null;
+    }
     return budget ? budgetedDecodeLatin1(u8, off, end, budget) : decodeLatin1(u8, off, end);
   }
 
@@ -435,7 +449,7 @@
             break;
           }
           const fileEnd=fileoff+filesize, vmEnd=vmaddr+vmsize;
-          const validMapping = filesize <= vmsize && fileoff <= sliceSize && fileEnd >= fileoff && fileEnd <= sliceSize && vmEnd >= vmaddr;
+          const validMapping = filesize <= vmsize && fileoff <= sliceSize && fileEnd >= fileoff && fileEnd <= MAX_U64 && fileEnd <= sliceSize && vmEnd >= vmaddr && vmEnd <= MAX_U64;
           if (!validMapping) info.diagnostics.push(segname + ': invalid segment file/VM range');
           const seg={name:segname,vmaddr,vmsize,fileoff,filesize,maxprot,initprot,nsects,flags:segflags,sections:[],validMapping};
           for (let si=0; si<nsects; si++) {
@@ -459,8 +473,8 @@
             const vmExec=!!(initprot&4);
             const codeSection=!!(sflags&(S_ATTR_PURE_INSTRUCTIONS|S_ATTR_SOME_INSTRUCTIONS))||type===S_SYMBOL_STUBS;
             const secEnd=addr+size, secFileEnd=offset+size;
-            const vmInside=addr>=vmaddr && secEnd>=addr && secEnd<=vmEnd;
-            const fileInside=zerofill || (offset>=fileoff && secFileEnd>=offset && secFileEnd<=fileEnd && secFileEnd<=sliceSize);
+            const vmInside=addr>=vmaddr && secEnd>=addr && secEnd<=MAX_U64 && secEnd<=vmEnd;
+            const fileInside=zerofill || (offset>=fileoff && secFileEnd>=offset && secFileEnd<=MAX_U64 && secFileEnd<=fileEnd && secFileEnd<=sliceSize);
             const valid=validMapping && vmInside && fileInside;
             if (!valid) info.diagnostics.push((ssegname||segname)+','+sectname+': section outside parent/slice range');
             seg.sections.push({name:sectname,segment:ssegname||segname,addr,size,offset,align,flags:sflags,type,reserved1,reserved2,
@@ -601,15 +615,31 @@
 
   function rejectAmbiguousSegmentOwnership(info) {
     const owned = (info.segments || []).filter((segment) => segment.validMapping && segment.vmsize > 0n);
-    for (let i = 0; i < owned.length; i++) {
-      for (let j = i + 1; j < owned.length; j++) {
-        const a = owned[i], b = owned[j];
+    if (owned.length < 2) return;
+    const sorted = owned.slice().sort((a, b) => (a.vmaddr < b.vmaddr ? -1 : a.vmaddr > b.vmaddr ? 1 : 0));
+    const MAX_CONFLICT_DIAGS = 64;
+    let conflictDiags = 0;
+    let suppressedDiags = 0;
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i];
+      const aEnd = a.vmaddr + a.vmsize;
+      for (let j = i + 1; j < sorted.length; j++) {
+        const b = sorted[j];
+        if (b.vmaddr >= aEnd) break;
         if (!classicOwnershipAmbiguous(a, b)) continue;
         a.validMapping = false; b.validMapping = false;
         a.mappingConflict = true; b.mappingConflict = true;
         info.segmentOwnershipConflict = true;
-        info.diagnostics.push(`${b.name}: VM range overlaps segment ${a.name} with a conflicting file mapping (ambiguous ownership)`);
+        if (conflictDiags < MAX_CONFLICT_DIAGS) {
+          info.diagnostics.push(`${b.name}: VM range overlaps segment ${a.name} with a conflicting file mapping (ambiguous ownership)`);
+          conflictDiags++;
+        } else {
+          suppressedDiags++;
+        }
       }
+    }
+    if (suppressedDiags > 0) {
+      info.diagnostics.push(`segment ownership: ${suppressedDiags} additional overlap diagnostics suppressed`);
     }
   }
 
@@ -727,19 +757,42 @@
     const shouldCancel=typeof options.shouldCancel==='function'?options.shouldCancel:null;
     // #8838: LC_DATA_IN_CODE declares ranges inside __text that are physically
     // data. Preserve that exclusion while applying the #8805 retention cap.
-    const dataInCode=Array.isArray(options.dataInCode)?options.dataInCode:[];
+    const rawDataInCode=Array.isArray(options.dataInCode)?options.dataInCode:[];
+    const sortedDataInCode=[];
+    for(const range of rawDataInCode){
+      if(!Array.isArray(range)||range.length<2) continue;
+      const lo=BigInt(range[0]),hi=BigInt(range[1]);
+      if(hi>lo) sortedDataInCode.push([lo,hi]);
+    }
+    sortedDataInCode.sort((a,b)=>(a[0]<b[0]?-1:a[0]>b[0]?1:(a[1]<b[1]?-1:a[1]>b[1]?1:0)));
+    const mergedDataInCode=[];
+    for(const [lo,hi] of sortedDataInCode){
+      const prev=mergedDataInCode[mergedDataInCode.length-1];
+      if(prev&&lo<=prev[1]){if(hi>prev[1])prev[1]=hi;}
+      else mergedDataInCode.push([lo,hi]);
+    }
     const overlapsDataInCode=(value)=>{
+      if(!mergedDataInCode.length) return false;
       const end=value+alignment;
-      return dataInCode.some((range)=>{
-        if(!Array.isArray(range)||range.length<2) return false;
-        const lo=BigInt(range[0]),hi=BigInt(range[1]);
-        return hi>lo && value<hi && end>lo;
-      });
+      let lo=0,hi=mergedDataInCode.length-1;
+      while(lo<=hi){
+        const mid=(lo+hi)>>>1;
+        const [rLo,rHi]=mergedDataInCode[mid];
+        if(end<=rLo) hi=mid-1;
+        else if(value>=rHi) lo=mid+1;
+        else return true;
+      }
+      return false;
     };
     const valid=(value)=>value%alignment===0n
       && regions.length>0 && regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size)
       && !overlapsDataInCode(value);
+    const maxSteps=Math.max(resultLimit*4, 2_000_000);
+    let steps=0;
     while(i<buf.length){
+      steps++;
+      if(shouldCancel&&((steps&63)===0)&&shouldCancel()){markTruncated(out,'cancelled');partialReason='cancelled';break;}
+      if(steps>maxSteps){markTruncated(out,'work-limit');partialReason='work-limit';break;}
       let delta=0n,shift=0n,byte=0;
       do {
         if(i>=buf.length){malformed=true;partialReason='truncated-leb';break;}
@@ -749,12 +802,11 @@
       if(malformed) break;
       if(delta===0n){terminated=true;break;}
       const next=addr+delta;
-      if(next<addr){malformed=true;partialReason='address-overflow';break;}
+      if(next<addr||next>MAX_U64){malformed=true;partialReason='address-overflow';break;}
       addr=next;
       if(!valid(addr)){rejected++;continue;}
       if(out.length>=resultLimit){markTruncated(out,'result-limit');partialReason='result-limit';break;}
       out.push(addr);
-      if(shouldCancel&&((out.length&63)===0)&&shouldCancel()){markTruncated(out,'cancelled');partialReason='cancelled';break;}
     }
     // #8822: only a fully read stream with an explicit zero terminator can be exact.
     // A result/cancel cap is already explicitly partial and must not be rewritten
@@ -826,7 +878,7 @@
         continue;
       }
       const hi = address + length;
-      if (hi < address) {
+      if (hi < address || hi > MAX_U64) {
         out.truncated = true;
         if (!out.partialReason) out.partialReason = 'address-overflow';
         continue;
@@ -1010,54 +1062,76 @@
     const local = entries.filter((e) => e && e.lsda >= vm && e.lsda < secEnd)
       .slice().sort((a, b) => (a.lsda < b.lsda ? -1 : a.lsda > b.lsda ? 1 : 0));
 
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    const maxLandingPads = boundedExpansionBudget(options.maxLandingPads, 400_000, 400_000);
+    const maxWork = 2_000_000;
+    let workUnits = 0;
+    const lsdaCache = new Map();
     let groupEndIdx = 0;
     for (let i = 0; i < local.length; i++) {
+      if (out.size >= maxLandingPads || workUnits >= maxWork) break;
+      if (shouldCancel && ((i & 63) === 0) && shouldCancel()) break;
       const e = local[i];
       if (groupEndIdx <= i) {
         groupEndIdx = i + 1;
         while (groupEndIdx < local.length && local[groupEndIdx].lsda === e.lsda) groupEndIdx++;
       }
-      let p = Number(e.lsda - vm);
+      const pStart = Number(e.lsda - vm);
       const end = groupEndIdx < local.length ? Number(local[groupEndIdx].lsda - vm) : buf.length;
-      if (p < 0 || p + 3 > end || end > buf.length) continue;
-      try {
-        const lpEncoding = u8[p++];
-        let lpBase = e.functionStart;
-        if (lpEncoding !== 0xff) {
-          const x = ehEncodedValue(dv, u8, p, end, lpEncoding, vm, options);
-          if (!x || x.value == null) continue;
-          lpBase = x.value; p = x.next;
-        }
-        if (p >= end) continue;
-        const typeEncoding = u8[p++];
-        if (typeEncoding !== 0xff) {
-          const typeOffset = ehReadULEB(u8, p, end);
-          if (!typeOffset) continue;
-          p = typeOffset.next; // type table itself is irrelevant to boundaries
-        }
-        if (p >= end) continue;
-        const callSiteEncoding = u8[p++];
-        const tableLen = ehReadULEB(u8, p, end);
-        if (!tableLen || tableLen.value > BigInt(Number.MAX_SAFE_INTEGER)) continue;
-        p = tableLen.next;
-        const tableEnd = p + Number(tableLen.value);
-        if (tableEnd > end) continue;
-        // Call-site offsets are relative to LPStart/functionStart. Preserve the
-        // representation format while ignoring application bits for offsets.
-        const offsetEncoding = callSiteEncoding & 0x0f;
-        while (p < tableEnd) {
-          const startX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
-          if (!startX) break; p = startX.next;
-          const lengthX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
-          if (!lengthX) break; p = lengthX.next;
-          const landingX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
-          if (!landingX) break; p = landingX.next;
-          const action = ehReadULEB(u8, p, tableEnd);
-          if (!action) break; p = action.next;
-          if (landingX.raw !== 0n) out.add(lpBase + landingX.raw);
-          void startX; void lengthX;
-        }
-      } catch { /* malformed LSDA: skip this bounded record */ }
+      if (pStart < 0 || pStart + 3 > end || end > buf.length) continue;
+      let parsed = lsdaCache.get(e.lsda);
+      if (parsed === undefined) {
+        parsed = null;
+        try {
+          let p = pStart;
+          const lpEncoding = u8[p++];
+          let explicitLpBase = null;
+          if (lpEncoding !== 0xff) {
+            const x = ehEncodedValue(dv, u8, p, end, lpEncoding, vm, options);
+            if (!x || x.value == null) { lsdaCache.set(e.lsda, null); continue; }
+            explicitLpBase = x.value; p = x.next;
+          }
+          if (p >= end) { lsdaCache.set(e.lsda, null); continue; }
+          const typeEncoding = u8[p++];
+          if (typeEncoding !== 0xff) {
+            const typeOffset = ehReadULEB(u8, p, end);
+            if (!typeOffset) { lsdaCache.set(e.lsda, null); continue; }
+            p = typeOffset.next;
+          }
+          if (p >= end) { lsdaCache.set(e.lsda, null); continue; }
+          const callSiteEncoding = u8[p++];
+          const tableLen = ehReadULEB(u8, p, end);
+          if (!tableLen || tableLen.value > BigInt(Number.MAX_SAFE_INTEGER)) { lsdaCache.set(e.lsda, null); continue; }
+          p = tableLen.next;
+          const tableEnd = p + Number(tableLen.value);
+          if (tableEnd > end) { lsdaCache.set(e.lsda, null); continue; }
+          const offsetEncoding = callSiteEncoding & 0x0f;
+          const offsets = [];
+          while (p < tableEnd) {
+            workUnits++;
+            if (workUnits >= maxWork) break;
+            const startX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
+            if (!startX) break; p = startX.next;
+            const lengthX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
+            if (!lengthX) break; p = lengthX.next;
+            const landingX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
+            if (!landingX) break; p = landingX.next;
+            const action = ehReadULEB(u8, p, tableEnd);
+            if (!action) break; p = action.next;
+            if (landingX.raw !== 0n) offsets.push(landingX.raw);
+            void startX; void lengthX;
+          }
+          parsed = { explicitLpBase, offsets };
+        } catch { parsed = null; }
+        lsdaCache.set(e.lsda, parsed);
+      }
+      if (!parsed) continue;
+      const lpBase = parsed.explicitLpBase != null ? parsed.explicitLpBase : e.functionStart;
+      for (const rawOffset of parsed.offsets) {
+        workUnits++;
+        if (out.size >= maxLandingPads || workUnits >= maxWork) break;
+        out.add(lpBase + rawOffset);
+      }
     }
     return Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   }

@@ -197,10 +197,19 @@ function capturePassState(state, shouldAbort = null, readOnlyRoots = null) {
     seen.add(value);
     const proto = Object.getPrototypeOf(value);
     const map = value instanceof Map, set = value instanceof Set, date = value instanceof Date;
+    const arrayBuffer = value instanceof ArrayBuffer, view = ArrayBuffer.isView(value);
     // Live adapters/class instances are not pass-owned plain data. Do not
     // traverse them or invoke accessors while capturing the rollback state.
-    if (!map && !set && !date && !(value instanceof RegExp) && !Array.isArray(value)
+    if (!map && !set && !date && !arrayBuffer && !view && !(value instanceof RegExp) && !Array.isArray(value)
         && proto !== Object.prototype && proto !== null) continue;
+    if (arrayBuffer) {
+      records.push({ value, arrayBuffer: true, bytes: new Uint8Array(value.slice(0)) });
+      continue;
+    }
+    if (view) {
+      records.push({ value, view: true, bytes: new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)) });
+      continue;
+    }
     // A frozen plain object or frozen Array cannot have its prototype, own keys,
     // or property descriptors mutated in place, so it never needs a rollback
     // record — only its non-immutable object children need to be traversed.
@@ -239,7 +248,9 @@ function capturePassState(state, shouldAbort = null, readOnlyRoots = null) {
   }
   if (globalThis.__hexPerfProbe) globalThis.__hexPerfProbe.recordCapturePassState?.(performance.now() - __t0, records.length); // PERF-PROBE
   return () => {
-    for (const { value, proto, descriptors, entries, map, set, time } of records) {
+    for (const { value, proto, descriptors, entries, map, set, time, arrayBuffer, view, bytes } of records) {
+      if (arrayBuffer) { new Uint8Array(value).set(bytes); continue; }
+      if (view) { new Uint8Array(value.buffer, value.byteOffset, value.byteLength).set(bytes); continue; }
       if (Object.getPrototypeOf(value) !== proto) Object.setPrototypeOf(value, proto);
       for (const key of Reflect.ownKeys(value)) {
         if (!Object.hasOwn(descriptors, key) && !Reflect.deleteProperty(value, key)) {

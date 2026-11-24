@@ -324,7 +324,7 @@ function normalizeResolution(raw, fallback) {
     if (prior && stableStringify(prior) !== stableStringify(region)) fail('memory-ssa-build-conflicting-region-id');
     byId.set(region.id, region);
   }
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return [...byId.values()].sort((a, b) => compareText(a.id, b.id));
 }
 function callResolver(resolver, memory, context, fallback) {
   if (typeof resolver !== 'function') return [fallback];
@@ -496,8 +496,14 @@ function makeDescriptor(node, role, sourceKind, index, memory, extra = {}) {
  * registers-core tables; this set only re-states the frame/stack root names
  * those tables already normalize.
  */
-const FRAME_POINTER_REGISTER_IDS = new Set(['fp', 'x29', 'rbp', 'ebp']);
-const STACK_POINTER_ONLY_REGISTER_IDS = new Set(['sp', 'rsp', 'esp']);
+function compareText(left, right) {
+  const a = String(left ?? '');
+  const b = String(right ?? '');
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+const FRAME_POINTER_REGISTER_IDS = new Set(['fp', 'x29', 'rbp', 'ebp', 'x8', 's0']);
+const STACK_POINTER_ONLY_REGISTER_IDS = new Set(['sp', 'rsp', 'esp', 'x2']);
 const STACK_POINTER_REGISTER_IDS = new Set([...STACK_POINTER_ONLY_REGISTER_IDS, ...FRAME_POINTER_REGISTER_IDS]);
 const STACK_POINTER_REGISTER_SUFFIXES = ['_sp', '_fp'];
 
@@ -511,7 +517,20 @@ const STACK_POINTER_REGISTER_SUFFIXES = ['_sp', '_fp'];
  * 64-bit ABIs, each mapping to its parameter slot.
  */
 const X86_64_ARGUMENT_REGISTER_SLOTS = new Map([
-  ['rdi', 'arg0'], ['rsi', 'arg1'], ['rdx', 'arg2'], ['rcx', 'arg3'], ['r8', 'arg4'], ['r9', 'arg5'],
+  ['rdi', 'arg0'], ['edi', 'arg0'], ['di', 'arg0'], ['dil', 'arg0'],
+  ['rsi', 'arg1'], ['esi', 'arg1'], ['si', 'arg1'], ['sil', 'arg1'],
+  ['rdx', 'arg2'], ['edx', 'arg2'], ['dx', 'arg2'], ['dl', 'arg2'],
+  ['rcx', 'arg3'], ['ecx', 'arg3'], ['cx', 'arg3'], ['cl', 'arg3'],
+  ['r8', 'arg4'], ['r8d', 'arg4'], ['r8w', 'arg4'], ['r8b', 'arg4'],
+  ['r9', 'arg5'], ['r9d', 'arg5'], ['r9w', 'arg5'], ['r9b', 'arg5'],
+]);
+const RISCV_INT_ARGUMENT_REGISTER_SLOTS = new Map([
+  ['x10', 'arg0'], ['x11', 'arg1'], ['x12', 'arg2'], ['x13', 'arg3'],
+  ['x14', 'arg4'], ['x15', 'arg5'], ['x16', 'arg6'], ['x17', 'arg7'],
+]);
+const RISCV_FP_ARGUMENT_REGISTER_SLOTS = new Map([
+  ['f10', 'arg0'], ['f11', 'arg1'], ['f12', 'arg2'], ['f13', 'arg3'],
+  ['f14', 'arg4'], ['f15', 'arg5'], ['f16', 'arg6'], ['f17', 'arg7'],
 ]);
 
 function expressionContainsStackRegister(expression, active = new Set()) {
@@ -645,6 +664,10 @@ function argumentRegisterSlot(candidate) {
   // `int:sret` so passing a local stack buffer address blocks no-escape.
   const x86IntSlot = X86_64_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId);
   if (x86IntSlot != null) return `int:${x86IntSlot}`;
+  const riscvIntSlot = RISCV_INT_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId);
+  if (riscvIntSlot != null) return `int:${riscvIntSlot}`;
+  const riscvFpSlot = RISCV_FP_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId);
+  if (riscvFpSlot != null) return `fp:${riscvFpSlot}`;
   if (INDIRECT_RESULT_REGISTER_PATTERN.test(rawRegisterId)) return 'int:sret';
   const fpMatch = rawRegisterId.match(FP_SIMD_ARGUMENT_REGISTER_PATTERN);
   if (fpMatch) return `fp:arg${fpMatch[1]}`;
@@ -1288,7 +1311,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   // are established independently by the canonical access provider below.
   if (!regionById.size) addRegion(regionById, fallbackRegion);
   if (regionById.size > budgetLimit(options, 'maxRegions')) fail('memory-ssa-build-budget-exceeded-maxRegions');
-  const regions = [...regionById.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const regions = [...regionById.values()].sort((a, b) => compareText(a.id, b.id));
   const regionIds = regions.map((region) => region.id);
   // The serialized identity describes the canonical build, but is not an
   // authority for publication. The exact artifact object is bound privately
@@ -1497,9 +1520,9 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   }
   for (const events of eventsByNode.values()) {
     events.sort((a, b) => a.descriptor.index - b.descriptor.index
-      || a.descriptor.key.localeCompare(b.descriptor.key)
-      || a.regionId.localeCompare(b.regionId)
-      || a.id.localeCompare(b.id));
+      || compareText(a.descriptor.key, b.descriptor.key)
+      || compareText(a.regionId, b.regionId)
+      || compareText(a.id, b.id));
   }
 
   const entryDefinitionIds = new Map(regionIds.map((regionId) => [
@@ -1872,7 +1895,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       const nodeReads = readsByNode.get(nodeId) ?? [];
       for (const descriptor of nodeReads) {
         const targets = descriptor.broad ? regions : descriptor.regions;
-        const uniqueTargets = [...new Map(targets.map((region) => [region.id, region])).values()].sort((a, b) => a.id.localeCompare(b.id));
+        const uniqueTargets = [...new Map(targets.map((region) => [region.id, region])).values()].sort((a, b) => compareText(a.id, b.id));
         for (const region of uniqueTargets) {
           tick();
           const reaching = reachingForRead(descriptor, currentDefForRegion(region.id));
@@ -2076,19 +2099,19 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   for (const link of useDefLinks) useIdsByDefinition.get(link.definitionId).push(link.useId);
   const defUseLinks = [...useIdsByDefinition.entries()]
     .map(([definitionId, useIds]) => ({ definitionId, useIds: useIds.sort() }))
-    .sort((a, b) => a.definitionId.localeCompare(b.definitionId));
+    .sort((a, b) => compareText(a.definitionId, b.definitionId));
   const blockStates = traversal.map((blockId, bIdx) => ({
     blockId,
     entry: regionIds.map((regionId, rIdx) => ({ regionId, definitionId: getInDef(bIdx, rIdx) })),
     exit: regionIds.map((regionId, rIdx) => ({ regionId, definitionId: getOutDef(bIdx, rIdx) })),
   }));
 
-  accessMetadata.sort((a, b) => a.memorySsaEntityId.localeCompare(b.memorySsaEntityId)
-    || a.regionId.localeCompare(b.regionId));
+  accessMetadata.sort((a, b) => compareText(a.memorySsaEntityId, b.memorySsaEntityId)
+    || compareText(a.regionId, b.regionId));
   const canonicalAccessBindings = accessMetadata
     .map((metadata) => canonicalAccessBinding(metadata))
-    .sort((a, b) => a.memorySsaEntityId.localeCompare(b.memorySsaEntityId)
-      || a.regionId.localeCompare(b.regionId));
+    .sort((a, b) => compareText(a.memorySsaEntityId, b.memorySsaEntityId)
+      || compareText(a.regionId, b.regionId));
   const artifact = {
     ...contract,
     buildVersion: MEMORY_SSA_BUILD_VERSION,

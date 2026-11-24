@@ -16,11 +16,12 @@ function askExactInteger(message, initial, normalize) {
   return normalize(value);
 }
 
-function workerLookup(file, slide, runtimeAddress, { signal } = {}) {
+function workerLookup(file, slide, runtimeAddress, { signal, timeoutMs = 30000 } = {}) {
   if (signal?.aborted) return Promise.reject(abortError());
   const worker = new Worker(new URL('./dyld-runtime-worker.js', import.meta.url), { type:'module' });
   return new Promise((resolve, reject) => {
     let settled = false;
+    let timer = null;
     const onAbort = () => {
       if (settled) return;
       cleanup();
@@ -29,6 +30,7 @@ function workerLookup(file, slide, runtimeAddress, { signal } = {}) {
     const cleanup = () => {
       if (settled) return;
       settled = true;
+      if (timer !== null) { clearTimeout(timer); timer = null; }
       signal?.removeEventListener?.('abort', onAbort);
       worker.onmessage = null;
       worker.onerror = null;
@@ -36,6 +38,13 @@ function workerLookup(file, slide, runtimeAddress, { signal } = {}) {
       worker.terminate();
     };
     signal?.addEventListener?.('abort', onAbort, { once:true });
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (settled) return;
+        cleanup();
+        reject(new Error('dyld runtime lookup timed out'));
+      }, timeoutMs);
+    }
     worker.onmessage = (event) => {
       if (settled) return;
       const message = event.data || {};

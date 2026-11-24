@@ -109,9 +109,12 @@ export function createAppAnalysisQueryAdapter(app) {
     // advances monotonically instead of resetting to 0.
     let lo = 0;
     let hi = upperBound;
+    let steps = 0;
+    const MAX_BINARY_SEARCH_STEPS = 64;
     while (lo < hi) {
+      if (++steps > MAX_BINARY_SEARCH_STEPS) return { total: null, invalid: true };
       abortIfNeeded(options?.signal);
-      const mid = Math.floor((lo + hi) / 2);
+      const mid = lo + Math.floor((hi - lo) / 2);
       const probe = await base.evidence(snapshot, query, { offset: mid, limit: 1 }, options);
       const probeTotal = pageOffset(probe?.page?.total);
       if (probeTotal != null) {
@@ -233,7 +236,7 @@ export function createAppAnalysisQueryAdapter(app) {
       const localCursor = requested.offset + value.length;
       if (value.length === requested.limit && localCursor <= prefix.length) {
         next = localCursor;
-      } else if (baseHasNext && consumedBaseRows > 0) {
+      } else if (baseHasNext && (consumedBaseRows > 0 || baseNext > upstreamOffset)) {
         next = prefix.length + baseNext;
       } else if (!baseContinuationInvalid && upstreamTotal != null) {
         const availableTotal = prefix.length + upstreamTotal + suffix.length;

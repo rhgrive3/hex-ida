@@ -11,9 +11,10 @@ import { MEMORY_TRANSFORM_PROGRAM_SCHEMA, normalizeMemoryTransformProgram } from
 export const CANONICAL_MEMORY_TRANSFORM_CAPTURE_SCHEMA = 'canonical-memory-transform-capture/v1';
 const copy = value => snapshotContractData(value, { allowBigInt: true, maxNodes: 65536, maxBytes: 4194304 });
 const tick = work => { work.charge('workUnits'); work.checkpoint(); };
-function valueBytes(value, widthBits) {
+function valueBytes(value, widthBits, endian = 'little') {
   const n = BigInt(value);
-  return Array.from({ length: widthBits / 8 }, (_, i) => Number((n >> BigInt(i * 8)) & 255n));
+  const count = widthBits / 8;
+  return Array.from({ length: count }, (_, i) => Number((n >> BigInt((endian === 'big' ? count - 1 - i : i) * 8)) & 255n));
 }
 function matchesStatement(statement, load, fact) {
   const expression = statement.semantic?.expression;
@@ -74,7 +75,7 @@ function captureCanonicalMemoryTransformsImpl(pipeline, decompiler, { worldId, s
         faults: memory.faults, exceptionTargets: [], addressSpace: memory.addressSpace },
       reachingDefinitions: row.sourceKind === 'load' ? [entity.reachingDefinitionId] : entity.previousDefinitionIds };
     if (row.sourceKind === 'load') { operation.target = entity.id; outputs.push(entity.id); }
-    else operation.value = valueBytes(row.canonicalValue.value, memory.widthBits);
+    else operation.value = valueBytes(row.canonicalValue.value, memory.widthBits, memory.endian);
     operations.push(operation);
   }
   const unknowns = concurrency === 'single-thread' ? [] : ['memory-transform-concurrency-not-qualified'];
@@ -102,7 +103,7 @@ function captureCanonicalMemoryTransformsImpl(pipeline, decompiler, { worldId, s
     // its value projection changes to the already-consumed canonical constant.
     const nextOperations = [...current.operations];
     nextOperations.splice(operationIndex, 1, { ...old, target: null },
-      { id: `${old.id}:forwarded-value`, kind: 'copy', target: old.target, value: valueBytes(fact.value, fact.widthBits) });
+      { id: `${old.id}:forwarded-value`, kind: 'copy', target: old.target, value: valueBytes(fact.value, fact.widthBits, fact.endian ?? old.endian) });
     const { id: ignored, ...body } = current;
     const after = normalizeMemoryTransformProgram({ ...body, operations: nextOperations }, { work });
     const step = { before: current, after, sourceReceipt: copy(fact), statementIndices: statements,

@@ -332,6 +332,8 @@ function sanitizeOuterHtml(node, maxChars) {
   let clone = null;
   try { clone = node.cloneNode?.(true) || null; } catch {}
   if (clone) {
+    const rootTag = String(clone?.tagName || '').toLowerCase();
+    if (['script', 'style', 'noscript', 'template', 'iframe', 'object', 'embed'].includes(rootTag)) return '';
     const all = [clone, ...(clone.querySelectorAll?.('*') || [])];
     for (const element of all) {
       const tag = String(element?.tagName || '').toLowerCase();
@@ -414,8 +416,11 @@ function classTokens(node) {
 function isEditable(node) {
   const tag = String(node?.tagName || '').toLowerCase();
   if (['input', 'textarea'].includes(tag)) return true;
+  if (node?.isContentEditable === true) return true;
+  const hasAttr = typeof node?.hasAttribute === 'function' ? node.hasAttribute('contenteditable') : false;
   const editable = safeAttribute(node, 'contenteditable');
-  return editable === '' || editable === 'true' || node?.isContentEditable === true;
+  if (hasAttr) return editable === null || editable === '' || editable.toLowerCase() === 'true';
+  return editable === '' || editable?.toLowerCase?.() === 'true';
 }
 
 function boundedText(value, max) {

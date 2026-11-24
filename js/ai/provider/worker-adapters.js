@@ -55,7 +55,7 @@ function geminiAdapter(env) {
   const model = env.GEMINI_MODEL || 'gemini-3.7-flash';
   return {
     id: 'gemini', model, configured: !!env.GEMINI_API_KEY,
-    capabilities: { provider: 'gemini', contextTokens: numberOr(env.GEMINI_CONTEXT_TOKENS, 1_000_000), maxOutputTokens: numberOr(env.GEMINI_MAX_OUTPUT_TOKENS, 8192), maxTools: numberOr(env.GEMINI_TOOL_LIMIT, 32), maxRequestBytes: numberOr(env.AI_REQUEST_LIMIT_BYTES, 160000), tpm: nullableNumber(env.GEMINI_TPM) },
+    capabilities: { provider: 'gemini', contextTokens: numberOr(env.GEMINI_CONTEXT_TOKENS, 1_000_000), maxOutputTokens: numberOr(env.GEMINI_MAX_OUTPUT_TOKENS, 8192), maxTools: positiveInteger(env.GEMINI_TOOL_LIMIT, 32), maxRequestBytes: numberOr(env.AI_REQUEST_LIMIT_BYTES, 160000), tpm: nullableNumber(env.GEMINI_TPM) },
     endpoint: env.GEMINI_INTERACTIONS_URL || GEMINI_URL,
     headers: { 'content-type': 'application/json', accept: 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY || '' },
     build({ payload, systemInstruction, tools }) {
@@ -75,7 +75,7 @@ function groqAdapter(env) {
   const model = env.GROQ_MODEL || 'openai/gpt-oss-120b';
   return {
     id: 'groq', model, configured: !!env.GROQ_API_KEY,
-    capabilities: { provider: 'groq', contextTokens: numberOr(env.GROQ_CONTEXT_TOKENS, 131072), maxOutputTokens: numberOr(env.GROQ_MAX_OUTPUT_TOKENS, 8192), maxTools: numberOr(env.GROQ_TOOL_LIMIT, 32), maxRequestBytes: numberOr(env.AI_REQUEST_LIMIT_BYTES, 160000), tpm: nullableNumber(env.GROQ_TPM) },
+    capabilities: { provider: 'groq', contextTokens: numberOr(env.GROQ_CONTEXT_TOKENS, 131072), maxOutputTokens: numberOr(env.GROQ_MAX_OUTPUT_TOKENS, 8192), maxTools: positiveInteger(env.GROQ_TOOL_LIMIT, 32), maxRequestBytes: numberOr(env.AI_REQUEST_LIMIT_BYTES, 160000), tpm: nullableNumber(env.GROQ_TPM) },
     endpoint: env.GROQ_CHAT_URL || GROQ_URL,
     headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Bearer ${env.GROQ_API_KEY || ''}` },
     build({ payload, systemInstruction, tools }) {
@@ -114,6 +114,6 @@ function modelInput(payload) {
 function toGeminiTool(tool) { return { type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema }; }
 function toOpenAITool(tool) { return { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }; }
 function positiveNumber(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
-function positiveInteger(value, fallback) { return Math.max(1, Math.floor(positiveNumber(value, fallback))); }
+function positiveInteger(value, fallback) { const n = Number(value); return Number.isInteger(n) && n >= 1 ? n : fallback; }
 function numberOr(value, fallback) { return positiveNumber(value, fallback); }
 function nullableNumber(value) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : null; }

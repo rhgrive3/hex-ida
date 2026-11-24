@@ -187,6 +187,7 @@ export class AnalysisResumeStore {
     if (!this.indexedDB) return null;
     if (this.dbPromise) return this.dbPromise;
     this.dbPromise = new Promise((resolve, reject) => {
+      let settled = false;
       const request = this.indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -194,11 +195,24 @@ export class AnalysisResumeStore {
       };
       request.onsuccess = () => {
         const db = request.result;
+        if (settled) {
+          try { db.close(); } catch {}
+          return;
+        }
+        settled = true;
         db.onversionchange = () => { try { db.close(); } catch {} this.dbPromise = null; };
         resolve(db);
       };
-      request.onerror = () => reject(request.error || new Error('analysis-resume-open-failed'));
-      request.onblocked = () => reject(new Error('analysis-resume-open-blocked'));
+      request.onerror = () => {
+        if (settled) return;
+        settled = true;
+        reject(request.error || new Error('analysis-resume-open-failed'));
+      };
+      request.onblocked = () => {
+        if (settled) return;
+        settled = true;
+        reject(new Error('analysis-resume-open-blocked'));
+      };
     }).catch((error) => {
       this.dbPromise = null;
       throw error;
@@ -338,11 +352,14 @@ export class AnalysisResumeStore {
       const unchanged = !supersededBinaryId
         && entries.every(([key, value]) => previousMeta[key] === value);
       if (unchanged) return true;
-      const nextMeta = { ...previousMeta, ...meta, supersededBinaryId:null, savedAt:Date.now() };
+      const clearSuperseded = Boolean(meta?.binaryId);
+      const nextMeta = { ...previousMeta, ...meta, supersededBinaryId: clearSuperseded ? null : supersededBinaryId, savedAt:Date.now() };
       const saved = await this.put(LAST_FILE_META_KEY, nextMeta);
       if (saved && meta.binaryId && supersededBinaryId && supersededBinaryId !== meta.binaryId) {
-        await this.writeChain.catch(() => false);
-        await this.deleteSessionsForBinary(supersededBinaryId).catch(() => false);
+        const cleanupTask = () => this.deleteSessionsForBinary(supersededBinaryId).catch(() => false);
+        const queued = this.writeChain.then(cleanupTask, cleanupTask);
+        this.writeChain = queued.catch(() => false);
+        await queued;
       }
       return saved;
     };

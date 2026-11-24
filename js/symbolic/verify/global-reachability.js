@@ -126,6 +126,9 @@ export async function verifyGlobalEdgeReachability({
     return unknown('duplicate-incoming-cfg-path', 'Global unreachability requires distinct identities for every incoming CFG path');
   }
   const derivedSources = cfgIncomingSources(ir, targetBlock);
+  if (ir != null && !derivedSources) {
+    return unknown('missing-cfg-context', 'Global unreachability requires targetBlock and predecessor CFG edges to exist in the supplied IR');
+  }
   if (derivedSources) {
     const suppliedSources = globalScope.incomingPaths.map((path) => path.fromBlock);
     if (new Set(suppliedSources).size !== suppliedSources.length) {
