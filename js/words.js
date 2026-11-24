@@ -531,7 +531,7 @@ acquire, release,
    * logic imm より先、pair opc===3 の非メモリ時は isSimd へフォールスルー等）を
    * 完全に保存して判定する。
    */
-  function classifyWord(w) {
+  function classifyWordJs(w) {
     if (w === 0) return KIND.OTHER;                    // 埋め草。命令として数えない
     switch ((w >>> 25) & 0xf) {
       case 0:
@@ -633,8 +633,82 @@ acquire, release,
    * @param {number} w  4 バイトの語（リトルエンディアンで読んだもの）
    * @param {BigInt} pc その命令のアドレス
    */
-  function decodeWord(w, pc) {
-    const kind = classifyWord(w);
+  /* ── Unified WASM engine bridge (IIFE / classic-worker compatible) ── */
+
+  let wasmBridge = null;
+  let wasmBridgePromise = null;
+
+  function isJsEngineForced() {
+    if (typeof global !== 'undefined' && global) {
+      const g = global.HEX_ENGINE !== undefined ? global.HEX_ENGINE : global.__HEX_ENGINE_MODE__;
+      if (g != null && String(g).trim().toLowerCase() === 'js') return true;
+    }
+    if (typeof process !== 'undefined' && process && process.env && process.env.HEX_ENGINE != null) {
+      if (String(process.env.HEX_ENGINE).trim().toLowerCase() === 'js') return true;
+    }
+    return false;
+  }
+
+  function setWasmBridge(bridge) {
+    wasmBridge = (bridge && typeof bridge === 'object') ? bridge : null;
+    return wasmBridge;
+  }
+
+  function getActiveWasmBridge() {
+    if (isJsEngineForced()) return null;
+    const bridge = wasmBridge || (global && global.__HEX_ENGINE_BRIDGE__) || null;
+    if (!bridge) return null;
+    if (typeof bridge.getEngineMode === 'function' && bridge.getEngineMode() === 'js') return null;
+    return bridge;
+  }
+
+  function initWasmBridge() {
+    if (wasmBridge) return Promise.resolve(wasmBridge);
+    if (wasmBridgePromise) return wasmBridgePromise;
+    const bridgeSpec = './core/hex-engine-bridge.js';
+    try {
+      wasmBridgePromise = import(bridgeSpec).then((mod) => {
+        if (mod && typeof mod.wasmDecodeArm64Word === 'function') {
+          wasmBridge = mod;
+          return mod;
+        }
+        return null;
+      }).catch(() => null);
+    } catch {
+      wasmBridgePromise = Promise.resolve(null);
+    }
+    return wasmBridgePromise;
+  }
+
+  // Opportunistically warm the bridge in ESM/browser runtimes without failing classic workers/vm.
+  initWasmBridge();
+
+  function buildDecodedFromWasm(w, pc, res) {
+    const kind = res.kind;
+    return {
+      kind,
+      kindName: KIND_NAME[kind] || 'OTHER',
+      target: res.hasTarget ? res.target : null,
+      pcRel: res.hasPcRel ? pcRelTarget(w, pc) : null,
+      memory: res.hasMemory ? memoryAccess(w) : null,
+      compareWith: res.hasCompareWith ? res.compareWith : null,
+      rd: res.rd,
+      rn: res.rn,
+      rm: res.rm,
+    };
+  }
+
+  function classifyWord(w) {
+    const bridge = getActiveWasmBridge();
+    if (bridge && typeof bridge.wasmDecodeArm64Word === 'function') {
+      const res = bridge.wasmDecodeArm64Word(w >>> 0, 0n);
+      if (res && typeof res.kind === 'number') return res.kind;
+    }
+    return classifyWordJs(w);
+  }
+
+  function decodeWordJs(w, pc) {
+    const kind = classifyWordJs(w);
     const out = {
       kind,
       kindName: KIND_NAME[kind] || 'OTHER',
@@ -650,6 +724,58 @@ acquire, release,
     if (kind === KIND.ADRP) out.pcRel = pcRelTarget(w, pc);
     if (kind === KIND.LOAD || kind === KIND.STORE || kind === KIND.ATOMIC) out.memory = memoryAccess(w);
     if (kind === KIND.CMP) out.compareWith = compareImmediate(w);
+    return out;
+  }
+
+  function decodeWord(w, pc) {
+    const bridge = getActiveWasmBridge();
+    if (bridge && typeof bridge.wasmDecodeArm64Word === 'function') {
+      const pcBig = typeof pc === 'bigint' ? pc : (pc == null ? 0n : BigInt(pc));
+      const res = bridge.wasmDecodeArm64Word(w >>> 0, pcBig);
+      if (res && typeof res.kind === 'number') {
+        return buildDecodedFromWasm(w >>> 0, pcBig, res);
+      }
+    }
+    return decodeWordJs(w, pc);
+  }
+
+  function decodeWordsBatch(words, basePc = 0n) {
+    if (!words || typeof words.length !== 'number') return [];
+    const count = words.length >>> 0;
+    if (count === 0) return [];
+    const basePcBig = typeof basePc === 'bigint' ? basePc : BigInt(basePc);
+    const bridge = getActiveWasmBridge();
+    if (bridge && typeof bridge.wasmDecodeArm64Batch === 'function') {
+      const batch = bridge.wasmDecodeArm64Batch(words, basePcBig);
+      if (Array.isArray(batch) && batch.length === count) {
+        const out = new Array(count);
+        for (let i = 0; i < count; i += 1) {
+          out[i] = buildDecodedFromWasm(words[i] >>> 0, basePcBig + BigInt(i * 4), batch[i]);
+        }
+        return out;
+      }
+    }
+    const out = new Array(count);
+    for (let i = 0; i < count; i += 1) {
+      out[i] = decodeWordJs(words[i] >>> 0, basePcBig + BigInt(i * 4));
+    }
+    return out;
+  }
+
+  function classifyWordsBatch(words) {
+    if (!words || typeof words.length !== 'number') return new Uint8Array(0);
+    const count = words.length >>> 0;
+    const out = new Uint8Array(count);
+    if (count === 0) return out;
+    const bridge = getActiveWasmBridge();
+    if (bridge && typeof bridge.wasmDecodeArm64Batch === 'function') {
+      const batch = bridge.wasmDecodeArm64Batch(words, 0n);
+      if (Array.isArray(batch) && batch.length === count) {
+        for (let i = 0; i < count; i += 1) out[i] = batch[i].kind;
+        return out;
+      }
+    }
+    for (let i = 0; i < count; i += 1) out[i] = classifyWordJs(words[i] >>> 0);
     return out;
   }
 
@@ -697,6 +823,7 @@ acquire, release,
     isCompare, isMultiply, isDivide, isShiftOp, isFpMulDiv, isFpAddSub, isFpCondSelect, isSimd, isMoveWide,
     isNop,
     isStpToSp, isSubSp, looksLikePrologue, looksLikeEnd,
-    classifyWord, decodeWord,
+    classifyWord, decodeWord, classifyWordsBatch, decodeWordsBatch,
+    setWasmBridge, initWasmBridge,
   };
 })(typeof self !== 'undefined' ? self : globalThis);
