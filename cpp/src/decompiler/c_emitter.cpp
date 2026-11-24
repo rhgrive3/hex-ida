@@ -25,24 +25,24 @@ static hex::Arena* active_arena() {
 }
 
 static bool is_terminator(uint8_t op) {
-  return op == HEX_IR_RET || op == HEX_IR_BRANCH || op == HEX_IR_CONDBR;
+  return op == CEMIT_IR_RET || op == CEMIT_IR_BRANCH || op == CEMIT_IR_CONDBR;
 }
 
 static bool is_dead_inst(const CEmitInst& inst) {
-  return (inst.flags & HEX_IR_FLAG_DEAD) != 0u || inst.op == HEX_IR_NOP;
+  return (inst.flags & CEMIT_IR_FLAG_DEAD) != 0u || inst.op == CEMIT_IR_NOP;
 }
 
 static bool is_pure_inlineable(const CEmitInst& inst) {
   if (is_dead_inst(inst)) return false;
   switch (inst.op) {
-    case HEX_IR_CONST:
-    case HEX_IR_PARAM:
-    case HEX_IR_COPY:
-    case HEX_IR_BINOP:
-    case HEX_IR_UNOP:
-    case HEX_IR_CMP:
-    case HEX_IR_SELECT:
-    case HEX_IR_CAST:
+    case CEMIT_IR_CONST:
+    case CEMIT_IR_PARAM:
+    case CEMIT_IR_COPY:
+    case CEMIT_IR_BINOP:
+    case CEMIT_IR_UNOP:
+    case CEMIT_IR_CMP:
+    case CEMIT_IR_SELECT:
+    case CEMIT_IR_CAST:
       return true;
     default:
       return false;
@@ -87,42 +87,42 @@ static const char* type_name_for(uint8_t width, bool is_signed) {
 }
 
 static const char* binop_symbol(uint8_t flags) {
-  const uint8_t sub = static_cast<uint8_t>(flags & HEX_IR_FLAG_SUBOP_MASK);
+  const uint8_t sub = static_cast<uint8_t>(flags & CEMIT_IR_FLAG_SUBOP_MASK);
   switch (sub) {
-    case HEX_IR_BIN_ADD: return " + ";
-    case HEX_IR_BIN_SUB: return " - ";
-    case HEX_IR_BIN_MUL: return " * ";
-    case HEX_IR_BIN_SDIV: return " / ";
-    case HEX_IR_BIN_UDIV: return " / ";
-    case HEX_IR_BIN_SREM: return " % ";
-    case HEX_IR_BIN_AND: return " & ";
-    case HEX_IR_BIN_OR: return " | ";
-    case HEX_IR_BIN_XOR: return " ^ ";
-    case HEX_IR_BIN_SHL: return " << ";
-    case HEX_IR_BIN_SHR: return " >> ";
+    case CEMIT_BIN_ADD: return " + ";
+    case CEMIT_BIN_SUB: return " - ";
+    case CEMIT_BIN_MUL: return " * ";
+    case CEMIT_BIN_SDIV: return " / ";
+    case CEMIT_BIN_UDIV: return " / ";
+    case CEMIT_BIN_SREM: return " % ";
+    case CEMIT_BIN_AND: return " & ";
+    case CEMIT_BIN_OR: return " | ";
+    case CEMIT_BIN_XOR: return " ^ ";
+    case CEMIT_BIN_SHL: return " << ";
+    case CEMIT_BIN_SHR: return " >> ";
     default: return " + ";
   }
 }
 
 static uint8_t binop_precedence(uint8_t flags) {
-  const uint8_t sub = static_cast<uint8_t>(flags & HEX_IR_FLAG_SUBOP_MASK);
+  const uint8_t sub = static_cast<uint8_t>(flags & CEMIT_IR_FLAG_SUBOP_MASK);
   switch (sub) {
-    case HEX_IR_BIN_MUL:
-    case HEX_IR_BIN_SDIV:
-    case HEX_IR_BIN_UDIV:
-    case HEX_IR_BIN_SREM:
+    case CEMIT_BIN_MUL:
+    case CEMIT_BIN_SDIV:
+    case CEMIT_BIN_UDIV:
+    case CEMIT_BIN_SREM:
       return 12;
-    case HEX_IR_BIN_ADD:
-    case HEX_IR_BIN_SUB:
+    case CEMIT_BIN_ADD:
+    case CEMIT_BIN_SUB:
       return 11;
-    case HEX_IR_BIN_SHL:
-    case HEX_IR_BIN_SHR:
+    case CEMIT_BIN_SHL:
+    case CEMIT_BIN_SHR:
       return 10;
-    case HEX_IR_BIN_AND:
+    case CEMIT_BIN_AND:
       return 7;
-    case HEX_IR_BIN_XOR:
+    case CEMIT_BIN_XOR:
       return 6;
-    case HEX_IR_BIN_OR:
+    case CEMIT_BIN_OR:
       return 5;
     default:
       return 11;
@@ -130,35 +130,35 @@ static uint8_t binop_precedence(uint8_t flags) {
 }
 
 static const char* cmp_symbol(uint8_t flags) {
-  const uint8_t sub = static_cast<uint8_t>(flags & HEX_IR_FLAG_SUBOP_MASK);
+  const uint8_t sub = static_cast<uint8_t>(flags & CEMIT_IR_FLAG_SUBOP_MASK);
   switch (sub) {
-    case HEX_IR_CMP_EQ: return " == ";
-    case HEX_IR_CMP_NE: return " != ";
-    case HEX_IR_CMP_SLT:
-    case HEX_IR_CMP_ULT: return " < ";
-    case HEX_IR_CMP_SLE:
-    case HEX_IR_CMP_ULE: return " <= ";
-    case HEX_IR_CMP_SGT:
-    case HEX_IR_CMP_UGT: return " > ";
-    case HEX_IR_CMP_SGE:
-    case HEX_IR_CMP_UGE: return " >= ";
+    case CEMIT_CMP_EQ: return " == ";
+    case CEMIT_CMP_NE: return " != ";
+    case CEMIT_CMP_SLT:
+    case CEMIT_CMP_ULT: return " < ";
+    case CEMIT_CMP_SLE:
+    case CEMIT_CMP_ULE: return " <= ";
+    case CEMIT_CMP_SGT:
+    case CEMIT_CMP_UGT: return " > ";
+    case CEMIT_CMP_SGE:
+    case CEMIT_CMP_UGE: return " >= ";
     default: return " == ";
   }
 }
 
 static uint8_t invert_cmp_subop(uint8_t sub) {
   switch (sub) {
-    case HEX_IR_CMP_EQ: return HEX_IR_CMP_NE;
-    case HEX_IR_CMP_NE: return HEX_IR_CMP_EQ;
-    case HEX_IR_CMP_SLT: return HEX_IR_CMP_SGE;
-    case HEX_IR_CMP_SLE: return HEX_IR_CMP_SGT;
-    case HEX_IR_CMP_SGT: return HEX_IR_CMP_SLE;
-    case HEX_IR_CMP_SGE: return HEX_IR_CMP_SLT;
-    case HEX_IR_CMP_ULT: return HEX_IR_CMP_UGE;
-    case HEX_IR_CMP_ULE: return HEX_IR_CMP_UGT;
-    case HEX_IR_CMP_UGT: return HEX_IR_CMP_ULE;
-    case HEX_IR_CMP_UGE: return HEX_IR_CMP_ULT;
-    default: return HEX_IR_CMP_NE;
+    case CEMIT_CMP_EQ: return CEMIT_CMP_NE;
+    case CEMIT_CMP_NE: return CEMIT_CMP_EQ;
+    case CEMIT_CMP_SLT: return CEMIT_CMP_SGE;
+    case CEMIT_CMP_SLE: return CEMIT_CMP_SGT;
+    case CEMIT_CMP_SGT: return CEMIT_CMP_SLE;
+    case CEMIT_CMP_SGE: return CEMIT_CMP_SLT;
+    case CEMIT_CMP_ULT: return CEMIT_CMP_UGE;
+    case CEMIT_CMP_ULE: return CEMIT_CMP_UGT;
+    case CEMIT_CMP_UGT: return CEMIT_CMP_ULE;
+    case CEMIT_CMP_UGE: return CEMIT_CMP_ULT;
+    default: return CEMIT_CMP_NE;
   }
 }
 
@@ -519,7 +519,7 @@ struct EmitterCtx {
 
       // TOK_VAL
       const uint32_t vid = tok.val_id;
-      if (vid == HEX_IR_NO_VAL) {
+      if (vid == CEMIT_IR_NO_VAL) {
         if (tok.invert) out.put_str("!0");
         else out.put_str("0");
         continue;
@@ -528,8 +528,8 @@ struct EmitterCtx {
       const bool can_expand =
           vid < max_val_id && def_inst[vid] >= 0 &&
           (inlined[vid] != 0u ||
-           view.insts[def_inst[vid]].op == HEX_IR_PARAM ||
-           view.insts[def_inst[vid]].op == HEX_IR_CONST);
+           view.insts[def_inst[vid]].op == CEMIT_IR_PARAM ||
+           view.insts[def_inst[vid]].op == CEMIT_IR_CONST);
 
       if (!can_expand) {
         if (tok.invert) out.put_char('!');
@@ -539,24 +539,24 @@ struct EmitterCtx {
       }
 
       const CEmitInst& inst = view.insts[def_inst[vid]];
-      if (inst.op == HEX_IR_PARAM) {
+      if (inst.op == CEMIT_IR_PARAM) {
         if (tok.invert) out.put_char('!');
         out.put_char('a');
         out.put_u64_dec(inst.imm + 1u);
         continue;
       }
-      if (inst.op == HEX_IR_CONST) {
+      if (inst.op == CEMIT_IR_CONST) {
         if (tok.invert) {
           out.put_char('!');
           out.put_char('(');
-          out.put_imm(inst.imm, inst.width, (inst.flags & HEX_IR_FLAG_SIGNED) != 0u);
+          out.put_imm(inst.imm, inst.width, (inst.flags & CEMIT_IR_FLAG_SIGNED) != 0u);
           out.put_char(')');
         } else {
-          out.put_imm(inst.imm, inst.width, (inst.flags & HEX_IR_FLAG_SIGNED) != 0u);
+          out.put_imm(inst.imm, inst.width, (inst.flags & CEMIT_IR_FLAG_SIGNED) != 0u);
         }
         continue;
       }
-      if (inst.op == HEX_IR_COPY) {
+      if (inst.op == CEMIT_IR_COPY) {
         ExprTok sub{};
         sub.kind = ExprTok::TOK_VAL;
         sub.parent_prec = tok.parent_prec;
@@ -565,8 +565,8 @@ struct EmitterCtx {
         if (!expr_stack.push_back(sub)) out.oom = true;
         continue;
       }
-      if (inst.op == HEX_IR_CMP) {
-        uint8_t subop = static_cast<uint8_t>(inst.flags & HEX_IR_FLAG_SUBOP_MASK);
+      if (inst.op == CEMIT_IR_CMP) {
+        uint8_t subop = static_cast<uint8_t>(inst.flags & CEMIT_IR_FLAG_SUBOP_MASK);
         if (tok.invert) {
           subop = invert_cmp_subop(subop);
         }
@@ -589,7 +589,7 @@ struct EmitterCtx {
         }
         continue;
       }
-      if (inst.op == HEX_IR_BINOP) {
+      if (inst.op == CEMIT_IR_BINOP) {
         const uint8_t my_prec = binop_precedence(inst.flags);
         const bool need_parens = (tok.parent_prec > my_prec) || (tok.invert != 0u);
         if (need_parens) {
@@ -613,18 +613,18 @@ struct EmitterCtx {
         }
         continue;
       }
-      if (inst.op == HEX_IR_UNOP) {
-        const uint8_t sub = static_cast<uint8_t>(inst.flags & HEX_IR_FLAG_SUBOP_MASK);
-        if (tok.invert && sub == HEX_IR_UN_LNOT) {
+      if (inst.op == CEMIT_IR_UNOP) {
+        const uint8_t sub = static_cast<uint8_t>(inst.flags & CEMIT_IR_FLAG_SUBOP_MASK);
+        if (tok.invert && sub == CEMIT_UN_LNOT) {
           ExprTok inner{}; inner.kind = ExprTok::TOK_VAL; inner.parent_prec = tok.parent_prec; inner.val_id = inst.src0;
           if (!expr_stack.push_back(inner)) out.oom = true;
           continue;
         }
         const char* prefix = "-";
-        if (sub == HEX_IR_UN_NEG) prefix = "-";
-        else if (sub == HEX_IR_UN_NOT) prefix = "~";
-        else if (sub == HEX_IR_UN_LNOT) prefix = "!";
-        else if (sub == HEX_IR_UN_ZEXT) {
+        if (sub == CEMIT_UN_NEG) prefix = "-";
+        else if (sub == CEMIT_UN_NOT) prefix = "~";
+        else if (sub == CEMIT_UN_LNOT) prefix = "!";
+        else if (sub == CEMIT_UN_ZEXT) {
           const uint8_t w = normalize_width(inst.width);
           note_type(w, false);
           prefix = (w == 32u) ? "(uint32)" : "(uint64)";
@@ -645,7 +645,7 @@ struct EmitterCtx {
         }
         continue;
       }
-      if (inst.op == HEX_IR_SELECT) {
+      if (inst.op == CEMIT_IR_SELECT) {
         const bool need_parens = (tok.parent_prec > 2u) || (tok.invert != 0u);
         if (need_parens) {
           ExprTok rp{}; rp.kind = ExprTok::TOK_RPAREN;
@@ -672,9 +672,9 @@ struct EmitterCtx {
         }
         continue;
       }
-      if (inst.op == HEX_IR_CAST) {
+      if (inst.op == CEMIT_IR_CAST) {
         const uint8_t w = normalize_width(inst.width);
-        const bool is_s = (inst.flags & HEX_IR_FLAG_SIGNED) != 0u;
+        const bool is_s = (inst.flags & CEMIT_IR_FLAG_SIGNED) != 0u;
         note_type(w, is_s);
         if (tok.invert) {
           ExprTok rp{}; rp.kind = ExprTok::TOK_RPAREN;
@@ -709,9 +709,9 @@ struct EmitterCtx {
     for (uint32_t i = r.start; i < r.end; ++i) {
       const CEmitInst& inst = view.insts[i];
       if (is_dead_inst(inst) || is_terminator(inst.op)) continue;
-      if (inst.op == HEX_IR_PARAM || inst.op == HEX_IR_PHI) continue;
-      if (inst.dst != HEX_IR_NO_VAL && inst.dst < max_val_id && inlined[inst.dst] != 0u) continue;
-      if (inst.op == HEX_IR_CONST && inst.dst != HEX_IR_NO_VAL &&
+      if (inst.op == CEMIT_IR_PARAM || inst.op == CEMIT_IR_PHI) continue;
+      if (inst.dst != CEMIT_IR_NO_VAL && inst.dst < max_val_id && inlined[inst.dst] != 0u) continue;
+      if (inst.op == CEMIT_IR_CONST && inst.dst != CEMIT_IR_NO_VAL &&
           inst.dst < max_val_id && use_count[inst.dst] == 0u) {
         continue;
       }
@@ -729,9 +729,9 @@ struct EmitterCtx {
     for (uint32_t i = r.start; i < r.end && !out.oom && !out.limit_hit; ++i) {
       const CEmitInst& inst = view.insts[i];
       if (is_dead_inst(inst) || is_terminator(inst.op)) continue;
-      if (inst.op == HEX_IR_PARAM || inst.op == HEX_IR_PHI) continue;
-      if (inst.dst != HEX_IR_NO_VAL && inst.dst < max_val_id && inlined[inst.dst] != 0u) continue;
-      if (inst.op == HEX_IR_CONST && inst.dst != HEX_IR_NO_VAL &&
+      if (inst.op == CEMIT_IR_PARAM || inst.op == CEMIT_IR_PHI) continue;
+      if (inst.dst != CEMIT_IR_NO_VAL && inst.dst < max_val_id && inlined[inst.dst] != 0u) continue;
+      if (inst.op == CEMIT_IR_CONST && inst.dst != CEMIT_IR_NO_VAL &&
           inst.dst < max_val_id && use_count[inst.dst] == 0u) {
         continue;
       }
@@ -740,9 +740,9 @@ struct EmitterCtx {
       out.record_line(bb, line_addr);
       put_indent();
 
-      if (inst.op == HEX_IR_STORE) {
+      if (inst.op == CEMIT_IR_STORE) {
         const uint8_t w = normalize_width(inst.width);
-        const bool is_s = (inst.flags & HEX_IR_FLAG_SIGNED) != 0u;
+        const bool is_s = (inst.flags & CEMIT_IR_FLAG_SIGNED) != 0u;
         note_type(w, is_s);
         out.put_str("*(");
         out.put_str(type_name_for(w, is_s));
@@ -754,10 +754,10 @@ struct EmitterCtx {
         continue;
       }
 
-      if (inst.op == HEX_IR_CALL) {
-        if (inst.dst != HEX_IR_NO_VAL) {
+      if (inst.op == CEMIT_IR_CALL) {
+        if (inst.dst != CEMIT_IR_NO_VAL) {
           const uint8_t w = normalize_width(inst.width);
-          const bool is_s = (inst.flags & HEX_IR_FLAG_SIGNED) != 0u;
+          const bool is_s = (inst.flags & CEMIT_IR_FLAG_SIGNED) != 0u;
           if (inst.dst < max_val_id && declared[inst.dst] == 0u) {
             note_type(w, is_s);
             out.put_str(type_name_for(w, is_s));
@@ -772,16 +772,16 @@ struct EmitterCtx {
         out.put_u64_hex_upper(inst.imm);
         out.put_char('(');
         uint32_t argc = 0;
-        if (inst.src0 != HEX_IR_NO_VAL) {
+        if (inst.src0 != CEMIT_IR_NO_VAL) {
           emit_expr(inst.src0);
           ++argc;
         }
-        if (inst.src1 != HEX_IR_NO_VAL) {
+        if (inst.src1 != CEMIT_IR_NO_VAL) {
           if (argc > 0) out.put_str(", ");
           emit_expr(inst.src1);
           ++argc;
         }
-        if (inst.src2 != HEX_IR_NO_VAL) {
+        if (inst.src2 != CEMIT_IR_NO_VAL) {
           if (argc > 0) out.put_str(", ");
           emit_expr(inst.src2);
         }
@@ -790,9 +790,9 @@ struct EmitterCtx {
       }
 
       // Value-producing statement: [type ]vN = <rhs>;
-      if (inst.dst != HEX_IR_NO_VAL) {
+      if (inst.dst != CEMIT_IR_NO_VAL) {
         const uint8_t w = normalize_width(inst.width);
-        const bool is_s = (inst.flags & HEX_IR_FLAG_SIGNED) != 0u;
+        const bool is_s = (inst.flags & CEMIT_IR_FLAG_SIGNED) != 0u;
         if (inst.dst < max_val_id && declared[inst.dst] == 0u) {
           note_type(w, is_s);
           out.put_str(type_name_for(w, is_s));
@@ -803,45 +803,45 @@ struct EmitterCtx {
         out.put_u64_dec(inst.dst);
         out.put_str(" = ");
 
-        if (inst.op == HEX_IR_LOAD) {
+        if (inst.op == CEMIT_IR_LOAD) {
           note_type(w, is_s);
           out.put_str("*(");
           out.put_str(type_name_for(w, is_s));
           out.put_str("*)(");
           emit_expr(inst.src0);
           out.put_str(")");
-        } else if (inst.op == HEX_IR_CONST) {
+        } else if (inst.op == CEMIT_IR_CONST) {
           out.put_imm(inst.imm, inst.width, is_s);
-        } else if (inst.op == HEX_IR_COPY) {
+        } else if (inst.op == CEMIT_IR_COPY) {
           emit_expr(inst.src0);
-        } else if (inst.op == HEX_IR_BINOP) {
+        } else if (inst.op == CEMIT_IR_BINOP) {
           const uint8_t prec = binop_precedence(inst.flags);
           emit_expr(inst.src0, prec);
           out.put_str(binop_symbol(inst.flags));
           emit_expr(inst.src1, static_cast<uint8_t>(prec + 1u));
-        } else if (inst.op == HEX_IR_UNOP) {
-          const uint8_t sub = static_cast<uint8_t>(inst.flags & HEX_IR_FLAG_SUBOP_MASK);
-          if (sub == HEX_IR_UN_NEG) out.put_char('-');
-          else if (sub == HEX_IR_UN_NOT) out.put_char('~');
-          else if (sub == HEX_IR_UN_LNOT) out.put_char('!');
-          else if (sub == HEX_IR_UN_ZEXT) {
+        } else if (inst.op == CEMIT_IR_UNOP) {
+          const uint8_t sub = static_cast<uint8_t>(inst.flags & CEMIT_IR_FLAG_SUBOP_MASK);
+          if (sub == CEMIT_UN_NEG) out.put_char('-');
+          else if (sub == CEMIT_UN_NOT) out.put_char('~');
+          else if (sub == CEMIT_UN_LNOT) out.put_char('!');
+          else if (sub == CEMIT_UN_ZEXT) {
             note_type(w, false);
             out.put_char('(');
             out.put_str(type_name_for(w, false));
             out.put_char(')');
           }
           emit_expr(inst.src0, 14u);
-        } else if (inst.op == HEX_IR_CMP) {
+        } else if (inst.op == CEMIT_IR_CMP) {
           emit_expr(inst.src0, 8u);
           out.put_str(cmp_symbol(inst.flags));
           emit_expr(inst.src1, 9u);
-        } else if (inst.op == HEX_IR_SELECT) {
+        } else if (inst.op == CEMIT_IR_SELECT) {
           emit_expr(inst.src0, 3u);
           out.put_str(" ? ");
           emit_expr(inst.src1, 3u);
           out.put_str(" : ");
           emit_expr(inst.src2, 3u);
-        } else if (inst.op == HEX_IR_CAST) {
+        } else if (inst.op == CEMIT_IR_CAST) {
           note_type(w, is_s);
           out.put_char('(');
           out.put_str(type_name_for(w, is_s));
@@ -920,7 +920,7 @@ struct RegionFrame {
 };
 
 static uint32_t find_loop_exit_block(const CEmitFunctionView& view, int32_t loop_id) {
-  if (loop_id < 0 || !view.succ_off || !view.succ_dst) return HEX_IR_NO_VAL;
+  if (loop_id < 0 || !view.succ_off || !view.succ_dst) return CEMIT_IR_NO_VAL;
   for (uint32_t bb = 0; bb < view.num_blocks; ++bb) {
     if (!block_in_loop(bb, loop_id, view)) continue;
     const uint32_t s = view.succ_off[bb];
@@ -933,7 +933,7 @@ static uint32_t find_loop_exit_block(const CEmitFunctionView& view, int32_t loop
       }
     }
   }
-  return HEX_IR_NO_VAL;
+  return CEMIT_IR_NO_VAL;
 }
 
 static void emit_body_iterative(EmitterCtx& ctx) {
@@ -943,10 +943,10 @@ static void emit_body_iterative(EmitterCtx& ctx) {
   RegionFrame entry{};
   entry.kind = RegionFrame::FRAME_BLOCK;
   entry.bb = view.entry_block;
-  entry.stop_bb = HEX_IR_NO_VAL;
+  entry.stop_bb = CEMIT_IR_NO_VAL;
   entry.loop_id = -1;
-  entry.loop_header_bb = HEX_IR_NO_VAL;
-  entry.loop_exit_bb = HEX_IR_NO_VAL;
+  entry.loop_header_bb = CEMIT_IR_NO_VAL;
+  entry.loop_exit_bb = CEMIT_IR_NO_VAL;
   if (!stack.push_back(entry)) {
     ctx.out.oom = true;
     return;
@@ -988,7 +988,7 @@ static void emit_body_iterative(EmitterCtx& ctx) {
 
     // FRAME_BLOCK
     const uint32_t bb = f.bb;
-    if (bb == HEX_IR_NO_VAL || bb >= view.num_blocks) continue;
+    if (bb == CEMIT_IR_NO_VAL || bb >= view.num_blocks) continue;
     if (bb == f.stop_bb) continue;
 
     if (ctx.block_emitted[bb] != 0u) {
@@ -1001,12 +1001,12 @@ static void emit_body_iterative(EmitterCtx& ctx) {
     if (hdr_loop >= 0 && hdr_loop != f.loop_id) {
       const uint32_t exit_bb = find_loop_exit_block(view, hdr_loop);
       const CEmitInst* term = ctx.get_terminator(bb);
-      uint32_t succs[2] = {HEX_IR_NO_VAL, HEX_IR_NO_VAL};
+      uint32_t succs[2] = {CEMIT_IR_NO_VAL, CEMIT_IR_NO_VAL};
       const uint32_t nsucc = ctx.get_succs(bb, succs, 2u);
       const uint64_t hdr_addr = (term && term->addr != 0u) ? term->addr : get_block_origin_addr(view, bb);
 
       // Push post-loop continuation (exit_bb) BEFORE loop close brace so it runs after loop.
-      if (exit_bb != HEX_IR_NO_VAL && exit_bb != f.stop_bb) {
+      if (exit_bb != CEMIT_IR_NO_VAL && exit_bb != f.stop_bb) {
         RegionFrame after{};
         after.kind = RegionFrame::FRAME_BLOCK;
         after.bb = exit_bb;
@@ -1018,7 +1018,7 @@ static void emit_body_iterative(EmitterCtx& ctx) {
       }
 
       // Case 1: Header-tested loop (CONDBR where one arm is inside loop and one arm exits).
-      if (term && term->op == HEX_IR_CONDBR && nsucc == 2u) {
+      if (term && term->op == CEMIT_IR_CONDBR && nsucc == 2u) {
         const bool t_in = block_in_loop(succs[0], hdr_loop, view);
         const bool f_in = block_in_loop(succs[1], hdr_loop, view);
         if (t_in != f_in) {
@@ -1105,14 +1105,14 @@ static void emit_body_iterative(EmitterCtx& ctx) {
     ctx.emit_block_stmts(bb);
 
     const CEmitInst* term = ctx.get_terminator(bb);
-    uint32_t succs[2] = {HEX_IR_NO_VAL, HEX_IR_NO_VAL};
+    uint32_t succs[2] = {CEMIT_IR_NO_VAL, CEMIT_IR_NO_VAL};
     const uint32_t nsucc = ctx.get_succs(bb, succs, 2u);
     const uint64_t term_addr = (term && term->addr != 0u) ? term->addr : get_block_origin_addr(view, bb);
 
-    if (term && term->op == HEX_IR_RET) {
+    if (term && term->op == CEMIT_IR_RET) {
       ctx.out.record_line(bb, term_addr);
       ctx.put_indent();
-      if (term->src0 != HEX_IR_NO_VAL) {
+      if (term->src0 != CEMIT_IR_NO_VAL) {
         ctx.out.put_str("return ");
         ctx.emit_expr(term->src0);
         ctx.out.put_str(";\n");
@@ -1122,7 +1122,7 @@ static void emit_body_iterative(EmitterCtx& ctx) {
       continue;
     }
 
-    if (term && term->op == HEX_IR_CONDBR && nsucc == 2u) {
+    if (term && term->op == CEMIT_IR_CONDBR && nsucc == 2u) {
       const uint32_t t_bb = succs[0];
       const uint32_t f_bb = succs[1];
 
@@ -1197,7 +1197,7 @@ static void emit_body_iterative(EmitterCtx& ctx) {
       const bool has_else = (f_bb != merge_bb) && (f_bb < view.num_blocks) && (ctx.block_emitted[f_bb] == 0u);
 
       // Push continuation at merge_bb first (runs after if/else closes).
-      if (merge_bb != f.stop_bb && merge_bb != HEX_IR_NO_VAL && merge_bb < view.num_blocks) {
+      if (merge_bb != f.stop_bb && merge_bb != CEMIT_IR_NO_VAL && merge_bb < view.num_blocks) {
         RegionFrame cont = f;
         cont.bb = merge_bb;
         if (!stack.push_back(cont)) { ctx.out.oom = true; break; }
@@ -1382,11 +1382,11 @@ static int32_t emit_c_impl(const CEmitFunctionView* view,
   uint32_t inferred_params = view->num_params;
   for (uint32_t i = 0; i < view->num_insts; ++i) {
     const CEmitInst& inst = view->insts[i];
-    if (inst.dst != HEX_IR_NO_VAL && inst.dst + 1u > max_val) max_val = inst.dst + 1u;
-    if (inst.src0 != HEX_IR_NO_VAL && inst.src0 + 1u > max_val) max_val = inst.src0 + 1u;
-    if (inst.src1 != HEX_IR_NO_VAL && inst.src1 + 1u > max_val) max_val = inst.src1 + 1u;
-    if (inst.src2 != HEX_IR_NO_VAL && inst.src2 + 1u > max_val) max_val = inst.src2 + 1u;
-    if (inst.op == HEX_IR_PARAM && inst.imm < 32u) {
+    if (inst.dst != CEMIT_IR_NO_VAL && inst.dst + 1u > max_val) max_val = inst.dst + 1u;
+    if (inst.src0 != CEMIT_IR_NO_VAL && inst.src0 + 1u > max_val) max_val = inst.src0 + 1u;
+    if (inst.src1 != CEMIT_IR_NO_VAL && inst.src1 + 1u > max_val) max_val = inst.src1 + 1u;
+    if (inst.src2 != CEMIT_IR_NO_VAL && inst.src2 + 1u > max_val) max_val = inst.src2 + 1u;
+    if (inst.op == CEMIT_IR_PARAM && inst.imm < 32u) {
       const uint32_t p = static_cast<uint32_t>(inst.imm) + 1u;
       if (p > inferred_params) inferred_params = p;
     }
@@ -1418,13 +1418,13 @@ static int32_t emit_c_impl(const CEmitFunctionView* view,
     for (uint32_t i = r.start; i < r.end; ++i) {
       const CEmitInst& inst = view->insts[i];
       if (is_dead_inst(inst)) continue;
-      if (inst.dst != HEX_IR_NO_VAL && inst.dst < max_val && def_inst[inst.dst] < 0) {
+      if (inst.dst != CEMIT_IR_NO_VAL && inst.dst < max_val && def_inst[inst.dst] < 0) {
         def_inst[inst.dst] = static_cast<int32_t>(i);
         def_block[inst.dst] = static_cast<int32_t>(bb);
       }
-      if (inst.src0 != HEX_IR_NO_VAL && inst.src0 < max_val) ++use_count[inst.src0];
-      if (inst.src1 != HEX_IR_NO_VAL && inst.src1 < max_val) ++use_count[inst.src1];
-      if (inst.src2 != HEX_IR_NO_VAL && inst.src2 < max_val) ++use_count[inst.src2];
+      if (inst.src0 != CEMIT_IR_NO_VAL && inst.src0 < max_val) ++use_count[inst.src0];
+      if (inst.src1 != CEMIT_IR_NO_VAL && inst.src1 < max_val) ++use_count[inst.src1];
+      if (inst.src2 != CEMIT_IR_NO_VAL && inst.src2 < max_val) ++use_count[inst.src2];
     }
   }
 
@@ -1438,7 +1438,7 @@ static int32_t emit_c_impl(const CEmitFunctionView* view,
       const uint32_t srcs[3] = {inst.src0, inst.src1, inst.src2};
       for (uint32_t k = 0; k < 3u; ++k) {
         const uint32_t sv = srcs[k];
-        if (sv == HEX_IR_NO_VAL || sv >= max_val) continue;
+        if (sv == CEMIT_IR_NO_VAL || sv >= max_val) continue;
         if (def_inst[sv] >= 0 && def_block[sv] == static_cast<int32_t>(bb) &&
             use_count[sv] == 1u && is_pure_inlineable(view->insts[def_inst[sv]])) {
           inlined[sv] = 1u;
