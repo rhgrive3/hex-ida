@@ -48,7 +48,6 @@ typedef enum HexIrUserKind {
   HEX_IR_USER_INST = 0,
   HEX_IR_USER_PHI = 1,
 } HexIrUserKind;
-#endif
 
 // Sub-opcodes encoded in IrInst::flags low nibble (flags & 0x0fu) for HEX_IR_OP_BIN.
 typedef enum HexIrBinOp {
@@ -75,6 +74,7 @@ typedef enum HexIrUnOp {
 
 // Width flag in IrInst::flags: 0 = 64-bit, 0x10u = 32-bit.
 static const uint16_t HEX_IR_FLAG_WIDTH32 = 0x10u;
+#endif
 
 // Public C ABI: run fixed-point SSA optimization passes on a resident IR handle.
 // Returns HEX_OK on fixed-point convergence, HEX_ERR_RESOURCE_LIMIT if max_iters
