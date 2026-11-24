@@ -21,7 +21,7 @@ function randomSecret() {
 function macFor(secret, body) {
   const a = fnv1a(`${secret}\u0000${body}`, 0x811c9dc5);
   const b = fnv1a(`${body}\u0000${secret}`, 0x9e3779b9);
-  return `${a.toString(36)}${b.toString(36)}`;
+  return `${a.toString(36).padStart(7, '0')}${b.toString(36).padStart(7, '0')}`;
 }
 
 function encodeBody(value) {
@@ -69,7 +69,8 @@ const IDENTITY_DEPTH_LIMIT = 1024;
 export function stableSerialize(value, depth = 0, ancestors = null) {
   if (depth > IDENTITY_DEPTH_LIMIT) throw new TypeError('identity-serialize-depth-limit');
   if (typeof value === 'bigint') return JSON.stringify(`0x${value.toString(16)}`);
-  if (value == null || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
+  if (value === undefined) return 'undefined';
+  if (value === null || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
   if (Array.isArray(value)) {
     const path = enterAncestorPath(value, ancestors);
     try {
@@ -101,5 +102,5 @@ export function shortHash(value) {
   const text = typeof value === 'string' ? value : stableSerialize(value);
   const a = fnv1a(text, 0x811c9dc5);
   const b = fnv1a(text, 0x9e3779b9);
-  return `${a.toString(36)}${b.toString(36)}`;
+  return `${a.toString(36).padStart(7, '0')}${b.toString(36).padStart(7, '0')}`;
 }

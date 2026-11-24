@@ -24,7 +24,11 @@ function fail(code) { throw new TypeError(code); }
  * never bind the same staged symbolic rewrite. Build a typed, deterministic
  * witness first, then feed that JSON-safe witness to the ordinary digest.
  */
-function typedWitness(value, seen = new WeakSet()) {
+const MAX_WITNESS_DEPTH = 64;
+const MAX_WITNESS_NODES = 65536;
+const MAX_WITNESS_ARRAY_LENGTH = 65536;
+
+function typedWitness(value, seen = new WeakSet(), state = { depth: 0, nodes: 0, memo: new WeakMap() }) {
   if (value === null) return { type:'null' };
   const kind = typeof value;
   if (kind === 'string') return { type:'string', value };
@@ -37,33 +41,43 @@ function typedWitness(value, seen = new WeakSet()) {
   }
   if (kind !== 'object') fail('phase8-rewrite-proof-binding-unsupported-value');
   if (seen.has(value)) fail('phase8-rewrite-proof-binding-cycle');
+  if (state.memo.has(value)) return state.memo.get(value);
+  if (state.depth >= MAX_WITNESS_DEPTH) fail('phase8-rewrite-proof-binding-depth-limit');
+  if (++state.nodes > MAX_WITNESS_NODES) fail('phase8-rewrite-proof-binding-node-limit');
   seen.add(value);
+  state.depth += 1;
   try {
+    let out;
     if (Array.isArray(value)) {
+      if (value.length > MAX_WITNESS_ARRAY_LENGTH) fail('phase8-rewrite-proof-binding-array-limit');
       const items = [];
       for (let index = 0; index < value.length; index += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
         if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
           fail('phase8-rewrite-proof-binding-noncanonical-array');
         }
-        items.push(typedWitness(descriptor.value, seen));
+        items.push(typedWitness(descriptor.value, seen, state));
       }
-      return { type:'array', items };
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      fail('phase8-rewrite-proof-binding-noncanonical-object');
-    }
-    const entries = [];
-    for (const key of Object.keys(value).sort()) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      out = { type:'array', items };
+    } else {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
         fail('phase8-rewrite-proof-binding-noncanonical-object');
       }
-      entries.push([key, typedWitness(descriptor.value, seen)]);
+      const entries = [];
+      for (const key of Object.keys(value).sort()) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+          fail('phase8-rewrite-proof-binding-noncanonical-object');
+        }
+        entries.push([key, typedWitness(descriptor.value, seen, state)]);
+      }
+      out = { type:'object', entries };
     }
-    return { type:'object', entries };
+    state.memo.set(value, out);
+    return out;
   } finally {
+    state.depth -= 1;
     seen.delete(value);
   }
 }

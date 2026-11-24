@@ -358,10 +358,13 @@ export class VariableInstructionIndex {
   }
 
   async prefetchForward(page,{signal=null}={}){
-    if(!page||this.maxPrefetchPages<=0||page.status!=='ok')return Object.freeze([]);
+    if(!page||this.maxPrefetchPages<=0||page.status!=='ok'||!this.region||page.generation!==this.generation)return Object.freeze([]);
+    const generation=this.generation, region=this.region;
     const out=[]; let next=page.nextAddress;
-    for(let i=0;i<this.maxPrefetchPages&&next<this.region.end;i++){
-      const candidate=await this.ensurePage(next,{signal,priority:'prefetch',protect:false}); out.push(candidate);
+    for(let i=0;i<this.maxPrefetchPages&&this.region===region&&this.generation===generation&&next<region.end;i++){
+      const candidate=await this.ensurePage(next,{signal,priority:'prefetch',protect:false});
+      if(this.region!==region||this.generation!==generation)break;
+      out.push(candidate);
       if(!candidate.entries.length||candidate.nextAddress<=next)break; next=candidate.nextAddress;
     }
     return Object.freeze(out);
@@ -370,23 +373,37 @@ export class VariableInstructionIndex {
   async navigate(address,{signal=null,trusted=false}={}){
     const target=BigInt(address); this._assertInRegion(target);
     if(signal?.aborted)throw abortError(signal.reason);
+    const generation=this.generation, region=this.region;
     this.cancelExcept([target]);
     const exact=this.knownEntry(target);
-    if(exact){this.currentAddress=exact.address;return Object.freeze({status:'exact',address:exact.address,entry:exact,page:this._pageContaining(exact.address)});}
+    if(exact){
+      const page=this._pageContaining(exact.address);
+      if(page){page.lastUsed=++this._clock;this.currentPageKey=pageKey(this.generation,page.start);}
+      this.currentAddress=exact.address;
+      return Object.freeze({status:'exact',address:exact.address,entry:exact,page});
+    }
     const containing=this.containingEntry(target);
-    if(containing){this.currentAddress=containing.address;return Object.freeze({status:'inside-known',address:containing.address,entry:containing,page:this._pageContaining(containing.address)});}
-    if(trusted||target===this.region.start){
+    if(containing){
+      const page=this._pageContaining(containing.address);
+      if(page){page.lastUsed=++this._clock;this.currentPageKey=pageKey(this.generation,page.start);}
+      this.currentAddress=containing.address;
+      return Object.freeze({status:'inside-known',address:containing.address,entry:containing,page});
+    }
+    if(trusted||target===region.start){
       const page=await this.ensurePage(target,{signal,priority:'current',protect:true}),entry=page.entries[0]||null;
       if(signal?.aborted)throw abortError(signal.reason);
+      if(this.generation!==generation||this.region!==region)throw abortError('region-changed');
       if(!entry||entry.address!==target)return Object.freeze({status:page.status==='undecodable'?'undecodable':'unknown',address:target,entry:null,page});
       this.currentAddress=target; void this.prefetchForward(page,{signal}).catch(()=>{});
       return Object.freeze({status:'decoded',address:target,entry,page});
     }
     const proven=await this.resynchronize(target,{signal});
     if(signal?.aborted)throw abortError(signal.reason);
+    if(this.generation!==generation||this.region!==region)throw abortError('region-changed');
     if(proven.status!=='proven')return proven;
     const page=await this.ensurePage(proven.address,{signal,priority:'current',protect:true}),entry=page.entries[0]||null;
     if(signal?.aborted)throw abortError(signal.reason);
+    if(this.generation!==generation||this.region!==region)throw abortError('region-changed');
     if(!entry||entry.address!==proven.address)return Object.freeze({status:'unknown',address:target,entry:null,page});
     this.currentAddress=proven.address; void this.prefetchForward(page,{signal}).catch(()=>{});
     return Object.freeze({status:target===proven.address?'decoded':'resynchronized',address:proven.address,requestedAddress:target,entry,page});
@@ -409,14 +426,15 @@ export class VariableInstructionIndex {
     if(signal?.aborted)throw abortError(signal.reason);
     const generation=this.generation, region=this.region;
     const lower=target-BigInt(Math.min(this.resyncBytes,Number(target-region.start)));
-    const candidateFloor=target-BigInt(X86_MAX_INSTRUCTION_BYTES);
-    const first=lower>candidateFloor?lower:(candidateFloor>region.start?candidateFloor:region.start);
+    const first=lower>region.start?lower:region.start;
     const candidates=[];
     for(let start=first;start<target;start++){
       if(signal?.aborted)throw abortError(signal.reason);
       if(generation!==this.generation||this.region!==region)throw abortError('region-changed');
+      const toTarget=target-start;
       const remaining=region.end-start;
-      const length=Math.min(this.resyncBytes,Number(remaining>BigInt(this.resyncBytes)?BigInt(this.resyncBytes):remaining));
+      const span=toTarget<remaining?toTarget:remaining;
+      const length=Math.min(this.resyncBytes,Number(span>BigInt(this.resyncBytes)?BigInt(this.resyncBytes):span));
       if(length<=0)continue;
       this._metrics.decodeRequestCount++; this._metrics.requestedDecodeBytes+=length;
       let response;

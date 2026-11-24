@@ -20,30 +20,43 @@ function sha256Hex(data) {
   return stableDigest(data);
 }
 
-function canonicalizeValue(val) {
-  if (val === null || typeof val !== 'object') {
-    if (typeof val === 'bigint') return `0x${val.toString(16)}`;
-    return val;
+const MAX_CANONICAL_DEPTH = 64;
+
+function canonicalizeValue(val, seen = new WeakSet(), depth = 0) {
+  if (val === null) return null;
+  if (typeof val === 'bigint') return { $bigint: val < 0n ? `-0x${(-val).toString(16)}` : `0x${val.toString(16)}` };
+  if (typeof val === 'number') {
+    if (!Number.isFinite(val)) throw new TypeError('canonicalizeValue: non-finite number is not canonicalizable');
+    return Object.is(val, -0) ? { $number: '-0' } : val;
   }
-  if (Array.isArray(val)) {
-    return val.map(canonicalizeValue);
+  if (typeof val === 'undefined') return { $undefined: true };
+  if (typeof val !== 'object') return val;
+  if (depth >= MAX_CANONICAL_DEPTH) throw new TypeError('canonicalizeValue: maximum nesting depth exceeded');
+  if (seen.has(val)) throw new TypeError('canonicalizeValue: cyclic structure is not canonicalizable');
+  seen.add(val);
+  try {
+    if (Array.isArray(val)) {
+      return val.map((item) => canonicalizeValue(item, seen, depth + 1));
+    }
+    /*
+     * Dynamic keys are stored as own data properties. Assigning with
+     * `sorted[k] = ...` routes the key `'__proto__'` through the prototype
+     * setter, so an own `__proto__` data property silently disappears and two
+     * different solver configurations collapse into one fingerprint (#5907).
+     */
+    const sorted = {};
+    for (const k of Object.keys(val).sort()) {
+      Object.defineProperty(sorted, k, {
+        value: canonicalizeValue(val[k], seen, depth + 1),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return sorted;
+  } finally {
+    seen.delete(val);
   }
-  /*
-   * Dynamic keys are stored as own data properties. Assigning with
-   * `sorted[k] = ...` routes the key `'__proto__'` through the prototype
-   * setter, so an own `__proto__` data property silently disappears and two
-   * different solver configurations collapse into one fingerprint (#5907).
-   */
-  const sorted = {};
-  for (const k of Object.keys(val).sort()) {
-    Object.defineProperty(sorted, k, {
-      value: canonicalizeValue(val[k]),
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-  }
-  return sorted;
 }
 
 function requireIdentityText(value, label) {
@@ -153,13 +166,19 @@ export function isCacheableProof({
   capabilityFingerprint = null,
   backendId = null,
   backendVersion = null,
+  witnessModel = undefined,
 } = {}) {
   // 1. Only clean PROVED or REFUTED verdicts may be cached
   if (verdict !== 'proved' && verdict !== 'refuted') {
     return false;
   }
 
-  if (proofAuthority !== PROOF_AUTHORITY.EXACT || !capabilityFingerprint || !backendId || !backendVersion) return false;
+  if (
+    proofAuthority !== PROOF_AUTHORITY.EXACT ||
+    typeof capabilityFingerprint !== 'string' || !capabilityFingerprint.trim() ||
+    typeof backendId !== 'string' || !backendId.trim() ||
+    typeof backendVersion !== 'string' || !backendVersion.trim()
+  ) return false;
 
   // 2. Check solver status: must be clean SAT or UNSAT, not failure/timeout/cancelled/etc.
   if (
@@ -196,8 +215,12 @@ export function isCacheableProof({
     return false;
   }
 
-  // 5. Inconsistent or unknown preconditions cannot produce cacheable proofs
+  // 5. PROVED verdicts require positively satisfiable preconditions;
+  // inconsistent or unknown preconditions never cache.
   if (preconditionStatus === 'inconsistent' || preconditionStatus === 'unknown') {
+    return false;
+  }
+  if (verdict === 'proved' && preconditionStatus !== 'satisfiable') {
     return false;
   }
 
@@ -210,7 +233,7 @@ export function isCacheableProof({
   // This matches the REFUTED validation invariant shared with evidence
   // admission (createSymbolicEvidence / isRefutedEvidence) so a refutation
   // cannot enter the proof cache on an unverified solver witness.
-  if (verdict === 'refuted' && validationStatus !== 'validated') {
+  if (verdict === 'refuted' && (validationStatus !== 'validated' || (witnessModel !== undefined && witnessModel == null))) {
     return false;
   }
 
@@ -243,8 +266,8 @@ export function computeProofCacheKey({
     throw new TypeError('computeProofCacheKey: verifierFingerprint is required and must be a string');
   }
 
-  const binaryIdentityText = optionalIdentityText(binaryIdentity, 'computeProofCacheKey: binaryIdentity') ?? 'binary:unknown';
-  const analysisRevisionText = optionalIdentityText(analysisRevision, 'computeProofCacheKey: analysisRevision') ?? 'analysis:0';
+  const binaryIdentityText = optionalIdentityText(binaryIdentity, 'computeProofCacheKey: binaryIdentity');
+  const analysisRevisionText = optionalIdentityText(analysisRevision, 'computeProofCacheKey: analysisRevision');
 
   const parts = [
     requireIdentityText(baseKey, 'computeProofCacheKey: baseKey'),
@@ -253,5 +276,5 @@ export function computeProofCacheKey({
     verifierFingerprint,
     queryHash,
   ];
-  return parts.join('::');
+  return JSON.stringify(parts);
 }

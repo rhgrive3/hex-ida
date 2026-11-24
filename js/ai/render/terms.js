@@ -82,7 +82,8 @@ export function decorateTerms(root, { onOpen } = {}) {
           return;
         }
         box = definition(hit, onOpen);
-        host.after(box);
+        if (host.tagName === 'LI') host.append(box);
+        else host.after(box);
         button.setAttribute('aria-expanded', 'true');
       });
       const fragment = document.createDocumentFragment();

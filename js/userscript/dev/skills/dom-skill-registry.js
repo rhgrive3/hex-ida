@@ -207,15 +207,32 @@ function bindProgramArgs(program, args) {
   return cloned;
 }
 
-function substitute(value, args) {
-  if (Array.isArray(value)) return value.map((item) => substitute(item, args));
+const MAX_SUBSTITUTE_DEPTH = 64;
+const MAX_ARG_JSON_BYTES = 256 * 1024;
+const FORBIDDEN_SUBSTITUTE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+function substitute(value, args, depth = 0) {
+  if (depth >= MAX_SUBSTITUTE_DEPTH) throw skillError('invalid-program', 'DOM Skill template exceeds maximum nesting depth.');
+  if (Array.isArray(value)) return value.map((item) => substitute(item, args, depth + 1));
   if (plainRecord(value)) {
     if (typeof value.arg === 'string' && Object.keys(value).length === 1) {
       if (!Object.prototype.hasOwnProperty.call(args, value.arg)) throw skillError('argument-missing', `DOM Skill argument is missing: ${value.arg}`);
-      return JSON.parse(JSON.stringify(args[value.arg]));
+      const serialized = JSON.stringify(args[value.arg]);
+      if (typeof serialized === 'string' && serialized.length > MAX_ARG_JSON_BYTES) {
+        throw skillError('invalid-argument', `DOM Skill argument exceeds size limit: ${value.arg}`);
+      }
+      return serialized === undefined ? undefined : JSON.parse(serialized);
     }
     const out = {};
-    for (const [key, item] of Object.entries(value)) out[key] = substitute(item, args);
+    for (const [key, item] of Object.entries(value)) {
+      if (FORBIDDEN_SUBSTITUTE_KEYS.has(key)) continue;
+      Object.defineProperty(out, key, {
+        value: substitute(item, args, depth + 1),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
     return out;
   }
   return value;

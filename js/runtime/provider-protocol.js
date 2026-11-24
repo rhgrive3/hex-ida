@@ -198,6 +198,9 @@ export class RuntimeProviderProtocolClient {
 
   setEpoch(next) {
     const value = epoch(next);
+    if (value < this.epoch) {
+      throw new RangeError(`provider epoch must be monotonic (current=${this.epoch}, next=${value})`);
+    }
     if (value === this.epoch) return value;
     this.epoch = value;
     for (const [id, pending] of [...this.pending]) {

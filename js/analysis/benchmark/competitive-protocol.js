@@ -109,7 +109,8 @@ export async function admitCompetitiveProtocol(protocol, { work, verifyTwin, ver
   const obligations = [], twinReceipts = [], participantReceipts = [];
   if (typeof verifyPolicies !== 'function') obligations.push('independent-policy-adjudicator-unavailable');
   else {
-    const answer = await work.await((signal) => verifyPolicies(protocol, { signal }));
+    const rawAnswer = await work.await((signal) => verifyPolicies(protocol, { signal }));
+    const answer = rawAnswer == null ? null : snapshotContractData(rawAnswer, { maxBytes: 65536, maxNodes: 4096 });
     if (answer?.protocolId !== protocol.id || answer.denominatorSha256 !== protocol.denominatorSha256
       || answer.victoryPolicySha256 !== protocol.victoryPolicySha256 || answer.preregistered !== true
       || answer.nativeAdaptersFair !== true || answer.counterbalanced !== true || answer.knowledgePolicyChecked !== true) {
@@ -118,25 +119,33 @@ export async function admitCompetitiveProtocol(protocol, { work, verifyTwin, ver
   }
   for (const item of protocol.cases) {
     work.charge('workUnits');
-    const receipt = typeof verifyTwin === 'function' ? await work.await((signal) => verifyTwin(item, { protocol, signal })) : null;
+    const rawReceipt = typeof verifyTwin === 'function' ? await work.await((signal) => verifyTwin(item, { protocol, signal })) : null;
+    const receipt = rawReceipt == null ? null : snapshotContractData(rawReceipt, { maxBytes: 65536, maxNodes: 4096 });
     if (receipt?.caseId !== item.caseId || receipt.binarySha256 !== item.binarySha256
       || receipt.debugBinarySha256 !== item.debugBinarySha256 || receipt.twinManifestDigest !== item.twinManifestDigest
       || receipt.oracleManifestSha256 !== item.oracleManifestSha256 || receipt.stripLineageVerified !== true
       || receipt.executableBytesEqual !== true || receipt.independentGroundTruth !== true
       || receipt.licensePermitted !== true || typeof receipt.checkerVersion !== 'string' || !receipt.checkerVersion) {
       obligations.push(`twin-not-admitted:${item.caseId}`);
-    } else twinReceipts.push(snapshotContractData(receipt, { maxBytes: 65536, maxNodes: 4096 }));
+    } else {
+      work.charge('residentBytes', JSON.stringify(receipt).length);
+      twinReceipts.push(receipt);
+    }
     await work.yieldIfNeeded();
   }
   for (const participant of protocol.participants) {
     work.charge('workUnits');
-    const receipt = typeof verifyParticipant === 'function'
+    const rawReceipt = typeof verifyParticipant === 'function'
       ? await work.await((signal) => verifyParticipant(participant, { protocol, signal })) : null;
+    const receipt = rawReceipt == null ? null : snapshotContractData(rawReceipt, { maxBytes: 65536, maxNodes: 4096 });
     if (receipt?.participantId !== participant.id || receipt.toolDistributionSha256 !== participant.tool.distributionSha256
       || receipt.adapterSha256 !== participant.tool.adapterSha256 || receipt.sameAstraIdentity !== protocol.sameAstraIdentity
       || receipt.nativeCapabilitiesActuallyExercised !== true || receipt.availableForMeasurement !== true) {
       obligations.push(`participant-not-admitted:${participant.id}`);
-    } else participantReceipts.push(snapshotContractData(receipt, { maxBytes: 65536, maxNodes: 4096 }));
+    } else {
+      work.charge('residentBytes', JSON.stringify(receipt).length);
+      participantReceipts.push(receipt);
+    }
   }
   const result = deepFreeze({ schema: 'competitive-protocol-admission/v1', protocolId: protocol.id,
     status: obligations.length ? 'NOT-ADMITTED' : 'ADMITTED-FOR-MEASUREMENT', obligations,
@@ -198,8 +207,12 @@ export function competitiveReleasePreflight(protocol, admission, measurements) {
   if (!ADMITTED.has(admission) || admission.protocolId !== protocol.id) contractFail('competitive-admission-required');
   if (!Array.isArray(measurements) || measurements.length > 100000) contractFail('competitive-measurement-budget');
   const rows = measurements.map((value) => {
-    const { id: _id, receiptVerified: _verified, ...data } = value;
-    return normalizeCompetitiveMeasurement(protocol, data);
+    const snapped = snapshotContractData(value, { maxBytes: 262144, maxNodes: 16384 });
+    if (!snapped || typeof snapped !== 'object' || Array.isArray(snapped)) contractFail('competitive-measurement-fields');
+    const { id: suppliedId, receiptVerified: _verified, ...data } = snapped;
+    const row = normalizeCompetitiveMeasurement(protocol, data);
+    if (suppliedId != null && suppliedId !== row.id) contractFail('competitive-measurement-id-mismatch');
+    return row;
   });
   const keys = new Set(), vetoes = [...admission.obligations];
   let measured = 0;

@@ -12,8 +12,10 @@ async function request(path, method = 'GET', body) {
       headers['x-hex-csrf'] = (await csrf.json()).csrfToken;
     }
     const response = await fetch(path, { method, headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Request failed');
+    let data = null;
+    try { data = await response.json(); } catch {}
+    if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
+    if (data === null) throw new Error('Invalid JSON response');
     return data;
   } finally { clearTimeout(timer); }
 }
