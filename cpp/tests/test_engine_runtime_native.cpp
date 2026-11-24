@@ -365,6 +365,192 @@ void test_wave7_expanded_arm64_lifting_0diff() {
   std::printf("  [PASS] Wave 7 expanded ARM64 lifting 0-diff & fail-closed checks\n");
 }
 
+
+void test_wave8_shifts_and_mov_alias_0diff() {
+  assert(hex_engine_init() == HEX_OK);
+
+  auto expect_exact = [](const uint32_t* words, uint32_t count, const char* name, const char* expected_full) {
+    assert(hex_engine_decompile_arm64(
+               words, count, 0x1000ULL, name,
+               static_cast<uint32_t>(std::strlen(name)),
+               HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string got(hex_engine_decompile_get_text_ptr(), hex_engine_decompile_get_text_len());
+    if (got != expected_full) {
+      std::fprintf(stderr, "MISMATCH for %s:\n--- GOT ---\n%s\n--- EXP ---\n%s\n",
+                   name, got.c_str(), expected_full);
+      assert(false);
+    }
+  };
+
+  // 1. Variable shifts (LSLV / LSRV / ASRV, 32-bit & 64-bit, rn != rm): 0-diff with JS decompile-base.js
+  {
+    const uint32_t lsl_w[2] = {0x1ac12000u, 0xd65f03c0u};  // lsl w0, w0, w1; ret
+    expect_exact(lsl_w, 2u, "lsl_w",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 lsl_w(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 << (a2 & 31);\n"
+        "}");
+
+    const uint32_t lsl_x[2] = {0x9ac12000u, 0xd65f03c0u};  // lsl x0, x0, x1; ret
+    expect_exact(lsl_x, 2u, "lsl_x",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "uint64 lsl_x(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 << (a2 & 63);\n"
+        "}");
+
+    const uint32_t lsr_w[2] = {0x1ac12400u, 0xd65f03c0u};  // lsr w0, w0, w1; ret
+    expect_exact(lsr_w, 2u, "lsr_w",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 lsr_w(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 >> (a2 & 31);\n"
+        "}");
+
+    const uint32_t lsr_x[2] = {0x9ac12400u, 0xd65f03c0u};  // lsr x0, x0, x1; ret
+    expect_exact(lsr_x, 2u, "lsr_x",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "uint64 lsr_x(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 >> (a2 & 63);\n"
+        "}");
+
+    const uint32_t asr_w[2] = {0x1ac12800u, 0xd65f03c0u};  // asr w0, w0, w1; ret
+    expect_exact(asr_w, 2u, "asr_w",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 asr_w(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 >> (a2 & 31);\n"
+        "}");
+
+    const uint32_t asr_x[2] = {0x9ac12800u, 0xd65f03c0u};  // asr x0, x0, x1; ret
+    expect_exact(asr_x, 2u, "asr_x",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "uint64 asr_x(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 >> (a2 & 63);\n"
+        "}");
+
+    // Shift into temp register followed by add: (a1 << (a2 & 31)) + a2
+    const uint32_t lsl_temp_add[3] = {0x1ac12002u, 0x0b010040u, 0xd65f03c0u};
+    expect_exact(lsl_temp_add, 3u, "lsl_temp_add",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 lsl_temp_add(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return (a1 << (a2 & 31)) + a2;\n"
+        "}");
+  }
+
+  // 2. Register MOV alias via temp registers (orr wd, wzr, wm / orr xd, xzr, xm)
+  {
+    // mov w2, w0; add w0, w2, w1; ret -> return a1 + a2;
+    const uint32_t mov_temp_w[3] = {0x2a0003e2u, 0x0b010040u, 0xd65f03c0u};
+    expect_exact(mov_temp_w, 3u, "mov_temp_w",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 mov_temp_w(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 + a2;\n"
+        "}");
+
+    // mov x2, x0; add x0, x2, x1; ret -> return a1 + a2;
+    const uint32_t mov_temp_x[3] = {0xaa0003e2u, 0x8b010040u, 0xd65f03c0u};
+    expect_exact(mov_temp_x, 3u, "mov_temp_x",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "uint64 mov_temp_x(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 + a2;\n"
+        "}");
+
+    // mov w2, w0; mov w3, w1; add w0, w2, w3; ret -> return a1 + a2;
+    const uint32_t mov_two_w[4] = {0x2a0003e2u, 0x2a0103e3u, 0x0b030040u, 0xd65f03c0u};
+    expect_exact(mov_two_w, 4u, "mov_two_w",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 mov_two_w(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 + a2;\n"
+        "}");
+
+    // mov w2, w0; lsl w0, w2, w1; ret -> return a1 << (a2 & 31);
+    const uint32_t mov_then_lsl[3] = {0x2a0003e2u, 0x1ac12040u, 0xd65f03c0u};
+    expect_exact(mov_then_lsl, 3u, "mov_then_lsl",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 mov_then_lsl(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 << (a2 & 31);\n"
+        "}");
+
+    // movz w2, #5; mov w0, w2; ret -> return 5;
+    const uint32_t mov_const[3] = {0x528000a2u, 0x2a0203e0u, 0xd65f03c0u};
+    expect_exact(mov_const, 3u, "mov_const",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "int32 mov_const(void)\n"
+        "{\n"
+        "    return 5;\n"
+        "}");
+  }
+
+  // 3. Fail-closed rejections (must return HEX_ERR_UNSUPPORTED)
+  // (a) Variable shift with rn == rm
+  const uint32_t lsl_same[2] = {0x1ac02000u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(lsl_same, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  // (b) RORV (op2=0x0b)
+  const uint32_t ror_w[2] = {0x1ac12c00u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(ror_w, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  // (c) Shift with computed LHS under JS_PARITY (parenthesization divergence guard)
+  const uint32_t add_then_lsl[3] = {0x0b010000u, 0x1ac22000u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(add_then_lsl, 3u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  // (d) Pure MOV-only functions (JS emits `(void) { uint64 a1; return a1; }`)
+  const uint32_t mov_self[2] = {0x2a0003e0u, 0xd65f03c0u};
+  const uint32_t mov_chain[3] = {0xaa0003e2u, 0xaa0203e0u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(mov_self, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+  assert(hex_engine_decompile_arm64(mov_chain, 3u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  // (e) Gapped argument MOV (`mov x0, x1; ret`)
+  const uint32_t mov_gap[2] = {0xaa0103e0u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(mov_gap, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  // (f) Alias-resolved self-operand SUB / SHIFT via MOV
+  const uint32_t mov_sub_same[3] = {0x2a0003e2u, 0x4b000040u, 0xd65f03c0u};
+  const uint32_t mov_lsl_same[3] = {0x2a0003e2u, 0x1ac02040u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(mov_sub_same, 3u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+  assert(hex_engine_decompile_arm64(mov_lsl_same, 3u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  // (g) Existing fail-closed invariants: rn==rm SUB/AND/EOR & unallocated sh[1] bit
+  const uint32_t sub_same[2] = {0x4b000000u, 0xd65f03c0u};
+  const uint32_t and_same[2] = {0x0a000000u, 0xd65f03c0u};
+  const uint32_t eor_same[2] = {0xca000000u, 0xd65f03c0u};
+  const uint32_t bad_sh1[2] = {0x11800400u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(sub_same, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+  assert(hex_engine_decompile_arm64(and_same, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+  assert(hex_engine_decompile_arm64(eor_same, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+  assert(hex_engine_decompile_arm64(bad_sh1, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  std::printf("  [PASS] Wave 8 variable shifts & MOV alias 0-diff + fail-closed checks\n");
+}
+
 }  // namespace
 
 int main() {
@@ -375,6 +561,7 @@ int main() {
   test_strict_parity_rejections();
   test_three_arena_isolation_and_zero_leak();
   test_wave7_expanded_arm64_lifting_0diff();
+  test_wave8_shifts_and_mov_alias_0diff();
   std::printf("test_engine_runtime_native (ASan+UBSan): ALL PASS\n");
   return 0;
 }
