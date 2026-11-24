@@ -328,12 +328,108 @@ static void test_issue_regressions_and_formatting() {
   }
 }
 
+static void test_arm64e_pac_recognition_and_gate() {
+  // Positive: all required arm64e PAC instructions must return 1 for hex_arm64_is_pac_word
+  // and 0 (fail-closed) for hex_arm64_is_decompiler_supported.
+  const uint32_t kPacWords[] = {
+      // Data-processing 1-source (Z=0)
+      0xdac10020U,  // pacia x0, x1
+      0xdac10420U,  // pacib x0, x1
+      0xdac10820U,  // pacda x0, x1
+      0xdac10c20U,  // pacdb x0, x1
+      0xdac11020U,  // autia x0, x1
+      0xdac11420U,  // autib x0, x1
+      0xdac11820U,  // autda x0, x1
+      0xdac11c20U,  // autdb x0, x1
+      // Data-processing 1-source (Z=1)
+      0xdac123e0U,  // paciza x0
+      0xdac127e0U,  // pacizb x0
+      0xdac12be0U,  // pacdza x0
+      0xdac12fe0U,  // pacdzb x0
+      0xdac133e0U,  // autiza x0
+      0xdac137e0U,  // autizb x0
+      0xdac13be0U,  // autdza x0
+      0xdac13fe0U,  // autdzb x0
+      // Strip PAC
+      0xdac143e0U,  // xpaci x0
+      0xdac147e0U,  // xpacd x0
+      0xd50320ffU,  // xpaclri
+      // Generic PAC
+      0x9ac23020U,  // pacga x0, x1, x2
+      // HINT-space PAC/AUT
+      0xd503231fU,  // paciaz
+      0xd503233fU,  // paciasp
+      0xd503235fU,  // pacibz
+      0xd503237fU,  // pacibsp
+      0xd503239fU,  // autiaz
+      0xd50323bfU,  // autiasp
+      0xd50323dfU,  // autibz
+      0xd50323ffU,  // autibsp
+      0xd503211fU,  // pacia1716
+      0xd503215fU,  // pacib1716
+      0xd503219fU,  // autia1716
+      0xd50321dfU,  // autib1716
+      // Authenticated returns & branches
+      0xd65f0bffU,  // retaa
+      0xd65f0fffU,  // retab
+      0xd69f0bffU,  // eretaa
+      0xd69f0fffU,  // eretab
+      0xd61f081fU,  // braaz x0
+      0xd61f0c3fU,  // brabz x1
+      0xd63f081fU,  // blraaz x0
+      0xd63f0c3fU,  // blrabz x1
+      0xd71f0801U,  // braa x0, x1
+      0xd71f0c01U,  // brab x0, x1
+      0xd73f0801U,  // blraa x0, x1
+      0xd73f0c01U,  // blrab x0, x1
+      // Authenticated loads
+      0xf8200420U,  // ldraa x0, [x1]
+      0xf8a00c20U,  // ldrab x0, [x1]!
+  };
+  for (uint32_t w : kPacWords) {
+    assert(hex_arm64_is_pac_word(w) == 1);
+    assert(hex_arm64_is_decompiler_supported(w) == 0);
+  }
+
+  // Negative: standard non-PAC instructions (including nearby HINT/branch/load encodings) must return 0
+  const uint32_t kNonPacWords[] = {
+      0xd503201fU,  // nop
+      0xd503241fU,  // bti
+      0xd503245fU,  // bti c
+      0xd503203fU,  // yield
+      0xd65f03c0U,  // ret
+      0xd65f0000U,  // ret x0
+      0xd69f03e0U,  // eret
+      0xd61f0000U,  // br x0
+      0xd63f0000U,  // blr x0
+      0x91000400U,  // add x0, x0, #1
+      0x8b010000U,  // add x0, x0, x1
+      0x9b017c00U,  // mul x0, x0, x1
+      0xa9bf7bfdU,  // stp x29, x30, [sp, #-16]!
+      0xa8c17bfdU,  // ldp x29, x30, [sp], #16
+      0xf9400020U,  // ldr x0, [x1]
+      0xf8400420U,  // ldr x0, [x1], #0
+      0xf8626820U,  // ldr x0, [x1, x2]
+      0xf8226820U,  // str x0, [x1, x2]
+      0xdac00020U,  // rbit x0, x1
+      0x9ac10800U,  // udiv x0, x0, x1
+  };
+  for (uint32_t w : kNonPacWords) {
+    assert(hex_arm64_is_pac_word(w) == 0);
+  }
+  // All 86 real non-PAC ELF oracle words must also return 0
+  for (const auto& tc : kRealElfOracle) {
+    assert(hex_arm64_is_pac_word(tc.word) == 0);
+  }
+}
+
 }  // namespace
 
 int main() {
   test_real_elf_binaries_oracle_parity();
   test_capability_table_and_decompiler_gate();
   test_issue_regressions_and_formatting();
-  std::printf("test_arm64_decode_native (86 real ELF words + capability gate + regressions, ASan+UBSan): ALL PASS\n");
+  test_arm64e_pac_recognition_and_gate();
+  std::printf("test_arm64_decode_native (86 real ELF words + capability gate + regressions + arm64e PAC, ASan+UBSan): ALL PASS\n");
   return 0;
 }
