@@ -136,6 +136,13 @@ bool is_runtime_arm64_word_supported(uint32_t w, bool js_parity_mode) {
   // Delegate remaining instructions to the core ARM64 capability gate.
   if (!hex_arm64_is_decompiler_supported(w)) return false;
 
+  // Variable shifts (LSLV/LSRV/ASRV): require rn != rm.
+  if (kind == HEX_ARM64_KIND_SHIFT) {
+    const uint32_t rn = (w >> 5) & 0x1fu;
+    const uint32_t rm = (w >> 16) & 0x1fu;
+    if (rn == rm) return false;
+  }
+
   // Reject flag-setting ADDS/SUBS under JS parity (only plain ADD/SUB).
   if (kind == HEX_ARM64_KIND_ARITH && ((w >> 29) & 1u) != 0u) return false;
   // Reject SUB reg with rn == rm under JS parity (optimizer folds x - x -> 0, JS emits a1 - a1).
@@ -174,7 +181,8 @@ struct Arm64ParityCheckResult {
 //   - must write return register x0/w0 before RET
 //   - no dead writes (every written register must flow to x0 at RET)
 //   - read-before-write argument registers x0..x7 must be contiguous from x0 (no gaps)
-Arm64ParityCheckResult check_arm64_strict_parity(const HexArm64Decoded* decoded, uint32_t count) {
+Arm64ParityCheckResult check_arm64_strict_parity(
+    const HexArm64Decoded* decoded, uint32_t count, bool js_parity_mode) {
   Arm64ParityCheckResult res{false, 0u, 0u, 0u};
   if (count == 0u || count > kMaxParityWords) return res;
   if (decoded[count - 1u].kind != HEX_ARM64_KIND_RET) return res;
@@ -184,9 +192,14 @@ Arm64ParityCheckResult check_arm64_strict_parity(const HexArm64Decoded* decoded,
   uint8_t insn_r1[kMaxParityWords];
   uint8_t insn_rcount[kMaxParityWords];
 
+  uint8_t alias_origin[31];
+  for (uint8_t r = 0u; r < 31u; ++r) alias_origin[r] = r;
+
   uint32_t defined_mask = 0u;
+  uint32_t computed_mask = 0u;
   uint32_t rbw_arg_mask = 0u;
   uint8_t last_x0_width = 0u;
+  bool has_non_mov_compute = false;
 
   for (uint32_t i = 0u; i + 1u < count; ++i) {
     const HexArm64Decoded& d = decoded[i];
@@ -226,6 +239,7 @@ Arm64ParityCheckResult check_arm64_strict_parity(const HexArm64Decoded* decoded,
         break;
       case HEX_ARM64_KIND_MUL:
       case HEX_ARM64_KIND_LOGIC:
+      case HEX_ARM64_KIND_SHIFT:
         dst = d.rd;
         r0 = d.rn;
         r1 = d.rm;
@@ -246,6 +260,35 @@ Arm64ParityCheckResult check_arm64_strict_parity(const HexArm64Decoded* decoded,
       }
     }
 
+    // Fail-closed on alias-resolved self-operand reductions and shift precedence/folding diffs.
+    if (d.kind == HEX_ARM64_KIND_SHIFT) {
+      if (alias_origin[r0] == alias_origin[r1]) return res;
+      if (js_parity_mode &&
+          (((computed_mask & (1u << r0)) != 0u) || ((computed_mask & (1u << r1)) != 0u))) {
+        return res;
+      }
+    } else if (js_parity_mode && rc == 2u && alias_origin[r0] == alias_origin[r1]) {
+      const bool is_sub_reg =
+          (d.kind == HEX_ARM64_KIND_ARITH) && ((d.word & 0x1f200000u) == 0x0b000000u) &&
+          (((d.word >> 30) & 1u) != 0u);
+      if (is_sub_reg || d.kind == HEX_ARM64_KIND_LOGIC) {
+        return res;
+      }
+    }
+
+    if (d.kind == HEX_ARM64_KIND_MOVREG) {
+      alias_origin[dst] = alias_origin[r0];
+      if ((computed_mask & (1u << r0)) != 0u) {
+        computed_mask |= (1u << dst);
+      } else {
+        computed_mask &= ~(1u << dst);
+      }
+    } else {
+      has_non_mov_compute = true;
+      alias_origin[dst] = dst;
+      computed_mask |= (1u << dst);
+    }
+
     defined_mask |= (1u << dst);
     if (dst == 0u) {
       last_x0_width = (((d.word >> 31) & 1u) == 0u) ? 32u : 64u;
@@ -257,8 +300,9 @@ Arm64ParityCheckResult check_arm64_strict_parity(const HexArm64Decoded* decoded,
     insn_rcount[i] = rc;
   }
 
-  // Must write return register x0/w0 before RET.
-  if ((defined_mask & 1u) == 0u || last_x0_width == 0u) return res;
+  // Must write return register x0/w0 before RET and perform at least one non-MOV op
+  // (pure MOV-only functions like `mov w0, w0; ret` emit `(void) { uint64 a1; return a1; }` in JS).
+  if ((defined_mask & 1u) == 0u || last_x0_width == 0u || !has_non_mov_compute) return res;
 
   // Backward liveness pass: reject dead writes that never reach x0 at RET.
   uint32_t live_mask = 1u;
@@ -393,9 +437,19 @@ HexStatus lift_arm64_insn(
       if (op2 == 1u) subop = HEX_IR_BIN_LSR;
       else if (op2 == 2u) subop = HEX_IR_BIN_ASR;
       track_ret(d.rd);
+      const uint64_t sh_mask = is32 ? 31ULL : 63ULL;
+      const uint32_t tmp_mask = next_temp_var++;
+      HexStatus st = store.add_inst(
+          ir_handle, block_id, HEX_IR_OP_CONST, wflag, tmp_mask, kNone, kNone, kNone, sh_mask, nullptr);
+      if (st != HEX_OK) return st;
+      const uint32_t tmp_amt = next_temp_var++;
+      st = store.add_inst(
+          ir_handle, block_id, HEX_IR_OP_BIN, static_cast<uint16_t>(HEX_IR_BIN_AND | wflag),
+          tmp_amt, d.rm, tmp_mask, kNone, 0u, nullptr);
+      if (st != HEX_OK) return st;
       return store.add_inst(
           ir_handle, block_id, HEX_IR_OP_BIN, static_cast<uint16_t>(subop | wflag),
-          d.rd, d.rn, d.rm, kNone, 0u, nullptr);
+          d.rd, d.rn, tmp_amt, kNone, 0u, nullptr);
     }
 
     case HEX_ARM64_KIND_CMP: {
@@ -550,7 +604,7 @@ HexStatus hex_engine_decompile_arm64(
   if (st != HEX_OK) return st;
 
   // Strict 0-bit JS-oracle parity gate (read-before-write args, no dead writes, x0 written).
-  const Arm64ParityCheckResult parity = check_arm64_strict_parity(decoded, word_count);
+  const Arm64ParityCheckResult parity = check_arm64_strict_parity(decoded, word_count, js_parity_mode);
   if (!parity.supported) {
     return HEX_ERR_UNSUPPORTED;
   }
@@ -608,7 +662,7 @@ HexStatus hex_engine_decompile_arm64(
   }
 
   hex::Vec<uint64_t> ir_inst_addrs(&g_scratch_arena);
-  if (!ir_inst_addrs.reserve(static_cast<size_t>(word_count) * 2u)) {
+  if (!ir_inst_addrs.reserve(static_cast<size_t>(word_count) * 3u)) {
     return fail_cleanup(HEX_ERR_OOM);
   }
 
