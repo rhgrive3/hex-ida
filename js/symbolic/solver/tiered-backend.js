@@ -361,7 +361,7 @@ class TieredSolverSession extends SolverSession {
       'no-exact-tier-eligible', { eligibility, attempts: [], engineBackend: null });
 
     const timeoutMs = options.timeoutMs;
-    const effectiveDeterministic = Boolean(options.deterministic === true || this.options.deterministic === true);
+    const effectiveDeterministic = options.deterministic !== undefined ? options.deterministic === true : this.options.deterministic === true;
     const deterministic = effectiveDeterministic && timeoutMs > 0;
     const deadline = !deterministic && timeoutMs > 0 ? (globalThis.performance?.now?.() ?? Date.now()) + timeoutMs : Infinity;
     const sessionSignal = this.options.signal || null;

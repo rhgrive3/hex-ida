@@ -2,20 +2,23 @@
 
 importScripts('./capstone-structured.js', '../../../../capstone.js');
 
-const MAX_DECODE_BYTES = 1024 * 1024;
+const MAX_DECODE_BYTES = 64 * 1024;
+const MAX_QUEUE_LENGTH = 64;
+const MAX_U64 = (1n << 64n) - 1n;
 let decoderPromise = null;
 let semanticModulePromise = null;
 let provenanceModulePromise = null;
 let processing = false;
+let activeId = null;
 const queue = [];
 const cancelledIds = new Set();
 
 function exactAddress(value, code) {
-  if (typeof value === 'bigint' && value >= 0n) return value;
+  if (typeof value === 'bigint' && value >= 0n && value <= MAX_U64) return value;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|0|[1-9]\d*)$/.test(value)) {
     const parsed = BigInt(value);
-    if (parsed >= 0n) return parsed;
+    if (parsed >= 0n && parsed <= MAX_U64) return parsed;
   }
   throw new TypeError(code);
 }
@@ -70,7 +73,7 @@ async function decoder() {
       ]);
       if (rc !== 0) throw new Error(`x86-semantic-function-capstone-open:${rc}`);
       const handle = M.getValue(handlePointer, 'i32');
-      M.ccall('cs_option', 'number', ['number','number','number'], [handle, M.OPT_SKIPDATA, M.OPT_ON]);
+      M.ccall('cs_option', 'number', ['number','number','number'], [handle, M.OPT_SKIPDATA, M.OPT_OFF]);
       const detailRc = M.ccall('cs_option', 'number', ['number','number','number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
       if (detailRc !== 0) throw new Error(`x86-semantic-function-capstone-detail:${detailRc}`);
       outputPointer = M._malloc(4);
@@ -81,7 +84,7 @@ async function decoder() {
       M._free(handlePointer);
       throw error;
     }
-  })();
+  })().catch((error) => { decoderPromise = null; throw error; });
   return decoderPromise;
 }
 
@@ -98,7 +101,7 @@ async function revalidateAndAnalyze(message) {
   }
   const serialized = serializedRows(message.input);
   const { M, handle, outputPointer } = await decoder();
-  provenanceModulePromise ||= import('./runtime-provenance.js');
+  provenanceModulePromise ||= import('./runtime-provenance.js').catch((error) => { provenanceModulePromise = null; throw error; });
   const { markReceiverRevalidatedX86Row } = await provenanceModulePromise;
   if (cancelledIds.has(message.id)) return null;
   const buffer = M._malloc(15);
@@ -139,7 +142,7 @@ async function revalidateAndAnalyze(message) {
     throw new Error('x86-semantic-function-decoder-revalidation-incomplete');
   }
   if (cancelledIds.has(message.id)) return null;
-  semanticModulePromise ||= import('./semantic-function.js');
+  semanticModulePromise ||= import('./semantic-function.js').catch((error) => { semanticModulePromise = null; throw error; });
   const { analyzeDecodedSemanticFunction } = await semanticModulePromise;
   if (cancelledIds.has(message.id)) return null;
   return await analyzeDecodedSemanticFunction({
@@ -151,6 +154,7 @@ async function revalidateAndAnalyze(message) {
 }
 
 async function run(message) {
+  activeId = message.id;
   try {
     const result = await revalidateAndAnalyze(message);
     if (cancelledIds.delete(message.id) || result == null) return;
@@ -158,6 +162,9 @@ async function run(message) {
   } catch (error) {
     if (cancelledIds.delete(message.id)) return;
     self.postMessage({ id:message.id, ok:false, error:error?.message || String(error) });
+  } finally {
+    if (activeId === message.id) activeId = null;
+    cancelledIds.delete(message.id);
   }
 }
 
@@ -180,14 +187,21 @@ self.onmessage = (event) => {
   if (!message) return;
   if (message.t === 'cancel') {
     if (message.id != null) {
-      cancelledIds.add(message.id);
       const index = queue.findIndex((queued) => queued.id === message.id);
-      if (index >= 0) queue.splice(index, 1);
+      if (index >= 0) {
+        queue.splice(index, 1);
+      } else if (activeId === message.id) {
+        cancelledIds.add(message.id);
+      }
     }
     return;
   }
   if (message.t !== 'semanticFunction') {
     self.postMessage({ id:message.id, ok:false, error:'x86-semantic-function-decoder-revalidation-message-invalid' });
+    return;
+  }
+  if (queue.length >= MAX_QUEUE_LENGTH) {
+    self.postMessage({ id:message.id, ok:false, error:'x86-semantic-function-decoder-revalidation-queue-full' });
     return;
   }
   queue.push(message);

@@ -276,7 +276,7 @@ export class ScopedAnalysisService {
       }
       else if (method === 'runtimeObservations') value = await queryRuntimeReconciliation(input, {
         world: this.#world, assumptions: this.#assumptions, snapshotId: this.#snapshot.snapshotId, work,
-        getContext: this.#host.configuration.getRuntimeEvidenceContext ?? null,
+        getContext: this.#host.configuration.getRuntimeEvidenceContext ?? this.#host.getNativeRuntimeEvidenceContext ?? null,
         getTargetEnvelope: this.#host.configuration.getRuntimeTargetEnvelope ?? null,
         qualifyObservation: this.#host.configuration.qualifyRuntimeObservation ?? null });
       else if (method === 'referenceSlice' || method === 'replayReferenceSlice') value = await this.#references(method, input, work);
@@ -327,7 +327,7 @@ export class ScopedAnalysisService {
       abiInputBindings: native ? 'isolated-existing-abi-and-compat-64-bit-register-inputs; candidate-only' : 'unsupported',
       abiPlacementEvidence: this.#host.configuration.getAbiPlacementContext || native ? 'canonical-owner-physical-consistency; prototype-unknown-preserved' : 'unsupported',
       explainTransformChain: (this.#host.configuration.resolveTransformReceipt || native) ? 'receipt-dag-replay; checker-required-for-semantic-verdict' : 'unsupported',
-      runtimeObservations: this.#host.configuration.getRuntimeEvidenceContext ? 'captured-events-only; no-runtime-experiments' : 'unsupported',
+      runtimeObservations: this.#host.configuration.getRuntimeEvidenceContext || this.#host.getNativeRuntimeEvidenceContext ? 'captured-events-only; no-runtime-experiments' : 'unsupported',
       objectMemory: native || custom ? 'isolated-worker-points-to-root-projection' : 'unsupported',
       summarySlice: native || custom ? 'resumable-source-preparation-and-context-insensitive-bounded-scc' : 'unsupported',
       rangeValueCatalog: native ? 'isolated-canonical-value-identities' : 'unsupported',

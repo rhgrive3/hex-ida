@@ -14,8 +14,8 @@ const HIGH_HALF_EXTENSIONS = Object.freeze({
 
 export function liftX86ImplicitSignExtensionEffects(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
-  const low = LOW_HALF_EXTENSIONS[family];
-  const high = HIGH_HALF_EXTENSIONS[family];
+  const low = Object.hasOwn(LOW_HALF_EXTENSIONS, family) ? LOW_HALF_EXTENSIONS[family] : null;
+  const high = Object.hasOwn(HIGH_HALF_EXTENSIONS, family) ? HIGH_HALF_EXTENSIONS[family] : null;
   if (!low && !high) return null;
 
   const ctx = createX86EffectContext(instruction, context);

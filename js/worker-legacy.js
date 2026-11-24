@@ -1108,7 +1108,7 @@ async function swiftReflectionFunctionStarts(slice, lo, hi, requestId, epoch = c
          * first parse of a physical descriptor merges into the output. */
         for (const t of targets) out.add(t);
       }
-      if (cancelled(requestId, epoch)) return finish();
+      if (cancelled(requestId, epoch)) { markTruncated('cancelled'); return finish(); }
     }
   }
   function finish() {
@@ -2087,14 +2087,16 @@ if (r != null && r !== 31) {
 continue;
         }
 
-        if (mem.load) {
-const r = mem.reg;
-if (r !== 31) {
-  spanOf[r] = 0;
-  pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
-  pDir[r] = 0; pClamp[r] = 0;
-  pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
-  pAmtSize[r] = 0; pAmtSpan[r] = 0;
+        if (mem.load || mem.prefetch) {
+if (mem.load && !mem.vector && !mem.prefetch) {
+  const r = mem.reg;
+  if (r !== 31) {
+    spanOf[r] = 0;
+    pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
+    pDir[r] = 0; pClamp[r] = 0;
+    pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
+    pAmtSize[r] = 0; pAmtSpan[r] = 0;
+  }
 }
 continue;
         }
@@ -2381,7 +2383,8 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   const minLen = Math.max(2, Number(min) || STRINGS_MIN);
   const cap = Math.min(Number(limit) || STRINGS_LIMIT, STRINGS_LIMIT);
   const regionBytes = Number(region.size);
-  const total = Math.min(regionBytes, Math.max(0, Number(maxBytes == null ? regionBytes : maxBytes)));
+  const rawMaxBytes = maxBytes == null ? regionBytes : Number(maxBytes);
+  const total = Math.min(regionBytes, Math.max(0, Number.isFinite(rawMaxBytes) ? rawMaxBytes : regionBytes));
   const out = [];
   let pos = 0;                 // 次に読むファイル内の位置（region 先頭から）
   let runStart = -1;           // いま伸びている文字列の先頭
@@ -2608,6 +2611,7 @@ function vmToFile(addr) {
  * 「adrp + add で作ったアドレスに何があるか」を見せるために使う。
  */
 async function readAtAddress({ addr, len, text }) {
+  if (addr == null || typeof addr === 'boolean' || (typeof addr === 'string' && !addr.trim())) return { found: false };
   const at = BigInt(addr);
   const hit = vmToFile(at);
   if (!hit) return { found: false };
@@ -2787,7 +2791,9 @@ async function classifyExecutableCoverage({ gaps, regionIds, endian = 'little', 
             if (subOff + subLen <= blk.length) {
               classifySliceWords(blk, subOff, subLen, subVm);
             } else {
-              appendSpan(subVm, subVm + BigInt(subLen), 'unknown');
+              const readable = subOff < blk.length ? ((Math.min(subLen, blk.length - subOff)) & ~3) : 0;
+              if (readable > 0) classifySliceWords(blk, subOff, readable, subVm);
+              if (readable < subLen) appendSpan(subVm + BigInt(readable), subVm + BigInt(subLen), 'unknown');
             }
           }
         }
@@ -2833,7 +2839,8 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
   if (!region) throw new Error('Unknown region.');
   const results = [];
   const total = Number(region.size);
-  const startByte = Math.max(0, Math.min(total, Number(from || 0)));
+  const rawFrom = Number(from ?? 0);
+  const startByte = Math.max(0, Math.min(total, Number.isFinite(rawFrom) ? rawFrom : 0));
   let scanned = 0;
   let capped = false;
 

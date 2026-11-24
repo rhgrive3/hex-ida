@@ -34,7 +34,9 @@ function isCanonicalPresentation(result) {
 function relationAddress(value) {
   const candidate = value?.addr ?? value?.address ?? value?.functionAddress
     ?? value?.caller ?? value?.callee ?? value?.target ?? value;
-  try { return candidate == null ? null : BigInt(candidate); } catch { return null; }
+  if (candidate == null || typeof candidate === 'boolean') return null;
+  if (typeof candidate === 'string' && !candidate.trim()) return null;
+  try { return BigInt(candidate); } catch { return null; }
 }
 
 function labelFor(app, address) {
@@ -114,7 +116,7 @@ export function parseDebuggerArgument(value) {
   if (!raw || raw !== raw.trim() || !/^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
     return { ok: false, value: null, error: '10進整数か0x付き16進整数を入力してください。' };
   }
-  try { return { ok: true, value: BigInt(raw), error: null }; }
+  try { return { ok: true, value: /^-0[xX]/.test(raw) ? -BigInt(raw.slice(1)) : BigInt(raw), error: null }; }
   catch { return { ok: false, value: null, error: '整数として読み取れません。' }; }
 }
 
@@ -243,6 +245,13 @@ export function functionAnalysisUiRoute(app) {
 export async function showTypes(app, addr, ...args) {
   install(app);
   const route = functionAnalysisUiRoute(app);
+  if (route.route === 'unsupported') {
+    const sheet = new Sheet('引数・戻り値・変数');
+    sheet.body.append(noteBox(
+      'このアーキテクチャでは、検証できる型projectionがまだありません。' +
+      ' ARM64向けの旧推論を流用して型を作ることはしません。'));
+    return;
+  }
   const result = route.route === 'canonical' ? { presentationProjection: { canonical: true, analysisAuthority: 'AnalysisQueryAPI' } } : null;
   if (!isCanonicalPresentation(result)) return base.showTypes(app, addr, ...args);
 
@@ -302,6 +311,13 @@ export async function showTypes(app, addr, ...args) {
 export async function showStructRecover(app, addr, ...args) {
   install(app);
   const route = functionAnalysisUiRoute(app);
+  if (route.route === 'unsupported') {
+    const sheet = new Sheet('構造体を組み立てる');
+    sheet.body.append(noteBox(
+      'このアーキテクチャでは、構造体復元のtyped query projectionがまだ提供されていません。' +
+      ' ARM64向けの旧モデルへ変換して構造体を推測することはしません。'));
+    return;
+  }
   const result = route.route === 'canonical' ? { presentationProjection: { canonical: true, analysisAuthority: 'AnalysisQueryAPI' } } : null;
   if (!isCanonicalPresentation(result)) return base.showStructRecover(app, addr, ...args);
   const sheet = new Sheet('構造体を組み立てる');
@@ -386,9 +402,11 @@ export async function showCallGraphPanel(app, addr) {
     }));
   }
   const { renderGraph, graphLegend } = await import('./graphview.js');
+  if (closed || !sheet.root.isConnected) return;
   sheet.body.append(chips, graphLegend('call'));
 
   async function draw() {
+    if (closed || !sheet.root.isConnected) return;
     drawController?.abort('call-graph-depth-changed');
     const controller = new AbortController();
     drawController = controller;
@@ -458,8 +476,8 @@ export async function showLinkage(app, ...args) {
 }
 
 export async function showGlobals(app, ...args) {
-  const base = await loadToolsBase();
-  return base.showGlobals(app, ...args);
+  const mod = await import('./ui/tools/globals.js');
+  return mod.showGlobals(app, ...args);
 }
 
 export async function showScript(app, ...args) {

@@ -374,7 +374,7 @@ export function recoverStruct(model, reg) {
   const list = Array.from(members.values()).sort((a, b) => a.offset - b.offset);
   for (const m of list) {
     m.type = typeFromAccess(m.size, { signed: m.signed });
-    m.name = 'field_' + m.offset.toString(16).toUpperCase();
+    m.name = m.offset < 0 ? 'field_neg_' + Math.abs(m.offset).toString(16).toUpperCase() : 'field_' + m.offset.toString(16).toUpperCase();
   }
   const last = list[list.length - 1];
   return {
@@ -422,7 +422,7 @@ export class TypeStore {
     const s = this.get(structName);
     if (!s) return null;
     let m = s.members.find((x) => x.offset === offset);
-    if (!m) { m = { offset, size: 8, type: 'int64', name: 'field_' + offset.toString(16) }; s.members.push(m); }
+    if (!m) { m = { offset, size: 8, type: 'int64', name: offset < 0 ? 'field_neg_' + Math.abs(offset).toString(16) : 'field_' + offset.toString(16) }; s.members.push(m); }
     Object.assign(m, patch || {});
     if (patch && patch.type) m.size = sizeOfType(patch.type);
     s.members.sort((a, b) => a.offset - b.offset);
@@ -474,7 +474,9 @@ export class TypeStore {
 
   /** C のヘッダとして書き出す。 */
   toC(name) {
-    return structToC(this.get(name));
+    const s = this.get(name);
+    if (!s) return '';
+    return structToC(s);
   }
 }
 
@@ -490,7 +492,7 @@ export function structToC(s) {
     const offset = Number.isFinite(m.offset) ? m.offset : cursor;
     if (offset > cursor) lines.push('    uint8 pad_' + cursor.toString(16) + '[' + (offset - cursor) + '];');
     lines.push('    ' + m.type + ' ' + m.name + ';' + '   // +0x' + offset.toString(16).toUpperCase());
-    cursor = offset + (m.size || 8);
+    cursor = Math.max(cursor, offset + (m.size || 8));
   }
   const size = s.size != null ? s.size : cursor;
   lines.push('};   // 全体で ' + size + ' バイト');

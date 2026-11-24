@@ -50,6 +50,21 @@ function consumeCustomMods(bytes, offset, code, typeDefOrRefRowCounts = null) {
   return readCustomMods(bytes, offset, code, typeDefOrRefRowCounts).next;
 }
 
+function readCompressedSigned(bytes, offset, code) {
+  const parsed = readCompressed(bytes, offset, code);
+  const width = parsed.next - offset;
+  const u = parsed.value;
+  let value;
+  if (width === 1) {
+    value = (u & 1) ? ((u >> 1) - 64) : (u >> 1);
+  } else if (width === 2) {
+    value = (u & 1) ? ((u >> 1) - 8192) : (u >> 1);
+  } else {
+    value = (u & 1) ? ((u >>> 1) - 268435456) : (u >>> 1);
+  }
+  return { next: parsed.next, value };
+}
+
 function parseArrayShape(bytes, offset, code) {
   let parsed = readCompressed(bytes, offset, code);
   const rank = parsed.value;
@@ -70,7 +85,7 @@ function parseArrayShape(bytes, offset, code) {
   const lowerBounds = [];
   pos = parsed.next;
   for (let i = 0; i < lowerBoundCount; i++) {
-    const bound = readCompressed(bytes, pos, code);
+    const bound = readCompressedSigned(bytes, pos, code);
     lowerBounds.push(bound.value);
     pos = bound.next;
   }
@@ -455,7 +470,24 @@ export function substituteCilMethodGeneric(value, args) {
     if (!Number.isSafeInteger(index) || index < 0 || index >= args.length) {
       fail('cil-call-signature-methodspec-generic-index-invalid');
     }
-    return args[index];
+    const replacement = args[index];
+    const hasOuterMods = Array.isArray(value.customModifiers) && value.customModifiers.length > 0;
+    const hasOuterLocalMods = Array.isArray(value.productionCustomModifiers) && value.productionCustomModifiers.length > 0;
+    if (!hasOuterMods && !hasOuterLocalMods) return replacement;
+    return Object.freeze({
+      ...replacement,
+      ...(hasOuterMods ? {
+        customModifiers: Object.freeze([...value.customModifiers, ...(replacement?.customModifiers || [])]),
+      } : {}),
+      ...(hasOuterLocalMods ? {
+        productionCustomModifiers: Object.freeze([...value.productionCustomModifiers, ...(replacement?.productionCustomModifiers || [])]),
+      } : {}),
+    });
+  }
+  // A nested generic fnPtr declares its own method-generic parameter scope,
+  // shadowing outer MVAR indices (!!N).
+  if (typeof value.genericParameterCount === 'number' && value.genericParameterCount > 0 && value.callingConvention != null) {
+    return value;
   }
   let changed = false;
   const out = {};

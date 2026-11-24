@@ -42,7 +42,7 @@ export class FunctionMatchIndex {
       this.complete = false;
       return [];
     }
-    const fp = fingerprinted ? input : fingerprintFunctionFast(input);
+    const fp = fingerprinted ? input : (this.mode === 'full' ? fingerprintFunction(input) : fingerprintFunctionFast(input));
     const rawMaxCandidates = Number(options.maxCandidates ?? 128);
     const maxCandidates = Number.isFinite(rawMaxCandidates) && rawMaxCandidates > 0 ? Math.max(1, Math.floor(rawMaxCandidates)) : 128;
     const rawMaxBucketScan = Number(options.maxBucketScan ?? 1024);
@@ -181,9 +181,15 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     let left=byBefore.get(c.i); if (!left) byBefore.set(c.i,left=[]); left.push(c);
     let right=byAfter.get(c.j); if (!right) byAfter.set(c.j,right=[]); right.push(c);
   }
+  for (const list of byAfter.values()) {
+    list.sort((a, b) => b.baseConfidence - a.baseConfidence || a.i - b.i);
+  }
+  let refineChecks = 0;
   for (const [i, choices] of byBefore) {
+    if ((++refineChecks & 63) === 0 && !budget.checkCandidateWall()) break;
     choices.sort((a,b)=>b.baseConfidence-a.baseConfidence || a.j-b.j); const top=choices[0], second=choices[1];
-    const reverse=(byAfter.get(top.j)||[]).slice().sort((a,b)=>b.baseConfidence-a.baseConfidence || a.i-b.i); const reverseSecond=reverse.find((x)=>x.i!==i);
+    const reverse = byAfter.get(top.j) || [];
+    const reverseSecond = reverse[0]?.i !== i ? reverse[0] : reverse[1];
     const uniqueLeft=!second || top.baseConfidence-second.baseConfidence>0.06;
     const uniqueRight=!reverseSecond || top.baseConfidence-reverseSecond.baseConfidence>0.06;
     if (top.baseConfidence>=0.9 && uniqueLeft && uniqueRight && before[top.i].address!=null && after[top.j].address!=null) {
@@ -197,16 +203,19 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   }
   const iterations = Math.max(0, Math.min(3, options.neighborhoodIterations ?? 2));
   for (let iter = 0; iter < iterations; iter++) {
+    if (budget.candidateGraphIncomplete || !budget.checkCandidateWall()) break;
     let changed = false;
     for (const c of all) {
+      if ((++refineChecks & 255) === 0 && !budget.checkCandidateWall()) break;
       if (c.baseConfidence < 0.55) continue;
       const bonus = neighborBonus(before[c.i], after[c.j], anchors);
       const next = Math.min(0.97, c.baseConfidence + bonus);
       if (next > c.confidence) { c.confidence = next; if (bonus > 0 && !c.reasons.includes('call-neighborhood')) c.reasons.push('call-neighborhood'); changed = true; }
     }
-    if (!changed || iter + 1 >= iterations) break;
+    if (!changed || iter + 1 >= iterations || budget.candidateGraphIncomplete) break;
     let anchorsAdded = false;
     for (const [i, choices] of byBefore) {
+      if ((++refineChecks & 63) === 0 && !budget.checkCandidateWall()) break;
       if (before[i].address == null) continue;
       const fromKey = String(before[i].address);
       if (anchors.has(fromKey)) continue;
@@ -400,12 +409,13 @@ export function recognitionMetrics(expectedPairs, result) {
 }
 
 export function calibrationReport(expectedPairs, result, options = {}) {
-  const bins = Math.max(2, Math.min(50, Number(options.bins) || 10));
+  const rawBins = Math.floor(Number(options.bins));
+  const bins = Number.isFinite(rawBins) && rawBins > 0 ? Math.max(2, Math.min(50, rawBins)) : 10;
   const expected = new Set((expectedPairs || []).map(([a,b]) => `${a}>${b}`));
   const buckets = Array.from({length:bins}, (_x,index) => ({ lower:index/bins, upper:(index+1)/bins, samples:0, correct:0, meanScore:0 }));
   for (const match of result.matches || []) {
     const score = Math.max(0, Math.min(1, Number(match.confidence) || 0));
-    const index = Math.min(bins-1, Math.floor(score*bins)); const bucket=buckets[index];
+    const index = Math.max(0, Math.min(bins - 1, Math.floor(score * bins))); const bucket=buckets[index];
     bucket.samples++; bucket.meanScore += score;
     if (expected.has(`${match.before.address}>${match.after.address}`)) bucket.correct++;
   }

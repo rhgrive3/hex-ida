@@ -168,7 +168,7 @@ function validateControlProjection(ir, cfg) {
       continue;
     }
     if (node.kind === 'switch') {
-      const expectedTargets = node.targets.slice().sort();
+      const expectedTargets = [...new Set(node.targets)].sort();
       const actualTargets = [...new Set(successors.map((edge) => edge.to))].sort();
       if (stableStringify(expectedTargets) !== stableStringify(actualTargets)
         || successors.some((edge) => !['switch-case', 'switch-default'].includes(edge.kind))) {
@@ -286,6 +286,8 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     && isCanonicalSemanticIrProducerArtifact(irInput)
     && Object.isFrozen(irInput)
     && cfgInput != null && typeof cfgInput === 'object' && Object.isFrozen(cfgInput)
+    && Array.isArray(cfgInput.blocks) && Object.isFrozen(cfgInput.blocks)
+    && cfgInput.blocks.every((block) => block != null && typeof block === 'object' && Object.isFrozen(block))
     && options.budget == null
     && options.irOptions == null
     && options.cfgOptions == null
@@ -303,6 +305,7 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
   if (!blockSetEqual(ir, cfg)) fail('semantic-ssa-block-set-mismatch');
   validateControlProjection(ir, cfg);
   const entry = cfg.blocks.find((block) => block.id === cfg.entryBlockId);
+  if (!ssaInput || typeof ssaInput !== 'object' || Array.isArray(ssaInput)) fail('semantic-ssa-invalid-contract');
   const ssa = isCanonicalSemanticSsaProducerArtifact(ssaInput)
     && options.budget == null
     && options.cfgOptions == null

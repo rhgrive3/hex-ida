@@ -1324,7 +1324,9 @@ export function showPatches(app, targetAddr = null) {
         const a = input('0x100004000', targetAddr != null ? addrHex(targetAddr) : undefined);
         sh.body.append(para(pick('書き換えたい命令のアドレスを入れてください。', 'Enter the address of the instruction to patch.')), field(a, pick('進む', 'Next'), async () => {
           let addr;
-          try { addr = BigInt(a.value.trim()); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
+          const raw = a.value.trim();
+          if (!raw) { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
+          try { addr = BigInt(raw); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
           sh.close();
           const insn = await instructionAt(app, addr);
           showPatchEditor(app, addr, insn, { onChange: render });
@@ -1699,7 +1701,9 @@ export function showDebugger(app, addr) {
       'Execution pauses here when using "Run to end".')));
   sheet.body.append(field(bpInput, pick('置く', 'Add'), () => {
     let a;
-    try { a = BigInt(bpInput.value.trim()); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
+    const raw = bpInput.value.trim();
+    if (!raw) { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
+    try { a = BigInt(raw); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
     emu.breakpoints.add(a.toString());
     bpInput.value = '';
     renderBreakpoints();
@@ -1739,6 +1743,7 @@ export function showDebugger(app, addr) {
         return;
       }
     } else {
+      if (!v) { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
       try { a = BigInt(v); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
     }
     try {

@@ -311,7 +311,7 @@ function renderChapter(app, router, chapter) {
       const next = loadProgress();
       if (next[chapter.id]) delete next[chapter.id]; else next[chapter.id] = true;
       saveProgress(next);
-      router.navigate('/learn?chapter=' + chapter.id + '&v=' + Date.now(), { replace: true });
+      router.navigate('/learn?chapter=' + encodeURIComponent(chapter.id) + '&v=' + Date.now(), { replace: true });
     },
   }));
   s.body.append(navTop);
@@ -325,13 +325,13 @@ function renderChapter(app, router, chapter) {
 
   const nav = h('div', 'ui-learning-nav');
   if (index > 0) nav.append(uiButton(pick('← 前の章', '← Previous'), {
-    cls: 'ui-secondary-action', onClick: () => router.navigate('/learn?chapter=' + CHAPTERS[index - 1].id),
+    cls: 'ui-secondary-action', onClick: () => router.navigate('/learn?chapter=' + encodeURIComponent(CHAPTERS[index - 1].id)),
   }));
   if (index < CHAPTERS.length - 1) nav.append(uiButton(pick('次の章 →', 'Next →'), {
     cls: 'ui-primary-action',
     onClick: () => {
       const next = loadProgress(); next[chapter.id] = true; saveProgress(next);
-      router.navigate('/learn?chapter=' + CHAPTERS[index + 1].id);
+      router.navigate('/learn?chapter=' + encodeURIComponent(CHAPTERS[index + 1].id));
     },
   }));
   s.body.append(nav);
@@ -339,7 +339,7 @@ function renderChapter(app, router, chapter) {
 }
 
 function renderGlossary(router, selectedTerm) {
-  const entry = selectedTerm ? GLOSSARY[selectedTerm] : null;
+  const entry = selectedTerm && Object.hasOwn(GLOSSARY, selectedTerm) ? GLOSSARY[selectedTerm] : null;
   const s = screen(pick('用語集', 'Glossary'), {
     id: 'learn', subtitle: pick('解析で出てくる言葉を検索できます。', 'Search terms used throughout the analysis UI.'),
   });
@@ -355,7 +355,7 @@ function renderGlossary(router, selectedTerm) {
       term.body.append(sectionTitle(pick('関連する用語', 'Related terms')));
       const related = h('div', 'ui-setting-chips');
       for (const id of entry.related) {
-        if (!GLOSSARY[id]) continue;
+        if (!Object.hasOwn(GLOSSARY, id)) continue;
         related.append(uiButton(GLOSSARY[id].term, { cls: 'ui-secondary-action', onClick: () => router.navigate('/learn?term=' + encodeURIComponent(id)) }));
       }
       term.body.append(related);
@@ -377,7 +377,8 @@ function renderGlossary(router, selectedTerm) {
       return;
     }
     for (const id of ids) {
-      const item = GLOSSARY[id];
+      const item = Object.hasOwn(GLOSSARY, id) ? GLOSSARY[id] : null;
+      if (!item) continue;
       results.append(listRow({ title: item.term, subtitle: item.short, onClick: () => router.navigate('/learn?term=' + encodeURIComponent(id)) }));
     }
   };
@@ -416,7 +417,7 @@ function renderLearn(app, router, route) {
     title: pick(`第${index + 1}章`, `Chapter ${index + 1}`) + '　' + chapter.title,
     subtitle: chapter.subtitle,
     meta: progress[chapter.id] ? '✓' : '',
-    onClick: () => router.navigate('/learn?chapter=' + chapter.id),
+    onClick: () => router.navigate('/learn?chapter=' + encodeURIComponent(chapter.id)),
   })));
   s.body.append(rows);
   return { root: s.root };

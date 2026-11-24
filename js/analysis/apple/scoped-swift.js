@@ -114,8 +114,11 @@ export function createSwiftScopedDispatchResolver({ getContext, resolveFunctionI
       if (context.isCurrent() !== true) contractFail('swift-scoped-metadata-changed');
       const candidates = [];
       if (resolved.complete !== true) requirements.push('swift-owner-metadata-incomplete');
-      const records = resolved.candidates?.length ? resolved.candidates : resolved.resolved ? [resolved.resolved] : [];
-      if (!Array.isArray(records) || records.length > Math.min(query.maxTargets, 128)) contractFail('swift-scoped-result-budget');
+      const rawRecords = resolved.candidates?.length ? resolved.candidates : resolved.resolved ? [resolved.resolved] : [];
+      if (!Array.isArray(rawRecords)) contractFail('swift-scoped-result-budget');
+      const targetCap = Math.min(query.maxTargets, 128);
+      if (rawRecords.length > targetCap) requirements.push('swift-scoped-result-budget-truncated');
+      const records = rawRecords.slice(0, targetCap);
       for (const record of records) {
         work.checkpoint(); work.charge('workUnits');
         const rawAddress = call.kind === 'vtable' ? record.impl : record.target;

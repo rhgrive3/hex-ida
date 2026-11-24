@@ -290,6 +290,11 @@ export class Sheet {
    */
   close() {
     if (!this.root.isConnected) return;
+    if (parkedSheet && parkedSheet !== this) {
+      const previous = parkedSheet;
+      parkedSheet = null;
+      previous.destroyChain();
+    }
     this.park();
     parkedSheet = this;
     clearTimeout(parkTimer);
@@ -570,7 +575,7 @@ export function closeMenu() {
 
 /* ── Dialog ─────────────────────────────────────────────────── */
 
-export function alertDialog(title, message, { confirmLabel = t('btn.ok'), onConfirm } = {}) {
+export function alertDialog(title, message, { confirmLabel = t('btn.ok'), cancelLabel = t('btn.cancel'), onConfirm, onCancel } = {}) {
   closeMenu();
   const returnFocus = document.activeElement;
   const backdrop = el('div', 'backdrop');
@@ -579,20 +584,34 @@ export function alertDialog(title, message, { confirmLabel = t('btn.ok'), onConf
   d.setAttribute('aria-modal', 'true');
   d.append(el('h3', null, title), el('p', null, message));
   const actions = el('div', 'actions');
-  const key = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(); } };
-  const done = () => {
+  let closed = false;
+  const cleanup = () => {
+    if (closed) return false;
+    closed = true;
     document.removeEventListener('keydown', key, true);
     backdrop.remove(); d.remove();
     if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === 'function') {
       try { returnFocus.focus({ preventScroll: true }); } catch { /* best effort */ }
     }
+    return true;
+  };
+  const cancel = () => {
+    if (!cleanup()) return;
+    if (onCancel) onCancel();
+  };
+  const confirm = () => {
+    if (!cleanup()) return;
     if (onConfirm) onConfirm();
   };
-  const ok = button(confirmLabel, null, done);
+  const key = (e) => { if (e.key === 'Escape') { e.preventDefault(); cancel(); } };
+  if (onConfirm) {
+    actions.append(button(cancelLabel, null, cancel));
+  }
+  const ok = button(confirmLabel, null, confirm);
   actions.append(ok);
   d.append(actions);
   overlays().append(backdrop, d);
-  backdrop.addEventListener('click', done);
+  backdrop.addEventListener('click', cancel);
   document.addEventListener('keydown', key, true);
   requestAnimationFrame(() => ok.focus({ preventScroll: true }));
   return d;
