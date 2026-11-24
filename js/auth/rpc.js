@@ -83,7 +83,7 @@ export function createAuthRpcClient({ port, timeoutMs = 15000 } = {}) {
         const value = safeIdentity(await call('authorize', { policy }));
         if (closed) throw new Error('HEX auth channel closed.');
         // Parent identity broadcasts precede replies; never revive an older Admin.
-        const latest = generation === refreshGeneration ? update(value) : identity;
+        const latest = generation === refreshGeneration ? (refreshGeneration++, update(value)) : identity;
         if (!latest.capabilities.canUseDevAgent || (policy === 'yolo' && !latest.capabilities.canUseDevYolo)) throw new Error('Dev authorization denied.');
         return latest;
       } catch (error) { demote(); throw error; }
@@ -91,7 +91,7 @@ export function createAuthRpcClient({ port, timeoutMs = 15000 } = {}) {
     source: (kind) => kind === 'child' ? call('child') : Promise.reject(new Error('Parent source is not a child capability.')),
     aiCapability: () => call('ai-capability'),
     login: () => call('login'),
-    async logout() { try { await call('logout'); } finally { demote(); } },
+    async logout() { refreshGeneration++; try { await call('logout'); } finally { demote(); } },
     close() { closed = true; port.removeEventListener('message', listener); for (const task of pending.values()) { clearTimeout(task.timer); task.reject(new Error('HEX auth channel closed.')); } pending.clear(); demote(); listeners.clear(); },
   });
 }

@@ -399,9 +399,11 @@ function parseComparisonContext(lineText, canonicalGpNames = false) {
 function conditionExprFromContext(cond, cmpCtx) {
   if (cond === 'al') return '1';
   if (cond === 'nv') return '0';
-  if (!cmpCtx) return `(0 /* cond:${cond} */)`;
+  if (!cmpCtx) return null;
   if (cmpCtx.kind === 'fccmp') {
+    if (!cmpCtx.guardExpr) return null;
     const fcmpExpr = conditionExprFromContext(cond, cmpCtx.fcmp);
+    if (!fcmpExpr) return null;
     const fallback = nzcvImmediateMatches(cmpCtx.nzcv, cond) ? '1' : '0';
     return `(${cmpCtx.guardExpr} ? ${fcmpExpr} : ${fallback})`;
   }
@@ -422,7 +424,7 @@ function conditionExprFromContext(cond, cmpCtx) {
       case 'hs': case 'cs': case 'pl': return `(!(${lhs} < ${rhs}))`;
       case 'vs': return `((${lhs} != ${lhs}) || (${rhs} != ${rhs}))`;
       case 'vc': return `((${lhs} == ${lhs}) && (${rhs} == ${rhs}))`;
-      default: return `(0 /* cond:${cond} */)`;
+      default: return null;
     }
   }
   const uType = bits === 32 ? 'uint32_t' : 'uint64_t';
@@ -433,7 +435,7 @@ function conditionExprFromContext(cond, cmpCtx) {
     if (cond === 'ne') return `(${masked} != 0)`;
     if (cond === 'mi') return `((${sType})${masked} < 0)`;
     if (cond === 'pl') return `((${sType})${masked} >= 0)`;
-    return `(0 /* cond:${cond} */)`;
+    return null;
   }
   if (kind === 'cmn') {
     const sum = `((${uType})(${lhs}) + (${uType})(${rhs}))`;
@@ -441,7 +443,7 @@ function conditionExprFromContext(cond, cmpCtx) {
     if (cond === 'ne') return `(${sum} != 0)`;
     if (cond === 'mi') return `((${sType})${sum} < 0)`;
     if (cond === 'pl') return `((${sType})${sum} >= 0)`;
-    return `(0 /* cond:${cond} */)`;
+    return null;
   }
   switch (cond) {
     case 'eq': return `((${uType})(${lhs}) == (${uType})(${rhs}))`;
@@ -456,7 +458,7 @@ function conditionExprFromContext(cond, cmpCtx) {
     case 'hs': case 'cs': return `((${uType})(${lhs}) >= (${uType})(${rhs}))`;
     case 'mi': return `((${sType})((${uType})(${lhs}) - (${uType})(${rhs})) < 0)`;
     case 'pl': return `((${sType})((${uType})(${lhs}) - (${uType})(${rhs})) >= 0)`;
-    default: return `(0 /* cond:${cond} */)`;
+    default: return null;
   }
 }
 
@@ -632,6 +634,7 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
     if (dst && !dst.isZero && rn && rm && dst.bits === rn.bits && dst.bits === rm.bits && cond !== null) {
       const uType = dst.bits === 32 ? 'uint32_t' : 'uint64_t';
       const condExpr = conditionExprFromContext(cond, cmpCtx);
+      if (!condExpr) return null;
       const tVal = `(${uType})(${rn.name})`;
       let fVal = `(${uType})(${rm.name})`;
       if (mnemonic === 'csinc') fVal = `((${uType})(${rm.name}) + 1${dst.bits === 32 ? 'U' : 'ULL'})`;
@@ -648,6 +651,7 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
     const cond = canonicalConditionToken(operands[1]);
     if (dst && !dst.isZero && cond !== null && cond !== 'al' && cond !== 'nv') {
       const condExpr = conditionExprFromContext(cond, cmpCtx);
+      if (!condExpr) return null;
       const tVal = mnemonic === 'cset'
         ? (dst.bits === 32 ? '1U' : '1ULL')
         : (dst.bits === 32 ? '0xffffffffU' : '0xffffffffffffffffULL');
@@ -664,7 +668,9 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
     const cond = canonicalConditionToken(operands[3]);
     if (cond !== null && cond !== 'al' && cond !== 'nv') {
       if (standardC) {
-        return `${operands[0]} = ${conditionExprFromContext(cond, cmpCtx)} ? ${operands[1]} : ${operands[2]};`;
+        const condExpr = conditionExprFromContext(cond, cmpCtx);
+        if (!condExpr) return null;
+        return `${operands[0]} = ${condExpr} ? ${operands[1]} : ${operands[2]};`;
       }
       return `${operands[0]} = __a64_cond_${cond}() ? ${operands[1]} : ${operands[2]};`;
     }
@@ -921,9 +927,13 @@ export function lowerArm64RawAssembly(result, options = {}) {
           && nzcv != null && nzcv >= 0 && nzcv <= 15
           && /^[sd]\d+$/i.test(ops[0]) && /^[sd]\d+$/i.test(ops[1])) {
         const guardExpr = conditionExprFromContext(guardCond, lastCmp);
-        const fcmp = { kind: 'fcmp', lhs: ops[0], rhs: ops[1], bits: ops[0][0].toLowerCase() === 's' ? 32 : 64 };
-        const regs = [...new Set([...cmpCtxRegs(lastCmp), ...cmpCtxRegs(fcmp)])];
-        lastCmp = { kind: 'fccmp', guardExpr, fcmp, nzcv, regs };
+        if (guardExpr) {
+          const fcmp = { kind: 'fcmp', lhs: ops[0], rhs: ops[1], bits: ops[0][0].toLowerCase() === 's' ? 32 : 64 };
+          const regs = [...new Set([...cmpCtxRegs(lastCmp), ...cmpCtxRegs(fcmp)])];
+          lastCmp = { kind: 'fccmp', guardExpr, fcmp, nzcv, regs };
+        } else {
+          lastCmp = null;
+        }
       } else {
         lastCmp = null;
       }

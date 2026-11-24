@@ -110,36 +110,65 @@ export async function verifyConditionalEdgeFeasibility({
 
   // 2. Normalize preconditions P
   let pExpr = null;
+  const mergePreconditionTranslation = (pTrans) => {
+    if (pTrans.assumptions?.length) {
+      translationRes.assumptions = [...(translationRes.assumptions || []), ...pTrans.assumptions];
+    }
+    if (pTrans.unsupportedEntities?.length) {
+      translationRes.unsupportedEntities = [
+        ...(translationRes.unsupportedEntities || []),
+        ...pTrans.unsupportedEntities,
+      ];
+    }
+    if (pTrans.semanticUnknowns) {
+      translationRes.semanticUnknowns = (translationRes.semanticUnknowns || 0) + pTrans.semanticUnknowns;
+    }
+    if (pTrans.completeness) {
+      translationRes.completeness = createCompleteness(Object.fromEntries(
+        Object.keys(translationRes.completeness || {}).map((key) => [
+          key,
+          pTrans.completeness[key] === COMPLETENESS_STATUS.COMPLETE
+            ? translationRes.completeness?.[key] || COMPLETENESS_STATUS.COMPLETE
+            : pTrans.completeness[key],
+        ])
+      ));
+    }
+  };
+  const failPreconditionTranslation = () => Object.freeze({
+    verdict: VERDICT.UNKNOWN,
+    claimKind,
+    reasonCode: 'precondition-translation-failed',
+    proofStatement: 'Preconditions could not be translated into symbolic expression',
+    solverStatus: SOLVER_STATUS.UNSUPPORTED,
+    preconditionStatus: 'unknown',
+    assumptions: Object.freeze(translationRes.assumptions || []),
+    completeness: translationRes.completeness || createCompleteness({ translation: COMPLETENESS_STATUS.UNSUPPORTED }),
+    queryHash: null,
+    query: null,
+    solverResult: null,
+    evidence: null,
+  });
   if (preconditions) {
     if (Array.isArray(preconditions)) {
-      pExpr = preconditions;
+      const normalized = [];
+      for (const item of preconditions) {
+        if (item && item.kind && item.sort) {
+          normalized.push(item);
+        } else {
+          const pTrans = translateSemanticIR(item, { ir, fromBlock, ...translationOptions });
+          mergePreconditionTranslation(pTrans);
+          if (!pTrans.expression) return failPreconditionTranslation();
+          normalized.push(pTrans.expression);
+        }
+      }
+      pExpr = normalized;
     } else if (preconditions.kind && preconditions.sort) {
       pExpr = preconditions;
     } else {
       const pTrans = translateSemanticIR(preconditions, { ir, fromBlock, ...translationOptions });
+      mergePreconditionTranslation(pTrans);
+      if (!pTrans.expression) return failPreconditionTranslation();
       pExpr = pTrans.expression;
-      if (pTrans.assumptions?.length) {
-        translationRes.assumptions = [...(translationRes.assumptions || []), ...pTrans.assumptions];
-      }
-      if (pTrans.unsupportedEntities?.length) {
-        translationRes.unsupportedEntities = [
-          ...(translationRes.unsupportedEntities || []),
-          ...pTrans.unsupportedEntities,
-        ];
-      }
-      if (pTrans.semanticUnknowns) {
-        translationRes.semanticUnknowns = (translationRes.semanticUnknowns || 0) + pTrans.semanticUnknowns;
-      }
-      if (pTrans.completeness) {
-        translationRes.completeness = createCompleteness(Object.fromEntries(
-          Object.keys(translationRes.completeness || {}).map((key) => [
-            key,
-            pTrans.completeness[key] === COMPLETENESS_STATUS.COMPLETE
-              ? translationRes.completeness?.[key] || COMPLETENESS_STATUS.COMPLETE
-              : pTrans.completeness[key],
-          ])
-        ));
-      }
     }
   }
 

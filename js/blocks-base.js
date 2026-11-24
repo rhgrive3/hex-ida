@@ -863,6 +863,46 @@ export function analyzeDataFlow(insns, opts) {
     }
     return acc;
   }
+  function invalidateStackFrame(baseKey) {
+    stackFrameLost.add(baseKey);
+    stackFrame.delete(baseKey);
+    const slotPrefix = baseKey + '+';
+    const bytePrefix = baseKey + '#b#';
+    for (const k of Array.from(stack.keys())) {
+      if (k.startsWith(slotPrefix)) stack.delete(k);
+    }
+    for (const k of Array.from(stackBytes.keys())) {
+      if (k.startsWith(bytePrefix)) stackBytes.delete(k);
+    }
+  }
+  function addSubImmOffset(op) {
+    if (!op || op.k !== 'imm' || op.value == null) return null;
+    const shift = op.shift;
+    if (!shift) return op.value;
+    if (shift.op === 'lsl' && (shift.amount === 0 || shift.amount === 12)) {
+      return op.value << BigInt(shift.amount);
+    }
+    return null;
+  }
+  function trackSpWrite(insn, base) {
+    const dstOp = insn.ops[0];
+    const dstBits = (dstOp && dstOp.k === 'reg' && Number.isFinite(dstOp.bits)) ? dstOp.bits : 64;
+    if ((base === 'add' || base === 'sub') && insn.ops.length >= 3 &&
+        regKey(dstOp) === 'sp' && regKey(insn.ops[1]) === 'sp' && dstBits === 64) {
+      const offset = addSubImmOffset(insn.ops[2]);
+      if (offset != null) {
+        if (!stackFrameLost.has('sp')) {
+          const delta = base === 'sub' ? -offset : offset;
+          stackFrame.set('sp', (stackFrame.get('sp') || 0n) + delta);
+        }
+        return;
+      }
+    } else if (base === 'mov' && insn.ops.length >= 2 &&
+        regKey(dstOp) === 'sp' && regKey(insn.ops[1]) === 'sp' && dstBits === 64) {
+      return;
+    }
+    invalidateStackFrame('sp');
+  }
 
   for (let i = 0; i < insns.length; i++) {
     const insn = insns[i];
@@ -886,8 +926,15 @@ export function analyzeDataFlow(insns, opts) {
 
     if (insn.data || insn.unknownMnemonic) {
       // 読めない命令のあとは、何が起きたか分からない。手前の推測は捨てる。
-      for (const w of insn.writes) regs.delete(w);
+      for (const w of insn.writes) {
+        regs.delete(w);
+        if (w === 'sp') invalidateStackFrame('sp');
+      }
       continue;
+    }
+
+    if (!insn.memory && !insn.isCall && insn.writes.includes('sp')) {
+      trackSpWrite(insn, base);
     }
 
     /* ── adrp / adr: アドレスの土台 ── */
@@ -1110,17 +1157,10 @@ export function analyzeDataFlow(insns, opts) {
         if (wb != null && !stackFrameLost.has(m.base)) {
           stackFrame.set(m.base, (stackFrame.get(m.base) || 0n) + wb);
         } else {
-          stackFrameLost.add(m.base);
-          stackFrame.delete(m.base);
-          const slotPrefix = m.base + '+';
-          const bytePrefix = m.base + '#b#';
-          for (const k of Array.from(stack.keys())) {
-            if (k.startsWith(slotPrefix)) stack.delete(k);
-          }
-          for (const k of Array.from(stackBytes.keys())) {
-            if (k.startsWith(bytePrefix)) stackBytes.delete(k);
-          }
+          invalidateStackFrame(m.base);
         }
+      } else if (insn.writes.includes('sp')) {
+        invalidateStackFrame('sp');
       }
       markWritten(insn, written);
       continue;

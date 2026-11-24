@@ -19,6 +19,24 @@ function isReceiverRevalidationRealm() {
   }
 }
 
+function lockProtectedWorkerLogicalPath() {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, '__HEX_PROTECTED_WORKER_LOGICAL_PATH__');
+  if (descriptor && !descriptor.configurable) return;
+  try {
+    Object.defineProperty(globalThis, '__HEX_PROTECTED_WORKER_LOGICAL_PATH__', {
+      value: descriptor ? descriptor.value : undefined,
+      writable: false,
+      enumerable: Boolean(descriptor?.enumerable),
+      configurable: false,
+    });
+  } catch {
+    // globalThis may already be non-extensible or frozen.
+  }
+}
+
+const RECEIVER_REVALIDATION_REALM = isReceiverRevalidationRealm();
+lockProtectedWorkerLogicalPath();
+
 /**
  * Attach Capstone's union-domain discriminator after receiver-side byte
  * revalidation. This is evidence normalization only: it never mints runtime
@@ -40,10 +58,10 @@ export function withReceiverX86FlagDomainEvidence(row) {
  * callers may supply arbitrary parser-like objects to it in tests/tools.
  */
 export function markReceiverRevalidatedX86Row(row) {
-  if (!isReceiverRevalidationRealm()) {
+  if (!RECEIVER_REVALIDATION_REALM || !isReceiverRevalidationRealm()) {
     throw new TypeError('x86-decoder-runtime-provenance-mint-outside-revalidation-worker');
   }
-  if (row == null || (typeof row !== 'object' && typeof row !== 'function')) {
+  if (row == null || typeof row !== 'object' || Array.isArray(row)) {
     throw new TypeError('x86-decoder-runtime-provenance-row-required');
   }
   const receiverRow = withReceiverX86FlagDomainEvidence(row);

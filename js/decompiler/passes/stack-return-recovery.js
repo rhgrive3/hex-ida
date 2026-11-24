@@ -468,13 +468,32 @@ function stackScopesCompatible(sa, sb) {
   return sa === sb;
 }
 
+function isProvenStackAliasFree(locOrInst, loc = null) {
+  return loc?.stackAliasFree === true
+    || loc?.aliasProof?.noStackAlias === true
+    || locOrInst?.stackAliasFree === true
+    || locOrInst?.extra?.stackAliasFree === true
+    || locOrInst?.aliasProof?.noStackAlias === true;
+}
+
+function callHasProvenNoMemoryWrite(inst) {
+  if (!inst || inst.memoryBarrier === true) return false;
+  return inst.extra?.memoryWrite?.scope === 'none'
+    || inst.extra?.memoryEffects?.writes === 'none'
+    || inst.memoryEffectSummary?.mayWrite === false;
+}
+
 function stackLocationsOverlap(a, b, aSize = null, bSize = null) {
   const keyA = typeof a === 'string' ? a : a?.key;
   const keyB = typeof b === 'string' ? b : b?.key;
   if (keyA && keyB && keyA === keyB) return true;
   const stackA = isStackLocationLike(a);
   const stackB = isStackLocationLike(b);
-  if (!stackA || !stackB) return false;
+  if (!stackA || !stackB) {
+    if (stackA && !stackB && isProvenStackAliasFree(b)) return false;
+    if (!stackA && stackB && isProvenStackAliasFree(a)) return false;
+    return true;
+  }
   const ra = parseStackByteRange(a, aSize);
   const rb = parseStackByteRange(b, bSize);
   if (!ra || !rb) return true;
@@ -496,10 +515,14 @@ function committedStoreBarrier(inst, key, targetLoc = null) {
   const target = targetLoc || key;
   const targetSize = targetLoc?.size ?? null;
   if (inst?.op === 'call') {
-    return (inst.memKills || []).some((loc) => stackLocationsOverlap(loc, target, loc?.size ?? null, targetSize));
+    if (callHasProvenNoMemoryWrite(inst)) return false;
+    if (!Array.isArray(inst.memKills) || inst.memKills.length === 0) return true;
+    return inst.memKills.some((loc) => !loc || loc.kind === 'unknown' || !loc.key
+      || stackLocationsOverlap(loc, target, loc?.size ?? null, targetSize));
   }
   if (inst?.op !== 'store') return false;
   if (!inst.loc?.key || inst.loc?.kind === 'unknown') return true;
+  if (isStackLocationLike(target) && !isStackLocationLike(inst.loc) && isProvenStackAliasFree(inst, inst.loc)) return false;
   return stackLocationsOverlap(inst.loc, target, storeAccessBytes(inst), targetSize);
 }
 
@@ -654,14 +677,15 @@ function unsafeBarrier(inst, key, expectedBytes = null, targetLoc = null) {
   if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
   const target = targetLoc || key;
   if (inst?.op === 'call') {
-    // buildMemorySSA has already proven which locations this call can kill.
-    // A private caller stack slot is absent from memKills and is safe to carry
-    // through the call; an escaped stack address is present and remains a barrier.
-    return (inst.memKills || []).some((loc) => stackLocationsOverlap(loc, target, loc?.size ?? null, expectedBytes));
+    if (callHasProvenNoMemoryWrite(inst)) return false;
+    if (!Array.isArray(inst.memKills) || inst.memKills.length === 0) return true;
+    return inst.memKills.some((loc) => !loc || loc.kind === 'unknown' || !loc.key
+      || stackLocationsOverlap(loc, target, loc?.size ?? null, expectedBytes));
   }
   if (inst?.op !== 'store') return false;
   if (!inst.loc?.key || inst.loc?.kind === 'unknown') return true;
-  if (inst.loc.key === key) return false;
+  if (isStackLocationLike(inst.loc) && inst.loc.key === key) return false;
+  if (isStackLocationLike(target) && !isStackLocationLike(inst.loc) && isProvenStackAliasFree(inst, inst.loc)) return false;
   return stackLocationsOverlap(inst.loc, target, storeAccessBytes(inst), expectedBytes);
 }
 

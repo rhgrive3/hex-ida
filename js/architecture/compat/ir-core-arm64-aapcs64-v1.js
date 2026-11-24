@@ -1331,7 +1331,7 @@ function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
     const baseReg = a.baseReg || a.base?.reg || 'stack';
     const frameEpoch = a.base?.id ?? -1;
     const proof = a.base ? stackPointerProvenanceOf(a.base) : null;
-    if (proof && proof.must === true && proof.offset != null) {
+    if (proof && proof.must === true && proof.root === 'sp' && proof.offset != null) {
       const cdisp = BigInt(proof.offset) + BigInt(a.disp);
       return { key:`stack:sp:c${cdisp.toString()}:s${size}`, kind:MK.STACK, baseReg:'sp', frameEpoch:0, disp:cdisp, size, base:a.base };
     }
@@ -1413,13 +1413,13 @@ function storeOverlapsRange(storeLoc, otherLoc) {
     if (pair.has(MK.FIELD) && pair.has(MK.STACK)) {
       const field = storeLoc.kind === MK.FIELD ? storeLoc : otherLoc;
       const stack = storeLoc.kind === MK.STACK ? storeLoc : otherLoc;
-      const baseReg = String(field.rawBase?.reg || field.base?.reg || '');
-      if (/^x[0-7]$/.test(baseReg) || field.base?.kind === VK.ARG) return true;
-      const proof = stackPointerProvenanceOf(field.rawBase || field.base);
-      if (!proof || proof.must !== true || proof.offset == null || field.disp == null || stack.disp == null) return false;
-      if (stack.baseReg && !['sp','x29'].includes(String(stack.baseReg))) return true;
-      const fieldStart = BigInt(proof.offset) + BigInt(field.disp);
-      return overlap(fieldStart, BigInt(field.size || 8), BigInt(stack.disp), BigInt(stack.size || 8));
+      const proof = stackPointerProvenanceOf(field.base);
+      if (proof && proof.must === true && proof.root === 'sp' && proof.offset != null && field.disp != null && stack.disp != null) {
+        if (stack.baseReg !== 'sp' || stack.frameEpoch !== 0) return true;
+        const fieldStart = BigInt(proof.offset) + BigInt(field.disp);
+        return overlap(fieldStart, BigInt(field.size || 8), BigInt(stack.disp), BigInt(stack.size || 8));
+      }
+      return true;
     }
     return false;
   }
@@ -1436,7 +1436,7 @@ function storeOverlapsRange(storeLoc, otherLoc) {
     }
     const pa = stackPointerProvenanceOf(storeLoc.base);
     const pb = stackPointerProvenanceOf(otherLoc.base);
-    if (pa?.must === true && pb?.must === true && pa.offset != null && pb.offset != null) {
+    if (pa?.must === true && pb?.must === true && pa.root != null && pa.root === pb.root && pa.offset != null && pb.offset != null) {
       return overlap(BigInt(pa.offset) + BigInt(storeLoc.disp),sa, BigInt(pb.offset) + BigInt(otherLoc.disp),sb);
     }
     return true;
@@ -1464,8 +1464,10 @@ export function stackPointerProvenanceOf(value, memo = new Map(), active = new S
   let out = null;
   const reg = String(value.reg || '');
   const def = value.def;
-  if (value.kind === VK.ARG && (reg === 'sp' || reg === 'x29')) {
-    out = { offset: 0n, must: true, via: 'root' };
+  if (value.kind === VK.ARG && reg === 'sp') {
+    out = { root: 'sp', offset: 0n, must: true, via: 'root' };
+  } else if (value.kind === VK.ARG && reg === 'x29') {
+    out = { root: 'x29', offset: 0n, must: false, via: 'fp-root' };
   } else if (def?.op === OP.MOV && def.args?.[0]?.value) {
     const p = stackPointerProvenanceOf(def.args[0].value, memo, active);
     if (p) out = { ...p, via: 'mov' };
@@ -1474,9 +1476,12 @@ export function stackPointerProvenanceOf(value, memo = new Map(), active = new S
     const stackIncoming = incoming.filter(Boolean);
     if (stackIncoming.length) {
       const first = stackIncoming[0].offset;
+      const firstRoot = stackIncoming[0].root;
+      const sameRoot = firstRoot != null && stackIncoming.every((p) => p.root === firstRoot);
       out = {
-        offset: stackIncoming.every((p) => p.offset === first) ? first : null,
-        must: stackIncoming.length === incoming.length && stackIncoming.every((p) => p.must !== false),
+        root: sameRoot ? firstRoot : null,
+        offset: sameRoot && stackIncoming.every((p) => p.offset === first) ? first : null,
+        must: sameRoot && stackIncoming.length === incoming.length && stackIncoming.every((p) => p.must !== false),
         via: 'phi',
       };
     }

@@ -133,7 +133,7 @@ test('#1138 a void call consumes its signature and produces no value', () => {
   assert.equal(bundle.callEffects[0].returnDescriptor, null);
 });
 
-test('#1138 invokespecial <init> consumes the receiver and pushes that same object back initialized', () => {
+test('#1138 invokespecial <init> consumes the receiver without re-pushing it (JVMS §6.5)', () => {
   const { fn } = lift({ bytecode: [0xbb, 0x00, 0x02, 0x59, 0xb7, 0x00, 0x11, 0x57, 0xb1] });
   const created = fn.bundles.find((entry) => entry.mnemonic === 'new');
   const duplicated = fn.bundles.find((entry) => entry.mnemonic === 'dup');
@@ -141,12 +141,7 @@ test('#1138 invokespecial <init> consumes the receiver and pushes that same obje
   const allocationId = created.producedValues[0].allocationId;
   assert.equal(typeof allocationId, 'string');
   assert.deepEqual(init.consumedValues.map((value) => value.id), ['objectref']);
-  assert.equal(init.producedValues.length, 1);
-  const pushedBack = init.producedValues[0];
-  assert.equal(pushedBack.aliasConsumedReceiver, true);
-  assert.equal(pushedBack.allocationId, allocationId);
-  assert.equal(pushedBack.allocationState, 'initialized');
-  assert.equal(pushedBack.fresh, true);
+  assert.deepEqual(init.producedValues, []);
   assert.equal(init.callEffects[0].initializesAllocation, true);
   assert.equal(init.callEffects[0].receiverAllocationId, allocationId);
   assert.equal(duplicated.producedValues[0].allocationId, allocationId);

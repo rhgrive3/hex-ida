@@ -1078,7 +1078,8 @@
       value |= BigInt(b & 0x7f) << shift;
       shift += 7n;
       if (!(b & 0x80)) {
-        if ((b & 0x40) && shift < 64n) value |= (-1n) << shift;
+        if (b & 0x40) value |= (-1n) << shift;
+        if (value < -(1n << 63n) || value > (1n << 63n) - 1n) return null;
         return { value, next: p + 1 };
       }
     }

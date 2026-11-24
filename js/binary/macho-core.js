@@ -465,6 +465,8 @@ function parseThin(bytes, opts) {
     }
   }
 
+  if (linkeditData.dataInCode) parseDataInCode(r, linkeditData.dataInCode, image, metadataBudget);
+
   if (linkeditData.main) {
     image.entrypoint = image.offsetToAddress(linkeditData.main.entryoff);
     image.metadata.entrypointSource = 'LC_MAIN';
@@ -473,13 +475,12 @@ function parseThin(bytes, opts) {
     image.metadata.entrypointSource = 'LC_UNIXTHREAD';
   }
   if (image.entrypoint != null && image.entrypoint !== 0n) {
-    const entrySegment = image.segmentAt(image.entrypoint);
-    const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
     // The LC_UNIXTHREAD PC is an absolute address: unlike the LC_MAIN path
     // (whose entryoff maps through the file-backed table), it can land in a
     // segment's zero-fill tail, where no instruction byte exists. Require
+    // executable/aligned mapping, LC_DATA_IN_CODE exclusion, and contiguous
     // file backing before calling it a valid entrypoint (#5555).
-    if (entrySegment?.perms?.execute && image.entrypoint % alignment === 0n && image.addressToOffset(image.entrypoint) != null) {
+    if (image.isInstructionAllowed(image.entrypoint) && hasContiguousFileBackedInstruction(image, image.entrypoint)) {
       image.metadata.entrypointValid = true;
       image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
     } else {
@@ -489,7 +490,6 @@ function parseThin(bytes, opts) {
   }
 
   for (const st of symtabs) parseSymbolTable(r, st, image, bits, metadataBudget);
-  if (linkeditData.dataInCode) parseDataInCode(r, linkeditData.dataInCode, image, metadataBudget);
   const hadFunctionStarts = !!linkeditData.functionStarts;
   if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image, metadataBudget);
   parseCompactUnwind(r, image, metadataBudget);
@@ -936,20 +936,35 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
 }
 
 
+function instructionWidthForArch(arch) {
+  return (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32')
+    ? 4n
+    : arch === 'arm' ? 2n : 1n;
+}
+
+function hasContiguousFileBackedInstruction(image, address) {
+  const width = instructionWidthForArch(image.arch);
+  const first = image.resolveVirtualMapping(address);
+  if (!first || first.kind !== 'file' || first.offset == null || first.available < width) return false;
+  for (let delta = 1n; delta < width; delta += 1n) {
+    const next = image.resolveVirtualMapping(address + delta);
+    if (!next || next.kind !== 'file' || next.offset !== first.offset + delta) return false;
+  }
+  return true;
+}
+
 function isSymbolFunctionCandidate(image, address, requirePureInstructions) {
   const sec = image.sectionAt(address);
   if (!sec || !sec.perms.execute) return false;
   if (requirePureInstructions && (sec.flags & S_ATTR_PURE_INSTRUCTIONS) === 0) return false;
 
-  const instructionBytes = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32')
-    ? 4n
-    : image.arch === 'arm' ? 2n : 1n;
+  const instructionBytes = instructionWidthForArch(image.arch);
   if (sec.size < instructionBytes || address > sec.address + sec.size - instructionBytes) return false;
 
   // Symbol metadata remains visible even when it cannot be strengthened into
   // exact function evidence. The shared check covers ISA alignment, executable
-  // ownership, file-backed bytes, and LC_DATA_IN_CODE exclusion (#8159).
-  return image.isInstructionAllowed(address);
+  // ownership, contiguous file-backed bytes, and LC_DATA_IN_CODE exclusion (#8159).
+  return image.isInstructionAllowed(address) && hasContiguousFileBackedInstruction(image, address);
 }
 
 function parseFunctionStarts(r, dc, image, sharedBudget = null) {
@@ -985,15 +1000,15 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
     const next = addr + x.value;
     addr = next;
     const seg = image.segmentAt(addr);
-    if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n) || image.isDataInCode(addr)) {
+    if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n) || !image.isInstructionAllowed(addr)) {
       status.complete = false; status.partialReason = 'invalid-entry';
       image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
       break;
     }
     // A segment's vm size may exceed its file size; the difference is loader
-    // zero-fill. A start with no file-backed instruction byte is not static
-    // evidence and must not become a 0.995-confidence seed (#5551).
-    if (image.addressToOffset(addr) == null) {
+    // zero-fill. A start without contiguous file-backed instruction bytes is
+    // not static evidence and must not become a 0.995-confidence seed (#5551).
+    if (!hasContiguousFileBackedInstruction(image, addr)) {
       status.complete = false; status.partialReason = 'invalid-entry';
       image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)} (no file-backed instruction bytes)`);
       break;
@@ -1330,6 +1345,14 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
       fail('entry-zero-fill-invalid', `function range 0x${candidate.startOffset.toString(16)}..0x${candidate.endOffset.toString(16)} extends into the executable zero-fill tail`, true);
       return;
     }
+    if (!hasContiguousFileBackedInstruction(image, start)) {
+      fail('entry-file-backing-invalid', `function offset 0x${candidate.startOffset.toString(16)} lacks contiguous file-backed instruction bytes`, true);
+      return;
+    }
+    if (!image.isInstructionAllowed(start)) {
+      fail('entry-data-in-code-invalid', `function offset 0x${candidate.startOffset.toString(16)} overlaps LC_DATA_IN_CODE or is not an allowed instruction start`, true);
+      return;
+    }
     const continuation = (candidate.encoding & notFunctionStartMask) !== 0;
     if (continuation) {
       if (currentOwnerStart == null) {
@@ -1377,11 +1400,7 @@ function importIdentityAtSite(image, address) {
 }
 
 function isInterposeInstructionAllowed(image, address) {
-  if (!image.isInstructionAllowed(address)) return false;
-  const instructionBytes = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32')
-    ? 4n : image.arch === 'arm' ? 2n : 1n;
-  const mapping = image.resolveVirtualMapping(address);
-  return mapping?.kind === 'file' && mapping.available >= instructionBytes;
+  return image.isInstructionAllowed(address) && hasContiguousFileBackedInstruction(image, address);
 }
 
 function parseInterposingSections(r, image, bits, metadataBudget) {
@@ -1545,14 +1564,12 @@ function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
           failureReason = 'non-executable';
         } else if (target % alignment !== 0n) {
           failureReason = 'misaligned';
+        } else if (!hasContiguousFileBackedInstruction(image, target)) {
+          failureReason = 'not-file-backed';
+        } else if (!image.isInstructionAllowed(target)) {
+          failureReason = 'data-in-code';
         } else {
-          const offStart = image.addressToOffset(target);
-          const offEnd = image.addressToOffset(target + instructionBytes - 1n);
-          if (offStart == null || offEnd == null) {
-            failureReason = 'not-file-backed';
-          } else {
-            isValid = true;
-          }
+          isValid = true;
         }
       }
 
@@ -1645,10 +1662,12 @@ function parseInitFuncOffsets(r, image, metadataBudget) {
           failureReason = 'non-executable';
         } else if (target % alignment !== 0n) {
           failureReason = 'misaligned';
+        } else if (!hasContiguousFileBackedInstruction(image, target)) {
+          failureReason = 'not-file-backed';
+        } else if (!image.isInstructionAllowed(target)) {
+          failureReason = 'data-in-code';
         } else {
-          const mapping = image.resolveVirtualMapping(target);
-          if (mapping?.kind !== 'file' || mapping.available < instructionBytes) failureReason = 'not-file-backed';
-          else valid = true;
+          valid = true;
         }
       }
 

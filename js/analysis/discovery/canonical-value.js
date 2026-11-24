@@ -83,50 +83,65 @@ function validateNode(node, seen = new WeakSet(), budget = { nodes: 0, text: 0 }
   }
   seen.add(node);
   const type = descriptor(node, 't', 'discovery-typed-value-frame-invalid').value;
-  const keys = Object.keys(node).sort();
+  let keys;
+  try { keys = Object.keys(node).sort(); }
+  catch { fail('discovery-typed-value-frame-invalid'); }
+  let rebuilt;
   if (type === 'null' || type === 'hole') {
-    if (keys.length !== 1) fail('discovery-typed-value-frame-invalid');
+    if (keys.length !== 1 || keys[0] !== 't') fail('discovery-typed-value-frame-invalid');
+    rebuilt = { t: type };
   } else {
     if (keys.length !== 2 || keys[0] !== 't' || keys[1] !== 'v') fail('discovery-typed-value-frame-invalid');
     const value = descriptor(node, 'v', 'discovery-typed-value-frame-invalid').value;
     if (typeof value === 'string') consume(budget, depth, value);
     if (type === 'boolean') {
       if (typeof value !== 'boolean') fail('discovery-typed-value-frame-invalid');
+      rebuilt = { t: 'boolean', v: value };
     } else if (type === 'string') {
       if (typeof value !== 'string') fail('discovery-typed-value-frame-invalid');
+      rebuilt = { t: 'string', v: value };
     } else if (type === 'bigint') {
       if (typeof value !== 'string' || value === '-0' || !/^-?(?:0|[1-9][0-9]*)$/.test(value)) {
         fail('discovery-typed-value-frame-invalid');
       }
+      rebuilt = { t: 'bigint', v: value };
     } else if (type === 'number') {
       if (typeof value !== 'string' || (value !== '-0'
           && (!Number.isFinite(Number(value)) || String(Number(value)) !== value))) {
         fail('discovery-typed-value-frame-invalid');
       }
+      rebuilt = { t: 'number', v: value };
     } else if (type === 'array') {
       if (!Array.isArray(value)) fail('discovery-typed-value-frame-invalid');
+      const items = [];
       const length = boundedLength(value, budget);
       for (let index = 0; index < length; index += 1) {
         const item = descriptor(value, String(index), 'discovery-typed-value-frame-invalid').value;
-        validateNode(item, seen, budget, depth + 1);
+        items.push(validateNode(item, seen, budget, depth + 1));
       }
+      rebuilt = { t: 'array', v: items };
     } else if (type === 'object') {
       if (!Array.isArray(value)) fail('discovery-typed-value-frame-invalid');
+      const entries = [];
       let previous = null;
       const length = boundedLength(value, budget);
       for (let index = 0; index < length; index += 1) {
         const entry = descriptor(value, String(index), 'discovery-typed-value-frame-invalid').value;
-        if (!Array.isArray(entry) || entry.length !== 2) fail('discovery-typed-value-frame-invalid');
+        if (!Array.isArray(entry) || descriptor(entry, 'length', 'discovery-typed-value-frame-invalid').value !== 2) {
+          fail('discovery-typed-value-frame-invalid');
+        }
         const key = descriptor(entry, '0', 'discovery-typed-value-frame-invalid').value;
         const child = descriptor(entry, '1', 'discovery-typed-value-frame-invalid').value;
         if (typeof key !== 'string' || (previous != null && key <= previous)) fail('discovery-typed-value-frame-invalid');
         previous = key;
         consume(budget, depth, key);
-        validateNode(child, seen, budget, depth + 1);
+        entries.push([key, validateNode(child, seen, budget, depth + 1)]);
       }
+      rebuilt = { t: 'object', v: entries };
     } else fail('discovery-typed-value-frame-invalid');
   }
   seen.delete(node);
+  return rebuilt;
 }
 
 function isFrame(value) {
@@ -139,11 +154,14 @@ export function canonicalTypedValue(value) {
   if (isFrame(value)) {
     const schema = descriptor(value, 'schema', 'discovery-typed-value-frame-invalid').value;
     const node = descriptor(value, 'value', 'discovery-typed-value-frame-invalid').value;
-    if (schema !== DISCOVERY_TYPED_VALUE_SCHEMA || Object.keys(value).sort().join(',') !== 'schema,value') {
+    let keys;
+    try { keys = Object.keys(value).sort(); }
+    catch { fail('discovery-typed-value-frame-invalid'); }
+    if (schema !== DISCOVERY_TYPED_VALUE_SCHEMA || keys.length !== 2 || keys[0] !== 'schema' || keys[1] !== 'value') {
       fail('discovery-typed-value-frame-invalid');
     }
-    validateNode(node);
-    return deepFreeze(JSON.parse(JSON.stringify(value)));
+    const rebuilt = validateNode(node);
+    return deepFreeze({ schema: DISCOVERY_TYPED_VALUE_SCHEMA, value: rebuilt });
   }
   return deepFreeze({ schema: DISCOVERY_TYPED_VALUE_SCHEMA, value: encode(value, new WeakSet(), { nodes: 0, text: 0 }) });
 }
