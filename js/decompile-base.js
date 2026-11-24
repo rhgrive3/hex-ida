@@ -628,16 +628,24 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
 
   // A landing pad may branch into the ordinary ARC cleanup tail. Those targets
   // need an explicit label in the semantic body so every preserved goto lands.
+  // Snapshot semantic.lines so a later failure rolls back any inserted labels.
+  const savedLines = semantic.lines.slice();
   for (const bi of detachedBlocks) {
     for (const succ of semantic.ir.blocks[bi]?.succ || []) {
       if (!detachedBlocks.has(succ) && classification.reachable.has(succ)) {
-        if (!ensureSemanticLabel(semantic, semanticModel, opts, succ)) return null;
+        if (!ensureSemanticLabel(semantic, semanticModel, opts, succ)) {
+          semantic.lines = savedLines;
+          return null;
+        }
       }
     }
   }
 
   const close = semantic.lines?.findLastIndex?.((l) => l.kind === 'ctrl' && l.text === '}') ?? -1;
-  if (close < 0) return null;
+  if (close < 0) {
+    semantic.lines = savedLines;
+    return null;
+  }
   semantic.lines.splice(close, 0,
     { kind: 'comment', indent: 1, text: '/* Exception landing pads — entered only by runtime unwinding. */', row: null, addr: null, note: null },
     ...regionLines,

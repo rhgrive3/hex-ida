@@ -133,6 +133,9 @@ export function annotateValueRanges(ir) {
           }
         } else if ((inst.sub === 'lshr' || inst.sub === 'ashr') && a && bc != null && bc >= 0n && bc < BigInt(bits)) {
           if (inst.sub === 'lshr' && a.min >= 0n) next = { min: a.min >> bc, max: a.max >> bc };
+          else if (inst.sub === 'ashr' && inst.dst.signed === true && a.min >= bounds.min && a.max <= bounds.max) {
+            next = { min: a.min >> bc, max: a.max >> bc };
+          }
         } else if (inst.sub === 'shl' && a && bc != null && bc >= 0n && bc < BigInt(bits)) {
           const min = a.min << bc, max = a.max << bc;
           if (min >= bounds.min && max <= bounds.max) next = { min, max };

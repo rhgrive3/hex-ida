@@ -117,7 +117,8 @@ function admitRecordingGraph(value, maxBytes) {
     }
     active.add(item);
     try {
-      if (item instanceof ArrayBuffer || ArrayBuffer.isView(item)) {
+      const isSab = typeof SharedArrayBuffer !== 'undefined' && item instanceof SharedArrayBuffer;
+      if (item instanceof ArrayBuffer || isSab || ArrayBuffer.isView(item)) {
         charge(serializedByteArrayUpperBound(item.byteLength));
         return;
       }
@@ -148,17 +149,36 @@ function required(value, code, message) {
   return text;
 }
 
-function ownedClone(value) {
-  if (typeof structuredClone === 'function') return structuredClone(value);
+function ownedClone(value, seen = new WeakMap()) {
   if (value == null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(ownedClone);
-  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (seen.has(value)) return seen.get(value);
+  if (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer) {
+    const copy = new Uint8Array(value.byteLength);
+    copy.set(new Uint8Array(value));
+    return copy.buffer;
+  }
   if (value instanceof ArrayBuffer) return value.slice(0);
-  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  if (value instanceof DataView) {
+    const copy = new Uint8Array(value.byteLength);
+    copy.set(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+    return new DataView(copy.buffer);
+  }
+  if (ArrayBuffer.isView(value)) {
+    const copy = new Uint8Array(value.byteLength);
+    copy.set(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+    return new value.constructor(copy.buffer, 0, value.length);
+  }
   if (value instanceof Date) return new Date(value.getTime());
+  if (Array.isArray(value)) {
+    const out = [];
+    seen.set(value, out);
+    for (let i = 0; i < value.length; i++) out.push(ownedClone(value[i], seen));
+    return out;
+  }
   const out = {};
+  seen.set(value, out);
   for (const [key, item] of Object.entries(value)) {
-    Object.defineProperty(out, key, { value: ownedClone(item), enumerable: true, configurable: true, writable: true });
+    Object.defineProperty(out, key, { value: ownedClone(item, seen), enumerable: true, configurable: true, writable: true });
   }
   return out;
 }

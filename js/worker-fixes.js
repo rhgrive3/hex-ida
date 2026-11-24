@@ -28,7 +28,8 @@ runSearch = async function runSearchHardened(args) {
   if (!region) throw new Error('Unknown region.');
   const results = [];
   const total = Number(region.size);
-  const startByte = Math.max(0, Math.min(total, Number(args.from || 0)));
+  const rawFrom = Number(args.from ?? 0);
+  const startByte = Math.max(0, Math.min(total, Number.isFinite(rawFrom) ? rawFrom : 0));
   const query = String(args.query || '');
   if (!query) throw new Error('Enter text to search for.');
 
@@ -169,8 +170,10 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
 
       const rel = Words.pcRelTarget(w, pc);
       if (rel) {
-        pageOf[rel.reg] = rel.value;
-        pageAt[rel.reg] = index;
+        if (rel.reg < 31) {
+          pageOf[rel.reg] = rel.value;
+          pageAt[rel.reg] = index;
+        }
         if (!rel.page && rel.value === want) {
           out.push({ row: byteOff / 4, addr: pc, kind: 'address' });
           if (out.length >= cap) break;
@@ -181,7 +184,7 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
       const pair = Words.pairedOffset(w);
       let propagated = -1;
       if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= __XREF_PAIR_WINDOW) {
-        const full = pageOf[pair.rn] + pair.imm;
+        const full = BigInt.asUintN(64, pageOf[pair.rn] + pair.imm);
         if (full === want) {
           out.push({
             row: byteOff / 4, addr: pc,
@@ -189,11 +192,13 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
           });
           if (out.length >= cap) break;
         }
-        if (!pair.load && !pair.store) {
-          pageOf[pair.rd] = full;
-          pageAt[pair.rd] = index;
-          propagated = pair.rd;
-        } else if (pair.load && pair.rd < 31) {
+        if (!pair.load && !pair.store && !pair.prefetch) {
+          if (pair.rd < 31) {
+            pageOf[pair.rd] = full;
+            pageAt[pair.rd] = index;
+            propagated = pair.rd;
+          }
+        } else if (pair.load && pair.gpDest !== false && pair.rd < 31) {
           pageOf[pair.rd] = null;
           pageAt[pair.rd] = -1;
         }
@@ -772,7 +777,6 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
         if (trapRunValues.length < 4097) trapRunValues.push(w);
       } else {
         flushTrapRun();
-        flushAdrpReturnRun();
       }
       if (lastIndirectBranch != null && betweenIndirectKinds.length <= 12) betweenIndirectKinds.push(currentKind);
       if (Words.isBr(w)) {
@@ -804,6 +808,7 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
   flushRepeatedDirectTails();
   flushInlineUdfRun();
   flushTrapRun();
+  flushAdrpReturnRun();
   for (const [target, count] of tailCallCounts) {
     if (count >= 2 || prologues.has(target) || terminalStarts.has(target)) tailCalls.add(target);
   }
@@ -871,14 +876,16 @@ async function __budgetedLegacyGuessFunctions(args) {
         vmAddr: region.vmAddr + scanStart,
         size: scanEnd - scanStart,
       };
+      const tempSlice = { ...slice, regions: [...originalRegions, temp] };
       regions.set(temp.id, temp);
-      slice.regions = [...originalRegions, temp];
+      slices.push(tempSlice);
       let part;
       try {
         part = await __legacyGuessFunctions({ ...args, regionId: temp.id, limit: cap });
       } finally {
         regions.delete(temp.id);
-        slice.regions = originalRegions;
+        const tempIdx = slices.indexOf(tempSlice);
+        if (tempIdx >= 0) slices.splice(tempIdx, 1);
       }
       if (!part || part.cancelled) return part || { starts: new BigUint64Array(0), cancelled: true };
 
@@ -895,7 +902,7 @@ async function __budgetedLegacyGuessFunctions(args) {
       await yieldToQueue();
     }
   } finally {
-    slice.regions = originalRegions;
+    // original slice.regions is never mutated
   }
 
   const list = Array.from(merged).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -983,6 +990,7 @@ guessFunctions = async function guessFunctionsHardened(args) {
   const reqEpoch = args.epoch ?? (typeof currentEpoch !== 'undefined' ? currentEpoch : undefined);
   let cacheKey = null;
   if (args.requestId != null) {
+    __activeGuessEpochByReq.set(requestKey(reqEpoch, args.requestId), reqEpoch);
     __activeGuessEpochByReq.set(args.requestId, reqEpoch);
     if (typeof __metaReadCacheByReq !== 'undefined') {
       cacheKey = requestKey(reqEpoch, args.requestId);
@@ -1009,7 +1017,7 @@ guessFunctions = async function guessFunctionsHardened(args) {
     const result = await __budgetedLegacyGuessFunctions(args);
     if (!result || result.cancelled || !result.starts || !result.starts.length) return result;
     if (!region) return result;
-    const ev = await __functionEvidence(region, slice, args.requestId, result.cap);
+    const ev = await __functionEvidence(region, slice, args.requestId, result.cap, reqEpoch);
     if (!ev || ev.cancelled || cancelled(args.requestId, reqEpoch)) return { starts: new BigUint64Array(0), cancelled: true };
 
   const kept = new Set();
@@ -1176,6 +1184,11 @@ guessFunctions = async function guessFunctionsHardened(args) {
   };
   } finally {
     if (cacheKey != null && typeof __metaReadCacheByReq !== 'undefined') __metaReadCacheByReq.delete(cacheKey);
-    if (args.requestId != null) __activeGuessEpochByReq.delete(args.requestId);
+    if (args.requestId != null) {
+      __activeGuessEpochByReq.delete(requestKey(reqEpoch, args.requestId));
+      if (__activeGuessEpochByReq.get(args.requestId) === reqEpoch) {
+        __activeGuessEpochByReq.delete(args.requestId);
+      }
+    }
   }
 };

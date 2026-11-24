@@ -50,7 +50,9 @@ export function parseSlideInfo5Structure(bytes, mapping, totalSize) {
 function decodeRecord(mapping, pageOffset, raw, info, slide, mappings, targetRange) {
   const authenticated = ((raw >> 63n) & 1n) !== 0n;
   const runtimeOffset = raw & RUNTIME_OFFSET_MASK;
+  const MAX_U64 = 0xffffffffffffffffn;
   const targetAddress = info.valueAdd + runtimeOffset;
+  if (targetAddress > MAX_U64) throw new Error('dyld shared cache v5 rebase target overflows 64-bit address space');
   const targetInCurrentFileMappings = inAnyMapping(targetAddress, mappings);
   const targetInSharedRegion = inTargetRange(targetAddress, targetRange);
   if (!targetInCurrentFileMappings && !targetInSharedRegion) {
@@ -58,12 +60,18 @@ function decodeRecord(mapping, pageOffset, raw, info, slide, mappings, targetRan
   }
   const next = Number((raw >> 52n) & NEXT_MASK);
   const high8 = Number((raw >> 34n) & 0xffn);
+  const storageAddress = mapping.address + BigInt(pageOffset);
+  const runtimeStorageAddress = storageAddress + slide;
+  const runtimeTargetAddress = targetAddress + slide;
+  if (storageAddress > MAX_U64 || runtimeStorageAddress > MAX_U64 || runtimeTargetAddress > MAX_U64) {
+    throw new Error('dyld shared cache v5 slid address overflows 64-bit address space');
+  }
   const record = {
-    storageAddress: mapping.address + BigInt(pageOffset),
-    runtimeStorageAddress: mapping.address + BigInt(pageOffset) + slide,
+    storageAddress,
+    runtimeStorageAddress,
     rawValue: raw,
     targetAddress,
-    runtimeTargetAddress: targetAddress + slide,
+    runtimeTargetAddress,
     authenticated,
     runtimeOffset,
     nextPointerUnits: next,
@@ -76,7 +84,7 @@ function decodeRecord(mapping, pageOffset, raw, info, slide, mappings, targetRan
     record.keyIsData = ((raw >> 51n) & 1n) !== 0n;
   } else {
     record.high8 = high8;
-    record.materializedRuntimeValue = (targetAddress + slide) | (BigInt(high8) << 56n);
+    record.materializedRuntimeValue = (runtimeTargetAddress & 0x00ffffffffffffffn) | (BigInt(high8) << 56n);
   }
   return { next, record };
 }
@@ -98,7 +106,7 @@ export function walkSlideInfo5Sync(bytes, mapping, info, slide, mappings, maxRec
     let guard = 0;
     while (true) {
       const pageStart = page * info.pageSize;
-      const pageEnd = Math.min((page + 1) * info.pageSize, bytes.length);
+      const pageEnd = Math.min((page + 1) * info.pageSize, bytes.length, Number(mapping.size));
       const offset = pageStart + withinPage;
       if ((withinPage & 7) !== 0 || offset < pageStart || offset + 8 > pageEnd) throw new Error('dyld shared cache v5 rebase chain leaves its page');
       if (rebases.length >= maxRecords) throw new Error('dyld shared cache rebase record budget exceeded');

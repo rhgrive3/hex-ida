@@ -212,6 +212,7 @@
    * 「この関数はメモリに書いている」という説明が丸ごと逆になる。
    */
   function transferIsLoad(w) {
+    if (isPrefetchImmediate(w)) return false;
     if (((w >>> 26) & 1) === 1) return ((w >>> 22) & 1) === 1;   // SIMD は bit 22 のみ
     return ((w >>> 22) & 3) !== 0;
   }
@@ -343,10 +344,10 @@ acquire, release,
     // Unsigned immediate (the most common scalar/SIMD form).
     if (masked(w, 0x3b000000) === 0x39000000) {
       const scale = transferScale(w);
-      const load = transferIsLoad(w);
       const prefetch = isPrefetchImmediate(w);
+      const load = !prefetch && transferIsLoad(w);
       return {
-        load, store: !load, size: 1 << scale, vector: ((w >>> 26) & 1) === 1,
+        load, store: !load && !prefetch, size: 1 << scale, vector: ((w >>> 26) & 1) === 1,
         prefetch, gpDest: !prefetch && ((w >>> 26) & 1) === 0, base: rn(w), reg: rd(w),
         disp: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
       };
@@ -421,7 +422,9 @@ acquire, release,
   function compareImmediate(w) {
     if (!isAddSubImm(w) || ((w >>> 29) & 1) !== 1 || rd(w) !== 31) return null;
     const shift = ((w >>> 22) & 1) ? 12n : 0n;
-    return BigInt((w >>> 10) & 0xfff) << shift;
+    const imm = BigInt((w >>> 10) & 0xfff) << shift;
+    const isSub = ((w >>> 30) & 1) === 1;
+    return isSub ? imm : (imm === 0n ? 0n : -imm);
   }
 
   /** mul / madd / msub。掛け算は「値の計算」を示す強い手がかり。 */
@@ -504,12 +507,14 @@ acquire, release,
     if (isCondBranch(w)) return KIND.CONDBR;
 
     if (masked(w, 0x1f000000) === 0x10000000) return KIND.ADRP;
+    if (isPrefetchLiteral(w)) return KIND.OTHER;
     if (masked(w, 0x3b000000) === 0x18000000) return KIND.LITERAL;
 
     if (isCompare(w)) return KIND.CMP;
 
     const mem = memoryAccess(w);
     if (mem) {
+      if (mem.prefetch) return KIND.OTHER;
       if (mem.atomic) return KIND.ATOMIC;
       return mem.load ? KIND.LOAD : KIND.STORE;
     }

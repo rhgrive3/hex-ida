@@ -66,12 +66,13 @@ export function normalizeStatus(value, confidence) {
 }
 
 export function statusText(status, ja = true) {
-  const item = STATUS_TEXT[status] || STATUS_TEXT.unknown;
+  const item = (typeof status === 'string' && Object.hasOwn(STATUS_TEXT, status)) ? STATUS_TEXT[status] : STATUS_TEXT.unknown;
   return ja ? item.ja : item.en;
 }
 
 export function statusMark(status) {
-  return (STATUS_TEXT[status] || STATUS_TEXT.unknown).mark;
+  const item = (typeof status === 'string' && Object.hasOwn(STATUS_TEXT, status)) ? STATUS_TEXT[status] : STATUS_TEXT.unknown;
+  return item.mark;
 }
 
 /* `Number(null)` is 0, so a missing score would otherwise read as "0% sure"
@@ -99,8 +100,13 @@ function schemaStringIds(value) {
 /** Core addresses are already `0x…` strings; anything else is coerced once. */
 export function addressString(value) {
   if (value == null) return null;
-  if (typeof value === 'string') return /^0x[0-9a-f]+$/i.test(value.trim()) ? value.trim().toLowerCase() : null;
-  try { return '0x' + BigInt(value).toString(16); } catch { return null; }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return /^0x[0-9a-f]+$/i.test(trimmed) ? trimmed.toLowerCase() : null;
+  }
+  if (typeof value === 'bigint') return value >= 0n ? '0x' + value.toString(16) : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? '0x' + BigInt(value).toString(16) : null;
+  return null;
 }
 
 export function addressBigInt(value) {
@@ -198,7 +204,7 @@ const ACTION_LABELS = Object.freeze({
 });
 
 export function actionLabel(kind, ja = true) {
-  const item = ACTION_LABELS[kind];
+  const item = typeof kind === 'string' && Object.hasOwn(ACTION_LABELS, kind) ? ACTION_LABELS[kind] : null;
   return item ? (ja ? item.ja : item.en) : kind;
 }
 

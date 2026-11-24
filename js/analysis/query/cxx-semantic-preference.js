@@ -104,7 +104,7 @@ export function withCxxSemanticPreference(query, local, symbols, {policy='legacy
       changeSites: top === local.top ? local.changeSites : (top.sites ?? []),
       semanticPreference: Object.freeze({ source: 'binary-method-context', verdict: 'weak-preference',
         evidenceTopKey: local.top?.key ?? null, selectedKey: top.key,
-        decisive: scores.length === 1 || scores[0].score > scores[1].score,
+        decisive: scores.length === 1 || scores[0].score > scores[1].score || (policy === 'object-context-v4' && scores[0].score === scores[1].score && (scores[0].objectMatches ?? 0) > (scores[1].objectMatches ?? 0)),
         scores: Object.freeze(scores) }),
     };
   } catch (_) {
@@ -131,7 +131,12 @@ export function withCxxReturnedMemberPreference(local, selection, symbols, index
     if (!Array.isArray(shortlist) || shortlist.length>255 || !shortlist.length
       || new Set(shortlist.map(c=>c.key)).size!==shortlist.length
       || shortlist.some(c=>!local.candidates.includes(c))) return local;
-    const address=BigInt(selection.selectedAddress), owner=index.classInfo(selection.selectedClass);
+    const rawAddr = selection.selectedAddress;
+    const address = typeof rawAddr === 'bigint' ? rawAddr
+      : typeof rawAddr === 'number' && Number.isSafeInteger(rawAddr) ? BigInt(rawAddr)
+      : typeof rawAddr === 'string' && /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(rawAddr.trim()) ? BigInt(rawAddr.trim())
+      : -1n;
+    const owner=index.classInfo(selection.selectedClass);
     if (!owner || typeof selection.selectedClass!=='string' || address<0n
       || owner.ivars.length>400) return local;
     const views=cxxSemanticViews(local.candidates,symbols);
