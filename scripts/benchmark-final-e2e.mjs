@@ -11,7 +11,7 @@
  * Reports:
  *   1. Full-corpus decompilation wall time (median ms across rounds) and peak
  *      memory (RSS MB / heapUsed MB) per mode.
- *   2. WASM-eligible 7-function subset decompilation wall time (median ms) and
+ *   2. WASM-eligible N-function subset decompilation wall time (median ms) and
  *      peak memory per mode.
  *   3. Telemetry verification (wasmCalls & fallbackCounts) per mode.
  *   4. Both human-readable Markdown tables and machine-readable JSON output.
@@ -74,6 +74,59 @@ function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+const ALL_WASM_DOMAINS = Object.freeze([
+  'decompile',
+  'cfg',
+  'loops',
+  'identity',
+  'binary',
+  'arm64_decode',
+  'x86_64_decode',
+]);
+
+function summarizeWasmCalls(counts = {}) {
+  const byDomain = {};
+  let total = 0;
+  for (const domain of ALL_WASM_DOMAINS) {
+    const value = Number(counts[domain] || 0);
+    byDomain[domain] = value;
+    total += value;
+  }
+  for (const [domain, rawVal] of Object.entries(counts)) {
+    if (!Object.hasOwn(byDomain, domain)) {
+      const value = Number(rawVal || 0);
+      byDomain[domain] = value;
+      total += value;
+    }
+  }
+  return { byDomain, total };
+}
+
+function withModeEnv(mode, fn) {
+  const prevGlobal = globalThis.HEX_ENGINE;
+  const prevGlobalMode = globalThis.__HEX_ENGINE_MODE__;
+  const prevEnv = process.env.HEX_ENGINE;
+  try {
+    if (mode === 'js') {
+      globalThis.HEX_ENGINE = 'js';
+      globalThis.__HEX_ENGINE_MODE__ = 'js';
+      process.env.HEX_ENGINE = 'js';
+    } else {
+      delete globalThis.HEX_ENGINE;
+      delete globalThis.__HEX_ENGINE_MODE__;
+      delete process.env.HEX_ENGINE;
+    }
+    return fn();
+  } finally {
+    if (prevGlobal === undefined) delete globalThis.HEX_ENGINE;
+    else globalThis.HEX_ENGINE = prevGlobal;
+    if (prevGlobalMode === undefined) delete globalThis.__HEX_ENGINE_MODE__;
+    else globalThis.__HEX_ENGINE_MODE__ = prevGlobalMode;
+    if (prevEnv === undefined) delete process.env.HEX_ENGINE;
+    else process.env.HEX_ENGINE = prevEnv;
+  }
 }
 
 function toMB(bytes) {
@@ -378,6 +431,7 @@ function runWasm7SubsetOnce(wasmEligibleFunctions, mode, iters) {
 
 function formatTable(report) {
   const lines = [];
+  const eligibleCount = report.corpus.wasmEligibleFunctions;
   lines.push('=== Final E2E Benchmark (13 Real Binaries x All Functions) ===');
   lines.push('| Mode | Median Total (ms) | Peak RSS (MB) | Peak heapUsed (MB) | Speedup vs JS | WASM Engine Calls | FLAG_JS Fallbacks |');
   lines.push('|---|---:|---:|---:|---:|---:|---:|');
@@ -385,13 +439,14 @@ function formatTable(report) {
   for (const mode of ['js', 'wasm', 'auto']) {
     const r = report.fullCorpus[mode];
     const speedup = r.medianMs > 0 ? (jsFullMed / r.medianMs).toFixed(2) : '0.00';
+    const flagJsFallbacks = r.fallbackCounts['decompile:wasm_disabled'] || 0;
     lines.push(
-      `| ${mode} | ${r.medianMs.toFixed(2)} | ${r.peakRssMB.toFixed(2)} | ${r.peakHeapMB.toFixed(2)} | ${speedup}x | ${r.wasmCalls.decompile || 0} | ${r.fallbackCounts.FLAG_JS || 0} |`,
+      `| ${mode} | ${r.medianMs.toFixed(2)} | ${r.peakRssMB.toFixed(2)} | ${r.peakHeapMB.toFixed(2)} | ${speedup}x | ${r.wasmCalls.decompile || 0} | ${flagJsFallbacks} |`,
     );
   }
   lines.push('');
-  lines.push(`=== WASM-Eligible ${report.corpus.wasmEligibleFunctions} Functions Subset (per-pass = ${report.corpus.wasmEligibleFunctions} functions, ${report.config.wasm7Iters}x batch median) ===`);
-  lines.push('| Mode | Median Batch (ms) | Median Per-Pass 7 Fns (ms) | Peak RSS (MB) | Peak heapUsed (MB) | Speedup vs JS |');
+  lines.push(`=== WASM-Eligible ${eligibleCount} Functions Subset (per-pass = ${eligibleCount} functions, ${report.config.wasm7Iters}x batch median) ===`);
+  lines.push(`| Mode | Median Batch (ms) | Median Per-Pass ${eligibleCount} Fns (ms) | Peak RSS (MB) | Peak heapUsed (MB) | Speedup vs JS |`);
   lines.push('|---|---:|---:|---:|---:|---:|');
   const js7Med = report.wasm7Subset.js.medianBatchMs;
   for (const mode of ['js', 'wasm', 'auto']) {
@@ -401,6 +456,28 @@ function formatTable(report) {
       `| ${mode} | ${r.medianBatchMs.toFixed(2)} | ${r.medianPerPassMs.toFixed(3)} | ${r.peakRssMB.toFixed(2)} | ${r.peakHeapMB.toFixed(2)} | ${speedup}x |`,
     );
   }
+  lines.push('');
+  lines.push('=== WASM Call Summary (All Domains) ===');
+  const domainHeaders = ALL_WASM_DOMAINS.join(' | ');
+  const domainSep = ALL_WASM_DOMAINS.map(() => '---:').join('|');
+  lines.push(`| Suite | Mode | ${domainHeaders} | Total |`);
+  lines.push(`|---|---|${domainSep}|---:|`);
+  for (const [suiteLabel, suiteData] of [
+    ['Full Corpus', report.fullCorpus],
+    [`Subset (${eligibleCount} Fns)`, report.wasm7Subset],
+  ]) {
+    for (const mode of ['js', 'wasm', 'auto']) {
+      const summary = suiteData[mode].wasmCallSummary;
+      const cols = ALL_WASM_DOMAINS.map((d) => summary.byDomain[d] || 0).join(' | ');
+      lines.push(`| ${suiteLabel} | ${mode} | ${cols} | ${summary.total} |`);
+    }
+  }
+  const v = report.verification;
+  lines.push('');
+  lines.push(
+    `JS Mode Zero-WASM Verification: ${v.jsModeZeroWasmVerified ? 'PASS' : 'FAIL'} `
+    + `(fullCorpus total=${v.jsFullCorpusTotalWasmCalls}, subset total=${v.jsSubsetTotalWasmCalls})`,
+  );
   return lines.join('\n');
 }
 
@@ -414,8 +491,8 @@ async function main() {
     const { preparedBinaries, wasmEligibleFunctions, totalFunctions } = prepareCorpus(sessions);
 
     // Warmup both engines briefly
-    runWasm7SubsetOnce(wasmEligibleFunctions, 'js', 2);
-    runWasm7SubsetOnce(wasmEligibleFunctions, 'wasm', 2);
+    withModeEnv('js', () => runWasm7SubsetOnce(wasmEligibleFunctions, 'js', 2));
+    withModeEnv('wasm', () => runWasm7SubsetOnce(wasmEligibleFunctions, 'wasm', 2));
 
     const modes = ['js', 'wasm', 'auto'];
     const fullCorpus = {};
@@ -432,13 +509,18 @@ async function main() {
       for (let r = 0; r < rounds; r += 1) {
         if (typeof global.gc === 'function') global.gc();
         resetAllTelemetry();
-        const res = runFullCorpusOnce(preparedBinaries, mode);
+        const res = withModeEnv(mode, () => runFullCorpusOnce(preparedBinaries, mode));
         roundTimes.push(res.elapsedMs);
         if (res.peakRss > peakRss) peakRss = res.peakRss;
         if (res.peakHeap > peakHeap) peakHeap = res.peakHeap;
         lastSink = res.sink;
         lastWasmCalls = getWasmCallCounts();
         lastFallbackCounts = getFallbackCounts();
+      }
+
+      const wasmCallSummary = summarizeWasmCalls(lastWasmCalls);
+      if (mode === 'js' && wasmCallSummary.total !== 0) {
+        throw new Error(`JS mode full-corpus expected 0 WASM calls across all domains, got ${JSON.stringify(wasmCallSummary)}`);
       }
 
       fullCorpus[mode] = {
@@ -448,6 +530,7 @@ async function main() {
         peakHeapMB: toMB(peakHeap),
         sink: lastSink,
         wasmCalls: lastWasmCalls,
+        wasmCallSummary,
         fallbackCounts: lastFallbackCounts,
       };
     }
@@ -463,13 +546,18 @@ async function main() {
       for (let r = 0; r < rounds; r += 1) {
         if (typeof global.gc === 'function') global.gc();
         resetAllTelemetry();
-        const res = runWasm7SubsetOnce(wasmEligibleFunctions, mode, wasm7Iters);
+        const res = withModeEnv(mode, () => runWasm7SubsetOnce(wasmEligibleFunctions, mode, wasm7Iters));
         batchTimes.push(res.elapsedMs);
         if (res.peakRss > peakRss) peakRss = res.peakRss;
         if (res.peakHeap > peakHeap) peakHeap = res.peakHeap;
         lastSink = res.sink;
         lastWasmCalls = getWasmCallCounts();
         lastFallbackCounts = getFallbackCounts();
+      }
+
+      const wasmCallSummary = summarizeWasmCalls(lastWasmCalls);
+      if (mode === 'js' && wasmCallSummary.total !== 0) {
+        throw new Error(`JS mode subset expected 0 WASM calls across all domains, got ${JSON.stringify(wasmCallSummary)}`);
       }
 
       const medBatch = median(batchTimes);
@@ -481,10 +569,13 @@ async function main() {
         peakHeapMB: toMB(peakHeap),
         sink: lastSink,
         wasmCalls: lastWasmCalls,
+        wasmCallSummary,
         fallbackCounts: lastFallbackCounts,
       };
     }
 
+    const jsFullTotal = fullCorpus.js.wasmCallSummary.total;
+    const jsSubsetTotal = wasm7Subset.js.wasmCallSummary.total;
     const report = {
       timestamp: new Date().toISOString(),
       nodeVersion: process.version,
@@ -494,6 +585,11 @@ async function main() {
         totalFunctions,
         wasmEligibleFunctions: wasmEligibleFunctions.length,
         wasmEligibleNames: wasmEligibleFunctions.map((f) => `${f.binaryId}::${f.name}(${f.insnCount})`),
+      },
+      verification: {
+        jsModeZeroWasmVerified: jsFullTotal === 0 && jsSubsetTotal === 0,
+        jsFullCorpusTotalWasmCalls: jsFullTotal,
+        jsSubsetTotalWasmCalls: jsSubsetTotal,
       },
       fullCorpus,
       wasm7Subset,
