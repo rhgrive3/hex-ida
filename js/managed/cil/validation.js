@@ -417,9 +417,7 @@ export function validateCilEffectFunction(decoded, context = {}) {
       const targetMembership = regionMembership(regions, edge.targetOffset);
       let legal = sameMembership(sourceMembership, targetMembership);
       if (edge.kind === 'leave') {
-        const exitsProtectedScope = sourceMembership.length === 0 || targetMembership.length < sourceMembership.length;
         legal = !leaveSourceForbidden(regions, offset)
-          && exitsProtectedScope
           && membershipSubset(targetMembership, sourceMembership);
       }
       if (!legal) {

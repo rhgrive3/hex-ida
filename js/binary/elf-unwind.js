@@ -149,9 +149,11 @@ function domainOffset(domain, address) {
 }
 
 function domainContext(domain, image, bits) {
+  const ehFrameHdr = (image?.sections || []).find((s) => s?.name === '.eh_frame_hdr');
   return {
     secAddress:domain.address,
     secOffset:Number(domain.fileOffset),
+    dataBase:ehFrameHdr?.address ?? domain.address,
     textBase:(image.segments.find((s) => s.perms.execute) || image.segments[0] || { address:0n }).address,
     image,
     bits,
@@ -558,12 +560,12 @@ function decodeEhValue(r, p0, enc, ctx, end = r.length) {
   else throw new Error(`unsupported DW_EH_PE format 0x${format.toString(16)}`);
   let value = raw;
   const fieldAddress = ctx.secAddress + BigInt(p - ctx.secOffset);
-  if (application === 0x10) value += fieldAddress;
-  else if (application === 0x20) value += ctx.textBase;
-  else if (application === 0x30) value += ctx.secAddress;
+  if (application === 0x10) value = BigInt.asUintN(ctx.bits, value + fieldAddress);
+  else if (application === 0x20) value = BigInt.asUintN(ctx.bits, value + ctx.textBase);
+  else if (application === 0x30) value = BigInt.asUintN(ctx.bits, value + (ctx.dataBase ?? ctx.secAddress));
   else if (application === 0x40) {
     if (ctx.functionBase == null) throw new Error('DW_EH_PE_funcrel requires a function base');
-    value += ctx.functionBase;
+    value = BigInt.asUintN(ctx.bits, value + ctx.functionBase);
   } else if (application !== 0 && application !== 0x50) {
     throw new Error(`unsupported DW_EH_PE application 0x${application.toString(16)}`);
   }

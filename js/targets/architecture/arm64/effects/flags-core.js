@@ -147,6 +147,7 @@ export function liftArm64FlagEffects(instruction, options = {}) {
     return ctx.partial(`arm64-${mnemonic}-operand-shape-unencodable`, ['flags', 'other']);
   }
   const widthBits = instructionBits(ops[0]);
+  if (!widthBits) return ctx.partial(`arm64-${mnemonic}-width-unavailable`, ['flags', 'other']);
 
   if (mnemonic === 'tst') {
     const lhs = ctx.readOperand(ops[0], widthBits);

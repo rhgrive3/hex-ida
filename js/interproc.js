@@ -353,16 +353,25 @@ function composeReturn(wrapper, callee) {
       const raw = r.op === 'sub' ? actual.value - r.constant : actual.value + r.constant;
       return { kind: 'constant', value: normalizeBitvector(raw, r.bits, r.signed), bits: r.bits || null, signed: r.signed ?? null, trusted: true, via: 'callee-summary' };
     }
-    return { ...r, input: actual, via: 'callee-summary' };
+    if (actual.kind === 'argument') {
+      const index = actual.index == null
+        ? (/^x[0-7]$/.test(String(actual.reg || '')) ? Number(String(actual.reg).slice(1)) : null)
+        : actual.index;
+      if (index == null) return null;
+      return { ...r, argument: index, input: { ...actual, index }, via: 'callee-summary' };
+    }
+    return null;
   }
   if (r.kind === 'field' || r.kind === 'global') return { ...r, via: 'callee-summary' };
   return null;
 }
 
+const SUMMARY_ACTIVE_PATH = Symbol('summary-active-path');
+
 function cacheScopeOf(context) {
   const generation=context?.analysisGeneration ?? context?.generation ?? context?.epoch ?? '';
   const session=context?.sessionId ?? context?.binaryHash ?? context?.binaryIdentity ?? '';
-  return String(session)+'@'+String(generation);
+  return JSON.stringify([String(session), String(generation)]);
 }
 function hasFunctionLocalSummaryOptions(opts) {
   return FUNCTION_LOCAL_SUMMARY_OPTION_KEYS.some((key) => own(opts, key));
@@ -398,17 +407,19 @@ export class FunctionSummaryCache {
     if (address == null) return null;
     const addressKey = address.toString();
     const cacheable = !hasContextSensitiveSummaryInputs(this.context, opts);
-    const key = cacheScopeOf(this.context) + ':' + addressKey;
+    const key = JSON.stringify([cacheScopeOf(this.context), addressKey]);
     if (cacheable && this.cache.has(key)) {
       const hit = this.cache.get(key);
       this._touch(key, hit);
       return hit;
     }
-    if (this.active.has(addressKey)) return { address, cycle: true, engine: 'semantic-ir', reads: [], writes: [], returns: [], calls: [], effects: {}, argumentRoles: [], classification: {} };
+    const activePath = opts?.[SUMMARY_ACTIVE_PATH] instanceof Set ? opts[SUMMARY_ACTIVE_PATH] : new Set();
+    if (activePath.has(addressKey)) return { address, cycle: true, engine: 'semantic-ir', reads: [], writes: [], returns: [], calls: [], effects: {}, argumentRoles: [], classification: {} };
     const depth = opts && opts.depth != null ? opts.depth : 0;
     const cancelled = typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false);
     if (cancelled()) return null;
-    this.active.add(addressKey);
+    const nextActivePath = new Set(activePath);
+    nextActivePath.add(addressKey);
     try {
       let range = null;
       try { range = this.context.program && this.context.program.functionRange ? this.context.program.functionRange(address) : null; } catch { range = null; }
@@ -430,7 +441,9 @@ export class FunctionSummaryCache {
           && singleReturn && singleReturn.trusted && singleReturn.kind === 'call') {
         const target = summary.calls[0].target;
         if (target != null && !cancelled()) {
-          const callee = await this.summaryFor(target, calleeOptions(opts, depth + 1));
+          const nextOpts = calleeOptions(opts, depth + 1);
+          nextOpts[SUMMARY_ACTIVE_PATH] = nextActivePath;
+          const callee = await this.summaryFor(target, nextOpts);
           const propagated = composeReturn(summary, callee);
           if (propagated) {
             summary.propagatedReturn = propagated;
@@ -442,7 +455,7 @@ export class FunctionSummaryCache {
       if (cacheable) this._touch(key, summary);
       return summary;
     } finally {
-      this.active.delete(addressKey);
+      nextActivePath.delete(addressKey);
     }
   }
 }

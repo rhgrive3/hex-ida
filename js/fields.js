@@ -174,7 +174,7 @@ export class FieldIndex {
             .map((x) => plainFieldName(x)).filter(Boolean);
           const matched = setter
             ? names.some((name) => `set${name[0].toUpperCase()}${name.slice(1)}:` === text)
-            : names.includes(plainFieldName(text));
+            : names.includes(text);
           if (matched) matches.push(iv);
         }
         return matches.length === 1 ? matches[0] : null;
@@ -226,8 +226,10 @@ export class FieldIndex {
   fieldAt(className, offset) {
     if (!isValidNumericKey(offset)) return null;
     const normalizedKey = typeof offset === 'string' ? normalizeAddressKey(offset) : null;
-    const off = normalizedKey != null ? Number(BigInt(normalizedKey)) : Number(offset);
-    if (!Number.isFinite(off)) return null;
+    const offBig = normalizedKey != null ? BigInt(normalizedKey) : (typeof offset === 'bigint' ? offset : null);
+    if (offBig != null && (offBig < BigInt(Number.MIN_SAFE_INTEGER) || offBig > BigInt(Number.MAX_SAFE_INTEGER))) return null;
+    const off = offBig != null ? Number(offBig) : Number(offset);
+    if (!Number.isSafeInteger(off)) return null;
     const visited = new Set();
     let currentName = className;
     let depth = 0;

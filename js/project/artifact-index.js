@@ -114,7 +114,8 @@ export class ProjectArtifactIndex {
   }
 
   list() {
-    return Object.freeze([...this.refs.values()].sort((a, b) => a.scope.localeCompare(b.scope) || a.kind.localeCompare(b.kind) || a.artifactId.localeCompare(b.artifactId)));
+    const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+    return Object.freeze([...this.refs.values()].sort((a, b) => cmp(a.scope, b.scope) || cmp(a.kind, b.kind) || cmp(a.artifactId, b.artifactId)));
   }
 
   async resolve(scope, kind, store, options = {}) {

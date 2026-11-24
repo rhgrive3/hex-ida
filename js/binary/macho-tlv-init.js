@@ -76,6 +76,7 @@ export function applyMachOTlvInitializers(thinInput, image) {
         if (!executable) reason = 'non-executable';
         else if (instructionBytes == null) reason = 'unsupported-isa';
         else if (target % instructionBytes !== 0n) reason = 'misaligned';
+        else if (typeof image.isDataInCode === 'function' && image.isDataInCode(target)) reason = 'data-in-code';
         else {
           const first = image.addressToOffset(target);
           if (first == null) reason = 'not-file-backed';

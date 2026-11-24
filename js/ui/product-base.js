@@ -299,12 +299,14 @@ let cachedClassEntities = null;
 function getClassEntities(app) {
   const classes = app.fields?.classes || app.objcModel?.classes;
   const swiftTypes = app.swiftModel?.types || app.swiftRuntime?.types || [];
-  const cxxClasses = app.symbols ? findCxxClasses(app.symbols) : [];
+  const symbols = app.symbols || null;
   const il2cppTypes = app.il2cppModel?.types || app.il2cpp?.types || [];
+  const currentJa = ja();
 
-  if (cachedClassesRef && cachedClassesRef.classes === classes && cachedClassesRef.swift === swiftTypes && cachedClassesRef.cxx === cxxClasses && cachedClassesRef.il2cpp === il2cppTypes && cachedClassEntities) {
+  if (cachedClassesRef && cachedClassesRef.classes === classes && cachedClassesRef.swift === swiftTypes && cachedClassesRef.symbols === symbols && cachedClassesRef.il2cpp === il2cppTypes && cachedClassesRef.ja === currentJa && cachedClassEntities) {
     return cachedClassEntities;
   }
+  const cxxClasses = symbols ? findCxxClasses(symbols) : [];
 
   const items = [];
   const seen = new Set();
@@ -391,7 +393,7 @@ function getClassEntities(app) {
     }
   }
 
-  cachedClassesRef = { classes, swift: swiftTypes, cxx: cxxClasses, il2cpp: il2cppTypes };
+  cachedClassesRef = { classes, swift: swiftTypes, symbols, il2cpp: il2cppTypes, ja: currentJa };
   cachedClassEntities = items;
   return items;
 }
@@ -1492,6 +1494,7 @@ function renderResults(app, router, route) {
   }
   const report = app.autoReport && app.autoReport.report;
   const findings = report && (report.findings || report.results || report.goals);
+  let virtualList = null;
   if (Array.isArray(findings) && findings.length) {
     const renderFinding = (item, index) => {
       const title = item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding');
@@ -1505,7 +1508,7 @@ function renderResults(app, router, route) {
         onClick: () => router.navigate('/finding/' + encodeURIComponent(String(findingId))),
       });
     };
-    if (findings.length > 80) s.body.append(new VirtualList({ items: findings, rowHeight: 64, ariaLabel: text('解析結果', 'Analysis results'), renderRow: renderFinding }).root);
+    if (findings.length > 80) { virtualList = new VirtualList({ items: findings, rowHeight: 64, ariaLabel: text('解析結果', 'Analysis results'), renderRow: renderFinding }); s.body.append(virtualList.root); }
     else {
       const list = h('div', 'ui-list');
       findings.forEach((item, index) => list.append(renderFinding(item, index)));
@@ -1514,16 +1517,19 @@ function renderResults(app, router, route) {
   } else {
     s.body.append(emptyState(text('まだ確定した結果がありません', 'No confirmed results yet'), text('「調べる」で目的を入力すると、答えと根拠をここから辿れるようになります。', 'Investigate a goal to create results you can revisit.'), uiButton(text('調べるへ', 'Go to Investigate'), { cls: 'ui-primary-action', onClick: () => router.navigate('/investigate') })));
   }
-  return { root: s.root };
+  return { root: s.root, dispose: () => { virtualList?.dispose?.(); } };
 }
 
 function pickOneFile(accept='') {
   return new Promise((resolve) => {
     const input=document.createElement('input'); input.type='file'; input.accept=accept;
     input.style.position='fixed'; input.style.left='-10000px'; document.body.append(input);
-    const finish=(file)=>{input.remove();resolve(file||null);};
+    let settled=false;
+    const onFocus=()=>{ setTimeout(()=>{ if(!settled) finish(input.files?.[0]||null); }, 300); };
+    const finish=(file)=>{ if(settled)return; settled=true; window.removeEventListener('focus',onFocus); input.remove(); resolve(file||null); };
     input.addEventListener('change',()=>finish(input.files?.[0]||null),{once:true});
     input.addEventListener('cancel',()=>finish(null),{once:true});
+    window.addEventListener('focus',onFocus,{once:true});
     input.click();
   });
 }

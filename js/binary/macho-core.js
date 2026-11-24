@@ -684,9 +684,9 @@ function parseSegment64(r, p, cmdsize, image, order, sharedBudget = null) {
   const nsects = r.u32(p + 64);
   if (nsects > Math.floor((cmdsize - 72) / 80)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 68);
+  if (!budget.take({ objects: 1, operations: 1 + image.segments.length, estimatedHeapBytes: 256 }, 'segment')) return;
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
-  if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 256 }, 'segment')) return;
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
   order.push(seg);
   let q = p + 72;
@@ -722,9 +722,9 @@ function parseSegment32(r, p, cmdsize, image, order, sharedBudget = null) {
   const nsects = r.u32(p + 48);
   if (nsects > Math.floor((cmdsize - 56) / 68)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 52);
+  if (!budget.take({ objects: 1, operations: 1 + image.segments.length, estimatedHeapBytes: 256 }, 'segment')) return;
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
-  if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 256 }, 'segment')) return;
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
   order.push(seg);
   let q = p + 56;
@@ -828,6 +828,7 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
   for (const section of image.sections) {
     if (section && section.index >= 1) knownSectionOrdinals.add(section.index);
   }
+  let minUnterminatedStrx = Infinity;
   for (let i = 0; i < st.nsyms; i++) {
     if (!budget.take({ inputBytes:ent, records:1,objects:1,operations:2,estimatedHeapBytes:224 }, 'symbol-record')) break;
     const p = st.symoff + i * ent;
@@ -846,8 +847,16 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     // Bounded first-NUL scan rather than materializing the whole suffix: on a
     // sparse backing the old `subarray(strx, strsize).indexOf(0)` copied the
     // entire remaining string table once per symbol (O(nsyms x strsize), #8651).
+    if (strx >= minUnterminatedStrx) {
+      markMachOMetadataPartial(image, 'symbol-name-not-terminated');
+      budget.warn(`Mach-O symbol ${i} name has no NUL terminator before string-table end`);
+      continue;
+    }
     const nameEnd = r.findZero(st.stroff + strx, st.stroff + st.strsize);
+    const scannedBytes = nameEnd < 0 ? (st.strsize - strx) : (nameEnd - (st.stroff + strx) + 1);
+    if (!budget.take({ inputBytes: scannedBytes }, 'symbol-name-scan')) break;
     if (nameEnd < 0) {
+      if (strx < minUnterminatedStrx) minUnterminatedStrx = strx;
       markMachOMetadataPartial(image, 'symbol-name-not-terminated');
       budget.warn(`Mach-O symbol ${i} name has no NUL terminator before string-table end`);
       continue;
@@ -1420,6 +1429,21 @@ function parseInterposingSections(r, image, bits, metadataBudget) {
   const tupleSize = ptrSize * 2;
   const tupleSizeBig = BigInt(tupleSize);
   const recoveredTargets = new Set();
+  const importBySite = new Map();
+  for (const imp of image.imports || []) {
+    for (const site of imp?.sites || []) {
+      if (!metadataBudget.take({ operations: 1 }, 'interpose-import-index')) break;
+      if (site?.address != null && !importBySite.has(site.address)) {
+        importBySite.set(site.address, {
+          name: imp.name || null,
+          library: imp.library || null,
+          ordinal: Number.isSafeInteger(imp.ordinal) ? imp.ordinal : null,
+          weak: !!imp.weak,
+          source: imp.source || null,
+        });
+      }
+    }
+  }
 
   for (const sec of sections) {
     const provenance = (sec.flags & 0xff) === S_INTERPOSING ? 'S_INTERPOSING' : '__DATA,__interpose';
@@ -1453,7 +1477,7 @@ function parseInterposingSections(r, image, bits, metadataBudget) {
       const rawReplacee = ptrSize === 8 ? r.u64(filePos + ptrSize) : BigInt(r.u32(filePos + ptrSize));
       const replacement = resolveMachOPointer(image, rawReplacement, { address: replacementSlotAddress });
       const replacee = resolveMachOPointer(image, rawReplacee, { address: replaceeSlotAddress });
-      const replaceeImport = replacee == null ? importIdentityAtSite(image, replaceeSlotAddress) : null;
+      const replaceeImport = replacee == null ? (importBySite.get(replaceeSlotAddress) ?? null) : null;
 
       let failureReason = null;
       if (replacement == null) failureReason = 'replacement-unresolved';
@@ -1533,7 +1557,7 @@ function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
     const count = Number(sec.size / ptrSizeBig);
     const secFileOffset = sec.fileOffset != null ? Number(sec.fileOffset) : null;
     const secFileSize = sec.fileSize != null ? Number(sec.fileSize) : 0;
-    const fileAvailable = (secFileOffset != null && secFileOffset <= r.length)
+    const fileAvailable = (secFileOffset != null && Number.isSafeInteger(secFileOffset) && secFileOffset >= 0 && secFileOffset <= r.length)
       ? Math.max(0, Math.min(secFileSize, r.length - secFileOffset))
       : 0;
     const safeCount = Math.min(count, Math.floor(fileAvailable / ptrSize));
@@ -1713,13 +1737,11 @@ function parseDataInCode(r, dc, image, metadataBudget) {
 
   if (dc.offset > r.length || dc.size > r.length - dc.offset) {
     budget.partial('data-in-code:out-of-range', 'LC_DATA_IN_CODE data range exceeds input');
-    image.warnings.push('LC_DATA_IN_CODE data range exceeds input');
     return;
   }
 
   if (dc.size % 8 !== 0) {
     budget.partial('data-in-code:truncated', `LC_DATA_IN_CODE data size ${dc.size} is not a multiple of entry size 8`);
-    image.warnings.push(`LC_DATA_IN_CODE data size ${dc.size} is not a multiple of entry size 8`);
   }
 
   image.metadata.dataInCode = image.dataInCode;
@@ -1737,7 +1759,6 @@ function parseDataInCode(r, dc, image, metadataBudget) {
 
     if (offset > r.length || length > r.length - offset) {
       budget.partial('data-in-code:entry-out-of-range', `data_in_code_entry offset 0x${offset.toString(16)} length ${length} exceeds Mach-O slice`);
-      image.warnings.push(`data_in_code_entry offset 0x${offset.toString(16)} length ${length} exceeds Mach-O slice`);
       continue;
     }
 

@@ -180,7 +180,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
   } catch {
     return defaultResult({ loaderPolicy:'unavailable', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(['ELF bytes unavailable or truncated']) });
   }
-  if (r.length < 64) return defaultResult({ loaderPolicy:'unavailable', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(['ELF bytes unavailable or truncated']) });
+  if (r.length < 16) return defaultResult({ loaderPolicy:'unavailable', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(['ELF bytes unavailable or truncated']) });
   if (r.u8(0) !== 0x7f || r.u8(1) !== 0x45 || r.u8(2) !== 0x4c || r.u8(3) !== 0x46) {
     return defaultResult({ loaderPolicy:'not-elf', btiRequested:null, pacRequested:null, gcsRequested:null });
   }
@@ -189,8 +189,10 @@ export function parseAarch64GnuProperty(input, options = {}) {
   if ((cls !== 1 && cls !== 2) || (data !== 1 && data !== 2)) {
     return defaultResult({ loaderPolicy:'unsupported-elf-header', btiRequested:null, pacRequested:null, gcsRequested:null });
   }
-  if (data !== 1) r = r.endian(false);
   const bits = cls === 2 ? 64 : 32;
+  const minEhdr = bits === 64 ? 64 : 52;
+  if (r.length < minEhdr) return defaultResult({ loaderPolicy:'unavailable', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(['ELF bytes unavailable or truncated']) });
+  if (data !== 1) r = r.endian(false);
   const machine = r.u16(18);
   if (machine !== EM_AARCH64) return defaultResult({ loaderPolicy:'not-aarch64', btiRequested:null, pacRequested:null, gcsRequested:null });
   const phoff = bits === 64 ? r.u64(32) : BigInt(r.u32(28));
@@ -206,8 +208,8 @@ export function parseAarch64GnuProperty(input, options = {}) {
     warnings.push('extended ELF program-header count is not re-read by the bounded GNU property parser');
     return budgetResult(budget, { loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null }, warnings);
   }
-  if (phoffNumber == null || phentsize < minPh || phnum > maxProgramHeaders
-      || !boundedSpan(phoffNumber, phnum * phentsize, r.length)) {
+  if (phnum > 0 && (phoffNumber == null || phentsize < minPh || phnum > maxProgramHeaders
+      || !boundedSpan(phoffNumber, phnum * phentsize, r.length))) {
     warnings.push('ELF program-header table is unavailable or outside bounded input');
     return budgetResult(budget, { loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null }, warnings);
   }
