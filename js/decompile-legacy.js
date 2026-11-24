@@ -4128,7 +4128,13 @@ function declarations(ctx, types, o, body) {
       continue;
     }
     const raw = (ctx.notes && ctx.funcAddr != null ? ctx.notes.typeOf(ctx.funcAddr, l.slot) : null) || l.type;
-    const type = raw === 'unknown' ? 'int64' : raw;
+    let type = raw === 'unknown' ? 'int64' : raw;
+    if (type === 'float' || type === 'double') {
+      const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\*\\s*\\([^;{}()]*\\*\\s*\\)\\s*\\([^;{}()]*\\b${esc}\\b`).test(text)) {
+        type = 'uint64';
+      }
+    }
     if (!byType.has(type)) byType.set(type, []);
     byType.get(type).push(name);
   }
