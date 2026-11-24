@@ -5,12 +5,7 @@
  */
 import { recordFallback, recordWasmCall } from './core/wasm-telemetry.js';
 
-let hexEngineModule = null;
-try {
-  hexEngineModule = await import('./core/hex-engine-wasm.js');
-} catch {
-  hexEngineModule = null;
-}
+import * as hexEngineModule from './core/hex-engine-wasm.js';
 
 function isJsEngineForced() {
   if (typeof globalThis === 'object' && globalThis !== null && globalThis.__HEX_ENGINE_MODE__ === 'js') {

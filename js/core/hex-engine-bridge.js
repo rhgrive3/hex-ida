@@ -85,12 +85,7 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 // Optional static-like load of ./hex-engine-wasm.js (generated in a parallel worktree).
-let wasmModuleApi = null;
-try {
-  wasmModuleApi = await import('./hex-engine-wasm.js');
-} catch {
-  wasmModuleApi = null;
-}
+import * as wasmModuleApi from './hex-engine-wasm.js';
 
 function noteFallback(domain, reason) {
   recordFallback(`${domain}:${reason}`);
