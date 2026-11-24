@@ -142,7 +142,7 @@ export function installScopedAnalysisTools(registry, context) {
         const { workBudget: requested, ...request } = input;
         const limits = requested === undefined ? undefined : normalizeQueryLimits(requested);
         return context.runScopedAnalysis(method, request, {
-          signal: execution.signal ?? registry.executionSignal ?? null, ...(limits ? { limits } : {}),
+          signal: execution.signal ?? null, ...(limits ? { limits } : {}),
         });
       },
     });

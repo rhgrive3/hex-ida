@@ -235,8 +235,11 @@ export function shapeOfStep(expr) {
       if (holdsResult(cur.a) && !holdsResult(cur.b)) { muls.push(cur.b); cur = cur.a; continue; }
       if (holdsResult(cur.b) && !holdsResult(cur.a)) { muls.push(cur.a); cur = cur.b; continue; }
     }
-    if ((cur.op === 'sar' || cur.op === 'shr') && holdsResult(cur.a) && constOf(cur.b) != null) {
-      divs.push({ k: 'const', v: 1n << constOf(cur.b) }); cur = cur.a; continue;
+    if ((cur.op === 'sar' || cur.op === 'shr') && holdsResult(cur.a)) {
+      const sh = constOf(cur.b);
+      if (sh != null && sh > 0n && sh < 64n) {
+        divs.push({ k: 'const', v: 1n << sh }); cur = cur.a; continue;
+      }
     }
     break;
   }

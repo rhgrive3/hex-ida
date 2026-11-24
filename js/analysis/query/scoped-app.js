@@ -119,13 +119,14 @@ export async function dispatchScopedAppQuery(app, snapshot, method, request, opt
       },
       readRange: async (request, { signal } = {}) => {
         if (!current()) contractFail('scoped-byte-reader-stale');
-        if (signal?.aborted) throw signal.reason;
+        if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
         if (request.binaryId !== snapshot.binaryId || request.worldId !== entry.service?.worldId) contractFail('scoped-byte-reader-world-mismatch');
         const offset = BigInt(unsignedAddress(request.offset, { bits: 64 }));
         exactInteger(request.length, 'scoped-byte-reader-length', { min: 1, max: 65536 });
-        if (offset > BigInt(Number.MAX_SAFE_INTEGER) || offset + BigInt(request.length) > BigInt(file.size)) contractFail('scoped-byte-reader-range');
+        const endOffset = offset + BigInt(request.length);
+        if (offset > BigInt(Number.MAX_SAFE_INTEGER) || endOffset > BigInt(Number.MAX_SAFE_INTEGER) || endOffset > BigInt(file.size)) contractFail('scoped-byte-reader-range');
         const bytes = new Uint8Array(await file.slice(Number(offset), Number(offset) + request.length).arrayBuffer());
-        if (signal?.aborted) throw signal.reason;
+        if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
         if (!current()) contractFail('scoped-byte-reader-stale');
         return { worldId: request.worldId, binaryId: snapshot.binaryId, offset: request.offset, bytes };
       },

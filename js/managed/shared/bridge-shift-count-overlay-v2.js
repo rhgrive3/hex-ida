@@ -73,7 +73,15 @@ export function overlayManagedI32ShiftCounts(fn, lowered, options = {}) {
         completeness: 'complete',
         metadata: { mnemonic: `${bundle.mnemonic}:shift-count-normalized` },
       });
-      insertedByShift.set(node.id, { before: [normalizedNode], replacement: { ...node, inputs: [node.inputs[0], normalizedValueId] } });
+      const clearShiftUnknown = node.unknown?.reason === 'managed-shift-count-unnormalized' || node.unknown?.reason === 'managed-shift-count-out-of-range';
+      insertedByShift.set(node.id, {
+        before: [normalizedNode],
+        replacement: {
+          ...node,
+          inputs: [node.inputs[0], normalizedValueId],
+          ...(clearShiftUnknown ? { unknown: null, completeness: 'complete' } : {}),
+        },
+      });
       addedValues.push(normalizedValue);
     } else {
       const constNodeId = `${node.id}_shift_count_mask_const`;
@@ -119,7 +127,15 @@ export function overlayManagedI32ShiftCounts(fn, lowered, options = {}) {
         completeness: 'complete',
         metadata: { mnemonic: `${bundle.mnemonic}:shift-count-mask` },
       });
-      insertedByShift.set(node.id, { before: [constNode, maskNode], replacement: { ...node, inputs: [node.inputs[0], maskValueId] } });
+      const clearShiftUnknown = node.unknown?.reason === 'managed-shift-count-unnormalized' || node.unknown?.reason === 'managed-shift-count-out-of-range';
+      insertedByShift.set(node.id, {
+        before: [constNode, maskNode],
+        replacement: {
+          ...node,
+          inputs: [node.inputs[0], maskValueId],
+          ...(clearShiftUnknown ? { unknown: null, completeness: 'complete' } : {}),
+        },
+      });
       addedValues.push(constValue, maskValue);
     }
   }
@@ -141,6 +157,11 @@ export function overlayManagedI32ShiftCounts(fn, lowered, options = {}) {
     }
     return { ...block, nodeIds };
   });
-  const semanticIr = createSemanticIrFunction({ ...old, nodes, blocks, values: [...old.values, ...addedValues] }, options);
+  const SHIFT_UNKNOWN_REASONS = new Set(['managed-shift-count-unnormalized', 'managed-shift-count-out-of-range']);
+  const remainingShiftReasons = new Set(nodes.map((n) => n.unknown?.reason).filter((r) => SHIFT_UNKNOWN_REASONS.has(r)));
+  const unknowns = (old.unknowns ?? []).filter((u) => !SHIFT_UNKNOWN_REASONS.has(u?.reason) || remainingShiftReasons.has(u.reason));
+  const allNodesComplete = nodes.every((n) => n.completeness === 'complete');
+  const completeness = fn.aggregateCompleteness === 'exact' && unknowns.length === 0 && allNodesComplete ? 'complete' : old.completeness;
+  const semanticIr = createSemanticIrFunction({ ...old, nodes, blocks, values: [...old.values, ...addedValues], unknowns, completeness }, options);
   return deepFreeze({ ...lowered, semanticIr, ssa: buildSemanticSsa(semanticIr, lowered.cfg, options) });
 }

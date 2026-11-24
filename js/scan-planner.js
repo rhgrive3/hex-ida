@@ -370,6 +370,7 @@ export function mergeChunkProgramScans({
 
   const targetKindLen = Math.min(words, globalKindCap);
   let outKinds = kinds;
+  let kindsCovered = 0;
   if (!outKinds) {
     outKinds = new Uint8Array(targetKindLen);
     for (let i = 0; i < ordered.length; i++) {
@@ -378,16 +379,24 @@ export function mergeChunkProgramScans({
         const base = r.chunkWordBase != null
           ? r.chunkWordBase
           : (chunks && chunks[r.chunkIndex] ? chunks[r.chunkIndex].wordBase : 0);
-        const take = Math.min(r.kinds.length, Math.max(0, outKinds.length - base));
+        const chunkCovered = Number.isInteger(r.kindsCovered) ? Math.max(0, Math.min(r.kinds.length, r.kindsCovered)) : r.kinds.length;
+        const take = Math.min(chunkCovered, Math.max(0, outKinds.length - base));
         if (take > 0) {
           outKinds.set(take === r.kinds.length ? r.kinds : r.kinds.subarray(0, take), base);
+          kindsCovered += take;
         }
       }
       r.kinds = null;
     }
   } else {
-    for (let i = 0; i < ordered.length; i++) ordered[i].kinds = null;
+    for (let i = 0; i < ordered.length; i++) {
+      const r = ordered[i];
+      const chunkCovered = Number.isInteger(r?.kindsCovered) ? Math.max(0, r.kindsCovered) : (r?.words || 0);
+      kindsCovered += chunkCovered;
+      r.kinds = null;
+    }
     if (outKinds.length > words) outKinds = outKinds.slice(0, words);
+    kindsCovered = Math.min(words, outKinds.length, kindsCovered || outKinds.length);
   }
 
   // Field-by-field merge, nulling each source array immediately after copying.
@@ -420,7 +429,7 @@ export function mergeChunkProgramScans({
     refKind,
     refCount,
     kinds: outKinds,
-    kindsCovered: Math.min(words, outKinds.length),
+    kindsCovered: Math.min(words, outKinds.length, kindsCovered),
     callsCapped,
     refsCapped,
     budgetCapped,

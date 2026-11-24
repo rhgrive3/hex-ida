@@ -63,7 +63,7 @@ export function groupedFusion(items, opts) {
       nth = counted.get(group) || 0;
       counted.set(group, nth + 1);
       delta *= damp(nth);
-      const cap = LN(GROUP_CAP[group] != null ? GROUP_CAP[group] : 20);
+      const cap = LN(Object.hasOwn(GROUP_CAP, group) && GROUP_CAP[group] != null ? GROUP_CAP[group] : 20);
       const posAlready = posByGroup.get(group) || 0;
       delta = Math.min(delta, Math.max(0, cap - posAlready));
       posByGroup.set(group, posAlready + delta);
@@ -159,7 +159,7 @@ export function accuracyReport(rows) {
   const total = all.length;
   if (!total) {
     return { total: 0, top1: null, top3: null, precision: null, recall: null,
-      brier: null, ece: null, falseConfirmRate: null, confirmed: 0, abstentions: 0 };
+      brier: null, ece: null, falseConfirmRate: null, confirmed: 0, abstentions: 0, abstentionAccuracy: null };
   }
   const answered = all.filter((r) => r.verdict && r.verdict !== 'none');
   const confirmed = all.filter((r) => r.verdict === 'confirmed');

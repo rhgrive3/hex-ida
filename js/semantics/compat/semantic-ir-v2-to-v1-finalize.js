@@ -332,7 +332,8 @@ function uint(value, bits) { return BigInt.asUintN(Math.max(1, Number(bits || 64
 function sint(value, bits) { return BigInt.asIntN(Math.max(1, Number(bits || 64)), BigInt(value)); }
 function ror(value, amount, bits) {
   const width = Math.max(1, Number(bits || 64));
-  const shift = Number(BigInt(amount) % BigInt(width));
+  const w = BigInt(width);
+  const shift = Number(((BigInt(amount) % w) + w) % w);
   const input = uint(value, width);
   if (shift === 0) return input;
   return uint((input >> BigInt(shift)) | (input << BigInt(width - shift)), width);
@@ -370,6 +371,7 @@ function foldInstruction(inst) {
     if (inst.sub === 'is-zero') return args[0] === 0n ? 1n : 0n;
     if (inst.sub === 'sext') {
       const sourceBits = Number(inst.extra?.sourceBits ?? inst.args?.[0]?.value?.bits ?? bits);
+      if (!Number.isSafeInteger(sourceBits) || sourceBits < 1 || sourceBits > bits) return null;
       return uint(sint(args[0], sourceBits), bits);
     }
   }
@@ -402,7 +404,9 @@ function foldInstruction(inst) {
   if (inst.op === V1_OP.BFX && args.length >= 1 && args[0] != null) {
     const lsb = Number(inst.extra?.lsb);
     const width = Number(inst.extra?.width);
-    if (Number.isInteger(lsb) && lsb >= 0 && Number.isInteger(width) && width > 0) {
+    const srcBits = Number(inst.args?.[0]?.value?.bits ?? bits);
+    const maxWidth = Math.min(256, Math.max(bits, Number.isSafeInteger(srcBits) && srcBits > 0 ? srcBits : bits));
+    if (Number.isSafeInteger(lsb) && lsb >= 0 && lsb < maxWidth && Number.isSafeInteger(width) && width > 0 && width <= maxWidth) {
       const src = uint(args[0], inst.args?.[0]?.value?.bits ?? bits);
       if (inst.extra?.toward === 'left') {
         if (!Number.isSafeInteger(bits) || bits <= 0 || lsb >= bits) return null;

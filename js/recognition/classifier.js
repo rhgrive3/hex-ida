@@ -102,7 +102,7 @@ function scoreFingerprint(fp, cls, context = {}) {
   if (context.calledFromApplication) score += 0.08;
   const penalties = { SYSTEM:0.7, RUNTIME:0.7, SDK:0.65, LIBRARY:0.65, GENERATED:0.75 };
   const hard = cls.hardSuppress === true && cls.confidence >= 0.8;
-  score -= hard ? (penalties[cls.classification] || 0) : (['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) ? 0.08 * Math.max(0,Math.min(1,cls.confidence || 0)) : 0);
+  score -= hard ? (Object.hasOwn(penalties, cls.classification) ? penalties[cls.classification] : 0) : (['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) ? 0.08 * Math.max(0,Math.min(1,cls.confidence || 0)) : 0);
   if (vendorConfidenceOf(context.vendor) >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
   return Math.max(0, Math.min(1, score));
 }
@@ -170,7 +170,7 @@ export function rankApplicationFunctions(functions = [], contextFor = () => ({})
 export function classificationMetrics(results = []) {
   const total = results.length || 1;
   const counts = Object.fromEntries(FUNCTION_CLASSES.map((x) => [x, 0]));
-  for (const item of results) { const c = item.classification?.classification || item.classification || 'UNKNOWN'; if (c in counts) counts[c]++; }
+  for (const item of results) { const c = item.classification?.classification || item.classification || 'UNKNOWN'; if (Object.hasOwn(counts, c)) counts[c]++; }
   const suppressed = counts.SYSTEM + counts.RUNTIME + counts.SDK + counts.LIBRARY + counts.GENERATED;
   return { total: results.length, counts, librarySuppressionRate: suppressed / total, applicationCodeReduction: suppressed / total, applicationVisibleRate: counts.APPLICATION / total };
 }

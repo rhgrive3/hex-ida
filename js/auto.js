@@ -636,9 +636,10 @@ export function memoizeAnalysis(analyze) {
     // not collide with their primitive lookalikes through toString(), or a
     // malformed address would reuse another address's cached analysis.
     const keyPart = (value) => {
-      if (value == null) return 'null';
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
-      try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return null; }
+      if (value === null) return ['null', null];
+      if (value === undefined) return ['undefined', null];
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return [typeof value, String(value)];
+      try { return ['structured', stableDigest(jsonSafe(value))]; } catch { return null; }
     };
     const addrPart = keyPart(addr);
     const endPart = keyPart(end);
@@ -646,7 +647,7 @@ export function memoizeAnalysis(analyze) {
     // memoization preserves the analyzer's actual input and avoids sharing one
     // opaque sentinel across unrelated cyclic values (#3309).
     if (addrPart == null || endPart == null) return Promise.resolve().then(() => analyze(addr, end, options));
-    const key = `${addrPart}:${endPart}`;
+    const key = JSON.stringify([addrPart, endPart]);
     if (cache.has(key)) return cache.get(key);
     const p = Promise.resolve()
       .then(() => analyze(addr, end, options))

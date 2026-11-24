@@ -63,7 +63,7 @@ export function completenessOf(result) {
   const returned = returnedValue === undefined ? rows.length : returnedValue;
   const total = totalValue === undefined ? (truncatedValue === true ? null : returned) : totalValue;
   const behindCounts = total != null && returned < total;
-  const contradictsCounts = behindCounts && completeValue === true;
+  const contradictsCounts = (behindCounts || truncatedValue === true) && completeValue === true;
   const complete = contradictsCounts ? false
     : completeValue === undefined ? (truncatedValue !== true && !behindCounts)
       : completeValue;
@@ -281,5 +281,7 @@ export function projectKnowledge(result, meta = {}) {
 }
 
 export function projectBounded(result, meta = {}) {
-  return withEnvelope(boundedProjection(result, { arrayLimit: 24, stringLimit: 6000, objectLimit: 80 }), { ...meta, result });
+  const projected = boundedProjection(result, { arrayLimit: 24, stringLimit: 6000, objectLimit: 80 });
+  const body = projected && typeof projected === 'object' && !Array.isArray(projected) ? projected : { value: projected };
+  return withEnvelope(body, { ...meta, result });
 }

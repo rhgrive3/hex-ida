@@ -1,4 +1,5 @@
 import { deepFreeze } from '../../core/identity/index.js';
+import { createSemanticIrFunction } from '../../semantics/ir/function.js';
 import { buildSemanticSsa } from '../../semantics/ssa/build.js';
 
 const blockOffset = id => {
@@ -11,7 +12,7 @@ const valueType = (kind,width,addressSpace=null) => addressSpace ? {kind,widthBi
 
 const DEX_BRANCH_OPERATORS = Object.freeze({ eq:'eq', ne:'ne', lt:'slt', ge:'sge', gt:'sgt', le:'sle' });
 
-function repairDexControlSemantics(fn, lowered) {
+function repairDexControlSemantics(fn, lowered, options = {}) {
   const old = lowered.semanticIr;
   const bundleByEffect = new Map((fn.bundles ?? []).map((bundle) => [bundle.operationId, bundle]));
   const additionsBefore = new Map();
@@ -107,7 +108,7 @@ function repairDexControlSemantics(fn, lowered) {
   return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg)};
 }
 
-function splitDexExceptionBlocks(fn, lowered) {
+function splitDexExceptionBlocks(fn, lowered, options = {}) {
   if (!fn.exceptionRegions?.length) return lowered;
   const bundles = [...fn.bundles].sort((a,b)=>a.bytecodeOffset-b.bytecodeOffset);
   const bundleByEffect = new Map(bundles.map(b=>[b.operationId,b]));
@@ -136,15 +137,29 @@ function splitDexExceptionBlocks(fn, lowered) {
   const byId=new Map(cfgBlocks.map(b=>[b.id,b]));
   for(const b of cfgBlocks)for(const e of b.successors){const t=byId.get(e.to);if(t&&!t.predecessors.includes(b.id))t.predecessors.push(b.id)}
   const nodeOffset = n => bundleByEffect.get(n.sourceEffectIds?.[0])?.bytecodeOffset ?? blockOffset(n.blockId) ?? 0;
-  const nodes=lowered.semanticIr.nodes.map(n=>({...n,blockId:blockId(sorted.filter(s=>s<=nodeOffset(n)).at(-1)??sorted[0])}));
+  const floorOffset = (off) => {
+    let lo = 0, hi = sorted.length - 1, ans = sorted[0];
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid] <= off) { ans = sorted[mid]; lo = mid + 1; } else hi = mid - 1;
+    }
+    return ans;
+  };
+  const nodes = lowered.semanticIr.nodes.map(n => ({ ...n, blockId: blockId(floorOffset(nodeOffset(n))) }));
+  const nodeIdsByBlock = new Map();
+  for (const n of nodes) {
+    let list = nodeIdsByBlock.get(n.blockId);
+    if (!list) { list = []; nodeIdsByBlock.set(n.blockId, list); }
+    list.push(n.id);
+  }
   const blockOrigin=new Map(lowered.semanticIr.blocks.map(b=>[b.id,b.origin]));
-  const irBlocks=cfgBlocks.map(b=>({id:b.id,nodeIds:nodes.filter(n=>n.blockId===b.id).map(n=>n.id),origin:blockOrigin.get(ownerOf(blockOffset(b.id)).id)}));
+  const irBlocks=cfgBlocks.map(b=>({id:b.id,nodeIds:nodeIdsByBlock.get(b.id)??[],origin:blockOrigin.get(ownerOf(blockOffset(b.id)).id)}));
   const cfg={...lowered.cfg,blocks:cfgBlocks};
-  const semanticIr={...lowered.semanticIr,blocks:irBlocks,nodes};
-  return {...lowered,cfg,semanticIr,ssa:buildSemanticSsa(semanticIr,cfg)};
+  const semanticIr=createSemanticIrFunction({...lowered.semanticIr,blocks:irBlocks,nodes}, options);
+  return {...lowered,cfg,semanticIr,ssa:buildSemanticSsa(semanticIr,cfg,options)};
 }
 
-function repairDexFieldMemory(fn, lowered) {
+function repairDexFieldMemory(fn, lowered, options = {}) {
   const bound = new Map();
   for(const b of fn.bundles){const m=b.memoryEffects?.[0];if(m?.bindingVersion===1)bound.set(b.operationId,{bundle:b,memory:m})}
   if(!bound.size)return lowered;
@@ -172,7 +187,7 @@ function repairDexFieldMemory(fn, lowered) {
     additionsBefore.set(node.id,[addressNode]);
     const mem={...node.memory,addressSpace:memory.space,addressExpr:{valueId:addressValue.id},widthBits:memory.byteWidth*8,volatility:memory.volatility??'unknown',atomic:memory.atomic??'unknown',ordering:memory.ordering??'unknown'};
     let updated={...node,memory:mem};
-    if(memory.isWrite){let valueId=getRead(memory.valueReadIndex);const extras=[];if(memory.valueBits>memory.byteWidth*8){const id=`${node.id}:field-truncate`,out=`${id}:value`;makeValue(out,valueType('bitvector',memory.byteWidth*8),id,node.origin);extras.push({id,kind:'trunc',blockId:node.blockId,inputs:[valueId],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin});valueId=out}additionsBefore.set(node.id,[addressNode,...extras]);updated={...updated,inputs:[addressValue.id,valueId]}}
+    if(memory.isWrite){let valueId=getRead(memory.valueReadIndex);if(valueId==null){additionsBefore.delete(node.id);continue;}const extras=[];if(memory.valueBits>memory.byteWidth*8){const id=`${node.id}:field-truncate`,out=`${id}:value`;makeValue(out,valueType('bitvector',memory.byteWidth*8),id,node.origin);extras.push({id,kind:'trunc',blockId:node.blockId,inputs:[valueId],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin});valueId=out}additionsBefore.set(node.id,[addressNode,...extras]);updated={...updated,inputs:[addressValue.id,valueId]}}
     else {updated={...updated,inputs:[addressValue.id]};if(memory.extension){const id=`${node.id}:field-extend`,out=`${id}:value`,kind=memory.extension==='sign'?'sext':'zext';makeValue(out,memory.valueType,id,node.origin);const fromBits=memory.byteWidth*8,toBits=memory.valueBits??memory.valueType?.widthBits;const ext={id,kind,blockId:node.blockId,inputs:[node.outputs[0]],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{fromBits,toBits},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin};additionsAfter.set(node.id,[ext]);for(const w of writesByEffect.get(effectId)??NO_NODES){if(w.inputs?.[0]===node.outputs[0])replacement.set(w.id,{...w,inputs:[out]})}}}
     replacement.set(node.id,updated);
   }
@@ -184,13 +199,13 @@ function repairDexFieldMemory(fn, lowered) {
   const unknowns=(old.unknowns??[]).filter(u=>u?.reason!=='memory-address-unavailable'||stillMissingAddress);
   const allNodesComplete=nodes.every(n=>n.completeness==='complete');
   const completeness=fn.aggregateCompleteness==='exact'&&unknowns.length===0&&allNodesComplete?'complete':old.completeness;
-  const semanticIr={...old,blocks,nodes,values:retainedValues,unknowns,completeness};
-  return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg)};
+  const semanticIr=createSemanticIrFunction({...old,blocks,nodes,values:retainedValues,unknowns,completeness}, options);
+  return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg,options)};
 }
 
 
 
-function repairDexArrayMemory(fn, lowered) {
+function repairDexArrayMemory(fn, lowered, options = {}) {
   const bound=new Map();
   for(const b of fn.bundles){const m=b.memoryEffects?.[0];if(m?.bindingVersion===2)bound.set(b.operationId,{bundle:b,memory:m})}
   if(!bound.size)return lowered;
@@ -225,12 +240,12 @@ function repairDexArrayMemory(fn, lowered) {
   const nodes=[];for(const n of old.nodes){nodes.push(...(before.get(n.id)??[]));nodes.push(replacement.get(n.id)??n);nodes.push(...(after.get(n.id)??[]))}
   const byBlock=new Map();for(const n of nodes){if(!byBlock.has(n.blockId))byBlock.set(n.blockId,[]);byBlock.get(n.blockId).push(n.id)}
   const blocks=old.blocks.map(b=>({...b,nodeIds:byBlock.get(b.id)??[]}));
-  const semanticIr={...old,blocks,nodes,values};
-  return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg)};
+  const semanticIr=createSemanticIrFunction({...old,blocks,nodes,values}, options);
+  return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg,options)};
 }
 
 const DEX_SPECIAL_INTRINSICS=new Set(['new-array','filled-new-array','filled-new-array/range','array-length','check-cast','instance-of']);
-function repairDexArrayTypeNodes(fn, lowered) {
+function repairDexArrayTypeNodes(fn, lowered, options = {}) {
   const bundles=new Map((fn.bundles??[]).map(b=>[b.operationId,b]));
   let changed=false;
   const nodes=lowered.semanticIr.nodes.map(node=>{
@@ -243,16 +258,16 @@ function repairDexArrayTypeNodes(fn, lowered) {
     return {...node,kind:'intrinsic',operator,intrinsic:{inputs:[...(node.inputs??[])],outputs:[...(node.outputs??[])],stateReads:[],stateWrites:[],memoryRead:{scope:'none'},memoryWrite:(mn==='new-array'||mn.startsWith('filled-new-array'))?{scope:'all',addressSpaces:['managed-heap']}:{scope:'none'},controlEffects:[],determinism:'input-dependent',symbolicDetail:'summary-only'},attributes:{...(node.attributes??{}),...(bundle.metadata??{})},metadata:{...(node.metadata??{}),dexMetadata:bundle.metadata??{}}};
   });
   if(!changed)return lowered;
-  const semanticIr={...lowered.semanticIr,nodes};
-  return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg)};
+  const semanticIr=createSemanticIrFunction({...lowered.semanticIr,nodes}, options);
+  return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg,options)};
 }
 
-export function overlayDexLowering(fn, lowered) {
+export function overlayDexLowering(fn, lowered, options = {}) {
   if(fn?.frontendId!=='dex')return lowered;
-  let out=repairDexControlSemantics(fn,lowered);
-  out=splitDexExceptionBlocks(fn,out);
-  out=repairDexFieldMemory(fn,out);
-  out=repairDexArrayMemory(fn,out);
-  out=repairDexArrayTypeNodes(fn,out);
+  let out=repairDexControlSemantics(fn,lowered,options);
+  out=splitDexExceptionBlocks(fn,out,options);
+  out=repairDexFieldMemory(fn,out,options);
+  out=repairDexArrayMemory(fn,out,options);
+  out=repairDexArrayTypeNodes(fn,out,options);
   return deepFreeze(out);
 }

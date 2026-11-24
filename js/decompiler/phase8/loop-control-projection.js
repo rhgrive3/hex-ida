@@ -431,7 +431,7 @@ function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, bloc
     if (!LOOP_NODE_TEXT.test(text) && !SWITCH_NODE_TEXT.test(text)) continue;
     if (blockOf(node) === proof.header) continue;
     const nested = findAlreadyProjectedSpan(body, index);
-    if (!nested) continue;
+    if (!nested) return null;
     nestedRanges.push(nested);
     index = nested.end;
   }
@@ -622,7 +622,7 @@ function projectOneLoop(body, proof, ctx) {
     if (!LOOP_NODE_TEXT.test(text) && !SWITCH_NODE_TEXT.test(text)) continue;
     if (blockOf(node) === proof.header) continue;
     const nested = findAlreadyProjectedSpan(body, index);
-    if (!nested) continue;
+    if (!nested) return null;
     nestedRanges.push(nested);
     index = nested.end;
   }
