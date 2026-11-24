@@ -3364,7 +3364,8 @@ function memoryStatement(insn, ctx, mk, base) {
     }
     const dstOp0 = insn.ops[0];
     const isFpOrVecDst = fpRegWidth(dstOp0) != null || dstOp0?.cls === 'fp' || dstOp0?.cls === 'vec';
-    const text = isFpOrVecDst ? null : ctx.textOf.get(insn.row);
+    const isSubPointerLoad = elemSize < 8 || dstOp0?.bits === 32;
+    const text = (isFpOrVecDst || isSubPointerLoad) ? null : ctx.textOf.get(insn.row);
     if (text != null) {
       return wrapWb(mk(d0 + ' = "' + escapeText(text) + '";', { dst: insn.writes[0], pure: !hasWb }));
     }
