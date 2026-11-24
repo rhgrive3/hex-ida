@@ -25,8 +25,8 @@ export { auditBinary, capabilitiesOf } from './audit.js';
 export { fnv1a64, fingerprintBytes, fingerprintFunction, fingerprintImage } from './fingerprint.js';
 
 const WASM_FORMAT_BY_ID = Object.freeze({
-  1: 'macho',
-  2: 'elf',
+  1: 'elf',
+  2: 'macho',
   3: 'pe',
 });
 

@@ -411,6 +411,7 @@ HexStatus hex_engine_decompile_x86_64(
         d.cap != HEX_X86_CAP_DECOMP) {
       return HEX_ERR_UNSUPPORTED;
     }
+    if (static_cast<uint32_t>(d.length) > byte_len - off) return HEX_ERR_UNSUPPORTED;
     off += static_cast<uint32_t>(d.length);
     ++insn_count;
   }

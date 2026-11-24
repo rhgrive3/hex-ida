@@ -23,6 +23,7 @@ import {
 } from '../../js/core/hex-engine-wasm.js';
 import {
   getFallbackCount,
+  getWasmCallCount,
   getWasmCallCounts,
   resetAllTelemetry,
 } from '../../js/core/wasm-telemetry.js';
@@ -213,6 +214,7 @@ test('Wave 7 parity: ARM64 expanded instructions produce 0-diff pseudocode, line
     const wasmMap = normalizeSourceMap(wasmRes, wasmLines);
     assert.deepEqual(wasmMap, jsMap, `${tc.name}: sourceMap mismatch between JS and WASM`);
   }
+  assert.ok(getWasmCallCount('decompile') >= 7, `expected >= 7 WASM decompile calls across expanded ARM64 suite, got ${getWasmCallCount('decompile')}`);
 });
 
 // ---------------------------------------------------------------------------

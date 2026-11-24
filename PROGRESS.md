@@ -34,3 +34,10 @@
 
 ## Uncovered Standalone Architectures (Automatic JS Fallback)
 - `riscv64`, `arm64e`, `x86_64` decompilation, `x86` decompilation: automatically fall back per-function to JS with structured `decompile:non_arm64_arch:<arch>` telemetry.
+
+## Wave 7 (Persistent 9-Parallel Expansion & 9-Parallel Independent Review)
+- **Impl Agents**: 9 parallel worktrees (`E1` identity wire, `E2` binary wire, `E3` words.js wire, `E4` ARM64 decode gate expansion, `E5` ARM64 runtime lifting expansion, `E6` `x86_64_decomp` SysV/Win64 vertical slice, `E7` WASM memory/export optimization, `E8` `controlflow`/`benchmark` alignment, `E9` Wave 7 expanded parity suite)
+- **Independent Review Agents**: 9 parallel non-overlapping reviewers (`R1`–`R9`, zero self-review)
+- **Review Findings Resolved**: `js/core/identity/index.js` safe-integer 0-ULP gate (`1e-50`/`1.2345e-300`/`9.999999999999999e20`), `js/binary/index.js` `WASM_FORMAT_BY_ID` ELF/Mach-O ID alignment, `engine_runtime.cpp` `g_emit_arena` rebind before emit, `x86_64_decomp.cpp` length bounds guard, `arm64_decode.cpp` `s_bit==0` guard, `wave7-expanded-parity.test.mjs` mandatory `>=7` WASM decompile assert + `t.skip` removal, `ABI.md` 84-export sync.
+- **Unified WASM Artifact**: `wasm/hex_engine.wasm` (**221,868 bytes**, 11 freestanding C++20 units, **84 exports**, **0 imports**, initial linear memory **13.75 MiB** <= 16 MiB)
+- **Wave 7 Benchmark**: Full corpus WASM calls **101,567** (`identity`: 101,236, `cfg`: 156, `loops`: 156, `binary`: 13, `decompile`: 6 functions); `js` mode verified **0** WASM calls across all 7 domains; WASM-eligible 6-function subset **1,766.04x** speedup (`7,152.47 ms` -> `4.05 ms`, `heapUsed` `309.59 MB` -> `63.12 MB`).

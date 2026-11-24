@@ -829,6 +829,7 @@ HexStatus hex_engine_decompile_arm64(
   view.node_innermost_loop = loop_res.node_innermost_loop;
 
   // c_emitter runs against g_emit_arena (physically separate from g_scratch_arena).
+  hex::decompiler::bind_arena(&g_emit_arena);
   const int32_t emit_rc = hex_decomp_emit_c_ex(&view, kMaxEmitBytes, emit_flags);
   store.release(ir_handle);
   ir_handle = 0u;
