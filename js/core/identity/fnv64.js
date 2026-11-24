@@ -1,3 +1,5 @@
+import { wasmFnv64Bytes } from '../hex-engine-bridge.js';
+
 /**
  * Exact FNV-1a-64 in two unsigned 32-bit limbs. No UTF-8 conversion is done by
  * the text variant: canonical IDs have always hashed JavaScript UTF-16 units.
@@ -35,6 +37,21 @@ export function fnv64Text(text, low = OFFSET_LOW, high = OFFSET_HIGH) {
 /** Accepts byte iterables and returns state so chunk boundaries never affect identity. */
 export function fnv64Bytes(bytes, low = OFFSET_LOW, high = OFFSET_HIGH) {
   checkSeed(low, high);
+  if (
+    bytes instanceof Uint8Array
+    && Object.getPrototypeOf(bytes) === Uint8Array.prototype
+    && bytes[Symbol.iterator] === Uint8Array.prototype[Symbol.iterator]
+    && low === OFFSET_LOW
+    && high === OFFSET_HIGH
+  ) {
+    const hash = wasmFnv64Bytes(bytes);
+    if (hash !== null) {
+      return {
+        low: Number(hash & 0xffffffffn) >>> 0,
+        high: Number((hash >> 32n) & 0xffffffffn) >>> 0,
+      };
+    }
+  }
   for (const byte of bytes) {
     // Retain the public hashBytes domain and its exact error, including holes,
     // non-numbers, signed values and values from custom iterators.
@@ -52,6 +69,20 @@ export function fnv64Bytes(bytes, low = OFFSET_LOW, high = OFFSET_HIGH) {
 /** ByteSource hashing uses indexed reads, deliberately ignoring custom iterators. */
 export function fnv64ByteView(bytes, low = OFFSET_LOW, high = OFFSET_HIGH) {
   checkSeed(low, high);
+  if (
+    bytes instanceof Uint8Array
+    && Object.getPrototypeOf(bytes) === Uint8Array.prototype
+    && low === OFFSET_LOW
+    && high === OFFSET_HIGH
+  ) {
+    const hash = wasmFnv64Bytes(bytes);
+    if (hash !== null) {
+      return {
+        low: Number(hash & 0xffffffffn) >>> 0,
+        high: Number((hash >> 32n) & 0xffffffffn) >>> 0,
+      };
+    }
+  }
   for (let index = 0; index < bytes.length; index += 1) {
     low ^= bytes[index];
     const carry = ((low >>> 16) * 0x1b3 + (((low & 0xffff) * 0x1b3) >>> 16)) >>> 16;
