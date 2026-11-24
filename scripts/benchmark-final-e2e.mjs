@@ -78,6 +78,7 @@ function median(values) {
 
 const ALL_WASM_DOMAINS = Object.freeze([
   'decompile',
+  'x86_64_decompile',
   'cfg',
   'loops',
   'identity',
@@ -364,7 +365,7 @@ function runFullCorpusOnce(preparedBinaries, mode) {
               ? { _forceWasm: true, _engine: 'wasm' }
               : { _engine: 'auto' };
           const cfgRes = analyzeGraph(fn.cfgSuccs, fn.cfgEntry, null, cfgOpts);
-          sink += (cfgRes?.reachable || []).length;
+          sink += cfgRes?.reachable?.size ?? cfgRes?.reachable?.length ?? 0;
         }
         const dec = decompile(fn.model, {
           addr: fn.address,
@@ -392,7 +393,7 @@ function runFullCorpusOnce(preparedBinaries, mode) {
               ? { _forceWasm: true, _engine: 'wasm' }
               : { _engine: 'auto' };
           const cfgRes = analyzeGraph(succs, entryIdx, null, cfgOpts);
-          sink += (cfgRes?.reachable || []).length;
+          sink += cfgRes?.reachable?.size ?? cfgRes?.reachable?.length ?? 0;
         }
         sink += (sem?.decompiler?.pseudocode || '').length;
       }
