@@ -426,12 +426,20 @@ test('E2E regression: ORR / FMOV / MNEG / SMULL / MOVN 0-diff parity and safe fa
   const arm64 = await createCapstoneArm64Session();
   try {
     const cases = [
+      { name: 'reg_add_w_wasm', words: [0x0b010000, 0xd65f03c0], expectWasm: true },
       { name: 'reg_orr_imm', words: [0xb2401fe0, 0xd65f03c0], expectFallback: true },
       { name: 'reg_fmov_imm', words: [0x1e6e1000, 0xd65f03c0], expectFallback: true },
       { name: 'reg_mneg', words: [0x1b01fc00, 0xd65f03c0], expectFallback: true },
       { name: 'reg_smull', words: [0x9b217c00, 0xd65f03c0], expectFallback: true },
-      { name: 'reg_movn_w', words: [0x12800000, 0xd65f03c0], expectFallback: false },
-      { name: 'reg_movn_x', words: [0x92800000, 0xd65f03c0], expectFallback: false },
+      { name: 'reg_movn_w', words: [0x12800000, 0xd65f03c0], expectFallback: true },
+      { name: 'reg_movn_x', words: [0x92800000, 0xd65f03c0], expectFallback: true },
+      { name: 'reg_movz_lsl16', words: [0xd2a24680, 0xd65f03c0] },
+      { name: 'reg_add_mul_x', words: [0x8b010002, 0x9b017c40, 0xd65f03c0] },
+      { name: 'reg_mov_x0_x1', words: [0xaa0103e0, 0xd65f03c0] },
+      { name: 'reg_add_x0_x9', words: [0x8b090000, 0xd65f03c0] },
+      { name: 'reg_add_x2_dead', words: [0x8b010002, 0xd65f03c0] },
+      { name: 'foo$bar', words: [0x0b010000, 0xd65f03c0] },
+      { name: '-[MyClass doThing:]', words: [0x0b010000, 0xd65f03c0], expectFallback: true, expectedFallbackKey: 'decompile:unsupported_objc_name' },
     ];
 
     for (const tc of cases) {
@@ -479,10 +487,80 @@ test('E2E regression: ORR / FMOV / MNEG / SMULL / MOVN 0-diff parity and safe fa
 
       assert.equal(autoRes.pseudocode, jsRes.pseudocode, `${tc.name}: pseudocode mismatch`);
       assert.deepEqual(normalizeLines(autoRes.lines), normalizeLines(jsRes.lines), `${tc.name}: lines mismatch`);
+      const smJs = normalizeSourceMap(jsRes.sourceMap, jsRes.lines);
+      const smAuto = normalizeSourceMap(autoRes.sourceMap, autoRes.lines);
+      assert.equal(smAuto.length, smJs.length, `${tc.name}: sourceMap length mismatch`);
+      for (let i = 0; i < smJs.length; i += 1) {
+        assert.equal(smAuto[i].outputStartLine, smJs[i].outputStartLine, `${tc.name}: sourceMap[${i}] startLine mismatch`);
+        assert.equal(smAuto[i].outputEndLine, smJs[i].outputEndLine, `${tc.name}: sourceMap[${i}] endLine mismatch`);
+        assert.equal(smAuto[i].kind, smJs[i].kind, `${tc.name}: sourceMap[${i}] kind mismatch`);
+      }
+      if (tc.expectWasm) {
+        assert.ok(getWasmCallCount('decompile') >= 1, `${tc.name}: expected decompile WASM call >= 1`);
+      }
       if (tc.expectFallback) {
         assert.equal(getWasmCallCount('decompile'), 0, `${tc.name}: must not count decompile WASM call on fallback`);
         assert.ok(countTotalFallbacks() >= 1, `${tc.name}: must record fallback reason`);
       }
+      if (tc.expectedFallbackKey) {
+        assert.ok(getFallbackCount(tc.expectedFallbackKey) >= 1, `${tc.name}: expected fallback key ${tc.expectedFallbackKey}`);
+      }
+    }
+
+    // Metadata-less 4-byte rawBytes sequence must NOT be misdetected as arm64.
+    {
+      const raw = new Uint8Array([0x00, 0x00, 0x01, 0x0b, 0xc0, 0x03, 0x5f, 0xd6]);
+      const decodedNoWord = arm64.decode(raw, 0x1000n).map((ins, row) => ({
+        row,
+        address: BigInt(ins.address),
+        size: 4,
+        length: 4,
+        mn: String(ins.mnemonic || '').toLowerCase(),
+        mnemonic: String(ins.mnemonic || '').toLowerCase(),
+        ops: String(ins.opStr || ''),
+        opStr: String(ins.opStr || ''),
+        rawBytes: raw.subarray(row * 4, row * 4 + 4),
+      }));
+      const addrToRow = new Map(decodedNoWord.map((ins, idx) => [ins.address, idx]));
+      const rowOfAddress = (a) => addrToRow.get(BigInt(a)) ?? null;
+      const model = buildSemanticModel(decodedNoWord, {
+        startRow: 0,
+        endRow: decodedNoWord.length - 1,
+        rowOfAddress,
+        symbolFor: () => null,
+        name: 'no_meta_4byte',
+      });
+      // Strip any word/arch metadata so only 4-byte rawBytes remain.
+      const strippedModel = {
+        ...model,
+        instructions: (model.instructions || []).map((ins, idx) => {
+          const copy = { ...ins, rawBytes: raw.subarray(idx * 4, idx * 4 + 4) };
+          delete copy.word;
+          delete copy.arch;
+          delete copy.decoderSemanticVersion;
+          return copy;
+        }),
+      };
+      delete strippedModel.arch;
+      delete strippedModel.architecture;
+      const jsRes = withEngineEnv('js', () => decompile(strippedModel, {
+        addr: 0x1000n,
+        name: 'no_meta_4byte',
+        rowOfAddress,
+        beginner: false,
+        _engine: 'js',
+      }));
+      resetAllTelemetry();
+      const autoRes = withEngineEnv('auto', () => decompile(strippedModel, {
+        addr: 0x1000n,
+        name: 'no_meta_4byte',
+        rowOfAddress,
+        beginner: false,
+        _engine: 'auto',
+      }));
+      assert.equal(autoRes.pseudocode, jsRes.pseudocode, 'no_meta_4byte: pseudocode mismatch');
+      assert.equal(getWasmCallCount('decompile'), 0, 'no_meta_4byte: must not run WASM without arch metadata');
+      assert.ok(getFallbackCount('decompile:non_arm64_arch:unknown') >= 1, 'no_meta_4byte: expected non_arm64_arch:unknown fallback');
     }
   } finally {
     arm64.close();

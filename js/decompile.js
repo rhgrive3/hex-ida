@@ -33,19 +33,34 @@ function detectModelArchitecture(model, opts) {
     ?? model?.architecture
     ?? model?.profile?.architecture
     ?? null;
-  if (typeof raw === 'string' && raw.trim()) return raw.trim().toLowerCase();
+  if (typeof raw === 'string' && raw.trim()) {
+    const norm = raw.trim().toLowerCase();
+    if (norm === 'arm64' || norm === 'aarch64') return 'arm64';
+    return norm;
+  }
   const insns = model?.instructions;
   if (Array.isArray(insns) && insns.length > 0) {
     const first = insns[0];
-    const dsv = String(first?.decoderSemanticVersion ?? '').toLowerCase();
-    if (dsv.includes('x86_64') || dsv.includes('amd64')) return 'x86_64';
-    if (dsv.includes('x86')) return 'x86';
-    if (dsv.includes('riscv')) return 'riscv64';
-    if (typeof first?.arch === 'string' && first.arch.trim()) return first.arch.trim().toLowerCase();
-    if (typeof first?.word === 'number' && (first.size === 4 || first.length === 4 || first.size == null)) {
-      return 'arm64';
+    if (typeof first?.arch === 'string' && first.arch.trim()) {
+      const norm = first.arch.trim().toLowerCase();
+      return norm === 'aarch64' ? 'arm64' : norm;
     }
-    if (first?.rawBytes instanceof Uint8Array && first.rawBytes.length === 4 && insns.every((i) => (i?.rawBytes?.length === 4 || i?.size === 4))) {
+    const dsv = String(
+      opts?.decoderSemanticVersion
+      ?? model?.decoderSemanticVersion
+      ?? first?.decoderSemanticVersion
+      ?? '',
+    ).toLowerCase();
+    if (dsv) {
+      if (dsv.includes('arm64e')) return 'arm64e';
+      if (dsv.includes('arm64_32')) return 'arm64_32';
+      if (dsv.includes('arm64') || dsv.includes('aarch64')) return 'arm64';
+      if (dsv.includes('x86_64') || dsv.includes('amd64')) return 'x86_64';
+      if (dsv.includes('x86')) return 'x86';
+      if (dsv.includes('riscv')) return 'riscv64';
+      return 'unknown';
+    }
+    if (typeof first?.word === 'number' && Number.isFinite(first.word)) {
       return 'arm64';
     }
   }

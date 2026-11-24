@@ -371,7 +371,6 @@ export function wasmDecodeArm64Batch(words, basePc = 0n) {
   }
   const count = words.length >>> 0;
   if (count === 0) {
-    recordWasmCall('arm64_decode');
     return [];
   }
   try {
@@ -406,7 +405,6 @@ export function wasmDecodeX86_64Batch(bytes, basePc = 0n) {
     return noteFallback('x86_64_decode', 'wasm_unavailable');
   }
   if (bytes.length === 0) {
-    recordWasmCall('x86_64_decode');
     return [];
   }
   try {
@@ -493,8 +491,12 @@ function classifyUnsupportedArm64Insn(word, insn, ex) {
     return 'unsupported_insn:movn';
   }
   if (typeof ex.hex_arm64_is_decompiler_supported === 'function') {
-    if (ex.hex_arm64_is_decompiler_supported(word >>> 0) === 0) {
-      return `unsupported_insn:${mn || `0x${(word >>> 0).toString(16)}`}`;
+    try {
+      if (ex.hex_arm64_is_decompiler_supported(word >>> 0) === 0) {
+        return `unsupported_insn:${mn || `0x${(word >>> 0).toString(16)}`}`;
+      }
+    } catch {
+      return 'unsupported_insn:gate_exception';
     }
   }
   return null;
@@ -536,8 +538,16 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     let namePtr = 0;
     let nameLen = 0;
     const rawName = typeof funcName === 'string' ? funcName : '';
-    const stripped = rawName.replace(/^_+/, '');
-    const nameStr = stripped.length > 0 ? stripped : rawName;
+    if (rawName.startsWith('-[') || rawName.startsWith('+[')) {
+      return noteFallback('decompile', 'unsupported_objc_name');
+    }
+    let nameStr = '';
+    if (rawName.length > 0) {
+      nameStr = rawName.replace(/^_+/, '').replace(/[^A-Za-z0-9_]/g, '_');
+      if (nameStr.length === 0 || /^[0-9]/.test(nameStr)) {
+        return noteFallback('decompile', 'unsupported_symbol_name');
+      }
+    }
     if (nameStr.length > 0) {
       const nameBytes = textEncoder.encode(nameStr);
       nameLen = nameBytes.length;
