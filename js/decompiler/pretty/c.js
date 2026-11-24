@@ -523,9 +523,9 @@ function printExpr(n, parentPrec, opts, ptrSet, ptrMemo) {
         const leftIsPtr = exprIsPointerTypedInternal(n.left, ptrSet, ptrMemo);
         const rightIsPtr = exprIsPointerTypedInternal(n.right, ptrSet, ptrMemo);
         const isIntOnly = INTEGER_ONLY_BINARY_OPS.has(n.op);
-        castLeft = (isIntOnly && leftIsPtr) || (n.op === 'add' && leftIsPtr && rightIsPtr);
+        castLeft = (isIntOnly && leftIsPtr) || ((n.op === 'add' || n.op === 'sub') && leftIsPtr && rightIsPtr);
         castRight = (isIntOnly && rightIsPtr)
-          || (n.op === 'sub' && !leftIsPtr && rightIsPtr)
+          || (n.op === 'sub' && rightIsPtr)
           || (n.op === 'add' && leftIsPtr && rightIsPtr);
       }
       const isFpBin = FP_BIN_OPS.has(n.op);

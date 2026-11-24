@@ -2346,8 +2346,8 @@ function binText(inst, ctx) {
       if (isGlobalAddrText(b)) b = wrapPtrAsUintptr(b);
     }
   } else if (inst.sub === 'sub') {
-    if (isGlobalAddrText(a)) a = wrapPtrAsUintptr(a);
-    if ((!aPtr && bPtr) || isGlobalAddrText(b)) {
+    if ((aPtr && bPtr) || isGlobalAddrText(a)) a = wrapPtrAsUintptr(a);
+    if (bPtr || isGlobalAddrText(b)) {
       b = wrapPtrAsUintptr(b);
     }
   }

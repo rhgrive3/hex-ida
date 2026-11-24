@@ -467,7 +467,7 @@ function targetOf(base, ops) {
     const target = isBitTestBranch ? ops[2] : [...ops].reverse().find((op) => op.k === 'imm');
     return target && target.value != null && target.value >= 0n ? target.value : null;
   }
-  if (base === 'ldr' && ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null && ops[1].value >= 0n) {
+  if ((base === 'ldr' || base === 'ldrsw') && ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null && ops[1].value >= 0n) {
     return ops[1].value;
   }
   return null;

@@ -139,7 +139,8 @@ export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
   ['getchar', '<stdio.h>'], ['getc', '<stdio.h>'], ['fgetc', '<stdio.h>'], ['ungetc', '<stdio.h>'],
   ['fgets', '<stdio.h>'], ['getline', '<stdio.h>'],
   ['fopen', '<stdio.h>'], ['freopen', '<stdio.h>'], ['fclose', '<stdio.h>'], ['fflush', '<stdio.h>'],
-  ['fread', '<stdio.h>'], ['fwrite', '<stdio.h>'], ['fseek', '<stdio.h>'], ['ftell', '<stdio.h>'], ['rewind', '<stdio.h>'],
+  ['fread', '<stdio.h>'], ['fwrite', '<stdio.h>'], ['fseek', '<stdio.h>'], ['ftell', '<stdio.h>'], ['fseeko', '<stdio.h>'], ['ftello', '<stdio.h>'], ['rewind', '<stdio.h>'],
+  ['fdopen', '<stdio.h>'], ['popen', '<stdio.h>'], ['pclose', '<stdio.h>'], ['dprintf', '<stdio.h>'], ['vdprintf', '<stdio.h>'], ['asprintf', '<stdio.h>'], ['vasprintf', '<stdio.h>'],
   ['fgetpos', '<stdio.h>'], ['fsetpos', '<stdio.h>'], ['feof', '<stdio.h>'], ['ferror', '<stdio.h>'], ['clearerr', '<stdio.h>'],
   ['perror', '<stdio.h>'], ['remove', '<stdio.h>'], ['rename', '<stdio.h>'],
   ['tmpfile', '<stdio.h>'], ['tmpnam', '<stdio.h>'], ['setbuf', '<stdio.h>'], ['setvbuf', '<stdio.h>'], ['fileno', '<stdio.h>'],
@@ -381,10 +382,12 @@ export function isFixedWidthPreludeDeclaration(text) {
  * `typedef struct { uint64 field_0; ... } hex_struct_<name>;` */
 export function parseSynthesizedStructPreludeDeclaration(text) {
   const trimmed = String(text ?? '').trim();
-  const match = /^typedef\s+struct(?:\s+hex_struct_[A-Za-z0-9_]+)?\s*\{\s*([^}]+?)\s*\}\s*(hex_struct_[A-Za-z0-9_]+)\s*;$/.exec(trimmed);
+  const match = /^typedef\s+struct(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s*\{\s*([^}]+?)\s*\}\s*([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(trimmed);
   if (!match) return null;
-  const body = match[1].trim();
-  const name = match[2];
+  const tag = match[1];
+  const body = match[2].trim();
+  const name = match[3];
+  if ((tag && tag !== name) || KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name)) return null;
   const fields = [];
   for (const part of body.split(';')) {
     const item = part.trim();

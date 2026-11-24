@@ -490,6 +490,36 @@ function lift(insn, opts = {}) {
     return out;
   }
 
+  /* ── PC相対リテラルロード (ldr / ldrsw Xt, #addr) ── */
+  if (!insn.memory && (base === 'ldr' || base === 'ldrsw') && ops.length === 2
+      && ops[0]?.k === 'reg' && ops[1]?.k === 'imm') {
+    const target = insn.pcRelTarget != null ? insn.pcRelTarget : ops[1].value;
+    if (target != null && target >= 0n) {
+      const signedLoad = base === 'ldrsw';
+      const each = signedLoad ? 4 : Math.max(1, (regBits(ops[0]) || 64) / 8);
+      push({
+        op: OP.LOAD,
+        dstReg: ops[0].cls !== 'zr' ? regKeyOf(ops[0]) : null,
+        dstBits: regBits(ops[0]),
+        addr: {
+          base: null,
+          disp: target,
+          index: null,
+          scale: 0,
+          extend: null,
+          mode: 'literal',
+          literalAddress: target,
+          stack: false,
+          size: each,
+        },
+        size: each,
+        signed: signedLoad,
+        srcs: [],
+      });
+      return out;
+    }
+  }
+
   /* ── メモリ ── */
   if (insn.memory) {
     const mem = ops.find((o) => o.k === 'mem');
@@ -1339,6 +1369,10 @@ function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
   const a = inst.addr;
   if (!a) return null;
   const size = Number(a.size || inst.extra?.size || 0) || 0;
+  if (a.mode === 'literal' && a.literalAddress != null) {
+    const address = canonicalGlobalAddress(a.literalAddress);
+    return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size };
+  }
   if (a.index || a.disp == null || !a.base) return { key:`unknown:${inst.id}`, kind:MK.UNKNOWN, size };
   if (a.stack) {
     const baseReg = a.baseReg || a.base?.reg || 'stack';

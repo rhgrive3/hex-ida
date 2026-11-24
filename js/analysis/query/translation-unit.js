@@ -91,6 +91,10 @@ const KEYWORDS = new Set([
   'true', 'false', 'NULL',
 ]);
 const PSEUDO_INTRINSIC = /^(?:phi|bit_extract|bit_insert|sext|zext|trunc|__arm64_[A-Za-z0-9_]*|__a64_[A-Za-z0-9_]*)$/;
+const MANGLED_EXTERNAL_SYMBOL = /^__(?:s|Z)[A-Za-z0-9_]+$/;
+function isReservedCompilerSymbol(name) {
+  return typeof name === 'string' && name.startsWith('__') && !MANGLED_EXTERNAL_SYMBOL.test(name);
+}
 const SIMPLE_C_TYPE = /^(?:(?:const|volatile|restrict)\s+)*(?:void|bool|id|float|double|u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|uintptr_t|intptr_t|uint128|int128|vector128|__int128|unsigned\s+__int128|(?:(?:signed|unsigned)\s+)?(?:char|short|int|long|long\s+long))(?:\s*\*)*$/;
 const ID_TYPE_USAGE = /(?:^|[\n;({,])\s*(?:(?:const|volatile|restrict|static|extern)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*|\(\s*(?:(?:const|volatile|restrict)\s+)*id\s*\*+\s*\)|(?:^|[=(,:?+\-*/%&|^<>!~;{]|\breturn\b)\s*\(\s*(?:(?:const|volatile|restrict)\s+)*id\s*\)\s*(?:[A-Za-z_0-9("'\[]|&(?!&)|\*(?!\*)|[~!](?!=))|typedef\s+void\s*\*\s*id\s*;/;
 
@@ -136,7 +140,7 @@ function declarationBearingText(text) {
   return out;
 }
 
-function normalizedType(raw) {
+function normalizedType(raw, knownStructNames = null) {
   if (typeof raw !== 'string') return null;
   let type = raw.trim().replace(/\s+/g, ' ');
   for (const [alias, standard] of FIXED_WIDTH_ALIASES) {
@@ -146,7 +150,12 @@ function normalizedType(raw) {
     type = type.replace(new RegExp(`\\b${alias}\\b`, 'g'), () => standard);
   }
   if (!type || /\b(?:unknown|auto|closure|function)\b/i.test(type)) return null;
-  return SIMPLE_C_TYPE.test(type) ? type : null;
+  if (SIMPLE_C_TYPE.test(type)) return type;
+  if (knownStructNames && knownStructNames.size > 0) {
+    const sm = /^(?:(?:const|volatile|restrict)\s+)*(?:struct\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\s*\*)+$/.exec(type);
+    if (sm && knownStructNames.has(sm[1])) return type;
+  }
+  return null;
 }
 
 function headersForText(text, headers) {
@@ -750,7 +759,7 @@ function extractFaithfulBodyText(original) {
   return { ok:true, bodyText:text.slice(openOffset, closeOffset + 1) };
 }
 
-function safeSignatureDeclaration(signature) {
+function safeSignatureDeclaration(signature, knownStructNames = null) {
   const text = String(signature ?? '').trim().replace(/\s*\{\s*$/, '');
   const open = text.indexOf('(');
   const close = text.lastIndexOf(')');
@@ -760,12 +769,12 @@ function safeSignatureDeclaration(signature) {
   if (!headMatch) return null;
   const returnType = headMatch[1].trim();
   const name = headMatch[2];
-  if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !normalizedType(returnType)) return null;
+  if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !normalizedType(returnType, knownStructNames)) return null;
   for (const group of text.slice(open + 1, close).split(',')) {
     const value = group.trim();
     if (!value || /^void$/i.test(value)) continue;
     const parameter = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
-    if (!parameter || !normalizedType(parameter[1].trim())) return null;
+    if (!parameter || !normalizedType(parameter[1].trim(), knownStructNames)) return null;
   }
   return `${prefix}(${text.slice(open + 1, close)});`;
 }
@@ -1412,13 +1421,14 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
   for (const [fnName, header] of STANDARD_C_LIBRARY_HEADERS) {
     if (headers.has(header)) stdlibHeaderFunctions.add(fnName);
   }
-  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, knownArityBounds, pointerParamPositions, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
+  const synthesizedStructNames = new Set(synthesizedStructs.keys());
+  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, knownArityBounds, pointerParamPositions, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructNames, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
 }
 
 function faithfulBodyEligibility(fn, context) {
   const original = String(fn?.pseudocode ?? fn?.source ?? '');
   if (!original.trim()) return { eligible:false, reason:'body-empty' };
-  const signature = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature);
+  const signature = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature, context.synthesizedStructNames);
   if (!signature) return { eligible:false, reason:'signature-unprovable' };
   const name = String(fn?.renderedName ?? fn?.name ?? '');
   if (!C_IDENTIFIER.test(name)) return { eligible:false, reason:'name-not-c-identifier' };
@@ -1486,6 +1496,9 @@ function faithfulBodyEligibility(fn, context) {
     }
     if (context.knownAritySelected.has(callee)) {
       return { eligible:false, reason:`arity-unknown-call-contradicts-selected-signature:${callee}` };
+    }
+    if (context.stdlibHeaderFunctions?.has(callee)) {
+      return { eligible:false, reason:`arity-unknown-call-contradicts-stdlib:${callee}` };
     }
   }
   if (context.knownArityBounds?.size) {
@@ -1582,8 +1595,8 @@ function emittedFunctionAlias(fn, index) {
   return candidate && C_IDENTIFIER.test(candidate) ? candidate : `hex_tu_fn_${index}`;
 }
 
-function syntaxOnlyFunctionSource(signature, alias) {
-  const declaration = safeSignatureDeclaration(signature);
+function syntaxOnlyFunctionSource(signature, alias, knownStructNames = null) {
+  const declaration = safeSignatureDeclaration(signature, knownStructNames);
   return `${declaration ? declaration.slice(0, -1) : `void ${alias}(void)`}\n{\n    __builtin_trap(); /* hex-tu-fallback: body withheld; syntax-only placeholder. */\n}`;
 }
 
@@ -1882,17 +1895,9 @@ export function buildCTranslationUnit(functions, options = {}) {
   const unresolvedGlobalNames = new Set();
   const strippedByIndex = new Array(functions.length);
 
-  const normalizedFunctions = functions.map((fn, index) => {
-    const originalPseudocode = String(fn?.pseudocode ?? fn?.source ?? '');
+  for (let index = 0; index < functions.length; index++) {
+    const originalPseudocode = String(functions[index]?.pseudocode ?? functions[index]?.source ?? '');
     if (!originalPseudocode.trim()) throw new TypeError(`translation-unit-function-source-required:${index}`);
-    const suppliedSignature = String(fn?.signature ?? '');
-    const originalSignature = looksLikeSignature(suppliedSignature)
-      ? suppliedSignature
-      : (signatureFromText(originalPseudocode) ?? (suppliedSignature || originalPseudocode.split(/\r?\n/, 1)[0] || ''));
-    const emittedName = emittedFunctionAlias({ signature: originalSignature, pseudocode: originalPseudocode }, index);
-    const safeSignature = safeSignatureDeclaration(originalSignature);
-    const emittedSignature = safeSignature ? safeSignature.slice(0, -1) : `void ${emittedName}(void)`;
-    const signature = emittedSignature;
     for (const structDef of extractSynthesizedStructTypedefs(originalPseudocode)) {
       let fieldMap = synthesizedStructs.get(structDef.name);
       if (!fieldMap) {
@@ -1907,6 +1912,19 @@ export function buildCTranslationUnit(functions, options = {}) {
         }
       }
     }
+  }
+  const synthesizedStructNames = new Set(synthesizedStructs.keys());
+
+  const normalizedFunctions = functions.map((fn, index) => {
+    const originalPseudocode = String(fn?.pseudocode ?? fn?.source ?? '');
+    const suppliedSignature = String(fn?.signature ?? '');
+    const originalSignature = looksLikeSignature(suppliedSignature)
+      ? suppliedSignature
+      : (signatureFromText(originalPseudocode) ?? (suppliedSignature || originalPseudocode.split(/\r?\n/, 1)[0] || ''));
+    const emittedName = emittedFunctionAlias({ signature: originalSignature, pseudocode: originalPseudocode }, index);
+    const safeSignature = safeSignatureDeclaration(originalSignature, synthesizedStructNames);
+    const emittedSignature = safeSignature ? safeSignature.slice(0, -1) : `void ${emittedName}(void)`;
+    const signature = emittedSignature;
     for (const header of extractStandardHeaderIncludes(originalPseudocode)) {
       headers.add(header);
     }
@@ -1932,7 +1950,7 @@ export function buildCTranslationUnit(functions, options = {}) {
       // counted as a parsed recovered function.
       renderedName:emittedName, signature, pseudocode:originalPseudocode,
       originalPseudocode, originalSignature,
-      sourcePseudocode:syntaxOnlyFunctionSource(originalSignature, emittedName),
+      sourcePseudocode:syntaxOnlyFunctionSource(originalSignature, emittedName, synthesizedStructNames),
       syntaxOnly:true,
     };
   });
@@ -1950,7 +1968,7 @@ export function buildCTranslationUnit(functions, options = {}) {
   // A definition must be declared before any call to it. Selected definitions
   // are evidence-backed, so their rendered signatures are safe to publish here.
   for (const fn of normalizedFunctions) {
-    const declaration = safeSignatureDeclaration(fn.signature);
+    const declaration = safeSignatureDeclaration(fn.signature, synthesizedStructNames);
     if (!declaration) continue;
     aliasContractsForText(declaration, headers, typeDeclarations);
     selectedDefinitionRows.push({ address:fn.address, name:fn.renderedName, declaration });
@@ -1978,7 +1996,7 @@ export function buildCTranslationUnit(functions, options = {}) {
         evidence = declaration ? 'selected-function-definition-signature' : null;
       }
       if (!declaration) {
-        if (!name.startsWith('__')) {
+        if (!isReservedCompilerSymbol(name)) {
           const fallback = fallbackPrototypeFor(name);
           if (fallback && !fallbackNames.has(name)) {
             fallbackNames.add(name);
@@ -2033,7 +2051,7 @@ export function buildCTranslationUnit(functions, options = {}) {
         headers.add(STANDARD_C_LIBRARY_HEADERS.get(name));
         continue;
       }
-      if (name.startsWith('__')) {
+      if (isReservedCompilerSymbol(name)) {
         // Reserved compiler helpers are not redeclared; their unresolved row
         // remains explicit and a later syntax-only body can avoid using them.
       } else {
@@ -2179,13 +2197,13 @@ export function buildCTranslationUnit(functions, options = {}) {
   for (const fn of normalizedFunctions) {
     const fnName = String(fn?.renderedName ?? '');
     if (!C_IDENTIFIER.test(fnName)) continue;
-    const emittedDecl = safeSignatureDeclaration(fn?.signature);
+    const emittedDecl = safeSignatureDeclaration(fn?.signature, synthesizedStructNames);
     if (emittedDecl) {
       const bounds = parseSignatureArity(emittedDecl, fnName);
       if (bounds) eligibilityContext.knownArityBounds.set(fnName, bounds);
       else eligibilityContext.knownArityBounds.delete(fnName);
     }
-    const declaration = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature);
+    const declaration = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature, synthesizedStructNames);
     if (!declaration) continue;
     if (isUnprototypedDeclaration(declaration, fnName)) {
       eligibilityContext.unprototypedFallbacks.add(fnName);
