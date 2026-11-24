@@ -104,6 +104,7 @@ bool is_runtime_arm64_word_supported(uint32_t w, bool js_parity_mode) {
 
   // ADD / SUB (immediate): S=0, GPR rd/rn < 31, non-zero imm (avoid x+0 fold diff).
   if (kind == HEX_ARM64_KIND_ARITH && (w & 0x1f000000u) == 0x11000000u) {
+    if (((w >> 23) & 1u) != 0u) return false;
     const bool s_bit = ((w >> 29) & 1u) != 0u;
     const uint32_t rd = w & 0x1fu;
     const uint32_t rn = (w >> 5) & 0x1fu;
@@ -126,6 +127,7 @@ bool is_runtime_arm64_word_supported(uint32_t w, bool js_parity_mode) {
     const uint32_t rm = (w >> 16) & 0x1fu;
     if ((opc == 0u || opc == 2u) && n_bit == 0u && shift == 0u && imm6 == 0u &&
         rd < 31u && rn < 31u && rm < 31u) {
+      if (js_parity_mode && rn == rm) return false;
       return true;
     }
     return false;
@@ -136,6 +138,13 @@ bool is_runtime_arm64_word_supported(uint32_t w, bool js_parity_mode) {
 
   // Reject flag-setting ADDS/SUBS under JS parity (only plain ADD/SUB).
   if (kind == HEX_ARM64_KIND_ARITH && ((w >> 29) & 1u) != 0u) return false;
+  // Reject SUB reg with rn == rm under JS parity (optimizer folds x - x -> 0, JS emits a1 - a1).
+  if (js_parity_mode && kind == HEX_ARM64_KIND_ARITH &&
+      (w & 0x1f200000u) == 0x0b000000u && ((w >> 30) & 1u) != 0u) {
+    const uint32_t rn = (w >> 5) & 0x1fu;
+    const uint32_t rm = (w >> 16) & 0x1fu;
+    if (rn == rm) return false;
+  }
 
   // Enforce JS decimal/hex literal threshold parity on MOVZ/MOVN constants.
   if (js_parity_mode && kind == HEX_ARM64_KIND_MOVIMM) {
