@@ -302,7 +302,7 @@ function isMemberRecursive(member, entityId, sccMembers = []) {
   return member?.isRecursive === true || member?.memberType?.isRecursive === true;
 }
 
-const STRUCTURAL_NUMERIC_FACT_KEYS = new Set(['widthBits', 'sizeBytes', 'alignBytes', 'offset', 'strideBytes', 'length']);
+const STRUCTURAL_NUMERIC_FACT_KEYS = new Set(['widthBits', 'sizeBytes', 'totalSizeBytes', 'alignBytes', 'offset', 'strideBytes', 'length']);
 const MEMBER_FACT_CONFLICT = Symbol('member-fact-conflict');
 
 function mergeCompatibleMemberFacts(left, right, key = null) {
@@ -316,15 +316,18 @@ function mergeCompatibleMemberFacts(left, right, key = null) {
     || typeof left !== 'object' || typeof right !== 'object'
     || Array.isArray(left) || Array.isArray(right)) return MEMBER_FACT_CONFLICT;
 
-  const merged = { ...left };
+  const merged = {};
+  for (const [childKey, value] of Object.entries(left)) {
+    Object.defineProperty(merged, childKey, { value, enumerable: true, writable: true, configurable: true });
+  }
   for (const [childKey, value] of Object.entries(right)) {
     if (!Object.hasOwn(merged, childKey)) {
-      merged[childKey] = value;
+      Object.defineProperty(merged, childKey, { value, enumerable: true, writable: true, configurable: true });
       continue;
     }
     const combined = mergeCompatibleMemberFacts(merged[childKey], value, childKey);
     if (combined === MEMBER_FACT_CONFLICT) return MEMBER_FACT_CONFLICT;
-    merged[childKey] = combined;
+    Object.defineProperty(merged, childKey, { value: combined, enumerable: true, writable: true, configurable: true });
   }
   return merged;
 }
@@ -544,8 +547,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
   for (const descriptor of descriptors) {
     for (const [key, value] of Object.entries(descriptor).sort(([left], [right]) => left.localeCompare(right))) {
       if (layer === 'nominal' && (key === 'name' || key === 'aliases')) continue;
-      if (!(key in merged)) merged[key] = value;
-      else if (stableStringify(merged[key]) !== stableStringify(value)) return null;
+      if (!Object.hasOwn(merged, key)) {
+        Object.defineProperty(merged, key, { value, enumerable: true, writable: true, configurable: true });
+      } else if (stableStringify(merged[key]) !== stableStringify(value)) return null;
     }
   }
   return createTypeClaim({ layer, entityId, descriptor: merged });
@@ -727,11 +731,9 @@ export class TypeConstraintGraph {
           ? this.#status('truncated', 'budget-exhausted')
           : this.#status('complete', null),
       layers: solvedLayers,
-      userConstrained: [...this.userConstraintDigests].some((digest) => (
-        Object.values(solvedLayers).some((solved) => solved.hardConstraints.some((constraint) => (
-          constraint.origin === 'user-approved' && stableDigest(constraint.claim) === digest
-        )))
-      )),
+      userConstrained: Object.values(solvedLayers).some((solved) => solved.hardConstraints.some((constraint) => (
+        constraint.origin === 'user-approved' && this.userConstraintDigests.has(stableDigest(constraint.claim))
+      ))),
     });
   }
 
@@ -845,6 +847,7 @@ export class TypeConstraintGraph {
       const componentDigests = new Map();
 
       while (changed) {
+        if (signal?.aborted) break;
         if (iterations >= iterationLimit) {
           converged = false;
           break;
@@ -863,10 +866,10 @@ export class TypeConstraintGraph {
             changed = true;
           }
         }
-        if (!isRecursive) break;
+        if (!isRecursive || signal?.aborted) break;
       }
 
-      if (!converged) {
+      if (!converged && !signal?.aborted) {
         for (const entityId of component) {
           const existing = solvedResults.get(entityId);
           const truncatedResult = createTypeResult({

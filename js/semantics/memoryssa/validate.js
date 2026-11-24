@@ -63,24 +63,32 @@ export function validateMemorySsa(memorySsa, options = {}) {
   const useIds = new Set(contract.uses.map((use) => use.id));
   const useById = new Map(contract.uses.map((use) => [use.id, use]));
   const regionIds = new Set(contract.regions.map((region) => region.id));
+  const compareText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   if (memorySsa.useDefLinks != null) {
+    if (!Array.isArray(memorySsa.useDefLinks)) fail('memory-ssa-validate-use-def-index-mismatch');
     const expected = contract.reachingDefinitionLinks
       .map((link) => ({ ...link }))
-      .sort((a, b) => a.useId.localeCompare(b.useId));
+      .sort((a, b) => compareText(a.useId, b.useId));
     const actual = memorySsa.useDefLinks
-      .map((link) => ({ ...link }))
-      .sort((a, b) => a.useId.localeCompare(b.useId));
+      .map((link) => {
+        if (!link || typeof link !== 'object' || Array.isArray(link) || typeof link.useId !== 'string') {
+          fail('memory-ssa-validate-use-def-index-mismatch');
+        }
+        return { ...link };
+      })
+      .sort((a, b) => compareText(a.useId, b.useId));
     if (stableStringify(actual) !== stableStringify(expected)) fail('memory-ssa-validate-use-def-index-mismatch');
   }
   if (memorySsa.defUseLinks != null) {
+    if (!Array.isArray(memorySsa.defUseLinks)) fail('memory-ssa-validate-invalid-def-use-index');
     const expected = new Map(contract.definitions.map((definition) => [definition.id, []]));
     for (const link of contract.reachingDefinitionLinks) expected.get(link.definitionId).push(link.useId);
     const expectedArray = [...expected.entries()]
       .map(([definitionId, ids]) => ({ definitionId, useIds: ids.sort() }))
-      .sort((a, b) => a.definitionId.localeCompare(b.definitionId));
+      .sort((a, b) => compareText(a.definitionId, b.definitionId));
     const actual = memorySsa.defUseLinks
       .map((link) => {
-        if (!link || typeof link !== 'object' || typeof link.definitionId !== 'string' || !link.definitionId.trim() || !Array.isArray(link.useIds)) {
+        if (!link || typeof link !== 'object' || Array.isArray(link) || typeof link.definitionId !== 'string' || !link.definitionId.trim() || !Array.isArray(link.useIds)) {
           fail('memory-ssa-validate-invalid-def-use-index');
         }
         const useIds = link.useIds.map((id) => {
@@ -89,11 +97,12 @@ export function validateMemorySsa(memorySsa, options = {}) {
         }).sort();
         return { definitionId:link.definitionId, useIds };
       })
-      .sort((a, b) => a.definitionId.localeCompare(b.definitionId));
+      .sort((a, b) => compareText(a.definitionId, b.definitionId));
     if (stableStringify(actual) !== stableStringify(expectedArray)) fail('memory-ssa-validate-def-use-index-mismatch');
   }
 
   if (memorySsa.accessMetadata != null) {
+    if (!Array.isArray(memorySsa.accessMetadata)) fail('memory-ssa-validate-invalid-access-metadata');
     const metadataIds = new Set();
     const metadataEntityIdsByKind = new Map();
     for (const item of memorySsa.accessMetadata) {
@@ -142,6 +151,10 @@ export function validateMemorySsa(memorySsa, options = {}) {
   }
 
   if (memorySsa.blockStates != null) {
+    if (!Array.isArray(memorySsa.blockStates)) fail('memory-ssa-validate-invalid-block-state');
+    for (const state of memorySsa.blockStates) {
+      if (!state || typeof state !== 'object' || Array.isArray(state)) fail('memory-ssa-validate-invalid-block-state');
+    }
     const blockIds = new Set(options.cfg?.blocks?.map((block) => block.id) ?? memorySsa.blockStates.map((state) => state.blockId));
     const seenBlockIds = new Set();
     for (const state of memorySsa.blockStates) {
@@ -153,6 +166,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
         if (!Array.isArray(state[side])) fail('memory-ssa-validate-invalid-block-state');
         const seenRegions = new Set();
         for (const item of state[side]) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) fail('memory-ssa-validate-invalid-block-state');
           if (!regionIds.has(item.regionId)) fail('memory-ssa-validate-block-state-region-mismatch');
           if (!definitionIds.has(item.definitionId)) fail('memory-ssa-validate-block-state-definition-mismatch');
           if (definitionById.get(item.definitionId).regionId !== item.regionId) fail('memory-ssa-validate-block-state-region-mismatch');

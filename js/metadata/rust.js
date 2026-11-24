@@ -182,9 +182,10 @@ function v0CacheComposedRender(state, kind, entryPos, depth, length, build) {
  * Parses a Rust v0 base-62 integer.
  */
 function parseV0Base62(str, pos) {
-  let val = 0;
+  if (pos >= str.length) return null;
+  if (str[pos] === '_') return { value: 0, nextPos: pos + 1 };
+  let val = 0n;
   let i = pos;
-  if (i < str.length && str[i] === '_') return { value: 0, nextPos: i + 1 };
   while (i < str.length) {
     const c = str.charCodeAt(i);
     let digit = -1;
@@ -192,9 +193,12 @@ function parseV0Base62(str, pos) {
     else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61 + 10; // a-z -> 10-35
     else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41 + 36; // A-Z -> 36-61
     else if (c === 0x5f) { // '_' delimiter
-      return { value: val + 1, nextPos: i + 1 };
+      const result = val + 1n;
+      return { value: result <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(result) : result, nextPos: i + 1 };
     } else break;
-    val = val * 62 + digit;
+    const nextVal = val * 62n + BigInt(digit);
+    if (nextVal > 0xffffffffffffffffn) return null;
+    val = nextVal;
     i++;
   }
   return null;
@@ -317,10 +321,19 @@ function parseV0Identifier(str, pos, state) {
     len = 0;
     p += 1;
   } else {
-    const lenMatch = str.slice(p).match(/^[1-9][0-9]*/);
-    if (!lenMatch) return null;
-    len = Number(lenMatch[0]);
-    p += lenMatch[0].length;
+    if (p >= str.length) return null;
+    const first = str.charCodeAt(p);
+    if (first < 0x31 || first > 0x39) return null;
+    let parsedLen = 0;
+    const maxRemaining = str.length - p;
+    while (p < str.length) {
+      const code = str.charCodeAt(p);
+      if (code < 0x30 || code > 0x39) break;
+      parsedLen = parsedLen * 10 + (code - 0x30);
+      if (!Number.isSafeInteger(parsedLen) || parsedLen > maxRemaining) return null;
+      p++;
+    }
+    len = parsedLen;
   }
   if (p < str.length && str[p] === '_') {
     p++;
@@ -351,7 +364,9 @@ function parseV0Identifier(str, pos, state) {
  * `<const-data>` is `[n] <hex>* _` and `p` is a standalone placeholder.
  */
 function parseV0Const(str, state, depth = 0) {
-  if (state.pos >= str.length || depth > 32) return null;
+  if (state.pos >= str.length) return null;
+  const limit = Number.isSafeInteger(state.maxDepth) ? state.maxDepth : 32;
+  if (depth > limit) { state.depthExceeded = true; return null; }
   if (depth > state.maxSeenDepth) state.maxSeenDepth = depth;
   if (!v0ChargeOp(state)) return null;
   if (str[state.pos] === 'p') {
@@ -989,6 +1004,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const toolchainVersion = findRustcVersion(this.commentBuffer);
     const hasEvidence = rustSymbols.length > 0 || toolchainVersion != null || unreadable > 0 || invalidEntries > 0;
 
+    this.cachedParsed = null;
     if (!hasEvidence) {
       return createLanguageMetadataResult({
         providerId: this.id,

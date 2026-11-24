@@ -153,7 +153,8 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
       const recordRefs = map.transformReverse && Object.hasOwn(map.transformReverse, key) ? map.transformReverse[key] : EMPTY;
       if (!Array.isArray(recordRefs)) return unavailable('invalid-transform-reverse-map');
       for (const index of recordRefs) {
-        const record = map.ledger[index];
+        const record = Array.isArray(map?.ledger) && Number.isInteger(index) && index >= 0 && index < map.ledger.length ? map.ledger[index] : null;
+        if (!record || typeof record !== 'object') return unavailable('inconsistent-transform-reverse-map');
         const matches = renderRecordWitnesses(record).some(witness => {
         const history = witness?.originHistory;
         return history

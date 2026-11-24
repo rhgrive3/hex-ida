@@ -52,9 +52,15 @@ function regexTest(rx, text) {
   return matched;
 }
 function hits(values, regexes) {
-  const out = [];
-  for (const value of values || []) { const s = textOf(value); if (s && regexes?.some((rx) => regexTest(rx, s))) out.push(s); }
-  return [...new Set(out)].slice(0, 12);
+  const seen = new Set();
+  for (const value of values || []) {
+    const s = textOf(value);
+    if (s && !seen.has(s) && regexes?.some((rx) => regexTest(rx, s))) {
+      seen.add(s);
+      if (seen.size >= 12) break;
+    }
+  }
+  return [...seen];
 }
 export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
   const source = input && typeof input === 'object' ? input : {};
@@ -138,20 +144,21 @@ export function validateKnowledgePack(pack) {
     if (!Number.isInteger(pack.version) || pack.version < 1 || pack.version > SIGNATURE_PACK_VERSION) throw new Error('unsupported knowledge pack version');
     if (!Array.isArray(pack.signatures) || !Array.isArray(pack.mappings)) throw new Error('pack signatures/mappings must be arrays');
     if (pack.signatures.length > 1_000_000 || pack.mappings.length > 1_000_000) throw new Error('knowledge pack is unreasonably large');
-    for (const entry of [...pack.signatures, ...pack.mappings]) if (!entry || typeof entry !== 'object') throw new Error('knowledge pack entry must be an object');
     for (const entry of pack.signatures) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('knowledge pack entry must be an object');
       if (!entry.architecture || typeof entry.architecture !== 'string') throw new Error('signature architecture is required');
       if (typeof entry.confidence !== 'number' || !Number.isFinite(entry.confidence) || entry.confidence < 0 || entry.confidence > 1) throw new Error('signature confidence must be a finite number in [0,1]');
       if (!Array.isArray(entry.symbols)) throw new Error('signature symbols must be an array');
       for (const symbol of entry.symbols) {
         if (typeof symbol !== 'string') throw new Error('signature symbols must contain only primitive strings');
       }
-      if (!entry.provenance || typeof entry.provenance !== 'object') throw new Error('signature provenance is required');
+      if (!entry.provenance || typeof entry.provenance !== 'object' || Array.isArray(entry.provenance)) throw new Error('signature provenance is required');
       if (typeof entry.license !== 'string' || !entry.license) throw new Error('signature license is required');
     }
     for (const entry of pack.mappings) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('knowledge pack entry must be an object');
       if (typeof entry.confidence !== 'number' || !Number.isFinite(entry.confidence) || entry.confidence < 0 || entry.confidence > 1) throw new Error('mapping confidence must be a finite number in [0,1]');
-      if (!entry.provenance || typeof entry.provenance !== 'object') throw new Error('mapping provenance is required');
+      if (!entry.provenance || typeof entry.provenance !== 'object' || Array.isArray(entry.provenance)) throw new Error('mapping provenance is required');
       if (typeof entry.license !== 'string' || !entry.license) throw new Error('mapping license is required');
       const identity = typeof entry.identity === 'string' ? entry.identity.trim() : '';
       const name = typeof entry.name === 'string' ? entry.name.trim() : '';

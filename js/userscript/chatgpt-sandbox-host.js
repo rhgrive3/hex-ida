@@ -337,7 +337,10 @@ export function createSandboxMonitor(options) {
       readyReject(error);
       return;
     }
-    if (data.type === SANDBOX_READY) readyResolve(Object.freeze({ generation: expectedGeneration, sandboxToken: token }));
+    if (data.type === SANDBOX_READY) {
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+      readyResolve(Object.freeze({ generation: expectedGeneration, sandboxToken: token }));
+    }
   }
   windowRef.addEventListener('message', onMessage);
   signal?.addEventListener?.('abort', onAbort, { once: true });

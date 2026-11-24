@@ -97,8 +97,15 @@ export async function readSwiftMangledName(read, address, options = {}) {
   if (!bytes || !bytes.length) return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
 
   const base = BigInt(address), refs = [], fragments = [], fragment = [], paddingOffsets = [];
-  let i = 0, terminated = false, relativeReferenceSeen = false;
-  const flushFragment = () => { const text = swiftMangledFragment(fragment); if (text != null && text) fragments.push(text); fragment.length = 0; };
+  let i = 0, terminated = false, relativeReferenceSeen = false, invalidFragmentUtf8 = false;
+  const flushFragment = () => {
+    if (fragment.length > 0) {
+      const text = swiftMangledFragment(fragment);
+      if (text == null) invalidFragmentUtf8 = true;
+      else if (text) fragments.push(text);
+    }
+    fragment.length = 0;
+  };
   while (i < bytes.length) {
     const byte = bytes[i];
     if (byte === 0) { terminated = true; break; }
@@ -157,6 +164,12 @@ export async function readSwiftMangledName(read, address, options = {}) {
     } catch {
       return { complete:false, reason:'invalid-utf8', text:null, rawBytes, fragments, symbolicReferences:[] };
     }
+  }
+  if (invalidFragmentUtf8) {
+    return {
+      complete:false, reason:'invalid-utf8', text:null, rawBytes, fragments, symbolicReferences:refs,
+      referencesResolved:refs.every((ref) => ref.resolved),
+    };
   }
   return {
     complete:true, reason:null, text:null, rawBytes, fragments, symbolicReferences:refs,
@@ -574,7 +587,7 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
       if(f.mangledTypeEncoding?.complete===false)warnings.push(`Swift field ${t.name||t.address}.${f.name}: mangled type metadata is partial (${f.mangledTypeEncoding.reason||'unknown'}).`);
       else if(f.mangledTypeEncoding?.symbolicReferences?.length&&!f.mangledTypeEncoding.referencesResolved)warnings.push(`Swift field ${t.name||t.address}.${f.name}: symbolic mangled type reference remains unresolved.`);
     }
-  }catch{t.fields=[];warnings.push(`Swift type ${t.name||t.address}: field metadata could not be parsed.`);typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;}}
+  }catch(error){if(isCancellationError(error))throw error;t.fields=[];warnings.push(`Swift type ${t.name||t.address}: field metadata could not be parsed.`);typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;}}
   if(signal?.aborted)return null;
   const autoVtables=await discoverSwiftClassVTables(get,types,budget);warnings.push(...autoVtables.warnings);
   const vtableSeedMap=new Map();for(const v of autoVtables.seeds)vtableSeedMap.set(`${String(v.typeAddress)}:${String(v.address)}`,v);for(const v of opts.vtables||[])vtableSeedMap.set(`${String(v.typeAddress)}:${String(v.address)}`,v);
@@ -657,7 +670,7 @@ export function resolveSwiftDispatch(index,call={}){
   return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0.15,complete:universeComplete};
 }
 
-export function swiftCallingConvention({name='',mangled='',metadata=null,attributes=null}={}){const sym=demangleSwiftSymbol(mangled||name),a=attributes||{},async=a.async!=null?!!a.async:!!sym.async,throws=a.throws!=null?!!a.throws:!!sym.throws;return{runtime:'swift',swiftself:a.swiftself!==false,swiftasync:async,swiftthrows:throws,indirectResult:!!a.indirectResult,context:a.context!==false,errorResult:throws||!!a.errorResult,metadataArguments:Number(a.metadataArguments||(metadata?.generic?1:0)),representation:async&&throws?'await-throwing':async?'await':throws?'throwing':'normal'};}
+export function swiftCallingConvention({name='',mangled='',metadata=null,attributes=null}={}){const sym=demangleSwiftSymbol(mangled||name),a=attributes||{},async=a.async!=null?!!a.async:!!sym.async,throws=a.throws!=null?!!a.throws:!!sym.throws;return{runtime:'swift',swiftself:a.swiftself!==false,swiftasync:async,swiftthrows:throws,indirectResult:!!a.indirectResult,context:a.context!==false,errorResult:throws||!!a.errorResult,metadataArguments:Number(a.metadataArguments??(metadata?.generic?1:0)),representation:async&&throws?'await-throwing':async?'await':throws?'throwing':'normal'};}
 const SWIFT_NOISE=[/^_?swift_(retain|release|bridgeObjectRetain|bridgeObjectRelease|unknownObjectRetain|unknownObjectRelease|beginAccess|endAccess|copyPOD|destroyPOD)\b/,/^_?swift_get(TypeByMangledName|SingletonMetadata|GenericMetadata|WitnessTable|AssociatedTypeWitness)\b/,/metadata accessor/i,/(copy|destroy) value witness/i];
 export function classifySwiftRuntimeCall(name){const n=String(name||'');if(SWIFT_NOISE.some((r)=>r.test(n)))return{runtime:'swift',noise:true,category:/metadata|TypeBy|Metadata/.test(n)?'metadata':'ownership',name:n};if(/^_?swift_/.test(n)||/^_?\$[sS]/.test(n))return{runtime:'swift',noise:false,category:'runtime',name:n};return null;}
 export function formatSwiftCall(name,args=[],convention={}){const cc=convention.representation?convention:swiftCallingConvention({name,attributes:convention}),readable=demangleSwiftSymbol(name).demangled||name||'unknown_call',prefix=cc.swiftasync?'await ':'',throwing=cc.swiftthrows?'try ':'';return`${throwing}${prefix}${readable}(${args.join(', ')})`;}

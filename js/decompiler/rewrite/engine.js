@@ -23,7 +23,7 @@ function createSnapshotStorage() {
       key += `${kind}:${values.length}:[`;
       for (const value of values) {
         if (typeof value === 'string' && value.length > 2048
-            || typeof value === 'bigint' && value >= (1n << 1024n)) return snapshot;
+            || typeof value === 'bigint' && (value >= (1n << 1024n) || value <= -(1n << 1024n))) return snapshot;
         // Length-prefix primitive text directly. JSON serialization could
         // execute an inherited toJSON hook on the encoding's own arrays.
         const text = Object.is(value, -0) ? '-0' : String(value);
@@ -146,7 +146,7 @@ export class RewriteEngine {
     const proof = [];
     const stats = { iterations: 0, applications: 0, budgetExceeded: false,
       workBudgetExceeded: false, deadlineExceeded: false, externalAbort: false,
-      elapsedMs: 0, byRule: {} };
+      elapsedMs: 0, byRule: Object.create(null) };
     const phases = [...new Set(this.rules.map((r) => r.phase))];
     let current = root;
     let deadlineChecks = 0;
@@ -201,7 +201,7 @@ export class RewriteEngine {
         const frame = stack.pop();
         const n = frame.n;
         if (!n || rewritten.has(n)) continue;
-        if (overBudget(n)) { stats.budgetExceeded = true; rewritten.set(n, n); continue; }
+        if (stats.budgetExceeded || overBudget(n)) { stats.budgetExceeded = true; rewritten.set(n, n); break; }
         if (!frame.exit) {
           if (active.has(n)) { rewritten.set(n, n); continue; }
           active.add(n);
@@ -323,6 +323,12 @@ export class RewriteHistoryJournal {
   }
 
   mark() { return { length:this.records.length, truncated:this.truncated }; }
-  rollback(mark) { this.records.length = mark.length; this.truncated = mark.truncated; }
+  rollback(mark) {
+    if (!mark || !Number.isInteger(mark.length) || mark.length < 0 || mark.length > this.records.length) {
+      throw new RangeError('rewrite-history-journal-invalid-mark');
+    }
+    this.records.length = mark.length;
+    this.truncated = Boolean(mark.truncated);
+  }
   recordsSince(mark) { return Object.freeze(this.records.slice(mark.length)); }
 }

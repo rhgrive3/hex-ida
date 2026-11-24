@@ -204,8 +204,20 @@ function authenticatedTargetAlignmentFault() {
 function addressOf(decoded, context) {
   const value = context?.address ?? decoded?.address ?? decoded?.virtualAddress;
   if (value == null) return null;
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
-  catch { return null; }
+  let parsed;
+  if (typeof value === 'bigint') {
+    parsed = value;
+  } else if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) return null;
+    parsed = BigInt(value);
+  } else if (typeof value === 'string') {
+    const text = value.trim();
+    if (!/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) return null;
+    try { parsed = BigInt(text); } catch { return null; }
+  } else {
+    return null;
+  }
+  return parsed >= 0n && parsed < (1n << 64n) ? parsed : null;
 }
 
 function reg(id, bits = POINTER_BITS) {
@@ -694,7 +706,7 @@ function enhancedReturnAddressSign(decoded, context, instructionId, descriptor) 
   });
 }
 
-function immediatePauthLrOffset(decoded) {
+function immediatePauthLrOffset(decoded, context = {}) {
   const explicit = decoded?.pauthLrPcOffsetBytes;
   if (explicit != null) {
     try {
@@ -702,15 +714,30 @@ function immediatePauthLrOffset(decoded) {
       if (value >= 0n && value <= 262140n && (value & 3n) === 0n) return value;
     } catch { /* fall through to operand-derived target */ }
   }
-  const address = addressOf(decoded, {});
+  const address = addressOf(decoded, context);
   const operands = operandList(decoded);
-  if (address == null || operands.length !== 1 || typeof operands[0] !== 'string') return null;
-  const text = operands[0].trim().replace(/^#/, '');
-  try {
-    const target = BigInt(text);
-    const offset = address - target;
-    return offset >= 0n && offset <= 262140n && (offset & 3n) === 0n ? offset : null;
-  } catch { return null; }
+  if (address == null || operands.length !== 1) return null;
+  const rawOperand = operands[0];
+  let target = null;
+  if (typeof rawOperand === 'string') {
+    const text = rawOperand.trim().replace(/^#/, '');
+    if (/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) {
+      try { target = BigInt(text); } catch { return null; }
+    }
+  } else if (rawOperand && typeof rawOperand === 'object') {
+    const rawVal = rawOperand.value ?? rawOperand.immediate ?? rawOperand.target ?? rawOperand.address;
+    if (typeof rawVal === 'bigint') target = rawVal;
+    else if (typeof rawVal === 'number' && Number.isSafeInteger(rawVal)) target = BigInt(rawVal);
+    else if (typeof rawVal === 'string') {
+      const text = rawVal.trim().replace(/^#/, '');
+      if (/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) {
+        try { target = BigInt(text); } catch { return null; }
+      }
+    }
+  }
+  if (target == null) return null;
+  const offset = address - target;
+  return offset >= 0n && offset <= 262140n && (offset & 3n) === 0n ? offset : null;
 }
 
 function enhancedAuthenticatedReturn(decoded, context, instructionId, descriptor, variant) {
@@ -731,7 +758,7 @@ function enhancedAuthenticatedReturn(decoded, context, instructionId, descriptor
       return partialMissing(decoded, context, instructionId, 'enhanced authenticated return immediate operand shape is invalid', { control:true, fault:true });
     }
     const address = addressOf(decoded, context);
-    const offset = immediatePauthLrOffset(decoded);
+    const offset = immediatePauthLrOffset(decoded, context);
     if (address == null || offset == null) {
       return partialMissing(decoded, context, instructionId, 'enhanced authenticated return PC-relative modifier is unavailable', { control:true, fault:true });
     }
@@ -857,7 +884,7 @@ export function createArm64eEffectsExtension(baseLiftExact = null) {
   return Object.freeze({
     architectureId: 'arm64e',
     semanticVersion: ARM64E_EFFECTS_SEMANTIC_VERSION,
-    canHandle: isArm64ePointerAuthenticationInstruction,
+    canHandle: (decoded) => isArm64ePointerAuthenticationInstruction(decoded) || isArm64eAuthenticatedLoadInstruction(decoded),
     liftExact: extendArm64WithArm64eEffects(baseLiftExact),
   });
 }

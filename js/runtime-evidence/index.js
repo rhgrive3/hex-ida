@@ -11,7 +11,8 @@ function nowIso() { return new Date().toISOString(); }
 // caller mutation cannot desynchronize the stored payload from its fixed ID.
 function ownEvidenceValue(value) {
   if (value === null || typeof value !== 'object') return value;
-  try { return structuredClone(value); } catch { return value; }
+  try { return structuredClone(value); }
+  catch { throw new TypeError('runtime evidence payload must be cloneable'); }
 }
 let RUN_OCCURRENCE_SEQUENCE = 0;
 function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
@@ -57,8 +58,8 @@ function addressValue(value) {
   return address != null && address >= 0n ? address : null;
 }
 function sameAddress(a,b) { const left=addressValue(a); const right=addressValue(b); return left != null && right != null && left === right; }
-const VERDICT_PRIORITY = Object.freeze({ unsupported:0, inconclusive:1, supported:2, confirmed:3, contradicted:4 });
-function verdictPriority(value) { return VERDICT_PRIORITY[value] ?? 1; }
+const VERDICT_PRIORITY = Object.freeze(Object.assign(Object.create(null), { unsupported:0, inconclusive:1, supported:2, confirmed:3, contradicted:4 }));
+function verdictPriority(value) { return typeof value === 'string' && Object.hasOwn(VERDICT_PRIORITY, value) ? VERDICT_PRIORITY[value] : 0; }
 function runtimeEvidenceGroupKey(item) {
   const provenance = item && item.provenance;
   if (provenance && typeof provenance === 'object') {
@@ -136,15 +137,16 @@ export function createRuntimeEvidenceRecord(input = {}) {
     .slice(0, 4096).map(ownEvidenceValue);
   const hasObservationPayload = ownedInput != null || ownedInitialState != null
     || ownedObservedState != null || ownedBranchPath.length > 0;
+  const effectiveVerdict = scopedObservation ? 'inconclusive' : (input.verdict || 'inconclusive');
   const isBare4327Shape = !hasObservationPayload
-    && (input.verdict ?? 'inconclusive') === 'inconclusive'
+    && effectiveVerdict === 'inconclusive'
     && input.timestamp == null;
   const observationContent = {
     input: ownedInput,
     initialState: ownedInitialState,
     observedState: ownedObservedState,
     branchPath: ownedBranchPath,
-    verdict: input.verdict ?? 'inconclusive',
+    verdict: effectiveVerdict,
     runTimestamp: isBare4327Shape ? null : resolvedTimestamp,
     ...(scopedObservation ? { scopedObservation } : {}),
   };
@@ -207,9 +209,13 @@ export function traceToSemanticFacts(trace, context = {}) {
   const facts = [];
   let processedEvents = 0;
   let hitFactLimit = false;
+  const FACT_EVENT_TYPES = new Set(['memory-read', 'memory-write', 'call', 'branch', 'return', 'objc-dispatch', 'swift-dispatch']);
   for (const event of events) {
-    if (facts.length >= limit) { hitFactLimit = true; break; }
+    if (!event || typeof event !== 'object') continue;
+    const producesFact = FACT_EVENT_TYPES.has(event.type);
+    if (producesFact && facts.length >= limit) { hitFactLimit = true; break; }
     processedEvents++;
+    if (!producesFact) continue;
     const common = { runtime:true, sessionId, binaryHash:context.binaryHash || null, provenance:{ group:GROUP.RUNTIME, observationGroup:group, independent:false }, address:event.address ?? null, confidence:safeConfidence(context.confidence,0.8) };
     if (event.type === 'memory-read') facts.push({ ...common, kind:'reads-field', location:{ address:event.address, region:event.region, size:event.size }, value:event.value });
     else if (event.type === 'memory-write') facts.push({ ...common, kind:'writes-field', location:{ address:event.address, region:event.region, size:event.size }, before:event.before, value:event.after });
@@ -271,7 +277,10 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   for (const item of evidence) {
     if (candidateHash && item.binaryHash !== candidateHash) { ignoredEvidence++; continue; }
     const itemSlice = item.sliceIdentity || null;
-    if (itemSlice !== candidateSlice) { ignoredEvidence++; continue; }
+    const sameSlice = itemSlice === candidateSlice
+      || (itemSlice != null && candidateSlice != null && typeof itemSlice === 'object' && typeof candidateSlice === 'object'
+        && stableDigest(itemSlice) === stableDigest(candidateSlice));
+    if (!sameSlice) { ignoredEvidence++; continue; }
     if (candidateFunction != null && (item.function == null || !sameAddress(candidateFunction,item.function))) { ignoredEvidence++; continue; }
     compatible.push(item);
   }
