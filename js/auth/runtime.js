@@ -11,7 +11,12 @@ export async function startParentAuth({ apiOrigin, privilegedManifest, manager, 
   const unsubscribe = auth.subscribe((identity) => {
     if (!identity.capabilities.canUseDevAgent) { epoch++; extension?.close(); extension = null; }
   });
-  await auth.initialize();
+  try {
+    await auth.initialize();
+  } catch (error) {
+    unsubscribe();
+    throw error;
+  }
   if (auth.getIdentity().capabilities.canFetchPrivilegedDevSource) {
     const current = epoch;
     try {

@@ -103,6 +103,9 @@ export function showCandidates(app, goal) {
   if (!goal) return null;
   app.lastGoal = goal;
   void app.persistAnalysisSession?.(['lastGoal']);
+  const initialGen = app?.backend?.gen;
+  const initialFile = app?.store?.get?.('fileInfo');
+  const isCurrentBinary = () => app?.backend?.gen === initialGen && app?.store?.get?.('fileInfo') === initialFile;
   const controller = new AbortController();
   const sheet = new Sheet(goalLabel(goal), { onClose:() => controller.abort('candidate-sheet-closed') });
   const progress = progressView(sheet.body);
@@ -110,10 +113,10 @@ export function showCandidates(app, goal) {
 
   investigationServiceFor(app).investigate(goal, {
     signal:controller.signal,
-    onProgress:(value) => progress.update(value),
+    onProgress:(value) => { if (isCurrentBinary()) progress.update(value); },
   }).then((result) => {
     progress.done();
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
     appendCompleteness(host, result);
     const pin = result.pin;
     if (pin?.top && pin.verdict !== VERDICT.NONE) {
@@ -169,6 +172,9 @@ export function showCandidates(app, goal) {
 
 export function showOverview(app) {
   if (!app.store.get('fileInfo')) { toast(pick('先にファイルを開いてください。', 'Open a file first.')); return null; }
+  const initialGen = app?.backend?.gen;
+  const initialFile = app?.store?.get?.('fileInfo');
+  const isCurrentBinary = () => app?.backend?.gen === initialGen && app?.store?.get?.('fileInfo') === initialFile;
   const controller = new AbortController();
   const sheet = new Sheet(pick('このアプリを解析しました', 'Application overview'), { onClose:() => controller.abort('overview-sheet-closed') });
   const progress = progressView(sheet.body);
@@ -176,10 +182,10 @@ export function showOverview(app) {
 
   investigationServiceFor(app).overview({
     signal:controller.signal,
-    onProgress:(value) => progress.update(value),
+    onProgress:(value) => { if (isCurrentBinary()) progress.update(value); },
   }).then((result) => {
     progress.done();
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
     app.autoReport = { report:result.report, key:result.context.region?.id ?? null, gen:app.symbols?.gen, snapshotId:result.snapshotId };
     void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
     appendCompleteness(host, result);

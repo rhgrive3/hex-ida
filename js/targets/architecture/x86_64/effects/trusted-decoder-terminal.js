@@ -103,10 +103,24 @@ function decoderRegisterSets(instruction) {
   return { reads, writes };
 }
 
+function parseEflagsWord(value) {
+  if (value == null) return 0n;
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^(?:0x[0-9a-f]+|\d+)$/i.test(trimmed)) {
+      try { return BigInt(trimmed); } catch { return null; }
+    }
+  }
+  return null;
+}
+
 function flagSets(instruction, domain) {
   const reads = new Set();
   const writes = new Set();
-  const raw = BigInt(instruction?.detail?.eflags ?? 0n);
+  const raw = parseEflagsWord(instruction?.detail?.eflags);
+  if (raw == null) return null;
   let nondeterministic = false;
 
   if (domain.writesComparisonRflags) {
@@ -196,9 +210,11 @@ function stackAccess(widthBits, direction) {
 function ioAccess(instruction) {
   const family = String(instruction.instructionFamily || '').toLowerCase();
   if (!IO_READ.test(family) && !IO_WRITE.test(family)) return null;
-  const immediate = (instruction.detail.operands || []).find((operand) => operand?.type === 'immediate');
+  const operands = instruction.detail.operands || [];
+  const immediate = operands.find((operand) => operand?.type === 'immediate');
+  const dataOperand = IO_WRITE.test(family) ? operands[1] : operands[0];
   const widthBits = family.endsWith('b') ? 8 : family.endsWith('w') ? 16 : family.endsWith('d') ? 32 :
-    Number((instruction.detail.operands || []).find((operand) => operand?.widthBits)?.widthBits || 8);
+    Number(dataOperand?.widthBits || operands.find((operand) => operand?.widthBits)?.widthBits || 8);
   return Object.freeze({
     direction:IO_READ.test(family) ? 'read' : 'write',
     access:Object.freeze({
@@ -349,6 +365,7 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
 
   const registers = decoderRegisterSets(instruction);
   const flags = flagSets(instruction, domain);
+  if (!flags) return partial;
   for (const value of flags.reads) {
     if (domain.usesFpuFlags && value.startsWith('rflags.')) return partial;
     if (!domain.usesFpuFlags && value.startsWith('fpsw.')) return partial;

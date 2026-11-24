@@ -1195,7 +1195,7 @@ export function starsOf(probability, verdict) {
  * 同じ理由が何度も出ないよう、code ごとに束ねて効きの大きい順にする。
  */
 export function explain(fusion, limit = 12) {
-  if (!fusion) return [];
+  if (!fusion || !Array.isArray(fusion.items)) return [];
   const merged = new Map();
   for (const it of fusion.items) {
     const key = it.code;

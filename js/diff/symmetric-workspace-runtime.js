@@ -23,7 +23,11 @@ function abortError(signal) {
 }
 function throwIfAborted(signal) { if (signal?.aborted) throw abortError(signal); }
 function requestWithSignal(request, signal) {
-  throwIfAborted(signal);
+  if (signal?.aborted) {
+    try { request?.cancel?.(); } catch { /* best effort */ }
+    Promise.resolve(request).catch(() => {});
+    throw abortError(signal);
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {
@@ -250,17 +254,27 @@ export function installSymmetricWorkspaceDiff(app) {
   workspace.diff = async function symmetricDiff(options = {}) {
     const signal = options.signal ?? null;
     throwIfAborted(signal);
+    const revision = workspace.bindingRevision;
+    const baseline = workspace.baseline;
+    const threshold = options.threshold ?? 0.62;
+    const matchBudget = options.matchBudget || DEFAULT_SYMMETRIC_MATCH_BUDGET;
+    let diffKey;
+    try { diffKey = JSON.stringify({ revision, baselineHash: baseline?.hash ?? null, threshold, matchBudget }); }
+    catch { diffKey = `${revision}:${baseline?.hash ?? ''}:${threshold}`; }
     const running = workspace.busy;
     if (running && typeof running.then === 'function') {
       const entry = sharedDiffSession(running);
       // An abandoned producer may still be unwinding; fresh consumers need a
-      // live producer, even before the abandoned task's finalizer runs.
-      if (!entry.controller?.signal.aborted) return joinSharedDiff(entry, signal);
+      // live producer with matching revision, baseline, and options.
+      if (!entry.controller?.signal.aborted && entry.diffKey === diffKey && entry.baseline === baseline) {
+        return joinSharedDiff(entry, signal);
+      }
+      if (!entry.controller?.signal.aborted && (entry.revision !== revision || entry.baseline !== baseline)) {
+        try { entry.controller?.abort('diff-superseded'); } catch {}
+      }
     }
     const controller = new AbortController();
     const sharedSignal = controller.signal;
-    const revision = workspace.bindingRevision;
-    const baseline = workspace.baseline;
     let task;
     task = (async () => {
       if (!baseline) throw new Error('baseline-not-loaded');
@@ -320,7 +334,7 @@ export function installSymmetricWorkspaceDiff(app) {
       workspace.diffState = result;
       return result;
     })().finally(() => { if (workspace.busy === task) workspace.busy = null; });
-    const entry = { task, controller, waiters:0, settled:false };
+    const entry = { task, controller, waiters:0, settled:false, diffKey, baseline, revision };
     sharedDiffSessions.set(task, entry);
     const settle = () => { entry.settled = true; };
     task.then(settle, settle);

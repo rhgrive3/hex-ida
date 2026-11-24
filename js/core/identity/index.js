@@ -417,7 +417,7 @@ export function stableDigest(value) {
 // `stableDigest(Array.from(bytes))` for the same integer 0..255 elements.
 export function stableDigestBytes(bytes, start = 0, end = bytes == null ? 0 : bytes.length, maskStart = -1, maskEnd = -1) {
   if (bytes == null || typeof bytes.length !== 'number') fail('identity-bytes-required');
-  if (start < 0 || end > bytes.length || end < start) fail('identity-byte-range-invalid');
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end > bytes.length || end < start) fail('identity-byte-range-invalid');
   let aLow = FNV_OFFSET_LOW; let aHigh = FNV_OFFSET_HIGH;
   let bLow = FNV_OFFSET_HIGH; let bHigh = FNV_OFFSET_LOW;
   const feed = (code) => {

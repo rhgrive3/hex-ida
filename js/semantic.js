@@ -82,6 +82,14 @@ function fact(kind, inst, extra = {}) {
   };
 }
 
+const UNIDENTIFIED_VALUE_IDS = new WeakMap();
+let nextUnidentifiedValueId = 1;
+function semanticValueKey(v) {
+  if (v.id != null) return 'id:' + String(v.id);
+  let sid = UNIDENTIFIED_VALUE_IDS.get(v);
+  if (!sid) { sid = 'obj:' + (nextUnidentifiedValueId++); UNIDENTIFIED_VALUE_IDS.set(v, sid); }
+  return sid;
+}
 function sameSemanticValue(a, b, seen = new Set()) {
   if (!a || !b) return false;
   if (a === b) return true;
@@ -93,7 +101,7 @@ function sameSemanticValue(a, b, seen = new Set()) {
   }
   const bitsA = Number(a.bits || 64), bitsB = Number(b.bits || 64);
   if (bitsA !== bitsB) return false;
-  const pairKey = String(a.id ?? '?') + ':' + String(b.id ?? '?');
+  const pairKey = semanticValueKey(a) + ':' + semanticValueKey(b);
   if (seen.has(pairKey)) return false;
   const next = new Set(seen).add(pairKey);
   const ad = a.def, bd = b.def;
@@ -152,16 +160,16 @@ export function proveClampSelect(sel) {
   return { kind, condition:cond, lhs, rhs, bound, candidate, compare:cmp };
 }
 
-const THRESHOLD_OPERATOR = Object.freeze({
+const THRESHOLD_OPERATOR = Object.freeze(Object.assign(Object.create(null), {
   eq:'==', ne:'!=',
   lt:'<', le:'<=', gt:'>', ge:'>=',
   lo:'<', cc:'<', hi:'>', ls:'<=', hs:'>=', cs:'>=',
-});
-const SWAPPED_CONDITION = Object.freeze({
+}));
+const SWAPPED_CONDITION = Object.freeze(Object.assign(Object.create(null), {
   eq:'eq', ne:'ne', lt:'gt', gt:'lt', le:'ge', ge:'le',
   lo:'hi', cc:'hi', hi:'lo', ls:'hs', hs:'ls', cs:'ls',
-});
-const SWAPPED_OPERATOR = Object.freeze({ '<':'>', '<=':'>=', '>':'<', '>=':'<=', '==':'==', '!=':'!=' });
+}));
+const SWAPPED_OPERATOR = Object.freeze(Object.assign(Object.create(null), { '<':'>', '<=':'>=', '>':'<', '>=':'<=', '==':'==', '!=':'!=' }));
 
 function isConditionalCompare(cmp) {
   return Boolean(cmp && (cmp.conditional === true || cmp.extra?.conditional === true || cmp.extra?.fallbackNzcv != null));
@@ -296,7 +304,7 @@ function sourceMemoryProvenance(value, opts = {}) {
   function optionsOf(v) {
     if (!v) return [[]];
     if (memo.has(v.id)) return memo.get(v.id);
-    if (active.has(v.id) || visited++ >= maxNodes) return [[]];
+    if (active.has(v.id) || visited++ >= maxNodes) return [];
     active.add(v.id);
     const d = v.def;
     let out;
@@ -540,17 +548,29 @@ function sourceSinkFacts(ir, out) {
   }
 }
 
+const factCacheWithProofs = new WeakMap();
 export function semanticFacts(ir, options = null) {
   if (!ir || !ir.instructions) return [];
-  if (factCache.has(ir)) return factCache.get(ir);
   const precomputedRmw = Array.isArray(options?.readModifyWriteProofs)
     ? options.readModifyWriteProofs
     : null;
+  if (precomputedRmw === null) {
+    if (factCache.has(ir)) return factCache.get(ir).slice();
+  } else {
+    const byProof = factCacheWithProofs.get(ir);
+    if (byProof?.has(precomputedRmw)) return byProof.get(precomputedRmw).slice();
+  }
   const out = [];
   memoryFacts(ir, out); rmwFacts(ir, out, precomputedRmw); controlFacts(ir, out); sourceSinkFacts(ir, out);
   out.sort((a, b) => (a.row == null ? -1 : a.row) - (b.row == null ? -1 : b.row) || String(a.kind).localeCompare(String(b.kind)));
-  factCache.set(ir, out);
-  return out;
+  if (precomputedRmw === null) {
+    factCache.set(ir, out);
+  } else {
+    let byProof = factCacheWithProofs.get(ir);
+    if (!byProof) { byProof = new WeakMap(); factCacheWithProofs.set(ir, byProof); }
+    byProof.set(precomputedRmw, out);
+  }
+  return out.slice();
 }
 
 export function semanticFactsFor(model, opts) {

@@ -25,11 +25,22 @@ function uniqueNodes(root,guard) {
 }
 function replace(root,target,replacement,guard) {
   const memo=new Map();
-  function visit(node) {
-    guard.take('workItems');
-    if(node===target) return replacement;
-    if(memo.has(node)) return memo.get(node);
-    const before=expressionChildren(node),after=before.map(visit);
+  const stack=[[root,false]];
+  while(stack.length) {
+    const [node,expanded]=stack.pop();
+    if(node===target) { memo.set(node,replacement); continue; }
+    if(memo.has(node)) continue;
+    if(!expanded) {
+      guard.take('workItems');
+      const before=expressionChildren(node);
+      stack.push([node,true]);
+      for(let i=before.length-1;i>=0;i--) {
+        if(before[i]!==target && !memo.has(before[i])) stack.push([before[i],false]);
+      }
+      continue;
+    }
+    const before=expressionChildren(node);
+    const after=before.map((child)=>child===target?replacement:memo.get(child));
     let result=node;
     if(before.some((x,i)=>x!==after[i])) {
       guard.take('allocationUnits');
@@ -45,12 +56,12 @@ function replace(root,target,replacement,guard) {
         default:throw new QueryFailure('unsupported-rewrite-node');
       }
     }
-    guard.take('allocationUnits');memo.set(node,result);return result;
+    guard.take('allocationUnits');memo.set(node,result);
   }
-  return visit(root);
+  return root===target?replacement:memo.get(root);
 }
 export async function queryDeobfuscationCandidates(options={}) {
-  options = { ...options };
+  options = queryRecord(options);
   const {expression,valueId,identity}=options;
   if(typeof valueId!=='string' || !valueId || valueId.length>512) throw new TypeError('bounded semantic value ID required');
   const guard=createQueryGuard({...options,timeoutMs:options.timeoutMs??120},LIMITS);
@@ -101,6 +112,9 @@ export async function queryDeobfuscationCandidates(options={}) {
           candidateId,beforeValueId:valueId,afterValueId:`${valueId}:candidate:${digest}`,
           before:expression,after,timeoutMs:remaining,identity:guard.identity});
         guard.check();
+        if(!verification.eligible && /budget|timeout|deadline|cancel|stale/i.test(String(verification.reason || ''))) {
+          throw new QueryFailure(verification.reason);
+        }
         candidates.push(Object.freeze({rule:proposal.rule,candidateId,before:expression,after,
           eligible:verification.eligible,verification}));
       }

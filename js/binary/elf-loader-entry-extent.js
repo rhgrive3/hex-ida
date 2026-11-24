@@ -30,7 +30,7 @@ function uniqueExecutableFileSpan(image, start, size) {
 // Reuse the production word classifier; unknown/control/system instructions
 // keep the original start-only seed. This deliberately does not solve CFGs.
 export function retainElfLoaderEntryExtents(image) {
-  if (image.format !== 'elf' || image.arch !== 'arm64' || image.endian !== 'little') return image;
+  if (image.format !== 'elf' || image.arch !== 'arm64' || image.endian !== 'little' || !image.bytes) return image;
   const reader = new ByteView(image.bytes);
   const starts = new Set(image.functions.map((fn) => fn.address));
   const exactStarts = new Set(image.functions.filter((fn) => fn.exactFunctionStart === true).map((fn) => fn.address));

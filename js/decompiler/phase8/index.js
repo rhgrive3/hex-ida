@@ -716,9 +716,12 @@ export function runPhase8Stage(context = {}, options = {}) {
   // caller's requested resource bound.
   const timeBudgetMs = explicitTimeBudget && Number.isFinite(parsedTimeBudget)
     ? Math.max(0, parsedTimeBudget) : explicitTimeBudget ? 0 : null;
+  const hasExplicitInheritedDeadline = options.deadline !== undefined && options.deadline !== null
+    || (context.opts?.transformDeadline !== undefined && context.opts?.transformDeadline !== null);
   const inheritedDeadline = options.deadline ?? context.opts?.transformDeadline ?? null;
-  const validInheritedDeadline = typeof inheritedDeadline === 'number' && Number.isFinite(inheritedDeadline)
-    ? inheritedDeadline : null;
+  const validInheritedDeadline = !hasExplicitInheritedDeadline
+    ? null
+    : (typeof inheritedDeadline === 'number' && Number.isFinite(inheritedDeadline) ? inheritedDeadline : started);
   const localDeadline = explicitTimeBudget ? started + timeBudgetMs : null;
   const deadline = localDeadline == null ? validInheritedDeadline
     : validInheritedDeadline == null ? localDeadline : Math.min(localDeadline, validInheritedDeadline);

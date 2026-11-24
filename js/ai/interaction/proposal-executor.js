@@ -38,7 +38,7 @@ export class ProposalExecutor {
   async currentState(proposal) {
     if (NOTE_BACKED_KINDS.has(proposal.kind)) await awaitNoteStoreReady(this.app);
     const target = targetObject(proposal.target);
-    const address = target.address == null ? null : BigInt(target.address);
+    const address = target.address == null ? null : parseProposalAddress(target.address);
     switch (proposal.kind) {
       case 'rename': return address == null ? null : (this.app?.notes?.nameOf?.(address) || this.app?.symbols?.nameAt?.(address) || null);
       case 'comment': return address == null ? null : commentStateForExpected(this.app?.notes?.comment?.(address), proposal.before);
@@ -133,9 +133,37 @@ function structFieldExpectation(proposal) {
   expectation.name = fieldName;
   return expectation;
 }
+function parseProposalAddress(value) {
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new AIError('invalid_tool_call', 'Proposal target address must be non-negative.');
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new AIError('invalid_tool_call', 'Proposal target address must be a non-negative integer.');
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^(?:0x[0-9a-f]+|\d+)$/i.test(trimmed)) throw new AIError('invalid_tool_call', 'Proposal target address must be a non-negative integer.');
+    return BigInt(trimmed);
+  }
+  throw new AIError('invalid_tool_call', 'Proposal target address must be a non-negative integer.');
+}
+function parseStructOffset(value) {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+  return null;
+}
 function findStructField(app, target) {
+  const offset = parseStructOffset(target?.offset);
+  if (offset === null) return null;
   const struct = app?.notes?.structs?.find?.((item) => item?.name === String(target.struct || target.name || ''));
-  return struct?.fields?.find?.((item) => Number(item?.offset) === Number(target.offset)) || null;
+  return struct?.fields?.find?.((item) => parseStructOffset(item?.offset) === offset) || null;
 }
 function findProjectAnnotation(app, target) { return app?.projectAnnotations?.find?.((item) => item?.id === String(target.id || ''))?.value ?? null; }
 function byteArray(value) {
@@ -175,7 +203,7 @@ function normalize(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const out = {}; for (const key of Object.keys(value).sort()) out[key] = normalize(value[key]); return out;
   }
-  return Array.isArray(value) ? value.map(normalize) : typeof value === 'bigint' ? value.toString() : value;
+  return Array.isArray(value) ? value.map(normalize) : typeof value === 'bigint' ? { __hexBigInt: value.toString() } : value;
 }
 
 export function createProposalExecutor(options) { return new ProposalExecutor(options); }

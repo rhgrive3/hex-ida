@@ -5,6 +5,20 @@ import { createDevAnalysisScopeRequest, ANALYSIS_SCOPE_INITIALS } from '../run/a
 
 const STORAGE_KEY = 'hex.ai.dev.settings.v1';
 
+function sameAdminIdentity(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return a.authenticated === b.authenticated
+      && a.admin === b.admin
+      && a.subject === b.subject
+      && a.capabilities?.canUseDevAgent === b.capabilities?.canUseDevAgent
+      && a.capabilities?.canUseDevYolo === b.capabilities?.canUseDevYolo;
+  }
+}
+
 export class DevAgentUiSettings {
   constructor({ authProvider = new DenyAllAdminProvider(), storage = defaultStorage(), key = STORAGE_KEY } = {}) {
     this.authProvider = authProvider;
@@ -32,7 +46,7 @@ export class DevAgentUiSettings {
     const canUseDev = next.capabilities.canUseDevAgent && canSelectAgentProfile(next, AGENT_PROFILE.DEV);
     const wasDev = this.agentProfile === AGENT_PROFILE.DEV;
     const wasYolo = this.decisionPolicy === DEV_DECISION_POLICY.YOLO;
-    const identityChanged = this.identity !== next;
+    const identityChanged = !sameAdminIdentity(this.identity, next);
     const lostYoloPrivilege = !next.capabilities.canUseDevYolo && wasYolo;
     const downgraded = (!canUseDev && wasDev) || lostYoloPrivilege;
     this.identity = next;
