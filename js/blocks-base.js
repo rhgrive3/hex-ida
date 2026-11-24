@@ -356,7 +356,7 @@ export const FEATURE_OF_CATEGORY = {
  * its memory fact, and for stores the source read is inverted into a
  * destination write. The AdvSIMD structure register-list family belongs here
  * too (#3601). */
-const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldtr|ldtrb|ldtrh|ldtrsb|ldtrsh|ldtrsw|ld1|ld2|ld3|ld4)$/;
+const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldxrb|ldaxrb|ldxrh|ldaxrh|ldxp|ldaxp|ldapr|ldaprb|ldaprh|ldtr|ldtrb|ldtrh|ldtrsb|ldtrsh|ldtrsw|ld1|ld2|ld3|ld4)$/;
 const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|sttrb|sttrh|stxr|stlxr|stxrb|stxrh|stlxrb|stlxrh|stxp|stlxp|st1|st2|st3|st4)$/;
 const STRUCTURE_MN = /^(ld1|ld2|ld3|ld4|st1|st2|st3|st4)$/;
 /* Exclusive stores are memory stores that still define a 32-bit status result
@@ -417,7 +417,7 @@ function writeIndexes(base, ops) {
   // is the source value, so the generic [0] fallback would invert them (#3602).
   if (ATOMIC_SOURCE_RESULT_RE.test(base)) return ops.length > 1 ? [1] : [];
   if (STORE_MN.test(base)) return [];
-  if (base === 'ldp' || base === 'ldpsw' || base === 'ldnp') return [0, 1];
+  if (base === 'ldp' || base === 'ldpsw' || base === 'ldnp' || base === 'ldxp' || base === 'ldaxp') return [0, 1];
   if (COMPARE_MN.test(base)) return [];
   if (CALL_MN.test(base) || RET_MN.test(base)) return [];
   if (COND_BRANCH.test(base) || base === 'b' || base === 'br' || PAC_INDIRECT_BRANCH_MN.test(base) || /^b\./.test(base)) return [];
@@ -463,8 +463,8 @@ function targetOf(base, ops) {
 
 /** アクセスするバイト数（分かる範囲で）。 */
 function accessSize(base, ops) {
-  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb|ldtrb|ldtrsb|sttrb|stxrb|stlxrb)$/.test(base)) return 1;
-  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh|ldtrh|ldtrsh|sttrh|stxrh|stlxrh)$/.test(base)) return 2;
+  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb|ldtrb|ldtrsb|sttrb|stxrb|stlxrb|ldxrb|ldaxrb|ldaprb)$/.test(base)) return 1;
+  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh|ldtrh|ldtrsh|sttrh|stxrh|stlxrh|ldxrh|ldaxrh|ldaprh)$/.test(base)) return 2;
   if (/^(ldrsw|ldursw|ldtrsw)$/.test(base)) return 4;
   // Exclusive stores move the data operand (operand 1), never the 32-bit
   // status result that comes first (#3592).
@@ -495,7 +495,7 @@ function accessSize(base, ops) {
   const reg = ops.find((o) => o.k === 'reg');
   if (base === 'ldpsw') return 8; // two 4-byte words in memory
   const w = reg && reg.bits ? reg.bits / 8 : 8;
-  if (base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp') return w * 2;
+  if (base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp' || base === 'ldxp' || base === 'ldaxp') return w * 2;
   return w;
 }
 
