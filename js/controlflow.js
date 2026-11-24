@@ -7,30 +7,23 @@ import { recordFallback, recordWasmCall } from './core/wasm-telemetry.js';
 
 import * as hexEngineModule from './core/hex-engine-wasm.js';
 
-function normalizeEngineFlag(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+function resolveEngineMode(options = null) {
+  const raw = (options && typeof options === 'object' && options._engine != null ? options._engine : null)
+    ?? (typeof globalThis === 'object' && globalThis !== null
+      ? (globalThis.HEX_ENGINE ?? globalThis.__HEX_ENGINE_MODE__)
+      : null)
+    ?? (typeof process === 'object' && process !== null && process.env ? process.env.HEX_ENGINE : null)
+    ?? 'auto';
+  const norm = String(raw).trim().toLowerCase();
+  if (norm === 'js' || norm === 'wasm' || norm === 'auto') return norm;
+  return 'auto';
 }
 
 function isJsEngineForced(options = null) {
-  if (options && typeof options === 'object') {
-    if (options._forceJs === true || normalizeEngineFlag(options._engine) === 'js') {
-      return true;
-    }
+  if (options && typeof options === 'object' && options._forceJs === true) {
+    return true;
   }
-  if (typeof globalThis === 'object' && globalThis !== null) {
-    if (
-      normalizeEngineFlag(globalThis.HEX_ENGINE) === 'js'
-      || normalizeEngineFlag(globalThis.__HEX_ENGINE_MODE__) === 'js'
-    ) {
-      return true;
-    }
-  }
-  if (typeof process === 'object' && process !== null && process.env) {
-    if (normalizeEngineFlag(process.env.HEX_ENGINE) === 'js') {
-      return true;
-    }
-  }
-  return false;
+  return resolveEngineMode(options) === 'js';
 }
 
 /* Natural-loop materialization is the only part of this analysis whose output is
