@@ -1,0 +1,65 @@
+[
+  {
+    "binary": "macho-sample-arm64",
+    "kind": "fnv64ByteView",
+    "inputLen": 252,
+    "low": 3585297279,
+    "high": 2224909344,
+    "stableDigestHex": "257e81e5a520269ac73df1902ece3a65",
+    "stableStringify": "{\"a\":[1,0,null,true,\"hex\"],\"b\":2,\"c\":{\"y\":8,\"z\":9}}"
+  },
+  {
+    "binary": "arm64-semantic-holdout",
+    "kind": "fnv64ByteView",
+    "inputLen": 108,
+    "low": 2812290836,
+    "high": 2352876964,
+    "stableDigestHex": "835e0e6a54a868f5db459f12845f5be4",
+    "stableStringify": "{\"a\":[1,0,null,true,\"hex\"],\"b\":2,\"c\":{\"y\":8,\"z\":9}}"
+  },
+  {
+    "binary": "arm64-fpsimd-holdout",
+    "kind": "fnv64ByteView",
+    "inputLen": 68,
+    "low": 3711121755,
+    "high": 3660246965,
+    "stableDigestHex": "07164c16952f5bf095ae739443335303",
+    "stableStringify": "{\"a\":[1,0,null,true,\"hex\"],\"b\":2,\"c\":{\"y\":8,\"z\":9}}"
+  },
+  {
+    "binary": "arm64-threaded-int",
+    "kind": "fnv64ByteView",
+    "inputLen": 24,
+    "low": 2321862702,
+    "high": 1938435157,
+    "stableDigestHex": "573991d4f6ba5d6e3205e9c07f37f157",
+    "stableStringify": "{\"a\":[1,0,null,true,\"hex\"],\"b\":2,\"c\":{\"y\":8,\"z\":9}}"
+  },
+  {
+    "binary": "arm64-threaded-mem",
+    "kind": "fnv64ByteView",
+    "inputLen": 64,
+    "low": 976119833,
+    "high": 3754175414,
+    "stableDigestHex": "dbd098063ce24a6b4fbf560d81743954",
+    "stableStringify": "{\"a\":[1,0,null,true,\"hex\"],\"b\":2,\"c\":{\"y\":8,\"z\":9}}"
+  },
+  {
+    "binary": "arm64-dispatch-table",
+    "kind": "fnv64ByteView",
+    "inputLen": 144,
+    "low": 2977900043,
+    "high": 3444706280,
+    "stableDigestHex": "2eeeefb271a5dfec17367c03eef858e1",
+    "stableStringify": "{\"a\":[1,0,null,true,\"hex\"],\"b\":2,\"c\":{\"y\":8,\"z\":9}}"
+  },
+  {
+    "binary": "arm64-gnu-b-key-cfi",
+    "kind": "fnv64ByteView",
+    "inputLen": 20,
+    "low": 20408619,
+    "high": 13988229,
+    "stableDigestHex": "a9efb6a411c6a893067bc46ab2b96060",
+    "stableStringify": "{\"a\":[1,0,null,true,\"hex\"],\"b\":2,\"c\":{\"y\":8,\"z\":9}}"
+  }
+]
