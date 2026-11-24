@@ -22,12 +22,74 @@ const MAX_FUNCTION_SCAN = 400_000;
 
 const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
   'profile',
+  'objcSyntax',
   'decompilerTimeBudgetMs',
   'phase8TimeBudgetMs',
   'phase8WorkBudget',
   'renderProvenanceBudget',
   'renderProvenanceBindingBudget',
 ]);
+
+const normalizeObjcSyntax = (v) => (v === 'c' ? 'c' : 'objc');
+
+const GLOBAL_EVIDENCE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const GLOBAL_EVIDENCE_ADDR_RE = /^(?:0[xX][0-9A-Fa-f]+|\d+)$/;
+
+function normalizeGlobalEvidenceAddress(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!GLOBAL_EVIDENCE_ADDR_RE.test(trimmed)) return null;
+    try { return BigInt(trimmed); } catch { return null; }
+  }
+  return null;
+}
+
+function normalizeGlobalEvidenceEntries(source) {
+  if (!source || typeof source !== 'object') return [];
+  const entries = [];
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      if (item && typeof item === 'object') entries.push({ ...item });
+    }
+    return entries;
+  }
+  const pairs = source instanceof Map ? source.entries() : Object.entries(source);
+  for (const [key, value] of pairs) {
+    if (!value || typeof value !== 'object') continue;
+    const entry = { ...value };
+    if (entry.address == null && normalizeGlobalEvidenceAddress(key) != null) {
+      entry.address = key;
+    }
+    if (entry.name == null && typeof key === 'string' && GLOBAL_EVIDENCE_IDENT_RE.test(key)) {
+      entry.name = key;
+    }
+    entries.push(entry);
+  }
+  return entries;
+}
+
+function mergeGlobalEvidence(primary, secondary) {
+  if (primary == null) return secondary ?? null;
+  if (secondary == null || secondary === primary) return primary;
+  const merged = [];
+  const seenNames = new Set();
+  const seenAddresses = new Set();
+  const addEntry = (entry) => {
+    const name = typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : null;
+    const addr = normalizeGlobalEvidenceAddress(entry.address);
+    if ((name != null && seenNames.has(name)) || (addr != null && seenAddresses.has(addr))) {
+      return;
+    }
+    if (name != null) seenNames.add(name);
+    if (addr != null) seenAddresses.add(addr);
+    merged.push(entry);
+  };
+  for (const entry of normalizeGlobalEvidenceEntries(primary)) addEntry(entry);
+  for (const entry of normalizeGlobalEvidenceEntries(secondary)) addEntry(entry);
+  return merged;
+}
 
 // Cache by the immutable source object, then by loaded slice index. An entry
 // also records the reader and SymbolIndex identities because either can be
@@ -893,6 +955,7 @@ export const DECOMPILE_INTERNAL_FIELDS = Object.freeze([
   'semanticSuppressionHistory', 'semanticControlRenderHistory',
   'semanticStatementRenderHistory',
   'semanticStoreRenderHistory', 'switchRenderHistory', 'legacyFallback',
+  'objcSyntax', 'globalEvidence',
 ]);
 
 const DECOMPILE_PUBLIC_FIELD_SET = new Set(DECOMPILE_PUBLIC_FIELDS);
@@ -1665,7 +1728,15 @@ export function createAppAnalysisQueryAdapter(app) {
         reason:result?.status?.reason ?? functionCompleteness?.reason ?? null,
         ...(functionCompleteness?.provenance != null ? { provenance:functionCompleteness.provenance } : {}),
       };
-      if (result?.value?.decompiler) {
+      const requestedObjcSyntax = options.objcSyntax != null ? normalizeObjcSyntax(options.objcSyntax) : null;
+      if (
+        result?.value?.decompiler
+        && (
+          requestedObjcSyntax == null
+          || normalizeObjcSyntax(result.value.decompiler.objcSyntax) === requestedObjcSyntax
+          || !result.value.model
+        )
+      ) {
         return publish(result.value.decompiler, result.status?.completeness, functionStatus);
       }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
@@ -1690,6 +1761,7 @@ export function createAppAnalysisQueryAdapter(app) {
         ...imageOptions,
         ...archOptions,
         ...decompilerOptionsFromQuery(options),
+        ...(requestedObjcSyntax != null ? { objcSyntax: requestedObjcSyntax } : {}),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
         ...(returnsValue ? { returnsValue } : {}),
@@ -1733,7 +1805,14 @@ export function createAppAnalysisQueryAdapter(app) {
         }
         const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress ?? null;
         const name = address == null ? null : symbolFor(address);
-        let producer = result.value.decompiler ?? null;
+        const requestedObjcSyntax = options.objcSyntax != null ? normalizeObjcSyntax(options.objcSyntax) : 'c';
+        const cachedDecompiler = result.value.decompiler ?? null;
+        let producer = cachedDecompiler && (
+          normalizeObjcSyntax(cachedDecompiler.objcSyntax) === requestedObjcSyntax
+          || !result.value.model
+        )
+          ? cachedDecompiler
+          : null;
         if (!producer && result.value.model) {
           // Only positive return evidence is forwarded: `false` would force a void
           // return, while an absent fact must leave return inference to the IR.
@@ -1770,6 +1849,7 @@ export function createAppAnalysisQueryAdapter(app) {
             ...imageOptions,
             ...archOptions,
             ...decompilerOptionsFromQuery(options),
+            objcSyntax: requestedObjcSyntax,
             name,
             addr:address,
             symbolFor,
@@ -1800,7 +1880,7 @@ export function createAppAnalysisQueryAdapter(app) {
           semanticIR:producer.semanticIR ?? result.value.semanticIR ?? null,
           types:producer.types ?? result.value.types ?? null,
           locationTypes:producer.locationTypes ?? result.value.locationTypes ?? null,
-          globalEvidence:producer.globalEvidence ?? result.value.globalEvidence ?? null,
+          globalEvidence:mergeGlobalEvidence(result.value.globalEvidence, producer.globalEvidence),
         });
       }
 
