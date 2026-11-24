@@ -85,6 +85,22 @@ function memText(m) {
    ──────────────────────────────────────────────────────────── */
 
 const BRANCH_IMM = new Set(['b', 'bl', 'cbz', 'cbnz', 'tbz', 'tbnz']);
+const BRANCH_EXACT = new Set([
+  'b', 'bl', 'cbz', 'cbnz', 'tbz', 'tbnz',
+  'br', 'blr', 'ret',
+  'braa', 'brab', 'braaz', 'brabz',
+  'blraa', 'blrab', 'blraaz', 'blrabz',
+  'retaa', 'retab', 'retaasppc', 'retabsppc', 'retaasppcr', 'retabsppcr',
+]);
+const CALL_MNEMONICS = new Set(['bl', 'blr', 'blraa', 'blrab', 'blraaz', 'blrabz']);
+const RETURN_MNEMONICS = new Set(['ret', 'retaa', 'retab', 'retaasppc', 'retabsppc', 'retaasppcr', 'retabsppcr']);
+
+function isCondBranchBase(base) {
+  if (base.length !== 4 || base.charCodeAt(0) !== 98 || base.charCodeAt(1) !== 46) return false;
+  const c2 = base.charCodeAt(2);
+  const c3 = base.charCodeAt(3);
+  return c2 >= 97 && c2 <= 122 && c3 >= 97 && c3 <= 122;
+}
 
 /**
  * 同じ 64bit 汎用レジスタか。
@@ -100,15 +116,10 @@ function sameGeneralRegister(a, b) {
   return a.num === b.num;
 }
 
-/** 命令が指しているアドレス（BigInt）。ないときは null。 */
-export function referenceTarget(mn, opsStr) {
-  if (!mn) return null;
-  const base = mn.toLowerCase();
-  const ops = parseOperands(opsStr);
-  const isCond = /^b\.[a-z]{2}$/.test(base);
+function referenceTargetFromOps(base, ops) {
   // アドレス 0 は「参照なし」の合図ではなく、実在しうる番地です。
   // 存在判定に正の値であることを使うと、0 番地の分岐先/参照先が消えます (#1288)。
-  if (BRANCH_IMM.has(base) || isCond || base === 'adr' || base === 'adrp') {
+  if (BRANCH_IMM.has(base) || isCondBranchBase(base) || base === 'adr' || base === 'adrp') {
     for (let i = ops.length - 1; i >= 0; i--) {
       if (ops[i].k === 'imm' && ops[i].value != null && ops[i].value >= 0n) return ops[i].value;
     }
@@ -120,22 +131,31 @@ export function referenceTarget(mn, opsStr) {
   return null;
 }
 
+/** 命令が指しているアドレス（BigInt）。ないときは null。 */
+export function referenceTarget(mn, opsStr) {
+  if (!mn) return null;
+  const base = mn.toLowerCase();
+  if (!BRANCH_IMM.has(base) && !isCondBranchBase(base) && base !== 'adr' && base !== 'adrp' && base !== 'ldr') {
+    return null;
+  }
+  return referenceTargetFromOps(base, parseOperands(opsStr));
+}
+
 /** 分岐命令か。 */
 export function isBranch(mn) {
-  const b = (mn || '').toLowerCase();
-  return BRANCH_IMM.has(b) || /^b\.[a-z]{2}$/.test(b) ||
-    b === 'br' || b === 'blr' || b === 'ret' ||
-    /^(braa|brab|braaz|brabz|blraa|blrab|blraaz|blrabz|retaa|retab|retaasppc|retabsppc|retaasppcr|retabsppcr)$/.test(b);
+  if (!mn) return false;
+  const b = mn.toLowerCase();
+  return BRANCH_EXACT.has(b) || isCondBranchBase(b);
 }
 
 export function isCall(mn) {
-  const b = (mn || '').toLowerCase();
-  return b === 'bl' || b === 'blr' || b === 'blraa' || b === 'blrab' || b === 'blraaz' || b === 'blrabz';
+  if (!mn) return false;
+  return CALL_MNEMONICS.has(mn.toLowerCase());
 }
 
 export function isReturn(mn) {
-  const b = (mn || '').toLowerCase();
-  return b === 'ret' || b === 'retaa' || b === 'retab' || b === 'retaasppc' || b === 'retabsppc' || b === 'retaasppcr' || b === 'retabsppcr';
+  if (!mn) return false;
+  return RETURN_MNEMONICS.has(mn.toLowerCase());
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -197,30 +217,31 @@ export function categoryOf(mn) {
   const direct = CATEGORY.get(b);
   if (direct) return direct;
   if (ATOMIC_CATEGORY_RE.test(b) || STORE_ONLY_ATOMIC_CATEGORY_RE.test(b)) return 'atomic';
-  if (/^b\./.test(b)) return 'flow';
-  if (/^f/.test(b)) return 'float';
+  if (b.length >= 2 && b.charCodeAt(0) === 98 && b.charCodeAt(1) === 46) return 'flow';
+  if (b.charCodeAt(0) === 102) return 'float';
   return '';
 }
 
+const CATEGORY_LABELS = Object.assign(Object.create(null), {
+  move: ['代入', 'move'],
+  arith: ['計算', 'maths'],
+  logic: ['ビット演算', 'bits'],
+  compare: ['比較', 'compare'],
+  select: ['条件で選ぶ', 'select'],
+  load: ['読み込み', 'load'],
+  store: ['書き込み', 'store'],
+  flow: ['流れを変える', 'flow'],
+  address: ['アドレス作り', 'address'],
+  system: ['CPU/OS', 'system'],
+  float: ['小数の計算', 'float'],
+  simd: ['まとめて計算', 'simd'],
+  atomic: ['排他アクセス', 'atomic'],
+  data: ['データ', 'data'],
+});
+
 /** カテゴリの日本語名（行の左に出すラベル）。 */
 export function categoryLabel(c) {
-  const T = {
-    move: ['代入', 'move'],
-    arith: ['計算', 'maths'],
-    logic: ['ビット演算', 'bits'],
-    compare: ['比較', 'compare'],
-    select: ['条件で選ぶ', 'select'],
-    load: ['読み込み', 'load'],
-    store: ['書き込み', 'store'],
-    flow: ['流れを変える', 'flow'],
-    address: ['アドレス作り', 'address'],
-    system: ['CPU/OS', 'system'],
-    float: ['小数の計算', 'float'],
-    simd: ['まとめて計算', 'simd'],
-    atomic: ['排他アクセス', 'atomic'],
-    data: ['データ', 'data'],
-  };
-  const e = Object.hasOwn(T, c) ? T[c] : null;
+  const e = CATEGORY_LABELS[c];
   return e ? pick(e[0], e[1]) : '';
 }
 
@@ -239,10 +260,17 @@ function sizeOfReg(r) {
   return Math.max(1, r.bits / 8);
 }
 
+const SIZE_WORDS_JA = Object.assign(Object.create(null), {
+  1: '1 バイト',
+  2: '2 バイト（16 ビット）',
+  4: '4 バイト（32 ビット）',
+  8: '8 バイト（64 ビット）',
+  16: '16 バイト（128 ビット）',
+});
+
 function sizeWord(bytes) {
   if (!isJa()) return bytes + ' bytes';
-  const names = { 1: '1 バイト', 2: '2 バイト（16 ビット）', 4: '4 バイト（32 ビット）', 8: '8 バイト（64 ビット）', 16: '16 バイト（128 ビット）' };
-  return names[bytes] || bytes + ' バイト';
+  return SIZE_WORDS_JA[bytes] || bytes + ' バイト';
 }
 
 function J(ja, en) { return pick(ja, en); }
@@ -287,7 +315,7 @@ export function explain(mn, opsStr, address, ctx) {
       mn ? 'The ' + mn + ' instruction. No plain-language description yet.' : '');
     out.pseudo = (mn || '') + (opsStr ? ' ' + opsStr : '');
   }
-  if (out.target == null) out.target = referenceTarget(base, opsStr);
+  if (out.target == null) out.target = referenceTargetFromOps(base, ops);
   return out;
 }
 
@@ -2834,7 +2862,9 @@ export function brief(mn, ops, style, ctx) {
   text = (text || '').replace(/\s+/g, ' ').trim();
 
   if (cacheable) {
-    if (briefCache.size > BRIEF_CACHE_MAX) briefCache.clear();
+    if (briefCache.size >= BRIEF_CACHE_MAX) {
+      briefCache.delete(briefCache.keys().next().value);
+    }
     briefCache.set(key, text);
   }
   return text;

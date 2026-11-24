@@ -9,6 +9,8 @@ const CLI_DIRECTORY_INDEX = 14;
 const METHOD_DEF_TABLE = 0x06;
 const STANDALONE_SIG_TABLE = 0x11;
 const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const UTF8_DECODER = new TextDecoder('utf-8');
+const ASCII_DECODER = new TextDecoder('ascii');
 
 function checkedRange(bytes, offset, size, code) {
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > bytes.length - size) {
@@ -277,7 +279,7 @@ function parseMetadataTables(bytes, view, tableStream, stringStream = null) {
           let sPos = sStart;
           while (sPos < sEnd && bytes[sPos] !== 0) sPos++;
           if (sPos < sEnd) {
-            try { moduleName = new TextDecoder('utf-8').decode(bytes.subarray(sStart, sPos)); } catch {}
+            try { moduleName = UTF8_DECODER.decode(bytes.subarray(sStart, sPos)); } catch {}
           }
         }
       }
@@ -510,7 +512,7 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize, { headerOn
   const versionStart = metadataOffset + 16;
   if (versionLength > metadataEnd - versionStart) fail('cil-metadata-version-truncated');
   const versionBytes = bytes.subarray(versionStart, versionStart + versionLength);
-  const runtimeVersion = new TextDecoder('utf-8').decode(versionBytes).replace(/\0+$/, '');
+  const runtimeVersion = UTF8_DECODER.decode(versionBytes).replace(/\0+$/, '');
   const flagsOffset = align4(versionStart + versionLength);
   if (flagsOffset + 4 > metadataEnd) fail('cil-metadata-stream-header-truncated');
   const streamCount = readU16(view, flagsOffset + 2, 'cil-metadata-stream-header-truncated');
@@ -524,7 +526,7 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize, { headerOn
     const nameStart = streamPos;
     while (streamPos < metadataEnd && bytes[streamPos] !== 0) streamPos++;
     if (streamPos >= metadataEnd) fail('cil-metadata-stream-name-truncated');
-    const name = new TextDecoder('ascii').decode(bytes.subarray(nameStart, streamPos));
+    const name = ASCII_DECODER.decode(bytes.subarray(nameStart, streamPos));
     streamPos = align4(streamPos + 1);
     if (relativeOffset > metadataSize || size > metadataSize - relativeOffset) fail('cil-metadata-stream-out-of-bounds');
     streams.push({ name, offset: metadataOffset + relativeOffset, size });
@@ -558,7 +560,7 @@ function parseRawMetadataRootHeader(bytes, view, metadataOffset, metadataSize) {
   if (versionLength === 0) fail('cil-metadata-version-empty');
   const versionStart = metadataOffset + 16;
   if (versionLength > metadataEnd - versionStart) fail('cil-metadata-version-truncated');
-  const runtimeVersion = new TextDecoder('utf-8').decode(bytes.subarray(versionStart, versionStart + versionLength)).replace(/\0+$/, '');
+  const runtimeVersion = UTF8_DECODER.decode(bytes.subarray(versionStart, versionStart + versionLength)).replace(/\0+$/, '');
   if (!runtimeVersion.trim()) fail('cil-metadata-version-empty');
 
   const flagsOffset = align4(versionStart + versionLength);
@@ -579,7 +581,7 @@ function parseRawMetadataRootHeader(bytes, view, metadataOffset, metadataSize) {
     if (streamPos === nameStart) fail('cil-metadata-stream-name-empty');
     const nameBytes = bytes.subarray(nameStart, streamPos);
     if (nameBytes.some((byte) => byte < 0x21 || byte > 0x7e)) fail('cil-metadata-stream-name-invalid');
-    const name = new TextDecoder('ascii').decode(nameBytes);
+    const name = ASCII_DECODER.decode(nameBytes);
     if (names.has(name)) fail('cil-metadata-stream-name-duplicate');
     names.add(name);
     streamPos = align4(streamPos + 1);

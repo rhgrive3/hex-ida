@@ -21,13 +21,23 @@ const ARM64_EFFECT_FAMILIES = Object.freeze([
 ]);
 
 const ARM64_ADD_SUB_IMMEDIATE_MNEMONICS = Object.freeze(new Set(['add','adds','sub','subs']));
+const ARM64_ADD_SUB_ALIAS_MNEMONICS = Object.freeze(new Set(['neg','negs','ngc','ngcs']));
+const ARM64_CARRY_MNEMONICS = Object.freeze(new Set(['adc','adcs','sbc','sbcs']));
+const ARM64_NGC_MNEMONICS = Object.freeze(new Set(['ngc','ngcs']));
 const ARM64_ADD_SUB_FAMILY_MNEMONICS = Object.freeze(new Set([
   ...ARM64_ADD_SUB_IMMEDIATE_MNEMONICS,
-  'adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs',
+  ...ARM64_CARRY_MNEMONICS,
+  ...ARM64_ADD_SUB_ALIAS_MNEMONICS,
 ]));
+const ARM64_FLAG_IMMEDIATE_MNEMONICS = Object.freeze(new Set(['cmp','cmn','ccmp','ccmn']));
 const ARM64_LOGICAL_IMMEDIATE_MNEMONICS = Object.freeze(new Set(['and','ands','orr','eor','tst']));
 const ARM64_LOGICAL_REGISTER_ONLY_MNEMONICS = Object.freeze(new Set(['bic','bics','orn','eon']));
+const ARM64_LOGICAL_SHIFT_KINDS = Object.freeze(new Set(['lsl','lsr','asr','ror']));
 const ARM64_LITERAL_MEMORY_MNEMONICS = Object.freeze(new Set(['ldr','ldrsw','prfm']));
+const ARM64_MULDIV_4OP_MNEMONICS = Object.freeze(new Set(['madd','msub','smaddl','smsubl','umaddl','umsubl']));
+const ARM64_MULDIV_SAME_WIDTH_MNEMONICS = Object.freeze(new Set(['mul','mneg','sdiv','udiv','madd','msub']));
+const ARM64_MULDIV_LONG_3OP_MNEMONICS = Object.freeze(new Set(['smull','umull','smnegl','umnegl']));
+const ARM64_MULDIV_HIGH_MNEMONICS = Object.freeze(new Set(['smulh','umulh']));
 const ARM64_MULTIPLY_DIVIDE_MNEMONICS = Object.freeze(new Set([
   'mul','mneg','smull','umull','smulh','umulh','sdiv','udiv',
   'madd','msub','smaddl','smsubl','umaddl','umsubl','smnegl','umnegl',
@@ -37,8 +47,10 @@ const ARM64_CONDITIONAL_ONE_SOURCE = Object.freeze(new Set(['cinc','cneg','cinv'
 const ARM64_UNARY_REGISTER_MNEMONICS = Object.freeze(new Set([
   'sxtb','sxth','sxtw','uxtb','uxth','uxtw','clz','rbit','rev','rev16','rev32','abs',
 ]));
+const ARM64_SHIFT_IMMEDIATE_MNEMONICS = Object.freeze(new Set(['lsl','lsr','asr','ror']));
 const ARM64_SHIFT_MNEMONICS = Object.freeze(new Set(['lsl','lslv','lsr','lsrv','asr','asrv','ror','rorv']));
 const ARM64_VARIABLE_SHIFT_MNEMONICS = Object.freeze(new Set(['lslv','lsrv','asrv','rorv']));
+const ARM64_BITFIELD_4OP_MNEMONICS = Object.freeze(new Set(['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi']));
 const ARM64_BITFIELD_MNEMONICS = Object.freeze(new Set(['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc']));
 
 function validImm12WithOptionalLsl12(op) {
@@ -74,23 +86,30 @@ function buildLogicalImmediateMasks(widthBits) {
     for (let ones = 1; ones < elementBits; ones++) {
       const base = (1n << BigInt(ones)) - 1n;
       for (let rotation = 0; rotation < elementBits; rotation++) {
-        masks.add(replicateElement(rotateRightElement(base, rotation, elementBits), elementBits, widthBits).toString());
+        masks.add(replicateElement(rotateRightElement(base, rotation, elementBits), elementBits, widthBits));
       }
     }
   }
   return masks;
 }
 
-const LOGICAL_IMMEDIATE_MASKS = Object.freeze({
-  32: buildLogicalImmediateMasks(32),
-  64: buildLogicalImmediateMasks(64),
-});
+let logicalMasks32 = null;
+let logicalMasks64 = null;
+
+function getLogicalImmediateMasks(widthBits) {
+  if (widthBits === 32) {
+    if (logicalMasks32 === null) logicalMasks32 = buildLogicalImmediateMasks(32);
+    return logicalMasks32;
+  }
+  if (logicalMasks64 === null) logicalMasks64 = buildLogicalImmediateMasks(64);
+  return logicalMasks64;
+}
 
 function logicalImmediateEncodable(op, widthBits) {
   if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null || op.extend != null) return false;
   const immediate = immediateOf(op);
   if (immediate == null) return false;
-  return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
+  return getLogicalImmediateMasks(widthBits).has(BigInt.asUintN(widthBits, immediate));
 }
 
 function singleWideMoveEncodable(pattern, widthBits) {
@@ -110,7 +129,7 @@ function movImmediateEncodable(op, widthBits) {
   const immediate = immediateOf(op);
   if (immediate == null) return false;
   const pattern = BigInt.asUintN(widthBits, immediate);
-  return singleWideMoveEncodable(pattern, widthBits) || LOGICAL_IMMEDIATE_MASKS[widthBits].has(pattern.toString());
+  return singleWideMoveEncodable(pattern, widthBits) || getLogicalImmediateMasks(widthBits).has(pattern);
 }
 
 function asBigIntOrNull(value) {
@@ -118,7 +137,9 @@ function asBigIntOrNull(value) {
 }
 
 function isGpOrZrRegister(operand) {
-  return operand?.k === 'reg' && typeof operand.cls === 'string' && ['gp','zr'].includes(operand.cls.toLowerCase());
+  if (operand?.k !== 'reg' || typeof operand.cls !== 'string') return false;
+  const cls = operand.cls.toLowerCase();
+  return cls === 'gp' || cls === 'zr';
 }
 
 function isPlainGpSource(operand) {
@@ -144,28 +165,27 @@ function isLogicalShiftedGpSource(operand, widthBits) {
   if (typeof operand.shift.op !== 'string') return false;
   const kind = operand.shift.op.toLowerCase();
   const amount = operand.shift.amount ?? 0;
-  return ['lsl','lsr','asr','ror'].includes(kind)
+  return ARM64_LOGICAL_SHIFT_KINDS.has(kind)
     && typeof amount === 'number' && Number.isInteger(amount) && amount >= 0 && amount < widthBits;
 }
 
-function addSubImmediateEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
+function addSubImmediateEncodingFailure(instruction, mnemonic) {
   if (!ARM64_ADD_SUB_FAMILY_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (!isGpOrZrRegister(ops[0])) return null;
-  const alias = ['neg','negs','ngc','ngcs'].includes(mnemonic);
+  const alias = ARM64_ADD_SUB_ALIAS_MNEMONICS.has(mnemonic);
   const expectedOperandCount = alias ? 2 : 3;
   if (ops.length !== expectedOperandCount) return `arm64-${mnemonic}-operand-shape-unencodable`;
   const lhs = alias ? null : ops[1];
   const rhs = alias ? ops[1] : ops[2];
   if (rhs?.k === 'imm' && !ARM64_ADD_SUB_IMMEDIATE_MNEMONICS.has(mnemonic)) return `arm64-${mnemonic}-immediate-form-unencodable`;
   const widthBits = structuredRegisterWidth(ops[0]);
-  if (['adc','adcs','sbc','sbcs'].includes(mnemonic)) {
+  if (ARM64_CARRY_MNEMONICS.has(mnemonic)) {
     if (!isGpSourceOfWidth(lhs, widthBits) || !isGpSourceOfWidth(rhs, widthBits)) return `arm64-${mnemonic}-register-width-unencodable`;
     if (!isPlainGpSource(lhs) || !isPlainGpSource(rhs)) return `arm64-${mnemonic}-register-modifier-unencodable`;
   } else if (alias && !isGpSourceOfWidth(rhs, widthBits)) {
     return `arm64-${mnemonic}-register-width-unencodable`;
-  } else if (['ngc','ngcs'].includes(mnemonic) && !isPlainGpSource(rhs)) {
+  } else if (ARM64_NGC_MNEMONICS.has(mnemonic) && !isPlainGpSource(rhs)) {
     return `arm64-${mnemonic}-register-modifier-unencodable`;
   }
   if (lhs?.k === 'imm') return `arm64-${mnemonic}-lhs-immediate-unencodable`;
@@ -179,9 +199,8 @@ function addSubImmediateEncodingFailure(instruction) {
   return null;
 }
 
-function flagEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
-  if (!['cmp','cmn','ccmp','ccmn'].includes(mnemonic)) return null;
+function flagEncodingFailure(instruction, mnemonic) {
+  if (!ARM64_FLAG_IMMEDIATE_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (!isGpOrZrRegister(ops[0])) return null;
   const rhs = ops[1];
@@ -200,8 +219,7 @@ function flagEncodingFailure(instruction) {
   return null;
 }
 
-function logicalEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
+function logicalEncodingFailure(instruction, mnemonic) {
   const isImmediateCapable = ARM64_LOGICAL_IMMEDIATE_MNEMONICS.has(mnemonic);
   const isRegisterOnly = ARM64_LOGICAL_REGISTER_ONLY_MNEMONICS.has(mnemonic) || mnemonic === 'mvn';
   if (!isImmediateCapable && !isRegisterOnly) return null;
@@ -233,29 +251,30 @@ function logicalEncodingFailure(instruction) {
   return isLogicalShiftedGpSource(rhs, widthBits) ? null : `arm64-${mnemonic}-rhs-register-required`;
 }
 
-function multiplyDivideEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
+function multiplyDivideEncodingFailure(instruction, mnemonic) {
   if (!ARM64_MULTIPLY_DIVIDE_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (!isGpOrZrRegister(ops[0])) return null;
-  const expectedOperandCount = ['madd','msub','smaddl','smsubl','umaddl','umsubl'].includes(mnemonic) ? 4 : 3;
+  const expectedOperandCount = ARM64_MULDIV_4OP_MNEMONICS.has(mnemonic) ? 4 : 3;
   if (ops.length !== expectedOperandCount) return `arm64-${mnemonic}-operand-shape-unencodable`;
   const destinationBits = structuredRegisterWidth(ops[0]);
-  const required = [];
-  if (['mul','mneg','sdiv','udiv','madd','msub'].includes(mnemonic)) {
-    for (let index = 1; index < ops.length; index++) required.push([index, destinationBits]);
-  } else if (['smull','umull','smnegl','umnegl'].includes(mnemonic)) {
-    required.push([1,32],[2,32]);
-    if (destinationBits !== 64) return `arm64-${mnemonic}-source-register-required`;
-  } else if (['smulh','umulh'].includes(mnemonic)) {
-    required.push([1,64],[2,64]);
-    if (destinationBits !== 64) return `arm64-${mnemonic}-source-register-required`;
-  } else {
-    required.push([1,32],[2,32],[3,64]);
-    if (destinationBits !== 64) return `arm64-${mnemonic}-source-register-required`;
+  if (ARM64_MULDIV_SAME_WIDTH_MNEMONICS.has(mnemonic)) {
+    for (let index = 1; index < ops.length; index++) {
+      if (!isPlainGpSourceOfWidth(ops[index], destinationBits)) return `arm64-${mnemonic}-source-register-required`;
+    }
+    return null;
   }
-  for (const [index,bits] of required) {
-    if (!isPlainGpSourceOfWidth(ops[index], bits)) return `arm64-${mnemonic}-source-register-required`;
+  if (destinationBits !== 64) return `arm64-${mnemonic}-source-register-required`;
+  if (ARM64_MULDIV_LONG_3OP_MNEMONICS.has(mnemonic)) {
+    if (!isPlainGpSourceOfWidth(ops[1], 32) || !isPlainGpSourceOfWidth(ops[2], 32)) return `arm64-${mnemonic}-source-register-required`;
+    return null;
+  }
+  if (ARM64_MULDIV_HIGH_MNEMONICS.has(mnemonic)) {
+    if (!isPlainGpSourceOfWidth(ops[1], 64) || !isPlainGpSourceOfWidth(ops[2], 64)) return `arm64-${mnemonic}-source-register-required`;
+    return null;
+  }
+  if (!isPlainGpSourceOfWidth(ops[1], 32) || !isPlainGpSourceOfWidth(ops[2], 32) || !isPlainGpSourceOfWidth(ops[3], 64)) {
+    return `arm64-${mnemonic}-source-register-required`;
   }
   return null;
 }
@@ -265,11 +284,11 @@ function modifierFreeImmediate(op) {
 }
 
 function scalarImmediateModifierEncodingFailure(mnemonic, ops) {
-  if (['lsl','lsr','asr','ror'].includes(mnemonic) && ops[2]?.k === 'imm' && !modifierFreeImmediate(ops[2])) {
+  if (ARM64_SHIFT_IMMEDIATE_MNEMONICS.has(mnemonic) && ops[2]?.k === 'imm' && !modifierFreeImmediate(ops[2])) {
     return `arm64-${mnemonic}-immediate-modifier-unencodable`;
   }
   if (mnemonic === 'extr' && !modifierFreeImmediate(ops[3])) return 'arm64-extr-immediate-modifier-unencodable';
-  if (['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi'].includes(mnemonic)
+  if (ARM64_BITFIELD_4OP_MNEMONICS.has(mnemonic)
     && (!modifierFreeImmediate(ops[2]) || !modifierFreeImmediate(ops[3]))) {
     return `arm64-${mnemonic}-immediate-modifier-unencodable`;
   }
@@ -283,7 +302,7 @@ function bitfieldRegisterShapeEncodingFailure(mnemonic, ops) {
   if (!ARM64_BITFIELD_MNEMONICS.has(mnemonic)) return null;
   const destination = ops[0];
   const widthBits = Number(destination?.bits || 0);
-  if (!isGpOrZrRegister(destination) || ![32,64].includes(widthBits)
+  if (!isGpOrZrRegister(destination) || (widthBits !== 32 && widthBits !== 64)
     || destination.shift != null || destination.extend != null) {
     return `arm64-${mnemonic}-destination-register-unencodable`;
   }
@@ -293,8 +312,7 @@ function bitfieldRegisterShapeEncodingFailure(mnemonic, ops) {
     : `arm64-${mnemonic}-source-register-unencodable`;
 }
 
-function registerOnlyIntegerEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
+function registerOnlyIntegerEncodingFailure(instruction, mnemonic) {
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   const immediateFailure = scalarImmediateModifierEncodingFailure(mnemonic, ops);
   if (immediateFailure) return immediateFailure;
@@ -302,14 +320,12 @@ function registerOnlyIntegerEncodingFailure(instruction) {
   if (bitfieldFailure) return bitfieldFailure;
   if (!isGpOrZrRegister(ops[0])) return null;
   const widthBits = structuredRegisterWidth(ops[0]);
-  const widthSensitiveIndices = mnemonic === 'extr' ? [1,2]
-    : ARM64_CONDITIONAL_TWO_SOURCE.has(mnemonic) ? [1,2]
-      : ARM64_CONDITIONAL_ONE_SOURCE.has(mnemonic) ? [1]
-        : null;
-  if (widthSensitiveIndices) {
-    for (const index of widthSensitiveIndices) {
-      if (!isPlainGpSourceOfWidth(ops[index], widthBits)) return `arm64-${mnemonic}-source-register-required`;
+  if (mnemonic === 'extr' || ARM64_CONDITIONAL_TWO_SOURCE.has(mnemonic)) {
+    if (!isPlainGpSourceOfWidth(ops[1], widthBits) || !isPlainGpSourceOfWidth(ops[2], widthBits)) {
+      return `arm64-${mnemonic}-source-register-required`;
     }
+  } else if (ARM64_CONDITIONAL_ONE_SOURCE.has(mnemonic)) {
+    if (!isPlainGpSourceOfWidth(ops[1], widthBits)) return `arm64-${mnemonic}-source-register-required`;
   } else if (ARM64_UNARY_REGISTER_MNEMONICS.has(mnemonic)) {
     if (!isPlainGpSource(ops[1])) return `arm64-${mnemonic}-source-register-required`;
   }
@@ -319,8 +335,7 @@ function registerOnlyIntegerEncodingFailure(instruction) {
   return null;
 }
 
-function moveEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
+function moveEncodingFailure(instruction, mnemonic) {
   if (mnemonic !== 'mov') return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (!isGpOrZrRegister(ops[0])) return null;
@@ -330,8 +345,7 @@ function moveEncodingFailure(instruction) {
   return movImmediateEncodable(source, widthBits) ? null : 'arm64-mov-immediate-unencodable';
 }
 
-function prefetchOperandShapeEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
+function prefetchOperandShapeEncodingFailure(instruction, mnemonic) {
   if (mnemonic !== 'prfm' && mnemonic !== 'prfum') return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   const hasPrintedSpecifier = ops[0]?.k === 'other';
@@ -343,8 +357,7 @@ function prefetchOperandShapeEncodingFailure(instruction) {
   return `arm64-${mnemonic}-operand-shape-unencodable`;
 }
 
-function literalMemoryEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
+function literalMemoryEncodingFailure(instruction, mnemonic) {
   if (!ARM64_LITERAL_MEMORY_MNEMONICS.has(mnemonic)) return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (ops.some((op) => op?.k === 'mem' || op?.kind === 'memory')) return null;
@@ -363,8 +376,7 @@ function literalMemoryEncodingFailure(instruction) {
   return null;
 }
 
-function unaryEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
+function unaryEncodingFailure(instruction, mnemonic) {
   if (mnemonic !== 'rev32') return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (!isGpOrZrRegister(ops[0])) return null;
@@ -377,8 +389,7 @@ const SIGNED_IMM21_MIN = -(1n << 20n);
 const SIGNED_IMM21_MAX = (1n << 20n) - 1n;
 const A64_PAGE_BYTES = 4096n;
 
-function addressImmediateEncodingFailure(instruction) {
-  const mnemonic = instructionMnemonic(instruction);
+function addressImmediateEncodingFailure(instruction, mnemonic) {
   if (mnemonic !== 'adr' && mnemonic !== 'adrp') return null;
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (ops.length !== 2) return `arm64-${mnemonic}-operand-shape-unencodable`;
@@ -417,17 +428,73 @@ function addressImmediateEncodingFailure(instruction) {
     : null;
 }
 
-function structuredEncodingFailure(instruction) {
-  return addressImmediateEncodingFailure(instruction)
-    || addSubImmediateEncodingFailure(instruction)
-    || flagEncodingFailure(instruction)
-    || logicalEncodingFailure(instruction)
-    || multiplyDivideEncodingFailure(instruction)
-    || registerOnlyIntegerEncodingFailure(instruction)
-    || moveEncodingFailure(instruction)
-    || prefetchOperandShapeEncodingFailure(instruction)
-    || literalMemoryEncodingFailure(instruction)
-    || unaryEncodingFailure(instruction);
+const VALIDATORS_BY_MNEMONIC = new Map();
+function registerValidators(mnemonics, validator) {
+  for (const mnemonic of mnemonics) {
+    let list = VALIDATORS_BY_MNEMONIC.get(mnemonic);
+    if (!list) {
+      list = [];
+      VALIDATORS_BY_MNEMONIC.set(mnemonic, list);
+    }
+    if (!list.includes(validator)) list.push(validator);
+  }
+}
+
+// Register in the exact original evaluation order of structuredEncodingFailure.
+registerValidators(['adr', 'adrp'], addressImmediateEncodingFailure);
+registerValidators(ARM64_ADD_SUB_FAMILY_MNEMONICS, addSubImmediateEncodingFailure);
+registerValidators(ARM64_FLAG_IMMEDIATE_MNEMONICS, flagEncodingFailure);
+registerValidators(ARM64_LOGICAL_IMMEDIATE_MNEMONICS, logicalEncodingFailure);
+registerValidators(ARM64_LOGICAL_REGISTER_ONLY_MNEMONICS, logicalEncodingFailure);
+registerValidators(['mvn'], logicalEncodingFailure);
+registerValidators(ARM64_MULTIPLY_DIVIDE_MNEMONICS, multiplyDivideEncodingFailure);
+registerValidators([
+  'extr',
+  ...ARM64_BITFIELD_MNEMONICS,
+  ...ARM64_CONDITIONAL_TWO_SOURCE,
+  ...ARM64_CONDITIONAL_ONE_SOURCE,
+  ...ARM64_UNARY_REGISTER_MNEMONICS,
+  ...ARM64_SHIFT_MNEMONICS,
+], registerOnlyIntegerEncodingFailure);
+registerValidators(['mov'], moveEncodingFailure);
+registerValidators(['prfm', 'prfum'], prefetchOperandShapeEncodingFailure);
+registerValidators(ARM64_LITERAL_MEMORY_MNEMONICS, literalMemoryEncodingFailure);
+registerValidators(['rev32'], unaryEncodingFailure);
+
+// Strictly non-overlapping mnemonic -> family direct dispatch table.
+// Any mnemonic that can be claimed by multiple families (e.g. add/sub/mov/and/
+// orr/eor/bic/mvn/neg/mul/abs/clz/rbit/rev/smull/umull shared with SIMD) is
+// intentionally omitted and falls through to ARM64_EFFECT_FAMILIES in order.
+const UNIQUE_FAMILY_BY_MNEMONIC = new Map();
+function registerUniqueFamily(mnemonics, lift) {
+  for (const mnemonic of mnemonics) UNIQUE_FAMILY_BY_MNEMONIC.set(mnemonic, lift);
+}
+registerUniqueFamily(['cmp','cmn','ccmp','ccmn','tst'], liftArm64FlagEffects);
+registerUniqueFamily(['b','bl','br','blr','ret','cbz','cbnz','tbz','tbnz'], liftArm64ControlEffects);
+registerUniqueFamily([
+  'ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw',
+  'ldp','ldpsw','ldnp','ldar','ldarb','ldarh',
+  'str','strb','strh','stur','sturb','sturh','stp','stnp','stlr','stlrb','stlrh',
+  'prfm','prfum',
+], liftArm64MemoryEffects);
+registerUniqueFamily([
+  'movz','movk','movn','adr','adrp',
+  'csel','csinc','csinv','csneg','cset','csetm','cinc','cinv','cneg',
+  'sdiv','udiv','madd','msub','smaddl','smsubl','umaddl','umsubl','smulh','umulh',
+  'ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc','extr',
+  'lsl','lsr','asr','ror','lslv','lsrv','asrv','rorv',
+  'sxtb','sxth','sxtw','uxtb','uxth','uxtw','rev16','rev32',
+  'adc','adcs','sbc','sbcs','adds','subs','ands','bics','negs','ngc','ngcs',
+], liftArm64IntegerEffects);
+
+function structuredEncodingFailure(instruction, mnemonic) {
+  const validators = VALIDATORS_BY_MNEMONIC.get(mnemonic);
+  if (!validators) return null;
+  for (let i = 0; i < validators.length; i++) {
+    const failure = validators[i](instruction, mnemonic);
+    if (failure) return failure;
+  }
+  return null;
 }
 
 function normalizedInstruction(decoded, context) {
@@ -459,12 +526,19 @@ function normalizedContext(context = {}) {
 export function liftArm64MachineEffects(decoded, context = {}) {
   const instruction = normalizedInstruction(decoded, context);
   const familyContext = normalizedContext(context);
-  const encodingFailure = structuredEncodingFailure(instruction);
+  const mnemonic = instructionMnemonic(instruction);
+  const encodingFailure = structuredEncodingFailure(instruction, mnemonic);
   if (encodingFailure) {
     const partial = createArm64EffectContext(instruction, familyContext).partial(encodingFailure, ['registers','flags','memory','other']);
     return decorateArm64BtiGuardedPageEffects(instruction, partial, familyContext);
   }
+  const directLift = UNIQUE_FAMILY_BY_MNEMONIC.get(mnemonic);
+  if (directLift) {
+    const result = directLift(instruction, familyContext);
+    if (result != null) return decorateArm64BtiGuardedPageEffects(instruction, result, familyContext);
+  }
   for (const family of ARM64_EFFECT_FAMILIES) {
+    if (family.lift === directLift) continue;
     const result = family.lift(instruction, familyContext);
     if (result != null) return decorateArm64BtiGuardedPageEffects(instruction, result, familyContext);
   }

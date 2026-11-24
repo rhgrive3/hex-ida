@@ -737,12 +737,19 @@ function entryStackArguments(ir, types, ctx, opts = {}) {
   const layout = stackLayout(ctx);
   const canonicalEntries = canonicalFunctionArgumentEntries(ctx, opts);
   if (!layout || ctx.classifierState) return [];
+  const entrySpByBase = new Map();
+  for (const [rawReg, value] of ir?.args?.entries?.() || []) {
+    const canonical = ctx.canonical(rawReg);
+    if (ctx.stackPointers.has(canonical) && !entrySpByBase.has(canonical)) {
+      entrySpByBase.set(canonical, value);
+    }
+  }
   const byKey = new Map();
   for (const inst of ir?.instructions || []) {
     if (inst?.op !== 'load' || inst.loc?.kind !== 'stack') continue;
     const baseReg = ctx.canonical(inst.loc?.baseReg);
     if (!ctx.stackPointers.has(baseReg)) continue;
-    const entrySp = entryValueForBase(ir, ctx, baseReg);
+    const entrySp = entrySpByBase.get(baseReg) ?? null;
     if (!entrySp || inst.loc.frameEpoch !== entrySp.id || inst.loc.disp == null) continue;
     const disp = BigInt(inst.loc.disp);
     if (disp < layout.firstStackArgumentOffset || inst.memUse?.kind !== 'entry') continue;

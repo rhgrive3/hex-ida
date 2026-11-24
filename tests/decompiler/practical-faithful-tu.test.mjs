@@ -361,3 +361,24 @@ test('existing contract: undefined goto label remains syntaxOnly', () => {
   assert.equal(unit.functions[0].syntaxOnly, true);
   assert.ok(unit.unresolved.some((u) => u.reason === 'goto-syntax-unavailable'));
 });
+
+test('sanitizeFloatPointerCasts inserts (uintptr_t) when a float/double expression is cast to a pointer', () => {
+  const closed = closeFunctionOutput({
+    lines: [
+      { kind: 'sig', indent: 0, text: 'void fn_fp_ptr(double d0)' },
+      { kind: 'ctrl', indent: 0, text: '{' },
+      { kind: 'stmt', indent: 1, text: '*(uint8_t *)(d0) = 0;' },
+      { kind: 'stmt', indent: 1, text: '*(uint32_t *)(d0 + 1.0) = 1;' },
+      { kind: 'ctrl', indent: 0, text: '}' },
+    ],
+  });
+  const text = closed.lines.map((l) => l.text).join('\n');
+  assert.match(text, /\(uint8_t \*\)\(uintptr_t\)\(d0\)/);
+  assert.match(text, /\(uint32_t \*\)\(uintptr_t\)\(d0 \+ 1\.0\)/);
+  const tu = buildCTranslationUnit([
+    { address: 0x20000n, name: 'fn_fp_ptr', signature: 'void fn_fp_ptr(double d0)', pseudocode: text },
+  ]);
+  assert.equal(tu.functions[0].syntaxOnly, false);
+  const cCheck = c11StrictCompileOk(tu.source);
+  if (!cCheck.skipped) assert.equal(cCheck.ok, true, cCheck.stderr);
+});

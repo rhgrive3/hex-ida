@@ -6,7 +6,7 @@ import {
   createRegisterValue,
   createTemporaryValue,
 } from '../../../../semantics/effects/index.js';
-import { createRiscv64DecodedInstruction } from '../decoded-instruction.js';
+import { createRiscv64DecodedInstruction, isCanonicalRiscv64DecodedInstruction } from '../decoded-instruction.js';
 import { riscv64RegisterDescriptor } from '../registers.js';
 
 export const RISCV64_ARCHITECTURE_ID = 'riscv64';
@@ -203,6 +203,12 @@ export function createRiscv64EffectContext(decoded, context = {}) {
 }
 
 export function normalizeRiscv64Instruction(decoded, context = {}) {
+  if (isCanonicalRiscv64DecodedInstruction(decoded)
+    && (decoded.instructionId != null || context.instructionId == null)
+    && (decoded.mode != null || context.mode == null)
+    && (decoded.origin != null || context.origin == null)) {
+    return decoded;
+  }
   return createRiscv64DecodedInstruction({
     ...decoded,
     ...(decoded?.instructionId == null && context.instructionId != null ? { instructionId: context.instructionId } : {}),

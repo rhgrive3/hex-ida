@@ -29,6 +29,28 @@ function bigMax(a, b) { return a > b ? a : b; }
 
 function isAbort(error) { return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'; }
 
+function findVariableRow(rows, target) {
+  const n = rows.length;
+  if (!n) return -1;
+  let lo = 0, hi = n;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (rows[mid].address < target) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo < n && rows[lo].address === target) return lo;
+  if (lo > 0) {
+    let prev = lo - 1;
+    const prevAddr = rows[prev].address;
+    while (prev > 0 && rows[prev - 1].address === prevAddr) prev--;
+    for (let i = prev; i < lo; i++) {
+      const entry = rows[i];
+      if (entry.address < target && target < entry.address + BigInt(entry.length)) return i;
+    }
+  }
+  return -1;
+}
+
 export class CodeViewer {
   constructor(opts) {
     this.vp = opts.viewport;
@@ -170,10 +192,8 @@ export class CodeViewer {
     const rel = address - this.region.vmAddr;
     if (rel < 0n || rel >= this.region.size) return null;
     if (this.isVariableAsm()) {
-      const exact = this.variableRows.findIndex((entry) => entry.address === address);
-      if (exact >= 0) return exact;
-      const containing = this.variableRows.findIndex((entry) => entry.address < address && address < entry.address + BigInt(entry.length));
-      if (containing >= 0) return containing;
+      const found = findVariableRow(this.variableRows, address);
+      if (found >= 0) return found;
       return this.variableRows.length === 0 && this.variableError?.address === address ? 0 : null;
     }
     const fixed = this.fixedInstructionSize();
@@ -378,8 +398,7 @@ export class CodeViewer {
 
   _goToKnownVariableAddress(address, where = 'third') {
     const target = BigInt(address);
-    let row = this.variableRows.findIndex((entry) => entry.address === target);
-    if (row < 0) row = this.variableRows.findIndex((entry) => entry.address < target && target < entry.address + BigInt(entry.length));
+    const row = findVariableRow(this.variableRows, target);
     if (row < 0) return false;
     this.goToRow(row, where);
     return true;
@@ -640,8 +659,17 @@ export class CodeViewer {
     }
     const rowCount=Math.max(0,Number(endRow-startRow));
     this._ensurePool(rowCount);
-    if(this.isVariableAsm()) this._renderVariable(startRow,endRow);
-    else this._renderFixed(startRow,endRow);
+    const frameArch = this.architectureId();
+    const frameIsVarAsm = this.isVariableAsm();
+    this._frameArch = frameArch;
+    this._frameIsVarAsm = frameIsVarAsm;
+    try {
+      if(frameIsVarAsm) this._renderVariable(startRow,endRow);
+      else this._renderFixed(startRow,endRow);
+    } finally {
+      this._frameArch = null;
+      this._frameIsVarAsm = null;
+    }
     for(let i=rowCount;i<this.pool.length;i++) if(this.pool[i].style.display!=='none')this.pool[i].style.display='none';
     const localTop=Math.max(0,this.baseRow+Math.floor(scrollTop/rowH));
     const top=this._bigRows()
@@ -675,13 +703,19 @@ export class CodeViewer {
   }
 
   _ensurePool(n) {
+    if (this.pool.length >= n) return;
+    const needed = n - this.pool.length;
+    const container = needed > 1 && typeof document.createDocumentFragment === 'function'
+      ? document.createDocumentFragment()
+      : this.rowsEl;
     while(this.pool.length<n){
       const el=document.createElement('div');el.className='row';
       const a=document.createElement('span');a.className='c-addr';const h=document.createElement('span');h.className='c-hex';const m=document.createElement('span');m.className='c-mn';const o=document.createElement('span');o.className='c-ops';const s=document.createElement('span');s.className='c-ascii';
       const note=document.createElement('span');note.className='c-note';const f=document.createElement('i');f.className='fnname';const bt=document.createElement('i');bt.className='sblkname';const nt=document.createTextNode('');note.append(f,bt,nt);el.append(a,h,m,o,s,note);
       el._a=a;el._h=h;el._m=m;el._o=o;el._s=s;el._n=note;el._f=f;el._nt=nt;el._bt=bt;el._row=-1;el._addr=null;el._hex=null;el._mn=null;el._ops=null;el._ascii=null;el._top=-1;el._cls='';el._note=null;el._fn=null;el._sblk=null;el._sblkName=null;
-      this.rowsEl.appendChild(el);this.pool.push(el);
+      container.appendChild(el);this.pool.push(el);
     }
+    if (container !== this.rowsEl) this.rowsEl.appendChild(container);
   }
 
   _paintVariableRow(el,row,top) {
@@ -700,7 +734,9 @@ export class CodeViewer {
     if(el.style.display==='none')el.style.display='';if(el._top!==top){el.style.top=top+'px';el._top=top;}el._row=row;
     const addr=address==null?'':addrText(address);if(el._addr!==addr){el._a.textContent=addr;el._addr=addr;}
     let hex=null,ascii=null;if(bytes?.length){hex=bytesHex(bytes,0,bytes.length,!this.hexJoined);if(this.mode==='hex')ascii=bytesAscii(bytes,0,bytes.length);}
-    const placeholder=this.isVariableAsm()?'··':'·· ·· ·· ··',hexText=hex===null?placeholder:hex;if(el._hex!==hexText){el._h.textContent=hexText;el._hex=hexText;}
+    const isVarAsm=this._frameIsVarAsm!=null?this._frameIsVarAsm:this.isVariableAsm();
+    const arch=this._frameArch!=null?this._frameArch:this.architectureId();
+    const placeholder=isVarAsm?'··':'·· ·· ·· ··',hexText=hex===null?placeholder:hex;if(el._hex!==hexText){el._h.textContent=hexText;el._hex=hexText;}
     if(this.mode==='hex'){const t=ascii===null?'':ascii;if(el._ascii!==t){el._s.textContent=t;el._ascii=t;}}
     if(this.mode==='asm'){if(el._mn!==mn){el._m.textContent=mn;el._mn=mn;}this._setOps(el,ops);}else if(el._mn!==''){el._m.textContent='';el._mn='';this._setOps(el,'');}
     const isFnStart=address!=null&&this.symbols.functionCount>0&&this.symbols.isFunctionStart(address);const blk=this.mode==='asm'&&row>=0?this.blockAt(row):null;
@@ -709,12 +745,26 @@ export class CodeViewer {
       const blkName=blk?.title||'';if(el._sblkName!==blkName){el._bt.textContent=blkName?'▼ '+blkName:'';el._sblkName=blkName;}
       let note='';if(mn&&mn!=='…'&&mn!=='???'&&fixedCtx)note=this._noteFor(row,fixedCtx.idx,mn,ops,fixedCtx.asmEntry);if(el._note!==note){el._nt.nodeValue=note;el._note=note;}
     }else if(el._note!==''){el._nt.nodeValue='';el._note='';el._f.textContent='';el._fn='';el._bt.textContent='';el._sblkName='';}
-    let cls='row';if(this.mode==='asm'){const k=mnemonicClass(mn);if(k)cls+=' '+k;if(!mn||mn==='…')cls+=' pending';const cg=instructionCategory(this.architectureId(),mn);if(cg)cls+=' cat-'+cg;if(isFnStart)cls+=' fnstart';if(blk)cls+=' sblk sblk-'+blk.pos+' sblk-lv-'+blk.level;}else if(!bytes?.length)cls+=' pending';
+    let cls='row';if(this.mode==='asm'){const k=mnemonicClass(mn);if(k)cls+=' '+k;if(!mn||mn==='…')cls+=' pending';const cg=instructionCategory(arch,mn);if(cg)cls+=' cat-'+cg;if(isFnStart)cls+=' fnstart';if(blk)cls+=' sblk sblk-'+blk.pos+' sblk-lv-'+blk.level;}else if(!bytes?.length)cls+=' pending';
     if(row>=0&&row>=this._selLo&&row<=this._selHi){cls+=' sel';if(this._selLo!==this._selHi){if(row===this._selLo)cls+=' sel-first';if(row===this._selHi)cls+=' sel-last';}}if(row>=0&&row===this.markedRow)cls+=' hit';if(el._cls!==cls){el.className=cls;el._cls=cls;}
   }
 
   _setOps(el,str) {
-    if(el._ops===str)return;el._ops=str;const target=el._o;if(!str){target.textContent='';return;}IMM_RE.lastIndex=0;if(!IMM_RE.test(str)){target.textContent=str;return;}target.textContent='';const parts=str.split(IMM_RE);for(let i=0;i<parts.length;i++){const p=parts[i];if(!p)continue;if(i%2===1){const s=document.createElement('span');s.className='tok-imm';s.textContent=p;target.appendChild(s);}else target.appendChild(document.createTextNode(p));}
+    if(el._ops===str)return;el._ops=str;const target=el._o;if(!str){target.textContent='';return;}
+    IMM_RE.lastIndex=0;let m=IMM_RE.exec(str);if(!m){target.textContent=str;return;}
+    const container=typeof document.createDocumentFragment==='function'?document.createDocumentFragment():target;
+    if(container===target)target.textContent='';
+    let last=0;
+    while(m){
+      const idx=m.index;
+      if(idx>last)container.appendChild(document.createTextNode(str.slice(last,idx)));
+      const s=document.createElement('span');s.className='tok-imm';s.textContent=m[0];container.appendChild(s);
+      last=idx+m[0].length;
+      if(m[0].length===0)IMM_RE.lastIndex++;
+      m=IMM_RE.exec(str);
+    }
+    if(last<str.length)container.appendChild(document.createTextNode(str.slice(last)));
+    if(container!==target){target.textContent='';target.appendChild(container);}
   }
 
   attachScrubber(track,thumb) {

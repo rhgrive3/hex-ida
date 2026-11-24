@@ -45,6 +45,7 @@ export const PROVENANCE_LOSS_REASONS = Object.freeze([
   'target-cap',
   'unsupported-operation',
 ]);
+const PROVENANCE_LOSS_REASON_SET = new Set(PROVENANCE_LOSS_REASONS);
 
 function fail(code) { throw new TypeError(code); }
 
@@ -456,7 +457,7 @@ export function createPointsToSet(input = {}) {
   // imprecision: the alias layer maps these onto proof reasons, and a free-form
   // string there becomes an answer nobody can account for.
   for (const reason of lossReasons) {
-    if (!PROVENANCE_LOSS_REASONS.includes(reason)) fail(`points-to-unknown-loss-reason:${reason}`);
+    if (!PROVENANCE_LOSS_REASON_SET.has(reason)) fail(`points-to-unknown-loss-reason:${reason}`);
   }
   return deepFreeze({
     top,
@@ -582,7 +583,8 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
   // precision but never drops a known reachable root — dropping it broke the
   // upper-bound law (previous ⊑ widened) and let the fixed point "converge"
   // below its own past state (#5358).
-  const rootsOnlyInPrevious = previous.targets.filter((target) => !next.targets.some((candidate) => candidate.rootKey === target.rootKey));
+  const nextRootKeys = new Set(next.targets.map((candidate) => candidate.rootKey));
+  const rootsOnlyInPrevious = previous.targets.filter((target) => !nextRootKeys.has(target.rootKey));
   let anyWidened = false;
   const targets = next.targets.map((target) => {
     const prior = priorByRoot.get(target.rootKey);
@@ -656,12 +658,60 @@ export function pointsToDigest(set) {
  * Monotonicity check used by the property tests: a join must never be lower in
  * the lattice than either input.
  */
+function targetsSortedByRootKey(targets) {
+  for (let i = 1; i < targets.length; i += 1) {
+    if (targets[i - 1].rootKey >= targets[i].rootKey) return false;
+  }
+  return true;
+}
+
+function pointsToLessOrEqualLinear(aTargets, bTargets, startIndex) {
+  for (let ai = startIndex; ai < aTargets.length; ai += 1) {
+    const target = aTargets[ai];
+    const other = bTargets.find((candidate) => candidate.rootKey === target.rootKey);
+    if (!other) return false;
+    const inner = target.offsetRange;
+    const outer = other.offsetRange;
+    if (outer.min != null && (inner.min == null || inner.min < outer.min)) return false;
+    if (outer.max != null && (inner.max == null || inner.max > outer.max)) return false;
+  }
+  return true;
+}
+
 export function pointsToLessOrEqual(a, b) {
   if (b.top) return true;
   if (a.top) return false;
-  for (const target of a.targets) {
-    const other = b.targets.find((candidate) => candidate.rootKey === target.rootKey);
-    if (!other) return false;
+  const aTargets = a.targets;
+  const bTargets = b.targets;
+  let bi = 0;
+  let prevAKey = null;
+  let prevBKey = null;
+  for (let ai = 0; ai < aTargets.length; ai += 1) {
+    const target = aTargets[ai];
+    const aKey = target.rootKey;
+    if (prevAKey !== null && prevAKey >= aKey) {
+      return pointsToLessOrEqualLinear(aTargets, bTargets, ai);
+    }
+    prevAKey = aKey;
+    while (bi < bTargets.length) {
+      const bKey = bTargets[bi].rootKey;
+      if (prevBKey !== null && prevBKey >= bKey) {
+        return pointsToLessOrEqualLinear(aTargets, bTargets, ai);
+      }
+      if (bKey < aKey) {
+        prevBKey = bKey;
+        bi += 1;
+        continue;
+      }
+      break;
+    }
+    if (bi >= bTargets.length || bTargets[bi].rootKey !== aKey) {
+      if (!targetsSortedByRootKey(bTargets)) {
+        return pointsToLessOrEqualLinear(aTargets, bTargets, ai);
+      }
+      return false;
+    }
+    const other = bTargets[bi];
     const inner = target.offsetRange;
     const outer = other.offsetRange;
     if (outer.min != null && (inner.min == null || inner.min < outer.min)) return false;

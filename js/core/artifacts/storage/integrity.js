@@ -7,11 +7,13 @@ import {
   encodeArtifactPayload,
   validateArtifactRecord,
 } from '../contracts.js';
-import { stableDigest, createArtifactId } from '../../identity/index.js';
+import { stableDigest, stableStringify, createArtifactId } from '../../identity/index.js';
 
 export const ARTIFACT_STORAGE_ENVELOPE_SCHEMA_VERSION = 1;
 
 const encoder = new TextEncoder();
+const payloadDecoder = new TextDecoder('utf-8', { fatal: true });
+const CANONICAL_STORED_RECORDS = new WeakSet();
 
 function isObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -105,7 +107,9 @@ export function validateArtifactRecordShape(record) {
 export function canonicalStoredRecord(record) {
   validateArtifactRecordShape(record);
   try {
-    return freeze(JSON.parse(canonicalSerializeArtifactRecord(record)));
+    const frozen = freeze(JSON.parse(canonicalSerializeArtifactRecord(record)));
+    CANONICAL_STORED_RECORDS.add(frozen);
+    return frozen;
   } catch (error) {
     if (error instanceof ArtifactCorruptionError) throw error;
     throw new ArtifactCorruptionError('artifact-record-malformed', 'Artifact record cannot be canonically serialized', { cause:String(error) });
@@ -149,7 +153,10 @@ function assertArtifactIdRecomputable(record) {
 }
 
 export function artifactRecordChecksum(record) {
-  return stableDigest({ storageEnvelopeSchemaVersion:ARTIFACT_STORAGE_ENVELOPE_SCHEMA_VERSION, record:JSON.parse(canonicalSerializeArtifactRecord(record)) });
+  const canonical = CANONICAL_STORED_RECORDS.has(record)
+    ? record
+    : JSON.parse(canonicalSerializeArtifactRecord(record));
+  return stableDigest({ storageEnvelopeSchemaVersion:ARTIFACT_STORAGE_ENVELOPE_SCHEMA_VERSION, record:canonical });
 }
 
 export function createStorageEnvelopeFields(record) {
@@ -248,14 +255,27 @@ export function validateDescriptorRecord(record, descriptor) {
   return true;
 }
 
-export function decodeCanonicalArtifactPayload(bytes) {
-  const view = normalizeStoredPayloadBytes(bytes);
-  const payload = decodeArtifactPayload(view);
-  const canonical = encodeArtifactPayload(payload);
-  if (!equalBytes(view, canonical)) {
+function decodeCanonicalArtifactPayloadOwned(view) {
+  let text;
+  let payload;
+  try {
+    text = payloadDecoder.decode(view);
+    payload = JSON.parse(text);
+  } catch (error) {
+    throw new ArtifactCorruptionError('artifact-payload-malformed', 'Artifact payload is not valid canonical JSON', { cause:String(error) });
+  }
+  // UTF-8 BOM (EF BB BF) is stripped by TextDecoder(ignoreBOM:false), so reject explicitly.
+  if (view.byteLength >= 3 && view[0] === 0xef && view[1] === 0xbb && view[2] === 0xbf) {
+    throw new ArtifactCorruptionError('artifact-payload-noncanonical', 'Artifact payload does not match canonical-json-v1 encoding');
+  }
+  if (stableStringify(payload) !== text) {
     throw new ArtifactCorruptionError('artifact-payload-noncanonical', 'Artifact payload does not match canonical-json-v1 encoding');
   }
   return payload;
+}
+
+export function decodeCanonicalArtifactPayload(bytes) {
+  return decodeCanonicalArtifactPayloadOwned(normalizeStoredPayloadBytes(bytes));
 }
 
 export function validateStoredArtifact(raw, { artifactId, descriptor = null, allowIncomplete = false } = {}) {
@@ -279,7 +299,7 @@ export function validateStoredArtifact(raw, { artifactId, descriptor = null, all
   assertArtifactIdRecomputable(record);
   validateDescriptorRecord(record, descriptor);
   const envelope = validateStorageEnvelope(raw, record);
-  const payload = decodeCanonicalArtifactPayload(payloadBytes);
+  const payload = decodeCanonicalArtifactPayloadOwned(payloadBytes);
   return { record, payloadBytes, payload, legacyStorageEnvelope:envelope.legacy };
 }
 

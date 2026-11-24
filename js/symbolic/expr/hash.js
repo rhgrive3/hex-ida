@@ -244,66 +244,99 @@ export function computeStructuralHashesBounded(roots, { maxNodes = 100000 } = {}
   return Object.freeze({ ok: true, hashes: Object.freeze(roots.map((root) => hashes.get(root))), nodeCount, traversalCount });
 }
 
+// Iterative structural equality over finite acyclic Expr DAGs.
+// Memoizes visited (x, y) pairs lazily for deep/shared DAGs so repeated
+// sub-DAG comparisons avoid exponential re-traversal (acyclic DAG precondition).
 export function structuralEquals(a, b) {
   if (a === b) return true;
   if (!a || !b) return false;
-  const visited = new WeakMap();
-  const stack = [[a, b]];
+  const stack = [a, b];
+  let visited = null;
+  let steps = 0;
+
   while (stack.length > 0) {
-    const [left, right] = stack.pop();
-    if (left === right) continue;
-    if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
-    let seenRight = visited.get(left);
-    if (seenRight?.has(right)) continue;
-    if (left.kind !== right.kind) return false;
-    if (!sameSort(left.sort, right.sort)) return false;
-    if (!seenRight) {
-      seenRight = new WeakSet();
-      visited.set(left, seenRight);
+    const y = stack.pop();
+    const x = stack.pop();
+    if (x === y) continue;
+    if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false;
+    if (x.kind !== y.kind) return false;
+    if (!sameSort(x.sort, y.sort)) return false;
+
+    const hx = hashCache.get(x);
+    if (hx !== undefined) {
+      const hy = hashCache.get(y);
+      if (hy !== undefined && hx !== hy) return false;
     }
-    seenRight.add(right);
-    switch (left.kind) {
+    if (visited !== null) {
+      const seenY = visited.get(x);
+      if (seenY && seenY.has(y)) continue;
+    }
+    steps++;
+    if (steps > 8) {
+      if (visited === null) visited = new Map();
+      let seenY = visited.get(x);
+      if (!seenY) {
+        seenY = new Set();
+        visited.set(x, seenY);
+      }
+      seenY.add(y);
+    }
+
+    switch (x.kind) {
       case EXPR_KIND.CONST:
-        if (left.value !== right.value) return false;
+        if (x.value !== y.value) return false;
         break;
+
       case EXPR_KIND.FRESH_SYMBOL:
-        if (left.symbolId != null || right.symbolId != null) {
-          if (left.symbolId !== right.symbolId || left.name !== right.name) return false;
-        } else if (left.name !== right.name) {
+        // Structural identity equals solver binding identity: symbolId first,
+        // name-only comparison only for legacy nodes without a symbolId.
+        if (x.symbolId != null || y.symbolId != null) {
+          if (x.symbolId !== y.symbolId || x.name !== y.name) return false;
+        } else if (x.name !== y.name) {
           return false;
         }
         break;
+
       case EXPR_KIND.UNKNOWN_SEMANTIC:
-        if (left.reason !== right.reason || canonicalDetailJson(left.detail) !== canonicalDetailJson(right.detail)) return false;
-        break;
-      case EXPR_KIND.UNARY:
-        if (left.op !== right.op) return false;
-        stack.push([left.arg, right.arg]);
-        break;
-      case EXPR_KIND.BINARY:
-      case EXPR_KIND.COMPARE:
-        if (left.op !== right.op) return false;
-        stack.push([left.right, right.right], [left.left, right.left]);
-        break;
-      case EXPR_KIND.CONNECTIVE:
-        if (left.op !== right.op || left.args.length !== right.args.length) return false;
-        for (let i = left.args.length - 1; i >= 0; i--) {
-          stack.push([left.args[i], right.args[i]]);
+        if (x.reason !== y.reason || canonicalDetailJson(x.detail) !== canonicalDetailJson(y.detail)) {
+          return false;
         }
         break;
+
+      case EXPR_KIND.UNARY:
+        if (x.op !== y.op) return false;
+        stack.push(x.arg, y.arg);
+        break;
+
+      case EXPR_KIND.BINARY:
+      case EXPR_KIND.COMPARE:
+        if (x.op !== y.op) return false;
+        stack.push(x.right, y.right, x.left, y.left);
+        break;
+
+      case EXPR_KIND.CONNECTIVE:
+        if (x.op !== y.op || x.args.length !== y.args.length) return false;
+        for (let i = x.args.length - 1; i >= 0; i--) {
+          stack.push(x.args[i], y.args[i]);
+        }
+        break;
+
       case EXPR_KIND.ITE:
-        stack.push([left.elseExpr, right.elseExpr], [left.thenExpr, right.thenExpr], [left.cond, right.cond]);
+        stack.push(x.elseExpr, y.elseExpr, x.thenExpr, y.thenExpr, x.cond, y.cond);
         break;
+
       case EXPR_KIND.EXTRACT:
-        if (left.high !== right.high || left.low !== right.low) return false;
-        stack.push([left.arg, right.arg]);
+        if (x.high !== y.high || x.low !== y.low) return false;
+        stack.push(x.arg, y.arg);
         break;
+
       case EXPR_KIND.CONCAT:
-        stack.push([left.right, right.right], [left.left, right.left]);
+        stack.push(x.right, y.right, x.left, y.left);
         break;
+
       case EXPR_KIND.CAST:
-        if (left.op !== right.op || left.targetWidth !== right.targetWidth) return false;
-        stack.push([left.arg, right.arg]);
+        if (x.op !== y.op || x.targetWidth !== y.targetWidth) return false;
+        stack.push(x.arg, y.arg);
         break;
       default:
         return false;

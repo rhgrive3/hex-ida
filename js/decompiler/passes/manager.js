@@ -143,24 +143,27 @@ function isDeepImmutable(value) {
   return immutable;
 }
 
-function effectiveReadOnlyRoots(state, budget, pass) {
+function resolveReadOnlyRoots(state, budget, pass) {
   const baseRoots = pass.readOnlyRoots instanceof Set
     ? pass.readOnlyRoots
     : (budget.readOnlyRoots instanceof Set ? budget.readOnlyRoots : null);
   const budgetKeys = budget.readOnlyKeys;
   const passKeys = pass.readOnlyKeys;
-  if (!budgetKeys && !passKeys) return baseRoots;
-  const roots = baseRoots ? new Set(baseRoots) : new Set();
+  if (!budgetKeys && !passKeys) return { baseRoots, extraRoots: null };
+  let extraRoots = null;
   const addKeys = (keys) => {
     if (!keys) return;
     for (const key of keys) {
       const value = Object.getOwnPropertyDescriptor(state, key)?.value;
-      if (value !== null && typeof value === 'object') roots.add(value);
+      if (value !== null && typeof value === 'object'
+          && (baseRoots === null || !baseRoots.has(value))) {
+        (extraRoots ??= new Set()).add(value);
+      }
     }
   };
   addKeys(budgetKeys);
   addKeys(passKeys);
-  return roots.size > 0 ? roots : baseRoots;
+  return { baseRoots, extraRoots };
 }
 
 function captureShallowState(state) {
@@ -177,7 +180,7 @@ function captureShallowState(state) {
   };
 }
 
-function capturePassState(state, shouldAbort = null, readOnlyRoots = null) {
+function capturePassState(state, shouldAbort = null, baseReadOnlyRoots = null, extraReadOnlyRoots = null) {
   const __t0 = globalThis.__hexPerfProbe ? performance.now() : 0; // PERF-PROBE
   const pending = [state], seen = new Set(), records = [];
   let checked = 0;
@@ -192,7 +195,8 @@ function capturePassState(state, shouldAbort = null, readOnlyRoots = null) {
     checked++;
     const value = pending.pop();
     if (value === null || typeof value !== 'object' || seen.has(value)) continue;
-    if (readOnlyRoots !== null && readOnlyRoots.has(value)) continue;
+    if ((baseReadOnlyRoots !== null && baseReadOnlyRoots.has(value))
+        || (extraReadOnlyRoots !== null && extraReadOnlyRoots.has(value))) continue;
     if (isDeepImmutable(value)) continue;
     seen.add(value);
     const proto = Object.getPrototypeOf(value);
@@ -467,10 +471,13 @@ export class PassManager {
           // Run synchronously on the real graph; retain descriptors and collection
           // entries so a failure restores pass-owned data in place (including
           // aliases/cycles). This does not roll back external adapter side effects.
-          const readOnlyRoots = effectiveReadOnlyRoots(state, this.budget, pass);
-          const restore = pass.shallowStateOnly === true
-            ? captureShallowState(state)
-            : capturePassState(state, passBudget.shouldAbort, readOnlyRoots);
+          let restore;
+          if (pass.shallowStateOnly === true) {
+            restore = captureShallowState(state);
+          } else {
+            const { baseRoots, extraRoots } = resolveReadOnlyRoots(state, this.budget, pass);
+            restore = capturePassState(state, passBudget.shouldAbort, baseRoots, extraRoots);
+          }
           if (restore == null || passBudget.shouldAbort()) {
             if (!budgetWarned) state.warnings.push(`Decompiler pass budget exhausted while preparing ${pass.name}; optional pass was skipped.`);
             budgetWarned = true;

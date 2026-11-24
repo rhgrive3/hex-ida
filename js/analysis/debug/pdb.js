@@ -1485,7 +1485,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     });
     // Procedures carry the type index that names a function's signature; that
     // is the record the type graph can actually use.
-    const typed = parsed.symbols.symbols.filter((symbol) => symbol.kind === 'procedure' && symbol.typeIndex);
+    const typed = typedSymbolsForPdb(parsed);
     const typePage = page(typed, cursor, pageSize, (symbol) => {
       const described = renderTypeIndex(symbol.typeIndex, parsed.tpi.types, 0, renderContext);
       return createDebugRecord({
@@ -1582,6 +1582,19 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
   const streamIndex = view.getUint16(entryOffset, true);
   if (streamIndex === 0xffff || streamIndex >= msf.streams.length) return null;
   return msf.streams[streamIndex].read();
+}
+
+const pdbTypedSymbolsCache = new WeakMap();
+
+function typedSymbolsForPdb(parsed) {
+  const symbols = parsed.symbols.symbols;
+  const cached = pdbTypedSymbolsCache.get(parsed);
+  if (cached && cached.symbolsRef === symbols && cached.count === symbols.length) {
+    return cached.typed;
+  }
+  const typed = symbols.filter((symbol) => symbol.kind === 'procedure' && symbol.typeIndex);
+  pdbTypedSymbolsCache.set(parsed, { symbolsRef: symbols, count: symbols.length, typed });
+  return typed;
 }
 
 function page(items, cursor, pageSize, map) {

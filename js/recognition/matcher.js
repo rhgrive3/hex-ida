@@ -48,30 +48,58 @@ export class FunctionMatchIndex {
     const rawMaxBucketScan = Number(options.maxBucketScan ?? 1024);
     const boundedBucketScan = Number.isFinite(rawMaxBucketScan) && rawMaxBucketScan > 0 ? Math.max(1, Math.floor(rawMaxBucketScan)) : 1024;
     const maxBucketScan = Math.max(maxCandidates, boundedBucketScan);
-    const tokenBuckets = coarseTokens(fp).map((token) => ({token,bucket:this.buckets.get(token)})).filter((x) => x.bucket?.length).sort((a,b) => a.bucket.length - b.bucket.length);
+    const tokens = coarseTokens(fp);
+    const tokenBuckets = [];
+    for (let t = 0; t < tokens.length; t += 1) {
+      const token = tokens[t];
+      const bucket = this.buckets.get(token);
+      if (bucket && bucket.length) tokenBuckets.push({ token, bucket });
+    }
     if (!tokenBuckets.length) return [];
+    tokenBuckets.sort((a, b) => a.bucket.length - b.bucket.length);
     const exact = tokenBuckets.find((x) => x.token.startsWith('nb:') && x.bucket.length <= maxCandidates);
     if (exact) return exact.bucket.slice();
     const scores = new Map();
-    const selected = tokenBuckets.slice(0, Math.min(6, tokenBuckets.length));
-    for (let rank = 0; rank < selected.length; rank++) {
-      const { bucket } = selected[rank]; const scan = Math.min(bucket.length, maxBucketScan);
+    const selectedCount = Math.min(6, tokenBuckets.length);
+    for (let rank = 0; rank < selectedCount; rank += 1) {
+      const { bucket } = tokenBuckets[rank];
+      const bucketLen = bucket.length;
+      const scan = Math.min(bucketLen, maxBucketScan);
       // For huge, low-information buckets, deterministic spread sampling avoids O(N) probes.
-      const step = bucket.length > scan ? bucket.length / scan : 1;
-      for (let k = 0; k < scan; k++) {
-        const idx = bucket[Math.min(bucket.length - 1, Math.floor(k * step))];
-        const current = scores.get(idx) || {hits:0, rarity:0}; current.hits++; current.rarity += 1 / Math.max(1,bucket.length); scores.set(idx,current);
+      const step = bucketLen > scan ? bucketLen / scan : 1;
+      const invLen = 1 / Math.max(1, bucketLen);
+      for (let k = 0; k < scan; k += 1) {
+        const idx = bucket[Math.min(bucketLen - 1, Math.floor(k * step))];
+        let current = scores.get(idx);
+        if (current === undefined) {
+          scores.set(idx, { hits: 1, rarity: invLen });
+        } else {
+          current.hits += 1;
+          current.rarity += invLen;
+        }
       }
     }
     return [...scores].sort((a,b) => b[1].hits-a[1].hits || b[1].rarity-a[1].rarity || a[0]-b[0]).slice(0,maxCandidates).map(([i])=>i);
   }
 }
 
-function neighborSet(fp) { return new Set([...(fp.callers || []), ...(fp.callees || [])].map(String)); }
-function neighborBonus(a, b, anchors) {
-  if (!anchors?.size) return 0;
-  const A = neighborSet(a), B = neighborSet(b);
-  if (!A.size || !B.size) return 0;
+function getNeighborSet(cache, list, idx) {
+  let set = cache[idx];
+  if (set !== undefined) return set;
+  const fp = list[idx];
+  const callers = fp.callers, callees = fp.callees;
+  if ((!callers || !callers.length) && (!callees || !callees.length)) {
+    cache[idx] = null;
+    return null;
+  }
+  set = new Set();
+  if (callers) for (let k = 0; k < callers.length; k += 1) set.add(String(callers[k]));
+  if (callees) for (let k = 0; k < callees.length; k += 1) set.add(String(callees[k]));
+  cache[idx] = set;
+  return set;
+}
+function neighborBonusFromSets(A, B, anchors) {
+  if (!A || !B || !anchors.size) return 0;
   let possible = 0, hits = 0;
   for (const from of A) {
     const to = anchors.get(from);
@@ -188,11 +216,12 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   for (const [i, choices] of byBefore) {
     if ((++refineChecks & 63) === 0 && !budget.checkCandidateWall()) break;
     choices.sort((a,b)=>b.baseConfidence-a.baseConfidence || a.j-b.j); const top=choices[0], second=choices[1];
-    const reverse = byAfter.get(top.j) || [];
-    const reverseSecond = reverse[0]?.i !== i ? reverse[0] : reverse[1];
     const uniqueLeft=!second || top.baseConfidence-second.baseConfidence>0.06;
-    const uniqueRight=!reverseSecond || top.baseConfidence-reverseSecond.baseConfidence>0.06;
-    if (top.baseConfidence>=0.9 && uniqueLeft && uniqueRight && before[top.i].address!=null && after[top.j].address!=null) {
+    if (top.baseConfidence < 0.9 || !uniqueLeft || before[top.i].address == null || after[top.j].address == null) continue;
+    const reverse = byAfter.get(top.j);
+    const reverseSecond = reverse ? (reverse[0]?.i !== i ? reverse[0] : reverse[1]) : null;
+    const uniqueRight = !reverseSecond || top.baseConfidence - reverseSecond.baseConfidence > 0.06;
+    if (uniqueRight) {
       const fromKey = String(before[top.i].address);
       const toKey = String(after[top.j].address);
       if (!anchors.has(fromKey) && !anchoredAfter.has(toKey)) {
@@ -202,13 +231,19 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     }
   }
   const iterations = Math.max(0, Math.min(3, options.neighborhoodIterations ?? 2));
-  for (let iter = 0; iter < iterations; iter++) {
+  const beforeNeighbors = anchors.size > 0 && iterations > 0 ? new Array(before.length) : null;
+  const afterNeighbors = anchors.size > 0 && iterations > 0 ? new Array(after.length) : null;
+  for (let iter = 0; iter < iterations && anchors.size > 0; iter++) {
     if (budget.candidateGraphIncomplete || !budget.checkCandidateWall()) break;
     let changed = false;
     for (const c of all) {
       if ((++refineChecks & 255) === 0 && !budget.checkCandidateWall()) break;
       if (c.baseConfidence < 0.55) continue;
-      const bonus = neighborBonus(before[c.i], after[c.j], anchors);
+      const bonus = neighborBonusFromSets(
+        getNeighborSet(beforeNeighbors, before, c.i),
+        getNeighborSet(afterNeighbors, after, c.j),
+        anchors,
+      );
       const next = Math.min(0.97, c.baseConfidence + bonus);
       if (next > c.confidence) { c.confidence = next; if (bonus > 0 && !c.reasons.includes('call-neighborhood')) c.reasons.push('call-neighborhood'); changed = true; }
     }

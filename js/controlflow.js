@@ -94,22 +94,36 @@ function predecessorsOf(succ) {
   return pred;
 }
 
+function maskFromReachable(reachable, length) {
+  const mask = new Uint8Array(length);
+  for (const i of reachable) if (i >= 0 && i < length) mask[i] = 1;
+  return mask;
+}
+
 function reachableFrom(succ, entry) {
   const out = new Set();
   if (!validNodeIndex(entry, succ.length)) return out;
+  const seen = new Uint8Array(succ.length);
   const stack = [entry];
   while (stack.length) {
     const i = stack.pop();
-    if (out.has(i)) continue;
+    if (seen[i]) continue;
+    seen[i] = 1;
     out.add(i);
-    for (const j of succ[i]) if (!out.has(j)) stack.push(j);
+    const xs = succ[i];
+    for (let k = 0; k < xs.length; k++) {
+      const j = xs[k];
+      if (!seen[j]) stack.push(j);
+    }
   }
   return out;
 }
 
-function reversePostOrder(succ, entry, allowed = null) {
-  if (!validNodeIndex(entry, succ.length) || (allowed && !allowed.has(entry))) return [];
-  const seen = new Set([entry]);
+function reversePostOrder(succ, entry, allowedMask = null) {
+  const n = succ.length;
+  if (!validNodeIndex(entry, n) || (allowedMask && !allowedMask[entry])) return [];
+  const seen = new Uint8Array(n);
+  seen[entry] = 1;
   const post = [];
   const stack = [{ node: entry, next: 0 }];
   while (stack.length) {
@@ -117,8 +131,8 @@ function reversePostOrder(succ, entry, allowed = null) {
     const xs = succ[frame.node] || [];
     if (frame.next < xs.length) {
       const next = xs[frame.next++];
-      if ((allowed && !allowed.has(next)) || seen.has(next)) continue;
-      seen.add(next);
+      if ((allowedMask && !allowedMask[next]) || seen[next]) continue;
+      seen[next] = 1;
       stack.push({ node: next, next: 0 });
       continue;
     }
@@ -130,15 +144,16 @@ function reversePostOrder(succ, entry, allowed = null) {
 }
 
 /* Cooper-Harvey-Kennedy immediate dominators: O(N) memory, no Set-per-node. */
-function immediateDominatorsOf(succ, pred, reachable, entry) {
-  const idom = new Array(succ.length).fill(-1);
-  const rpo = reversePostOrder(succ, entry, reachable);
+function immediateDominatorsOf(succ, pred, reachableMask, entry) {
+  const n = succ.length;
+  const idom = new Array(n).fill(-1);
+  const rpo = reversePostOrder(succ, entry, reachableMask);
   if (!rpo.length) return { idom, rpo };
-  const rank = new Array(succ.length).fill(-1);
-  rpo.forEach((node, i) => { rank[node] = i; });
+  const rank = new Int32Array(n).fill(-1);
+  for (let i = 0; i < rpo.length; i++) rank[rpo[i]] = i;
   idom[entry] = entry;
   const intersect = (a, b) => {
-    let guard = succ.length * 2 + 4;
+    let guard = n * 2 + 4;
     while (a !== b && guard-- > 0) {
       while (rank[a] > rank[b]) a = idom[a];
       while (rank[b] > rank[a]) b = idom[b];
@@ -147,14 +162,19 @@ function immediateDominatorsOf(succ, pred, reachable, entry) {
     return a === b ? a : -1;
   };
   let changed = true;
-  for (let round = 0; changed && round < succ.length * 2 + 4; round++) {
+  for (let round = 0; changed && round < n * 2 + 4; round++) {
     changed = false;
     for (let ri = 1; ri < rpo.length; ri++) {
       const node = rpo[ri];
-      const ps = (pred[node] || []).filter((p) => reachable.has(p) && idom[p] >= 0);
-      if (!ps.length) continue;
-      let next = ps[0];
-      for (let i = 1; i < ps.length && next >= 0; i++) next = intersect(next, ps[i]);
+      const ps = pred[node];
+      if (!ps || ps.length === 0) continue;
+      let next = -1;
+      for (let i = 0; i < ps.length; i++) {
+        const p = ps[i];
+        if (!reachableMask[p] || idom[p] < 0) continue;
+        next = next < 0 ? p : intersect(next, p);
+        if (next < 0) break;
+      }
       if (next >= 0 && idom[node] !== next) { idom[node] = next; changed = true; }
     }
   }
@@ -243,36 +263,40 @@ function dominanceViews(idom, reachable, excluded = -1) {
 }
 
 /* Iterative Kosaraju SCC. Avoids JS call-stack overflow on giant functions. */
-function strongComponents(succ, pred, reachable) {
-  const seen = new Set();
+function strongComponents(succ, pred, reachable, reachableMask) {
+  const n = succ.length;
+  const seen = new Uint8Array(n);
   const finish = [];
   for (const root of reachable) {
-    if (seen.has(root)) continue;
-    seen.add(root);
+    if (seen[root]) continue;
+    seen[root] = 1;
     const stack = [{ node: root, next: 0 }];
     while (stack.length) {
       const frame = stack[stack.length - 1];
       const xs = succ[frame.node] || [];
       if (frame.next < xs.length) {
         const next = xs[frame.next++];
-        if (!reachable.has(next) || seen.has(next)) continue;
-        seen.add(next); stack.push({ node: next, next: 0 });
+        if (!reachableMask[next] || seen[next]) continue;
+        seen[next] = 1; stack.push({ node: next, next: 0 });
       } else { finish.push(frame.node); stack.pop(); }
     }
   }
   const components = [];
-  const componentOf = new Array(succ.length).fill(-1);
-  const assigned = new Set();
+  const componentOf = new Array(n).fill(-1);
+  const assigned = new Uint8Array(n);
   for (let fi = finish.length - 1; fi >= 0; fi--) {
     const root = finish[fi];
-    if (assigned.has(root)) continue;
+    if (assigned[root]) continue;
     const comp = [];
-    const stack = [root]; assigned.add(root);
+    const stack = [root]; assigned[root] = 1;
     while (stack.length) {
       const node = stack.pop(); comp.push(node); componentOf[node] = components.length;
-      for (const next of pred[node] || []) {
-        if (!reachable.has(next) || assigned.has(next)) continue;
-        assigned.add(next); stack.push(next);
+      const ps = pred[node];
+      if (!ps) continue;
+      for (let k = 0; k < ps.length; k++) {
+        const next = ps[k];
+        if (!reachableMask[next] || assigned[next]) continue;
+        assigned[next] = 1; stack.push(next);
       }
     }
     components.push(comp);
@@ -280,38 +304,51 @@ function strongComponents(succ, pred, reachable) {
   return { components, componentOf };
 }
 
-function postDominatorsOf(succ, pred, reachable, components, componentOf, terminating) {
+function postDominatorsOf(succ, pred, reachable, reachableMask, components, componentOf, terminating) {
   const n = succ.length;
   const EXIT = n;
-  const internal = (i) => succ[i].filter((j) => reachable.has(j));
 
-  const compOut = components.map(() => new Set());
-  const compHasExit = components.map(() => false);
+  const compHasOut = new Uint8Array(components.length);
+  const compHasExit = new Uint8Array(components.length);
   for (const i of reachable) {
     const ci = componentOf[i];
-    const xs = internal(i);
-    if (!xs.length || terminating.has(i)) compHasExit[ci] = true;
-    for (const j of xs) {
-      const cj = componentOf[j];
-      if (ci !== cj) compOut[ci].add(cj);
+    const xs = succ[i];
+    let hasInternal = false;
+    for (let k = 0; k < xs.length; k++) {
+      const j = xs[k];
+      if (!reachableMask[j]) continue;
+      hasInternal = true;
+      if (ci !== componentOf[j]) compHasOut[ci] = 1;
     }
+    if (!hasInternal || terminating.has(i)) compHasExit[ci] = 1;
   }
-  const nonTerminatingSinks = new Set();
+  const nonTerminatingSinkMask = new Uint8Array(n);
+  const badMask = new Uint8Array(n);
   const bad = new Set();
   const stack = [];
   for (let c = 0; c < components.length; c++) {
-    if (compOut[c].size || compHasExit[c]) continue;
-    for (const i of components[c]) if (reachable.has(i)) {
-      nonTerminatingSinks.add(i);
-      bad.add(i);
-      stack.push(i);
+    if (compHasOut[c] || compHasExit[c]) continue;
+    const comp = components[c];
+    for (let k = 0; k < comp.length; k++) {
+      const i = comp[k];
+      if (!reachableMask[i]) continue;
+      nonTerminatingSinkMask[i] = 1;
+      if (!badMask[i]) {
+        badMask[i] = 1;
+        bad.add(i);
+        stack.push(i);
+      }
     }
   }
   while (stack.length) {
     const i = stack.pop();
-    for (const p of pred[i]) {
-      if (!reachable.has(p) || bad.has(p)) continue;
-      bad.add(p); stack.push(p);
+    const ps = pred[i];
+    for (let k = 0; k < ps.length; k++) {
+      const p = ps[k];
+      if (!reachableMask[p] || badMask[p]) continue;
+      badMask[p] = 1;
+      bad.add(p);
+      stack.push(p);
     }
   }
 
@@ -323,13 +360,20 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf, termin
   // but cannot invent another SCC member as a mandatory post-dominator.
   const reverse = Array.from({ length: n + 1 }, () => []);
   for (const i of reachable) {
-    const xs = internal(i);
-    if (!xs.length || nonTerminatingSinks.has(i) || terminating.has(i)) reverse[EXIT].push(i);
-    for (const j of xs) reverse[j].push(i);
+    const xs = succ[i];
+    let hasInternal = false;
+    for (let k = 0; k < xs.length; k++) {
+      const j = xs[k];
+      if (!reachableMask[j]) continue;
+      hasInternal = true;
+      reverse[j].push(i);
+    }
+    if (!hasInternal || nonTerminatingSinkMask[i] || terminating.has(i)) reverse[EXIT].push(i);
   }
   const reversePred = predecessorsOf(reverse);
   const reverseReachable = reachableFrom(reverse, EXIT);
-  const { idom: reverseIdom } = immediateDominatorsOf(reverse, reversePred, reverseReachable, EXIT);
+  const reverseReachableMask = maskFromReachable(reverseReachable, n + 1);
+  const { idom: reverseIdom } = immediateDominatorsOf(reverse, reversePred, reverseReachableMask, EXIT);
   const views = dominanceViews(reverseIdom, reverseReachable, EXIT);
   const ipdom = new Array(n).fill(null);
   for (const i of reachable) {
@@ -371,9 +415,10 @@ export function analyzeGraph(successors, entry = 0, terminating = null, options 
   const canonicalEntry = validNodeIndex(entry, succ.length) ? entry : -1;
   const predecessors = predecessorsOf(succ);
   const reachable = reachableFrom(succ, canonicalEntry);
-  const { idom: immediateDominators } = immediateDominatorsOf(succ, predecessors, reachable, canonicalEntry);
+  const reachableMask = maskFromReachable(reachable, succ.length);
+  const { idom: immediateDominators } = immediateDominatorsOf(succ, predecessors, reachableMask, canonicalEntry);
   const dominators = dominanceViews(immediateDominators, reachable);
-  const { components, componentOf } = strongComponents(succ, predecessors, reachable);
+  const { components, componentOf } = strongComponents(succ, predecessors, reachable, reachableMask);
   const backEdges = [];
 
   // A natural back-edge is not "an edge to a smaller address".  The target
@@ -448,7 +493,7 @@ export function analyzeGraph(successors, entry = 0, terminating = null, options 
   }
   const loops = Array.from(loopByHeader.values());
 
-  const post = postDominatorsOf(succ, predecessors, reachable, components, componentOf, terminatingNodes);
+  const post = postDominatorsOf(succ, predecessors, reachable, reachableMask, components, componentOf, terminatingNodes);
   return {
     successors: succ,
     predecessors,

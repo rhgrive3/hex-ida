@@ -122,10 +122,13 @@ function readSafePtrNumber(buf, off, ptrSize, little = true) {
   return Number(val);
 }
 
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+const UTF8_LENIENT_DECODER = new TextDecoder('utf-8', { fatal: false });
+
 function decodeCString(buf, off, end) {
   if (off < 0 || end <= off || end > buf.length) return null;
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(off, end));
+    return UTF8_FATAL_DECODER.decode(buf.subarray(off, end));
   } catch {
     return null;
   }
@@ -174,7 +177,7 @@ function isValidSectionOffset(value, length) {
 export function findGoBuildVersion(buffer) {
   if (!buffer || buffer.length < 16) return null;
   // Look for `\xff Go buildinf:` magic or `go1.` string pattern
-  const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer.subarray(0, Math.min(buffer.length, 1024 * 1024)));
+  const text = UTF8_LENIENT_DECODER.decode(buffer.subarray(0, Math.min(buffer.length, 1024 * 1024)));
   const match = text.match(/\bgo(1\.\d+(?:\.\d+)?(?:[a-zA-Z0-9_.-]+)?)\b/);
   return match ? match[1] : null;
 }
@@ -685,7 +688,7 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
       }
       if (nameOffset != null && nameLength != null && nameOffset + nameLength <= buf.length) {
         try {
-          name = new TextDecoder('utf-8', { fatal: true }).decode(
+          name = UTF8_FATAL_DECODER.decode(
             buf.subarray(nameOffset, nameOffset + nameLength)
           );
         } catch {

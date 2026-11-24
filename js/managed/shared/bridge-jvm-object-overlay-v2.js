@@ -135,8 +135,9 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
   const bundleByEffect = new Map((fn.bundles ?? []).map((bundle) => [bundle.operationId, bundle]));
   const nodeReplacements = new Map();
   const valueReplacements = new Map();
-  const oldValueById = new Map(old.values.map((candidate) => [candidate.id, candidate]));
   const dupPlans = [];
+  let valuesById = null;
+  const getValuesById = () => (valuesById ??= new Map(old.values.map((value) => [value.id, value])));
   let changed = false;
 
   for (const node of old.nodes) {
@@ -172,8 +173,9 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
           typeTestPredicate: predicate.predicateKind,
         },
       });
+      const valueIndex = getValuesById();
       for (const outputId of node.outputs) {
-        const value = oldValueById.get(outputId);
+        const value = valueIndex.get(outputId);
         if (value) valueReplacements.set(outputId, replaceValueMetadata(value, predicate));
       }
       continue;
@@ -210,8 +212,9 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
           ...(isArrayAllocation ? { allocationKind: 'array' } : {}),
         },
       });
+      const valueIndex = getValuesById();
       for (const outputId of node.outputs) {
-        const value = oldValueById.get(outputId);
+        const value = valueIndex.get(outputId);
         if (value) valueReplacements.set(outputId, replaceValueMetadata(value, allocation));
       }
       continue;
@@ -229,10 +232,11 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
           ...(allocationIds.length ? { allocationIds, preservesAllocationIdentity: true } : {}),
         },
       });
+      const valueIndex = getValuesById();
       for (let index = 0; index < node.outputs.length; index += 1) {
         const entry = allocations[index];
         if (!entry) continue;
-        const value = oldValueById.get(node.outputs[index]);
+        const value = valueIndex.get(node.outputs[index]);
         if (value) valueReplacements.set(value.id, replaceValueMetadata(value, entry));
       }
       if (allocation == null || allocationIds.length <= 1) {
@@ -274,7 +278,7 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
       dupPlans,
       nodeReplacements,
       valueReplacements,
-      valuesById: new Map(old.values.map((value) => [value.id, value])),
+      valuesById: getValuesById(),
     });
   }
   const nodes = old.nodes.map((node) => nodeReplacements.get(node.id) ?? node);

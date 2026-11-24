@@ -328,24 +328,56 @@ function readOptionalString(heap, index, code) {
   return Number.isSafeInteger(index) && index >= 1 ? readCilMetadataString(heap, index, code) : '';
 }
 
+const fieldListMonotonicCache = new WeakMap();
+function isFieldListMonotonic(index) {
+  let monotonic = fieldListMonotonicCache.get(index);
+  if (monotonic !== undefined) return monotonic;
+  const typeDefs = index.typeDefs;
+  const maxEnd = index.fieldDefs.length + 1;
+  monotonic = true;
+  let prev = 1;
+  for (let i = 0; i < typeDefs.length; i++) {
+    const begin = typeDefs[i].fieldList;
+    if (!Number.isSafeInteger(begin) || begin < prev || begin > maxEnd) { monotonic = false; break; }
+    prev = begin;
+  }
+  fieldListMonotonicCache.set(index, monotonic);
+  return monotonic;
+}
+
 function resolveFieldOwner(index, rid) {
+  const typeDefs = index.typeDefs;
   const fieldCount = index.fieldDefs.length;
-  if (index.typeDefs.length === 0) fail('cil-fielddef-owner-missing');
+  if (typeDefs.length === 0) fail('cil-fielddef-owner-missing');
   let owner = null;
-  for (let position = 0; position < index.typeDefs.length; position++) {
-    const row = index.typeDefs[position];
-    const begin = row.fieldList;
-    if (!Number.isSafeInteger(begin) || begin < 1 || begin > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
-    const next = position + 1 < index.typeDefs.length ? index.typeDefs[position + 1].fieldList : fieldCount + 1;
-    if (!Number.isSafeInteger(next) || next < begin || next > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
-    if (rid >= begin && rid < next) { owner = row; break; }
+  let ownerIndex = -1;
+  if (isFieldListMonotonic(index)) {
+    let lo = 0, hi = typeDefs.length - 1, best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (typeDefs[mid].fieldList <= rid) { best = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    if (best >= 0) {
+      const next = best + 1 < typeDefs.length ? typeDefs[best + 1].fieldList : fieldCount + 1;
+      if (rid < next) { owner = typeDefs[best]; ownerIndex = best; }
+    }
+  } else {
+    for (let position = 0; position < typeDefs.length; position++) {
+      const row = typeDefs[position];
+      const begin = row.fieldList;
+      if (!Number.isSafeInteger(begin) || begin < 1 || begin > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
+      const next = position + 1 < typeDefs.length ? typeDefs[position + 1].fieldList : fieldCount + 1;
+      if (!Number.isSafeInteger(next) || next < begin || next > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
+      if (rid >= begin && rid < next) { owner = row; ownerIndex = position; break; }
+    }
   }
   if (!owner) fail('cil-fielddef-owner-missing');
   const name = readOptionalString(index.stringsHeap, owner.nameIndex, 'cil-field-owner-name-invalid');
   if (!name) fail('cil-field-owner-name-invalid');
   const namespace = readOptionalString(index.stringsHeap, owner.namespaceIndex, 'cil-field-owner-namespace-invalid');
   return {
-    declaringTypeToken: tokenFor(TYPE_DEF_TABLE, index.typeDefs.indexOf(owner) + 1),
+    declaringTypeToken: tokenFor(TYPE_DEF_TABLE, ownerIndex + 1),
     declaringType: `${namespace ? `${namespace}.` : ''}${name}`,
   };
 }

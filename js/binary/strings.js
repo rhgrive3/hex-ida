@@ -4,29 +4,40 @@ function printableCodePoint(cp) {
   if (cp >= 0xd800 && cp <= 0xdfff) return false;
   return cp <= 0x10ffff;
 }
-function utf8At(bytes, p, end) {
-  const b0=bytes[p];
-  if (b0 < 0x80) return {cp:b0,bytes:1};
-  let n,min,cp;
-  if (b0>=0xc2 && b0<=0xdf) { n=2; min=0x80; cp=b0&0x1f; }
-  else if (b0>=0xe0 && b0<=0xef) { n=3; min=0x800; cp=b0&0x0f; }
-  else if (b0>=0xf0 && b0<=0xf4) { n=4; min=0x10000; cp=b0&0x07; }
-  else return null;
-  if (p+n>end) return null;
-  for(let i=1;i<n;i++){ const b=bytes[p+i]; if((b&0xc0)!==0x80) return null; cp=(cp<<6)|(b&0x3f); }
-  if(cp<min || cp>0x10ffff || (cp>=0xd800&&cp<=0xdfff)) return null;
-  return {cp,bytes:n};
-}
-function utf16At(bytes,p,end,be){
-  if(p+2>end) return null;
-  const u=be?(bytes[p]<<8)|bytes[p+1]:bytes[p]|(bytes[p+1]<<8);
-  if(u>=0xd800&&u<=0xdbff){
-    if(p+4>end) return null; const v=be?(bytes[p+2]<<8)|bytes[p+3]:bytes[p+2]|(bytes[p+3]<<8);
-    if(v<0xdc00||v>0xdfff) return null;
-    return {cp:0x10000+((u-0xd800)<<10)+(v-0xdc00),bytes:4};
+const FATAL_DECODERS = { utf8: null, utf16le: null, utf16be: null };
+function getFatalDecoder(encoding) {
+  let dec = FATAL_DECODERS[encoding];
+  if (!dec) {
+    const label = encoding === 'utf16le' ? 'utf-16le' : encoding === 'utf16be' ? 'utf-16be' : 'utf-8';
+    dec = new TextDecoder(label, { fatal: true });
+    FATAL_DECODERS[encoding] = dec;
   }
-  if(u>=0xdc00&&u<=0xdfff) return null;
-  return {cp:u,bytes:2};
+  return dec;
+}
+function utf8AtPacked(bytes, p, end) {
+  const b0 = bytes[p];
+  if (b0 < 0x80) return (b0 << 3) | 1;
+  let n, min, cp;
+  if (b0 >= 0xc2 && b0 <= 0xdf) { n = 2; min = 0x80; cp = b0 & 0x1f; }
+  else if (b0 >= 0xe0 && b0 <= 0xef) { n = 3; min = 0x800; cp = b0 & 0x0f; }
+  else if (b0 >= 0xf0 && b0 <= 0xf4) { n = 4; min = 0x10000; cp = b0 & 0x07; }
+  else return -1;
+  if (p + n > end) return -1;
+  for (let i = 1; i < n; i++) { const b = bytes[p + i]; if ((b & 0xc0) !== 0x80) return -1; cp = (cp << 6) | (b & 0x3f); }
+  if (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return -1;
+  return (cp << 3) | n;
+}
+function utf16AtPacked(bytes, p, end, be) {
+  if (p + 2 > end) return -1;
+  const u = be ? (bytes[p] << 8) | bytes[p + 1] : bytes[p] | (bytes[p + 1] << 8);
+  if (u >= 0xd800 && u <= 0xdbff) {
+    if (p + 4 > end) return -1;
+    const v = be ? (bytes[p + 2] << 8) | bytes[p + 3] : bytes[p + 2] | (bytes[p + 3] << 8);
+    if (v < 0xdc00 || v > 0xdfff) return -1;
+    return ((0x10000 + ((u - 0xd800) << 10) + (v - 0xdc00)) << 3) | 4;
+  }
+  if (u >= 0xdc00 && u <= 0xdfff) return -1;
+  return (u << 3) | 2;
 }
 function finiteOption(value,fallback){
   const candidate=value===0?0:(value||fallback), n=Number(candidate);
@@ -127,9 +138,15 @@ export function scanStrings(image, opts = {}) {
     if(out.length>=limit) break;
     const start=Math.max(0,range.start), end=Math.min(bytes.length,start+Math.max(0,range.size));
     for(let p=start;p<end&&out.length<limit;){
-      const first=utf8At(bytes,p,end); if(!first||!printableCodePoint(first.cp)){p++;continue;}
+      const b0=bytes[p];
+      if(b0<0x80){ if(b0!==9&&(b0<0x20||b0>0x7e)){p++;continue;} }
+      else { const first=utf8AtPacked(bytes,p,end); if(first<0||!printableCodePoint(first>>>3)){p++;continue;} }
       const s=p; let q=p, chars=0;
-      while(q<end&&chars<max){ const x=utf8At(bytes,q,end); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
+      while(q<end&&chars<max){
+        const b=bytes[q];
+        if(b<0x80){ if(b!==9&&(b<0x20||b>0x7e)) break; q++; chars++; }
+        else { const x=utf8AtPacked(bytes,q,end); if(x<0||!printableCodePoint(x>>>3)) break; q+=x&7; chars++; }
+      }
       if(chars>=min) emit(image,out,seen,s,q-s,'utf8',range.section);
       p=Math.max(chars>=max?q:q+(q<end?1:0),p+1);
     }
@@ -139,9 +156,9 @@ export function scanStrings(image, opts = {}) {
       for(let parity=0;parity<2&&out.length<limit;parity++){
         let p=start + ((parity - (start & 1) + 2) & 1);
         while(p+1<end&&out.length<limit){
-          const first=utf16At(bytes,p,end,be); if(!first||!printableCodePoint(first.cp)){p+=2;continue;}
+          const first=utf16AtPacked(bytes,p,end,be); if(first<0||!printableCodePoint(first>>>3)){p+=2;continue;}
           const s=p; let q=p, chars=0;
-          while(q+1<end&&chars<max){ const x=utf16At(bytes,q,end,be); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
+          while(q+1<end&&chars<max){ const x=utf16AtPacked(bytes,q,end,be); if(x<0||!printableCodePoint(x>>>3)) break; q+=x&7; chars++; }
           if(chars>=min) emit(image,out,seen,s,q-s,encoding,range.section);
           p=Math.max(chars>=max?q:q+(q<end?2:0),p+2);
         }
@@ -153,6 +170,6 @@ export function scanStrings(image, opts = {}) {
 function emit(image,out,seen,fileOffset,byteLength,encoding,section){
   const key=`${fileOffset}:${encoding}`; if(seen.has(key)) return; seen.add(key);
   const raw=image.bytes.subarray(fileOffset,fileOffset+byteLength);
-  let text; try { text=new TextDecoder(encoding==='utf16le'?'utf-16le':encoding==='utf16be'?'utf-16be':'utf-8',{fatal:true}).decode(raw); } catch { return; }
+  let text; try { text=getFatalDecoder(encoding).decode(raw); } catch { return; }
   out.push({text,encoding,fileOffset:BigInt(fileOffset),address:image.offsetToAddress(BigInt(fileOffset)),byteLength,section});
 }

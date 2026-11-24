@@ -1,6 +1,23 @@
-const BUILTIN={v:'void',b:'bool',c:'char',a:'signed char',h:'unsigned char',s:'short',t:'unsigned short',i:'int',j:'unsigned int',l:'long',m:'unsigned long',x:'long long',y:'unsigned long long',n:'__int128',o:'unsigned __int128',f:'float',d:'double',e:'long double',z:'...',Ds:'char16_t',Di:'char32_t',Du:'char8_t',Dn:'decltype(nullptr)'};
-const SUBSTITUTIONS={St:'std',Sa:'std::allocator',Sb:'std::basic_string',Ss:'std::string',Si:'std::istream',So:'std::ostream',Sd:'std::iostream'};
-const OPERATORS={nw:'operator new',na:'operator new[]',dl:'operator delete',da:'operator delete[]',ps:'operator+',ng:'operator-',ad:'operator&',de:'operator*',co:'operator~',pl:'operator+',mi:'operator-',ml:'operator*',dv:'operator/',rm:'operator%',an:'operator&',or:'operator|',eo:'operator^',aS:'operator=',pL:'operator+=',mI:'operator-=',mL:'operator*=',dV:'operator/=',ls:'operator<<',rs:'operator>>',eq:'operator==',ne:'operator!=',lt:'operator<',gt:'operator>',le:'operator<=',ge:'operator>=',nt:'operator!',aa:'operator&&',oo:'operator||',pp:'operator++',mm:'operator--',cm:'operator,',ix:'operator[]',cl:'operator()',pt:'operator->'};
+const nullDict=(obj)=>Object.freeze(Object.assign(Object.create(null),obj));
+const BUILTIN=nullDict({v:'void',b:'bool',c:'char',a:'signed char',h:'unsigned char',s:'short',t:'unsigned short',i:'int',j:'unsigned int',l:'long',m:'unsigned long',x:'long long',y:'unsigned long long',n:'__int128',o:'unsigned __int128',f:'float',d:'double',e:'long double',z:'...',Ds:'char16_t',Di:'char32_t',Du:'char8_t',Dn:'decltype(nullptr)'});
+const SUBSTITUTIONS=nullDict({St:'std',Sa:'std::allocator',Sb:'std::basic_string',Ss:'std::string',Si:'std::istream',So:'std::ostream',Sd:'std::iostream'});
+const OPERATORS=nullDict({nw:'operator new',na:'operator new[]',dl:'operator delete',da:'operator delete[]',ps:'operator+',ng:'operator-',ad:'operator&',de:'operator*',co:'operator~',pl:'operator+',mi:'operator-',ml:'operator*',dv:'operator/',rm:'operator%',an:'operator&',or:'operator|',eo:'operator^',aS:'operator=',pL:'operator+=',mI:'operator-=',mL:'operator*=',dV:'operator/=',ls:'operator<<',rs:'operator>>',eq:'operator==',ne:'operator!=',lt:'operator<',gt:'operator>',le:'operator<=',ge:'operator>=',nt:'operator!',aa:'operator&&',oo:'operator||',pp:'operator++',mm:'operator--',cm:'operator,',ix:'operator[]',cl:'operator()',pt:'operator->'});
+const SPECIAL_MAP=nullDict({TV:'vtable for {}',TT:'VTT for {}',TI:'typeinfo for {}',TS:'typeinfo name for {}',GV:'guard variable for {}',Th:'thunk to {}'});
+const CVR_MAP=nullDict({r:' restrict',V:' volatile',K:' const'});
+const INTEGRAL_BITS=nullDict({b:1,c:8,a:8,h:8,s:16,t:16,i:32,j:32,l:64,m:64,x:64,y:64,n:128,o:128});
+const INTEGRAL_SUFFIX=nullDict({j:'u',l:'l',m:'ul',x:'ll',y:'ull'});
+const FINISH_CVR_RE=/^(.*?)( (?:const|volatile|restrict)(?: (?:const|volatile|restrict))*)$/;
+const INTEGRAL_LIT_STICKY_RE=/(0|[1-9][0-9]{0,38})E/y;
+const STD_SINGLE_ARG_RE=/^std::(vector|list|deque|set|multiset|unordered_set|unordered_multiset|forward_list|stack|queue)$/;
+const STD_PAIR_ARG_RE=/^std::(map|multimap|unordered_map|unordered_multimap)$/;
+const MAX_DEMANGLE_CACHE=4096;
+const MAX_CACHE_KEY_LEN=1024;
+const demangleCxxCache=new Map();
+const readableNameCache=new Map();
+const shortNameCache=new Map();
+const shortNameKeepNsCache=new Map();
+function cacheSet(cache,key,val){if(cache.size>=MAX_DEMANGLE_CACHE)cache.delete(cache.keys().next().value);cache.set(key,val);return val;}
+function isAsciiDigitCode(code){return code>=48&&code<=57;}
 
 const CXX_DEMANGLE_MAX_INPUT=4096,CXX_DEMANGLE_MAX_DEPTH=64,CXX_DEMANGLE_MAX_STEPS=2048,CXX_DEMANGLE_MAX_OUT=8192;
 function demangleStep(p,out){
@@ -14,48 +31,54 @@ function demangleStep(p,out){
 }
 export function demangleCxx(name){
   if(typeof name !== 'string' || !name || name.length>CXX_DEMANGLE_MAX_INPUT)return null;
+  const cacheable=name.length<=MAX_CACHE_KEY_LEN;
+  if(cacheable&&demangleCxxCache.has(name))return demangleCxxCache.get(name);
   const s=name.startsWith('__Z')?name.slice(1):name;
-  if(!s.startsWith('_Z'))return null;
+  if(!s.startsWith('_Z'))return cacheable?cacheSet(demangleCxxCache,name,null):null;
   const p={s,i:2,subs:[],depth:0,steps:0,outChars:0};
+  let result=null;
   try{
     const special=readSpecial(p),body=readName(p,false);
-    if(!body)return null;
-    let out=special?special.replace('{}',body):body;
-    if(special){
-      if(special==='thunk to {}'){
+    if(body){
+      let out=special?special.replace('{}',body):body;
+      if(special){
+        if(special==='thunk to {}'){
+          out=finishFunctionArgs(p,out);
+          if(out!=null&&p.i===s.length)result=out;
+        }else if(p.i===s.length)result=out;
+      }else if(p.i<s.length){
         out=finishFunctionArgs(p,out);
-        if(out==null)return null;
-      }
-      return p.i===s.length?out:null;
+        if(out!=null&&p.i===s.length)result=out;
+      }else if(p.i===s.length)result=out;
     }
-    if(p.i<s.length){out=finishFunctionArgs(p,out);if(out==null||p.i!==s.length)return null;}
-    return p.i===s.length?out:null;
-  }catch{return null;}
+  }catch{result=null;}
+  return cacheable?cacheSet(demangleCxxCache,name,result):result;
 }
-function readSpecial(p){const start=p.i,two=p.s.slice(p.i,p.i+2),map={TV:'vtable for {}',TT:'VTT for {}',TI:'typeinfo for {}',TS:'typeinfo name for {}',GV:'guard variable for {}',Th:'thunk to {}'};if(!map[two])return null;if(two==='Th'){p.i++;if(!readNonVirtualCallOffset(p)){p.i=start;return null;}}else p.i+=2;return map[two];}
-function readNonVirtualCallOffset(p){if(p.s[p.i]!=='h')return false;p.i++;if(p.s[p.i]==='n')p.i++;const start=p.i;while(p.i<p.s.length&&/\d/.test(p.s[p.i]))p.i++;if(p.i===start||p.s[start]==='0'&&p.i-start>1||p.s[p.i]!=='_')return false;p.i++;return true;}
-function finishFunctionArgs(p,out){const args=readArgs(p);if(args==null)return null;const m=/^(.*?)( (?:const|volatile|restrict)(?: (?:const|volatile|restrict))*)$/.exec(out);return m?`${m[1]}(${args})${m[2]}`:`${out}(${args})`;}
-function readName(p,isSub=true){const c=p.s[p.i],two=p.s.slice(p.i,p.i+2);if(OPERATORS[two]&&!/\d/.test(c||'')){p.i+=2;return OPERATORS[two];}if(c==='N'){p.i++;return readNested(p,isSub);}if(c==='S'){if(two==='St'){p.i+=2;const tail=readName(p,false);if(!tail)return null;const out=`std::${tail}`;if(isSub)p.subs.push(out);return out;}return readSubstitution(p);}if(/\d/.test(c||''))return readSourceName(p,isSub);if(c==='L'){p.i++;return readName(p,isSub);}return null;}
+function readSpecial(p){const start=p.i,two=p.s.slice(p.i,p.i+2),hit=SPECIAL_MAP[two];if(!hit)return null;if(two==='Th'){p.i++;if(!readNonVirtualCallOffset(p)){p.i=start;return null;}}else p.i+=2;return hit;}
+function readNonVirtualCallOffset(p){if(p.s[p.i]!=='h')return false;p.i++;if(p.s[p.i]==='n')p.i++;const start=p.i;while(p.i<p.s.length&&isAsciiDigitCode(p.s.charCodeAt(p.i)))p.i++;if(p.i===start||p.s[start]==='0'&&p.i-start>1||p.s[p.i]!=='_')return false;p.i++;return true;}
+function finishFunctionArgs(p,out){const args=readArgs(p);if(args==null)return null;const m=FINISH_CVR_RE.exec(out);return m?`${m[1]}(${args})${m[2]}`:`${out}(${args})`;}
+function readName(p,isSub=true){const c=p.s[p.i];if(!c)return null;const cCode=c.charCodeAt(0);const two=p.s.slice(p.i,p.i+2);if(OPERATORS[two]&&!isAsciiDigitCode(cCode)){p.i+=2;return OPERATORS[two];}if(c==='N'){p.i++;return readNested(p,isSub);}if(c==='S'){if(two==='St'){p.i+=2;const tail=readName(p,false);if(!tail)return null;const out=`std::${tail}`;if(isSub)p.subs.push(out);return out;}return readSubstitution(p);}if(isAsciiDigitCode(cCode))return readSourceName(p,isSub);if(c==='L'){p.i++;return readName(p,isSub);}return null;}
 function readNested(p,isSub=true){
   const parts=[];
   const captureRole=p.captureFunctionRole===true&&p.i===3;
   let finalRole='ordinary';
   let cvr='',cvMask=0,cvLast=-1,currentPrefix='',lastUnqualified=null;
-  while(p.i<p.s.length&&/[rVK]/.test(p.s[p.i])){
-    const code=p.s[p.i],rank=code==='r'?0:code==='V'?1:2,bit=1<<rank;
+  while(p.i<p.s.length){
+    const code=p.s[p.i],cvText=CVR_MAP[code];
+    if(!cvText)break;
+    const rank=code==='r'?0:code==='V'?1:2,bit=1<<rank;
     if((cvMask&bit)!==0||rank<cvLast)return null;
-    cvMask|=bit;cvLast=rank;cvr={r:' restrict',V:' volatile',K:' const'}[code]+cvr;p.i++;
+    cvMask|=bit;cvLast=rank;cvr=cvText+cvr;p.i++;
   }
   while(p.i<p.s.length&&p.s[p.i]!=='E'){
-    const c=p.s[p.i];let part=null,isSubst=false,updatesName=false;
+    const c=p.s[p.i],cCode=c.charCodeAt(0);let part=null,isSubst=false,updatesName=false;
     finalRole='ordinary';
-    if(/\d/.test(c)){part=readSourceName(p,false);updatesName=true;}
+    if(isAsciiDigitCode(cCode)){part=readSourceName(p,false);updatesName=true;}
     else if(c==='S'){part=readSubstitution(p);isSubst=true;updatesName=true;}
     else if(c==='C'){if(p.i+2>p.s.length||captureRole&&!/[123]/.test(p.s[p.i+1]))return null;p.i+=2;if(!skipAbiTags(p))return null;part=lastUnqualified||'ctor';finalRole='constructor';}
     else if(c==='D'){if(p.i+2>p.s.length||captureRole&&!/[012]/.test(p.s[p.i+1]))return null;p.i+=2;if(!skipAbiTags(p))return null;part='~'+(lastUnqualified||'dtor');finalRole='destructor';}
-    else if(OPERATORS[p.s.slice(p.i,p.i+2)]){part=OPERATORS[p.s.slice(p.i,p.i+2)];p.i+=2;if(!skipAbiTags(p))return null;}
-    else if(c==='I')part=readTemplateArgs(p);
-    else return null;
+    else{const op=OPERATORS[p.s.slice(p.i,p.i+2)];if(op){part=op;p.i+=2;if(!skipAbiTags(p))return null;}else if(c==='I')part=readTemplateArgs(p);else return null;}
+
     if(!part)return null;
     parts.push(part);
     if(updatesName)lastUnqualified=part.split('::').at(-1)||lastUnqualified;
@@ -100,8 +123,9 @@ export function cxxAbiFunctionIdentity(name){
     return Object.freeze({...p.functionRole,...p.functionIdentity});
   }catch{return null;}
 }
-function skipAbiTags(p){while(p.i<p.s.length&&p.s[p.i]==='B'){const saved=p.i;p.i++;let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!n||!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length){p.i=saved;return false;}p.i+=len;}return true;}
-function readSourceName(p,isSub=true){let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length)return null;const out=p.s.slice(p.i,p.i+len);p.i+=len;if(!skipAbiTags(p))return null;if(isSub)p.subs.push(out);return out;}
+function readSaturatedLen(p){const start=p.i,remaining=p.s.length-start;let len=0;while(p.i<p.s.length){const code=p.s.charCodeAt(p.i);if(!isAsciiDigitCode(code))break;if(len<=remaining)len=len*10+(code-48);p.i++;}return p.i===start?-1:len;}
+function skipAbiTags(p){while(p.i<p.s.length&&p.s[p.i]==='B'){const saved=p.i;p.i++;const len=readSaturatedLen(p);if(len<=0||p.i+len>p.s.length){p.i=saved;return false;}p.i+=len;}return true;}
+function readSourceName(p,isSub=true){const len=readSaturatedLen(p);if(len<=0||p.i+len>p.s.length)return null;const out=p.s.slice(p.i,p.i+len);p.i+=len;if(!skipAbiTags(p))return null;if(isSub)p.subs.push(out);return out;}
 function readSubstitution(p){const two=p.s.slice(p.i,p.i+2);if(SUBSTITUTIONS[two]){p.i+=2;return demangleStep(p,SUBSTITUTIONS[two]);}p.i++;let idx='';while(p.i<p.s.length&&p.s[p.i]!=='_')idx+=p.s[p.i++];if(p.s[p.i]!=='_'||(idx&&!/^[0-9A-Z]+$/i.test(idx)))return null;p.i++;const n=idx===''?0:parseInt(idx,36)+1;const res=Number.isSafeInteger(n)?(p.subs[n]||null):null;return res?demangleStep(p,res):null;}
 function readTemplateArgs(p){p.i++;const args=[];for(let guard=0;p.i<p.s.length&&p.s[p.i]!=='E'&&guard<64;guard++){const before=p.i,t=p.s[p.i]==='L'?readIntegralTemplateArgument(p):readType(p);if(!t||p.i<=before)return null;args.push(t);}if(p.s[p.i]!=='E'||!args.length)return null;p.i++;return `<${args.join(', ')}>`;}
 // Itanium ABI 5.1.6.1: L <type> <number> E. Support only bounded
@@ -114,10 +138,11 @@ function readIntegralTemplateArgument(p){
   const type=readType(p);
   if(!type||!builtin&&!/^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$/.test(type))return null;
   const negative=p.s[p.i]==='n';if(negative)p.i++;
-  const match=/^(0|[1-9][0-9]{0,38})E/.exec(p.s.slice(p.i));
+  INTEGRAL_LIT_STICKY_RE.lastIndex=p.i;
+  const match=INTEGRAL_LIT_STICKY_RE.exec(p.s);
   if(!match||negative&&(match[1]==='0'||/^[bhtjmyo]$/.test(code)))return null;
   const magnitude=BigInt(match[1]);
-  const bits={b:1,c:8,a:8,h:8,s:16,t:16,i:32,j:32,l:64,m:64,x:64,y:64,n:128,o:128}[code];
+  const bits=INTEGRAL_BITS[code];
   if(bits!=null){
     const unsigned=/^[bhtjmyo]$/.test(code);
     const limit=code==='b'?1n:unsigned?(1n<<BigInt(bits))-1n:(1n<<BigInt(bits-1))-(negative?0n:1n);
@@ -127,13 +152,13 @@ function readIntegralTemplateArgument(p){
   const value=(negative?'-':'')+match[1];
   if(code==='b')return magnitude===0n?'false':'true';
   if(code==='i')return value;
-  const suffix={j:'u',l:'l',m:'ul',x:'ll',y:'ull'}[code];
+  const suffix=INTEGRAL_SUFFIX[code];
   return suffix?value+suffix:`(${type})${value}`;
 }
 function readArgs(p){const args=[];for(let guard=0;p.i<p.s.length;guard++){if(guard>=64)return null;const before=p.i,t=readType(p);if(!t||p.i<=before)return null;args.push(t);}if(!args.length)return null;return args.length===1&&args[0]==='void'?'':args.join(', ');}
 function readType(p){if(++p.depth>CXX_DEMANGLE_MAX_DEPTH)throw new Error('demangle-depth');try{demangleStep(p);const c=p.s[p.i];if(!c)return null;if(c==='P'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`${t} *`);p.subs.push(res);return res;}if(c==='R'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`${t} &`);p.subs.push(res);return res;}if(c==='O'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`${t} &&`);p.subs.push(res);return res;}if(c==='K'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`const ${t}`);p.subs.push(res);return res;}if(c==='V'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`volatile ${t}`);p.subs.push(res);return res;}if(c==='N'){p.i++;return demangleStep(p,readNested(p,true));}if(c==='S'){let res;if(p.s.slice(p.i,p.i+2)==='St'){p.i+=2;const tail=readName(p,false);if(!tail)return null;res=demangleStep(p,`std::${tail}`);p.subs.push(res);}else{res=readSubstitution(p);if(!res)return null;}if(p.s[p.i]==='I'){const ta=readTemplateArgs(p);if(!ta)return null;res=demangleStep(p,res+ta);p.subs.push(res);}return res;}if(c==='I')return demangleStep(p,readTemplateArgs(p));if(/\d/.test(c))return demangleStep(p,readSourceName(p,true));const two=p.s.slice(p.i,p.i+2);if(two.length===2&&BUILTIN[two]){p.i+=2;return BUILTIN[two];}if(BUILTIN[c]){p.i++;return BUILTIN[c];}return null;}finally{p.depth--;}}
 
-const SWIFT_KIND={C:'class',V:'struct',O:'enum',P:'protocol',F:'func',vg:'getter',vs:'setter',fC:'init',fD:'deinit'};
+const SWIFT_KIND=nullDict({C:'class',V:'struct',O:'enum',P:'protocol',F:'func',vg:'getter',vs:'setter',fC:'init',fD:'deinit'});
 const SWIFT_KIND_LENGTHS=[...new Set(Object.keys(SWIFT_KIND).map((k)=>k.length))].sort((a,b)=>b-a);
 export function demangleSwift(name){
   if(typeof name!=='string'||!name)return null;
@@ -142,15 +167,22 @@ export function demangleSwift(name){
   const body=s.replace(/^(?:\$s|\$S|_T0)/,'');
   const parts=[];let i=0,guard=0,acceptIdentifiers=true;
   while(i<body.length&&guard++<200){
-    const m=acceptIdentifiers?/^(\d+)/.exec(body.slice(i)):null;
-    if(m){
-      const len=Number(m[1]);i+=m[1].length;if(!Number.isSafeInteger(len)||len<=0)return null;
-      const word=body.slice(i,i+len);if(word.length!==len)return null;i+=len;
+    if(acceptIdentifiers&&isAsciiDigitCode(body.charCodeAt(i))){
+      const digitStart=i,remaining=body.length-digitStart;
+      let len=0;
+      while(i<body.length){
+        const code=body.charCodeAt(i);
+        if(!isAsciiDigitCode(code))break;
+        if(len<=remaining)len=len*10+(code-48);
+        i++;
+      }
+      if(len<=0||i+len>body.length)return null;
+      const word=body.slice(i,i+len);i+=len;
       if(word)parts.push(word);
       continue;
     }
-    const rest=body.slice(i);let kind=null;
-    for(const klen of SWIFT_KIND_LENGTHS){const token=rest.slice(0,klen);if(SWIFT_KIND[token]){kind=token;i+=klen;break;}}
+    let kind=null;
+    for(const klen of SWIFT_KIND_LENGTHS){const token=body.slice(i,i+klen);if(SWIFT_KIND[token]){kind=token;i+=klen;break;}}
     if(kind){parts.push(`(${SWIFT_KIND[kind]})`);continue;}
     acceptIdentifiers=false;i++;
   }
@@ -164,9 +196,9 @@ function splitArgs(s){const out=[];let depth=0,cur='';for(const ch of s){if(ch==
 function skipOperatorToken(s,i){if(s.slice(i,i+8)!=='operator')return 0;const prev=i>0?s[i-1]:'';if(/[\w$]/.test(prev))return 0;let j=i+8;while(j<s.length&&s[j]===' ')j++;const m=/^(?:->\*|->|<<=|>>=|<<|>>|<=|>=|<=>|<|>)/.exec(s.slice(j));return m?(j+m[0].length-i):0;}
 function findTemplate(s,from=0){let open=-1;for(let i=from;i<s.length;i++){const skip=skipOperatorToken(s,i);if(skip){i+=skip-1;continue;}if(s[i]==='<'){open=i;break;}}if(open<0)return null;let depth=0;for(let i=open;i<s.length;i++){const skip=skipOperatorToken(s,i);if(skip){i+=skip-1;continue;}if(s[i]==='<')depth++;else if(s[i]==='>'&&!--depth)return{open,close:i};}return null;}
 const ALIAS=new Map([['std::basic_string|char','std::string'],['std::basic_string|wchar_t','std::wstring'],['std::basic_ostream|char','std::ostream'],['std::basic_istream|char','std::istream'],['std::basic_stringstream|char','std::stringstream']]);
-function simplifyStd(s){let out=s,cursor=0;for(let guard=0;guard<40;guard++){const t=findTemplate(out,cursor);if(!t)break;const head=/[\w:~]+$/.exec(out.slice(0,t.open));if(!head){cursor=t.open+1;continue;}const base=head[0],args=splitArgs(out.slice(t.open+1,t.close)).map(simplifyStd),alias=ALIAS.get(`${base}|${args[0]}`);let repl=alias||`${base}<${args.join(', ')}>`;if(!alias&&/^std::(vector|list|deque|set|multiset|unordered_set|unordered_multiset|forward_list|stack|queue)$/.test(base)&&args.length>1)repl=`${base}<${args[0]}>`;if(!alias&&/^std::(map|multimap|unordered_map|unordered_multimap)$/.test(base)&&args.length>2)repl=`${base}<${args.slice(0,2).join(', ')}>`;const start=t.open-base.length;out=out.slice(0,start)+repl+out.slice(t.close+1);cursor=start+repl.length;if(out.indexOf('<',cursor)<0)break;}return out;}
-export function readableName(name){if(typeof name!=='string'||!name)return name;const cxx=demangleCxx(name);return cxx?simplifyStd(stripInline(cxx)):(demangleSwift(name)||name);}
-export function shortName(name,opts){if(typeof name!=='string'||!name)return name;const o=opts||{};let s=readableName(name);if(s===name)return name.replace(/^_+/,'')||name;const opCallIdx=s.indexOf('operator()');const paren=opCallIdx>=0?s.indexOf('(',opCallIdx+10):s.indexOf('(');if(paren>0)s=s.slice(0,paren);for(let guard=0;guard<40;guard++){const t=findTemplate(s);if(!t)break;s=s.slice(0,t.open)+s.slice(t.close+1);}s=s.replace(/\s+/g,' ').replace(/ const$/,'').trim();if(!o.keepNamespace){const parts=s.split('::');if(parts.length>2&&parts[0]!=='std')s=parts.slice(-2).join('::');}return s||name;}
+function simplifyStd(s){let out=s,cursor=0;for(let guard=0;guard<40;guard++){const t=findTemplate(out,cursor);if(!t)break;const head=/[\w:~]+$/.exec(out.slice(0,t.open));if(!head){cursor=t.open+1;continue;}const base=head[0],args=splitArgs(out.slice(t.open+1,t.close)).map(simplifyStd),alias=ALIAS.get(`${base}|${args[0]}`);let repl=alias||`${base}<${args.join(', ')}>`;if(!alias&&STD_SINGLE_ARG_RE.test(base)&&args.length>1)repl=`${base}<${args[0]}>`;if(!alias&&STD_PAIR_ARG_RE.test(base)&&args.length>2)repl=`${base}<${args.slice(0,2).join(', ')}>`;const start=t.open-base.length;out=out.slice(0,start)+repl+out.slice(t.close+1);cursor=start+repl.length;if(out.indexOf('<',cursor)<0)break;}return out;}
+export function readableName(name){if(typeof name!=='string'||!name)return name;const cacheable=name.length<=MAX_CACHE_KEY_LEN;if(cacheable&&readableNameCache.has(name))return readableNameCache.get(name);const cxx=demangleCxx(name);const out=cxx?simplifyStd(stripInline(cxx)):(demangleSwift(name)||name);return cacheable?cacheSet(readableNameCache,name,out):out;}
+export function shortName(name,opts){if(typeof name!=='string'||!name)return name;const keepNs=!!(opts&&opts.keepNamespace);const cache=keepNs?shortNameKeepNsCache:shortNameCache;const cacheable=name.length<=MAX_CACHE_KEY_LEN;if(cacheable&&cache.has(name))return cache.get(name);let s=readableName(name);if(s===name){const out=name.replace(/^_+/,'')||name;return cacheable?cacheSet(cache,name,out):out;}const opCallIdx=s.indexOf('operator()');const paren=opCallIdx>=0?s.indexOf('(',opCallIdx+10):s.indexOf('(');if(paren>0)s=s.slice(0,paren);for(let guard=0;guard<40;guard++){const t=findTemplate(s);if(!t)break;s=s.slice(0,t.open)+s.slice(t.close+1);}s=s.replace(/\s+/g,' ').replace(/ const$/,'').trim();if(!keepNs){const parts=s.split('::');if(parts.length>2&&parts[0]!=='std')s=parts.slice(-2).join('::');}const out=s||name;return cacheable?cacheSet(cache,name,out):out;}
 export function isMangled(name){return typeof name==='string'&&!!name&&(/^_?_Z/.test(name)||/^_?\$s/.test(name)||/^_?\$S/.test(name));}
 export function findCxxClasses(symbols,limit=5000){const out=new Map();if(!symbols?.names)return[];for(let i=0;i<symbols.names.length;i++){const raw=symbols.names[i],m=raw&&/^_?_Z(TV|TI|TS)(.+)$/.exec(raw);if(!m)continue;const cls=demangleCxx('_Z'+m[2].replace(/^N?/,(s)=>s))||demangleCxx('_ZN'+m[2])||m[2];if(!out.has(cls)){if(out.size>=limit)continue;out.set(cls,{name:cls,vtable:null,typeinfo:null,typeName:null,raw});}const e=out.get(cls);if(m[1]==='TV')e.vtable=symbols.addrs[i];if(m[1]==='TI')e.typeinfo=symbols.addrs[i];if(m[1]==='TS')e.typeName=symbols.addrs[i];}return[...out.values()].sort((a,b)=>a.name.localeCompare(b.name));}
 
@@ -325,6 +357,7 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
 
   for(let i=2;i<slotLimit+2&&(i+1)*pointerBytes<=bytes.length;i++){
     const raw=wordAt(i*pointerBytes);
+    let directName=null,directNameChecked=false;
     // Structural vtable end detection (when not running in exact slotCount mode, and not an encoded pointer format):
     if(!isExactMode && pointerFormat==null){
       const signedWord=BigInt.asIntN(pointerBytes*8,raw);
@@ -340,7 +373,8 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
         if(signedWord<0n&&isExecutable!=null&&!isExecutable(raw))break;
       }
       // If a slot points directly to a known typeinfo or typeinfo name symbol (_ZTI or _ZTS), the slot run has ended
-      const directName=symbols?(symbols.nameAt(raw)||symbols.label(raw)):null;
+      directName=symbols?(symbols.nameAt(raw)||symbols.label(raw)):null;
+      directNameChecked=true;
       if(directName&&/^_?_ZT[IS]/.test(directName))break;
     }
 
@@ -351,7 +385,7 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
       if(!isExecutable(addr))break;
     }
 
-    const name=addr!=null&&addr!==0n&&symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;
+    const name=addr!=null&&addr!==0n&&symbols?(directNameChecked&&addr===raw?directName:(symbols.nameAt(addr)||symbols.label(addr))):null;
     slots.push({index:i-2,raw,addr,binding:resolved.binding||null,unresolved:!!resolved.unresolved,reason:resolved.reason||null,name:name||null,readable:name?readableName(name):null});
   }
   return{addr:vtableAddr,pointerBytes,offsetToTop,typeinfo:typeinfoResolved.addr,typeinfoRaw,typeinfoBinding:typeinfoResolved.binding||null,typeinfoUnresolved:!!typeinfoResolved.unresolved,typeinfoReason:typeinfoResolved.reason||null,slots};

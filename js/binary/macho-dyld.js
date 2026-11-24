@@ -799,23 +799,21 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     image.imports.push(imp); status.decodedBinds++;
     return true;
   };
-  const sortedMappings = [...(image.sections || []), ...(image.segments || [])]
-    .filter((m) => m && m.size > 0n)
-    .sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
-  const crossesNarrowerMappingIndexed = (owner, address, end) => {
-    let lo = 0, hi = sortedMappings.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (sortedMappings[mid].address <= address) lo = mid + 1;
-      else hi = mid;
+  let threadedSortedMappings = null;
+  const ensureThreadedMappings = () => {
+    if (threadedSortedMappings !== null) return threadedSortedMappings;
+    const items = [];
+    for (const mapping of image.sections || []) {
+      if (mapping && mapping.size > 0n && mapping.address != null) items.push(mapping);
     }
-    for (let idx = lo; idx < sortedMappings.length; idx++) {
-      const mapping = sortedMappings[idx];
-      if (mapping.address >= end) break;
-      if (mapping === owner || mapping.size >= owner.size) continue;
-      return true;
+    for (const mapping of image.segments || []) {
+      if (mapping && mapping.size > 0n && mapping.address != null) items.push(mapping);
     }
-    return false;
+    items.sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
+    const starts = new Array(items.length);
+    for (let i = 0; i < items.length; i++) starts[i] = items[i].address;
+    threadedSortedMappings = { items, starts };
+    return threadedSortedMappings;
   };
   const threadedPointerFileOffset = (address) => {
     const width = 8n;
@@ -831,7 +829,18 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       // contiguous (#4296).
       const owner = first.mapping;
       const end = address + width;
-      if (crossesNarrowerMappingIndexed(owner, address, end)) return null;
+      const { items, starts } = ensureThreadedMappings();
+      let lo = 0, hi = starts.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (starts[mid] <= address) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < items.length; i++) {
+        const mapping = items[i];
+        if (mapping.address >= end) break;
+        if (mapping !== owner && mapping.size < owner.size) return null;
+      }
       return first.offset;
     }
 
@@ -890,7 +899,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     // dyld's lazy-bind decoder accepts only DONE, the dylib-ordinal setters,
     // SET_SYMBOL_TRAILING_FLAGS_IMM, SET_ADDEND_SLEB, SET_SEGMENT_AND_OFFSET_ULEB
     // and DO_BIND; everything else is "bad lazy bind opcode" (issue #5889).
-    if (source === 'lazy-bind' && ![0x00, 0x10, 0x20, 0x30, 0x40, 0x60, 0x70, 0x90].includes(op)) {
+    if (source === 'lazy-bind' && !LAZY_BIND_OPCODES.has(op)) {
       fail(`bad lazy bind opcode 0x${byte.toString(16)}`, byte);
       break;
     }
@@ -1108,34 +1117,43 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
   return status;
 }
 
+const LAZY_BIND_OPCODES = new Set([0x00, 0x10, 0x20, 0x30, 0x40, 0x60, 0x70, 0x90]);
+let utf8LossyDecoder = null;
+function getUtf8LossyDecoder() {
+  if (!utf8LossyDecoder) utf8LossyDecoder = new TextDecoder('utf-8', { fatal: false });
+  return utf8LossyDecoder;
+}
+
 function stopExportTrieBudget(budget, key, label) {
   return budget.take({ [key]: budget.remaining(key) + 1 }, label);
 }
 
-function utf8CodeUnitsAt(r, p, end) {
-  const b0 = r.u8(p);
-  const cont = (value) => value >= 0x80 && value <= 0xbf;
-  if (b0 < 0x80) return { width: 1, units: 1 };
+function isUtf8Cont(value) {
+  return value >= 0x80 && value <= 0xbf;
+}
+
+function utf8CodeUnitsPacked(r, b0, p, end) {
+  if (b0 < 0x80) return (1 << 2) | 1;
   if (b0 >= 0xc2 && b0 <= 0xdf && p + 1 < end) {
     const b1 = r.u8(p + 1);
-    if (cont(b1)) return { width: 2, units: 1 };
+    if (isUtf8Cont(b1)) return (2 << 2) | 1;
   } else if (b0 >= 0xe0 && b0 <= 0xef && p + 2 < end) {
     const b1 = r.u8(p + 1), b2 = r.u8(p + 2);
     const validB1 = b0 === 0xe0 ? b1 >= 0xa0 && b1 <= 0xbf
       : b0 === 0xed ? b1 >= 0x80 && b1 <= 0x9f
-        : cont(b1);
-    if (validB1 && cont(b2)) return { width: 3, units: 1 };
+        : isUtf8Cont(b1);
+    if (validB1 && isUtf8Cont(b2)) return (3 << 2) | 1;
   } else if (b0 >= 0xf0 && b0 <= 0xf4 && p + 3 < end) {
     const b1 = r.u8(p + 1), b2 = r.u8(p + 2), b3 = r.u8(p + 3);
     const validB1 = b0 === 0xf0 ? b1 >= 0x90 && b1 <= 0xbf
       : b0 === 0xf4 ? b1 >= 0x80 && b1 <= 0x8f
-        : cont(b1);
-    if (validB1 && cont(b2) && cont(b3)) return { width: 4, units: 2 };
+        : isUtf8Cont(b1);
+    if (validB1 && isUtf8Cont(b2) && isUtf8Cont(b3)) return (4 << 2) | 2;
   }
   // TextDecoder({fatal:false}) replaces malformed input. Advancing one byte
   // at a time can only overestimate the resulting UTF-16 length, so it is a
   // safe pre-allocation bound without accepting an oversized string (#4154).
-  return { width: 1, units: 1 };
+  return (1 << 2) | 1;
 }
 
 function readBudgetedExportTrieCString(r, start, end, budget, label) {
@@ -1152,17 +1170,26 @@ function readBudgetedExportTrieCString(r, start, end, budget, label) {
       if (!budget.take({ operations: 1 }, `${label}-scan`)) return null;
       nextScanCheck = p + 4096;
     }
-    if (r.u8(p) === 0) {
+    const b0 = r.u8(p);
+    if (b0 === 0) {
       const inputBytes = p + 1 - start;
       const stringBytes = utf16Units * 2;
       const estimatedHeapBytes = stringBytes + 32;
       if (!budget.take({ inputBytes, stringBytes, estimatedHeapBytes }, label)) return null;
       const raw = r.slice(start, p - start);
-      const text = new TextDecoder('utf-8', { fatal: false }).decode(raw);
+      const text = getUtf8LossyDecoder().decode(raw);
       return { text, next: p + 1, bytes: inputBytes };
     }
-    const next = utf8CodeUnitsAt(r, p, scanEnd);
-    const nextUnits = utf16Units + next.units;
+    let width, units;
+    if (b0 < 0x80) {
+      width = 1;
+      units = 1;
+    } else {
+      const packed = utf8CodeUnitsPacked(r, b0, p, scanEnd);
+      width = packed >>> 2;
+      units = packed & 3;
+    }
+    const nextUnits = utf16Units + units;
     if (nextUnits > maxStringUnits) {
       stopExportTrieBudget(budget, 'stringBytes', label);
       return null;
@@ -1172,7 +1199,7 @@ function readBudgetedExportTrieCString(r, start, end, budget, label) {
       return null;
     }
     utf16Units = nextUnits;
-    p += next.width;
+    p += width;
   }
   if (scanEnd < end) {
     stopExportTrieBudget(budget, 'inputBytes', label);
@@ -1203,7 +1230,7 @@ function rawCString(r, p, end) {
   if (p >= end) throw new Error('unterminated C string');
   const raw = r.slice(start, p - start);
   let text;
-  try { text = new TextDecoder('utf-8', { fatal: false }).decode(raw); }
+  try { text = getUtf8LossyDecoder().decode(raw); }
   catch { text = Array.from(raw, (c) => c >= 0x20 && c <= 0x7e ? String.fromCharCode(c) : '\uFFFD').join(''); }
   return { text, next: p + 1, bytes: p + 1 - start };
 }

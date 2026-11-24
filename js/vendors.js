@@ -211,20 +211,48 @@ export function swiftModuleOf(name) {
  * 先頭 `_` は剥がし、`UPPER_` 形式（例: `SDL_Init`）は `_` 手前を単一トークン（`SDL_`）
  * 扱いにして `SD` → `SDWebImage` のような誤分割や `SDLoader` との混同を防ぐ。
  */
+function buildPrefilter(patterns, forText) {
+  const ciSources = [];
+  const csSources = [];
+  for (const p of patterns) {
+    const rx = forText && p.textRe ? p.textRe : p.re;
+    const flags = rx.flags;
+    if ((flags && flags !== 'i') || /\\[1-9]/.test(rx.source)) return null;
+    if (flags === 'i') ciSources.push(`(?:${rx.source})`);
+    else csSources.push(`(?:${rx.source})`);
+  }
+  return {
+    ci: ciSources.length ? new RegExp(ciSources.join('|'), 'i') : null,
+    cs: csSources.length ? new RegExp(csSources.join('|')) : null,
+  };
+}
+
+const NAME_PREFILTER = buildPrefilter(VENDOR_PATTERNS, false);
+const TEXT_PREFILTER = buildPrefilter(VENDOR_PATTERNS, true);
+
 function prefixesOf(name) {
   if (typeof name !== 'string') return [];
-  const s = name.replace(/^_+/, '');
-  if (!/^[A-Z]{2}/.test(s)) return [];
-  const under = /^([A-Z]{2,})_/.exec(s);
-  if (under) return under[1].length <= 5 ? [under[1] + '_'] : [];
+  const totalLen = name.length;
+  let start = 0;
+  while (start < totalLen && name.charCodeAt(start) === 95) start++;
+  const len = totalLen - start;
+  if (len < 2) return [];
+  let upperLen = 0;
+  while (start + upperLen < totalLen) {
+    const c = name.charCodeAt(start + upperLen);
+    if (c < 65 || c > 90) break;
+    upperLen++;
+  }
+  if (upperLen < 2) return [];
+  if (start + upperLen < totalLen && name.charCodeAt(start + upperLen) === 95) {
+    return upperLen <= 5 ? [name.slice(start, start + upperLen) + '_'] : [];
+  }
   const out = [];
-  for (let n = Math.min(5, s.length - 1); n >= 2; n--) {
-    const head = s.slice(0, n);
-    if (!/^[A-Z]+$/.test(head)) continue;
-    const next = s[n];
+  for (let n = Math.min(5, upperLen, len - 1); n >= 2; n--) {
+    const next = name.charCodeAt(start + n);
     // 接頭辞の直後は「大文字＋小文字」か「大文字の続き」。数字始まりは採らない。
-    if (!/[A-Za-z]/.test(next)) continue;
-    out.push(head);
+    if (!((next >= 65 && next <= 90) || (next >= 97 && next <= 122))) continue;
+    out.push(name.slice(start, start + n));
   }
   return out;
 }
@@ -234,6 +262,8 @@ function matchPattern(name, opts) {
   if (typeof name !== 'string') return null;
   const s = name;
   const forText = !!(opts && opts.forText);
+  const pf = forText ? TEXT_PREFILTER : NAME_PREFILTER;
+  if (pf && !(pf.ci && pf.ci.test(s)) && !(pf.cs && pf.cs.test(s))) return null;
   for (const p of VENDOR_PATTERNS) {
     const rx = forText && p.textRe ? p.textRe : p.re;
     if (rx.test(s)) return { vendor: p.vendor, kind: p.kind, via: 'name' };
@@ -580,13 +610,19 @@ export function vendorOf(className, learned) {
      * `ISLWSProgRvManager` は `ISLWS` とも `IS` とも読める。どちらも当たったら、
      * 名前で裏の取れているほう（IronSource の `IS`）を採る。長さでは決めない。
      */
-    const stripped = name.replace(/^_+/, '');
+    let start = 0;
+    while (start < name.length && name.charCodeAt(start) === 95) start++;
     let best = null;
     for (const p of prefixesOf(name)) {
       const hit = learned.prefixes ? learned.prefixes.get(p) : null;
       if (!hit) continue;
-      if (!p.endsWith('_') && !Object.hasOwn(VENDOR_PREFIXES, p) && !/[a-z]/.test(stripped.slice(p.length))) {
-        continue;
+      if (!p.endsWith('_') && !Object.hasOwn(VENDOR_PREFIXES, p)) {
+        let hasLower = false;
+        for (let i = start + p.length; i < name.length; i++) {
+          const c = name.charCodeAt(i);
+          if (c >= 97 && c <= 122) { hasLower = true; break; }
+        }
+        if (!hasLower) continue;
       }
       if (!best || (best.confidence !== 'high' && hit.confidence === 'high')) {
         best = Object.assign({}, hit, { via: hit.via, prefix: p });

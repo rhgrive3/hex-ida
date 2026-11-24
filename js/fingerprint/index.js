@@ -1,8 +1,15 @@
 import { parseOperands } from '../arm64.js';
+import { fnv64ByteView, fnv64Hex } from '../core/identity/fnv64.js';
 
-const MASK64 = 0xffffffffffffffffn;
-const FNV_OFFSET = 0xcbf29ce484222325n;
-const FNV_PRIME = 0x100000001b3n;
+const FNV_OFFSET_LOW = 0x84222325;
+const FNV_OFFSET_HIGH = 0xcbf29ce4;
+const SHARED_TEXT_ENCODER = new TextEncoder();
+const SORTED_FROZEN_ARRAYS = new WeakSet();
+function freezeSorted(arr) {
+  Object.freeze(arr);
+  SORTED_FROZEN_ARRAYS.add(arr);
+  return arr;
+}
 export const FUNCTION_FINGERPRINT_VERSION = 4;
 // Bump when comparison weights, floors, caps or identity labels change.
 export const FUNCTION_FINGERPRINT_COMPARISON_VERSION = '1.0.0';
@@ -21,11 +28,24 @@ export class FingerprintVersionError extends Error {
 
 function hashBytes(bytes) {
   if (!bytes || !bytes.length) return null;
-  let hash = FNV_OFFSET;
-  for (const b of bytes) { hash ^= BigInt(b); hash = (hash * FNV_PRIME) & MASK64; }
-  return hash.toString(16).padStart(16, '0');
+  const { low, high } = fnv64ByteView(bytes);
+  return fnv64Hex(low, high);
 }
-function hashText(text) { return text ? hashBytes(new TextEncoder().encode(text)) : null; }
+function hashText(text) {
+  if (!text) return null;
+  if (typeof text !== 'string') return hashBytes(SHARED_TEXT_ENCODER.encode(String(text)));
+  let low = FNV_OFFSET_LOW;
+  let high = FNV_OFFSET_HIGH;
+  for (let i = 0, n = text.length; i < n; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code >= 0x80) return hashBytes(SHARED_TEXT_ENCODER.encode(text));
+    low ^= code;
+    const carry = ((low >>> 16) * 0x1b3 + (((low & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    high = (Math.imul(high, 0x1b3) + (low << 8) + carry) | 0;
+    low = Math.imul(low, 0x1b3);
+  }
+  return fnv64Hex(low, high);
+}
 function canonicalFingerprintBytes(value) {
   if (value == null) return null;
   if (value instanceof Uint8Array) return value;
@@ -366,9 +386,20 @@ function inferredRelocationWidth(raw, architecture = 'unknown') {
   return null;
 }
 
-function normalizeRelocationsDetailed(bytes, relocationOffsets = [], relocationRanges = [], architecture = 'unknown') {
+function normalizeRelocationsDetailed(bytes, relocationOffsets = [], relocationRanges = [], architecture = 'unknown', { copyIfUnmodified = true } = {}) {
   if (!bytes || !bytes.length) return { bytes:null, unknown:[], masked:[] };
-  const out = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
+  const hasOffsets = relocationOffsets != null && (Array.isArray(relocationOffsets) ? relocationOffsets.length > 0 : true);
+  const hasRanges = relocationRanges != null && (Array.isArray(relocationRanges) ? relocationRanges.length > 0 : true);
+  if (!hasOffsets && !hasRanges) {
+    const out = copyIfUnmodified
+      ? (bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes))
+      : (bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+    return { bytes:out, unknown:[], masked:[] };
+  }
+  let out = copyIfUnmodified
+    ? (bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes))
+    : (bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+  let copied = copyIfUnmodified || !(bytes instanceof Uint8Array);
   const ranges = [];
   for (const raw of relocationOffsets || []) ranges.push(isRelocationRecord(raw) ? raw : { offset:raw });
   for (const raw of relocationRanges || []) ranges.push(isRelocationRecord(raw) ? raw : { offset:raw });
@@ -381,6 +412,7 @@ function normalizeRelocationsDetailed(bytes, relocationOffsets = [], relocationR
       continue;
     }
     if (!Number.isSafeInteger(width) || width <= 0) { unknown.push({ offset, type: relocationType(raw) }); continue; }
+    if (!copied) { out = out.slice(); copied = true; }
     const end = Math.min(out.length, offset + width);
     out.fill(0, offset, end);
     masked.push({ offset, width:end - offset });
@@ -450,7 +482,7 @@ export function fingerprintFunction(fn = {}, options = {}) {
   if (fn?.schema === 'hex.function-fingerprint' && fn.version === FUNCTION_FINGERPRINT_VERSION && options.includeSemantic !== false) return fn;
   const bytes = canonicalFingerprintBytes(fn.bytes);
   const architecture = String(fn.architecture || fn.arch || 'unknown').toLowerCase();
-  const relocation = normalizeRelocationsDetailed(bytes, fn.relocationOffsets, fn.relocationRanges, architecture);
+  const relocation = normalizeRelocationsDetailed(bytes, fn.relocationOffsets, fn.relocationRanges, architecture, { copyIfUnmodified: false });
   const normalizedBytes = relocation.bytes;
   const instructionInput = Array.isArray(fn.instructions) ? fn.instructions : [];
   const structuredOperandsValid = !hasInvalidStructuredOperands(instructionInput);
@@ -459,16 +491,18 @@ export function fingerprintFunction(fn = {}, options = {}) {
   const operands = instructions.map((x) => `${x.mnemonic} ${x.operands}`.trim());
   const bagOperands = structuredOperandsValid ? normalizeInstructionBag(instructionInput, fn.normalization).map((x) => `${x.mnemonic} ${x.operands}`.trim()) : [];
   const cfg = cfgShape(fn.cfg);
-  const blocks = blockHashes(fn.cfg);
+  const blocks = freezeSorted(blockHashes(fn.cfg));
   const semantic = options.includeSemantic === false ? semanticShape({}) : semanticShape(fn);
-  const strings = uniq(fn.strings), imports = uniq(fn.imports), calls = uniq(fn.calls), callees = uniq(fn.callees), callers = uniq(fn.callers);
-  const constants = numericUniq(fn.constants), fields = uniq([...(fn.fieldAccessShape || []), ...(semantic.fieldShape || [])]), selectors = uniq(fn.objcSelectors ?? fn.selectors), swiftMetadata = uniq(fn.swiftMetadata);
-  const runtimeMetadata = uniq(fn.runtimeMetadata), stack = stackShape(fn);
+  const strings = freezeSorted(uniq(fn.strings)), imports = freezeSorted(uniq(fn.imports)), calls = freezeSorted(uniq(fn.calls)), callees = uniq(fn.callees), callers = uniq(fn.callers);
+  const constants = freezeSorted(numericUniq(fn.constants)), fields = freezeSorted(uniq([...(fn.fieldAccessShape || []), ...(semantic.fieldShape || [])])), selectors = uniq(fn.objcSelectors ?? fn.selectors), swiftMetadata = uniq(fn.swiftMetadata);
+  const runtimeMetadata = freezeSorted(uniq(fn.runtimeMetadata)), stack = stackShape(fn);
   const objc = { class: fn.objcClass || fn.objc?.class || null, selector: fn.objcSelector || fn.objc?.selector || null, methodKind: fn.objcMethodKind || fn.objc?.methodKind || null, selectors: uniq([...(selectors || []), ...(fn.objc?.selectors || [])]), ivars: uniq(fn.objcIvars || fn.objc?.ivars), protocols: uniq(fn.objcProtocols || fn.objc?.protocols), categories: uniq(fn.objcCategories || fn.objc?.categories), messageSendProfile: uniq(fn.objcMessageSendProfile || fn.messageSendProfile || fn.objc?.messageSendProfile) };
   const swift = { typeDescriptor: fn.swiftTypeDescriptor || fn.swift?.typeDescriptor || null, conformances: uniq(fn.swiftConformances || fn.swift?.conformances), witnessUsage: uniq(fn.swiftWitnessUsage || fn.swift?.witnessUsage), vtableUsage: uniq(fn.swiftVtableUsage || fn.swift?.vtableUsage), metadataAccessors: uniq(fn.swiftMetadataAccessors || fn.swift?.metadataAccessors), runtimeCalls: uniq(fn.swiftRuntimeCalls || fn.swift?.runtimeCalls), metadata: uniq([...(swiftMetadata || []), ...(fn.swift?.metadata || [])]) };
   const size = Math.max(0, Number(fn.size ?? bytes?.length ?? 0));
   const exactBytesHash = bytes?.length ? hashBytes(bytes) : (fn.exactBytesHash || fn.byteHash || null);
-  const normalizedBytesHash = normalizedBytes?.length ? hashBytes(normalizedBytes) : (fn.normalizedBytesHash || fn.normalizedByteHash || null);
+  const normalizedBytesHash = normalizedBytes?.length
+    ? (relocation.masked.length === 0 ? exactBytesHash : hashBytes(normalizedBytes))
+    : (fn.normalizedBytesHash || fn.normalizedByteHash || null);
   const instructionSequenceHash = structuredOperandsValid && mnemonics.length ? nonEmptyHash(mnemonics) : (structuredOperandsValid ? (fn.instructionSequenceHash || null) : null);
   const instructionBagHash = structuredOperandsValid && mnemonics.length ? nonEmptyHash([...mnemonics].sort()) : (structuredOperandsValid ? (fn.instructionBagHash || null) : null);
   const normalizedOperandsHash = structuredOperandsValid && operands.length ? nonEmptyHash(operands) : (structuredOperandsValid ? (fn.normalizedOperandsHash || null) : null);
@@ -517,7 +551,7 @@ export function fingerprintFunctionFast(fn = {}) {
   }
   const bytes = canonicalFingerprintBytes(fn.bytes);
   const architecture = String(fn.architecture || fn.arch || 'unknown').toLowerCase();
-  const relocation = normalizeRelocationsDetailed(bytes, fn.relocationOffsets, fn.relocationRanges, architecture);
+  const relocation = normalizeRelocationsDetailed(bytes, fn.relocationOffsets, fn.relocationRanges, architecture, { copyIfUnmodified: false });
   const normalizedBytes = relocation.bytes;
   const instructionInput = Array.isArray(fn.instructions) ? fn.instructions : [];
   const structuredOperandsValid = !hasInvalidStructuredOperands(instructionInput);
@@ -527,7 +561,9 @@ export function fingerprintFunctionFast(fn = {}) {
   const cfg = cfgShape(fn.cfg), blocks = blockHashes(fn.cfg);
   const size = Math.max(0, Number(fn.size ?? bytes?.length ?? 0));
   const exactBytesHash = bytes?.length ? hashBytes(bytes) : (fn.exactBytesHash || fn.byteHash || null);
-  const normalizedBytesHash = normalizedBytes?.length ? hashBytes(normalizedBytes) : (fn.normalizedBytesHash || fn.normalizedByteHash || null);
+  const normalizedBytesHash = normalizedBytes?.length
+    ? (relocation.masked.length === 0 ? exactBytesHash : hashBytes(normalizedBytes))
+    : (fn.normalizedBytesHash || fn.normalizedByteHash || null);
   const instructionSequenceHash = structuredOperandsValid && mnemonics.length ? nonEmptyHash(mnemonics) : (structuredOperandsValid ? (fn.instructionSequenceHash || null) : null);
   const instructionBagHash = structuredOperandsValid && mnemonics.length ? nonEmptyHash([...mnemonics].sort()) : (structuredOperandsValid ? (fn.instructionBagHash || null) : null);
   const normalizedOperandsHash = structuredOperandsValid && operands.length ? nonEmptyHash(operands) : (structuredOperandsValid ? (fn.normalizedOperandsHash || null) : null);
@@ -541,8 +577,36 @@ export function fingerprintFunctionFast(fn = {}) {
     objc:{selector:fn.objcSelector||fn.objc?.selector||null}, swift:{typeDescriptor:fn.swiftTypeDescriptor||fn.swift?.typeDescriptor||null} });
 }
 
+function jaccardSorted(a, b) {
+  let i = 0, j = 0, sizeA = 0, sizeB = 0, hit = 0;
+  const na = a.length, nb = b.length;
+  while (i < na && j < nb) {
+    const va = a[i], vb = b[j];
+    if (va === vb) {
+      hit += 1; sizeA += 1; sizeB += 1;
+      do { i += 1; } while (i < na && a[i] === va);
+      do { j += 1; } while (j < nb && b[j] === vb);
+    } else if (va < vb) {
+      sizeA += 1;
+      do { i += 1; } while (i < na && a[i] === va);
+    } else {
+      sizeB += 1;
+      do { j += 1; } while (j < nb && b[j] === vb);
+    }
+  }
+  while (i < na) {
+    const va = a[i]; sizeA += 1;
+    do { i += 1; } while (i < na && a[i] === va);
+  }
+  while (j < nb) {
+    const vb = b[j]; sizeB += 1;
+    do { j += 1; } while (j < nb && b[j] === vb);
+  }
+  return hit / (sizeA + sizeB - hit || 1);
+}
 function jaccard(a, b) {
   if (!a?.length || !b?.length) return null;
+  if (SORTED_FROZEN_ARRAYS.has(a) && SORTED_FROZEN_ARRAYS.has(b)) return jaccardSorted(a, b);
   const A = new Set(a), B = new Set(b); let hit = 0;
   for (const x of A) if (B.has(x)) hit++;
   return hit / (A.size + B.size - hit || 1);
@@ -564,12 +628,25 @@ function cfgSimilarity(a, b) {
   return scores.length ? scores.reduce((s, x) => s + x, 0) / scores.length : null;
 }
 function profileBag(profile = {}) {
-  const out = [];
-  for (const [key, value] of Object.entries(profile || {})) {
-    if (Array.isArray(value)) for (const item of value) out.push(`${key}:${item}`);
-    else if (value != null && String(value).length) out.push(`${key}:${value}`);
+  if (!profile) return null;
+  let out = null;
+  for (const key in profile) {
+    if (!Object.hasOwn(profile, key)) continue;
+    const value = profile[key];
+    if (Array.isArray(value)) {
+      if (!value.length) continue;
+      if (out === null) out = [];
+      for (let i = 0; i < value.length; i += 1) out.push(`${key}:${value[i]}`);
+    } else if (value != null) {
+      const s = String(value);
+      if (!s.length) continue;
+      if (out === null) out = [];
+      out.push(`${key}:${s}`);
+    }
   }
-  return out.sort();
+  if (out === null) return null;
+  out.sort();
+  return out;
 }
 function add(evidence, signal, value, weight, group, exact = false) {
   if (value == null || Number.isNaN(value)) return;
@@ -606,35 +683,66 @@ export function compareFingerprints(left, right) {
   add(evidence, 'runtime-metadata', jaccard(a.runtimeMetadata, b.runtimeMetadata), 0.06, 'runtime');
   add(evidence, 'size', ratio(a.size, b.size), 0.04, 'shape');
 
-  const byGroup = new Map();
-  for (const e of evidence) {
-    if (!byGroup.has(e.group)) byGroup.set(e.group, []);
-    byGroup.get(e.group).push(e);
+  // Aggregate by group in first-seen order without intermediate Map/Array/closure churn.
+  const groupNames = [];
+  const groupMaxW = [];
+  const groupSumW = [];
+  const groupSumVW = [];
+  let strongMask = 0;
+  let semanticExact = false;
+  let instructionExact = false;
+  let normalizedOperandsExact = false;
+  for (let i = 0; i < evidence.length; i += 1) {
+    const e = evidence[i];
+    const g = e.group;
+    let gi = -1;
+    for (let k = 0; k < groupNames.length; k += 1) {
+      if (groupNames[k] === g) { gi = k; break; }
+    }
+    if (gi < 0) {
+      groupNames.push(g);
+      groupMaxW.push(e.weight);
+      groupSumW.push(e.weight);
+      groupSumVW.push(e.value * e.weight);
+    } else {
+      if (e.weight > groupMaxW[gi]) groupMaxW[gi] = e.weight;
+      groupSumW[gi] += e.weight;
+      groupSumVW[gi] += e.value * e.weight;
+    }
+    if (e.value >= 0.9) {
+      if (g === 'bytes') strongMask |= 1;
+      else if (g === 'instruction') strongMask |= 2;
+      else if (g === 'semantic') strongMask |= 4;
+      else if (g === 'cfg') strongMask |= 8;
+    }
+    if (e.value === 1) {
+      if (e.signal === 'semantic-ir') semanticExact = true;
+      else if (e.signal === 'instruction-sequence') instructionExact = true;
+      else if (e.signal === 'normalized-operands') normalizedOperandsExact = true;
+    }
   }
   let weighted = 0, total = 0;
-  for (const group of byGroup.values()) {
-    const groupWeight = Math.max(...group.map((e) => e.weight));
-    const signalWeight = group.reduce((sum, e) => sum + e.weight, 0);
-    const groupValue = signalWeight ? group.reduce((sum, e) => sum + e.value * e.weight, 0) / signalWeight : 0;
-    weighted += groupValue * groupWeight; total += groupWeight;
+  for (let k = 0; k < groupNames.length; k += 1) {
+    const groupWeight = groupMaxW[k];
+    const signalWeight = groupSumW[k];
+    const groupValue = signalWeight ? groupSumVW[k] / signalWeight : 0;
+    weighted += groupValue * groupWeight;
+    total += groupWeight;
   }
   let confidence = total ? weighted / total : 0;
-  const strongPositiveGroups = new Set(evidence.filter((e) => ['bytes','instruction','semantic','cfg'].includes(e.group) && e.value >= 0.9).map((e) => e.group));
-  const onlyWeak = strongPositiveGroups.size === 0;
-  if (onlyWeak) confidence = Math.min(confidence, 0.59);
+  const strongPositiveCount = (strongMask & 1) + ((strongMask >> 1) & 1) + ((strongMask >> 2) & 1) + ((strongMask >> 3) & 1);
+  if (strongPositiveCount === 0) confidence = Math.min(confidence, 0.59);
   if (normalizedExact && relocationConfidence === 1) confidence = Math.max(confidence, 0.985);
-  const semanticExact = evidence.some((e) => e.signal === 'semantic-ir' && e.value === 1);
-  if (semanticExact && strongPositiveGroups.size >= 2) confidence = Math.max(confidence, 0.9);
-  const instructionExact = evidence.some((e) => e.signal === 'instruction-sequence' && e.value === 1);
-  if (instructionExact && evidence.some((e) => e.signal === 'normalized-operands' && e.value === 1) && strongPositiveGroups.size >= 2) confidence = Math.max(confidence, 0.86);
-  if (!normalizedExact && strongPositiveGroups.size < 2) confidence = Math.min(confidence, 0.77);
-  if (relocationConfidence < 1 && strongPositiveGroups.size < 2) confidence = Math.min(confidence, 0.7);
+  if (semanticExact && strongPositiveCount >= 2) confidence = Math.max(confidence, 0.9);
+  if (instructionExact && normalizedOperandsExact && strongPositiveCount >= 2) confidence = Math.max(confidence, 0.86);
+  if (!normalizedExact && strongPositiveCount < 2) confidence = Math.min(confidence, 0.77);
+  if (relocationConfidence < 1 && strongPositiveCount < 2) confidence = Math.min(confidence, 0.7);
   confidence = Math.max(0, Math.min(1, confidence));
 
   let identity = 'unrelated';
   if (normalizedExact && relocationConfidence === 1) identity = 'normalized-identical';
-  else if (semanticExact && strongPositiveGroups.size >= 2 && confidence >= 0.88) identity = 'semantic-equivalent';
-  else if (confidence >= 0.78 && strongPositiveGroups.size >= 2) identity = 'probable-same';
+  else if (semanticExact && strongPositiveCount >= 2 && confidence >= 0.88) identity = 'semantic-equivalent';
+  else if (confidence >= 0.78 && strongPositiveCount >= 2) identity = 'probable-same';
   else if (confidence >= 0.55) identity = 'similar';
   const reasons = evidence.filter((e) => e.value >= 0.75).sort((x, y) => y.weight * y.value - x.weight * x.value).map((e) => e.signal);
   return { confidence, identity, reasons, evidence };

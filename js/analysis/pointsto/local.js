@@ -846,7 +846,9 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     return blockRank.get(node?.blockId) ?? Number.MAX_SAFE_INTEGER;
   };
   const cmpText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-  const irOrder = [...values.keys()].sort((left, right) => rankOf(left) - rankOf(right) || cmpText(left, right));
+  const irRank = new Map();
+  for (const id of values.keys()) irRank.set(id, rankOf(id));
+  const irOrder = [...values.keys()].sort((left, right) => irRank.get(left) - irRank.get(right) || cmpText(left, right));
   const ssaOrder = [...ssaDefinitions.keys()].sort((left, right) => {
     const leftRank = blockRank.get(ssaDefinitions.get(left).blockId) ?? Number.MAX_SAFE_INTEGER;
     const rightRank = blockRank.get(ssaDefinitions.get(right).blockId) ?? Number.MAX_SAFE_INTEGER;
@@ -907,14 +909,24 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     };
   }
 
+  const EMPTY_ARRAY = Object.freeze([]);
+  const reachingSsaCache = new Map();
   /** Reaching SSA values for one `state-read`, matched on variable identity. */
   function reachingSsaValues(node) {
+    const nodeKey = String(node.id);
+    const cached = reachingSsaCache.get(nodeKey);
+    if (cached !== undefined) return cached;
     const variableKey = String(node.variable?.key ?? '');
-    if (!variableKey) return [];
-    const uses = (ssaUsesByEntity.get(String(node.id)) ?? []).filter((use) => (
+    if (!variableKey) {
+      reachingSsaCache.set(nodeKey, EMPTY_ARRAY);
+      return EMPTY_ARRAY;
+    }
+    const uses = (ssaUsesByEntity.get(nodeKey) ?? []).filter((use) => (
       String(use.proof?.variableIdentity?.key ?? use.proof?.sourceVariableKey ?? '') === variableKey
     ));
-    return [...new Set(uses.map((use) => String(use.valueId)))].sort();
+    const result = [...new Set(uses.map((use) => String(use.valueId)))].sort();
+    reachingSsaCache.set(nodeKey, result);
+    return result;
   }
 
   function transferSsa(ssaValueId) {
@@ -1099,9 +1111,18 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
           return topPointsTo('unresolved-call');
         }
         if (!isCompleteStatus(calleeSummary.status) || calleeSummary.unknownCallEffects.length) return topPointsTo('unresolved-call');
-        const alternatives = calleeSummary.returnProvenance.filter(
-          (prov) => Number(prov.returnIndex ?? 0) === returnIndex,
-        );
+        let byReturnIndex = summaryEval.returnProvenanceByIndex;
+        if (!byReturnIndex) {
+          byReturnIndex = new Map();
+          for (const prov of calleeSummary.returnProvenance) {
+            const idxKey = Number(prov.returnIndex ?? 0);
+            let list = byReturnIndex.get(idxKey);
+            if (!list) { list = []; byReturnIndex.set(idxKey, list); }
+            list.push(prov);
+          }
+          summaryEval.returnProvenanceByIndex = byReturnIndex;
+        }
+        const alternatives = byReturnIndex.get(returnIndex) ?? EMPTY_ARRAY;
         if (!alternatives.length) return topPointsTo('unresolved-call');
         // Join every return alternative from every proven candidate. A missing
         // alternative is unknown, never an empty contribution to this union.
@@ -1150,8 +1171,6 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     return topPointsTo('unsupported-operation');
   }
 
-  const ssaIndexById = new Map(ssaOrder.map((id, index) => [id, index]));
-  const irIndexById = new Map(irOrder.map((id, index) => [id, index]));
   const ssaHeap = createIndexMinHeap();
   const irHeap = createIndexMinHeap();
   const inSsaHeap = new Uint8Array(ssaOrder.length);
@@ -1183,13 +1202,8 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     const bucket = table.get(id);
     if (!bucket) return;
     for (const consumer of bucket) {
-      if (consumer.charCodeAt(0) === 115) {
-        const idx = ssaIndexById.get(consumer.slice(2));
-        if (idx !== undefined) enqueueSsa(idx, activeKind, activeIdx);
-      } else {
-        const idx = irIndexById.get(consumer.slice(2));
-        if (idx !== undefined) enqueueIr(idx, activeKind, activeIdx);
-      }
+      if (consumer >= 0) enqueueSsa(consumer, activeKind, activeIdx);
+      else enqueueIr(~consumer, activeKind, activeIdx);
     }
   };
 
@@ -1227,7 +1241,7 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
         inHeap[idx] = 0;
         const id = order[idx];
         const current = state.get(id);
-        activeConsumer = `${kindPrefix}:${id}`;
+        activeConsumer = kindPrefix === 's' ? idx : ~idx;
         let transferred;
         try {
           transferred = transfer(id);

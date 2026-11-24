@@ -757,36 +757,48 @@
     const shouldCancel=typeof options.shouldCancel==='function'?options.shouldCancel:null;
     // #8838: LC_DATA_IN_CODE declares ranges inside __text that are physically
     // data. Preserve that exclusion while applying the #8805 retention cap.
-    const rawDataInCode=Array.isArray(options.dataInCode)?options.dataInCode:[];
-    const sortedDataInCode=[];
-    for(const range of rawDataInCode){
-      if(!Array.isArray(range)||range.length<2) continue;
-      const lo=BigInt(range[0]),hi=BigInt(range[1]);
-      if(hi>lo) sortedDataInCode.push([lo,hi]);
-    }
-    sortedDataInCode.sort((a,b)=>(a[0]<b[0]?-1:a[0]>b[0]?1:(a[1]<b[1]?-1:a[1]>b[1]?1:0)));
-    const mergedDataInCode=[];
-    for(const [lo,hi] of sortedDataInCode){
-      const prev=mergedDataInCode[mergedDataInCode.length-1];
-      if(prev&&lo<=prev[1]){if(hi>prev[1])prev[1]=hi;}
-      else mergedDataInCode.push([lo,hi]);
-    }
-    const overlapsDataInCode=(value)=>{
-      if(!mergedDataInCode.length) return false;
-      const end=value+alignment;
-      let lo=0,hi=mergedDataInCode.length-1;
-      while(lo<=hi){
-        const mid=(lo+hi)>>>1;
-        const [rLo,rHi]=mergedDataInCode[mid];
-        if(end<=rLo) hi=mid-1;
-        else if(value>=rHi) lo=mid+1;
-        else return true;
+    const dataInCode=Array.isArray(options.dataInCode)?options.dataInCode:[];
+    const mergeBigIntervals=(raw)=>{
+      if(raw.length<=1) return raw;
+      raw.sort((a,b)=>(a.start<b.start?-1:a.start>b.start?1:a.end<b.end?-1:a.end>b.end?1:0));
+      const merged=[raw[0]];
+      for(let k=1;k<raw.length;k++){
+        const prev=merged[merged.length-1],cur=raw[k];
+        if(cur.start<=prev.end){ if(cur.end>prev.end) prev.end=cur.end; }
+        else merged.push(cur);
       }
-      return false;
+      return merged;
     };
-    const valid=(value)=>value%alignment===0n
-      && regions.length>0 && regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size)
-      && !overlapsDataInCode(value);
+    const execRaw=[];
+    for(let k=0;k<regions.length;k++){
+      const r=regions[k];
+      if(r&&r.exec&&r.size>0n) execRaw.push({start:r.vmAddr,end:r.vmAddr+r.size});
+    }
+    const execIntervals=mergeBigIntervals(execRaw);
+    let dicIntervals=null;
+    const ensureDicIntervals=()=>{
+      if(dicIntervals!==null) return dicIntervals;
+      const dicRaw=[];
+      for(let k=0;k<dataInCode.length;k++){
+        const range=dataInCode[k];
+        if(!Array.isArray(range)||range.length<2) continue;
+        const lo=BigInt(range[0]),hi=BigInt(range[1]);
+        if(hi>lo) dicRaw.push({start:lo,end:hi});
+      }
+      dicIntervals=mergeBigIntervals(dicRaw);
+      return dicIntervals;
+    };
+    let execCursor=0,dicCursor=0;
+    const valid=(value)=>{
+      if(value%alignment!==0n||execIntervals.length===0) return false;
+      while(execCursor<execIntervals.length&&execIntervals[execCursor].end<=value) execCursor++;
+      if(execCursor>=execIntervals.length||execIntervals[execCursor].start>value) return false;
+      if(dataInCode.length===0) return true;
+      const dic=ensureDicIntervals();
+      const end=value+alignment;
+      while(dicCursor<dic.length&&dic[dicCursor].end<=value) dicCursor++;
+      return !(dicCursor<dic.length&&dic[dicCursor].start<end);
+    };
     const maxSteps=Math.max(resultLimit*4, 2_000_000);
     let steps=0;
     while(i<buf.length){
@@ -1232,11 +1244,47 @@
     return null;
   }
 
-  function fdeInExecutableMapping(start, end, options) {
+  function buildEhExecRangeIndex(ranges) {
+    if (!Array.isArray(ranges) || ranges.length < 4) return null;
+    const sorted = ranges.slice().sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
+    const starts = new Array(sorted.length);
+    const prefixMaxEnd = new Array(sorted.length);
+    let maxEnd = null;
+    for (let i = 0; i < sorted.length; i++) {
+      starts[i] = sorted[i].start;
+      if (maxEnd === null || sorted[i].end > maxEnd) maxEnd = sorted[i].end;
+      prefixMaxEnd[i] = maxEnd;
+    }
+    return { sorted, starts, prefixMaxEnd };
+  }
+
+  function fdeInExecutableMapping(start, end, options, execIndex = null) {
     const align = options && options.align;
     if (align && align > 1n && (start % align) !== 0n) return false;
     const ranges = options && options.execRanges;
     if (!Array.isArray(ranges)) return true;
+    if (execIndex) {
+      const { sorted, starts, prefixMaxEnd } = execIndex;
+      let lo = 0, hi = starts.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (starts[mid] <= start) lo = mid + 1;
+        else hi = mid;
+      }
+      const upper = lo;
+      if (upper === 0) return false;
+      lo = 0;
+      hi = upper;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (prefixMaxEnd[mid] >= end) hi = mid;
+        else lo = mid + 1;
+      }
+      for (let i = lo; i < upper; i++) {
+        if (end <= sorted[i].end) return true;
+      }
+      return false;
+    }
     return ranges.some((range) => range.start <= start && end <= range.end);
   }
 
@@ -1254,6 +1302,7 @@
     const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     const cies = new Map();
     const vm = BigInt(sectionVM);
+    const execIndex = buildEhExecRangeIndex(options && options.execRanges);
     let p = 0;
 
     while (p + 4 <= buf.length) {
@@ -1338,7 +1387,7 @@
           if (!rangeX || rangeX.raw <= 0n) { p = recordEnd; continue; }
           const start = startX.value, end = start + rangeX.raw;
           if (start >= 0n && end > start) {
-            if (!fdeInExecutableMapping(start, end, options)) { p = recordEnd; continue; }
+            if (!fdeInExecutableMapping(start, end, options, execIndex)) { p = recordEnd; continue; }
             out.push({ start, end });
           }
         } catch { /* malformed FDE: fail closed */ }
