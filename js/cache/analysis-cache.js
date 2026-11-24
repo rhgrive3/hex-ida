@@ -3,27 +3,43 @@ export const ANALYSIS_CACHE_FALLBACK = Object.freeze({ MEMORY:'memory', ERROR:'e
 const ALLOWED_FIELDS = new Set(['formatMetadata', 'functionSeeds', 'stringsIndex', 'imports', 'analysisSummaries']);
 const CANONICAL_ARTIFACT_ID = /^artifact_[0-9a-f]{32}$/i;
 
-function stableValue(value) {
+const MAX_STABLE_VALUE_DEPTH = 32;
+const MAX_MEMORY_CACHE_ENTRIES = 512;
+
+function stableValue(value, depth = 0, seen = new Set()) {
   if (value == null) return value;
   if (typeof value === 'boolean' || typeof value === 'string') return value;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value !== 'object') throw new TypeError('analysis-cache-settings-invalid');
-  if (Array.isArray(value)) {
+  if (depth > MAX_STABLE_VALUE_DEPTH || seen.has(value)) throw new TypeError('analysis-cache-settings-invalid');
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getOwnPropertySymbols(value).length) throw new TypeError('analysis-cache-settings-invalid');
+      const out = new Array(value.length);
+      for (let i = 0; i < value.length; i++) {
+        const desc = Object.getOwnPropertyDescriptor(value, i);
+        if (!desc || !Object.hasOwn(desc, 'value')) throw new TypeError('analysis-cache-settings-invalid');
+        out[i] = stableValue(desc.value, depth + 1, seen);
+      }
+      if (Object.getOwnPropertyNames(value).length !== value.length + 1) {
+        throw new TypeError('analysis-cache-settings-invalid');
+      }
+      return out;
+    }
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== null && proto !== Object.prototype) throw new TypeError('analysis-cache-settings-invalid');
     if (Object.getOwnPropertySymbols(value).length) throw new TypeError('analysis-cache-settings-invalid');
-    for (let i = 0; i < value.length; i++) {
-      if (!Object.hasOwn(value, i)) throw new TypeError('analysis-cache-settings-invalid');
+    const out = {};
+    for (const key of Object.keys(value).sort()) {
+      const desc = Object.getOwnPropertyDescriptor(value, key);
+      if (!desc || !Object.hasOwn(desc, 'value')) throw new TypeError('analysis-cache-settings-invalid');
+      Object.defineProperty(out, key, { value:stableValue(desc.value, depth + 1, seen), enumerable:true, configurable:true, writable:true });
     }
-    if (Object.getOwnPropertyNames(value).length !== value.length + 1) {
-      throw new TypeError('analysis-cache-settings-invalid');
-    }
-    return value.map(stableValue);
+    return out;
+  } finally {
+    seen.delete(value);
   }
-  const proto = Object.getPrototypeOf(value);
-  if (proto !== null && proto !== Object.prototype) throw new TypeError('analysis-cache-settings-invalid');
-  if (Object.getOwnPropertySymbols(value).length) throw new TypeError('analysis-cache-settings-invalid');
-  const out = {};
-  for (const key of Object.keys(value).sort()) Object.defineProperty(out, key, { value:stableValue(value[key]), enumerable:true, configurable:true, writable:true });
-  return out;
 }
 
 function analysisIdentity(options = {}) {
@@ -190,7 +206,12 @@ export class AnalysisCache {
       data:snapshot,
     };
     if (this.memory) {
+      if (this.memory.has(record.key)) this.memory.delete(record.key);
       this.memory.set(record.key, record);
+      while (this.memory.size > MAX_MEMORY_CACHE_ENTRIES) {
+        const oldestKey = this.memory.keys().next().value;
+        this.memory.delete(oldestKey);
+      }
       return cloneWithoutSharedCheck(snapshot);
     }
     try {
@@ -216,13 +237,14 @@ export class AnalysisCache {
 
   async invalidateStale() {
     const stale = (key, record) => {
-      if (record?.canonicalArtifactId) {
-        if (!CANONICAL_ARTIFACT_ID.test(record.canonicalArtifactId)) return true;
+      if (typeof key !== 'string' || !record || typeof record !== 'object') return true;
+      if (record.canonicalArtifactId != null) {
+        if (typeof record.canonicalArtifactId !== 'string' || !CANONICAL_ARTIFACT_ID.test(record.canonicalArtifactId)) return true;
         return record.schemaVersion !== this.schemaVersion
           || record.analysisIdentity !== this.analysisIdentity
           || key !== this.canonicalKey(record.canonicalArtifactId);
       }
-      return record?.schemaVersion !== this.schemaVersion || record?.analysisIdentity !== this.analysisIdentity || !key.startsWith(`${this.schemaVersion}:${this.analysisIdentity}:`);
+      return record.schemaVersion !== this.schemaVersion || record.analysisIdentity !== this.analysisIdentity || !key.startsWith(`${this.schemaVersion}:${this.analysisIdentity}:`);
     };
     if (this.memory) {
       let removed = 0;

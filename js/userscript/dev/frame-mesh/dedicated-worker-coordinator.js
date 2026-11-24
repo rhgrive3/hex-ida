@@ -32,7 +32,14 @@ export class DedicatedWorkerCoordinator {
   async createChat(args={}) { this.assertClaim(args); return this.withIdentity(await this.controller.createChat(args)); }
   async send(args={}) { const c=this.assertClaim(args); return this.runTurn(() => this.controller.send(required(args.instruction,'instruction'), c)); }
   async followup(args={}) { const c=this.assertClaim(args); return this.runTurn(() => this.controller.followup(required(args.text ?? args.instruction,'text'), c)); }
-  async nudge(args={}) { const c=this.assertClaim(args); return this.runTurn(() => this.controller.nudge(c), { allowImmediate:true }); }
+  async nudge(args={}) {
+    const c=this.assertClaim(args);
+    if (this.pendingTerminal) {
+      const initial = await Promise.race([Promise.resolve().then(() => this.controller.nudge(c)), this.pendingTerminal.closePromise]);
+      return this.withIdentity(initial);
+    }
+    return this.runTurn(() => this.controller.nudge(c), { allowImmediate:true });
+  }
   async observe(args={}) { this.assertClaim(args); return this.withIdentity(this.controller.observe()); }
   async stop(args={}) { this.assertClaim(args); const value=await this.controller.stop(); if (this.pendingTerminal) await this.pendingTerminal.promise.catch(()=>null); return this.withIdentity(value); }
   async result(args={}) { this.assertClaim(args); return this.lastResult || this.withIdentity(this.controller.result()); }
@@ -76,7 +83,7 @@ export class DedicatedWorkerCoordinator {
     const pending=this.armTerminal();
     try {
       const initial=await Promise.race([Promise.resolve().then(operation), pending.closePromise]);
-      if(allowImmediate&&initial?.outcome==='still-working') return this.withIdentity(initial);
+      if(allowImmediate&&initial?.outcome==='still-working') { if(this.pendingTerminal===pending)this.pendingTerminal=null; pending.resolve(initial); return this.withIdentity(initial); }
       await pending.promise;
       return this.lastResult||this.withIdentity(this.controller.result());
     }

@@ -290,9 +290,10 @@ const HEX_STATIC_INTRINSIC_DEFS = Object.freeze(new Map([
   ['ctz32', 'static inline uint32_t ctz32(uint32_t v) { return v ? (uint32_t)__builtin_ctz(v) : 32U; }'],
   ['ctz64', 'static inline uint64_t ctz64(uint64_t v) { return v ? (uint64_t)__builtin_ctzll(v) : 64ULL; }'],
   ['popcnt', 'static inline uint64_t popcnt(uint64_t v) { return (uint64_t)__builtin_popcountll(v); }'],
+  ['hex_f64_to_u64', 'static inline uint64_t hex_f64_to_u64(double v) { union { double d; uint64_t u; } x; x.d = v; return x.u; }'],
 ]));
 
-const ARM64_NZCV_COND_EXPRS = Object.freeze({
+const ARM64_NZCV_COND_EXPRS = Object.freeze(Object.assign(Object.create(null), {
   eq: 'Z', ne: '!Z',
   cs: 'C', hs: 'C',
   cc: '!C', lo: '!C',
@@ -302,23 +303,27 @@ const ARM64_NZCV_COND_EXPRS = Object.freeze({
   ge: '(N == V)', lt: '(N != V)',
   gt: '(!Z && (N == V))', le: '(Z || (N != V))',
   al: '1', nv: '1',
-});
+}));
 
 function hexIntrinsicHelperDef(name) {
   const fixed = HEX_STATIC_INTRINSIC_DEFS.get(name);
   if (fixed) return fixed;
-  const m = /^__arm64_nzcv_(add|sub|and)_([a-z]+)_(32|64)$/.exec(name);
+  const m = /^__arm64_nzcv_(add|sub|and|fsub)_([a-z]+)_(8|16|32|64)$/.exec(name);
   if (!m) return null;
   const [, op, cond, bits] = m;
-  const condExpr = ARM64_NZCV_COND_EXPRS[cond];
+  const condExpr = Object.hasOwn(ARM64_NZCV_COND_EXPRS, cond) ? ARM64_NZCV_COND_EXPRS[cond] : null;
   if (!condExpr) return null;
-  const is32 = bits === '32';
-  const ut = is32 ? 'uint32_t' : 'uint64_t';
-  const shift = is32 ? '31' : '63';
-  const zero = is32 ? '0U' : '0ULL';
-  const one = is32 ? '1U' : '1ULL';
-  const uaInit = is32 ? '(uint32_t)a' : 'a';
-  const ubInit = is32 ? '(uint32_t)b' : 'b';
+  if (op === 'fsub') {
+    const ft = bits === '32' ? 'float' : 'double';
+    return `static inline int ${name}(${ft} a, ${ft} b) { int N = 0, Z = 0, C = 0, V = 0; if ((a != a) || (b != b)) { C = 1; V = 1; } else if (a == b) { Z = 1; C = 1; } else if (a < b) { N = 1; } else { C = 1; } (void)N; (void)Z; (void)C; (void)V; return ${condExpr}; }`;
+  }
+  const bitWidth = Number(bits);
+  const ut = bitWidth === 8 ? 'uint8_t' : bitWidth === 16 ? 'uint16_t' : bitWidth === 32 ? 'uint32_t' : 'uint64_t';
+  const shift = String(bitWidth - 1);
+  const zero = bitWidth === 64 ? '0ULL' : '0U';
+  const one = bitWidth === 64 ? '1ULL' : '1U';
+  const uaInit = bitWidth === 64 ? 'a' : `(${ut})a`;
+  const ubInit = bitWidth === 64 ? 'b' : `(${ut})b`;
   let opBody;
   if (op === 'add') {
     opBody = `${ut} r = (${ut})(ua + ub); int N = (int)((r >> ${shift}) & ${one}); int Z = (r == ${zero}); int C = (r < ua); int V = (int)((((~(ua ^ ub)) & (ua ^ r)) >> ${shift}) & ${one});`;
@@ -1947,7 +1952,8 @@ function isCastTypeText(castInner) {
   return null;
 }
 
-function classifyExprType(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+function classifyExprType(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null, depth = 0) {
+  if (depth > MAX_EXPR_REWRITE_DEPTH) return 'unknown';
   const t = stripOuterParens(expr);
   if (!t) return 'unknown';
 
@@ -1965,8 +1971,8 @@ function classifyExprType(expr, ptrNames, intNames, floatNames = null, selfCallS
   // 4. Top-level ternary (lowest precedence).
   const tern = findTopLevelTernary(t);
   if (tern) {
-    const t1 = classifyExprType(t.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec);
-    const t2 = classifyExprType(t.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec);
+    const t1 = classifyExprType(t.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const t2 = classifyExprType(t.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     if (t1 === 'ptr' && (t2 === 'ptr' || t2 === 'zero')) return 'ptr';
     if (t2 === 'ptr' && (t1 === 'ptr' || t1 === 'zero')) return 'ptr';
     if ((t1 === 'int' || t1 === 'zero') && (t2 === 'int' || t2 === 'zero')) return 'int';
@@ -1981,8 +1987,8 @@ function classifyExprType(expr, ptrNames, intNames, floatNames = null, selfCallS
     if (['||', '&&', '==', '!=', '<=', '>=', '<', '>', '|', '^', '&', '<<', '>>', '%'].includes(bin.op)) {
       return 'int';
     }
-    const leftT = classifyExprType(t.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec);
-    const rightT = classifyExprType(t.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec);
+    const leftT = classifyExprType(t.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const rightT = classifyExprType(t.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     if (['*', '/'].includes(bin.op)) {
       if (leftT === 'float' || rightT === 'float') return 'float';
       return 'int';
@@ -2363,10 +2369,10 @@ function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null, self
       let j = i;
       while (j < text.length && /[A-Za-z0-9_]/.test(text[j])) j++;
       const ident = text.slice(i, j);
-      const spec = LP64_SIZE_T_BUILTIN_PTR_ARGS[ident] || null;
-      const intArgSpec = !spec ? (BUILTIN_INT_ARGS[ident] || null) : null;
+      const spec = Object.hasOwn(LP64_SIZE_T_BUILTIN_PTR_ARGS, ident) ? LP64_SIZE_T_BUILTIN_PTR_ARGS[ident] : null;
+      const intArgSpec = !spec && Object.hasOwn(BUILTIN_INT_ARGS, ident) ? BUILTIN_INT_ARGS[ident] : null;
       const isSelfCall = !spec && !intArgSpec && selfCallSpec && ident === selfCallSpec.name && selfCallSpec.params.length > 0;
-      const reqDefaults = STDLIB_REQUIRED_ARG_DEFAULTS[ident] || null;
+      const reqDefaults = Object.hasOwn(STDLIB_REQUIRED_ARG_DEFAULTS, ident) ? STDLIB_REQUIRED_ARG_DEFAULTS[ident] : null;
       if (spec || intArgSpec || isSelfCall || reqDefaults) {
         let k = j;
         while (k < text.length && /\s/.test(text[k])) k++;
@@ -2509,9 +2515,9 @@ function rewriteParenthesizedSubexprs(text, transform) {
   return out;
 }
 
-function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null, depth = 0) {
   const s = String(expr ?? '');
-  if (!s.includes('?')) return s;
+  if (depth > MAX_EXPR_REWRITE_DEPTH || !s.includes('?')) return s;
   const trimmed = s.trim();
   if (!trimmed.includes('?')) return s;
   const lead = s.slice(0, s.indexOf(trimmed));
@@ -2520,9 +2526,9 @@ function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null, se
   // Split top-level ternary/binary operators first so each subexpression is visited once (O(N)).
   const tern = findTopLevelTernary(trimmed);
   if (tern) {
-    const cond = harmonizeMixedTernaries(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames, selfCallSpec);
-    let arm1 = harmonizeMixedTernaries(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec);
-    let arm2 = harmonizeMixedTernaries(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec);
+    const cond = harmonizeMixedTernaries(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    let arm1 = harmonizeMixedTernaries(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    let arm2 = harmonizeMixedTernaries(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     const t1 = classifyExprType(arm1, ptrNames, intNames, floatNames, selfCallSpec);
     const t2 = classifyExprType(arm2, ptrNames, intNames, floatNames, selfCallSpec);
     if (t1 === 'ptr' && t2 === 'int') {
@@ -2541,15 +2547,15 @@ function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null, se
 
   const bin = findLowestTopLevelBinaryOp(trimmed);
   if (bin) {
-    const left = harmonizeMixedTernaries(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec);
-    const right = harmonizeMixedTernaries(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec);
+    const left = harmonizeMixedTernaries(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const right = harmonizeMixedTernaries(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     return `${lead}${left}${trimmed.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
   }
 
   // Leaf/base case: no top-level operator; recurse into parenthesized/subscripted subexpressions once.
   const withNested = rewriteParenthesizedSubexprs(
     trimmed,
-    (inner) => harmonizeMixedTernaries(inner, ptrNames, intNames, floatNames, selfCallSpec),
+    (inner) => harmonizeMixedTernaries(inner, ptrNames, intNames, floatNames, selfCallSpec, depth + 1),
   );
   return `${lead}${withNested}${trail}`;
 }
@@ -2567,11 +2573,13 @@ const PTR_RETURNING_STDLIB_CALLS = new Set([
 
 const BITWISE_BIN_OPS = new Set(['&', '|', '^', '<<', '>>', '%']);
 
+const MAX_EXPR_REWRITE_DEPTH = 96;
+
 function wrapBitwiseOperand(operand, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
   const { lead, core, trail } = splitExprCommentAffixes(operand);
   if (!core) return operand;
   if (isFloatExpr(core, floatNames)) {
-    return `${lead}(uint64)(${core})${trail}`;
+    return `${lead}hex_f64_to_u64(${core})${trail}`;
   }
   if (classifyExprType(core, ptrNames, intNames, floatNames, selfCallSpec) === 'ptr') {
     return `${lead}(uintptr_t)(${core})${trail}`;
@@ -2579,9 +2587,9 @@ function wrapBitwiseOperand(operand, ptrNames, intNames, floatNames = null, self
   return operand;
 }
 
-function sanitizeBitwiseOps(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+function sanitizeBitwiseOps(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null, depth = 0) {
   const s = String(expr ?? '');
-  if (!/[&|^~%]|<<|>>/.test(s)) return s;
+  if (depth > MAX_EXPR_REWRITE_DEPTH || !/[&|^~%]|<<|>>/.test(s)) return s;
   const trimmed = s.trim();
   if (!trimmed) return s;
   const lead = s.slice(0, s.indexOf(trimmed));
@@ -2590,16 +2598,16 @@ function sanitizeBitwiseOps(expr, ptrNames, intNames, floatNames = null, selfCal
   // Split top-level ternary/binary/unary operators first so each subexpression is visited once (O(N)).
   const tern = findTopLevelTernary(trimmed);
   if (tern) {
-    const cond = sanitizeBitwiseOps(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames, selfCallSpec);
-    const arm1 = sanitizeBitwiseOps(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec);
-    const arm2 = sanitizeBitwiseOps(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec);
+    const cond = sanitizeBitwiseOps(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const arm1 = sanitizeBitwiseOps(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const arm2 = sanitizeBitwiseOps(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     return `${lead}${cond}?${arm1}:${arm2}${trail}`;
   }
 
   const bin = findLowestTopLevelBinaryOp(trimmed);
   if (bin) {
-    let left = sanitizeBitwiseOps(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec);
-    let right = sanitizeBitwiseOps(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec);
+    let left = sanitizeBitwiseOps(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    let right = sanitizeBitwiseOps(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     if (BITWISE_BIN_OPS.has(bin.op)) {
       left = wrapBitwiseOperand(left, ptrNames, intNames, floatNames, selfCallSpec);
       right = wrapBitwiseOperand(right, ptrNames, intNames, floatNames, selfCallSpec);
@@ -2608,14 +2616,14 @@ function sanitizeBitwiseOps(expr, ptrNames, intNames, floatNames = null, selfCal
   }
 
   if (trimmed.startsWith('~')) {
-    const inner = sanitizeBitwiseOps(trimmed.slice(1), ptrNames, intNames, floatNames, selfCallSpec);
+    const inner = sanitizeBitwiseOps(trimmed.slice(1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     return `${lead}~${wrapBitwiseOperand(inner, ptrNames, intNames, floatNames, selfCallSpec)}${trail}`;
   }
 
   // Leaf/base case: no top-level operator; recurse into parenthesized/subscripted subexpressions once.
   const withNested = rewriteParenthesizedSubexprs(
     trimmed,
-    (inner) => sanitizeBitwiseOps(inner, ptrNames, intNames, floatNames, selfCallSpec),
+    (inner) => sanitizeBitwiseOps(inner, ptrNames, intNames, floatNames, selfCallSpec, depth + 1),
   );
   return `${lead}${withNested}${trail}`;
 }
@@ -4126,14 +4134,14 @@ export function closeFunctionOutput(result, options = {}) {
       const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const u128Type = '(?:uint128|int128|vector128|(?:unsigned\\s+)?__int128)';
       const patterns = [
-        new RegExp(`\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)[^;{}]*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`),
+        new RegExp(`\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)[^;{}]*=(?!=)\\s*(?:\\([^;{}()]*\\)\\s*)*(?<!&)${esc}\\b`),
         new RegExp(`\\(\\s*${u128Type}\\s*\\)\\s*\\(?\\s*(?<!&)${esc}\\b`),
-        new RegExp(`(?:\\b${u128Type}\\s+[A-Za-z_][A-Za-z0-9_]*|\\b[qQvV]\\d+(?:_\\d+)?)\\s*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`),
+        new RegExp(`(?:\\b${u128Type}\\s+[A-Za-z_][A-Za-z0-9_]*|\\b[qQvV]\\d+(?:_\\d+)?)\\s*=(?!=)\\s*(?:\\([^;{}()]*\\)\\s*)*(?<!&)${esc}\\b`),
         new RegExp(`\\b${esc}\\s*=(?!=)\\s*(?:\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)|\\b[qQvV]\\d+(?:_\\d+)?\\b)`),
       ];
       if (patterns.some((re) => re.test(cleanedBodyForGlobals))) return true;
       if (u128LocalNames.size > 0) {
-        const assignRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`, 'g');
+        const assignRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=(?!=)\\s*(?:\\([^;{}()]*\\)\\s*)*(?<!&)${esc}\\b`, 'g');
         for (let m = assignRe.exec(cleanedBodyForGlobals); m; m = assignRe.exec(cleanedBodyForGlobals)) {
           if (u128LocalNames.has(m[1])) return true;
         }
@@ -4526,7 +4534,7 @@ export function closeFunctionOutput(result, options = {}) {
   const intrinsicPrelude = [];
   for (const entry of [...uses.values()].sort((a, b) => compareAscii(a.name, b.name))) {
     if (!entry?.callTarget) continue;
-    if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || entry.name === sigFuncName) continue;
+    if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || bitfieldHelperNames.has(entry.name) || entry.name === sigFuncName) continue;
     if (!isEligibleIntrinsicHelper(entry.name, renderedBody)) continue;
     const helperDef = hexIntrinsicHelperDef(entry.name);
     if (!helperDef) continue;
@@ -4580,7 +4588,7 @@ export function closeFunctionOutput(result, options = {}) {
       });
     }
   }
-  const postFixedPrelude = [...idTypedefPrelude, ...structPrelude, ...globalPrelude, ...prototypePrelude, ...atomicPrelude, ...glibcAliasPrelude, ...intrinsicPrelude];
+  const postFixedPrelude = [...idTypedefPrelude, ...structPrelude, ...globalPrelude, ...prototypePrelude, ...atomicPrelude, ...bitfieldHelperPrelude, ...glibcAliasPrelude, ...intrinsicPrelude];
   if (postFixedPrelude.length) withPostFixedPrelude.splice(sigIndex, 0, ...postFixedPrelude);
 
   const prelude = fixedWidthPreludeLines(render(withPostFixedPrelude), existingTypes)

@@ -45,6 +45,8 @@ export function installViewerDragReturnGuard(viewer, { moveTolerance = DEFAULT_M
     viewport.removeEventListener?.('pointermove', pointermove, true);
     viewport.removeEventListener?.('pointerup', pointerup, true);
     viewport.removeEventListener?.('pointercancel', pointercancel, true);
+    delete viewer.__dragReturnGuardInstalled;
+    delete viewer.__disposeDragReturnGuard;
   };
   Object.defineProperty(viewer, '__dragReturnGuardInstalled', { value: true, configurable: true });
   Object.defineProperty(viewer, '__disposeDragReturnGuard', { value: cleanup, configurable: true });

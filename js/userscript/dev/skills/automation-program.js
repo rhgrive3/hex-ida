@@ -267,9 +267,16 @@ function selectorText(value) {
   if (!text || text.length > MAX_SELECTOR) throw new TypeError(`CSS selector must be 1-${MAX_SELECTOR} characters.`);
   return text;
 }
+const RESERVED_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+function defineSafeProp(target, key, value) {
+  if (RESERVED_OBJECT_KEYS.has(key)) throw new TypeError(`Reserved AutomationProgram key: ${key}`);
+  Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
+}
 function variableName(value) {
   const name = String(value || '').trim();
-  if (!/^[A-Za-z_$][A-Za-z0-9_$.-]{0,63}$/.test(name)) throw new TypeError(`Invalid AutomationProgram variable: ${value}`);
+  if (!/^[A-Za-z_$][A-Za-z0-9_$.-]{0,63}$/.test(name) || RESERVED_OBJECT_KEYS.has(name)) {
+    throw new TypeError(`Invalid AutomationProgram variable: ${value}`);
+  }
   return name;
 }
 function setVar(state, name, value) {
@@ -307,7 +314,7 @@ function resolveTemplate(state, value) {
   if (plainRecord(value)) {
     if (typeof value.var === 'string' && Object.keys(value).length === 1) return state.context.get(variableName(value.var));
     const out = {};
-    for (const [key, item] of Object.entries(value)) out[key] = resolveTemplate(state, item);
+    for (const [key, item] of Object.entries(value)) defineSafeProp(out, key, resolveTemplate(state, item));
     return out;
   }
   return value;
@@ -332,9 +339,9 @@ function conditionValue(condition, state) {
 function collectNode(node, fields) {
   const out = {};
   for (const field of fields) {
-    if (field.kind === 'text') out[field.as] = readSafeText(node, field.maxChars);
-    else if (field.kind === 'attribute') out[field.as] = boundedString(node?.getAttribute?.(field.name) ?? '', field.maxChars) || null;
-    else if (field.kind === 'property') out[field.as] = readSafeProperty(node, field.name);
+    if (field.kind === 'text') defineSafeProp(out, field.as, readSafeText(node, field.maxChars));
+    else if (field.kind === 'attribute') defineSafeProp(out, field.as, boundedString(node?.getAttribute?.(field.name) ?? '', field.maxChars) || null);
+    else if (field.kind === 'property') defineSafeProp(out, field.as, readSafeProperty(node, field.name));
   }
   return out;
 }
@@ -394,21 +401,29 @@ function readSafeText(node, maxChars) {
   if (node.childNodes && typeof node.childNodes.length === 'number' && node.childNodes.length > 0) {
     const parts = [];
     let total = 0;
-    const walk = (current) => {
-      if (!current || total >= maxChars) return;
+    let visited = 0;
+    const MAX_DOM_NODES = 10000;
+    const MAX_DOM_DEPTH = 128;
+    const stack = [{ node, depth: 0 }];
+    while (stack.length > 0 && total < maxChars && visited < MAX_DOM_NODES) {
+      const { node: current, depth } = stack.pop();
+      if (!current || depth > MAX_DOM_DEPTH) continue;
+      visited += 1;
       if (current.nodeType === 3) {
         const chunk = String(current.nodeValue ?? current.textContent ?? '');
         if (chunk) {
           parts.push(chunk.slice(0, maxChars - total));
           total += chunk.length;
         }
-        return;
+        continue;
       }
-      if (current.nodeType === 8) return;
-      if (NON_READABLE_TEXT_TAGS.has(nodeTagName(current))) return;
+      if (current.nodeType === 8) continue;
+      if (NON_READABLE_TEXT_TAGS.has(nodeTagName(current))) continue;
       const children = current.childNodes;
       if (children && typeof children.length === 'number' && children.length > 0) {
-        for (let i = 0; i < children.length && total < maxChars; i++) walk(children[i]);
+        for (let i = children.length - 1; i >= 0; i--) {
+          stack.push({ node: children[i], depth: depth + 1 });
+        }
       } else if (typeof current.textContent === 'string') {
         const chunk = current.textContent;
         if (chunk) {
@@ -416,8 +431,7 @@ function readSafeText(node, maxChars) {
           total += chunk.length;
         }
       }
-    };
-    walk(node);
+    }
     return boundedString(parts.join(''), maxChars);
   }
   return boundedString(node.textContent || '', maxChars);
@@ -473,9 +487,9 @@ function isVisible(node) {
 function snapshotVars(context) {
   const out = {};
   for (const [key, value] of context.entries()) {
-    if (key === '$document') continue;
+    if (key === '$document' || RESERVED_OBJECT_KEYS.has(key)) continue;
     if (isDomLike(value) || (Array.isArray(value) && value.some(isDomLike))) continue;
-    out[key] = value;
+    defineSafeProp(out, key, value);
   }
   return out;
 }
@@ -487,7 +501,10 @@ function sanitizeReturn(value, depth = 0) {
   if (Array.isArray(value)) return value.slice(0, MAX_COLLECTION).map((item) => sanitizeReturn(item, depth + 1));
   if (plainRecord(value)) {
     const out = {};
-    for (const [key, item] of Object.entries(value).slice(0, 128)) out[key] = sanitizeReturn(item, depth + 1);
+    for (const [key, item] of Object.entries(value).slice(0, 128)) {
+      if (RESERVED_OBJECT_KEYS.has(key)) continue;
+      defineSafeProp(out, key, sanitizeReturn(item, depth + 1));
+    }
     return out;
   }
   return primitive(value);

@@ -349,13 +349,19 @@ function mergeProvenance(left, right) {
   if (left == null) return immutableProvenance(right);
   if (right == null) return immutableProvenance(left);
   if (sameProvenance(left, right)) return left;
-  const merged = {};
+  const merged = Object.create(null);
   for (const source of [left, right]) {
     if (!source || typeof source !== 'object') continue;
     for (const key of Object.keys(source)) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
       const value = source[key];
-      if (Array.isArray(value)) merged[key] = [...new Set([...(merged[key] ?? []), ...value])].sort();
-      else if (merged[key] == null) merged[key] = value;
+      const existing = Object.hasOwn(merged, key) ? merged[key] : undefined;
+      if (Array.isArray(value)) {
+        const base = Array.isArray(existing) ? existing : [];
+        merged[key] = [...new Set([...base, ...value])].sort();
+      } else if (existing == null) {
+        merged[key] = value;
+      }
     }
   }
   return immutableProvenance(merged);
@@ -1199,7 +1205,22 @@ export function intersectRange(left, right) {
 
 function castFact(factInputValue, toBits, cast) {
   const fact = factInput(factInputValue);
-  if (fact == null || !isSupportedWidth(toBits)) return fullFact(toBits, { status: 'malformed', reason: 'invalid cast fact' });
+  if (!isSupportedWidth(toBits)) {
+    return Object.freeze({
+      bits: toBits,
+      range: null,
+      knownZero: 0n,
+      knownOne: 0n,
+      alignment: null,
+      congruence: NO_CONGRUENCE,
+      pointerOffset: null,
+      constant: null,
+      status: 'malformed',
+      reason: 'unsupported cast width',
+      provenance: EMPTY_PROVENANCE,
+    });
+  }
+  if (fact == null) return fullFact(toBits, { status: 'malformed', reason: 'invalid cast fact' });
   const result = cast === 'trunc' ? truncateRange(fact.range, toBits)
     : cast === 'zext' ? zeroExtendRange(fact.range, toBits)
       : signExtendRange(fact.range, toBits);

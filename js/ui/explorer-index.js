@@ -39,7 +39,8 @@ export async function queryFunctions(app, query, { signal, offset = 0, limit = 2
       break;
     } catch (error) {
       if (signal?.aborted) throw abortError();
-      if (attempt || error?.code !== 'analysis-snapshot-stale') throw error;
+      const isStale = error?.code === 'ANALYSIS_SNAPSHOT_STALE' || error?.code === 'analysis-snapshot-stale' || error?.name === 'AnalysisSnapshotStaleError';
+      if (attempt || !isStale) throw error;
     }
   }
   const rows = (result?.value || []).map((row) => {

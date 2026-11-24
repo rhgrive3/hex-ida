@@ -723,7 +723,7 @@ export class CodeViewer {
     const sigOpts = this._scrubberController ? { signal: this._scrubberController.signal } : undefined;
     this.track=track;this.thumb=thumb;let dragging=false;
     const navigate=(clientY)=>{const rect=track.getBoundingClientRect(),thumbH=this._thumbHeight(rect.height),usable=Math.max(1,rect.height-thumbH),y=Math.max(0,Math.min(usable,clientY-rect.top-thumbH/2)),frac=y/usable;
-      if(this.isVariableAsm()&&this.region){const span=this.region.size>0n?this.region.size-1n:0n;const scaled=BigInt(Math.floor(frac*1_000_000));const target=this.region.vmAddr+(span*scaled)/1_000_000n;this.goToAddress(target);}
+      if((this.isVariableAsm()||this._bigRows())&&this.region){const span=this.region.size>0n?this.region.size-1n:0n;const scaled=BigInt(Math.floor(frac*1_000_000));const target=this.region.vmAddr+(span*scaled)/1_000_000n;this.goToAddress(target);}
       else {const span=Math.max(0,this.totalRows-this.visibleRows());this.goToRow(Math.round(frac*span),'top');}}
     track.addEventListener('pointerdown',(e)=>{if(!this.region)return;dragging=true;track.classList.add('dragging');track.setPointerCapture(e.pointerId);navigate(e.clientY);e.preventDefault();},sigOpts);
     track.addEventListener('pointermove',(e)=>{if(!dragging)return;navigate(e.clientY);e.preventDefault();},sigOpts);const end=()=>{dragging=false;track.classList.remove('dragging');};track.addEventListener('pointerup',end,sigOpts);track.addEventListener('pointercancel',end,sigOpts);

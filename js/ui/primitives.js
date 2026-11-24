@@ -61,7 +61,8 @@ const REASON_CODE = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+$/;
 
 /** Plain-language explanation for a known reason code, or null. */
 export function reasonText(code) {
-  const entry = REASONS[String(code ?? '').trim()];
+  const key = String(code ?? '').trim();
+  const entry = Object.hasOwn(REASONS, key) ? REASONS[key] : null;
   return entry ? (isJa() ? entry[0] : entry[1]) : null;
 }
 
@@ -168,7 +169,7 @@ const EVIDENCE = {
 };
 
 export function evidenceBadge(status, { ja = isJa(), detail } = {}) {
-  const key = EVIDENCE[status] ? status : 'unverified';
+  const key = typeof status === 'string' && Object.hasOwn(EVIDENCE, status) ? status : 'unverified';
   const node = h('span', 'evidence-badge evidence-' + key, ja ? EVIDENCE[key][1] : EVIDENCE[key][0]);
   node.dataset.evidence = key;
   node.setAttribute('aria-label', (ja ? EVIDENCE[key][1] : EVIDENCE[key][0]) + (detail ? ': ' + detail : ''));
@@ -228,7 +229,7 @@ export function tabs(items, active, onChange, { orientation = 'horizontal', labe
     else if (event.key === 'End') target = lastEnabled(buttons);
     else if (event.key === previousKey) target = nextEnabled(buttons, current, -1);
     else if (event.key === nextKey) target = nextEnabled(buttons, current, 1);
-    if (target == null) return;
+    if (target == null || target < 0) return;
     event.preventDefault();
     activate(target);
   });
@@ -261,7 +262,16 @@ export function scrollStrip(root, activeSelector = '.active, [aria-selected="tru
   };
   root.addEventListener('scroll', update, { passive: true });
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(reveal);
-  if (typeof ResizeObserver === 'function') new ResizeObserver(update).observe(root);
+  let observer = null;
+  if (typeof ResizeObserver === 'function') {
+    observer = new ResizeObserver(update);
+    observer.observe(root);
+  }
+  root.disposeScrollStrip = () => {
+    root.removeEventListener('scroll', update);
+    observer?.disconnect?.();
+    observer = null;
+  };
   return root;
 }
 
@@ -331,7 +341,7 @@ const MAX_SPACER_HEIGHT = 1_000_000;
 export class VirtualList {
   constructor({ items = [], rowHeight = 60, overscan = 6, renderRow, ariaLabel = isJa() ? '一覧' : 'List' } = {}) {
     this.items = items;
-    this.rowHeight = Math.max(44, rowHeight);
+    this.rowHeight = Number.isFinite(Number(rowHeight)) ? Math.max(44, Number(rowHeight)) : 44;
     this.overscan = overscan;
     this.renderRow = renderRow;
     this.root = h('div', 'ui-virtual-list');
