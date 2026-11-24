@@ -21,10 +21,12 @@ const SYNTHETIC_UNKNOWN_STATE_KEY = '@unknown-state';
 const FUNCTION_LEVEL_STATE_UNKNOWN_NODE_ID = '@function-level-state-unknown';
 
 function fail(code) { throw new TypeError(code); }
+function compareText(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
 }
 function assertNotAborted(options) {
   if (options?.signal?.aborted) {
@@ -205,7 +207,7 @@ function scalarReferences(node, tick) {
     for (const access of node.intrinsic.memoryWrite.accesses ?? []) add(access.addressExpr.valueId, 'intrinsic-memory-write-address');
   }
   return [...roles.entries()].map(([valueId, roleSet]) => ({ valueId, roles: [...roleSet].sort() }))
-    .sort((a, b) => a.valueId.localeCompare(b.valueId));
+    .sort((a, b) => compareText(a.valueId, b.valueId));
 }
 function collectModel(ir, options, tick) {
   const values = semanticValueById(ir);
@@ -323,7 +325,7 @@ function collectModel(ir, options, tick) {
   for (const key of [...knownKeys].sort()) {
     tick();
     const knownTypes = [...(typesByKey.get(key)?.values() ?? [])]
-      .sort((a, b) => typeKey(a).localeCompare(typeKey(b)));
+      .sort((a, b) => compareText(typeKey(a), typeKey(b)));
     const types = knownTypes.length ? knownTypes : [null];
     const collision = types.length > 1;
     const ref = refsByKey.get(key).ref;
@@ -397,8 +399,8 @@ function collectModel(ir, options, tick) {
     eventsByBlock.set(block.id, [...dedup.values()].sort((a, b) =>
       a.nodeOrdinal - b.nodeOrdinal
       || a.phase - b.phase
-      || a.variant.key.localeCompare(b.variant.key)
-      || String(a.sourceSemanticValueId ?? '').localeCompare(String(b.sourceSemanticValueId ?? ''))));
+      || compareText(a.variant.key, b.variant.key)
+      || compareText(String(a.sourceSemanticValueId ?? ''), String(b.sourceSemanticValueId ?? ''))));
   }
 
   const seedsByVariant = new Map(variants.map((variant) => [variant.key, []]));
@@ -406,11 +408,11 @@ function collectModel(ir, options, tick) {
     for (const variant of variantFor(seed.key, seed.machineType)) seedsByVariant.get(variant.key).push(seed.value);
   }
   for (const list of seedsByVariant.values()) {
-    list.sort((a, b) => a.id.localeCompare(b.id));
+    list.sort((a, b) => compareText(a.id, b.id));
     if (list.length > 1) fail('semantic-ssa-multiple-entry-values');
   }
 
-  const sortedVariants = variants.sort((a, b) => a.key.localeCompare(b.key));
+  const sortedVariants = variants.sort((a, b) => compareText(a.key, b.key));
   return { values, nodes, variants: sortedVariants, variantBySemanticKey: new Map(sortedVariants.map((variant) => [variant.key, variant])), variantsByKey, eventsByBlock, seedsByVariant };
 }
 
@@ -678,14 +680,14 @@ function phiSkeleton(ir, block, variant) {
 }
 
 function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {
-  const sorted = phiDefinitions.slice().sort((a, b) => a.valueId.localeCompare(b.valueId));
+  const sorted = phiDefinitions.slice().sort((a, b) => compareText(a.valueId, b.valueId));
   const phiIds = new Set(sorted.map((phi) => phi.valueId));
   const origins = []; const originByKey = new Map(); const roots = new Map();
   const dependents = new Map(sorted.map((phi) => [phi.valueId, new Set()]));
   const addOrigin = (key, origin) => { if (originByKey.has(key)) return originByKey.get(key); const index = origins.length; origins.push(origin); originByKey.set(key, index); return index; };
   for (const phi of sorted) {
     tick(); const set = new Set([addOrigin('base:' + phi.valueId, safeOrigin(irBlocks.get(phi.blockId)?.origin, createOriginSet({ parentEntityIds: [phi.blockId] })))]);
-    const incoming = phi.incoming.slice().sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.valueId.localeCompare(b.valueId));
+    const incoming = phi.incoming.slice().sort((a, b) => compareText(a.predecessorBlockId, b.predecessorBlockId) || compareText(a.valueId, b.valueId));
     for (const item of incoming) { tick(); const definition = definitionByValue.get(item.valueId); if (!definition) fail('semantic-ssa-dangling-phi-value-id');
       if (definition.kind === 'phi') { if (!phiIds.has(definition.valueId)) fail('semantic-ssa-dangling-phi-value-id'); dependents.get(definition.valueId).add(phi.valueId); } else set.add(addOrigin('definition:' + definition.valueId, definition.origin)); }
     roots.set(phi.valueId, set);
@@ -712,7 +714,7 @@ function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {
   return resolved;
 }
 function finalizePhi(phi, resolvedOrigin) {
-  const incoming = phi.incoming.slice().sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.valueId.localeCompare(b.valueId));
+  const incoming = phi.incoming.slice().sort((a, b) => compareText(a.predecessorBlockId, b.predecessorBlockId) || compareText(a.valueId, b.valueId));
   const origin = transformOrigin(resolvedOrigin, {
     ruleId: 'phi-insertion',
     proofKind: 'dominance-frontier',

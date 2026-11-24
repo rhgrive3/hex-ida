@@ -91,8 +91,8 @@ export function observableEffectReason(instruction) {
     }
     if (access.volatility === true) return 'the access is known to be volatile';
     if (access.atomic !== false) return `access atomicity is ${access.atomic === true ? 'yes' : 'unknown'}`;
-    if (access.ordering != null && access.ordering !== 'unknown' && access.ordering !== 'relaxed') {
-      return `access imposes ordering: ${access.ordering}`;
+    if (access.ordering != null && access.ordering !== 'relaxed') {
+      return access.ordering === 'unknown' ? 'access ordering is unproved' : `access imposes ordering: ${access.ordering}`;
     }
     if (Array.isArray(access.faults) && access.faults.length > 0) {
       return `access can fault: ${access.faults.map((fault) => fault?.kind ?? String(fault)).join(', ')}`;

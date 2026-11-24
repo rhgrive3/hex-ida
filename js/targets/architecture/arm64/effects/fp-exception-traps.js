@@ -50,7 +50,7 @@ function buildFault(operation, exceptionClasses, executionCondition) {
   const seen = new Set();
   for (const exceptionClass of exceptionClasses || []) {
     if (typeof exceptionClass !== 'string' || seen.has(exceptionClass)) continue;
-    const control = FP_EXCEPTION_TRAP_CONTROL[exceptionClass];
+    const control = Object.hasOwn(FP_EXCEPTION_TRAP_CONTROL, exceptionClass) ? FP_EXCEPTION_TRAP_CONTROL[exceptionClass] : null;
     if (!control) continue;
     seen.add(exceptionClass);
     alternatives.push(Object.freeze({
@@ -94,6 +94,6 @@ export function arm64FpExceptionTrapFault(mnemonic, options = {}) {
 
   const exceptionClasses = customClasses ?? arm64FpExceptionClassesForMnemonic(operation);
   const fault = buildFault(operation, exceptionClasses, executionCondition);
-  if (customClasses == null && executionCondition == null) DEFAULT_FAULT_CACHE.set(operation, fault);
+  if (customClasses == null && executionCondition == null && fault != null && DEFAULT_FAULT_CACHE.size < 256) DEFAULT_FAULT_CACHE.set(operation, fault);
   return fault;
 }

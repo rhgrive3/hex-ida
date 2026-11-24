@@ -70,8 +70,11 @@ export async function verifyDeobfuscationCandidate(candidate={}) {
       if(names.has(symbol.name)&&names.get(symbol.name)!==symbol.symbolId) return reject('ambiguous-symbol-name-handoff');
       names.set(symbol.name,symbol.symbolId);
     }
-    const beforeSymbols=new Set(collectSymbols([before]).symbols.map(s=>s.symbolId));
-    const afterSymbols=new Set(collectSymbols([after]).symbols.map(s=>s.symbolId));
+    const beforeCollected=collectSymbols([before],{maxExprNodes:100000,maxExprDepth:128});
+    const afterCollected=collectSymbols([after],{maxExprNodes:100000,maxExprDepth:128});
+    if(beforeCollected.unsupportedReason||beforeCollected.limitExceeded||beforeCollected.depthExceeded||afterCollected.unsupportedReason||afterCollected.limitExceeded||afterCollected.depthExceeded) return reject('unsupported-or-budgeted-expression');
+    const beforeSymbols=new Set(beforeCollected.symbols.map(s=>s.symbolId));
+    const afterSymbols=new Set(afterCollected.symbols.map(s=>s.symbolId));
     const mapped=new Set();const inputs=[];
     for(const pair of submittedInputs) {
       guard.take('workItems');

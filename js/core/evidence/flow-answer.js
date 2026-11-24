@@ -202,9 +202,9 @@ export async function assembleFlowAnswer({ plan, result, members, specialization
       [dispatch.query?.callSiteId ?? dispatch.callSiteId ?? plan.id]);
     ownerRoots.push(id);
     for (const candidate of dispatch.candidates ?? []) {
-      const pointer = candidate.provenance?.declaration.pointerView, access = candidate.provenance?.declaration.access;
+      const pointer = candidate.provenance?.declaration?.pointerView, access = candidate.provenance?.declaration?.access;
       for (const ref of [dispatch.query?.callSiteId, access?.nodeId, access?.memoryEntityId].filter(Boolean)) {
-        for (const target of entityNodes.get(`${dispatch.query.functionId}\u0000${ref}`) ?? []) edge(id, target);
+        for (const target of entityNodes.get(`${dispatch.query?.functionId}\u0000${ref}`) ?? []) edge(id, target);
       }
       const source = pointer?.byteSource;
       if (!source) { if (pointer) gap({ reason: 'loader-pointer-source-bytes-unavailable', pointerId: pointer.id }); continue; }

@@ -287,7 +287,17 @@ function materializeVerifiedLabels(result, index, addresses) {
     if (row == null) continue;
     while (ti < targets.length && targets[ti].row <= row) placements.push({ ...targets[ti++], at: li });
   }
-  const closing = result.lines.findIndex((l) => l?.kind === 'ctrl' && l.text === '}');
+  let closing = -1;
+  for (let i = result.lines.length - 1; i >= 0; i--) {
+    const l = result.lines[i];
+    if (l?.kind === 'ctrl' && l.text === '}' && (l.indent || 0) === 0) { closing = i; break; }
+  }
+  if (closing < 0) {
+    for (let i = result.lines.length - 1; i >= 0; i--) {
+      const l = result.lines[i];
+      if (l?.kind === 'ctrl' && l.text === '}') { closing = i; break; }
+    }
+  }
   if (closing < 0) return false;
   while (ti < targets.length) placements.push({ ...targets[ti++], at: closing });
   placements.sort((a, b) => b.at - a.at || b.row - a.row);
@@ -380,7 +390,12 @@ export function structureKnownSwitches(result, model, opts = {}) {
       // provenance remains attached; indentation is cosmetic and is therefore
       // intentionally left untouched.
       for (const range of [...terminal.ranges].sort((a, b) => b.start - a.start)) {
-        result.lines.splice(range.start, range.end - range.start);
+        const spliced = result.lines.splice(range.start, range.end - range.start);
+        for (const line of spliced) {
+          if (line?.kind === 'label' && typeof line.text === 'string') {
+            index.labels.delete(line.text.replace(/:$/, '').toUpperCase());
+          }
+        }
       }
     }
     const generated = [{ kind: 'ctrl', indent: at.indent, text: `switch (${expr}) {`, row: sw.row, addr: null, note: null }];
@@ -392,8 +407,7 @@ export function structureKnownSwitches(result, model, opts = {}) {
         row: sw.row, addr: cases[i].address, note: null };
       generated.push(caseLine); repl.push(caseLine);
       if (terminal) {
-        const body = terminal.byKey.get(key).body;
-        for (const line of body) line.indent = Math.max(line.indent || 0, at.indent + 2);
+        const body = terminal.byKey.get(key).body.map((line) => ({ ...line, indent: Math.max(line.indent || 0, at.indent + 2) }));
         repl.push(...body);
       }
     }
@@ -404,8 +418,7 @@ export function structureKnownSwitches(result, model, opts = {}) {
         row: sw.row, addr: defaultAddress, note: null };
       generated.push(defaultLine); repl.push(defaultLine);
       if (terminal) {
-        const body = terminal.byKey.get(key).body;
-        for (const line of body) line.indent = Math.max(line.indent || 0, at.indent + 2);
+        const body = terminal.byKey.get(key).body.map((line) => ({ ...line, indent: Math.max(line.indent || 0, at.indent + 2) }));
         repl.push(...body);
       }
     }

@@ -34,7 +34,7 @@ function continuationCondition(iv) {
   if (!cmp || cmp.op !== OP.CMP || cmp.args.length < 2) return null;
   const inside = iv.inside || (iv.phi?.incoming || []).find((x) => loop.nodes.has(x.from))?.value || null;
   const render = (v) => {
-    if (same(v, iv.value) || same(v, inside)) return iv.name;
+    if (same(v, inside)) return iv.name;
     const c = constantText(v);
     return c != null ? c : null;
   };
@@ -184,6 +184,7 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
     if (!cond || !init) continue;
 
     const headerAddr = blockAddress(loop.header);
+    if (headerAddr == null) continue;
     const label = `loc_${hex(headerAddr)}`;
     const range = replacementRange(result.lines || [], term, label);
     if (!range) continue;
@@ -206,7 +207,6 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
     // control-flow warning would hide unrelated unresolved edges (#5135). Preserve
     // them fail-closed until diagnostics carry enough identity for scoped removal.
     result.ctx = { ...(result.ctx || {}), loopRepair: iv0.discoveredFrom || 'ssa-post-test' };
-    return result;
   }
   return result;
 }

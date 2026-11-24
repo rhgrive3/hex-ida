@@ -238,9 +238,11 @@ export function decodeArm64PatchWord(wordVal, at = 0n) {
     const sf = (u >>> 31) & 1;
     const rn = (u >>> 5) & 0x1F;
     const rd = u & 0x1F;
-    const p = sf ? 'x' : 'w';
-    const spName = sf ? 'sp' : 'wsp';
-    return { mn: 'mov', ops: `${rd === 31 ? spName : p + rd}, ${rn === 31 ? spName : p + rn}` };
+    if (rd === 31 || rn === 31) {
+      const p = sf ? 'x' : 'w';
+      const spName = sf ? 'sp' : 'wsp';
+      return { mn: 'mov', ops: `${rd === 31 ? spName : p + rd}, ${rn === 31 ? spName : p + rn}` };
+    }
   }
   if ((u & 0x7C000000) === 0x14000000) {
     const isBl = (u >>> 31) & 1;
@@ -322,7 +324,8 @@ export function suggestPatches(mn, opsStr, addr, options = {}) {
   out.push({ id: 'nop', label: 'この命令を何もしない（nop）にする', why: '呼び出しやチェックを 1 つ飛ばして、どう変わるか試すときに使います。', text: 'nop' });
   const cond = /^b\.(\w+)$/.exec(base);
   if (cond) {
-    const inv = { eq: 'ne', ne: 'eq', lt: 'ge', ge: 'lt', gt: 'le', le: 'gt', hi: 'ls', ls: 'hi', hs: 'lo', lo: 'hs', cs: 'cc', cc: 'cs', mi: 'pl', pl: 'mi', vs: 'vc', vc: 'vs' }[cond[1]];
+    const invTable = Object.assign(Object.create(null), { eq: 'ne', ne: 'eq', lt: 'ge', ge: 'lt', gt: 'le', le: 'gt', hi: 'ls', ls: 'hi', hs: 'lo', lo: 'hs', cs: 'cc', cc: 'cs', mi: 'pl', pl: 'mi', vs: 'vc', vc: 'vs' });
+    const inv = invTable[cond[1]];
     const target = targetOf(opsStr);
     if (inv && target != null) {
       out.push({ id: 'invert', label: '条件を反対にする（b.' + cond[1] + ' → b.' + inv + '）', why: '「合っていたら通す」を「間違っていたら通す」に入れ替えます。判定の効き目を確かめられます。', text: 'b.' + inv + ' 0x' + target.toString(16) });

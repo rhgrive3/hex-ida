@@ -81,11 +81,15 @@ export class DevRunEventHost {
       releaseOwnRegistration();
       throw error;
     }
-    return Object.freeze({
-      ...this.acceptEvent(yielded.run, event),
-      decision: yielded.decision,
-      yielded: true,
-    });
+    try {
+      return Object.freeze({
+        ...this.acceptEvent(yielded.run, event),
+        decision: yielded.decision,
+        yielded: true,
+      });
+    } finally {
+      releaseOwnRegistration();
+    }
   }
 
   resumeHuman(run, data = {}) {
@@ -103,8 +107,9 @@ export class DevRunEventHost {
     if (record.kind === 'event' && !record.events.includes(normalized.type)) {
       return Object.freeze({ run, resumed: false, event: normalized });
     }
+    const resumedRun = this.supervisor.resume(run);
     this.waiting.delete(run.runId);
-    return Object.freeze({ run: this.supervisor.resume(run), resumed: true, event: normalized });
+    return Object.freeze({ run: resumedRun, resumed: true, event: normalized });
   }
 
   waitingFor(runId) {

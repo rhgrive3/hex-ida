@@ -549,7 +549,24 @@ export class ProductWorkspace{
     finally{if(listenerRegistered)signal.removeEventListener('abort',onAbort);}
   }
   async diff(options={}){
-    if(this.busy)return this.busy;
+    const threshold=options.threshold??0.62;
+    const matchBudget=options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536};
+    const optionsKey=JSON.stringify({threshold,matchBudget});
+    const waitWithSignal=(promise,signal)=>{
+      if(!signal)return promise;
+      if(signal.aborted){Promise.resolve(promise).catch(()=>{});return Promise.reject(abortError());}
+      return new Promise((resolve,reject)=>{
+        const onAbort=()=>{cleanup();reject(abortError());};
+        const cleanup=()=>{signal.removeEventListener('abort',onAbort);};
+        signal.addEventListener('abort',onAbort,{once:true});
+        Promise.resolve(promise).then((v)=>{cleanup();resolve(v);},(e)=>{cleanup();reject(e);});
+      });
+    };
+    if(this.busy){
+      if(this._busyKey===optionsKey)return waitWithSignal(this.busy,options.signal);
+      try{await waitWithSignal(this.busy,options.signal);}catch(e){if(options.signal?.aborted)throw e;}
+      throwIfAborted(options.signal);
+    }
     const revision=this.bindingRevision, baseline=this.baseline;
     let task;
     task=(async()=>{
@@ -559,7 +576,7 @@ export class ProductWorkspace{
       try{await this.app.ensureRecognition?.({maxFunctions:MAX_DIFF_FUNCTIONS,knowledgeLimit:0,signal:options.signal});}catch(error){if(options.signal?.aborted)throwIfAborted(options.signal);/* symbol fallback remains valid */}
       throwIfAborted(options.signal);assertCurrent();
       const current=createCompactFunctionSet(this.app?.symbols,this.identity?.metadata?.architecture,MAX_DIFF_FUNCTIONS), before=baseline.functions;
-      let result=await runDiffInWorker(before,current,{mode:'fast',signal:options.signal,threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
+      let result=await runDiffInWorker(before,current,{mode:'fast',signal:options.signal,threshold,matchBudget});
       assertCurrent();
       result=demoteLowInformationAbsenceClaims(result);
       const inputsComplete=before.complete===true&&current.complete===true;
@@ -570,8 +587,8 @@ export class ProductWorkspace{
       result.provenance={baselineHash:baseline.hash,currentHash:this.identity?.hash||null,architecture:baseline.architecture,currentArchitecture:this.identity?.metadata?.architecture||null,baselineName:baseline.info?.name||baseline.file?.name||null,currentName:this.identity?.metadata?.name||null,complete:false,functionSetsComplete:inputsComplete,fingerprintProfile:before.evidenceProfile,evidenceSymmetric:true};
       assertCurrent();
       this.diffState=result;return result;
-    })().finally(()=>{if(this.busy===task)this.busy=null;});
-    this.busy=task;return task;
+    })().finally(()=>{if(this.busy===task){this.busy=null;this._busyKey=null;}});
+    this.busy=task;this._busyKey=optionsKey;return task;
   }
   getBinaryDiff(){return this.diffState;}
   invalidate(){this.bindSequence++;this.identity=null;this._resetBoundState();}

@@ -45,7 +45,7 @@ export function createAiEngine(app, options = {}) {
   let defaultSessionId = null;
 
   const runtime = () => {
-    if (!corePromise) corePromise = Promise.resolve().then(() => loadCore(localContext)).then((value) => { core = value || null; return core; }).catch(() => { core = null; return null; });
+    if (!corePromise) corePromise = Promise.resolve().then(() => loadCore(localContext)).then((value) => { core = value || null; if (!core) corePromise = null; return core; }).catch(() => { core = null; corePromise = null; return null; });
     return corePromise;
   };
 
@@ -126,15 +126,20 @@ export function createAiEngine(app, options = {}) {
     cancel() { if (core && typeof core.cancel === 'function') core.cancel(); },
     async createAgentJob(input = {}) {
       const engine = await runtime();
+      if (!engine || typeof engine.createJob !== 'function') throw new Error('AI core unavailable.');
       const key = canonicalConversationId(input.conversationId);
       return engine.createJob({ ...input, conversationId: key, sessionId: input.sessionId || (key ? sessions.get(key) : defaultSessionId) || null });
     },
     async runAgentJobSlice(jobOrId, options = {}) {
-      const engine = await runtime(); const checkpoint = await engine.runJobSlice(jobOrId, options);
+      const engine = await runtime();
+      if (!engine || typeof engine.runJobSlice !== 'function') throw new Error('AI core unavailable.');
+      const checkpoint = await engine.runJobSlice(jobOrId, options);
       bindJobSession(checkpoint, sessions, (value) => { defaultSessionId = value; }); persistConversationBindings(sessions); return checkpoint;
     },
     async resumeAgentJob(id, options = {}) {
-      const engine = await runtime(); const checkpoint = await engine.resumeJob(id, options);
+      const engine = await runtime();
+      if (!engine || typeof engine.resumeJob !== 'function') throw new Error('AI core unavailable.');
+      const checkpoint = await engine.resumeJob(id, options);
       bindJobSession(checkpoint, sessions, (value) => { defaultSessionId = value; }); persistConversationBindings(sessions); return checkpoint;
     },
     async aiCapabilities(options = {}) {
@@ -221,7 +226,7 @@ export function createLiveProjectSessionPersistence(app) {
   };
   const changed = (project) => {
     if (app?.workspace) app.workspace.project = project;
-    app.activeProject = project;
+    if (app) app.activeProject = project;
     if (typeof setTimeout !== 'function') { runAutosave(); return; }
     if (flush == null) {
       let resolve, reject;
@@ -308,10 +313,23 @@ export function createLiveProjectSessionPersistence(app) {
       }
     },
     async delete(id) {
-      const adapter = adapterFor(projectFor());
+      const project = projectFor();
+      const adapter = adapterFor(project);
       if (!adapter) return;
+      const entries = project?.findings?.investigationSessions;
+      const priorIndex = Array.isArray(entries) ? entries.findIndex((item) => item && item.id === id) : -1;
+      const priorEntry = priorIndex >= 0 ? entries[priorIndex] : null;
       await adapter.delete(id);
-      await awaitFlush();
+      try {
+        await awaitFlush();
+      } catch (error) {
+        if (priorEntry && Array.isArray(project?.findings?.investigationSessions)
+          && !project.findings.investigationSessions.some((item) => item && item.id === id)) {
+          const insertAt = Math.min(priorIndex, project.findings.investigationSessions.length);
+          project.findings.investigationSessions.splice(insertAt, 0, priorEntry);
+        }
+        throw error;
+      }
     },
   };
 }
@@ -478,7 +496,13 @@ function loadConversationBindings() {
   } catch { /* optional persistence */ }
   return out;
 }
+const MAX_CONVERSATION_BINDINGS = 200;
 function persistConversationBindings(bindings) {
+  while (bindings.size > MAX_CONVERSATION_BINDINGS) {
+    const oldest = bindings.keys().next().value;
+    if (oldest === undefined) break;
+    bindings.delete(oldest);
+  }
   try { globalThis.localStorage?.setItem?.(CONVERSATION_BINDING_KEY, JSON.stringify(Object.fromEntries(bindings))); } catch { /* private mode */ }
 }
 

@@ -35,13 +35,33 @@ function canonicalFingerprintBytes(value) {
   }
   return Uint8Array.from(value);
 }
-function stable(value) {
+function stable(value, active = new Set()) {
   if (value == null) return 'null';
-  if (typeof value === 'bigint') return JSON.stringify({ $bigint: value.toString() });
+  if (typeof value === 'bigint') return JSON.stringify({ $bigint: value.toString(), $type: 'bigint' });
   if (typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
-  const keys = Object.keys(value).sort();
-  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stable(value[k])).join(',') + '}';
+  if (active.has(value)) throw new TypeError('function-fingerprint-cyclic-value');
+  active.add(value);
+  try {
+    if (Array.isArray(value)) return '[' + value.map((item) => stable(item, active)).join(',') + ']';
+    const keys = Object.keys(value).sort();
+    return '{' + keys.map((k) => JSON.stringify(k) + ':' + stable(value[k], active)).join(',') + '}';
+  } finally {
+    active.delete(value);
+  }
+}
+function canonicalFingerprintAddress(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError('function-fingerprint-address-invalid');
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^(?:0[xX][0-9a-fA-F]+|[+-]?[0-9]+)$/.test(trimmed)) throw new TypeError('function-fingerprint-address-invalid');
+    return BigInt(trimmed);
+  }
+  throw new TypeError('function-fingerprint-address-invalid');
 }
 function uniq(values) {
   return [...new Set((values || []).filter((v) => v != null && String(v).length).map((v) => String(v)))].sort();
@@ -473,7 +493,7 @@ export function fingerprintFunction(fn = {}, options = {}) {
   });
   return Object.freeze({
     schema: 'hex.function-fingerprint', version: FUNCTION_FINGERPRINT_VERSION,
-    address: fn.address == null ? null : BigInt(fn.address), name: fn.name || null, architecture, size,
+    address: canonicalFingerprintAddress(fn.address), name: fn.name || null, architecture, size,
     exactBytesHash, byteHash: exactBytesHash, normalizedBytesHash, normalizedByteHash: normalizedBytesHash,
     byteSample: normalizedBytes ? stratifiedByteSample(normalizedBytes) : Array.from(fn.byteSample || []),
     instructionSequenceHash, instructionBagHash, normalizedOperandsHash, normalizedOperandBagHash, cfgHash, basicBlockHashes: blocks, semanticHash, irHash: semanticHash,
@@ -514,7 +534,7 @@ export function fingerprintFunctionFast(fn = {}) {
   const normalizedOperandBagHash = structuredOperandsValid && bagOperands.length ? nonEmptyHash([...bagOperands].sort()) : (structuredOperandsValid ? (fn.normalizedOperandBagHash || null) : null);
   const cfgHash = (cfg.blocks || cfg.edges || cfg.exits || cfg.loops || cfg.calls) ? nonEmptyHash({cfg,blocks}) : (fn.cfgHash || null);
   return Object.freeze({ schema:'hex.function-fingerprint-fast', version:FUNCTION_FINGERPRINT_VERSION,
-    address:fn.address==null?null:BigInt(fn.address), name:fn.name||null, architecture, size, exactBytesHash, byteHash:exactBytesHash, normalizedBytesHash, normalizedByteHash:normalizedBytesHash,
+    address:canonicalFingerprintAddress(fn.address), name:fn.name||null, architecture, size, exactBytesHash, byteHash:exactBytesHash, normalizedBytesHash, normalizedByteHash:normalizedBytesHash,
     instructionSequenceHash, instructionBagHash, normalizedOperandsHash, normalizedOperandBagHash, cfgHash, cfg,
     strings:uniq(fn.strings).slice(0,4), imports:uniq(fn.imports).slice(0,4), semanticHash:null,
     relocationNormalization:Object.freeze({ confidence:relocation.unknown.length ? 0.65 : 1, masked:relocation.masked.length, unknown:relocation.unknown.length }),
