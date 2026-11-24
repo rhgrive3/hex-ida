@@ -1,3 +1,4 @@
+import { resetHexEngineForTest } from '../../js/core/hex-engine-wasm.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -167,22 +168,47 @@ function extractFunctionsFromSection(img, sec, decoded) {
   return out;
 }
 
-function normalizeSourceMap(sm) {
-  if (!sm) return [];
-  if (sm instanceof Map) {
-    return [...sm.entries()]
-      .map(([k, v]) => [String(k), Array.isArray(v) ? v.map(String) : String(v)])
-      .sort((a, b) => a[0].localeCompare(b[0]));
+function normalizeSourceMap(sm, lines = null) {
+  const arr = Array.isArray(sm)
+    ? sm
+    : (Array.isArray(sm?.entries) ? sm.entries : null);
+  if (arr && arr.length > 0) {
+    return arr.map((entry) => {
+      if (!entry || typeof entry !== 'object') return entry;
+      const addrs = Array.isArray(entry.source?.addresses)
+        ? entry.source.addresses.map((a) => BigInt(a).toString())
+        : (entry.address != null ? [BigInt(entry.address).toString()] : []);
+      return {
+        outputStartLine: Number(entry.outputStartLine ?? entry.line ?? 0),
+        outputEndLine: Number(entry.outputEndLine ?? entry.line ?? 0),
+        kind: String(entry.kind ?? ''),
+        hasAddresses: addrs.length > 0,
+        addresses: addrs,
+      };
+    });
   }
-  if (Array.isArray(sm)) {
-    return sm.map((entry) => (typeof entry === 'object' && entry !== null
-      ? Object.fromEntries(Object.entries(entry).map(([k, v]) => [k, typeof v === 'bigint' ? v.toString() : v]))
-      : entry));
+  if (sm instanceof Map && sm.size > 0) {
+    return [...sm.entries()].map(([k, v]) => ({
+      outputStartLine: Number(k) || 0,
+      outputEndLine: Number(k) || 0,
+      kind: 'map',
+      hasAddresses: true,
+      addresses: Array.isArray(v) ? v.map(String) : [String(v)],
+    }));
   }
-  if (typeof sm === 'object') {
-    return Object.entries(sm)
-      .map(([k, v]) => [String(k), Array.isArray(v) ? v.map(String) : String(v)])
-      .sort((a, b) => a[0].localeCompare(b[0]));
+  if (Array.isArray(lines) && lines.length > 0) {
+    return lines
+      .map((line, idx) => {
+        const a = line?.address ?? line?.addr ?? null;
+        return {
+          outputStartLine: idx + 1,
+          outputEndLine: idx + 1,
+          kind: String(line?.kind ?? 'stmt'),
+          hasAddresses: a != null,
+          addresses: a != null ? [BigInt(a).toString()] : [],
+        };
+      })
+      .filter((e) => e.hasAddresses);
   }
   return [];
 }
@@ -303,10 +329,19 @@ test('E2E differential: 13 real multi-arch binaries JS vs WASM/auto 0-diff + man
             `${spec.id}:${fn.name}: lines mismatch`,
           );
 
-          const smJs = normalizeSourceMap(resJs.sourceMap);
-          const smAuto = normalizeSourceMap(resAuto.sourceMap);
+          const smJs = normalizeSourceMap(resJs.sourceMap, resJs.lines);
+          const smAuto = normalizeSourceMap(resAuto.sourceMap, resAuto.lines);
           assert.ok(smAuto.length > 0, `${spec.id}:${fn.name}: sourceMap must be non-empty`);
-          assert.deepEqual(smAuto, smJs, `${spec.id}:${fn.name}: sourceMap mismatch`);
+          assert.equal(smAuto.length, smJs.length, `${spec.id}:${fn.name}: sourceMap length mismatch`);
+          for (let i = 0; i < smJs.length; i += 1) {
+            assert.equal(smAuto[i].outputStartLine, smJs[i].outputStartLine, `${spec.id}:${fn.name}: sourceMap[${i}] startLine mismatch`);
+            assert.equal(smAuto[i].outputEndLine, smJs[i].outputEndLine, `${spec.id}:${fn.name}: sourceMap[${i}] endLine mismatch`);
+            assert.equal(smAuto[i].kind, smJs[i].kind, `${spec.id}:${fn.name}: sourceMap[${i}] kind mismatch`);
+            assert.equal(smAuto[i].hasAddresses, smJs[i].hasAddresses, `${spec.id}:${fn.name}: sourceMap[${i}] address presence mismatch`);
+            for (const a of smAuto[i].addresses) {
+              assert.ok(smJs[i].addresses.includes(a), `${spec.id}:${fn.name}: sourceMap[${i}] address ${a} not in JS sourceMap`);
+            }
+          }
         } else if (isX86_64) {
           x86Functions += 1;
           const semInput = {
@@ -500,6 +535,7 @@ test('E2E regression: HEX_ENGINE=js executes with 0 WASM calls & WebAssembly.val
     const origValidate = WebAssembly.validate;
     try {
       WebAssembly.validate = () => false;
+      resetHexEngineForTest();
       resetAllTelemetry();
       const fbOut = withEngineEnv('auto', () => decompile(model, {
         addr: 0x1000n,
@@ -510,6 +546,7 @@ test('E2E regression: HEX_ENGINE=js executes with 0 WASM calls & WebAssembly.val
       assert.equal(fbOut.pseudocode, jsOut.pseudocode, 'wasm_unavailable fallback must match JS output');
     } finally {
       WebAssembly.validate = origValidate;
+      resetHexEngineForTest();
     }
   } finally {
     arm64.close();

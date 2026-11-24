@@ -1315,13 +1315,13 @@ static void emit_js_parity_prelude(TextBuf& buf, uint32_t used_types) {
       buf.put_str(kDecls[i].line);
     }
   }
-  buf.put_char('\n');
 }
 
 static void emit_signature(TextBuf& buf,
                            const CEmitFunctionView& view,
                            uint32_t num_params,
-                           uint32_t* used_types_out) {
+                           uint32_t* used_types_out,
+                           bool js_parity) {
   if (view.ret_width == 0u) {
     buf.put_str("void ");
   } else {
@@ -1350,7 +1350,7 @@ static void emit_signature(TextBuf& buf,
       buf.put_u64_dec(i + 1u);
     }
   }
-  buf.put_str(") {\n");
+  buf.put_str(js_parity ? ")\n{\n" : ") {\n");
 }
 
 static int32_t emit_c_impl(const CEmitFunctionView* view,
@@ -1472,13 +1472,13 @@ static int32_t emit_c_impl(const CEmitFunctionView* view,
   if (ctx.js_parity) {
     emit_js_parity_prelude(final_buf, sig_types);
   }
-  emit_signature(final_buf, *view, inferred_params, nullptr);
+  emit_signature(final_buf, *view, inferred_params, nullptr, ctx.js_parity);
 
   const uint32_t body_line_offset = final_buf.line_no - 1u;
   if (ctx.out.len > 0u && ctx.out.data != nullptr) {
     final_buf.put_str_n(ctx.out.data, ctx.out.len);
   }
-  final_buf.put_str("}\n");
+  final_buf.put_str(ctx.js_parity ? "}" : "}\n");
 
   if (final_buf.oom) return HEX_ERR_OOM;
   if (final_buf.limit_hit) return HEX_ERR_RESOURCE_LIMIT;

@@ -317,6 +317,16 @@ HexStatus hex_engine_decompile_arm64(
   if (word_count > HEX_ENGINE_MAX_DECOMP_WORDS) return HEX_ERR_RESOURCE_LIMIT;
   if (func_name_len > 0u && !func_name_utf8) return HEX_ERR_INVALID_ARG;
 
+  char local_func_name[256];
+  uint32_t local_func_name_len = 0u;
+  if (func_name_utf8 && func_name_len > 0u) {
+    local_func_name_len = func_name_len < sizeof(local_func_name) ? func_name_len : static_cast<uint32_t>(sizeof(local_func_name) - 1u);
+    hex::mem_copy(local_func_name, func_name_utf8, local_func_name_len);
+    local_func_name[local_func_name_len] = '\0';
+    func_name_utf8 = local_func_name;
+    func_name_len = local_func_name_len;
+  }
+
   auto ptr_in_scratch = [](const void* ptr) -> bool {
     if (!ptr || !g_scratch_arena.base()) return false;
     const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);

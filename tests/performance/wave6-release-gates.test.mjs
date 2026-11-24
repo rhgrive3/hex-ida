@@ -67,7 +67,7 @@ test('Wave 6 release gate: required docs, manifest, and core WASM/bridge public 
     'hex-engine-wasm.js must export isWasmBulkMemorySupported',
   );
   assert.ok(
-    typeof engineWasm.createWasmInstance === 'function' || typeof engineWasm.getEngineInstance === 'function',
+    typeof engineWasm.getHexEngineExports === 'function' || typeof engineWasm.createWasmInstance === 'function' || typeof engineWasm.getEngineInstance === 'function',
     'hex-engine-wasm.js must export instance factory',
   );
   assert.equal(

@@ -73,7 +73,7 @@ static void test_js_parity_add_and_hex(void) {
   assert(contains(txt, "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */"));
   assert(contains(txt, "typedef __INT32_TYPE__ int32;\n"));
   assert(contains(txt, "typedef __UINT64_TYPE__ uint64;\n"));
-  assert(contains(txt, "int32 add_fn(uint64 a1, uint64 a2) {\n"));
+  assert(contains(txt, "int32 add_fn(uint64 a1, uint64 a2)\n{\n"));
   assert(contains(txt, "    return a1 + a2;\n"));
 
   // Verify uppercase hex literal 0xFFFFFFFF.

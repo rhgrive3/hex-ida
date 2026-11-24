@@ -489,6 +489,9 @@ function classifyUnsupportedArm64Insn(word, insn, ex) {
   if (isNonAliasOrrRegister(word, mn, ops)) {
     return 'unsupported_insn:orr';
   }
+  if (((word & 0x7F800000) >>> 0) === 0x12800000) {
+    return 'unsupported_insn:movn';
+  }
   if (typeof ex.hex_arm64_is_decompiler_supported === 'function') {
     if (ex.hex_arm64_is_decompiler_supported(word >>> 0) === 0) {
       return `unsupported_insn:${mn || `0x${(word >>> 0).toString(16)}`}`;
@@ -531,12 +534,18 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     for (let i = 0; i < count; i += 1) wordsView[i] = words[i] >>> 0;
 
     let namePtr = 0;
-    const nameStr = typeof funcName === 'string' ? funcName : '';
+    let nameLen = 0;
+    const rawName = typeof funcName === 'string' ? funcName : '';
+    const stripped = rawName.replace(/^_+/, '');
+    const nameStr = stripped.length > 0 ? stripped : rawName;
     if (nameStr.length > 0) {
-      const nameBytes = textEncoder.encode(`${nameStr}\0`);
-      namePtr = allocScratch(ex, nameBytes.length);
+      const nameBytes = textEncoder.encode(nameStr);
+      nameLen = nameBytes.length;
+      namePtr = allocScratch(ex, nameLen + 1);
       if (!namePtr) return noteFallback('decompile', 'oom');
-      new Uint8Array(ex.memory.buffer, namePtr, nameBytes.length).set(nameBytes);
+      const memView = new Uint8Array(ex.memory.buffer, namePtr, nameLen + 1);
+      memView.set(nameBytes, 0);
+      memView[nameLen] = 0;
     }
 
     const status = ex.hex_engine_decompile_arm64(
@@ -544,6 +553,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       count,
       BigInt(baseAddr),
       namePtr,
+      nameLen,
       HEX_EMIT_FLAG_JS_PARITY,
     );
     if (status !== HEX_OK) {
@@ -559,7 +569,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     const mem = ex.memory.buffer;
     const pseudocode = textDecoder.decode(new Uint8Array(mem, textPtr, textLen));
 
-    const sourceMap = [];
+    const rawLinemap = new Map();
     if (
       typeof ex.hex_decomp_get_linemap_ptr === 'function'
       && typeof ex.hex_decomp_get_linemap_count === 'function'
@@ -572,28 +582,87 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
           const off = lmPtr + i * SIZEOF_HEX_LINEMAP_ENTRY;
           const lineNo = dv.getUint32(off, true);
           const address = dv.getBigUint64(off + 8, true);
-          sourceMap.push({ line: lineNo, address });
+          const list = rawLinemap.get(lineNo) || [];
+          if (!list.includes(address)) list.push(address);
+          rawLinemap.set(lineNo, list);
         }
       }
     }
 
     const rawLines = pseudocode.split('\n');
-    const lines = rawLines.map((text, idx) => {
-      const entry = sourceMap[idx] || null;
+    const baseAddrBig = BigInt(baseAddr);
+    const addrToRow = new Map();
+    if (Array.isArray(insns)) {
+      for (let i = 0; i < insns.length; i += 1) {
+        if (insns[i]?.address != null) addrToRow.set(BigInt(insns[i].address), i);
+      }
+    } else {
+      for (let i = 0; i < count; i += 1) {
+        addrToRow.set(baseAddrBig + BigInt(i * 4), i);
+      }
+    }
+
+    const lines = [];
+    const sourceMap = [];
+    let bodyLineNo = 0;
+    let seenSig = false;
+    for (let idx = 0; idx < rawLines.length; idx += 1) {
+      const text = rawLines[idx];
       const trimmed = text.trimStart();
       const indent = Math.floor((text.length - trimmed.length) / 4);
-      return {
-        kind: trimmed.startsWith('/*') || trimmed.startsWith('typedef ') ? 'decl'
-          : trimmed === '{' || trimmed === '}' || trimmed.startsWith('if ') || trimmed.startsWith('while ') || trimmed.startsWith('} else') ? 'ctrl'
-            : 'stmt',
+      const isPrelude = !seenSig && (trimmed.startsWith('/*') || trimmed.startsWith('typedef '));
+      let kind;
+      if (isPrelude) {
+        kind = 'decl';
+      } else if (!seenSig) {
+        kind = 'sig';
+        seenSig = true;
+      } else if (
+        trimmed === '{' || trimmed === '}' || trimmed.startsWith('if ')
+        || trimmed.startsWith('while ') || trimmed.startsWith('} else')
+      ) {
+        kind = 'ctrl';
+      } else {
+        kind = 'stmt';
+      }
+
+      const mappedAddrs = rawLinemap.get(idx + 1) || [];
+      const firstAddr = kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null);
+      lines.push({
+        kind,
         indent,
         text: trimmed,
-        row: null,
-        addr: entry ? entry.address : null,
-        address: entry ? entry.address : null,
+        row: firstAddr != null ? (addrToRow.get(firstAddr) ?? null) : null,
+        addr: firstAddr,
+        address: firstAddr,
         note: null,
-      };
-    });
+      });
+
+      if (!isPrelude) {
+        bodyLineNo += 1;
+        const addresses = kind === 'sig'
+          ? [baseAddrBig]
+          : (kind === 'ctrl' && (trimmed === '{' || trimmed === '}'))
+            ? []
+            : mappedAddrs.slice();
+        const rows = addresses
+          .map((a) => addrToRow.get(a))
+          .filter((r) => r !== undefined);
+        sourceMap.push({
+          outputStartLine: bodyLineNo,
+          outputEndLine: bodyLineNo,
+          source: {
+            addresses,
+            rows,
+            ir: [],
+            ssaDefs: [],
+            ssaUses: [],
+            evidence: [],
+          },
+          kind,
+        });
+      }
+    }
 
     recordWasmCall('decompile');
     return { pseudocode, lines, sourceMap };

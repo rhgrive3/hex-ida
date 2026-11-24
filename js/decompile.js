@@ -37,10 +37,15 @@ function detectModelArchitecture(model, opts) {
   const insns = model?.instructions;
   if (Array.isArray(insns) && insns.length > 0) {
     const first = insns[0];
+    const dsv = String(first?.decoderSemanticVersion ?? '').toLowerCase();
+    if (dsv.includes('x86_64') || dsv.includes('amd64')) return 'x86_64';
+    if (dsv.includes('x86')) return 'x86';
+    if (dsv.includes('riscv')) return 'riscv64';
+    if (typeof first?.arch === 'string' && first.arch.trim()) return first.arch.trim().toLowerCase();
     if (typeof first?.word === 'number' && (first.size === 4 || first.length === 4 || first.size == null)) {
       return 'arm64';
     }
-    if (first?.rawBytes instanceof Uint8Array && first.rawBytes.length === 4) {
+    if (first?.rawBytes instanceof Uint8Array && first.rawBytes.length === 4 && insns.every((i) => (i?.rawBytes?.length === 4 || i?.size === 4))) {
       return 'arm64';
     }
   }
