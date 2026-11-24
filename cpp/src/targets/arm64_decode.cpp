@@ -4,24 +4,24 @@ namespace {
 
 constexpr uint8_t kKindCapTable[27] = {
     HEX_ARM64_CAP_FALLBACK,  // OTHER
-    HEX_ARM64_CAP_FALLBACK,  // NOP
+    HEX_ARM64_CAP_DECOMP,    // NOP
     HEX_ARM64_CAP_FALLBACK,  // ADRP
     HEX_ARM64_CAP_DECOMP,    // MOVIMM
     HEX_ARM64_CAP_DECOMP,    // MOVREG
     HEX_ARM64_CAP_DECOMP,    // ARITH
     HEX_ARM64_CAP_DECOMP,    // MUL
     HEX_ARM64_CAP_FALLBACK,  // DIV
-    HEX_ARM64_CAP_FALLBACK,  // LOGIC
-    HEX_ARM64_CAP_FALLBACK,  // SHIFT
+    HEX_ARM64_CAP_DECOMP,    // LOGIC
+    HEX_ARM64_CAP_DECOMP,    // SHIFT
     HEX_ARM64_CAP_FALLBACK,  // FARITH
     HEX_ARM64_CAP_FALLBACK,  // FMUL
     HEX_ARM64_CAP_FALLBACK,  // FCONV
     HEX_ARM64_CAP_FALLBACK,  // SIMD
     HEX_ARM64_CAP_FALLBACK,  // LOAD
     HEX_ARM64_CAP_FALLBACK,  // STORE
-    HEX_ARM64_CAP_FALLBACK,  // CMP
-    HEX_ARM64_CAP_FALLBACK,  // CONDBR
-    HEX_ARM64_CAP_FALLBACK,  // BRANCH
+    HEX_ARM64_CAP_DECOMP,    // CMP
+    HEX_ARM64_CAP_DECOMP,    // CONDBR
+    HEX_ARM64_CAP_DECOMP,    // BRANCH
     HEX_ARM64_CAP_FALLBACK,  // CALL
     HEX_ARM64_CAP_FALLBACK,  // INDCALL
     HEX_ARM64_CAP_DECOMP,    // RET
@@ -673,17 +673,53 @@ uint8_t hex_arm64_kind_capability(uint8_t kind) {
 
 int32_t hex_arm64_is_decompiler_supported(uint32_t w) {
   const uint8_t kind = hex_arm64_classify_word(w);
+
+  // Frame prologue `stp x29, x30, [sp, #-N]!` and epilogue `ldp x29, x30, [sp], #N`
+  if (kind == HEX_ARM64_KIND_STORE) {
+    if (masked(w, 0xffc00000U) == 0xa9800000U &&
+        reg_rd(w) == 29U && reg_rn(w) == 31U && ((w >> 10) & 0x1fU) == 30U &&
+        sign_extend((w >> 15) & 0x7fU, 7U) < 0) {
+      return 1;
+    }
+    return 0;
+  }
+  if (kind == HEX_ARM64_KIND_LOAD) {
+    if (masked(w, 0xffc00000U) == 0xa8c00000U &&
+        reg_rd(w) == 29U && reg_rn(w) == 31U && ((w >> 10) & 0x1fU) == 30U &&
+        sign_extend((w >> 15) & 0x7fU, 7U) > 0) {
+      return 1;
+    }
+    return 0;
+  }
+
   if (hex_arm64_kind_capability(kind) != HEX_ARM64_CAP_DECOMP) return 0;
 
+  if (kind == HEX_ARM64_KIND_NOP) {
+    return w == 0xd503201fU ? 1 : 0;
+  }
   if (kind == HEX_ARM64_KIND_RET) {
     // Only canonical `ret` (ret x30 == 0xd65f03c0); exclude `ret xN` (N!=30) and PAC RETAA/RETAB.
     return w == 0xd65f03c0U ? 1 : 0;
   }
   if (kind == HEX_ARM64_KIND_ARITH) {
-    // Only unshifted register ADD/SUB/ADDS/SUBS with GPR x0..x30 / w0..w30
-    if (is_add_sub_imm(w) || is_add_sub_extended(w)) return 0;
-    if (((w >> 10) & 0x3fU) != 0U) return 0;
-    return (reg_rd(w) < 31U && reg_rn(w) < 31U && reg_rm(w) < 31U) ? 1 : 0;
+    if (is_add_sub_imm(w)) {
+      // Non-flag-setting ADD/SUB (immediate), shift <= 1 (LSL #0 or LSL #12)
+      const uint32_t s_bit = (w >> 29) & 1U;
+      const uint32_t shift = (w >> 22) & 3U;
+      if (s_bit != 0U || shift > 1U) return 0;
+      const uint8_t rd = reg_rd(w);
+      const uint8_t rn = reg_rn(w);
+      if (rd < 31U && rn < 31U) return 1;
+      // Allow 64-bit SP frame prologue/epilogue: `sub sp, sp, #imm` / `add sp, sp, #imm`
+      const uint32_t sf = (w >> 31) & 1U;
+      return (sf == 1U && rd == 31U && rn == 31U) ? 1 : 0;
+    }
+    if (is_add_sub_shifted(w)) {
+      // Unshifted ADD/SUB (shifted register): shift == 0 and imm6 == 0, non-SP GPRs
+      if (((w >> 22) & 3U) != 0U || ((w >> 10) & 0x3fU) != 0U) return 0;
+      return (reg_rd(w) < 31U && reg_rn(w) < 31U && reg_rm(w) < 31U) ? 1 : 0;
+    }
+    return 0;
   }
   if (kind == HEX_ARM64_KIND_MUL) {
     // Strict 2-operand MUL (MADD with op31==0, o0==0, Ra==xzr/wzr (31)); exclude MSUB/MNEG/SMULL/UMULL
@@ -701,10 +737,59 @@ int32_t hex_arm64_is_decompiler_supported(uint32_t w) {
     return (group == 5U && reg_rd(w) < 31U && reg_rm(w) < 31U) ? 1 : 0;
   }
   if (kind == HEX_ARM64_KIND_MOVIMM) {
-    // Strict move-wide MOVZ (opc==2) and MOVN (opc==0); exclude MOVK, ORR (imm), FMOV (imm)
+    // Strict move-wide MOVZ (opc==2) only; exclude MOVN (opc==0), MOVK (opc==3), ORR (imm), FMOV (imm)
     const uint32_t op_group = (w >> 23) & 0x3fU;
     const uint32_t opc = (w >> 29) & 3U;
-    return (op_group == 0x25U && (opc == 0U || opc == 2U) && reg_rd(w) < 31U) ? 1 : 0;
+    return (op_group == 0x25U && opc == 2U && reg_rd(w) < 31U) ? 1 : 0;
+  }
+  if (kind == HEX_ARM64_KIND_LOGIC) {
+    // Strict AND (opc==0) / EOR (opc==2) shifted register with N==0, shift==0, imm6==0; exclude ORR non-alias
+    if (!is_logic_shifted(w)) return 0;
+    const uint32_t opc = (w >> 29) & 3U;
+    const uint32_t n_bit = (w >> 21) & 1U;
+    const uint32_t shift = (w >> 22) & 3U;
+    const uint32_t imm6 = (w >> 10) & 0x3fU;
+    if ((opc != 0U && opc != 2U) || n_bit != 0U || shift != 0U || imm6 != 0U) return 0;
+    return (reg_rd(w) < 31U && reg_rn(w) < 31U && reg_rm(w) < 31U) ? 1 : 0;
+  }
+  if (kind == HEX_ARM64_KIND_SHIFT) {
+    // Variable shifts LSLV (op2=0x08), LSRV (op2=0x09), ASRV (op2=0x0a)
+    if (!is_dp2(w) || ((w >> 30) & 1U) != 0U) return 0;
+    const uint32_t op2 = (w >> 10) & 0x3fU;
+    if (op2 < 0x08U || op2 > 0x0aU) return 0;
+    return (reg_rd(w) < 31U && reg_rn(w) < 31U && reg_rm(w) < 31U) ? 1 : 0;
+  }
+  if (kind == HEX_ARM64_KIND_CMP) {
+    // Integer CMP only: SUBS xzr/wzr, rn, #imm (shift<=1) or SUBS xzr/wzr, rn, rm (shift==0); exclude FCMP/CMN/TST
+    if (is_add_sub_imm(w)) {
+      const uint32_t op_s = (w >> 29) & 3U;  // op=1 (SUB), S=1 => 3
+      const uint32_t shift = (w >> 22) & 3U;
+      return (op_s == 3U && reg_rd(w) == 31U && shift <= 1U && reg_rn(w) < 31U) ? 1 : 0;
+    }
+    if (is_add_sub_shifted(w)) {
+      const uint32_t op_s = (w >> 29) & 3U;
+      const uint32_t shift = (w >> 22) & 3U;
+      const uint32_t imm6 = (w >> 10) & 0x3fU;
+      return (op_s == 3U && reg_rd(w) == 31U && shift == 0U && imm6 == 0U &&
+              reg_rn(w) < 31U && reg_rm(w) < 31U)
+                 ? 1
+                 : 0;
+    }
+    return 0;
+  }
+  if (kind == HEX_ARM64_KIND_BRANCH) {
+    // Intra-function unconditional B imm26 only; exclude indirect BR
+    return is_branch_imm(w) ? 1 : 0;
+  }
+  if (kind == HEX_ARM64_KIND_CONDBR) {
+    // B.cond (cond != 15) and CBZ/CBNZ; exclude TBZ/TBNZ
+    if (masked(w, 0xff000010U) == 0x54000000U) {
+      return (w & 0xfU) != 15U ? 1 : 0;
+    }
+    if (masked(w, 0x7e000000U) == 0x34000000U) {
+      return reg_rd(w) < 31U ? 1 : 0;
+    }
+    return 0;
   }
   return 0;
 }
