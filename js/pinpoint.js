@@ -391,6 +391,7 @@ function guardedAnalyze(analyze, opts) {
       };
       controller.signal.addEventListener('abort', onControllerAbort, { once: true });
     });
+    timeout.catch(() => {});
     try {
       operation = analyze(...analyzeArgsWithSignal(args, controller.signal));
       return await Promise.race([Promise.resolve(operation), timeout]);
@@ -433,7 +434,7 @@ function groupAt(groups, key) {
 function sizeMatches(site, size) {
   const wanted = Number(size) || 0;
   if (wanted <= 0) return true;
-  return site?.size === wanted || (wanted > 8 && site?.size === 8);
+  return site?.size == null || site.size === wanted || (wanted > 8 && site.size === 8);
 }
 
 function safeOffsetKey(offset) {
@@ -527,7 +528,6 @@ function batchedScanAccess(scanAccess, opts) {
 
       const ms = accessTimeoutMs(opts);
       const controller = new AbortController();
-      const unlinkParent = linkParentSignal(controller, opts?.signal || null);
       let timer = null;
       let operation = null;
       let timedOut = false;
@@ -546,23 +546,23 @@ function batchedScanAccess(scanAccess, opts) {
         };
         controller.signal.addEventListener('abort', onControllerAbort, { once: true });
       });
+      timeout.catch(() => {});
       try {
         operation = scanAccess(toScan, { signal: controller.signal });
       } catch (error) {
         if (timer != null) clearTimeout(timer);
         if (onControllerAbort) controller.signal.removeEventListener('abort', onControllerAbort);
-        unlinkParent();
         state.failed = true;
         throw error;
       }
       const inFlight = Promise.race([Promise.resolve(operation), timeout])
         .then((groups) => {
-          if (!timedOut && opts?.signal?.aborted) return state.groups || emptyGroups();
+          if (timedOut || controller.signal.aborted) return state.groups || emptyGroups();
           mergeScannedGroups(state, toScan, groups);
           return state.groups;
         })
         .catch(() => {
-          if (timedOut || !opts?.signal?.aborted) {
+          if (timedOut || (!controller.signal.aborted && !isAborted())) {
             state.failed = true;
           }
           return state.groups || emptyGroups();
@@ -570,7 +570,6 @@ function batchedScanAccess(scanAccess, opts) {
         .finally(() => {
           if (timer != null) clearTimeout(timer);
           if (onControllerAbort) controller.signal.removeEventListener('abort', onControllerAbort);
-          unlinkParent();
           if (state.promise === inFlight) state.promise = null;
         });
       state.promise = inFlight;
@@ -743,7 +742,7 @@ export async function pinpointField(opts = {}) {
     candidates: ranked,
     priorCandidates,
     priorStableAcrossVerification: true,
-    changeSites: oldTopKey === newTopKey ? raw.changeSites : ((decision.top && decision.top.sites) || []),
+    changeSites: oldTopKey === newTopKey ? raw.changeSites : ((decision.top && (decision.top.changeSites || decision.top.sites)) || []),
   };
   const preferred = opts.binaryContextPreference === true
     ? withCxxSemanticPreference(opts.goal?.text, result, opts.symbols) : result;

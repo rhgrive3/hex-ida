@@ -227,7 +227,14 @@ function deepFreezeTree(node, seen = new Map()) {
   if (node instanceof Date) return readonlyDate(node, seen);
 
   seen.set(node, node);
-  for (const key of Object.keys(node)) node[key] = deepFreezeTree(node[key], seen);
+  for (const key of Object.keys(node)) {
+    Object.defineProperty(node, key, {
+      value: deepFreezeTree(node[key], seen),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
   return Object.freeze(node);
 }
 

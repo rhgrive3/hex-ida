@@ -845,7 +845,7 @@ export function extractCppObjectEvidence(context = {}) {
       const callArg0 = targetRegister
         ? (inst.args?.[0]?.value ?? inst.args?.[0])
         : (inst.args?.[1]?.value ?? inst.args?.[1]);
-      if (callArg0 && !receiverAliases.has(callArg0.id)) continue;
+      if (!callArg0 || !receiverAliases.has(callArg0.id)) continue;
 
       let slotOffsetBigInt;
       try { slotOffsetBigInt = BigInt(slotOffset); } catch { continue; }

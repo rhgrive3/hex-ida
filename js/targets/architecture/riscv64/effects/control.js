@@ -11,7 +11,7 @@ const BRANCH_PREDICATE = Object.freeze({
   bgeu: { predicate: 'uge', signed: false },
 });
 const RETURN_ADDRESS_HINT_REGISTERS = Object.freeze(['x1', 'x5']);
-function addressRef(value) { return { kind: 'absolute-address', value: BigInt(value) }; }
+function addressRef(value) { return { kind: 'absolute-address', value: BigInt.asUintN(64, BigInt(value)) }; }
 function targetAlignmentFault(instructionAlignment) {
   const alignmentBytes = Number(instructionAlignment);
   if (alignmentBytes <= 2) return null;
@@ -53,7 +53,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
   if (!fields.supported) return null;
   const op = fields.op;
   const address = BigInt(ctx.instruction.address);
-  const next = address + BigInt(ctx.instruction.size);
+  const next = BigInt.asUintN(64, address + BigInt(ctx.instruction.size));
 
   if (BRANCH_PREDICATE[op]) {
     const { predicate, signed } = BRANCH_PREDICATE[op];
@@ -65,7 +65,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
       widthBits: RISCV64_XLEN,
       conditionSource: 'direct-register-comparison',
     });
-    const target = address + BigInt(fields.imm);
+    const target = BigInt.asUintN(64, address + BigInt(fields.imm));
     return ctx.finish({
       controlEffect: { kind: 'conditional-branch', target: addressRef(target), fallthrough: addressRef(next), condition },
       possibleFaults: target === next ? [] : conditionalTargetAlignmentFaults(ctx, target, condition),
@@ -81,7 +81,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
   }
 
   if (op === 'jal') {
-    const target = address + BigInt(fields.imm);
+    const target = BigInt.asUintN(64, address + BigInt(fields.imm));
     const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));
     const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);
     return ctx.finish({

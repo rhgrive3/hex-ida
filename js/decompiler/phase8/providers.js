@@ -356,10 +356,21 @@ export function runProviderPass(context = {}, budget = {}, area = null) {
       failures.push(Object.freeze({ providerId: provider.id, reason: String(error?.message ?? error) }));
       continue;
     }
+    const maxHintsPerProvider = Number.isSafeInteger(budget?.maxHintsPerProvider) && budget.maxHintsPerProvider > 0 ? budget.maxHintsPerProvider : 256;
+    const maxTotalHints = Number.isSafeInteger(budget?.maxTotalHints) && budget.maxTotalHints > 0 ? budget.maxTotalHints : 1024;
+    const maxFailures = Number.isSafeInteger(budget?.maxFailures) && budget.maxFailures > 0 ? budget.maxFailures : 256;
+    let providerHints = 0;
     for (const raw of produced) {
+      if (abortedNow()) { budgetExhausted = true; break; }
+      if (providerHints >= maxHintsPerProvider || hints.length >= maxTotalHints) { budgetExhausted = true; break; }
       let hint;
       try { hint = normalizeHint(raw, provider); }
-      catch (error) { failures.push(Object.freeze({ providerId: provider.id, reason: String(error?.message ?? error) })); continue; }
+      catch (error) {
+        if (failures.length >= maxFailures) { budgetExhausted = true; break; }
+        failures.push(Object.freeze({ providerId: provider.id, reason: String(error?.message ?? error) }));
+        continue;
+      }
+      providerHints += 1;
       const verdict = judgeHint(hint, view);
       hints.push(Object.freeze({
         providerId: provider.id,

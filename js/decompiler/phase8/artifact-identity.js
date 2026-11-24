@@ -136,12 +136,19 @@ function failOnEnumerableOwnProperties(descriptors, label, { allowArrayIndex = f
   }
 }
 
-function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakMap()) {
+const MAX_OPTION_DEPTH = 64;
+const MAX_OPTION_NODES = 65536;
+const MAX_OPTION_ARRAY_LENGTH = 65536;
+
+function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakMap(), state = { depth: 0, nodes: 0 }) {
   if (!value || typeof value !== 'object') return value;
   if (active.has(value)) fail('phase8-artifact-options-cycle');
   if (done.has(value)) return done.get(value);
+  if (state.depth >= MAX_OPTION_DEPTH) fail('phase8-artifact-options-depth-limit');
+  if (++state.nodes > MAX_OPTION_NODES) fail('phase8-artifact-options-node-limit');
   if (isSharedArrayBuffer(value)) fail('phase8-artifact-options-shared-buffer');
   active.add(value);
+  state.depth += 1;
   try {
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const snapshotDataProperty = (key, descriptor) => {
@@ -151,7 +158,7 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
       if (descriptor.enumerable && FORBIDDEN_KEY_FIELDS.includes(key)) {
         fail(`phase8-artifact-presentation-state-in-key:${key}`);
       }
-      return snapshotArtifactOptions(descriptor.value, active, done);
+      return snapshotArtifactOptions(descriptor.value, active, done, state);
     };
 
     if (isMap(value)) {
@@ -161,7 +168,7 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
         if (typeof key === 'string' && FORBIDDEN_KEY_FIELDS.includes(key)) {
           fail(`phase8-artifact-presentation-state-in-key:${key}`);
         }
-        out.set(snapshotArtifactOptions(key, active, done), snapshotArtifactOptions(entryValue, active, done));
+        out.set(snapshotArtifactOptions(key, active, done, state), snapshotArtifactOptions(entryValue, active, done, state));
       }
       done.set(value, out);
       return out;
@@ -169,7 +176,7 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
     if (isSet(value)) {
       failOnEnumerableOwnProperties(descriptors, 'set');
       const out = new Set();
-      for (const entry of Set.prototype.values.call(value)) out.add(snapshotArtifactOptions(entry, active, done));
+      for (const entry of Set.prototype.values.call(value)) out.add(snapshotArtifactOptions(entry, active, done, state));
       done.set(value, out);
       return out;
     }
@@ -228,9 +235,27 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
       done.set(value, out);
       return out;
     }
+    if (value instanceof RegExp || Object.prototype.toString.call(value) === '[object RegExp]') {
+      failOnEnumerableOwnProperties(descriptors, 'regexp');
+      const out = Object.freeze({ $type: 'RegExp', source: RegExp.prototype.source ? Object.getOwnPropertyDescriptor(RegExp.prototype, 'source').get.call(value) : String(value.source), flags: Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags').get.call(value) });
+      done.set(value, out);
+      return out;
+    }
+    if (typeof URL === 'function' && value instanceof URL) {
+      failOnEnumerableOwnProperties(descriptors, 'url');
+      const out = Object.freeze({ $type: 'URL', href: value.href });
+      done.set(value, out);
+      return out;
+    }
+    if (value instanceof Error || Object.prototype.toString.call(value) === '[object Error]') {
+      failOnEnumerableOwnProperties(descriptors, 'error');
+      const out = Object.freeze({ $type: 'Error', name: String(value.name), message: String(value.message) });
+      done.set(value, out);
+      return out;
+    }
     if (Array.isArray(value)) {
       const length = descriptors.length?.value;
-      if (!Number.isSafeInteger(length) || length < 0) fail('phase8-artifact-options-array-length-invalid');
+      if (!Number.isSafeInteger(length) || length < 0 || length > MAX_OPTION_ARRAY_LENGTH) fail('phase8-artifact-options-array-length-invalid');
       const out = new Array(length);
       for (const key of Reflect.ownKeys(descriptors)) {
         const descriptor = descriptors[key];
@@ -266,6 +291,7 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
     done.set(value, out);
     return out;
   } finally {
+    state.depth -= 1;
     active.delete(value);
   }
 }

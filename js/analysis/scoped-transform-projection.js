@@ -6,7 +6,7 @@ import { decompileScopedCanonicalOwner } from './semantic-function.js';
 import { createWorldScope, createAssumptionSet, worldContains } from '../core/identity/world.js';
 import { deepFreeze, stableStringify } from '../core/identity/index.js';
 import { snapshotContractData, recordFields, exactString, contractFail } from '../core/identity/structured.js';
-import { ScopedAnalysisWork, assertScopedAnalysisWork } from '../core/budgets/scoped-work.js';
+import { AnalysisWorkStopped, ScopedAnalysisWork, assertScopedAnalysisWork } from '../core/budgets/scoped-work.js';
 import { MEMORY_VIEW_FRAME_SCHEMA } from '../core/evidence/memory-transform-frame.js';
 import { captureCanonicalMemoryTransforms } from './scoped-memory-transform-projection.js';
 
@@ -85,5 +85,8 @@ export async function projectScopedTransformOwners(owner, semanticResult, reques
     work.charge('residentBytes', stableStringify(body).length * 2);
     return finish({ status: 'completed', ...body, semanticIrVersion: pipeline.semanticIr.contractVersion,
       sourceBinding: 'existing-loader-bytes-and-decoded-word-reconciliation; no-ISA-proof' });
+  } catch (error) {
+    if (error instanceof AnalysisWorkStopped && !error.cost) error.cost = work.cost();
+    throw error;
   } finally { if (!sharedWork) work.dispose(); }
 }

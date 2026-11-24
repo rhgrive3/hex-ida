@@ -54,6 +54,7 @@ export function configurePhase8RegionProofApi(api) {
 }
 export function configurePhase8ProofApi(api) {
   if (!api || typeof api !== 'object') fail('phase8-proof-api-required');
+  if (phase8ProofApi) fail('phase8-proof-api-already-configured');
   const required = ['PROOF_REWRITE_PASS', 'proofAdmissionReason', 'proofPublicationResult',
     'attachValidatedRewriteMetadata', 'recomputeEquivalenceProofId', 'validatedRewriteMetadataFor',
     'hasCanonicalEquivalenceAuthority'];

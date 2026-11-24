@@ -36,9 +36,17 @@ function nullableString(value, code) {
   if (value != null && typeof value !== 'string') throw new ArtifactCorruptionError(code);
 }
 
+function toByteView(value) {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return null;
+}
+
 function equalBytes(left, right) {
-  const a = left instanceof Uint8Array ? left : new Uint8Array(left);
-  const b = right instanceof Uint8Array ? right : new Uint8Array(right);
+  const a = toByteView(left);
+  const b = toByteView(right);
+  if (!a || !b) return false;
   if (a.byteLength !== b.byteLength) return false;
   for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
   return true;
@@ -313,6 +321,7 @@ const PUBLICATION_IDENTITY_KEYS = Object.freeze([
   'entityId',
   'runtimeSnapshotId',
   'canonicalConfigHash',
+  'optionsHash',
   'versions',
   'upstreamArtifactIds',
   'dependencyScope',
@@ -339,6 +348,7 @@ export function compatiblePublishedArtifact(existingRecord, newRecord, existingP
     // created record are structurally equal but distinct objects.
     if (!identityMaterialEqual(existingRecord[key] ?? null, newRecord[key] ?? null)) return false;
   }
+  if (existingPayload === null && newPayload === null) return true;
   try { return equalBytes(existingPayload, newPayload); }
   catch { return false; }
 }

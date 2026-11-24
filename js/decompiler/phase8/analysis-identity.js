@@ -886,7 +886,12 @@ function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
       digests.set(value, digest);
       return digest;
     } catch {
-      // Maps/Sets/host objects use the generic semantic projection below.
+      // Maps/Sets/host objects or invalid values (functions, symbols, NaN,
+      // cycles) must go through the strict semanticObject validator below.
+      const canonical = semanticObject(value, new Set(), NO_SKIPPED_KEYS, path, memo);
+      const digest = stableDigest(canonical);
+      digests.set(value, digest);
+      return digest;
     }
   }
   // Canonical OriginSets are validated and deeply frozen by the producer.  A
@@ -894,7 +899,7 @@ function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
   // provenance arrays on large functions.  Untrusted/mutable metadata still
   // takes the strict semantic walk, which rejects functions, symbols and
   // cycles instead of letting jsonSafe erase them.
-  const canonical = trustedFrozen && typeof value === 'object' && Object.isFrozen(value)
+  const canonical = trustedFrozen && typeof value === 'object' && isDeeplyFrozenFinite(value)
     ? value : semanticObject(value, new Set(), NO_SKIPPED_KEYS, path, memo);
   const digest = stableDigest(canonical);
   if (typeof value === 'object') digests.set(value, digest);
@@ -1220,7 +1225,7 @@ function hasMalformedIdentityFields(candidate) {
 function sameKnownSourceFields(identity, source) {
   if (source == null || typeof source !== 'object' || Array.isArray(source)) return true;
   for (const name of REQUIRED_FIELDS) {
-    const observed = field(source, name, name === 'semanticIrId' ? 'semanticIRId' : name);
+    const observed = name === 'semanticIrId' ? field(source, 'semanticIrId', 'semanticIRId') : name === 'analyzerVersion' ? field(source, 'analyzerVersion', 'semanticSchemaVersion') : field(source, name);
     if (observed != null && observed !== identity[name]) return false;
   }
   return true;
@@ -1306,7 +1311,8 @@ export function canonicalAnalysisIdentity(context = {}) {
   }
   const irAnalysisIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'analysisIdentity')?.value;
   const irIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'identity')?.value;
-  const irSourceIdentity = irAnalysisIdentity ?? irIdentity ?? null;
+  const irArtifactIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'artifactIdentity')?.value;
+  const irSourceIdentity = irAnalysisIdentity ?? irIdentity ?? irArtifactIdentity ?? null;
   if (hasMalformedIdentityFields(source)
       || hasMalformedIdentityFields(irSourceIdentity)) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };

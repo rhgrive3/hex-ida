@@ -24,8 +24,12 @@ function claimVerdict(claim) {
 
 function claimAddress(claim) {
   const value = claim?.address;
-  if (value == null) return null;
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(trimmed)) return null;
+  try { return BigInt(trimmed); }
   catch { return null; }
 }
 
@@ -252,6 +256,8 @@ function renderClaimList(app, router, routeContext = {}) {
       );
       if (disposed || signal.aborted) return;
       if (result?.completeness === 'unsupported') {
+        virtual?.dispose();
+        virtual = null;
         host.replaceChildren(errorState(
           pick('結果のスナップショットが一致しません', 'Results snapshot mismatch'),
           String(result?.status?.reason || 'claim-report-snapshot-mismatch'),
@@ -259,14 +265,20 @@ function renderClaimList(app, router, routeContext = {}) {
         nextOffset = null;
         return;
       }
+      const currentOffset = nextOffset;
       const pageClaims = Array.isArray(result?.value) ? result.value : [];
       claims.push(...pageClaims);
       lastCompleteness = result?.completeness || result?.status?.completeness || 'partial';
       lastReason = result?.status?.reason || null;
-      nextOffset = result?.page?.next ?? null;
+      const rawNext = result?.page?.next;
+      nextOffset = Number.isSafeInteger(rawNext) && rawNext > currentOffset ? rawNext : null;
       paint();
     } catch (error) {
-      if (!disposed && !isAbort(error, signal)) host.replaceChildren(currentQueryError(error));
+      if (!disposed && !isAbort(error, signal)) {
+        virtual?.dispose();
+        virtual = null;
+        host.replaceChildren(currentQueryError(error));
+      }
     } finally {
       loading = false;
     }

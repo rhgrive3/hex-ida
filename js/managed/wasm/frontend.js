@@ -76,8 +76,8 @@ export class WasmFrontend {
   async validateMethod(decoded, context = {}) {
     const hasUnknowns = decoded.bundles.some((b) => b.completeness === 'unknown');
     const hasPartials = decoded.bundles.some((b) => b.completeness === 'partial');
-    const status = hasUnknowns ? 'partial' : hasPartials ? 'partial' : 'valid';
     const specValidation = decoded.metadata?.wasmSpecValidation === 'partial' ? 'partial' : 'valid';
+    const status = hasUnknowns || hasPartials || specValidation === 'partial' ? 'partial' : 'valid';
     return createManagedValidationReport({
       targetId: decoded.methodId,
       status,

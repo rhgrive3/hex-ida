@@ -24,19 +24,15 @@ function isPlainObject(value) {
   return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function count(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
-}
-
 function coverageReports(plan) {
   const reports = [];
-  if (plan.completeness != null) reports.push(['completeness', plan.completeness]);
-  if (plan.searchCompleteness != null) reports.push(['searchCompleteness', plan.searchCompleteness]);
-  if (plan.semanticCompleteness != null) reports.push(['semanticCompleteness', plan.semanticCompleteness]);
+  if (Object.hasOwn(plan, 'completeness')) reports.push(['completeness', plan.completeness]);
+  if (Object.hasOwn(plan, 'searchCompleteness') && plan.searchCompleteness !== undefined) reports.push(['searchCompleteness', plan.searchCompleteness]);
+  if (Object.hasOwn(plan, 'semanticCompleteness') && plan.semanticCompleteness !== undefined) reports.push(['semanticCompleteness', plan.semanticCompleteness]);
   const best = plan.best;
   if (isPlainObject(best)) {
     if (Object.hasOwn(best, 'complete')) reports.push(['best-complete', best.complete]);
-    if (best.semanticCompleteness != null) reports.push(['best-semanticCompleteness', best.semanticCompleteness]);
+    if (Object.hasOwn(best, 'semanticCompleteness') && best.semanticCompleteness !== undefined) reports.push(['best-semanticCompleteness', best.semanticCompleteness]);
   }
   return reports;
 }
@@ -45,10 +41,17 @@ function evaluate(label, value, reasons) {
   if (label === 'completeness') {
     if (!isPlainObject(value)) { reasons.push('completeness-malformed'); return; }
     if (value.complete !== true) reasons.push('plan-coverage-incomplete');
-    if (value.partial === true) reasons.push('plan-coverage-partial');
-    if (value.budgetLimited === true) reasons.push('plan-budget-limited');
-    if (value.searchComplete === false) reasons.push('search-coverage-incomplete');
-    if (count(value.unanalyzedFunctions) > 0) reasons.push('candidate-coverage-incomplete');
+    if (value.partial !== undefined && typeof value.partial !== 'boolean') reasons.push('plan-coverage-partial');
+    else if (value.partial === true) reasons.push('plan-coverage-partial');
+    if (value.budgetLimited !== undefined && typeof value.budgetLimited !== 'boolean') reasons.push('plan-budget-limited');
+    else if (value.budgetLimited === true) reasons.push('plan-budget-limited');
+    if (value.searchComplete !== undefined && typeof value.searchComplete !== 'boolean') reasons.push('search-coverage-incomplete');
+    else if (value.searchComplete === false) reasons.push('search-coverage-incomplete');
+    if (value.unanalyzedFunctions !== undefined) {
+      if (typeof value.unanalyzedFunctions !== 'number' || !Number.isSafeInteger(value.unanalyzedFunctions) || value.unanalyzedFunctions !== 0) {
+        reasons.push('candidate-coverage-incomplete');
+      }
+    }
     return;
   }
   if (label === 'best-complete') {

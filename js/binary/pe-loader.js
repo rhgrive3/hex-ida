@@ -303,15 +303,35 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
   return publishTlsAddresses(parseTlsDirectoryCore(r, dir, tlsImage, budget));
 }
 
+const PE_LOADER_FAILED_STRING_SPANS = new WeakMap();
+function peLoaderFailedStringSpans(budget) {
+  let set = PE_LOADER_FAILED_STRING_SPANS.get(budget);
+  if (!set) { set = new Set(); PE_LOADER_FAILED_STRING_SPANS.set(budget, set); }
+  return set;
+}
+
 function mappedCStringAtRva(r, image, rva, budget, label) {
   const range = mappedFileRangeForRva(image, rva);
   if (!range) { budget.partial(`${label}:unmapped-string`, `Ignored ${label} string outside a file-backed mapping`); return ''; }
+  const rawMax = Math.min(1 << 16, range.end - range.start);
   const maxByStringBudget = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
-  const max = Math.min(1 << 16, range.end - range.start, maxByStringBudget);
+  const max = Math.min(rawMax, maxByStringBudget);
   if (max <= 0) return '';
+  const failed = peLoaderFailedStringSpans(budget);
+  const failKey = `${range.start}:${rawMax}`;
+  if (failed.has(failKey)) {
+    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+    return '';
+  }
   const nulAt = r.slice(range.start, max).indexOf(0);
   if (nulAt < 0) {
-    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+    budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+    if (maxByStringBudget < rawMax) {
+      budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+    } else {
+      failed.add(failKey);
+      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+    }
     return '';
   }
   const value = r.cstring(range.start, max);
@@ -322,10 +342,25 @@ function mappedCStringAtRva(r, image, rva, budget, label) {
 
 function mappedCStringAtOffset(r, start, end, budget, label) {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= end || end > r.length) return '';
-  const max = Math.min(1 << 16, end-start, Math.max(1, Math.floor(budget.remainingStringBytes/2)+1));
+  const rawMax = Math.min(1 << 16, end - start);
+  const maxByStringBudget = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
+  const max = Math.min(rawMax, maxByStringBudget);
+  if (max <= 0) return '';
+  const failed = peLoaderFailedStringSpans(budget);
+  const failKey = `${start}:${rawMax}`;
+  if (failed.has(failKey)) {
+    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+    return '';
+  }
   const nulAt = r.slice(start, max).indexOf(0);
   if (nulAt < 0) {
-    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+    budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+    if (maxByStringBudget < rawMax) {
+      budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+    } else {
+      failed.add(failKey);
+      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+    }
     return '';
   }
   const value = r.cstring(start,max);

@@ -85,8 +85,9 @@ export class KnowledgeDB {
     this.indexedDB = options.indexedDB === undefined ? globalThis.indexedDB : options.indexedDB;
     this.dbName = options.dbName || 'hex-knowledge';
     this.memory = options.memory || (!this.indexedDB ? new Map() : null);
-    this.negativeMemory = options.negativeMemory || (!this.indexedDB ? new Map() : null);
+    this.negativeMemory = options.negativeMemory || (this.memory ? new Map() : (!this.indexedDB ? new Map() : null));
     this._db = null;
+    this._dbOpenPromise = null;
     // Changes only after a semantic mutation successfully commits (#5723).
     this.revision = 0;
     const maxCandidates = Number(options.maxCandidates || 1000);
@@ -178,7 +179,7 @@ export class KnowledgeDB {
   }
 
   async reidentify(input, options = {}) {
-    const matches = await this.findMatches(input, { threshold:options.threshold ?? 0.58, limit:Math.max(5, options.limit || 5) });
+    const matches = await this.findMatches(input, { threshold:options.threshold ?? 0.58, limit:Math.max(5, options.limit || 5), sourceBinaryHash: options.sourceBinaryHash });
     if (!matches.length) return { matched:false, ambiguous:matches.truncated === true, truncated:matches.truncated === true, confidence:0, candidates:[] };
     const best = matches[0], second = matches[1];
     const truncated = matches.truncated === true;
@@ -193,7 +194,7 @@ export class KnowledgeDB {
   }
 
   async propagate(input, options = {}) {
-    const result = await this.reidentify(input, { acceptThreshold:options.threshold ?? 0.84, ambiguityWindow:options.ambiguityWindow ?? 0.035 });
+    const result = await this.reidentify(input, { acceptThreshold:options.threshold ?? 0.84, ambiguityWindow:options.ambiguityWindow ?? 0.035, sourceBinaryHash: options.sourceBinaryHash });
     if (!result.matched) return { propagated:false, ...result };
     const source = result.knowledge;
     const status = source.confirmation === 'user-confirmed' || source.confirmation === 'debugger-confirmed' ? 'high-confidence-inferred' : 'weak-inferred';
@@ -291,7 +292,8 @@ export class KnowledgeDB {
 
   async #dbOpen() {
     if (this._db) return this._db;
-    this._db = await new Promise((resolve,reject) => {
+    if (this._dbOpenPromise) return this._dbOpenPromise;
+    this._dbOpenPromise = new Promise((resolve,reject) => {
       const req = this.indexedDB.open(this.dbName, KNOWLEDGE_SCHEMA_VERSION);
       req.onupgradeneeded = () => {
         const db=req.result;
@@ -303,9 +305,10 @@ export class KnowledgeDB {
         if (!neg.indexNames.contains('candidateName')) neg.createIndex('candidateName','candidateName',{unique:false});
         if (!neg.indexNames.contains('candidateIdentity')) neg.createIndex('candidateIdentity','candidateIdentity',{unique:false});
       };
-      req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error);
+      req.onsuccess=()=>{ this._db = req.result; resolve(req.result); };
+      req.onerror=()=>{ this._dbOpenPromise = null; reject(req.error); };
     });
-    return this._db;
+    return this._dbOpenPromise;
   }
   async #put(storeName,record) {
     const db = await this.#dbOpen();

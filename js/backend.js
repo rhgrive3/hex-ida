@@ -78,7 +78,7 @@ function isLegacyMachArchitecture(architecture) {
   return LEGACY_MACHO_ARCHITECTURES.includes(String(architecture || '').toLowerCase());
 }
 
-const AARCH64_ARCHITECTURES = Object.freeze(['arm64', 'arm64e', 'arm64ec', 'aarch64', 'aarch64_be']);
+const AARCH64_ARCHITECTURES = Object.freeze(['arm64', 'arm64e', 'arm64_32', 'arm64ec', 'aarch64', 'aarch64_be']);
 function isAarch64Architecture(architecture) {
   return AARCH64_ARCHITECTURES.includes(String(architecture || '').toLowerCase());
 }
@@ -1784,6 +1784,8 @@ export class Backend {
   }
 
   _disassembleBytes(bytes, address, architecture, uiEpoch = this.gen, decodeContext = {}) {
+    if (this.disposed) return Promise.reject(new Error('backend disposed'));
+    if (decodeContext.signal?.aborted) return Promise.reject(cancelledRequestError('disassembly cancelled'));
     if (!this._disasmWorker) {
       this._disasmWorker = new Worker(new URL('./platform/capstone-disasm-worker.js', import.meta.url));
       const worker = this._disasmWorker;
@@ -1956,7 +1958,7 @@ export class Backend {
       return;
     }
     const cached = this.cache.get(key);
-    if (cached && (!wantAsm || cached.mn)) return;
+    if (cached && !cached.error && (!wantAsm || cached.mn)) return;
     const job = { regionId, chunk, wantAsm: !!wantAsm, priority, key, gen: this.gen, dispatchedWantAsm: null };
     this.inflight.set(key, job);
     const dispatched = this.inflight.size - this.queue.length;
@@ -2010,7 +2012,7 @@ export class Backend {
 
   _dispatch(job) {
     job.dispatchedWantAsm = !!job.wantAsm;
-    this.call('chunk', { regionId: job.regionId, chunk: job.chunk, wantAsm: job.dispatchedWantAsm })
+    this.call('chunk', { regionId: job.regionId, chunk: job.chunk, wantAsm: job.dispatchedWantAsm }, undefined, { trackLastRequest: false })
       .then(
         (res) => this._finishChunk(job, res),
         (err) => this._finishChunk(job, null, err),

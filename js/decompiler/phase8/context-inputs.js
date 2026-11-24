@@ -7,6 +7,20 @@ import { analysisIdentityMatches } from './analysis-identity.js';
 import { createEntityId, deepFreeze } from '../../core/identity/index.js';
 import { contractFail } from '../../core/identity/structured.js';
 const BINDINGS = new WeakMap();
+const ALLOWED_OPERATORS = new Set(['eq', 'ne', 'ult', 'ule', 'ugt', 'uge', 'slt', 'sle', 'sgt', 'sge', '==', '!=', '<', '<=', '>', '>=']);
+function strictConstantBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) contractFail('sccp-context-input-constant-invalid');
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) contractFail('sccp-context-input-constant-invalid');
+    return BigInt(text);
+  }
+  contractFail('sccp-context-input-constant-invalid');
+}
 export function createConditionalSccpInputs(analysis, ownerIdentity, constraints, assumptions) {
   if (!Array.isArray(constraints) || !constraints.length || constraints.length > 32
     || !analysis?.get || !ownerIdentity?.binaryId) contractFail('sccp-context-input-binding');
@@ -17,8 +31,15 @@ export function createConditionalSccpInputs(analysis, ownerIdentity, constraints
     // Never overwrite a defined expression or fabricate a register parameter.
     if (!value || value.kind !== 'arg' || value.def != null || value.bits !== constraint.bits
       || !assumptions.predicates.includes(constraint.assumptionId)) contractFail('sccp-context-input-not-entry-argument');
+    if (typeof constraint.operator !== 'string' || !ALLOWED_OPERATORS.has(constraint.operator)) {
+      contractFail('sccp-context-input-operator-invalid');
+    }
+    if (typeof constraint.truth !== 'boolean') {
+      contractFail('sccp-context-input-truth-invalid');
+    }
+    const constant = strictConstantBigInt(constraint.constant);
     const before = facts.get(value.id) ?? fullFact(value.bits, { valueId: value.id });
-    const fact = refineFactByComparison(before, constraint.operator, BigInt(constraint.constant), constraint.truth);
+    const fact = refineFactByComparison(before, constraint.operator, constant, constraint.truth);
     facts.set(value.id, fact);
   }
   const token = deepFreeze({ schema: 'conditional-sccp-inputs/v1', id: createEntityId({ binaryId: ownerIdentity.binaryId,

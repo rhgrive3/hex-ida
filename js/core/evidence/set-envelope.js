@@ -125,8 +125,9 @@ export function refineSetEnvelope(previous, additional, { world, closure = null,
     status: 'open', certificate: null,
     frontier: stringSet([...previous.closure.frontier, ...additional.closure.frontier, 'composed-bound-closure-unverified']),
   };
+  const sortedCandidates = [...candidateMap.values()].sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || compareIdentity(a.item.id, b.item.id) || compareIdentity(a.source, b.source));
   return createSetEnvelope({ domain: previous.domain, provenMembers: lower, upper,
-    rankedCandidates: [...candidateMap.values()].slice(0, maxMembers), closure: combinedClosure }, { world, maxMembers });
+    rankedCandidates: sortedCandidates.slice(0, maxMembers), closure: combinedClosure }, { world, maxMembers });
 }
 
 /** Proposition identity is tied to all candidate bounds and their typed values. */

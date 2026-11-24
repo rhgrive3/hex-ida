@@ -466,6 +466,9 @@ export function fuseFunctionCandidates(evidence, options = {}) {
       ? [fullBucket]
       : distinctArchitectures.map((architectureId) => fullBucket.filter((item) => item.architectureId == null || item.architectureId === architectureId));
     for (const bucket of partitions) {
+      if (candidates.length >= budget.maxCandidates) {
+        return { candidates: [], status: status('truncated', 'budget-exhausted') };
+      }
       const startState = fuseStartState(bucket);
       let extent = fuseExtent(bucket);
       const names = [...new Set(bucket.map((item) => item.name).filter(Boolean))];
@@ -522,6 +525,28 @@ export function fuseFunctionCandidates(evidence, options = {}) {
  * overlap benign. Exclusive or ambiguous participation remains fail-closed.
  */
 function reconcileOverlaps(candidates, { signal = null } = {}) {
+  const n = candidates.length;
+  if (n <= 1) return candidates;
+  const byArch = new Map();
+  for (let i = 0; i < n; i++) {
+    const archKey = candidates[i]?.architectureId ?? '';
+    if (!byArch.has(archKey)) byArch.set(archKey, []);
+    byArch.get(archKey).push(i);
+  }
+  if (byArch.size > 1) {
+    const out = candidates.slice();
+    for (const indices of byArch.values()) {
+      if (indices.length <= 1) continue;
+      const subset = indices.map((idx) => candidates[idx]);
+      const reconciled = reconcileOverlapsSingleArch(subset, { signal });
+      for (let j = 0; j < indices.length; j++) out[indices[j]] = reconciled[j];
+    }
+    return out;
+  }
+  return reconcileOverlapsSingleArch(candidates, { signal });
+}
+
+function reconcileOverlapsSingleArch(candidates, { signal = null } = {}) {
   const n = candidates.length;
   if (n <= 1) return candidates;
 

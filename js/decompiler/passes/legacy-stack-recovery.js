@@ -27,11 +27,37 @@ export function exactLegacySameBlockStackStore(load, ir) {
       || Number(store.row) >= Number(load.row)) return null;
   const block = ir?.blocks?.[load.block];
   if (!block) return null;
+  const parseStackRange = (loc) => {
+    if (!loc || loc.kind !== 'stack') return null;
+    const sz = Number(loc.size);
+    if (!Number.isSafeInteger(sz) || sz <= 0) return null;
+    const rawOff = loc.offset ?? loc.disp;
+    let off = null;
+    if (typeof rawOff === 'bigint') off = rawOff;
+    else if (typeof rawOff === 'number' && Number.isSafeInteger(rawOff)) off = BigInt(rawOff);
+    else if (typeof loc.key === 'string') {
+      const m = /([+-]?\d+)$/.exec(loc.key);
+      if (m) off = BigInt(m[1]);
+    }
+    if (off == null) return null;
+    const base = loc.base?.reg ?? (typeof loc.key === 'string' ? loc.key.split(/[+-]/)[0] : null);
+    return { base, start: off, end: off + BigInt(sz) };
+  };
+  const targetRange = parseStackRange(load.loc);
   for (const inst of block.insts || []) {
     if (inst === store || inst === load || inst?.row == null) continue;
     if (Number(inst.row) <= Number(store.row) || Number(inst.row) >= Number(load.row)) continue;
     if (inst.op === 'call' || inst.op === 'clobber' || inst.op === 'unknown') return null;
-    if (inst.op === 'store' && (!inst.loc?.key || inst.loc?.kind === 'unknown')) return null;
+    if (inst.op === 'store') {
+      if (!inst.loc?.key || inst.loc?.kind === 'unknown') return null;
+      if (inst.loc.key === load.loc.key) return null;
+      if (inst.loc.kind === 'stack') {
+        const instRange = parseStackRange(inst.loc);
+        if (!targetRange || !instRange) return null;
+        if (instRange.base !== targetRange.base) return null;
+        if (instRange.start < targetRange.end && instRange.end > targetRange.start) return null;
+      }
+    }
   }
   return store;
 }

@@ -251,6 +251,9 @@ function loadIsReusable(definition) {
         : `access imposes ordering: ${access.ordering}`,
     };
   }
+  if (Array.isArray(access.faults) && access.faults.length > 0) {
+    return { ok: false, reason: `access can fault: ${access.faults.map((fault) => fault?.kind ?? String(fault)).join(', ')}` };
+  }
   if (definition.unknownAliasBarrier != null) {
     return { ok: false, reason: 'an unknown store lies between this load and its source' };
   }
@@ -274,7 +277,7 @@ function memoryVersionKey(definition) {
   const use = definition?.memUse;
   if (use == null) return null;
   const reaching = use.memDefs ?? use.reaching ?? null;
-  if (!Array.isArray(reaching)) return null;
+  if (!Array.isArray(reaching) || reaching.length === 0) return null;
   const ids = reaching.map((entry) => entry?.inst?.id ?? entry?.id ?? null);
   if (ids.some((id) => id == null)) return null;
   return ids.map(String).sort().join('|');

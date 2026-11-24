@@ -127,6 +127,11 @@ function entryFor(backend, requestParams) {
       if (!entry.result) entry.retire();
       throw error;
     });
+  entry.promise.catch(() => {});
+  if (map.size >= 256) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey !== undefined) map.delete(oldestKey);
+  }
   map.set(key, entry);
   return entry;
 }
@@ -152,7 +157,7 @@ export function fieldAccessRegion(backend, region, offset, size, { signal } = {}
       finish(reject, abortError(signal));
       if (entry.waiters === 0 && !entry.result && !entry.retired && typeof entry.request?.cancel === 'function') {
         entry.retire();
-        entry.request.cancel();
+        try { entry.request.cancel(); } catch { /* best-effort cancel */ }
       }
     };
     if (signal?.aborted) { onAbort(); return; }

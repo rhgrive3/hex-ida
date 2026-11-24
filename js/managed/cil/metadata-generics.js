@@ -17,10 +17,15 @@ export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs,
     if (valueText.length === 0) fail('cil-generic-param-name-required');
     return valueText;
   };
-  const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
-    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
-    return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
-  });
+  const readRows = (table, decode) => {
+    const rowCount = counts[table];
+    admission?.chargeObjects(rowCount);
+    return Array.from({ length: rowCount }, (_, i) => {
+      admission?.chargeOperations(1);
+      const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
+      return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
+    });
+  };
 
   const ownerSize = codedIndexSize(counts, [0x02, 0x06], 1);
   const genericParams = readRows(0x2a, pos => {

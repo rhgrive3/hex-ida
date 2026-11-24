@@ -32,7 +32,10 @@ export function createLazyAppAnalysisQueryAPI(app, loadAdapter = defaultLoadAppA
   const facade = Object.create(AnalysisQueryAPI.prototype);
   return new Proxy(facade, {
     get(target, prop, receiver) {
-      if (typeof prop === 'string' && !NEVER_DELEGATED.has(prop)) {
+      if (typeof prop === 'string'
+        && !NEVER_DELEGATED.has(prop)
+        && Object.prototype.hasOwnProperty.call(AnalysisQueryAPI.prototype, prop)
+        && typeof AnalysisQueryAPI.prototype[prop] === 'function') {
         return async (...args) => {
           const api = await lazyApi();
           return api[prop](...args);

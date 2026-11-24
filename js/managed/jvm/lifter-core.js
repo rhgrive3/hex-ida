@@ -249,8 +249,10 @@ function collectJvmControlFlowJoins(bytecode, exceptionTable) {
     const boundary = decodeJvmInstructionBoundary(bytecode, offset);
     if (!boundary.complete || boundary.end <= offset) break;
     const opcode = bytecode[offset];
-    if (opcode >= 0x99 && opcode <= 0xa8) {
+    if ((opcode >= 0x99 && opcode <= 0xa8) || opcode === 0xc6 || opcode === 0xc7) {
       joinOffsets.add(offset + view.getInt16(offset + 1, false));
+    } else if (opcode === 0xc8 || opcode === 0xc9) {
+      joinOffsets.add(offset + view.getInt32(offset + 1, false));
     } else if (opcode === 0xa9) {
       dynamicJump = true;
     } else if (opcode === 0xaa) {

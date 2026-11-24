@@ -130,7 +130,7 @@ function regBits(op) {
  *   { t:'zero' }                       ← zr。値としては定数 0
  */
 
-const BIN_OF = {
+const BIN_OF = Object.assign(Object.create(null), {
   add: 'add', adds: 'add', sub: 'sub', subs: 'sub',
   mul: 'mul', mneg: 'mul', smull: 'smull', umull: 'umull',
   smulh: 'smulh', umulh: 'umulh', sdiv: 'sdiv', udiv: 'udiv',
@@ -138,21 +138,21 @@ const BIN_OF = {
   lsl: 'shl', lslv: 'shl', lsr: 'lshr', lsrv: 'lshr', asr: 'ashr', asrv: 'ashr',
   ror: 'ror', rorv: 'ror',
   fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
-};
+});
 
-const UN_OF = {
+const UN_OF = Object.assign(Object.create(null), {
   neg: 'neg', negs: 'neg', mvn: 'not', fneg: 'fneg', fabs: 'fabs', fsqrt: 'fsqrt',
   sxtb: 'sxt8', sxth: 'sxt16', sxtw: 'sxt32',
   uxtb: 'uxt8', uxth: 'uxt16', uxtw: 'uxt32',
   clz: 'clz', rbit: 'rbit', rev: 'rev', rev16: 'rev16', rev32: 'rev32',
   scvtf: 'i2f', ucvtf: 'u2f', fcvtzs: 'f2i', fcvtzu: 'f2u',
   fmov: 'fmov', abs: 'abs',
-};
+});
 
-const SEL_OF = { csel: 'sel', fcsel: 'sel', csinc: 'inc', csinv: 'inv', csneg: 'neg', cset: 'set', csetm: 'setm', cinc: 'cinc', cneg: 'cneg', cinv: 'cinv' };
+const SEL_OF = Object.assign(Object.create(null), { csel: 'sel', fcsel: 'sel', csinc: 'inc', csinv: 'inv', csneg: 'neg', cset: 'set', csetm: 'setm', cinc: 'cinc', cneg: 'cneg', cinv: 'cinv' });
 
 /* 条件コード → 比較の意味。signed が null のものは符号に関係しない。 */
-export const COND = {
+export const COND = Object.assign(Object.create(null), {
   eq: { op: '==', signed: null }, ne: { op: '!=', signed: null },
   hs: { op: '>=', signed: false }, cs: { op: '>=', signed: false },
   lo: { op: '<', signed: false }, cc: { op: '<', signed: false },
@@ -161,13 +161,13 @@ export const COND = {
   gt: { op: '>', signed: true }, le: { op: '<=', signed: true },
   mi: { op: '<', signed: true, vsZero: true }, pl: { op: '>=', signed: true, vsZero: true },
   vs: null, vc: null, al: null, nv: null,
-};
+});
 
-const INVERSE_COND = {
+const INVERSE_COND = Object.assign(Object.create(null), {
   eq: 'ne', ne: 'eq', hs: 'lo', lo: 'hs', cs: 'cc', cc: 'cs',
   hi: 'ls', ls: 'hi', ge: 'lt', lt: 'ge', gt: 'le', le: 'gt',
   mi: 'pl', pl: 'mi', vs: 'vc', vc: 'vs',
-};
+});
 
 export function inverseCondition(c) { return INVERSE_COND[c] || null; }
 
@@ -649,11 +649,13 @@ function lift(insn, opts = {}) {
     return out;
   }
   if (base === 'movk') {
+    const dst = dstReg();
+    if (!dst) return out;
     const src = opnd(ops[1]);
     const lsb = src?.shift?.op === 'lsl' ? (src.shift.amount || 0) : 0;
     const insert = src ? { ...src, shift:null } : { t:'imm', value:0n };
-    push({ op:OP.BFI, dstReg:dstReg(), dstBits:dstBits(), lsb, width:16,
-      srcs:[{ t:'reg', reg:dstReg(), bits:dstBits() }, insert] });
+    push({ op:OP.BFI, dstReg:dst, dstBits:dstBits(), lsb, width:16,
+      srcs:[{ t:'reg', reg:dst, bits:dstBits() }, insert] });
     return out;
   }
 
@@ -672,8 +674,10 @@ function lift(insn, opts = {}) {
     const lsb = ops[2] && ops[2].value != null ? Number(ops[2].value) : null;
     const width = ops[3] && ops[3].value != null ? Number(ops[3].value) : null;
     if (base === 'bfi' || base === 'bfxil') {
-      push({ op:OP.BFI, dstReg:dstReg(), dstBits:dstBits(), lsb, width, bitfieldKind:base,
-        srcs:[{ t:'reg', reg:dstReg(), bits:dstBits() }, opnd(ops[1])].filter(Boolean) });
+      const dst = dstReg();
+      if (!dst) return out;
+      push({ op:OP.BFI, dstReg:dst, dstBits:dstBits(), lsb, width, bitfieldKind:base,
+        srcs:[{ t:'reg', reg:dst, bits:dstBits() }, opnd(ops[1])].filter(Boolean) });
     } else {
       push({ op: OP.BFX, dstReg: dstReg(), dstBits: dstBits(), lsb, width,
         signed: base[0] === 's', toward: /iz$/.test(base) ? 'left' : 'right',
@@ -701,7 +705,8 @@ function lift(insn, opts = {}) {
     const inst = push({ op: OP.BIN, sub: BIN_OF[base], dstReg: dstReg(), dstBits: dstBits(),
       negate: base === 'mneg', srcs: b ? [a, b] : [a] });
     if (/s$/.test(base) && /^(adds|subs|ands|bics)$/.test(base)) {
-      push(Object.assign(flags(), { op: OP.CMP, sub: BIN_OF[base] === 'add' ? 'add' : BIN_OF[base] === 'and' ? 'and' : 'sub',
+      const cmpSub = BIN_OF[base] === 'add' ? 'add' : BIN_OF[base] === 'and' ? 'and' : BIN_OF[base] === 'bic' ? 'bic' : 'sub';
+      push(Object.assign(flags(), { op: OP.CMP, sub: cmpSub,
         bits: dstBits(), srcs: inst.srcs.slice() }));
     }
     return out;
@@ -1226,9 +1231,14 @@ function pointerShiftedConst(arg) {
   let v = arg.value.const;
   const shift = arg.shift;
   if (!shift) return v;
-  const amount = BigInt(shift.amount || 0);
+  const rawAmount = Number(shift.amount || 0);
+  if (!Number.isSafeInteger(rawAmount) || rawAmount < 0 || rawAmount >= 64) return null;
+  const amount = BigInt(rawAmount);
   if (shift.op === 'lsl') return v << amount;
-  if (shift.op === 'lsr') return v >> amount;
+  if (shift.op === 'lsr') {
+    const bits = Number(arg.bits || arg.value?.bits) === 32 ? 32 : 64;
+    return BigInt.asUintN(bits, v) >> amount;
+  }
   return null;
 }
 
@@ -1245,9 +1255,12 @@ const defaultPointerProvenanceMemo = new WeakMap();
  * distinct. Memory SSA passes a private memo because it runs before full value
  * propagation, while public consumers use the default post-build memo.
  */
-export function pointerProvenance(value, active = null, memo = defaultPointerProvenanceMemo) {
+const MAX_PROVENANCE_DEPTH = 128;
+
+export function pointerProvenance(value, active = null, memo = defaultPointerProvenanceMemo, depth = 0) {
   if (!value) return null;
   if (memo.has(value)) return memo.get(value);
+  if (depth >= MAX_PROVENANCE_DEPTH) return { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:false, valueId:value.id };
   const visiting = active || new Set();
   if (visiting.has(value)) return { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:false, valueId:value.id };
   visiting.add(value);
@@ -1280,11 +1293,11 @@ export function pointerProvenance(value, active = null, memo = defaultPointerPro
     if (movBits < 64) {
       out = { kind: 'unknown', root: 'value:' + value.id, rootValue: value, offset: 0n, must: false, valueId: value.id, via: 'mov-narrow' };
     } else {
-      const source = pointerProvenance(def.args[0].value, visiting, memo);
+      const source = pointerProvenance(def.args[0].value, visiting, memo, depth + 1);
       if (source) out = { ...source, valueId: value.id, via: 'mov' };
     }
   } else if (def && def.op === OP.PHI && def.args?.length) {
-    const alternatives = def.args.map((arg) => arg?.value ? pointerProvenance(arg.value, visiting, memo) : null);
+    const alternatives = def.args.map((arg) => arg?.value ? pointerProvenance(arg.value, visiting, memo, depth + 1) : null);
     const keys = alternatives.map(pointerProvenanceKey);
     if (keys[0] && keys.every((key) => key === keys[0])) {
       out = { ...alternatives[0], valueId:value.id, via:'phi', must:alternatives.every((x) => x && x.must !== false) };
@@ -1296,13 +1309,13 @@ export function pointerProvenance(value, active = null, memo = defaultPointerPro
     const a = def.args[0], b = def.args[1];
     const ac = pointerShiftedConst(a), bc = pointerShiftedConst(b);
     if (bc != null && a?.value) {
-      const source = pointerProvenance(a.value, visiting, memo);
+      const source = pointerProvenance(a.value, visiting, memo, depth + 1);
       if (source && source.kind !== 'phi') {
         const delta = def.sub === 'sub' ? -bc : bc;
         out = { ...source, offset:(source.offset || 0n) + delta, valueId:value.id, via:def.sub + '-constant' };
       }
     } else if (def.sub === 'add' && ac != null && b?.value) {
-      const source = pointerProvenance(b.value, visiting, memo);
+      const source = pointerProvenance(b.value, visiting, memo, depth + 1);
       if (source && source.kind !== 'phi') {
         out = { ...source, offset:(source.offset || 0n) + ac, valueId:value.id, via:'add-constant' };
       }
@@ -1456,10 +1469,10 @@ function storeOverlapsRange(storeLoc, otherLoc) {
   return false;
 }
 
-export function stackPointerProvenanceOf(value, memo = new Map(), active = new Set()) {
+export function stackPointerProvenanceOf(value, memo = new Map(), active = new Set(), depth = 0) {
   if (!value) return null;
   if (memo.has(value.id)) return memo.get(value.id);
-  if (active.has(value.id)) return null;
+  if (depth >= MAX_PROVENANCE_DEPTH || active.has(value.id)) return null;
   active.add(value.id);
   let out = null;
   const reg = String(value.reg || '');
@@ -1469,10 +1482,10 @@ export function stackPointerProvenanceOf(value, memo = new Map(), active = new S
   } else if (value.kind === VK.ARG && reg === 'x29') {
     out = { root: 'x29', offset: 0n, must: false, via: 'fp-root' };
   } else if (def?.op === OP.MOV && def.args?.[0]?.value) {
-    const p = stackPointerProvenanceOf(def.args[0].value, memo, active);
+    const p = stackPointerProvenanceOf(def.args[0].value, memo, active, depth + 1);
     if (p) out = { ...p, via: 'mov' };
   } else if (def?.op === OP.PHI && def.args?.length) {
-    const incoming = def.args.map((a) => stackPointerProvenanceOf(a?.value, memo, active));
+    const incoming = def.args.map((a) => stackPointerProvenanceOf(a?.value, memo, active, depth + 1));
     const stackIncoming = incoming.filter(Boolean);
     if (stackIncoming.length) {
       const first = stackIncoming[0].offset;
@@ -1487,12 +1500,12 @@ export function stackPointerProvenanceOf(value, memo = new Map(), active = new S
     }
   } else if (def?.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
     const left = def.args[0], right = def.args[1];
-    const lc = left?.value?.const, rc = right?.value?.const;
+    const lc = pointerShiftedConst(left), rc = pointerShiftedConst(right);
     if (rc != null && left?.value) {
-      const p = stackPointerProvenanceOf(left.value, memo, active);
+      const p = stackPointerProvenanceOf(left.value, memo, active, depth + 1);
       if (p) out = { ...p, offset: p.offset == null ? null : p.offset + (def.sub === 'sub' ? -rc : rc), via: def.sub };
     } else if (def.sub === 'add' && lc != null && right?.value) {
-      const p = stackPointerProvenanceOf(right.value, memo, active);
+      const p = stackPointerProvenanceOf(right.value, memo, active, depth + 1);
       if (p) out = { ...p, offset: p.offset == null ? null : p.offset + lc, via: 'add' };
     }
   }
@@ -1941,6 +1954,7 @@ function prototypeParameterSignature(param) {
   return JSON.stringify([
     param.type ?? '', param.name ?? '', param.abiClass ?? '', param.class ?? '', param.kind ?? '',
     param.pointer ?? '', param.isPointer ?? '', param.hfa ?? '', param.hva ?? '',
+    param.aggregate ?? '', param.alignment ?? '',
     param.members ?? '', param.elements ?? '', param.count ?? '',
     param.bits ?? '', param.sizeBits ?? '',
     param.mayContainPointers ?? '', param.containsPointers ?? '',
@@ -1954,6 +1968,7 @@ function prototypeSignature(proto) {
     proto.returnType ?? '', proto.ret ?? '', proto.result ?? '', proto.resultType ?? '',
     proto.returnClass ?? '', proto.abiClass ?? '', proto.resultClass ?? '',
     proto.returnsValue ?? '', proto.void ?? '', proto.indirectResult ?? '',
+    JSON.stringify(proto.aggregate ?? ''),
     proto.returnBits ?? '', proto.bits ?? '', proto.variadic ?? '', proto.varargs ?? '',
     ...args.map(prototypeParameterSignature),
   ].join('|');
@@ -1984,7 +1999,13 @@ export function irFor(model, opts) {
   if (key != null && entries.has(key)) return entries.get(key);
   let ir = null;
   try { ir = buildIR(model, opts); } catch { ir = null; }
-  if (ir != null && key != null) entries.set(key, ir);
+  if (ir != null && key != null) {
+    if (entries.size >= 64) {
+      const oldestKey = entries.keys().next().value;
+      if (oldestKey !== undefined) entries.delete(oldestKey);
+    }
+    entries.set(key, ir);
+  }
   return ir;
 }
 

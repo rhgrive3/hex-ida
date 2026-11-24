@@ -73,8 +73,13 @@ export class ResourceBudget {
   }
 
   checkCancelled() {
-    if (!this.signal?.aborted) return;
-    throw this.signal.reason ?? new DOMException('Aborted', 'AbortError');
+    let curr = this;
+    while (curr) {
+      if (curr.signal?.aborted) {
+        throw curr.signal.reason ?? new DOMException('Aborted', 'AbortError');
+      }
+      curr = curr.parent;
+    }
   }
 
   scope(name, limits = {}) {

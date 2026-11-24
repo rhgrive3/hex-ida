@@ -8,7 +8,13 @@
 
 export { COMPLETENESS_STATUS, createCompleteness } from './completeness.js';
 
-import { scalarOperationSupported, scalarBitfieldSupported } from './scalar.js';
+import { scalarOperation, scalarOperationSupported, scalarBitfieldSupported } from './scalar.js';
+
+const VALID_CMP_TOKENS = new Set([
+  '==', 'eq', '!=', 'ne',
+  '<', 'lt', '<=', 'le', '>', 'gt', '>=', 'ge',
+  'ult', 'ule', 'ugt', 'uge', 'slt', 'sle', 'sgt', 'sge',
+]);
 import { OP, MK } from '../../ir-base.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -76,16 +82,22 @@ export function classifyOpSupport(op, inst = null) {
       // not repeat it inside the optional instruction descriptor (#5202).
       return scalarOperationSupported(inst, op) ? TRANSLATION_STATUS.EXACT : TRANSLATION_STATUS.UNSUPPORTED;
 
-    case OP.CMP:
-      /* #5202: a comparison without cond/subOp has no ordering or equality
-         semantic; '==' must not be invented. */
-      if (!(inst?.extra?.comparison || inst?.comparison || inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
+    case OP.CMP: {
+      /* #5202: a comparison without a valid comparison token has no ordering
+         or equality semantic; '==' must not be invented. */
+      const token = inst?.extra?.comparison ?? inst?.comparison ?? inst?.cond ?? scalarOperation(inst);
+      if (typeof token !== 'string' || !VALID_CMP_TOKENS.has(token.trim().toLowerCase())) {
+        return TRANSLATION_STATUS.UNSUPPORTED;
+      }
       return TRANSLATION_STATUS.EXACT;
+    }
 
     case OP.SEL:
-      /* #5202: a select without a condition must not become an
+      /* #5202: a select without a condition value must not become an
          always-true ITE. */
-      if (!inst?.cond) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (inst?.conditionValue == null && !(inst?.cond != null && typeof inst.cond === 'object')) {
+        return TRANSLATION_STATUS.UNSUPPORTED;
+      }
       return TRANSLATION_STATUS.EXACT;
 
     case OP.BFX:

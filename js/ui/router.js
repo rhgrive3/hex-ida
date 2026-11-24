@@ -155,11 +155,17 @@ export class ProductRouter {
     // Build the destination before committing browser history. If the route
     // renderer throws, the current view, URL and history stack must remain one
     // coherent state instead of leaving a dead entry that only looks opened.
+    const generationBefore = this.renderGeneration;
     this.depth = nextDepth;
     const rendered = this._render(path, { replace, restoredState: null });
     if (!rendered) {
-      this.depth = previousDepth;
+      if (this.renderGeneration === generationBefore || this.renderGeneration === generationBefore + 1) {
+        this.depth = previousDepth;
+      }
       return false;
+    }
+    if (this.renderGeneration !== generationBefore + 1 || this.current?.fullPath !== path) {
+      return true;
     }
 
     const state = { hexUi: true, key: ++this.serial, depth: nextDepth, viewState: null };

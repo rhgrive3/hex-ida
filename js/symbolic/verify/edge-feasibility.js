@@ -124,12 +124,20 @@ export async function verifyConditionalEdgeFeasibility({
       translationRes.semanticUnknowns = (translationRes.semanticUnknowns || 0) + pTrans.semanticUnknowns;
     }
     if (pTrans.completeness) {
+      const rank = (status) => status === COMPLETENESS_STATUS.UNSUPPORTED ? 0
+        : status === COMPLETENESS_STATUS.PARTIAL ? 1 : 2;
+      const mergeStatus = (a, b) => rank(a) <= rank(b) ? a : b;
+      const keys = new Set([
+        ...Object.keys(translationRes.completeness || {}),
+        ...Object.keys(pTrans.completeness || {}),
+      ]);
       translationRes.completeness = createCompleteness(Object.fromEntries(
-        Object.keys(translationRes.completeness || {}).map((key) => [
+        [...keys].map((key) => [
           key,
-          pTrans.completeness[key] === COMPLETENESS_STATUS.COMPLETE
-            ? translationRes.completeness?.[key] || COMPLETENESS_STATUS.COMPLETE
-            : pTrans.completeness[key],
+          mergeStatus(
+            translationRes.completeness?.[key] || COMPLETENESS_STATUS.COMPLETE,
+            pTrans.completeness?.[key] || COMPLETENESS_STATUS.COMPLETE,
+          ),
         ])
       ));
     }

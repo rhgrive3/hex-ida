@@ -27,7 +27,8 @@ runSearch = async function runSearchHardened(args) {
   if (!region) throw new Error('Unknown region.');
   const results = [];
   const total = Number(region.size);
-  const startByte = Math.max(0, Math.min(total, Number(args.from || 0)));
+  const rawFrom = Number(args.from ?? 0);
+  const startByte = Math.max(0, Math.min(total, Number.isFinite(rawFrom) ? rawFrom : 0));
   const query = String(args.query || '');
   if (!query) throw new Error('Enter text to search for.');
 
@@ -662,7 +663,6 @@ async function __functionEvidence(region, slice, requestId) {
         if (trapRunValues.length < 4097) trapRunValues.push(w);
       } else {
         flushTrapRun();
-        flushAdrpReturnRun();
       }
       if (lastIndirectBranch != null && betweenIndirectKinds.length <= 12) betweenIndirectKinds.push(currentKind);
       if (Words.isBr(w)) {
@@ -694,6 +694,7 @@ async function __functionEvidence(region, slice, requestId) {
   flushRepeatedDirectTails();
   flushInlineUdfRun();
   flushTrapRun();
+  flushAdrpReturnRun();
   for (const [target, count] of tailCallCounts) {
     if (count >= 2 || prologues.has(target) || terminalStarts.has(target)) tailCalls.add(target);
   }

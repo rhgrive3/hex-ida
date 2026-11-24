@@ -173,6 +173,7 @@ export class PagedArtifactReader {
   }
 
   async #page(pageIndex, { signal = null, prefetch = false } = {}) {
+    this.#throwIfCancelled(signal);
     const key = pageIndex.toString();
     const cached = this.pages.get(key);
     if (cached) {
@@ -213,6 +214,7 @@ export class PagedArtifactReader {
       entry.settled = true;
       if (this.inflight.get(key) === entry) this.inflight.delete(key);
     });
+    entry.promise.catch(() => {});
     this.inflight.set(key, entry);
     return entry;
   }

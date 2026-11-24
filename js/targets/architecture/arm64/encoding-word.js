@@ -62,7 +62,7 @@ export function arm64DecodedEncodingWord(decoded) {
 
   for (const bytes of [decoded.rawBytes, decoded.bytes]) {
     if (bytes == null) continue;
-    if (typeof bytes.length !== 'number' || bytes.length < ARM64_INSTRUCTION_SIZE_BYTES) return null;
+    if (typeof bytes.length !== 'number' || bytes.length !== ARM64_INSTRUCTION_SIZE_BYTES) return null;
     const parsed = fromBytes(bytes, 0);
     if (parsed == null) return null;
     candidates.push(parsed);

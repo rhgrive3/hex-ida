@@ -220,8 +220,8 @@ function cpIndexFor(bundle) {
     return bundle.memoryEffects?.find((effect) => effect?.cpIndex != null)?.cpIndex ?? null;
   if (opcode >= 0xb6 && opcode <= 0xb9)
     return bundle.callEffects?.find((effect) => effect?.cpIndex != null)?.cpIndex ?? null;
-  if (opcode === 0xbb)
-    return bundle.producedValues?.find((value) => value?.cpClassIndex != null)?.cpClassIndex ?? null;
+  if (opcode === 0xbb || opcode === 0xc0 || opcode === 0xc1)
+    return bundle.producedValues?.find((value) => value?.cpClassIndex != null)?.cpClassIndex ?? bundle.cpClassIndex ?? null;
   return null;
 }
 
@@ -255,7 +255,7 @@ function validateConstantPoolOperand(bundle, image, classMajor, errors, unsuppor
       if (tag === 11) unsupported.add(`interface-methodref-version-unproven:${bundle.bytecodeOffset}`);
     } else allowed = new Set(classMajor >= 52 ? [10, 11] : [10]);
   }
-  else if (opcode === 0xbb) allowed = new Set([7]);
+  else if (opcode === 0xbb || opcode === 0xc0 || opcode === 0xc1) allowed = new Set([7]);
   if (allowed && !allowed.has(tag)) {
     errors.push({ code: 'jvm-invalid-cp-operand-tag', offset: bundle.bytecodeOffset, cpIndex, tag });
   }

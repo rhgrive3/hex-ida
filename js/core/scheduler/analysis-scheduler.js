@@ -512,7 +512,7 @@ export class AnalysisScheduler {
   }
 
   #registerDag(artifactId, dependencyIds) {
-    const ids=[...dependencyIds].sort((a,b)=>a.localeCompare(b));
+    const ids=[...dependencyIds].sort((a,b)=>(a<b?-1:a>b?1:0));
     const skipCycleDfs=(this.dagInbound.get(artifactId)||0)===0&&this.dag.size===this.dagInbound.size;
     for (const dependencyId of ids) {
       this.metrics.cycleChecks++;
@@ -570,7 +570,7 @@ export class AnalysisScheduler {
     const pending=[rootArtifactId];
     while (pending.length&&this.terminalHistory.size>this.terminalHistoryLimit) {
       const artifactId=pending.pop();
-      if (!this.terminalHistory.has(artifactId)||this.inflight.has(artifactId)||(this.dagInbound.get(artifactId)||0)!==0) continue;
+      if (!this.terminalHistory.has(artifactId)||this.inflight.has(artifactId)||(this.dagInbound.get(artifactId)||0)!==0) { this.terminalRoots.delete(artifactId); continue; }
       this.terminalHistory.delete(artifactId);
       this.terminalRoots.delete(artifactId);
       this.states.delete(artifactId);
@@ -685,13 +685,13 @@ export class AnalysisScheduler {
       this.metrics.failedJobs++;
       this.metrics.storageFailures++;
       task.state='failed'; this.states.set(task.artifactId,'failed');
-      this.#emit('storage.failed', task, { code: error.code || null });
+      this.#emit('storage.failed', task, { code: error?.code || null });
       return;
     }
     this.metrics.failedJobs++;
     if (task.phase==='producer') this.metrics.producerFailures++;
     task.state='failed'; this.states.set(task.artifactId,'failed');
-    this.#emit('job.failed', task, { code: error.code || null, name: error.name || 'Error' });
+    this.#emit('job.failed', task, { code: error?.code || null, name: error?.name || 'Error' });
   }
 
   #cancelQueuedTask(task) {

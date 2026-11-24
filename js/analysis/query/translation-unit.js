@@ -756,15 +756,16 @@ function safeSignatureDeclaration(signature) {
   const close = text.lastIndexOf(')');
   if (open < 1 || close !== text.length - 1) return null;
   const prefix = text.slice(0, open).trim();
-  const words = prefix.split(/\s+/);
-  const name = words.at(-1);
-  const returnType = words.slice(0, -1).join(' ');
+  const headMatch = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(prefix);
+  if (!headMatch) return null;
+  const returnType = headMatch[1].trim();
+  const name = headMatch[2];
   if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !normalizedType(returnType)) return null;
   for (const group of text.slice(open + 1, close).split(',')) {
     const value = group.trim();
     if (!value || /^void$/i.test(value)) continue;
-    const parameter = /^(.*?)(?:\s+)([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
-    if (!parameter || !normalizedType(parameter[1])) return null;
+    const parameter = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+    if (!parameter || !normalizedType(parameter[1].trim())) return null;
   }
   return `${prefix}(${text.slice(open + 1, close)});`;
 }
@@ -1448,7 +1449,7 @@ function faithfulBodyEligibility(fn, context) {
     for (const group of signature.slice(sigOpen + 1, sigClose).split(',')) {
       const value = group.trim();
       if (!value || /^void$/i.test(value)) continue;
-      const param = /^(.*?)(?:\s+)([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+      const param = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
       if (param?.[2]) {
         declaredLocals.add(param[2]);
         if (param[1].includes('*') || /(?:^|\s)id(?:\s|$)/.test(param[1])) pointerLocals.add(param[2]);
@@ -1860,7 +1861,11 @@ export function buildCTranslationUnit(functions, options = {}) {
         synthesizedStructs.set(structDef.name, fieldMap);
       }
       for (const field of structDef.fields) {
-        if (!fieldMap.has(field.name)) fieldMap.set(field.name, field.type);
+        const existingType = fieldMap.get(field.name);
+        if (existingType === undefined) fieldMap.set(field.name, field.type);
+        else if (existingType !== field.type) {
+          unresolvedRows.push(unresolved('unresolved-struct-field-conflict', `${structDef.name}.${field.name}`, 'synthesized-struct-field-type-conflict', { existingType, conflictingType: field.type }));
+        }
       }
     }
     for (const header of extractStandardHeaderIncludes(originalPseudocode)) {
@@ -1945,7 +1950,7 @@ export function buildCTranslationUnit(functions, options = {}) {
         continue;
       }
       headersForText(declaration, headers);
-      const key = `${name}\u0000${addressText(call.target) ?? ''}`;
+      const key = name;
       const prior = prototypeMap.get(key);
       if (!prior) prototypeMap.set(key, { name, address:addressText(call.target), declaration, evidence, exact:call.prototype?.exact === true, conflict:false });
       else {

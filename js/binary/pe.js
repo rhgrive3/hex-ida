@@ -438,7 +438,9 @@ export function parsePE(input, options = {}) {
         sectionIndex: i + 1, name, virtualAddress, virtualSize, sizeOfImage,
         endRva: endRva.toString(), misaligned,
       });
-      image.warnings.push(`PE section ${name || `#${i + 1}`} violates the image section-layout contract (${layoutReason}): RVA 0x${virtualAddress.toString(16)} extent 0x${virtualExtent.toString(16)}; excluded from canonical mapping`);
+      if (!virtualAddressMisaligned || outOfOrder) {
+        image.warnings.push(`PE section ${name || `#${i + 1}`} violates the image section-layout contract (${layoutReason}): RVA 0x${virtualAddress.toString(16)} extent 0x${virtualExtent.toString(16)}; excluded from canonical mapping`);
+      }
       continue;
     }
     if (virtualAddressMisaligned || virtualRangeInvalid) continue;

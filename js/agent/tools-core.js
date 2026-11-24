@@ -167,7 +167,8 @@ class FunctionLoader {
         catch (error) { throw new AgentToolError('tool-failed', 'functionRange failed', { method: 'functionRange', cause: String(error && error.message || error) }); }
       }
       this.attempted.add(key);
-      const model = await this.ctx.analyze(addr, range && range.end);
+      const start = range && range.start != null ? range.start : addr;
+      const model = await this.ctx.analyze(start, range && range.end);
       this.analyzed.add(key);
       this._put(key, model || null);
       return model || null;
@@ -302,7 +303,7 @@ function programResultLocalComplete(rows, meta, offset, returned, request) {
   const hasTotal = meta?.total != null
     || (meta?.completeness && typeof meta.completeness === 'object' && meta.completeness.total != null);
   if (hasTotal) return false;
-  return rows.length < request || offset + returned >= rows.length;
+  return rows.length < request && offset + returned >= rows.length;
 }
 
 function programResultConsistentTotal(meta, rows) {
@@ -410,7 +411,8 @@ export function createAgentTools(context, opts) {
       let range = null;
       if (ctx.program && typeof ctx.program.functionRange === 'function') { const rq = programQuery(ctx, 'functionRange', [addr]); range = rq.results; }
       const request = Math.min(1000000, offset + limit + 1);
-      const q = programQuery(ctx, 'calleesOf', [addr, range && range.end, request]);
+      const start = range && range.start != null ? range.start : addr;
+      const q = programQuery(ctx, 'calleesOf', [start, range && range.end, request]);
       const { rows: raw, meta, valid } = programResultRows(q);
       const page = raw.slice(offset, offset + limit);
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));

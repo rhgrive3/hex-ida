@@ -247,7 +247,10 @@ function throwIfPanelAborted(signal) {
 
 async function awaitConsumer(promise, signal) {
   if (!signal) return promise;
-  throwIfPanelAborted(signal);
+  if (signal.aborted) {
+    Promise.resolve(promise).catch(() => {});
+    throw abortFailure(signal);
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {

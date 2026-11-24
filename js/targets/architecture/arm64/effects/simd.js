@@ -437,7 +437,7 @@ function immediateFloatZero(op, widthBits) {
   // The architectural zero immediate is canonical evidence: a finite number 0
   // or the explicit 0n bit pattern. Structured/malformed float fields must not
   // mint a zero bit pattern through Number() coercion.
-  const zero = (typeof op.float === 'number' && Number.isFinite(op.float) && op.float === 0) || op.value === 0n;
+  const zero = (typeof op.float === 'number' && Object.is(op.float, 0)) || op.value === 0n;
   if (!zero || op.shift || op.extend != null) return null;
   const format = FLOAT_FORMAT[widthBits];
   return format ? createFloatValue(widthBits, format, { bitPattern:0n }) : null;
@@ -445,8 +445,9 @@ function immediateFloatZero(op, widthBits) {
 function shiftInfo(op) {
   if (!op?.shift) return null;
   const shift = op.shift;
-  if (!['lsl','msl'].includes(shift.op) || !Number.isInteger(shift.amount)) return null;
-  return { op:shift.op, amount:shift.amount };
+  const opName = typeof shift.op === 'string' ? shift.op.toLowerCase() : '';
+  if (!['lsl','msl'].includes(opName) || !Number.isInteger(shift.amount)) return null;
+  return { op:opName, amount:shift.amount };
 }
 function laneGpWidth(elementBits) {
   return elementBits === 64 ? 64 : 32;
@@ -572,12 +573,12 @@ function modifiedImmediateShape(mnemonic, dstInfo, imm) {
     return { shift:null, immediateBits:8 };
   }
   if (dstInfo.arr === '4h' || dstInfo.arr === '8h') {
-    if (value > 255n || (shift && (shift.op !== 'lsl' || shift.amount !== 8))) return null;
+    if (value > 255n || (shift && (shift.op !== 'lsl' || ![0,8].includes(shift.amount)))) return null;
     return { shift:shift || null, immediateBits:8 };
   }
   if (dstInfo.arr === '2s' || dstInfo.arr === '4s') {
     if (value > 255n) return null;
-    if (shift && !((shift.op === 'lsl' && [8,16,24].includes(shift.amount)) || (shift.op === 'msl' && [8,16].includes(shift.amount)))) return null;
+    if (shift && !((shift.op === 'lsl' && [0,8,16,24].includes(shift.amount)) || (shift.op === 'msl' && [8,16].includes(shift.amount)))) return null;
     return { shift:shift || null, immediateBits:8 };
   }
   if (dstInfo.arr === '2d') {
@@ -621,8 +622,8 @@ function logicalImmediate(instruction, context, mnemonic, ops) {
   const shift = shiftInfo(imm);
   if (imm.shift && !shift) return null;
   const validShift = dstArrangement.elementBits === 16
-    ? (!shift || (shift.op === 'lsl' && shift.amount === 8))
-    : (!shift || (shift.op === 'lsl' && [8,16,24].includes(shift.amount)));
+    ? (!shift || (shift.op === 'lsl' && [0,8].includes(shift.amount)))
+    : (!shift || (shift.op === 'lsl' && [0,8,16,24].includes(shift.amount)));
   if (!validShift) return null;
   const operations = [];
   const prior = appendVectorRead(operations, dst, dstArrangement, `${mnemonic}:prior`);

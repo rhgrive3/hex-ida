@@ -25,24 +25,53 @@ function canonicalDefinitionIds(load) {
   return new Set((load.memoryForwarding.contributingDefinitionIds || []).map(String));
 }
 
-function canonicalStoreInstructions(load, ir) {
-  const definitionIds = canonicalDefinitionIds(load);
-  if (!definitionIds.size) return [];
-  return (ir?.instructions || []).filter((candidate) => {
-    if (candidate?.op !== OP.STORE) return false;
+function buildStoreIndex(ir) {
+  const index = new Map();
+  for (const candidate of ir?.instructions || []) {
+    if (candidate?.op !== OP.STORE) continue;
     const ids = [
       candidate.memDef?.definitionId,
       ...(candidate.memDefs || []).map((item) => item?.definitionId),
       candidate.extra?.memoryDefinitionId,
     ].filter((id) => id != null).map(String);
-    return ids.some((id) => definitionIds.has(id));
-  });
+    for (const id of ids) {
+      let list = index.get(id);
+      if (!list) { list = []; index.set(id, list); }
+      list.push(candidate);
+    }
+  }
+  return index;
 }
+
+function canonicalStoreInstructions(load, ir, storeIndex) {
+  const definitionIds = canonicalDefinitionIds(load);
+  if (!definitionIds.size || !ir) return [];
+  const matched = new Set();
+  for (const id of definitionIds) {
+    for (const store of storeIndex.get(id) || []) matched.add(store);
+  }
+  return [...matched];
+}
+
+function readOnlySet(set) {
+  const failMutate = () => { throw new TypeError('Cannot mutate frozen Set'); };
+  Object.defineProperties(set, {
+    add: { value: failMutate, writable: false, configurable: false },
+    delete: { value: failMutate, writable: false, configurable: false },
+    clear: { value: failMutate, writable: false, configurable: false },
+  });
+  return Object.freeze(set);
+}
+
+const MAX_SLICE_DEPTH = 256;
 
 export function backwardDependencySlice(target, options = {}) {
   const ir = options.ir || null;
-  const maxDepth = Number.isFinite(options.maxDepth) ? options.maxDepth : 64;
+  const maxDepth = Number.isFinite(options.maxDepth)
+    ? Math.max(0, Math.min(MAX_SLICE_DEPTH, Math.floor(options.maxDepth)))
+    : 64;
   const fromBlock = options.fromBlock != null ? options.fromBlock : null;
+  const storeIndex = ir ? buildStoreIndex(ir) : new Map();
 
   const reachedValues = new Set();
   const reachedInstructions = new Set();
@@ -51,6 +80,7 @@ export function backwardDependencySlice(target, options = {}) {
   let hasCycle = false;
   let hitDepthLimit = false;
   let unresolvedPhiPredecessor = false;
+  let unresolvedMemoryLoad = false;
 
   const activeValues = new Set();
   const activeInstructions = new Set();
@@ -143,7 +173,7 @@ export function backwardDependencySlice(target, options = {}) {
     // If PHI instruction and fromBlock is specified, filter incoming
     if (inst.op === OP.PHI && Array.isArray(inst.incoming)) {
       if (fromBlock != null) {
-        const matches = inst.incoming.filter((inc) => inc.from === fromBlock);
+        const matches = inst.incoming.filter((inc) => inc && inc.from === fromBlock);
         if (matches.length === 1 && matches[0]?.value) {
           visitValue(matches[0].value, depth + 1);
         } else {
@@ -195,8 +225,14 @@ export function backwardDependencySlice(target, options = {}) {
     // reachingStore link is intentionally ignored, including when no IR map
     // is supplied to resolve the canonical definition IDs.
     if (inst.op === OP.LOAD) {
-      for (const store of canonicalStoreInstructions(inst, ir)) {
-        visitInstruction(store, depth + 1);
+      const stores = canonicalStoreInstructions(inst, ir, storeIndex);
+      if (stores.length === 0) {
+        unresolvedMemoryLoad = true;
+        assumptions.push(`load:${instId || inst.row || 'unknown'}:unproven-memory-forwarding`);
+      } else {
+        for (const store of stores) {
+          visitInstruction(store, depth + 1);
+        }
       }
     }
 
@@ -220,15 +256,15 @@ export function backwardDependencySlice(target, options = {}) {
   const completeness = createCompleteness({
     translation: hitDepthLimit ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
     controlFlow: hasCycle || unresolvedPhiPredecessor ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
-    memoryEffects: COMPLETENESS_STATUS.COMPLETE,
+    memoryEffects: unresolvedMemoryLoad ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
     pathCoverage: COMPLETENESS_STATUS.COMPLETE,
     queryScope: unresolvedPhiPredecessor ? COMPLETENESS_STATUS.PARTIAL : COMPLETENESS_STATUS.COMPLETE,
   });
 
   return Object.freeze({
-    values: Object.freeze(reachedValues),
-    instructions: Object.freeze(reachedInstructions),
-    origins: Object.freeze(reachedOrigins),
+    values: readOnlySet(reachedValues),
+    instructions: readOnlySet(reachedInstructions),
+    origins: readOnlySet(reachedOrigins),
     hasCycle,
     hitDepthLimit,
     assumptions: Object.freeze(assumptions),

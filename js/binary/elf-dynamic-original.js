@@ -226,7 +226,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
         // The scan stops at the terminating NUL; charging the whole 1 MiB
         // window per name exhausted the budget after ~8 DT_NEEDED entries.
         const window = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
-        const scanned = name === "" ? window : Math.min(window, decoded + 1);
+        const scanned = name === "" ? Math.min(window, 1) : Math.min(window, decoded + 1);
         dynamicStringScanBytes += Math.max(0, scanned);
       }
     }
@@ -403,11 +403,11 @@ function decodeAarch64PltTail(r, image, address) {
     || ((w2 >>> 5) & 0x1f) !== 16 || (w2 & 0x1f) !== 16) return null;
   if (((w3 & AARCH64_BR_MASK) >>> 0) !== AARCH64_BR || ((w3 >>> 5) & 0x1f) !== 17) return null;
 
-  const page = (address & ~0xfffn) + decodeAarch64AdrpPageDelta(w0);
+  const page = BigInt.asUintN(64, (address & ~0xfffn) + decodeAarch64AdrpPageDelta(w0));
   const ldrOffset = BigInt((w1 >>> 10) & 0xfff) * 8n;
   const shift = ((w2 >>> 22) & 1) === 1 ? 12n : 0n;
   const addOffset = BigInt((w2 >>> 10) & 0xfff) << shift;
-  return { gotSlot: page + ldrOffset, addTarget: page + addOffset };
+  return { gotSlot: BigInt.asUintN(64, page + ldrOffset), addTarget: BigInt.asUintN(64, page + addOffset) };
 }
 
 function decodeAarch64PltResolver(r, image, address) {
@@ -681,7 +681,7 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const isArm32 = Number(image?.metadata?.machine) === 40 || image?.arch === 'arm';
     const isThumb = isArm32 && (type === 2 || type === STT_GNU_IFUNC) && (value & 1n) === 1n;
     const effectiveValue = isThumb ? (value & ~1n) : value;
-    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : effectiveValue, originalValue: value, isThumb, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, aarch64VariantPcsFlag, aarch64VariantPcs, callingConvention: aarch64VariantPcs ? 'aarch64-variant-pcs' : riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:effectiveValue, resolution:'runtime-resolver' } : {}) };
+    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : sectionIdentity.known ? effectiveValue : null, originalValue: value, isThumb, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, aarch64VariantPcsFlag, aarch64VariantPcs, callingConvention: aarch64VariantPcs ? 'aarch64-variant-pcs' : riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:effectiveValue, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);

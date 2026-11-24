@@ -97,7 +97,7 @@ const EXTRA_LABEL = {
 };
 
 export function categoryLabel(id) {
-  const extra = EXTRA_LABEL[id];
+  const extra = Object.hasOwn(EXTRA_LABEL, id) ? EXTRA_LABEL[id] : null;
   return extra ? pick(extra.ja, extra.en) : featureLabelOf(id);
 }
 

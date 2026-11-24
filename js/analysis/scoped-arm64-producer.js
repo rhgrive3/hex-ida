@@ -76,8 +76,9 @@ export async function produceScopedArm64Pipeline(backend, { region, address, len
   const byteStart = BigInt(unsignedAddress(read.fileOffset, { bits: 64 }));
   const bytes = read.bytes.slice(); work.charge('residentBytes', length);
   const relative = start - regionStart;
-  if (relative / 4n > BigInt(Number.MAX_SAFE_INTEGER)) return { status: 'unsupported', reason: 'scoped-arm64-viewer-row-range' };
-  const startRow = Number(relative / 4n), count = length / 4;
+  const count = length / 4;
+  if (relative / 4n + BigInt(count) > BigInt(Number.MAX_SAFE_INTEGER)) return { status: 'unsupported', reason: 'scoped-arm64-viewer-row-range' };
+  const startRow = Number(relative / 4n);
   // A partial low-budget result must not mask later higher-budget precision.
   // Timeouts do not publish; resource ceilings, not wall time, enter the key.
   const scopedOwnerBudget = ['ranges', 'range-values', 'flow-inputs', 'demand', 'transforms'].includes(scopedLocalProjection?.kind)
@@ -118,7 +119,11 @@ export async function produceScopedArm64Pipeline(backend, { region, address, len
           entry = await work.await((childSignal) => awaitCancellableProducer(backend.fetchChunk(region.id, chunk, true), childSignal));
           loadedChunk = chunk; check();
         }
-        if (producerSignal.aborted) throw producerSignal.reason;
+        if (producerSignal.aborted) {
+          throw producerSignal.reason instanceof Error
+            ? producerSignal.reason
+            : Object.assign(new Error(String(producerSignal.reason ?? 'scoped-arm64-producer-aborted')), { name: 'AbortError' });
+        }
         const word = arm64EncodingWord(entry?.bytes, chunkRow);
         const sourceWord = arm64EncodingWord(bytes, index);
         if (word === null || sourceWord === null || word !== sourceWord) contractFail('scoped-arm64-decode-byte-mismatch');

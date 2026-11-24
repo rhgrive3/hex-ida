@@ -573,10 +573,11 @@ async function scanStrings(msg, signal) {
     await Promise.resolve();
   }
   flush();
+  const isCapped = out.length > cap;
   return {
-    results: out.slice(0, cap), cancelled: false, capped: out.length >= cap,
-    truncationReason: out.length >= cap ? 'result-limit' : (total < regionBytes ? 'input-budget' : null),
-    scannedBytes: exactExternalInteger(pos), complete: pos >= regionBytes && out.length < cap,
+    results: out.slice(0, cap), cancelled: false, capped: isCapped,
+    truncationReason: isCapped ? 'result-limit' : (total < regionBytes ? 'input-budget' : null),
+    scannedBytes: exactExternalInteger(pos), complete: pos >= regionBytes && !isCapped,
   };
 }
 
@@ -589,8 +590,15 @@ async function runSearch(msg, signal) {
   let pattern, mask = null;
   if (msg.kind === 'hex') {
     pattern = msg.hex?.bytes;
-    mask = msg.hex?.mask;
     if (!pattern?.length) throw new Error('Enter a hex pattern.');
+    const rawMask = msg.hex?.mask;
+    if (rawMask == null) {
+      mask = new Uint8Array(pattern.length).fill(0xff);
+    } else if ((Array.isArray(rawMask) || ArrayBuffer.isView(rawMask)) && rawMask.length === pattern.length) {
+      mask = rawMask;
+    } else {
+      throw new Error('Hex search mask length must match pattern length.');
+    }
   } else {
     const q = String(msg.query || '');
     if (!q) throw new Error('Enter text to search for.');
@@ -626,8 +634,8 @@ async function runSearch(msg, signal) {
         if (!ok) continue;
       }
       const byteOff = base + BigInt(i);
-      results.push({ row: exactExternalInteger(byteOff / BigInt(ROW_BYTES)), addr: BigInt(region.vmAddr) + byteOff, byteOff: exactExternalInteger(byteOff) });
       if (results.length >= SEARCH_LIMIT) { capped = true; break; }
+      results.push({ row: exactExternalInteger(byteOff / BigInt(ROW_BYTES)), addr: BigInt(region.vmAddr) + byteOff, byteOff: exactExternalInteger(byteOff) });
     }
     pos += BigInt(block.length);
     carry = pattern.length > 1 ? joined.slice(Math.max(0, joined.length - pattern.length + 1)) : new Uint8Array(0);
@@ -668,7 +676,8 @@ function vmToFile(address) {
 async function readAtAddress(msg, signal) {
   const hit = vmToFile(msg.addr);
   if (!hit) return { found: false };
-  const requested = Math.min(Math.max(0, Number(msg.len) || 256), 1 << 20);
+  const rawLen = msg.len == null ? 256 : Number(msg.len);
+  const requested = Math.min(Math.max(0, Number.isFinite(rawLen) ? Math.floor(rawLen) : 256), 1 << 20);
   const fileSize = BigInt(image?.fileSize ?? source?.size ?? 0n);
   let available = fileSize - hit.offset;
   if (hit.region) {
@@ -715,7 +724,7 @@ async function metadataPage(msg, signal) {
       }).capability;
     return { summary:selected.summary(), metadata:selected.metadata, capability };
   }
-  const list = collections[msg.kind];
+  const list = Object.hasOwn(collections, msg.kind) ? collections[msg.kind] : null;
   if (!list) throw new Error(`Unknown metadata kind: ${msg.kind}`);
   const start = metadataPageInteger(msg.start, 0, 0, 'start');
   const limit = Math.min(5000, metadataPageInteger(msg.limit, 500, 1, 'limit'));

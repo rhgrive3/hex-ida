@@ -2217,9 +2217,9 @@ function buildValueRaw(v, state, flags = {}) {
       const subLower = sub.toLowerCase();
       const extWidthMap = { b: 8, h: 16, w: 32, '8': 8, '16': 16, '32': 32 };
       if (subLower === 'is-zero' || subLower === 'is_zero') {
-        out = expr.compare('eq', a, expr.constant(0, a.bits || 64, false, origin(d, v)), origin(d, v));
+        out = expr.compare('eq', a, expr.constant(0, a.bits || 64, false, origin(d, v)), false, origin(d, v));
       } else if (subLower === 'is-nonzero' || subLower === 'is_nonzero') {
-        out = expr.compare('ne', a, expr.constant(0, a.bits || 64, false, origin(d, v)), origin(d, v));
+        out = expr.compare('ne', a, expr.constant(0, a.bits || 64, false, origin(d, v)), false, origin(d, v));
       } else if (/^sxt/i.test(sub)) {
         const suffix = subLower.slice(3);
         const fromBits = extWidthMap[suffix] || Number(suffix) || a.bits || 32;

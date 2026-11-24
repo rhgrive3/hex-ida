@@ -16,46 +16,54 @@ function hasPointerVarName(name, pointerVarNames) {
   return false;
 }
 
-export function exprIsPointerTyped(node, pointerVarNames) {
-  if (!node || typeof node !== 'object') return false;
+export function exprIsPointerTyped(node, pointerVarNames, memo = new Map(), depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 128) return false;
+  if (memo.has(node)) return memo.get(node);
+  memo.set(node, false);
+  let result = false;
   switch (node.kind) {
     case 'var': {
-      if (node.stringLiteral === true || node.isPointer === true || node.type?.kind === 'pointer') return true;
-      if (typeof node.name === 'string') {
-        if (hasPointerVarName(node.name, pointerVarNames)) return true;
-        if (node.name.startsWith('&')) return true;
-        if (node.name.startsWith('"') && node.name.endsWith('"')) return true;
-        if (/^\(\s*(?:const\s+|volatile\s+|struct\s+|union\s+|enum\s+)?[A-Za-z_][A-Za-z0-9_\s]*\*+\s*\)/.test(node.name)) return true;
+      if (node.stringLiteral === true || node.isPointer === true || node.type?.kind === 'pointer') {
+        result = true;
+      } else if (typeof node.name === 'string') {
+        if (hasPointerVarName(node.name, pointerVarNames)) result = true;
+        else if (node.name.startsWith('&')) result = true;
+        else if (node.name.startsWith('"') && node.name.endsWith('"')) result = true;
+        else if (/^\(\s*(?:const\s+|volatile\s+|struct\s+|union\s+|enum\s+)?[A-Za-z_][A-Za-z0-9_\s]*\*+\s*\)/.test(node.name)) result = true;
       }
-      return false;
+      break;
     }
     case 'cast': {
-      if (node.type?.kind === 'pointer') return true;
-      if (typeof node.type === 'string' && node.type.includes('*')) return true;
-      if (typeof node.cType === 'string' && node.cType.includes('*')) return true;
-      return false;
+      result = node.type?.kind === 'pointer'
+        || (typeof node.type === 'string' && node.type.includes('*'))
+        || (typeof node.cType === 'string' && node.cType.includes('*'));
+      break;
     }
     case 'unary':
-      return node.op === 'addr' || node.op === 'addrof';
+      result = node.op === 'addr' || node.op === 'addrof';
+      break;
     case 'binary': {
       if (node.op === 'add') {
-        const l = exprIsPointerTyped(node.left, pointerVarNames);
-        const r = exprIsPointerTyped(node.right, pointerVarNames);
-        return l !== r;
+        const l = exprIsPointerTyped(node.left, pointerVarNames, memo, depth + 1);
+        const r = exprIsPointerTyped(node.right, pointerVarNames, memo, depth + 1);
+        result = l !== r;
+      } else if (node.op === 'sub') {
+        const l = exprIsPointerTyped(node.left, pointerVarNames, memo, depth + 1);
+        const r = exprIsPointerTyped(node.right, pointerVarNames, memo, depth + 1);
+        result = l && !r;
       }
-      if (node.op === 'sub') {
-        const l = exprIsPointerTyped(node.left, pointerVarNames);
-        const r = exprIsPointerTyped(node.right, pointerVarNames);
-        return l && !r;
-      }
-      return false;
+      break;
     }
     case 'select':
-      return exprIsPointerTyped(node.whenTrue, pointerVarNames)
-        || exprIsPointerTyped(node.whenFalse, pointerVarNames);
+      result = exprIsPointerTyped(node.whenTrue, pointerVarNames, memo, depth + 1)
+        || exprIsPointerTyped(node.whenFalse, pointerVarNames, memo, depth + 1);
+      break;
     default:
-      return node.isPointer === true || node.type?.kind === 'pointer';
+      result = node.isPointer === true || node.type?.kind === 'pointer';
+      break;
   }
+  memo.set(node, result);
+  return result;
 }
 
 function printPointerAsUintptr(node, opts) {
@@ -371,7 +379,7 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
         return wrap(text, PREC.add, parentPrec);
       }
       if (n.name === 'msub' && n.args?.length === 3) {
-        const text = `${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)} - ${printExpression(n.args[2], PREC.add + 1, opts)}`;
+        const text = `${printExpression(n.args[2], PREC.sub, opts)} - ${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)}`;
         return wrap(text, PREC.sub, parentPrec);
       }
       return `${sanitizeCallableIdent(n.name, 'unknown_intrinsic')}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;

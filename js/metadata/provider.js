@@ -410,6 +410,7 @@ export function createLanguageMetadataResult(input = {}) {
       invalidEntries: nonNegativeSafeInteger(input.completeness?.invalidEntries, 'metadata-result-invalid-invalid-entries'),
       complete: input.completeness?.complete === true,
       reasons: deepFreeze([...reasons].map(String)),
+      ...(typeof input.completeness?.pointerAbi === 'string' ? { pointerAbi: input.completeness.pointerAbi } : {}),
     }),
     diagnostics: deepFreeze([...diagnostics].map(String)),
     status,

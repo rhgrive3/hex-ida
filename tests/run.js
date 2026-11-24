@@ -2181,7 +2181,7 @@ function reader(bodies) {
   const fn = async (addr) => {
     calls.push(addr);
     const lines = bodies[addr.toString()];
-    return lines ? build(lines, addr) : null;
+    return lines ? build(lines, undefined, addr) : null;
   };
   fn.calls = calls;
   return fn;
@@ -2644,7 +2644,7 @@ test('PINPOINT: 本物のクラス表（練習用サンプル）から、アク�
     goal: goalFromPreset('hp'),
     fields,
     map: { classes: [{ name: 'BattleManager', category: 'battle' }] },
-    analyze: async (addr) => (addr === apply.addr ? build(body, addr) : null),
+    analyze: async (addr) => (addr === apply.addr ? build(body, undefined, addr) : null),
   });
 
   eq(res.verdict, VERDICT.CONFIRMED, '確定できていない: ' + res.missing.join(', '));

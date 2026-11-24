@@ -152,6 +152,7 @@ function parseRoutinesCommands(input, image) {
       else if (!mapping) record.reason = 'unmapped';
       else if (!mapping.mapping?.perms?.execute) record.reason = 'non-executable';
       else if (initAddress % instructionUnit !== 0n) record.reason = 'misaligned';
+      else if (typeof image.isDataInCode === 'function' && image.isDataInCode(initAddress)) record.reason = 'data-in-code';
       else if (!isContiguousFileBackedSpan(image, initAddress, instructionUnit)) record.reason = 'not-file-backed';
 
       if (record.reason) {
@@ -183,7 +184,9 @@ function parseRoutinesCommands(input, image) {
   return image;
 }
 
-function validateKnownLoadCommandSizes(input, image) {
+function validateKnownLoadCommandSizes(input, image, opts = {}) {
+  const budget = ensureMachOMetadataBudget(image, opts.metadataBudget ?? null);
+  const signal = opts.signal ?? null;
   const bytes = selectedThinBytes(input, image);
   if (!bytes) throw new Error('Mach-O selected slice is outside file');
   const kind = thinMachOKind(bytes);
@@ -197,6 +200,8 @@ function validateKnownLoadCommandSizes(input, image) {
   const commandEnd = headerSize + sizeofcmds;
   let p = headerSize;
   for (let i = 0; i < ncmds; i++) {
+    if (signal?.aborted) { markMachOMetadataPartial(image, 'cancelled'); return; }
+    if (!budget.take({ operations: 1 }, 'validate-load-command-sizes')) return;
     if (p + 8 > commandEnd) return;
     const cmd = r.u32(p), cmdsize = r.u32(p + 4);
     if (cmdsize < 8 || p + cmdsize > commandEnd) return;
@@ -217,7 +222,8 @@ export function repairMachOZeroEntrypoint(image) {
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
   const instructionUnit = machoInstructionUnit(image.arch);
   const fileBacked = instructionUnit != null && isContiguousFileBackedSpan(image, 0n, instructionUnit);
-  if (entrySegment?.perms?.execute && 0n % alignment === 0n && fileBacked) {
+  const inDataInCode = typeof image.isDataInCode === 'function' && image.isDataInCode(0n);
+  if (entrySegment?.perms?.execute && 0n % alignment === 0n && fileBacked && !inDataInCode) {
     image.metadata.entrypointValid = true;
     const seed = functionSeed(0n, { source:'entrypoint', confidence:0.9 });
     image.functions = mergeFunctionSeeds([...(image.functions || []), seed], image);
@@ -231,12 +237,13 @@ export function repairMachOZeroEntrypoint(image) {
 
 export function parseMachO(input, opts = {}) {
   const image = parseMachOCore(input, opts);
-  validateKnownLoadCommandSizes(input, image);
+  validateKnownLoadCommandSizes(input, image, opts);
   parseRoutinesCommands(input, image);
   const thin = selectedThinBytes(input, image);
   if (thin) {
     applyMachOIndirectSymbols(thin, image, opts);
     applyMachOTlvInitializers(thin, image);
   }
+  image.metadata.machoMetadata = ensureMachOMetadataBudget(image).snapshot();
   return repairMachOZeroEntrypoint(image);
 }

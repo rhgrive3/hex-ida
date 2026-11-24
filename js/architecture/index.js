@@ -172,7 +172,8 @@ export function architectureCapability(image, engine = {}) {
   const semanticCapability = target?.capabilities?.semanticAnalysis || 'unsupported';
   const arm64Analysis = legacyArm64Analysis && semanticCapability !== 'unsupported';
   const emulationSupported = ownTruthy(engine?.emulation, architecture);
-  const analysisLevel = arm64Analysis ? (architecture === 'arm64e' ? 'partial' : 'full') : 'unsupported';
+  const isPartialSemantic = semanticCapability === 'partial' || semanticCapability.endsWith('-partial') || architecture === 'arm64e';
+  const analysisLevel = arm64Analysis ? (isPartialSemantic ? 'partial' : 'full') : 'unsupported';
   return Object.freeze({
     format: image?.format || 'unknown', architecture, endianness: image?.endian || 'unknown', bits: Number(image?.bits || 0),
     canDisassemble: engineSupported, canAnalyzeDataflow: arm64Analysis, canEmulate: emulationSupported,

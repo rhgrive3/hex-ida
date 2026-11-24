@@ -16,16 +16,22 @@ function offsetHex(value) {
 
 // Field types arrive as a descriptor ({ kind:'int', bytes:4, signed:true });
 // String() of it printed "[object Object]".
-function typeText(type) {
+function typeText(type, seen = new Set(), depth = 0) {
   if (type == null) return '';
   if (typeof type !== 'object') return String(type);
-  const bits = Number.isFinite(Number(type.bytes)) ? Number(type.bytes) * 8 : null;
-  if (type.kind === 'int' && bits) return `${type.signed === false ? 'uint' : 'int'}${bits}`;
-  if (type.kind === 'float' && bits) return bits === 32 ? 'float' : bits === 64 ? 'double' : `float${bits}`;
-  if (type.kind === 'bool') return 'bool';
-  if (type.kind === 'pointer' || type.kind === 'ptr') return pick('ポインタ', 'pointer') + (type.target ? ` (${typeText(type.target)})` : '');
-  if (typeof type.name === 'string' && type.name) return type.name;
-  return typeof type.kind === 'string' ? type.kind + (bits ? ` (${bits} bit)` : '') : '';
+  if (depth > 16 || seen.has(type)) return '...';
+  seen.add(type);
+  try {
+    const bits = Number.isFinite(Number(type.bytes)) ? Number(type.bytes) * 8 : null;
+    if (type.kind === 'int' && bits) return `${type.signed === false ? 'uint' : 'int'}${bits}`;
+    if (type.kind === 'float' && bits) return bits === 32 ? 'float' : bits === 64 ? 'double' : `float${bits}`;
+    if (type.kind === 'bool') return 'bool';
+    if (type.kind === 'pointer' || type.kind === 'ptr') return pick('ポインタ', 'pointer') + (type.target ? ` (${typeText(type.target, seen, depth + 1)})` : '');
+    if (typeof type.name === 'string' && type.name) return type.name;
+    return typeof type.kind === 'string' ? type.kind + (bits ? ` (${bits} bit)` : '') : '';
+  } finally {
+    seen.delete(type);
+  }
 }
 
 function functionLabel(app, address) {
@@ -158,11 +164,14 @@ export function showField(app, className, field) {
   const results = el('div');
   body.append(status, results);
 
+  const initialGen = app?.backend?.gen;
+  const initialFile = app?.store?.get?.('fileInfo');
+  const isCurrentBinary = () => app?.backend?.gen === initialGen && app?.store?.get?.('fileInfo') === initialFile;
   let latest = { results:[], complete:false, scannedRegionIds:[], unscannedRegionIds:[] };
   const pagingState = { shownGroups: FIELD_ACCESS_PAGE_SIZE };
   const render = (aggregate) => {
     latest = aggregate;
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
     // Function ownership enrichment is optional. Never start a whole-program
     // ProgramIndex just to render field-access partials; use it only when another
     // consumer has already produced it.
@@ -174,13 +183,13 @@ export function showField(app, className, field) {
     concurrency:2,
     onPartial:(aggregate) => { render(aggregate); },
   }).then((aggregate) => {
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
     status.textContent = aggregate.complete
       ? pick('コード全体の確認が完了しました。', 'Executable-region scan complete.')
       : pick(`一部の解析が不完全です（${aggregate.reason || 'unknown'}）。`, `Some analysis remains incomplete (${aggregate.reason || 'unknown'}).`);
     render(aggregate);
   }).catch((error) => {
-    if (error?.name === 'AbortError' || controller.signal.aborted) return;
+    if (error?.name === 'AbortError' || controller.signal.aborted || !isCurrentBinary()) return;
     status.textContent = pick('アクセス解析を完了できませんでした。', 'Field-access analysis could not complete.');
     render({ ...latest, complete:false, reason:error?.message || 'field-access-failed' });
   });

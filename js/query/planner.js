@@ -396,7 +396,9 @@ async function awaitBudget(promise, b) {
   const abortPromise = new Promise((_, reject) => {
     onAbort = () => reject(abortError(b)); b.signal.addEventListener('abort', onAbort, { once:true });
   });
-  try { return await Promise.race([Promise.resolve(promise), abortPromise]); }
+  const settled = Promise.resolve(promise);
+  settled.catch(() => {});
+  try { return await Promise.race([settled, abortPromise]); }
   finally { b.signal.removeEventListener('abort', onAbort); }
 }
 async function invokeTool(tools, name, b, ...args) {

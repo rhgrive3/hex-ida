@@ -202,7 +202,12 @@ function scanObjectBudget(value, limits, maxBytes, options = {}) {
       // (unless the raw value itself is null): they contribute no canonical
       // bytes and no entry.
       if (jsonSafeNull(item) && item !== null) {
-        if (preserveSemanticValues) defineKey(frame.snap, key, item);
+        if (preserveSemanticValues) {
+          chargeEntry();
+          countString(key);
+          chargeCanonicalBytes(8);
+          defineKey(frame.snap, key, item);
+        }
         continue;
       }
       chargeEntry();
@@ -248,7 +253,7 @@ function scanObjectBudget(value, limits, maxBytes, options = {}) {
       // later getter in the same provider graph from mutating bytes that the
       // admitted snapshot will canonicalize, while keeping package-input
       // behavior unchanged.
-      const admittedBinary = preserveSemanticValues ? structuredClone(item) : item;
+      const admittedBinary = structuredClone(item);
       if (slot) assignSlot(slot, admittedBinary);
       return;
     }
@@ -461,11 +466,17 @@ export function importPhase12Package(value, options = {}) {
 
 export function resolvePackageDependencies(envelope, dependencies = []) {
   const checked = validateEnvelopeShape(envelope);
-  const available = new Map(normalizeDependencies(dependencies).map((item) => [item.packageId, item]));
+  const available = new Map();
+  for (const item of normalizeDependencies(dependencies)) {
+    const list = available.get(item.packageId) ?? [];
+    list.push(item);
+    available.set(item.packageId, list);
+  }
   const resolved = [];
   for (const dependency of checked.dependencies) {
-    const found = available.get(dependency.packageId);
-    if (!found || found.contentHash !== dependency.contentHash || found.packageVersion !== dependency.packageVersion) {
+    const candidates = available.get(dependency.packageId) ?? [];
+    const found = candidates.find((item) => item.contentHash === dependency.contentHash && item.packageVersion === dependency.packageVersion);
+    if (!found) {
       throw new PackageValidationError('package-dependency-not-pinned', `dependency ${dependency.packageId} is not resolved to its exact identity`);
     }
     resolved.push(Object.freeze({ packageId: dependency.packageId, contentHash: dependency.contentHash, packageVersion: dependency.packageVersion }));
@@ -599,4 +610,10 @@ export function validateProviderOutput(value, options = {}) {
   } catch (error) { return { ok: false, error: error.message, code: error.code }; }
 }
 
-export function createPackageBudget(options = {}) { return createResourceBudget({ maxBytes: options.maxBytes || MAX_PACKAGE_INPUT_BYTES, maxEntries: options.maxEntries || DEFAULT_PACKAGE_LIMITS.maxEntries, ...options }); }
+export function createPackageBudget(options = {}) {
+  const clean = {};
+  for (const [k, v] of Object.entries(options || {})) {
+    if (v !== undefined) clean[k] = v;
+  }
+  return createResourceBudget({ maxBytes: MAX_PACKAGE_INPUT_BYTES, maxEntries: DEFAULT_PACKAGE_LIMITS.maxEntries, ...clean });
+}

@@ -145,7 +145,14 @@ const INDEX_KEY = 'hex.ai.conversations.v2.index';
 const RESERVED_NAMESPACE = 'index';
 
 export function createConversationStore({ namespace, storage, key = STORAGE_KEY } = {}) {
+  const storageKey = (() => {
+    try {
+      const text = String(key);
+      return text ? text : null;
+    } catch { return null; }
+  })();
   const backing = () => {
+    if (!storageKey) return null;
     if (storage) return storage;
     try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
   };
@@ -154,12 +161,9 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     try { value = typeof namespace === 'function' ? namespace() : namespace; } catch { value = null; }
     return value == null || value === '' ? 'default' : String(value);
   };
-  // Re-canonicalize defensively: a boxed/coercible key (e.g. `new String(...)`
-  // with a throwing toString) must never alias the default store's bucket or
-  // index paths, and custom stores must not own the legacy v1 key.
-  const storageKey = (() => {
-    try { return String(key); } catch { return null; }
-  })();
+  // Re-canonicalize defensively above: a boxed/coercible key (e.g. `new String(...)`
+  // with a throwing toString) fails closed instead of aliasing `"null.<space>"`,
+  // and custom stores must not own the legacy v1 key.
   // `index` is the managed-metadata component (`INDEX_KEY` / `${key}.index`):
   // a bucket rooted at it would alias conversation data onto the index key,
   // deterministically destroying history (#5789). That namespace fails closed
@@ -219,6 +223,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
       if (legacyAll && typeof legacyAll === 'object') {
         const index = readIndex();
         for (const [sp, list] of Object.entries(legacyAll)) {
+          if (isReservedNamespace(sp)) continue;
           if (Array.isArray(list) && list.length) {
             const bk = bucketKey(sp);
             if (!store.getItem(bk)) {
@@ -235,6 +240,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
 
   return {
     get key() {
+      if (!storageKey) return null;
       return isReservedNamespace(currentNamespace()) ? null : bucketKey(currentNamespace());
     },
     namespace: currentNamespace,

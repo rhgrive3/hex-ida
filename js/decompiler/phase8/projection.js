@@ -490,12 +490,27 @@ function transformExpression(root, names, records, memo = new Map(), replacement
 function replaceCondition(text, keyword, expression) {
   const source = String(text || '');
   const marker = `${keyword} (`;
-  const at = source.indexOf(marker);
+  let searchFrom = 0;
+  let at = -1;
+  while (searchFrom <= source.length - marker.length) {
+    const idx = source.indexOf(marker, searchFrom);
+    if (idx < 0) break;
+    const prev = idx > 0 ? source[idx - 1] : '';
+    if (!/[A-Za-z0-9_$]/.test(prev)) { at = idx; break; }
+    searchFrom = idx + 1;
+  }
   if (at < 0) return { text:source, replaced:false };
   const open = at + keyword.length + 1;
   let depth = 0;
+  let quote = null;
   for (let index = open; index < source.length; index += 1) {
     const char = source[index];
+    if (quote) {
+      if (char === '\\') { index += 1; continue; }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") { quote = char; continue; }
     if (char === '(') depth += 1;
     else if (char === ')') {
       depth -= 1;

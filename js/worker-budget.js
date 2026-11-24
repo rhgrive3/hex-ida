@@ -28,6 +28,13 @@
       const maxWallMs = limits.maxWallMs !== undefined && typeof limits.maxWallMs === 'number' && limits.maxWallMs >= 0
         ? limits.maxWallMs
         : Infinity;
+      const numLimit = (val, fallback) => (typeof val === 'number' && Number.isFinite(val) && val >= 0 ? val : fallback);
+      const maxRead = numLimit(limits.read, 32 * MiB);
+      const maxResident = numLimit(limits.resident, 8 * MiB);
+      const maxRegions = numLimit(limits.regions, 128);
+      const maxNames = numLimit(limits.names, 80_000);
+      const maxStrings = numLimit(limits.strings, 8 * MiB);
+      const maxOperations = numLimit(limits.operations, 2_000_000);
       const used = { read:0, resident:0, regions:0, names:0, strings:0, operations:0 };
       let truncated = false;
       let truncationReason = null;
@@ -57,14 +64,14 @@
         get truncated() { return truncated; },
         get truncationReason() { return truncationReason; },
         markTruncated,
-        takeRead:(n)=>take('read',n,32*MiB), takeResident:(n)=>take('resident',n,8*MiB),
+        takeRead:(n)=>take('read',n,maxRead), takeResident:(n)=>take('resident',n,maxResident),
         /*
          * Release must be as strict as take. Only a finite positive primitive
          * number may be returned to resident accounting (#1337, #3291).
          */
         releaseResident(n){ if(typeof n!=='number'||!Number.isFinite(n)||n<=0) return; used.resident=Math.max(0,used.resident-n); },
-        takeRegion:(n=1)=>take('regions',n,128), takeName:(n=1)=>take('names',n,80_000),
-        takeString:(n)=>take('strings',n,8*MiB), takeOperation:(n=1)=>take('operations',n,2_000_000),
+        takeRegion:(n=1)=>take('regions',n,maxRegions), takeName:(n=1)=>take('names',n,maxNames),
+        takeString:(n)=>take('strings',n,maxStrings), takeOperation:(n=1)=>take('operations',n,maxOperations),
         expired:()=>!checkWall(), snapshot:()=>({...used,elapsedMs:now()-start,truncated,truncationReason}),
       };
     },

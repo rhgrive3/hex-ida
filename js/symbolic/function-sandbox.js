@@ -60,10 +60,15 @@ function boundedObjectSize(value) {
   return Math.min(Math.max(0x100, value), MAX_SANDBOX_OBJECT_SIZE);
 }
 
+const MAX_MEMORY_WRITE_SIZE = 64;
+
 function memoryWriteSize(value, label) {
   if (value === undefined || value === null) return 8;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
     throw new TypeError(`${label} must be a positive safe integer, got ${String(value)}`);
+  }
+  if (value > MAX_MEMORY_WRITE_SIZE) {
+    throw new RangeError(`${label} must be <= ${MAX_MEMORY_WRITE_SIZE}, got ${value}`);
   }
   return value;
 }
@@ -202,11 +207,12 @@ export class FunctionSandbox {
       }
     };
     throwIfCancelled();
-    const args = (o.args || []).map((v) => asConcrete(v, 'args'));
     const objectBase = o.objectBase != null ? asConcreteAddress(o.objectBase, 'objectBase') : this.objectBase;
     this.objectBase = objectBase;
+    const args = (o.args || []).map((v, i) => (
+      i === 0 && v == null && o.objectAsArg0 !== false ? objectBase : asConcrete(v, 'args')
+    ));
     if (o.objectAsArg0 !== false && args.length === 0) args.push(objectBase);
-    else if (o.objectAsArg0 !== false && args[0] == null) args[0] = objectBase;
     const firstSetupHeapOverride = this._setupCount === 0 && this.emulator.heap !== this._initialHeapBase ? this.emulator.heap : null;
     this.emulator.reset();
     if (signal) this.emulator._runSignal = signal;
@@ -311,7 +317,7 @@ export class FunctionSandbox {
     };
   }
 
-  setRegister(reg, value) { this.emulator.set(reg, asConcrete(value, 'register value')); }
+  setRegister(reg, value) { this.emulator.set(reg, machineWord64(value, 'register value')); }
   getRegister(reg) { return this.emulator.get(reg); }
   addBreakpoint(address) { this.emulator.breakpoints.add(asConcreteAddress(address, 'breakpoint').toString()); }
   removeBreakpoint(address) { this.emulator.breakpoints.delete(asConcreteAddress(address, 'breakpoint').toString()); }
@@ -323,7 +329,7 @@ export class FunctionSandbox {
     const maxSteps = boundedStepBudget(o.maxSteps);
     const signal = o.signal == null ? null : o.signal;
     const result = await this.emulator.run(maxSteps, o.onProgress, { signal });
-    const after = await snapshot(this.emulator, this.watch);
+    const after = signal?.aborted ? [] : await snapshot(this.emulator, this.watch);
     const beforeBy = new Map(this.before.map((x) => [x.address.toString() + ':' + x.size, x]));
     const touchedFields = [];
     for (const a of after) {

@@ -46,7 +46,7 @@ function validImm12(op) {
     && op.shift.op.toLowerCase() === 'lsl'
     && typeof op.shift.amount === 'number'
     && Number.isInteger(op.shift.amount)
-    && op.shift.amount === 12;
+    && (op.shift.amount === 0 || op.shift.amount === 12);
 }
 
 function rotateRightElement(value, amount, widthBits) {

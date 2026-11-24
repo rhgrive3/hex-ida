@@ -373,8 +373,8 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       || paramSlots.some(rid => rid < 1 || rid > params.length))) fail('cil-param-pointer-table-invalid');
   const paramOwners = new Map();
   for (let i = 0; i < methods.length; i++) {
-    const first = methods[i].paramList || paramSlots.length + 1;
-    const last = methods[i + 1]?.paramList || paramSlots.length + 1;
+    const first = methods[i].paramList ?? (paramSlots.length + 1);
+    const last = methods[i + 1]?.paramList ?? (paramSlots.length + 1);
     if (first < 1 || last < first || last > paramSlots.length + 1 || (i === 0 && first !== 1)) {
       fail('cil-param-list-invalid');
     }
@@ -983,8 +983,8 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
     const base = enumType?.extendsTypeRef ?? null;
     if (base?.namespace === 'System' && base?.name === 'Enum' && base.resolutionScope?.table === 0x23) {
       isEnum = coreLibraryNames.has(assemblyRefs?.[base.resolutionScope.rid - 1]?.name);
-    } else if (typeof enumType?.extendsToken === 'string' && enumType.extendsToken.startsWith('0x0200')) {
-      const baseRid = Number.parseInt(enumType.extendsToken.slice(6), 16);
+    } else if (typeof enumType?.extendsToken === 'string' && /^0x02[0-9a-f]{6}$/i.test(enumType.extendsToken)) {
+      const baseRid = Number.parseInt(enumType.extendsToken.slice(4), 16);
       const baseType = types[baseRid - 1];
       isEnum = coreLibraryNames.has(assembly?.name) && baseType?.namespace === 'System' && baseType?.name === 'Enum';
     }

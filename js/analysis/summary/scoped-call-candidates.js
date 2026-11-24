@@ -29,7 +29,7 @@ export async function bindScopedSummaryCallCandidates(summary, projection, index
   }
   const sets = summary.indirectCallSets, bindings = [], skipped = [], next = [];
   const gap = entry => { if (skipped.length < SCOPED_SUMMARY_CANDIDATE_LIMITS.bindings) skipped.push(entry); };
-  if (sets.length > SCOPED_SUMMARY_CANDIDATE_LIMITS.callSites) return deepFreeze({ summary, bindings, skipped: [{ reason: 'call-site-limit' }], exact: false });
+  if (sets.length > SCOPED_SUMMARY_CANDIDATE_LIMITS.callSites) return deepFreeze({ summary, bindings, skipped: [{ reason: 'call-site-limit' }], exact: false, context: 'context-insensitive', publication: 'none', targetClosure: 'unknown' });
   const unknownSites = new Set(summary.unknownCallEffects.map(row => row.callSiteId)), sites = new Set();
   for (const call of sets) {
     work.charge('workUnits');

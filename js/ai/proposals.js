@@ -127,13 +127,16 @@ export class ProposalStore {
     // Capture the caller-controlled property once. Besides closing the
     // revision/payload TOCTOU, this preserves the explicit symbol-key fail
     // closed check below because structuredClone intentionally omits symbols.
+    const target = input.target;
     const before = input.before;
-    // #8973: bound the caller-controlled state at admission, before the safety
-    // preflight, the structured clone, the fingerprint, or persistence can each
-    // expand a large binary container into whole-buffer work and OOM the worker.
-    admitBoundedProposalState([input.target, before, input.after]);
+    const after = input.after;
+    // #8973: bound the caller-controlled state at admission without invoking
+    // user accessors, then validate stability on all three inputs before cloning.
+    admitBoundedProposalState([target, before, after]);
+    rejectUnstableProposalState(target);
     rejectUnstableProposalState(before);
-    const executionPayload = snapshotProposalPayload(input, before);
+    rejectUnstableProposalState(after);
+    const executionPayload = snapshotProposalPayload({ target, after }, before);
     // Uint8Array is an accepted wire representation of patch bytes, but the
     // stale-state authority and the backend read both use plain arrays. Keep
     // one canonical payload for either accepted container so equal bytes do
@@ -657,7 +660,13 @@ function admitBoundedProposalState(values) {
     seen.add(value);
     const binary = intrinsicBinaryContainer(value);
     if (binary) {
-      binaryBytes += binary.byteLength || 0;
+      const backingBuffer = binary.buffer;
+      if (backingBuffer && !seen.has(backingBuffer)) {
+        seen.add(backingBuffer);
+        binaryBytes += backingBuffer.byteLength || 0;
+      } else if (!backingBuffer) {
+        binaryBytes += binary.byteLength || 0;
+      }
       if (binaryBytes > PROPOSAL_STATE_MAX_BINARY_BYTES) {
         throw new AIError('tool_failed',
           'Proposal state binary payload exceeds the admitted size budget and cannot be snapshotted or fingerprinted safely.');
@@ -676,14 +685,28 @@ function admitBoundedProposalState(values) {
       return;
     }
     if (Array.isArray(value)) {
-      // Bounded by length before touching any element; never materializes keys.
+      // Bounded by length before touching any element; read descriptors so getters never run.
       if (nodes + value.length > PROPOSAL_STATE_MAX_NODES) rejectNodeBudget();
-      for (let i = 0; i < value.length; i += 1) { spendNode(); visit(value[i], depth + 1); }
+      for (let i = 0; i < value.length; i += 1) {
+        spendNode();
+        const desc = Object.getOwnPropertyDescriptor(value, i);
+        if (desc && !Object.hasOwn(desc, 'value')) {
+          throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
+        }
+        visit(desc ? desc.value : undefined, depth + 1);
+      }
       return;
     }
     const keys = Object.keys(value);
     if (nodes + keys.length > PROPOSAL_STATE_MAX_NODES) rejectNodeBudget();
-    for (const key of keys) { spendNode(); visit(value[key], depth + 1); }
+    for (const key of keys) {
+      spendNode();
+      const desc = Object.getOwnPropertyDescriptor(value, key);
+      if (!desc || !Object.hasOwn(desc, 'value')) {
+        throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
+      }
+      visit(desc.value, depth + 1);
+    }
   };
   for (const value of values) {
     if (value === null || typeof value !== 'object') spendNode();
@@ -1149,9 +1172,24 @@ function decodePersistedBytes(value) {
   return value;
 }
 
+const PERSISTED_VIEW_CONSTRUCTORS = new Map([
+  ['Int8Array', Int8Array],
+  ['Uint8Array', Uint8Array],
+  ['Uint8ClampedArray', Uint8ClampedArray],
+  ['Int16Array', Int16Array],
+  ['Uint16Array', Uint16Array],
+  ['Int32Array', Int32Array],
+  ['Uint32Array', Uint32Array],
+  ['Float32Array', Float32Array],
+  ['Float64Array', Float64Array],
+  ['BigInt64Array', BigInt64Array],
+  ['BigUint64Array', BigUint64Array],
+]);
+if (typeof Float16Array === 'function') PERSISTED_VIEW_CONSTRUCTORS.set('Float16Array', Float16Array);
+
 function persistedView(kind, buffer, byteOffset, byteLength) {
   if (kind === 'DataView') return new DataView(buffer, byteOffset, byteLength);
-  const Ctor = globalThis[kind];
+  const Ctor = PERSISTED_VIEW_CONSTRUCTORS.get(kind);
   if (typeof Ctor !== 'function' || !Ctor.BYTES_PER_ELEMENT || byteLength % Ctor.BYTES_PER_ELEMENT !== 0) {
     throw new AIError('tool_failed', 'Persisted proposal execution view kind is invalid.');
   }

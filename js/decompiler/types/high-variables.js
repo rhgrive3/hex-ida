@@ -222,11 +222,18 @@ export function recoverHighVariables(ir, recoveredTypes, opts = {}) {
     const key = unsafe ? `v:${v.id}` : ai != null ? `arg:${ai}` : v.stackSlot?.key ? `stack:${v.stackSlot.key}` : `v:${v.id}`;
     let g = !unsafe && originGroup ? groups[originGroup - 1] : byKey.get(key);
     if (g && (!compatibleType(g.type, t) || g.unsafeMerge)) g = null;
+    if (!g && !unsafe && originGroup) {
+      const keyed = byKey.get(key);
+      if (keyed && compatibleType(keyed.type, t) && !keyed.unsafeMerge) g = keyed;
+    }
     if (!g) {
       g = { id: groups.length + 1, key, kind: ai != null ? 'argument' : v.stackSlot ? 'stack' : 'local', values: [], type: t, unsafeMerge: unsafe };
       if (ai != null) g.argIndex = ai;
       if (v.stackSlot?.offset != null) g.stackOffset = v.stackSlot.offset;
-      groups.push(g); byKey.set(key, g);
+      groups.push(g);
+      if (!byKey.has(key)) byKey.set(key, g);
+    } else if (g.type == null && t != null) {
+      g.type = t;
     }
     g.values.push(v); valueToGroup.set(v.id, g.id);
   }

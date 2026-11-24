@@ -3,14 +3,16 @@ import { completenessOf } from '../projections/index.js';
 
 const FORBIDDEN_PATH = new Set(['__proto__', 'prototype', 'constructor']);
 
-function textIdentity(value) {
-  if (value == null || value === '') return null;
+function textIdentity(value, seen = new WeakSet(), depth = 0) {
+  if (value == null || value === '' || depth > 32) return null;
   if (typeof value === 'bigint') return `0x${value.toString(16)}`;
   if (typeof value === 'object') {
-    if (value.identity != null) return textIdentity(value.identity);
-    if (value.id != null) return textIdentity(value.id);
-    if (value.uuid != null) return textIdentity(value.uuid);
-    if (value.address != null) return textIdentity(value.address);
+    if (seen.has(value)) return null;
+    seen.add(value);
+    if (value.identity != null) return textIdentity(value.identity, seen, depth + 1);
+    if (value.id != null) return textIdentity(value.id, seen, depth + 1);
+    if (value.uuid != null) return textIdentity(value.uuid, seen, depth + 1);
+    if (value.address != null) return textIdentity(value.address, seen, depth + 1);
     return null;
   }
   return String(value);

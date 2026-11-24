@@ -217,7 +217,7 @@ export async function parseItaniumTypeInfo({ read, symbols, typeinfoAddress, poi
     const fromSymbol = classNameFromTypeinfoSymbol(ztsSymbol);
     if (fromSymbol) { className = fromSymbol; nameSource = 'zts-symbol'; }
     else {
-      const nameBytes = await read(namePointer, 64);
+      const nameBytes = await read(namePointer, MAX_TYPE_NAME_BYTES);
       const parsed = nameBytes ? parseItaniumTypeName(nameBytes) : null;
       if (parsed) { className = parsed; nameSource = 'zts-string'; }
     }

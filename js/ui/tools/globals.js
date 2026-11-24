@@ -66,10 +66,13 @@ export function mergeGlobals(named, stats, limit = 400) {
   // Preserve legacy membership semantics: named globals occupy the first slots
   // before unnamed hot targets are admitted. Only the expensive unnamed tail is
   // selected with a bounded heap.
-  for (const row of (named || []).slice(0, cap)) {
-    const key = BigInt(row.addr).toString();
+  for (const row of (named || [])) {
+    if (namedRows.length >= cap) break;
+    const addr = BigInt(row.addr);
+    const key = addr.toString();
+    if (seen.has(key)) continue;
     seen.add(key);
-    namedRows.push({ ...row, refs:namedReferenceCount(stats, row.addr) });
+    namedRows.push({ ...row, addr, refs:namedReferenceCount(stats, addr) });
   }
 
   const hot = boundedTopGlobals(Math.max(0, cap - namedRows.length));
@@ -129,15 +132,22 @@ export function showGlobals(app) {
   const named = findGlobals(app.symbols, null, regions, { limit:400 });
   renderRows(app, sheet, host, named, { pending:true, complete:false });
 
+  const initialGen = app?.backend?.gen;
+  const initialFile = app?.store?.get?.('fileInfo');
+  const isCurrentBinary = () => app?.backend?.gen === initialGen && app?.store?.get?.('fileInfo') === initialFile;
   (async () => {
     try {
       const program = await app.ensureProgram?.({ signal:controller.signal, priority:'user-visible' });
-      if (!program || controller.signal.aborted || !sheet.root.isConnected) return;
+      if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
+      if (!program) {
+        renderRows(app, sheet, host, named, { pending:false, complete:false, reason:'ProgramIndex 未準備' });
+        return;
+      }
       const stats = await globalReferenceStats(program, regions, { signal:controller.signal });
-      if (controller.signal.aborted || !sheet.root.isConnected) return;
+      if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
       renderRows(app, sheet, host, mergeGlobals(named, stats), { complete:stats.complete, reason:stats.reason });
     } catch (error) {
-      if (error?.name === 'AbortError' || controller.signal.aborted) return;
+      if (error?.name === 'AbortError' || controller.signal.aborted || !isCurrentBinary()) return;
       if (sheet.root.isConnected) renderRows(app, sheet, host, named, { complete:false, reason:error?.message || '参照集計に失敗' });
     }
   })();

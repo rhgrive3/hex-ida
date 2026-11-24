@@ -242,6 +242,7 @@ export function createAgentTools(context, opts = {}) {
   const originalCallees = tools.get_callees;
   tools.get_callees = async (address, options) => {
     const addr = asAddress(address);
+    if (addr == null) throw new AgentToolError('invalid-argument', 'get_callees requires a valid address', { field: 'address' });
     let range = null;
     // Let the core report an unavailable Program query when no Program was
     // supplied.  A missing range on an existing Program remains a distinct
@@ -322,9 +323,13 @@ export function createAgentTools(context, opts = {}) {
       if (await proveExactLimitComplete(name, args, result, scope)) result = markExactComplete(result);
       if (scope.scopeTruncated) result = { ...forceIncomplete(result, 'function-budget'), scopeTruncated:true, scopedFunctions:scope.addresses.length };
       else {
-        const reason = scope.addresses.map((addr) => {
+        const usesCustomExplain = name === 'explain_evidence' && typeof ctx.explainEvidence === 'function';
+        const stoppedByLimit = result && result.complete === false && result.reason === 'result-limit';
+        const reason = usesCustomExplain ? null : scope.addresses.map((addr) => {
           const key = modelKey(addr);
-          return key == null ? null : semanticSourceReason(models.get(key));
+          if (key == null) return null;
+          if (stoppedByLimit && !models.has(key)) return null;
+          return semanticSourceReason(models.get(key));
         }).find(Boolean) ?? null;
         if (reason) result = forceIncomplete(result, reason);
         result = { ...result, scopeTruncated:false, scopedFunctions:scope.addresses.length };

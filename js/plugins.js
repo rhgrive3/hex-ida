@@ -137,6 +137,7 @@ async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
     if (Number.isFinite(n) && n > maxBytes) throw new Error('PLUGIN_TOO_LARGE');
   }
   if (!res.body?.getReader) {
+    if (rawLength == null || String(rawLength).trim() === '') throw new Error('PLUGIN_UNBOUNDED_RESPONSE');
     const n = Number(rawLength);
     if (!Number.isFinite(n) || n < 0 || n > maxBytes) throw new Error('PLUGIN_UNBOUNDED_RESPONSE');
     const text = await res.text();
@@ -204,6 +205,7 @@ export class PluginHost {
               || sourceBytes(p.source) > MAX_PLUGIN_SOURCE_BYTES) {
               await this.install(p.source, p.origin || '保存されたもの', {
                 silent: true,
+                fromLoad: true,
                 installationId: p.installationId,
                 enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
               });
@@ -222,6 +224,7 @@ export class PluginHost {
               origin: p.origin || '保存されたもの',
             }));
             const added = all.filter((plugin) => enabled.has(plugin.index));
+            this.plugins = this.plugins.filter((existing) => existing.installationId !== installationId);
             this.plugins.push(...added);
             this.installations.set(installationId, {
               v: 3,
@@ -244,6 +247,7 @@ export class PluginHost {
           }
           await this.install(p.source, p.origin || '保存されたもの', {
             silent: true,
+            fromLoad: true,
             installationId: p.installationId || newInstallId(),
             enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
           });
@@ -294,6 +298,7 @@ export class PluginHost {
   }
 
   async install(source, origin, opts = {}) {
+    if (!opts.fromLoad && this.ready) await this.ready;
     if (typeof source !== 'string' || !source.trim()) return { error: '中身が空です。' };
     if (sourceBytes(source) > MAX_PLUGIN_SOURCE_BYTES) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
     const { runInSandbox } = await loadScriptSandbox();
@@ -353,6 +358,7 @@ export class PluginHost {
       definitionsDigest,
     });
 
+    this.plugins = this.plugins.filter((existing) => existing.installationId !== installationId);
     this.plugins.push(...added);
     if (!opts.silent) {
       const saved = saveRegistryOrRollback(this, before);
@@ -430,11 +436,14 @@ export class PluginHost {
   }
 
   remove(id) {
-    const before = this.plugins.slice();
+    const before = snapshotRegistryState(this);
     this.plugins = this.plugins.filter((p) => p.id !== id);
-    const saved = this.save();
+    const referenced = new Set(this.plugins.map((p) => p.installationId));
+    for (const instId of [...this.installations.keys()]) {
+      if (!referenced.has(instId)) this.installations.delete(instId);
+    }
+    const saved = saveRegistryOrRollback(this, before);
     if (!saved.ok) {
-      this.plugins = before;
       return { ok: false, error: saved.error, persistenceError: true };
     }
     return { ok: true };
@@ -452,6 +461,7 @@ export class PluginHost {
   }
 
   async run(id, out, options = {}) {
+    if (this.ready) await this.ready;
     const p = this.plugins.find((x) => x.id === id);
     if (!p) return { error: 'そのプラグインが見つかりません。' };
     // The manifest check protects restore, but the public registry objects can

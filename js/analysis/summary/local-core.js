@@ -592,12 +592,10 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         memoryReadRegions.push(...callee.memoryReadRegions.map(contextualEffect));
         memoryWriteRegions.push(...callee.memoryWriteRegions.map(contextualEffect));
         for (const effect of callee.registerEffects) registerEffects.add(effect);
-        if (targetProof.nativeTargetFact) {
-          for (const input of callee.inputs) readVariables.add(input);
-          for (const site of callee.allocations) allocations.add(site);
-          for (const site of callee.frees) frees.add(site);
-          escapes.push(...callee.escapes.map(escape => JSON.parse(stableStringify(escape))));
-        }
+        for (const input of callee.inputs) readVariables.add(input);
+        for (const site of callee.allocations) allocations.add(site);
+        for (const site of callee.frees) frees.add(site);
+        escapes.push(...callee.escapes.map(escape => JSON.parse(stableStringify(escape))));
         for (const unknown of callee.unknownCallEffects) {
           // Keep the originating call site. Composing a path prefix here would
           // make the effect set grow every time a summary is recomposed, which is
@@ -635,7 +633,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       continue;
     }
 
-    const complete = node.call?.completeness === 'complete';
+    const complete = node.call?.completeness === 'complete' && !options.conservativeCallSiteIds?.has?.(node.id);
     const source = complete ? 'abi-rule' : 'unknown-call-fallback';
     const readOk = applyScope({ node, scope: node.call?.memoryRead, resolveRegion, into: memoryReadRegions, source });
     const writeOk = applyScope({ node, scope: node.call?.memoryWrite, resolveRegion, into: memoryWriteRegions, source });
@@ -730,7 +728,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         kind:'native-call-effects-discharge', version:1, functionId:ir.functionId,
         snapshotId:options.snapshotId ?? 'snapshot-unbound',
         semanticIrDigest:memorySsa.identity.semanticIrDigest, scalarSsaDigest:memorySsa.identity.scalarSsaDigest,
-        calls:[...closedNativeCalls.values()].sort((a, b) => a.callSiteId.localeCompare(b.callSiteId)),
+        calls:[...closedNativeCalls.values()].sort((a, b) => (a.callSiteId < b.callSiteId ? -1 : a.callSiteId > b.callSiteId ? 1 : 0)),
         obligations:[...actualIssues].sort().map(issue => JSON.parse(issue)),
       });
     }

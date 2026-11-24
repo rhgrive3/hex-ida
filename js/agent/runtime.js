@@ -217,7 +217,7 @@ export async function runAgent(config) {
   const goal = cfg.goal || '';
   const context = cfg.context || {};
   const llm = cfg.llm || null;
-  const budget = budgetOf(cfg.budget || cfg);
+  const budget = budgetOf(cfg.budget && typeof cfg.budget === 'object' ? { ...cfg, ...cfg.budget } : cfg);
   if (!llm || typeof llm.next !== 'function') return runDeterministicAgent(goal, context, { ...cfg, ...budget });
 
   const query = typeof goal === 'string' ? compileGoal(goal) : goal;
@@ -249,7 +249,9 @@ export async function runAgent(config) {
       if (external?.aborted) abort();
     }
     let timer;
+    externalAbortPromise.catch(() => {});
     const operation = Promise.resolve().then(() => startOperation(controller.signal, remainingMs));
+    operation.catch(() => {});
     try {
       const value = await Promise.race([
         operation,
@@ -317,19 +319,21 @@ export async function runAgent(config) {
       stopReason = 'invalid-tool-request'; break;
     }
     const addr = addressFromRequest(req.tool, req.args);
+    let budgetKey = null;
     if (addr != null) {
       // Interior addresses of one function share the canonical budget slot:
       // resolve the function start before accounting, matching the loader's
       // cache identity (#5424).
-      let budgetKey = addr.toString();
+      budgetKey = addr.toString();
       try {
         const range = context.program?.functionRange?.(addr);
         if (range && range.start != null) budgetKey = range.start.toString();
       } catch { /* keep the raw address key */ }
-      functions.add(budgetKey);
-      if (usedFunctionCount() > budget.maxFunctions) { stopReason = 'function-budget'; break; }
+      const nextCount = functions.has(budgetKey) ? usedFunctionCount() : usedFunctionCount() + 1;
+      if (nextCount > budget.maxFunctions) { stopReason = 'function-budget'; break; }
     }
     if (!toolCallBudget.consume()) { stopReason = 'tool-call-budget'; break; }
+    if (budgetKey != null) functions.add(budgetKey);
     let result;
     try {
       result = await awaitRunBudget((signal) => tools[req.tool](...toolArgsWithRunSignal(req.tool, req.args, signal)));

@@ -290,7 +290,7 @@ export function createAppRuntimeIO(app, source = null) {
       const chunk = Math.floor(row / 1024);
       if (typeof backend?.fetchChunk !== 'function') return null;
       const decoded = await backend.fetchChunk(region.id, chunk, true);
-      if (!isCurrent()) return null;
+      if (!isCurrent() || !decoded) return null;
       const index = row - chunk * 1024;
       return { mn: decoded.mn ? decoded.mn[index] : '', ops: decoded.ops ? decoded.ops[index] : '' };
     },

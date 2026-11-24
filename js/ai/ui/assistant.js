@@ -198,7 +198,7 @@ export function installAssistant(app, ui) {
     return session.ask(question, { context });
   }
 
-  session.on((event) => {
+  const unsubscribeSession = session.on((event) => {
     const launcherState = launcherStateForSessionEvent(event.type, session.busy);
     if (launcherState) launcher.setState(launcherState);
     if (event.type === 'settled' && launcherState === 'idle' && !open) {
@@ -267,6 +267,7 @@ export function installAssistant(app, ui) {
         document.removeEventListener('keydown', onKey, true);
         window.removeEventListener('resize', onResize);
         window.removeEventListener('orientationchange', onResize);
+        if (unsubscribeSession) unsubscribeSession();
         if (unsubscribe) unsubscribe();
         extensionHost.destroy();
         accountControl.destroy();

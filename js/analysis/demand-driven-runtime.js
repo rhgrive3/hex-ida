@@ -229,7 +229,7 @@ function waitForShared(entry, signal, onDetach = null) {
       try { entry.cancel?.(); } catch { /* cancellation is best-effort */ }
       try { entry.request?.cancel?.(); } catch { /* cancellation is best-effort */ }
     }
-    throw abortError(signal);
+    return Promise.reject(abortError(signal));
   }
   entry.waiters++;
   return new Promise((resolve, reject) => {
@@ -246,8 +246,9 @@ function waitForShared(entry, signal, onDetach = null) {
       if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1); detach();
       if (!entry.settled && entry.waiters === 0) {
         entry.cancelled = true;
-        entry.cancel?.();
-        entry.request?.cancel?.();
+        void Promise.resolve(entry.promise).catch(() => {});
+        try { entry.cancel?.(); } catch { /* cancellation is best-effort */ }
+        try { entry.request?.cancel?.(); } catch { /* cancellation is best-effort */ }
       }
       reject(abortError(signal));
     };
@@ -320,7 +321,7 @@ function installWorkerBackedIdentity(app) {
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
     // Do not create the first shared producer for a caller that has already
     // left. Cache hits remain usable without starting any new work (#4749).
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     let entry = this._binaryIdEntry;
     // #4611: a single-flight entry whose last waiter aborted is cancelled but
     // may not have settled yet; the owner must not hand it to a new caller.
@@ -506,7 +507,7 @@ function installCancellableFunctionDiscovery(app) {
   discoveryProducersByApp.set(app, producers);
   app.ensureFunctions = function demandFunctionDiscovery(region, rawOptions = {}) {
     const options = typeof rawOptions === 'function' ? { onProgress:rawOptions, signal:null } : (rawOptions || {});
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     const run = async () => {
       if (app.symbolsReady) {
         try { await app.symbolsReady; } catch { /* symbol seeds are optional */ }

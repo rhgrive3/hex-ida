@@ -45,7 +45,7 @@ export function collectDemandIntegerCandidates(member, { world, assumptions, wor
     const virtualBoundary = entry + boundary - start;
     if (boundary <= start || boundary - start > BigInt(INTEGER_FRAGMENT_MAX_INSTRUCTIONS * 4) || (boundary - start) % 4n
       || virtualBoundary + 4n > BigInt(location.end)
-      || !row.origin.virtualRanges.some(v => BigInt(v.start) === virtualBoundary && BigInt(v.end) === virtualBoundary + 4n)) continue;
+      || !(row.origin?.virtualRanges ?? []).some(v => BigInt(v.start) === virtualBoundary && BigInt(v.end) === virtualBoundary + 4n)) continue;
     let contiguous = true;
     for (let offset = 0n; offset <= boundary - start; offset += 4n) {
       work.charge('workUnits');

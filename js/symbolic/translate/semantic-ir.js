@@ -136,7 +136,7 @@ export function translateSemanticIR(target, options = {}) {
       else expression = visitInstruction(def, width, depth + 1);
     } else if (val.const != null) expression = literalExpression(null, width, val);
     else expression = unknown(width, 'value-without-definition', val);
-    if (expression?.kind === 'unknown_semantic' && !unsupportedEntities.some(e => e.reason === expression.reason)) {
+    if (expression?.kind === 'unknown_semantic' && !unsupportedEntities.some(e => e.id === (id ?? null) && e.reason === expression.reason)) {
       semanticUnknowns++; unsupportedEntities.push(Object.freeze({ id:id ?? null, reason:expression.reason }));
     }
     if (['bool','boolean'].includes(val.machineType?.kind) && expression?.sort.kind !== 'bool'

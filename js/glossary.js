@@ -950,7 +950,7 @@ export const GLOSSARY_ORDER = [
 ];
 
 export function glossaryEntry(id) {
-  return GLOSSARY[id] || null;
+  return Object.hasOwn(GLOSSARY, id) ? GLOSSARY[id] : null;
 }
 
 /**

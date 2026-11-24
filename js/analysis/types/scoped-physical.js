@@ -21,7 +21,7 @@ const LIMITS = Object.freeze({ maxConstraintsPerLayer: 128, maxComparisonsPerLay
 
 function stop(signal) {
   if (!signal?.aborted) return;
-  throw signal.reason;
+  throw signal.reason !== undefined ? signal.reason : new DOMException('Aborted', 'AbortError');
 }
 function machineDescriptor(type, vectorElement = false) {
   if (!type || typeof type.kind !== 'string') return null;

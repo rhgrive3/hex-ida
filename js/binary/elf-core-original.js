@@ -161,9 +161,11 @@ export function parseELF(input, options = {}) {
   if (h.type !== ET_REL && image.entrypoint != null) {
     const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64' && h.type === ET_EXEC;
     if (image.entrypoint !== 0n || zeroResetVector) {
-      const rejection = elfInstructionTargetRejection(image, image.entrypoint);
+      const isArm32Entry = Number(image.metadata.machine) === 40 || image.arch === 'arm';
+      const effectiveEntry = isArm32Entry && (image.entrypoint & 1n) === 1n ? (image.entrypoint & ~1n) : image.entrypoint;
+      const rejection = elfInstructionTargetRejection(image, effectiveEntry);
       if (rejection == null) {
-        image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+        image.functions.push(functionSeed(effectiveEntry, { source: 'entrypoint', confidence: 0.9 }));
         if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'aarch64-executable-pt-load-at-zero';
       } else {
         image.warnings.push(`Ignored ELF entrypoint 0x${image.entrypoint.toString(16)}: ${rejection}`);
@@ -806,7 +808,10 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       if (i !== 0 || nameOff !== 0) budget.partial(`symbols:${table.index}:name-offset-range`, `ELF symbol table ${table.index} references a string-table offset outside its string table`);
       continue;
     }
-    const maxName=Math.min(strBytes-nameOff,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1));
+    const rawMaxName = Math.min(strBytes - nameOff, 1 << 20);
+    const budgetMaxName = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
+    const maxName = Math.min(rawMaxName, budgetMaxName);
+    const clampedByBudget = budgetMaxName < rawMaxName;
     let name;
     if (failedNameOffsets.has(nameOff)) {
       name = null;
@@ -814,8 +819,13 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       scan.scanned = 0;
       name = terminatedStringInTable(r,strStart,strBytes,nameOff,maxName,scan);
       if (name == null) {
-        failedNameOffsets.add(nameOff);
         authoritative = false;
+        if (clampedByBudget) {
+          budget.partial(`symbols:${table.index}:string-budget-exhausted`,`ELF symbol ${i} in table ${table.index} exceeded remaining string budget before NUL terminator`);
+          if (scan.scanned > 0) budget.take({ inputBytes: scan.scanned, operations: 1 }, 'symbol-name-scan');
+          break;
+        }
+        failedNameOffsets.add(nameOff);
         budget.partial(`symbols:${table.index}:unterminated-name`,`ELF symbol ${i} in table ${table.index} references a string without a NUL terminator in its string table`);
         if (scan.scanned > 0 && !budget.take({ inputBytes: scan.scanned, operations: 1 }, 'symbol-name-scan')) break;
         continue;
@@ -1131,10 +1141,12 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
     if (loaderTag && val !== 0n && !loaderTag.handled && Number(image.metadata.type) !== ET_REL) {
       if (tag === DT_INIT) dtInitHandled = true;
       else dtFiniHandled = true;
-      const rejection = elfInstructionTargetRejection(image, val);
+      const isArm32Dyn = Number(image.metadata.machine) === 40 || image.arch === 'arm';
+      const effectiveVal = isArm32Dyn && (val & 1n) === 1n ? (val & ~1n) : val;
+      const rejection = elfInstructionTargetRejection(image, effectiveVal);
       if (rejection == null) {
-        const analysisWindow = elfLoaderEntrySectionAnalysisWindow(image, val);
-        image.functions.push(functionSeed(val, {
+        const analysisWindow = elfLoaderEntrySectionAnalysisWindow(image, effectiveVal);
+        image.functions.push(functionSeed(effectiveVal, {
           source: loaderTag.source,
           confidence: 0.9,
           exactFunctionStart: true,
@@ -1142,7 +1154,7 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
           loaderEntryContract: loaderTag.name,
           analysisWindow,
         }));
-        image.metadata[loaderTag.metadata] = { address: val, source: 'SHT_DYNAMIC' };
+        image.metadata[loaderTag.metadata] = { address: effectiveVal, source: 'SHT_DYNAMIC' };
       } else {
         budget.partial(
           `dynamic-section:${sec.index}:${loaderTag.source}`,
@@ -1161,11 +1173,10 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
       }
       if (stringTableValid && val < BigInt(strSize)) {
         const off = Number(val);
-        const max = Math.min(
-          strSize - off,
-          1 << 20,
-          Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1),
-        );
+        const rawMax = Math.min(strSize - off, 1 << 20);
+        const budgetMax = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
+        const max = Math.min(rawMax, budgetMax);
+        const clampedByBudget = budgetMax < rawMax;
         let name;
         if (failedStringOffsets.has(off)) {
           name = null;
@@ -1173,6 +1184,14 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
           scan.scanned = 0;
           name = terminatedStringInTable(r, strStart, strSize, off, max, scan);
           if (name == null) {
+            if (clampedByBudget) {
+              budget.partial(
+                `dynamic-section:${sec.index}:string-budget-exhausted`,
+                `ELF SHT_DYNAMIC ${sec.index} string exceeded remaining string budget before NUL terminator`,
+              );
+              if (scan.scanned > 0) budget.take({ inputBytes: scan.scanned, operations: 1 }, 'SHT_DYNAMIC-string-scan');
+              break;
+            }
             failedStringOffsets.add(off);
             budget.partial(
               `dynamic-section:${sec.index}:unterminated-string`,

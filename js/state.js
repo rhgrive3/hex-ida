@@ -44,6 +44,7 @@ export class Store {
   }
   get(key) { return this.state[key]; }
   set(patch) {
+    if (!patch || typeof patch !== 'object') return;
     const keys = Object.keys(patch);
     for (const k of keys) {
       if (FORBIDDEN_STATE_KEYS.has(k)) throw new TypeError('state-key-invalid');
@@ -51,7 +52,7 @@ export class Store {
     let changed = false;
     // Apply only properties explicitly provided by the patch.
     for (const k of keys) {
-      if (this.state[k] !== patch[k]) { this.state[k] = patch[k]; changed = true; }
+      if (!Object.is(this.state[k], patch[k])) { this.state[k] = patch[k]; changed = true; }
     }
     if (changed) for (const fn of this.listeners) invokeListener(fn, this.state, patch);
   }

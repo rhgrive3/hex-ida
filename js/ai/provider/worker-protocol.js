@@ -116,7 +116,7 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (!isObject(args)) throw new Error('The model function arguments must be an object.');
   if (name === 'submit_hex_result') {
     const answer = boundedText(args.answer, 30000).trim(); if (!answer) throw new Error('The final answer is empty.');
-    return { type: 'final', answer, confidence: finiteConfidence(args.confidence), evidenceIds: stringList(args.evidenceIds, 100), hypothesisIds: stringList(args.hypothesisIds, 100), hypotheses: normalizeList(args.hypotheses, 30), suggestedActions: normalizeList(args.suggestedActions, 30), proposals: normalizeList(args.proposals, 8), followups: stringList(args.followups, 20) };
+    return { type: 'final', answer, confidence: finiteConfidence(args.confidence), evidenceIds: stringList(args.evidenceIds, 100), hypothesisIds: stringList(args.hypothesisIds, 100), hypotheses: normalizeList(args.hypotheses, 30), suggestedActions: normalizeList(args.suggestedActions, 30), proposals: normalizeProposals(args.proposals, 8), followups: stringList(args.followups, 20) };
   }
   if (!allowedTools.includes(name)) throw new Error('The model requested an unknown tool.');
   return { type: 'tool', tool: name, arguments: sanitizeValue(args, 0), purpose: boundedText(call.purpose, 1000) };
@@ -133,7 +133,7 @@ export function normalizeRequest(value) {
   const context = { question, currentFunction, xrefs: normalizeList(value.xrefs, 60), callers: normalizeList(value.callers, 60), callees: normalizeList(value.callees, 60), strings: normalizeList(value.strings, 60), globals: normalizeList(value.globals, 60) };
   const untrustedTarget = compactUntrustedTarget(value.untrustedTarget);
   if (untrustedTarget) context.untrustedTarget = untrustedTarget;
-  if (JSON.stringify(context).length > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The selected analysis context is too large.');
+  if (byteLength(JSON.stringify(context)) > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The selected analysis context is too large.');
   return { thinkingLevel, context };
 }
 
@@ -153,7 +153,8 @@ export function normalizeCurrentFunction(value) {
 
 export function promptWorkbench(context) {
   const fn = context?.current?.function || null, selection = context?.current?.selection || null;
-  return { binary: context?.current?.binaryIdentity ? { name: context.current.binaryId, architecture: context?.turn?.architecture } : null, function: fn ? { address: fn.address, name: fn.name } : null, selection: selection ? { kind: 'snapshot', address: selection.start, text: selection.instructions?.[0]?.mnemonic } : null };
+  const binaryName = context?.current?.binaryId ?? context?.current?.binaryIdentity?.name ?? context?.current?.binaryIdentity?.id ?? null;
+  return { binary: (context?.current?.binaryIdentity || context?.current?.binaryId) ? { name: binaryName, architecture: context?.turn?.architecture } : null, function: fn ? { address: fn.address, name: fn.name } : null, selection: selection ? { kind: 'snapshot', address: selection.start, text: selection.instructions?.[0]?.mnemonic } : null };
 }
 // Binary content is rejected by value type, not by property name (#5316): a
 // key-name blacklist let a TypedArray/DataView/ArrayBuffer pass under any
@@ -166,7 +167,38 @@ export function isBinaryContainer(value) {
   return value instanceof ArrayBuffer
     || (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer);
 }
-export function rejectBinaryPayload(value, depth = 0) { if (depth > 10 || !value || typeof value !== 'object') return; if (isBinaryContainer(value)) throw new HttpError(422, 'binary_upload_forbidden', 'Binary content cannot be sent to the AI worker.'); const forbidden = new Set(['binary','binaryBytes','fileBytes','rawBinary','byteSource','arrayBuffer']); for (const [key, item] of Object.entries(value)) { if (forbidden.has(key)) throw new HttpError(422, 'binary_upload_forbidden', 'Binary content cannot be sent to the AI worker.'); rejectBinaryPayload(item, depth + 1); } }
+export function rejectBinaryPayload(value, depth = 0) { if (!value || typeof value !== 'object') return; if (depth > 10) throw new HttpError(422, 'binary_upload_forbidden', 'Nested context exceeded maximum binary inspection depth.'); if (isBinaryContainer(value)) throw new HttpError(422, 'binary_upload_forbidden', 'Binary content cannot be sent to the AI worker.'); const forbidden = new Set(['binary','binaryBytes','fileBytes','rawBinary','byteSource','arrayBuffer']); for (const [key, item] of Object.entries(value)) { if (forbidden.has(key)) throw new HttpError(422, 'binary_upload_forbidden', 'Binary content cannot be sent to the AI worker.'); rejectBinaryPayload(item, depth + 1); } }
+const MAX_PATCH_PROPOSAL_BYTES = 4096;
+function sanitizePatchByteArray(value) {
+  if (!Array.isArray(value)) return sanitizeValue(value, 1);
+  if (value.length > MAX_PATCH_PROPOSAL_BYTES) {
+    throw new Error(`Patch proposal byte array exceeds maximum length (${MAX_PATCH_PROPOSAL_BYTES}).`);
+  }
+  const out = new Array(value.length);
+  for (let i = 0; i < value.length; i++) {
+    const b = value[i];
+    if (typeof b !== 'number' || !Number.isInteger(b) || b < 0 || b > 255) {
+      throw new Error('Patch proposal byte array must contain integer byte values 0..255.');
+    }
+    out[i] = b;
+  }
+  return out;
+}
+function normalizeProposals(value, maxItems) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const raw of value.slice(0, maxItems)) {
+    if (!isObject(raw)) continue;
+    const clean = sanitizeValue(raw, 0);
+    if (!clean) continue;
+    if (raw.kind === 'patch') {
+      if (Array.isArray(raw.before)) defineOwn(clean, 'before', sanitizePatchByteArray(raw.before));
+      if (Array.isArray(raw.after)) defineOwn(clean, 'after', sanitizePatchByteArray(raw.after));
+    }
+    out.push(clean);
+  }
+  return out;
+}
 export function normalizeList(value, maxItems) { return Array.isArray(value) ? value.slice(0, maxItems).map((item) => sanitizeValue(item, 0)).filter((item) => item != null) : []; }
 export function sanitizeValue(value, depth) { if (depth > 6) return null; if (typeof value === 'string') return boundedText(value, 6000); if (typeof value === 'number' || typeof value === 'boolean') return value; if (value == null) return null; if (isBinaryContainer(value)) return null; if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeValue(item, depth + 1)).filter((item) => item != null); if (!isObject(value)) return null; const out = {}; for (const [key, item] of Object.entries(value).slice(0, 40)) { const clean = sanitizeValue(item, depth + 1); if (clean != null) defineOwn(out, boundedText(key, 80), clean); } return out; }
 export function stringList(value, max) { return Array.isArray(value) ? value.slice(0, max).map((item) => boundedText(item, 2000)).filter(Boolean) : []; }

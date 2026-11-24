@@ -93,7 +93,7 @@ function canonicalCfgGraph(model, cfg, opts = {}) {
       if (!byCfgId.has(targetId)) continue;
       const targetCompat = bySemanticId.get(targetId) ?? legacyBlocks[blockIndex.get(targetId)] ?? null;
       const style = edgeStyle(successor.kind);
-      const back = sourceCompat && targetCompat
+      const back = sourceCompat?.endRow != null && targetCompat?.startRow != null
         && provenBackEdges.has(`${sourceCompat.endRow}:${targetCompat.startRow}`);
       edges.push({
         from:sourceId,

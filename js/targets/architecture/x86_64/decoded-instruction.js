@@ -56,7 +56,9 @@ function bigint(value, code) {
   if (typeof value === 'string') {
     const textValue = value.trim();
     if (NUMERIC_TEXT.test(textValue)) {
-      try { return BigInt(textValue); } catch { /* fall through to reject */ }
+      try {
+        return textValue.startsWith('-') ? -BigInt(textValue.slice(1)) : BigInt(textValue);
+      } catch { /* fall through to reject */ }
     }
   }
   throw new TypeError(code);
@@ -161,24 +163,25 @@ function bytesOf(input, length) {
     isUint8 = tag === 'Uint8Array';
   }
   if (isUint8) {
-    const bytes = new Uint8Array(input.length);
+    if (input.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
+    const bytes = new Uint8Array(length);
     bytes.set(input);
-    if (bytes.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
     return bytes;
   }
   if (!Array.isArray(input)) {
     throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
   }
-  const bytes = new Uint8Array(input.length);
-  for (let index = 0; index < input.length; index += 1) {
-    if (!Object.hasOwn(input, index)) throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
-    const byte = input[index];
+  if (input.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
+  const bytes = new Uint8Array(length);
+  for (let index = 0; index < length; index += 1) {
+    const desc = Object.getOwnPropertyDescriptor(input, index);
+    if (!desc || !Object.hasOwn(desc, 'value')) throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
+    const byte = desc.value;
     if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
       throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
     }
     bytes[index] = byte;
   }
-  if (bytes.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
   return bytes;
 }
 
@@ -282,19 +285,24 @@ const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
   Symbol.toStringTag,
 )?.get;
 
-function prefixBytesOf(input, code) {
+function prefixBytesOf(input, code, maxLength = 15) {
   if (input == null) return new Uint8Array();
   if (ArrayBuffer.isView(input)) {
     let tag = null;
     try { tag = TYPED_ARRAY_TAG_GETTER?.call(input) ?? null; } catch { tag = null; }
     if (tag !== 'Uint8Array') throw new TypeError(code);
-    try { return Uint8Array.from(input); } catch { throw new TypeError(code); }
+    if (input.length > maxLength) throw new TypeError(code);
+    const bytes = new Uint8Array(input.length);
+    for (let index = 0; index < input.length; index += 1) bytes[index] = input[index];
+    return bytes;
   }
   if (!Array.isArray(input)) throw new TypeError(code);
+  if (input.length > maxLength) throw new TypeError(code);
   const bytes = new Uint8Array(input.length);
   for (let index = 0; index < input.length; index += 1) {
-    if (!Object.hasOwn(input, index)) throw new TypeError(code);
-    const byte = input[index];
+    const desc = Object.getOwnPropertyDescriptor(input, index);
+    if (!desc || !Object.hasOwn(desc, 'value')) throw new TypeError(code);
+    const byte = desc.value;
     if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
       throw new TypeError(code);
     }
@@ -327,6 +335,8 @@ export function createX86DecodedInstruction(input = {}) {
   const instructionFamily = text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required');
   const rawDetail = input.detail && typeof input.detail === 'object' ? input.detail : {};
   const rawOperands = rawDetail.operands ?? input.structuredOperands ?? (Array.isArray(input.operands) ? input.operands : []);
+  if (!Array.isArray(rawOperands)) throw new TypeError('x86-decoded-instruction-invalid-operand-count');
+  if (rawOperands.length > 64) throw new TypeError('x86-decoded-instruction-invalid-operand-count');
   const operands = rawOperands.map((operand, index) => normalizeOperand(
     operand,
     index,

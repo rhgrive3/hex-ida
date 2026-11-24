@@ -257,12 +257,16 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
     if (!leftSet || !rightSet) return a1;
 
     const run = pointsTo();
-    const a2Status = mergeAnalysisStatus(status, run.status);
+    const roots = nonEscapingRoots();
+    let a2Status = mergeAnalysisStatus(status, run.status);
+    if (!options.nonEscapingRoots && escapeRun?.status) {
+      a2Status = mergeAnalysisStatus(a2Status, escapeRun.status);
+    }
     const a2 = pointsToAlias(leftSet, rightSet, {
       status: a2Status,
       widthBitsLeft: leftAccess.widthBits,
       widthBitsRight: rightAccess.widthBits,
-      nonEscapingRoots: nonEscapingRoots(),
+      nonEscapingRoots: roots,
     });
 
     if (contradicts(a1.relation, a2.relation)) {

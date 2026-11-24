@@ -56,7 +56,7 @@ export function mergeMachOAnalysisResults(legacy, normalized) {
       };
       const current = entries.get(key);
       if (!current) { entries.set(key, next); continue; }
-      current.flag ||= next.flag;
+      current.flag = (current.flag || 0) | (next.flag || 0);
       if (authoritative && next.name && (next.kind === 2 || !current.name || current.kind === 0)) {
         current.name = next.name; current.kind = next.kind; current.provenance = next.provenance;
       }

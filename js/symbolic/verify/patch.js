@@ -7,6 +7,26 @@
 
 import { verifyBoundedEquivalence } from './equivalence.js';
 import { VERDICT, CLAIM_KIND } from './query.js';
+import { ownDataEntries } from '../expr/data-boundary.js';
+
+function snapshotPatchMemoryRegions(memoryRegions) {
+  if (!Array.isArray(memoryRegions)) return memoryRegions;
+  const normalize = (value, seen = new Set()) => {
+    if (typeof value === 'bigint') return `0x${value.toString(16)}`;
+    if (value == null || typeof value !== 'object') return value;
+    if (seen.has(value)) throw new TypeError('verifyPatchEquivalence: cyclic memoryRegions');
+    seen.add(value);
+    try {
+      if (Array.isArray(value)) return Object.freeze(value.map((item) => normalize(item, seen)));
+      const out = {};
+      for (const [key, entry] of ownDataEntries(value)) out[key] = normalize(entry, seen);
+      return Object.freeze(out);
+    } finally {
+      seen.delete(value);
+    }
+  };
+  return Object.freeze(memoryRegions.map((region) => normalize(region)));
+}
 
 export async function verifyPatchEquivalence({
   originalBinaryId = 'original_binary',
@@ -48,7 +68,7 @@ export async function verifyPatchEquivalence({
         kind: 'patch-equivalence',
         originalBinaryId,
         patchedPatchSetId,
-        memoryRegions,
+        memoryRegions: snapshotPatchMemoryRegions(memoryRegions),
       },
     },
   });

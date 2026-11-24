@@ -209,7 +209,9 @@ export function parseRiscvAttributes(input, options = {}) {
             const arch = readNtbs(bytes, attributeCursor, subsubEnd);
             if (!arch) return null;
             const normalized = normalizeRiscvIsaString(arch.value);
-            if (normalized && !found) found = Object.freeze({ ...normalized, evidence:'elf-attribute' });
+            if (!normalized) return null;
+            if (found && found.canonical !== normalized.canonical) return null;
+            if (!found) found = Object.freeze({ ...normalized, evidence:'elf-attribute' });
             attributeCursor = arch.next;
           } else if (!KNOWN_RISCV_ATTRIBUTE_TAGS.has(attr.value) && (attr.value % 128) < 64) {
             return null;

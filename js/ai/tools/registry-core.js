@@ -20,27 +20,32 @@ const TOOL_FUNCTION_ADDRESS_ARRAY_KEYS = new Map([
 // cross-turn cache reuse (#4065).
 const SNAPSHOT_DEPENDENT_UNKEYED_TOOLS = new Set(["get_current_function", "get_selection_context"]);
 
-function boundaryIdentity(value) {
-  if (value == null || value === '') return null;
+function boundaryIdentity(value, seen = new WeakSet(), depth = 0) {
+  if (value == null || value === '' || depth > 32) return null;
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
   if (typeof value !== 'object') return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
   for (const key of ['identity', 'id', 'uuid', 'address', 'functionAddress', 'selectionId']) {
-    if (value[key] != null) return boundaryIdentity(value[key]);
+    if (value[key] != null) return boundaryIdentity(value[key], seen, depth + 1);
   }
   const start = value.startAddress ?? value.start;
   const end = value.endAddress ?? value.end;
-  if (start != null || end != null) return (boundaryIdentity(start) || '') + ':' + (boundaryIdentity(end) || '');
+  if (start != null || end != null) return (boundaryIdentity(start, seen, depth + 1) || '') + ':' + (boundaryIdentity(end, seen, depth + 1) || '');
   return null;
 }
 
 function scopeBoundaryFor(scope, args = {}, options = {}, context = {}) {
-  if (scope !== 'function' && scope !== 'selection') return null;
+  if (scope !== 'function' && scope !== 'selection' && scope !== 'neighborhood') return null;
   const candidate = options.scopeBoundary ?? options.scopeIdentity ??
     (scope === 'function'
       ? options.functionIdentity ?? args.functionAddress ?? args.function ?? context.functionIdentity ??
         context.currentFunction?.address ?? context.currentFunction?.id
-      : options.selectionIdentity ?? args.selectionId ?? args.selection ?? args.selectionAddress ??
-        context.selectionIdentity ?? context.selection?.id);
+      : scope === 'neighborhood'
+        ? options.neighborhoodIdentity ?? options.functionIdentity ?? args.functionAddress ?? args.function ?? args.address ??
+          context.neighborhoodIdentity ?? context.functionIdentity ?? context.currentFunction?.address ?? context.currentFunction?.id
+        : options.selectionIdentity ?? args.selectionId ?? args.selection ?? args.selectionAddress ??
+          context.selectionIdentity ?? context.selection?.id);
   const identity = boundaryIdentity(candidate);
   if (!identity) return null;
   return identity.startsWith(scope + ':') ? identity : scope + ':' + identity;
@@ -55,7 +60,6 @@ export class ToolRegistry {
     if (this.evidenceStore?.setObservationStore) this.evidenceStore.setObservationStore(this.observationStore);
     this.tools = new Map();
     this.accounting = { calls: 0, cost: 0, elapsedMs: 0, failures: 0, cacheHits: 0 };
-    this.executionSignal = null;
   }
 
   register(definition) {
@@ -66,7 +70,7 @@ export class ToolRegistry {
       description: "", inputSchema: { type: "object" }, outputSchema: null, cost: "cheap",
       scopeSupport: ["auto", "binary", "project"], mutability: "read-only", needsApproval: false,
       category: "discovery", preferredPrerequisites: [], resultKind: "observation",
-      deterministic: true, cacheable: true, storeResult: true, modelProjection: projectBounded,
+      deterministic: true, storeResult: true, modelProjection: projectBounded,
       ...definition,
       // Reserved snapshot-dependent reads must never be made reusable by a
       // custom definition; their UI snapshot is absent from the cache key.
@@ -101,10 +105,8 @@ export class ToolRegistry {
     const started = Date.now();
     const scope = options.scope || "auto";
     const scopeBoundary = scopeBoundaryFor(scope, args, options, this.context);
-    const previousSignal = this.executionSignal;
     const timeoutMs = resolveToolTimeout(tool, options);
     const execution = createExecutionSignal(options.signal, timeoutMs);
-    this.executionSignal = execution.signal;
     try {
       assertSchema(args, tool.inputSchema, "invalid_tool_call");
       this.assertScope(tool, args, scope);
@@ -198,7 +200,6 @@ export class ToolRegistry {
       throw new AIError("tool_failed", `${name} failed: ${message}`);
     } finally {
       execution.dispose();
-      this.executionSignal = previousSignal;
     }
   }
 
@@ -237,9 +238,10 @@ export class ToolRegistry {
   }
 }
 
-function collectAddressTargets(value, tool = "") {
+function collectAddressTargets(value, tool = "", seen = new WeakSet(), depth = 0) {
   const out = [];
-  if (!value || typeof value !== "object") return out;
+  if (!value || typeof value !== "object" || depth > 32 || seen.has(value)) return out;
+  seen.add(value);
   for (const [key, item] of Object.entries(value)) {
     if ((ADDRESS_KEYS.has(key) || /Address$/.test(key)) && typeof item === "string" && addressText(item)) {
       out.push({ address:addressText(item), kind:"address" });
@@ -248,7 +250,7 @@ function collectAddressTargets(value, tool = "") {
         if (typeof address === "string" && addressText(address)) out.push({ address:addressText(address), kind:"function" });
       }
     } else if (item && typeof item === "object") {
-      out.push(...collectAddressTargets(item, tool));
+      out.push(...collectAddressTargets(item, tool, seen, depth + 1));
     }
   }
   return out;

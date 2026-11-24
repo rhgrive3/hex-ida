@@ -7,6 +7,14 @@ import {
 
 export { SEMANTIC_SSA_BUILD_DEFAULT_BUDGET, SEMANTIC_SSA_BUILD_VERSION };
 
+function canonicalSnapshotId(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') return value.length > 0 ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? String(value) : null;
+  if (typeof value === 'bigint') return value.toString();
+  return null;
+}
+
 class CanonicalSemanticSsaRow {
   #rowBrand = true;
   #producer;
@@ -50,7 +58,7 @@ class CanonicalSemanticSsaArtifact {
     this.#functionId = String(binding.functionId);
     this.#semanticIrDigest = String(binding.semanticIrDigest);
     this.#scalarSsaDigest = String(binding.scalarSsaDigest);
-    this.#snapshotId = binding.snapshotId != null ? String(binding.snapshotId) : null;
+    this.#snapshotId = canonicalSnapshotId(binding.snapshotId);
     this.#semanticIrSource = binding.semanticIrSource ?? null;
     Object.setPrototypeOf(this, Object.prototype);
   }
@@ -74,7 +82,10 @@ class CanonicalSemanticSsaArtifact {
       if (value.#functionId !== String(binding.functionId)) return false;
       if (value.#semanticIrDigest !== String(binding.semanticIrDigest)) return false;
       if (binding.scalarSsaDigest != null && value.#scalarSsaDigest !== String(binding.scalarSsaDigest)) return false;
-      if (value.#snapshotId != null && binding.snapshotId != null && value.#snapshotId !== String(binding.snapshotId)) return false;
+      if (binding.snapshotId != null) {
+        const reqSnapshotId = canonicalSnapshotId(binding.snapshotId);
+        if (reqSnapshotId == null || value.#snapshotId == null || value.#snapshotId !== reqSnapshotId) return false;
+      }
       return true;
     } catch {
       return false;

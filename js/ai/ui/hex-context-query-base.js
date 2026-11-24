@@ -187,15 +187,32 @@ export function createHexAIContext(app) {
 
   const legacy = createLegacyHexAIContext(app);
   const context = cloneContextDescriptors(legacy);
+  const MAX_NAME_CACHE = 2048;
   const names = new Map();
+  let cachedBinaryId = null;
+  const currentBinaryId = () => app?.backend?.binaryId ?? legacy.binaryId ?? null;
+  const ensureNameScope = () => {
+    const activeId = currentBinaryId();
+    if (activeId !== cachedBinaryId) {
+      names.clear();
+      cachedBinaryId = activeId;
+    }
+    return activeId;
+  };
+  const nameCacheKey = (address) => JSON.stringify([ensureNameScope(), address.toString()]);
   const remember = (row) => {
     const address = toBigInt(row?.address ?? row?.addr ?? row?.startAddress);
-    if (address != null && row?.name) names.set(address.toString(), String(row.name));
+    if (address != null && row?.name) {
+      const key = nameCacheKey(address);
+      if (names.has(key)) names.delete(key);
+      names.set(key, String(row.name));
+      while (names.size > MAX_NAME_CACHE) names.delete(names.keys().next().value);
+    }
     return address;
   };
   const nameOf = (address) => {
     const addr = toBigInt(address);
-    return addr == null ? null : (names.get(addr.toString()) || null);
+    return addr == null ? null : (names.get(nameCacheKey(addr)) || null);
   };
 
   define(context, 'analysisAuthority', { value:QUERY_AUTHORITY, writable:false });

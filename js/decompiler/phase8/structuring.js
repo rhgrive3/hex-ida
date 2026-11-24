@@ -331,7 +331,10 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
   const cfg = analysis?.get('cfg');
   const dominatorFacts = analysis?.get('dominators');
   const inductionFacts = analysis?.get('induction');
-  const limits = { ...DEFAULT_LIMITS, ...(budget.limits ?? {}) };
+  const limits = Object.fromEntries(Object.entries(DEFAULT_LIMITS).map(([k, def]) => {
+    const v = budget?.limits?.[k];
+    return [k, typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : def];
+  }));
 
   const allBlocks = cfg?.blocks ?? [];
   // Cutting the CFG to fit maxBlocks drops blocks and edges from the analysis,
