@@ -27,7 +27,7 @@ function decodeBase64(b64) {
 }
 
 function isJsEngineForced() {
-  if (typeof globalThis === 'object' && globalThis !== null && globalThis.__HEX_ENGINE_MODE__ === 'js') {
+  if (typeof globalThis === 'object' && globalThis !== null && (globalThis.HEX_ENGINE === 'js' || globalThis.__HEX_ENGINE_MODE__ === 'js')) {
     return true;
   }
   if (typeof process === 'object' && process !== null && process.env && process.env.HEX_ENGINE === 'js') {

@@ -30,11 +30,8 @@ import { analyzeGraph } from '../js/controlflow.js';
 import { decompile } from '../js/decompile.js';
 import { analyzeSemanticFunction } from '../js/analysis/semantic-function.js';
 import {
-  canUseWasmForFunction,
-  extractArm64InstructionWords,
-} from '../js/core/hex-engine-bridge.js';
-import {
   getFallbackCounts,
+  getWasmCallCount,
   getWasmCallCounts,
   resetAllTelemetry,
 } from '../js/core/wasm-telemetry.js';
@@ -222,14 +219,16 @@ function prepareCorpus(sessions) {
         const builtCfg = buildCfg(model, { rowOfAddress });
         cfgSuccs = (builtCfg?.nodes || []).map((node) => (node.succ || []).map((e) => e.to));
         cfgEntry = builtCfg?.entry ?? 0;
-        const words = extractArm64InstructionWords(model.instructions || fn.insns);
-        const gate = canUseWasmForFunction({
-          arch: 'arm64',
-          words,
-          instructions: model.instructions || fn.insns,
-          opts: { beginner: false, _engine: 'wasm' },
+        resetAllTelemetry();
+        const beforeDecomp = getWasmCallCount('decompile');
+        decompile(model, {
+          addr: fn.address,
+          name: fn.name,
+          rowOfAddress,
+          beginner: false,
+          _engine: 'auto',
         });
-        wasmEligible = gate.ok;
+        wasmEligible = getWasmCallCount('decompile') > beforeDecomp;
       }
 
       const x86SemanticInput = isX86_64
@@ -387,7 +386,7 @@ function formatTable(report) {
     const r = report.fullCorpus[mode];
     const speedup = r.medianMs > 0 ? (jsFullMed / r.medianMs).toFixed(2) : '0.00';
     lines.push(
-      `| ${mode} | ${r.medianMs.toFixed(2)} | ${r.peakRssMB.toFixed(2)} | ${r.peakHeapMB.toFixed(2)} | ${speedup}x | ${r.wasmCalls.engine_runtime || 0} | ${r.fallbackCounts.FLAG_JS || 0} |`,
+      `| ${mode} | ${r.medianMs.toFixed(2)} | ${r.peakRssMB.toFixed(2)} | ${r.peakHeapMB.toFixed(2)} | ${speedup}x | ${r.wasmCalls.decompile || 0} | ${r.fallbackCounts.FLAG_JS || 0} |`,
     );
   }
   lines.push('');
