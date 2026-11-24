@@ -33,6 +33,9 @@ const SIZEOF_HEX_IMAGE_INFO = 72;
 const SIZEOF_HEX_ARM64_DECODED = 208;
 const SIZEOF_HEX_X86_DECODED = 72;
 const SIZEOF_HEX_LINEMAP_ENTRY = 16;
+const SIZEOF_HEX_IR_STATS = 56;
+const SIZEOF_HEX_RISCV64_DECODED = 64;
+const HEX_IR_NONE = 0xffffffff;
 
 // Instructions whose JS decompiler oracle semantics can diverge from the fast
 // WASM lifter/emitter path and must therefore fail closed to JS.
@@ -683,5 +686,411 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     return { pseudocode, lines, sourceMap };
   } catch {
     return noteFallback('decompile', 'wasm_exception');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared Engine Scratch + Decompiler Output Helpers (Wave 8)
+// ---------------------------------------------------------------------------
+function allocEngineScratch(ex, bytes) {
+  if (typeof ex.hex_engine_scratch_alloc === 'function') return ex.hex_engine_scratch_alloc(bytes);
+  return allocScratch(ex, bytes);
+}
+
+function resetEngineScratch(ex) {
+  if (typeof ex.hex_engine_scratch_reset === 'function') ex.hex_engine_scratch_reset();
+  else resetScratch(ex);
+}
+
+function normalizeDecompileSymbolName(funcName, domain) {
+  const rawName = typeof funcName === 'string' ? funcName : '';
+  if (rawName.startsWith('-[') || rawName.startsWith('+[')) {
+    return { ok: false, reason: 'unsupported_objc_name', name: '' };
+  }
+  if (rawName.length === 0) {
+    return { ok: true, reason: null, name: '' };
+  }
+  const nameStr = rawName.replace(/^_+/, '').replace(/[^A-Za-z0-9_]/g, '_');
+  if (nameStr.length === 0 || /^[0-9]/.test(nameStr)) {
+    return { ok: false, reason: 'unsupported_symbol_name', name: '' };
+  }
+  return { ok: true, reason: null, name: nameStr, domain };
+}
+
+function readDecompileLinemap(mem, lmPtr, lmCount) {
+  const rawLinemap = new Map();
+  if (lmPtr && lmCount > 0) {
+    const dv = new DataView(mem);
+    for (let i = 0; i < lmCount; i += 1) {
+      const off = lmPtr + i * SIZEOF_HEX_LINEMAP_ENTRY;
+      const lineNo = dv.getUint32(off, true);
+      const address = dv.getBigUint64(off + 8, true);
+      const list = rawLinemap.get(lineNo) || [];
+      if (!list.includes(address)) list.push(address);
+      rawLinemap.set(lineNo, list);
+    }
+  }
+  return rawLinemap;
+}
+
+function buildDecompiledLinesAndSourceMap(pseudocode, rawLinemap, baseAddrBig, addrToRow) {
+  const rawLines = pseudocode.split('\n');
+  const lines = [];
+  const sourceMap = [];
+  let bodyLineNo = 0;
+  let seenSig = false;
+  for (let idx = 0; idx < rawLines.length; idx += 1) {
+    const text = rawLines[idx];
+    const trimmed = text.trimStart();
+    const indent = Math.floor((text.length - trimmed.length) / 4);
+    const isPrelude = !seenSig && (trimmed.startsWith('/*') || trimmed.startsWith('typedef '));
+    let kind;
+    if (isPrelude) {
+      kind = 'decl';
+    } else if (!seenSig) {
+      kind = 'sig';
+      seenSig = true;
+    } else if (
+      trimmed === '{' || trimmed === '}' || trimmed.startsWith('if ')
+      || trimmed.startsWith('while ') || trimmed.startsWith('} else')
+    ) {
+      kind = 'ctrl';
+    } else {
+      kind = 'stmt';
+    }
+
+    const mappedAddrs = rawLinemap.get(idx + 1) || [];
+    const firstAddr = kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null);
+    const lineAddresses = isPrelude || kind === 'sig'
+      ? [baseAddrBig]
+      : (kind === 'ctrl' && (trimmed === '{' || trimmed === '}'))
+        ? []
+        : mappedAddrs.slice();
+    const lineRows = lineAddresses
+      .map((a) => addrToRow.get(a))
+      .filter((r) => r !== undefined);
+    lines.push({
+      kind,
+      indent,
+      text: trimmed,
+      row: firstAddr != null ? (addrToRow.get(firstAddr) ?? null) : null,
+      addr: firstAddr,
+      address: firstAddr,
+      source: { addresses: lineAddresses, rows: lineRows },
+      note: null,
+    });
+
+    if (!isPrelude) {
+      bodyLineNo += 1;
+      const addresses = kind === 'sig'
+        ? [baseAddrBig]
+        : (kind === 'ctrl' && (trimmed === '{' || trimmed === '}'))
+          ? []
+          : mappedAddrs.slice();
+      const rows = addresses
+        .map((a) => addrToRow.get(a))
+        .filter((r) => r !== undefined);
+      sourceMap.push({
+        outputStartLine: bodyLineNo,
+        outputEndLine: bodyLineNo,
+        source: {
+          addresses,
+          rows,
+          ir: [],
+          ssaDefs: [],
+          ssaUses: [],
+          evidence: [],
+        },
+        kind,
+      });
+    }
+  }
+  return { lines, sourceMap };
+}
+
+// ---------------------------------------------------------------------------
+// x86_64 Decompiler WASM Bridge (Wave 8)
+// ---------------------------------------------------------------------------
+export function wasmDecompileX86_64Function({
+  bytes,
+  baseAddr = 0n,
+  funcName = '',
+  abiId = 0,
+  insns = null,
+} = {}) {
+  if (getEngineMode() === 'js') return noteFallback('x86_64_decompile', 'wasm_disabled');
+  const ex = getHexEngineExportsSafe();
+  if (
+    !isWasmBulkMemorySupported()
+    || !ex
+    || typeof ex.hex_engine_decompile_x86_64 !== 'function'
+    || typeof ex.hex_x86_64_decomp_get_text_ptr !== 'function'
+    || typeof ex.hex_x86_64_decomp_get_text_len !== 'function'
+  ) {
+    return noteFallback('x86_64_decompile', 'wasm_unavailable');
+  }
+  if (!(bytes instanceof Uint8Array)) {
+    return noteFallback('x86_64_decompile', 'invalid_bytes');
+  }
+  if (bytes.length === 0) {
+    return noteFallback('x86_64_decompile', 'empty_bytes');
+  }
+
+  const norm = normalizeDecompileSymbolName(funcName, 'x86_64_decompile');
+  if (!norm.ok) {
+    return noteFallback('x86_64_decompile', norm.reason);
+  }
+
+  try {
+    resetEngineScratch(ex);
+    const bytesPtr = allocEngineScratch(ex, bytes.length);
+    if (!bytesPtr) return noteFallback('x86_64_decompile', 'oom');
+    new Uint8Array(ex.memory.buffer, bytesPtr, bytes.length).set(bytes);
+
+    let namePtr = 0;
+    let nameLen = 0;
+    if (norm.name.length > 0) {
+      const nameBytes = textEncoder.encode(norm.name);
+      nameLen = nameBytes.length;
+      namePtr = allocEngineScratch(ex, nameLen + 1);
+      if (!namePtr) return noteFallback('x86_64_decompile', 'oom');
+      const memView = new Uint8Array(ex.memory.buffer, namePtr, nameLen + 1);
+      memView.set(nameBytes, 0);
+      memView[nameLen] = 0;
+    }
+
+    const baseAddrBig = BigInt(baseAddr);
+    const status = ex.hex_engine_decompile_x86_64(
+      bytesPtr,
+      bytes.length,
+      baseAddrBig,
+      namePtr,
+      nameLen,
+      abiId >>> 0,
+      HEX_EMIT_FLAG_JS_PARITY,
+    );
+    if (status !== HEX_OK) {
+      return noteFallback('x86_64_decompile', `wasm_status_${status}`);
+    }
+
+    const textPtr = ex.hex_x86_64_decomp_get_text_ptr();
+    const textLen = ex.hex_x86_64_decomp_get_text_len();
+    if (!textPtr || !textLen) {
+      return noteFallback('x86_64_decompile', 'empty_wasm_output');
+    }
+
+    const mem = ex.memory.buffer;
+    const pseudocode = textDecoder.decode(new Uint8Array(mem, textPtr, textLen));
+
+    const rawLinemap = (
+      typeof ex.hex_x86_64_decomp_get_linemap_ptr === 'function'
+      && typeof ex.hex_x86_64_decomp_get_linemap_count === 'function'
+    )
+      ? readDecompileLinemap(
+        mem,
+        ex.hex_x86_64_decomp_get_linemap_ptr(),
+        ex.hex_x86_64_decomp_get_linemap_count(),
+      )
+      : new Map();
+
+    const addrToRow = new Map();
+    if (Array.isArray(insns)) {
+      for (let i = 0; i < insns.length; i += 1) {
+        if (insns[i]?.address != null) addrToRow.set(BigInt(insns[i].address), i);
+      }
+    }
+
+    const { lines, sourceMap } = buildDecompiledLinesAndSourceMap(
+      pseudocode,
+      rawLinemap,
+      baseAddrBig,
+      addrToRow,
+    );
+
+    recordWasmCall('x86_64_decompile');
+    return { pseudocode, lines, sourceMap };
+  } catch {
+    return noteFallback('x86_64_decompile', 'wasm_exception');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resident IR + SSA Optimizer WASM Bridge (Wave 8)
+// ---------------------------------------------------------------------------
+export function wasmRunResidentIrAndOptimize({
+  blocks,
+  edges = [],
+  insts = [],
+  entryBlock = 0,
+  maxIters = 16,
+} = {}) {
+  if (getEngineMode() === 'js') return noteFallback('resident_ir', 'wasm_disabled');
+  const ex = getHexEngineExportsSafe();
+  if (
+    !isWasmBulkMemorySupported()
+    || !ex
+    || typeof ex.hex_ir_create !== 'function'
+    || typeof ex.hex_ir_release !== 'function'
+    || typeof ex.hex_ir_add_block !== 'function'
+    || typeof ex.hex_ir_add_edge !== 'function'
+    || typeof ex.hex_ir_add_inst !== 'function'
+    || typeof ex.hex_ir_run_cfg_and_ssa !== 'function'
+    || typeof ex.hex_ir_get_stats !== 'function'
+    || typeof ex.hex_decomp_optimize_ir !== 'function'
+  ) {
+    return noteFallback('resident_ir', 'wasm_unavailable');
+  }
+
+  const blockCount = typeof blocks === 'number'
+    ? (blocks >>> 0)
+    : (Array.isArray(blocks) ? blocks.length : 0);
+  if (blockCount === 0) {
+    return noteFallback('resident_ir', 'empty_blocks');
+  }
+  const edgeList = Array.isArray(edges) ? edges : [];
+  const instList = Array.isArray(insts) ? insts : [];
+
+  let handle = 0;
+  try {
+    resetEngineScratch(ex);
+    const outHandlePtr = allocEngineScratch(ex, 8);
+    const outIdPtr = allocEngineScratch(ex, 8);
+    const outChangedPtr = allocEngineScratch(ex, 8);
+    const outStatsPtr = allocEngineScratch(ex, SIZEOF_HEX_IR_STATS);
+    if (!outHandlePtr || !outIdPtr || !outChangedPtr || !outStatsPtr) {
+      return noteFallback('resident_ir', 'oom');
+    }
+
+    const createStatus = ex.hex_ir_create(entryBlock >>> 0, outHandlePtr);
+    if (createStatus !== HEX_OK) {
+      return noteFallback('resident_ir', `create_status_${createStatus}`);
+    }
+    handle = new DataView(ex.memory.buffer).getUint32(outHandlePtr, true);
+    if (!handle) {
+      return noteFallback('resident_ir', 'invalid_handle');
+    }
+
+    for (let i = 0; i < blockCount; i += 1) {
+      const st = ex.hex_ir_add_block(handle, outIdPtr);
+      if (st !== HEX_OK) return noteFallback('resident_ir', `add_block_status_${st}`);
+    }
+
+    for (let i = 0; i < edgeList.length; i += 1) {
+      const e = edgeList[i];
+      const from = Array.isArray(e) ? e[0] : (e?.from ?? e?.fromBlock ?? e?.from_block);
+      const to = Array.isArray(e) ? e[1] : (e?.to ?? e?.toBlock ?? e?.to_block);
+      const st = ex.hex_ir_add_edge(handle, from >>> 0, to >>> 0);
+      if (st !== HEX_OK) return noteFallback('resident_ir', `add_edge_status_${st}`);
+    }
+
+    for (let i = 0; i < instList.length; i += 1) {
+      const ins = instList[i];
+      const blockId = (ins?.blockId ?? ins?.block_id ?? ins?.block ?? 0) >>> 0;
+      const op = (ins?.op ?? 0) & 0xffff;
+      const flags = (ins?.flags ?? 0) & 0xffff;
+      const dstVal = (ins?.dstVal ?? ins?.dst_val ?? ins?.dst ?? HEX_IR_NONE) >>> 0;
+      const arg0 = (ins?.arg0 ?? HEX_IR_NONE) >>> 0;
+      const arg1 = (ins?.arg1 ?? HEX_IR_NONE) >>> 0;
+      const arg2 = (ins?.arg2 ?? HEX_IR_NONE) >>> 0;
+      const imm = BigInt(ins?.imm64 ?? ins?.imm64_or_sym ?? ins?.imm ?? 0n);
+      const st = ex.hex_ir_add_inst(handle, blockId, op, flags, dstVal, arg0, arg1, arg2, imm, outIdPtr);
+      if (st !== HEX_OK) return noteFallback('resident_ir', `add_inst_status_${st}`);
+    }
+
+    const ssaStatus = ex.hex_ir_run_cfg_and_ssa(handle);
+    if (ssaStatus !== HEX_OK) {
+      return noteFallback('resident_ir', `ssa_status_${ssaStatus}`);
+    }
+
+    const optStatus = ex.hex_decomp_optimize_ir(handle, maxIters >>> 0, outChangedPtr);
+    if (optStatus !== HEX_OK) {
+      return noteFallback('ir_optimizer', `opt_status_${optStatus}`);
+    }
+    const changedCount = new DataView(ex.memory.buffer).getUint32(outChangedPtr, true);
+
+    const statsStatus = ex.hex_ir_get_stats(handle, outStatsPtr);
+    if (statsStatus !== HEX_OK) {
+      return noteFallback('resident_ir', `stats_status_${statsStatus}`);
+    }
+    const dv = new DataView(ex.memory.buffer, outStatsPtr, SIZEOF_HEX_IR_STATS);
+    const stats = {
+      blockCount: dv.getUint32(0, true),
+      edgeCount: dv.getUint32(4, true),
+      instCount: dv.getUint32(8, true),
+      valueCount: dv.getUint32(12, true),
+      phiCount: dv.getUint32(16, true),
+      useCount: dv.getUint32(20, true),
+      reachableBlockCount: dv.getUint32(24, true),
+      sccCount: dv.getUint32(28, true),
+      cfgReady: dv.getUint8(32) !== 0,
+      ssaReady: dv.getUint8(33) !== 0,
+      memssaReady: dv.getUint8(34) !== 0,
+      digestLo64: dv.getBigUint64(40, true),
+      digestHi64: dv.getBigUint64(48, true),
+    };
+
+    recordWasmCall('resident_ir');
+    recordWasmCall('ir_optimizer');
+    return { stats, changedCount };
+  } catch {
+    return noteFallback('resident_ir', 'wasm_exception');
+  } finally {
+    if (handle) {
+      try {
+        ex.hex_ir_release(handle);
+      } catch {
+        // Ignore cleanup failure
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RISC-V 64 Decode API (Wave 8 pre-wired)
+// ---------------------------------------------------------------------------
+export function wasmDecodeRiscv64Batch(bytes, basePc = 0n) {
+  if (getEngineMode() === 'js') return noteFallback('riscv64_decode', 'wasm_disabled');
+  if (!(bytes instanceof Uint8Array)) return noteFallback('riscv64_decode', 'invalid_bytes');
+  const ex = getHexEngineExportsSafe();
+  if (!isWasmBulkMemorySupported() || !ex || typeof ex.hex_riscv64_decode_batch !== 'function') {
+    return noteFallback('riscv64_decode', 'wasm_unavailable');
+  }
+  if (bytes.length === 0) {
+    return [];
+  }
+  try {
+    resetEngineScratch(ex);
+    const maxInsns = Math.ceil(bytes.length / 2);
+    const inPtr = allocEngineScratch(ex, bytes.length);
+    const outPtr = allocEngineScratch(ex, maxInsns * SIZEOF_HEX_RISCV64_DECODED);
+    const countPtr = allocEngineScratch(ex, 8);
+    if (!inPtr || !outPtr || !countPtr) return noteFallback('riscv64_decode', 'oom');
+    new Uint8Array(ex.memory.buffer, inPtr, bytes.length).set(bytes);
+    const status = ex.hex_riscv64_decode_batch(inPtr, bytes.length, BigInt(basePc), outPtr, maxInsns, countPtr);
+    if (status !== HEX_OK) return noteFallback('riscv64_decode', `wasm_status_${status}`);
+    const mem = ex.memory.buffer;
+    const count = new DataView(mem).getUint32(countPtr, true);
+    const out = new Array(count);
+    for (let i = 0; i < count; i += 1) {
+      const base = outPtr + i * SIZEOF_HEX_RISCV64_DECODED;
+      const dv = new DataView(mem, base, SIZEOF_HEX_RISCV64_DECODED);
+      out[i] = {
+        pc: dv.getBigUint64(0, true),
+        target: dv.getBigUint64(8, true),
+        imm: dv.getBigInt64(16, true),
+        raw: dv.getUint32(24, true),
+        length: dv.getUint8(28),
+        kind: dv.getUint8(29),
+        rd: dv.getUint8(30),
+        rs1: dv.getUint8(31),
+        rs2: dv.getUint8(32),
+        valid: dv.getUint8(33) !== 0,
+        mn: readCString(mem, base + 36, 24),
+      };
+    }
+    recordWasmCall('riscv64_decode');
+    return out;
+  } catch {
+    return noteFallback('riscv64_decode', 'wasm_exception');
   }
 }
