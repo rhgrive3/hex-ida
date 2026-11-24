@@ -52,7 +52,7 @@ function safetyCeiling(value) {
 export function resolveDecompilerProfile(profileName) {
   if (typeof profileName !== 'string') return DECOMPILER_PROFILES.fast;
   const key = profileName.trim().toLowerCase();
-  return DECOMPILER_PROFILES[key] || DECOMPILER_PROFILES.fast;
+  return Object.hasOwn(DECOMPILER_PROFILES, key) ? DECOMPILER_PROFILES[key] : DECOMPILER_PROFILES.fast;
 }
 
 /**
@@ -62,14 +62,17 @@ export function applyDecompilerProfile(opts = {}) {
   const profile = resolveDecompilerProfile(opts.profile);
   const decompilerTimeBudgetMs = opts.decompilerTimeBudgetMs ?? profile.decompilerTimeBudgetMs;
   const transformSafetyCeilingMs = opts.transformSafetyCeilingMs ?? profile.transformSafetyCeilingMs;
+  const hasExplicitDeadline = typeof opts.transformDeadline === 'number' && Number.isFinite(opts.transformDeadline);
+  const hasExplicitBudget = opts.decompilerTimeBudgetMs != null;
   const fastTimedTransforms = profile.name === 'fast' && opts.deterministicTransforms !== true;
-  const deadlineMs = opts.decompilerTimeBudgetMs != null
+  const shouldTimeTransforms = opts.deterministicTransforms !== true && (fastTimedTransforms || hasExplicitDeadline || hasExplicitBudget);
+  const deadlineMs = hasExplicitBudget
     ? opts.decompilerTimeBudgetMs
     : transformSafetyCeilingMs;
-  const transformDeadline = fastTimedTransforms && deadlineMs != null
-    ? (typeof opts.transformDeadline === 'number' && Number.isFinite(opts.transformDeadline)
+  const transformDeadline = shouldTimeTransforms && (hasExplicitDeadline || deadlineMs != null)
+    ? (hasExplicitDeadline
       ? opts.transformDeadline
-      : clock(opts) + (opts.decompilerTimeBudgetMs != null
+      : clock(opts) + (hasExplicitBudget
         ? deadlineDuration(deadlineMs)
         : safetyCeiling(deadlineMs)))
     : null;

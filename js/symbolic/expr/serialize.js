@@ -45,8 +45,13 @@ export function canonicalizeObject(obj) {
   return sorted;
 }
 
-export function exprToPlain(node) {
+const MAX_EXPR_TO_PLAIN_NODES = 65536;
+
+export function exprToPlain(node, _budget = { nodes: 0 }) {
   if (!node) return null;
+  if (++_budget.nodes > MAX_EXPR_TO_PLAIN_NODES) {
+    throw new RangeError(`exprToPlain: expression exceeds node budget (${MAX_EXPR_TO_PLAIN_NODES})`);
+  }
   const base = {
     kind: node.kind,
     sort: node.sort.kind === SORT_KIND.BOOL ? { kind: 'bool' } : { kind: 'bv', width: node.sort.width },
@@ -78,38 +83,38 @@ export function exprToPlain(node) {
       return {
         ...base,
         op: node.op,
-        arg: exprToPlain(node.arg),
+        arg: exprToPlain(node.arg, _budget),
       };
 
     case EXPR_KIND.BINARY:
       return {
         ...base,
         op: node.op,
-        left: exprToPlain(node.left),
-        right: exprToPlain(node.right),
+        left: exprToPlain(node.left, _budget),
+        right: exprToPlain(node.right, _budget),
       };
 
     case EXPR_KIND.COMPARE:
       return {
         ...base,
         op: node.op,
-        left: exprToPlain(node.left),
-        right: exprToPlain(node.right),
+        left: exprToPlain(node.left, _budget),
+        right: exprToPlain(node.right, _budget),
       };
 
     case EXPR_KIND.CONNECTIVE:
       return {
         ...base,
         op: node.op,
-        args: node.args.map(exprToPlain),
+        args: node.args.map((arg) => exprToPlain(arg, _budget)),
       };
 
     case EXPR_KIND.ITE:
       return {
         ...base,
-        cond: exprToPlain(node.cond),
-        thenExpr: exprToPlain(node.thenExpr),
-        elseExpr: exprToPlain(node.elseExpr),
+        cond: exprToPlain(node.cond, _budget),
+        thenExpr: exprToPlain(node.thenExpr, _budget),
+        elseExpr: exprToPlain(node.elseExpr, _budget),
       };
 
     case EXPR_KIND.EXTRACT:
@@ -117,14 +122,14 @@ export function exprToPlain(node) {
         ...base,
         high: node.high,
         low: node.low,
-        arg: exprToPlain(node.arg),
+        arg: exprToPlain(node.arg, _budget),
       };
 
     case EXPR_KIND.CONCAT:
       return {
         ...base,
-        left: exprToPlain(node.left),
-        right: exprToPlain(node.right),
+        left: exprToPlain(node.left, _budget),
+        right: exprToPlain(node.right, _budget),
       };
 
     case EXPR_KIND.CAST:
@@ -132,7 +137,7 @@ export function exprToPlain(node) {
         ...base,
         op: node.op,
         targetWidth: node.targetWidth,
-        arg: exprToPlain(node.arg),
+        arg: exprToPlain(node.arg, _budget),
       };
 
     default:
@@ -141,7 +146,10 @@ export function exprToPlain(node) {
 }
 
 function sortFromPlain(plain) {
-  return plain.sort.kind === 'bool' ? boolSort() : bvSort(plain.sort.width);
+  const kind = plain?.sort?.kind;
+  if (kind === 'bool') return boolSort();
+  if (kind === 'bv') return bvSort(plain.sort.width);
+  throw new TypeError(`sortFromPlain: unknown sort kind '${String(kind)}'`);
 }
 
 /*
@@ -222,29 +230,45 @@ function hexPreview(value) {
 // recursion input; admit it iteratively under the same depth/node/byte
 // budgets instead of letting an embedded object bypass them.
 function admitDetailPayload(detail, budget) {
+  if (detail == null) return detail;
   if (typeof detail === 'string') {
     chargeScalarBytes(budget, detail.length);
-    return;
+    return detail;
   }
-  if (!detail || typeof detail !== 'object') return;
-  const stack = [[detail, 1]];
-  while (stack.length > 0) {
-    const [value, depth] = stack.pop();
+  if (typeof detail !== 'object') return detail;
+  const active = new Set();
+  const walk = (value, depth) => {
     dagBudgetGuard(value, depth, budget);
     if (typeof value === 'string') {
       chargeScalarBytes(budget, value.length);
-      continue;
+      return value;
     }
-    if (!value || typeof value !== 'object') continue;
-    if (Array.isArray(value)) {
-      for (const item of value) stack.push([item, depth + 1]);
-      continue;
+    if (!value || typeof value !== 'object') return value;
+    if (active.has(value)) throw new TypeError('deserializeExprDag: circular detail payload');
+    active.add(value);
+    try {
+      if (Array.isArray(value)) {
+        const out = [];
+        for (let i = 0; i < value.length; i += 1) {
+          const desc = Object.getOwnPropertyDescriptor(value, i);
+          if (desc && (desc.get || desc.set)) throw new TypeError('deserializeExprDag: accessor property not allowed in detail payload');
+          out.push(walk(desc ? desc.value : undefined, depth + 1));
+        }
+        return out;
+      }
+      const out = {};
+      for (const key of Object.keys(value)) {
+        chargeScalarBytes(budget, key.length);
+        const desc = Object.getOwnPropertyDescriptor(value, key);
+        if (!desc || desc.get || desc.set) throw new TypeError('deserializeExprDag: accessor property not allowed in detail payload');
+        Object.defineProperty(out, key, { value: walk(desc.value, depth + 1), enumerable: true, writable: true, configurable: true });
+      }
+      return out;
+    } finally {
+      active.delete(value);
     }
-    for (const key of Object.keys(value)) {
-      chargeScalarBytes(budget, key.length);
-      stack.push([value[key], depth + 1]);
-    }
-  }
+  };
+  return walk(detail, 1);
 }
 
 function reserveCanonicalFreshSymbolIds(plain, seen = new Map(), depth = 0, budget = { nodes: 0, bytes: 0 }) {
@@ -315,28 +339,31 @@ function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0, bytes: 0 }) {
         return value;
       }
 
-    case EXPR_KIND.FRESH_SYMBOL:
+    case EXPR_KIND.FRESH_SYMBOL: {
       if (typeof plain.name === 'string') chargeScalarBytes(budget, plain.name.length);
       if (typeof plain.symbolId === 'string') chargeScalarBytes(budget, plain.symbolId.length);
+      const safeMeta = plain.meta && typeof plain.meta === 'object' ? admitDetailPayload(plain.meta, budget) : {};
       // Restore the saved canonical symbolId. Discarding a present malformed ID
       // would silently rebind the serialized symbol to a fresh identity. Only
       // legacy payloads where the ID is missing or a blank string may allocate
       // a replacement.
       if (plain.symbolId == null && !Object.prototype.hasOwnProperty.call(plain, 'symbolId')) {
-        return createFreshSymbol(sort, plain.name, plain.meta || {});
+        return createFreshSymbol(sort, plain.name, safeMeta);
       }
       if (typeof plain.symbolId === 'string' && plain.symbolId.trim() === '') {
-        return createFreshSymbol(sort, plain.name, plain.meta || {});
+        return createFreshSymbol(sort, plain.name, safeMeta);
       }
       if (typeof plain.symbolId !== 'string') {
         throw new TypeError('plainToExpr: fresh symbolId must be a string when present');
       }
-      return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
+      return restoreFreshSymbol(sort, plain.name, plain.symbolId, safeMeta);
+    }
 
-    case EXPR_KIND.UNKNOWN_SEMANTIC:
+    case EXPR_KIND.UNKNOWN_SEMANTIC: {
       if (typeof plain.reason === 'string') chargeScalarBytes(budget, plain.reason.length);
-      admitDetailPayload(plain.detail, budget);
-      return createUnknownSemantic(sort, plain.reason, plain.detail);
+      const safeDetail = admitDetailPayload(plain.detail, budget);
+      return createUnknownSemantic(sort, plain.reason, safeDetail);
+    }
 
     case EXPR_KIND.UNARY:
       return createUnary(plain.op, plainNodeToExpr(plain.arg, depth + 1, budget));

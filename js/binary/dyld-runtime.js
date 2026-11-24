@@ -38,29 +38,34 @@ export function mapDyldRuntimeAddress(image, value, slideValue = null) {
   if (!image || image.format !== 'dyld-shared-cache') throw new TypeError('dyld shared-cache BinaryImage required');
   const runtimeAddress = normalizeDyldRuntimeAddress(value);
   const metadata = image.metadata?.dyldSharedCache || {};
-  const slide = normalizeDyldRuntimeSlide(slideValue ?? metadata.slide ?? 0n);
-  const segment = (image.segments || []).find((entry) => {
+  const imageSlide = normalizeDyldRuntimeSlide(metadata.slide ?? 0n);
+  const slide = normalizeDyldRuntimeSlide(slideValue ?? imageSlide);
+  const unslidAddress = runtimeAddress >= slide ? runtimeAddress - slide : null;
+  const lookupAddress = slide === imageSlide
+    ? runtimeAddress
+    : (unslidAddress != null ? unslidAddress + imageSlide : null);
+  const segment = lookupAddress == null ? null : ((image.segments || []).find((entry) => {
     const start = BigInt(entry.address ?? 0n);
     const size = BigInt(entry.fileSize ?? entry.size ?? 0n);
-    return size > 0n && runtimeAddress >= start && runtimeAddress < start + size;
-  }) || null;
+    return size > 0n && lookupAddress >= start && lookupAddress < start + size;
+  }) || null);
   if (!segment) return Object.freeze({ mapped:false, runtimeAddress, slide, reason:'runtime-address-unmapped' });
 
   const segmentAddress = BigInt(segment.address);
-  const fileOffset = BigInt(segment.fileOffset ?? 0n) + (runtimeAddress - segmentAddress);
-  const unslidAddress = runtimeAddress >= slide ? runtimeAddress - slide : null;
+  const fileOffset = BigInt(segment.fileOffset ?? 0n) + (lookupAddress - segmentAddress);
+  const slideDelta = slide - imageSlide;
   let rebase = null;
   for (const mapping of metadata.mappingWithSlide || []) {
     for (const record of mapping?.slideInfo?.rebases || []) {
-      if (record.runtimeStorageAddress === runtimeAddress) {
+      if (record.runtimeStorageAddress === lookupAddress) {
         rebase = { role:'storage', storageAddress:record.storageAddress, targetAddress:record.targetAddress,
-          runtimeStorageAddress:record.runtimeStorageAddress, runtimeTargetAddress:record.runtimeTargetAddress,
+          runtimeStorageAddress:record.runtimeStorageAddress + slideDelta, runtimeTargetAddress:record.runtimeTargetAddress + slideDelta,
           authenticated:record.authenticated === true };
         break;
       }
-      if (record.runtimeTargetAddress === runtimeAddress) {
+      if (record.runtimeTargetAddress === lookupAddress) {
         rebase = { role:'target', storageAddress:record.storageAddress, targetAddress:record.targetAddress,
-          runtimeStorageAddress:record.runtimeStorageAddress, runtimeTargetAddress:record.runtimeTargetAddress,
+          runtimeStorageAddress:record.runtimeStorageAddress + slideDelta, runtimeTargetAddress:record.runtimeTargetAddress + slideDelta,
           authenticated:record.authenticated === true };
         break;
       }

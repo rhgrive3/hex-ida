@@ -728,6 +728,9 @@ export class EmulatorProvider {
           break;
         }
         const source = sourceEvents[index];
+        if (!source || typeof source !== 'object' || Array.isArray(source)) {
+          throw new Error(`emulator-provider: sourceEvents[${index}] must be a non-null object`);
+        }
         const identity = eventIdentity(source, index, runOccurrence);
         const kind = source.kind ?? source.type ?? 'emulator-checkpoint';
         const sourceCompleteness = source.completeness;

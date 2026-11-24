@@ -1,4 +1,5 @@
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { parseJvmFieldDescriptor } from './descriptors.js';
 
 const JVM_MANAGED_HEAP_REFERENCE_TYPE = Object.freeze({
   kind: 'address',
@@ -37,9 +38,36 @@ function resolveJvmClassRefName(jvmClass, cpIndex) {
   return name?.tag === 1 && typeof name.value === 'string' && name.value.length > 0 ? name.value : null;
 }
 
+function isValidJvmBinaryName(name) {
+  if (typeof name !== 'string' || name.length === 0) return false;
+  if (name[0] === '/' || name[name.length - 1] === '/') return false;
+  for (let i = 0; i < name.length; i++) {
+    const ch = name[i];
+    if (ch === '.' || ch === '[' || ch === ';') return false;
+    if (ch === '/' && name[i + 1] === '/') return false;
+  }
+  return true;
+}
+
+function isValidJvmArrayDescriptor(descriptor) {
+  if (typeof descriptor !== 'string' || !descriptor.startsWith('[')) return false;
+  try {
+    const parsed = parseJvmFieldDescriptor(descriptor);
+    return parsed?.type?.kind === 'array' && parsed.type.dimensions >= 1 && parsed.type.dimensions <= 255;
+  } catch {
+    return false;
+  }
+}
+
 function arrayDescriptorForComponent(componentName) {
   if (typeof componentName !== 'string' || componentName.length === 0) return null;
-  return componentName.startsWith('[') ? `[${componentName}` : `[L${componentName};`;
+  if (componentName.startsWith('[')) {
+    const descriptor = `[${componentName}`;
+    return isValidJvmArrayDescriptor(descriptor) ? descriptor : null;
+  }
+  if (!isValidJvmBinaryName(componentName)) return null;
+  const descriptor = `[L${componentName};`;
+  return isValidJvmArrayDescriptor(descriptor) ? descriptor : null;
 }
 
 function arrayRank(descriptor) {
@@ -183,7 +211,7 @@ function arrayAllocationBundle(bundle, bytecode, jvmClass, options) {
       id: `dimension_${dimensions - index - 1}`,
       bits: 32,
     }));
-    if (dimensions === 0 || rank === 0 || dimensions > rank) {
+    if (dimensions === 0 || rank === 0 || rank > 255 || dimensions > rank || !isValidJvmArrayDescriptor(descriptor)) {
       return createVMEffectBundle({
         ...bundle,
         mnemonic: 'multianewarray',

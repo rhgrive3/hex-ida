@@ -247,16 +247,22 @@ export function parseDyldSharedCache(input, options = {}) {
     });
   }
 
+  const MAX_DYLD_AMBIGUITIES = 256;
   const ambiguities = [];
-  for (let left = 0; left < mappings.length; left++) {
-    const a = mappings[left];
-    for (let right = left + 1; right < mappings.length; right++) {
-      const b = mappings[right];
+  const sortedMappings = [...mappings].sort((x, y) => (x.address < y.address ? -1 : x.address > y.address ? 1 : x.index - y.index));
+  for (let left = 0; left < sortedMappings.length && ambiguities.length < MAX_DYLD_AMBIGUITIES; left++) {
+    const a = sortedMappings[left];
+    const endA = a.address + a.size;
+    for (let right = left + 1; right < sortedMappings.length && ambiguities.length < MAX_DYLD_AMBIGUITIES; right++) {
+      const b = sortedMappings[right];
+      if (b.address >= endA) break;
       const start = a.address > b.address ? a.address : b.address;
-      const endA = a.address + a.size;
       const endB = b.address + b.size;
       const end = endA < endB ? endA : endB;
-      if (start < end) ambiguities.push({ kind: 'overlapping-vm-mappings', candidates: [a.index, b.index], start, end });
+      if (start < end) {
+        const candidates = a.index < b.index ? [a.index, b.index] : [b.index, a.index];
+        ambiguities.push({ kind: 'overlapping-vm-mappings', candidates, start, end });
+      }
     }
   }
 

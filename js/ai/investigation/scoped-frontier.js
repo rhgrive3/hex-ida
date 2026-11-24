@@ -122,7 +122,7 @@ async function actionFrontier(rows, maximum, work) {
     }
     if (!dominated) pareto.push(candidate);
   }
-  pareto.sort((a, b) => b.directReuse - a.directReuse || b.declaredImpact - a.declaredImpact
+  pareto.sort((a, b) => b.declaredImpact - a.declaredImpact || b.directReuse - a.directReuse
     || a.costEstimate.toolCalls - b.costEstimate.toolCalls || a.costEstimate.bytesRead - b.costEstimate.bytesRead
     || a.costEstimate.residentBytes - b.costEstimate.residentBytes || a.costEstimate.workUnits - b.costEstimate.workUnits
     || compareIdentity(a.id, b.id));
@@ -236,9 +236,29 @@ export async function describeInvestigationFrontier(request, { world, assumption
   const planned = prepareInvestigationPlanningRows(relevant, { samples: costSamples,
     ownerRevision: inventoryBinding?.ownerRevision ?? null, planningBudget, work });
   const frontier = await actionFrontier(planned.rows, maximumActions, work); check();
+  const contractHypotheses = [...hypotheses];
+  const contractMissing = [...missing];
+  if (requested.length < allHypotheses.length) {
+    const requestedSet = new Set(requested);
+    for (const id of allHypotheses) {
+      if (requestedSet.has(id)) continue;
+      work.charge('nodes'); work.charge('workUnits');
+      const record = context.hypothesisStore.get(id);
+      capturedHypotheses.set(id, record);
+      if (!record) { contractMissing.push({ id, kind: 'hypothesis-owner-record-missing' }); continue; }
+      const raw = snapshotContractData(record, { ...LIMITS, maxBytes: 65536, maxNodes: 4096 });
+      const support = stringSet(raw.supportEvidenceIds, 'investigation-support-ids', 256);
+      const contradiction = stringSet(raw.contradictionEvidenceIds, 'investigation-contradiction-ids', 256);
+      contractHypotheses.push({ id, recordDigest: digest(raw), recordedStatus: raw.status,
+        claimDigest: digest(raw.claim), supportEvidenceIds: support, contradictionEvidenceIds: contradiction,
+        declaredMissingEvidence: raw.missingEvidence, semanticVerdict: 'not-established',
+        reviewSignals: support.length && contradiction.length ? ['declared-support-and-contradiction-coexist'] : [],
+        authority: 'existing-agent-state-not-canonical-truth' });
+    }
+  }
   const discharged = rows.filter((row) => row.discharge.status === 'discharged').length;
   const success = checkInvestigationSuccessContract(successContract, { rows, binding, goalDigest: digest(job.goal),
-    ownerRevision: inventoryBinding?.ownerRevision ?? null, missing, hypotheses, work });
+    ownerRevision: inventoryBinding?.ownerRevision ?? null, missing: contractMissing, hypotheses: contractHypotheses, work });
   const policy = planInvestigationInspection(frontier, { rows, samples: costSamples,
     ownerRevision: inventoryBinding?.ownerRevision ?? null, planningBudget, success, work,
     calibration: planned.calibration, deferredCandidates: planned.deferred });

@@ -311,7 +311,8 @@ function isPoolCompletion(event) {
 }
 
 function wantsCompletion(events) {
-  return Array.isArray(events) && events.some((event) => String(event) === 'worker.completed');
+  const list = Array.isArray(events) ? events : (typeof events === 'string' ? [events] : []);
+  return list.some((event) => String(event) === 'worker.completed');
 }
 
 function ownershipError(leaseId, detail) {

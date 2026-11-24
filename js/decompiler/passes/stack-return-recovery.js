@@ -320,7 +320,7 @@ function controller(ir, merge, predecessors, opts, passIndex = null) {
 function storeValue(inst, key, values, expectedBytes = null) {
   if (inst?.op !== 'store' || inst.loc?.kind !== 'stack' || inst.loc?.key !== key) return null;
   const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
-  if (expectedBytes != null && expectedBytes > 0 && bytes > 0 && bytes !== expectedBytes) return null;
+  if (expectedBytes != null && expectedBytes > 0 && bytes !== expectedBytes) return null;
   let node = expressionOf(valueOf(inst.args?.[0]), values);
   if (!node) return null;
   const bits = bytes > 0 ? bytes * 8 : 0;
