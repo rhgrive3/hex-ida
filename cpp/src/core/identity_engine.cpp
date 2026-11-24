@@ -1193,7 +1193,16 @@ bool g_external_arena_bound = false;
 bool g_owned_fixed_bound = false;
 bool g_owned_arena_ready = false;
 
-#if defined(__wasm__)
+#if defined(HEX_UNIFIED_WASM)
+void init_default_arena() {
+  // Unified WASM builds inject the shared scratch arena via bind_global_arena_ptr().
+  g_owned_arena.init_fixed(nullptr, 0u);
+  g_owned_arena_ready = true;
+  g_owned_fixed_bound = false;
+  g_external_arena_bound = false;
+  g_active_arena = &g_owned_arena;
+}
+#elif defined(__wasm__)
 void init_default_arena() {
   const uintptr_t raw = reinterpret_cast<uintptr_t>(&__heap_base);
   const uintptr_t aligned = (raw + 7u) & ~static_cast<uintptr_t>(7u);

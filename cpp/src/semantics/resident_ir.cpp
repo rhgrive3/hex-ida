@@ -1621,7 +1621,9 @@ Arena g_default_arena;
 IrStore g_default_store;
 bool g_default_ready = false;
 
-#if defined(__wasm__)
+#if defined(HEX_UNIFIED_WASM)
+// Unified WASM builds inject persistent & scratch arenas via default_store().init().
+#elif defined(__wasm__)
 extern "C" unsigned char __heap_base;
 constexpr size_t kWasmScratchBytes = 1024u * 1024u;  // 1 MiB fixed scratch region
 #else
@@ -1631,7 +1633,11 @@ alignas(8) uint8_t g_native_backing[8u * 1024u * 1024u];
 
 void ensure_default_store() {
   if (g_default_ready) return;
-#if defined(__wasm__)
+#if defined(HEX_UNIFIED_WASM)
+  // Avoid touching __heap_base or growing linear memory; engine_runtime.cpp binds the arenas.
+  g_default_scratch_arena.init_fixed(nullptr, 0u);
+  g_default_arena.init_fixed(nullptr, 0u);
+#elif defined(__wasm__)
   const uintptr_t base = (reinterpret_cast<uintptr_t>(&__heap_base) + 7u) & ~static_cast<uintptr_t>(7u);
   size_t total = static_cast<size_t>(__builtin_wasm_memory_size(0)) * 65536u;
   const size_t min_needed = base + kWasmScratchBytes + 65536u;
