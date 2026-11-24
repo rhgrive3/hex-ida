@@ -164,11 +164,27 @@ const CLAIM_ADDRESS_PATTERN = /0x[0-9a-fA-F]{1,16}/g;
  * happens to cite it (#9009). Only literal `0x…` tokens count, so this stays a
  * deterministic typed check instead of a textual-entailment guess.
  */
+const STRICT_ADDRESS_RE = /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
+
+function parseStrictAddressBigInt(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || !STRICT_ADDRESS_RE.test(trimmed)) return null;
+    try { return BigInt(trimmed); } catch { return null; }
+  }
+  return null;
+}
+
 export function claimedAddresses(...texts) {
   const claimed = new Set();
   for (const text of texts) {
     if (typeof text !== 'string' || !text) continue;
-    for (const match of text.match(CLAIM_ADDRESS_PATTERN) || []) claimed.add(match.toLowerCase());
+    for (const match of text.match(CLAIM_ADDRESS_PATTERN) || []) {
+      const parsed = parseStrictAddressBigInt(match);
+      claimed.add(parsed != null ? `0x${parsed.toString(16)}` : match.toLowerCase());
+    }
   }
   return claimed;
 }
@@ -177,7 +193,12 @@ function recordSubjects(record) {
   const subjects = new Set();
   for (const value of [record?.functionAddress, record?.address]) {
     if (value == null) continue;
-    try { subjects.add(`0x${BigInt(value).toString(16)}`); } catch { subjects.add(String(value).toLowerCase()); }
+    const parsed = parseStrictAddressBigInt(value);
+    if (parsed != null) {
+      subjects.add(`0x${parsed.toString(16)}`);
+    } else if (typeof value === 'string' && value.trim()) {
+      subjects.add(value.trim().toLowerCase());
+    }
   }
   return subjects;
 }
@@ -331,7 +352,7 @@ const BRIDGE_DIAGNOSTIC_MESSAGES = Object.freeze({
   timeout: 'ChatGPT response capture timed out.',
   RPC_UNSAFE_RESULT: 'The ChatGPT bridge rejected an unsafe RPC result.',
 });
-function safeBridgeDiagnosticMessage(code) { return code ? BRIDGE_DIAGNOSTIC_MESSAGES[code] || null : null; }
+function safeBridgeDiagnosticMessage(code) { return typeof code === 'string' && Object.hasOwn(BRIDGE_DIAGNOSTIC_MESSAGES, code) ? BRIDGE_DIAGNOSTIC_MESSAGES[code] : null; }
 export function visibleProviderDiagnostics(error) {
   if (error?.type !== 'provider_error' && error?.type !== 'model_timeout') return '';
   const diagnostics = providerDiagnostics(error);
@@ -347,7 +368,7 @@ export function visibleProviderDiagnostics(error) {
 }
 export function humanError(error) {
   const labels = { cancelled: '解析を停止しました。保存済みの証拠とセッションは保持されています。', budget_exhausted: '解析予算または時間上限に達しました。得られた根拠までを返します。', context_too_large: 'provider へ送る入力全体が安全な上限を超えたため、送信前に停止しました。', model_timeout: 'モデル応答が時間内に完了しませんでした。ローカル解析結果は保持されています。', provider_error: 'AI provider を利用できませんでした。ローカル解析結果は保持されています。', invalid_model_output: 'モデル出力を安全に検証できませんでした。', invalid_tool_call: 'モデルが要求したツール呼び出しを検証できませんでした。', scope_violation: '指定された解析範囲を越える要求を拒否しました。', tool_failed: 'Hex ツールの実行に失敗しました。' };
-  const label = labels[error?.type] || error?.message || 'AI 解析を完了できませんでした。';
+  const label = (typeof error?.type === 'string' && Object.hasOwn(labels, error.type) ? labels[error.type] : null) || error?.message || 'AI 解析を完了できませんでした。';
   const diagnostics = visibleProviderDiagnostics(error);
   return diagnostics ? `${label}\n\n${diagnostics}` : label;
 }
@@ -394,8 +415,24 @@ export async function addressExistsAsync(context, address, signal = null) {
   }
   return addressExistsSync(context, address);
 }
-export function stableStringify(value) { if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`; if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`; return JSON.stringify(value); }
-export function addressString(value) { try { return `0x${BigInt(value).toString(16)}`; } catch { return null; } }
+export function stableStringify(value, seen = new WeakSet(), depth = 0) {
+  if (depth > 64) return '"[MaxDepth]"';
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) return '"[Circular]"';
+    seen.add(value);
+    try {
+      if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item, seen, depth + 1)).join(',')}]`;
+      return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key], seen, depth + 1)}`).join(',')}}`;
+    } finally {
+      seen.delete(value);
+    }
+  }
+  return JSON.stringify(value);
+}
+export function addressString(value) {
+  const parsed = parseStrictAddressBigInt(value);
+  return parsed != null ? `0x${parsed.toString(16)}` : null;
+}
 
 function strongIdentity(identity, id) {
   const value = id == null ? canonicalBindingId(identity?.id) : canonicalBindingId(id);

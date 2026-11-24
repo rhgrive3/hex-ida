@@ -180,7 +180,14 @@ function immutableSnapshot(value, active = new Set()) {
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) return null;
     const copy = {};
-    for (const key of Object.keys(value).sort()) copy[key] = immutableSnapshot(value[key], active);
+    for (const key of Object.keys(value).sort()) {
+      Object.defineProperty(copy, key, {
+        value: immutableSnapshot(value[key], active),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
     return Object.freeze(copy);
   } catch {
     return null;
@@ -710,8 +717,13 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
         rightFact ?? factFromRange(rightRange, {
           valueId: operands[1]?.id ?? null,
         }), { provenance: false });
+      const provenConst = combined.constant != null
+        && (combined.status === 'exact' || combined.status === 'conservative')
+        && combined.range.bits === resultBits
+        ? combined.constant
+        : null;
       return {
-        cell: overdefined(`operands of ${shape.operator} are not both constant`),
+        cell: provenConst != null ? constantCell(provenConst) : overdefined(`operands of ${shape.operator} are not both constant`),
         range: combined.range.bits === resultBits ? combined.range : fullRange(resultBits),
         fact: Object.freeze({ ...combined, valueId: value.id }),
       };
@@ -1139,14 +1151,33 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   // Materialize conservative block-entry joins from the edge-local facts. This
   // is a projection of the same edge map, not another path/value analysis.
   const blockEntryFacts = new Map();
+  const reachableIncomingByBlock = new Map();
   for (const entry of edgeFacts.values()) {
     if (entry.reachable !== true) continue;
-    if (!blockEntryFacts.has(entry.to)) blockEntryFacts.set(entry.to, new Map());
-    const merged = blockEntryFacts.get(entry.to);
-    for (const [valueId, fact] of entry.facts) {
-      const prior = merged.get(valueId);
-      merged.set(valueId, prior == null ? fact : joinFacts(prior, fact));
+    if (!reachableIncomingByBlock.has(entry.to)) reachableIncomingByBlock.set(entry.to, []);
+    reachableIncomingByBlock.get(entry.to).push(entry);
+  }
+  for (const [blockId, incomingEdges] of reachableIncomingByBlock) {
+    const candidateValueIds = new Set();
+    for (const entry of incomingEdges) {
+      for (const valueId of entry.facts.keys()) candidateValueIds.add(valueId);
     }
+    if (!candidateValueIds.size) {
+      blockEntryFacts.set(blockId, new Map());
+      continue;
+    }
+    const merged = new Map();
+    for (const valueId of candidateValueIds) {
+      let joined = null;
+      let valid = true;
+      for (const entry of incomingEdges) {
+        const edgeFact = entry.facts.get(valueId) ?? facts.get(valueId) ?? null;
+        if (edgeFact == null) { valid = false; break; }
+        joined = joined == null ? edgeFact : joinFacts(joined, edgeFact);
+      }
+      if (valid && joined != null) merged.set(valueId, joined);
+    }
+    blockEntryFacts.set(blockId, merged);
   }
   for (const [block, valueFacts] of blockEntryFacts) blockEntryFacts.set(block, new Map(
     [...valueFacts.entries()].sort(([left], [right]) => Number(left) - Number(right)),
@@ -1350,6 +1381,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   result.publicationDigest = stableDigest({
     contractVersion: result.contractVersion,
     passVersion: result.passVersion,
+    ...(conditionalInputs ? { conditionalInputsId: result.conditionalInputsId, conditionalOn: result.conditionalOn } : {}),
     identity: result.identity,
     provenance: result.provenance,
     constants: [...result.constants.entries()],

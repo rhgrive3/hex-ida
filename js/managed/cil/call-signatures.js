@@ -368,8 +368,8 @@ function resolveFieldOwner(index, rid) {
       const begin = row.fieldList;
       if (!Number.isSafeInteger(begin) || begin < 1 || begin > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
       const next = position + 1 < typeDefs.length ? typeDefs[position + 1].fieldList : fieldCount + 1;
+      if (!Number.isSafeInteger(next) || next < begin || next > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
       if (rid >= begin && rid < next) { owner = row; ownerIndex = position; break; }
-      if (next < begin || next > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
     }
   }
   if (!owner) fail('cil-fielddef-owner-missing');
@@ -420,6 +420,10 @@ function resolveFieldIndexed(index, token) {
           declaringTypeToken: tokenFor(TYPE_DEF_TABLE, parentRid),
           declaringType: `${namespace ? `${namespace}.` : ''}${name}`,
         };
+      } else if (parentTag === 1) {
+        if (parentRid > index.typeRefs.length) fail('cil-memberref-parent-out-of-range');
+      } else if (parentTag === 2) {
+        if (parentRid > index.moduleRefs.length) fail('cil-memberref-parent-out-of-range');
       } else if (parentTag === 4) {
         if (parentRid > index.typeSpecs.length) fail('cil-memberref-parent-out-of-range');
         const typeSpecRow = index.typeSpecs[parentRid - 1];
@@ -616,7 +620,7 @@ export function createCilCallStackEffect(kind, resolution) {  if (!['call', 'cal
   for (let index = signature.parameters.length - 1; index >= 0; index--) {
     consumedValues.push(Object.freeze({ id:`arg${index}`, ...signature.parameters[index] }));
   }
-  if (kind !== 'newobj' && signature.hasThis) consumedValues.push(Object.freeze({ id:'this' }));
+  if (kind !== 'newobj' && signature.hasThis && !signature.explicitThis) consumedValues.push(Object.freeze({ id:'this' }));
 
   const producedValues = [];
   if (kind === 'newobj') {

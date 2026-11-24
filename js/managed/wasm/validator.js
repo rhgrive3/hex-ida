@@ -74,7 +74,11 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
   if (!funcType) fail('wasm-invalid-function-type-index');
   const codeBody = wasmModule.codeBodies[internalIndex];
   const bytecode = codeBody.bytecode;
-  const locals = [...funcType.params, ...codeBody.locals];
+  const localParams = funcType.params;
+  const localDecls = codeBody.locals;
+  const localParamCount = localParams.length;
+  const localTotalCount = localParamCount + localDecls.length;
+  const localTypeAt = (index) => (index < localParamCount ? localParams[index] : localDecls[index - localParamCount]);
   const globals = moduleIndex.globals;
   const tables = moduleIndex.tables;
   const memoryContext = createWasmMemoryValidationContext(wasmModule);
@@ -250,15 +254,16 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
       }
       case 0x20: {
         const local = decodeUleb128(bytecode, pos); pos = local.nextOffset;
-        if (local.value >= locals.length) fail('wasm-invalid-local-index');
-        stack.push(locals[local.value]);
+        if (local.value >= localTotalCount) fail('wasm-invalid-local-index');
+        stack.push(localTypeAt(local.value));
         break;
       }
       case 0x21: case 0x22: {
         const local = decodeUleb128(bytecode, pos); pos = local.nextOffset;
-        if (local.value >= locals.length) fail('wasm-invalid-local-index');
-        pop(locals[local.value]);
-        if (opcode === 0x22) stack.push(locals[local.value]);
+        if (local.value >= localTotalCount) fail('wasm-invalid-local-index');
+        const localType = localTypeAt(local.value);
+        pop(localType);
+        if (opcode === 0x22) stack.push(localType);
         break;
       }
       case 0x23: case 0x24: {
@@ -302,7 +307,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
       case 0x7c: case 0x7d: case 0x7e:
         pop(I64); pop(I64); stack.push(I64); break;
       default:
-        return Object.freeze({ complete: false });
+        return Object.freeze({ complete: false, selectTypes });
     }
   }
 

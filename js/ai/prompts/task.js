@@ -108,9 +108,6 @@ export function detectTask(question, context = {}) {
   }
   for (const [id, re] of PATTERNS) {
     if (re.test(text)) {
-      if (id === 'explain_function' && context.selection === 'instruction' && /この行|this line/i.test(text)) {
-        return 'explain_instruction';
-      }
       return id;
     }
   }
@@ -119,7 +116,7 @@ export function detectTask(question, context = {}) {
 
 /** The hint block for a task id, or '' when there is no hint. */
 export function taskHint(task) {
-  return task && HINTS[task] ? HINTS[task] : '';
+  return typeof task === 'string' && Object.hasOwn(HINTS, task) ? HINTS[task] : '';
 }
 
 export default { TASKS, detectTask, taskHint };

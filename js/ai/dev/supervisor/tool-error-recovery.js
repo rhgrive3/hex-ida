@@ -15,6 +15,7 @@ export const DEV_TERMINAL_TOOL_ERROR_CODES = Object.freeze([
   'dev-runtime-corruption',
   'dev-security-violation',
   'dev-invariant-violation',
+  'dev-admin-not-authorized',
 ]);
 
 const TERMINAL_CODES = new Set(DEV_TERMINAL_TOOL_ERROR_CODES);
@@ -54,9 +55,15 @@ export function isTerminalDevToolError(error) {
 export const DEV_TOOL_ERROR_SAFE_MESSAGE
   = 'Dev tool failed. Raw diagnostic text is withheld from provider-bound history; the failure class is in code.';
 
+function boundedErrorCode(value, fallback = 'dev-tool-error') {
+  const text = String(value || '').trim();
+  return /^[a-z0-9._:-]{1,64}$/i.test(text) ? text : fallback;
+}
+
 export function describeDevToolError(error) {
   const name = String(error?.name || '').trim();
-  const code = String(error?.code || '').trim() || name || 'dev-tool-error';
+  const rawCode = String(error?.code || '').trim() || name || 'dev-tool-error';
+  const code = boundedErrorCode(rawCode, boundedErrorCode(name, 'dev-tool-error'));
   /* Local diagnostic representation: error text is tool/transport-controlled
      untrusted input, so credential-shaped values are removed before the text
      reaches even local consumers, and the result stays bounded by

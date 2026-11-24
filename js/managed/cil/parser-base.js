@@ -504,7 +504,7 @@ function localVarSignatureBlob(bytes, token, metadataInfo) {
   return heap.subarray(nextOffset, nextOffset + length);
 }
 
-function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
+function parseMetadataRoot(bytes, view, metadataOffset, metadataSize, { headerOnly = false } = {}) {
   checkedRange(bytes, metadataOffset, metadataSize, 'cil-metadata-root-out-of-bounds');
   const metadataEnd = metadataOffset + metadataSize;
   if (readU32(view, metadataOffset, 'cil-metadata-root-truncated') !== 0x424a5342) fail('cil-metadata-signature-invalid');
@@ -535,6 +535,9 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   const stringStream = streams.find((stream) => stream.name === '#Strings');
   const tableStream = streams.find((stream) => stream.name === '#~' || stream.name === '#-');
   const blobStream = streams.find((stream) => stream.name === '#Blob') ?? null;
+  if (headerOnly) {
+    return Object.freeze({ runtimeVersion, strings: [], moduleName: null, methodRvas: [], standAloneSigBlobIndexes: [], typeDefOrRefCounts: null, blobStream });
+  }
   const strings = stringStream ? parseStringsHeap(bytes, stringStream.offset, stringStream.size) : [];
   const tables = parseMetadataTables(bytes, view, tableStream, stringStream);
   return Object.freeze({
@@ -781,7 +784,7 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
   };
 }
 
-export function probeCil(bytes) {
+export function probeCil(bytes, options = {}) {
   if (!bytes || bytes.length < 64) return { supported: false, confidence: 0, reason: 'too-small' };
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
 
@@ -793,7 +796,7 @@ export function probeCil(bytes) {
       const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
       const layout = readPeCliLayout(u8, view);
       if (layout?.cliPresent) {
-        parseMetadataRoot(u8, view, layout.metadataOffset, layout.metadataSize);
+        parseMetadataRoot(u8, view, layout.metadataOffset, layout.metadataSize, { headerOnly: options?.headerOnly === true });
         return { supported: true, confidence: 1.0, formatVersion: 'pe-cli', vmSpecEdition: 'clr-v4' };
       }
       return { supported: false, confidence: 0, reason: layout?.cliPresent === false ? 'cli-directory-missing' : 'invalid-pe-cli' };

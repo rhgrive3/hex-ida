@@ -30,22 +30,23 @@ function needsConservativeCall(callNode, options, classifyTarget) {
     });
   });
 }
-function conservativeIr(ir, memorySsa, options) {
+function conservativeCallSiteIds(ir, memorySsa, options) {
   const classifyTarget = createSemanticCallTargetClassifier(ir, memorySsa, {
     ...options, summaryForTarget:target => summaryForTarget(options, target),
   });
-  let changed = false;
-  const nodes = (ir?.nodes ?? []).map((node) => {
+  const degraded = new Set();
+  for (const node of ir?.nodes ?? []) {
     if (node?.kind !== 'call' || node.call?.completeness !== 'complete'
-      || !needsConservativeCall(node, options, classifyTarget)) return node;
-    changed = true;
-    return { ...node, call:{ ...(node.call ?? {}), completeness:'partial' } };
-  });
-  return changed ? { ...ir, nodes } : ir;
+      || !needsConservativeCall(node, options, classifyTarget)) continue;
+    degraded.add(node.id);
+  }
+  return degraded.size ? degraded : null;
 }
 
 export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {}) {
-  const result = core.buildLocalFunctionSummary(conservativeIr(ir, memorySsa, options), cfg, ssa, memorySsa, options);
+  const degraded = conservativeCallSiteIds(ir, memorySsa, options);
+  const coreOptions = degraded ? { ...options, conservativeCallSiteIds: degraded } : options;
+  const result = core.buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, coreOptions);
   if (!result?.summary) return result;
   const oldStatus = result.status ?? result.summary.status;
   const status = createAnalysisStatus({

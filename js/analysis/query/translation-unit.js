@@ -61,6 +61,7 @@ const SAFE_COMPILER_BUILTINS = new Set([
   '__builtin_clz', '__builtin_clzll', '__builtin_ctz', '__builtin_ctzll',
   '__builtin_popcount', '__builtin_popcountll',
   '__builtin_llround', '__builtin_llroundf', '__builtin_trap',
+  '__builtin_expect', '__builtin_unreachable',
 ]);
 
 function isBinaryBackedGlobalPreludeComment(line) {
@@ -755,15 +756,16 @@ function safeSignatureDeclaration(signature) {
   const close = text.lastIndexOf(')');
   if (open < 1 || close !== text.length - 1) return null;
   const prefix = text.slice(0, open).trim();
-  const words = prefix.split(/\s+/);
-  const name = words.at(-1);
-  const returnType = words.slice(0, -1).join(' ');
+  const headMatch = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(prefix);
+  if (!headMatch) return null;
+  const returnType = headMatch[1].trim();
+  const name = headMatch[2];
   if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !normalizedType(returnType)) return null;
   for (const group of text.slice(open + 1, close).split(',')) {
     const value = group.trim();
     if (!value || /^void$/i.test(value)) continue;
-    const parameter = /^(.*?)(?:\s+)([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
-    if (!parameter || !normalizedType(parameter[1])) return null;
+    const parameter = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+    if (!parameter || !normalizedType(parameter[1].trim())) return null;
   }
   return `${prefix}(${text.slice(open + 1, close)});`;
 }
@@ -1187,7 +1189,7 @@ function hasStatementMacroCallShape(codeText, context) {
     const inner = match[2];
     if (context.keywordsLike.has(name)) continue;
     if (TYPE_LIKE_IDENTIFIERS.has(name) || context.knownAliases.has(name)) continue;
-    if (/^\s*\*+\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*$/.test(inner)) continue;
+    if (/^\s*\*+\s*(?:(?:const|volatile|restrict)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*$/.test(inner)) continue;
     return true;
   }
   return false;
@@ -1291,6 +1293,35 @@ function hasRawObjcMessageSyntax(codeText) {
     if (close < 0) continue;
     const afterClose = codeText.slice(close + 1).trimStart();
     if (afterClose.startsWith('=') && !afterClose.startsWith('==')) continue;
+    if (prev >= 0 && (codeText[prev] === '{' || codeText[prev] === ',')) {
+      let pos = 0;
+      let validChain = true;
+      while (pos < afterClose.length) {
+        while (pos < afterClose.length && /\s/.test(afterClose[pos])) pos++;
+        if (afterClose[pos] === '.') {
+          pos++;
+          while (pos < afterClose.length && /\s/.test(afterClose[pos])) pos++;
+          const fieldMatch = /^[A-Za-z_][A-Za-z0-9_]*/.exec(afterClose.slice(pos));
+          if (!fieldMatch) { validChain = false; break; }
+          pos += fieldMatch[0].length;
+        } else if (afterClose[pos] === '[') {
+          let subDepth = 0;
+          let subClosed = false;
+          for (; pos < afterClose.length; pos++) {
+            if (afterClose[pos] === '[') subDepth++;
+            else if (afterClose[pos] === ']') {
+              subDepth--;
+              if (subDepth === 0) { pos++; subClosed = true; break; }
+            }
+          }
+          if (!subClosed) { validChain = false; break; }
+        } else {
+          break;
+        }
+      }
+      while (pos < afterClose.length && /\s/.test(afterClose[pos])) pos++;
+      if (validChain && afterClose[pos] === '=' && afterClose[pos + 1] !== '=') continue;
+    }
     const inner = codeText.slice(i + 1, close).trim();
     if (!inner) continue;
     // Detect `[receiver selector]` or `[receiver sel:arg ...]` at top level.
@@ -1347,7 +1378,7 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
     fallbackNames.add(match[1]);
     if (/\[\]\s*;/.test(String(declaration))) fallbackArrayGlobals.add(match[1]);
   }
-  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), ...EXTENDED_128_TYPE_ALIASES.keys(), 'id', ...synthesizedStructs.keys()]);
+  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), ...EXTENDED_128_TYPE_ALIASES.keys(), 'id', '__int128', '__fp16', ...synthesizedStructs.keys()]);
   if (headers.has('<stdint.h>')) { knownAliases.add('uintptr_t'); knownAliases.add('intptr_t'); }
   if (headers.has('<stddef.h>') || headers.has('<stdlib.h>') || headers.has('<string.h>') || headers.has('<stdio.h>')) { knownAliases.add('size_t'); }
   if (headers.has('<stddef.h>')) { knownAliases.add('ptrdiff_t'); }
@@ -1418,7 +1449,7 @@ function faithfulBodyEligibility(fn, context) {
     for (const group of signature.slice(sigOpen + 1, sigClose).split(',')) {
       const value = group.trim();
       if (!value || /^void$/i.test(value)) continue;
-      const param = /^(.*?)(?:\s+)([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+      const param = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
       if (param?.[2]) {
         declaredLocals.add(param[2]);
         if (param[1].includes('*') || /(?:^|\s)id(?:\s|$)/.test(param[1])) pointerLocals.add(param[2]);
@@ -1441,6 +1472,8 @@ function faithfulBodyEligibility(fn, context) {
   }
   for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)/g)) {
     if (context.keywordsLike.has(match[1])) continue;
+    const bounds = context.knownArityBounds?.get(match[1]);
+    if (bounds && bounds.min === 0 && bounds.max === 0) continue;
     const openIdx = match.index + match[0].indexOf('(');
     const closeIdx = match.index + match[0].length - 1;
     const rawInner = bodyText.slice(openIdx + 1, closeIdx);
@@ -1500,8 +1533,9 @@ function faithfulBodyEligibility(fn, context) {
     if (!context.fallbackArrayGlobals.has(name)) continue;
     const after = codeText.slice(match.index + name.length);
     if (/^\s*\[/.test(after)) continue;
-    if (codeText[match.index - 1] === '&') continue;
-    if (/\bsizeof\s*$/.test(codeText.slice(0, match.index))) continue;
+    const before = codeText.slice(0, match.index);
+    if (/(?:^|[^&])&\s*\(*\s*$/.test(before)) continue;
+    if (/\bsizeof\s*\(*\s*$/.test(before)) continue;
     return { eligible:false, reason:`global-byte-array-fallback-usage-unsupported:${name}` };
   }
   for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
@@ -1866,7 +1900,11 @@ export function buildCTranslationUnit(functions, options = {}) {
         synthesizedStructs.set(structDef.name, fieldMap);
       }
       for (const field of structDef.fields) {
-        if (!fieldMap.has(field.name)) fieldMap.set(field.name, field.type);
+        const existingType = fieldMap.get(field.name);
+        if (existingType === undefined) fieldMap.set(field.name, field.type);
+        else if (existingType !== field.type) {
+          unresolvedRows.push(unresolved('unresolved-struct-field-conflict', `${structDef.name}.${field.name}`, 'synthesized-struct-field-type-conflict', { existingType, conflictingType: field.type }));
+        }
       }
     }
     for (const header of extractStandardHeaderIncludes(originalPseudocode)) {
@@ -1952,7 +1990,7 @@ export function buildCTranslationUnit(functions, options = {}) {
         continue;
       }
       headersForText(declaration, headers);
-      const key = `${name}\u0000${addressText(call.target) ?? ''}`;
+      const key = name;
       const prior = prototypeMap.get(key);
       if (!prior) {
         prototypeMap.set(key, { name, address:addressText(call.target), declaration, evidence, exact:call.prototype?.exact === true, conflict:false });

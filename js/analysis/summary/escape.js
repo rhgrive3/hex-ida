@@ -254,10 +254,9 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   };
 
   const record = (set, { reason, boundary, siteId, evidenceIds }) => {
-    if (!set) { sawUnresolvedFlow = true; return; }
-    if (set.top) {
-      // A value that may point anywhere carries every root out with it. There
-      // is no root list to mark, so no root may be called non-escaping later.
+    if (!set || set.top || !set.targets?.length) {
+      // Missing, top, or empty points-to sets are unresolved flows; fail closed
+      // so no root can be certified non-escaping.
       sawUnresolvedFlow = true;
       return;
     }
@@ -310,7 +309,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
       const storedSet = setsFor(storedValueId);
       if (!storedSet || storedSet.top || !storedSet.targets.length) { sawUnresolvedFlow = true; continue; }
       const addressSet = setsFor(node.memory?.addressExpr?.valueId);
-      if (!addressSet || addressSet.top) {
+      if (!addressSet || addressSet.top || !addressSet.targets?.length) {
         record(storedSet, {
           reason: 'stored-through-unknown-pointer', boundary: 'unknown', siteId: node.id, evidenceIds: evidenceOf(node),
         });

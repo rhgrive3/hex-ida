@@ -64,19 +64,26 @@ function strictProvenanceOffset(value) {
   }
   return null;
 }
-function sameCanonicalValue(raw, canonical) {
+function sameCanonicalValue(raw, canonical, seen = new WeakMap(), depth = 0) {
   if (raw === canonical) return true;
+  if (depth > 64) return false;
   if (!raw || !canonical || typeof raw !== 'object' || typeof canonical !== 'object') return false;
   if (Array.isArray(raw) !== Array.isArray(canonical)) return false;
-  if (Array.isArray(raw)) {
-    if (raw.length !== canonical.length) return false;
-    for (let i = 0; i < raw.length; i++) if (!Object.hasOwn(raw, i) || !sameCanonicalValue(raw[i], canonical[i])) return false;
-    return true;
+  if (seen.has(raw)) return seen.get(raw) === canonical;
+  seen.set(raw, canonical);
+  try {
+    if (Array.isArray(raw)) {
+      if (raw.length !== canonical.length) return false;
+      for (let i = 0; i < raw.length; i++) if (!Object.hasOwn(raw, i) || !sameCanonicalValue(raw[i], canonical[i], seen, depth + 1)) return false;
+      return true;
+    }
+    try { plainRecord(raw, 'function-summary-invalid-record'); } catch { return false; }
+    const keys = Object.keys(canonical);
+    return Object.keys(raw).length === keys.length
+      && keys.every((key) => Object.hasOwn(raw, key) && sameCanonicalValue(raw[key], canonical[key], seen, depth + 1));
+  } finally {
+    seen.delete(raw);
   }
-  try { plainRecord(raw, 'function-summary-invalid-record'); } catch { return false; }
-  const keys = Object.keys(canonical);
-  return Object.keys(raw).length === keys.length
-    && keys.every((key) => Object.hasOwn(raw, key) && sameCanonicalValue(raw[key], canonical[key]));
 }
 function validateStringList(values, code) {
   return denseArray(values, code).map((value) => nonEmptyString(value, code));
@@ -150,13 +157,13 @@ function validateDirectCallInput(input) {
 function validateIndirectCallInput(input) {
   plainRecord(input, 'function-summary-invalid-indirect-call');
   nonEmptyString(input.callSiteId, 'function-summary-call-site-required');
-  validateStringList(input.candidateEntityIds, 'function-summary-invalid-target-ids');
+  const candidates = validateStringList(input.candidateEntityIds, 'function-summary-invalid-target-ids');
   optionalBoolean(input.exhaustive, 'function-summary-invalid-exhaustive');
   // `exhaustive:true` claims the candidate universe is complete and lets the
   // summary omit the unknown-call fallback. That claim is only meaningful for
   // a non-empty universe: an empty "exhaustive" set describes an indirect call
   // with no possible target yet still publishes complete/pure (#5346).
-  if (input.exhaustive === true && input.candidateEntityIds.length === 0) {
+  if (input.exhaustive === true && candidates.length === 0) {
     throw new TypeError('function-summary-exhaustive-indirect-requires-candidates');
   }
 }

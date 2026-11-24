@@ -109,12 +109,16 @@ function u64(buf, off, little = true) {
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
 function readPtr(buf, off, ptrSize, little = true) {
-  return ptrSize === 4 ? BigInt(u32(buf, off, little) ?? 0) : (u64(buf, off, little) ?? 0n);
+  if (ptrSize === 4) {
+    const v = u32(buf, off, little);
+    return v == null ? null : BigInt(v);
+  }
+  return u64(buf, off, little);
 }
 
 function readSafePtrNumber(buf, off, ptrSize, little = true) {
   const val = readPtr(buf, off, ptrSize, little);
-  if (val > MAX_SAFE_BIGINT) return null;
+  if (val == null || val > MAX_SAFE_BIGINT) return null;
   return Number(val);
 }
 
@@ -484,7 +488,7 @@ export function parseGoFunctions(buf, header, options = {}) {
     } else {
       entryPC = readPtr(buf, slot, header.ptrSize, header.little);
       const funcOffVal = readSafePtrNumber(buf, slot + header.ptrSize, header.ptrSize, header.little);
-      if (funcOffVal == null) {
+      if (entryPC == null || funcOffVal == null) {
         invalidEntries++;
         continue;
       }
@@ -736,6 +740,8 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
   }
 
   probe() {
+    this.cachedHeader = null;
+    this.cachedFunctions = null;
     if (!this.pclntabBuffer || this.pclntabBuffer.length === 0) {
       // A section-table hit is metadata evidence even when its bytes were not
       // supplied for scanning. Keep that state distinct from a stripped

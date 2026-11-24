@@ -10,6 +10,7 @@ const ACC_SUPER = 0x0020;
 const ACC_INTERFACE = 0x0200;
 const ACC_ABSTRACT = 0x0400;
 const ACC_ANNOTATION = 0x2000;
+const ACC_ENUM = 0x4000;
 const ACC_MODULE = 0x8000;
 
 function knownMajor(value) {
@@ -43,7 +44,10 @@ export function validateJvmClassFlags(flags, {
   // every class-file version this parser accepts.
   if ((flags & ACC_FINAL) !== 0 && isAbstract) errors.push('jvm-class-final-abstract-conflict');
 
-  // §4.1: since class-file version 52 (Java SE 7) ACC_SUPER is forbidden on
+  if (isInterface && !isAbstract) errors.push('jvm-interface-requires-abstract');
+  if (isInterface && (flags & ACC_ENUM) !== 0) errors.push('jvm-interface-enum-conflict');
+
+  // §4.1: since class-file version 52 (Java SE 8) ACC_SUPER is forbidden on
   // interface flags. Older interface versions did use it, so a missing or
   // pre-52 version cannot prove the rule either way.
   if (isInterface && (flags & ACC_SUPER) !== 0) {
@@ -57,7 +61,7 @@ export function validateJvmClassFlags(flags, {
 
   if (isModule) {
     if (major != null && major < 53) errors.push('jvm-module-flag-version');
-    if (isInterface || isAbstract || (flags & ACC_FINAL) !== 0) errors.push('jvm-module-flag-conflict');
+    if ((flags & ~ACC_MODULE) !== 0) errors.push('jvm-module-flag-conflict');
   }
 
   return { errors, unsupported };

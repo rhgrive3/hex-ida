@@ -20,19 +20,27 @@ export function addrHex(v, pad = 8) {
 
 /** "F6 57 BD A9" or "F657BDA9" */
 export function bytesHex(u8, off, len, spaced = true) {
+  if (!u8 || typeof u8.length !== 'number') return '';
+  const start = Math.max(0, Math.trunc(Number(off) || 0));
+  const count = Math.max(0, Math.trunc(Number(len) || 0));
+  const end = Math.min(u8.length, start + count);
   let s = '';
-  for (let i = 0; i < len; i++) {
-    if (spaced && i) s += ' ';
-    s += HEX2[u8[off + i]];
+  for (let i = start; i < end; i++) {
+    if (spaced && i > start) s += ' ';
+    s += HEX2[u8[i]];
   }
   return s;
 }
 
 /** Printable ASCII rendering for hex mode. */
 export function bytesAscii(u8, off, len) {
+  if (!u8 || typeof u8.length !== 'number') return '';
+  const start = Math.max(0, Math.trunc(Number(off) || 0));
+  const count = Math.max(0, Math.trunc(Number(len) || 0));
+  const end = Math.min(u8.length, start + count);
   let s = '';
-  for (let i = 0; i < len; i++) {
-    const c = u8[off + i];
+  for (let i = start; i < end; i++) {
+    const c = u8[i];
     s += (c >= 0x20 && c < 0x7f) ? String.fromCharCode(c) : '.';
   }
   return s;
@@ -41,6 +49,7 @@ export function bytesAscii(u8, off, len) {
 /** 24.7 MB */
 export function sizeText(n) {
   const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return '0' + pick(' バイト', ' bytes');
   if (v < 1024) return v + pick(' バイト', ' bytes');
   const units = ['KB', 'MB', 'GB', 'TB'];
   let i = -1, x = v;

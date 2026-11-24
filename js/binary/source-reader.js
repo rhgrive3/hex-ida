@@ -217,7 +217,8 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
           const missing = span.end > cursor ? span.end - cursor : 0n;
           const wantedByParser = missing > BigInt(maxPageSize) ? maxPageSize : safeNumber(missing, 'missing source range length');
           const requested = Math.max(pageSize, adaptive, wantedByParser);
-          const requestLimit = Math.min(requested, maxPageSize, source.maxReadLength, budgetRemaining);
+          const sourceMaxRead = Number.isFinite(source.maxReadLength) && source.maxReadLength > 0 ? source.maxReadLength : maxPageSize;
+          const requestLimit = Math.min(requested, maxPageSize, sourceMaxRead, budgetRemaining);
           // A one-byte parser miss still gets a bounded read-ahead window.
           // The cache tracks the requested gap separately, so extending the
           // source read cannot change parser semantics and avoids one-read-per-byte storms.

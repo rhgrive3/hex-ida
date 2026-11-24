@@ -40,7 +40,7 @@ function sourceField(raw, projection) {
   if (!memory || memory.sourceEntityId !== storeNodeId || memory.kind !== 'memory-def') reasons.push('field-memory-definition-not-bound');
   if (!references.length || references.length > 32) reasons.push('field-canonical-ssa-value-unavailable');
   if (offset < 32 && PREFIX.get(offset) !== widthBytes) reasons.push('block-header-layout-width-mismatch');
-  const constant = raw.constant === null ? null : unsignedAddress(raw.constant, { bits: Math.min(widthBytes * 8, 128) });
+  const constant = raw.constant == null ? null : unsignedAddress(raw.constant, { bits: Math.min(widthBytes * 8, 128) });
   const evidenceIds = stringSet(raw.evidenceIds, 'objc-block-field-evidence', 64);
   if (!evidenceIds.length) reasons.push('field-source-evidence-unavailable');
   return deepFreeze({ offset, widthBytes, valueId, storeNodeId, memoryDefinitionId, constant,
@@ -153,7 +153,12 @@ export function nativeObjcBlockContext(projection, demand, blockValueId, { world
     const facts = (demand.ranges?.values ?? []).filter(row => ids.has(row.localId) && row.completeness === 'complete'
       && !row.conditionalOn?.length && row.fact?.bits === widthBits && row.fact?.constant != null);
     if (!facts.length || facts.some(row => !sameData(row.fact, facts[0].fact))) return null;
-    return String(facts[0].fact.constant.value);
+    const rawVal = facts[0].fact.constant.value;
+    try {
+      const parsed = typeof rawVal === 'bigint' ? rawVal : BigInt(rawVal);
+      if (parsed < 0n) return null;
+      return parsed.toString();
+    } catch { return null; }
   };
   for (const access of demand.memoryObjects?.accesses ?? []) {
     work.charge('workUnits');

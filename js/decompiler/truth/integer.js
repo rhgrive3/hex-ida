@@ -39,8 +39,8 @@ export function evalUnary(op, value, bits = 64, fromBits = bits) {
   switch (op) {
     case 'neg': return u(-u(value, bits), bits);
     case 'not': return u(~u(value, bits), bits);
-    case 'bool': return boolValue(value);
-    case 'lnot': return boolValue(value) ? 0n : 1n;
+    case 'bool': return boolValue(u(value, bits));
+    case 'lnot': return boolValue(u(value, bits)) ? 0n : 1n;
     case 'trunc': return trunc(value, bits);
     case 'zext': return zext(value, fromBits, bits);
     case 'sext': return sext(value, fromBits, bits);

@@ -58,8 +58,11 @@ function frozenQueryIndex(ssa) {
       }
     }
     const semanticValueId = definition.proof?.sourceSemanticValueId;
-    if (semanticValueId != null && !definitionBySemanticValue.has(semanticValueId)) {
-      definitionBySemanticValue.set(semanticValueId, definition);
+    if (semanticValueId != null) {
+      const existing = definitionBySemanticValue.get(semanticValueId);
+      if (!existing || (definition.proof?.kind === 'semantic-value-definition' && existing.proof?.kind !== 'semantic-value-definition')) {
+        definitionBySemanticValue.set(semanticValueId, definition);
+      }
     }
   }
   for (const use of useRows) {
@@ -71,12 +74,18 @@ function frozenQueryIndex(ssa) {
     bySource.push(use);
     usesBySourceEntity.set(use.sourceEntityId, bySource);
     const semanticValueId = use.proof?.sourceSemanticValueId;
-    if (semanticValueId != null && !useBySemanticValue.has(semanticValueId)) useBySemanticValue.set(semanticValueId, use);
+    if (semanticValueId != null) {
+      const existing = useBySemanticValue.get(semanticValueId);
+      if (!existing || (use.proof?.kind === 'semantic-value-use' && existing.proof?.kind !== 'semantic-value-use')) {
+        useBySemanticValue.set(semanticValueId, use);
+      }
+    }
   }
-  const byUseId = (a, b) => a.useId.localeCompare(b.useId);
+  const compareText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const byUseId = (a, b) => compareText(a.useId, b.useId);
   const byDefinitionPosition = (a, b) =>
-    String(a.blockId ?? '').localeCompare(String(b.blockId ?? '')) || a.valueId.localeCompare(b.valueId);
-  const byValueId = (a, b) => a.valueId.localeCompare(b.valueId);
+    compareText(String(a.blockId ?? ''), String(b.blockId ?? '')) || compareText(a.valueId, b.valueId);
+  const byValueId = (a, b) => compareText(a.valueId, b.valueId);
   for (const list of usesByValue.values()) Object.freeze(list.sort(byUseId));
   for (const list of usesBySourceEntity.values()) Object.freeze(list.sort(byUseId));
   for (const list of definitionsByVariable.values()) Object.freeze(list.sort(byDefinitionPosition));
@@ -120,7 +129,7 @@ export function getUsesForDefinition(ssa, definitionOrId) {
   if (!definition) return Object.freeze([]);
   const index = frozenQueryIndex(ssa);
   const rows = index ? index.usesByValue.get(definition.valueId) ?? []
-    : uses(ssa).filter((use) => use.valueId === definition.valueId).slice().sort((a, b) => a.useId.localeCompare(b.useId));
+    : uses(ssa).filter((use) => use.valueId === definition.valueId).slice().sort((a, b) => (a.useId < b.useId ? -1 : a.useId > b.useId ? 1 : 0));
   return Object.freeze(rows.slice());
 }
 
@@ -134,7 +143,7 @@ export function getDefinitionsForVariable(ssa, variableKey) {
   const index = frozenQueryIndex(ssa);
   const rows = index ? index.definitionsByVariable.get(key) ?? []
     : definitions(ssa).filter((definition) => definition.variableKey === key).slice().sort((a, b) =>
-      String(a.blockId ?? '').localeCompare(String(b.blockId ?? '')) || a.valueId.localeCompare(b.valueId));
+      (String(a.blockId ?? '') < String(b.blockId ?? '') ? -1 : String(a.blockId ?? '') > String(b.blockId ?? '') ? 1 : (a.valueId < b.valueId ? -1 : a.valueId > b.valueId ? 1 : 0)));
   return Object.freeze(rows.slice());
 }
 
@@ -143,7 +152,7 @@ export function getPhiDefinitions(ssa, blockId = null) {
   const index = frozenQueryIndex(ssa);
   const rows = index ? (id == null ? index.phiDefinitions : index.phiDefinitionsByBlock.get(id) ?? [])
     : definitions(ssa).filter((definition) => definition.kind === 'phi' && (id == null || definition.blockId === id))
-      .slice().sort((a, b) => a.valueId.localeCompare(b.valueId));
+      .slice().sort((a, b) => (a.valueId < b.valueId ? -1 : a.valueId > b.valueId ? 1 : 0));
   return Object.freeze(rows.slice());
 }
 
@@ -160,22 +169,24 @@ export function getSsaUsesForSourceEntity(ssa, sourceEntityId) {
   const id = nonEmpty(sourceEntityId, 'semantic-ssa-query-source-entity-required');
   const index = frozenQueryIndex(ssa);
   const rows = index ? index.usesBySourceEntity.get(id) ?? []
-    : uses(ssa).filter((use) => use.sourceEntityId === id).slice().sort((a, b) => a.useId.localeCompare(b.useId));
+    : uses(ssa).filter((use) => use.sourceEntityId === id).slice().sort((a, b) => (a.useId < b.useId ? -1 : a.useId > b.useId ? 1 : 0));
   return Object.freeze(rows.slice());
 }
 
 export function getSsaUseForSemanticValue(ssa, semanticValueId) {
   const id = nonEmpty(semanticValueId, 'semantic-ssa-query-semantic-value-required');
   const index = frozenQueryIndex(ssa);
-  return index ? index.useBySemanticValue.get(id) ?? null
-    : uses(ssa).find((use) => use.proof?.sourceSemanticValueId === id) ?? null;
+  if (index) return index.useBySemanticValue.get(id) ?? null;
+  const rows = uses(ssa).filter((use) => use.proof?.sourceSemanticValueId === id);
+  return rows.find((use) => use.proof?.kind === 'semantic-value-use') ?? rows[0] ?? null;
 }
 
 export function getSsaDefinitionForSemanticValue(ssa, semanticValueId) {
   const id = nonEmpty(semanticValueId, 'semantic-ssa-query-semantic-value-required');
   const index = frozenQueryIndex(ssa);
-  return index ? index.definitionBySemanticValue.get(id) ?? null
-    : definitions(ssa).find((definition) => definition.proof?.sourceSemanticValueId === id) ?? null;
+  if (index) return index.definitionBySemanticValue.get(id) ?? null;
+  const rows = definitions(ssa).filter((definition) => definition.proof?.sourceSemanticValueId === id);
+  return rows.find((definition) => definition.proof?.kind === 'semantic-value-definition') ?? rows[0] ?? null;
 }
 
 const EMPTY_FROZEN_LIST = Object.freeze([]);
@@ -248,7 +259,7 @@ export function createSsaQueryIndex(ssa) {
       let sorted = sortedUsesByValue.get(id);
       if (sorted === undefined) {
         const list = usesByValue.get(id);
-        sorted = list ? Object.freeze(list.slice().sort((a, b) => a.useId.localeCompare(b.useId))) : EMPTY_FROZEN_LIST;
+        sorted = list ? Object.freeze(list.slice().sort((a, b) => (a.useId < b.useId ? -1 : a.useId > b.useId ? 1 : 0))) : EMPTY_FROZEN_LIST;
         sortedUsesByValue.set(id, sorted);
       }
       return sorted;

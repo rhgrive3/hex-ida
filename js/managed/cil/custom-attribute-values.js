@@ -111,12 +111,12 @@ function enumUnderlyingForTypeDef(type, context, cache) {
   const base = definition?.extendsTypeRef;
   let isEnum = false;
   if (base) isEnum = isCoreLibraryType({ table:0x01, row:base }, 'Enum', context);
-  else if (definition?.extendsToken?.startsWith('0x0200')) {
-    const baseRid = Number.parseInt(definition.extendsToken.slice(6), 16);
+  else if (typeof definition?.extendsToken === 'string' && /^0x02[0-9a-f]{6}$/i.test(definition.extendsToken)) {
+    const baseRid = Number.parseInt(definition.extendsToken.slice(4), 16);
     isEnum = isCoreLibraryType({ table:0x02, rid:baseRid, row:context.types[baseRid - 1] }, 'Enum', context);
   }
   if (!isEnum || !Array.isArray(definition.fieldTokens)) fail('cil-customattribute-constructor-signature-invalid');
-  const fields = definition.fieldTokens.map(token => context.fields[Number.parseInt(token.slice(6), 16) - 1]);
+  const fields = definition.fieldTokens.map(token => (typeof token === 'string' && /^0x04[0-9a-f]{6}$/i.test(token) ? context.fields[Number.parseInt(token.slice(4), 16) - 1] : undefined));
   const valueFields = fields.filter(field => field?.name === 'value__');
   if (valueFields.length !== 1 || (valueFields[0].accessFlags & 0x10) !== 0) {
     fail('cil-customattribute-constructor-signature-invalid');

@@ -63,40 +63,47 @@ export async function gmFetch(input, init = {}, requestInput = null) {
         anonymous: true,
         redirect: 'error',
         onload: (response) => {
-          const status = Number(response?.status) || 0;
-          if (!status) {
-            finish(reject, new TypeError(`Hex request failed before an HTTP response was received: ${url}`));
-            return;
-          }
-          if (response.finalUrl != null && response.finalUrl !== '') {
-            let requestedOrigin = null;
-            let finalOrigin = null;
-            try {
-              const baseHref = globalThis.location?.href;
-              requestedOrigin = new URL(url, baseHref).origin;
-              finalOrigin = new URL(String(response.finalUrl), baseHref).origin;
-            } catch {
-              finish(reject, new TypeError(`Hex request returned an invalid finalUrl: ${url}`));
+          try {
+            const status = Number(response?.status) || 0;
+            if (!status) {
+              finish(reject, new TypeError(`Hex request failed before an HTTP response was received: ${url}`));
               return;
             }
-            if (!requestedOrigin || requestedOrigin === 'null' || finalOrigin !== requestedOrigin) {
-              finish(reject, new TypeError(`Hex request redirected across origins: ${url}`));
+            if (response.finalUrl != null && response.finalUrl !== '') {
+              let requestedOrigin = null;
+              let finalOrigin = null;
+              try {
+                const baseHref = globalThis.location?.href;
+                requestedOrigin = new URL(url, baseHref).origin;
+                finalOrigin = new URL(String(response.finalUrl), baseHref).origin;
+              } catch {
+                finish(reject, new TypeError(`Hex request returned an invalid finalUrl: ${url}`));
+                return;
+              }
+              if (!requestedOrigin || requestedOrigin === 'null' || finalOrigin !== requestedOrigin) {
+                finish(reject, new TypeError(`Hex request redirected across origins: ${url}`));
+                return;
+              }
+            }
+            const isNullBodyStatus = status === 101 || status === 204 || status === 205 || status === 304;
+            const raw = response.response ?? response.responseText;
+            const responseBody = isNullBodyStatus
+              ? null
+              : (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)
+                ? raw
+                : (typeof raw === 'string' ? raw : null));
+            if (!isNullBodyStatus && responseBody === null) {
+              finish(reject, new TypeError(`Hex request returned a body that is neither bytes nor text: ${url}`));
               return;
             }
+            finish(resolve, new Response(responseBody, {
+              status,
+              statusText: response.statusText || '',
+              headers: parseHeaders(response.responseHeaders),
+            }));
+          } catch (error) {
+            finish(reject, error);
           }
-          const raw = response.response ?? response.responseText;
-          const responseBody = raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)
-            ? raw
-            : (typeof raw === 'string' ? raw : null);
-          if (responseBody === null) {
-            finish(reject, new TypeError(`Hex request returned a body that is neither bytes nor text: ${url}`));
-            return;
-          }
-          finish(resolve, new Response(responseBody, {
-            status,
-            statusText: response.statusText || '',
-            headers: parseHeaders(response.responseHeaders),
-          }));
         },
         onerror: () => finish(reject, new TypeError(`Hex request failed: ${url}`)),
         ontimeout: () => finish(reject, new DOMException('Hex request timed out.', 'TimeoutError')),

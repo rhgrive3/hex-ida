@@ -44,8 +44,22 @@ export function repairElfZeroAddressFunctionSeeds(image) {
         : 'ELF STT_FUNC with validated executable extent')
         + (extentRejection ? '; published st_size is not file-backed and is not retained as extent authority' : ''),
       callingConvention: symbol.callingConvention || null,
-      abiMetadata: symbol.riscvVariantCc ? { riscvVariantCc:true, stOther:symbol.stOther } : null,
+      abiMetadata: (symbol.riscvVariantCc || symbol.aarch64VariantPcs)
+        ? {
+          ...(symbol.riscvVariantCc ? { riscvVariantCc:true } : {}),
+          ...(symbol.aarch64VariantPcs ? { aarch64VariantPcs:true } : {}),
+          stOther:symbol.stOther,
+        }
+        : null,
     }));
+    if (symbol.riscvVariantCc && image.metadata) {
+      if (!Array.isArray(image.metadata.riscvVariantCcFunctions)) image.metadata.riscvVariantCcFunctions = [];
+      if (!image.metadata.riscvVariantCcFunctions.includes(0n)) image.metadata.riscvVariantCcFunctions.push(0n);
+    }
+    if (symbol.aarch64VariantPcs && image.metadata) {
+      if (!Array.isArray(image.metadata.aarch64VariantPcsFunctions)) image.metadata.aarch64VariantPcsFunctions = [];
+      if (!image.metadata.aarch64VariantPcsFunctions.includes(0n)) image.metadata.aarch64VariantPcsFunctions.push(0n);
+    }
   }
   if (zeroSeeds.length) image.functions = mergeFunctionSeeds([...(image.functions || []), ...zeroSeeds], image);
   return image;

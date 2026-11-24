@@ -289,8 +289,18 @@ export function executableELFRange(image, address, size = 0n, sectionIndex = nul
   return (image.segments || []).find(executableSegment) || null;
 }
 
+function minimumElfInstructionBytes(image) {
+  if (image?.arch === 'arm64') return 4n;
+  if (image?.arch === 'riscv64' || image?.arch === 'riscv32' || Number(image?.metadata?.machine) === 243) {
+    const align = image?.metadata?.riscvIsa?.file?.instructionAlignment ?? image?.metadata?.riscvFileIsa?.instructionAlignment;
+    return align === 4 ? 4n : 2n;
+  }
+  if (image?.arch === 'arm' || Number(image?.metadata?.machine) === 40) return 2n;
+  return 1n;
+}
+
 export function elfInstructionTargetRejection(image, address) {
-  const instructionBytes = image?.arch === 'arm64' ? 4n : 1n;
+  const instructionBytes = minimumElfInstructionBytes(image);
   if (typeof image?.isDataInCode === 'function' && image.isDataInCode(address)) return 'inside an authoritative data-in-code interval';
   if (!executableELFRange(image, address, 0n)) return 'outside a canonical executable mapping';
   const alignmentRejection = elfInstructionStartAlignmentRejection(image, address);
@@ -316,7 +326,7 @@ export function elfInstructionTargetRejection(image, address) {
  */
 export function elfExactFunctionStartRejection(image, address, options = {}) {
   const sectionIndex = options.sectionIndex ?? null;
-  const instructionBytes = image?.arch === 'arm64' ? 4n : 1n;
+  const instructionBytes = minimumElfInstructionBytes(image);
   if (!elfExecutableFunctionExtent(image, address, 0n, sectionIndex)) return 'outside a canonical executable mapping';
   const alignmentRejection = elfInstructionStartAlignmentRejection(image, address);
   if (alignmentRejection) return alignmentRejection;

@@ -298,7 +298,17 @@ function materializeVerifiedLabels(result, index, addresses) {
     if (row == null) continue;
     while (ti < targets.length && targets[ti].row <= row) placements.push({ ...targets[ti++], at: li });
   }
-  const closing = result.lines.findIndex((l) => l?.kind === 'ctrl' && l.text === '}');
+  let closing = -1;
+  for (let i = result.lines.length - 1; i >= 0; i--) {
+    const l = result.lines[i];
+    if (l?.kind === 'ctrl' && l.text === '}' && (l.indent || 0) === 0) { closing = i; break; }
+  }
+  if (closing < 0) {
+    for (let i = result.lines.length - 1; i >= 0; i--) {
+      const l = result.lines[i];
+      if (l?.kind === 'ctrl' && l.text === '}') { closing = i; break; }
+    }
+  }
   if (closing < 0) return false;
   while (ti < targets.length) placements.push({ ...targets[ti++], at: closing });
   placements.sort((a, b) => b.at - a.at || b.row - a.row);
@@ -388,7 +398,8 @@ export function structureKnownSwitches(result, model, opts = {}) {
     const terminal = terminalSwitchCasePlan(result, cases, defaultAddress, at);
     if (terminal) {
       // Remove the original label-delimited bodies in one in-place pass while
-      // preserving `result.lines` array identity and reusing exact line objects.
+      // preserving `result.lines` array identity, reusing exact line objects,
+      // and evicting removed labels from `index.labels`.
       const ascRanges = [...terminal.ranges].sort((a, b) => a.start - b.start);
       const lines = result.lines;
       let write = 0;
@@ -400,7 +411,13 @@ export function structureKnownSwitches(result, model, opts = {}) {
           write += 1;
           read += 1;
         }
-        read = range.end;
+        while (read < range.end) {
+          const line = lines[read];
+          if (line?.kind === 'label' && typeof line.text === 'string') {
+            index.labels.delete(line.text.replace(/:$/, '').toUpperCase());
+          }
+          read += 1;
+        }
       }
       while (read < lines.length) {
         if (write !== read) lines[write] = lines[read];
@@ -418,8 +435,7 @@ export function structureKnownSwitches(result, model, opts = {}) {
         row: sw.row, addr: cases[i].address, note: null };
       generated.push(caseLine); repl.push(caseLine);
       if (terminal) {
-        const body = terminal.byKey.get(key).body;
-        for (const line of body) line.indent = Math.max(line.indent || 0, at.indent + 2);
+        const body = terminal.byKey.get(key).body.map((line) => ({ ...line, indent: Math.max(line.indent || 0, at.indent + 2) }));
         repl.push(...body);
       }
     }
@@ -430,8 +446,7 @@ export function structureKnownSwitches(result, model, opts = {}) {
         row: sw.row, addr: defaultAddress, note: null };
       generated.push(defaultLine); repl.push(defaultLine);
       if (terminal) {
-        const body = terminal.byKey.get(key).body;
-        for (const line of body) line.indent = Math.max(line.indent || 0, at.indent + 2);
+        const body = terminal.byKey.get(key).body.map((line) => ({ ...line, indent: Math.max(line.indent || 0, at.indent + 2) }));
         repl.push(...body);
       }
     }

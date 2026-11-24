@@ -131,7 +131,10 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
       const current = ++epoch;
       const result = await request('/api/auth/userscript/complete', { method: 'POST', body: { transactionId, pollSecret, completionProof }, signal });
       if (typeof result?.token !== 'string' || !SECRET.test(result.token)) throw new Error('Invalid HEX session.');
-      if (closed || signal?.aborted || current !== epoch) throw new Error('Login was cancelled.');
+      if (closed || signal?.aborted || current !== epoch) {
+        try { await mutation('/auth/logout', {}, { tokenOverride: result.token }); } catch {}
+        throw new Error('Login was cancelled.');
+      }
       const token = result.token;
       const pairingEpoch = ++epoch;
       bearer = token;
@@ -157,6 +160,7 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
       if (closed || signal?.aborted || pairingEpoch !== epoch) {
         // Cancellation during asynchronous GM storage must not survive reload,
         // unless a newer lifecycle generation already owns the same storage.
+        try { await mutation('/auth/logout', {}, { tokenOverride: token }); } catch {}
         try { await privateStorageCleanup(manager, persistence.generation, () => manager.deleteValue(STORAGE_KEY)); }
         finally {
           if (bearer === token) {

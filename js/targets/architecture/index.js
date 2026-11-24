@@ -17,7 +17,7 @@ import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2,
 
 const ARM64_RETURN_OPS = new Set(['ret','retaa','retab','retaasppc','retabsppc','retaasppcr','retabsppcr']);
 const ARM64_CALL_OPS = new Set(['bl','blr','blraa','blrab','blraaz','blrabz']);
-const ARM64_BRANCH_OPS = new Set(['b','br','braa','brab','braaz','brabz','b.al','b.nv']);
+const ARM64_BRANCH_OPS = new Set(['b','br','braa','brab','braaz','brabz','b.al','b.nv','bc.al','bc.nv']);
 const ARM64_COND_BRANCH_OPS = new Set(['cbz','cbnz','tbz','tbnz']);
 const ARM64_UNKNOWN_OPS = new Set(['eret','eretaa','eretab','drps','brk','hlt','svc','hvc','smc']);
 
@@ -28,7 +28,7 @@ const X86_SYSCALL_OPS = new Set(['syscall','sysret','sysretq']);
 const RISCV_COND_BRANCH_OPS = new Set(['beq','bne','blt','bge','bltu','bgeu']);
 const RISCV_DIRECT_TARGET_OPS = new Set(['jal','beq','bne','blt','bge','bltu','bgeu']);
 
-const ARM64_PAUTH_HINT_NOPS = new Set(['paciasp', 'pacibsp', 'autiasp', 'autibsp', 'paciaz', 'pacibz', 'autiaz', 'autibz']);
+const ARM64_PAUTH_HINT_NOPS = new Set(['paciasp', 'pacibsp', 'autiasp', 'autibsp', 'paciaz', 'pacibz', 'autiaz', 'autibz', 'pacia1716', 'pacib1716', 'autia1716', 'autib1716', 'xpaclri']);
 
 function arm64ControlFlow(instruction) {
   const rawMnemonic = instruction?.mnemonic;
@@ -105,10 +105,11 @@ function riscv64DirectControlTarget(instruction) {
  * as `branchTarget`, so no operand text is parsed here.
  */
 function arm64DirectControlTarget(instruction) {
-  if (instruction?.branchTarget == null) return null;
+  const target = instruction?.branchTarget ?? instruction?.callTarget;
+  if (target == null) return null;
   const kind = arm64ControlFlow(instruction);
   if (kind !== 'branch' && kind !== 'conditional-branch' && kind !== 'call') return null;
-  try { return BigInt(instruction.branchTarget); }
+  try { return BigInt(target); }
   catch { return null; }
 }
 
@@ -158,7 +159,7 @@ const liftArm64ArchitectureMachineEffects = (decoded, context = {}) => {
     const pacRequested = context.pacRequested ?? context.pacPolicy?.pacRequested ?? context.aarch64SecurityFeatures?.pacRequested ?? context.arm64GnuProperty?.pacRequested ?? context.arm64Bti?.pacRequested ?? context.image?.metadata?.arm64GnuProperty?.pacRequested ?? context.image?.metadata?.arm64Bti?.pacRequested ?? null;
     const pacEnabled = context.pacEnabled ?? context.runtime?.pacEnabled ?? null;
 
-    if (pacEnabled === true || (pacRequested === true && pacEnabled !== false)) {
+    if (pacEnabled === true) {
       const arm64Context = {
         ...context,
         architectureId: 'arm64',
@@ -182,14 +183,15 @@ const liftArm64ArchitectureMachineEffects = (decoded, context = {}) => {
     if (pacEnabled === false || pacRequested === false) {
       const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.toLowerCase() : '';
       if (ARM64_PAUTH_HINT_NOPS.has(mnemonic)) {
+        const instructionId = decoded.instructionId || context.instructionId || 'arm64:pauth:nop';
         return createMachineEffectBundle({
-          instructionId: decoded.instructionId || context.instructionId || 'arm64:pauth:nop',
+          instructionId,
           architectureId: 'arm64',
           mode: decoded.mode || context.mode || 'a64',
           operations: [],
           controlEffect: { kind: 'fallthrough' },
           possibleFaults: [],
-          origin: decoded.origin || context.origin || { instructionIds: [decoded.instructionId] },
+          origin: decoded.origin || context.origin || { instructionIds: [instructionId] },
           completeness: 'exact',
           statePreservation: { proven: true, reason: 'PAuth HINT instruction on system without PAC feature is an architectural NOP' },
           metadata: {
@@ -199,14 +201,15 @@ const liftArm64ArchitectureMachineEffects = (decoded, context = {}) => {
           },
         }, context?.machineEffectsOptions);
       }
+      const instructionId = decoded.instructionId || context.instructionId || 'arm64:pauth:undefined';
       return createMachineEffectBundle({
-        instructionId: decoded.instructionId || context.instructionId || 'arm64:pauth:undefined',
+        instructionId,
         architectureId: 'arm64',
         mode: decoded.mode || context.mode || 'a64',
         operations: [],
         controlEffect: { kind: 'trap', reason: 'undefined-instruction-exception' },
         possibleFaults: [{ kind: 'undefined-instruction-exception' }],
-        origin: decoded.origin || context.origin || { instructionIds: [decoded.instructionId] },
+        origin: decoded.origin || context.origin || { instructionIds: [instructionId] },
         completeness: 'partial',
         unknownEffects: { categories: ['control', 'registers', 'faults'], reason: 'arm64-pac-feature-absent-undefined-instruction' },
         metadata: {
@@ -219,14 +222,15 @@ const liftArm64ArchitectureMachineEffects = (decoded, context = {}) => {
 
     // PAC runtime state is unresolved/unknown -> fail closed to partial
     const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.toLowerCase() : '';
+    const instructionId = decoded.instructionId || context.instructionId || 'arm64:pauth:unresolved';
     return createMachineEffectBundle({
-      instructionId: decoded.instructionId || context.instructionId || 'arm64:pauth:unresolved',
+      instructionId,
       architectureId: 'arm64',
       mode: decoded.mode || context.mode || 'a64',
       operations: [],
       controlEffect: { kind: 'unknown', reason: 'arm64-pac-runtime-state-unresolved' },
       possibleFaults: [],
-      origin: decoded.origin || context.origin || { instructionIds: [decoded.instructionId] },
+      origin: decoded.origin || context.origin || { instructionIds: [instructionId] },
       completeness: 'partial',
       unknownEffects: { categories: ['control', 'registers'], reason: 'arm64-pac-runtime-state-unresolved' },
       metadata: {

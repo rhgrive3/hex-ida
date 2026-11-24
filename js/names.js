@@ -761,11 +761,14 @@ export class NoteStore {
 
   async transactionAsync(fn) {
     this._transactionDepth = (this._transactionDepth || 0) + 1;
+    let succeeded = false;
     try {
-      return await fn();
+      const result = await fn();
+      succeeded = true;
+      return result;
     } finally {
       this._transactionDepth--;
-      if (this._transactionDepth === 0 && this.dirty) {
+      if (succeeded && this._transactionDepth === 0 && this.dirty) {
         this.save();
       }
     }
@@ -888,16 +891,54 @@ export class NoteStore {
   /** 読み込み（書き出したものを戻す）。既存の内容とまぜる。 */
   fromJSON(text) {
     const o = JSON.parse(text);
-    if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');
+    if (!o || typeof o !== 'object' || Array.isArray(o)) throw new Error('invalid-notes-import');
     // Identity comparison stays type-preserving: a structured id must never
     // launder into this store's namespace through String() coercion (#5968).
     if (o.id != null && typeof o.id !== 'string') throw new Error('notes-file-mismatch');
     if (o.id != null && this.id != null && o.id !== this.id) throw new Error('notes-file-mismatch');
+    const plainSection = (value) => {
+      if (value == null) return null;
+      if (typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid-notes-import');
+      return value;
+    };
+    const names = plainSection(o.names);
+    const comments = plainSection(o.comments);
+    const vars = plainSection(o.vars);
+    const types = plainSection(o.types);
+    if (o.structs != null && !Array.isArray(o.structs)) throw new Error('invalid-notes-import');
     let n = 0;
-    for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
-    for (const [k, v] of Object.entries(o.comments || {})) { this.comments.set(k, v); n++; }
-    for (const [k, v] of Object.entries(o.vars || {})) { this.vars.set(k, v); n++; }
-    for (const [k, v] of Object.entries(o.types || {})) { this.types.set(k, v); n++; }
+    if (names) {
+      for (const [k, v] of Object.entries(names)) {
+        if (typeof v !== 'string') continue;
+        const clean = cleanName(v);
+        if (!clean) continue;
+        this.names.set(k, clean); n++;
+      }
+    }
+    if (comments) {
+      for (const [k, v] of Object.entries(comments)) {
+        if (typeof v !== 'string') continue;
+        const clean = v.slice(0, 500).trim();
+        if (!clean) continue;
+        this.comments.set(k, clean); n++;
+      }
+    }
+    if (vars) {
+      for (const [k, v] of Object.entries(vars)) {
+        if (typeof v !== 'string') continue;
+        const clean = cleanName(v);
+        if (!clean) continue;
+        this.vars.set(k, clean); n++;
+      }
+    }
+    if (types) {
+      for (const [k, v] of Object.entries(types)) {
+        if (typeof v !== 'string') continue;
+        const clean = v.slice(0, 80).trim();
+        if (!clean) continue;
+        this.types.set(k, clean); n++;
+      }
+    }
     if (Array.isArray(o.structs)) this.structs = this.structs.concat(o.structs);
     this.dirty = true;
     this.lastMutationSaved = this.save();

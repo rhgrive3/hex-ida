@@ -33,8 +33,8 @@ export function installDevBootstrapHost({ host, runtimeIdentity, authorize = nul
     if (!current || event.source !== current.iframe.contentWindow) return;
     const data = event.data;
     if (!isRecord(data) || data.protocol !== PROTOCOL) return;
-    if (String(data.generation || '') !== current.generation) return;
-    if (String(data.sandboxToken || '').toLowerCase() !== current.sandboxToken) return;
+    if (!current.generation || String(data.generation || '') !== current.generation) return;
+    if (!current.sandboxToken || String(data.sandboxToken || '').toLowerCase() !== current.sandboxToken) return;
 
     if (data.type === 'hex.dev.bootstrap.handoff-request') {
       current.iframe.contentWindow.postMessage({

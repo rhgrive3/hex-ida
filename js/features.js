@@ -177,9 +177,10 @@ function featureRetentionLimit(value, fallback = 200) {
   if (typeof value !== 'number' && typeof value !== 'string')
     throw new TypeError('perFeature must be a non-negative finite number');
   const requested = Number(value);
-  return Number.isFinite(requested)
-    ? Math.max(0, Math.floor(requested || 0))
-    : fallback;
+  if (!Number.isFinite(requested)) {
+    throw new TypeError('perFeature must be a non-negative finite number');
+  }
+  return Math.max(0, Math.floor(requested || 0));
 }
 
 function insertSorted(list, item, limit) {

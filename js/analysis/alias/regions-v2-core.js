@@ -72,7 +72,12 @@ function toBigIntString(value) {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (/^[+-]?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(trimmed)) {
-      try { return BigInt(trimmed).toString(); } catch {}
+      const negative = trimmed.startsWith('-');
+      const body = negative || trimmed.startsWith('+') ? trimmed.slice(1) : trimmed;
+      try {
+        const mag = BigInt(body);
+        return (negative ? -mag : mag).toString();
+      } catch {}
     }
   }
   return null;
@@ -155,7 +160,10 @@ function memoryNodeDisplacement(node) {
     if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
     const text = String(raw).trim();
     if (!/^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) return null;
-    return BigInt(text);
+    const negative = text.startsWith('-');
+    const body = negative || text.startsWith('+') ? text.slice(1) : text;
+    const mag = BigInt(body);
+    return negative ? -mag : mag;
   } catch {
     return null;
   }
@@ -498,7 +506,14 @@ export function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     const constantIndex = inputValues.findIndex((value) => value?.metadata?.constant?.kind === 'bitvector');
     const baseIndex = constantIndex === 0 ? 1 : constantIndex === 1 ? 0 : -1;
     if (baseIndex >= 0) {
-      const constant = memoryInteger(inputValues[constantIndex]?.metadata?.constant?.value);
+      const constValObj = inputValues[constantIndex];
+      const rawConstant = memoryInteger(constValObj?.metadata?.constant?.value);
+      const constWidth = constValObj?.metadata?.constant?.widthBits ?? constValObj?.machineType?.widthBits ?? null;
+      const constant = rawConstant == null
+        ? null
+        : (typeof constWidth === 'number' && Number.isSafeInteger(constWidth) && constWidth > 0
+          ? BigInt.asIntN(constWidth, rawConstant)
+          : null);
       const baseValue = inputValues[baseIndex];
       if (constant != null && baseValue?.definitionNodeId != null) {
         addressOffset = constant;

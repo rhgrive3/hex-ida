@@ -1607,6 +1607,9 @@ export function showOverview(app) {
     }
     const box = progressBox(later, pick('中身を調べています…', 'Looking inside…'));
     let cancelled = false;
+    const runEpoch = app.backend?.gen;
+    const runSlice = app.sliceIndex;
+    const isStale = () => cancelled || !sheet.root.isConnected || app.backend?.gen !== runEpoch || app.sliceIndex !== runSlice;
     const runController = new AbortController();
     sheet.onClose = () => {
       cancelled = true;
@@ -1615,9 +1618,10 @@ export function showOverview(app) {
     };
 
     prepare(app, box).then(async ({ strings, program, shapes }) => {
-      if (cancelled || !sheet.root.isConnected) return;
+      if (isStale()) return;
       let recognition=null;
       try { recognition=await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { recognition=null; }
+      if (isStale()) return;
       const cxxFields = cxxMemberIndexForApp(app);
       const cxxRevision = cxxFields?.revision || 0;
       const report = await autoAnalyze({
@@ -1626,7 +1630,7 @@ export function showOverview(app) {
         shapes, recognition,
         analyze: makeAnalyzer(app, region, runController.signal),
         scanAccess: makeAccessScanner(app, region, runController.signal),
-        isCancelled: () => cancelled || !sheet.root.isConnected,
+        isCancelled: () => isStale(),
         onProgress: (p) => {
           box.set({ done: p.done, all: p.all });
           /*
@@ -1639,7 +1643,7 @@ export function showOverview(app) {
         },
       });
       box.done();
-      if (cancelled || !sheet.root.isConnected) return;
+      if (isStale()) return;
       app.autoReport = { report, key: region ? region.id : null, gen: app.symbols.gen, cxxFields, cxxRevision };
       void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
       renderAutoReport(app, sheet, later, report, region);
@@ -1696,89 +1700,101 @@ async function pinnedFor(app, goal, ctx) {
       (app.autoReport.cxxRevision || 0) === (cxxFields?.revision || 0)) return fromAuto;
 
   if (!app.pinnedCache) app.pinnedCache = new Map();
-  const key = JSON.stringify([goal.id, goal.text, app.symbols.gen, cxxFields?.snapshotId, cxxFields?.revision]);
-  if (app.pinnedCache.has(key)) return app.pinnedCache.get(key);
-
   const region = ctx.region;
-  if (ctx.box) ctx.box.say(pick('値を 1 つに絞り込んでいます…', 'Narrowing down to one value…'));
-  const common = {
-    goal,
-    fields: app.fields,
-    cxxFields,
-    shapes: ctx.shapes || app.shapes || null,
-    program: ctx.program,
-    symbols: app.symbols,
-    strings: ctx.strings || [],
-    region,
-    map: report ? report.map : null,
-    // 形から立てた候補を開いて確かめるとき、参照している文言もそこで読む
-    textAt: stringLookup(ctx.strings || []),
-    signal: ctx.signal || null,
-    analyze: makeAnalyzer(app, region, ctx.signal || null),
-    scanAccess: makeAccessScanner(app, region, ctx.signal || null),
-    // 1 つの目的だけを見にきているので、ここでは予算を広く取る
-    budget: { left: 48 },
-    limit: 12,
-    onProgress: (x) => { if (ctx.box) ctx.box.set(x); },
-  };
-  let retryableFailure = false;
-  const attempt = async (operation) => {
-    try { return await operation(); }
-    catch (error) {
-      if (ctx.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR' ||
-          error?.code === 'pinpoint-analysis-timeout' || error?.code === 'pinpoint-access-timeout') {
-        retryableFailure = true;
+  const key = JSON.stringify([
+    goal.id, goal.text, app.backend?.gen ?? 0, app.sliceIndex ?? 0, region?.id ?? null,
+    app.symbols.gen, cxxFields?.snapshotId, cxxFields?.revision,
+  ]);
+  let entry = app.pinnedCache.get(key);
+  if (!entry) {
+    if (ctx.box) ctx.box.say(pick('値を 1 つに絞り込んでいます…', 'Narrowing down to one value…'));
+    const sharedController = new AbortController();
+    const common = {
+      goal,
+      fields: app.fields,
+      cxxFields,
+      shapes: ctx.shapes || app.shapes || null,
+      program: ctx.program,
+      symbols: app.symbols,
+      strings: ctx.strings || [],
+      region,
+      map: report ? report.map : null,
+      textAt: stringLookup(ctx.strings || []),
+      signal: sharedController.signal,
+      analyze: makeAnalyzer(app, region, sharedController.signal),
+      scanAccess: makeAccessScanner(app, region, sharedController.signal),
+      budget: { left: 48 },
+      limit: 12,
+      onProgress: (x) => { if (ctx.box) ctx.box.set(x); },
+    };
+    let retryableFailure = false;
+    const attempt = async (operation) => {
+      try { return await operation(); }
+      catch (error) {
+        if (sharedController.signal.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR' ||
+            error?.code === 'pinpoint-analysis-timeout' || error?.code === 'pinpoint-access-timeout') {
+          retryableFailure = true;
+        }
+        return null;
       }
-      return null;
+    };
+    const promise = (async () => {
+      let pin = null;
+      if (app.fields?.classCount || cxxFields?.fieldCount) {
+        pin = await attempt(() => pinpointField(common));
+      }
+      const undecided = (p) => !p || !p.top ||
+        verdictRank(p.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
+      if (undecided(pin) && ((ctx.ranked && ctx.ranked.length) || (common.shapes && common.shapes.size))) {
+        const loc = await attempt(() => pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked || [] })));
+        if (beats(loc, pin)) pin = loc;
+      }
+      if (undecided(pin) && ctx.ranked && ctx.ranked.length) {
+        const fn = await attempt(() => pinpointFunction(Object.assign({}, common, { ranked: ctx.ranked })));
+        if (beats(fn, pin)) pin = fn;
+      }
+      return pin;
+    })();
+    entry = { promise, controller: sharedController, waiters: 0, settled: false };
+    app.pinnedCache.set(key, entry);
+    promise.then(() => {
+      entry.settled = true;
+      if ((sharedController.signal.aborted || retryableFailure) && app.pinnedCache.get(key) === entry) {
+        app.pinnedCache.delete(key);
+      }
+    }, () => {
+      entry.settled = true;
+      if (app.pinnedCache.get(key) === entry) app.pinnedCache.delete(key);
+    });
+  }
+  const callerSignal = ctx.signal || null;
+  if (callerSignal?.aborted) return null;
+  entry.waiters += 1;
+  let released = false;
+  const release = (aborted) => {
+    if (released) return;
+    released = true;
+    entry.waiters = Math.max(0, entry.waiters - 1);
+    if (aborted && !entry.settled && entry.waiters === 0) {
+      if (!entry.controller.signal.aborted) entry.controller.abort('pinned-waiters-aborted');
+      if (app.pinnedCache.get(key) === entry) app.pinnedCache.delete(key);
     }
   };
-  const p = (async () => {
-    let pin = null;
-    if (app.fields?.classCount || cxxFields?.fieldCount) {
-      pin = await attempt(() => pinpointField(common));
-    }
-    /*
-     * クラス表から決まらなかったなら、形と命令から「場所」を決めにいく。
-     *
-     * ここは長いあいだ `!pin.top` のときしか走っていなかった。ところが
-     * クラス表がある C++ ゲームでは、pinpointField は必ず何かを 1 位に立てる
-     * （中身は広告 SDK の名前で、判定は「見つかりませんでした」）。top が
-     * ある以上ここが素通りされ、**命令から降りる道が 1 度も試されないまま**
-     * 「見つかりませんでした」と出ていた。battlecats の HP がまさにこれ。
-     * 決着していないなら、必ずもう一方も試して、良かったほうを採る。
-     */
-    const undecided = (p) => !p || !p.top ||
-      verdictRank(p.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
-    if (undecided(pin) && ((ctx.ranked && ctx.ranked.length) || (common.shapes && common.shapes.size))) {
-      const loc = await attempt(() => pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked || [] })));
-      if (beats(loc, pin)) pin = loc;
-    }
-    /*
-     * 値としては決まらなかった。それでも「その処理がどれか」は決まることがある。
-     *
-     * ゲーム本体が C++ のアプリでは、値の名前はどこにも残っていない代わりに、
-     * 「攻撃力アップ:%d 基ダ×(100+%d)÷100」のような、開発者が書いた計算式が残る。
-     * その文言を参照している関数が 1 個だけで、しかもその式の定数が命令の中に
-     * 実在するなら、処理としては確定できる。ここを呼んでいなかったので、
-     * 画面には「見つかりませんでした」しか出ていなかった。
-     */
-    if (undecided(pin) && ctx.ranked && ctx.ranked.length) {
-      const fn = await attempt(() => pinpointFunction(Object.assign({}, common, { ranked: ctx.ranked })));
-      if (beats(fn, pin)) pin = fn;
-    }
-    return pin;
-  })();
-  app.pinnedCache.set(key, p);
-  try {
-    const result = await p;
-    if ((ctx.signal?.aborted || retryableFailure) && app.pinnedCache.get(key) === p) {
-      app.pinnedCache.delete(key);
-    }
-    return result;
-  } catch (error) {
-    if (app.pinnedCache.get(key) === p) app.pinnedCache.delete(key);
-    throw error;
+  if (!callerSignal) {
+    try { return await entry.promise; }
+    finally { release(false); }
   }
+  return await new Promise((resolve, reject) => {
+    const onAbort = () => {
+      release(true);
+      resolve(null);
+    };
+    callerSignal.addEventListener('abort', onAbort, { once: true });
+    entry.promise.then(
+      (res) => { callerSignal.removeEventListener('abort', onAbort); release(false); resolve(res); },
+      (err) => { callerSignal.removeEventListener('abort', onAbort); release(false); reject(err); },
+    );
+  });
 }
 
 /**
@@ -1817,8 +1833,8 @@ function beats(next, cur) {
 const PURPOSE_ROWS = 10;
 
 /** 答えに選ばれた処理 1 個ぶんの「何をしているか」を、見出しの下に足す。 */
-async function describeAnswer(app, region, program, strings, addr, into) {
-  const analyze = makeAnalyzer(app, region);
+async function describeAnswer(app, region, program, strings, addr, into, signal = null) {
+  const analyze = makeAnalyzer(app, region, signal);
   if (!analyze || !into) return;
   const range = program ? program.functionRange(addr) : null;
   let model = null;
@@ -2398,12 +2414,12 @@ function appendNumberFlow(app, parent, addr, offset, fallback) {
   return host;
 }
 
-async function attachIrFlow(app, host, addr, offset) {
+async function attachIrFlow(app, host, addr, offset, signal = null) {
   if (!host || addr == null || !app.store.get('canDisassemble')) return;
   const window = functionAnalysisWindow(app, addr);
   if (!window) return;
   const { region, start, end } = window;
-  const analyze = makeAnalyzer(app, region);
+  const analyze = makeAnalyzer(app, region, signal);
   if (!analyze) return;
   let model = null;
   try {
@@ -3228,9 +3244,11 @@ export function showDataTables(app) {
   const out = el('div');
   body.append(out);
 
+  const schemaEpoch = app.backend?.gen;
+  const schemaSlice = app.sliceIndex;
   app.ensureSchemas((p) => box.set(p)).then((schemas) => {
     box.done();
-    if (!sheet.root.isConnected) return;
+    if (!sheet.root.isConnected || app.backend?.gen !== schemaEpoch || app.sliceIndex !== schemaSlice) return;
     if (!schemas || !schemas.length) {
       out.append(para(pick(
         'データファイルを読み込んでいるところが見つかりませんでした。',
@@ -3416,8 +3434,11 @@ export function showCandidates(app, goal) {
   const results = el('div');
   body.append(results);
 
+  const candEpoch = app.backend?.gen;
+  const candSlice = app.sliceIndex;
+  const isCandStale = () => !sheet.root.isConnected || app.backend?.gen !== candEpoch || app.sliceIndex !== candSlice;
   prepare(app, box).then(async ({ strings, program, shapes }) => {
-    if (!sheet.root.isConnected) { box.done(); return; }
+    if (isCandStale()) { box.done(); return; }
     const region = app.codeRegion();
 
     /*
@@ -3434,7 +3455,7 @@ export function showCandidates(app, goal) {
       signal: controller.signal,
     });
     box.done();
-    if (!sheet.root.isConnected) return;
+    if (isCandStale()) return;
     if ((!pin?.top || verdictRank(pin.verdict)<=verdictRank(VERDICT.AMBIGUOUS))
         && supportsArm64SemanticAnalysis(app.store?.get?.('architecture')??app.store?.get?.('capability')?.architecture)
         && app.symbols?.names?.some(name=>typeof name==='string'&&/^_?_Z/.test(name))) {
@@ -4149,7 +4170,8 @@ export function showFunctionReport(app, addr, goal) {
         nextStepsBlkRef.replaceWith(nextSteps);
         nextStepsBlkRef = nextSteps;
       }
-    }).catch(() => { /* relationship enrichment is optional */ });
+    }).catch(() => { /* relationship enrichment is optional */ })
+      .finally(() => { if (loadingNote && loadingNote.parentNode) loadingNote.remove(); });
   }).catch((err) => {
     box.done();
     if (controller.signal.aborted || err?.name === 'AbortError') return;
@@ -4578,17 +4600,32 @@ function geminiAnalysisSection(reportOrGetter, res, parentSignal = null) {
   output.setAttribute('role', 'document');
   section.append(status, output);
 
+  const MAX_GEMINI_MARKDOWN_CHARS = 512 * 1024;
+  const GEMINI_RENDER_THROTTLE_MS = 64;
   let controller = null;
   let markdownText = '';
   let renderFrame = 0;
+  let lastRenderAt = 0;
   const renderOutput = () => {
     renderFrame = 0;
+    lastRenderAt = Date.now();
     const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 72;
     renderGeminiMarkdown(output, markdownText);
     if (follow) output.scrollTop = output.scrollHeight;
   };
   const scheduleRender = () => {
-    if (!renderFrame) renderFrame = requestAnimationFrame(renderOutput);
+    if (renderFrame) return;
+    if (Date.now() - lastRenderAt < GEMINI_RENDER_THROTTLE_MS) {
+      renderFrame = requestAnimationFrame(() => {
+        if (Date.now() - lastRenderAt < GEMINI_RENDER_THROTTLE_MS) {
+          renderFrame = requestAnimationFrame(renderOutput);
+        } else {
+          renderOutput();
+        }
+      });
+      return;
+    }
+    renderFrame = requestAnimationFrame(renderOutput);
   };
   const flushRender = () => {
     if (renderFrame) cancelAnimationFrame(renderFrame);
@@ -4631,7 +4668,9 @@ function geminiAnalysisSection(reportOrGetter, res, parentSignal = null) {
     try {
       await streamGemini(payload, {
         onText: (chunk) => {
-          markdownText += chunk;
+          if (markdownText.length < MAX_GEMINI_MARKDOWN_CHARS) {
+            markdownText += String(chunk).slice(0, MAX_GEMINI_MARKDOWN_CHARS - markdownText.length);
+          }
           copy.disabled = !markdownText;
           scheduleRender();
         },
@@ -4662,7 +4701,10 @@ function geminiAnalysisSection(reportOrGetter, res, parentSignal = null) {
     if (controller) controller.abort();
   });
   if (parentSignal) {
-    const onParentAbort = () => { if (controller) controller.abort(); };
+    const onParentAbort = () => {
+      if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
+      if (controller) controller.abort();
+    };
     if (parentSignal.aborted) onParentAbort();
     else parentSignal.addEventListener('abort', onParentAbort, { once: true });
   }

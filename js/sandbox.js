@@ -138,7 +138,7 @@ const WORKER_PRELUDE = String.raw`
   const OUTPUT_MAX_PER_SECOND = 96;
   let outputMessages = 0, outputBytes = 0, outputWindow = nativeNow(), outputWindowCount = 0;
   const outputSize = (value) => {
-    const seen = new NativeSet(); const stack=[value]; let bytes=0, nodes=0;
+    const seen = new NativeSet(); const buffers = new NativeSet(); const stack=[value]; let bytes=0, nodes=0;
     while (stack.length && bytes <= OUTPUT_MAX_BYTES) {
       const x=nativeArrayPop(stack); if (++nodes > 4096) return OUTPUT_MAX_BYTES + 1;
       if (x == null) { bytes+=4; continue; }
@@ -148,14 +148,20 @@ const WORKER_PRELUDE = String.raw`
       if (typeof x === 'undefined') { bytes+=4; continue; }
       let arrayBufferBytes = null;
       try { arrayBufferBytes = nativeArrayBufferByteLength(x); } catch {}
-      if (arrayBufferBytes !== null) { bytes += arrayBufferBytes; continue; }
+      if (arrayBufferBytes !== null) {
+        if (!nativeSetHas(buffers, x)) { nativeSetAdd(buffers, x); bytes += arrayBufferBytes; }
+        continue;
+      }
       if (nativeArrayBufferIsView(x)) {
         let buffer = null;
         try { buffer = nativeTypedArrayBuffer(x); }
         catch { try { buffer = nativeDataViewBuffer(x); } catch {} }
         if (!buffer) return OUTPUT_MAX_BYTES + 1;
-        try { bytes += nativeArrayBufferByteLength(buffer); }
-        catch { return OUTPUT_MAX_BYTES + 1; }
+        if (!nativeSetHas(buffers, buffer)) {
+          nativeSetAdd(buffers, buffer);
+          try { bytes += nativeArrayBufferByteLength(buffer); }
+          catch { return OUTPUT_MAX_BYTES + 1; }
+        }
         continue;
       }
       if (typeof x !== 'object') return OUTPUT_MAX_BYTES + 1;
@@ -1088,8 +1094,14 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       }
     };
 
-    frame.srcdoc = buildFrameSrcdoc();
-    document.body.append(frame);
+    try {
+      frame.srcdoc = buildFrameSrcdoc();
+      if (!document.body) throw new Error('document.body is unavailable');
+      document.body.append(frame);
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
   });
 }
 

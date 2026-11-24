@@ -316,7 +316,7 @@ export class SemanticQueryExecution {
       if (error?.code === 'semantic-query-world-stale' || error?.code === 'interprocedural-scope-stale' || error?.message === 'semantic-query-world-stale') executionStatus = 'stale';
       else {
         const stopped = workStopStatus(error, work.signal);
-        if (!stopped) throw error;
+        if (!stopped) { this.close('failed'); throw error; }
         executionStatus = stopped;
         this.#frontier.add(stopped, { functionId: this.#plan.query.scope.functionIds[this.#functionIndex] ?? null });
         // Exhausting the total ledger cannot be fixed by resuming with a fresh

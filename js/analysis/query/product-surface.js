@@ -7,7 +7,7 @@ const REPORT_BINDINGS = new WeakMap();
 const STRING_STATES = new WeakMap();
 const BACKEND_IDS = new WeakMap();
 let nextBackendId = 1;
-const CANONICAL_VERDICTS = new Set(['confirmed','supported','likely','unverified','contradicted','unknown']);
+const CANONICAL_VERDICTS = new Set(['confirmed','supported','likely','inconclusive','unverified','contradicted','unknown']);
 
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -226,7 +226,7 @@ async function scanNextStringRegion(app, state, options = {}) {
   if (state.complete || state.cursor >= state.plan.length || state.budget.exhausted) {
     state.complete = state.cursor >= state.plan.length && !state.backendIncomplete && !state.truncationReason && !state.budget.truncationReason;
     state.truncationReason ||= state.budget.truncationReason || (state.backendIncomplete ? 'backend-partial' : state.cursor < state.plan.length ? 'collection-budget' : null);
-    return;
+    return false;
   }
   if (!state.inFlight) {
     const index = state.cursor;
@@ -234,7 +234,7 @@ async function scanNextStringRegion(app, state, options = {}) {
     const remaining = state.budget.requestLimit();
     if (remaining <= 0) {
       state.truncationReason ||= 'result-budget';
-      return;
+      return false;
     }
     const request = app.backend.strings(
       { regionId:item.region.id, min:4, maxBytes:item.bytes, limit:remaining },
@@ -404,7 +404,10 @@ export function createProductSurfaceQueries(app) {
         abortIfNeeded(options.signal);
         const matches = matchingStrings(state, needle);
         if (matches.length >= offset + limit || state.complete || state.budget.exhausted || state.cursor >= state.plan.length) break;
-        await scanNextStringRegion(app, state, options);
+        const prevCursor = state.cursor;
+        const prevMatches = state.items?.length ?? matches.length;
+        const progressed = await scanNextStringRegion(app, state, options);
+        if (progressed === false || (state.cursor === prevCursor && (state.items?.length ?? matches.length) === prevMatches && state.budget.requestLimit() <= 0)) break;
       }
       const matches = matchingStrings(state, needle);
       const value = matches.slice(offset, offset + limit).map(({ normalizedText, ...row }) => row);

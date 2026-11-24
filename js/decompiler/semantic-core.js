@@ -1148,30 +1148,32 @@ function readOnlyShortCStringAt(addr, ctx) {
   return null;
 }
 
-function isAddressDerivedValue(value, depth = 0, seen = null) {
+function isAddressDerivedValue(value, depth = 0, seen = null, memo = null) {
   if (!value || depth > 64) return false;
   if (value.addressDerived === true || value.def?.extra?.addressDerived === true) return true;
-  const visited = seen || new Set();
   const visitKey = value.id != null ? value.id : value;
+  const cache = memo || new Map();
+  if (cache.has(visitKey)) return cache.get(visitKey);
+  const visited = seen || new Set();
   if (visited.has(visitKey)) return false;
   visited.add(visitKey);
+  let res = false;
   try {
     const op = value.def?.op;
-    if (!op) return false;
-    if (op === OP.ADDR) return true;
-    if (op === OP.MOV || (OP.CAST != null && op === OP.CAST) || op === 'cast') {
-      return isAddressDerivedValue(valueOf(value.def.args?.[0]), depth, visited);
+    if (!op) res = false;
+    else if (op === OP.ADDR) res = true;
+    else if (op === OP.MOV || (OP.CAST != null && op === OP.CAST) || op === 'cast') {
+      res = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth, visited, cache);
+    } else if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
+      const leftAddr = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1, visited, cache);
+      const rightAddr = isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1, visited, cache);
+      res = value.def.sub === 'sub' ? (leftAddr && !rightAddr) : (leftAddr || rightAddr);
     }
-    if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
-      const leftAddr = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1, visited);
-      const rightAddr = isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1, visited);
-      if (value.def.sub === 'sub') return leftAddr && !rightAddr;
-      return leftAddr || rightAddr;
-    }
-    return false;
   } finally {
     visited.delete(visitKey);
   }
+  if (visited.size === 0 || res === true) cache.set(visitKey, res);
+  return res;
 }
 
 function hasAddressRefForAddr(addr, defRow, ctx, { anyRow = false } = {}) {
@@ -2538,9 +2540,10 @@ function parsePrintfFormatSpecifiers(fmt) {
 
 const CSTRING_CYCLE = Symbol('cstring-cycle');
 
-function resolveConstantCStringInner(value, ctx, seen) {
+function resolveConstantCStringInner(value, ctx, seen, memo = new Map()) {
   if (!value) return null;
   if (value.id != null) {
+    if (memo.has(value.id)) return memo.get(value.id);
     if (seen.has(value.id)) return CSTRING_CYCLE;
     seen.add(value.id);
   }
@@ -2571,18 +2574,23 @@ function resolveConstantCStringInner(value, ctx, seen) {
       return null;
     }
     if (d.op === OP.MOV || d.op === OP.CAST || d.op === 'cast') {
-      return resolveConstantCStringInner(valueOf(d.args?.[0]), ctx, seen);
+      const r = resolveConstantCStringInner(valueOf(d.args?.[0]), ctx, seen, memo);
+      if (value.id != null && r !== CSTRING_CYCLE) memo.set(value.id, r);
+      return r;
     }
     if (d.op === OP.PHI) {
       const rawIncoming = Array.isArray(d.incoming) && d.incoming.length
         ? d.incoming.map((x) => valueOf(x))
         : (d.args || []).map((x) => valueOf(x));
       const nonSelf = rawIncoming.filter((v) => v && v !== value && (value.id == null || v.id !== value.id));
-      if (!nonSelf.length) return null;
+      if (!nonSelf.length) {
+        if (value.id != null) memo.set(value.id, null);
+        return null;
+      }
       let common = null;
       let sawCycle = false;
       for (const inc of nonSelf) {
-        const s = resolveConstantCStringInner(inc, ctx, seen);
+        const s = resolveConstantCStringInner(inc, ctx, seen, memo);
         if (s === CSTRING_CYCLE) { sawCycle = true; continue; }
         if (s == null) return null;
         if (common == null) common = s;
@@ -2685,6 +2693,7 @@ function callRecord(inst, ctx) {
   } else {
     let override = null;
     try { override = ctx.opts.callPrototypeFor?.(target, name, inst) || null; } catch { override = null; }
+    if (!override) override = inst.callPrototype ?? inst.extra?.callPrototype ?? null;
     const knownSig = knownCallSignature(name);
     const knownProto = knownCallPrototype(name);
     const hasFpSigParams = !override && isAArch64
@@ -2747,6 +2756,42 @@ function callRecord(inst, ctx) {
             sourceArgIndices = values[0] ? [0] : [];
             arityKnown = false;
             ctx.unknownCallArities++;
+          }
+        } else if (!override && target != null && ctx.opts?.addr != null && target === ctx.opts.addr && Array.isArray(ctx.types?.args)) {
+          if (ctx.types.args.length === 0) {
+            logicalArgs = [];
+            sourceArgIndices = [];
+            arityKnown = true;
+          } else {
+            resolvedArgs = [];
+            for (let i = 0; i < ctx.types.args.length; i++) {
+              const a = ctx.types.args[i];
+              const reg = a?.reg ? String(a.reg) : `x${Number.isInteger(a?.index) ? a.index : i}`;
+              const gpMatch = /^[xw]([0-7])$/i.exec(reg);
+              if (gpMatch) {
+                const idx = Number(gpMatch[1]);
+                resolvedArgs.push({
+                  reg,
+                  value: values[idx] || null,
+                  text: argText[idx] ?? 'unknown',
+                  tickets: argumentTickets[idx] || [],
+                });
+              } else {
+                const fpMatch = /^([sdvq])([0-7])$/i.exec(reg);
+                const canon = canonicalRegister(reg, isAArch64);
+                let val = explicitArgs.get(canon) ?? explicitArgs.get(reg) ?? reachingRegisterValue(ctx.ir, inst, reg, isAArch64);
+                if (!val && fpMatch) {
+                  val = resolveFpCallArg(explicitArgs, ctx.ir, inst, Number(fpMatch[2]), fpMatch[1].toLowerCase() === 's');
+                }
+                const input = initialValueCursor(ctx);
+                const text = val ? renderValue(val, ctx) : null;
+                const tickets = input ? input.list.slice(input.start) : [];
+                resolvedArgs.push({ reg, value: val || null, text: text ?? 'unknown', tickets });
+              }
+            }
+            logicalArgs = resolvedArgs.map((a) => a.text);
+            sourceArgIndices = [];
+            arityKnown = true;
           }
         } else {
           arityKnown = false;
@@ -2830,6 +2875,61 @@ function callRecord(inst, ctx) {
   return rec;
 }
 
+function sanitizeSwiftDollarTokens(text) {
+  const s = String(text || '');
+  if (!s.includes('$')) return s;
+  let out = '';
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let j = i + 1;
+      while (j < n) {
+        if (s[j] === '\\' && j + 1 < n) { j += 2; continue; }
+        if (s[j] === quote) { j++; break; }
+        j++;
+      }
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === '/' && i + 1 < n && s[i + 1] === '/') {
+      let j = i + 2;
+      while (j < n && s[j] !== '\n') j++;
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === '/' && i + 1 < n && s[i + 1] === '*') {
+      let j = i + 2;
+      while (j + 1 < n && !(s[j] === '*' && s[j + 1] === '/')) j++;
+      j = j + 1 < n ? j + 2 : n;
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (/[A-Za-z0-9_$]/.test(ch)) {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9_$]/.test(s[j])) j++;
+      const tok = s.slice(i, j);
+      if (tok.includes('$')) {
+        let sanitized = tok.replace(/\$/g, '_');
+        if (!sanitized || /^[0-9]/.test(sanitized)) sanitized = `swift_${sanitized}`;
+        out += sanitized;
+      } else {
+        out += tok;
+      }
+      i = j;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 function renderCall(inst, ctx) {
   const c = callRecord(inst, ctx);
   if (c.resolved.runtime === 'objc' && c.resolved.message) {
@@ -2842,12 +2942,7 @@ function renderCall(inst, ctx) {
     return c.resolved.message.text;
   }
   if (c.resolved.runtime === 'swift' && c.resolved.text) {
-    return c.resolved.text.replace(/^([A-Za-z_$][A-Za-z0-9_$]*)(\s*\()/, (_, ident, tail) => {
-      if (!ident.includes('$')) return `${ident}${tail}`;
-      let sanitized = ident.replace(/\$/g, '_');
-      if (!sanitized || /^[0-9]/.test(sanitized)) sanitized = `swift_${sanitized}`;
-      return `${sanitized}${tail}`;
-    });
+    return sanitizeSwiftDollarTokens(c.resolved.text);
   }
   const name = c.name ? safeIdent(c.name, 'unknown_call') : null;
   if (name) {
@@ -4397,7 +4492,7 @@ export function recoverInductionVariables(ir, ctx = null) {
       let step = null;
       if (sameValue(a, phi.dst) && b?.const != null) step = stepDef.sub === 'add' ? b.const : -b.const;
       else if (stepDef.sub === 'add' && sameValue(b, phi.dst) && a?.const != null) step = a.const;
-      if (step == null) continue;
+      if (step == null || step === 0n) continue;
       const term = blockTerm(block);
       if (!term || term.op !== OP.CBR) continue;
       const name = `i${out.length || ''}`;
@@ -5431,6 +5526,12 @@ export function decompileSemantic(model, rawOpts = {}) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
     ctx.materialNames = new Map(baseMaterialNames);
     ctx.exprCache.clear();
+    ctx.callCache.clear();
+    ctx.evidence.length = 0;
+    ctx.unknown = 0;
+    ctx.unknownCallArities = 0;
+    ctx.hoistedInductionDecls?.clear?.();
+    ctx.emittedInductionNames?.clear?.();
     if (ctx.phiLowering) {
       ctx.phiLowering.skippedPhiIds.clear();
       ctx.phiLowering.temps.clear();
@@ -5441,9 +5542,20 @@ export function decompileSemantic(model, rawOpts = {}) {
     // ctx.suppressed diagnostics unchanged, including the abandoned attempt.
     ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
     ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
+    ctx.storeRenderHistory.consumers = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    ctx.storeRenderHistory.edges = historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges);
     ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
+    ctx.statementRenderHistory.consumers = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    ctx.statementRenderHistory.edges = historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges);
     ctx.controlRenderHistory.events.length = 0; ctx.controlRenderHistory.reasons.clear();
-    if (ctx.conditionalRegionHistory) ctx.conditionalRegionHistory.events.length = 0;
+    ctx.controlRenderHistory.consumers = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    ctx.controlRenderHistory.edges = historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges);
+    if (ctx.conditionalRegionHistory) {
+      ctx.conditionalRegionHistory.events.length = 0;
+      ctx.conditionalRegionHistory.reasons.clear();
+      ctx.conditionalRegionHistory.remaining = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    }
+    beginInitialValueTrace(ctx);
     runBatchedEmission(() => {
       body.push(...faithfulCfg(ctx, 1));
     });

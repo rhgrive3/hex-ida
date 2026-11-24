@@ -63,7 +63,7 @@ function validImm12WithOptionalLsl12(op) {
     && op.shift.op.toLowerCase() === 'lsl'
     && typeof op.shift.amount === 'number'
     && Number.isInteger(op.shift.amount)
-    && op.shift.amount === 12;
+    && (op.shift.amount === 0 || op.shift.amount === 12);
 }
 
 function rotateRightElement(value, amount, widthBits) {
@@ -520,7 +520,7 @@ function normalizedInstruction(decoded, context) {
 
 function normalizedContext(context = {}) {
   const machineEffectsOptions = context.machineEffectsOptions ?? context.options ?? {};
-  return { ...context, ...machineEffectsOptions, options: machineEffectsOptions, machineEffectsOptions };
+  return { ...machineEffectsOptions, ...context, options: machineEffectsOptions, machineEffectsOptions };
 }
 
 export function liftArm64MachineEffects(decoded, context = {}) {

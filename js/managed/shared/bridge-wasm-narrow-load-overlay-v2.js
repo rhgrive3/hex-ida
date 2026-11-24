@@ -8,6 +8,12 @@ const NARROW_LOADS = Object.freeze({
   0x2d: Object.freeze({ mnemonic: 'i32.load8_u', sourceBits: 8, resultBits: 32, extension: 'zero', kind: 'zext' }),
   0x2e: Object.freeze({ mnemonic: 'i32.load16_s', sourceBits: 16, resultBits: 32, extension: 'sign', kind: 'sext' }),
   0x2f: Object.freeze({ mnemonic: 'i32.load16_u', sourceBits: 16, resultBits: 32, extension: 'zero', kind: 'zext' }),
+  0x30: Object.freeze({ mnemonic: 'i64.load8_s', sourceBits: 8, resultBits: 64, extension: 'sign', kind: 'sext' }),
+  0x31: Object.freeze({ mnemonic: 'i64.load8_u', sourceBits: 8, resultBits: 64, extension: 'zero', kind: 'zext' }),
+  0x32: Object.freeze({ mnemonic: 'i64.load16_s', sourceBits: 16, resultBits: 64, extension: 'sign', kind: 'sext' }),
+  0x33: Object.freeze({ mnemonic: 'i64.load16_u', sourceBits: 16, resultBits: 64, extension: 'zero', kind: 'zext' }),
+  0x34: Object.freeze({ mnemonic: 'i64.load32_s', sourceBits: 32, resultBits: 64, extension: 'sign', kind: 'sext' }),
+  0x35: Object.freeze({ mnemonic: 'i64.load32_u', sourceBits: 32, resultBits: 64, extension: 'zero', kind: 'zext' }),
 });
 
 function fail(code) { throw new TypeError(code); }

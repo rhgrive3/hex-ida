@@ -15,8 +15,20 @@ function widthBytes(region) {
 }
 
 function toBigInt(value) {
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
-  catch { return null; }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) {
+      const negative = text.startsWith('-');
+      const body = negative || text.startsWith('+') ? text.slice(1) : text;
+      try {
+        const mag = BigInt(body);
+        return negative ? -mag : mag;
+      } catch { return null; }
+    }
+  }
+  return null;
 }
 
 function intervalRelation(startA, sizeA, startB, sizeB) {

@@ -755,9 +755,9 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     status.complete = false; image.metadata.dyldBindings.complete = false;
     if (opcode != null && !status.unsupportedOpcodes.includes(opcode)) status.unsupportedOpcodes.push(opcode);
     const warning = `${source}: ${message}`;
-    if (!seenWarnings.has(warning) && seenWarnings.size < budget.limits.warnings) {
+    if (!seenWarnings.has(warning)) {
       seenWarnings.add(warning);
-      image.warnings.push(warning);
+      budget.warn(warning);
     }
   };
   const validDylibOrdinal = () => {

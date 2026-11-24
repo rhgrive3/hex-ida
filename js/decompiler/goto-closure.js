@@ -953,16 +953,20 @@ export function eliminateAvoidableGotos(result, opts = {}, stats = null) {
   // then one more text fixpoint for the text the wraps rewrote.
   runTextFixpoint(entryInfo);
   const wrap = wrapBackwardLoops(current, result.ir, opts.shouldAbort);
-  totals.loopWraps += wrap.stats.loopWraps;
   totals.loopCandidates += wrap.stats.loopCandidates;
   totals.refusedLoopProof += wrap.stats.refusedLoopProof;
   totals.scanSteps += wrap.stats.scanSteps;
-  current = wrap.lines;
   if (wrap.stats.loopWraps > 0) {
-    const afterWrap = analyzeLines(current);
+    const candidate = wrap.lines;
+    const afterWrap = analyzeLines(candidate);
     totals.scanSteps += afterWrap.steps;
-    if (!labelAtEndOfBlock(current, afterWrap)) runTextFixpoint(afterWrap);
-    else totals.refusedPasses += 1;
+    if (!labelAtEndOfBlock(candidate, afterWrap)) {
+      current = candidate;
+      totals.loopWraps += wrap.stats.loopWraps;
+      runTextFixpoint(afterWrap);
+    } else {
+      totals.refusedPasses += 1;
+    }
   }
   if (current === lines || (totals.removedGotos === 0 && totals.removedLabels === 0
       && totals.guardBlocks === 0 && totals.ifElseRegions === 0 && totals.loopWraps === 0)) return finish(result);

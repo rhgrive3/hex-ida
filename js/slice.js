@@ -102,13 +102,22 @@ export function backwardSlice(ir, seed, opts) {
   return { instructions, values, truncated:truncated||memoryTraversalTruncated, seed, memoryAlternatives, memoryAmbiguous:memoryAlternatives.some((x)=>x.ambiguous), memoryTraversalTruncated };
 }
 
-function memoryNodeContainsStore(node, store, seen = new Set()) {
-  if (!node || seen.has(node)) return false;
-  seen.add(node);
-  if (node.kind === 'store') return node.inst === store;
-  if (node.kind !== 'phi') return false;
-  for (const incoming of node.incoming || []) {
-    if (memoryNodeContainsStore(incoming && incoming.node, store, seen)) return true;
+function memoryNodeContainsStore(node, store) {
+  if (!node) return false;
+  const seen = new Set();
+  const stack = [node];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (!cur || seen.has(cur)) continue;
+    seen.add(cur);
+    if (cur.kind === 'store') {
+      if (cur.inst === store) return true;
+      continue;
+    }
+    if (cur.kind !== 'phi') continue;
+    for (const incoming of cur.incoming || []) {
+      if (incoming && incoming.node && !seen.has(incoming.node)) stack.push(incoming.node);
+    }
   }
   return false;
 }
@@ -194,7 +203,11 @@ function stepOf(inst) {
   }
 }
 
+const ORDERED_CLAMP_CONDS = new Set(['gt', 'ge', 'lt', 'le', 'hi', 'hs', 'cs', 'lo', 'cc', 'ls']);
+
 function clampLike(inst) {
+  const cond = String(inst?.cond || '').toLowerCase();
+  if (!ORDERED_CLAMP_CONDS.has(cond)) return false;
   const flags = inst.args[2] && inst.args[2].value;
   const cmp = flags && flags.def;
   if (!cmp || cmp.op !== OP.CMP) return false;

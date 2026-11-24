@@ -756,7 +756,7 @@ const STRINGS = {
 let current = 'ja';
 
 export function setLang(l) {
-  current = STRINGS[l] ? l : 'ja';
+  current = typeof l === 'string' && Object.hasOwn(STRINGS, l) ? l : 'ja';
   uiRoot()?.setAttribute('lang', current);
 }
 
@@ -777,12 +777,12 @@ export function detectLang() {
 
 /** t('key', {n: 3}) → '3 行' */
 export function t(key, vars) {
-  const table = STRINGS[current] || STRINGS.ja;
-  let s = table[key];
-  if (s == null) s = STRINGS.ja[key];
+  const table = Object.hasOwn(STRINGS, current) ? STRINGS[current] : STRINGS.ja;
+  let s = typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : null;
+  if (s == null && typeof key === 'string' && Object.hasOwn(STRINGS.ja, key)) s = STRINGS.ja[key];
   if (s == null) return key;
   if (!vars) return s;
-  return s.replace(/\{(\w+)\}/g, (m, name) => (vars[name] != null ? String(vars[name]) : m));
+  return s.replace(/\{(\w+)\}/g, (m, name) => (Object.hasOwn(vars, name) && vars[name] != null ? String(vars[name]) : m));
 }
 
 /** 言語に応じて片方を返す小道具。長文をテーブルに入れたくないときに使う。 */

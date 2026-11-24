@@ -160,7 +160,7 @@ export async function explainTransformChain(request, { world, assumptions, snaps
     if (node.observable.termination === 'unproved') remaining.add('termination-observable-unproved');
   }
   if (chain.length !== stepIds.length) remaining.add('main-chain-receipt-missing');
-  const rejected = mainChecks.some((check) => check?.status === 'rejected');
+  const rejected = [...checkRows.values()].some((check) => check?.status === 'rejected');
   const verified = chain.length === stepIds.length && !remaining.size && mainChecks.every((check) => check?.status === 'verified');
   const bounded = [...nodes.values()].some((node) => node.claim === 'bounded-equivalent' || node.observable.termination === 'bounded-only');
   // The composition is no stronger than its weakest PREMISE checker as well

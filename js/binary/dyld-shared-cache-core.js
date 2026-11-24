@@ -102,6 +102,7 @@ function parseMappings(bytes, count, totalSize, label = 'dyld shared cache mappi
       initProt: r.u32(p + 28),
     };
     if (mapping.size === 0n) throw new Error(`${label} ${i} has zero size`);
+    if (mapping.address + mapping.size > 0xffffffffffffffffn) throw new Error(`${label} ${i} virtual address range overflows 64-bit address space`);
     checkedRange(mapping.fileOffset, mapping.size, totalSize, `${label} ${i}`);
     if ((mapping.initProt & ~7) !== 0 || (mapping.maxProt & ~7) !== 0 || (mapping.initProt & ~mapping.maxProt) !== 0) {
       throw new Error(`${label} ${i} has invalid VM protection bits`);
@@ -206,17 +207,25 @@ function rebaseRecord(mapping, pageOffset, raw, info, slide, mappings) {
   const valueMask = (~info.deltaMask) & ((1n << 64n) - 1n);
   const encoded = raw & valueMask;
   let target = encoded;
-  if (target !== 0n) target += info.valueAdd;
+  if (target !== 0n) {
+    target += info.valueAdd;
+    if (target > 0xffffffffffffffffn) throw new Error('dyld shared cache rebase target overflows 64-bit address space');
+  }
   if (target !== 0n && !inAnyMapping(target, mappings)) throw new Error('dyld shared cache rebase target is outside mapped cache address space');
   const storageAddress = mapping.address + BigInt(pageOffset);
+  const runtimeStorageAddress = storageAddress + slide;
+  const runtimeTargetAddress = target === 0n ? 0n : target + slide;
+  if (storageAddress > 0xffffffffffffffffn || runtimeStorageAddress > 0xffffffffffffffffn || runtimeTargetAddress > 0xffffffffffffffffn) {
+    throw new Error('dyld shared cache slid address overflows 64-bit address space');
+  }
   return {
     delta,
     record: {
       storageAddress,
-      runtimeStorageAddress: storageAddress + slide,
+      runtimeStorageAddress,
       rawValue: raw,
       targetAddress: target,
-      runtimeTargetAddress: target === 0n ? 0n : target + slide,
+      runtimeTargetAddress,
       authenticated: false,
     },
   };
@@ -277,8 +286,14 @@ function normalizeSlide(header, opts) {
   return slide;
 }
 
+function checkedU64(value, label) {
+  if (value < 0n || value > 0xffffffffffffffffn) throw new Error(`${label} overflows 64-bit address space`);
+  return value;
+}
+
 function makeImage(input, source, header, mappings, slideMappings, slide, slideMetadata) {
   const base = header.sharedRegionStart !== 0n ? header.sharedRegionStart : mappings.reduce((m, x) => x.address < m ? x.address : m, mappings[0].address);
+  const imageBase = checkedU64(base + slide, 'dyld shared cache imageBase');
   const fileSize = source?.size ?? BigInt(input?.byteLength ?? 0);
   const image = new BinaryImage(input, {
     source,
@@ -286,15 +301,17 @@ function makeImage(input, source, header, mappings, slideMappings, slide, slideM
     arch: header.arch,
     bits: header.bits,
     endian: 'little',
-    imageBase: base + slide,
+    imageBase,
     fileOffset: 0n,
     fileSize,
   });
   for (let i = 0; i < mappings.length; i++) {
     const m = mappings[i];
+    const slidAddress = checkedU64(m.address + slide, `dyld shared cache mapping ${i} runtime address`);
+    checkedU64(slidAddress + m.size, `dyld shared cache mapping ${i} runtime end`);
     image.addSegment({
       name: `cache-map-${i}`,
-      address: m.address + slide,
+      address: slidAddress,
       size: m.size,
       fileOffset: m.fileOffset,
       fileSize: m.size,
@@ -323,10 +340,14 @@ function makeImage(input, source, header, mappings, slideMappings, slide, slideM
 }
 
 function validateSlideMappings(slideMappings, mappings) {
+  const seenCanonical = new Set();
   for (let i = 0; i < slideMappings.length; i++) {
     const item = slideMappings[i];
     const canonical = mappings.find((m) => m.address === item.address && m.size === item.size && m.fileOffset === item.fileOffset);
     if (!canonical) throw new Error(`dyld shared cache slide mapping ${i} does not match a canonical mapping`);
+    const key = `${item.address}:${item.size}:${item.fileOffset}`;
+    if (seenCanonical.has(key)) throw new Error(`dyld shared cache slide mapping ${i} duplicates a canonical mapping`);
+    seenCanonical.add(key);
     if (canonical.maxProt !== item.maxProt || canonical.initProt !== item.initProt) {
       throw new Error(`dyld shared cache slide mapping ${i} protection identity disagrees with its canonical mapping`);
     }
@@ -339,36 +360,44 @@ function maxRecordsOption(opts) {
   return opts.maxRebases;
 }
 
-function parseSlideInfoSync(allBytes, item, slide, mappings, opts, targetRange) {
+function parseSlideInfoSync(allBytes, item, slide, mappings, opts, targetRange, budget) {
   if (item.slideInfoFileSize === 0n) return { version: null, complete: true, rebaseCount: 0, rebases: [] };
   const offset = Number(item.slideInfoFileOffset), size = Number(item.slideInfoFileSize);
   const infoBytes = allBytes.subarray(offset, offset + size);
+  if (infoBytes.length < 4) throw new Error('dyld shared cache slide info is truncated');
   const version = new ByteView(infoBytes, { littleEndian: true }).u32(0);
   const mappingBytes = allBytes.subarray(Number(item.fileOffset), Number(item.fileOffset + item.size));
+  const limit = budget ? budget.remaining : maxRecordsOption(opts);
   if (version === 5) {
     const info = parseSlideInfo5Structure(infoBytes, item, BigInt(allBytes.byteLength));
-    const rebases = walkSlideInfo5Sync(mappingBytes, item, info, slide, mappings, maxRecordsOption(opts), targetRange);
+    const rebases = walkSlideInfo5Sync(mappingBytes, item, info, slide, mappings, limit, targetRange);
+    if (budget) budget.remaining -= rebases.length;
     return { version, pageSize: info.pageSize, valueAdd: info.valueAdd, complete: true, rebaseCount: rebases.length, rebases };
   }
   if (version !== 2) throw new Error(`unsupported dyld shared cache slide info version ${version}`);
   const info = parseSlideInfo2Structure(infoBytes, item, BigInt(allBytes.byteLength));
-  const rebases = walkSlideInfo2Sync(mappingBytes, item, info, slide, mappings, maxRecordsOption(opts));
+  const rebases = walkSlideInfo2Sync(mappingBytes, item, info, slide, mappings, limit);
+  if (budget) budget.remaining -= rebases.length;
   return { version, pageSize: info.pageSize, complete: true, rebaseCount: rebases.length, rebases };
 }
 
-async function parseSlideInfoSource(source, item, slide, mappings, opts, targetRange) {
+async function parseSlideInfoSource(source, item, slide, mappings, opts, targetRange, budget) {
   if (item.slideInfoFileSize === 0n) return { version: null, complete: true, rebaseCount: 0, rebases: [] };
   const infoBytes = await readBoundedRange(source, item.slideInfoFileOffset, Number(item.slideInfoFileSize), opts.signal);
+  if (infoBytes.length < 4) throw new Error('dyld shared cache slide info is truncated');
   const version = new ByteView(infoBytes, { littleEndian: true }).u32(0);
+  const limit = budget ? budget.remaining : maxRecordsOption(opts);
   if (version === 5) {
     const info = parseSlideInfo5Structure(infoBytes, item, source.size);
     const read64 = async (offset) => new ByteView(await readBoundedRange(source, offset, 8, opts.signal), { littleEndian: true }).u64(0);
-    const rebases = await walkSlideInfo5Source(read64, item, info, slide, mappings, maxRecordsOption(opts), targetRange);
+    const rebases = await walkSlideInfo5Source(read64, item, info, slide, mappings, limit, targetRange);
+    if (budget) budget.remaining -= rebases.length;
     return { version, pageSize: info.pageSize, valueAdd: info.valueAdd, complete: true, rebaseCount: rebases.length, rebases };
   }
   if (version !== 2) throw new Error(`unsupported dyld shared cache slide info version ${version}`);
   const info = parseSlideInfo2Structure(infoBytes, item, source.size);
-  const rebases = await walkSlideInfo2Source(source, item, info, slide, mappings, maxRecordsOption(opts), opts.signal);
+  const rebases = await walkSlideInfo2Source(source, item, info, slide, mappings, limit, opts.signal);
+  if (budget) budget.remaining -= rebases.length;
   return { version, pageSize: info.pageSize, complete: true, rebaseCount: rebases.length, rebases };
 }
 
@@ -387,7 +416,8 @@ export function parseDyldSharedCache(input, opts = {}) {
   const slide = normalizeSlide(header, opts);
   if (slide !== 0n && slideMappings.length === 0) throw new Error('cannot apply a nonzero dyld shared cache slide without slide info');
   const targetRange = header.sharedRegionSize > 0n ? { start: header.sharedRegionStart, size: header.sharedRegionSize } : null;
-  const slideMetadata = slideMappings.map((item) => parseSlideInfoSync(bytes, item, slide, mappings, opts, targetRange));
+  const rebaseBudget = { remaining: maxRecordsOption(opts) };
+  const slideMetadata = slideMappings.map((item) => parseSlideInfoSync(bytes, item, slide, mappings, opts, targetRange, rebaseBudget));
   return makeImage(bytes, null, header, mappings, slideMappings, slide, slideMetadata);
 }
 
@@ -408,7 +438,8 @@ export async function parseDyldSharedCacheSource(input, opts = {}) {
   if (slide !== 0n && slideMappings.length === 0) throw new Error('cannot apply a nonzero dyld shared cache slide without slide info');
   const slideMetadata = [];
   const targetRange = header.sharedRegionSize > 0n ? { start: header.sharedRegionStart, size: header.sharedRegionSize } : null;
-  for (const item of slideMappings) slideMetadata.push(await parseSlideInfoSource(source, item, slide, mappings, opts, targetRange));
+  const rebaseBudget = { remaining: maxRecordsOption(opts) };
+  for (const item of slideMappings) slideMetadata.push(await parseSlideInfoSource(source, item, slide, mappings, opts, targetRange, rebaseBudget));
   return makeImage(null, source, header, mappings, slideMappings, slide, slideMetadata);
 }
 

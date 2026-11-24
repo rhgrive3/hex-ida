@@ -83,7 +83,7 @@ function recordDataEntries(value, name) {
     if (!descriptor.enumerable) throw typeError(`${name}: non-enumerable field '${key}' is not canonical data`);
     entries.push([key, descriptor.value]);
   }
-  entries.sort((left, right) => left[0].localeCompare(right[0]));
+  entries.sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
   return entries;
 }
 
@@ -198,25 +198,45 @@ function measureIdentityData(root, {
   return Object.freeze({ nodes, edges, serializedUnits });
 }
 
-function cloneIdentityData(value, copies = new WeakMap(), name = 'query identity') {
-  if (!isObject(value)) return value;
-  const prior = copies.get(value);
-  if (prior) return prior;
-  const entries = identityEntries(value, name);
-  const clone = Array.isArray(value)
+function cloneIdentityData(root, copies = new WeakMap(), name = 'query identity') {
+  if (!isObject(root)) return root;
+  const priorRoot = copies.get(root);
+  if (priorRoot) return priorRoot;
+  const makeShell = (value, entries) => (Array.isArray(value)
     ? new Array(entries.length)
-    : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
-  copies.set(value, clone);
-  for (const [key, child] of entries) {
-    if (Array.isArray(clone)) clone[Number(key)] = cloneIdentityData(child, copies, name);
-    else Object.defineProperty(clone, key, {
-      value: cloneIdentityData(child, copies, name),
+    : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype));
+  const rootEntries = identityEntries(root, name);
+  const rootClone = makeShell(root, rootEntries);
+  copies.set(root, rootClone);
+  const stack = [{ target: rootClone, entries: rootEntries, index: 0 }];
+  while (stack.length) {
+    const frame = stack[stack.length - 1];
+    if (frame.index >= frame.entries.length) {
+      stack.pop();
+      continue;
+    }
+    const [key, child] = frame.entries[frame.index++];
+    let clonedChild = child;
+    if (isObject(child)) {
+      const existing = copies.get(child);
+      if (existing) {
+        clonedChild = existing;
+      } else {
+        const childEntries = identityEntries(child, name);
+        clonedChild = makeShell(child, childEntries);
+        copies.set(child, clonedChild);
+        stack.push({ target: clonedChild, entries: childEntries, index: 0 });
+      }
+    }
+    if (Array.isArray(frame.target)) frame.target[Number(key)] = clonedChild;
+    else Object.defineProperty(frame.target, key, {
+      value: clonedChild,
       enumerable: true,
       configurable: true,
       writable: true,
     });
   }
-  return clone;
+  return rootClone;
 }
 
 function deepFreezeData(root) {
@@ -345,14 +365,16 @@ function expressionPlan(source) {
   return { fields, children };
 }
 
-function cloneExpression(root) {
+function cloneExpression(root, budget = null) {
   if (root == null) return null;
   if (!isObject(root) || Array.isArray(root)) throw typeError('query assertion must be an expression node or null');
+  const maxNodes = budget?.maxNodes ?? QUERY_EXPRESSION_HASH_MAX_NODES;
+  const maxDepth = budget?.maxDepth ?? QUERY_EXPRESSION_HASH_MAX_DEPTH;
   const copies = new WeakMap();
   const plans = new WeakMap();
   const colors = new WeakMap();
   const stack = [{ source: root, exit: false, depth: 1 }];
-  let nodes = 0;
+  let localNodes = 0;
   while (stack.length) {
     const frame = stack.pop();
     const { source, depth } = frame;
@@ -370,11 +392,20 @@ function cloneExpression(root) {
       colors.set(source, 2);
       continue;
     }
-    if (depth > QUERY_EXPRESSION_HASH_MAX_DEPTH) throw typeError('query expression depth budget exceeded');
+    if (depth > maxDepth) {
+      const err = typeError('query expression depth budget exceeded');
+      err.budgetReason = 'expression-depth-budget-exceeded';
+      throw err;
+    }
     if (colors.get(source) === 1) throw typeError('cyclic query expression');
     if (colors.get(source) === 2) continue;
-    nodes++;
-    if (nodes > QUERY_EXPRESSION_HASH_MAX_NODES) throw typeError('query expression node budget exceeded');
+    localNodes++;
+    if (budget) budget.nodes = (budget.nodes || 0) + 1;
+    if ((budget ? budget.nodes : localNodes) > maxNodes) {
+      const err = typeError('query expression node budget exceeded');
+      err.budgetReason = 'expression-node-budget-exceeded';
+      throw err;
+    }
     const plan = expressionPlan(source);
     const target = {};
     copies.set(source, target);
@@ -469,19 +500,19 @@ function expressionKindDeclared(value) {
   return !!descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') && typeof descriptor.value === 'string';
 }
 
-function normalizeExpressionEntry(value, name) {
-  if (expressionKindDeclared(value)) return cloneExpression(value);
+function normalizeExpressionEntry(value, name, exprBudget = null) {
+  if (expressionKindDeclared(value)) return cloneExpression(value, exprBudget);
   if (!isObject(value) || Array.isArray(value)) {
     throw typeError(`${name} must be an expression node or an opaque payload object`);
   }
   return snapshotIdentityData(value, `${name} metadata`);
 }
 
-function normalizeExpressionArray(value, name) {
+function normalizeExpressionArray(value, name, exprBudget = null) {
   if (value == null || value === false) return [];
   const inputs = Array.isArray(value) ? arrayDataValues(value, name) : [value];
   if (inputs.some((entry) => !isObject(entry) || Array.isArray(entry))) throw typeError(`${name}: every constraint must be an expression`);
-  return inputs.map((entry) => normalizeExpressionEntry(entry, name));
+  return inputs.map((entry) => normalizeExpressionEntry(entry, name, exprBudget));
 }
 
 function preflightMalformedExpressionMetadata(value, name) {
@@ -715,10 +746,14 @@ export function validateVerificationQuery(query, options = {}) {
   }
   const assertion = data.get('assertion') ?? null;
   let safeConstraints, safeAssertion;
+  const cloneBudget = { nodes: 0, maxNodes: maxExprNodes, maxDepth: maxExprDepth };
   try {
-    safeConstraints = constraints.map((expression) => normalizeExpressionEntry(expression, 'constraints'));
-    safeAssertion = assertion ? normalizeExpressionEntry(assertion, 'assertion') : null;
-  } catch {
+    safeConstraints = constraints.map((expression) => normalizeExpressionEntry(expression, 'constraints', cloneBudget));
+    safeAssertion = assertion ? normalizeExpressionEntry(assertion, 'assertion', cloneBudget) : null;
+  } catch (error) {
+    if (error?.budgetReason) {
+      return Object.freeze({ valid: false, reason: error.budgetReason, limitExceeded: true });
+    }
     return Object.freeze({ valid: false, reason: 'invalid-verification-query-shape' });
   }
   const roots = [...safeConstraints, ...(safeAssertion ? [safeAssertion] : [])];
@@ -785,10 +820,11 @@ export function createVerificationQuery(input = {}) {
   const normalizedTargetEntity = normalizeTargetEntity(get('targetEntity', null) ?? null);
   const constraintsInput = get('constraints', []);
   preflightMalformedExpressionMetadata(constraintsInput, 'constraints');
-  const constraints = normalizeExpressionArray(constraintsInput, 'constraints');
+  const createCloneBudget = { nodes: 0, maxNodes: QUERY_EXPRESSION_HASH_MAX_NODES, maxDepth: QUERY_EXPRESSION_HASH_MAX_DEPTH };
+  const constraints = normalizeExpressionArray(constraintsInput, 'constraints', createCloneBudget);
   const assertionInput = get('assertion', null);
   preflightMalformedExpressionMetadata(assertionInput, 'assertion');
-  const assertion = assertionInput == null ? null : normalizeExpressionEntry(assertionInput, 'assertion');
+  const assertion = assertionInput == null ? null : normalizeExpressionEntry(assertionInput, 'assertion', createCloneBudget);
   const assumptionsInput = get('assumptions', []);
   const requestedOutputsInput = get('requestedOutputs', []);
   const assumptions = snapshotIdentityData(Array.isArray(assumptionsInput) ? assumptionsInput : [], 'assumptions');

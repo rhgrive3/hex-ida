@@ -77,7 +77,7 @@ export function createHexAIContext(app) {
   define(context, 'runScopedAnalysis', async (method, request, options = {}) => {
     if (!scopedMethods.has(method)) throw new TypeError('scoped-ai-method-not-allowed');
     abortIfNeeded(options.signal);
-    if (!scopedAnalysisHost(app)?.configuration.enabled) return {
+    if (!scopedAnalysisHost(app)?.configuration?.enabled) return {
       value: { status:'unsupported', reason:'scoped-analysis-disabled', exact:false },
       completeness:'unsupported', analysisAuthority:QUERY_AUTHORITY,
     };

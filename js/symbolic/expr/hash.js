@@ -31,67 +31,77 @@ export function computeStructuralHash(node) {
   if (hashCache.has(node)) {
     return hashCache.get(node);
   }
-
-  let canonicalRep = '';
-  const sortStr = sortToString(node.sort);
-
-  switch (node.kind) {
-    case EXPR_KIND.CONST:
-      canonicalRep = `CONST:${sortStr}:${typeof node.value === 'bigint' ? '0x' + node.value.toString(16) : String(node.value)}`;
-      break;
-
-    case EXPR_KIND.FRESH_SYMBOL:
-      // Fresh symbols are independent variables even when they share a name;
-      // the solver binds them by symbolId, so structural identity must agree
-      // with solver binding identity (#3246).
-      canonicalRep = `SYM:${sortStr}:${JSON.stringify([node.symbolId ?? null, node.name])}`;
-      break;
-
-    case EXPR_KIND.UNKNOWN_SEMANTIC:
-      canonicalRep = `UNKNOWN:${sortStr}:${node.reason}:${canonicalDetailJson(node.detail)}`;
-      break;
-
-    case EXPR_KIND.UNARY:
-      canonicalRep = `UNARY:${node.op}:${sortStr}(${computeStructuralHash(node.arg)})`;
-      break;
-
-    case EXPR_KIND.BINARY:
-      canonicalRep = `BINARY:${node.op}:${sortStr}(${computeStructuralHash(node.left)},${computeStructuralHash(node.right)})`;
-      break;
-
-    case EXPR_KIND.COMPARE:
-      canonicalRep = `CMP:${node.op}(${computeStructuralHash(node.left)},${computeStructuralHash(node.right)})`;
-      break;
-
-    case EXPR_KIND.CONNECTIVE: {
-      const childHashes = node.args.map(computeStructuralHash).join(',');
-      canonicalRep = `CONN:${node.op}(${childHashes})`;
-      break;
+  const colors = new Map();
+  const stack = [{ node, expanded: false }];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const cur = frame.node;
+    if (!cur || hashCache.has(cur)) {
+      stack.pop();
+      continue;
     }
-
-    case EXPR_KIND.ITE:
-      canonicalRep = `ITE:${sortStr}(${computeStructuralHash(node.cond)},${computeStructuralHash(node.thenExpr)},${computeStructuralHash(node.elseExpr)})`;
-      break;
-
-    case EXPR_KIND.EXTRACT:
-      canonicalRep = `EXTRACT:${sortStr}[${node.high}:${node.low}](${computeStructuralHash(node.arg)})`;
-      break;
-
-    case EXPR_KIND.CONCAT:
-      canonicalRep = `CONCAT:${sortStr}(${computeStructuralHash(node.left)},${computeStructuralHash(node.right)})`;
-      break;
-
-    case EXPR_KIND.CAST:
-      canonicalRep = `CAST:${node.op}:${node.targetWidth ?? ""}:${sortStr}(${computeStructuralHash(node.arg)})`;
-      break;
-
-    default:
-      canonicalRep = `GENERIC:${node.kind}:${sortStr}`;
+    if (!frame.expanded) {
+      const color = colors.get(cur) || 0;
+      if (color === 1) throw new RangeError('symbolic-expr-cycle');
+      if (color === 2) { stack.pop(); continue; }
+      colors.set(cur, 1);
+      frame.expanded = true;
+      const children = childExpressions(cur);
+      for (let i = children.length - 1; i >= 0; i--) {
+        const child = children[i];
+        if (!child || hashCache.has(child)) continue;
+        if (colors.get(child) === 1) throw new RangeError('symbolic-expr-cycle');
+        if (colors.get(child) !== 2) stack.push({ node: child, expanded: false });
+      }
+      continue;
+    }
+    const hashOf = (child) => (child ? hashCache.get(child) : 'null');
+    const sortStr = sortToString(cur.sort);
+    let canonicalRep = '';
+    switch (cur.kind) {
+      case EXPR_KIND.CONST:
+        canonicalRep = `CONST:${sortStr}:${typeof cur.value === 'bigint' ? '0x' + cur.value.toString(16) : String(cur.value)}`;
+        break;
+      case EXPR_KIND.FRESH_SYMBOL:
+        canonicalRep = `SYM:${sortStr}:${JSON.stringify([cur.symbolId ?? null, cur.name])}`;
+        break;
+      case EXPR_KIND.UNKNOWN_SEMANTIC:
+        canonicalRep = `UNKNOWN:${sortStr}:${cur.reason}:${canonicalDetailJson(cur.detail)}`;
+        break;
+      case EXPR_KIND.UNARY:
+        canonicalRep = `UNARY:${cur.op}:${sortStr}(${hashOf(cur.arg)})`;
+        break;
+      case EXPR_KIND.BINARY:
+        canonicalRep = `BINARY:${cur.op}:${sortStr}(${hashOf(cur.left)},${hashOf(cur.right)})`;
+        break;
+      case EXPR_KIND.COMPARE:
+        canonicalRep = `CMP:${cur.op}(${hashOf(cur.left)},${hashOf(cur.right)})`;
+        break;
+      case EXPR_KIND.CONNECTIVE: {
+        const childHashes = cur.args.map(hashOf).join(',');
+        canonicalRep = `CONN:${cur.op}(${childHashes})`;
+        break;
+      }
+      case EXPR_KIND.ITE:
+        canonicalRep = `ITE:${sortStr}(${hashOf(cur.cond)},${hashOf(cur.thenExpr)},${hashOf(cur.elseExpr)})`;
+        break;
+      case EXPR_KIND.EXTRACT:
+        canonicalRep = `EXTRACT:${sortStr}[${cur.high}:${cur.low}](${hashOf(cur.arg)})`;
+        break;
+      case EXPR_KIND.CONCAT:
+        canonicalRep = `CONCAT:${sortStr}(${hashOf(cur.left)},${hashOf(cur.right)})`;
+        break;
+      case EXPR_KIND.CAST:
+        canonicalRep = `CAST:${cur.op}:${cur.targetWidth ?? ""}:${sortStr}(${hashOf(cur.arg)})`;
+        break;
+      default:
+        canonicalRep = `GENERIC:${cur.kind}:${sortStr}`;
+    }
+    hashCache.set(cur, sha256Hex(canonicalRep));
+    colors.set(cur, 2);
+    stack.pop();
   }
-
-  const hash = sha256Hex(canonicalRep);
-  hashCache.set(node, hash);
-  return hash;
+  return hashCache.get(node);
 }
 
 function childExpressions(node) {
@@ -248,30 +258,28 @@ export function structuralEquals(a, b) {
     const y = stack.pop();
     const x = stack.pop();
     if (x === y) continue;
-    if (!x || !y) return false;
+    if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false;
     if (x.kind !== y.kind) return false;
     if (!sameSort(x.sort, y.sort)) return false;
 
-    if (typeof x === 'object' && typeof y === 'object') {
-      const hx = hashCache.get(x);
-      if (hx !== undefined) {
-        const hy = hashCache.get(y);
-        if (hy !== undefined && hx !== hy) return false;
+    const hx = hashCache.get(x);
+    if (hx !== undefined) {
+      const hy = hashCache.get(y);
+      if (hy !== undefined && hx !== hy) return false;
+    }
+    if (visited !== null) {
+      const seenY = visited.get(x);
+      if (seenY && seenY.has(y)) continue;
+    }
+    steps++;
+    if (steps > 8) {
+      if (visited === null) visited = new Map();
+      let seenY = visited.get(x);
+      if (!seenY) {
+        seenY = new Set();
+        visited.set(x, seenY);
       }
-      if (visited !== null) {
-        const seenY = visited.get(x);
-        if (seenY && seenY.has(y)) continue;
-      }
-      steps++;
-      if (steps > 8) {
-        if (visited === null) visited = new Map();
-        let seenY = visited.get(x);
-        if (!seenY) {
-          seenY = new Set();
-          visited.set(x, seenY);
-        }
-        seenY.add(y);
-      }
+      seenY.add(y);
     }
 
     switch (x.kind) {
@@ -330,7 +338,6 @@ export function structuralEquals(a, b) {
         if (x.op !== y.op || x.targetWidth !== y.targetWidth) return false;
         stack.push(x.arg, y.arg);
         break;
-
       default:
         return false;
     }

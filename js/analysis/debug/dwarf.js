@@ -486,8 +486,28 @@ function readUnsignedWidth(cursor, width) {
  * the DIE keeps its other attributes and records that one is unknown, which is
  * how a partially understood record stays honest instead of being dropped.
  */
-function readForm(cursor, form, unit, sections, implicitConst, strings) {
-  switch (form) {
+const MAX_INDIRECT_FORM_DEPTH = 16;
+
+function readForm(cursor, form, unit, sections, implicitConst, strings, attributeBudget = null, decodedBudget = null) {
+  let currentForm = form;
+  let currentImplicit = implicitConst;
+  let indirectDepth = 0;
+  while (currentForm === DW_FORM.indirect) {
+    indirectDepth += 1;
+    if (indirectDepth > MAX_INDIRECT_FORM_DEPTH) {
+      return { value: null, unsupported: true, fatal: true, form: DW_FORM.indirect };
+    }
+    attributeBudget?.charge(1);
+    const actual = Number(cursor.uleb());
+    currentImplicit = actual === DW_FORM.implicit_const ? cursor.sleb() : null;
+    currentForm = actual;
+  }
+  const result = readFormDirect(cursor, currentForm, unit, sections, currentImplicit, strings, decodedBudget);
+  return indirectDepth > 0 ? { ...result, form: result.form ?? currentForm } : result;
+}
+
+function readFormDirect(cursor, currentForm, unit, sections, currentImplicit, strings, decodedBudget) {
+  switch (currentForm) {
     case DW_FORM.addr: {
       // DW_FORM_addr occupies exactly the CU's address size, which the DWARF
       // spec does not restrict to 4/8: reading any other width desyncs every
@@ -527,6 +547,10 @@ function readForm(cursor, form, unit, sections, implicitConst, strings) {
         end += 1;
       }
       if (end === cursor.limit) throw new RangeError('dwarf-read-past-limit');
+      if (decodedBudget) {
+        const codeUnits = decodedUtf16CodeUnits(cursor.bytes, start, end);
+        decodedBudget.charge(codeUnits * DECODED_STRING_BYTES_PER_CHAR);
+      }
       const text = new TextDecoder('utf8').decode(cursor.bytes.subarray(start, end));
       cursor.offset = end + 1;
       return { value: text };
@@ -560,16 +584,7 @@ function readForm(cursor, form, unit, sections, implicitConst, strings) {
     case DW_FORM.block2: return { value: cursor.slice(cursor.u16()) };
     case DW_FORM.block4: return { value: cursor.slice(cursor.u32()) };
     case DW_FORM.flag_present: return { value: 1n };
-    case DW_FORM.implicit_const: return { value: implicitConst };
-    case DW_FORM.indirect: {
-      const actual = Number(cursor.uleb());
-      // DWARF 5 §7.5.3: when DW_FORM_indirect resolves to DW_FORM_implicit_const,
-      // the implicit constant value is encoded as a SLEB128 immediately following
-      // the form code in .debug_info.
-      const resolvedImplicit = actual === DW_FORM.implicit_const ? cursor.sleb() : null;
-      const inner = readForm(cursor, actual, unit, sections, resolvedImplicit, strings);
-      return { ...inner, form: inner.form ?? actual };
-    }
+    case DW_FORM.implicit_const: return { value: currentImplicit };
     default:
       // An unrecognised form has an unknown length, so the DIE stream cannot be
       // resynchronised. The unit stops here and reports itself incomplete.
@@ -1101,7 +1116,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           // is the bound on applying it. Zero-byte forms create the same
           // retained per-DIE state as a wide form, so they are charged too.
           attributeBudget.charge(1);
-          const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst, strings);
+          const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst, strings, attributeBudget, strings.decodedBudget);
           const resolvedForm = read.form ?? spec.form;
           if (read.unsupported) {
             dieComplete = false;
@@ -1128,16 +1143,28 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       if (!unitComplete) { complete = false; break; }
 
       if (attributes.has(DW_AT.str_offsets_base)) {
-        unit.strOffsetsBase = Number(attributes.get(DW_AT.str_offsets_base).value);
+        const rawBig = bigNumeric(attributes.get(DW_AT.str_offsets_base).value);
+        const base = rawBig != null && rawBig >= 0n && rawBig <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(rawBig) : null;
+        unit.strOffsetsBase = base;
+        if (base == null) {
+          dieComplete = false;
+          unitComplete = false;
+          complete = false;
+        }
       }
       if (attributes.has(DW_AT.addr_base)) {
-        const raw = attributes.get(DW_AT.addr_base).value;
-        const base = Number(raw);
+        const rawBig = bigNumeric(attributes.get(DW_AT.addr_base).value);
+        const base = rawBig != null && rawBig >= 0n && rawBig <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(rawBig) : null;
         // addr_base is a section offset in bytes: it must land inside
         // `.debug_addr` past its header, or no addrx entry can resolve (#6184).
-        unit.addrBase = Number.isSafeInteger(base) && base >= 0 && sections.debug_addr && base <= sections.debug_addr.length
+        unit.addrBase = base != null && sections.debug_addr && base <= sections.debug_addr.length
           ? base
           : null;
+        if (rawBig == null) {
+          dieComplete = false;
+          unitComplete = false;
+          complete = false;
+        }
       }
       try {
         for (const [attribute, entry] of attributes) {
@@ -1324,7 +1351,9 @@ function attributeName(die, dies) {
 /** Preserves current-object reference dispatch while blocking external namespaces. */
 function currentDebugInfoReferenceTarget(entry, owner, dies) {
   if (!entry || entry.value == null || NON_CURRENT_DIE_OFFSET_REFERENCE_FORMS.includes(entry.form)) return null;
-  const raw = Number(entry.value);
+  const rawBig = bigNumeric(entry.value);
+  if (rawBig == null || rawBig < 0n || rawBig > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  const raw = Number(rawBig);
   const isUnitRelative = [DW_FORM.ref1, DW_FORM.ref2, DW_FORM.ref4, DW_FORM.ref8, DW_FORM.ref_udata].includes(entry.form);
   const target = isUnitRelative && owner.unit ? owner.unit.start + raw : raw;
   return dies.get(target) ?? null;
@@ -1546,6 +1575,7 @@ export function readBuildId(noteSection, { endian = null } = {}) {
       : null;
     // NT_GNU_BUILD_ID
     if (type === 3 && name === 'GNU') {
+      if (descSize === 0) return null;
       return [...noteSection.subarray(descStart, descEnd)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
     }
     offset = descEnd + ((4 - (descSize & 3)) & 3);

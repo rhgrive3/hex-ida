@@ -521,6 +521,7 @@ export function callGraph(program, symbols, addr, opts) {
   add(addr, 'entry');
 
   let frontier = [addr];
+  const expandedCallers = new Set([idOf(addr)]);
   for (let d = 0; d < depth; d++) {
     const next = [];
     for (const a of frontier) {
@@ -528,15 +529,19 @@ export function callGraph(program, symbols, addr, opts) {
       for (const c of callers) {
         const start = c.addr;
         if (start == null) continue;
-        add(start, 'caller');
-        addEdge(idOf(start), idOf(a), 'call');
-        next.push(start);
+        const startId = add(start, 'caller');
+        addEdge(startId, idOf(a), 'call');
+        if (!expandedCallers.has(startId)) {
+          expandedCallers.add(startId);
+          next.push(start);
+        }
       }
     }
     frontier = next;
   }
 
   frontier = [addr];
+  const expandedCallees = new Set([idOf(addr)]);
   for (let d = 0; d < depth; d++) {
     const next = [];
     for (const a of frontier) {
@@ -546,9 +551,12 @@ export function callGraph(program, symbols, addr, opts) {
       for (const c of callees) {
         const target = c.addr;
         if (target == null) continue;
-        add(target, 'callee');
-        addEdge(idOf(a), idOf(target), 'call');
-        next.push(target);
+        const targetId = add(target, 'callee');
+        addEdge(idOf(a), targetId, 'call');
+        if (!expandedCallees.has(targetId)) {
+          expandedCallees.add(targetId);
+          next.push(target);
+        }
       }
     }
     frontier = next;

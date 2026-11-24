@@ -51,11 +51,17 @@ export class ScopedNativeBestAdapter {
         const method = cursor ? 'resumeDemandQuery' : input.kind === 'demand' ? 'demandQuery' : 'investigateDemand';
         // Service owns aggregate deterministic budgets. A fresh step never
         // resets them; wall deadline is shared across this entire adapter run.
+        const safeLimits = {};
+        if (limits && typeof limits === 'object' && !Array.isArray(limits)) {
+          for (const key of ['workUnits', 'calls', 'bytes', 'nodes', 'memoryBytes', 'functions', 'instructions', 'paths', 'edges', 'depth']) {
+            if (limits[key] !== undefined) safeLimits[key] = limits[key];
+          }
+        }
         const envelope = await work.await(child => this.#service.invoke(method, cursor ? { cursor } : input.request,
-          { signal: child, limits: { ...limits, deadlineMs: Math.max(1, Math.floor(deadlineMs - work.cost().elapsedMs)) } }));
+          { signal: child, limits: { ...safeLimits, deadlineMs: Math.max(1, Math.floor(deadlineMs - work.cost().elapsedMs)) } }));
         result = envelope.value; this.#check(result);
         this.#cursor = result?.continuation?.cursor ?? null;
-        if (!this.#cursor) { status = result.executionStatus ?? result.status ?? 'unknown'; steps++; break; }
+        if (!this.#cursor) { status = result?.executionStatus ?? result?.status ?? 'unknown'; steps++; break; }
       }
       if (result?.publication?.status === 'published') this.#lastArtifact = result.publication.artifactId;
       // Bounded, owned output only. No score, exact error count or correctness
@@ -82,8 +88,19 @@ export class ScopedNativeBestAdapter {
   async explain({ level = 'owners' } = {}, options = {}) {
     this.#check(); if (!this.#lastArtifact) contractFail('native-best-no-published-result');
     const artifactId = this.#lastArtifact;
+    const rawDeadline = options.limits?.deadlineMs;
+    const explainDeadlineMs = rawDeadline === undefined ? 10000
+      : (typeof rawDeadline === 'number' && Number.isFinite(rawDeadline) && rawDeadline > 0
+        ? Math.min(Math.floor(rawDeadline), 120000)
+        : contractFail('native-best-explain-deadline'));
+    const safeExplainLimits = {};
+    if (options.limits && typeof options.limits === 'object' && !Array.isArray(options.limits)) {
+      for (const key of ['workUnits', 'calls', 'bytes', 'nodes', 'memoryBytes', 'functions', 'instructions', 'paths', 'edges', 'depth']) {
+        if (options.limits[key] !== undefined) safeExplainLimits[key] = options.limits[key];
+      }
+    }
     const result = await this.#service.invoke('replayDemandResult', { artifactId, level }, {
-      ...options, limits: { ...options.limits, deadlineMs: Math.min(options.limits?.deadlineMs ?? 10000, 120000) } });
+      ...options, limits: { ...safeExplainLimits, deadlineMs: explainDeadlineMs } });
     this.#check(result.value); return { binding: this.#binding, artifactId, replay: result.value, oracleAuthority: false };
   }
   cancel() { const active = this.#active; active?.abort(new Error('native-best-harness-cancelled')); return { requested: !!active, exact: false }; }

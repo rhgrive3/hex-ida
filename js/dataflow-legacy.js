@@ -125,7 +125,8 @@ export function selfRegisters(model) {
       const src = insn.reads.find((r) => live.has(r));
       if (src && dst) {
         // 64 ビット幅のコピーだけを認める（w レジスタへのコピーは値の切り出し）
-        const wide = /^x\d+$/.test(dst) || dst === 'sp';
+        const dstOp = insn.ops?.[0];
+        const wide = dst === 'sp' || (dstOp?.k === 'reg' && Number.isFinite(dstOp.bits) ? dstOp.bits === 64 : /^x\d+$/.test(dst));
         if (wide) {
           close(dst, insn.row);
           open(dst, insn.row); set.add(dst); at.set(dst, insn.row);
@@ -368,7 +369,7 @@ export function findValueUpdates(model, opts) {
    唯一の手がかりになる。 */
 
 /* 中身を変えずに写すだけの命令。ここは素通りして、その先を見にいく。 */
-const PASS_OPS = new Set(['mov', 'fmov', 'sxtw', 'uxtw', 'sxtb', 'uxtb', 'sxth', 'uxth', 'orr']);
+const PASS_OPS = new Set(['mov', 'fmov', 'sxtw', 'uxtw', 'sxtb', 'uxtb', 'sxth', 'uxth']);
 /* 呼び出しの直後の x0 は「呼んだ先が決めた値」。 */
 const RET_REG = 'x0';
 /* 呼び出しで壊れるレジスタ（AAPCS64）。x19〜x28 は呼ばれた側が元に戻す。 */
@@ -462,7 +463,7 @@ export function traceOrigin(model, row, reg, opts) {
         return { kind: 'imm', value, row: found.row, crossedJoin };
       }
     }
-    if (PASS_OPS.has(mn)) {
+    if (PASS_OPS.has(mn) || (mn === 'orr' && isOrrMovAlias(found))) {
       const src = found.reads.find((r) => r !== want) || found.reads[0] || null;
       if (!src) return null;
       want = src; at = found.row; continue;         // 写しただけ。その先を見る。
@@ -615,7 +616,7 @@ function selfOffsetIn(model, insns, at, self, reg) {
     for (let k = from - 1; k >= 0 && from - k <= 32; k--) {
       if (insns[k].writes.includes(want)) { found = k; break; }
     }
-    if (found == null) return self.isSelf(want, at) ? { disp: 0n } : null;
+    if (found == null) return insns[at] && self.isSelf(want, insns[at].row) ? { disp: 0n } : null;
     const insn = insns[found];
     const base = insn.mnemonic.toLowerCase();
     if (base === 'add' && insn.ops.length >= 3 && insn.ops[1] && insn.ops[1].k === 'reg') {

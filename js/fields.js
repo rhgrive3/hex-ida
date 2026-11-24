@@ -203,7 +203,7 @@ export class FieldIndex {
         if (setter || !hasColon) {
           defaultHit = setter
             ? defaultSetterBySel.get(text)
-            : defaultGetterByPlain.get(plainFieldName(text));
+            : defaultGetterByPlain.get(text);
         }
         if (defaultHit === AMBIGUOUS) return null;
         if (customHit && defaultHit && customHit !== defaultHit) return null;
@@ -256,8 +256,10 @@ export class FieldIndex {
   fieldAt(className, offset) {
     if (!isValidNumericKey(offset)) return null;
     const normalizedKey = typeof offset === 'string' ? normalizeAddressKey(offset) : null;
-    const off = normalizedKey != null ? Number(BigInt(normalizedKey)) : Number(offset);
-    if (!Number.isFinite(off)) return null;
+    const offBig = normalizedKey != null ? BigInt(normalizedKey) : (typeof offset === 'bigint' ? offset : null);
+    if (offBig != null && (offBig < BigInt(Number.MIN_SAFE_INTEGER) || offBig > BigInt(Number.MAX_SAFE_INTEGER))) return null;
+    const off = offBig != null ? Number(offBig) : Number(offset);
+    if (!Number.isSafeInteger(off)) return null;
     const visited = new Set();
     let currentName = className;
     let depth = 0;

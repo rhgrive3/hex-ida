@@ -48,6 +48,8 @@ function swiftPartialCoverage(model) {
   };
 }
 
+const PROBE_GENERATIONS = new WeakMap();
+
 export class SwiftMetadataProvider extends LanguageMetadataProvider {
   constructor({
     readAt = null,
@@ -66,9 +68,14 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
     this.options = options;
     this.cachedModel = null;
     this.cachedIndex = null;
+    PROBE_GENERATIONS.set(this, 0);
   }
 
   async probe() {
+    const generation = (PROBE_GENERATIONS.get(this) ?? 0) + 1;
+    PROBE_GENERATIONS.set(this, generation);
+    this.cachedModel = null;
+    this.cachedIndex = null;
     if (this.sections != null && !Array.isArray(this.sections) && typeof this.sections !== 'object') {
       throw new TypeError('metadata-swift-sections-must-be-array-or-object');
     }
@@ -132,7 +139,8 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
     // The provider knows the binary architecture; Swift pointer-sized ABI reads
     // must derive their width from it instead of defaulting to LP64 (#8309).
     const model = await buildSwiftMetadataModel(this.readAt, this.sections, { architecture: this.architecture, ...this.options });
-    if (!model || this.options.signal?.aborted === true) {
+    const superseded = PROBE_GENERATIONS.get(this) !== generation;
+    if (!model || superseded || this.options.signal?.aborted === true) {
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -291,12 +299,13 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
     if (!model || !model.conformances) return createLanguageMetadataPage({ records: [] });
 
     const records = [];
-    for (const conf of model.conformances) {
+    for (let idx = 0; idx < model.conformances.length; idx++) {
+      const conf = model.conformances[idx];
       const addrStr = conf.address != null ? `0x${conf.address.toString(16)}` : null;
       records.push(
         createLanguageMetadataRecord({
           kind: 'conformance',
-          entityId: `conf@${addrStr}`,
+          entityId: addrStr != null ? `conf@${addrStr}` : `conf@unknown:${idx}`,
           address: addrStr,
           providerId: this.id,
           providerVersion: this.version,

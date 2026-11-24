@@ -1129,10 +1129,23 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
 
   const exprMemo = new Map();
 
-  function buildValueExpr(valId) {
+  function safeBigIntConstant(raw) {
+    if (typeof raw === 'bigint') return raw;
+    if (typeof raw === 'number') return Number.isSafeInteger(raw) ? BigInt(raw) : null;
+    if (typeof raw === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(raw.trim())) {
+      try { return BigInt(raw.trim()); } catch { return null; }
+    }
+    return null;
+  }
+
+  const visiting = new Set();
+  function buildValueExpr(valId, depth = 0) {
     if (exprMemo.has(valId)) return exprMemo.get(valId);
     const val = valueMap.get(valId);
     if (!val) return expr.variable(`v_${valId}`);
+    if (depth > 64 || visiting.has(valId)) {
+      return expr.variable(safeIdent(val.id || `v_${valId}`), val.machineType?.widthBits || 32);
+    }
 
     // Metadata authority first (#8028): a value carrying an explicit
     // constant/string/null fact renders from that fact regardless of the
@@ -1154,9 +1167,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       return z;
     }
     if (val.metadata?.constant != null) {
+      const w = val.machineType?.widthBits || 32;
+      const bi = val.machineType?.kind === 'float' ? null : safeBigIntConstant(val.metadata.constant);
       const c = val.machineType?.kind === 'float'
-        ? expr.floatConstant(Number(val.metadata.constant), val.machineType?.widthBits || 32)
-        : expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
+        ? expr.floatConstant(Number(val.metadata.constant), w)
+        : (bi != null ? expr.constant(bi, w) : expr.variable(safeIdent(val.id || `v_${valId}`), w));
       exprMemo.set(valId, c);
       return c;
     }
@@ -1168,10 +1183,12 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       return vExpr;
     }
 
+    visiting.add(valId);
     const n = defNode;
     const bits = val.machineType?.widthBits || 32;
     let res = null;
-
+    const childExpr = (id) => buildValueExpr(id, depth + 1);
+    try {
     if (n.kind === 'const') {
       if (val.metadata?.stringRef != null) {
         res = expr.variable(JSON.stringify(val.metadata.stringRef), bits);
@@ -1189,19 +1206,27 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         exprMemo.set(valId, res);
         return res;
       }
-      const cVal = val.metadata?.constant != null ? BigInt(val.metadata.constant) : 0n;
+      const cVal = val.metadata?.constant != null ? (safeBigIntConstant(val.metadata.constant) ?? 0n) : 0n;
       res = expr.constant(cVal, bits);
     } else if (n.kind === 'binary') {
-      const left = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
-      const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
+      const left = n.inputs[0] ? childExpr(n.inputs[0]) : expr.constant(0n, bits);
+      const right = n.inputs[1] ? childExpr(n.inputs[1]) : expr.constant(0n, bits);
       const mn = (n.metadata?.mnemonic || '').toLowerCase();
+      const op = typeof n.operator === 'string' ? n.operator.toLowerCase() : '';
       let normalizedOp = 'add';
-      const isDivRem = (mn.includes('div') || mn.includes('rem') || mn.includes('mod') || MANAGED_DIV_REM_OPERATORS.has(n.operator));
-      if (isDivRem) {
+      const DIRECT_BINARY_OPS = new Set(['add', 'sub', 'mul', 'and', 'or', 'xor', 'shl']);
+      if (DIRECT_BINARY_OPS.has(op)) {
+        res = expr.binary(op, left, right, bits);
+      } else if (MANAGED_DIV_REM_OPERATORS.has(n.operator) || (!op && (mn.includes('div') || mn.includes('rem') || mn.includes('mod')))) {
         const divRemOp = managedDivisionRemainderOperatorForNode(n, frontendId, mn);
         res = divRemOp
           ? expr.binary(divRemOp, left, right, bits)
           : expr.intrinsic(safeIdent(mn || 'managed_div_rem'), [left, right], bits);
+      } else if (MANAGED_RIGHT_SHIFT_OPERATORS.has(n.operator) || op === 'shr' || (!op && mn.includes('shr'))) {
+        const shiftOp = managedRightShiftOperatorForNode(n, frontendId, mn);
+        res = shiftOp
+          ? expr.binary(shiftOp, left, right, bits, shiftOp === 'ashr')
+          : expr.intrinsic(safeIdent(mn || 'managed_right_shift'), [left, right], bits);
       }
       if (!res) {
         if (mn.includes('sub')) normalizedOp = 'sub';
@@ -1212,7 +1237,7 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         else if (mn.includes('xor')) normalizedOp = 'xor';
         else if (mn.includes('or')) normalizedOp = 'or';
         else if (mn.includes('shl')) normalizedOp = 'shl';
-        else if (MANAGED_RIGHT_SHIFT_OPERATORS.has(n.operator) || n.operator === 'shr' || mn.includes('shr')) {
+        else if (mn.includes('shr')) {
           const shiftOp = managedRightShiftOperatorForNode(n, frontendId, mn);
           res = shiftOp
             ? expr.binary(shiftOp, left, right, bits, shiftOp === 'ashr')
@@ -1221,15 +1246,15 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       }
       if (!res) res = expr.binary(normalizedOp, left, right, bits);
     } else if (n.kind === 'compare') {
-      const left = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
-      const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
+      const left = n.inputs[0] ? childExpr(n.inputs[0]) : expr.constant(0n, bits);
+      const right = n.inputs[1] ? childExpr(n.inputs[1]) : expr.constant(0n, bits);
       const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
       const comparison = managedComparisonForNode(n, frontendId, mnemonic);
       res = comparison
         ? expr.compare(comparison.op, left, right, comparison.signed)
         : expr.intrinsic(safeIdent(mnemonic || 'managed_compare'), [left, right], bits);
     } else if (n.kind === 'unary') {
-      const arg = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
+      const arg = n.inputs[0] ? childExpr(n.inputs[0]) : expr.constant(0n, bits);
       const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
       const operator = managedUnaryOperatorForNode(n, mnemonic);
       res = operator
@@ -1237,23 +1262,23 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         : expr.intrinsic(mnemonic || 'unsupported_unary', [arg], bits);
     } else if (n.kind === 'call') {
       const callee = n.call?.targetEntityIds?.[0] || 'callee';
-      const args = (n.inputs || []).map(buildValueExpr);
+      const args = (n.inputs || []).map(childExpr);
       res = expr.call(callee, args, bits);
     } else if (n.kind === 'load') {
-      const base = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.variable('base');
+      const base = n.inputs[0] ? childExpr(n.inputs[0]) : expr.variable('base');
       if (n.inputs.length > 1) {
-        const idx = buildValueExpr(n.inputs[1]);
+        const idx = childExpr(n.inputs[1]);
         res = expr.index(base, idx, 1, bits);
       } else {
         res = expr.field(base, n.metadata?.fieldName || 'field', 0n, bits);
       }
     } else if (n.kind === 'intrinsic' || n.kind === 'barrier') {
-      const args = (n.inputs || []).map(buildValueExpr);
+      const args = (n.inputs || []).map(childExpr);
       res = expr.intrinsic(n.metadata?.mnemonic || 'unsupported_intrinsic', args, bits);
     } else if (n.kind === 'copy') {
       res = n.completeness === 'complete' && n.inputs?.length === 1
-        ? buildValueExpr(n.inputs[0])
-        : expr.intrinsic('unsupported_copy', (n.inputs || []).map(buildValueExpr), bits);
+        ? childExpr(n.inputs[0])
+        : expr.intrinsic('unsupported_copy', (n.inputs || []).map(childExpr), bits);
     } else if (n.kind === 'state-read') {
       const stateName = n.completeness === 'complete' ? managedStateIdent(n.variable, frontendId) : null;
       res = stateName
@@ -1265,6 +1290,9 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
 
     exprMemo.set(valId, res);
     return res;
+    } finally {
+      visiting.delete(valId);
+    }
   }
 
   const body = [];

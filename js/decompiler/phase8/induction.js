@@ -485,7 +485,10 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
     });
   }
   const dominates = createDominance(analysis?.get('dominators'));
-  const limits = { ...DEFAULT_LIMITS, ...(budget.limits ?? {}) };
+  const limits = Object.fromEntries(Object.entries(DEFAULT_LIMITS).map(([k, def]) => {
+    const v = budget?.limits?.[k];
+    return [k, typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : def];
+  }));
 
   const blocks = cfg?.blocks ?? [];
   const byIndex = new Map(blocks.map((block) => [block.index, block]));

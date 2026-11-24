@@ -92,6 +92,14 @@ function summaryResidentRows(summary) {
     rows += unknown.targetEntityIds?.length || 0;
     rows += unknown.evidenceIds?.length || 0;
   }
+  for (const effect of summary.memoryReadRegions || []) {
+    rows += effect.evidenceIds?.length || 0;
+    rows += effect.addressSpaces?.length || 0;
+  }
+  for (const effect of summary.memoryWriteRegions || []) {
+    rows += effect.evidenceIds?.length || 0;
+    rows += effect.addressSpaces?.length || 0;
+  }
   return rows;
 }
 
@@ -140,12 +148,13 @@ export function condenseCallGraph(roots, successorsOf, {
       if (signal?.aborted) return { components, truncated: true, cancelled: true };
       const frame = work[work.length - 1];
       if (frame.successors == null) {
+        if (index.has(frame.node)) { work.pop(); continue; }
         index.set(frame.node, counter);
         low.set(frame.node, counter);
         counter += 1;
         stack.push(frame.node);
         onStack.add(frame.node);
-        frame.successors = [...successorsOf(frame.node)].sort();
+        frame.successors = [...new Set(successorsOf(frame.node))].sort();
       }
       if (frame.state < frame.successors.length) {
         if (++traversedEdges > maxEdges) {
@@ -436,8 +445,34 @@ function effectAddressSpaces(effect) {
   return effect.addressSpaces?.length ? effect.addressSpaces : ['memory'];
 }
 
-function mergeEffects(lists, cap) {
+function mergeEffects(lists, cap, rowLimit = cap, chargeRows = null) {
   const effectiveCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 1;
+  const effectiveRowLimit = Number.isSafeInteger(rowLimit) && rowLimit >= 1 ? rowLimit : effectiveCap;
+  let truncated = false;
+  const unionStrings = (left, right) => {
+    const merged = boundedUnion(left, right, effectiveRowLimit, (value) => value, chargeRows);
+    if (merged.truncated) truncated = true;
+    return merged.values;
+  };
+  const unionFlatStrings = (items, getter) => {
+    let acc = [];
+    for (const item of items) acc = unionStrings(acc, getter(item));
+    return acc;
+  };
+  const addBoundedStrings = (set, input) => {
+    for (const value of input || []) {
+      if (typeof chargeRows === 'function') chargeRows(1);
+      if (set.has(value)) continue;
+      if (set.size >= effectiveRowLimit) { truncated = true; return; }
+      set.add(value);
+    }
+  };
+  const finalizeBoundedStrings = (set) => {
+    const values = [...set];
+    chargeSortWork(values.length, chargeRows);
+    values.sort(compareCodeUnitStrings);
+    return values;
+  };
   const byKey = new Map();
   const broadByKey = new Map();
   for (const list of lists) {
@@ -449,13 +484,17 @@ function mergeEffects(lists, cap) {
         // the authority of an earlier, disjoint space.
         const rawSpaces = effect.addressSpaces;
         const spaces = rawSpaces.length ? rawSpaces : [null];
-        const canZeroCopy = rawSpaces.length <= 1 && Object.isFrozen(effect);
+        const rawEvidence = effect.evidenceIds ?? [];
+        const canZeroCopy = rawSpaces.length <= 1
+          && Object.isFrozen(effect)
+          && rawEvidence.length <= effectiveRowLimit;
         for (const addressSpace of spaces) {
           const key = `${effect.source}\u0000${addressSpace ?? ''}`;
           const entry = broadByKey.get(key);
           if (!entry) {
             const addressSpaces = addressSpace == null ? [] : [addressSpace];
             if (canZeroCopy) {
+              if (typeof chargeRows === 'function' && rawEvidence.length > 0) chargeRows(rawEvidence.length);
               broadByKey.set(key, {
                 raw: effect,
                 merged: false,
@@ -464,21 +503,24 @@ function mergeEffects(lists, cap) {
                 evidenceSet: null,
               });
             } else {
+              const evidenceSet = new Set();
+              addBoundedStrings(evidenceSet, rawEvidence);
               broadByKey.set(key, {
                 raw: null,
                 merged: true,
                 base: effect,
                 addressSpaces,
-                evidenceSet: new Set(effect.evidenceIds),
+                evidenceSet,
               });
             }
           } else {
             if (!entry.merged) {
               entry.merged = true;
-              entry.evidenceSet = new Set(entry.raw.evidenceIds);
+              entry.evidenceSet = new Set();
+              addBoundedStrings(entry.evidenceSet, entry.raw.evidenceIds);
               entry.raw = null;
             }
-            for (const id of effect.evidenceIds) entry.evidenceSet.add(id);
+            addBoundedStrings(entry.evidenceSet, rawEvidence);
           }
         }
         continue;
@@ -505,14 +547,16 @@ function mergeEffects(lists, cap) {
       // sources independently of input order.
       if (!entry.merged) {
         entry.merged = true;
-        entry.spaceSet = new Set(entry.raw.addressSpaces);
-        entry.evidenceSet = new Set(entry.raw.evidenceIds);
+        entry.spaceSet = new Set();
+        entry.evidenceSet = new Set();
+        addBoundedStrings(entry.spaceSet, entry.raw.addressSpaces);
+        addBoundedStrings(entry.evidenceSet, entry.raw.evidenceIds);
         entry.raw = null;
       }
       entry.region = mergedRegionProof(entry.region, effect.region ?? null);
       entry.source = strongestSource(entry.source, effect.source);
-      for (const space of effect.addressSpaces) entry.spaceSet.add(space);
-      for (const id of effect.evidenceIds) entry.evidenceSet.add(id);
+      addBoundedStrings(entry.spaceSet, effect.addressSpaces);
+      addBoundedStrings(entry.evidenceSet, effect.evidenceIds);
     }
   }
   const specificKeyed = [];
@@ -523,9 +567,9 @@ function mergeEffects(lists, cap) {
           regionKind: entry.regionKind,
           region: entry.region,
           broad: false,
-          addressSpaces: [...entry.spaceSet].sort(),
+          addressSpaces: finalizeBoundedStrings(entry.spaceSet),
           source: entry.source,
-          evidenceIds: [...entry.evidenceSet].sort(),
+          evidenceIds: finalizeBoundedStrings(entry.evidenceSet),
         })
       : entry.raw;
     const sortKey = `${eff.regionId ?? ''}\u0000${eff.regionKind}\u0000${SOURCE_AUTHORITY_RANK.get(eff.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${eff.addressSpaces.join(',')}\u0000${eff.evidenceIds.join(',')}`;
@@ -541,7 +585,7 @@ function mergeEffects(lists, cap) {
           ...entry.base,
           broad: true,
           addressSpaces: entry.addressSpaces,
-          evidenceIds: [...entry.evidenceSet].sort(),
+          evidenceIds: finalizeBoundedStrings(entry.evidenceSet),
         })
       : entry.raw;
     const sortKey = `${SOURCE_AUTHORITY_RANK.get(eff.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${eff.addressSpaces.join(',')}\u0000${eff.evidenceIds.join(',')}`;
@@ -551,25 +595,24 @@ function mergeEffects(lists, cap) {
   const broad = broadKeyed.map((pair) => pair[1]);
   const combined = [...broad, ...specific];
   if (broad.length === 0 && specific.length > effectiveCap) {
-    const spaces = [...new Set(specific.flatMap(effectAddressSpaces))].sort();
-    const evidenceIds = [...new Set(specific.flatMap((effect) => effect.evidenceIds || []))].sort();
-    return [createMemoryEffect({
-      regionKind: 'unknown',
-      broad: true,
-      addressSpaces: spaces,
-      source: 'unknown-call-fallback',
-      evidenceIds,
-    })];
+    const spaces = unionFlatStrings(specific, effectAddressSpaces);
+    const evidenceIds = unionFlatStrings(specific, (effect) => effect.evidenceIds || []);
+    return {
+      values: [createMemoryEffect({
+        regionKind: 'unknown',
+        broad: true,
+        addressSpaces: spaces,
+        source: 'unknown-call-fallback',
+        evidenceIds,
+      })],
+      truncated,
+    };
   }
   if (combined.length > effectiveCap) {
-    // Any entry folded into a new broad claim loses its precise geometry. A
-    // conservative fallback source is therefore required whenever a specific
-    // effect is dropped; broad-only collapse can retain the weakest broad
-    // authority without laundering a stronger source into another space.
     const kept = combined.slice(0, Math.max(0, effectiveCap - 1));
     const dropped = combined.slice(kept.length);
-    const droppedSpaces = [...new Set(dropped.flatMap(effectAddressSpaces))].sort();
-    const droppedEvidence = [...new Set(dropped.flatMap((effect) => effect.evidenceIds || []))].sort();
+    const droppedSpaces = unionFlatStrings(dropped, effectAddressSpaces);
+    const droppedEvidence = unionFlatStrings(dropped, (effect) => effect.evidenceIds || []);
     const hasSpecific = dropped.some((effect) => !effect.broad);
     const source = hasSpecific
       ? 'unknown-call-fallback'
@@ -581,9 +624,9 @@ function mergeEffects(lists, cap) {
       source,
       evidenceIds: droppedEvidence,
     });
-    return [finalBroad, ...kept];
+    return { values: [finalBroad, ...kept], truncated };
   }
-  return combined;
+  return { values: combined, truncated };
 }
 
 function unionKnowledge(values) {
@@ -871,13 +914,15 @@ function hasEmptyReturnPositions(summary) {
 
 // Reused df98376ae transfer: the local equation describes expressions; only
 // the canonical SCC's current callee state can discover their return roots.
-function composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved, componentSet = new Set(component)) {
+function composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved, { replaceCallFallbacks = false, relaxLocalFloor = false, componentSet = new Set(component) } = {}) {
   const unknowns = () => [...new Set([
     ...local.returnProvenance.map(fact => fact.returnIndex ?? 0),
     ...(local.returnEquations?.sites ?? []).map(site => site.returnIndex),
   ])].sort((a, b) => a - b).map(returnIndex => ({ kind:'unknown', returnIndex }));
+  const localComplete = local.status.completeness === 'complete' || relaxLocalFloor;
+  const unresolvedLocalCalls = local.unknownCallEffects.length > 0 && !replaceCallFallbacks;
   if (!summaryIdentityMatches(local, { functionId:local.functionId, snapshotId })
-    || local.status.completeness !== 'complete' || local.unknownCallEffects.length) return unknowns();
+    || !localComplete || unresolvedLocalCalls) return unknowns();
   if (!local.returnEquations) return local.returnProvenance;
   const facts = new Map();
   const add = fact => { facts.set(JSON.stringify(fact), fact); };
@@ -989,7 +1034,7 @@ function composeSummary({ functionId, locals, models, solved, component, compone
   // example, because its own callee or memory evidence is unresolved). Such a
   // summary is not enough to replace this caller's conservative fallback: only
   // a complete callee proves that the call boundary is closed.
-  const isCompleteSolved = (target) => solved.get(target)?.status?.completeness === 'complete';
+  const isCompleteSolved = (target) => { const entry = solved.get(target); return entry ? entry.status?.completeness === 'complete' : (!unconverged && !groundUnresolved && componentSet.has(target)); };
   for (const call of local.directCalls) {
     if (call.targetEntityIds.length > 0 && call.targetEntityIds.every(isCompleteSolved)) {
       resolvedCallSites.add(call.callSiteId);
@@ -1208,8 +1253,11 @@ function composeSummary({ functionId, locals, models, solved, component, compone
 
   const mergedEscapes = mergeEscapes(escapes, rowLimit, chargeMergeRows);
   if (mergedEscapes.truncated) payloadTruncated = true;
-  const mergedReads = mergeEffects(reads, limits.maxEffectsPerSummary);
-  const mergedWrites = mergeEffects(writes, limits.maxEffectsPerSummary);
+  const mergedReadsResult = mergeEffects(reads, limits.maxEffectsPerSummary, rowLimit, chargeMergeRows);
+  const mergedWritesResult = mergeEffects(writes, limits.maxEffectsPerSummary, rowLimit, chargeMergeRows);
+  if (mergedReadsResult.truncated || mergedWritesResult.truncated) payloadTruncated = true;
+  const mergedReads = mergedReadsResult.values;
+  const mergedWrites = mergedWritesResult.values;
   // `createFunctionSummary()` detaches/freezes every published row. Charge that
   // copy before invoking the constructor so nested provenance cannot escape the
   // work ledger merely because it dedupes to one logical top-level escape.
@@ -1219,6 +1267,14 @@ function composeSummary({ functionId, locals, models, solved, component, compone
   for (const unknown of dedupedUnknowns) {
     detachRows += unknown.targetEntityIds?.length || 0;
     detachRows += unknown.evidenceIds?.length || 0;
+  }
+  for (const effect of mergedReads) {
+    detachRows += effect.evidenceIds?.length || 0;
+    detachRows += effect.addressSpaces?.length || 0;
+  }
+  for (const effect of mergedWrites) {
+    detachRows += effect.evidenceIds?.length || 0;
+    detachRows += effect.addressSpaces?.length || 0;
   }
   chargeMergeRows(detachRows);
 
@@ -1249,7 +1305,7 @@ function composeSummary({ functionId, locals, models, solved, component, compone
     returnValues: local.returnValues,
     // Unknown effects and nonconvergence cannot publish strong return facts.
     returnProvenance: unconverged || hasUnknown ? []
-      : composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved, componentSet),
+      : composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved, { replaceCallFallbacks, relaxLocalFloor, componentSet }),
     returnEquations: local.returnEquations,
     returnSourceDigest: local.returnSourceDigest,
     registerEffects: [...registerEffects],

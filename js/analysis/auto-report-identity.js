@@ -117,17 +117,28 @@ function subscribeToSnapshotOwner(app, state) {
   if (!tracker) {
     const originalSnapshot = snapshotOwner.snapshot.bind(snapshotOwner);
     tracker = {
-      subscribers:new Map(),
+      subscribers:new Set(),
+      subscriberEntries:new WeakMap(),
       hasSnapshot:false,
       currentSnapshotId:null,
+      seq:0,
+      appliedSeq:0,
     };
     snapshotOwner.snapshot = async function trackedAnalysisSnapshot(options = {}) {
+      const requestSeq = ++tracker.seq;
       const snapshot = await originalSnapshot(options);
+      if (requestSeq < tracker.appliedSeq) return snapshot;
+      tracker.appliedSeq = requestSeq;
       const snapshotId = snapshot?.snapshotId ?? null;
       tracker.hasSnapshot = true;
       tracker.currentSnapshotId = snapshotId;
-      for (const [subscriberApp, subscriberState] of tracker.subscribers) {
-        updateSnapshotSubscriber(subscriberApp, subscriberState, snapshotId);
+      for (const entry of tracker.subscribers) {
+        const subscriberApp = entry.ref.deref();
+        if (!subscriberApp) {
+          tracker.subscribers.delete(entry);
+          continue;
+        }
+        updateSnapshotSubscriber(subscriberApp, entry.state, snapshotId);
       }
       return snapshot;
     };
@@ -137,7 +148,14 @@ function subscribeToSnapshotOwner(app, state) {
     } catch { /* marker is diagnostic only; the WeakMap owns tracker identity */ }
   }
 
-  tracker.subscribers.set(app, state);
+  const existingEntry = tracker.subscriberEntries.get(app);
+  if (existingEntry) {
+    existingEntry.state = state;
+  } else {
+    const entry = { ref:new WeakRef(app), state };
+    tracker.subscriberEntries.set(app, entry);
+    tracker.subscribers.add(entry);
+  }
   // The snapshot identity belongs to the shared query owner, not to whichever
   // app happened to install the wrapper first. A later subscriber therefore
   // inherits the most recent successfully published snapshot immediately.

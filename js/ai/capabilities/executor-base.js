@@ -11,7 +11,23 @@ export class CapabilityExecutor {
   }
 
   currentBinaryId() { return typeof this.binaryId === 'function' ? this.binaryId() : this.binaryId; }
-  context() { return { app: this.app, ui: this.ui, toolRegistry: this.toolRegistry, runtimePlatform: this.runtimePlatform, binaryId: this.currentBinaryId() }; }
+  context() {
+    let runtimePlatform = this.runtimePlatform;
+    if (typeof runtimePlatform === 'function') {
+      try {
+        const resolved = runtimePlatform();
+        if (resolved && typeof resolved.then === 'function') {
+          resolved.catch?.(() => {});
+          runtimePlatform = null;
+        } else {
+          runtimePlatform = resolved;
+        }
+      } catch {
+        runtimePlatform = null;
+      }
+    }
+    return { app: this.app, ui: this.ui, toolRegistry: this.toolRegistry, runtimePlatform, binaryId: this.currentBinaryId() };
+  }
   async resolveRuntimePlatform() { return typeof this.runtimePlatform === 'function' ? this.runtimePlatform() : this.runtimePlatform; }
 
   async execute(id, args = {}, options = {}) {
@@ -19,6 +35,7 @@ export class CapabilityExecutor {
     if (!entry || !entry.agentExposed) throw new AIError('invalid_tool_call', `Unknown or human-only capability: ${id}`);
     const executionArgs = entry.requiresApproval ? snapshotApprovedArguments(args) : args;
     assertSchema(executionArgs, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
+    validateAddressFields(entry, executionArgs);
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, executionArgs, runtimePlatform);
     this.verifyScope(entry, options);
@@ -98,7 +115,10 @@ export class CapabilityExecutor {
       case 'runtime.status': return runtimeStatus(runtimePlatform);
       case 'runtime.connect': return runtimePlatform?.startSession?.({ adapter: args.adapter || null, binaryHash: args.binaryId || this.currentBinaryId(), trace: args.trace || {}, connect: true }) ?? unavailable('runtime connect');
       case 'runtime.attach': return runtimeAdapter(runtimePlatform).attach(args.target || {}, options);
-      case 'runtime.detach': return runtimePlatform.sessions.close(args.runtimeSessionId);
+      case 'runtime.detach': {
+        if (typeof runtimePlatform?.sessions?.close !== 'function') throw new AIError('tool_failed', 'Runtime session close is unavailable.');
+        return runtimePlatform.sessions.close(args.runtimeSessionId);
+      }
       case 'runtime.breakpoint-create': return runtimeAdapter(runtimePlatform).setBreakpoint(args.breakpoint || args);
       case 'runtime.watchpoint-create': return runtimeAdapter(runtimePlatform).watchMemory(args.watchpoint || args);
       case 'runtime.breakpoint-remove': case 'runtime.watchpoint-remove': return runtimeAdapter(runtimePlatform).removeBreakpoint(args.id);
@@ -110,7 +130,10 @@ export class CapabilityExecutor {
       case 'runtime.registers': return runtimeAdapter(runtimePlatform).readRegisters(args.threadId);
       case 'runtime.memory-read': return boundedMemoryRead(runtimeAdapter(runtimePlatform), args);
       case 'runtime.memory-write': return boundedMemoryWrite(runtimeAdapter(runtimePlatform), args);
-      case 'runtime.experiment': return runtimePlatform.runExperiment(args.experiment, options);
+      case 'runtime.experiment': {
+        if (typeof runtimePlatform?.runExperiment !== 'function') throw new AIError('tool_failed', 'Runtime experiment runner is unavailable.');
+        return runtimePlatform.runExperiment(args.experiment, options);
+      }
       case 'project.save': return callRequired(app?.workspace, 'autosave');
       case 'project.snapshot': return callRequired(app?.workspace, 'snapshot');
       case 'project.restore-known': return callRequired(app?.workspace, 'importProject', args.project);
@@ -125,7 +148,7 @@ export class CapabilityExecutor {
   }
 
   async revertPatch(args) {
-    const patch = this.app?.patches?.at?.(BigInt(args.fileOffset));
+    const patch = this.app?.patches?.at?.(parseNonNegativeAddress(args.fileOffset, 'fileOffset'));
     if (!patch) throw new AIError('tool_failed', 'Patch is no longer present.');
     this.app.patches.remove(patch.offset);
     const metadata = serializePatch(patch);
@@ -183,7 +206,45 @@ function containsSharedMemory(value, seen = new WeakSet()) {
 }
 
 function validAuthorization(value) { return value?.kind === 'proposal' && typeof value.token === 'string' && value.token.length >= 8; }
-function runtimeAdapter(platform) { const session = platform?.currentSession?.(); if (!session?.adapter) throw new AIError('tool_failed', 'Runtime adapter is unavailable.'); return session.adapter; }
+function parseNonNegativeAddress(value, label = 'address') {
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new AIError('invalid_tool_call', `${label} must be a non-negative integer.`);
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new AIError('invalid_tool_call', `${label} must be a non-negative integer.`);
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^(?:0x[0-9a-f]+|\d+)$/i.test(trimmed)) {
+      throw new AIError('invalid_tool_call', `${label} must be a non-negative decimal or hexadecimal integer.`);
+    }
+    try {
+      return BigInt(trimmed);
+    } catch {
+      throw new AIError('invalid_tool_call', `${label} must be a non-negative decimal or hexadecimal integer.`);
+    }
+  }
+  throw new AIError('invalid_tool_call', `${label} must be a non-negative integer.`);
+}
+
+const ADDRESS_VALIDATED_CAPABILITIES = new Set([
+  'annotation.rename', 'annotation.comment', 'annotation.set-type',
+  'patch.preview', 'patch.create', 'runtime.memory-read', 'runtime.memory-write',
+]);
+
+function validateAddressFields(entry, args) {
+  if (!args || typeof args !== 'object') return;
+  if (ADDRESS_VALIDATED_CAPABILITIES.has(entry.id) && Object.prototype.hasOwnProperty.call(args, 'address')) {
+    parseNonNegativeAddress(args.address, 'address');
+  }
+  if (entry.id === 'patch.revert' && Object.prototype.hasOwnProperty.call(args, 'fileOffset')) {
+    parseNonNegativeAddress(args.fileOffset, 'fileOffset');
+  }
+}
+
+function runtimeAdapter(platform) { const session = platform?.currentSession?.(false); if (!session?.adapter) throw new AIError('tool_failed', 'Runtime adapter is unavailable.'); return session.adapter; }
 function runtimeStatus(platform) { const session = platform?.currentSession?.(false); return session ? { connected: !!session.adapter?.connected, sessionId: session.id, binaryId: session.binaryHash || null, backend: session.backend, capabilities: session.adapter?.capabilities || {} } : { connected: false, sessionId: null }; }
 
 async function boundedMemoryRead(adapter, args) {
@@ -256,7 +317,7 @@ function rollbackNoteMutation(notes, method, address, snapshot) {
 }
 
 function setNote(app, kind, args, after = null) {
-  const address = BigInt(args.address); const value = String(args.value ?? '');
+  const address = parseNonNegativeAddress(args.address, 'address'); const value = String(args.value ?? '');
   const method = kind === 'name' ? 'setName' : 'setComment';
   const getter = kind === 'name' ? 'nameOf' : 'comment';
   if (typeof app?.notes?.[method] !== 'function') throw new AIError('tool_failed', `${kind} annotation adapter is unavailable.`);
@@ -295,7 +356,7 @@ function refreshDisplay(app) {
 // restore the prior note state and only then surface the original error, so a
 // failed proposal never ends up partially written (#6255).
 function renameSymbol(app, args) {
-  const address = BigInt(args.address); const value = String(args.value ?? '');
+  const address = parseNonNegativeAddress(args.address, 'address'); const value = String(args.value ?? '');
   if (typeof app?.notes?.setName !== 'function') throw new AIError('tool_failed', 'name annotation adapter is unavailable.');
   const snapshot = noteMutationSnapshot(app.notes, 'nameOf', address);
   if (!snapshot.canRestore) throw new AIError('tool_failed', 'name annotation adapter cannot provide the snapshot required for atomic persistence.');
@@ -329,7 +390,7 @@ function renameSymbol(app, args) {
 }
 
 function setType(app, args) {
-  const address = BigInt(args.address), key = String(args.key || 'return'), value = String(args.value ?? '');
+  const address = parseNonNegativeAddress(args.address, 'address'), key = String(args.key || 'return'), value = String(args.value ?? '');
   const notes = app?.notes;
   if (typeof notes?.setType !== 'function') throw new AIError('tool_failed', 'Type annotation adapter is unavailable.');
   if (typeof notes.typeOf !== 'function') throw new AIError('tool_failed', 'Type annotation adapter cannot provide the snapshot required for atomic persistence.');
@@ -412,9 +473,22 @@ function setStructField(app, args) {
   return { ok: true, struct: name, field };
 }
 
-async function setProjectAnnotation(app, args) {
-  if (!app) throw new AIError('tool_failed', 'Project annotation adapter is unavailable.');
-  if (typeof app.workspace?.autosave !== 'function') throw new AIError('tool_failed', 'Project annotation persistence is unavailable.');
+const PROJECT_ANNOTATION_QUEUES = new WeakMap();
+
+function setProjectAnnotation(app, args) {
+  if (!app) return Promise.reject(new AIError('tool_failed', 'Project annotation adapter is unavailable.'));
+  if (typeof app.workspace?.autosave !== 'function') return Promise.reject(new AIError('tool_failed', 'Project annotation persistence is unavailable.'));
+  const prev = PROJECT_ANNOTATION_QUEUES.get(app) || Promise.resolve();
+  const next = prev.catch(() => {}).then(() => runSetProjectAnnotation(app, args));
+  const settled = next.catch(() => {});
+  PROJECT_ANNOTATION_QUEUES.set(app, settled);
+  settled.finally(() => {
+    if (PROJECT_ANNOTATION_QUEUES.get(app) === settled) PROJECT_ANNOTATION_QUEUES.delete(app);
+  });
+  return next;
+}
+
+async function runSetProjectAnnotation(app, args) {
 
   const previousProjectAnnotations = app.projectAnnotations;
   const projectAnnotationsSnapshot = Array.isArray(previousProjectAnnotations) ? previousProjectAnnotations.slice() : null;
@@ -499,7 +573,7 @@ async function validatePatchTarget(app, args) {
   if (args.instruction !== false && !instructionPatchArchitectureSupported(architecture)) {
     throw new AIError('invalid_tool_call', `Instruction patching is unsupported for architecture: ${architecture || 'unknown'}.`);
   }
-  const address = BigInt(args.address), before = byteArray(args.before), after = byteArray(args.after);
+  const address = parseNonNegativeAddress(args.address, 'address'), before = byteArray(args.before), after = byteArray(args.after);
   if (!before.length || before.length !== after.length) throw new AIError('invalid_tool_call', 'Patch before/after lengths must match and be non-zero.');
   const regions = app?.store?.get?.('regions') || [];
   const region = regions.find((item) => address >= item.vmAddr && address < item.vmAddr + item.size);

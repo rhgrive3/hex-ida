@@ -50,6 +50,19 @@ const cancellableExtensionToSourceWidth = (n) => {
  * and emits no equivalence proof.
  */
 const integerComparison = (q) => q?.kind === 'compare' && q.comparisonDomain === 'integer';
+const MAX_UNWRAP_CAST_DEPTH = 64;
+function unwrapSameWidthCast(x) {
+  const seen = new WeakSet();
+  let cur = x;
+  let depth = 0;
+  while (cur?.kind === 'cast' && sameWidthDomain(cur, cur.arg) && depth < MAX_UNWRAP_CAST_DEPTH) {
+    if (seen.has(cur)) break;
+    seen.add(cur);
+    cur = cur.arg;
+    depth += 1;
+  }
+  return cur;
+}
 const algebraProof = (name, before, after) => ({
   kind: 'integer-algebra',
   detail: name,
@@ -270,7 +283,7 @@ const bitRules = [
 
 const compareRules = [{
   name: 'compare-self-eq-ne', phase: 'boolean',
-  match: (n) => n?.kind === 'compare' && n.comparisonDomain !== 'floating' && ['eq','ne'].includes(n.op) && sameExpr(n.left, n.right) && isPure(n.left) ? {} : null,
+  match: (n) => n?.kind === 'compare' && integerComparison(n) && ['eq','ne'].includes(n.op) && sameExpr(n.left, n.right) && isPure(n.left) ? {} : null,
   rewrite: (n) => c(n.op === 'eq' ? 1 : 0, n, 1),
   proof: proof('comparison-reflexivity', 'pure expression compared with itself'), cost,
 }, {
@@ -306,7 +319,7 @@ const compareCanonicalRules = [{
 const rangeRules = [{
   name:'range-proven-compare', phase:'range',
   match:(n)=>{
-    if (n?.kind!=='compare' || !n.left?.range || !isConst(n.right)) return null;
+    if (!integerComparison(n) || !n.left?.range || !isConst(n.right)) return null;
     const source=n.left.range;
     const bits=Number(n.left.bits || source.bits || 64);
     const relational=!['eq','ne'].includes(n.op);
@@ -314,7 +327,7 @@ const rangeRules = [{
     if (relational && compareSigned == null) return null;
     const r=normalizeRangeDomain(source,bits,compareSigned);
     if (!r) return null;
-    const c=normalizeIntegerValue(n.right.value,bits,compareSigned);
+    const c=normalizeIntegerValue(constOperandValue(n.right),bits,compareSigned);
     let value=null;
     if (n.op==='eq' && (c<r.min || c>r.max)) value=0;
     else if (n.op==='ne' && (c<r.min || c>r.max)) value=1;
@@ -364,17 +377,18 @@ const selectRules = [{
     // the selected value, so the domain is admitted before any shape matching.
     if (!integerComparison(n.condition)) return null;
     const q = n.condition;
+    if (typeof q.compareSigned !== 'boolean') return null;
     // Constant signedness/nominal width is metadata; select equivalence is over
     // the result bitvector. This keeps WZR and #0 equivalent after width-aware
     // operand reconstruction while retaining strict structural matching for
     // non-constant expressions.
-    const unwrapSameWidthCast = (x) => x?.kind === 'cast' && sameWidthDomain(x, x.arg) ? unwrapSameWidthCast(x.arg) : x;
     const sameArm = (a, b) => {
       const ua = unwrapSameWidthCast(a), ub = unwrapSameWidthCast(b);
       if (sameExpr(a, b) && sameWidthDomain(n, a, b)) return true;
       if (sameExpr(ua, ub) && sameWidthDomain(n, a, b, ua, ub)) return true;
+      const cmpBits = Number(n.bits || q.left?.bits || 64);
       return isConst(a) && isConst(b)
-        && BigInt.asUintN(Number(n.bits || q.left?.bits || 64), a.value) === BigInt.asUintN(Number(n.bits || q.left?.bits || 64), b.value);
+        && BigInt.asUintN(cmpBits, constOperandValue(a)) === BigInt.asUintN(cmpBits, constOperandValue(b));
     };
     const ta = sameArm(n.whenTrue, q.left), tb = sameArm(n.whenTrue, q.right);
     const fa = sameArm(n.whenFalse, q.left), fb = sameArm(n.whenFalse, q.right);
@@ -405,7 +419,6 @@ const selectRules = [{
     if (q.compareSigned !== true) return null;
     if (!isConst(q.right, 0) || !isStable(q.left)) return null;
     if (!sameWidthDomain(n, q.left, n.whenTrue, n.whenFalse)) return null;
-    const unwrapSameWidthCast = (x) => x?.kind === 'cast' && sameWidthDomain(x, x.arg) ? unwrapSameWidthCast(x.arg) : x;
     const uleft = unwrapSameWidthCast(q.left);
     const neg = (x) => {
       if (!sameWidthDomain(n, x)) return false;
@@ -433,15 +446,15 @@ const selectRules = [{
 
 const extensionRules = [{
   name: 'redundant-trunc', phase: 'width',
-  match: (n) => n?.kind === 'unary' && n.op === 'trunc' && Number(n.arg?.bits) === Number(n.bits) ? {} : null,
+  match: (n) => n?.kind === 'unary' && n.op === 'trunc' && sameWidthDomain(n, n.arg) ? {} : null,
   rewrite: (n) => n.arg, proof: proof('width-identity', 'same-width truncation'), cost,
 }, {
   name: 'redundant-zext', phase: 'width',
-  match: (n) => n?.kind === 'unary' && n.op === 'zext' && Number(n.arg?.bits) === Number(n.bits) ? {} : null,
+  match: (n) => n?.kind === 'unary' && n.op === 'zext' && sameWidthDomain(n, n.arg) ? {} : null,
   rewrite: (n) => n.arg, proof: proof('width-identity', 'same-width zero extension'), cost,
 }, {
   name: 'redundant-sext', phase: 'width',
-  match: (n) => n?.kind === 'unary' && n.op === 'sext' && Number(n.arg?.bits) === Number(n.bits) ? {} : null,
+  match: (n) => n?.kind === 'unary' && n.op === 'sext' && sameWidthDomain(n, n.arg) ? {} : null,
   rewrite: (n) => n.arg, proof: proof('width-identity', 'same-width sign extension'), cost,
 }, {
   // A declared `zext`/`sext` whose result is *narrower* than its source is a

@@ -97,7 +97,12 @@ function descriptorTextForType(type) {
   return null;
 }
 
-const DISPATCH_TAGS = Object.freeze({ virtual: 10, special: 10, static: 10, interface: 11 });
+const DISPATCH_TAGS = Object.freeze({
+  virtual: Object.freeze([10]),
+  special: Object.freeze([10, 11]),
+  static: Object.freeze([10, 11]),
+  interface: Object.freeze([11]),
+});
 
 /**
  * Resolve the constant-pool method reference used by one JVM invoke opcode into
@@ -105,10 +110,10 @@ const DISPATCH_TAGS = Object.freeze({ virtual: 10, special: 10, static: 10, inte
  * part of the reference is not losslessly resolvable.
  */
 export function resolveJvmMethodSignature(jvmClass, cpIndex, { dispatchKind } = {}) {
-  const expectedTag = DISPATCH_TAGS[dispatchKind];
-  if (expectedTag == null) return null;
+  const allowedTags = Object.hasOwn(DISPATCH_TAGS, dispatchKind) ? DISPATCH_TAGS[dispatchKind] : null;
+  if (!allowedTags) return null;
   const ref = cpEntry(jvmClass, cpIndex);
-  if (!ref || ref.tag !== expectedTag) return null;
+  if (!ref || !allowedTags.includes(ref.tag)) return null;
 
   const ownerClass = cpEntry(jvmClass, ref.classIndex);
   const nameAndType = cpEntry(jvmClass, ref.nameAndTypeIndex);
@@ -118,9 +123,10 @@ export function resolveJvmMethodSignature(jvmClass, cpIndex, { dispatchKind } = 
   const name = utf8Value(jvmClass, nameAndType.nameIndex);
   const descriptor = utf8Value(jvmClass, nameAndType.descriptorIndex);
   if (!validInternalClassName(owner) || !validUnqualifiedName(name)) return null;
-  // JVMS §4.4.2: an interface method reference is never an initialization method.
-  if (expectedTag === 10 && name === '<clinit>') return null;
-  if (expectedTag === 11 && name === '<init>') return null;
+  // JVMS §4.4.2 / §6.5: `<clinit>` is never callable by any invoke instruction,
+  // and `<init>` is only callable via `invokespecial` on a CONSTANT_Methodref_info (tag 10).
+  if (name === '<clinit>') return null;
+  if (name === '<init>' && (dispatchKind !== 'special' || ref.tag !== 10)) return null;
 
   let parsed;
   try {

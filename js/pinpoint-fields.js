@@ -45,10 +45,11 @@ export function composePinpointFields(fields, cxxFields) {
   const owners = new Set([...classes.values()].filter((cls) => cls?.source === 'cxx').map((cls) => cls.ownerKey));
   let added = 0;
   for (const [key, cls] of cxxFields.classes) {
-    if (owners.has(cls.ownerKey) || !cls.ivars?.some((iv) => isCxxMemberField(iv, cls))) continue;
+    const memberCount = (cls.ivars || []).filter((iv) => isCxxMemberField(iv, cls)).length;
+    if (owners.has(cls.ownerKey) || !memberCount) continue;
     classes.set(Symbol(key), cls);
     owners.add(cls.ownerKey);
-    added += cls.ivars.length;
+    added += memberCount;
   }
   const cxxMethodOwners = buildCxxMethodOwners(cxxFields);
   const ownersOf = (address) => {
@@ -79,7 +80,7 @@ export function composePinpointFields(fields, cxxFields) {
     classes,
     classCount: classes.size,
     fieldCount: (fields?.fieldCount || 0) + added,
-    classInfo: (name) => fields?.classInfo?.(name) || cxxFields.classInfo(name),
+    classInfo: (name) => fields?.classInfo?.(name) || cxxFields?.classInfo?.(name) || null,
     ownerOf,
     ownersOf,
   };

@@ -129,6 +129,10 @@ export class ScanWorkerPool {
   cancelRequest(epoch, requestId) {
     if (requestId == null) return;
     const key = requestKey(epoch, requestId);
+    if (this._cancelledRequests.size >= 4096) {
+      const oldest = this._cancelledRequests.values().next().value;
+      if (oldest !== undefined) this._cancelledRequests.delete(oldest);
+    }
     this._cancelledRequests.add(key);
 
     for (let i = this._queue.length - 1; i >= 0; i--) {
@@ -154,6 +158,7 @@ export class ScanWorkerPool {
 
   cancelEpoch(epoch) {
     const targetEpoch = epoch == null ? this._minEpoch : Number(epoch);
+    if (!Number.isSafeInteger(targetEpoch)) throw new TypeError('scan-pool: epoch must be a safe integer');
     if (targetEpoch + 1 > this._minEpoch) {
       this._minEpoch = targetEpoch + 1;
       this._cancelledRequests.clear();
@@ -294,8 +299,11 @@ export class ScanWorkerPool {
     } catch (error) {
       const failErr = error instanceof Error ? error : new Error(String(error));
       if (!failErr.code) failErr.code = 'WORKER_FAILED';
-      const queued = this._queue.splice(0, this._queue.length);
-      for (const job of queued) this._settleJobReject(job, failErr);
+      const hasLiveWorker = [...this._workers].some((entry) => !entry.terminated);
+      if (!hasLiveWorker) {
+        const queued = this._queue.splice(0, this._queue.length);
+        for (const job of queued) this._settleJobReject(job, failErr);
+      }
       return null;
     }
 

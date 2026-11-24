@@ -103,6 +103,11 @@ function cloneCachedArtifact(value) {
         Object.assign(budget.used, producerBudget.used);
         budget.used.warnings = Math.min(copy.warnings?.length || 0, budget.limits.warnings);
       }
+      if (producerBudget.stopped === true) {
+        budget.stopped = true;
+        if (producerBudget.stopReason !== undefined) budget.stopReason = producerBudget.stopReason;
+        if (producerBudget.reason !== undefined) budget.reason = producerBudget.reason;
+      }
       ensureMachOMetadataBudget(copy, budget);
     }
     reissueMachOImageAuthority(copy, value);
@@ -275,6 +280,9 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
   if (entry && (entry.retired || entry.controller.signal.aborted)) {
     if (cache.get(key) === entry) cache.delete(key);
     entry = null;
+  } else if (entry) {
+    cache.delete(key);
+    cache.set(key, entry);
   }
   if (!entry) {
     const controller = new AbortController();
@@ -306,6 +314,14 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
         entry.retire();
         throw error;
       });
+    if (cache.size >= 32) {
+      for (const [oldKey, oldEntry] of cache) {
+        if (oldEntry.waiters === 0) {
+          cache.delete(oldKey);
+          if (cache.size < 32) break;
+        }
+      }
+    }
     cache.set(key, entry);
   }
   return waitForEntry(entry, signal, options.strings?.onProgress ?? null);

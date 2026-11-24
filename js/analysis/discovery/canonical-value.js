@@ -62,6 +62,8 @@ function encode(value, seen, budget, depth = 0) {
     }
     encoded = { t: 'array', v: items };
   } else {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) fail('discovery-typed-value-object-invalid');
     let keys;
     try { keys = Object.keys(value).sort(); }
     catch { fail('discovery-typed-value-object-invalid'); }

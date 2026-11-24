@@ -126,7 +126,7 @@ function readFunctionInstructionImmediate(bytes,offset,opcode,dataCount=null,hea
   if(opcode===0x0c||opcode===0x0d||opcode===0x10||opcode===0x12||opcode===0x14||opcode===0x15||(opcode>=0x20&&opcode<=0x26)||opcode===0xd2)return readFunctionU32(bytes,offset);
   if(opcode===0x11||opcode===0x13)return readFunctionU32(bytes,readFunctionU32(bytes,offset));
   if(opcode===0x0e){const count=decodeUleb128(bytes,offset);let pos=count.nextOffset;for(let i=0;i<=count.value;i++){if(budget)budget.chargeValue();pos=readFunctionU32(bytes,pos);}return pos;}
-  if(opcode===0x1c){const count=decodeUleb128(bytes,offset);let pos=count.nextOffset;for(let i=0;i<count.value;i++){if(pos>=bytes.length||!WASM_VALUE_TYPES.has(bytes[pos]))fail('wasm-invalid-select-value-type');pos++;}return pos;}
+  if(opcode===0x1c){const count=decodeUleb128(bytes,offset);let pos=count.nextOffset;for(let i=0;i<count.value;i++){if(budget){budget.checkpoint();budget.chargeValue();}if(pos>=bytes.length||!WASM_VALUE_TYPES.has(bytes[pos]))fail('wasm-invalid-select-value-type');pos++;}return pos;}
   if(opcode>=0x28&&opcode<=0x3e)return readFunctionMemarg(bytes,offset);
   if(opcode===0x3f||opcode===0x40)return readFunctionU32(bytes,offset);
   if(opcode===0x41)return decodeSleb128(bytes,offset).nextOffset;

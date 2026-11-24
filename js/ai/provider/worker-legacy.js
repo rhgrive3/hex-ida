@@ -47,10 +47,20 @@ export async function handleGemini(request, env) {
     try {
       upstream = await fetch(GEMINI_INTERACTIONS_URL, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream', 'x-goog-api-key': env.GEMINI_API_KEY }, body: upstreamBody, signal: upstreamAbort.signal });
     } catch {
-      if (upstreamAbort.signal.aborted) { await cleanup(); return jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.'); }
+      if (upstreamAbort.signal.aborted) {
+        await cleanup();
+        return request.signal.aborted
+          ? jsonError(499, 'client_cancelled', 'The client disconnected during the provider request.')
+          : jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.');
+      }
       logRetryableFailure(attempt, 0, 'network_error');
       if (attempt === MAX_UPSTREAM_ATTEMPTS) { await cleanup(); return jsonError(502, 'upstream_unavailable', 'The analysis service could not be reached after retrying.'); }
-      if (!await waitForRetry(attempt, null, upstreamAbort.signal)) { await cleanup(); return jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.'); }
+      if (!await waitForRetry(attempt, null, upstreamAbort.signal)) {
+        await cleanup();
+        return request.signal.aborted
+          ? jsonError(499, 'client_cancelled', 'The client disconnected during the provider request.')
+          : jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.');
+      }
       continue;
     }
     if (upstream.ok) break;
@@ -58,14 +68,42 @@ export async function handleGemini(request, env) {
     const retryable = isRetryableUpstreamFailure(upstream.status, failure.code);
     if (retryable) logRetryableFailure(attempt, upstream.status, failure.code);
     if (!retryable || attempt === MAX_UPSTREAM_ATTEMPTS) { await cleanup(); return upstreamError(upstream.status, failure.code, upstream.headers.get('retry-after')); }
-    if (!await waitForRetry(attempt, upstream.headers.get('retry-after'), upstreamAbort.signal)) { await cleanup(); return jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.'); }
+    if (!await waitForRetry(attempt, upstream.headers.get('retry-after'), upstreamAbort.signal)) {
+      await cleanup();
+      return request.signal.aborted
+        ? jsonError(499, 'client_cancelled', 'The client disconnected during the provider request.')
+        : jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.');
+    }
   }
   if (!upstream?.ok) { await cleanup(); return jsonError(502, 'upstream_error', 'The analysis service returned an unexpected error after retrying.'); }
   if (!upstream.body) { await cleanup(); return jsonError(502, 'invalid_upstream_response', 'The analysis service returned an empty response.'); }
   const upstreamReader = upstream.body.getReader();
+  let cancelled = false;
   const readable = new ReadableStream({
-    start(controller) { return (async () => { try { while (true) { const { done, value } = await upstreamReader.read(); if (done) break; controller.enqueue(value); } await cleanup(); controller.close(); } catch (error) { await cleanup(); controller.error(error); } })(); },
-    async cancel(reason) { try { await upstreamReader.cancel(reason); } finally { await cleanup(); } },
+    start(controller) {
+      return (async () => {
+        try {
+          while (!cancelled) {
+            const { done, value } = await upstreamReader.read();
+            if (done || cancelled) break;
+            controller.enqueue(value);
+          }
+          await cleanup();
+          if (!cancelled) {
+            try { controller.close(); } catch { /* stream already closed/cancelled */ }
+          }
+        } catch (error) {
+          await cleanup();
+          if (!cancelled) {
+            try { controller.error(error); } catch { /* stream already closed/cancelled */ }
+          }
+        }
+      })();
+    },
+    async cancel(reason) {
+      cancelled = true;
+      try { await upstreamReader.cancel(reason); } finally { await cleanup(); }
+    },
   });
   return new Response(readable, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store, no-transform', 'x-content-type-options': 'nosniff' } });
 }

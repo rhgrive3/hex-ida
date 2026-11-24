@@ -900,7 +900,7 @@ export class BinaryImage {
     const isExecutable = Boolean(sec ? sec.perms?.execute : seg?.perms?.execute);
     if (!isExecutable) return false;
 
-    const arch = this.arch;
+    const arch = (this.arch === 'arm64ec' && typeof this.archAt === 'function' ? this.archAt(a) : null) || this.arch;
     const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
     if (a % alignment !== 0n) return false;
 
@@ -908,6 +908,7 @@ export class BinaryImage {
     const offStart = this.addressToOffset(a);
     const offEnd = this.addressToOffset(a + instructionBytes - 1n);
     if (offStart === null || offEnd === null) return false;
+    if (instructionBytes > 1n && offEnd !== offStart + instructionBytes - 1n) return false;
 
     const instEnd = a + instructionBytes;
     if (this._dataInCodeSorted === null) this._dataInCodeSorted = isDataInCodeAddressSorted(this.dataInCode);
@@ -1119,7 +1120,14 @@ export class BinaryImage {
   }
 
   finalize() {
-    const byAddr = (a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0;
+    const byAddr = (a, b) => {
+      const aa = a?.address;
+      const bb = b?.address;
+      if (aa == null && bb == null) return 0;
+      if (aa == null) return 1;
+      if (bb == null) return -1;
+      return aa < bb ? -1 : aa > bb ? 1 : 0;
+    };
     this.segments.sort(byAddr);
     this.sections.sort(byAddr);
     this._mappingLookups.segments = null;
@@ -1169,13 +1177,20 @@ export class BinaryImage {
   }
 
   toJSON() {
-    const convert = (v) => {
+    const seen = new WeakSet();
+    const convert = (v, depth = 0) => {
       if (typeof v === 'bigint') return v < 0n ? '-0x' + (-v).toString(16).toUpperCase() : '0x' + v.toString(16).toUpperCase();
-      if (Array.isArray(v)) return v.map(convert);
       if (v && typeof v === 'object') {
-        const out = {};
-        for (const [k, x] of Object.entries(v)) Object.defineProperty(out, k, { value: convert(x), enumerable: true, configurable: true, writable: true });
-        return out;
+        if (depth >= 64 || seen.has(v)) return '[Circular]';
+        seen.add(v);
+        try {
+          if (Array.isArray(v)) return v.map((item) => convert(item, depth + 1));
+          const out = {};
+          for (const [k, x] of Object.entries(v)) Object.defineProperty(out, k, { value: convert(x, depth + 1), enumerable: true, configurable: true, writable: true });
+          return out;
+        } finally {
+          seen.delete(v);
+        }
       }
       return v;
     };
@@ -1289,7 +1304,7 @@ function createMonotonicRegionLookup(regions) {
 }
 
 export function mergeFunctionSeeds(input, context = {}) {
-  const rank = { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, constructor: 4, export: 3, entrypoint: 2, heuristic: 1 };
+  const rank = Object.assign(Object.create(null), { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, constructor: 4, export: 3, entrypoint: 2, heuristic: 1 });
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;

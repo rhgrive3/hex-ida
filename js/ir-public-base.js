@@ -4,14 +4,16 @@ import { OP, COND } from './ir-core.js';
 import { normalizeIntegerValue, normalizeRangeDomain } from './range-domain.js';
 import { valueRange } from './ir-base.js';
 
-function projectedConstant(value, active = new Set()) {
-  if (!value || active.has(value)) return null;
+const PROJECTED_CONST_MAX_DEPTH = 128;
+
+function projectedConstant(value, active = new Set(), depth = 0) {
+  if (!value || depth > PROJECTED_CONST_MAX_DEPTH || active.has(value)) return null;
   const bits = Math.max(1, Math.min(64, Number(value.bits || 64)));
   if (value.const != null) return BigInt.asUintN(bits, BigInt(value.const));
   const def = value.def;
   if (!def || !Array.isArray(def.args)) return null;
   active.add(value);
-  const input = (index) => projectedConstant(def.args[index]?.value, active);
+  const input = (index) => projectedConstant(def.args[index]?.value, active, depth + 1);
   let result = null;
   if (def.op === OP.MOV && def.args.length === 1) {
     const v = input(0);

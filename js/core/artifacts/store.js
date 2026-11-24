@@ -97,13 +97,15 @@ export class ArtifactStore {
     maxEpochs = DEFAULT_MAX_EPOCHS,
   } = {}) {
     const backendHooks = snapshotCallableHooks(backend, ['getRaw', 'putAtomic', 'delete', 'capabilities', 'close'], 'artifact-backend-invalid');
+    const deleteIfMatches = typeof backend?.deleteIfMatches === 'function' ? backend.deleteIfMatches.bind(backend) : null;
+    const fullBackendHooks = Object.freeze({ ...backendHooks, deleteIfMatches });
     const hotCacheHooks = snapshotCallableHooks(hotCache, ['get', 'put', 'delete', 'clear', 'stats'], 'artifact-hot-cache-invalid');
     if (!['delete', 'retain'].includes(corruptionPolicy)) throw new TypeError('artifact-corruption-policy-invalid');
     this.#maxIdentityProofs = positiveBound(maxIdentityProofs, DEFAULT_MAX_IDENTITY_PROOFS, 'artifact-identity-proofs-bound-invalid');
     this.#maxEpochs = positiveBound(maxEpochs, DEFAULT_MAX_EPOCHS, 'artifact-epochs-bound-invalid');
     this.backend = backend;
     this.hotCache = hotCache;
-    this.#backendHooks = backendHooks;
+    this.#backendHooks = fullBackendHooks;
     this.#hotCacheHooks = hotCacheHooks;
     this.corruptionPolicy = corruptionPolicy;
     this.mutations = new Map();
@@ -268,7 +270,9 @@ export class ArtifactStore {
     this.metrics.requests++;
     if (this.#quarantined.has(artifactId)) return { status:'quarantined', artifactId, reason:this.#quarantined.get(artifactId).reason };
 
-    for (;;) {
+    const MAX_MUTATION_RETRIES = 64;
+    for (let attempt = 0; ; attempt++) {
+      if (attempt >= MAX_MUTATION_RETRIES) throw new ArtifactStorageError('artifact-mutation-retries-exhausted');
       await this.#waitForMutation(artifactId);
       aborted(options.signal);
       if (this.#quarantined.has(artifactId)) return { status:'quarantined', artifactId, reason:this.#quarantined.get(artifactId).reason };
@@ -382,9 +386,9 @@ export class ArtifactStore {
       this.#hotCacheHooks.delete(artifactId); this.#identityProofs.delete(artifactId);
       this.metrics.quarantines++;
       let removed = false;
-      if (typeof this.backend.deleteIfMatches === 'function') {
+      if (this.#backendHooks.deleteIfMatches) {
         // An abort after this point must never restore rejected canonical data.
-        removed = await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
+        removed = await this.#backendHooks.deleteIfMatches(artifactId, record, payloadBytes);
       }
       const verdict = Object.freeze({ reason, persistentWithdrawal:removed === true });
       this.#quarantined.set(artifactId, verdict);
@@ -493,8 +497,12 @@ export class ArtifactStore {
       this.#hotCacheHooks.delete(artifactId);
       this.#identityProofs.delete(requireArtifactId(artifactId));
       try {
-        if (record && payloadBytes != null && typeof this.backend.deleteIfMatches === 'function') {
-          return await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
+        const hasValidPayloadBytes = payloadBytes instanceof Uint8Array || payloadBytes instanceof ArrayBuffer || ArrayBuffer.isView(payloadBytes);
+        if (record && hasValidPayloadBytes && this.#backendHooks.deleteIfMatches) {
+          return await this.#backendHooks.deleteIfMatches(artifactId, record, payloadBytes);
+        }
+        if (payloadBytes != null && !hasValidPayloadBytes) {
+          return await this.#backendHooks.delete(artifactId);
         }
         return false;
       } catch (error) {
@@ -608,7 +616,7 @@ export class ArtifactStore {
         this.#hotCacheHooks.delete(artifactId);
         if (!writeResult?.duplicate) {
           try {
-            if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
+            if (this.#backendHooks.deleteIfMatches) await this.#backendHooks.deleteIfMatches(artifactId, record, payloadBytes);
             else await this.#backendHooks.delete(artifactId);
           } catch { /* cancellation remains the primary result */ }
         }
@@ -637,7 +645,7 @@ export class ArtifactStore {
         this.#hotCacheHooks.delete(artifactId);
         if (!writeResult?.duplicate) {
           try {
-            if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
+            if (this.#backendHooks.deleteIfMatches) await this.#backendHooks.deleteIfMatches(artifactId, record, payloadBytes);
             else await this.#backendHooks.delete(artifactId);
           } catch { /* preserve the original post-publication failure */ }
         }

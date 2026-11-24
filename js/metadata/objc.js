@@ -234,6 +234,8 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     const pointerAbiReason = model.pointerAbiReason
       ?? [
         ...(model.runtimeCompleteness?.classes?.reasons ?? []),
+        ...(model.runtimeCompleteness?.categories?.reasons ?? []),
+        ...(model.runtimeCompleteness?.protocols?.reasons ?? []),
         ...(model.completeness?.protocols?.reasons ?? []),
       ].find((reason) => typeof reason === 'string' && reason.startsWith('objc-pointer-abi'))
       ?? null;

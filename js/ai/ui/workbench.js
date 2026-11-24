@@ -51,7 +51,8 @@ export function functionNameOf(app, addr) {
   if (addr == null) return null;
   const raw = safe(() => app.symbols && (app.symbols.nameAt?.(addr) || app.symbols.label?.(addr)));
   if (raw) return prettyName(raw);
-  return 'sub_' + BigInt(addr).toString(16).toUpperCase();
+  const hex = safe(() => BigInt(addr).toString(16).toUpperCase());
+  return hex != null ? 'sub_' + hex : null;
 }
 
 /** The instruction or range the user currently has selected, if any. */

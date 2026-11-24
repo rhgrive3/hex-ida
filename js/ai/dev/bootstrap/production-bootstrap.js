@@ -170,7 +170,11 @@ function exchangeWithParent(globalObject, requestType, responseType, payload, op
     }
     globalObject.addEventListener('message', onMessage);
     timer = setTimeout(() => finish(new Error(`Bootstrap parent response timeout: ${responseType}`)), HANDOFF_TIMEOUT_MS);
-    parent.postMessage({ protocol: HOST_PROTOCOL, type: requestType, generation, sandboxToken, ...payload }, targetOrigin);
+    try {
+      parent.postMessage({ protocol: HOST_PROTOCOL, type: requestType, generation, sandboxToken, ...payload }, targetOrigin);
+    } catch (error) {
+      finish(error);
+    }
   });
 }
 

@@ -5,6 +5,8 @@ export const MANAGED_RUNTIME_BINDING_SCHEMA = 'hex-managed-runtime-binding/v1';
 const FRONTENDS = new Set(['wasm', 'dex', 'cil', 'jvm']);
 const MANAGED_RUNTIME_PROVIDER_PROFILE_VERSION = 'provider-bound-runtime-v1';
 const VALID_MANAGED_RUNTIME_SUPPORT = new WeakSet();
+const VALID_MANAGED_RUNTIME_BINDINGS = new WeakSet();
+const MAX_TOTAL_FRAMES = 65536;
 
 // Keep this denominator at the managed boundary.  The generic runtime
 // authority can validate an arbitrary capability subset, but M6 cannot be
@@ -52,7 +54,7 @@ function runtimeBindingPayload(runtime) {
 }
 
 function isManagedRuntimeBinding(binding) {
-  if (!binding || typeof binding !== 'object' || binding.schemaVersion !== MANAGED_RUNTIME_BINDING_SCHEMA) return false;
+  if (!binding || typeof binding !== 'object' || !VALID_MANAGED_RUNTIME_BINDINGS.has(binding) || binding.schemaVersion !== MANAGED_RUNTIME_BINDING_SCHEMA) return false;
   let expectedTarget;
   try {
     expectedTarget = managedRuntimeTargetProfileId(binding.frontendId);
@@ -114,7 +116,9 @@ export function createManagedRuntimeBinding(input = {}) {
     maxLocalsPerFrame: boundedCount(input.maxLocalsPerFrame, 4096, 65536, 'managed-runtime-max-locals-invalid'),
     maxOperandStack: boundedCount(input.maxOperandStack, 4096, 65536, 'managed-runtime-max-stack-invalid'),
   };
-  return deepFreeze({ ...binding, bindingId: `managed-runtime:${stableDigest(binding)}` });
+  const frozen = deepFreeze({ ...binding, bindingId: `managed-runtime:${stableDigest(binding)}` });
+  VALID_MANAGED_RUNTIME_BINDINGS.add(frozen);
+  return frozen;
 }
 
 export function validateManagedRuntimeState(binding, state = {}) {
@@ -123,11 +127,16 @@ export function validateManagedRuntimeState(binding, state = {}) {
   if (!Array.isArray(state.threads)) return { ok: false, reason: 'managed-runtime-threads-required' };
   const threads = state.threads;
   if (threads.length > binding.maxThreads) return { ok: false, reason: 'managed-runtime-thread-budget-exceeded' };
+  let totalFrames = 0;
+  const validatedThreads = [];
   for (const thread of threads) {
     if (!thread || typeof thread !== 'object' || Array.isArray(thread)) return { ok: false, reason: 'managed-runtime-thread-invalid' };
     const frames = thread.frames ?? [];
     if (!Array.isArray(frames)) return { ok: false, reason: 'managed-runtime-frames-invalid' };
     if (frames.length > binding.maxFramesPerThread) return { ok: false, reason: 'managed-runtime-frame-budget-exceeded' };
+    totalFrames += frames.length;
+    if (totalFrames > MAX_TOTAL_FRAMES) return { ok: false, reason: 'managed-runtime-total-frame-budget-exceeded' };
+    const validatedFrames = [];
     for (const frame of frames) {
       if (!frame || typeof frame !== 'object' || Array.isArray(frame)) return { ok: false, reason: 'managed-runtime-frame-invalid' };
       if (typeof frame.moduleIdentity !== 'string' || !frame.moduleIdentity.trim()) return { ok: false, reason: 'managed-runtime-frame-module-required' };
@@ -138,9 +147,18 @@ export function validateManagedRuntimeState(binding, state = {}) {
       if (!Array.isArray(operandStack)) return { ok: false, reason: 'managed-runtime-operand-stack-invalid' };
       if (locals.length > binding.maxLocalsPerFrame) return { ok: false, reason: 'managed-runtime-local-budget-exceeded' };
       if (operandStack.length > binding.maxOperandStack) return { ok: false, reason: 'managed-runtime-stack-budget-exceeded' };
+      validatedFrames.push(Object.freeze({
+        ...frame,
+        locals: Object.freeze(locals.slice()),
+        operandStack: Object.freeze(operandStack.slice()),
+      }));
     }
+    validatedThreads.push(Object.freeze({
+      ...thread,
+      frames: Object.freeze(validatedFrames),
+    }));
   }
-  return { ok: true, threads };
+  return { ok: true, threads: Object.freeze(validatedThreads) };
 }
 
 export function validateManagedRuntimeObservation(binding, observation, options = {}) {

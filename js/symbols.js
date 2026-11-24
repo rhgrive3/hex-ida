@@ -765,10 +765,12 @@ export class SymbolIndex {
   setGuessedFunctions(starts) {
     this.funcs = starts || new BigUint64Array(0);
     this.funcEnds = null;
+    this.functionTopologyEnds.clear();
     this.functionProvenance.clear();
     for (const addr of this.funcs) this.functionProvenance.set(addr.toString(), { source: 'heuristic', confidence: 0.55, confirmed: false });
     this.guessed = true;
     this.gen = ++SymbolIndex.gen;
+    this.functionTopologyRevision += 1;
   }
 }
 

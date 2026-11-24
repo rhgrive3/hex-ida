@@ -160,7 +160,7 @@ const MAX_NAME = 512;
  * @param {BigInt} [base] イメージの先頭（__TEXT の vmaddr）。無ければ足さない。
  */
 export function sanitizePointer(v, base, pointerFormat = null) {
-  if (v === 0n) return null;
+  if (typeof v !== 'bigint' || v === 0n) return null;
   const baseBig = base == null ? null : BigInt(base);
   const format = pointerFormat == null ? null : Number(pointerFormat);
   if (format === 2 || format === 6) {
@@ -695,24 +695,24 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
   if (!meta) {
     try {
       info.ivars = await readIvars(get, cleanPointer(get, readWord(get, ro, layout.roIvars)), info.instanceSize, completeness);
-    } catch { info.ivars = []; }
+    } catch { markLegacyPartial(completeness, 'ivar-read-error', 'invalidIvars'); info.ivars = []; }
     try {
       // 表が短くて baseProperties まで届かないことがある。届かなければ空のまま。
       if (ro.length >= layout.roProps + layout.pointerBytes) {
         info.properties = await readProperties(get, cleanPointer(get, readWord(get, ro, layout.roProps)), completeness);
       }
-    } catch { info.properties = []; }
+    } catch { markLegacyPartial(completeness, 'property-read-error', 'invalidProperties'); info.properties = []; }
     try {
       if (ro.length >= layout.roProtocols + layout.pointerBytes) {
         info.protocols = await readProtocolList(get, cleanPointer(get, readWord(get, ro, layout.roProtocols)), completeness);
       }
-    } catch { info.protocols = []; }
+    } catch { markLegacyPartial(completeness, 'protocol-read-error', 'invalidProtocols'); info.protocols = []; }
   } else {
     try {
       if (ro.length >= layout.roProps + layout.pointerBytes) {
         info.classProperties = await readProperties(get, cleanPointer(get, readWord(get, ro, layout.roProps)), completeness, 'class-property');
       }
-    } catch { info.classProperties = []; }
+    } catch { markLegacyPartial(completeness, 'class-property-read-error', 'invalidProperties'); info.classProperties = []; }
   }
 
   // isa はメタクラス。そちらにクラスメソッド（+）が入っている。

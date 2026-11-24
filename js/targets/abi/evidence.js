@@ -35,7 +35,6 @@ export function abiResultInvalidState(value) {
   // result that still contains exact-looking placements and have a consumer
   // accept those placements.
   if (value.unsupported === true) return 'unsupported';
-  if (value.partial === true) return 'partial';
   if (value.malformed === true || value.malformedEvidence === true) return 'malformed';
   if (value.cancelled === true || value.canceled === true || value.cancellation === true) return 'cancelled';
   if (value.deadlineExceeded === true || value.deadlineExpired === true) return 'deadline-exceeded';

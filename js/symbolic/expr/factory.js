@@ -107,7 +107,7 @@ export function createFreshSymbol(sort, name, meta = {}) {
     sort,
     name,
     symbolId: id,
-    meta: Object.freeze({ ...meta }),
+    meta: meta && typeof meta === 'object' ? deepFreezePlainJson(JSON.parse(JSON.stringify(meta))) : Object.freeze({}),
   });
 }
 
@@ -143,7 +143,7 @@ export function restoreFreshSymbol(sort, name, symbolId, meta = {}) {
     sort,
     name,
     symbolId,
-    meta: Object.freeze({ ...meta }),
+    meta: meta && typeof meta === 'object' ? deepFreezePlainJson(JSON.parse(JSON.stringify(meta))) : Object.freeze({}),
   });
 }
 

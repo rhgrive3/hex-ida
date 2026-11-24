@@ -217,7 +217,7 @@ export function translateExecutedTarget(target,options) {
   if(record && isExecutionSnapshot(snapshot,options.identity,options.ir) && options.ir===record.ir && options.identity) {
     if(Object.hasOwn(options,'symbolicArgs') || options.fromBlock!=null) reason='execution-options-conflict';
     else if(!expression) reason='target-not-executed-in-snapshot';
-    else if(options.bitWidth!=null && expression.sort.kind==='bv' && options.bitWidth!==expression.sort.width) reason='execution-width-mismatch';
+    else if(options.bitWidth!=null && (expression.sort.kind!=='bv' || options.bitWidth!==expression.sort.width)) reason='execution-width-mismatch';
     else {
       const value=target?.dst ?? target;
       const assumption=createAssumption({id:`execution:${snapshot.pathIndex}:${semanticValueIdentity(value)}`,kind:'bounded-execution-snapshot',

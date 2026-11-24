@@ -498,7 +498,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
     rowOfAddress: (a) => {
       if (a == null) return null;
       const rel = a - region.vmAddr;
-      if (rel < 0n || rel >= region.size) return null;
+      if (rel < 0n || rel >= region.size || rel % 4n !== 0n) return null;
       return Number(rel / 4n);
     },
   });
@@ -625,6 +625,7 @@ function makeShared(map, key, producer) {
     entry.progressListeners.clear();
     entry.promise = Promise.reject(error);
     if (map.get(key) === entry) map.delete(key);
+    return entry;
   }
   map.set(key, entry);
   return entry;
@@ -706,7 +707,10 @@ function cancelShared(map, reason) {
   map.clear();
 }
 
+let analysisCacheEpoch = 0;
+
 export function clearAnalysisCache() {
+  analysisCacheEpoch += 1;
   cache.clear();
   cancelShared(analysisInflight, 'analysis-cache-cleared');
   cancelShared(textInflight, 'analysis-cache-cleared');
@@ -746,13 +750,16 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   } else {
     let entry = analysisInflight.get(key);
     if (!entry) {
+      const epoch = analysisCacheEpoch;
       entry = makeShared(analysisInflight, key, async (producerSignal, dispatchProgress) => {
         const value = await analyzeFunction(
           backend, region, startRow, endRow, symbols, dispatchProgress,
           { ...opts, maxRows: budget, signal: producerSignal },
         );
         value.textsResolved = false;
-        cache.set(key, value);
+        if (!producerSignal.aborted && epoch === analysisCacheEpoch) {
+          cache.set(key, value);
+        }
         return value;
       });
     }

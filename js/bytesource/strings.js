@@ -1,5 +1,11 @@
 import { asByteSource } from '../binary/source.js';
 
+const TEXT_DECODERS = {
+  utf8: new TextDecoder('utf-8', { ignoreBOM: true }),
+  utf16le: new TextDecoder('utf-16le', { ignoreBOM: true }),
+  utf16be: new TextDecoder('utf-16be', { ignoreBOM: true }),
+};
+
 function printableAscii(c) {
   return c === 9 || (c >= 0x20 && c <= 0x7e);
 }
@@ -9,17 +15,6 @@ function printableCodePoint(cp) {
   if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
   if (cp >= 0xd800 && cp <= 0xdfff) return false;
   return cp <= 0x10ffff;
-}
-
-const LOSSY_DECODERS = { utf8: null, utf16le: null, utf16be: null };
-function getLossyDecoder(encoding) {
-  let dec = LOSSY_DECODERS[encoding];
-  if (!dec) {
-    const label = encoding === 'utf16le' ? 'utf-16le' : encoding === 'utf16be' ? 'utf-16be' : 'utf-8';
-    dec = new TextDecoder(label);
-    LOSSY_DECODERS[encoding] = dec;
-  }
-  return dec;
 }
 
 function utf8AtPacked(bytes, p, end = bytes.length) {
@@ -345,7 +340,7 @@ function tryEmit(image, bytes, base, localStart, byteLength, encoding, range, ou
   seen.add(key);
   const raw = bytes.subarray(localStart, localStart + byteLength);
   let text;
-  try { text = getLossyDecoder(encoding).decode(raw); }
+  try { text = (TEXT_DECODERS[encoding] || TEXT_DECODERS.utf8).decode(raw); }
   catch { text = ''; }
   out.push({ text, encoding, fileOffset, address: image.offsetToAddress(fileOffset), byteLength, section: range.section });
   return { emitted: true, capped: false };

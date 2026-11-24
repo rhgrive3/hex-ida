@@ -185,7 +185,7 @@ cat('udf .byte', 'data');
 // for exclusive operations and barriers. These are the read-modify-write families
 // that this facade already classifies as atomic; all ordering/size variants belong
 // to the same category (#1827).
-const ATOMIC_CATEGORY_RE = /^(?:cas|swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_CATEGORY_RE = /^(?:casp(?:al|a|l)?|(?:cas|swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?)$/;
 // Store-only LSE aliases discard the loaded value, so Arm exposes only the
 // relaxed/release spellings plus the byte/halfword size suffixes. They remain
 // atomic read-modify-write instructions even though they have no GPR result
@@ -194,7 +194,7 @@ const STORE_ONLY_ATOMIC_CATEGORY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin
 
 // #3606: shared by the instruction-model consumers. Keep this producer with
 // the read/write consumer when reconciling call-boundary analysis.
-const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_READ_WRITE_DEST_RE = /^(?:casp(?:al|a|l)?|cas(?:al|a|l)?(?:b|h)?)$/;
 const RMW_DEST_MNEMONICS = new Set([
   'movk',
   'pacia', 'pacib', 'pacda', 'pacdb',
@@ -567,11 +567,18 @@ HANDLERS.add = (o, ops, base, addr, c) => {
   // ただし「直前が adrp」だけでは足りません。この add が adrp の書き込み先
   // レジスタを読んでいることまで確かめないと、無関係な 2 行から実在しない
   // 参照先を作ってしまいます (#1289)。
+  const shiftedImmValue = (op) => {
+    if (!op || op.k !== 'imm' || op.value == null) return null;
+    if (!op.shift) return op.value;
+    if (op.shift.op === 'lsl' && (op.shift.amount === 0 || op.shift.amount === 12)) return op.value << BigInt(op.shift.amount);
+    return null;
+  };
   if (c && c.prev && /^adrp$/i.test(c.prev.mn) && m && m.k === 'imm'
     && sameGeneralRegister(n, parseOperands(c.prev.ops)[0])) {
     const page = referenceTarget('adrp', c.prev.ops);
-    if (page != null) {
-      const full = page + (m.value || 0n);
+    const immOff = shiftedImmValue(m);
+    if (page != null && immOff != null) {
+      const full = page + immOff;
       o.target = full;
       o.detail.push(J(
         '1 行上の adrp と組で、' + tgt(full, c) + ' というアドレスを作っています。ARM64 で遠くのデータを指すときの定番の 2 行です。',
@@ -593,15 +600,18 @@ HANDLERS.sub = (o, ops) => {
     'Subtract ' + opShort(m) + ' from ' + opShort(n) + ', result in ' + opShort(d) + '.');
   o.terms = ['register'];
   if (d && n && d.cls === 'sp' && n.cls === 'sp' && m && m.k === 'imm') {
+    const shifted = !m.shift ? (m.value || 0n) : (m.shift.op === 'lsl' && (m.shift.amount === 0 || m.shift.amount === 12) ? (m.value || 0n) << BigInt(m.shift.amount) : null);
+    if (shifted != null) {
     o.title = J('スタックの場所を確保する', 'Reserve stack space');
     o.summary = J(
-      'スタックポインタを ' + (m.value || 0n).toString(10) + ' バイト下げて、その分の作業スペースを確保する。',
-      'Lower the stack pointer by ' + m.value + ' bytes to make room for local variables.');
+      'スタックポインタを ' + shifted.toString(10) + ' バイト下げて、その分の作業スペースを確保する。',
+      'Lower the stack pointer by ' + shifted.toString(10) + ' bytes to make room for local variables.');
     o.detail.push(J(
       'スタックはアドレスが小さい方へ伸びるので、「引く」＝「場所を取る」です。' +
       '関数の終わりでは同じ量を add sp, sp, #… で返します。',
       'The stack grows downwards, so subtracting reserves space. The epilogue adds the same amount back.'));
     o.terms = ['stack', 'sp'];
+    }
   }
   addRegRoles(o, ops);
 };
@@ -800,15 +810,28 @@ HANDLERS.ror = shifter('ビットを回転させる', 'Rotate right', '回転さ
 
 HANDLERS.ubfx = (o, ops) => {
   const [d, n, lsb, width] = ops;
+  const validWidth = width && typeof width.value === 'bigint' && width.value > 0n && width.value <= 64n;
+  const maskText = validWidth ? '0x' + ((1n << width.value) - 1n).toString(16).toUpperCase() : '…';
   o.title = J('ビットを切り出す', 'Extract bit field');
-  o.pseudo = opShort(d) + ' = (' + opShort(n) + ' >> ' + immShort(lsb) + ') & ' + (width && width.value != null ? '0x' + ((1n << width.value) - 1n).toString(16).toUpperCase() : '…');
+  o.pseudo = opShort(d) + ' = (' + opShort(n) + ' >> ' + immShort(lsb) + ') & ' + maskText;
   o.summary = J(
     opShort(n) + ' の ' + immShort(lsb) + ' ビット目から ' + immShort(width) + ' ビット分を抜き出して ' + opShort(d) + ' に入れる。上は 0 で埋める。',
-    'Take ' + immShort(width) + ' bits starting at bit ' + immShort(lsb) + ' of ' + opShort(n) + '.');
+    'Take ' + immShort(width) + ' bits starting at bit ' + immShort(lsb) + ' of ' + opShort(n) + ' (zero-extended).');
   o.detail.push(J('1 個の数の中に複数の情報を詰め込んでいるときの取り出しです。', 'Unpacking several fields stored in one word.'));
   o.terms = ['bitfield'];
 };
-HANDLERS.sbfx = (o, ops) => { HANDLERS.ubfx(o, ops); o.title = J('ビットを切り出す（符号つき）', 'Extract signed bit field'); };
+HANDLERS.sbfx = (o, ops) => {
+  const [d, n, lsb, width] = ops;
+  const validWidth = width && typeof width.value === 'bigint' && width.value > 0n && width.value <= 64n;
+  const maskText = validWidth ? '0x' + ((1n << width.value) - 1n).toString(16).toUpperCase() : '…';
+  o.title = J('ビットを切り出す（符号つき）', 'Extract signed bit field');
+  o.pseudo = opShort(d) + ' = sign_extend((' + opShort(n) + ' >> ' + immShort(lsb) + ') & ' + maskText + ', ' + immShort(width) + ')';
+  o.summary = J(
+    opShort(n) + ' の ' + immShort(lsb) + ' ビット目から ' + immShort(width) + ' ビット分を抜き出して ' + opShort(d) + ' に入れる。上は符号ビットで埋める（符号拡張）。',
+    'Take ' + immShort(width) + ' signed bits starting at bit ' + immShort(lsb) + ' of ' + opShort(n) + ' (sign-extended).');
+  o.detail.push(J('1 個の数の中に詰め込まれた符号つきフィールドを取り出します。', 'Unpacking a signed bit field stored in one word.'));
+  o.terms = ['bitfield'];
+};
 HANDLERS.ubfiz = (o, ops) => {
   const [d, n, lsb, width] = ops;
   o.title = J('切り出して左に置く', 'Insert bit field');
@@ -2441,11 +2464,13 @@ function mteTagHandler({ isLoad, zeroing = false, span = 1 }) {
         'Read the Allocation Tag of ' + spanEn + ' and merge it into the existing ' + opShort(dst) + ' value, preserving its non-tag address bits. This is not an ordinary data load.');
     } else {
       o.title = J('メモリタグを書く', 'Store allocation tag');
+      const zeroBytes = span * 16;
+      const zeroMn = span === 2 ? 'STZ2G' : 'STZG';
       o.pseudo = 'AllocationTag[' + addrExpr + '] = Tag(' + opShort(dst) + ')' +
-        (zeroing ? '; zero(*[16 bytes]' + addrExpr + ') ' + J('/* グランユールをゼロクリア */', '/* granule zeroing */') : '');
+        (zeroing ? '; zero(*[' + zeroBytes + ' bytes]' + addrExpr + ') ' + J('/* グランユールをゼロクリア */', '/* granule zeroing */') : '');
       o.summary = J(
-        opShort(dst) + ' の上位ビットに詰めたタグを、' + spanJa + ' の Allocation Tag として書き込みます。' + (zeroing ? 'さらにこのグランユールのデータ 16 バイトをゼロで埋めます。' : 'メモリ上のデータ本体は書き換えません。'),
-        'Store the tag packed in ' + opShort(dst) + ' as the Allocation Tag of ' + spanEn + '.' + (zeroing ? ' STZG also zeroes the 16 data bytes of the granule.' : ' The data bytes themselves are not written.'));
+        opShort(dst) + ' の上位ビットに詰めたタグを、' + spanJa + ' の Allocation Tag として書き込みます。' + (zeroing ? 'さらにこのグランユールのデータ ' + zeroBytes + ' バイトをゼロで埋めます。' : 'メモリ上のデータ本体は書き換えません。'),
+        'Store the tag packed in ' + opShort(dst) + ' as the Allocation Tag of ' + spanEn + '.' + (zeroing ? ' ' + zeroMn + ' also zeroes the ' + zeroBytes + ' data bytes of the ' + (span === 2 ? 'granules.' : 'granule.') : ' The data bytes themselves are not written.'));
     }
     o.detail.push(J(
       'MTE（Memory Tagging Extension）ではメモリは 16 バイト単位で 4 ビットのタグを持っており、この命令は通常の整数転送ではなくそのタグを操作します。',
@@ -2821,10 +2846,13 @@ const BRIEF_CACHE_MAX = 4000;
  */
 export function brief(mn, ops, style, ctx) {
   if (!mn) return '';
+  const cacheable = !(ctx && ctx.prev);
   const gen = (ctx && ctx.gen) || 0;
-  const key = gen + '\0' + style + '\0' + (ctx && ctx.lang ? ctx.lang : '') + '\0' + mn + '\0' + (ops || '');
-  const hit = briefCache.get(key);
-  if (hit !== undefined) return hit;
+  const key = cacheable ? (gen + '\0' + style + '\0' + (ctx && ctx.lang ? ctx.lang : '') + '\0' + mn + '\0' + (ops || '')) : null;
+  if (cacheable) {
+    const hit = briefCache.get(key);
+    if (hit !== undefined) return hit;
+  }
 
   const e = explain(mn, ops, null, ctx);
   let text;
@@ -2833,10 +2861,12 @@ export function brief(mn, ops, style, ctx) {
   else text = e.summary || e.title;
   text = (text || '').replace(/\s+/g, ' ').trim();
 
-  if (briefCache.size >= BRIEF_CACHE_MAX) {
-    briefCache.delete(briefCache.keys().next().value);
+  if (cacheable) {
+    if (briefCache.size >= BRIEF_CACHE_MAX) {
+      briefCache.delete(briefCache.keys().next().value);
+    }
+    briefCache.set(key, text);
   }
-  briefCache.set(key, text);
   return text;
 }
 

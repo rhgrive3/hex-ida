@@ -51,7 +51,10 @@ export function createTaintFlow(options) {
     // Reserve even for absent dependencies; skipping null entries must not
     // create an unbounded loop or manufacture an untainted value.
     guard.take('workItems', inputs.length);
-    const out=resolve(id);out.defined=true;
+    if (id == null) throw new QueryFailure('invalid-semantic-value-id');
+    const out=resolve(id);
+    if (out === clean || out === top) throw new QueryFailure('immutable-constant-taint-handle');
+    out.defined=true;
     if(unknown) out.seed=TAINT_TOP;
     for (const input of inputs) {
       if (input == null) out.seed = TAINT_TOP;

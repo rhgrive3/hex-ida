@@ -30,7 +30,11 @@ export function assertWireBudget(payload, capabilities = SAFE_PROVIDER_CAPABILIT
   const maxBytes = positiveLimit(capabilities.maxRequestBytes, SAFE_PROVIDER_CAPABILITIES.maxRequestBytes);
   const contextTokens = positiveLimit(capabilities.contextTokens, SAFE_PROVIDER_CAPABILITIES.contextTokens);
   const outputTokens = nonNegativeLimit(capabilities.maxOutputTokens, SAFE_PROVIDER_CAPABILITIES.maxOutputTokens);
-  const maxTokens = Math.max(1, contextTokens - outputTokens);
+  const inputTokens = contextTokens - outputTokens;
+  if (inputTokens <= 0) {
+    throw new AIError('context_too_large', 'The provider token window leaves no input-token capacity.', { ...usage, maxBytes, contextTokens, outputTokens, maxTokens: 0 });
+  }
+  const maxTokens = inputTokens;
   if (usage.wireBytes > maxBytes || usage.estimatedInputTokens > maxTokens) {
     throw new AIError('context_too_large', 'The complete provider payload exceeds the safe input budget.', { ...usage, maxBytes, maxTokens });
   }

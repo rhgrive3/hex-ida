@@ -349,9 +349,20 @@ export function resolveAnalysisRevision(local = {}) {
   return null;
 }
 function first(...values) { return values.find((value) => value !== undefined && value !== null) ?? null; }
-function parseAddress(value) { try { return value == null ? null : BigInt(value); } catch { return value; } }
-function deepFreeze(value) {
-  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
-  for (const item of Object.values(value)) deepFreeze(item);
+function parseAddress(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return value >= 0n ? value : value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || !/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(trimmed)) return value;
+    try { return BigInt(trimmed); } catch { return value; }
+  }
+  return value;
+}
+function deepFreeze(value, seen = new WeakSet(), depth = 0) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value) || seen.has(value) || depth > 64) return value;
+  seen.add(value);
+  for (const item of Object.values(value)) deepFreeze(item, seen, depth + 1);
   return Object.freeze(value);
 }

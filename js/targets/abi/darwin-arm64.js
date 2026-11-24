@@ -10,7 +10,12 @@ import {
   classifyAAPCS64FunctionReturn,
 } from './aapcs64.js';
 
-const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ios-simulator','ipados','ipados-simulator','macos','maccatalyst','tvos','tvos-simulator','watchos','watchos-simulator','visionos','visionos-simulator','maccatalyst']);
+const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ios-simulator','ipados','ipados-simulator','macos','macosx','maccatalyst','tvos','tvos-simulator','watchos','watchos-simulator','visionos','visionos-simulator']);
+function isPowerOfTwoAlignment(value) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return false;
+  const big = BigInt(value);
+  return (big & (big - 1n)) === 0n;
+}
 const DARWIN_VARIADIC_STACK_SLOT_ALIGNMENT = 8;
 
 function callPrototypeOf(insn, opts) {
@@ -56,7 +61,7 @@ function aggregateAlignmentEvidence(parameter, layoutEvidence) {
         .filter((key) => Object.hasOwn(owner, key))
         .map((key) => {
           const value = owner[key];
-          return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+          return isPowerOfTwoAlignment(value) ? value : null;
         }));
     if (!values.length) return { present:false, value:null };
     const flattened = values.flat();
@@ -151,9 +156,9 @@ function parameterClass(param) {
     : bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
   const rawExplicitAlignment = param?.alignmentBytes || param?.alignBytes || param?.alignment || 0;
   const explicitAlignment = typeof rawExplicitAlignment === 'number' ? rawExplicitAlignment : 0;
-  const explicitAlignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0
+  const explicitAlignmentBytes = isPowerOfTwoAlignment(explicitAlignment)
     ? explicitAlignment : null;
-  const explicitAlignmentProven = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0;
+  const explicitAlignmentProven = isPowerOfTwoAlignment(explicitAlignment);
   const aggregateAlignment = aggregateAlignmentEvidence(param, layoutEvidence);
   let alignmentBytes = explicitAlignmentProven ? explicitAlignment : 1;
   if (!explicitAlignmentProven) {

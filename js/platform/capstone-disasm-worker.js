@@ -128,16 +128,17 @@ function arm64PauthLrFallback(bytes, offset, address) {
   return null;
 }
 
-const PRIORITY_ORDER = {
+const PRIORITY_ORDER = Object.assign(Object.create(null), {
   visible: 0,
   current: 0,
   near: 1,
   prefetch: 2,
   idle: 3,
-};
+});
 
 function priorityValueOf(p) {
-  return PRIORITY_ORDER[String(p).toLowerCase()] ?? 0;
+  const key = String(p).toLowerCase();
+  return Object.hasOwn(PRIORITY_ORDER, key) ? PRIORITY_ORDER[key] : 0;
 }
 
 const queue = [];
@@ -152,6 +153,8 @@ async function decodeMessage(msg) {
       cancelledIds.delete(msg.id);
       return;
     }
+    const rawLen = msg.bytes instanceof Uint8Array ? msg.bytes.byteLength : (typeof msg.bytes?.byteLength === 'number' ? msg.bytes.byteLength : (typeof msg.bytes?.length === 'number' ? msg.bytes.length : (typeof msg.bytes === 'number' ? msg.bytes : 0)));
+    if (rawLen > 1024 * 1024) throw new Error('disassembly request exceeds 1 MiB');
     const bytes = msg.bytes instanceof Uint8Array ? msg.bytes : new Uint8Array(msg.bytes || 0);
     if (bytes.length > 1024 * 1024) throw new Error('disassembly request exceeds 1 MiB');
     const need = Math.max(1, bytes.length);

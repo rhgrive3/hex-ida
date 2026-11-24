@@ -64,10 +64,12 @@ export function classifyOmnibox(input) {
     const hit = COMMANDS.find((command) => command.match.test(body));
     return { kind: 'command', value: body, command: hit ? hit.id : null, raw };
   }
-  const quoted = /^["'“”「](.*)["'“”」]$/.exec(value);
-  if (quoted) return { kind: 'string', value: quoted[1], raw };
+  const QUOTE_PAIRS = { '"': '"', "'": "'", '“': '”', '”': '”', '「': '」' };
+  if (value.length >= 2 && Object.hasOwn(QUOTE_PAIRS, value[0]) && QUOTE_PAIRS[value[0]] === value[value.length - 1]) {
+    return { kind: 'string', value: value.slice(1, -1), raw };
+  }
 
-  if (/^0[xX][0-9a-fA-F]+$/.test(value) || /^[0-9a-fA-F]{6,16}$/.test(value)) {
+  if (/^0[xX][0-9a-fA-F]+$/.test(value) || (/^[0-9a-fA-F]{6,16}$/.test(value) && /[0-9]/.test(value))) {
     return { kind: 'address', value, raw };
   }
   if (/^sub_[0-9a-fA-F]+$/i.test(value) || OBJC_METHOD.test(value)) {

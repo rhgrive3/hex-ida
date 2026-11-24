@@ -31,9 +31,10 @@ function normalizePointerVarSet(pointerVarNames) {
   return null;
 }
 
-function exprIsPointerTypedInternal(node, ptrSet, memo) {
-  if (!node || typeof node !== 'object') return false;
+function exprIsPointerTypedInternal(node, ptrSet, memo, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 128) return false;
   if (memo.has(node)) return memo.get(node);
+  memo.set(node, false);
   let res = false;
   switch (node.kind) {
     case 'var': {
@@ -57,19 +58,19 @@ function exprIsPointerTypedInternal(node, ptrSet, memo) {
       break;
     case 'binary': {
       if (node.op === 'add') {
-        const l = exprIsPointerTypedInternal(node.left, ptrSet, memo);
-        const r = exprIsPointerTypedInternal(node.right, ptrSet, memo);
+        const l = exprIsPointerTypedInternal(node.left, ptrSet, memo, depth + 1);
+        const r = exprIsPointerTypedInternal(node.right, ptrSet, memo, depth + 1);
         res = l !== r;
       } else if (node.op === 'sub') {
-        const l = exprIsPointerTypedInternal(node.left, ptrSet, memo);
-        const r = exprIsPointerTypedInternal(node.right, ptrSet, memo);
+        const l = exprIsPointerTypedInternal(node.left, ptrSet, memo, depth + 1);
+        const r = exprIsPointerTypedInternal(node.right, ptrSet, memo, depth + 1);
         res = l && !r;
       }
       break;
     }
     case 'select':
-      res = exprIsPointerTypedInternal(node.whenTrue, ptrSet, memo)
-        || exprIsPointerTypedInternal(node.whenFalse, ptrSet, memo);
+      res = exprIsPointerTypedInternal(node.whenTrue, ptrSet, memo, depth + 1)
+        || exprIsPointerTypedInternal(node.whenFalse, ptrSet, memo, depth + 1);
       break;
     default:
       res = node.isPointer === true || node.type?.kind === 'pointer';
@@ -79,9 +80,9 @@ function exprIsPointerTypedInternal(node, ptrSet, memo) {
   return res;
 }
 
-export function exprIsPointerTyped(node, pointerVarNames) {
-  if (!node || typeof node !== 'object') return false;
-  return exprIsPointerTypedInternal(node, normalizePointerVarSet(pointerVarNames), new Map());
+export function exprIsPointerTyped(node, pointerVarNames, memo = new Map(), depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 128) return false;
+  return exprIsPointerTypedInternal(node, normalizePointerVarSet(pointerVarNames), memo, depth);
 }
 
 function printPointerAsUintptr(node, opts, ptrSet, ptrMemo) {
@@ -414,7 +415,7 @@ function printExpr(n, parentPrec, opts, ptrSet, ptrMemo) {
         return wrap(text, PREC.add, parentPrec);
       }
       if (n.name === 'msub' && n.args?.length === 3) {
-        const text = `${printExpr(n.args[0], PREC.mul, opts, ptrSet, ptrMemo)} * ${printExpr(n.args[1], PREC.mul, opts, ptrSet, ptrMemo)} - ${printExpr(n.args[2], PREC.add + 1, opts, ptrSet, ptrMemo)}`;
+        const text = `${printExpr(n.args[2], PREC.sub, opts, ptrSet, ptrMemo)} - ${printExpr(n.args[0], PREC.mul, opts, ptrSet, ptrMemo)} * ${printExpr(n.args[1], PREC.mul, opts, ptrSet, ptrMemo)}`;
         return wrap(text, PREC.sub, parentPrec);
       }
       return `${sanitizeCallableIdent(n.name, 'unknown_intrinsic')}(${(n.args || []).map((a) => printExpr(a, 0, opts, ptrSet, ptrMemo)).join(', ')})`;

@@ -40,17 +40,24 @@ import { checkPreconditionsConsistency } from './preconditions.js';
 import { createSymbolicEvidence } from '../evidence/symbolic-evidence.js';
 import { ownDataEntries } from '../expr/data-boundary.js';
 
-function collectFreshSymbols(expr, out = [], seen = new Set()) {
-  if (!expr || typeof expr !== 'object' || seen.has(expr)) return out;
-  seen.add(expr);
-  if (expr.kind === EXPR_KIND.FRESH_SYMBOL) out.push(expr);
-  if (expr.kind === EXPR_KIND.UNARY || expr.kind === EXPR_KIND.EXTRACT || expr.kind === EXPR_KIND.CAST) collectFreshSymbols(expr.arg, out, seen);
-  else if (expr.kind === EXPR_KIND.BINARY || expr.kind === EXPR_KIND.COMPARE || expr.kind === EXPR_KIND.CONCAT) {
-    collectFreshSymbols(expr.left, out, seen); collectFreshSymbols(expr.right, out, seen);
-  } else if (expr.kind === EXPR_KIND.CONNECTIVE) {
-    for (const arg of expr.args || []) collectFreshSymbols(arg, out, seen);
-  } else if (expr.kind === EXPR_KIND.ITE) {
-    collectFreshSymbols(expr.cond, out, seen); collectFreshSymbols(expr.thenExpr, out, seen); collectFreshSymbols(expr.elseExpr, out, seen);
+function collectFreshSymbols(root, out = [], seen = new Set()) {
+  if (!root || typeof root !== 'object') return out;
+  const stack = [root];
+  while (stack.length > 0) {
+    const expr = stack.pop();
+    if (!expr || typeof expr !== 'object' || seen.has(expr)) continue;
+    seen.add(expr);
+    if (expr.kind === EXPR_KIND.FRESH_SYMBOL) out.push(expr);
+    if (expr.kind === EXPR_KIND.UNARY || expr.kind === EXPR_KIND.EXTRACT || expr.kind === EXPR_KIND.CAST) {
+      stack.push(expr.arg);
+    } else if (expr.kind === EXPR_KIND.BINARY || expr.kind === EXPR_KIND.COMPARE || expr.kind === EXPR_KIND.CONCAT) {
+      stack.push(expr.right, expr.left);
+    } else if (expr.kind === EXPR_KIND.CONNECTIVE) {
+      const args = expr.args || [];
+      for (let i = args.length - 1; i >= 0; i--) stack.push(args[i]);
+    } else if (expr.kind === EXPR_KIND.ITE) {
+      stack.push(expr.elseExpr, expr.thenExpr, expr.cond);
+    }
   }
   return out;
 }
@@ -60,27 +67,52 @@ function resolveSymbol(symbols, key) {
   return symbols.find((symbol) => symbol === key || symbol.symbolId === String(key) || symbol.name === String(key)) || null;
 }
 
-function replaceSymbols(expr, replacements, seen = new Map()) {
-  if (!expr || typeof expr !== 'object') return expr;
-  if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
-    return replacements.get(expr) || expr;
+function replaceSymbols(root, replacements, seen = new Map()) {
+  if (!root || typeof root !== 'object') return root;
+  const stack = [[root, false]];
+  while (stack.length > 0) {
+    const [expr, expanded] = stack.pop();
+    if (!expr || typeof expr !== 'object' || seen.has(expr)) continue;
+    if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
+      seen.set(expr, replacements.get(expr) || expr);
+      continue;
+    }
+    if (!expanded) {
+      stack.push([expr, true]);
+      if (expr.kind === EXPR_KIND.UNARY || expr.kind === EXPR_KIND.EXTRACT || expr.kind === EXPR_KIND.CAST) {
+        if (expr.arg && typeof expr.arg === 'object' && !seen.has(expr.arg)) stack.push([expr.arg, false]);
+      } else if (expr.kind === EXPR_KIND.BINARY || expr.kind === EXPR_KIND.COMPARE || expr.kind === EXPR_KIND.CONCAT) {
+        if (expr.right && typeof expr.right === 'object' && !seen.has(expr.right)) stack.push([expr.right, false]);
+        if (expr.left && typeof expr.left === 'object' && !seen.has(expr.left)) stack.push([expr.left, false]);
+      } else if (expr.kind === EXPR_KIND.CONNECTIVE) {
+        const args = expr.args || [];
+        for (let i = args.length - 1; i >= 0; i--) {
+          if (args[i] && typeof args[i] === 'object' && !seen.has(args[i])) stack.push([args[i], false]);
+        }
+      } else if (expr.kind === EXPR_KIND.ITE) {
+        if (expr.elseExpr && typeof expr.elseExpr === 'object' && !seen.has(expr.elseExpr)) stack.push([expr.elseExpr, false]);
+        if (expr.thenExpr && typeof expr.thenExpr === 'object' && !seen.has(expr.thenExpr)) stack.push([expr.thenExpr, false]);
+        if (expr.cond && typeof expr.cond === 'object' && !seen.has(expr.cond)) stack.push([expr.cond, false]);
+      }
+      continue;
+    }
+    const resolve = (child) => (child && typeof child === 'object' && seen.has(child) ? seen.get(child) : child);
+    const children = {};
+    if (expr.kind === EXPR_KIND.UNARY || expr.kind === EXPR_KIND.EXTRACT || expr.kind === EXPR_KIND.CAST) {
+      children.arg = resolve(expr.arg);
+    } else if (expr.kind === EXPR_KIND.BINARY || expr.kind === EXPR_KIND.COMPARE || expr.kind === EXPR_KIND.CONCAT) {
+      children.left = resolve(expr.left);
+      children.right = resolve(expr.right);
+    } else if (expr.kind === EXPR_KIND.CONNECTIVE) {
+      children.args = Object.freeze((expr.args || []).map(resolve));
+    } else if (expr.kind === EXPR_KIND.ITE) {
+      children.cond = resolve(expr.cond);
+      children.thenExpr = resolve(expr.thenExpr);
+      children.elseExpr = resolve(expr.elseExpr);
+    }
+    seen.set(expr, Object.keys(children).length === 0 ? expr : Object.freeze({ ...expr, ...children }));
   }
-  if (seen.has(expr)) return seen.get(expr);
-  const children = {};
-  if (expr.kind === EXPR_KIND.UNARY || expr.kind === EXPR_KIND.EXTRACT || expr.kind === EXPR_KIND.CAST) children.arg = replaceSymbols(expr.arg, replacements, seen);
-  else if (expr.kind === EXPR_KIND.BINARY || expr.kind === EXPR_KIND.COMPARE || expr.kind === EXPR_KIND.CONCAT) {
-    children.left = replaceSymbols(expr.left, replacements, seen);
-    children.right = replaceSymbols(expr.right, replacements, seen);
-  } else if (expr.kind === EXPR_KIND.CONNECTIVE) children.args = Object.freeze((expr.args || []).map((arg) => replaceSymbols(arg, replacements, seen)));
-  else if (expr.kind === EXPR_KIND.ITE) {
-    children.cond = replaceSymbols(expr.cond, replacements, seen);
-    children.thenExpr = replaceSymbols(expr.thenExpr, replacements, seen);
-    children.elseExpr = replaceSymbols(expr.elseExpr, replacements, seen);
-  }
-  if (Object.keys(children).length === 0) return expr;
-  const replaced = Object.freeze({ ...expr, ...children });
-  seen.set(expr, replaced);
-  return replaced;
+  return seen.get(root) ?? root;
 }
 
 function correspondAfterSymbols(beforeExpr, afterExpr, correspondence = {}) {
@@ -228,7 +260,7 @@ export async function verifyBoundedEquivalence({
   // Sort mismatch is a query incompatibility, never a witnessed refutation.
   // Check preconditions first so contradictory conditions cannot bypass the
   // vacuous-proof guard (#6092).
-  if (beforeExpr.sort.kind !== afterExpr.sort.kind || (beforeExpr.sort.width && beforeExpr.sort.width !== afterExpr.sort.width)) {
+  if (beforeExpr.sort.kind !== afterExpr.sort.kind || (beforeExpr.sort.width ?? null) !== (afterExpr.sort.width ?? null)) {
     let sortPreconditionExpr = null;
     if (preconditions != null) {
       if (Array.isArray(preconditions)) {
@@ -509,10 +541,10 @@ export async function verifyBoundedEquivalence({
       exprSchemaVersion: '1.0.0',
       translatorVersion: query.translatorVersion,
       semanticIrVersion: query.semanticIrVersion,
-      backendId: activeSession.backend?.id || 'unknown',
-      backendVersion: activeSession.backend?.version || '0.0.0',
-      proofAuthority: activeSession.backend?.proofAuthority || 'none',
-      capabilityFingerprint: activeSession.backend?.capabilityFingerprint?.() || null,
+      backendId: (activeSession.backend || backend)?.id || 'unknown',
+      backendVersion: (activeSession.backend || backend)?.version || '0.0.0',
+      proofAuthority: (activeSession.backend || backend)?.proofAuthority || 'none',
+      capabilityFingerprint: (activeSession.backend || backend)?.capabilityFingerprint?.() || null,
       solverStatus: solverResult.status,
       preconditionStatus: 'satisfiable',
       validationStatus: 'validated',
@@ -581,9 +613,9 @@ export async function verifyBoundedEquivalence({
       unsupportedEntities: allUnsupported,
       assumptionsExplicit: true,
       preconditionsConsistent: pCheck.consistent === true,
-      backend: activeSession.backend,
+      backend: activeSession.backend || backend,
       solverResult,
-      validSolverResult: isValidSolverResult(solverResult, { query, backend: activeSession.backend }),
+      validSolverResult: isValidSolverResult(solverResult, { query, backend: activeSession.backend || backend }),
       solverResultStatus: solverResult.status,
       cancelled: activeSession.isCancelled?.() ?? false,
       timedOut: lifecycle.timedOut === true,
@@ -619,10 +651,10 @@ export async function verifyBoundedEquivalence({
       exprSchemaVersion: '1.0.0',
       translatorVersion: query.translatorVersion,
       semanticIrVersion: query.semanticIrVersion,
-      backendId: activeSession.backend?.id || 'unknown',
-      backendVersion: activeSession.backend?.version || '0.0.0',
-      proofAuthority: activeSession.backend?.proofAuthority || 'none',
-      capabilityFingerprint: activeSession.backend?.capabilityFingerprint?.() || null,
+      backendId: (activeSession.backend || backend)?.id || 'unknown',
+      backendVersion: (activeSession.backend || backend)?.version || '0.0.0',
+      proofAuthority: (activeSession.backend || backend)?.proofAuthority || 'none',
+      capabilityFingerprint: (activeSession.backend || backend)?.capabilityFingerprint?.() || null,
       solverStatus: solverResult.status,
       preconditionStatus: 'satisfiable',
       validationStatus: 'validated',

@@ -198,7 +198,7 @@
 
     const mem = Words.memoryAccess(word);
     if (mem) {
-      if (mem.load && !mem.vector) {
+      if (mem.load && !mem.vector && !mem.prefetch) {
         unknown(mem.reg);
         if (mem.pair && mem.reg2 != null) unknown(mem.reg2);
       }
@@ -691,7 +691,7 @@
       refKind: outRefKind,
       refCount: nRefs,
       kinds,
-      kindsCovered: kinds.length,
+      kindsCovered: Math.min(localIndex, kinds.length),
       callsLimitCapped,
       refsLimitCapped,
       budgetCapped,
@@ -799,6 +799,12 @@
       if (r < 0 || r >= 31) return;
       pBase[r] = -1;
       spanOf[r] = 0;
+      pAmtKind[r] = AMT_NONE;
+      pAmtBase[r] = -1;
+      pAmtDisp[r] = 0;
+      pAmtScaled[r] = 0;
+      pAmtSize[r] = 0;
+      pAmtSpan[r] = 0;
     };
     const forgetAll = () => {
       pBase.fill(-1);
@@ -849,14 +855,8 @@
         const w = dv.getUint32(i * 4, true);
 
         if (Words.isCallImm(w) || Words.isIndirectCall(w)) {
-          for (let r = 0; r <= 18; r++) { pBase[r] = -1; spanOf[r] = 0; }
-          pBase[0] = -1;
-          pAmtKind[0] = AMT_NONE;
-          copy(0, 0);
-          pBase[0] = -1;
+          for (let r = 0; r <= 18; r++) forget(r);
           pAmtKind[0] = AMT_CALL;
-          pAmtBase[0] = -1;
-          pAmtDisp[0] = 0;
           continue;
         }
         if (Words.isBranchImm(w) || Words.isRet(w) || Words.isBr(w)) {
@@ -906,20 +906,22 @@
           }
 
           if (mem.load) {
-            const r = mem.reg;
-            if (r !== 31) {
-              spanOf[r] = 0;
-              pBase[r] = mem.base;
-              pDisp[r] = d;
-              pSize[r] = mem.size;
-              pDir[r] = 0;
-              pClamp[r] = 0;
-              pAmtKind[r] = AMT_NONE;
-              pAmtBase[r] = -1;
-              pAmtDisp[r] = 0;
-              pAmtScaled[r] = 0;
-              pAmtSize[r] = 0;
-              pAmtSpan[r] = 0;
+            if (!mem.vector && !mem.prefetch) {
+              const r = mem.reg;
+              if (r !== 31) {
+                spanOf[r] = 0;
+                pBase[r] = mem.base;
+                pDisp[r] = d;
+                pSize[r] = mem.size;
+                pDir[r] = 0;
+                pClamp[r] = 0;
+                pAmtKind[r] = AMT_NONE;
+                pAmtBase[r] = -1;
+                pAmtDisp[r] = 0;
+                pAmtScaled[r] = 0;
+                pAmtSize[r] = 0;
+                pAmtSpan[r] = 0;
+              }
             }
             continue;
           }

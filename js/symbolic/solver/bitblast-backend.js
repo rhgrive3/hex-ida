@@ -721,7 +721,6 @@ async function solveCnf(builder, { signal, deadline, limits }) {
       }
     }
   }
-
   return { status, assignment, decisions, propagations };
 }
 
@@ -833,7 +832,21 @@ class BitBlastSolverSession extends SolverSession {
       });
     }
 
-    const solved = await solveCnf(builder, { signal, deadline, limits });
+    let solved;
+    try {
+      solved = await solveCnf(builder, { signal, deadline, limits });
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return createSolverResult({
+          ...snapshotResultBase,
+          status: SOLVER_STATUS.RESOURCE_LIMIT,
+          reason: 'cnf-search-resource-limit',
+          stats: { solveTimeMs: monotonicNow() - startedAt },
+          lifecycle: { budgetExceeded: true, publishable: false },
+        });
+      }
+      throw error;
+    }
     const stats = {
       solveTimeMs: monotonicNow() - startedAt,
       nodesEvaluated: solved.decisions,

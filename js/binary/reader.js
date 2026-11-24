@@ -519,7 +519,8 @@ export function align(value, alignment) {
   const v = integerValue(value, 'value');
   const a = integerValue(alignment, 'alignment');
   if (a <= 0n) return v;
-  return (v + a - 1n) / a * a;
+  const rem = v % a;
+  return rem === 0n ? v : rem > 0n ? v + (a - rem) : v - rem;
 }
 
 export function inRange(value, start, size) {

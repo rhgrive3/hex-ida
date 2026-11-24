@@ -26,10 +26,12 @@ export function x86VectorEncodingInfo(instruction){
     return Object.freeze({kind:valid?'vex':'invalid',prefixKind:'vex3',vectorWidthBits:valid?(((bytes[2]&4)!==0)?256:128):null,valid,opcodeMap:map,mandatoryPrefixCode:valid?(bytes[2]&3):null,encodedVvvv:valid?((bytes[2]>>>3)&15):null,maskRegister:null,zeroing:false});
   }
   if(kind==='evex'){
-    const p0=bytes[1]??0,p1=bytes[2]??0,p2=bytes[3]??0,map=p0&3,ll=(p2>>>5)&3,aaa=p2&7,zeroing=(p2&0x80)!==0;
+    const p0=bytes[1]??0,p1=bytes[2]??0,p2=bytes[3]??0,map=p0&3,ll=(p2>>>5)&3,aaa=p2&7,zeroing=(p2&0x80)!==0,broadcastOrRounding=(p2&0x10)!==0;
     const fixedBitsValid=(p0&0x0c)===0&&(p1&0x04)!==0;
-    const valid=bytes.length===4&&bytes[0]===0x62&&fixedBitsValid&&map!==0&&ll!==3&&!(zeroing&&aaa===0);
-    return Object.freeze({kind:valid?'evex':'invalid',prefixKind:'evex',vectorWidthBits:ll===0?128:ll===1?256:ll===2?512:null,valid,opcodeMap:map,mandatoryPrefixCode:p1&3,encodedVvvv:(p1>>>3)&15,maskRegister:aaa===0?null:`k${aaa}`,zeroing,broadcastOrRounding:(p2&0x10)!==0,evexLengthCode:ll});
+    const hasMemoryOperand=Array.isArray(instruction?.operands)&&instruction.operands.some((op)=>op?.type==='memory');
+    const llValid=ll!==3||(broadcastOrRounding&&!hasMemoryOperand);
+    const valid=bytes.length===4&&bytes[0]===0x62&&fixedBitsValid&&map!==0&&llValid&&!(zeroing&&aaa===0);
+    return Object.freeze({kind:valid?'evex':'invalid',prefixKind:'evex',vectorWidthBits:ll===0?128:ll===1?256:(ll===2||(ll===3&&llValid))?512:null,valid,opcodeMap:map,mandatoryPrefixCode:p1&3,encodedVvvv:(p1>>>3)&15,maskRegister:aaa===0?null:`k${aaa}`,zeroing,broadcastOrRounding,evexLengthCode:ll});
   }
   return Object.freeze({kind:'invalid',prefixKind:kind||null,vectorWidthBits:null,valid:false,maskRegister:null,zeroing:false});
 }
@@ -40,16 +42,23 @@ const SIMD_VECTOR_PP=new Map([
   ...[...PACKED_ARITHMETIC.keys(),...PACKED_COMPARE.keys(),...PACKED_SHIFT.keys(),'pshufd','punpckldq','pandn'].map((name)=>[name,1]),
 ]);
 
+const SIMD_LEGACY_PREFIX_BYTES=new Set([0x26,0x2e,0x36,0x3e,0x64,0x65,0x66,0x67,0xf0,0xf2,0xf3]);
+
 function rawVectorPrefixMatches(instruction,encoding){
   if(encoding.kind!=='vex')return true;
   const prefix=Uint8Array.from(instruction?.detail?.prefixes?.vector?.bytes||[]),raw=Uint8Array.from(instruction?.rawBytes||[]);
   if(prefix.length===0||raw.length<prefix.length)return false;
-  for(let i=0;i<prefix.length;i+=1)if(raw[i]!==prefix[i])return false;
+  let cursor=0;
+  while(cursor<raw.length&&SIMD_LEGACY_PREFIX_BYTES.has(raw[cursor]))cursor+=1;
+  if(cursor<raw.length&&raw[cursor]>=0x40&&raw[cursor]<=0x4f)return false;
+  if(cursor+prefix.length>raw.length)return false;
+  for(let i=0;i<prefix.length;i+=1)if(raw[cursor+i]!==prefix[i])return false;
   return true;
 }
 
 export function x86VectorFamilyEncodingMatches(instruction,family,encoding=x86VectorEncodingInfo(instruction)){
-  if(encoding.kind!=='vex'||!rawVectorPrefixMatches(instruction,encoding))return true;
+  if(encoding.kind!=='vex')return true;
+  if(instruction?.rawBytes?.length&&!rawVectorPrefixMatches(instruction,encoding))return false;
   const base=baseFamily(String(family||'').toLowerCase()),expectedPp=family==='vzeroupper'||family==='vzeroall'?0:SIMD_VECTOR_PP.get(base);
   if(expectedPp==null||encoding.opcodeMap!==1)return false;
   return Array.isArray(expectedPp)?expectedPp.includes(encoding.mandatoryPrefixCode):encoding.mandatoryPrefixCode===expectedPp;

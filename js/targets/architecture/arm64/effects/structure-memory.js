@@ -87,8 +87,7 @@ function canonicalRegisterList(list, mnemonic) {
     const currentArrangement = operand.arr.trim().toLowerCase();
     const currentShape = STRUCTURE_ARRANGEMENTS.get(currentArrangement);
     if (!currentShape) return { reason:'arm64-structure-memory-arrangement-unencodable' };
-    if (currentArrangement === '1d'
-        && (!mnemonic.endsWith('1') || list.regs.length > 2)) {
+    if (currentArrangement === '1d' && !mnemonic.endsWith('1')) {
       return { reason:'arm64-structure-memory-arrangement-unencodable-for-register-list' };
     }
     if (operand.text != null && (typeof operand.text !== 'string'

@@ -14,12 +14,37 @@ export const PE_METADATA_LIMITS = Object.freeze({
   wallClockMs: Infinity,
 });
 
+const PE_MAX_WARNINGS = 2048;
+const PE_WARNING_SETS = new WeakMap();
+const PE_REASON_SETS = new WeakMap();
+
+function pushPEWarning(image, warning) {
+  if (!warning) return;
+  let seen = PE_WARNING_SETS.get(image);
+  if (!seen) {
+    seen = new Set(image.warnings || []);
+    PE_WARNING_SETS.set(image, seen);
+  }
+  if (seen.has(warning)) return;
+  if (image.warnings.length >= PE_MAX_WARNINGS) return;
+  seen.add(warning);
+  image.warnings.push(warning);
+}
+
 function markPEPartial(image, reason, warning = null) {
   image.metadata ||= {};
   image.metadata.peMetadata ||= { complete: true, reasons: [] };
   image.metadata.peMetadata.complete = false;
-  if (!image.metadata.peMetadata.reasons.includes(reason)) image.metadata.peMetadata.reasons.push(reason);
-  if (warning && !image.warnings.includes(warning)) image.warnings.push(warning);
+  let reasonSet = PE_REASON_SETS.get(image);
+  if (!reasonSet) {
+    reasonSet = new Set(image.metadata.peMetadata.reasons);
+    PE_REASON_SETS.set(image, reasonSet);
+  }
+  if (!reasonSet.has(reason)) {
+    reasonSet.add(reason);
+    image.metadata.peMetadata.reasons.push(reason);
+  }
+  if (warning) pushPEWarning(image, warning);
 }
 
 // Budget limits and costs are typed evidence: only real safe-integer numbers
@@ -305,12 +330,26 @@ function mappedFileRangeForAddress(image, address) {
   return mappedFileRangeForRva(image, Number(a - image.imageBase));
 }
 
+const PE_FAILED_STRING_SPANS = new WeakMap();
+function peFailedStringSpans(budget) {
+  let set = PE_FAILED_STRING_SPANS.get(budget);
+  if (!set) { set = new Set(); PE_FAILED_STRING_SPANS.set(budget, set); }
+  return set;
+}
+
 function mappedCStringAtRva(r, image, rva, budget, label) {
   const range = mappedFileRangeForRva(image, rva);
   if (!range) { budget.partial(`${label}:unmapped-string`, `Ignored ${label} string outside a file-backed mapping`); return ''; }
+  const rawMax = Math.min(1 << 16, range.end - range.start);
   const maxByStringBudget = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
-  const max = Math.min(1 << 16, range.end - range.start, maxByStringBudget);
+  const max = Math.min(rawMax, maxByStringBudget);
   if (max <= 0) return '';
+  const failed = peFailedStringSpans(budget);
+  const failKey = `${range.start}:${rawMax}`;
+  if (failed.has(failKey)) {
+    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+    return '';
+  }
   // ByteView.cstring() tolerates a missing NUL and returns the whole span, so
   // it would accept unterminated bytes as canonical metadata (#2187).
   let value;
@@ -318,14 +357,26 @@ function mappedCStringAtRva(r, image, rva, budget, label) {
     r.check(range.start, max);
     const nulPos = r.findZero(range.start, range.start + max);
     if (nulPos < 0) {
-      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+      budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+      if (maxByStringBudget < rawMax) {
+        budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+      } else {
+        failed.add(failKey);
+        budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+      }
       return '';
     }
     value = r.decodeString(range.start, nulPos);
   } else {
     const nulAt = r.slice(range.start, max).indexOf(0);
     if (nulAt < 0) {
-      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+      budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+      if (maxByStringBudget < rawMax) {
+        budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+      } else {
+        failed.add(failKey);
+        budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+      }
       return '';
     }
     value = r.cstring(range.start, max);
@@ -337,21 +388,42 @@ function mappedCStringAtRva(r, image, rva, budget, label) {
 
 function mappedCStringAtOffset(r, start, end, budget, label) {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= end || end > r.length) return '';
-  const max = Math.min(1 << 16, end-start, Math.max(1, Math.floor(budget.remainingStringBytes/2)+1));
+  const rawMax = Math.min(1 << 16, end - start);
+  const maxByStringBudget = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
+  const max = Math.min(rawMax, maxByStringBudget);
+  if (max <= 0) return '';
+  const failed = peFailedStringSpans(budget);
+  const failKey = `${start}:${rawMax}`;
+  if (failed.has(failKey)) {
+    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+    return '';
+  }
   // Same contract as mappedCStringAtRva: no NUL inside the span -> not a string.
   let value;
   if (typeof r.check === 'function' && typeof r.findZero === 'function' && typeof r.decodeString === 'function') {
     r.check(start, max);
     const nulPos = r.findZero(start, start + max);
     if (nulPos < 0) {
-      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+      budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+      if (maxByStringBudget < rawMax) {
+        budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+      } else {
+        failed.add(failKey);
+        budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+      }
       return '';
     }
     value = r.decodeString(start, nulPos);
   } else {
     const nulAt = r.slice(start, max).indexOf(0);
     if (nulAt < 0) {
-      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+      budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+      if (maxByStringBudget < rawMax) {
+        budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+      } else {
+        failed.add(failKey);
+        budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+      }
       return '';
     }
     value = r.cstring(start, max);
@@ -602,7 +674,9 @@ function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
   if (epilogCount === 0 && codeWords === 0) {
     const ext = mappedFileSpanForRva(image, xdataRva, 8);
     if (!ext || ext.start + 8 > r.length) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-extension', `Ignored truncated ARM64 .xdata extension at RVA 0x${xdataRva.toString(16)}`);
-    const word = r.u32(ext.start + 4); epilogCount = word & 0xffff; codeWords = (word >>> 16) & 0xff; headerBytes = 8;
+    const word = r.u32(ext.start + 4);
+    if ((word >>> 24) !== 0) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-extension-reserved', `Ignored ARM64 .xdata extension with non-zero reserved bits at RVA 0x${xdataRva.toString(16)}`);
+    epilogCount = word & 0xffff; codeWords = (word >>> 16) & 0xff; headerBytes = 8;
     if (!budget.take({ inputBytes:4, operations:1 }, 'arm64-xdata-extension')) return null;
   }
   const recordBytes = headerBytes + (packedEpilog ? 0 : epilogCount * 4) + codeWords * 4 + (hasHandler ? 4 : 0);
@@ -657,7 +731,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
         pendingZeroRecords = 0;
       }
       const ordered=previousBegin==null||(begin>previousBegin&&begin>=previousEnd);
-      if(!begin||finish<=begin||!ordered||!executableRvaRange(image,begin,finish-begin)){if(begin||finish)image.warnings.push(`Ignored ${!ordered?'overlapping/out-of-order':'invalid/unmapped'} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);meta.invalidRecords++;continue;}
+      if(!begin||finish<=begin||!ordered||!executableRvaRange(image,begin,finish-begin)){if(begin||finish)pushPEWarning(image, `Ignored ${!ordered?'overlapping/out-of-order':'invalid/unmapped'} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);meta.invalidRecords++;continue;}
       const decoded=parseX64UnwindDescriptor(r,image,{begin,finish,unwind},budget);
       previousBegin=begin;previousEnd=finish;
       if(!decoded)continue;
@@ -681,7 +755,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
         budget.partial('exception:internal-zero-record', `Ignored ${pendingZeroRecords} internal zero-filled ARM64 exception record(s) before a later record`);
         pendingZeroRecords = 0;
       }
-      if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
+      if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)pushPEWarning(image, `Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
       // AArch64 instructions are fixed 4-byte units: an exception range that
       // does not start on an instruction boundary cannot describe a real
       // function start, so it must not mint a high-confidence seed (#5667).
@@ -695,7 +769,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
         const packed=arm64PackedFrameFields(unwindData);
         if(packed.regI>10){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-registers',`Ignored ARM64 packed unwind entry with invalid RegI ${packed.regI} (x19-x28 hold at most 10 registers) at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
         if(packed.frameBytes<packed.saveAreaBytes){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-frame-size',`Ignored ARM64 packed unwind entry whose FrameSize ${packed.frameBytes} byte(s) cannot contain the mandatory ${packed.saveAreaBytes}-byte save/home area at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
-        const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
+        const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){pushPEWarning(image, `Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
         // #8787: a packed .pdata entry publishes a concrete `bytes`-wide extent, so
         // the whole extent must be file-backed. executableRvaRange() only proves the
         // virtual range is executable; validate the real backing before claiming the
@@ -704,7 +778,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       else if(flag===0){descriptor=parseArm64XdataDescriptor(r,image,begin,unwindData>>>0,budget);}
       else{invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-reserved-flag',`Ignored reserved ARM64 packed unwind flag at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
       if(!descriptor){previousBegin=begin;continue;}
-      if(previousEnd!=null&&begin<previousEnd){image.warnings.push(`Ignored overlapping ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
+      if(previousEnd!=null&&begin<previousEnd){pushPEWarning(image, `Ignored overlapping ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
       if(descriptor.fragment)recordExceptionFragment(image,'arm64-pdata',begin,descriptor.size,{encoding:descriptor.encoding||'xdata-fragment',xdataRva:descriptor.xdataRva??null});
       else image.functions.push(functionSeed(image.imageBase+BigInt(begin),{size:BigInt(descriptor.size),source:'exception',confidence:0.995}));
       meta.count++;previousBegin=begin;previousEnd=begin+descriptor.size;
@@ -936,7 +1010,7 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
     // A callback address that is not on the architecture's instruction
     // boundary cannot be a function entry: mirror seedValidatedEntrypoint()'s
     // alignment contract so crafted tables cannot mint misplaced seeds (#5667).
-    const alignment=image.metadata?.machine===0xaa64||image.metadata?.machine===0xa641?4n:image.metadata?.machine===0x01c4?2n:1n;
+    const alignment=image.metadata?.machine===0xaa64?4n:image.metadata?.machine===0x01c4?2n:1n;
     if(target%alignment!==0n){budget.partial('tls:callback-target-alignment',`Ignored PE TLS callback target 0x${target.toString(16)} not ${alignment}-byte aligned`);continue;}
     // #8787: an aligned ARM64 callback whose first byte is file-backed but whose
     // remaining instruction bytes fall in zero-fill must not mint a seed; require
@@ -1014,7 +1088,7 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
       // GuardCF targets are function entries: reject addresses that are not on
       // the architecture's instruction boundary (seedValidatedEntrypoint's
       // alignment contract), so crafted tables cannot mint misplaced seeds (#5667).
-      const alignment = image.metadata?.machine === 0xaa64 || image.metadata?.machine === 0xa641
+      const alignment = image.metadata?.machine === 0xaa64
         ? 4n
         : image.metadata?.machine === 0x01c4 ? 2n : 1n;
       if (address % alignment !== 0n) {

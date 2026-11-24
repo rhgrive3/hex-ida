@@ -38,7 +38,7 @@ const FIXED = new Map([
   ['strtod', 2], ['strtof', 2], ['strtold', 2],
   ['abs', 1], ['labs', 1], ['llabs', 1], ['div', 2], ['ldiv', 2], ['lldiv', 2],
   ['qsort', 4], ['bsearch', 5],
-  ['exit', 1], ['_exit', 1], ['quick_exit', 1], ['abort', 0], ['rand', 0], ['srand', 1], ['getenv', 1], ['system', 1],
+  ['exit', 1], ['quick_exit', 1], ['abort', 0], ['rand', 0], ['srand', 1], ['getenv', 1], ['system', 1],
   ['stack_chk_fail', 0], ['chk_fail', 0], ['assert_fail', 4], ['longjmp', 2],
   // unistd / POSIX I/O
   ['close', 1], ['read', 3], ['write', 3], ['lseek', 3],
@@ -183,7 +183,6 @@ const SIGNATURES = new Map([
   ['chk_fail', { retType: 'void', paramTypes: [] }],
   ['assert_fail', { retType: 'void', paramTypes: ['ptr', 'ptr', 'int', 'ptr'] }],
   ['exit', { retType: 'void', paramTypes: ['int'] }],
-  ['_exit', { retType: 'void', paramTypes: ['int'] }],
   ['quick_exit', { retType: 'void', paramTypes: ['int'] }],
   ['abort', { retType: 'void', paramTypes: [] }],
   ['bzero', { retType: 'void', paramTypes: ['ptr', 'size'] }],

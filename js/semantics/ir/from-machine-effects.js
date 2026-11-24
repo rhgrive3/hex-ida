@@ -65,6 +65,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
 
   const nodes = [];
   const values = [];
+  const valueIndexById = new Map();
   const nodeIds = [];
   const blocks = new Map();
   const valueIds = new Set();
@@ -138,6 +139,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     if (valueIds.has(value.id)) fail('semantic-ir-lowering-duplicate-value-id');
     valueIds.add(value.id);
     valueById.set(value.id, value);
+    valueIndexById.set(value.id, values.length);
     values.push(value);
     return value.id;
   }
@@ -722,7 +724,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     const output = createDefinitionValue(effect, nodeId, resultValue, `${role}-result`, 0);
     const variable = createPhysicalStateVariable(stateValue);
     const origin = effectOrigin(effect, `${role}-projection`, [nodeId, output]);
-    const index = values.findIndex((value) => value.id === output);
+    const index = valueIndexById.get(output) ?? -1;
     if (index >= 0) values[index] = { ...values[index], variableKey: variable.key, origin };
     addNode({
       id: nodeId,
@@ -763,7 +765,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     const memory = semanticMemoryAccess(effect, operation.access, 'memory-read');
     if (!memory.access) {
       const origin = effectOrigin(effect, 'unknown-memory-read-projection', [nodeId, output]);
-      const index = values.findIndex((value) => value.id === output);
+      const index = valueIndexById.get(output) ?? -1;
       if (index >= 0) values[index] = { ...values[index], origin };
       addNode({
         id: nodeId,
@@ -784,7 +786,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       return;
     }
     const origin = effectOrigin(effect, 'memory-read-projection', [nodeId, output]);
-    const index = values.findIndex((value) => value.id === output);
+    const index = valueIndexById.get(output) ?? -1;
     if (index >= 0) values[index] = { ...values[index], origin };
     addNode({
       id: nodeId,

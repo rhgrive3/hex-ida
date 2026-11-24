@@ -115,8 +115,8 @@ function structuredOperandList(decoded) {
   const baseText = memoryMatch[1].toLowerCase();
   const baseIsSp = baseText === 'sp';
   const baseNumber = baseIsSp ? 31 : Number(baseText.slice(1));
-  const displacement = memoryMatch[2] == null ? null : signedIntegerText(memoryMatch[2]);
   const preIndex = memoryMatch[3] === '!';
+  const displacement = memoryMatch[2] == null ? (preIndex ? 0n : null) : signedIntegerText(memoryMatch[2]);
   const memory = {
     k: 'mem',
     text: memoryText.trim(),
@@ -236,7 +236,7 @@ export function isArm64eAuthenticatedLoadInstruction(decoded) {
 
 export function liftArm64eAuthenticatedLoadEffects(decoded, context = {}) {
   const mnemonic = mnemonicOf(decoded);
-  const descriptor = AUTHENTICATED_LOADS[mnemonic];
+  const descriptor = Object.hasOwn(AUTHENTICATED_LOADS, mnemonic) ? AUTHENTICATED_LOADS[mnemonic] : null;
   if (!descriptor) return null;
   const instructionId = arm64eEffectInstructionId(decoded, context);
 

@@ -84,7 +84,7 @@ export function applyRemoteEnvelopeQueued(log, gate, envelope) {
   const unresolvedOperationIds = summary.unresolvedOperationIds;
   return Object.freeze({
     status: unresolvedOperationIds.length ? 'accepted-with-pending-dependencies' : 'applied',
-    envelopeId: envelope.envelopeId,
+    envelopeId: snap.envelopeId,
     results,
     unresolvedOperationIds,
     unresolvedCount: summary.unresolvedCount,

@@ -145,6 +145,7 @@ function expandContinuation(plan, protocols, packed) {
   let expandedBytes = bytes({ ...packed, trials: [] });
   const trials = packed.trials.map((row, index) => {
     const trial = plan.trials[index];
+    if (!row || typeof row !== 'object' || Array.isArray(row)) contractFail('astra-trial-continuation-pack-row');
     if (Object.keys(trial).some(key => Object.hasOwn(row, key)) || row.preparation && Object.hasOwn(row.preparation, 'binding')) contractFail('astra-trial-continuation-pack-duplicate');
     const full = { ...trial, ...row, ...(row.preparation ? {
       preparation: { ...row.preparation, binding: bindingFor(protocols[trial.mode], trial) },
@@ -265,12 +266,23 @@ export async function runAstraTrials(plan, protocols, { work, getAdapter = null,
     }
     if (row.mode === 'T2' && row.reason === 'paired-common-information-control-mismatch') invalidControls.add(pairedKey(row));
   }
+  if (prior) {
+    for (const row of prior.trials.slice(startOrdinal)) {
+      if (row.mode === 'T2' && row.state === 'FAILED' && row.reason === 'paired-common-information-control-mismatch') {
+        invalidControls.add(pairedKey(row));
+      }
+    }
+  }
   let attempted = 0, stopped = null, nextOrdinal = startOrdinal;
   for (const trial of plan.trials.slice(startOrdinal)) {
     const base = { ...trial, state: 'UNMEASURED', executionState: 'not-run', reason: 'not-executed',
       evidenceIds: [], measurements: [], oracleAuthority: false, correctness: 'UNMEASURED', defaultRolloutEligible: false };
     if (stopped || attempted >= maximumTrials) { rows.push({ ...base, reason: stopped ?? 'per-invocation-trial-cap' }); continue; }
     nextOrdinal = trial.ordinal + 1;
+    if (trial.mode === 'T2' && invalidControls.has(pairedKey(trial))) {
+      rows.push({ ...base, state: 'FAILED', executionState: 'not-run', reason: 'paired-common-information-control-mismatch' });
+      continue;
+    }
     if (!getAdapter) { rows.push({ ...base, state: 'UNAVAILABLE', reason: 'native-adapter-unavailable' }); continue; }
     let context = null, child = null, controller = null, abort = null, preparation = null, attemptedQuery = false;
     const pendingMeasurements = [];
@@ -389,8 +401,9 @@ export function reviewAstraTrialReadiness(plan, result) {
     const rows = result.trials.filter(row => row.mode === mode);
     const executed = rows.filter(row => row.executionState === 'executed-unadjudicated').length;
     const failed = rows.filter(row => row.state === 'FAILED').length, unavailable = rows.filter(row => row.state === 'UNAVAILABLE').length;
+    const unmeasured = rows.filter(row => row.state === 'UNMEASURED').length;
     if (executed !== rows.length) vetoes.add(mode + ':execution-denominator-incomplete');
-    return [mode, { expected: rows.length, executedUnadjudicated: executed, failed, unavailable, unmeasured: rows.length, independentlyMeasured: 0 }];
+    return [mode, { expected: rows.length, executedUnadjudicated: executed, failed, unavailable, unmeasured, independentlyMeasured: 0 }];
   }));
   return deepFreeze({ schema: 'same-astra-rollout-review/v1', planId: plan.id, denominator: result.denominator, modes,
     candidateMeasurementCount: result.measurements.length, vetoes: [...vetoes].sort(), verdict: 'NOT-YET',

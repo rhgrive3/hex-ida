@@ -129,6 +129,7 @@ export class InvestigationSessionStore {
         await this.persistence.delete(key);
       }
       this.sessions.delete(key);
+      return true;
     });
   }
 
@@ -412,11 +413,19 @@ function freezeOwned(value, seen = new WeakSet()) {
   return Object.freeze(value);
 }
 
+function safeItemKey(item) {
+  try {
+    return JSON.stringify(item, (_key, value) => (typeof value === 'bigint' ? `${value}n` : value));
+  } catch {
+    return String(item);
+  }
+}
+
 function mergeUnique(current, incoming) {
   const values = [...bounded(current, 100), ...bounded(incoming, 100)];
   const latest = new Map();
   for (const item of values) {
-    const id = typeof item === 'string' ? item : String(item?.id ?? item?.claim ?? item?.summary ?? JSON.stringify(item));
+    const id = typeof item === 'string' ? item : String(item?.id ?? item?.claim ?? item?.summary ?? safeItemKey(item));
     // Refresh both the snapshot and its retention order. A recently updated
     // item must not be evicted merely because its first occurrence was old.
     latest.delete(id);

@@ -45,7 +45,7 @@ const COND_OPS = {
   lo: '<', ls: '<=', hi: '>', hs: '>=',
   cc: '<', cs: '>=',
   mi: '< 0', pl: '>= 0', vs: 'overflow', vc: '!overflow',
-  al: 'true', nv: 'false',
+  al: 'true', nv: 'true',
 };
 
 /** 条件を反対にする（if の中身と外側を入れ替えるときに使う）。 */
@@ -1059,8 +1059,10 @@ function decideMaterial(model, vg) {
 }
 
 /** 変数として残したところで止めた、見た目の大きさ。 */
-function visibleSize(n, material, depth) {
+function visibleSize(n, material, depth, memo = new Map()) {
   if (!n || (depth || 0) > 24) return 1;
+  if (memo.has(n)) return memo.get(n);
+  memo.set(n, 1);
   let total = 1;
   const kids = n.k === 'bin' ? [n.a, n.b]
     : n.k === 'un' ? [n.a]
@@ -1069,8 +1071,9 @@ function visibleSize(n, material, depth) {
           : n.k === 'call' ? (n.args || []).map((a) => a.value) : [];
   for (const c of kids) {
     if (!c) continue;
-    total += material.has(c) ? 1 : visibleSize(c, material, (depth || 0) + 1);
+    total += material.has(c) ? 1 : visibleSize(c, material, (depth || 0) + 1, memo);
   }
+  memo.set(n, total);
   return total;
 }
 
@@ -1124,6 +1127,7 @@ function liveOutSets(model, blocks, blockOf) {
 
   const out = blocks.map(() => new Set());
   const inSet = blocks.map(() => new Set());
+  let converged = false;
   for (let round = 0; round < 40; round++) {
     let changed = false;
     for (let i = n - 1; i >= 0; i--) {
@@ -1143,7 +1147,15 @@ function liveOutSets(model, blocks, blockOf) {
       }
       if (o.size !== prevOutSize || ni.size !== prevInSize) changed = true;
     }
-    if (!changed) break;
+    if (!changed) { converged = true; break; }
+  }
+  if (!converged) {
+    const allRegs = new Set();
+    for (let i = 0; i < n; i++) {
+      for (const r of use[i]) allRegs.add(r);
+      for (const r of def[i]) allRegs.add(r);
+    }
+    for (let i = 0; i < n; i++) for (const r of allRegs) out[i].add(r);
   }
   return out;
 }
@@ -1272,7 +1284,7 @@ function exprText(ctx, nodeValue, self, atRow = null, sourceReg = null) {
         return varOf(n.reg, ctx);
       }
       const formatCallNode = (c) => {
-        if (c.sel) return null;
+        if (c.sel ?? c.selector) return null;
         const label = callLabel(c, ctx);
         const calleeKey = c.name || label;
         const proto = knownCallPrototype(calleeKey);
@@ -1550,7 +1562,8 @@ function memNodeName(m, ctx) {
     if (named && named.name) {
       const resolvedBase = m.base ? exprText(ctx, m.base, null, m.row != null ? m.row : null) : null;
       const baseText = resolvedBase || varOf(m.baseReg, ctx);
-      return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
+      const fieldName = named.name.includes('$') ? sanitizeLegacyCallLabel(named.name) : named.name;
+      return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + fieldName;
     }
   }
   return null;
@@ -1561,7 +1574,8 @@ const isMalformedObjcSelector = (s) => typeof s !== 'string' || !s.length || !/^
 function callLabel(c, ctx) {
   const custom = ctx.notes && c.target != null ? ctx.notes.nameOf(c.target) : null;
   if (custom) return sanitizeLegacyCallLabel(custom);
-  if (c.sel) return (ctx.opts?.objcSyntax === 'c' || isMalformedObjcSelector(c.sel)) ? 'objc_msgSend' : '[' + (c.sel) + ']';
+  const sel = c.sel ?? c.selector;
+  if (sel) return (ctx.opts?.objcSyntax === 'c' || isMalformedObjcSelector(sel)) ? 'objc_msgSend' : '[' + sel + ']';
   if (c.name) return sanitizeLegacyCallLabel(shortName(c.name));
   return c.target != null ? 'sub_' + c.target.toString(16).toUpperCase() : 'unknown_call';
 }
@@ -2197,7 +2211,7 @@ function condText(cond, ctx) {
   if (cond.kind === 'flag') {
     const op = COND_OPS[cond.cc] || cond.cc;
     if (cond.cc === 'al') return '1';
-    if (cond.cc === 'nv') return '0';
+    if (cond.cc === 'nv') return '1';
     if (!cond.cmp) return 'flag_' + cond.cc;
     if (cond.cc === 'vs') return 'flag_vs /* overflow(' + cond.cmp.left + ', ' + cond.cmp.right + ') */';
     if (cond.cc === 'vc') return '!flag_vs /* !overflow(' + cond.cmp.left + ', ' + cond.cmp.right + ') */';
@@ -2205,11 +2219,16 @@ function condText(cond, ctx) {
       const expr = cond.cmp.op === 'bics'
         ? '(' + cond.cmp.left + ' & ~(' + cond.cmp.right + '))'
         : '(' + cond.cmp.left + ' & ' + cond.cmp.right + ')';
-      if (cond.cc === 'mi' || cond.cc === 'pl') {
-        const signedTy = cond.cmp.bits === 32 ? 'int32' : 'int64';
-        return '((' + signedTy + ')' + expr + (cond.cc === 'mi' ? ' < 0)' : ' >= 0)');
-      }
-      return expr + (cond.cc === 'eq' ? ' == 0' : ' != 0');
+      const signedTy = cond.cmp.bits === 32 ? 'int32' : 'int64';
+      if (cond.cc === 'eq') return expr + ' == 0';
+      if (cond.cc === 'ne') return expr + ' != 0';
+      if (cond.cc === 'mi' || cond.cc === 'lt') return '((' + signedTy + ')' + expr + ' < 0)';
+      if (cond.cc === 'pl' || cond.cc === 'ge') return '((' + signedTy + ')' + expr + ' >= 0)';
+      if (cond.cc === 'le') return '((' + signedTy + ')' + expr + ' <= 0)';
+      if (cond.cc === 'gt') return '((' + signedTy + ')' + expr + ' > 0)';
+      if (cond.cc === 'hi' || cond.cc === 'cs' || cond.cc === 'hs') return '0';
+      if (cond.cc === 'ls' || cond.cc === 'cc' || cond.cc === 'lo') return '1';
+      return expr + ' != 0';
     }
     if (cond.cmp.op === 'cmn' || cond.cmp.op === 'adds') {
       const sum = '(' + cond.cmp.left + ' + ' + cond.cmp.right + ')';
@@ -2397,12 +2416,24 @@ function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
 
   const baseText = baseOverride != null ? baseOverride : (op.base ? operandText(op.base, ctx, insn) : varOf(base, ctx));
   const named = ctx.fieldFor ? ctx.fieldFor(base, Number(disp), insn ? insn.row : null) : null;
-  if (named && named.name) return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
+  if (named && named.name) {
+    const fieldName = named.name.includes('$') ? sanitizeLegacyCallLabel(named.name) : named.name;
+    return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + fieldName;
+  }
 
   const type = typeFromAccess(size, { float });
   const indexText = op.index ? operandText(op.index, ctx, insn) : null;
+  let indexScaled = indexText;
+  if (op.index && op.shift && op.shift.amount) {
+    const shOp = String(op.shift.op || 'lsl').toLowerCase();
+    const shAmt = Number(op.shift.amount);
+    if (shOp === 'lsr') indexScaled = '(' + indexText + ' >> ' + shAmt + ')';
+    else if (shOp === 'asr') indexScaled = '((int64)' + indexText + ' >> ' + shAmt + ')';
+    else if (Number.isSafeInteger(shAmt) && shAmt > 0 && shAmt <= 30) indexScaled = indexText + ' * ' + (1n << BigInt(shAmt)).toString();
+    else indexScaled = '(' + indexText + ' << ' + shAmt + ')';
+  }
   const inner = op.index
-    ? baseText + ' + ' + indexText + (op.shift && op.shift.amount ? ' * ' + (1 << op.shift.amount) : '')
+    ? baseText + ' + ' + indexScaled
     : (disp ? baseText + ' + ' + hexImm(disp) : baseText);
   if (/^global_[0-9A-F]+(?:\s*[+-]\s*(?:0x[0-9A-Fa-f]+|\d+))?$/.test(inner)) {
     return '*(' + type + ' *)(uintptr_t)(' + inner + ')';
@@ -2814,7 +2845,11 @@ function statementFor(insn, ctx, node, state) {
   if (base === 'movk') {
     const imm = insn.ops[1];
     const sh = imm && imm.shift && imm.shift.amount ? imm.shift.amount : 0;
-    return mk(varOf(dst, ctx) + ' |= ' + hexImm(imm && imm.value != null ? imm.value : 0n) + (sh ? ' << ' + sh : '') + ';',
+    const dstVar = varOf(dst, ctx);
+    const val = imm && imm.value != null ? imm.value : 0n;
+    const lane = sh ? '(' + hexImm(val) + 'ULL << ' + sh + ')' : hexImm(val);
+    const mask = sh ? '~(0xFFFFULL << ' + sh + ')' : '~0xFFFFULL';
+    return mk(dstVar + ' = (' + dstVar + ' & ' + mask + ') | ' + lane + ';',
       { dst, pure: true, note: '大きな定数を 16 ビットずつ組み立てています。' });
   }
 
@@ -4179,7 +4214,7 @@ const WHOLE_WORD_REPLACE_RE_CACHE_LIMIT = 256;
 function replaceWholeWord(text, word, value) {
   let re = WHOLE_WORD_REPLACE_RE_CACHE.get(word);
   if (!re) {
-    re = new RegExp('(^|[^\\w>])' + escapeRe(word) + '($|[^\\w])', 'g');
+    re = new RegExp('(?<![\\w>])' + escapeRe(word) + '(?!\\w)', 'g');
     if (WHOLE_WORD_REPLACE_RE_CACHE.size >= WHOLE_WORD_REPLACE_RE_CACHE_LIMIT) {
       const oldest = WHOLE_WORD_REPLACE_RE_CACHE.keys().next().value;
       WHOLE_WORD_REPLACE_RE_CACHE.delete(oldest);
@@ -4187,7 +4222,7 @@ function replaceWholeWord(text, word, value) {
     WHOLE_WORD_REPLACE_RE_CACHE.set(word, re);
   }
   re.lastIndex = 0;
-  return text.replace(re, (m, a, b) => a + value + b);
+  return text.replace(re, () => value);
 }
 
 /* ── 変数の宣言 ─────────────────────────────────────────── */
@@ -4261,7 +4296,13 @@ function declarations(ctx, types, o, body) {
       continue;
     }
     const raw = (ctx.notes && ctx.funcAddr != null ? ctx.notes.typeOf(ctx.funcAddr, l.slot) : null) || l.type;
-    const type = raw === 'unknown' ? 'int64' : raw;
+    let type = raw === 'unknown' ? 'int64' : raw;
+    if (type === 'float' || type === 'double') {
+      const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\*\\s*\\([^;{}()]*\\*\\s*\\)\\s*\\([^;{}()]*\\b${esc}\\b`).test(text)) {
+        type = 'uint64';
+      }
+    }
     if (!byType.has(type)) byType.set(type, []);
     byType.get(type).push(name);
   }

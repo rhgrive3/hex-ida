@@ -288,7 +288,7 @@ function makeIndexedTable(t) {
     kind: 'indexed', columns: t.columns, columnStride: t.stride, columnSize: t.size,
     recordStride: t.recordStride, records: t.records, consistent: t.consistent,
     storeAddr: t.storeAddr, scaled: t.scaled, fromCall: t.fromCall,
-    offsetOf(i) { if (!(i >= 0) || (t.columns != null && i >= t.columns)) return null; return i * t.stride; },
+    offsetOf(i) { if (!Number.isInteger(i) || i < 0 || (t.columns != null && i >= t.columns)) return null; return i * t.stride; },
   };
 }
 

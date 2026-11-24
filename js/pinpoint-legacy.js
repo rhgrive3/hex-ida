@@ -292,7 +292,7 @@ export async function pinpointField(opts) {
            * クラスのメソッドを何本も読むのは重い。それは上位 2 つだけにする。
            * 3 位以下を深追いしても、決着には効かないので。
            */
-          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 2 });
+          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 2 }, fields);
         } catch { /* 1 個読めなくても、ほかは確かめる */ }
         if (c.evidence.length !== beforeLen) dirty.push(c);
         checked++;
@@ -312,7 +312,7 @@ export async function pinpointField(opts) {
   const top = result.top;
   if (top && top.source !== 'cxx' && o.scanAccess && !cancelled()) {
     try {
-      changeSites = await collectChangeSites(top, o);
+      changeSites = await collectChangeSites(top, o, fields);
     } catch { changeSites = []; }
   } else if (top) {
     changeSites = top.sites || [];
@@ -611,7 +611,7 @@ function charge(o, n) {
   if (o.budget && o.budget.left != null) o.budget.left -= (n || 1);
 }
 
-async function verifyCandidate(c, goal, o, how) {
+async function verifyCandidate(c, goal, o, how, fields = o.fields) {
   const analyze = o.analyze;
   const program = o.program;
   if (!analyze) return;
@@ -663,7 +663,7 @@ async function verifyCandidate(c, goal, o, how) {
    */
   if (deep && (!c.verified || !c.rmwFound)) {
     const methods = ((c.context.info && c.context.info.info ? c.context.info.info.methods : null) ||
-      methodsOfClass(o.fields, c.className))
+      methodsOfClass(fields, c.className))
       .filter((m) => m && m.addr != null && !analyzedAccessors.has(m.addr.toString()));
     const pick = pickMethodsToRead(methods, goal, 3);
     for (const m of pick) {
@@ -758,11 +758,11 @@ function readAccessGroup(groups, offset, size) {
   return null;
 }
 
-async function collectChangeSites(top, o) {
+async function collectChangeSites(top, o, fields = o.fields) {
   const req = [{ offset: top.offset, size: top.size || 0 }];
   const res = o.signal ? await o.scanAccess(req, { signal: o.signal }) : await o.scanAccess(req);
   const list = readAccessGroup(res, top.offset, top.size || 0) || [];
-  return groupSites(list, o.program, o.fields, top.className);
+  return groupSites(list, o.program, fields, top.className);
 }
 
 /**
@@ -1439,7 +1439,7 @@ function buildFunctionCandidate(c, goal, o) {
    */
   const fnRole = c.name ? numericSymbolRole(goal, c.name) : 'neutral';
   const hasVendorConflict = !!(c.vendor && vendorConflicts(goal.id, c.vendor));
-  const total = o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 0;
+  const total = Math.max(50, o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 2000);
   if (total > 0 && fnRole !== 'non-value' && !hasVendorConflict) {
     const seenText = new Set();
     const named = [];

@@ -49,7 +49,7 @@ function vaToOffset(segments, va, size = 1) {
     if (seg.type !== PT_LOAD) continue;
     const start = seg.vaddr;
     const fileSize = seg.filesz;
-    if (fileSize <= 0n || addr < start || addr + len > start + fileSize) continue;
+    if (fileSize <= 0n || addr < start || (len === 0n ? addr >= start + fileSize : addr + len > start + fileSize)) continue;
     const delta = addr - start;
     const fileStart = seg.offset + delta;
     if (fileStart > BigInt(Number.MAX_SAFE_INTEGER)) return null;
@@ -87,7 +87,16 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   if (configuredPage != null && Number.isSafeInteger(configuredPage) && configuredPage > 0) {
     maxReadLimit = Math.min(maxReadLimit, configuredPage);
   }
-  const readChunk = (off, len) => readBoundedRange(source, off, len, signal, maxReadLimit);
+  const maxPrefetchReads = Number.isSafeInteger(options.maxReads) && options.maxReads > 0 ? options.maxReads : 4096;
+  let readsUsed = 0;
+  let metaBytesRead = 0;
+  const readChunk = (off, len) => {
+    if (readsUsed >= maxPrefetchReads) throw new Error('ELF prefetch read budget exceeded');
+    if (len > 0 && metaBytesRead + len > maxCachedBytes) throw new Error('ELF prefetch byte budget exceeded');
+    readsUsed++;
+    metaBytesRead += len;
+    return readBoundedRange(source, off, len, signal, maxReadLimit);
+  };
 
   if (source.size < 16n) return [];
   const headerPrefix = prefix.byteLength >= 64 ? prefix : await readChunk(0n, Math.min(64, Number(source.size)));
@@ -375,7 +384,7 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
           }
         }
       } else {
-        const hashSec = sections.find((s) => s.name === '.hash');
+        const hashSec = sections.find((s) => s.type === 5) || sections.find((s) => s.name === '.hash');
         if (hashSec) {
           addRange(hashSec.offset, hashSec.size, 2, 'DT_HASH-sec');
         } else {
@@ -441,13 +450,21 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
                   let cp = chainsOff + (idx - symOffset) * 4;
                   let steps = 0;
                   let terminated = false;
+                  const CHAIN_CHUNK_ENTRIES = 1024;
                   while (steps < MAX_GNU_HASH_CHAIN_STEPS && Number.isSafeInteger(cp) && cp >= 0 && BigInt(cp) + 4n <= source.size) {
-                    const chainBytes = await readChunk(BigInt(cp), 4);
+                    const maxStepsLeft = MAX_GNU_HASH_CHAIN_STEPS - steps;
+                    const maxFileEntries = Number((source.size - BigInt(cp)) / 4n);
+                    const batchEntries = Math.min(CHAIN_CHUNK_ENTRIES, maxStepsLeft, maxFileEntries);
+                    if (batchEntries <= 0) break;
+                    const chainBytes = await readChunk(BigInt(cp), batchEntries * 4);
                     const cr = new ByteView(chainBytes, { littleEndian });
-                    const chain = cr.u32(0);
-                    steps++;
-                    if (chain & 1) { terminated = true; break; }
-                    idx++; cp += 4;
+                    for (let k = 0; k < batchEntries; k++) {
+                      const chain = cr.u32(k * 4);
+                      steps++;
+                      if (chain & 1) { terminated = true; break; }
+                      idx++; cp += 4;
+                    }
+                    if (terminated) break;
                   }
                   if (terminated) count = idx + 1;
                 }
@@ -637,9 +654,8 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
       const additional = item.size - Number(overlap);
       if (additional <= 0) continue;
       if (currentBudgetUsed + additional > maxCachedBytes) {
-        // Exceeds budget, stop
-        budgetExhausted = true;
-        break;
+        // Exceeds budget; skip this range so smaller essential ranges can still fit
+        continue;
       }
 
       currentBudgetUsed += additional;

@@ -254,7 +254,7 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           kind: 'memory-write',
           target: { address },
           requestedChange: { bytes },
-          parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          parentInterventionIds: callOptions?.parentInterventionIds ?? [],
           sequence: ++interventionSequence,
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);

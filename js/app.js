@@ -42,7 +42,12 @@ import { AnalysisResumeStore, captureAppAnalysisState, applyAppAnalysisState } f
 
 
 let _panelsModulePromise = null;
-function panelsModule() { return _panelsModulePromise ||= import('./panels.js'); }
+function panelsModule() {
+  return _panelsModulePromise ||= import('./panels.js').catch((err) => {
+    _panelsModulePromise = null;
+    throw err;
+  });
+}
 function lazyPanel(name) {
   return (...args) => panelsModule().then((module) => module[name](...args));
 }
@@ -742,8 +747,11 @@ export class App {
       this.swiftBusy = null;
       this.swiftBusyAbort = null;
       this.swiftBusyEpoch = -1;
+      this.recognitionBusy?.controller?.abort('recognition-reset');
       this.recognition = null;
       this.recognitionBusy = null;
+      this.recognitionKnowledgeRev = 0;
+      this.recognitionBusyKnowledgeRev = -1;
       this.program = null;
       this.programScan = null;
       this.programKey = null;
@@ -1039,7 +1047,11 @@ export class App {
         const item = use[itemIndex];
         const r = item.region;
         const remaining = collectionBudget.requestLimit();
-        if (remaining <= 0) { collectionBudget.truncationReason ||= 'result-budget'; break; }
+        if (remaining <= 0) {
+          collectionBudget.truncationReason ||= 'result-budget';
+          for (const rest of use.slice(itemIndex)) if (!skipped.includes(rest.region)) skipped.push(rest.region);
+          break;
+        }
         const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes, limit: remaining },
           progressFn && ((p) => progressFn({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
         scannedBytes += res.scannedBytes || 0;
@@ -1711,7 +1723,7 @@ export class App {
       return true;
     }
     const regions = this.store.get('regions') || [];
-    const target = regions.find((r) => r.size > 0n && addr >= r.vmAddr && addr < r.vmAddr + r.size);
+    const target = regions.find((r) => !r.zerofill && r.size > 0n && addr >= r.vmAddr && addr < r.vmAddr + r.size);
     if (target) {
       this.selectRegion(target, { silent: true });
       if (!this.viewer.goToAddress(addr)) return false;

@@ -87,6 +87,9 @@ export function decodeJvmInstructionBoundary(bytecode, start) {
   if (opcode === 0xb9 && (bytecode[start + 3] === 0 || bytecode[start + 4] !== 0)) {
     return malformedBoundary(bytecode, start);
   }
+  if (opcode === 0xba && (bytecode[start + 3] !== 0 || bytecode[start + 4] !== 0)) {
+    return malformedBoundary(bytecode, start);
+  }
 
   return Object.freeze({ end: start + length, complete: true, start });
 }

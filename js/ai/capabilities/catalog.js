@@ -305,8 +305,18 @@ export function availability(entry, context) {
 
 function runtimeAvailability(entry, runtimePlatform) {
   if (entry.id === 'runtime.status') return { ok: true };
-  if (!runtimePlatform) return { ok: false, reason: 'runtime-adapter-unavailable' };
-  if (typeof runtimePlatform !== 'object') return { ok: true };
+  if (typeof runtimePlatform === 'function') {
+    try {
+      runtimePlatform = runtimePlatform();
+    } catch {
+      return { ok: false, reason: 'runtime-adapter-unavailable' };
+    }
+    if (runtimePlatform && typeof runtimePlatform.then === 'function') {
+      runtimePlatform.catch?.(() => {});
+      return { ok: false, reason: 'runtime-adapter-unavailable' };
+    }
+  }
+  if (!runtimePlatform || typeof runtimePlatform !== 'object') return { ok: false, reason: 'runtime-adapter-unavailable' };
   const session = typeof runtimePlatform.currentSession === 'function' ? runtimePlatform.currentSession(false) || null : null;
   if (entry.id === 'runtime.connect') {
     const adapter = session?.adapter || (typeof runtimePlatform.adapter === 'function' ? runtimePlatform.adapter() : null);

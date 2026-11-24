@@ -169,7 +169,7 @@ export function accuracyReport(rows) {
   const total = all.length;
   if (!total) {
     return { total: 0, top1: null, top3: null, precision: null, recall: null,
-      brier: null, ece: null, falseConfirmRate: null, confirmed: 0, abstentions: 0 };
+      brier: null, ece: null, falseConfirmRate: null, confirmed: 0, abstentions: 0, abstentionAccuracy: null };
   }
   const answered = all.filter((r) => r.verdict && r.verdict !== 'none');
   const confirmed = all.filter((r) => r.verdict === 'confirmed');
