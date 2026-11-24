@@ -944,6 +944,12 @@ function instructionWidthForArch(arch) {
 
 function hasContiguousFileBackedInstruction(image, address) {
   const width = instructionWidthForArch(image.arch);
+  if (typeof image?.resolveVirtualMapping !== 'function') {
+    const seg = typeof image?.segmentAt === 'function' ? image.segmentAt(address) : null;
+    if (!seg || !seg.perms?.execute) return false;
+    const backedEnd = seg.address + BigInt(seg.fileSize ?? seg.size ?? 0n);
+    return address >= seg.address && address + width <= backedEnd;
+  }
   const first = image.resolveVirtualMapping(address);
   if (!first || first.kind !== 'file' || first.offset == null || first.available < width) return false;
   for (let delta = 1n; delta < width; delta += 1n) {
@@ -1349,7 +1355,7 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
       fail('entry-file-backing-invalid', `function offset 0x${candidate.startOffset.toString(16)} lacks contiguous file-backed instruction bytes`, true);
       return;
     }
-    if (!image.isInstructionAllowed(start)) {
+    if (typeof image?.isInstructionAllowed === 'function' && !image.isInstructionAllowed(start)) {
       fail('entry-data-in-code-invalid', `function offset 0x${candidate.startOffset.toString(16)} overlaps LC_DATA_IN_CODE or is not an allowed instruction start`, true);
       return;
     }
