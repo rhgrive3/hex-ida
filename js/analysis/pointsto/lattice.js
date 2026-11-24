@@ -284,7 +284,7 @@ function targetMatchesCanonicalProof(input, proof, rootIdentity) {
   const addressSpace = canonicalAddressSpace(input.addressSpace);
   const rootKind = typeof input.rootKind === 'string' ? input.rootKind : 'unknown';
   const rootEntityId = typeof input.rootEntityId === 'string' && input.rootEntityId.trim()
-    ? input.rootEntityId : null;
+    ? input.rootEntityId.trim() : null;
   return addressSpace === canonicalAddressSpace(proof.addressSpace)
     && rootKind === proofRootKind(proof)
     && stableStringify(canonicalIdentity) === stableStringify(proof.rootIdentity ?? null)
@@ -573,9 +573,10 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
 /** Widening applied at loop headers once the iteration threshold is passed. */
 export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET) {
   const targetLimit = maxTargetsPerSet(budget);
-  if (next.top) return next;
   if (previous == null) return next;
-  if (previous.top) return previous;
+  if (previous.top || next.top) {
+    return createPointsToSet({ top: true, lossReasons: [...previous.lossReasons, ...next.lossReasons] });
+  }
   const priorByRoot = new Map(previous.targets.map((target) => [target.rootKey, target]));
   // A root that only `previous` holds must survive widening: widening may lose
   // precision but never drops a known reachable root — dropping it broke the
@@ -598,7 +599,7 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
   if (rootsOnlyInPrevious.length) anyWidened = true;
   const merged = [...targets, ...rootsOnlyInPrevious];
   if (merged.length > targetLimit) {
-    return topPointsTo('target-cap');
+    return createPointsToSet({ top: true, lossReasons: [...previous.lossReasons, ...next.lossReasons, 'target-cap'] });
   }
   return createPointsToSet({
     targets: merged,

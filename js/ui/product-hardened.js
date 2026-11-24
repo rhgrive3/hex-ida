@@ -68,14 +68,22 @@ export function baseClassificationBadge(value, result) {
   return 'confirmed';
 }
 
+const MAX_CANONICAL_ITEMS = 5000;
+const MAX_CANONICAL_PAGES = 100;
+
 export async function loadCanonicalClaims(queries, snapshot, detailId = null, options = {}) {
   if (detailId != null) {
     return queries.claims(snapshot, { claimId:detailId }, { offset:0, limit:1 }, options);
   }
   const value = [];
   let offset = 0;
+  let pages = 0;
   let completeness = 'complete';
   while (true) {
+    if (pages >= MAX_CANONICAL_PAGES || value.length >= MAX_CANONICAL_ITEMS) {
+      return { value: value.slice(0, MAX_CANONICAL_ITEMS), completeness: 'partial' };
+    }
+    pages += 1;
     const result = await queries.claims(snapshot, {}, { offset, limit:CLAIM_PAGE_SIZE }, options);
     const rows = Array.isArray(result?.value) ? result.value : [];
     value.push(...rows);
@@ -98,9 +106,14 @@ export async function loadCanonicalClaims(queries, snapshot, detailId = null, op
 export async function loadCanonicalStrings(queries, snapshot, filter = {}, options = {}) {
   const value = [];
   let offset = 0;
+  let pages = 0;
   let completeness = 'complete';
   let status = null;
   while (true) {
+    if (pages >= MAX_CANONICAL_PAGES || value.length >= MAX_CANONICAL_ITEMS) {
+      return { value: value.slice(0, MAX_CANONICAL_ITEMS), completeness: 'partial', status };
+    }
+    pages += 1;
     const result = await queries.strings(snapshot, filter, { offset, limit:STRING_PAGE_SIZE }, options);
     const rows = Array.isArray(result?.value) ? result.value : null;
     if (!rows) return { value, completeness:'partial', status:result?.status || status };
@@ -199,8 +212,9 @@ const COMPLETENESS_LABELS = {
 };
 
 function labelFrom(table, value) {
-  const entry = table[String(value ?? '')];
-  return entry ? text(entry[0], entry[1]) : String(value ?? '');
+  const key = String(value ?? '');
+  const entry = Object.hasOwn(table, key) ? table[key] : null;
+  return entry ? text(entry[0], entry[1]) : key;
 }
 function classificationLabel(value) { return labelFrom(CLASSIFICATION_LABELS, value || 'UNKNOWN'); }
 function refinementLabel(value) { return value ? labelFrom(REFINEMENT_LABELS, value) : ''; }
@@ -208,7 +222,7 @@ function completenessLabel(value) { return labelFrom(COMPLETENESS_LABELS, value)
 function evidenceList(items) {
   return (Array.isArray(items) ? items : []).map((item) => {
     const raw = String(item);
-    if (EVIDENCE_LABELS[raw]) return labelFrom(EVIDENCE_LABELS, raw);
+    if (Object.hasOwn(EVIDENCE_LABELS, raw)) return labelFrom(EVIDENCE_LABELS, raw);
     const [kind, ...rest] = raw.split(':');
     const detail = rest.join(':');
     if (kind === 'signature-hint' && detail) return text(`既知の関数に似ている: ${detail}`, `signature hint: ${detail}`);
@@ -375,10 +389,12 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
   s.body.append(host);
 
   const signal = signalOf(meta);
+  let disposed = false;
+  let activeList = null;
   (async () => {
     try {
       const result = await withCurrentSnapshot(queries, signal, (snapshot) => loadCanonicalClaims(queries, snapshot, detailId, { signal }));
-      if (signal?.aborted) return;
+      if (disposed || signal?.aborted) return;
       const claims = result.value || [];
       if (detailId) {
         const claim = claims[0];
@@ -423,6 +439,8 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
         onClick:() => router.navigate(`/finding/${encodeURIComponent(claim.claimId)}`),
       });
       const list = claims.length > 80 ? new VirtualList({ items:claims, rowHeight:64, ariaLabel:text('解析結果', 'Analysis results'), renderRow }) : null;
+      activeList?.dispose?.();
+      activeList = list;
       if (list) host.replaceChildren(list.root);
       else {
         const rows = h('div', 'ui-list');
@@ -431,10 +449,10 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
       }
       if (result.completeness !== 'complete') host.prepend(h('p', 'ui-partial-note', text('結果は一部だけです。まだ処理していない結果を「無い」とは判断しません。', 'The claim set is partial; unprocessed claims are not treated as absent.')));
     } catch (error) {
-      if (!signal?.aborted) host.replaceChildren(errorState(text('結果を表示できませんでした', 'Could not show results'), String(error?.message || error)));
+      if (!disposed && !signal?.aborted) host.replaceChildren(errorState(text('結果を表示できませんでした', 'Could not show results'), String(error?.message || error)));
     }
   })();
-  return { root:s.root };
+  return { root:s.root, dispose:() => { disposed = true; activeList?.dispose?.(); activeList = null; } };
 }
 
 function signalOf(meta) {

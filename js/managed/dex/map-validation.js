@@ -139,11 +139,12 @@ function skipEncodedValue(bytes, offset, limit, depth = 0) {
   }
 }
 
-function skipTypeList(view, offset, limit) {
+function skipTypeList(view, offset, limit, hasNext = true) {
   checkedRange(limit, offset, 4, RANGE_ERROR);
   const count = view.getUint32(offset, true);
   if (count > Math.floor((limit - offset - 4) / 2)) fail(RANGE_ERROR);
   const rawEnd = offset + 4 + count * 2;
+  if (!hasNext) return rawEnd;
   const end = align4(rawEnd);
   checkedRange(limit, rawEnd, end - rawEnd, RANGE_ERROR);
   return end;
@@ -277,7 +278,7 @@ function variableSectionEnd(bytes, view, type, size, offset, limit) {
   requireLoopBudget(size, limit - offset, minBytes);
   let pos = offset;
   for (let i = 0; i < size; i++) {
-    if (type === TYPE_TYPE_LIST) pos = skipTypeList(view, pos, limit);
+    if (type === TYPE_TYPE_LIST) pos = skipTypeList(view, pos, limit, i + 1 < size);
     else if (type === TYPE_ANNOTATION_SET_REF_LIST || type === TYPE_ANNOTATION_SET_ITEM) pos = skipUint32List(view, pos, limit);
     else if (type === TYPE_CLASS_DATA_ITEM) pos = skipClassData(bytes, pos, limit);
     else if (type === TYPE_CODE_ITEM) {

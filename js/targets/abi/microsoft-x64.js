@@ -153,7 +153,7 @@ function conservativeUnknownArguments(extra = {}) {
   return {
     srcs,
     arguments:srcs.map((source, index) => ({
-      index:index % 4,
+      index,
       location:'register',
       reg:source.reg,
       bits:source.bits,
@@ -200,7 +200,7 @@ export function microsoftX64AggregateReturnDecision(descriptor, prototype, optio
       pieces:[{ pieceIndex:0, order:0, reg:'rax', abiClass:'integer-aggregate', bits, bytes, byteOffset:0 }],
     };
   }
-  if (nonTrivial || (bitsProven && !physicalPadding && ![8,16,32,64].includes(bits))) {
+  if (nonTrivial || (bitsProven && ((physicalBytes != null && physicalBytes > 8) || bits > 64 || (!physicalPadding && ![8,16,32,64].includes(bits))))) {
     return {
       kind:'indirect', bits:64, aggregate:true,
       pointeeBits:bitsProven ? bits : null,
@@ -565,7 +565,8 @@ export const MICROSOFT_X64_ABI = new ABIPlugin({
   classifyCallReturn:classifyMicrosoftX64CallReturn,
   classifyFunctionReturn:classifyMicrosoftX64FunctionReturn,
   classifyEntryRegister:(reg) => {
-    const id = String(reg || '').toLowerCase();
+    if (typeof reg !== 'string') return { kind:'incoming-register-state', reg:'' };
+    const id = reg.toLowerCase();
     const integerIndex = INTEGER_ARGUMENT_REGISTERS.indexOf(id);
     if (integerIndex >= 0) return { kind:'argument', reg:id, index:integerIndex, abiClass:'integer' };
     const vectorIndex = VECTOR_ARGUMENT_REGISTERS.indexOf(id);

@@ -684,12 +684,19 @@ export function claimsConflict(left, right) {
   if (a == null || b == null) return true;
 
   if (left.layer === 'machine') {
-    // Different widths for the same access are a genuine contradiction; a
-    // different class at the same width is too (an integer is not a pointer).
-    if (a.widthBits != null && b.widthBits != null && numericValuesDiffer(a.widthBits, b.widthBits)) return true;
-    if (a.class != null && b.class != null && a.class !== b.class) return true;
-    if (a.addressSpace != null && b.addressSpace != null && a.addressSpace !== b.addressSpace) return true;
-    return false;
+    const machineDescriptorsConflict = (x, y, depth = 0) => {
+      if (depth > 8) return true;
+      if (x == null || y == null || typeof x !== 'object' || typeof y !== 'object') return true;
+      if (x.widthBits != null && y.widthBits != null && numericValuesDiffer(x.widthBits, y.widthBits)) return true;
+      if (x.class != null && y.class != null && x.class !== y.class) return true;
+      if (x.kind != null && y.kind != null && x.kind !== y.kind) return true;
+      if (x.format != null && y.format != null && x.format !== y.format) return true;
+      if (x.addressSpace != null && y.addressSpace != null && x.addressSpace !== y.addressSpace) return true;
+      if (x.laneCount != null && y.laneCount != null && numericValuesDiffer(x.laneCount, y.laneCount)) return true;
+      if (x.elementType != null && y.elementType != null && machineDescriptorsConflict(x.elementType, y.elementType, depth + 1)) return true;
+      return false;
+    };
+    return machineDescriptorsConflict(a, b);
   }
   if (left.layer === 'abi') {
     if (a.location != null && b.location != null && a.location !== b.location) return true;

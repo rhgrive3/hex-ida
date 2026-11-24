@@ -755,9 +755,9 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     status.complete = false; image.metadata.dyldBindings.complete = false;
     if (opcode != null && !status.unsupportedOpcodes.includes(opcode)) status.unsupportedOpcodes.push(opcode);
     const warning = `${source}: ${message}`;
-    if (!seenWarnings.has(warning) && seenWarnings.size < budget.limits.warnings) {
+    if (!seenWarnings.has(warning)) {
       seenWarnings.add(warning);
-      image.warnings.push(warning);
+      budget.warn(warning);
     }
   };
   const validDylibOrdinal = () => {
@@ -799,6 +799,24 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     image.imports.push(imp); status.decodedBinds++;
     return true;
   };
+  const sortedMappings = [...(image.sections || []), ...(image.segments || [])]
+    .filter((m) => m && m.size > 0n)
+    .sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
+  const crossesNarrowerMappingIndexed = (owner, address, end) => {
+    let lo = 0, hi = sortedMappings.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (sortedMappings[mid].address <= address) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let idx = lo; idx < sortedMappings.length; idx++) {
+      const mapping = sortedMappings[idx];
+      if (mapping.address >= end) break;
+      if (mapping === owner || mapping.size >= owner.size) continue;
+      return true;
+    }
+    return false;
+  };
   const threadedPointerFileOffset = (address) => {
     const width = 8n;
     if (typeof image.resolveVirtualMapping === 'function') {
@@ -813,14 +831,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       // contiguous (#4296).
       const owner = first.mapping;
       const end = address + width;
-      const crossesNarrowerMapping = (mappings) => {
-        for (const mapping of mappings || []) {
-          if (mapping === owner || mapping.size <= 0n || mapping.size >= owner.size) continue;
-          if (mapping.address > address && mapping.address < end) return true;
-        }
-        return false;
-      };
-      if (crossesNarrowerMapping(image.sections) || crossesNarrowerMapping(image.segments)) return null;
+      if (crossesNarrowerMappingIndexed(owner, address, end)) return null;
       return first.offset;
     }
 

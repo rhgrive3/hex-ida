@@ -15,7 +15,7 @@ export function collapseActivity(activity) {
     if (last && last.label === item.label) {
       last.detail = item.detail || last.detail;
       last.state = item.state || last.state;
-      last.error = item.error || last.error;
+      last.error = item.error || null;
       continue;
     }
     out.push({ ...item });
