@@ -108,11 +108,11 @@ function applyRegisterModifier(v, op) {
     return extended << BigInt(shift);
   }
   if (amount == null) return v;
-  if (!Number.isSafeInteger(amount) || amount < 0) {
-    throw new EmulatorFault('illegal-shift-amount', `register modifier ${name} needs a non-negative immediate shift`, { operand: op, amount: op.shift.amount });
+  const width = op.bits === 32 ? 32 : 64;
+  if (!Number.isSafeInteger(amount) || amount < 0 || amount > width) {
+    throw new EmulatorFault('illegal-shift-amount', `register modifier ${name} requires an immediate shift in 0..${width}`, { operand: op, amount: op.shift.amount });
   }
   const s = BigInt(amount);
-  const width = op.bits === 32 ? 32 : 64;
   if (name === 'lsl') return v << s;
   if (name === 'lsr') return v >> s;
   if (name === 'asr') return BigInt.asIntN(width, v) >> s;
@@ -381,11 +381,11 @@ export class Emulator {
     const address = BigInt(addr);
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
-    let w = this.mem.get(key);
-    if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
     const off = Number(address - page);
     if (off < 0 || off >= PAGE) throw new EmulatorFault('unmapped-memory', 'write offset is outside page', { address });
     this._assertWriteAuthority(key, off, address);
+    let w = this.mem.get(key);
+    if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
     w.data[off] = Number(value) & 0xff;
     w.mask[off] = 1;
   }
@@ -597,7 +597,8 @@ export class Emulator {
     }
     if (mn === 'tbz' || mn === 'tbnz') {
       const v = R(ops[0]);
-      const bit = ops[1] && ops[1].value != null ? ops[1].value : 0n;
+      const bit = ops[1] && ops[1].value != null ? BigInt(ops[1].value) : 0n;
+      if (bit < 0n || bit >= 64n) throw new EmulatorFault('illegal-bit-index', `${mn} bit index out of range 0..63`, { bit });
       const set = ((v >> bit) & 1n) === 1n;
       const taken = mn === 'tbnz' ? set : !set;
       const target = this.branchTarget(ops, 2);
@@ -607,11 +608,14 @@ export class Emulator {
     }
     if (mn === 'bl' || mn === 'blr') {
       const target = mn === 'bl' ? this.branchTarget(ops, 0) : R(ops[0]);
-      if (target != null && this.trace.length < 4000) {
+      if (target == null) throw new EmulatorFault('unknown-call-target', '呼び出し先が分かりませんでした。');
+      if (this.trace.length < TRACE_MAX) {
         this.trace.push({ type:'call', addr:at, address:at, target, indirect:mn === 'blr', text:(mn + ' ' + opsStr).trim() });
+      } else {
+        this.traceTruncated = true;
+        this.traceDropped++;
       }
       this.x[30] = at + 4n;
-      if (target == null) throw new EmulatorFault('unknown-call-target', '呼び出し先が分かりませんでした。');
       const hooked = await this.hookedCall(target);
       if (hooked) return at + 4n;
       const executable = this.mapped(target);
@@ -752,12 +756,17 @@ export class Emulator {
       return null;
     }
 
-    if (/^(ubfx|sbfx|ubfiz|sbfiz|bfi|bfxil|lsl|lsr)$/.test(mn) && ops.length >= 4) {
+    if (/^(ubfx|sbfx|ubfiz|sbfiz|bfi|bfxil)$/.test(mn) && ops.length >= 4) {
       const src = R(ops[1]);
-      const lsb = BigInt(ops[2].value || 0n);
-      const width = BigInt(ops[3].value || 1n);
-      const mask = (1n << width) - 1n;
       const wide = isWide(ops[0]);
+      const bits = wide ? 64n : 32n;
+      if (ops[2]?.value == null || ops[3]?.value == null) throw new EmulatorFault('illegal-bitfield', `${mn} requires immediate lsb and width`);
+      const lsb = BigInt(ops[2].value);
+      const width = BigInt(ops[3].value);
+      if (lsb < 0n || lsb >= bits || width < 1n || lsb + width > bits) {
+        throw new EmulatorFault('illegal-bitfield', `${mn} bitfield bounds out of range`, { lsb, width, bits });
+      }
+      const mask = (1n << width) - 1n;
       let r;
       if (mn === 'ubfx') r = (src >> lsb) & mask;
       else if (mn === 'sbfx') r = BigInt.asUintN(64, BigInt.asIntN(Number(width), (src >> lsb) & mask));
@@ -790,7 +799,7 @@ export class Emulator {
     if (/^(?:ldr(?:b|h|sb|sh|sw)?|ldur(?:b|h|sb|sh|sw)?|ldp|ldnp|ldpsw|ldxr(?:b|h)?|ldaxr(?:b|h)?|ldar(?:b|h)?)$/.test(mn)) {
       return this.loadInsn(mn, ops);
     }
-    if (/^(str|strb|strh|stur|sturb|sturh|stp|stnp|stxr|stlxr|stlr)/.test(mn)) {
+    if (/^(?:str(?:b|h)?|stur(?:b|h)?|stp|stnp|stxr(?:b|h)?|stlxr(?:b|h)?|stlr(?:b|h)?)$/.test(mn)) {
       return this.storeInsn(mn, ops);
     }
 
@@ -844,7 +853,14 @@ export class Emulator {
     if (op.k === 'imm') {
       let v = op.value != null ? op.value : 0n;
       if (op.shift && op.shift.amount) {
-        const s = BigInt(op.shift.amount);
+        const amount = op.shift.amount;
+        if (typeof amount === 'number' && !Number.isSafeInteger(amount)) {
+          throw new EmulatorFault('illegal-shift-amount', 'immediate shift amount must be a safe integer', { operand: op, amount });
+        }
+        const s = BigInt(amount);
+        if (s < 0n || s > 64n) {
+          throw new EmulatorFault('illegal-shift-amount', 'immediate shift amount out of range 0..64', { operand: op, amount });
+        }
         v = op.shift.op === 'lsr' ? v >> s : v << s;
       }
       return BigInt.asUintN(64, v);
@@ -896,7 +912,7 @@ export class Emulator {
     if (pair) {
       if (signedWordPair) {
         let a = await this.load(addr, 4);
-        let b = await this.load(addr + 4n, 4);
+        let b = await this.load(BigInt.asUintN(64, addr + 4n), 4);
         a = BigInt.asUintN(64, BigInt.asIntN(32, a));
         b = BigInt.asUintN(64, BigInt.asIntN(32, b));
         this.effectiveAddress(mem, true);
@@ -907,7 +923,7 @@ export class Emulator {
         const eachB = pairElementSize(ops[1]);
         if (eachA == null || eachB == null) throw pairUnsupportedFault(mn, ops[0], ops[1]);
         const a = await this.load(addr, eachA);
-        const b = await this.load(addr + BigInt(eachA), eachB);
+        const b = await this.load(BigInt.asUintN(64, addr + BigInt(eachA)), eachB);
         this.effectiveAddress(mem, true);
         if (isFloatReg(ops[0])) this.setFpBits(ops[0], a); else this.set(ops[0].text, a);
         if (isFloatReg(ops[1])) this.setFpBits(ops[1], b); else this.set(ops[1].text, b);
@@ -948,8 +964,20 @@ export class Emulator {
       const eachA = pairElementSize(ops[0]);
       const eachB = pairElementSize(ops[1]);
       if (eachA == null || eachB == null) throw pairUnsupportedFault(mn, ops[0], ops[1]);
+      const addrB = BigInt.asUintN(64, addr + BigInt(eachA));
+      // Pre-validate both halves before committing either write (#7968 no-partial-commit).
+      await this._ensurePageRange(addr, addr + BigInt(eachA - 1));
+      await this._ensurePageRange(addrB, addrB + BigInt(eachB - 1));
+      for (let i = 0n; i < BigInt(eachA); i++) {
+        const a = addr + i, p = (a / BigInt(PAGE)) * BigInt(PAGE);
+        this._assertWriteAuthority(p.toString(), Number(a - p), a);
+      }
+      for (let i = 0n; i < BigInt(eachB); i++) {
+        const a = addrB + i, p = (a / BigInt(PAGE)) * BigInt(PAGE);
+        this._assertWriteAuthority(p.toString(), Number(a - p), a);
+      }
       await this.store(addr, eachA, elementBits(this, ops[0]));
-      await this.store(addr + BigInt(eachA), eachB, elementBits(this, ops[1]));
+      await this.store(addrB, eachB, elementBits(this, ops[1]));
     } else if (isFloatReg(ops[first])) await this.store(addr,size,this.fpBits(ops[first]));
     else await this.store(addr,size,this.get(ops[first].text));
     this.effectiveAddress(mem,true);
@@ -1225,13 +1253,46 @@ export class Emulator {
     if (!name) return false;
     const plain=name.replace(/^_+/, '');
     const MAX_HOOK_BYTES=65536n;
+    const invalidateExclusiveRange = (start, len) => {
+      if (!this.exclusive || len <= 0n) return;
+      const endExclusive = start + len, monitorEnd = this.exclusive.addr + BigInt(this.exclusive.size);
+      if (!(endExclusive <= this.exclusive.addr || monitorEnd <= start)) this.exclusive = null;
+    };
+    const prevalidateWriteRange = async (start, len) => {
+      if (len <= 0n) return;
+      await this._ensurePageRange(start, start + len - 1n);
+      for (let i = 0n; i < len; i++) {
+        const a = BigInt.asUintN(64, start + i);
+        const p = (a / BigInt(PAGE)) * BigInt(PAGE);
+        this._assertWriteAuthority(p.toString(), Number(a - p), a);
+      }
+    };
     const allocate=async(size,zero=false)=>{
       this._syncHeapBase();
       if (size < 0n || size > this.heapSize) throw new EmulatorFault('heap-exhausted','synthetic allocation exceeds heap size',{size});
-      const addr=this.heap, next=addr+((size+15n)&~15n);
+      const bump = size === 0n ? 16n : ((size + 15n) & ~15n);
+      const addr=this.heap, next=addr+bump;
       if (next > this.heapBase + this.heapSize) throw new EmulatorFault('heap-exhausted','synthetic heap exceeded heap size',{heapBase:this.heapBase,heap:next});
+      if (zero && size > 0n) {
+        const pageBig = BigInt(PAGE);
+        let cur = addr;
+        const end = addr + size;
+        while (cur < end) {
+          const page = (cur / pageBig) * pageBig;
+          const key = page.toString();
+          const startOff = Number(cur - page);
+          const chunkEnd = page + pageBig < end ? page + pageBig : end;
+          const endOff = Number(chunkEnd - page);
+          await this.ensure(cur);
+          let w = this.mem.get(key);
+          if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
+          w.data.fill(0, startOff, endOff);
+          w.mask.fill(1, startOff, endOff);
+          cur = chunkEnd;
+        }
+        invalidateExclusiveRange(addr, size);
+      }
       this.heap=next; this.heapAllocations++;
-      if (zero) for (let i=0n;i<size;i++) { await this.ensure(addr+i); this.writeByte(addr+i,0); }
       return addr;
     };
     if (/^(malloc|operator new|Znwm|Znam)$/.test(plain)) {
@@ -1249,14 +1310,20 @@ export class Emulator {
     }
     if (/^(memcpy|memmove)$/.test(plain)) {
       const d=this.x[0],src=this.x[1],n=this.x[2]; if (n>MAX_HOOK_BYTES) throw new EmulatorFault('hook-copy-too-large',plain+': コピー長が安全上限65536バイトを超えました',{size:n});
-      const snapshot=plain==='memmove'?new Uint8Array(Number(n)):null;
-      if (snapshot) for(let i=0;i<snapshot.length;i++){await this.ensure(src+BigInt(i));snapshot[i]=this.byteAt(src+BigInt(i));}
-      for(let i=0n;i<n;i++){await this.ensure(src+i);await this.ensure(d+i);this.writeByte(d+i,snapshot?snapshot[Number(i)]:this.byteAt(src+i));}
+      const snapshot=new Uint8Array(Number(n));
+      for(let i=0;i<snapshot.length;i++){const sa=BigInt.asUintN(64,src+BigInt(i));await this.ensure(sa);snapshot[i]=this.byteAt(sa);}
+      await prevalidateWriteRange(d, n);
+      for(let i=0n;i<n;i++){this.writeByte(BigInt.asUintN(64,d+i),snapshot[Number(i)]);}
+      invalidateExclusiveRange(d, n);
       this.x[0]=d; this.log.push({call:plain,note:n+' バイトをコピーしました'}); return true;
     }
     if (/^(memset|bzero)$/.test(plain)) {
       const d=this.x[0],c=plain==='bzero'?0n:this.x[1],n=plain==='bzero'?this.x[1]:this.x[2]; if(n>MAX_HOOK_BYTES) throw new EmulatorFault('hook-write-too-large',plain+': 書込長が安全上限65536バイトを超えました',{size:n});
-      for(let i=0n;i<n;i++){await this.ensure(d+i);this.writeByte(d+i,Number(c&0xffn));} this.x[0]=d; this.log.push({call:plain,note:n+' バイトを埋めました'}); return true;
+      await prevalidateWriteRange(d, n);
+      const byteVal=Number(c&0xffn);
+      for(let i=0n;i<n;i++){this.writeByte(BigInt.asUintN(64,d+i),byteVal);}
+      invalidateExclusiveRange(d, n);
+      this.x[0]=d; this.log.push({call:plain,note:n+' バイトを埋めました'}); return true;
     }
     if (/^(arc4random|rand|random)$/.test(plain)) { this.x[0]=4n; this.log.push({call:plain,note:'乱数は毎回 4 を返します（結果を比べられるように）'}); return true; }
     if (plain === 'objc_storeStrong') { await this.store(this.x[0],8,this.x[1]); this.log.push({call:plain,note:'strong参照先へ新しいobject pointerを書き込みました'}); return true; }

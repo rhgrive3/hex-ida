@@ -128,12 +128,49 @@ export function selectDevContext({ packet, budgetBytes = null, expandEvidenceRef
   bytes = byteLength(core);
   // JSON key overhead can push the total past the estimate; give back the
   // lowest-priority items until it genuinely fits.
+  let droppedDependencyResult = false;
   while (budget != null && bytes > budget) {
     const tier = [...OPTIONAL_TIERS].reverse().find((name) => core[name].length > 0);
     if (!tier) break;
     const dropped = core[tier].pop();
+    if (tier === 'dependencyResults') droppedDependencyResult = true;
     omitted.push(omission(refOf(dropped), DEV_OMISSION_REASON.OVER_BUDGET, tier));
     bytes = byteLength(core);
+  }
+  if (droppedDependencyResult && (packet.artifactRefs || []).length > 0) {
+    const keptCovered = new Set();
+    for (const dep of core.dependencyResults) {
+      for (const ref of dep?.coveredEvidenceRefs || []) {
+        const normalized = String(ref);
+        if (!expand.has(normalized)) keptCovered.add(normalized);
+      }
+    }
+    const existingRefs = new Set(core.artifactRefs.map((entry) => refOf(entry)).filter(Boolean));
+    for (const value of packet.artifactRefs || []) {
+      const ref = refOf(value);
+      if (!ref || keptCovered.has(ref) || existingRefs.has(ref)) continue;
+      const idx = omitted.findIndex((entry) => entry.section === 'artifactRefs' && entry.reason === DEV_OMISSION_REASON.ALREADY_COVERED && entry.ref === String(ref).slice(0, 256));
+      if (idx === -1) continue;
+      const candidateCost = byteLength(value) + 1;
+      if (budget == null || bytes + candidateCost <= budget) {
+        core.artifactRefs.push(value);
+        existingRefs.add(ref);
+        omitted.splice(idx, 1);
+        bytes = byteLength(core);
+      } else if (value?.excerpt) {
+        const reduced = { ...value, excerpt: null };
+        if (bytes + byteLength(reduced) + 1 <= budget) {
+          core.artifactRefs.push(reduced);
+          existingRefs.add(ref);
+          omitted[idx] = omission(ref, DEV_OMISSION_REASON.EXCERPT_OVER_BUDGET, 'artifactRefs');
+          bytes = byteLength(core);
+        } else {
+          omitted[idx] = omission(ref, DEV_OMISSION_REASON.OVER_BUDGET, 'artifactRefs');
+        }
+      } else {
+        omitted[idx] = omission(ref, DEV_OMISSION_REASON.OVER_BUDGET, 'artifactRefs');
+      }
+    }
   }
 
   return Object.freeze({
@@ -391,7 +428,14 @@ function freezeDeepCopy(value) {
   if (Array.isArray(value)) return Object.freeze(value.map(freezeDeepCopy));
   if (value && typeof value === 'object') {
     const copy = {};
-    for (const key of Object.keys(value)) copy[key] = freezeDeepCopy(value[key]);
+    for (const key of Object.keys(value)) {
+      Object.defineProperty(copy, key, {
+        value: freezeDeepCopy(value[key]),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
     return Object.freeze(copy);
   }
   return value;

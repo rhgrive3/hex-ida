@@ -127,11 +127,12 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
       const targets = Array.isArray(candidate?.targets) ? candidate.targets
         .map(target => canonicalInstructionAddress(target, 'semantic-function-switch-target-invalid')) : [];
       const cases = Array.isArray(candidate?.cases) ? candidate.cases : [];
+      const caseAddresses = cases.map((entry) => canonicalInstructionAddress(entry?.address, 'semantic-function-switch-case-address-invalid'));
       if (!source || controlKind(architecturePlugin, source) !== 'branch' || directTarget(architecturePlugin, source) != null
           || targets.length === 0 || targets.some(target => !byAddress.has(target.toString()))
-          || cases.length === 0 || cases.some(entry => !targets.some(target => target === BigInt(entry?.address)))) continue;
+          || caseAddresses.length === 0 || caseAddresses.some(addr => !targets.some(target => target === addr))) continue;
       const uniqueTargets = [...new Set(targets.map(String))].map(BigInt);
-      if (uniqueTargets.length !== new Set(cases.map(entry => String(entry?.address))).size) continue;
+      if (uniqueTargets.length !== new Set(caseAddresses.map(String)).size) continue;
       switchByAddress.set(branchAddress.toString(), Object.freeze({
         ...candidate,
         instructionAddress:branchAddress,
@@ -493,7 +494,6 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
       ops:String(decoded.opStr || ''),
     });
   }
-  const maximumRow = Math.max(...legacyRows.keys());
   for (const block of pipeline.legacyV1.blocks) {
     const proven = (block.insts || []).map((instruction) => instruction.address).filter((address) => address != null).map(BigInt)
       .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)[0];
@@ -501,6 +501,8 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     const prior = legacyRows.get(block.startRow);
     legacyRows.set(block.startRow, { ...(prior || { row:block.startRow, size:0, mn:'', ops:'' }), address:proven });
   }
+  let maximumRow = -1;
+  for (const key of legacyRows.keys()) { if (key > maximumRow) maximumRow = key; }
   const model = {
     name:String(input.name || `sub_${addressOf(orderedInstructions[0]).toString(16)}`),
     instructions:Array.from({ length:maximumRow + 1 }, (_unused, row) => legacyRows.get(row) ?? {

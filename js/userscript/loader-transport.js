@@ -78,7 +78,6 @@ export async function readBoundedText(response, options) {
 
 async function discardResponseBody(response) {
   try { await response.body?.cancel?.(); } catch { /* best effort */ }
-  try { await response.arrayBuffer?.(); } catch { /* best effort */ }
 }
 
 async function cancelReader(reader, reason) {

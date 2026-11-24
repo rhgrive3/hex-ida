@@ -1158,7 +1158,16 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         && entry?.mustUse !== false && entry?.exact !== false
         && entry?.named !== false && entry?.variadic !== true;
       const explicitArguments = hardInvalid ? null : Array.isArray(classified?.arguments)
-        ? (partial ? classified.arguments.map((entry) => provenArgument(entry) ? entry : markUncertain(entry)) : classified.arguments)
+        ? (partial ? (() => {
+          let frontierReached = false;
+          return classified.arguments.map((entry) => {
+            if (frontierReached || !provenArgument(entry)) {
+              frontierReached = true;
+              return markUncertain(entry);
+            }
+            return entry;
+          });
+        })() : classified.arguments)
         : null;
       const implicitInputs = hardInvalid ? [] : Array.isArray(classified?.implicitInputs)
         ? classified.implicitInputs.map((input, index) => Object.freeze({
@@ -1416,7 +1425,6 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
       ops:String(decoded.opStr || ''),
     });
   }
-  const maximumRow = Math.max(...legacyRows.keys());
   for (const block of pipeline.legacyV1.blocks) {
     const proven = (block.insts || []).map((instruction) => instruction.address).filter((address) => address != null).map(BigInt)
       .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)[0];
@@ -1424,6 +1432,8 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     const prior = legacyRows.get(block.startRow);
     legacyRows.set(block.startRow, { ...(prior || { row:block.startRow, size:0, mn:'', ops:'' }), address:proven });
   }
+  let maximumRow = -1;
+  for (const key of legacyRows.keys()) { if (key > maximumRow) maximumRow = key; }
   const model = {
     name:String(input.name || `sub_${addressOf(orderedInstructions[0]).toString(16)}`),
     instructions:Array.from({ length:maximumRow + 1 }, (_unused, row) => legacyRows.get(row) ?? {

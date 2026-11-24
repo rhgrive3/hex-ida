@@ -41,7 +41,7 @@ function scheduleBackground(signal) {
 }
 
 function waitForEntry(entry, signal) {
-  abortIfNeeded(signal);
+  if (signal?.aborted) return Promise.reject(abortError(signal));
   entry.waiters++;
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -57,7 +57,7 @@ function waitForEntry(entry, signal) {
       settled = true;
       signal?.removeEventListener('abort', onAbort);
       entry.waiters = Math.max(0, entry.waiters - 1);
-      if (!entry.settled && entry.waiters === 0) entry.controller.abort('binary-identity-no-consumers');
+      if (!entry.settled && entry.waiters === 0) { entry.promise?.catch?.(() => {}); entry.controller.abort('binary-identity-no-consumers'); }
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
@@ -80,12 +80,12 @@ export function installSharedWorkerBinaryIdentity(app) {
   backend.ensureBinaryId = function ensureSharedBinaryId(options = {}) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
 
     const file = this.file;
     const epoch = Number(this.gen ?? this.analysisEpoch ?? 0);
     if (current && (current.file !== file || current.epoch !== epoch)) {
-      if (!current.settled) current.controller.abort('binary-identity-binding-changed');
+      if (!current.settled) { current.promise?.catch?.(() => {}); current.controller.abort('binary-identity-binding-changed'); }
       current = null;
       this._binaryIdPromise = null;
     }
@@ -126,6 +126,7 @@ export function installSharedWorkerBinaryIdentity(app) {
           return binaryId;
         })
         .catch((error) => {
+          entry.settled = true;
           if (current === entry) {
             current = null;
             this._binaryIdPromise = null;

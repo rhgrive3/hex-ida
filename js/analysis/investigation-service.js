@@ -99,7 +99,7 @@ function budgetProfileCovers(available, requested) {
 }
 
 function waitShared(entry, signal, onLastWaiterAbort = null) {
-  abortIfNeeded(signal);
+  if (signal?.aborted) return Promise.reject(abortError(signal));
   entry.waiters++;
   return new Promise((resolve, reject) => {
     let done = false;
@@ -116,6 +116,7 @@ function waitShared(entry, signal, onLastWaiterAbort = null) {
       signal?.removeEventListener('abort', onAbort);
       entry.waiters = Math.max(0, entry.waiters - 1);
       if (!entry.settled && entry.waiters === 0) {
+        entry.promise?.catch?.(() => {});
         onLastWaiterAbort?.();
         entry.controller.abort('investigation-no-consumers');
       }
@@ -129,7 +130,7 @@ function waitShared(entry, signal, onLastWaiterAbort = null) {
 
 function requestWithSignal(request, signal) {
   if (!request || typeof request.then !== 'function') return Promise.resolve(request);
-  if (signal?.aborted) { request.cancel?.(); return Promise.reject(abortError(signal)); }
+  if (signal?.aborted) { Promise.resolve(request).catch(() => {}); try { request.cancel?.(); } catch { /* best effort */ } return Promise.reject(abortError(signal)); }
   return new Promise((resolve, reject) => {
     const onAbort = () => { try { request.cancel?.(); } catch { /* best effort */ } reject(abortError(signal)); };
     signal?.addEventListener('abort', onAbort, { once:true });
@@ -405,7 +406,7 @@ export class InvestigationService {
   }
 
   #shared(key, producer, options = {}) {
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     const epoch = this.#syncEpoch();
     const generation = this.cacheGeneration;
     let entry = this.shared.get(key);
@@ -468,7 +469,7 @@ export class InvestigationService {
         if (budget.exhausted) { skipped.push(...use.slice(index).map((x) => x.region)); break; }
         const { region, bytes } = use[index];
         const limit = budget.requestLimit();
-        if (limit <= 0) break;
+        if (limit <= 0) { skipped.push(...use.slice(index).map((x) => x.region)); break; }
         const request = this.app.backend.strings({ regionId:region.id, min:4, maxBytes:bytes, limit }, (p) => progress(options, { phase:'strings', region:region.id, done:index + (p?.all ? Math.min(1, p.done / p.all) : 0), all:use.length }));
         const result = await requestWithSignal(request, signal);
         scannedBytes += Number(result?.scannedBytes || 0);
@@ -749,6 +750,13 @@ export class InvestigationService {
       pin = candidate;
       if (!options.signal?.aborted) {
         this.#assertPinMutationCurrent(context, epoch, generation);
+        if (this.pinCache.size >= 128) {
+          const oldestKey = this.pinCache.keys().next().value;
+          if (oldestKey !== undefined) {
+            this.pinCache.delete(oldestKey);
+            this.pinRequestIdentityCache.delete(oldestKey);
+          }
+        }
         this.pinCache.set(cacheKey, pin);
         this.pinRequestIdentityCache.set(cacheKey, request);
       }

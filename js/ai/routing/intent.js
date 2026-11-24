@@ -4,8 +4,8 @@ const RULES = [
   ['project-query', /(project|annotation|comment|rename|プロジェクト|注釈|メモ)/i],
   ['trace-value', /(trace|data.?flow|value of|register|\bx\d+\b|\bw\d+\b|レジスタ|値.*どこ|由来|追跡)/i],
   ['explain-selection', /(selection|selected|this instruction|この命令|選択|選んだ|ハイライト)/i],
-  ['find-behaviour', /(where|locate|find|探|特定).*(increase|decrease|write|update|behavio|処理|増|減|書き|更新|変更)/i],
-  ['find-function', /(find|locate|search|探|特定).*(function|method|関数|メソッド)/i],
+  ['find-behaviour', /(?:(?:where|locate|find|探|特定).*(?:increase|decrease|write|update|behavio|処理|増|減|書き|更新|変更)|(?:処理|増|減|書き|更新|変更).*(?:探|特定))/i],
+  ['find-function', /(?:(?:find|locate|search|探|特定).*(?:function|method|関数|メソッド)|(?:関数|メソッド).*(?:探|特定))/i],
   ['explain-current-function', /(this function|current function|この関数|今の関数|what does.*function|関数.*何|関数.*説明)/i],
 ];
 

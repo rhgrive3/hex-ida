@@ -81,7 +81,7 @@ function publishProgress(entry, value) {
   }
 }
 function attach(entry, options) {
-  throwIfAborted(options.signal);
+  if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
   const subscriber = { onProgress:options.onProgress, priority:options.priority, budget:options.budget };
   entry.subscribers.add(subscriber);
   entry.waiters++;
@@ -94,6 +94,7 @@ function attach(entry, options) {
       entry.subscribers.delete(subscriber);
       entry.waiters = Math.max(0, entry.waiters - 1);
       if (cancelled && entry.waiters === 0 && !entry.settled && !entry.controller.signal.aborted) {
+        entry.promise?.catch?.(() => {});
         entry.controller.abort(options.signal?.reason ?? 'no-active-consumers');
       }
       fn(value);
@@ -106,8 +107,14 @@ function attach(entry, options) {
   });
 }
 function requestWithSignal(request, signal) {
-  throwIfAborted(signal);
+  if (signal?.aborted) {
+    if (request && typeof request.then === 'function') Promise.resolve(request).catch(() => {});
+    try { request?.cancel?.(); } catch { /* best effort */ }
+    return Promise.reject(abortError(signal));
+  }
   if (!request || typeof request.then !== 'function') return Promise.resolve(request);
+  const settledRequest = Promise.resolve(request);
+  settledRequest.catch(() => {});
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {
@@ -362,7 +369,10 @@ function createStringEntry(app, key, initialOptions = {}) {
     }
     if (!use.length && current) {
       const bytes = budget.requestBytes(Number(current.size));
-      if (bytes > 0) use.push({ region:current, bytes });
+      if (bytes > 0) {
+        use.push({ region:current, bytes });
+        if (bytes < Number(current.size)) skipped.push(current);
+      }
     }
     const rows = [];
     let scannedBytes = 0, backendIncomplete = false, backendMalformed = false;
@@ -372,7 +382,7 @@ function createStringEntry(app, key, initialOptions = {}) {
       if (budget.exhausted) { skipped.push(...use.slice(index).map((item) => item.region)); break; }
       const { region, bytes } = use[index];
       const limit = budget.requestLimit();
-      if (limit <= 0) break;
+      if (limit <= 0) { skipped.push(...use.slice(index).map((item) => item.region)); break; }
       const request = app.backend.strings({
         regionId:region.id, min:4, maxBytes:bytes, limit,
         analysisPriority:String(entry.producerOptions.priority || 'user-visible'),
@@ -668,7 +678,7 @@ export function installSharedAppArtifacts(app) {
 
   app.ensureStrings = function sharedStrings(rawOptions = {}) {
     const options = normalizeOptions(rawOptions);
-    throwIfAborted(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     const epoch = epochOf(app);
     const artifact = artifactIdentityOf(app);
     const key = `${epoch}:${artifact}`;
@@ -699,7 +709,7 @@ export function installSharedAppArtifacts(app) {
 
   app.ensureProgram = function sharedProgram(rawOptions = {}) {
     const options = normalizeOptions(rawOptions);
-    throwIfAborted(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     const regions = executableRegions(app);
     if (!regions.length) return Promise.resolve(null);
     const epoch = epochOf(app);
