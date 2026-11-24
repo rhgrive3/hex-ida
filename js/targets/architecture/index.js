@@ -5,7 +5,7 @@ import { extendArm64eWithPacmEffects } from './arm64e/effects-pacm.js';
 import { arm64ePointerAuthenticationOperandShapeFailureBundle } from './arm64e/encoding.js';
 import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftArm64MachineEffects } from './arm64/effects/index.js';
 import { decorateArm64BtypeEffects } from './arm64/effects/btype.js';
-import { decorateArm64BtiGuardedPageEffects } from './arm64/effects/bti-guard-state.js';
+import { ARM64_IMPLICIT_BTI_LANDING_MNEMONICS, decorateArm64BtiGuardedPageEffects } from './arm64/effects/bti-guard-state.js';
 import { createMachineEffectBundle } from '../../semantics/effects/index.js';
 import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects, liftX86DecodedMachineEffects } from './x86_64/effects/index.js';
 import { x86RegisterFile } from './x86_64/registers.js';
@@ -15,19 +15,33 @@ import { RISCV64_INSTRUCTION_ALIGNMENT, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION
 import { riscv64RegisterFile } from './riscv64/registers.js';
 import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2, canonicalArchitectureId, normalizeArchitecturePositiveInteger } from './registry.js';
 
+const ARM64_RETURN_OPS = new Set(['ret','retaa','retab','retaasppc','retabsppc','retaasppcr','retabsppcr']);
+const ARM64_CALL_OPS = new Set(['bl','blr','blraa','blrab','blraaz','blrabz']);
+const ARM64_BRANCH_OPS = new Set(['b','br','braa','brab','braaz','brabz','b.al','b.nv']);
+const ARM64_COND_BRANCH_OPS = new Set(['cbz','cbnz','tbz','tbnz']);
+const ARM64_UNKNOWN_OPS = new Set(['eret','eretaa','eretab','drps','brk','hlt','svc','hvc','smc']);
+
+const X86_LOOP_OPS = new Set(['loop','loope','loopz','loopne','loopnz']);
+const X86_UNKNOWN_OPS = new Set(['ud2','ud0','ud1','int3','int1','int','iret','iretd','iretq','ljmp','sysenter','sysexit','sysexitq']);
+const X86_SYSCALL_OPS = new Set(['syscall','sysret','sysretq']);
+
+const RISCV_COND_BRANCH_OPS = new Set(['beq','bne','blt','bge','bltu','bgeu']);
+const RISCV_DIRECT_TARGET_OPS = new Set(['jal','beq','bne','blt','bge','bltu','bgeu']);
+
+const ARM64_PAUTH_HINT_NOPS = new Set(['paciasp', 'pacibsp', 'autiasp', 'autibsp', 'paciaz', 'pacibz', 'autiaz', 'autibz']);
+
 function arm64ControlFlow(instruction) {
   const rawMnemonic = instruction?.mnemonic;
   const op = typeof rawMnemonic === 'string' ? rawMnemonic.toLowerCase() : '';
-  if (/^(?:ret|retaa|retab|retaasppc|retabsppc|retaasppcr|retabsppcr)$/.test(op)) return 'return';
-  if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
-  if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';
-  if (op === 'b.al' || op === 'b.nv') return 'branch';
+  if (ARM64_RETURN_OPS.has(op)) return 'return';
+  if (ARM64_CALL_OPS.has(op)) return 'call';
+  if (ARM64_BRANCH_OPS.has(op)) return 'branch';
   // FEAT_HBC `BC.<cond>` is a PC-relative conditional branch: the same
   // control family as `B.<cond>` (Capstone 5 prints the B.cond space as
   // `bc.<cond>` when HBC is enabled), so its decoded branchTarget must
   // surface as a direct conditional-control target.
-  if (op.startsWith('b.') || op.startsWith('bc.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
-  if (/^(?:eret|eretaa|eretab|drps|brk|hlt|svc|hvc|smc)$/.test(op)) return 'unknown';
+  if (ARM64_COND_BRANCH_OPS.has(op) || op.startsWith('b.') || op.startsWith('bc.')) return 'conditional-branch';
+  if (ARM64_UNKNOWN_OPS.has(op)) return 'unknown';
   return 'fallthrough';
 }
 
@@ -36,11 +50,10 @@ function x86ControlFlow(instruction) {
   if (op.startsWith('ret')) return 'return';
   if (op === 'call') return 'call';
   if (op === 'jmp') return 'branch';
-  if (/^(?:loop|loope|loopz|loopne|loopnz)$/.test(op)) return 'conditional-branch';
-  if (/^(?:ud2|ud0|ud1|int3|int1|int)$/.test(op)) return 'unknown';
-  if (/^(?:syscall|sysret|sysretq)$/.test(op)) return 'branch';
-  if (/^(?:iret|iretd|iretq|ljmp|sysenter|sysexit|sysexitq)$/.test(op)) return 'unknown';
-  if (/^j[^m]/.test(op)) return 'conditional-branch';
+  if (X86_LOOP_OPS.has(op)) return 'conditional-branch';
+  if (X86_UNKNOWN_OPS.has(op)) return 'unknown';
+  if (X86_SYSCALL_OPS.has(op)) return 'branch';
+  if (op.length >= 2 && op.charCodeAt(0) === 106 && op.charCodeAt(1) !== 109) return 'conditional-branch';
   return 'fallthrough';
 }
 
@@ -60,9 +73,9 @@ function riscv64ControlFlow(instruction) {
   const fields = instruction?.fields;
   if (!fields?.supported) return 'unknown';
   const op = fields.op;
-  if (op === 'jal') return fields.rd === 'x0' ? 'branch' : ['x1', 'x5'].includes(fields.rd) ? 'call' : 'branch';
+  if (op === 'jal') return fields.rd === 'x0' ? 'branch' : (fields.rd === 'x1' || fields.rd === 'x5') ? 'call' : 'branch';
   if (op === 'jalr') {
-    if (['x1', 'x5'].includes(fields.rd)) return 'call';
+    if (fields.rd === 'x1' || fields.rd === 'x5') return 'call';
     if (fields.rd !== 'x0') return 'branch';
     if (riscv64IsStandardReturn(fields)) return 'return';
     // An indirect jump. It is reported as a branch, matching how x86 classifies
@@ -72,7 +85,7 @@ function riscv64ControlFlow(instruction) {
     // which records kind `indirect` with the computed target expression.
     return 'branch';
   }
-  if (['beq','bne','blt','bge','bltu','bgeu'].includes(op)) return 'conditional-branch';
+  if (RISCV_COND_BRANCH_OPS.has(op)) return 'conditional-branch';
   if (op === 'ecall' || op === 'ebreak') return 'unknown';
   return 'fallthrough';
 }
@@ -81,7 +94,7 @@ function riscv64ControlFlow(instruction) {
 function riscv64DirectControlTarget(instruction) {
   const fields = instruction?.fields;
   if (!fields?.supported || fields.imm == null) return null;
-  if (!['jal','beq','bne','blt','bge','bltu','bgeu'].includes(fields.op)) return null;
+  if (!RISCV_DIRECT_TARGET_OPS.has(fields.op)) return null;
   try { return BigInt(instruction.address) + BigInt(fields.imm); }
   catch { return null; }
 }
@@ -93,7 +106,8 @@ function riscv64DirectControlTarget(instruction) {
  */
 function arm64DirectControlTarget(instruction) {
   if (instruction?.branchTarget == null) return null;
-  if (!['branch','conditional-branch','call'].includes(arm64ControlFlow(instruction))) return null;
+  const kind = arm64ControlFlow(instruction);
+  if (kind !== 'branch' && kind !== 'conditional-branch' && kind !== 'call') return null;
   try { return BigInt(instruction.branchTarget); }
   catch { return null; }
 }
@@ -103,7 +117,7 @@ function x86DirectControlTarget(instruction) {
   const operand = instruction?.detail?.operands?.[0];
   if (operand?.type !== 'immediate' || operand.value == null) return null;
   const kind = x86ControlFlow(instruction);
-  if (!['branch','conditional-branch','call'].includes(kind)) return null;
+  if (kind !== 'branch' && kind !== 'conditional-branch' && kind !== 'call') return null;
   try { return BigInt(operand.value); }
   catch { return null; }
 }
@@ -115,6 +129,19 @@ const ARM64_REGISTERS = Object.freeze([
   Object.freeze({ id:'pstate.btype', bits:2, kind:'system-state' }),
   ...Array.from({length:32}, (_x,i) => Object.freeze({ id:`v${i}`, bits:128, kind:'vector' })),
 ]);
+
+function sameBtiContextInputs(context) {
+  const opts = context?.machineEffectsOptions ?? context?.options;
+  if (!opts || typeof opts !== 'object') return true;
+  const directGuard = context.btiGuardedPage ?? context.guardedPageState ?? context.pageGuardState ?? null;
+  const mergedGuard = (opts.btiGuardedPage ?? context.btiGuardedPage)
+    ?? (opts.guardedPageState ?? context.guardedPageState)
+    ?? (opts.pageGuardState ?? context.pageGuardState) ?? null;
+  return directGuard === mergedGuard
+    && (context.featBti ?? context.hasBti ?? null) === ((opts.featBti ?? context.featBti) ?? (opts.hasBti ?? context.hasBti) ?? null)
+    && (context.incomingBtype ?? context.btype ?? context.pstateBtype) === ((opts.incomingBtype ?? context.incomingBtype) ?? (opts.btype ?? context.btype) ?? (opts.pstateBtype ?? context.pstateBtype))
+    && (context.sctlrBt ?? context.sctlr_elx_bt ?? context.btPolicy ?? context.sctlrPolicy) === ((opts.sctlrBt ?? context.sctlrBt) ?? (opts.sctlr_elx_bt ?? context.sctlr_elx_bt) ?? (opts.btPolicy ?? context.btPolicy) ?? (opts.sctlrPolicy ?? context.sctlrPolicy));
+}
 
 const liftArm64eMachineEffectsBase = extendArm64eWithPacmEffects(extendArm64WithArm64eEffects(liftArm64MachineEffects));
 const liftArm64eMachineEffects = (decoded, context = {}) => {
@@ -154,7 +181,7 @@ const liftArm64ArchitectureMachineEffects = (decoded, context = {}) => {
 
     if (pacEnabled === false || pacRequested === false) {
       const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.toLowerCase() : '';
-      if (['paciasp', 'pacibsp', 'autiasp', 'autibsp', 'paciaz', 'pacibz', 'autiaz', 'autibz'].includes(mnemonic)) {
+      if (ARM64_PAUTH_HINT_NOPS.has(mnemonic)) {
         return createMachineEffectBundle({
           instructionId: decoded.instructionId || context.instructionId || 'arm64:pauth:nop',
           architectureId: 'arm64',
@@ -212,7 +239,16 @@ const liftArm64ArchitectureMachineEffects = (decoded, context = {}) => {
 
   const bundle = liftArm64MachineEffects(decoded, context);
   if (bundle == null) return null;
-  const postState = decorateArm64BtiGuardedPageEffects(decoded, bundle, context);
+  // liftArm64MachineEffects already ran decorateArm64BtiGuardedPageEffects
+  // inside dispatcher.js. Skip the redundant second pass when the instruction
+  // is not BTI/implicit-landing or when context and normalizedContext carry
+  // identical BTI guard inputs.
+  const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.trim().toLowerCase() : '';
+  const needsSecondBtiPass = (mnemonic === 'bti' || ARM64_IMPLICIT_BTI_LANDING_MNEMONICS.has(mnemonic))
+    && !sameBtiContextInputs(context);
+  const postState = needsSecondBtiPass
+    ? decorateArm64BtiGuardedPageEffects(decoded, bundle, context)
+    : bundle;
   return decorateArm64BtypeEffects(decoded, context, postState);
 };
 

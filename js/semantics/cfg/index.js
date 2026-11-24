@@ -109,11 +109,16 @@ function normalizePredecessors(input) {
 function normalizeBlock(input) {
   input = object(input, 'semantic-cfg-invalid-block');
   assertAllowedKeys(input, new Set(['id', 'successors', 'predecessors']), 'semantic-cfg-unexpected-block-field');
-  const successors = array(input.successors ?? [], 'semantic-cfg-invalid-successors')
-    .map(normalizeEdge)
-    .sort((a, b) => compareCanonicalText(edgeKey(a), edgeKey(b)));
-  const keys = successors.map(edgeKey);
-  if (new Set(keys).size !== keys.length) fail('semantic-cfg-duplicate-edge');
+  const keyed = array(input.successors ?? [], 'semantic-cfg-invalid-successors')
+    .map((raw) => {
+      const edge = normalizeEdge(raw);
+      return { edge, key: edgeKey(edge) };
+    })
+    .sort((a, b) => compareCanonicalText(a.key, b.key));
+  for (let i = 1; i < keyed.length; i += 1) {
+    if (keyed[i].key === keyed[i - 1].key) fail('semantic-cfg-duplicate-edge');
+  }
+  const successors = keyed.map((item) => item.edge);
   return {
     id: nonEmpty(input.id, 'semantic-cfg-block-id-required'),
     successors,
@@ -124,6 +129,8 @@ function normalizeBlock(input) {
 const immutableCfgIndexes = new WeakMap();
 const canonicalSemanticCfgs = new WeakSet();
 const canonicalDominanceCache = new WeakMap();
+const canonicalDominanceResults = new WeakSet();
+const dominanceTreeIndexCache = new WeakMap();
 
 export function isCanonicalSemanticCfg(cfg) {
   return Boolean(cfg && typeof cfg === 'object' && canonicalSemanticCfgs.has(cfg));
@@ -214,6 +221,25 @@ export function predecessorsOf(cfg, blockId) {
   return block ? block.predecessors.slice() : [];
 }
 
+function sortedSuccessorTargets(block) {
+  const succs = block.successors;
+  const len = succs.length;
+  if (len === 0) return [];
+  if (len === 1) return [succs[0].to];
+  const targets = new Array(len);
+  let needsSort = false;
+  let prev = succs[0].to;
+  targets[0] = prev;
+  for (let i = 1; i < len; i += 1) {
+    const cur = succs[i].to;
+    targets[i] = cur;
+    if (cur < prev) needsSort = true;
+    prev = cur;
+  }
+  if (needsSort) targets.sort();
+  return targets;
+}
+
 function reachableBlocksWithTick(cfg, startBlockId, tick) {
   const byId = cfgIndex(cfg);
   const start = String(startBlockId);
@@ -225,8 +251,11 @@ function reachableBlocksWithTick(cfg, startBlockId, tick) {
     const id = stack.pop();
     if (seen.has(id)) continue;
     seen.add(id);
-    const next = byId.get(id).successors.map((edge) => edge.to).slice().sort().reverse();
-    for (const target of next) if (!seen.has(target)) stack.push(target);
+    const next = sortedSuccessorTargets(byId.get(id)).reverse();
+    for (let i = 0; i < next.length; i += 1) {
+      const target = next[i];
+      if (!seen.has(target)) stack.push(target);
+    }
   }
   return Object.freeze([...seen].sort());
 }
@@ -245,7 +274,7 @@ function reachabilityAndReversePostOrderWithTick(cfg, tick) {
   const stack = [{
     id: entry,
     next: 0,
-    successors: byId.get(entry).successors.map((edge) => edge.to).slice().sort(),
+    successors: sortedSuccessorTargets(byId.get(entry)),
   }];
   while (stack.length) {
     tick();
@@ -257,7 +286,7 @@ function reachabilityAndReversePostOrderWithTick(cfg, tick) {
       stack.push({
         id: target,
         next: 0,
-        successors: byId.get(target).successors.map((edge) => edge.to).slice().sort(),
+        successors: sortedSuccessorTargets(byId.get(target)),
       });
       continue;
     }
@@ -310,19 +339,28 @@ export function analyzeSemanticDominance(cfg, options = {}) {
   // paid along dominator chains instead of over whole block sets. Full dominator
   // sets are then recovered from the idom tree, which is the definition of a
   // dominator, so the published result is unchanged.
+  const rpoCount = rpo.length;
   const order = new Map();
-  const reachablePredsById = new Map();
-  for (let index = 0; index < rpo.length; index += 1) {
+  for (let index = 0; index < rpoCount; index += 1) {
     tick();
-    const id = rpo[index];
-    order.set(id, index);
-    reachablePredsById.set(id, byId.get(id).predecessors.filter((pred) => reachable.has(pred)));
+    order.set(rpo[index], index);
   }
-  const idom = new Map([[entry, entry]]);
+  const reachablePredIndices = new Array(rpoCount);
+  for (let index = 0; index < rpoCount; index += 1) {
+    const preds = byId.get(rpo[index]).predecessors;
+    const list = [];
+    for (let p = 0; p < preds.length; p += 1) {
+      const pIdx = order.get(preds[p]);
+      if (pIdx !== undefined) list.push(pIdx);
+    }
+    reachablePredIndices[index] = list;
+  }
+  const idomIdx = new Int32Array(rpoCount).fill(-1);
+  idomIdx[0] = 0;
   const intersect = (a, b) => {
     while (a !== b) {
-      while (order.get(a) > order.get(b)) { tick(); a = idom.get(a); }
-      while (order.get(b) > order.get(a)) { tick(); b = idom.get(b); }
+      while (a > b) { tick(); a = idomIdx[a]; }
+      while (b > a) { tick(); b = idomIdx[b]; }
     }
     return a;
   };
@@ -332,17 +370,18 @@ export function analyzeSemanticDominance(cfg, options = {}) {
     tick();
     if (++rounds > cfg.blocks.length * 2 + 4) fail('semantic-cfg-dominance-did-not-converge');
     changed = false;
-    for (const id of rpo) {
+    for (let i = 0; i < rpoCount; i += 1) {
       tick();
-      if (id === entry) continue;
-      const predecessors = reachablePredsById.get(id);
-      let next = null;
-      for (const pred of predecessors) {
-        if (!idom.has(pred)) continue;
-        next = next == null ? pred : intersect(pred, next);
+      if (i === 0) continue;
+      const predecessors = reachablePredIndices[i];
+      let next = -1;
+      for (let p = 0; p < predecessors.length; p += 1) {
+        const pred = predecessors[p];
+        if (idomIdx[pred] === -1) continue;
+        next = next === -1 ? pred : intersect(pred, next);
       }
-      if (next == null) continue;
-      if (idom.get(id) !== next) { idom.set(id, next); changed = true; }
+      if (next === -1) continue;
+      if (idomIdx[i] !== next) { idomIdx[i] = next; changed = true; }
     }
   }
 
@@ -352,11 +391,12 @@ export function analyzeSemanticDominance(cfg, options = {}) {
   // A dominator precedes its block in reverse postorder, so each block can
   // reuse its immediate dominator's already-sorted chain via binary insertion,
   // avoiding repeated ancestor traversal and O(chain log chain) full sorts.
-  const doms = new Map([[entry, [entry]]]);
-  for (const id of rpo) {
-    if (id === entry) continue;
-    const parent = idom.get(id);
-    const parentChain = doms.get(parent);
+  const domChains = new Array(rpoCount);
+  domChains[0] = [entry];
+  for (let i = 1; i < rpoCount; i += 1) {
+    const id = rpo[i];
+    const parentIdx = idomIdx[i];
+    const parentChain = parentIdx >= 0 ? domChains[parentIdx] : null;
     if (!parentChain) fail('semantic-cfg-invalid-dominator-chain');
     let low = 0;
     let high = parentChain.length;
@@ -365,46 +405,52 @@ export function analyzeSemanticDominance(cfg, options = {}) {
       if (parentChain[mid] < id) low = mid + 1;
       else high = mid;
     }
-    const chain = parentChain.slice();
-    chain.splice(low, 0, id);
-    doms.set(id, chain);
+    const len = parentChain.length;
+    const chain = new Array(len + 1);
+    for (let k = 0; k < low; k += 1) chain[k] = parentChain[k];
+    chain[low] = id;
+    for (let k = low; k < len; k += 1) chain[k + 1] = parentChain[k];
+    domChains[i] = chain;
   }
+  idomIdx[0] = -1;
 
-  const idomOut = new Map();
   const dominators = {};
+  const immediateDominators = {};
   for (const block of cfg.blocks) {
     const id = block.id;
-    if (!reachable.has(id) || id === entry) {
-      idomOut.set(id, null);
+    const rIdx = order.get(id);
+    if (rIdx === undefined || rIdx === 0) {
+      immediateDominators[id] = null;
       dominators[id] = [id];
       continue;
     }
-    dominators[id] = doms.get(id);
-    idomOut.set(id, idom.get(id));
+    dominators[id] = domChains[rIdx];
+    immediateDominators[id] = rpo[idomIdx[rIdx]];
   }
 
-  const frontier = new Map(cfg.blocks.map((block) => [block.id, new Set()]));
+  const frontierSets = Array.from({ length: rpoCount }, () => new Set());
   for (const block of cfg.blocks) {
-    if (!reachable.has(block.id)) continue;
-    const predecessors = reachablePredsById.get(block.id);
-    if (!predecessors || predecessors.length === 0 || (predecessors.length < 2 && block.id !== entry)) continue;
-    for (const pred of predecessors) {
-      let runner = pred;
+    const bIdx = order.get(block.id);
+    if (bIdx === undefined) continue;
+    const predecessors = reachablePredIndices[bIdx];
+    if (predecessors.length === 0 || (predecessors.length < 2 && bIdx !== 0)) continue;
+    const targetIdom = idomIdx[bIdx];
+    for (let p = 0; p < predecessors.length; p += 1) {
+      let runner = predecessors[p];
       let guard = cfg.blocks.length + 2;
-      while (runner != null && runner !== idomOut.get(block.id) && guard-- > 0) {
+      while (runner !== -1 && runner !== targetIdom && guard-- > 0) {
         tick();
-        frontier.get(runner).add(block.id);
-        runner = idomOut.get(runner);
+        frontierSets[runner].add(block.id);
+        runner = idomIdx[runner];
       }
       if (guard <= 0) fail('semantic-cfg-invalid-dominator-chain');
     }
   }
 
-  const immediateDominators = {};
   const dominanceFrontier = {};
   for (const block of cfg.blocks) {
-    immediateDominators[block.id] = idomOut.get(block.id);
-    dominanceFrontier[block.id] = [...frontier.get(block.id)].sort();
+    const bIdx = order.get(block.id);
+    dominanceFrontier[block.id] = bIdx === undefined ? [] : [...frontierSets[bIdx]].sort();
   }
   const result = deepFreeze({
     reachable: [...reachable].sort(),
@@ -413,6 +459,92 @@ export function analyzeSemanticDominance(cfg, options = {}) {
     immediateDominators,
     dominanceFrontier,
   });
+  canonicalDominanceResults.add(result);
   if (cacheable) canonicalDominanceCache.set(cfg, { result, workUsed });
   return result;
+}
+
+export function withCanonicalDominanceFrontier(dominance, dominanceFrontier) {
+  const derived = deepFreeze({ ...dominance, dominanceFrontier });
+  if (canonicalDominanceResults.has(dominance)) {
+    canonicalDominanceResults.add(derived);
+    const existing = dominanceTreeIndexCache.get(dominance);
+    if (existing) dominanceTreeIndexCache.set(derived, existing);
+  }
+  return derived;
+}
+
+function getCanonicalDominanceTreeIndex(dominance) {
+  if (!dominance || typeof dominance !== 'object' || !canonicalDominanceResults.has(dominance)) {
+    return null;
+  }
+  let cached = dominanceTreeIndexCache.get(dominance);
+  if (cached) return cached;
+  const immediateDominators = dominance.immediateDominators;
+  const blockIds = Object.keys(immediateDominators);
+  const n = blockIds.length;
+  const blockIndexById = new Map();
+  for (let i = 0; i < n; i += 1) blockIndexById.set(blockIds[i], i);
+  const firstChild = new Int32Array(n).fill(-1);
+  const nextSibling = new Int32Array(n).fill(-1);
+  const roots = [];
+  for (let i = 0; i < n; i += 1) {
+    const idom = immediateDominators[blockIds[i]];
+    if (idom == null) {
+      roots.push(i);
+    } else {
+      const parentIdx = blockIndexById.get(idom);
+      if (parentIdx === undefined) {
+        roots.push(i);
+      } else {
+        nextSibling[i] = firstChild[parentIdx];
+        firstChild[parentIdx] = i;
+      }
+    }
+  }
+  const tin = new Int32Array(n);
+  const tout = new Int32Array(n);
+  const stackNode = new Int32Array(n);
+  const stackChild = new Int32Array(n);
+  let clock = 0;
+  for (let r = 0; r < roots.length; r += 1) {
+    const root = roots[r];
+    tin[root] = ++clock;
+    stackNode[0] = root;
+    stackChild[0] = firstChild[root];
+    let top = 1;
+    while (top > 0) {
+      const cur = stackNode[top - 1];
+      const child = stackChild[top - 1];
+      if (child !== -1) {
+        stackChild[top - 1] = nextSibling[child];
+        tin[child] = ++clock;
+        stackNode[top] = child;
+        stackChild[top] = firstChild[child];
+        top += 1;
+      } else {
+        tout[cur] = ++clock;
+        top -= 1;
+      }
+    }
+  }
+  cached = { blockIndexById, tin, tout };
+  dominanceTreeIndexCache.set(dominance, cached);
+  return cached;
+}
+
+export function dominatesBlock(dominance, ancestorId, descendantId) {
+  if (!dominance || typeof dominance !== 'object' || ancestorId == null || descendantId == null) {
+    return false;
+  }
+  const index = getCanonicalDominanceTreeIndex(dominance);
+  if (index) {
+    const aIdx = index.blockIndexById.get(ancestorId);
+    const dIdx = index.blockIndexById.get(descendantId);
+    if (aIdx === undefined || dIdx === undefined) return false;
+    if (aIdx === dIdx) return true;
+    return index.tin[aIdx] <= index.tin[dIdx] && index.tin[dIdx] < index.tout[aIdx];
+  }
+  const doms = dominance.dominators?.[descendantId];
+  return Array.isArray(doms) ? doms.includes(ancestorId) : false;
 }

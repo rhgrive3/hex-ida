@@ -85,7 +85,13 @@ export class FieldIndex {
     // for every insertion is Θ(M²) and a valid 60 000-method Objective-C image
     // blocks the analysis loop for seconds. Insertion order and the exact
     // duplicate identity (className, sel, kind) stay unchanged.
-    this._ownerIdentities = new Set();
+    const ownerIdentities = new Set();
+    const AMBIGUOUS = Symbol('ambiguous');
+    const addUnique = (map, key, iv) => {
+      const existing = map.get(key);
+      if (existing === undefined) map.set(key, iv);
+      else if (existing !== iv) map.set(key, AMBIGUOUS);
+    };
     this.classOfName = new Map();  // クラス名 -> クラス情報（別名）
     /*
      * 「位置が書いてある場所」→ フィールド。
@@ -100,10 +106,16 @@ export class FieldIndex {
     for (const c of list) {
       if (!c || !c.name) continue;
       const byOffset = new Map();
+      const sizedIvars = [];
+      let minOwnOffset = Infinity;
       const ivars = (c.ivars || []).filter((iv) =>
         objcIvarRangeWithinInstance(iv?.offset, iv?.size ?? null, c.instanceSize));
       for (const iv of ivars) {
-        byOffset.set(Number(iv.offset), iv);
+        const ivOff = Number(iv.offset);
+        byOffset.set(ivOff, iv);
+        if (iv.offset != null && Number.isFinite(ivOff)) {
+          if (ivOff < minOwnOffset) minOwnOffset = ivOff;
+        }
         if (iv.offsetVar != null) {
           const offsetKey = normalizeAddressKey(iv.offsetVar);
           if (offsetKey != null) this.byOffsetVar.set(offsetKey, { className: c.name, field: iv });
@@ -123,6 +135,9 @@ export class FieldIndex {
           : (typeof p.name === 'string' && p.name ? '_' + p.name : null);
         if (key && !propByIvar.has(key)) propByIvar.set(key, p);
       }
+      const customBySel = new Map();
+      const defaultGetterByPlain = new Map();
+      const defaultSetterBySel = new Map();
       for (const iv of ivars) {
         const p = propByIvar.get(iv.name);
         if (p) {
@@ -130,13 +145,40 @@ export class FieldIndex {
           // 宣言された型の方が具体的なら、そちらも持っておく（上書きはしない）
           if (p.type && (!iv.type || iv.type.kind === 'unknown')) iv.declaredType = p.type;
         }
+        if (iv.offset != null && Number.isFinite(Number(iv.offset))) {
+          const size = iv.size || (iv.type && iv.type.bytes) || 0;
+          if (size > 0) sizedIvars.push(iv);
+        }
+        if (typeof iv.property?.getter === 'string' && iv.property.getter.length > 0) {
+          addUnique(customBySel, iv.property.getter, iv);
+        }
+        if (typeof iv.property?.setter === 'string' && iv.property.setter.length > 0) {
+          addUnique(customBySel, iv.property.setter, iv);
+        }
+        if (typeof iv.name === 'string' && iv.name.length > 0) {
+          const plain = plainFieldName(iv.name);
+          if (plain) {
+            addUnique(defaultGetterByPlain, plain, iv);
+            addUnique(defaultSetterBySel, `set${plain[0].toUpperCase()}${plain.slice(1)}:`, iv);
+          }
+        }
+        if (typeof iv.property?.name === 'string' && iv.property.name.length > 0) {
+          const plain = plainFieldName(iv.property.name);
+          if (plain) {
+            addUnique(defaultGetterByPlain, plain, iv);
+            addUnique(defaultSetterBySel, `set${plain[0].toUpperCase()}${plain.slice(1)}:`, iv);
+          }
+        }
       }
 
+      const instanceSize = c.instanceSize || 0;
       const entry = {
         name: c.name,
         superName: c.superName || null,
-        instanceSize: c.instanceSize || 0,
+        instanceSize,
+        firstOwnOffset: Number.isFinite(minOwnOffset) ? minOwnOffset : instanceSize,
         ivars,
+        sizedIvars,
         properties: c.properties || [],
         propertyByIvar: propByIvar,
         byOffset,
@@ -153,31 +195,19 @@ export class FieldIndex {
       const accessorField = (sel) => {
         const text = String(sel || '');
         if (!text) return null;
+        const customHit = customBySel.get(text);
+        if (customHit === AMBIGUOUS) return null;
         const setter = /^set([^:]+):$/.test(text);
         const hasColon = text.includes(':');
-
-        const matches = [];
-        for (const iv of ivars) {
-          const customGetter = typeof iv.property?.getter === 'string' && iv.property.getter.length > 0
-            ? iv.property.getter
-            : null;
-          const customSetter = typeof iv.property?.setter === 'string' && iv.property.setter.length > 0
-            ? iv.property.setter
-            : null;
-          if (customGetter === text || customSetter === text) {
-            matches.push(iv);
-            continue;
-          }
-          if (!setter && hasColon) continue;
-          const names = [iv.name, iv.property && iv.property.name]
-            .filter((x) => typeof x === 'string' && x.length > 0)
-            .map((x) => plainFieldName(x)).filter(Boolean);
-          const matched = setter
-            ? names.some((name) => `set${name[0].toUpperCase()}${name.slice(1)}:` === text)
-            : names.includes(plainFieldName(text));
-          if (matched) matches.push(iv);
+        let defaultHit;
+        if (setter || !hasColon) {
+          defaultHit = setter
+            ? defaultSetterBySel.get(text)
+            : defaultGetterByPlain.get(plainFieldName(text));
         }
-        return matches.length === 1 ? matches[0] : null;
+        if (defaultHit === AMBIGUOUS) return null;
+        if (customHit && defaultHit && customHit !== defaultHit) return null;
+        return customHit || defaultHit || null;
       };
       const addMethodOwner = (m, defaultKind, allowInstanceAccessor) => {
         if (m.addr == null) return;
@@ -188,8 +218,8 @@ export class FieldIndex {
           accessorField: allowInstanceAccessor ? accessorField(m.sel) : null,
         };
         const identity = `${key}\u0000${owner.className}\u0000${owner.sel ?? ''}\u0000${owner.kind ?? ''}`;
-        if (this._ownerIdentities.has(identity)) return;
-        this._ownerIdentities.add(identity);
+        if (ownerIdentities.has(identity)) return;
+        ownerIdentities.add(identity);
         const owners = this.methodOwner.get(key) || [];
         owners.push(owner);
         this.methodOwner.set(key, owners);
@@ -238,22 +268,14 @@ export class FieldIndex {
       if (!c) return null;
       const exact = c.byOffset.get(off);
       if (exact) return { field: exact, className: currentName, exact: true, delta: 0 };
-      for (const iv of c.ivars) {
-        if (iv.offset == null || !Number.isFinite(Number(iv.offset))) continue;
+      for (const iv of c.sizedIvars) {
         const ivOffset = Number(iv.offset);
         const size = iv.size || (iv.type && iv.type.bytes) || 0;
         if (size > 0 && off > ivOffset && off < ivOffset + size) {
           return { field: iv, className: currentName, exact: false, delta: off - ivOffset };
         }
       }
-      let minOwnOffset = Infinity;
-      for (const iv of c.ivars) {
-        if (iv.offset == null) continue;
-        const ivOff = Number(iv.offset);
-        if (Number.isFinite(ivOff) && ivOff < minOwnOffset) minOwnOffset = ivOff;
-      }
-      const firstOwnOffset = Number.isFinite(minOwnOffset) ? minOwnOffset : c.instanceSize;
-      if (!c.superName || !(off < firstOwnOffset)) return null;
+      if (!c.superName || !(off < c.firstOwnOffset)) return null;
       currentName = c.superName;
     }
     return null;

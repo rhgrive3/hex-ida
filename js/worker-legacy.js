@@ -2828,6 +2828,60 @@ async function classifyExecutableCoverage({ gaps, regionIds, endian = 'little', 
 
 /* ── search ─────────────────────────────────────────────────── */
 
+function compileLegacyBytePattern(pattern, mask, foldAscii) {
+  const length = pattern && pattern.length;
+  if (!Number.isInteger(length) || length < 3 || length > 4096) return null;
+  const lowerByte = (b) => (b >= 65 && b <= 90 ? b + 32 : b);
+  const expected = new Uint8Array(length);
+  const masks = foldAscii ? null : new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    const pb = pattern[i];
+    if (typeof pb !== 'number' || !Number.isInteger(pb) || pb < 0 || pb > 255) return null;
+    expected[i] = foldAscii ? lowerByte(pb) : pb;
+    if (masks) {
+      const mb = mask && mask[i];
+      if (typeof mb !== 'number' || !Number.isInteger(mb) || mb < 0 || mb > 255) return null;
+      masks[i] = mb;
+    }
+  }
+  if (masks) {
+    let allZero = true;
+    for (let i = 0; i < length; i++) if (masks[i] !== 0) { allZero = false; break; }
+    if (allZero) {
+      let matches = true;
+      for (let i = 0; i < length; i++) if (expected[i] !== 0) { matches = false; break; }
+      return { find(bytes, from) { return matches && from <= bytes.length - length ? from : -1; } };
+    }
+  }
+  const skip = new Uint32Array(256);
+  skip.fill(length);
+  for (let i = 0; i < length - 1; i++) {
+    const distance = length - 1 - i;
+    if (!masks || masks[i] === 255) skip[expected[i]] = distance;
+    else {
+      const m = masks[i], e = expected[i];
+      for (let byte = 0; byte < 256; byte++) if ((byte & m) === e) skip[byte] = distance;
+    }
+  }
+  return {
+    find(bytes, from) {
+      const last = length - 1;
+      const end = bytes.length - length;
+      for (let at = from; at <= end;) {
+        const tail = foldAscii ? lowerByte(bytes[at + last]) : bytes[at + last];
+        let idx = last;
+        for (; idx >= 0; idx--) {
+          const actual = foldAscii ? lowerByte(bytes[at + idx]) : bytes[at + idx];
+          if (masks ? (actual & masks[idx]) !== expected[idx] : actual !== expected[idx]) break;
+        }
+        if (idx < 0) return at;
+        at += skip[tail];
+      }
+      return -1;
+    },
+  };
+}
+
 async function runSearch({ regionId, kind, query, hex, from, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
@@ -2841,6 +2895,7 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     const pat = hex;
     if (!pat || !pat.bytes.length) throw new Error('Enter a hex pattern such as “FD 7B” or “D1??00”.');
     const plen = pat.bytes.length;
+    const matcher = compileLegacyBytePattern(pat.bytes, pat.mask, false);
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
@@ -2852,15 +2907,19 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
       const base = pos - carry.length;
       const limit = joined.length - plen + 1;
       for (let i = 0; i < limit; i++) {
-        let ok = true;
-        for (let j = 0; j < plen; j++) {
-          if ((joined[i + j] & pat.mask[j]) !== pat.bytes[j]) { ok = false; break; }
+        if (matcher) {
+          i = matcher.find(joined, i);
+          if (i < 0) break;
+        } else {
+          let ok = true;
+          for (let j = 0; j < plen; j++) {
+            if ((joined[i + j] & pat.mask[j]) !== pat.bytes[j]) { ok = false; break; }
+          }
+          if (!ok) continue;
         }
-        if (ok) {
-          const byteOff = base + i;
-          push(results, byteOff, region, joined, i, plen);
-          if (results.length >= SEARCH_LIMIT) { capped = true; break; }
-        }
+        const byteOff = base + i;
+        push(results, byteOff, region, joined, i, plen);
+        if (results.length >= SEARCH_LIMIT) { capped = true; break; }
       }
       pos += blk.length;
       scanned = pos - startByte;
@@ -2878,6 +2937,7 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     const lower = (b) => (b >= 65 && b <= 90 ? b + 32 : b);
     for (let i = 0; i < pat.length; i++) pat[i] = lower(pat[i]);
     const plen = pat.length;
+    const matcher = compileLegacyBytePattern(pat, null, true);
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
@@ -2889,11 +2949,16 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
       const base = pos - carry.length;
       const limit = joined.length - plen + 1;
       for (let i = 0; i < limit; i++) {
-        let ok = true;
-        for (let j = 0; j < plen; j++) {
-          if (lower(joined[i + j]) !== pat[j]) { ok = false; break; }
+        if (matcher) {
+          i = matcher.find(joined, i);
+          if (i < 0) break;
+        } else {
+          let ok = true;
+          for (let j = 0; j < plen; j++) {
+            if (lower(joined[i + j]) !== pat[j]) { ok = false; break; }
+          }
+          if (!ok) continue;
         }
-        if (!ok) continue;
         const byteOff = base + i;
         // 前後を少し添えて、どんな文字列の中の一致か分かるようにする
         let text = '';

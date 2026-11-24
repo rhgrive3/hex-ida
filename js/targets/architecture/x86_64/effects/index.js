@@ -53,21 +53,49 @@ const FAMILIES = Object.freeze([
 
 export { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION };
 
+const EVEX_ONLY_REGISTER_ID_RE = /^(?:zmm(?:[0-9]|[12][0-9]|3[01])|(?:xmm|ymm)(?:1[6-9]|2[0-9]|3[01]))$/;
+
+function isEvexOnlyRegister(register) {
+  if (!register) return false;
+  if (register.evexOnly === true) return true;
+  const id = String(register.id || '').toLowerCase();
+  if (id.length < 4) return false;
+  const c0 = id.charCodeAt(0);
+  if (c0 !== 122 && c0 !== 120 && c0 !== 121) return false; // 'z', 'x', 'y'
+  return EVEX_ONLY_REGISTER_ID_RE.test(id);
+}
+
 function invalidNonEvexExtendedVector(instruction) {
   const evex = String(instruction?.detail?.prefixes?.vector?.kind || '').toLowerCase() === 'evex';
   if (evex) return false;
-  const registers = [
-    ...(instruction?.detail?.operands || []).filter((operand) => operand?.type === 'register').map((operand) => operand.register),
-    ...(instruction?.detail?.implicitReads || []), ...(instruction?.detail?.implicitWrites || []),
-  ];
-  return registers.some((register) => register?.evexOnly === true || /^(?:zmm(?:[0-9]|[12][0-9]|3[01])|(?:xmm|ymm)(?:1[6-9]|2[0-9]|3[01]))$/.test(String(register?.id || '').toLowerCase()));
+  const detail = instruction?.detail;
+  const operands = detail?.operands;
+  if (operands) {
+    for (let i = 0; i < operands.length; i++) {
+      const operand = operands[i];
+      if (operand?.type === 'register' && isEvexOnlyRegister(operand.register)) return true;
+    }
+  }
+  const implicitReads = detail?.implicitReads;
+  if (implicitReads) {
+    for (let i = 0; i < implicitReads.length; i++) {
+      if (isEvexOnlyRegister(implicitReads[i])) return true;
+    }
+  }
+  const implicitWrites = detail?.implicitWrites;
+  if (implicitWrites) {
+    for (let i = 0; i < implicitWrites.length; i++) {
+      if (isEvexOnlyRegister(implicitWrites[i])) return true;
+    }
+  }
+  return false;
 }
 
 function vectorPrefixRawMismatch(instruction) {
   const vector = instruction?.detail?.prefixes?.vector;
   if (vector == null) return false;
   const kind = String(vector.kind || '').toLowerCase();
-  const bytes = Uint8Array.from(vector.bytes || []);
+  const bytes = vector.bytes instanceof Uint8Array ? vector.bytes : Uint8Array.from(vector.bytes || []);
   if (kind === 'vex2') {
     if (bytes.length !== 2 || bytes[0] !== 0xc5) return false;
   } else if (kind === 'vex3') {

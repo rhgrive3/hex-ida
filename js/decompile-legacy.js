@@ -340,7 +340,47 @@ function buildContext(model, o) {
   const symbolFor = nameReader(o.symbolFor);
   const { scalarFpKinds, vecRegs } = computeFpVecKinds(model, callOf, symbolFor);
 
+  let memWritesByRow = null;
+  if (values && Array.isArray(values.memWrites) && values.memWrites.length) {
+    memWritesByRow = new Map();
+    for (const w of values.memWrites) {
+      let arr = memWritesByRow.get(w.row);
+      if (!arr) { arr = []; memWritesByRow.set(w.row, arr); }
+      arr.push(w);
+    }
+  }
+  let writeRowsByReg = null;
+  let callRows = null;
+  const modelInsns = (model && model.instructions) || [];
+  let insnsSortedByRow = true;
+  let prevInsnRow = -Infinity;
+  for (let i = 0; i < modelInsns.length; i++) {
+    const r = modelInsns[i].row;
+    if (r == null || r < prevInsnRow) { insnsSortedByRow = false; break; }
+    prevInsnRow = r;
+  }
+  if (insnsSortedByRow && modelInsns.length) {
+    writeRowsByReg = new Map();
+    callRows = [];
+    for (let i = 0; i < modelInsns.length; i++) {
+      const insn = modelInsns[i];
+      if (insn.isCall) callRows.push(insn.row);
+      const writes = insn.writes;
+      if (writes) {
+        for (let j = 0; j < writes.length; j++) {
+          const wReg = writes[j];
+          let arr = writeRowsByReg.get(wReg);
+          if (!arr) { arr = []; writeRowsByReg.set(wReg, arr); }
+          arr.push(insn.row);
+        }
+      }
+    }
+  }
+
   return {
+    memWritesByRow,
+    writeRowsByReg,
+    callRows,
     model,
     opts: o,
     byRow,
@@ -1087,16 +1127,36 @@ function liveOutSets(model, blocks, blockOf) {
   for (let round = 0; round < 40; round++) {
     let changed = false;
     for (let i = n - 1; i >= 0; i--) {
-      const o = new Set();
-      for (const s of succ[i]) for (const r of inSet[s]) o.add(r);
-      const ni = new Set(use[i]);
-      for (const r of o) if (!def[i].has(r)) ni.add(r);
-      if (ni.size !== inSet[i].size || o.size !== out[i].size) changed = true;
-      inSet[i] = ni; out[i] = o;
+      const o = out[i];
+      const ni = inSet[i];
+      const d = def[i];
+      const prevOutSize = o.size;
+      const prevInSize = ni.size;
+      if (round === 0) {
+        for (const r of use[i]) ni.add(r);
+      }
+      for (const s of succ[i]) {
+        for (const r of inSet[s]) {
+          o.add(r);
+          if (!d.has(r)) ni.add(r);
+        }
+      }
+      if (o.size !== prevOutSize || ni.size !== prevInSize) changed = true;
     }
     if (!changed) break;
   }
   return out;
+}
+
+function hasRowInOpenRange(sortedRows, loExclusive, hiExclusive) {
+  if (!sortedRows || !sortedRows.length || loExclusive >= hiExclusive) return false;
+  let lo = 0, hi = sortedRows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (sortedRows[mid] <= loExclusive) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < sortedRows.length && sortedRows[lo] < hiExclusive;
 }
 
 /**
@@ -1125,6 +1185,11 @@ function isClobberedMatName(ctx, matName, targetNode, atRow, sourceReg = null, r
   if (!def || def.row == null) return false;
   const limitRow = atRow != null ? atRow : (regNode && regNode.row != null && regNode.row >= 0 ? regNode.row + 1 : null);
   if (limitRow == null) return false;
+  if (ctx.writeRowsByReg) {
+    if (hasRowInOpenRange(ctx.writeRowsByReg.get(matName), def.row, limitRow)) return true;
+    if (callerClobbered && hasRowInOpenRange(ctx.callRows, def.row, limitRow)) return true;
+    return false;
+  }
   const insns = (ctx.model && ctx.model.instructions) || [];
   for (const i of insns) {
     if (i.row <= def.row) continue;
@@ -3306,9 +3371,12 @@ function memoryStatement(insn, ctx, mk, base) {
 function storedValues(insn, ctx) {
   const vg = ctx.values;
   if (!vg) return [];
+  const list = ctx.memWritesByRow ? ctx.memWritesByRow.get(insn.row) : vg.memWrites;
+  if (!list || !list.length) return [];
   const out = [];
-  for (const w of vg.memWrites || []) {
-    if (w.row !== insn.row) continue;
+  for (let i = 0; i < list.length; i++) {
+    const w = list[i];
+    if (!ctx.memWritesByRow && w.row !== insn.row) continue;
     const text = w.value ? exprText(ctx, w.value, null, w.row) : null;
     out.push(text || null);
   }
@@ -3891,11 +3959,29 @@ function inlineTemporaries(stmts, ctx, blockInfo = {}) {
      */
     const lhs = /^([A-Za-z_]\w*)\s*=\s*/.exec(st.text.trim());
     const name = lhs ? lhs[1] : varOf(reg, ctx);
-    const readers = st.call
-      ? stmts.map((s, k) => k).filter((k) => k > i && !stmts[k].dropped && hasWholeWord(stmts[k].text, name))
-      : (uses.get(reg) || []).filter((j) => j > i);
-    if (readers.length !== 1) continue;
-    const j = readers[0];
+    let j = -1;
+    let readerCount = 0;
+    if (st.call) {
+      for (let k = i + 1; k < stmts.length; k++) {
+        if (!stmts[k].dropped && hasWholeWord(stmts[k].text, name)) {
+          j = k;
+          readerCount++;
+          if (readerCount > 1) break;
+        }
+      }
+    } else {
+      const regUses = uses.get(reg);
+      if (regUses) {
+        for (let ui = 0; ui < regUses.length; ui++) {
+          if (regUses[ui] > i) {
+            j = regUses[ui];
+            readerCount++;
+            if (readerCount > 1) break;
+          }
+        }
+      }
+    }
+    if (readerCount !== 1) continue;
     const target = stmts[j];
     if (!target || target.dropped) continue;
     if (target.call) continue;                   // 呼び出しの行に埋め込むと左辺まで書き換えてしまう
@@ -3953,14 +4039,30 @@ function inlineTemporaries(stmts, ctx, blockInfo = {}) {
       if (crossesCtrl) continue;
       const interveningDef = (defs.get(reg) || []).some((k) => k > i && k < j && !stmts[k].dropped);
       if (interveningDef) continue;
-      const clobberedRead = (st.reads || []).some((r) =>
-        (defs.get(r) || []).some((k) => k > i && k < j && !stmts[k].dropped) ||
-        stmts.some((mid, k) => k > i && k < j && !mid.dropped && mid.call && CALL_CLOBBER_REG.test(r))
-      ) || stmts.some((mid, k) => {
-        if (k <= i || k >= j || mid.dropped) return false;
-        const mlhs = /^([A-Za-z_]\w*)\s*=\s*/.exec(mid.text.trim());
-        return !!(mlhs && hasWholeWord(value, mlhs[1]));
-      });
+      let clobberedRead = false;
+      const stReads = st.reads || [];
+      let hasCallerClobberRead = false;
+      for (let ri = 0; ri < stReads.length; ri++) {
+        const r = stReads[ri];
+        const rDefs = defs.get(r);
+        if (rDefs) {
+          for (let di = 0; di < rDefs.length; di++) {
+            const dk = rDefs[di];
+            if (dk > i && dk < j && !stmts[dk].dropped) { clobberedRead = true; break; }
+          }
+        }
+        if (clobberedRead) break;
+        if (CALL_CLOBBER_REG.test(r)) hasCallerClobberRead = true;
+      }
+      if (!clobberedRead) {
+        for (let k = i + 1; k < j; k++) {
+          const mid = stmts[k];
+          if (mid.dropped) continue;
+          if (hasCallerClobberRead && mid.call) { clobberedRead = true; break; }
+          const mlhs = /^([A-Za-z_]\w*)\s*=\s*/.exec(mid.text.trim());
+          if (mlhs && hasWholeWord(value, mlhs[1])) { clobberedRead = true; break; }
+        }
+      }
       if (clobberedRead) continue;
       const isTemp = /^x(8|9|1[0-7])$/.test(reg);
       if (!laterDefs.length && !isTemp) continue; // あとで使われるかもしれない変数は残す
@@ -4004,14 +4106,21 @@ function removeDeadStores(stmts) {
   }
 }
 
+const GENERIC_ASSIGN_RHS_RE = /^[A-Za-z_]\w*\s*=\s*(.*);$/;
+
 function rightHandSide(text, reg) {
-  const m = new RegExp('^' + escapeRe(reg) + '\\s*=\\s*(.*);$').exec(text.trim());
-  if (!m) {
-    const m2 = /^[A-Za-z_]\w*\s*=\s*(.*);$/.exec(text.trim());
-    if (m2) return m2[1];
-    return null;
+  const trimmed = text.trim();
+  if (trimmed.endsWith(';') && trimmed.startsWith(reg)) {
+    let idx = reg.length;
+    while (idx < trimmed.length && /\s/.test(trimmed[idx])) idx++;
+    if (idx < trimmed.length && trimmed[idx] === '=') {
+      idx++;
+      while (idx < trimmed.length && /\s/.test(trimmed[idx])) idx++;
+      return trimmed.slice(idx, trimmed.length - 1);
+    }
   }
-  return m[1];
+  const m2 = GENERIC_ASSIGN_RHS_RE.exec(trimmed);
+  return m2 ? m2[1] : null;
 }
 
 function isWrappedInBalancedParens(expr) {
@@ -4043,13 +4152,42 @@ function needsParens(expr) {
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-function hasWholeWord(text, word) {
-  return new RegExp('(^|[^\\w>])' + escapeRe(word) + '($|[^\\w])').test(text);
+function isWordCode(c) {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
 }
 
+const EMPTY_WHOLE_WORD_RE = /(^|[^\w>])($|[^\w])/;
+
+function hasWholeWord(text, word) {
+  if (!word) return EMPTY_WHOLE_WORD_RE.test(text);
+  const wLen = word.length;
+  const tLen = text.length;
+  let pos = text.indexOf(word, 0);
+  while (pos !== -1) {
+    const leftOk = pos === 0 || (!isWordCode(text.charCodeAt(pos - 1)) && text.charCodeAt(pos - 1) !== 62);
+    const rightEnd = pos + wLen;
+    const rightOk = rightEnd === tLen || !isWordCode(text.charCodeAt(rightEnd));
+    if (leftOk && rightOk) return true;
+    pos = text.indexOf(word, pos + 1);
+  }
+  return false;
+}
+
+const WHOLE_WORD_REPLACE_RE_CACHE = new Map();
+const WHOLE_WORD_REPLACE_RE_CACHE_LIMIT = 256;
+
 function replaceWholeWord(text, word, value) {
-  return text.replace(new RegExp('(^|[^\\w>])' + escapeRe(word) + '($|[^\\w])', 'g'),
-    (m, a, b) => a + value + b);
+  let re = WHOLE_WORD_REPLACE_RE_CACHE.get(word);
+  if (!re) {
+    re = new RegExp('(^|[^\\w>])' + escapeRe(word) + '($|[^\\w])', 'g');
+    if (WHOLE_WORD_REPLACE_RE_CACHE.size >= WHOLE_WORD_REPLACE_RE_CACHE_LIMIT) {
+      const oldest = WHOLE_WORD_REPLACE_RE_CACHE.keys().next().value;
+      WHOLE_WORD_REPLACE_RE_CACHE.delete(oldest);
+    }
+    WHOLE_WORD_REPLACE_RE_CACHE.set(word, re);
+  }
+  re.lastIndex = 0;
+  return text.replace(re, (m, a, b) => a + value + b);
 }
 
 /* ── 変数の宣言 ─────────────────────────────────────────── */

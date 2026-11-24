@@ -311,10 +311,12 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
 
   const sortedLeaderOffsets = [...leaderOffsets].sort((a, b) => a - b);
   const blockByOffset = new Map();
+  const blockIndexById = new Map();
   for (let bi = 0; bi < sortedLeaderOffsets.length; bi++) {
     const off = sortedLeaderOffsets[bi];
     const blockId = `bb_0x${off.toString(16)}`;
     blockByOffset.set(off, blockId);
+    blockIndexById.set(blockId, bi);
   }
 
   let currentBlockNodeIds = [];
@@ -504,7 +506,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
           if (c.falseTargetOffset != null) {
             targets.push(blockByOffset.get(c.falseTargetOffset) || `bb_0x${c.falseTargetOffset.toString(16)}`);
           } else {
-            const currentIdx = sortedLeaderOffsets.indexOf(sortedLeaderOffsets.find((off) => blockByOffset.get(off) === blkId));
+            const currentIdx = blockIndexById.get(blkId) ?? -1;
             if (currentIdx >= 0 && currentIdx + 1 < sortedLeaderOffsets.length) {
               targets.push(blockByOffset.get(sortedLeaderOffsets[currentIdx + 1]));
             }

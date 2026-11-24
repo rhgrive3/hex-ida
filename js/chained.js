@@ -44,6 +44,12 @@ function ascii(u8, off, len) {
   return out;
 }
 
+let utf8StrictDecoder = null;
+function getUtf8StrictDecoder() {
+  if (!utf8StrictDecoder) utf8StrictDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  return utf8StrictDecoder;
+}
+
 function utf8z(u8, off, reserveDecoded = null) {
   if (!(off >= 0) || off >= u8.length) return null;
   let end = off;
@@ -60,7 +66,7 @@ function utf8z(u8, off, reserveDecoded = null) {
   // bounded by two bytes per input byte, so admit that conservative upper bound
   // before decode rather than allocating first and charging afterwards (#8739).
   if (reserveDecoded && !reserveDecoded((end - off) * 2)) return null;
-  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u8.subarray(off, end)); }
+  try { return getUtf8StrictDecoder().decode(u8.subarray(off, end)); }
   catch { return null; }
 }
 
@@ -295,8 +301,7 @@ function stubInterveningPreservesBase(w, baseReg) {
 }
 
 /** Decode the GOT slot loaded by a conventional arm64 Mach-O stub. */
-function stubSlot(code, off, pc, stubSize) {
-  const dv = new DataView(code.buffer, code.byteOffset, code.byteLength);
+function stubSlot(code, off, pc, stubSize, dv = new DataView(code.buffer, code.byteOffset, code.byteLength)) {
   const words = Math.min(Math.floor(stubSize / 4), 5);
   let page = null;
   let baseReg = -1;
@@ -392,23 +397,24 @@ function makeBlockReader(file, takeRead = () => true) {
     const n = Number(off);
     if (!(n >= 0) || n + 8 > file.size) return null;
     const bi = Math.floor(n / BLOCK);
-    let b = cache.get(bi);
-    if (!b) {
+    let entry = cache.get(bi);
+    if (!entry) {
       const blockStart = bi * BLOCK;
       const blockBytes = Math.min(BLOCK, file.size - blockStart);
       if (!takeRead(blockBytes)) return null;
-      b = await bytes(file, blockStart, blockBytes);
-      cache.set(bi, b);
+      const b = await bytes(file, blockStart, blockBytes);
+      entry = { bytes: b, dv: new DataView(b.buffer, b.byteOffset, b.byteLength) };
+      cache.set(bi, entry);
       while (cache.size > 8) cache.delete(cache.keys().next().value);
     }
     const p = n - bi * BLOCK;
-    if (p + 8 > b.length) {
+    if (p + 8 > entry.bytes.length) {
       if (!takeRead(8)) return null;
       const exact = await bytes(file, n, 8);
       if (exact.length < 8) return null;
       return new DataView(exact.buffer, exact.byteOffset, 8).getBigUint64(0, true);
     }
-    return new DataView(b.buffer, b.byteOffset + p, 8).getBigUint64(0, true);
+    return entry.dv.getBigUint64(p, true);
   };
 }
 
@@ -490,11 +496,12 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
     const sectionBytes = Number(sec.size);
     if (!takeSupplementalRead(sectionBytes)) return [];
     const code = await bytes(file, image.base + sec.fileoff, sectionBytes);
+    const codeView = new DataView(code.buffer, code.byteOffset, code.byteLength);
     const count = Math.min(Math.floor(Number(sec.size) / sec.stubSize), MAX_STUBS - decodedStubs);
     for (let i = 0; i < count; i++) {
       decodedStubs++;
       const stubAddr = sec.addr + BigInt(i * sec.stubSize);
-      const slot = stubSlot(code, i * sec.stubSize, stubAddr, sec.stubSize);
+      const slot = stubSlot(code, i * sec.stubSize, stubAddr, sec.stubSize, codeView);
       if (slot == null) continue;
       const hit = segmentFor(image.segments, slot);
       if (!hit || hit.s.validFileRange === false) continue;

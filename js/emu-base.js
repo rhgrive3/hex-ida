@@ -28,7 +28,67 @@ import { parseOperands } from './arm64.js';
 const MASK64 = (1n << 64n) - 1n;
 const MASK32 = 0xFFFFFFFFn;
 const PAGE = 4096;
+const PAGE_BIG = 4096n;
+const PAGE_MASK = ~4095n;
 const TRACE_MAX = 4000;
+
+function pageFloor(address) {
+  return address >= 0n ? (address & PAGE_MASK) : (address / PAGE_BIG) * PAGE_BIG;
+}
+
+function inRanges(ranges, off) {
+  if (!ranges) return false;
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    if (off >= r.lo && off < r.hi) return true;
+  }
+  return false;
+}
+
+// Kind codes for REG_LUT: 0=gp, 1=sp, 2=wsp, 3=pc, 4=zr
+const REG_LUT = Object.create(null);
+for (let i = 0; i <= 30; i++) {
+  REG_LUT['x' + i] = Object.freeze({ kind: 0, idx: i, mask32: false });
+  REG_LUT['w' + i] = Object.freeze({ kind: 0, idx: i, mask32: true });
+}
+REG_LUT.fp = REG_LUT.x29;
+REG_LUT.lr = REG_LUT.x30;
+REG_LUT.sp = Object.freeze({ kind: 1, idx: -1, mask32: false });
+REG_LUT.wsp = Object.freeze({ kind: 2, idx: -1, mask32: true });
+REG_LUT.pc = Object.freeze({ kind: 3, idx: -1, mask32: false });
+REG_LUT.xzr = Object.freeze({ kind: 4, idx: -1, mask32: false });
+REG_LUT.wzr = Object.freeze({ kind: 4, idx: -1, mask32: true });
+
+const PAUTH_HINT_IMMS = new Set([7n, 8n, 10n, 12n, 14n, 24n, 25n, 26n, 27n, 28n, 29n, 30n, 31n]);
+const NOP_LIKE_MNEMONICS = new Set(['nop', 'hint', 'bti', 'dmb', 'dsb', 'isb', 'prfm']);
+const PAUTH_UNSUPPORTED_RE = /^(?:(?:pac|aut)(?:ia|ib)(?:z|sp)?|ldraa|ldrab|xpaclri|retaa|retab)$/;
+const B_COND_RE = /^b.(w+)$/;
+const ARITH_OPS = Object.assign(Object.create(null), {
+  add: (a, b) => a + b, adds: (a, b) => a + b,
+  sub: (a, b) => a - b, subs: (a, b) => a - b,
+  and: (a, b) => a & b, ands: (a, b) => a & b,
+  orr: (a, b) => a | b, orn: (a, b) => a | ~b,
+  eor: (a, b) => a ^ b, eon: (a, b) => a ^ ~b,
+  bic: (a, b) => a & ~b, bics: (a, b) => a & ~b,
+  mul: (a, b) => a * b,
+  lsl: null, lsr: null, asr: null, ror: null,
+  udiv: null, sdiv: null,
+  smull: null, umull: null,
+});
+const EXTEND_MNEMONIC_BITS = Object.assign(Object.create(null), {
+  sxtb: 8, sxth: 16, sxtw: 32, uxtb: 8, uxth: 16, uxtw: 32,
+});
+const CSEL_MNEMONICS = new Set(['csel', 'csinc', 'csinv', 'csneg', 'cset', 'csetm', 'cinc', 'cinv', 'cneg']);
+const MADDL_MNEMONICS = new Set(['smaddl', 'umaddl', 'smsubl', 'umsubl']);
+const BITFIELD_4OP_MNEMONICS = new Set(['ubfx', 'sbfx', 'ubfiz', 'sbfiz', 'bfi', 'bfxil', 'lsl', 'lsr']);
+const LOAD_MNEMONICS = new Set([
+  'ldr', 'ldrb', 'ldrh', 'ldrsb', 'ldrsh', 'ldrsw',
+  'ldur', 'ldurb', 'ldurh', 'ldursb', 'ldursh', 'ldursw',
+  'ldp', 'ldnp', 'ldpsw',
+  'ldxr', 'ldxrb', 'ldxrh', 'ldaxr', 'ldaxrb', 'ldaxrh',
+  'ldar', 'ldarb', 'ldarh',
+]);
+const STORE_MNEMONICS_RE = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stxr|stlxr|stlr)/;
 
 export const STACK_TOP = 0x0000700000000000n;
 
@@ -170,11 +230,16 @@ export class Emulator {
   }
 
   get(reg) {
+    if (typeof reg !== 'string') throw new EmulatorFault('invalid-register', 'register selector must be a string', { register: reg });
+    const entry = REG_LUT[reg] || REG_LUT[reg.toLowerCase()];
+    if (entry) {
+      if (entry.kind === 0) return entry.mask32 ? (this.x[entry.idx] & MASK32) : this.x[entry.idx];
+      if (entry.kind === 1) return this.sp;
+      if (entry.kind === 2) return this.sp & MASK32;
+      if (entry.kind === 3) return this.pc;
+      return 0n;
+    }
     const name = this._normalizeReg(reg);
-    if (name === 'sp') return this.sp;
-    if (name === 'wsp') return this.sp & MASK32;
-    if (name === 'pc') return this.pc;
-    if (/^[xw]zr$/.test(name)) return 0n;
     const m = /^([xw])(\d+)$/.exec(name);
     if (!m) throw new EmulatorFault('invalid-register', `unknown register: ${reg}`, { register: reg });
     const n = Number(m[2]);
@@ -184,12 +249,18 @@ export class Emulator {
   }
 
   set(reg, value) {
+    if (typeof reg !== 'string') throw new EmulatorFault('invalid-register', 'register selector must be a string', { register: reg });
+    const entry = REG_LUT[reg] || REG_LUT[reg.toLowerCase()];
+    if (entry) {
+      const v = BigInt.asUintN(64, BigInt(value));
+      if (entry.kind === 0) { this.x[entry.idx] = entry.mask32 ? (v & MASK32) : v; return; }
+      if (entry.kind === 1) { this.sp = v; return; }
+      if (entry.kind === 2) { this.sp = BigInt.asUintN(32, v); return; }
+      if (entry.kind === 3) { this.pc = v; return; }
+      return;
+    }
     const name = this._normalizeReg(reg);
     const v = BigInt.asUintN(64, BigInt(value));
-    if (name === 'sp') { this.sp = v; return; }
-    if (name === 'wsp') { this.sp = BigInt.asUintN(32, v); return; }
-    if (name === 'pc') { this.pc = v; return; }
-    if (/^[xw]zr$/.test(name)) return;
     const m = /^([xw])(\d+)$/.exec(name);
     if (!m) throw new EmulatorFault('invalid-register', `unknown register: ${reg}`, { register: reg });
     const n = Number(m[2]);
@@ -330,15 +401,15 @@ export class Emulator {
 
   byteAt(addr) {
     const address = BigInt(addr);
-    const page = (address / BigInt(PAGE)) * BigInt(PAGE);
+    const page = pageFloor(address);
     const key = page.toString();
     const off = Number(address - page);
     const w = this.mem.get(key);
     if (w && w.mask[off]) return w.data[off];
     const l = this.loaded.get(key);
     if (!l) throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${address.toString(16)}`, { address });
-    const ranges = this.syntheticRanges.get(key) || [];
-    const inWindow = ranges.some((r) => off >= r.lo && off < r.hi);
+    const ranges = this.syntheticRanges.get(key);
+    const inWindow = inRanges(ranges, off);
     /* #5685: a mapZero-created page backs only its declared windows;
        pages with other backing treat a window as additive backing. */
     if (this.syntheticRangeGated.has(key)) {
@@ -360,8 +431,7 @@ export class Emulator {
     if (this.syntheticRangeGated.has(key)) {
       const w = this.mem.get(key);
       if (w && w.mask[off]) return;
-      const ranges = this.syntheticRanges.get(key) || [];
-      if (!ranges.some((r) => off >= r.lo && off < r.hi)) {
+      if (!inRanges(this.syntheticRanges.get(key), off)) {
         throw new EmulatorFault('unmapped-memory', `write is outside synthetic mapping at 0x${address.toString(16)}`, { address });
       }
       return;
@@ -370,8 +440,7 @@ export class Emulator {
       const w = this.mem.get(key);
       if (w && w.mask[off]) return;
       const valid = this.loadedValid.get(key) || 0;
-      const inWindow = (this.syntheticRanges.get(key) || []).some((r) => off >= r.lo && off < r.hi);
-      if (off >= valid && !inWindow) {
+      if (off >= valid && !inRanges(this.syntheticRanges.get(key), off)) {
         throw new EmulatorFault('unmapped-memory', `write is outside backed memory at 0x${address.toString(16)}`, { address });
       }
     }
@@ -379,7 +448,7 @@ export class Emulator {
 
   writeByte(addr, value) {
     const address = BigInt(addr);
-    const page = (address / BigInt(PAGE)) * BigInt(PAGE);
+    const page = pageFloor(address);
     const key = page.toString();
     let w = this.mem.get(key);
     if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
@@ -394,8 +463,47 @@ export class Emulator {
     const n = normalizeMemorySize(size);
     const start = BigInt(addr);
     const end = start + BigInt(n - 1);
-    await this._ensurePageRange(start, end)
+    await this._ensurePageRange(start, end);
+    const startPage = pageFloor(start);
+    const endPage = pageFloor(end);
     let v = 0n;
+    if (startPage === endPage && start >= 0n) {
+      const key = startPage.toString();
+      const baseOff = Number(start - startPage);
+      const w = this.mem.get(key);
+      const l = this.loaded.get(key);
+      const gated = this.syntheticRangeGated.has(key);
+      const valid = gated ? 0 : (this.loadedValid.get(key) || 0);
+      const ranges = this.syntheticRanges.get(key);
+      // #8695: scan descending (high byte -> low byte) to preserve exact fault byte address
+      for (let i = n - 1; i >= 0; i--) {
+        const off = baseOff + i;
+        let byte;
+        if (w && w.mask[off]) {
+          byte = w.data[off];
+        } else {
+          if (!l) {
+            const bad = start + BigInt(i);
+            throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${bad.toString(16)}`, { address: bad });
+          }
+          if (gated) {
+            if (!inRanges(ranges, off)) {
+              const bad = start + BigInt(i);
+              throw new EmulatorFault('unmapped-memory', `byte is outside synthetic mapping at 0x${bad.toString(16)}`, { address: bad });
+            }
+            byte = l[off];
+          } else {
+            if (off < 0 || (off >= valid && !inRanges(ranges, off))) {
+              const bad = start + BigInt(i);
+              throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${bad.toString(16)}`, { address: bad });
+            }
+            byte = l[off];
+          }
+        }
+        v = (v << 8n) | BigInt(byte);
+      }
+      return v;
+    }
     for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(start + BigInt(i)));
     return v;
   }
@@ -412,13 +520,67 @@ export class Emulator {
        below would fail open and writeByte() would mint undeclared mem
        backing. An interior page without backing fails closed here. */
     const end = start + BigInt(n - 1);
-    await this._ensurePageRange(start, end)
+    await this._ensurePageRange(start, end);
+    const startPage = pageFloor(start);
+    const endPage = pageFloor(end);
+    if (startPage === endPage && start >= 0n) {
+      const key = startPage.toString();
+      const baseOff = Number(start - startPage);
+      if (baseOff >= 0 && baseOff + n <= PAGE) {
+        const wExisting = this.mem.get(key);
+        const gated = this.syntheticRangeGated.has(key);
+        const hasLoaded = this.loaded.has(key);
+        const ranges = this.syntheticRanges.get(key);
+        // #7968: admit every byte BEFORE minting any mem page or committing any byte
+        if (gated) {
+          for (let i = 0; i < n; i++) {
+            const off = baseOff + i;
+            if (wExisting && wExisting.mask[off]) continue;
+            if (!inRanges(ranges, off)) {
+              const bad = start + BigInt(i);
+              throw new EmulatorFault('unmapped-memory', `write is outside synthetic mapping at 0x${bad.toString(16)}`, { address: bad });
+            }
+          }
+        } else if (hasLoaded) {
+          const valid = this.loadedValid.get(key) || 0;
+          for (let i = 0; i < n; i++) {
+            const off = baseOff + i;
+            if (wExisting && wExisting.mask[off]) continue;
+            if (off >= valid && !inRanges(ranges, off)) {
+              const bad = start + BigInt(i);
+              throw new EmulatorFault('unmapped-memory', `write is outside backed memory at 0x${bad.toString(16)}`, { address: bad });
+            }
+          }
+        }
+        if (value instanceof Uint8Array) {
+          if (value.length < n) throw new EmulatorFault('short-write-value', `byte vector has ${value.length} bytes but store needs ${n}`, { size:n, length:value.length });
+          let w = wExisting;
+          if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
+          for (let i = 0; i < n; i++) {
+            const off = baseOff + i;
+            w.data[off] = value[i] & 0xff;
+            w.mask[off] = 1;
+          }
+          return;
+        }
+        let v = BigInt(value);
+        let w = wExisting;
+        if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
+        for (let i = 0; i < n; i++) {
+          const off = baseOff + i;
+          w.data[off] = Number(v & 0xffn);
+          w.mask[off] = 1;
+          v >>= 8n;
+        }
+        return;
+      }
+    }
     /* #7968: admit every byte of the store before committing any of it — a
        range that straddles the write-authority boundary fails closed without
        partially writing the bytes inside the prefix. */
     for (let i = 0n; i < BigInt(n); i++) {
       const a = start + i;
-      const p = (a / BigInt(PAGE)) * BigInt(PAGE);
+      const p = pageFloor(a);
       this._assertWriteAuthority(p.toString(), Number(a - p), a);
     }
     if (value instanceof Uint8Array) {
@@ -435,7 +597,41 @@ export class Emulator {
     const start = BigInt(addr);
     const out = new Uint8Array(n);
     if (!n) return out;
-    await this._ensurePageRange(start, start + BigInt(n - 1));
+    const end = start + BigInt(n - 1);
+    await this._ensurePageRange(start, end);
+    const startPage = pageFloor(start);
+    const endPage = pageFloor(end);
+    if (startPage === endPage && start >= 0n) {
+      const key = startPage.toString();
+      const baseOff = Number(start - startPage);
+      const w = this.mem.get(key);
+      const l = this.loaded.get(key);
+      const gated = this.syntheticRangeGated.has(key);
+      const valid = gated ? 0 : (this.loadedValid.get(key) || 0);
+      const ranges = this.syntheticRanges.get(key);
+      for (let i = 0; i < n; i++) {
+        const off = baseOff + i;
+        if (w && w.mask[off]) { out[i] = w.data[off]; continue; }
+        if (!l) {
+          const bad = start + BigInt(i);
+          throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${bad.toString(16)}`, { address: bad });
+        }
+        if (gated) {
+          if (!inRanges(ranges, off)) {
+            const bad = start + BigInt(i);
+            throw new EmulatorFault('unmapped-memory', `byte is outside synthetic mapping at 0x${bad.toString(16)}`, { address: bad });
+          }
+          out[i] = l[off];
+        } else {
+          if (off < 0 || (off >= valid && !inRanges(ranges, off))) {
+            const bad = start + BigInt(i);
+            throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${bad.toString(16)}`, { address: bad });
+          }
+          out[i] = l[off];
+        }
+      }
+      return out;
+    }
     for (let i = 0; i < n; i++) out[i] = this.byteAt(start + BigInt(i));
     return out;
   }
@@ -531,7 +727,7 @@ export class Emulator {
     let n = 0;
     while (n < limit && !this.stopped) {
       throwIfAborted(signal);
-      if (this.breakpoints.has(this.pc.toString())) {
+      if (this.breakpoints.size > 0 && this.breakpoints.has(this.pc.toString())) {
         return { hitBreakpoint: true, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
       }
       const r = await this.step({ signal });
@@ -564,12 +760,13 @@ export class Emulator {
     // authenticated state transition (#4099).
     if (mn === 'hint') {
       const hint = ops.length === 1 && ops[0]?.k === 'imm' ? ops[0].value : null;
-      if (hint != null && new Set([7n, 8n, 10n, 12n, 14n, 24n, 25n, 26n, 27n, 28n, 29n, 30n, 31n]).has(hint)) {
+      if (hint != null && PAUTH_HINT_IMMS.has(hint)) {
         throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication HINTはまだ実行できません: #${hint}`, { instruction: mn, hint });
       }
+      return null;
     }
-    if (/^(nop|hint|bti|dmb|dsb|isb|prfm)$/.test(mn)) return null;
-    if (/^(pac|aut)(ia|ib)(z|sp)?$/.test(mn) || /^(ldraa|ldrab)$/.test(mn) || mn === 'xpaclri' || mn === 'retaa' || mn === 'retab') {
+    if (NOP_LIKE_MNEMONICS.has(mn)) return null;
+    if (PAUTH_UNSUPPORTED_RE.test(mn)) {
       throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication命令はまだ実行できません: ${mn}`, { instruction: mn });
     }
 
@@ -578,13 +775,15 @@ export class Emulator {
       if (target == null) throw new EmulatorFault('unknown-branch-target', '分岐先が分かりませんでした。');
       return target;
     }
-    if (/^b\.(\w+)$/.test(mn)) {
-      const cc = /^b\.(\w+)$/.exec(mn)[1];
-      const taken = this.cond(cc);
-      const target = this.branchTarget(ops, 0);
-      if (taken && target == null) throw new EmulatorFault('unknown-branch-target', '分岐先が分かりませんでした。');
-      this._recordConditionalBranch(ops, taken, 0);
-      return taken ? target : null;
+    if (mn.length >= 3 && mn.charCodeAt(0) === 98 && mn.charCodeAt(1) === 46) {
+      const bm = B_COND_RE.exec(mn);
+      if (bm) {
+        const taken = this.cond(bm[1]);
+        const target = this.branchTarget(ops, 0);
+        if (taken && target == null) throw new EmulatorFault('unknown-branch-target', '分岐先が分かりませんでした。');
+        this._recordConditionalBranch(ops, taken, 0);
+        return taken ? target : null;
+      }
     }
     if (mn === 'cbz' || mn === 'cbnz') {
       const v = R(ops[0]);
@@ -657,19 +856,7 @@ export class Emulator {
       return null;
     }
 
-    const arith = {
-      add: (a, b) => a + b, adds: (a, b) => a + b,
-      sub: (a, b) => a - b, subs: (a, b) => a - b,
-      and: (a, b) => a & b, ands: (a, b) => a & b,
-      orr: (a, b) => a | b, orn: (a, b) => a | ~b,
-      eor: (a, b) => a ^ b, eon: (a, b) => a ^ ~b,
-      bic: (a, b) => a & ~b, bics: (a, b) => a & ~b,
-      mul: (a, b) => a * b,
-      lsl: null, lsr: null, asr: null, ror: null,
-      udiv: null, sdiv: null,
-      smull: null, umull: null,
-    };
-    if (Object.prototype.hasOwnProperty.call(arith, mn)) {
+    if (mn in ARITH_OPS) {
       const wide = isWide(ops[0]);
       const a = R(ops[1]);
       const b = R(ops[2]);
@@ -685,10 +872,10 @@ export class Emulator {
         r = sb === 0n ? 0n : sa / sb;
       } else if (mn === 'smull') r = BigInt.asIntN(32, a) * BigInt.asIntN(32, b);
       else if (mn === 'umull') r = (a & MASK32) * (b & MASK32);
-      else r = arith[mn](a, b);
+      else r = ARITH_OPS[mn](a, b);
       const out = wide ? BigInt.asUintN(64, r) : BigInt.asUintN(32, r);
       this.set(ops[0].text, out);
-      if (/s$/.test(mn) && mn !== 'bics') this.setFlags(mn, a, b, out, wide);
+      if (mn.charCodeAt(mn.length - 1) === 115 && mn !== 'bics') this.setFlags(mn, a, b, out, wide);
       if (mn === 'bics' || mn === 'ands') this.setLogicFlags(out, wide);
       return null;
     }
@@ -715,13 +902,13 @@ export class Emulator {
       this.set(ops[0].text, mn === 'madd' ? c + a * b : c - a * b);
       return null;
     }
-    if (/^(sxtb|sxth|sxtw|uxtb|uxth|uxtw)$/.test(mn)) {
-      const bits = { b: 8, h: 16, w: 32 }[mn[3]];
+    const extBits = EXTEND_MNEMONIC_BITS[mn];
+    if (extBits !== undefined) {
       const v = R(ops[1]);
-      this.set(ops[0].text, mn[0] === 's' ? BigInt.asUintN(64, BigInt.asIntN(bits, v)) : BigInt.asUintN(64, v & ((1n << BigInt(bits)) - 1n)));
+      this.set(ops[0].text, mn.charCodeAt(0) === 115 ? BigInt.asUintN(64, BigInt.asIntN(extBits, v)) : BigInt.asUintN(64, v & ((1n << BigInt(extBits)) - 1n)));
       return null;
     }
-    if (/^(csel|csinc|csinv|csneg|cset|csetm|cinc|cinv|cneg)$/.test(mn)) return this.conditionalSelect(mn, ops);
+    if (CSEL_MNEMONICS.has(mn)) return this.conditionalSelect(mn, ops);
 
     if (mn === 'ccmp' || mn === 'ccmn') {
       const ccOp = ops[ops.length - 1];
@@ -738,7 +925,7 @@ export class Emulator {
       return null;
     }
 
-    if (/^(smaddl|umaddl|smsubl|umsubl)$/.test(mn)) {
+    if (MADDL_MNEMONICS.has(mn)) {
       const a = mn[0] === 's' ? BigInt.asIntN(32, R(ops[1])) : (R(ops[1]) & MASK32);
       const b = mn[0] === 's' ? BigInt.asIntN(32, R(ops[2])) : (R(ops[2]) & MASK32);
       const c = R(ops[3]);
@@ -752,7 +939,7 @@ export class Emulator {
       return null;
     }
 
-    if (/^(ubfx|sbfx|ubfiz|sbfiz|bfi|bfxil|lsl|lsr)$/.test(mn) && ops.length >= 4) {
+    if (ops.length >= 4 && BITFIELD_4OP_MNEMONICS.has(mn)) {
       const src = R(ops[1]);
       const lsb = BigInt(ops[2].value || 0n);
       const width = BigInt(ops[3].value || 1n);
@@ -785,12 +972,12 @@ export class Emulator {
       return null;
     }
 
-    if (/^f/.test(mn) || /^[su]cvtf$/.test(mn)) return this.floatInsn(mn, ops);
+    if (mn.charCodeAt(0) === 102 || mn === 'scvtf' || mn === 'ucvtf') return this.floatInsn(mn, ops);
 
-    if (/^(?:ldr(?:b|h|sb|sh|sw)?|ldur(?:b|h|sb|sh|sw)?|ldp|ldnp|ldpsw|ldxr(?:b|h)?|ldaxr(?:b|h)?|ldar(?:b|h)?)$/.test(mn)) {
+    if (LOAD_MNEMONICS.has(mn)) {
       return this.loadInsn(mn, ops);
     }
-    if (/^(str|strb|strh|stur|sturb|sturh|stp|stnp|stxr|stlxr|stlr)/.test(mn)) {
+    if (STORE_MNEMONICS_RE.test(mn)) {
       return this.storeInsn(mn, ops);
     }
 
@@ -1407,24 +1594,23 @@ function pairUnsupportedFault(mn, a, b) {
   );
 }
 
+const FP_SCRATCH_DV = new DataView(new ArrayBuffer(8));
+const FP32_FORMAT = Object.freeze({ bits:32, fracBits:23, expBits:8, bias:127, emin:-126, emax:127 });
+const FP64_FORMAT = Object.freeze({ bits:64, fracBits:52, expBits:11, bias:1023, emin:-1022, emax:1023 });
+
 function bitsToFloat(bits, size) {
-  const buf = new ArrayBuffer(8);
-  const dv = new DataView(buf);
-  dv.setBigUint64(0, BigInt.asUintN(64, bits), true);
-  return size === 4 ? dv.getFloat32(0, true) : dv.getFloat64(0, true);
+  FP_SCRATCH_DV.setBigUint64(0, BigInt.asUintN(64, bits), true);
+  return size === 4 ? FP_SCRATCH_DV.getFloat32(0, true) : FP_SCRATCH_DV.getFloat64(0, true);
 }
 
 function floatToBits(value, size) {
-  const buf = new ArrayBuffer(8);
-  const dv = new DataView(buf);
-  if (size === 4) { dv.setFloat32(0, value, true); return BigInt(dv.getUint32(0, true)); }
-  dv.setFloat64(0, value, true);
-  return dv.getBigUint64(0, true);
+  if (size === 4) { FP_SCRATCH_DV.setFloat32(0, value, true); return BigInt(FP_SCRATCH_DV.getUint32(0, true)); }
+  FP_SCRATCH_DV.setFloat64(0, value, true);
+  return FP_SCRATCH_DV.getBigUint64(0, true);
 }
 
 function fpFormat(size) {
-  return size === 4 ? { bits:32, fracBits:23, expBits:8, bias:127, emin:-126, emax:127 }
-    : { bits:64, fracBits:52, expBits:11, bias:1023, emin:-1022, emax:1023 };
+  return size === 4 ? FP32_FORMAT : FP64_FORMAT;
 }
 function decodeFp(bits, size) {
   const f=fpFormat(size), raw=BigInt.asUintN(f.bits,BigInt(bits));

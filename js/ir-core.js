@@ -871,9 +871,36 @@ function instructionsBySemanticNodeIdFor(projected) {
   return entry.byNodeId;
 }
 
+function compareReachingRegisterCandidate(left, right) {
+  if (left.recency.scope !== right.recency.scope) return right.recency.scope - left.recency.scope;
+  if (left.recency.depth !== right.recency.depth) return right.recency.depth - left.recency.depth;
+  if (left.recency.row !== right.recency.row) return right.recency.row - left.recency.row;
+  if (left.recency.nonPhi !== right.recency.nonPhi) return right.recency.nonPhi - left.recency.nonPhi;
+  if (left.recency.instIndex !== right.recency.instIndex) return right.recency.instIndex - left.recency.instIndex;
+  if (left.width !== right.width) return right.width - left.width;
+  return right.id - left.id;
+}
+
 function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded = null, observation = null) {
   const regValues = reg == null ? (projected.values ?? []) : (valuesByRegFor(projected).get(reg) ?? []);
   const bitsNum = Number(bits);
+  const observeAll = Boolean(observation && !observation.unavailable);
+  if (!observeAll) {
+    let best = null;
+    for (let i = 0; i < regValues.length; i += 1) {
+      const value = regValues[i];
+      if (value === excluded || value.reg !== reg || value.kind === LEGACY_VK.UNDEF) continue;
+      if (!valueDominatesLegacyInstruction(value, inst, projected)) continue;
+      const candidate = {
+        value,
+        recency: legacyDefinitionRecency(value, inst, projected),
+        width: bitsNum > 0 && value.bits === bitsNum ? 1 : 0,
+        id: value.id ?? 0,
+      };
+      if (best === null || compareReachingRegisterCandidate(candidate, best) < 0) best = candidate;
+    }
+    return best ? best.value : null;
+  }
   const decorated = [];
   for (let i = 0; i < regValues.length; i += 1) {
     const value = regValues[i];
@@ -886,21 +913,11 @@ function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded
       id: value.id ?? 0,
     });
   }
-  decorated.sort((left, right) => {
-    if (left.recency.scope !== right.recency.scope) return right.recency.scope - left.recency.scope;
-    if (left.recency.depth !== right.recency.depth) return right.recency.depth - left.recency.depth;
-    if (left.recency.row !== right.recency.row) return right.recency.row - left.recency.row;
-    if (left.recency.nonPhi !== right.recency.nonPhi) return right.recency.nonPhi - left.recency.nonPhi;
-    if (left.recency.instIndex !== right.recency.instIndex) return right.recency.instIndex - left.recency.instIndex;
-    if (left.width !== right.width) return right.width - left.width;
-    return right.id - left.id;
-  });
+  decorated.sort(compareReachingRegisterCandidate);
   const candidates = decorated.map((item) => item.value);
-  if (observation && !observation.unavailable) {
-    if (candidates.length > 512) observation.unavailable = true;
-    else observation.candidates = Object.freeze(candidates.map(value => Object.freeze({ value,
-      definition:value.def, reg:value.reg, kind:value.kind, bits:value.bits, constant:value.const })));
-  }
+  if (candidates.length > 512) observation.unavailable = true;
+  else observation.candidates = Object.freeze(candidates.map(value => Object.freeze({ value,
+    definition:value.def, reg:value.reg, kind:value.kind, bits:value.bits, constant:value.const })));
   return candidates[0] ?? null;
 }
 

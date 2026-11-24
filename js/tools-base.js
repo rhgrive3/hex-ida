@@ -449,13 +449,35 @@ export async function showDecompiler(app, addr) {
   const byRow = new Map();
   for (const i of res.model.instructions) byRow.set(i.row, i);
 
+  const preparedLines = out.lines.map((l) => {
+    if (l.kind === 'blank') return { l, blank: true };
+    const sourceRows = decompilerSourceRows(l);
+    const sourceInsns = [];
+    for (let i = 0; i < sourceRows.length; i++) {
+      const insn = byRow.get(sourceRows[i]);
+      if (insn) sourceInsns.push(insn);
+    }
+    return { l, blank: false, sourceInsns, primary: primaryDecompilerAddress(l) };
+  });
+
+  const rowLineMap = new WeakMap();
+  codeWrap.addEventListener('click', (event) => {
+    const target = event.target?.closest?.('.cl.tappable');
+    const info = target ? rowLineMap.get(target) : null;
+    if (info) lineMenu(app, sheet, info.l, info.sourceInsns);
+  });
+
   function render() {
-    codeWrap.replaceChildren();
-    for (const l of out.lines) {
-      if (l.kind === 'blank') { codeWrap.append(el('div', 'cl blank', ' ')); continue; }
-      const sourceRows = decompilerSourceRows(l);
-      const sourceInsns = sourceRows.map((r) => byRow.get(r)).filter(Boolean);
-      const primary = primaryDecompilerAddress(l);
+    const frag = typeof document.createDocumentFragment === 'function'
+      ? document.createDocumentFragment()
+      : null;
+    const container = frag || codeWrap;
+    if (!frag) codeWrap.replaceChildren();
+    for (let i = 0; i < preparedLines.length; i++) {
+      const entry = preparedLines[i];
+      const l = entry.l;
+      if (entry.blank) { container.append(el('div', 'cl blank', ' ')); continue; }
+      const { sourceInsns, primary } = entry;
       const row = el('div', 'cl ' + l.kind);
       const gutter = el('span', 'cl-addr mono', formatDecompilerSource(l, { maxGroups: 1 }));
       const text = el('span', 'cl-text mono');
@@ -464,23 +486,25 @@ export async function showDecompiler(app, addr) {
       if (primary != null) {
         row.classList.add('tappable');
         row.title = fullDecompilerSourceText(l);
-        row.addEventListener('click', () => lineMenu(app, sheet, l, sourceInsns));
+        rowLineMap.set(row, entry);
       }
-      codeWrap.append(row);
+      container.append(row);
       if (showNotes && l.note) {
         const n = el('div', 'cl note');
         n.append(el('span', 'cl-addr'), el('span', 'cl-text', '// ' + l.note));
-        codeWrap.append(n);
+        container.append(n);
       }
       if (showAsm) {
-        for (const insn of sourceInsns) {
+        for (let j = 0; j < sourceInsns.length; j++) {
+          const insn = sourceInsns[j];
           const a = el('div', 'cl asm');
           const asmAddr = insn.address != null ? insn.address.toString(16).toUpperCase().slice(-6).padStart(6, '0') : '';
           a.append(el('span', 'cl-addr mono', asmAddr), el('span', 'cl-text mono', '; ' + insn.mnemonic + ' ' + insn.operands));
-          codeWrap.append(a);
+          container.append(a);
         }
       }
     }
+    if (frag) codeWrap.replaceChildren(frag);
   }
   render();
 }
@@ -503,15 +527,19 @@ const CODE_TOKENS = new RegExp([
 
 function paintCode(node, text) {
   node.replaceChildren();
+  if (!text) return;
+  CODE_TOKENS.lastIndex = 0;
   let last = 0;
-  text.replace(CODE_TOKENS, (m, str, kw, type, num, call, cmt, at) => {
+  let m;
+  while ((m = CODE_TOKENS.exec(text)) !== null) {
+    const at = m.index;
     if (at > last) node.append(document.createTextNode(text.slice(last, at)));
-    const cls = str ? 'c-str' : kw ? 'c-kw' : type ? 'c-type'
-      : num ? 'c-num' : call ? 'c-call' : 'c-cmt';
-    node.append(el('span', cls, m));
-    last = at + m.length;
-    return m;
-  });
+    const cls = m[1] ? 'c-str' : m[2] ? 'c-kw' : m[3] ? 'c-type'
+      : m[4] ? 'c-num' : m[5] ? 'c-call' : 'c-cmt';
+    node.append(el('span', cls, m[0]));
+    last = at + m[0].length;
+    if (m[0].length === 0) CODE_TOKENS.lastIndex++;
+  }
   if (last < text.length) node.append(document.createTextNode(text.slice(last)));
 }
 
@@ -923,10 +951,17 @@ export function showCxxClasses(app) {
   const status = el('div', 'hint', classes.length + ' 個のクラスが見つかりました。');
   const l = list();
   sheet.body.append(status, l);
+  const classNamesLower = classes.map((c) => c.name.toLowerCase());
 
   function render() {
     const q = search.value.trim().toLowerCase();
-    const hits = q ? classes.filter((c) => c.name.toLowerCase().includes(q)) : classes;
+    let hits = classes;
+    if (q) {
+      hits = [];
+      for (let i = 0; i < classes.length; i++) {
+        if (classNamesLower[i].includes(q)) hits.push(classes[i]);
+      }
+    }
     l.replaceChildren();
     for (const c of hits.slice(0, 300)) {
       l.append(tapRow(c.name, {
@@ -2131,6 +2166,16 @@ export function showIl2cpp(app) {
     const search = input('クラス名・メソッド名で絞り込む');
     const results = list();
     body.append(field(search, '探す', run), results);
+    let classLower = null;
+    let methodLower = null;
+    let literalLower = null;
+    const takeMatches = (source, lowered, q, limit) => {
+      const out = [];
+      for (let i = 0; i < source.length && out.length < limit; i++) {
+        if (lowered[i].includes(q)) out.push(source[i]);
+      }
+      return out;
+    };
 
     function run() {
       const q = search.value.trim().toLowerCase();
@@ -2142,9 +2187,14 @@ export function showIl2cpp(app) {
         }
         return;
       }
-      const cs = meta.classes.filter((c) => c.full.toLowerCase().includes(q)).slice(0, 60);
-      const ms = meta.methods.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 100);
-      const ls = meta.literals.filter((x) => x.text.toLowerCase().includes(q)).slice(0, 60);
+      if (!classLower) {
+        classLower = meta.classes.map((c) => c.full.toLowerCase());
+        methodLower = meta.methods.map((m) => m.name.toLowerCase());
+        literalLower = meta.literals.map((x) => x.text.toLowerCase());
+      }
+      const cs = takeMatches(meta.classes, classLower, q, 60);
+      const ms = takeMatches(meta.methods, methodLower, q, 100);
+      const ls = takeMatches(meta.literals, literalLower, q, 60);
       if (cs.length) results.append(groupRow('クラス'));
       for (const c of cs) results.append(tapRow(c.full, { sub: 'クラス', onTap: () => copyText(c.full, '名前') }));
       if (ms.length) results.append(groupRow('メソッド'));

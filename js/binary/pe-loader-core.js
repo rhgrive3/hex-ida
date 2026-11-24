@@ -104,21 +104,179 @@ export function peExactMappingOwner(owner) {
   return !!owner && owner.source !== PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE;
 }
 
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const peOwnerIndexCache = new WeakMap();
+
+function sampleOwnerSig(owner) {
+  if (!owner) return null;
+  return {
+    ref: owner,
+    address: owner.address,
+    size: owner.size,
+    fileOffset: owner.fileOffset,
+    fileSize: owner.fileSize,
+    source: owner.source,
+    write: !!owner.perms?.write,
+  };
+}
+
+function sameOwnerSig(sig, owner) {
+  if (sig === null) return !owner;
+  return !!owner
+    && sig.ref === owner
+    && sig.address === owner.address
+    && sig.size === owner.size
+    && sig.fileOffset === owner.fileOffset
+    && sig.fileSize === owner.fileSize
+    && sig.source === owner.source
+    && sig.write === !!owner.perms?.write;
+}
+
+function sampleListSigs(list) {
+  const len = list.length;
+  if (len === 0) return null;
+  return [
+    sampleOwnerSig(list[0]),
+    sampleOwnerSig(list[len >>> 1]),
+    sampleOwnerSig(list[len - 1]),
+  ];
+}
+
+function sameListSigs(sigs, list) {
+  const len = list.length;
+  if (len === 0) return sigs === null;
+  if (sigs === null) return false;
+  return sameOwnerSig(sigs[0], list[0])
+    && sameOwnerSig(sigs[1], list[len >>> 1])
+    && sameOwnerSig(sigs[2], list[len - 1]);
+}
+
+function buildMergedMemoryIntervals(owners, writableOnly) {
+  const raw = [];
+  for (let i = 0; i < owners.length; i++) {
+    const owner = owners[i];
+    if (!owner || owner.address == null || owner.size == null) continue;
+    if (writableOnly && !owner.perms?.write) continue;
+    const ownerAddress = BigInt(owner.address);
+    const ownerSize = BigInt(owner.size);
+    if (ownerSize <= 0n) continue;
+    raw.push({ start: ownerAddress, end: ownerAddress + ownerSize });
+  }
+  if (raw.length <= 1) return raw;
+  raw.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
+  const merged = [raw[0]];
+  for (let i = 1; i < raw.length; i++) {
+    const prev = merged[merged.length - 1];
+    const curr = raw[i];
+    if (curr.start <= prev.end) {
+      if (curr.end > prev.end) prev.end = curr.end;
+    } else {
+      merged.push(curr);
+    }
+  }
+  return merged;
+}
+
+function buildPeOwnerIndex(image, sections, segments) {
+  const owners = [];
+  const fileItems = [];
+  let order = 0;
+  const collect = (list) => {
+    for (let i = 0; i < list.length; i++) {
+      const owner = list[i];
+      if (!peExactMappingOwner(owner)) continue;
+      owners.push(owner);
+      const itemOrder = order++;
+      if (owner.address == null || owner.fileOffset == null || owner.fileSize == null) continue;
+      const fileSize = BigInt(owner.fileSize);
+      if (fileSize <= 0n) continue;
+      const start = owner.address;
+      const end = start + fileSize;
+      fileItems.push({ owner, order: itemOrder, start, end, fileOffset: BigInt(owner.fileOffset), fileSize });
+    }
+  };
+  collect(sections);
+  collect(segments);
+  fileItems.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order));
+  const fileStarts = new Array(fileItems.length);
+  const filePrefixEnds = new Array(fileItems.length);
+  let maxEnd = null;
+  for (let i = 0; i < fileItems.length; i++) {
+    fileStarts[i] = fileItems[i].start;
+    if (maxEnd === null || fileItems[i].end > maxEnd) maxEnd = fileItems[i].end;
+    filePrefixEnds[i] = maxEnd;
+  }
+  return {
+    sectionsRef: image.sections,
+    sectionsLen: sections.length,
+    sectionsSigs: sampleListSigs(sections),
+    segmentsRef: image.segments,
+    segmentsLen: segments.length,
+    segmentsSigs: sampleListSigs(segments),
+    finalized: Boolean(image._finalized),
+    owners,
+    fileItems,
+    fileStarts,
+    filePrefixEnds,
+    allMemIntervals: null,
+    writeMemIntervals: null,
+  };
+}
+
+function getPeOwnerIndex(image) {
+  const sections = Array.isArray(image?.sections) ? image.sections : [];
+  const segments = Array.isArray(image?.segments) ? image.segments : [];
+  const finalized = Boolean(image?._finalized);
+  if (image && typeof image === 'object') {
+    const cached = peOwnerIndexCache.get(image);
+    if (cached
+      && cached.sectionsRef === image.sections
+      && cached.sectionsLen === sections.length
+      && cached.segmentsRef === image.segments
+      && cached.segmentsLen === segments.length
+      && cached.finalized === finalized
+      && sameListSigs(cached.sectionsSigs, sections)
+      && sameListSigs(cached.segmentsSigs, segments)) {
+      return cached;
+    }
+    const fresh = buildPeOwnerIndex(image, sections, segments);
+    peOwnerIndexCache.set(image, fresh);
+    return fresh;
+  }
+  return buildPeOwnerIndex(image || {}, sections, segments);
+}
+
 export function mappedFileRangeForRva(image, rva) {
   if (!Number.isInteger(rva) || rva <= 0) return null;
   const address = image.imageBase + BigInt(rva);
-  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
-  for (const owner of owners) {
-    if (!owner || owner.address == null || owner.fileOffset == null || owner.fileSize == null) continue;
-    const fileSize = BigInt(owner.fileSize);
-    if (fileSize <= 0n || address < owner.address || address >= owner.address + fileSize) continue;
-    const delta = address - owner.address;
-    const start = BigInt(owner.fileOffset) + delta;
-    const end = BigInt(owner.fileOffset) + fileSize;
-    if (start > BigInt(Number.MAX_SAFE_INTEGER) || end > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-    return { start: Number(start), end: Number(end), owner, address };
+  const { fileItems, fileStarts, filePrefixEnds } = getPeOwnerIndex(image);
+  let lo = 0, hi = fileStarts.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (fileStarts[mid] <= address) lo = mid + 1;
+    else hi = mid;
   }
-  return null;
+  const upper = lo;
+  if (upper === 0) return null;
+  lo = 0;
+  hi = upper;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (filePrefixEnds[mid] > address) hi = mid;
+    else lo = mid + 1;
+  }
+  let best = null;
+  for (let i = lo; i < upper; i++) {
+    const item = fileItems[i];
+    if (item.end <= address) continue;
+    if (best === null || item.order < best.order) best = item;
+  }
+  if (best === null) return null;
+  const delta = address - best.start;
+  const start = best.fileOffset + delta;
+  const end = best.fileOffset + best.fileSize;
+  if (start > MAX_SAFE_INTEGER_BIGINT || end > MAX_SAFE_INTEGER_BIGINT) return null;
+  return { start: Number(start), end: Number(end), owner: best.owner, address };
 }
 
 export function mappedFileSpanForRva(image, rva, size) {
@@ -132,21 +290,12 @@ export function mappedFileSpanForRva(image, rva, size) {
 function mappedMemorySpanForRva(image, rva, size, { writable = false } = {}) {
   if (!Number.isInteger(rva) || rva <= 0 || !Number.isSafeInteger(size) || size <= 0) return null;
   const address = image.imageBase + BigInt(rva), spanEnd = address + BigInt(size);
-  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
-  let cursor = address;
-  while (cursor < spanEnd) {
-    let coveredTo = cursor;
-    for (const owner of owners) {
-      if (!owner || owner.address == null || owner.size == null) continue;
-      if (writable && !owner.perms?.write) continue;
-      const ownerAddress = BigInt(owner.address), ownerSize = BigInt(owner.size);
-      if (ownerSize <= 0n) continue;
-      const ownerEnd = ownerAddress + ownerSize;
-      if (ownerAddress <= cursor && cursor < ownerEnd && ownerEnd > coveredTo) coveredTo = ownerEnd;
-    }
-    if (coveredTo === cursor) return null;
-    cursor = coveredTo;
-  }
+  const index = getPeOwnerIndex(image);
+  const intervals = writable
+    ? (index.writeMemIntervals ??= buildMergedMemoryIntervals(index.owners, true))
+    : (index.allMemIntervals ??= buildMergedMemoryIntervals(index.owners, false));
+  const hit = findMergedInterval(intervals, address, -1);
+  if (hit < 0 || spanEnd > intervals[hit].end) return null;
   return { address, spanEnd };
 }
 
@@ -164,12 +313,23 @@ function mappedCStringAtRva(r, image, rva, budget, label) {
   if (max <= 0) return '';
   // ByteView.cstring() tolerates a missing NUL and returns the whole span, so
   // it would accept unterminated bytes as canonical metadata (#2187).
-  const nulAt = r.slice(range.start, max).indexOf(0);
-  if (nulAt < 0) {
-    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
-    return '';
+  let value;
+  if (typeof r.check === 'function' && typeof r.findZero === 'function' && typeof r.decodeString === 'function') {
+    r.check(range.start, max);
+    const nulPos = r.findZero(range.start, range.start + max);
+    if (nulPos < 0) {
+      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+      return '';
+    }
+    value = r.decodeString(range.start, nulPos);
+  } else {
+    const nulAt = r.slice(range.start, max).indexOf(0);
+    if (nulAt < 0) {
+      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+      return '';
+    }
+    value = r.cstring(range.start, max);
   }
-  const value = r.cstring(range.start, max);
   const inputBytes = Math.min(max, value.length + 1);
   if (!budget.take({ inputBytes, stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
   return value;
@@ -179,12 +339,23 @@ function mappedCStringAtOffset(r, start, end, budget, label) {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= end || end > r.length) return '';
   const max = Math.min(1 << 16, end-start, Math.max(1, Math.floor(budget.remainingStringBytes/2)+1));
   // Same contract as mappedCStringAtRva: no NUL inside the span -> not a string.
-  const nulAt = r.slice(start, max).indexOf(0);
-  if (nulAt < 0) {
-    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
-    return '';
+  let value;
+  if (typeof r.check === 'function' && typeof r.findZero === 'function' && typeof r.decodeString === 'function') {
+    r.check(start, max);
+    const nulPos = r.findZero(start, start + max);
+    if (nulPos < 0) {
+      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+      return '';
+    }
+    value = r.decodeString(start, nulPos);
+  } else {
+    const nulAt = r.slice(start, max).indexOf(0);
+    if (nulAt < 0) {
+      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+      return '';
+    }
+    value = r.cstring(start, max);
   }
-  const value = r.cstring(start,max);
   if (!budget.take({ inputBytes:Math.min(max,value.length+1), stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
   return value;
 }
@@ -710,7 +881,14 @@ export function resolveCoffSectionName(r, inlineName, ptrSymbols, count) {
   if (!Number.isSafeInteger(offset) || offset < 4 || offset >= stringSize || stringBase + offset >= r.length) return raw;
   const start = stringBase + offset;
   const max = Math.min(stringSize - offset, r.length - start);
-  if (max <= 0 || r.slice(start, max).indexOf(0) < 0) return raw;
+  if (max <= 0) return raw;
+  if (typeof r.check === 'function' && typeof r.findZero === 'function' && typeof r.decodeString === 'function') {
+    r.check(start, max);
+    const nulPos = r.findZero(start, start + max);
+    if (nulPos < 0) return raw;
+    return r.decodeString(start, nulPos) || raw;
+  }
+  if (r.slice(start, max).indexOf(0) < 0) return raw;
   return r.cstring(start, max) || raw;
 }
 

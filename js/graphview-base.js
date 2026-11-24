@@ -50,6 +50,9 @@ export function renderGraph(nodes, edges, opts) {
   }
   svg.append(defs);
 
+  const edgeMeta = new WeakMap();
+  const nodeAction = new WeakMap();
+
   /* 線を先に描く。各線には halo と太い透明 hit-area を持たせる。 */
   for (const route of routes) {
     const e = route.edge;
@@ -58,12 +61,13 @@ export function renderGraph(nodes, edges, opts) {
     const d = roundedOrthogonalPath(route.points);
     const group = svgEl('g', { class: 'g-edge-group' });
 
+    const haloBase = e.kind === 'back' ? 7 : 5.5;
     const hit = svgEl('path', {
       d, fill: 'none', stroke: 'transparent', 'stroke-width': 14,
       'pointer-events': 'stroke',
     });
     const halo = svgEl('path', {
-      d, fill: 'none', stroke: 'var(--surface-2)', 'stroke-width': e.kind === 'back' ? 7 : 5.5,
+      d, fill: 'none', stroke: 'var(--surface-2)', 'stroke-width': haloBase,
       'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none',
     });
     const path = svgEl('path', {
@@ -72,20 +76,7 @@ export function renderGraph(nodes, edges, opts) {
       'marker-end': 'url(#' + markerPrefix + markerId + ')',
       'pointer-events': 'none',
     });
-
-    const baseWidth = e.kind === 'back' ? 2.5 : 1.6;
-    const emphasize = () => {
-      path.style.strokeWidth = String(baseWidth + 1.6);
-      halo.style.strokeWidth = String((e.kind === 'back' ? 7 : 5.5) + 2.4);
-    };
-    const normalize = () => {
-      path.style.strokeWidth = '';
-      halo.style.strokeWidth = String(e.kind === 'back' ? 7 : 5.5);
-    };
-    hit.addEventListener('pointerenter', emphasize);
-    hit.addEventListener('pointerleave', normalize);
-    hit.addEventListener('focus', emphasize);
-    hit.addEventListener('blur', normalize);
+    edgeMeta.set(hit, { path, halo, baseWidth: e.kind === 'back' ? 2.5 : 1.6, haloBase });
 
     group.append(hit, halo, path);
 
@@ -130,18 +121,47 @@ export function renderGraph(nodes, edges, opts) {
     }
     if (n.onTap || o.onNode) {
       g.style.cursor = 'pointer';
-      const activate = () => (n.onTap ? n.onTap() : o.onNode(n));
-      g.addEventListener('click', activate);
-      g.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
-      });
+      nodeAction.set(g, () => (n.onTap ? n.onTap() : o.onNode(n)));
     }
     svg.append(g);
   }
 
+  const delegationController = typeof AbortController === 'function' ? new AbortController() : null;
+  const sigOpts = delegationController ? { signal: delegationController.signal } : undefined;
+  const onEmphasize = (event) => {
+    const meta = edgeMeta.get(event.target);
+    if (!meta) return;
+    meta.path.style.strokeWidth = String(meta.baseWidth + 1.6);
+    meta.halo.style.strokeWidth = String(meta.haloBase + 2.4);
+  };
+  const onNormalize = (event) => {
+    const meta = edgeMeta.get(event.target);
+    if (!meta) return;
+    meta.path.style.strokeWidth = '';
+    meta.halo.style.strokeWidth = String(meta.haloBase);
+  };
+  svg.addEventListener('pointerover', onEmphasize, sigOpts);
+  svg.addEventListener('pointerout', onNormalize, sigOpts);
+  svg.addEventListener('focusin', onEmphasize, sigOpts);
+  svg.addEventListener('focusout', onNormalize, sigOpts);
+  svg.addEventListener('click', (event) => {
+    const node = event.target?.closest?.('.g-node');
+    const action = node ? nodeAction.get(node) : null;
+    if (action) action();
+  }, sigOpts);
+  svg.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const node = event.target?.closest?.('.g-node');
+    const action = node ? nodeAction.get(node) : null;
+    if (action) { event.preventDefault(); action(); }
+  }, sigOpts);
+
   wrap.append(svg);
   const panZoom = attachPanZoom(wrap, svg, layout);
-  wrap.dispose = panZoom.dispose;
+  wrap.dispose = () => {
+    delegationController?.abort();
+    panZoom.dispose?.();
+  };
   return wrap;
 }
 
@@ -381,7 +401,25 @@ export function cfgGraph(model, opts) {
   const byRow = new Map();
   for (const i of model.instructions) byRow.set(i.row, i);
 
+  let blocksSorted = true;
+  for (let i = 1; i < blocks.length; i++) {
+    if (blocks[i].startRow < blocks[i - 1].startRow || blocks[i].startRow <= blocks[i - 1].endRow) {
+      blocksSorted = false;
+      break;
+    }
+  }
   const nodeOfRow = (row) => {
+    if (blocksSorted) {
+      let lo = 0, hi = blocks.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        const b = blocks[mid];
+        if (row < b.startRow) hi = mid - 1;
+        else if (row > b.endRow) lo = mid + 1;
+        else return b.index;
+      }
+      return -1;
+    }
     for (const b of blocks) if (row >= b.startRow && row <= b.endRow) return b.index;
     return -1;
   };
@@ -413,7 +451,11 @@ export function cfgGraph(model, opts) {
     return !!target && backEdges.has(`${terminalRow}:${target.startRow}`);
   };
   for (const b of blocks) {
-    const last = [...b.rows].reverse().map((r) => byRow.get(r)).find((i) => i && !i.data);
+    let last = null;
+    for (let ri = b.rows.length - 1; ri >= 0; ri--) {
+      const insn = byRow.get(b.rows[ri]);
+      if (insn && !insn.data) { last = insn; break; }
+    }
     if (!last) continue;
     const base = (last.mnemonic || '').toLowerCase();
     if (last.isReturn || last.isTailCall) continue;

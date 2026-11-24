@@ -282,11 +282,29 @@ function toBytes(value) {
   if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   return null;
 }
+const READ_PRIMITIVE = Symbol('pattern-read-primitive');
+
 function createSource(input, options = {}) {
   const bytes = toBytes(input);
   if (bytes) {
     const snapshotId = options.snapshotId || byteViewDigest(bytes);
-    return { snapshotId, size: bytes.byteLength, read(offset, length, space = 'file') { if (space !== 'file') throw new Error('pattern-address-space-unavailable'); const at = Number(offset), n = Number(length); if (!Number.isSafeInteger(at) || !Number.isSafeInteger(n) || at < 0 || n < 0 || at + n > bytes.byteLength) throw new RangeError('pattern-read-out-of-range'); return bytes.slice(at, at + n); } };
+    const sharedView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return {
+      snapshotId,
+      size: bytes.byteLength,
+      read(offset, length, space = 'file') {
+        if (space !== 'file') throw new Error('pattern-address-space-unavailable');
+        const at = Number(offset), n = Number(length);
+        if (!Number.isSafeInteger(at) || !Number.isSafeInteger(n) || at < 0 || n < 0 || at + n > bytes.byteLength) throw new RangeError('pattern-read-out-of-range');
+        return bytes.slice(at, at + n);
+      },
+      [READ_PRIMITIVE](offset, spec, typeName, space = 'file') {
+        if (space !== 'file') throw new Error('pattern-address-space-unavailable');
+        const at = Number(offset), n = spec.bytes;
+        if (!Number.isSafeInteger(at) || at < 0 || at + n > bytes.byteLength) throw new RangeError('pattern-read-out-of-range');
+        return primitiveValue(spec.read(sharedView, at), typeName);
+      },
+    };
   }
   if (input && typeof input.read === 'function') return {
     snapshotId: String(input.snapshotId || options.snapshotId || ''),
@@ -427,7 +445,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
   if (type.kind === 'primitive') {
     const spec = PRIMITIVES.get(type.name); if (!spec) fail('pattern-primitive-unsupported');
     if (!ctx.budget.consumeBytes(spec.bytes)) return { status: 'partial', reason: ctx.budget.stopped.reason };
-    const bytes = ctx.source.read(offset, spec.bytes, space); const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const value = primitiveValue(spec.read(view, 0), type.name);
+    let value; if (typeof ctx.source[READ_PRIMITIVE] === 'function') { value = ctx.source[READ_PRIMITIVE](offset, spec, type.name, space); } else { const bytes = ctx.source.read(offset, spec.bytes, space); const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); value = primitiveValue(spec.read(view, 0), type.name); }
     return fieldValue(type, value, ctx, offset, spec.bytes, space);
   }
   if (type.kind === 'named') {
@@ -517,9 +535,16 @@ async function readTypeAsync(type, offset, space, ctx, values, depth = 0) {
   if (type.kind === 'primitive') {
     const spec = PRIMITIVES.get(type.name); if (!spec) fail('pattern-primitive-unsupported');
     if (!ctx.budget.consumeBytes(spec.bytes)) return { status: 'partial', reason: ctx.budget.stopped.reason };
-    const bytes = await ctx.source.read(offset, spec.bytes, space, ctx.signal);
-    if (!ctx.budget.checkpoint()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'cancelled' };
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const value = primitiveValue(spec.read(view, 0), type.name);
+    let value;
+    if (typeof ctx.source[READ_PRIMITIVE] === 'function') {
+      value = ctx.source[READ_PRIMITIVE](offset, spec, type.name, space);
+      if (!ctx.budget.checkpoint()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'cancelled' };
+    } else {
+      const bytes = await ctx.source.read(offset, spec.bytes, space, ctx.signal);
+      if (!ctx.budget.checkpoint()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'cancelled' };
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      value = primitiveValue(spec.read(view, 0), type.name);
+    }
     return fieldValue(type, value, ctx, offset, spec.bytes, space);
   }
   if (type.kind === 'named') {

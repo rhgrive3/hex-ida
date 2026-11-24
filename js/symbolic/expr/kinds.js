@@ -12,8 +12,13 @@ export const SORT_KIND = Object.freeze({
 
 export const MAX_BV_WIDTH = 65536;
 
+const BOOL_SORT = Object.freeze({ kind: SORT_KIND.BOOL });
+const BV_SORT_CACHE = Array.from({ length: 65 }, (_, w) =>
+  w === 0 ? null : Object.freeze({ kind: SORT_KIND.BV, width: w })
+);
+
 export function boolSort() {
-  return Object.freeze({ kind: SORT_KIND.BOOL });
+  return BOOL_SORT;
 }
 
 export function bvSort(width) {
@@ -23,7 +28,7 @@ export function bvSort(width) {
   if (width > MAX_BV_WIDTH) {
     throw new RangeError(`bvSort: width exceeds maximum supported width (${MAX_BV_WIDTH}), got ${width}`);
   }
-  return Object.freeze({ kind: SORT_KIND.BV, width });
+  return width <= 64 ? BV_SORT_CACHE[width] : Object.freeze({ kind: SORT_KIND.BV, width });
 }
 
 export function isBoolSort(sort) {

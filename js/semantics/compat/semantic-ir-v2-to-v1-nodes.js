@@ -412,17 +412,57 @@ function isFpStateVariable(variable) {
   return isAnyFpRegisterName(regId);
 }
 
+const frozenNodeConsumersCache = new WeakMap();
+function consumersMapForContext(context) {
+  if (context.consumersByValueId) return context.consumersByValueId;
+  const nodes = context.ir?.nodes;
+  if (!Array.isArray(nodes)) return null;
+  const frozen = Object.isFrozen(nodes);
+  if (frozen) {
+    const cached = frozenNodeConsumersCache.get(nodes);
+    if (cached) return cached;
+  }
+  const index = new Map();
+  for (let i = 0; i < nodes.length; i += 1) {
+    const candidate = nodes[i];
+    const inputs = candidate?.inputs;
+    if (!Array.isArray(inputs) || inputs.length === 0) continue;
+    let seenInputs = null;
+    for (let j = 0; j < inputs.length; j += 1) {
+      const inputId = inputs[j];
+      if (j > 0) {
+        if (seenInputs === null) {
+          if (inputId === inputs[0]) continue;
+          if (inputs.length > 2) { seenInputs = new Set([inputs[0], inputId]); }
+        } else {
+          if (seenInputs.has(inputId)) continue;
+          seenInputs.add(inputId);
+        }
+      }
+      let list = index.get(inputId);
+      if (!list) { list = []; index.set(inputId, list); }
+      list.push(candidate);
+    }
+  }
+  if (frozen) frozenNodeConsumersCache.set(nodes, index);
+  return index;
+}
+
 function valueWritesToScalarFpReg(valueId, context, maxDepth = 3) {
   if (valueId == null || !context) return false;
+  const consumersByValueId = consumersMapForContext(context);
+  if (!consumersByValueId) return false;
   const visited = new Set();
   const queue = [{ id: valueId, depth: 0 }];
-  while (queue.length > 0) {
-    const { id, depth } = queue.shift();
+  let head = 0;
+  while (head < queue.length) {
+    const { id, depth } = queue[head++];
     if (id == null || visited.has(id) || depth > maxDepth) continue;
     visited.add(id);
-    const consumers = context.consumersByValueId?.get(id)
-      ?? (context.ir?.nodes || []).filter((candidate) => candidate.inputs?.includes(id));
-    for (const consumer of consumers) {
+    const consumers = consumersByValueId.get(id);
+    if (!consumers) continue;
+    for (let i = 0; i < consumers.length; i += 1) {
+      const consumer = consumers[i];
       if (!consumer) continue;
       if (consumer.kind === 'state-write') {
         const meta = operationMetadata(consumer);

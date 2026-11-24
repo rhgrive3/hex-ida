@@ -130,6 +130,8 @@ async function decodedPointer(get, raw, storageAddress = null) {
 
 async function ptr(get, addr) { const b = await get(addr, pointerBytesOf(get)); return b ? decodedPointer(get, readWord(get, b, 0), addr) : null; }
 
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 async function decodeCString(get, addr) {
   for (let want = NAME_READ_INITIAL; want <= NAME_READ_MAX; want *= 2) {
     const b = await get(addr, Math.min(want, NAME_READ_MAX), true);
@@ -139,7 +141,7 @@ async function decodeCString(get, addr) {
       if (!end) return null;
       const bytes = b.subarray(0, end);
       try {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        const text = UTF8_FATAL_DECODER.decode(bytes);
         return /[\u0000-\u001f\u007f]/u.test(text) ? null : text;
       } catch { return null; }
     }

@@ -367,21 +367,42 @@ function buildCallDominanceIndex(ir) {
       callBlocks.push(blk);
     }
   }
-  return { firstCallRowByBlock, callBlocks };
+  return { firstCallRowByBlock, callBlocks, callBlockSet, domByCallCache: new Map() };
 }
 
 function dominatedByEarlierCall(ir, atInst, callIndex = null) {
   if (!ir || !atInst) return false;
-  const { firstCallRowByBlock, callBlocks } = callIndex || buildCallDominanceIndex(ir);
+  const index = callIndex || buildCallDominanceIndex(ir);
+  const { firstCallRowByBlock, callBlocks, callBlockSet, domByCallCache } = index;
   const blk = atInst.block ?? null;
   if (atInst.row != null) {
     const firstRow = firstCallRowByBlock.get(blk);
     if (firstRow != null && firstRow < atInst.row) return true;
   }
-  if (atInst.block != null) {
-    for (const cb of callBlocks) {
-      if (cb !== atInst.block && blockDominates(ir, cb, atInst.block)) return true;
+  if (atInst.block != null && callBlocks.length > 0) {
+    if (domByCallCache && domByCallCache.has(atInst.block)) {
+      return domByCallCache.get(atInst.block);
     }
+    let result = false;
+    const dom = ir.dominators?.[atInst.block];
+    if (dom && typeof dom.has === 'function') {
+      for (const cb of callBlocks) {
+        if (cb !== atInst.block && dom.has(cb)) { result = true; break; }
+      }
+    } else if (callBlockSet) {
+      let cur = atInst.block, guard = 0;
+      const limit = (ir.blocks?.length || 0) + 1;
+      while (cur != null && cur >= 0 && guard++ <= limit) {
+        cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+        if (cur !== atInst.block && callBlockSet.has(cur)) { result = true; break; }
+      }
+    } else {
+      for (const cb of callBlocks) {
+        if (cb !== atInst.block && blockDominates(ir, cb, atInst.block)) { result = true; break; }
+      }
+    }
+    domByCallCache?.set(atInst.block, result);
+    return result;
   }
   return false;
 }
@@ -859,9 +880,38 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   // Propagate floating-point evidence and scalar 32/64-bit float widths across
   // register-view MOV/bitcast/trunc/zext and PHI nodes so vN/qN <-> sN/dN chains
   // recover float/double arguments and return types.
-  for (let pass = 0; pass < 6; pass++) {
+  let hasAnyFloat = false;
+  for (const e of ev.values()) { if (e.floating > 0) { hasAnyFloat = true; break; } }
+  if (!hasAnyFloat) {
+    for (const e of locEv.values()) { if (e.floating > 0) { hasAnyFloat = true; break; } }
+  }
+  const fpPropInsts = [];
+  for (const inst of ir.instructions || []) {
+    if (inst.op === OP.MOV && inst.dst) {
+      const isScalarFpView = !inst.sub || inst.sub === 'trunc' || inst.sub === 'zext' || inst.sub === 'fmov' || inst.extra?.castKind === 'bitcast';
+      if (!isScalarFpView) continue;
+      if (inst.sub === 'fmov' && inst.extra?.float === true && inst.extra?.bitcopy !== true) hasAnyFloat = true;
+      fpPropInsts.push(inst);
+    } else if (inst.op === OP.LOAD && inst.dst) {
+      // Preserve lFor(inst.loc) registration side effect in locEv (returned in locations Map).
+      lFor(inst.loc);
+      fpPropInsts.push(inst);
+    } else if (inst.op === OP.STORE) {
+      if (valueOf(inst.args && inst.args[0])) lFor(inst.loc);
+      fpPropInsts.push(inst);
+    } else if (inst.op === OP.PHI && inst.dst) {
+      fpPropInsts.push(inst);
+    }
+  }
+  const fpPhiIncoming = hasAnyFloat ? new Map() : null;
+  if (hasAnyFloat) {
+    for (let i = 0; i < fpPropInsts.length; i++) {
+      if (fpPropInsts[i].op === OP.PHI) fpPhiIncoming.set(fpPropInsts[i], phiIncomingValues(fpPropInsts[i]));
+    }
+  }
+  for (let pass = 0; hasAnyFloat && pass < 6; pass++) {
     let changed = false;
-    for (const inst of ir.instructions || []) {
+    for (const inst of fpPropInsts) {
       if (inst.op === OP.MOV && inst.dst) {
         const src = valueOf(inst.args && inst.args[0]);
         if (!src) continue;
@@ -936,7 +986,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         }
       } else if (inst.op === OP.PHI && inst.dst) {
         const de = eFor(inst.dst);
-        const args = phiIncomingValues(inst);
+        const args = fpPhiIncoming.get(inst) || [];
         if (de && args.length) {
           const floatArgs = args.filter((a) => (eFor(a)?.floating || 0) > 0);
           if (floatArgs.length > 0 && de.floating === 0) {

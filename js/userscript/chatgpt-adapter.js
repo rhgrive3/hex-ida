@@ -169,9 +169,14 @@ export class ChatGPTDOMAdapter {
     return String(inner || raw).trim();
   }
 
-  assistantTurns() { return this.all('assistantTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
-  userTurns() { return this.all('userTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
-  conversationTurns() { return this.all('conversationTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
+  _makeTurn(node) {
+    const turn = { node, id: this.identity(node) };
+    defineLazyText(turn, () => this.text(node));
+    return turn;
+  }
+  assistantTurns() { return this.all('assistantTurn').map((node) => this._makeTurn(node)); }
+  userTurns() { return this.all('userTurn').map((node) => this._makeTurn(node)); }
+  conversationTurns() { return this.all('conversationTurn').map((node) => this._makeTurn(node)); }
 
   conversation() {
     const href = String(this.location?.href || '');
@@ -239,10 +244,22 @@ export class ChatGPTDOMAdapter {
     const root = this.document?.documentElement || this.document?.body || null;
     if (!root || typeof Observer !== 'function') return () => {};
     const selectors = this.selectors.pageError || [];
+    const IGNORED_SCOPE = '[data-testid^="conversation-turn-"], [id^="hex-"], [data-hex]';
     const candidates = (raw) => {
       const element = raw?.nodeType === 1 ? raw : raw?.parentElement;
       if (!element) return [];
+      let insideIgnored = false;
+      try { insideIgnored = !!element.closest?.(IGNORED_SCOPE); } catch { insideIgnored = false; }
       const found = new Set();
+      if (insideIgnored) {
+        for (const selector of selectors) {
+          try {
+            const enclosing = element.closest?.(selector);
+            if (enclosing && !enclosing.closest?.(IGNORED_SCOPE)) found.add(enclosing);
+          } catch { /* selector unsupported */ }
+        }
+        return [...found];
+      }
       for (const selector of selectors) {
         try { if (element.matches?.(selector)) found.add(element); } catch { /* selector unsupported */ }
         try { const enclosing = element.closest?.(selector); if (enclosing) found.add(enclosing); } catch { /* selector unsupported */ }
@@ -675,7 +692,7 @@ export class ChatGPTTurnController {
 
         const explicit = this.assistantTurns().filter((turn) => !baselineAssistant.has(turn.id));
         if (explicit.length > 1) throw bridgeError('turn-controller', 'manual-interference', 'Multiple assistant turns appeared while one Hex request was in flight.');
-        const turn = explicit[0] || this.fallbackResponseTurn({ baselineConversation, baselineUsers, requestUserTurn, normalizedPrompt });
+        const turn = explicit[0] || this.fallbackResponseTurn({ baselineConversation, baselineUsers, requestUserTurn, normalizedPrompt, conversationTurns, userTurns });
         if (turn) {
           if (latestId && turn.id !== latestId) throw bridgeError('turn-controller', 'stale-response', 'The assistant turn identity changed before the Hex response settled.');
           latestId = turn.id;
@@ -771,9 +788,11 @@ export class ChatGPTTurnController {
     try { return this.adapter.stop?.() === true; } catch { return false; }
   }
 
-  fallbackResponseTurn({ baselineConversation, baselineUsers, requestUserTurn, normalizedPrompt }) {
-    const freshUsers = new Set(this.userTurns().filter((turn) => !baselineUsers.has(turn.id)).map((turn) => turn.id));
-    const candidates = this.conversationTurns().filter((turn) => {
+  fallbackResponseTurn({ baselineConversation, baselineUsers, requestUserTurn, normalizedPrompt, conversationTurns = null, userTurns = null }) {
+    const users = userTurns || this.userTurns();
+    const turns = conversationTurns || this.conversationTurns();
+    const freshUsers = new Set(users.filter((turn) => !baselineUsers.has(turn.id)).map((turn) => turn.id));
+    const candidates = turns.filter((turn) => {
       if (baselineConversation.has(turn.id)) return false;
       if (turn.id === requestUserTurn?.id || freshUsers.has(turn.id)) return false;
       const text = normalizeText(turn.text);
@@ -827,17 +846,49 @@ export function conversationIdentity(value) {
   } catch { return null; }
 }
 
+function defineLazyText(target, compute) {
+  Object.defineProperty(target, 'text', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const value = compute();
+      Object.defineProperty(this, 'text', { value, writable: true, enumerable: true, configurable: true });
+      return value;
+    },
+    set(value) {
+      Object.defineProperty(this, 'text', { value, writable: true, enumerable: true, configurable: true });
+    },
+  });
+}
+
 function canonicalTurns(adapter, turns) {
   const out = [];
   const seen = new Set();
   for (const source of turns || []) {
     if (!source) continue;
     const root = source.node?.closest?.('[data-testid^="conversation-turn-"]') || source.node || null;
-    const id = root && root !== source.node ? (adapter.identity?.(root) || source.id) : source.id;
+    const useRoot = !!(root && root !== source.node);
+    const id = useRoot ? (adapter.identity?.(root) || source.id) : source.id;
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    const text = root && root !== source.node ? (adapter.text?.(root) || source.text || '') : (source.text || '');
-    out.push({ ...source, node: root || source.node || null, id: String(id), text: String(text || '').trim() });
+    const desc = Object.getOwnPropertyDescriptor(source, 'text');
+    const isPlainText = !!desc && Object.prototype.hasOwnProperty.call(desc, 'value');
+    const target = {};
+    for (const key of Object.keys(source)) {
+      if (key === 'text') continue;
+      target[key] = source[key];
+    }
+    target.node = root || source.node || null;
+    target.id = String(id);
+    if (!useRoot && isPlainText) {
+      target.text = String(desc.value || '').trim();
+    } else {
+      defineLazyText(target, () => {
+        const raw = useRoot ? (adapter.text?.(root) || source.text || '') : (source.text || '');
+        return String(raw || '').trim();
+      });
+    }
+    out.push(target);
   }
   return out;
 }

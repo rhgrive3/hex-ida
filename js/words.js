@@ -57,6 +57,10 @@
 
   const KIND_NAME = Object.keys(KIND);
 
+  const LSE_OP_NAMES = Object.freeze([
+    'ldadd', 'ldclr', 'ldeor', 'ldset', 'ldsmax', 'ldsmin', 'ldumax', 'ldumin', 'swp',
+  ]);
+
   /* ── ビット操作 ──────────────────────────────────────────────
      JS の & は符号つき 32 ビットを返す。bit31 が立つ命令（bl / ret など）を
      素朴に比較するといつまでも一致しないので、必ずここを通す。 */
@@ -66,6 +70,11 @@
   function signExtend(value, bits) {
     const sign = 1n << BigInt(bits - 1);
     return (value & (sign - 1n)) - (value & sign);
+  }
+
+  function signExtend32(value, bits) {
+    const shift = 32 - bits;
+    return (value << shift) >> shift;
   }
 
   /**
@@ -89,7 +98,7 @@
   /** b / bl の飛び先。違う命令なら null。 */
   function branchImm26(w, pc) {
     if (masked(w, 0x7c000000) !== 0x14000000) return null;
-    return canonical64(pc + (signExtend(BigInt(w >>> 0) & 0x3ffffffn, 26) << 2n));
+    return canonical64(pc + BigInt(signExtend32(w & 0x3ffffff, 26) * 4));
   }
 
   function isCallImm(w) { return masked(w, 0xfc000000) === 0x94000000; }
@@ -114,17 +123,19 @@
 
   /** 条件つき分岐の飛び先。 */
   function condBranchTarget(w, pc) {
-    const bw = BigInt(w >>> 0);
-    if (masked(w, 0xff000010) === 0x54000000) return canonical64(pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n));
-    if (masked(w, 0x7e000000) === 0x34000000) return canonical64(pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n));
-    if (masked(w, 0x7e000000) === 0x36000000) return canonical64(pc + (signExtend((bw >> 5n) & 0x3fffn, 14) << 2n));
+    if (masked(w, 0xff000010) === 0x54000000 || masked(w, 0x7e000000) === 0x34000000) {
+      return canonical64(pc + BigInt(signExtend32((w >>> 5) & 0x7ffff, 19) * 4));
+    }
+    if (masked(w, 0x7e000000) === 0x36000000) {
+      return canonical64(pc + BigInt(signExtend32((w >>> 5) & 0x3fff, 14) * 4));
+    }
     return null;
   }
 
   /** ldr (literal) — 手近に置かれた定数を読む形。 */
   function literalTarget(w, pc) {
     if (masked(w, 0x3b000000) !== 0x18000000) return null;
-    return canonical64(pc + (signExtend((BigInt(w >>> 0) >> 5n) & 0x7ffffn, 19) << 2n));
+    return canonical64(pc + BigInt(signExtend32((w >>> 5) & 0x7ffff, 19) * 4));
   }
 
   /** この語が「どこかのアドレスを指している」なら、その先。分からなければ null。 */
@@ -141,12 +152,9 @@
   /** adr / adrp をほどく。{reg, value, page} か null。 */
   function pcRelTarget(w, pc) {
     if (masked(w, 0x1f000000) !== 0x10000000) return null;
-    const bw = BigInt(w >>> 0);
-    const immlo = (bw >> 29n) & 0x3n;
-    const immhi = (bw >> 5n) & 0x7ffffn;
-    const imm = signExtend((immhi << 2n) | immlo, 21);
-    if (w & 0x80000000) return { reg: rd(w), value: canonical64((pc & ~0xfffn) + (imm << 12n)), page: true };
-    return { reg: rd(w), value: canonical64(pc + imm), page: false };
+    const imm = signExtend32((((w >>> 5) & 0x7ffff) << 2) | ((w >>> 29) & 3), 21);
+    if (w & 0x80000000) return { reg: rd(w), value: canonical64((pc & ~0xfffn) + (BigInt(imm) << 12n)), page: true };
+    return { reg: rd(w), value: canonical64(pc + BigInt(imm)), page: false };
   }
 
   /**
@@ -163,7 +171,7 @@
     // 限定すると、その組がまるごと ProgramIndex から落ちる (#3936)。
     if (((w >>> 23) & 0x1ff) === 0x122) {
       const shift = (w >>> 22) & 1;
-      const imm = BigInt((w >>> 10) & 0xfff) << BigInt(shift ? 12 : 0);
+      const imm = BigInt(((w >>> 10) & 0xfff) << (shift ? 12 : 0));
       return { rn: rn(w), rd: rd(w), imm, load: false };
     }
     // LDR/LDRB/LDRH/STR… (immediate, unsigned offset) — 倍率は転送サイズで決まる
@@ -173,7 +181,7 @@
       const prefetch = isPrefetchImmediate(w);
       return {
         rn: rn(w), rd: rd(w),
-        imm: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
+        imm: BigInt(((w >>> 10) & 0xfff) << scale),
         load: isLoad, store: !isLoad && !prefetch,
         prefetch,
         // SIMD/FP loads write vN/dN/sN, not xN/wN.  Consumers that track
@@ -217,6 +225,30 @@
   }
 
   /* ── メモリアクセス ─────────────────────────────────────── */
+
+  /**
+   * classifyWord 向けのゼロ割当メモリ分類ヘルパー。
+   * memoryAccess(w) の判定条件・フォールスルー契約（pair の opc===3 や
+   * LSE の opCode>=9 で非メモリ扱い＝KIND.OTHER を返し後続分類へ渡す）と
+   * ビット単位で完全に一致する。
+   */
+  function classifyMemoryKind(w) {
+    const atomicClass = masked(w, 0x3f000000);
+    if (atomicClass === 0x08000000) return KIND.ATOMIC;
+    if (atomicClass === 0x38000000 && ((w >>> 21) & 1) === 1 && ((w >>> 10) & 3) === 0) {
+      if (((w >>> 12) & 0xf) < LSE_OP_NAMES.length) return KIND.ATOMIC;
+    }
+    if (masked(w, 0x3a000000) === 0x28000000) {
+      if (((w >>> 30) & 3) === 3) return KIND.OTHER;
+      return ((w >>> 22) & 1) === 1 ? KIND.LOAD : KIND.STORE;
+    }
+    if (masked(w, 0x3b000000) === 0x39000000 ||
+        masked(w, 0x3b200000) === 0x38000000 ||
+        masked(w, 0x3b200c00) === 0x38200800) {
+      return transferIsLoad(w) ? KIND.LOAD : KIND.STORE;
+    }
+    return KIND.OTHER;
+  }
 
   /**
    * メモリを触る命令か。触るなら {load, size, pair, base, reg, disp}。
@@ -291,8 +323,7 @@ out.valueReg2 = (valueReg + 1) & 31;
     // different selector (0xc) and must not be mistaken for an RMW operation.
     if (atomicClass === 0x38000000 && ((w >>> 21) & 1) === 1 && ((w >>> 10) & 3) === 0) {
       const opCode = (w >>> 12) & 0xf;
-      const names = ['ldadd', 'ldclr', 'ldeor', 'ldset', 'ldsmax', 'ldsmin', 'ldumax', 'ldumin', 'swp'];
-      if (opCode < names.length) {
+      if (opCode < LSE_OP_NAMES.length) {
         const size = 1 << ((w >>> 30) & 3);
         const acquire = ((w >>> 23) & 1) === 1;
         const release = ((w >>> 22) & 1) === 1;
@@ -300,7 +331,7 @@ out.valueReg2 = (valueReg + 1) & 31;
         const resultReg = rd(w);
         return {
 load: true, store: true, rmw: true, atomic: true,
-atomicOp: names[opCode], size, elementSize: size,
+atomicOp: LSE_OP_NAMES[opCode], size, elementSize: size,
 base: rn(w), reg: resultReg, sourceReg, valueReg: sourceReg, resultReg,
 disp: 0n,
 ordering: acquire ? (release ? 'acq_rel' : 'acquire') : (release ? 'release' : 'relaxed'),
@@ -321,7 +352,7 @@ acquire, release,
       // the allocation tag and scales its signed offset by the 16-byte tag
       // granule, not by 4 like an integer W pair (#3975).
       if (opc === 1 && !vector && !load) {
-        const imm7 = Number(signExtend(BigInt((w >>> 15) & 0x7f), 7));
+        const imm7 = signExtend32((w >>> 15) & 0x7f, 7);
         return {
           load: false, store: true, size: 16, elementSize: 8, pair: true, vector: false,
           signed: false, signExtendTo: null, tag: true,
@@ -332,7 +363,7 @@ acquire, release,
       // Integer opc=0 => W pair, opc=1 => LDPSW, opc=2 => X pair.
       // SIMD opc=0/1/2 => S/D/Q pairs.
       const elementSize = vector ? (4 << opc) : (opc === 2 ? 8 : 4);
-      const imm7 = Number(signExtend(BigInt((w >>> 15) & 0x7f), 7));
+      const imm7 = signExtend32((w >>> 15) & 0x7f, 7);
       return {
         load, store: !load, size: elementSize * 2, elementSize, pair: true, vector,
         signed: signedWordPair, signExtendTo: signedWordPair ? 8 : null,
@@ -348,14 +379,14 @@ acquire, release,
       return {
         load, store: !load, size: 1 << scale, vector: ((w >>> 26) & 1) === 1,
         prefetch, gpDest: !prefetch && ((w >>> 26) & 1) === 0, base: rn(w), reg: rd(w),
-        disp: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
+        disp: BigInt(((w >>> 10) & 0xfff) << scale),
       };
     }
     // Pre/post/unscaled immediate.
     if (masked(w, 0x3b200000) === 0x38000000) {
       const load = transferIsLoad(w);
       const kind = (w >>> 10) & 3;
-      const imm9 = Number(signExtend(BigInt((w >>> 12) & 0x1ff), 9));
+      const imm9 = signExtend32((w >>> 12) & 0x1ff, 9);
       return {
         load, store: !load, size: 1 << transferScale(w), vector: ((w >>> 26) & 1) === 1, base: rn(w), reg: rd(w),
         disp: BigInt(imm9), mode: kind === 1 ? 'post' : kind === 3 ? 'pre' : 'offset',
@@ -420,8 +451,8 @@ acquire, release,
   /** cmp xN, #imm の即値。比較でなければ null。 */
   function compareImmediate(w) {
     if (!isAddSubImm(w) || ((w >>> 29) & 1) !== 1 || rd(w) !== 31) return null;
-    const shift = ((w >>> 22) & 1) ? 12n : 0n;
-    return BigInt((w >>> 10) & 0xfff) << shift;
+    const shift = ((w >>> 22) & 1) ? 12 : 0;
+    return BigInt(((w >>> 10) & 0xfff) << shift);
   }
 
   /** mul / madd / msub。掛け算は「値の計算」を示す強い手がかり。 */
@@ -489,66 +520,105 @@ acquire, release,
   /**
    * 語 1 つを分類する。分からなければ KIND.OTHER。
    *
-   * 判定の順番には意味がある。比較 (cmp) は足し算 (subs) の一種なので先に見る、
-   * のように「より具体的なもの」から確かめていく。
+   * A64 公式トップレベル群 op0 = bits[28:25] で 16 バケットに分岐し、
+   * 各バケット内で元の優先順位（cmp が subs より先、logical immediate move が
+   * logic imm より先、pair opc===3 の非メモリ時は isSimd へフォールスルー等）を
+   * 完全に保存して判定する。
    */
   function classifyWord(w) {
     if (w === 0) return KIND.OTHER;                    // 埋め草。命令として数えない
-    if (isNop(w)) return KIND.NOP;
-    if (isTrap(w)) return KIND.TRAP;
-
-    if (isCallImm(w)) return KIND.CALL;
-    if (isIndirectCall(w)) return KIND.INDCALL;
-    if (isRet(w)) return KIND.RET;
-    if (isBranchImm(w) || isBr(w)) return KIND.BRANCH;
-    if (isCondBranch(w)) return KIND.CONDBR;
-
-    if (masked(w, 0x1f000000) === 0x10000000) return KIND.ADRP;
-    if (masked(w, 0x3b000000) === 0x18000000) return KIND.LITERAL;
-
-    if (isCompare(w)) return KIND.CMP;
-
-    const mem = memoryAccess(w);
-    if (mem) {
-      if (mem.atomic) return KIND.ATOMIC;
-      return mem.load ? KIND.LOAD : KIND.STORE;
+    switch ((w >>> 25) & 0xf) {
+      case 0:
+        return masked(w, 0xffff0000) === 0x00000000 ? KIND.TRAP : KIND.OTHER;
+      case 4:
+        return classifyMemoryKind(w);
+      case 5:
+        if (isAddSubShifted(w) || isAddSubExtended(w)) {
+          if (((w >>> 29) & 1) === 1 && rd(w) === 31) return KIND.CMP;
+          return KIND.ARITH;
+        }
+        if (isLogicShifted(w)) {
+          const opc = (w >>> 29) & 3;
+          if (opc === 3 && rd(w) === 31) return KIND.CMP;
+          if (opc === 1 && rn(w) === 31 && ((w >>> 21) & 1) === 0 &&
+              ((w >>> 22) & 3) === 0 && ((w >>> 10) & 0x3f) === 0) return KIND.MOVREG; // mov = orr xD,xzr,xM
+          return KIND.LOGIC;
+        }
+        return KIND.OTHER;
+      case 6: {
+        // pair (0x28) の opc===3 は非メモリ（KIND.OTHER）を返すため、
+        // 必ず後続の isSimd(w) へフォールスルーする。
+        const memKind = classifyMemoryKind(w);
+        if (memKind !== KIND.OTHER) return memKind;
+        return isSimd(w) ? KIND.SIMD : KIND.OTHER;
+      }
+      case 7:
+        return isSimd(w) ? KIND.SIMD : KIND.OTHER;
+      case 8:
+        if (masked(w, 0x1f000000) === 0x10000000) return KIND.ADRP;
+        if (isAddSubImm(w)) {
+          const sBit = (w >>> 29) & 1;
+          if (sBit === 1 && rd(w) === 31) return KIND.CMP;
+          /* add xD, xN, #0 は実質コピー。ただし S ビットが立っていれば
+             旗を立てる計算なのでコピーとは呼べない。 */
+          if (((w >>> 10) & 0xfff) === 0 && !sBit && (rn(w) === 31 || rd(w) === 31)) return KIND.MOVREG;
+          return KIND.ARITH;
+        }
+        return KIND.OTHER;
+      case 9:
+        if (isLogicImm(w)) {
+          const opc = (w >>> 29) & 3;
+          if (opc === 3 && rd(w) === 31) return KIND.CMP;
+          if (opc === 1 && rn(w) === 31) return KIND.MOVIMM;
+          return KIND.LOGIC;
+        }
+        if (isMoveWide(w)) return KIND.MOVIMM;
+        if (isBitfield(w)) return KIND.SHIFT;
+        return KIND.OTHER;
+      case 10:
+        if (isNop(w)) return KIND.NOP;
+        if (masked(w, 0xffe0001f) === 0xd4200000) return KIND.TRAP;
+        if (isCallImm(w)) return KIND.CALL;
+        if (isBranchImm(w)) return KIND.BRANCH;
+        if (masked(w, 0xff000010) === 0x54000000 || masked(w, 0x7e000000) === 0x34000000) return KIND.CONDBR;
+        if (isSystem(w)) return KIND.SYS;
+        return KIND.OTHER;
+      case 11:
+        if (isCallImm(w)) return KIND.CALL;
+        if (isIndirectCall(w)) return KIND.INDCALL;
+        if (isRet(w)) return KIND.RET;
+        if (isBranchImm(w) || isBr(w)) return KIND.BRANCH;
+        if (masked(w, 0x7e000000) === 0x36000000) return KIND.CONDBR;
+        return KIND.OTHER;
+      case 12:
+      case 14:
+        if (masked(w, 0x3b000000) === 0x18000000) return KIND.LITERAL;
+        return classifyMemoryKind(w);
+      case 13:
+        if (isCondCompare(w)) return KIND.CMP;
+        if (isMultiply(w)) return KIND.MUL;
+        if (isDivide(w)) return KIND.DIV;
+        if (isCondSelect(w)) return KIND.CSEL;
+        if (isShiftOp(w) || isIntegerOneSourceBitOp(w)) return KIND.SHIFT;
+        return KIND.OTHER;
+      case 15:
+        if (isFpCompare(w)) return KIND.CMP;
+        if (isFpMulDiv(w)) return KIND.FMUL;
+        if (isFpAddSub(w)) return KIND.FARITH;
+        if (isFpToInt(w) || isFpFixedConvert(w) || isSimdScalarIntFloatConvert(w)) return KIND.FCONV;
+        if (isFpDp1(w)) {
+          /* FP one-source shares one encoding family. fabs/fneg/fsqrt are
+             arithmetic; fcvt and the remaining conversion forms are conversions. */
+          const op = (w >>> 15) & 0x3f;
+          if (op === 1 || op === 2 || op === 3) return KIND.FARITH;
+          return KIND.FCONV;
+        }
+        if (isFpImm(w)) return KIND.MOVIMM;
+        if (isFpCondSelect(w)) return KIND.CSEL;
+        return KIND.OTHER;
+      default:
+        return KIND.OTHER;
     }
-
-    if (isMultiply(w)) return KIND.MUL;
-    if (isDivide(w)) return KIND.DIV;
-    if (isFpMulDiv(w)) return KIND.FMUL;
-    if (isFpAddSub(w)) return KIND.FARITH;
-    if (isFpToInt(w) || isFpFixedConvert(w) || isSimdScalarIntFloatConvert(w)) return KIND.FCONV;
-    if (isFpDp1(w)) {
-      /* FP one-source shares one encoding family. fabs/fneg/fsqrt are
-         arithmetic; fcvt and the remaining conversion forms are conversions. */
-      const op = (w >>> 15) & 0x3f;
-      if (op === 1 || op === 2 || op === 3) return KIND.FARITH;
-      return KIND.FCONV;
-    }
-    if (isFpImm(w)) return KIND.MOVIMM;
-    if (isCondSelect(w) || isFpCondSelect(w)) return KIND.CSEL;
-    if (isMoveWide(w) || isLogicalImmediateMove(w)) return KIND.MOVIMM;
-    if (isShiftOp(w) || isIntegerOneSourceBitOp(w)) return KIND.SHIFT;
-
-    if (isAddSubImm(w) || isAddSubShifted(w) || isAddSubExtended(w)) {
-      /* orr xD, xzr, xM は mov の別名。add xD, xN, #0 も実質コピー。
-         ただし S ビットが立っていれば（adds / subs）旗を立てる計算なので、
-         コピーとは呼べない — `subs x8, x8, #0` は実際には比較として使われる。 */
-      if (isAddSubImm(w) && ((w >>> 10) & 0xfff) === 0 && !((w >>> 29) & 1) &&
-          (rn(w) === 31 || rd(w) === 31)) return KIND.MOVREG;
-      return KIND.ARITH;
-    }
-    if (isLogicShifted(w)) {
-      if (((w >>> 29) & 3) === 1 && rn(w) === 31 && ((w >>> 21) & 1) === 0 &&
-          ((w >>> 22) & 3) === 0 && ((w >>> 10) & 0x3f) === 0) return KIND.MOVREG; // mov = orr xD,xzr,xM
-      return KIND.LOGIC;
-    }
-    if (isLogicImm(w)) return KIND.LOGIC;
-    if (isBitfield(w)) return KIND.SHIFT;
-    if (isSimd(w)) return KIND.SIMD;
-    if (isSystem(w)) return KIND.SYS;
-    return KIND.OTHER;
   }
 
   /**

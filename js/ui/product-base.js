@@ -297,14 +297,27 @@ let cachedClassesRef = null;
 let cachedClassEntities = null;
 
 function getClassEntities(app) {
-  const classes = app.fields?.classes || app.objcModel?.classes;
-  const swiftTypes = app.swiftModel?.types || app.swiftRuntime?.types || [];
-  const cxxClasses = app.symbols ? findCxxClasses(app.symbols) : [];
-  const il2cppTypes = app.il2cppModel?.types || app.il2cpp?.types || [];
+  const classes = app.fields?.classes || app.objcModel?.classes || null;
+  const swiftTypes = app.swiftModel?.types || app.swiftRuntime?.types || null;
+  const il2cppTypes = app.il2cppModel?.types || app.il2cpp?.types || null;
+  const symbols = app.symbols || null;
+  const symbolsGen = symbols?.gen ?? null;
+  const isJapanese = ja();
 
-  if (cachedClassesRef && cachedClassesRef.classes === classes && cachedClassesRef.swift === swiftTypes && cachedClassesRef.cxx === cxxClasses && cachedClassesRef.il2cpp === il2cppTypes && cachedClassEntities) {
+  if (
+    cachedClassesRef
+    && cachedClassesRef.classes === classes
+    && cachedClassesRef.swift === swiftTypes
+    && cachedClassesRef.il2cpp === il2cppTypes
+    && cachedClassesRef.symbols === symbols
+    && cachedClassesRef.symbolsGen === symbolsGen
+    && cachedClassesRef.isJapanese === isJapanese
+    && cachedClassEntities
+  ) {
     return cachedClassEntities;
   }
+
+  const cxxClasses = symbols ? findCxxClasses(symbols) : null;
 
   const items = [];
   const seen = new Set();
@@ -391,7 +404,7 @@ function getClassEntities(app) {
     }
   }
 
-  cachedClassesRef = { classes, swift: swiftTypes, cxx: cxxClasses, il2cpp: il2cppTypes };
+  cachedClassesRef = { classes, swift: swiftTypes, il2cpp: il2cppTypes, symbols, symbolsGen, isJapanese };
   cachedClassEntities = items;
   return items;
 }

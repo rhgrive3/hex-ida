@@ -12,7 +12,7 @@ export function createTaintFlow(options) {
   const guard=createQueryGuard({...options,timeoutMs:options.timeoutMs??120},CEILINGS);
   const maxUpdates=boundedLimit(options.maxUpdates,8,8,'updatesPerValue');
   const sourceLimit=boundedLimit(options.sourceLimit,4096,4096,'sourceLimit');
-  const nodes=new Map(), edges=[], handles=new WeakMap(), interned=new Map();
+  const nodes=new Map(), edges=[], handles=new WeakMap(), interned=new Map(), internedPairs=new Map();
   const modelSinks=[...options.models.sinks,...options.models.memorySinks];
   const sanitizers=new Map(options.models.sanitizers.map(x=>[x.valueId,x]));
   let joinCounter=0, maxActualUpdates=0,widened=false;
@@ -24,7 +24,7 @@ export function createTaintFlow(options) {
     if(nodes.has(key)) return nodes.get(key);
     guard.take('latticeValues');
     const handle=Object.freeze({key});handles.set(handle,key);
-    const n={key,semanticId,handle,inputs:new Set(),outputs:new Set(),seed:UNTAINTED,state:UNTAINTED,updates:0,defined:false,sanitizer:sanitizers.get(semanticId)};
+    const n={key,semanticId,handle,inputs:new Set(),outputs:new Set(),inputNodes:[],outputNodes:[],inQueue:false,seed:UNTAINTED,state:UNTAINTED,updates:0,defined:false,sanitizer:sanitizers.get(semanticId)};
     nodes.set(key,n);return n;
   }
   const clean=ensureKey('constant:clean');clean.defined=true;
@@ -42,6 +42,7 @@ export function createTaintFlow(options) {
     if(output.inputs.has(input.key)) return;
     guard.take('flowEdges');
     output.inputs.add(input.key);input.outputs.add(output.key);
+    output.inputNodes.push(input);input.outputNodes.push(output);
     edges.push(Object.freeze({from:input.key,to:output.key,kind}));
   }
   function value(id,inputs,kind,{unknown=false,control=null}={}) {
@@ -59,12 +60,32 @@ export function createTaintFlow(options) {
     if(control!=null) edge(resolve(control),out,'control');
     return out.handle;
   }
+  function internPair(first, second) {
+    let bySecond=internedPairs.get(first.key);
+    if(bySecond && bySecond.has(second.key)) return bySecond.get(second.key);
+    const out=ensureKey(`memory:${joinCounter++}`);out.defined=true;
+    edge(first,out,'memory/control-join');
+    edge(second,out,'memory/control-join');
+    if(!bySecond){bySecond=new Map();internedPairs.set(first.key,bySecond);}
+    bySecond.set(second.key,out.handle);
+    return out.handle;
+  }
   function joinHandles(...items) {
     guard.take('workItems', items.length);
+    if(items.length===2) {
+      const raw0=items[0], raw1=items[1];
+      if(raw0==null && raw1==null) return clean.handle;
+      if(raw0==null) return resolve(raw1).handle;
+      if(raw1==null) return resolve(raw0).handle;
+      const n0=resolve(raw0), n1=resolve(raw1);
+      if(n0.key===n1.key) return n0.handle;
+      return n0.key<n1.key ? internPair(n0,n1) : internPair(n1,n0);
+    }
     const inputs=items.filter(x=>x!=null).map(resolve);
     if(!inputs.length) return clean.handle;
     const unique=[...new Map(inputs.map(n=>[n.key,n])).values()].sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0);
     if(unique.length===1) return unique[0].handle;
+    if(unique.length===2) return internPair(unique[0],unique[1]);
     const key=JSON.stringify(unique.map(n=>n.key));
     if(interned.has(key)) return interned.get(key);
     const out=ensureKey(`memory:${joinCounter++}`);out.defined=true;
@@ -89,13 +110,15 @@ export function createTaintFlow(options) {
     guard.check();
     for(const n of nodes.values()) if(!n.defined||partial) n.seed=TAINT_TOP;
     guard.take('workItems',nodes.size); // Reserve the initial work-list before allocation.
-    const queue=[...nodes.keys()],queued=new Set(queue);
+    const queue=[];
+    for(const n of nodes.values()) { n.inQueue=true; queue.push(n); }
     let head=0;
     while(head<queue.length) {
       guard.take('workItems');
-      const key=queue[head++];queued.delete(key);
-      const n=nodes.get(key);let next=UNTAINTED;
-      for(const input of n.inputs) {guard.take('workItems');next=join(next,nodes.get(input).state);}
+      const n=queue[head++];n.inQueue=false;
+      let next=UNTAINTED;
+      const inNodes=n.inputNodes;
+      for(let i=0;i<inNodes.length;i++) {guard.take('workItems');next=join(next,inNodes[i].state);}
       if(n.sanitizer?.scope==='value') {
         guard.take('workItems',n.sanitizer.removeSources.length+(next.sources?.length??0));
         next=filterTaint(next,n.sanitizer.removeSources);
@@ -107,9 +130,13 @@ export function createTaintFlow(options) {
       // Widen on the last available update, retaining a conservative upper bound.
       if(n.updates===maxUpdates-1 && next.kind!=='top') {next=TAINT_TOP;widened=true;}
       n.state=next;n.updates++;maxActualUpdates=Math.max(maxActualUpdates,n.updates);
-      for(const out of n.outputs) if(!queued.has(out)) {
-        // Queue allocation is charged before append, including duplicate revisits.
-        guard.take('workItems');queue.push(out);queued.add(out);
+      const outNodes=n.outputNodes;
+      for(let i=0;i<outNodes.length;i++) {
+        const out=outNodes[i];
+        if(!out.inQueue) {
+          // Queue allocation is charged before append, including duplicate revisits.
+          guard.take('workItems');queue.push(out);out.inQueue=true;
+        }
       }
     }
     guard.take('emittedRecords',nodes.size+edges.length+modelSinks.length+1+2*(options.models.sources.length+modelSinks.length+options.models.sanitizers.length)); // Includes the summary evidence record.

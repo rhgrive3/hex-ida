@@ -96,12 +96,15 @@ const DW_FORM = Object.freeze({
 // DWARF5 address forms carry a zero-based index into the unit's `.debug_addr`
 // address array (#6184), not an address themselves.
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
+const ADDRX_FORM_SET = new Set(ADDRX_FORMS);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+const ADDRESS_CLASS_FORM_SET = new Set(ADDRESS_CLASS_FORMS);
 // DWARF5 indexed string forms resolve through `.debug_str_offsets` after the
 // attribute list is read, because DW_AT_str_offsets_base may arrive on the unit
 // root that owns them.
 const STRX_FORMS = Object.freeze([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4]);
+const STRX_FORM_SET = new Set(STRX_FORMS);
 /** The largest extent the canonical DebugRecord `sizeBytes` domain can hold. */
 const MAX_EXACT_DEBUG_EXTENT = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -1140,8 +1143,8 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         for (const [attribute, entry] of attributes) {
           // Deferred index resolution is per-DIE work too: charging it keeps a
           // small-byte form from moving the same amplification sideways (#8752).
-          if (STRX_FORMS.includes(entry.form) || ADDRX_FORMS.includes(entry.form)) attributeBudget.charge(1);
-          if (STRX_FORMS.includes(entry.form)) {
+          if (STRX_FORM_SET.has(entry.form) || ADDRX_FORM_SET.has(entry.form)) attributeBudget.charge(1);
+          if (STRX_FORM_SET.has(entry.form)) {
             const resolved = strxString(entry.value, unit, sections, strOffsetsContributionState, strings);
             attributes.set(attribute, { form: entry.form, value: resolved });
             if (resolved == null) {
@@ -1157,7 +1160,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
                 if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
               }
             }
-          } else if (ADDRX_FORMS.includes(entry.form)) {
+          } else if (ADDRX_FORM_SET.has(entry.form)) {
             // addrx forms are indices into `.debug_addr`, not addresses (#6184).
             // An unresolvable index stays unknown (null) and marks the DIE
             // partial: publishing the raw index as an address would point
@@ -1215,7 +1218,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       // unsigned size. A reversed range is malformed debug evidence: keep the
       // DIE for pagination/diagnostics, but withhold completeness so it cannot
       // become an exact function extent (#4232).
-      if (lowPcEntry?.value != null && highPcEntry?.value != null && ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
+      if (lowPcEntry?.value != null && highPcEntry?.value != null && ADDRESS_CLASS_FORM_SET.has(highPcEntry.form)) {
         const extent = debugExtentBetween(lowPcEntry.value, highPcEntry.value);
         if (extent == null || extent < 0n || extent > MAX_EXACT_DEBUG_EXTENT) {
           dieComplete = false;
@@ -1224,7 +1227,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
             ? `DW_AT_high_pc precedes DW_AT_low_pc at 0x${dieOffset.toString(16)}`
             : `DW_AT_high_pc range exceeds exact size bounds at 0x${dieOffset.toString(16)}`);
         }
-      } else if (highPcEntry?.value != null && !ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
+      } else if (highPcEntry?.value != null && !ADDRESS_CLASS_FORM_SET.has(highPcEntry.form)) {
         // DWARF4 §3.3.5: a constant-class DW_AT_high_pc *is* the extent — an
         // offset from low_pc. It still has to be representable in the canonical
         // DebugRecord sizeBytes domain, or the provider would publish evidence
@@ -1605,6 +1608,17 @@ function companionDebugSections(companion) {
   return Object.keys(out).length ? out : null;
 }
 
+const dwarfPageCache = new WeakMap();
+
+function getDwarfPageBucket(parsed, dies) {
+  let bucket = dwarfPageCache.get(parsed);
+  if (!bucket || bucket.diesRef !== dies || bucket.dieCount !== dies.size) {
+    bucket = { diesRef: dies, dieCount: dies.size, symbolDies: null, typedDies: null };
+    dwarfPageCache.set(parsed, bucket);
+  }
+  return bucket;
+}
+
 export class DwarfDebugInfoProvider extends DebugInfoProvider {
   constructor() {
     super({ id: DWARF_PROVIDER_ID, version: DWARF_PROVIDER_VERSION, ecosystem: 'dwarf' });
@@ -1741,7 +1755,15 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
   symbols(result, { cursor = null, pageSize = DEBUG_DEFAULT_PAGE_SIZE } = {}) {
     const dies = result.parsed?.dies;
     if (!dies) return createDebugPage({ records: [] });
-    const ordered = [...dies.values()].filter((die) => die.tag === DW_TAG.subprogram || die.tag === DW_TAG.variable);
+    const bucket = getDwarfPageBucket(result.parsed, dies);
+    if (!bucket.symbolDies) {
+      const list = [];
+      for (const die of dies.values()) {
+        if (die.tag === DW_TAG.subprogram || die.tag === DW_TAG.variable) list.push(die);
+      }
+      bucket.symbolDies = list;
+    }
+    const ordered = bucket.symbolDies;
     return page(ordered, cursor, pageSize, (die) => {
       const lowPc = attributeValue(die, DW_AT.low_pc);
       const highPc = attributeValue(die, DW_AT.high_pc);
@@ -1750,7 +1772,7 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       // an absolute address when its form is an address class (DW_FORM_addr or
       // an addrx form resolved through .debug_addr, #6184).
       const highForm = die.attributes.get(DW_AT.high_pc)?.form;
-      const highIsAddress = ADDRESS_CLASS_FORMS.includes(highForm);
+      const highIsAddress = ADDRESS_CLASS_FORM_SET.has(highForm);
       // Record construction cannot reject an unrepresentable extent later: the
       // canonical sizeBytes domain is a safe non-negative integer, so the
       // conversion is validated here and an out-of-domain extent stays unknown
@@ -1792,9 +1814,18 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
   types(result, { cursor = null, pageSize = DEBUG_DEFAULT_PAGE_SIZE } = {}) {
     const dies = result.parsed?.dies;
     if (!dies) return createDebugPage({ records: [] });
-    const typed = [...dies.values()].filter((die) => (
-      die.tag === DW_TAG.subprogram || die.tag === DW_TAG.variable || die.tag === DW_TAG.formal_parameter
-    ) && effectiveAttribute(die, DW_AT.type, dies) != null);
+    const bucket = getDwarfPageBucket(result.parsed, dies);
+    if (!bucket.typedDies) {
+      const list = [];
+      for (const die of dies.values()) {
+        if ((die.tag === DW_TAG.subprogram || die.tag === DW_TAG.variable || die.tag === DW_TAG.formal_parameter)
+          && effectiveAttribute(die, DW_AT.type, dies) != null) {
+          list.push(die);
+        }
+      }
+      bucket.typedDies = list;
+    }
+    const typed = bucket.typedDies;
     return page(typed, cursor, pageSize, (die) => {
       const described = describeType(referencedType(die, dies), dies);
       return createDebugRecord({

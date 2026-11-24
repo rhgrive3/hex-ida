@@ -12,8 +12,7 @@ import { ArtifactHotCache } from './hot-cache.js';
 import { createArtifactBackend } from './backends.js';
 import {
   artifactHotEntrySize,
-  canonicalStoredRecord,
-  normalizeStoredPayloadBytes,
+  validateArtifactRecordShape,
   validateStoredArtifact,
   validateUpstreamRecordIdentity,
 } from './storage/integrity.js';
@@ -277,9 +276,7 @@ export class ArtifactStore {
       const cached = this.#hotCacheHooks.get(artifactId);
       if (cached) {
         try {
-          const payloadBytes = normalizeStoredPayloadBytes(cached.payloadBytes);
-          const record = canonicalStoredRecord(cached.record);
-          const validated = validateStoredArtifact({ record, payload:payloadBytes }, {
+          const validated = validateStoredArtifact({ record:cached.record, payload:cached.payloadBytes }, {
             artifactId,
             descriptor,
             allowIncomplete:options.allowIncomplete,
@@ -622,9 +619,10 @@ export class ArtifactStore {
       let canonicalPayloadBytes;
       let returnedPayload;
       try {
-        canonicalRecord = canonicalStoredRecord(writeResult?.record ?? record);
-        canonicalPayloadBytes = normalizeStoredPayloadBytes(writeResult?.payload ?? payloadBytes);
-        const storedView = { record:canonicalRecord, payload:canonicalPayloadBytes };
+        const rawRecord = writeResult?.record ?? record;
+        const rawPayload = writeResult?.payload ?? payloadBytes;
+        validateArtifactRecordShape(rawRecord);
+        const storedView = { record:rawRecord, payload:rawPayload };
         if (Object.hasOwn(writeResult || {}, 'storageEnvelopeSchemaVersion')) storedView.storageEnvelopeSchemaVersion = writeResult.storageEnvelopeSchemaVersion;
         if (Object.hasOwn(writeResult || {}, 'recordChecksum')) storedView.recordChecksum = writeResult.recordChecksum;
         const validated = validateStoredArtifact(

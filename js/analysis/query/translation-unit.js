@@ -1612,10 +1612,30 @@ function callRecord(inst, symbolFor) {
   return { target, name, prototype, indirect:inst?.extra?.indirect === true || inst?.indirect === true };
 }
 
-function explicitGlobalEvidence(fn, address, name) {
+function buildGlobalEvidenceIndex(evidence) {
+  if (!Array.isArray(evidence)) return null;
+  const byAddr = new Map();
+  const byName = new Map();
+  for (let idx = 0; idx < evidence.length; idx++) {
+    const item = evidence[idx];
+    const itemKey = addressKey(item?.address);
+    if (itemKey != null && !byAddr.has(itemKey)) byAddr.set(itemKey, { item, idx });
+    const itemName = item?.name;
+    if (!byName.has(itemName)) byName.set(itemName, { item, idx });
+  }
+  return { byAddr, byName };
+}
+
+function explicitGlobalEvidence(fn, address, name, evidenceIndex = null) {
   const evidence = fn?.globalEvidence;
   const key = addressKey(address);
   if (!evidence || key == null) return null;
+  if (evidenceIndex) {
+    const byAddrHit = evidenceIndex.byAddr.get(key) ?? null;
+    const byNameHit = evidenceIndex.byName.get(name) ?? null;
+    if (byAddrHit && byNameHit) return byAddrHit.idx <= byNameHit.idx ? byAddrHit.item : byNameHit.item;
+    return (byAddrHit ?? byNameHit)?.item ?? null;
+  }
   if (evidence instanceof Map) return evidence.get(key) ?? evidence.get(addressText(address)) ?? evidence.get(name) ?? null;
   if (Array.isArray(evidence)) return evidence.find((item) => addressKey(item?.address) === key || item?.name === name) ?? null;
   if (typeof evidence === 'object') return evidence[key] ?? evidence[addressText(address)] ?? evidence[name] ?? null;
@@ -1635,8 +1655,9 @@ function isClosureBinaryProvenance(provenance) {
   return provenance === 'closure-binary-data' || provenance === 'closure-binary-section';
 }
 
-function globalRecords(fn, symbolFor) {
+function globalRecords(fn, symbolFor, preStrippedPseudocode = null, preDeclBearingCode = null) {
   const records = new Map();
+  const evidenceIndex = buildGlobalEvidenceIndex(fn?.globalEvidence);
   const remember = (address, name, type, provenance, size = null, rendered = false) => {
     const key = addressKey(address);
     if (key == null) return;
@@ -1663,7 +1684,7 @@ function globalRecords(fn, symbolFor) {
     if (String(loc?.kind ?? '').toLowerCase() !== 'global' || loc?.address == null) continue;
     const address = loc.address;
     const symbol = symbolFor(address) ?? loc.name ?? null;
-    const explicit = explicitGlobalEvidence(fn, address, symbol);
+    const explicit = explicitGlobalEvidence(fn, address, symbol, evidenceIndex);
     const recovered = locationType(fn, loc.key);
     const explicitType = normalizedType(explicit?.type ?? explicit?.cType ?? '');
     const explicitProv = explicit?.provenance ?? (explicitType ? 'explicit-global-evidence' : 'global-memory-location');
@@ -1681,10 +1702,10 @@ function globalRecords(fn, symbolFor) {
   }
 
   const rawPseudocode = fn?.pseudocode ?? '';
-  const strippedPseudocode = stripStandaloneGlobalPreludeLines(rawPseudocode);
+  const strippedPseudocode = preStrippedPseudocode ?? stripStandaloneGlobalPreludeLines(rawPseudocode);
   for (const match of strippedPseudocode.matchAll(/\bglobal_([0-9A-Fa-f]+)\b/g)) {
     const address = BigInt(`0x${match[1]}`);
-    const explicit = explicitGlobalEvidence(fn, address, match[0]);
+    const explicit = explicitGlobalEvidence(fn, address, match[0], evidenceIndex);
     remember(address, match[0], normalizedType(explicit?.type ?? explicit?.cType ?? ''), explicit?.provenance ?? 'rendered-global-reference', explicit?.size ?? null, true);
   }
 
@@ -1693,10 +1714,14 @@ function globalRecords(fn, symbolFor) {
   }
 
   const preludeArrayGlobals = extractUnresolvedArrayGlobalsFromPrelude(rawPseudocode);
-  const strippedCode = declarationBearingText(strippedPseudocode);
+  const strippedCode = preDeclBearingCode ?? declarationBearingText(strippedPseudocode);
+  const subscriptedNames = new Set();
+  for (const match of strippedCode.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\[/g)) {
+    subscriptedNames.add(match[1]);
+  }
   for (const row of records.values()) {
     for (const gName of row.names) {
-      if (preludeArrayGlobals.has(gName) || new RegExp(`\\b${gName}\\s*\\[`).test(strippedCode)) {
+      if (preludeArrayGlobals.has(gName) || subscriptedNames.has(gName)) {
         row.hasArraySubscriptUse = true;
         break;
       }
@@ -1716,8 +1741,8 @@ function globalAddressForName(globalMap, name) {
   return null;
 }
 
-function callLikeCallees(source) {
-  const text = declarationBearingText(source);
+function callLikeCallees(source, preDeclBearingText = null) {
+  const text = preDeclBearingText ?? declarationBearingText(source);
   const names = new Set();
   for (const match of text.matchAll(/(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
     const name = match[1];
@@ -1731,9 +1756,10 @@ function callLikeCallees(source) {
   return [...names];
 }
 
-function globalLikeNames(source) {
+function globalLikeNames(source, preDeclBearingText = null) {
+  const text = preDeclBearingText ?? declarationBearingText(source);
   const names = new Set();
-  for (const match of declarationBearingText(source).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
+  for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
     const name = match[1];
     if (!C_IDENTIFIER.test(name)) continue;
     if (KEYWORDS.has(name)) continue;
@@ -1805,9 +1831,22 @@ export function buildCTranslationUnit(functions, options = {}) {
   const fallbackNames = new Set();
   const selectedDefinitionRows = [];
   const prototypeMap = new Map();
+  const prototypeNames = new Set();
   const globalMap = new Map();
+  const globalOrderByKey = new Map();
+  const globalKeyByName = new Map();
+  let nextGlobalOrder = 0;
+  const registerGlobalName = (name, key) => {
+    const keyOrder = globalOrderByKey.get(key);
+    const existingKey = globalKeyByName.get(name);
+    if (existingKey == null || keyOrder < globalOrderByKey.get(existingKey)) {
+      globalKeyByName.set(name, key);
+    }
+  };
   const helperMap = new Map();
   const unresolvedRows = [];
+  const unresolvedGlobalNames = new Set();
+  const strippedByIndex = new Array(functions.length);
 
   const normalizedFunctions = functions.map((fn, index) => {
     const originalPseudocode = String(fn?.pseudocode ?? fn?.source ?? '');
@@ -1842,6 +1881,7 @@ export function buildCTranslationUnit(functions, options = {}) {
       headersForText(blockText, headers);
     }
     const strippedPseudocode = stripStandaloneGlobalPreludeLines(originalPseudocode);
+    strippedByIndex[index] = strippedPseudocode;
     // A function's own typedef lines are never emitted (a faithful body is
     // the text after its signature), so they cannot stand in for the contract.
     aliasContractsForText(strippedPseudocode, headers, typeDeclarations, { ownTypedefsEmitted:false });
@@ -1914,18 +1954,25 @@ export function buildCTranslationUnit(functions, options = {}) {
       headersForText(declaration, headers);
       const key = `${name}\u0000${addressText(call.target) ?? ''}`;
       const prior = prototypeMap.get(key);
-      if (!prior) prototypeMap.set(key, { name, address:addressText(call.target), declaration, evidence, exact:call.prototype?.exact === true, conflict:false });
+      if (!prior) {
+        prototypeMap.set(key, { name, address:addressText(call.target), declaration, evidence, exact:call.prototype?.exact === true, conflict:false });
+        prototypeNames.add(name);
+      }
       else {
         if (prior.declaration !== declaration) prior.conflict = true;
         prior.exact = prior.exact && call.prototype?.exact === true;
       }
     }
 
-    for (const global of globalRecords(fn, symbolFor)) {
+    const fnScanSource = strippedByIndex[fn.index] ?? stripStandaloneGlobalPreludeLines(fn.pseudocode);
+    const fnDeclBearing = declarationBearingText(fnScanSource);
+    for (const global of globalRecords(fn, symbolFor, fnScanSource, fnDeclBearing)) {
       const key = addressKey(global.address);
       const prior = globalMap.get(key);
-      if (!prior) globalMap.set(key, global);
-      else {
+      if (!prior) {
+        globalMap.set(key, global);
+        globalOrderByKey.set(key, nextGlobalOrder++);
+      } else {
         for (const name of global.names) prior.names.add(name);
         for (const name of global.renderedNames) prior.renderedNames.add(name);
         for (const type of global.irTypes) prior.irTypes.add(type);
@@ -1934,12 +1981,13 @@ export function buildCTranslationUnit(functions, options = {}) {
         for (const size of global.sizes) prior.sizes.add(size);
         if (global.hasArraySubscriptUse) prior.hasArraySubscriptUse = true;
       }
+      for (const name of global.names) registerGlobalName(name, key);
+      for (const name of global.renderedNames) registerGlobalName(name, key);
     }
 
-    const fnScanSource = stripStandaloneGlobalPreludeLines(fn.pseudocode);
-    for (const name of callLikeCallees(fnScanSource)) {
+    for (const name of callLikeCallees(fnScanSource, fnDeclBearing)) {
       if (selectedNames.has(name)) continue;
-      if ([...prototypeMap.values()].some((row) => row.name === name)) continue;
+      if (prototypeNames.has(name)) continue;
       if (helperMap.has(name)) continue;
       if (hoistedHelperNames.has(name)) continue;
       if (SAFE_COMPILER_BUILTINS.has(name)) continue;
@@ -1970,9 +2018,9 @@ export function buildCTranslationUnit(functions, options = {}) {
       }
     }
 
-    for (const name of globalLikeNames(fnScanSource)) {
+    for (const name of globalLikeNames(fnScanSource, fnDeclBearing)) {
       if (selectedNames.has(name)) continue;
-      const address = globalAddressForName(globalMap, name);
+      const address = globalKeyByName.get(name) ?? null;
       if (address == null) {
         const fallback = fallbackGlobalFor(name);
         if (fallback && !fallbackNames.has(name)) {
@@ -1980,7 +2028,8 @@ export function buildCTranslationUnit(functions, options = {}) {
           fallbackDeclarations.push(fallback);
           headersForText('uint8_t', headers);
         }
-        if (!unresolvedRows.some((row) => row.kind === 'unresolved-global' && row.subject === name)) {
+        if (!unresolvedGlobalNames.has(name)) {
+          unresolvedGlobalNames.add(name);
           unresolvedRows.push(unresolved('unresolved-global', name, 'global-type-evidence-unavailable', {}));
         }
       }

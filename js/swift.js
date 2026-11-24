@@ -3,6 +3,7 @@ import { pagedReader } from './objc-legacy.js';
 import { parseSwiftGenericContext, parseSwiftCaptureSection } from './swift-context.js';
 
 const MAX_NAME = 512;
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
 const DEFAULT_BUDGET = 20000;
 
 function u16(b, o = 0) { return b[o] | (b[o + 1] << 8); }
@@ -21,7 +22,7 @@ async function cstring(read, addr, max = MAX_NAME) {
   let end = 0;
   for (; end < b.length && b[end]; end++) if (b[end] < 0x20 || b[end] === 0x7f) return null;
   if (!end || end === b.length) return null;
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(0, end)); } catch { return null; }
+  try { return UTF8_FATAL_DECODER.decode(b.subarray(0, end)); } catch { return null; }
 }
 
 // Swift native pointer width is an architectural ABI fact, not a container
@@ -84,7 +85,7 @@ function pointerResolverFor(options) {
 
 function swiftMangledFragment(bytes) {
   if (!bytes.length) return null;
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes)); } catch { return null; }
+  try { return UTF8_FATAL_DECODER.decode(Uint8Array.from(bytes)); } catch { return null; }
 }
 
 export async function readSwiftMangledName(read, address, options = {}) {
@@ -152,7 +153,7 @@ export async function readSwiftMangledName(read, address, options = {}) {
   const rawBytes = Array.from(bytes.subarray(0, i));
   if (!refs.length) {
     try {
-      const text = new TextDecoder('utf-8', { fatal:true }).decode(bytes.subarray(0, i));
+      const text = UTF8_FATAL_DECODER.decode(bytes.subarray(0, i));
       return { complete:true, reason:null, text, rawBytes, fragments:[text], symbolicReferences:[], referencesResolved:true };
     } catch {
       return { complete:false, reason:'invalid-utf8', text:null, rawBytes, fragments, symbolicReferences:[] };

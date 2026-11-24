@@ -38,13 +38,15 @@ function readCompressed(bytes, offset, code) {
   fail(code);
 }
 
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 function readSerString(bytes, offset) {
   if (offset >= bytes.length) fail('cil-customattribute-value-invalid');
   if (bytes[offset] === 0xff) return { value:null, next:offset + 1 };
   const length = readCompressed(bytes, offset, 'cil-customattribute-value-invalid');
   if (length.value > bytes.length - length.next) fail('cil-customattribute-value-invalid');
   let value;
-  try { value = new TextDecoder('utf-8', { fatal:true }).decode(bytes.subarray(length.next, length.next + length.value)); }
+  try { value = UTF8_FATAL_DECODER.decode(bytes.subarray(length.next, length.next + length.value)); }
   catch { fail('cil-customattribute-value-invalid'); }
   return { value, next:length.next + length.value };
 }

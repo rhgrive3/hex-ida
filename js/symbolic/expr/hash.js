@@ -234,58 +234,106 @@ export function computeStructuralHashesBounded(roots, { maxNodes = 100000 } = {}
   return Object.freeze({ ok: true, hashes: Object.freeze(roots.map((root) => hashes.get(root))), nodeCount, traversalCount });
 }
 
+// Iterative structural equality over finite acyclic Expr DAGs.
+// Memoizes visited (x, y) pairs lazily for deep/shared DAGs so repeated
+// sub-DAG comparisons avoid exponential re-traversal (acyclic DAG precondition).
 export function structuralEquals(a, b) {
   if (a === b) return true;
   if (!a || !b) return false;
-  if (a.kind !== b.kind) return false;
-  if (!sameSort(a.sort, b.sort)) return false;
+  const stack = [a, b];
+  let visited = null;
+  let steps = 0;
 
-  switch (a.kind) {
-    case EXPR_KIND.CONST:
-      return a.value === b.value;
+  while (stack.length > 0) {
+    const y = stack.pop();
+    const x = stack.pop();
+    if (x === y) continue;
+    if (!x || !y) return false;
+    if (x.kind !== y.kind) return false;
+    if (!sameSort(x.sort, y.sort)) return false;
 
-    case EXPR_KIND.FRESH_SYMBOL:
-      // Structural identity equals solver binding identity: symbolId first,
-      // name-only comparison only for legacy nodes without a symbolId.
-      if (a.symbolId != null || b.symbolId != null) return a.symbolId === b.symbolId && a.name === b.name;
-      return a.name === b.name;
-
-    case EXPR_KIND.UNKNOWN_SEMANTIC:
-      return a.reason === b.reason && canonicalDetailJson(a.detail) === canonicalDetailJson(b.detail);
-
-    case EXPR_KIND.UNARY:
-      return a.op === b.op && structuralEquals(a.arg, b.arg);
-
-    case EXPR_KIND.BINARY:
-      return a.op === b.op && structuralEquals(a.left, b.left) && structuralEquals(a.right, b.right);
-
-    case EXPR_KIND.COMPARE:
-      return a.op === b.op && structuralEquals(a.left, b.left) && structuralEquals(a.right, b.right);
-
-    case EXPR_KIND.CONNECTIVE:
-      if (a.op !== b.op || a.args.length !== b.args.length) return false;
-      for (let i = 0; i < a.args.length; i++) {
-        if (!structuralEquals(a.args[i], b.args[i])) return false;
+    if (typeof x === 'object' && typeof y === 'object') {
+      const hx = hashCache.get(x);
+      if (hx !== undefined) {
+        const hy = hashCache.get(y);
+        if (hy !== undefined && hx !== hy) return false;
       }
-      return true;
+      if (visited !== null) {
+        const seenY = visited.get(x);
+        if (seenY && seenY.has(y)) continue;
+      }
+      steps++;
+      if (steps > 8) {
+        if (visited === null) visited = new Map();
+        let seenY = visited.get(x);
+        if (!seenY) {
+          seenY = new Set();
+          visited.set(x, seenY);
+        }
+        seenY.add(y);
+      }
+    }
 
-    case EXPR_KIND.ITE:
-      return (
-        structuralEquals(a.cond, b.cond) &&
-        structuralEquals(a.thenExpr, b.thenExpr) &&
-        structuralEquals(a.elseExpr, b.elseExpr)
-      );
+    switch (x.kind) {
+      case EXPR_KIND.CONST:
+        if (x.value !== y.value) return false;
+        break;
 
-    case EXPR_KIND.EXTRACT:
-      return a.high === b.high && a.low === b.low && structuralEquals(a.arg, b.arg);
+      case EXPR_KIND.FRESH_SYMBOL:
+        // Structural identity equals solver binding identity: symbolId first,
+        // name-only comparison only for legacy nodes without a symbolId.
+        if (x.symbolId != null || y.symbolId != null) {
+          if (x.symbolId !== y.symbolId || x.name !== y.name) return false;
+        } else if (x.name !== y.name) {
+          return false;
+        }
+        break;
 
-    case EXPR_KIND.CONCAT:
-      return structuralEquals(a.left, b.left) && structuralEquals(a.right, b.right);
+      case EXPR_KIND.UNKNOWN_SEMANTIC:
+        if (x.reason !== y.reason || canonicalDetailJson(x.detail) !== canonicalDetailJson(y.detail)) {
+          return false;
+        }
+        break;
 
-    case EXPR_KIND.CAST:
-      return a.op === b.op && a.targetWidth === b.targetWidth && structuralEquals(a.arg, b.arg);
+      case EXPR_KIND.UNARY:
+        if (x.op !== y.op) return false;
+        stack.push(x.arg, y.arg);
+        break;
 
-    default:
-      return false;
+      case EXPR_KIND.BINARY:
+      case EXPR_KIND.COMPARE:
+        if (x.op !== y.op) return false;
+        stack.push(x.right, y.right, x.left, y.left);
+        break;
+
+      case EXPR_KIND.CONNECTIVE:
+        if (x.op !== y.op || x.args.length !== y.args.length) return false;
+        for (let i = x.args.length - 1; i >= 0; i--) {
+          stack.push(x.args[i], y.args[i]);
+        }
+        break;
+
+      case EXPR_KIND.ITE:
+        stack.push(x.elseExpr, y.elseExpr, x.thenExpr, y.thenExpr, x.cond, y.cond);
+        break;
+
+      case EXPR_KIND.EXTRACT:
+        if (x.high !== y.high || x.low !== y.low) return false;
+        stack.push(x.arg, y.arg);
+        break;
+
+      case EXPR_KIND.CONCAT:
+        stack.push(x.right, y.right, x.left, y.left);
+        break;
+
+      case EXPR_KIND.CAST:
+        if (x.op !== y.op || x.targetWidth !== y.targetWidth) return false;
+        stack.push(x.arg, y.arg);
+        break;
+
+      default:
+        return false;
+    }
   }
+  return true;
 }

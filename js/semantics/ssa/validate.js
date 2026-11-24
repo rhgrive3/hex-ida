@@ -1,5 +1,5 @@
 import { stableStringify } from '../../core/identity/index.js';
-import { createSemanticCfg } from '../cfg/index.js';
+import { createSemanticCfg, dominatesBlock } from '../cfg/index.js';
 import { createSemanticIrFunction, isCanonicalSemanticIrProducerArtifact } from '../ir/function.js';
 import { isCanonicalSemanticSsaProducerArtifact } from './build.js';
 import {
@@ -96,8 +96,15 @@ function originContains(container, required, stringCache, setCache) {
   }
   return true;
 }
+function stringArraysEqual(left, right) {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
 function blockSetEqual(ir, cfg) {
-  return stableStringify(ir.blocks.map((block) => block.id).sort()) === stableStringify(cfg.blocks.map((block) => block.id).sort());
+  return stringArraysEqual(ir.blocks.map((block) => block.id).sort(), cfg.blocks.map((block) => block.id).sort());
 }
 const CONTROL_PROJECTION_KINDS = new Set(['branch', 'conditional-branch', 'switch', 'return', 'trap', 'unknown-control-effect', 'incomplete']);
 const UNKNOWN_CONTROL_EDGE_KINDS = new Set(['indirect-candidate', 'unknown']);
@@ -170,7 +177,7 @@ function validateControlProjection(ir, cfg) {
     if (node.kind === 'switch') {
       const expectedTargets = node.targets.slice().sort();
       const actualTargets = [...new Set(successors.map((edge) => edge.to))].sort();
-      if (stableStringify(expectedTargets) !== stableStringify(actualTargets)
+      if (!stringArraysEqual(expectedTargets, actualTargets)
         || successors.some((edge) => !['switch-case', 'switch-default'].includes(edge.kind))) {
         fail('semantic-ssa-control-flow-mismatch');
       }
@@ -200,7 +207,7 @@ function validateControlProjection(ir, cfg) {
       && successors.some((edge) => edge.kind === 'fallthrough' && !node.targets.includes(edge.to))) {
       fail('semantic-ssa-control-flow-mismatch');
     }
-    if (stableStringify(sortedProjectionEdges(projectedControlEdges(node))) !== stableStringify(sortedProjectionEdges(comparableSuccessors))) {
+    if (!stringArraysEqual(sortedProjectionEdges(projectedControlEdges(node)), sortedProjectionEdges(comparableSuccessors))) {
       fail('semantic-ssa-control-flow-mismatch');
     }
   }
@@ -327,14 +334,27 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     }
     return cachedVirtualEntryPredecessor;
   };
-  const dominatorSetCache = new Map();
-  const hasDominator = (blockId, candidate) => {
-    let set = dominatorSetCache.get(blockId);
-    if (!set) {
-      set = new Set(dominance.dominators[blockId] ?? []);
-      dominatorSetCache.set(blockId, set);
+  const hasDominator = (blockId, candidate) => dominatesBlock(dominance, candidate, blockId);
+  const machineTypeKeyCache = new WeakMap();
+  const machineTypeKey = (type) => {
+    const value = type ?? null;
+    if (value == null) return 'null';
+    if (typeof value === 'object') {
+      let key = machineTypeKeyCache.get(value);
+      if (key === undefined) {
+        key = stableStringify(value);
+        machineTypeKeyCache.set(value, key);
+      }
+      return key;
     }
-    return set.has(candidate);
+    return stableStringify(value);
+  };
+  const sameMachineType = (left, right) => {
+    const a = left ?? null;
+    const b = right ?? null;
+    if (a === b) return true;
+    if (a == null || b == null) return false;
+    return machineTypeKey(a) === machineTypeKey(b);
   };
   const phiPredecessorCache = new Map();
   const phiPredecessors = (blockId) => {
@@ -374,7 +394,7 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
         tick();
         const incomingDef = definitionByValue.get(incoming.valueId);
         if (!incomingDef) fail('semantic-ssa-dangling-phi-value-id');
-        if (stableStringify(incomingDef.proof?.machineType ?? null) !== stableStringify(definition.proof.machineType ?? null)) fail('semantic-ssa-phi-type-mismatch');
+        if (!sameMachineType(incomingDef.proof?.machineType, definition.proof.machineType)) fail('semantic-ssa-phi-type-mismatch');
         if (!originContains(definition.origin, incomingDef.origin, originStringCache, originSetCache)) fail('semantic-ssa-phi-origin-incomplete');
         const predecessor = incoming.predecessorBlockId;
         if (definition.blockId === cfg.entryBlockId
@@ -401,7 +421,7 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     if (use.blockId != null && usePosition.blockId !== use.blockId) fail('semantic-ssa-use-source-block-mismatch');
     const definition = definitionByValue.get(use.valueId);
     if (!definition) fail('semantic-ssa-dangling-value-id');
-    if (stableStringify(definition.proof?.machineType ?? null) !== stableStringify(use.proof.machineType ?? null)) fail('semantic-ssa-use-type-mismatch');
+    if (!sameMachineType(definition.proof?.machineType, use.proof.machineType)) fail('semantic-ssa-use-type-mismatch');
     if (definition.blockId == null || use.blockId == null || !hasDominator(use.blockId, definition.blockId)) {
       fail('semantic-ssa-definition-does-not-dominate-use');
     }
@@ -425,8 +445,8 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     const variableDefinitions = definitionsByVariableKey.get(variableKey);
     const expected = [...computeExpectedPhiBlocks(variableDefinitions, dominance, reachable, tick)].sort();
     const actual = variableDefinitions.filter((definition) => definition.kind === 'phi').map((definition) => definition.blockId).sort();
-    if (stableStringify(expected) !== stableStringify(actual)) fail('semantic-ssa-phi-placement-mismatch');
-    const typeKeys = new Set(variableDefinitions.map((definition) => stableStringify(definition.proof?.machineType ?? null)));
+    if (!stringArraysEqual(expected, actual)) fail('semantic-ssa-phi-placement-mismatch');
+    const typeKeys = new Set(variableDefinitions.map((definition) => machineTypeKey(definition.proof?.machineType)));
     if (typeKeys.size > 1) fail('semantic-ssa-variable-type-collision');
   }
 
@@ -434,7 +454,7 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     tick();
     const predecessors = phiPredecessors(definition.blockId);
     const incoming = definition.incoming.map((item) => item.predecessorBlockId).sort();
-    if (stableStringify(predecessors) !== stableStringify(incoming)) fail('semantic-ssa-phi-predecessor-set-incomplete');
+    if (!stringArraysEqual(predecessors, incoming)) fail('semantic-ssa-phi-predecessor-set-incomplete');
     if (!irByBlock.has(definition.blockId)) fail('semantic-ssa-phi-block-not-in-ir');
   }
   if (canFastPath && ssa === ssaInput && ir === irInput && cfg === cfgInput) {

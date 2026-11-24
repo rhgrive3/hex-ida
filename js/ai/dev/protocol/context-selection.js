@@ -98,15 +98,19 @@ export function selectDevContext({ packet, budgetBytes = null, expandEvidenceRef
     });
   }
 
+  const tierCosts = { dependencyResults: [], artifactRefs: [], contextDelta: [] };
   for (const tier of OPTIONAL_TIERS) {
     for (const item of candidates(tier, packet, covered, omitted)) {
-      const cost = byteLength(item.value) + 1;
+      const valueBytes = byteLength(item.value);
+      const cost = valueBytes + 1;
       if (budget != null && bytes + cost > budget) {
         // Prefer a reference over bulk content before giving the item up.
         const reduced = item.reduce?.();
-        const reducedCost = reduced ? byteLength(reduced) + 1 : null;
+        const reducedBytes = reduced ? byteLength(reduced) : null;
+        const reducedCost = reducedBytes != null ? reducedBytes + 1 : null;
         if (reduced && budget != null && bytes + reducedCost <= budget) {
           core[tier].push(reduced);
+          tierCosts[tier].push(byteLength([reduced]) - 2);
           bytes += reducedCost;
           omitted.push(omission(item.ref, DEV_OMISSION_REASON.EXCERPT_OVER_BUDGET, tier));
           continue;
@@ -115,6 +119,7 @@ export function selectDevContext({ packet, budgetBytes = null, expandEvidenceRef
         continue;
       }
       core[tier].push(item.value);
+      tierCosts[tier].push(byteLength([item.value]) - 2);
       bytes += cost;
       if (tier === 'dependencyResults') {
         for (const ref of item.value?.coveredEvidenceRefs || []) {
@@ -129,11 +134,15 @@ export function selectDevContext({ packet, budgetBytes = null, expandEvidenceRef
   // JSON key overhead can push the total past the estimate; give back the
   // lowest-priority items until it genuinely fits.
   while (budget != null && bytes > budget) {
-    const tier = [...OPTIONAL_TIERS].reverse().find((name) => core[name].length > 0);
+    let tier = null;
+    for (let ti = OPTIONAL_TIERS.length - 1; ti >= 0; ti -= 1) {
+      if (core[OPTIONAL_TIERS[ti]].length > 0) { tier = OPTIONAL_TIERS[ti]; break; }
+    }
     if (!tier) break;
     const dropped = core[tier].pop();
+    const droppedBytes = tierCosts[tier].pop();
     omitted.push(omission(refOf(dropped), DEV_OMISSION_REASON.OVER_BUDGET, tier));
-    bytes = byteLength(core);
+    bytes -= droppedBytes + (core[tier].length > 0 ? 1 : 0);
   }
 
   return Object.freeze({
@@ -171,20 +180,21 @@ function resolveFacts(input, omitted) {
       omitted.push(omission(fact.statement, DEV_OMISSION_REASON.SUPERSEDED, 'authoritativeFacts'));
       continue;
     }
-    const existing = byStatement.get(fact.statement);
-    if (!existing) {
-      byStatement.set(fact.statement, fact);
+    const existingEntry = byStatement.get(fact.statement);
+    if (!existingEntry) {
+      byStatement.set(fact.statement, { fact, index: kept.length });
       kept.push(fact);
       continue;
     }
     // Same statement twice: the fresher owning-system observation wins.
+    const existing = existingEntry.fact;
     const winner = fresher(existing, fact);
     const loser = winner === existing ? fact : existing;
     superseded.push({ ...loser, omissionReason: DEV_OMISSION_REASON.DUPLICATE });
     omitted.push(omission(loser.statement, DEV_OMISSION_REASON.DUPLICATE, 'authoritativeFacts'));
     if (winner !== existing) {
-      byStatement.set(fact.statement, winner);
-      kept[kept.indexOf(existing)] = winner;
+      existingEntry.fact = winner;
+      kept[existingEntry.index] = winner;
     }
   }
   return { facts: kept, superseded };

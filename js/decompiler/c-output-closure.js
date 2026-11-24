@@ -339,11 +339,12 @@ function isHexIntrinsicHelper(name) {
   return hexIntrinsicHelperDef(name) !== null;
 }
 
-function isEligibleIntrinsicHelper(name, renderedBody) {
+function isEligibleIntrinsicHelper(name, renderedBody, precleanedBody = null) {
   if (!isHexIntrinsicHelper(name)) return false;
   const requiredArity = ARITY_GUARDED_INTRINSICS.get(name);
   if (requiredArity != null) {
-    const { minArgs, maxArgs } = callSiteArityRange(declarationBearingSource(renderedBody), name);
+    const clean = precleanedBody != null ? precleanedBody : declarationBearingSource(renderedBody);
+    const { minArgs, maxArgs } = callSiteArityRange(clean, name);
     return minArgs === requiredArity && maxArgs === requiredArity;
   }
   return true;
@@ -588,71 +589,227 @@ export function extractHelperPreludeBlocks(text) {
 
 /* Remove comments and literals so identifier scans never read prose or asm
  * text.  Newlines are preserved so callers can still reason about lines. */
+function isIdentCharCode(c) {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+}
+
+function isNumBodyCode(c) {
+  return isIdentCharCode(c) || c === 46 /* '.' */ || c === 39 /* '\'' */;
+}
+
+function isWsAt(str, idx) {
+  const c = str.charCodeAt(idx);
+  return c === 32 || (c >= 9 && c <= 13) || (c >= 0x80 && /\s/.test(str[idx]));
+}
+
+function isPrecededByArrow(source, start) {
+  let i = start - 1;
+  while (i >= 0 && isWsAt(source, i)) i--;
+  return i >= 1 && source.charCodeAt(i) === 62 /* '>' */ && source.charCodeAt(i - 1) === 45 /* '-' */;
+}
+
+function isFollowedByArrow(source, end) {
+  let i = end;
+  const len = source.length;
+  while (i < len && isWsAt(source, i)) i++;
+  return i + 1 < len && source.charCodeAt(i) === 45 /* '-' */ && source.charCodeAt(i + 1) === 62 /* '>' */;
+}
+
+function isPointerCastSuffix(source, end) {
+  let i = end;
+  const len = source.length;
+  while (i < len && isWsAt(source, i)) i++;
+  let stars = 0;
+  while (i < len && source.charCodeAt(i) === 42 /* '*' */) { stars++; i++; }
+  if (stars === 0) return false;
+  while (i < len && isWsAt(source, i)) i++;
+  return i < len && source.charCodeAt(i) === 41 /* ')' */;
+}
+
 export function declarationBearingSource(text) {
   const source = String(text ?? '');
-  let out = '';
+  const len = source.length;
+  let parts = null;
+  let runStart = 0;
+  let spaceRun = 0;
   let state = 'code';
   let lineStart = true;
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i];
-    const next = source[i + 1];
+
+  const ensureParts = (flushEnd) => {
+    if (!parts) parts = [];
+    if (flushEnd > runStart) parts.push(source.slice(runStart, flushEnd));
+  };
+  const flushSpaces = () => {
+    if (spaceRun > 0) {
+      parts.push(' '.repeat(spaceRun));
+      spaceRun = 0;
+    }
+  };
+
+  for (let i = 0; i < len; i++) {
+    const code = source.charCodeAt(i);
+    const nextCode = i + 1 < len ? source.charCodeAt(i + 1) : -1;
     if (state === 'code') {
-      if (lineStart && ch === '#') { out += ' '; state = 'preproc'; lineStart = false; continue; }
-      if (ch === '/' && next === '/') { out += '  '; i++; state = 'line'; lineStart = false; continue; }
-      if (ch === '/' && next === '*') { out += '  '; i++; state = 'block'; continue; }
-      if (ch === '"') { out += ' '; state = 'string'; lineStart = false; continue; }
-      if (ch === "'") { out += ' '; state = 'char'; lineStart = false; continue; }
-      if (ch >= '0' && ch <= '9' && (i === 0 || !/[A-Za-z0-9_]/.test(source[i - 1]))) {
-        const isHex = ch === '0' && (next === 'x' || next === 'X');
+      if (lineStart && code === 35 /* '#' */) {
+        ensureParts(i);
+        spaceRun = 1;
+        state = 'preproc';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code === 47 /* '/' */ && nextCode === 47 /* '/' */) {
+        ensureParts(i);
+        spaceRun = 2;
+        i++;
+        state = 'line';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code === 47 /* '/' */ && nextCode === 42 /* '*' */) {
+        ensureParts(i);
+        spaceRun = 2;
+        i++;
+        state = 'block';
+        runStart = len;
+        continue;
+      }
+      if (code === 34 /* '"' */) {
+        ensureParts(i);
+        spaceRun = 1;
+        state = 'string';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code === 39 /* '\'' */) {
+        ensureParts(i);
+        spaceRun = 1;
+        state = 'char';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code >= 48 && code <= 57 && (i === 0 || !isIdentCharCode(source.charCodeAt(i - 1)))) {
+        const isHex = code === 48 && (nextCode === 120 /* 'x' */ || nextCode === 88 /* 'X' */);
         let j = i;
-        while (j < source.length) {
-          const c = source[j];
-          if (/[0-9A-Za-z_.']/.test(c)) {
-            const isExp = isHex ? (c === 'p' || c === 'P') : (c === 'e' || c === 'E');
-            if (isExp && (source[j + 1] === '+' || source[j + 1] === '-')) {
-              j += 2;
-              continue;
+        while (j < len) {
+          const cc = source.charCodeAt(j);
+          if (isNumBodyCode(cc)) {
+            const isExp = isHex ? (cc === 112 /* 'p' */ || cc === 80 /* 'P' */) : (cc === 101 /* 'e' */ || cc === 69 /* 'E' */);
+            if (isExp && j + 1 < len) {
+              const nc = source.charCodeAt(j + 1);
+              if (nc === 43 /* '+' */ || nc === 45 /* '-' */) {
+                j += 2;
+                continue;
+              }
             }
             j++;
           } else {
             break;
           }
         }
-        out += '0'.repeat(j - i);
+        ensureParts(i);
+        parts.push('0'.repeat(j - i));
+        runStart = j;
         i = j - 1;
         lineStart = false;
         continue;
       }
-      if (ch === '\n') lineStart = true;
-      else if (ch !== ' ' && ch !== '\t' && ch !== '\r') lineStart = false;
-      out += ch;
+      if (code === 10 /* '\n' */) lineStart = true;
+      else if (code !== 32 && code !== 9 && code !== 13) lineStart = false;
       continue;
     }
     if (state === 'preproc') {
-      if (ch === '\\' && next === '\n') { out += ' \n'; i++; continue; }
-      if (ch === '\\' && next === '\r' && source[i + 2] === '\n') { out += '  \n'; i += 2; continue; }
-      if (ch === '\n') { out += '\n'; state = 'code'; lineStart = true; }
-      else out += ' ';
+      if (code === 92 /* '\\' */ && nextCode === 10 /* '\n' */) {
+        spaceRun += 1;
+        flushSpaces();
+        parts.push('\n');
+        i++;
+        continue;
+      }
+      if (code === 92 /* '\\' */ && nextCode === 13 /* '\r' */ && i + 2 < len && source.charCodeAt(i + 2) === 10) {
+        spaceRun += 2;
+        flushSpaces();
+        parts.push('\n');
+        i += 2;
+        continue;
+      }
+      if (code === 10 /* '\n' */) {
+        flushSpaces();
+        parts.push('\n');
+        state = 'code';
+        lineStart = true;
+        runStart = i + 1;
+      } else {
+        spaceRun += 1;
+      }
       continue;
     }
-    if (state === 'line') { if (ch === '\n') { out += '\n'; state = 'code'; lineStart = true; } else out += ' '; continue; }
+    if (state === 'line') {
+      if (code === 10 /* '\n' */) {
+        flushSpaces();
+        parts.push('\n');
+        state = 'code';
+        lineStart = true;
+        runStart = i + 1;
+      } else {
+        spaceRun += 1;
+      }
+      continue;
+    }
     if (state === 'block') {
-      if (ch === '*' && next === '/') { out += '  '; i++; state = 'code'; }
-      else if (ch === '\n') { out += '\n'; lineStart = true; }
-      else out += ' ';
+      if (code === 42 /* '*' */ && nextCode === 47 /* '/' */) {
+        spaceRun += 2;
+        flushSpaces();
+        i++;
+        state = 'code';
+        runStart = i + 1;
+      } else if (code === 10 /* '\n' */) {
+        flushSpaces();
+        parts.push('\n');
+        lineStart = true;
+      } else {
+        spaceRun += 1;
+      }
       continue;
     }
-    if (ch === '\\') {
-      if (next === '\n') { out += ' \n'; i++; }
-      else if (next === '\r' && source[i + 2] === '\n') { out += '  \n'; i += 2; }
-      else if (i + 1 < source.length) { out += '  '; i++; }
-      else out += ' ';
+    if (code === 92 /* '\\' */) {
+      if (nextCode === 10 /* '\n' */) {
+        spaceRun += 1;
+        flushSpaces();
+        parts.push('\n');
+        i++;
+      } else if (nextCode === 13 /* '\r' */ && i + 2 < len && source.charCodeAt(i + 2) === 10) {
+        spaceRun += 2;
+        flushSpaces();
+        parts.push('\n');
+        i += 2;
+      } else if (i + 1 < len) {
+        spaceRun += 2;
+        i++;
+      } else {
+        spaceRun += 1;
+      }
       continue;
     }
-    if ((state === 'string' && ch === '"') || (state === 'char' && ch === "'")) { out += ' '; state = 'code'; }
-    else out += ch === '\n' ? '\n' : ' ';
+    if ((state === 'string' && code === 34 /* '"' */) || (state === 'char' && code === 39 /* '\'' */)) {
+      spaceRun += 1;
+      flushSpaces();
+      state = 'code';
+      runStart = i + 1;
+    } else if (code === 10 /* '\n' */) {
+      flushSpaces();
+      parts.push('\n');
+    } else {
+      spaceRun += 1;
+    }
   }
-  return out;
+  if (!parts) return source;
+  flushSpaces();
+  if (state === 'code' && runStart < len) parts.push(source.slice(runStart));
+  return parts.join('');
 }
 
 
@@ -815,8 +972,8 @@ function collectObjcSelectorOffsets(source) {
   return offsets;
 }
 
-export function scanIdentifierUses(text) {
-  const source = declarationBearingSource(text);
+export function scanIdentifierUses(text, precleanedSource = null) {
+  const source = precleanedSource != null ? precleanedSource : declarationBearingSource(text);
   const objcSelectorOffsets = collectObjcSelectorOffsets(source);
   const uses = new Map();
   const pattern = /[A-Za-z_][A-Za-z0-9_]*/g;
@@ -826,8 +983,8 @@ export function scanIdentifierUses(text) {
     const end = start + name.length;
     const before = previousChar(source, start);
     const after = nextChar(source, end);
-    const memberName = before === '.' || source.slice(0, start).trimEnd().endsWith('->');
-    const memberBase = after === '.' || source.slice(end).trimStart().startsWith('->');
+    const memberName = before === '.' || isPrecededByArrow(source, start);
+    const memberBase = after === '.' || isFollowedByArrow(source, end);
     const callTarget = after === '(';
     const objcSelector = objcSelectorOffsets.has(start);
     const label = !objcSelector && after === ':' && startsStatement(source, start);
@@ -852,7 +1009,7 @@ export function scanIdentifierUses(text) {
     const isPointerCast = before === '('
       && registerType(name) == null
       && !/^(?:var|local|tmp|call|load|arg|phi)_/.test(name)
-      && /^\s*\*+\s*\)/.test(source.slice(end));
+      && isPointerCastSuffix(source, end);
     const castType = isPointerCast || isNonPointerCast;
     const tag = ['struct', 'union', 'enum'].includes(previousWord(source, start));
     const isValueUse = !callTarget && !memberName && !label && !gotoLabel && !castType && !tag && !objcSelector;
@@ -884,8 +1041,8 @@ export function scanIdentifierUses(text) {
  * Collect all member accesses (`base->field` and `base.field`) on non-member
  * base identifiers from the declaration-bearing source.
  */
-function collectMemberBaseAccesses(text) {
-  const source = declarationBearingSource(text);
+function collectMemberBaseAccesses(text, precleanedSource = null) {
+  const source = precleanedSource != null ? precleanedSource : declarationBearingSource(text);
   const accesses = new Map();
   const pattern = /([A-Za-z_][A-Za-z0-9_]*)\s*(->|\.)\s*([A-Za-z_][A-Za-z0-9_]*)/g;
   for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
@@ -894,7 +1051,7 @@ function collectMemberBaseAccesses(text) {
     const field = match[3];
     const start = match.index;
     const before = previousChar(source, start);
-    if (before === '.' || source.slice(0, start).trimEnd().endsWith('->')) continue;
+    if (before === '.' || isPrecededByArrow(source, start)) continue;
     if (['struct', 'union', 'enum', 'goto'].includes(previousWord(source, start))) continue;
     if (KEYWORDS.has(field)) continue;
     let rec = accesses.get(base);
@@ -1082,9 +1239,9 @@ const STANDARD_KNOWN_TYPES = new Set([
 ]);
 
 /* Extract pointer parameter bindings (`Thing * this`, `const Base * a2`) from a function signature. */
-function signaturePointerParams(signature) {
+function signaturePointerParams(signature, precleanedSig = null) {
   const result = [];
-  const text = declarationBearingSource(signature);
+  const text = precleanedSig != null ? precleanedSig : declarationBearingSource(signature);
   const open = text.indexOf('(');
   if (open < 0) return result;
   let depth = 0;
@@ -1185,8 +1342,8 @@ function callSiteArityRange(source, name) {
   return minArgs === Infinity ? { minArgs: 0, maxArgs: 0 } : { minArgs, maxArgs };
 }
 
-function signatureFunctionName(signature) {
-  const text = declarationBearingSource(signature);
+function signatureFunctionName(signature, precleanedSig = null) {
+  const text = precleanedSig != null ? precleanedSig : declarationBearingSource(signature);
   const open = text.indexOf('(');
   if (open < 0) return null;
   const tokens = [...text.slice(0, open).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
@@ -1194,9 +1351,9 @@ function signatureFunctionName(signature) {
 }
 
 /* Type names appearing in a function signature (return type and parameter types). */
-function signatureTypeNames(signature) {
+function signatureTypeNames(signature, precleanedSig = null) {
   const names = new Set();
-  const text = declarationBearingSource(signature);
+  const text = precleanedSig != null ? precleanedSig : declarationBearingSource(signature);
   const open = text.indexOf('(');
   if (open < 0) return names;
   const retTokens = [...text.slice(0, open).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
@@ -1306,15 +1463,66 @@ function resultEvidence(result) {
   };
 }
 
+function buildEvidenceIndex(result) {
+  const base = resultEvidence(result);
+  const stackSlotsByOffset = new Map();
+  for (const candidate of base.stackSlots) {
+    try {
+      const off = BigInt(candidate?.offset ?? candidate?.disp);
+      if (!stackSlotsByOffset.has(off)) stackSlotsByOffset.set(off, candidate);
+    } catch { /* ignore */ }
+  }
+  const localsBySlot = new Map();
+  const localsByOffset = new Map();
+  for (let i = 0; i < base.locals.length; i += 1) {
+    const candidate = base.locals[i];
+    // Preserve exact `.find()` semantics when `slot === null` (`slot?.name === undefined`):
+    // `undefined` must also be indexed as a valid Map key without filtering it out.
+    const slotKey = candidate?.slot;
+    if (!localsBySlot.has(slotKey)) localsBySlot.set(slotKey, i);
+    try {
+      const off = BigInt(candidate?.offset);
+      if (!localsByOffset.has(off)) localsByOffset.set(off, i);
+    } catch { /* ignore */ }
+  }
+  const argsByIndex = new Map();
+  for (const candidate of base.args) {
+    const idx = Number(candidate?.index);
+    if (!Number.isNaN(idx) && !argsByIndex.has(idx)) argsByIndex.set(idx, candidate);
+  }
+  return {
+    ...base,
+    indexed: true,
+    stackSlotsByOffset,
+    localsBySlot,
+    localsByOffset,
+    argsByIndex,
+  };
+}
+
 function recoveredStackType(name, evidence) {
   const offset = stackOffsetFromName(name);
   if (offset == null) return null;
-  const slot = evidence.stackSlots.find((candidate) => {
-    try { return BigInt(candidate?.offset ?? candidate?.disp) === offset; } catch { return false; }
-  }) ?? null;
-  const local = evidence.locals.find((candidate) =>
-    candidate?.slot === slot?.name || candidate?.slot === name
-    || (() => { try { return BigInt(candidate?.offset) === offset; } catch { return false; } })()) ?? null;
+  let slot = null;
+  let local = null;
+  if (evidence.indexed) {
+    slot = evidence.stackSlotsByOffset.get(offset) ?? null;
+    const slotIdx = evidence.localsBySlot.get(slot?.name);
+    const nameIdx = evidence.localsBySlot.get(name);
+    const offIdx = evidence.localsByOffset.get(offset);
+    let bestIdx = Infinity;
+    if (slotIdx !== undefined && slotIdx < bestIdx) bestIdx = slotIdx;
+    if (nameIdx !== undefined && nameIdx < bestIdx) bestIdx = nameIdx;
+    if (offIdx !== undefined && offIdx < bestIdx) bestIdx = offIdx;
+    local = bestIdx < Infinity ? evidence.locals[bestIdx] : null;
+  } else {
+    slot = evidence.stackSlots.find((candidate) => {
+      try { return BigInt(candidate?.offset ?? candidate?.disp) === offset; } catch { return false; }
+    }) ?? null;
+    local = evidence.locals.find((candidate) =>
+      candidate?.slot === slot?.name || candidate?.slot === name
+      || (() => { try { return BigInt(candidate?.offset) === offset; } catch { return false; } })()) ?? null;
+  }
   const recovered = usableRecoveredType(recoveredTypeName(local?.type))
     ?? usableRecoveredType(recoveredTypeName(local?.semanticType));
   if (recovered && FIXED_WIDTH_TYPES.has(recovered)) return recovered;
@@ -1326,11 +1534,11 @@ function recoveredStackType(name, evidence) {
  * recovered value type), then the naming class the producer itself used, then
  * the explicit 64-bit fallback.  Never a type name this closure cannot spell.
  */
-export function inferPointerTypedLocals(renderedBody, sigText) {
-  const source = declarationBearingSource(renderedBody);
-  const sigPtrNames = new Set(signaturePointerParams(sigText).map((item) => item.paramName));
+export function inferPointerTypedLocals(renderedBody, sigText, precleanedBody = null, precleanedSig = null) {
+  const source = precleanedBody != null ? precleanedBody : declarationBearingSource(renderedBody);
+  const cleanSig = precleanedSig != null ? precleanedSig : declarationBearingSource(sigText);
+  const sigPtrNames = new Set(signaturePointerParams(sigText, cleanSig).map((item) => item.paramName));
   const ptrParamRe = /(?:\bid\s+|\*\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?=[,)])/g;
-  const cleanSig = declarationBearingSource(sigText);
   for (let m = ptrParamRe.exec(cleanSig); m; m = ptrParamRe.exec(cleanSig)) {
     sigPtrNames.add(m[1]);
   }
@@ -1367,8 +1575,8 @@ export function inferPointerTypedLocals(renderedBody, sigText) {
   return ptrLocals;
 }
 
-function inferMutablePtrReturnLocals(renderedBody) {
-  const source = declarationBearingSource(renderedBody);
+function inferMutablePtrReturnLocals(renderedBody, precleanedBody = null) {
+  const source = precleanedBody != null ? precleanedBody : declarationBearingSource(renderedBody);
   const assignPattern = /(?:^|(?<=[;{}]))\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?!=)([^;{}]+);/gm;
   const stats = new Map();
   const isPtrRetCall = (expr) => {
@@ -1514,8 +1722,8 @@ function inferMutablePtrReturnLocals(renderedBody) {
   return result;
 }
 
-export function localDeclarationTypeFor(name, result) {
-  const evidence = resultEvidence(result);
+export function localDeclarationTypeFor(name, result, prebuiltEvidence = null) {
+  const evidence = prebuiltEvidence ?? resultEvidence(result);
   const stack = recoveredStackType(name, evidence);
   if (stack) return stack;
   const register = registerType(name);
@@ -1523,7 +1731,9 @@ export function localDeclarationTypeFor(name, result) {
   const argument = /^a(\d+)$/.exec(name);
   if (argument) {
     const index = Number(argument[1]) - 1;
-    const entry = evidence.args.find((candidate) => Number(candidate?.index) === index);
+    const entry = evidence.indexed
+      ? evidence.argsByIndex.get(index)
+      : evidence.args.find((candidate) => Number(candidate?.index) === index);
     const recovered = usableRecoveredType(recoveredTypeName(entry?.type));
     if (recovered) return recovered;
   }
@@ -1609,12 +1819,20 @@ function definedTypeAliases(lines) {
  * declaration already defines.  Deterministic order; no output when the text
  * is already self-contained.
  */
+const FIXED_WIDTH_TYPE_PATTERNS = Object.freeze(
+  [...FIXED_WIDTH_TYPES.entries()].map(([alias, builtin]) => Object.freeze([
+    alias,
+    builtin,
+    new RegExp(`\\b${escapeRegExp(alias)}\\b`),
+  ])),
+);
+
 export function fixedWidthPreludeLines(text, alreadyDefined = new Set()) {
   const source = declarationBearingSource(text);
   const lines = [];
-  for (const [alias, builtin] of FIXED_WIDTH_TYPES) {
+  for (const [alias, builtin, pattern] of FIXED_WIDTH_TYPE_PATTERNS) {
     if (alreadyDefined.has(alias)) continue;
-    if (!new RegExp(`\\b${escapeRegExp(alias)}\\b`).test(source)) continue;
+    if (!pattern.test(source)) continue;
     if (!lines.length) lines.push({ kind: 'decl', indent: 0, text: PRELUDE_COMMENT, row: null, addr: null, note: null });
     lines.push({ kind: 'decl', indent: 0, text: `typedef ${builtin} ${alias};`, row: null, addr: null, note: null });
   }
@@ -2343,6 +2561,7 @@ const STDLIB_REQUIRED_ARG_DEFAULTS = Object.freeze({
 });
 
 function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+  if (text.indexOf('(') < 0) return text;
   let out = '';
   let i = 0;
   while (i < text.length) {
@@ -2915,8 +3134,7 @@ function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, 
       while (j < code.length && /[A-Za-z0-9_]/.test(code[j])) j++;
       const ident = code.slice(i, j);
       const beforeChar = previousChar(code, i);
-      const beforeTrimmed = code.slice(0, i).trimEnd();
-      const isMemberName = beforeChar === '.' || beforeTrimmed.endsWith('->');
+      const isMemberName = beforeChar === '.' || isPrecededByArrow(code, i);
       const prevWord = previousWord(code, i);
       if (!isMemberName && !['struct', 'union', 'enum', 'goto'].includes(prevWord) && badArrowBases.has(ident)) {
         let k = j;
@@ -3037,7 +3255,10 @@ function findTopLevelControlBracedBlock(text) {
   return null;
 }
 
+const OVERSIZED_INT_CANDIDATE_RE = /0[xX][0-9A-Fa-f]{17}|[0-9]{20}/;
+
 function sanitizeOversizedIntLiterals(code) {
+  if (!OVERSIZED_INT_CANDIDATE_RE.test(code)) return code;
   let out = '';
   let i = 0;
   const len = code.length;
@@ -3556,8 +3777,13 @@ export function createGlobalDataResolver(result, options) {
       const rel = Number(addr - entry.start);
       if (inlineBytes && rel >= 0 && rel < inlineBytes.length) {
         const n = Math.min(count, inlineBytes.length - rel);
-        const out = new Uint8Array(n);
-        for (let i = 0; i < n; i += 1) out[i] = inlineBytes[rel + i];
+        let out;
+        if (inlineBytes instanceof Uint8Array) {
+          out = inlineBytes.subarray(rel, rel + n);
+        } else {
+          out = new Uint8Array(n);
+          for (let i = 0; i < n; i += 1) out[i] = inlineBytes[rel + i];
+        }
         return { bytes: out, section: entry.sec, sectionEnd: entry.end };
       }
       const fileOffset = entry.sec.offset ?? entry.sec.fileOffset;
@@ -3565,8 +3791,13 @@ export function createGlobalDataResolver(result, options) {
         const pos = Number(BigInt(fileOffset) + (addr - entry.start));
         if (pos >= 0 && pos < fileBytes.length) {
           const n = Math.min(count, fileBytes.length - pos);
-          const out = new Uint8Array(n);
-          for (let i = 0; i < n; i += 1) out[i] = fileBytes[pos + i];
+          let out;
+          if (fileBytes instanceof Uint8Array) {
+            out = fileBytes.subarray(pos, pos + n);
+          } else {
+            out = new Uint8Array(n);
+            for (let i = 0; i < n; i += 1) out[i] = fileBytes[pos + i];
+          }
           return { bytes: out, section: entry.sec, sectionEnd: entry.end };
         }
       }
@@ -3672,12 +3903,11 @@ export function createGlobalDataResolver(result, options) {
       const remBytes = Number(entry.end - addr);
       maxScan = Math.min(maxWords, Math.ceil(remBytes / 8));
     }
-    for (const relAddr of relativeRelocs.keys()) {
-      if (relAddr >= addr && relAddr < addr + BigInt(maxWords * 8)) {
-        const diff = Number(relAddr - addr);
-        if (diff % 8 === 0) {
-          const idx = diff / 8 + 1;
-          if (idx > maxScan) maxScan = Math.min(maxWords, idx);
+    if (relativeRelocs.size > 0 && maxScan < maxWords) {
+      for (let i = maxWords - 1; i >= maxScan; i -= 1) {
+        if (relativeRelocs.has(addr + BigInt(i * 8))) {
+          maxScan = i + 1;
+          break;
         }
       }
     }
@@ -3853,9 +4083,11 @@ export function closeFunctionOutput(result, options = {}) {
 
   const declared = declaredNamesFromLines(lines);
   const sigText = String(lines[sigIndex].text ?? '');
+  const cleanSig = declarationBearingSource(sigText);
+  const sigTypes = signatureTypeNames(sigText, cleanSig);
   for (const name of parameterNames(sigText)) declared.add(name);
-  for (const name of signatureTypeNames(sigText)) declared.add(name);
-  const objcSigMatch = /[+-]\[([^\]]+)\]/.exec(declarationBearingSource(sigText));
+  for (const name of sigTypes) declared.add(name);
+  const objcSigMatch = /[+-]\[([^\]]+)\]/.exec(cleanSig);
   if (objcSigMatch) {
     for (const m of objcSigMatch[1].matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) declared.add(m[0]);
   }
@@ -3863,10 +4095,11 @@ export function closeFunctionOutput(result, options = {}) {
   const bodyOpen = lines.findIndex((item, index) => index > sigIndex && item?.kind === 'ctrl' && item?.text === '{');
   const renderedInitial = render(lines);
   const renderedBody = bodyOpen >= 0 ? render(lines.slice(bodyOpen)) : '';
-  const uses = scanIdentifierUses(renderedBody);
+  const cleanBody = declarationBearingSource(renderedBody);
+  const uses = scanIdentifierUses(renderedBody, cleanBody);
   const existingTypes = definedTypeAliases(lines);
 
-  const memberBaseAccesses = collectMemberBaseAccesses(renderedBody);
+  const memberBaseAccesses = collectMemberBaseAccesses(renderedBody, cleanBody);
   for (const baseName of memberBaseAccesses.keys()) {
     const useEntry = uses.get(baseName);
     if (useEntry) useEntry.memberBase = true;
@@ -4013,22 +4246,128 @@ export function closeFunctionOutput(result, options = {}) {
       if (!copyTargetsBySource.has(src)) copyTargetsBySource.set(src, new Set());
       copyTargetsBySource.get(src).add(lhs);
     }
+    const interestSet = new Set();
+    for (const entry of standaloneGlobals) {
+      const g = typeof entry === 'string' ? entry : entry.name;
+      if (!g) continue;
+      interestSet.add(g);
+      let frontier = [g];
+      for (let hop = 0; hop < 2 && frontier.length > 0; hop += 1) {
+        const next = [];
+        for (const name of frontier) {
+          const targets = copyTargetsBySource.get(name);
+          if (!targets) continue;
+          for (const alias of targets) {
+            if (!interestSet.has(alias)) {
+              interestSet.add(alias);
+              next.push(alias);
+            }
+          }
+        }
+        frontier = next;
+      }
+    }
+    const occByIdent = new Map();
+    const segSlices = [];
+    const segIdsByIdent = new Map();
+    {
+      // Preserve leading delimiter (';', '{', or '}') on every non-initial
+      // segment so '^' anchors never falsely match after '}' (#review_01).
+      const bodyLen = cleanedBodyForGlobals.length;
+      let segStart = 0;
+      let segIdx = 0;
+      let segIdents = null;
+      const flushSegment = (segEnd) => {
+        if (segIdents) {
+          segSlices[segIdx] = cleanedBodyForGlobals.slice(segStart, segEnd);
+          for (const name of segIdents) {
+            let list = segIdsByIdent.get(name);
+            if (!list) { list = []; segIdsByIdent.set(name, list); }
+            list.push(segIdx);
+          }
+          segIdents = null;
+        }
+        segIdx += 1;
+      };
+      for (let pos = 0; pos < bodyLen; pos += 1) {
+        const c = cleanedBodyForGlobals.charCodeAt(pos);
+        if (c === 59 /* ';' */ || c === 123 /* '{' */ || c === 125 /* '}' */) {
+          flushSegment(pos);
+          segStart = pos;
+          continue;
+        }
+        if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95) {
+          let end = pos + 1;
+          while (end < bodyLen && isIdentCharCode(cleanedBodyForGlobals.charCodeAt(end))) end += 1;
+          const ident = cleanedBodyForGlobals.slice(pos, end);
+          if (interestSet.has(ident)) {
+            let occ = occByIdent.get(ident);
+            if (!occ) { occ = []; occByIdent.set(ident, occ); }
+            occ.push(pos);
+            if (!segIdents) segIdents = new Set();
+            segIdents.add(ident);
+          }
+          pos = end - 1;
+        }
+      }
+      flushSegment(bodyLen);
+    }
+    const derefCache = new Map();
     const isIdentDereferenced = (ident) => {
+      if (derefCache.has(ident)) return derefCache.get(ident);
+      const occs = occByIdent.get(ident);
+      if (!occs || !occs.length) {
+        derefCache.set(ident, false);
+        return false;
+      }
+      const len = cleanedBodyForGlobals.length;
+      const identLen = ident.length;
+      // Direct O(1)-per-occurrence checks on cleanedBodyForGlobals for arrow (->),
+      // subscript ([), and unary deref (*ident / *(ident)), avoiding split('}') false positives.
+      for (let oi = 0; oi < occs.length; oi += 1) {
+        const start = occs[oi];
+        const end = start + identLen;
+        if (isFollowedByArrow(cleanedBodyForGlobals, end)) { derefCache.set(ident, true); return true; }
+        let k = end;
+        while (k < len && isWsAt(cleanedBodyForGlobals, k)) k += 1;
+        if (k < len && cleanedBodyForGlobals.charCodeAt(k) === 91 /* '[' */) { derefCache.set(ident, true); return true; }
+        let p = start - 1;
+        while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        if (p >= 0 && cleanedBodyForGlobals.charCodeAt(p) === 40 /* '(' */) {
+          p -= 1;
+          while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        }
+        if (p >= 0 && cleanedBodyForGlobals.charCodeAt(p) === 42 /* '*' */) {
+          let q = p - 1;
+          while (q >= 0 && isWsAt(cleanedBodyForGlobals, q)) q -= 1;
+          if (q < 0) { derefCache.set(ident, true); return true; }
+          const ch = cleanedBodyForGlobals[q];
+          if ('=({[,;:!?&|^~+-<>'.includes(ch)) { derefCache.set(ident, true); return true; }
+          if (isIdentCharCode(cleanedBodyForGlobals.charCodeAt(q)) && previousWord(cleanedBodyForGlobals, p) === 'return') {
+            derefCache.set(ident, true);
+            return true;
+          }
+        }
+      }
+      const segIds = segIdsByIdent.get(ident);
+      if (!segIds || !segIds.length) {
+        derefCache.set(ident, false);
+        return false;
+      }
       const esc = ident.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const arrowRe = new RegExp(`\\b${esc}\\s*->`);
-      if (arrowRe.test(cleanedBodyForGlobals)) return true;
-      const subscriptRe = new RegExp(`\\b${esc}\\s*\\[`);
-      if (subscriptRe.test(cleanedBodyForGlobals)) return true;
       const castDerefRe = new RegExp(
         `\\*\\s*\\([^;{}()]*\\*\\s*\\)\\s*\\(?\\s*(?:\\(\\s*(?:uintptr_t|intptr_t|[A-Za-z_][A-Za-z0-9_\\s]*\\*)\\s*\\)\\s*)?\\(?\\s*${esc}\\b`,
       );
-      if (castDerefRe.test(cleanedBodyForGlobals)) return true;
-      const unaryDerefRe = new RegExp(`(?:^|[=({[,;:!?&|^~+\\-<>]|\\breturn\\b)\\s*\\*\\s*\\(?\\s*${esc}\\b`);
-      if (unaryDerefRe.test(cleanedBodyForGlobals)) return true;
       const castArrowRe = new RegExp(
         `\\(\\s*\\([^;{}()]*\\*\\s*\\)\\s*(?:\\(\\s*(?:uintptr_t|intptr_t)\\s*\\)\\s*)?\\(?\\s*${esc}\\b[^;{}]*\\)\\s*(?:->|\\[)`,
       );
-      return castArrowRe.test(cleanedBodyForGlobals);
+      let matched = false;
+      for (let si = 0; si < segIds.length; si += 1) {
+        const seg = segSlices[segIds[si]];
+        if (castDerefRe.test(seg) || castArrowRe.test(seg)) { matched = true; break; }
+      }
+      derefCache.set(ident, matched);
+      return matched;
     };
     const isGlobalDereferenced = (globalName) => {
       if (isIdentDereferenced(globalName)) return true;
@@ -4051,15 +4390,13 @@ export function closeFunctionOutput(result, options = {}) {
       return false;
     };
     const hasOnlyAddressOfUses = (globalName) => {
-      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp(`\\b${esc}\\b`, 'g');
-      let sawAny = false;
-      for (let m = re.exec(cleanedBodyForGlobals); m; m = re.exec(cleanedBodyForGlobals)) {
-        sawAny = true;
-        let ampIdx = m.index - 1;
-        while (ampIdx >= 0 && /\s/.test(cleanedBodyForGlobals[ampIdx])) ampIdx--;
-        if (ampIdx < 0 || cleanedBodyForGlobals[ampIdx] !== '&') return false;
-        if (ampIdx >= 1 && cleanedBodyForGlobals[ampIdx - 1] === '&') return false;
+      const occs = occByIdent.get(globalName);
+      if (!occs || !occs.length) return false;
+      for (let oi = 0; oi < occs.length; oi += 1) {
+        let ampIdx = occs[oi] - 1;
+        while (ampIdx >= 0 && isWsAt(cleanedBodyForGlobals, ampIdx)) ampIdx--;
+        if (ampIdx < 0 || cleanedBodyForGlobals.charCodeAt(ampIdx) !== 38 /* '&' */) return false;
+        if (ampIdx >= 1 && cleanedBodyForGlobals.charCodeAt(ampIdx - 1) === 38 /* '&' */) return false;
         const beforeAmp = previousChar(cleanedBodyForGlobals, ampIdx);
         const isUnary = !beforeAmp
           || '=({[,;:!?|^~+-<>*/%'.includes(beforeAmp)
@@ -4067,7 +4404,7 @@ export function closeFunctionOutput(result, options = {}) {
           || (/[A-Za-z0-9_]/.test(beforeAmp) && previousWord(cleanedBodyForGlobals, ampIdx) === 'return');
         if (!isUnary) return false;
       }
-      return sawAny;
+      return true;
     };
     const align16 = (v) => Math.ceil(v / 16) * 16;
     const isCastBeforeIndex = (text, idx) => {
@@ -4103,15 +4440,29 @@ export function closeFunctionOutput(result, options = {}) {
       return false;
     };
     const isGlobalAddressTaken = (globalName) => {
-      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp(`(?<!&)&\\s*\\(?\\s*${esc}\\b`, 'g');
-      for (let m = re.exec(cleanedBodyForGlobals); m; m = re.exec(cleanedBodyForGlobals)) {
-        const idx = m.index;
-        if (/^\s*\)\s*->/.test(cleanedBodyForGlobals.slice(idx + m[0].length))) continue;
-        const prev = previousChar(cleanedBodyForGlobals, idx);
+      const occs = occByIdent.get(globalName);
+      if (!occs || !occs.length) return false;
+      const bodyLen = cleanedBodyForGlobals.length;
+      const nameLen = globalName.length;
+      for (let oi = 0; oi < occs.length; oi += 1) {
+        const start = occs[oi];
+        let p = start - 1;
+        while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        if (p >= 0 && cleanedBodyForGlobals.charCodeAt(p) === 40 /* '(' */) {
+          p -= 1;
+          while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        }
+        if (p < 0 || cleanedBodyForGlobals.charCodeAt(p) !== 38 /* '&' */) continue;
+        if (p >= 1 && cleanedBodyForGlobals.charCodeAt(p - 1) === 38 /* '&' */) continue;
+        let after = start + nameLen;
+        while (after < bodyLen && isWsAt(cleanedBodyForGlobals, after)) after += 1;
+        if (after < bodyLen && cleanedBodyForGlobals.charCodeAt(after) === 41 /* ')' */ && isFollowedByArrow(cleanedBodyForGlobals, after + 1)) {
+          continue;
+        }
+        const prev = previousChar(cleanedBodyForGlobals, p);
         if (!prev || '=({[,;:!?|^~+-<>*/%'.includes(prev)) return true;
-        if (prev === ')' && isCastBeforeIndex(cleanedBodyForGlobals, idx)) return true;
-        if (/[A-Za-z0-9_]/.test(prev) && previousWord(cleanedBodyForGlobals, idx) === 'return') return true;
+        if (prev === ')' && isCastBeforeIndex(cleanedBodyForGlobals, p)) return true;
+        if (/[A-Za-z0-9_]/.test(prev) && previousWord(cleanedBodyForGlobals, p) === 'return') return true;
       }
       return false;
     };
@@ -4123,6 +4474,8 @@ export function closeFunctionOutput(result, options = {}) {
       }
     }
     const isGlobalUsedAsUint128 = (globalName) => {
+      const segIds = segIdsByIdent.get(globalName);
+      if (!segIds || !segIds.length) return false;
       const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const u128Type = '(?:uint128|int128|vector128|(?:unsigned\\s+)?__int128)';
       const patterns = [
@@ -4131,11 +4484,18 @@ export function closeFunctionOutput(result, options = {}) {
         new RegExp(`(?:\\b${u128Type}\\s+[A-Za-z_][A-Za-z0-9_]*|\\b[qQvV]\\d+(?:_\\d+)?)\\s*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`),
         new RegExp(`\\b${esc}\\s*=(?!=)\\s*(?:\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)|\\b[qQvV]\\d+(?:_\\d+)?\\b)`),
       ];
-      if (patterns.some((re) => re.test(cleanedBodyForGlobals))) return true;
+      for (let si = 0; si < segIds.length; si += 1) {
+        const seg = segSlices[segIds[si]];
+        if (patterns.some((re) => re.test(seg))) return true;
+      }
       if (u128LocalNames.size > 0) {
         const assignRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`, 'g');
-        for (let m = assignRe.exec(cleanedBodyForGlobals); m; m = assignRe.exec(cleanedBodyForGlobals)) {
-          if (u128LocalNames.has(m[1])) return true;
+        for (let si = 0; si < segIds.length; si += 1) {
+          const seg = segSlices[segIds[si]];
+          assignRe.lastIndex = 0;
+          for (let m = assignRe.exec(seg); m; m = assignRe.exec(seg)) {
+            if (u128LocalNames.has(m[1])) return true;
+          }
         }
       }
       return false;
@@ -4251,10 +4611,10 @@ export function closeFunctionOutput(result, options = {}) {
     }
   }
 
-  const idUsedAsType = signatureTypeNames(sigText).has('id')
+  const idUsedAsType = sigTypes.has('id')
     || Boolean(uses.get('id')?.castType)
     || Boolean(objcSigMatch)
-    || /(?:^|[\n;{])\s*(?:(?:const|volatile|restrict|static)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:=|;|\[|,)/.test(declarationBearingSource(renderedBody));
+    || /(?:^|[\n;{])\s*(?:(?:const|volatile|restrict|static)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:=|;|\[|,)/.test(cleanBody);
   const idTypedefPrelude = [];
   if (!existingTypes.has('id') && idUsedAsType) {
     idTypedefPrelude.push({
@@ -4269,8 +4629,8 @@ export function closeFunctionOutput(result, options = {}) {
     const m = /([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(d.text);
     return m ? m[1] : '';
   }).filter(Boolean));
-  const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText);
-  const mutablePtrReturnLocals = inferMutablePtrReturnLocals(renderedBody);
+  const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText, cleanBody, cleanSig);
+  const mutablePtrReturnLocals = inferMutablePtrReturnLocals(renderedBody, cleanBody);
   const syntheticStackFrameLayoutForSp = (bodyText) => {
     const cleaned = String(bodyText ?? '')
       .replace(/\/\*[\s\S]*?\*\//g, ' ')
@@ -4312,12 +4672,13 @@ export function closeFunctionOutput(result, options = {}) {
     }
     return { totalSize: belowSize + aboveSize, belowSize };
   };
+  const evidenceIndex = buildEvidenceIndex(result);
   const localDeclarations = [...uses.values()]
     .filter((entry) => isDeclarableLocal(entry, declared, declaredMemberBaseNames, existingTypes))
     .flatMap((entry) => {
       const declType = (() => {
         if (entry.subscriptBase && (entry.name === 'memory' || !entry.nonSubscriptValue)) return 'uint8_t *';
-        const t = localDeclarationTypeFor(entry.name, result);
+        const t = localDeclarationTypeFor(entry.name, result, evidenceIndex);
         if (t === 'uint64' && mutablePtrReturnLocals.has(entry.name)) return mutablePtrReturnLocals.get(entry.name);
         return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'const void *' : t;
       })();
@@ -4381,7 +4742,7 @@ export function closeFunctionOutput(result, options = {}) {
   const { lines: afterIntConv, changed: intConvChanged } = applyIntConversionCoercions(withArrowRewrites, bodyOpen, symTable);
   const { lines: afterScalarArrow, changed: scalarArrowChanged } = applyScalarArrowRewrites(afterIntConv, bodyOpen, arrowRewriteBases);
 
-  const sigPtrParams = signaturePointerParams(sigText);
+  const sigPtrParams = signaturePointerParams(sigText, cleanSig);
   const sigTypesByName = new Map();
   for (const { typeName, paramName } of sigPtrParams) {
     if (existingTypes.has(typeName)) continue;
@@ -4425,7 +4786,7 @@ export function closeFunctionOutput(result, options = {}) {
     const m = /^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(String(l?.text ?? ''));
     if (m) macroDefinedCalls.add(m[1]);
   }
-  const sigFuncName = signatureFunctionName(sigText);
+  const sigFuncName = signatureFunctionName(sigText, cleanSig);
   const existingIncludes = new Set();
   const existingLineTexts = new Set();
   for (const l of lines) {
@@ -4527,7 +4888,7 @@ export function closeFunctionOutput(result, options = {}) {
   for (const entry of [...uses.values()].sort((a, b) => compareAscii(a.name, b.name))) {
     if (!entry?.callTarget) continue;
     if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || entry.name === sigFuncName) continue;
-    if (!isEligibleIntrinsicHelper(entry.name, renderedBody)) continue;
+    if (!isEligibleIntrinsicHelper(entry.name, renderedBody, cleanBody)) continue;
     const helperDef = hexIntrinsicHelperDef(entry.name);
     if (!helperDef) continue;
     const guard = `__hex_helper_${entry.name}_defined`;
@@ -4550,7 +4911,7 @@ export function closeFunctionOutput(result, options = {}) {
       && !STANDARD_C_LIBRARY_HEADERS.has(entry.name)
       && !GLIBC_STRIPPED_ALIAS_MAP.has(entry.name)
       && !GLIBC_CHK_PROTOTYPES.has(entry.name)
-      && !isEligibleIntrinsicHelper(entry.name, renderedBody)
+      && !isEligibleIntrinsicHelper(entry.name, renderedBody, cleanBody)
       && !macroDefinedCalls.has(entry.name)
       && !bitfieldHelperNames.has(entry.name)
       && !/^__builtin_/.test(entry.name)

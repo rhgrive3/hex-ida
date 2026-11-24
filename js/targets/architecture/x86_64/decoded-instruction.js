@@ -196,18 +196,29 @@ function segmentOf(value) {
   return segment;
 }
 
+const SUPPLEMENTARY_REGISTER_PATTERNS = Object.freeze([
+  [/^st\([0-7]\)$/, 80, 'x87'],
+  [/^mm[0-7]$/, 64, 'mmx'],
+  [/^k[0-7]$/, null, 'mask'],
+  [/^xmm(?:1[6-9]|2[0-9]|3[01])$/, 128, 'vector'],
+  [/^ymm(?:1[6-9]|2[0-9]|3[01])$/, 256, 'vector'],
+  [/^zmm(?:[0-9]|[12][0-9]|3[01])$/, 512, 'vector'],
+  [/^bnd[0-3]$/, 128, 'bounds'],
+  [/^cr(?:[0-9]|1[0-5])$/, 64, 'control-register'],
+  [/^dr(?:[0-9]|1[0-5])$/, 64, 'debug-register'],
+  [/^(?:cs|ds|es|fs|gs|ss)$/, 16, 'segment'],
+  [/^fpsw$/, 16, 'x87-status'],
+  [/^fpcw$/, 16, 'x87-control'],
+]);
+
 function supplementaryRegisterShape(value, hintedWidthBits) {
   const name = String(typeof value === 'object' ? (value?.id ?? value?.name ?? value?.registerId ?? '') : value ?? '').trim().toLowerCase();
   const hinted = Number(hintedWidthBits);
   const width = Number.isSafeInteger(hinted) && hinted > 0 ? hinted : null;
-  const fixed = [
-    [/^st\([0-7]\)$/,80,'x87'], [/^mm[0-7]$/,64,'mmx'], [/^k[0-7]$/,width || 64,'mask'],
-    [/^xmm(?:1[6-9]|2[0-9]|3[01])$/,128,'vector'], [/^ymm(?:1[6-9]|2[0-9]|3[01])$/,256,'vector'],
-    [/^zmm(?:[0-9]|[12][0-9]|3[01])$/,512,'vector'], [/^bnd[0-3]$/,128,'bounds'],
-    [/^cr(?:[0-9]|1[0-5])$/,64,'control-register'], [/^dr(?:[0-9]|1[0-5])$/,64,'debug-register'],
-    [/^(?:cs|ds|es|fs|gs|ss)$/,16,'segment'], [/^fpsw$/,16,'x87-status'], [/^fpcw$/,16,'x87-control'],
-  ];
-  for (const [pattern,bits,kind] of fixed) if (pattern.test(name)) return { name, bits:Number(bits), kind };
+  for (let i = 0; i < SUPPLEMENTARY_REGISTER_PATTERNS.length; i++) {
+    const [pattern, bits, kind] = SUPPLEMENTARY_REGISTER_PATTERNS[i];
+    if (pattern.test(name)) return { name, bits: bits === null ? (width || 64) : bits, kind };
+  }
   return null;
 }
 
@@ -393,7 +404,15 @@ export function createX86DecodedInstruction(input = {}) {
     mnemonic:String(input.mnemonic ?? ''),
     opStr:String(input.opStr ?? input.operandString ?? ''),
   };
-  return Object.freeze(result);
+  const frozen = Object.freeze(result);
+  CANONICAL_X86_DECODED.add(frozen);
+  return frozen;
+}
+
+const CANONICAL_X86_DECODED = new WeakSet();
+
+export function isCanonicalX86DecodedInstruction(value) {
+  return value != null && typeof value === 'object' && CANONICAL_X86_DECODED.has(value);
 }
 
 export function x86DecodedInstructionIsStructured(input) {

@@ -41,6 +41,12 @@ export function buildCfg(model, opts) {
   // binary-search it rather than repeatedly scanning all blocks.
   const blockIntervals = blocks.map((b, index) => ({ index, start:b.startRow, end:b.endRow }))
     .sort((a, b) => a.start - b.start || a.end - b.end || a.index - b.index);
+  const blockPrefixMaxEnd = new Array(blockIntervals.length);
+  let maxEndSoFar = -Infinity;
+  for (let i = 0; i < blockIntervals.length; i++) {
+    if (blockIntervals[i].end > maxEndSoFar) maxEndSoFar = blockIntervals[i].end;
+    blockPrefixMaxEnd[i] = maxEndSoFar;
+  }
   const blockAtRow = (row) => {
     let lo = 0, hi = blockIntervals.length - 1, candidate = -1;
     while (lo <= hi) {
@@ -182,7 +188,7 @@ export function buildCfg(model, opts) {
     backEdges,
     entry: entryBlock,
     exits: nodes.filter((n) => n.isExit).map((n) => n.index),
-    shapes: classifyShapes(nodes, backEdges, model, graph.immediatePostDominators),
+    shapes: classifyShapes(nodes, backEdges, model, graph.immediatePostDominators, blockIntervals, blockPrefixMaxEnd),
     dominators: graph.dominators,
     components: graph.components,
     /*
@@ -199,16 +205,27 @@ export function buildCfg(model, opts) {
  * 道の形を見分ける。
  * 見分けられなかったものは何も返さない（「たぶん if」とは言わない）。
  */
-function classifyShapes(nodes, backEdges, model, ipdom) {
+function classifyShapes(nodes, backEdges, model, ipdom, blockIntervals, blockPrefixMaxEnd) {
   const shapes = [];
   const errorBlocks = new Set();
   for (const sb of model.semantic || []) {
-    if (sb.role === ROLE.ERROR_HANDLING) {
-      for (const n of nodes) if (sb.startRow >= n.startRow && sb.startRow <= n.endRow) errorBlocks.add(n.index);
+    if (sb.role !== ROLE.ERROR_HANDLING) continue;
+    const row = sb.startRow;
+    let lo = 0, hi = blockIntervals.length - 1, upper = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (blockIntervals[mid].start <= row) { upper = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    for (let i = upper; i >= 0; i--) {
+      if (blockPrefixMaxEnd[i] < row) break;
+      if (row <= blockIntervals[i].end) errorBlocks.add(blockIntervals[i].index);
     }
   }
 
+  const backEdgeLatches = new Set();
   for (const b of backEdges) {
+    backEdgeLatches.add(b.from);
     shapes.push({
       kind: 'loop', header: b.to, latch: b.from,
       startRow: nodes[b.to] ? nodes[b.to].startRow : null,
@@ -220,7 +237,7 @@ function classifyShapes(nodes, backEdges, model, ipdom) {
     const taken = n.succ.find((s) => s.kind === EDGE.TAKEN);
     const fall = n.succ.find((s) => s.kind === EDGE.FALL);
     if (!taken || !fall) continue;
-    if (backEdges.some((b) => b.from === n.index)) continue;    // ループの判定はもう入れた
+    if (backEdgeLatches.has(n.index)) continue;    // ループの判定はもう入れた
 
     const a = taken.to, c = fall.to;
     if (a < 0 || c < 0) continue;
@@ -234,9 +251,17 @@ function classifyShapes(nodes, backEdges, model, ipdom) {
       let cur = start;
       for (let step = 0; step < 3 && cur >= 0 && nodes[cur]; step++) {
         if (nodes[cur].isExit) return step;
-        const only = nodes[cur].succ.filter((s) => s.to >= 0);
-        if (only.length !== 1) return -1;
-        cur = only[0].to;
+        const succs = nodes[cur].succ;
+        let onlyTo = -1;
+        let count = 0;
+        for (let k = 0; k < succs.length; k++) {
+          if (succs[k].to >= 0) {
+            onlyTo = succs[k].to;
+            if (++count > 1) return -1;
+          }
+        }
+        if (count !== 1) return -1;
+        cur = onlyTo;
       }
       return -1;
     };
@@ -267,21 +292,24 @@ function classifyShapes(nodes, backEdges, model, ipdom) {
 }
 
 /** 2 つの道が最初に出会うブロック。見つからなければ -1。 */
+function lastInternalSuccessor(succs) {
+  for (let i = succs.length - 1; i >= 0; i--) {
+    if (succs[i].to >= 0) return succs[i].to;
+  }
+  return -1;
+}
+
 function firstMerge(nodes, a, b, depth) {
   const seen = new Set();
   let cur = a;
   for (let i = 0; i < depth && cur >= 0 && nodes[cur]; i++) {
     seen.add(cur);
-    const next = nodes[cur].succ.filter((s) => s.to >= 0);
-    if (!next.length) break;
-    cur = next[next.length - 1].to;
+    cur = lastInternalSuccessor(nodes[cur].succ);
   }
   cur = b;
   for (let i = 0; i < depth && cur >= 0 && nodes[cur]; i++) {
     if (seen.has(cur)) return cur;
-    const next = nodes[cur].succ.filter((s) => s.to >= 0);
-    if (!next.length) break;
-    cur = next[next.length - 1].to;
+    cur = lastInternalSuccessor(nodes[cur].succ);
   }
   return -1;
 }

@@ -656,10 +656,12 @@ export function functionStory(model, name) {
   const who = label ? pick('この関数（' + label + '）', 'this function (' + label + ')') : pick('この処理', 'this routine');
   const Who = pick(who, who.charAt(0).toUpperCase() + who.slice(1));
 
+  const isJa = pick(true, false);
+  const featureLabels = f.features.map(featureLabel).filter(Boolean);
   if (f.features.length) {
-    purpose.push(pick(
-      Who + 'は、' + f.features.map(featureLabel).filter(Boolean).join('と') + 'に関わる処理をしています。',
-      Who + ' is involved in ' + f.features.map(featureLabel).filter(Boolean).join(' and ') + '.'));
+    purpose.push(isJa
+      ? Who + 'は、' + featureLabels.join('と') + 'に関わる処理をしています。'
+      : Who + ' is involved in ' + featureLabels.join(' and ') + '.');
   }
   /*
    * 呼んでいるメソッドの名前。人が付けた言葉がそのまま残っている唯一の場所なので、
@@ -667,12 +669,13 @@ export function functionStory(model, name) {
    */
   const sels = uniq((model.calls || []).map((c) => c.selector).filter(Boolean));
   if (sels.length) {
-    purpose.unshift(pick(
-      '「' + sels.slice(0, 8).join('」「') + '」' +
-        (sels.length > 8 ? ' など ' + sels.length + ' 個' : '') + 'というメソッドを呼んでいます。' +
-        'メソッドの名前は人が付けたものなので、この関数が何の担当かを知る手がかりになります。',
-      'It calls the methods ' + sels.slice(0, 8).map((x) => '“' + x + '”').join(', ') +
-        '. Method names are written by people, so they say a lot about what this is for.'));
+    const topSels = sels.slice(0, 8);
+    purpose.unshift(isJa
+      ? '「' + topSels.join('」「') + '」' +
+          (sels.length > 8 ? ' など ' + sels.length + ' 個' : '') + 'というメソッドを呼んでいます。' +
+          'メソッドの名前は人が付けたものなので、この関数が何の担当かを知る手がかりになります。'
+      : 'It calls the methods ' + topSels.map((x) => '“' + x + '”').join(', ') +
+          '. Method names are written by people, so they say a lot about what this is for.');
   }
   /*
    * 言語のしくみ（ARC・Swift ランタイム・C++ の下ごしらえ）は、
@@ -682,25 +685,29 @@ export function functionStory(model, name) {
   const meaty = f.apis.filter((a) => a.cat !== 'runtime');
   const apiPhrases = (meaty.length ? meaty : f.apis).map((a) => apiShort(a.id)).filter(Boolean);
   if (apiPhrases.length) {
-    purpose.push(pick(
-      '具体的には、' + uniq(apiPhrases).slice(0, 4).join('・') + 'といった処理を行っています。',
-      'Concretely it does the following: ' + uniq(apiPhrases).slice(0, 4).join(', ') + '.'));
+    const topApis = uniq(apiPhrases).slice(0, 4);
+    purpose.push(isJa
+      ? '具体的には、' + topApis.join('・') + 'といった処理を行っています。'
+      : 'Concretely it does the following: ' + topApis.join(', ') + '.');
   }
   if (f.strings && f.strings.length) {
-    purpose.push(pick(
-      '「' + f.strings.slice(0, 3).map((s) => trim(s, 24)).join('」「') + '」といった文字列を使っています。',
-      'It uses the text ' + f.strings.slice(0, 3).map((s) => '“' + trim(s, 24) + '”').join(', ') + '.'));
+    const topStrs = f.strings.slice(0, 3).map((s) => trim(s, 24));
+    purpose.push(isJa
+      ? '「' + topStrs.join('」「') + '」といった文字列を使っています。'
+      : 'It uses the text ' + topStrs.map((s) => '“' + s + '”').join(', ') + '.');
   }
   // 名前は分かるが意味は分からない呼び出し。ここから先へ辿るための手がかりになる。
-  const plain = (f.calledNames || []).filter((c) => !f.apis.some((a) => a.name === c.name));
+  const apiNames = new Set((f.apis || []).map((a) => a.name));
+  const plain = (f.calledNames || []).filter((c) => !apiNames.has(c.name));
   if (plain.length) {
-    const list = plain.slice(0, 4).map((c) => '「' + trim(shortName(c.name), 36) + '」').join('、');
-    purpose.push(pick(
-      list + (plain.length > 4 ? ' など ' + plain.length + ' 種類' : '') +
-        'という名前の処理を呼んでいます。それぞれが何をしているかは、その関数をたどると分かります。',
-      'It calls ' + plain.slice(0, 4).map((c) => '“' + trim(shortName(c.name), 36) + '”').join(', ') +
-        (plain.length > 4 ? ' and ' + (plain.length - 4) + ' more' : '') +
-        '. Follow each one to see what it does.'));
+    const topPlain = plain.slice(0, 4).map((c) => trim(shortName(c.name), 36));
+    purpose.push(isJa
+      ? topPlain.map((s) => '「' + s + '」').join('、') +
+          (plain.length > 4 ? ' など ' + plain.length + ' 種類' : '') +
+          'という名前の処理を呼んでいます。それぞれが何をしているかは、その関数をたどると分かります。'
+      : 'It calls ' + topPlain.map((s) => '“' + s + '”').join(', ') +
+          (plain.length > 4 ? ' and ' + (plain.length - 4) + ' more' : '') +
+          '. Follow each one to see what it does.');
   }
   if (f.loops) {
     purpose.push(pick('同じ処理を繰り返す部分があります。', 'Part of it repeats in a loop.'));
@@ -729,7 +736,7 @@ export function functionStory(model, name) {
     purpose,
     evidence,
     confidence: f.confidence,
-    features: f.features.map(featureLabel).filter(Boolean),
+    features: featureLabels,
   };
 }
 
@@ -753,8 +760,13 @@ function headlineOf(f, name) {
 }
 
 function uniq(arr) {
+  const seen = new Set();
   const out = [];
-  for (const a of arr) if (a && !out.includes(a)) out.push(a);
+  for (const a of arr) {
+    if (!a || seen.has(a)) continue;
+    seen.add(a);
+    out.push(a);
+  }
   return out;
 }
 

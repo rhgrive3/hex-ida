@@ -130,10 +130,16 @@ export class AnalysisCache {
     if (!binaryHash && !artifactId) return null;
     const key = this.key(binaryHash, { artifactId });
     let record;
+    let fromNativeIdb = false;
     if (this.memory) record = this.memory.get(key) || null;
     else {
-      try { record = await this.#idbGet(key); }
-      catch (error) { const memory = this.#fallback(error); record = memory.get(key) || null; }
+      try {
+        record = await this.#idbGet(key);
+        fromNativeIdb = typeof IDBFactory === 'function' && this.indexedDB instanceof IDBFactory;
+      } catch (error) {
+        const memory = this.#fallback(error);
+        record = memory.get(key) || null;
+      }
     }
     if (!record) return null;
     if (this.#isCorruptOrStale(record, artifactId)) {
@@ -141,6 +147,7 @@ export class AnalysisCache {
       return null;
     }
     if (!this.#validRecord(record, binaryHash, artifactId)) return null;
+    if (fromNativeIdb) return record.data;
     return structuredCloneSafe(record.data);
   }
 
@@ -362,16 +369,48 @@ function fallbackClone(value, seen = new WeakMap(), sharedBuffers = new WeakMap(
   const out = {}; seen.set(value, out); for (const [k, v] of Object.entries(value)) Object.defineProperty(out, k, { value:fallbackClone(v, seen, sharedBuffers), enumerable:true, configurable:true, writable:true }); return out;
 }
 
-function containsSharedBuffer(value, seen = new WeakSet()) {
+function containsSharedBuffer(value, seen = null) {
   if (typeof SharedArrayBuffer === 'undefined' || value == null || typeof value !== 'object') return false;
-  if (seen.has(value)) return false;
-  seen.add(value);
   if (isSharedArrayBuffer(value)) return true;
   if (ArrayBuffer.isView(value)) return isSharedArrayBuffer(value.buffer);
-  if (value instanceof Map) { for (const [k, v] of value) if (containsSharedBuffer(k, seen) || containsSharedBuffer(v, seen)) return true; return false; }
-  if (value instanceof Set) { for (const v of value) if (containsSharedBuffer(v, seen)) return true; return false; }
-  if (Array.isArray(value)) { for (const v of value) if (containsSharedBuffer(v, seen)) return true; return false; }
-  for (const k of Object.keys(value)) if (containsSharedBuffer(value[k], seen)) return true;
+  if (value instanceof ArrayBuffer || value instanceof Date) return false;
+  const active = seen ?? new WeakSet();
+  if (active.has(value)) return false;
+  active.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0, n = value.length; i < n; i += 1) {
+      const item = value[i];
+      if (item != null && typeof item === 'object' && containsSharedBuffer(item, active)) return true;
+    }
+    return false;
+  }
+  if (value instanceof Map) {
+    for (const [k, v] of value) {
+      if ((k != null && typeof k === 'object' && containsSharedBuffer(k, active))
+        || (v != null && typeof v === 'object' && containsSharedBuffer(v, active))) return true;
+    }
+    return false;
+  }
+  if (value instanceof Set) {
+    for (const v of value) {
+      if (v != null && typeof v === 'object' && containsSharedBuffer(v, active)) return true;
+    }
+    return false;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto === Object.prototype || proto === null) {
+    for (const k in value) {
+      if (!Object.hasOwn(value, k)) continue;
+      const item = value[k];
+      if (item != null && typeof item === 'object' && containsSharedBuffer(item, active)) return true;
+    }
+    return false;
+  }
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i += 1) {
+    const item = value[keys[i]];
+    if (item != null && typeof item === 'object' && containsSharedBuffer(item, active)) return true;
+  }
   return false;
 }
 

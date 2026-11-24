@@ -76,10 +76,6 @@ export function layoutNodes(nodes, edges, byId) {
     if (!byId.has(e.from) || !byId.has(e.to) || e.kind === 'back' || e.from === e.to) continue;
     pred.get(e.to).push(e.from);
   }
-  const mean = (ids) => (ids.length
-    ? ids.reduce((s, id) => s + (order.get(id) != null ? order.get(id) : 0), 0) / ids.length
-    : null);
-
   for (let pass = 0; pass < 6; pass++) {
     const down = pass % 2 === 0;
     const seq = down ? ranksSorted : ranksSorted.slice().reverse();
@@ -89,8 +85,16 @@ export function layoutNodes(nodes, edges, byId) {
       const key = new Map();
       for (const id of ids) {
         const neighbours = down ? pred.get(id) : (succ.get(id) || []);
-        const m = mean(neighbours.filter((x) => rank.get(x) !== r));
-        key.set(id, m == null ? order.get(id) : m);
+        let sum = 0, cnt = 0;
+        for (let ni = 0; ni < neighbours.length; ni++) {
+          const x = neighbours[ni];
+          if (rank.get(x) !== r) {
+            const o = order.get(x);
+            sum += o != null ? o : 0;
+            cnt++;
+          }
+        }
+        key.set(id, cnt ? sum / cnt : order.get(id));
       }
       ids.sort((a, b) => key.get(a) - key.get(b) || order.get(a) - order.get(b));
       ids.forEach((id, i) => order.set(id, i));
@@ -263,43 +267,52 @@ function assignEndpointTracks(items, sourcePort, targetPort, layout) {
     add(targetKey, item, 'target', targetPort.get(item).x);
   }
 
+  const nextRankMap = new Map();
+  for (let i = 0; i < layout.ranksSorted.length - 1; i++) {
+    nextRankMap.set(layout.ranksSorted[i], layout.ranksSorted[i + 1]);
+  }
+
   for (const [key, records] of corridors) {
     records.sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index || (a.endpoint < b.endpoint ? -1 : 1));
-    const used = [];
+    const usedSorted = [];
+    const sourceRecords = [];
+    const targetRecords = [];
     for (const record of records) {
-      const x = nearestFreeTrack(record.baseX, used);
-      used.push(x);
-      (record.endpoint === 'source' ? sourceTrack : targetTrack).set(record.item, x);
+      const x = nearestFreeTrack(record.baseX, usedSorted);
+      insertSortedNumber(usedSorted, x);
+      if (record.endpoint === 'source') {
+        sourceTrack.set(record.item, x);
+        sourceRecords.push(record);
+      } else {
+        targetTrack.set(record.item, x);
+        targetRecords.push(record);
+      }
     }
 
-    const bounds = corridorBounds(key, layout);
+    const bounds = corridorBounds(key, layout, nextRankMap);
     const height = Math.max(24, bounds.bottom - bounds.top);
-    const sourceRecords = records.filter((r) => r.endpoint === 'source')
-      .sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index);
-    const targetRecords = records.filter((r) => r.endpoint === 'target')
-      .sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index);
     const sourceLow = bounds.top + 4;
     const sourceHigh = bounds.top + Math.max(8, height * 0.28);
     const targetLow = bounds.bottom - Math.max(8, height * 0.28);
     const targetHigh = bounds.bottom - 4;
-    sourceRecords.forEach((record, i) => {
-      sourceJogY.set(record.item, distributeBetween(sourceLow, sourceHigh, i, sourceRecords.length));
-    });
-    targetRecords.forEach((record, i) => {
-      targetJogY.set(record.item, distributeBetween(targetLow, targetHigh, i, targetRecords.length));
-    });
+    for (let i = 0; i < sourceRecords.length; i++) {
+      sourceJogY.set(sourceRecords[i].item, distributeBetween(sourceLow, sourceHigh, i, sourceRecords.length));
+    }
+    for (let i = 0; i < targetRecords.length; i++) {
+      targetJogY.set(targetRecords[i].item, distributeBetween(targetLow, targetHigh, i, targetRecords.length));
+    }
   }
   return { sourceTrack, targetTrack, sourceJogY, targetJogY };
 }
 
-function corridorBounds(key, layout) {
+function corridorBounds(key, layout, nextRankMap = null) {
   if (key === 'top') {
     const first = layout.rowBounds.get(layout.ranksSorted[0]);
     return { top: Math.max(2, first.top - 42), bottom: first.top - 2 };
   }
   const rank = Number(key.slice(4));
   const from = layout.rowBounds.get(rank);
-  const nextRank = layout.ranksSorted.find((r) => r > rank);
+  const nextRank = nextRankMap ? (nextRankMap.has(rank) ? nextRankMap.get(rank) : undefined) : layout.ranksSorted.find((r) => r > rank);
   if (from && nextRank != null) {
     const to = layout.rowBounds.get(nextRank);
     return { top: from.bottom, bottom: to.top - 2 };
@@ -308,17 +321,41 @@ function corridorBounds(key, layout) {
   return { top, bottom: Math.min(layout.height - 2, top + 42) };
 }
 
-function nearestFreeTrack(baseX, used) {
+function insertSortedNumber(arr, value) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid] < value) lo = mid + 1;
+    else hi = mid;
+  }
+  arr.splice(lo, 0, value);
+}
+
+function isTrackFree(usedSorted, candidate, clearance) {
+  const n = usedSorted.length;
+  if (!n) return true;
+  let lo = 0, hi = n;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (usedSorted[mid] < candidate) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo < n && Math.abs(usedSorted[lo] - candidate) < clearance) return false;
+  if (lo > 0 && Math.abs(usedSorted[lo - 1] - candidate) < clearance) return false;
+  return true;
+}
+
+function nearestFreeTrack(baseX, usedSorted) {
   const spacing = 6;
   const clearance = 3;
-  for (let ring = 0; ring <= 8; ring++) {
-    const offsets = ring === 0 ? [0] : [ring * spacing, -ring * spacing];
-    for (const offset of offsets) {
-      const candidate = baseX + offset;
-      if (used.every((x) => Math.abs(x - candidate) >= clearance)) return candidate;
-    }
+  if (isTrackFree(usedSorted, baseX, clearance)) return baseX;
+  for (let ring = 1; ring <= 8; ring++) {
+    const pos = baseX + ring * spacing;
+    if (isTrackFree(usedSorted, pos, clearance)) return pos;
+    const neg = baseX - ring * spacing;
+    if (isTrackFree(usedSorted, neg, clearance)) return neg;
   }
-  return baseX + (used.length + 1) * spacing;
+  return baseX + (usedSorted.length + 1) * spacing;
 }
 
 function endpointTrackedPoints(sx, stx, sourceY, sourceJogY, laneY, ttx, tx, targetJogY, targetY) {

@@ -11,6 +11,9 @@ export function joinTaint(a,b,maxSources=4096) {
   if(!Number.isSafeInteger(maxSources)||maxSources<0||maxSources>4096) throw new TypeError('invalid taint source limit');
   if(!issued.has(a)||!issued.has(b)||a.kind==='top'||b.kind==='top') return TAINT_TOP;
   if(a.sources.length>maxSources || b.sources.length>maxSources) return TAINT_TOP;
+  if(a===b) return a;
+  if(a.kind==='untainted') return b;
+  if(b.kind==='untainted') return a;
   const sources=new Set(a.sources);
   for(const id of b.sources) { sources.add(id);if(sources.size>maxSources) return TAINT_TOP; }
   if(sources.size>maxSources) return TAINT_TOP;
