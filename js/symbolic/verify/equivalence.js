@@ -231,9 +231,53 @@ export async function verifyBoundedEquivalence({
   if (beforeExpr.sort.kind !== afterExpr.sort.kind || (beforeExpr.sort.width && beforeExpr.sort.width !== afterExpr.sort.width)) {
     let sortPreconditionExpr = null;
     if (preconditions != null) {
-      if (Array.isArray(preconditions)) sortPreconditionExpr = preconditions;
-      else if (preconditions.kind && preconditions.sort) sortPreconditionExpr = preconditions;
-      else sortPreconditionExpr = translateSemanticIR(preconditions, { ir: beforeIr, ...options }).expression;
+      if (Array.isArray(preconditions)) {
+        const normalized = [];
+        for (const item of preconditions) {
+          if (item && item.kind && item.sort) {
+            normalized.push(item);
+          } else {
+            const itemTrans = translateSemanticIR(item, { ir: beforeIr, ...options });
+            if (!itemTrans.expression) {
+              return Object.freeze({
+                verdict: VERDICT.UNKNOWN,
+                claimKind: CLAIM_KIND.EQUIVALENT,
+                reasonCode: 'precondition-translation-failed',
+                proofStatement: 'Preconditions could not be translated into symbolic expression',
+                solverStatus: SOLVER_STATUS.UNSUPPORTED,
+                assumptions: Object.freeze([...combinedAssumptions, ...(itemTrans.assumptions || [])]),
+                completeness: createCompleteness({ translation: COMPLETENESS_STATUS.UNSUPPORTED }),
+                queryHash: null,
+                query: null,
+                solverResult: null,
+                evidence: null,
+              });
+            }
+            normalized.push(itemTrans.expression);
+          }
+        }
+        sortPreconditionExpr = normalized;
+      } else if (preconditions.kind && preconditions.sort) {
+        sortPreconditionExpr = preconditions;
+      } else {
+        const sortPreconditionTrans = translateSemanticIR(preconditions, { ir: beforeIr, ...options });
+        if (!sortPreconditionTrans.expression) {
+          return Object.freeze({
+            verdict: VERDICT.UNKNOWN,
+            claimKind: CLAIM_KIND.EQUIVALENT,
+            reasonCode: 'precondition-translation-failed',
+            proofStatement: 'Preconditions could not be translated into symbolic expression',
+            solverStatus: SOLVER_STATUS.UNSUPPORTED,
+            assumptions: Object.freeze([...combinedAssumptions, ...(sortPreconditionTrans.assumptions || [])]),
+            completeness: createCompleteness({ translation: COMPLETENESS_STATUS.UNSUPPORTED }),
+            queryHash: null,
+            query: null,
+            solverResult: null,
+            evidence: null,
+          });
+        }
+        sortPreconditionExpr = sortPreconditionTrans.expression;
+      }
     }
     const pCheckSort = await checkPreconditionsConsistency(sortPreconditionExpr, activeSession, options);
     if (!pCheckSort.consistent) {
@@ -292,21 +336,50 @@ export async function verifyBoundedEquivalence({
 
   // 2. Translate preconditions P
   let pExpr = null;
-  let pAssumptions = [];
-  let pUnsupported = [];
+  const pAssumptions = [];
+  const pUnsupported = [];
   let pUnknowns = 0;
-  let pTrans = null;
+  const pTransList = [];
+  const failPreconditionTranslation = () => Object.freeze({
+    verdict: VERDICT.UNKNOWN,
+    claimKind: CLAIM_KIND.EQUIVALENT,
+    reasonCode: 'precondition-translation-failed',
+    proofStatement: 'Preconditions could not be translated into symbolic expression',
+    solverStatus: SOLVER_STATUS.UNSUPPORTED,
+    assumptions: Object.freeze([...combinedAssumptions, ...pAssumptions]),
+    completeness: createCompleteness({ translation: COMPLETENESS_STATUS.UNSUPPORTED }),
+    queryHash: null,
+    query: null,
+    solverResult: null,
+    evidence: null,
+  });
   if (preconditions) {
     if (Array.isArray(preconditions)) {
-      pExpr = preconditions;
+      const normalized = [];
+      for (const item of preconditions) {
+        if (item && item.kind && item.sort) {
+          normalized.push(item);
+        } else {
+          const itemTrans = translateSemanticIR(item, { ir: beforeIr, ...options });
+          pTransList.push(itemTrans);
+          pAssumptions.push(...(itemTrans.assumptions || []));
+          pUnsupported.push(...(itemTrans.unsupportedEntities || []));
+          pUnknowns += itemTrans.semanticUnknowns || 0;
+          if (!itemTrans.expression) return failPreconditionTranslation();
+          normalized.push(itemTrans.expression);
+        }
+      }
+      pExpr = normalized;
     } else if (preconditions.kind && preconditions.sort) {
       pExpr = preconditions;
     } else {
-      pTrans = translateSemanticIR(preconditions, { ir: beforeIr, ...options });
+      const pTrans = translateSemanticIR(preconditions, { ir: beforeIr, ...options });
+      pTransList.push(pTrans);
+      pAssumptions.push(...(pTrans.assumptions || []));
+      pUnsupported.push(...(pTrans.unsupportedEntities || []));
+      pUnknowns += pTrans.semanticUnknowns || 0;
+      if (!pTrans.expression) return failPreconditionTranslation();
       pExpr = pTrans.expression;
-      pAssumptions = pTrans.assumptions || [];
-      pUnsupported = pTrans.unsupportedEntities || [];
-      pUnknowns = pTrans.semanticUnknowns || 0;
     }
   }
   if (Array.isArray(pExpr)) pExpr = pExpr.map((expr) => replaceSymbols(expr, symbolReplacements));
@@ -322,7 +395,7 @@ export async function verifyBoundedEquivalence({
   const allUnsupported = [...combinedUnsupported, ...pUnsupported];
   const allUnknowns = combinedUnknowns + pUnknowns;
 
-  const translationResults = [beforeTrans, afterTrans, pTrans].filter(Boolean);
+  const translationResults = [beforeTrans, afterTrans, ...pTransList].filter(Boolean);
   const mergeCompleteness = (key) => {
     const statuses = translationResults.map((item) => item.completeness?.[key] || COMPLETENESS_STATUS.PARTIAL);
     if (statuses.includes(COMPLETENESS_STATUS.UNSUPPORTED)) return COMPLETENESS_STATUS.UNSUPPORTED;

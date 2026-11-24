@@ -840,9 +840,9 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           });
           consumedValues.push(...signature.consumedValues);
           producedValues.push(...signature.producedValues);
-          // JVMS §6.5: `invokespecial <init>` pops the objectref and pushes that
-          // same objectref back, so the receiver's slot count cancels out and the
-          // arguments leave the stack.
+          // JVMS §6.5: invoke* pops its arguments (and receiver for non-static
+          // calls) and pushes only a non-void return value (`invokespecial <init>`
+          // is void-returning with producedSlots === 0 and producedValues === []).
           currentStackHeight += signature.producedSlots - signature.consumedSlots;
         }
         break;

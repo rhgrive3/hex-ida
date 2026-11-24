@@ -184,17 +184,12 @@ export function resolveJvmMethodSignature(jvmClass, cpIndex, { dispatchKind } = 
       ...(returnType.type ? { type: returnType.type } : {}),
     });
   }
-  // JVMS §6.5 invokespecial: an instance initialization method pops its
-  // objectref and pushes that same objectref back after the call, so the
-  // freshly initialized object stays where the verifier expects it.
+  // JVMS §6.5 invokespecial: an instance initialization method (`<init>`) is
+  // void-returning (producedSlots === 0). It pops its arguments and objectref
+  // and pushes nothing back onto the operand stack; any surviving reference
+  // comes from a prior `dup` or local copy, whose initialization transition is
+  // tracked separately on object semantics.
   const initializesReceiver = dispatchKind === 'special' && name === '<init>';
-  if (initializesReceiver) {
-    producedValues.push({
-      id: 'initializedObjectref',
-      ...receiver,
-      aliasConsumedReceiver: true,
-    });
-  }
 
   return Object.freeze({
     cpIndex,

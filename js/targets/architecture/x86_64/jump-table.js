@@ -2,8 +2,12 @@ const MAX_SWITCH_CASES = 4096;
 const MAX_MEMORY_SEGMENTS = 128;
 const MAX_MEMORY_BYTES = 32 * 1024 * 1024;
 const MAX_SEGMENT_BYTES = 16 * 1024 * 1024;
+const MAX_EXPRESSION_DEPTH = 16;
+const MAX_EXPRESSION_NODES = 64;
 const ADDRESS_LIMIT = 1n << 64n;
 const CONTROL_FLOW_KINDS = new Set(['fallthrough', 'call', 'branch', 'conditional-branch', 'return', 'unknown']);
+const OPAQUE_EXPRESSION = Object.freeze({ kind:'opaque-expression' });
+const EXPRESSION_METRICS = new WeakMap();
 
 function integer(value) {
   if (typeof value === 'bigint') return value;
@@ -35,8 +39,65 @@ function immediate(operandValue) {
   return operandValue?.type === 'immediate' ? integer(operandValue.value) : null;
 }
 
+function expressionMetrics(value) {
+  if (!value || typeof value !== 'object') return { depth: 0, nodes: 0 };
+  return EXPRESSION_METRICS.get(value) ?? { depth: 1, nodes: 1 };
+}
+
+function boundExpression(node, children) {
+  let maxDepth = 0;
+  let totalNodes = 1;
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    if (!child || typeof child !== 'object' || child.kind === 'opaque-expression') {
+      return OPAQUE_EXPRESSION;
+    }
+    const metrics = expressionMetrics(child);
+    if (metrics.depth > maxDepth) maxDepth = metrics.depth;
+    totalNodes += metrics.nodes;
+    if (maxDepth + 1 > MAX_EXPRESSION_DEPTH || totalNodes > MAX_EXPRESSION_NODES) {
+      return OPAQUE_EXPRESSION;
+    }
+  }
+  EXPRESSION_METRICS.set(node, { depth: maxDepth + 1, nodes: totalNodes });
+  return node;
+}
+
+function serializeExpression(value, depth, budget) {
+  if (value === null) return 'null';
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (typeof value !== 'object') {
+    const primitive = JSON.stringify(value);
+    return primitive === undefined ? null : primitive;
+  }
+  if (value.kind === 'opaque-expression') return null;
+  if (depth > MAX_EXPRESSION_DEPTH) return null;
+  budget.remaining -= 1;
+  if (budget.remaining < 0) return null;
+  if (Array.isArray(value)) {
+    const parts = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      const child = serializeExpression(value[index], depth + 1, budget);
+      if (child == null) return null;
+      parts[index] = child;
+    }
+    return `[${parts.join(',')}]`;
+  }
+  const keys = Object.keys(value);
+  const parts = [];
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (value[key] === undefined) continue;
+    const child = serializeExpression(value[key], depth + 1, budget);
+    if (child == null) return null;
+    parts.push(`${JSON.stringify(key)}:${child}`);
+  }
+  return `{${parts.join(',')}}`;
+}
+
 function expressionKey(value) {
-  return value == null ? null : JSON.stringify(value);
+  if (value == null || typeof value !== 'object' || value.kind === 'opaque-expression') return null;
+  return serializeExpression(value, 0, { remaining: MAX_EXPRESSION_NODES });
 }
 
 function initialRegister(registerValue) {
@@ -48,8 +109,8 @@ function readRegister(registerValue, state) {
   if (registerValue.viewBits < registerValue.physicalBits) {
     const lsb = Number.isSafeInteger(registerValue.lsb) && registerValue.lsb >= 0 ? registerValue.lsb : 0;
     value = lsb > 0
-      ? { kind:'extract', value, lsb, widthBits:registerValue.viewBits }
-      : { kind:'truncate', value, widthBits:registerValue.viewBits };
+      ? boundExpression({ kind:'extract', value, lsb, widthBits:registerValue.viewBits }, [value])
+      : boundExpression({ kind:'truncate', value, widthBits:registerValue.viewBits }, [value]);
   }
   return value;
 }
@@ -59,10 +120,10 @@ function writeRegister(registerValue, value, state) {
   if (registerValue.viewBits < registerValue.physicalBits) {
     const lsb = Number.isSafeInteger(registerValue.lsb) && registerValue.lsb >= 0 ? registerValue.lsb : 0;
     if (registerValue.viewBits === 32 && registerValue.physicalBits === 64 && lsb === 0) {
-      fullValue = { kind:'zero-extend', value, fromBits:registerValue.viewBits, toBits:registerValue.physicalBits };
+      fullValue = boundExpression({ kind:'zero-extend', value, fromBits:registerValue.viewBits, toBits:registerValue.physicalBits }, [value]);
     } else {
       const prior = state.registers.get(registerValue.physicalId) ?? initialRegister(registerValue);
-      fullValue = { kind:'insert', into:prior, value, lsb, widthBits:registerValue.viewBits, physicalBits:registerValue.physicalBits };
+      fullValue = boundExpression({ kind:'insert', into:prior, value, lsb, widthBits:registerValue.viewBits, physicalBits:registerValue.physicalBits }, [prior, value]);
     }
   }
   state.registers.set(registerValue.physicalId, fullValue);
@@ -176,7 +237,9 @@ function boundedFallthrough(instruction, comparison, instructions) {
   if (target == null || !instructions.some(item => address(item.address) === target)) return null;
   const next = instructions[instructions.indexOf(instruction) + 1];
   if (!next || address(next.address) !== address(instruction.address) + BigInt(instruction.length)) return null;
-  return { selector:comparison.lhs, selectorKey:expressionKey(comparison.lhs), min:0n, max:maximum,
+  const selectorKey = expressionKey(comparison.lhs);
+  if (!selectorKey) return null;
+  return { selector:comparison.lhs, selectorKey, min:0n, max:maximum,
     defaultAddress:target, branchAddress:address(instruction.address),
     fallthroughAddress:address(next.address) };
 }
@@ -221,7 +284,8 @@ function dispatchIsBounded(bounds, indirectJump, instructions, classifyControlFl
 }
 
 function targetAddresses(segments, pattern, bounds) {
-  if (!pattern || !bounds || expressionKey(pattern.indexValue) !== bounds.selectorKey) return null;
+  const indexKey = pattern ? expressionKey(pattern.indexValue) : null;
+  if (!pattern || !bounds || !bounds.selectorKey || !indexKey || indexKey !== bounds.selectorKey) return null;
   const count = bounds.max - bounds.min + 1n;
   if (bounds.min !== 0n || count <= 0n || count > BigInt(MAX_SWITCH_CASES)) return null;
   const widthBytes = pattern.widthBits / 8;
@@ -426,7 +490,7 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
           : null;
         if (family === 'sub' && destination && constant != null) {
           const lhs = readRegister(destination, state);
-          writeRegister(destination, { kind:'subtract', left:lhs, right:constant.toString(), widthBits:destination.viewBits }, state);
+          writeRegister(destination, boundExpression({ kind:'subtract', left:lhs, right:constant.toString(), widthBits:destination.viewBits }, [lhs]), state);
         }
         pendingTable = null;
         pendingJump = null;
@@ -437,7 +501,7 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
         const destination = register(first), source = register(second);
         if (destination && source) {
           const left = readRegister(destination, state), right = readRegister(source, state);
-          writeRegister(destination, { kind:'add', left, right, widthBits:destination.viewBits }, state);
+          writeRegister(destination, boundExpression({ kind:'add', left, right, widthBits:destination.viewBits }, [left, right]), state);
         } else if (destination) writeRegister(destination, { kind:'unresolved-write', instructionAddress:String(instruction.address) }, state);
         comparison = null;
         pendingTable = null;

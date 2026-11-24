@@ -899,6 +899,7 @@ export class Emulator {
         let b = await this.load(addr + 4n, 4);
         a = BigInt.asUintN(64, BigInt.asIntN(32, a));
         b = BigInt.asUintN(64, BigInt.asIntN(32, b));
+        this.effectiveAddress(mem, true);
         this.set(ops[0].text, a);
         this.set(ops[1].text, b);
       } else {
@@ -907,17 +908,18 @@ export class Emulator {
         if (eachA == null || eachB == null) throw pairUnsupportedFault(mn, ops[0], ops[1]);
         const a = await this.load(addr, eachA);
         const b = await this.load(addr + BigInt(eachA), eachB);
+        this.effectiveAddress(mem, true);
         if (isFloatReg(ops[0])) this.setFpBits(ops[0], a); else this.set(ops[0].text, a);
         if (isFloatReg(ops[1])) this.setFpBits(ops[1], b); else this.set(ops[1].text, b);
       }
     } else {
       let v = await this.load(addr, size);
       if (signed) v = BigInt.asUintN(64, BigInt.asIntN(size * 8, v));
+      this.effectiveAddress(mem, true);
       if (isFloatReg(ops[0])) this.setFpBits(ops[0], v);
       else this.set(ops[0].text, v);
     }
     if (/^(ldxr|ldaxr)/.test(mn) && !pair) this.exclusive = { addr:BigInt(addr), size };
-    this.effectiveAddress(mem, true);
     return null;
   }
 

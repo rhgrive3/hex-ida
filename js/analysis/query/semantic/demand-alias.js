@@ -3,14 +3,54 @@
  * integer premises plus newly reopened canonical object premises. */
 import { pointsToAlias } from '../../pointsto/alias.js';
 import { createPointsToSet } from '../../pointsto/lattice.js';
+import { createAnalysisStatus, isCompleteStatus, mergeAnalysisStatus } from '../../status.js';
 import { supportedAliasCell, ALIAS_PROOF_SCHEMA, ALIAS_PROOF_VERSION, ALIAS_PROOF_INTERPRETATION } from '../../../core/evidence/alias-proof-kernel.js';
 import { integerFragmentProofScope } from '../../../core/evidence/range-proof-kernel.js';
 import { stableStringify } from '../../../core/identity/index.js';
 import { assertScopedAnalysisWork } from '../../../core/budgets/scoped-work.js';
 
+function combineOwnerStatuses(leftStatus, rightStatus) {
+  const fallbackBase = leftStatus && typeof leftStatus === 'object' ? leftStatus
+    : rightStatus && typeof rightStatus === 'object' ? rightStatus : null;
+  const fallback = (completeness, stopReason) => createAnalysisStatus({
+    snapshotId: typeof fallbackBase?.snapshotId === 'string' && fallbackBase.snapshotId.trim()
+      ? fallbackBase.snapshotId : 'demand-alias-unknown-snapshot',
+    analyzerId: typeof fallbackBase?.analyzerId === 'string' && fallbackBase.analyzerId.trim()
+      ? fallbackBase.analyzerId : 'phase7.pointsto.demand-alias',
+    analyzerVersion: typeof fallbackBase?.analyzerVersion === 'string' && fallbackBase.analyzerVersion.trim()
+      ? fallbackBase.analyzerVersion : '1.0.0',
+    completeness,
+    stopReason,
+  });
+  if (!leftStatus || typeof leftStatus !== 'object' || !rightStatus || typeof rightStatus !== 'object') {
+    return fallback('unsupported', 'evidence-missing');
+  }
+  if (leftStatus.snapshotId !== rightStatus.snapshotId) {
+    return fallback('unsupported', 'dependency-mismatch');
+  }
+  try {
+    return mergeAnalysisStatus(leftStatus, rightStatus);
+  } catch {
+    if (!isCompleteStatus(leftStatus) || !isCompleteStatus(rightStatus)) {
+      const worst = [leftStatus, rightStatus].some((s) => s?.completeness === 'unsupported')
+        ? 'unsupported' : 'partial';
+      const reason = leftStatus.stopReason ?? rightStatus.stopReason ?? 'unsupported-input';
+      try {
+        return fallback(worst, reason);
+      } catch {
+        return fallback(worst, 'unsupported-input');
+      }
+    }
+    return fallback('unsupported', 'unsupported-input');
+  }
+}
+
 export function compareCanonicalAliasCells(left, right) {
-  return pointsToAlias(createPointsToSet(left.pointsTo), createPointsToSet(right.pointsTo), {
-    widthBitsLeft: 8, widthBitsRight: 8, status: left.ownerStatus });
+  const status = combineOwnerStatuses(left?.ownerStatus, right?.ownerStatus);
+  const leftSet = left?.pointsTo != null ? createPointsToSet(left.pointsTo) : null;
+  const rightSet = right?.pointsTo != null ? createPointsToSet(right.pointsTo) : null;
+  return pointsToAlias(leftSet, rightSet, {
+    widthBitsLeft: 8, widthBitsRight: 8, status });
 }
 export function collectDemandAliasCandidates(member, { work } = {}) {
   assertScopedAnalysisWork(work);

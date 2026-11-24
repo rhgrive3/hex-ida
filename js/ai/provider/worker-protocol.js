@@ -80,7 +80,7 @@ export function sanitizeToolSchema(value, depth = 0) {
     else if (['type','description','pattern'].includes(key)) out[key] = boundedText(item, key === 'description' ? 1000 : 300);
     else if (typeof item === 'number' || typeof item === 'boolean' || typeof item === 'string') out[key] = item;
   }
-  if (depth === 0 && out.type !== 'object') out.type = 'object'; out.properties ||= {}; return out;
+  if (depth === 0 && out.type !== 'object') out.type = 'object'; if (out.type === 'object') out.properties ||= {}; return out;
 }
 
 export function finalResultTool() {

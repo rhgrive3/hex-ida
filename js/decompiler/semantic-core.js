@@ -2140,6 +2140,7 @@ export function renderBranchCondition(inst, ctx, invert = false) {
 
 function selectAsMinMax(inst, ctx) {
   if (!inst || inst.op !== OP.SEL || inst.args.length < 3) return null;
+  if (inst.sub && inst.sub !== 'sel' && inst.sub !== 'csel' && inst.sub !== 'fcsel') return null;
   const t = valueOf(inst.args[0]), f = valueOf(inst.args[1]), flags = valueOf(inst.args[2]);
   const cmp = cmpFromFlags(flags);
   if (!cmp || cmp.args.length < 2 || cmp.sub !== 'sub' || cmp.extra?.conditional) return null;
@@ -2960,6 +2961,13 @@ function renderValueText(value, ctx, flags) {
         const looksAddrOrStr = (s) => typeof s === 'string' && (s.startsWith('"') || s.startsWith('&global_'));
         if (looksAddrOrStr(t) && !looksAddrOrStr(f)) f = renderSelArm(fVal, true);
         else if (looksAddrOrStr(f) && !looksAddrOrStr(t)) t = renderSelArm(tVal, true);
+        const negArm = (s) => (s.startsWith('-') ? `-(${s})` : `-${paren(s)}`);
+        if (d.sub === 'inc') f = `(${paren(f)} + 1)`;
+        else if (d.sub === 'inv') f = `~${paren(f)}`;
+        else if (d.sub === 'neg') f = negArm(f);
+        else if (d.sub === 'cinc') { f = t; t = `(${paren(t)} + 1)`; }
+        else if (d.sub === 'cinv') { f = t; t = `~${paren(t)}`; }
+        else if (d.sub === 'cneg') { f = t; t = negArm(t); }
         const cond = renderCmp(cmpFromFlags(valueOf(d.args?.[2])), d.cond, ctx);
         out = initialValueForm(ctx, 'select-conditional', `(${cond} ? ${t} : ${f})`);
       }

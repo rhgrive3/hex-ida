@@ -142,6 +142,70 @@ function memoryAccessOf(definition) {
   return definition?.extra?.memoryAccess ?? null;
 }
 
+function loadWidthBitsOf(definition) {
+  const access = memoryAccessOf(definition);
+  const widthBits = access?.widthBits;
+  return typeof widthBits === 'number' && Number.isSafeInteger(widthBits) && widthBits > 0 ? widthBits : null;
+}
+
+function normalizeLoadExtensionToken(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== 'string') return 'unknown';
+  const token = raw.trim().toLowerCase();
+  if (!token) return null;
+  if (token === 'sext' || token === 'sign' || token === 'sign-extend' || token === 'sign_extend' || token === 'signed' || token === 'sload') return 'sext';
+  if (token === 'zext' || token === 'zero' || token === 'zero-extend' || token === 'zero_extend' || token === 'unsigned' || token === 'zload') return 'zext';
+  if (token === 'raw' || token === 'none') return 'raw';
+  return 'unknown';
+}
+
+function loadExtensionKindOf(definition, producedBits, widthBits) {
+  const access = memoryAccessOf(definition);
+  const extra = definition?.extra ?? null;
+  const rawExt = extra?.extend ?? extra?.extension ?? access?.extend ?? access?.extension ?? definition?.sub ?? null;
+  if (rawExt != null) {
+    const normalized = normalizeLoadExtensionToken(rawExt);
+    if (normalized === 'unknown') return null;
+    if (normalized != null) return normalized;
+  }
+  const signedFlag = extra?.signed !== undefined ? extra.signed : access?.signed;
+  if (signedFlag === true) return widthBits < producedBits ? 'sext' : 'sext';
+  if (signedFlag === false) return widthBits < producedBits ? 'zext' : 'zext';
+  if (signedFlag != null) return null;
+  if (widthBits === producedBits) return 'raw';
+  return null;
+}
+
+function loadCongruenceKey(instruction, produced, version) {
+  if (!Number.isSafeInteger(produced?.bits) || produced.bits <= 0) {
+    return { ok: false, key: null, reason: 'load destination width is unknown' };
+  }
+  const widthBits = loadWidthBitsOf(instruction);
+  if (widthBits == null) {
+    return { ok: false, key: null, reason: 'load memory access width is unknown' };
+  }
+  const extension = loadExtensionKindOf(instruction, produced.bits, widthBits);
+  if (extension == null) {
+    return { ok: false, key: null, reason: 'load extension kind is unknown' };
+  }
+  const access = memoryAccessOf(instruction);
+  const key = JSON.stringify([
+    'load',
+    instruction.loc.key,
+    produced.bits,
+    widthBits,
+    extension,
+    access?.addressSpace ?? 'memory',
+    access?.volatility ?? null,
+    access?.atomic ?? null,
+    access?.ordering ?? null,
+    access?.endian ?? null,
+    instruction.extra?.float === true,
+    version,
+  ]);
+  return { ok: true, key, widthBits, extension, reason: null };
+}
+
 /**
  * Whether a load may participate in value numbering at all.
  *
@@ -397,7 +461,9 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         if (!reusable.ok) { singleton(produced, reusable.reason); continue; }
         const version = memoryVersionKey(instruction);
         if (version == null) { singleton(produced, 'reaching memory definitions are not determined'); continue; }
-        const key = `load:${instruction.loc.key}:${produced.bits}:${version}`;
+        const loadKey = loadCongruenceKey(instruction, produced, version);
+        if (!loadKey.ok) { singleton(produced, loadKey.reason); continue; }
+        const key = loadKey.key;
         const existing = keyToNumber.get(key);
         if (existing == null) {
           const number = nextNumber++;
@@ -412,7 +478,7 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         if (earlier != null && dominates(dominatorsOf, earlier.def?.block, instruction.block)) {
           reuseCandidates.push({
             kind: 'load', valueId: produced.id, reuseOf: earlier.id,
-            proof: `same location ${instruction.loc.key} at ${produced.bits} bits, same reaching memory definitions, no unknown-store barrier, and the earlier load dominates`,
+            proof: `same location ${instruction.loc.key} at ${loadKey.widthBits}-bit access (${loadKey.extension}) to ${produced.bits} bits, same reaching memory definitions, no unknown-store barrier, and the earlier load dominates`,
           });
         }
         continue;

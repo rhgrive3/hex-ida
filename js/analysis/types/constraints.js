@@ -528,10 +528,15 @@ function memberTypesConflict(aType, bType) {
   if (aKind != null && bKind != null && aKind !== bKind) return true;
 
   if (aKind === 'pointer' || bKind === 'pointer') {
-    const aTarget = aType.targetEntityId ?? null;
-    const bTarget = bType.targetEntityId ?? null;
+    const aTarget = aType.targetEntityId != null ? (canonicalDependencyIdentity(aType.targetEntityId) ?? aType.targetEntityId) : null;
+    const bTarget = bType.targetEntityId != null ? (canonicalDependencyIdentity(bType.targetEntityId) ?? bType.targetEntityId) : null;
     if (aTarget != null && bTarget != null && aTarget !== bTarget) return true;
     if (aType.pointeeType != null && bType.pointeeType != null && memberTypesConflict(aType.pointeeType, bType.pointeeType)) return true;
+    if (aType.addressSpace != null && bType.addressSpace != null && aType.addressSpace !== bType.addressSpace) return true;
+    if (aType.nullable != null && bType.nullable != null && aType.nullable !== bType.nullable) return true;
+    if (aType.widthBits != null && bType.widthBits != null && numericValuesDiffer(aType.widthBits, bType.widthBits)) return true;
+    if (aType.sizeBytes != null && bType.sizeBytes != null && numericValuesDiffer(aType.sizeBytes, bType.sizeBytes)) return true;
+    if (aType.alignBytes != null && bType.alignBytes != null && numericValuesDiffer(aType.alignBytes, bType.alignBytes)) return true;
     return false;
   }
 
@@ -746,6 +751,28 @@ export function claimsConflict(left, right) {
       if (a.alignBytes != null && b.alignBytes != null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
       if (a.elementEntityId != null && b.elementEntityId != null && a.elementEntityId !== b.elementEntityId) return true;
       if (a.elementType != null && b.elementType != null && memberTypesConflict(a.elementType, b.elementType)) return true;
+      return false;
+    }
+
+    // Top-level pointer claims are complete structural candidates, not
+    // aggregate field fragments. Reject incompatible kinds (including pointer
+    // vs field/members) and check pointer-specific contract fields directly.
+    if (aKind === 'pointer' || bKind === 'pointer') {
+      if (aKind !== bKind) return true;
+      if (a.offset != null || b.offset != null || a.members != null || b.members != null) return true;
+      const aPointerSize = normalizedTotalSize(a);
+      const bPointerSize = normalizedTotalSize(b);
+      if (aPointerSize === SIZE_CONFLICT || bPointerSize === SIZE_CONFLICT) return true;
+      if (aPointerSize != null && bPointerSize != null && numericValuesDiffer(aPointerSize, bPointerSize)) return true;
+      if (a.widthBits != null && b.widthBits != null && numericValuesDiffer(a.widthBits, b.widthBits)) return true;
+      if (a.alignBytes != null && b.alignBytes != null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+      const aTarget = a.targetEntityId != null ? (canonicalDependencyIdentity(a.targetEntityId) ?? a.targetEntityId) : null;
+      const bTarget = b.targetEntityId != null ? (canonicalDependencyIdentity(b.targetEntityId) ?? b.targetEntityId) : null;
+      if (aTarget != null && bTarget != null && aTarget !== bTarget) return true;
+      if (a.pointeeType != null && b.pointeeType != null && memberTypesConflict(a.pointeeType, b.pointeeType)) return true;
+      if (a.addressSpace != null && b.addressSpace != null && a.addressSpace !== b.addressSpace) return true;
+      if (a.nullable != null && b.nullable != null && a.nullable !== b.nullable) return true;
+      if (a.const != null && b.const != null && a.const !== b.const) return true;
       return false;
     }
 

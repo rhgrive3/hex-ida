@@ -243,11 +243,27 @@ const bitRules = [
     match: (n) => n?.kind === 'intrinsic' && n.name === 'bit_extract' && n.args?.[0]?.kind === 'intrinsic' && n.args[0].name === 'bit_extract'
       && isConst(n.args[1]) && isConst(n.args[2]) && isConst(n.args[0].args?.[1]) && isConst(n.args[0].args?.[2]) ? { inner: n.args[0] } : null,
     precondition: (n, m) => {
-      const lsb = constOperandValue(n.args[1]), width = constOperandValue(n.args[2]);
+      const innerBits = widthOf(m.inner);
+      const outerBits = widthOf(n);
+      if (innerBits == null || outerBits == null) return false;
+      const innerLsb = constOperandValue(m.inner.args[1]);
       const innerWidth = constOperandValue(m.inner.args[2]);
-      return lsb + width <= innerWidth;
+      const outerLsb = constOperandValue(n.args[1]);
+      const outerWidth = constOperandValue(n.args[2]);
+      const effectiveInnerWidth = innerWidth < BigInt(innerBits) ? innerWidth : BigInt(innerBits);
+      if (outerLsb + outerWidth > effectiveInnerWidth) return false;
+      const lsbBits = Math.max(64, widthOf(m.inner.args[1]) ?? 0, widthOf(n.args[1]) ?? 0);
+      return innerLsb + outerLsb < (1n << BigInt(lsbBits));
     },
-    rewrite: (n, m) => expr.intrinsic('bit_extract', [m.inner.args[0], c(constOperandValue(m.inner.args[1]) + constOperandValue(n.args[1]), n), n.args[2]], n.bits, n.signed, n.source),
+    rewrite: (n, m) => {
+      const combinedLsb = constOperandValue(m.inner.args[1]) + constOperandValue(n.args[1]);
+      const lsbBits = Math.max(64, widthOf(m.inner.args[1]) ?? 0, widthOf(n.args[1]) ?? 0);
+      return expr.intrinsic(
+        'bit_extract',
+        [m.inner.args[0], expr.constant(combinedLsb, lsbBits, false, n.args[1]?.source ?? n.source), n.args[2]],
+        n.bits, n.signed, n.source,
+      );
+    },
     proof: proof('bit-slice-composition', 'nested fixed-width extraction'), cost,
   },
 ];

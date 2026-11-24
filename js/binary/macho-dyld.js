@@ -627,6 +627,13 @@ export function decodeChainedPointer(raw, format, imageBase = null, options = {}
     const target = base + offset;
     return target <= 0xffffffffffffffffn ? target : undefined;
   };
+  const taggedOffsetTarget = (offset, high8) => {
+    const baseTarget = offsetTarget(offset);
+    if (baseTarget === undefined) return undefined;
+    if (baseTarget === null) return null;
+    if (high8 !== 0n && baseTarget > 0x00ffffffffffffffn) return undefined;
+    return (baseTarget | (high8 << 56n)) & 0xffffffffffffffffn;
+  };
   if (format === 3) {
     const bind = !!((raw >> 31n) & 1n);
     const next = Number((raw >> 26n) & 0x1fn);
@@ -659,8 +666,9 @@ export function decodeChainedPointer(raw, format, imageBase = null, options = {}
     if (!bind) {
       const target = raw & 0xfffffffffn;
       const high8 = (raw >> 36n) & 0xffn;
-      const reconstructed = target | (high8 << 56n);
-      const resolved = format === 6 ? offsetTarget(reconstructed) : reconstructed;
+      const resolved = format === 6
+        ? taggedOffsetTarget(target, high8)
+        : ((target | (high8 << 56n)) & 0xffffffffffffffffn);
       if (resolved === undefined) return null;
       return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, storageWidth: width, target: resolved, authenticated: false, authentication: null };
     }
@@ -699,9 +707,10 @@ export function decodeChainedPointer(raw, format, imageBase = null, options = {}
     }
     const target = raw & 0x7ffffffffffn;
     const high8 = (raw >> 43n) & 0xffn;
-    const reconstructed = target | (high8 << 56n);
     const vmOffset = format === 7 || format === 9 || format === 12;
-    const resolved = vmOffset ? offsetTarget(reconstructed) : reconstructed;
+    const resolved = vmOffset
+      ? taggedOffsetTarget(target, high8)
+      : ((target | (high8 << 56n)) & 0xffffffffffffffffn);
     if (resolved === undefined) return null;
     return { bind, ordinal: -1, addend: 0n, next, stride, storageWidth: width, target: resolved, authenticated: false, authentication: null };
   }
