@@ -74,7 +74,7 @@ function strictTargetInteger(value) {
   if (typeof value === 'string') {
     const text = value.trim();
     if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
-      try { return BigInt(text); } catch { return null; }
+      try { return text.startsWith('-') ? -BigInt(text.slice(1)) : BigInt(text); } catch { return null; }
     }
   }
   return null;
@@ -103,15 +103,21 @@ function directTargetEvidenceCoherence(instruction, target, mnemonic) {
     // `b5 011011 op b40 imm14 Rt` (TBZ/TBNZ).
     const op26 = word >>> 26;
     const topByte = word >>> 24;
-    const displacementBits = mnemonic === 'b' || mnemonic === 'bl'
-      ? ((op26 === 0b000101 || op26 === 0b100101) ? 26 : null)
-      : /^bc?\./.test(mnemonic)
-        ? (topByte === 0x54 ? 19 : null)
-        : mnemonic === 'cbz' || mnemonic === 'cbnz'
-          ? (topByte === 0x34 || topByte === 0x35 || topByte === 0xb4 || topByte === 0xb5 ? 19 : null)
-          : mnemonic === 'tbz' || mnemonic === 'tbnz'
-            ? (topByte === 0x36 || topByte === 0x37 || topByte === 0xb6 || topByte === 0xb7 ? 14 : null)
-            : null;
+    const displacementBits = mnemonic === 'b'
+      ? (op26 === 0b000101 ? 26 : null)
+      : mnemonic === 'bl'
+        ? (op26 === 0b100101 ? 26 : null)
+        : /^bc?\./.test(mnemonic)
+          ? (topByte === 0x54 ? 19 : null)
+          : mnemonic === 'cbz'
+            ? ((topByte === 0x34 || topByte === 0xb4) ? 19 : null)
+            : mnemonic === 'cbnz'
+              ? ((topByte === 0x35 || topByte === 0xb5) ? 19 : null)
+              : mnemonic === 'tbz'
+                ? ((topByte === 0x36 || topByte === 0xb6) ? 14 : null)
+                : mnemonic === 'tbnz'
+                  ? ((topByte === 0x37 || topByte === 0xb7) ? 14 : null)
+                  : null;
     if (displacementBits == null) return null;
     const shift = displacementBits === 26 ? 0 : 5;
     let immediate = BigInt((word >>> shift) & ((1 << displacementBits) - 1));
@@ -407,8 +413,10 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
 
 export function decorateArm64GcsEffects(instruction, options = {}, bundle) {
   if (!bundle) return bundle;
+  if (bundle?.metadata?.gcs === true) return bundle;
   const mnemonic = typeof instruction?.mnemonic === 'string' ? instruction.mnemonic.toLowerCase() : '';
   if (!['bl', 'blr', 'ret'].includes(mnemonic)) return bundle;
+  const gcsEndian = options?.dataEndianness === 'big' ? 'big' : 'little';
 
   const gcsRequested = options.gcsRequested ?? options.gcsPolicy?.gcsRequested ?? options.aarch64SecurityFeatures?.gcsRequested ?? options.arm64GnuProperty?.gcsRequested ?? options.arm64Bti?.gcsRequested ?? options.image?.metadata?.arm64GnuProperty?.gcsRequested ?? options.image?.metadata?.arm64Bti?.gcsRequested ?? null;
   const gcsEnabled = options.gcsEnabled ?? options.runtime?.gcsEnabled ?? null;
@@ -478,7 +486,7 @@ export function decorateArm64GcsEffects(instruction, options = {}, bundle) {
             space: 'memory',
             addressExpr: newGcsprVal,
             widthBits: 64,
-            endian: 'little',
+            endian: gcsEndian,
           }),
           value: createBitVectorValue(64, linkAddress),
           metadata: { purpose: 'gcs-push-return-address' },
@@ -521,7 +529,7 @@ export function decorateArm64GcsEffects(instruction, options = {}, bundle) {
             space: 'memory',
             addressExpr: gcsprVal,
             widthBits: 64,
-            endian: 'little',
+            endian: gcsEndian,
           }),
           value: poppedReturnAddr,
           metadata: { purpose: 'gcs-pop-return-address' },

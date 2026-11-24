@@ -102,8 +102,20 @@ export const expr = {
   index(base, index, scale = 1, bits = 64, source = null, extra = {}) { return node('index', { ...extra, base, index, scale, bits, signed: extra.signed ?? null, effect: maxEffect(effectOf(base), effectOf(index)) }, mergeSource(source, base?.source, index?.source)); },
   intrinsic(name, args = [], bits = 64, signed = null, source = null, extra = {}) { return node('intrinsic', { ...extra, name, args: args.slice(), bits, signed, effect: maxEffect(...args.map(effectOf)) }, mergeSource(source, ...args.map((a) => a?.source))); },
 };
-const EFFECT_RANK = { pure: 0, read: 1, call: 2, write: 3, volatile: 4, unknown: 5 };
-export function maxEffect(...effects) { let best = 'pure'; for (const effect of effects.flat()) if ((EFFECT_RANK[effect] ?? 5) > (EFFECT_RANK[best] ?? 0)) best = effect || 'unknown'; return best; }
+const EFFECT_RANK = Object.assign(Object.create(null), { pure: 0, read: 1, call: 2, write: 3, volatile: 4, unknown: 5 });
+export function maxEffect(...effects) {
+  let best = 'pure';
+  let bestRank = 0;
+  for (const effect of effects.flat()) {
+    const known = typeof effect === 'string' && Object.hasOwn(EFFECT_RANK, effect);
+    const rank = known ? EFFECT_RANK[effect] : 5;
+    if (rank > bestRank) {
+      best = known ? effect : 'unknown';
+      bestRank = rank;
+    }
+  }
+  return best;
+}
 export function effectOf(n) { return n?.effect || 'pure'; }
 export function isPure(n) { return effectOf(n) === 'pure'; }
 export function mayDuplicate(n) { return isPure(n); }
@@ -208,11 +220,11 @@ export function structuralKey(root) {
     const n = frame.n;
     if (!n || keys.has(n)) continue;
     if (!frame.exit) {
-      if (active.has(n)) { keys.set(n, `cycle:${n.kind}`); continue; }
+      if (active.has(n)) continue;
       active.add(n);
       stack.push({ n, exit: true });
       const kids = children(n);
-      for (let i = kids.length - 1; i >= 0; i--) if (kids[i] && !keys.has(kids[i])) stack.push({ n: kids[i], exit: false });
+      for (let i = kids.length - 1; i >= 0; i--) if (kids[i] && !keys.has(kids[i]) && !active.has(kids[i])) stack.push({ n: kids[i], exit: false });
       continue;
     }
     const k = (x) => x ? (keys.get(x) || `cycle:${x.kind}`) : 'null';

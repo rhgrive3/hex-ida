@@ -7,7 +7,7 @@
  */
 
 import { EXPR_KIND, SORT_KIND } from '../expr/kinds.js';
-import { SOLVER_STATUS } from '../solver/result.js';
+import { SOLVER_STATUS, isValidSolverResult } from '../solver/result.js';
 import { VERIFICATION_QUERY_KIND, CLAIM_KIND, createVerificationQuery } from './query.js';
 import { validateSatModel } from './validate-model.js';
 
@@ -74,6 +74,26 @@ export async function checkPreconditionsConsistency(preconditionsExpr, session, 
 
   // 3. Solve precondition query using the session
   const result = await session.check(query, options);
+
+  if (!isValidSolverResult(result)) {
+    return Object.freeze({
+      consistent: false,
+      status: SOLVER_STATUS.PROVIDER_FAILURE,
+      reason: 'invalid-precondition-solver-result',
+      result,
+    });
+  }
+
+  const lifecycle = result.lifecycle;
+  if (lifecycle && (lifecycle.publishable === false || lifecycle.stale === true
+      || lifecycle.timedOut === true || lifecycle.cancelled === true || lifecycle.disposed === true)) {
+    return Object.freeze({
+      consistent: false,
+      status: result.status,
+      reason: result.reason || 'precondition-lifecycle-invalid',
+      result,
+    });
+  }
 
   if (result.status === SOLVER_STATUS.UNSAT) {
     return Object.freeze({

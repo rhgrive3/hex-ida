@@ -7,7 +7,15 @@ function parseInteger(value) {
   try {
     if (typeof value === 'bigint') return value;
     if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-    if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) return BigInt(value.trim());
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (/^[+-]?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
+        const negative = text.startsWith('-');
+        const body = negative || text.startsWith('+') ? text.slice(1) : text;
+        const mag = BigInt(body);
+        return negative ? -mag : mag;
+      }
+    }
   } catch {}
   return null;
 }
@@ -54,8 +62,9 @@ function exactIntegerConstant(valuesById, nodesById, valueId) {
   }
   let exact = null;
   for (const candidate of candidates) {
+    if (candidate == null) continue;
     const integer = parseInteger(candidate);
-    if (integer == null) continue;
+    if (integer == null) return null;
     if (exact == null) {
       exact = integer;
       continue;

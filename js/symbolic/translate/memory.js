@@ -54,78 +54,88 @@ export function translateExecutionValue(value,state,options={},active=new Set())
   if(active.has(value.id)||active.size>=64) throw new QueryFailure('value-cycle-or-depth');
   active.add(value.id);
   let expression, inputs=[], control=state.control;
-  if (value.kind === 'arg' && options.argumentExpressions?.has(value)) {
-    const expression = options.argumentExpressions.get(value);
-    state.byteMemory.validateExpression(expression, bits);
-    if (options.symbolicArgs != null) throw new QueryFailure('canonical-argument-options-conflict');
-    state.byteMemory.chargeExecution(1, 1);
-    state.scalarCache.set(value.id, expression);
-    state.inputExpressions.set(value.id, expression);
-    state.taint?.value(semanticId, [], 'data', {control});
+  const ownData = (obj, key) => {
+    if (obj == null || typeof obj !== 'object' || key == null) return undefined;
+    const desc = Object.getOwnPropertyDescriptor(obj, key);
+    if (!desc) return undefined;
+    if (!Object.hasOwn(desc, 'value')) throw new QueryFailure('unsupported-configured-argument');
+    return desc.value;
+  };
+  try {
+    if (value.kind === 'arg' && options.argumentExpressions?.has(value)) {
+      const argExpr = options.argumentExpressions.get(value);
+      state.byteMemory.validateExpression(argExpr, bits);
+      if (options.symbolicArgs != null) throw new QueryFailure('canonical-argument-options-conflict');
+      state.byteMemory.chargeExecution(1, 1);
+      state.scalarCache.set(value.id, argExpr);
+      state.inputExpressions.set(value.id, argExpr);
+      state.taint?.value(semanticId, [], 'data', {control});
+      return argExpr;
+    }
+    const intrinsicConstant=value.def?.op===OP.CONST || value.const!=null && (!value.def || value.def.op===OP.ADDR);
+    if(intrinsicConstant || value.kind==='arg') {
+      if(state.scalarCache.has(value.id)) {
+        expression=state.scalarCache.get(value.id);
+        if(expression.sort.width!==bits) throw new QueryFailure('semantic-value-width-conflict');
+      }
+      else if (state.inputExpressions?.has(value.id)) {
+        // Canonical input identity is query-wide; whether it has been evaluated
+        // is path-local. Sharing the former must not grant snapshot membership.
+        expression = state.inputExpressions.get(value.id);
+        if (expression?.sort?.kind === 'bv' && expression.sort.width !== bits) throw new QueryFailure('semantic-value-width-conflict');
+        state.byteMemory?.chargeExecution(1, 1);
+        state.scalarCache.set(value.id, expression);
+      }
+      else {
+        const index=value.index ?? (/^x[0-9]+$/.test(value.reg ?? '')?Number(value.reg.slice(1)):null);
+        const custom=ownData(options.symbolicArgs, index) ?? ownData(options.symbolicArgs, value.reg);
+        if(custom!=null && !['bigint','number','string'].includes(typeof custom)) throw new QueryFailure('unsupported-configured-argument');
+        if(typeof value.const==='number'&&!Number.isSafeInteger(value.const)||typeof custom==='number'&&!Number.isSafeInteger(custom)) throw new QueryFailure('unsafe-integer');
+        expression=intrinsicConstant && value.kind!=='arg'
+          ? literalExpression(value.def,bits,value)
+          : translateSemanticIR({...value,const:null},{bitWidth:bits,symbolicArgs:options.symbolicArgs}).expression;
+        state.byteMemory?.chargeExecution(1, 2);
+        state.inputExpressions?.set(value.id, expression);
+        state.scalarCache.set(value.id,expression);
+      }
+    } else if(value.def?.op===OP.LOAD) expression=undef(bits,'load-not-executed');
+    else if(value.def?.op===OP.PHI) {
+      const matches=(value.def.incoming??[]).filter(x=>x.from===state.prevBlock);
+      if(matches.length!==1) expression=undef(bits,'ambiguous-phi');
+      else { inputs=[semanticValueIdentity(matches[0].value)];expression=translateExecutionValue(matches[0].value,state,options,active); }
+    } else if(value.def?.op===OP.SEL) {
+      const inst=value.def;
+      const selectArgs = inst.args ?? [];
+      // The compatibility projection may retain one third, display-only
+      // comparison carrier so the rendered select remains linked to the
+      // producer's flag result. It is authenticated by the executor's issued
+      // carrier binding and is never evaluated as a data operand.
+      let hasDisplayCarrier = false;
+      if (selectArgs.length === 3) {
+        const displayValue = selectArgs[2]?.value;
+        const record = displayValue?.def ? state.comparisonCarriers?.get(displayValue.def) : null;
+        const expectedId = displayValue?.semanticValueId ?? displayValue?.semanticSsaValueId ?? displayValue?.id;
+        hasDisplayCarrier = record?.kind === 'display-carrier'
+          && record.carriedValueId === displayValue?.id
+          && inst.extra?.conditionCarrierValueId === expectedId;
+      }
+      if (!inst.conditionValue || (selectArgs.length !== 2 && !hasDisplayCarrier)) expression=undef(bits,'memory-select-needs-canonical-condition');
+      else {
+        const values=[inst.conditionValue,...selectArgs.slice(0,2).map(a=>a.value)];
+        inputs=values.slice(1).map(semanticValueIdentity);
+        control=state.taint?.joinHandles(state.control,semanticValueIdentity(inst.conditionValue)) ?? state.control;
+        const [condition,yes,no]=values.map(v=>translateExecutionValue(v,state,options,active));
+        expression=translateMemoryScalar(inst,[yes,no],bits,condition);
+      }
+    } else if(value.def) {
+      state.byteMemory?.chargeExecution((value.def.args??[]).length,(value.def.args??[]).length);
+      const args=(value.def.args??[]).map(a=>a.value);
+      inputs=args.map(semanticValueIdentity);
+      expression=translateMemoryScalar(value.def,args.map(v=>translateExecutionValue(v,state,options,active)),bits);
+    } else expression=undef(bits,'value-without-definition');
+  } finally {
     active.delete(value.id);
-    return expression;
   }
-  const intrinsicConstant=value.def?.op===OP.CONST || value.const!=null && (!value.def || value.def.op===OP.ADDR);
-  if(intrinsicConstant || value.kind==='arg') {
-    if(state.scalarCache.has(value.id)) {
-      expression=state.scalarCache.get(value.id);
-      if(expression.sort.width!==bits) throw new QueryFailure('semantic-value-width-conflict');
-    }
-    else if (state.inputExpressions?.has(value.id)) {
-      // Canonical input identity is query-wide; whether it has been evaluated
-      // is path-local. Sharing the former must not grant snapshot membership.
-      expression = state.inputExpressions.get(value.id);
-      state.byteMemory?.chargeExecution(1, 1);
-      state.scalarCache.set(value.id, expression);
-    }
-    else {
-      const index=value.index ?? (/^x[0-9]+$/.test(value.reg ?? '')?Number(value.reg.slice(1)):null);
-      const custom=options.symbolicArgs?.[index] ?? options.symbolicArgs?.[value.reg];
-      if(custom!=null && !['bigint','number','string'].includes(typeof custom)) throw new QueryFailure('unsupported-configured-argument');
-      if(typeof value.const==='number'&&!Number.isSafeInteger(value.const)||typeof custom==='number'&&!Number.isSafeInteger(custom)) throw new QueryFailure('unsafe-integer');
-      expression=intrinsicConstant && value.kind!=='arg'
-        ? literalExpression(value.def,bits,value)
-        : translateSemanticIR({...value,const:null},{bitWidth:bits,symbolicArgs:options.symbolicArgs}).expression;
-      state.byteMemory?.chargeExecution(1, 2);
-      state.inputExpressions?.set(value.id, expression);
-      state.scalarCache.set(value.id,expression);
-    }
-  } else if(value.def?.op===OP.LOAD) expression=undef(bits,'load-not-executed');
-  else if(value.def?.op===OP.PHI) {
-    const matches=(value.def.incoming??[]).filter(x=>x.from===state.prevBlock);
-    if(matches.length!==1) expression=undef(bits,'ambiguous-phi');
-    else { inputs=[semanticValueIdentity(matches[0].value)];expression=translateExecutionValue(matches[0].value,state,options,active); }
-  } else if(value.def?.op===OP.SEL) {
-    const inst=value.def;
-    const selectArgs = inst.args ?? [];
-    // The compatibility projection may retain one third, display-only
-    // comparison carrier so the rendered select remains linked to the
-    // producer's flag result. It is authenticated by the executor's issued
-    // carrier binding and is never evaluated as a data operand.
-    let hasDisplayCarrier = false;
-    if (selectArgs.length === 3) {
-      const displayValue = selectArgs[2]?.value;
-      const record = displayValue?.def ? state.comparisonCarriers?.get(displayValue.def) : null;
-      const expectedId = displayValue?.semanticValueId ?? displayValue?.semanticSsaValueId ?? displayValue?.id;
-      hasDisplayCarrier = record?.kind === 'display-carrier'
-        && record.carriedValueId === displayValue?.id
-        && inst.extra?.conditionCarrierValueId === expectedId;
-    }
-    if (!inst.conditionValue || (selectArgs.length !== 2 && !hasDisplayCarrier)) expression=undef(bits,'memory-select-needs-canonical-condition');
-    else {
-      const values=[inst.conditionValue,...selectArgs.slice(0,2).map(a=>a.value)];
-      inputs=values.slice(1).map(semanticValueIdentity);
-      control=state.taint?.joinHandles(state.control,semanticValueIdentity(inst.conditionValue)) ?? state.control;
-      const [condition,yes,no]=values.map(v=>translateExecutionValue(v,state,options,active));
-      expression=translateMemoryScalar(inst,[yes,no],bits,condition);
-    }
-  } else if(value.def) {
-    state.byteMemory?.chargeExecution((value.def.args??[]).length,(value.def.args??[]).length);
-    const args=(value.def.args??[]).map(a=>a.value);
-    inputs=args.map(semanticValueIdentity);
-    expression=translateMemoryScalar(value.def,args.map(v=>translateExecutionValue(v,state,options,active)),bits);
-  } else expression=undef(bits,'value-without-definition');
-  active.delete(value.id);
   if (expression?.sort?.kind === 'bool' && bits !== 1) throw new QueryFailure('boolean-carrier-width-mismatch');
   if (['bool', 'boolean'].includes(value.machineType?.kind) && expression?.sort?.kind !== 'bool') throw new QueryFailure('machine-value-sort-mismatch');
   state.taint?.value(semanticId,inputs,'data',{unknown:expression?.kind==='unknown_semantic',control});
@@ -204,7 +214,10 @@ export function translateMemoryAccess(inst,state,options={}) {
   }
   if(inst.op!==OP.STORE) throw new QueryFailure('not-memory-instruction');
   const v=inst.args?.[0]?.value;
+  if (!v) throw new QueryFailure('missing-store-value');
+  if (v.bits != null && v.bits !== size * 8) throw new QueryFailure('store-width-mismatch');
   const expression=translateExecutionValue(v,state,options);
+  if (expression?.sort?.kind === 'bv' && expression.sort.width !== size * 8) throw new QueryFailure('store-width-mismatch');
   const label=state.taint?.joinHandles(semanticValueIdentity(v),...addressIds,state.control);
   const result=memory.store(address,size,expression,{...access,label});
   if(result.status!=='stored') throw new QueryFailure(result.reason);

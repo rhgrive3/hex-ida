@@ -4,7 +4,7 @@ export { sectionHasMappedAddress } from './model.js';
 
 function isExecutableMappedAddress(image, address) {
   const sec = image.sectionAt?.(address);
-  if (sec && sectionHasMappedAddress(sec) && sec.perms?.execute) return true;
+  if (sec && sectionHasMappedAddress(sec)) return Boolean(sec.perms?.execute);
   const seg = image.segmentAt?.(address);
   if (seg && seg.perms?.execute) return true;
   return false;
@@ -16,7 +16,8 @@ function isExecutableMappedExtent(image, address, size) {
   const end = address + size;
   while (cur < end) {
     const sec = image.sectionAt?.(cur);
-    if (sec && sectionHasMappedAddress(sec) && sec.perms?.execute && sec.size > 0n) {
+    if (sec && sectionHasMappedAddress(sec)) {
+      if (!sec.perms?.execute || sec.size <= 0n) return false;
       const next = sec.address + sec.size;
       if (next <= cur) return false;
       cur = next;

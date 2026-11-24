@@ -98,7 +98,9 @@ function enumValue(value, allowed, fallback, code) {
 // records such as `{ status: new String('verified') }` remain inspectable,
 // while the core identity serializer continues to reject boxed objects in
 // stale-state and approval identities.
-function normalizePayloadBoxedPrimitives(value, seen = new WeakSet()) {
+const MAX_EVIDENCE_PAYLOAD_DEPTH = 64;
+function normalizePayloadBoxedPrimitives(value, seen = new WeakSet(), depth = 0) {
+  if (depth > MAX_EVIDENCE_PAYLOAD_DEPTH) fail('evidence-payload-depth-exceeded');
   if (value instanceof String) return String.prototype.valueOf.call(value);
   if (value instanceof Number) return Number.prototype.valueOf.call(value);
   if (value instanceof Boolean) return Boolean.prototype.valueOf.call(value);
@@ -106,7 +108,7 @@ function normalizePayloadBoxedPrimitives(value, seen = new WeakSet()) {
   if (seen.has(value)) return value;
   if (Array.isArray(value)) {
     seen.add(value);
-    const out = value.map(item => normalizePayloadBoxedPrimitives(item, seen));
+    const out = value.map(item => normalizePayloadBoxedPrimitives(item, seen, depth + 1));
     seen.delete(value);
     return out;
   }
@@ -121,7 +123,7 @@ function normalizePayloadBoxedPrimitives(value, seen = new WeakSet()) {
       continue;
     }
     Object.defineProperty(out, key, {
-      value: normalizePayloadBoxedPrimitives(descriptor.value, seen),
+      value: normalizePayloadBoxedPrimitives(descriptor.value, seen, depth + 1),
       enumerable: descriptor.enumerable,
       configurable: descriptor.configurable,
       writable: descriptor.writable,

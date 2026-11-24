@@ -36,7 +36,7 @@ const ROLE_LABEL = {
 };
 
 export function roleLabel(role) {
-  const e = ROLE_LABEL[role] || ROLE_LABEL[ROLE.UNKNOWN];
+  const e = (typeof role === "string" && Object.hasOwn(ROLE_LABEL, role) ? ROLE_LABEL[role] : null) || ROLE_LABEL[ROLE.UNKNOWN];
   return pick(e[0], e[1]);
 }
 
@@ -166,12 +166,12 @@ const API_PHRASE = {
 };
 
 export function apiShort(id) {
-  const e = API_PHRASE[id];
+  const e = typeof id === "string" && Object.hasOwn(API_PHRASE, id) ? API_PHRASE[id] : null;
   return e ? pick(e[0][0], e[0][1]) : null;
 }
 
 export function apiLong(id) {
-  const e = API_PHRASE[id];
+  const e = typeof id === "string" && Object.hasOwn(API_PHRASE, id) ? API_PHRASE[id] : null;
   return e ? pick(e[1][0], e[1][1]) : null;
 }
 
@@ -187,7 +187,7 @@ const ARG_LABEL = {
 };
 
 function argLabel(role) {
-  const e = ARG_LABEL[role];
+  const e = typeof role === "string" && Object.hasOwn(ARG_LABEL, role) ? ARG_LABEL[role] : null;
   return e ? pick(e[0], e[1]) : null;
 }
 
@@ -238,7 +238,7 @@ export function describeValue(v) {
         : pick('メモリから読み出した値', 'a value read from memory');
     case 'callResult': {
       const api = v.call && v.call.api ? v.call.api : null;
-      if (api && api.ret && RET_LABEL[api.ret]) {
+      if (api && typeof api.ret === "string" && Object.hasOwn(RET_LABEL, api.ret) && RET_LABEL[api.ret]) {
         return pick(RET_LABEL[api.ret][0], RET_LABEL[api.ret][1]);
       }
       if (v.call && v.call.name) {
@@ -620,7 +620,7 @@ const FEATURE_LABEL = {
 };
 
 export function featureLabel(id) {
-  const e = FEATURE_LABEL[id];
+  const e = typeof id === "string" && Object.hasOwn(FEATURE_LABEL, id) ? FEATURE_LABEL[id] : null;
   return e ? pick(e[0], e[1]) : null;
 }
 
@@ -1505,7 +1505,7 @@ export function flowStepText(step) {
             'Another routine is called and its result is used.'),
       };
     case 'compute': {
-      const e = FLOW_COMPUTE[step.op] || null;
+      const e = (typeof step.op === "string" && Object.hasOwn(FLOW_COMPUTE, step.op) ? FLOW_COMPUTE[step.op] : null) || null;
       const other = (step.operands || []).map(num).find((x) => x != null);
       return {
         kind: step.kind,
@@ -2162,7 +2162,7 @@ const TOPIC_OBJECT = {
 
 /** 「を◯◯する」の目的語に置ける形の機能名。 */
 function topicObject(id) {
-  const o = TOPIC_OBJECT[id];
+  const o = typeof id === "string" && Object.hasOwn(TOPIC_OBJECT, id) ? TOPIC_OBJECT[id] : null;
   return o ? pick(o[0], o[1]) : topicLabel(id);
 }
 
@@ -2799,7 +2799,7 @@ const WORK_VERB = {
 /** 変更 1 件を、そのまま読み上げる。 */
 export function changeText(c) {
   if (!c) return '';
-  const verb = WORK_VERB[c.work] || WORK_VERB.set;
+  const verb = (typeof c.work === "string" && Object.hasOwn(WORK_VERB, c.work) ? WORK_VERB[c.work] : null) || WORK_VERB.set;
   const place = placeShort(c);
   const amt = amountShort(c.amount, c.base);
   const tail = [];
