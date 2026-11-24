@@ -7,12 +7,28 @@ import { recordFallback, recordWasmCall } from './core/wasm-telemetry.js';
 
 import * as hexEngineModule from './core/hex-engine-wasm.js';
 
-function isJsEngineForced() {
-  if (typeof globalThis === 'object' && globalThis !== null && globalThis.__HEX_ENGINE_MODE__ === 'js') {
-    return true;
+function normalizeEngineFlag(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function isJsEngineForced(options = null) {
+  if (options && typeof options === 'object') {
+    if (options._forceJs === true || normalizeEngineFlag(options._engine) === 'js') {
+      return true;
+    }
   }
-  if (typeof process === 'object' && process !== null && process.env && process.env.HEX_ENGINE === 'js') {
-    return true;
+  if (typeof globalThis === 'object' && globalThis !== null) {
+    if (
+      normalizeEngineFlag(globalThis.HEX_ENGINE) === 'js'
+      || normalizeEngineFlag(globalThis.__HEX_ENGINE_MODE__) === 'js'
+    ) {
+      return true;
+    }
+  }
+  if (typeof process === 'object' && process !== null && process.env) {
+    if (normalizeEngineFlag(process.env.HEX_ENGINE) === 'js') {
+      return true;
+    }
   }
   return false;
 }
@@ -400,8 +416,8 @@ function postDominatorsOf(succ, pred, reachable, reachableMask, components, comp
   };
 }
 
-function tryAnalyzeGraphWasm(succ, predecessors, edgeCount, canonicalEntry, terminatingNodes, limits) {
-  if (isJsEngineForced()) {
+function tryAnalyzeGraphWasm(succ, predecessors, edgeCount, canonicalEntry, terminatingNodes, limits, options = null) {
+  if (isJsEngineForced(options)) {
     recordFallback('cfg:wasm_disabled');
     return null;
   }
@@ -707,7 +723,7 @@ export function analyzeGraph(successors, entry = 0, terminating = null, options 
   const canonicalEntry = validNodeIndex(entry, succ.length) ? entry : -1;
   const predecessors = predecessorsOf(succ);
 
-  const wasmResult = tryAnalyzeGraphWasm(succ, predecessors, edgeCount, canonicalEntry, terminatingNodes, limits);
+  const wasmResult = tryAnalyzeGraphWasm(succ, predecessors, edgeCount, canonicalEntry, terminatingNodes, limits, options);
   if (wasmResult !== null) return wasmResult;
 
   const reachable = reachableFrom(succ, canonicalEntry);
