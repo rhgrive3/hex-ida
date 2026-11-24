@@ -16,10 +16,10 @@ import { missingText } from '../../narrate.js';
 const CODE = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/;
 
 function entry(labelJa, labelEn, askJa, askEn) {
-  return { label: pick(labelJa, labelEn), ask: pick(askJa, askEn) };
+  return { labelJa, labelEn, askJa, askEn };
 }
 
-const TABLE = {
+const TABLE = Object.assign(Object.create(null), {
   entity: entry('調べる対象がはっきりしていません', 'The subject is unclear',
     '何の値について調べればよいか、具体例を挙げて聞き直したいです', 'Ask me which value to investigate, with examples'),
   action: entry('どんな動作を探すのかが決まっていません', 'The behaviour to look for is unclear',
@@ -50,7 +50,7 @@ const TABLE = {
     'もう一度試して', 'Try again'),
   'budget_exhausted': entry('解析の予算に達しました', 'The investigation budget ran out',
     '範囲を絞ってもう一度調べて', 'Investigate again with a narrower scope'),
-};
+});
 
 /**
  * @param {string} value a missing-evidence code or a sentence from the model
@@ -60,8 +60,8 @@ export function missingLabel(value) {
   const text = String(value == null ? '' : value).trim();
   if (!text) return { label: '', ask: '', code: null };
   if (!CODE.test(text)) return { label: text, ask: text, code: null };
-  const known = TABLE[text];
-  if (known) return { ...known, code: text };
+  const known = Object.hasOwn(TABLE, text) ? TABLE[text] : null;
+  if (known) return { label: pick(known.labelJa, known.labelEn), ask: pick(known.askJa, known.askEn), code: text };
   const narrated = missingText(text);
   if (narrated) return { label: narrated, ask: narrated, code: text };
   /* An unknown code is still shown — hiding it would hide the uncertainty —

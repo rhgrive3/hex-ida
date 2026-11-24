@@ -102,6 +102,7 @@ export function overlayCilMetadata(bytes,parsed,context,options={}){
    if(length==null)break;
    const entryBytes=length.next-offset+length.value;
    if(entryBytes<=0)break;
+   if(length.value>usHeap.length-length.next)fail('cil-user-string-truncated');
    admission?.chargeOperations(1);
    admission?.chargeStringBytes(length.value);
    const payload=usHeap.subarray(length.next,length.next+Math.max(length.value-1,0));

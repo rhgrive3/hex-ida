@@ -250,7 +250,8 @@ export function createHexAIContext(app) {
     runtime: {
       getObservations({ functionAddress, limit = 100 } = {}) {
         const addr = toBigInt(functionAddress);
-        const results = runtimeEvidenceForApp(app, addr).slice(-limit);
+        const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+        const results = boundedLimit === 0 ? [] : runtimeEvidenceForApp(app, addr).slice(-boundedLimit);
         const completeConfirmed = results.filter((item)=>item?.verdict==='confirmed' && item?.observedState?.factsComplete !== false && item?.reproducibility?.replayable === true);
         const contradicted = results.filter((item)=>item?.verdict==='contradicted').length;
         return {

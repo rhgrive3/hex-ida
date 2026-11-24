@@ -106,10 +106,18 @@ export function normalizeRangeDomain(range, bits, signed) {
 
 export function mergeRangeDomain(a, b, bits = null, signed = undefined) {
   if (!a && !b) return null;
-  const source = a || b;
   const width = normalizeBits(bits != null ? bits : (a?.bits != null ? a.bits : (b?.bits != null ? b.bits : null)), 64);
   if (width == null) return null;
-  const targetSigned = signed === undefined ? normalizedSignedness(source.signed) : normalizedSignedness(signed);
+  const aSigned = a ? normalizedSignedness(a.signed) : null;
+  const bSigned = b ? normalizedSignedness(b.signed) : null;
+  let targetSigned;
+  if (signed !== undefined) targetSigned = normalizedSignedness(signed);
+  else if (!a) targetSigned = bSigned;
+  else if (!b) targetSigned = aSigned;
+  else if (aSigned === bSigned) targetSigned = aSigned;
+  else if (aSigned == null) targetSigned = bSigned;
+  else if (bSigned == null) targetSigned = aSigned;
+  else targetSigned = true;
   if (!a) return normalizeRangeDomain(b, width, targetSigned);
   if (!b) return normalizeRangeDomain(a, width, targetSigned);
   const x = normalizeRangeDomain(a, width, targetSigned);

@@ -79,7 +79,7 @@ function cilStackValueIsIntegral(value) {
   if (value.pointee != null || value.typeToken != null || value.valueType != null || value.referenceKind != null) return false;
   if (value.floating === true || value.type?.kind === 'float') return false;
   if (value.stackType != null) return value.stackType === 'int32' || value.stackType === 'int64';
-  return value.constant != null && Number.isSafeInteger(Number(value.constant));
+  return value.constant != null && (typeof value.constant === 'bigint' || Number.isSafeInteger(Number(value.constant)));
 }
 
 // Both the width and the integral category of the stack top must be proven for
@@ -290,10 +290,11 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     }
     const signature = methodAuthority.signature;
     // ECMA-335 §III.3.19: ldarg.0 addresses `this` on instance methods.
-    if (signature.hasThis && index === 0) {
+    const implicitThis = signature.hasThis && !signature.explicitThis;
+    if (implicitThis && index === 0) {
       return { complete:true, slotType:{ stackType:'object-ref' } };
     }
-    const parameterIndex = signature.hasThis ? index - 1 : index;
+    const parameterIndex = implicitThis ? index - 1 : index;
     if (!Number.isSafeInteger(parameterIndex) || parameterIndex < 0
       || parameterIndex >= signature.parameters.length) {
       return { complete:false, reason:'cil-argument-index-out-of-frame' };
@@ -336,6 +337,11 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   while (pc < bytecode.length) {
     budget.chargeOperation();
     const opOffset = pc;
+    if (dispatchedEntryOffsets.has(opOffset)) {
+      pushWidthRun = [];
+      pushIntegerRun = [];
+      pushFloatRun = [];
+    }
     let opcode = bytecode[pc++];
     opSeq++;
 
@@ -709,9 +715,12 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             // integral predicates would let FP division inherit them; staying
             // exception-free is the #7937 defect. Fail closed instead of
             // minting exception-free exact semantics.
-            if (opcode === 0x5b) {
+            if (opcode === 0x5b || opcode === 0x5d) {
               completeness = 'partial';
-              unknownEffects.push({ category: 'control', reason: 'cil-div-exception-authority-unresolved' });
+              unknownEffects.push({
+                category: 'control',
+                reason: opcode === 0x5b ? 'cil-div-exception-authority-unresolved' : 'cil-rem-exception-authority-unresolved',
+              });
             }
           }
           break;
@@ -721,11 +730,15 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           {
             mnemonic = opcode === 0x65 ? 'neg' : 'not';
             const widths = operandWidths(pushWidthRun, 1);
-            if (widths == null) {
+            const topFloat = pushFloatRun.length > 0 && pushFloatRun[pushFloatRun.length - 1] != null;
+            if (widths == null || (opcode === 0x66 && topFloat)) {
               consumedValues.push({ id: 'val' });
               producedValues.push({});
               completeness = 'partial';
-              unknownEffects.push({ category: 'stack', reason: 'cil-arithmetic-operand-width-unresolved' });
+              unknownEffects.push({
+                category: 'stack',
+                reason: opcode === 0x66 && topFloat ? 'cil-not-floating-operand-invalid' : 'cil-arithmetic-operand-width-unresolved',
+              });
             } else {
               consumedValues.push({ id: 'val', bits: widths[0] });
               const produced = { bits: widths[0] };

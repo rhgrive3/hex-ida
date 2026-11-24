@@ -11,6 +11,7 @@ export function assertAgentProfile(value) {
 }
 
 function canUseDev(identity) {
+  if (identity?.authenticated !== true) return false;
   return identity?.capabilities?.canUseDevAgent === true || (identity?.capabilities == null && identity?.admin === true);
 }
 

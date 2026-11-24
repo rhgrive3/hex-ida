@@ -92,6 +92,14 @@ function summaryResidentRows(summary) {
     rows += unknown.targetEntityIds?.length || 0;
     rows += unknown.evidenceIds?.length || 0;
   }
+  for (const effect of summary.memoryReadRegions || []) {
+    rows += effect.evidenceIds?.length || 0;
+    rows += effect.addressSpaces?.length || 0;
+  }
+  for (const effect of summary.memoryWriteRegions || []) {
+    rows += effect.evidenceIds?.length || 0;
+    rows += effect.addressSpaces?.length || 0;
+  }
   return rows;
 }
 
@@ -140,12 +148,13 @@ export function condenseCallGraph(roots, successorsOf, {
       if (signal?.aborted) return { components, truncated: true, cancelled: true };
       const frame = work[work.length - 1];
       if (frame.successors == null) {
+        if (index.has(frame.node)) { work.pop(); continue; }
         index.set(frame.node, counter);
         low.set(frame.node, counter);
         counter += 1;
         stack.push(frame.node);
         onStack.add(frame.node);
-        frame.successors = [...successorsOf(frame.node)].sort();
+        frame.successors = [...new Set(successorsOf(frame.node))].sort();
       }
       if (frame.state < frame.successors.length) {
         if (++traversedEdges > maxEdges) {
@@ -436,16 +445,24 @@ function effectAddressSpaces(effect) {
   return effect.addressSpaces?.length ? effect.addressSpaces : ['memory'];
 }
 
-function mergeEffects(lists, cap) {
+function mergeEffects(lists, cap, rowLimit = cap, chargeRows = null) {
   const effectiveCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 1;
+  const effectiveRowLimit = Number.isSafeInteger(rowLimit) && rowLimit >= 1 ? rowLimit : effectiveCap;
+  let truncated = false;
+  const unionStrings = (left, right) => {
+    const merged = boundedUnion(left, right, effectiveRowLimit, (value) => value, chargeRows);
+    if (merged.truncated) truncated = true;
+    return merged.values;
+  };
+  const unionFlatStrings = (items, getter) => {
+    let acc = [];
+    for (const item of items) acc = unionStrings(acc, getter(item));
+    return acc;
+  };
   const byKey = new Map();
   const broadByKey = new Map();
   for (const effect of lists.flat()) {
     if (effect.broad) {
-      // A broad effect is already a coverage claim for every region in each
-      // address space. Keep source and evidence attached to those spaces while
-      // deduping repeated observations; a later broad effect must not rewrite
-      // the authority of an earlier, disjoint space.
       const spaces = effect.addressSpaces.length ? effect.addressSpaces : [null];
       for (const addressSpace of spaces) {
         const key = `${effect.source}\u0000${addressSpace ?? ''}`;
@@ -455,7 +472,7 @@ function mergeEffects(lists, cap) {
           ...(prior ?? effect),
           broad: true,
           addressSpaces,
-          evidenceIds: [...new Set([...(prior?.evidenceIds ?? []), ...effect.evidenceIds])].sort(),
+          evidenceIds: unionStrings(prior?.evidenceIds ?? [], effect.evidenceIds ?? []),
         }));
       }
       continue;
@@ -466,19 +483,14 @@ function mergeEffects(lists, cap) {
       byKey.set(key, effect);
       continue;
     }
-    // Same region and kind means one logical region effect: union its
-    // coverage and provenance instead of dropping every later observation.
-    // Address spaces add up (a region may be reached through more than one),
-    // evidence accumulates, and authority keeps the stronger of the two
-    // sources independently of input order.
     byKey.set(key, createMemoryEffect({
       regionId: effect.regionId,
       regionKind: effect.regionKind,
       region: mergedRegionProof(prior.region ?? null, effect.region ?? null),
       broad: false,
-      addressSpaces: [...new Set([...prior.addressSpaces, ...effect.addressSpaces])].sort(),
+      addressSpaces: unionStrings(prior.addressSpaces ?? [], effect.addressSpaces ?? []),
       source: strongestSource(prior.source, effect.source),
-      evidenceIds: [...new Set([...prior.evidenceIds, ...effect.evidenceIds])].sort(),
+      evidenceIds: unionStrings(prior.evidenceIds ?? [], effect.evidenceIds ?? []),
     }));
   }
   const specific = [...byKey.values()].sort((left, right) => {
@@ -493,25 +505,24 @@ function mergeEffects(lists, cap) {
   });
   const combined = [...broad, ...specific];
   if (broad.length === 0 && specific.length > effectiveCap) {
-    const spaces = [...new Set(specific.flatMap(effectAddressSpaces))].sort();
-    const evidenceIds = [...new Set(specific.flatMap((effect) => effect.evidenceIds || []))].sort();
-    return [createMemoryEffect({
-      regionKind: 'unknown',
-      broad: true,
-      addressSpaces: spaces,
-      source: 'unknown-call-fallback',
-      evidenceIds,
-    })];
+    const spaces = unionFlatStrings(specific, effectAddressSpaces);
+    const evidenceIds = unionFlatStrings(specific, (effect) => effect.evidenceIds || []);
+    return {
+      values: [createMemoryEffect({
+        regionKind: 'unknown',
+        broad: true,
+        addressSpaces: spaces,
+        source: 'unknown-call-fallback',
+        evidenceIds,
+      })],
+      truncated,
+    };
   }
   if (combined.length > effectiveCap) {
-    // Any entry folded into a new broad claim loses its precise geometry. A
-    // conservative fallback source is therefore required whenever a specific
-    // effect is dropped; broad-only collapse can retain the weakest broad
-    // authority without laundering a stronger source into another space.
     const kept = combined.slice(0, Math.max(0, effectiveCap - 1));
     const dropped = combined.slice(kept.length);
-    const droppedSpaces = [...new Set(dropped.flatMap(effectAddressSpaces))].sort();
-    const droppedEvidence = [...new Set(dropped.flatMap((effect) => effect.evidenceIds || []))].sort();
+    const droppedSpaces = unionFlatStrings(dropped, effectAddressSpaces);
+    const droppedEvidence = unionFlatStrings(dropped, (effect) => effect.evidenceIds || []);
     const hasSpecific = dropped.some((effect) => !effect.broad);
     const source = hasSpecific
       ? 'unknown-call-fallback'
@@ -523,9 +534,9 @@ function mergeEffects(lists, cap) {
       source,
       evidenceIds: droppedEvidence,
     });
-    return [finalBroad, ...kept];
+    return { values: [finalBroad, ...kept], truncated };
   }
-  return combined;
+  return { values: combined, truncated };
 }
 
 function unionKnowledge(values) {
@@ -812,13 +823,15 @@ function hasEmptyReturnPositions(summary) {
 
 // Reused df98376ae transfer: the local equation describes expressions; only
 // the canonical SCC's current callee state can discover their return roots.
-function composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved) {
+function composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved, { replaceCallFallbacks = false, relaxLocalFloor = false } = {}) {
   const unknowns = () => [...new Set([
     ...local.returnProvenance.map(fact => fact.returnIndex ?? 0),
     ...(local.returnEquations?.sites ?? []).map(site => site.returnIndex),
   ])].sort((a, b) => a - b).map(returnIndex => ({ kind:'unknown', returnIndex }));
+  const localComplete = local.status.completeness === 'complete' || relaxLocalFloor;
+  const unresolvedLocalCalls = local.unknownCallEffects.length > 0 && !replaceCallFallbacks;
   if (!summaryIdentityMatches(local, { functionId:local.functionId, snapshotId })
-    || local.status.completeness !== 'complete' || local.unknownCallEffects.length) return unknowns();
+    || !localComplete || unresolvedLocalCalls) return unknowns();
   if (!local.returnEquations) return local.returnProvenance;
   const facts = new Map();
   const add = fact => { facts.set(JSON.stringify(fact), fact); };
@@ -930,7 +943,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   // example, because its own callee or memory evidence is unresolved). Such a
   // summary is not enough to replace this caller's conservative fallback: only
   // a complete callee proves that the call boundary is closed.
-  const isCompleteSolved = (target) => solved.get(target)?.status?.completeness === 'complete';
+  const isCompleteSolved = (target) => { const entry = solved.get(target); return entry ? entry.status?.completeness === 'complete' : (!unconverged && !groundUnresolved && component.includes(target)); };
   for (const call of local.directCalls) {
     if (call.targetEntityIds.length > 0 && call.targetEntityIds.every(isCompleteSolved)) {
       resolvedCallSites.add(call.callSiteId);
@@ -1138,8 +1151,11 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
 
   const mergedEscapes = mergeEscapes(escapes, rowLimit, chargeMergeRows);
   if (mergedEscapes.truncated) payloadTruncated = true;
-  const mergedReads = mergeEffects(reads, limits.maxEffectsPerSummary);
-  const mergedWrites = mergeEffects(writes, limits.maxEffectsPerSummary);
+  const mergedReadsResult = mergeEffects(reads, limits.maxEffectsPerSummary, rowLimit, chargeMergeRows);
+  const mergedWritesResult = mergeEffects(writes, limits.maxEffectsPerSummary, rowLimit, chargeMergeRows);
+  if (mergedReadsResult.truncated || mergedWritesResult.truncated) payloadTruncated = true;
+  const mergedReads = mergedReadsResult.values;
+  const mergedWrites = mergedWritesResult.values;
   // `createFunctionSummary()` detaches/freezes every published row. Charge that
   // copy before invoking the constructor so nested provenance cannot escape the
   // work ledger merely because it dedupes to one logical top-level escape.
@@ -1149,6 +1165,14 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   for (const unknown of dedupedUnknowns) {
     detachRows += unknown.targetEntityIds?.length || 0;
     detachRows += unknown.evidenceIds?.length || 0;
+  }
+  for (const effect of mergedReads) {
+    detachRows += effect.evidenceIds?.length || 0;
+    detachRows += effect.addressSpaces?.length || 0;
+  }
+  for (const effect of mergedWrites) {
+    detachRows += effect.evidenceIds?.length || 0;
+    detachRows += effect.addressSpaces?.length || 0;
   }
   chargeMergeRows(detachRows);
 
@@ -1179,7 +1203,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     returnValues: local.returnValues,
     // Unknown effects and nonconvergence cannot publish strong return facts.
     returnProvenance: unconverged || hasUnknown ? []
-      : composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved),
+      : composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved, { replaceCallFallbacks, relaxLocalFloor }),
     returnEquations: local.returnEquations,
     returnSourceDigest: local.returnSourceDigest,
     registerEffects: [...registerEffects],

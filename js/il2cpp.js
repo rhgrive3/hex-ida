@@ -444,12 +444,13 @@ export async function bindMethodAddresses(meta, opts) {
 
     const expectedSlots=meta.methods.reduce((m,method)=>Math.max(m,Number(method.index)+1),0);
     const maxLegacyCount=expectedSlots+Math.max(32,Math.ceil(expectedSlots*0.01));
-    const candidates=[],seen=new Set();
+    const candidates=[],lastScannedByRegion=new Map();
     const complete=await scanDataChunks(context,48,async(r,base,bytes)=>{
       const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+      let lastAddr=lastScannedByRegion.get(r)??null;
       for(let at=0;at+48<=bytes.length;at+=8){
         budget.check(1);
-        const addr=r.vmAddr+base+BigInt(at); if(seen.has(addr.toString()))continue;seen.add(addr.toString());
+        const addr=r.vmAddr+base+BigInt(at); if(lastAddr!=null&&addr<=lastAddr)continue;lastAddr=addr;lastScannedByRegion.set(r,lastAddr);
         const count64=dv.getBigUint64(at,true);if(count64<1n||count64>5_000_000n)continue;
         const count=Number(count64);if(count<expectedSlots||count>maxLegacyCount)continue;
         const table=dv.getBigUint64(at+8,true)&0x00ffffffffffffffn,sampleCount=Math.min(count,128);
@@ -495,11 +496,12 @@ export async function bindMethodAddresses(meta, opts) {
 
 async function bindCodeGenModules(meta,ctx,o={}){
   const {data,containing,inExec,budget}=ctx,images=meta.images||[];if(!images.length)return{bound:0,candidate:null};
-  const raw=[],seen=new Set();
+  const raw=[],lastScannedByRegion=new Map();
   const complete=await scanDataChunks(ctx,24,async(r,base,bytes)=>{
     const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+    let lastAddr=lastScannedByRegion.get(r)??null;
     for(let at=0;at+24<=bytes.length;at+=8){
-      budget.check(1);const addr=r.vmAddr+base+BigInt(at);if(seen.has(addr.toString()))continue;seen.add(addr.toString());
+      budget.check(1);const addr=r.vmAddr+base+BigInt(at);if(lastAddr!=null&&addr<=lastAddr)continue;lastAddr=addr;lastScannedByRegion.set(r,lastAddr);
       const namePtr=dv.getBigUint64(at,true)&0x00ffffffffffffffn,count=dv.getUint32(at+8,true),table=dv.getBigUint64(at+16,true)&0x00ffffffffffffffn;
       if(!count||count>meta.methods.length+4096||!containing(namePtr,1)||!containing(table,Math.min(count,32)*8))continue;
       budget.consumeCandidate();raw.push({addr,namePtr,count,table});
@@ -507,7 +509,31 @@ async function bindCodeGenModules(meta,ctx,o={}){
   });
   if(!complete)return{...bindingFail(meta,budget,'scan-budget-exhausted','CodeGenModule候補をbudget内に全走査できなかったため、自動bindingしません。'),blocked:true};
   const wanted=new Map(images.map((x)=>[x.name.toLowerCase(),x])),groups=new Map();
+  const sortedImages=[...images].filter((img)=>img.typeCount>0).sort((a,b)=>a.typeStart-b.typeStart);
+  const methodsByImage=new Map();
+  for(const img of images)methodsByImage.set(img.index,[]);
+  for(const m of meta.methods){
+    budget.check(1);
+    if(!m.token)continue;
+    let lo=0,hi=sortedImages.length-1;
+    while(lo<=hi){
+      const mid=(lo+hi)>>>1,img=sortedImages[mid];
+      if(m.classIndex<img.typeStart)hi=mid-1;
+      else if(m.classIndex>=img.typeStart+img.typeCount)lo=mid+1;
+      else{methodsByImage.get(img.index).push(m);break;}
+    }
+  }
+  const ridsByImage=new Map();
+  for(const img of images){
+    const rids=[];
+    for(const m of methodsByImage.get(img.index)||[]){
+      const rid=(m.token&0x00ffffff)-1;
+      if(rid>=0)rids.push(rid);
+    }
+    ridsByImage.set(img.index,rids);
+  }
   for(const c of raw){
+    budget.check(1);
     const nameRegion=containing(c.namePtr,1);if(!nameRegion)continue;
     const avail=nameRegion.vmAddr+nameRegion.size-c.namePtr;
     const nameReadLen=avail>=160n?160:Number(avail);
@@ -518,11 +544,11 @@ async function bindCodeGenModules(meta,ctx,o={}){
     const dv=new DataView(sample.buffer,sample.byteOffset,sample.byteLength);let nonzero=0,executable=0;
     for(let i=0;i<sampleCount;i++){budget.check(1);const p=dv.getBigUint64(i*8,true);if(p)nonzero++;if(inExec(p)!=null)executable++;}
     if(!nonzero)continue;const executableRatio=executable/nonzero;if(executableRatio<0.85)continue;
-    const image=wanted.get(key),methods=meta.methods.filter((m)=>m.classIndex>=image.typeStart&&m.classIndex<image.typeStart+image.typeCount&&m.token);
-    const rids=methods.map((m)=>(m.token&0x00ffffff)-1).filter((rid)=>rid>=0);
+    const image=wanted.get(key),rids=ridsByImage.get(image.index)||[];
+    if(!rids.length)continue;
     let covered=0,maxRid=-1;
-    for(const rid of rids){if(rid<c.count)covered++;if(rid>maxRid)maxRid=rid;}
-    const tokenCoverage=covered/Math.max(1,Math.min(rids.length,c.count));
+    for(const rid of rids){budget.check(1);if(rid<c.count)covered++;if(rid>maxRid)maxRid=rid;}
+    const tokenCoverage=covered/rids.length;
     const tail=maxRid>=0?Math.max(0,c.count-(maxRid+1)):c.count;
     const tailPenalty=maxRid>=0?Math.min(1,tail/Math.max(1,maxRid+1)):0;
     const score=executableRatio+tokenCoverage*0.75-tailPenalty*0.2;
@@ -545,7 +571,7 @@ async function bindCodeGenModules(meta,ctx,o={}){
   const staged=[];
   for(const image of images){
     const mod=selected.get(image.index);if(!mod)continue;
-    const methods=meta.methods.filter((m)=>m.classIndex>=image.typeStart&&m.classIndex<image.typeStart+image.typeCount&&m.token);
+    const methods=methodsByImage.get(image.index)||[];
     const pairs=methods.map((method)=>({method,rid:(method.token&0x00ffffff)-1})).filter((x)=>x.rid>=0&&x.rid<mod.count);
     const values=await pointerValues(ctx,mod.table,mod.count,pairs.map((x)=>x.rid));if(!values)continue;
     for(const {method,rid} of pairs){const raw=values.get(rid);if(raw==null)continue;const address=inExec(raw);if(address!=null)staged.push({method,address,image,mod});}

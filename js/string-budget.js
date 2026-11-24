@@ -47,6 +47,6 @@ export class StringCollectionBudget {
   }
 
   get exhausted() {
-    return this.requestLimit() <= 0 || this.estimatedHeap >= this.heapLimit;
+    return this.requestLimit() <= 0 || this.estimatedHeap + 96 > this.heapLimit;
   }
 }
