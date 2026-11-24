@@ -62,6 +62,7 @@ export class CachedByteSource extends ByteSource {
   }
 
   async #page(pageIndex, signal) {
+    throwIfCancelled(signal);
     const key = pageIndex.toString();
     const cached = this.cache.get(key);
     if (cached) {
@@ -94,6 +95,7 @@ export class CachedByteSource extends ByteSource {
         entry.settled = true;
         if (this.inflight.get(key) === entry) this.inflight.delete(key);
       });
+      entry.promise.catch(() => {});
       this.inflight.set(key, entry);
     }
 

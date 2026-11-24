@@ -34,7 +34,11 @@ function abortError(signal) {
 }
 function throwIfAborted(signal) { if (signal?.aborted) throw abortError(signal); }
 function requestWithSignal(request, signal) {
-  throwIfAborted(signal);
+  if (signal?.aborted) {
+    try { request?.cancel?.(); } catch { /* best effort */ }
+    Promise.resolve(request).catch(() => {});
+    throw abortError(signal);
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {
@@ -56,7 +60,11 @@ function requestWithSignal(request, signal) {
 }
 function executableRegions(regions) {
   return Array.from(regions || []).filter((region) => {
-    try { return region?.exec === true && BigInt(region.size ?? 0) > 0n; } catch { return false; }
+    try {
+      if (region?.exec !== true || region.vmAddr == null) return false;
+      BigInt(region.vmAddr);
+      return BigInt(region.size ?? 0) > 0n;
+    } catch { return false; }
   }).sort((a, b) => BigInt(a.vmAddr) < BigInt(b.vmAddr) ? -1 : BigInt(a.vmAddr) > BigInt(b.vmAddr) ? 1 : 0);
 }
 function regionFor(regions, address) {

@@ -26,11 +26,18 @@ function mnemonicOf(instruction) {
   return instruction.mnemonic.trim().toLowerCase();
 }
 
-function deepCopyEvidence(value) {
+const MAX_EVIDENCE_DEPTH = 64;
+function deepCopyEvidence(value, seen = new WeakSet(), depth = 0) {
   if (value == null) return null;
-  if (Array.isArray(value)) return value.map(deepCopyEvidence);
-  if (typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deepCopyEvidence(item)]));
-  return value;
+  if (typeof value !== 'object') return value;
+  if (depth >= MAX_EVIDENCE_DEPTH || seen.has(value)) return null;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => deepCopyEvidence(item, seen, depth + 1));
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deepCopyEvidence(item, seen, depth + 1)]));
+  } finally {
+    seen.delete(value);
+  }
 }
 
 function parseGuardedField(val) {
@@ -230,7 +237,7 @@ function normalizeBtype(val) {
   if (typeof val === 'bigint') return normalizeBtype(Number(val));
   if (typeof val === 'string') {
     const s = val.trim().toLowerCase();
-    if (s.startsWith('0b')) return normalizeBtype(parseInt(s.slice(2), 2));
+    if (/^0b[01]+$/.test(s)) return normalizeBtype(parseInt(s.slice(2), 2));
     if (/^\d+$/.test(s)) return normalizeBtype(parseInt(s, 10));
   }
   return null;
@@ -377,7 +384,7 @@ function decorateImplicitBtiLanding(instruction, bundle, context) {
   // absent, so the bundle fails closed to a partial result that preserves the
   // pointer-authentication operations without fabricating exact BTI semantics.
   // This mirrors the sibling FEAT_PAuth_LR / PACM unknown→partial handling.
-  if (featBti == null) {
+  if (featBti !== true) {
     return rebuiltBundle(bundle, {
       operations:bundle.operations,
       possibleFaults:bundle.possibleFaults,

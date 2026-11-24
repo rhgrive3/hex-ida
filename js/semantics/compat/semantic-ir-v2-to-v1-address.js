@@ -19,8 +19,10 @@ function extensionToken(kind, fromBits, toBits) {
   return null;
 }
 
-function semanticIndexTerm(valueId, context, active) {
-  if (!valueId || active.has(valueId)) return null;
+const MAX_ADDR_DEPTH = 64;
+
+function semanticIndexTerm(valueId, context, active, depth = 0) {
+  if (!valueId || depth >= MAX_ADDR_DEPTH || active.has(valueId)) return null;
   active.add(valueId);
   const { producerByValueId, valuesById, semanticValueById } = context;
   const producer = producerByValueId.get(valueId) ?? null;
@@ -41,12 +43,12 @@ function semanticIndexTerm(valueId, context, active) {
       };
     }
   } else if ((producer.kind === 'copy' || producer.kind === 'bitcast') && producer.inputs.length === 1) {
-    const nested = semanticIndexTerm(producer.inputs[0], context, active);
+    const nested = semanticIndexTerm(producer.inputs[0], context, active, depth + 1);
     if (nested && nested.targetWidthBits === legacyValue?.bits) {
       result = { ...nested, origin: mergeOrigins(nested.origin, producer.origin, semanticValue?.origin) };
     }
   } else if ((producer.kind === 'sext' || producer.kind === 'zext') && producer.inputs.length === 1) {
-    const nested = semanticIndexTerm(producer.inputs[0], context, active);
+    const nested = semanticIndexTerm(producer.inputs[0], context, active, depth + 1);
     const source = valuesById.get(producer.inputs[0]);
     const output = valuesById.get(valueId);
     const fromBits = Number(producer.attributes?.fromBits ?? source?.bits ?? 0) || null;
@@ -67,7 +69,7 @@ function semanticIndexTerm(valueId, context, active) {
       };
     }
   } else if (producer.kind === 'binary' && (producer.operator === 'shl' || producer.operator === 'lsl') && producer.inputs.length === 2) {
-    const nested = semanticIndexTerm(producer.inputs[0], context, active);
+    const nested = semanticIndexTerm(producer.inputs[0], context, active, depth + 1);
     const amountNode = producerByValueId.get(producer.inputs[1]) ?? null;
     const amount = amountNode?.kind === 'const' ? constantPayload(amountNode) : null;
     const widthBits = legacyValue?.bits;
@@ -111,8 +113,8 @@ function baseLeaf(valueId, context) {
   return null;
 }
 
-function lowerAddress(valueId, context, active) {
-  if (!valueId || active.has(valueId)) return null;
+function lowerAddress(valueId, context, active, depth = 0) {
+  if (!valueId || depth >= MAX_ADDR_DEPTH || active.has(valueId)) return null;
   active.add(valueId);
   const { producerByValueId, valuesById, semanticValueById } = context;
   const producer = producerByValueId.get(valueId) ?? null;
@@ -146,7 +148,7 @@ function lowerAddress(valueId, context, active) {
     const rightConst = rightNode?.kind === 'const' ? constantPayload(rightNode) : null;
 
     if (rightConst != null) {
-      const left = lowerAddress(leftId, context, active) ?? baseLeaf(leftId, context);
+      const left = lowerAddress(leftId, context, active, depth + 1) ?? baseLeaf(leftId, context);
       if (left && left.precise) {
         const addressBits = Math.max(1, Number(left.addressWidthBits || 64));
         const signedOffset = BigInt.asIntN(addressBits, rightConst);
@@ -154,15 +156,15 @@ function lowerAddress(valueId, context, active) {
         result = { ...left, disp: (left.disp ?? 0n) + delta, origin: mergeOrigins(left.origin, producer.origin, rightNode.origin, semanticValue?.origin) };
       }
     } else if (producer.operator === 'add' && leftConst != null) {
-      const right = lowerAddress(rightId, context, active) ?? baseLeaf(rightId, context);
+      const right = lowerAddress(rightId, context, active, depth + 1) ?? baseLeaf(rightId, context);
       if (right && right.precise) {
         const addressBits = Math.max(1, Number(right.addressWidthBits || 64));
         const signedOffset = BigInt.asIntN(addressBits, leftConst);
         result = { ...right, disp: (right.disp ?? 0n) + signedOffset, origin: mergeOrigins(right.origin, producer.origin, leftNode.origin, semanticValue?.origin) };
       }
     } else if (producer.operator === 'add') {
-      const left = lowerAddress(leftId, context, active) ?? baseLeaf(leftId, context);
-      const index = semanticIndexTerm(rightId, context, new Set());
+      const left = lowerAddress(leftId, context, active, depth + 1) ?? baseLeaf(leftId, context);
+      const index = semanticIndexTerm(rightId, context, new Set(), depth + 1);
       if (left && left.precise && left.index == null && index
           && (index.scale === 0 || left.addressWidthBits === index.targetWidthBits)
           && valuesById.get(valueId)?.bits === left.addressWidthBits) {

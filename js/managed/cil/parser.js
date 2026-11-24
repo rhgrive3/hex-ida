@@ -8,7 +8,7 @@ function unsupported(reason='malformed-pe-cli'){ return {supported:false,confide
 // probe or a parse decodes the definition graph exactly once instead of once per
 // overlay per entry point (#8704).
 function cilValidatedPipeline(bytes,options={}){
-  const base=probeCilBase(bytes); if(!base.supported)return {supported:false,probe:base};
+  const base=probeCilBase(bytes,{headerOnly:true}); if(!base.supported)return {supported:false,probe:base};
   try {
     const context=readCilMetadataContext(bytes,options);
     return {supported:true,base,image:overlayCilManifestSecurity(bytes,overlayCilMetadata(bytes,parseCilBase(bytes,options),context),context)};
@@ -16,7 +16,7 @@ function cilValidatedPipeline(bytes,options={}){
     if(isCilMetadataResourceLimit(error))return {supported:false,error};
     // An invalid budget describes the caller, not the image, so it is never
     // collapsed into a malformed-metadata verdict.
-    if(isCilMetadataBudgetConfigError(error))throw error;
+    if(isCilMetadataBudgetConfigError(error)||error?.message==='cil-invalid-strings-utf8')throw error;
     return {supported:false,probe:unsupported()};
   }
 }

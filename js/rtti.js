@@ -2,11 +2,21 @@ const BUILTIN={v:'void',b:'bool',c:'char',a:'signed char',h:'unsigned char',s:'s
 const SUBSTITUTIONS={St:'std',Sa:'std::allocator',Sb:'std::basic_string',Ss:'std::string',Si:'std::istream',So:'std::ostream',Sd:'std::iostream'};
 const OPERATORS={nw:'operator new',na:'operator new[]',dl:'operator delete',da:'operator delete[]',ps:'operator+',ng:'operator-',ad:'operator&',de:'operator*',co:'operator~',pl:'operator+',mi:'operator-',ml:'operator*',dv:'operator/',rm:'operator%',an:'operator&',or:'operator|',eo:'operator^',aS:'operator=',pL:'operator+=',mI:'operator-=',mL:'operator*=',dV:'operator/=',ls:'operator<<',rs:'operator>>',eq:'operator==',ne:'operator!=',lt:'operator<',gt:'operator>',le:'operator<=',ge:'operator>=',nt:'operator!',aa:'operator&&',oo:'operator||',pp:'operator++',mm:'operator--',cm:'operator,',ix:'operator[]',cl:'operator()',pt:'operator->'};
 
+const CXX_DEMANGLE_MAX_INPUT=4096,CXX_DEMANGLE_MAX_DEPTH=64,CXX_DEMANGLE_MAX_STEPS=2048,CXX_DEMANGLE_MAX_OUT=8192;
+function demangleStep(p,out){
+  if(++p.steps>CXX_DEMANGLE_MAX_STEPS)throw new Error('demangle-budget');
+  if(typeof out==='string'){
+    if(out.length>CXX_DEMANGLE_MAX_OUT)throw new Error('demangle-budget');
+    p.outChars=(p.outChars||0)+out.length;
+    if(p.outChars>CXX_DEMANGLE_MAX_OUT*4)throw new Error('demangle-budget');
+  }
+  return out;
+}
 export function demangleCxx(name){
-  if(typeof name !== 'string' || !name)return null;
+  if(typeof name !== 'string' || !name || name.length>CXX_DEMANGLE_MAX_INPUT)return null;
   const s=name.startsWith('__Z')?name.slice(1):name;
   if(!s.startsWith('_Z'))return null;
-  const p={s,i:2,subs:[]};
+  const p={s,i:2,subs:[],depth:0,steps:0,outChars:0};
   try{
     const special=readSpecial(p),body=readName(p,false);
     if(!body)return null;
@@ -83,7 +93,7 @@ export function cxxAbiFunctionIdentity(name){
   if(typeof name!=='string'||name.length>4096)return null;
   const s=name.startsWith('__Z')?name.slice(1):name;
   if(!s.startsWith('_ZN'))return null;
-  const p={s,i:2,subs:[],captureFunctionRole:true};
+  const p={s,i:2,subs:[],depth:0,steps:0,outChars:0,captureFunctionRole:true};
   try{
     if(!readName(p,false)||!p.functionRole||p.i>=s.length)return null;
     if(readArgs(p)==null||p.i!==s.length)return null;
@@ -92,7 +102,7 @@ export function cxxAbiFunctionIdentity(name){
 }
 function skipAbiTags(p){while(p.i<p.s.length&&p.s[p.i]==='B'){const saved=p.i;p.i++;let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!n||!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length){p.i=saved;return false;}p.i+=len;}return true;}
 function readSourceName(p,isSub=true){let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length)return null;const out=p.s.slice(p.i,p.i+len);p.i+=len;if(!skipAbiTags(p))return null;if(isSub)p.subs.push(out);return out;}
-function readSubstitution(p){const two=p.s.slice(p.i,p.i+2);if(SUBSTITUTIONS[two]){p.i+=2;return SUBSTITUTIONS[two];}p.i++;let idx='';while(p.i<p.s.length&&p.s[p.i]!=='_')idx+=p.s[p.i++];if(p.s[p.i]!=='_'||(idx&&!/^[0-9A-Z]+$/i.test(idx)))return null;p.i++;const n=idx===''?0:parseInt(idx,36)+1;return Number.isSafeInteger(n)?(p.subs[n]||null):null;}
+function readSubstitution(p){const two=p.s.slice(p.i,p.i+2);if(SUBSTITUTIONS[two]){p.i+=2;return demangleStep(p,SUBSTITUTIONS[two]);}p.i++;let idx='';while(p.i<p.s.length&&p.s[p.i]!=='_')idx+=p.s[p.i++];if(p.s[p.i]!=='_'||(idx&&!/^[0-9A-Z]+$/i.test(idx)))return null;p.i++;const n=idx===''?0:parseInt(idx,36)+1;const res=Number.isSafeInteger(n)?(p.subs[n]||null):null;return res?demangleStep(p,res):null;}
 function readTemplateArgs(p){p.i++;const args=[];for(let guard=0;p.i<p.s.length&&p.s[p.i]!=='E'&&guard<64;guard++){const before=p.i,t=p.s[p.i]==='L'?readIntegralTemplateArgument(p):readType(p);if(!t||p.i<=before)return null;args.push(t);}if(p.s[p.i]!=='E'||!args.length)return null;p.i++;return `<${args.join(', ')}>`;}
 // Itanium ABI 5.1.6.1: L <type> <number> E. Support only bounded
 // integral/enum literals. Floating, pointer, external-name and expression
@@ -121,7 +131,7 @@ function readIntegralTemplateArgument(p){
   return suffix?value+suffix:`(${type})${value}`;
 }
 function readArgs(p){const args=[];for(let guard=0;p.i<p.s.length;guard++){if(guard>=64)return null;const before=p.i,t=readType(p);if(!t||p.i<=before)return null;args.push(t);}if(!args.length)return null;return args.length===1&&args[0]==='void'?'':args.join(', ');}
-function readType(p){const c=p.s[p.i];if(!c)return null;if(c==='P'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} *`;p.subs.push(res);return res;}if(c==='R'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} &`;p.subs.push(res);return res;}if(c==='O'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} &&`;p.subs.push(res);return res;}if(c==='K'){p.i++;const t=readType(p);if(!t)return null;const res=`const ${t}`;p.subs.push(res);return res;}if(c==='V'){p.i++;const t=readType(p);if(!t)return null;const res=`volatile ${t}`;p.subs.push(res);return res;}if(c==='N'){p.i++;return readNested(p,true);}if(c==='S'){let res;if(p.s.slice(p.i,p.i+2)==='St'){p.i+=2;const tail=readName(p,false);if(!tail)return null;res=`std::${tail}`;p.subs.push(res);}else{res=readSubstitution(p);if(!res)return null;}if(p.s[p.i]==='I'){const ta=readTemplateArgs(p);if(!ta)return null;res+=ta;p.subs.push(res);}return res;}if(c==='I')return readTemplateArgs(p);if(/\d/.test(c))return readSourceName(p,true);const two=p.s.slice(p.i,p.i+2);if(two.length===2&&BUILTIN[two]){p.i+=2;return BUILTIN[two];}if(BUILTIN[c]){p.i++;return BUILTIN[c];}return null;}
+function readType(p){if(++p.depth>CXX_DEMANGLE_MAX_DEPTH)throw new Error('demangle-depth');try{demangleStep(p);const c=p.s[p.i];if(!c)return null;if(c==='P'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`${t} *`);p.subs.push(res);return res;}if(c==='R'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`${t} &`);p.subs.push(res);return res;}if(c==='O'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`${t} &&`);p.subs.push(res);return res;}if(c==='K'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`const ${t}`);p.subs.push(res);return res;}if(c==='V'){p.i++;const t=readType(p);if(!t)return null;const res=demangleStep(p,`volatile ${t}`);p.subs.push(res);return res;}if(c==='N'){p.i++;return demangleStep(p,readNested(p,true));}if(c==='S'){let res;if(p.s.slice(p.i,p.i+2)==='St'){p.i+=2;const tail=readName(p,false);if(!tail)return null;res=demangleStep(p,`std::${tail}`);p.subs.push(res);}else{res=readSubstitution(p);if(!res)return null;}if(p.s[p.i]==='I'){const ta=readTemplateArgs(p);if(!ta)return null;res=demangleStep(p,res+ta);p.subs.push(res);}return res;}if(c==='I')return demangleStep(p,readTemplateArgs(p));if(/\d/.test(c))return demangleStep(p,readSourceName(p,true));const two=p.s.slice(p.i,p.i+2);if(two.length===2&&BUILTIN[two]){p.i+=2;return BUILTIN[two];}if(BUILTIN[c]){p.i++;return BUILTIN[c];}return null;}finally{p.depth--;}}
 
 const SWIFT_KIND={C:'class',V:'struct',O:'enum',P:'protocol',F:'func',vg:'getter',vs:'setter',fC:'init',fD:'deinit'};
 const SWIFT_KIND_LENGTHS=[...new Set(Object.keys(SWIFT_KIND).map((k)=>k.length))].sort((a,b)=>b-a);
@@ -151,7 +161,8 @@ export function demangleSwift(name){
 }
 function stripInline(s){return s.replace(/std::__(?:[0-9]+|ndk1|cxx11)::/g,'std::').replace(/(^|[^\w:])__(?:[0-9]+|ndk1|cxx11)::/g,'$1std::');}
 function splitArgs(s){const out=[];let depth=0,cur='';for(const ch of s){if(ch==='<'||ch==='(')depth++;if(ch==='>'||ch===')')depth--;if(ch===','&&depth===0){out.push(cur.trim());cur='';continue;}cur+=ch;}if(cur.trim())out.push(cur.trim());return out;}
-function findTemplate(s,from=0){const open=s.indexOf('<',from);if(open<0)return null;let depth=0;for(let i=open;i<s.length;i++){if(s[i]==='<')depth++;else if(s[i]==='>'&&!--depth)return{open,close:i};}return null;}
+function skipOperatorToken(s,i){if(s.slice(i,i+8)!=='operator')return 0;const prev=i>0?s[i-1]:'';if(/[\w$]/.test(prev))return 0;let j=i+8;while(j<s.length&&s[j]===' ')j++;const m=/^(?:->\*|->|<<=|>>=|<<|>>|<=|>=|<=>|<|>)/.exec(s.slice(j));return m?(j+m[0].length-i):0;}
+function findTemplate(s,from=0){let open=-1;for(let i=from;i<s.length;i++){const skip=skipOperatorToken(s,i);if(skip){i+=skip-1;continue;}if(s[i]==='<'){open=i;break;}}if(open<0)return null;let depth=0;for(let i=open;i<s.length;i++){const skip=skipOperatorToken(s,i);if(skip){i+=skip-1;continue;}if(s[i]==='<')depth++;else if(s[i]==='>'&&!--depth)return{open,close:i};}return null;}
 const ALIAS=new Map([['std::basic_string|char','std::string'],['std::basic_string|wchar_t','std::wstring'],['std::basic_ostream|char','std::ostream'],['std::basic_istream|char','std::istream'],['std::basic_stringstream|char','std::stringstream']]);
 function simplifyStd(s){let out=s,cursor=0;for(let guard=0;guard<40;guard++){const t=findTemplate(out,cursor);if(!t)break;const head=/[\w:~]+$/.exec(out.slice(0,t.open));if(!head){cursor=t.open+1;continue;}const base=head[0],args=splitArgs(out.slice(t.open+1,t.close)).map(simplifyStd),alias=ALIAS.get(`${base}|${args[0]}`);let repl=alias||`${base}<${args.join(', ')}>`;if(!alias&&/^std::(vector|list|deque|set|multiset|unordered_set|unordered_multiset|forward_list|stack|queue)$/.test(base)&&args.length>1)repl=`${base}<${args[0]}>`;if(!alias&&/^std::(map|multimap|unordered_map|unordered_multimap)$/.test(base)&&args.length>2)repl=`${base}<${args.slice(0,2).join(', ')}>`;const start=t.open-base.length;out=out.slice(0,start)+repl+out.slice(t.close+1);cursor=start+repl.length;if(out.indexOf('<',cursor)<0)break;}return out;}
 export function readableName(name){if(typeof name!=='string'||!name)return name;const cxx=demangleCxx(name);return cxx?simplifyStd(stripInline(cxx)):(demangleSwift(name)||name);}
@@ -200,12 +211,11 @@ function decodeChainedVtablePointer(raw,format,imageBase){
     if(bind)return{raw,addr:null,binding:{kind:'chained-bind',ordinal:Number(raw&0xffffffn)},unresolved:false,pointerFormat:format};
     const target=raw&0xfffffffffn;
     const high8=(raw>>36n)&0xffn;
-    const reconstructed=target|(high8<<56n);
     if(format===6){
       if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-offset-rebase',pointerFormat:format};
-      return{raw,addr:base+reconstructed,binding:null,unresolved:false,pointerFormat:format};
+      return{raw,addr:BigInt.asUintN(64,(base+target)|(high8<<56n)),binding:null,unresolved:false,pointerFormat:format};
     }
-    return{raw,addr:reconstructed,binding:null,unresolved:false,pointerFormat:format};
+    return{raw,addr:BigInt.asUintN(64,target|(high8<<56n)),binding:null,unresolved:false,pointerFormat:format};
   }
 
   // Generic arm64e layouts share auth/bind bit placement but not target
@@ -222,13 +232,12 @@ function decodeChainedVtablePointer(raw,format,imageBase){
     }
     const target=raw&0x7ffffffffffn;
     const high8=(raw>>43n)&0xffn;
-    const reconstructed=target|(high8<<56n);
     const vmOffset=(format===7||format===9||format===12);
     if(vmOffset){
       if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-offset-rebase',pointerFormat:format};
-      return{raw,addr:base+reconstructed,binding:null,unresolved:false,pointerFormat:format};
+      return{raw,addr:BigInt.asUintN(64,(base+target)|(high8<<56n)),binding:null,unresolved:false,pointerFormat:format};
     }
-    return{raw,addr:reconstructed,binding:null,unresolved:false,pointerFormat:format};
+    return{raw,addr:BigInt.asUintN(64,target|(high8<<56n)),binding:null,unresolved:false,pointerFormat:format};
   }
   return{raw,addr:null,binding:null,unresolved:true,reason:'unsupported-chained-pointer-format',pointerFormat:format};
 }

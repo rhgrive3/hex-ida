@@ -98,11 +98,14 @@ export function showDataTables(app) {
     host,
   );
 
+  const initialGen = app?.backend?.gen;
+  const initialFile = app?.store?.get?.('fileInfo');
+  const isCurrentBinary = () => app?.backend?.gen === initialGen && app?.store?.get?.('fileInfo') === initialFile;
   recoverSchemasForUi(app, {
     signal:controller.signal,
     priority:'interactive',
     onProgress:(progress) => {
-      if (controller.signal.aborted || !sheet.root.isConnected) return;
+      if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
       const phase = progress?.phase;
       status.textContent = phase === 'strings'
         ? pick('文字列を確認しています…', 'Collecting strings…')
@@ -113,11 +116,11 @@ export function showDataTables(app) {
             : status.textContent;
     },
   }).then((schemas) => {
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
     status.textContent = pick('解析が完了しました。', 'Analysis complete.');
     renderSchemas(app, sheet, host, schemas);
   }).catch((error) => {
-    if (error?.name === 'AbortError' || controller.signal.aborted) return;
+    if (error?.name === 'AbortError' || controller.signal.aborted || !isCurrentBinary()) return;
     status.textContent = pick('データ表の解析を完了できませんでした。', 'Data-table analysis could not complete.');
     host.append(noteBox(error?.message || String(error)));
   });

@@ -75,6 +75,7 @@ export function createFunctionPager(fetchPage) {
   let done = false;
   let completeness = 'complete';
   let total = null;
+  let totalInvalidated = false;
 
   return {
     get hasMore() { return !done; },
@@ -96,11 +97,15 @@ export function createFunctionPager(fetchPage) {
       } else if (typeof rawTotal !== 'number' || !Number.isSafeInteger(rawTotal) || rawTotal < requestedOffset + value.length) {
         completeness = 'partial';
         total = null;
+        totalInvalidated = true;
+      } else if (totalInvalidated) {
+        total = null;
       } else if (total == null) {
         total = rawTotal;
       } else if (total !== rawTotal) {
         completeness = 'partial';
         total = null;
+        totalInvalidated = true;
       }
 
       if (!page || !Object.hasOwn(page, 'next')) {
@@ -265,7 +270,7 @@ export function showFunctions(app) {
         updateMore(current, pager.completeness, pager.total);
       }
     } finally {
-      loading = false;
+      if (current === sequence) loading = false;
     }
   };
 
@@ -324,10 +329,13 @@ export function showFunctionSummary(app, row) {
   const status = el('div', 'hint', '同じ解析スナップショットから要約を作っています…');
   sheet.body.append(status);
 
+  const initialGen = app?.backend?.gen;
+  const initialFile = app?.store?.get?.('fileInfo');
+  const isCurrentBinary = () => app?.backend?.gen === initialGen && app?.store?.get?.('fileInfo') === initialFile;
   void (async () => {
     try {
       const bundle = await analysisBundle(app, BigInt(address), { signal:controller.signal });
-      if (controller.signal.aborted || !sheet.root.isConnected) return;
+      if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
       status.remove();
 
       const fn = bundle.fn;
@@ -382,7 +390,7 @@ export function showFunctionSummary(app, row) {
       const views = summaryNextViews(app, sheet, target);
       if (views) sheet.body.append(views);
     } catch (error) {
-      if (controller.signal.aborted || error?.name === 'AbortError') return;
+      if (controller.signal.aborted || error?.name === 'AbortError' || !isCurrentBinary()) return;
       status.textContent = '';
       alertDialog('解析できませんでした', userError(error));
     }

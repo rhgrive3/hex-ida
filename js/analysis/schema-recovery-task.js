@@ -72,12 +72,14 @@ function publishBestSchemaResult(app, entry) {
   // become authoritative just because the backend epoch is unchanged (#8997).
   if (entry.boundGeneration !== schemaDependencyGeneration(app)) return;
   const current = app.schemas;
-  if (current?.complete === true && entry.result.complete !== true) return;
-  const currentLimit = current?.schemaRecoveryEpoch === entry.epoch
+  const sameEpochAndGeneration = current?.schemaRecoveryEpoch === entry.epoch
+    && current?.schemaRecoveryDependencyGeneration === entry.boundGeneration;
+  if (sameEpochAndGeneration && current?.complete === true && entry.result.complete !== true) return;
+  const currentLimit = sameEpochAndGeneration
     && Number.isSafeInteger(current?.schemaRecoveryMaxSchemas)
     ? current.schemaRecoveryMaxSchemas
     : -1;
-  if (entry.result.complete === true || current?.complete !== true && entry.maxSchemas >= currentLimit) {
+  if (!sameEpochAndGeneration || entry.result.complete === true || (current?.complete !== true && entry.maxSchemas >= currentLimit)) {
     app.schemas = entry.result;
   }
 }
@@ -87,6 +89,11 @@ function createTask(app, epoch, maxSchemas, dependencyGeneration, { onProgress, 
   const controller = new AbortController();
   const signal = controller.signal;
   const map = taskMap(app);
+  for (const [oldKey, oldEntry] of map) {
+    if (oldEntry.result && (oldEntry.epoch !== epoch || oldEntry.dependencyGeneration !== dependencyGeneration)) {
+      map.delete(oldKey);
+    }
+  }
   const key = taskKey(epoch, maxSchemas, dependencyGeneration);
   const entry = { key, epoch, maxSchemas, dependencyGeneration, boundGeneration: dependencyGeneration, controller, waiters:0, result:null, promise:null, priority, budget };
 
@@ -150,6 +157,7 @@ function createTask(app, epoch, maxSchemas, dependencyGeneration, { onProgress, 
 }
 
 export function recoverSchemasForUi(app, { signal = null, onProgress = null, priority = 'interactive', budget = null } = {}) {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
   const epoch = app?.backend?.gen ?? -1;
   const generation = schemaDependencyGeneration(app);
   const maxSchemas = normalizeSchemaRecoveryLimit(budget?.maxSchemas);

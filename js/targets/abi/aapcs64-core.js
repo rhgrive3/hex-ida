@@ -173,7 +173,9 @@ const UNSUPPORTED_AAPCS64_VARIANT_PCS = new Set([
   'aarch64-ilp32-variant-pcs',
 ]);
 function isUnsupportedAAPCS64VariantPCS(convention) {
-  return UNSUPPORTED_AAPCS64_VARIANT_PCS.has(convention);
+  if (typeof convention !== 'string') return false;
+  const normalized = convention.trim().toLowerCase().replace(/^__/, '').replace(/_/g, '-');
+  return UNSUPPORTED_AAPCS64_VARIANT_PCS.has(normalized);
 }
 
 export function classifyAAPCS64Arguments(insn, opts = {}) {
@@ -585,6 +587,7 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
   // padding-only lane.  Refuse a padded aggregate return rather than
   // collapsing its physical extent to the logical width.
   if (aggregate && aggregateLayout?.bytes > Math.ceil(returnBits / 8)) {
+    if (aggregateLayout.bytes > 16) return indirectReturnResult(pointerBits);
     return { reg:null, regs:[], bits:returnBits, bytes:aggregateLayout.bytes, aggregate:true, partial:true,
       reason:'aapcs64-padded-aggregate-return-layout-not-represented' };
   }
@@ -661,6 +664,7 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
       reason:'aapcs64-aggregate-return-size-not-proven' };
   }
   if (aggregate && aggregateLayout?.bytes > Math.ceil(returnBits / 8)) {
+    if (aggregateLayout.bytes > 16) return indirectReturnResult(pointerBits);
     return { reg:null, regs:[], bits:returnBits, bytes:aggregateLayout.bytes, aggregate:true, partial:true,
       reason:'aapcs64-padded-aggregate-return-layout-not-represented' };
   }
