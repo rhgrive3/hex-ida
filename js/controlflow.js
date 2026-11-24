@@ -3,6 +3,24 @@
  * CFG viewer and decompiler.  Address order is deliberately irrelevant:
  * optimized binaries routinely place cleanup/cold blocks before their callers.
  */
+import { recordFallback, recordWasmCall } from './core/wasm-telemetry.js';
+
+let hexEngineModule = null;
+try {
+  hexEngineModule = await import('./core/hex-engine-wasm.js');
+} catch {
+  hexEngineModule = null;
+}
+
+function isJsEngineForced() {
+  if (typeof globalThis === 'object' && globalThis !== null && globalThis.__HEX_ENGINE_MODE__ === 'js') {
+    return true;
+  }
+  if (typeof process === 'object' && process !== null && process.env && process.env.HEX_ENGINE === 'js') {
+    return true;
+  }
+  return false;
+}
 
 /* Natural-loop materialization is the only part of this analysis whose output is
  * superlinear in its input: a Θ(N)-edge graph whose loops nest Θ(N) deep has
@@ -387,6 +405,285 @@ function postDominatorsOf(succ, pred, reachable, reachableMask, components, comp
   };
 }
 
+function tryAnalyzeGraphWasm(succ, predecessors, edgeCount, canonicalEntry, terminatingNodes, limits) {
+  if (isJsEngineForced()) {
+    recordFallback('cfg:wasm_disabled');
+    return null;
+  }
+  const ex = hexEngineModule?.getHexEngineExports?.() ?? null;
+  if (!ex || typeof ex.cfg_reset !== 'function' || typeof ex.cfg_alloc !== 'function'
+    || typeof ex.cfg_analyze !== 'function' || typeof ex.cfg_get_result_ptr !== 'function'
+    || typeof ex.hex_loop_reset !== 'function' || typeof ex.hex_loop_alloc !== 'function'
+    || typeof ex.hex_loop_analyze !== 'function' || typeof ex.hex_loop_get_ptr !== 'function') {
+    recordFallback('cfg:wasm_unavailable');
+    return null;
+  }
+
+  const n = succ.length;
+  const hasTerminating = terminatingNodes.size > 0;
+  try {
+    // 1. Run CFG + dominator + SCC + post-dominator engine in WASM
+    ex.cfg_reset();
+    const offPtr = ex.cfg_alloc((n + 1) * 4);
+    const dstPtr = edgeCount > 0 ? ex.cfg_alloc(edgeCount * 4) : 0;
+    const termPtr = hasTerminating ? ex.cfg_alloc(n) : 0;
+    if (!offPtr || (edgeCount > 0 && !dstPtr) || (hasTerminating && !termPtr)) {
+      recordFallback('cfg:wasm_error');
+      return null;
+    }
+
+    {
+      const buf = ex.memory.buffer;
+      const offView = new Uint32Array(buf, offPtr, n + 1);
+      const dstView = edgeCount > 0 ? new Int32Array(buf, dstPtr, edgeCount) : null;
+      let cursor = 0;
+      for (let i = 0; i < n; i++) {
+        offView[i] = cursor;
+        const row = succ[i];
+        for (let k = 0; k < row.length; k++) {
+          dstView[cursor++] = row[k];
+        }
+      }
+      offView[n] = cursor;
+      if (hasTerminating) {
+        const termView = new Uint8Array(buf, termPtr, n);
+        termView.fill(0);
+        for (const t of terminatingNodes) termView[t] = 1;
+      }
+    }
+
+    const cfgRc = ex.cfg_analyze(n, offPtr, dstPtr, canonicalEntry, termPtr);
+    if (cfgRc !== 0) {
+      recordFallback('cfg:wasm_error');
+      return null;
+    }
+
+    // Re-acquire memory.buffer after WASM call (ABI.md 3.2)
+    const cfgBuf = ex.memory.buffer;
+    const reachOrderPtr = ex.cfg_get_result_ptr(13);
+    const reachCount = ex.cfg_get_result_ptr(14);
+    const idomPtr = ex.cfg_get_result_ptr(1);
+    const domTinPtr = ex.cfg_get_result_ptr(2);
+    const domToutPtr = ex.cfg_get_result_ptr(3);
+    const domDepthPtr = ex.cfg_get_result_ptr(4);
+    const compOfPtr = ex.cfg_get_result_ptr(5);
+    const numComps = ex.cfg_get_result_ptr(6);
+    const pdomIdomPtr = ex.cfg_get_result_ptr(7);
+    const pdomTinPtr = ex.cfg_get_result_ptr(8);
+    const pdomToutPtr = ex.cfg_get_result_ptr(9);
+    const pdomDepthPtr = ex.cfg_get_result_ptr(10);
+    const pdomReachMaskPtr = ex.cfg_get_result_ptr(11);
+    const nonTermMaskPtr = ex.cfg_get_result_ptr(12);
+
+    const reachable = new Set();
+    if (reachCount > 0 && reachOrderPtr) {
+      const reachOrder = new Int32Array(cfgBuf, reachOrderPtr, reachCount);
+      for (let i = 0; i < reachCount; i++) reachable.add(reachOrder[i]);
+    }
+
+    const immediateDominators = new Array(n).fill(-1);
+    const domTin = new Array(n).fill(-1);
+    const domTout = new Array(n).fill(-1);
+    const domDepth = new Array(n).fill(0);
+    const componentOf = new Array(n).fill(-1);
+    const components = Array.from({ length: numComps }, () => []);
+    if (n > 0) {
+      const idomView = new Int32Array(cfgBuf, idomPtr, n);
+      const tinView = new Int32Array(cfgBuf, domTinPtr, n);
+      const toutView = new Int32Array(cfgBuf, domToutPtr, n);
+      const depthView = new Int32Array(cfgBuf, domDepthPtr, n);
+      const compView = new Int32Array(cfgBuf, compOfPtr, n);
+      for (let i = 0; i < n; i++) {
+        immediateDominators[i] = idomView[i];
+        domTin[i] = tinView[i];
+        domTout[i] = toutView[i];
+        domDepth[i] = depthView[i];
+        const ci = compView[i];
+        componentOf[i] = ci;
+        if (ci >= 0 && ci < numComps) components[ci].push(i);
+      }
+    }
+    const domIndex = { tin: domTin, tout: domTout, depth: domDepth };
+    const dominators = immediateDominators.map((_, node) => new DominanceView(node, immediateDominators, reachable, domIndex, -1));
+
+    const EXIT = n;
+    const np1 = n + 1;
+    const pdomIdom = new Array(np1).fill(-1);
+    const pdomTin = new Array(np1).fill(-1);
+    const pdomTout = new Array(np1).fill(-1);
+    const pdomDepth = new Array(np1).fill(0);
+    const pdomReachable = new Set();
+    const nonTerminatingReachable = new Set();
+    if (pdomIdomPtr) {
+      const pIdomView = new Int32Array(cfgBuf, pdomIdomPtr, np1);
+      const pTinView = new Int32Array(cfgBuf, pdomTinPtr, np1);
+      const pToutView = new Int32Array(cfgBuf, pdomToutPtr, np1);
+      const pDepthView = new Int32Array(cfgBuf, pdomDepthPtr, np1);
+      const pReachView = new Uint8Array(cfgBuf, pdomReachMaskPtr, np1);
+      for (let i = 0; i < np1; i++) {
+        pdomIdom[i] = pIdomView[i];
+        pdomTin[i] = pTinView[i];
+        pdomTout[i] = pToutView[i];
+        pdomDepth[i] = pDepthView[i];
+        if (pReachView[i]) pdomReachable.add(i);
+      }
+    }
+    if (n > 0 && nonTermMaskPtr) {
+      const ntView = new Uint8Array(cfgBuf, nonTermMaskPtr, n);
+      for (let i = 0; i < n; i++) {
+        if (ntView[i]) nonTerminatingReachable.add(i);
+      }
+    }
+    const pdomIndex = { tin: pdomTin, tout: pdomTout, depth: pdomDepth };
+    const postDominators = new Array(n);
+    const immediatePostDominators = new Array(n).fill(null);
+    for (let i = 0; i < n; i++) {
+      postDominators[i] = new DominanceView(i, pdomIdom, pdomReachable, pdomIndex, EXIT);
+      if (reachable.has(i)) {
+        const d = pdomIdom[i];
+        immediatePostDominators[i] = d >= 0 && d !== EXIT ? d : null;
+      }
+    }
+
+    // 2. Run natural-loop analyzer in WASM
+    ex.hex_loop_reset();
+    const lOffPtr = ex.hex_loop_alloc((n + 1) * 4);
+    const lDstPtr = edgeCount > 0 ? ex.hex_loop_alloc(edgeCount * 4) : 0;
+    const lTermPtr = hasTerminating ? ex.hex_loop_alloc(n) : 0;
+    if (!lOffPtr || (edgeCount > 0 && !lDstPtr) || (hasTerminating && !lTermPtr)) {
+      recordFallback('cfg:wasm_error');
+      return null;
+    }
+
+    {
+      const buf = ex.memory.buffer;
+      const offView = new Uint32Array(buf, lOffPtr, n + 1);
+      const dstView = edgeCount > 0 ? new Int32Array(buf, lDstPtr, edgeCount) : null;
+      let cursor = 0;
+      for (let i = 0; i < n; i++) {
+        offView[i] = cursor;
+        const row = succ[i];
+        for (let k = 0; k < row.length; k++) {
+          dstView[cursor++] = row[k];
+        }
+      }
+      offView[n] = cursor;
+      if (hasTerminating) {
+        const termView = new Uint8Array(buf, lTermPtr, n);
+        termView.fill(0);
+        for (const t of terminatingNodes) termView[t] = 1;
+      }
+    }
+
+    const loopRc = ex.hex_loop_analyze(
+      n,
+      lOffPtr,
+      lDstPtr,
+      canonicalEntry,
+      lTermPtr,
+      limits.maxLoopMemberships,
+      limits.maxLoopWalkSteps,
+    );
+    if (loopRc !== 0) {
+      recordFallback('cfg:wasm_error');
+      return null;
+    }
+
+    const loopBuf = ex.memory.buffer;
+    const numBackEdges = ex.hex_loop_get_ptr(0);
+    const beFromPtr = ex.hex_loop_get_ptr(1);
+    const beToPtr = ex.hex_loop_get_ptr(2);
+    const numLoops = ex.hex_loop_get_ptr(3);
+    const headerPtr = ex.hex_loop_get_ptr(4);
+    const latchOffPtr = ex.hex_loop_get_ptr(7);
+    const latchNodesPtr = ex.hex_loop_get_ptr(8);
+    const bodyOffPtr = ex.hex_loop_get_ptr(9);
+    const bodyNodesPtr = ex.hex_loop_get_ptr(10);
+    const exitOffPtr = ex.hex_loop_get_ptr(11);
+    const exitNodesPtr = ex.hex_loop_get_ptr(12);
+    const completeFlag = ex.hex_loop_get_ptr(16) !== 0;
+    const stopCode = ex.hex_loop_get_ptr(17);
+    const retainedMemberships = ex.hex_loop_get_ptr(18);
+    const walkSteps = ex.hex_loop_get_ptr(19);
+
+    const backEdges = new Array(numBackEdges);
+    if (numBackEdges > 0) {
+      const fromView = new Int32Array(loopBuf, beFromPtr, numBackEdges);
+      const toView = new Int32Array(loopBuf, beToPtr, numBackEdges);
+      for (let i = 0; i < numBackEdges; i++) {
+        backEdges[i] = { from: fromView[i], to: toView[i] };
+      }
+    }
+
+    const loopByHeader = new Map();
+    const loops = [];
+    if (completeFlag && numLoops > 0) {
+      const headers = new Int32Array(loopBuf, headerPtr, numLoops);
+      const latchOff = new Uint32Array(loopBuf, latchOffPtr, numLoops + 1);
+      const bodyOff = new Uint32Array(loopBuf, bodyOffPtr, numLoops + 1);
+      const exitOff = new Uint32Array(loopBuf, exitOffPtr, numLoops + 1);
+      const totalLatches = latchOff[numLoops];
+      const totalBody = bodyOff[numLoops];
+      const totalExits = exitOff[numLoops];
+      const latchNodes = totalLatches > 0 ? new Int32Array(loopBuf, latchNodesPtr, totalLatches) : null;
+      const bodyNodes = totalBody > 0 ? new Int32Array(loopBuf, bodyNodesPtr, totalBody) : null;
+      const exitNodes = totalExits > 0 ? new Int32Array(loopBuf, exitNodesPtr, totalExits) : null;
+
+      for (let i = 0; i < numLoops; i++) {
+        const header = headers[i];
+        const latches = new Set();
+        for (let k = latchOff[i]; k < latchOff[i + 1]; k++) latches.add(latchNodes[k]);
+        const nodes = new Set();
+        for (let k = bodyOff[i]; k < bodyOff[i + 1]; k++) nodes.add(bodyNodes[k]);
+        const exits = new Set();
+        for (let k = exitOff[i]; k < exitOff[i + 1]; k++) exits.add(exitNodes[k]);
+        const loop = { header, latches, nodes, exits };
+        loopByHeader.set(header, loop);
+        loops.push(loop);
+      }
+    }
+
+    const loopStopReason = stopCode === 1
+      ? 'loop-walk-budget'
+      : stopCode === 2
+        ? 'loop-membership-budget'
+        : null;
+
+    recordWasmCall('cfg');
+    recordWasmCall('loops');
+
+    return {
+      successors: succ,
+      predecessors,
+      reachable,
+      dominators,
+      immediateDominators,
+      components,
+      componentOf,
+      backEdges,
+      loops,
+      loopByHeader,
+      loopAnalysis: Object.freeze({
+        schema: LOOP_ANALYSIS_SCHEMA,
+        complete: completeFlag,
+        stopReason: loopStopReason,
+        loops: loops.length,
+        retainedMemberships,
+        walkSteps,
+        nodes: n,
+        edges: edgeCount,
+        budget: Object.freeze({ ...limits }),
+      }),
+      postDominators,
+      immediatePostDominators,
+      nonTerminatingReachable,
+    };
+  } catch {
+    recordFallback('cfg:wasm_error');
+    return null;
+  }
+}
+
 /**
  * @param {number[][]} successors internal CFG successor indices
  * @param {number} entry entry node index
@@ -414,6 +711,10 @@ export function analyzeGraph(successors, entry = 0, terminating = null, options 
   const terminatingNodes = normalizedTerminatingNodes(terminating, succ.length);
   const canonicalEntry = validNodeIndex(entry, succ.length) ? entry : -1;
   const predecessors = predecessorsOf(succ);
+
+  const wasmResult = tryAnalyzeGraphWasm(succ, predecessors, edgeCount, canonicalEntry, terminatingNodes, limits);
+  if (wasmResult !== null) return wasmResult;
+
   const reachable = reachableFrom(succ, canonicalEntry);
   const reachableMask = maskFromReachable(reachable, succ.length);
   const { idom: immediateDominators } = immediateDominatorsOf(succ, predecessors, reachableMask, canonicalEntry);
