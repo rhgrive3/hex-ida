@@ -843,7 +843,7 @@ HexStatus optimize_ir(
 
 namespace {
 
-alignas(8) uint8_t g_opt_scratch_buf[512u * 1024u];
+alignas(8) uint8_t g_opt_scratch_buf[256u * 1024u];
 Arena g_opt_scratch_arena;
 bool g_opt_scratch_ready = false;
 
