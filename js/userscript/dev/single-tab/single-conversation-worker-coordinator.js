@@ -130,6 +130,13 @@ export class SingleConversationWorkerCoordinator {
     const claim = this.assertClaim(args);
     this.refreshSupervisorAnchor();
     if (!this.controller.isActive()) await this.ensureWorkerConversation();
+    if (this.pendingTerminal) {
+      const initial = await Promise.race([
+        Promise.resolve().then(() => this.controller.nudge({ runId: claim.runId, workerId: claim.workerId })),
+        this.pendingTerminal.closePromise,
+      ]);
+      return this.withIdentity(initial);
+    }
     return this.runWorkerTurn(() => this.controller.nudge({ runId: claim.runId, workerId: claim.workerId }), {
       allowImmediate: true,
     });
@@ -213,7 +220,11 @@ export class SingleConversationWorkerCoordinator {
     const pending = this.armTerminal();
     try {
       const initial = await Promise.race([Promise.resolve().then(operation), pending.closePromise]);
-      if (allowImmediate && initial?.outcome === 'still-working') return this.withIdentity(initial);
+      if (allowImmediate && initial?.outcome === 'still-working') {
+        if (this.pendingTerminal === pending) this.pendingTerminal = null;
+        pending.resolve(initial);
+        return this.withIdentity(initial);
+      }
       await pending.promise;
       return this.lastResult || this.withIdentity(this.controller.result());
     } catch (error) {

@@ -176,16 +176,15 @@ export function createChatGPTIframeHost(options = {}) {
     failure = null;
     lifecycle = 'loading';
     statusBox.hidden = false; statusBox.textContent = 'Loading Hex…'; errorBox.hidden = true;
-    if (!targetWindow || typeof targetWindow.postMessage !== 'function') {
-      fail(currentGeneration, 'iframe-bootstrap', new Error('Hex iframe window is unavailable.'));
-      return;
-    }
-
     const current = {
       generation: currentGeneration, generationText, controller,
       parentPort: null, childPort: null, cleanup: null, transferred: false,
     };
     activeGeneration = current;
+    if (!targetWindow || typeof targetWindow.postMessage !== 'function') {
+      fail(currentGeneration, 'iframe-bootstrap', new Error('Hex iframe window is unavailable.'));
+      return;
+    }
 
     const bootstrap = waitForEmbedChildBootstrap({
       windowRef,

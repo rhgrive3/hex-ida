@@ -518,9 +518,11 @@ export function rangeOnBranch(ir, branch, taken = true) {
   };
 }
 
+const branchConstraintsCache = new WeakMap();
+
 export function branchConstraints(ir) {
   if (!ir) return [];
-  if (ir._branchConstraints) return ir._branchConstraints;
+  if (branchConstraintsCache.has(ir)) return branchConstraintsCache.get(ir);
   const out = [];
   for (const inst of ir.instructions || []) {
     if (inst.op !== OP.CBR) continue;
@@ -528,7 +530,7 @@ export function branchConstraints(ir) {
     const no = rangeOnBranch(ir, inst, false);
     if (yes || no) out.push({ branch: inst, taken: yes, fallthrough: no });
   }
-  ir._branchConstraints = out;
+  branchConstraintsCache.set(ir, out);
   return out;
 }
 
@@ -545,35 +547,51 @@ function originIdentity(o) {
 }
 
 const originMemo = new WeakMap();
-export function originOf(value, active) {
+const ORIGIN_MAX_DEPTH = 128;
+export function originOf(value, active, state = null) {
   if (!value) return null;
   if (originMemo.has(value)) return originMemo.get(value);
   const visiting = active || new Set();
-  if (visiting.has(value)) return null;
+  const tracker = state || { sawCycle: false, depth: 0 };
+  if (visiting.has(value) || tracker.depth > ORIGIN_MAX_DEPTH) {
+    tracker.sawCycle = true;
+    return null;
+  }
   visiting.add(value);
+  const prevSawCycle = tracker.sawCycle;
+  tracker.sawCycle = false;
+  tracker.depth += 1;
   const def = value.def;
   let out = null;
-  if (def && def.op === OP.LOAD && def.loc) {
-    if (def.loc.kind === MK.GLOBAL) out = { kind: 'global', address: def.loc.address, location: def.loc, row: def.row, addressOfInstruction: def.address };
-    else out = { kind: def.loc.kind === MK.STACK ? 'stack' : 'field', location: def.loc, row: def.row, address: def.address };
-  } else if (def && def.op === OP.CALL) {
-    out = { kind: 'call', target: def.extra && def.extra.target != null ? def.extra.target : null,
-      instructionId: def.id, row: def.row, address: def.address };
-  } else if (def && (def.op === OP.MOV || (def.op === OP.UN && /^(sxt|uxt|fmov)/.test(def.sub || ''))) && def.args[0]) {
-    out = originOf(def.args[0].value, visiting);
-  } else if (def && def.op === OP.PHI && def.args && def.args.length) {
-    const os = def.args.map((a) => originOf(a && a.value, visiting));
-    const keys = os.map(originIdentity);
-    if (keys[0] && keys.every((k) => k === keys[0])) out = os[0];
-  } else if (value.kind === VK.ARG && /^x[0-7]$/.test(String(value.reg || ''))) {
-    out = { kind: 'argument', reg: value.reg };
-  } else if (value.const != null) {
-    out = { kind: 'constant', value: value.const };
-  } else if (def) {
-    out = { kind: 'computed', op: def.op, sub: def.sub || null, row: def.row, address: def.address };
+  try {
+    if (def && def.op === OP.LOAD && def.loc) {
+      if (def.loc.kind === MK.GLOBAL) out = { kind: 'global', address: def.loc.address, location: def.loc, row: def.row, addressOfInstruction: def.address };
+      else if (def.loc.kind === MK.STACK) out = { kind: 'stack', location: def.loc, row: def.row, address: def.address };
+      else if (def.loc.kind === MK.FIELD) out = { kind: 'field', location: def.loc, row: def.row, address: def.address };
+      else out = { kind: 'unknown', location: def.loc, row: def.row, address: def.address };
+    } else if (def && def.op === OP.CALL) {
+      out = { kind: 'call', target: def.extra && def.extra.target != null ? def.extra.target : null,
+        instructionId: def.id, row: def.row, address: def.address };
+    } else if (def && (def.op === OP.MOV || (def.op === OP.UN && /^(sxt|uxt|fmov)/.test(def.sub || ''))) && def.args[0]) {
+      out = originOf(def.args[0].value, visiting, tracker);
+    } else if (def && def.op === OP.PHI && def.args && def.args.length) {
+      const os = def.args.map((a) => originOf(a && a.value, visiting, tracker));
+      const keys = os.map(originIdentity);
+      if (keys[0] && keys.every((k) => k === keys[0])) out = os[0];
+    } else if (value.kind === VK.ARG && /^x[0-7]$/.test(String(value.reg || ''))) {
+      out = { kind: 'argument', reg: value.reg };
+    } else if (value.const != null) {
+      out = { kind: 'constant', value: value.const };
+    } else if (def) {
+      out = { kind: 'computed', op: def.op, sub: def.sub || null, row: def.row, address: def.address };
+    }
+  } finally {
+    tracker.depth -= 1;
+    visiting.delete(value);
   }
-  visiting.delete(value);
-  originMemo.set(value, out);
+  const subtreeHitCycle = tracker.sawCycle;
+  tracker.sawCycle = prevSawCycle || subtreeHitCycle;
+  if (!subtreeHitCycle) originMemo.set(value, out);
   return out;
 }
 

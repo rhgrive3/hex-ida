@@ -283,7 +283,10 @@ export function validateDexMethod(decoded) {
     if (handler.typeIndex != null && (handler.typeIndex < 0 || handler.typeIndex >= meta.tableSizes.types)) errors.push(finding('dex-catch-handler-type-index-out-of-range', { typeIndex: handler.typeIndex }));
     if (!Number.isSafeInteger(handler.target) || handler.target < 0 || handler.target >= codeBytes) errors.push(finding('dex-catch-handler-target-out-of-range', { targetOffset: handler.target }));
     else if (!boundaries.has(handler.target)) errors.push(finding('dex-catch-handler-target-not-instruction-boundary', { targetOffset: handler.target }));
-    else if (branches.has(handler.target)) errors.push(finding('dex-move-exception-control-flow-entry-invalid', { targetOffset: handler.target }));
+    else if (branches.has(handler.target)) {
+      const targetFact = facts.find((f) => f.offset === handler.target);
+      if (targetFact?.opcode === 0x0d) errors.push(finding('dex-move-exception-control-flow-entry-invalid', { targetOffset: handler.target }));
+    }
   }
   verifierFacts.push(finding('dex-independent-verifier-ran', { instructions: facts.length, registersSize: meta.registersSize, triesSize: meta.triesSize }));
   return { structuralErrors, errors, warnings, verifierFacts, partialReasons };

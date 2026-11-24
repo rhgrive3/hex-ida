@@ -10,17 +10,17 @@
 import { h, uiButton } from '../../ui/primitives.js';
 import { pick } from '../../i18n.js';
 
-const KIND_LABEL = {
+const KIND_LABEL = Object.freeze(Object.assign(Object.create(null), {
   rename: ['名前の変更', 'Rename'],
   comment: ['メモの追加', 'Comment'],
   type: ['型の変更', 'Type change'],
   'struct-field': ['構造体フィールド', 'Struct field'],
   patch: ['命令の書き換え', 'Patch'],
   'project-annotation': ['プロジェクト注釈', 'Project annotation'],
-};
+}));
 
 function kindLabel(kind) {
-  const item = KIND_LABEL[kind];
+  const item = typeof kind === 'string' && Object.hasOwn(KIND_LABEL, kind) ? KIND_LABEL[kind] : null;
   return item ? pick(item[0], item[1]) : kind;
 }
 
@@ -96,7 +96,16 @@ export function renderProposal(proposal, { onApply, onReject } = {}) {
     status.textContent = text;
   };
 
+  const initialSettled = proposal.status === 'applied' || proposal.status === 'rejected';
+  if (initialSettled) {
+    settle(
+      proposal.status === 'applied' ? pick('適用しました', 'Applied') : pick('却下しました', 'Rejected'),
+      proposal.status,
+    );
+  }
+
   apply.addEventListener('click', async () => {
+    if (apply.disabled) return;
     apply.disabled = true;
     reject.disabled = true;
     status.textContent = pick('適用しています…', 'Applying…');
@@ -110,6 +119,7 @@ export function renderProposal(proposal, { onApply, onReject } = {}) {
     }
   });
   reject.addEventListener('click', () => {
+    if (reject.disabled) return;
     try { if (onReject) onReject(proposal); } catch { /* rejection is local state only */ }
     settle(pick('却下しました', 'Rejected'), 'rejected');
   });

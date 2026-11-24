@@ -130,11 +130,11 @@ function relationalSignCondition(inst, cond) {
 /* CNEG/CINC/CINV are aliases of CSNEG/CSINC/CSINV with the condition inverted. */
 function normalizeConditionalSelectAliases(ir) {
   const changes = [];
-  const alias = { cneg:'neg', cinc:'inc', cinv:'inv' };
+  const alias = Object.assign(Object.create(null), { cneg:'neg', cinc:'inc', cinv:'inv' });
   for (const inst of ir?.instructions || []) {
-    const replacement = alias[inst?.sub];
+    const replacement = typeof inst?.sub === 'string' && Object.hasOwn(alias, inst.sub) ? alias[inst.sub] : null;
     if (replacement) {
-      let inverse = INVERSE_CONDITION[inst.cond];
+      let inverse = typeof inst.cond === 'string' && Object.hasOwn(INVERSE_CONDITION, inst.cond) ? INVERSE_CONDITION[inst.cond] : null;
       if (!inverse) continue;
       inverse = relationalSignCondition(inst, inverse);
       changes.push({ inst, sub:inst.sub, cond:inst.cond });
@@ -318,7 +318,9 @@ function latestReturnInstruction(ir) {
 
 function reanchorExactStackReturn(result, opts = {}) {
   if (!result?.semanticAst || !result?.ir) return result;
-  const ret = latestReturnInstruction(result.ir);
+  const returns = (result.ir.instructions || []).filter((inst) => inst?.op === 'ret');
+  if (returns.length !== 1) return result;
+  const ret = returns[0];
   const returnRegister = canonicalScalarReturnRegister(result, opts);
   const found = ret ? latestReturnStackLoad(result.ir, ret, returnRegister) : null;
   if (!found?.load?.loc?.key) return result;
@@ -757,7 +759,7 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
       { phase8PrepareProof:true, phase8ProofOnlyRewrites:proofOnlyRewrites, shouldAbort:aborted });
     if (aborted() || !isProducerProjection(final) || !current()) return fail('cancelled-or-stale-at-final-publication');
     return final;
-  } catch (error) { return fail(guard?.reason() ?? error.reason ?? 'invalid-or-unsupported-condition-optimization'); }
+  } catch (error) { return fail(guard?.reason() ?? error?.reason ?? 'invalid-or-unsupported-condition-optimization'); }
 }
 
 /** Demand-driven asynchronous proof path. The representation result comes from

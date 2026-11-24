@@ -23,10 +23,22 @@ export function chargeScopedWorkerCost(work, value) {
   const limits = normalizeQueryLimits(cost.limits);
   const resources = Object.keys(limits).filter((key) => !['deadlineMs', 'yieldEvery'].includes(key));
   recordFields(cost.used, resources, 'scoped-worker-resource-fields');
-  // Validate every debit before changing any counters. Parent budgets remain
-  // the canonical owner and reject counters exceeding the remaining balance.
-  for (const used of Object.values(cost.used)) exactInteger(used, 'scoped-worker-resource-used');
-  for (const [key, used] of Object.entries(cost.used)) work.charge(key, used);
+  // Validate every debit and verify remaining capacity before changing any counters
+  // so a later overflow never leaves earlier debits partially applied.
+  const entries = Object.entries(cost.used);
+  for (const [, used] of entries) exactInteger(used, 'scoped-worker-resource-used');
+  work.checkpoint();
+  for (const [key, used] of entries) {
+    if (used > work.remaining(key)) {
+      throw new AnalysisWorkStopped({
+        status: 'budget-exhausted',
+        reason: `scoped-work-budget:${key}`,
+        cost: work.cost(),
+        resource: key,
+      });
+    }
+  }
+  for (const [key, used] of entries) work.charge(key, used);
   work.checkpoint();
 }
 

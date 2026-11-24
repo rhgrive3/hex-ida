@@ -422,7 +422,7 @@ export function createMemorySsaContract(input, options = {}) {
     // (which it does not dominate) is not canonical MemorySSA. Definitions
     // without a block stay unpinned.
     const dominance = dominanceFor(cfg, dominanceCache);
-    for (const incoming of definition.incoming) {
+    if (dominance) for (const incoming of definition.incoming) {
       const prior = definitionById.get(incoming.definitionId);
       if (prior?.blockId == null || prior.blockId === incoming.predecessorBlockId) continue;
       if (!cacheCfgFacts) {

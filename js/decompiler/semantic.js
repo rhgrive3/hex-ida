@@ -76,7 +76,7 @@ function recoverCompatInductionVariables(ir, ctx = null) {
       } else if (stepDef.sub === 'add' && rightRoot?.id === phi.dst.id && left?.const != null) {
         step = left.const;
       }
-      if (step == null) continue;
+      if (step == null || step === 0n) continue;
       const term = compatBlockTerm(block);
       if (!term || term.op !== OP.CBR) continue;
       const name = `i${out.length || ''}`;

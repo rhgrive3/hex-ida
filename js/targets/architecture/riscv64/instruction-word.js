@@ -445,10 +445,34 @@ function isUint8ArrayView(value) {
 function normalizeInstructionWordBytes(bytes, code) {
   if (bytes == null) return new Uint8Array();
   if (isUint8ArrayView(bytes)) {
-    try { return Uint8Array.prototype.slice.call(bytes); } catch { throw new TypeError(code); }
+    try {
+      const length = bytes.byteLength;
+      if (length !== 2 && length !== 4) return { length };
+      const out = new Uint8Array(length);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, length);
+      for (let index = 0; index < length; index += 1) {
+        WORD_UINT8_ARRAY_SET.call(out, [view.getUint8(index)], index);
+      }
+      return out;
+    } catch {
+      throw new TypeError(code);
+    }
   }
   if (!Array.isArray(bytes)) throw new TypeError(code);
   const length = bytes.length;
+  if (length !== 2 && length !== 4) {
+    if (length <= 16) {
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(bytes, String(index));
+        if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError(code);
+        const byte = descriptor.value;
+        if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+          throw new TypeError(code);
+        }
+      }
+    }
+    return { length };
+  }
   const out = new Uint8Array(length);
   for (let index = 0; index < length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(bytes, String(index));

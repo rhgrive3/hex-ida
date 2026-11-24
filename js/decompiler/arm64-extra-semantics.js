@@ -327,8 +327,7 @@ function nzcvImmediateMatches(nzcv, cond) {
     case 'lt': return n !== v;
     case 'gt': return !z && n === v;
     case 'le': return z || n !== v;
-    case 'al': return true;
-    case 'nv': return false;
+    case 'al': case 'nv': return true;
     default: return false;
   }
 }
@@ -397,8 +396,7 @@ function parseComparisonContext(lineText, canonicalGpNames = false) {
 }
 
 function conditionExprFromContext(cond, cmpCtx) {
-  if (cond === 'al') return '1';
-  if (cond === 'nv') return '0';
+  if (cond === 'al' || cond === 'nv') return '1';
   if (!cmpCtx) return null;
   if (cmpCtx.kind === 'fccmp') {
     if (!cmpCtx.guardExpr) return null;
@@ -621,7 +619,8 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
       }
       const hi = isFloat ? '2147483648.0f' : '2147483647.5';
       const lo = isFloat ? '-2147483648.0f' : '-2147483648.5';
-      return `${dst.name} = (int32_t)(!((${src}) == (${src})) ? 0 : ((${src}) >= ${hi} ? 0x7fffffff : ((${src}) <= ${lo} ? (-0x7fffffff - 1) : (int32_t)${fn}(${src}))));`;
+      const castPrefix = canonicalGpNames ? '(uint64_t)(uint32_t)(int32_t)' : '(int32_t)';
+      return `${dst.name} = ${castPrefix}(!((${src}) == (${src})) ? 0 : ((${src}) >= ${hi} ? 0x7fffffff : ((${src}) <= ${lo} ? (-0x7fffffff - 1) : (int32_t)${fn}(${src}))));`;
     }
   }
 

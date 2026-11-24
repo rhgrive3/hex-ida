@@ -325,7 +325,7 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
   let bestDepth = -1;
   let bestRow = -1;
   for (const value of regValues) {
-    if (value.reg !== reg || !value.def || value.clobbered) continue;
+    if (value.reg !== reg || !value.def) continue;
     const def = value.def;
     if (def === atInst) continue;
     if (def.block === atInst.block) {
@@ -343,7 +343,7 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
       bestRow = row;
     }
   }
-  return best;
+  return best?.clobbered ? null : best;
 }
 
 /*
@@ -1192,40 +1192,48 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         vals = fpVals;
       }
     }
+    const is32BitIntReturnMemo = new Map();
     const is32BitIntReturnValue = (val, seen = new Set()) => {
-      if (!val || seen.has(val)) return false;
+      if (!val) return false;
+      if (is32BitIntReturnMemo.has(val)) return is32BitIntReturnMemo.get(val);
+      if (seen.has(val)) return false;
       seen.add(val);
-      const vt = values.get(val.id);
-      if (vt && vt.kind !== 'unknown' && vt.name !== 'int32' && vt.name !== 'uint32' && vt.name !== 'bool') return false;
-      if (vt?.name === 'int32') return true;
-      if (typeof val.reg === 'string' && /^w\d+$/.test(val.reg)) return true;
-      if (val.bits === 32) return true;
-      const def = val.def;
-      if (!def) return false;
-      if (def.op === OP.CONST) return val.bits === 32 || val.const === 0xffffffffn;
-      if (def.op === OP.MOV) {
-        if (def.sub === 'zext' && Number(def.extra?.sourceBits) === 32) return true;
-        if (def.sub === 'trunc' && (Number(def.extra?.targetBits) === 32 || val.bits === 32)) return true;
-        if (val.const === 0xffffffffn) return true;
-        const src = valueOf(def.args?.[0]);
-        return src ? is32BitIntReturnValue(src, seen) : false;
+      let res = false;
+      try {
+        const vt = values.get(val.id);
+        if (vt && vt.kind !== 'unknown' && vt.name !== 'int32' && vt.name !== 'uint32' && vt.name !== 'bool') { res = false; }
+        else if (vt?.name === 'int32' || (typeof val.reg === 'string' && /^w\d+$/.test(val.reg)) || val.bits === 32) { res = true; }
+        else {
+          const def = val.def;
+          if (!def) res = false;
+          else if (def.op === OP.CONST) res = val.bits === 32 || val.const === 0xffffffffn;
+          else if (def.op === OP.MOV) {
+            if ((def.sub === 'zext' && Number(def.extra?.sourceBits) === 32)
+                || (def.sub === 'trunc' && (Number(def.extra?.targetBits) === 32 || val.bits === 32))
+                || val.const === 0xffffffffn) {
+              res = true;
+            } else {
+              const src = valueOf(def.args?.[0]);
+              res = src ? is32BitIntReturnValue(src, seen) : false;
+            }
+          } else if (def.op === OP.PHI) {
+            const incoming = phiIncomingValues(def).filter((arg) => !seen.has(arg));
+            res = incoming.length > 0 && incoming.every((arg) => is32BitIntReturnValue(arg, seen));
+          } else if (def.op === OP.SEL) {
+            const arms = (def.args || []).slice(0, 2).map(valueOf).filter(Boolean);
+            res = arms.length === 2 && arms.every((arg) => is32BitIntReturnValue(arg, seen));
+          } else if (def.op === OP.LOAD) {
+            res = Number(def.extra?.size) === 4 || Number(def.extra?.widthBits) === 32 || val.bits === 32;
+          } else if (def.op === OP.CALL) {
+            const sig = knownCallSignature(calleeNameOf(def));
+            res = sig?.retType === 'int';
+          }
+        }
+      } finally {
+        seen.delete(val);
       }
-      if (def.op === OP.PHI) {
-        const incoming = phiIncomingValues(def).filter((arg) => !seen.has(arg));
-        return incoming.length > 0 && incoming.every((arg) => is32BitIntReturnValue(arg, new Set(seen)));
-      }
-      if (def.op === OP.SEL) {
-        const arms = (def.args || []).slice(0, 2).map(valueOf).filter(Boolean);
-        return arms.length === 2 && arms.every((arg) => is32BitIntReturnValue(arg, new Set(seen)));
-      }
-      if (def.op === OP.LOAD) {
-        return Number(def.extra?.size) === 4 || Number(def.extra?.widthBits) === 32 || val.bits === 32;
-      }
-      if (def.op === OP.CALL) {
-        const sig = knownCallSignature(calleeNameOf(def));
-        return sig?.retType === 'int';
-      }
-      return false;
+      if (seen.size === 0) is32BitIntReturnMemo.set(val, res);
+      return res;
     };
     if (vals.length) {
       let picked = null;
@@ -1283,7 +1291,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     });
     if (filteredArgs.length !== args.length) {
       args.length = 0;
-      filteredArgs.forEach((a, idx) => args.push({ ...a, index: idx }));
+      filteredArgs.forEach((a) => args.push(a));
     }
   }
   const warnings = [];
