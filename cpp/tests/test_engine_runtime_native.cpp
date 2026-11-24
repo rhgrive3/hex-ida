@@ -210,6 +210,161 @@ void test_three_arena_isolation_and_zero_leak() {
   std::printf("  [PASS] 3-arena isolation & 64-iteration zero-leak reclamation\n");
 }
 
+
+void test_wave7_expanded_arm64_lifting_0diff() {
+  assert(hex_engine_init() == HEX_OK);
+
+  auto expect_exact = [](const uint32_t* words, uint32_t count, const char* name, const char* expected_full) {
+    assert(hex_engine_decompile_arm64(
+               words, count, 0x1000ULL, name,
+               static_cast<uint32_t>(std::strlen(name)),
+               HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string got(hex_engine_decompile_get_text_ptr(), hex_engine_decompile_get_text_len());
+    if (got != expected_full) {
+      std::fprintf(stderr, "MISMATCH for %s:\n--- GOT ---\n%s\n--- EXP ---\n%s\n",
+                   name, got.c_str(), expected_full);
+      assert(false);
+    }
+  };
+
+  // 1. ADD (immediate): add w0, w0, #1; ret
+  {
+    const uint32_t w[2] = {0x11000400u, 0xd65f03c0u};
+    expect_exact(w, 2u, "fn",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 fn(uint64 a1)\n"
+        "{\n"
+        "    return a1 + 1;\n"
+        "}");
+  }
+
+  // 2. SUB (immediate): sub x0, x0, #4; ret
+  {
+    const uint32_t w[2] = {0xd1001000u, 0xd65f03c0u};
+    expect_exact(w, 2u, "fn",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "uint64 fn(uint64 a1)\n"
+        "{\n"
+        "    return a1 - 4;\n"
+        "}");
+  }
+
+  // 3. SUB (shifted register): sub w0, w0, w1; ret
+  {
+    const uint32_t w[2] = {0x4b010000u, 0xd65f03c0u};
+    expect_exact(w, 2u, "fn",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 fn(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 - a2;\n"
+        "}");
+  }
+
+  // 4. AND (register): and w0, w0, w1; ret
+  {
+    const uint32_t w[2] = {0x0a010000u, 0xd65f03c0u};
+    expect_exact(w, 2u, "fn",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 fn(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 & a2;\n"
+        "}");
+  }
+
+  // 5. EOR (register): eor x0, x0, x1; ret
+  {
+    const uint32_t w[2] = {0xca010000u, 0xd65f03c0u};
+    expect_exact(w, 2u, "fn",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "uint64 fn(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 ^ a2;\n"
+        "}");
+  }
+
+  // 6. NOP skip: nop; add w0, w0, w1; ret
+  {
+    const uint32_t w[3] = {0xd503201fu, 0x0b010000u, 0xd65f03c0u};
+    expect_exact(w, 3u, "fn",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "int32 fn(uint64 a1, uint64 a2)\n"
+        "{\n"
+        "    return a1 + a2;\n"
+        "}");
+  }
+
+  // 7. MOVZ simple constants (decimal <= 99 and uppercase hex >= 1000)
+  {
+    const uint32_t w42[2] = {0x52800540u, 0xd65f03c0u};  // movz w0, #42; ret
+    expect_exact(w42, 2u, "fn",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "int32 fn(void)\n"
+        "{\n"
+        "    return 42;\n"
+        "}");
+
+    const uint32_t w1234[2] = {0xd2824680u, 0xd65f03c0u};  // movz x0, #0x1234; ret
+    expect_exact(w1234, 2u, "fn",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "uint64 fn(void)\n"
+        "{\n"
+        "    return 0x1234;\n"
+        "}");
+
+    const uint32_t w10000[2] = {0xd2a00020u, 0xd65f03c0u};  // movz x0, #1, lsl #16; ret
+    expect_exact(w10000, 2u, "fn",
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "uint64 fn(void)\n"
+        "{\n"
+        "    return 0x10000;\n"
+        "}");
+  }
+
+  // 8. Fail-closed checks (must return HEX_ERR_UNSUPPORTED to preserve 0-diff):
+  //    (a) Frame prologue/epilogue (JS emits local_m10/local_x29 stack saves -> must fail-closed)
+  const uint32_t frame_fn[5] = {
+      0xa9bf7bfdu,  // stp x29, x30, [sp, #-16]!
+      0x910003fdu,  // mov x29, sp
+      0x0b010000u,  // add w0, w0, w1
+      0xa8c17bfdu,  // ldp x29, x30, [sp], #16
+      0xd65f03c0u,  // ret
+  };
+  assert(hex_engine_decompile_arm64(frame_fn, 5u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  //    (b) Constant in [100..999] (JS prints 0xFF, c_emitter prints 255 -> fail-closed)
+  const uint32_t movz_255[2] = {0x52801fe0u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(movz_255, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  //    (c) Folded constant landing in [100..999]: movz w0, #60; movz w1, #60; add w0, w0, w1; ret -> 120
+  const uint32_t fold_120[4] = {0x52800780u, 0x52800781u, 0x0b010000u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(fold_120, 4u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  //    (d) ADD immediate #0 (optimizer folds a1 + 0 -> a1 while JS prints a1 + 0 -> fail-closed)
+  const uint32_t add_zero[2] = {0x11000000u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(add_zero, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  //    (e) BIC (N=1) and shifted AND (imm6 != 0) -> fail-closed
+  const uint32_t bic_w[2] = {0x0a210000u, 0xd65f03c0u};
+  const uint32_t and_sh[2] = {0x0a010400u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(bic_w, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+  assert(hex_engine_decompile_arm64(and_sh, 2u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+
+  std::printf("  [PASS] Wave 7 expanded ARM64 lifting 0-diff & fail-closed checks\n");
+}
+
 }  // namespace
 
 int main() {
@@ -219,6 +374,7 @@ int main() {
   test_emit_arena_isolation_from_scratch();
   test_strict_parity_rejections();
   test_three_arena_isolation_and_zero_leak();
+  test_wave7_expanded_arm64_lifting_0diff();
   std::printf("test_engine_runtime_native (ASan+UBSan): ALL PASS\n");
   return 0;
 }
