@@ -245,6 +245,9 @@ uint8_t hex_arm64_looks_like_prologue(uint32_t word);
 HEX_WASM_EXPORT("hex_arm64_looks_like_end")
 uint8_t hex_arm64_looks_like_end(uint32_t word);
 
+HEX_WASM_EXPORT("hex_arm64_is_pac_word")
+int32_t hex_arm64_is_pac_word(uint32_t word);
+
 #ifdef __cplusplus
 }
 #endif

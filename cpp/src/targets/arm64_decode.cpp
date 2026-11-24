@@ -671,7 +671,46 @@ uint8_t hex_arm64_kind_capability(uint8_t kind) {
   return kind < 27U ? kKindCapTable[kind] : static_cast<uint8_t>(HEX_ARM64_CAP_FALLBACK);
 }
 
+int32_t hex_arm64_is_pac_word(uint32_t w) {
+  // ARMv8.3-A FEAT_PAuth (arm64e) Pointer Authentication instructions:
+  // 1. Data-processing (1-source):
+  //    PACIA/PACIB/PACDA/PACDB/AUTIA/AUTIB/AUTDA/AUTDB (Z=0, op3=0..7)
+  if (masked(w, 0xffffe000U) == 0xdac10000U) return 1;
+  //    PACIZA/PACIZB/PACDZA/PACDZB/AUTIZA/AUTIZB/AUTDZA/AUTDZB (Z=1, op3=0..7, Rn=31)
+  if (masked(w, 0xffffe3e0U) == 0xdac123e0U) return 1;
+  //    XPACI Xd / XPACD Xd
+  if (masked(w, 0xfffffbe0U) == 0xdac143e0U) return 1;
+  // 2. Data-processing (2-source): PACGA Xd, Xn, Xm
+  if (masked(w, 0xffe0fc00U) == 0x9ac03000U) return 1;
+  // 3. HINT-space PAC/AUT/XPACLRI:
+  //    PACIAZ/PACIASP/PACIBZ/PACIBSP/AUTIAZ/AUTIASP/AUTIBZ/AUTIBSP (CRm=3, op2=0..7)
+  if (masked(w, 0xffffff1fU) == 0xd503231fU) return 1;
+  //    PACIA1716/PACIB1716/AUTIA1716/AUTIB1716 (CRm=1, op2=0,2,4,6)
+  if (masked(w, 0xffffff3fU) == 0xd503211fU) return 1;
+  //    XPACLRI (CRm=0, op2=7)
+  if (w == 0xd50320ffU) return 1;
+  // 4. Authenticated branches & returns:
+  //    RETAA / RETAB
+  if (masked(w, 0xfffffbffU) == 0xd65f0bffU) return 1;
+  //    ERETAA / ERETAB
+  if (masked(w, 0xfffffbffU) == 0xd69f0bffU) return 1;
+  //    BRAAZ Xn / BRABZ Xn
+  if (masked(w, 0xfffff81fU) == 0xd61f081fU) return 1;
+  //    BLRAAZ Xn / BLRABZ Xn
+  if (masked(w, 0xfffff81fU) == 0xd63f081fU) return 1;
+  //    BRAA Xn, Xm / BRAB Xn, Xm
+  if (masked(w, 0xfffff800U) == 0xd71f0800U) return 1;
+  //    BLRAA Xn, Xm / BLRAB Xn, Xm
+  if (masked(w, 0xfffff800U) == 0xd73f0800U) return 1;
+  // 5. Authenticated loads: LDRAA / LDRAB
+  if (masked(w, 0xff200400U) == 0xf8200400U) return 1;
+  return 0;
+}
+
 int32_t hex_arm64_is_decompiler_supported(uint32_t w) {
+  // arm64e PAC instructions are strictly fail-closed (never admitted to WASM decompiler)
+  if (hex_arm64_is_pac_word(w) != 0) return 0;
+
   const uint8_t kind = hex_arm64_classify_word(w);
 
   // Frame prologue `stp x29, x30, [sp, #-N]!` and epilogue `ldp x29, x30, [sp], #N`
