@@ -18,6 +18,7 @@
  *   分からないものは kind:'unknown' のまま残す。無理に名前を付けない。
  */
 import { parseOperands, categoryOf, arm64ReadsDestination } from './arm64.js';
+import { extraApiInfo } from './api-cross-binary-families.js';
 import { analyzeGraph } from './controlflow.js';
 import { knownCallSignature } from './decompiler/call-prototypes.js';
 
@@ -326,17 +327,27 @@ const API_TABLE = [
     args: null, ret: 'object', effect: 'error' },
 ];
 
+function freezeApiRecord(a) {
+  if (!a) return null;
+  const copy = {
+    ...a,
+    ...(a.re instanceof RegExp ? { re: new RegExp(a.re.source, a.re.flags) } : {}),
+    ...(Array.isArray(a.args) ? { args: Object.freeze(a.args.slice()) } : {}),
+  };
+  return Object.freeze(copy);
+}
+
 /** 名前 → API の知識。知らない名前なら null（知ったかぶりをしない）。 */
 export function apiInfo(name) {
   if (typeof name !== 'string') return null;
   const clean = name.trim();
   for (const a of PRECISE_API_TABLE) {
-    if (a.re.test(clean)) return a;
+    if (a.re.test(clean)) return freezeApiRecord(a);
   }
   for (const a of API_TABLE) {
-    if (a.re.test(clean)) return a;
+    if (a.re.test(clean)) return freezeApiRecord(a);
   }
-  return null;
+  return extraApiInfo(clean);
 }
 
 /** API の分類 → アプリの機能。Phase 10 の入口。 */
@@ -356,7 +367,7 @@ export const FEATURE_OF_CATEGORY = {
  * its memory fact, and for stores the source read is inverted into a
  * destination write. The AdvSIMD structure register-list family belongs here
  * too (#3601). */
-const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldtr|ldtrb|ldtrh|ldtrsb|ldtrsh|ldtrsw|ld1|ld2|ld3|ld4)$/;
+const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldxp|ldaxp|ldtr|ldtrb|ldtrh|ldtrsb|ldtrsh|ldtrsw|ld1|ld2|ld3|ld4)$/;
 const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|sttrb|sttrh|stxr|stlxr|stxrb|stxrh|stlxrb|stlxrh|stxp|stlxp|st1|st2|st3|st4)$/;
 const STRUCTURE_MN = /^(ld1|ld2|ld3|ld4|st1|st2|st3|st4)$/;
 /* Exclusive stores are memory stores that still define a 32-bit status result
@@ -379,9 +390,10 @@ const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ld(?:add|set|clr|eor|smax|smin|umax|umi
  * the only register operand is a source read (#3602). */
 const ATOMIC_STORE_ONLY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)l?(?:b|h)?$/;
 /* CAS keeps the compare-and-result register read-write (#3602). */
-const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_READ_WRITE_DEST_RE = /^(?:casp(?:al|a|l)?|cas(?:al|a|l)?(?:b|h)?)$/;
+const ATOMIC_PAIR_CAS_RE = /^casp(?:al|a|l)?$/;
 /* Every LSE RMW spelling, for the memory read-modify-write fact. */
-const ATOMIC_RMW_MN = /^(?:cas|swp|ld(?:add|set|clr|eor|smax|smin|umax|umin)|st(?:add|clr|eor|set|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_RMW_MN = /^(?:casp(?:al|a|l)?|(?:cas|swp|ld(?:add|set|clr|eor|smax|smin|umax|umin)|st(?:add|clr|eor|set|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?)$/;
 
 /**
  * レジスタを 1 つの鍵にする。zr は値を持たないので追跡しない。
@@ -417,7 +429,7 @@ function writeIndexes(base, ops) {
   // is the source value, so the generic [0] fallback would invert them (#3602).
   if (ATOMIC_SOURCE_RESULT_RE.test(base)) return ops.length > 1 ? [1] : [];
   if (STORE_MN.test(base)) return [];
-  if (base === 'ldp' || base === 'ldpsw' || base === 'ldnp') return [0, 1];
+  if (base === 'ldp' || base === 'ldpsw' || base === 'ldnp' || base === 'ldxp' || base === 'ldaxp' || ATOMIC_PAIR_CAS_RE.test(base)) return [0, 1];
   if (COMPARE_MN.test(base)) return [];
   if (CALL_MN.test(base) || RET_MN.test(base)) return [];
   if (COND_BRANCH.test(base) || base === 'b' || base === 'br' || PAC_INDIRECT_BRANCH_MN.test(base) || /^b\./.test(base)) return [];
@@ -492,10 +504,10 @@ function accessSize(base, ops) {
     }
     return total > 0 ? total : null;
   }
-  const reg = ops.find((o) => o.k === 'reg');
+  const reg = EXCLUSIVE_STORE_MN.test(base) ? (ops[1]?.k === 'reg' ? ops[1] : ops.find((o) => o.k === 'reg')) : ops.find((o) => o.k === 'reg');
   if (base === 'ldpsw') return 8; // two 4-byte words in memory
   const w = reg && reg.bits ? reg.bits / 8 : 8;
-  if (base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp') return w * 2;
+  if (base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp' || base === 'ldxp' || base === 'ldaxp' || base === 'stxp' || base === 'stlxp' || ATOMIC_PAIR_CAS_RE.test(base)) return w * 2;
   return w;
 }
 
@@ -609,8 +621,8 @@ export function makeInstruction(raw) {
     insn.memory = {
       kind: atomicRmw ? 'atomic' : (LOAD_MN.test(base) ? 'load' : 'store'),
       base: regKey(mem.base),
-      disp: mem.addressDisp && mem.addressDisp.value != null ? mem.addressDisp.value : (mem.disp && mem.disp.value != null ? mem.disp.value : null),
-      writebackDisp: mem.writebackDisp && mem.writebackDisp.value != null ? mem.writebackDisp.value : null,
+      disp: mem.mode === 'post' ? 0n : (mem.addressDisp && mem.addressDisp.value != null ? mem.addressDisp.value : (mem.disp && mem.disp.value != null ? mem.disp.value : null)),
+      writebackDisp: mem.writebackDisp && mem.writebackDisp.value != null ? mem.writebackDisp.value : ((mem.mode === 'post' || mem.mode === 'pre') && mem.disp && mem.disp.value != null ? mem.disp.value : null),
       indexed: !!mem.index,
       // 添字レジスタ。フィールドの位置がここに載ってくる形（非固定 ABI）を解くのに要る
       index: mem.index ? regKey(mem.index) : null,
@@ -904,12 +916,14 @@ export function analyzeDataFlow(insns, opts) {
     invalidateStackFrame('sp');
   }
 
+  const entryRegsByRow = new Map();
   for (let i = 0; i < insns.length; i++) {
     const insn = insns[i];
     const base = insn.mnemonic.toLowerCase();
 
     // 分岐で飛んでこられる場所 = 合流点。ここから先は前提を持ち越せない。
     if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); stackBytes.clear(); stackFrame.clear(); stackFrameLost.clear(); }
+    if (blockStartRows.has(insn.row)) entryRegsByRow.set(insn.row, new Map(regs));
     if (rowKills && blockStartRows.has(insn.row)) written.clear();
 
     // 引数レジスタの検出は「自分で書く前に読んだか」で判定する
@@ -933,8 +947,9 @@ export function analyzeDataFlow(insns, opts) {
       continue;
     }
 
-    if (!insn.memory && !insn.isCall && insn.writes.includes('sp')) {
-      trackSpWrite(insn, base);
+    if (!insn.memory && !insn.isCall) {
+      if (insn.writes.includes('sp')) trackSpWrite(insn, base);
+      if (insn.writes.includes('x29')) invalidateStackFrame('x29');
     }
 
     /* ── adrp / adr: アドレスの土台 ── */
@@ -1025,8 +1040,10 @@ export function analyzeDataFlow(insns, opts) {
     if (base === 'movz') {
       const dst = insn.writes[0];
       const s = insn.ops[1];
-      if (dst && s && s.k === 'imm' && s.value != null) {
-        const shift = s.shift && s.shift.amount ? BigInt(s.shift.amount) : 0n;
+      const rawShift = s && s.shift && s.shift.amount != null ? s.shift.amount : 0;
+      const validShift = rawShift === 0 || rawShift === 16 || rawShift === 32 || rawShift === 48;
+      if (dst && s && s.k === 'imm' && s.value != null && validShift) {
+        const shift = BigInt(rawShift);
         const v = value('imm', { value: s.value << shift }, SCORE.confirmed,
           [ev('imm', insn.row, { value: s.value << shift })], insn.row);
         set(dst, v);
@@ -1256,6 +1273,8 @@ export function analyzeDataFlow(insns, opts) {
     flows, calls, byRow, addressRefs,
     argRegs: Array.from(argsRead).sort((a, b) => a - b),
     finalRegs: regs,
+    entryRegsByRow,
+    joinRows,
   };
 }
 
@@ -1624,9 +1643,14 @@ function lastCallBefore(calls, row) {
 
 /** そのブロックに入る時点でレジスタが持っていた値（分かる範囲で）。 */
 function valueAt(flow, row, reg) {
+  if (flow?.entryRegsByRow instanceof Map && flow.entryRegsByRow.has(row)) {
+    return flow.entryRegsByRow.get(row).get(reg) ?? null;
+  }
+  if (flow?.joinRows instanceof Set && flow.joinRows.has(row)) return null;
   let best = null;
   for (const f of flow.flows) {
     if (f.row >= row) break;
+    if (flow?.joinRows instanceof Set && flow.joinRows.has(f.row)) best = null;
     if (f.to === reg && f.value) best = f.value;
   }
   return best;

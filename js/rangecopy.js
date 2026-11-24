@@ -49,6 +49,7 @@ export function rangeCopyMenu(app,x,y) {
   items.push('-', { label:t('sel.selectAll'), action:() => app.viewer.selectAllRows() }, { label:t('sel.clear'), action:() => app.viewer.clearRange() });
   menu(items,x,y);
 }
+const activeCopyCount = new WeakMap();
 export function copyRange(app, what) {
   const region=app.store.get('currentRegion'), sel=app.viewer.selectionRange(); if(!region||!sel)return;
   if(sel.count>MAX_COPY_ROWS){
@@ -58,8 +59,13 @@ export function copyRange(app, what) {
   }
   const wantAsm=(what==='asm'||what==='all'||what==='explained')&&!!app.store.get('canDisassemble')&&region.disasm!==false;
   const n=sel.count.toLocaleString(), label=t('sel.rows',{ n });
+  activeCopyCount.set(app, (activeCopyCount.get(app) || 0) + 1);
   app.setBusy(true,t('sel.copying',{ n }));
-  const text=buildText(app,region,sel,what,wantAsm).finally(()=>app.setBusy(false));
+  const text=buildText(app,region,sel,what,wantAsm).finally(()=>{
+    const rem = Math.max(0, (activeCopyCount.get(app) || 1) - 1);
+    activeCopyCount.set(app, rem);
+    if (rem === 0) app.setBusy(false);
+  });
   copyTextLazy(text,label);
 }
 
@@ -98,8 +104,10 @@ async function buildFixedText(app, region, sel, what, wantAsm) {
     const from=isBig?(selStart>base?selStart:base):Math.max(selStart,base);
     const chunkEnd=isBig?base+chunkRows-1n:base+CHUNK_ROWS-1;
     const to=isBig?(selEnd<chunkEnd?selEnd:chunkEnd):Math.min(selEnd,chunkEnd);
+    const rawFixed=app.viewer?.fixedInstructionSize?.();
+    const step=Number.isInteger(rawFixed)&&rawFixed>0?rawFixed:4;
     for(let row=from;row<=to;row++){
-      const idx=isBig?Number(row-base):row-base, off=idx*4, avail=entry.bytes?Math.min(4,entry.bytes.length-off):0;
+      const idx=isBig?Number(row-base):row-base, off=idx*step, avail=entry.bytes?Math.min(step,entry.bytes.length-off):0;
       const hex=avail>0?bytesHex(entry.bytes,off,avail,spaced):'', mn=entry.mn?(entry.mn[idx]||''):'', ops=entry.ops?(entry.ops[idx]||''):'';
       if(what==='address')out.push(addrHex(app.viewer.rowAddress(row)));
       else if(what==='hex')out.push(hex);

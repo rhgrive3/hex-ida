@@ -415,15 +415,23 @@ function parseElfRelativeRelocations(fileBytes) {
     }
 
     const byteLenBig = BigInt(byteLen);
+    const MAX_ELF_RELOCATIONS_SCANNED = MAX_ELF_RELOCATIONS * 2;
+    let scannedEntries = 0;
+    const seenSpans = new Set();
     const seen = new Set();
     const scanRelaTable = (tableOffset, tableSize, entSize) => {
-      if (relocations.length >= MAX_ELF_RELOCATIONS) return;
+      if (relocations.length >= MAX_ELF_RELOCATIONS || scannedEntries >= MAX_ELF_RELOCATIONS_SCANNED) return;
       if (tableOffset < 0n || tableSize <= 0n || entSize < 24n) return;
       if (tableOffset > byteLenBig || tableSize > byteLenBig - tableOffset) return;
+      const spanKey = `${tableOffset}:${tableSize}:${entSize}`;
+      if (seenSpans.has(spanKey)) return;
+      seenSpans.add(spanKey);
       const countBig = tableSize / entSize;
-      const remaining = BigInt(MAX_ELF_RELOCATIONS - relocations.length);
-      const limit = Number(countBig < remaining ? countBig : remaining);
+      const remainingScanned = BigInt(MAX_ELF_RELOCATIONS_SCANNED - scannedEntries);
+      const limit = Number(countBig < remainingScanned ? countBig : remainingScanned);
       for (let i = 0; i < limit; i += 1) {
+        if (relocations.length >= MAX_ELF_RELOCATIONS || scannedEntries >= MAX_ELF_RELOCATIONS_SCANNED) break;
+        scannedEntries += 1;
         const entryOffBig = tableOffset + BigInt(i) * entSize;
         if (entryOffBig + 24n > byteLenBig) break;
         const off = Number(entryOffBig);
@@ -1230,8 +1238,9 @@ export function createAppAnalysisQueryAdapter(app) {
       if (rowOffset > MAX_ROW || endRowExact > MAX_ROW || maxRowExact > MAX_ROW) {
         return unsupported(id, 'function-row-index-unrepresentable');
       }
+      if (maxRowExact < 0n) return unsupported(id, 'function-range-empty');
       const startRow = Number(rowOffset);
-      const maxRow = Math.max(0, Number(maxRowExact));
+      const maxRow = Number(maxRowExact);
       const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
       const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, { ...options, architecture });
@@ -1304,8 +1313,9 @@ export function createAppAnalysisQueryAdapter(app) {
           throwIfAborted(options.signal);
           if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
           try {
-            cxxEvidence=entry.provider.projectForFunction({functionAddress:address!=null?BigInt(address):null,
-              functionName:address==null?null:app?.symbols?.nameAt?.(address),ir:projectionIr,
+            const addrBig = address != null ? BigInt(address) : null;
+            cxxEvidence=entry.provider.projectForFunction({functionAddress:addrBig,
+              functionName:addrBig==null?null:app?.symbols?.nameAt?.(addrBig),ir:projectionIr,
               enableTypedArguments:options.typedArgumentRecovery===true});
           } catch {cxxEvidence=null;}
         }
@@ -1317,9 +1327,7 @@ export function createAppAnalysisQueryAdapter(app) {
   const adapter = {
     async currentIdentity(options = {}) {
       if (options.signal?.aborted) {
-        const error = options.signal.reason instanceof Error ? options.signal.reason : new Error('AbortError');
-        error.name = 'AbortError';
-        throw error;
+        throw abortError(options.signal);
       }
       const fileInfo = currentInfo(app);
       const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;

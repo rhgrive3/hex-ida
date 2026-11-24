@@ -43,14 +43,22 @@ export function overlayJvmLocalLowering(fn, lowered, options = {}) {
   const addedNodes = [];
   const insertBefore = new Map();
   const removedNodeIds = new Set();
+  const nodesByEffect = new Map();
+  for (const node of old.nodes) {
+    for (const id of node.sourceEffectIds || []) {
+      let list = nodesByEffect.get(id);
+      if (!list) { list = []; nodesByEffect.set(id, list); }
+      list.push(node);
+    }
+  }
   let changed = false;
 
   for (const bundle of fn.bundles ?? []) {
     const effectId = bundle.operationId;
+    const effectNodes = nodesByEffect.get(effectId) || [];
     if (bundle.mnemonic === 'iinc') {
-      const primary = old.nodes.find((node) => (
+      const primary = effectNodes.find((node) => (
         node.kind === 'copy'
-        && (node.sourceEffectIds || []).includes(effectId)
         && node.inputs.length === 1
         && node.outputs.length === 1
       ));
@@ -105,11 +113,10 @@ export function overlayJvmLocalLowering(fn, lowered, options = {}) {
     }
 
     if (JVM_STORE_MNEMONIC.test(String(bundle.mnemonic ?? ''))) {
-      const spurious = old.nodes.find((node) => (
+      const spurious = effectNodes.find((node) => (
         node.kind === 'binary'
         && node.operator === 'or'
         && node.outputs.length === 0
-        && (node.sourceEffectIds || []).includes(effectId)
       ));
       if (spurious) {
         removedNodeIds.add(spurious.id);

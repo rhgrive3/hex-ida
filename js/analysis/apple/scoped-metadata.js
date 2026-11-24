@@ -58,7 +58,7 @@ export async function queryMachOPointerView(request, { world, assumptions, snaps
 /** Preflight ONLY the hierarchy/protocol closure the existing resolver reads.
  * This is budget validation, not a second method-resolution implementation. */
 async function boundObjcOwnerTraversal(index, receiverType, protocols, work) {
-  const pending = [...(protocols ?? [])], seenProtocols = new Set(), seenClasses = new Set();
+  const pending = [], seenProtocols = new Set(), seenClasses = new Set();
   const enqueue = (values) => {
     if (values == null) return;
     if (!Array.isArray(values) || values.length > 256) contractFail('objc-scoped-protocol-list-budget');
@@ -71,6 +71,7 @@ async function boundObjcOwnerTraversal(index, receiverType, protocols, work) {
     }
     if (pending.length > 8192) contractFail('objc-scoped-protocol-queue-budget');
   };
+  enqueue(protocols);
   let name = cleanClassName(receiverType);
   while (name && !seenClasses.has(name) && seenClasses.size < 64) {
     seenClasses.add(name); work.charge('workUnits');

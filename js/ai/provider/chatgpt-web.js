@@ -42,8 +42,17 @@ export class ChatGPTWebProvider extends AIProvider {
       const decision = parseChatGPTDecision(text);
       return validateModelDecision(decision, (request.tools || []).map((tool) => tool.name));
     } catch (error) {
-      if (controller.signal.aborted || error?.name === 'AbortError') {
+      if (controller.signal.aborted) {
         throw interruptionError(controller.signal);
+      }
+      if (error?.name === 'AbortError') {
+        throw new AIError('model_timeout', error?.message || 'The AI model request aborted.', {
+          provider: 'chatgpt-web',
+          bridgeCode: error?.code || 'timeout',
+          bridgeStage: bridgeStage(error),
+          bridgeDetails: error?.details || null,
+          runtimeBuildId: runtimeBuildId(),
+        });
       }
       if (error instanceof AIError) throw error;
       const type = error?.code === 'timeout' ? 'model_timeout' : 'provider_error';

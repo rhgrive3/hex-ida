@@ -71,7 +71,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
       const model = await context.analyze(address, end, {
         ...callerOptions,
         maxInstructions: Math.min(requestedMax, remaining),
-        signal: registry.executionSignal || callerOptions.signal || null,
+        signal: callerOptions.signal || null,
       });
       const cost = Array.isArray(model?.instructions) ? model.instructions.length : 0;
       const latestRemaining = Math.max(0, maxDisassembly - disassembly);
@@ -432,7 +432,8 @@ async function searchPage(context, legacy, tool, query, limit, offset, cursorFor
     source = Array.isArray(value?.results) ? value.results : [];
   }
   const rows = source.slice(0, limit).map((row) => ({ ...row, score: Number(row?.score || 0), reasons: Array.isArray(row?.reasons) ? row.reasons : [] }));
-  const explicitTotal = Number.isFinite(Number(value?.total)) ? Number(value.total) : null;
+  const finiteNumeric = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v)) ? Number(v) : null;
+  const explicitTotal = finiteNumeric(value?.total);
   const upstreamComplete = value?.complete === true || value?.completeness?.complete === true;
   const upstreamTruncated = Boolean(value?.truncated) || Boolean(value?.completeness?.complete === false);
   const hasLookahead = source.length > rows.length;
@@ -445,7 +446,7 @@ async function searchPage(context, legacy, tool, query, limit, offset, cursorFor
   return {
     tool, query, results: rows, returned: rows.length, total, offset,
     truncated: !complete, complete, reason: complete ? null : (value?.reason || value?.completeness?.reason || (upstreamTruncated ? 'scan-budget' : 'result-limit')),
-    coverage: Number.isFinite(Number(value?.coverage ?? value?.completeness?.coverage)) ? Number(value?.coverage ?? value?.completeness?.coverage) : (total ? Math.min(1, knownPosition / total) : null),
+    coverage: finiteNumeric(value?.coverage ?? value?.completeness?.coverage) ?? (total ? Math.min(1, knownPosition / total) : null),
     ...(value?.scanned != null ? { scanned: value.scanned } : {}),
     ...(value?.scanTotal != null ? { scanTotal: value.scanTotal } : {}),
     ...(nextOffset != null ? { continuation: { cursor: cursorFor(nextOffset) } } : {}),
@@ -600,7 +601,8 @@ function pageResult(base, total, offset, returned, cursor) {
 function attachContinuation(value, offset, cursorFactory) {
   const out = { ...(value || {}), offset };
   const returned = out.returned != null && Number.isFinite(Number(out.returned)) ? Number(out.returned) : resultCount(out) || 0;
-  const complete = out.complete === true || out.truncated === false && Number.isFinite(Number(out.total)) && offset + returned >= Number(out.total);
+  const explicitTotal = (typeof out.total === 'number' || (typeof out.total === 'string' && out.total.trim() !== '')) && Number.isFinite(Number(out.total)) ? Number(out.total) : null;
+  const complete = out.complete === true || (out.truncated === false && explicitTotal != null && offset + returned >= explicitTotal);
   out.returned = returned;
   out.complete = Boolean(complete);
   out.truncated = !out.complete;
@@ -715,7 +717,8 @@ function reportedOffset(value) {
 function externalArrayPage(value, rows, { offset = 0, limit, localOffset = 0, cursorFor = null, base = {} } = {}) {
   const available = rows.slice(localOffset);
   const page = available.slice(0, limit);
-  const explicitTotal = Number.isFinite(Number(value?.total ?? value?.completeness?.total)) ? Number(value?.total ?? value?.completeness?.total) : null;
+  const finiteNumeric = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v)) ? Number(v) : null;
+  const explicitTotal = finiteNumeric(value?.total ?? value?.completeness?.total);
   const upstreamComplete = value?.complete === true || value?.completeness?.complete === true;
   const upstreamTruncated = value?.truncated === true || value?.complete === false || value?.completeness?.complete === false;
   const hasLookahead = available.length > page.length;
@@ -725,8 +728,8 @@ function externalArrayPage(value, rows, { offset = 0, limit, localOffset = 0, cu
       : !upstreamTruncated && !hasLookahead && page.length < limit;
   const total = explicitTotal ?? (complete ? knownPosition : null);
   const next = !complete && page.length ? knownPosition : null;
-  const coverageRaw = value?.coverage ?? value?.completeness?.coverage;
-  const coverage = Number.isFinite(Number(coverageRaw)) ? Math.max(0, Math.min(1, Number(coverageRaw)))
+  const coverageRaw = finiteNumeric(value?.coverage ?? value?.completeness?.coverage);
+  const coverage = coverageRaw != null ? Math.max(0, Math.min(1, coverageRaw))
     : total != null && total > 0 ? Math.min(1, knownPosition / total) : (complete ? 1 : null);
   return {
     ...base,
@@ -865,7 +868,10 @@ async function binaryDiff(context, { limit, offset = 0, cursorFor }) {
       value = await context.getBinaryDiff({ limit: Math.min(1_000_000, offset + limit + 1), offset: 0 });
       localOffset = offset;
     }
-  } else value = context.binaryDiff || { results: [] };
+  } else {
+    value = context.binaryDiff || { results: [] };
+    localOffset = offset;
+  }
   const key = Array.isArray(value?.results) ? 'results' : Array.isArray(value?.functions) ? 'functions' : Array.isArray(value?.changes) ? 'changes' : Array.isArray(value) ? 'results' : null;
   const rows = Array.isArray(value) ? value : (key ? value[key] : []);
   const paged = externalArrayPage(value, rows, { offset, limit, localOffset, cursorFor });

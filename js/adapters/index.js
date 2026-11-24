@@ -376,6 +376,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       this.activeRun.cancelled = true;
       this.activeRun.sandbox.emulator.stopped = 'stale-request';
       this.activeRun.sandbox.emulator.stopCode = 'stale-request';
+      this.activeRun.controller?.abort();
       this.activeRun = null;
     }
     this.memoryMap = memoryMap;
@@ -394,6 +395,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       this.activeRun.cancelled = true;
       this.activeRun.sandbox.emulator.stopped = 'cancelled';
       this.activeRun.sandbox.emulator.stopCode = 'cancelled';
+      this.activeRun.controller?.abort();
       this.activeRun = null;
     }
     this.cancelled = true; this.running = false; this.sandbox = null; this.memoryMap = null; this.initialRegisters = null; this.lastResult = null;
@@ -720,10 +722,11 @@ export class RemoteDebugAdapter extends DebugAdapter {
   }
   async disconnect() {
     const wasConnected = this.connected;
-    if (wasConnected) { try { await this.protocol.request('disconnect',{}, { epoch:this.epoch, timeoutMs:1000 }); } catch {} }
+    const disconnectEpoch = this.epoch;
     this.connected = false;
     this.eventListeners.clear();
     this.nextEpoch();
+    if (wasConnected) { try { await this.protocol.request('disconnect',{}, { epoch:disconnectEpoch, timeoutMs:1000 }); } catch {} }
     return { disconnected:true };
   }
   setEpoch(epoch) {
@@ -761,8 +764,8 @@ export class RemoteDebugAdapter extends DebugAdapter {
   // remote mutation at the transport instead of letting it run to completion.
   writeRegister(reg,value,threadId,requestOptions={}){const name=registerSelector(reg); const normalized=registerWriteValue(name,value); return this.call('writeRegister',{reg:name,value:normalized.toString(),threadId},{ signal:requestOptions?.signal })}
   async readMemory(address,size){const n=memoryReadSize(size,1); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}
-  async writeMemory(address,bytes,requestOptions={}){this.require('writeMemory'); const LIMIT=64*1024; let data; if(bytes instanceof Uint8Array)data=bytes; else { const it=bytes?.[Symbol.iterator]; if(typeof it==='function'&&typeof bytes!=='string'){ // bounded consumption (#5750): never enumerate past the limit
-    data=new Uint8Array(LIMIT+1); let n=0; for(const b of bytes){ if(n>=LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); data[n++]=b; } data=data.subarray(0,n); } else { data=Array.from(bytes||[]); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); } }
+  async writeMemory(address,bytes,requestOptions={}){this.requireConnected(); this.require('writeMemory'); const LIMIT=64*1024; let data; if(bytes instanceof Uint8Array)data=bytes; else { const it=bytes?.[Symbol.iterator]; if(typeof it==='function'&&typeof bytes!=='string'){ // bounded consumption (#5750): never enumerate past the limit
+    data=new Uint8Array(LIMIT+1); let n=0; for(const b of bytes){ if(n>=LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); data[n++]=b; } data=data.subarray(0,n); } else { throw new DebugAdapterError('invalid-byte','memory write requires a byte array'); } }
     if(data.length>LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data},{ signal:requestOptions?.signal }); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
