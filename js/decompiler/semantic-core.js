@@ -870,30 +870,30 @@ function frameBookkeepingRegisters(ctx) {
   if (ctx.ir?.compat?.projection === 'semantic-ir-v2-to-v1') return new Set();
   return new Set(['r29', 'r30']);
 }
-function instDefinesOrClobbersReg(inst, canonReg) {
+function instDefinesOrClobbersReg(inst, canonReg, isAArch64 = false) {
   if (!inst || !canonReg) return false;
   if (inst.op === OP.CALL) {
-    if (inst.dst?.reg && canonicalRegister(inst.dst.reg) === canonReg) return true;
+    if (inst.dst?.reg && canonicalRegister(inst.dst.reg, isAArch64) === canonReg) return true;
     if (!inst.dst) return true;
-    if (Array.isArray(inst.clobbers) && inst.clobbers.some((r) => canonicalRegister(r) === canonReg)) return true;
-    if (Array.isArray(inst.extra?.clobbers) && inst.extra.clobbers.some((r) => canonicalRegister(r) === canonReg)) return true;
+    if (Array.isArray(inst.clobbers) && inst.clobbers.some((r) => canonicalRegister(r, isAArch64) === canonReg)) return true;
+    if (Array.isArray(inst.extra?.clobbers) && inst.extra.clobbers.some((r) => canonicalRegister(r, isAArch64) === canonReg)) return true;
     return false;
   }
   if (inst.op === OP.CLOBBER) {
-    return !inst.dst?.reg || canonicalRegister(inst.dst.reg) === canonReg;
+    return !inst.dst?.reg || canonicalRegister(inst.dst.reg, isAArch64) === canonReg;
   }
   return false;
 }
 
-function valueClobberedBeforeRet(explicit, ret, canonReg, ir) {
+function valueClobberedBeforeRet(explicit, ret, canonReg, ir, isAArch64 = false) {
   if (!explicit || !ret || !canonReg || !ir || ret.block == null) return false;
-  if (explicit.reg && canonicalRegister(explicit.reg) !== canonReg) return false;
+  if (explicit.reg && canonicalRegister(explicit.reg, isAArch64) !== canonReg) return false;
   const def = explicit.def || null;
   const defBlock = def?.block ?? (ir.entry ?? 0);
   const retBlockObj = ir.blocks?.[ret.block];
   if (retBlockObj) {
     for (const inst of retBlockObj.insts || []) {
-      if (!instDefinesOrClobbersReg(inst, canonReg)) continue;
+      if (!instDefinesOrClobbersReg(inst, canonReg, isAArch64)) continue;
       if (!sameBlockPrecedes(ir, inst, ret)) continue;
       if (def && def.block === ret.block && !sameBlockPrecedes(ir, def, inst)) continue;
       return true;
@@ -902,7 +902,7 @@ function valueClobberedBeforeRet(explicit, ret, canonReg, ir) {
   if (defBlock !== ret.block && ir.blocks?.[defBlock]) {
     if (def && def.block === defBlock) {
       for (const inst of ir.blocks[defBlock].insts || []) {
-        if (sameBlockPrecedes(ir, def, inst) && instDefinesOrClobbersReg(inst, canonReg)) {
+        if (sameBlockPrecedes(ir, def, inst) && instDefinesOrClobbersReg(inst, canonReg, isAArch64)) {
           return true;
         }
       }
@@ -916,7 +916,7 @@ function valueClobberedBeforeRet(explicit, ret, canonReg, ir) {
       if (!blockCanReach(ir, bi, ret.block)) continue;
       const b = ir.blocks[bi];
       if (!b) continue;
-      if ((b.insts || []).some((inst) => instDefinesOrClobbersReg(inst, canonReg))) return true;
+      if ((b.insts || []).some((inst) => instDefinesOrClobbersReg(inst, canonReg, isAArch64))) return true;
       for (const s of b.succ || []) {
         if (!seen.has(s) && s !== ret.block) queue.push(s);
       }
@@ -929,13 +929,14 @@ function returnValueAt(ret, ctx) {
   if (ctx?.callerIsVoid) return null;
   const explicit=valueOf(ret?.args?.[0]);
   const reg=returnRegisterForContext(ctx);
+  const isAArch64 = isAArch64Context(ctx.ir, ctx.opts);
   if (explicit) {
-    if (reg && valueClobberedBeforeRet(explicit, ret, canonicalRegister(reg), ctx.ir)) {
-      return reachingRegisterValue(ctx.ir, ret, reg, isAArch64Context(ctx.ir, ctx.opts));
+    if (reg && valueClobberedBeforeRet(explicit, ret, canonicalRegister(reg, isAArch64), ctx.ir, isAArch64)) {
+      return reachingRegisterValue(ctx.ir, ret, reg, isAArch64);
     }
     return explicit;
   }
-  return reg ? reachingRegisterValue(ctx.ir, ret, reg, isAArch64Context(ctx.ir, ctx.opts)) : null;
+  return reg ? reachingRegisterValue(ctx.ir, ret, reg, isAArch64) : null;
 }
 
 function feedsReturn(value, ctx) {

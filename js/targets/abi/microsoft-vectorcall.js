@@ -627,8 +627,8 @@ export const MICROSOFT_VECTORCALL_ABI = new ABIPlugin({
     // Register identity is schema data: never stringify arrays/objects into
     // an argument-register token (#5718).
     const id = typeof reg === 'string' ? reg.toLowerCase() : '';
-    const vectorIndex = VECTOR_ARGUMENT_REGISTERS.indexOf(id);
-    if (vectorIndex >= 0) return { kind:'argument', reg:id, index:vectorIndex, abiClass:'fp-or-vector' };
+    const vectorMatch = /^(xmm|ymm)([0-5])$/.exec(id);
+    if (vectorMatch) return { kind:'argument', reg:id, index:Number(vectorMatch[2]), abiClass:'fp-or-vector' };
     if (typeof reg !== 'string') return { kind:'incoming-register-state', reg:id };
     return MICROSOFT_X64_ABI.classifyEntryRegister(reg);
   },

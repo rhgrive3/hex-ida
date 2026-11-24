@@ -69,12 +69,15 @@ function typeBits(type, fallback = 64, pointerBits = 64) {
   if (isComplexLongDouble(type)) return 256;
   if (isLongDouble(type)) return 128;
   if (isInt128(type)) return 128;
+  if (/\b__m512(?:i|d)?\b/.test(type)) return 512;
+  if (/\b__m256(?:i|d)?\b/.test(type)) return 256;
+  if (/\b__m128(?:i|d)?\b/.test(type)) return 128;
   if (/\b(?:unsigned\s+)?long\s+long\b/.test(type)) return 64;
   if (/\blong\b/.test(type)) return pointerBits === 32 ? 32 : 64;
-  if (/\b(?:bool|char|int8|uint8)\b/.test(type)) return 8;
-  if (/\b(?:short|int16|uint16)\b/.test(type)) return 16;
-  if (/\b(?:int|unsigned int|int32|uint32|float)\b/.test(type)) return 32;
-  if (/\b(?:double|int64|uint64)\b/.test(type)) return 64;
+  if (/\b(?:bool|_bool|char|int8(?:_t)?|uint8(?:_t)?|i8|u8|byte)\b/.test(type)) return 8;
+  if (/\b(?:short|int16(?:_t)?|uint16(?:_t)?|i16|u16|half|fp16)\b/.test(type)) return 16;
+  if (/\b(?:int|unsigned int|int32(?:_t)?|uint32(?:_t)?|i32|u32|float|f32)\b/.test(type)) return 32;
+  if (/\b(?:double|int64(?:_t)?|uint64(?:_t)?|i64|u64|f64)\b/.test(type)) return 64;
   return fallback;
 }
 
@@ -87,7 +90,7 @@ function parameterClass(parameter, pointerBits = 64) {
   const x87 = !pointer && (complexX87 || parameter?.x87 === true || isLongDouble(type, abiClass));
   const aggregate = !x87 && !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
-  const vector = !x87 && !pointer && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
+  const vector = !x87 && !pointer && (parameter?.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`));
   const floating = !x87 && !aggregate && !pointer && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
   const aggregateLayoutPresent = aggregate && aggregateLayoutDescriptorPresent(parameter);
   const aggregateLayout = aggregate && aggregateLayoutPresent ? canonicalAggregateLayout(parameter) : null;

@@ -394,7 +394,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           ...(c.aggregate ? { aggregate:true, alignmentBytes:c.alignmentBytes } : {}),
           possible:false,
           mustUse:true,
-          ...(c.bits < 32 && !c.pointer ? {
+          ...(c.bits < 32 && !c.pointer && !c.aggregate ? {
             callerExtended:true,
             extension:c.signed ? 'sign-extend-to-32' : 'zero-extend-to-32',
           } : {}),

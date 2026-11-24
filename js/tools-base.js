@@ -852,44 +852,51 @@ export function showStructs(app) {
 
 function showStructDetail(app, store, s, onChange) {
   const sheet = new Sheet(s.name);
-  sheet.body.append(codeBlock(store.toC(s.name)));
-  const l = list();
-  for (const m of s.members) {
-    l.append(tapRow('+0x' + m.offset.toString(16).toUpperCase() + '  ' + m.type + ' ' + m.name, {
-      sub: (m.size || 8) + ' バイト',
-      onTap: () => {
-        const nameIn = input('項目の名前', m.name);
-        const d = el('div');
-        d.append(para('この項目に名前を付けます。'), field(nameIn, '決定', () => {
-          try {
-            store.setMember(s.name, m.offset, { name: nameIn.value.trim() || m.name });
-          } catch (error) {
-            if (error?.name !== 'PersistenceError') throw error;
-            onChange(); notePersistenceFailure(app, '構造体'); return;
-          }
-          sheet.close();
-          onChange();
-          toast('名前を付けました');
-        }));
-        const sh = new Sheet('項目の名前');
-        sh.body.append(d);
-      },
-    }));
-  }
-  sheet.body.append(l);
-  const chips = el('div', 'chips');
-  chips.append(button('C としてコピー', 'chip', () => copyText(store.toC(s.name), '構造体')));
-  chips.append(button('削除', 'chip danger', () => {
-    try { store.remove(s.name); }
-    catch (error) {
-      if (error?.name !== 'PersistenceError') throw error;
-      onChange(); notePersistenceFailure(app, '構造体の削除'); return;
+  const render = () => {
+    sheet.body.replaceChildren();
+    const cur = store.list().find((x) => x.name === s.name) || s;
+    sheet.body.append(codeBlock(store.toC(cur.name)));
+    const l = list();
+    for (const m of cur.members) {
+      l.append(tapRow('+0x' + m.offset.toString(16).toUpperCase() + '  ' + m.type + ' ' + m.name, {
+        sub: (m.size || 8) + ' バイト',
+        onTap: () => {
+          const nameIn = input('項目の名前', m.name);
+          const d = el('div');
+          d.append(para('この項目に名前を付けます。'), field(nameIn, '決定', () => {
+            try {
+              store.setMember(cur.name, m.offset, { name: nameIn.value.trim() || m.name });
+            } catch (error) {
+              if (error?.name !== 'PersistenceError') throw error;
+              onChange(); notePersistenceFailure(app, '構造体'); return;
+            }
+            sh.back();
+            sheet.destroyForward();
+            render();
+            onChange();
+            toast('名前を付けました');
+          }));
+          const sh = new Sheet('項目の名前');
+          sh.body.append(d);
+        },
+      }));
     }
-    sheet.close();
-    onChange();
-    toast('削除しました');
-  }));
-  sheet.body.append(chips);
+    sheet.body.append(l);
+    const chips = el('div', 'chips');
+    chips.append(button('C としてコピー', 'chip', () => copyText(store.toC(cur.name), '構造体')));
+    chips.append(button('削除', 'chip danger', () => {
+      try { store.remove(cur.name); }
+      catch (error) {
+        if (error?.name !== 'PersistenceError') throw error;
+        onChange(); notePersistenceFailure(app, '構造体の削除'); return;
+      }
+      sheet.close();
+      onChange();
+      toast('削除しました');
+    }));
+    sheet.body.append(chips);
+  };
+  render();
 }
 
 /* ══════════════════════════════════════════════════════════

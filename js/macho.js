@@ -307,8 +307,12 @@
     return String(cn.cpu || 'unknown').toLowerCase();
   }
 
+  function isArm32Architecture(arch) {
+    return arch === 'arm' || arch === 'armv7' || arch === 'armv7s' || arch === 'armv7k';
+  }
+
   function instructionAlignment(arch) {
-    return arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32' ? 4n : arch === 'arm' ? 2n : 1n;
+    return arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32' ? 4n : isArm32Architecture(arch) ? 2n : 1n;
   }
 
   function inRange(value, start, size) {
@@ -1232,7 +1236,7 @@
                 const nextQ = ehEncodedAdvance(u8, q, augEnd, enc, options);
                 if (nextQ == null) { fdeEncoding = null; q = augEnd; break; }
                 q = nextQ;
-              } else if (ch !== 'S') {
+              } else if (ch !== 'S' && ch !== 'B') {
                 // Unknown augmentation data has no self-describing size. The
                 // outer z-length still lets us skip this CIE safely.
                 fdeEncoding = null; q = augEnd; break;
@@ -1357,6 +1361,7 @@
       || arch === 'x86' || arch === 'i386' || arch === 'ppc';
     const ptrSize = is32 ? 4 : 8;
     const minNonRelativeStride = ptrSize * 3;
+    const isArm32 = isArm32Architecture(arch);
     const align = instructionAlignment(arch);
     const inside = (addr, rs) => {
       /* #8798: the authority sets are sorted disjoint interval lists, so an
@@ -1412,10 +1417,11 @@
            imp = objcMethodPointer(readPtr(q + ptrSize * 2), imageBase);
            if (!inside(nameAddr, index.selectorText)) { valid = false; break; }
          }
-         if (!inside(typeAddr, index.typeText) || !inside(imp, index.exec) || (imp % align) !== 0n) {
+         const normalizedImp = isArm32 && imp != null ? (imp & ~1n) : imp;
+         if (!inside(typeAddr, index.typeText) || !inside(normalizedImp, index.exec) || (normalizedImp % align) !== 0n) {
            valid = false; break;
          }
-         imps.push(imp);
+         imps.push(normalizedImp);
        }
        if (valid) {
          for (const imp of imps) {

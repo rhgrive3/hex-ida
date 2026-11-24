@@ -497,7 +497,7 @@ function lift(insn, opts = {}) {
     const writebackDispOp = mem ? (mem.writebackDisp ?? (mem.mode === 'pre' ? addressDispOp : null)) : null;
     const addr = {
       base: mem ? regKeyOf(mem.base) : null,
-      disp: addressDispOp && addressDispOp.value != null ? addressDispOp.value : (mem?.mode === 'post' ? 0n : null),
+      disp: addressDispOp && addressDispOp.value != null ? addressDispOp.value : (mem?.mode === 'post' || (mem && mem.base && !mem.index) ? 0n : null),
       index: mem && mem.index ? regKeyOf(mem.index) : null,
       scale: mem && mem.shift ? (mem.shift.amount || 0) : 0,
       extend: mem && mem.shift && mem.shift.op !== 'lsl' ? mem.shift.op : null,

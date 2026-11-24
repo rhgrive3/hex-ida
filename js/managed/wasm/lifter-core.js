@@ -203,7 +203,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const frame = { id: `frame_${frameSeq++}`, kind, startOffset: opOffset, bodyOffset: pos, stackHeight: baseHeight, params: bt.params, results: bt.results, pendingBranches: [], polymorphic: false, elseSeen: false, ifEffect: null, elseEffect: null };
         controlStack.push(frame);
         if (kind === 'if') {
-          const ce = { kind: 'conditional-branch', targetOffset: null, structured: 'if-false' };
+          const ce = { kind: 'conditional-branch', targetOffset: pos, falseTargetOffset: null, structured: 'if' };
           frame.ifEffect = ce;
           controlEffects.push(ce);
         }
@@ -217,7 +217,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         frame.elseSeen = true;
         frame.polymorphic = false;
         currentStackHeight = frame.stackHeight + frame.params.length;
-        if (frame.ifEffect) frame.ifEffect.targetOffset = pos;
+        if (frame.ifEffect) frame.ifEffect.falseTargetOffset = pos;
         const ce = { kind: 'branch', targetOffset: null, structured: 'else-join' };
         frame.elseEffect = ce;
         frame.pendingBranches.push({ effect: ce, field: 'targetOffset' });
@@ -234,7 +234,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         frame.endOffset = opOffset;
         frame.continuationOffset = continuation;
         for (const pending of frame.pendingBranches) pending.effect[pending.field] = continuation;
-        if (frame.kind === 'if' && frame.ifEffect && !frame.elseSeen) frame.ifEffect.targetOffset = continuation;
+        if (frame.kind === 'if' && frame.ifEffect && !frame.elseSeen) frame.ifEffect.falseTargetOffset = continuation;
         if (frame.kind === 'function') {
           if (pos !== bytecode.length) fail('wasm-trailing-bytes-after-function-end');
           if (!frame.polymorphic && funcType.results.length) {

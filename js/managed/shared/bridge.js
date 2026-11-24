@@ -287,6 +287,9 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
       if (c.targetOffset != null && offsetToIndex.has(c.targetOffset)) {
         leaderOffsets.add(c.targetOffset);
       }
+      if (c.falseTargetOffset != null && offsetToIndex.has(c.falseTargetOffset)) {
+        leaderOffsets.add(c.falseTargetOffset);
+      }
       if (Array.isArray(c.targetOffsets)) {
         for (const t of c.targetOffsets) {
           if (offsetToIndex.has(t)) leaderOffsets.add(t);
@@ -498,9 +501,13 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
           if (c.targetOffset != null) {
             targets.push(blockByOffset.get(c.targetOffset) || `bb_0x${c.targetOffset.toString(16)}`);
           }
-          const currentIdx = sortedLeaderOffsets.indexOf(sortedLeaderOffsets.find((off) => blockByOffset.get(off) === blkId));
-          if (currentIdx >= 0 && currentIdx + 1 < sortedLeaderOffsets.length) {
-            targets.push(blockByOffset.get(sortedLeaderOffsets[currentIdx + 1]));
+          if (c.falseTargetOffset != null) {
+            targets.push(blockByOffset.get(c.falseTargetOffset) || `bb_0x${c.falseTargetOffset.toString(16)}`);
+          } else {
+            const currentIdx = sortedLeaderOffsets.indexOf(sortedLeaderOffsets.find((off) => blockByOffset.get(off) === blkId));
+            if (currentIdx >= 0 && currentIdx + 1 < sortedLeaderOffsets.length) {
+              targets.push(blockByOffset.get(sortedLeaderOffsets[currentIdx + 1]));
+            }
           }
         } else if (c.kind === 'switch') {
           nodeKind = 'switch';
@@ -703,6 +710,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
     const successors = [];
     let hasUncondBranch = false;
     let hasReturn = false;
+    let hasExplicitCondFalse = false;
 
     for (const bun of blkBundles) {
       for (const ctrl of bun.controlEffects) {
@@ -719,8 +727,12 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
               successors.push({ to: targetBlk, kind: 'conditional-true' });
             }
           }
-          if (idx + 1 < irBlocks.length) {
-            successors.push({ to: irBlocks[idx + 1].id, kind: 'conditional-false' });
+          const falseBlk = ctrl.falseTargetOffset != null
+            ? blockByOffset.get(ctrl.falseTargetOffset)
+            : (idx + 1 < irBlocks.length ? irBlocks[idx + 1].id : null);
+          if (falseBlk) {
+            successors.push({ to: falseBlk, kind: 'conditional-false' });
+            if (ctrl.falseTargetOffset != null) hasExplicitCondFalse = true;
           }
         } else if (ctrl.kind === 'switch' && Array.isArray(ctrl.targetOffsets)) {
           for (let ti = 0; ti < ctrl.targetOffsets.length; ti++) {
@@ -736,7 +748,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
     }
 
     // Add fallthrough edge if not unconditional branch or return
-    if (!hasUncondBranch && !hasReturn && idx + 1 < irBlocks.length) {
+    if (!hasUncondBranch && !hasReturn && !hasExplicitCondFalse && idx + 1 < irBlocks.length) {
       if (!successors.some((s) => s.to === irBlocks[idx + 1].id)) {
         successors.push({ to: irBlocks[idx + 1].id, kind: 'fallthrough' });
       }
@@ -1255,8 +1267,23 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
 
   const body = [];
   const cfgBlockById = new Map((cfg.blocks || []).map((block) => [block.id, block]));
+  const nextBlockIdByBlockId = new Map();
+  for (let bi = 0; bi + 1 < cfg.blocks.length; bi++) {
+    nextBlockIdByBlockId.set(cfg.blocks[bi].id, cfg.blocks[bi + 1].id);
+  }
   const renderedControlTargets = new Set();
   for (const n of semanticIr.nodes) {
+    if (n.kind === 'conditional-branch') {
+      const trueTarget = n.targets?.[0];
+      if (typeof trueTarget === 'string' && trueTarget.length > 0) {
+        renderedControlTargets.add(trueTarget);
+      }
+      const falseTarget = n.targets?.[1];
+      if (typeof falseTarget === 'string' && falseTarget.length > 0 && falseTarget !== nextBlockIdByBlockId.get(n.blockId)) {
+        renderedControlTargets.add(falseTarget);
+      }
+      continue;
+    }
     if (n.kind !== 'branch' && n.kind !== 'switch') continue;
     for (const target of n.targets || []) {
       if (typeof target === 'string' && target.length > 0) renderedControlTargets.add(target);
@@ -1359,9 +1386,15 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         }
       } else if (n.kind === 'conditional-branch') {
         const cond = n.inputs[0] ? printExpression(buildValueExpr(n.inputs[0])) : 'cond';
+        const nextBlkId = bi + 1 < cfg.blocks.length ? cfg.blocks[bi + 1].id : null;
+        const falseTarget = n.targets && n.targets[1] && n.targets[1] !== nextBlkId ? n.targets[1] : null;
         body.push({ kind: 'if', indent: isLoop ? 2 : 1, text: `if (${cond}) {` });
         if (n.targets && n.targets[0]) {
           body.push({ kind: 'goto', indent: isLoop ? 3 : 2, text: `goto ${n.targets[0]};` });
+        }
+        if (falseTarget) {
+          body.push({ kind: 'else', indent: isLoop ? 2 : 1, text: '} else {' });
+          body.push({ kind: 'goto', indent: isLoop ? 3 : 2, text: `goto ${falseTarget};` });
         }
         body.push({ kind: 'if_close', indent: isLoop ? 2 : 1, text: '}' });
       } else if (n.kind === 'switch') {

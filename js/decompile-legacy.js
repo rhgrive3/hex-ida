@@ -1221,7 +1221,9 @@ function exprText(ctx, nodeValue, self, atRow = null, sourceReg = null) {
       };
       if (n === self) {
         if (n.k === 'bin' && n.op === 'ror') {
-          return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), n.bits === 32 ? 32 : 64);
+          const rorInsn = atRow != null ? ctx.byRow.get(atRow) : null;
+          const rorBits = n.bits === 32 || rorInsn?.ops?.[0]?.bits === 32 ? 32 : 64;
+          return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), rorBits);
         }
         if (n.k === 'call') {
           const formatted = formatCallNode(n);
@@ -1243,7 +1245,9 @@ function exprText(ctx, nodeValue, self, atRow = null, sourceReg = null) {
         if (formatted != null) return formatted;
       }
       if (n.k === 'bin' && n.op === 'ror') {
-        return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), n.bits === 32 ? 32 : 64);
+        const rorInsn = n.row != null ? ctx.byRow.get(n.row) : (atRow != null ? ctx.byRow.get(atRow) : null);
+        const rorBits = n.bits === 32 || rorInsn?.ops?.[0]?.bits === 32 ? 32 : 64;
+        return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), rorBits);
       }
       return null;
     },
@@ -2241,14 +2245,18 @@ function sanitizeFallbackOperand(text) {
   return '0 /* ' + s.replace(/\*\//g, '* /') + ' */';
 }
 
-function operandText(op, ctx, insn) {
+function operandText(op, ctx, insn, opts = null) {
   if (!op) return '0 /* unknown */';
   if (op.k === 'reg') {
     const reg = regOf(op);
     const value = insn && ctx.values ? ctx.values.at(insn.row, reg) : null;
     const resolved = value ? exprText(ctx, value, null, insn ? insn.row : null, reg) : null;
     const base = resolved || varOf(reg, ctx);
-    return op.bits === 32 && op.cls === 'gp' ? '(int32)' + (resolved ? '(' + base + ')' : base) : base;
+    if (op.bits === 32 && op.cls === 'gp') {
+      const castTy = opts?.unsigned ? 'uint32' : 'int32';
+      return '(' + castTy + ')' + (resolved ? '(' + base + ')' : base);
+    }
+    return base;
   }
   if (op.k === 'imm') {
     if (op.value == null && op.float != null) return String(op.float);
@@ -2770,14 +2778,23 @@ function statementFor(insn, ctx, node, state) {
   };
   const operandBits = insn.ops[0]?.bits === 32 || insn.ops[0]?.width === 32 || /^w\d+$/i.test(insn.ops[0]?.name || '') ? 32 : 64;
   if ((base === 'ror' || base === 'rorv') && insn.ops.length >= 3 && dst) {
-    const a = operandText(insn.ops[1], ctx, insn);
-    const b = operandText(insn.ops[2], ctx, insn);
+    const a = operandText(insn.ops[1], ctx, insn, { unsigned: true });
+    const b = operandText(insn.ops[2], ctx, insn, { unsigned: true });
     return mk(varOf(dst, ctx) + ' = ' + rorExpr(a, b, operandBits) + ';', { dst, pure: true });
   }
   if (BIN[base] && insn.ops.length >= 3 && dst) {
-    const a = operandText(insn.ops[1], ctx, insn);
-    const b = operandText(insn.ops[2], ctx, insn);
+    if (base === 'smull' || base === 'umull') {
+      const isUnsigned = base === 'umull';
+      const wideTy = isUnsigned ? 'uint64' : 'int64';
+      const a = operandText(insn.ops[1], ctx, insn, { unsigned: isUnsigned });
+      const b = operandText(insn.ops[2], ctx, insn, { unsigned: isUnsigned });
+      return mk(varOf(dst, ctx) + ' = (' + wideTy + ')' + a + ' * (' + wideTy + ')' + b + ';', { dst, pure: true });
+    }
     const sh = insn.ops[2] && insn.ops[2].shift && insn.ops[2].shift.amount ? insn.ops[2].shift : null;
+    const unsignedOp = base === 'udiv' || base === 'lsr';
+    const unsignedB = base === 'udiv' || base === 'lsr' || sh?.op === 'lsr' || sh?.op === 'ror';
+    const a = operandText(insn.ops[1], ctx, insn, { unsigned: unsignedOp });
+    const b = operandText(insn.ops[2], ctx, insn, { unsigned: unsignedB });
     const expr = sh
       ? (sh.op === 'ror' ? rorExpr(b, sh.amount, operandBits) : '(' + b + ' ' + shiftOp(sh.op) + ' ' + sh.amount + ')')
       : b;
@@ -2857,11 +2874,32 @@ function statementFor(insn, ctx, node, state) {
   /* 型変換 */
   const cast = /^(sxtb|sxth|sxtw|uxtb|uxth|uxtw|scvtf|ucvtf|fcvtzs|fcvtzu|fcvt)$/.exec(base);
   if (cast && dst) {
-    const to = {
+    let to = {
       sxtb: 'int8', sxth: 'int16', sxtw: 'int32', uxtb: 'uint8', uxth: 'uint16', uxtw: 'uint32',
-      scvtf: 'double', ucvtf: 'double', fcvtzs: 'int64', fcvtzu: 'uint64', fcvt: 'double',
     }[base];
-    return mk(varOf(dst, ctx) + ' = (' + to + ')' + operandText(insn.ops[1], ctx, insn) + ';',
+    let src;
+    if (base === 'fcvt') {
+      to = fpRegWidth(insn.ops[0]) === 'float' ? 'float' : 'double';
+      src = operandText(insn.ops[1], ctx, insn);
+    } else if (base === 'scvtf' || base === 'ucvtf') {
+      to = fpRegWidth(insn.ops[0]) === 'float' ? 'float' : 'double';
+      if (base === 'ucvtf') {
+        const srcOp = insn.ops[1];
+        const srcIs32 = srcOp?.bits === 32 || srcOp?.width === 32 || /^w\d+$/i.test(srcOp?.name || srcOp?.text || '');
+        const rawSrc = operandText(srcOp, ctx, insn, { unsigned: true });
+        src = srcIs32
+          ? rawSrc
+          : (/^\(uint64\)/.test(rawSrc) ? rawSrc : '(uint64)' + (/^[A-Za-z_]\w*$/.test(rawSrc) ? rawSrc : '(' + rawSrc + ')'));
+      } else {
+        src = operandText(insn.ops[1], ctx, insn);
+      }
+    } else if (base === 'fcvtzs' || base === 'fcvtzu') {
+      to = (base === 'fcvtzs' ? 'int' : 'uint') + (operandBits === 32 ? '32' : '64');
+      src = operandText(insn.ops[1], ctx, insn);
+    } else {
+      src = operandText(insn.ops[1], ctx, insn);
+    }
+    return mk(varOf(dst, ctx) + ' = (' + to + ')' + src + ';',
       { dst, pure: true });
   }
   if (base === 'bfi' || base === 'bfxil' || base === 'ubfx' || base === 'sbfx' || base === 'ubfiz') {
@@ -2954,8 +2992,9 @@ function bitfieldExpr(base, dst, insn, ctx, bits = 64) {
 function rorExpr(value, amount, bits = 64) {
   const width = bits === 32 ? 32 : 64;
   const mask = width - 1;
+  const v = width === 32 && !/^\(uint32\)/.test(value) ? '(uint32)(' + value + ')' : value;
   const sh = '(' + amount + ' & ' + mask + ')';
-  return '((' + value + ' >> ' + sh + ') | (' + value + ' << ((' + width + ' - ' + sh + ') & ' + mask + ')))';
+  return '((' + v + ' >> ' + sh + ') | (' + v + ' << ((' + width + ' - ' + sh + ') & ' + mask + ')))';
 }
 
 function shiftOp(op) {
@@ -3324,8 +3363,14 @@ function callStatement(insn, ctx, mk) {
       ? parts.map((p, i) => p + ':' + argv[i]).join(' ')
       : sel;
     const receiver = needsParens(receiverValue) ? '(' + receiverValue + ')' : receiverValue;
-    return mk(nameForDef(ctx, insn.row, 'x0') + ' = [' + receiver + ' ' + body + '];',
-      { dst: 'x0', call: true, reads: ['x0'].concat(parts.map((_, i) => 'x' + (i + 2))),
+    const callExpr = '[' + receiver + ' ' + body + ']';
+    const text = isTail
+      ? (ctx.callerIsVoid ? callExpr + '; return;' : 'return ' + callExpr + ';')
+      : nameForDef(ctx, insn.row, 'x0') + ' = ' + callExpr + ';';
+    return mk(text,
+      { dst: isTail ? null : 'x0', call: true,
+        kind: isTail ? 'ctrl' : 'stmt',
+        reads: ['x0'].concat(parts.map((_, i) => 'x' + (i + 2))),
         note: 'Objective-C のメソッド「' + sel + '」を呼びます。' });
   }
 

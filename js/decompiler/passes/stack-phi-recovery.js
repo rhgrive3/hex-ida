@@ -560,6 +560,8 @@ function hasUnsafeBarrier(inst, key, size = null, targetLoc = null) {
   if (inst?.op !== 'store') return false;
   if (!inst.loc?.key || inst.loc?.kind === 'unknown') return true;
   if (inst.loc.key === key) return false;
+  if (inst.loc?.kind === 'global') return false;
+  if (!isStackLocationLike(inst.loc)) return true;
   return stackLocationsOverlap(inst.loc, targetLoc || key, storeAccessSize(inst), size);
 }
 

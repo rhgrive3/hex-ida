@@ -555,9 +555,11 @@ export class PlatformPluginRegistry {
         ...(error?.executionMayContinue === true ? { executionMayContinue: true } : {}),
       };
     } finally {
-      if (pluginScope && pluginScopeName && context.resourceBudget?.children instanceof Map
-        && context.resourceBudget.children.get(pluginScopeName) === pluginScope) {
-        context.resourceBudget.children.delete(pluginScopeName);
+      if (pluginScope && pluginScopeName && context.resourceBudget?.children instanceof Map) {
+        const registered = context.resourceBudget.children.get(pluginScopeName);
+        if (registered && (registered === pluginScope || registered.name === pluginScopeName)) {
+          context.resourceBudget.children.delete(pluginScopeName);
+        }
       }
     }
   }

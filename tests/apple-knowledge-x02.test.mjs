@@ -300,9 +300,9 @@ function chainedFixture(raw, pointerFormat, { dyldCache = null } = {}) {
     [2, { target: 0x2345n, stride: 4 }],
     [6, { target: 0x100002345n, stride: 4 }],
     [7, { target: 0x100002345n, stride: 4 }],
-    [9, { target: 0x100002345n, stride: 8 }],
+    [9, { target: 0x100002345n, stride: 4 }],
     [10, { target: 0x2345n, stride: 4 }],
-    [12, { target: 0x100002345n, stride: 8 }],
+    [12, { target: 0x100002345n, stride: 4 }],
   ]);
   for (const [format, expected] of expected64) {
     const decoded = decodeChainedPointer(0x2345n, format, 0x100000000n);

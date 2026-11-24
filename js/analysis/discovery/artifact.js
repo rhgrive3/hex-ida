@@ -934,6 +934,44 @@ function normalizeBudgetV2(input = {}) {
   return deepFreeze(result);
 }
 
+const PRODUCER_STATUS_STOP_REASONS_V2 = new Set([
+  'cancelled',
+  'budget-exhausted',
+  'memory-limit',
+  'iteration-limit',
+]);
+
+function normalizeFusionBudgetV2(input) {
+  if (input === undefined) return undefined;
+  const value = record(input, 'discovery-artifact-fusion-budget-invalid');
+  const result = {};
+  for (const name of ['maxCandidates', 'maxEvidencePerCandidate']) {
+    const raw = own(value, name, `discovery-artifact-fusion-budget-${name}-invalid`);
+    if (raw == null) continue;
+    if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 1) {
+      fail(`discovery-artifact-fusion-budget-${name}-invalid`);
+    }
+    result[name] = raw;
+  }
+  return deepFreeze(result);
+}
+
+function normalizeProducerStatusV2(input) {
+  if (input === undefined) return undefined;
+  const value = record(input, 'discovery-artifact-producer-status-invalid');
+  const truncated = own(value, 'truncated', 'discovery-artifact-producer-status-invalid');
+  if (typeof truncated !== 'boolean') fail('discovery-artifact-producer-status-invalid');
+  const stopReason = own(value, 'stopReason', 'discovery-artifact-producer-status-invalid') ?? null;
+  if (truncated) {
+    if (typeof stopReason !== 'string' || !PRODUCER_STATUS_STOP_REASONS_V2.has(stopReason)) {
+      fail('discovery-artifact-producer-status-invalid');
+    }
+  } else if (stopReason != null) {
+    fail('discovery-artifact-producer-status-invalid');
+  }
+  return deepFreeze({ truncated, stopReason });
+}
+
 function normalizeStatusV2(input) {
   const value = record(input, 'discovery-artifact-status-invalid');
   return createAnalysisStatus({
@@ -1088,6 +1126,11 @@ export function createDiscoveryArtifact(input = {}) {
   }
 
   const status = normalizeStatusV2(own(value, 'status', 'discovery-artifact-status-invalid'));
+  const fusionBudget = normalizeFusionBudgetV2(own(value, 'fusionBudget', 'discovery-artifact-fusion-budget-invalid'));
+  const producerStatus = normalizeProducerStatusV2(own(value, 'producerStatus', 'discovery-artifact-producer-status-invalid'));
+  if (producerStatus?.truncated === true && status.completeness === 'complete') {
+    fail('discovery-artifact-producer-status-mismatch');
+  }
   const binding = normalizeBindingV2(own(value, 'binding', 'discovery-artifact-binding-invalid') ?? {});
   if (binding.snapshotId != null && status.snapshotId !== binding.snapshotId) {
     fail('discovery-artifact-status-snapshot-mismatch');
@@ -1099,6 +1142,8 @@ export function createDiscoveryArtifact(input = {}) {
   const derivedCandidates = canonicalCandidatesV2(fuseFunctionCandidates(evidence, {
     architectureId: binding.architectureId ?? 'generic',
     snapshotId: status.snapshotId,
+    ...(fusionBudget ? { budget: fusionBudget } : {}),
+    ...(producerStatus ? { producerStatus } : {}),
   }).candidates);
   if (candidates.length !== derivedCandidates.length
       || candidates.some((candidate, index) => candidate.digest !== derivedCandidates[index].digest)) {

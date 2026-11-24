@@ -279,7 +279,7 @@ function parseImportNames(raw) {
 function chainNext(raw, format) {
   if (format === 2 || format === 6) return { next: Number((raw >> 51n) & 0xfffn), stride: 4 };
   if (format === 1 || format === 7 || format === 9 || format === 10 || format === 12) {
-    return { next: Number((raw >> 51n) & 0x7ffn), stride: format === 7 || format === 10 ? 4 : 8 };
+    return { next: Number((raw >> 51n) & 0x7ffn), stride: format === 1 ? 8 : 4 };
   }
   return null;
 }

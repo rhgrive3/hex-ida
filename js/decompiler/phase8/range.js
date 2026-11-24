@@ -973,13 +973,15 @@ export function evaluateBinaryFact(operator, leftInput, rightInput, options = {}
   if (operator === 'add' || operator === 'sub') {
     congruence = addCongruence(left.congruence, right.congruence, bits, operator === 'sub');
     ({ knownZero, knownOne } = arithmeticKnownBits(left, right, bits, operator === 'sub'));
+    const signedDelta = (value) => BigInt.asIntN(bits, value);
     if (rightConstant != null && left.pointerOffset != null) {
-      const delta = operator === 'sub' ? -rightConstant : rightConstant;
+      const delta = operator === 'sub' ? -signedDelta(rightConstant) : signedDelta(rightConstant);
       pointerOffset = shiftedPointerOffset(left.pointerOffset, delta);
       alignment = shiftedAlignment(left.alignment, delta, bits);
     } else if (operator === 'add' && leftConstant != null && right.pointerOffset != null) {
-      pointerOffset = shiftedPointerOffset(right.pointerOffset, leftConstant);
-      alignment = shiftedAlignment(right.alignment, leftConstant, bits);
+      const delta = signedDelta(leftConstant);
+      pointerOffset = shiftedPointerOffset(right.pointerOffset, delta);
+      alignment = shiftedAlignment(right.alignment, delta, bits);
     }
   } else if (operator === 'and') {
     knownZero = (left.knownZero | right.knownZero) & mask;
