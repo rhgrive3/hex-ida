@@ -110,13 +110,30 @@ export function showFunctions(app) {
   sheet.body.append(field, bar, status, results);
 
   let all = [];
+  let nameLower = [];
+  let addrHexLower = [];
+  const setAll = (listData) => {
+    all = listData;
+    const len = all.length;
+    nameLower = new Array(len);
+    addrHexLower = new Array(len);
+    for (let i = 0; i < len; i++) {
+      const f = all[i];
+      nameLower[i] = (f.name || '').toLowerCase();
+      addrHexLower[i] = f.addr.toString(16);
+    }
+  };
 
   const render = () => {
     const q = input.value.trim().toLowerCase();
-    const items = q
-      ? all.filter((f) => (f.name || '').toLowerCase().includes(q) ||
-                          f.addr.toString(16).includes(q.replace(/^0x/, '')))
-      : all;
+    let items = all;
+    if (q) {
+      const qHex = q.startsWith('0x') ? q.slice(2) : q;
+      items = [];
+      for (let i = 0; i < all.length; i++) {
+        if (nameLower[i].includes(q) || addrHexLower[i].includes(qHex)) items.push(all[i]);
+      }
+    }
     results.replaceChildren();
     let shown = 0;
     const PAGE = 120;
@@ -152,7 +169,7 @@ export function showFunctions(app) {
   const start = async () => {
     const sym = app.symbols;
     if (sym.functionCount > 0) {
-      all = sym.functionList(region);
+      setAll(sym.functionList(region));
       fill.style.width = '100%';
       status.textContent = sym.guessed
         ? t('functions.hintNoSymbols')
@@ -171,7 +188,7 @@ export function showFunctions(app) {
       const guessed = await req;
       if (activeRequest === req) activeRequest = null;
       fill.style.width = '100%';
-      all = guessed.functionList(region);
+      setAll(guessed.functionList(region));
       status.textContent = all.length ? t('functions.hintNoSymbols') : t('functions.none');
       render();
     } catch (err) {
@@ -711,11 +728,18 @@ export function showStrings(app) {
   sheet.body.append(chips, field, bar, status, results);
 
   let all = [];
+  let textLower = [];
   let active = targets[0] || null;
 
   const render = () => {
     const q = input.value.trim().toLowerCase();
-    const items = q ? all.filter((s) => s.text.toLowerCase().includes(q)) : all;
+    let items = all;
+    if (q) {
+      items = [];
+      for (let i = 0; i < all.length; i++) {
+        if (textLower[i].includes(q)) items.push(all[i]);
+      }
+    }
     results.replaceChildren();
     let shown = 0;
     const PAGE = 120;
@@ -762,6 +786,7 @@ export function showStrings(app) {
     for (const c of chips.children) c.setAttribute('aria-pressed', String(c._region === region));
     results.replaceChildren();
     all = [];
+    textLower = [];
     status.textContent = t('strings.scanning');
     fill.style.width = '0%';
     const progress = (p) => {
@@ -777,6 +802,8 @@ export function showStrings(app) {
       if (token !== scanToken || active !== region || !sheet.root.isConnected) return;
       fill.style.width = '100%';
       all = res.results;
+      textLower = new Array(all.length);
+      for (let i = 0; i < all.length; i++) textLower[i] = all[i].text.toLowerCase();
       status.textContent = t('strings.count', { n: all.length.toLocaleString() }) +
         (res.capped ? t('strings.capped', { n: all.length.toLocaleString() }) : '') +
         '\n' + t('strings.hint');

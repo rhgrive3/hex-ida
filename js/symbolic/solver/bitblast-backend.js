@@ -129,14 +129,15 @@ class CnfBuilder {
     this.clauses = [];
     this.expressionMemo = new WeakMap();
     this.symbolBits = new Map();
-    this.gateMemo = new Map();
+    this.binGateMemo = [null, new Map(), new Map(), new Map()];
+    this.iteGateMemo = new Map();
     this.trueLiteral = this.newVariable();
     this.addClause([this.trueLiteral]);
   }
 
   guard() {
     if (this.signal?.aborted) throw new LimitError('cancelled');
-    if (monotonicNow() >= this.deadline) throw new LimitError('timeout');
+    if (this.deadline !== Infinity && monotonicNow() >= this.deadline) throw new LimitError('timeout');
   }
 
   newVariable() {
@@ -148,14 +149,44 @@ class CnfBuilder {
 
   addClause(literals) {
     this.guard();
-    const unique = [];
-    const seen = new Set();
-    for (const literal of literals) {
-      if (!Number.isSafeInteger(literal) || literal === 0) throw new LimitError('invalid-cnf-literal');
-      if (seen.has(-literal)) return;
-      if (!seen.has(literal)) {
-        seen.add(literal);
-        unique.push(literal);
+    let unique;
+    if (Array.isArray(literals) && literals.length <= 3) {
+      const len = literals.length;
+      if (len === 0) {
+        unique = [];
+      } else if (len === 1) {
+        const l0 = literals[0];
+        if (!Number.isSafeInteger(l0) || l0 === 0) throw new LimitError('invalid-cnf-literal');
+        unique = [l0];
+      } else if (len === 2) {
+        const l0 = literals[0];
+        if (!Number.isSafeInteger(l0) || l0 === 0) throw new LimitError('invalid-cnf-literal');
+        const l1 = literals[1];
+        if (!Number.isSafeInteger(l1) || l1 === 0) throw new LimitError('invalid-cnf-literal');
+        if (l1 === -l0) return;
+        unique = l1 === l0 ? [l0] : [l0, l1];
+      } else {
+        const l0 = literals[0];
+        if (!Number.isSafeInteger(l0) || l0 === 0) throw new LimitError('invalid-cnf-literal');
+        const l1 = literals[1];
+        if (!Number.isSafeInteger(l1) || l1 === 0) throw new LimitError('invalid-cnf-literal');
+        if (l1 === -l0) return;
+        const l2 = literals[2];
+        if (!Number.isSafeInteger(l2) || l2 === 0) throw new LimitError('invalid-cnf-literal');
+        if (l2 === -l0 || l2 === -l1) return;
+        if (l1 === l0) unique = l2 === l0 ? [l0] : [l0, l2];
+        else unique = (l2 === l0 || l2 === l1) ? [l0, l1] : [l0, l1, l2];
+      }
+    } else {
+      unique = [];
+      const seen = new Set();
+      for (const literal of literals) {
+        if (!Number.isSafeInteger(literal) || literal === 0) throw new LimitError('invalid-cnf-literal');
+        if (seen.has(-literal)) return;
+        if (!seen.has(literal)) {
+          seen.add(literal);
+          unique.push(literal);
+        }
       }
     }
     this.clauses.push(unique);
@@ -164,14 +195,40 @@ class CnfBuilder {
 
   constant(value) { return value ? this.trueLiteral : -this.trueLiteral; }
 
-  memoGate(kind, inputs, build) {
-    const keyInputs = (kind === 'and' || kind === 'or' || kind === 'xor')
-      ? [...inputs].sort((a, b) => a - b)
-      : inputs;
-    const key = `${kind}:${keyInputs.join(',')}`;
-    if (this.gateMemo.has(key)) return this.gateMemo.get(key);
+  memoBinaryGate(opCode, a, b, build) {
+    if (a > b) { const tmp = a; a = b; b = tmp; }
+    const table = this.binGateMemo[opCode];
+    let inner = table.get(a);
+    if (inner !== undefined) {
+      const existing = inner.get(b);
+      if (existing !== undefined) return existing;
+    }
     const output = build();
-    this.gateMemo.set(key, output);
+    if (inner === undefined) {
+      inner = new Map();
+      table.set(a, inner);
+    }
+    inner.set(b, output);
+    return output;
+  }
+
+  memoIteGate(condition, thenLiteral, elseLiteral, build) {
+    let byThen = this.iteGateMemo.get(condition);
+    let byElse = byThen !== undefined ? byThen.get(thenLiteral) : undefined;
+    if (byElse !== undefined) {
+      const existing = byElse.get(elseLiteral);
+      if (existing !== undefined) return existing;
+    }
+    const output = build();
+    if (byThen === undefined) {
+      byThen = new Map();
+      this.iteGateMemo.set(condition, byThen);
+    }
+    if (byElse === undefined) {
+      byElse = new Map();
+      byThen.set(thenLiteral, byElse);
+    }
+    byElse.set(elseLiteral, output);
     return output;
   }
 
@@ -181,7 +238,7 @@ class CnfBuilder {
     if (a === this.trueLiteral) return b;
     if (b === this.trueLiteral) return a;
     if (a === -this.trueLiteral || b === -this.trueLiteral) return this.constant(false);
-    return this.memoGate('and', [a, b], () => {
+    return this.memoBinaryGate(1, a, b, () => {
       const out = this.newVariable();
       this.addClause([-out, a]);
       this.addClause([-out, b]);
@@ -196,7 +253,7 @@ class CnfBuilder {
     if (a === -this.trueLiteral) return b;
     if (b === -this.trueLiteral) return a;
     if (a === this.trueLiteral || b === this.trueLiteral) return this.constant(true);
-    return this.memoGate('or', [a, b], () => {
+    return this.memoBinaryGate(2, a, b, () => {
       const out = this.newVariable();
       this.addClause([out, -a]);
       this.addClause([out, -b]);
@@ -212,7 +269,7 @@ class CnfBuilder {
     if (b === -this.trueLiteral) return a;
     if (a === this.trueLiteral) return -b;
     if (b === this.trueLiteral) return -a;
-    return this.memoGate('xor', [a, b], () => {
+    return this.memoBinaryGate(3, a, b, () => {
       const out = this.newVariable();
       this.addClause([-a, -b, -out]);
       this.addClause([a, b, -out]);
@@ -228,7 +285,7 @@ class CnfBuilder {
     if (condition === -this.trueLiteral) return elseLiteral;
     if (thenLiteral === this.trueLiteral && elseLiteral === -this.trueLiteral) return condition;
     if (thenLiteral === -this.trueLiteral && elseLiteral === this.trueLiteral) return -condition;
-    return this.memoGate('ite', [condition, thenLiteral, elseLiteral], () => {
+    return this.memoIteGate(condition, thenLiteral, elseLiteral, () => {
       const out = this.newVariable();
       this.addClause([-condition, -thenLiteral, out]);
       this.addClause([-condition, thenLiteral, -out]);
@@ -530,23 +587,28 @@ async function solveCnf(builder, { signal, deadline, limits }) {
     if (clause.length === 1 && !enqueue(clause[0])) return { status: 'unsat', assignment, decisions, propagations };
   }
 
-  async function guard() {
+  let decisionCursor = 0;
+
+  function checkGuardSync() {
     if (signal?.aborted) return 'cancelled';
-    if (monotonicNow() >= deadline) return 'timeout';
+    if (deadline !== Infinity && monotonicNow() >= deadline) return 'timeout';
     if (decisions > limits.maxDecisions) return 'decision-budget-exceeded';
     if (propagations > limits.maxPropagations) return 'propagation-budget-exceeded';
-    if (propagations - yieldedAt >= limits.yieldEvery) {
-      yieldedAt = propagations;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      if (signal?.aborted) return 'cancelled';
-      if (monotonicNow() >= deadline) return 'timeout';
-    }
+    if (propagations - yieldedAt >= limits.yieldEvery) return 'yield';
     return null;
   }
 
-  async function propagate() {
+  async function handleYield() {
+    yieldedAt = propagations;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (signal?.aborted) return 'cancelled';
+    if (deadline !== Infinity && monotonicNow() >= deadline) return 'timeout';
+    return null;
+  }
+
+  function propagateSync() {
     while (propagationHead < trail.length) {
-      const guardResult = await guard();
+      const guardResult = checkGuardSync();
       if (guardResult) return guardResult;
       const falseLiteral = -trail[propagationHead++];
       const list = watches[literalIndex(falseLiteral)];
@@ -588,10 +650,12 @@ async function solveCnf(builder, { signal, deadline, limits }) {
   }
 
   function decisionLiteral() {
-    for (const clause of clauses) {
+    for (let i = decisionCursor; i < clauses.length; i++) {
+      const clause = clauses[i];
       let satisfied = false;
       let candidate = 0;
-      for (const literal of clause) {
+      for (let j = 0; j < clause.length; j++) {
+        const literal = clause[j];
         const value = literalValue(literal, assignment);
         if (value === 1) {
           satisfied = true;
@@ -599,9 +663,12 @@ async function solveCnf(builder, { signal, deadline, limits }) {
         }
         if (value === 0 && candidate === 0) candidate = literal;
       }
-      if (!satisfied && candidate !== 0) return candidate;
-      if (!satisfied && candidate === 0) return null;
+      if (!satisfied) {
+        decisionCursor = i;
+        return candidate !== 0 ? candidate : null;
+      }
     }
+    decisionCursor = clauses.length;
     return 0;
   }
 
@@ -610,56 +677,50 @@ async function solveCnf(builder, { signal, deadline, limits }) {
     propagationHead = Math.min(propagationHead, mark);
   }
 
-  async function searchIterative() {
-    const frames = [];
-    let backtrack = false;
-    while (true) {
-      if (!backtrack) {
-        const propagation = await propagate();
-        if (propagation === 'conflict') {
-          backtrack = true;
-        } else if (propagation) {
-          return propagation;
-        } else {
-          const literal = decisionLiteral();
-          if (literal === null) {
-            backtrack = true;
-          } else if (literal === 0) {
-            return 'sat';
-          } else {
-            decisions++;
-            const guardResult = await guard();
-            if (guardResult) return guardResult;
-            const mark = trail.length;
-            const absLit = Math.abs(literal);
-            frames.push({ mark, secondChoice: absLit, triedSecond: false });
-            if (!enqueue(-absLit)) {
-              restore(mark);
-              backtrack = true;
-            }
-          }
-        }
+  const frames = [];
+  let status = 'unsat';
+  outer: while (true) {
+    let propagation = propagateSync();
+    while (propagation === 'yield') {
+      const yieldGuard = await handleYield();
+      if (yieldGuard) { status = yieldGuard; break outer; }
+      propagation = propagateSync();
+    }
+    if (propagation && propagation !== 'conflict') { status = propagation; break; }
+
+    let backtrack = propagation === 'conflict';
+    if (!backtrack) {
+      const literal = decisionLiteral();
+      if (literal === 0) { status = 'sat'; break; }
+      if (literal === null) {
+        backtrack = true;
+      } else {
+        decisions++;
+        let guardResult = checkGuardSync();
+        if (guardResult === 'yield') guardResult = await handleYield();
+        if (guardResult) { status = guardResult; break; }
+        const absLit = Math.abs(literal);
+        const mark = trail.length;
+        const savedCursor = decisionCursor;
+        frames.push({ absLit, mark, phase: 0, savedCursor });
+        if (enqueue(-absLit)) continue;
+        backtrack = true;
       }
-      if (backtrack) {
-        while (frames.length > 0) {
-          const frame = frames[frames.length - 1];
-          restore(frame.mark);
-          if (!frame.triedSecond) {
-            frame.triedSecond = true;
-            if (enqueue(frame.secondChoice)) {
-              backtrack = false;
-              break;
-            }
-            restore(frame.mark);
-          }
-          frames.pop();
-        }
-        if (backtrack) return 'unsat';
+    }
+
+    while (backtrack) {
+      if (frames.length === 0) { status = 'unsat'; break outer; }
+      const top = frames[frames.length - 1];
+      restore(top.mark);
+      decisionCursor = top.savedCursor;
+      if (top.phase === 0) {
+        top.phase = 1;
+        if (enqueue(top.absLit)) backtrack = false;
+      } else {
+        frames.pop();
       }
     }
   }
-
-  const status = await searchIterative();
   return { status, assignment, decisions, propagations };
 }
 

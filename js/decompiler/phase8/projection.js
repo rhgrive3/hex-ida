@@ -552,6 +552,8 @@ function refreshMetrics(result, semanticAst, printed, records) {
 // existing solver admission boundary. GVN names/hashes and expression text are
 // not equivalence authority. This initial adoption is local to one straight-line
 // block and immutable entry inputs; it never removes canonical instructions.
+const HEX_CSE_NAME_RE = /\bhex_cse_\d+\b/g;
+
 function shareProvedScalars(result, bindings, consumers, records, shouldAbort, regionCopy) {
   const body = result.cAst.body;
   const ordered = result.ir.instructions ?? [];
@@ -582,6 +584,7 @@ function shareProvedScalars(result, bindings, consumers, records, shouldAbort, r
   }
   const plans = [];
   let serial = 0;
+  let usedCseNames = null;
   for (const group of groups) {
     if (--remaining < 0 || shouldAbort?.()) return;
     if (group.items.length < 2) continue;
@@ -591,11 +594,22 @@ function shareProvedScalars(result, bindings, consumers, records, shouldAbort, r
     if (last.index - first.index + 1 !== group.items.length
       || group.items.some((item, i) => i && instructionPositions.get(item.instruction.id)
         <= instructionPositions.get(group.items[i - 1].instruction.id))) continue;
+    if (usedCseNames === null) {
+      usedCseNames = new Set();
+      for (let bi = 0; bi < body.length; bi += 1) {
+        const text = body[bi]?.text;
+        if (typeof text !== 'string' || !text.includes('hex_cse_')) continue;
+        HEX_CSE_NAME_RE.lastIndex = 0;
+        let m;
+        while ((m = HEX_CSE_NAME_RE.exec(text)) !== null) usedCseNames.add(m[0]);
+      }
+    }
     let name;
     do {
       if (--remaining < 0 || shouldAbort?.()) return;
       name = `hex_cse_${serial++}`;
-    } while (body.some(node => new RegExp(`\\b${name}\\b`).test(node.text ?? '')));
+    } while (usedCseNames.has(name));
+    usedCseNames.add(name);
     const source = mergeSource(...group.items.map(item => item.expression.source));
     const record = Object.freeze({ kind:'proved-scalar-cse',
       proof:'identical admitted solver recipes and immutable entry inputs in one straight-line rendered block',
@@ -615,19 +629,45 @@ function shareProvedScalars(result, bindings, consumers, records, shouldAbort, r
   }
   // All checks precede writes. The surrounding proof projection rechecks the
   // source/plan and cancellation before publication, including after printing.
-  for (const plan of plans.sort((a, b) => b.group.items[0].index - a.group.items[0].index)) {
-    const { group, name, source, record, node, consumer } = plan;
+  if (plans.length === 0) return;
+  plans.sort((a, b) => b.group.items[0].index - a.group.items[0].index);
+  for (const plan of plans) {
+    const { group, name, source, record, node } = plan;
     for (const item of group.items) {
       item.node.semantic.expression = expr.variable(name, item.expression.bits, false, source);
       item.node.text = item.node.semantic.op === 'return' ? `return ${name};` : `${item.node.semantic.location.text} = ${name};`;
       consumers[item.index] = Object.freeze({ ...item.consumer,
         records:Object.freeze([...item.consumer.records, record]) });
     }
-    body.splice(group.items[0].index, 0, node);
     recordRegionInsertion(regionCopy, node, group.items[0].node, record);
-    consumers.splice(group.items[0].index, 0, consumer);
     bindings.set(node.semantic.expression, group.binding);
     records.push(record);
+  }
+  if (plans.length === 1) {
+    const plan = plans[0];
+    const insertAt = plan.group.items[0].index;
+    body.splice(insertAt, 0, plan.node);
+    consumers.splice(insertAt, 0, plan.consumer);
+  } else {
+    const oldLen = body.length;
+    const addCount = plans.length;
+    body.length = oldLen + addCount;
+    consumers.length = oldLen + addCount;
+    let write = oldLen + addCount - 1;
+    let read = oldLen - 1;
+    for (let pi = 0; pi < addCount; pi += 1) {
+      const plan = plans[pi];
+      const insertAt = plan.group.items[0].index;
+      while (read >= insertAt) {
+        body[write] = body[read];
+        consumers[write] = consumers[read];
+        write -= 1;
+        read -= 1;
+      }
+      body[write] = plan.node;
+      consumers[write] = plan.consumer;
+      write -= 1;
+    }
   }
 }
 
@@ -925,9 +965,18 @@ function applyPhase8ProjectionCore(result, analysis, opts = {}) {
         || !bodyProof.nodes.length || bodyProof.nodes.length > 256) return original;
     const indexes = new Set(), entries = [];
     const afterSource = mergeSource(bodyProof.header.source, conditionProof.expression.source);
+    let sourceIndexByNode = null;
+    if (bodyProof.nodes.length >= 2) {
+      sourceIndexByNode = new Map();
+      const origBody = original.cAst.body;
+      for (let bi = 0; bi < origBody.length; bi += 1) {
+        const n = origBody[bi];
+        if (!sourceIndexByNode.has(n)) sourceIndexByNode.set(n, bi);
+      }
+    }
     for (const [ordinal, sourceNode] of bodyProof.nodes.entries()) {
       const clone = regionCopy.copies.get(sourceNode);
-      const index = original.cAst.body.indexOf(sourceNode);
+      const index = sourceIndexByNode ? (sourceIndexByNode.get(sourceNode) ?? -1) : original.cAst.body.indexOf(sourceNode);
       if (!clone || index < 0 || indexes.has(index) || result.cAst.body[index] !== clone
           || sourceNode.kind !== 'stmt' || sourceNode.semantic?.op !== 'store'
           || bodyProof.originalNodes[ordinal]?.kind !== 'stmt') return original;
@@ -947,12 +996,24 @@ function applyPhase8ProjectionCore(result, analysis, opts = {}) {
     for (const entry of entries.sort((left, right) => right.index - left.index)) {
       recordRegionRemoval(regionCopy, entry.sourceNode, entry.clone, entry.record);
       if (regionCopy.failed) return original;
-      result.cAst.body.splice(entry.index, 1);
-      expressionConsumers.splice(entry.index, 1);
-      storeSpellings.splice(entry.index, 1);
-      controlSources.splice(entry.index, 1);
       regionRemovalRecords.push(entry.record);
     }
+    const bodyArr = result.cAst.body;
+    let write = 0;
+    for (let read = 0; read < bodyArr.length; read += 1) {
+      if (indexes.has(read)) continue;
+      if (write !== read) {
+        bodyArr[write] = bodyArr[read];
+        expressionConsumers[write] = expressionConsumers[read];
+        storeSpellings[write] = storeSpellings[read];
+        controlSources[write] = controlSources[read];
+      }
+      write += 1;
+    }
+    bodyArr.length = write;
+    expressionConsumers.length = write;
+    storeSpellings.length = write;
+    controlSources.length = write;
     regionRemovalRecords.reverse();
   }
 

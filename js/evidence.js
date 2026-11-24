@@ -683,6 +683,30 @@ function damping(nth, family) {
 }
 
 const LN = Math.log;
+const LN_10 = LN(10);
+const DEFAULT_FAMILY_LOG_CAP = LN(20);
+const FAMILY_LOG_CAP = Object.freeze(
+  Object.fromEntries(Object.entries(FAMILY_CAP).map(([k, v]) => [k, LN(v)]))
+);
+const REGISTERED_CODE_GROUP = (() => {
+  const map = Object.create(null);
+  for (const table of [EVIDENCE, ADAPTER_EVIDENCE]) {
+    for (const code of Object.keys(table)) {
+      if (Object.hasOwn(map, code)) continue;
+      let resolved = null;
+      for (const [re, g] of CODE_GROUP) {
+        if (re.test(code)) { resolved = g; break; }
+      }
+      if (!resolved) {
+        const fam = table[code].family;
+        const fg = Object.hasOwn(FAMILY_GROUP, fam) ? FAMILY_GROUP[fam] : null;
+        if (typeof fg === 'string' && CANONICAL_GROUPS.has(fg)) resolved = fg;
+      }
+      map[code] = resolved;
+    }
+  }
+  return Object.freeze(map);
+})();
 
 /**
  * 証拠を合成する。
@@ -716,61 +740,68 @@ export function fuse(items, opts) {
   const counted = new Map();          // 同じ code が何回目か（正の寄与のみ進める）
   const detailed = [];
 
-  const byEffect = (a, b) => {
-    // 効きの大きいものから採る。割引は後ろに回した方が損が小さい。
-    const ea = Math.abs(LN(Math.max(1e-6, a.lr)) * a.strength);
-    const eb = Math.abs(LN(Math.max(1e-6, b.lr)) * b.strength);
-    return eb - ea;
-  };
-  const all = (items || []).filter((x) => x && x.code).map((x) => {
-    /*
-     * fuse() は evidence() / adapterEvidence() の出力だけを受理する。
-     * 生の object が family/kind/id/lr/strength を自由に名乗ることを許すと、
-     * EVIDENCE 表に無い code だけで confirmed を捏造できる（#5972）。
-     * factory 出力は mint 時 producer + code から authority を再導出し、
-     * 呼び出し側の family/kind/id や後付け code mutation は採用しない。
-     * lr だけは実測チャネルとして factory が明示的に渡した値を優先する
-     * （family cap が歯止めになる）。
-     */
-    const provenance = x && FACTORY_PROVENANCE.get(x);
-    if (!provenance) {
-      throw new TypeError(`raw-evidence-item-rejected:${x && x.code}`);
+  const identifying = [];
+  const corroborating = [];
+  if (items) {
+    for (let i = 0; i < items.length; i++) {
+      const x = items[i];
+      if (!x || !x.code) continue;
+      /*
+       * fuse() は evidence() / adapterEvidence() の出力だけを受理する。
+       * 生の object が family/kind/id/lr/strength を自由に名乗ることを許すと、
+       * EVIDENCE 表に無い code だけで confirmed を捏造できる（#5972）。
+       * factory 出力は mint 時 producer + code から authority を再導出し、
+       * 呼び出し側の family/kind/id や後付け code mutation は採用しない。
+       * lr だけは実測チャネルとして factory が明示的に渡した値を優先する
+       * （family cap が歯止めになる）。
+       */
+      const provenance = FACTORY_PROVENANCE.get(x);
+      if (!provenance) {
+        throw new TypeError(`raw-evidence-item-rejected:${x && x.code}`);
+      }
+      if (!Object.is(provenance.code, x.code)) {
+        throw new TypeError('evidence-code-mutated');
+      }
+      const info = provenance.producer === ADAPTER_EVIDENCE_FACTORY
+        ? (Object.hasOwn(ADAPTER_EVIDENCE, provenance.code) ? ADAPTER_EVIDENCE[provenance.code] : null)
+        : (Object.hasOwn(EVIDENCE, provenance.code) ? EVIDENCE[provenance.code] : null);
+      /*
+       * family/kind/id の authority は producer に対応する表が持つ。通常 evidence()
+       * から adapter-only code を mint しても ADAPTER_EVIDENCE authority は得られず、
+       * 表に無い static code と同じ弱い既定（CONTEXT / inference / 非識別）に落ちる。
+       */
+      const strength = finiteStrength(x.strength, x.strength == null ? 1 : 0);
+      const item = {
+        code: provenance.code,
+        strength,
+        lr: provenance.lr,
+        family: info ? info.family : FAMILY.CONTEXT,
+        kind: info ? info.kind : 'inference',
+        id: !!(info && info.id),
+        detail: x.detail || null,
+      };
+      const rawDelta = LN(Math.max(1e-6, item.lr)) * strength;
+      const entry = { item, rawDelta, absDelta: Math.abs(rawDelta) };
+      if (item.id) identifying.push(entry);
+      else corroborating.push(entry);
     }
-    if (!Object.is(provenance.code, x.code)) {
-      throw new TypeError('evidence-code-mutated');
-    }
-    const info = provenance.producer === ADAPTER_EVIDENCE_FACTORY
-      ? (Object.hasOwn(ADAPTER_EVIDENCE, provenance.code) ? ADAPTER_EVIDENCE[provenance.code] : null)
-      : (Object.hasOwn(EVIDENCE, provenance.code) ? EVIDENCE[provenance.code] : null);
-    /*
-     * family/kind/id の authority は producer に対応する表が持つ。通常 evidence()
-     * から adapter-only code を mint しても ADAPTER_EVIDENCE authority は得られず、
-     * 表に無い static code と同じ弱い既定（CONTEXT / inference / 非識別）に落ちる。
-     */
-    return {
-      code: provenance.code,
-      strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
-      lr: provenance.lr,
-      family: info ? info.family : FAMILY.CONTEXT,
-      kind: info ? info.kind : 'inference',
-      id: !!(info && info.id),
-      detail: x.detail || null,
-    };
-  });
+  }
   /*
    * 目的に結びつける証拠を先に処理する。そのあとで、裏打ちの証拠を
    * 「結びつきがどれだけ強いか」に応じて割り引く。順番に意味がある。
+   * 効きの大きいものから採る。割引は後ろに回した方が損が小さい。
    */
-  const identifying = all.filter((x) => x.id).sort(byEffect);
-  const corroborating = all.filter((x) => !x.id).sort(byEffect);
+  const byAbsDelta = (a, b) => b.absDelta - a.absDelta;
+  identifying.sort(byAbsDelta);
+  corroborating.sort(byAbsDelta);
 
-  const apply = (it, scale) => {
-    const lr = Math.max(1e-6, it.lr);
+  const apply = (entry, scale) => {
+    const it = entry.item;
     const family = it.family || FAMILY.CONTEXT;
     const key = family + ':' + it.code;
 
     // 1 件の効き（対数オッズ）。打ち消す証拠（delta <= 0）は重複割引・上限の消費を行わない。
-    let delta = LN(lr) * (it.strength == null ? 1 : it.strength);
+    let delta = entry.rawDelta;
     let nth = 0;
     if (delta > 0) {
       nth = counted.get(key) || 0;
@@ -778,7 +809,7 @@ export function fuse(items, opts) {
       delta *= damping(nth, family) * scale;
 
       // 系統ごとの上限。正の寄与だけで管理し、負の証拠が上限枠を水増ししないようにする。
-      const cap = LN(Object.hasOwn(FAMILY_CAP, family) ? FAMILY_CAP[family] : 20);
+      const cap = Object.hasOwn(FAMILY_LOG_CAP, family) ? FAMILY_LOG_CAP[family] : DEFAULT_FAMILY_LOG_CAP;
       const posAlready = posPerFamily.get(family) || 0;
       const room = Math.max(0, cap - posAlready);
       if (delta > room) delta = room;
@@ -798,8 +829,8 @@ export function fuse(items, opts) {
   };
 
   let idLogOdds = 0;
-  for (const it of identifying) {
-    const d = apply(it, 1);
+  for (let i = 0; i < identifying.length; i++) {
+    const d = apply(identifying[i], 1);
     if (d > 0) idLogOdds += d;
   }
 
@@ -811,8 +842,8 @@ export function fuse(items, opts) {
    * だから目的への結びつきが無いときは、ほとんど効かせない（2 割）。
    * 結びつきが十分に強ければ（10 倍以上）、そのまま効かせる。
    */
-  const scale = 0.2 + 0.8 * Math.max(0, Math.min(1, idLogOdds / LN(10)));
-  for (const it of corroborating) apply(it, scale);
+  const scale = 0.2 + 0.8 * Math.max(0, Math.min(1, idLogOdds / LN_10));
+  for (let i = 0; i < corroborating.length; i++) apply(corroborating[i], scale);
 
   const families = new Set();
   /*
@@ -992,14 +1023,7 @@ const TRUSTED_LIKELY_GROUPS = Object.freeze([GROUP.METADATA, GROUP.STRUCTURAL]);
  */
 function canonicalRegisteredGroup(code) {
   if (typeof code !== 'string') return null;
-  const info = Object.hasOwn(EVIDENCE, code)
-    ? EVIDENCE[code]
-    : (Object.hasOwn(ADAPTER_EVIDENCE, code) ? ADAPTER_EVIDENCE[code] : null);
-  if (!info) return null;
-
-  for (const [re, g] of CODE_GROUP) if (re.test(code)) return g;
-  const g = Object.hasOwn(FAMILY_GROUP, info.family) ? FAMILY_GROUP[info.family] : null;
-  return typeof g === 'string' && CANONICAL_GROUPS.has(g) ? g : null;
+  return Object.hasOwn(REGISTERED_CODE_GROUP, code) ? REGISTERED_CODE_GROUP[code] : null;
 }
 
 /* 観測された出どころの集合。検証を通せなければ null（＝例外は通らない）。 */

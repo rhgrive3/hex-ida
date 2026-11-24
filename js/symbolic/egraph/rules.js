@@ -3,6 +3,15 @@ import * as E from '../expr/index.js';
 import { expressionChildren } from '../memory/expression-contract.js';
 export const EQUALITY_RULESET_VERSION = 'hex-pure-bv-eqs/1';
 
+const AND_OR = new Set(['and','or']);
+const RIGHT_ZERO_IDENTITY = new Set(['add','or','xor','sub','shl','lshr','ashr']);
+const LEFT_ZERO_IDENTITY = new Set(['add','or','xor']);
+const INVOLUTION_UNARY = new Set(['not','neg']);
+const ZERO_ABSORBING = new Set(['and','mul']);
+const BOOL_SELF_FALSE = new Set(['xor','ne']);
+const BOOL_SELF_TRUE = new Set(['eq','implies']);
+const EXT_CAST = new Set(['zext','sext']);
+
 export function proposeSimpleCandidates(node) {
   const out=[];
   const propose=(rule,after)=>out.push({rule,after});
@@ -12,10 +21,10 @@ export function proposeSimpleCandidates(node) {
     const {left:a,right:b,op}=node,width=node.sort.width;
     if(a===b && op==='xor') propose('xor-self',E.createBv(width,0n));
     if(a===b && op==='sub') propose('sub-self',E.createBv(width,0n));
-    if(a===b && ['and','or'].includes(op)) propose(`${op}-self`,a);
+    if(a===b && AND_OR.has(op)) propose(`${op}-self`,a);
     if(a===b && op==='add') propose('double-add',E.createBinary('shl',a,E.createBv(width,1n)));
-    if(['add','or','xor','sub','shl','lshr','ashr'].includes(op) && zero(b)) propose(`${op}-zero`,a);
-    if(['add','or','xor'].includes(op) && zero(a)) propose(`${op}-zero-left`,b);
+    if(RIGHT_ZERO_IDENTITY.has(op) && zero(b)) propose(`${op}-zero`,a);
+    if(LEFT_ZERO_IDENTITY.has(op) && zero(a)) propose(`${op}-zero-left`,b);
     if(op==='mul' && one(b)) propose('mul-one',a);
     if(op==='mul' && one(a)) propose('mul-one-left',b);
     if(op==='and' && b.kind==='const' && b.value===(1n<<BigInt(width))-1n) propose('and-mask',a);
@@ -25,7 +34,7 @@ export function proposeSimpleCandidates(node) {
       propose('mba-add',E.createBinary('add',a.left,a.right));
     }
   }
-  if(node.kind==='unary' && node.arg.kind==='unary' && node.op===node.arg.op && ['not','neg'].includes(node.op)) propose(`double-${node.op}`,node.arg.arg);
+  if(node.kind==='unary' && node.arg.kind==='unary' && node.op===node.arg.op && INVOLUTION_UNARY.has(node.op)) propose(`double-${node.op}`,node.arg.arg);
   if(node.kind==='connective' && node.op==='not' && node.args[0]?.kind==='connective' && node.args[0].op==='not') propose('double-bool-not',node.args[0].args[0]);
   if(node.kind==='ite' && node.thenExpr===node.elseExpr) propose('same-select-arms',node.thenExpr);
   return out;
@@ -45,7 +54,7 @@ export function proposeEqualityCandidates(node) {
       if (a.kind === 'binary' && a.op === op) emit('associate-right-'+op,binary(op,a.left,binary(op,a.right,b)));
       if (b.kind === 'binary' && b.op === op) emit('associate-left-'+op,binary(op,binary(op,a,b.left),b.right));
     }
-    if (['and','mul'].includes(op) && ((a.kind==='const' && a.value===0n) || (b.kind==='const' && b.value===0n))) emit(op+'-zero',E.createBv(width,0n));
+    if (ZERO_ABSORBING.has(op) && ((a.kind==='const' && a.value===0n) || (b.kind==='const' && b.value===0n))) emit(op+'-zero',E.createBv(width,0n));
     if (op === 'xor') {
       if (a.kind==='binary' && a.op==='xor' && a.right===b) emit('xor-cancel-right',a.left);
       if (b.kind==='binary' && b.op==='xor' && a===b.left) emit('xor-cancel-left',b.right);
@@ -68,10 +77,10 @@ export function proposeEqualityCandidates(node) {
   }
   if (node.kind==='connective' && node.args.length===2) {
     const [a,b] = node.args;
-    if (a===b && ['and','or'].includes(node.op)) emit('bool-idempotent',a);
-    if (a===b && ['xor','ne'].includes(node.op)) emit('bool-self-false',E.createBool(false));
-    if (a===b && ['eq','implies'].includes(node.op)) emit('bool-self-true',E.createBool(true));
-    if (['and','or'].includes(node.op)) {
+    if (a===b && AND_OR.has(node.op)) emit('bool-idempotent',a);
+    if (a===b && BOOL_SELF_FALSE.has(node.op)) emit('bool-self-false',E.createBool(false));
+    if (a===b && BOOL_SELF_TRUE.has(node.op)) emit('bool-self-true',E.createBool(true));
+    if (AND_OR.has(node.op)) {
       if ((a.kind==='connective' && a.op==='not' && a.args[0]===b) || (b.kind==='connective' && b.op==='not' && b.args[0]===a)) emit('bool-complement',E.createBool(node.op==='or'));
       for(const [value,other] of [[a,b],[b,a]]) if(value.kind==='const') {
         emit('bool-constant',value.value===(node.op==='and')?other:value);
@@ -79,7 +88,7 @@ export function proposeEqualityCandidates(node) {
     }
   }
   if (node.kind==='ite' && node.cond.kind==='const') emit('constant-select',node.cond.value?node.thenExpr:node.elseExpr);
-  if (node.kind==='cast' && node.op==='trunc' && node.arg.kind==='cast' && ['zext','sext'].includes(node.arg.op) && node.targetWidth===node.arg.arg.sort.width) emit('truncate-extension',node.arg.arg);
+  if (node.kind==='cast' && node.op==='trunc' && node.arg.kind==='cast' && EXT_CAST.has(node.arg.op) && node.targetWidth===node.arg.arg.sort.width) emit('truncate-extension',node.arg.arg);
   if (node.kind!=='const' && node.kind!=='fresh_symbol' && expressionChildren(node).every(child=>child.kind==='const')) {
     const value=E.evaluateExpr(node); // existing evaluator, only constant leaves
     if (value.status===E.EVAL_STATUS.VALUE) emit('canonical-constant-fold',node.sort.kind==='bool'?E.createBool(value.value):E.createBv(node.sort.width,value.value));

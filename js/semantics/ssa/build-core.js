@@ -1,6 +1,6 @@
 import { createValueId, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { appendTransform, createOriginSet, createTransformRecord, mergeOriginSets } from '../../core/identity/origin.js';
-import { analyzeSemanticDominance, createSemanticCfg, deterministicTraversal } from '../cfg/index.js';
+import { analyzeSemanticDominance, createSemanticCfg, deterministicTraversal, dominatesBlock } from '../cfg/index.js';
 import { createSemanticIrFunction, isCanonicalSemanticIrProducerArtifact } from '../ir/function.js';
 import {
   analyzeSemanticSsaDominance,
@@ -679,30 +679,185 @@ function phiSkeleton(ir, block, variant) {
   };
 }
 
+const PHI_ORIGIN_BITSET_MAX_WORDS = 65536;
 function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {
   const sorted = phiDefinitions.slice().sort((a, b) => compareText(a.valueId, b.valueId));
-  const phiIds = new Set(sorted.map((phi) => phi.valueId));
-  const origins = []; const originByKey = new Map(); const roots = new Map();
-  const dependents = new Map(sorted.map((phi) => [phi.valueId, new Set()]));
-  const addOrigin = (key, origin) => { if (originByKey.has(key)) return originByKey.get(key); const index = origins.length; origins.push(origin); originByKey.set(key, index); return index; };
-  for (const phi of sorted) {
-    tick(); const set = new Set([addOrigin('base:' + phi.valueId, safeOrigin(irBlocks.get(phi.blockId)?.origin, createOriginSet({ parentEntityIds: [phi.blockId] })))]);
+  const phiCount = sorted.length;
+  if (phiCount === 0) return new Map();
+  const phiIndexById = new Map();
+  for (let i = 0; i < phiCount; i += 1) phiIndexById.set(sorted[i].valueId, i);
+  const origins = [];
+  const originByKey = new Map();
+  const initialOrigins = new Array(phiCount);
+  const dependents = Array.from({ length: phiCount }, () => new Set());
+  const parent = new Int32Array(phiCount);
+  for (let i = 0; i < phiCount; i += 1) parent[i] = i;
+  const findRoot = (x) => {
+    let r = x;
+    while (parent[r] !== r) r = parent[r];
+    while (parent[x] !== r) { const next = parent[x]; parent[x] = r; x = next; }
+    return r;
+  };
+  const unionNodes = (a, b) => {
+    const ra = findRoot(a);
+    const rb = findRoot(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
+  const addOrigin = (key, origin) => {
+    if (originByKey.has(key)) return originByKey.get(key);
+    const index = origins.length;
+    origins.push(origin);
+    originByKey.set(key, index);
+    return index;
+  };
+  for (let i = 0; i < phiCount; i += 1) {
+    const phi = sorted[i];
+    tick();
+    const initSet = new Set([addOrigin('base:' + phi.valueId, safeOrigin(irBlocks.get(phi.blockId)?.origin, createOriginSet({ parentEntityIds: [phi.blockId] })))]);
     const incoming = phi.incoming.slice().sort((a, b) => compareText(a.predecessorBlockId, b.predecessorBlockId) || compareText(a.valueId, b.valueId));
-    for (const item of incoming) { tick(); const definition = definitionByValue.get(item.valueId); if (!definition) fail('semantic-ssa-dangling-phi-value-id');
-      if (definition.kind === 'phi') { if (!phiIds.has(definition.valueId)) fail('semantic-ssa-dangling-phi-value-id'); dependents.get(definition.valueId).add(phi.valueId); } else set.add(addOrigin('definition:' + definition.valueId, definition.origin)); }
-    roots.set(phi.valueId, set);
+    for (const item of incoming) {
+      tick();
+      const definition = definitionByValue.get(item.valueId);
+      if (!definition) fail('semantic-ssa-dangling-phi-value-id');
+      if (definition.kind === 'phi') {
+        const depIdx = phiIndexById.get(definition.valueId);
+        if (depIdx === undefined) fail('semantic-ssa-dangling-phi-value-id');
+        dependents[depIdx].add(i);
+        unionNodes(depIdx, i);
+      } else {
+        initSet.add(addOrigin('definition:' + definition.valueId, definition.origin));
+      }
+    }
+    initialOrigins[i] = [...initSet].sort((a, b) => a - b);
   }
-  const sortedDependents = new Map();
-  for (const [phiId, depSet] of dependents) sortedDependents.set(phiId, [...depSet].sort());
-  const queue = sorted.map((phi) => phi.valueId); const queued = new Set(queue);
-  for (let cursor = 0; cursor < queue.length; cursor++) { tick(); const sourceId = queue[cursor]; queued.delete(sourceId); const source = roots.get(sourceId);
-    for (const targetId of sortedDependents.get(sourceId)) { tick(); const target = roots.get(targetId); const before = target.size; for (const index of source) target.add(index); if (target.size !== before && !queued.has(targetId)) { queue.push(targetId); queued.add(targetId); } }
+  const sortedDependentIndices = new Array(phiCount);
+  for (let i = 0; i < phiCount; i += 1) {
+    const depSet = dependents[i];
+    if (depSet.size === 0) {
+      sortedDependentIndices[i] = [];
+    } else if (depSet.size === 1) {
+      sortedDependentIndices[i] = [...depSet];
+    } else {
+      sortedDependentIndices[i] = [...depSet].sort((a, b) => {
+        const left = sorted[a].valueId;
+        const right = sorted[b].valueId;
+        return left < right ? -1 : left > right ? 1 : 0;
+      });
+    }
+  }
+  const components = new Map();
+  for (let i = 0; i < phiCount; i += 1) {
+    const root = findRoot(i);
+    let members = components.get(root);
+    if (!members) { members = []; components.set(root, members); }
+    members.push(i);
+  }
+  const finalSortedIndices = new Array(phiCount);
+  for (const members of components.values()) {
+    const compSize = members.length;
+    if (compSize === 1 && sortedDependentIndices[members[0]].length === 0) {
+      tick();
+      finalSortedIndices[members[0]] = initialOrigins[members[0]];
+      continue;
+    }
+    const compOriginsSet = new Set();
+    for (let m = 0; m < compSize; m += 1) {
+      const list = initialOrigins[members[m]];
+      for (let k = 0; k < list.length; k += 1) compOriginsSet.add(list[k]);
+    }
+    const localToGlobal = [...compOriginsSet].sort((a, b) => a - b);
+    const words = (localToGlobal.length + 31) >>> 5;
+    if (compSize * words <= PHI_ORIGIN_BITSET_MAX_WORDS) {
+      const localPosByGlobalPhi = new Map();
+      for (let m = 0; m < compSize; m += 1) localPosByGlobalPhi.set(members[m], m);
+      const globalToLocalOrigin = new Map();
+      for (let o = 0; o < localToGlobal.length; o += 1) globalToLocalOrigin.set(localToGlobal[o], o);
+      const bits = new Uint32Array(compSize * words);
+      for (let m = 0; m < compSize; m += 1) {
+        const off = m * words;
+        const list = initialOrigins[members[m]];
+        for (let k = 0; k < list.length; k += 1) {
+          const bit = globalToLocalOrigin.get(list[k]);
+          bits[off + (bit >>> 5)] |= (1 << (bit & 31));
+        }
+      }
+      const queue = new Array(compSize);
+      const queued = new Uint8Array(compSize);
+      for (let m = 0; m < compSize; m += 1) { queue[m] = m; queued[m] = 1; }
+      for (let cursor = 0; cursor < queue.length; cursor += 1) {
+        tick();
+        const sLocal = queue[cursor];
+        queued[sLocal] = 0;
+        const sOff = sLocal * words;
+        const deps = sortedDependentIndices[members[sLocal]];
+        for (let d = 0; d < deps.length; d += 1) {
+          tick();
+          const tLocal = localPosByGlobalPhi.get(deps[d]);
+          const tOff = tLocal * words;
+          let changed = 0;
+          for (let w = 0; w < words; w += 1) {
+            const prev = bits[tOff + w];
+            const next = prev | bits[sOff + w];
+            if (next !== prev) {
+              bits[tOff + w] = next;
+              changed = 1;
+            }
+          }
+          if (changed && !queued[tLocal]) {
+            queue.push(tLocal);
+            queued[tLocal] = 1;
+          }
+        }
+      }
+      for (let m = 0; m < compSize; m += 1) {
+        const off = m * words;
+        const indices = [];
+        for (let w = 0; w < words; w += 1) {
+          let word = bits[off + w];
+          const base = w << 5;
+          while (word !== 0) {
+            const low = word & -word;
+            const bit = 31 - Math.clz32(low);
+            indices.push(localToGlobal[base | bit]);
+            word ^= low;
+          }
+        }
+        finalSortedIndices[members[m]] = indices;
+      }
+    } else {
+      const compRoots = new Map();
+      const queue = members.slice();
+      const queued = new Set(queue);
+      for (let m = 0; m < compSize; m += 1) compRoots.set(members[m], new Set(initialOrigins[members[m]]));
+      for (let cursor = 0; cursor < queue.length; cursor += 1) {
+        tick();
+        const sIdx = queue[cursor];
+        queued.delete(sIdx);
+        const source = compRoots.get(sIdx);
+        const deps = sortedDependentIndices[sIdx];
+        for (let d = 0; d < deps.length; d += 1) {
+          tick();
+          const tIdx = deps[d];
+          const target = compRoots.get(tIdx);
+          const before = target.size;
+          for (const index of source) target.add(index);
+          if (target.size !== before && !queued.has(tIdx)) {
+            queue.push(tIdx);
+            queued.add(tIdx);
+          }
+        }
+      }
+      for (let m = 0; m < compSize; m += 1) {
+        finalSortedIndices[members[m]] = [...compRoots.get(members[m])].sort((a, b) => a - b);
+      }
+    }
   }
   const resolved = new Map();
   const mergedByRootKey = new Map();
-  for (const phi of sorted) {
+  for (let i = 0; i < phiCount; i += 1) {
+    const phi = sorted[i];
     tick();
-    const sortedIndices = [...roots.get(phi.valueId)].sort((a, b) => a - b);
+    const sortedIndices = finalSortedIndices[i];
     const rootKey = sortedIndices.join(',');
     let merged = mergedByRootKey.get(rootKey);
     if (merged === undefined) {
@@ -780,42 +935,7 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
     scalarValueIdBySemantic.set(semanticValue.id, definition.valueId);
   }
 
-  // The idom relation is a tree for reachable blocks. Entry/exit intervals
-  // answer the repeated scalar-use dominance query without scanning its chain.
-  const domChildren = new Map();
-  for (const block of cfg.blocks) {
-    const blockId = block.id;
-    const idom = dominance.immediateDominators[blockId];
-    if (idom == null) continue;
-    const children = domChildren.get(idom);
-    if (children) children.push(blockId);
-    else domChildren.set(idom, [blockId]);
-  }
-  const noDomChildren = [];
-  const domTin = new Map();
-  const domTout = new Map();
-  let domClock = 0;
-  const domDfsStack = [{ blockId: cfg.entryBlockId, childIndex: 0 }];
-  domTin.set(cfg.entryBlockId, ++domClock);
-  while (domDfsStack.length > 0) {
-    const frame = domDfsStack[domDfsStack.length - 1];
-    const children = domChildren.get(frame.blockId) || noDomChildren;
-    if (frame.childIndex < children.length) {
-      const childId = children[frame.childIndex++];
-      domTin.set(childId, ++domClock);
-      domDfsStack.push({ blockId: childId, childIndex: 0 });
-    } else {
-      domTout.set(frame.blockId, ++domClock);
-      domDfsStack.pop();
-    }
-  }
-  const dominatesReachable = (ancestorId, descendantId) => {
-    if (ancestorId === descendantId) return true;
-    const aIn = domTin.get(ancestorId);
-    const dIn = domTin.get(descendantId);
-    if (aIn === undefined || dIn === undefined) return false;
-    return aIn <= dIn && dIn < domTout.get(ancestorId);
-  };
+  const dominatesReachable = (ancestorId, descendantId) => dominatesBlock(dominance, ancestorId, descendantId);
 
   const nodePositions = new Map();
   for (const block of ir.blocks) {
@@ -874,11 +994,44 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
     }
   }
 
-  const children = new Map(cfg.blocks.map((block) => [block.id, []]));
-  for (const [blockId, idom] of Object.entries(dominance.immediateDominators)) {
-    if (idom != null) children.get(idom).push(blockId);
+  const sortedPhiEntriesByBlock = new Map();
+  for (const [blockId, blockPhis] of phiByBlock) {
+    if (blockPhis.size === 0) {
+      sortedPhiEntriesByBlock.set(blockId, []);
+    } else {
+      sortedPhiEntriesByBlock.set(blockId, [...blockPhis.keys()].sort().map((variantKey) => [variantKey, blockPhis.get(variantKey)]));
+    }
   }
-  for (const list of children.values()) list.sort();
+  const uniqueSuccessorsByBlock = new Map();
+  for (const block of cfg.blocks) {
+    const succs = block.successors;
+    if (succs.length === 0) {
+      uniqueSuccessorsByBlock.set(block.id, []);
+    } else if (succs.length === 1) {
+      uniqueSuccessorsByBlock.set(block.id, [succs[0].to]);
+    } else {
+      const seen = new Set();
+      const list = [];
+      let needsSort = false;
+      let prev = '';
+      for (let i = 0; i < succs.length; i += 1) {
+        const to = succs[i].to;
+        if (seen.has(to)) continue;
+        seen.add(to);
+        if (list.length > 0 && to < prev) needsSort = true;
+        prev = to;
+        list.push(to);
+      }
+      if (needsSort) list.sort();
+      uniqueSuccessorsByBlock.set(block.id, list);
+    }
+  }
+
+  const children = new Map(cfg.blocks.map((block) => [block.id, []]));
+  for (const block of cfg.blocks) {
+    const idom = dominance.immediateDominators[block.id];
+    if (idom != null) children.get(idom).push(block.id);
+  }
 
   let useOrdinal = 0;
   let phiLinkCount = 0;
@@ -887,14 +1040,13 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
     phi.incoming.push({ predecessorBlockId, valueId });
   };
 
-  const entryBlock = cfg.blocks.find((block) => block.id === cfg.entryBlockId);
+  const entryBlock = cfgBlocks.get(cfg.entryBlockId);
   if (entryBlock && entryBlock.predecessors.length > 0) {
     const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);
-    const entryPhis = phiByBlock.get(cfg.entryBlockId);
-    for (const variantKey of [...entryPhis.keys()].sort()) {
+    for (const [variantKey, phi] of sortedPhiEntriesByBlock.get(cfg.entryBlockId)) {
       const seedValueId = seedValueByVariant.get(variantKey);
       if (!seedValueId) fail('semantic-ssa-missing-entry-phi-seed');
-      addPhiIncoming(entryPhis.get(variantKey), virtualEntryPredecessor, seedValueId);
+      addPhiIncoming(phi, virtualEntryPredecessor, seedValueId);
     }
   }
 
@@ -906,9 +1058,7 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
       if (!frame.entered) {
         frame.entered = true;
         const blockId = frame.blockId;
-        const blockPhis = phiByBlock.get(blockId);
-        for (const variantKey of [...blockPhis.keys()].sort()) {
-          const phi = blockPhis.get(variantKey);
+        for (const [variantKey, phi] of sortedPhiEntriesByBlock.get(blockId)) {
           stacks.get(variantKey).push(phi.valueId);
           frame.pushed.push(variantKey);
         }
@@ -941,13 +1091,12 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
             frame.pushed.push(event.variant.key);
           }
         }
-        for (const successorId of [...new Set(cfgBlocks.get(blockId).successors.map((edge) => edge.to))].sort()) {
-          const successorPhis = phiByBlock.get(successorId);
-          for (const variantKey of [...successorPhis.keys()].sort()) {
+        for (const successorId of uniqueSuccessorsByBlock.get(blockId)) {
+          for (const [variantKey, phi] of sortedPhiEntriesByBlock.get(successorId)) {
             const stack = stacks.get(variantKey);
             const current = stack[stack.length - 1];
             if (!current) fail('semantic-ssa-missing-phi-input-definition');
-            addPhiIncoming(successorPhis.get(variantKey), blockId, current);
+            addPhiIncoming(phi, blockId, current);
           }
         }
       }
@@ -967,8 +1116,8 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
     tick();
     const local = new Map();
     const neededVariantKeys = new Set(model.eventsByBlock.get(blockId).map((event) => event.variant.key));
-    for (const successorId of [...new Set(cfgBlocks.get(blockId).successors.map((edge) => edge.to))]) {
-      for (const variantKey of phiByBlock.get(successorId).keys()) neededVariantKeys.add(variantKey);
+    for (const successorId of uniqueSuccessorsByBlock.get(blockId)) {
+      for (const [variantKey] of sortedPhiEntriesByBlock.get(successorId)) neededVariantKeys.add(variantKey);
     }
     for (const variantKey of [...neededVariantKeys].sort()) {
       const variant = model.variantBySemanticKey.get(variantKey);
@@ -1000,10 +1149,9 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
         local.set(event.variant.key, definition.valueId);
       }
     }
-    for (const successorId of [...new Set(cfgBlocks.get(blockId).successors.map((edge) => edge.to))].sort()) {
-      const successorPhis = phiByBlock.get(successorId);
-      for (const variantKey of [...successorPhis.keys()].sort()) {
-        addPhiIncoming(successorPhis.get(variantKey), blockId, local.get(variantKey));
+    for (const successorId of uniqueSuccessorsByBlock.get(blockId)) {
+      for (const [variantKey, phi] of sortedPhiEntriesByBlock.get(successorId)) {
+        addPhiIncoming(phi, blockId, local.get(variantKey));
       }
     }
   }

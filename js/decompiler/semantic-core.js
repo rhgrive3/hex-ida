@@ -1391,14 +1391,40 @@ function getValuesByReg(ir, isAArch64 = false) {
   return byReg;
 }
 
+const BLOCK_INST_POS_CACHE = new WeakMap();
+
 function blockInstPosition(ir, inst) {
   if (!ir || !inst || inst.block == null) return null;
   const block = ir.blocks?.[inst.block];
   if (!block) return null;
   if (inst.op === OP.PHI) return -1;
-  const insts = block.insts || [];
-  const idx = insts.indexOf(inst);
-  return idx >= 0 ? idx : null;
+  const insts = block.insts;
+  if (!Array.isArray(insts) || insts.length === 0) return null;
+  let cached = BLOCK_INST_POS_CACHE.get(insts);
+  if (!cached || cached.length !== insts.length) {
+    const map = new Map();
+    for (let i = 0; i < insts.length; i += 1) {
+      const cur = insts[i];
+      if (!map.has(cur)) map.set(cur, i);
+    }
+    cached = { length: insts.length, map };
+    BLOCK_INST_POS_CACHE.set(insts, cached);
+  }
+  let idx = cached.map.get(inst);
+  if (idx !== undefined && insts[idx] === inst) return idx;
+  if (idx !== undefined) {
+    // Array elements were modified in place with the same length; rebuild index.
+    const map = new Map();
+    for (let i = 0; i < insts.length; i += 1) {
+      const cur = insts[i];
+      if (!map.has(cur)) map.set(cur, i);
+    }
+    cached = { length: insts.length, map };
+    BLOCK_INST_POS_CACHE.set(insts, cached);
+    idx = map.get(inst);
+    return idx !== undefined ? idx : null;
+  }
+  return null;
 }
 
 function sameBlockPrecedes(ir, a, b) {
@@ -1592,25 +1618,48 @@ export function readSemanticLocalDeclaration(node, ir) {
     ? owner : null;
 }
 
+const DECL_WORD_TOKEN_RE = /[A-Za-z0-9_]+/g;
+const DECL_PURE_WORD_RE = /^[A-Za-z0-9_]+$/;
+
 function semanticLocalDeclarations(types, body, ctx) {
   const text = body.map((item) => item.text || '').join('\n');
+  const usedTokens = new Set();
+  DECL_WORD_TOKEN_RE.lastIndex = 0;
+  let tokMatch;
+  while ((tokMatch = DECL_WORD_TOKEN_RE.exec(text)) !== null) usedTokens.add(tokMatch[0]);
   const out = [];
   const seen = new Set();
-  for (const local of types.locals || []) {
+  const locals = types.locals || [];
+  let slotByName = null;
+  if (locals.length > 0 && Array.isArray(ctx.ir.stackSlots) && ctx.ir.stackSlots.length > 0) {
+    slotByName = new Map();
+    for (const candidate of ctx.ir.stackSlots) {
+      if (!slotByName.has(candidate.name)) slotByName.set(candidate.name, candidate);
+    }
+  }
+  for (const local of locals) {
     const name = String(local.slot || '');
     if (!/^[A-Za-z_]\w*$/.test(name) || seen.has(name)) continue;
-    if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) continue;
+    if (!usedTokens.has(name)) continue;
     const type = semanticLocalDeclarationType(local, ctx);
     if (!type) continue;
     seen.add(name);
     const node = line('decl', 1, `${type} ${name};`, null);
-    const slot = (ctx.ir.stackSlots || []).find(candidate => candidate.name === local.slot);
+    const slot = slotByName ? slotByName.get(local.slot) : undefined;
     if (slot?.key) localDeclarationOwners.set(node, Object.freeze({ ir:ctx.ir, slot, key:slot.key, name, type }));
     out.push(node);
   }
-  for (const [id, name] of ctx.materialNames || []) {
-    const value = (ctx.ir.values || []).find((candidate) => candidate.id === id);
-    if (!value?.def || seen.has(name) || !text.includes(name)) continue;
+  const materialNames = ctx.materialNames;
+  let valueById = null;
+  if (materialNames && (materialNames.size > 0 || materialNames.length > 0) && Array.isArray(ctx.ir.values)) {
+    valueById = new Map();
+    for (const candidate of ctx.ir.values) {
+      if (!valueById.has(candidate.id)) valueById.set(candidate.id, candidate);
+    }
+  }
+  for (const [id, name] of materialNames || []) {
+    const value = valueById ? valueById.get(id) : undefined;
+    if (!value?.def || seen.has(name) || (!usedTokens.has(name) && !text.includes(name))) continue;
     if (value.def.op === OP.LOAD) {
       const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
       const bits = [8, 16, 32, 64, 128].includes(Number(value.bits)) ? Number(value.bits) : 64;
@@ -1643,7 +1692,11 @@ function semanticLocalDeclarations(types, body, ctx) {
     for (const entry of phiEntries) {
       const name = entry?.name;
       if (!name || seen.has(name)) continue;
-      if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) continue;
+      if (DECL_PURE_WORD_RE.test(name)) {
+        if (!usedTokens.has(name)) continue;
+      } else if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) {
+        continue;
+      }
       seen.add(name);
       out.push(line('decl', 1, `${entry.type || 'uint64'} ${name};`, null));
     }
@@ -4168,6 +4221,19 @@ function buildPhiLowering(ctx) {
   };
 }
 
+const PHI_STRING_OR_WORD_RE = /"(?:\\.|[^"\\])*"|[A-Za-z0-9_]+/g;
+
+function extractPhiWordIdents(expr) {
+  const idents = new Set();
+  if (!expr) return idents;
+  PHI_STRING_OR_WORD_RE.lastIndex = 0;
+  let m;
+  while ((m = PHI_STRING_OR_WORD_RE.exec(expr)) !== null) {
+    if (m[0].charCodeAt(0) !== 34 /* '"' */) idents.add(m[0]);
+  }
+  return idents;
+}
+
 function exprReferencesIdent(expr, ident) {
   if (!expr || !ident || !expr.includes(ident)) return false;
   const stripped = expr.replace(/"(?:\\.|[^"\\])*"/g, '""');
@@ -4176,6 +4242,9 @@ function exprReferencesIdent(expr, ident) {
 
 function replaceIdentInExpr(expr, ident, replacement) {
   if (!expr || !ident || !expr.includes(ident)) return expr;
+  if (DECL_PURE_WORD_RE.test(ident)) {
+    return expr.replace(PHI_STRING_OR_WORD_RE, (tok) => (tok === ident ? replacement : tok));
+  }
   const re = new RegExp(`(?<![A-Za-z0-9_])${escapePhiRegExp(ident)}(?![A-Za-z0-9_])`, 'g');
   return expr.replace(/"(?:\\.|[^"\\])*"|[^"]+/g, (seg) => (seg.startsWith('"') ? seg : seg.replace(re, replacement)));
 }
@@ -4229,27 +4298,53 @@ function emitPhiCopiesForEdge(fromBi, toBi, out, ctx, indent, anchorInst = null)
     return line('stmt', indent, `${lhs} = ${rhs};`, fallbackRow, fallbackAddr, extra);
   };
 
+  const allPureWordDst = pending.every((item) => DECL_PURE_WORD_RE.test(item.dst));
+  let useCount = null;
+  if (allPureWordDst) {
+    useCount = new Map();
+    for (const item of pending) {
+      const idents = extractPhiWordIdents(item.rhs);
+      item.rhsIdents = idents;
+      for (const ident of idents) useCount.set(ident, (useCount.get(ident) || 0) + 1);
+    }
+  }
+
   let emitted = 0;
   while (pending.length) {
     let readyIdx = -1;
-    for (let i = 0; i < pending.length; i++) {
-      const dst = pending[i].dst;
-      let usedByOther = false;
-      for (let j = 0; j < pending.length; j++) {
-        if (i === j) continue;
-        if (exprReferencesIdent(pending[j].rhs, dst)) {
-          usedByOther = true;
+    if (useCount) {
+      for (let i = 0; i < pending.length; i++) {
+        const dst = pending[i].dst;
+        const totalUses = useCount.get(dst) || 0;
+        const selfUse = pending[i].rhsIdents.has(dst) ? 1 : 0;
+        if (totalUses - selfUse === 0) {
+          readyIdx = i;
           break;
         }
       }
-      if (!usedByOther) {
-        readyIdx = i;
-        break;
+    } else {
+      for (let i = 0; i < pending.length; i++) {
+        const dst = pending[i].dst;
+        let usedByOther = false;
+        for (let j = 0; j < pending.length; j++) {
+          if (i === j) continue;
+          if (exprReferencesIdent(pending[j].rhs, dst)) {
+            usedByOther = true;
+            break;
+          }
+        }
+        if (!usedByOther) {
+          readyIdx = i;
+          break;
+        }
       }
     }
 
     if (readyIdx >= 0) {
       const item = pending.splice(readyIdx, 1)[0];
+      if (useCount) {
+        for (const ident of item.rhsIdents) useCount.set(ident, (useCount.get(ident) || 1) - 1);
+      }
       out.push(makeCopyLine(item.dst, item.rhs, item.phi, item.value));
       emitted++;
     } else {
@@ -4260,8 +4355,21 @@ function emitPhiCopiesForEdge(fromBi, toBi, out, ctx, indent, anchorInst = null)
       lowering.temps.set(tmpName, { name: tmpName, type: victim.dstType });
       out.push(makeCopyLine(tmpName, victim.dst, victim.phi, victim.phi.dst));
       emitted++;
-      for (const item of pending) {
-        item.rhs = replaceIdentInExpr(item.rhs, victim.dst, tmpName);
+      if (useCount) {
+        for (const item of pending) {
+          if (!item.rhsIdents.has(victim.dst)) continue;
+          item.rhs = replaceIdentInExpr(item.rhs, victim.dst, tmpName);
+          item.rhsIdents.delete(victim.dst);
+          useCount.set(victim.dst, (useCount.get(victim.dst) || 1) - 1);
+          if (!item.rhsIdents.has(tmpName)) {
+            item.rhsIdents.add(tmpName);
+            useCount.set(tmpName, (useCount.get(tmpName) || 0) + 1);
+          }
+        }
+      } else {
+        for (const item of pending) {
+          item.rhs = replaceIdentInExpr(item.rhs, victim.dst, tmpName);
+        }
       }
     }
   }

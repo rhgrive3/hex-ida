@@ -7,8 +7,33 @@ importScripts(
 
 const CS_INSN_STRUCT = 240;
 const OFF_SIZE = 16, OFF_MNEMONIC = 42, OFF_OP_STR = 74;
+const MAX_SCRATCH_BYTES = 64 * 1024;
 let modulePromise = null;
 const handles = new Map();
+let scratchM = null;
+let scratchPtr = 0;
+let scratchCap = 0;
+
+function acquireScratchBuffer(M, need) {
+  if (scratchM === M && scratchPtr !== 0 && scratchCap >= need) return scratchPtr;
+  if (scratchPtr !== 0 && scratchM) {
+    const oldM = scratchM;
+    const oldPtr = scratchPtr;
+    scratchPtr = 0;
+    scratchCap = 0;
+    scratchM = null;
+    oldM._free(oldPtr);
+  } else {
+    scratchPtr = 0;
+    scratchCap = 0;
+    scratchM = null;
+  }
+  const ptr = M._malloc(need);
+  scratchM = M;
+  scratchPtr = ptr;
+  scratchCap = need;
+  return ptr;
+}
 
 async function getModule() {
   if (!modulePromise) {
@@ -132,7 +157,9 @@ async function decodeMessage(msg) {
     if (rawLen > 1024 * 1024) throw new Error('disassembly request exceeds 1 MiB');
     const bytes = msg.bytes instanceof Uint8Array ? msg.bytes : new Uint8Array(msg.bytes || 0);
     if (bytes.length > 1024 * 1024) throw new Error('disassembly request exceeds 1 MiB');
-    const buf = M._malloc(Math.max(1, bytes.length));
+    const need = Math.max(1, bytes.length);
+    const useScratch = need <= MAX_SCRATCH_BYTES;
+    const buf = useScratch ? acquireScratchBuffer(M, need) : M._malloc(need);
     try {
       if (bytes.length) M.writeArrayToMemory(bytes, buf);
       const count = M.ccall('cs_disasm', 'number', ['number','number','number','number','number','number'],
@@ -140,19 +167,21 @@ async function decodeMessage(msg) {
       const base = count ? M.getValue(out, 'i32') : 0;
       const instructions = [];
       let consumed = 0;
+      const baseAddress = count > 0 ? BigInt(msg.address) : 0n;
       try {
         for (let i = 0; i < count; i++) {
           const p = base + i * CS_INSN_STRUCT;
           const size = M.getValue(p + OFF_SIZE, 'i16');
           if (!(size > 0)) break;
+          const instructionAddress = baseAddress + BigInt(consumed);
           if (msg.architecture === 'x86_64') {
             instructions.push(globalThis.HexX86CapstoneStructured.parseInstruction(M, handle, p, {
-              address:BigInt(msg.address) + BigInt(consumed),
+              address:instructionAddress,
               mode:'long-64',
             }));
           } else if (msg.architecture === 'riscv64') {
             instructions.push(globalThis.HexRiscv64CapstoneStructured.parseInstruction(M, handle, p, {
-              address:BigInt(msg.address) + BigInt(consumed),
+              address:instructionAddress,
               mode:msg.riscvIsa?.compressedInstructions === false ? 'rv64im' : 'rv64imc',
               isaIdentity:msg.riscvIsa?.canonical ?? null,
               isaEvidence:msg.riscvIsa?.evidence ?? null,
@@ -160,7 +189,6 @@ async function decodeMessage(msg) {
               compressedInstructions:msg.riscvIsa?.compressedInstructions ?? null,
             }));
           } else {
-            const instructionAddress = BigInt(msg.address) + BigInt(consumed);
             const mnemonic = M.UTF8ToString(p + OFF_MNEMONIC);
             const fallback = mnemonic === '.byte' && size === 4
               ? arm64PauthLrFallback(bytes, consumed, instructionAddress)
@@ -182,7 +210,7 @@ async function decodeMessage(msg) {
         return;
       }
       self.postMessage({ id: msg.id, ok: true, instructions, bytesConsumed: consumed });
-    } finally { M._free(buf); }
+    } finally { if (!useScratch) M._free(buf); }
   } catch (error) {
     if (cancelledIds.has(msg.id)) {
       cancelledIds.delete(msg.id);
@@ -196,7 +224,7 @@ async function processQueue() {
   if (processing) return;
   processing = true;
   while (queue.length > 0) {
-    const msg = queue.shift();
+    const { msg } = queue.shift();
     if (cancelledIds.has(msg.id)) {
       cancelledIds.delete(msg.id);
       continue;
@@ -221,7 +249,7 @@ self.onmessage = (event) => {
         cancelledIds.add(msg.id);
         return;
       }
-      const idx = queue.findIndex((j) => j.id === msg.id);
+      const idx = queue.findIndex((j) => j.msg.id === msg.id);
       if (idx >= 0) queue.splice(idx, 1);
     }
     return;
@@ -233,7 +261,7 @@ self.onmessage = (event) => {
   // Sequential reuse after settle/cancel remains valid.
   if (msg.id != null
       && (activeRequestId === msg.id
-        || queue.some((pending) => pending.id === msg.id)
+        || queue.some((pending) => pending.msg.id === msg.id)
         || cancelledIds.has(msg.id))) {
     self.postMessage({ id: msg.id, ok: false, error: `duplicate live request id: ${msg.id}` });
     return;
@@ -242,11 +270,11 @@ self.onmessage = (event) => {
   const pVal = priorityValueOf(msg.priority);
   let insertIdx = queue.length;
   for (let i = 0; i < queue.length; i++) {
-    if (priorityValueOf(queue[i].priority) > pVal) {
+    if (queue[i].pVal > pVal) {
       insertIdx = i;
       break;
     }
   }
-  queue.splice(insertIdx, 0, msg);
+  queue.splice(insertIdx, 0, { msg, pVal });
   processQueue();
 };

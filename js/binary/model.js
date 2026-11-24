@@ -544,6 +544,7 @@ export class BinaryImage {
     this._mappingSorted = { sections: null, segments: null };
     this._dataInCodeLookup = null;
     this._dataInCodeSorted = null;
+    this._chpeLookup = null;
   }
 
   addSegment(s) {
@@ -688,38 +689,105 @@ export class BinaryImage {
         va = this.imageBase + addr;
       }
 
-      const map = this.chpeCodeMap;
-      const findSorted = (target, startKey, endKey) => {
-        let lo = 0, hi = map.length - 1;
-        while (lo <= hi) {
-          const mid = (lo + hi) >>> 1;
-          const entry = map[mid];
-          if (!entry || entry[startKey] == null || entry[endKey] == null) return undefined;
-          if (target < entry[startKey]) hi = mid - 1;
-          else if (target >= entry[endKey]) lo = mid + 1;
-          else return entry.arch;
+      if (this.chpeCodeMap.length < 4) {
+        for (const entry of this.chpeCodeMap) {
+          if (!entry) continue;
+          if (rva !== null && entry.startRva != null && entry.endRva != null) {
+            if (rva >= entry.startRva && rva < entry.endRva) {
+              return entry.arch;
+            }
+          }
+          if (va !== null && entry.startAddress != null && entry.endAddress != null) {
+            if (va >= entry.startAddress && va < entry.endAddress) {
+              return entry.arch;
+            }
+          }
         }
         return null;
-      };
-      if (rva !== null) {
-        const found = findSorted(rva, 'startRva', 'endRva');
-        if (found !== undefined && found !== null) return found;
-        if (found === undefined) {
-          for (const entry of map) {
-            if (entry && entry.startRva != null && entry.endRva != null && rva >= entry.startRva && rva < entry.endRva) return entry.arch;
+      }
+      let lookup = this._chpeLookup;
+      if (!lookup || lookup.ref !== this.chpeCodeMap || lookup.len !== this.chpeCodeMap.length) {
+        const rvaItems = [];
+        const vaItems = [];
+        for (let order = 0; order < this.chpeCodeMap.length; order++) {
+          const entry = this.chpeCodeMap[order];
+          if (!entry) continue;
+          if (entry.startRva != null && entry.endRva != null && entry.endRva > entry.startRva) {
+            rvaItems.push({ start: entry.startRva, end: entry.endRva, order, arch: entry.arch });
+          }
+          if (entry.startAddress != null && entry.endAddress != null && entry.endAddress > entry.startAddress) {
+            vaItems.push({ start: entry.startAddress, end: entry.endAddress, order, arch: entry.arch });
+          }
+        }
+        rvaItems.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order));
+        vaItems.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order));
+        const rvaStarts = new Array(rvaItems.length);
+        const rvaPrefixEnds = new Array(rvaItems.length);
+        let maxRvaEnd = null;
+        for (let i = 0; i < rvaItems.length; i++) {
+          rvaStarts[i] = rvaItems[i].start;
+          if (maxRvaEnd === null || rvaItems[i].end > maxRvaEnd) maxRvaEnd = rvaItems[i].end;
+          rvaPrefixEnds[i] = maxRvaEnd;
+        }
+        const vaStarts = new Array(vaItems.length);
+        const vaPrefixEnds = new Array(vaItems.length);
+        let maxVaEnd = null;
+        for (let i = 0; i < vaItems.length; i++) {
+          vaStarts[i] = vaItems[i].start;
+          if (maxVaEnd === null || vaItems[i].end > maxVaEnd) maxVaEnd = vaItems[i].end;
+          vaPrefixEnds[i] = maxVaEnd;
+        }
+        lookup = { ref: this.chpeCodeMap, len: this.chpeCodeMap.length, rvaItems, rvaStarts, rvaPrefixEnds, vaItems, vaStarts, vaPrefixEnds };
+        this._chpeLookup = lookup;
+      }
+      let best = null;
+      if (rva !== null && lookup.rvaStarts.length > 0) {
+        let lo = 0, hi = lookup.rvaStarts.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (lookup.rvaStarts[mid] <= rva) lo = mid + 1;
+          else hi = mid;
+        }
+        const upper = lo;
+        if (upper > 0) {
+          lo = 0;
+          hi = upper;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (lookup.rvaPrefixEnds[mid] > rva) hi = mid;
+            else lo = mid + 1;
+          }
+          for (let i = lo; i < upper; i++) {
+            const item = lookup.rvaItems[i];
+            if (item.end <= rva) continue;
+            if (best === null || item.order < best.order) best = item;
           }
         }
       }
-      if (va !== null) {
-        const found = findSorted(va, 'startAddress', 'endAddress');
-        if (found !== undefined && found !== null) return found;
-        if (found === undefined) {
-          for (const entry of map) {
-            if (entry && entry.startAddress != null && entry.endAddress != null && va >= entry.startAddress && va < entry.endAddress) return entry.arch;
+      if (va !== null && lookup.vaStarts.length > 0) {
+        let lo = 0, hi = lookup.vaStarts.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (lookup.vaStarts[mid] <= va) lo = mid + 1;
+          else hi = mid;
+        }
+        const upper = lo;
+        if (upper > 0) {
+          lo = 0;
+          hi = upper;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (lookup.vaPrefixEnds[mid] > va) hi = mid;
+            else lo = mid + 1;
+          }
+          for (let i = lo; i < upper; i++) {
+            const item = lookup.vaItems[i];
+            if (item.end <= va) continue;
+            if (best === null || item.order < best.order) best = item;
           }
         }
       }
-      return null;
+      return best ? best.arch : null;
     }
     return this.arch;
   }
@@ -734,19 +802,24 @@ export class BinaryImage {
   _nextMappingBoundary(current, owner) {
     // Issue #970: a narrower mapping starting inside `owner` (e.g. a zero-fill __bss
     // section inside a broader file-backed segment) ends the current chunk at its start.
-    const end = owner.address + owner.size;
-    let next = null;
-    const consider = (m) => {
-      if (m === owner || m.size <= 0n) return;
-      if (m.address <= current || m.address >= end) return;
-      if (m.size >= owner.size) return;
-      if (next === null || m.address < next) next = m.address;
-    };
-    for (const m of this.sections) {
-      if (sectionHasMappedAddress(m)) consider(m);
+    if (!this._mappingLookups.virtual) {
+      this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
     }
-    for (const m of this.segments) consider(m);
-    return next;
+    const { items, starts } = this._mappingLookups.virtual;
+    const end = owner.address + owner.size;
+    let lo = 0;
+    let hi = starts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (starts[mid] <= current) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = lo; i < items.length; i++) {
+      const item = items[i];
+      if (item.start >= end) break;
+      if (item.mapping !== owner && item.size < owner.size) return item.start;
+    }
+    return null;
   }
 
   resolveVirtualMapping(address) {

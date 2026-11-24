@@ -151,7 +151,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
   // never share mutable storage with any caller. `Object.freeze` cannot seal
   // typed-array elements, so every read publishes a fresh defensive copy and
   // caller mutation can never desynchronize the encoding from `fields`.
-  return Object.freeze({
+  const frozen = Object.freeze({
     architecture: 'riscv64',
     mode,
     instructionAlignment,
@@ -183,6 +183,14 @@ export function createRiscv64DecodedInstruction(input = {}) {
     ...(input.instructionId == null ? {} : { instructionId: strictToken(input.instructionId, 'riscv64-decoded-instruction-invalid-instruction-id') }),
     ...(input.origin == null ? {} : { origin: input.origin }),
   });
+  CANONICAL_RISCV64_DECODED.add(frozen);
+  return frozen;
+}
+
+const CANONICAL_RISCV64_DECODED = new WeakSet();
+
+export function isCanonicalRiscv64DecodedInstruction(value) {
+  return value != null && typeof value === 'object' && CANONICAL_RISCV64_DECODED.has(value);
 }
 
 /** True when every register field of a decoded instruction resolves physically. */

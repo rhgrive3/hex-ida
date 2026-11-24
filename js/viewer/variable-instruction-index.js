@@ -167,15 +167,17 @@ export class VariableInstructionIndex {
     if(!current)current=this.pages.values().next().value||null;
     if(!current)return Object.freeze([]);
 
-    const chain=[current]; let cursor=current;
+    const chain=[current]; const inChain=new Set([current]); let cursor=current;
     while(true){
-      const prev=Array.from(this.pages.values()).find((page)=>page.nextAddress===cursor.start&&page.entries.length>0);
-      if(!prev||chain.includes(prev))break; chain.unshift(prev); cursor=prev;
+      let prev=null;
+      for(const page of this.pages.values()){if(page.nextAddress===cursor.start&&page.entries.length>0){prev=page;break;}}
+      if(!prev||inChain.has(prev))break; chain.unshift(prev); inChain.add(prev); cursor=prev;
     }
     cursor=current;
     while(true){
-      const next=Array.from(this.pages.values()).find((page)=>page.start===cursor.nextAddress);
-      if(!next||chain.includes(next))break; chain.push(next); cursor=next;
+      let next=null;
+      for(const page of this.pages.values()){if(page.start===cursor.nextAddress){next=page;break;}}
+      if(!next||inChain.has(next))break; chain.push(next); inChain.add(next); cursor=next;
       if(next.entries.length===0)break;
     }
     const byAddress=new Map();
@@ -409,7 +411,13 @@ export class VariableInstructionIndex {
     return Object.freeze({status:target===proven.address?'decoded':'resynchronized',address:proven.address,requestedAddress:target,entry,page});
   }
 
-  _pageContaining(address){for(const page of this.pages.values())if(page.entries.some((entry)=>entry.address===address))return page;return null;}
+  _pageContaining(address){
+    const owners=this.knownOwners.get(BigInt(address).toString(16));
+    if(!owners||!owners.size)return null;
+    if(owners.size===1)return this.pages.get(owners.keys().next().value)||null;
+    for(const[key,page]of this.pages)if(owners.has(key))return page;
+    return null;
+  }
 
   async previousBoundary(targetAddress,{signal=null}={}){
     const target=BigInt(targetAddress); this._assertInRegion(target,{allowEnd:true});

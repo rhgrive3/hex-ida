@@ -8,7 +8,7 @@ import {
   createRegisterValue,
   createTemporaryValue,
 } from '../../../../semantics/effects/index.js';
-import { createX86DecodedInstruction } from '../decoded-instruction.js';
+import { createX86DecodedInstruction, isCanonicalX86DecodedInstruction } from '../decoded-instruction.js';
 import { x86RegisterDescriptor } from '../registers.js';
 
 export const X86_64_ARCHITECTURE_ID = 'x86_64';
@@ -34,6 +34,12 @@ function registerOperand(value) {
 }
 
 export function normalizeX86Instruction(decoded, context = {}) {
+  if (isCanonicalX86DecodedInstruction(decoded)
+    && (decoded.instructionId != null || context.instructionId == null)
+    && (decoded.mode != null || context.mode == null)
+    && (decoded.origin != null || context.origin == null)) {
+    return decoded;
+  }
   return createX86DecodedInstruction({
     ...decoded,
     ...(decoded?.instructionId == null && context.instructionId != null ? { instructionId:context.instructionId } : {}),

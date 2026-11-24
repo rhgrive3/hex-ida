@@ -1851,11 +1851,33 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const sourceDescriptorByDefinitionId = new Map([...eventById.entries()].map(([id, event]) => [id, event.descriptor]));
   const reachingForRead = (readDescriptor, startDefinitionId) => {
     let definitionId = startDefinitionId;
-    const visited = new Set();
+    let v0 = null;
+    let v1 = null;
+    let v2 = null;
+    let step = 0;
+    let visited = null;
     while (definitionId != null) {
       tick();
-      if (visited.has(definitionId)) return { definitionId, relation: 'unknown' };
-      visited.add(definitionId);
+      if (visited !== null) {
+        if (visited.has(definitionId)) return { definitionId, relation: 'unknown' };
+        visited.add(definitionId);
+      } else if (step === 0) {
+        v0 = definitionId;
+        step = 1;
+      } else if (step === 1) {
+        if (definitionId === v0) return { definitionId, relation: 'unknown' };
+        v1 = definitionId;
+        step = 2;
+      } else if (step === 2) {
+        if (definitionId === v0 || definitionId === v1) return { definitionId, relation: 'unknown' };
+        v2 = definitionId;
+        step = 3;
+      } else {
+        if (definitionId === v0 || definitionId === v1 || definitionId === v2) {
+          return { definitionId, relation: 'unknown' };
+        }
+        visited = new Set([v0, v1, v2, definitionId]);
+      }
       const definition = definitionById.get(definitionId);
       if (!definition) fail('memory-ssa-build-missing-definition');
       const sourceDescriptor = sourceDescriptorByDefinitionId.get(definitionId);
@@ -1880,6 +1902,23 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     }
   }
 
+  const descriptorSnapshots = new Map();
+  const snapshotForDescriptor = (descriptor) => {
+    let snap = descriptorSnapshots.get(descriptor);
+    if (snap) return snap;
+    const memory = descriptor.memory == null ? null : deepFreeze(jsonSafe(descriptor.memory));
+    const sequencing = descriptor.memory == null ? null : deepFreeze(jsonSafe({
+      volatility: descriptor.memory.volatility,
+      atomic: descriptor.memory.atomic,
+      ordering: descriptor.memory.ordering,
+      alignment: descriptor.memory.alignment,
+    }));
+    const origin = deepFreeze(jsonSafe(descriptor.node.origin));
+    snap = { memory, sequencing, origin };
+    descriptorSnapshots.set(descriptor, snap);
+    return snap;
+  };
+
   const maxUsesBudget = budgetLimit(options, 'maxUses');
   const uses = [];
   const accessMetadata = [];
@@ -1894,8 +1933,15 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     for (const nodeId of block.nodeIds) {
       const nodeReads = readsByNode.get(nodeId) ?? [];
       for (const descriptor of nodeReads) {
-        const targets = descriptor.broad ? regions : descriptor.regions;
-        const uniqueTargets = [...new Map(targets.map((region) => [region.id, region])).values()].sort((a, b) => compareText(a.id, b.id));
+        let uniqueTargets;
+        if (descriptor.broad) {
+          uniqueTargets = regions;
+        } else if (descriptor.regions.length <= 1) {
+          uniqueTargets = descriptor.regions;
+        } else {
+          uniqueTargets = [...new Map(descriptor.regions.map((region) => [region.id, region])).values()].sort((a, b) => compareText(a.id, b.id));
+        }
+        const descriptorSnap = snapshotForDescriptor(descriptor);
         for (const region of uniqueTargets) {
           tick();
           const reaching = reachingForRead(descriptor, currentDefForRegion(region.id));
@@ -1998,17 +2044,12 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             role: descriptor.role,
             accessIndex: descriptor.index,
             broad: descriptor.broad,
-            memory: descriptor.memory == null ? null : jsonSafe(descriptor.memory),
-            sequencing: descriptor.memory == null ? null : jsonSafe({
-              volatility: descriptor.memory.volatility,
-              atomic: descriptor.memory.atomic,
-              ordering: descriptor.memory.ordering,
-              alignment: descriptor.memory.alignment,
-            }),
+            memory: descriptorSnap.memory,
+            sequencing: descriptorSnap.sequencing,
             aliasProof: reaching.proof ?? null,
             aliasRelation: reaching.relation === 'no' ? 'unknown' : reaching.relation,
             accessProof: cachedMemoryAccessProof(descriptor),
-            origin: jsonSafe(descriptor.node.origin),
+            origin: descriptorSnap.origin,
             byteRange,
             rangeProof: memoryRangeProof(
               id,
@@ -2028,6 +2069,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   }
 
   for (const event of eventById.values()) {
+    const eventSnap = snapshotForDescriptor(event.descriptor);
     accessMetadata.push({
       memorySsaEntityId: event.id,
       entityKind: 'definition',
@@ -2038,13 +2080,8 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       role: event.descriptor.role,
       accessIndex: event.descriptor.index,
       broad: event.descriptor.broad,
-      memory: event.descriptor.memory == null ? null : jsonSafe(event.descriptor.memory),
-      sequencing: event.descriptor.memory == null ? null : jsonSafe({
-        volatility: event.descriptor.memory.volatility,
-        atomic: event.descriptor.memory.atomic,
-        ordering: event.descriptor.memory.ordering,
-        alignment: event.descriptor.memory.alignment,
-      }),
+      memory: eventSnap.memory,
+      sequencing: eventSnap.sequencing,
       aliasProof: event.aliasProof,
       aliasRelation: event.aliasRelation,
       accessProof: cachedMemoryAccessProof(event.descriptor),
@@ -2063,7 +2100,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
           return canonicalValue == null ? {} : { canonicalValue };
         })()
         : {}),
-      origin: jsonSafe(event.descriptor.node.origin),
+      origin: eventSnap.origin,
       ...(() => {
         const eventRegion = regionById.get(event.regionId);
         const byteRange = event.aliasRelation === 'may'
@@ -2109,9 +2146,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   accessMetadata.sort((a, b) => compareText(a.memorySsaEntityId, b.memorySsaEntityId)
     || compareText(a.regionId, b.regionId));
   const canonicalAccessBindings = accessMetadata
-    .map((metadata) => canonicalAccessBinding(metadata))
-    .sort((a, b) => compareText(a.memorySsaEntityId, b.memorySsaEntityId)
-      || compareText(a.regionId, b.regionId));
+    .map((metadata) => canonicalAccessBinding(metadata));
   const artifact = {
     ...contract,
     buildVersion: MEMORY_SSA_BUILD_VERSION,

@@ -151,9 +151,24 @@ export function probeDex(bytes) {
   return { supported: true, confidence: 1.0, ...versionInfo };
 }
 
+const ASCII_DECODER = new TextDecoder('ascii');
+
 function decodeMutf8(bytes, offset) {
   const { value: utf16Size, nextOffset } = readUleb128(bytes, offset);
+  const asciiLimit = Math.min(bytes.length, nextOffset + utf16Size);
   let pos = nextOffset;
+  while (pos < asciiLimit) {
+    const b = bytes[pos];
+    if (b === 0 || b >= 0x80) break;
+    pos++;
+  }
+  if (pos === nextOffset + utf16Size && pos < bytes.length && bytes[pos] === 0) {
+    return utf16Size === 0 ? '' : ASCII_DECODER.decode(bytes.subarray(nextOffset, pos));
+  }
+  if (pos === nextOffset + utf16Size && pos < bytes.length && bytes[pos] >= 0x01 && bytes[pos] <= 0x7f) {
+    fail('dex-malformed-string-data');
+  }
+  pos = nextOffset;
   const chars = [];
   let decodedUnits = 0;
   let terminated = false;

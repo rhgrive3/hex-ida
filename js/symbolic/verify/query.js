@@ -585,26 +585,30 @@ function expressionIdentityProjection(entry, hash) {
   return expressionKindDeclared(entry) ? { hash } : { hash, expression: entry };
 }
 
-function canonicalQueryHashPayload(query, identityLimits = {}) {
-  const data = query instanceof Map ? query : queryDataMap(query);
-  const constraints = normalizeExpressionArray(data.get('constraints'), 'constraints');
-  const assertionInput = data.get('assertion') ?? null;
-  const assertion = assertionInput == null ? null : normalizeExpressionEntry(assertionInput, 'assertion');
-  const normalizedTargetEntity = normalizeTargetEntity(data.get('targetEntity') ?? null, identityLimits);
-  const assumptions = snapshotIdentityData(data.get('assumptions') ?? [], 'assumptions', identityLimits);
-  const completeness = snapshotIdentityData(data.get('completeness') ?? createCompleteness(), 'completeness', identityLimits);
-  const requestedOutputs = snapshotIdentityData(data.get('requestedOutputs') ?? [], 'requestedOutputs', identityLimits);
-  const proofScope = snapshotIdentityData(data.get('proofScope') ?? null, 'proofScope', identityLimits);
-  const semanticIrVersion = requireIdentityString(data.get('semanticIrVersion') ?? SEMANTIC_IR_VERSION, 'semanticIrVersion');
-  const translatorVersion = requireIdentityString(data.get('translatorVersion') ?? TRANSLATOR_VERSION, 'translatorVersion');
-  const architecture = requireIdentityString(data.get('architecture') ?? 'generic', 'architecture');
-  const bitWidth = normalizeBitWidth(data.get('bitWidth') ?? null);
+const VALID_QUERY_KINDS = new Set(Object.values(VERIFICATION_QUERY_KIND));
+const VALID_CLAIM_KINDS = new Set(Object.values(CLAIM_KIND));
+
+function buildHashPayloadFromNormalized({
+  kind,
+  claimKind,
+  targetEntity,
+  constraints,
+  assertion,
+  assumptions,
+  completeness,
+  requestedOutputs,
+  semanticIrVersion,
+  translatorVersion,
+  architecture,
+  bitWidth,
+  proofScope,
+}) {
   const hashes = expressionHashes(constraints, assertion);
   return {
     schemaVersion: QUERY_SCHEMA_VERSION,
-    kind: data.get('kind'),
-    claimKind: data.get('claimKind'),
-    targetEntity: normalizedTargetEntity,
+    kind,
+    claimKind,
+    targetEntity,
     // The published record and its hash material share one constraint
     // representation (#5779): every entry carries the structural hash of the
     // exact entry the record returns, plus that entry itself when it is an
@@ -622,6 +626,37 @@ function canonicalQueryHashPayload(query, identityLimits = {}) {
   };
 }
 
+function canonicalQueryHashPayload(query, identityLimits = {}) {
+  const data = query instanceof Map ? query : queryDataMap(query);
+  const constraints = normalizeExpressionArray(data.get('constraints'), 'constraints');
+  const assertionInput = data.get('assertion') ?? null;
+  const assertion = assertionInput == null ? null : normalizeExpressionEntry(assertionInput, 'assertion');
+  const normalizedTargetEntity = normalizeTargetEntity(data.get('targetEntity') ?? null, identityLimits);
+  const assumptions = snapshotIdentityData(data.get('assumptions') ?? [], 'assumptions', identityLimits);
+  const completeness = snapshotIdentityData(data.get('completeness') ?? createCompleteness(), 'completeness', identityLimits);
+  const requestedOutputs = snapshotIdentityData(data.get('requestedOutputs') ?? [], 'requestedOutputs', identityLimits);
+  const proofScope = snapshotIdentityData(data.get('proofScope') ?? null, 'proofScope', identityLimits);
+  const semanticIrVersion = requireIdentityString(data.get('semanticIrVersion') ?? SEMANTIC_IR_VERSION, 'semanticIrVersion');
+  const translatorVersion = requireIdentityString(data.get('translatorVersion') ?? TRANSLATOR_VERSION, 'translatorVersion');
+  const architecture = requireIdentityString(data.get('architecture') ?? 'generic', 'architecture');
+  const bitWidth = normalizeBitWidth(data.get('bitWidth') ?? null);
+  return buildHashPayloadFromNormalized({
+    kind: data.get('kind'),
+    claimKind: data.get('claimKind'),
+    targetEntity: normalizedTargetEntity,
+    constraints,
+    assertion,
+    assumptions,
+    completeness,
+    requestedOutputs,
+    semanticIrVersion,
+    translatorVersion,
+    architecture,
+    bitWidth,
+    proofScope,
+  });
+}
+
 export function computeCanonicalQueryHash(query) {
   return stableDigest(canonicalQueryHashPayload(query));
 }
@@ -630,8 +665,8 @@ export function verifyVerificationQueryIdentity(query) {
   if (!query || typeof query !== 'object') return 'not-an-object';
   let data;
   try { data = queryDataMap(query); } catch { return 'unhashable-query-content'; }
-  if (typeof data.get('kind') !== 'string' || !Object.values(VERIFICATION_QUERY_KIND).includes(data.get('kind'))) return 'unknown-query-kind';
-  if (typeof data.get('claimKind') !== 'string' || !Object.values(CLAIM_KIND).includes(data.get('claimKind'))) return 'unknown-claim-kind';
+  if (typeof data.get('kind') !== 'string' || !VALID_QUERY_KINDS.has(data.get('kind'))) return 'unknown-query-kind';
+  if (typeof data.get('claimKind') !== 'string' || !VALID_CLAIM_KINDS.has(data.get('claimKind'))) return 'unknown-claim-kind';
   if (!Array.isArray(data.get('constraints'))) return 'constraints-not-array';
   if (data.get('schemaVersion') !== QUERY_SCHEMA_VERSION) return 'schema-version-mismatch';
   if (typeof data.get('queryHash') !== 'string' || data.get('queryHash').length === 0) return 'missing-query-hash';
@@ -664,8 +699,8 @@ export function validateVerificationQuery(query, options = {}) {
       typeof maxExprDepth !== 'number' || !Number.isSafeInteger(maxExprDepth) || maxExprDepth <= 0) {
     return Object.freeze({ valid: false, reason: 'invalid-query-validation-budget', invalidBudget: true });
   }
-  if (!Object.values(VERIFICATION_QUERY_KIND).includes(data.get('kind')) ||
-      !Object.values(CLAIM_KIND).includes(data.get('claimKind')) ||
+  if (!VALID_QUERY_KINDS.has(data.get('kind')) ||
+      !VALID_CLAIM_KINDS.has(data.get('claimKind')) ||
       data.get('schemaVersion') !== QUERY_SCHEMA_VERSION ||
       !Array.isArray(data.get('constraints')) || !identityShapeIsValid(data.get('targetEntity') ?? null) ||
       typeof data.get('semanticIrVersion') !== 'string' || data.get('semanticIrVersion').trim().length === 0 ||
@@ -724,10 +759,41 @@ export function validateVerificationQuery(query, options = {}) {
   const roots = [...safeConstraints, ...(safeAssertion ? [safeAssertion] : [])];
   const bounds = expressionBounds(roots, maxExprNodes, maxExprDepth);
   if (!bounds.ok) return Object.freeze({ valid: false, reason: bounds.reason, limitExceeded: bounds.limitExceeded === true });
-  let reason;
-  try { reason = verifyVerificationQueryIdentity(query); } catch { reason = 'unhashable-query-content'; }
-  if (reason) return Object.freeze({ valid: false,
-    reason: reason === 'query-hash-identity-mismatch' ? 'query-hash-content-mismatch' : reason });
+  if (typeof data.get('queryHash') !== 'string' || data.get('queryHash').length === 0) {
+    return Object.freeze({ valid: false, reason: 'missing-query-hash' });
+  }
+  let canonical;
+  try {
+    const normalizedTargetEntity = normalizeTargetEntity(data.get('targetEntity') ?? null, {});
+    const assumptions = snapshotIdentityData(data.get('assumptions') ?? [], 'assumptions', {});
+    const completeness = snapshotIdentityData(data.get('completeness') ?? createCompleteness(), 'completeness', {});
+    const requestedOutputs = snapshotIdentityData(data.get('requestedOutputs') ?? [], 'requestedOutputs', {});
+    const proofScope = snapshotIdentityData(data.get('proofScope') ?? null, 'proofScope', {});
+    const semanticIrVersion = requireIdentityString(data.get('semanticIrVersion') ?? SEMANTIC_IR_VERSION, 'semanticIrVersion');
+    const translatorVersion = requireIdentityString(data.get('translatorVersion') ?? TRANSLATOR_VERSION, 'translatorVersion');
+    const architecture = requireIdentityString(data.get('architecture') ?? 'generic', 'architecture');
+    const bitWidth = normalizeBitWidth(data.get('bitWidth') ?? null);
+    canonical = stableDigest(buildHashPayloadFromNormalized({
+      kind: data.get('kind'),
+      claimKind: data.get('claimKind'),
+      targetEntity: normalizedTargetEntity,
+      constraints: safeConstraints,
+      assertion: safeAssertion,
+      assumptions,
+      completeness,
+      requestedOutputs,
+      semanticIrVersion,
+      translatorVersion,
+      architecture,
+      bitWidth,
+      proofScope,
+    }));
+  } catch {
+    return Object.freeze({ valid: false, reason: 'unhashable-query-content' });
+  }
+  if (canonical !== data.get('queryHash')) {
+    return Object.freeze({ valid: false, reason: 'query-hash-content-mismatch' });
+  }
   return Object.freeze({ valid: true, nodeCount: bounds.nodeCount, maxDepth: bounds.maxDepth,
     identity: identityMetrics, recomputedHash: data.get('queryHash') });
 }
@@ -741,10 +807,10 @@ export function createVerificationQuery(input = {}) {
   const get = (key, fallback = undefined) => data.has(key) ? data.get(key) : fallback;
   const kind = get('kind');
   const claimKind = get('claimKind');
-  if (!Object.values(VERIFICATION_QUERY_KIND).includes(kind)) {
+  if (!VALID_QUERY_KINDS.has(kind)) {
     throw typeError(`createVerificationQuery: invalid query kind '${kind}'`);
   }
-  if (!Object.values(CLAIM_KIND).includes(claimKind)) {
+  if (!VALID_CLAIM_KINDS.has(claimKind)) {
     throw typeError(`createVerificationQuery: invalid claim kind '${claimKind}'`);
   }
   const semanticIrVersion = requireIdentityString(get('semanticIrVersion', SEMANTIC_IR_VERSION) ?? SEMANTIC_IR_VERSION, 'semanticIrVersion');
@@ -784,6 +850,6 @@ export function createVerificationQuery(input = {}) {
     bitWidth,
     proofScope,
   };
-  const queryHash = computeCanonicalQueryHash(record);
+  const queryHash = stableDigest(buildHashPayloadFromNormalized(record));
   return Object.freeze({ ...record, queryHash });
 }

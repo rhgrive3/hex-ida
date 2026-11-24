@@ -305,6 +305,8 @@ export function pagedReader(read, pageBytes = 65536, maxPages = 96, options = {}
 }
 
 /** 0 で終わる文字列を読む。読めなければ null。 */
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 async function cstring(get, addr) {
   if (addr == null) return null;
   // 区画の端に置かれた名前も読めるように、短い読み取りも受け取る。
@@ -314,7 +316,7 @@ async function cstring(get, addr) {
   const end = buf.indexOf(0);
   if (end <= 0) return null;
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(0, end));
+    const text = UTF8_FATAL_DECODER.decode(buf.subarray(0, end));
     return /[\u0000-\u001f\u007f]/u.test(text) ? null : text;
   } catch {
     return null;

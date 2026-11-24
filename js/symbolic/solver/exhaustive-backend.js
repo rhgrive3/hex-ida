@@ -107,12 +107,31 @@ function childExpressions(expr) {
   }
 }
 
+const EXPR_KIND_SET = new Set(Object.values(EXPR_KIND));
+const BV_UNARY_OP_SET = new Set(Object.values(BV_UNARY_OP));
+const BV_BINARY_OP_SET = new Set(Object.values(BV_BINARY_OP));
+const BV_COMPARE_OP_SET = new Set(Object.values(BV_COMPARE_OP));
+const BOOL_CONNECTIVE_OP_SET = new Set(Object.values(BOOL_CONNECTIVE_OP));
+const BINARY_CONNECTIVE_OPS = new Set([BOOL_CONNECTIVE_OP.IMPLIES, BOOL_CONNECTIVE_OP.EQ, BOOL_CONNECTIVE_OP.NE]);
+const CAST_OP_SET = new Set(Object.values(CAST_OP));
+const EXT_CAST_OPS = new Set([CAST_OP.ZEXT, CAST_OP.SEXT]);
+
+function sameSortExact(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (a.kind !== b.kind) return false;
+  if (a.kind === SORT_KIND.BV && a.width !== b.width) return false;
+  const expectedKeys = a.kind === SORT_KIND.BV ? 2 : 1;
+  if (Object.keys(a).length === expectedKeys && Object.keys(b).length === expectedKeys) return true;
+  return stableDigest(a) === stableDigest(b);
+}
+
 function sameBvSort(left, right) {
   return isBvSort(left?.sort) && isBvSort(right?.sort) && left.sort.width === right.sort.width;
 }
 
 function validateExprNode(expr) {
-  if (!expr || typeof expr !== 'object' || !Object.values(EXPR_KIND).includes(expr.kind)) return 'unsupported-expression-kind';
+  if (!expr || typeof expr !== 'object' || !EXPR_KIND_SET.has(expr.kind)) return 'unsupported-expression-kind';
   if (!isBoolSort(expr.sort) && !isBvSort(expr.sort)) return 'invalid-expression-sort';
   switch (expr.kind) {
     case EXPR_KIND.CONST:
@@ -127,17 +146,17 @@ function validateExprNode(expr) {
     case EXPR_KIND.UNKNOWN_SEMANTIC:
       return `unknown-semantic:${expr.reason || 'unspecified'}`;
     case EXPR_KIND.UNARY:
-      return Object.values(BV_UNARY_OP).includes(expr.op) && sameBvSort(expr, expr.arg) ? null : 'invalid-unary-expression';
+      return BV_UNARY_OP_SET.has(expr.op) && sameBvSort(expr, expr.arg) ? null : 'invalid-unary-expression';
     case EXPR_KIND.BINARY:
-      return Object.values(BV_BINARY_OP).includes(expr.op) && sameBvSort(expr.left, expr.right) && sameBvSort(expr, expr.left)
+      return BV_BINARY_OP_SET.has(expr.op) && sameBvSort(expr.left, expr.right) && sameBvSort(expr, expr.left)
         ? null : 'invalid-binary-expression';
     case EXPR_KIND.COMPARE:
-      return Object.values(BV_COMPARE_OP).includes(expr.op) && isBoolSort(expr.sort) && sameBvSort(expr.left, expr.right)
+      return BV_COMPARE_OP_SET.has(expr.op) && isBoolSort(expr.sort) && sameBvSort(expr.left, expr.right)
         ? null : 'invalid-compare-expression';
     case EXPR_KIND.CONNECTIVE: {
-      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args)) return 'invalid-connective-expression';
+      if (!BOOL_CONNECTIVE_OP_SET.has(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args)) return 'invalid-connective-expression';
       if (expr.args.length === 0 || (expr.op === BOOL_CONNECTIVE_OP.NOT && expr.args.length !== 1) ||
-          ([BOOL_CONNECTIVE_OP.IMPLIES, BOOL_CONNECTIVE_OP.EQ, BOOL_CONNECTIVE_OP.NE].includes(expr.op) && expr.args.length !== 2)) return 'invalid-connective-arity';
+          (BINARY_CONNECTIVE_OPS.has(expr.op) && expr.args.length !== 2)) return 'invalid-connective-arity';
       return null;
     }
     case EXPR_KIND.ITE:
@@ -153,10 +172,10 @@ function validateExprNode(expr) {
       return isBvSort(expr.left?.sort) && isBvSort(expr.right?.sort) && isBvSort(expr.sort) &&
         expr.sort.width === expr.left.sort.width + expr.right.sort.width ? null : 'invalid-concat-expression';
     case EXPR_KIND.CAST:
-      return Object.values(CAST_OP).includes(expr.op) && isBvSort(expr.arg?.sort) && isBvSort(expr.sort) &&
+      return CAST_OP_SET.has(expr.op) && isBvSort(expr.arg?.sort) && isBvSort(expr.sort) &&
         Number.isSafeInteger(expr.targetWidth) && expr.sort.width === expr.targetWidth &&
         ((expr.op === CAST_OP.TRUNC && expr.targetWidth < expr.arg.sort.width) ||
-          ([CAST_OP.ZEXT, CAST_OP.SEXT].includes(expr.op) && expr.targetWidth > expr.arg.sort.width))
+          (EXT_CAST_OPS.has(expr.op) && expr.targetWidth > expr.arg.sort.width))
         ? null : 'invalid-cast-expression';
     default:
       return 'unsupported-expression-kind';
@@ -200,7 +219,7 @@ export function collectSymbols(expressions, { maxExprNodes = 100000, maxExprDept
           if (!key || !frame.expr.name) unsupportedReason = 'malformed-symbol';
           else {
             const existing = symbols.get(key);
-            if (existing && stableDigest(existing.sort) !== stableDigest(frame.expr.sort)) unsupportedReason = 'symbol-sort-conflict';
+            if (existing && !sameSortExact(existing.sort, frame.expr.sort)) unsupportedReason = 'symbol-sort-conflict';
             else if (existing && existing.name !== String(frame.expr.name)) unsupportedReason = 'symbol-identity-conflict';
             symbols.set(key, { key, name: String(frame.expr.name), symbolId: String(frame.expr.symbolId || key), sort: frame.expr.sort });
           }

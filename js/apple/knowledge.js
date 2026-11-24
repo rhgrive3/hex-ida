@@ -120,12 +120,14 @@ function hexBytes(bytes) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 function readCString(bytes, start, end) {
   if (!Number.isSafeInteger(start) || start < 0 || start >= end || end > bytes.length) return null;
   let cursor = start;
   while (cursor < end && bytes[cursor] !== 0) cursor++;
   if (cursor === end) return null;
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(start, cursor)); }
+  try { return UTF8_FATAL_DECODER.decode(bytes.subarray(start, cursor)); }
   catch { return null; }
 }
 
