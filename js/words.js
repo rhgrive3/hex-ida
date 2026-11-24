@@ -662,13 +662,24 @@ acquire, release,
     return bridge;
   }
 
+  let defaultWasmBridge = null;
+  let wasmEngineApi = null;
+
   function initWasmBridge() {
     if (wasmBridge) return Promise.resolve(wasmBridge);
     if (wasmBridgePromise) return wasmBridgePromise;
     const bridgeSpec = './core/hex-engine-bridge.js';
+    const wasmSpec = './core/hex-engine-wasm.js';
     try {
-      wasmBridgePromise = import(bridgeSpec).then((mod) => {
+      wasmBridgePromise = Promise.all([
+        import(bridgeSpec).catch(() => null),
+        import(wasmSpec).catch(() => null),
+      ]).then(([mod, wasmMod]) => {
+        if (wasmMod && typeof wasmMod.getHexEngineExports === 'function') {
+          wasmEngineApi = wasmMod;
+        }
         if (mod && typeof mod.wasmDecodeArm64Word === 'function') {
+          defaultWasmBridge = mod;
           wasmBridge = mod;
           return mod;
         }
@@ -762,17 +773,71 @@ acquire, release,
     return out;
   }
 
+  function classifyWordsBatchFastWasm(words, count, out, bridge) {
+    if (!wasmEngineApi || bridge !== defaultWasmBridge) return false;
+    if (typeof wasmEngineApi.isWasmBulkMemorySupported === 'function' &&
+        !wasmEngineApi.isWasmBulkMemorySupported()) {
+      return false;
+    }
+    let ex = null;
+    try {
+      ex = wasmEngineApi.getHexEngineExports();
+    } catch {
+      return false;
+    }
+    if (!ex || !ex.memory ||
+        typeof ex.hex_arm64_classify_batch !== 'function' ||
+        typeof ex.hex_engine_scratch_reset !== 'function' ||
+        typeof ex.hex_engine_scratch_alloc !== 'function') {
+      return false;
+    }
+    const CHUNK_WORDS = 65536;
+    try {
+      for (let offset = 0; offset < count; offset += CHUNK_WORDS) {
+        const chunkLen = (count - offset) < CHUNK_WORDS ? (count - offset) : CHUNK_WORDS;
+        ex.hex_engine_scratch_reset();
+        const inPtr = ex.hex_engine_scratch_alloc(chunkLen * 4);
+        const outPtr = ex.hex_engine_scratch_alloc(chunkLen);
+        if (!inPtr || !outPtr) return false;
+        const inView = new Uint32Array(ex.memory.buffer, inPtr, chunkLen);
+        for (let i = 0; i < chunkLen; i += 1) inView[i] = words[offset + i] >>> 0;
+        const status = ex.hex_arm64_classify_batch(inPtr, chunkLen, outPtr);
+        if (status !== 0) return false;
+        out.set(new Uint8Array(ex.memory.buffer, outPtr, chunkLen), offset);
+      }
+      if (typeof bridge.recordWasmCall === 'function') {
+        bridge.recordWasmCall('arm64_decode');
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function classifyWordsBatch(words) {
     if (!words || typeof words.length !== 'number') return new Uint8Array(0);
     const count = words.length >>> 0;
     const out = new Uint8Array(count);
     if (count === 0) return out;
     const bridge = getActiveWasmBridge();
-    if (bridge && typeof bridge.wasmDecodeArm64Batch === 'function') {
-      const batch = bridge.wasmDecodeArm64Batch(words, 0n);
-      if (Array.isArray(batch) && batch.length === count) {
-        for (let i = 0; i < count; i += 1) out[i] = batch[i].kind;
+    if (bridge) {
+      if (typeof bridge.wasmClassifyArm64Batch === 'function') {
+        const kinds = bridge.wasmClassifyArm64Batch(words);
+        if (kinds && typeof kinds.length === 'number' && kinds.length === count) {
+          if (kinds instanceof Uint8Array) return kinds;
+          for (let i = 0; i < count; i += 1) out[i] = kinds[i];
+          return out;
+        }
+      }
+      if (classifyWordsBatchFastWasm(words, count, out, bridge)) {
         return out;
+      }
+      if (typeof bridge.wasmDecodeArm64Batch === 'function') {
+        const batch = bridge.wasmDecodeArm64Batch(words, 0n);
+        if (Array.isArray(batch) && batch.length === count) {
+          for (let i = 0; i < count; i += 1) out[i] = batch[i].kind;
+          return out;
+        }
       }
     }
     for (let i = 0; i < count; i += 1) out[i] = classifyWordJs(words[i] >>> 0);
