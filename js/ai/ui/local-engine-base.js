@@ -144,7 +144,7 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
     return { ...base, answer: localChatAnswer({ name, address, model, selection: context.selection, reason: 'missing-context' }) };
   }
 
-  const functionAssembly = assembly || assemblyText(model);
+  const functionAssembly = assembly;
   const payload = {
     question: (compactGuidance(prompt) + '\n\n' + question).slice(0, 6000),
     thinkingLevel: style === 'analyst' ? 'high' : 'medium',
@@ -152,11 +152,17 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
     currentFunction: { address, name: activeFn.name || null, assembly: functionAssembly, pseudocode: null },
     xrefs: [], callers: [], callees: [], strings: [], globals: [],
   };
+  const MAX_STREAMED_CHARS = 512 * 1024;
   let streamed = '';
   try {
     onActivity({ label: pick('AI に問い合わせ', 'Asking the model'), state: 'running' });
     await streamGemini(payload, {
-      onText: (chunk) => { streamed += chunk; if (onText) onText(chunk); },
+      onText: (chunk) => {
+        if (typeof chunk === 'string' && streamed.length < MAX_STREAMED_CHARS) {
+          streamed += chunk.slice(0, MAX_STREAMED_CHARS - streamed.length);
+        }
+        if (onText) onText(chunk);
+      },
     }, signal);
     onActivity({ label: pick('AI に問い合わせ', 'Asking the model'), detail: pick('完了', 'done') });
   } catch (error) {

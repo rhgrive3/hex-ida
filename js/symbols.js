@@ -636,12 +636,23 @@ export class SymbolIndex {
     }
 
     for (const { start } of canonical) {
+      // Binary search for the largest index i where this.funcs[i] < start.
+      let lo = 0;
+      let hi = this.funcs.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (this.funcs[mid] < start) lo = mid + 1;
+        else hi = mid;
+      }
       let predKey = null;
-      for (let i = 0; i < this.funcs.length; i++) {
+      for (let i = lo - 1; i >= 0; i--) {
         const candidate = this.funcs[i];
-        if (candidate >= start) break;
         const bound = priorBound.get(candidate.toString());
-        if (bound != null && start < bound) predKey = candidate.toString();
+        if (bound != null && start < bound) {
+          predKey = candidate.toString();
+          break;
+        }
+        if (bound != null && bound <= start && this.funcEnds == null) break;
       }
       if (predKey == null) continue;
       const previous = this.functionTopologyEnds.get(predKey);
@@ -688,10 +699,12 @@ export class SymbolIndex {
   setGuessedFunctions(starts) {
     this.funcs = starts || new BigUint64Array(0);
     this.funcEnds = null;
+    this.functionTopologyEnds.clear();
     this.functionProvenance.clear();
     for (const addr of this.funcs) this.functionProvenance.set(addr.toString(), { source: 'heuristic', confidence: 0.55, confirmed: false });
     this.guessed = true;
     this.gen = ++SymbolIndex.gen;
+    this.functionTopologyRevision += 1;
   }
 }
 

@@ -17,7 +17,7 @@ export function renderExtendedIndex(indexText, extend = null) {
     case 'uxtw': return `(uint64_t)(uint32_t)${index}`;
     case 'sxtx': return `(int64_t)${index}`;
     case 'uxtx': return `(uint64_t)${index}`;
-    case 'lsl': case '': return indexText;
+    case 'lsl': case '': return index;
     default: return `__arm64_index_${safeExtendName(extend)}(${index})`;
   }
 }
@@ -26,7 +26,7 @@ export function renderIndexedMemory(baseText, indexText, { extend = null, scale 
   const shift = canonicalScale(scale);
   const bytes = typeof size === 'number' && Number.isSafeInteger(size) && size >= 0 ? size : 0;
   const index = renderExtendedIndex(indexText, extend);
-  if (shift === null) return `memory[${baseText} + __arm64_index_invalid_scale(${index})]`;
+  if (shift === null) return `memory[${wrapped(baseText)} + __arm64_index_invalid_scale(${index})]`;
   const scaleBytes = 2 ** shift;
   if (bytes > 0 && Number.isSafeInteger(scaleBytes) && scaleBytes === bytes) {
     return `${wrapped(baseText)}[${index}]`;
@@ -81,7 +81,7 @@ export function effectiveIndexOffset(value, extend = null, scale = 0) {
     case 'sxtw': canonical = BigInt.asIntN(32, index); break;
     case 'uxtw': canonical = BigInt.asUintN(32, index); break;
     case 'sxtx': canonical = BigInt.asIntN(64, index); break;
-    case 'uxtx': case 'lsl': canonical = BigInt.asUintN(64, index); break;
+    case 'uxtx': case 'lsl': case '': canonical = BigInt.asUintN(64, index); break;
   }
   return canonical << BigInt(shift);
 }

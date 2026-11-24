@@ -50,8 +50,8 @@ function x86ControlTargetFault(operation, conditional = false) {
   });
 }
 
-function addressRef(value) { return Object.freeze({ kind:'absolute-address', value:BigInt(value).toString(), widthBits:64 }); }
-function fallthrough(instruction) { return addressRef(BigInt(instruction.address) + BigInt(instruction.length)); }
+function addressRef(value) { return Object.freeze({ kind:'absolute-address', value:BigInt.asUintN(64, BigInt(value)).toString(), widthBits:64 }); }
+function fallthrough(instruction) { return addressRef(BigInt.asUintN(64, BigInt(instruction.address) + BigInt(instruction.length))); }
 function directTarget(operand) { return operand?.type === 'immediate' ? operand.value : null; }
 
 const EXECUTION_ENV = 'sys:x86.execution-environment';

@@ -256,6 +256,16 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const targetFrame = controlStack[controlStack.length - 1 - lr.value];
         mnemonic = opcode === 0x0c ? 'br' : 'br_if';
         if (opcode === 0x0d) { consumedValues.push({ id: 'cond', bits: 32 }); consume(1); }
+        const labelTypes = targetFrame.kind === 'loop' ? targetFrame.params : targetFrame.results;
+        if (labelTypes.length) {
+          preChargedValues += labelTypes.length;
+          budget.chargeValues(labelTypes.length);
+          for (let i = labelTypes.length - 1; i >= 0; i--) {
+            consumedValues.push({ id: `branch_${i}`, bits: typeBits(labelTypes[i]), type: labelTypes[i] });
+          }
+          consume(labelTypes.length, 'wasm-stack-underflow-branch');
+          if (opcode === 0x0d) produce(labelTypes.length);
+        }
         const ce = { kind: opcode === 0x0c ? 'branch' : 'conditional-branch', targetOffset: null, labelIdx: lr.value };
         labelTarget(targetFrame, ce);
         controlEffects.push(ce);
@@ -276,6 +286,16 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         for (const depth of labelDepths) if (depth >= controlStack.length) fail('wasm-invalid-branch-depth');
         mnemonic = 'br_table';
         consumedValues.push({ id: 'index', bits: 32 }); consume(1);
+        const defaultTargetFrame = controlStack[controlStack.length - 1 - labelDepths.at(-1)];
+        const tableLabelTypes = defaultTargetFrame.kind === 'loop' ? defaultTargetFrame.params : defaultTargetFrame.results;
+        if (tableLabelTypes.length) {
+          preChargedValues += tableLabelTypes.length;
+          budget.chargeValues(tableLabelTypes.length);
+          for (let i = tableLabelTypes.length - 1; i >= 0; i--) {
+            consumedValues.push({ id: `branch_${i}`, bits: typeBits(tableLabelTypes[i]), type: tableLabelTypes[i] });
+          }
+          consume(tableLabelTypes.length, 'wasm-stack-underflow-branch');
+        }
         const ce = { kind: 'switch', targetOffsets: new Array(labelDepths.length - 1).fill(null), defaultTargetOffset: null, labelDepths: labelDepths.slice(0, -1), defaultLabelDepth: labelDepths.at(-1) };
         const caseFrames = [];
         const caseHolders = [];
@@ -406,7 +426,9 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const memarg = decodeWasmMemarg(bytecode, pos); pos = memarg.nextOffset;
         const memory = validateWasmMemoryInstruction(memoryContext, opcode, memarg.align, memarg.memoryIndex);
         const bits = (opcode === 0x37 || opcode === 0x39) ? 64 : 32; const byteWidth = opcode === 0x3a ? 1 : opcode === 0x3b ? 2 : bits / 8;
-        mnemonic = opcode === 0x36 ? 'i32.store' : opcode === 0x37 ? 'i64.store' : 'store'; consumedValues.push({ id: 'val', bits }, { id: 'addr', bits: 32 }); consume(2); memoryEffects.push({ space: 'linear-memory', memoryIndex: memory.memoryIndex, byteWidth, offset: memarg.offset, align: memarg.align, isWrite: true });
+        mnemonic = opcode === 0x36 ? 'i32.store' : opcode === 0x37 ? 'i64.store' : opcode === 0x38 ? 'f32.store' : opcode === 0x39 ? 'f64.store' : 'store';
+        const valType = opcode === 0x38 ? { kind: 'float', widthBits: 32, format: 'binary32' } : opcode === 0x39 ? { kind: 'float', widthBits: 64, format: 'binary64' } : null;
+        consumedValues.push(valType ? { id: 'val', bits, type: valType } : { id: 'val', bits }, { id: 'addr', bits: 32 }); consume(2); memoryEffects.push({ space: 'linear-memory', memoryIndex: memory.memoryIndex, byteWidth, offset: memarg.offset, align: memarg.align, isWrite: true });
         possibleExceptions.push({ kind: 'linear-memory-oob', memoryIndex: memory.memoryIndex, condition: `effectiveAddress+${byteWidth}>memorySize` });
         break;
       }

@@ -371,7 +371,7 @@ function liftTimestamp(ctx, family) {
 }
 
 function liftSyscall(ctx) {
-  const nextRip = BigInt(ctx.instruction.address) + BigInt(ctx.instruction.length);
+  const nextRip = BigInt.asUintN(64, BigInt(ctx.instruction.address) + BigInt(ctx.instruction.length));
   const rflagsOperand = x86RegisterOperand('rflags');
   const rflags = ctx.readRegister(rflagsOperand);
   if (!liveEncodingMatches(ctx.instruction, 'syscall') || String(ctx.instruction.mnemonic || '').toLowerCase() !== 'syscall') {

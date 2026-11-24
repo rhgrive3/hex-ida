@@ -67,6 +67,17 @@ export class DynamicTaskGraphHost {
     this.retryBaseDelayMs = boundedInt(retryBaseDelayMs, 0, MAX_RETRY_DELAY_MS, DEFAULT_RETRY_BASE_DELAY_MS);
     this.onWorkerCompletion = typeof onWorkerCompletion === 'function' ? onWorkerCompletion : null;
     this.graphs = new Map();
+    this.maxRetainedGraphs = 64;
+  }
+  _pruneCompletedGraphs() {
+    if (this.graphs.size < this.maxRetainedGraphs) return;
+    for (const [id, graph] of this.graphs) {
+      if (this.graphs.size < this.maxRetainedGraphs) break;
+      const st = graph?.status?.()?.status;
+      if (st === 'completed' || st === 'failed' || st === 'cancelled') {
+        this.graphs.delete(id);
+      }
+    }
   }
 
   async start({ graphId = null, tasks, maxConcurrency = DEV_WORKER_POOL_MAX, runId = null } = {}) {
@@ -86,6 +97,7 @@ export class DynamicTaskGraphHost {
       runId,
       onWorkerCompletion: this.onWorkerCompletion,
     });
+    this._pruneCompletedGraphs();
     this.graphs.set(id, graph);
     await graph.start();
     return graph.status();
@@ -820,7 +832,6 @@ function boundedInt(value, min, max, fallback) { if (value == null) return fallb
 function settleWithin(operation, timeoutMs) {
   const limit = Math.max(0, Number(timeoutMs) || 0);
   if (limit === 0) {
-    void Promise.resolve().then(operation).catch(() => {});
     return Promise.resolve({ settled: false, value: undefined, error: null });
   }
   return new Promise((resolve) => {

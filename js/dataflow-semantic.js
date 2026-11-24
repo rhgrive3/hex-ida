@@ -264,7 +264,9 @@ function originFingerprint(origin) {
   if (!origin) return 'none';
   const value = origin.value != null ? String(origin.value) : '';
   const address = origin.address != null ? String(origin.address) : '';
-  const location = origin.location ? String(origin.location.key || origin.location.address || origin.location.disp || '') : '';
+  const location = origin.location
+    ? String(origin.location.key || origin.location.address || origin.location.disp || '')
+    : [origin.base || '', origin.disp != null ? String(origin.disp) : '', origin.size != null ? String(origin.size) : ''].filter(Boolean).join(':');
   return [origin.kind || '', origin.reg || '', origin.op || '', origin.sub || '', value, address, location].join('|');
 }
 
@@ -286,17 +288,23 @@ function sameComputationPath(a, b) {
  * Follow the stored SSA value back to a memory source while preserving the
  * computation chain. This is def-use traversal, not a second ARM64 scanner.
  */
-function computationPath(value, active = new Set(), clampPartNodes = new Set(), clampPartIds = new Set()) {
-  if (!value || active.has(value.id)) return null;
+const MAX_TRAVERSAL_DEPTH = 64;
+const MAX_TRAVERSAL_STEPS = 4096;
+
+function computationPath(value, active = new Set(), clampPartNodes = new Set(), clampPartIds = new Set(), memo = new Map(), budget = { steps: 0 }, depth = 0) {
+  if (!value || active.has(value.id) || depth > MAX_TRAVERSAL_DEPTH) return null;
+  const useMemo = clampPartNodes.size === 0 && clampPartIds.size === 0;
+  if (useMemo && memo.has(value.id)) return memo.get(value.id);
+  if (++budget.steps > MAX_TRAVERSAL_STEPS) return null;
   active.add(value.id);
   const def = value.def;
   let out = null;
   if (def && def.op === OP.LOAD && def.loc && def.loc.kind !== MK.UNKNOWN) {
     out = { load: def, steps: [] };
   } else if (def && def.op === OP.MOV && def.args[0]) {
-    out = computationPath(def.args[0].value, active, clampPartNodes, clampPartIds);
+    out = computationPath(def.args[0].value, active, clampPartNodes, clampPartIds, memo, budget, depth + 1);
   } else if (def && def.op === OP.UN && PASS_UN.has(def.sub) && def.args[0]) {
-    out = computationPath(def.args[0].value, active, clampPartNodes, clampPartIds);
+    out = computationPath(def.args[0].value, active, clampPartNodes, clampPartIds, memo, budget, depth + 1);
     if (out && !out.ambiguous) {
       const step = {
         op: operationName(def), imm: null, immFloat: null, other: null, otherOrigin: null,
@@ -306,7 +314,7 @@ function computationPath(value, active = new Set(), clampPartNodes = new Set(), 
       out = { load: out.load, steps: out.steps.concat([step]) };
     }
   } else if (def && def.op === OP.PHI && def.args && def.args.length) {
-    const paths = def.args.map((a) => computationPath(a && a.value, new Set(active), clampPartNodes, clampPartIds)).filter(Boolean);
+    const paths = def.args.map((a) => computationPath(a && a.value, active, clampPartNodes, clampPartIds, memo, budget, depth + 1)).filter(Boolean);
     if (paths.length === def.args.length && paths.length && paths.every((p) => sameLoadLocation(paths[0].load, p.load))) {
       if (paths.every((p) => sameComputationPath(paths[0], p))) out = paths[0];
       else out = { load: paths[0].load, steps: [], ambiguous: true, alternatives: paths };
@@ -328,7 +336,7 @@ function computationPath(value, active = new Set(), clampPartNodes = new Set(), 
     let chosen = -1;
     let path = null;
     for (const i of order) {
-      const p = computationPath(args[i].value, new Set(active), nextPartNodes, nextPartIds);
+      const p = computationPath(args[i].value, active, nextPartNodes, nextPartIds, memo, budget, depth + 1);
       if (p) { chosen = i; path = p; break; }
     }
     if (path) {
@@ -356,6 +364,7 @@ function computationPath(value, active = new Set(), clampPartNodes = new Set(), 
     }
   }
   active.delete(value.id);
+  if (useMemo && budget.steps <= MAX_TRAVERSAL_STEPS) memo.set(value.id, out);
   return out;
 }
 
@@ -417,20 +426,25 @@ function directWrites(ir, facts, rmwRows, opts) {
   return out;
 }
 
-function rootLoad(value, active = new Set()) {
-  if (!value || active.has(value.id)) return null;
+function rootLoad(value, active = new Set(), memo = new Map(), budget = { steps: 0 }, depth = 0) {
+  if (!value || active.has(value.id) || depth > MAX_TRAVERSAL_DEPTH) return null;
+  if (memo.has(value.id)) return memo.get(value.id);
+  if (++budget.steps > MAX_TRAVERSAL_STEPS) return null;
   active.add(value.id);
   const def = value.def;
-  if (!def) return null;
-  if (def.op === OP.LOAD) return def;
-  if ((def.op === OP.MOV || (def.op === OP.UN && PASS_UN.has(def.sub))) && def.args[0]) {
-    return rootLoad(def.args[0].value, active);
+  let result = null;
+  if (def) {
+    if (def.op === OP.LOAD) result = def;
+    else if ((def.op === OP.MOV || (def.op === OP.UN && PASS_UN.has(def.sub))) && def.args[0]) {
+      result = rootLoad(def.args[0].value, active, memo, budget, depth + 1);
+    } else if (def.op === OP.PHI && def.args && def.args.length) {
+      const loads = def.args.map((a) => rootLoad(a && a.value, active, memo, budget, depth + 1)).filter(Boolean);
+      if (loads.length === def.args.length && loads.every((l) => sameLoadLocation(loads[0], l))) result = loads[0];
+    }
   }
-  if (def.op === OP.PHI && def.args && def.args.length) {
-    const loads = def.args.map((a) => rootLoad(a && a.value, new Set(active))).filter(Boolean);
-    if (loads.length === def.args.length && loads.every((l) => sameLoadLocation(loads[0], l))) return loads[0];
-  }
-  return null;
+  active.delete(value.id);
+  if (budget.steps <= MAX_TRAVERSAL_STEPS) memo.set(value.id, result);
+  return result;
 }
 
 function returnedReads(ir) {
