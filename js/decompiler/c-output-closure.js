@@ -2985,11 +2985,72 @@ function rewriteNonStructArrowAccesses(lines, bodyOpen, symTable, existingTypes 
   return { lines: out, changed, syntheticArrowStructs };
 }
 
+function sanitizeFloatPointerCasts(expr, floatNames) {
+  const s = String(expr ?? '');
+  if (!floatNames?.size || !s.includes('*')) return s;
+  let out = '';
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(s, i);
+      out += s.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '*') {
+      const end = skipBlockComment(s, i);
+      out += s.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '/') {
+      out += s.slice(i);
+      break;
+    }
+    if (ch === '(') {
+      const closeType = findMatchingDelimRaw(s, i, '(', ')');
+      if (closeType > i) {
+        const castInner = s.slice(i + 1, closeType).trim();
+        if (/^(?:(?:const|volatile|struct|union|enum|unsigned|signed|long|short)\s+)*[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:const|volatile))*\s*\*+(?:\s*(?:const|volatile|restrict))*$/.test(castInner)) {
+          let k = closeType + 1;
+          while (k < n && /\s/.test(s[k])) k++;
+          if (s[k] === '(') {
+            const closeArg = findMatchingDelimRaw(s, k, '(', ')');
+            if (closeArg > k) {
+              const argRaw = s.slice(k + 1, closeArg);
+              const { lead, core, trail } = splitExprCommentAffixes(argRaw);
+              if (core && !/^\(\s*(?:uintptr_t|intptr_t)\s*\)/.test(core) && isFloatExpr(core, floatNames)) {
+                const sanitizedCore = sanitizeFloatPointerCasts(core, floatNames);
+                out += `(${castInner})(uintptr_t)(${lead}${sanitizedCore}${trail})`;
+                i = closeArg + 1;
+                continue;
+              }
+            }
+          } else {
+            const identMatch = /^([A-Za-z_][A-Za-z0-9_]*)\b/.exec(s.slice(k));
+            if (identMatch && floatNames.has(identMatch[1]) && !/^\s*\(/.test(s.slice(k + identMatch[1].length))) {
+              out += `(${castInner})(uintptr_t)${identMatch[1]}`;
+              i = k + identMatch[1].length;
+              continue;
+            }
+          }
+        }
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 function rewriteExprForIntConversion(expr, symTable) {
   const { ptrNames, intNames, floatNames, selfCallSpec } = symTable;
   const harmonized = harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames, selfCallSpec);
   const withCalls = rewriteBuiltinPtrArgs(harmonized, ptrNames, intNames, floatNames, selfCallSpec);
-  return sanitizeBitwiseOps(withCalls, ptrNames, intNames, floatNames, selfCallSpec);
+  const withBitwise = sanitizeBitwiseOps(withCalls, ptrNames, intNames, floatNames, selfCallSpec);
+  return sanitizeFloatPointerCasts(withBitwise, floatNames);
 }
 
 function findTopLevelControlBracedBlock(text) {

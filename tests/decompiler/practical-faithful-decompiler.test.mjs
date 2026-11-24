@@ -376,3 +376,20 @@ test('5. apple/runtime formats resolved ObjC IMP calls as C identifiers when sty
   assert.equal(clsC.text, 'objc_cls_SettingsVC_sharedInstance');
   assert.doesNotMatch(clsC.text, /^[+-]\[/);
 });
+
+test('6. decompile-legacy upgrades stack slots used in pointer dereferences from float/double to uint64', () => {
+  const { model, opts } = modelOf([
+    { address: 0xa000n, mn: 'stp', ops: 'd13, d12, [sp, #-0x20]!' },
+    { address: 0xa004n, mn: 'bl', ops: '0xb000' },
+    { address: 0xa008n, mn: 'str', ops: 'x0, [sp, #0x0]' },
+    { address: 0xa00cn, mn: 'ldr', ops: 'x8, [sp, #0x0]' },
+    { address: 0xa010n, mn: 'strb', ops: 'wzr, [x8, #0x10]' },
+    { address: 0xa014n, mn: 'ldp', ops: 'd13, d12, [sp], #0x20' },
+    { address: 0xa018n, mn: 'ret', ops: '' },
+  ], { name: 'legacy_fp_slot_reused_as_ptr', base: 0xa000n });
+
+  const out = legacyDecompile(model, opts);
+  const text = out.lines.map((l) => l.text).join('\n');
+  assert.doesNotMatch(text, /^\s*double\s+.*var_0\b/m);
+  assert.match(text, /\buint64\b.*var_0\b/);
+});
