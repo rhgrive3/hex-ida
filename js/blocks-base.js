@@ -1479,8 +1479,8 @@ function finishBlock(g, ctx) {
   let score = SCORE.confirmed;
 
   for (const insn of g.instructions) {
-    for (const w of insn.writes) writes.add(w);
     for (const r of insn.reads) if (!writes.has(r)) reads.add(r);
+    for (const w of insn.writes) writes.add(w);
 
     if (insn.isCall) {
       const call = callByRow.get(insn.row);

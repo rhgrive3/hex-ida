@@ -156,7 +156,7 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
       const pc = region.vmAddr + BigInt(byteOff);
       const direct = Words.wordTarget(w, pc);
       if (direct != null && direct === want) {
-        out.push({ row: byteOff / 4, addr: pc, kind: 'branch' });
+        out.push({ row: byteOff / 4, addr: pc, kind: Words.classifyWord(w) === Words.KIND.LITERAL ? 'load' : 'branch' });
         if (out.length >= cap) break;
       }
 

@@ -57,10 +57,10 @@ export function typeBits(type, fallback = 64) {
    * its first token (issue #5977). */
   const text = String(type || '').toLowerCase().replace(/\s+/g, ' ').trim();
   if (/\*|\b(?:pointer|ptr)\b/.test(text)) return 64;
-  if (/\b(?:bool|char|int8|uint8)\b/.test(text)) return 8;
-  if (/\b(?:short|int16|uint16)\b/.test(text)) return 16;
-  if (/\b(?:unsigned\s+)?long long\b|\b(?:double|int64|uint64)\b/.test(text)) return 64;
-  if (/\b(?:int|unsigned int|long|unsigned long|int32|uint32|float)\b/.test(text)) return 32;
+  if (/\b(?:bool|_bool|char|int8(?:_t)?|uint8(?:_t)?|i8|u8|byte)\b/.test(text)) return 8;
+  if (/\b(?:short|int16(?:_t)?|uint16(?:_t)?|i16|u16|half|fp16)\b/.test(text)) return 16;
+  if (/\b(?:unsigned\s+)?long long\b|\b(?:double|int64(?:_t)?|uint64(?:_t)?|i64|u64|f64)\b/.test(text)) return 64;
+  if (/\b(?:int|unsigned int|long|unsigned long|int32(?:_t)?|uint32(?:_t)?|i32|u32|float|f32)\b/.test(text)) return 32;
   return fallback;
 }
 

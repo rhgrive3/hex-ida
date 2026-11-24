@@ -689,7 +689,7 @@ export function decodeChainedPointer(raw, format, imageBase = null, options = {}
       if (a & 0x40000) a -= 0x80000;
       addend = BigInt(a);
     }
-    const stride = format === 7 || format === 10 ? 4 : 8;
+    const stride = format === 1 ? 8 : 4;
     const authCompat = auth ? { authenticationKey: keyIndex, discriminator: diversity, addressDiversity } : {};
     if (bind) return { bind, ordinal, addend, next, stride, storageWidth: width, target: null, authenticated: auth, authentication, ...authCompat };
     if (auth) {

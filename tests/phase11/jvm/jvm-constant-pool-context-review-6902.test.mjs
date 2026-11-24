@@ -13,11 +13,11 @@ const cpMethodType=(descriptor)=>[16,(descriptor>>>8)&255,descriptor&255];
 const cpDynamic=(tag,bootstrap,nat)=>[tag,(bootstrap>>>8)&255,bootstrap&255,(nat>>>8)&255,nat&255];
 const cpModule=(tag,name)=>[tag,(name>>>8)&255,name&255];
 
-function buildClass(entries,{major=52,accessFlags=0x0021,classAttributes=[]}={}){
+function buildClass(entries,{major=52,accessFlags=0x0021,superClass=(accessFlags&0x8000)?0:4,classAttributes=[]}={}){
   const out=[];u4(out,0xcafebabe);u2(out,0);u2(out,major);
   let slots=1;for(const entry of entries)slots+=entry[0]===5||entry[0]===6?2:1;u2(out,slots);
   for(const entry of entries)out.push(...entry);
-  u2(out,accessFlags);u2(out,2);u2(out,4);u2(out,0);u2(out,0);u2(out,0);u2(out,classAttributes.length);
+  u2(out,accessFlags);u2(out,2);u2(out,superClass);u2(out,0);u2(out,0);u2(out,0);u2(out,classAttributes.length);
   for(const {nameIndex,payload} of classAttributes){u2(out,nameIndex);u4(out,payload.length);out.push(...payload);}
   return Uint8Array.from(out);
 }

@@ -1994,11 +1994,14 @@ export function showClass(app, className) {
     const ul = list();
     for (const iv of info.ivars) {
       const type = typeWord(iv.type);
+      const hasOffset = iv.offset != null;
       ul.append(tapRow(plainFieldName(iv.name), {
-        sub: (type ? type + '  ·  ' : '') +
-          pick('先頭から ' + offsetHex(BigInt(iv.offset)) + ' の位置', 'at ' + offsetHex(BigInt(iv.offset))),
-        right: '›',
-        onTap: () => { sheet.close(); showField(app, className, iv); },
+        sub: (type ? type + '  ·  ' : '') + (hasOffset
+          ? pick('先頭から ' + offsetHex(BigInt(iv.offset)) + ' の位置', 'at ' + offsetHex(BigInt(iv.offset)))
+          : pick('オフセット不明', 'offset unknown')),
+        right: hasOffset ? '›' : '',
+        disabled: !hasOffset,
+        onTap: hasOffset ? () => { sheet.close(); showField(app, className, iv); } : undefined,
       }));
     }
     body.append(ul);

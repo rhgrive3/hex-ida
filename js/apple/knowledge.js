@@ -799,7 +799,9 @@ export function buildAppleKnowledge({ image = null, binaryIdentity = null, slice
     if (signature.status === 'structurally-valid' && machoComplete) signatureStatus = 'supported';
     else if (signature.status === 'unsupported') signatureStatus = 'unsupported';
     else if (signature.status === 'malformed') signatureStatus = 'malformed';
+    else if (signature.status === 'partial') signatureStatus = 'partial';
     else if (signature.status === 'absent' && machoComplete) signatureStatus = 'absent';
+    else signatureStatus = 'partial';
   }
   const signingReasons = [
     ...(signature?.reasons || []),

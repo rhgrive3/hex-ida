@@ -81,25 +81,25 @@ test('#4860 ordinary class with a valid nonzero superclass is accepted', () => {
   assert.equal(image.superClassName, 'B');
 });
 
-test('#4860 module-info with super_class=0 is rejected', () => {
-  assert.throws(
-    () => parseJvm(classFixture({ thisName: 'module-info', superZero: true, flags: ACC_MODULE }), { binaryId: 'repro-4860-module-zero' }),
-    /jvm-invalid-zero-super-class/,
+test('#4860 module-info with super_class=0 is accepted per JVMS §4.1', () => {
+  const image = parseJvm(
+    classFixture({ thisName: 'module-info', superZero: true, flags: ACC_MODULE }),
+    { binaryId: 'sanity-4860-module-zero' },
   );
+  assert.equal(image.thisClassName, 'module-info');
+  assert.equal(image.superClassName, null);
 });
 
 test('#4860 module-info with a non-Object super_class is rejected', () => {
   assert.throws(
     () => parseJvm(classFixture({ thisName: 'module-info', superName: 'B', flags: ACC_MODULE }), { binaryId: 'repro-4860-module-nonobject' }),
-    /jvm-super-class-must-be-object/,
+    /jvm-invalid-module-super-class/,
   );
 });
 
-test('#4860 module-info with super_class naming java/lang/Object is accepted', () => {
-  const image = parseJvm(
-    classFixture({ thisName: 'module-info', superName: 'java/lang/Object', flags: ACC_MODULE }),
-    { binaryId: 'sanity-4860-module-object' },
+test('#4860 module-info with nonzero java/lang/Object super_class is rejected per JVMS §4.1', () => {
+  assert.throws(
+    () => parseJvm(classFixture({ thisName: 'module-info', superName: 'java/lang/Object', flags: ACC_MODULE }), { binaryId: 'repro-4860-module-object' }),
+    /jvm-invalid-module-super-class/,
   );
-  assert.equal(image.thisClassName, 'module-info');
-  assert.equal(image.superClassName, 'java/lang/Object');
 });

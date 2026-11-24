@@ -259,7 +259,7 @@ findXrefs = async function findXrefsLoopSafe({ regionId, target, limit, requestI
       const byteOff = pos + i * 4;
       const pc = region.vmAddr + BigInt(byteOff);
       const direct = Words.wordTarget(w, pc);
-      if (direct != null && direct === want && pushHit(byteOff, pc, 'branch')) break;
+      if (direct != null && direct === want && pushHit(byteOff, pc, Words.classifyWord(w) === Words.KIND.LITERAL ? 'load' : 'branch')) break;
 
       const loopKills = prepass.entries.get(pc);
       if (loopKills) {
@@ -308,6 +308,20 @@ findXrefs = async function findXrefsLoopSafe({ regionId, target, limit, requestI
         if (mem.pair && Number.isSafeInteger(mem.elementSize) && mem.elementSize > 0) {
           const second = first + BigInt(mem.elementSize);
           if (second === want && pushHit(byteOff, pc, hitKind)) break;
+        }
+      }
+      if (mem) {
+        if (mem.load && !mem.vector && mem.pair && mem.reg2 != null && mem.reg2 < 31) {
+          pageOf[mem.reg2] = null;
+          pageAt[mem.reg2] = -1;
+        }
+        if ((mem.mode === 'pre' || mem.mode === 'post') && mem.base != null && mem.base < 31) {
+          pageOf[mem.base] = null;
+          pageAt[mem.base] = -1;
+        }
+        if (mem.statusReg != null && mem.statusReg < 31) {
+          pageOf[mem.statusReg] = null;
+          pageAt[mem.statusReg] = -1;
         }
       }
 

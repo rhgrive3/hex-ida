@@ -2271,24 +2271,30 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
       if (kind !== Words.KIND.LOAD && kind !== Words.KIND.STORE && kind !== Words.KIND.ATOMIC) continue;
       const mem = Words.memoryAccess(w);
       if (!mem || mem.disp == null || mem.indexed) continue;
-      const slot = wanted.get(mem.disp.toString());
-      if (!slot || slot.out.length >= cap) continue;
-      // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
-      if (slot.size > 0 && mem.size !== slot.size && !(slot.size > 8 && mem.size === 8)) continue;
+      const hasPairElement = mem.pair && Number.isSafeInteger(mem.elementSize) && mem.elementSize > 0;
+      const accessSize = hasPairElement ? mem.elementSize : mem.size;
+      const baseDisp = mem.mode === 'post' ? 0n : mem.disp;
+      const disps = hasPairElement ? [baseDisp, baseDisp + BigInt(mem.elementSize)] : [baseDisp];
       const byteOff = pos + i * 4;
       const accessKinds = mem.rmw ? ['load', 'store'] : [mem.load ? 'load' : 'store'];
-      for (const accessKind of accessKinds) {
-        if (slot.out.length >= cap) break;
-        slot.out.push({
-          row: byteOff / 4,
-          addr: region.vmAddr + BigInt(byteOff),
-          kind: accessKind,
-          base: mem.base,
-          size: mem.size,
-          atomic: !!mem.atomic,
-          rmw: !!mem.rmw,
-        });
-        found++;
+      for (const disp of disps) {
+        const slot = wanted.get(disp.toString());
+        if (!slot || slot.out.length >= cap) continue;
+        // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
+        if (slot.size > 0 && accessSize !== slot.size && !(slot.size > 8 && accessSize === 8)) continue;
+        for (const accessKind of accessKinds) {
+          if (slot.out.length >= cap) break;
+          slot.out.push({
+            row: byteOff / 4,
+            addr: region.vmAddr + BigInt(byteOff),
+            kind: accessKind,
+            base: mem.base,
+            size: accessSize,
+            atomic: !!mem.atomic,
+            rmw: !!mem.rmw,
+          });
+          found++;
+        }
       }
     }
     pos += words * 4;
@@ -2495,12 +2501,12 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
       const pc = region.vmAddr + BigInt(byteOff);
       provenance.enter(pc);
 
+      const kind = Words.classifyWord(w);
       const direct = wordTarget(w, pc);
       if (direct !== null && direct === want) {
-        out.push({ row: byteOff / 4, addr: pc, kind: 'branch' });
+        out.push({ row: byteOff / 4, addr: pc, kind: kind === Words.KIND.LITERAL ? 'load' : 'branch' });
         if (out.length >= cap) break;
       }
-      const kind = Words.classifyWord(w);
       if (kind === Words.KIND.CALL || kind === Words.KIND.INDCALL ||
           kind === Words.KIND.CONDBR || kind === Words.KIND.BRANCH ||
           kind === Words.KIND.RET || kind === Words.KIND.TRAP) {
