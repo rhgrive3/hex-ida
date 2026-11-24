@@ -108,11 +108,12 @@ test('Wave 6 release gate: HEX_ENGINE=js rollback mode and isWasmBulkMemorySuppo
   try {
     process.env.HEX_ENGINE = 'js';
     delete globalThis.HEX_ENGINE;
-    if (typeof engineBridge.resolveEngineMode === 'function') {
-      assert.equal(engineBridge.resolveEngineMode({}), 'js', 'HEX_ENGINE=js must resolve to js');
-      assert.equal(engineBridge.resolveEngineMode({ _engine: 'wasm' }), 'wasm', 'opts._engine must override env');
+    assert.equal(typeof engineBridge.getEngineMode, 'function', 'hex-engine-bridge.js must export getEngineMode');
+  {
+      assert.equal(engineBridge.getEngineMode({}), 'js', 'HEX_ENGINE=js must resolve to js');
+      assert.equal(engineBridge.getEngineMode({ _engine: 'wasm' }), 'wasm', 'opts._engine must override env');
       globalThis.HEX_ENGINE = 'auto';
-      assert.equal(engineBridge.resolveEngineMode({}), 'auto', 'globalThis.HEX_ENGINE must override env');
+      assert.equal(engineBridge.getEngineMode({}), 'auto', 'globalThis.HEX_ENGINE must override env');
     }
   } finally {
     if (prevEnv === undefined) delete process.env.HEX_ENGINE;

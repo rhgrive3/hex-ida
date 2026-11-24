@@ -85,8 +85,8 @@ function extractArm64Words(insns) {
 }
 
 function tryWasmDecompile(model, opts) {
-  const requestedEngine = opts?._engine ? String(opts._engine).toLowerCase() : null;
-  if (requestedEngine === 'js' || getEngineMode() === 'js') {
+  const effectiveMode = getEngineMode(opts);
+  if (effectiveMode === 'js') {
     recordFallback('decompile:wasm_disabled');
     return null;
   }

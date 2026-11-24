@@ -121,10 +121,11 @@ export function resetHexEngineForTest() {
   resetAllTelemetry();
 }
 
-export function getEngineMode() {
-  const raw = globalThis.__HEX_ENGINE_MODE__
-    || (typeof process !== 'undefined' && process.env?.HEX_ENGINE)
-    || 'auto';
+export function getEngineMode(opts = null) {
+  const raw = (opts && opts._engine != null ? opts._engine : null)
+    ?? (typeof globalThis !== 'undefined' ? (globalThis.HEX_ENGINE ?? globalThis.__HEX_ENGINE_MODE__) : null)
+    ?? (typeof process !== 'undefined' && process.env ? process.env.HEX_ENGINE : null)
+    ?? 'auto';
   const norm = String(raw).trim().toLowerCase();
   if (norm === 'js' || norm === 'wasm' || norm === 'auto') return norm;
   return 'auto';

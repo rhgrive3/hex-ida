@@ -578,7 +578,7 @@ struct EmitterCtx {
         }
         ExprTok rhs{}; rhs.kind = ExprTok::TOK_VAL; rhs.parent_prec = my_prec + 1u; rhs.val_id = inst.src1;
         ExprTok op{}; op.kind = ExprTok::TOK_STR; op.str = cmp_symbol(subop);
-        ExprTok lhs{}; lhs.kind = ExprTok::TOK_VAL; lhs.parent_prec = my_prec; lhs.val_id = inst.src0;
+        ExprTok lhs{}; lhs.kind = ExprTok::TOK_VAL; lhs.parent_prec = js_parity ? static_cast<uint8_t>(my_prec + 1u) : my_prec; lhs.val_id = inst.src0;
         if (!expr_stack.push_back(rhs) || !expr_stack.push_back(op) || !expr_stack.push_back(lhs)) {
           out.oom = true;
           break;
@@ -598,7 +598,7 @@ struct EmitterCtx {
         }
         ExprTok rhs{}; rhs.kind = ExprTok::TOK_VAL; rhs.parent_prec = my_prec + 1u; rhs.val_id = inst.src1;
         ExprTok op{}; op.kind = ExprTok::TOK_STR; op.str = binop_symbol(inst.flags);
-        ExprTok lhs{}; lhs.kind = ExprTok::TOK_VAL; lhs.parent_prec = my_prec; lhs.val_id = inst.src0;
+        ExprTok lhs{}; lhs.kind = ExprTok::TOK_VAL; lhs.parent_prec = js_parity ? static_cast<uint8_t>(my_prec + 1u) : my_prec; lhs.val_id = inst.src0;
         if (!expr_stack.push_back(rhs) || !expr_stack.push_back(op) || !expr_stack.push_back(lhs)) {
           out.oom = true;
           break;
