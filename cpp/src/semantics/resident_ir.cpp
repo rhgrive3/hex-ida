@@ -708,7 +708,6 @@ HexStatus IrStore::release(HexIrHandle handle) {
   if (active_count_ > 0u) --active_count_;
   if (active_count_ == 0u) {
     if (arena_) arena_->reset();
-    if (scratch_ && scratch_ != arena_) scratch_->reset();
   }
   return HEX_OK;
 }

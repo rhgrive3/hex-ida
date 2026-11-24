@@ -676,8 +676,8 @@ int32_t hex_arm64_is_decompiler_supported(uint32_t w) {
   if (hex_arm64_kind_capability(kind) != HEX_ARM64_CAP_DECOMP) return 0;
 
   if (kind == HEX_ARM64_KIND_RET) {
-    // Standard RET (exclude PAC RETAA/RETAB)
-    return masked(w, 0xfffffc1fU) == 0xd65f0000U ? 1 : 0;
+    // Only canonical `ret` (ret x30 == 0xd65f03c0); exclude `ret xN` (N!=30) and PAC RETAA/RETAB.
+    return w == 0xd65f03c0U ? 1 : 0;
   }
   if (kind == HEX_ARM64_KIND_ARITH) {
     // Only unshifted register ADD/SUB/ADDS/SUBS with GPR x0..x30 / w0..w30

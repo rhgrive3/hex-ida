@@ -720,6 +720,66 @@ struct EmitterCtx {
     return false;
   }
 
+  // Record all instruction addresses folded into this statement's expression tree (non-recursive).
+  void record_stmt_linemap(uint32_t bb, const CEmitInst& root_inst, uint64_t root_addr) {
+    uint64_t addrs[64];
+    uint32_t addr_count = 0u;
+    auto push_unique = [&](uint64_t a) {
+      if (a == 0u || addr_count >= 64u) return;
+      for (uint32_t k = 0u; k < addr_count; ++k) {
+        if (addrs[k] == a) return;
+      }
+      addrs[addr_count++] = a;
+    };
+
+    uint32_t stack[64];
+    uint32_t sp = 0u;
+    const uint32_t root_srcs[3] = {root_inst.src0, root_inst.src1, root_inst.src2};
+    for (uint32_t k = 0u; k < 3u; ++k) {
+      const uint32_t sv = root_srcs[k];
+      if (sv != CEMIT_IR_NO_VAL && sv < max_val_id && inlined[sv] != 0u && sp < 64u) {
+        stack[sp++] = sv;
+      }
+    }
+
+    uint32_t steps = 0u;
+    while (sp > 0u && steps < 128u) {
+      ++steps;
+      const uint32_t vid = stack[--sp];
+      const int32_t didx = def_inst[vid];
+      if (didx < 0 || static_cast<uint32_t>(didx) >= view.num_insts) continue;
+      const CEmitInst& def = view.insts[didx];
+      if (def.op == CEMIT_IR_PARAM) continue;
+      if (def.addr != 0u) push_unique(def.addr);
+      const uint32_t dsrcs[3] = {def.src0, def.src1, def.src2};
+      for (uint32_t k = 0u; k < 3u; ++k) {
+        const uint32_t sv = dsrcs[k];
+        if (sv != CEMIT_IR_NO_VAL && sv < max_val_id && inlined[sv] != 0u && sp < 64u) {
+          stack[sp++] = sv;
+        }
+      }
+    }
+    push_unique(root_addr);
+
+    if (addr_count == 0u) {
+      out.record_line(bb, root_addr);
+      return;
+    }
+    // Insertion sort ascending by VA for deterministic order.
+    for (uint32_t i = 1u; i < addr_count; ++i) {
+      const uint64_t key = addrs[i];
+      uint32_t j = i;
+      while (j > 0u && addrs[j - 1u] > key) {
+        addrs[j] = addrs[j - 1u];
+        --j;
+      }
+      addrs[j] = key;
+    }
+    for (uint32_t i = 0u; i < addr_count; ++i) {
+      out.record_line(bb, addrs[i]);
+    }
+  }
+
   // Emit non-terminator statements of block `bb`.
   void emit_block_stmts(uint32_t bb) {
     const InstRange r = get_block_inst_range(view, bb);
@@ -737,7 +797,7 @@ struct EmitterCtx {
       }
 
       const uint64_t line_addr = inst.addr != 0u ? inst.addr : fallback_addr;
-      out.record_line(bb, line_addr);
+      record_stmt_linemap(bb, inst, line_addr);
       put_indent();
 
       if (inst.op == CEMIT_IR_STORE) {
@@ -1110,7 +1170,7 @@ static void emit_body_iterative(EmitterCtx& ctx) {
     const uint64_t term_addr = (term && term->addr != 0u) ? term->addr : get_block_origin_addr(view, bb);
 
     if (term && term->op == CEMIT_IR_RET) {
-      ctx.out.record_line(bb, term_addr);
+      ctx.record_stmt_linemap(bb, *term, term_addr);
       ctx.put_indent();
       if (term->src0 != CEMIT_IR_NO_VAL) {
         ctx.out.put_str("return ");

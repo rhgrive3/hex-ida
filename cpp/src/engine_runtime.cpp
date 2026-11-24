@@ -2,13 +2,18 @@
 
 namespace {
 
+constexpr uint32_t kEmitArenaBytes = 512u * 1024u;
+constexpr uint32_t kMaxParityWords = 16u;
+
 alignas(16) uint8_t g_image_storage[HEX_ENGINE_IMAGE_ARENA_BYTES];
 alignas(16) uint8_t g_ir_storage[HEX_ENGINE_IR_ARENA_BYTES];
 alignas(16) uint8_t g_scratch_storage[HEX_ENGINE_SCRATCH_ARENA_BYTES];
+alignas(16) uint8_t g_emit_storage[kEmitArenaBytes];
 
 hex::Arena g_image_arena;
 hex::Arena g_ir_arena;
 hex::Arena g_scratch_arena;
+hex::Arena g_emit_arena;
 bool g_initialized = false;
 
 const char* g_last_text = nullptr;
@@ -31,7 +36,8 @@ void bind_all_subsystems() {
   hex::identity::bind_global_arena_ptr(&g_scratch_arena);
   hex::binary::bind_global_arenas(&g_image_arena, &g_scratch_arena);
   hex::ir::default_store().init(&g_ir_arena, &g_scratch_arena);
-  hex::decompiler::bind_arena(&g_scratch_arena);
+  // Dedicated fixed emit arena isolates c_emitter output/work buffers from g_scratch_arena.
+  hex::decompiler::bind_arena(&g_emit_arena);
 }
 
 void ensure_initialized() {
@@ -81,6 +87,122 @@ uint8_t map_arm64_cond_to_cemit_cmp(uint32_t cond) {
     case 0xdu: return CEMIT_CMP_SLE;
     default:   return CEMIT_CMP_NE;
   }
+}
+
+struct Arm64ParityCheckResult {
+  bool supported;
+  uint32_t inferred_param_count;
+  uint32_t rbw_arg_mask;
+  uint8_t ret_width;
+};
+
+// Strict 0-bit JS-oracle parity gate for ARM64 functions:
+//   - word_count in [1, kMaxParityWords]
+//   - straight-line body ending in canonical `ret` (0xd65f03c0), no interior RET
+//   - no read of undefined non-argument register (reg >= 8)
+//   - must write return register x0/w0 before RET
+//   - no dead writes (every written register must flow to x0 at RET)
+//   - read-before-write argument registers x0..x7 must be contiguous from x0 (no gaps)
+Arm64ParityCheckResult check_arm64_strict_parity(const HexArm64Decoded* decoded, uint32_t count) {
+  Arm64ParityCheckResult res{false, 0u, 0u, 0u};
+  if (count == 0u || count > kMaxParityWords) return res;
+  if (decoded[count - 1u].kind != HEX_ARM64_KIND_RET) return res;
+
+  uint8_t insn_dst[kMaxParityWords];
+  uint8_t insn_r0[kMaxParityWords];
+  uint8_t insn_r1[kMaxParityWords];
+  uint8_t insn_rcount[kMaxParityWords];
+
+  uint32_t defined_mask = 0u;
+  uint32_t rbw_arg_mask = 0u;
+  uint8_t last_x0_width = 0u;
+
+  for (uint32_t i = 0u; i + 1u < count; ++i) {
+    const HexArm64Decoded& d = decoded[i];
+    if (d.kind == HEX_ARM64_KIND_RET) return res;  // interior RET
+
+    uint8_t dst = 31u;
+    uint8_t r0 = 31u;
+    uint8_t r1 = 31u;
+    uint8_t rc = 0u;
+
+    switch (d.kind) {
+      case HEX_ARM64_KIND_MOVIMM:
+        dst = d.rd;
+        break;
+      case HEX_ARM64_KIND_MOVREG:
+        dst = d.rd;
+        r0 = d.rm;
+        rc = 1u;
+        break;
+      case HEX_ARM64_KIND_ARITH:
+      case HEX_ARM64_KIND_MUL:
+        dst = d.rd;
+        r0 = d.rn;
+        r1 = d.rm;
+        rc = 2u;
+        break;
+      default:
+        return res;
+    }
+
+    if (dst >= 31u) return res;
+    const uint8_t reads[2] = {r0, r1};
+    for (uint8_t k = 0u; k < rc; ++k) {
+      const uint8_t r = reads[k];
+      if (r >= 31u) return res;
+      if ((defined_mask & (1u << r)) == 0u) {
+        if (r >= 8u) return res;  // undefined non-argument register read
+        rbw_arg_mask |= (1u << r);
+      }
+    }
+
+    defined_mask |= (1u << dst);
+    if (dst == 0u) {
+      last_x0_width = (((d.word >> 31) & 1u) == 0u) ? 32u : 64u;
+    }
+
+    insn_dst[i] = dst;
+    insn_r0[i] = r0;
+    insn_r1[i] = r1;
+    insn_rcount[i] = rc;
+  }
+
+  // Must write return register x0/w0 before RET.
+  if ((defined_mask & 1u) == 0u || last_x0_width == 0u) return res;
+
+  // Backward liveness pass: reject dead writes that never reach x0 at RET.
+  uint32_t live_mask = 1u;
+  for (uint32_t rev = count - 1u; rev > 0u; --rev) {
+    const uint32_t i = rev - 1u;
+    const uint8_t dst = insn_dst[i];
+    if ((live_mask & (1u << dst)) == 0u) {
+      return res;  // dead write
+    }
+    live_mask &= ~(1u << dst);
+    if (insn_rcount[i] >= 1u) live_mask |= (1u << insn_r0[i]);
+    if (insn_rcount[i] >= 2u) live_mask |= (1u << insn_r1[i]);
+  }
+
+  // Strict read-before-write argument inference: must be contiguous from x0 with no gaps.
+  uint32_t param_count = 0u;
+  if (rbw_arg_mask != 0u) {
+    uint32_t max_arg = 0u;
+    for (uint32_t r = 0u; r < 8u; ++r) {
+      if ((rbw_arg_mask & (1u << r)) != 0u) max_arg = r;
+    }
+    const uint32_t expected_mask = (1u << (max_arg + 1u)) - 1u;
+    if (rbw_arg_mask != expected_mask) {
+      return res;  // gapped argument register usage (e.g. `mov x0, x1; ret`)
+    }
+    param_count = max_arg + 1u;
+  }
+
+  res.supported = true;
+  res.inferred_param_count = param_count;
+  res.rbw_arg_mask = rbw_arg_mask;
+  res.ret_width = last_x0_width;
+  return res;
 }
 
 // Lift a single supported ARM64 instruction into Resident IR.
@@ -209,7 +331,6 @@ HexStatus lift_arm64_insn(
             ir_handle, block_id, HEX_IR_OP_CBR, static_cast<uint16_t>(cemit_cmp),
             kNone, kFlagVarId, kNone, kNone, d.target, nullptr);
       }
-      // CBZ / CBNZ
       const bool is_cbnz = ((w >> 24) & 1u) != 0u;
       const uint8_t cemit_cmp = is_cbnz ? CEMIT_CMP_NE : CEMIT_CMP_EQ;
       return store.add_inst(
@@ -249,6 +370,7 @@ HexStatus bind_external_arenas(
   g_image_arena.init_fixed(image_buf, image_cap);
   g_ir_arena.init_fixed(ir_buf, ir_cap);
   g_scratch_arena.init_fixed(scratch_buf, scratch_cap);
+  g_emit_arena.init_fixed(g_emit_storage, sizeof(g_emit_storage));
   bind_all_subsystems();
   clear_last_output();
   g_initialized = true;
@@ -277,6 +399,7 @@ HexStatus hex_engine_init(void) {
   g_image_arena.init_fixed(g_image_storage, sizeof(g_image_storage));
   g_ir_arena.init_fixed(g_ir_storage, sizeof(g_ir_storage));
   g_scratch_arena.init_fixed(g_scratch_storage, sizeof(g_scratch_storage));
+  g_emit_arena.init_fixed(g_emit_storage, sizeof(g_emit_storage));
   bind_all_subsystems();
   clear_last_output();
   g_initialized = true;
@@ -298,7 +421,6 @@ void* hex_engine_scratch_alloc(uint32_t bytes) {
 HEX_WASM_EXPORT("hex_engine_scratch_reset")
 void hex_engine_scratch_reset(void) {
   ensure_initialized();
-  clear_last_output();
   g_scratch_arena.reset();
 }
 
@@ -317,33 +439,16 @@ HexStatus hex_engine_decompile_arm64(
   if (word_count > HEX_ENGINE_MAX_DECOMP_WORDS) return HEX_ERR_RESOURCE_LIMIT;
   if (func_name_len > 0u && !func_name_utf8) return HEX_ERR_INVALID_ARG;
 
-  char local_func_name[256];
-  uint32_t local_func_name_len = 0u;
-  if (func_name_utf8 && func_name_len > 0u) {
-    local_func_name_len = func_name_len < sizeof(local_func_name) ? func_name_len : static_cast<uint32_t>(sizeof(local_func_name) - 1u);
-    hex::mem_copy(local_func_name, func_name_utf8, local_func_name_len);
-    local_func_name[local_func_name_len] = '\0';
-    func_name_utf8 = local_func_name;
-    func_name_len = local_func_name_len;
-  }
+  // Guard caller-allocated inputs on g_scratch_arena (e.g., words / func_name_utf8)
+  // and guarantee O(1) reclamation of all temporary pipeline buffers on every exit path.
+  hex::ArenaScope scratch_scope(g_scratch_arena);
 
-  auto ptr_in_scratch = [](const void* ptr) -> bool {
-    if (!ptr || !g_scratch_arena.base()) return false;
-    const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-    const uintptr_t beg = reinterpret_cast<uintptr_t>(g_scratch_arena.base());
-    const uintptr_t end = beg + g_scratch_arena.capacity();
-    return addr >= beg && addr < end;
-  };
-  const bool input_in_scratch = ptr_in_scratch(words) || (func_name_len > 0u && ptr_in_scratch(func_name_utf8));
-  if (!input_in_scratch) {
-    g_scratch_arena.reset();
+  // Stage 1: ARM64 capability gate (fail-closed on length > kMaxParityWords or unsupported insn).
+  if (word_count > kMaxParityWords) {
+    return HEX_ERR_UNSUPPORTED;
   }
-  const size_t scratch_mark = g_scratch_arena.used();
-
-  // Stage 1: ARM64 capability gate & batch decode (fail-closed on any unsupported instruction).
   for (uint32_t i = 0u; i < word_count; ++i) {
     if (!hex_arm64_is_decompiler_supported(words[i])) {
-      g_scratch_arena.restore(scratch_mark);
       return HEX_ERR_UNSUPPORTED;
     }
   }
@@ -351,18 +456,18 @@ HexStatus hex_engine_decompile_arm64(
   HexArm64Decoded* decoded = g_scratch_arena.alloc<HexArm64Decoded>(word_count);
   if (!decoded) return HEX_ERR_OOM;
   HexStatus st = hex_arm64_decode_batch(words, word_count, base_addr, decoded);
-  if (st != HEX_OK) {
-    g_scratch_arena.restore(scratch_mark);
-    return st;
+  if (st != HEX_OK) return st;
+
+  // Strict 0-bit JS-oracle parity gate (read-before-write args, no dead writes, x0 written).
+  const Arm64ParityCheckResult parity = check_arm64_strict_parity(decoded, word_count);
+  if (!parity.supported) {
+    return HEX_ERR_UNSUPPORTED;
   }
 
   // Stage 2: Basic block partitioning.
   uint8_t* is_leader = hex::arena_alloc_zeroed<uint8_t>(g_scratch_arena, word_count);
   uint32_t* insn_to_block = g_scratch_arena.alloc<uint32_t>(word_count);
-  if (!is_leader || !insn_to_block) {
-    g_scratch_arena.restore(scratch_mark);
-    return HEX_ERR_OOM;
-  }
+  if (!is_leader || !insn_to_block) return HEX_ERR_OOM;
 
   is_leader[0] = 1u;
   const uint64_t code_end = base_addr + static_cast<uint64_t>(word_count) * 4ULL;
@@ -386,10 +491,7 @@ HexStatus hex_engine_decompile_arm64(
   }
 
   uint64_t* block_addrs = g_scratch_arena.alloc<uint64_t>(num_blocks);
-  if (!block_addrs) {
-    g_scratch_arena.restore(scratch_mark);
-    return HEX_ERR_OOM;
-  }
+  if (!block_addrs) return HEX_ERR_OOM;
   {
     uint32_t cur_b = 0u;
     for (uint32_t i = 0u; i < word_count; ++i) {
@@ -401,15 +503,11 @@ HexStatus hex_engine_decompile_arm64(
   hex::ir::IrStore& store = hex::ir::default_store();
   HexIrHandle ir_handle = 0u;
   st = store.create(0u, &ir_handle);
-  if (st != HEX_OK) {
-    g_scratch_arena.restore(scratch_mark);
-    return st;
-  }
+  if (st != HEX_OK) return st;
 
   auto fail_cleanup = [&](HexStatus err) -> HexStatus {
     if (ir_handle != 0u) store.release(ir_handle);
     clear_last_output();
-    g_scratch_arena.restore(scratch_mark);
     return err;
   };
 
@@ -418,7 +516,6 @@ HexStatus hex_engine_decompile_arm64(
     if (st != HEX_OK) return fail_cleanup(st);
   }
 
-  // Lift instructions & track source VA per IR instruction.
   hex::Vec<uint64_t> ir_inst_addrs(&g_scratch_arena);
   if (!ir_inst_addrs.reserve(static_cast<size_t>(word_count) * 2u)) {
     return fail_cleanup(HEX_ERR_OOM);
@@ -442,7 +539,6 @@ HexStatus hex_engine_decompile_arm64(
       if (!ir_inst_addrs.push_back(decoded[i].pc)) return fail_cleanup(HEX_ERR_OOM);
     }
 
-    // Add CFG edges at block terminators or block boundary fallthrough.
     const bool at_block_end = (i + 1u == word_count) || (insn_to_block[i + 1u] != blk);
     if (at_block_end) {
       const HexArm64Decoded& d = decoded[i];
@@ -498,14 +594,13 @@ HexStatus hex_engine_decompile_arm64(
       &loop_res);
   if (st != HEX_OK) return fail_cleanup(st);
 
-  // Stage 7: Bridge Resident IR + LoopResult into CEmitFunctionView and invoke c_emitter.
-  uint32_t max_param_count = 0u;
+  // Stage 7: Bridge Resident IR + LoopResult into CEmitFunctionView (on g_scratch_arena)
+  // and emit C text + linemap into the physically isolated g_emit_arena.
   uint32_t entry_param_count = 0u;
   for (size_t v = 0u; v < fn->values.size(); ++v) {
     const hex::ir::IrValueDef& vd = fn->values[v];
-    if (vd.kind == HEX_IR_VAL_ENTRY && vd.var_id < 8u) {
+    if (vd.kind == HEX_IR_VAL_ENTRY && vd.var_id < 8u && ((parity.rbw_arg_mask & (1u << vd.var_id)) != 0u)) {
       ++entry_param_count;
-      if (vd.var_id + 1u > max_param_count) max_param_count = vd.var_id + 1u;
     }
   }
 
@@ -526,7 +621,6 @@ HexStatus hex_engine_decompile_arm64(
   for (size_t e = 0u; e < fn->succ_dst.size(); ++e) {
     succ_dst_u32[e] = static_cast<uint32_t>(fn->succ_dst[e]);
   }
-
   for (uint32_t l = 0u; l < loop_res.num_loops; ++l) {
     loop_headers_u32[l] = static_cast<uint32_t>(loop_res.loop_header[l]);
   }
@@ -537,7 +631,7 @@ HexStatus hex_engine_decompile_arm64(
     if (b == fn->header.entry_block) {
       for (size_t v = 0u; v < fn->values.size(); ++v) {
         const hex::ir::IrValueDef& vd = fn->values[v];
-        if (vd.kind == HEX_IR_VAL_ENTRY && vd.var_id < 8u) {
+        if (vd.kind == HEX_IR_VAL_ENTRY && vd.var_id < 8u && ((parity.rbw_arg_mask & (1u << vd.var_id)) != 0u)) {
           CEmitInst pi{};
           pi.op = CEMIT_IR_PARAM;
           pi.flags = 0u;
@@ -625,9 +719,9 @@ HexStatus hex_engine_decompile_arm64(
   view.func_name = func_name_utf8;
   view.func_name_len = func_name_len;
   view.entry_va = base_addr;
-  view.num_params = max_param_count;
-  view.ret_width = wrote_x0 ? ret_width : 0u;
-  view.ret_is_signed = (wrote_x0 && ret_width == 32u) ? 1u : 0u;
+  view.num_params = parity.inferred_param_count;
+  view.ret_width = parity.ret_width;
+  view.ret_is_signed = (parity.ret_width == 32u) ? 1u : 0u;
   view.num_blocks = num_blocks;
   view.entry_block = fn->header.entry_block;
   view.block_inst_off = emit_block_off;
@@ -643,13 +737,13 @@ HexStatus hex_engine_decompile_arm64(
   view.loop_parent = loop_res.loop_parent;
   view.node_innermost_loop = loop_res.node_innermost_loop;
 
+  // c_emitter runs against g_emit_arena (physically separate from g_scratch_arena).
   const int32_t emit_rc = hex_decomp_emit_c_ex(&view, kMaxEmitBytes, emit_flags);
   store.release(ir_handle);
   ir_handle = 0u;
 
   if (emit_rc != HEX_OK) {
     clear_last_output();
-    g_scratch_arena.restore(scratch_mark);
     return static_cast<HexStatus>(emit_rc);
   }
 

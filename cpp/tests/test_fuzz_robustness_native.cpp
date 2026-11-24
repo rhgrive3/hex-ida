@@ -15,6 +15,7 @@
 #include "decompiler/ir_optimizer.hpp"
 #include "targets/arm64_decode.hpp"
 #include "targets/x86_64_decode.hpp"
+#include "engine_runtime.hpp"
 
 namespace {
 
@@ -426,6 +427,117 @@ static void run_decoders_and_ir_pipeline_fuzz(Rng& rng) {
               static_cast<unsigned long long>(total_ir_opt_ok));
 }
 
+
+// ============================================================================
+// 3. Engine Runtime & C Emitter Fuzz (1,200+ cases):
+//    Passes words via hex_engine_scratch_alloc, verifies input non-corruption
+//    AND output survival across subsequent hex_engine_scratch_alloc clobbering.
+// ============================================================================
+static void run_engine_runtime_and_c_emitter_fuzz(Rng& rng) {
+  assert(hex_engine_init() == HEX_OK);
+
+  // Pool of valid supported ARM64 instruction templates + random words
+  static constexpr uint32_t kSupportedPool[] = {
+      0x0b010000u,  // add w0, w0, w1
+      0x8b010000u,  // add x0, x0, x1
+      0x4b010000u,  // sub w0, w0, w1
+      0xcb010000u,  // sub x0, x0, x1
+      0x1b007c00u,  // mul w0, w0, w0
+      0x9b017c00u,  // mul x0, x0, x1
+      0x52800540u,  // movz w0, #42
+      0xd2800080u,  // movz x0, #4
+      0x52800141u,  // movz w1, #10
+      0x12800020u,  // movn w0, #1
+      0xaa0003e1u,  // mov x1, x0
+      0x2a0103e0u,  // mov w0, w1
+  };
+  constexpr uint32_t kPoolLen = static_cast<uint32_t>(sizeof(kSupportedPool) / sizeof(kSupportedPool[0]));
+  constexpr uint32_t kRet = 0xd65f03c0u;
+
+  uint32_t ok_count = 0u;
+  uint32_t unsupported_count = 0u;
+
+  for (uint32_t iter = 0u; iter < 1200u; ++iter) {
+    hex_engine_scratch_reset();
+    const bool bias_valid = (iter % 2u == 0u);
+    const uint32_t count = bias_valid ? (2u + rng.uniform(7u)) : (1u + rng.uniform(20u));
+    uint32_t* scratch_words = static_cast<uint32_t*>(hex_engine_scratch_alloc(count * sizeof(uint32_t)));
+    assert(scratch_words != nullptr);
+
+    // Valid x0-accumulating ops (no dead writes, contiguous args x0..x1)
+    static constexpr uint32_t kAccumPool[] = {
+        0x0b010000u,  // add w0, w0, w1
+        0x8b010000u,  // add x0, x0, x1
+        0x4b010000u,  // sub w0, w0, w1
+        0xcb010000u,  // sub x0, x0, x1
+        0x1b007c00u,  // mul w0, w0, w0
+        0x9b017c00u,  // mul x0, x0, x1
+    };
+    constexpr uint32_t kAccumLen = static_cast<uint32_t>(sizeof(kAccumPool) / sizeof(kAccumPool[0]));
+
+    std::vector<uint32_t> expected_words(count);
+    for (uint32_t i = 0u; i < count; ++i) {
+      uint32_t w = 0u;
+      if (bias_valid) {
+        if (i + 1u == count) {
+          w = kRet;
+        } else if (count == 2u && (iter % 4u == 0u)) {
+          w = 0x52800000u | ((rng.uniform(1000u) & 0xffffu) << 5);  // movz w0, #imm
+        } else {
+          w = kAccumPool[rng.uniform(kAccumLen)];
+        }
+      } else {
+        w = (rng.uniform(3u) == 0u) ? rng.next_u32() : kSupportedPool[rng.uniform(kPoolLen)];
+      }
+      scratch_words[i] = w;
+      expected_words[i] = w;
+    }
+
+    const uint64_t base_addr = 0x100000ULL + static_cast<uint64_t>(iter) * 0x40ULL;
+    const uint32_t emit_flags = (iter & 1u) ? HEX_EMIT_FLAG_JS_PARITY : HEX_EMIT_FLAG_NONE;
+    const HexStatus st = hex_engine_decompile_arm64(
+        scratch_words, count, base_addr, "fuzz_fn", 7u, emit_flags);
+    assert(st == HEX_OK || st == HEX_ERR_UNSUPPORTED);
+
+    // Input words on g_scratch_arena must NEVER be corrupted by decompilation or IrStore::release().
+    for (uint32_t i = 0u; i < count; ++i) {
+      assert(scratch_words[i] == expected_words[i]);
+    }
+
+    if (st == HEX_OK) {
+      ++ok_count;
+      const char* tptr = hex_engine_decompile_get_text_ptr();
+      const uint32_t tlen = hex_engine_decompile_get_text_len();
+      const HexLineMapEntry* lm = hex_engine_decompile_get_linemap_ptr();
+      const uint32_t lmc = hex_engine_decompile_get_linemap_count();
+      assert(tptr != nullptr && tlen > 0u);
+      assert(lm != nullptr && lmc >= 1u);
+
+      const std::string text_copy(tptr, tlen);
+      const std::vector<HexLineMapEntry> lm_copy(lm, lm + lmc);
+
+      // Clobber g_scratch_arena via subsequent scratch_alloc -> output in g_emit_arena must survive intact!
+      void* clobber = hex_engine_scratch_alloc(64u * 1024u);
+      assert(clobber != nullptr);
+      std::memset(clobber, 0xA5, 64u * 1024u);
+      assert(std::string(tptr, tlen) == text_copy);
+      for (uint32_t k = 0u; k < lmc; ++k) {
+        assert(lm[k].line_no == lm_copy[k].line_no);
+        assert(lm[k].block_id == lm_copy[k].block_id);
+        assert(lm[k].addr == lm_copy[k].addr);
+      }
+    } else {
+      ++unsupported_count;
+      assert(hex_engine_decompile_get_text_ptr() == nullptr);
+      assert(hex_engine_decompile_get_text_len() == 0u);
+    }
+  }
+
+  assert(ok_count > 100u && unsupported_count > 100u);
+  std::printf("  [PASS] 1,200 engine_runtime + c_emitter fuzz (ok=%u, unsupported=%u, 0 aliasing/UAF)\n",
+              ok_count, unsupported_count);
+}
+
 }  // namespace
 
 int main() {
@@ -433,6 +545,7 @@ int main() {
   std::printf("Running test_fuzz_robustness_native (ASan+UBSan)...\n");
   run_binary_loader_fuzz(rng);
   run_decoders_and_ir_pipeline_fuzz(rng);
+  run_engine_runtime_and_c_emitter_fuzz(rng);
   std::printf("test_fuzz_robustness_native: ALL PASS\n");
   return 0;
 }
