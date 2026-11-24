@@ -38,10 +38,16 @@ export function validateSatModel(query, model) {
     }
   }
 
+  if (constraints.length === 0 && !assertion) {
+    return { valid: false, reason: 'empty-query', detail: { constraintCount: 0 } };
+  }
+
   // 1. Evaluate all constraints against the model bindings
   for (let i = 0; i < constraints.length; i++) {
     const c = constraints[i];
-    if (!c) continue;
+    if (!c) {
+      return { valid: false, reason: 'invalid-constraint', detail: { constraintIndex: i, constraint: c } };
+    }
 
     const evalRes = evaluateExpr(c, model);
     if (evalRes.status !== EVAL_STATUS.VALUE) {

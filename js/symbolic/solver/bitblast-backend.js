@@ -610,29 +610,56 @@ async function solveCnf(builder, { signal, deadline, limits }) {
     propagationHead = Math.min(propagationHead, mark);
   }
 
-  async function search() {
-    const propagation = await propagate();
-    if (propagation === 'conflict') return 'unsat';
-    if (propagation) return propagation;
-    const literal = decisionLiteral();
-    if (literal === null) return 'unsat';
-    if (literal === 0) return 'sat';
-    decisions++;
-    const guardResult = await guard();
-    if (guardResult) return guardResult;
-    const mark = trail.length;
-    for (const choice of [-Math.abs(literal), Math.abs(literal)]) {
-      if (enqueue(choice)) {
-        const result = await search();
-        if (result === 'sat') return result;
-        if (result !== 'unsat') return result;
+  async function searchIterative() {
+    const frames = [];
+    let backtrack = false;
+    while (true) {
+      if (!backtrack) {
+        const propagation = await propagate();
+        if (propagation === 'conflict') {
+          backtrack = true;
+        } else if (propagation) {
+          return propagation;
+        } else {
+          const literal = decisionLiteral();
+          if (literal === null) {
+            backtrack = true;
+          } else if (literal === 0) {
+            return 'sat';
+          } else {
+            decisions++;
+            const guardResult = await guard();
+            if (guardResult) return guardResult;
+            const mark = trail.length;
+            const absLit = Math.abs(literal);
+            frames.push({ mark, secondChoice: absLit, triedSecond: false });
+            if (!enqueue(-absLit)) {
+              restore(mark);
+              backtrack = true;
+            }
+          }
+        }
       }
-      restore(mark);
+      if (backtrack) {
+        while (frames.length > 0) {
+          const frame = frames[frames.length - 1];
+          restore(frame.mark);
+          if (!frame.triedSecond) {
+            frame.triedSecond = true;
+            if (enqueue(frame.secondChoice)) {
+              backtrack = false;
+              break;
+            }
+            restore(frame.mark);
+          }
+          frames.pop();
+        }
+        if (backtrack) return 'unsat';
+      }
     }
-    return 'unsat';
   }
 
-  const status = await search();
+  const status = await searchIterative();
   return { status, assignment, decisions, propagations };
 }
 
@@ -744,7 +771,21 @@ class BitBlastSolverSession extends SolverSession {
       });
     }
 
-    const solved = await solveCnf(builder, { signal, deadline, limits });
+    let solved;
+    try {
+      solved = await solveCnf(builder, { signal, deadline, limits });
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return createSolverResult({
+          ...snapshotResultBase,
+          status: SOLVER_STATUS.RESOURCE_LIMIT,
+          reason: 'cnf-search-resource-limit',
+          stats: { solveTimeMs: monotonicNow() - startedAt },
+          lifecycle: { budgetExceeded: true, publishable: false },
+        });
+      }
+      throw error;
+    }
     const stats = {
       solveTimeMs: monotonicNow() - startedAt,
       nodesEvaluated: solved.decisions,

@@ -39,7 +39,7 @@ export function layoutNodes(nodes, edges, byId) {
     for (const s of succ.get(id) || []) {
       const r = (rank.get(id) || 0) + 1;
       if (!rank.has(s) || rank.get(s) < r) {
-        if ((rank.get(s) || 0) > nodes.length) continue;
+        if (r > nodes.length) continue;
         rank.set(s, r);
         work.push(s);
       }
@@ -295,6 +295,7 @@ function assignEndpointTracks(items, sourcePort, targetPort, layout) {
 function corridorBounds(key, layout) {
   if (key === 'top') {
     const first = layout.rowBounds.get(layout.ranksSorted[0]);
+    if (!first) return { top: 2, bottom: 44 };
     return { top: Math.max(2, first.top - 42), bottom: first.top - 2 };
   }
   const rank = Number(key.slice(4));

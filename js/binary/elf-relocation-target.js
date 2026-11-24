@@ -184,7 +184,7 @@ export function publishELFRelocationTargets(image) {
       symbol = symbolForRelocation(relocation, indexes);
       const symbolAddress = relocationBigInt(symbol?.address);
       if (symbol?.defined !== true || symbolAddress == null) continue;
-      target = symbolAddress + (addend ?? 0n);
+      target = BigInt.asUintN(64, symbolAddress + (addend ?? 0n));
     } else {
       continue;
     }

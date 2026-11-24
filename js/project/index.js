@@ -127,8 +127,22 @@ function stripPortableVerificationAuthority(project) {
       ...(hypothesesChanged ? { hypotheses } : {}),
     };
   });
-  if (!changed) return project;
-  return { ...project, findings: { ...project.findings, investigationSessions: stripped } };
+  const confirmedSource = Array.isArray(project.findings.confirmed) ? project.findings.confirmed : [];
+  const strippedConfirmed = confirmedSource.map(downgradePortableEvidenceAuthority);
+  const confirmedChanged = strippedConfirmed.some((record, index) => record !== confirmedSource[index]);
+  const evidenceSource = Array.isArray(project.findings.evidence) ? project.findings.evidence : [];
+  const strippedEvidence = evidenceSource.map(downgradePortableEvidenceAuthority);
+  const evidenceChanged = strippedEvidence.some((record, index) => record !== evidenceSource[index]);
+  if (!changed && !confirmedChanged && !evidenceChanged) return project;
+  return {
+    ...project,
+    findings: {
+      ...project.findings,
+      ...(changed ? { investigationSessions: stripped } : {}),
+      ...(confirmedChanged ? { confirmed: strippedConfirmed } : {}),
+      ...(evidenceChanged ? { evidence: strippedEvidence } : {}),
+    },
+  };
 }
 
 export function mintProjectId() {
@@ -314,9 +328,14 @@ function escapeBigIntTag(value) {
  * instead of deleting from the input prevents key-order-dependent loss when
  * siblings such as `$$$hexBigInt` and `$$hexBigInt` are both present.
  */
-function unescapeBigIntTagTree(value) {
+const MAX_BIGINT_TREE_DEPTH = 128;
+
+function unescapeBigIntTagTree(value, depth = 0) {
   if (!value || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map((item) => unescapeBigIntTagTree(item));
+  if (depth >= MAX_BIGINT_TREE_DEPTH) {
+    throw new ProjectFormatError('project JSON exceeds maximum nesting depth', 'HEX_PROJECT_TOO_DEEP');
+  }
+  if (Array.isArray(value)) return value.map((item) => unescapeBigIntTagTree(item, depth + 1));
 
   const out = {};
   for (const key of Object.keys(value)) {
@@ -328,7 +347,7 @@ function unescapeBigIntTagTree(value) {
       );
     }
     Object.defineProperty(out, unescaped, {
-      value: unescapeBigIntTagTree(value[key]),
+      value: unescapeBigIntTagTree(value[key], depth + 1),
       enumerable: true,
       configurable: true,
       writable: true,

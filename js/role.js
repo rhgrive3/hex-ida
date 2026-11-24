@@ -148,8 +148,14 @@ function collectTopics(input) {
   if (input.owner && input.owner.className) push('class', input.owner.className);
   for (const sel of (input.selectors || []).slice(0, 12)) push('selector', sel, 0.8);
   for (const s of (input.strings || []).slice(0, 24)) push('string', s.text != null ? s.text : s, 1);
-  for (const c of (input.callees || []).slice(0, 24)) push('callee', c.name || c, 0.9);
-  for (const c of (input.callers || []).slice(0, 24)) push('caller', c.name || c, 0.9);
+  for (const c of (input.callees || []).slice(0, 24)) {
+    const label = typeof c === 'string' ? c : c?.name;
+    if (typeof label === 'string' && label) push('callee', label, 0.9);
+  }
+  for (const c of (input.callers || []).slice(0, 24)) {
+    const label = typeof c === 'string' ? c : c?.name;
+    if (typeof label === 'string' && label) push('caller', label, 0.9);
+  }
 
   for (const g of GOALS) {
     for (const t of texts) {
@@ -879,9 +885,14 @@ function validatedStringByteLength(s) {
 }
 
 /** 文字列一覧（{addr,text} の配列）を、アドレスから引ける形にする。1 回だけ作る。 */
+const STRING_LOOKUP_CACHE = new WeakMap();
+
 export function stringLookup(list) {
   if (!list) return () => null;
-  if (list.__lookup) return list.__lookup;
+  const cached = typeof list === 'object' ? STRING_LOOKUP_CACHE.get(list) : null;
+  if (cached && cached.length === list.length && cached.first === list[0] && cached.last === list[list.length - 1]) {
+    return cached.fn;
+  }
   const sorted = [];
   for (const s of list) {
     if (!s) continue;
@@ -906,7 +917,9 @@ export function stringLookup(list) {
     const len = BigInt(bytes + 1);
     return addr < hit.addr + len ? hit.entry : null;
   };
-  try { Object.defineProperty(list, '__lookup', { value: fn, enumerable: false }); } catch { /* 凍結配列なら諦める */ }
+  if (typeof list === 'object') {
+    STRING_LOOKUP_CACHE.set(list, { length: list.length, first: list[0], last: list[list.length - 1], fn });
+  }
   return fn;
 }
 

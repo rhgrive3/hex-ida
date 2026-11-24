@@ -499,7 +499,12 @@ function metadataCloneOwned(value, state = { depth:0, nodes:0, active:new WeakSe
     for (const key of keys.sort()) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !Object.hasOwn(descriptor, 'value')) metadataFail('phase8-rewrite-metadata-accessor');
-      out[key] = metadataCloneOwned(descriptor.value, state);
+      Object.defineProperty(out, key, {
+        value: metadataCloneOwned(descriptor.value, state),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
     return Object.freeze(out);
   } finally {

@@ -92,8 +92,7 @@ export class DebugSession {
         throw new DebugAdapterError('stale-session-connect','debug session connect completed after the session lifecycle changed');
       }
       if (typeof this.adapter.onEvent === 'function') {
-        const subscriptionEpoch = this.epoch;
-        const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event,subscriptionEpoch));
+        const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event));
         if (unsubscribe != null && typeof unsubscribe !== 'function') throw new DebugAdapterError('event-subscription','adapter onEvent must return an unsubscribe function');
         this._unsubscribe=unsubscribe || null;
       }

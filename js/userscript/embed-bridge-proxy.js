@@ -217,10 +217,18 @@ const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const MAX_PLAIN_DEPTH = 64;
 const MAX_ARRAY_INDEX = 2 ** 32 - 2;
 
-function inspectPlainData(value, seen, depth) {
+const MAX_PLAIN_NODES = 256000;
+const MAX_PLAIN_BYTES = 8 * 1024 * 1024;
+
+function inspectPlainData(value, seen, depth, budget = { nodes: 0, bytes: 0 }) {
+  if (++budget.nodes > MAX_PLAIN_NODES) return false;
   if (value === null) return true;
   const type = typeof value;
-  if (type === 'string' || type === 'boolean') return true;
+  if (type === 'boolean') return true;
+  if (type === 'string') {
+    budget.bytes += value.length * 2;
+    return budget.bytes <= MAX_PLAIN_BYTES;
+  }
   if (type === 'number') return Number.isFinite(value);
   if (type !== 'object' || depth >= MAX_PLAIN_DEPTH) return false;
   if (isBinaryLike(value) || isDomNode(value) || seen.has(value)) return false;
@@ -235,7 +243,7 @@ function inspectPlainData(value, seen, depth) {
         if (Number(key) > MAX_ARRAY_INDEX) return false;
         const descriptor = descriptors[key];
         if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) return false;
-        if (!inspectPlainData(descriptor.value, seen, depth + 1)) return false;
+        if (!inspectPlainData(descriptor.value, seen, depth + 1, budget)) return false;
       }
       return true;
     } finally {
@@ -250,9 +258,11 @@ function inspectPlainData(value, seen, depth) {
   try {
     for (const key of Reflect.ownKeys(descriptors)) {
       if (typeof key !== 'string' || DANGEROUS_KEYS.has(key)) return false;
+      budget.bytes += key.length * 2;
+      if (budget.bytes > MAX_PLAIN_BYTES) return false;
       const descriptor = descriptors[key];
       if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) return false;
-      if (!inspectPlainData(descriptor.value, seen, depth + 1)) return false;
+      if (!inspectPlainData(descriptor.value, seen, depth + 1, budget)) return false;
     }
     return true;
   } finally {
