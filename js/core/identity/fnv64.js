@@ -11,6 +11,7 @@ import { wasmFnv64Bytes } from '../hex-engine-bridge.js';
  */
 const OFFSET_LOW = 0x84222325;
 const OFFSET_HIGH = 0xcbf29ce4;
+const WASM_FNV64_MIN_BYTES = 64;
 
 function checkSeed(low, high) {
   if (!Number.isInteger(low) || low < 0 || low > 0xffffffff
@@ -39,6 +40,7 @@ export function fnv64Bytes(bytes, low = OFFSET_LOW, high = OFFSET_HIGH) {
   checkSeed(low, high);
   if (
     bytes instanceof Uint8Array
+    && bytes.length >= WASM_FNV64_MIN_BYTES
     && Object.getPrototypeOf(bytes) === Uint8Array.prototype
     && bytes[Symbol.iterator] === Uint8Array.prototype[Symbol.iterator]
     && low === OFFSET_LOW
@@ -71,6 +73,7 @@ export function fnv64ByteView(bytes, low = OFFSET_LOW, high = OFFSET_HIGH) {
   checkSeed(low, high);
   if (
     bytes instanceof Uint8Array
+    && bytes.length >= WASM_FNV64_MIN_BYTES
     && Object.getPrototypeOf(bytes) === Uint8Array.prototype
     && low === OFFSET_LOW
     && high === OFFSET_HIGH

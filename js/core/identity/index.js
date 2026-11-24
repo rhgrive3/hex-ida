@@ -257,10 +257,31 @@ function isWasmJsonSafe(val) {
   return true;
 }
 
+const WASM_IDENTITY_MIN_STRING_LEN = 64;
+
+function shouldUseWasmForSafeValue(safe) {
+  if (safe === null) return false;
+  const t = typeof safe;
+  if (t === 'string') return safe.length >= WASM_IDENTITY_MIN_STRING_LEN;
+  if (t !== 'object') return false;
+  if (Array.isArray(safe)) return safe.length > 0;
+  return Object.keys(safe).length > 0;
+}
+
+function isTrivialInlineDigestValue(value) {
+  if (value === null) return true;
+  const t = typeof value;
+  if (t === 'string') return value.length < WASM_IDENTITY_MIN_STRING_LEN;
+  if (t !== 'object') return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (isCanonicalPlainObject(value)) return Object.keys(value).length === 0;
+  return false;
+}
+
 export function stableStringify(value) {
   const safe = jsonSafe(value);
   if (safe === undefined) return undefined;
-  if (!hasCustomToJson() && isWasmJsonSafe(safe)) {
+  if (!hasCustomToJson() && shouldUseWasmForSafeValue(safe) && isWasmJsonSafe(safe)) {
     const wasmText = wasmStableStringify(safe);
     if (wasmText !== null) return wasmText;
   }
@@ -277,9 +298,9 @@ export function stableDigest(value) {
     return fnv64Text(text) + fnv64Text(text, FNV_OFFSET_HIGH, FNV_OFFSET_LOW);
   }
   let target = value;
-  if (getEngineMode() !== 'js') {
+  if (!isTrivialInlineDigestValue(value) && getEngineMode() !== 'js') {
     const safe = jsonSafe(value);
-    if (safe !== undefined && isWasmJsonSafe(safe)) {
+    if (safe !== undefined && shouldUseWasmForSafeValue(safe) && isWasmJsonSafe(safe)) {
       const wasmHash = typeof safe === 'string'
         ? wasmStableDigest(JSON.stringify(safe))
         : wasmStableDigest(safe);

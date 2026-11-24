@@ -102,6 +102,9 @@ test('Wave 7 Identity WASM vs JS: 0-diff parity across edge cases', () => {
     Number.NEGATIVE_INFINITY,
     '',
     'plain-ascii',
+    'long-ascii-string-over-64-chars-'.repeat(3),
+    [],
+    {},
     '日本語テスト 🚀 "quote" \\slash\n\t\u0000',
     '\ud800',
     '\udc00',
@@ -168,25 +171,47 @@ test('Wave 7 Identity WASM: error contracts and custom seed/iterator fallback pa
   assert.equal(fnv64Hex(wasmCustomSeed.low, wasmCustomSeed.high), fnv64Hex(jsCustomSeed.low, jsCustomSeed.high));
 });
 
-test('Wave 7 Identity WASM: HEX_ENGINE=js rollback executes zero WASM calls', () => {
+test('Wave 7 Identity WASM: HEX_ENGINE=js rollback and small-input inline threshold', () => {
   const payload = { b: 2, a: [1, -0, null, true, 'hex'], c: { z: 9, y: 8 } };
-  const bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+  const bytes64 = new Uint8Array(64);
+  for (let i = 0; i < bytes64.length; i += 1) bytes64[i] = (i * 31) & 0xff;
+  const smallBytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
 
   resetAllTelemetry();
   const jsResults = withEngineMode('js', () => ({
     str: stableStringify(payload),
     dig: stableDigest(payload),
-    view: fnv64ByteView(bytes),
-    iter: fnv64Bytes(bytes),
+    view: fnv64ByteView(bytes64),
+    iter: fnv64Bytes(bytes64),
+    smallView: fnv64ByteView(smallBytes),
+    smallIter: fnv64Bytes(smallBytes),
   }));
   assert.equal(getWasmCallCount('identity'), 0, 'HEX_ENGINE=js must record 0 WASM identity calls');
 
+  // Trivial/tiny inputs (< 64 bytes, primitives, empty containers, short strings) must stay inline JS
+  withEngineMode('wasm', () => {
+    assert.deepEqual(fnv64ByteView(smallBytes), jsResults.smallView);
+    assert.deepEqual(fnv64Bytes(smallBytes), jsResults.smallIter);
+    assert.equal(stableStringify(42), '42');
+    assert.equal(stableStringify('short'), '"short"');
+    assert.equal(stableStringify([]), '[]');
+    assert.equal(stableStringify({}), '{}');
+    assert.equal(stableDigest(42), withEngineMode('js', () => stableDigest(42)));
+    assert.equal(stableDigest('short'), withEngineMode('js', () => stableDigest('short')));
+    assert.equal(stableDigest([]), withEngineMode('js', () => stableDigest([])));
+    assert.equal(stableDigest({}), withEngineMode('js', () => stableDigest({})));
+  });
+  assert.equal(getWasmCallCount('identity'), 0, 'Small/primitive inputs must avoid WASM boundary overhead');
+
+  // >= 64 byte buffers and non-empty structured objects must still execute WASM
   const wasmResults = withEngineMode('wasm', () => ({
     str: stableStringify(payload),
     dig: stableDigest(payload),
-    view: fnv64ByteView(bytes),
-    iter: fnv64Bytes(bytes),
+    view: fnv64ByteView(bytes64),
+    iter: fnv64Bytes(bytes64),
+    smallView: fnv64ByteView(smallBytes),
+    smallIter: fnv64Bytes(smallBytes),
   }));
-  assert.ok(getWasmCallCount('identity') >= 4, 'HEX_ENGINE=wasm must record >= 4 WASM identity calls');
+  assert.ok(getWasmCallCount('identity') >= 4, 'HEX_ENGINE=wasm must record >= 4 WASM identity calls for >= 64B & objects');
   assert.deepEqual(wasmResults, jsResults);
 });
