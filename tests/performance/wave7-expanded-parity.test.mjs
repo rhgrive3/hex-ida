@@ -298,10 +298,10 @@ test('Wave 7 x86_64 WASM ABI smoke: SysV AMD64, Microsoft x64, and truncated inp
 
   const scratchReset = ex.hex_engine_scratch_reset || ex.hex_identity_reset;
   const scratchAlloc = ex.hex_engine_scratch_alloc || ex.hex_identity_alloc;
-  const getTextPtr = ex.hex_engine_decompile_get_text_ptr || ex.hex_decomp_get_text_ptr;
-  const getTextLen = ex.hex_engine_decompile_get_text_len || ex.hex_decomp_get_text_len;
-  const getLmPtr = ex.hex_engine_decompile_get_linemap_ptr || ex.hex_decomp_get_linemap_ptr;
-  const getLmCount = ex.hex_engine_decompile_get_linemap_count || ex.hex_decomp_get_linemap_count;
+  const getTextPtr = ex.hex_x86_64_decomp_get_text_ptr || ex.hex_engine_decompile_get_text_ptr || ex.hex_decomp_get_text_ptr;
+  const getTextLen = ex.hex_x86_64_decomp_get_text_len || ex.hex_engine_decompile_get_text_len || ex.hex_decomp_get_text_len;
+  const getLmPtr = ex.hex_x86_64_decomp_get_linemap_ptr || ex.hex_engine_decompile_get_linemap_ptr || ex.hex_decomp_get_linemap_ptr;
+  const getLmCount = ex.hex_x86_64_decomp_get_linemap_count || ex.hex_engine_decompile_get_linemap_count || ex.hex_decomp_get_linemap_count;
 
   assert.equal(typeof scratchReset, 'function', 'scratch reset export required');
   assert.equal(typeof scratchAlloc, 'function', 'scratch alloc export required');

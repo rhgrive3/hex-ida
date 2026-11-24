@@ -634,6 +634,14 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
 
       const mappedAddrs = rawLinemap.get(idx + 1) || [];
       const firstAddr = kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null);
+      const lineAddresses = isPrelude || kind === 'sig'
+        ? [baseAddrBig]
+        : (kind === 'ctrl' && (trimmed === '{' || trimmed === '}'))
+          ? []
+          : mappedAddrs.slice();
+      const lineRows = lineAddresses
+        .map((a) => addrToRow.get(a))
+        .filter((r) => r !== undefined);
       lines.push({
         kind,
         indent,
@@ -641,6 +649,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         row: firstAddr != null ? (addrToRow.get(firstAddr) ?? null) : null,
         addr: firstAddr,
         address: firstAddr,
+        source: { addresses: lineAddresses, rows: lineRows },
         note: null,
       });
 
