@@ -89,6 +89,68 @@ uint8_t map_arm64_cond_to_cemit_cmp(uint32_t cond) {
   }
 }
 
+// JS decompile-base.js prints decimals for [0..99] and uppercase hex for >= 100,
+// while c_emitter prints decimals for [0..999] and uppercase hex for >= 1000.
+// Reject [100..999] under JS parity mode to guarantee strict 0-diff output.
+constexpr bool is_js_parity_imm_exact(uint64_t val) {
+  return !(val >= 100ULL && val <= 999ULL);
+}
+
+bool is_runtime_arm64_word_supported(uint32_t w, bool js_parity_mode) {
+  // Canonical NOP (0xd503201f) can be safely skipped.
+  if (w == 0xd503201fu) return true;
+
+  const uint8_t kind = hex_arm64_classify_word(w);
+
+  // ADD / SUB (immediate): S=0, GPR rd/rn < 31, non-zero imm (avoid x+0 fold diff).
+  if (kind == HEX_ARM64_KIND_ARITH && (w & 0x1f000000u) == 0x11000000u) {
+    const bool s_bit = ((w >> 29) & 1u) != 0u;
+    const uint32_t rd = w & 0x1fu;
+    const uint32_t rn = (w >> 5) & 0x1fu;
+    if (s_bit || rd >= 31u || rn >= 31u) return false;
+    const uint32_t shift = ((w >> 22) & 1u) ? 12u : 0u;
+    const uint64_t imm = static_cast<uint64_t>((w >> 10) & 0xfffu) << shift;
+    if (imm == 0ULL) return false;
+    if (js_parity_mode && !is_js_parity_imm_exact(imm)) return false;
+    return true;
+  }
+
+  // AND / EOR (unshifted register): N=0, shift=0, imm6=0, GPR rd/rn/rm < 31.
+  if (kind == HEX_ARM64_KIND_LOGIC && (w & 0x1f000000u) == 0x0a000000u) {
+    const uint32_t opc = (w >> 29) & 3u;
+    const uint32_t n_bit = (w >> 21) & 1u;
+    const uint32_t shift = (w >> 22) & 3u;
+    const uint32_t imm6 = (w >> 10) & 0x3fu;
+    const uint32_t rd = w & 0x1fu;
+    const uint32_t rn = (w >> 5) & 0x1fu;
+    const uint32_t rm = (w >> 16) & 0x1fu;
+    if ((opc == 0u || opc == 2u) && n_bit == 0u && shift == 0u && imm6 == 0u &&
+        rd < 31u && rn < 31u && rm < 31u) {
+      return true;
+    }
+    return false;
+  }
+
+  // Delegate remaining instructions to the core ARM64 capability gate.
+  if (!hex_arm64_is_decompiler_supported(w)) return false;
+
+  // Reject flag-setting ADDS/SUBS under JS parity (only plain ADD/SUB).
+  if (kind == HEX_ARM64_KIND_ARITH && ((w >> 29) & 1u) != 0u) return false;
+
+  // Enforce JS decimal/hex literal threshold parity on MOVZ/MOVN constants.
+  if (js_parity_mode && kind == HEX_ARM64_KIND_MOVIMM) {
+    const uint32_t opc = (w >> 29) & 3u;
+    const uint32_t hw = (w >> 21) & 3u;
+    const uint64_t imm16 = static_cast<uint64_t>((w >> 5) & 0xffffu);
+    uint64_t val = imm16 << (hw * 16u);
+    if (opc == 0u) val = ~val;
+    if (((w >> 31) & 1u) == 0u) val &= 0xffffffffULL;
+    if (!is_js_parity_imm_exact(val)) return false;
+  }
+
+  return true;
+}
+
 struct Arm64ParityCheckResult {
   bool supported;
   uint32_t inferred_param_count;
@@ -121,6 +183,14 @@ Arm64ParityCheckResult check_arm64_strict_parity(const HexArm64Decoded* decoded,
     const HexArm64Decoded& d = decoded[i];
     if (d.kind == HEX_ARM64_KIND_RET) return res;  // interior RET
 
+    if (d.kind == HEX_ARM64_KIND_NOP) {
+      insn_dst[i] = 31u;
+      insn_r0[i] = 31u;
+      insn_r1[i] = 31u;
+      insn_rcount[i] = 0u;
+      continue;
+    }
+
     uint8_t dst = 31u;
     uint8_t r0 = 31u;
     uint8_t r1 = 31u;
@@ -136,7 +206,17 @@ Arm64ParityCheckResult check_arm64_strict_parity(const HexArm64Decoded* decoded,
         rc = 1u;
         break;
       case HEX_ARM64_KIND_ARITH:
+        dst = d.rd;
+        r0 = d.rn;
+        if ((d.word & 0x1f000000u) == 0x11000000u) {
+          rc = 1u;  // ADD/SUB immediate reads only Rn
+        } else {
+          r1 = d.rm;
+          rc = 2u;
+        }
+        break;
       case HEX_ARM64_KIND_MUL:
+      case HEX_ARM64_KIND_LOGIC:
         dst = d.rd;
         r0 = d.rn;
         r1 = d.rm;
@@ -176,6 +256,7 @@ Arm64ParityCheckResult check_arm64_strict_parity(const HexArm64Decoded* decoded,
   for (uint32_t rev = count - 1u; rev > 0u; --rev) {
     const uint32_t i = rev - 1u;
     const uint8_t dst = insn_dst[i];
+    if (dst == 31u) continue;  // NOP
     if ((live_mask & (1u << dst)) == 0u) {
       return res;  // dead write
     }
@@ -447,8 +528,9 @@ HexStatus hex_engine_decompile_arm64(
   if (word_count > kMaxParityWords) {
     return HEX_ERR_UNSUPPORTED;
   }
+  const bool js_parity_mode = (emit_flags & HEX_EMIT_FLAG_JS_PARITY) != 0u;
   for (uint32_t i = 0u; i < word_count; ++i) {
-    if (!hex_arm64_is_decompiler_supported(words[i])) {
+    if (!is_runtime_arm64_word_supported(words[i], js_parity_mode)) {
       return HEX_ERR_UNSUPPORTED;
     }
   }
@@ -579,6 +661,15 @@ HexStatus hex_engine_decompile_arm64(
   const hex::ir::IrFunction* fn = store.lookup(ir_handle);
   if (!fn || fn->header.block_count != num_blocks) {
     return fail_cleanup(HEX_ERR_INTERNAL);
+  }
+  if (js_parity_mode) {
+    // Reject folded constants in [100..999] where c_emitter decimal vs JS hex would diverge.
+    for (size_t idx = 0u; idx < fn->insts.size(); ++idx) {
+      const hex::ir::IrInst& ins = fn->insts[idx];
+      if (ins.op == HEX_IR_OP_CONST && !is_js_parity_imm_exact(ins.imm64_or_sym)) {
+        return fail_cleanup(HEX_ERR_UNSUPPORTED);
+      }
+    }
   }
 
   // Stage 6: Natural Loop Analysis via loop_engine (uses cfg_engine internally).
