@@ -30,12 +30,7 @@ export function chargeScopedWorkerCost(work, value) {
   work.checkpoint();
   for (const [key, used] of entries) {
     if (used > work.remaining(key)) {
-      throw new AnalysisWorkStopped({
-        status: 'budget-exhausted',
-        reason: `scoped-work-budget:${key}`,
-        cost: work.cost(),
-        resource: key,
-      });
+      throw new AnalysisWorkStopped('budget-exhausted', `scoped-work-budget:${key}`, work.cost());
     }
   }
   for (const [key, used] of entries) work.charge(key, used);

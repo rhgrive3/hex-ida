@@ -333,7 +333,7 @@ export class SemanticQueryExecution {
     const flowClosure = this.#plan.query.flow && !this.#closed ? createScopedFlowClosure({ plan: this.#plan,
       scopes: this.#flowScopes, searches: this.#flowSearches, cuts: [...this.#flowCuts].sort(),
       enumerationComplete: this.done && !this.#terminalReason, possiblePaths: this.#totalPaths,
-      isCurrent: () => this.#current() === true && this.#ownerCurrents.every(current => current() === true) && (!this.#scopeBuilder || typeof this.#scopeBuilder.isCurrent !== 'function' || this.#scopeBuilder.isCurrent() === true) }) : null;
+      isCurrent: () => this.#current() === true && this.#ownerCurrents.every(current => current() === true) }) : null;
     return deepFreeze({ schema: SEMANTIC_QUERY_RESULT_SCHEMA, sessionId: this.#id, planId: this.#plan.id,
       worldId: this.#world.id, assumptionsId: this.#assumptions.id, executionStatus,
       scopeMode: this.#scopeBuilder ? 'explicit-interprocedural' : 'function-local',
