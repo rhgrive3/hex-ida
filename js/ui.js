@@ -8,7 +8,7 @@ import { t } from './i18n.js';
 import { uiRoot } from './ui-root.js';
 
 const overlays = () => document.getElementById('overlays');
-const pickUi = (ja, en) => (uiRoot()?.lang || navigator.language || 'ja')
+const pickUi = (ja, en) => (uiRoot()?.lang || (typeof navigator !== 'undefined' && navigator?.language) || 'ja')
   .toLowerCase().startsWith('ja') ? ja : en;
 
 export function el(tag, cls, text) {

@@ -824,9 +824,11 @@ function deriveArithmetic(ctx, value, node, expectedAddressSpace, state) {
       return scalarConstant(normalizeModulo(leftConstant + rightConstant, widthBits), widthBits, node.id);
     }
     if (rightConstant != null && left.kind !== 'unknown' && left.kind !== 'constant') {
+      if (rightConstant === 0n && (left.widthBits == null || widthBits == null || left.widthBits === widthBits)) return left;
       return addToRoot(left, right, widthBits, node.kind === 'address', false);
     }
     if (leftConstant != null && right.kind !== 'unknown' && right.kind !== 'constant') {
+      if (leftConstant === 0n && (right.widthBits == null || widthBits == null || right.widthBits === widthBits)) return right;
       return addToRoot(right, left, widthBits, node.kind === 'address', false);
     }
     return unknown('canonical-address-indexed-or-nonconstant-add');
@@ -836,6 +838,7 @@ function deriveArithmetic(ctx, value, node, expectedAddressSpace, state) {
       return scalarConstant(normalizeModulo(leftConstant - rightConstant, widthBits), widthBits, node.id);
     }
     if (rightConstant != null && left.kind !== 'unknown' && left.kind !== 'constant') {
+      if (rightConstant === 0n && (left.widthBits == null || widthBits == null || left.widthBits === widthBits)) return left;
       return addToRoot(left, right, widthBits, node.kind === 'address', true);
     }
     return unknown('canonical-address-indexed-or-nonconstant-sub');
@@ -876,9 +879,11 @@ function deriveAddWithCarry(ctx, value, node, expectedAddressSpace, state) {
     return scalarConstant(normalizeModulo(result, widthBits), widthBits, node.id);
   }
   if (rightConstant != null && left.kind !== 'unknown' && left.kind !== 'constant') {
+    if (rightConstant === 0n && (left.widthBits == null || widthBits == null || left.widthBits === widthBits)) return left;
     return addToRoot(left, right, widthBits, true, subtract);
   }
   if (!subtract && leftConstant != null && right.kind !== 'unknown' && right.kind !== 'constant') {
+    if (leftConstant === 0n && (right.widthBits == null || widthBits == null || right.widthBits === widthBits)) return right;
     return addToRoot(right, left, widthBits, true, false);
   }
   return unknown('canonical-address-add-with-carry-nonconstant-offset');
