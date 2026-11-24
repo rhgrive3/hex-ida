@@ -61,6 +61,7 @@ const SAFE_COMPILER_BUILTINS = new Set([
   '__builtin_clz', '__builtin_clzll', '__builtin_ctz', '__builtin_ctzll',
   '__builtin_popcount', '__builtin_popcountll',
   '__builtin_llround', '__builtin_llroundf', '__builtin_trap',
+  '__builtin_expect', '__builtin_unreachable',
 ]);
 
 function isBinaryBackedGlobalPreludeComment(line) {
@@ -1188,7 +1189,7 @@ function hasStatementMacroCallShape(codeText, context) {
     const inner = match[2];
     if (context.keywordsLike.has(name)) continue;
     if (TYPE_LIKE_IDENTIFIERS.has(name) || context.knownAliases.has(name)) continue;
-    if (/^\s*\*+\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*$/.test(inner)) continue;
+    if (/^\s*\*+\s*(?:(?:const|volatile|restrict)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*$/.test(inner)) continue;
     return true;
   }
   return false;
@@ -1292,6 +1293,35 @@ function hasRawObjcMessageSyntax(codeText) {
     if (close < 0) continue;
     const afterClose = codeText.slice(close + 1).trimStart();
     if (afterClose.startsWith('=') && !afterClose.startsWith('==')) continue;
+    if (prev >= 0 && (codeText[prev] === '{' || codeText[prev] === ',')) {
+      let pos = 0;
+      let validChain = true;
+      while (pos < afterClose.length) {
+        while (pos < afterClose.length && /\s/.test(afterClose[pos])) pos++;
+        if (afterClose[pos] === '.') {
+          pos++;
+          while (pos < afterClose.length && /\s/.test(afterClose[pos])) pos++;
+          const fieldMatch = /^[A-Za-z_][A-Za-z0-9_]*/.exec(afterClose.slice(pos));
+          if (!fieldMatch) { validChain = false; break; }
+          pos += fieldMatch[0].length;
+        } else if (afterClose[pos] === '[') {
+          let subDepth = 0;
+          let subClosed = false;
+          for (; pos < afterClose.length; pos++) {
+            if (afterClose[pos] === '[') subDepth++;
+            else if (afterClose[pos] === ']') {
+              subDepth--;
+              if (subDepth === 0) { pos++; subClosed = true; break; }
+            }
+          }
+          if (!subClosed) { validChain = false; break; }
+        } else {
+          break;
+        }
+      }
+      while (pos < afterClose.length && /\s/.test(afterClose[pos])) pos++;
+      if (validChain && afterClose[pos] === '=' && afterClose[pos + 1] !== '=') continue;
+    }
     const inner = codeText.slice(i + 1, close).trim();
     if (!inner) continue;
     // Detect `[receiver selector]` or `[receiver sel:arg ...]` at top level.
@@ -1348,7 +1378,7 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
     fallbackNames.add(match[1]);
     if (/\[\]\s*;/.test(String(declaration))) fallbackArrayGlobals.add(match[1]);
   }
-  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), ...EXTENDED_128_TYPE_ALIASES.keys(), 'id', ...synthesizedStructs.keys()]);
+  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), ...EXTENDED_128_TYPE_ALIASES.keys(), 'id', '__int128', '__fp16', ...synthesizedStructs.keys()]);
   if (headers.has('<stdint.h>')) { knownAliases.add('uintptr_t'); knownAliases.add('intptr_t'); }
   if (headers.has('<stddef.h>') || headers.has('<stdlib.h>') || headers.has('<string.h>') || headers.has('<stdio.h>')) { knownAliases.add('size_t'); }
   if (headers.has('<stddef.h>')) { knownAliases.add('ptrdiff_t'); }
@@ -1442,6 +1472,8 @@ function faithfulBodyEligibility(fn, context) {
   }
   for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)/g)) {
     if (context.keywordsLike.has(match[1])) continue;
+    const bounds = context.knownArityBounds?.get(match[1]);
+    if (bounds && bounds.min === 0 && bounds.max === 0) continue;
     const openIdx = match.index + match[0].indexOf('(');
     const closeIdx = match.index + match[0].length - 1;
     const rawInner = bodyText.slice(openIdx + 1, closeIdx);
@@ -1501,8 +1533,9 @@ function faithfulBodyEligibility(fn, context) {
     if (!context.fallbackArrayGlobals.has(name)) continue;
     const after = codeText.slice(match.index + name.length);
     if (/^\s*\[/.test(after)) continue;
-    if (codeText[match.index - 1] === '&') continue;
-    if (/\bsizeof\s*$/.test(codeText.slice(0, match.index))) continue;
+    const before = codeText.slice(0, match.index);
+    if (/(?:^|[^&])&\s*\(*\s*$/.test(before)) continue;
+    if (/\bsizeof\s*\(*\s*$/.test(before)) continue;
     return { eligible:false, reason:`global-byte-array-fallback-usage-unsupported:${name}` };
   }
   for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {

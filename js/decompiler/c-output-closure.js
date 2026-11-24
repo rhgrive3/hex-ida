@@ -308,22 +308,31 @@ const ARM64_NZCV_COND_EXPRS = Object.freeze(Object.assign(Object.create(null), {
 function hexIntrinsicHelperDef(name) {
   const fixed = HEX_STATIC_INTRINSIC_DEFS.get(name);
   if (fixed) return fixed;
-  const m = /^__arm64_nzcv_(add|sub|and|fsub)_([a-z]+)_(8|16|32|64)$/.exec(name);
+  const fsubMatch = /^__arm64_nzcv_fsub_([a-z]+)_(32|64)$/.exec(name);
+  if (fsubMatch) {
+    const [, cond, bits] = fsubMatch;
+    const condExpr = Object.hasOwn(ARM64_NZCV_COND_EXPRS, cond) ? ARM64_NZCV_COND_EXPRS[cond] : null;
+    if (!condExpr) return null;
+    const is32 = bits === '32';
+    const ut = is32 ? 'uint32_t' : 'uint64_t';
+    const ft = is32 ? 'float' : 'double';
+    const uaInit = is32 ? '(uint32_t)a' : 'a';
+    const ubInit = is32 ? '(uint32_t)b' : 'b';
+    return `static inline int ${name}(uint64_t a, uint64_t b) { union { ${ut} u; ${ft} f; } ua = { ${uaInit} }, ub = { ${ubInit} }; ${ft} fa = ua.f, fb = ub.f; int unord = (fa != fa || fb != fb); int N = (!unord && fa < fb); int Z = (!unord && fa == fb); int C = (unord || fa >= fb); int V = unord; (void)N; (void)Z; (void)C; (void)V; return ${condExpr}; }`;
+  }
+  const m = /^__arm64_nzcv_(add|sub|and)_([a-z]+)_(8|16|32|64)$/.exec(name);
   if (!m) return null;
   const [, op, cond, bits] = m;
   const condExpr = Object.hasOwn(ARM64_NZCV_COND_EXPRS, cond) ? ARM64_NZCV_COND_EXPRS[cond] : null;
   if (!condExpr) return null;
-  if (op === 'fsub') {
-    const ft = bits === '32' ? 'float' : 'double';
-    return `static inline int ${name}(${ft} a, ${ft} b) { int N = 0, Z = 0, C = 0, V = 0; if ((a != a) || (b != b)) { C = 1; V = 1; } else if (a == b) { Z = 1; C = 1; } else if (a < b) { N = 1; } else { C = 1; } (void)N; (void)Z; (void)C; (void)V; return ${condExpr}; }`;
-  }
-  const bitWidth = Number(bits);
-  const ut = bitWidth === 8 ? 'uint8_t' : bitWidth === 16 ? 'uint16_t' : bitWidth === 32 ? 'uint32_t' : 'uint64_t';
-  const shift = String(bitWidth - 1);
-  const zero = bitWidth === 64 ? '0ULL' : '0U';
-  const one = bitWidth === 64 ? '1ULL' : '1U';
-  const uaInit = bitWidth === 64 ? 'a' : `(${ut})a`;
-  const ubInit = bitWidth === 64 ? 'b' : `(${ut})b`;
+  const spec = bits === '8'
+    ? { ut: 'uint8_t', shift: '7', zero: '0U', one: '1U', uaInit: '(uint8_t)a', ubInit: '(uint8_t)b' }
+    : bits === '16'
+      ? { ut: 'uint16_t', shift: '15', zero: '0U', one: '1U', uaInit: '(uint16_t)a', ubInit: '(uint16_t)b' }
+      : bits === '32'
+        ? { ut: 'uint32_t', shift: '31', zero: '0U', one: '1U', uaInit: '(uint32_t)a', ubInit: '(uint32_t)b' }
+        : { ut: 'uint64_t', shift: '63', zero: '0ULL', one: '1ULL', uaInit: 'a', ubInit: 'b' };
+  const { ut, shift, zero, one, uaInit, ubInit } = spec;
   let opBody;
   if (op === 'add') {
     opBody = `${ut} r = (${ut})(ua + ub); int N = (int)((r >> ${shift}) & ${one}); int Z = (r == ${zero}); int C = (r < ua); int V = (int)((((~(ua ^ ub)) & (ua ^ r)) >> ${shift}) & ${one});`;
@@ -1052,7 +1061,9 @@ function declaredNamesFromLines(lines) {
         const tagMatch = /\b(?:struct|union|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(cleaned);
         if (tagMatch && !KEYWORDS.has(tagMatch[1])) declared.add(tagMatch[1]);
       } else if (braceDepth <= 1) {
-        const match = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(\s+(?:\*+\s*)*|\s*\*+\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.exec(cleaned);
+        const labelColon = findLeadingLabelColonIndex(cleaned);
+        const declCandidate = labelColon >= 0 ? cleaned.slice(labelColon + 1).replace(/^\s*;\s*/, '').trim() : cleaned;
+        const match = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(\s+(?:\*+\s*)*|\s*\*+\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.exec(declCandidate);
         if (match && !NON_DECL_STMT_HEADS.has(match[2]) && !KEYWORDS.has(match[4])) {
           const hasQualifier = match[1].trim().length > 0;
           const typeTok = match[2];
@@ -1065,7 +1076,7 @@ function declaredNamesFromLines(lines) {
             || definedTypes.has(typeTok);
           if (!hasStar || hasQualifier || knownType) {
             if (!/\b(?:struct|union|enum)\s+$/.test(match[1])) declared.add(typeTok);
-            for (const part of splitTopLevelCommas(cleaned.replace(/;\s*$/, ''))) {
+            for (const part of splitTopLevelCommas(declCandidate.replace(/;\s*$/, ''))) {
               const head = cutBeforeTopLevelAssign(part).replace(/\[[^\]]*\]/g, '').trim();
               const nm = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(head);
               if (nm && !KEYWORDS.has(nm[1])) declared.add(nm[1]);
@@ -3812,17 +3823,118 @@ function isLocalVarDeclarationLine(item, cleaned, existingTypes) {
   return false;
 }
 
+function findLeadingLabelColonIndex(rawText) {
+  const len = rawText.length;
+  let pos = 0;
+  let lastColonIdx = -1;
+  while (pos < len) {
+    // Skip whitespace and leading block comments.
+    while (pos < len) {
+      if (/\s/.test(rawText[pos])) { pos += 1; continue; }
+      if (rawText[pos] === '/' && rawText[pos + 1] === '*') {
+        const end = rawText.indexOf('*/', pos + 2);
+        if (end < 0) return lastColonIdx;
+        pos = end + 2;
+        continue;
+      }
+      if (rawText[pos] === '/' && rawText[pos + 1] === '/') return lastColonIdx;
+      break;
+    }
+    if (pos >= len) break;
+    const rest = rawText.slice(pos);
+    const defaultMatch = /^default\b\s*:(?!:)/.exec(rest);
+    if (defaultMatch) {
+      lastColonIdx = pos + defaultMatch[0].length - 1;
+      pos = lastColonIdx + 1;
+      continue;
+    }
+    const caseMatch = /^case\b(?![A-Za-z0-9_])/.exec(rest);
+    if (caseMatch) {
+      let k = pos + caseMatch[0].length;
+      let paren = 0;
+      let ternary = 0;
+      let found = -1;
+      while (k < len) {
+        const ch = rawText[k];
+        if (ch === '/' && rawText[k + 1] === '*') {
+          const end = rawText.indexOf('*/', k + 2);
+          if (end < 0) break;
+          k = end + 2;
+          continue;
+        }
+        if (ch === '/' && rawText[k + 1] === '/') break;
+        if (ch === '"' || ch === "'") {
+          const quote = ch;
+          k += 1;
+          while (k < len) {
+            if (rawText[k] === '\\') { k += 2; continue; }
+            if (rawText[k] === quote) { k += 1; break; }
+            k += 1;
+          }
+          continue;
+        }
+        if (ch === '(') { paren += 1; k += 1; continue; }
+        if (ch === ')') { if (paren > 0) paren -= 1; k += 1; continue; }
+        if (paren === 0 && ch === '?') { ternary += 1; k += 1; continue; }
+        if (paren === 0 && ch === ':') {
+          if (rawText[k + 1] === ':') { k += 2; continue; }
+          if (ternary > 0) { ternary -= 1; k += 1; continue; }
+          found = k;
+          break;
+        }
+        k += 1;
+      }
+      if (found < 0) break;
+      lastColonIdx = found;
+      pos = found + 1;
+      continue;
+    }
+    const identMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)/.exec(rest);
+    if (identMatch) {
+      lastColonIdx = pos + identMatch[0].length - 1;
+      pos = lastColonIdx + 1;
+      continue;
+    }
+    break;
+  }
+  return lastColonIdx;
+}
+
 function applyLabelHygiene(lines, bodyOpen, existingTypes, entrySource) {
   if (bodyOpen < 0 || !Array.isArray(lines) || !lines.length) return { lines, changed: false };
   const out = [];
   let changed = false;
   for (let i = 0; i < lines.length; i += 1) {
     const item = lines[i];
+    if (i <= bodyOpen || item?.kind === 'comment') {
+      out.push(item);
+      continue;
+    }
+    const rawText = String(item?.text ?? '');
+    const cleaned = declarationBearingSource(rawText).trim();
+    if (!isLabelLikeLineText(cleaned)) {
+      const colonIdx = findLeadingLabelColonIndex(rawText);
+      if (colonIdx >= 0) {
+        const tail = rawText.slice(colonIdx + 1);
+        const tailClean = declarationBearingSource(tail).trim();
+        if (
+          tailClean
+          && !tailClean.startsWith(';')
+          && (tailClean === '}' || tailClean.startsWith('}') || isLocalVarDeclarationLine({ kind: 'stmt' }, tailClean, existingTypes))
+        ) {
+          const spacer = tail.length > 0 && (tail[0] === ' ' || tail[0] === '\t') ? '' : ' ';
+          out.push({
+            ...item,
+            text: `${rawText.slice(0, colonIdx + 1)} ;${spacer}${tail}`,
+          });
+          changed = true;
+          continue;
+        }
+      }
+      out.push(item);
+      continue;
+    }
     out.push(item);
-    if (i <= bodyOpen) continue;
-    if (item?.kind === 'comment') continue;
-    const cleaned = declarationBearingSource(item?.text ?? '').trim();
-    if (!isLabelLikeLineText(cleaned)) continue;
     let nextItem = null;
     let nextClean = '';
     for (let j = i + 1; j < lines.length; j += 1) {

@@ -1219,7 +1219,7 @@ function exprText(ctx, nodeValue, self, atRow = null, sourceReg = null) {
         return varOf(n.reg, ctx);
       }
       const formatCallNode = (c) => {
-        if (c.sel) return null;
+        if (c.sel ?? c.selector) return null;
         const label = callLabel(c, ctx);
         const calleeKey = c.name || label;
         const proto = knownCallPrototype(calleeKey);
@@ -1497,7 +1497,8 @@ function memNodeName(m, ctx) {
     if (named && named.name) {
       const resolvedBase = m.base ? exprText(ctx, m.base, null, m.row != null ? m.row : null) : null;
       const baseText = resolvedBase || varOf(m.baseReg, ctx);
-      return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
+      const fieldName = named.name.includes('$') ? sanitizeLegacyCallLabel(named.name) : named.name;
+      return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + fieldName;
     }
   }
   return null;
@@ -1508,7 +1509,8 @@ const isMalformedObjcSelector = (s) => typeof s !== 'string' || !s.length || !/^
 function callLabel(c, ctx) {
   const custom = ctx.notes && c.target != null ? ctx.notes.nameOf(c.target) : null;
   if (custom) return sanitizeLegacyCallLabel(custom);
-  if (c.sel) return (ctx.opts?.objcSyntax === 'c' || isMalformedObjcSelector(c.sel)) ? 'objc_msgSend' : '[' + (c.sel) + ']';
+  const sel = c.sel ?? c.selector;
+  if (sel) return (ctx.opts?.objcSyntax === 'c' || isMalformedObjcSelector(sel)) ? 'objc_msgSend' : '[' + sel + ']';
   if (c.name) return sanitizeLegacyCallLabel(shortName(c.name));
   return c.target != null ? 'sub_' + c.target.toString(16).toUpperCase() : 'unknown_call';
 }
@@ -2349,7 +2351,10 @@ function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
 
   const baseText = baseOverride != null ? baseOverride : (op.base ? operandText(op.base, ctx, insn) : varOf(base, ctx));
   const named = ctx.fieldFor ? ctx.fieldFor(base, Number(disp), insn ? insn.row : null) : null;
-  if (named && named.name) return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
+  if (named && named.name) {
+    const fieldName = named.name.includes('$') ? sanitizeLegacyCallLabel(named.name) : named.name;
+    return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + fieldName;
+  }
 
   const type = typeFromAccess(size, { float });
   const indexText = op.index ? operandText(op.index, ctx, insn) : null;
