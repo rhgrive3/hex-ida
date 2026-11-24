@@ -10,7 +10,9 @@ constexpr uint32_t kMaxElfPhdrs = 4096u;
 constexpr size_t kScratchCap = 1024u * 1024u;       // 1 MiB fixed
 constexpr size_t kDefaultImageCap = 8u * 1024u * 1024u;
 
-#if defined(__wasm__)
+#if defined(HEX_UNIFIED_WASM)
+// Unified WASM builds inject image & scratch arenas via bind_global_arenas().
+#elif defined(__wasm__)
 extern "C" unsigned char __heap_base;
 #else
 alignas(16) static uint8_t g_native_scratch_buf[kScratchCap];
@@ -27,7 +29,10 @@ static bool g_externally_bound = false;
 void ensure_arenas() {
   if (g_externally_bound) return;
   if (g_arenas_initialized) return;
-#if defined(__wasm__)
+#if defined(HEX_UNIFIED_WASM)
+  g_default_scratch_arena.init_fixed(nullptr, 0u);
+  g_default_image_arena.init_fixed(nullptr, 0u);
+#elif defined(__wasm__)
   uint8_t* base = &__heap_base;
   g_default_scratch_arena.init_fixed(base, kScratchCap);
   g_default_image_arena.init_external(base + kScratchCap, kDefaultImageCap, true);

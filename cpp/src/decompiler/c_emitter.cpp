@@ -2,11 +2,13 @@
 
 namespace {
 
+#ifndef HEX_UNIFIED_WASM
 // Standalone fallback scratch buffer (512 KiB) when no external arena is bound.
 static constexpr size_t kFallbackArenaBytes = 512u * 1024u;
 alignas(16) static uint8_t g_fallback_storage[kFallbackArenaBytes];
 static hex::Arena g_fallback_arena;
 static bool g_fallback_initialized = false;
+#endif
 static hex::Arena* g_bound_arena = nullptr;
 
 // Output state (stored inside active scratch arena or static fallback pointers).
@@ -17,11 +19,15 @@ static uint32_t g_out_linemap_count = 0;
 
 static hex::Arena* active_arena() {
   if (g_bound_arena != nullptr) return g_bound_arena;
+#ifndef HEX_UNIFIED_WASM
   if (!g_fallback_initialized) {
     g_fallback_arena.init_fixed(g_fallback_storage, kFallbackArenaBytes);
     g_fallback_initialized = true;
   }
   return &g_fallback_arena;
+#else
+  return nullptr;
+#endif
 }
 
 static bool is_terminator(uint8_t op) {

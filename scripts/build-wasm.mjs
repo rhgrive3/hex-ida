@@ -66,6 +66,10 @@ const HEX_ENGINE_CPP_SRCS = [
   'cpp/src/decompiler/c_emitter.cpp',
 ];
 
+const OPTIONAL_TARGET_SRCS = [
+  'cpp/src/targets/x86_64_decomp.cpp',
+];
+
 const OPTIONAL_RUNTIME_SRCS = [
   'cpp/src/engine_runtime.cpp',
   'cpp/src/runtime/engine_runtime.cpp',
@@ -179,6 +183,12 @@ function buildHexEngineUnified(tmpDir) {
     }
     srcs.push(abs);
   }
+  for (const rel of OPTIONAL_TARGET_SRCS) {
+    const abs = path.join(ROOT, rel);
+    if (fs.existsSync(abs)) {
+      srcs.push(abs);
+    }
+  }
   for (const rel of OPTIONAL_RUNTIME_SRCS) {
     const abs = path.join(ROOT, rel);
     if (fs.existsSync(abs)) {
@@ -188,7 +198,7 @@ function buildHexEngineUnified(tmpDir) {
   }
 
   const rawWasm = path.join(tmpDir, 'hex_engine.raw.wasm');
-  const optWasm = path.join(tmpDir, 'hex_engine.opt.wasm');
+  const optWasm = path.join(ROOT, 'wasm', 'hex_engine.wasm');
   const outJsPath = path.join(ROOT, 'js/core/hex-engine-wasm.js');
 
   const clangArgs = [
@@ -199,16 +209,17 @@ function buildHexEngineUnified(tmpDir) {
     '-fno-exceptions',
     '-fno-rtti',
     '-mbulk-memory',
+    '-DHEX_UNIFIED_WASM=1',
     `-I${path.join(ROOT, 'cpp/include')}`,
     `-I${path.join(ROOT, 'cpp/src')}`,
     '-Wl,--no-entry',
-    '-Wl,--export-dynamic',
     '-o',
     rawWasm,
     ...srcs,
   ];
   execFileSync('clang++', clangArgs, { stdio: 'inherit' });
 
+  fs.mkdirSync(path.dirname(optWasm), { recursive: true });
   execFileSync(
     'wasm-opt',
     ['-O3', '--enable-bulk-memory', '-o', optWasm, rawWasm],
