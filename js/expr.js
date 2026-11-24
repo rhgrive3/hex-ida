@@ -1803,6 +1803,20 @@ function condSymbol(cc, cmp, o, depth) {
       const signedCast = bits === 32 ? 'int32' : 'int64';
       return '((' + signedCast + ')(' + lhs + ' - ' + rhs + ') ' + (cc === 'mi' ? '< 0' : '>= 0') + ')';
     }
+    if (cc === 'vs' || cc === 'vc') {
+      const lhs = emit(cmp.a, 11, o, depth + 1);
+      const rhs = cmp.b ? emit(cmp.b, 11, o, depth + 1) : '0';
+      if (isFp) {
+        return cc === 'vs'
+          ? '((' + lhs + ' != ' + lhs + ') || (' + rhs + ' != ' + rhs + '))'
+          : '((' + lhs + ' == ' + lhs + ') && (' + rhs + ' == ' + rhs + '))';
+      }
+      const uType = bits === 32 ? 'uint32' : 'uint64';
+      const shift = bits === 32 ? 31 : 63;
+      const ov = '(((((' + uType + ')(' + lhs + ') ^ (' + uType + ')(' + rhs + ')) & ((' + uType + ')(' + lhs + ') ^ ((' + uType + ')(' + lhs + ') - (' + uType + ')(' + rhs + ')))) >> ' + shift + ') & 1)';
+      return cc === 'vs' ? ov : '(!' + ov + ')';
+    }
+    if (cc === 'al' || cc === 'nv') return '1';
     if (!isFp && unsignedOps[cc]) {
       const unsignedCast = bits === 32 ? '(uint32)' : '(uint64)';
       const lhs = unsignedCast + emit(cmp.a, 11, o, depth + 1);

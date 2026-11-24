@@ -2775,6 +2775,29 @@ function statementFor(insn, ctx, node, state) {
   /* スタックへの退避・復帰は「後片付け」なので隠す（読みやすさ優先） */
   if (isFrameHousekeeping(insn, ctx)) return null;
 
+  /* PC相対リテラルロード (ldr / ldrsw Xt, #addr) */
+  if (!insn.memory && (base === 'ldr' || base === 'ldrsw') && insn.ops.length === 2
+      && insn.ops[0]?.k === 'reg' && insn.ops[1]?.k === 'imm') {
+    const target = insn.pcRelTarget != null ? insn.pcRelTarget : insn.ops[1].value;
+    const litDst = insn.writes[0] || regOf(insn.ops[0]);
+    if (target != null && target >= 0n && litDst) {
+      const text = ctx.textOf.get(row);
+      if (text != null) return mk(varOf(litDst, ctx) + ' = "' + escapeText(text) + '";', { dst: litDst, pure: true, reads: [] });
+      const addrHex = '0x' + target.toString(16).toUpperCase() + 'ULL';
+      let loadExpr;
+      if (base === 'ldrsw') {
+        loadExpr = '(int64_t)(*(const int32_t *)(uintptr_t)' + addrHex + ')';
+      } else if (insn.ops[0].cls === 'fp' || insn.ops[0].cls === 'vec') {
+        const ft = insn.ops[0].bits === 32 ? 'float' : 'double';
+        loadExpr = '*(const ' + ft + ' *)(uintptr_t)' + addrHex;
+      } else {
+        const ut = insn.ops[0].bits === 32 ? 'uint32_t' : 'uint64_t';
+        loadExpr = '*(const ' + ut + ' *)(uintptr_t)' + addrHex;
+      }
+      return mk(varOf(litDst, ctx) + ' = ' + loadExpr + ';', { dst: litDst, reads: [] });
+    }
+  }
+
   /* メモリ */
   if (insn.memory) {
     const memStmt = memoryStatement(insn, ctx, mk, base);
