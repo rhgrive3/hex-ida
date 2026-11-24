@@ -3253,7 +3253,7 @@ function cAstFromLines(result, state) {
     let semantic = known?.semantic || null;
     const switched = switchHistory && readSwitchLineHistory(line, state.ir);
     if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
-    const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic };
+    const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic, ...(typeof line.block === 'number' ? { block: line.block } : {}) };
     node.text = explicitProvenCppFieldOffsets(node.text, state);
     const initial = initialStatement || initialControl;
     const virtualSlot = initialStatement?.instruction
@@ -3583,7 +3583,7 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   advanced.cAst ||= validatedCAstFromLines(result, advanced);
   advanced.printed ||= printProgram(advanced.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
   const explanation = explainSemanticFacts(advanced.facts, result.summary);
-  const lines = advanced.cAst.body.map((n) => ({ kind: n.kind, indent: n.indent, text: n.text, row: n.source.rows[0] ?? null, addr: n.source.addresses[0] ?? null, note: null, source: n.source }));
+  const lines = advanced.cAst.body.map((n) => ({ kind: n.kind, indent: n.indent, text: n.text, row: n.source.rows[0] ?? null, addr: n.source.addresses[0] ?? null, note: null, source: n.source, ...(typeof n.block === 'number' ? { block: n.block } : {}) }));
   const enhanced = {
     ...result,
     lines,

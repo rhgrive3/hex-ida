@@ -1159,6 +1159,7 @@ function applyPhase8ProjectionCore(result, analysis, opts = {}) {
       addr:source.addresses?.[0] ?? null,
       note:null,
       source,
+      ...(typeof node.block === 'number' ? { block: node.block } : {}),
     };
     const consumers = [expressionConsumers[index], renderedConditions.get(node)].filter(Boolean);
     if (consumers.length) {

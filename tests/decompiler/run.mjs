@@ -23,6 +23,7 @@ export async function runDecompilerTests({ env = process.env } = {}) {
       path.join(DIRECTORY, 'recompilation-watchdog.test.mjs'),
       path.join(DIRECTORY, 'output-c-declarations.test.mjs'),
       path.join(DIRECTORY, 'avoidable-goto-closure.test.mjs'),
+      path.join(DIRECTORY, 'humaneval-974-1202-regressions.test.mjs'),
     ],
     cwd: ROOT,
     env: childEnv,
