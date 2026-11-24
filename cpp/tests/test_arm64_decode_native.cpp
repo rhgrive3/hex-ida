@@ -212,25 +212,71 @@ static void test_capability_table_and_decompiler_gate() {
   assert(hex_arm64_kind_capability(HEX_ARM64_KIND_SIMD) == HEX_ARM64_CAP_FALLBACK);
   assert(hex_arm64_kind_capability(255u) == HEX_ARM64_CAP_FALLBACK);
 
+  // Expanded capability table checks (Wave 7)
+  assert(hex_arm64_kind_capability(HEX_ARM64_KIND_NOP) == HEX_ARM64_CAP_DECOMP);
+  assert(hex_arm64_kind_capability(HEX_ARM64_KIND_LOGIC) == HEX_ARM64_CAP_DECOMP);
+  assert(hex_arm64_kind_capability(HEX_ARM64_KIND_SHIFT) == HEX_ARM64_CAP_DECOMP);
+  assert(hex_arm64_kind_capability(HEX_ARM64_KIND_CMP) == HEX_ARM64_CAP_DECOMP);
+  assert(hex_arm64_kind_capability(HEX_ARM64_KIND_CONDBR) == HEX_ARM64_CAP_DECOMP);
+  assert(hex_arm64_kind_capability(HEX_ARM64_KIND_BRANCH) == HEX_ARM64_CAP_DECOMP);
+
   // Supported exact-parity instructions -> 1
   assert(hex_arm64_is_decompiler_supported(0xd65f03c0U) == 1);  // ret
+  assert(hex_arm64_is_decompiler_supported(0xd503201fU) == 1);  // nop
   assert(hex_arm64_is_decompiler_supported(0x0b010000U) == 1);  // add w0, w0, w1
   assert(hex_arm64_is_decompiler_supported(0xcb010000U) == 1);  // sub x0, x0, x1
+  assert(hex_arm64_is_decompiler_supported(0x91004000U) == 1);  // add x0, x0, #0x10 (imm, sh=0)
+  assert(hex_arm64_is_decompiler_supported(0x91400400U) == 1);  // add x0, x0, #1, lsl #12 (sh=1)
+  assert(hex_arm64_is_decompiler_supported(0xd1000400U) == 1);  // sub x0, x0, #1
+  assert(hex_arm64_is_decompiler_supported(0xd10043ffU) == 1);  // sub sp, sp, #0x10 (prologue)
+  assert(hex_arm64_is_decompiler_supported(0x910043ffU) == 1);  // add sp, sp, #0x10 (epilogue)
   assert(hex_arm64_is_decompiler_supported(0x1b017c00U) == 1);  // mul w0, w0, w1
   assert(hex_arm64_is_decompiler_supported(0xaa0103e0U) == 1);  // mov x0, x1 (orr x0, xzr, x1)
   assert(hex_arm64_is_decompiler_supported(0x52800020U) == 1);  // movz w0, #1
-  assert(hex_arm64_is_decompiler_supported(0x92800000U) == 1);  // movn x0, #0
+  assert(hex_arm64_is_decompiler_supported(0x8a010000U) == 1);  // and x0, x0, x1 (shift=0)
+  assert(hex_arm64_is_decompiler_supported(0xca010000U) == 1);  // eor x0, x0, x1 (shift=0)
+  assert(hex_arm64_is_decompiler_supported(0x9ac12000U) == 1);  // lslv x0, x0, x1
+  assert(hex_arm64_is_decompiler_supported(0x9ac12400U) == 1);  // lsrv x0, x0, x1
+  assert(hex_arm64_is_decompiler_supported(0x9ac12800U) == 1);  // asrv x0, x0, x1
+  assert(hex_arm64_is_decompiler_supported(0xf100001fU) == 1);  // cmp x0, #0 (imm)
+  assert(hex_arm64_is_decompiler_supported(0xeb01001fU) == 1);  // cmp x0, x1 (shifted reg, sh=0)
+  assert(hex_arm64_is_decompiler_supported(0x14000002U) == 1);  // b +8
+  assert(hex_arm64_is_decompiler_supported(0x54000060U) == 1);  // b.eq +12
+  assert(hex_arm64_is_decompiler_supported(0xb4000040U) == 1);  // cbz x0, +8
+  assert(hex_arm64_is_decompiler_supported(0xb5000040U) == 1);  // cbnz x0, +8
+  assert(hex_arm64_is_decompiler_supported(0xa9bf7bfdU) == 1);  // stp x29, x30, [sp, #-16]!
+  assert(hex_arm64_is_decompiler_supported(0xa8c17bfdU) == 1);  // ldp x29, x30, [sp], #16
 
-  // Wave 4 strict gate rejections -> 0 (must fall back)
+  // Strict fail-closed rejections -> 0 (must fall back)
+  assert(hex_arm64_is_decompiler_supported(0xaa010000U) == 0);  // ORR x0, x0, x1 (non-alias)
   assert(hex_arm64_is_decompiler_supported(0xb2401fe0U) == 0);  // ORR imm (mov x0, #0xff)
   assert(hex_arm64_is_decompiler_supported(0x1e6e1000U) == 0);  // FMOV d0, #1.0
+  assert(hex_arm64_is_decompiler_supported(0x92800000U) == 0);  // MOVN x0, #0
+  assert(hex_arm64_is_decompiler_supported(0x12800000U) == 0);  // MOVN w0, #0
   assert(hex_arm64_is_decompiler_supported(0xf2800020U) == 0);  // MOVK x0, #1
   assert(hex_arm64_is_decompiler_supported(0x1b01fc00U) == 0);  // MNEG/MSUB w0, w0, w1
   assert(hex_arm64_is_decompiler_supported(0x9b217c00U) == 0);  // SMULL x0, w0, w1
   assert(hex_arm64_is_decompiler_supported(0x1b010800U) == 0);  // MADD w0, w0, w1, w2 (ra != 31)
   assert(hex_arm64_is_decompiler_supported(0x910003e0U) == 0);  // MOV x0, sp (group 8)
-  assert(hex_arm64_is_decompiler_supported(0x91004000U) == 0);  // ADD x0, x0, #0x10 (imm)
+  assert(hex_arm64_is_decompiler_supported(0xb1004000U) == 0);  // ADDS x0, x0, #0x10 (flag-setting)
+  assert(hex_arm64_is_decompiler_supported(0x0b010400U) == 0);  // ADD w0, w0, w1, lsl #1 (imm6!=0)
+  assert(hex_arm64_is_decompiler_supported(0x8a010400U) == 0);  // AND x0, x0, x1, lsl #1 (imm6!=0)
+  assert(hex_arm64_is_decompiler_supported(0x9ac12c00U) == 0);  // RORV x0, x0, x1
+  assert(hex_arm64_is_decompiler_supported(0xd65f0100U) == 0);  // RET x8 (rn != 30)
   assert(hex_arm64_is_decompiler_supported(0xd65f0bffU) == 0);  // RETAA (PAC)
+  assert(hex_arm64_is_decompiler_supported(0xd61f0100U) == 0);  // BR x8 (indirect branch)
+  assert(hex_arm64_is_decompiler_supported(0x36000040U) == 0);  // TBZ w0, #0, +8
+  assert(hex_arm64_is_decompiler_supported(0xc87f8440U) == 0);  // LDAXP (atomic)
+  assert(hex_arm64_is_decompiler_supported(0xc8228440U) == 0);  // STLXP (atomic)
+  assert(hex_arm64_is_decompiler_supported(0xc8dffc20U) == 0);  // LDAR (atomic)
+  assert(hex_arm64_is_decompiler_supported(0xc89ffc20U) == 0);  // STLR (atomic)
+  assert(hex_arm64_is_decompiler_supported(0xc85f7c20U) == 0);  // LDXR (atomic)
+  assert(hex_arm64_is_decompiler_supported(0x1e622820U) == 0);  // FADD d0, d1, d2 (FP)
+  assert(hex_arm64_is_decompiler_supported(0x1e620820U) == 0);  // FMUL d0, d1, d2 (FP)
+  assert(hex_arm64_is_decompiler_supported(0x1e612000U) == 0);  // FCMP d0, d1 (FP CMP)
+  assert(hex_arm64_is_decompiler_supported(0x4ea28420U) == 0);  // SIMD
+  assert(hex_arm64_is_decompiler_supported(0xa9bf07e0U) == 0);  // STP x0, x1, [sp, #-16]! (non-x29/x30)
+  assert(hex_arm64_is_decompiler_supported(0xf94003e1U) == 0);  // LDR x1, [sp] (general load)
 }
 
 static void test_issue_regressions_and_formatting() {
