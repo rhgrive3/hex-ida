@@ -62,7 +62,7 @@ REG_LUT.wzr = Object.freeze({ kind: 4, idx: -1, mask32: true });
 const PAUTH_HINT_IMMS = new Set([7n, 8n, 10n, 12n, 14n, 24n, 25n, 26n, 27n, 28n, 29n, 30n, 31n]);
 const NOP_LIKE_MNEMONICS = new Set(['nop', 'hint', 'bti', 'dmb', 'dsb', 'isb', 'prfm']);
 const PAUTH_UNSUPPORTED_RE = /^(?:(?:pac|aut)(?:ia|ib)(?:z|sp)?|ldraa|ldrab|xpaclri|retaa|retab)$/;
-const B_COND_RE = /^b.(w+)$/;
+const B_COND_RE = /^b\.(\w+)$/;
 const ARITH_OPS = Object.assign(Object.create(null), {
   add: (a, b) => a + b, adds: (a, b) => a + b,
   sub: (a, b) => a - b, subs: (a, b) => a - b,
