@@ -167,7 +167,7 @@ static bool decode_adrp_page(uint32_t w, uint64_t va, uint32_t* rd, uint64_t* pa
   const uint32_t imm21 = (immhi << 2u) | immlo;
   *rd = w & 31u;
   const uint64_t base_page = va & ~0xFFFULL;
-  *page_va = static_cast<uint64_t>(static_cast<int64_t>(base_page) + sign_extend_21(imm21) * 4096LL);
+  *page_va = (base_page + static_cast<uint64_t>(sign_extend_21(imm21)) * 4096ULL);
   return true;
 }
 

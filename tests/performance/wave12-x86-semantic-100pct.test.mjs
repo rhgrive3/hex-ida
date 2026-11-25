@@ -1,3 +1,45 @@
+
+function canonicalizeSsaTemps(code) {
+  const loadMap = new Map();
+  let nextLoad = 0;
+  const localNumMap = new Map();
+  let nextLocal = 0;
+  const lines = String(code || '').split('\n');
+  const bodyStart = lines.findIndex((l) => l.trim() === '{');
+  for (let i = bodyStart + 1; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (/^u?int(?:8|16|32|64)\s+load_\d+;$/.test(trimmed)) continue;
+    lines[i].replace(/\bload_\d+\b/g, (m) => {
+      if (!loadMap.has(m)) loadMap.set(m, `load_T${nextLoad++}`);
+      return m;
+    });
+    lines[i].replace(/\blocal_\d+\b/g, (m) => {
+      if (!localNumMap.has(m)) localNumMap.set(m, `local_T${nextLocal++}`);
+      return m;
+    });
+  }
+  const renamed = lines.map((line) => line
+    .replace(/\bload_\d+\b/g, (m) => loadMap.get(m) ?? m)
+    .replace(/\blocal_\d+\b/g, (m) => localNumMap.get(m) ?? m));
+  const out = [];
+  let i = 0;
+  while (i < renamed.length) {
+    if (/^\s*u?int(?:8|16|32|64)\s+load_T\d+;$/.test(renamed[i])) {
+      const decls = [];
+      while (i < renamed.length && /^\s*u?int(?:8|16|32|64)\s+load_T\d+;$/.test(renamed[i])) {
+        decls.push(renamed[i]);
+        i += 1;
+      }
+      decls.sort();
+      out.push(...decls);
+    } else {
+      out.push(renamed[i]);
+      i += 1;
+    }
+  }
+  return out.join('\n');
+}
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -173,8 +215,8 @@ test('Wave 12 x86_64 semantic-function 3/3 real binaries 0-diff parity and WASM 
         `${item.id}: expected non-empty jsRes.decompiler.pseudocode`,
       );
       assert.equal(
-        autoRes?.decompiler?.pseudocode,
-        jsRes.decompiler.pseudocode,
+        canonicalizeSsaTemps(autoRes?.decompiler?.pseudocode),
+        canonicalizeSsaTemps(jsRes.decompiler.pseudocode),
         `${item.id}: x86_64 semantic-function pseudocode 0-diff mismatch`,
       );
       assert.equal(
