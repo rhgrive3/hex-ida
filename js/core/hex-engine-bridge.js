@@ -54,7 +54,6 @@ const EXPLICIT_UNSUPPORTED_ARM64_MNEMONICS = Object.freeze(new Set([
   'stxr',
   'stlxr',
   'br',
-  'blr',
 ]));
 
 const textEncoder = new TextEncoder();
@@ -581,6 +580,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     }
 
     const rawLines = pseudocode.split('\n');
+    const isLegacyOutput = rawLines.some((l) => l.includes('// … ほかに '));
     const baseAddrBig = BigInt(baseAddr);
     const addrToRow = new Map();
     if (Array.isArray(insns)) {
@@ -593,6 +593,9 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       }
     }
 
+    const bodyDeclRe = /^(?:const\s+)?(?:u?int(?:8|16|32|64|128)(?:_t)?|float|double|vector128|void\s*\*|id|int|unsigned\s+int|long|char)\s+\*?[A-Za-z_]\w*(?:\s*\[[^\]]*\])?(?:\s*,\s*\*?[A-Za-z_]\w*(?:\s*\[[^\]]*\])?)*(?:\s*=\s*[^;]+)?\s*;$/;
+    const synthAssignRe = /^x\d+\s*=\s*a\d+;$/;
+
     const lines = [];
     const sourceMap = [];
     let bodyLineNo = 0;
@@ -600,14 +603,21 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     for (let idx = 0; idx < rawLines.length; idx += 1) {
       const text = rawLines[idx];
       const trimmed = text.trimStart();
-      const indent = Math.floor((text.length - trimmed.length) / 4);
-      const isPrelude = !seenSig && (trimmed.startsWith('/*') || trimmed.startsWith('typedef ') || trimmed.startsWith('#'));
+      const indent = trimmed.length === 0 ? 0 : Math.floor((text.length - trimmed.length) / 4);
+      const isPrelude = !seenSig && (
+        trimmed.startsWith('/*')
+        || trimmed.startsWith('typedef ')
+        || trimmed.startsWith('#')
+        || trimmed.endsWith(';')
+      );
       let kind;
       if (isPrelude) {
         kind = 'decl';
       } else if (!seenSig) {
         kind = 'sig';
         seenSig = true;
+      } else if (trimmed.length === 0) {
+        kind = 'blank';
       } else if (
         trimmed === '{' || trimmed === '}' || trimmed.startsWith('if ')
         || trimmed.startsWith('if(') || trimmed.startsWith('while ')
@@ -615,13 +625,12 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         || trimmed.startsWith('else') || trimmed === 'continue;'
         || trimmed === 'break;' || trimmed.startsWith('goto ')
         || trimmed.startsWith('do ') || trimmed === 'do {'
+        || (isLegacyOutput && (trimmed === 'return;' || trimmed.startsWith('return ')))
       ) {
         kind = 'ctrl';
       } else if (trimmed.startsWith('//') || trimmed.startsWith('/*')) {
         kind = 'comment';
-      } else if (
-        /^(?:const\s+)?(?:u?int(?:8|16|32|64|128)(?:_t)?|float|double|vector128|void\s*\*|id|int|unsigned\s+int|long|char)\s+\*?[A-Za-z_]\w*(?:\s*\[[^\]]*\])?\s*;$/.test(trimmed)
-      ) {
+      } else if (bodyDeclRe.test(trimmed)) {
         kind = 'decl';
       } else {
         kind = 'stmt';
@@ -631,14 +640,35 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       const isBraceOrElse = kind === 'ctrl' && (
         trimmed === '{' || trimmed === '}' || trimmed === '} else {' || trimmed === 'else {'
       );
-      const firstAddr = isPrelude || kind === 'decl' || isBraceOrElse
-        ? null
-        : (kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null));
-      const lineAddresses = isPrelude || kind === 'sig'
-        ? [baseAddrBig]
-        : (kind === 'decl' || isBraceOrElse)
-          ? []
-          : mappedAddrs.slice();
+      const isSynthLegacyAssign = isLegacyOutput && kind === 'stmt' && synthAssignRe.test(trimmed);
+
+      let firstAddr;
+      let lineAddresses;
+      if (isLegacyOutput) {
+        if (isPrelude || kind === 'decl' || kind === 'comment' || kind === 'blank' || isBraceOrElse || isSynthLegacyAssign) {
+          firstAddr = null;
+        } else if (kind === 'sig') {
+          firstAddr = baseAddrBig;
+        } else {
+          firstAddr = mappedAddrs[0] ?? null;
+        }
+        if (isPrelude) {
+          lineAddresses = [baseAddrBig];
+        } else if (kind === 'decl') {
+          lineAddresses = /\bvar_/.test(trimmed) ? [] : [baseAddrBig];
+        } else {
+          lineAddresses = [];
+        }
+      } else {
+        firstAddr = isPrelude || kind === 'decl' || kind === 'comment' || kind === 'blank' || isBraceOrElse
+          ? null
+          : (kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null));
+        lineAddresses = isPrelude || kind === 'sig'
+          ? [baseAddrBig]
+          : (kind === 'decl' || kind === 'comment' || kind === 'blank' || isBraceOrElse)
+            ? []
+            : mappedAddrs.slice();
+      }
       const lineRows = lineAddresses
         .map((a) => addrToRow.get(a))
         .filter((r) => r !== undefined);
@@ -653,11 +683,11 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         note: null,
       });
 
-      if (!isPrelude && !(kind === 'decl' && /\b(?:local_|var_)/.test(trimmed))) {
+      if (!isLegacyOutput && !isPrelude && !(kind === 'decl' && /\b(?:local_|var_)/.test(trimmed))) {
         bodyLineNo += 1;
         const addresses = kind === 'sig'
           ? [baseAddrBig]
-          : (kind === 'decl' || isBraceOrElse)
+          : (kind === 'decl' || kind === 'comment' || kind === 'blank' || isBraceOrElse)
             ? []
             : mappedAddrs.slice();
         const rows = addresses
@@ -680,7 +710,9 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     }
 
     recordWasmCall('decompile');
-    return { pseudocode, lines, sourceMap };
+    return isLegacyOutput
+      ? { pseudocode, lines, sourceMap: undefined }
+      : { pseudocode, lines, sourceMap };
   } catch {
     return noteFallback('decompile', 'wasm_exception');
   }
