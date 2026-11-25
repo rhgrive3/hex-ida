@@ -121,11 +121,11 @@ void test_bcond_lslv_asrv_div_sp_prfm_ldnp_fcvtau_cas_csel() {
   assert(contains(txt, len, "((uint32_t)x1 != 0 ?"));
   assert(contains(txt, len, "((int64_t)x0 / (int64_t)x1)"));
   assert(contains(txt, len, "sp = x0 + 16;"));
-  assert(contains(txt, len, "((uint64_t)sp == (uint64_t)16) ? x0 : x1;"));
+  assert(contains(txt, len, "((__hex_nzcv & 4u) != 0u) ? x0 : x1;"));
   assert(contains(txt, len, "sp = x15 & "));
   assert(contains(txt, len, "x2 = *(uint64 *)((uintptr_t)(x0) + 16);"));
   assert(contains(txt, len, "x1 = *(uint64 *)((uintptr_t)(x0) + 24);\n    x0 = *(uint64 *)((uintptr_t)(x0) + 16);"));
-  assert(contains(txt, len, "x3 = (uint32_t)(int64_t)d0;"));
+  assert(contains(txt, len, "x3 = (uint32_t)round(d0);"));
   assert(contains(txt, len, "(void)0; /* arm64 insn 0xC8A17C02 */"));
 }
 

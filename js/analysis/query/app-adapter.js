@@ -1781,6 +1781,7 @@ export function createAppAnalysisQueryAdapter(app) {
         ...(requestedObjcSyntax != null ? { objcSyntax: requestedObjcSyntax } : {}),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
+        symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null,
         ...(returnsValue ? { returnsValue } : {}),
         ...(projectionIr ? { ir:projectionIr } : {}),
         ...(cxxEvidence ? { cxxEvidence } : {}),

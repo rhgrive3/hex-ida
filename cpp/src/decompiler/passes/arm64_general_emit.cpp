@@ -260,6 +260,7 @@ struct CmpState {
   uint32_t lhs_reg;
   uint32_t rhs_reg;
   uint64_t rhs_imm;
+  bool is_nzcv_var;
 };
 
 struct AnalysisCtx {
@@ -281,9 +282,28 @@ struct AnalysisCtx {
   bool uses_int64_t;
   bool uses_uintptr;
   bool uses_uint128;
+  uint32_t fp_single_mask;
+  uint32_t fp_double_mask;
+  uint32_t fp_param_single_mask;
+  uint32_t fp_param_double_mask;
+  bool uses_nzcv;
+  bool uses_fp_bitcast;
   bool has_unknown_call;
   bool returns_double;
+  bool returns_float;
+  bool returns_int32;
   bool returns_value;
+  bool last_ret_is_fp;
+  bool x0_read_since_write;
+  bool d0_read_since_write;
+  bool d0_compared;
+  bool x0_written_32;
+  bool x0_written_64;
+  bool last_x0_is32;
+  uint32_t ret_fp_count;
+  uint32_t ret_gpr_count;
+  uint32_t ret_int32_count;
+  uint32_t ret_int64_count;
   bool table_overflow;
   const char* norm_name;
   uint32_t norm_len;
@@ -291,6 +311,8 @@ struct AnalysisCtx {
   uint32_t fp_param_count;
   uint64_t adrp_page[31];
   bool adrp_valid[31];
+  uint64_t saved_adrp_page[31];
+  bool saved_adrp_valid[31];
   GlobalEntry globals[kMaxGlobals];
   uint32_t global_count;
   uint64_t callees[kMaxCallees];
@@ -302,27 +324,49 @@ struct AnalysisCtx {
     if ((gpr_written & (1u << r)) == 0u) {
       gpr_read_before_write |= (1u << r);
     }
+    if (r == 0u) x0_read_since_write = true;
   }
 
-  void mark_gpr_write(uint32_t r) {
+  void clear_adrp(uint32_t r) {
+    if (r >= 31u) return;
+    adrp_valid[r] = false;
+    if (r < 19u || r > 28u) saved_adrp_valid[r] = false;
+  }
+
+  void mark_gpr_write(uint32_t r, bool is64 = true) {
     if (r >= 31u) return;
     gpr_used |= (1u << r);
     gpr_written |= (1u << r);
-    adrp_valid[r] = false;
+    clear_adrp(r);
+    if (r == 0u) {
+      last_ret_is_fp = false;
+      x0_read_since_write = false;
+      last_x0_is32 = !is64;
+      if (is64) x0_written_64 = true;
+      else x0_written_32 = true;
+    }
   }
 
-  void mark_fp_read(uint32_t r) {
+  void mark_fp_read(uint32_t r, int width = 0) {
     r &= 31u;
     fp_used |= (1u << r);
     if ((fp_written & (1u << r)) == 0u) {
       fp_read_before_write |= (1u << r);
+      if (width == 1) fp_param_single_mask |= (1u << r);
+      else if (width == 2) fp_param_double_mask |= (1u << r);
     }
+    if (r == 0u) d0_read_since_write = true;
   }
 
   void mark_fp_write(uint32_t r) {
     r &= 31u;
     fp_used |= (1u << r);
     fp_written |= (1u << r);
+    if (r == 0u) {
+      last_ret_is_fp = true;
+      d0_read_since_write = false;
+      d0_compared = false;
+    }
   }
 
   void mark_q(uint32_t r) {
@@ -389,12 +433,149 @@ static bool is_internal_target(uint64_t target, uint64_t base_addr, uint32_t wor
   return true;
 }
 
+static void mark_ext_types(AnalysisCtx& ctx, uint32_t option) {
+  switch (option) {
+    case 0u: ctx.uses_uint8 = true; break;
+    case 1u: ctx.uses_uint16 = true; break;
+    case 2u: ctx.uses_uint32 = true; break;
+    case 3u: ctx.uses_uint64_t = true; break;
+    case 4u: ctx.uses_int8 = true; ctx.uses_int64_t = true; break;
+    case 5u: ctx.uses_int16 = true; ctx.uses_int64_t = true; break;
+    case 6u: ctx.uses_int32 = true; ctx.uses_int64_t = true; break;
+    case 7u: ctx.uses_int64_t = true; break;
+  }
+}
+
+static void emit_ext_reg(TextBuf& tb, uint32_t rm, uint32_t option, uint32_t imm3) {
+  if (imm3 != 0u) tb.put_char('(');
+  switch (option) {
+    case 0u: tb.put_str("(uint64_t)(uint8_t)"); tb.put_reg_x(rm); break;
+    case 1u: tb.put_str("(uint64_t)(uint16_t)"); tb.put_reg_x(rm); break;
+    case 2u: tb.put_str("(uint64_t)(uint32_t)"); tb.put_reg_x(rm); break;
+    case 3u: tb.put_str("(uint64_t)"); tb.put_reg_x(rm); break;
+    case 4u: tb.put_str("(uint64_t)(int64_t)(int8_t)"); tb.put_reg_x(rm); break;
+    case 5u: tb.put_str("(uint64_t)(int64_t)(int16_t)"); tb.put_reg_x(rm); break;
+    case 6u: tb.put_str("(uint64_t)(int64_t)(int32_t)"); tb.put_reg_x(rm); break;
+    default: tb.put_str("(uint64_t)(int64_t)"); tb.put_reg_x(rm); break;
+  }
+  if (imm3 != 0u) {
+    tb.put_str(" << ");
+    tb.put_u64_dec(imm3);
+    tb.put_char(')');
+  }
+}
+
+static void emit_shifted_reg(TextBuf& tb, uint32_t rm, uint32_t shift_type, uint32_t imm6, bool is64) {
+  if (imm6 == 0u) {
+    if (!is64) tb.put_str("(uint32_t)");
+    tb.put_reg_x(rm);
+    return;
+  }
+  if (shift_type == 2u) {
+    if (is64) {
+      tb.put_str("(uint64_t)((int64_t)");
+      tb.put_reg_x(rm);
+      tb.put_str(" >> ");
+      tb.put_u64_dec(imm6);
+      tb.put_char(')');
+    } else {
+      tb.put_str("(uint32_t)((int32_t)");
+      tb.put_reg_x(rm);
+      tb.put_str(" >> ");
+      tb.put_u64_dec(imm6);
+      tb.put_char(')');
+    }
+  } else if (shift_type == 3u) {
+    const uint32_t bits = is64 ? 64u : 32u;
+    const uint32_t sh = imm6 & (bits - 1u);
+    tb.put_str(is64 ? "(((uint64_t)" : "(((uint32_t)");
+    tb.put_reg_x(rm);
+    tb.put_str(" >> ");
+    tb.put_u64_dec(sh);
+    tb.put_str(is64 ? ") | ((uint64_t)" : ") | ((uint32_t)");
+    tb.put_reg_x(rm);
+    tb.put_str(" << ");
+    tb.put_u64_dec((bits - sh) & (bits - 1u));
+    tb.put_str("))");
+  } else {
+    tb.put_str(is64 ? "((uint64_t)" : "((uint32_t)");
+    tb.put_reg_x(rm);
+    tb.put_str(shift_type == 0u ? " << " : " >> ");
+    tb.put_u64_dec(imm6);
+    tb.put_char(')');
+  }
+}
+
+static void emit_nzcv_addsub_tail(TextBuf& tb, bool is64, bool is_sub, uint32_t rd) {
+  if (is64) {
+    if (is_sub) {
+      tb.put_str("; uint64_t __cr = __ca - __cb; __hex_nzcv = ((uint32_t)((__cr >> 63) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | ((__ca >= __cb) ? 2u : 0u) | ((uint32_t)((((__ca ^ __cb) & (__ca ^ __cr)) >> 63) & 1u));");
+    } else {
+      tb.put_str("; uint64_t __cr = __ca + __cb; __hex_nzcv = ((uint32_t)((__cr >> 63) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | ((__cr < __ca) ? 2u : 0u) | ((uint32_t)(((~(__ca ^ __cb) & (__ca ^ __cr)) >> 63) & 1u));");
+    }
+  } else {
+    if (is_sub) {
+      tb.put_str("; uint32_t __cr = __ca - __cb; __hex_nzcv = (((__cr >> 31) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | ((__ca >= __cb) ? 2u : 0u) | ((((__ca ^ __cb) & (__ca ^ __cr)) >> 31) & 1u);");
+    } else {
+      tb.put_str("; uint32_t __cr = __ca + __cb; __hex_nzcv = (((__cr >> 31) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | ((__cr < __ca) ? 2u : 0u) | (((~(__ca ^ __cb) & (__ca ^ __cr)) >> 31) & 1u);");
+    }
+  }
+  if (rd < 31u) {
+    tb.put_char(' ');
+    tb.put_reg_x(rd);
+    tb.put_str(" = __cr;");
+  }
+  tb.put_str(" }\n");
+}
+
 static void emit_cond_expr(TextBuf& tb, uint32_t cond, const CmpState& cmp) {
   if (!cmp.valid) {
     tb.put_str("(1)");
     return;
   }
   const uint32_t c = cond & 0xFu;
+  if (cmp.is_nzcv_var) {
+    switch (c) {
+      case 0x0u: tb.put_str("((__hex_nzcv & 4u) != 0u)"); return;
+      case 0x1u: tb.put_str("((__hex_nzcv & 4u) == 0u)"); return;
+      case 0x2u: tb.put_str("((__hex_nzcv & 2u) != 0u)"); return;
+      case 0x3u: tb.put_str("((__hex_nzcv & 2u) == 0u)"); return;
+      case 0x4u: tb.put_str("((__hex_nzcv & 8u) != 0u)"); return;
+      case 0x5u: tb.put_str("((__hex_nzcv & 8u) == 0u)"); return;
+      case 0x6u: tb.put_str("((__hex_nzcv & 1u) != 0u)"); return;
+      case 0x7u: tb.put_str("((__hex_nzcv & 1u) == 0u)"); return;
+      case 0x8u: tb.put_str("(((__hex_nzcv & 2u) != 0u) && ((__hex_nzcv & 4u) == 0u))"); return;
+      case 0x9u: tb.put_str("(((__hex_nzcv & 2u) == 0u) || ((__hex_nzcv & 4u) != 0u))"); return;
+      case 0xAu: tb.put_str("((((__hex_nzcv >> 3u) & 1u) == (__hex_nzcv & 1u)))"); return;
+      case 0xBu: tb.put_str("((((__hex_nzcv >> 3u) & 1u) != (__hex_nzcv & 1u)))"); return;
+      case 0xCu: tb.put_str("(((__hex_nzcv & 4u) == 0u) && (((__hex_nzcv >> 3u) & 1u) == (__hex_nzcv & 1u)))"); return;
+      case 0xDu: tb.put_str("(((__hex_nzcv & 4u) != 0u) || (((__hex_nzcv >> 3u) & 1u) != (__hex_nzcv & 1u)))"); return;
+      default: tb.put_str("(1)"); return;
+    }
+  }
+  if ((c == 0x4u || c == 0x5u) && !cmp.is_fp) {
+    // MI (negative) / PL (non-negative): evaluate sign bit of (lhs +/- rhs)
+    const char* scast = cmp.is32 ? "(int32_t)" : "(int64_t)";
+    const char* ucast = cmp.is32 ? "(uint32_t)" : "(uint64_t)";
+    tb.put_char('(');
+    tb.put_str(scast);
+    if (cmp.is_imm && cmp.rhs_imm == 0ULL) {
+      if (cmp.lhs_is_sp) tb.put_reg_x_or_sp(cmp.lhs_reg);
+      else tb.put_reg_x(cmp.lhs_reg);
+    } else {
+      tb.put_char('(');
+      tb.put_str(ucast);
+      if (cmp.lhs_is_sp) tb.put_reg_x_or_sp(cmp.lhs_reg);
+      else tb.put_reg_x(cmp.lhs_reg);
+      tb.put_str(cmp.is_cmn ? " + " : " - ");
+      tb.put_str(ucast);
+      if (cmp.is_imm) tb.put_imm(cmp.rhs_imm);
+      else tb.put_reg_x(cmp.rhs_reg);
+      tb.put_char(')');
+    }
+    tb.put_str(c == 0x4u ? " < 0)" : " >= 0)");
+    return;
+  }
   const bool signed_cmp = (c == 0xAu || c == 0xBu || c == 0xCu || c == 0xDu);
   const char* op = "==";
   switch (c) {
@@ -402,6 +583,8 @@ static void emit_cond_expr(TextBuf& tb, uint32_t cond, const CmpState& cmp) {
     case 0x1u: op = "!="; break;  // ne
     case 0x2u: op = ">="; break;  // hs/cs
     case 0x3u: op = "<";  break;  // lo/cc
+    case 0x4u: op = "<";  break;  // mi (FP less than)
+    case 0x5u: op = ">="; break;  // pl (FP greater/equal)
     case 0x8u: op = ">";  break;  // hi
     case 0x9u: op = "<="; break;  // ls
     case 0xAu: op = ">="; break;  // ge
@@ -525,15 +708,40 @@ static void process_insn(
   // RET (x30 or reg)
   if ((w & 0xFFFFFC1Fu) == 0xD65F0000u) {
     if (!emit) {
-      if ((ctx.gpr_written & 1u) != 0u) ctx.returns_value = true;
-      else if ((ctx.fp_written & 1u) != 0u) {
-        ctx.returns_value = true;
-        ctx.returns_double = true;
+      const bool fp_w = (ctx.fp_written & 1u) != 0u && (ctx.fp_used & 1u) != 0u && (((ctx.fp_single_mask | ctx.fp_double_mask) & 1u) != 0u);
+      const bool gpr_w = (ctx.gpr_written & 1u) != 0u && (ctx.gpr_used & 1u) != 0u;
+      bool voted_gpr = false;
+      if (fp_w && !ctx.d0_compared && (!gpr_w || ctx.x0_read_since_write || (ctx.last_ret_is_fp && !ctx.d0_read_since_write))) {
+        ctx.ret_fp_count += 3u;
+      } else if (fp_w && ctx.d0_compared && gpr_w && !ctx.x0_read_since_write) {
+        ctx.ret_gpr_count += 3u;
+        voted_gpr = true;
+      } else if (fp_w && ctx.d0_compared && gpr_w && ctx.x0_read_since_write && !ctx.last_ret_is_fp) {
+        // e.g. tid 35: x0 is loop ptr (read by cmp), s0 is running max (compared by fcmpe)
+        ctx.ret_fp_count += 2u;
+      } else if (gpr_w && !ctx.x0_read_since_write && (!fp_w || ctx.d0_read_since_write || !ctx.last_ret_is_fp)) {
+        ctx.ret_gpr_count += 2u;
+        voted_gpr = true;
+      } else if (ctx.last_ret_is_fp && fp_w && !ctx.d0_compared) {
+        ctx.ret_fp_count += 1u;
+      } else if (gpr_w) {
+        ctx.ret_gpr_count += 1u;
+        voted_gpr = true;
+      } else if (fp_w) {
+        ctx.ret_fp_count += 1u;
+      }
+      if (voted_gpr) {
+        if (ctx.last_x0_is32) ctx.ret_int32_count++;
+        else ctx.ret_int64_count++;
       }
     } else if (tb) {
       rec();
-      if (ctx.returns_double) {
+      if (ctx.returns_float) {
+        tb->put_str("    return (float)d0;\n");
+      } else if (ctx.returns_double) {
         tb->put_str("    return d0;\n");
+      } else if (ctx.returns_int32) {
+        tb->put_str("    return (int)(int32_t)x0;\n");
       } else if (ctx.returns_value) {
         tb->put_str("    return x0;\n");
       } else {
@@ -584,7 +792,7 @@ static void process_insn(
     if (!emit) {
       if (target != base_addr) ctx.add_callee(target);
       ctx.mark_gpr_write(0u);
-      ctx.mark_fp_write(0u);
+      ctx.fp_written |= 1u;
       // Caller-saved ADRP pages may be clobbered by call (x0..x18).
       for (uint32_t r = 0u; r < 19u; ++r) ctx.adrp_valid[r] = false;
     } else if (tb) {
@@ -624,7 +832,7 @@ static void process_insn(
       }
       for (uint32_t r = 0u; r < 19u; ++r) ctx.adrp_valid[r] = false;
     }
-    cmp.valid = false;
+    if (!cmp.is_nzcv_var) cmp.valid = false;
     return;
   }
 
@@ -642,7 +850,7 @@ static void process_insn(
       tb->put_str("    x0 = unknown_call(x0);\n");
       for (uint32_t r = 0u; r < 19u; ++r) ctx.adrp_valid[r] = false;
     }
-    cmp.valid = false;
+    if (!cmp.is_nzcv_var) cmp.valid = false;
     return;
   }
 
@@ -756,9 +964,17 @@ static void process_insn(
         ctx.mark_gpr_write(rd);
         ctx.adrp_page[rd] = val;
         ctx.adrp_valid[rd] = is_adrp;
+        if (is_adrp) {
+          ctx.saved_adrp_page[rd] = val;
+          ctx.saved_adrp_valid[rd] = true;
+        }
       } else if (tb) {
         ctx.adrp_page[rd] = val;
         ctx.adrp_valid[rd] = is_adrp;
+        if (is_adrp) {
+          ctx.saved_adrp_page[rd] = val;
+          ctx.saved_adrp_valid[rd] = true;
+        }
         if (!is_adrp) {
           rec();
           tb->put_str("    ");
@@ -784,7 +1000,7 @@ static void process_insn(
       if (opc == 3u) {  // MOVK
         if (!emit) {
           ctx.mark_gpr_read(rd);
-          ctx.mark_gpr_write(rd);
+          ctx.mark_gpr_write(rd, is64);
         } else if (tb) {
           const uint64_t clear_mask = ~(0xFFFFULL << shift);
           rec();
@@ -797,14 +1013,14 @@ static void process_insn(
           tb->put_str("ULL) | 0x");
           tb->put_u64_hex(imm16 << shift, true);
           tb->put_str("ULL;\n");
-          ctx.adrp_valid[rd] = false;
+          ctx.clear_adrp(rd);
         }
       } else {
         uint64_t val = imm16 << shift;
         if (opc == 0u) val = ~val;
         if (!is64) val &= 0xFFFFFFFFULL;
         if (!emit) {
-          ctx.mark_gpr_write(rd);
+          ctx.mark_gpr_write(rd, is64);
         } else if (tb) {
           rec();
           tb->put_str("    ");
@@ -812,7 +1028,7 @@ static void process_insn(
           tb->put_str(" = ");
           tb->put_imm(val);
           tb->put_str(";\n");
-          ctx.adrp_valid[rd] = false;
+          ctx.clear_adrp(rd);
         }
       }
     }
@@ -832,29 +1048,52 @@ static void process_insn(
     if (decode_bitmask_imm(N, imms, immr, is64, &imm)) {
       const bool sets_flags = (opc == 3u);
       if (sets_flags) {
-        cmp = CmpState{true, !is64, false, true, false, false, rn, 31u, 0ULL};
+        cmp = CmpState{true, !is64, false, false, false, false, 0u, 0u, 0ULL, true};
       }
       if (!emit) {
         if (rn < 31u) ctx.mark_gpr_read(rn);
-        if (rd < 31u) ctx.mark_gpr_write(rd);
+        if (rd < 31u) ctx.mark_gpr_write(rd, is64);
         else if (!sets_flags) ctx.uses_sp = true;
-        if (!is64 && !(sets_flags && rd == 31u)) ctx.uses_uint32 = true;
-      } else if (tb && !(sets_flags && rd == 31u)) {
-        rec();
-        tb->put_str("    ");
-        tb->put_reg_x_or_sp(rd);
-        tb->put_str(" = ");
-        if (opc == 1u && rn == 31u) {
-          tb->put_imm(imm);
-        } else {
-          if (!is64) tb->put_str("(uint32_t)(");
-          tb->put_reg_x(rn);
-          tb->put_str(opc == 1u ? " | " : (opc == 2u ? " ^ " : " & "));
-          tb->put_imm(imm);
-          if (!is64) tb->put_char(')');
+        if (sets_flags) {
+          ctx.uses_nzcv = true;
+          ctx.uses_uint32 = true;
+          if (is64) ctx.uses_uint64_t = true;
         }
-        tb->put_str(";\n");
-        if (rd < 31u) ctx.adrp_valid[rd] = false;
+        if (!is64 && !(sets_flags && rd == 31u)) ctx.uses_uint32 = true;
+      } else if (tb) {
+        if (sets_flags) {
+          rec();
+          tb->put_str(is64 ? "    { uint64_t __tr = (uint64_t)(" : "    { uint32_t __tr = (uint32_t)(");
+          tb->put_reg_x(rn);
+          tb->put_str(" & ");
+          tb->put_imm(imm);
+          tb->put_str(is64
+              ? "); __hex_nzcv = ((uint32_t)((__tr >> 63) & 1u) << 3) | ((__tr == 0u) ? 4u : 0u);"
+              : "); __hex_nzcv = (((__tr >> 31) & 1u) << 3) | ((__tr == 0u) ? 4u : 0u);");
+          if (rd < 31u) {
+            tb->put_char(' ');
+            tb->put_reg_x(rd);
+            tb->put_str(" = __tr;");
+            ctx.clear_adrp(rd);
+          }
+          tb->put_str(" }\n");
+        } else {
+          rec();
+          tb->put_str("    ");
+          tb->put_reg_x_or_sp(rd);
+          tb->put_str(" = ");
+          if (opc == 1u && rn == 31u) {
+            tb->put_imm(imm);
+          } else {
+            if (!is64) tb->put_str("(uint32_t)(");
+            tb->put_reg_x(rn);
+            tb->put_str(opc == 1u ? " | " : (opc == 2u ? " ^ " : " & "));
+            tb->put_imm(imm);
+            if (!is64) tb->put_char(')');
+          }
+          tb->put_str(";\n");
+          if (rd < 31u) ctx.clear_adrp(rd);
+        }
       }
     }
     return;
@@ -871,18 +1110,24 @@ static void process_insn(
     const uint32_t rd = w & 31u;
 
     if (sets_flags) {
-      cmp = CmpState{true, !is64, false, true, !is_sub, rn == 31u, rn, 31u, imm};
+      cmp = CmpState{true, !is64, false, false, false, false, 0u, 0u, 0ULL, true};
     }
 
     // ADRP + ADD global address resolution
-    if (!is_sub && !sets_flags && is64 && rn < 31u && rd < 31u && ctx.adrp_valid[rn]) {
-      const uint64_t gaddr = ctx.adrp_page[rn] + imm;
+    if (!is_sub && !sets_flags && is64 && rn < 31u && rd < 31u && (ctx.adrp_valid[rn] || (imm != 0ULL && ctx.saved_adrp_valid[rn]))) {
+      const uint64_t gaddr = (ctx.adrp_valid[rn] ? ctx.adrp_page[rn] : ctx.saved_adrp_page[rn]) + imm;
       if (!emit) {
+        const bool keep_saved = (rd == rn) && ctx.saved_adrp_valid[rd];
+        const uint64_t keep_page = ctx.saved_adrp_page[rd];
         ctx.add_global(gaddr, true);
         ctx.uses_uintptr = true;
-        ctx.mark_gpr_write(rd);
+        ctx.mark_gpr_write(rd, is64);
+        if (keep_saved) { ctx.saved_adrp_valid[rd] = true; ctx.saved_adrp_page[rd] = keep_page; }
       } else if (tb) {
-        ctx.adrp_valid[rd] = false;
+        const bool keep_saved = (rd == rn) && ctx.saved_adrp_valid[rd];
+        const uint64_t keep_page = ctx.saved_adrp_page[rd];
+        ctx.clear_adrp(rd);
+        if (keep_saved) { ctx.saved_adrp_valid[rd] = true; ctx.saved_adrp_page[rd] = keep_page; }
         rec();
         tb->put_str("    ");
         tb->put_reg_x(rd);
@@ -896,15 +1141,25 @@ static void process_insn(
     if (!emit) {
       if (rn == 31u) ctx.uses_sp = true;
       else ctx.mark_gpr_read(rn);
-      if (rd < 31u) ctx.mark_gpr_write(rd);
+      if (rd < 31u) ctx.mark_gpr_write(rd, is64);
       else if (!sets_flags) ctx.uses_sp = true;
+      if (sets_flags) {
+        ctx.uses_nzcv = true;
+        ctx.uses_uint32 = true;
+        if (is64) ctx.uses_uint64_t = true;
+      }
       if (!is64 && !(sets_flags && rd == 31u)) ctx.uses_uint32 = true;
     } else if (tb) {
-      if (sets_flags && rd == 31u) {
-        // CMP / CMN immediate: handled via cmp state.
+      rec();
+      if (sets_flags) {
+        tb->put_str(is64 ? "    { uint64_t __ca = (uint64_t)" : "    { uint32_t __ca = (uint32_t)");
+        tb->put_reg_x_or_sp(rn);
+        tb->put_str(is64 ? ", __cb = (uint64_t)" : ", __cb = (uint32_t)");
+        tb->put_imm(imm);
+        emit_nzcv_addsub_tail(*tb, is64, is_sub, rd);
+        if (rd < 31u) ctx.clear_adrp(rd);
         return;
       }
-      rec();
       tb->put_str("    ");
       tb->put_reg_x_or_sp(rd);
       tb->put_str(" = ");
@@ -916,7 +1171,7 @@ static void process_insn(
       }
       if (!is64) tb->put_char(')');
       tb->put_str(";\n");
-      if (rd < 31u) ctx.adrp_valid[rd] = false;
+      if (rd < 31u) ctx.clear_adrp(rd);
     }
     return;
   }
@@ -933,15 +1188,33 @@ static void process_insn(
     const uint32_t rd = w & 31u;
 
     if (sets_flags) {
-      cmp = CmpState{true, !is64, false, false, !is_sub, false, rn, rm, 0ULL};
+      cmp = CmpState{true, !is64, false, false, false, false, 0u, 0u, 0ULL, true};
     }
     if (!emit) {
       ctx.mark_gpr_read(rn);
       ctx.mark_gpr_read(rm);
-      if (rd < 31u) ctx.mark_gpr_write(rd);
-      if (!is64 && rd < 31u) ctx.uses_uint32 = true;
+      if (rd < 31u) ctx.mark_gpr_write(rd, is64);
+      if (sets_flags) {
+        ctx.uses_nzcv = true;
+        ctx.uses_uint32 = true;
+        if (is64) ctx.uses_uint64_t = true;
+      }
+      if (!is64) ctx.uses_uint32 = true;
+      if (imm6 != 0u) {
+        if (is64) ctx.uses_uint64_t = true;
+        if (shift_type == 2u) { if (is64) ctx.uses_int64_t = true; else ctx.uses_int32 = true; }
+      }
     } else if (tb) {
-      if (sets_flags && rd == 31u) return;  // CMP / CMN reg
+      if (sets_flags) {
+        rec();
+        tb->put_str(is64 ? "    { uint64_t __ca = (uint64_t)" : "    { uint32_t __ca = (uint32_t)");
+        tb->put_reg_x(rn);
+        tb->put_str(is64 ? ", __cb = (uint64_t)" : ", __cb = (uint32_t)");
+        emit_shifted_reg(*tb, rm, shift_type, imm6, is64);
+        emit_nzcv_addsub_tail(*tb, is64, is_sub, rd);
+        if (rd < 31u) ctx.clear_adrp(rd);
+        return;
+      }
       if (rd < 31u) {
         rec();
         tb->put_str("    ");
@@ -954,43 +1227,52 @@ static void process_insn(
           tb->put_reg_x(rn);
           tb->put_str(is_sub ? " - " : " + ");
         }
-        if (imm6 != 0u) {
-          tb->put_char('(');
-          tb->put_reg_x(rm);
-          tb->put_str(shift_type == 0u ? " << " : " >> ");
-          tb->put_u64_dec(imm6);
-          tb->put_char(')');
-        } else {
-          tb->put_reg_x(rm);
-        }
+        emit_shifted_reg(*tb, rm, shift_type, imm6, is64);
         if (!is64) tb->put_char(')');
         tb->put_str(";\n");
-        ctx.adrp_valid[rd] = false;
+        ctx.clear_adrp(rd);
       }
     }
     return;
   }
 
-  // ADD / SUB (extended register)
+  // ADD / ADDS / SUB / SUBS (extended register)
   if ((w & 0x1FE00000u) == 0x0B200000u) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const bool is_sub = ((w >> 30u) & 1u) != 0u;
     const bool sets_flags = ((w >> 29u) & 1u) != 0u;
     const uint32_t rm = (w >> 16u) & 31u;
+    const uint32_t option = (w >> 13u) & 7u;
     const uint32_t imm3 = (w >> 10u) & 7u;
     const uint32_t rn = (w >> 5u) & 31u;
     const uint32_t rd = w & 31u;
     if (sets_flags) {
-      cmp = CmpState{true, !is64, false, false, !is_sub, rn == 31u, rn, rm, 0ULL};
+      cmp = CmpState{true, !is64, false, false, false, false, 0u, 0u, 0ULL, true};
     }
     if (!emit) {
       if (rn == 31u) ctx.uses_sp = true;
       else ctx.mark_gpr_read(rn);
       ctx.mark_gpr_read(rm);
-      if (rd < 31u) ctx.mark_gpr_write(rd);
+      if (rd < 31u) ctx.mark_gpr_write(rd, is64);
       else if (!sets_flags) ctx.uses_sp = true;
-      if (!is64 && !(sets_flags && rd == 31u)) ctx.uses_uint32 = true;
-    } else if (tb && !(sets_flags && rd == 31u)) {
+      ctx.uses_uint64_t = true;
+      mark_ext_types(ctx, option);
+      if (sets_flags) {
+        ctx.uses_nzcv = true;
+        ctx.uses_uint32 = true;
+      }
+      if (!is64) ctx.uses_uint32 = true;
+    } else if (tb) {
+      if (sets_flags) {
+        rec();
+        tb->put_str(is64 ? "    { uint64_t __ca = (uint64_t)" : "    { uint32_t __ca = (uint32_t)");
+        tb->put_reg_x_or_sp(rn);
+        tb->put_str(is64 ? ", __cb = (uint64_t)" : ", __cb = (uint32_t)");
+        emit_ext_reg(*tb, rm, option, imm3);
+        emit_nzcv_addsub_tail(*tb, is64, is_sub, rd);
+        if (rd < 31u) ctx.clear_adrp(rd);
+        return;
+      }
       rec();
       tb->put_str("    ");
       tb->put_reg_x_or_sp(rd);
@@ -998,18 +1280,10 @@ static void process_insn(
       if (!is64) tb->put_str("(uint32_t)(");
       tb->put_reg_x_or_sp(rn);
       tb->put_str(is_sub ? " - " : " + ");
-      if (imm3 != 0u) {
-        tb->put_char('(');
-        tb->put_reg_x(rm);
-        tb->put_str(" << ");
-        tb->put_u64_dec(imm3);
-        tb->put_char(')');
-      } else {
-        tb->put_reg_x(rm);
-      }
+      emit_ext_reg(*tb, rm, option, imm3);
       if (!is64) tb->put_char(')');
       tb->put_str(";\n");
-      if (rd < 31u) ctx.adrp_valid[rd] = false;
+      if (rd < 31u) ctx.clear_adrp(rd);
     }
     return;
   }
@@ -1030,13 +1304,39 @@ static void process_insn(
       return;
     }
     if (opc == 3u) {
-      cmp = CmpState{true, !is64, false, true, false, false, rn, 31u, 0ULL};
+      cmp = CmpState{true, !is64, false, false, false, false, 0u, 0u, 0ULL, true};
     }
     if (!emit) {
       if (rn < 31u) ctx.mark_gpr_read(rn);
       if (rm < 31u) ctx.mark_gpr_read(rm);
-      if (rd < 31u) ctx.mark_gpr_write(rd);
-      if (!is64 && rd < 31u) ctx.uses_uint32 = true;
+      if (rd < 31u) ctx.mark_gpr_write(rd, is64);
+      if (opc == 3u) {
+        ctx.uses_nzcv = true;
+        ctx.uses_uint32 = true;
+        if (is64) ctx.uses_uint64_t = true;
+      }
+      if (!is64) ctx.uses_uint32 = true;
+      if (imm6 != 0u) {
+        if (is64) ctx.uses_uint64_t = true;
+        if (shift_type == 2u) { if (is64) ctx.uses_int64_t = true; else ctx.uses_int32 = true; }
+      }
+    } else if (tb && opc == 3u) {
+      rec();
+      tb->put_str(is64 ? "    { uint64_t __tr = (uint64_t)(" : "    { uint32_t __tr = (uint32_t)(");
+      tb->put_reg_x(rn);
+      tb->put_str(invert ? " & ~(" : " & (");
+      emit_shifted_reg(*tb, rm, shift_type, imm6, is64);
+      tb->put_str(is64
+          ? ")); __hex_nzcv = ((uint32_t)((__tr >> 63) & 1u) << 3) | ((__tr == 0u) ? 4u : 0u);"
+          : ")); __hex_nzcv = (((__tr >> 31) & 1u) << 3) | ((__tr == 0u) ? 4u : 0u);");
+      if (rd < 31u) {
+        tb->put_char(' ');
+        tb->put_reg_x(rd);
+        tb->put_str(" = __tr;");
+        ctx.clear_adrp(rd);
+      }
+      tb->put_str(" }\n");
+      return;
     } else if (tb && rd < 31u) {
       rec();
       tb->put_str("    ");
@@ -1066,7 +1366,7 @@ static void process_insn(
       }
       if (!is64) tb->put_char(')');
       tb->put_str(";\n");
-      ctx.adrp_valid[rd] = false;
+      ctx.clear_adrp(rd);
     }
     return;
   }
@@ -1085,7 +1385,7 @@ static void process_insn(
     const uint32_t width = is64 ? 64u : 32u;
     if (!emit) {
       ctx.mark_gpr_read(rn);
-      if (rd < 31u) ctx.mark_gpr_write(rd);
+      if (rd < 31u) ctx.mark_gpr_write(rd, is64);
       ctx.uses_uint32 = true;
       if (opc == 0u) {
         ctx.uses_int64_t = true;
@@ -1156,7 +1456,7 @@ static void process_insn(
         if (!is64) tb->put_char(')');
       }
       tb->put_str(";\n");
-      ctx.adrp_valid[rd] = false;
+      ctx.clear_adrp(rd);
     }
     return;
   }
@@ -1173,7 +1473,7 @@ static void process_insn(
     if (!emit) {
       ctx.mark_gpr_read(rn);
       ctx.mark_gpr_read(rm);
-      if (rd < 31u) ctx.mark_gpr_write(rd);
+      if (rd < 31u) ctx.mark_gpr_write(rd, is64);
       if (!is64) ctx.uses_uint32 = true;
       if (cmp.valid && !cmp.is_fp) {
         const bool signed_cmp = (cond == 0xAu || cond == 0xBu || cond == 0xCu || cond == 0xDu);
@@ -1210,7 +1510,7 @@ static void process_insn(
       }
       if (!is64) tb->put_char(')');
       tb->put_str(";\n");
-      ctx.adrp_valid[rd] = false;
+      ctx.clear_adrp(rd);
     }
     return;
   }
@@ -1227,7 +1527,7 @@ static void process_insn(
       ctx.mark_gpr_read(rn);
       ctx.mark_gpr_read(rm);
       if (ra < 31u) ctx.mark_gpr_read(ra);
-      if (rd < 31u) ctx.mark_gpr_write(rd);
+      if (rd < 31u) ctx.mark_gpr_write(rd, is64);
       if (!is64) ctx.uses_uint32 = true;
     } else if (tb && rd < 31u) {
       rec();
@@ -1247,7 +1547,7 @@ static void process_insn(
       if (ra < 31u || is_sub) tb->put_char(')');
       if (!is64) tb->put_char(')');
       tb->put_str(";\n");
-      ctx.adrp_valid[rd] = false;
+      ctx.clear_adrp(rd);
     }
     return;
   }
@@ -1263,7 +1563,7 @@ static void process_insn(
       if (!emit) {
         ctx.mark_gpr_read(rn);
         ctx.mark_gpr_read(rm);
-        if (rd < 31u) ctx.mark_gpr_write(rd);
+        if (rd < 31u) ctx.mark_gpr_write(rd, is64);
         ctx.uses_uint32 = true;
         ctx.uses_int32 = true;
         ctx.uses_int64_t = true;
@@ -1306,7 +1606,7 @@ static void process_insn(
           if (!is64) tb->put_char(')');
         }
         tb->put_str(";\n");
-        ctx.adrp_valid[rd] = false;
+        ctx.clear_adrp(rd);
       }
       return;
     }
@@ -1349,7 +1649,7 @@ static void process_insn(
         else if (is_load) { ctx.mark_fp_write(rt); ctx.mark_fp_write(rt2); }
         else { ctx.mark_fp_read(rt); ctx.mark_fp_read(rt2); }
       } else {
-        if (is_load) { ctx.mark_gpr_write(rt); ctx.mark_gpr_write(rt2); }
+        if (is_load) { const bool ldp64 = (((w >> 30u) & 3u) >= 2u); ctx.mark_gpr_write(rt, ldp64); ctx.mark_gpr_write(rt2, ldp64); }
         else { ctx.mark_gpr_read(rt); ctx.mark_gpr_read(rt2); }
       }
     } else if (tb) {
@@ -1403,10 +1703,10 @@ static void process_insn(
         emit_one(rt2, eff1);
       }
       if (!is_fp && is_load) {
-        if (rt < 31u) ctx.adrp_valid[rt] = false;
-        if (rt2 < 31u) ctx.adrp_valid[rt2] = false;
+        if (rt < 31u) ctx.clear_adrp(rt);
+        if (rt2 < 31u) ctx.clear_adrp(rt2);
       }
-      if ((mode == 1u || mode == 3u) && rn < 31u) ctx.adrp_valid[rn] = false;
+      if ((mode == 1u || mode == 3u) && rn < 31u) ctx.clear_adrp(rn);
       if (mode == 1u && disp != 0) {
         rec();
         tb->put_str("    ");
@@ -1463,10 +1763,16 @@ static void process_insn(
         ctx.add_global(gaddr, false);
         if (is_fp) {
           if (bits == 128u) ctx.mark_q(rt);
-          else if (is_load) ctx.mark_fp_write(rt);
-          else ctx.mark_fp_read(rt);
+          else if (is_load) {
+            ctx.mark_fp_write(rt);
+            ctx.uses_fp_bitcast = true;
+            ctx.uses_uint32 = true;
+            ctx.uses_uint64_t = true;
+            if (bits == 32u) ctx.fp_single_mask |= (1u << rt);
+            else if (bits == 64u) ctx.fp_double_mask |= (1u << rt);
+          } else ctx.mark_fp_read(rt);
         } else {
-          if (is_load) ctx.mark_gpr_write(rt);
+          if (is_load) ctx.mark_gpr_write(rt, (((w >> 30u) & 3u) == 3u) || (((w >> 22u) & 3u) == 2u));
           else ctx.mark_gpr_read(rt);
         }
       } else if (tb) {
@@ -1478,16 +1784,25 @@ static void process_insn(
             tb->put_u64_hex(gaddr, true);
             tb->put_str(";\n");
           } else {
-            if (is_fp) {
-              if (bits == 128u) tb->put_reg_q(rt);
-              else tb->put_reg_d(rt);
+            if (is_fp && bits != 128u) {
+              tb->put_reg_d(rt);
+              if (bits == 32u) {
+                tb->put_str(" = (double)__hex_u32_to_f32((uint32_t)global_");
+                tb->put_u64_hex(gaddr, true);
+                tb->put_str(");\n");
+              } else {
+                tb->put_str(" = __hex_u64_to_f64(global_");
+                tb->put_u64_hex(gaddr, true);
+                tb->put_str(");\n");
+              }
             } else {
-              tb->put_reg_x(rt);
+              if (is_fp) tb->put_reg_q(rt);
+              else tb->put_reg_x(rt);
+              tb->put_str(" = global_");
+              tb->put_u64_hex(gaddr, true);
+              tb->put_str(";\n");
             }
-            tb->put_str(" = global_");
-            tb->put_u64_hex(gaddr, true);
-            tb->put_str(";\n");
-            if (!is_fp && rt < 31u) ctx.adrp_valid[rt] = false;
+            if (!is_fp && rt < 31u) ctx.clear_adrp(rt);
           }
         } else {
           tb->put_str("global_");
@@ -1518,7 +1833,7 @@ static void process_insn(
         else if (is_load) ctx.mark_fp_write(rt);
         else ctx.mark_fp_read(rt);
       } else {
-        if (is_load) ctx.mark_gpr_write(rt);
+        if (is_load) ctx.mark_gpr_write(rt, (((w >> 30u) & 3u) == 3u) || (((w >> 22u) & 3u) == 2u));
         else ctx.mark_gpr_read(rt);
       }
     } else if (tb) {
@@ -1563,7 +1878,7 @@ static void process_insn(
             emit_mem_addr(*tb, rn, (idx_mode == 1u || idx_mode == 3u) ? 0LL : disp);
           }
           tb->put_str(");\n");
-          if (!is_fp && rt < 31u) ctx.adrp_valid[rt] = false;
+          if (!is_fp && rt < 31u) ctx.clear_adrp(rt);
         } else {
           emit_mem_load_type(*tb, bits, false, is_fp);
           if (is_regoff) {
@@ -1596,7 +1911,7 @@ static void process_insn(
           tb->put_str(";\n");
         }
       }
-      if ((idx_mode == 1u || idx_mode == 3u) && rn < 31u) ctx.adrp_valid[rn] = false;
+      if ((idx_mode == 1u || idx_mode == 3u) && rn < 31u) ctx.clear_adrp(rn);
       if (idx_mode == 1u && disp != 0) {
         rec();
         tb->put_str("    ");
@@ -1627,7 +1942,7 @@ static void process_insn(
       const uint64_t gaddr = ctx.adrp_page[rn];
       if (!emit) {
         ctx.add_global(gaddr, false);
-        if (is_load) ctx.mark_gpr_write(rt);
+        if (is_load) ctx.mark_gpr_write(rt, (((w >> 30u) & 3u) == 3u) || (((w >> 22u) & 3u) == 2u));
         else ctx.mark_gpr_read(rt);
       } else if (tb) {
         rec();
@@ -1642,7 +1957,7 @@ static void process_insn(
             tb->put_str(" = global_");
             tb->put_u64_hex(gaddr, true);
             tb->put_str(";\n");
-            ctx.adrp_valid[rt] = false;
+            ctx.clear_adrp(rt);
           }
         } else {
           tb->put_str("global_");
@@ -1675,7 +1990,7 @@ static void process_insn(
           emit_mem_load_type(*tb, bits, false, false);
           emit_mem_addr(*tb, rn, 0LL);
           tb->put_str(");\n");
-          ctx.adrp_valid[rt] = false;
+          ctx.clear_adrp(rt);
         }
       } else {
         rec();
@@ -1693,7 +2008,7 @@ static void process_insn(
           tb->put_str("    ");
           tb->put_reg_x(rs);
           tb->put_str(" = 0;\n");
-          ctx.adrp_valid[rs] = false;
+          ctx.clear_adrp(rs);
         }
       }
     }
@@ -1702,10 +2017,13 @@ static void process_insn(
 
   // FMOV (immediate): sf=0, 00 11110 ftype(2) 1 imm8(8) 100 00000 Rd(5)
   if ((w & 0x5F201C00u) == 0x1E201000u) {
+    const uint32_t ftype = (w >> 22u) & 3u;
     const uint32_t imm8 = (w >> 13u) & 0xFFu;
     const uint32_t rd = w & 31u;
     if (!emit) {
       ctx.mark_fp_write(rd);
+      if (ftype == 0u) ctx.fp_single_mask |= (1u << rd);
+      else if (ftype == 1u) ctx.fp_double_mask |= (1u << rd);
     } else if (tb) {
       rec();
       tb->put_str("    ");
@@ -1717,14 +2035,24 @@ static void process_insn(
     return;
   }
 
-  // FP Data-Processing (1-source): FMOV / FABS / FNEG / FSQRT / FCVT
+  // FP Data-Processing (1-source): FMOV / FABS / FNEG / FSQRT / FCVT / FRINT*
   if ((w & 0x5F207C00u) == 0x1E204000u) {
+    const uint32_t ftype = (w >> 22u) & 3u;
     const uint32_t opcode = (w >> 15u) & 0x3Fu;
     const uint32_t rn = (w >> 5u) & 31u;
     const uint32_t rd = w & 31u;
     if (!emit) {
-      ctx.mark_fp_read(rn);
+      const int fw = ftype == 0u ? 1 : (ftype == 1u ? 2 : 0);
+      ctx.mark_fp_read(rn, fw);
       ctx.mark_fp_write(rd);
+      if (opcode == 4u) {
+        ctx.fp_single_mask |= (1u << rd);
+      } else if (opcode == 5u) {
+        ctx.fp_double_mask |= (1u << rd);
+      } else {
+        if (ftype == 0u) ctx.fp_single_mask |= (1u << rd);
+        else if (ftype == 1u) ctx.fp_double_mask |= (1u << rd);
+      }
     } else if (tb) {
       rec();
       tb->put_str("    ");
@@ -1739,6 +2067,26 @@ static void process_insn(
         tb->put_str(" < 0.0 ? -");
         tb->put_reg_d(rn);
         tb->put_str(" : ");
+        tb->put_reg_d(rn);
+        tb->put_str(")");
+      } else if (opcode == 3u) {
+        tb->put_str("sqrt(");
+        tb->put_reg_d(rn);
+        tb->put_str(")");
+      } else if (opcode == 9u) {
+        tb->put_str("ceil(");
+        tb->put_reg_d(rn);
+        tb->put_str(")");
+      } else if (opcode == 10u) {
+        tb->put_str("floor(");
+        tb->put_reg_d(rn);
+        tb->put_str(")");
+      } else if (opcode == 11u) {
+        tb->put_str("trunc(");
+        tb->put_reg_d(rn);
+        tb->put_str(")");
+      } else if (opcode == 8u || opcode == 12u || opcode == 14u || opcode == 15u) {
+        tb->put_str("round(");
         tb->put_reg_d(rn);
         tb->put_str(")");
       } else {
@@ -1762,9 +2110,14 @@ static void process_insn(
     else if (opcode == 3u) fop = " - ";
     if (fop) {
       if (!emit) {
-        ctx.mark_fp_read(rn);
-        ctx.mark_fp_read(rm);
+        const uint32_t ftype = (w >> 22u) & 3u;
+        const int fw = ftype == 0u ? 1 : (ftype == 1u ? 2 : 0);
+        ctx.mark_fp_read(rn, fw);
+        ctx.mark_fp_read(rm, fw);
         ctx.mark_fp_write(rd);
+        const uint32_t mask = (1u << rn) | (1u << rm) | (1u << rd);
+        if (ftype == 0u) ctx.fp_single_mask |= mask;
+        else if (ftype == 1u) ctx.fp_double_mask |= mask;
       } else if (tb) {
         rec();
         tb->put_str("    ");
@@ -1781,13 +2134,32 @@ static void process_insn(
 
   // FCMP (reg or #0.0)
   if ((w & 0x5F203C00u) == 0x1E202000u) {
+    const uint32_t ftype = (w >> 22u) & 3u;
     const bool is_zero = ((w >> 3u) & 1u) != 0u;
     const uint32_t rm = (w >> 16u) & 31u;
     const uint32_t rn = (w >> 5u) & 31u;
-    cmp = CmpState{true, false, true, is_zero, false, false, rn, rm, 0ULL};
+    cmp = CmpState{true, false, false, false, false, false, 0u, 0u, 0ULL, true};
     if (!emit) {
-      ctx.mark_fp_read(rn);
-      if (!is_zero) ctx.mark_fp_read(rm);
+      ctx.uses_nzcv = true;
+      ctx.uses_uint32 = true;
+      const int fw = ftype == 0u ? 1 : (ftype == 1u ? 2 : 0);
+      ctx.mark_fp_read(rn, fw);
+      if (rn == 0u || (!is_zero && rm == 0u)) ctx.d0_compared = true;
+      if (ftype == 0u) ctx.fp_single_mask |= (1u << rn);
+      else if (ftype == 1u) ctx.fp_double_mask |= (1u << rn);
+      if (!is_zero) {
+        ctx.mark_fp_read(rm, fw);
+        if (ftype == 0u) ctx.fp_single_mask |= (1u << rm);
+        else if (ftype == 1u) ctx.fp_double_mask |= (1u << rm);
+      }
+    } else if (tb) {
+      rec();
+      tb->put_str("    { double __fa = ");
+      tb->put_reg_d(rn);
+      tb->put_str(", __fb = ");
+      if (is_zero) tb->put_str("0.0");
+      else tb->put_reg_d(rm);
+      tb->put_str("; __hex_nzcv = (__fa == __fb) ? 6u : ((__fa < __fb) ? 8u : ((__fa > __fb) ? 2u : 3u)); }\n");
     }
     return;
   }
@@ -1799,37 +2171,400 @@ static void process_insn(
     const uint32_t opcode = (w >> 16u) & 7u;
     const uint32_t rn = (w >> 5u) & 31u;
     const uint32_t rd = w & 31u;
-    const bool to_int = (opcode == 0u || opcode == 1u || opcode == 4u || opcode == 5u || opcode == 6u);
-    if (to_int) {
+    const uint32_t ftype = (w >> 22u) & 3u;
+    const bool to_int = (opcode == 0u || opcode == 1u || opcode == 4u || opcode == 5u);
+    if (opcode == 6u) {
+      // FMOV Wd/Xd, Sn/Dn (IEEE-754 bit-cast FP -> GPR)
       if (!emit) {
         ctx.mark_fp_read(rn);
-        if (rd < 31u) ctx.mark_gpr_write(rd);
+        if (rd < 31u) ctx.mark_gpr_write(rd, ftype == 1u);
+        ctx.uses_fp_bitcast = true;
+        ctx.uses_uint32 = true;
+        ctx.uses_uint64_t = true;
+        if (ftype == 0u) ctx.fp_single_mask |= (1u << rn);
+        else if (ftype == 1u) ctx.fp_double_mask |= (1u << rn);
+      } else if (tb && rd < 31u) {
+        rec();
+        tb->put_str("    ");
+        tb->put_reg_x(rd);
+        tb->put_str(ftype == 0u ? " = (uint64)__hex_f32_to_u32((float)" : " = __hex_f64_to_u64(");
+        tb->put_reg_d(rn);
+        tb->put_str(ftype == 0u ? "));\n" : ");\n");
+        ctx.clear_adrp(rd);
+      }
+    } else if (opcode == 7u) {
+      // FMOV Sd/Dd, Wn/Xn (IEEE-754 bit-cast GPR -> FP)
+      if (!emit) {
+        ctx.mark_gpr_read(rn);
+        ctx.mark_fp_write(rd);
+        ctx.uses_fp_bitcast = true;
+        ctx.uses_uint32 = true;
+        ctx.uses_uint64_t = true;
+        if (ftype == 0u) ctx.fp_single_mask |= (1u << rd);
+        else if (ftype == 1u) ctx.fp_double_mask |= (1u << rd);
+      } else if (tb) {
+        rec();
+        tb->put_str("    ");
+        tb->put_reg_d(rd);
+        tb->put_str(ftype == 0u ? " = (double)__hex_u32_to_f32((uint32_t)" : " = __hex_u64_to_f64((uint64_t)");
+        tb->put_reg_x(rn);
+        tb->put_str(");\n");
+      }
+    } else if (to_int) {
+      if (!emit) {
+        ctx.mark_fp_read(rn);
+        if (rd < 31u) ctx.mark_gpr_write(rd, is64_int);
         ctx.uses_int64_t = true;
         ctx.uses_uint32 = true;
       } else if (tb && rd < 31u) {
         rec();
         tb->put_str("    ");
         tb->put_reg_x(rd);
-        tb->put_str(is64_int ? " = (uint64)(int64_t)" : " = (uint32_t)(int64_t)");
-        tb->put_reg_d(rn);
+        const bool is_unsigned_cvt = (opcode == 1u || opcode == 5u);
+        if (is64_int) {
+          tb->put_str(is_unsigned_cvt ? " = (uint64)" : " = (uint64)(int64_t)");
+        } else {
+          tb->put_str(is_unsigned_cvt ? " = (uint32_t)" : " = (uint32_t)(int64_t)");
+        }
+        if (rmode == 1u && opcode < 4u) {
+          tb->put_str("ceil(");
+          tb->put_reg_d(rn);
+          tb->put_str(")");
+        } else if (rmode == 2u && opcode < 4u) {
+          tb->put_str("floor(");
+          tb->put_reg_d(rn);
+          tb->put_str(")");
+        } else if ((rmode == 0u && opcode < 4u) || opcode == 4u || opcode == 5u) {
+          tb->put_str("round(");
+          tb->put_reg_d(rn);
+          tb->put_str(")");
+        } else {
+          tb->put_reg_d(rn);
+        }
         tb->put_str(";\n");
-        ctx.adrp_valid[rd] = false;
+        ctx.clear_adrp(rd);
       }
-    } else if (opcode == 2u || opcode == 3u || opcode == 7u) {
+    } else if (opcode == 2u || opcode == 3u) {
       if (!emit) {
         ctx.mark_gpr_read(rn);
         ctx.mark_fp_write(rd);
-        if (opcode == 2u) ctx.uses_int64_t = true;
+        if (opcode == 2u) { ctx.uses_int64_t = true; ctx.uses_int32 = true; }
+        if (opcode == 3u) { ctx.uses_uint64_t = true; ctx.uses_uint32 = true; }
+        if (ftype == 0u) ctx.fp_single_mask |= (1u << rd);
+        else if (ftype == 1u) ctx.fp_double_mask |= (1u << rd);
       } else if (tb) {
         rec();
         tb->put_str("    ");
         tb->put_reg_d(rd);
-        tb->put_str(opcode == 2u ? " = (double)(int64_t)" : " = (double)");
+        if (opcode == 2u) {
+          tb->put_str(is64_int ? " = (double)(int64_t)" : " = (double)(int32_t)");
+        } else {
+          tb->put_str(is64_int ? " = (double)(uint64_t)" : " = (double)(uint32_t)");
+        }
         tb->put_reg_x(rn);
         tb->put_str(";\n");
       }
     } else {
       (void)rmode;
+    }
+    return;
+  }
+
+  // SMULL / UMULL / SMADDL / UMADDL / SMSUBL / UMSUBL (32x32->64)
+  if ((w & 0xFFE00000u) == 0x9B200000u || (w & 0xFFE00000u) == 0x9BA00000u) {
+    const bool is_unsigned = ((w >> 23u) & 1u) != 0u;
+    const bool is_sub = ((w >> 15u) & 1u) != 0u;
+    const uint32_t rm = (w >> 16u) & 31u;
+    const uint32_t ra = (w >> 10u) & 31u;
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    if (!emit) {
+      ctx.mark_gpr_read(rn);
+      ctx.mark_gpr_read(rm);
+      if (ra < 31u) ctx.mark_gpr_read(ra);
+      if (rd < 31u) ctx.mark_gpr_write(rd);
+      if (is_unsigned) { ctx.uses_uint64_t = true; ctx.uses_uint32 = true; }
+      else { ctx.uses_int64_t = true; ctx.uses_int32 = true; }
+    } else if (tb && rd < 31u) {
+      rec();
+      tb->put_str("    ");
+      tb->put_reg_x(rd);
+      tb->put_str(" = ");
+      if (ra < 31u) {
+        tb->put_reg_x(ra);
+        tb->put_str(is_sub ? " - " : " + ");
+      } else if (is_sub) {
+        tb->put_str("-");
+      }
+      if (is_unsigned) {
+        tb->put_str("((uint64_t)(uint32_t)");
+        tb->put_reg_x(rn);
+        tb->put_str(" * (uint64_t)(uint32_t)");
+        tb->put_reg_x(rm);
+        tb->put_str(")");
+      } else {
+        tb->put_str("(uint64)((int64_t)(int32_t)");
+        tb->put_reg_x(rn);
+        tb->put_str(" * (int64_t)(int32_t)");
+        tb->put_reg_x(rm);
+        tb->put_str(")");
+      }
+      tb->put_str(";\n");
+      ctx.clear_adrp(rd);
+    }
+    return;
+  }
+
+  // CCMP / CCMN (register & immediate)
+  if ((w & 0x3FE00410u) == 0x3A400000u) {
+    const bool is64 = ((w >> 31u) & 1u) != 0u;
+    const bool is_sub = ((w >> 30u) & 1u) != 0u;  // 1=CCMP, 0=CCMN
+    const bool is_imm = ((w >> 11u) & 1u) != 0u;
+    const uint32_t rm_or_imm = (w >> 16u) & 31u;
+    const uint32_t cond = (w >> 12u) & 15u;
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t nzcv_imm = w & 15u;
+    if (!emit) {
+      ctx.uses_nzcv = true;
+      ctx.uses_uint32 = true;
+      ctx.uses_int32 = true;
+      ctx.uses_uint64_t = true;
+      ctx.uses_int64_t = true;
+      ctx.mark_gpr_read(rn);
+      if (!is_imm) ctx.mark_gpr_read(rm_or_imm);
+    } else if (tb) {
+      rec();
+      tb->put_str("    if (");
+      emit_cond_expr(*tb, cond, cmp);
+      tb->put_str(") { ");
+      if (is64) {
+        tb->put_str("uint64_t __ca = (uint64_t)");
+        tb->put_reg_x(rn);
+        tb->put_str(", __cb = (uint64_t)");
+        if (is_imm) tb->put_u64_dec(rm_or_imm);
+        else tb->put_reg_x(rm_or_imm);
+        if (is_sub) {
+          tb->put_str("; uint64_t __cr = __ca - __cb; __hex_nzcv = ((uint32_t)((__cr >> 63) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | ((__ca >= __cb) ? 2u : 0u) | ((uint32_t)((((__ca ^ __cb) & (__ca ^ __cr)) >> 63) & 1u));");
+        } else {
+          tb->put_str("; uint64_t __cr = __ca + __cb; __hex_nzcv = ((uint32_t)((__cr >> 63) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | ((__cr < __ca) ? 2u : 0u) | ((uint32_t)(((~(__ca ^ __cb) & (__ca ^ __cr)) >> 63) & 1u));");
+        }
+      } else {
+        tb->put_str("uint32_t __ca = (uint32_t)");
+        tb->put_reg_x(rn);
+        tb->put_str(", __cb = (uint32_t)");
+        if (is_imm) tb->put_u64_dec(rm_or_imm);
+        else tb->put_reg_x(rm_or_imm);
+        if (is_sub) {
+          tb->put_str("; uint32_t __cr = __ca - __cb; __hex_nzcv = (((__cr >> 31) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | ((__ca >= __cb) ? 2u : 0u) | ((((__ca ^ __cb) & (__ca ^ __cr)) >> 31) & 1u);");
+        } else {
+          tb->put_str("; uint32_t __cr = __ca + __cb; __hex_nzcv = (((__cr >> 31) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | ((__cr < __ca) ? 2u : 0u) | (((~(__ca ^ __cb) & (__ca ^ __cr)) >> 31) & 1u);");
+        }
+      }
+      tb->put_str(" } else { __hex_nzcv = ");
+      tb->put_u64_dec(nzcv_imm);
+      tb->put_str("u; }\n");
+    }
+    cmp = CmpState{true, !is64, false, false, false, false, 0u, 0u, 0ULL, true};
+    return;
+  }
+
+  // MOVI v/d, #0 (AdvSIMD immediate zero: scalar 0x2F00E400 vs vector 0x0F000400)
+  if ((w & 0xBFFFFC00u) == 0x0F000400u || (w & 0xFFFFFC00u) == 0x2F00E400u) {
+    const bool is_scalar_d = (w & 0xFFFFFC00u) == 0x2F00E400u;
+    const uint32_t rd = w & 31u;
+    if (!emit) {
+      if (is_scalar_d) {
+        ctx.mark_fp_write(rd);
+        ctx.fp_double_mask |= (1u << rd);
+      } else {
+        ctx.mark_q(rd);
+        ctx.fp_written |= (1u << rd);
+      }
+    } else if (tb) {
+      rec();
+      tb->put_str("    ");
+      if (is_scalar_d) {
+        tb->put_reg_d(rd);
+        tb->put_str(" = 0.0;\n");
+      } else {
+        tb->put_reg_q(rd);
+        tb->put_str(" = 0;\n");
+        if ((ctx.fp_used & (1u << rd)) != 0u) {
+          tb->put_str("    ");
+          tb->put_reg_d(rd);
+          tb->put_str(" = 0.0;\n");
+        }
+      }
+    }
+    return;
+  }
+
+  // Scalar FABD s/d (AdvSIMD scalar floating-point absolute difference)
+  if ((w & 0xFFA0FC00u) == 0x7EA0D400u) {
+    const bool is_double = ((w >> 22u) & 1u) != 0u;
+    const uint32_t rm = (w >> 16u) & 31u;
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    if (!emit) {
+      ctx.mark_fp_read(rn);
+      ctx.mark_fp_read(rm);
+      ctx.mark_fp_write(rd);
+      const uint32_t mask = (1u << rn) | (1u << rm) | (1u << rd);
+      if (is_double) ctx.fp_double_mask |= mask;
+      else ctx.fp_single_mask |= mask;
+    } else if (tb) {
+      rec();
+      tb->put_str("    ");
+      tb->put_reg_d(rd);
+      tb->put_str(" = (");
+      tb->put_reg_d(rn);
+      tb->put_str(" >= ");
+      tb->put_reg_d(rm);
+      tb->put_str(") ? (");
+      tb->put_reg_d(rn);
+      tb->put_str(" - ");
+      tb->put_reg_d(rm);
+      tb->put_str(") : (");
+      tb->put_reg_d(rm);
+      tb->put_str(" - ");
+      tb->put_reg_d(rn);
+      tb->put_str(");\n");
+    }
+    return;
+  }
+
+  // FMADD / FMSUB / FNMADD / FNMSUB (scalar s/d)
+  if ((w & 0xFF000000u) == 0x1F000000u) {
+    const uint32_t ftype = (w >> 22u) & 3u;
+    const bool o1 = ((w >> 21u) & 1u) != 0u;
+    const bool o0 = ((w >> 15u) & 1u) != 0u;
+    const uint32_t rm = (w >> 16u) & 31u;
+    const uint32_t ra = (w >> 10u) & 31u;
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    if (!emit) {
+      ctx.mark_fp_read(rn);
+      ctx.mark_fp_read(rm);
+      ctx.mark_fp_read(ra);
+      ctx.mark_fp_write(rd);
+      const uint32_t mask = (1u << rn) | (1u << rm) | (1u << ra) | (1u << rd);
+      if (ftype == 0u) ctx.fp_single_mask |= mask;
+      else if (ftype == 1u) ctx.fp_double_mask |= mask;
+    } else if (tb) {
+      rec();
+      tb->put_str("    ");
+      tb->put_reg_d(rd);
+      tb->put_str(" = ");
+      if (o1) tb->put_str("-(");
+      tb->put_reg_d(ra);
+      tb->put_str(o0 ? " - (" : " + (");
+      tb->put_reg_d(rn);
+      tb->put_str(" * ");
+      tb->put_reg_d(rm);
+      tb->put_str(o1 ? "))" : ")");
+      tb->put_str(";\n");
+    }
+    return;
+  }
+
+  // Scalar AdvSIMD FCVTZS s/d (0x5EA1B800) and SCVTF s/d (0x5E21D800)
+  if ((w & 0xFFBFFC00u) == 0x5EA1B800u || (w & 0xFFBFFC00u) == 0x5E21D800u) {
+    const bool is_to_int = ((w >> 23u) & 1u) != 0u;
+    const bool is_double = ((w >> 22u) & 1u) != 0u;
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    if (!emit) {
+      ctx.mark_fp_read(rn);
+      ctx.mark_fp_write(rd);
+      ctx.uses_int32 = true;
+      ctx.uses_int64_t = true;
+      const uint32_t mask = (1u << rn) | (1u << rd);
+      if (is_double) ctx.fp_double_mask |= mask;
+      else ctx.fp_single_mask |= mask;
+    } else if (tb) {
+      rec();
+      tb->put_str("    ");
+      tb->put_reg_d(rd);
+      if (is_to_int) {
+        tb->put_str(is_double ? " = (double)(int64_t)" : " = (double)(int32_t)");
+      } else {
+        tb->put_str(" = (double)");
+      }
+      tb->put_reg_d(rn);
+      tb->put_str(";\n");
+    }
+    return;
+  }
+
+  // ADC / ADCS / SBC / SBCS (Add/Subtract with Carry)
+  if ((w & 0x1FE0FC00u) == 0x1A000000u) {
+    const bool is64 = ((w >> 31u) & 1u) != 0u;
+    const bool is_sub = ((w >> 30u) & 1u) != 0u;
+    const bool sets_flags = ((w >> 29u) & 1u) != 0u;
+    const uint32_t rm = (w >> 16u) & 31u;
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    if (sets_flags) {
+      cmp = CmpState{true, !is64, false, false, false, false, 0u, 0u, 0ULL, true};
+    }
+    if (!emit) {
+      ctx.uses_nzcv = true;
+      ctx.uses_uint32 = true;
+      if (is64) ctx.uses_uint64_t = true;
+      if (rn < 31u) ctx.mark_gpr_read(rn);
+      if (rm < 31u) ctx.mark_gpr_read(rm);
+      if (rd < 31u) ctx.mark_gpr_write(rd, is64);
+    } else if (tb) {
+      rec();
+      if (is64) {
+        tb->put_str("    { uint64_t __ca = (uint64_t)");
+        tb->put_reg_x(rn);
+        tb->put_str(", __cb = (uint64_t)");
+        tb->put_reg_x(rm);
+        tb->put_str(", __cin = (uint64_t)((__hex_nzcv >> 1u) & 1u); uint64_t __cr = ");
+        tb->put_str(is_sub ? "__ca - __cb - (1ULL - __cin);" : "__ca + __cb + __cin;");
+        if (sets_flags) {
+          tb->put_str(" __hex_nzcv = ((uint32_t)((__cr >> 63) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u);");
+        }
+      } else {
+        tb->put_str("    { uint32_t __ca = (uint32_t)");
+        tb->put_reg_x(rn);
+        tb->put_str(", __cb = (uint32_t)");
+        tb->put_reg_x(rm);
+        tb->put_str(", __cin = ((__hex_nzcv >> 1u) & 1u); uint32_t __cr = ");
+        tb->put_str(is_sub ? "__ca - __cb - (1u - __cin);" : "__ca + __cb + __cin;");
+        if (sets_flags) {
+          tb->put_str(" __hex_nzcv = (((__cr >> 31) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u);");
+        }
+      }
+      if (rd < 31u) {
+        tb->put_char(' ');
+        tb->put_reg_x(rd);
+        tb->put_str(" = __cr;");
+        ctx.clear_adrp(rd);
+      }
+      tb->put_str(" }\n");
+    }
+    return;
+  }
+
+  // REV64 vD.2s, vN.2s (AdvSIMD 32-bit element swap in 64-bit D register)
+  if ((w & 0xFFFFFC00u) == 0x0EA00800u) {
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    if (!emit) {
+      ctx.mark_fp_read(rn);
+      ctx.mark_fp_write(rd);
+      ctx.uses_fp_bitcast = true;
+      ctx.uses_uint32 = true;
+      ctx.uses_uint64_t = true;
+    } else if (tb) {
+      rec();
+      tb->put_str("    { uint64_t __rv = __hex_f64_to_u64(");
+      tb->put_reg_d(rn);
+      tb->put_str("); ");
+      tb->put_reg_d(rd);
+      tb->put_str(" = __hex_u64_to_f64((__rv >> 32) | (__rv << 32)); }\n");
     }
     return;
   }
@@ -1950,7 +2685,15 @@ HexStatus try_emit_arm64_general(
   CmpState cmp{};
   for (uint32_t i = 0u; i < word_count; ++i) {
     if (is_label[i] != 0u) {
-      for (uint32_t r = 0u; r < 31u; ++r) ctx.adrp_valid[r] = false;
+      const bool after_term = (i > 0u) && (((words[i - 1u] & 0xFFFFFC1Fu) == 0xD65F0000u) || ((words[i - 1u] & 0xFC000000u) == 0x14000000u));
+      for (uint32_t r = 0u; r < 31u; ++r) {
+        if (after_term && ctx.saved_adrp_valid[r]) {
+          ctx.adrp_valid[r] = true;
+          ctx.adrp_page[r] = ctx.saved_adrp_page[r];
+        } else if (r < 19u || r > 28u) {
+          ctx.adrp_valid[r] = false;
+        }
+      }
     }
     const uint64_t pc = base_addr + static_cast<uint64_t>(i) * 4ULL;
     process_insn(words[i], pc, base_addr, word_count, ctx, cmp, false, nullptr);
@@ -1958,14 +2701,133 @@ HexStatus try_emit_arm64_general(
   if (ctx.table_overflow) return HEX_ERR_RESOURCE_LIMIT;
   ctx.sort_tables();
 
-  // Infer integer and FP parameter counts from read-before-write masks.
+  // Exact CFG backward liveness over basic blocks to prevent out-of-order loop bodies from creating phantom parameters.
+  uint32_t live_in_gpr0 = ctx.gpr_read_before_write & 0xFFu;
+  uint32_t live_in_fp0 = ctx.fp_read_before_write & 0xFFu;
+  {
+    uint32_t* blk_id = emit_arena.alloc<uint32_t>(word_count);
+    uint32_t num_blks = 0u;
+    if (blk_id) {
+      for (uint32_t i = 0u; i < word_count; ++i) {
+        if (i == 0u || is_label[i] != 0u) ++num_blks;
+        blk_id[i] = num_blks - 1u;
+        // Start a new block after any branch or ret if another insn follows.
+        const uint32_t wi = words[i];
+        if (i + 1u < word_count && is_label[i + 1u] == 0u &&
+            ((wi & 0xFFFFFC1Fu) == 0xD65F0000u || (wi & 0xFC000000u) == 0x14000000u ||
+             (wi & 0xFFFFFC1Fu) == 0xD61F0000u || (wi & 0x7E000000u) == 0x34000000u ||
+             (wi & 0xFF000010u) == 0x54000000u || (wi & 0x7E000000u) == 0x36000000u)) {
+          is_label[i + 1u] = 2u;  // internal CFG split marker (not emitted as C label)
+        }
+      }
+      uint32_t* b_use_g = emit_arena.alloc<uint32_t>(num_blks);
+      uint32_t* b_def_g = emit_arena.alloc<uint32_t>(num_blks);
+      uint32_t* b_use_f = emit_arena.alloc<uint32_t>(num_blks);
+      uint32_t* b_def_f = emit_arena.alloc<uint32_t>(num_blks);
+      uint32_t* b_in_g = emit_arena.alloc<uint32_t>(num_blks);
+      uint32_t* b_in_f = emit_arena.alloc<uint32_t>(num_blks);
+      int32_t* b_s0 = emit_arena.alloc<int32_t>(num_blks);
+      int32_t* b_s1 = emit_arena.alloc<int32_t>(num_blks);
+      if (b_use_g && b_def_g && b_use_f && b_def_f && b_in_g && b_in_f && b_s0 && b_s1) {
+        for (uint32_t b = 0u; b < num_blks; ++b) {
+          b_use_g[b] = b_def_g[b] = b_use_f[b] = b_def_f[b] = b_in_g[b] = b_in_f[b] = 0u;
+          b_s0[b] = b_s1[b] = -1;
+        }
+        uint32_t i = 0u;
+        for (uint32_t b = 0u; b < num_blks && i < word_count; ++b) {
+          AnalysisCtx bctx{};
+          CmpState bcmp{};
+          uint32_t last_i = i;
+          while (i < word_count && blk_id[i] == b) {
+            const uint64_t pc = base_addr + static_cast<uint64_t>(i) * 4ULL;
+            // On BL or external tail-call B, x0 is implicitly read if block has not used FP regs
+            const uint32_t wi = words[i];
+            if ((wi & 0xFC000000u) == 0x94000000u) {
+              if (bctx.fp_used == 0u && (ctx.fp_read_before_write & 0xFFu) == 0u) bctx.mark_gpr_read(0u);
+            } else if ((wi & 0xFC000000u) == 0x14000000u) {
+              const uint64_t tgt = pc + static_cast<uint64_t>(sign_extend(wi & 0x03FFFFFFu, 26u) * 4LL);
+              uint32_t tidx = 0u;
+              if (!is_internal_target(tgt, base_addr, word_count, &tidx) && bctx.fp_used == 0u && (ctx.fp_read_before_write & 0xFFu) == 0u) {
+                bctx.mark_gpr_read(0u);
+              }
+            }
+            process_insn(wi, pc, base_addr, word_count, bctx, bcmp, false, nullptr);
+            last_i = i;
+            ++i;
+          }
+          b_use_g[b] = bctx.gpr_read_before_write & 0xFFu;
+          b_def_g[b] = bctx.gpr_written & 0xFFu;
+          b_use_f[b] = bctx.fp_read_before_write & 0xFFu;
+          b_def_f[b] = bctx.fp_written & 0xFFu;
+          const uint32_t lw = words[last_i];
+          const uint64_t lpc = base_addr + static_cast<uint64_t>(last_i) * 4ULL;
+          if ((lw & 0xFFFFFC1Fu) == 0xD65F0000u || (lw & 0xFFFFFC1Fu) == 0xD61F0000u) {
+            // RET / BR: no internal successors
+          } else if ((lw & 0xFC000000u) == 0x14000000u) {
+            const uint64_t tgt = lpc + static_cast<uint64_t>(sign_extend(lw & 0x03FFFFFFu, 26u) * 4LL);
+            uint32_t tidx = 0u;
+            if (is_internal_target(tgt, base_addr, word_count, &tidx)) b_s0[b] = static_cast<int32_t>(blk_id[tidx]);
+          } else if ((lw & 0x7E000000u) == 0x34000000u || (lw & 0xFF000010u) == 0x54000000u || (lw & 0x7E000000u) == 0x36000000u) {
+            if (last_i + 1u < word_count) b_s0[b] = static_cast<int32_t>(blk_id[last_i + 1u]);
+            const uint64_t tgt = ((lw & 0x7E000000u) == 0x36000000u)
+                ? lpc + static_cast<uint64_t>(sign_extend((lw >> 5u) & 0x3FFFu, 14u) * 4LL)
+                : lpc + static_cast<uint64_t>(sign_extend((lw >> 5u) & 0x7FFFFu, 19u) * 4LL);
+            uint32_t tidx = 0u;
+            if (is_internal_target(tgt, base_addr, word_count, &tidx)) b_s1[b] = static_cast<int32_t>(blk_id[tidx]);
+          } else {
+            if (last_i + 1u < word_count) b_s0[b] = static_cast<int32_t>(blk_id[last_i + 1u]);
+          }
+        }
+        for (uint32_t iter = 0u; iter < 64u; ++iter) {
+          bool changed = false;
+          for (int32_t b = static_cast<int32_t>(num_blks) - 1; b >= 0; --b) {
+            uint32_t og = 0u, of = 0u;
+            if (b_s0[b] >= 0) { og |= b_in_g[b_s0[b]]; of |= b_in_f[b_s0[b]]; }
+            if (b_s1[b] >= 0) { og |= b_in_g[b_s1[b]]; of |= b_in_f[b_s1[b]]; }
+            const uint32_t ng = b_use_g[b] | (og & ~b_def_g[b]);
+            const uint32_t nf = b_use_f[b] | (of & ~b_def_f[b]);
+            if (ng != b_in_g[b] || nf != b_in_f[b]) {
+              b_in_g[b] = ng;
+              b_in_f[b] = nf;
+              changed = true;
+            }
+          }
+          if (!changed) break;
+        }
+        live_in_gpr0 = b_in_g[0];
+        live_in_fp0 = b_in_f[0];
+      }
+      // Restore is_label so only real branch targets (== 1) emit C labels
+      for (uint32_t k = 0u; k < word_count; ++k) {
+        if (is_label[k] == 2u) is_label[k] = 0u;
+      }
+    }
+  }
   uint32_t int_param_count = 0u;
   for (uint32_t r = 0u; r < 8u; ++r) {
-    if ((ctx.gpr_read_before_write & (1u << r)) != 0u) int_param_count = r + 1u;
+    if ((live_in_gpr0 & (1u << r)) != 0u) {
+      if (r >= 4u && (live_in_gpr0 & (1u << (r - 1u))) == 0u) break;
+      int_param_count = r + 1u;
+    }
   }
   uint32_t fp_param_count = 0u;
   for (uint32_t r = 0u; r < 8u; ++r) {
-    if ((ctx.fp_read_before_write & (1u << r)) != 0u) fp_param_count = r + 1u;
+    if ((live_in_fp0 & (1u << r)) != 0u) fp_param_count = r + 1u;
+  }
+  if (ctx.ret_fp_count > 0u && ctx.ret_fp_count > ctx.ret_gpr_count) {
+    ctx.returns_value = true;
+    ctx.returns_double = true;
+    if ((ctx.fp_single_mask & 1u) != 0u && (ctx.fp_double_mask & 1u) == 0u) {
+      ctx.returns_float = true;
+    }
+  } else if (ctx.ret_gpr_count > 0u) {
+    ctx.returns_value = true;
+    ctx.returns_double = false;
+    ctx.returns_float = false;
+    if (ctx.ret_int32_count > 0u && ctx.ret_int64_count == 0u) {
+      ctx.returns_int32 = true;
+      ctx.uses_int32 = true;
+    }
   }
   ctx.norm_name = norm_name;
   ctx.norm_len = norm_len;
@@ -1987,6 +2849,13 @@ HexStatus try_emit_arm64_general(
   if (ctx.uses_int64_t) tb.put_str("typedef __INT64_TYPE__ int64_t;\n");
   if (ctx.uses_uintptr || ctx.uses_sp) tb.put_str("typedef __UINTPTR_TYPE__ uintptr_t;\n");
   if (ctx.uses_uint128) tb.put_str("typedef unsigned __int128 uint128;\n");
+  if (ctx.uses_fp_bitcast) {
+    tb.put_str(
+        "static inline float __hex_u32_to_f32(uint32_t u) { union { uint32_t i; float f; } v; v.i = u; return v.f; }\n"
+        "static inline double __hex_u64_to_f64(uint64_t u) { union { uint64_t i; double d; } v; v.i = u; return v.d; }\n"
+        "static inline uint32_t __hex_f32_to_u32(float f) { union { uint32_t i; float f; } v; v.f = f; return v.i; }\n"
+        "static inline uint64_t __hex_f64_to_u64(double d) { union { uint64_t i; double d; } v; v.d = d; return v.i; }\n");
+  }
 
   // Emit external globals.
   if (ctx.global_count > 0u) {
@@ -2032,7 +2901,9 @@ HexStatus try_emit_arm64_general(
 
   // Function signature.
   tb.record_line(base_addr);
-  if (ctx.returns_double) tb.put_str("double ");
+  if (ctx.returns_float) tb.put_str("float ");
+  else if (ctx.returns_double) tb.put_str("double ");
+  else if (ctx.returns_int32) tb.put_str("int ");
   else if (ctx.returns_value) tb.put_str("uint64 ");
   else tb.put_str("void ");
   tb.put_bytes(norm_name, norm_len);
@@ -2049,7 +2920,11 @@ HexStatus try_emit_arm64_general(
     }
     for (uint32_t r = 0u; r < fp_param_count; ++r) {
       if (!first) tb.put_str(", ");
-      tb.put_str("double fa");
+      const bool has_p_info = (((ctx.fp_param_single_mask | ctx.fp_param_double_mask) & (1u << r)) != 0u);
+      const bool is_s = has_p_info
+          ? (((ctx.fp_param_single_mask & (1u << r)) != 0u) && ((ctx.fp_param_double_mask & (1u << r)) == 0u))
+          : (((ctx.fp_single_mask & (1u << r)) != 0u) && ((ctx.fp_double_mask & (1u << r)) == 0u));
+      tb.put_str(is_s ? "float fa" : "double fa");
       tb.put_u64_dec(r + 1u);
       first = false;
     }
@@ -2057,6 +2932,9 @@ HexStatus try_emit_arm64_general(
   tb.put_str(")\n{\n");
 
   // Local declarations.
+  if (ctx.uses_nzcv) {
+    tb.put_str("    uint32_t __hex_nzcv = 0;\n");
+  }
   if (ctx.uses_sp) {
     tb.put_str("    uint8_t __hex_stack_frame[4096] = {0};\n");
     tb.put_str("    uint64 sp = (uintptr_t)(__hex_stack_frame + sizeof(__hex_stack_frame));\n");
@@ -2096,14 +2974,21 @@ HexStatus try_emit_arm64_general(
   }
 
   // Pass 2: Emit C body statements.
-  for (uint32_t r = 0u; r < 31u; ++r) ctx.adrp_valid[r] = false;
-  cmp = CmpState{};
+  for (uint32_t r = 0u; r < 31u; ++r) { ctx.adrp_valid[r] = false; ctx.saved_adrp_valid[r] = false; }
+  cmp = ctx.uses_nzcv ? CmpState{true, false, false, false, false, false, 0u, 0u, 0ULL, true} : CmpState{};
   bool pending_label = false;
   for (uint32_t i = 0u; i < word_count; ++i) {
     const uint64_t pc = base_addr + static_cast<uint64_t>(i) * 4ULL;
     if (is_label[i] != 0u) {
-      // Invalidate ADRP cache across join points to avoid stale cross-block addresses.
-      for (uint32_t r = 0u; r < 31u; ++r) ctx.adrp_valid[r] = false;
+      const bool after_term = (i > 0u) && (((words[i - 1u] & 0xFFFFFC1Fu) == 0xD65F0000u) || ((words[i - 1u] & 0xFC000000u) == 0x14000000u));
+      for (uint32_t r = 0u; r < 31u; ++r) {
+        if (after_term && ctx.saved_adrp_valid[r]) {
+          ctx.adrp_valid[r] = true;
+          ctx.adrp_page[r] = ctx.saved_adrp_page[r];
+        } else if (r < 19u || r > 28u) {
+          ctx.adrp_valid[r] = false;
+        }
+      }
       tb.put_str("loc_");
       tb.put_u64_hex(pc, true);
       tb.put_str(":\n");

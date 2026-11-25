@@ -470,7 +470,491 @@ function classifyUnsupportedArm64Insn(word, insn) {
   return null;
 }
 
-export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null } = {}) {
+
+const WASM_GENERAL_LIBC_SPECS = {
+  malloc: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(uintptr_t)malloc((size_t)x0)', regs: ['x0'], needUintptr: true },
+  calloc: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(uintptr_t)calloc((size_t)x0, (size_t)x1)', regs: ['x0', 'x1'], needUintptr: true },
+  realloc: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(uintptr_t)realloc((void *)(uintptr_t)x0, (size_t)x1)', regs: ['x0', 'x1'], needUintptr: true },
+  free: { hdr: '<stdlib.h>', ret: 'void', call: 'free((void *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true },
+  exit: { hdr: '<stdlib.h>', ret: 'void', call: 'exit((int)x0)', regs: ['x0'] },
+  abort: { hdr: '<stdlib.h>', ret: 'void', call: 'abort()', regs: [] },
+  strlen: { hdr: '<string.h>', ret: 'x0', call: '(uint64)strlen((const char *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true },
+  strcpy: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)strcpy((char *)(uintptr_t)x0, (const char *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true },
+  strncpy: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)strncpy((char *)(uintptr_t)x0, (const char *)(uintptr_t)x1, (size_t)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true },
+  stpcpy: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)stpcpy((char *)(uintptr_t)x0, (const char *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true },
+  strcat: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)strcat((char *)(uintptr_t)x0, (const char *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true },
+  strncat: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)strncat((char *)(uintptr_t)x0, (const char *)(uintptr_t)x1, (size_t)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true },
+  strcmp: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(int64_t)strcmp((const char *)(uintptr_t)x0, (const char *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true, needInt64: true },
+  strncmp: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(int64_t)strncmp((const char *)(uintptr_t)x0, (const char *)(uintptr_t)x1, (size_t)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true, needInt64: true },
+  strchr: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)strchr((const char *)(uintptr_t)x0, (int)x1)', regs: ['x0', 'x1'], needUintptr: true },
+  strrchr: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)strrchr((const char *)(uintptr_t)x0, (int)x1)', regs: ['x0', 'x1'], needUintptr: true },
+  strstr: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)strstr((const char *)(uintptr_t)x0, (const char *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true },
+  strdup: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)strdup((const char *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true },
+  memcpy: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)memcpy((void *)(uintptr_t)x0, (const void *)(uintptr_t)x1, (size_t)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true },
+  memmove: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)memmove((void *)(uintptr_t)x0, (const void *)(uintptr_t)x1, (size_t)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true },
+  memset: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)memset((void *)(uintptr_t)x0, (int)x1, (size_t)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true },
+  memcmp: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(int64_t)memcmp((const void *)(uintptr_t)x0, (const void *)(uintptr_t)x1, (size_t)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true, needInt64: true },
+  strtol: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)strtol((const char *)(uintptr_t)x0, (char **)(uintptr_t)x1, (int)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true },
+  strtoll: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)strtoll((const char *)(uintptr_t)x0, (char **)(uintptr_t)x1, (int)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true },
+  strtoul: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)strtoul((const char *)(uintptr_t)x0, (char **)(uintptr_t)x1, (int)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true },
+  strtod: { hdr: '<stdlib.h>', ret: 'd0', call: 'strtod((const char *)(uintptr_t)x0, (char **)(uintptr_t)x1)', regs: ['x0', 'x1', 'd0'], needUintptr: true },
+  atoi: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)atoi((const char *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
+  atol: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)atol((const char *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
+  abs: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)abs((int)x0)', regs: ['x0'], needInt64: true },
+  labs: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)labs((long)x0)', regs: ['x0'], needInt64: true },
+  qsort: { hdr: '<stdlib.h>', ret: 'void', call: 'qsort((void *)(uintptr_t)x0, (size_t)x1, (size_t)x2, (int (*)(const void *, const void *))(uintptr_t)x3)', regs: ['x0', 'x1', 'x2', 'x3'], needUintptr: true },
+  sprintf: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)sprintf((char *)(uintptr_t)x0, (const char *)(uintptr_t)x1, x2, x3, x4, x5)', regs: ['x0', 'x1', 'x2', 'x3', 'x4', 'x5'], needUintptr: true, needInt64: true },
+  snprintf: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)snprintf((char *)(uintptr_t)x0, (size_t)x1, (const char *)(uintptr_t)x2, x3, x4, x5)', regs: ['x0', 'x1', 'x2', 'x3', 'x4', 'x5'], needUintptr: true, needInt64: true },
+  __ctype_b_loc: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(uintptr_t)__ctype_b_loc()', regs: ['x0'], needUintptr: true },
+  __ctype_tolower_loc: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(uintptr_t)__ctype_tolower_loc()', regs: ['x0'], needUintptr: true },
+  __ctype_toupper_loc: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(uintptr_t)__ctype_toupper_loc()', regs: ['x0'], needUintptr: true },
+  pow: { hdr: '<math.h>', ret: 'd0', call: 'pow(d0, d1)', regs: ['d0', 'd1'] },
+  sqrt: { hdr: '<math.h>', ret: 'd0', call: 'sqrt(d0)', regs: ['d0'] },
+  sqrtf: { hdr: '<math.h>', ret: 'd0', call: '(double)sqrtf((float)d0)', regs: ['d0'] },
+  fabs: { hdr: '<math.h>', ret: 'd0', call: 'fabs(d0)', regs: ['d0'] },
+  fabsf: { hdr: '<math.h>', ret: 'd0', call: '(double)fabsf((float)d0)', regs: ['d0'] },
+  floor: { hdr: '<math.h>', ret: 'd0', call: 'floor(d0)', regs: ['d0'] },
+  ceil: { hdr: '<math.h>', ret: 'd0', call: 'ceil(d0)', regs: ['d0'] },
+  round: { hdr: '<math.h>', ret: 'd0', call: 'round(d0)', regs: ['d0'] },
+  fmod: { hdr: '<math.h>', ret: 'd0', call: 'fmod(d0, d1)', regs: ['d0', 'd1'] },
+  sin: { hdr: '<math.h>', ret: 'd0', call: 'sin(d0)', regs: ['d0'] },
+  cos: { hdr: '<math.h>', ret: 'd0', call: 'cos(d0)', regs: ['d0'] },
+  log: { hdr: '<math.h>', ret: 'd0', call: 'log(d0)', regs: ['d0'] },
+  exp: { hdr: '<math.h>', ret: 'd0', call: 'exp(d0)', regs: ['d0'] },
+};
+
+function normalizeLibcSymbolName(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  let name = raw.trim();
+  const at = name.indexOf('@');
+  if (at > 0) name = name.slice(0, at);
+  if (WASM_GENERAL_LIBC_SPECS[name]) return name;
+  if (name.startsWith('_') && !name.startsWith('__') && WASM_GENERAL_LIBC_SPECS[name.slice(1)]) {
+    return name.slice(1);
+  }
+  return null;
+}
+
+const ELF64_INFO_CACHE = new WeakMap();
+
+function parseElf64SectionsAndSyms(fileBytes) {
+  if (!(fileBytes instanceof Uint8Array) || fileBytes.length < 64) return null;
+  if (fileBytes[0] !== 0x7f || fileBytes[1] !== 0x45 || fileBytes[2] !== 0x4c || fileBytes[3] !== 0x46) return null;
+  if (fileBytes[4] !== 2 || fileBytes[5] !== 1) return null; // 64-bit little-endian
+  const cached = ELF64_INFO_CACHE.get(fileBytes);
+  if (cached) return cached;
+  const dv = new DataView(fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength);
+  const shoff = Number(dv.getBigUint64(40, true));
+  const shentsize = dv.getUint16(58, true);
+  const shnum = dv.getUint16(60, true);
+  const shstrndx = dv.getUint16(62, true);
+  const secs = [];
+  const syms = new Map();
+  if (shoff > 0 && shentsize >= 64 && shoff + shnum * shentsize <= fileBytes.length) {
+    let strOff = 0, strSize = 0;
+    if (shstrndx < shnum) {
+      const sp = shoff + shstrndx * shentsize;
+      strOff = Number(dv.getBigUint64(sp + 24, true));
+      strSize = Number(dv.getBigUint64(sp + 32, true));
+    }
+    const readStr = (off, sz, idx) => {
+      if (off + idx >= fileBytes.length || idx >= sz) return '';
+      let end = off + idx;
+      const lim = Math.min(fileBytes.length, off + sz);
+      while (end < lim && fileBytes[end] !== 0) end++;
+      let s = '';
+      for (let k = off + idx; k < end; k++) s += String.fromCharCode(fileBytes[k]);
+      return s;
+    };
+    for (let i = 0; i < shnum; i++) {
+      const p = shoff + i * shentsize;
+      const shName = dv.getUint32(p, true);
+      const shType = dv.getUint32(p + 4, true);
+      const shFlags = dv.getBigUint64(p + 8, true);
+      const shAddr = dv.getBigUint64(p + 16, true);
+      const shOffset = dv.getBigUint64(p + 24, true);
+      const shSize = dv.getBigUint64(p + 32, true);
+      const shLink = dv.getUint32(p + 40, true);
+      const shEntSize = Number(dv.getBigUint64(p + 56, true));
+      const name = readStr(strOff, strSize, shName);
+      secs.push({ name, type: shType, flags: shFlags, addr: shAddr, offset: shOffset, size: shSize, link: shLink, entsize: shEntSize });
+    }
+    for (const sec of secs) {
+      if ((sec.type === 2 || sec.type === 11) && sec.entsize >= 24 && sec.link < secs.length) {
+        const count = Math.floor(Number(sec.size) / sec.entsize);
+        const base = Number(sec.offset);
+        for (let i = 0; i < count; i++) {
+          const ep = base + i * sec.entsize;
+          if (ep + 24 > fileBytes.length) break;
+          const stInfo = fileBytes[ep + 4];
+          const stType = stInfo & 0xf;
+          const stValue = dv.getBigUint64(ep + 8, true);
+          const stSize = Number(dv.getBigUint64(ep + 16, true));
+          if (stType === 2 && stValue > 0n && stSize >= 4) {
+            syms.set(stValue, stSize);
+          }
+        }
+      }
+    }
+  }
+  const info = { secs, syms };
+  ELF64_INFO_CACHE.set(fileBytes, info);
+  return info;
+}
+
+function readBinaryBytesAt(addr, len, { readBytes, fileBytes, sections }) {
+  const elfInfo = parseElf64SectionsAndSyms(fileBytes);
+  if (elfInfo) {
+    for (const sec of elfInfo.secs) {
+      if (sec.size <= 0n || sec.addr <= 0n) continue;
+      if (addr >= sec.addr && addr < sec.addr + sec.size) {
+        if (sec.type === 8 || sec.name === '.bss') return null; // SHT_NOBITS -> keep zeroed writable buffer
+        const delta = addr - sec.addr;
+        const avail = Number(sec.size - delta);
+        const take = Math.min(len, avail);
+        const offNum = Number(sec.offset + delta);
+        if (offNum >= 0 && offNum + take <= fileBytes.length && take > 0) {
+          return fileBytes.subarray(offNum, offNum + take);
+        }
+      }
+    }
+    return null;
+  }
+  if (fileBytes instanceof Uint8Array && Array.isArray(sections)) {
+    for (const sec of sections) {
+      if (!sec) continue;
+      if (sec.name === '.bss' || sec.type === 'SHT_NOBITS' || sec.nobits) return null;
+      const start = BigInt(sec.address ?? sec.vmAddr ?? sec.addr ?? 0);
+      const size = BigInt(sec.size ?? 0);
+      const foff = sec.fileOffset != null ? BigInt(sec.fileOffset) : (sec.offset != null ? BigInt(sec.offset) : null);
+      if (foff == null || size <= 0n) continue;
+      if (addr >= start && addr < start + size) {
+        const delta = addr - start;
+        const avail = Number(size - delta);
+        const take = Math.min(len, avail);
+        const offNum = Number(foff + delta);
+        if (offNum >= 0 && offNum + take <= fileBytes.length && take > 0) {
+          return fileBytes.subarray(offNum, offNum + take);
+        }
+      }
+    }
+  }
+  if (typeof readBytes === 'function') {
+    try {
+      const b = readBytes(addr, len);
+      if (b && b.length > 0) return b instanceof Uint8Array ? b : new Uint8Array(b);
+    } catch {}
+  }
+  return null;
+}
+
+function readCStringFromElf(addr, fileBytes, elfInfo) {
+  if (!elfInfo || addr <= 0n) return null;
+  for (const sec of elfInfo.secs) {
+    if (sec.type === 8 || sec.size <= 0n || sec.addr <= 0n) continue;
+    if (sec.name !== '.rodata' && !sec.name.startsWith('.rodata.')) continue;
+    if (addr >= sec.addr && addr < sec.addr + sec.size) {
+      const off = Number(sec.offset + (addr - sec.addr));
+      const maxEnd = Math.min(fileBytes.length, Number(sec.offset + sec.size), off + 256);
+      let end = off;
+      while (end < maxEnd && fileBytes[end] !== 0) {
+        const ch = fileBytes[end];
+        if (ch < 0x09 || (ch > 0x0d && ch < 0x20) || ch > 0x7e) return null;
+        end++;
+      }
+      if (end < maxEnd && fileBytes[end] === 0) {
+        let s = '';
+        for (let k = off; k < end; k++) {
+          const ch = fileBytes[k];
+          if (ch === 0x5c) s += '\\';
+          else if (ch === 0x22) s += '\"';
+          else if (ch === 0x0a) s += '\n';
+          else if (ch === 0x0d) s += '\r';
+          else if (ch === 0x09) s += '\t';
+          else s += String.fromCharCode(ch);
+        }
+        return s;
+      }
+    }
+  }
+  return null;
+}
+
+function postprocessWasmGeneralC(text, { symbolFor, readBytes, fileBytes, sections, allowHelperInlining = true } = {}) {
+  const isGeneral = text.includes('/* arguments unknown */') || text.includes('__hex_global_') || text.includes('static uint64 global_') || (typeof symbolFor === 'function' && text.includes('uint64 x0 = '));
+  if (!isGeneral) return { text, addedLines: 0 };
+
+  let out = text;
+  const headers = new Set();
+  const extraRegs = new Set();
+  let needUintptr = false;
+  let needInt64 = false;
+  let needUint8 = false;
+  let changed = false;
+
+  // 1. Resolve sub_<HEX> callees against libc symbols via symbolFor
+  if (typeof symbolFor === 'function' && out.includes('sub_')) {
+    const resolvedHexes = new Map();
+    const callRe = /sub_([0-9A-Fa-f]+)\(\/\* arguments unknown \*\/\)/g;
+    let m;
+    while ((m = callRe.exec(out)) !== null) {
+      const hex = m[1];
+      if (resolvedHexes.has(hex)) continue;
+      let rawSym = null;
+      try { rawSym = symbolFor(BigInt(`0x${hex}`)); } catch {}
+      const norm = normalizeLibcSymbolName(rawSym);
+      if (norm) resolvedHexes.set(hex, WASM_GENERAL_LIBC_SPECS[norm]);
+    }
+    if (resolvedHexes.size > 0) {
+      changed = true;
+      for (const [hex, spec] of resolvedHexes.entries()) {
+        headers.add(spec.hdr);
+        if (spec.needUintptr) needUintptr = true;
+        if (spec.needInt64) needInt64 = true;
+        for (const r of spec.regs) extraRegs.add(r);
+        // Remove dummy prototype line
+        out = out.replace(new RegExp(`^uint64 sub_${hex} \\(__HEX_ANY_ARGS\\);\\n`, 'gm'), '');
+        // Rewrite `x0 = sub_HEX(/* arguments unknown */);`
+        if (spec.ret === 'void') {
+          out = out.replace(new RegExp(`x0 = sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call};`);
+          out = out.replace(new RegExp(`return sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call}; return 0;`);
+          out = out.replace(new RegExp(`sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call};`);
+        } else if (spec.ret === 'd0') {
+          out = out.replace(new RegExp(`x0 = sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `d0 = ${spec.call};`);
+          out = out.replace(new RegExp(`return sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `return ${spec.call};`);
+          out = out.replace(new RegExp(`sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `d0 = ${spec.call};`);
+        } else {
+          out = out.replace(new RegExp(`x0 = sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `x0 = ${spec.call};`);
+          out = out.replace(new RegExp(`return sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `return ${spec.call};`);
+          out = out.replace(new RegExp(`sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `x0 = ${spec.call};`);
+        }
+      }
+    }
+  }
+
+  // 1b. Inline-decompile internal .text helper callees (e.g. GCC func0.part.0) via WASM
+  const helperDefs = [];
+  if (allowHelperInlining && fileBytes instanceof Uint8Array && out.includes('sub_') && out.includes('/* arguments unknown */')) {
+    const elfInfo = parseElf64SectionsAndSyms(fileBytes);
+    if (elfInfo) {
+      const textSec = elfInfo.secs.find((s) => s.name === '.text');
+      const unresolvedHexes = new Set();
+      const unresRe = /sub_([0-9A-Fa-f]+)\(\/\* arguments unknown \*\/\)/g;
+      let um;
+      while ((um = unresRe.exec(out)) !== null) unresolvedHexes.add(um[1]);
+      for (const hex of unresolvedHexes) {
+        const hAddr = BigInt(`0x${hex}`);
+        if (!textSec || hAddr < textSec.addr || hAddr >= textSec.addr + textSec.size) continue;
+        const symSize = elfInfo.syms.get(hAddr) || 0;
+        let byteLen = symSize;
+        if (byteLen < 4) {
+          // Scan up to RET (0xd65f03c0), max 256 words
+          const maxBytes = Math.min(1024, Number(textSec.addr + textSec.size - hAddr));
+          const off0 = Number(textSec.offset + (hAddr - textSec.addr));
+          const dv = new DataView(fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength);
+          for (let off = 0; off + 4 <= maxBytes; off += 4) {
+            const w = dv.getUint32(off0 + off, true);
+            byteLen = off + 4;
+            if (w === 0xd65f03c0) break;
+          }
+        }
+        const wordCnt = Math.floor(byteLen / 4);
+        if (wordCnt < 2 || wordCnt > 4096) continue;
+        const off0 = Number(textSec.offset + (hAddr - textSec.addr));
+        if (off0 < 0 || off0 + wordCnt * 4 > fileBytes.length) continue;
+        const hWords = new Uint32Array(wordCnt);
+        const dv = new DataView(fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength);
+        for (let i = 0; i < wordCnt; i++) hWords[i] = dv.getUint32(off0 + i * 4, true);
+        const hRes = wasmDecompileArm64Function({
+          words: hWords,
+          baseAddr: hAddr,
+          funcName: `sub_${hex}`,
+          symbolFor,
+          readBytes,
+          fileBytes,
+          sections,
+          allowHelperInlining: false,
+        });
+        if (!hRes || !hRes.pseudocode) continue;
+        // Parse helper signature to know arg count & return type
+        const sigM = hRes.pseudocode.match(/^(void|int|uint64|float|double)\s+(sub_[0-9A-Fa-f]+)\(([^)]*)\)/m);
+        if (!sigM) continue;
+        const hRet = sigM[1];
+        const hParamsStr = sigM[3].trim();
+        const hParams = hParamsStr === 'void' || !hParamsStr ? [] : hParamsStr.split(',').map((s) => s.trim());
+        const callArgs = [];
+        let gi = 0, fi = 0;
+        for (const hp of hParams) {
+          if (hp.startsWith('float ') || hp.startsWith('double ')) {
+            callArgs.push(hp.startsWith('float ') ? `(float)d${fi}` : `d${fi}`);
+            extraRegs.add(`d${fi}`);
+            fi++;
+          } else {
+            callArgs.push(`x${gi}`);
+            extraRegs.add(`x${gi}`);
+            gi++;
+          }
+        }
+        const callExpr = `sub_${hex}(${callArgs.join(', ')})`;
+        changed = true;
+        const unknownCall = `sub_${hex}(/* arguments unknown */)`;
+        out = out.replaceAll(`uint64 sub_${hex} (__HEX_ANY_ARGS);\n`, '');
+        if (hRet === 'void') {
+          out = out.replaceAll(`x0 = ${unknownCall};`, `${callExpr};`);
+          out = out.replaceAll(`return ${unknownCall};`, `${callExpr}; return;`);
+          out = out.replaceAll(`${unknownCall};`, `${callExpr};`);
+        } else if (hRet === 'float' || hRet === 'double') {
+          out = out.replaceAll(`x0 = ${unknownCall};`, `d0 = ${callExpr};`);
+          out = out.replaceAll(`return ${unknownCall};`, `return ${callExpr};`);
+          out = out.replaceAll(`${unknownCall};`, `d0 = ${callExpr};`);
+        } else {
+          out = out.replaceAll(`x0 = ${unknownCall};`, `x0 = (uint64)${callExpr};`);
+          out = out.replaceAll(`return ${unknownCall};`, `return ${callExpr};`);
+          out = out.replaceAll(`${unknownCall};`, `x0 = (uint64)${callExpr};`);
+        }
+        // If helper expects more integer parameters than the outer function declared (tail-call forwarding), widen outer signature
+        if (gi > 0) {
+          const outerSigM = out.match(/^(void|int|uint64|float|double) ([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)\n\{/m);
+          if (outerSigM) {
+            const outerParams = outerSigM[3].trim() === 'void' || !outerSigM[3].trim()
+              ? []
+              : outerSigM[3].split(',').map((s) => s.trim());
+            const curIntCnt = outerParams.filter((x) => x.startsWith('uint64 a')).length;
+            if (gi > curIntCnt) {
+              const fpParams = outerParams.filter((x) => !x.startsWith('uint64 a'));
+              const newIntParams = [];
+              for (let k = 1; k <= gi; k++) newIntParams.push(`uint64 a${k}`);
+              const allP = [...newIntParams, ...fpParams].join(', ');
+              out = out.replace(outerSigM[0], `${outerSigM[1]} ${outerSigM[2]}(${allP})\n{`);
+              for (let k = curIntCnt; k < gi; k++) {
+                out = out.replace(new RegExp(`^    uint64 x${k} = 0;$`, 'm'), `    uint64 x${k} = a${k + 1};`);
+                if (!out.includes(`uint64 x${k} `)) {
+                  const bi = out.indexOf(')\n{\n');
+                  if (bi >= 0) out = out.slice(0, bi + 4) + `    uint64 x${k} = a${k + 1};\n` + out.slice(bi + 4);
+                }
+              }
+            }
+          }
+        }
+        // Strip duplicate includes/typedefs/pragmas from helper body and keep its static globals + function
+        const hLines = hRes.pseudocode.split('\n').filter((line) => {
+          if (line.startsWith('#include ')) {
+            headers.add(line.slice(9).trim());
+            return false;
+          }
+          if (line.startsWith('#define _GNU_SOURCE') || line.startsWith('#pragma GCC optimize')) return false;
+          if (line.startsWith('typedef ') || line.startsWith('/* hex: fixed-width')) return false;
+          if (line.startsWith('static inline float __hex_u32_to_f32') || line.startsWith('static inline double __hex_u64_to_f64') || line.startsWith('static inline uint32_t __hex_f32_to_u32') || line.startsWith('static inline uint64_t __hex_f64_to_u64')) return false;
+          return true;
+        });
+        helperDefs.push(hLines.join('\n').replace(`${hRet} sub_${hex}(`, `static ${hRet} sub_${hex}(`));
+      }
+    }
+  }
+
+  // 2. Materialize .rodata / .data globals from binary bytes (including .data/.data.rel.ro string pointer tables)
+  if ((readBytes || fileBytes) && out.includes('global_')) {
+    const elfInfo = parseElf64SectionsAndSyms(fileBytes);
+    out = out.replace(/^static uint64 __hex_global_([0-9A-Fa-f]+)_buf\[512\] = \{0\};$/gm, (full, hex) => {
+      const gAddr = BigInt(`0x${hex}`);
+      const bytes = readBinaryBytesAt(gAddr, 256, { readBytes, fileBytes, sections });
+      if (!bytes || bytes.length === 0) return full;
+      // Check if this is an array of 64-bit pointers to NUL-terminated strings in .rodata
+      if (elfInfo && bytes.length >= 8) {
+        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const ptrStrings = [];
+        for (let off = 0; off + 8 <= bytes.length; off += 8) {
+          const ptrVal = dv.getBigUint64(off, true);
+          const strVal = readCStringFromElf(ptrVal, fileBytes, elfInfo);
+          if (strVal == null) break;
+          ptrStrings.push(strVal);
+        }
+        if (ptrStrings.length >= 2) {
+          changed = true;
+          const items = ptrStrings.map((s) => `"${s}"`).join(', ');
+          return `static const char *__hex_global_${hex}_buf[${ptrStrings.length}] = { ${items} };`;
+        }
+      }
+      changed = true;
+      needUint8 = true;
+      const arr = Array.from(bytes, (b) => `0x${b.toString(16).padStart(2, '0')}`).join(', ');
+      return `static uint8_t __hex_global_${hex}_buf[${bytes.length}] __attribute__((aligned(8))) = { ${arr} };`;
+    });
+    out = out.replace(/^static uint64 global_([0-9A-Fa-f]+) = 0;$/gm, (full, hex) => {
+      const bytes = readBinaryBytesAt(BigInt(`0x${hex}`), 8, { readBytes, fileBytes, sections });
+      if (!bytes || bytes.length === 0) return full;
+      changed = true;
+      let val = 0n;
+      for (let i = Math.min(bytes.length, 8) - 1; i >= 0; i -= 1) {
+        val = (val << 8n) | BigInt(bytes[i]);
+      }
+      return `static uint64 global_${hex} = 0x${val.toString(16).toUpperCase()}ULL;`;
+    });
+  }
+
+  // Always add <stdbool.h> and <stddef.h> for general-emitter C11 units when symbolFor/readBytes/fileBytes context is active
+  if (typeof symbolFor === 'function' || readBytes || fileBytes) {
+    headers.add('<stdbool.h>');
+    headers.add('<stddef.h>');
+    changed = true;
+  }
+
+  if (!changed) return { text, addedLines: 0 };
+
+  // Inject any missing local reg declarations inside function body `{`
+  const missingLocals = [];
+  for (const r of extraRegs) {
+    if (r.startsWith('x')) {
+      if (!new RegExp(`\\buint64 ${r}\\b`).test(out)) { const rIdx = Number(r.slice(1)); const hasParam = Number.isInteger(rIdx) && out.includes(`uint64 a${rIdx + 1}`); missingLocals.push(`    uint64 ${r} = ${hasParam ? `a${rIdx + 1}` : '0'};`); }
+    } else if (r.startsWith('d')) {
+      if (!new RegExp(`\\bdouble ${r}\\b`).test(out)) missingLocals.push(`    double ${r} = 0.0;`);
+    }
+  }
+  if (missingLocals.length > 0) {
+    const braceIdx = out.indexOf(')\n{\n');
+    if (braceIdx >= 0) {
+      out = out.slice(0, braceIdx + 4) + missingLocals.join('\n') + '\n' + out.slice(braceIdx + 4);
+    }
+  }
+
+  // Inject any missing typedefs
+  const extraTypedefs = [];
+  if (needUintptr && !out.includes('typedef __UINTPTR_TYPE__ uintptr_t;')) extraTypedefs.push('typedef __UINTPTR_TYPE__ uintptr_t;');
+  if (needInt64 && !out.includes('typedef __INT64_TYPE__ int64_t;')) extraTypedefs.push('typedef __INT64_TYPE__ int64_t;');
+  if (needUint8 && !out.includes('typedef __UINT8_TYPE__ uint8_t;')) extraTypedefs.push('typedef __UINT8_TYPE__ uint8_t;');
+
+  if (/\b(?:floor|ceil|trunc|round|sqrt|fabs)\s*\(/.test(out)) {
+    headers.add('<math.h>');
+  }
+  const hdrLines = [];
+  if (headers.has('<string.h>')) hdrLines.push('#define _GNU_SOURCE');
+  hdrLines.push('#if defined(__GNUC__) && !defined(__clang__)');
+  hdrLines.push('#pragma GCC optimize("no-strict-aliasing")');
+  hdrLines.push('#endif');
+  for (const h of [...headers].sort()) hdrLines.push(`#include ${h}`);
+  for (const td of extraTypedefs) hdrLines.push(td);
+  const prefix = hdrLines.length > 0 ? `${hdrLines.join('\n')}\n` : '';
+  if (helperDefs.length > 0) {
+    // Ensure <stdint.h> is available for inlined helpers
+    const stdintInc = '#include <stdint.h>\n';
+    const fnSigIdx = out.search(/^(?:void|int|uint64|float|double)\s+[A-Za-z_][A-Za-z0-9_]*\([^)]*\)\n\{/m);
+    if (fnSigIdx >= 0) {
+      const hBlock = `${helperDefs.join('\n\n')}\n\n`;
+      out = out.slice(0, fnSigIdx) + hBlock + out.slice(fnSigIdx);
+    }
+    return { text: stdintInc + prefix + out, addedLines: hdrLines.length + missingLocals.length + 1 };
+  }
+  if (false) {
+    const fnSigIdx = out.search(/^(?:void|int|uint64|float|double)\s+[A-Za-z_][A-Za-z0-9_]*\([^)]*\)\n\{/m);
+    if (fnSigIdx >= 0) {
+      const hBlock = `${helperDefs.join('\n\n')}\n\n`;
+      out = out.slice(0, fnSigIdx) + hBlock + out.slice(fnSigIdx);
+    }
+  }
+  return { text: prefix + out, addedLines: hdrLines.length + missingLocals.length };
+}
+
+export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null, symbolFor = null, readBytes = null, fileBytes = null, sections = null, allowHelperInlining = true } = {}) {
   if (getEngineMode() === 'js') return noteFallback('decompile', 'wasm_disabled');
   const ex = getHexEngineExportsSafe();
   if (
@@ -549,7 +1033,9 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     }
 
     const mem = ex.memory.buffer;
-    const pseudocode = textDecoder.decode(new Uint8Array(mem, textPtr, textLen));
+    const rawPseudocode = textDecoder.decode(new Uint8Array(mem, textPtr, textLen));
+    const post = postprocessWasmGeneralC(rawPseudocode, { symbolFor, readBytes, fileBytes, sections, allowHelperInlining });
+    const pseudocode = post.text;
     if ((rawName.startsWith('-[') || rawName.startsWith('+[')) && !pseudocode.includes('typedef void * id;')) {
       return noteFallback('decompile', 'unsupported_objc_name');
     }
@@ -567,7 +1053,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         const dv = new DataView(mem);
         for (let i = 0; i < lmCount; i += 1) {
           const off = lmPtr + i * SIZEOF_HEX_LINEMAP_ENTRY;
-          const lineNo = dv.getUint32(off, true);
+          const lineNo = dv.getUint32(off, true) + post.addedLines;
           const address = dv.getBigUint64(off + 8, true);
           const list = rawLinemap.get(lineNo) || [];
           if (!list.includes(address)) list.push(address);

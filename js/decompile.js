@@ -122,6 +122,10 @@ function tryWasmDecompile(model, opts) {
     baseAddr,
     funcName,
     insns,
+    symbolFor: opts?.symbolFor ?? model?.symbolFor ?? null,
+    readBytes: opts?.readBytes ?? model?.readBytes ?? null,
+    fileBytes: opts?.fileBytes ?? model?.fileBytes ?? null,
+    sections: opts?.sections ?? model?.sections ?? null,
   });
   if (!wasmRes) return null;
   return {
