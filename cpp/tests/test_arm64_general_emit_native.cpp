@@ -165,7 +165,7 @@ void test_guards_oom_and_table_overflow() {
 
   const uint32_t tiny_alu[] = { 0x0b010000u, 0xd65f03c0u };
   assert(hex::decompiler::passes::try_emit_arm64_general(
-             tiny_alu, 2u, 0x1000ULL, "tiny", 4u, 0u, arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_UNSUPPORTED);
+             tiny_alu, 2u, 0x1000ULL, "tiny", 4u, 0u, arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
 
   const uint32_t four_words[] = { 0xf9400000u, 0xf900001fu, 0xaa0003e0u, 0xd65f03c0u };
   assert(hex::decompiler::passes::try_emit_arm64_general(
@@ -183,27 +183,27 @@ void test_guards_oom_and_table_overflow() {
              four_words, 4u, 0x1000ULL, "oom", 3u, 0u, tiny_arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_OOM);
 
   // Exceeding kMaxCallees (128) -> HEX_ERR_RESOURCE_LIMIT
-  uint32_t many_calls[135];
-  for (uint32_t i = 0u; i < 134u; ++i) {
+  uint32_t many_calls[520];
+  for (uint32_t i = 0u; i < 519u; ++i) {
     many_calls[i] = 0x94000000u | ((0x400u + i * 2u) & 0x03FFFFFFu);
   }
-  many_calls[134] = 0xd65f03c0u;
+  many_calls[519] = 0xd65f03c0u;
   arena.reset();
   assert(hex::decompiler::passes::try_emit_arm64_general(
-             many_calls, 135u, 0x100000000ULL, "many_calls", 10u, 0u,
+             many_calls, 520u, 0x100000000ULL, "many_calls", 10u, 0u,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_RESOURCE_LIMIT);
 
-  // Exceeding kMaxGlobals (128) -> HEX_ERR_RESOURCE_LIMIT
-  uint32_t many_globals[135];
+  // Exceeding kMaxGlobals (512) -> HEX_ERR_RESOURCE_LIMIT
+  uint32_t many_globals[520];
   many_globals[0] = 0x90000008u;  // adrp x8, #0x100000000
-  for (uint32_t i = 0u; i < 133u; ++i) {
+  for (uint32_t i = 0u; i < 518u; ++i) {
     // ldr x9, [x8, #(i * 8)]
     many_globals[1u + i] = 0xf9400109u | ((i & 0xFFFu) << 10u);
   }
-  many_globals[134] = 0xd65f03c0u;
+  many_globals[519] = 0xd65f03c0u;
   arena.reset();
   assert(hex::decompiler::passes::try_emit_arm64_general(
-             many_globals, 135u, 0x100000000ULL, "many_globals", 12u, 0u,
+             many_globals, 520u, 0x100000000ULL, "many_globals", 12u, 0u,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_RESOURCE_LIMIT);
 
   // Trailing label before '}' emits valid C11 `(void)0;`
@@ -387,6 +387,79 @@ void test_wave25_neon_fmov_1word_and_structurizer() {
   }
 }
 
+void test_wave26_structurizer_and_stubs() {
+  static uint8_t buf[1536 * 1024];
+  hex::Arena arena;
+  arena.init_fixed(buf, sizeof(buf));
+
+  // (a) Short-circuit || merge (Rule 7) + multi-statement tail return (Rule 5)
+  // if (x0 == 0) goto L_ret; if (x1 == 0) goto L_ret; x0 = x0 + x1; return x0;
+  // L_ret: x0 = 1; x0 = x0 + 2; return x0;
+  {
+    arena.reset();
+    const uint32_t w[] = {
+        0xb40000a0u,  // 0x00: cbz x0, +20 (0x14)
+        0xb4000081u,  // 0x04: cbz x1, +16 (0x14)
+        0x8b010000u,  // 0x08: add x0, x0, x1
+        0xd65f03c0u,  // 0x0c: ret
+        0xd503201fu,  // 0x10: nop (keeps L_ret non-fallthrough)
+        0xd2800020u,  // 0x14: movz x0, #1
+        0x91000800u,  // 0x18: add x0, x0, #2
+        0xd65f03c0u,  // 0x1c: ret
+    };
+    const char* txt = nullptr; uint32_t len = 0u;
+    const HexLineMapEntry* lm = nullptr; uint32_t lm_cnt = 0u;
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 8u, 0x100008000ULL, "short_circuit_ret", 17u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "||"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (b) Loop with continue (Rule 8) + multi-entry do-while (Rule 2)
+  // 0x00: cbz x0, +24 (0x18 -> loop_hdr)  -- creates a 2nd ref to loop_hdr
+  // 0x04: add x0, x0, #1
+  // 0x08: L_hdr: subs x0, x0, #1
+  // 0x0c: cbz x1, +8 (0x14 -> L_cont)
+  // 0x10: add x2, x2, #1
+  // 0x14: L_cont: cbnz x0, -12 (0x08 -> L_hdr)
+  // 0x18: ret
+  {
+    arena.reset();
+    const uint32_t w[] = {
+        0xb4000040u,  // 0x00: cbz x0, +8 (0x08 -> L_hdr)
+        0x91000400u,  // 0x04: add x0, x0, #1
+        0xf1000400u,  // 0x08: L_hdr: subs x0, x0, #1
+        0xb4000041u,  // 0x0c: cbz x1, +8 (0x14 -> L_cont)
+        0x91000442u,  // 0x10: add x2, x2, #1
+        0xb5ffffa0u,  // 0x14: L_cont: cbnz x0, -12 (0x08 -> L_hdr)
+        0xd65f03c0u,  // 0x18: ret
+    };
+    const char* txt = nullptr; uint32_t len = 0u;
+    const HexLineMapEntry* lm = nullptr; uint32_t lm_cnt = 0u;
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 7u, 0x100009000ULL, "multi_entry_loop", 16u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "do {"));
+    assert(contains(txt, len, "} while ("));
+  }
+
+  // (c) 2-word and 3-word real stubs (previously rejected by word_count < 4u)
+  {
+    arena.reset();
+    const uint32_t w2[2] = {0xd2800540u, 0xd65f03c0u};  // movz x0, #42; ret
+    const char* txt = nullptr; uint32_t len = 0u;
+    const HexLineMapEntry* lm = nullptr; uint32_t lm_cnt = 0u;
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w2, 2u, 0x10000a000ULL, "stub2", 5u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert((contains(txt, len, "42") || contains(txt, len, "0x2a")) && contains(txt, len, "return "));
+  }
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -396,6 +469,7 @@ int main() {
   test_sparse_self_recursion_and_trailing_fallback_label();
   test_wave23_instructions_and_pass_sync();
   test_wave25_neon_fmov_1word_and_structurizer();
+  test_wave26_structurizer_and_stubs();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }

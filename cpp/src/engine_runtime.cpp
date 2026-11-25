@@ -18,7 +18,7 @@
 
 namespace {
 
-constexpr uint32_t kEmitArenaBytes = 512u * 1024u;
+constexpr uint32_t kEmitArenaBytes = 1536u * 1024u;
 constexpr uint32_t kMaxParityWords = 16u;
 
 alignas(16) uint8_t g_image_storage[HEX_ENGINE_IMAGE_ARENA_BYTES];
