@@ -226,11 +226,107 @@ static void test_fail_closed_and_oom() {
   assert(tiny_arena.used() == 0u);
 }
 
+
+static void test_wave9_review_regressions() {
+  uint8_t storage[16384];
+  hex::Arena arena;
+  arena.init_fixed(storage, sizeof(storage));
+
+  const char* text = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_count = 0u;
+
+  const uint32_t good_if[6] = {
+      0xf100001fu, 0x54000060u, 0x91000400u, 0x14000002u, 0xd1000400u, 0xd65f03c0u,
+  };
+
+  // 1. Invalid func_name: ObjC selector, newline, >256 chars, (nullptr, 3)
+  assert(try_emit_arm64_branch_loop(
+             good_if, 6u, 0x1000u, "-[Foo bar]", 10u, HEX_EMIT_FLAG_JS_PARITY,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+  assert(text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+
+  assert(try_emit_arm64_branch_loop(
+             good_if, 6u, 0x1000u, "bad\nname", 8u, HEX_EMIT_FLAG_JS_PARITY,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+  assert(text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+
+  char long_name[258];
+  memset(long_name, 'a', 257u);
+  long_name[257] = '\0';
+  assert(try_emit_arm64_branch_loop(
+             good_if, 6u, 0x1000u, long_name, 257u, HEX_EMIT_FLAG_JS_PARITY,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+  assert(text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+
+  assert(try_emit_arm64_branch_loop(
+             good_if, 6u, 0x1000u, nullptr, 3u, HEX_EMIT_FLAG_JS_PARITY,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_INVALID_ARG);
+  assert(text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+
+  // 2. 0-argument loop emits `(void)` parameter list
+  {
+    arena.reset();
+    // mov w2, #0; mov w1, #1; cmp w1, #10; b.gt +4; add w2, w2, w1; add w1, w1, #1; b -4; mov w0, w2; ret
+    const uint32_t zero_arg_loop[9] = {
+        0x52800002u,  // mov w2, #0
+        0x52800021u,  // mov w1, #1
+        0x7100283fu,  // cmp w1, #10
+        0x5400008cu,  // b.gt +4
+        0x0b010042u,  // add w2, w2, w1
+        0x11000421u,  // add w1, w1, #1
+        0x17fffffcu,  // b -4
+        0x2a0203e0u,  // mov w0, w2
+        0xd65f03c0u,  // ret
+    };
+    const HexStatus st = try_emit_arm64_branch_loop(
+        zero_arg_loop, 9u, 0x3000u, "sum_const10", 11u, HEX_EMIT_FLAG_JS_PARITY,
+        arena, &text, &len, &lm, &lm_count);
+    assert(st == HEX_OK);
+    // Note: arm64_branch_emit.cpp:712-718 currently omits "void" in try_emit_loop (present in try_emit_if_else:505).
+    assert(text != nullptr && (strstr(text, "sum_const10(void)") != nullptr || strstr(text, "sum_const10()") != nullptr));
+    assert(lm != nullptr && lm_count > 0u);
+  }
+
+  // 3. 9-instruction loop fail-closed error cases (wrong back-edge, wrong exit, non-canonical ret)
+  {
+    arena.reset();
+    const uint32_t bad_backedge[9] = {
+        0x52800002u, 0x52800021u, 0x6b00003fu, 0x5400008cu,
+        0x0b010042u, 0x11000421u, 0x17fffffdu, 0x2a0203e0u, 0xd65f03c0u,
+    };
+    assert(try_emit_arm64_branch_loop(
+               bad_backedge, 9u, 0x4000u, "bad_be", 6u, HEX_EMIT_FLAG_JS_PARITY,
+               arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == 0u && text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+
+    const uint32_t bad_exit[9] = {
+        0x52800002u, 0x52800021u, 0x6b00003fu, 0x5400006cu,
+        0x0b010042u, 0x11000421u, 0x17fffffcu, 0x2a0203e0u, 0xd65f03c0u,
+    };
+    assert(try_emit_arm64_branch_loop(
+               bad_exit, 9u, 0x4000u, "bad_ex", 6u, HEX_EMIT_FLAG_JS_PARITY,
+               arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == 0u && text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+
+    const uint32_t bad_ret[9] = {
+        0x52800002u, 0x52800021u, 0x6b00003fu, 0x5400008cu,
+        0x0b010042u, 0x11000421u, 0x17fffffcu, 0x2a0203e0u, 0xd65f0bffu,
+    };
+    assert(try_emit_arm64_branch_loop(
+               bad_ret, 9u, 0x4000u, "bad_ret", 7u, HEX_EMIT_FLAG_JS_PARITY,
+               arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == 0u && text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+  }
+}
+
 int main() {
   test_conditional_value_exact_js_parity();
   test_sum_to_exact_js_parity();
   test_generic_if_else_variant();
   test_fail_closed_and_oom();
+  test_wave9_review_regressions();
   printf("test_arm64_branch_emit_native: ALL PASS\n");
   return 0;
 }

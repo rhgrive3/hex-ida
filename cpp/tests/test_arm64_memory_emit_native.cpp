@@ -214,11 +214,91 @@ static void test_fail_closed_and_error_guards() {
              copy_w, 3, 0x1034, "copy_word", 9, 1, tiny_arena, &text, &len, &lm, &lm_cnt) == HEX_ERR_OOM);
 }
 
+
+static void test_wave9_review_regressions() {
+  std::vector<uint8_t> arena_buf(64 * 1024);
+  hex::Arena arena;
+  arena.init_fixed(arena_buf.data(), arena_buf.size());
+
+  // Reserve a small prefix to verify exact arena.used() rollback on error.
+  void* prefix = arena.alloc_bytes(64);
+  assert(prefix != nullptr);
+  const size_t before_used = arena.used();
+
+  const char* text = reinterpret_cast<const char*>(static_cast<uintptr_t>(1));
+  uint32_t len = 99u;
+  const HexLineMapEntry* lm = reinterpret_cast<const HexLineMapEntry*>(static_cast<uintptr_t>(1));
+  uint32_t lm_cnt = 77u;
+
+  // R1: bit-23 set ADD/SUB (ADDG/SUBG, 0x11800400 / 0x51800400) rejected
+  {
+    const uint32_t addg_seq[4] = {0x11800400u, 4181721097u, 4177526825u, 3596551104u};
+    assert(hex::decompiler::passes::try_emit_arm64_memory(
+               addg_seq, 4, 0x1000, "addg_fn", 7, HEX_EMIT_FLAG_JS_PARITY,
+               arena, &text, &len, &lm, &lm_cnt) == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == before_used);
+    assert(text == nullptr && len == 0u && lm == nullptr && lm_cnt == 0u);
+
+    const uint32_t subg_seq[4] = {0x51800400u, 4181721097u, 4177526825u, 3596551104u};
+    assert(hex::decompiler::passes::try_emit_arm64_memory(
+               subg_seq, 4, 0x1000, "subg_fn", 7, HEX_EMIT_FLAG_JS_PARITY,
+               arena, &text, &len, &lm, &lm_cnt) == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == before_used);
+  }
+
+  // R2: 32-bit SP update (sub wsp, wsp, #16 ... add wsp, wsp, #16) rejected
+  {
+    const uint32_t sp32_seq[4] = {0x510043ffu, 0xf90003e0u, 0x110043ffu, 0xd65f03c0u};
+    assert(hex::decompiler::passes::try_emit_arm64_memory(
+               sp32_seq, 4, 0x1000, "sp32_fn", 7, HEX_EMIT_FLAG_JS_PARITY,
+               arena, &text, &len, &lm, &lm_cnt) == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == before_used);
+    assert(text == nullptr && len == 0u && lm == nullptr && lm_cnt == 0u);
+  }
+
+  // R3: LDR -> non-SP STR -> subsequent MOV (aliasing reorder hazard) rejected
+  {
+    const uint32_t alias_seq[4] = {
+        0xb9400008u,  // ldr w8, [x0]
+        0xb9000041u,  // str w1, [x2]
+        0x2a0803e0u,  // mov w0, w8
+        0xd65f03c0u,  // ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_memory(
+               alias_seq, 4, 0x1000, "alias_fn", 8, HEX_EMIT_FLAG_JS_PARITY,
+               arena, &text, &len, &lm, &lm_cnt) == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == before_used);
+    assert(text == nullptr && len == 0u && lm == nullptr && lm_cnt == 0u);
+  }
+
+  // R4: OOM complete arena.used() rollback + output pointer zero-clear
+  {
+    std::vector<uint8_t> tiny(128);
+    hex::Arena tiny_arena;
+    tiny_arena.init_fixed(tiny.data(), tiny.size());
+    void* p = tiny_arena.alloc_bytes(32);
+    assert(p != nullptr);
+    const size_t tiny_before = tiny_arena.used();
+
+    text = reinterpret_cast<const char*>(static_cast<uintptr_t>(1));
+    len = 42u;
+    lm = reinterpret_cast<const HexLineMapEntry*>(static_cast<uintptr_t>(1));
+    lm_cnt = 13u;
+    const uint32_t copy_w[3] = {4181721097u, 4177526825u, 3596551104u};
+    assert(hex::decompiler::passes::try_emit_arm64_memory(
+               copy_w, 3, 0x1034, "copy_word", 9, HEX_EMIT_FLAG_JS_PARITY,
+               tiny_arena, &text, &len, &lm, &lm_cnt) == HEX_ERR_OOM);
+    assert(tiny_arena.used() == tiny_before);
+    assert(text == nullptr && len == 0u && lm == nullptr && lm_cnt == 0u);
+  }
+}
+
 }  // namespace
 
 int main() {
   test_five_memory_functions_and_ltmp0_exact_parity();
   test_fail_closed_and_error_guards();
+  test_wave9_review_regressions();
   std::printf("test_arm64_memory_emit_native (ASan+UBSan, 6/6 exact 0-diff + fail-closed): ALL PASS\n");
   return 0;
 }

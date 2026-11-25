@@ -218,6 +218,47 @@ int main() {
     check_true("neg_oom", st == HEX_ERR_OOM && tiny_arena.used() == 0u);
   }
 
+
+  // Wave 9 R1-R5 review regressions
+  {
+    // 1. 64-bit MOVZ x0 under JS_PARITY rejected
+    const uint32_t w_movz_x0[] = { 0xD2800540u, 0xD65F03C0u };  // movz x0, #42; ret
+    run_negative_case("w9_movz_x0_64_rejected", w_movz_x0, 2, 0x1000u, "f_movz_x0", HEX_ERR_UNSUPPORTED);
+
+    // 2. Immediates >= 100 (#255, #1000) and `sub 0 - 1` rejected
+    const uint32_t w_imm255[] = { 0x52801FE0u, 0xD65F03C0u };  // movz w0, #255; ret
+    run_negative_case("w9_imm_255_rejected", w_imm255, 2, 0x1000u, "f_255", HEX_ERR_UNSUPPORTED);
+
+    const uint32_t w_imm1000[] = { 0x52807D00u, 0xD65F03C0u };  // movz w0, #1000; ret
+    run_negative_case("w9_imm_1000_rejected", w_imm1000, 2, 0x1000u, "f_1000", HEX_ERR_UNSUPPORTED);
+
+    const uint32_t w_sub_neg1[] = { 0x2A1F03E0u, 0x51000400u, 0xD65F03C0u };  // mov w0, wzr; sub w0, w0, #1; ret
+    run_negative_case("w9_sub_0_minus_1_rejected", w_sub_neg1, 3, 0x1000u, "f_sub_neg1", HEX_ERR_UNSUPPORTED);
+
+    // 3. `nop; movn w0, #0; ret` rejected
+    const uint32_t w_nop_movn[] = { 0xD503201Fu, 0x12800000u, 0xD65F03C0u };
+    run_negative_case("w9_nop_movn_rejected", w_nop_movn, 3, 0x1000u, "f_nop_movn", HEX_ERR_UNSUPPORTED);
+
+    // 4. bit-23 set ADD (0x11800400) rejected
+    const uint32_t w_add_bit23[] = { 0x12800000u, 0x11800400u, 0xD65F03C0u };
+    run_negative_case("w9_add_bit23_rejected", w_add_bit23, 3, 0x1000u, "f_add_b23", HEX_ERR_UNSUPPORTED);
+
+    // 5. (nullptr, 3) returns HEX_ERR_INVALID_ARG
+    uint8_t mem[4096];
+    hex::Arena arena;
+    arena.init_fixed(mem, sizeof(mem));
+    const char* text = nullptr;
+    uint32_t len = 0u;
+    const HexLineMapEntry* lm = nullptr;
+    uint32_t lm_count = 0u;
+    const uint32_t w_ret[] = { 0xD65F03C0u };
+    const HexStatus st = try_emit_arm64_simple(
+        w_ret, 1, 0x1000u, nullptr, 3u, HEX_EMIT_FLAG_JS_PARITY, arena,
+        &text, &len, &lm, &lm_count);
+    check_true("w9_null_name_nonzero_len_invalid_arg",
+               st == HEX_ERR_INVALID_ARG && text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+  }
+
   std::printf("test_arm64_simple_emit_native: pass=%d fail=%d\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
