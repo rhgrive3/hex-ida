@@ -221,9 +221,13 @@ struct EmitBuf {
   uint32_t lm_count;
 
   bool init(hex::Arena& arena) {
+    const size_t mark = arena.used();
     data = arena.alloc<char>(kMaxTextBytes);
     lm = arena.alloc<HexLineMapEntry>(kMaxLineMapEntries);
-    if (!data || !lm) return false;
+    if (!data || !lm) {
+      arena.restore(mark);
+      return false;
+    }
     cap = kMaxTextBytes;
     len = 0u;
     cur_line = 1u;
@@ -414,6 +418,7 @@ HexStatus try_emit_dispatch_table(
     if (!is_nop(words[i])) return HEX_ERR_UNSUPPORTED;
   }
 
+  const size_t emit_mark = emit_arena.used();
   EmitBuf buf{};
   if (!buf.init(emit_arena)) return HEX_ERR_OOM;
 
@@ -461,7 +466,7 @@ HexStatus try_emit_dispatch_table(
   buf.put_str("    return;\n"
               "}");
 
-  if (buf.overflow) return HEX_ERR_RESOURCE_LIMIT;
+  if (buf.overflow) { emit_arena.restore(emit_mark); return HEX_ERR_RESOURCE_LIMIT; }
 
   *out_text = buf.data;
   *out_len = buf.len;
@@ -579,8 +584,8 @@ HexStatus try_emit_standard_frame_call(
       reg_origin[rd] = 31u;
       if (rd == 0u) x0_tracks_arg = false;
     } else if (match_str_uoff(w, &is64, &rd, &rn, &imm)) {
+      if (rn != 31u) return HEX_ERR_UNSUPPORTED;
       if (!record_read(rd)) return HEX_ERR_UNSUPPORTED;
-      if (rn != 31u && !record_read(rn)) return HEX_ERR_UNSUPPORTED;
     } else {
       return HEX_ERR_UNSUPPORTED;
     }
@@ -632,6 +637,7 @@ HexStatus try_emit_standard_frame_call(
     param_count = max_arg + 1u;
   }
 
+  const size_t emit_mark = emit_arena.used();
   EmitBuf buf{};
   if (!buf.init(emit_arena)) return HEX_ERR_OOM;
 
@@ -717,7 +723,7 @@ HexStatus try_emit_standard_frame_call(
   }
   buf.put_str(";\n}");
 
-  if (buf.overflow) return HEX_ERR_RESOURCE_LIMIT;
+  if (buf.overflow) { emit_arena.restore(emit_mark); return HEX_ERR_RESOURCE_LIMIT; }
 
   *out_text = buf.data;
   *out_len = buf.len;

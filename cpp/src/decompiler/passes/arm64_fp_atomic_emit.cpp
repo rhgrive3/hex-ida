@@ -189,7 +189,7 @@ struct EmitWriter {
 
   bool ensure(uint32_t extra) {
     if (oom) return false;
-    if (extra > kMaxBufCap || len > kMaxBufCap - extra - 1U) {
+    if (extra >= kMaxBufCap || len > kMaxBufCap - 1U - extra) {
       oom = true;
       return false;
     }
@@ -708,7 +708,7 @@ HexStatus try_emit_arm64_fp_atomic(
     uint8_t rt2 = 0U;
     uint8_t rn = 0U;
     if (is_ldaxp_64(words[0], &rt, &rt2, &rn) &&
-        rt == 0U && rt2 <= 30U && rn <= 7U && rn != rt && rn != rt2) {
+        rt == 0U && rt2 <= 30U && rt2 != rt && rn <= 7U && rn != rt && rn != rt2) {
       EmitWriter w;
       if (!w.init(&emit_arena, 512U)) {
         emit_arena.restore(arena_mark);

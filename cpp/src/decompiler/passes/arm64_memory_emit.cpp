@@ -251,16 +251,25 @@ inline int64_t sign_extend_7(uint32_t imm7) {
   return (imm7 & 0x40u) ? static_cast<int64_t>(imm7 | ~0x7fu) : static_cast<int64_t>(imm7);
 }
 
-void record_struct_field(StructFieldSet* sets, uint8_t param_idx, uint64_t off) {
-  if (param_idx >= 8u) return;
+struct ArenaRollback {
+  hex::Arena& arena;
+  size_t mark;
+  bool armed;
+  ~ArenaRollback() {
+    if (armed) arena.restore(mark);
+  }
+};
+
+bool record_struct_field(StructFieldSet* sets, uint8_t param_idx, uint64_t off) {
+  if (param_idx >= 8u) return false;
   StructFieldSet& s = sets[param_idx];
   s.used = true;
   for (uint32_t i = 0; i < s.field_count; ++i) {
-    if (s.offsets[i] == off) return;
+    if (s.offsets[i] == off) return true;
   }
-  if (s.field_count < 16u) {
-    s.offsets[s.field_count++] = off;
-  }
+  if (s.field_count >= 16u) return false;
+  s.offsets[s.field_count++] = off;
+  return true;
 }
 
 }  // namespace
@@ -278,10 +287,15 @@ HexStatus try_emit_arm64_memory(
     const HexLineMapEntry** out_linemap,
     uint32_t* out_linemap_count) {
   (void)emit_flags;
+  if (out_text) *out_text = nullptr;
+  if (out_len) *out_len = 0u;
+  if (out_linemap) *out_linemap = nullptr;
+  if (out_linemap_count) *out_linemap_count = 0u;
   if (!words || word_count == 0u || !out_text || !out_len || !out_linemap || !out_linemap_count) {
     return HEX_ERR_INVALID_ARG;
   }
   if (word_count > 64u) return HEX_ERR_UNSUPPORTED;
+  ArenaRollback arena_guard{emit_arena, emit_arena.used(), true};
 
   // Must end with canonical ARM64 RET (x30).
   if (words[word_count - 1u] != 0xd65f03c0u) {
@@ -343,8 +357,10 @@ HexStatus try_emit_arm64_memory(
     return static_cast<int32_t>(slot_count++);
   };
 
+  bool reg_load_invalidated[31];
+  for (uint32_t i = 0; i < 31u; ++i) reg_load_invalidated[i] = false;
   auto read_reg = [&](uint32_t r, uint32_t* out_id) -> bool {
-    if (r == 31u) return false;
+    if (r >= 31u || reg_load_invalidated[r]) return false;
     if (reg_expr[r] == kNoExpr) return false;
     if (!reg_written[r] && r < 8u) param_read[r] = true;
     *out_id = reg_expr[r];
@@ -401,14 +417,15 @@ HexStatus try_emit_arm64_memory(
       continue;
     }
 
-    // 3. ADD (immediate, non-flag-setting): sf 0 0 10001 sh imm12 Rn Rd
-    if ((w & 0x7f000000u) == 0x11000000u) {
+    // 3. ADD (immediate, non-flag-setting): sf 0 0 100010 sh imm12 Rn Rd (bit 23 must be 0)
+    if ((w & 0x7f800000u) == 0x11000000u) {
       const uint8_t bits = (w >> 31) ? 64u : 32u;
       const uint32_t sh = (w >> 22) & 1u;
       const uint64_t imm = static_cast<uint64_t>((w >> 10) & 0xfffu) << (sh ? 12u : 0u);
       const uint32_t rn = (w >> 5) & 31u;
       const uint32_t rd = w & 31u;
       if (rd == 31u && rn == 31u) {
+        if (bits != 64u) return HEX_ERR_UNSUPPORTED;
         sp_delta += static_cast<int64_t>(imm);
         continue;
       }
@@ -448,8 +465,9 @@ HexStatus try_emit_arm64_memory(
       continue;
     }
 
-    // 4. SUB (immediate, non-flag-setting): sf 1 0 10001 sh imm12 Rn Rd
-    if ((w & 0x7f000000u) == 0x51000000u) {
+    // 4. SUB (immediate, non-flag-setting): sf 1 0 100010 sh imm12 Rn Rd (bit 23 must be 0)
+    if ((w & 0x7f800000u) == 0x51000000u) {
+      if ((w >> 31) == 0u) return HEX_ERR_UNSUPPORTED;
       const uint32_t sh = (w >> 22) & 1u;
       const uint64_t imm = static_cast<uint64_t>((w >> 10) & 0xfffu) << (sh ? 12u : 0u);
       const uint32_t rn = (w >> 5) & 31u;
@@ -514,13 +532,21 @@ HexStatus try_emit_arm64_memory(
         uses_uintptr = true;
         if (is64) {
           param_is_ptr64[exprs[base_id].param_idx] = true;
-          record_struct_field(structs, exprs[base_id].param_idx, static_cast<uint64_t>(disp));
+          if (!record_struct_field(structs, exprs[base_id].param_idx, static_cast<uint64_t>(disp))) {
+            return HEX_ERR_UNSUPPORTED;
+          }
         } else {
           uses_u32_deref = true;
         }
         if (stmts.size() >= kMaxStmts) return HEX_ERR_UNSUPPORTED;
         if (!stmts.push_back(Stmt{StmtKind::MemStore, bits, 0u, base_id, val_id, disp, va})) {
           return HEX_ERR_OOM;
+        }
+        for (uint32_t rr = 0u; rr < 31u; ++rr) {
+          if (reg_written[rr] && reg_expr[rr] < exprs.size() &&
+              exprs[reg_expr[rr]].kind == ExprKind::Load) {
+            reg_load_invalidated[rr] = true;
+          }
         }
       }
       continue;
@@ -558,7 +584,9 @@ HexStatus try_emit_arm64_memory(
         uses_uintptr = true;
         if (is64) {
           param_is_ptr64[exprs[base_id].param_idx] = true;
-          record_struct_field(structs, exprs[base_id].param_idx, static_cast<uint64_t>(disp));
+          if (!record_struct_field(structs, exprs[base_id].param_idx, static_cast<uint64_t>(disp))) {
+            return HEX_ERR_UNSUPPORTED;
+          }
         } else {
           uses_u32_deref = true;
         }
@@ -573,6 +601,7 @@ HexStatus try_emit_arm64_memory(
         reg_expr[rt] = lid;
         reg_bits[rt] = bits;
         reg_written[rt] = true;
+        reg_load_invalidated[rt] = false;
         if (rt == 0u) r0_last_va = va;
       }
       continue;
@@ -823,6 +852,7 @@ HexStatus try_emit_arm64_memory(
     mem_copy(lm_buf, lmap.data(), lmap.size() * sizeof(HexLineMapEntry));
   }
 
+  arena_guard.armed = false;
   *out_text = out_buf;
   *out_len = static_cast<uint32_t>(tlen);
   *out_linemap = lm_buf;

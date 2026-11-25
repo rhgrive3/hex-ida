@@ -194,7 +194,8 @@ HexStatus try_emit_arm64_simple(
   if (out_linemap) *out_linemap = nullptr;
   if (out_linemap_count) *out_linemap_count = 0u;
 
-  if (!words || word_count == 0u || !out_text || !out_len || !out_linemap || !out_linemap_count) {
+  if (!words || word_count == 0u || !out_text || !out_len || !out_linemap || !out_linemap_count ||
+      (func_name == nullptr && func_name_len > 0u)) {
     return HEX_ERR_INVALID_ARG;
   }
   if (word_count > kMaxSimpleWords) {
@@ -318,7 +319,7 @@ HexStatus try_emit_arm64_simple(
     }
 
     // ADD/SUB (immediate) folding on constant w0/x0
-    const uint32_t op_hi = w & 0x7F000000u;
+    const uint32_t op_hi = w & 0x7F800000u;
     if (op_hi == 0x11000000u || op_hi == 0x51000000u) {
       const bool is_sub = (op_hi == 0x51000000u);
       const uint32_t sf = (w >> 31u) & 1u;
@@ -352,10 +353,14 @@ HexStatus try_emit_arm64_simple(
   if (has_frame && !has_r0) {
     return HEX_ERR_UNSUPPORTED;
   }
-  // Under JS_PARITY, decimal vs hex formatting diverges for constants in [100..999]; fail closed.
+  // Under JS_PARITY, 64-bit constant returns (uint64 vs int64) and constants >= 100 (hex vs dec,
+  // including negative/wrapped values like 0xFFFFFFFF) diverge from JS; fail closed.
   if ((emit_flags & HEX_EMIT_FLAG_JS_PARITY) != 0u && has_r0) {
-    const uint64_t masked = r0_is_64 ? r0_val : static_cast<uint64_t>(static_cast<uint32_t>(r0_val));
-    if (masked >= 100u && masked <= 999u) {
+    if (r0_is_64) {
+      return HEX_ERR_UNSUPPORTED;
+    }
+    const uint32_t masked32 = static_cast<uint32_t>(r0_val);
+    if (masked32 >= 100u) {
       return HEX_ERR_UNSUPPORTED;
     }
   }

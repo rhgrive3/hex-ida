@@ -502,10 +502,14 @@ static HexStatus try_emit_if_else(
   w.put_cstr(ret_is_64 ? "uint64 " : "int32 ");
   w.put_func_name(func_name, func_name_len, base_addr);
   w.put_char('(');
-  for (uint32_t p = 0u; p < param_count; ++p) {
-    if (p > 0u) w.put_cstr(", ");
-    w.put_cstr("uint64 ");
-    w.put_param_name(static_cast<uint8_t>(p));
+  if (param_count == 0u) {
+    w.put_cstr("void");
+  } else {
+    for (uint32_t p = 0u; p < param_count; ++p) {
+      if (p > 0u) w.put_cstr(", ");
+      w.put_cstr("uint64 ");
+      w.put_param_name(static_cast<uint8_t>(p));
+    }
   }
   w.put_cstr(")\n{\n");
 
@@ -842,6 +846,15 @@ HexStatus try_emit_arm64_branch_loop(
   }
   if (func_name == nullptr && func_name_len > 0u) {
     return HEX_ERR_INVALID_ARG;
+  }
+  if (func_name_len > 256u) return HEX_ERR_UNSUPPORTED;
+  if (func_name != nullptr && func_name_len > 0u) {
+    for (uint32_t i = 0u; i < func_name_len; ++i) {
+      const char ch = func_name[i];
+      const bool ok = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                      (ch >= '0' && ch <= '9') || ch == '_';
+      if (!ok) return HEX_ERR_UNSUPPORTED;
+    }
   }
 
   if (word_count == 6u) {

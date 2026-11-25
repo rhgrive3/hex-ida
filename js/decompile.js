@@ -140,6 +140,19 @@ export function decompile(model, opts = {}) {
   if (canonical) return canonical;
   const wasmRes = tryWasmDecompile(model, opts);
   if (wasmRes) return wasmRes;
+  if (getEngineMode(opts) === 'js') {
+    const prevMode = globalThis.__HEX_ENGINE_MODE__;
+    globalThis.__HEX_ENGINE_MODE__ = 'js';
+    try {
+      return baseDecompile(model, opts);
+    } finally {
+      if (prevMode === undefined) {
+        delete globalThis.__HEX_ENGINE_MODE__;
+      } else {
+        globalThis.__HEX_ENGINE_MODE__ = prevMode;
+      }
+    }
+  }
   return baseDecompile(model, opts);
 }
 

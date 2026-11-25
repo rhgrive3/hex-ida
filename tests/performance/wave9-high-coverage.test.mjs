@@ -291,6 +291,8 @@ test('Wave 9 coverage: 13 real binaries x all ARM64/arm64_32 functions produce 0
         assert.ok(wasmMap.length > 0, `${label}: sourceMap must be non-empty`);
         assert.equal(wasmMap.length, jsMap.length, `${label}: sourceMap address-entry count mismatch (wasm=${wasmMap.length}, js=${jsMap.length})`);
         for (let mi = 0; mi < jsMap.length; mi += 1) {
+          assert.equal(wasmMap[mi].startLine, jsMap[mi].startLine, `${label}: sourceMap[${mi}] startLine mismatch`);
+          assert.ok(wasmMap[mi].addresses.length > 0, `${label}: sourceMap[${mi}] addresses must be non-empty`);
           for (const a of wasmMap[mi].addresses) {
             assert.ok(jsMap[mi].addresses.includes(a), `${label}: sourceMap[${mi}] address ${a} not in JS sourceMap`);
           }
