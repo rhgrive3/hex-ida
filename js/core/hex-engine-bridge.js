@@ -1418,3 +1418,135 @@ export function wasmByteSearchFind(haystack, fromOffset, pattern, masks, foldAsc
     return noteFallback('byte_search', 'wasm_exception');
   }
 }
+
+// ---------------------------------------------------------------------------
+// SHA-256 WASM Bridge (Wave 14)
+// ---------------------------------------------------------------------------
+const SHA256_MAX_CHUNK_BLOCKS = 4096;
+const SHA256_MAX_HASH_BYTES = 262144;
+
+export function wasmSha256CompressBlocks(stateU32, bytes, offset, blockCount, opts = {}) {
+  if (getEngineMode(opts) === 'js') {
+    noteFallback('sha256', 'wasm_disabled');
+    return false;
+  }
+  const ex = getHexEngineExportsSafe();
+  if (
+    !isWasmBulkMemorySupported()
+    || !ex
+    || typeof ex.hex_sha256_compress_blocks !== 'function'
+    || typeof ex.hex_identity_alloc !== 'function'
+    || typeof ex.hex_identity_reset !== 'function'
+  ) {
+    noteFallback('sha256', 'wasm_unavailable');
+    return false;
+  }
+  if (!(stateU32 instanceof Uint32Array) || stateU32.length !== 8) {
+    noteFallback('sha256', 'invalid_state');
+    return false;
+  }
+  if (!(bytes instanceof Uint8Array)) {
+    noteFallback('sha256', 'invalid_bytes');
+    return false;
+  }
+  if (
+    !Number.isSafeInteger(offset)
+    || offset < 0
+    || !Number.isSafeInteger(blockCount)
+    || blockCount < 0
+    || offset + blockCount * 64 > bytes.length
+  ) {
+    noteFallback('sha256', 'invalid_range');
+    return false;
+  }
+  if (blockCount === 0) {
+    recordWasmCall('sha256');
+    return true;
+  }
+
+  try {
+    const tmpState = new Uint32Array(stateU32);
+    let remaining = blockCount;
+    let curOff = offset;
+
+    while (remaining > 0) {
+      const chunkBlocks = Math.min(SHA256_MAX_CHUNK_BLOCKS, remaining);
+      const chunkBytes = chunkBlocks * 64;
+
+      ex.hex_identity_reset();
+      const statePtr = ex.hex_identity_alloc(32);
+      const blocksPtr = ex.hex_identity_alloc(chunkBytes);
+      if (!statePtr || !blocksPtr) {
+        noteFallback('sha256', 'oom');
+        return false;
+      }
+
+      new Uint32Array(ex.memory.buffer, statePtr, 8).set(tmpState);
+      new Uint8Array(ex.memory.buffer, blocksPtr, chunkBytes).set(
+        bytes.subarray(curOff, curOff + chunkBytes),
+      );
+
+      const status = ex.hex_sha256_compress_blocks(statePtr, blocksPtr, chunkBlocks >>> 0);
+      if (status !== HEX_OK) {
+        noteFallback('sha256', `wasm_status_${status}`);
+        return false;
+      }
+
+      tmpState.set(new Uint32Array(ex.memory.buffer, statePtr, 8));
+      curOff += chunkBytes;
+      remaining -= chunkBlocks;
+    }
+
+    stateU32.set(tmpState);
+    recordWasmCall('sha256');
+    return true;
+  } catch {
+    noteFallback('sha256', 'wasm_exception');
+    return false;
+  }
+}
+
+export function wasmSha256Hash(bytes, opts = {}) {
+  if (getEngineMode(opts) === 'js') return noteFallback('sha256', 'wasm_disabled');
+  const ex = getHexEngineExportsSafe();
+  if (
+    !isWasmBulkMemorySupported()
+    || !ex
+    || typeof ex.hex_sha256_hash !== 'function'
+    || typeof ex.hex_identity_alloc !== 'function'
+    || typeof ex.hex_identity_reset !== 'function'
+  ) {
+    return noteFallback('sha256', 'wasm_unavailable');
+  }
+  if (!(bytes instanceof Uint8Array)) {
+    return noteFallback('sha256', 'invalid_bytes');
+  }
+  if (bytes.length > SHA256_MAX_HASH_BYTES) {
+    return noteFallback('sha256', 'input_too_large');
+  }
+
+  try {
+    ex.hex_identity_reset();
+    const len = bytes.length;
+    const dataPtr = len > 0 ? ex.hex_identity_alloc(len) : 0;
+    const outPtr = ex.hex_identity_alloc(32);
+    if ((len > 0 && !dataPtr) || !outPtr) {
+      return noteFallback('sha256', 'oom');
+    }
+    if (len > 0) {
+      new Uint8Array(ex.memory.buffer, dataPtr, len).set(bytes);
+    }
+
+    const status = ex.hex_sha256_hash(dataPtr, len >>> 0, outPtr);
+    if (status !== HEX_OK) {
+      return noteFallback('sha256', `wasm_status_${status}`);
+    }
+
+    const out = new Uint8Array(32);
+    out.set(new Uint8Array(ex.memory.buffer, outPtr, 32));
+    recordWasmCall('sha256');
+    return out;
+  } catch {
+    return noteFallback('sha256', 'wasm_exception');
+  }
+}
