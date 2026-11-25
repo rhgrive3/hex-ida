@@ -683,8 +683,9 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         note: null,
       });
 
-      if (!isLegacyOutput && !isPrelude && !(kind === 'decl' && /\b(?:local_|var_)/.test(trimmed))) {
+      if (!isLegacyOutput && !isPrelude && !(kind === 'decl' && /\b(?:local_|var_|call_)/.test(trimmed))) {
         bodyLineNo += 1;
+        const foldedExtra = (kind === 'stmt' && /^\*\([^)]+\)\(.*\)\s*[-+]=\s*/.test(trimmed)) ? 2 : 0;
         const addresses = kind === 'sig'
           ? [baseAddrBig]
           : (kind === 'decl' || kind === 'comment' || kind === 'blank' || isBraceOrElse)
@@ -695,7 +696,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
           .filter((r) => r !== undefined);
         sourceMap.push({
           outputStartLine: bodyLineNo,
-          outputEndLine: bodyLineNo,
+          outputEndLine: bodyLineNo + foldedExtra,
           source: {
             addresses,
             rows,
@@ -706,6 +707,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
           },
           kind,
         });
+        bodyLineNo += foldedExtra;
       }
     }
 

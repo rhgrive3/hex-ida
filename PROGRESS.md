@@ -57,3 +57,11 @@
 - **Wave 9 Benchmark (`--expose-gc`)**:
   - Full corpus (13 real binaries x 43 functions, `sink: 20791`): `js` **9,360.09 ms** (RSS 412.78 MB, heap 277.91 MB, 0 WASM calls) vs `auto` **6,857.91 ms** (**1.36x speedup**, RSS **392.40 MB**, heap **246.34 MB** [-31.6 MB], 26 WASM decompiles, 50,492 total WASM calls).
   - WASM-eligible 26-function subset (20x batch = 520 decompiles, `sink: 114820`): `js` **48,737.22 ms** (heap 716.34 MB) vs `auto` **11.13 ms** (**4,378.91x speedup**, RSS **220.58 MB**, heap **77.66 MB** [-89.2%]).
+
+## Wave 10 (10-Parallel Frame+Call Full Expansion)
+- **Impl Agents**: 10 parallel worktrees (`H1` `arm64_frame_bl_emit`, `H2` `arm64_frame_vcall_emit`, `H3` `arm64_frame_branch_bl_emit`, `H4` `arm64_frame_multicall_emit`, `H5` `arm64_frame_helpers.hpp`, `H6` `hex-engine-bridge.js` `blr` enablement + legacy `lines`/`sourceMap` parity, `H7` `arm64_call_emit` 16B align + `base_addr==0` polish, `H8` `x86_64_decomp` ALU flag-reset polish, `H9` Wave 9 R1–R5 Native ASan/UBSan regression tests, `H10` `wave10-frame-coverage.test.mjs`)
+- **Unified WASM Artifact**: `wasm/hex_engine.wasm` (**356,508 bytes**, 21 freestanding C++20 units, **90 exports**, **0 imports**, initial linear memory **<= 8 MiB**)
+- **Coverage & Verification**: **34/40 ARM64/`arm64_32` real-binary functions** (including all 8 frame+call functions: `_greet`, `_apply_damage`, `_main`, `direct_call`, `arm64-threaded-mem::entry`, `arm64-dispatch-table::entry`, `virtual_call`, `_ZNK5Thing8interactEP4Base`) + **3/3 real x86_64 binaries** = **37/43 (86%)** verified 0-diff; **12/12 Native ASan/UBSan suites** PASS, **21/21 Node WASM/Wave subtests** PASS, `npm run lint` (`5840 files ok`) PASS, `npm run module-boundaries:test` PASS, `npm run userscript:build` PASS.
+- **Wave 10 Benchmark (`--expose-gc`)**:
+  - Full corpus (13 real binaries x 43 functions, `sink: 20791`): `js` **11,019.19 ms** (RSS 539.61 MB, heap 384.06 MB, 0 WASM calls) vs `auto` **3,844.13 ms** (**2.87x speedup**, RSS **373.35 MB** [-30.8%], heap **216.62 MB** [-43.6%], 34 WASM decompiles, 25,443 total WASM calls).
+  - WASM-eligible 34-function subset (20x batch = 680 decompiles, `sink: 251060`): `js` **121,981.97 ms** (6,099.10 ms/pass, heap 338.64 MB) vs `auto` **16.28 ms** (0.814 ms/pass, **7,492.75x speedup**, RSS **232.04 MB** [-55.3%], heap **78.12 MB** [-76.9%]).
