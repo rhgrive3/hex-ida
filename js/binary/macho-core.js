@@ -576,7 +576,7 @@ function parseThin(bytes, opts) {
   }
 
   image.metadata.machoMetadata = metadataBudget.snapshot();
-  const issued = image.finalize();
+  const issued = image.finalize({ _consumeOwnedSeeds: true });
   const authoritySections = issued.sections.map(metadataMappingSnapshot);
   const authoritySegments = issued.segments.map(metadataMappingSnapshot);
   const residentBytes = issued.bytes instanceof Uint8Array ? issued.bytes : null;
@@ -1075,9 +1075,10 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
   const canFastPath = image.arch !== 'arm64ec' && typeof image.resolveVirtualMapping === 'function' && (!image.dataInCode || image.dataInCode.length === 0) && !(image.sections || []).some((s) => s?.source === 'unmapped-section');
   let fastRunLo = 0n;
   let fastRunHi = -1n;
+  const fnStartCost = { records: 1, operations: 1, estimatedHeapBytes: 32 };
   let terminated = false;
   while (p < end) {
-    if (!budget.take({ records:1, operations:1, estimatedHeapBytes:32 }, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
+    if (!budget.take(fnStartCost, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     let x;
     try { x = r.uleb(p, 10, end); }
     catch (e) {
