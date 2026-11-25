@@ -41,10 +41,8 @@ const HEX_IR_NONE = 0xffffffff;
 // invocation; all other instructions are delegated directly to C++'s strict
 // 0-diff gate (`hex_engine_decompile_arm64` -> HEX_OK vs HEX_ERR_UNSUPPORTED).
 const EXPLICIT_UNSUPPORTED_ARM64_MNEMONICS = Object.freeze(new Set([
-  'fmov',
   'mneg',
   'smull',
-  'br',
 ]));
 
 const textEncoder = new TextEncoder();
@@ -443,6 +441,8 @@ function isNonAliasOrrRegister(word, mn, ops) {
 function isOrrImmediate(word) {
   const w = word >>> 0;
   // ARM64 ORR (immediate): sf 01 100100 N immr(6) imms(6) Rn(5) Rd(5)
+  // Allow 32-bit MOV (bitmask immediate) alias: sf=0, opc=01, Rn=31 (WZR).
+  if (((w & 0xff8003e0) >>> 0) === 0x320003e0) return false;
   return ((w & 0x7f800000) >>> 0) === 0x32000000;
 }
 
@@ -486,13 +486,16 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
   }
 
   const count = words.length >>> 0;
+  const checkStrictTinyFilter = count <= 3;
   for (let i = 0; i < count; i += 1) {
     const w = words[i];
     if (typeof w !== 'number' || !Number.isFinite(w)) {
       return noteFallback('decompile', 'invalid_word');
     }
-    const reason = classifyUnsupportedArm64Insn(w >>> 0, insns ? insns[i] : null);
-    if (reason) return noteFallback('decompile', reason);
+    if (checkStrictTinyFilter) {
+      const reason = classifyUnsupportedArm64Insn(w >>> 0, insns ? insns[i] : null);
+      if (reason) return noteFallback('decompile', reason);
+    }
   }
 
   try {
@@ -665,9 +668,11 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
           : (kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null));
         lineAddresses = isPrelude || kind === 'sig'
           ? [baseAddrBig]
-          : (kind === 'decl' || kind === 'comment' || kind === 'blank' || isBraceOrElse)
-            ? []
-            : mappedAddrs.slice();
+          : kind === 'decl'
+            ? (mappedAddrs.length > 0 ? mappedAddrs.slice() : [])
+            : (kind === 'comment' || kind === 'blank' || isBraceOrElse)
+              ? []
+              : mappedAddrs.slice();
       }
       const lineRows = lineAddresses
         .map((a) => addrToRow.get(a))

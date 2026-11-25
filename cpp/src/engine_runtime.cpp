@@ -13,6 +13,7 @@
 #include "decompiler/passes/arm64_objc_emit.hpp"
 #include "decompiler/passes/arm64_udf_emit.hpp"
 #include "decompiler/passes/arm64_global_thunk_emit.hpp"
+#include "decompiler/passes/arm64_general_emit.hpp"
 #endif
 
 namespace {
@@ -64,6 +65,7 @@ HexStatus try_specialized_arm64_passes(
     &hex::decompiler::passes::try_emit_arm64_objc,
     &hex::decompiler::passes::try_emit_arm64_udf_tail,
     &hex::decompiler::passes::try_emit_arm64_global_thunk,
+    &hex::decompiler::passes::try_emit_arm64_general,
   };
   for (size_t i = 0; i < sizeof(kPasses) / sizeof(kPasses[0]); ++i) {
     g_emit_arena.reset();
