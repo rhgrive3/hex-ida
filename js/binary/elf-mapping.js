@@ -1,5 +1,23 @@
 import { sectionHasMappedAddress } from './model.js';
 
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const EMPTY_ARRAY = Object.freeze([]);
+const EMPTY_MAP = new Map();
+const EMPTY_MAPPING_CACHE = Object.freeze({
+  sectionsRef: null,
+  sectionsLen: 0,
+  segmentsRef: null,
+  segmentsLen: 0,
+  execBuilt: true,
+  execSections: EMPTY_ARRAY,
+  execSegments: EMPTY_ARRAY,
+  sectionByIndex: EMPTY_MAP,
+  fileSegmentsBuilt: true,
+  fileSegments: EMPTY_ARRAY,
+});
+
+const elfImageMappingCache = new WeakMap();
+
 export function safeELFNumber(value) {
   if (typeof value !== 'number' && typeof value !== 'bigint' && typeof value !== 'string') return null;
   if (typeof value === 'string' && value.trim() === '') return null;
@@ -17,18 +35,157 @@ function strictELFInteger(value, label) {
   throw new TypeError(`${label} must be a bigint, safe integer, or non-empty integer string`);
 }
 
+function getELFMappingCache(image) {
+  if (!image || typeof image !== 'object') return EMPTY_MAPPING_CACHE;
+  const sectionsRef = image.sections || null;
+  const sectionsLen = Array.isArray(sectionsRef) ? sectionsRef.length : 0;
+  const segmentsRef = image.segments || null;
+  const segmentsLen = Array.isArray(segmentsRef) ? segmentsRef.length : 0;
+  let cache = elfImageMappingCache.get(image);
+  if (
+    cache
+    && cache.sectionsRef === sectionsRef
+    && cache.sectionsLen === sectionsLen
+    && cache.segmentsRef === segmentsRef
+    && cache.segmentsLen === segmentsLen
+  ) {
+    return cache;
+  }
+  cache = {
+    sectionsRef,
+    sectionsLen,
+    segmentsRef,
+    segmentsLen,
+    execBuilt: false,
+    execSections: null,
+    execSegments: null,
+    sectionByIndex: null,
+    fileSegmentsBuilt: false,
+    fileSegments: null,
+  };
+  elfImageMappingCache.set(image, cache);
+  return cache;
+}
+
+function ensureExecMappingCache(cache) {
+  if (cache.execBuilt) return cache;
+  const sections = cache.sectionsRef;
+  const segments = cache.segmentsRef;
+  const execSections = [];
+  const sectionByIndex = new Map();
+  if (Array.isArray(sections)) {
+    for (let i = 0; i < sections.length; i += 1) {
+      const section = sections[i];
+      if (!section) continue;
+      const isExecMapped = Boolean(section.perms?.execute) && sectionHasMappedAddress(section);
+      let entry = null;
+      if (isExecMapped) {
+        const lo = BigInt(section.address ?? 0);
+        const hi = lo + BigInt(section.size ?? 0);
+        const fileSize = BigInt(
+          Object.prototype.hasOwnProperty.call(section, 'fileSize')
+            ? (section.fileSize ?? 0)
+            : (section.size ?? 0),
+        );
+        entry = {
+          section,
+          lo,
+          hi,
+          read: Boolean(section.perms?.read),
+          fileSize,
+        };
+        execSections.push(entry);
+      }
+      if (section.index !== undefined && !sectionByIndex.has(section.index)) {
+        sectionByIndex.set(section.index, entry);
+      }
+    }
+  }
+  const execSegments = [];
+  if (Array.isArray(segments)) {
+    for (let i = 0; i < segments.length; i += 1) {
+      const segment = segments[i];
+      if (!segment?.perms?.execute) continue;
+      const lo = BigInt(segment.address ?? 0);
+      const hi = lo + BigInt(segment.size ?? 0);
+      execSegments.push({ segment, lo, hi });
+    }
+  }
+  cache.execSections = execSections;
+  cache.execSegments = execSegments;
+  cache.sectionByIndex = sectionByIndex;
+  cache.execBuilt = true;
+  return cache;
+}
+
+function ensureFileSegmentsCache(cache) {
+  if (cache.fileSegmentsBuilt) return cache;
+  const segments = cache.segmentsRef;
+  const fileSegments = [];
+  if (Array.isArray(segments)) {
+    for (let i = 0; i < segments.length; i += 1) {
+      const segment = segments[i];
+      const start = BigInt(segment.address ?? 0);
+      const fileSize = BigInt(
+        Object.prototype.hasOwnProperty.call(segment, 'fileSize')
+          ? (segment.fileSize ?? 0)
+          : (segment.size ?? 0),
+      );
+      if (fileSize <= 0n) continue;
+      const fileOffset = BigInt(segment.fileOffset ?? 0);
+      fileSegments.push({
+        segment,
+        start,
+        vaEnd: start + fileSize,
+        fileOffset,
+        fileEnd: fileOffset + fileSize,
+      });
+    }
+  }
+  cache.fileSegments = fileSegments;
+  cache.fileSegmentsBuilt = true;
+  return cache;
+}
+
+function rangeContains(lo, hi, start, extent) {
+  if (start < lo || start >= hi) return false;
+  return extent === 0n || extent <= hi - start;
+}
+
+function hasExecutableSegmentCovering(execSegments, start, extent) {
+  for (let i = 0; i < execSegments.length; i += 1) {
+    const entry = execSegments[i];
+    if (rangeContains(entry.lo, entry.hi, start, extent)) return true;
+  }
+  return false;
+}
+
+function findExecutableSegmentCovering(execSegments, start, extent) {
+  for (let i = 0; i < execSegments.length; i += 1) {
+    const entry = execSegments[i];
+    if (rangeContains(entry.lo, entry.hi, start, extent)) return entry.segment;
+  }
+  return null;
+}
+
+function isExecutableSectionEntryValid(entry, relocatable, execSegments, start, extent) {
+  if (!entry || !rangeContains(entry.lo, entry.hi, start, extent)) return false;
+  if (relocatable) return true;
+  if (!entry.read) return false;
+  return hasExecutableSegmentCovering(execSegments, start, extent);
+}
+
 /** Return the file-backed suffix of the PT_LOAD that owns `va`. */
 export function mappedELFFileRangeForVa(image, va) {
-  const address = strictELFInteger(va, 'va');
-  for (const segment of image?.segments || []) {
-    const start = BigInt(segment.address ?? 0);
-    const fileSize = BigInt(Object.prototype.hasOwnProperty.call(segment, "fileSize") ? (segment.fileSize ?? 0) : (segment.size ?? 0));
-    if (fileSize <= 0n || address < start || address >= start + fileSize) continue;
-    const delta = address - start;
-    const fileStart = BigInt(segment.fileOffset ?? 0) + delta;
-    const fileEnd = BigInt(segment.fileOffset ?? 0) + fileSize;
-    if (fileStart > BigInt(Number.MAX_SAFE_INTEGER) || fileEnd > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-    return { start:Number(fileStart), end:Number(fileEnd), segment, address };
+  const address = typeof va === 'bigint' ? va : strictELFInteger(va, 'va');
+  const fileSegments = ensureFileSegmentsCache(getELFMappingCache(image)).fileSegments;
+  for (let i = 0; i < fileSegments.length; i += 1) {
+    const entry = fileSegments[i];
+    if (address < entry.start || address >= entry.vaEnd) continue;
+    const fileStart = entry.fileOffset + (address - entry.start);
+    const fileEnd = entry.fileEnd;
+    if (fileStart > MAX_SAFE_INTEGER_BIGINT || fileEnd > MAX_SAFE_INTEGER_BIGINT) return null;
+    return { start: Number(fileStart), end: Number(fileEnd), segment: entry.segment, address };
   }
   return null;
 }
@@ -221,15 +378,45 @@ export function elfLoaderEntrySectionAnalysisWindow(image, address) {
   });
 }
 
+function hasMappedELFFileSpanForVa(image, address, n) {
+  const fileSegments = ensureFileSegmentsCache(getELFMappingCache(image)).fileSegments;
+  for (let i = 0; i < fileSegments.length; i += 1) {
+    const entry = fileSegments[i];
+    if (address < entry.start || address >= entry.vaEnd) continue;
+    const fileStart = entry.fileOffset + (address - entry.start);
+    const fileEnd = entry.fileEnd;
+    if (fileStart > MAX_SAFE_INTEGER_BIGINT || fileEnd > MAX_SAFE_INTEGER_BIGINT) return false;
+    return Number(n) <= Number(fileEnd) - Number(fileStart);
+  }
+  return false;
+}
+
 /** Require the entire VA span to remain in one file-backed PT_LOAD mapping. */
 export function mappedELFFileSpanForVa(image, va, size) {
-  const n = strictELFInteger(size, 'size');
-  if (n < 0n || n > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-  const range = mappedELFFileRangeForVa(image, va);
-  if (!range) return null;
-  const bytes = Number(n);
-  if (bytes > range.end - range.start) return null;
-  return { ...range, spanEnd:range.start + bytes, size:bytes };
+  const n = typeof size === 'bigint' ? size : strictELFInteger(size, 'size');
+  if (n < 0n || n > MAX_SAFE_INTEGER_BIGINT) return null;
+  const address = typeof va === 'bigint' ? va : strictELFInteger(va, 'va');
+  const fileSegments = ensureFileSegmentsCache(getELFMappingCache(image)).fileSegments;
+  for (let i = 0; i < fileSegments.length; i += 1) {
+    const entry = fileSegments[i];
+    if (address < entry.start || address >= entry.vaEnd) continue;
+    const fileStart = entry.fileOffset + (address - entry.start);
+    const fileEnd = entry.fileEnd;
+    if (fileStart > MAX_SAFE_INTEGER_BIGINT || fileEnd > MAX_SAFE_INTEGER_BIGINT) return null;
+    const startNum = Number(fileStart);
+    const endNum = Number(fileEnd);
+    const bytes = Number(n);
+    if (bytes > endNum - startNum) return null;
+    return {
+      start: startNum,
+      end: endNum,
+      segment: entry.segment,
+      address,
+      spanEnd: startNum + bytes,
+      size: bytes,
+    };
+  }
+  return null;
 }
 
 /** Architecture-specific alignment gate for exact ELF instruction starts. */
@@ -263,30 +450,26 @@ export function elfInstructionStartAlignmentRejection(image, address) {
  * that do not exist in the file (#4223).
  */
 export function executableELFRange(image, address, size = 0n, sectionIndex = null) {
-  const start = strictELFInteger(address, 'address');
-  const extent = strictELFInteger(size ?? 0n, 'size');
+  const start = typeof address === 'bigint' ? address : strictELFInteger(address, 'address');
+  const extent = typeof size === 'bigint' ? size : strictELFInteger(size ?? 0n, 'size');
   if (extent < 0n) return null;
   const relocatable = image?.metadata?.type === 1;
-  const contains = (owner) => {
-    const lo = BigInt(owner?.address ?? 0), hi = lo + BigInt(owner?.size ?? 0);
-    if (start < lo || start >= hi) return false;
-    return extent === 0n || extent <= hi - start;
-  };
-  const executableSegment = (segment) => !!segment?.perms?.execute && contains(segment);
-  const executableSection = (section) => {
-    if (!section?.perms?.execute || !contains(section)) return false;
-    if (!sectionHasMappedAddress(section)) return false;
-    if (relocatable) return true;
-    if (!section?.perms?.read) return false;
-    return (image.segments || []).some(executableSegment);
-  };
+  const cache = ensureExecMappingCache(getELFMappingCache(image));
+  const execSegments = cache.execSegments;
   if (Number.isInteger(sectionIndex)) {
-    const section = (image.sections || []).find((candidate) => candidate.index === sectionIndex) || null;
-    return executableSection(section) ? section : null;
+    const entry = cache.sectionByIndex.get(sectionIndex) ?? null;
+    return isExecutableSectionEntryValid(entry, relocatable, execSegments, start, extent)
+      ? entry.section
+      : null;
   }
-  const section = (image.sections || []).find(executableSection) || null;
-  if (section) return section;
-  return (image.segments || []).find(executableSegment) || null;
+  const execSections = cache.execSections;
+  for (let i = 0; i < execSections.length; i += 1) {
+    const entry = execSections[i];
+    if (isExecutableSectionEntryValid(entry, relocatable, execSegments, start, extent)) {
+      return entry.section;
+    }
+  }
+  return findExecutableSegmentCovering(execSegments, start, extent);
 }
 
 function minimumElfInstructionBytes(image) {
@@ -306,7 +489,8 @@ export function elfInstructionTargetRejection(image, address) {
   const alignmentRejection = elfInstructionStartAlignmentRejection(image, address);
   if (alignmentRejection) return alignmentRejection;
   if (!executableELFRange(image, address, instructionBytes)) return 'instruction bytes cross the canonical executable extent';
-  if (!mappedELFFileSpanForVa(image, address, instructionBytes)) return 'instruction bytes are not fully file-backed';
+  const start = typeof address === 'bigint' ? address : strictELFInteger(address, 'address');
+  if (!hasMappedELFFileSpanForVa(image, start, instructionBytes)) return 'instruction bytes are not fully file-backed';
   return null;
 }
 
@@ -338,32 +522,37 @@ export function elfExactFunctionStartRejection(image, address, options = {}) {
 function elfExecutableFunctionExtent(image, address, bytes, sectionIndex) {
   const canonical = executableELFRange(image, address, bytes, sectionIndex);
   if (canonical) return canonical;
-  const start = strictELFInteger(address, 'address');
-  const extent = strictELFInteger(bytes ?? 0n, 'bytes');
+  const start = typeof address === 'bigint' ? address : strictELFInteger(address, 'address');
+  const extent = typeof bytes === 'bigint' ? bytes : strictELFInteger(bytes ?? 0n, 'bytes');
   if (extent < 0n) return null;
-  for (const section of image?.sections || []) {
-    if (!section?.perms?.execute || !sectionHasMappedAddress(section)) continue;
-    const lo = BigInt(section.address ?? 0n);
-    const hi = lo + BigInt(section.size ?? 0n);
-    if (start < lo || start >= hi) continue;
-    if (extent !== 0n && start + extent > hi) continue;
-    return section;
+  const execSections = ensureExecMappingCache(getELFMappingCache(image)).execSections;
+  for (let i = 0; i < execSections.length; i += 1) {
+    const entry = execSections[i];
+    if (start < entry.lo || start >= entry.hi) continue;
+    if (extent !== 0n && start + extent > entry.hi) continue;
+    return entry.section;
   }
   return null;
 }
 
 /** Prove that `bytes` at `address` are input bytes, not synthesized zero-fill. */
 export function elfFunctionBytesFileBacked(image, address, bytes) {
-  if (mappedELFFileSpanForVa(image, address, bytes)) return true;
-  const length = strictELFInteger(bytes ?? 0n, 'bytes');
-  if (length <= 0n) return true;
-  const start = strictELFInteger(address, 'address');
-  for (const section of image?.sections || []) {
-    if (!section?.perms?.execute || !sectionHasMappedAddress(section)) continue;
-    const fileSize = BigInt(Object.prototype.hasOwnProperty.call(section, "fileSize") ? (section.fileSize ?? 0n) : (section.size ?? 0n));
-    if (fileSize <= 0n) continue;
-    const delta = start - BigInt(section.address ?? 0n);
-    if (delta < 0n || delta + length > fileSize) continue;
+  const n = typeof bytes === 'bigint' ? bytes : strictELFInteger(bytes, 'size');
+  let start;
+  if (n >= 0n && n <= MAX_SAFE_INTEGER_BIGINT) {
+    start = typeof address === 'bigint' ? address : strictELFInteger(address, 'va');
+    if (hasMappedELFFileSpanForVa(image, start, n)) return true;
+    if (n <= 0n) return true;
+  } else {
+    if (n <= 0n) return true;
+    start = typeof address === 'bigint' ? address : strictELFInteger(address, 'address');
+  }
+  const execSections = ensureExecMappingCache(getELFMappingCache(image)).execSections;
+  for (let i = 0; i < execSections.length; i += 1) {
+    const entry = execSections[i];
+    if (entry.fileSize <= 0n) continue;
+    const delta = start - entry.lo;
+    if (delta < 0n || delta + n > entry.fileSize) continue;
     return true;
   }
   return false;
@@ -375,7 +564,7 @@ export function elfFunctionBytesFileBacked(image, address, bytes) {
  * validated function body, even when its first instruction is file-backed.
  */
 export function elfFunctionExtentRejection(image, address, size) {
-  const length = strictELFInteger(size ?? 0n, 'size');
+  const length = typeof size === 'bigint' ? size : strictELFInteger(size ?? 0n, 'size');
   if (length <= 0n) return null;
   if (elfFunctionBytesFileBacked(image, address, length)) return null;
   return 'published function extent is not fully file-backed';
