@@ -59,6 +59,13 @@ export function openBinary(input, opts = {}) {
   else if (format === 'pe') image = parsePE(input, opts);
   else throw new Error('対応していない実行ファイル形式です（Mach-O / ELF / PE を判定できませんでした）。');
 
-  if (opts.strings) image.strings = scanStrings(image, typeof opts.strings === 'object' ? opts.strings : {});
+  if (opts.strings) {
+    const stringOpts = typeof opts.strings === 'object'
+      ? (opts._engine != null && opts.strings._engine == null
+        ? { ...opts.strings, _engine: opts._engine }
+        : opts.strings)
+      : (opts._engine != null ? { _engine: opts._engine } : {});
+    image.strings = scanStrings(image, stringOpts);
+  }
   return image;
 }
