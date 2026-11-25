@@ -1311,14 +1311,31 @@ export function createAppAnalysisQueryAdapter(app) {
         throwIfAborted(options.signal);
         if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
         if(builtIndex&&!builtIndex.empty){
-          try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
-          if(projectionIr){
+          const addrBig = address != null ? BigInt(address) : null;
+          const addrKey = addrBig != null ? addrBig.toString() : null;
+          const fnSymName = addrBig == null ? null : app?.symbols?.nameAt?.(addrBig);
+          const isCxxCandidate = addrKey != null && (
+            Boolean(builtIndex.bySlotAddress?.has(addrKey)) ||
+            Boolean(builtIndex.symbolOwners?.has(addrKey)) ||
+            Boolean(builtIndex.typedArguments?.has(addrKey)) ||
+            builtIndex.symbolNameFor?.(addrBig) != null ||
+            (typeof fnSymName === 'string' && fnSymName.startsWith('_Z'))
+          );
+          if(isCxxCandidate){
+            try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
+            if(projectionIr){
+              try {
+                cxxEvidence=entry.provider.projectForFunction({functionAddress:addrBig,
+                  functionName:fnSymName,ir:projectionIr,
+                  enableTypedArguments:options.typedArgumentRecovery===true});
+              } catch {cxxEvidence=null;}
+            }
+          } else {
             try {
-              const addrBig = address != null ? BigInt(address) : null;
-              cxxEvidence=entry.provider.projectForFunction({functionAddress:addrBig,
-                functionName:addrBig==null?null:app?.symbols?.nameAt?.(addrBig),ir:projectionIr,
+              entry.provider.projectForFunction({functionAddress:addrBig,
+                functionName:fnSymName,ir:null,
                 enableTypedArguments:options.typedArgumentRecovery===true});
-            } catch {cxxEvidence=null;}
+            } catch { cxxEvidence=null; }
           }
         } else {
           try {
@@ -1783,7 +1800,7 @@ export function createAppAnalysisQueryAdapter(app) {
         addr:address,
         symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null,
         ...(returnsValue ? { returnsValue } : {}),
-        ...(projectionIr ? { ir:projectionIr } : {}),
+        ...(cxxEvidence && projectionIr ? { ir:projectionIr } : {}),
         ...(cxxEvidence ? { cxxEvidence } : {}),
       });
       return publish(projection, result.status?.completeness, functionStatus);

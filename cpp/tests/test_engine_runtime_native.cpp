@@ -152,13 +152,21 @@ void test_strict_parity_rejections() {
   assert(hex_engine_decompile_arm64(fp_words, 2u, 0x3000ULL, "fp_fn", 5u, 0u) == HEX_ERR_UNSUPPORTED);
 #endif
   const uint32_t fmov_words[2] = {0x1e6e1000u, 0xd65f03c0u};
+#if defined(HEX_HAS_DECOMP_PASSES)
+  assert(hex_engine_decompile_arm64(fmov_words, 2u, 0x3000ULL, "fmov_fn", 7u, 0u) == HEX_OK);
+#else
   assert(hex_engine_decompile_arm64(fmov_words, 2u, 0x3000ULL, "fmov_fn", 7u, 0u) == HEX_ERR_UNSUPPORTED);
+#endif
 
   // 3. word_count > 16 (17 instructions)
   uint32_t long_words[17];
   for (int i = 0; i < 16; ++i) long_words[i] = 0x0b010000u;  // add w0, w0, w1
   long_words[16] = 0xd65f03c0u;                              // ret
+#if defined(HEX_HAS_DECOMP_PASSES)
+  assert(hex_engine_decompile_arm64(long_words, 17u, 0x3000ULL, nullptr, 0u, 0u) == HEX_OK);
+#else
   assert(hex_engine_decompile_arm64(long_words, 17u, 0x3000ULL, nullptr, 0u, 0u) == HEX_ERR_UNSUPPORTED);
+#endif
 
   // 4. Undefined non-argument register read (`add x0, x0, x9; ret`)
   const uint32_t undef_x9[2] = {0x8b090000u, 0xd65f03c0u};

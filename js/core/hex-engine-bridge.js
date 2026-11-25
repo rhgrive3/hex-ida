@@ -41,7 +41,6 @@ const HEX_IR_NONE = 0xffffffff;
 // invocation; all other instructions are delegated directly to C++'s strict
 // 0-diff gate (`hex_engine_decompile_arm64` -> HEX_OK vs HEX_ERR_UNSUPPORTED).
 const EXPLICIT_UNSUPPORTED_ARM64_MNEMONICS = Object.freeze(new Set([
-  'fmov',
   'mneg',
   'smull',
 ]));
@@ -457,10 +456,7 @@ function classifyUnsupportedArm64Insn(word, insn) {
   if (isNonAliasOrrRegister(w, mn, ops) || isOrrImmediate(w)) {
     return 'unsupported_insn:orr';
   }
-  // Bit-level fallback guards for FMOV (imm), MNEG, and SMULL when mnemonic metadata is omitted.
-  if (((w & 0x5f201c00) >>> 0) === 0x1e201000) {
-    return 'unsupported_insn:fmov';
-  }
+  // Bit-level fallback guards for MNEG and SMULL when mnemonic metadata is omitted (FMOV imm is handled natively in WASM).
   if (((w & 0x7fe0fc00) >>> 0) === 0x1b00fc00) {
     return 'unsupported_insn:mneg';
   }
@@ -882,7 +878,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   // 2. Materialize .rodata / .data globals from binary bytes (including .data/.data.rel.ro string pointer tables)
   if ((readBytes || fileBytes) && out.includes('global_')) {
     const elfInfo = parseElf64SectionsAndSyms(fileBytes);
-    out = out.replace(/^static uint64 __hex_global_([0-9A-Fa-f]+)_buf\[512\] = \{0\};$/gm, (full, hex) => {
+    out = out.replace(/^static (?:_Alignas\(\d+\) )?uint64 __hex_global_([0-9A-Fa-f]+)_buf\[512\] = \{0\};$/gm, (full, hex) => {
       const gAddr = BigInt(`0x${hex}`);
       const bytes = readBinaryBytesAt(gAddr, 256, { readBytes, fileBytes, sections });
       if (!bytes || bytes.length === 0) return full;
@@ -905,7 +901,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
       changed = true;
       needUint8 = true;
       const arr = Array.from(bytes, (b) => `0x${b.toString(16).padStart(2, '0')}`).join(', ');
-      return `static uint8_t __hex_global_${hex}_buf[${bytes.length}] __attribute__((aligned(8))) = { ${arr} };`;
+      return `static _Alignas(16) uint8_t __hex_global_${hex}_buf[${bytes.length}] = { ${arr} };`;
     });
     out = out.replace(/^static uint64 global_([0-9A-Fa-f]+) = 0;$/gm, (full, hex) => {
       const bytes = readBinaryBytesAt(BigInt(`0x${hex}`), 8, { readBytes, fileBytes, sections });
@@ -950,14 +946,27 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   if (needInt64 && !out.includes('typedef __INT64_TYPE__ int64_t;')) extraTypedefs.push('typedef __INT64_TYPE__ int64_t;');
   if (needUint8 && !out.includes('typedef __UINT8_TYPE__ uint8_t;')) extraTypedefs.push('typedef __UINT8_TYPE__ uint8_t;');
 
-  // Infer `const char *a1` for single-param `int fn(uint64 a1)` whose first use of x0 is `strlen((const char *)(uintptr_t)x0)`
+  // Infer `const char *a1` for single-param `int fn(uint64 a1)` passing initial x0 (directly or via stack spill) to `strlen`
   const singleStrSigM = out.match(/^int ([A-Za-z_][A-Za-z0-9_]*)\(uint64 a1\)\n\{/m);
   if (singleStrSigM && out.includes('strlen((const char *)(uintptr_t)x0)') && out.includes('    uint64 x0 = a1;')) {
     const bodyStart = out.indexOf(singleStrSigM[0]) + singleStrSigM[0].length;
     const strlenPos = out.indexOf('strlen((const char *)(uintptr_t)x0)', bodyStart);
     const lineStart = out.lastIndexOf('\n', strlenPos);
     const beforeStrlen = out.slice(bodyStart, lineStart > bodyStart ? lineStart : bodyStart);
-    if (!/^    x0 = /m.test(beforeStrlen)) {
+    let isStrArg = !/^    x0 = /m.test(beforeStrlen);
+    if (!isStrArg) {
+      const firstWriteIdx = beforeStrlen.search(/^    x0 = /m);
+      const beforeFirstWrite = firstWriteIdx >= 0 ? beforeStrlen.slice(0, firstWriteIdx) : beforeStrlen;
+      const spillM = beforeFirstWrite.match(/^    \*\(uint64 \*\)\(\(uintptr_t\)\(sp\) \+ (\d+)\) = x0;$/m);
+      if (spillM) {
+        const slotOff = spillM[1];
+        const prevLine = beforeStrlen.trimEnd().split('\n').pop() || '';
+        if (prevLine === `    x0 = *(uint64 *)((uintptr_t)(sp) + ${slotOff});`) {
+          isStrArg = true;
+        }
+      }
+    }
+    if (isStrArg) {
       out = out.replace(singleStrSigM[0], `int ${singleStrSigM[1]}(const char *a1)\n{`);
       out = out.replace('    uint64 x0 = a1;', '    uint64 x0 = (uint64)(uintptr_t)a1;');
       needUintptr = true;

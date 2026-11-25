@@ -115,7 +115,7 @@ void test_bcond_lslv_asrv_div_sp_prfm_ldnp_fcvtau_cas_csel() {
              words, 18u, 0x100002000ULL, "review_regressions", 18u, 0u,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
   assert_parens_balanced(txt, len);
-  assert(contains(txt, len, "if (1) goto loc_10000200C;"));
+  assert(contains(txt, len, "if (!(1)) {"));
   assert(contains(txt, len, "x0 = (uint64)((int64_t)x0 >> (x1 & 63));"));
   assert(contains(txt, len, "x0 = (uint32_t)(((int32_t)x0) >> (x1 & 31));"));
   assert(contains(txt, len, "((uint32_t)x1 != 0 ?"));
@@ -212,7 +212,8 @@ void test_guards_oom_and_table_overflow() {
   assert(hex::decompiler::passes::try_emit_arm64_general(
              trailing_nop, 4u, 0x1000ULL, "trail", 5u, 0u, arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
   assert_parens_balanced(txt, len);
-  assert(contains(txt, len, "loc_100C:\n    (void)0;\n}"));
+  assert(contains(txt, len, "if (x0 != 0) {"));
+  assert(contains(txt, len, "    (void)0;\n}"));
 }
 
 }  // namespace
@@ -237,7 +238,8 @@ void test_sparse_self_recursion_and_trailing_fallback_label() {
              arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
   assert_parens_balanced(txt, len);
   assert(contains(txt, len, "    sub_100001000(x0, a2, x2);"));
-  assert(contains(txt, len, "loc_10000100C:\n    (void)0; /* arm64 insn 0xC8A17C02 */\n}"));
+  assert(contains(txt, len, "if (x2 != 0) {"));
+  assert(contains(txt, len, "    (void)0; /* arm64 insn 0xC8A17C02 */\n}"));
 }
 
 
@@ -286,6 +288,64 @@ void test_wave23_instructions_and_pass_sync() {
   assert(!contains(txt, len, "global_1010"));
 }
 
+
+void test_wave25_neon_fmov_1word_and_structurizer() {
+  hex::Arena arena;
+  arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+  // 1. 1-word RET
+  {
+    const uint32_t w1[] = { 0xD65F03C0u };
+    const char* txt = nullptr; uint32_t len = 0u;
+    const HexLineMapEntry* lm = nullptr; uint32_t lm_cnt = 0u;
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w1, 1u, 0x100004D3CULL, "ret_only", 8u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+  }
+  // 2. Scalar FMOV #imm8 (2-word stub)
+  {
+    arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+    const uint32_t w2[] = { 0x1E2E1000u, 0xD65F03C0u };  // fmov s0, #1.0; ret
+    const char* txt = nullptr; uint32_t len = 0u;
+    const HexLineMapEntry* lm = nullptr; uint32_t lm_cnt = 0u;
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w2, 2u, 0x100004E00ULL, "fmov_imm", 8u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "d0 = "));
+  }
+  // 3. NEON vector suite + structured do-while loop (0 gotos)
+  {
+    arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+    const uint32_t w3[] = {
+      0x4F000421u,  // movi v1.4s, #1
+      0x6F038402u,  // mvni v2.8h, #0x60
+      0x4EA18400u,  // add v0.4s, v0.4s, v1.4s
+      0x6E611CE4u,  // bsl v4.16b, v7.16b, v1.16b
+      0x6EA08C40u,  // cmeq v0.4s, v2.4s, v0.4s
+      0x4EB1B800u,  // addv s0, v0.4s
+      0x5EF1B8A0u,  // addp d0, v5.2d
+      0x4CDF8820u,  // ld2 {v0.4s, v1.4s}, [x1], #32
+      0x6EA5D421u,  // fabd v1.4s, v1.4s, v5.4s
+      0x6E218822u,  // frinta v2.4s, v1.4s
+      0x4EA1B800u,  // fcvtzs v0.4s, v0.4s
+      0x0E617820u,  // fcvtl v0.2d, v1.2s
+      0xD1000400u,  // sub x0, x0, #1
+      0xB5FFFEA0u,  // cbnz x0, -44 (back to idx 2 -> do { ... } while)
+      0xD65F03C0u,  // ret
+    };
+    const char* txt = nullptr; uint32_t len = 0u;
+    const HexLineMapEntry* lm = nullptr; uint32_t lm_cnt = 0u;
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w3, 15u, 0x100005000ULL, "neon_loop", 9u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "do {"));
+    assert(contains(txt, len, "} while ("));
+    assert(!contains(txt, len, "goto loc_"));
+  }
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -295,5 +355,6 @@ int main() {
   test_sparse_self_recursion_and_trailing_fallback_label();
   test_wave23_instructions_and_pass_sync();
   std::puts("test_arm64_general_emit_native: PASS");
+    test_wave25_neon_fmov_1word_and_structurizer();
   return 0;
 }
