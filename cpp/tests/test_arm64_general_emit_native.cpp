@@ -240,6 +240,51 @@ void test_sparse_self_recursion_and_trailing_fallback_label() {
   assert(contains(txt, len, "loc_10000100C:\n    (void)0; /* arm64 insn 0xC8A17C02 */\n}"));
 }
 
+
+void test_wave23_instructions_and_pass_sync() {
+  hex::Arena arena;
+  arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+  const uint32_t words[] = {
+    0x7ea2d420u,  // fabd s0, s1, s2
+    0x1e260003u,  // fmov w3, s0
+    0x1e270064u,  // fmov s4, w3
+    0x1e64c0a5u,  // frintp d5, d5
+    0x7a1f00c6u,  // sbcs w6, w6, wzr
+    0x0ea008e7u,  // rev64 v7.2s, v7.2s
+    0x8b29c908u,  // add x8, x8, w9, sxtw #2
+    0xd65f03c0u,  // ret
+  };
+  const char* txt = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_cnt = 0u;
+  assert(hex::decompiler::passes::try_emit_arm64_general(
+             words, 8u, 0x2000ULL, "wave23_ops", 10u, 0u,
+             arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+  assert_parens_balanced(txt, len);
+  assert(contains(txt, len, "extern double sqrt(double);"));
+  assert(contains(txt, len, "__hex_f32_to_u32"));
+  assert(contains(txt, len, "__hex_u32_to_f32"));
+  assert(contains(txt, len, "ceil(d5)"));
+  assert(contains(txt, len, "__ca > __cb"));
+  assert(contains(txt, len, "__rv >> 32"));
+  assert(contains(txt, len, "(int64_t)(int32_t)x9"));
+
+  arena.reset();
+  const uint32_t sync_words[] = {
+    0x90000000u,  // adrp x0, #0x1000
+    0x94000010u,  // bl +0x40
+    0xd65f03c0u,  // ret
+    0x91004000u,  // loc_100C: add x0, x0, #0x10 (must NOT emit undeclared global_1010)
+    0xd65f03c0u,  // ret
+  };
+  assert(hex::decompiler::passes::try_emit_arm64_general(
+             sync_words, 5u, 0x1000ULL, "adrp_bl_sync", 12u, 0u,
+             arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+  assert_parens_balanced(txt, len);
+  assert(!contains(txt, len, "global_1010"));
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -247,6 +292,7 @@ int main() {
   test_self_recursion_and_cross_label_adrp();
   test_guards_oom_and_table_overflow();
   test_sparse_self_recursion_and_trailing_fallback_label();
+  test_wave23_instructions_and_pass_sync();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }

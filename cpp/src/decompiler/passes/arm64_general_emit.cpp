@@ -288,6 +288,7 @@ struct AnalysisCtx {
   uint32_t fp_param_double_mask;
   bool uses_nzcv;
   bool uses_fp_bitcast;
+  bool uses_math;
   bool has_unknown_call;
   bool returns_double;
   bool returns_float;
@@ -313,6 +314,7 @@ struct AnalysisCtx {
   bool adrp_valid[31];
   uint64_t saved_adrp_page[31];
   bool saved_adrp_valid[31];
+  bool adrp_consumed[31];
   GlobalEntry globals[kMaxGlobals];
   uint32_t global_count;
   uint64_t callees[kMaxCallees];
@@ -466,7 +468,9 @@ static void emit_ext_reg(TextBuf& tb, uint32_t rm, uint32_t option, uint32_t imm
 }
 
 static void emit_shifted_reg(TextBuf& tb, uint32_t rm, uint32_t shift_type, uint32_t imm6, bool is64) {
-  if (imm6 == 0u) {
+  const uint32_t bits = is64 ? 64u : 32u;
+  const uint32_t sh = imm6 & (bits - 1u);
+  if (sh == 0u) {
     if (!is64) tb.put_str("(uint32_t)");
     tb.put_reg_x(rm);
     return;
@@ -476,18 +480,16 @@ static void emit_shifted_reg(TextBuf& tb, uint32_t rm, uint32_t shift_type, uint
       tb.put_str("(uint64_t)((int64_t)");
       tb.put_reg_x(rm);
       tb.put_str(" >> ");
-      tb.put_u64_dec(imm6);
+      tb.put_u64_dec(sh);
       tb.put_char(')');
     } else {
       tb.put_str("(uint32_t)((int32_t)");
       tb.put_reg_x(rm);
       tb.put_str(" >> ");
-      tb.put_u64_dec(imm6);
+      tb.put_u64_dec(sh);
       tb.put_char(')');
     }
   } else if (shift_type == 3u) {
-    const uint32_t bits = is64 ? 64u : 32u;
-    const uint32_t sh = imm6 & (bits - 1u);
     tb.put_str(is64 ? "(((uint64_t)" : "(((uint32_t)");
     tb.put_reg_x(rm);
     tb.put_str(" >> ");
@@ -501,7 +503,7 @@ static void emit_shifted_reg(TextBuf& tb, uint32_t rm, uint32_t shift_type, uint
     tb.put_str(is64 ? "((uint64_t)" : "((uint32_t)");
     tb.put_reg_x(rm);
     tb.put_str(shift_type == 0u ? " << " : " >> ");
-    tb.put_u64_dec(imm6);
+    tb.put_u64_dec(sh);
     tb.put_char(')');
   }
 }
@@ -794,7 +796,7 @@ static void process_insn(
       ctx.mark_gpr_write(0u);
       ctx.fp_written |= 1u;
       // Caller-saved ADRP pages may be clobbered by call (x0..x18).
-      for (uint32_t r = 0u; r < 19u; ++r) ctx.adrp_valid[r] = false;
+      for (uint32_t r = 0u; r < 19u; ++r) ctx.clear_adrp(r);
     } else if (tb) {
       rec();
       if (target == base_addr && ctx.norm_name && ctx.norm_len > 0u) {
@@ -830,7 +832,7 @@ static void process_insn(
         tb->put_u64_hex(target, true);
         tb->put_str("(/* arguments unknown */);\n");
       }
-      for (uint32_t r = 0u; r < 19u; ++r) ctx.adrp_valid[r] = false;
+      for (uint32_t r = 0u; r < 19u; ++r) ctx.clear_adrp(r);
     }
     if (!cmp.is_nzcv_var) cmp.valid = false;
     return;
@@ -844,11 +846,11 @@ static void process_insn(
       ctx.mark_gpr_read(rn);
       ctx.mark_gpr_read(0u);
       ctx.mark_gpr_write(0u);
-      for (uint32_t r = 0u; r < 19u; ++r) ctx.adrp_valid[r] = false;
+      for (uint32_t r = 0u; r < 19u; ++r) ctx.clear_adrp(r);
     } else if (tb) {
       rec();
       tb->put_str("    x0 = unknown_call(x0);\n");
-      for (uint32_t r = 0u; r < 19u; ++r) ctx.adrp_valid[r] = false;
+      for (uint32_t r = 0u; r < 19u; ++r) ctx.clear_adrp(r);
     }
     if (!cmp.is_nzcv_var) cmp.valid = false;
     return;
@@ -967,13 +969,17 @@ static void process_insn(
         if (is_adrp) {
           ctx.saved_adrp_page[rd] = val;
           ctx.saved_adrp_valid[rd] = true;
+          ctx.adrp_consumed[rd] = false;
         }
       } else if (tb) {
-        ctx.adrp_page[rd] = val;
-        ctx.adrp_valid[rd] = is_adrp;
         if (is_adrp) {
+          ctx.adrp_page[rd] = val;
+          ctx.adrp_valid[rd] = true;
           ctx.saved_adrp_page[rd] = val;
           ctx.saved_adrp_valid[rd] = true;
+          ctx.adrp_consumed[rd] = false;
+        } else {
+          ctx.clear_adrp(rd);
         }
         if (!is_adrp) {
           rec();
@@ -1114,7 +1120,7 @@ static void process_insn(
     }
 
     // ADRP + ADD global address resolution
-    if (!is_sub && !sets_flags && is64 && rn < 31u && rd < 31u && (ctx.adrp_valid[rn] || (imm != 0ULL && ctx.saved_adrp_valid[rn]))) {
+    if (!is_sub && !sets_flags && is64 && rn < 31u && rd < 31u && (ctx.adrp_valid[rn] || (imm != 0ULL && ctx.saved_adrp_valid[rn] && !ctx.adrp_consumed[rn]))) {
       const uint64_t gaddr = (ctx.adrp_valid[rn] ? ctx.adrp_page[rn] : ctx.saved_adrp_page[rn]) + imm;
       if (!emit) {
         const bool keep_saved = (rd == rn) && ctx.saved_adrp_valid[rd];
@@ -1122,12 +1128,12 @@ static void process_insn(
         ctx.add_global(gaddr, true);
         ctx.uses_uintptr = true;
         ctx.mark_gpr_write(rd, is64);
-        if (keep_saved) { ctx.saved_adrp_valid[rd] = true; ctx.saved_adrp_page[rd] = keep_page; }
+        if (keep_saved) { ctx.saved_adrp_valid[rd] = true; ctx.saved_adrp_page[rd] = keep_page; ctx.adrp_consumed[rd] = true; }
       } else if (tb) {
         const bool keep_saved = (rd == rn) && ctx.saved_adrp_valid[rd];
         const uint64_t keep_page = ctx.saved_adrp_page[rd];
         ctx.clear_adrp(rd);
-        if (keep_saved) { ctx.saved_adrp_valid[rd] = true; ctx.saved_adrp_page[rd] = keep_page; }
+        if (keep_saved) { ctx.saved_adrp_valid[rd] = true; ctx.saved_adrp_page[rd] = keep_page; ctx.adrp_consumed[rd] = true; }
         rec();
         tb->put_str("    ");
         tb->put_reg_x(rd);
@@ -2045,6 +2051,9 @@ static void process_insn(
       const int fw = ftype == 0u ? 1 : (ftype == 1u ? 2 : 0);
       ctx.mark_fp_read(rn, fw);
       ctx.mark_fp_write(rd);
+      if (opcode == 3u || (opcode >= 8u && opcode <= 15u)) {
+        ctx.uses_math = true;
+      }
       if (opcode == 4u) {
         ctx.fp_single_mask |= (1u << rd);
       } else if (opcode == 5u) {
@@ -2189,7 +2198,7 @@ static void process_insn(
         tb->put_reg_x(rd);
         tb->put_str(ftype == 0u ? " = (uint64)__hex_f32_to_u32((float)" : " = __hex_f64_to_u64(");
         tb->put_reg_d(rn);
-        tb->put_str(ftype == 0u ? "));\n" : ");\n");
+        tb->put_str(");\n");
         ctx.clear_adrp(rd);
       }
     } else if (opcode == 7u) {
@@ -2216,6 +2225,7 @@ static void process_insn(
         if (rd < 31u) ctx.mark_gpr_write(rd, is64_int);
         ctx.uses_int64_t = true;
         ctx.uses_uint32 = true;
+        if (rmode != 3u || opcode == 4u || opcode == 5u) ctx.uses_math = true;
       } else if (tb && rd < 31u) {
         rec();
         tb->put_str("    ");
@@ -2476,8 +2486,11 @@ static void process_insn(
     if (!emit) {
       ctx.mark_fp_read(rn);
       ctx.mark_fp_write(rd);
+      ctx.uses_fp_bitcast = true;
       ctx.uses_int32 = true;
+      ctx.uses_uint32 = true;
       ctx.uses_int64_t = true;
+      ctx.uses_uint64_t = true;
       const uint32_t mask = (1u << rn) | (1u << rd);
       if (is_double) ctx.fp_double_mask |= mask;
       else ctx.fp_single_mask |= mask;
@@ -2486,12 +2499,26 @@ static void process_insn(
       tb->put_str("    ");
       tb->put_reg_d(rd);
       if (is_to_int) {
-        tb->put_str(is_double ? " = (double)(int64_t)" : " = (double)(int32_t)");
+        if (is_double) {
+          tb->put_str(" = __hex_u64_to_f64((uint64_t)(int64_t)");
+          tb->put_reg_d(rn);
+          tb->put_str(");\n");
+        } else {
+          tb->put_str(" = (double)__hex_u32_to_f32((uint32_t)(int32_t)");
+          tb->put_reg_d(rn);
+          tb->put_str(");\n");
+        }
       } else {
-        tb->put_str(" = (double)");
+        if (is_double) {
+          tb->put_str(" = (double)(int64_t)__hex_f64_to_u64(");
+          tb->put_reg_d(rn);
+          tb->put_str(");\n");
+        } else {
+          tb->put_str(" = (double)(int32_t)__hex_f32_to_u32((float)");
+          tb->put_reg_d(rn);
+          tb->put_str(");\n");
+        }
       }
-      tb->put_reg_d(rn);
-      tb->put_str(";\n");
     }
     return;
   }
@@ -2524,7 +2551,11 @@ static void process_insn(
         tb->put_str(", __cin = (uint64_t)((__hex_nzcv >> 1u) & 1u); uint64_t __cr = ");
         tb->put_str(is_sub ? "__ca - __cb - (1ULL - __cin);" : "__ca + __cb + __cin;");
         if (sets_flags) {
-          tb->put_str(" __hex_nzcv = ((uint32_t)((__cr >> 63) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u);");
+          if (is_sub) {
+            tb->put_str(" __hex_nzcv = ((uint32_t)((__cr >> 63) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | (((__ca > __cb) || (__cin && __ca == __cb)) ? 2u : 0u) | ((uint32_t)((((__ca ^ __cb) & (__ca ^ __cr)) >> 63) & 1u));");
+          } else {
+            tb->put_str(" __hex_nzcv = ((uint32_t)((__cr >> 63) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | (((__cr < __ca) || (__cin && __cr == __ca)) ? 2u : 0u) | ((uint32_t)(((~(__ca ^ __cb) & (__ca ^ __cr)) >> 63) & 1u));");
+          }
         }
       } else {
         tb->put_str("    { uint32_t __ca = (uint32_t)");
@@ -2534,7 +2565,11 @@ static void process_insn(
         tb->put_str(", __cin = ((__hex_nzcv >> 1u) & 1u); uint32_t __cr = ");
         tb->put_str(is_sub ? "__ca - __cb - (1u - __cin);" : "__ca + __cb + __cin;");
         if (sets_flags) {
-          tb->put_str(" __hex_nzcv = (((__cr >> 31) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u);");
+          if (is_sub) {
+            tb->put_str(" __hex_nzcv = (((__cr >> 31) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | (((__ca > __cb) || (__cin && __ca == __cb)) ? 2u : 0u) | ((((__ca ^ __cb) & (__ca ^ __cr)) >> 31) & 1u);");
+          } else {
+            tb->put_str(" __hex_nzcv = (((__cr >> 31) & 1u) << 3) | ((__cr == 0u) ? 4u : 0u) | (((__cr < __ca) || (__cin && __cr == __ca)) ? 2u : 0u) | (((~(__ca ^ __cb) & (__ca ^ __cr)) >> 31) & 1u);");
+          }
         }
       }
       if (rd < 31u) {
@@ -2690,6 +2725,7 @@ HexStatus try_emit_arm64_general(
         if (after_term && ctx.saved_adrp_valid[r]) {
           ctx.adrp_valid[r] = true;
           ctx.adrp_page[r] = ctx.saved_adrp_page[r];
+          ctx.adrp_consumed[r] = false;
         } else if (r < 19u || r > 28u) {
           ctx.adrp_valid[r] = false;
         }
@@ -2849,6 +2885,11 @@ HexStatus try_emit_arm64_general(
   if (ctx.uses_int64_t) tb.put_str("typedef __INT64_TYPE__ int64_t;\n");
   if (ctx.uses_uintptr || ctx.uses_sp) tb.put_str("typedef __UINTPTR_TYPE__ uintptr_t;\n");
   if (ctx.uses_uint128) tb.put_str("typedef unsigned __int128 uint128;\n");
+  if (ctx.uses_math) {
+    tb.put_str(
+        "extern double sqrt(double); extern double ceil(double); extern double floor(double); "
+        "extern double trunc(double); extern double round(double); extern double rint(double);\n");
+  }
   if (ctx.uses_fp_bitcast) {
     tb.put_str(
         "static inline float __hex_u32_to_f32(uint32_t u) { union { uint32_t i; float f; } v; v.i = u; return v.f; }\n"
@@ -2974,7 +3015,7 @@ HexStatus try_emit_arm64_general(
   }
 
   // Pass 2: Emit C body statements.
-  for (uint32_t r = 0u; r < 31u; ++r) { ctx.adrp_valid[r] = false; ctx.saved_adrp_valid[r] = false; }
+  for (uint32_t r = 0u; r < 31u; ++r) { ctx.adrp_valid[r] = false; ctx.saved_adrp_valid[r] = false; ctx.adrp_consumed[r] = false; }
   cmp = ctx.uses_nzcv ? CmpState{true, false, false, false, false, false, 0u, 0u, 0ULL, true} : CmpState{};
   bool pending_label = false;
   for (uint32_t i = 0u; i < word_count; ++i) {
@@ -2985,6 +3026,7 @@ HexStatus try_emit_arm64_general(
         if (after_term && ctx.saved_adrp_valid[r]) {
           ctx.adrp_valid[r] = true;
           ctx.adrp_page[r] = ctx.saved_adrp_page[r];
+          ctx.adrp_consumed[r] = false;
         } else if (r < 19u || r > 28u) {
           ctx.adrp_valid[r] = false;
         }

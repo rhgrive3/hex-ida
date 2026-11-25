@@ -623,12 +623,18 @@ function readBinaryBytesAt(addr, len, { readBytes, fileBytes, sections }) {
   if (fileBytes instanceof Uint8Array && Array.isArray(sections)) {
     for (const sec of sections) {
       if (!sec) continue;
-      if (sec.name === '.bss' || sec.type === 'SHT_NOBITS' || sec.nobits) return null;
-      const start = BigInt(sec.address ?? sec.vmAddr ?? sec.addr ?? 0);
-      const size = BigInt(sec.size ?? 0);
-      const foff = sec.fileOffset != null ? BigInt(sec.fileOffset) : (sec.offset != null ? BigInt(sec.offset) : null);
-      if (foff == null || size <= 0n) continue;
+      let start, size, foff;
+      try {
+        start = BigInt(sec.address ?? sec.vmAddr ?? sec.addr ?? 0);
+        size = BigInt(sec.size ?? 0);
+        foff = sec.fileOffset != null ? BigInt(sec.fileOffset) : (sec.offset != null ? BigInt(sec.offset) : null);
+      } catch {
+        continue;
+      }
+      if (size <= 0n) continue;
       if (addr >= start && addr < start + size) {
+        if (sec.name === '.bss' || sec.type === 'SHT_NOBITS' || sec.nobits) return null;
+        if (foff == null) continue;
         const delta = addr - start;
         const avail = Number(size - delta);
         const take = Math.min(len, avail);
@@ -659,18 +665,18 @@ function readCStringFromElf(addr, fileBytes, elfInfo) {
       let end = off;
       while (end < maxEnd && fileBytes[end] !== 0) {
         const ch = fileBytes[end];
-        if (ch < 0x09 || (ch > 0x0d && ch < 0x20) || ch > 0x7e) return null;
+        if (ch !== 0x09 && ch !== 0x0a && ch !== 0x0d && (ch < 0x20 || ch > 0x7e)) return null;
         end++;
       }
       if (end < maxEnd && fileBytes[end] === 0) {
         let s = '';
         for (let k = off; k < end; k++) {
           const ch = fileBytes[k];
-          if (ch === 0x5c) s += '\\';
-          else if (ch === 0x22) s += '\"';
-          else if (ch === 0x0a) s += '\n';
-          else if (ch === 0x0d) s += '\r';
-          else if (ch === 0x09) s += '\t';
+          if (ch === 0x5c) s += '\\\\';
+          else if (ch === 0x22) s += '\\"';
+          else if (ch === 0x0a) s += '\\n';
+          else if (ch === 0x0d) s += '\\r';
+          else if (ch === 0x09) s += '\\t';
           else s += String.fromCharCode(ch);
         }
         return s;
@@ -680,7 +686,7 @@ function readCStringFromElf(addr, fileBytes, elfInfo) {
   return null;
 }
 
-function postprocessWasmGeneralC(text, { symbolFor, readBytes, fileBytes, sections, allowHelperInlining = true } = {}) {
+function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fileBytes, sections, allowHelperInlining = true } = {}) {
   const isGeneral = text.includes('/* arguments unknown */') || text.includes('__hex_global_') || text.includes('static uint64 global_') || (typeof symbolFor === 'function' && text.includes('uint64 x0 = '));
   if (!isGeneral) return { text, addedLines: 0 };
 
@@ -742,15 +748,18 @@ function postprocessWasmGeneralC(text, { symbolFor, readBytes, fileBytes, sectio
       const unresRe = /sub_([0-9A-Fa-f]+)\(\/\* arguments unknown \*\/\)/g;
       let um;
       while ((um = unresRe.exec(out)) !== null) unresolvedHexes.add(um[1]);
+      let inlinedCount = 0;
       for (const hex of unresolvedHexes) {
+        if (inlinedCount >= 8) break;
         const hAddr = BigInt(`0x${hex}`);
+        if (hAddr === baseAddr) continue;
         if (!textSec || hAddr < textSec.addr || hAddr >= textSec.addr + textSec.size) continue;
+        const off0 = Number(textSec.offset + (hAddr - textSec.addr));
+        if (!Number.isSafeInteger(off0) || off0 < 0 || off0 + 8 > fileBytes.length) continue;
         const symSize = elfInfo.syms.get(hAddr) || 0;
         let byteLen = symSize;
         if (byteLen < 4) {
-          // Scan up to RET (0xd65f03c0), max 256 words
-          const maxBytes = Math.min(1024, Number(textSec.addr + textSec.size - hAddr));
-          const off0 = Number(textSec.offset + (hAddr - textSec.addr));
+          const maxBytes = Math.min(1024, Number(textSec.addr + textSec.size - hAddr), fileBytes.length - off0);
           const dv = new DataView(fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength);
           for (let off = 0; off + 4 <= maxBytes; off += 4) {
             const w = dv.getUint32(off0 + off, true);
@@ -760,8 +769,8 @@ function postprocessWasmGeneralC(text, { symbolFor, readBytes, fileBytes, sectio
         }
         const wordCnt = Math.floor(byteLen / 4);
         if (wordCnt < 2 || wordCnt > 4096) continue;
-        const off0 = Number(textSec.offset + (hAddr - textSec.addr));
-        if (off0 < 0 || off0 + wordCnt * 4 > fileBytes.length) continue;
+        if (off0 + wordCnt * 4 > fileBytes.length) continue;
+        inlinedCount++;
         const hWords = new Uint32Array(wordCnt);
         const dv = new DataView(fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength);
         for (let i = 0; i < wordCnt; i++) hWords[i] = dv.getUint32(off0 + i * 4, true);
@@ -837,7 +846,11 @@ function postprocessWasmGeneralC(text, { symbolFor, readBytes, fileBytes, sectio
           }
         }
         // Strip duplicate includes/typedefs/pragmas from helper body and keep its static globals + function
-        const hLines = hRes.pseudocode.split('\n').filter((line) => {
+        const cleanedHelper = hRes.pseudocode.replaceAll(
+          '#if defined(__GNUC__) && !defined(__clang__)\n#pragma GCC optimize("no-strict-aliasing")\n#endif\n',
+          ''
+        );
+        const hLines = cleanedHelper.split('\n').filter((line) => {
           if (line.startsWith('#include ')) {
             headers.add(line.slice(9).trim());
             return false;
@@ -923,8 +936,11 @@ function postprocessWasmGeneralC(text, { symbolFor, readBytes, fileBytes, sectio
   if (needInt64 && !out.includes('typedef __INT64_TYPE__ int64_t;')) extraTypedefs.push('typedef __INT64_TYPE__ int64_t;');
   if (needUint8 && !out.includes('typedef __UINT8_TYPE__ uint8_t;')) extraTypedefs.push('typedef __UINT8_TYPE__ uint8_t;');
 
-  if (/\b(?:floor|ceil|trunc|round|sqrt|fabs)\s*\(/.test(out)) {
+  if (/\b(?:floor|ceil|trunc|round|sqrt|fabs|rint)\s*\(/.test(out)) {
     headers.add('<math.h>');
+  }
+  if (helperDefs.length > 0) {
+    headers.add('<stdint.h>');
   }
   const hdrLines = [];
   if (headers.has('<string.h>')) hdrLines.push('#define _GNU_SOURCE');
@@ -935,23 +951,18 @@ function postprocessWasmGeneralC(text, { symbolFor, readBytes, fileBytes, sectio
   for (const td of extraTypedefs) hdrLines.push(td);
   const prefix = hdrLines.length > 0 ? `${hdrLines.join('\n')}\n` : '';
   if (helperDefs.length > 0) {
-    // Ensure <stdint.h> is available for inlined helpers
-    const stdintInc = '#include <stdint.h>\n';
-    const fnSigIdx = out.search(/^(?:void|int|uint64|float|double)\s+[A-Za-z_][A-Za-z0-9_]*\([^)]*\)\n\{/m);
-    if (fnSigIdx >= 0) {
-      const hBlock = `${helperDefs.join('\n\n')}\n\n`;
-      out = out.slice(0, fnSigIdx) + hBlock + out.slice(fnSigIdx);
-    }
-    return { text: stdintInc + prefix + out, addedLines: hdrLines.length + missingLocals.length + 1 };
-  }
-  if (false) {
     const fnSigIdx = out.search(/^(?:void|int|uint64|float|double)\s+[A-Za-z_][A-Za-z0-9_]*\([^)]*\)\n\{/m);
     if (fnSigIdx >= 0) {
       const hBlock = `${helperDefs.join('\n\n')}\n\n`;
       out = out.slice(0, fnSigIdx) + hBlock + out.slice(fnSigIdx);
     }
   }
-  return { text: prefix + out, addedLines: hdrLines.length + missingLocals.length };
+  const finalText = prefix + out;
+  const outerSigRe = /^(?:void|int|uint64|float|double)\s+[A-Za-z_][A-Za-z0-9_]*\([^)]*\)$/;
+  const rawSigLine = text.split('\n').findIndex((l) => outerSigRe.test(l));
+  const finalSigLine = finalText.split('\n').findIndex((l) => outerSigRe.test(l));
+  const exactAdded = (rawSigLine >= 0 && finalSigLine >= 0) ? Math.max(0, finalSigLine - rawSigLine) : hdrLines.length;
+  return { text: finalText, addedLines: exactAdded };
 }
 
 export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null, symbolFor = null, readBytes = null, fileBytes = null, sections = null, allowHelperInlining = true } = {}) {
@@ -1034,13 +1045,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
 
     const mem = ex.memory.buffer;
     const rawPseudocode = textDecoder.decode(new Uint8Array(mem, textPtr, textLen));
-    const post = postprocessWasmGeneralC(rawPseudocode, { symbolFor, readBytes, fileBytes, sections, allowHelperInlining });
-    const pseudocode = post.text;
-    if ((rawName.startsWith('-[') || rawName.startsWith('+[')) && !pseudocode.includes('typedef void * id;')) {
-      return noteFallback('decompile', 'unsupported_objc_name');
-    }
-
-    const rawLinemap = new Map();
+    const extractedLm = [];
     if (
       typeof ex.hex_decomp_get_linemap_ptr === 'function'
       && typeof ex.hex_decomp_get_linemap_count === 'function'
@@ -1053,13 +1058,24 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         const dv = new DataView(mem);
         for (let i = 0; i < lmCount; i += 1) {
           const off = lmPtr + i * SIZEOF_HEX_LINEMAP_ENTRY;
-          const lineNo = dv.getUint32(off, true) + post.addedLines;
-          const address = dv.getBigUint64(off + 8, true);
-          const list = rawLinemap.get(lineNo) || [];
-          if (!list.includes(address)) list.push(address);
-          rawLinemap.set(lineNo, list);
+          extractedLm.push({ lineNo: dv.getUint32(off, true), address: dv.getBigUint64(off + 8, true) });
         }
       }
+    }
+
+    const post = postprocessWasmGeneralC(rawPseudocode, { baseAddr: BigInt(baseAddr), symbolFor, readBytes, fileBytes, sections, allowHelperInlining });
+    const pseudocode = post.text;
+    if ((rawName.startsWith('-[') || rawName.startsWith('+[')) && !pseudocode.includes('typedef void * id;')) {
+      return noteFallback('decompile', 'unsupported_objc_name');
+    }
+
+    const rawLinemap = new Map();
+    for (let i = 0; i < extractedLm.length; i += 1) {
+      const lineNo = extractedLm[i].lineNo + post.addedLines;
+      const address = extractedLm[i].address;
+      const list = rawLinemap.get(lineNo) || [];
+      if (!list.includes(address)) list.push(address);
+      rawLinemap.set(lineNo, list);
     }
 
     const rawLines = pseudocode.split('\n');
@@ -1099,7 +1115,9 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         || trimmed.startsWith('typedef ')
         || trimmed.startsWith('#')
         || trimmed.startsWith('static ')
+        || trimmed.startsWith('extern ')
         || trimmed.endsWith(';')
+        || (post.addedLines > 0 && idx < post.addedLines)
       );
       let kind;
       if (isPrelude) {
