@@ -640,7 +640,7 @@ acquire, release,
 
   function isJsEngineForced() {
     if (typeof global !== 'undefined' && global) {
-      const g = global.HEX_ENGINE !== undefined ? global.HEX_ENGINE : global.__HEX_ENGINE_MODE__;
+      const g = global.HEX_ENGINE ?? global.__HEX_ENGINE_MODE__;
       if (g != null && String(g).trim().toLowerCase() === 'js') return true;
     }
     if (typeof process !== 'undefined' && process && process.env && process.env.HEX_ENGINE != null) {
@@ -711,7 +711,7 @@ acquire, release,
 
   function isExplicitWasmMode() {
     if (typeof global !== 'undefined' && global) {
-      const g = global.HEX_ENGINE !== undefined ? global.HEX_ENGINE : global.__HEX_ENGINE_MODE__;
+      const g = global.HEX_ENGINE ?? global.__HEX_ENGINE_MODE__;
       if (g != null) return String(g).trim().toLowerCase() === 'wasm';
     }
     if (typeof process !== 'undefined' && process && process.env && process.env.HEX_ENGINE != null) {

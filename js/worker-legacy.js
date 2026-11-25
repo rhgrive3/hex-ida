@@ -1296,7 +1296,6 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   };
 
   const maybeYield = createYielder(16);
-  let reusableBlockWords = null;
   while (pos < total) {
     if (cancelled(requestId, epoch)) return { starts: [], cancelled: true };
     const want = Math.min(STREAM_SCAN_BLOCK, total - pos);
@@ -1712,6 +1711,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
 
   const allocatedBytes = () => callFrom.byteLength + callTo.byteLength + refFrom.byteLength + refTo.byteLength + refKind.byteLength + kinds.byteLength;
   const canGrow = (temporaryBytes) => WORKER_BUDGET.withinProgramBudget(allocatedBytes(), temporaryBytes) && allocatedBytes() + temporaryBytes <= PROGRAM_INDEX_BUDGET_BYTES;
+  let reusableBlockWords = null;
 
   while (pos < total) {
     if (cancelled(requestId, epoch)) return { cancelled: true, __transfer: [] };
