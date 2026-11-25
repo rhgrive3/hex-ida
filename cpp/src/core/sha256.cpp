@@ -39,16 +39,50 @@ static inline void store_be32(uint8_t* p, uint32_t v) {
   p[3] = static_cast<uint8_t>(v & 0xffu);
 }
 
+#define HEX_SHA256_SIGMA0(x) (rotr32((x), 2u) ^ rotr32((x), 13u) ^ rotr32((x), 22u))
+#define HEX_SHA256_SIGMA1(x) (rotr32((x), 6u) ^ rotr32((x), 11u) ^ rotr32((x), 25u))
+#define HEX_SHA256_GAMMA0(x) (rotr32((x), 7u) ^ rotr32((x), 18u) ^ ((x) >> 3u))
+#define HEX_SHA256_GAMMA1(x) (rotr32((x), 17u) ^ rotr32((x), 19u) ^ ((x) >> 10u))
+#define HEX_SHA256_CH(x, y, z) ((z) ^ ((x) & ((y) ^ (z))))
+#define HEX_SHA256_MAJ(x, y, z) (((x) & (y)) | ((z) & ((x) | (y))))
+
+#define HEX_SHA256_STEP(a, b, c, d, e, f, g, h, k, wt)                                \
+  do {                                                                                \
+    const uint32_t t1 = (h) + HEX_SHA256_SIGMA1(e) + HEX_SHA256_CH(e, f, g) + (k) + (wt); \
+    const uint32_t t2 = HEX_SHA256_SIGMA0(a) + HEX_SHA256_MAJ(a, b, c);               \
+    (d) += t1;                                                                        \
+    (h) = t1 + t2;                                                                    \
+  } while (0)
+
+#define HEX_SHA256_R00_15(a, b, c, d, e, f, g, h, idx)              \
+  do {                                                              \
+    w[(idx)] = load_be32(block + (idx) * 4u);                       \
+    HEX_SHA256_STEP(a, b, c, d, e, f, g, h, kSha256K[(idx)], w[(idx)]); \
+  } while (0)
+
+#define HEX_SHA256_W_UPDATE(idx)                                             \
+  (w[(idx) & 15u] = w[(idx) & 15u] + HEX_SHA256_GAMMA0(w[((idx) + 1u) & 15u]) \
+                    + w[((idx) + 9u) & 15u] + HEX_SHA256_GAMMA1(w[((idx) + 14u) & 15u]))
+
+#define HEX_SHA256_R16_63(a, b, c, d, e, f, g, h, idx)                     \
+  do {                                                                     \
+    const uint32_t wt = HEX_SHA256_W_UPDATE(idx);                          \
+    HEX_SHA256_STEP(a, b, c, d, e, f, g, h, kSha256K[(idx)], wt);          \
+  } while (0)
+
+#define HEX_SHA256_OCTET_16_63(base)                               \
+  HEX_SHA256_R16_63(a, b, c, d, e, f, g, h, (base) + 0u);          \
+  HEX_SHA256_R16_63(h, a, b, c, d, e, f, g, (base) + 1u);          \
+  HEX_SHA256_R16_63(g, h, a, b, c, d, e, f, (base) + 2u);          \
+  HEX_SHA256_R16_63(f, g, h, a, b, c, d, e, (base) + 3u);          \
+  HEX_SHA256_R16_63(e, f, g, h, a, b, c, d, (base) + 4u);          \
+  HEX_SHA256_R16_63(d, e, f, g, h, a, b, c, (base) + 5u);          \
+  HEX_SHA256_R16_63(c, d, e, f, g, h, a, b, (base) + 6u);          \
+  HEX_SHA256_R16_63(b, c, d, e, f, g, h, a, (base) + 7u)
+
 static void compress_one_block(uint32_t state[8], const uint8_t block[64]) {
-  uint32_t w[64];
-  for (uint32_t i = 0u; i < 16u; ++i) {
-    w[i] = load_be32(block + i * 4u);
-  }
-  for (uint32_t i = 16u; i < 64u; ++i) {
-    const uint32_t s0 = rotr32(w[i - 15u], 7u) ^ rotr32(w[i - 15u], 18u) ^ (w[i - 15u] >> 3u);
-    const uint32_t s1 = rotr32(w[i - 2u], 17u) ^ rotr32(w[i - 2u], 19u) ^ (w[i - 2u] >> 10u);
-    w[i] = w[i - 16u] + s0 + w[i - 7u] + s1;
-  }
+  // 16-word rolling window promoted to WASM local registers by LLVM SROA.
+  uint32_t w[16];
 
   uint32_t a = state[0];
   uint32_t b = state[1];
@@ -59,23 +93,31 @@ static void compress_one_block(uint32_t state[8], const uint8_t block[64]) {
   uint32_t g = state[6];
   uint32_t h = state[7];
 
-  for (uint32_t i = 0u; i < 64u; ++i) {
-    const uint32_t s1 = rotr32(e, 6u) ^ rotr32(e, 11u) ^ rotr32(e, 25u);
-    const uint32_t ch = (e & f) ^ ((~e) & g);
-    const uint32_t temp1 = h + s1 + ch + kSha256K[i] + w[i];
-    const uint32_t s0 = rotr32(a, 2u) ^ rotr32(a, 13u) ^ rotr32(a, 22u);
-    const uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-    const uint32_t temp2 = s0 + maj;
+  // Rounds 0..15: load big-endian message words + compress
+  HEX_SHA256_R00_15(a, b, c, d, e, f, g, h, 0u);
+  HEX_SHA256_R00_15(h, a, b, c, d, e, f, g, 1u);
+  HEX_SHA256_R00_15(g, h, a, b, c, d, e, f, 2u);
+  HEX_SHA256_R00_15(f, g, h, a, b, c, d, e, 3u);
+  HEX_SHA256_R00_15(e, f, g, h, a, b, c, d, 4u);
+  HEX_SHA256_R00_15(d, e, f, g, h, a, b, c, 5u);
+  HEX_SHA256_R00_15(c, d, e, f, g, h, a, b, 6u);
+  HEX_SHA256_R00_15(b, c, d, e, f, g, h, a, 7u);
+  HEX_SHA256_R00_15(a, b, c, d, e, f, g, h, 8u);
+  HEX_SHA256_R00_15(h, a, b, c, d, e, f, g, 9u);
+  HEX_SHA256_R00_15(g, h, a, b, c, d, e, f, 10u);
+  HEX_SHA256_R00_15(f, g, h, a, b, c, d, e, 11u);
+  HEX_SHA256_R00_15(e, f, g, h, a, b, c, d, 12u);
+  HEX_SHA256_R00_15(d, e, f, g, h, a, b, c, 13u);
+  HEX_SHA256_R00_15(c, d, e, f, g, h, a, b, 14u);
+  HEX_SHA256_R00_15(b, c, d, e, f, g, h, a, 15u);
 
-    h = g;
-    g = f;
-    f = e;
-    e = d + temp1;
-    d = c;
-    c = b;
-    b = a;
-    a = temp1 + temp2;
-  }
+  // Rounds 16..63: rolling 16-word schedule update + compress
+  HEX_SHA256_OCTET_16_63(16u);
+  HEX_SHA256_OCTET_16_63(24u);
+  HEX_SHA256_OCTET_16_63(32u);
+  HEX_SHA256_OCTET_16_63(40u);
+  HEX_SHA256_OCTET_16_63(48u);
+  HEX_SHA256_OCTET_16_63(56u);
 
   state[0] += a;
   state[1] += b;
@@ -86,6 +128,18 @@ static void compress_one_block(uint32_t state[8], const uint8_t block[64]) {
   state[6] += g;
   state[7] += h;
 }
+
+#undef HEX_SHA256_OCTET_16_63
+#undef HEX_SHA256_R16_63
+#undef HEX_SHA256_W_UPDATE
+#undef HEX_SHA256_R00_15
+#undef HEX_SHA256_STEP
+#undef HEX_SHA256_MAJ
+#undef HEX_SHA256_CH
+#undef HEX_SHA256_GAMMA1
+#undef HEX_SHA256_GAMMA0
+#undef HEX_SHA256_SIGMA1
+#undef HEX_SHA256_SIGMA0
 
 }  // namespace
 
