@@ -1070,6 +1070,11 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
   let addr = image.imageBase;
   const maxAddress = image.bits === 32 ? 0xffffffffn : 0xffffffffffffffffn;
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
+  const alignMask = alignment > 1n ? alignment - 1n : 0n;
+  const width = instructionWidthForArch(image.arch);
+  const canFastPath = image.arch !== 'arm64ec' && typeof image.resolveVirtualMapping === 'function' && (!image.dataInCode || image.dataInCode.length === 0);
+  let fastRunLo = 0n;
+  let fastRunHi = -1n;
   let terminated = false;
   while (p < end) {
     if (!budget.take({ records:1, operations:1, estimatedHeapBytes:32 }, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
@@ -1088,19 +1093,58 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
     }
     const next = addr + x.value;
     addr = next;
-    const seg = image.segmentAt(addr);
-    if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n) || !image.isInstructionAllowed(addr)) {
-      status.complete = false; status.partialReason = 'invalid-entry';
-      image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
-      break;
-    }
-    // A segment's vm size may exceed its file size; the difference is loader
-    // zero-fill. A start without contiguous file-backed instruction bytes is
-    // not static evidence and must not become a 0.995-confidence seed (#5551).
-    if (!hasContiguousFileBackedInstruction(image, addr)) {
-      status.complete = false; status.partialReason = 'invalid-entry';
-      image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)} (no file-backed instruction bytes)`);
-      break;
+    const inFastRun = canFastPath
+      && addr >= fastRunLo
+      && addr + width <= fastRunHi
+      && (alignMask === 0n || (addr & alignMask) === 0n);
+    if (!inFastRun) {
+      const seg = image.segmentAt(addr);
+      if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n) || !image.isInstructionAllowed(addr)) {
+        status.complete = false; status.partialReason = 'invalid-entry';
+        image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
+        break;
+      }
+      // A segment's vm size may exceed its file size; the difference is loader
+      // zero-fill. A start without contiguous file-backed instruction bytes is
+      // not static evidence and must not become a 0.995-confidence seed (#5551).
+      if (!hasContiguousFileBackedInstruction(image, addr)) {
+        status.complete = false; status.partialReason = 'invalid-entry';
+        image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)} (no file-backed instruction bytes)`);
+        break;
+      }
+      if (canFastPath) {
+        // Compute a provably safe contiguous executable file-backed run [fastRunLo, fastRunHi)
+        // bounded by the current virtual-mapping run, section/segment bounds, and owner fileSize.
+        const vRuns = image._mappingLookups?.virtual?.runs;
+        if (vRuns && vRuns.starts.length >= 2) {
+          let lo = 0;
+          let hi = vRuns.starts.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (vRuns.starts[mid] <= addr) lo = mid + 1;
+            else hi = mid;
+          }
+          if (lo > 0 && lo < vRuns.starts.length) {
+            const runStart = vRuns.starts[lo - 1];
+            const runEnd = vRuns.starts[lo];
+            const owner = image._virtualMappingAt(addr);
+            const sec = image.sectionAt(addr);
+            if (owner && (!sec || sec.perms?.execute)) {
+              const ownerFileEnd = owner.address + (owner.fileSize ?? 0n);
+              const segEnd = seg.address + seg.size;
+              let safeHi = runEnd < ownerFileEnd ? runEnd : ownerFileEnd;
+              if (segEnd < safeHi) safeHi = segEnd;
+              if (sec && sec.address + sec.size < safeHi) safeHi = sec.address + sec.size;
+              let safeLo = runStart > seg.address ? runStart : seg.address;
+              if (sec && sec.address > safeLo) safeLo = sec.address;
+              if (addr >= safeLo && addr + width <= safeHi) {
+                fastRunLo = safeLo;
+                fastRunHi = safeHi;
+              }
+            }
+          }
+        }
+      }
     }
     if (!budget.take({ inputBytes:x.bytes, objects:1, estimatedHeapBytes:128 }, 'function-start-output')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     image.functions.push(functionSeed(addr, { source: 'function_starts', confidence: 0.995 }));

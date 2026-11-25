@@ -1225,6 +1225,7 @@ export function wasmDecodeRiscv64Batch(bytes, basePc = 0n) {
 // ---------------------------------------------------------------------------
 const STRING_SCAN_MAX_SPANS = 65536;
 const STRING_SCAN_ARENA_BUDGET = 1_500_000;
+const STRING_SCAN_CHUNK_BYTES = 524288;
 const STRING_SCAN_ENCODINGS = Object.freeze(['utf8', 'utf16le', 'utf16be']);
 const BYTE_SEARCH_CHUNK_BYTES = 262144;
 const BYTE_SEARCH_NOT_FOUND = 0xffffffff;
@@ -1273,7 +1274,204 @@ export function wasmScanStringsFlat(bytes, ranges, opts = {}) {
     Math.floor((STRING_SCAN_ARENA_BUDGET - bytesLen - rangeBytes - 256) / 16),
   );
   if (spanCap < 1) {
-    return noteFallback('strings', 'input_too_large');
+    // Chunked WASM path for large binaries (> 1.5 MiB) with exact 0-diff ordering & boundary safety.
+    const normalizedRanges = new Array(ranges.length);
+    let prevEnd = 0;
+    for (let i = 0; i < ranges.length; i += 1) {
+      const r = ranges[i];
+      if (!r || typeof r !== 'object') return noteFallback('strings', 'invalid_range');
+      const startNum = Number(r.start ?? 0);
+      const endNum = r.size != null ? startNum + Number(r.size) : Number(r.end ?? startNum);
+      if (!Number.isFinite(startNum) || !Number.isFinite(endNum) || startNum < 0 || endNum < startNum) {
+        return noteFallback('strings', 'invalid_range');
+      }
+      const start = Math.min(bytesLen, Math.floor(startNum));
+      const end = Math.min(bytesLen, Math.floor(endNum));
+      if (i > 0 && start < prevEnd) {
+        return noteFallback('strings', 'overlapping_large_ranges');
+      }
+      prevEnd = end;
+      normalizedRanges[i] = { start, end, idx: i };
+    }
+
+    const encFlagsList = [];
+    if (utf8) encFlagsList.push(1);
+    if (utf16le) encFlagsList.push(2);
+    if (utf16be) encFlagsList.push(4);
+
+    const chunks = [];
+    let totalSpans = 0;
+    try {
+      for (let ri = 0; ri < normalizedRanges.length && totalSpans < limit; ri += 1) {
+        const { start: rStart, end: rEnd, idx: rangeIdx } = normalizedRanges[ri];
+        if (rEnd <= rStart) continue;
+        const needSplit = (rEnd - rStart) > STRING_SCAN_CHUNK_BYTES;
+        const passes = needSplit ? encFlagsList : [flags];
+
+        for (let pi = 0; pi < passes.length && totalSpans < limit; pi += 1) {
+          const passFlags = passes[pi];
+          const isUtf16Pass = (passFlags & 6) !== 0;
+          const splitUtf16Parity = needSplit && isUtf16Pass;
+          const evenChunks = splitUtf16Parity ? [] : null;
+          const oddChunks = splitUtf16Parity ? [] : null;
+          let evenCount = 0;
+          let oddCount = 0;
+          let pos = rStart;
+          while (pos < rEnd && (splitUtf16Parity ? (totalSpans + evenCount < limit) : (totalSpans < limit))) {
+            let cut = Math.min(rEnd, pos + STRING_SCAN_CHUNK_BYTES);
+            if (cut < rEnd) {
+              if (isUtf16Pass) {
+                // Ensure 2-byte alignment relative to rStart AND 3 consecutive NULs so both
+                // parity 0 and parity 1 UTF-16 code units terminate cleanly before cut.
+                if (((cut - rStart) & 1) !== 0) cut -= 1;
+                let found = -1;
+                const maxC = cut + 1 < rEnd ? cut : cut - 2;
+                for (let c = maxC; c >= pos + 4; c -= 2) {
+                  if (bytes[c - 2] === 0 && bytes[c - 1] === 0 && bytes[c] === 0 && bytes[c + 1] === 0) {
+                    found = c;
+                    break;
+                  }
+                }
+                if (found < 0) return noteFallback('strings', 'chunk_no_boundary');
+                cut = found;
+              } else {
+                let found = -1;
+                for (let c = cut; c >= pos + 4; c -= 1) {
+                  if (bytes[c - 1] === 0) {
+                    found = c;
+                    break;
+                  }
+                }
+                if (found < 0) return noteFallback('strings', 'chunk_no_boundary');
+                cut = found;
+              }
+            }
+            const chunkLen = cut - pos;
+            const remainingLimit = splitUtf16Parity
+              ? Math.max(1, limit - totalSpans)
+              : (limit - totalSpans);
+            // When splitting UTF-16 parity across chunks, allow up to full chunk capacity so
+            // odd spans from earlier chunks cannot crowd out even spans inside a single chunk.
+            const maxWanted = splitUtf16Parity ? STRING_SCAN_MAX_SPANS : remainingLimit;
+            let chunkSpanCap = Math.min(
+              maxWanted,
+              STRING_SCAN_MAX_SPANS,
+              Math.floor((STRING_SCAN_ARENA_BUDGET - chunkLen - 16 - 256) / 16),
+            );
+            if (chunkSpanCap < 1) return noteFallback('strings', 'input_too_large');
+
+            ex.hex_identity_reset();
+            const bytesPtr = ex.hex_identity_alloc(chunkLen);
+            const rangesPtr = ex.hex_identity_alloc(16);
+            const outCountPtr = ex.hex_identity_alloc(4);
+            if (!bytesPtr || !rangesPtr || !outCountPtr) return noteFallback('strings', 'oom');
+            let outSpansPtr = ex.hex_identity_alloc(chunkSpanCap * 16);
+            while (!outSpansPtr && chunkSpanCap > 1) {
+              chunkSpanCap = chunkSpanCap >>> 1;
+              outSpansPtr = ex.hex_identity_alloc(chunkSpanCap * 16);
+            }
+            if (!outSpansPtr) return noteFallback('strings', 'oom');
+
+            new Uint8Array(ex.memory.buffer, bytesPtr, chunkLen).set(bytes.subarray(pos, cut));
+            const rdv = new DataView(ex.memory.buffer, rangesPtr, 16);
+            rdv.setUint32(0, 0, true);
+            rdv.setUint32(4, chunkLen >>> 0, true);
+            rdv.setUint32(8, rangeIdx >>> 0, true);
+            rdv.setUint32(12, 0, true);
+
+            const status = ex.hex_string_scan_ranges(
+              bytesPtr,
+              chunkLen >>> 0,
+              rangesPtr,
+              1,
+              minLength >>> 0,
+              maxLength >>> 0,
+              passFlags >>> 0,
+              chunkSpanCap >>> 0,
+              outSpansPtr,
+              outCountPtr,
+            );
+            if (status !== HEX_OK) return noteFallback('strings', `wasm_status_${status}`);
+
+            const mem = ex.memory.buffer;
+            const outCount = new DataView(mem).getUint32(outCountPtr, true);
+            if (outCount > chunkSpanCap) return noteFallback('strings', 'invalid_out_count');
+            if (outCount === chunkSpanCap && (splitUtf16Parity || chunkSpanCap < remainingLimit)) {
+              return noteFallback('strings', 'span_cap_reached');
+            }
+            if (outCount > 0) {
+              const src = new Uint32Array(mem, outSpansPtr, outCount * 4);
+              if (splitUtf16Parity) {
+                let eLen = 0;
+                let oLen = 0;
+                for (let k = 0; k < outCount * 4; k += 4) {
+                  if (((src[k] + pos) & 1) === 0) eLen += 1;
+                  else oLen += 1;
+                }
+                const eArr = eLen > 0 ? new Uint32Array(eLen * 4) : null;
+                const oArr = oLen > 0 ? new Uint32Array(oLen * 4) : null;
+                let ei = 0;
+                let oi = 0;
+                for (let k = 0; k < outCount * 4; k += 4) {
+                  const absOff = src[k] + pos;
+                  if ((absOff & 1) === 0) {
+                    eArr[ei++] = absOff;
+                    eArr[ei++] = src[k + 1];
+                    eArr[ei++] = src[k + 2];
+                    eArr[ei++] = src[k + 3];
+                  } else {
+                    oArr[oi++] = absOff;
+                    oArr[oi++] = src[k + 1];
+                    oArr[oi++] = src[k + 2];
+                    oArr[oi++] = src[k + 3];
+                  }
+                }
+                if (eArr) { evenChunks.push(eArr); evenCount += eLen; }
+                if (oArr) { oddChunks.push(oArr); oddCount += oLen; }
+              } else {
+                const flatChunk = new Uint32Array(outCount * 4);
+                for (let k = 0; k < outCount * 4; k += 4) {
+                  flatChunk[k] = src[k] + pos;
+                  flatChunk[k + 1] = src[k + 1];
+                  flatChunk[k + 2] = src[k + 2];
+                  flatChunk[k + 3] = src[k + 3];
+                }
+                chunks.push(flatChunk);
+                totalSpans += outCount;
+              }
+            }
+            pos = cut;
+          }
+          if (splitUtf16Parity) {
+            for (let ci = 0; ci < evenChunks.length && totalSpans < limit; ci += 1) {
+              const arr = evenChunks[ci];
+              const avail = arr.length >>> 2;
+              const take = Math.min(avail, limit - totalSpans);
+              chunks.push(take === avail ? arr : arr.subarray(0, take * 4));
+              totalSpans += take;
+            }
+            for (let ci = 0; ci < oddChunks.length && totalSpans < limit; ci += 1) {
+              const arr = oddChunks[ci];
+              const avail = arr.length >>> 2;
+              const take = Math.min(avail, limit - totalSpans);
+              chunks.push(take === avail ? arr : arr.subarray(0, take * 4));
+              totalSpans += take;
+            }
+          }
+        }
+      }
+
+      const combined = new Uint32Array(totalSpans * 4);
+      let writeOff = 0;
+      for (let i = 0; i < chunks.length; i += 1) {
+        combined.set(chunks[i], writeOff);
+        writeOff += chunks[i].length;
+      }
+      recordWasmCall('strings');
+      return combined;
+    } catch {
+      return noteFallback('strings', 'wasm_exception');
+    }
   }
 
   try {

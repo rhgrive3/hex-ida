@@ -495,3 +495,45 @@ test('Wave 16 direct IncrementalSha256 & sha256BlobHex { _engine: "js" } isolati
     assert.deepStrictEqual(autoBlob, jsBlob);
   });
 });
+
+test('Wave 17 chunked wasmScanStringsFlat (> 1.5 MiB): UTF-8 + UTF-16LE/BE + parity ordering + 4-byte NUL boundary + limit match JS 0-diff', () => {
+  // Build a 2.2 MiB synthetic buffer (> 1.5 MiB scratch arena) with strings placed across 512 KiB chunk boundaries
+  const size = 2_300_000;
+  const buf = new Uint8Array(size);
+  const writeAscii = (off, str) => {
+    for (let i = 0; i < str.length; i += 1) buf[off + i] = str.charCodeAt(i);
+  };
+  const writeUtf16Le = (off, str) => {
+    for (let i = 0; i < str.length; i += 1) {
+      const c = str.charCodeAt(i);
+      buf[off + i * 2] = c & 0xff;
+      buf[off + i * 2 + 1] = (c >>> 8) & 0xff;
+    }
+  };
+  // Place UTF-8 and UTF-16LE (both even and odd offsets) around 512 KiB, 1 MiB, 1.5 MiB boundaries
+  for (const base of [64, 524200, 524290, 1048500, 1048600, 1572800, 2097100]) {
+    writeAscii(base, `utf8_marker_${base}`);
+    writeUtf16Le(base + 40, `u16even_${base}`);
+    writeUtf16Le(base + 101, `u16odd_${base}`);
+  }
+  const img = new BinaryImage(buf, { format: 'elf', arch: 'arm64', bits: 64, fileSize: BigInt(size) });
+  img.addSegment({ name: 'DATA', address: 0x1000000n, size: BigInt(size), fileOffset: 0n, fileSize: BigInt(size), perms: { read: true, write: true, execute: false } });
+  img.addSection({ name: '.rodata', index: 1, address: 0x1000000n, size: BigInt(size), fileOffset: 0n, fileSize: BigInt(size), perms: { read: true, write: false, execute: false }, flags: 2 });
+
+  // Use scanStrings via openBinary-like options by importing scanStrings dynamically or checking via BinaryImage
+  return import('../../js/binary/strings.js').then(({ scanStrings }) => {
+    for (const scanOpts of [
+      { utf16: false, minLength: 4 },
+      { utf16: 'le', minLength: 4 },
+      { utf16: 'both', minLength: 4, limit: 15 },
+    ]) {
+      const jsRes = withEngineMode('js', () => scanStrings(img, { ...scanOpts, _engine: 'js' }));
+      resetAllTelemetry();
+      const wasmRes = withEngineMode('auto', () => scanStrings(img, { ...scanOpts, _engine: 'auto' }));
+      assert.ok(getWasmCallCount('strings') >= 1, `expected chunked WASM strings dispatch for ${JSON.stringify(scanOpts)}`);
+      const strFallbacks = Object.entries(getFallbackCounts()).filter(([k]) => k.startsWith('strings:'));
+      assert.deepStrictEqual(strFallbacks, [], `expected 0 strings fallbacks, got ${JSON.stringify(strFallbacks)}`);
+      assert.deepStrictEqual(wasmRes, jsRes, `chunked WASM strings 0-diff mismatch for ${JSON.stringify(scanOpts)}`);
+    }
+  });
+});

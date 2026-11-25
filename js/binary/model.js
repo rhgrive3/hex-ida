@@ -1419,7 +1419,7 @@ function createMonotonicRegionLookup(regions) {
   };
 
   return (address) => {
-    const value = BigInt(address);
+    const value = typeof address === 'bigint' ? address : BigInt(address);
     if (lastAddress !== null && value < lastAddress) reset();
     lastAddress = value;
     while (cursor < ordered.length && ordered[cursor].start <= value) heap.push(ordered[cursor++]);
@@ -1434,19 +1434,28 @@ const SEED_SOURCE_RANK = Object.freeze(Object.assign(Object.create(null), {
   constructor: 4, export: 3, entrypoint: 2, heuristic: 1,
 }));
 
+function hasSeedSource(seed, target) {
+  if (Array.isArray(seed.sources)) return seed.sources.includes(target);
+  return seed.source === target;
+}
+
 export function mergeFunctionSeeds(input, context = {}) {
   const rank = SEED_SOURCE_RANK;
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
-    const confidence = finiteConfidence(f0.confidence, 0.5);
-    const exactFunctionStartConfidence = f0.exactFunctionStartConfidence == null
+    const rawConf = f0.confidence;
+    const confidence = (typeof rawConf === 'number' && Number.isFinite(rawConf))
+      ? rawConf
+      : finiteConfidence(rawConf, 0.5);
+    const rawExactConf = f0.exactFunctionStartConfidence;
+    const exactFunctionStartConfidence = rawExactConf == null
       ? (f0.exactFunctionStart === true || (!Array.isArray(f0.sources) && EXACT_FUNCTION_START_SOURCES.has(f0.source)) ? confidence : null)
-      : finiteConfidence(f0.exactFunctionStartConfidence, 0);
-    const address = strictBigIntOrNull(f0.address);
+      : ((typeof rawExactConf === 'number' && Number.isFinite(rawExactConf)) ? rawExactConf : finiteConfidence(rawExactConf, 0));
+    const address = typeof f0.address === 'bigint' ? f0.address : strictBigIntOrNull(f0.address);
     if (address === null) continue;
-    const size = f0.size == null ? null : strictBigIntOrNull(f0.size);
-    const end = f0.end == null ? null : strictBigIntOrNull(f0.end);
+    const size = f0.size == null ? null : (typeof f0.size === 'bigint' ? f0.size : strictBigIntOrNull(f0.size));
+    const end = f0.end == null ? null : (typeof f0.end === 'bigint' ? f0.end : strictBigIntOrNull(f0.end));
     // Raw providers may use exact numbers or numeric strings, but structured,
     // fractional, unsafe, and malformed extents are not promoted through
     // BigInt() coercion. Drop that seed at the canonical boundary (#5891).
@@ -1541,23 +1550,42 @@ export function mergeFunctionSeeds(input, context = {}) {
     }
     m.set(k, best);
   }
-  const out = [...m.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
+  const out = new Array(m.size);
+  let outIdx = 0;
+  let alreadySorted = true;
+  let prevAddr = null;
+  for (const val of m.values()) {
+    if (prevAddr !== null && val.address < prevAddr) alreadySorted = false;
+    prevAddr = val.address;
+    out[outIdx++] = val;
+  }
+  if (!alreadySorted) {
+    out.sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
+  }
   const regions = [...(context.sections || []), ...(context.segments || [])]
     .filter((r) => r && r.address != null && r.size != null && BigInt(r.size) > 0n && r.perms?.execute)
     .sort((a,b) => BigInt(a.size) < BigInt(b.size) ? -1 : BigInt(a.size) > BigInt(b.size) ? 1 : 0);
-  const regionFor = createMonotonicRegionLookup(regions);
+  const hasRegions = regions.length > 0;
+  const regionFor = hasRegions ? createMonotonicRegionLookup(regions) : null;
+  let cachedRegionIdx = -1;
+  let cachedRegionVal = null;
   for (let i = 0; i < out.length; i++) {
     const f = out[i];
     if (f.end == null && f.size != null) f.end = f.address + f.size;
     if (f.size == null && f.end != null && f.end > f.address) f.size = f.end - f.address;
     if (f.size == null && i + 1 < out.length && out[i + 1].address > f.address) {
       const next = out[i + 1];
-      const sources = new Set(f.sources || [f.source]);
-      const nextSources = new Set(next.sources || [next.source]);
-      const provenFunctionStarts = sources.has('function_starts') && nextSources.has('function_starts');
+      const provenFunctionStarts = hasSeedSource(f, 'function_starts') && hasSeedSource(next, 'function_starts');
       const delta = next.address - f.address;
-      const currentRegion = regionFor(f.address), nextRegion = regionFor(next.address);
-      const sameCanonicalRegion = !regions.length || (currentRegion != null && currentRegion === nextRegion);
+      let currentRegion = null;
+      let sameCanonicalRegion = true;
+      if (hasRegions) {
+        currentRegion = cachedRegionIdx === i ? cachedRegionVal : regionFor(f.address);
+        const nextRegion = regionFor(next.address);
+        cachedRegionIdx = i + 1;
+        cachedRegionVal = nextRegion;
+        sameCanonicalRegion = currentRegion != null && currentRegion === nextRegion;
+      }
       const withinRegionEnd = !currentRegion || next.address <= BigInt(currentRegion.address) + BigInt(currentRegion.size);
       if (provenFunctionStarts && sameCanonicalRegion && withinRegionEnd && delta <= 0x1000000n) {
         f.size = delta; f.end = next.address;

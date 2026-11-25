@@ -107,15 +107,15 @@ export function openBinary(input, opts = {}) {
       globalThis.__HEX_ENGINE_MODE__ = 'js';
       setMode = true;
     }
+  const detected = detectBinary(input);
   let wasmInfo = null;
   if (engineMode !== 'js') {
     const bytes = toUint8View(input);
-    if (bytes) {
+    if (bytes && (bytes.length <= 1_500_000 || detected.format === 'unknown')) {
       wasmInfo = wasmInspectBinary(bytes);
     }
   }
 
-  const detected = detectBinary(input);
   const format = detected.format !== 'unknown'
     ? detected.format
     : (wasmInfo ? (WASM_FORMAT_BY_ID[wasmInfo.format] || 'unknown') : 'unknown');
