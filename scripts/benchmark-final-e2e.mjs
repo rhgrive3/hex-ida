@@ -25,6 +25,7 @@ import { performance } from 'node:perf_hooks';
 
 import { openBinary, scanStrings } from '../js/binary/index.js';
 import { compileBytePattern } from '../js/platform/byte-search.js';
+import { IncrementalSha256 } from '../js/cache/content-identity.js';
 import { buildSampleBinary } from '../js/sample.js';
 import { buildSemanticModel } from '../js/blocks.js';
 import { buildCfg } from '../js/cfg.js';
@@ -89,6 +90,7 @@ const ALL_WASM_DOMAINS = Object.freeze([
   'x86_64_decode',
   'strings',
   'byte_search',
+  'sha256',
 ]);
 
 function summarizeWasmCalls(counts = {}) {
@@ -473,21 +475,49 @@ function buildSyntheticByteSearchFixture(byteSize = 1024 * 1024) {
   return { buffer, pattern, mask };
 }
 
+function buildRealisticStringsImage(byteSize = 1024 * 1024) {
+  // ~98% non-string binary noise + ~2% embedded ASCII strings (realistic ELF/Mach-O density)
+  const bytes = new Uint8Array(byteSize);
+  for (let i = 0; i < byteSize; i += 1) {
+    const v = (i * 13 + 3) & 0x1f;
+    bytes[i] = v === 9 ? 0x7f : v;  // non-printable control / DEL noise
+  }
+  const encoder = new TextEncoder();
+  const stride = 1024;
+  for (let off = 32, idx = 0; off + 24 < byteSize; off += stride, idx += 1) {
+    const token = encoder.encode(`sym_real_bin_${String(idx).padStart(4, '0')}_fn`);
+    bytes.set(token, off);
+    bytes[off + token.length] = 0;
+  }
+  return {
+    bytes,
+    sections: [],
+    segments: [],
+    endian: 'little',
+    offsetToAddress: (off) => BigInt(off),
+  };
+}
+
 function runWave13Microbench(rounds) {
   const stringsImage = buildSyntheticStringsImage(256 * 1024);
+  const realisticStringsImage = buildRealisticStringsImage(1024 * 1024);
   const { buffer: searchBuf, pattern, mask } = buildSyntheticByteSearchFixture(1024 * 1024);
 
   // Brief warmup for both modes
   for (const mode of ['js', 'wasm']) {
     withModeEnv(mode, () => {
       scanStrings(stringsImage, { _engine: mode });
+      scanStrings(realisticStringsImage, { _engine: mode });
       const matcher = compileBytePattern(pattern, mask, false);
       if (matcher) matcher.find(searchBuf, 0);
+      new IncrementalSha256().update(searchBuf).hexDigest();
     });
   }
 
   const scanStringsResult = { bufferBytes: stringsImage.bytes.length };
+  const realisticStringsResult = { bufferBytes: realisticStringsImage.bytes.length };
   const byteSearchResult = { bufferBytes: searchBuf.length, patternBytes: pattern.length };
+  const sha256Result = { bufferBytes: searchBuf.length };
 
   for (const mode of ['js', 'wasm']) {
     const strTimes = [];
@@ -534,6 +564,42 @@ function runWave13Microbench(rounds) {
       matches: matchCount,
       wasmCalls: searchWasmCalls,
     };
+
+    const shaTimes = [];
+    let shaDigestPrefix = '';
+    let shaWasmCalls = 0;
+    for (let r = 0; r < rounds; r += 1) {
+      resetAllTelemetry();
+      const t0 = performance.now();
+      const digest = withModeEnv(mode, () => new IncrementalSha256().update(searchBuf).hexDigest());
+      shaTimes.push(performance.now() - t0);
+      shaDigestPrefix = digest.slice(0, 16);
+      shaWasmCalls = getWasmCallCount('sha256');
+    }
+    sha256Result[mode] = {
+      roundsMs: shaTimes.map((t) => +t.toFixed(3)),
+      medianMs: +median(shaTimes).toFixed(3),
+      digestPrefix: shaDigestPrefix,
+      wasmCalls: shaWasmCalls,
+    };
+
+    const realStrTimes = [];
+    let realStrCount = 0;
+    let realStrWasmCalls = 0;
+    for (let r = 0; r < rounds; r += 1) {
+      resetAllTelemetry();
+      const t0 = performance.now();
+      const found = withModeEnv(mode, () => scanStrings(realisticStringsImage, { _engine: mode }));
+      realStrTimes.push(performance.now() - t0);
+      realStrCount = found.length;
+      realStrWasmCalls = getWasmCallCount('strings');
+    }
+    realisticStringsResult[mode] = {
+      roundsMs: realStrTimes.map((t) => +t.toFixed(3)),
+      medianMs: +median(realStrTimes).toFixed(3),
+      count: realStrCount,
+      wasmCalls: realStrWasmCalls,
+    };
   }
 
   scanStringsResult.speedupVsJs = scanStringsResult.wasm.medianMs > 0
@@ -542,10 +608,18 @@ function runWave13Microbench(rounds) {
   byteSearchResult.speedupVsJs = byteSearchResult.wasm.medianMs > 0
     ? +(byteSearchResult.js.medianMs / byteSearchResult.wasm.medianMs).toFixed(2)
     : 0;
+  sha256Result.speedupVsJs = sha256Result.wasm.medianMs > 0
+    ? +(sha256Result.js.medianMs / sha256Result.wasm.medianMs).toFixed(2)
+    : 0;
+  realisticStringsResult.speedupVsJs = realisticStringsResult.wasm.medianMs > 0
+    ? +(realisticStringsResult.js.medianMs / realisticStringsResult.wasm.medianMs).toFixed(2)
+    : 0;
 
   return {
     scanStrings256KiB: scanStringsResult,
     byteSearch1MiB: byteSearchResult,
+    sha2561MiB: sha256Result,
+    scanStrings1MiBRealistic: realisticStringsResult,
   };
 }
 
@@ -593,17 +667,32 @@ function formatTable(report) {
     }
   }
   if (report.wave13Microbench) {
-    const { scanStrings256KiB: s, byteSearch1MiB: b } = report.wave13Microbench;
+    const {
+      scanStrings256KiB: s,
+      byteSearch1MiB: b,
+      sha2561MiB: h,
+      scanStrings1MiBRealistic: sr,
+    } = report.wave13Microbench;
     lines.push('');
-    lines.push('=== Wave 13 Microbench (strings 256 KiB / byte_search 1 MiB) ===');
+    lines.push('=== Wave 13/14 Microbench (strings / byte_search / sha256) ===');
     lines.push('| Benchmark | JS Median (ms) | WASM Median (ms) | Speedup vs JS | Hits/Count | WASM Calls |');
     lines.push('|---|---:|---:|---:|---:|---:|');
     lines.push(
       `| scanStrings (256 KiB) | ${s.js.medianMs.toFixed(3)} | ${s.wasm.medianMs.toFixed(3)} | ${s.speedupVsJs.toFixed(2)}x | ${s.wasm.count} | ${s.wasm.wasmCalls} |`,
     );
+    if (sr) {
+      lines.push(
+        `| scanStrings (1 MiB realistic) | ${sr.js.medianMs.toFixed(3)} | ${sr.wasm.medianMs.toFixed(3)} | ${sr.speedupVsJs.toFixed(2)}x | ${sr.wasm.count} | ${sr.wasm.wasmCalls} |`,
+      );
+    }
     lines.push(
       `| byteSearch (1 MiB) | ${b.js.medianMs.toFixed(3)} | ${b.wasm.medianMs.toFixed(3)} | ${b.speedupVsJs.toFixed(2)}x | ${b.wasm.matches} | ${b.wasm.wasmCalls} |`,
     );
+    if (h) {
+      lines.push(
+        `| sha256 (1 MiB) | ${h.js.medianMs.toFixed(3)} | ${h.wasm.medianMs.toFixed(3)} | ${h.speedupVsJs.toFixed(2)}x | ${h.wasm.digestPrefix} | ${h.wasm.wasmCalls} |`,
+      );
+    }
   }
   const v = report.verification;
   lines.push('');
