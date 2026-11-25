@@ -266,6 +266,7 @@ struct CmpState {
 struct AnalysisCtx {
   uint32_t gpr_read_before_write;  // bits 0..30
   uint32_t gpr_written;            // bits 0..30
+  uint32_t gpr_written_insn;       // per-instruction non-call write tracker
   uint32_t gpr_used;               // bits 0..30
   uint32_t fp_read_before_write;   // bits 0..31 (d0..d31)
   uint32_t fp_written;             // bits 0..31
@@ -339,6 +340,7 @@ struct AnalysisCtx {
     if (r >= 31u) return;
     gpr_used |= (1u << r);
     gpr_written |= (1u << r);
+    gpr_written_insn |= (1u << r);
     clear_adrp(r);
     if (r == 0u) {
       last_ret_is_fp = false;
@@ -4504,16 +4506,13 @@ HexStatus try_emit_arm64_general(
                 bctx.mark_gpr_read(0u);
               }
             }
+            bctx.gpr_written_insn = 0u;
+            process_insn(wi, pc, base_addr, word_count, bctx, bcmp, false, nullptr);
             if ((wi & 0xFC000000u) == 0x94000000u || (wi & 0xFFFFFC1Fu) == 0xD63F0000u) {
-              process_insn(wi, pc, base_addr, word_count, bctx, bcmp, false, nullptr);
               bctx.gpr_written |= 0xFFu;
               bctx.fp_written |= 0xFFu;
             } else {
-              const uint32_t saved_gw = bctx.gpr_written;
-              bctx.gpr_written &= ~0xFFu;
-              process_insn(wi, pc, base_addr, word_count, bctx, bcmp, false, nullptr);
-              b_def_nc_g[b] |= (bctx.gpr_written & 0xFFu);
-              bctx.gpr_written |= saved_gw;
+              b_def_nc_g[b] |= (bctx.gpr_written_insn & 0xFFu);
             }
             last_i = i;
             ++i;

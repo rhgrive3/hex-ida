@@ -367,6 +367,24 @@ void test_wave25_neon_fmov_1word_and_structurizer() {
     assert(contains(txt, len, "/* arm64 insn 0x9E2E13E0 */"));
     assert(contains(txt, len, "/* arm64 insn 0xE080420 */"));
   }
+  // 5. Intra-block write-then-read liveness: must NOT infer spurious arguments
+  {
+    arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+    const uint32_t w5[] = {
+      0xD2800020u,  // mov x0, #1
+      0x91000801u,  // add x1, x0, #2
+      0xB4000041u,  // cbz x1, +8
+      0xD2800060u,  // mov x0, #3
+      0xD65F03C0u,  // ret
+    };
+    const char* txt = nullptr; uint32_t len = 0u;
+    const HexLineMapEntry* lm = nullptr; uint32_t lm_cnt = 0u;
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w5, 5u, 0x100007000ULL, "zero_arg_fn", 11u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "uint64 zero_arg_fn(void)"));
+  }
 }
 
 int main() {
