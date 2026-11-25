@@ -688,7 +688,7 @@ function readCStringFromElf(addr, fileBytes, elfInfo) {
 
 function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fileBytes, sections, allowHelperInlining = true } = {}) {
   const isGeneral = text.includes('/* arguments unknown */') || text.includes('__hex_global_') || text.includes('static uint64 global_') || (typeof symbolFor === 'function' && text.includes('uint64 x0 = '));
-  if (!isGeneral) return { text, addedLines: 0 };
+  if (!isGeneral) return { text, addedLines: 0, outerSigLine: -1 };
 
   let out = text;
   const headers = new Set();
@@ -912,7 +912,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
     changed = true;
   }
 
-  if (!changed) return { text, addedLines: 0 };
+  if (!changed) return { text, addedLines: 0, outerSigLine: -1 };
 
   // Inject any missing local reg declarations inside function body `{`
   const missingLocals = [];
@@ -962,7 +962,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   const rawSigLine = text.split('\n').findIndex((l) => outerSigRe.test(l));
   const finalSigLine = finalText.split('\n').findIndex((l) => outerSigRe.test(l));
   const exactAdded = (rawSigLine >= 0 && finalSigLine >= 0) ? Math.max(0, finalSigLine - rawSigLine) : hdrLines.length;
-  return { text: finalText, addedLines: exactAdded };
+  return { text: finalText, addedLines: exactAdded, outerSigLine: finalSigLine };
 }
 
 export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null, symbolFor = null, readBytes = null, fileBytes = null, sections = null, allowHelperInlining = true } = {}) {
@@ -1117,7 +1117,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         || trimmed.startsWith('static ')
         || trimmed.startsWith('extern ')
         || trimmed.endsWith(';')
-        || (post.addedLines > 0 && idx < post.addedLines)
+        || (post.outerSigLine > 0 && idx < post.outerSigLine)
       );
       let kind;
       if (isPrelude) {
