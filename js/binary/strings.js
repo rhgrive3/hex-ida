@@ -135,17 +135,17 @@ export function scanStrings(image, opts = {}) {
   const limit=resultLimitOption(opts.limit), utf16Encodings=chooseUtf16Encodings(image,opts.utf16), includeExecutable=opts.includeExecutable===true;
   const bytes=image.bytes; if(!bytes) return [];
   const ranges=mappedScanRanges(image,bytes.length,includeExecutable);
-  const out=[], seen=new Set();
+  const out = [];
   const getEngineMode = hexEngineBridge.getEngineMode;
+  const wasmScanStringsFlat = hexEngineBridge.wasmScanStringsFlat;
   const wasmScanStrings = hexEngineBridge.wasmScanStrings;
   if (
     typeof getEngineMode === 'function'
     && getEngineMode(opts) !== 'js'
-    && typeof wasmScanStrings === 'function'
     && ranges.length > 0
     && bytes instanceof Uint8Array
   ) {
-    const spans = wasmScanStrings(bytes, ranges, {
+    const wasmOpts = {
       minLength: min,
       maxLength: max,
       limit,
@@ -153,15 +153,66 @@ export function scanStrings(image, opts = {}) {
       utf16le: utf16Encodings.includes('utf16le'),
       utf16be: utf16Encodings.includes('utf16be'),
       _engine: opts._engine,
-    });
-    if (Array.isArray(spans)) {
-      for (let i = 0; i < spans.length && out.length < limit; i++) {
-        const span = spans[i];
-        emit(image, out, seen, span.fileOffset, span.byteLength, span.encoding, ranges[span.rangeIdx]?.section ?? null);
+    };
+    if (typeof wasmScanStringsFlat === 'function') {
+      const flat = wasmScanStringsFlat(bytes, ranges, wasmOpts);
+      if (flat instanceof Uint32Array) {
+        const flatLen = flat.length;
+        for (let k = 0; k + 3 < flatLen && out.length < limit; k += 4) {
+          const fileOffset = flat[k];
+          const byteLength = flat[k + 1];
+          const encoding = WASM_ENCODINGS[flat[k + 2]] || 'utf8';
+          const rangeIdx = flat[k + 3];
+          let text = encoding === 'utf8' && byteLength <= 256
+            ? decodeAsciiIfPure(bytes, fileOffset, byteLength)
+            : null;
+          if (text === null) {
+            const raw = bytes.subarray(fileOffset, fileOffset + byteLength);
+            try { text = getFatalDecoder(encoding).decode(raw); } catch { continue; }
+          }
+          const offBig = BigInt(fileOffset);
+          out.push({
+            text,
+            encoding,
+            fileOffset: offBig,
+            address: image.offsetToAddress(offBig),
+            byteLength,
+            section: ranges[rangeIdx]?.section ?? null,
+          });
+        }
+        return out;
       }
-      return out;
+    }
+    if (typeof wasmScanStrings === 'function') {
+      const spans = wasmScanStrings(bytes, ranges, wasmOpts);
+      if (Array.isArray(spans)) {
+        for (let i = 0; i < spans.length && out.length < limit; i++) {
+          const span = spans[i];
+          const fileOffset = span.fileOffset;
+          const byteLength = span.byteLength;
+          const encoding = span.encoding;
+          let text = encoding === 'utf8' && byteLength <= 256
+            ? decodeAsciiIfPure(bytes, fileOffset, byteLength)
+            : null;
+          if (text === null) {
+            const raw = bytes.subarray(fileOffset, fileOffset + byteLength);
+            try { text = getFatalDecoder(encoding).decode(raw); } catch { continue; }
+          }
+          const offBig = BigInt(fileOffset);
+          out.push({
+            text,
+            encoding,
+            fileOffset: offBig,
+            address: image.offsetToAddress(offBig),
+            byteLength,
+            section: ranges[span.rangeIdx]?.section ?? null,
+          });
+        }
+        return out;
+      }
     }
   }
+  const seen = new Set();
   for(const range of ranges){
     if(out.length>=limit) break;
     const start=Math.max(0,range.start), end=Math.min(bytes.length,start+Math.max(0,range.size));
@@ -195,17 +246,26 @@ export function scanStrings(image, opts = {}) {
   }
   return out;
 }
+const WASM_ENCODINGS = ['utf8', 'utf16le', 'utf16be'];
 function decodeAsciiIfPure(bytes, fileOffset, byteLength) {
-  if (byteLength <= 0 || byteLength > 128) return null;
+  if (byteLength <= 0 || byteLength > 256) return null;
   const end = fileOffset + byteLength;
   for (let p = fileOffset; p < end; p++) {
     if (bytes[p] >= 0x80) return null;
   }
   let out = '';
   let p = fileOffset;
-  if (byteLength <= 16) {
+  if (byteLength < 16) {
     for (; p < end; p++) out += String.fromCharCode(bytes[p]);
     return out;
+  }
+  for (; p + 16 <= end; p += 16) {
+    out += String.fromCharCode(
+      bytes[p], bytes[p + 1], bytes[p + 2], bytes[p + 3],
+      bytes[p + 4], bytes[p + 5], bytes[p + 6], bytes[p + 7],
+      bytes[p + 8], bytes[p + 9], bytes[p + 10], bytes[p + 11],
+      bytes[p + 12], bytes[p + 13], bytes[p + 14], bytes[p + 15],
+    );
   }
   for (; p + 8 <= end; p += 8) {
     out += String.fromCharCode(
@@ -218,10 +278,11 @@ function decodeAsciiIfPure(bytes, fileOffset, byteLength) {
 }
 function emit(image,out,seen,fileOffset,byteLength,encoding,section){
   const key=`${fileOffset}:${encoding}`; if(seen.has(key)) return; seen.add(key);
-  let text = encoding === 'utf8' && byteLength <= 128 ? decodeAsciiIfPure(image.bytes, fileOffset, byteLength) : null;
+  let text = encoding === 'utf8' && byteLength <= 256 ? decodeAsciiIfPure(image.bytes, fileOffset, byteLength) : null;
   if (text === null) {
     const raw=image.bytes.subarray(fileOffset,fileOffset+byteLength);
     try { text=getFatalDecoder(encoding).decode(raw); } catch { return; }
   }
-  out.push({text,encoding,fileOffset:BigInt(fileOffset),address:image.offsetToAddress(BigInt(fileOffset)),byteLength,section});
+  const offBig = BigInt(fileOffset);
+  out.push({text,encoding,fileOffset:offBig,address:image.offsetToAddress(offBig),byteLength,section});
 }
