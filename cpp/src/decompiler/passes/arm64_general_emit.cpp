@@ -598,12 +598,22 @@ static void process_insn(
         bool first = true;
         for (uint32_t r = 0u; r < ctx.int_param_count; ++r) {
           if (!first) tb->put_str(", ");
-          tb->put_reg_x(r);
+          if ((ctx.gpr_used & (1u << r)) != 0u) {
+            tb->put_reg_x(r);
+          } else {
+            tb->put_char('a');
+            tb->put_u64_dec(r + 1u);
+          }
           first = false;
         }
         for (uint32_t r = 0u; r < ctx.fp_param_count; ++r) {
           if (!first) tb->put_str(", ");
-          tb->put_reg_d(r);
+          if ((ctx.fp_used & (1u << r)) != 0u) {
+            tb->put_reg_d(r);
+          } else {
+            tb->put_str("fa");
+            tb->put_u64_dec(r + 1u);
+          }
           first = false;
         }
         tb->put_str(");\n");
@@ -762,8 +772,8 @@ static void process_insn(
     return;
   }
 
-  // MOVZ / MOVN / MOVK
-  if ((w & 0x1F800000u) == 0x12800000u) {
+  // MOVZ / MOVN / MOVK (opc=1 is unallocated)
+  if ((w & 0x1F800000u) == 0x12800000u && ((w >> 29u) & 3u) != 1u) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const uint32_t opc = (w >> 29u) & 3u;  // 0=movn, 2=movz, 3=movk
     const uint32_t hw = (w >> 21u) & 3u;
@@ -1152,7 +1162,7 @@ static void process_insn(
   }
 
   // Conditional Select: CSEL / CSINC (CSET) / CSINV / CSNEG
-  if ((w & 0x1FE00800u) == 0x1A800000u) {
+  if ((w & 0x3FE00800u) == 0x1A800000u) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const bool op_neg = ((w >> 30u) & 1u) != 0u;
     const uint32_t op2 = (w >> 10u) & 1u;  // 0=csel/csinv, 1=csinc/csneg
@@ -1824,10 +1834,11 @@ static void process_insn(
     return;
   }
 
-  // Fallback for any other valid ARM64 instruction: emit portable comment.
+  // Fallback for any other valid ARM64 instruction: emit valid C11 statement + comment
+  // (safe directly after a label before '}' under -std=c11, and carries a valid linemap stmt).
   if (emit && tb) {
     rec();
-    tb->put_str("    /* arm64 insn 0x");
+    tb->put_str("    (void)0; /* arm64 insn 0x");
     tb->put_u64_hex(w, true);
     tb->put_str(" */\n");
   }

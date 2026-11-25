@@ -126,7 +126,7 @@ void test_bcond_lslv_asrv_div_sp_prfm_ldnp_fcvtau_cas_csel() {
   assert(contains(txt, len, "x2 = *(uint64 *)((uintptr_t)(x0) + 16);"));
   assert(contains(txt, len, "x1 = *(uint64 *)((uintptr_t)(x0) + 24);\n    x0 = *(uint64 *)((uintptr_t)(x0) + 16);"));
   assert(contains(txt, len, "x3 = (uint32_t)(int64_t)d0;"));
-  assert(contains(txt, len, "/* arm64 insn 0xC8A17C02 */"));
+  assert(contains(txt, len, "(void)0; /* arm64 insn 0xC8A17C02 */"));
 }
 
 void test_self_recursion_and_cross_label_adrp() {
@@ -217,12 +217,36 @@ void test_guards_oom_and_table_overflow() {
 
 }  // namespace
 
+
+void test_sparse_self_recursion_and_trailing_fallback_label() {
+  hex::Arena arena;
+  arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+  // Sparse param x2 (x1 unused) + self-recursive BL + trailing label before CAS fallback
+  const uint32_t words[] = {
+    0xb4000062u,  // cbz x2, +12 (targets idx 3 CAS fallback at end!)
+    0xd1000442u,  // sub x2, x2, #1
+    0x97fffffeu,  // bl self
+    0xc8a17c02u,  // loc_10000100C: cas x1, x2, [x0] -> must emit `(void)0; /* arm64 insn ... */`
+  };
+  const char* txt = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_cnt = 0u;
+  assert(hex::decompiler::passes::try_emit_arm64_general(
+             words, 4u, 0x100001000ULL, nullptr, 0u, 0u,
+             arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+  assert_parens_balanced(txt, len);
+  assert(contains(txt, len, "    sub_100001000(x0, a2, x2);"));
+  assert(contains(txt, len, "loc_10000100C:\n    (void)0; /* arm64 insn 0xC8A17C02 */\n}"));
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
   test_bcond_lslv_asrv_div_sp_prfm_ldnp_fcvtau_cas_csel();
   test_self_recursion_and_cross_label_adrp();
   test_guards_oom_and_table_overflow();
+  test_sparse_self_recursion_and_trailing_fallback_label();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }
