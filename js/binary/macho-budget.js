@@ -77,22 +77,48 @@ export function createMachOMetadataBudget(image, options = {}) {
     take(cost = {}, reason = 'metadata') {
       if (stopped) return false;
       if (signal?.aborted) return stop('aborted');
-      const resolvedCost = {};
-      for (const key of Object.keys(used)) {
-        const value = metadataCost(cost[key]);
-        if (value == null) return stop(`${reason}:${key}`);
-        resolvedCost[key] = value;
+      const cInputBytes = metadataCost(cost.inputBytes);
+      if (cInputBytes === null) return stop(`${reason}:inputBytes`);
+      const cRecords = metadataCost(cost.records);
+      if (cRecords === null) return stop(`${reason}:records`);
+      const cObjects = metadataCost(cost.objects);
+      if (cObjects === null) return stop(`${reason}:objects`);
+      const cStringBytes = metadataCost(cost.stringBytes);
+      if (cStringBytes === null) return stop(`${reason}:stringBytes`);
+      const cOperations = metadataCost(cost.operations);
+      if (cOperations === null) return stop(`${reason}:operations`);
+      const cWarnings = metadataCost(cost.warnings);
+      if (cWarnings === null) return stop(`${reason}:warnings`);
+      const cEstimatedHeapBytes = metadataCost(cost.estimatedHeapBytes);
+      if (cEstimatedHeapBytes === null) return stop(`${reason}:estimatedHeapBytes`);
+
+      if (used.operations + cOperations >= nextTimeCheck) {
+        nextTimeCheck = used.operations + cOperations + 1024;
+        if (limits.wallClockMs !== Infinity && Date.now() - started > limits.wallClockMs) return stop('wall-clock');
       }
-      const opCost = resolvedCost.operations;
-      if (used.operations + opCost >= nextTimeCheck) {
-        nextTimeCheck = used.operations + opCost + 1024;
-        if (Date.now() - started > limits.wallClockMs) return stop('wall-clock');
-      }
-      for (const key of Object.keys(used)) {
-        const next = used[key] + resolvedCost[key];
-        if (!Number.isSafeInteger(next) || next > limits[key]) return stop(`${reason}:${key}`);
-      }
-      for (const key of Object.keys(used)) used[key] += resolvedCost[key];
+
+      const nInputBytes = used.inputBytes + cInputBytes;
+      if (!Number.isSafeInteger(nInputBytes) || nInputBytes > limits.inputBytes) return stop(`${reason}:inputBytes`);
+      const nRecords = used.records + cRecords;
+      if (!Number.isSafeInteger(nRecords) || nRecords > limits.records) return stop(`${reason}:records`);
+      const nObjects = used.objects + cObjects;
+      if (!Number.isSafeInteger(nObjects) || nObjects > limits.objects) return stop(`${reason}:objects`);
+      const nStringBytes = used.stringBytes + cStringBytes;
+      if (!Number.isSafeInteger(nStringBytes) || nStringBytes > limits.stringBytes) return stop(`${reason}:stringBytes`);
+      const nOperations = used.operations + cOperations;
+      if (!Number.isSafeInteger(nOperations) || nOperations > limits.operations) return stop(`${reason}:operations`);
+      const nWarnings = used.warnings + cWarnings;
+      if (!Number.isSafeInteger(nWarnings) || nWarnings > limits.warnings) return stop(`${reason}:warnings`);
+      const nEstimatedHeapBytes = used.estimatedHeapBytes + cEstimatedHeapBytes;
+      if (!Number.isSafeInteger(nEstimatedHeapBytes) || nEstimatedHeapBytes > limits.estimatedHeapBytes) return stop(`${reason}:estimatedHeapBytes`);
+
+      used.inputBytes = nInputBytes;
+      used.records = nRecords;
+      used.objects = nObjects;
+      used.stringBytes = nStringBytes;
+      used.operations = nOperations;
+      used.warnings = nWarnings;
+      used.estimatedHeapBytes = nEstimatedHeapBytes;
       return true;
     },
     partial(reason, warning = null) {
