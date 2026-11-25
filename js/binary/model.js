@@ -1436,6 +1436,7 @@ const SEED_SOURCE_RANK = Object.freeze(Object.assign(Object.create(null), {
 
 function hasSeedSource(seed, target) {
   if (Array.isArray(seed.sources)) return seed.sources.includes(target);
+  if (seed.sources instanceof Set) return seed.sources.has(target);
   return seed.source === target;
 }
 
@@ -1445,13 +1446,13 @@ export function mergeFunctionSeeds(input, context = {}) {
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
     const rawConf = f0.confidence;
-    const confidence = (typeof rawConf === 'number' && Number.isFinite(rawConf))
+    const confidence = (typeof rawConf === 'number' && rawConf > 0 && rawConf <= 1)
       ? rawConf
       : finiteConfidence(rawConf, 0.5);
     const rawExactConf = f0.exactFunctionStartConfidence;
     const exactFunctionStartConfidence = rawExactConf == null
       ? (f0.exactFunctionStart === true || (!Array.isArray(f0.sources) && EXACT_FUNCTION_START_SOURCES.has(f0.source)) ? confidence : null)
-      : ((typeof rawExactConf === 'number' && Number.isFinite(rawExactConf)) ? rawExactConf : finiteConfidence(rawExactConf, 0));
+      : ((typeof rawExactConf === 'number' && rawExactConf > 0 && rawExactConf <= 1) ? rawExactConf : finiteConfidence(rawExactConf, 0));
     const address = typeof f0.address === 'bigint' ? f0.address : strictBigIntOrNull(f0.address);
     if (address === null) continue;
     const size = f0.size == null ? null : (typeof f0.size === 'bigint' ? f0.size : strictBigIntOrNull(f0.size));

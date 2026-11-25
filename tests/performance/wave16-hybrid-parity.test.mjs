@@ -535,5 +535,53 @@ test('Wave 17 chunked wasmScanStringsFlat (> 1.5 MiB): UTF-8 + UTF-16LE/BE + par
       assert.deepStrictEqual(strFallbacks, [], `expected 0 strings fallbacks, got ${JSON.stringify(strFallbacks)}`);
       assert.deepStrictEqual(wasmRes, jsRes, `chunked WASM strings 0-diff mismatch for ${JSON.stringify(scanOpts)}`);
     }
+
+    // Odd rStart small (<= 512 KiB) & large (524289 = cut+1===rEnd) ranges with UTF-16LE + UTF-16BE + limit + maxLength
+    const writeUtf16Be = (target, off, str) => {
+      for (let i = 0; i < str.length; i += 1) {
+        const c = str.charCodeAt(i);
+        target[off + i * 2] = (c >>> 8) & 0xff;
+        target[off + i * 2 + 1] = c & 0xff;
+      }
+    };
+    const buf2 = new Uint8Array(2_000_000);
+    const writeLe2 = (off, str) => {
+      for (let i = 0; i < str.length; i += 1) {
+        const c = str.charCodeAt(i);
+        buf2[off + i * 2] = c & 0xff;
+        buf2[off + i * 2 + 1] = (c >>> 8) & 0xff;
+      }
+    };
+    // Small odd-offset range [101, 2101)
+    writeLe2(101, 'odd_le_first');
+    writeLe2(200, 'even_le_first');
+    writeUtf16Be(buf2, 301, 'odd_be_first');
+    writeUtf16Be(buf2, 400, 'even_be_first');
+    // Large odd-offset range [10001, 10001 + 524289)
+    writeLe2(10001, 'big_odd_le');
+    writeLe2(10200, 'big_even_le');
+    writeUtf16Be(buf2, 534001, 'big_odd_be');
+    writeUtf16Be(buf2, 534200, 'big_even_be');
+
+    const img2 = new BinaryImage(buf2, { format: 'elf', arch: 'arm64', bits: 64, fileSize: BigInt(buf2.length) });
+    img2.addSegment({ name: 'DATA', address: 0x2000000n, size: BigInt(buf2.length), fileOffset: 0n, fileSize: BigInt(buf2.length), perms: { read: true, write: true, execute: false } });
+    img2.addSection({ name: '.rodata1', index: 1, address: 0x2000065n, size: 2000n, fileOffset: 101n, fileSize: 2000n, perms: { read: true, write: false, execute: false }, flags: 2 });
+    img2.addSection({ name: '.rodata2', index: 2, address: 0x2002711n, size: 524289n, fileOffset: 10001n, fileSize: 524289n, perms: { read: true, write: false, execute: false }, flags: 2 });
+
+    for (const scanOpts of [
+      { utf16: 'both', minLength: 4 },
+      { utf16: 'both', minLength: 4, limit: 1 },
+      { utf16: 'both', minLength: 4, maxLength: 6 },
+    ]) {
+      resetAllTelemetry();
+      const jsRes = withEngineMode('js', () => scanStrings(img2, { ...scanOpts, _engine: 'js' }));
+      assert.equal(getWasmCallCount('strings'), 0, 'HEX_ENGINE=js must record 0 WASM strings calls on > 1.5 MiB buffer');
+      resetAllTelemetry();
+      const wasmRes = withEngineMode('auto', () => scanStrings(img2, { ...scanOpts, _engine: 'auto' }));
+      assert.ok(getWasmCallCount('strings') >= 1, `expected chunked WASM strings dispatch for odd rStart ${JSON.stringify(scanOpts)}`);
+      const strFallbacks = Object.entries(getFallbackCounts()).filter(([k]) => k.startsWith('strings:'));
+      assert.deepStrictEqual(strFallbacks, [], `expected 0 strings fallbacks, got ${JSON.stringify(strFallbacks)}`);
+      assert.deepStrictEqual(wasmRes, jsRes, `odd rStart chunked WASM strings 0-diff mismatch for ${JSON.stringify(scanOpts)}`);
+    }
   });
 });

@@ -1072,7 +1072,7 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
   const alignMask = alignment > 1n ? alignment - 1n : 0n;
   const width = instructionWidthForArch(image.arch);
-  const canFastPath = image.arch !== 'arm64ec' && typeof image.resolveVirtualMapping === 'function' && (!image.dataInCode || image.dataInCode.length === 0);
+  const canFastPath = image.arch !== 'arm64ec' && typeof image.resolveVirtualMapping === 'function' && (!image.dataInCode || image.dataInCode.length === 0) && !(image.sections || []).some((s) => s?.source === 'unmapped-section');
   let fastRunLo = 0n;
   let fastRunHi = -1n;
   let terminated = false;

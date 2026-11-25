@@ -1275,6 +1275,7 @@ export function wasmScanStringsFlat(bytes, ranges, opts = {}) {
   );
   if (spanCap < 1) {
     // Chunked WASM path for large binaries (> 1.5 MiB) with exact 0-diff ordering & boundary safety.
+    if (bytesLen > 0xffffffff) return noteFallback('strings', 'input_too_large');
     const normalizedRanges = new Array(ranges.length);
     let prevEnd = 0;
     for (let i = 0; i < ranges.length; i += 1) {
@@ -1306,22 +1307,22 @@ export function wasmScanStringsFlat(bytes, ranges, opts = {}) {
         const { start: rStart, end: rEnd, idx: rangeIdx } = normalizedRanges[ri];
         if (rEnd <= rStart) continue;
         const needSplit = (rEnd - rStart) > STRING_SCAN_CHUNK_BYTES;
-        const passes = needSplit ? encFlagsList : [flags];
+        const needParityFix = (rStart & 1) !== 0 && (flags & 6) !== 0;
+        const passes = (needSplit || needParityFix) ? encFlagsList : [flags];
 
         for (let pi = 0; pi < passes.length && totalSpans < limit; pi += 1) {
           const passFlags = passes[pi];
           const isUtf16Pass = (passFlags & 6) !== 0;
-          const splitUtf16Parity = needSplit && isUtf16Pass;
+          const splitUtf16Parity = (needSplit || (rStart & 1) !== 0) && isUtf16Pass;
           const evenChunks = splitUtf16Parity ? [] : null;
           const oddChunks = splitUtf16Parity ? [] : null;
           let evenCount = 0;
-          let oddCount = 0;
           let pos = rStart;
           while (pos < rEnd && (splitUtf16Parity ? (totalSpans + evenCount < limit) : (totalSpans < limit))) {
             let cut = Math.min(rEnd, pos + STRING_SCAN_CHUNK_BYTES);
             if (cut < rEnd) {
               if (isUtf16Pass) {
-                // Ensure 2-byte alignment relative to rStart AND 3 consecutive NULs so both
+                // Ensure 2-byte alignment relative to rStart AND 4 consecutive NULs so both
                 // parity 0 and parity 1 UTF-16 code units terminate cleanly before cut.
                 if (((cut - rStart) & 1) !== 0) cut -= 1;
                 let found = -1;
@@ -1427,7 +1428,7 @@ export function wasmScanStringsFlat(bytes, ranges, opts = {}) {
                   }
                 }
                 if (eArr) { evenChunks.push(eArr); evenCount += eLen; }
-                if (oArr) { oddChunks.push(oArr); oddCount += oLen; }
+                if (oArr) { oddChunks.push(oArr); }
               } else {
                 const flatChunk = new Uint32Array(outCount * 4);
                 for (let k = 0; k < outCount * 4; k += 4) {
