@@ -1223,13 +1223,13 @@ export function wasmDecodeRiscv64Batch(bytes, basePc = 0n) {
 // ---------------------------------------------------------------------------
 // Wave 13: String Scanner & Byte Search WASM Bridges
 // ---------------------------------------------------------------------------
-const STRING_SCAN_MAX_SPANS = 32768;
-const STRING_SCAN_ARENA_BUDGET = 3_500_000;
+const STRING_SCAN_MAX_SPANS = 131072;
+const STRING_SCAN_ARENA_BUDGET = 3_900_000;
 const STRING_SCAN_ENCODINGS = Object.freeze(['utf8', 'utf16le', 'utf16be']);
 const BYTE_SEARCH_CHUNK_BYTES = 262144;
 const BYTE_SEARCH_NOT_FOUND = 0xffffffff;
 
-export function wasmScanStrings(bytes, ranges, opts = {}) {
+export function wasmScanStringsFlat(bytes, ranges, opts = {}) {
   if (getEngineMode(opts) === 'js') return noteFallback('strings', 'wasm_disabled');
   const ex = getHexEngineExportsSafe();
   if (
@@ -1257,13 +1257,17 @@ export function wasmScanStrings(bytes, ranges, opts = {}) {
 
   if (ranges.length === 0 || limit === 0 || bytes.length === 0 || flags === 0) {
     recordWasmCall('strings');
-    return [];
+    return new Uint32Array(0);
   }
 
   const bytesLen = bytes.length;
   const rangeBytes = ranges.length * 16;
-  const spanCap = Math.min(limit, STRING_SCAN_MAX_SPANS);
-  if (bytesLen + rangeBytes + spanCap * 16 + 256 > STRING_SCAN_ARENA_BUDGET) {
+  let spanCap = Math.min(
+    limit,
+    STRING_SCAN_MAX_SPANS,
+    Math.floor((STRING_SCAN_ARENA_BUDGET - bytesLen - rangeBytes - 256) / 16),
+  );
+  if (spanCap < 1) {
     return noteFallback('strings', 'input_too_large');
   }
 
@@ -1271,9 +1275,16 @@ export function wasmScanStrings(bytes, ranges, opts = {}) {
     ex.hex_identity_reset();
     const bytesPtr = ex.hex_identity_alloc(bytesLen);
     const rangesPtr = ex.hex_identity_alloc(rangeBytes);
-    const outSpansPtr = ex.hex_identity_alloc(spanCap * 16);
     const outCountPtr = ex.hex_identity_alloc(4);
-    if (!bytesPtr || !rangesPtr || !outSpansPtr || !outCountPtr) {
+    if (!bytesPtr || !rangesPtr || !outCountPtr) {
+      return noteFallback('strings', 'oom');
+    }
+    let outSpansPtr = ex.hex_identity_alloc(spanCap * 16);
+    while (!outSpansPtr && spanCap > 1) {
+      spanCap = spanCap >>> 1;
+      outSpansPtr = ex.hex_identity_alloc(spanCap * 16);
+    }
+    if (!outSpansPtr) {
       return noteFallback('strings', 'oom');
     }
 
@@ -1319,23 +1330,47 @@ export function wasmScanStrings(bytes, ranges, opts = {}) {
       return noteFallback('strings', 'span_cap_reached');
     }
 
-    const sdv = new DataView(mem, outSpansPtr, outCount * 16);
-    const out = new Array(outCount);
-    for (let i = 0; i < outCount; i += 1) {
-      const off = i * 16;
-      const encId = sdv.getUint32(off + 8, true);
-      out[i] = {
-        fileOffset: sdv.getUint32(off, true),
-        byteLength: sdv.getUint32(off + 4, true),
-        encoding: STRING_SCAN_ENCODINGS[encId] || 'utf8',
-        rangeIdx: sdv.getUint32(off + 12, true),
-      };
+    if (outCount === 0) {
+      recordWasmCall('strings');
+      return new Uint32Array(0);
+    }
+
+    const flat = new Uint32Array(outCount * 4);
+    if ((outSpansPtr & 3) === 0) {
+      flat.set(new Uint32Array(mem, outSpansPtr, outCount * 4));
+    } else {
+      const sdv = new DataView(mem, outSpansPtr, outCount * 16);
+      for (let i = 0; i < outCount; i += 1) {
+        const off = i * 16;
+        const base = i * 4;
+        flat[base] = sdv.getUint32(off, true);
+        flat[base + 1] = sdv.getUint32(off + 4, true);
+        flat[base + 2] = sdv.getUint32(off + 8, true);
+        flat[base + 3] = sdv.getUint32(off + 12, true);
+      }
     }
     recordWasmCall('strings');
-    return out;
+    return flat;
   } catch {
     return noteFallback('strings', 'wasm_exception');
   }
+}
+
+export function wasmScanStrings(bytes, ranges, opts = {}) {
+  const flat = wasmScanStringsFlat(bytes, ranges, opts);
+  if (flat === null) return null;
+  const outCount = flat.length >>> 2;
+  const out = new Array(outCount);
+  for (let i = 0; i < outCount; i += 1) {
+    const base = i * 4;
+    out[i] = {
+      fileOffset: flat[base],
+      byteLength: flat[base + 1],
+      encoding: STRING_SCAN_ENCODINGS[flat[base + 2]] || 'utf8',
+      rangeIdx: flat[base + 3],
+    };
+  }
+  return out;
 }
 
 export function wasmByteSearchFind(haystack, fromOffset, pattern, masks, foldAscii, opts = {}) {
@@ -1423,8 +1458,8 @@ export function wasmByteSearchFind(haystack, fromOffset, pattern, masks, foldAsc
 // ---------------------------------------------------------------------------
 // SHA-256 WASM Bridge (Wave 14)
 // ---------------------------------------------------------------------------
-const SHA256_MAX_CHUNK_BLOCKS = 4096;
-const SHA256_MAX_HASH_BYTES = 262144;
+const SHA256_MAX_CHUNK_BLOCKS = 16384;
+const SHA256_MAX_HASH_BYTES = 1048576;
 
 export function wasmSha256CompressBlocks(stateU32, bytes, offset, blockCount, opts = {}) {
   if (getEngineMode(opts) === 'js') {
