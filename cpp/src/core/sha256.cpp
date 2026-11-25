@@ -150,6 +150,7 @@ HexStatus hex_sha256_compress_blocks(
     uint32_t* state,
     const uint8_t* blocks,
     uint32_t block_count) {
+  if (block_count > (UINT32_MAX / 64u)) return HEX_ERR_RESOURCE_LIMIT;
   if (!state || (block_count > 0u && !blocks)) {
     return HEX_ERR_INVALID_ARG;
   }

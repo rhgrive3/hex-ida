@@ -39,6 +39,16 @@ function toUint8View(input) {
 
 export function openBinary(input, opts = {}) {
   const engineMode = getEngineMode(opts);
+  const scopeJs = engineMode === 'js';
+  const hadPrevHex = scopeJs && Object.prototype.hasOwnProperty.call(globalThis, 'HEX_ENGINE');
+  const prevHex = scopeJs ? globalThis.HEX_ENGINE : undefined;
+  const hadPrevMode = scopeJs && Object.prototype.hasOwnProperty.call(globalThis, '__HEX_ENGINE_MODE__');
+  const prevMode = scopeJs ? globalThis.__HEX_ENGINE_MODE__ : undefined;
+  if (scopeJs) {
+    globalThis.HEX_ENGINE = 'js';
+    globalThis.__HEX_ENGINE_MODE__ = 'js';
+  }
+  try {
   let wasmInfo = null;
   if (engineMode !== 'js') {
     const bytes = toUint8View(input);
@@ -97,4 +107,12 @@ export function openBinary(input, opts = {}) {
     }
   }
   return image;
+  } finally {
+    if (scopeJs) {
+      if (hadPrevHex) globalThis.HEX_ENGINE = prevHex;
+      else delete globalThis.HEX_ENGINE;
+      if (hadPrevMode) globalThis.__HEX_ENGINE_MODE__ = prevMode;
+      else delete globalThis.__HEX_ENGINE_MODE__;
+    }
+  }
 }

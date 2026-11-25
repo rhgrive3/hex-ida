@@ -1223,8 +1223,8 @@ export function wasmDecodeRiscv64Batch(bytes, basePc = 0n) {
 // ---------------------------------------------------------------------------
 // Wave 13: String Scanner & Byte Search WASM Bridges
 // ---------------------------------------------------------------------------
-const STRING_SCAN_MAX_SPANS = 131072;
-const STRING_SCAN_ARENA_BUDGET = 3_900_000;
+const STRING_SCAN_MAX_SPANS = 65536;
+const STRING_SCAN_ARENA_BUDGET = 1_500_000;
 const STRING_SCAN_ENCODINGS = Object.freeze(['utf8', 'utf16le', 'utf16be']);
 const BYTE_SEARCH_CHUNK_BYTES = 262144;
 const BYTE_SEARCH_NOT_FOUND = 0xffffffff;
@@ -1590,7 +1590,7 @@ export function wasmSha256Hash(bytes, opts = {}) {
 // ---------------------------------------------------------------------------
 // ELF Symbol Table Extractor WASM Bridge (Wave 16)
 // ---------------------------------------------------------------------------
-const ELF_SYMBOLS_ARENA_BUDGET = 3_800_000;
+const ELF_SYMBOLS_ARENA_BUDGET = 1_500_000;
 
 export function wasmExtractElfSymbols(
   symBytes,
@@ -1673,6 +1673,7 @@ export function wasmExtractElfSymbols(
       xindexLen >>> 0,
       flags >>> 0,
       outPtr,
+      count >>> 0,
       outCountPtr,
     );
     if (status !== HEX_OK) {

@@ -624,7 +624,7 @@ export class BinaryImage {
     const o = typeof offset === 'bigint' ? offset : strictBigIntOrNull(offset);
     if (o === null || o < 0n) return null;
     const cached = this._lastOffsetLookupEntry;
-    if (cached !== null && o >= cached.start && o < cached.end) {
+    if (this._mappingLookups.offsets !== null && cached !== null && o >= cached.start && o < cached.end) {
       return cached.addrBase + (o - cached.fileOffset);
     }
     if (!this._mappingLookups.offsets) {

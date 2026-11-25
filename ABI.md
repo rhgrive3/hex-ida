@@ -1,7 +1,7 @@
 # hex-ida Unified C++/WASM Engine C ABI Specification
 
 - **ABI Version**: `0x00010000` (`hex_engine_version()`)
-- **Distribution Artifact**: `js/core/hex-engine-wasm.js` (Base64-embedded freestanding `hex_engine.wasm`, 429,411 bytes, 27 freestanding C++20 units, 99 exports, 0 imports, 6.6875 MiB (107 pages) initial linear memory, built via `node scripts/build-wasm.mjs` using `clang++ --target=wasm32 -std=c++20 -O3 -nostdlib -fno-exceptions -fno-rtti -mbulk-memory` + `wasm-opt -O3 --enable-bulk-memory`, zero Emscripten)
+- **Distribution Artifact**: `js/core/hex-engine-wasm.js` (Base64-embedded freestanding `hex_engine.wasm`, 430,499 bytes, 28 freestanding C++20 units, 100 exports, 0 imports, 6.6875 MiB (107 pages) initial linear memory, built via `node scripts/build-wasm.mjs` using `clang++ --target=wasm32 -std=c++20 -O3 -nostdlib -fno-exceptions -fno-rtti -mbulk-memory` + `wasm-opt -O3 --enable-bulk-memory`, zero Emscripten)
 - **Host Boundary**: `js/ui/`, `js/ai/`, `js/auth/`, `js/userscript/` MUST NOT import internal engine modules directly; all WASM access goes through `js/core/hex-engine-bridge.js` and `js/core/hex-engine-wasm.js`.
 
 ## 1. Error Codes (`HexStatus`, `int32_t`)
@@ -29,9 +29,10 @@
 ### Identity (`cpp/src/core/identity_engine.hpp`)
 - `hex_identity_reset`, `hex_identity_alloc`, `hex_identity_fnv64_bytes`, `hex_identity_digest_utf8`, `hex_identity_digest_bytes`, `hex_identity_stable_stringify`, `hex_identity_merge_origins`, `hex_identity_merge_origins_sorted`
 
-### Binary Image Store & String Scanner (`cpp/src/binary/image_store.hpp`, `cpp/src/binary/string_scanner.hpp`)
+### Binary Image Store, String Scanner & ELF Symbols (`cpp/src/binary/image_store.hpp`, `cpp/src/binary/string_scanner.hpp`, `cpp/src/binary/elf_symbols.hpp`)
 - `hex_image_alloc_input`, `hex_image_open`, `hex_image_close`, `hex_image_get_info`, `hex_image_section_count`, `hex_image_get_section`, `hex_image_scratch_alloc`, `hex_image_scratch_reset`
 - `hex_string_scan_ranges(const uint8_t* bytes, uint32_t byte_len, const HexStringScanRange* ranges, uint32_t range_count, uint32_t min_chars, uint32_t max_chars, uint32_t flags, uint32_t max_results, HexStringSpan* out_spans, uint32_t* out_count) -> HexStatus`
+- `hex_elf_extract_symbols(const uint8_t* sym_bytes, uint32_t sym_bytes_len, uint32_t ent_size, uint32_t count, const uint8_t* str_bytes, uint32_t str_bytes_len, const uint8_t* xindex_bytes, uint32_t xindex_bytes_len, uint32_t flags, HexElfSymbolRecord* out_records, uint32_t max_records, uint32_t* out_count) -> HexStatus`
 
 ### Byte Search & SHA-256 (`cpp/src/core/byte_search.hpp`, `cpp/src/core/sha256.hpp`)
 - `hex_byte_search_find(const uint8_t* haystack, uint32_t haystack_len, uint32_t from_offset, const uint8_t* pattern, const uint8_t* masks, uint32_t pattern_len, uint32_t flags, uint32_t* out_match_offset) -> HexStatus`

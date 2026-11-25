@@ -183,7 +183,7 @@ export function scanStrings(image, opts = {}) {
         return out;
       }
     }
-    if (typeof wasmScanStrings === 'function') {
+    else if (typeof wasmScanStrings === 'function') {
       const spans = wasmScanStrings(bytes, ranges, wasmOpts);
       if (Array.isArray(spans)) {
         for (let i = 0; i < spans.length && out.length < limit; i++) {

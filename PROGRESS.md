@@ -127,3 +127,23 @@
   - **Full corpus (13 real binaries x 43 functions, zero fallbacks, 156 WASM calls)**: `js` **9,797.79 ms** (RSS 449.93 MB, heap 283.36 MB) vs `auto` **13.68 ms** (**716.21x speedup**, warmed round 3 = **12.57 ms** [**779x**], RSS **203.79 MB** [-54.7%], heap **64.31 MB** [-77.3%]).
   - **WASM-eligible 40-function subset (20x batch = 800 decompiles, `sink: 325340`)**: `js` **142,169.70 ms** (7,108.485 ms/pass, RSS 994.93 MB, heap 838.70 MB) vs `auto` **13.29 ms** (0.664 ms/pass, **10,697.49x speedup**, RSS **248.22 MB** [-75.1%], heap **99.82 MB** [-88.1%]).
   - **Microbench**: `byteSearch (1 MiB)` **3.529 ms -> 0.671 ms (5.26x, warmed 0.360 ms = 9.4x)**; `sha256 (1 MiB)` **5.422 ms -> 3.216 ms (1.69x, 0-diff)**; `scanStrings (256 KiB dense 16,160 strings)` **10.391 ms -> 10.163 ms (1.02x, warmed 5.089 ms = 2.0x)**.
+
+## Wave 16 (Hybrid Architecture: C++20 ELF Symbol Extractor + Transparent Lazy `strings` & Mach-O Authority + Wave 15 4-Way Review Fixes)
+- **Hybrid Impl Agents (5 parallel worktrees)**:
+  - `N1` (`cpp/src/binary/elf_symbols.{hpp,cpp}`, `test_elf_symbols_native.cpp`): Freestanding C++20 ELF64/ELF32 LE/BE bulk symbol extractor with `SHN_XINDEX` & bounded `.strtab` length scan (**0 extra BSS**, +1,088 bytes WASM).
+  - `N2` (`js/core/hex-engine-bridge.js`, `scripts/build-wasm.mjs`): `wasmExtractElfSymbols` bridge (`1.5 MiB` scratch budget, `elf_symbols` telemetry) + auto-link.
+  - `N3` (`js/binary/elf-core-original.js`, `tests/performance/wave16-hybrid-parity.test.mjs`): Wired `parseSymbols` to `wasmExtractElfSymbols` (0-diff, full budget fidelity) + Wave 16 hybrid parity & lazy getter tests.
+  - `N4` (`js/binary/index.js`, `scripts/benchmark-final-e2e.mjs`): Transparent enumerable/configurable self-replacing lazy getter for `image.strings` (0-diff on read, writable, eager in `js` mode, scoped `HEX_ENGINE='js'` rollback) + `'elf_symbols'` benchmark domain.
+  - `N5` (`js/binary/macho-core.js`): Memoized lazy getters on Mach-O `authority` for `sections`, `segments`, `chainedSites`, `buildVersion`, and `dyldCacheBinding` (preserving full `deepFreeze` immutability & isolation).
+- **Wave 15 Independent Review Agents (4 parallel non-overlapping reviewers, zero self-review)**:
+  - `R15-1` (`sha256.cpp`): PASS; applied 32-bit `block_count * 64u` wrap guard.
+  - `R15-2` (`hex-engine-bridge.js`, `strings.js`): Aligned `STRING_SCAN_ARENA_BUDGET` & `ELF_SYMBOLS_ARENA_BUDGET` to actual 1.5 MiB unified scratch (`1_500_000`) and fixed `else if` double-fallback guard.
+  - `R15-3` (`macho-core.js`, `identity/index.js`, `model.js`): PASS; added `_mappingLookups.offsets !== null` cache guard.
+  - `R15-4` (`elf-mapping.js`, docs): Added null-element guard in `ensureFileSegmentsCache`; docs 100% synced.
+- **Unified WASM Artifact**: `wasm/hex_engine.wasm` (**430,499 bytes**, **28 freestanding C++20 units**, **100 exports**, **0 imports**, initial linear memory **6.6875 MiB** [107 pages] <= 8 MiB, `SharedArrayBuffer: false`).
+- **Verification**: Native ASan/UBSan (`test_elf_symbols_native`, `test_sha256_native`) ALL PASS; **42/42 Node Wave 6/7/11/12/13/14/16, `byte-search`, `#8736`, `#8772`, `#8880` subtests** PASS; `npm run lint` (`5846 files ok`) PASS; `npm run module-boundaries:test` PASS; `npm run userscript:build` PASS (protected runtime `20,947,477 -> 6,027,307 bytes`).
+- **Wave 16 Benchmarks**:
+  - Steady-state `openBinary` (50-iter avg across 13 real binaries): JS **8.775 ms** -> Hybrid Lazy **`6.401 ms`** (**1.37x**, down from `10.085 ms` in Wave 12/13 = **-36.5%**; even reading all `.strings` = **8.023 ms**).
+  - WASM-eligible 40-function batch (20x = 800 decompiles, `sink: 325340`): JS **148,220.25 ms** -> `auto` **14.34 ms** (`0.717 ms/pass`, **10,336.14x speedup**, RSS `-61.5%`, heap `-80.9%`).
+  - Full corpus (`--expose-gc`, **zero fallbacks**, 157–168 WASM calls including `elf_symbols: 12`, `sha256: 3`, `binary: 13`, `decompile: 40`, `x86_64_decompile: 3`): warmed `wasm` round 3 = **16.26 ms**, Peak Heap **62.47 MB** (`-79.2%`).
+  - Microbench: `byteSearch (1 MiB)` **4.302 ms -> 0.685 ms (6.28x, warmed 0.446 ms)**; `sha256 (1 MiB)` **5.365 ms -> 3.243 ms (1.65x, 0-diff)**.
