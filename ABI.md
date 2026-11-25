@@ -1,7 +1,7 @@
 # hex-ida Unified C++/WASM Engine C ABI Specification
 
 - **ABI Version**: `0x00010000` (`hex_engine_version()`)
-- **Distribution Artifact**: `js/core/hex-engine-wasm.js` (Base64-embedded freestanding `hex_engine.wasm`, 420,346 bytes, 26 freestanding C++20 units, 97 exports, 0 imports, 6.6875 MiB (107 pages) initial linear memory, built via `node scripts/build-wasm.mjs` using `clang++ --target=wasm32 -std=c++20 -O3 -nostdlib -fno-exceptions -fno-rtti -mbulk-memory` + `wasm-opt -O3 --enable-bulk-memory`, zero Emscripten)
+- **Distribution Artifact**: `js/core/hex-engine-wasm.js` (Base64-embedded freestanding `hex_engine.wasm`, 422,691 bytes, 27 freestanding C++20 units, 99 exports, 0 imports, 6.6875 MiB (107 pages) initial linear memory, built via `node scripts/build-wasm.mjs` using `clang++ --target=wasm32 -std=c++20 -O3 -nostdlib -fno-exceptions -fno-rtti -mbulk-memory` + `wasm-opt -O3 --enable-bulk-memory`, zero Emscripten)
 - **Host Boundary**: `js/ui/`, `js/ai/`, `js/auth/`, `js/userscript/` MUST NOT import internal engine modules directly; all WASM access goes through `js/core/hex-engine-bridge.js` and `js/core/hex-engine-wasm.js`.
 
 ## 1. Error Codes (`HexStatus`, `int32_t`)
@@ -33,8 +33,10 @@
 - `hex_image_alloc_input`, `hex_image_open`, `hex_image_close`, `hex_image_get_info`, `hex_image_section_count`, `hex_image_get_section`, `hex_image_scratch_alloc`, `hex_image_scratch_reset`
 - `hex_string_scan_ranges(const uint8_t* bytes, uint32_t byte_len, const HexStringScanRange* ranges, uint32_t range_count, uint32_t min_chars, uint32_t max_chars, uint32_t flags, uint32_t max_results, HexStringSpan* out_spans, uint32_t* out_count) -> HexStatus`
 
-### Byte Search (`cpp/src/core/byte_search.hpp`)
+### Byte Search & SHA-256 (`cpp/src/core/byte_search.hpp`, `cpp/src/core/sha256.hpp`)
 - `hex_byte_search_find(const uint8_t* haystack, uint32_t haystack_len, uint32_t from_offset, const uint8_t* pattern, const uint8_t* masks, uint32_t pattern_len, uint32_t flags, uint32_t* out_match_offset) -> HexStatus`
+- `hex_sha256_compress_blocks(uint32_t* state, const uint8_t* blocks, uint32_t block_count) -> HexStatus`
+- `hex_sha256_hash(const uint8_t* data, uint32_t len, uint8_t* out_digest32) -> HexStatus`
 
 ### CFG & Loop Analysis (`cpp/src/cfg/cfg_engine.hpp`, `loop_engine.hpp`)
 - `get_heap_base`, `cfg_reset`, `cfg_alloc`, `cfg_analyze`, `cfg_get_result_ptr`

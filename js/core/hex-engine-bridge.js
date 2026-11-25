@@ -1314,6 +1314,7 @@ export function wasmScanStrings(bytes, ranges, opts = {}) {
 
     const mem = ex.memory.buffer;
     const outCount = new DataView(mem).getUint32(outCountPtr, true);
+    if (outCount > spanCap) return noteFallback('strings', 'invalid_out_count');
     if (outCount === spanCap && spanCap < limit) {
       return noteFallback('strings', 'span_cap_reached');
     }

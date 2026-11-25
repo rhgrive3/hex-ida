@@ -179,7 +179,8 @@ test('Wave 13 byte-search telemetry: WASM calls recorded in wasm & auto (>= 8 Ki
   assert.equal(getWasmCallCount('byte_search'), 0, 'HEX_ENGINE=js must record 0 byte_search WASM calls');
 
   // 2. When wasmByteSearchFind is exported by hex-engine-bridge, verify WASM telemetry in wasm & auto modes
-  if (typeof hexEngineBridge.wasmByteSearchFind === 'function') {
+  assert.equal(typeof hexEngineBridge.wasmByteSearchFind, 'function');
+  {
     resetAllTelemetry();
     const wasmHit = withEngineMode('wasm', () => matcher.find(bigBuf, 0));
     assert.equal(wasmHit, 7000);
