@@ -44,15 +44,6 @@ const EXPLICIT_UNSUPPORTED_ARM64_MNEMONICS = Object.freeze(new Set([
   'fmov',
   'mneg',
   'smull',
-  // Exclusive load/store and indirect branch route to JS legacy decompiler (distinct sourceMap/kind schema).
-  'ldxp',
-  'ldaxp',
-  'stxp',
-  'stlxp',
-  'ldxr',
-  'ldaxr',
-  'stxr',
-  'stlxr',
   'br',
 ]));
 
@@ -514,11 +505,10 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     let namePtr = 0;
     let nameLen = 0;
     const rawName = typeof funcName === 'string' ? funcName : '';
-    if (rawName.startsWith('-[') || rawName.startsWith('+[')) {
-      return noteFallback('decompile', 'unsupported_objc_name');
-    }
     let nameStr = '';
-    if (rawName.length > 0) {
+    if (rawName.startsWith('-[') || rawName.startsWith('+[')) {
+      nameStr = rawName;
+    } else if (rawName.length > 0) {
       nameStr = rawName.replace(/^_+/, '').replace(/[^A-Za-z0-9_]/g, '_');
       if (nameStr.length === 0 || /^[0-9]/.test(nameStr)) {
         return noteFallback('decompile', 'unsupported_symbol_name');
@@ -556,6 +546,9 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
 
     const mem = ex.memory.buffer;
     const pseudocode = textDecoder.decode(new Uint8Array(mem, textPtr, textLen));
+    if ((rawName.startsWith('-[') || rawName.startsWith('+[')) && !pseudocode.includes('typedef void * id;')) {
+      return noteFallback('decompile', 'unsupported_objc_name');
+    }
 
     const rawLinemap = new Map();
     if (
@@ -580,7 +573,13 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     }
 
     const rawLines = pseudocode.split('\n');
-    const isLegacyOutput = rawLines.some((l) => l.includes('// … ほかに '));
+    const legacyRawRegDeclRe = /^\s*(?:u?int(?:8|16|32|64|128)(?:_t)?|float|double)\s+[xw]\d+;/;
+    const isLegacyOutput = rawLines.some((l) => (
+      l.includes('// … ほかに ')
+      || l.includes('*(uint128 *)')
+      || l.includes('__builtin_trap();   // ここに来たら異常')
+      || legacyRawRegDeclRe.test(l)
+    ));
     const baseAddrBig = BigInt(baseAddr);
     const addrToRow = new Map();
     if (Array.isArray(insns)) {
@@ -608,6 +607,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         trimmed.startsWith('/*')
         || trimmed.startsWith('typedef ')
         || trimmed.startsWith('#')
+        || trimmed.startsWith('static ')
         || trimmed.endsWith(';')
       );
       let kind;
@@ -625,7 +625,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         || trimmed.startsWith('else') || trimmed === 'continue;'
         || trimmed === 'break;' || trimmed.startsWith('goto ')
         || trimmed.startsWith('do ') || trimmed === 'do {'
-        || (isLegacyOutput && (trimmed === 'return;' || trimmed.startsWith('return ')))
+        || (isLegacyOutput && (trimmed === 'return;' || trimmed.startsWith('return ') || trimmed.startsWith('__builtin_trap()')))
       ) {
         kind = 'ctrl';
       } else if (trimmed.startsWith('//') || trimmed.startsWith('/*')) {
@@ -683,7 +683,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         note: null,
       });
 
-      if (!isLegacyOutput && !isPrelude && !(kind === 'decl' && /\b(?:local_|var_|call_)/.test(trimmed))) {
+      if (!isLegacyOutput && !isPrelude && !(kind === 'decl' && /\b(?:local_|var_|call_|self\b|a[1-8]\b)/.test(trimmed))) {
         bodyLineNo += 1;
         const foldedExtra = (kind === 'stmt' && /^\*\([^)]+\)\(.*\)\s*[-+]=\s*/.test(trimmed)) ? 2 : 0;
         const addresses = kind === 'sig'
