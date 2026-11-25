@@ -1,5 +1,13 @@
 #include "engine_runtime.hpp"
 
+#if defined(HEX_HAS_DECOMP_PASSES)
+#include "decompiler/passes/arm64_simple_emit.hpp"
+#include "decompiler/passes/arm64_memory_emit.hpp"
+#include "decompiler/passes/arm64_branch_emit.hpp"
+#include "decompiler/passes/arm64_fp_atomic_emit.hpp"
+#include "decompiler/passes/arm64_call_emit.hpp"
+#endif
+
 namespace {
 
 constexpr uint32_t kEmitArenaBytes = 512u * 1024u;
@@ -24,6 +32,45 @@ uint32_t g_last_linemap_count = 0u;
 constexpr uint32_t kFlagVarId = 32u;
 constexpr uint32_t kTempVarBase = 64u;
 constexpr uint32_t kMaxEmitBytes = 256u * 1024u;
+
+#if defined(HEX_HAS_DECOMP_PASSES)
+HexStatus try_specialized_arm64_passes(
+    const uint32_t* words,
+    uint32_t word_count,
+    uint64_t base_addr,
+    const char* func_name_utf8,
+    uint32_t func_name_len,
+    uint32_t emit_flags) {
+  using PassFn = HexStatus (*)(
+      const uint32_t*, uint32_t, uint64_t, const char*, uint32_t, uint32_t,
+      hex::Arena&, const char**, uint32_t*, const HexLineMapEntry**, uint32_t*);
+  static const PassFn kPasses[] = {
+    &hex::decompiler::passes::try_emit_arm64_simple,
+    &hex::decompiler::passes::try_emit_arm64_memory,
+    &hex::decompiler::passes::try_emit_arm64_branch_loop,
+    &hex::decompiler::passes::try_emit_arm64_fp_atomic,
+    &hex::decompiler::passes::try_emit_arm64_calls,
+  };
+  for (size_t i = 0; i < sizeof(kPasses) / sizeof(kPasses[0]); ++i) {
+    g_emit_arena.reset();
+    const char* txt = nullptr;
+    uint32_t txt_len = 0u;
+    const HexLineMapEntry* lm = nullptr;
+    uint32_t lm_cnt = 0u;
+    const HexStatus st = kPasses[i](
+        words, word_count, base_addr, func_name_utf8, func_name_len, emit_flags,
+        g_emit_arena, &txt, &txt_len, &lm, &lm_cnt);
+    if (st == HEX_OK && txt && txt_len > 0u) {
+      g_last_text = txt;
+      g_last_text_len = txt_len;
+      g_last_linemap = lm;
+      g_last_linemap_count = lm_cnt;
+      return HEX_OK;
+    }
+  }
+  return HEX_ERR_UNSUPPORTED;
+}
+#endif
 
 void clear_last_output() {
   g_last_text = nullptr;
@@ -587,26 +634,37 @@ HexStatus hex_engine_decompile_arm64(
   // and guarantee O(1) reclamation of all temporary pipeline buffers on every exit path.
   hex::ArenaScope scratch_scope(g_scratch_arena);
 
-  // Stage 1: ARM64 capability gate (fail-closed on length > kMaxParityWords or unsupported insn).
-  if (word_count > kMaxParityWords) {
-    return HEX_ERR_UNSUPPORTED;
-  }
+  // Stage 1: ARM64 capability gate (if primary straight-line SSA rejects, try specialized 0-diff passes).
   const bool js_parity_mode = (emit_flags & HEX_EMIT_FLAG_JS_PARITY) != 0u;
-  for (uint32_t i = 0u; i < word_count; ++i) {
-    if (!is_runtime_arm64_word_supported(words[i], js_parity_mode)) {
-      return HEX_ERR_UNSUPPORTED;
+  bool primary_supported = (word_count <= kMaxParityWords);
+  if (primary_supported) {
+    for (uint32_t i = 0u; i < word_count; ++i) {
+      if (!is_runtime_arm64_word_supported(words[i], js_parity_mode)) {
+        primary_supported = false;
+        break;
+      }
     }
   }
 
-  HexArm64Decoded* decoded = g_scratch_arena.alloc<HexArm64Decoded>(word_count);
-  if (!decoded) return HEX_ERR_OOM;
-  HexStatus st = hex_arm64_decode_batch(words, word_count, base_addr, decoded);
-  if (st != HEX_OK) return st;
+  HexArm64Decoded* decoded = nullptr;
+  Arm64ParityCheckResult parity{};
+  HexStatus st = HEX_OK;
+  if (primary_supported) {
+    decoded = g_scratch_arena.alloc<HexArm64Decoded>(word_count);
+    if (!decoded) return HEX_ERR_OOM;
+    st = hex_arm64_decode_batch(words, word_count, base_addr, decoded);
+    if (st != HEX_OK) return st;
+    parity = check_arm64_strict_parity(decoded, word_count, js_parity_mode);
+    primary_supported = parity.supported;
+  }
 
-  // Strict 0-bit JS-oracle parity gate (read-before-write args, no dead writes, x0 written).
-  const Arm64ParityCheckResult parity = check_arm64_strict_parity(decoded, word_count, js_parity_mode);
-  if (!parity.supported) {
+  if (!primary_supported) {
+#if defined(HEX_HAS_DECOMP_PASSES)
+    return try_specialized_arm64_passes(
+        words, word_count, base_addr, func_name_utf8, func_name_len, emit_flags);
+#else
     return HEX_ERR_UNSUPPORTED;
+#endif
   }
 
   // Stage 2: Basic block partitioning.

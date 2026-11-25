@@ -44,6 +44,17 @@ const EXPLICIT_UNSUPPORTED_ARM64_MNEMONICS = Object.freeze(new Set([
   'fmov',
   'mneg',
   'smull',
+  // Exclusive load/store and indirect branch route to JS legacy decompiler (distinct sourceMap/kind schema).
+  'ldxp',
+  'ldaxp',
+  'stxp',
+  'stlxp',
+  'ldxr',
+  'ldaxr',
+  'stxr',
+  'stlxr',
+  'br',
+  'blr',
 ]));
 
 const textEncoder = new TextEncoder();
@@ -536,8 +547,10 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       return noteFallback('decompile', `wasm_status_${status}`);
     }
 
-    const textPtr = ex.hex_decomp_get_text_ptr();
-    const textLen = ex.hex_decomp_get_text_len();
+    const getTP = ex.hex_engine_decompile_get_text_ptr || ex.hex_decomp_get_text_ptr;
+    const getTL = ex.hex_engine_decompile_get_text_len || ex.hex_decomp_get_text_len;
+    const textPtr = getTP();
+    const textLen = getTL();
     if (!textPtr || !textLen) {
       return noteFallback('decompile', 'empty_wasm_output');
     }
@@ -550,8 +563,10 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       typeof ex.hex_decomp_get_linemap_ptr === 'function'
       && typeof ex.hex_decomp_get_linemap_count === 'function'
     ) {
-      const lmPtr = ex.hex_decomp_get_linemap_ptr();
-      const lmCount = ex.hex_decomp_get_linemap_count();
+      const getLP = ex.hex_engine_decompile_get_linemap_ptr || ex.hex_decomp_get_linemap_ptr;
+      const getLC = ex.hex_engine_decompile_get_linemap_count || ex.hex_decomp_get_linemap_count;
+      const lmPtr = getLP();
+      const lmCount = getLC();
       if (lmPtr && lmCount > 0) {
         const dv = new DataView(mem);
         for (let i = 0; i < lmCount; i += 1) {
@@ -586,7 +601,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       const text = rawLines[idx];
       const trimmed = text.trimStart();
       const indent = Math.floor((text.length - trimmed.length) / 4);
-      const isPrelude = !seenSig && (trimmed.startsWith('/*') || trimmed.startsWith('typedef '));
+      const isPrelude = !seenSig && (trimmed.startsWith('/*') || trimmed.startsWith('typedef ') || trimmed.startsWith('#'));
       let kind;
       if (isPrelude) {
         kind = 'decl';
@@ -595,18 +610,33 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         seenSig = true;
       } else if (
         trimmed === '{' || trimmed === '}' || trimmed.startsWith('if ')
-        || trimmed.startsWith('while ') || trimmed.startsWith('} else')
+        || trimmed.startsWith('if(') || trimmed.startsWith('while ')
+        || trimmed.startsWith('while(') || trimmed.startsWith('} else')
+        || trimmed.startsWith('else') || trimmed === 'continue;'
+        || trimmed === 'break;' || trimmed.startsWith('goto ')
+        || trimmed.startsWith('do ') || trimmed === 'do {'
       ) {
         kind = 'ctrl';
+      } else if (trimmed.startsWith('//') || trimmed.startsWith('/*')) {
+        kind = 'comment';
+      } else if (
+        /^(?:const\s+)?(?:u?int(?:8|16|32|64|128)(?:_t)?|float|double|vector128|void\s*\*|id|int|unsigned\s+int|long|char)\s+\*?[A-Za-z_]\w*(?:\s*\[[^\]]*\])?\s*;$/.test(trimmed)
+      ) {
+        kind = 'decl';
       } else {
         kind = 'stmt';
       }
 
       const mappedAddrs = rawLinemap.get(idx + 1) || [];
-      const firstAddr = kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null);
+      const isBraceOrElse = kind === 'ctrl' && (
+        trimmed === '{' || trimmed === '}' || trimmed === '} else {' || trimmed === 'else {'
+      );
+      const firstAddr = isPrelude || kind === 'decl' || isBraceOrElse
+        ? null
+        : (kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null));
       const lineAddresses = isPrelude || kind === 'sig'
         ? [baseAddrBig]
-        : (kind === 'ctrl' && (trimmed === '{' || trimmed === '}'))
+        : (kind === 'decl' || isBraceOrElse)
           ? []
           : mappedAddrs.slice();
       const lineRows = lineAddresses
@@ -623,11 +653,11 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         note: null,
       });
 
-      if (!isPrelude) {
+      if (!isPrelude && !(kind === 'decl' && /\b(?:local_|var_)/.test(trimmed))) {
         bodyLineNo += 1;
         const addresses = kind === 'sig'
           ? [baseAddrBig]
-          : (kind === 'ctrl' && (trimmed === '{' || trimmed === '}'))
+          : (kind === 'decl' || isBraceOrElse)
             ? []
             : mappedAddrs.slice();
         const rows = addresses
@@ -710,7 +740,7 @@ function buildDecompiledLinesAndSourceMap(pseudocode, rawLinemap, baseAddrBig, a
     const text = rawLines[idx];
     const trimmed = text.trimStart();
     const indent = Math.floor((text.length - trimmed.length) / 4);
-    const isPrelude = !seenSig && (trimmed.startsWith('/*') || trimmed.startsWith('typedef '));
+    const isPrelude = !seenSig && (trimmed.startsWith('/*') || trimmed.startsWith('typedef ') || trimmed.startsWith('#'));
     let kind;
     if (isPrelude) {
       kind = 'decl';
@@ -727,7 +757,7 @@ function buildDecompiledLinesAndSourceMap(pseudocode, rawLinemap, baseAddrBig, a
     }
 
     const mappedAddrs = rawLinemap.get(idx + 1) || [];
-    const firstAddr = kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null);
+    const firstAddr = isPrelude || kind === 'decl' ? null : (kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null));
     const lineAddresses = isPrelude || kind === 'sig'
       ? [baseAddrBig]
       : (kind === 'ctrl' && (trimmed === '{' || trimmed === '}'))

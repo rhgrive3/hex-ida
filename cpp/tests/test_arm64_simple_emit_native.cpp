@@ -172,16 +172,9 @@ int main() {
         "}",
         5u, 0x2000u);
 
-    const uint32_t w_movn_neg[] = { 0x12800000u, 0xD65F03C0u };  // movn w0, #0 (-1); ret
-    run_positive_case(
-        "gen_movn_neg1", w_movn_neg, 2, 0x3000u, "ret_minus_one",
-        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
-        "typedef __INT32_TYPE__ int32;\n"
-        "int32 ret_minus_one(void)\n"
-        "{\n"
-        "    return -1;\n"
-        "}",
-        5u, 0x3000u);
+    // Standalone `movn w0, #0; ret` fails closed to JS for strict unsigned-literal parity.
+    const uint32_t w_movn_neg[] = { 0x12800000u, 0xD65F03C0u };
+    run_negative_case("gen_movn_neg1_fail_closed", w_movn_neg, 2, 0x3000u, "ret_minus_one", HEX_ERR_UNSUPPORTED);
   }
 
   // Negative / fail-closed cases

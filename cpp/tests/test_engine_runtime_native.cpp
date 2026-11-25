@@ -144,9 +144,15 @@ void test_strict_parity_rejections() {
   const uint32_t ret_x8[2] = {0x52800020u, 0xd65f0100u};
   assert(hex_engine_decompile_arm64(ret_x8, 2u, 0x3000ULL, nullptr, 0u, 0u) == HEX_ERR_UNSUPPORTED);
 
-  // 2. Unsupported FP instruction (`fadd d0, d0, d1`)
+  // 2. FP scalar `fadd d0, d0, d1; ret` is supported in Wave 9 passes, while `fmov d0, #1.0; ret` stays unsupported.
   const uint32_t fp_words[2] = {0x1e612800u, 0xd65f03c0u};
+#if defined(HEX_HAS_DECOMP_PASSES)
+  assert(hex_engine_decompile_arm64(fp_words, 2u, 0x3000ULL, "fp_fn", 5u, 0u) == HEX_OK);
+#else
   assert(hex_engine_decompile_arm64(fp_words, 2u, 0x3000ULL, "fp_fn", 5u, 0u) == HEX_ERR_UNSUPPORTED);
+#endif
+  const uint32_t fmov_words[2] = {0x1e6e1000u, 0xd65f03c0u};
+  assert(hex_engine_decompile_arm64(fmov_words, 2u, 0x3000ULL, "fmov_fn", 7u, 0u) == HEX_ERR_UNSUPPORTED);
 
   // 3. word_count > 16 (17 instructions)
   uint32_t long_words[17];

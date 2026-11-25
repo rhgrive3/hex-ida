@@ -284,8 +284,9 @@ HexStatus try_emit_arm64_simple(
       continue;
     }
 
-    // MOVN w0/x0, #imm16, lsl #hw*16
+    // MOVN w0/x0, #imm16, lsl #hw*16 (require follow-up arithmetic, e.g. movn+add+ret)
     if ((w & 0x7F800000u) == 0x12800000u) {
+      if (word_count == 2u) return HEX_ERR_UNSUPPORTED;
       const uint32_t sf = (w >> 31u) & 1u;
       const uint32_t hw = (w >> 21u) & 3u;
       const uint32_t imm16 = (w >> 5u) & 0xFFFFu;
@@ -350,6 +351,13 @@ HexStatus try_emit_arm64_simple(
   // Frame-wrapped void return is not verified; fail closed.
   if (has_frame && !has_r0) {
     return HEX_ERR_UNSUPPORTED;
+  }
+  // Under JS_PARITY, decimal vs hex formatting diverges for constants in [100..999]; fail closed.
+  if ((emit_flags & HEX_EMIT_FLAG_JS_PARITY) != 0u && has_r0) {
+    const uint64_t masked = r0_is_64 ? r0_val : static_cast<uint64_t>(static_cast<uint32_t>(r0_val));
+    if (masked >= 100u && masked <= 999u) {
+      return HEX_ERR_UNSUPPORTED;
+    }
   }
 
   const uint64_t ret_addr = base_addr + static_cast<uint64_t>(word_count - 1u) * 4u;
