@@ -963,7 +963,7 @@ export const DECOMPILE_INTERNAL_FIELDS = Object.freeze([
   'semanticSuppressionHistory', 'semanticControlRenderHistory',
   'semanticStatementRenderHistory',
   'semanticStoreRenderHistory', 'switchRenderHistory', 'legacyFallback',
-  'objcSyntax', 'globalEvidence',
+  'objcSyntax', 'globalEvidence', 'wasmAccelerated',
 ]);
 
 const DECOMPILE_PUBLIC_FIELD_SET = new Set(DECOMPILE_PUBLIC_FIELDS);
@@ -1305,19 +1305,28 @@ export function createAppAnalysisQueryAdapter(app) {
     const returnsValue=(result?.value?.setsReturnValue??result?.value?.model?.facts?.setsReturnValue)===true?true:undefined;
     let projectionIr=null,cxxEvidence=null;
     if(result?.value?.model&&supportsArm64SemanticAnalysis(architectureOf(app))){
-      try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
-      if(projectionIr){
-        const entry=ensureCxxEvidenceProviderForApp(app);
-        if(entry){
-          await entry.buildPromise;
-          throwIfAborted(options.signal);
-          if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+      const entry=ensureCxxEvidenceProviderForApp(app);
+      if(entry){
+        const builtIndex=await entry.buildPromise;
+        throwIfAborted(options.signal);
+        if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+        if(builtIndex&&!builtIndex.empty){
+          try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
+          if(projectionIr){
+            try {
+              const addrBig = address != null ? BigInt(address) : null;
+              cxxEvidence=entry.provider.projectForFunction({functionAddress:addrBig,
+                functionName:addrBig==null?null:app?.symbols?.nameAt?.(addrBig),ir:projectionIr,
+                enableTypedArguments:options.typedArgumentRecovery===true});
+            } catch {cxxEvidence=null;}
+          }
+        } else {
           try {
             const addrBig = address != null ? BigInt(address) : null;
-            cxxEvidence=entry.provider.projectForFunction({functionAddress:addrBig,
-              functionName:addrBig==null?null:app?.symbols?.nameAt?.(addrBig),ir:projectionIr,
+            entry.provider.projectForFunction({functionAddress:addrBig,
+              functionName:addrBig==null?null:app?.symbols?.nameAt?.(addrBig),ir:null,
               enableTypedArguments:options.typedArgumentRecovery===true});
-          } catch {cxxEvidence=null;}
+          } catch { cxxEvidence=null; }
         }
       }
     }
