@@ -732,16 +732,18 @@ static void emit_sync_q_to_d(TextBuf* tb, const AnalysisCtx& ctx, uint32_t r, bo
 }
 
 static uint64_t decode_advsimd_imm64(uint32_t op, uint32_t cmode, uint32_t imm8) {
-  if ((cmode & 0x9u) == 0x0u) {
+  if ((cmode & 0x8u) == 0x0u) {
+    // cmode 0,2,4,6 (MOVI/MVNI 32-bit) and 1,3,5,7 (ORR/BIC 32-bit)
     const uint32_t shift = (cmode >> 1u) * 8u;
     uint32_t v = imm8 << shift;
-    if (op != 0u) v = ~v;
+    if ((cmode & 1u) == 0u && op != 0u) v = ~v;
     return static_cast<uint64_t>(v) | (static_cast<uint64_t>(v) << 32u);
   }
-  if ((cmode & 0xDu) == 0x8u) {
+  if ((cmode & 0xCu) == 0x8u) {
+    // cmode 8,10 (MOVI/MVNI 16-bit) and 9,11 (ORR/BIC 16-bit)
     const uint32_t shift = ((cmode >> 1u) & 1u) * 8u;
     uint16_t v = static_cast<uint16_t>(imm8 << shift);
-    if (op != 0u) v = static_cast<uint16_t>(~v);
+    if ((cmode & 1u) == 0u && op != 0u) v = static_cast<uint16_t>(~v);
     const uint64_t w16 = static_cast<uint64_t>(v);
     return w16 | (w16 << 16u) | (w16 << 32u) | (w16 << 48u);
   }
@@ -2128,7 +2130,7 @@ static void process_insn(
   }
 
   // FMOV (immediate): sf=0, 00 11110 ftype(2) 1 imm8(8) 100 00000 Rd(5)
-  if ((w & 0x5F201C00u) == 0x1E201000u) {
+  if ((w & 0xFF201FE0u) == 0x1E201000u) {
     const uint32_t ftype = (w >> 22u) & 3u;
     const uint32_t imm8 = (w >> 13u) & 0xFFu;
     const uint32_t rd = w & 31u;
@@ -2541,56 +2543,80 @@ static void process_insn(
     return;
   }
 
-  // AdvSIMD Modified Immediate: MOVI / MVNI / vector FMOV #imm
+  // AdvSIMD Modified Immediate: MOVI / MVNI / ORR(imm) / BIC(imm) / vector FMOV #imm
   if ((w & 0x9FF80C00u) == 0x0F000400u) {
     const bool is_128 = ((w >> 30u) & 1u) != 0u;
     const uint32_t op = (w >> 29u) & 1u;
     const uint32_t cmode = (w >> 12u) & 15u;
     const uint32_t imm8 = (((w >> 16u) & 7u) << 5u) | ((w >> 5u) & 31u);
     const uint32_t rd = w & 31u;
-    const bool is_scalar_d = (!is_128 && op == 1u && cmode == 0xEu);
-    const uint64_t val64 = decode_advsimd_imm64(op, cmode, imm8);
-    if (!emit) {
-      if (is_scalar_d) {
-        ctx.mark_fp_write(rd);
-        ctx.fp_double_mask |= (1u << rd);
-        if (val64 != 0ULL) { ctx.uses_fp_bitcast = true; ctx.uses_uint64_t = true; }
-      } else {
-        ctx.mark_q(rd);
-        ctx.fp_written |= (1u << rd);
-      }
-    } else if (tb) {
-      rec();
-      tb->put_str("    ");
-      if (is_scalar_d) {
-        tb->put_reg_d(rd);
-        if (val64 == 0ULL) {
-          tb->put_str(" = 0.0;\n");
+    // Reject unallocated Q=0, op=1, cmode=0xF
+    if (!(!is_128 && op == 1u && cmode == 0xFu)) {
+      const bool is_orr_bic = ((cmode & 0x9u) == 0x1u) || ((cmode & 0xDu) == 0x9u);
+      const bool is_scalar_d = (!is_128 && op == 1u && cmode == 0xEu);
+      const uint64_t val64 = decode_advsimd_imm64(op, cmode, imm8);
+      if (!emit) {
+        if (is_scalar_d) {
+          ctx.mark_fp_write(rd);
+          ctx.fp_double_mask |= (1u << rd);
+          if (val64 != 0ULL) { ctx.uses_fp_bitcast = true; ctx.uses_uint64_t = true; }
         } else {
-          tb->put_str(" = __hex_u64_to_f64(0x");
-          tb->put_u64_hex(val64, true);
-          tb->put_str("ULL);\n");
+          ctx.mark_q(rd);
+          ctx.fp_written |= (1u << rd);
         }
-        emit_sync_d_to_q(tb, ctx, rd, true);
-      } else {
-        tb->put_reg_q(rd);
-        if (val64 == 0ULL) {
-          tb->put_str(" = 0;\n");
-        } else if (is_128) {
-          tb->put_str(" = ((uint128)0x");
-          tb->put_u64_hex(val64, true);
-          tb->put_str("ULL << 64) | (uint128)0x");
-          tb->put_u64_hex(val64, true);
-          tb->put_str("ULL;\n");
+      } else if (tb) {
+        rec();
+        tb->put_str("    ");
+        if (is_scalar_d) {
+          tb->put_reg_d(rd);
+          if (val64 == 0ULL) {
+            tb->put_str(" = 0.0;\n");
+          } else {
+            tb->put_str(" = __hex_u64_to_f64(0x");
+            tb->put_u64_hex(val64, true);
+            tb->put_str("ULL);\n");
+          }
+          emit_sync_d_to_q(tb, ctx, rd, true);
+        } else if (is_orr_bic) {
+          tb->put_reg_q(rd);
+          tb->put_str(" = ");
+          if (!is_128) tb->put_str("(");
+          tb->put_reg_q(rd);
+          tb->put_str(op == 0u ? " | " : " & ~");
+          if (is_128) {
+            tb->put_str("(((uint128)0x");
+            tb->put_u64_hex(val64, true);
+            tb->put_str("ULL << 64) | (uint128)0x");
+            tb->put_u64_hex(val64, true);
+            tb->put_str("ULL)");
+          } else {
+            tb->put_str("(uint128)0x");
+            tb->put_u64_hex(val64, true);
+            tb->put_str("ULL");
+          }
+          if (!is_128) tb->put_str(") & (uint128)0xFFFFFFFFFFFFFFFFULL");
+          tb->put_str(";\n");
+          emit_sync_q_to_d(tb, ctx, rd);
         } else {
-          tb->put_str(" = (uint128)0x");
-          tb->put_u64_hex(val64, true);
-          tb->put_str("ULL;\n");
+          tb->put_reg_q(rd);
+          if (val64 == 0ULL) {
+            tb->put_str(" = 0;\n");
+          } else if (is_128) {
+            tb->put_str(" = ((uint128)0x");
+            tb->put_u64_hex(val64, true);
+            tb->put_str("ULL << 64) | (uint128)0x");
+            tb->put_u64_hex(val64, true);
+            tb->put_str("ULL;\n");
+          } else {
+            tb->put_str(" = (uint128)0x");
+            tb->put_u64_hex(val64, true);
+            tb->put_str("ULL;\n");
+          }
+          emit_sync_q_to_d(tb, ctx, rd);
         }
-        emit_sync_q_to_d(tb, ctx, rd);
       }
+      return;
     }
-    return;
   }
 
   // Scalar FABD s/d (AdvSIMD scalar floating-point absolute difference)
@@ -3061,7 +3087,7 @@ static void process_insn(
     else if ((immh & 2u) != 0u) esize = 16u;
     const uint32_t sh = is_shl ? (imm7 - esize) : (2u * esize - imm7);
     const uint32_t lanes = (is_128 ? 128u : 64u) / esize;
-    if (lanes > 0u) {
+    if (lanes > 0u && (is_128 || esize < 64u)) {
       if (!emit) {
         ctx.mark_q(rn); ctx.mark_q(rd);
         ctx.fp_written |= (1u << rd);
@@ -3074,8 +3100,18 @@ static void process_insn(
         tb->put_u64_dec(lanes);
         tb->put_str("; ++__k) { "); tb->put_str(ct); tb->put_str(" __a = ("); tb->put_str(ct); tb->put_str(")("); tb->put_str(ut); tb->put_str(")(");
         tb->put_reg_q(rn); tb->put_str(" >> (__k * "); tb->put_u64_dec(esize); tb->put_str(")); __vr |= (uint128)(");
-        tb->put_str(ut); tb->put_str(")(__a "); tb->put_str(is_shl ? "<< " : ">> ");
-        tb->put_u64_dec(sh); tb->put_str(") << (__k * "); tb->put_u64_dec(esize); tb->put_str("); } ");
+        tb->put_str(ut);
+        if (!is_shl && sh >= esize) {
+          if (is_unsigned) {
+            tb->put_str(")(0u");
+          } else {
+            tb->put_str(")(__a < 0 ? ~("); tb->put_str(ut); tb->put_str(")0 : 0u");
+          }
+        } else {
+          tb->put_str(")(__a "); tb->put_str(is_shl ? "<< " : ">> ");
+          tb->put_u64_dec(sh);
+        }
+        tb->put_str(") << (__k * "); tb->put_u64_dec(esize); tb->put_str("); } ");
         tb->put_reg_q(rd); tb->put_str(" = __vr; }\n");
         emit_sync_q_to_d(tb, ctx, rd);
       }
@@ -3083,8 +3119,8 @@ static void process_insn(
     }
   }
 
-  // Vector SSHLL/SXTL & USHLL/UXTL
-  if ((w & 0x9F80FC00u) == 0x0F00A400u && (((w >> 19u) & 0xFu) != 0u)) {
+  // Vector SSHLL/SXTL & USHLL/UXTL (immh in 1..7)
+  if ((w & 0x9F80FC00u) == 0x0F00A400u && (((w >> 19u) & 0xFu) != 0u) && (((w >> 19u) & 0xFu) < 8u)) {
     const bool is_hi = ((w >> 30u) & 1u) != 0u;
     const bool is_unsigned = ((w >> 29u) & 1u) != 0u;
     const uint32_t imm7 = (w >> 16u) & 0x7Fu;
@@ -3113,7 +3149,7 @@ static void process_insn(
       tb->put_u64_dec(lanes);
       tb->put_str("; ++__k) { "); tb->put_str(sct); tb->put_str(" __a = ("); tb->put_str(sct); tb->put_str(")("); tb->put_str(sut); tb->put_str(")(");
       tb->put_reg_q(rn); tb->put_str(" >> ("); tb->put_u64_dec(base_bit); tb->put_str(" + __k * "); tb->put_u64_dec(esize);
-      tb->put_str(")); __vr |= (uint128)("); tb->put_str(dut); tb->put_str(")((("); tb->put_str(dct); tb->put_str(")__a) << ");
+      tb->put_str(")); __vr |= (uint128)("); tb->put_str(dut); tb->put_str(")((("); tb->put_str(dut); tb->put_str(")("); tb->put_str(dct); tb->put_str(")__a) << ");
       tb->put_u64_dec(sh); tb->put_str(") << (__k * "); tb->put_u64_dec(dst_esize); tb->put_str("); } ");
       tb->put_reg_q(rd); tb->put_str(" = __vr; }\n");
       emit_sync_q_to_d(tb, ctx, rd);
@@ -3129,9 +3165,10 @@ static void process_insn(
     const uint32_t imm5 = (w >> 16u) & 31u;
     const uint32_t rn = (w >> 5u) & 31u;
     const uint32_t rd = w & 31u;
-    if (imm5 != 0u) {
+    if ((imm5 & 0xFu) != 0u) {
       uint32_t tz = 0u;
       while (tz < 4u && (((imm5 >> tz) & 1u) == 0u)) ++tz;
+      if (!is_scalar && !is_128 && tz == 3u) return;
       const uint32_t esize = 8u << tz;
       const uint32_t idx = imm5 >> (tz + 1u);
       const uint32_t lanes = is_scalar ? 1u : ((is_128 ? 128u : 64u) / esize);
@@ -3863,13 +3900,23 @@ static bool structurize_c_body(TextBuf& tb, uint32_t body_start_off, uint32_t bo
     return true;
   };
 
-  auto has_bare_loop_ctrl = [&](uint32_t a0, uint32_t a1, int32_t d) -> bool {
+  auto has_bare_loop_ctrl = [&](uint32_t a0, uint32_t a1, int32_t /*d*/) -> bool {
+    int32_t loop_stack[32];
+    uint32_t loop_depth = 0u;
     for (uint32_t k = a0; k < a1; ++k) {
-      if (depth_arr[k] == d) {
-        const SLine& x = stmts[active[k]];
-        if (x.kind == 4u && x.synth && (ends_with(x.synth, x.synth_len, "break;", 6u) || ends_with(x.synth, x.synth_len, "continue;", 9u))) {
-          return true;
-        }
+      const SLine& x = stmts[active[k]];
+      if (x.kind == 4u && x.brace_delta > 0 && x.synth &&
+          (starts_with(x.synth, x.synth_len, "    do {", 8u) ||
+           starts_with(x.synth, x.synth_len, "    while (", 11u))) {
+        if (loop_depth < 32u) loop_stack[loop_depth++] = depth_arr[k];
+        else return true;  // conservative on extreme nesting
+      } else if (x.kind == 4u && x.brace_delta < 0 && loop_depth > 0u &&
+                 depth_arr[k] == loop_stack[loop_depth - 1u]) {
+        --loop_depth;
+      } else if (loop_depth == 0u && x.kind == 4u && x.synth &&
+                 (ends_with(x.synth, x.synth_len, "break;", 6u) ||
+                  ends_with(x.synth, x.synth_len, "continue;", 9u))) {
+        return true;
       }
     }
     return false;
@@ -3881,9 +3928,11 @@ static bool structurize_c_body(TextBuf& tb, uint32_t body_start_off, uint32_t bo
     int32_t d = 0;
     for (uint32_t i = 0u; i < n; ++i) {
       if (stmts[i].kind == 5u) continue;
+      const bool is_else_hdr = (stmts[i].kind == 4u && stmts[i].synth &&
+                                starts_with(stmts[i].synth, stmts[i].synth_len, "    } else {", 12u));
       if (stmts[i].brace_delta < 0) d += stmts[i].brace_delta;
       active[acount] = i;
-      depth_arr[acount] = d;
+      depth_arr[acount] = is_else_hdr ? (d - 1) : d;
       if (stmts[i].brace_delta > 0) d += stmts[i].brace_delta;
       ++acount;
     }
@@ -4352,7 +4401,7 @@ HexStatus try_emit_arm64_general(
           (w & 0x7E000000u) == 0x36000000u ||  // TBZ / TBNZ
           (w & 0xFF000010u) == 0x54000000u ||  // B.cond
           (w & 0xFFE0001Fu) == 0xD4200000u ||  // BRK
-          (w & 0x5F201C00u) == 0x1E201000u ||  // FMOV (imm)
+          (w & 0xFF201FE0u) == 0x1E201000u ||  // FMOV (imm)
           (w & 0x5F20FC00u) == 0x1E200000u ||  // FMOV (gpr<->fp) / FCVT
           (w & 0x9FF80C00u) == 0x0F000400u) {  // MOVI / MVNI
         has_complex_op = true;
@@ -4456,15 +4505,16 @@ HexStatus try_emit_arm64_general(
       }
       uint32_t* b_use_g = emit_arena.alloc<uint32_t>(num_blks);
       uint32_t* b_def_g = emit_arena.alloc<uint32_t>(num_blks);
+      uint32_t* b_def_nc_g = emit_arena.alloc<uint32_t>(num_blks);
       uint32_t* b_use_f = emit_arena.alloc<uint32_t>(num_blks);
       uint32_t* b_def_f = emit_arena.alloc<uint32_t>(num_blks);
       uint32_t* b_in_g = emit_arena.alloc<uint32_t>(num_blks);
       uint32_t* b_in_f = emit_arena.alloc<uint32_t>(num_blks);
       int32_t* b_s0 = emit_arena.alloc<int32_t>(num_blks);
       int32_t* b_s1 = emit_arena.alloc<int32_t>(num_blks);
-      if (b_use_g && b_def_g && b_use_f && b_def_f && b_in_g && b_in_f && b_s0 && b_s1) {
+      if (b_use_g && b_def_g && b_def_nc_g && b_use_f && b_def_f && b_in_g && b_in_f && b_s0 && b_s1) {
         for (uint32_t b = 0u; b < num_blks; ++b) {
-          b_use_g[b] = b_def_g[b] = b_use_f[b] = b_def_f[b] = b_in_g[b] = b_in_f[b] = 0u;
+          b_use_g[b] = b_def_g[b] = b_def_nc_g[b] = b_use_f[b] = b_def_f[b] = b_in_g[b] = b_in_f[b] = 0u;
           b_s0[b] = b_s1[b] = -1;
         }
         uint32_t i = 0u;
@@ -4485,17 +4535,19 @@ HexStatus try_emit_arm64_general(
                 bctx.mark_gpr_read(0u);
               }
             }
+            const uint32_t pre_gw = bctx.gpr_written;
             process_insn(wi, pc, base_addr, word_count, bctx, bcmp, false, nullptr);
             if ((wi & 0xFC000000u) == 0x94000000u || (wi & 0xFFFFFC1Fu) == 0xD63F0000u) {
               bctx.gpr_written |= 0xFFu;
               bctx.fp_written |= 0xFFu;
+            } else {
+              b_def_nc_g[b] |= ((bctx.gpr_written & ~pre_gw) & 0xFFu);
             }
             last_i = i;
             ++i;
           }
           b_use_g[b] = bctx.gpr_read_before_write & 0xFFu;
           b_def_g[b] = bctx.gpr_written & 0xFFu;
-          if (b > 0u) b_use_g[b] &= ~(b_def_g[b] & 0xF0u);
           b_use_f[b] = bctx.fp_read_before_write & 0xFFu;
           b_def_f[b] = bctx.fp_written & 0xFFu;
           const uint32_t lw = words[last_i];
@@ -4533,9 +4585,40 @@ HexStatus try_emit_arm64_general(
           }
           if (!changed) break;
         }
-        uint32_t non_entry_def_g = 0u;
-        for (uint32_t b = 1u; b < num_blks; ++b) non_entry_def_g |= b_def_g[b];
-        live_in_gpr0 = b_in_g[0] & ~((non_entry_def_g & ~b_use_g[0]) & 0xF0u);
+        // Only suppress x4..x7 as uninitialized loop-carried locals when:
+        // (1) not read in block 0, AND (2) every block reading r before writing it either
+        //     self-defines r via a non-call instruction or is transitively reachable from a non-call def of r.
+        uint32_t* b_reach_def = emit_arena.alloc<uint32_t>(num_blks);
+        uint32_t uninit_local_mask = 0u;
+        if (b_reach_def) {
+          for (uint32_t b = 0u; b < num_blks; ++b) b_reach_def[b] = b_def_nc_g[b];
+          for (uint32_t iter2 = 0u; iter2 < 64u; ++iter2) {
+            bool ch2 = false;
+            for (uint32_t b = 0u; b < num_blks; ++b) {
+              const uint32_t cur_d = b_reach_def[b];
+              if (b_s0[b] >= 0 && (b_reach_def[b_s0[b]] | cur_d) != b_reach_def[b_s0[b]]) {
+                b_reach_def[b_s0[b]] |= cur_d; ch2 = true;
+              }
+              if (b_s1[b] >= 0 && (b_reach_def[b_s1[b]] | cur_d) != b_reach_def[b_s1[b]]) {
+                b_reach_def[b_s1[b]] |= cur_d; ch2 = true;
+              }
+            }
+            if (!ch2) break;
+          }
+          for (uint32_t r = 4u; r < 8u; ++r) {
+            const uint32_t bit = 1u << r;
+            if ((b_in_g[0] & bit) == 0u || (b_use_g[0] & bit) != 0u) continue;
+            bool has_any_use = false;
+            bool all_local_like = true;
+            for (uint32_t b = 1u; b < num_blks; ++b) {
+              if ((b_use_g[b] & bit) == 0u) continue;
+              has_any_use = true;
+              if ((b_reach_def[b] & bit) == 0u) { all_local_like = false; break; }
+            }
+            if (has_any_use && all_local_like) uninit_local_mask |= bit;
+          }
+        }
+        live_in_gpr0 = b_in_g[0] & ~uninit_local_mask;
         live_in_fp0 = b_in_f[0];
       }
       // Restore is_label so only real branch targets (== 1) emit C labels

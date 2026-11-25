@@ -1311,7 +1311,7 @@ export function createAppAnalysisQueryAdapter(app) {
         throwIfAborted(options.signal);
         if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
         if(builtIndex&&!builtIndex.empty){
-          const addrBig = address != null ? BigInt(address) : null;
+          let addrBig = null; try { addrBig = address != null ? BigInt(address) : null; } catch { addrBig = null; }
           const addrKey = addrBig != null ? addrBig.toString() : null;
           const fnSymName = addrBig == null ? null : app?.symbols?.nameAt?.(addrBig);
           const isCxxCandidate = addrKey != null && (
