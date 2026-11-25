@@ -1219,3 +1219,202 @@ export function wasmDecodeRiscv64Batch(bytes, basePc = 0n) {
     return noteFallback('riscv64_decode', 'wasm_exception');
   }
 }
+
+// ---------------------------------------------------------------------------
+// Wave 13: String Scanner & Byte Search WASM Bridges
+// ---------------------------------------------------------------------------
+const STRING_SCAN_MAX_SPANS = 32768;
+const STRING_SCAN_ARENA_BUDGET = 3_500_000;
+const STRING_SCAN_ENCODINGS = Object.freeze(['utf8', 'utf16le', 'utf16be']);
+const BYTE_SEARCH_CHUNK_BYTES = 262144;
+const BYTE_SEARCH_NOT_FOUND = 0xffffffff;
+
+export function wasmScanStrings(bytes, ranges, opts = {}) {
+  if (getEngineMode(opts) === 'js') return noteFallback('strings', 'wasm_disabled');
+  const ex = getHexEngineExportsSafe();
+  if (
+    !isWasmBulkMemorySupported()
+    || !ex
+    || typeof ex.hex_string_scan_ranges !== 'function'
+    || typeof ex.hex_identity_alloc !== 'function'
+    || typeof ex.hex_identity_reset !== 'function'
+  ) {
+    return noteFallback('strings', 'wasm_unavailable');
+  }
+  if (!(bytes instanceof Uint8Array)) return noteFallback('strings', 'invalid_bytes');
+  if (!Array.isArray(ranges)) return noteFallback('strings', 'invalid_ranges');
+
+  const minLength = Math.max(1, Math.floor(Number(opts?.minLength ?? 4)));
+  const maxLength = Math.max(minLength, Math.floor(Number(opts?.maxLength ?? 256)));
+  const rawLimit = opts?.limit == null ? STRING_SCAN_MAX_SPANS : Number(opts.limit);
+  if (!Number.isFinite(rawLimit) || rawLimit < 0) return noteFallback('strings', 'invalid_limit');
+  const limit = Math.floor(rawLimit);
+
+  const utf8 = opts?.utf8 !== false;
+  const utf16le = Boolean(opts?.utf16le);
+  const utf16be = Boolean(opts?.utf16be);
+  const flags = (utf8 ? 1 : 0) | (utf16le ? 2 : 0) | (utf16be ? 4 : 0);
+
+  if (ranges.length === 0 || limit === 0 || bytes.length === 0 || flags === 0) {
+    recordWasmCall('strings');
+    return [];
+  }
+
+  const bytesLen = bytes.length;
+  const rangeBytes = ranges.length * 16;
+  const spanCap = Math.min(limit, STRING_SCAN_MAX_SPANS);
+  if (bytesLen + rangeBytes + spanCap * 16 + 256 > STRING_SCAN_ARENA_BUDGET) {
+    return noteFallback('strings', 'input_too_large');
+  }
+
+  try {
+    ex.hex_identity_reset();
+    const bytesPtr = ex.hex_identity_alloc(bytesLen);
+    const rangesPtr = ex.hex_identity_alloc(rangeBytes);
+    const outSpansPtr = ex.hex_identity_alloc(spanCap * 16);
+    const outCountPtr = ex.hex_identity_alloc(4);
+    if (!bytesPtr || !rangesPtr || !outSpansPtr || !outCountPtr) {
+      return noteFallback('strings', 'oom');
+    }
+
+    new Uint8Array(ex.memory.buffer, bytesPtr, bytesLen).set(bytes);
+    const rdv = new DataView(ex.memory.buffer, rangesPtr, rangeBytes);
+    for (let i = 0; i < ranges.length; i += 1) {
+      const r = ranges[i];
+      if (!r || typeof r !== 'object') return noteFallback('strings', 'invalid_range');
+      const startNum = Number(r.start ?? 0);
+      const endNum = r.size != null ? startNum + Number(r.size) : Number(r.end ?? startNum);
+      if (!Number.isFinite(startNum) || !Number.isFinite(endNum) || startNum < 0 || endNum < startNum) {
+        return noteFallback('strings', 'invalid_range');
+      }
+      const start = Math.min(bytesLen, Math.floor(startNum)) >>> 0;
+      const end = Math.min(bytesLen, Math.floor(endNum)) >>> 0;
+      const off = i * 16;
+      rdv.setUint32(off, start, true);
+      rdv.setUint32(off + 4, end, true);
+      rdv.setUint32(off + 8, i >>> 0, true);
+      rdv.setUint32(off + 12, 0, true);
+    }
+
+    const status = ex.hex_string_scan_ranges(
+      bytesPtr,
+      bytesLen >>> 0,
+      rangesPtr,
+      ranges.length >>> 0,
+      minLength >>> 0,
+      maxLength >>> 0,
+      flags >>> 0,
+      outSpansPtr,
+      spanCap >>> 0,
+      outCountPtr,
+    );
+    if (status !== HEX_OK) {
+      return noteFallback('strings', `wasm_status_${status}`);
+    }
+
+    const mem = ex.memory.buffer;
+    const outCount = new DataView(mem).getUint32(outCountPtr, true);
+    if (outCount === spanCap && spanCap < limit) {
+      return noteFallback('strings', 'span_cap_reached');
+    }
+
+    const sdv = new DataView(mem, outSpansPtr, outCount * 16);
+    const out = new Array(outCount);
+    for (let i = 0; i < outCount; i += 1) {
+      const off = i * 16;
+      const encId = sdv.getUint32(off + 8, true);
+      out[i] = {
+        fileOffset: sdv.getUint32(off, true),
+        byteLength: sdv.getUint32(off + 4, true),
+        encoding: STRING_SCAN_ENCODINGS[encId] || 'utf8',
+        rangeIdx: sdv.getUint32(off + 12, true),
+      };
+    }
+    recordWasmCall('strings');
+    return out;
+  } catch {
+    return noteFallback('strings', 'wasm_exception');
+  }
+}
+
+export function wasmByteSearchFind(haystack, fromOffset, pattern, masks, foldAscii, opts = {}) {
+  if (getEngineMode(opts) === 'js') return noteFallback('byte_search', 'wasm_disabled');
+  const ex = getHexEngineExportsSafe();
+  if (
+    !isWasmBulkMemorySupported()
+    || !ex
+    || typeof ex.hex_byte_search_find !== 'function'
+    || typeof ex.hex_identity_alloc !== 'function'
+    || typeof ex.hex_identity_reset !== 'function'
+  ) {
+    return noteFallback('byte_search', 'wasm_unavailable');
+  }
+  if (!(haystack instanceof Uint8Array)) return noteFallback('byte_search', 'invalid_haystack');
+  if (!(pattern instanceof Uint8Array) || pattern.length < 1 || pattern.length > 4096) {
+    return noteFallback('byte_search', 'invalid_pattern');
+  }
+  if (masks != null && (!(masks instanceof Uint8Array) || masks.length < pattern.length)) {
+    return noteFallback('byte_search', 'invalid_masks');
+  }
+
+  let start = Number(fromOffset ?? 0);
+  if (!Number.isFinite(start)) return noteFallback('byte_search', 'invalid_offset');
+  start = start < 0 ? 0 : Math.floor(start);
+
+  const patLen = pattern.length;
+  if (start + patLen > haystack.length) {
+    recordWasmCall('byte_search');
+    return -1;
+  }
+
+  const overlap = patLen - 1;
+  const flags = foldAscii ? 1 : 0;
+
+  try {
+    let chunkStart = start;
+    while (chunkStart + patLen <= haystack.length) {
+      const chunkLen = Math.min(BYTE_SEARCH_CHUNK_BYTES, haystack.length - chunkStart);
+      ex.hex_identity_reset();
+      const chunkPtr = ex.hex_identity_alloc(chunkLen);
+      const patPtr = ex.hex_identity_alloc(patLen);
+      const maskPtr = masks ? ex.hex_identity_alloc(patLen) : 0;
+      const outPtr = ex.hex_identity_alloc(4);
+      if (!chunkPtr || !patPtr || (masks && !maskPtr) || !outPtr) {
+        return noteFallback('byte_search', 'oom');
+      }
+
+      const memBytes = new Uint8Array(ex.memory.buffer);
+      memBytes.set(haystack.subarray(chunkStart, chunkStart + chunkLen), chunkPtr);
+      memBytes.set(pattern, patPtr);
+      if (masks) memBytes.set(masks.subarray(0, patLen), maskPtr);
+
+      const status = ex.hex_byte_search_find(
+        chunkPtr,
+        chunkLen >>> 0,
+        0,
+        patPtr,
+        maskPtr,
+        patLen >>> 0,
+        flags >>> 0,
+        outPtr,
+      );
+      if (status !== HEX_OK) {
+        return noteFallback('byte_search', `wasm_status_${status}`);
+      }
+
+      const match = new DataView(ex.memory.buffer).getUint32(outPtr, true);
+      if (match !== BYTE_SEARCH_NOT_FOUND) {
+        recordWasmCall('byte_search');
+        return chunkStart + match;
+      }
+
+      if (chunkLen <= overlap) break;
+      chunkStart += chunkLen - overlap;
+    }
+
+    recordWasmCall('byte_search');
+    return -1;
+  } catch {
+    return noteFallback('byte_search', 'wasm_exception');
+  }
+}

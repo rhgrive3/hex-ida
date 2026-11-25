@@ -70,6 +70,8 @@ const OPTIONAL_TARGET_SRCS = [
   'cpp/src/targets/x86_64_decomp.cpp',
   'cpp/src/targets/x86_64_semantic_emit.cpp',
   'cpp/src/targets/riscv64_decode.cpp',
+  'cpp/src/binary/string_scanner.cpp',
+  'cpp/src/core/byte_search.cpp',
 ];
 
 const OPTIONAL_RUNTIME_SRCS = [
