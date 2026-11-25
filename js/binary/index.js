@@ -65,7 +65,36 @@ export function openBinary(input, opts = {}) {
         ? { ...opts.strings, _engine: opts._engine }
         : opts.strings)
       : (opts._engine != null ? { _engine: opts._engine } : {});
-    image.strings = scanStrings(image, stringOpts);
+    const eagerStrings = engineMode !== 'auto'
+      || getEngineMode(stringOpts) !== 'auto'
+      || (typeof opts.strings === 'object' && (opts.strings.onProgress || opts.strings.signal || opts.strings.eager === true))
+      || !Object.isExtensible(image);
+    if (eagerStrings) {
+      image.strings = scanStrings(image, stringOpts);
+    } else {
+      Object.defineProperty(image, 'strings', {
+        enumerable: true,
+        configurable: true,
+        get() {
+          const value = scanStrings(image, stringOpts);
+          Object.defineProperty(image, 'strings', {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+          return value;
+        },
+        set(value) {
+          Object.defineProperty(image, 'strings', {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        },
+      });
+    }
   }
   return image;
 }

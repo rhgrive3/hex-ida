@@ -91,6 +91,7 @@ const ALL_WASM_DOMAINS = Object.freeze([
   'strings',
   'byte_search',
   'sha256',
+  'elf_symbols',
 ]);
 
 function summarizeWasmCalls(counts = {}) {
