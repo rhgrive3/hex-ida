@@ -232,10 +232,10 @@ bool emit_expr_iterative(Arena& arena, const Vec<ExprNode>& exprs, uint32_t root
         } else {
           if (e.disp >= 0) {
             if (!append_cstr(out, ") + 0x")) return false;
-            if (!append_u64_hex(out, static_cast<uint64_t>(e.disp), false)) return false;
+            if (!append_u64_hex(out, static_cast<uint64_t>(e.disp), true)) return false;
           } else {
             if (!append_cstr(out, ") - 0x")) return false;
-            if (!append_u64_hex(out, static_cast<uint64_t>(-(e.disp + 1)) + 1ULL, false)) return false;
+            if (!append_u64_hex(out, static_cast<uint64_t>(-(e.disp + 1)) + 1ULL, true)) return false;
           }
         }
         if (!append_ch(out, ')')) return false;

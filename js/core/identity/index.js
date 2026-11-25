@@ -258,23 +258,29 @@ function isWasmJsonSafe(val) {
 }
 
 const WASM_IDENTITY_MIN_STRING_LEN = 64;
+const WASM_IDENTITY_AUTO_MIN_STRING_LEN = 512;
+const WASM_IDENTITY_AUTO_MIN_CONTAINER_LEN = 16;
 
-function shouldUseWasmForSafeValue(safe) {
+function shouldUseWasmForSafeValue(safe, mode = getEngineMode()) {
   if (safe === null) return false;
   const t = typeof safe;
-  if (t === 'string') return safe.length >= WASM_IDENTITY_MIN_STRING_LEN;
+  const minStr = mode === 'wasm' ? WASM_IDENTITY_MIN_STRING_LEN : WASM_IDENTITY_AUTO_MIN_STRING_LEN;
+  const minCont = mode === 'wasm' ? 1 : WASM_IDENTITY_AUTO_MIN_CONTAINER_LEN;
+  if (t === 'string') return safe.length >= minStr;
   if (t !== 'object') return false;
-  if (Array.isArray(safe)) return safe.length > 0;
-  return Object.keys(safe).length > 0;
+  if (Array.isArray(safe)) return safe.length >= minCont;
+  return Object.keys(safe).length >= minCont;
 }
 
-function isTrivialInlineDigestValue(value) {
+function isTrivialInlineDigestValue(value, mode = getEngineMode()) {
   if (value === null) return true;
   const t = typeof value;
-  if (t === 'string') return value.length < WASM_IDENTITY_MIN_STRING_LEN;
+  const minStr = mode === 'wasm' ? WASM_IDENTITY_MIN_STRING_LEN : WASM_IDENTITY_AUTO_MIN_STRING_LEN;
+  const minCont = mode === 'wasm' ? 1 : WASM_IDENTITY_AUTO_MIN_CONTAINER_LEN;
+  if (t === 'string') return value.length < minStr;
   if (t !== 'object') return true;
-  if (Array.isArray(value)) return value.length === 0;
-  if (isCanonicalPlainObject(value)) return Object.keys(value).length === 0;
+  if (Array.isArray(value)) return value.length < minCont;
+  if (isCanonicalPlainObject(value)) return Object.keys(value).length < minCont;
   return false;
 }
 
@@ -298,9 +304,10 @@ export function stableDigest(value) {
     return fnv64Text(text) + fnv64Text(text, FNV_OFFSET_HIGH, FNV_OFFSET_LOW);
   }
   let target = value;
-  if (!isTrivialInlineDigestValue(value) && getEngineMode() !== 'js') {
+  const mode = getEngineMode();
+  if (mode !== 'js' && !isTrivialInlineDigestValue(value, mode)) {
     const safe = jsonSafe(value);
-    if (safe !== undefined && shouldUseWasmForSafeValue(safe) && isWasmJsonSafe(safe)) {
+    if (safe !== undefined && shouldUseWasmForSafeValue(safe, mode) && isWasmJsonSafe(safe)) {
       const wasmHash = typeof safe === 'string'
         ? wasmStableDigest(JSON.stringify(safe))
         : wasmStableDigest(safe);

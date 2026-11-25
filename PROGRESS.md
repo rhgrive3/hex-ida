@@ -140,7 +140,7 @@
   - `R15-2` (`hex-engine-bridge.js`, `strings.js`): Aligned `STRING_SCAN_ARENA_BUDGET` & `ELF_SYMBOLS_ARENA_BUDGET` to actual 1.5 MiB unified scratch (`1_500_000`) and fixed `else if` double-fallback guard.
   - `R15-3` (`macho-core.js`, `identity/index.js`, `model.js`): PASS; added `_mappingLookups.offsets !== null` cache guard.
   - `R15-4` (`elf-mapping.js`, docs): Added null-element guard in `ensureFileSegmentsCache`; docs 100% synced.
-- **Unified WASM Artifact**: `wasm/hex_engine.wasm` (**430,621 bytes**, **28 freestanding C++20 units**, **100 exports**, **0 imports**, initial linear memory **6.6875 MiB** [107 pages] <= 8 MiB, `SharedArrayBuffer: false`).
+- **Unified WASM Artifact**: `wasm/hex_engine.wasm` (**435,615 bytes**, **29 freestanding C++20 units**, **100 exports**, **0 imports**, initial linear memory **6.6875 MiB** [107 pages] <= 8 MiB, `SharedArrayBuffer: false`).
 - **Verification**: Native ASan/UBSan (`test_elf_symbols_native`, `test_sha256_native`) ALL PASS; **42/42 Node Wave 6/7/11/12/13/14/16, `byte-search`, `#8736`, `#8772`, `#8880` subtests** PASS; `npm run lint` (`5846 files ok`) PASS; `npm run module-boundaries:test` PASS; `npm run userscript:build` PASS (protected runtime `20,947,477 -> 6,027,307 bytes`).
 - **Wave 16 Benchmarks**:
   - Steady-state `openBinary` (50-iter avg across 13 real binaries): JS **8.775 ms** -> Hybrid Lazy **`6.401 ms`** (**1.37x**, down from `10.085 ms` in Wave 12/13 = **-36.5%**; even reading all `.strings` = **8.023 ms**).
