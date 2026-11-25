@@ -806,7 +806,7 @@ HexStatus try_emit_arm64_memory(
       if (st.bits == 32u) {
         if (!append_cstr(text, ") + ") || !append_i64_dec(text, st.disp)) return HEX_ERR_OOM;
       } else {
-        if (!append_cstr(text, ") + 0x") || !append_u64_hex(text, static_cast<uint64_t>(st.disp), false)) {
+        if (!append_cstr(text, ") + 0x") || !append_u64_hex(text, static_cast<uint64_t>(st.disp), true)) {
           return HEX_ERR_OOM;
         }
       }
