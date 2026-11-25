@@ -41,6 +41,7 @@ const HEX_IR_NONE = 0xffffffff;
 // invocation; all other instructions are delegated directly to C++'s strict
 // 0-diff gate (`hex_engine_decompile_arm64` -> HEX_OK vs HEX_ERR_UNSUPPORTED).
 const EXPLICIT_UNSUPPORTED_ARM64_MNEMONICS = Object.freeze(new Set([
+  'fmov',
   'mneg',
   'smull',
 ]));
@@ -577,7 +578,8 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
 
     const rawLines = pseudocode.split('\n');
     const legacyRawRegDeclRe = /^\s*(?:u?int(?:8|16|32|64|128)(?:_t)?|float|double)\s+[xw]\d+;/;
-    const isLegacyOutput = rawLines.some((l) => (
+    const hasGeneralQDecl = rawLines.some((l) => /^\s*uint128\s+q\d+\s*=\s*0;/.test(l));
+    const isLegacyOutput = !hasGeneralQDecl && rawLines.some((l) => (
       l.includes('// … ほかに ')
       || l.includes('*(uint128 *)')
       || l.includes('__builtin_trap();   // ここに来たら異常')
@@ -693,9 +695,11 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         const foldedExtra = (kind === 'stmt' && /^\*\([^)]+\)\(.*\)\s*[-+]=\s*/.test(trimmed)) ? 2 : 0;
         const addresses = kind === 'sig'
           ? [baseAddrBig]
-          : (kind === 'decl' || kind === 'comment' || kind === 'blank' || isBraceOrElse)
-            ? []
-            : mappedAddrs.slice();
+          : kind === 'decl'
+            ? (mappedAddrs.length > 0 ? mappedAddrs.slice() : [])
+            : (kind === 'comment' || kind === 'blank' || isBraceOrElse)
+              ? []
+              : mappedAddrs.slice();
         const rows = addresses
           .map((a) => addrToRow.get(a))
           .filter((r) => r !== undefined);

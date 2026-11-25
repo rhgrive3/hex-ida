@@ -10,7 +10,7 @@ static constexpr uint32_t kMaxNormNameLen = 128u;
 static constexpr uint32_t kMaxGlobals = 128u;
 static constexpr uint32_t kMaxCallees = 128u;
 static constexpr uint32_t kMaxTextCap = 131072u;
-static constexpr uint32_t kMaxLineMapCap = 2048u;
+static constexpr uint32_t kMaxLineMapCap = 4096u;
 
 static inline bool is_ascii_alpha(char c) {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
@@ -145,16 +145,6 @@ struct TextBuf {
       val /= 10u;
     } while (val != 0u);
     while (n > 0u) put_char(tmp[--n]);
-  }
-
-  void put_i64_signed(int64_t val) {
-    if (val < 0) {
-      put_char('-');
-      const uint64_t mag = static_cast<uint64_t>(-(val + 1)) + 1ULL;
-      put_u64_dec(mag);
-    } else {
-      put_u64_dec(static_cast<uint64_t>(val));
-    }
   }
 
   void put_imm(uint64_t val) {
@@ -293,6 +283,7 @@ struct AnalysisCtx {
   bool has_unknown_call;
   bool returns_double;
   bool returns_value;
+  bool table_overflow;
   uint64_t adrp_page[31];
   bool adrp_valid[31];
   GlobalEntry globals[kMaxGlobals];
@@ -345,6 +336,8 @@ struct AnalysisCtx {
       globals[global_count].addr = addr;
       globals[global_count].needs_addr_of = addr_of;
       ++global_count;
+    } else {
+      table_overflow = true;
     }
   }
 
@@ -354,6 +347,8 @@ struct AnalysisCtx {
     }
     if (callee_count < kMaxCallees) {
       callees[callee_count++] = addr;
+    } else {
+      table_overflow = true;
     }
   }
 
@@ -391,7 +386,7 @@ static bool is_internal_target(uint64_t target, uint64_t base_addr, uint32_t wor
 
 static void emit_cond_expr(TextBuf& tb, uint32_t cond, const CmpState& cmp) {
   if (!cmp.valid) {
-    tb.put_str("1");
+    tb.put_str("(1)");
     return;
   }
   const uint32_t c = cond & 0xFu;
@@ -409,7 +404,7 @@ static void emit_cond_expr(TextBuf& tb, uint32_t cond, const CmpState& cmp) {
     case 0xCu: op = ">";  break;  // gt
     case 0xDu: op = "<="; break;  // le
     default:
-      tb.put_str("1");
+      tb.put_str("(1)");
       return;
   }
 
@@ -567,6 +562,7 @@ static void process_insn(
           tb->put_str("    sub_");
           tb->put_u64_hex(target, true);
           tb->put_str("(/* arguments unknown */);\n");
+          rec();
           if (ctx.returns_double) tb->put_str("    return d0;\n");
           else tb->put_str("    return;\n");
         }
@@ -717,7 +713,7 @@ static void process_insn(
     const uint32_t immhi = (w >> 5u) & 0x7FFFFu;
     const int64_t imm21 = sign_extend((immhi << 2u) | immlo, 21u);
     const uint64_t val = is_adrp
-        ? ((pc & ~0xFFFULL) + static_cast<uint64_t>(imm21 << 12u))
+        ? ((pc & ~0xFFFULL) + (static_cast<uint64_t>(imm21) << 12u))
         : (pc + static_cast<uint64_t>(imm21));
     if (rd < 31u) {
       if (!emit) {
@@ -805,11 +801,12 @@ static void process_insn(
       if (!emit) {
         if (rn < 31u) ctx.mark_gpr_read(rn);
         if (rd < 31u) ctx.mark_gpr_write(rd);
-        if (!is64) ctx.uses_uint32 = true;
-      } else if (tb && rd < 31u) {
+        else if (!sets_flags) ctx.uses_sp = true;
+        if (!is64 && !(sets_flags && rd == 31u)) ctx.uses_uint32 = true;
+      } else if (tb && !(sets_flags && rd == 31u)) {
         rec();
         tb->put_str("    ");
-        tb->put_reg_x(rd);
+        tb->put_reg_x_or_sp(rd);
         tb->put_str(" = ");
         if (opc == 1u && rn == 31u) {
           tb->put_imm(imm);
@@ -821,7 +818,7 @@ static void process_insn(
           if (!is64) tb->put_char(')');
         }
         tb->put_str(";\n");
-        ctx.adrp_valid[rd] = false;
+        if (rd < 31u) ctx.adrp_valid[rd] = false;
       }
     }
     return;
@@ -861,10 +858,11 @@ static void process_insn(
     }
 
     if (!emit) {
-      if (rn == 31u || (rd == 31u && !sets_flags)) ctx.uses_sp = true;
+      if (rn == 31u) ctx.uses_sp = true;
       else ctx.mark_gpr_read(rn);
       if (rd < 31u) ctx.mark_gpr_write(rd);
-      if (!is64 && (rd < 31u)) ctx.uses_uint32 = true;
+      else if (!sets_flags) ctx.uses_sp = true;
+      if (!is64 && !(sets_flags && rd == 31u)) ctx.uses_uint32 = true;
     } else if (tb) {
       if (sets_flags && rd == 31u) {
         // CMP / CMN immediate: handled via cmp state.
@@ -954,7 +952,8 @@ static void process_insn(
       else ctx.mark_gpr_read(rn);
       ctx.mark_gpr_read(rm);
       if (rd < 31u) ctx.mark_gpr_write(rd);
-      if (!is64 && rd < 31u) ctx.uses_uint32 = true;
+      else if (!sets_flags) ctx.uses_sp = true;
+      if (!is64 && !(sets_flags && rd == 31u)) ctx.uses_uint32 = true;
     } else if (tb && !(sets_flags && rd == 31u)) {
       rec();
       tb->put_str("    ");
@@ -1037,7 +1036,7 @@ static void process_insn(
   }
 
   // UBFM / SBFM (LSL / LSR / ASR / SXTW / SXTH / SXTB / UXTB / UXTH)
-  if ((w & 0x1F800000u) == 0x13000000u) {
+  if ((w & 0x1F800000u) == 0x13000000u && (((w >> 29u) & 3u) == 0u || ((w >> 29u) & 3u) == 2u)) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const uint32_t opc = (w >> 29u) & 3u;  // 0=sbfm, 2=ubfm
     const uint32_t immr = (w >> 16u) & 0x3Fu;
@@ -1092,9 +1091,9 @@ static void process_insn(
         tb->put_str(" << ");
         tb->put_u64_dec(sh);
         if (!is64) tb->put_char(')');
-      } else {
-        // Generic bitfield extract
-        const uint32_t bits = (imms >= immr) ? (imms - immr + 1u) : (imms + 1u);
+      } else if (imms >= immr) {
+        // Generic bitfield extract (UBFX / SBFX)
+        const uint32_t bits = imms - immr + 1u;
         const uint64_t mask = (bits >= 64u) ? ~0ULL : ((1ULL << bits) - 1ULL);
         tb->put_str("(");
         tb->put_reg_x(rn);
@@ -1102,6 +1101,20 @@ static void process_insn(
         tb->put_u64_dec(immr);
         tb->put_str(") & ");
         tb->put_imm(mask);
+      } else {
+        // Bitfield insert-at-zero (UBFIZ / SBFIZ): (rn & mask) << (width - immr)
+        const uint32_t bits = imms + 1u;
+        const uint32_t lshift = (width - immr) & (width - 1u);
+        const uint64_t mask = (bits >= 64u) ? ~0ULL : ((1ULL << bits) - 1ULL);
+        if (!is64) tb->put_str("(uint32_t)(");
+        tb->put_str("((");
+        tb->put_reg_x(rn);
+        tb->put_str(" & ");
+        tb->put_imm(mask);
+        tb->put_str(") << ");
+        tb->put_u64_dec(lshift);
+        tb->put_char(')');
+        if (!is64) tb->put_char(')');
       }
       tb->put_str(";\n");
       ctx.adrp_valid[rd] = false;
@@ -1201,54 +1214,63 @@ static void process_insn(
   }
 
   // UDIV / SDIV / LSLV / LSRV / ASRV
-  if ((w & 0x5FE0E000u) == 0x1AC00000u) {
+  if ((w & 0x7FE0C000u) == 0x1AC00000u) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const uint32_t op2 = (w >> 10u) & 0x3Fu;
-    const uint32_t rm = (w >> 16u) & 31u;
-    const uint32_t rn = (w >> 5u) & 31u;
-    const uint32_t rd = w & 31u;
-    if (!emit) {
-      ctx.mark_gpr_read(rn);
-      ctx.mark_gpr_read(rm);
-      if (rd < 31u) ctx.mark_gpr_write(rd);
-      ctx.uses_uint32 = true;
-      ctx.uses_int32 = true;
-      ctx.uses_int64_t = true;
-    } else if (tb && rd < 31u) {
-      rec();
-      tb->put_str("    ");
-      tb->put_reg_x(rd);
-      tb->put_str(" = ");
-      if (op2 == 2u || op2 == 3u) {
-        // UDIV / SDIV (guard division by zero)
-        tb->put_char('(');
-        tb->put_reg_x(rm);
-        tb->put_str(" != 0 ? (");
-        if (op2 == 3u) tb->put_str(is64 ? "(int64_t)" : "(int32_t)");
-        else if (!is64) tb->put_str("(uint32_t)");
-        tb->put_reg_x(rn);
-        tb->put_str(" / ");
-        if (op2 == 3u) tb->put_str(is64 ? "(int64_t)" : "(int32_t)");
-        else if (!is64) tb->put_str("(uint32_t)");
-        tb->put_reg_x(rm);
-        tb->put_str(") : 0)");
-      } else {
-        const char* sop = (op2 == 8u) ? " << " : " >> ";
-        const uint32_t smask = is64 ? 63u : 31u;
-        if (!is64) tb->put_str("(uint32_t)(");
-        tb->put_reg_x(rn);
-        tb->put_str(sop);
-        tb->put_char('(');
-        tb->put_reg_x(rm);
-        tb->put_str(" & ");
-        tb->put_u64_dec(smask);
-        tb->put_char(')');
-        if (!is64) tb->put_char(')');
+    if (op2 == 2u || op2 == 3u || op2 == 8u || op2 == 9u || op2 == 10u) {
+      const uint32_t rm = (w >> 16u) & 31u;
+      const uint32_t rn = (w >> 5u) & 31u;
+      const uint32_t rd = w & 31u;
+      if (!emit) {
+        ctx.mark_gpr_read(rn);
+        ctx.mark_gpr_read(rm);
+        if (rd < 31u) ctx.mark_gpr_write(rd);
+        ctx.uses_uint32 = true;
+        ctx.uses_int32 = true;
+        ctx.uses_int64_t = true;
+      } else if (tb && rd < 31u) {
+        rec();
+        tb->put_str("    ");
+        tb->put_reg_x(rd);
+        tb->put_str(" = ");
+        if (op2 == 2u || op2 == 3u) {
+          // UDIV / SDIV (guard division by zero at exact operand width)
+          tb->put_char('(');
+          if (!is64) tb->put_str("(uint32_t)");
+          tb->put_reg_x(rm);
+          tb->put_str(" != 0 ? ");
+          if (!is64) tb->put_str("(uint32_t)");
+          tb->put_char('(');
+          if (op2 == 3u) tb->put_str(is64 ? "(int64_t)" : "(int32_t)");
+          else if (!is64) tb->put_str("(uint32_t)");
+          tb->put_reg_x(rn);
+          tb->put_str(" / ");
+          if (op2 == 3u) tb->put_str(is64 ? "(int64_t)" : "(int32_t)");
+          else if (!is64) tb->put_str("(uint32_t)");
+          tb->put_reg_x(rm);
+          tb->put_str(") : 0)");
+        } else {
+          const char* sop = (op2 == 8u) ? " << " : " >> ";
+          const uint32_t smask = is64 ? 63u : 31u;
+          if (!is64) tb->put_str("(uint32_t)(");
+          if (op2 == 10u) tb->put_str(is64 ? "(uint64)((int64_t)" : "((int32_t)");
+          else if (!is64) tb->put_str("((uint32_t)");
+          tb->put_reg_x(rn);
+          if (op2 == 10u || !is64) tb->put_char(')');
+          tb->put_str(sop);
+          tb->put_char('(');
+          tb->put_reg_x(rm);
+          tb->put_str(" & ");
+          tb->put_u64_dec(smask);
+          tb->put_char(')');
+          if (op2 == 10u && is64) tb->put_char(')');
+          if (!is64) tb->put_char(')');
+        }
+        tb->put_str(";\n");
+        ctx.adrp_valid[rd] = false;
       }
-      tb->put_str(";\n");
-      ctx.adrp_valid[rd] = false;
+      return;
     }
-    return;
   }
 
   // LDP / STP (GPR 32/64 and FP/SIMD 32/64/128: signed offset, pre-index, post-index)
@@ -1279,7 +1301,10 @@ static void process_insn(
     if (!emit) {
       mark_mem_types(ctx, bits, false, is_fp);
       if (rn == 31u) ctx.uses_sp = true;
-      else ctx.mark_gpr_read(rn);
+      else {
+        ctx.mark_gpr_read(rn);
+        if (mode == 1u || mode == 3u) ctx.mark_gpr_write(rn);
+      }
       if (is_fp) {
         if (bits == 128u) { ctx.mark_q(rt); ctx.mark_q(rt2); }
         else if (is_load) { ctx.mark_fp_write(rt); ctx.mark_fp_write(rt2); }
@@ -1299,10 +1324,11 @@ static void process_insn(
         tb->put_imm(disp > 0 ? static_cast<uint64_t>(disp) : static_cast<uint64_t>(-disp));
         tb->put_str(";\n");
       }
-      const int64_t eff0 = (mode == 2u) ? disp : 0;
+      const int64_t eff0 = (mode == 0u || mode == 2u) ? disp : 0;
       const int64_t eff1 = eff0 + static_cast<int64_t>(scale);
       auto emit_one = [&](uint32_t reg, int64_t off) {
         if (!is_fp && is_load && reg == 31u) return;
+        rec();
         tb->put_str("    ");
         if (is_load) {
           if (is_fp) {
@@ -1336,7 +1362,9 @@ static void process_insn(
         if (rt < 31u) ctx.adrp_valid[rt] = false;
         if (rt2 < 31u) ctx.adrp_valid[rt2] = false;
       }
+      if ((mode == 1u || mode == 3u) && rn < 31u) ctx.adrp_valid[rn] = false;
       if (mode == 1u && disp != 0) {
+        rec();
         tb->put_str("    ");
         tb->put_reg_x_or_sp(rn);
         tb->put_str(" = ");
@@ -1367,6 +1395,8 @@ static void process_insn(
       else if (size_f == 2u) { bits = 32u; scale = 4u; is_load = (opc & 1u) != 0u; }
       else return;
     } else {
+      // PRFM (prefetch memory): size=3, opc=2 -> hardware hint, does not write rt.
+      if (size_f == 3u && opc == 2u) return;
       is_load = (opc != 0u);
       is_signed = (opc >= 2u);
       bits = 8u << size_f;
@@ -1399,22 +1429,32 @@ static void process_insn(
         rec();
         tb->put_str("    ");
         if (is_load) {
+          if (!is_fp && rt == 31u) {
+            tb->put_str("(void)global_");
+            tb->put_u64_hex(gaddr, true);
+            tb->put_str(";\n");
+          } else {
+            if (is_fp) {
+              if (bits == 128u) tb->put_reg_q(rt);
+              else tb->put_reg_d(rt);
+            } else {
+              tb->put_reg_x(rt);
+            }
+            tb->put_str(" = global_");
+            tb->put_u64_hex(gaddr, true);
+            tb->put_str(";\n");
+            if (!is_fp && rt < 31u) ctx.adrp_valid[rt] = false;
+          }
+        } else {
+          tb->put_str("global_");
+          tb->put_u64_hex(gaddr, true);
+          tb->put_str(" = ");
           if (is_fp) {
             if (bits == 128u) tb->put_reg_q(rt);
             else tb->put_reg_d(rt);
           } else {
             tb->put_reg_x(rt);
           }
-          tb->put_str(" = global_");
-          tb->put_u64_hex(gaddr, true);
-          tb->put_str(";\n");
-          if (!is_fp && rt < 31u) ctx.adrp_valid[rt] = false;
-        } else {
-          tb->put_str("global_");
-          tb->put_u64_hex(gaddr, true);
-          tb->put_str(" = ");
-          if (is_fp) tb->put_reg_d(rt);
-          else tb->put_reg_x(rt);
           tb->put_str(";\n");
         }
       }
@@ -1424,7 +1464,10 @@ static void process_insn(
     if (!emit) {
       mark_mem_types(ctx, bits, is_signed, is_fp);
       if (rn == 31u) ctx.uses_sp = true;
-      else ctx.mark_gpr_read(rn);
+      else {
+        ctx.mark_gpr_read(rn);
+        if (idx_mode == 1u || idx_mode == 3u) ctx.mark_gpr_write(rn);
+      }
       if (is_regoff) ctx.mark_gpr_read(rm);
       if (is_fp) {
         if (bits == 128u) ctx.mark_q(rt);
@@ -1448,6 +1491,7 @@ static void process_insn(
       if (!is_fp && is_load && rt == 31u) {
         // Prefetch / discard load to XZR.
       } else {
+        if (idx_mode == 3u && disp != 0) rec();
         tb->put_str("    ");
         if (is_load) {
           if (is_fp) {
@@ -1510,6 +1554,7 @@ static void process_insn(
       }
       if ((idx_mode == 1u || idx_mode == 3u) && rn < 31u) ctx.adrp_valid[rn] = false;
       if (idx_mode == 1u && disp != 0) {
+        rec();
         tb->put_str("    ");
         tb->put_reg_x_or_sp(rn);
         tb->put_str(" = ");
@@ -1523,7 +1568,8 @@ static void process_insn(
   }
 
   // Load/Store Exclusive & Acquire/Release: LDXR / STXR / LDAXR / STLXR / LDAR / STLR
-  if ((w & 0x3F000000u) == 0x08000000u) {
+  // Exclude ARMv8.1 CAS/CASA/CASL/CASAL (bit 23 == 1 && bit 21 == 1).
+  if ((w & 0x3F000000u) == 0x08000000u && !(((w >> 23u) & 1u) != 0u && ((w >> 21u) & 1u) != 0u)) {
     const uint32_t size_f = (w >> 30u) & 3u;
     const bool is_load = ((w >> 22u) & 1u) != 0u;
     const bool is_ordered_only = ((w >> 23u) & 1u) != 0u;  // ldar/stlr
@@ -1543,10 +1589,17 @@ static void process_insn(
         rec();
         tb->put_str("    ");
         if (is_load) {
-          tb->put_reg_x(rt);
-          tb->put_str(" = global_");
-          tb->put_u64_hex(gaddr, true);
-          tb->put_str(";\n");
+          if (rt == 31u) {
+            tb->put_str("(void)global_");
+            tb->put_u64_hex(gaddr, true);
+            tb->put_str(";\n");
+          } else {
+            tb->put_reg_x(rt);
+            tb->put_str(" = global_");
+            tb->put_u64_hex(gaddr, true);
+            tb->put_str(";\n");
+            ctx.adrp_valid[rt] = false;
+          }
         } else {
           tb->put_str("global_");
           tb->put_u64_hex(gaddr, true);
@@ -1591,6 +1644,7 @@ static void process_insn(
         tb->put_reg_x(rt);
         tb->put_str(";\n");
         if (!is_ordered_only && rs < 31u) {
+          rec();
           tb->put_str("    ");
           tb->put_reg_x(rs);
           tb->put_str(" = 0;\n");
@@ -1700,7 +1754,7 @@ static void process_insn(
     const uint32_t opcode = (w >> 16u) & 7u;
     const uint32_t rn = (w >> 5u) & 31u;
     const uint32_t rd = w & 31u;
-    const bool to_int = (opcode == 0u || opcode == 1u || opcode == 4u || opcode == 6u);
+    const bool to_int = (opcode == 0u || opcode == 1u || opcode == 4u || opcode == 5u || opcode == 6u);
     if (to_int) {
       if (!emit) {
         ctx.mark_fp_read(rn);
@@ -1716,7 +1770,7 @@ static void process_insn(
         tb->put_str(";\n");
         ctx.adrp_valid[rd] = false;
       }
-    } else if (opcode == 2u || opcode == 3u || opcode == 5u || opcode == 7u) {
+    } else if (opcode == 2u || opcode == 3u || opcode == 7u) {
       if (!emit) {
         ctx.mark_gpr_read(rn);
         ctx.mark_fp_write(rd);
@@ -1783,7 +1837,8 @@ HexStatus try_emit_arm64_general(
       if ((w & 0x1F000000u) == 0x10000000u ||  // ADRP / ADR
           (w & 0x3A000000u) == 0x28000000u ||  // LDP / STP
           (w & 0x3B000000u) == 0x39000000u ||  // LDR / STR uoff
-          (w & 0x3B200000u) == 0x38000000u ||  // LDUR / STUR / pre / post / regoff
+          (w & 0x3B200000u) == 0x38000000u ||  // LDUR / STUR / pre / post
+          (w & 0x3B200C00u) == 0x38200800u ||  // LDR / STR regoff
           (w & 0x3F000000u) == 0x08000000u ||  // LDXR / STXR / LDAR / STLR
           (w & 0xFC000000u) == 0x14000000u ||  // B
           (w & 0xFC000000u) == 0x94000000u ||  // BL
@@ -1854,6 +1909,7 @@ HexStatus try_emit_arm64_general(
     const uint64_t pc = base_addr + static_cast<uint64_t>(i) * 4ULL;
     process_insn(words[i], pc, base_addr, word_count, ctx, cmp, false, nullptr);
   }
+  if (ctx.table_overflow) return HEX_ERR_RESOURCE_LIMIT;
   ctx.sort_tables();
 
   // Infer integer and FP parameter counts from read-before-write masks.
@@ -1914,8 +1970,19 @@ HexStatus try_emit_arm64_general(
         "#endif\n"
         "#endif\n");
     for (uint32_t i = 0u; i < ctx.callee_count; ++i) {
-      tb.put_str("uint64 sub_");
-      tb.put_u64_hex(ctx.callees[i], true);
+      char callee_name[32];
+      TextBuf ctb{callee_name, sizeof(callee_name), 0u, 1u, false, nullptr, 0u, 0u};
+      ctb.put_str("sub_");
+      ctb.put_u64_hex(ctx.callees[i], true);
+      bool is_self = (ctb.len == norm_len);
+      if (is_self) {
+        for (uint32_t k = 0u; k < norm_len; ++k) {
+          if (callee_name[k] != norm_name[k]) { is_self = false; break; }
+        }
+      }
+      if (is_self) continue;
+      tb.put_str("uint64 ");
+      tb.put_bytes(callee_name, ctb.len);
       tb.put_str(" (__HEX_ANY_ARGS);\n");
     }
     if (ctx.has_unknown_call) {
