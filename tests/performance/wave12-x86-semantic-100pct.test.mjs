@@ -203,7 +203,15 @@ test('Wave 12 x86_64 semantic-function 3/3 real binaries 0-diff parity and WASM 
     resetAllTelemetry();
     for (const item of cases) {
       const jsRes = withEngineEnv('js', () => analyzeSemanticFunction(item.semInput, { _engine: 'js' }));
+      const beforeX86 = getWasmCallCount('x86_64_decompile');
       const autoRes = withEngineEnv('auto', () => analyzeSemanticFunction(item.semInput, { _engine: 'auto' }));
+      const afterX86 = getWasmCallCount('x86_64_decompile');
+      assert.equal(afterX86 - beforeX86, 1, `${item.id}: expected exactly 1 x86_64_decompile WASM call`);
+      assert.ok(
+        Array.isArray(autoRes?.pipeline?.cfg?.blocks?.[0]?.successors)
+        && autoRes.pipeline.cfg.blocks[0].successors.every((e) => typeof e === 'object' && typeof e.to === 'string'),
+        `${item.id}: CFG successors must be edge objects { to, kind }`,
+      );
 
       assert.equal(
         typeof jsRes?.decompiler?.pseudocode,
@@ -251,13 +259,40 @@ test('Wave 12 x86_64 semantic-function JS isolation gate: { _engine: "js" } reco
       );
     }
 
-    for (const domain of ['x86_64_decompile', 'cfg', 'loops', 'identity']) {
-      assert.equal(
-        getWasmCallCount(domain),
-        0,
-        `expected 0 WASM calls for domain '${domain}' under { _engine: 'js' }, got ${getWasmCallCount(domain)}`,
-      );
-    }
+    const allCounts = getWasmCallCounts();
+    const totalWasmCalls = Object.values(allCounts).reduce((a, b) => a + b, 0);
+    assert.equal(
+      totalWasmCalls,
+      0,
+      `expected 0 total WASM calls under { _engine: 'js' }, got ${JSON.stringify(allCounts)}`,
+    );
+  } finally {
+    x86Session.close();
+  }
+});
+
+test('Wave 12 x86_64 semantic-function fail-closed fallback on unsupported instruction & custom name', async () => {
+  const x86Session = await createCapstoneX86Session();
+  try {
+    const cases = buildCorpusInputs(x86Session);
+    resetAllTelemetry();
+
+    // 1. Custom name must fail-closed to JS (0-diff protection)
+    const namedInput = { ...cases[0].semInput, name: 'custom_fn_name' };
+    const beforeNamed = getWasmCallCount('x86_64_decompile');
+    const namedRes = withEngineEnv('auto', () => analyzeSemanticFunction(namedInput, { _engine: 'auto' }));
+    assert.equal(getWasmCallCount('x86_64_decompile'), beforeNamed, 'custom name must fail-closed to JS');
+    assert.ok(namedRes?.decompiler?.pseudocode?.includes('custom_fn_name'));
+
+    // 2. Truncated / unsupported instruction sequence must fail-closed to JS
+    const truncInput = {
+      ...cases[0].semInput,
+      instructions: cases[0].semInput.instructions.slice(0, 3),
+    };
+    const beforeTrunc = getWasmCallCount('x86_64_decompile');
+    const truncRes = withEngineEnv('auto', () => analyzeSemanticFunction(truncInput, { _engine: 'auto' }));
+    assert.equal(getWasmCallCount('x86_64_decompile'), beforeTrunc, 'truncated x86_64 function must fail-closed to JS');
+    assert.equal(typeof truncRes?.decompiler?.pseudocode, 'string');
   } finally {
     x86Session.close();
   }

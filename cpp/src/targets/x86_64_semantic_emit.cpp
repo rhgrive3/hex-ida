@@ -138,7 +138,7 @@ static bool is_mem_rbp(const HexX86Decoded& d) {
   const uint8_t mod = static_cast<uint8_t>((d.modrm >> 6u) & 3u);
   return (d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u &&
          (mod == 1u || mod == 2u) &&
-         (d.rm & 7u) == 5u &&
+         d.rm == 5u &&
          (d.flags & HEX_X86_FLAG_HAS_SIB) == 0u;
 }
 
@@ -203,10 +203,17 @@ static bool match_common_body(const HexX86Decoded* insns,
     return false;
   }
   const int64_t d_val = insns[7].disp;
-  if (d_val == d_ptr || d_val == d_byte) return false;
+  auto overlaps = [](int64_t a, int64_t a_sz, int64_t b, int64_t b_sz) -> bool {
+    return a < b + b_sz && b < a + a_sz;
+  };
+  if (overlaps(d_ptr, 8, d_val, 4) || overlaps(d_ptr, 8, d_byte, 1) ||
+      overlaps(d_val, 4, d_byte, 1)) {
+    return false;
+  }
 
   // [8] movzx eax, byte [rbp + d_byte]
   if (insns[8].kind != HEX_X86_KIND_MOVZX || insns[8].opcode2 != 0xB6u ||
+      insns[8].op_size != 32u ||
       insns[8].reg != 0u || !is_mem_rbp(insns[8]) || insns[8].disp != d_byte) {
     return false;
   }
@@ -352,6 +359,7 @@ HexStatus hex_engine_decompile_x86_64_semantic(
     const HexStatus dst = hex_x86_64_decode_one(
         bytes + off, byte_len - off, base_addr + static_cast<uint64_t>(off), &insns[count]);
     if (dst != HEX_OK || !insns[count].valid || insns[count].length == 0u ||
+        insns[count].cap != HEX_X86_CAP_DECOMP ||
         (insns[count].flags & (HEX_X86_FLAG_TRUNCATED | HEX_X86_FLAG_INVALID)) != 0u) {
       return HEX_ERR_UNSUPPORTED;
     }
@@ -369,7 +377,7 @@ HexStatus hex_engine_decompile_x86_64_semantic(
     // SysV AMD64 structured pattern: 25 instructions
     if (count != 25u) return HEX_ERR_UNSUPPORTED;
     // [0] push rbp
-    if (insns[0].kind != HEX_X86_KIND_PUSH || insns[0].opcode != 0x55u) return HEX_ERR_UNSUPPORTED;
+    if (insns[0].kind != HEX_X86_KIND_PUSH || insns[0].opcode != 0x55u || insns[0].rm != 5u) return HEX_ERR_UNSUPPORTED;
     // [1] mov rbp, rsp
     if (insns[1].kind != HEX_X86_KIND_MOV || insns[1].opcode != 0x89u || insns[1].op_size != 64u ||
         !is_reg_direct(insns[1]) || insns[1].reg != 4u || insns[1].rm != 5u) {
@@ -377,6 +385,7 @@ HexStatus hex_engine_decompile_x86_64_semantic(
     }
     // [2] mov al, sil
     if (insns[2].kind != HEX_X86_KIND_MOV || insns[2].opcode != 0x88u || insns[2].op_size != 8u ||
+        (insns[2].flags & HEX_X86_FLAG_HAS_REX) == 0u ||
         !is_reg_direct(insns[2]) || insns[2].reg != 6u || insns[2].rm != 0u) {
       return HEX_ERR_UNSUPPORTED;
     }
@@ -391,7 +400,7 @@ HexStatus hex_engine_decompile_x86_64_semantic(
       return HEX_ERR_UNSUPPORTED;
     }
     // [23] pop rbp; [24] ret
-    if (insns[23].kind != HEX_X86_KIND_POP || insns[23].opcode != 0x5Du) return HEX_ERR_UNSUPPORTED;
+    if (insns[23].kind != HEX_X86_KIND_POP || insns[23].opcode != 0x5Du || insns[23].rm != 5u) return HEX_ERR_UNSUPPORTED;
     if (insns[24].kind != HEX_X86_KIND_RET || insns[24].opcode != 0xC3u) return HEX_ERR_UNSUPPORTED;
 
     if (!match_common_body(insns, insns[3].disp, insns[4].disp, &body)) {
@@ -402,7 +411,7 @@ HexStatus hex_engine_decompile_x86_64_semantic(
     // Microsoft x64 structured pattern: 26 instructions
     if (count != 26u) return HEX_ERR_UNSUPPORTED;
     // [0] push rbp
-    if (insns[0].kind != HEX_X86_KIND_PUSH || insns[0].opcode != 0x55u) return HEX_ERR_UNSUPPORTED;
+    if (insns[0].kind != HEX_X86_KIND_PUSH || insns[0].opcode != 0x55u || insns[0].rm != 5u) return HEX_ERR_UNSUPPORTED;
     // [1] sub rsp, frame_size
     const uint8_t sub_sp_grp = static_cast<uint8_t>((insns[1].modrm >> 3u) & 7u);
     if (insns[1].kind != HEX_X86_KIND_ALU ||
@@ -413,7 +422,9 @@ HexStatus hex_engine_decompile_x86_64_semantic(
     }
     const int64_t frame_size = insns[1].imm;
     // [2] lea rbp, [rsp + lea_off]
-    if (insns[2].kind != HEX_X86_KIND_LEA || insns[2].op_size != 64u || insns[2].reg != 5u) {
+    if (insns[2].kind != HEX_X86_KIND_LEA || insns[2].op_size != 64u || insns[2].reg != 5u ||
+        insns[2].rm != 4u || insns[2].index_reg != 0xffu ||
+        (insns[2].flags & HEX_X86_FLAG_RIP_REL) != 0u) {
       return HEX_ERR_UNSUPPORTED;
     }
     const int64_t lea_off = insns[2].disp;
@@ -436,7 +447,7 @@ HexStatus hex_engine_decompile_x86_64_semantic(
       return HEX_ERR_UNSUPPORTED;
     }
     // [24] pop rbp; [25] ret
-    if (insns[24].kind != HEX_X86_KIND_POP || insns[24].opcode != 0x5Du) return HEX_ERR_UNSUPPORTED;
+    if (insns[24].kind != HEX_X86_KIND_POP || insns[24].opcode != 0x5Du || insns[24].rm != 5u) return HEX_ERR_UNSUPPORTED;
     if (insns[25].kind != HEX_X86_KIND_RET || insns[25].opcode != 0xC3u) return HEX_ERR_UNSUPPORTED;
 
     if (!match_common_body(insns, insns[4].disp, insns[3].disp, &body)) {

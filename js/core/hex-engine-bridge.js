@@ -1304,8 +1304,8 @@ export function wasmScanStrings(bytes, ranges, opts = {}) {
       minLength >>> 0,
       maxLength >>> 0,
       flags >>> 0,
-      outSpansPtr,
       spanCap >>> 0,
+      outSpansPtr,
       outCountPtr,
     );
     if (status !== HEX_OK) {
@@ -1368,7 +1368,7 @@ export function wasmByteSearchFind(haystack, fromOffset, pattern, masks, foldAsc
   }
 
   const overlap = patLen - 1;
-  const flags = foldAscii ? 1 : 0;
+  const flags = (foldAscii ? 1 : 0) | (!foldAscii && masks ? 2 : 0);
 
   try {
     let chunkStart = start;

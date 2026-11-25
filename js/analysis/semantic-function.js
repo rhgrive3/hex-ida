@@ -370,30 +370,41 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
   const engineMode = getEngineMode(options);
   const x86FastPathEligible = architectureId === 'x86_64'
     && options.canonicalProjectionOnly !== true
+    && !input.name
+    && !input.cxxEvidence
+    && !input.cxxEvidenceProvider
     && !input.functionPrototype
     && !input.callPrototype
     && !input.callPrototypeFor
     && !input.memorySegments;
 
   if (x86FastPathEligible && engineMode !== 'js') {
-    const contiguous = extractContiguousInstructionBytes(orderedInstructions);
-    if (contiguous) {
-      const wasmResult = wasmDecompileX86_64SemanticFunction({
-        bytes: contiguous.bytes,
-        baseAddr: contiguous.baseAddr,
-        abiId: abiPlugin.id === 'microsoft-x64' ? 1 : 0,
-        insns: orderedInstructions,
-        _engine: options._engine ?? null,
-      });
-      if (wasmResult) {
-        abortIfRequested(options.signal);
-        const cfg = {
-          entryBlockId: blocks[0].key,
-          blocks: blocks.map((block) => ({
-            id: block.key,
-            successors: block.successors.map((edge) => edge.to),
-          })),
-        };
+    const supportedAbiId = abiPlugin.id === 'sysv-amd64'
+      ? 0
+      : (abiPlugin.id === 'microsoft-x64' ? 1 : -1);
+    if (supportedAbiId < 0) {
+      recordFallback('x86_64_decompile:unsupported_abi');
+    } else {
+      const contiguous = extractContiguousInstructionBytes(orderedInstructions);
+      if (!contiguous) {
+        recordFallback('x86_64_decompile:non_contiguous_bytes');
+      } else {
+        const wasmResult = wasmDecompileX86_64SemanticFunction({
+          bytes: contiguous.bytes,
+          baseAddr: contiguous.baseAddr,
+          abiId: supportedAbiId,
+          insns: orderedInstructions,
+          _engine: options._engine ?? null,
+        });
+        if (wasmResult) {
+          abortIfRequested(options.signal);
+          const cfg = {
+            entryBlockId: blocks[0].key,
+            blocks: blocks.map((block) => ({
+              id: block.key,
+              successors: block.successors.map((edge) => ({ to: edge.to, kind: edge.kind })),
+            })),
+          };
         return Object.freeze({
           route: SEMANTIC_FUNCTION_ROUTE,
           version: String(input.analysisVersion ?? options.analysisVersion ?? '1'),
@@ -419,7 +430,8 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
             labels: [],
             unknownInstructions: [],
           },
-        });
+          });
+        }
       }
     }
   }
@@ -427,7 +439,12 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
   const scopeJsEngine = engineMode === 'js';
   const hadPrevEngineMode = scopeJsEngine && Object.prototype.hasOwnProperty.call(globalThis, '__HEX_ENGINE_MODE__');
   const prevEngineMode = scopeJsEngine ? globalThis.__HEX_ENGINE_MODE__ : undefined;
-  if (scopeJsEngine) globalThis.__HEX_ENGINE_MODE__ = 'js';
+  const hadPrevHexEngine = scopeJsEngine && Object.prototype.hasOwnProperty.call(globalThis, 'HEX_ENGINE');
+  const prevHexEngine = scopeJsEngine ? globalThis.HEX_ENGINE : undefined;
+  if (scopeJsEngine) {
+    globalThis.__HEX_ENGINE_MODE__ = 'js';
+    globalThis.HEX_ENGINE = 'js';
+  }
   try {
     const controlUnknowns = semanticControlUnknowns(blocks, architecturePlugin, cfgOptions);
     const abiAdapter = semanticAbiAdapter(abiPlugin, input, { callPrototypeAuthority });
@@ -511,6 +528,8 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     if (scopeJsEngine) {
       if (hadPrevEngineMode) globalThis.__HEX_ENGINE_MODE__ = prevEngineMode;
       else delete globalThis.__HEX_ENGINE_MODE__;
+      if (hadPrevHexEngine) globalThis.HEX_ENGINE = prevHexEngine;
+      else delete globalThis.HEX_ENGINE;
     }
   }
 }

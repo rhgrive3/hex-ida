@@ -94,14 +94,20 @@ static bool is_valid_objc_name(const char* name, uint32_t len) {
   if ((name[0] != '-' && name[0] != '+') || name[1] != '[' || name[len - 1u] != ']') {
     return false;
   }
-  bool saw_space = false;
+  uint32_t space_count = 0u;
+  uint32_t space_idx = 0u;
   for (uint32_t i = 2u; i + 1u < len; ++i) {
     const unsigned char c = static_cast<unsigned char>(name[i]);
-    if (c < 0x20u || c >= 0x7Fu) return false;
-    if (c == ';' || c == '{' || c == '}' || c == '[' || c == ']') return false;
-    if (c == ' ') saw_space = true;
+    const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') || c == '_' || c == ':' ||
+                    c == '$' || c == '(' || c == ')' || c == ' ';
+    if (!ok) return false;
+    if (c == ' ') {
+      space_count++;
+      space_idx = i;
+    }
   }
-  return saw_space;
+  return space_count == 1u && space_idx > 2u && space_idx + 2u < len;
 }
 
 // Strict 64-bit SUB sp, sp, #imm (bit 23 MUST be 0).
@@ -110,7 +116,7 @@ static bool decode_sub_sp_imm64(uint32_t w, uint64_t* imm_out) {
   const uint32_t sh = (w >> 22u) & 1u;
   const uint32_t imm12 = (w >> 10u) & 0xFFFu;
   const uint64_t imm = static_cast<uint64_t>(imm12) << (sh ? 12u : 0u);
-  if (imm < 16ULL) return false;
+  if (imm < 16ULL || (imm & 15ULL) != 0ULL) return false;
   *imm_out = imm;
   return true;
 }
@@ -242,6 +248,9 @@ HexStatus try_emit_arm64_objc(
   if (word_count != 8u && word_count != 12u && word_count != 14u) {
     return HEX_ERR_UNSUPPORTED;
   }
+  if (base_addr > UINT64_MAX - static_cast<uint64_t>(word_count - 1u) * 4ULL) {
+    return HEX_ERR_UNSUPPORTED;
+  }
 
   // Common prologue: sub sp, sp, #N; mov xR1, x0; str wR1, [sp, #self_off];
   //                  mov xR2, x1; str wR2, [sp, #cmd_off]
@@ -257,7 +266,8 @@ HexStatus try_emit_arm64_objc(
   uint32_t r_self = 31u, rm_self = 31u;
   uint32_t str_self_rt = 31u, str_self_rn = 31u;
   uint64_t self_off = 0ULL;
-  if (!decode_mov_reg64(words[1], &r_self, &rm_self) || rm_self != 0u || r_self >= 29u) {
+  if (!decode_mov_reg64(words[1], &r_self, &rm_self) || rm_self != 0u ||
+      r_self >= 29u || r_self == 1u || r_self == 2u) {
     return HEX_ERR_UNSUPPORTED;
   }
   if (!decode_str_uoff32(words[2], &str_self_rt, &str_self_rn, &self_off) ||
@@ -268,7 +278,8 @@ HexStatus try_emit_arm64_objc(
   uint32_t r_cmd = 31u, rm_cmd = 31u;
   uint32_t str_cmd_rt = 31u, str_cmd_rn = 31u;
   uint64_t cmd_off = 0ULL;
-  if (!decode_mov_reg64(words[3], &r_cmd, &rm_cmd) || rm_cmd != 1u || r_cmd >= 29u) {
+  if (!decode_mov_reg64(words[3], &r_cmd, &rm_cmd) || rm_cmd != 1u ||
+      r_cmd >= 29u || r_cmd == 0u || r_cmd == 2u) {
     return HEX_ERR_UNSUPPORTED;
   }
   if (!decode_str_uoff32(words[4], &str_cmd_rt, &str_cmd_rn, &cmd_off) ||
