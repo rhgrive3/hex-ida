@@ -414,7 +414,7 @@ function tryAnalyzeGraphWasm(succ, predecessors, edgeCount, canonicalEntry, term
     recordFallback('cfg:wasm_disabled');
     return null;
   }
-  const ex = hexEngineModule?.getHexEngineExports?.() ?? null;
+  const ex = hexEngineModule?.getHexEngineExports?.(options) ?? null;
   if (!ex || typeof ex.cfg_reset !== 'function' || typeof ex.cfg_alloc !== 'function'
     || typeof ex.cfg_analyze !== 'function' || typeof ex.cfg_get_result_ptr !== 'function'
     || typeof ex.hex_loop_reset !== 'function' || typeof ex.hex_loop_alloc !== 'function'

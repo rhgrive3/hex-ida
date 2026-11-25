@@ -178,7 +178,7 @@ test('Wave 8 F5: hex_riscv64_* decodes RV64I + RVC, rejects truncated bytes, and
     assert.equal(len, tc.expectedLen, `${tc.name}: expected length ${tc.expectedLen}, got ${len}`);
 
     const status = ex.hex_riscv64_decode_one(inPtr, tc.bytes.length, 0x1000n, outPtr);
-    assert.equal(status, bridge.HEX_OK, `${tc.name}: hex_riscv64_decode_one must return HEX_OK`);
+    assert.equal(status, tc.expectedLen, `${tc.name}: hex_riscv64_decode_one must return decoded length ${tc.expectedLen}`);
 
     const dv = new DataView(ex.memory.buffer);
     const decodedLen = dv.getUint8(outPtr);

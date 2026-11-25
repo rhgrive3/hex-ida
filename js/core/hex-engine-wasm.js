@@ -54,8 +54,9 @@ export function isWasmBulkMemorySupported() {
   return bulkMemorySupported;
 }
 
-export function getHexEngineExports() {
-  if (isJsEngineForced()) return null;
+export function getHexEngineExports(opts = null) {
+  const forced = opts && opts._engine != null ? String(opts._engine).trim().toLowerCase() : null;
+  if (forced === 'js' || (forced !== 'wasm' && forced !== 'auto' && isJsEngineForced())) return null;
   if (!isWasmBulkMemorySupported()) return null;
   if (cachedExports !== null) return cachedExports;
   if (typeof WebAssembly !== 'object' || WebAssembly === null) return null;
