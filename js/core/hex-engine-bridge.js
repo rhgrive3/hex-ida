@@ -443,7 +443,7 @@ function isOrrImmediate(word) {
   const w = word >>> 0;
   // ARM64 ORR (immediate): sf 01 100100 N immr(6) imms(6) Rn(5) Rd(5)
   // Allow 32-bit MOV (bitmask immediate) alias: sf=0, opc=01, Rn=31 (WZR).
-  if (((w & 0xff8003e0) >>> 0) === 0x320003e0) return false;
+  if (((w & 0xffc003e0) >>> 0) === 0x320003e0) return false;
   return ((w & 0x7f800000) >>> 0) === 0x32000000;
 }
 
@@ -690,7 +690,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         note: null,
       });
 
-      if (!isLegacyOutput && !isPrelude && !(kind === 'decl' && /\b(?:local_|var_|call_|self\b|a[1-8]\b)/.test(trimmed))) {
+      if (!isLegacyOutput && !isPrelude && !(kind === 'decl' && !/^uint64\s+x\d+\s*=\s*a[1-8];$/.test(trimmed) && /\b(?:local_|var_|call_|self\b|a[1-8]\b)/.test(trimmed))) {
         bodyLineNo += 1;
         const foldedExtra = (kind === 'stmt' && /^\*\([^)]+\)\(.*\)\s*[-+]=\s*/.test(trimmed)) ? 2 : 0;
         const addresses = kind === 'sig'

@@ -256,6 +256,7 @@ struct CmpState {
   bool is_fp;
   bool is_imm;
   bool is_cmn;
+  bool lhs_is_sp;
   uint32_t lhs_reg;
   uint32_t rhs_reg;
   uint64_t rhs_imm;
@@ -284,6 +285,10 @@ struct AnalysisCtx {
   bool returns_double;
   bool returns_value;
   bool table_overflow;
+  const char* norm_name;
+  uint32_t norm_len;
+  uint32_t int_param_count;
+  uint32_t fp_param_count;
   uint64_t adrp_page[31];
   bool adrp_valid[31];
   GlobalEntry globals[kMaxGlobals];
@@ -428,7 +433,8 @@ static void emit_cond_expr(TextBuf& tb, uint32_t cond, const CmpState& cmp) {
       : (signed_cmp ? "(int64_t)" : "(uint64_t)");
 
   tb.put_str(cast);
-  tb.put_reg_x(cmp.lhs_reg);
+  if (cmp.lhs_is_sp) tb.put_reg_x_or_sp(cmp.lhs_reg);
+  else tb.put_reg_x(cmp.lhs_reg);
   tb.put_char(' ');
   tb.put_str(op);
   tb.put_char(' ');
@@ -576,16 +582,36 @@ static void process_insn(
     const int64_t delta = sign_extend(w & 0x03FFFFFFu, 26u) * 4LL;
     const uint64_t target = pc + static_cast<uint64_t>(delta);
     if (!emit) {
-      ctx.add_callee(target);
+      if (target != base_addr) ctx.add_callee(target);
       ctx.mark_gpr_write(0u);
       ctx.mark_fp_write(0u);
       // Caller-saved ADRP pages may be clobbered by call (x0..x18).
       for (uint32_t r = 0u; r < 19u; ++r) ctx.adrp_valid[r] = false;
     } else if (tb) {
       rec();
-      tb->put_str("    x0 = sub_");
-      tb->put_u64_hex(target, true);
-      tb->put_str("(/* arguments unknown */);\n");
+      if (target == base_addr && ctx.norm_name && ctx.norm_len > 0u) {
+        tb->put_str("    ");
+        if (ctx.returns_double) tb->put_str("d0 = ");
+        else if (ctx.returns_value) tb->put_str("x0 = ");
+        tb->put_bytes(ctx.norm_name, ctx.norm_len);
+        tb->put_char('(');
+        bool first = true;
+        for (uint32_t r = 0u; r < ctx.int_param_count; ++r) {
+          if (!first) tb->put_str(", ");
+          tb->put_reg_x(r);
+          first = false;
+        }
+        for (uint32_t r = 0u; r < ctx.fp_param_count; ++r) {
+          if (!first) tb->put_str(", ");
+          tb->put_reg_d(r);
+          first = false;
+        }
+        tb->put_str(");\n");
+      } else {
+        tb->put_str("    x0 = sub_");
+        tb->put_u64_hex(target, true);
+        tb->put_str("(/* arguments unknown */);\n");
+      }
       for (uint32_t r = 0u; r < 19u; ++r) ctx.adrp_valid[r] = false;
     }
     cmp.valid = false;
@@ -796,7 +822,7 @@ static void process_insn(
     if (decode_bitmask_imm(N, imms, immr, is64, &imm)) {
       const bool sets_flags = (opc == 3u);
       if (sets_flags) {
-        cmp = CmpState{true, !is64, false, true, false, rn, 31u, 0ULL};
+        cmp = CmpState{true, !is64, false, true, false, false, rn, 31u, 0ULL};
       }
       if (!emit) {
         if (rn < 31u) ctx.mark_gpr_read(rn);
@@ -825,7 +851,7 @@ static void process_insn(
   }
 
   // ADD / ADDS / SUB / SUBS (immediate)
-  if ((w & 0x1F000000u) == 0x11000000u) {
+  if ((w & 0x1F800000u) == 0x11000000u) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const bool is_sub = ((w >> 30u) & 1u) != 0u;
     const bool sets_flags = ((w >> 29u) & 1u) != 0u;
@@ -835,7 +861,7 @@ static void process_insn(
     const uint32_t rd = w & 31u;
 
     if (sets_flags) {
-      cmp = CmpState{true, !is64, false, true, !is_sub, rn, 31u, imm};
+      cmp = CmpState{true, !is64, false, true, !is_sub, rn == 31u, rn, 31u, imm};
     }
 
     // ADRP + ADD global address resolution
@@ -897,7 +923,7 @@ static void process_insn(
     const uint32_t rd = w & 31u;
 
     if (sets_flags) {
-      cmp = CmpState{true, !is64, false, false, !is_sub, rn, rm, 0ULL};
+      cmp = CmpState{true, !is64, false, false, !is_sub, false, rn, rm, 0ULL};
     }
     if (!emit) {
       ctx.mark_gpr_read(rn);
@@ -936,7 +962,7 @@ static void process_insn(
   }
 
   // ADD / SUB (extended register)
-  if ((w & 0x1F200000u) == 0x0B200000u) {
+  if ((w & 0x1FE00000u) == 0x0B200000u) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const bool is_sub = ((w >> 30u) & 1u) != 0u;
     const bool sets_flags = ((w >> 29u) & 1u) != 0u;
@@ -945,7 +971,7 @@ static void process_insn(
     const uint32_t rn = (w >> 5u) & 31u;
     const uint32_t rd = w & 31u;
     if (sets_flags) {
-      cmp = CmpState{true, !is64, false, false, !is_sub, rn, rm, 0ULL};
+      cmp = CmpState{true, !is64, false, false, !is_sub, rn == 31u, rn, rm, 0ULL};
     }
     if (!emit) {
       if (rn == 31u) ctx.uses_sp = true;
@@ -994,7 +1020,7 @@ static void process_insn(
       return;
     }
     if (opc == 3u) {
-      cmp = CmpState{true, !is64, false, true, false, rn, 31u, 0ULL};
+      cmp = CmpState{true, !is64, false, true, false, false, rn, 31u, 0ULL};
     }
     if (!emit) {
       if (rn < 31u) ctx.mark_gpr_read(rn);
@@ -1036,11 +1062,14 @@ static void process_insn(
   }
 
   // UBFM / SBFM (LSL / LSR / ASR / SXTW / SXTH / SXTB / UXTB / UXTH)
-  if ((w & 0x1F800000u) == 0x13000000u && (((w >> 29u) & 3u) == 0u || ((w >> 29u) & 3u) == 2u)) {
+  if ((w & 0x1F800000u) == 0x13000000u &&
+      (((w >> 29u) & 3u) == 0u || ((w >> 29u) & 3u) == 2u) &&
+      (((w >> 22u) & 1u) == ((w >> 31u) & 1u))) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const uint32_t opc = (w >> 29u) & 3u;  // 0=sbfm, 2=ubfm
     const uint32_t immr = (w >> 16u) & 0x3Fu;
     const uint32_t imms = (w >> 10u) & 0x3Fu;
+    if (!is64 && (immr >= 32u || imms >= 32u)) return;
     const uint32_t rn = (w >> 5u) & 31u;
     const uint32_t rd = w & 31u;
     const uint32_t width = is64 ? 64u : 32u;
@@ -1064,10 +1093,10 @@ static void process_insn(
         tb->put_str("(uint64)(int64_t)(int32_t)(uint32_t)");
         tb->put_reg_x(rn);
       } else if (opc == 0u && immr == 0u && imms == 7u) {
-        tb->put_str("(uint64)(int64_t)(int8_t)");
+        tb->put_str(is64 ? "(uint64)(int64_t)(int8_t)" : "(uint32_t)(int32_t)(int8_t)");
         tb->put_reg_x(rn);
       } else if (opc == 0u && immr == 0u && imms == 15u) {
-        tb->put_str("(uint64)(int64_t)(int16_t)");
+        tb->put_str(is64 ? "(uint64)(int64_t)(int16_t)" : "(uint32_t)(int32_t)(int16_t)");
         tb->put_reg_x(rn);
       } else if (opc == 2u && imms == width - 1u) {
         // LSR
@@ -1256,7 +1285,7 @@ static void process_insn(
           if (op2 == 10u) tb->put_str(is64 ? "(uint64)((int64_t)" : "((int32_t)");
           else if (!is64) tb->put_str("((uint32_t)");
           tb->put_reg_x(rn);
-          if (op2 == 10u || !is64) tb->put_char(')');
+          if (!is64) tb->put_char(')');
           tb->put_str(sop);
           tb->put_char('(');
           tb->put_reg_x(rm);
@@ -1314,8 +1343,8 @@ static void process_insn(
         else { ctx.mark_gpr_read(rt); ctx.mark_gpr_read(rt2); }
       }
     } else if (tb) {
-      rec();
       if (mode == 3u && disp != 0) {
+        rec();
         tb->put_str("    ");
         tb->put_reg_x_or_sp(rn);
         tb->put_str(" = ");
@@ -1356,8 +1385,13 @@ static void process_insn(
           tb->put_str(";\n");
         }
       };
-      emit_one(rt, eff0);
-      emit_one(rt2, eff1);
+      if (is_load && !is_fp && rt == rn && rt2 != rn) {
+        emit_one(rt2, eff1);
+        emit_one(rt, eff0);
+      } else {
+        emit_one(rt, eff0);
+        emit_one(rt2, eff1);
+      }
       if (!is_fp && is_load) {
         if (rt < 31u) ctx.adrp_valid[rt] = false;
         if (rt2 < 31u) ctx.adrp_valid[rt2] = false;
@@ -1478,8 +1512,8 @@ static void process_insn(
         else ctx.mark_gpr_read(rt);
       }
     } else if (tb) {
-      rec();
       if (idx_mode == 3u && disp != 0) {
+        rec();
         tb->put_str("    ");
         tb->put_reg_x_or_sp(rn);
         tb->put_str(" = ");
@@ -1489,9 +1523,9 @@ static void process_insn(
         tb->put_str(";\n");
       }
       if (!is_fp && is_load && rt == 31u) {
-        // Prefetch / discard load to XZR.
+        // Discard load to XZR.
       } else {
-        if (idx_mode == 3u && disp != 0) rec();
+        rec();
         tb->put_str("    ");
         if (is_load) {
           if (is_fp) {
@@ -1622,9 +1656,9 @@ static void process_insn(
         if (!is_ordered_only && rs < 31u) ctx.mark_gpr_write(rs);
       }
     } else if (tb) {
-      rec();
       if (is_load) {
         if (rt < 31u) {
+          rec();
           tb->put_str("    ");
           tb->put_reg_x(rt);
           tb->put_str(" = ");
@@ -1634,6 +1668,7 @@ static void process_insn(
           ctx.adrp_valid[rt] = false;
         }
       } else {
+        rec();
         tb->put_str("    ");
         emit_mem_load_type(*tb, bits, false, false);
         emit_mem_addr(*tb, rn, 0LL);
@@ -1739,7 +1774,7 @@ static void process_insn(
     const bool is_zero = ((w >> 3u) & 1u) != 0u;
     const uint32_t rm = (w >> 16u) & 31u;
     const uint32_t rn = (w >> 5u) & 31u;
-    cmp = CmpState{true, false, true, is_zero, false, rn, rm, 0ULL};
+    cmp = CmpState{true, false, true, is_zero, false, false, rn, rm, 0ULL};
     if (!emit) {
       ctx.mark_fp_read(rn);
       if (!is_zero) ctx.mark_fp_read(rm);
@@ -1921,6 +1956,10 @@ HexStatus try_emit_arm64_general(
   for (uint32_t r = 0u; r < 8u; ++r) {
     if ((ctx.fp_read_before_write & (1u << r)) != 0u) fp_param_count = r + 1u;
   }
+  ctx.norm_name = norm_name;
+  ctx.norm_len = norm_len;
+  ctx.int_param_count = int_param_count;
+  ctx.fp_param_count = fp_param_count;
 
   TextBuf tb{text_mem, kMaxTextCap, 0u, 1u, false, lm_mem, kMaxLineMapCap, 0u};
 
@@ -1970,19 +2009,9 @@ HexStatus try_emit_arm64_general(
         "#endif\n"
         "#endif\n");
     for (uint32_t i = 0u; i < ctx.callee_count; ++i) {
-      char callee_name[32];
-      TextBuf ctb{callee_name, sizeof(callee_name), 0u, 1u, false, nullptr, 0u, 0u};
-      ctb.put_str("sub_");
-      ctb.put_u64_hex(ctx.callees[i], true);
-      bool is_self = (ctb.len == norm_len);
-      if (is_self) {
-        for (uint32_t k = 0u; k < norm_len; ++k) {
-          if (callee_name[k] != norm_name[k]) { is_self = false; break; }
-        }
-      }
-      if (is_self) continue;
-      tb.put_str("uint64 ");
-      tb.put_bytes(callee_name, ctb.len);
+      if (ctx.callees[i] == base_addr) continue;
+      tb.put_str("uint64 sub_");
+      tb.put_u64_hex(ctx.callees[i], true);
       tb.put_str(" (__HEX_ANY_ARGS);\n");
     }
     if (ctx.has_unknown_call) {

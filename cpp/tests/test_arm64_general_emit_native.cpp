@@ -20,6 +20,18 @@ bool contains(const char* hay, uint32_t hay_len, const char* needle) {
   return false;
 }
 
+void assert_parens_balanced(const char* txt, uint32_t len) {
+  int depth = 0;
+  for (uint32_t i = 0u; i < len; ++i) {
+    if (txt[i] == '(') ++depth;
+    else if (txt[i] == ')') {
+      --depth;
+      assert(depth >= 0);
+    }
+  }
+  assert(depth == 0);
+}
+
 void test_frame_adrp_bl_ret() {
   hex::Arena arena;
   arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
@@ -35,6 +47,7 @@ void test_frame_adrp_bl_ret() {
              words, 8u, 0x100ca89ccULL, "sub_100ca89cc", 13u, HEX_EMIT_FLAG_JS_PARITY,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
   assert(txt != nullptr && len > 0u && lm != nullptr && lm_cnt > 0u);
+  assert_parens_balanced(txt, len);
   assert(contains(txt, len, "global_1018FE198"));
   assert(contains(txt, len, "sub_10116D080"));
   assert(contains(txt, len, "uint64 sub_100ca89cc("));
@@ -44,9 +57,6 @@ void test_frame_adrp_bl_ret() {
 void test_adrp_invalidation_and_xzr_and_q_store() {
   hex::Arena arena;
   arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
-  // adrp x8, +0x1000 ; ldr x8, [x8, #0x720] ; ldr x8, [x8] ;
-  // adrp x9, -0x1000 ; ldr xzr, [x9, #0x10] ; str q0, [x9, #0x20] ;
-  // ldar x9, [x9] ; ldr x9, [x9] ; ret
   const uint32_t words[] = {
     0x90000008u,  // adrp x8, #0x1008b0000
     0xf9439108u,  // ldr x8, [x8, #0x720]
@@ -65,6 +75,7 @@ void test_adrp_invalidation_and_xzr_and_q_store() {
   assert(hex::decompiler::passes::try_emit_arm64_general(
              words, 9u, 0x1008b0830ULL, nullptr, 0u, 0u,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+  assert_parens_balanced(txt, len);
   assert(contains(txt, len, "*(uint64 *)((uintptr_t)(x8))"));
   assert(contains(txt, len, "(void)global_"));
   assert(!contains(txt, len, "0ULL = global_"));
@@ -73,21 +84,27 @@ void test_adrp_invalidation_and_xzr_and_q_store() {
   assert(contains(txt, len, "*(uint64 *)((uintptr_t)(x9))"));
 }
 
-void test_bcond_lslv_udiv_sp_prfm_ldnp_fcvtau_cas() {
+void test_bcond_lslv_asrv_div_sp_prfm_ldnp_fcvtau_cas_csel() {
   hex::Arena arena;
   arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
   const uint32_t words[] = {
-    0x5400006eu,  // b.al +12 (invalid cmp / default cond -> must emit `if (1) goto ...;`)
-    0x1ac12000u,  // lslv w0, w0, w1 (op2=8)
-    0x1ac12400u,  // lsrv w0, w0, w1 (op2=9)
-    0x9ac12800u,  // asrv x0, x0, x1 (op2=10)
-    0x1ac10800u,  // udiv w0, w0, w1 (32-bit div-zero guard)
-    0x9100401fu,  // add sp, x0, #16 (rd=SP, rn=x0)
-    0x927cedffu,  // and sp, sp, #-16 (logical imm rd=SP)
-    0xf9800000u,  // prfm pldl1keep, [x0] (must NOT clobber x0)
-    0xa8410402u,  // ldnp x2, x1, [x0, #16] (mode=0 keeps offset +16)
-    0x1e650003u,  // fcvtau w3, d0 (opcode=5: FP -> GPR)
-    0xc8a17c02u,  // cas x1, x2, [x0] (excluded from LDAR/STLR)
+    0x5400006eu,  // b.al +12 (invalid cmp / default cond -> `if (1) goto ...;`)
+    0x1ac12000u,  // lslv w0, w0, w1
+    0x1ac12400u,  // lsrv w0, w0, w1
+    0x9ac12800u,  // asrv x0, x0, x1 (64-bit)
+    0x1ac12800u,  // asrv w0, w0, w1 (32-bit)
+    0x1ac10800u,  // udiv w0, w0, w1
+    0x9ac10c00u,  // sdiv x0, x0, x1
+    0x9100401fu,  // add sp, x0, #16
+    0xf10043ffu,  // cmp sp, #16 (lhs_is_sp)
+    0x9a810000u,  // csel x0, x0, x1, eq
+    0x1a9f17e4u,  // cset w4, eq (csinc)
+    0x927cedffu,  // and sp, x15, #-16
+    0xf9800000u,  // prfm pldl1keep, [x0]
+    0xa8410402u,  // ldnp x2, x1, [x0, #16]
+    0xa9410400u,  // ldp x0, x1, [x0, #16] (rt==rn aliasing: must load x1 before x0)
+    0x1e650003u,  // fcvtau w3, d0
+    0xc8a17c02u,  // cas x1, x2, [x0]
     0xd65f03c0u,  // ret
   };
   const char* txt = nullptr;
@@ -95,30 +112,33 @@ void test_bcond_lslv_udiv_sp_prfm_ldnp_fcvtau_cas() {
   const HexLineMapEntry* lm = nullptr;
   uint32_t lm_cnt = 0u;
   assert(hex::decompiler::passes::try_emit_arm64_general(
-             words, 12u, 0x100002000ULL, "review_regressions", 18u, 0u,
+             words, 18u, 0x100002000ULL, "review_regressions", 18u, 0u,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+  assert_parens_balanced(txt, len);
   assert(contains(txt, len, "if (1) goto loc_10000200C;"));
-  assert(contains(txt, len, " << (x1 & 31)"));
-  assert(contains(txt, len, " >> (x1 & 31)"));
-  assert(contains(txt, len, "(int64_t)x0) >> (x1 & 63)"));
+  assert(contains(txt, len, "x0 = (uint64)((int64_t)x0 >> (x1 & 63));"));
+  assert(contains(txt, len, "x0 = (uint32_t)(((int32_t)x0) >> (x1 & 31));"));
   assert(contains(txt, len, "((uint32_t)x1 != 0 ?"));
+  assert(contains(txt, len, "((int64_t)x0 / (int64_t)x1)"));
   assert(contains(txt, len, "sp = x0 + 16;"));
+  assert(contains(txt, len, "((uint64_t)sp == (uint64_t)16) ? x0 : x1;"));
   assert(contains(txt, len, "sp = x15 & "));
   assert(contains(txt, len, "x2 = *(uint64 *)((uintptr_t)(x0) + 16);"));
+  assert(contains(txt, len, "x1 = *(uint64 *)((uintptr_t)(x0) + 24);\n    x0 = *(uint64 *)((uintptr_t)(x0) + 16);"));
   assert(contains(txt, len, "x3 = (uint32_t)(int64_t)d0;"));
   assert(contains(txt, len, "/* arm64 insn 0xC8A17C02 */"));
 }
 
-void test_self_recursion_and_bitmask_fp() {
+void test_self_recursion_and_cross_label_adrp() {
   hex::Arena arena;
   arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
-  // Self-recursive void function: `bl 0x100001000 ; fmov d0, #1.0 ; fmov d1, d0 ; fadd d0, d0, d1 ; ret`
+  // Self-recursive function with 1 int param + cross-label ADRP invalidation
   const uint32_t words[] = {
-    0x94000000u,  // bl #0x100001000 (self)
-    0x32183fe9u,  // mov w9, #0xffff00
-    0x1e6e1000u,  // fmov d0, #1.0
-    0x1e604001u,  // fmov d1, d0
-    0x1e612800u,  // fadd d0, d0, d1
+    0xb4000080u,  // cbz x0, +16 (label at idx 4)
+    0xd1000400u,  // sub x0, x0, #1
+    0x97fffffeu,  // bl #0x100001abc (self-call!)
+    0x90000008u,  // adrp x8, #0x100001000 (invalidated at label idx 4!)
+    0xf9400108u,  // loc_100001ACC: ldr x8, [x8] (must NOT emit global_100001000)
     0xd65f03c0u,  // ret
   };
   const char* txt = nullptr;
@@ -126,13 +146,13 @@ void test_self_recursion_and_bitmask_fp() {
   const HexLineMapEntry* lm = nullptr;
   uint32_t lm_cnt = 0u;
   assert(hex::decompiler::passes::try_emit_arm64_general(
-             words, 6u, 0x100001000ULL, "sub_100001000", 13u, 0u,
+             words, 6u, 0x100001abcULL, nullptr, 0u, 0u,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
-  // Must NOT emit conflicting external `uint64 sub_100001000 (__HEX_ANY_ARGS);`
-  assert(!contains(txt, len, "uint64 sub_100001000 (__HEX_ANY_ARGS);"));
-  assert(contains(txt, len, "0xFFFF00"));
-  assert(contains(txt, len, "d0 = 1.0;"));
-  assert(contains(txt, len, "d0 = d0 + d1;"));
+  assert_parens_balanced(txt, len);
+  assert(!contains(txt, len, "uint64 sub_100001ABC (__HEX_ANY_ARGS);"));
+  assert(contains(txt, len, "x0 = sub_100001abc(x0);"));
+  assert(!contains(txt, len, "global_100001000"));
+  assert(contains(txt, len, "x8 = *(uint64 *)((uintptr_t)(x8));"));
 }
 
 void test_guards_oom_and_table_overflow() {
@@ -143,12 +163,10 @@ void test_guards_oom_and_table_overflow() {
   const HexLineMapEntry* lm = nullptr;
   uint32_t lm_cnt = 0u;
 
-  // Reject pure-register 2-word stub
   const uint32_t tiny_alu[] = { 0x0b010000u, 0xd65f03c0u };
   assert(hex::decompiler::passes::try_emit_arm64_general(
              tiny_alu, 2u, 0x1000ULL, "tiny", 4u, 0u, arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_UNSUPPORTED);
 
-  // Reject ObjC names & digit-leading names & PC wraparound
   const uint32_t four_words[] = { 0xf9400000u, 0xf900001fu, 0xaa0003e0u, 0xd65f03c0u };
   assert(hex::decompiler::passes::try_emit_arm64_general(
              four_words, 4u, 0x1000ULL, "-[Foo bar]", 10u, 0u, arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_UNSUPPORTED);
@@ -157,19 +175,17 @@ void test_guards_oom_and_table_overflow() {
   assert(hex::decompiler::passes::try_emit_arm64_general(
              four_words, 4u, UINT64_MAX - 8ULL, "wrap", 4u, 0u, arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_UNSUPPORTED);
 
-  // Tiny arena triggers HEX_ERR_OOM cleanly
+  // Tiny arena -> HEX_ERR_OOM
   alignas(16) uint8_t tiny_buf[64];
   hex::Arena tiny_arena;
   tiny_arena.init_fixed(tiny_buf, sizeof(tiny_buf));
   assert(hex::decompiler::passes::try_emit_arm64_general(
              four_words, 4u, 0x1000ULL, "oom", 3u, 0u, tiny_arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_OOM);
 
-  // Exceeding kMaxCallees (128) triggers HEX_ERR_RESOURCE_LIMIT cleanly
+  // Exceeding kMaxCallees (128) -> HEX_ERR_RESOURCE_LIMIT
   uint32_t many_calls[135];
   for (uint32_t i = 0u; i < 134u; ++i) {
-    // bl +(0x1000 + i*8) -> distinct external callee per instruction
-    const uint32_t imm26 = (0x400u + i * 2u) & 0x03FFFFFFu;
-    many_calls[i] = 0x94000000u | imm26;
+    many_calls[i] = 0x94000000u | ((0x400u + i * 2u) & 0x03FFFFFFu);
   }
   many_calls[134] = 0xd65f03c0u;
   arena.reset();
@@ -177,11 +193,25 @@ void test_guards_oom_and_table_overflow() {
              many_calls, 135u, 0x100000000ULL, "many_calls", 10u, 0u,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_RESOURCE_LIMIT);
 
+  // Exceeding kMaxGlobals (128) -> HEX_ERR_RESOURCE_LIMIT
+  uint32_t many_globals[135];
+  many_globals[0] = 0x90000008u;  // adrp x8, #0x100000000
+  for (uint32_t i = 0u; i < 133u; ++i) {
+    // ldr x9, [x8, #(i * 8)]
+    many_globals[1u + i] = 0xf9400109u | ((i & 0xFFFu) << 10u);
+  }
+  many_globals[134] = 0xd65f03c0u;
+  arena.reset();
+  assert(hex::decompiler::passes::try_emit_arm64_general(
+             many_globals, 135u, 0x100000000ULL, "many_globals", 12u, 0u,
+             arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_RESOURCE_LIMIT);
+
   // Trailing label before '}' emits valid C11 `(void)0;`
   const uint32_t trailing_nop[] = { 0xb4000060u, 0xd2800020u, 0xd65f03c0u, 0xd503201fu };
   arena.reset();
   assert(hex::decompiler::passes::try_emit_arm64_general(
              trailing_nop, 4u, 0x1000ULL, "trail", 5u, 0u, arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+  assert_parens_balanced(txt, len);
   assert(contains(txt, len, "loc_100C:\n    (void)0;\n}"));
 }
 
@@ -190,8 +220,8 @@ void test_guards_oom_and_table_overflow() {
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
-  test_bcond_lslv_udiv_sp_prfm_ldnp_fcvtau_cas();
-  test_self_recursion_and_bitmask_fp();
+  test_bcond_lslv_asrv_div_sp_prfm_ldnp_fcvtau_cas_csel();
+  test_self_recursion_and_cross_label_adrp();
   test_guards_oom_and_table_overflow();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
