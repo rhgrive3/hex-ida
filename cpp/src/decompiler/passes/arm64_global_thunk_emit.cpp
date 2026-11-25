@@ -8,10 +8,6 @@ namespace {
 static constexpr char kHexUpper[16] = {
     '0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'
 };
-static constexpr char kHexLower[16] = {
-    '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
-};
-
 static inline bool append_bytes(hex::Vec<char>& out, const char* s, uint32_t n) {
   for (uint32_t i = 0u; i < n; ++i) {
     if (!out.push_back(s[i])) return false;
@@ -27,7 +23,8 @@ static inline bool append_cstr(hex::Vec<char>& out, const char* s) {
 }
 
 static inline bool append_hex(hex::Vec<char>& out, uint64_t v, bool upper) {
-  const char* digits = upper ? kHexUpper : kHexLower;
+  (void)upper;
+  const char* digits = kHexUpper;
   if (v == 0ULL) return out.push_back('0');
   char tmp[20];
   uint32_t n = 0u;
@@ -44,7 +41,7 @@ static inline bool append_hex(hex::Vec<char>& out, uint64_t v, bool upper) {
 static inline bool append_func_name(hex::Vec<char>& out, const char* name, uint32_t len, uint64_t base_addr) {
   if (name && len > 0u) return append_bytes(out, name, len);
   if (!append_cstr(out, "sub_")) return false;
-  return append_hex(out, base_addr, false);
+  return append_hex(out, base_addr, true);
 }
 
 static inline int64_t sign_extend(uint64_t v, uint32_t bits) {
@@ -59,7 +56,7 @@ static inline bool decode_adrp(uint32_t w, uint64_t pc, uint32_t* rd_out, uint64
   const uint32_t immhi = (w >> 5u) & 0x7ffffu;
   const int64_t off = sign_extend((static_cast<uint64_t>(immhi) << 2u) | immlo, 21u) * 4096LL;
   *rd_out = w & 0x1fu;
-  *target_out = static_cast<uint64_t>(static_cast<int64_t>(pc & ~0xfffULL) + off);
+  *target_out = (pc & ~0xfffULL) + static_cast<uint64_t>(off);
   return true;
 }
 
@@ -80,7 +77,7 @@ static inline bool decode_b_or_bl(uint32_t w, uint64_t pc, bool want_bl, uint64_
   const uint32_t expected = want_bl ? 0x94000000u : 0x14000000u;
   if ((w & 0xfc000000u) != expected) return false;
   const int64_t off = sign_extend(w & 0x03ffffffu, 26u) * 4LL;
-  *target_out = static_cast<uint64_t>(static_cast<int64_t>(pc) + off);
+  *target_out = pc + static_cast<uint64_t>(off);
   return true;
 }
 
@@ -157,9 +154,10 @@ static bool classify_pure_reg_or_load(uint32_t w, uint32_t* read_mask_out, uint3
 
   // Unsigned-offset LDR / LDRB / LDRH / LDRSW (32/64-bit, no writeback, non-SIMD)
   // Bits [29:27]=111, [26]=0 (V=0), [25:24]=01, [23:22]=opc (01=LDR, 10=LDRSW/LDRSH/LDRSB, 11=LDRSH/LDRSB32)
-  if ((w & 0x3b000000u) == 0x39000000u) {
+  if ((w & 0x3f000000u) == 0x39000000u) {
+    const uint32_t size = (w >> 30u) & 3u;
     const uint32_t opc = (w >> 22u) & 3u;
-    if (opc == 0u) return false;  // STR / STRB / STRH
+    if (opc == 0u || (size == 3u && opc >= 2u) || (size == 2u && opc == 3u)) return false;
     add_r((w >> 5u) & 0x1fu);
     add_w(w & 0x1fu);
     *read_mask_out = rmask;
@@ -223,6 +221,7 @@ HexStatus try_emit_arm64_global_thunk(
     uint32_t* out_linemap_count) {
   (void)emit_flags;
   if (!words || word_count < 2u || word_count > 64u) return HEX_ERR_UNSUPPORTED;
+  if (base_addr > UINT64_MAX - static_cast<uint64_t>(word_count) * 4ULL) return HEX_ERR_UNSUPPORTED;
 
   // -------------------------------------------------------------------------
   // Pattern 1: ADRP X0, #page ; ADD X0, X0, #imm12 ; RET
@@ -328,6 +327,7 @@ HexStatus try_emit_arm64_global_thunk(
     uint64_t call_target = 0ULL;
     uint64_t tail_target = 0ULL;
     if (decode_b_or_bl(words[2u], base_addr + 8ULL, true, &call_target) &&
+        is_external_target(call_target, base_addr, word_count) &&
         decode_b_or_bl(words[4u], base_addr + 16ULL, false, &tail_target) &&
         is_external_target(tail_target, base_addr, word_count)) {
       hex::Vec<char> out(&emit_arena);
