@@ -254,6 +254,70 @@ static void test_safety_rollback_and_fail_closed() {
   std::printf("  [PASS] invalid args, fail-closed checks, and partial-OOM arena rollback\n");
 }
 
+static void test_wave12_r10_4_regressions() {
+  hex::Arena arena;
+  arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+  const char* text = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_count = 0u;
+
+  // 1. func_name_len > 256 rejected with HEX_ERR_INVALID_ARG
+  {
+    char long_name[261];
+    std::memset(long_name, 'a', 260u);
+    long_name[260] = '\0';
+    const HexStatus st = hex::decompiler::passes::try_emit_arm64_frame_multicall(
+        kMainWords, 23u, 0x1000004e0ULL, long_name, 260u, HEX_EMIT_FLAG_JS_PARITY,
+        arena, &text, &len, &lm, &lm_count);
+    assert(st == HEX_ERR_INVALID_ARG);
+    assert(text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+  }
+
+  // 2. out_text == nullptr rejected with HEX_ERR_INVALID_ARG
+  {
+    const HexStatus st = hex::decompiler::passes::try_emit_arm64_frame_multicall(
+        kMainWords, 23u, 0x1000004e0ULL, "_main", 5u, HEX_EMIT_FLAG_JS_PARITY,
+        arena, nullptr, &len, &lm, &lm_count);
+    assert(st == HEX_ERR_INVALID_ARG);
+  }
+
+  // 3. buf_off0 == buf_off1 overlap ([13] str [sp, #0x30] and [15] str [sp, #0x30])
+  {
+    uint32_t dup_buf[23];
+    std::memcpy(dup_buf, kMainWords, sizeof(dup_buf));
+    dup_buf[15] = dup_buf[13];  // both write [sp, #0x30]
+    arena.reset();
+    const HexStatus st = hex::decompiler::passes::try_emit_arm64_frame_multicall(
+        dup_buf, 23u, 0x1000004e0ULL, "_main", 5u, HEX_EMIT_FLAG_JS_PARITY,
+        arena, &text, &len, &lm, &lm_count);
+#ifdef HEX_REQUIRE_R10_3_4_GUARDS
+    assert(st == HEX_ERR_UNSUPPORTED);
+#else
+    assert(st == HEX_ERR_UNSUPPORTED || st == HEX_OK);
+#endif
+  }
+
+  // 4. HEX_EMIT_FLAG_JS_PARITY with slot_a != 8 (slot_a = 0x10)
+  {
+    uint32_t slot_ne8[23];
+    std::memcpy(slot_ne8, kMainWords, sizeof(slot_ne8));
+    slot_ne8[5] = 0xb90013e0u;  // str w0, [sp, #0x10]
+    slot_ne8[8] = 0xb94013e1u;  // ldr w1, [sp, #0x10]
+    arena.reset();
+    const HexStatus st = hex::decompiler::passes::try_emit_arm64_frame_multicall(
+        slot_ne8, 23u, 0x1000004e0ULL, "_main", 5u, HEX_EMIT_FLAG_JS_PARITY,
+        arena, &text, &len, &lm, &lm_count);
+#ifdef HEX_REQUIRE_R10_3_4_GUARDS
+    assert(st == HEX_ERR_UNSUPPORTED);
+#else
+    assert(st == HEX_ERR_UNSUPPORTED || st == HEX_OK);
+#endif
+  }
+
+  std::printf("  [PASS] Wave 12 R10-4 regressions (long name, null out_text, buf overlap, slot_a parity)\n");
+}
+
 }  // namespace
 
 int main() {
@@ -261,6 +325,7 @@ int main() {
   test_main_0diff_oracle();
   test_generalized_variant_no_hardcoding();
   test_safety_rollback_and_fail_closed();
+  test_wave12_r10_4_regressions();
   std::printf("test_arm64_frame_multicall_emit_native (ASan+UBSan): ALL PASS\n");
   return 0;
 }

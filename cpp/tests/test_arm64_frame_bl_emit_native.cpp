@@ -296,6 +296,91 @@ int main() {
     check_true("neg_oom_cleared", text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
   }
 
+  // Wave 12 R10-1 regression tests
+  {
+    const uint32_t valid7[7] = {
+        0xA9BF7BFDu, 0x910003FDu, 0x90000000u, 0x91152000u,
+        0x9400002Eu, 0xA8C17BFDu, 0xD65F03C0u,
+    };
+
+    // (a) Unaligned 24-byte frame (imm7 = -3 => 0x7D, disp = -24B) rejected
+    uint32_t unaligned24[7];
+    std::memcpy(unaligned24, valid7, sizeof(valid7));
+    unaligned24[0] = 0xA9800000u | (0x7Du << 15u) | (30u << 10u) | (31u << 5u) | 29u;  // stp [sp, #-24]!
+    unaligned24[5] = 0xA8C00000u | (0x03u << 15u) | (30u << 10u) | (31u << 5u) | 29u;  // ldp [sp], #24
+    run_negative("r10_unaligned_24b_frame", unaligned24, 7u, 0x1000ULL, "f", HEX_ERR_UNSUPPORTED);
+
+    // (b) (nullptr, 3) func_name rejected with HEX_ERR_INVALID_ARG
+    {
+      uint8_t mem[4096];
+      hex::Arena arena;
+      arena.init_fixed(mem, sizeof(mem));
+      const char* text = "stale";
+      uint32_t len = 1u;
+      const HexLineMapEntry* lm = nullptr;
+      uint32_t lm_count = 1u;
+      const HexStatus st = try_emit_arm64_frame_bl(
+          valid7, 7u, 0x1000ULL, nullptr, 3u, HEX_EMIT_FLAG_JS_PARITY, arena,
+          &text, &len, &lm, &lm_count);
+      check_true("r10_null_name_nonzero_len", st == HEX_ERR_INVALID_ARG);
+      check_true("r10_null_name_cleared", text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+    }
+
+    // (c) Constant >= 100 formatted as uppercase hex (0x64 for 100, 0x10A for 266)
+    {
+      const uint32_t w_100[8] = {
+          0xA9BF7BFDu, 0x910003FDu, 0xAA0103E0u, 0xAA0203E1u,
+          0x94000004u, 0x91019000u,  // add x0, x0, #100 (0x64)
+          0xA8C17BFDu, 0xD65F03C0u,
+      };
+      uint8_t mem[8192];
+      hex::Arena arena;
+      arena.init_fixed(mem, sizeof(mem));
+      const char* text = nullptr;
+      uint32_t len = 0u;
+      const HexLineMapEntry* lm = nullptr;
+      uint32_t lm_count = 0u;
+      const HexStatus st = try_emit_arm64_frame_bl(
+          w_100, 8u, 0x103CULL, "add_100", 7u, HEX_EMIT_FLAG_JS_PARITY, arena,
+          &text, &len, &lm, &lm_count);
+      check_true("r10_const_100_ok", st == HEX_OK && text != nullptr);
+      check_true("r10_const_100_upper_hex", text != nullptr && std::strstr(text, "return call_66 + 0x64;") != nullptr);
+
+      const uint32_t w_10a[8] = {
+          0xA9BF7BFDu, 0x910003FDu, 0xAA0103E0u, 0xAA0203E1u,
+          0x94000004u, 0x91042800u,  // add x0, x0, #0x10A (266)
+          0xA8C17BFDu, 0xD65F03C0u,
+      };
+      arena.reset();
+      const HexStatus st2 = try_emit_arm64_frame_bl(
+          w_10a, 8u, 0x103CULL, "add_10a", 7u, HEX_EMIT_FLAG_JS_PARITY, arena,
+          &text, &len, &lm, &lm_count);
+      check_true("r10_const_10a_ok", st2 == HEX_OK && text != nullptr);
+      check_true("r10_const_10a_upper_hex", text != nullptr && std::strstr(text, "return call_66 + 0x10A;") != nullptr);
+    }
+
+    // (d) High-address wrap near 0xFFFFFFFFFFFFFFF0ULL (bl at base+16 == 0x0, +0x10 -> 0x10, 0 UB)
+    {
+      const uint32_t w_wrap[7] = {
+          0xA9BF7BFDu, 0x910003FDu, 0x90000000u, 0x91152000u,
+          0x94000004u,  // bl +0x10 from (0xFFFFFFFFFFFFFFF0 + 0x10 == 0x0) -> 0x10
+          0xA8C17BFDu, 0xD65F03C0u,
+      };
+      uint8_t mem[8192];
+      hex::Arena arena;
+      arena.init_fixed(mem, sizeof(mem));
+      const char* text = nullptr;
+      uint32_t len = 0u;
+      const HexLineMapEntry* lm = nullptr;
+      uint32_t lm_count = 0u;
+      const HexStatus st = try_emit_arm64_frame_bl(
+          w_wrap, 7u, 0xFFFFFFFFFFFFFFF0ULL, "high_wrap", 9u, HEX_EMIT_FLAG_JS_PARITY, arena,
+          &text, &len, &lm, &lm_count);
+      check_true("r10_high_va_wrap_ok", st == HEX_OK && text != nullptr);
+      check_true("r10_high_va_target_10", text != nullptr && std::strstr(text, "sub_10") != nullptr);
+    }
+  }
+
   std::printf("test_arm64_frame_bl_emit_native: pass=%d fail=%d\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
