@@ -98,9 +98,9 @@ struct TextWriter {
   }
 
   void append_const_lit(uint64_t val) {
-    if (val >= 256ULL) {
+    if (val >= 100ULL) {
       append_str("0x");
-      append_u64_hex(val, false);
+      append_u64_hex(val, true);
     } else {
       append_u64_dec(val);
     }
@@ -151,7 +151,7 @@ static bool decode_stp_x29_x30_sp_pre(uint32_t w, int32_t* disp_bytes) {
   const uint32_t rt2 = (w >> 10u) & 31u;
   if (rt != 29u || rt2 != 30u || rn != 31u) return false;
   const int32_t disp = sign_extend_7(w >> 15u) * 8;
-  if (disp > -16) return false;
+  if (disp > -16 || ((-disp) & 15) != 0) return false;
   *disp_bytes = disp;
   return true;
 }
@@ -293,7 +293,7 @@ HexStatus try_emit_arm64_frame_bl(
   if (out_linemap) *out_linemap = nullptr;
   if (out_linemap_count) *out_linemap_count = 0u;
 
-  if (!words || word_count == 0u || !out_text || !out_len || !out_linemap || !out_linemap_count) {
+  if (!words || word_count == 0u || !out_text || !out_len || !out_linemap || !out_linemap_count || (func_name == nullptr && func_name_len > 0u)) {
     return HEX_ERR_INVALID_ARG;
   }
 

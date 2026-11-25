@@ -10,6 +10,8 @@
 #include "decompiler/passes/arm64_frame_vcall_emit.hpp"
 #include "decompiler/passes/arm64_frame_branch_bl_emit.hpp"
 #include "decompiler/passes/arm64_frame_multicall_emit.hpp"
+#include "decompiler/passes/arm64_objc_emit.hpp"
+#include "decompiler/passes/arm64_udf_emit.hpp"
 #endif
 
 namespace {
@@ -58,6 +60,8 @@ HexStatus try_specialized_arm64_passes(
     &hex::decompiler::passes::try_emit_arm64_frame_vcall,
     &hex::decompiler::passes::try_emit_arm64_frame_branch_bl,
     &hex::decompiler::passes::try_emit_arm64_frame_multicall,
+    &hex::decompiler::passes::try_emit_arm64_objc,
+    &hex::decompiler::passes::try_emit_arm64_udf_tail,
   };
   for (size_t i = 0; i < sizeof(kPasses) / sizeof(kPasses[0]); ++i) {
     g_emit_arena.reset();

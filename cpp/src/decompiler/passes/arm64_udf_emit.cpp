@@ -246,8 +246,7 @@ HexStatus try_emit_arm64_udf_tail(
   }
   w.put_cstr("(int64 a1)\n{\n");
 
-  // Return statement (mapped to arith + ret VAs)
-  w.map_addr(0u, base_addr);
+  // Return statement (mapped to ret VA to match JS legacy decompiler line.addr)
   w.map_addr(0u, base_addr + 4ULL);
   w.put_cstr("    return a1 ");
   w.put_char(is_sub ? '-' : '+');

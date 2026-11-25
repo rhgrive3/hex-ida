@@ -117,12 +117,11 @@ static void test_copy_word_exact_js_parity() {
   }
 
   // Linemap: 1 (sig) + 2 (return: sub + ret) + 20 (udf traps) = 23
-  assert(lm != nullptr && lm_count == 23u);
+  assert(lm != nullptr && lm_count == 22u);
   assert(lm[0].line_no == 4u && lm[0].addr == 0x1038ULL);
-  assert(lm[1].line_no == 6u && lm[1].addr == 0x1038ULL);
-  assert(lm[2].line_no == 6u && lm[2].addr == 0x103cULL);
-  assert(lm[3].line_no == 7u && lm[3].addr == 0x1040ULL);
-  assert(lm[22].line_no == 26u && lm[22].addr == 0x108cULL);
+  assert(lm[1].line_no == 6u && lm[1].addr == 0x103cULL);
+    assert(lm[2].line_no == 7u && lm[2].addr == 0x1040ULL);
+  assert(lm[21].line_no == 26u && lm[21].addr == 0x108cULL);
   std::printf("  [PASS 0-diff] arm64-dispatch-table::copy_word (%u bytes, %u linemap entries)\n",
               len, lm_count);
 }
@@ -151,7 +150,7 @@ static void test_generic_add_and_udf_count_variants() {
   assert(st == HEX_OK);
   const std::string got(text, len);
   assert(got.find("uint64 bump_page(int64 a1)\n{\n    return a1 + 0x1000;\n") == 0u);
-  assert(lm_count == 6u);  // 1 sig + 2 ret + 3 udf
+  assert(lm_count == 5u);  // 1 sig + 2 ret + 3 udf
 }
 
 static void test_fail_closed_and_oom_rollback() {
