@@ -1586,3 +1586,114 @@ export function wasmSha256Hash(bytes, opts = {}) {
     return noteFallback('sha256', 'wasm_exception');
   }
 }
+
+// ---------------------------------------------------------------------------
+// ELF Symbol Table Extractor WASM Bridge (Wave 16)
+// ---------------------------------------------------------------------------
+const ELF_SYMBOLS_ARENA_BUDGET = 3_800_000;
+
+export function wasmExtractElfSymbols(
+  symBytes,
+  entSize,
+  count,
+  strBytes,
+  xindexBytes,
+  is64Bit,
+  isBigEndian,
+  opts = {},
+) {
+  if (getEngineMode(opts) === 'js') return noteFallback('elf_symbols', 'wasm_disabled');
+  const ex = getHexEngineExportsSafe();
+  if (
+    !isWasmBulkMemorySupported()
+    || !ex
+    || typeof ex.hex_elf_extract_symbols !== 'function'
+    || typeof ex.hex_identity_alloc !== 'function'
+    || typeof ex.hex_identity_reset !== 'function'
+  ) {
+    return noteFallback('elf_symbols', 'wasm_unavailable');
+  }
+  if (!(symBytes instanceof Uint8Array)) return noteFallback('elf_symbols', 'invalid_sym_bytes');
+  if (!(strBytes instanceof Uint8Array)) return noteFallback('elf_symbols', 'invalid_str_bytes');
+  if (xindexBytes != null && !(xindexBytes instanceof Uint8Array)) {
+    return noteFallback('elf_symbols', 'invalid_xindex_bytes');
+  }
+  if (!Number.isSafeInteger(count) || count < 0) return noteFallback('elf_symbols', 'invalid_count');
+  const minEntSize = is64Bit ? 24 : 16;
+  if (!Number.isSafeInteger(entSize) || entSize < minEntSize) {
+    return noteFallback('elf_symbols', 'invalid_ent_size');
+  }
+  if (count * entSize > symBytes.length) return noteFallback('elf_symbols', 'invalid_range');
+
+  if (count === 0) {
+    recordWasmCall('elf_symbols');
+    const emptyBuf = new ArrayBuffer(0);
+    return { count: 0, buffer: emptyBuf, view: new DataView(emptyBuf) };
+  }
+
+  const symLen = symBytes.length;
+  const strLen = strBytes.length;
+  const xindexLen = xindexBytes ? xindexBytes.length : 0;
+  const outBytes = count * 32;
+  if (symLen + strLen + xindexLen + outBytes + 256 > ELF_SYMBOLS_ARENA_BUDGET) {
+    return noteFallback('elf_symbols', 'input_too_large');
+  }
+
+  try {
+    ex.hex_identity_reset();
+    const symPtr = symLen > 0 ? ex.hex_identity_alloc(symLen) : 0;
+    const strPtr = strLen > 0 ? ex.hex_identity_alloc(strLen) : 0;
+    const xindexPtr = xindexLen > 0 ? ex.hex_identity_alloc(xindexLen) : 0;
+    const outPtr = ex.hex_identity_alloc(outBytes);
+    const outCountPtr = ex.hex_identity_alloc(4);
+    if (
+      (symLen > 0 && !symPtr)
+      || (strLen > 0 && !strPtr)
+      || (xindexLen > 0 && !xindexPtr)
+      || !outPtr
+      || !outCountPtr
+    ) {
+      return noteFallback('elf_symbols', 'oom');
+    }
+
+    const memU8 = new Uint8Array(ex.memory.buffer);
+    if (symLen > 0) memU8.set(symBytes, symPtr);
+    if (strLen > 0) memU8.set(strBytes, strPtr);
+    if (xindexLen > 0) memU8.set(xindexBytes, xindexPtr);
+
+    const flags = (is64Bit ? 1 : 0) | (isBigEndian ? 2 : 0);
+    const status = ex.hex_elf_extract_symbols(
+      symPtr,
+      symLen >>> 0,
+      entSize >>> 0,
+      count >>> 0,
+      strPtr,
+      strLen >>> 0,
+      xindexPtr,
+      xindexLen >>> 0,
+      flags >>> 0,
+      outPtr,
+      outCountPtr,
+    );
+    if (status !== HEX_OK) {
+      return noteFallback('elf_symbols', `wasm_status_${status}`);
+    }
+
+    const mem = ex.memory.buffer;
+    const outCount = new DataView(mem).getUint32(outCountPtr, true);
+    if (outCount !== count) {
+      return noteFallback('elf_symbols', 'count_mismatch');
+    }
+
+    const outCopy = new Uint8Array(outBytes);
+    outCopy.set(new Uint8Array(mem, outPtr, outBytes));
+    recordWasmCall('elf_symbols');
+    return {
+      count: outCount,
+      buffer: outCopy.buffer,
+      view: new DataView(outCopy.buffer),
+    };
+  } catch {
+    return noteFallback('elf_symbols', 'wasm_exception');
+  }
+}
