@@ -286,6 +286,9 @@ static bool match_vcall_pattern(
     uint64_t base_addr,
     VcallPlan* plan) {
   if (word_count != 8u && word_count != 10u) return false;
+  if (base_addr > UINT64_MAX - static_cast<uint64_t>(word_count - 1u) * 4ULL) {
+    return false;
+  }
 
   // Common frame prologue & epilogue:
   //   [0] stp x29, x30, [sp, #-frame]!
@@ -303,7 +306,7 @@ static bool match_vcall_pattern(
     // Pattern 1 (8 insns):
     //   [2] ldr xT, [xRecv, #0]
     //   [3] movz wArg/xArg, #imm  (arg reg 1..7)
-    //   [4] ldr xT, [xT, #slot]
+    //   [4] ldr xT, [xT, #0]
     //   [5] blr xT                (non-PAC strictly)
     const DecodedLdrUoff l0 = decode_ldr_uoff(words[2]);
     const DecodedMovz mv = decode_movz(words[3]);
@@ -316,7 +319,7 @@ static bool match_vcall_pattern(
     if (!mv.valid || mv.rd == 0u || mv.rd >= 8u || mv.rd == l0.rt) {
       return false;
     }
-    if (!l1.valid || !l1.is_64 || l1.rn != l0.rt || l1.rt != l0.rt) {
+    if (!l1.valid || !l1.is_64 || l1.rn != l0.rt || l1.rt != l0.rt || l1.disp != 0u) {
       return false;
     }
     if (!blr.valid || blr.rn != l1.rt) {
@@ -333,11 +336,11 @@ static bool match_vcall_pattern(
   }
 
   // Pattern 2 (10 insns):
-  //   [2] ldr xT, [xRecv, #0]       (xRecv in 1..7, xT in 8..15)
-  //   [3] mov xTmp, xRecv           (xTmp in 8..15, xTmp != xT)
-  //   [4] ldr wArg/xArg, [xSelf, #disp]  (xSelf in 0..7, xSelf != xRecv, arg in 1..7)
+  //   [2] ldr xT, [x1, #0]          (contiguous arg: xRecv == x1, xT in 8..15)
+  //   [3] mov xTmp, x1              (xTmp in 8..15, xTmp != xT)
+  //   [4] ldr wArg/xArg, [x0, #disp] (contiguous arg: xSelf == x0, arg in 1..7)
   //   [5] mov x0, xTmp
-  //   [6] ldr xT, [xT, #slot]
+  //   [6] ldr xT, [xT, #0]
   //   [7] blr xT                    (non-PAC strictly)
   const DecodedLdrUoff l0 = decode_ldr_uoff(words[2]);
   const DecodedMovReg mv_save = decode_mov_reg(words[3]);
@@ -346,20 +349,20 @@ static bool match_vcall_pattern(
   const DecodedLdrUoff l1 = decode_ldr_uoff(words[6]);
   const DecodedBlr blr = decode_blr_non_pac(words[7]);
 
-  if (!l0.valid || !l0.is_64 || !is_scratch_reg(l0.rt) || l0.rn == 0u || l0.rn >= 8u || l0.disp != 0u) {
+  if (!l0.valid || !l0.is_64 || !is_scratch_reg(l0.rt) || l0.rn != 1u || l0.disp != 0u) {
     return false;
   }
   if (!mv_save.valid || !mv_save.is_64 || !is_scratch_reg(mv_save.rd) ||
       mv_save.rd == l0.rt || mv_save.rm != l0.rn) {
     return false;
   }
-  if (!l_arg.valid || l_arg.rn >= 8u || l_arg.rn == l0.rn || l_arg.rt == 0u || l_arg.rt >= 8u) {
+  if (!l_arg.valid || l_arg.rn != 0u || l_arg.rt == 0u || l_arg.rt >= 8u) {
     return false;
   }
   if (!mv_x0.valid || !mv_x0.is_64 || mv_x0.rd != 0u || mv_x0.rm != mv_save.rd) {
     return false;
   }
-  if (!l1.valid || !l1.is_64 || l1.rn != l0.rt || l1.rt != l0.rt) {
+  if (!l1.valid || !l1.is_64 || l1.rn != l0.rt || l1.rt != l0.rt || l1.disp != 0u) {
     return false;
   }
   if (!blr.valid || blr.rn != l1.rt) {

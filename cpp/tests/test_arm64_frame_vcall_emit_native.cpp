@@ -177,14 +177,14 @@ static void test_two_vcall_functions_exact_js_parity() {
 }
 
 static void test_generic_register_and_frame_variants() {
-  // Different scratch register (x10), frame size 0x20, non-zero vtable slot offset (+0x10),
+  // Different scratch register (x10), frame size 0x20, zero vtable slot offset (#0),
   // custom name, and non-parity mode (emit_flags = 0).
   const uint32_t words[8] = {
       0xa9be7bfdu,  // stp x29, x30, [sp, #-0x20]!
       0x910003fdu,  // mov x29, sp
       0xf940000au,  // ldr x10, [x0]
       0x52800142u,  // mov w2, #10
-      0xf940094au,  // ldr x10, [x10, #0x10]
+      0xf940014au,  // ldr x10, [x10, #0]
       0xd63f0140u,  // blr x10
       0xa8c27bfdu,  // ldp x29, x30, [sp], #0x20
       0xd65f03c0u,  // ret
@@ -280,6 +280,83 @@ static void test_pac_rejection_fail_closed_and_oom_rollback() {
          == HEX_ERR_OOM);
   assert(tiny_arena.used() == mark);
   assert(text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+
+  const uint32_t valid10[10] = {
+      0xa9bf7bfdu,  // stp x29, x30, [sp, #-0x10]!
+      0x910003fdu,  // mov x29, sp
+      0xf9400029u,  // ldr x9, [x1]
+      0xaa0103e8u,  // mov x8, x1
+      0xb9400c01u,  // ldr w1, [x0, #0xc]
+      0xaa0803e0u,  // mov x0, x8
+      0xf9400129u,  // ldr x9, [x9]
+      0xd63f0120u,  // blr x9
+      0xa8c17bfdu,  // ldp x29, x30, [sp], #0x10
+      0xd65f03c0u,  // ret
+  };
+
+  // 6. Non-zero vtable slot offset (l1.disp != 0) rejected in both Pattern 1 and Pattern 2
+  {
+    uint32_t p1_nonzero[8];
+    std::memcpy(p1_nonzero, valid8, sizeof(valid8));
+    p1_nonzero[4] = 0xf9400508u;  // ldr x8, [x8, #0x8]
+    assert(try_emit_arm64_frame_vcall(p1_nonzero, 8u, 0x1000u, "f", 1u, 1u, arena, &text, &len, &lm, &lm_count)
+           == HEX_ERR_UNSUPPORTED);
+
+    uint32_t p2_nonzero[10];
+    std::memcpy(p2_nonzero, valid10, sizeof(valid10));
+    p2_nonzero[6] = 0xf9400529u;  // ldr x9, [x9, #0x8]
+    assert(try_emit_arm64_frame_vcall(p2_nonzero, 10u, 0x1000u, "f", 1u, 1u, arena, &text, &len, &lm, &lm_count)
+           == HEX_ERR_UNSUPPORTED);
+  }
+
+  // 7. Skipped argument register in Pattern 2 (xRecv == x2 instead of x1) rejected
+  {
+    uint32_t p2_skipped[10];
+    std::memcpy(p2_skipped, valid10, sizeof(valid10));
+    p2_skipped[2] = 0xf9400049u;  // ldr x9, [x2]
+    p2_skipped[3] = 0xaa0203e8u;  // mov x8, x2
+    assert(try_emit_arm64_frame_vcall(p2_skipped, 10u, 0x1000u, "f", 1u, 1u, arena, &text, &len, &lm, &lm_count)
+           == HEX_ERR_UNSUPPORTED);
+  }
+
+  // 8. Pattern 2 PAC blraa and RETAA rejected
+  {
+    uint32_t p2_blraa[10];
+    std::memcpy(p2_blraa, valid10, sizeof(valid10));
+    p2_blraa[7] = 0xd73f0920u;  // blraa x9, x0
+    assert(try_emit_arm64_frame_vcall(p2_blraa, 10u, 0x1000u, "f", 1u, 1u, arena, &text, &len, &lm, &lm_count)
+           == HEX_ERR_UNSUPPORTED);
+
+    uint32_t p2_retaa[10];
+    std::memcpy(p2_retaa, valid10, sizeof(valid10));
+    p2_retaa[9] = 0xd65f0bffu;  // retaa
+    assert(try_emit_arm64_frame_vcall(p2_retaa, 10u, 0x1000u, "f", 1u, 1u, arena, &text, &len, &lm, &lm_count)
+           == HEX_ERR_UNSUPPORTED);
+
+    uint32_t p1_retaa[8];
+    std::memcpy(p1_retaa, valid8, sizeof(valid8));
+    p1_retaa[7] = 0xd65f0bffu;  // retaa
+    assert(try_emit_arm64_frame_vcall(p1_retaa, 8u, 0x1000u, "f", 1u, 1u, arena, &text, &len, &lm, &lm_count)
+           == HEX_ERR_UNSUPPORTED);
+  }
+
+  // 9. Oversized func_name_len > 256 rejected
+  {
+    const std::string long_name(257u, 'a');
+    assert(try_emit_arm64_frame_vcall(
+               valid8, 8u, 0x1000u, long_name.c_str(), static_cast<uint32_t>(long_name.size()), 1u,
+               arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+  }
+
+  // 10. base_addr wraparound overflow rejected in both Pattern 1 and Pattern 2
+  {
+    assert(try_emit_arm64_frame_vcall(
+               valid8, 8u, UINT64_MAX - 8ULL, "f", 1u, 1u, arena,
+               &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+    assert(try_emit_arm64_frame_vcall(
+               valid10, 10u, UINT64_MAX - 16ULL, "f", 1u, 1u, arena,
+               &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+  }
 }
 
 }  // namespace
