@@ -344,6 +344,29 @@ void test_wave25_neon_fmov_1word_and_structurizer() {
     assert(contains(txt, len, "} while ("));
     assert(!contains(txt, len, "goto loc_"));
   }
+  // 4. Regression checks: AdvSIMD ORR/BIC imm, SSHR #32 no-UB, invalid FMOV/DUP fallthrough
+  {
+    arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+    const uint32_t w4[] = {
+      0x4F001420u,  // orr v0.4s, #0x1
+      0x6F001420u,  // bic v0.4s, #0x1
+      0x4F200420u,  // sshr v0.4s, v1.4s, #32 (must NOT emit `>> 32`)
+      0x9E2E13E0u,  // unallocated FMOV-like word -> fallback comment
+      0x0E080420u,  // unallocated DUP Q=0 tz=3 -> fallback comment
+      0xD65F03C0u,  // ret
+    };
+    const char* txt = nullptr; uint32_t len = 0u;
+    const HexLineMapEntry* lm = nullptr; uint32_t lm_cnt = 0u;
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w4, 6u, 0x100006000ULL, "round2_reg", 10u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "q0 = q0 | "));
+    assert(contains(txt, len, "q0 = q0 & ~"));
+    assert(!contains(txt, len, ">> 32"));
+    assert(contains(txt, len, "/* arm64 insn 0x9E2E13E0 */"));
+    assert(contains(txt, len, "/* arm64 insn 0xE080420 */"));
+  }
 }
 
 int main() {
@@ -354,7 +377,7 @@ int main() {
   test_guards_oom_and_table_overflow();
   test_sparse_self_recursion_and_trailing_fallback_label();
   test_wave23_instructions_and_pass_sync();
+  test_wave25_neon_fmov_1word_and_structurizer();
   std::puts("test_arm64_general_emit_native: PASS");
-    test_wave25_neon_fmov_1word_and_structurizer();
   return 0;
 }

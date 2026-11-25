@@ -2149,38 +2149,6 @@ static void process_insn(
     return;
   }
 
-  // Scalar FMOV Sd/Dd, #imm8 (0x1E201000 / 0x1E601000)
-  if ((w & 0x5F201C00u) == 0x1E201000u) {
-    const uint32_t ftype = (w >> 22u) & 3u;
-    const uint32_t imm8 = (w >> 13u) & 0xFFu;
-    const uint32_t rd = w & 31u;
-    if (ftype == 0u || ftype == 1u) {
-      const bool is_double = (ftype == 1u);
-      const uint64_t val64 = decode_advsimd_imm64(is_double ? 1u : 0u, 0xFu, imm8);
-      if (!emit) {
-        ctx.mark_fp_write(rd);
-        ctx.uses_fp_bitcast = true;
-        if (is_double) { ctx.fp_double_mask |= (1u << rd); ctx.uses_uint64_t = true; }
-        else { ctx.fp_single_mask |= (1u << rd); ctx.uses_uint32 = true; }
-      } else if (tb) {
-        rec();
-        tb->put_str("    ");
-        tb->put_reg_d(rd);
-        if (is_double) {
-          tb->put_str(" = __hex_u64_to_f64(0x");
-          tb->put_u64_hex(val64, true);
-          tb->put_str("ULL);\n");
-        } else {
-          tb->put_str(" = (double)__hex_u32_to_f32(0x");
-          tb->put_u64_hex(static_cast<uint32_t>(val64), true);
-          tb->put_str("u);\n");
-        }
-        emit_sync_d_to_q(tb, ctx, rd, is_double);
-      }
-      return;
-    }
-  }
-
   // FP Data-Processing (1-source): FMOV / FABS / FNEG / FSQRT / FCVT / FRINT*
   if ((w & 0x5F207C00u) == 0x1E204000u) {
     const uint32_t ftype = (w >> 22u) & 3u;
@@ -3168,7 +3136,7 @@ static void process_insn(
     if ((imm5 & 0xFu) != 0u) {
       uint32_t tz = 0u;
       while (tz < 4u && (((imm5 >> tz) & 1u) == 0u)) ++tz;
-      if (!is_scalar && !is_128 && tz == 3u) return;
+      if (is_scalar || is_128 || tz < 3u) {
       const uint32_t esize = 8u << tz;
       const uint32_t idx = imm5 >> (tz + 1u);
       const uint32_t lanes = is_scalar ? 1u : ((is_128 ? 128u : 64u) / esize);
@@ -3215,6 +3183,7 @@ static void process_insn(
         }
       }
       return;
+      }
     }
   }
 
@@ -4535,13 +4504,16 @@ HexStatus try_emit_arm64_general(
                 bctx.mark_gpr_read(0u);
               }
             }
-            const uint32_t pre_gw = bctx.gpr_written;
-            process_insn(wi, pc, base_addr, word_count, bctx, bcmp, false, nullptr);
             if ((wi & 0xFC000000u) == 0x94000000u || (wi & 0xFFFFFC1Fu) == 0xD63F0000u) {
+              process_insn(wi, pc, base_addr, word_count, bctx, bcmp, false, nullptr);
               bctx.gpr_written |= 0xFFu;
               bctx.fp_written |= 0xFFu;
             } else {
-              b_def_nc_g[b] |= ((bctx.gpr_written & ~pre_gw) & 0xFFu);
+              const uint32_t saved_gw = bctx.gpr_written;
+              bctx.gpr_written &= ~0xFFu;
+              process_insn(wi, pc, base_addr, word_count, bctx, bcmp, false, nullptr);
+              b_def_nc_g[b] |= (bctx.gpr_written & 0xFFu);
+              bctx.gpr_written |= saved_gw;
             }
             last_i = i;
             ++i;
