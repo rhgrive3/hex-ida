@@ -110,3 +110,20 @@
   - Full corpus (13 real binaries x 43 functions, **zero fallbacks**, 162 WASM calls including `strings: 11`, `sha256: 9`): `js` **11,084.00 ms** (RSS 613.98 MB, heap 481.67 MB) vs `auto` **21.26 ms** (**521.35x speedup**, warmed round 2 = **19.37 ms**, RSS **202.99 MB** [-66.9%], heap **61.46 MB** [-87.2%]).
   - WASM-eligible 40-function subset (20x batch = 800 decompiles, `sink: 325340`): `js` **157,487.19 ms** (7,874.359 ms/pass, RSS 690.59 MB, heap 544.36 MB) vs `auto` **19.98 ms** (0.999 ms/pass, **7,882.24x speedup**, RSS **210.48 MB** [-69.5%], heap **76.55 MB** [-85.9%]).
   - Microbench: `byteSearch (1 MiB)` **3.615 ms -> 0.657 ms (5.50x)**; `sha256 (1 MiB)` **5.432 ms -> 5.072 ms (1.07x, 0-diff)**.
+
+## Wave 15 (716x Full-Corpus & 10,697x Batch — Flat Strings, Unrolled SHA-256, Mach-O 1x Hash, O(1) ELF/Model Maps + Wave 14 4-Way Review)
+- **Impl Agents (6 parallel worktrees)**:
+  - `M1` (`js/core/hex-engine-bridge.js`): Added `wasmScanStringsFlat` zero-object `Uint32Array` bridge (`STRING_SCAN_MAX_SPANS = 131,072`, `STRING_SCAN_ARENA_BUDGET = 3.9 MB`) and expanded `SHA256_MAX_CHUNK_BLOCKS = 16,384` / `SHA256_MAX_HASH_BYTES = 1 MiB` (single-shot 1 MiB SHA-256).
+  - `M2` (`js/binary/strings.js`): Wired `wasmScanStringsFlat`, dropped redundant per-hit `${offset}:${enc}` `Set` & double `BigInt` allocations on disjoint WASM ranges, expanded pure-ASCII fast decode to `<= 256B` with bounds guard.
+  - `M3` (`js/binary/macho-core.js`, `js/core/identity/index.js`): Deduplicated Mach-O resident SHA-256 from 3x -> 1x per binary via `wasmSha256Hash` + `HEX_TABLE` lookup; added `deepFreeze` fast-path.
+  - `M4` (`js/binary/model.js`): Hoisted `SEED_SOURCE_RANK`, switched `mergeFunctionSeeds` to `BigInt` `Map` keys with zero-alloc empty contract path, added O(1) last-hit range cache to `offsetToAddress`.
+  - `M5` (`js/binary/elf-mapping.js`): Replaced per-call closures & linear section/segment scans with `WeakMap`-cached O(1) `sectionByIndex` and pre-filtered executable ranges.
+  - `M6` (`cpp/src/core/sha256.cpp`): Unrolled 64-round SHA-256 compression with 16-word rolling window & register rotation (0 extra BSS, NIST FIPS 180-4 0-diff).
+- **Wave 14 Independent Review Agents (4 parallel non-overlapping reviewers, zero self-review)**:
+  - `R14-1` (`sha256.{hpp,cpp}`), `R14-2` (`hex-engine-bridge.js` SHA-256 + `content-identity.js`), `R14-3` (`elf-budget.js` + `macho-budget.js`), `R14-4` (`wave14-sha256-wasm-parity`, `strings.js`, docs): **4/4 PASS (0 Critical, 0 Major)**.
+- **Unified WASM Artifact**: `wasm/hex_engine.wasm` (**429,411 bytes**, **27 freestanding C++20 units**, **99 exports**, **0 imports**, initial linear memory **6.6875 MiB** [107 pages] <= 8 MiB, `SharedArrayBuffer: false`).
+- **Verification**: Native ASan/UBSan (`test_sha256_native`) PASS; **37/37 Node Wave 6/11/12/13/14, `byte-search`, `#8736`, `#8772`, `#8880` subtests** PASS; `npm run lint` (`5845 files ok`) PASS; `npm run module-boundaries:test` PASS; `npm run userscript:build` PASS (protected runtime `20,938,710 -> 6,022,653 bytes`).
+- **Wave 15 Benchmark (`--expose-gc --rounds=3 --wasm7-iters=20`)**:
+  - **Full corpus (13 real binaries x 43 functions, zero fallbacks, 156 WASM calls)**: `js` **9,797.79 ms** (RSS 449.93 MB, heap 283.36 MB) vs `auto` **13.68 ms** (**716.21x speedup**, warmed round 3 = **12.57 ms** [**779x**], RSS **203.79 MB** [-54.7%], heap **64.31 MB** [-77.3%]).
+  - **WASM-eligible 40-function subset (20x batch = 800 decompiles, `sink: 325340`)**: `js` **142,169.70 ms** (7,108.485 ms/pass, RSS 994.93 MB, heap 838.70 MB) vs `auto` **13.29 ms** (0.664 ms/pass, **10,697.49x speedup**, RSS **248.22 MB** [-75.1%], heap **99.82 MB** [-88.1%]).
+  - **Microbench**: `byteSearch (1 MiB)` **3.529 ms -> 0.671 ms (5.26x, warmed 0.360 ms = 9.4x)**; `sha256 (1 MiB)` **5.422 ms -> 3.216 ms (1.69x, 0-diff)**; `scanStrings (256 KiB dense 16,160 strings)` **10.391 ms -> 10.163 ms (1.02x, warmed 5.089 ms = 2.0x)**.

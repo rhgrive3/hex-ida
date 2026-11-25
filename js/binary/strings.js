@@ -250,6 +250,7 @@ const WASM_ENCODINGS = ['utf8', 'utf16le', 'utf16be'];
 function decodeAsciiIfPure(bytes, fileOffset, byteLength) {
   if (byteLength <= 0 || byteLength > 256) return null;
   const end = fileOffset + byteLength;
+  if (fileOffset < 0 || end > bytes.length) return null;
   for (let p = fileOffset; p < end; p++) {
     if (bytes[p] >= 0x80) return null;
   }
