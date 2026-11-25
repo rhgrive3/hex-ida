@@ -946,6 +946,100 @@ export function wasmDecompileX86_64Function({
 }
 
 // ---------------------------------------------------------------------------
+// x86_64 Semantic Decompiler WASM Bridge (Wave 12)
+// ---------------------------------------------------------------------------
+export function wasmDecompileX86_64SemanticFunction({
+  bytes,
+  baseAddr = 0n,
+  abiId = 0,
+  insns = null,
+  _engine = null,
+} = {}) {
+  if (getEngineMode({ _engine }) === 'js') return noteFallback('x86_64_decompile', 'wasm_disabled');
+  const ex = getHexEngineExportsSafe();
+  const getTextPtr = ex && typeof ex.hex_x86_64_semantic_get_text_ptr === 'function'
+    ? ex.hex_x86_64_semantic_get_text_ptr
+    : ex?.hex_x86_64_decomp_get_text_ptr;
+  const getTextLen = ex && typeof ex.hex_x86_64_semantic_get_text_len === 'function'
+    ? ex.hex_x86_64_semantic_get_text_len
+    : ex?.hex_x86_64_decomp_get_text_len;
+  if (
+    !isWasmBulkMemorySupported()
+    || !ex
+    || typeof ex.hex_engine_decompile_x86_64_semantic !== 'function'
+    || typeof getTextPtr !== 'function'
+    || typeof getTextLen !== 'function'
+  ) {
+    return noteFallback('x86_64_decompile', 'wasm_unavailable');
+  }
+  if (!(bytes instanceof Uint8Array)) {
+    return noteFallback('x86_64_decompile', 'invalid_bytes');
+  }
+  if (bytes.length === 0) {
+    return noteFallback('x86_64_decompile', 'empty_bytes');
+  }
+
+  try {
+    resetEngineScratch(ex);
+    const bytesPtr = allocEngineScratch(ex, bytes.length);
+    if (!bytesPtr) return noteFallback('x86_64_decompile', 'oom');
+    new Uint8Array(ex.memory.buffer, bytesPtr, bytes.length).set(bytes);
+
+    const baseAddrBig = BigInt(baseAddr);
+    const status = ex.hex_engine_decompile_x86_64_semantic(
+      bytesPtr,
+      bytes.length,
+      baseAddrBig,
+      abiId >>> 0,
+    );
+    if (status !== HEX_OK) {
+      return noteFallback('x86_64_decompile', `wasm_status_${status}`);
+    }
+
+    const textPtr = getTextPtr();
+    const textLen = getTextLen();
+    if (!textPtr || !textLen) {
+      return noteFallback('x86_64_decompile', 'empty_wasm_output');
+    }
+
+    const mem = ex.memory.buffer;
+    const pseudocode = textDecoder.decode(new Uint8Array(mem, textPtr, textLen));
+
+    const getLinemapPtr = typeof ex.hex_x86_64_semantic_get_linemap_ptr === 'function'
+      ? ex.hex_x86_64_semantic_get_linemap_ptr
+      : ex.hex_x86_64_decomp_get_linemap_ptr;
+    const getLinemapCount = typeof ex.hex_x86_64_semantic_get_linemap_count === 'function'
+      ? ex.hex_x86_64_semantic_get_linemap_count
+      : ex.hex_x86_64_decomp_get_linemap_count;
+    const rawLinemap = (
+      typeof getLinemapPtr === 'function'
+      && typeof getLinemapCount === 'function'
+    )
+      ? readDecompileLinemap(mem, getLinemapPtr(), getLinemapCount())
+      : new Map();
+
+    const addrToRow = new Map();
+    if (Array.isArray(insns)) {
+      for (let i = 0; i < insns.length; i += 1) {
+        if (insns[i]?.address != null) addrToRow.set(BigInt(insns[i].address), i);
+      }
+    }
+
+    const { lines, sourceMap } = buildDecompiledLinesAndSourceMap(
+      pseudocode,
+      rawLinemap,
+      baseAddrBig,
+      addrToRow,
+    );
+
+    recordWasmCall('x86_64_decompile');
+    return { pseudocode, lines, sourceMap };
+  } catch {
+    return noteFallback('x86_64_decompile', 'wasm_exception');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Resident IR + SSA Optimizer WASM Bridge (Wave 8)
 // ---------------------------------------------------------------------------
 export function wasmRunResidentIrAndOptimize({

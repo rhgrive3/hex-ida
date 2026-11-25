@@ -68,6 +68,7 @@ const HEX_ENGINE_CPP_SRCS = [
 
 const OPTIONAL_TARGET_SRCS = [
   'cpp/src/targets/x86_64_decomp.cpp',
+  'cpp/src/targets/x86_64_semantic_emit.cpp',
   'cpp/src/targets/riscv64_decode.cpp',
 ];
 
