@@ -25,27 +25,27 @@ constexpr bool is_nop(uint32_t w) { return w == 0xd503201fu; }
 constexpr bool is_ret_canon(uint32_t w) { return w == 0xd65f03c0u; }
 constexpr bool is_mov_fp_sp(uint32_t w) { return w == 0x910003fdu; }  // add x29, sp, #0
 
-// `stp x29, x30, [sp, #-N]!` (64-bit pre-indexed store pair, negative imm7)
+// `stp x29, x30, [sp, #-N]!` (64-bit pre-indexed store pair, 16-byte aligned negative imm7)
 bool match_stp_fp_lr_pre(uint32_t w, uint32_t* out_frame_bytes) {
   if (masked(w, 0xffc00000u) != 0xa9800000u) return false;
   if (reg_rd(w) != 29u || reg_rt2(w) != 30u || reg_rn(w) != 31u) return false;
   const int64_t imm7 = sign_extend((w >> 15) & 0x7fu, 7u);
   if (imm7 >= 0) return false;
-  const int64_t bytes = -imm7 * 8LL;
-  if (bytes <= 0 || bytes > 512LL) return false;
-  if (out_frame_bytes) *out_frame_bytes = static_cast<uint32_t>(bytes);
+  const uint32_t bytes = static_cast<uint32_t>(-imm7 * 8LL);
+  if (bytes < 16u || bytes > 512u || (bytes & 15u) != 0u) return false;
+  if (out_frame_bytes) *out_frame_bytes = bytes;
   return true;
 }
 
-// `ldp x29, x30, [sp], #N` (64-bit post-indexed load pair, positive imm7)
+// `ldp x29, x30, [sp], #N` (64-bit post-indexed load pair, 16-byte aligned positive imm7)
 bool match_ldp_fp_lr_post(uint32_t w, uint32_t* out_frame_bytes) {
   if (masked(w, 0xffc00000u) != 0xa8c00000u) return false;
   if (reg_rd(w) != 29u || reg_rt2(w) != 30u || reg_rn(w) != 31u) return false;
   const int64_t imm7 = sign_extend((w >> 15) & 0x7fu, 7u);
   if (imm7 <= 0) return false;
-  const int64_t bytes = imm7 * 8LL;
-  if (bytes <= 0 || bytes > 512LL) return false;
-  if (out_frame_bytes) *out_frame_bytes = static_cast<uint32_t>(bytes);
+  const uint32_t bytes = static_cast<uint32_t>(imm7 * 8LL);
+  if (bytes < 16u || bytes > 512u || (bytes & 15u) != 0u) return false;
+  if (out_frame_bytes) *out_frame_bytes = bytes;
   return true;
 }
 
@@ -322,7 +322,7 @@ struct EmitBuf {
   }
 
   void record_line(uint64_t addr) {
-    if (lm_count >= lm_cap || addr == 0ULL) return;
+    if (lm_count >= lm_cap) return;
     for (uint32_t i = 0u; i < lm_count; ++i) {
       if (lm[i].line_no == cur_line && lm[i].addr == addr) return;
     }

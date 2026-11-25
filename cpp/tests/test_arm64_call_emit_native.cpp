@@ -282,7 +282,97 @@ void test_invalid_args_and_fail_closed_edge_cases() {
              simple_call, 5u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_NONE,
              tiny_arena, &text, &len, &lm, &lm_count) == HEX_ERR_OOM);
 
-  std::printf("  [PASS] invalid args, mismatched frame, non-canonical ret, multi-call, and OOM fail-closed\n");
+  // Unaligned SP frame sizes (-8/+8 and -24/+24) must be rejected (16-byte SP alignment).
+  const uint32_t unaligned_8[5] = {
+      0xa9bffbfdu, 0x910003fdu, 0x94000004u, 0xa8c0fbfdu, 0xd65f03c0u,
+  };
+  const uint32_t unaligned_24[5] = {
+      0xa9befbfdu, 0x910003fdu, 0x94000004u, 0xa8c1fbfdu, 0xd65f03c0u,
+  };
+  assert(hex::decompiler::passes::try_emit_arm64_calls(
+             unaligned_8, 5u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_NONE,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+  assert(hex::decompiler::passes::try_emit_arm64_calls(
+             unaligned_24, 5u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_NONE,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+
+  // Partial OOM: text buffer (8192 B) succeeds, linemap (1024 B) fails -> arena.used() fully rolled back.
+  {
+    alignas(16) uint8_t partial_buf[8192u + 512u];
+    hex::Arena partial_arena;
+    partial_arena.init_fixed(partial_buf, sizeof(partial_buf));
+    void* sentinel = partial_arena.alloc_bytes(64u, 16u);
+    assert(sentinel != nullptr);
+    const size_t mark_before = partial_arena.used();
+    assert(mark_before == 64u);
+    assert(hex::decompiler::passes::try_emit_arm64_calls(
+               simple_call, 5u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_NONE,
+               partial_arena, &text, &len, &lm, &lm_count) == HEX_ERR_OOM);
+    assert(partial_arena.used() == mark_before);
+  }
+
+  // PAC instructions (`paciasp`, `retaa`, `blraa`) must fail-closed.
+  const uint32_t pac_paciasp[6] = {
+      0xd503233fu, 0xa9bf7bfdu, 0x910003fdu, 0x94000004u, 0xa8c17bfdu, 0xd65f03c0u,
+  };
+  const uint32_t pac_retaa[5] = {
+      0xa9bf7bfdu, 0x910003fdu, 0x94000004u, 0xa8c17bfdu, 0xd65f0bffu,
+  };
+  const uint32_t pac_blraa[5] = {
+      0xa9bf7bfdu, 0x910003fdu, 0xd73f0909u, 0xa8c17bfdu, 0xd65f03c0u,
+  };
+  assert(hex::decompiler::passes::try_emit_arm64_calls(
+             pac_paciasp, 6u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_NONE,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+  assert(hex::decompiler::passes::try_emit_arm64_calls(
+             pac_retaa, 5u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_NONE,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+  assert(hex::decompiler::passes::try_emit_arm64_calls(
+             pac_blraa, 5u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_NONE,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+
+  // Non-SP `str` (`str x9, [x0, #8]`) inside frame+call body must fail-closed.
+  const uint32_t non_sp_str[6] = {
+      0xa9bf7bfdu, 0x910003fdu, 0xf9000409u, 0x94000004u, 0xa8c17bfdu, 0xd65f03c0u,
+  };
+  assert(hex::decompiler::passes::try_emit_arm64_calls(
+             non_sp_str, 6u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_NONE,
+             arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+
+  // word_count > kMaxCallWords (65 > 64) must fail-closed.
+  {
+    uint32_t oversized[65];
+    oversized[0] = 0xa9bf7bfdu;  // stp x29, x30, [sp, #-16]!
+    oversized[1] = 0x910003fdu;  // mov x29, sp
+    for (uint32_t i = 2u; i < 62u; ++i) oversized[i] = 0xd503201fu;  // nop
+    oversized[62] = 0x94000004u;  // bl +16
+    oversized[63] = 0xa8c17bfdu;  // ldp x29, x30, [sp], #16
+    oversized[64] = 0xd65f03c0u;  // ret
+    assert(hex::decompiler::passes::try_emit_arm64_calls(
+               oversized, 65u, 0x1000ULL, "fn", 2u, HEX_EMIT_FLAG_NONE,
+               arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+  }
+
+  // base_addr == 0ULL must still record signature/entry linemap entries (not drop addr == 0).
+  {
+    arena.reset();
+    assert(hex::decompiler::passes::try_emit_arm64_calls(
+               simple_call, 5u, 0ULL, "zero_base_fn", 12u, HEX_EMIT_FLAG_NONE,
+               arena, &text, &len, &lm, &lm_count) == HEX_OK);
+    assert(lm != nullptr && lm_count >= 4u);
+    bool saw_zero_addr = false;
+    bool saw_call_addr = false;
+    bool saw_ret_addr = false;
+    for (uint32_t i = 0u; i < lm_count; ++i) {
+      assert(lm[i].line_no >= 1u);
+      if (lm[i].addr == 0ULL) saw_zero_addr = true;
+      if (lm[i].addr == 8ULL) saw_call_addr = true;
+      if (lm[i].addr == 16ULL) saw_ret_addr = true;
+    }
+    assert(saw_zero_addr && saw_call_addr && saw_ret_addr);
+  }
+
+  std::printf("  [PASS] invalid args, alignment, partial-OOM rollback, PAC, non-SP str, oversized, and base_addr==0\n");
 }
 
 }  // namespace
