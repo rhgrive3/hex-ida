@@ -541,6 +541,7 @@ export class BinaryImage {
     this.metadata = meta.metadata || {};
     this._finalized = false;
     this._mappingLookups = { sections: null, segments: null, virtual: null, offsets: null };
+    this._lastOffsetLookupEntry = null;
     this._mappingSorted = { sections: null, segments: null };
     this._dataInCodeLookup = null;
     this._dataInCodeSorted = null;
@@ -570,6 +571,7 @@ export class BinaryImage {
     this._mappingLookups.segments = null;
     this._mappingLookups.virtual = null;
     this._mappingLookups.offsets = null;
+    this._lastOffsetLookupEntry = null;
     this._mappingSorted.segments = null;
     return seg;
   }
@@ -600,6 +602,7 @@ export class BinaryImage {
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
     this._mappingLookups.offsets = null;
+    this._lastOffsetLookupEntry = null;
     this._mappingSorted.sections = null;
     return sec;
   }
@@ -618,9 +621,16 @@ export class BinaryImage {
   }
 
   offsetToAddress(offset) {
-    const o = strictBigIntOrNull(offset);
+    const o = typeof offset === 'bigint' ? offset : strictBigIntOrNull(offset);
     if (o === null || o < 0n) return null;
-    if (!this._mappingLookups.offsets) this._mappingLookups.offsets = buildFileOffsetLookup(this.sections, this.segments);
+    const cached = this._lastOffsetLookupEntry;
+    if (cached !== null && o >= cached.start && o < cached.end) {
+      return cached.addrBase + (o - cached.fileOffset);
+    }
+    if (!this._mappingLookups.offsets) {
+      this._mappingLookups.offsets = buildFileOffsetLookup(this.sections, this.segments);
+      this._lastOffsetLookupEntry = null;
+    }
     const lookup = this._mappingLookups.offsets;
     const window = fileOffsetCandidateWindow(lookup, o);
     if (window === null) return null;
@@ -631,16 +641,55 @@ export class BinaryImage {
       if (!owner) return null;
       const delta = a - owner.address;
       const fileSize = owner.fileSize ?? 0n;
-      return delta < fileSize && (owner.fileOffset + delta) === o ? a : null;
+      return delta < fileSize && (owner.fileOffset + delta) === o ? { a, delta, fileSize } : null;
+    };
+    const cacheHit = (candidate, resolved) => {
+      const vRuns = this._mappingLookups.virtual?.runs;
+      if (!vRuns || vRuns.starts.length < 2) return;
+      const a = resolved.a;
+      let lo = 0;
+      let hi = vRuns.starts.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (vRuns.starts[mid] <= a) lo = mid + 1;
+        else hi = mid;
+      }
+      if (lo === 0 || lo >= vRuns.starts.length) return;
+      const runStart = vRuns.starts[lo - 1];
+      const runEnd = vRuns.starts[lo];
+      let safeEnd = candidate.end;
+      if (window.hi < lookup.starts.length && lookup.starts[window.hi] < safeEnd) {
+        safeEnd = lookup.starts[window.hi];
+      }
+      const runFileEnd = o + (runEnd - a);
+      if (runFileEnd < safeEnd) safeEnd = runFileEnd;
+      const ownerFileEnd = o + (resolved.fileSize - resolved.delta);
+      if (ownerFileEnd < safeEnd) safeEnd = ownerFileEnd;
+      let safeStart = o;
+      if (window.lo === window.hi - 1 && (window.lo === 0 || lookup.prefixEnds[window.lo - 1] <= candidate.start)) {
+        const runFileStart = o - (a - runStart);
+        safeStart = candidate.start > runFileStart ? candidate.start : runFileStart;
+      }
+      if (safeStart < safeEnd) {
+        this._lastOffsetLookupEntry = {
+          start: safeStart,
+          end: safeEnd,
+          fileOffset: candidate.mapping.fileOffset,
+          addrBase: candidate.mapping.address,
+        };
+      }
     };
     const first = firstFileOffsetCandidate(lookup, window, o);
     if (first !== null) {
       const resolved = resolve(first);
-      if (resolved !== null) return resolved;
+      if (resolved !== null) {
+        cacheHit(first, resolved);
+        return resolved.a;
+      }
     }
     for (const candidate of orderedFileOffsetCandidates(lookup, window, o)) {
       const resolved = resolve(candidate);
-      if (resolved !== null) return resolved;
+      if (resolved !== null) return resolved.a;
     }
     return null;
   }
@@ -1134,6 +1183,7 @@ export class BinaryImage {
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
     this._mappingLookups.offsets = null;
+    this._lastOffsetLookupEntry = null;
     this._mappingSorted.segments = true;
     this._mappingSorted.sections = true;
     this.symbols.sort(byAddr);
@@ -1303,8 +1353,13 @@ function createMonotonicRegionLookup(regions) {
   };
 }
 
+const SEED_SOURCE_RANK = Object.freeze(Object.assign(Object.create(null), {
+  symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4,
+  constructor: 4, export: 3, entrypoint: 2, heuristic: 1,
+}));
+
 export function mergeFunctionSeeds(input, context = {}) {
-  const rank = Object.assign(Object.create(null), { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, constructor: 4, export: 3, entrypoint: 2, heuristic: 1 });
+  const rank = SEED_SOURCE_RANK;
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
@@ -1320,7 +1375,17 @@ export function mergeFunctionSeeds(input, context = {}) {
     // fractional, unsafe, and malformed extents are not promoted through
     // BigInt() coercion. Drop that seed at the canonical boundary (#5891).
     if ((f0.size != null && size === null) || (f0.end != null && end === null)) continue;
-    const loaderEntryContracts = normalizedLoaderEntryContracts(f0.loaderEntryContracts ?? f0.loaderEntryContract, [f0.source, ...(Array.isArray(f0.sources) ? f0.sources : [])]);
+    const loaderEntryContracts = (
+      f0.loaderEntryContracts == null
+      && f0.loaderEntryContract == null
+      && !Array.isArray(f0.sources)
+      && !ELF_LOADER_ENTRY_CONTRACTS.has(f0.source)
+    )
+      ? []
+      : normalizedLoaderEntryContracts(
+        f0.loaderEntryContracts ?? f0.loaderEntryContract,
+        [f0.source, ...(Array.isArray(f0.sources) ? f0.sources : [])],
+      );
     const analysisWindow = normalizedLoaderAnalysisWindow(f0.analysisWindow, address, loaderEntryContracts);
     const f = {
       ...f0,
@@ -1335,7 +1400,7 @@ export function mergeFunctionSeeds(input, context = {}) {
     };
     if ((f.size != null || f.end != null) && !f.extentSource) f.extentSource = f.source || 'unknown';
     if ((f.size != null || f.end != null) && f.extentConfidence == null) f.extentConfidence = Number(f.confidence ?? 0);
-    const k = f.address.toString();
+    const k = address;
     const prev = m.get(k);
     if (!prev) { m.set(k, f); continue; }
     const prevRank = rank[prev.source] || 0;
