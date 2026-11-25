@@ -1473,42 +1473,95 @@ export function mergeFunctionSeeds(input, context = {}) {
         [f0.source, ...(Array.isArray(f0.sources) ? f0.sources : [])],
       );
     const analysisWindow = normalizedLoaderAnalysisWindow(f0.analysisWindow, address, loaderEntryContracts);
-    const f = {
-      ...f0,
-      address,
-      size,
-      end,
-      confidence,
-      exactFunctionStartConfidence,
-      loaderEntryContracts,
-      analysisWindow,
-      extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5),
-    };
-    if ((f.size != null || f.end != null) && !f.extentSource) f.extentSource = f.source || 'unknown';
-    if ((f.size != null || f.end != null) && f.extentConfidence == null) f.extentConfidence = Number(f.confidence ?? 0);
-    const k = address;
+    // Safe-integer Number key avoids V8 BigInt Map hashing overhead on 100k+ seeds (exact 1:1 with BigInt).
+    const k = (address >= 0n && address <= 9007199254740991n) ? Number(address) : address;
     const prev = m.get(k);
-    if (!prev) { m.set(k, f); continue; }
+    const extentConfidenceVal = f0.extentConfidence == null
+      ? ((size != null || end != null) ? Number(confidence ?? 0) : null)
+      : finiteConfidence(f0.extentConfidence, 0.5);
+    const extentSourceVal = (size != null || end != null) ? (f0.extentSource || f0.source || 'unknown') : f0.extentSource;
+    if (!prev) {
+      const f = {
+        ...f0,
+        address,
+        size,
+        end,
+        confidence,
+        exactFunctionStartConfidence,
+        loaderEntryContracts,
+        analysisWindow,
+        extentConfidence: extentConfidenceVal,
+      };
+      if (extentSourceVal !== undefined) f.extentSource = extentSourceVal;
+      m.set(k, f);
+      continue;
+    }
     const prevRank = rank[prev.source] || 0;
-    const curRank = rank[f.source] || 0;
-    const best = curRank > prevRank || (curRank === prevRank && (f.confidence || 0) > (prev.confidence || 0)) ? f : prev;
-    const other = best === f ? prev : f;
+    const curRank = rank[f0.source] || 0;
+    const fWins = curRank > prevRank || (curRank === prevRank && (confidence || 0) > (prev.confidence || 0));
+    let f;
+    if (fWins) {
+      f = {
+        ...f0,
+        address,
+        size,
+        end,
+        confidence,
+        exactFunctionStartConfidence,
+        loaderEntryContracts,
+        analysisWindow,
+        extentConfidence: extentConfidenceVal,
+      };
+      if (extentSourceVal !== undefined) f.extentSource = extentSourceVal;
+    } else {
+      f = {
+        address,
+        size,
+        end,
+        source: f0.source,
+        sources: f0.sources,
+        name: f0.name,
+        confidence,
+        exactFunctionStart: f0.exactFunctionStart,
+        exactFunctionStartConfidence,
+        functionStartEvidence: f0.functionStartEvidence,
+        callingConvention: f0.callingConvention,
+        abiMetadata: f0.abiMetadata,
+        arch: f0.arch,
+        loaderEntryContracts,
+        analysisWindow,
+        extentSource: extentSourceVal,
+        extentConfidence: extentConfidenceVal,
+      };
+    }
+    const best = fWins ? f : prev;
+    const other = fWins ? prev : f;
     if (!best.name && other.name) best.name = other.name;
     if (!best.functionStartEvidence) best.functionStartEvidence = other.functionStartEvidence || null;
     if (!best.callingConvention && other.callingConvention) best.callingConvention = other.callingConvention;
     if (!best.abiMetadata && other.abiMetadata) best.abiMetadata = { ...other.abiMetadata };
     if (!best.arch && other.arch) best.arch = other.arch;
-    best.loaderEntryContracts = [...new Set([
-      ...(prev.loaderEntryContracts || []),
-      ...(f.loaderEntryContracts || []),
-    ])].filter((item) => ELF_LOADER_ENTRY_CONTRACTS.has(item)).sort();
-    const bestWindow = normalizedLoaderAnalysisWindow(best.analysisWindow, best.address, best.loaderEntryContracts);
-    const otherWindow = normalizedLoaderAnalysisWindow(other.analysisWindow, best.address, best.loaderEntryContracts);
-    if (bestWindow && otherWindow && (bestWindow.end !== otherWindow.end || bestWindow.sectionIndex !== otherWindow.sectionIndex)) {
-      best.analysisWindow = null;
-      best.analysisWindowConflict = true;
+    const prevContracts = prev.loaderEntryContracts;
+    const fContracts = f.loaderEntryContracts;
+    if ((!prevContracts || prevContracts.length === 0) && (!fContracts || fContracts.length === 0)) {
+      best.loaderEntryContracts = [];
     } else {
-      best.analysisWindow = bestWindow || otherWindow || null;
+      best.loaderEntryContracts = [...new Set([
+        ...(prevContracts || []),
+        ...(fContracts || []),
+      ])].filter((item) => ELF_LOADER_ENTRY_CONTRACTS.has(item)).sort();
+    }
+    if (best.analysisWindow == null && other.analysisWindow == null) {
+      best.analysisWindow = null;
+    } else {
+      const bestWindow = normalizedLoaderAnalysisWindow(best.analysisWindow, best.address, best.loaderEntryContracts);
+      const otherWindow = normalizedLoaderAnalysisWindow(other.analysisWindow, best.address, best.loaderEntryContracts);
+      if (bestWindow && otherWindow && (bestWindow.end !== otherWindow.end || bestWindow.sectionIndex !== otherWindow.sectionIndex)) {
+        best.analysisWindow = null;
+        best.analysisWindowConflict = true;
+      } else {
+        best.analysisWindow = bestWindow || otherWindow || null;
+      }
     }
     let inheritedExtent = false;
     const bestHasExtent = best.size != null || best.end != null;
@@ -1526,10 +1579,28 @@ export function mergeFunctionSeeds(input, context = {}) {
       best.extentSource = best.source || 'unknown';
       best.extentConfidence = Number(best.confidence ?? 0);
     }
-    best.sources = [...new Set([...(prev.sources || [prev.source]), ...(f.sources || [f.source])])];
-    const exactConfidences = [prev.exactFunctionStartConfidence, f.exactFunctionStartConfidence]
-      .filter((value) => Number.isFinite(value));
-    best.exactFunctionStartConfidence = exactConfidences.length ? Math.max(...exactConfidences) : null;
+    const prevSrcs = prev.sources;
+    const fSrcs = f.sources;
+    if (!prevSrcs && !fSrcs) {
+      best.sources = prev.source === f.source ? [prev.source] : [prev.source, f.source];
+    } else {
+      const mergedSrcs = prevSrcs ? prevSrcs.slice() : [prev.source];
+      if (fSrcs) {
+        for (let si = 0; si < fSrcs.length; si += 1) {
+          if (!mergedSrcs.includes(fSrcs[si])) mergedSrcs.push(fSrcs[si]);
+        }
+      } else if (!mergedSrcs.includes(f.source)) {
+        mergedSrcs.push(f.source);
+      }
+      best.sources = mergedSrcs;
+    }
+    const prevExConf = prev.exactFunctionStartConfidence;
+    const fExConf = f.exactFunctionStartConfidence;
+    const prevExOk = Number.isFinite(prevExConf);
+    const fExOk = Number.isFinite(fExConf);
+    best.exactFunctionStartConfidence = prevExOk && fExOk
+      ? (prevExConf >= fExConf ? prevExConf : fExConf)
+      : (prevExOk ? prevExConf : (fExOk ? fExConf : null));
     // Exactness authority and its confidence must come from the SAME evidence
     // record: adopting the exact marker of one seed while inflating the merged
     // confidence with an unrelated seed's score would synthesize
@@ -1587,7 +1658,7 @@ export function mergeFunctionSeeds(input, context = {}) {
         cachedRegionVal = nextRegion;
         sameCanonicalRegion = currentRegion != null && currentRegion === nextRegion;
       }
-      const withinRegionEnd = !currentRegion || next.address <= BigInt(currentRegion.address) + BigInt(currentRegion.size);
+      const withinRegionEnd = !currentRegion || next.address <= (typeof currentRegion.address === 'bigint' ? currentRegion.address : BigInt(currentRegion.address)) + (typeof currentRegion.size === 'bigint' ? currentRegion.size : BigInt(currentRegion.size));
       if (provenFunctionStarts && sameCanonicalRegion && withinRegionEnd && delta <= 0x1000000n) {
         f.size = delta; f.end = next.address;
         f.extentInferred = true;

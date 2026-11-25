@@ -709,11 +709,27 @@ acquire, release,
     };
   }
 
+  function isExplicitWasmMode() {
+    if (typeof global !== 'undefined' && global) {
+      const g = global.HEX_ENGINE !== undefined ? global.HEX_ENGINE : global.__HEX_ENGINE_MODE__;
+      if (g != null) return String(g).trim().toLowerCase() === 'wasm';
+    }
+    if (typeof process !== 'undefined' && process && process.env && process.env.HEX_ENGINE != null) {
+      return String(process.env.HEX_ENGINE).trim().toLowerCase() === 'wasm';
+    }
+    return false;
+  }
+
   function classifyWord(w) {
-    const bridge = getActiveWasmBridge();
-    if (bridge && typeof bridge.wasmDecodeArm64Word === 'function') {
-      const res = bridge.wasmDecodeArm64Word(w >>> 0, 0n);
-      if (res && typeof res.kind === 'number') return res.kind;
+    // Single-word classification is ~80ns in JS vs ~1,100ns crossing JS<->WASM per word.
+    // In auto mode, keep single-word classifyWord inline in JS (batch callers use classifyWordsBatch -> WASM);
+    // honor explicit wasm mode and custom test bridges.
+    if (isExplicitWasmMode() || (wasmBridge && wasmBridge !== defaultWasmBridge)) {
+      const bridge = getActiveWasmBridge();
+      if (bridge && typeof bridge.wasmDecodeArm64Word === 'function') {
+        const res = bridge.wasmDecodeArm64Word(w >>> 0, 0n);
+        if (res && typeof res.kind === 'number') return res.kind;
+      }
     }
     return classifyWordJs(w);
   }
@@ -800,7 +816,11 @@ acquire, release,
         const outPtr = ex.hex_engine_scratch_alloc(chunkLen);
         if (!inPtr || !outPtr) return false;
         const inView = new Uint32Array(ex.memory.buffer, inPtr, chunkLen);
-        for (let i = 0; i < chunkLen; i += 1) inView[i] = words[offset + i] >>> 0;
+        if (words instanceof Uint32Array) {
+          inView.set(words.subarray(offset, offset + chunkLen));
+        } else {
+          for (let i = 0; i < chunkLen; i += 1) inView[i] = words[offset + i] >>> 0;
+        }
         const status = ex.hex_arm64_classify_batch(inPtr, chunkLen, outPtr);
         if (status !== 0) return false;
         out.set(new Uint8Array(ex.memory.buffer, outPtr, chunkLen), offset);

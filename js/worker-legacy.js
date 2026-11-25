@@ -1719,12 +1719,19 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
     if (blk.length < 4) break;
     const n = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, n * 4);
+    let blockWords = null;
+    let blockKinds = null;
+    if (n >= 64 && typeof Words.classifyWordsBatch === 'function') {
+      blockWords = new Uint32Array(n);
+      for (let i = 0; i < n; i++) blockWords[i] = dv.getUint32(i * 4, true);
+      blockKinds = Words.classifyWordsBatch(blockWords);
+    }
 
     for (let i = 0; i < n; i++, index++) {
-      const w = dv.getUint32(i * 4, true);
+      const w = blockWords ? blockWords[i] : dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
       provenance.enter(pc);
-      const kind = Words.classifyWord(w);
+      const kind = blockKinds ? blockKinds[i] : Words.classifyWord(w);
       if (index < kinds.length) kinds[index] = inlineCanonicalKinds ? canonicalProgramKind(w, kind) : kind;
 
       if (kind === Words.KIND.CALL || kind === Words.KIND.INDCALL) {
