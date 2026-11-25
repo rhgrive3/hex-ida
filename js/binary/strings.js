@@ -1,3 +1,5 @@
+import * as hexEngineBridge from '../core/hex-engine-bridge.js';
+
 function printableCodePoint(cp) {
   if (cp === 9) return true;
   if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
@@ -134,6 +136,32 @@ export function scanStrings(image, opts = {}) {
   const bytes=image.bytes; if(!bytes) return [];
   const ranges=mappedScanRanges(image,bytes.length,includeExecutable);
   const out=[], seen=new Set();
+  const getEngineMode = hexEngineBridge.getEngineMode;
+  const wasmScanStrings = hexEngineBridge.wasmScanStrings;
+  if (
+    typeof getEngineMode === 'function'
+    && getEngineMode(opts) !== 'js'
+    && typeof wasmScanStrings === 'function'
+    && ranges.length > 0
+    && bytes instanceof Uint8Array
+  ) {
+    const spans = wasmScanStrings(bytes, ranges, {
+      minLength: min,
+      maxLength: max,
+      limit,
+      utf8: true,
+      utf16le: utf16Encodings.includes('utf16le'),
+      utf16be: utf16Encodings.includes('utf16be'),
+      _engine: opts._engine,
+    });
+    if (Array.isArray(spans)) {
+      for (let i = 0; i < spans.length && out.length < limit; i++) {
+        const span = spans[i];
+        emit(image, out, seen, span.fileOffset, span.byteLength, span.encoding, ranges[span.rangeIdx]?.section ?? null);
+      }
+      return out;
+    }
+  }
   for(const range of ranges){
     if(out.length>=limit) break;
     const start=Math.max(0,range.start), end=Math.min(bytes.length,start+Math.max(0,range.size));
