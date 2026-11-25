@@ -266,12 +266,83 @@ static void test_fail_closed_and_error_handling() {
   }
 }
 
+
+static void test_wave9_review_regressions() {
+  static uint8_t arena_buf[65536];
+  hex::Arena arena;
+  arena.init_fixed(arena_buf, sizeof(arena_buf));
+
+  const char* out_text = nullptr;
+  uint32_t out_len = 0U;
+  const HexLineMapEntry* out_linemap = nullptr;
+  uint32_t out_linemap_count = 0U;
+
+  // 1. func_name_len == 16384u (old EmitWriter::ensure underflow OOB boundary) -> safe OOM/error
+  {
+    static char huge_name[16384];
+    std::memset(huge_name, 'a', sizeof(huge_name));
+    const uint32_t words[] = {509749280U, 3596551104U};  // fadd d0, d1, d2; ret
+    arena.reset();
+    const HexStatus st = hex::decompiler::passes::try_emit_arm64_fp_atomic(
+        words, 2U, 0x1000ULL, huge_name, 16384U, HEX_EMIT_FLAG_JS_PARITY, arena,
+        &out_text, &out_len, &out_linemap, &out_linemap_count);
+    assert(st == HEX_ERR_OOM);
+    assert(arena.used() == 0U);
+    assert(out_text == nullptr && out_len == 0U && out_linemap == nullptr && out_linemap_count == 0U);
+  }
+
+  // 2. LDAXP with rt == rt2 must fail closed (UNPREDICTABLE in ARMv8)
+  {
+    // ldaxp x0, x0, [x2] (rt=0, rt2=0, rn=2): 0xc87f8040; ret
+    const uint32_t words[] = {0xc87f8040U, 0xd65f03c0U};
+    arena.reset();
+    const HexStatus st = hex::decompiler::passes::try_emit_arm64_fp_atomic(
+        words, 2U, 0x1000ULL, "ldaxp_same_rt", 13U, HEX_EMIT_FLAG_JS_PARITY, arena,
+        &out_text, &out_len, &out_linemap, &out_linemap_count);
+    assert(st == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == 0U);
+    assert(out_text == nullptr && out_len == 0U && out_linemap == nullptr && out_linemap_count == 0U);
+  }
+
+  // 3. fcmpe (signaling FP compare, bit 4 = 1) must fail closed
+  {
+    const uint32_t words[] = {
+        0x1e612010U,  // fcmpe d0, d1
+        1409286240U,  // b.eq #0x1018
+        509753376U,   // fsub d0, d1, d2
+        3596551104U,  // ret
+        509741088U,   // fmul d0, d1, d2
+        3596551104U,  // ret
+    };
+    arena.reset();
+    const HexStatus st = hex::decompiler::passes::try_emit_arm64_fp_atomic(
+        words, 6U, 0x1008ULL, "fcmpe_branch", 12U, HEX_EMIT_FLAG_JS_PARITY, arena,
+        &out_text, &out_len, &out_linemap, &out_linemap_count);
+    assert(st == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == 0U);
+    assert(out_text == nullptr && out_len == 0U && out_linemap == nullptr && out_linemap_count == 0U);
+  }
+
+  // 4. Reserved SIMD encoding (Q=0, size=3 -> 0x0ee18400) must fail closed
+  {
+    const uint32_t words[] = {0x0ee18400U, 0xd65f03c0U};
+    arena.reset();
+    const HexStatus st = hex::decompiler::passes::try_emit_arm64_fp_atomic(
+        words, 2U, 0x1020ULL, "reserved_simd", 13U, HEX_EMIT_FLAG_JS_PARITY, arena,
+        &out_text, &out_len, &out_linemap, &out_linemap_count);
+    assert(st == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == 0U);
+    assert(out_text == nullptr && out_len == 0U && out_linemap == nullptr && out_linemap_count == 0U);
+  }
+}
+
 }  // namespace
 
 int main() {
   test_all_7_oracle_functions();
   test_generalization_no_hardcoding();
   test_fail_closed_and_error_handling();
+  test_wave9_review_regressions();
   std::printf("test_arm64_fp_atomic_emit_native (7 oracle 0-diff + generalization + fail-closed, ASan+UBSan): ALL PASS\n");
   return 0;
 }
