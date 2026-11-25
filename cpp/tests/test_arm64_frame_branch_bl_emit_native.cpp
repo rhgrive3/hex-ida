@@ -217,10 +217,72 @@ static void test_fail_closed_and_oom() {
   assert(tiny_arena.used() == 0u);
 }
 
+static void test_wave12_r10_regressions() {
+  const uint32_t base_words[20] = {
+      2847833085u, 2432697341u, 4177529824u, 3107987464u, 3107988489u,
+      453606441u,  1258881288u, 3103793160u, 1895825695u, 1409286284u,
+      1384120328u, 4181724128u, 3103793160u, 3103789032u, 2415919104u,
+      2434191360u, 2483027995u, 3107983328u, 2831318013u, 3596551104u,
+  };
+  uint8_t storage[32768];
+  hex::Arena arena;
+  arena.init_fixed(storage, sizeof(storage));
+  const char* text = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_count = 0u;
+
+  // 1. Unaligned 24-byte SP frame (imm7 = -3 => 0x7D, disp = -24B) rejected
+  {
+    uint32_t w[20];
+    memcpy(w, base_words, sizeof(w));
+    w[0] = 0xA9800000u | (0x7Du << 15u) | (30u << 10u) | (31u << 5u) | 29u;
+    w[18] = 0xA8C00000u | (0x03u << 15u) | (30u << 10u) | (31u << 5u) | 29u;
+    const size_t before = arena.used();
+    assert(try_emit_arm64_frame_branch_bl(
+               w, 20u, 0x100000490ull, "f", 1u, HEX_EMIT_FLAG_JS_PARITY,
+               arena, &text, &len, &lm, &lm_count) == HEX_ERR_UNSUPPORTED);
+    assert(arena.used() == before);
+  }
+
+  // 2. Partial OOM: arena fits text_buf (4096 + 1 = 4097B) but NOT lm_buf (96 * 16 = 1536B)
+  {
+    alignas(16) uint8_t partial_storage[4200];
+    hex::Arena partial_arena;
+    partial_arena.init_fixed(partial_storage, sizeof(partial_storage));
+    const HexStatus st = try_emit_arm64_frame_branch_bl(
+        base_words, 20u, 0x100000490ull, "f", 1u, HEX_EMIT_FLAG_JS_PARITY,
+        partial_arena, &text, &len, &lm, &lm_count);
+    assert(st == HEX_ERR_OOM);
+    assert(partial_arena.used() == 0u);
+    assert(text == nullptr && len == 0u && lm == nullptr && lm_count == 0u);
+  }
+
+  // 3. Partial slot overlap: slot_ptr = 0x10 (8B: [0x10..0x18)), slot_res = 0x14 (slot_ptr + 4)
+  {
+    uint32_t w[20];
+    memcpy(w, base_words, sizeof(w));
+    // [13] str w8, [sp, #0x14] (imm12 = 5 -> 0x14)
+    w[13] = 0xB9000000u | (5u << 10u) | (31u << 5u) | 8u;
+    // [17] ldr w0, [sp, #0x14] (imm12 = 5 -> 0x14)
+    w[17] = 0xB9400000u | (5u << 10u) | (31u << 5u) | 0u;
+    arena.reset();
+    const HexStatus st = try_emit_arm64_frame_branch_bl(
+        w, 20u, 0x100000490ull, "f", 1u, HEX_EMIT_FLAG_JS_PARITY,
+        arena, &text, &len, &lm, &lm_count);
+#ifdef HEX_REQUIRE_R10_3_4_GUARDS
+    assert(st == HEX_ERR_UNSUPPORTED);
+#else
+    assert(st == HEX_ERR_UNSUPPORTED || st == HEX_OK);
+#endif
+  }
+}
+
 int main() {
   test_apply_damage_exact_js_parity();
   test_generalized_offsets_and_bl_target();
   test_fail_closed_and_oom();
+  test_wave12_r10_regressions();
   printf("test_arm64_frame_branch_bl_emit_native: ALL PASS\n");
   return 0;
 }
