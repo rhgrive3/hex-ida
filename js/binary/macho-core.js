@@ -275,7 +275,7 @@ export function parseMachO(input, opts = {}) {
     containerOffset: thinContainerOffset,
     [INTERNAL_RESIDENT_IDENTITY]: {
       binaryIdentity: containerIdentity,
-      sliceIdentity: sliceIdentity(containerIdentity, bytes, thinContainerOffset, cpuArchName(cpu, subtype), containerIdentity),
+      sliceIdentity: sliceIdentity(containerIdentity, bytes, thinContainerOffset, cpuArchName(cpu, subtype), containerIdentity, engineOpts),
       sliceDigest: containerIdentity,
       sliceBytes: bytes,
     },

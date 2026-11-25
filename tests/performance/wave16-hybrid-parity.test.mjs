@@ -49,6 +49,15 @@ function withEngineMode(mode, fn) {
   const prevGlobal = globalThis.HEX_ENGINE;
   const prevInternal = globalThis.__HEX_ENGINE_MODE__;
   const prevEnv = process.env.HEX_ENGINE;
+  const restore = () => {
+    if (prevGlobal === undefined) delete globalThis.HEX_ENGINE;
+    else globalThis.HEX_ENGINE = prevGlobal;
+    if (prevInternal === undefined) delete globalThis.__HEX_ENGINE_MODE__;
+    else globalThis.__HEX_ENGINE_MODE__ = prevInternal;
+    if (prevEnv === undefined) delete process.env.HEX_ENGINE;
+    else process.env.HEX_ENGINE = prevEnv;
+  };
+  let isAsync = false;
   try {
     if (mode == null) {
       delete globalThis.HEX_ENGINE;
@@ -59,14 +68,14 @@ function withEngineMode(mode, fn) {
       delete globalThis.__HEX_ENGINE_MODE__;
       delete process.env.HEX_ENGINE;
     }
-    return fn();
+    const res = fn();
+    if (res && typeof res.then === 'function') {
+      isAsync = true;
+      return res.finally(restore);
+    }
+    return res;
   } finally {
-    if (prevGlobal === undefined) delete globalThis.HEX_ENGINE;
-    else globalThis.HEX_ENGINE = prevGlobal;
-    if (prevInternal === undefined) delete globalThis.__HEX_ENGINE_MODE__;
-    else globalThis.__HEX_ENGINE_MODE__ = prevInternal;
-    if (prevEnv === undefined) delete process.env.HEX_ENGINE;
-    else process.env.HEX_ENGINE = prevEnv;
+    if (!isAsync) restore();
   }
 }
 

@@ -655,7 +655,7 @@ export class BinaryImage {
     const o = typeof offset === 'bigint' ? offset : strictBigIntOrNull(offset);
     if (o === null || o < 0n) return null;
     this._ensureMappingLookupsFresh();
-    const cached = this._lastOffsetLookupEntry;
+    const cached = Object.isFrozen(this) ? null : this._lastOffsetLookupEntry;
     if (
       this._mappingLookups.offsets !== null
       && this._mappingLookups.virtual !== null
