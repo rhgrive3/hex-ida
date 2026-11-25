@@ -274,12 +274,13 @@ void test_wave23_instructions_and_pass_sync() {
   const uint32_t sync_words[] = {
     0x90000000u,  // adrp x0, #0x1000
     0x94000010u,  // bl +0x40
+    0xb4000041u,  // cbz x1, +8 (targets idx 4 -> loc_1010 after RET!)
     0xd65f03c0u,  // ret
-    0x91004000u,  // loc_100C: add x0, x0, #0x10 (must NOT emit undeclared global_1010)
+    0x91004000u,  // loc_1010: add x0, x0, #0x10 (must NOT emit undeclared global_1010)
     0xd65f03c0u,  // ret
   };
   assert(hex::decompiler::passes::try_emit_arm64_general(
-             sync_words, 5u, 0x1000ULL, "adrp_bl_sync", 12u, 0u,
+             sync_words, 6u, 0x1000ULL, "adrp_bl_sync", 12u, 0u,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
   assert_parens_balanced(txt, len);
   assert(!contains(txt, len, "global_1010"));

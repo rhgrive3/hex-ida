@@ -500,6 +500,15 @@ const WASM_GENERAL_LIBC_SPECS = {
   strtod: { hdr: '<stdlib.h>', ret: 'd0', call: 'strtod((const char *)(uintptr_t)x0, (char **)(uintptr_t)x1)', regs: ['x0', 'x1', 'd0'], needUintptr: true },
   atoi: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)atoi((const char *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
   atol: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)atol((const char *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
+  atof: { hdr: '<stdlib.h>', ret: 'd0', call: 'atof((const char *)(uintptr_t)x0)', regs: ['x0', 'd0'], needUintptr: true },
+  tolower: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(int64_t)tolower((int)x0)', regs: ['x0'], needInt64: true },
+  toupper: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(int64_t)toupper((int)x0)', regs: ['x0'], needInt64: true },
+  isalpha: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(int64_t)isalpha((int)x0)', regs: ['x0'], needInt64: true },
+  isdigit: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(int64_t)isdigit((int)x0)', regs: ['x0'], needInt64: true },
+  isalnum: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(int64_t)isalnum((int)x0)', regs: ['x0'], needInt64: true },
+  isspace: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(int64_t)isspace((int)x0)', regs: ['x0'], needInt64: true },
+  isupper: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(int64_t)isupper((int)x0)', regs: ['x0'], needInt64: true },
+  islower: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(int64_t)islower((int)x0)', regs: ['x0'], needInt64: true },
   abs: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)abs((int)x0)', regs: ['x0'], needInt64: true },
   labs: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)labs((long)x0)', regs: ['x0'], needInt64: true },
   qsort: { hdr: '<stdlib.h>', ret: 'void', call: 'qsort((void *)(uintptr_t)x0, (size_t)x1, (size_t)x2, (int (*)(const void *, const void *))(uintptr_t)x3)', regs: ['x0', 'x1', 'x2', 'x3'], needUintptr: true },
@@ -516,6 +525,10 @@ const WASM_GENERAL_LIBC_SPECS = {
   floor: { hdr: '<math.h>', ret: 'd0', call: 'floor(d0)', regs: ['d0'] },
   ceil: { hdr: '<math.h>', ret: 'd0', call: 'ceil(d0)', regs: ['d0'] },
   round: { hdr: '<math.h>', ret: 'd0', call: 'round(d0)', regs: ['d0'] },
+  roundf: { hdr: '<math.h>', ret: 'd0', call: '(double)roundf((float)d0)', regs: ['d0'] },
+  floorf: { hdr: '<math.h>', ret: 'd0', call: '(double)floorf((float)d0)', regs: ['d0'] },
+  ceilf: { hdr: '<math.h>', ret: 'd0', call: '(double)ceilf((float)d0)', regs: ['d0'] },
+  truncf: { hdr: '<math.h>', ret: 'd0', call: '(double)truncf((float)d0)', regs: ['d0'] },
   fmod: { hdr: '<math.h>', ret: 'd0', call: 'fmod(d0, d1)', regs: ['d0', 'd1'] },
   sin: { hdr: '<math.h>', ret: 'd0', call: 'sin(d0)', regs: ['d0'] },
   cos: { hdr: '<math.h>', ret: 'd0', call: 'cos(d0)', regs: ['d0'] },
@@ -688,7 +701,7 @@ function readCStringFromElf(addr, fileBytes, elfInfo) {
 
 function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fileBytes, sections, allowHelperInlining = true } = {}) {
   const isGeneral = text.includes('/* arguments unknown */') || text.includes('__hex_global_') || text.includes('static uint64 global_') || (typeof symbolFor === 'function' && text.includes('uint64 x0 = '));
-  if (!isGeneral) return { text, addedLines: 0, outerSigLine: -1 };
+  if (!isGeneral) return { text, addedLines: 0, bodyAddedLines: 0, rawSigLine: -1, outerSigLine: -1 };
 
   let out = text;
   const headers = new Set();
@@ -723,7 +736,8 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
         // Rewrite `x0 = sub_HEX(/* arguments unknown */);`
         if (spec.ret === 'void') {
           out = out.replace(new RegExp(`x0 = sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call};`);
-          out = out.replace(new RegExp(`return sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call}; return 0;`);
+          const voidTailRet = /^void\s+[A-Za-z_][A-Za-z0-9_]*\(/m.test(out) ? 'return;' : 'return 0;';
+          out = out.replace(new RegExp(`return sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call}; ${voidTailRet}`);
           out = out.replace(new RegExp(`sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call};`);
         } else if (spec.ret === 'd0') {
           out = out.replace(new RegExp(`x0 = sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `d0 = ${spec.call};`);
@@ -912,7 +926,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
     changed = true;
   }
 
-  if (!changed) return { text, addedLines: 0, outerSigLine: -1 };
+  if (!changed) return { text, addedLines: 0, bodyAddedLines: 0, rawSigLine: -1, outerSigLine: -1 };
 
   // Inject any missing local reg declarations inside function body `{`
   const missingLocals = [];
@@ -935,6 +949,21 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   if (needUintptr && !out.includes('typedef __UINTPTR_TYPE__ uintptr_t;')) extraTypedefs.push('typedef __UINTPTR_TYPE__ uintptr_t;');
   if (needInt64 && !out.includes('typedef __INT64_TYPE__ int64_t;')) extraTypedefs.push('typedef __INT64_TYPE__ int64_t;');
   if (needUint8 && !out.includes('typedef __UINT8_TYPE__ uint8_t;')) extraTypedefs.push('typedef __UINT8_TYPE__ uint8_t;');
+
+  // Infer `const char *a1` for single-param `int fn(uint64 a1)` whose first use of x0 is `strlen((const char *)(uintptr_t)x0)`
+  const singleStrSigM = out.match(/^int ([A-Za-z_][A-Za-z0-9_]*)\(uint64 a1\)\n\{/m);
+  if (singleStrSigM && out.includes('strlen((const char *)(uintptr_t)x0)') && out.includes('    uint64 x0 = a1;')) {
+    const bodyStart = out.indexOf(singleStrSigM[0]) + singleStrSigM[0].length;
+    const strlenPos = out.indexOf('strlen((const char *)(uintptr_t)x0)', bodyStart);
+    const lineStart = out.lastIndexOf('\n', strlenPos);
+    const beforeStrlen = out.slice(bodyStart, lineStart > bodyStart ? lineStart : bodyStart);
+    if (!/^    x0 = /m.test(beforeStrlen)) {
+      out = out.replace(singleStrSigM[0], `int ${singleStrSigM[1]}(const char *a1)\n{`);
+      out = out.replace('    uint64 x0 = a1;', '    uint64 x0 = (uint64)(uintptr_t)a1;');
+      needUintptr = true;
+      changed = true;
+    }
+  }
 
   if (/\b(?:floor|ceil|trunc|round|sqrt|fabs|rint)\s*\(/.test(out)) {
     headers.add('<math.h>');
@@ -959,10 +988,13 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   }
   const finalText = prefix + out;
   const outerSigRe = /^(?:void|int|uint64|float|double)\s+[A-Za-z_][A-Za-z0-9_]*\([^)]*\)$/;
-  const rawSigLine = text.split('\n').findIndex((l) => outerSigRe.test(l));
-  const finalSigLine = finalText.split('\n').findIndex((l) => outerSigRe.test(l));
+  const rawLinesArr = text.split('\n');
+  const finalLinesArr = finalText.split('\n');
+  const rawSigLine = rawLinesArr.findIndex((l) => outerSigRe.test(l));
+  const finalSigLine = finalLinesArr.findIndex((l) => outerSigRe.test(l));
   const exactAdded = (rawSigLine >= 0 && finalSigLine >= 0) ? Math.max(0, finalSigLine - rawSigLine) : hdrLines.length;
-  return { text: finalText, addedLines: exactAdded, outerSigLine: finalSigLine };
+  const bodyAdded = Math.max(0, (finalLinesArr.length - Math.max(0, finalSigLine)) - (rawLinesArr.length - Math.max(0, rawSigLine)));
+  return { text: finalText, addedLines: exactAdded, bodyAddedLines: bodyAdded, rawSigLine, outerSigLine: finalSigLine };
 }
 
 export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null, symbolFor = null, readBytes = null, fileBytes = null, sections = null, allowHelperInlining = true } = {}) {
@@ -1070,8 +1102,10 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     }
 
     const rawLinemap = new Map();
+    const bodyThreshold = post.rawSigLine >= 0 ? (post.rawSigLine + 2) : Infinity;
     for (let i = 0; i < extractedLm.length; i += 1) {
-      const lineNo = extractedLm[i].lineNo + post.addedLines;
+      const rawLineNo = extractedLm[i].lineNo;
+      const lineNo = rawLineNo + post.addedLines + (rawLineNo > bodyThreshold ? (post.bodyAddedLines || 0) : 0);
       const address = extractedLm[i].address;
       const list = rawLinemap.get(lineNo) || [];
       if (!list.includes(address)) list.push(address);

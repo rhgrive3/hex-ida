@@ -1359,15 +1359,7 @@ static void process_insn(
         tb->put_reg_x(rn);
         tb->put_str(opc == 1u ? " | " : (opc == 2u ? " ^ " : " & "));
         if (invert) tb->put_str("~(");
-        if (imm6 != 0u) {
-          tb->put_char('(');
-          tb->put_reg_x(rm);
-          tb->put_str(shift_type == 0u ? " << " : " >> ");
-          tb->put_u64_dec(imm6);
-          tb->put_char(')');
-        } else {
-          tb->put_reg_x(rm);
-        }
+        emit_shifted_reg(*tb, rm, shift_type, imm6, is64);
         if (invert) tb->put_char(')');
       }
       if (!is64) tb->put_char(')');
@@ -1766,9 +1758,9 @@ static void process_insn(
     if (is_uoff && rn < 31u && ctx.adrp_valid[rn]) {
       const uint64_t gaddr = ctx.adrp_page[rn] + static_cast<uint64_t>(disp);
       if (!emit) {
-        ctx.add_global(gaddr, false);
+        ctx.add_global(gaddr, is_fp && bits == 128u);
         if (is_fp) {
-          if (bits == 128u) ctx.mark_q(rt);
+          if (bits == 128u) { ctx.mark_q(rt); ctx.uses_uintptr = true; }
           else if (is_load) {
             ctx.mark_fp_write(rt);
             ctx.uses_fp_bitcast = true;
@@ -1801,9 +1793,13 @@ static void process_insn(
                 tb->put_u64_hex(gaddr, true);
                 tb->put_str(");\n");
               }
+            } else if (is_fp) {
+              tb->put_reg_q(rt);
+              tb->put_str(" = *(uint128 *)((uintptr_t)(&global_");
+              tb->put_u64_hex(gaddr, true);
+              tb->put_str("));\n");
             } else {
-              if (is_fp) tb->put_reg_q(rt);
-              else tb->put_reg_x(rt);
+              tb->put_reg_x(rt);
               tb->put_str(" = global_");
               tb->put_u64_hex(gaddr, true);
               tb->put_str(";\n");
@@ -2094,7 +2090,11 @@ static void process_insn(
         tb->put_str("trunc(");
         tb->put_reg_d(rn);
         tb->put_str(")");
-      } else if (opcode == 8u || opcode == 12u || opcode == 14u || opcode == 15u) {
+      } else if (opcode == 8u || opcode == 14u || opcode == 15u) {
+        tb->put_str("rint(");
+        tb->put_reg_d(rn);
+        tb->put_str(")");
+      } else if (opcode == 12u) {
         tb->put_str("round(");
         tb->put_reg_d(rn);
         tb->put_str(")");
@@ -2244,7 +2244,11 @@ static void process_insn(
           tb->put_str("floor(");
           tb->put_reg_d(rn);
           tb->put_str(")");
-        } else if ((rmode == 0u && opcode < 4u) || opcode == 4u || opcode == 5u) {
+        } else if (rmode == 0u && opcode < 4u) {
+          tb->put_str("rint(");
+          tb->put_reg_d(rn);
+          tb->put_str(")");
+        } else if (opcode == 4u || opcode == 5u) {
           tb->put_str("round(");
           tb->put_reg_d(rn);
           tb->put_str(")");
@@ -2600,6 +2604,141 @@ static void process_insn(
       tb->put_str("); ");
       tb->put_reg_d(rd);
       tb->put_str(" = __hex_u64_to_f64((__rv >> 32) | (__rv << 32)); }\n");
+    }
+    return;
+  }
+
+  // Core 128-bit AdvSIMD (NEON) integer vector operations for -O3 auto-vectorized loops
+  // Bitwise 128-bit: AND (0x4E201C00), BIC (0x4E601C00), ORR/MOV (0x4EA01C00), EOR (0x6E201C00)
+  if ((w & 0xFFA0FC00u) == 0x4E201C00u || (w & 0xFFE0FC00u) == 0x4EA01C00u || (w & 0xFFE0FC00u) == 0x6E201C00u) {
+    const bool is_128 = ((w >> 30u) & 1u) != 0u;
+    if (is_128) {
+      const uint32_t rm = (w >> 16u) & 31u;
+      const uint32_t rn = (w >> 5u) & 31u;
+      const uint32_t rd = w & 31u;
+      const uint32_t u = (w >> 29u) & 1u;
+      const uint32_t sz = (w >> 22u) & 3u;
+      if (!emit) {
+        ctx.mark_q(rn);
+        ctx.mark_q(rm);
+        ctx.mark_q(rd);
+        ctx.fp_written |= (1u << rd);
+      } else if (tb) {
+        rec();
+        tb->put_str("    ");
+        tb->put_reg_q(rd);
+        tb->put_str(" = ");
+        if (u == 0u && sz == 2u && rn == rm) {
+          tb->put_reg_q(rn);
+        } else if (u == 0u && sz == 0u) {
+          tb->put_reg_q(rn); tb->put_str(" & "); tb->put_reg_q(rm);
+        } else if (u == 0u && sz == 1u) {
+          tb->put_reg_q(rn); tb->put_str(" & ~"); tb->put_reg_q(rm);
+        } else if (u == 0u && sz == 2u) {
+          tb->put_reg_q(rn); tb->put_str(" | "); tb->put_reg_q(rm);
+        } else {
+          tb->put_reg_q(rn); tb->put_str(" ^ "); tb->put_reg_q(rm);
+        }
+        tb->put_str(";\n");
+      }
+      return;
+    }
+  }
+
+  // Vector 4x32-bit ADD (0x4EA08400), SUB (0x6EA08400), MUL (0x4EA09C00)
+  if ((w & 0xFFE0FC00u) == 0x4EA08400u || (w & 0xFFE0FC00u) == 0x6EA08400u || (w & 0xFFE0FC00u) == 0x4EA09C00u) {
+    const uint32_t rm = (w >> 16u) & 31u;
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    const char* vop = ((w & 0xFFE0FC00u) == 0x6EA08400u) ? " - " : (((w & 0xFFE0FC00u) == 0x4EA09C00u) ? " * " : " + ");
+    if (!emit) {
+      ctx.mark_q(rn);
+      ctx.mark_q(rm);
+      ctx.mark_q(rd);
+      ctx.fp_written |= (1u << rd);
+      ctx.uses_uint32 = true;
+    } else if (tb) {
+      rec();
+      tb->put_str("    { uint128 __vr = 0; for (int __k = 0; __k < 4; ++__k) { uint32_t __a = (uint32_t)(");
+      tb->put_reg_q(rn);
+      tb->put_str(" >> (__k * 32)), __b = (uint32_t)(");
+      tb->put_reg_q(rm);
+      tb->put_str(" >> (__k * 32)); __vr |= (uint128)(uint32_t)(__a");
+      tb->put_str(vop);
+      tb->put_str("__b) << (__k * 32); } ");
+      tb->put_reg_q(rd);
+      tb->put_str(" = __vr; }\n");
+    }
+    return;
+  }
+
+  // Vector 4x32-bit ABS (0x4EA0B800)
+  if ((w & 0xFFFFFC00u) == 0x4EA0B800u) {
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    if (!emit) {
+      ctx.mark_q(rn);
+      ctx.mark_q(rd);
+      ctx.fp_written |= (1u << rd);
+      ctx.uses_int32 = true;
+      ctx.uses_uint32 = true;
+    } else if (tb) {
+      rec();
+      tb->put_str("    { uint128 __vr = 0; for (int __k = 0; __k < 4; ++__k) { int32_t __a = (int32_t)(uint32_t)(");
+      tb->put_reg_q(rn);
+      tb->put_str(" >> (__k * 32)); uint32_t __ab = __a < 0 ? (uint32_t)(0u - (uint32_t)__a) : (uint32_t)__a; __vr |= (uint128)__ab << (__k * 32); } ");
+      tb->put_reg_q(rd);
+      tb->put_str(" = __vr; }\n");
+    }
+    return;
+  }
+
+  // Vector 4x32-bit ADDV sD, vN.4s (0x4EB1B800)
+  if ((w & 0xFFFFFC00u) == 0x4EB1B800u) {
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    if (!emit) {
+      ctx.mark_q(rn);
+      ctx.mark_q(rd);
+      ctx.mark_fp_write(rd);
+      ctx.uses_fp_bitcast = true;
+      ctx.uses_uint32 = true;
+      ctx.uses_uint64_t = true;
+    } else if (tb) {
+      rec();
+      tb->put_str("    { uint32_t __vs = (uint32_t)");
+      tb->put_reg_q(rn);
+      tb->put_str(" + (uint32_t)(");
+      tb->put_reg_q(rn);
+      tb->put_str(" >> 32) + (uint32_t)(");
+      tb->put_reg_q(rn);
+      tb->put_str(" >> 64) + (uint32_t)(");
+      tb->put_reg_q(rn);
+      tb->put_str(" >> 96); ");
+      tb->put_reg_q(rd);
+      tb->put_str(" = (uint128)__vs; ");
+      tb->put_reg_d(rd);
+      tb->put_str(" = (double)__hex_u32_to_f32(__vs); }\n");
+    }
+    return;
+  }
+
+  // Vector 4x32-bit DUP vD.4s, wN (0x4E040C00)
+  if ((w & 0xFFFFFC00u) == 0x4E040C00u) {
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    if (!emit) {
+      ctx.mark_gpr_read(rn);
+      ctx.mark_q(rd);
+      ctx.fp_written |= (1u << rd);
+      ctx.uses_uint32 = true;
+    } else if (tb) {
+      rec();
+      tb->put_str("    { uint128 __vl = (uint128)(uint32_t)");
+      tb->put_reg_x(rn);
+      tb->put_str("; ");
+      tb->put_reg_q(rd);
+      tb->put_str(" = __vl | (__vl << 32) | (__vl << 64) | (__vl << 96); }\n");
     }
     return;
   }
