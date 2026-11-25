@@ -1,3 +1,5 @@
+import { getEngineMode, wasmSha256CompressBlocks } from '../core/hex-engine-bridge.js';
+
 const SHA256_INITIAL = Object.freeze([
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -45,6 +47,17 @@ export class IncrementalSha256 {
       this.bufferLength += take;
       offset += take;
       if (this.bufferLength === 64) { this.#transform(this.buffer, 0); this.bufferLength = 0; }
+    }
+    const fullBlocks = (bytes.byteLength - offset) >>> 6;
+    const engineMode = getEngineMode();
+    if (
+      engineMode !== 'js'
+      && (fullBlocks >= 4 || (fullBlocks >= 1 && engineMode === 'wasm'))
+      && typeof wasmSha256CompressBlocks === 'function'
+    ) {
+      if (wasmSha256CompressBlocks(this.state, bytes, offset, fullBlocks) === true) {
+        offset += fullBlocks * 64;
+      }
     }
     while (offset + 64 <= bytes.byteLength) {
       this.#transform(bytes, offset);
