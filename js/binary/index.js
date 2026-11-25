@@ -37,7 +37,8 @@ function toUint8View(input) {
   return null;
 }
 
-function defineLazyStrings(image, stringOpts) {
+function defineLazyStrings(image, initialStringOpts) {
+  let stringOpts = initialStringOpts;
   let computed = false;
   let cachedValue;
   Object.defineProperty(image, 'strings', {
@@ -47,19 +48,24 @@ function defineLazyStrings(image, stringOpts) {
       if (!computed) {
         cachedValue = scanStrings(image, stringOpts);
         computed = true;
+        stringOpts = null;
       }
       const value = cachedValue;
-      if (this === image && Object.getOwnPropertyDescriptor(image, 'strings')?.configurable === true) {
+      const desc = this === image ? Object.getOwnPropertyDescriptor(image, 'strings') : null;
+      if (desc?.configurable === true) {
         Object.defineProperty(image, 'strings', {
           value,
           writable: true,
-          enumerable: true,
+          enumerable: desc.enumerable,
           configurable: true,
         });
       }
       return value;
     },
     set(value) {
+      if (Object.isFrozen(image)) {
+        throw new TypeError("Cannot assign to read only property 'strings' of object");
+      }
       if (this !== image) {
         Object.defineProperty(this, 'strings', {
           value,
@@ -69,16 +75,15 @@ function defineLazyStrings(image, stringOpts) {
         });
         return;
       }
-      if (Object.isFrozen(image)) {
-        throw new TypeError("Cannot assign to read only property 'strings' of object");
-      }
       computed = true;
+      stringOpts = null;
       cachedValue = value;
-      if (Object.getOwnPropertyDescriptor(image, 'strings')?.configurable === true) {
+      const desc = Object.getOwnPropertyDescriptor(image, 'strings');
+      if (desc?.configurable === true) {
         Object.defineProperty(image, 'strings', {
           value,
           writable: true,
-          enumerable: true,
+          enumerable: desc.enumerable,
           configurable: true,
         });
       }
@@ -93,11 +98,15 @@ export function openBinary(input, opts = {}) {
   const prevHex = scopeJs ? globalThis.HEX_ENGINE : undefined;
   const hadPrevMode = scopeJs && Object.prototype.hasOwnProperty.call(globalThis, '__HEX_ENGINE_MODE__');
   const prevMode = scopeJs ? globalThis.__HEX_ENGINE_MODE__ : undefined;
-  if (scopeJs) {
-    globalThis.HEX_ENGINE = 'js';
-    globalThis.__HEX_ENGINE_MODE__ = 'js';
-  }
+  let setHex = false;
+  let setMode = false;
   try {
+    if (scopeJs) {
+      globalThis.HEX_ENGINE = 'js';
+      setHex = true;
+      globalThis.__HEX_ENGINE_MODE__ = 'js';
+      setMode = true;
+    }
   let wasmInfo = null;
   if (engineMode !== 'js') {
     const bytes = toUint8View(input);
@@ -120,7 +129,7 @@ export function openBinary(input, opts = {}) {
 
   if (opts.strings) {
     const resolvedStringEngine = (typeof opts.strings === 'object' && opts.strings !== null && opts.strings._engine != null)
-      ? opts.strings._engine
+      ? getEngineMode({ _engine: opts.strings._engine })
       : engineMode;
     const stringOpts = (typeof opts.strings === 'object' && opts.strings !== null)
       ? { ...opts.strings, _engine: resolvedStringEngine }
@@ -138,10 +147,14 @@ export function openBinary(input, opts = {}) {
   return image;
   } finally {
     if (scopeJs) {
-      if (hadPrevHex) globalThis.HEX_ENGINE = prevHex;
-      else delete globalThis.HEX_ENGINE;
-      if (hadPrevMode) globalThis.__HEX_ENGINE_MODE__ = prevMode;
-      else delete globalThis.__HEX_ENGINE_MODE__;
+      if (setHex) {
+        if (hadPrevHex) globalThis.HEX_ENGINE = prevHex;
+        else delete globalThis.HEX_ENGINE;
+      }
+      if (setMode) {
+        if (hadPrevMode) globalThis.__HEX_ENGINE_MODE__ = prevMode;
+        else delete globalThis.__HEX_ENGINE_MODE__;
+      }
     }
   }
 }

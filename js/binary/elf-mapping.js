@@ -401,10 +401,15 @@ function loadSpanSnapMatches(loads, snap) {
 function elfLoadSpanState(loads) {
   let state = elfLoadSpanIndexCache.get(loads);
   if (state && state.built === loads.length && loadSpanSnapMatches(loads, state.snap)) return state;
-  const fields = loads.map(elfLoadSpanFields);
-  const snap = loads.map((seg) => (seg && typeof seg === 'object'
-    ? { ref: seg, address: seg.address, size: seg.size, fileSize: seg.fileSize, fileOffset: seg.fileOffset }
-    : { ref: seg }));
+  const fields = new Array(loads.length);
+  const snap = new Array(loads.length);
+  for (let i = 0; i < loads.length; i += 1) {
+    const seg = loads[i];
+    fields[i] = elfLoadSpanFields(seg);
+    snap[i] = seg && typeof seg === 'object'
+      ? { ref: seg, address: seg.address, size: seg.size, fileSize: seg.fileSize, fileOffset: seg.fileOffset }
+      : { ref: seg };
+  }
   const sorted = fields.slice().sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
   const maxEnd = [];
   let run = null;
@@ -542,6 +547,7 @@ function hasMappedELFFileSpanForVa(image, address, n) {
   const fileSegments = ensureFileSegmentsCache(getELFMappingCache(image)).fileSegments;
   for (let i = 0; i < fileSegments.length; i += 1) {
     const entry = fileSegments[i];
+    if (entry.malformedError) throw entry.malformedError;
     if (address < entry.start || address >= entry.vaEnd) continue;
     const fileStart = entry.fileOffset + (address - entry.start);
     const fileEnd = entry.fileEnd;
@@ -559,6 +565,7 @@ export function mappedELFFileSpanForVa(image, va, size) {
   const fileSegments = ensureFileSegmentsCache(getELFMappingCache(image)).fileSegments;
   for (let i = 0; i < fileSegments.length; i += 1) {
     const entry = fileSegments[i];
+    if (entry.malformedError) throw entry.malformedError;
     if (address < entry.start || address >= entry.vaEnd) continue;
     const fileStart = entry.fileOffset + (address - entry.start);
     const fileEnd = entry.fileEnd;
@@ -688,6 +695,7 @@ function elfExecutableFunctionExtent(image, address, bytes, sectionIndex) {
   const execSections = ensureExecMappingCache(getELFMappingCache(image)).execSections;
   for (let i = 0; i < execSections.length; i += 1) {
     const entry = execSections[i];
+    if (entry.malformedError) throw entry.malformedError;
     if (start < entry.lo || start >= entry.hi) continue;
     if (extent !== 0n && start + extent > entry.hi) continue;
     return entry.section;
@@ -710,6 +718,7 @@ export function elfFunctionBytesFileBacked(image, address, bytes) {
   const execSections = ensureExecMappingCache(getELFMappingCache(image)).execSections;
   for (let i = 0; i < execSections.length; i += 1) {
     const entry = execSections[i];
+    if (entry.malformedError) throw entry.malformedError;
     if (entry.fileSize <= 0n) continue;
     const delta = start - entry.lo;
     if (delta < 0n || delta + n > entry.fileSize) continue;

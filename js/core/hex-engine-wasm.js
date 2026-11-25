@@ -28,13 +28,13 @@ function decodeBase64(b64) {
 
 function isJsEngineForced() {
   const norm = (v) => (v == null ? '' : String(v).trim().toLowerCase());
-  if (typeof globalThis === 'object' && globalThis !== null && (norm(globalThis.HEX_ENGINE) === 'js' || norm(globalThis.__HEX_ENGINE_MODE__) === 'js')) {
-    return true;
-  }
-  if (typeof process === 'object' && process !== null && process.env && norm(process.env.HEX_ENGINE) === 'js') {
-    return true;
-  }
-  return false;
+  const raw = (typeof globalThis === 'object' && globalThis !== null
+    ? (globalThis.HEX_ENGINE ?? globalThis.__HEX_ENGINE_MODE__)
+    : null)
+    ?? (typeof process === 'object' && process !== null && process.env
+      ? process.env.HEX_ENGINE
+      : null);
+  return norm(raw) === 'js';
 }
 
 let cachedBytes = null;

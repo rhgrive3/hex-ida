@@ -170,6 +170,8 @@ static void test_overflow_and_stride_and_boundaries() {
   // 1) 32-bit multiplication overflow (count * ent_size wraps in u32) and output-record 32-bit wrap guard
   assert(hex_elf_extract_symbols(buf, 64u, 16u, 0x10000001u, nullptr, 0u, nullptr, 0u, 0u, recs, 0x10000001u, &out_count) == HEX_ERR_RESOURCE_LIMIT);
   assert(hex_elf_extract_symbols(buf, 0xFFFFFFFFu, 16u, 0x08000001u, nullptr, 0u, nullptr, 0u, 0u, recs, 0x08000001u, &out_count) == HEX_ERR_RESOURCE_LIMIT);
+  // 32-bit count*ent_size overflow below UINT32_MAX/32 record cap -> HEX_ERR_INVALID_ARG
+  assert(hex_elf_extract_symbols(buf, 0xFFFFFFFFu, 64u, 0x07000000u, nullptr, 0u, nullptr, 0u, 0u, recs, 0x07000000u, &out_count) == HEX_ERR_INVALID_ARG);
 
   // 2) Non-minimal entry stride (ent_size = 32 for ELF64, ent_size = 20 for ELF32)
   {

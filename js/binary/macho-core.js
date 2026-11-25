@@ -256,7 +256,7 @@ export function parseMachO(input, opts = {}) {
       containerOffset: selected.offset,
       [INTERNAL_RESIDENT_IDENTITY]: {
         binaryIdentity: containerIdentity,
-        sliceIdentity: sliceIdentity(containerIdentity, sub, selected.offset, selectedArchitecture, subDigest),
+        sliceIdentity: sliceIdentity(containerIdentity, sub, selected.offset, selectedArchitecture, subDigest, engineOpts),
         sliceDigest: subDigest,
         sliceBytes: sub,
       },
@@ -598,9 +598,9 @@ function parseThin(bytes, opts) {
   let rawBuildVersion = issued.metadata.buildVersion && typeof issued.metadata.buildVersion === 'object'
     ? {
       ...issued.metadata.buildVersion,
-      tools: Array.isArray(issued.metadata.buildVersion.tools)
-        ? issued.metadata.buildVersion.tools.map((t) => (t && typeof t === 'object' ? { ...t } : t))
-        : issued.metadata.buildVersion.tools,
+      ...(Array.isArray(issued.metadata.buildVersion.tools)
+        ? { tools: issued.metadata.buildVersion.tools.map((t) => (t && typeof t === 'object' ? { ...t } : t)) }
+        : {}),
     }
     : issued.metadata.buildVersion;
   let frozenBuildVersion;

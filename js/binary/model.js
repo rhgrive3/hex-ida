@@ -541,14 +541,13 @@ export class BinaryImage {
     this.metadata = meta.metadata || {};
     this._finalized = false;
     this._mappingVersion = 0;
+    // Track array lengths (not object identity) to preserve #8772 Proxy-wrapping contract.
     this._mappingLookups = {
       sections: null,
       segments: null,
       virtual: null,
       offsets: null,
-      sectionsRef: null,
       sectionsLen: -1,
-      segmentsRef: null,
       segmentsLen: -1,
     };
     this._lastOffsetLookupEntry = null;
@@ -644,9 +643,7 @@ export class BinaryImage {
       lookups.segments = null;
       lookups.virtual = null;
       lookups.offsets = null;
-      lookups.sectionsRef = this.sections;
       lookups.sectionsLen = secLen;
-      lookups.segmentsRef = this.segments;
       lookups.segmentsLen = segLen;
       this._mappingSorted.sections = null;
       this._mappingSorted.segments = null;
@@ -673,6 +670,8 @@ export class BinaryImage {
         && m.address === cached.addrBase
         && m.fileSize === cached.fileSize
         && m.size === cached.size
+        && m.source === cached.source
+        && m.flags === cached.flags
       ) {
         return cached.addrBase + (o - cached.fileOffset);
       }
@@ -734,6 +733,8 @@ export class BinaryImage {
           addrBase: candidate.mapping.address,
           fileSize: candidate.mapping.fileSize,
           size: candidate.mapping.size,
+          source: candidate.mapping.source,
+          flags: candidate.mapping.flags,
         };
       }
     };
@@ -758,7 +759,10 @@ export class BinaryImage {
     this._ensureMappingLookupsFresh();
     if (this._mappingSorted.sections === null) this._mappingSorted.sections = isAddressSorted(this.sections);
     if (!this._mappingSorted.sections) return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
-    if (!this._mappingLookups.sections) this._mappingLookups.sections = buildMappingLookup(this.sections);
+    if (!this._mappingLookups.sections) {
+      this._mappingLookups.sections = buildMappingLookup(this.sections);
+      this._mappingLookups.sectionsLen = Array.isArray(this.sections) ? this.sections.length : 0;
+    }
     return lookupMapping(this._mappingLookups.sections, a);
   }
 
@@ -768,7 +772,10 @@ export class BinaryImage {
     this._ensureMappingLookupsFresh();
     if (this._mappingSorted.segments === null) this._mappingSorted.segments = isAddressSorted(this.segments);
     if (!this._mappingSorted.segments) return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
-    if (!this._mappingLookups.segments) this._mappingLookups.segments = buildMappingLookup(this.segments);
+    if (!this._mappingLookups.segments) {
+      this._mappingLookups.segments = buildMappingLookup(this.segments);
+      this._mappingLookups.segmentsLen = Array.isArray(this.segments) ? this.segments.length : 0;
+    }
     return lookupMapping(this._mappingLookups.segments, a);
   }
 
@@ -905,15 +912,22 @@ export class BinaryImage {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
     this._ensureMappingLookupsFresh();
-    if (!this._mappingLookups.virtual) this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
+    if (!this._mappingLookups.virtual) {
+      this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
+      this._mappingLookups.sectionsLen = Array.isArray(this.sections) ? this.sections.length : 0;
+      this._mappingLookups.segmentsLen = Array.isArray(this.segments) ? this.segments.length : 0;
+    }
     return lookupVirtualMapping(this._mappingLookups.virtual, a);
   }
 
   _nextMappingBoundary(current, owner) {
     // Issue #970: a narrower mapping starting inside `owner` (e.g. a zero-fill __bss
     // section inside a broader file-backed segment) ends the current chunk at its start.
+    this._ensureMappingLookupsFresh();
     if (!this._mappingLookups.virtual) {
       this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
+      this._mappingLookups.sectionsLen = Array.isArray(this.sections) ? this.sections.length : 0;
+      this._mappingLookups.segmentsLen = Array.isArray(this.segments) ? this.segments.length : 0;
     }
     const { items, starts } = this._mappingLookups.virtual;
     const end = owner.address + owner.size;

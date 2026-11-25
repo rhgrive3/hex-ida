@@ -13,6 +13,8 @@ extern "C" {
 // Compress `block_count` 64-byte SHA-256 message blocks into `state[0..7]` in-place
 // per FIPS 180-4. Returns HEX_ERR_INVALID_ARG if state is null or (block_count > 0 && !blocks).
 HEX_WASM_EXPORT("hex_sha256_compress_blocks")
+// Returns HEX_OK on success, HEX_ERR_INVALID_ARG on null pointers,
+// or HEX_ERR_RESOURCE_LIMIT if block_count > UINT32_MAX / 64u.
 HexStatus hex_sha256_compress_blocks(
     uint32_t* state,
     const uint8_t* blocks,

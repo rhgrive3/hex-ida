@@ -12,6 +12,7 @@ import {
   elfSectionFileSpanConsistentWithLoads,
 } from '../../js/binary/elf-mapping.js';
 import { buildSampleBinary } from '../../js/sample.js';
+import { IncrementalSha256, sha256BlobHex } from '../../js/cache/content-identity.js';
 import {
   getFallbackCounts,
   getWasmCallCount,
@@ -285,21 +286,38 @@ test('Wave 16 synthetic ELF matrix: ELF32/64 LE/BE, SHN_XINDEX, custom entsize, 
   ];
 
   for (const tc of cases) {
+    resetAllTelemetry();
     const bytes = buildSyntheticElf(tc.opts);
     const jsImg = withEngineMode('js', () => parseELF(bytes, { _engine: 'js' }));
+    const beforeCalls = getWasmCallCount('elf_symbols');
     const autoImg = withEngineMode('auto', () => parseELF(bytes, { _engine: 'auto' }));
+    const afterCalls = getWasmCallCount('elf_symbols');
+    assert.ok(afterCalls > beforeCalls, `${tc.name}: expected elf_symbols WASM dispatch`);
+    const synFallbacks = Object.entries(getFallbackCounts()).filter(([k]) => k.startsWith('elf_symbols:'));
+    assert.deepStrictEqual(synFallbacks, [], `${tc.name}: expected 0 elf_symbols fallbacks, got ${JSON.stringify(synFallbacks)}`);
     assert.deepStrictEqual(autoImg.symbols, jsImg.symbols, `${tc.name}: symbols mismatch`);
     assert.deepStrictEqual(autoImg.warnings, jsImg.warnings, `${tc.name}: warnings mismatch`);
     assert.deepStrictEqual(autoImg.metadata?.elfMetadata, jsImg.metadata?.elfMetadata, `${tc.name}: elfMetadata mismatch`);
   }
 
-  // Tight metadataLimits truncation parity
+  // Mid-symbol-table tight metadataLimits truncation parity (5 sections + 5 names + 2 of 4 symbols)
+  resetAllTelemetry();
   const bytes = buildSyntheticElf({ is64: true, be: false });
-  const tightOpts = { metadataLimits: { records: 6 } };
+  const fullImg = withEngineMode('js', () => parseELF(bytes, { _engine: 'js' }));
+  const tightOpts = { metadataLimits: { records: 12 } };
   const jsTight = withEngineMode('js', () => parseELF(bytes, { ...tightOpts, _engine: 'js' }));
+  const beforeTight = getWasmCallCount('elf_symbols');
   const autoTight = withEngineMode('auto', () => parseELF(bytes, { ...tightOpts, _engine: 'auto' }));
+  assert.ok(getWasmCallCount('elf_symbols') > beforeTight, 'mid-symbol tight budget must dispatch elf_symbols WASM');
+  assert.ok(autoTight.symbols.length > 0 && autoTight.symbols.length < fullImg.symbols.length, 'mid-symbol tight budget must partially truncate symbols');
   assert.deepStrictEqual(autoTight.symbols, jsTight.symbols, 'tight metadataLimits symbols mismatch');
   assert.deepStrictEqual(autoTight.metadata?.elfMetadata, jsTight.metadata?.elfMetadata, 'tight metadataLimits elfMetadata mismatch');
+
+  // Pre-symbol objects budget exhaustion must skip WASM completely (0 calls)
+  resetAllTelemetry();
+  const autoObjExhausted = withEngineMode('auto', () => parseELF(bytes, { metadataLimits: { objects: 10 }, _engine: 'auto' }));
+  assert.equal(autoObjExhausted.symbols.length, 0);
+  assert.equal(getWasmCallCount('elf_symbols'), 0, 'exhausted objects budget must record 0 elf_symbols WASM calls');
 });
 
 test('Wave 16 transparent lazy image.strings: enumerable, 0 calls before access, cached, writable, seal/freeze/prototype/drift safe', () => {
@@ -348,6 +366,8 @@ test('Wave 16 transparent lazy image.strings: enumerable, 0 calls before access,
     Object.freeze(frozen);
     assert.deepStrictEqual(frozen.strings, jsExpectedStrings, 'frozen image.strings read must succeed');
     assert.throws(() => { frozen.strings = []; }, TypeError, 'frozen image.strings write must throw TypeError');
+    const frozenChild = Object.create(frozen);
+    assert.throws(() => { frozenChild.strings = ['x']; }, TypeError, 'frozen prototype child.strings write must throw TypeError');
 
     const protoImg = openBinary(sample.bytes, { strings: true, _engine: 'auto' });
     const child = Object.create(protoImg);
@@ -445,5 +465,24 @@ test('Wave 16 JS isolation gate: globalThis.HEX_ENGINE=js, process.env.HEX_ENGIN
     for (const domain of domains) {
       assert.equal(getWasmCallCount(domain), 0, `direct parseELF/parseMachO({ _engine: 'js' }) must record 0 WASM calls for '${domain}'`);
     }
+  });
+});
+
+test('Wave 16 direct IncrementalSha256 & sha256BlobHex { _engine: "js" } isolation and parity', async () => {
+  const payload = new Uint8Array(4096);
+  for (let i = 0; i < payload.length; i += 1) payload[i] = (i * 31) & 0xff;
+  const blob = new Blob([payload]);
+
+  await withEngineMode('auto', async () => {
+    resetAllTelemetry();
+    const jsInc = new IncrementalSha256({ _engine: 'js' }).update(payload).hexDigest();
+    const jsBlob = await sha256BlobHex(blob, { _engine: 'js' });
+    assert.equal(getWasmCallCount('sha256'), 0, 'direct IncrementalSha256/sha256BlobHex({ _engine: "js" }) must record 0 sha256 WASM calls');
+
+    const autoInc = new IncrementalSha256({ _engine: 'auto' }).update(payload).hexDigest();
+    const autoBlob = await sha256BlobHex(blob, { _engine: 'auto' });
+    assert.ok(getWasmCallCount('sha256') >= 2, 'auto IncrementalSha256/sha256BlobHex must dispatch sha256 WASM');
+    assert.equal(autoInc, jsInc);
+    assert.deepStrictEqual(autoBlob, jsBlob);
   });
 });

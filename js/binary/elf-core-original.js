@@ -18,7 +18,8 @@ function decodeElfSymbolUtf8(bytes, start, len) {
   } catch {
     let out = '';
     for (let i = 0; i < slice.length; i++) {
-      out += slice[i] < 0x80 ? String.fromCharCode(slice[i]) : '\uFFFD';
+      const c = slice[i];
+      out += c >= 0x20 && c <= 0x7e ? String.fromCharCode(c) : '\uFFFD';
     }
     return out;
   }
@@ -821,7 +822,7 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget, o
   ) {
     if (!(r.bytes instanceof Uint8Array)) {
       hexEngineBridge.recordFallback?.('elf_symbols:non_uint8_backing');
-    } else if (!budget.stopped && budget.checkpoint()) {
+    } else if (!budget.stopped && (typeof budget.checkpoint !== 'function' || budget.checkpoint())) {
       const remRecords = Number.isFinite(budget.limits?.records)
         ? Math.max(0, Math.floor(budget.limits.records - (budget.used?.records ?? 0)))
         : count;
@@ -829,7 +830,16 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget, o
         ? Math.max(0, Math.floor(budget.limits.inputBytes - (budget.used?.inputBytes ?? 0)))
         : count * ent;
       const maxByBytes = ent > 0 ? Math.floor(remInputBytes / ent) : 0;
-      const candidateCount = Math.min(count, remRecords, maxByBytes);
+      const remObjects = Number.isFinite(budget.limits?.objects)
+        ? Math.max(0, Math.floor(budget.limits.objects - (budget.used?.objects ?? 0)))
+        : count;
+      const remOps = Number.isFinite(budget.limits?.operations)
+        ? Math.max(0, Math.floor((budget.limits.operations - (budget.used?.operations ?? 0)) / 2))
+        : count;
+      const remHeap = Number.isFinite(budget.limits?.estimatedHeapBytes)
+        ? Math.max(0, Math.floor((budget.limits.estimatedHeapBytes - (budget.used?.estimatedHeapBytes ?? 0)) / 224))
+        : count;
+      const candidateCount = Math.min(count, remRecords, maxByBytes, remObjects, remOps, remHeap);
       if (candidateCount > 0) {
         const symSlice = r.bytes.subarray(tableStart, tableStart + candidateCount * ent);
         const strSlice = r.bytes.subarray(strStart, strStart + strBytes);
