@@ -58,12 +58,12 @@ function noteFallback(domain, reason) {
   return null;
 }
 
-function getHexEngineExportsSafe() {
+function getHexEngineExportsSafe(opts = null) {
   if (!wasmModuleApi || typeof wasmModuleApi.getHexEngineExports !== 'function') {
     return null;
   }
   try {
-    return wasmModuleApi.getHexEngineExports() || null;
+    return wasmModuleApi.getHexEngineExports(opts) || null;
   } catch {
     return null;
   }
@@ -956,7 +956,7 @@ export function wasmDecompileX86_64SemanticFunction({
   _engine = null,
 } = {}) {
   if (getEngineMode({ _engine }) === 'js') return noteFallback('x86_64_decompile', 'wasm_disabled');
-  const ex = getHexEngineExportsSafe();
+  const ex = getHexEngineExportsSafe({ _engine });
   const getTextPtr = ex && typeof ex.hex_x86_64_semantic_get_text_ptr === 'function'
     ? ex.hex_x86_64_semantic_get_text_ptr
     : ex?.hex_x86_64_decomp_get_text_ptr;
@@ -1231,7 +1231,7 @@ const BYTE_SEARCH_NOT_FOUND = 0xffffffff;
 
 export function wasmScanStringsFlat(bytes, ranges, opts = {}) {
   if (getEngineMode(opts) === 'js') return noteFallback('strings', 'wasm_disabled');
-  const ex = getHexEngineExportsSafe();
+  const ex = getHexEngineExportsSafe(opts);
   if (
     !isWasmBulkMemorySupported()
     || !ex
@@ -1244,8 +1244,13 @@ export function wasmScanStringsFlat(bytes, ranges, opts = {}) {
   if (!(bytes instanceof Uint8Array)) return noteFallback('strings', 'invalid_bytes');
   if (!Array.isArray(ranges)) return noteFallback('strings', 'invalid_ranges');
 
-  const minLength = Math.max(1, Math.floor(Number(opts?.minLength ?? 4)));
-  const maxLength = Math.max(minLength, Math.floor(Number(opts?.maxLength ?? 256)));
+  const rawMinLength = Number(opts?.minLength ?? 4);
+  const rawMaxLength = Number(opts?.maxLength ?? 256);
+  if (!Number.isFinite(rawMinLength) || !Number.isFinite(rawMaxLength) || rawMinLength > 0xffffffff || rawMaxLength > 0xffffffff) {
+    return noteFallback('strings', 'invalid_length');
+  }
+  const minLength = Math.max(1, Math.floor(rawMinLength));
+  const maxLength = Math.max(minLength, Math.floor(rawMaxLength));
   const rawLimit = opts?.limit == null ? STRING_SCAN_MAX_SPANS : Number(opts.limit);
   if (!Number.isFinite(rawLimit) || rawLimit < 0) return noteFallback('strings', 'invalid_limit');
   const limit = Math.floor(rawLimit);
@@ -1375,7 +1380,7 @@ export function wasmScanStrings(bytes, ranges, opts = {}) {
 
 export function wasmByteSearchFind(haystack, fromOffset, pattern, masks, foldAscii, opts = {}) {
   if (getEngineMode(opts) === 'js') return noteFallback('byte_search', 'wasm_disabled');
-  const ex = getHexEngineExportsSafe();
+  const ex = getHexEngineExportsSafe(opts);
   if (
     !isWasmBulkMemorySupported()
     || !ex
@@ -1466,7 +1471,7 @@ export function wasmSha256CompressBlocks(stateU32, bytes, offset, blockCount, op
     noteFallback('sha256', 'wasm_disabled');
     return false;
   }
-  const ex = getHexEngineExportsSafe();
+  const ex = getHexEngineExportsSafe(opts);
   if (
     !isWasmBulkMemorySupported()
     || !ex
@@ -1544,7 +1549,7 @@ export function wasmSha256CompressBlocks(stateU32, bytes, offset, blockCount, op
 
 export function wasmSha256Hash(bytes, opts = {}) {
   if (getEngineMode(opts) === 'js') return noteFallback('sha256', 'wasm_disabled');
-  const ex = getHexEngineExportsSafe();
+  const ex = getHexEngineExportsSafe(opts);
   if (
     !isWasmBulkMemorySupported()
     || !ex
@@ -1603,7 +1608,7 @@ export function wasmExtractElfSymbols(
   opts = {},
 ) {
   if (getEngineMode(opts) === 'js') return noteFallback('elf_symbols', 'wasm_disabled');
-  const ex = getHexEngineExportsSafe();
+  const ex = getHexEngineExportsSafe(opts);
   if (
     !isWasmBulkMemorySupported()
     || !ex

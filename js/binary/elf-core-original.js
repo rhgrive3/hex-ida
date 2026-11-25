@@ -10,6 +10,20 @@ import * as hexEngineBridge from '../core/hex-engine-bridge.js';
 
 const ELF_SYMBOL_UTF8_DECODER = new TextDecoder('utf-8', { fatal: false });
 
+function decodeElfSymbolUtf8(bytes, start, len) {
+  if (len <= 0) return '';
+  const slice = bytes.subarray(start, start + len);
+  try {
+    return ELF_SYMBOL_UTF8_DECODER.decode(slice);
+  } catch {
+    let out = '';
+    for (let i = 0; i < slice.length; i++) {
+      out += slice[i] < 0x80 ? String.fromCharCode(slice[i]) : '\uFFFD';
+    }
+    return out;
+  }
+}
+
 const ET_REL = 1;
 const ET_EXEC = 2;
 const PT_LOAD = 1;
@@ -182,7 +196,7 @@ export function parseELF(input, options = {}) {
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
   let dynsymAuthoritative = false;
   for (const s of symbolTables) {
-    const complete = parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget);
+    const complete = parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget, options);
     if (s.type === SHT_DYNSYM && complete) dynsymAuthoritative = true;
   }
   if (isRiscv) {
@@ -748,7 +762,7 @@ function markFixedTableRemainder(section, entrySize, budget, label) {
   }
 }
 
-export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
+export function parseSymbols(r, table, sections, image, bits, elfType, budget, options = {}) {
   const str = sections[table.link];
   if (!str) {
     budget.partial(`symbols:${table.index}:string-table-link`, `ELF symbol table ${table.index} links to missing section ${table.link}`);
@@ -799,29 +813,49 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   }
 
   let wasmView = null;
+  let wasmCount = 0;
   if (
     count > 0
-    && r.bytes instanceof Uint8Array
-    && hexEngineBridge.getEngineMode?.() !== 'js'
+    && hexEngineBridge.getEngineMode?.(options) !== 'js'
     && typeof hexEngineBridge.wasmExtractElfSymbols === 'function'
   ) {
-    const symSlice = r.bytes.subarray(tableStart, tableStart + count * ent);
-    const strSlice = r.bytes.subarray(strStart, strStart + strBytes);
-    const xindexSlice = xindexValid
-      ? r.bytes.subarray(Number(xindex.offset), Number(xindex.offset) + count * 4)
-      : null;
-    const isBigEndian = Boolean(r.be ?? (r.littleEndian === false));
-    const wasmRes = hexEngineBridge.wasmExtractElfSymbols(
-      symSlice,
-      ent,
-      count,
-      strSlice,
-      xindexSlice,
-      bits === 64,
-      isBigEndian,
-    );
-    if (wasmRes && wasmRes.count === count && wasmRes.view instanceof DataView) {
-      wasmView = wasmRes.view;
+    if (!(r.bytes instanceof Uint8Array)) {
+      hexEngineBridge.recordFallback?.('elf_symbols:non_uint8_backing');
+    } else if (!budget.stopped && budget.checkpoint()) {
+      const remRecords = Number.isFinite(budget.limits?.records)
+        ? Math.max(0, Math.floor(budget.limits.records - (budget.used?.records ?? 0)))
+        : count;
+      const remInputBytes = Number.isFinite(budget.limits?.inputBytes)
+        ? Math.max(0, Math.floor(budget.limits.inputBytes - (budget.used?.inputBytes ?? 0)))
+        : count * ent;
+      const maxByBytes = ent > 0 ? Math.floor(remInputBytes / ent) : 0;
+      const candidateCount = Math.min(count, remRecords, maxByBytes);
+      if (candidateCount > 0) {
+        const symSlice = r.bytes.subarray(tableStart, tableStart + candidateCount * ent);
+        const strSlice = r.bytes.subarray(strStart, strStart + strBytes);
+        const xindexSlice = xindexValid
+          ? r.bytes.subarray(Number(xindex.offset), Number(xindex.offset) + candidateCount * 4)
+          : null;
+        const isBigEndian = Boolean(r.be ?? (r.littleEndian === false));
+        const wasmRes = hexEngineBridge.wasmExtractElfSymbols(
+          symSlice,
+          ent,
+          candidateCount,
+          strSlice,
+          xindexSlice,
+          bits === 64,
+          isBigEndian,
+          options,
+        );
+        if (wasmRes) {
+          if (wasmRes.count === candidateCount && wasmRes.view instanceof DataView) {
+            wasmView = wasmRes.view;
+            wasmCount = candidateCount;
+          } else {
+            hexEngineBridge.recordFallback?.('elf_symbols:invalid_result');
+          }
+        }
+      }
     }
   }
 
@@ -833,7 +867,7 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     let nameOff,info,other,shndx,value,size;
     let wasmNameLen = -1;
     let wasmXindexVal = -1;
-    if (wasmView) {
+    if (wasmView && i < wasmCount) {
       const wo = i * 32;
       value = wasmView.getBigUint64(wo, true);
       size = wasmView.getBigUint64(wo + 8, true);
@@ -872,9 +906,7 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       && nameOff + wasmNameLen < strBytes
       && r.bytes[strStart + nameOff + wasmNameLen] === 0
     ) {
-      name = wasmNameLen === 0
-        ? ''
-        : ELF_SYMBOL_UTF8_DECODER.decode(r.bytes.subarray(strStart + nameOff, strStart + nameOff + wasmNameLen));
+      name = decodeElfSymbolUtf8(r.bytes, strStart + nameOff, wasmNameLen);
     } else {
       scan.scanned = 0;
       name = terminatedStringInTable(r,strStart,strBytes,nameOff,maxName,scan);

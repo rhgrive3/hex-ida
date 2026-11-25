@@ -8,7 +8,7 @@
 | Integration Wave 2 (Persistent) | `engine_runtime`, `build-wasm.mjs`, `controlflow.js`, `hex-engine-bridge.js`, `decompile.js`, E2E/x86_64/release-gate tests, fuzz suite, docs | 5 | 5 (R1) | **COMPLETE** |
 | Wave 6 Review Fix & Re-Verification | 2-lane C++/JS fix for R1 findings (`g_emit_arena`, `IrStore::release`, strict ARM64 parity, `sourceMap`, symbol norm, `detectModelArchitecture`, `benchmark-final-e2e.mjs`, IIFE static imports, `c_emitter` left-assoc parens, `ABI.md`/`ROLLBACK.md` sync) | 2 | 4 (R2 re-verification across Perspectives 2–5) | **COMPLETE** |
 
-## Verification & Quality Gates (Final)
+## Verification & Quality Gates (Wave 6 Historical Baseline)
 - **Unified WASM Artifact**: `js/core/hex-engine-wasm.js` (`hex_engine.wasm` = **218,119 bytes**, 10 freestanding C++20 units, `clang++ --target=wasm32 -std=c++20 -O3 -nostdlib -fno-exceptions -fno-rtti -mbulk-memory` + `wasm-opt -O3 --enable-bulk-memory`, **0 Emscripten**)
 - **Native ASan/UBSan (`-Wall -Wextra -Werror`)**: **12/12 suites PASS** (including `test_fuzz_robustness_native`: 2,840 corrupt/truncated/mutated binaries + 5,000 random functions + 1,200 `engine_runtime`/`c_emitter` scratch-isolation cases — 0 crash / 0 UB / 0 OOB / 0 leak)
 - **Node Differential & Parity Suites**:
@@ -33,7 +33,7 @@
   - `auto`: **3.39 ms** (0.170 ms/pass, **1,100.86x**; R2 independent run: **2.80 ms / 1,543.24x**) | Peak RSS **191.96 MB** | Peak heapUsed **57.80 MB**
 
 ## Uncovered Standalone Architectures (Automatic JS Fallback)
-- `riscv64`, `arm64e`, `x86_64` decompilation, `x86` decompilation: automatically fall back per-function to JS with structured `decompile:non_arm64_arch:<arch>` telemetry.
+- At Wave 6 baseline: `riscv64`, `arm64e`, `x86_64` decompilation, `x86` decompilation fell back to JS. (Superseded in Waves 8–12: `x86_64` decompilation & semantic analysis, `arm64e` PAC recognition, and `riscv64` decoding are now handled natively in WASM; `x86` 32-bit decompilation falls back to JS with structured telemetry.)
 
 ## Wave 7 (Persistent 9-Parallel Expansion & 9-Parallel Independent Review)
 - **Impl Agents**: 9 parallel worktrees (`E1` identity wire, `E2` binary wire, `E3` words.js wire, `E4` ARM64 decode gate expansion, `E5` ARM64 runtime lifting expansion, `E6` `x86_64_decomp` SysV/Win64 vertical slice, `E7` WASM memory/export optimization, `E8` `controlflow`/`benchmark` alignment, `E9` Wave 7 expanded parity suite)

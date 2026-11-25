@@ -150,10 +150,10 @@ HexStatus hex_sha256_compress_blocks(
     uint32_t* state,
     const uint8_t* blocks,
     uint32_t block_count) {
-  if (block_count > (UINT32_MAX / 64u)) return HEX_ERR_RESOURCE_LIMIT;
   if (!state || (block_count > 0u && !blocks)) {
     return HEX_ERR_INVALID_ARG;
   }
+  if (block_count > (UINT32_MAX / 64u)) return HEX_ERR_RESOURCE_LIMIT;
   for (uint32_t i = 0u; i < block_count; ++i) {
     compress_one_block(state, blocks + static_cast<size_t>(i) * 64u);
   }

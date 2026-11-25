@@ -55,19 +55,19 @@ function sameByteSlice(a, b) {
   );
 }
 
-function residentDigest(bytes) {
+function residentDigest(bytes, engineOpts = undefined) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > MACHO_METADATA_LIMITS.inputBytes) return null;
-  if (bytes.byteLength <= WASM_SHA256_FAST_LIMIT && getEngineMode() !== 'js' && typeof wasmSha256Hash === 'function') {
-    const raw = wasmSha256Hash(bytes);
+  if (bytes.byteLength <= WASM_SHA256_FAST_LIMIT && getEngineMode(engineOpts) !== 'js' && typeof wasmSha256Hash === 'function') {
+    const raw = wasmSha256Hash(bytes, engineOpts);
     if (raw instanceof Uint8Array && raw.length === 32) {
       return `bin_sha256_${digestBytesToHex(raw)}`;
     }
   }
-  return `bin_sha256_${new IncrementalSha256().update(bytes).hexDigest()}`;
+  return `bin_sha256_${new IncrementalSha256(engineOpts).update(bytes).hexDigest()}`;
 }
 
-function sliceIdentity(binaryIdentity, bytes, offset, architecture, precomputedDigest = undefined) {
-  const digest = precomputedDigest !== undefined ? precomputedDigest : residentDigest(bytes);
+function sliceIdentity(binaryIdentity, bytes, offset, architecture, precomputedDigest = undefined, engineOpts = undefined) {
+  const digest = precomputedDigest !== undefined ? precomputedDigest : residentDigest(bytes, engineOpts);
   if (!binaryIdentity || !digest) return null;
   return `slice_macho_${architecture}_${offset.toString(16)}_${bytes.byteLength.toString(16)}_${digest.slice('bin_sha256_'.length)}`;
 }
@@ -241,7 +241,8 @@ const DYLIB_COMMANDS = new Set([
 export function parseMachO(input, opts = {}) {
   const bytes = new ByteView(input).bytes;
   const thinContainerOffset = containerOffset(opts.containerOffset);
-  const containerIdentity = residentDigest(bytes);
+  const engineOpts = opts?._engine != null ? { _engine: opts._engine } : undefined;
+  const containerIdentity = residentDigest(bytes, engineOpts);
   const kind = machoKind(bytes);
   if (!kind) throw new Error('not a Mach-O file');
   if (kind.fat) {
@@ -249,7 +250,7 @@ export function parseMachO(input, opts = {}) {
     if (!selected) throw new Error('Mach-O universal binary has no readable slice');
     const sub = bytes.subarray(Number(selected.offset), Number(selected.offset + selected.size));
     const selectedArchitecture = sliceArchName(selected);
-    const subDigest = sameByteSlice(sub, bytes) ? containerIdentity : residentDigest(sub);
+    const subDigest = sameByteSlice(sub, bytes) ? containerIdentity : residentDigest(sub, engineOpts);
     const image = parseThin(sub, {
       ...opts,
       containerOffset: selected.offset,
@@ -579,22 +580,28 @@ function parseThin(bytes, opts) {
   const authoritySections = issued.sections.map(metadataMappingSnapshot);
   const authoritySegments = issued.segments.map(metadataMappingSnapshot);
   const residentBytes = issued.bytes instanceof Uint8Array ? issued.bytes : null;
+  const engineOpts = opts?._engine != null ? { _engine: opts._engine } : undefined;
   const sourceDigest = (
     residentBytes !== null
     && residentIdentity.sliceDigest !== undefined
     && sameByteSlice(residentBytes, residentIdentity.sliceBytes)
-  ) ? residentIdentity.sliceDigest : residentDigest(residentBytes);
+  ) ? residentIdentity.sliceDigest : residentDigest(residentBytes, engineOpts);
   const contentMatches = () => sourceDigest !== null
     && issued.bytes === residentBytes
-    && residentDigest(residentBytes) === sourceDigest;
+    && residentDigest(residentBytes, engineOpts) === sourceDigest;
   const createMetadataSource = () => {
     if (!contentMatches()) return null;
     const snapshot = residentBytes.slice();
-    if (residentDigest(snapshot) !== sourceDigest) return null;
+    if (residentDigest(snapshot, engineOpts) !== sourceDigest) return null;
     return deepFreeze({ readAt: canonicalResidentReader(snapshot, authoritySections, authoritySegments) });
   };
-  const rawBuildVersion = issued.metadata.buildVersion && typeof issued.metadata.buildVersion === 'object'
-    ? { ...issued.metadata.buildVersion }
+  let rawBuildVersion = issued.metadata.buildVersion && typeof issued.metadata.buildVersion === 'object'
+    ? {
+      ...issued.metadata.buildVersion,
+      tools: Array.isArray(issued.metadata.buildVersion.tools)
+        ? issued.metadata.buildVersion.tools.map((t) => (t && typeof t === 'object' ? { ...t } : t))
+        : issued.metadata.buildVersion.tools,
+    }
     : issued.metadata.buildVersion;
   let frozenBuildVersion;
   let hasFrozenBuildVersion = false;
@@ -610,6 +617,7 @@ function parseThin(bytes, opts) {
     get buildVersion() {
       if (!hasFrozenBuildVersion) {
         frozenBuildVersion = authoritySnapshot(rawBuildVersion);
+        rawBuildVersion = null;
         hasFrozenBuildVersion = true;
       }
       return frozenBuildVersion;

@@ -27,7 +27,8 @@ function asBytes(value) {
 }
 
 export class IncrementalSha256 {
-  constructor() {
+  constructor(options = null) {
+    this._engineOpts = options && options._engine != null ? { _engine: options._engine } : null;
     this.state = Uint32Array.from(SHA256_INITIAL);
     this.buffer = new Uint8Array(64);
     this.bufferLength = 0;
@@ -49,13 +50,13 @@ export class IncrementalSha256 {
       if (this.bufferLength === 64) { this.#transform(this.buffer, 0); this.bufferLength = 0; }
     }
     const fullBlocks = (bytes.byteLength - offset) >>> 6;
-    const engineMode = getEngineMode();
+    const engineMode = getEngineMode(this._engineOpts);
     if (
       engineMode !== 'js'
       && (fullBlocks >= 4 || (fullBlocks >= 1 && engineMode === 'wasm'))
       && typeof wasmSha256CompressBlocks === 'function'
     ) {
-      if (wasmSha256CompressBlocks(this.state, bytes, offset, fullBlocks) === true) {
+      if (wasmSha256CompressBlocks(this.state, bytes, offset, fullBlocks, this._engineOpts) === true) {
         offset += fullBlocks * 64;
       }
     }
@@ -130,7 +131,7 @@ export async function sha256BlobHex(blob, options = {}) {
   const chunkBytes = options.chunkBytes ?? 1024 * 1024;
   if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) throw new TypeError('chunkBytes must be a positive safe integer');
   const signal = options.signal ?? null;
-  const hash = new IncrementalSha256();
+  const hash = new IncrementalSha256(options);
   let reads = 0, bytesRead = 0, largestRead = 0;
   for (let offset = 0; offset < blob.size; offset += chunkBytes) {
     throwIfAborted(signal);

@@ -64,14 +64,25 @@ HexStatus hex_elf_extract_symbols(
   if (!sym_bytes ||
       !out_records ||
       max_records < count ||
-      ent_size < min_ent ||
-      static_cast<uint64_t>(count) * static_cast<uint64_t>(ent_size) > static_cast<uint64_t>(sym_bytes_len)) {
+      ent_size < min_ent) {
+    return HEX_ERR_INVALID_ARG;
+  }
+  if (count > (UINT32_MAX / static_cast<uint32_t>(sizeof(HexElfSymbolRecord)))) {
+    return HEX_ERR_RESOURCE_LIMIT;
+  }
+  if (static_cast<uint64_t>(count) * static_cast<uint64_t>(ent_size) > static_cast<uint64_t>(sym_bytes_len)) {
     return HEX_ERR_INVALID_ARG;
   }
 
   const bool xindex_valid =
       (xindex_bytes != nullptr) &&
       (static_cast<uint64_t>(count) * 4ULL <= static_cast<uint64_t>(xindex_bytes_len));
+
+  // Small stack-allocated ring cache of known-unterminated name offsets to prevent
+  // quadratic O(N * M) rescans on adversarial ELF tables (0 extra BSS, 0-diff parity).
+  uint32_t unterm_cache[16];
+  uint32_t unterm_count = 0u;
+  uint32_t unterm_next = 0u;
 
   for (uint32_t i = 0u; i < count; ++i) {
     const uint8_t* entry = sym_bytes + static_cast<size_t>(i) * static_cast<size_t>(ent_size);
@@ -111,14 +122,29 @@ HexStatus hex_elf_extract_symbols(
     } else {
       const uint32_t rem = str_bytes_len - name_off;
       const uint32_t scan_limit = (rem < kMaxNameScanBytes) ? rem : kMaxNameScanBytes;
-      const uint8_t* s = str_bytes + name_off;
-      uint32_t len = 0u;
-      while (len < scan_limit && s[len] != 0u) {
-        ++len;
+      bool known_unterm = false;
+      for (uint32_t c = 0u; c < unterm_count; ++c) {
+        if (unterm_cache[c] == name_off) {
+          known_unterm = true;
+          break;
+        }
       }
-      name_len = len;
-      if (len == scan_limit) {
+      if (known_unterm) {
+        name_len = scan_limit;
         rec_flags |= HEX_ELF_REC_NAME_UNTERMINATED;
+      } else {
+        const uint8_t* s = str_bytes + name_off;
+        uint32_t len = 0u;
+        while (len < scan_limit && s[len] != 0u) {
+          ++len;
+        }
+        name_len = len;
+        if (len == scan_limit) {
+          rec_flags |= HEX_ELF_REC_NAME_UNTERMINATED;
+          unterm_cache[unterm_next] = name_off;
+          unterm_next = (unterm_next + 1u) & 15u;
+          if (unterm_count < 16u) ++unterm_count;
+        }
       }
     }
 

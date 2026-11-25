@@ -35,27 +35,138 @@ function strictELFInteger(value, label) {
   throw new TypeError(`${label} must be a bigint, safe integer, or non-empty integer string`);
 }
 
+function tryBigInt(value) {
+  try {
+    return { ok: true, value: BigInt(value ?? 0) };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+function snapshotSections(sections) {
+  if (!Array.isArray(sections) || sections.length === 0) return EMPTY_ARRAY;
+  const snap = new Array(sections.length);
+  for (let i = 0; i < sections.length; i += 1) {
+    const sec = sections[i];
+    snap[i] = sec && typeof sec === 'object'
+      ? {
+        ref: sec,
+        address: sec.address,
+        size: sec.size,
+        fileSize: sec.fileSize,
+        hasFileSize: Object.prototype.hasOwnProperty.call(sec, 'fileSize'),
+        fileOffset: sec.fileOffset,
+        exec: Boolean(sec.perms?.execute),
+        read: Boolean(sec.perms?.read),
+        index: sec.index,
+        flags: sec.flags,
+        source: sec.source,
+      }
+      : { ref: sec };
+  }
+  return snap;
+}
+
+function sectionsUnchanged(sections, snap) {
+  const len = Array.isArray(sections) ? sections.length : 0;
+  if (len !== snap.length) return false;
+  for (let i = 0; i < len; i += 1) {
+    const sec = sections[i];
+    const prev = snap[i];
+    if (sec !== prev.ref) return false;
+    if (sec && typeof sec === 'object') {
+      if (
+        sec.address !== prev.address
+        || sec.size !== prev.size
+        || sec.fileSize !== prev.fileSize
+        || Object.prototype.hasOwnProperty.call(sec, 'fileSize') !== prev.hasFileSize
+        || sec.fileOffset !== prev.fileOffset
+        || Boolean(sec.perms?.execute) !== prev.exec
+        || Boolean(sec.perms?.read) !== prev.read
+        || sec.index !== prev.index
+        || sec.flags !== prev.flags
+        || sec.source !== prev.source
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function snapshotSegments(segments) {
+  if (!Array.isArray(segments) || segments.length === 0) return EMPTY_ARRAY;
+  const snap = new Array(segments.length);
+  for (let i = 0; i < segments.length; i += 1) {
+    const seg = segments[i];
+    snap[i] = seg && typeof seg === 'object'
+      ? {
+        ref: seg,
+        address: seg.address,
+        size: seg.size,
+        fileSize: seg.fileSize,
+        hasFileSize: Object.prototype.hasOwnProperty.call(seg, 'fileSize'),
+        fileOffset: seg.fileOffset,
+        exec: Boolean(seg.perms?.execute),
+        read: Boolean(seg.perms?.read),
+      }
+      : { ref: seg };
+  }
+  return snap;
+}
+
+function segmentsUnchanged(segments, snap) {
+  const len = Array.isArray(segments) ? segments.length : 0;
+  if (len !== snap.length) return false;
+  for (let i = 0; i < len; i += 1) {
+    const seg = segments[i];
+    const prev = snap[i];
+    if (seg !== prev.ref) return false;
+    if (seg && typeof seg === 'object') {
+      if (
+        seg.address !== prev.address
+        || seg.size !== prev.size
+        || seg.fileSize !== prev.fileSize
+        || Object.prototype.hasOwnProperty.call(seg, 'fileSize') !== prev.hasFileSize
+        || seg.fileOffset !== prev.fileOffset
+        || Boolean(seg.perms?.execute) !== prev.exec
+        || Boolean(seg.perms?.read) !== prev.read
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function getELFMappingCache(image) {
   if (!image || typeof image !== 'object') return EMPTY_MAPPING_CACHE;
   const sectionsRef = image.sections || null;
   const sectionsLen = Array.isArray(sectionsRef) ? sectionsRef.length : 0;
   const segmentsRef = image.segments || null;
   const segmentsLen = Array.isArray(segmentsRef) ? segmentsRef.length : 0;
+  const version = image._mappingVersion ?? 0;
   let cache = elfImageMappingCache.get(image);
   if (
     cache
+    && cache.version === version
     && cache.sectionsRef === sectionsRef
     && cache.sectionsLen === sectionsLen
     && cache.segmentsRef === segmentsRef
     && cache.segmentsLen === segmentsLen
+    && sectionsUnchanged(sectionsRef, cache.sectionsSnap)
+    && segmentsUnchanged(segmentsRef, cache.segmentsSnap)
   ) {
     return cache;
   }
   cache = {
+    version,
     sectionsRef,
     sectionsLen,
     segmentsRef,
     segmentsLen,
+    sectionsSnap: snapshotSections(sectionsRef),
+    segmentsSnap: snapshotSegments(segmentsRef),
     execBuilt: false,
     execSections: null,
     execSegments: null,
@@ -76,24 +187,30 @@ function ensureExecMappingCache(cache) {
   if (Array.isArray(sections)) {
     for (let i = 0; i < sections.length; i += 1) {
       const section = sections[i];
-      if (!section) continue;
+      if (!section || typeof section !== 'object') continue;
       const isExecMapped = Boolean(section.perms?.execute) && sectionHasMappedAddress(section);
       let entry = null;
       if (isExecMapped) {
-        const lo = BigInt(section.address ?? 0);
-        const hi = lo + BigInt(section.size ?? 0);
-        const fileSize = BigInt(
-          Object.prototype.hasOwnProperty.call(section, 'fileSize')
-            ? (section.fileSize ?? 0)
-            : (section.size ?? 0),
-        );
-        entry = {
-          section,
-          lo,
-          hi,
-          read: Boolean(section.perms?.read),
-          fileSize,
-        };
+        const loRes = tryBigInt(section.address);
+        const szRes = tryBigInt(section.size);
+        const fsRaw = Object.prototype.hasOwnProperty.call(section, 'fileSize')
+          ? section.fileSize
+          : section.size;
+        const fsRes = tryBigInt(fsRaw);
+        if (!loRes.ok || !szRes.ok || !fsRes.ok) {
+          entry = {
+            section,
+            malformedError: (!loRes.ok ? loRes.error : (!szRes.ok ? szRes.error : fsRes.error)),
+          };
+        } else {
+          entry = {
+            section,
+            lo: loRes.value,
+            hi: loRes.value + szRes.value,
+            read: Boolean(section.perms?.read),
+            fileSize: fsRes.value,
+          };
+        }
         execSections.push(entry);
       }
       if (section.index !== undefined && !sectionByIndex.has(section.index)) {
@@ -105,10 +222,14 @@ function ensureExecMappingCache(cache) {
   if (Array.isArray(segments)) {
     for (let i = 0; i < segments.length; i += 1) {
       const segment = segments[i];
-      if (!segment?.perms?.execute) continue;
-      const lo = BigInt(segment.address ?? 0);
-      const hi = lo + BigInt(segment.size ?? 0);
-      execSegments.push({ segment, lo, hi });
+      if (!segment || typeof segment !== 'object' || !segment.perms?.execute) continue;
+      const loRes = tryBigInt(segment.address);
+      const szRes = tryBigInt(segment.size);
+      if (!loRes.ok || !szRes.ok) {
+        execSegments.push({ segment, malformedError: !loRes.ok ? loRes.error : szRes.error });
+      } else {
+        execSegments.push({ segment, lo: loRes.value, hi: loRes.value + szRes.value });
+      }
     }
   }
   cache.execSections = execSections;
@@ -125,20 +246,28 @@ function ensureFileSegmentsCache(cache) {
   if (Array.isArray(segments)) {
     for (let i = 0; i < segments.length; i += 1) {
       const segment = segments[i];
-      const start = BigInt(segment.address ?? 0);
-      const fileSize = BigInt(
-        Object.prototype.hasOwnProperty.call(segment, 'fileSize')
-          ? (segment.fileSize ?? 0)
-          : (segment.size ?? 0),
-      );
-      if (fileSize <= 0n) continue;
-      const fileOffset = BigInt(segment.fileOffset ?? 0);
+      if (!segment || typeof segment !== 'object') continue;
+      const startRes = tryBigInt(segment.address);
+      const fsRaw = Object.prototype.hasOwnProperty.call(segment, 'fileSize')
+        ? segment.fileSize
+        : segment.size;
+      const fsRes = tryBigInt(fsRaw);
+      if (!startRes.ok || !fsRes.ok) {
+        fileSegments.push({ segment, malformedError: !startRes.ok ? startRes.error : fsRes.error });
+        continue;
+      }
+      if (fsRes.value <= 0n) continue;
+      const offRes = tryBigInt(segment.fileOffset);
+      if (!offRes.ok) {
+        fileSegments.push({ segment, malformedError: offRes.error });
+        continue;
+      }
       fileSegments.push({
         segment,
-        start,
-        vaEnd: start + fileSize,
-        fileOffset,
-        fileEnd: fileOffset + fileSize,
+        start: startRes.value,
+        vaEnd: startRes.value + fsRes.value,
+        fileOffset: offRes.value,
+        fileEnd: offRes.value + fsRes.value,
       });
     }
   }
@@ -155,6 +284,7 @@ function rangeContains(lo, hi, start, extent) {
 function hasExecutableSegmentCovering(execSegments, start, extent) {
   for (let i = 0; i < execSegments.length; i += 1) {
     const entry = execSegments[i];
+    if (entry.malformedError) throw entry.malformedError;
     if (rangeContains(entry.lo, entry.hi, start, extent)) return true;
   }
   return false;
@@ -163,13 +293,16 @@ function hasExecutableSegmentCovering(execSegments, start, extent) {
 function findExecutableSegmentCovering(execSegments, start, extent) {
   for (let i = 0; i < execSegments.length; i += 1) {
     const entry = execSegments[i];
+    if (entry.malformedError) throw entry.malformedError;
     if (rangeContains(entry.lo, entry.hi, start, extent)) return entry.segment;
   }
   return null;
 }
 
 function isExecutableSectionEntryValid(entry, relocatable, execSegments, start, extent) {
-  if (!entry || !rangeContains(entry.lo, entry.hi, start, extent)) return false;
+  if (!entry) return false;
+  if (entry.malformedError) throw entry.malformedError;
+  if (!rangeContains(entry.lo, entry.hi, start, extent)) return false;
   if (relocatable) return true;
   if (!entry.read) return false;
   return hasExecutableSegmentCovering(execSegments, start, extent);
@@ -181,6 +314,7 @@ export function mappedELFFileRangeForVa(image, va) {
   const fileSegments = ensureFileSegmentsCache(getELFMappingCache(image)).fileSegments;
   for (let i = 0; i < fileSegments.length; i += 1) {
     const entry = fileSegments[i];
+    if (entry.malformedError) throw entry.malformedError;
     if (address < entry.start || address >= entry.vaEnd) continue;
     const fileStart = entry.fileOffset + (address - entry.start);
     const fileEnd = entry.fileEnd;
@@ -210,11 +344,14 @@ export function mappedELFFileRangeForVa(image, va) {
 const elfLoadSpanIndexCache = new WeakMap();
 
 function elfLoadSpanFields(segment) {
+  if (!segment || typeof segment !== 'object') {
+    return { segment, start: 0n, size: 0n, fileSize: 0n, fileOffset: 0n, end: 0n, invalid: true };
+  }
   const start = BigInt(segment.address ?? 0);
   const size = BigInt(segment.size ?? 0);
   const fileSize = BigInt(segment.fileSize ?? 0);
   const fileOffset = BigInt(segment.fileOffset ?? 0);
-  return { segment, start, size, fileSize, fileOffset, end: start + size };
+  return { segment, start, size, fileSize, fileOffset, end: start + size, invalid: false };
 }
 
 function elfLoadSpanBase(state, start) {
@@ -241,10 +378,33 @@ function elfLoadSpanBound(state, end) {
   return lo;
 }
 
+function loadSpanSnapMatches(loads, snap) {
+  if (!Array.isArray(loads) || loads.length !== snap.length) return false;
+  for (let i = 0; i < loads.length; i += 1) {
+    const seg = loads[i];
+    const prev = snap[i];
+    if (seg !== prev.ref) return false;
+    if (seg && typeof seg === 'object') {
+      if (
+        seg.address !== prev.address
+        || seg.size !== prev.size
+        || seg.fileSize !== prev.fileSize
+        || seg.fileOffset !== prev.fileOffset
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function elfLoadSpanState(loads) {
   let state = elfLoadSpanIndexCache.get(loads);
-  if (state && state.built === loads.length) return state;
+  if (state && state.built === loads.length && loadSpanSnapMatches(loads, state.snap)) return state;
   const fields = loads.map(elfLoadSpanFields);
+  const snap = loads.map((seg) => (seg && typeof seg === 'object'
+    ? { ref: seg, address: seg.address, size: seg.size, fileSize: seg.fileSize, fileOffset: seg.fileOffset }
+    : { ref: seg }));
   const sorted = fields.slice().sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
   const maxEnd = [];
   let run = null;
@@ -255,10 +415,10 @@ function elfLoadSpanState(loads) {
   let malformed = false;
   let malformedOffset = false;
   for (const f of fields) {
-    if (f.size <= 0n || f.fileSize < 0n || f.fileSize > f.size) { malformed = true; malformedOffset = true; }
+    if (f.invalid || f.size <= 0n || f.fileSize < 0n || f.fileSize > f.size) { malformed = true; malformedOffset = true; }
     else if (f.fileOffset < 0n) malformedOffset = true;
   }
-  state = { sorted, maxEnd, malformed, malformedOffset, built: loads.length };
+  state = { sorted, maxEnd, malformed, malformedOffset, built: loads.length, snap };
   elfLoadSpanIndexCache.set(loads, state);
   return state;
 }

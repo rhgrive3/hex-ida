@@ -540,7 +540,17 @@ export class BinaryImage {
     this.warnings = [];
     this.metadata = meta.metadata || {};
     this._finalized = false;
-    this._mappingLookups = { sections: null, segments: null, virtual: null, offsets: null };
+    this._mappingVersion = 0;
+    this._mappingLookups = {
+      sections: null,
+      segments: null,
+      virtual: null,
+      offsets: null,
+      sectionsRef: null,
+      sectionsLen: -1,
+      segmentsRef: null,
+      segmentsLen: -1,
+    };
     this._lastOffsetLookupEntry = null;
     this._mappingSorted = { sections: null, segments: null };
     this._dataInCodeLookup = null;
@@ -570,6 +580,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.segments = null;
     this._mappingLookups.virtual = null;
+    this._mappingVersion += 1;
     this._mappingLookups.offsets = null;
     this._lastOffsetLookupEntry = null;
     this._mappingSorted.segments = null;
@@ -601,6 +612,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingVersion += 1;
     this._mappingLookups.offsets = null;
     this._lastOffsetLookupEntry = null;
     this._mappingSorted.sections = null;
@@ -620,16 +632,59 @@ export class BinaryImage {
     return null;
   }
 
+  _ensureMappingLookupsFresh() {
+    const lookups = this._mappingLookups;
+    const secLen = Array.isArray(this.sections) ? this.sections.length : 0;
+    const segLen = Array.isArray(this.segments) ? this.segments.length : 0;
+    if (
+      (lookups.sectionsLen >= 0 && lookups.sectionsLen !== secLen)
+      || (lookups.segmentsLen >= 0 && lookups.segmentsLen !== segLen)
+    ) {
+      lookups.sections = null;
+      lookups.segments = null;
+      lookups.virtual = null;
+      lookups.offsets = null;
+      lookups.sectionsRef = this.sections;
+      lookups.sectionsLen = secLen;
+      lookups.segmentsRef = this.segments;
+      lookups.segmentsLen = segLen;
+      this._mappingSorted.sections = null;
+      this._mappingSorted.segments = null;
+      if (!Object.isFrozen(this)) this._lastOffsetLookupEntry = null;
+    }
+  }
+
   offsetToAddress(offset) {
     const o = typeof offset === 'bigint' ? offset : strictBigIntOrNull(offset);
     if (o === null || o < 0n) return null;
+    this._ensureMappingLookupsFresh();
     const cached = this._lastOffsetLookupEntry;
-    if (this._mappingLookups.offsets !== null && cached !== null && o >= cached.start && o < cached.end) {
-      return cached.addrBase + (o - cached.fileOffset);
+    if (
+      this._mappingLookups.offsets !== null
+      && this._mappingLookups.virtual !== null
+      && cached !== null
+      && o >= cached.start
+      && o < cached.end
+    ) {
+      const m = cached.mapping;
+      if (
+        m
+        && m.fileOffset === cached.fileOffset
+        && m.address === cached.addrBase
+        && m.fileSize === cached.fileSize
+        && m.size === cached.size
+      ) {
+        return cached.addrBase + (o - cached.fileOffset);
+      }
+      this._mappingLookups.offsets = null;
+      this._mappingLookups.virtual = null;
+      if (!Object.isFrozen(this)) this._lastOffsetLookupEntry = null;
     }
     if (!this._mappingLookups.offsets) {
       this._mappingLookups.offsets = buildFileOffsetLookup(this.sections, this.segments);
-      this._lastOffsetLookupEntry = null;
+      this._mappingLookups.sectionsLen = Array.isArray(this.sections) ? this.sections.length : 0;
+      this._mappingLookups.segmentsLen = Array.isArray(this.segments) ? this.segments.length : 0;
+      if (!Object.isFrozen(this)) this._lastOffsetLookupEntry = null;
     }
     const lookup = this._mappingLookups.offsets;
     const window = fileOffsetCandidateWindow(lookup, o);
@@ -670,12 +725,15 @@ export class BinaryImage {
         const runFileStart = o - (a - runStart);
         safeStart = candidate.start > runFileStart ? candidate.start : runFileStart;
       }
-      if (safeStart < safeEnd) {
+      if (safeStart < safeEnd && !Object.isFrozen(this)) {
         this._lastOffsetLookupEntry = {
           start: safeStart,
           end: safeEnd,
+          mapping: candidate.mapping,
           fileOffset: candidate.mapping.fileOffset,
           addrBase: candidate.mapping.address,
+          fileSize: candidate.mapping.fileSize,
+          size: candidate.mapping.size,
         };
       }
     };
@@ -697,6 +755,7 @@ export class BinaryImage {
   sectionAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
+    this._ensureMappingLookupsFresh();
     if (this._mappingSorted.sections === null) this._mappingSorted.sections = isAddressSorted(this.sections);
     if (!this._mappingSorted.sections) return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
     if (!this._mappingLookups.sections) this._mappingLookups.sections = buildMappingLookup(this.sections);
@@ -706,6 +765,7 @@ export class BinaryImage {
   segmentAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
+    this._ensureMappingLookupsFresh();
     if (this._mappingSorted.segments === null) this._mappingSorted.segments = isAddressSorted(this.segments);
     if (!this._mappingSorted.segments) return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
     if (!this._mappingLookups.segments) this._mappingLookups.segments = buildMappingLookup(this.segments);
@@ -844,6 +904,7 @@ export class BinaryImage {
   _virtualMappingAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
+    this._ensureMappingLookupsFresh();
     if (!this._mappingLookups.virtual) this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
     return lookupVirtualMapping(this._mappingLookups.virtual, a);
   }
@@ -1182,6 +1243,7 @@ export class BinaryImage {
     this._mappingLookups.segments = null;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingVersion += 1;
     this._mappingLookups.offsets = null;
     this._lastOffsetLookupEntry = null;
     this._mappingSorted.segments = true;

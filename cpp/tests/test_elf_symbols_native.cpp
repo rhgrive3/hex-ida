@@ -162,10 +162,91 @@ static void test_invalid_args() {
 
 }  // namespace
 
+static void test_overflow_and_stride_and_boundaries() {
+  uint8_t buf[64] = {0};
+  HexElfSymbolRecord recs[4];
+  uint32_t out_count = 0u;
+
+  // 1) 32-bit multiplication overflow (count * ent_size wraps in u32) and output-record 32-bit wrap guard
+  assert(hex_elf_extract_symbols(buf, 64u, 16u, 0x10000001u, nullptr, 0u, nullptr, 0u, 0u, recs, 0x10000001u, &out_count) == HEX_ERR_RESOURCE_LIMIT);
+  assert(hex_elf_extract_symbols(buf, 0xFFFFFFFFu, 16u, 0x08000001u, nullptr, 0u, nullptr, 0u, 0u, recs, 0x08000001u, &out_count) == HEX_ERR_RESOURCE_LIMIT);
+
+  // 2) Non-minimal entry stride (ent_size = 32 for ELF64, ent_size = 20 for ELF32)
+  {
+    const uint8_t strtab[] = {0, 'a', 0, 'b', 0};
+    std::vector<uint8_t> s64;
+    push_elf64_sym(s64, 1u, 0x12u, 0x00u, 1u, 0x1000ULL, 0x10ULL, false);
+    for (int k = 0; k < 8; ++k) s64.push_back(0xAAu);
+    push_elf64_sym(s64, 3u, 0x12u, 0x02u, 2u, 0x2000ULL, 0x20ULL, false);
+    for (int k = 0; k < 8; ++k) s64.push_back(0xBBu);
+    assert(hex_elf_extract_symbols(s64.data(), static_cast<uint32_t>(s64.size()), 32u, 2u,
+                                   strtab, static_cast<uint32_t>(sizeof(strtab)),
+                                   nullptr, 0u, HEX_ELF_SYM_FLAG_64BIT, recs, 4u, &out_count) == HEX_OK);
+    assert(out_count == 2u && recs[0].value == 0x1000ULL && recs[1].value == 0x2000ULL && recs[1].other == 0x02u);
+
+    std::vector<uint8_t> s32;
+    push_elf32_sym(s32, 1u, 0x3000u, 0x30u, 0x12u, 0x00u, 0xFFFFu, false);
+    for (int k = 0; k < 4; ++k) s32.push_back(0xCCu);
+    push_elf32_sym(s32, 3u, 0x4000u, 0x40u, 0x11u, 0x01u, 5u, false);
+    for (int k = 0; k < 4; ++k) s32.push_back(0xDDu);
+    // 3) ELF32 SHN_XINDEX valid and truncated xindex_bytes fallback
+    std::vector<uint8_t> xidx;
+    put_u32(xidx, 0x00012345u, false);
+    put_u32(xidx, 0u, false);
+    assert(hex_elf_extract_symbols(s32.data(), static_cast<uint32_t>(s32.size()), 20u, 2u,
+                                   strtab, static_cast<uint32_t>(sizeof(strtab)),
+                                   xidx.data(), static_cast<uint32_t>(xidx.size()), 0u, recs, 4u, &out_count) == HEX_OK);
+    assert(out_count == 2u && recs[0].shndx == 0x00012345u && recs[1].shndx == 5u);
+    // Truncated xindex_bytes (only 4 bytes for count=2 -> fallback to 0xFFFF)
+    assert(hex_elf_extract_symbols(s32.data(), static_cast<uint32_t>(s32.size()), 20u, 2u,
+                                   strtab, static_cast<uint32_t>(sizeof(strtab)),
+                                   xidx.data(), 4u, 0u, recs, 4u, &out_count) == HEX_OK);
+    assert(recs[0].shndx == 0xFFFFu);
+  }
+
+  // 4) Empty symbol name (name_off=0 at '\0') and str_bytes == nullptr with str_bytes_len > 0
+  {
+    const uint8_t strtab[] = {0, 'x', 0};
+    std::vector<uint8_t> s64;
+    push_elf64_sym(s64, 0u, 0x03u, 0x00u, 1u, 0ULL, 0ULL, false);
+    assert(hex_elf_extract_symbols(s64.data(), static_cast<uint32_t>(s64.size()), 24u, 1u,
+                                   strtab, static_cast<uint32_t>(sizeof(strtab)),
+                                   nullptr, 0u, HEX_ELF_SYM_FLAG_64BIT, recs, 4u, &out_count) == HEX_OK);
+    assert(recs[0].name_len == 0u && recs[0].flags == 0u);
+    assert(hex_elf_extract_symbols(s64.data(), static_cast<uint32_t>(s64.size()), 24u, 1u,
+                                   nullptr, 100u, nullptr, 0u, HEX_ELF_SYM_FLAG_64BIT, recs, 4u, &out_count) == HEX_OK);
+    assert((recs[0].flags & HEX_ELF_REC_NAME_OUT_OF_RANGE) != 0u);
+  }
+
+  // 5) kMaxNameScanBytes (1 MiB) exact boundary + repeated unterminated cache
+  {
+    const uint32_t cap = 1u << 20;
+    std::vector<uint8_t> big_str(cap + 4u, static_cast<uint8_t>('A'));
+    big_str[cap - 1u] = 0u;  // Terminated right at cap - 1
+    std::vector<uint8_t> s64;
+    push_elf64_sym(s64, 0u, 0x12u, 0u, 1u, 0ULL, 0ULL, false);
+    assert(hex_elf_extract_symbols(s64.data(), static_cast<uint32_t>(s64.size()), 24u, 1u,
+                                   big_str.data(), static_cast<uint32_t>(big_str.size()),
+                                   nullptr, 0u, HEX_ELF_SYM_FLAG_64BIT, recs, 4u, &out_count) == HEX_OK);
+    assert(recs[0].name_len == cap - 1u && recs[0].flags == 0u);
+
+    // Move NUL to offset cap -> exceeds scan_limit (clamped with UNTERMINATED)
+    big_str[cap - 1u] = static_cast<uint8_t>('A');
+    big_str[cap] = 0u;
+    push_elf64_sym(s64, 0u, 0x12u, 0u, 1u, 0ULL, 0ULL, false);
+    assert(hex_elf_extract_symbols(s64.data(), static_cast<uint32_t>(s64.size()), 24u, 2u,
+                                   big_str.data(), static_cast<uint32_t>(big_str.size()),
+                                   nullptr, 0u, HEX_ELF_SYM_FLAG_64BIT, recs, 4u, &out_count) == HEX_OK);
+    assert(recs[0].name_len == cap && (recs[0].flags & HEX_ELF_REC_NAME_UNTERMINATED) != 0u);
+    assert(recs[1].name_len == cap && (recs[1].flags & HEX_ELF_REC_NAME_UNTERMINATED) != 0u);
+  }
+}
+
 int main() {
   test_elf64_le_and_be_with_xindex_and_edge_names();
   test_elf32_le_and_be();
   test_invalid_args();
-  std::printf("test_elf_symbols_native (ASan+UBSan, ELF64/32 LE/BE + XINDEX + guards): ALL PASS\n");
+  test_overflow_and_stride_and_boundaries();
+  std::printf("test_elf_symbols_native (ASan+UBSan, ELF64/32 LE/BE + XINDEX + boundaries + guards): ALL PASS\n");
   return 0;
 }

@@ -4,9 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { openBinary } from '../../js/binary/index.js';
+import { BinaryImage, openBinary, parseELF, parseMachO } from '../../js/binary/index.js';
+import { machOImageAuthority } from '../../js/binary/macho-core.js';
+import {
+  executableELFRange,
+  mappedELFFileRangeForVa,
+  elfSectionFileSpanConsistentWithLoads,
+} from '../../js/binary/elf-mapping.js';
 import { buildSampleBinary } from '../../js/sample.js';
 import {
+  getFallbackCounts,
   getWasmCallCount,
   getWasmCallCounts,
   resetAllTelemetry,
@@ -62,59 +69,240 @@ function withEngineMode(mode, fn) {
   }
 }
 
-function summarizeSymbols(symbols) {
-  return (symbols || []).map((s) => ({
-    name: s.name,
-    address: s.address == null ? null : String(s.address),
-    size: s.size == null ? null : String(s.size),
-    kind: s.kind,
-    binding: s.binding,
-    defined: s.defined,
-    sectionIndex: s.sectionIndex ?? null,
-    source: s.source,
-  }));
+function withEnvEngineMode(mode, fn) {
+  const prevGlobal = globalThis.HEX_ENGINE;
+  const prevInternal = globalThis.__HEX_ENGINE_MODE__;
+  const prevEnv = process.env.HEX_ENGINE;
+  try {
+    delete globalThis.HEX_ENGINE;
+    delete globalThis.__HEX_ENGINE_MODE__;
+    if (mode == null) delete process.env.HEX_ENGINE;
+    else process.env.HEX_ENGINE = mode;
+    return fn();
+  } finally {
+    if (prevGlobal === undefined) delete globalThis.HEX_ENGINE;
+    else globalThis.HEX_ENGINE = prevGlobal;
+    if (prevInternal === undefined) delete globalThis.__HEX_ENGINE_MODE__;
+    else globalThis.__HEX_ENGINE_MODE__ = prevInternal;
+    if (prevEnv === undefined) delete process.env.HEX_ENGINE;
+    else process.env.HEX_ENGINE = prevEnv;
+  }
 }
 
-test('Wave 16 hybrid parity: all 13 real binaries match 0-diff (sections, segments, symbols, strings) and invoke elf_symbols WASM', () => {
+function buildSyntheticElf({
+  is64 = true,
+  be = false,
+  entsize = null,
+  withXindex = false,
+  malformedXindex = false,
+  unterminatedStrtab = false,
+  nonAsciiName = false,
+} = {}) {
+  const le = !be;
+  const ehSize = is64 ? 64 : 52;
+  const shEntSize = is64 ? 64 : 40;
+  const symEnt = entsize ?? (is64 ? 24 : 16);
+  const textOff = 0x100;
+  const textBytes = new Uint8Array([0xc3, 0x90, 0x90, 0x90]);
+
+  const strChunks = [
+    0x00,
+    ...Buffer.from('alpha\0', 'utf8'),
+    ...(nonAsciiName ? [0xc3, 0xa9, 0x80, 0x62, 0x00] : [...Buffer.from('beta\0', 'utf8')]),
+    ...Buffer.from('.text\0.symtab\0.strtab\0.shstrtab\0.symtab_shndx\0', 'utf8'),
+  ];
+  const strtabBytes = Uint8Array.from(
+    unterminatedStrtab ? [0x00, ...Buffer.from('unterminated_name', 'ascii')] : strChunks,
+  );
+  const shstrtabBytes = Uint8Array.from([
+    0x00,
+    ...Buffer.from('.text\0', 'ascii'),
+    ...Buffer.from('.symtab\0', 'ascii'),
+    ...Buffer.from('.strtab\0', 'ascii'),
+    ...Buffer.from('.shstrtab\0', 'ascii'),
+    ...Buffer.from('.symtab_shndx\0', 'ascii'),
+  ]);
+
+  const symCount = 4;
+  const symOff = 0x200;
+  const symBytes = new Uint8Array(symCount * symEnt);
+  const sdv = new DataView(symBytes.buffer);
+  const writeSym = (idx, nameOff, info, other, shndx, value, size) => {
+    const o = idx * symEnt;
+    if (is64) {
+      sdv.setUint32(o, nameOff, le);
+      sdv.setUint8(o + 4, info);
+      sdv.setUint8(o + 5, other);
+      sdv.setUint16(o + 6, shndx, le);
+      sdv.setBigUint64(o + 8, BigInt(value), le);
+      sdv.setBigUint64(o + 16, BigInt(size), le);
+    } else {
+      sdv.setUint32(o, nameOff, le);
+      sdv.setUint32(o + 4, Number(value), le);
+      sdv.setUint32(o + 8, Number(size), le);
+      sdv.setUint8(o + 12, info);
+      sdv.setUint8(o + 13, other);
+      sdv.setUint16(o + 14, shndx, le);
+    }
+  };
+  writeSym(0, 0, 0, 0, 0, 0, 0);
+  writeSym(1, 1, 0x12, 0x02, withXindex ? 0xffff : 1, 0x401000, 4);
+  writeSym(2, unterminatedStrtab ? 1 : 7, 0x11, 0x01, 1, 0x401004, 2);
+  writeSym(3, 99999, 0x12, 0x00, 1, 0x401008, 4); // out-of-range st_name
+
+  const strOff = 0x400;
+  const shstrOff = 0x500;
+  const xidxOff = 0x600;
+  const xidxSize = malformedXindex ? 8 : symCount * 4;
+  const shOff = 0x700;
+  const numSh = withXindex ? 6 : 5;
+  const totalSize = shOff + numSh * shEntSize + 64;
+  const buf = new Uint8Array(totalSize);
+  const dv = new DataView(buf.buffer);
+
+  // ELF header
+  buf.set([0x7f, 0x45, 0x4c, 0x46, is64 ? 2 : 1, be ? 2 : 1, 1, 0], 0);
+  dv.setUint16(16, 1, le); // ET_REL
+  dv.setUint16(18, is64 ? 62 : 3, le); // EM_X86_64 or EM_386
+  dv.setUint32(20, 1, le);
+  if (is64) {
+    dv.setBigUint64(40, BigInt(shOff), le);
+    dv.setUint16(52, ehSize, le);
+    dv.setUint16(58, shEntSize, le);
+    dv.setUint16(60, numSh, le);
+    dv.setUint16(62, 4, le); // shstrndx
+  } else {
+    dv.setUint32(32, shOff, le);
+    dv.setUint16(40, ehSize, le);
+    dv.setUint16(46, shEntSize, le);
+    dv.setUint16(48, numSh, le);
+    dv.setUint16(50, 4, le); // shstrndx
+  }
+
+  buf.set(textBytes, textOff);
+  buf.set(symBytes, symOff);
+  buf.set(strtabBytes, strOff);
+  buf.set(shstrtabBytes, shstrOff);
+  if (withXindex) {
+    dv.setUint32(xidxOff + 0, 0, le);
+    dv.setUint32(xidxOff + 4, 1, le); // resolves sym 1 -> .text
+    if (!malformedXindex) {
+      dv.setUint32(xidxOff + 8, 1, le);
+      dv.setUint32(xidxOff + 12, 1, le);
+    }
+  }
+
+  const writeSh = (idx, name, type, flags, addr, offset, size, link, info, align, es) => {
+    const o = shOff + idx * shEntSize;
+    if (is64) {
+      dv.setUint32(o + 0, name, le);
+      dv.setUint32(o + 4, type, le);
+      dv.setBigUint64(o + 8, BigInt(flags), le);
+      dv.setBigUint64(o + 16, BigInt(addr), le);
+      dv.setBigUint64(o + 24, BigInt(offset), le);
+      dv.setBigUint64(o + 32, BigInt(size), le);
+      dv.setUint32(o + 40, link, le);
+      dv.setUint32(o + 44, info, le);
+      dv.setBigUint64(o + 48, BigInt(align), le);
+      dv.setBigUint64(o + 56, BigInt(es), le);
+    } else {
+      dv.setUint32(o + 0, name, le);
+      dv.setUint32(o + 4, type, le);
+      dv.setUint32(o + 8, Number(flags), le);
+      dv.setUint32(o + 12, Number(addr), le);
+      dv.setUint32(o + 16, Number(offset), le);
+      dv.setUint32(o + 20, Number(size), le);
+      dv.setUint32(o + 24, link, le);
+      dv.setUint32(o + 28, info, le);
+      dv.setUint32(o + 32, Number(align), le);
+      dv.setUint32(o + 36, Number(es), le);
+    }
+  };
+  writeSh(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  writeSh(1, 1, 1, 6, 0x401000, textOff, textBytes.length, 0, 0, 16, 0); // .text
+  writeSh(2, 7, 2, 0, 0, symOff, symBytes.length, 3, 1, 8, symEnt); // .symtab -> .strtab (3)
+  writeSh(3, 15, 3, 0, 0, strOff, strtabBytes.length, 0, 0, 1, 0); // .strtab
+  writeSh(4, 23, 3, 0, 0, shstrOff, shstrtabBytes.length, 0, 0, 1, 0); // .shstrtab
+  if (withXindex) {
+    writeSh(5, 33, 18, 0, 0, xidxOff, xidxSize, 2, 0, 4, 4); // SHT_SYMTAB_SHNDX -> .symtab (2)
+  }
+  return buf;
+}
+
+test('Wave 16 hybrid parity: all 13 real binaries match 0-diff (full symbols, sections, segments, imports, exports, functions, warnings, strings) and invoke elf_symbols WASM', () => {
   const corpus = loadRealCorpus();
   assert.equal(corpus.length, 13);
 
   resetAllTelemetry();
+  let elfDispatched = 0;
   for (const fx of corpus) {
     const jsImg = withEngineMode('js', () => openBinary(fx.bytes, { strings: true, _engine: 'js' }));
+    const beforeElfCalls = getWasmCallCount('elf_symbols');
     const autoImg = withEngineMode('auto', () => openBinary(fx.bytes, { strings: true, _engine: 'auto' }));
+    const afterElfCalls = getWasmCallCount('elf_symbols');
 
     assert.equal(autoImg.format, jsImg.format, `${fx.id}: format mismatch`);
     assert.equal(autoImg.arch, jsImg.arch, `${fx.id}: arch mismatch`);
-    assert.equal(
-      (autoImg.sections || []).length,
-      (jsImg.sections || []).length,
-      `${fx.id}: sections.length mismatch`,
-    );
-    assert.equal(
-      (autoImg.segments || []).length,
-      (jsImg.segments || []).length,
-      `${fx.id}: segments.length mismatch`,
-    );
-    assert.deepStrictEqual(
-      summarizeSymbols(autoImg.symbols),
-      summarizeSymbols(jsImg.symbols),
-      `${fx.id}: symbols 0-diff mismatch`,
-    );
-    assert.deepStrictEqual(
-      autoImg.strings,
-      jsImg.strings,
-      `${fx.id}: strings 0-diff mismatch`,
-    );
+    assert.deepStrictEqual(autoImg.sections, jsImg.sections, `${fx.id}: sections 0-diff mismatch`);
+    assert.deepStrictEqual(autoImg.segments, jsImg.segments, `${fx.id}: segments 0-diff mismatch`);
+    assert.deepStrictEqual(autoImg.symbols, jsImg.symbols, `${fx.id}: full symbols 0-diff mismatch`);
+    assert.deepStrictEqual(autoImg.imports, jsImg.imports, `${fx.id}: imports 0-diff mismatch`);
+    assert.deepStrictEqual(autoImg.exports, jsImg.exports, `${fx.id}: exports 0-diff mismatch`);
+    assert.deepStrictEqual(autoImg.functions, jsImg.functions, `${fx.id}: functions 0-diff mismatch`);
+    assert.deepStrictEqual(autoImg.warnings, jsImg.warnings, `${fx.id}: warnings 0-diff mismatch`);
+    if (autoImg.format === 'elf') {
+      assert.deepStrictEqual(
+        autoImg.metadata?.elfMetadata,
+        jsImg.metadata?.elfMetadata,
+        `${fx.id}: elfMetadata 0-diff mismatch`,
+      );
+      if ((autoImg.symbols || []).length > 0) {
+        assert.ok(afterElfCalls > beforeElfCalls, `${fx.id}: expected elf_symbols WASM dispatch`);
+        elfDispatched += 1;
+      }
+    }
+    assert.deepStrictEqual(autoImg.strings, jsImg.strings, `${fx.id}: strings 0-diff mismatch`);
   }
 
-  assert.ok(
-    getWasmCallCount('elf_symbols') > 0,
-    `expected getWasmCallCount('elf_symbols') > 0 across ELF corpus, got ${getWasmCallCount('elf_symbols')} (all=${JSON.stringify(getWasmCallCounts())})`,
+  assert.ok(elfDispatched >= 7, `expected >= 7 ELF fixtures to dispatch elf_symbols WASM, got ${elfDispatched}`);
+  const fallbacks = getFallbackCounts();
+  const elfFallbacks = Object.entries(fallbacks).filter(([k]) => k.startsWith('elf_symbols:'));
+  assert.deepStrictEqual(
+    elfFallbacks,
+    [],
+    `expected 0 unexpected elf_symbols fallbacks, got ${JSON.stringify(elfFallbacks)} (calls=${JSON.stringify(getWasmCallCounts())})`,
   );
 });
 
-test('Wave 16 transparent lazy image.strings: enumerable, 0 calls before access, cached on 2nd access, writable', () => {
+test('Wave 16 synthetic ELF matrix: ELF32/64 LE/BE, SHN_XINDEX, custom entsize, corrupt/unterminated strtab, non-ASCII UTF-8, and tight metadataLimits match JS 0-diff', () => {
+  const cases = [
+    { name: 'elf64-le-basic', opts: { is64: true, be: false } },
+    { name: 'elf64-be-xindex', opts: { is64: true, be: true, withXindex: true } },
+    { name: 'elf32-le-custom-ent', opts: { is64: false, be: false, entsize: 20, withXindex: true } },
+    { name: 'elf32-be-non-ascii', opts: { is64: false, be: true, nonAsciiName: true } },
+    { name: 'elf64-malformed-xindex', opts: { is64: true, be: false, withXindex: true, malformedXindex: true } },
+    { name: 'elf64-unterminated-strtab', opts: { is64: true, be: false, unterminatedStrtab: true } },
+  ];
+
+  for (const tc of cases) {
+    const bytes = buildSyntheticElf(tc.opts);
+    const jsImg = withEngineMode('js', () => parseELF(bytes, { _engine: 'js' }));
+    const autoImg = withEngineMode('auto', () => parseELF(bytes, { _engine: 'auto' }));
+    assert.deepStrictEqual(autoImg.symbols, jsImg.symbols, `${tc.name}: symbols mismatch`);
+    assert.deepStrictEqual(autoImg.warnings, jsImg.warnings, `${tc.name}: warnings mismatch`);
+    assert.deepStrictEqual(autoImg.metadata?.elfMetadata, jsImg.metadata?.elfMetadata, `${tc.name}: elfMetadata mismatch`);
+  }
+
+  // Tight metadataLimits truncation parity
+  const bytes = buildSyntheticElf({ is64: true, be: false });
+  const tightOpts = { metadataLimits: { records: 6 } };
+  const jsTight = withEngineMode('js', () => parseELF(bytes, { ...tightOpts, _engine: 'js' }));
+  const autoTight = withEngineMode('auto', () => parseELF(bytes, { ...tightOpts, _engine: 'auto' }));
+  assert.deepStrictEqual(autoTight.symbols, jsTight.symbols, 'tight metadataLimits symbols mismatch');
+  assert.deepStrictEqual(autoTight.metadata?.elfMetadata, jsTight.metadata?.elfMetadata, 'tight metadataLimits elfMetadata mismatch');
+});
+
+test('Wave 16 transparent lazy image.strings: enumerable, 0 calls before access, cached, writable, seal/freeze/prototype/drift safe', () => {
   const corpus = loadRealCorpus();
   const sample = corpus.find((fx) => fx.id === 'arm64-semantic-holdout');
   assert.ok(sample);
@@ -124,7 +312,12 @@ test('Wave 16 transparent lazy image.strings: enumerable, 0 calls before access,
 
   withEngineMode('auto', () => {
     resetAllTelemetry();
-    const img = openBinary(sample.bytes, { strings: true, _engine: 'auto' });
+    const strOpts = { minLength: 4 };
+    const img = openBinary(sample.bytes, { strings: strOpts, _engine: 'auto' });
+
+    // Mutate caller's strOpts and flip global HEX_ENGINE after openBinary returns
+    strOpts.minLength = 9999;
+    globalThis.HEX_ENGINE = 'js';
 
     assert.equal('strings' in img, true, "'strings' in img must be true");
     assert.equal(Object.keys(img).includes('strings'), true, "Object.keys(img) must include 'strings'");
@@ -132,8 +325,8 @@ test('Wave 16 transparent lazy image.strings: enumerable, 0 calls before access,
 
     const first = img.strings;
     const afterFirst = getWasmCallCount('strings');
-    assert.ok(afterFirst >= 1, `expected >= 1 strings WASM call on first access, got ${afterFirst}`);
-    assert.deepStrictEqual(first, jsExpectedStrings, 'lazy strings must match JS 0-diff');
+    assert.ok(afterFirst >= 1, `pinned auto mode must still invoke strings WASM despite later HEX_ENGINE=js drift, got ${afterFirst}`);
+    assert.deepStrictEqual(first, jsExpectedStrings, 'lazy strings must ignore post-call opts.strings mutation and match JS 0-diff');
 
     const second = img.strings;
     assert.strictEqual(second, first, 'second access to img.strings must return cached result');
@@ -142,9 +335,67 @@ test('Wave 16 transparent lazy image.strings: enumerable, 0 calls before access,
     img.strings = [];
     assert.deepStrictEqual(img.strings, [], 'img.strings must remain writable');
   });
+
+  // Object.seal(image), Object.freeze(image), and Object.create(image)
+  withEngineMode('auto', () => {
+    const sealed = openBinary(sample.bytes, { strings: true, _engine: 'auto' });
+    Object.seal(sealed);
+    assert.deepStrictEqual(sealed.strings, jsExpectedStrings, 'sealed image.strings read must succeed');
+    sealed.strings = [];
+    assert.deepStrictEqual(sealed.strings, [], 'sealed image.strings write must succeed');
+
+    const frozen = openBinary(sample.bytes, { strings: true, _engine: 'auto' });
+    Object.freeze(frozen);
+    assert.deepStrictEqual(frozen.strings, jsExpectedStrings, 'frozen image.strings read must succeed');
+    assert.throws(() => { frozen.strings = []; }, TypeError, 'frozen image.strings write must throw TypeError');
+
+    const protoImg = openBinary(sample.bytes, { strings: true, _engine: 'auto' });
+    const child = Object.create(protoImg);
+    child.strings = ['override'];
+    assert.deepStrictEqual(child.strings, ['override'], 'child override must live on child');
+    assert.deepStrictEqual(protoImg.strings, jsExpectedStrings, 'child assignment must not mutate prototype image.strings');
+  });
 });
 
-test('Wave 16 JS isolation gate: HEX_ENGINE=js and { _engine: "js" } record 0 WASM calls across all domains', () => {
+test('Wave 16 Mach-O authority.buildVersion mutation immunity', () => {
+  const sample = buildSampleBinary();
+  const img = withEngineMode('auto', () => parseMachO(sample, { _engine: 'auto' }));
+  if (img.metadata?.buildVersion && Array.isArray(img.metadata.buildVersion.tools)) {
+    const origTools = img.metadata.buildVersion.tools.map((t) => ({ ...t }));
+    img.metadata.buildVersion.tools.push({ tool: 'TAMPERED', version: '9.9.9', rawVersion: 0 });
+    if (img.metadata.buildVersion.tools[0]) {
+      img.metadata.buildVersion.tools[0].version = 'TAMPERED';
+    }
+    const auth = machOImageAuthority(img);
+    assert.deepStrictEqual(auth.buildVersion.tools, origTools, 'authority.buildVersion.tools must be immune to post-parse mutation');
+  }
+});
+
+test('Wave 16 elf-mapping & BinaryImage in-place mutation cache invalidation', () => {
+  const img = new BinaryImage(new Uint8Array(0x2000), { format: 'elf', arch: 'x86_64', bits: 64, fileSize: 0x2000n });
+  img.addSegment({ name: 'LOAD0', address: 0x400000n, size: 0x1000n, fileOffset: 0x0n, fileSize: 0x1000n, perms: { read: true, execute: true } });
+  img.addSection({ name: '.text', index: 1, address: 0x400100n, size: 0x100n, fileOffset: 0x100n, fileSize: 0x100n, perms: { read: true, execute: true }, flags: 6 });
+
+  assert.equal(img.offsetToAddress(0x110n), 0x400110n);
+  assert.equal(executableELFRange(img, 0x400100n, 4n)?.name, '.text');
+  assert.equal(mappedELFFileRangeForVa(img, 0x400100n)?.start, 0x100);
+  assert.equal(elfSectionFileSpanConsistentWithLoads(img, 0x400100n, 0x100n, 0x100n, false), true);
+
+  // Mutate section & segment in place without changing array length
+  img.sections[0].fileOffset = 0x200n;
+  img.sections[0].perms.execute = false;
+  img.segments[0].fileOffset = 0x100n;
+  img.segments[0].fileSize = 0x50n;
+
+  assert.equal(executableELFRange(img, 0x400100n, 4n)?.name, 'LOAD0', 'in-place section.perms.execute mutation must invalidate elf-mapping section cache');
+  img.segments[0].perms.execute = false;
+  assert.equal(executableELFRange(img, 0x400100n, 4n), null, 'in-place segment.perms.execute mutation must invalidate elf-mapping segment cache');
+  assert.equal(mappedELFFileRangeForVa(img, 0x400100n), null, 'in-place segment.fileSize mutation must invalidate elf-mapping cache');
+  assert.equal(elfSectionFileSpanConsistentWithLoads(img, 0x400100n, 0x100n, 0x200n, false), false, 'in-place load mutation must invalidate loadSpan cache');
+  assert.notEqual(img.offsetToAddress(0x110n), 0x400110n, 'in-place section.fileOffset mutation must invalidate BinaryImage offsetToAddress cache');
+});
+
+test('Wave 16 JS isolation gate: globalThis.HEX_ENGINE=js, process.env.HEX_ENGINE=js, { _engine: "js" }, and direct parseELF/parseMachO record 0 WASM calls', () => {
   const corpus = loadRealCorpus();
   const domains = ['elf_symbols', 'strings', 'sha256', 'binary'];
 
@@ -156,15 +407,23 @@ test('Wave 16 JS isolation gate: HEX_ENGINE=js and { _engine: "js" } record 0 WA
       void img.strings;
     }
     for (const domain of domains) {
-      assert.equal(
-        getWasmCallCount(domain),
-        0,
-        `HEX_ENGINE=js must record 0 WASM calls for '${domain}', got ${getWasmCallCount(domain)}`,
-      );
+      assert.equal(getWasmCallCount(domain), 0, `globalThis.HEX_ENGINE=js must record 0 WASM calls for '${domain}'`);
     }
   });
 
-  // 2. Explicit { _engine: 'js' }
+  // 2. process.env.HEX_ENGINE = 'js' (with globalThis.HEX_ENGINE unset)
+  withEnvEngineMode('js', () => {
+    resetAllTelemetry();
+    for (const fx of corpus) {
+      const img = openBinary(fx.bytes, { strings: true });
+      void img.strings;
+    }
+    for (const domain of domains) {
+      assert.equal(getWasmCallCount(domain), 0, `process.env.HEX_ENGINE=js must record 0 WASM calls for '${domain}'`);
+    }
+  });
+
+  // 3. Explicit { _engine: 'js' } via openBinary
   withEngineMode(null, () => {
     resetAllTelemetry();
     for (const fx of corpus) {
@@ -172,11 +431,19 @@ test('Wave 16 JS isolation gate: HEX_ENGINE=js and { _engine: "js" } record 0 WA
       void img.strings;
     }
     for (const domain of domains) {
-      assert.equal(
-        getWasmCallCount(domain),
-        0,
-        `{ _engine: 'js' } must record 0 WASM calls for '${domain}', got ${getWasmCallCount(domain)}`,
-      );
+      assert.equal(getWasmCallCount(domain), 0, `openBinary({ _engine: 'js' }) must record 0 WASM calls for '${domain}'`);
+    }
+  });
+
+  // 4. Direct parseELF(bytes, { _engine: 'js' }) & parseMachO(bytes, { _engine: 'js' })
+  withEngineMode(null, () => {
+    resetAllTelemetry();
+    const elfFx = corpus.find((fx) => fx.id === 'arm64-semantic-holdout');
+    const machoFx = corpus.find((fx) => fx.id === 'macho-sample-arm64');
+    parseELF(elfFx.bytes, { _engine: 'js' });
+    parseMachO(machoFx.bytes, { _engine: 'js' });
+    for (const domain of domains) {
+      assert.equal(getWasmCallCount(domain), 0, `direct parseELF/parseMachO({ _engine: 'js' }) must record 0 WASM calls for '${domain}'`);
     }
   });
 });

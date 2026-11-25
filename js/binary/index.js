@@ -37,6 +37,55 @@ function toUint8View(input) {
   return null;
 }
 
+function defineLazyStrings(image, stringOpts) {
+  let computed = false;
+  let cachedValue;
+  Object.defineProperty(image, 'strings', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      if (!computed) {
+        cachedValue = scanStrings(image, stringOpts);
+        computed = true;
+      }
+      const value = cachedValue;
+      if (this === image && Object.getOwnPropertyDescriptor(image, 'strings')?.configurable === true) {
+        Object.defineProperty(image, 'strings', {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+      return value;
+    },
+    set(value) {
+      if (this !== image) {
+        Object.defineProperty(this, 'strings', {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+        return;
+      }
+      if (Object.isFrozen(image)) {
+        throw new TypeError("Cannot assign to read only property 'strings' of object");
+      }
+      computed = true;
+      cachedValue = value;
+      if (Object.getOwnPropertyDescriptor(image, 'strings')?.configurable === true) {
+        Object.defineProperty(image, 'strings', {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    },
+  });
+}
+
 export function openBinary(input, opts = {}) {
   const engineMode = getEngineMode(opts);
   const scopeJs = engineMode === 'js';
@@ -70,40 +119,20 @@ export function openBinary(input, opts = {}) {
   else throw new Error('対応していない実行ファイル形式です（Mach-O / ELF / PE を判定できませんでした）。');
 
   if (opts.strings) {
-    const stringOpts = typeof opts.strings === 'object'
-      ? (opts._engine != null && opts.strings._engine == null
-        ? { ...opts.strings, _engine: opts._engine }
-        : opts.strings)
-      : (opts._engine != null ? { _engine: opts._engine } : {});
+    const resolvedStringEngine = (typeof opts.strings === 'object' && opts.strings !== null && opts.strings._engine != null)
+      ? opts.strings._engine
+      : engineMode;
+    const stringOpts = (typeof opts.strings === 'object' && opts.strings !== null)
+      ? { ...opts.strings, _engine: resolvedStringEngine }
+      : { _engine: resolvedStringEngine };
     const eagerStrings = engineMode !== 'auto'
       || getEngineMode(stringOpts) !== 'auto'
-      || (typeof opts.strings === 'object' && (opts.strings.onProgress || opts.strings.signal || opts.strings.eager === true))
+      || (typeof opts.strings === 'object' && opts.strings !== null && (opts.strings.onProgress || opts.strings.signal || opts.strings.eager === true))
       || !Object.isExtensible(image);
     if (eagerStrings) {
       image.strings = scanStrings(image, stringOpts);
     } else {
-      Object.defineProperty(image, 'strings', {
-        enumerable: true,
-        configurable: true,
-        get() {
-          const value = scanStrings(image, stringOpts);
-          Object.defineProperty(image, 'strings', {
-            value,
-            writable: true,
-            enumerable: true,
-            configurable: true,
-          });
-          return value;
-        },
-        set(value) {
-          Object.defineProperty(image, 'strings', {
-            value,
-            writable: true,
-            enumerable: true,
-            configurable: true,
-          });
-        },
-      });
+      defineLazyStrings(image, stringOpts);
     }
   }
   return image;
