@@ -593,17 +593,39 @@ function parseThin(bytes, opts) {
     if (residentDigest(snapshot) !== sourceDigest) return null;
     return deepFreeze({ readAt: canonicalResidentReader(snapshot, authoritySections, authoritySegments) });
   };
+  const rawBuildVersion = issued.metadata.buildVersion && typeof issued.metadata.buildVersion === 'object'
+    ? { ...issued.metadata.buildVersion }
+    : issued.metadata.buildVersion;
+  let frozenBuildVersion;
+  let hasFrozenBuildVersion = false;
+  let frozenSections = null;
+  let frozenSegments = null;
+  let frozenChainedSites = null;
+  let frozenDyldCacheBinding;
+  let hasFrozenDyldCacheBinding = false;
   const authority = {
     binaryIdentity: boundIdentity(residentIdentity.binaryIdentity),
     sliceIdentity: boundIdentity(residentIdentity.sliceIdentity),
     architecture: issued.arch,
-    buildVersion: authoritySnapshot(issued.metadata.buildVersion),
+    get buildVersion() {
+      if (!hasFrozenBuildVersion) {
+        frozenBuildVersion = authoritySnapshot(rawBuildVersion);
+        hasFrozenBuildVersion = true;
+      }
+      return frozenBuildVersion;
+    },
     fileOffset: issued.fileOffset,
     fileSize: issued.fileSize,
     imageBase: issued.imageBase,
     platform: issued.platform,
-    sections: deepFreeze(authoritySections),
-    segments: deepFreeze(authoritySegments),
+    get sections() {
+      if (frozenSections === null) frozenSections = deepFreeze(authoritySections);
+      return frozenSections;
+    },
+    get segments() {
+      if (frozenSegments === null) frozenSegments = deepFreeze(authoritySegments);
+      return frozenSegments;
+    },
     createMetadataSource,
     sourceComplete: sourceDigest !== null,
     contentMatches,
@@ -611,9 +633,18 @@ function parseThin(bytes, opts) {
     get codeSignatureCommandsComplete() { return issued.metadata.codeSignatureCommandsComplete === true; },
     get codeSignature() { return issued.metadata.codeSignatureStructure ?? issued.metadata.codeSignature ?? null; },
     get chainedFixups() { return authoritySnapshot(issued.metadata.chainedFixups); },
-    chainedSites: deepFreeze(chainedPointerSites(issued)),
+    get chainedSites() {
+      if (frozenChainedSites === null) frozenChainedSites = deepFreeze(chainedPointerSites(issued));
+      return frozenChainedSites;
+    },
     dyldCache: opts.dyldCache ?? null,
-    dyldCacheBinding: authoritySnapshot(dyldCacheBinding),
+    get dyldCacheBinding() {
+      if (!hasFrozenDyldCacheBinding) {
+        frozenDyldCacheBinding = authoritySnapshot(dyldCacheBinding);
+        hasFrozenDyldCacheBinding = true;
+      }
+      return frozenDyldCacheBinding;
+    },
   };
   ISSUED_MACHO_IMAGES.set(issued, Object.freeze(authority));
   return issued;
