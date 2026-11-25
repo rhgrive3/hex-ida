@@ -37,51 +37,13 @@ const SIZEOF_HEX_IR_STATS = 56;
 const SIZEOF_HEX_RISCV64_DECODED = 64;
 const HEX_IR_NONE = 0xffffffff;
 
-// Instructions whose JS decompiler oracle semantics can diverge from the fast
-// WASM lifter/emitter path and must therefore fail closed to JS.
+// Known ARM64 regression guards kept explicitly blocked in JS before WASM
+// invocation; all other instructions are delegated directly to C++'s strict
+// 0-diff gate (`hex_engine_decompile_arm64` -> HEX_OK vs HEX_ERR_UNSUPPORTED).
 const EXPLICIT_UNSUPPORTED_ARM64_MNEMONICS = Object.freeze(new Set([
   'fmov',
   'mneg',
   'smull',
-  'umull',
-  'smaddl',
-  'umaddl',
-  'smsubl',
-  'umsubl',
-  'movn',
-  'movk',
-  'bic',
-  'orn',
-  'eon',
-  'extr',
-  'bfm',
-  'sbfm',
-  'ubfm',
-  'bfi',
-  'bfxil',
-  'sbfx',
-  'ubfx',
-  'rbit',
-  'rev',
-  'rev16',
-  'rev32',
-  'clz',
-  'cls',
-  'ccmp',
-  'ccmn',
-  'csinc',
-  'csinv',
-  'csneg',
-  'adc',
-  'adcs',
-  'sbc',
-  'sbcs',
-  'bl',
-  'blr',
-  'br',
-  'svc',
-  'brk',
-  'udf',
 ]));
 
 const textEncoder = new TextEncoder();
@@ -477,26 +439,31 @@ function isNonAliasOrrRegister(word, mn, ops) {
   return false;
 }
 
-function classifyUnsupportedArm64Insn(word, insn, ex) {
+function isOrrImmediate(word) {
+  const w = word >>> 0;
+  // ARM64 ORR (immediate): sf 01 100100 N immr(6) imms(6) Rn(5) Rd(5)
+  return ((w & 0x7f800000) >>> 0) === 0x32000000;
+}
+
+function classifyUnsupportedArm64Insn(word, insn) {
+  const w = word >>> 0;
   const mn = String(insn?.mn ?? insn?.mnemonic ?? '').trim().toLowerCase();
   const ops = String(insn?.ops ?? insn?.opStr ?? '');
   if (mn && EXPLICIT_UNSUPPORTED_ARM64_MNEMONICS.has(mn)) {
     return `unsupported_insn:${mn}`;
   }
-  if (isNonAliasOrrRegister(word, mn, ops)) {
+  if (isNonAliasOrrRegister(w, mn, ops) || isOrrImmediate(w)) {
     return 'unsupported_insn:orr';
   }
-  if (((word & 0x7F800000) >>> 0) === 0x12800000) {
-    return 'unsupported_insn:movn';
+  // Bit-level fallback guards for FMOV (imm), MNEG, and SMULL when mnemonic metadata is omitted.
+  if (((w & 0x5f201c00) >>> 0) === 0x1e201000) {
+    return 'unsupported_insn:fmov';
   }
-  if (typeof ex.hex_arm64_is_decompiler_supported === 'function') {
-    try {
-      if (ex.hex_arm64_is_decompiler_supported(word >>> 0) === 0) {
-        return `unsupported_insn:${mn || `0x${(word >>> 0).toString(16)}`}`;
-      }
-    } catch {
-      return 'unsupported_insn:gate_exception';
-    }
+  if (((w & 0x7fe0fc00) >>> 0) === 0x1b00fc00) {
+    return 'unsupported_insn:mneg';
+  }
+  if (((w & 0xffe0fc00) >>> 0) === 0x9b207c00) {
+    return 'unsupported_insn:smull';
   }
   return null;
 }
@@ -523,7 +490,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     if (typeof w !== 'number' || !Number.isFinite(w)) {
       return noteFallback('decompile', 'invalid_word');
     }
-    const reason = classifyUnsupportedArm64Insn(w >>> 0, insns ? insns[i] : null, ex);
+    const reason = classifyUnsupportedArm64Insn(w >>> 0, insns ? insns[i] : null);
     if (reason) return noteFallback('decompile', reason);
   }
 
