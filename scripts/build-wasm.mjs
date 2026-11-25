@@ -190,6 +190,18 @@ function buildHexEngineUnified(tmpDir) {
       srcs.push(abs);
     }
   }
+  let hasDecompPasses = false;
+  const decompPassesDir = path.join(ROOT, 'cpp/src/decompiler/passes');
+  if (fs.existsSync(decompPassesDir) && fs.statSync(decompPassesDir).isDirectory()) {
+    const passFiles = fs.readdirSync(decompPassesDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.cpp'))
+      .map((entry) => entry.name)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (const name of passFiles) {
+      srcs.push(path.join(decompPassesDir, name));
+    }
+    hasDecompPasses = passFiles.length > 0;
+  }
   for (const rel of OPTIONAL_RUNTIME_SRCS) {
     const abs = path.join(ROOT, rel);
     if (fs.existsSync(abs)) {
@@ -211,6 +223,7 @@ function buildHexEngineUnified(tmpDir) {
     '-fno-rtti',
     '-mbulk-memory',
     '-DHEX_UNIFIED_WASM=1',
+    ...(hasDecompPasses ? ['-DHEX_HAS_DECOMP_PASSES=1'] : []),
     `-I${path.join(ROOT, 'cpp/include')}`,
     `-I${path.join(ROOT, 'cpp/src')}`,
     '-Wl,--no-entry',
