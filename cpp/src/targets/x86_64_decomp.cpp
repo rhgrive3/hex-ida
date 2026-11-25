@@ -371,7 +371,10 @@ struct LiftBuilder {
 
 bool lift_one_x86_insn(LiftBuilder& b, const HexX86Decoded& d) {
   if (d.kind == HEX_X86_KIND_NOP) return true;
-  if (is_frame_prologue_or_epilogue(d, b.rbp_delta)) return true;
+  if (is_frame_prologue_or_epilogue(d, b.rbp_delta)) {
+    if (d.kind == HEX_X86_KIND_ALU) b.has_cmp = false;
+    return true;
+  }
 
   if (d.op_size != 8u && d.op_size != 16u && d.op_size != 32u && d.op_size != 64u) {
     return false;
@@ -538,6 +541,8 @@ bool lift_one_x86_insn(LiftBuilder& b, const HexX86Decoded& d) {
   }
 
   if (d.kind == HEX_X86_KIND_ALU) {
+    // Flag-clobbering ALU instructions (add/sub/xor/and/or) invalidate any prior cmp state.
+    b.has_cmp = false;
     if (w != 32u && w != 64u) return false;
 
     // Standard ALU: 01/03 (add), 09/0B (or), 21/23 (and), 29/2B (sub), 31/33 (xor)
@@ -633,6 +638,8 @@ bool lift_one_x86_insn(LiftBuilder& b, const HexX86Decoded& d) {
   }
 
   if (d.kind == HEX_X86_KIND_MUL) {
+    // Flag-clobbering IMUL instructions invalidate any prior cmp state.
+    b.has_cmp = false;
     if (w != 32u && w != 64u) return false;
     if (d.opcode == 0x0fu && d.opcode2 == 0xafu &&
         (d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u && mod == 3u) {
