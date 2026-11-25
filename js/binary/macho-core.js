@@ -6,6 +6,7 @@ import { cpuName, subtypeBase, cpuArchName, sliceArchName, selectDefaultFatSlice
 import { dyldCacheAuthority, malformedAppleCodeSignature, parseAppleCodeSignature } from '../apple/knowledge.js';
 import { deepFreeze } from '../core/identity/index.js';
 import { IncrementalSha256 } from '../cache/content-identity.js';
+import { getEngineMode, wasmSha256Hash } from '../core/hex-engine-bridge.js';
 
 
 const ISSUED_MACHO_IMAGES = new WeakMap();
@@ -35,13 +36,38 @@ function containerOffset(value) {
   throw new TypeError('Mach-O container offset must be a non-negative safe integer or bigint');
 }
 
+const HEX_TABLE = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+const WASM_SHA256_FAST_LIMIT = 1048576;
+
+function digestBytesToHex(digest) {
+  let hex = '';
+  for (let i = 0; i < digest.length; i += 1) hex += HEX_TABLE[digest[i]];
+  return hex;
+}
+
+function sameByteSlice(a, b) {
+  return a === b || (
+    a instanceof Uint8Array
+    && b instanceof Uint8Array
+    && a.buffer === b.buffer
+    && a.byteOffset === b.byteOffset
+    && a.byteLength === b.byteLength
+  );
+}
+
 function residentDigest(bytes) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > MACHO_METADATA_LIMITS.inputBytes) return null;
+  if (bytes.byteLength <= WASM_SHA256_FAST_LIMIT && getEngineMode() !== 'js' && typeof wasmSha256Hash === 'function') {
+    const raw = wasmSha256Hash(bytes);
+    if (raw instanceof Uint8Array && raw.length === 32) {
+      return `bin_sha256_${digestBytesToHex(raw)}`;
+    }
+  }
   return `bin_sha256_${new IncrementalSha256().update(bytes).hexDigest()}`;
 }
 
-function sliceIdentity(binaryIdentity, bytes, offset, architecture) {
-  const digest = residentDigest(bytes);
+function sliceIdentity(binaryIdentity, bytes, offset, architecture, precomputedDigest = undefined) {
+  const digest = precomputedDigest !== undefined ? precomputedDigest : residentDigest(bytes);
   if (!binaryIdentity || !digest) return null;
   return `slice_macho_${architecture}_${offset.toString(16)}_${bytes.byteLength.toString(16)}_${digest.slice('bin_sha256_'.length)}`;
 }
@@ -223,12 +249,15 @@ export function parseMachO(input, opts = {}) {
     if (!selected) throw new Error('Mach-O universal binary has no readable slice');
     const sub = bytes.subarray(Number(selected.offset), Number(selected.offset + selected.size));
     const selectedArchitecture = sliceArchName(selected);
+    const subDigest = sameByteSlice(sub, bytes) ? containerIdentity : residentDigest(sub);
     const image = parseThin(sub, {
       ...opts,
       containerOffset: selected.offset,
       [INTERNAL_RESIDENT_IDENTITY]: {
         binaryIdentity: containerIdentity,
-        sliceIdentity: sliceIdentity(containerIdentity, sub, selected.offset, selectedArchitecture),
+        sliceIdentity: sliceIdentity(containerIdentity, sub, selected.offset, selectedArchitecture, subDigest),
+        sliceDigest: subDigest,
+        sliceBytes: sub,
       },
     });
     image.metadata.fat = {
@@ -245,7 +274,9 @@ export function parseMachO(input, opts = {}) {
     containerOffset: thinContainerOffset,
     [INTERNAL_RESIDENT_IDENTITY]: {
       binaryIdentity: containerIdentity,
-      sliceIdentity: sliceIdentity(containerIdentity, bytes, thinContainerOffset, cpuArchName(cpu, subtype)),
+      sliceIdentity: sliceIdentity(containerIdentity, bytes, thinContainerOffset, cpuArchName(cpu, subtype), containerIdentity),
+      sliceDigest: containerIdentity,
+      sliceBytes: bytes,
     },
   });
 }
@@ -548,7 +579,11 @@ function parseThin(bytes, opts) {
   const authoritySections = issued.sections.map(metadataMappingSnapshot);
   const authoritySegments = issued.segments.map(metadataMappingSnapshot);
   const residentBytes = issued.bytes instanceof Uint8Array ? issued.bytes : null;
-  const sourceDigest = residentDigest(residentBytes);
+  const sourceDigest = (
+    residentBytes !== null
+    && residentIdentity.sliceDigest !== undefined
+    && sameByteSlice(residentBytes, residentIdentity.sliceBytes)
+  ) ? residentIdentity.sliceDigest : residentDigest(residentBytes);
   const contentMatches = () => sourceDigest !== null
     && issued.bytes === residentBytes
     && residentDigest(residentBytes) === sourceDigest;
