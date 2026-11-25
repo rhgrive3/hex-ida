@@ -186,6 +186,9 @@ void test_x86_64_loop_structuring() {
   const std::string text = get_emitted_text();
   CHECK(text.find("int32 sum_loop(uint64 a1)") != std::string::npos);
   CHECK(text.find("while") != std::string::npos || text.find("do {") != std::string::npos);
+  CHECK(text.find("+ 1") != std::string::npos);
+  CHECK(text.find("a1") != std::string::npos);
+  CHECK(text.find("<") != std::string::npos || text.find(">=") != std::string::npos);
   CHECK(text.find("return ") != std::string::npos);
   CHECK(hex_x86_64_decomp_get_linemap_ptr() != nullptr);
   CHECK(hex_x86_64_decomp_get_linemap_count() >= 3u);
@@ -231,6 +234,129 @@ void test_negative_and_fail_closed() {
   const uint8_t push_rbx[] = {0x53, 0x5b, 0xc3};
   CHECK(hex_engine_decompile_x86_64(no_ret, sizeof(no_ret), 0x1000, nullptr, 0, 0, 0) == HEX_ERR_UNSUPPORTED);
   CHECK(hex_engine_decompile_x86_64(push_rbx, sizeof(push_rbx), 0x1000, nullptr, 0, 0, 0) == HEX_ERR_UNSUPPORTED);
+
+  // Flag-clobbering ALU/MUL between cmp and jcc must fail-closed (HEX_ERR_UNSUPPORTED).
+  // 1) mov eax, edi; cmp edi, esi; add eax, 1; je +2; mov eax, esi; ret
+  {
+    const uint8_t cmp_add_jcc[] = {
+        0x89, 0xf8,        // mov eax, edi
+        0x39, 0xf7,        // cmp edi, esi
+        0x83, 0xc0, 0x01,  // add eax, 1  (clobbers flags)
+        0x74, 0x02,        // je +2 (-> ret)
+        0x89, 0xf0,        // mov eax, esi
+        0xc3,              // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              cmp_add_jcc, sizeof(cmp_add_jcc), 0x600000ULL,
+              "cmp_add_jcc", 11u, HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+  }
+  // 2) mov eax, edi; cmp edi, esi; imul eax, esi; je +2; mov eax, esi; ret
+  {
+    const uint8_t cmp_imul_jcc[] = {
+        0x89, 0xf8,        // mov eax, edi
+        0x39, 0xf7,        // cmp edi, esi
+        0x0f, 0xaf, 0xc6,  // imul eax, esi (clobbers flags)
+        0x74, 0x02,        // je +2 (-> ret)
+        0x89, 0xf0,        // mov eax, esi
+        0xc3,              // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              cmp_imul_jcc, sizeof(cmp_imul_jcc), 0x600100ULL,
+              "cmp_imul_jcc", 12u, HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+  }
+  // 3) mov eax, edi; cmp edi, esi; xor eax, eax; je +2; mov eax, esi; ret
+  {
+    const uint8_t cmp_xor_jcc[] = {
+        0x89, 0xf8,        // mov eax, edi
+        0x39, 0xf7,        // cmp edi, esi
+        0x31, 0xc0,        // xor eax, eax (clobbers flags)
+        0x74, 0x02,        // je +2 (-> ret)
+        0x89, 0xf0,        // mov eax, esi
+        0xc3,              // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              cmp_xor_jcc, sizeof(cmp_xor_jcc), 0x600200ULL,
+              "cmp_xor_jcc", 11u, HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_ERR_UNSUPPORTED);
+  }
+  // 4) Non-flag-clobbering mov between cmp and jcc stays supported (HEX_OK).
+  {
+    const uint8_t cmp_mov_jcc[] = {
+        0x39, 0xf7,        // cmp edi, esi
+        0x89, 0xf8,        // mov eax, edi (preserves flags)
+        0x74, 0x02,        // je +2 (-> ret)
+        0x89, 0xf0,        // mov eax, esi
+        0xc3,              // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              cmp_mov_jcc, sizeof(cmp_mov_jcc), 0x600300ULL,
+              "cmp_mov_jcc", 11u, HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+  }
+}
+
+void test_repeated_emit_arena_zero_leak_and_scratch_survival() {
+  const uint8_t loop_code[] = {
+      0x31, 0xc0,
+      0x31, 0xc9,
+      0x39, 0xf9,
+      0x7d, 0x09,
+      0x01, 0xc8,
+      0x83, 0xc1, 0x01,
+      0x39, 0xf9,
+      0x7c, 0xf7,
+      0xc3,
+  };
+  const uint8_t add_code[] = {0xf3, 0x0f, 0x1e, 0xfa, 0x8d, 0x04, 0x37, 0xc3};
+
+  std::string expected_loop;
+  uint32_t expected_loop_lm = 0u;
+  std::string expected_add;
+  uint32_t expected_add_lm = 0u;
+
+  // 80 consecutive decompiles: verifies g_x86_emit_arena resets cleanly with zero leak / OOM.
+  for (int iter = 0; iter < 80; ++iter) {
+    uint8_t mutable_code[32];
+    char mutable_name[32];
+    const bool is_loop = (iter % 2 == 0);
+    const size_t code_len = is_loop ? sizeof(loop_code) : sizeof(add_code);
+    std::memcpy(mutable_code, is_loop ? loop_code : add_code, code_len);
+    const char* src_name = is_loop ? "sum_loop_rep" : "add_rep";
+    const uint32_t name_len = static_cast<uint32_t>(std::strlen(src_name));
+    std::memcpy(mutable_name, src_name, name_len + 1u);
+
+    const HexStatus st = hex_engine_decompile_x86_64(
+        mutable_code, static_cast<uint32_t>(code_len), 0x700000ULL,
+        mutable_name, name_len, HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+
+    // Overwrite caller buffers immediately after decompile to verify output survival in g_x86_emit_arena.
+    std::memset(mutable_code, 0xAA, sizeof(mutable_code));
+    std::memset(mutable_name, 0x55, sizeof(mutable_name));
+
+    const std::string out_text = get_emitted_text();
+    const uint32_t lm_cnt = hex_x86_64_decomp_get_linemap_count();
+    const HexLineMapEntry* lm_ptr = hex_x86_64_decomp_get_linemap_ptr();
+    CHECK(!out_text.empty());
+    CHECK(lm_ptr != nullptr && lm_cnt >= 1u);
+
+    if (is_loop) {
+      if (expected_loop.empty()) {
+        expected_loop = out_text;
+        expected_loop_lm = lm_cnt;
+      } else {
+        CHECK(out_text == expected_loop);
+        CHECK(lm_cnt == expected_loop_lm);
+      }
+    } else {
+      if (expected_add.empty()) {
+        expected_add = out_text;
+        expected_add_lm = lm_cnt;
+      } else {
+        CHECK(out_text == expected_add);
+        CHECK(lm_cnt == expected_add_lm);
+      }
+    }
+  }
+  std::printf("  [PASS] repeated emit arena zero-leak & scratch survival (80 iters)\n");
 }
 
 }  // namespace
@@ -241,6 +367,7 @@ int main() {
   test_three_real_x86_64_binaries();
   test_x86_64_loop_structuring();
   test_negative_and_fail_closed();
+  test_repeated_emit_arena_zero_leak_and_scratch_survival();
 
   if (g_failures == 0) {
     std::printf("test_x86_64_decomp_native (ASan+UBSan): ALL PASS\n");
