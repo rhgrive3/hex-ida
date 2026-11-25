@@ -724,7 +724,8 @@ acquire, release,
     // Single-word classification is ~80ns in JS vs ~1,100ns crossing JS<->WASM per word.
     // In auto mode, keep single-word classifyWord inline in JS (batch callers use classifyWordsBatch -> WASM);
     // honor explicit wasm mode and custom test bridges.
-    if (isExplicitWasmMode() || (wasmBridge && wasmBridge !== defaultWasmBridge)) {
+    const customBridge = (wasmBridge && wasmBridge !== defaultWasmBridge) || (!wasmBridge && global && global.__HEX_ENGINE_BRIDGE__ && global.__HEX_ENGINE_BRIDGE__ !== defaultWasmBridge);
+    if (isExplicitWasmMode() || customBridge) {
       const bridge = getActiveWasmBridge();
       if (bridge && typeof bridge.wasmDecodeArm64Word === 'function') {
         const res = bridge.wasmDecodeArm64Word(w >>> 0, 0n);

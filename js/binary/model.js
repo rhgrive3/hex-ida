@@ -1584,10 +1584,17 @@ export function mergeFunctionSeeds(input, context = {}) {
     if (!prevSrcs && !fSrcs) {
       best.sources = prev.source === f.source ? [prev.source] : [prev.source, f.source];
     } else {
-      const mergedSrcs = prevSrcs ? prevSrcs.slice() : [prev.source];
+      const mergedSrcs = [];
+      if (prevSrcs) {
+        for (const s of prevSrcs) {
+          if (!mergedSrcs.includes(s)) mergedSrcs.push(s);
+        }
+      } else {
+        mergedSrcs.push(prev.source);
+      }
       if (fSrcs) {
-        for (let si = 0; si < fSrcs.length; si += 1) {
-          if (!mergedSrcs.includes(fSrcs[si])) mergedSrcs.push(fSrcs[si]);
+        for (const s of fSrcs) {
+          if (!mergedSrcs.includes(s)) mergedSrcs.push(s);
         }
       } else if (!mergedSrcs.includes(f.source)) {
         mergedSrcs.push(f.source);

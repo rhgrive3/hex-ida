@@ -1296,6 +1296,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   };
 
   const maybeYield = createYielder(16);
+  let reusableBlockWords = null;
   while (pos < total) {
     if (cancelled(requestId, epoch)) return { starts: [], cancelled: true };
     const want = Math.min(STREAM_SCAN_BLOCK, total - pos);
@@ -1722,7 +1723,10 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
     let blockWords = null;
     let blockKinds = null;
     if (n >= 64 && typeof Words.classifyWordsBatch === 'function') {
-      blockWords = new Uint32Array(n);
+      if (!reusableBlockWords || reusableBlockWords.length < n) {
+        reusableBlockWords = new Uint32Array(n);
+      }
+      blockWords = reusableBlockWords.length === n ? reusableBlockWords : reusableBlockWords.subarray(0, n);
       for (let i = 0; i < n; i++) blockWords[i] = dv.getUint32(i * 4, true);
       blockKinds = Words.classifyWordsBatch(blockWords);
     }
