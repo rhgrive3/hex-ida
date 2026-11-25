@@ -868,15 +868,39 @@ export function normalizeIdentity(value, code) {
 }
 
 export function deepFreeze(value, seen = null) {
-  if (!value || typeof value !== 'object') return value;
+  if (value == null || typeof value !== 'object') return value;
   if (Object.isFrozen(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
-  const active = seen ?? new WeakSet();
-  if (active.has(value)) return value;
-  active.add(value);
-  const keys = Object.keys(value);
-  for (let i = 0; i < keys.length; i += 1) deepFreeze(value[keys[i]], active);
-  const frozen = Object.freeze(value);
-  return frozen;
+  if (seen && seen.has(value)) return value;
+  let active = seen;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      const child = value[i];
+      if (child != null && typeof child === 'object' && !Object.isFrozen(child)) {
+        if (!active) {
+          active = new WeakSet();
+          active.add(value);
+        } else if (!active.has(value)) {
+          active.add(value);
+        }
+        deepFreeze(child, active);
+      }
+    }
+  } else {
+    const keys = Object.keys(value);
+    for (let i = 0; i < keys.length; i += 1) {
+      const child = value[keys[i]];
+      if (child != null && typeof child === 'object' && !Object.isFrozen(child)) {
+        if (!active) {
+          active = new WeakSet();
+          active.add(value);
+        } else if (!active.has(value)) {
+          active.add(value);
+        }
+        deepFreeze(child, active);
+      }
+    }
+  }
+  return Object.freeze(value);
 }
 
 export const IDENTITY_SCHEMA_VERSION = ID_SCHEMA_VERSION;
