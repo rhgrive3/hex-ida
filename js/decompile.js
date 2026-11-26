@@ -10,6 +10,7 @@ import {
   isWasmEngineAvailable,
   recordFallback,
   wasmDecompileArm64Function,
+  wasmDecompileX86_64Function,
 } from './core/hex-engine-bridge.js';
 export { optimizeSemanticDecompilation } from './decompiler/pipeline.js';
 
@@ -84,6 +85,32 @@ function extractArm64Words(insns) {
   return words;
 }
 
+function extractX86_64Bytes(insns) {
+  if (!Array.isArray(insns) || insns.length === 0) return null;
+  let totalBytes = 0;
+  const chunks = [];
+  let expectedAddr = insns[0]?.address != null ? BigInt(insns[0].address) : null;
+  for (let i = 0; i < insns.length; i += 1) {
+    const ins = insns[i];
+    const raw = ins?.rawBytes ?? ins?.bytes;
+    if (!(raw instanceof Uint8Array || Array.isArray(raw)) || raw.length === 0) return null;
+    if (expectedAddr !== null) {
+      if (ins?.address == null || BigInt(ins.address) !== expectedAddr) return null;
+      expectedAddr += BigInt(raw.length);
+    }
+    chunks.push(raw);
+    totalBytes += raw.length;
+  }
+  if (totalBytes === 0) return null;
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+}
+
 function tryWasmDecompile(model, opts) {
   const effectiveMode = getEngineMode(opts);
   if (effectiveMode === 'js') {
@@ -95,7 +122,9 @@ function tryWasmDecompile(model, opts) {
     return null;
   }
   const arch = detectModelArchitecture(model, opts);
-  if (arch !== 'arm64' && arch !== 'aarch64' && arch !== 'arm64_32' && arch !== 'arm64e') {
+  const isArm64 = arch === 'arm64' || arch === 'aarch64' || arch === 'arm64_32' || arch === 'arm64e';
+  const isX86_64 = arch === 'x86_64' || arch === 'amd64';
+  if (!isArm64 && !isX86_64) {
     recordFallback(`decompile:non_arm64_arch:${arch}`);
     return null;
   }
@@ -108,15 +137,45 @@ function tryWasmDecompile(model, opts) {
     return null;
   }
   const insns = model?.instructions;
+  const baseAddr = opts?.addr != null
+    ? BigInt(opts.addr)
+    : (insns?.[0]?.address != null ? BigInt(insns[0].address) : 0n);
+  const funcName = String(opts?.name ?? model?.name ?? '');
+
+  if (isX86_64) {
+    const bytes = extractX86_64Bytes(insns);
+    if (!bytes) {
+      recordFallback('decompile:missing_x86_64_bytes');
+      return null;
+    }
+    const abiHint = String(
+      opts?.abiId ?? model?.abiId ?? opts?.abi ?? model?.abi ?? opts?.platform ?? model?.platform ?? model?.profile?.platform ?? '',
+    ).trim().toLowerCase();
+    const wasmRes = wasmDecompileX86_64Function({
+      bytes,
+      baseAddr,
+      funcName,
+      abi: abiHint,
+      insns,
+      _engine: opts?._engine ?? null,
+    });
+    if (!wasmRes) return null;
+    return {
+      pseudocode: wasmRes.pseudocode,
+      lines: wasmRes.lines,
+      sourceMap: wasmRes.sourceMap,
+      warnings: [],
+      evidence: [],
+      semantic: false,
+      wasmAccelerated: true,
+    };
+  }
+
   const words = extractArm64Words(insns);
   if (!words) {
     recordFallback('decompile:missing_arm64_words');
     return null;
   }
-  const baseAddr = opts?.addr != null
-    ? BigInt(opts.addr)
-    : (insns[0]?.address != null ? BigInt(insns[0].address) : 0n);
-  const funcName = String(opts?.name ?? model?.name ?? '');
   const wasmRes = wasmDecompileArm64Function({
     words,
     baseAddr,

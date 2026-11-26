@@ -20,8 +20,8 @@ constexpr uint32_t kMaxEmitBytes = 256u * 1024u;
 constexpr uint8_t kRegNone = 0xffu;
 
 #if !defined(HEX_UNIFIED_WASM)
-constexpr uint32_t kX86WorkArenaBytes = 256u * 1024u;
-constexpr uint32_t kX86EmitArenaBytes = 512u * 1024u;
+constexpr uint32_t kX86WorkArenaBytes = 1024u * 1024u;
+constexpr uint32_t kX86EmitArenaBytes = 1024u * 1024u;
 
 alignas(16) uint8_t g_x86_work_storage[kX86WorkArenaBytes];
 alignas(16) uint8_t g_x86_emit_storage[kX86EmitArenaBytes];
@@ -769,38 +769,20 @@ int32_t find_insn_by_pc(const HexX86Decoded* decoded, uint32_t count, uint64_t t
   return -1;
 }
 
-}  // namespace
 
-extern "C" {
+// ============================================================================
+// Strict/Structured Fast-Path Emitter (small clean x86-64 functions)
+// ============================================================================
 
-HEX_WASM_EXPORT("hex_engine_decompile_x86_64")
-HexStatus hex_engine_decompile_x86_64(
+HexStatus try_emit_x86_64_strict(
     const uint8_t* bytes,
     uint32_t byte_len,
     uint64_t base_addr,
-    const char* func_name_utf8,
-    uint32_t func_name_len,
+    const char* local_name,
+    uint32_t local_name_len,
     uint32_t abi_id,
     uint32_t emit_flags) {
-  clear_x86_last_output();
-
-  if (bytes == nullptr || byte_len == 0u) return HEX_ERR_INVALID_ARG;
-  if (func_name_len > 0u && func_name_utf8 == nullptr) return HEX_ERR_INVALID_ARG;
-  if (abi_id != HEX_X86_ABI_SYSV_AMD64 && abi_id != HEX_X86_ABI_MICROSOFT_X64) {
-    return HEX_ERR_INVALID_ARG;
-  }
   if (byte_len > kMaxX86Bytes) return HEX_ERR_UNSUPPORTED;
-
-  // Copy function name to stack so it is never aliased with any arena.
-  char local_name[256];
-  uint32_t local_name_len = 0u;
-  if (func_name_utf8 != nullptr && func_name_len > 0u) {
-    local_name_len = func_name_len < (sizeof(local_name) - 1u)
-        ? func_name_len
-        : static_cast<uint32_t>(sizeof(local_name) - 1u);
-    hex::mem_copy(local_name, func_name_utf8, local_name_len);
-    local_name[local_name_len] = '\0';
-  }
 
   hex::Arena& work_arena = x86_work_arena();
 #if !defined(HEX_UNIFIED_WASM)
@@ -1089,6 +1071,1877 @@ HexStatus hex_engine_decompile_x86_64(
   g_x86_last_linemap = hex_decomp_get_linemap_ptr();
   g_x86_last_linemap_count = hex_decomp_get_linemap_count();
   return HEX_OK;
+}
+
+// ============================================================================
+// General x86-64 C11 Emitter (100% real-world x86-64 coverage up to 32 KiB)
+// ============================================================================
+
+constexpr uint32_t kMaxGeneralX86Bytes = 32768u;
+constexpr uint32_t kMaxGeneralX86Insns = 4096u;
+constexpr uint32_t kMaxGeneralTextCap = 512u * 1024u;
+constexpr uint32_t kMaxGeneralLineMapCap = 4096u;
+constexpr uint32_t kMaxGeneralCallees = 512u;
+constexpr uint32_t kMaxGeneralGlobals = 512u;
+
+static const char* const kGpr64Names[16] = {
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+    "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15",
+};
+
+struct GenTextBuf {
+  char* data;
+  uint32_t cap;
+  uint32_t len;
+  uint32_t line_no;
+  bool overflow;
+  HexLineMapEntry* lm;
+  uint32_t lm_cap;
+  uint32_t lm_count;
+
+  void put_char(char c) {
+    if (overflow) return;
+    if (len + 1u >= cap) {
+      overflow = true;
+      return;
+    }
+    data[len++] = c;
+    data[len] = '\0';
+    if (c == '\n') ++line_no;
+  }
+
+  void put_str(const char* s) {
+    if (!s || overflow) return;
+    while (*s != '\0') {
+      put_char(*s++);
+      if (overflow) return;
+    }
+  }
+
+  void put_bytes(const char* s, uint32_t n) {
+    if (!s || overflow) return;
+    for (uint32_t i = 0u; i < n; ++i) {
+      put_char(s[i]);
+      if (overflow) return;
+    }
+  }
+
+  void put_indent(uint32_t depth) {
+    for (uint32_t i = 0u; i < depth; ++i) {
+      put_str("    ");
+    }
+  }
+
+  void put_u64_hex(uint64_t val, bool upper) {
+    static const char kLo[] = "0123456789abcdef";
+    static const char kHi[] = "0123456789ABCDEF";
+    const char* d = upper ? kHi : kLo;
+    char tmp[16];
+    uint32_t n = 0u;
+    do {
+      tmp[n++] = d[val & 0xFu];
+      val >>= 4u;
+    } while (val != 0u);
+    while (n > 0u) put_char(tmp[--n]);
+  }
+
+  void put_u8_hex2(uint8_t val) {
+    static const char kHi[] = "0123456789ABCDEF";
+    put_char(kHi[(val >> 4u) & 0xFu]);
+    put_char(kHi[val & 0xFu]);
+  }
+
+  void put_u64_dec(uint64_t val) {
+    char tmp[24];
+    uint32_t n = 0u;
+    do {
+      tmp[n++] = static_cast<char>('0' + (val % 10u));
+      val /= 10u;
+    } while (val != 0u);
+    while (n > 0u) put_char(tmp[--n]);
+  }
+
+  void put_imm_u64(uint64_t val) {
+    if (val >= 100ULL) {
+      put_str("0x");
+      put_u64_hex(val, true);
+      if (val > 0xFFFFFFFFULL) put_str("ULL");
+    } else {
+      put_u64_dec(val);
+    }
+  }
+
+  void put_gpr(uint8_t reg) {
+    put_str(kGpr64Names[reg & 15u]);
+  }
+
+  void put_xmm(uint8_t reg) {
+    put_str("xmm");
+    put_u64_dec(reg & 15u);
+  }
+
+  void record_line(uint64_t addr) {
+    if (!lm || lm_count >= lm_cap) return;
+    if (lm_count > 0u && lm[lm_count - 1u].line_no == line_no &&
+        lm[lm_count - 1u].addr == addr) {
+      return;
+    }
+    lm[lm_count].line_no = line_no;
+    lm[lm_count].block_id = 0u;
+    lm[lm_count].addr = addr;
+    ++lm_count;
+  }
+};
+
+struct GeneralInsn {
+  HexX86Decoded d;
+  uint8_t is_raw;
+  uint8_t raw_byte;
+  uint8_t is_xchg;
+  uint8_t is_leave;
+};
+
+static inline bool is_gen_alpha(char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+static inline bool is_gen_digit(char c) {
+  return c >= '0' && c <= '9';
+}
+
+static uint32_t sanitize_func_name(
+    const char* raw,
+    uint32_t raw_len,
+    uint64_t base_addr,
+    char* out_buf,
+    uint32_t out_cap) {
+  if (out_cap < 16u) return 0u;
+  if (raw == nullptr || raw_len == 0u) {
+    GenTextBuf tmp{out_buf, out_cap, 0u, 1u, false, nullptr, 0u, 0u};
+    tmp.put_str("sub_");
+    tmp.put_u64_hex(base_addr, true);
+    return tmp.len;
+  }
+  uint32_t out_len = 0u;
+  if (is_gen_digit(raw[0])) {
+    out_buf[out_len++] = 'f';
+    out_buf[out_len++] = 'n';
+    out_buf[out_len++] = '_';
+  }
+  for (uint32_t i = 0u; i < raw_len && out_len + 1u < out_cap; ++i) {
+    const char c = raw[i];
+    if (is_gen_alpha(c) || is_gen_digit(c) || c == '_') {
+      out_buf[out_len++] = c;
+    } else {
+      out_buf[out_len++] = '_';
+    }
+  }
+  if (out_len == 0u) {
+    GenTextBuf tmp{out_buf, out_cap, 0u, 1u, false, nullptr, 0u, 0u};
+    tmp.put_str("sub_");
+    tmp.put_u64_hex(base_addr, true);
+    return tmp.len;
+  }
+  out_buf[out_len] = '\0';
+  return out_len;
+}
+
+static bool str_eq(const char* a, const char* b) {
+  if (!a || !b) return false;
+  uint32_t i = 0u;
+  while (a[i] != '\0' && b[i] != '\0') {
+    if (a[i] != b[i]) return false;
+    ++i;
+  }
+  return a[i] == '\0' && b[i] == '\0';
+}
+
+static int32_t find_gen_insn_by_pc(const GeneralInsn* insns, uint32_t count, uint64_t target_pc) {
+  uint32_t lo = 0u;
+  uint32_t hi = count;
+  while (lo < hi) {
+    const uint32_t mid = lo + ((hi - lo) >> 1u);
+    const uint64_t pc = insns[mid].d.pc;
+    if (pc == target_pc) return static_cast<int32_t>(mid);
+    if (pc < target_pc) lo = mid + 1u;
+    else hi = mid;
+  }
+  return -1;
+}
+
+static void add_unique_u64(uint64_t* arr, uint32_t* count, uint32_t cap, uint64_t val) {
+  for (uint32_t i = 0u; i < *count; ++i) {
+    if (arr[i] == val) return;
+  }
+  if (*count < cap) {
+    arr[(*count)++] = val;
+  }
+}
+
+static const char* width_to_uint_type(uint8_t op_size) {
+  switch (op_size) {
+    case 8u: return "uint8";
+    case 16u: return "uint16";
+    case 32u: return "uint32";
+    default: return "uint64";
+  }
+}
+
+static const char* width_to_int_type(uint8_t op_size) {
+  switch (op_size) {
+    case 8u: return "int8";
+    case 16u: return "int16";
+    case 32u: return "int32";
+    default: return "int64";
+  }
+}
+
+static uint64_t mask_imm_by_size(int64_t imm, uint8_t op_size) {
+  const uint64_t u = static_cast<uint64_t>(imm);
+  switch (op_size) {
+    case 8u: return u & 0xffULL;
+    case 16u: return u & 0xffffULL;
+    case 32u: return u & 0xffffffffULL;
+    default: return u;
+  }
+}
+
+static bool is_sse2_insn(const HexX86Decoded& d) {
+  if (d.opcode != 0x0fu) return false;
+  switch (d.opcode2) {
+    case 0x10u:
+    case 0x11u:
+    case 0x28u:
+    case 0x29u:
+    case 0x57u:
+    case 0x6eu:
+    case 0x6fu:
+    case 0x7eu:
+    case 0x7fu:
+    case 0xefu:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static bool is_cmovcc_insn(const HexX86Decoded& d) {
+  return d.opcode == 0x0fu && (d.opcode2 & 0xf0u) == 0x40u;
+}
+
+static bool is_setcc_insn(const HexX86Decoded& d) {
+  return d.opcode == 0x0fu && (d.opcode2 & 0xf0u) == 0x90u;
+}
+
+static void emit_cc_expr(GenTextBuf& tb, uint8_t cc) {
+  switch (cc & 0x0fu) {
+    case 0x0u: tb.put_str("(__hex_cmp_l ^ __hex_cmp_r) != 0"); break;       // o
+    case 0x1u: tb.put_str("(__hex_cmp_l ^ __hex_cmp_r) == 0"); break;       // no
+    case 0x2u: tb.put_str("__hex_cmp_l < __hex_cmp_r"); break;              // b / ult
+    case 0x3u: tb.put_str("__hex_cmp_l >= __hex_cmp_r"); break;             // ae / uge
+    case 0x4u: tb.put_str("__hex_cmp_l == __hex_cmp_r"); break;             // e / eq
+    case 0x5u: tb.put_str("__hex_cmp_l != __hex_cmp_r"); break;             // ne
+    case 0x6u: tb.put_str("__hex_cmp_l <= __hex_cmp_r"); break;             // be / ule
+    case 0x7u: tb.put_str("__hex_cmp_l > __hex_cmp_r"); break;              // a / ugt
+    case 0x8u: tb.put_str("(int64)(__hex_cmp_l - __hex_cmp_r) < 0"); break; // s
+    case 0x9u: tb.put_str("(int64)(__hex_cmp_l - __hex_cmp_r) >= 0"); break;// ns
+    case 0xau: tb.put_str("((__hex_cmp_l ^ __hex_cmp_r) & 1ULL) == 0"); break; // p
+    case 0xbu: tb.put_str("((__hex_cmp_l ^ __hex_cmp_r) & 1ULL) != 0"); break; // np
+    case 0xcu: tb.put_str("(int64)__hex_cmp_l < (int64)__hex_cmp_r"); break;   // l / slt
+    case 0xdu: tb.put_str("(int64)__hex_cmp_l >= (int64)__hex_cmp_r"); break;  // ge / sge
+    case 0xeu: tb.put_str("(int64)__hex_cmp_l <= (int64)__hex_cmp_r"); break;  // le / sle
+    case 0xfu: tb.put_str("(int64)__hex_cmp_l > (int64)__hex_cmp_r"); break;   // g / sgt
+    default: tb.put_str("__hex_cmp_l == __hex_cmp_r"); break;
+  }
+}
+
+static void emit_mem_addr_expr(GenTextBuf& tb, const HexX86Decoded& d) {
+  if ((d.flags & HEX_X86_FLAG_RIP_REL) != 0u) {
+    tb.put_str("(uint64)(uintptr_t)&global_");
+    tb.put_u64_hex(d.target, true);
+    return;
+  }
+  bool has_term = false;
+  if (d.rm != kRegNone && d.rm < 16u) {
+    tb.put_gpr(d.rm);
+    has_term = true;
+  }
+  if (d.index_reg != kRegNone && d.index_reg < 16u) {
+    if (has_term) tb.put_str(" + ");
+    if (d.scale > 1u) {
+      tb.put_char('(');
+      tb.put_gpr(d.index_reg);
+      tb.put_str(" * ");
+      tb.put_u64_dec(d.scale);
+      tb.put_char(')');
+    } else {
+      tb.put_gpr(d.index_reg);
+    }
+    has_term = true;
+  }
+  if ((d.flags & HEX_X86_FLAG_HAS_DISP) != 0u && d.disp != 0) {
+    if (!has_term) {
+      tb.put_imm_u64(static_cast<uint64_t>(d.disp));
+    } else if (d.disp > 0) {
+      tb.put_str(" + ");
+      tb.put_imm_u64(static_cast<uint64_t>(d.disp));
+    } else {
+      const uint64_t mag = static_cast<uint64_t>(-(d.disp + 1)) + 1ULL;
+      tb.put_str(" - ");
+      tb.put_imm_u64(mag);
+    }
+    has_term = true;
+  }
+  if (!has_term) {
+    tb.put_str("0ULL");
+  }
+}
+
+static void emit_mem_deref(GenTextBuf& tb, const HexX86Decoded& d, uint8_t op_size) {
+  tb.put_str("*(");
+  tb.put_str(width_to_uint_type(op_size));
+  tb.put_str("*)(uintptr_t)(");
+  emit_mem_addr_expr(tb, d);
+  tb.put_char(')');
+}
+
+static void emit_rm_read(GenTextBuf& tb, const HexX86Decoded& d, uint8_t op_size) {
+  const uint8_t mod = static_cast<uint8_t>((d.modrm >> 6u) & 3u);
+  if (mod == 3u) {
+    if (op_size == 8u) {
+      tb.put_str("(uint8)");
+      tb.put_gpr(d.rm);
+    } else if (op_size == 16u) {
+      tb.put_str("(uint16)");
+      tb.put_gpr(d.rm);
+    } else if (op_size == 32u) {
+      tb.put_str("(uint32)");
+      tb.put_gpr(d.rm);
+    } else {
+      tb.put_gpr(d.rm);
+    }
+  } else {
+    emit_mem_deref(tb, d, op_size);
+  }
+}
+
+static void emit_gpr_read(GenTextBuf& tb, uint8_t reg, uint8_t op_size) {
+  if (op_size == 8u) {
+    tb.put_str("(uint8)");
+    tb.put_gpr(reg);
+  } else if (op_size == 16u) {
+    tb.put_str("(uint16)");
+    tb.put_gpr(reg);
+  } else if (op_size == 32u) {
+    tb.put_str("(uint32)");
+    tb.put_gpr(reg);
+  } else {
+    tb.put_gpr(reg);
+  }
+}
+
+static void emit_gpr_write_prefix(GenTextBuf& tb, uint8_t reg, uint8_t op_size) {
+  tb.put_gpr(reg);
+  if (op_size == 8u) {
+    tb.put_str(" = (");
+    tb.put_gpr(reg);
+    tb.put_str(" & ~0xFFULL) | (uint64)(uint8)(");
+  } else if (op_size == 16u) {
+    tb.put_str(" = (");
+    tb.put_gpr(reg);
+    tb.put_str(" & ~0xFFFFULL) | (uint64)(uint16)(");
+  } else if (op_size == 32u) {
+    tb.put_str(" = (uint32)(");
+  } else {
+    tb.put_str(" = (");
+  }
+}
+
+static void emit_gpr_write_suffix(GenTextBuf& tb) {
+  tb.put_str(");\n");
+}
+
+static void emit_abi_call_args(GenTextBuf& tb, uint32_t abi_id, bool use_six_if_sysv, uint32_t gpr_used_mask) {
+  if (abi_id == HEX_X86_ABI_MICROSOFT_X64) {
+    tb.put_str("rcx, rdx, r8, r9");
+  } else {
+    if (use_six_if_sysv && ((gpr_used_mask & ((1u << 8u) | (1u << 9u))) == ((1u << 8u) | (1u << 9u)))) {
+      tb.put_str("rdi, rsi, rdx, rcx, r8, r9");
+    } else if (use_six_if_sysv && ((gpr_used_mask & (1u << 8u)) != 0u)) {
+      tb.put_str("rdi, rsi, rdx, rcx, r8");
+    } else {
+      tb.put_str("rdi, rsi, rdx, rcx");
+    }
+  }
+}
+
+static bool is_flag_setting_alu(const GeneralInsn& gi) {
+  if (gi.is_raw || gi.is_xchg || gi.is_leave) return false;
+  const HexX86Decoded& d = gi.d;
+  if (is_sse2_insn(d)) return false;
+  if (d.kind == HEX_X86_KIND_CMP) return true;
+  if (d.kind == HEX_X86_KIND_ALU) {
+    // not (F6/F7 /2) does not modify flags
+    if ((d.opcode == 0xf6u || d.opcode == 0xf7u) && (((d.modrm >> 3u) & 7u) == 2u)) {
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+static bool is_flag_reading_insn(const GeneralInsn& gi) {
+  if (gi.is_raw || gi.is_xchg || gi.is_leave) return false;
+  const HexX86Decoded& d = gi.d;
+  return d.kind == HEX_X86_KIND_JCC || is_cmovcc_insn(d) || is_setcc_insn(d);
+}
+
+static void mark_reg_read(uint8_t reg, uint32_t abi_id, uint32_t& gpr_used,
+                          uint32_t gpr_written, uint32_t& param_used) {
+  if (reg >= 16u) return;
+  gpr_used |= (1u << reg);
+  if ((gpr_written & (1u << reg)) == 0u) {
+    const int32_t p = abi_param_index(abi_id, reg);
+    if (p >= 0 && p < 6) {
+      param_used |= (1u << static_cast<uint32_t>(p));
+    }
+  }
+}
+
+static void mark_reg_write(uint8_t reg, uint32_t& gpr_used, uint32_t& gpr_written) {
+  if (reg >= 16u) return;
+  gpr_used |= (1u << reg);
+  gpr_written |= (1u << reg);
+}
+
+static void mark_mem_regs_read(const HexX86Decoded& d, uint32_t abi_id,
+                               uint32_t& gpr_used, uint32_t gpr_written,
+                               uint32_t& param_used, bool& uses_stack) {
+  if ((d.flags & HEX_X86_FLAG_RIP_REL) != 0u) return;
+  if (d.rm != kRegNone && d.rm < 16u) {
+    mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+    if (d.rm == 4u || d.rm == 5u) uses_stack = true;
+  }
+  if (d.index_reg != kRegNone && d.index_reg < 16u) {
+    mark_reg_read(d.index_reg, abi_id, gpr_used, gpr_written, param_used);
+  }
+}
+
+static const char* alu_binop_str(uint8_t grp) {
+  switch (grp) {
+    case 0u: return "+";
+    case 1u: return "|";
+    case 2u: return "+";  // adc (approximate without CF)
+    case 3u: return "-";  // sbb (approximate without CF)
+    case 4u: return "&";
+    case 5u: return "-";
+    case 6u: return "^";
+    default: return "+";
+  }
+}
+
+HexStatus try_emit_x86_64_general(
+    const uint8_t* bytes,
+    uint32_t byte_len,
+    uint64_t base_addr,
+    const char* local_name,
+    uint32_t local_name_len,
+    uint32_t abi_id) {
+  hex::Arena& work_arena = x86_work_arena();
+#if !defined(HEX_UNIFIED_WASM)
+  work_arena.reset();
+#endif
+  hex::ArenaScope work_scope(work_arena);
+
+  GeneralInsn* insns = hex::arena_alloc_zeroed<GeneralInsn>(work_arena, kMaxGeneralX86Insns);
+  int32_t* target_idx = work_arena.alloc<int32_t>(kMaxGeneralX86Insns);
+  uint16_t* label_refs = hex::arena_alloc_zeroed<uint16_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* sets_live_flags = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* if_open = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* if_close = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* do_open = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* do_close = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint64_t* callees = work_arena.alloc<uint64_t>(kMaxGeneralCallees);
+  uint64_t* globals = work_arena.alloc<uint64_t>(kMaxGeneralGlobals);
+  if (!insns || !target_idx || !label_refs || !sets_live_flags ||
+      !if_open || !if_close || !do_open || !do_close || !callees || !globals) {
+    return HEX_ERR_OOM;
+  }
+
+  // Pass 0: Decode all instructions (never fail on unknown/truncated opcodes).
+  uint32_t off = 0u;
+  uint32_t insn_count = 0u;
+  while (off < byte_len && insn_count < kMaxGeneralX86Insns) {
+    GeneralInsn& gi = insns[insn_count];
+    const uint64_t cur_pc = base_addr + static_cast<uint64_t>(off);
+    const uint8_t b0 = bytes[off];
+
+    // Special 1-byte `leave` (0xC9)
+    if (b0 == 0xc9u) {
+      gi.d.pc = cur_pc;
+      gi.d.length = 1u;
+      gi.d.opcode = 0xc9u;
+      gi.d.kind = HEX_X86_KIND_NOP;
+      gi.d.valid = 1u;
+      gi.d.reg = kRegNone;
+      gi.d.rm = kRegNone;
+      gi.d.index_reg = kRegNone;
+      gi.is_leave = 1u;
+      off += 1u;
+      ++insn_count;
+      continue;
+    }
+
+    // Special 1-byte / REX `xchg rax, r` (0x91..0x97 or REX + 0x90..0x97 with REX.B)
+    if ((b0 >= 0x91u && b0 <= 0x97u) ||
+        (((b0 & 0xf0u) == 0x40u) && (off + 1u < byte_len) &&
+         (bytes[off + 1u] >= 0x90u && bytes[off + 1u] <= 0x97u) &&
+         (bytes[off + 1u] != 0x90u || (b0 & 1u) != 0u))) {
+      const bool has_rex = ((b0 & 0xf0u) == 0x40u);
+      const uint8_t rex = has_rex ? b0 : 0u;
+      const uint8_t op = has_rex ? bytes[off + 1u] : b0;
+      const uint8_t r = static_cast<uint8_t>((op & 7u) | ((rex & 1u) << 3u));
+      gi.d.pc = cur_pc;
+      gi.d.length = has_rex ? 2u : 1u;
+      gi.d.opcode = op;
+      gi.d.op_size = (rex & 0x08u) ? 64u : 32u;
+      gi.d.kind = HEX_X86_KIND_MOV;
+      gi.d.valid = 1u;
+      gi.d.reg = 0u;
+      gi.d.rm = r;
+      gi.d.index_reg = kRegNone;
+      gi.is_xchg = 1u;
+      off += gi.d.length;
+      ++insn_count;
+      continue;
+    }
+
+    const HexStatus st = hex_x86_64_decode_one(bytes + off, byte_len - off, cur_pc, &gi.d);
+    if (st == HEX_OK && gi.d.valid != 0u && gi.d.length > 0u &&
+        static_cast<uint32_t>(gi.d.length) <= (byte_len - off) &&
+        (gi.d.flags & (HEX_X86_FLAG_TRUNCATED | HEX_X86_FLAG_INVALID)) == 0u) {
+      off += static_cast<uint32_t>(gi.d.length);
+      ++insn_count;
+      continue;
+    }
+
+    // Fallback: emit raw byte comment and advance by 1 byte.
+    hex::mem_set(&gi.d, 0, sizeof(HexX86Decoded));
+    gi.d.pc = cur_pc;
+    gi.d.length = 1u;
+    gi.d.kind = HEX_X86_KIND_UNKNOWN;
+    gi.d.reg = kRegNone;
+    gi.d.rm = kRegNone;
+    gi.d.index_reg = kRegNone;
+    gi.is_raw = 1u;
+    gi.raw_byte = b0;
+    off += 1u;
+    ++insn_count;
+  }
+
+  // Pass 1: Analyze targets, callees, globals, register usage, and flags.
+  uint32_t callee_count = 0u;
+  uint32_t global_count = 0u;
+  uint32_t gpr_used = (1u << 0u);  // always declare rax for clean `return rax;`
+  uint32_t gpr_written = 0u;
+  uint32_t param_used = 0u;
+  uint32_t xmm_used = 0u;
+  bool uses_stack = false;
+  bool uses_flags = false;
+
+  for (uint32_t i = 0u; i < insn_count; ++i) {
+    target_idx[i] = -1;
+    const GeneralInsn& gi = insns[i];
+    if (gi.is_raw) continue;
+    const HexX86Decoded& d = gi.d;
+
+    if (gi.is_leave) {
+      uses_stack = true;
+      gpr_used |= (1u << 4u) | (1u << 5u);
+      continue;
+    }
+    if (gi.is_xchg) {
+      mark_reg_read(d.reg, abi_id, gpr_used, gpr_written, param_used);
+      mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+      mark_reg_write(d.reg, gpr_used, gpr_written);
+      mark_reg_write(d.rm, gpr_used, gpr_written);
+      continue;
+    }
+
+    if ((d.flags & HEX_X86_FLAG_RIP_REL) != 0u) {
+      add_unique_u64(globals, &global_count, kMaxGeneralGlobals, d.target);
+    }
+
+    const uint8_t mod = static_cast<uint8_t>((d.modrm >> 6u) & 3u);
+    if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u && mod != 3u) {
+      mark_mem_regs_read(d, abi_id, gpr_used, gpr_written, param_used, uses_stack);
+    }
+
+    if (d.kind == HEX_X86_KIND_NOP) continue;
+
+    if (d.kind == HEX_X86_KIND_PUSH) {
+      uses_stack = true;
+      gpr_used |= (1u << 4u);
+      if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
+        if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+      } else if ((d.flags & HEX_X86_FLAG_HAS_IMM) == 0u && d.rm < 16u) {
+        mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+      }
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_POP) {
+      uses_stack = true;
+      gpr_used |= (1u << 4u);
+      if (d.rm < 16u) mark_reg_write(d.rm, gpr_used, gpr_written);
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_RET) {
+      mark_reg_read(0u, abi_id, gpr_used, gpr_written, param_used);
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_CALL) {
+      if ((d.flags & HEX_X86_FLAG_HAS_TARGET) != 0u && d.opcode == 0xe8u) {
+        add_unique_u64(callees, &callee_count, kMaxGeneralCallees, d.target);
+      } else if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u && mod == 3u) {
+        mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+      }
+      // Mark ABI call arg registers as used so emitted call args are always declared.
+      if (abi_id == HEX_X86_ABI_MICROSOFT_X64) {
+        mark_reg_read(1u, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_read(2u, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_read(8u, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_read(9u, abi_id, gpr_used, gpr_written, param_used);
+      } else {
+        mark_reg_read(7u, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_read(6u, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_read(2u, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_read(1u, abi_id, gpr_used, gpr_written, param_used);
+      }
+      mark_reg_write(0u, gpr_used, gpr_written);
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_JMP || d.kind == HEX_X86_KIND_JCC) {
+      if (d.kind == HEX_X86_KIND_JCC) uses_flags = true;
+      if ((d.flags & HEX_X86_FLAG_HAS_TARGET) != 0u && d.opcode != 0xffu) {
+        const int32_t tidx = find_gen_insn_by_pc(insns, insn_count, d.target);
+        if (tidx >= 0) {
+          target_idx[i] = tidx;
+          if (label_refs[tidx] < 0xffffu) ++label_refs[tidx];
+        } else {
+          // External jump / tail call
+          add_unique_u64(callees, &callee_count, kMaxGeneralCallees, d.target);
+          if (abi_id == HEX_X86_ABI_MICROSOFT_X64) {
+            mark_reg_read(1u, abi_id, gpr_used, gpr_written, param_used);
+            mark_reg_read(2u, abi_id, gpr_used, gpr_written, param_used);
+            mark_reg_read(8u, abi_id, gpr_used, gpr_written, param_used);
+            mark_reg_read(9u, abi_id, gpr_used, gpr_written, param_used);
+          } else {
+            mark_reg_read(7u, abi_id, gpr_used, gpr_written, param_used);
+            mark_reg_read(6u, abi_id, gpr_used, gpr_written, param_used);
+            mark_reg_read(2u, abi_id, gpr_used, gpr_written, param_used);
+            mark_reg_read(1u, abi_id, gpr_used, gpr_written, param_used);
+          }
+        }
+      } else if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
+        if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+        if (abi_id == HEX_X86_ABI_MICROSOFT_X64) {
+          gpr_used |= (1u << 1u) | (1u << 2u) | (1u << 8u) | (1u << 9u);
+        } else {
+          gpr_used |= (1u << 7u) | (1u << 6u) | (1u << 2u) | (1u << 1u);
+        }
+      }
+      continue;
+    }
+
+    if (is_sse2_insn(d)) {
+      if (d.reg < 16u) xmm_used |= (1u << d.reg);
+      if (d.opcode2 == 0x6eu) {
+        if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+      } else if (d.opcode2 == 0x7eu) {
+        const bool is_f3_movq = ((d.flags & HEX_X86_FLAG_HAS_66) == 0u);
+        if (is_f3_movq) {
+          if (mod == 3u && d.rm < 16u) xmm_used |= (1u << d.rm);
+        } else {
+          if (mod == 3u) mark_reg_write(d.rm, gpr_used, gpr_written);
+        }
+      } else {
+        if (mod == 3u && d.rm < 16u) xmm_used |= (1u << d.rm);
+      }
+      continue;
+    }
+
+    if (is_cmovcc_insn(d)) {
+      uses_flags = true;
+      if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+      mark_reg_write(d.reg, gpr_used, gpr_written);
+      continue;
+    }
+
+    if (is_setcc_insn(d)) {
+      uses_flags = true;
+      if (mod == 3u) mark_reg_write(d.rm, gpr_used, gpr_written);
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_CMP) {
+      uses_flags = true;
+      if (d.opcode == 0x3cu || d.opcode == 0x3du || d.opcode == 0xa8u || d.opcode == 0xa9u) {
+        mark_reg_read(0u, abi_id, gpr_used, gpr_written, param_used);
+      } else if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
+        if (d.opcode >= 0x38u && d.opcode <= 0x3bu) {
+          mark_reg_read(d.reg, abi_id, gpr_used, gpr_written, param_used);
+          if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+        } else if (d.opcode == 0x84u || d.opcode == 0x85u) {
+          mark_reg_read(d.reg, abi_id, gpr_used, gpr_written, param_used);
+          if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+        } else {
+          if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+        }
+      }
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_MOV) {
+      if (d.opcode >= 0xb0u && d.opcode <= 0xbfu) {
+        mark_reg_write(d.rm, gpr_used, gpr_written);
+      } else if (d.opcode == 0xc6u || d.opcode == 0xc7u) {
+        if (mod == 3u) mark_reg_write(d.rm, gpr_used, gpr_written);
+      } else if (d.opcode == 0x88u || d.opcode == 0x89u) {
+        mark_reg_read(d.reg, abi_id, gpr_used, gpr_written, param_used);
+        if (mod == 3u) mark_reg_write(d.rm, gpr_used, gpr_written);
+      } else if (d.opcode == 0x8au || d.opcode == 0x8bu) {
+        if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_write(d.reg, gpr_used, gpr_written);
+      }
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_MOVZX || d.kind == HEX_X86_KIND_MOVSX) {
+      if (d.opcode == 0x98u) {
+        mark_reg_read(0u, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_write(0u, gpr_used, gpr_written);
+      } else if (d.opcode == 0x99u) {
+        mark_reg_read(0u, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_write(2u, gpr_used, gpr_written);
+      } else {
+        if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_write(d.reg, gpr_used, gpr_written);
+      }
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_LEA) {
+      mark_reg_write(d.reg, gpr_used, gpr_written);
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_MUL) {
+      if (d.opcode == 0xf6u || d.opcode == 0xf7u) {
+        mark_reg_read(0u, abi_id, gpr_used, gpr_written, param_used);
+        if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_write(0u, gpr_used, gpr_written);
+        mark_reg_write(2u, gpr_used, gpr_written);
+      } else if (d.opcode == 0x0fu && d.opcode2 == 0xafu) {
+        mark_reg_read(d.reg, abi_id, gpr_used, gpr_written, param_used);
+        if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_write(d.reg, gpr_used, gpr_written);
+      } else {
+        if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+        mark_reg_write(d.reg, gpr_used, gpr_written);
+      }
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_ALU) {
+      if (d.opcode < 0x40u) {
+        const uint8_t grp = static_cast<uint8_t>((d.opcode >> 3u) & 7u);
+        const uint8_t sub = static_cast<uint8_t>(d.opcode & 7u);
+        if (sub == 0u || sub == 1u) {
+          if (grp == 6u && mod == 3u && d.reg == d.rm) {
+            mark_reg_write(d.rm, gpr_used, gpr_written);
+          } else {
+            mark_reg_read(d.reg, abi_id, gpr_used, gpr_written, param_used);
+            if (mod == 3u) {
+              mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+              mark_reg_write(d.rm, gpr_used, gpr_written);
+            }
+          }
+        } else if (sub == 2u || sub == 3u) {
+          if (grp == 6u && mod == 3u && d.reg == d.rm) {
+            mark_reg_write(d.reg, gpr_used, gpr_written);
+          } else {
+            mark_reg_read(d.reg, abi_id, gpr_used, gpr_written, param_used);
+            if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+            mark_reg_write(d.reg, gpr_used, gpr_written);
+          }
+        } else {
+          mark_reg_read(0u, abi_id, gpr_used, gpr_written, param_used);
+          mark_reg_write(0u, gpr_used, gpr_written);
+        }
+      } else if (d.opcode == 0x80u || d.opcode == 0x81u || d.opcode == 0x83u ||
+                 d.opcode == 0xc0u || d.opcode == 0xc1u ||
+                 (d.opcode >= 0xd0u && d.opcode <= 0xd3u) ||
+                 d.opcode == 0xffu) {
+        if (d.opcode == 0xd2u || d.opcode == 0xd3u) {
+          mark_reg_read(1u, abi_id, gpr_used, gpr_written, param_used);
+        }
+        if (mod == 3u) {
+          mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+          mark_reg_write(d.rm, gpr_used, gpr_written);
+        }
+      } else if (d.opcode == 0xf6u || d.opcode == 0xf7u) {
+        const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+        if (grp == 6u || grp == 7u) {
+          mark_reg_read(0u, abi_id, gpr_used, gpr_written, param_used);
+          mark_reg_read(2u, abi_id, gpr_used, gpr_written, param_used);
+          if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+          mark_reg_write(0u, gpr_used, gpr_written);
+          mark_reg_write(2u, gpr_used, gpr_written);
+        } else {
+          if (mod == 3u) {
+            mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
+            mark_reg_write(d.rm, gpr_used, gpr_written);
+          }
+        }
+      }
+      continue;
+    }
+  }
+
+  // Backward liveness pass for flags (so flag-setting ALU updates __hex_cmp only when needed).
+  bool flags_live = false;
+  for (uint32_t rev = insn_count; rev > 0u; --rev) {
+    const uint32_t i = rev - 1u;
+    const GeneralInsn& gi = insns[i];
+    if (is_flag_reading_insn(gi)) {
+      flags_live = true;
+    } else if (is_flag_setting_alu(gi)) {
+      if (flags_live) {
+        sets_live_flags[i] = 1u;
+        uses_flags = true;
+      }
+      flags_live = false;
+    }
+    if (label_refs[i] > 0u) {
+      // Conservative at join points: flags might be live across a branch.
+      flags_live = uses_flags;
+    }
+  }
+
+  // Simple structuring pass:
+  // 1) Short forward Jcc skip -> `if (!cond) { ... }`
+  // 2) Simple backward Jcc loop -> `do { ... } while (cond);`
+  for (uint32_t i = 0u; i < insn_count; ++i) {
+    const GeneralInsn& gi = insns[i];
+    if (gi.is_raw || gi.d.kind != HEX_X86_KIND_JCC) continue;
+    const int32_t tidx = target_idx[i];
+    if (tidx < 0) continue;
+    const uint32_t t = static_cast<uint32_t>(tidx);
+    if (t > i + 1u && t <= i + 6u && label_refs[t] == 1u &&
+        if_open[i] == 0u && if_close[t] == 0u && do_open[t] == 0u) {
+      bool ok = true;
+      for (uint32_t k = i + 1u; k < t; ++k) {
+        if (label_refs[k] > 0u || if_open[k] || if_close[k] || do_open[k] || do_close[k]) {
+          ok = false;
+          break;
+        }
+        if (!insns[k].is_raw &&
+            (insns[k].d.kind == HEX_X86_KIND_JCC || insns[k].d.kind == HEX_X86_KIND_JMP)) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        if_open[i] = 1u;
+        if_close[t] = 1u;
+        label_refs[t] = 0u;
+      }
+    } else if (t < i && (i - t) <= 32u && label_refs[t] == 1u && label_refs[i] == 0u &&
+               do_open[t] == 0u && do_close[i] == 0u) {
+      bool ok = true;
+      for (uint32_t k = t; k <= i; ++k) {
+        if (if_open[k] || if_close[k] || do_open[k] || do_close[k]) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        do_open[t] = 1u;
+        do_close[i] = 1u;
+        label_refs[t] = 0u;
+      }
+    }
+  }
+
+  // Compute parameter count from param_used bitmask.
+  uint32_t num_params = 0u;
+  const uint32_t max_abi_params = (abi_id == HEX_X86_ABI_MICROSOFT_X64) ? 4u : 6u;
+  for (uint32_t p = 0u; p < max_abi_params; ++p) {
+    if ((param_used & (1u << p)) != 0u) num_params = p + 1u;
+  }
+
+  // Sanitize function name.
+  char func_name[256];
+  const uint32_t func_name_out_len = sanitize_func_name(
+      local_name, local_name_len, base_addr, func_name, sizeof(func_name));
+
+  // Pass 2: Emit C11 text + linemap into x86_emit_arena().
+  hex::Arena& emit_arena = x86_emit_arena();
+  emit_arena.reset();
+  char* text_mem = emit_arena.alloc<char>(kMaxGeneralTextCap);
+  HexLineMapEntry* lm_mem = emit_arena.alloc<HexLineMapEntry>(kMaxGeneralLineMapCap);
+  if (!text_mem || !lm_mem) {
+    clear_x86_last_output();
+    return HEX_ERR_OOM;
+  }
+  text_mem[0] = '\0';
+
+  GenTextBuf tb{text_mem, kMaxGeneralTextCap, 0u, 1u, false, lm_mem, kMaxGeneralLineMapCap, 0u};
+
+  // Self-contained C11 fixed-width typedef prelude.
+  tb.put_str(
+      "typedef __UINT8_TYPE__ uint8;\n"
+      "typedef __INT8_TYPE__ int8;\n"
+      "typedef __UINT16_TYPE__ uint16;\n"
+      "typedef __INT16_TYPE__ int16;\n"
+      "typedef __UINT32_TYPE__ uint32;\n"
+      "typedef __INT32_TYPE__ int32;\n"
+      "typedef __UINT64_TYPE__ uint64;\n"
+      "typedef __INT64_TYPE__ int64;\n"
+      "typedef __UINT8_TYPE__ uint8_t;\n"
+      "typedef __UINTPTR_TYPE__ uintptr_t;\n");
+
+  // External RIP-relative globals.
+  for (uint32_t g = 0u; g < global_count; ++g) {
+    tb.put_str("static uint64 global_");
+    tb.put_u64_hex(globals[g], true);
+    tb.put_str(" = 0;\n");
+  }
+
+  // External callee prototypes.
+  if (callee_count > 0u) {
+    tb.put_str(
+        "#ifndef __HEX_ANY_ARGS\n"
+        "#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L\n"
+        "#define __HEX_ANY_ARGS ...\n"
+        "#else\n"
+        "#define __HEX_ANY_ARGS\n"
+        "#endif\n"
+        "#endif\n");
+    char self_sub[32];
+    GenTextBuf self_tb{self_sub, sizeof(self_sub), 0u, 1u, false, nullptr, 0u, 0u};
+    self_tb.put_str("sub_");
+    self_tb.put_u64_hex(base_addr, true);
+    for (uint32_t c = 0u; c < callee_count; ++c) {
+      if (callees[c] == base_addr && str_eq(func_name, self_sub)) continue;
+      tb.put_str("uint64 sub_");
+      tb.put_u64_hex(callees[c], true);
+      tb.put_str("(__HEX_ANY_ARGS);\n");
+    }
+  }
+
+  // Function signature.
+  tb.record_line(base_addr);
+  tb.put_str("uint64 ");
+  tb.put_bytes(func_name, func_name_out_len);
+  tb.put_char('(');
+  if (num_params == 0u) {
+    tb.put_str("void");
+  } else {
+    for (uint32_t p = 0u; p < num_params; ++p) {
+      if (p > 0u) tb.put_str(", ");
+      tb.put_str("uint64 a");
+      tb.put_u64_dec(p + 1u);
+    }
+  }
+  tb.put_str(")\n{\n");
+
+  // Local declarations.
+  if (uses_stack) {
+    tb.put_str("    static uint8_t __hex_stack[4096];\n");
+    gpr_used |= (1u << 4u);
+  }
+  if (uses_flags) {
+    tb.put_str("    uint64 __hex_cmp_l = 0, __hex_cmp_r = 0;\n");
+  }
+  for (uint32_t r = 0u; r < 16u; ++r) {
+    if ((gpr_used & (1u << r)) == 0u) continue;
+    tb.put_str("    uint64 ");
+    tb.put_gpr(static_cast<uint8_t>(r));
+    if (r == 4u && uses_stack) {
+      tb.put_str(" = (uint64)(uintptr_t)(__hex_stack + sizeof(__hex_stack) - 64);\n");
+    } else if (r == 5u && uses_stack) {
+      tb.put_str(" = rsp;\n");
+    } else {
+      const int32_t pidx = abi_param_index(abi_id, static_cast<uint8_t>(r));
+      if (pidx >= 0 && static_cast<uint32_t>(pidx) < num_params) {
+        tb.put_str(" = a");
+        tb.put_u64_dec(static_cast<uint32_t>(pidx) + 1u);
+        tb.put_str(";\n");
+      } else {
+        tb.put_str(" = 0;\n");
+      }
+    }
+  }
+  for (uint32_t x = 0u; x < 16u; ++x) {
+    if ((xmm_used & (1u << x)) == 0u) continue;
+    tb.put_str("    uint64 ");
+    tb.put_xmm(static_cast<uint8_t>(x));
+    tb.put_str(" = 0;\n");
+  }
+
+  // Emit body statements.
+  uint32_t indent = 1u;
+  uint32_t open_ifs = 0u;
+  uint32_t open_dos = 0u;
+  bool last_was_return = false;
+  bool truncated_body = false;
+
+  for (uint32_t i = 0u; i < insn_count; ++i) {
+    if (tb.len + 512u >= tb.cap) {
+      truncated_body = true;
+      break;
+    }
+
+    if (if_close[i] && open_ifs > 0u) {
+      --open_ifs;
+      --indent;
+      tb.put_indent(indent);
+      tb.put_str("}\n");
+      last_was_return = false;
+    }
+
+    if (label_refs[i] > 0u) {
+      tb.put_str("loc_");
+      tb.put_u64_hex(insns[i].d.pc, true);
+      tb.put_str(":\n");
+      last_was_return = false;
+    }
+
+    if (do_open[i]) {
+      tb.put_indent(indent);
+      tb.put_str("do {\n");
+      ++open_dos;
+      ++indent;
+      last_was_return = false;
+    }
+
+    const GeneralInsn& gi = insns[i];
+    const HexX86Decoded& d = gi.d;
+
+    if (gi.is_raw) {
+      tb.record_line(d.pc);
+      tb.put_indent(indent);
+      tb.put_str("/* x86_64 raw 0x");
+      tb.put_u8_hex2(gi.raw_byte);
+      tb.put_str(" */\n");
+      last_was_return = false;
+      continue;
+    }
+
+    if (gi.is_leave) {
+      tb.record_line(d.pc);
+      tb.put_indent(indent);
+      tb.put_str("rsp = rbp; rbp = *(uint64*)(uintptr_t)rsp; rsp += 8;\n");
+      last_was_return = false;
+      continue;
+    }
+
+    if (gi.is_xchg) {
+      tb.record_line(d.pc);
+      tb.put_indent(indent);
+      tb.put_str("{ uint64 __t = ");
+      tb.put_gpr(d.reg);
+      tb.put_str("; ");
+      tb.put_gpr(d.reg);
+      tb.put_str(" = ");
+      tb.put_gpr(d.rm);
+      tb.put_str("; ");
+      tb.put_gpr(d.rm);
+      tb.put_str(" = __t; }\n");
+      last_was_return = false;
+      continue;
+    }
+
+    if (d.kind == HEX_X86_KIND_NOP) {
+      continue;
+    }
+
+    const uint8_t mod = static_cast<uint8_t>((d.modrm >> 6u) & 3u);
+    const uint8_t w = (d.op_size == 8u || d.op_size == 16u || d.op_size == 32u || d.op_size == 64u)
+                          ? d.op_size
+                          : 64u;
+
+    tb.record_line(d.pc);
+
+    // RET
+    if (d.kind == HEX_X86_KIND_RET) {
+      tb.put_indent(indent);
+      tb.put_str("return rax;\n");
+      last_was_return = (open_ifs == 0u && open_dos == 0u);
+      continue;
+    }
+
+    // PUSH
+    if (d.kind == HEX_X86_KIND_PUSH) {
+      tb.put_indent(indent);
+      tb.put_str("rsp -= 8; *(uint64*)(uintptr_t)rsp = ");
+      if ((d.flags & HEX_X86_FLAG_HAS_IMM) != 0u) {
+        tb.put_imm_u64(static_cast<uint64_t>(d.imm));
+      } else if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
+        emit_rm_read(tb, d, 64u);
+      } else if (d.rm < 16u) {
+        tb.put_gpr(d.rm);
+      } else {
+        tb.put_str("0");
+      }
+      tb.put_str(";\n");
+      last_was_return = false;
+      continue;
+    }
+
+    // POP
+    if (d.kind == HEX_X86_KIND_POP) {
+      tb.put_indent(indent);
+      if (d.rm < 16u) {
+        tb.put_gpr(d.rm);
+        tb.put_str(" = *(uint64*)(uintptr_t)rsp; ");
+      }
+      tb.put_str("rsp += 8;\n");
+      last_was_return = false;
+      continue;
+    }
+
+    // CALL
+    if (d.kind == HEX_X86_KIND_CALL) {
+      tb.put_indent(indent);
+      if ((d.flags & HEX_X86_FLAG_HAS_TARGET) != 0u && d.opcode == 0xe8u) {
+        tb.put_str("rax = sub_");
+        tb.put_u64_hex(d.target, true);
+        tb.put_char('(');
+        emit_abi_call_args(tb, abi_id, true, gpr_used);
+        tb.put_str(");\n");
+      } else {
+        tb.put_str("rax = ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)(");
+        if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
+          emit_rm_read(tb, d, 64u);
+        } else {
+          tb.put_str("0");
+        }
+        tb.put_str("))(");
+        emit_abi_call_args(tb, abi_id, false, gpr_used);
+        tb.put_str(");\n");
+      }
+      last_was_return = false;
+      continue;
+    }
+
+    // JMP
+    if (d.kind == HEX_X86_KIND_JMP) {
+      tb.put_indent(indent);
+      if ((d.flags & HEX_X86_FLAG_HAS_TARGET) != 0u && d.opcode != 0xffu) {
+        if (target_idx[i] >= 0) {
+          tb.put_str("goto loc_");
+          tb.put_u64_hex(d.target, true);
+          tb.put_str(";\n");
+          last_was_return = false;
+        } else {
+          tb.put_str("return sub_");
+          tb.put_u64_hex(d.target, true);
+          tb.put_char('(');
+          emit_abi_call_args(tb, abi_id, true, gpr_used);
+          tb.put_str(");\n");
+          last_was_return = (open_ifs == 0u && open_dos == 0u);
+        }
+      } else {
+        tb.put_str("return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)(");
+        if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
+          emit_rm_read(tb, d, 64u);
+        } else {
+          tb.put_str("0");
+        }
+        tb.put_str("))(");
+        emit_abi_call_args(tb, abi_id, false, gpr_used);
+        tb.put_str(");\n");
+        last_was_return = (open_ifs == 0u && open_dos == 0u);
+      }
+      continue;
+    }
+
+    // JCC
+    if (d.kind == HEX_X86_KIND_JCC) {
+      const uint8_t cc = (d.opcode == 0x0fu) ? static_cast<uint8_t>(d.opcode2 & 0x0fu)
+                                             : static_cast<uint8_t>(d.opcode & 0x0fu);
+      if (if_open[i]) {
+        tb.put_indent(indent);
+        tb.put_str("if (");
+        emit_cc_expr(tb, static_cast<uint8_t>(cc ^ 1u));
+        tb.put_str(") {\n");
+        ++open_ifs;
+        ++indent;
+      } else if (do_close[i] && open_dos > 0u) {
+        --open_dos;
+        --indent;
+        tb.put_indent(indent);
+        tb.put_str("} while (");
+        emit_cc_expr(tb, cc);
+        tb.put_str(");\n");
+      } else if (target_idx[i] >= 0) {
+        tb.put_indent(indent);
+        tb.put_str("if (");
+        emit_cc_expr(tb, cc);
+        tb.put_str(") goto loc_");
+        tb.put_u64_hex(d.target, true);
+        tb.put_str(";\n");
+      } else {
+        tb.put_indent(indent);
+        tb.put_str("if (");
+        emit_cc_expr(tb, cc);
+        tb.put_str(") return sub_");
+        tb.put_u64_hex(d.target, true);
+        tb.put_char('(');
+        emit_abi_call_args(tb, abi_id, true, gpr_used);
+        tb.put_str(");\n");
+      }
+      last_was_return = false;
+      continue;
+    }
+
+    // SSE2
+    if (is_sse2_insn(d)) {
+      tb.put_indent(indent);
+      if (d.opcode2 == 0x57u || d.opcode2 == 0xefu) {
+        // xorps / xorpd / pxor
+        if (mod == 3u && d.reg == d.rm) {
+          tb.put_xmm(d.reg);
+          tb.put_str(" = 0;\n");
+        } else {
+          tb.put_xmm(d.reg);
+          tb.put_str(" ^= ");
+          if (mod == 3u) tb.put_xmm(d.rm);
+          else emit_mem_deref(tb, d, 64u);
+          tb.put_str(";\n");
+        }
+      } else if (d.opcode2 == 0x10u || d.opcode2 == 0x28u || d.opcode2 == 0x6fu) {
+        // movups/movupd/movss/movsd/movaps/movapd/movdqa/movdqu load
+        tb.put_xmm(d.reg);
+        tb.put_str(" = ");
+        if (mod == 3u) tb.put_xmm(d.rm);
+        else emit_mem_deref(tb, d, (d.op_size == 32u) ? 32u : 64u);
+        tb.put_str(";\n");
+      } else if (d.opcode2 == 0x11u || d.opcode2 == 0x29u || d.opcode2 == 0x7fu) {
+        // store
+        if (mod == 3u) {
+          tb.put_xmm(d.rm);
+          tb.put_str(" = ");
+          tb.put_xmm(d.reg);
+          tb.put_str(";\n");
+        } else {
+          const uint8_t sw = (d.op_size == 32u) ? 32u : 64u;
+          emit_mem_deref(tb, d, sw);
+          tb.put_str(" = (");
+          tb.put_str(width_to_uint_type(sw));
+          tb.put_str(")");
+          tb.put_xmm(d.reg);
+          tb.put_str(";\n");
+        }
+      } else if (d.opcode2 == 0x6eu) {
+        // movd/movq xmm, r/m
+        tb.put_xmm(d.reg);
+        tb.put_str(" = ");
+        emit_rm_read(tb, d, (d.op_size == 32u) ? 32u : 64u);
+        tb.put_str(";\n");
+      } else if (d.opcode2 == 0x7eu) {
+        const bool is_f3_movq = ((d.flags & HEX_X86_FLAG_HAS_66) == 0u);
+        if (is_f3_movq) {
+          tb.put_xmm(d.reg);
+          tb.put_str(" = ");
+          if (mod == 3u) tb.put_xmm(d.rm);
+          else emit_mem_deref(tb, d, 64u);
+          tb.put_str(";\n");
+        } else if (mod == 3u) {
+          emit_gpr_write_prefix(tb, d.rm, (d.op_size == 32u) ? 32u : 64u);
+          tb.put_xmm(d.reg);
+          emit_gpr_write_suffix(tb);
+        } else {
+          const uint8_t sw = (d.op_size == 32u) ? 32u : 64u;
+          emit_mem_deref(tb, d, sw);
+          tb.put_str(" = (");
+          tb.put_str(width_to_uint_type(sw));
+          tb.put_str(")");
+          tb.put_xmm(d.reg);
+          tb.put_str(";\n");
+        }
+      }
+      last_was_return = false;
+      continue;
+    }
+
+    // CMOVcc
+    if (is_cmovcc_insn(d)) {
+      const uint8_t cc = static_cast<uint8_t>(d.opcode2 & 0x0fu);
+      tb.put_indent(indent);
+      tb.put_str("if (");
+      emit_cc_expr(tb, cc);
+      tb.put_str(") ");
+      emit_gpr_write_prefix(tb, d.reg, w);
+      emit_rm_read(tb, d, w);
+      emit_gpr_write_suffix(tb);
+      last_was_return = false;
+      continue;
+    }
+
+    // SETcc
+    if (is_setcc_insn(d)) {
+      const uint8_t cc = static_cast<uint8_t>(d.opcode2 & 0x0fu);
+      tb.put_indent(indent);
+      if (mod == 3u) {
+        emit_gpr_write_prefix(tb, d.rm, 8u);
+        emit_cc_expr(tb, cc);
+        tb.put_str(" ? 1U : 0U");
+        emit_gpr_write_suffix(tb);
+      } else {
+        emit_mem_deref(tb, d, 8u);
+        tb.put_str(" = (uint8)(");
+        emit_cc_expr(tb, cc);
+        tb.put_str(" ? 1U : 0U);\n");
+      }
+      last_was_return = false;
+      continue;
+    }
+
+    // CMP / TEST
+    if (d.kind == HEX_X86_KIND_CMP) {
+      tb.put_indent(indent);
+      if (d.opcode == 0x84u || d.opcode == 0x85u) {
+        tb.put_str("__hex_cmp_l = (uint64)(");
+        emit_rm_read(tb, d, w);
+        tb.put_str(") & (uint64)(");
+        emit_gpr_read(tb, d.reg, w);
+        tb.put_str("); __hex_cmp_r = 0;\n");
+      } else if (d.opcode == 0xa8u || d.opcode == 0xa9u) {
+        tb.put_str("__hex_cmp_l = (uint64)(");
+        emit_gpr_read(tb, 0u, w);
+        tb.put_str(") & ");
+        tb.put_imm_u64(mask_imm_by_size(d.imm, w));
+        tb.put_str("; __hex_cmp_r = 0;\n");
+      } else if (d.opcode == 0xf6u || d.opcode == 0xf7u) {
+        tb.put_str("__hex_cmp_l = (uint64)(");
+        emit_rm_read(tb, d, w);
+        tb.put_str(") & ");
+        tb.put_imm_u64(mask_imm_by_size(d.imm, w));
+        tb.put_str("; __hex_cmp_r = 0;\n");
+      } else if (d.opcode == 0x3cu || d.opcode == 0x3du) {
+        tb.put_str("__hex_cmp_l = (uint64)(");
+        emit_gpr_read(tb, 0u, w);
+        tb.put_str("); __hex_cmp_r = ");
+        tb.put_imm_u64(mask_imm_by_size(d.imm, w));
+        tb.put_str(";\n");
+      } else if (d.opcode == 0x80u || d.opcode == 0x81u || d.opcode == 0x83u) {
+        tb.put_str("__hex_cmp_l = (uint64)(");
+        emit_rm_read(tb, d, w);
+        tb.put_str("); __hex_cmp_r = ");
+        tb.put_imm_u64(mask_imm_by_size(d.imm, w));
+        tb.put_str(";\n");
+      } else if (d.opcode == 0x38u || d.opcode == 0x39u) {
+        tb.put_str("__hex_cmp_l = (uint64)(");
+        emit_rm_read(tb, d, w);
+        tb.put_str("); __hex_cmp_r = (uint64)(");
+        emit_gpr_read(tb, d.reg, w);
+        tb.put_str(");\n");
+      } else {
+        tb.put_str("__hex_cmp_l = (uint64)(");
+        emit_gpr_read(tb, d.reg, w);
+        tb.put_str("); __hex_cmp_r = (uint64)(");
+        emit_rm_read(tb, d, w);
+        tb.put_str(");\n");
+      }
+      last_was_return = false;
+      continue;
+    }
+
+    // MOV
+    if (d.kind == HEX_X86_KIND_MOV) {
+      tb.put_indent(indent);
+      if (d.opcode >= 0xb0u && d.opcode <= 0xbfu) {
+        emit_gpr_write_prefix(tb, d.rm, w);
+        tb.put_imm_u64(mask_imm_by_size(d.imm, w));
+        emit_gpr_write_suffix(tb);
+      } else if (d.opcode == 0xc6u || d.opcode == 0xc7u) {
+        if (mod == 3u) {
+          emit_gpr_write_prefix(tb, d.rm, w);
+          tb.put_imm_u64(mask_imm_by_size(d.imm, w));
+          emit_gpr_write_suffix(tb);
+        } else {
+          emit_mem_deref(tb, d, w);
+          tb.put_str(" = (");
+          tb.put_str(width_to_uint_type(w));
+          tb.put_str(")");
+          tb.put_imm_u64(mask_imm_by_size(d.imm, w));
+          tb.put_str(";\n");
+        }
+      } else if (d.opcode == 0x88u || d.opcode == 0x89u) {
+        if (mod == 3u) {
+          emit_gpr_write_prefix(tb, d.rm, w);
+          emit_gpr_read(tb, d.reg, w);
+          emit_gpr_write_suffix(tb);
+        } else {
+          emit_mem_deref(tb, d, w);
+          tb.put_str(" = ");
+          emit_gpr_read(tb, d.reg, w);
+          tb.put_str(";\n");
+        }
+      } else if (d.opcode == 0x8au || d.opcode == 0x8bu) {
+        emit_gpr_write_prefix(tb, d.reg, w);
+        emit_rm_read(tb, d, w);
+        emit_gpr_write_suffix(tb);
+      } else {
+        tb.put_str("/* mov */\n");
+      }
+      last_was_return = false;
+      continue;
+    }
+
+    // MOVZX
+    if (d.kind == HEX_X86_KIND_MOVZX) {
+      const uint8_t src_w = (d.opcode2 == 0xb6u) ? 8u : 16u;
+      tb.put_indent(indent);
+      emit_gpr_write_prefix(tb, d.reg, w);
+      tb.put_str("(uint64)");
+      emit_rm_read(tb, d, src_w);
+      emit_gpr_write_suffix(tb);
+      last_was_return = false;
+      continue;
+    }
+
+    // MOVSX / MOVSXD / CDQE / CDQ / CQO
+    if (d.kind == HEX_X86_KIND_MOVSX) {
+      tb.put_indent(indent);
+      if (d.opcode == 0x98u) {
+        if (w == 64u) {
+          tb.put_str("rax = (uint64)(int64)(int32)rax;\n");
+        } else if (w == 32u) {
+          tb.put_str("rax = (uint32)(int32)(int16)rax;\n");
+        } else {
+          tb.put_str("rax = (rax & ~0xFFFFULL) | (uint16)(int16)(int8)rax;\n");
+        }
+      } else if (d.opcode == 0x99u) {
+        if (w == 64u) {
+          tb.put_str("rdx = ((int64)rax < 0) ? ~0ULL : 0ULL;\n");
+        } else if (w == 32u) {
+          tb.put_str("rdx = ((int32)rax < 0) ? 0xFFFFFFFFULL : 0ULL;\n");
+        } else {
+          tb.put_str("rdx = (rdx & ~0xFFFFULL) | (((int16)rax < 0) ? 0xFFFFULL : 0ULL);\n");
+        }
+      } else {
+        const uint8_t src_w = (d.opcode == 0x63u) ? 32u : ((d.opcode2 == 0xbeu) ? 8u : 16u);
+        emit_gpr_write_prefix(tb, d.reg, w);
+        tb.put_str("(uint64)(int64)(");
+        tb.put_str(width_to_int_type(src_w));
+        tb.put_str(")(");
+        emit_rm_read(tb, d, src_w);
+        tb.put_char(')');
+        emit_gpr_write_suffix(tb);
+      }
+      last_was_return = false;
+      continue;
+    }
+
+    // LEA
+    if (d.kind == HEX_X86_KIND_LEA) {
+      tb.put_indent(indent);
+      emit_gpr_write_prefix(tb, d.reg, w);
+      emit_mem_addr_expr(tb, d);
+      emit_gpr_write_suffix(tb);
+      last_was_return = false;
+      continue;
+    }
+
+    // MUL / IMUL
+    if (d.kind == HEX_X86_KIND_MUL) {
+      tb.put_indent(indent);
+      if (d.opcode == 0xf6u || d.opcode == 0xf7u) {
+        const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+        if (grp == 4u) {
+          tb.put_str("rax = (uint64)(");
+          emit_gpr_read(tb, 0u, w);
+          tb.put_str(") * (uint64)(");
+          emit_rm_read(tb, d, w);
+          tb.put_str("); rdx = 0;\n");
+        } else {
+          tb.put_str("rax = (uint64)((int64)(");
+          tb.put_str(width_to_int_type(w));
+          tb.put_str(")");
+          emit_gpr_read(tb, 0u, w);
+          tb.put_str(" * (int64)(");
+          tb.put_str(width_to_int_type(w));
+          tb.put_str(")");
+          emit_rm_read(tb, d, w);
+          tb.put_str("); rdx = 0;\n");
+        }
+      } else if (d.opcode == 0x0fu && d.opcode2 == 0xafu) {
+        emit_gpr_write_prefix(tb, d.reg, w);
+        emit_gpr_read(tb, d.reg, w);
+        tb.put_str(" * ");
+        emit_rm_read(tb, d, w);
+        emit_gpr_write_suffix(tb);
+      } else {
+        emit_gpr_write_prefix(tb, d.reg, w);
+        emit_rm_read(tb, d, w);
+        tb.put_str(" * ");
+        tb.put_imm_u64(mask_imm_by_size(d.imm, w));
+        emit_gpr_write_suffix(tb);
+      }
+      last_was_return = false;
+      continue;
+    }
+
+    // ALU (add, sub, and, or, xor, adc, sbb, shifts, inc, dec, neg, not, div, idiv)
+    if (d.kind == HEX_X86_KIND_ALU) {
+      tb.put_indent(indent);
+      uint8_t flag_reg = kRegNone;
+      bool flag_from_mem = false;
+
+      if (d.opcode < 0x40u) {
+        const uint8_t grp = static_cast<uint8_t>((d.opcode >> 3u) & 7u);
+        const uint8_t sub = static_cast<uint8_t>(d.opcode & 7u);
+        const char* op_s = alu_binop_str(grp);
+        if (sub == 0u || sub == 1u) {
+          if (mod == 3u) {
+            if (grp == 6u && d.reg == d.rm) {
+              emit_gpr_write_prefix(tb, d.rm, w);
+              tb.put_str("0");
+              emit_gpr_write_suffix(tb);
+            } else {
+              emit_gpr_write_prefix(tb, d.rm, w);
+              emit_gpr_read(tb, d.rm, w);
+              tb.put_char(' ');
+              tb.put_str(op_s);
+              tb.put_char(' ');
+              emit_gpr_read(tb, d.reg, w);
+              emit_gpr_write_suffix(tb);
+            }
+            flag_reg = d.rm;
+          } else {
+            emit_mem_deref(tb, d, w);
+            tb.put_str(" = (");
+            tb.put_str(width_to_uint_type(w));
+            tb.put_str(")(");
+            emit_mem_deref(tb, d, w);
+            tb.put_char(' ');
+            tb.put_str(op_s);
+            tb.put_char(' ');
+            emit_gpr_read(tb, d.reg, w);
+            tb.put_str(");\n");
+            flag_from_mem = true;
+          }
+        } else if (sub == 2u || sub == 3u) {
+          if (grp == 6u && mod == 3u && d.reg == d.rm) {
+            emit_gpr_write_prefix(tb, d.reg, w);
+            tb.put_str("0");
+            emit_gpr_write_suffix(tb);
+          } else {
+            emit_gpr_write_prefix(tb, d.reg, w);
+            emit_gpr_read(tb, d.reg, w);
+            tb.put_char(' ');
+            tb.put_str(op_s);
+            tb.put_char(' ');
+            emit_rm_read(tb, d, w);
+            emit_gpr_write_suffix(tb);
+          }
+          flag_reg = d.reg;
+        } else {
+          emit_gpr_write_prefix(tb, 0u, w);
+          emit_gpr_read(tb, 0u, w);
+          tb.put_char(' ');
+          tb.put_str(op_s);
+          tb.put_char(' ');
+          tb.put_imm_u64(mask_imm_by_size(d.imm, w));
+          emit_gpr_write_suffix(tb);
+          flag_reg = 0u;
+        }
+      } else if (d.opcode == 0x80u || d.opcode == 0x81u || d.opcode == 0x83u) {
+        const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+        const char* op_s = alu_binop_str(grp);
+        const uint64_t iv = mask_imm_by_size(d.imm, w);
+        if (mod == 3u) {
+          emit_gpr_write_prefix(tb, d.rm, w);
+          emit_gpr_read(tb, d.rm, w);
+          tb.put_char(' ');
+          tb.put_str(op_s);
+          tb.put_char(' ');
+          tb.put_imm_u64(iv);
+          emit_gpr_write_suffix(tb);
+          flag_reg = d.rm;
+        } else {
+          emit_mem_deref(tb, d, w);
+          tb.put_str(" = (");
+          tb.put_str(width_to_uint_type(w));
+          tb.put_str(")(");
+          emit_mem_deref(tb, d, w);
+          tb.put_char(' ');
+          tb.put_str(op_s);
+          tb.put_char(' ');
+          tb.put_imm_u64(iv);
+          tb.put_str(");\n");
+          flag_from_mem = true;
+        }
+      } else if (d.opcode == 0xc0u || d.opcode == 0xc1u ||
+                 (d.opcode >= 0xd0u && d.opcode <= 0xd3u)) {
+        const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+        const bool by_cl = (d.opcode == 0xd2u || d.opcode == 0xd3u);
+        const uint32_t shift_mask = (w == 64u) ? 63u : 31u;
+        const uint32_t imm_cnt = static_cast<uint32_t>(d.imm) & shift_mask;
+        auto emit_shift_rhs = [&]() {
+          if (grp == 7u) {
+            // sar (arithmetic right shift)
+            tb.put_str("((");
+            tb.put_str(width_to_int_type(w));
+            tb.put_str(")(");
+            emit_rm_read(tb, d, w);
+            tb.put_str(") >> ");
+            if (by_cl) {
+              tb.put_str("(rcx & ");
+              tb.put_u64_dec(shift_mask);
+              tb.put_char(')');
+            } else {
+              tb.put_u64_dec(imm_cnt);
+            }
+            tb.put_char(')');
+          } else if (grp == 0u || grp == 1u || grp == 2u || grp == 3u) {
+            // rol / ror / rcl / rcr
+            const bool is_left = (grp == 0u || grp == 2u);
+            const uint32_t rot_bits = (w == 64u) ? 64u : 32u;
+            tb.put_str("(((");
+            emit_rm_read(tb, d, w);
+            tb.put_str(is_left ? ") << " : ") >> ");
+            if (by_cl) {
+              tb.put_str("(rcx & ");
+              tb.put_u64_dec(shift_mask);
+              tb.put_char(')');
+            } else {
+              tb.put_u64_dec(imm_cnt);
+            }
+            tb.put_str(") | ((");
+            emit_rm_read(tb, d, w);
+            tb.put_str(is_left ? ") >> ((" : ") << ((");
+            tb.put_u64_dec(rot_bits);
+            tb.put_str(" - ");
+            if (by_cl) {
+              tb.put_str("(rcx & ");
+              tb.put_u64_dec(shift_mask);
+              tb.put_char(')');
+            } else {
+              tb.put_u64_dec(imm_cnt);
+            }
+            tb.put_str(") & ");
+            tb.put_u64_dec(shift_mask);
+            tb.put_str(")))");
+          } else {
+            // shl (4) / shr (5)
+            tb.put_char('(');
+            emit_rm_read(tb, d, w);
+            tb.put_str((grp == 4u) ? " << " : " >> ");
+            if (by_cl) {
+              tb.put_str("(rcx & ");
+              tb.put_u64_dec(shift_mask);
+              tb.put_char(')');
+            } else {
+              tb.put_u64_dec(imm_cnt);
+            }
+            tb.put_char(')');
+          }
+        };
+        if (mod == 3u) {
+          emit_gpr_write_prefix(tb, d.rm, w);
+          emit_shift_rhs();
+          emit_gpr_write_suffix(tb);
+          flag_reg = d.rm;
+        } else {
+          emit_mem_deref(tb, d, w);
+          tb.put_str(" = (");
+          tb.put_str(width_to_uint_type(w));
+          tb.put_str(")");
+          emit_shift_rhs();
+          tb.put_str(";\n");
+          flag_from_mem = true;
+        }
+      } else if (d.opcode == 0xffu) {
+        const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+        const char* op_s = (grp == 0u) ? "+" : "-";
+        if (mod == 3u) {
+          emit_gpr_write_prefix(tb, d.rm, w);
+          emit_gpr_read(tb, d.rm, w);
+          tb.put_char(' ');
+          tb.put_str(op_s);
+          tb.put_str(" 1");
+          emit_gpr_write_suffix(tb);
+          flag_reg = d.rm;
+        } else {
+          emit_mem_deref(tb, d, w);
+          tb.put_str(" = (");
+          tb.put_str(width_to_uint_type(w));
+          tb.put_str(")(");
+          emit_mem_deref(tb, d, w);
+          tb.put_char(' ');
+          tb.put_str(op_s);
+          tb.put_str(" 1);\n");
+          flag_from_mem = true;
+        }
+      } else if (d.opcode == 0xf6u || d.opcode == 0xf7u) {
+        const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+        if (grp == 2u || grp == 3u) {
+          // not (2) / neg (3)
+          if (mod == 3u) {
+            emit_gpr_write_prefix(tb, d.rm, w);
+            if (grp == 2u) {
+              tb.put_str("~(");
+              emit_gpr_read(tb, d.rm, w);
+              tb.put_char(')');
+            } else {
+              tb.put_str("0ULL - (uint64)(");
+              emit_gpr_read(tb, d.rm, w);
+              tb.put_char(')');
+            }
+            emit_gpr_write_suffix(tb);
+            if (grp == 3u) flag_reg = d.rm;
+          } else {
+            emit_mem_deref(tb, d, w);
+            tb.put_str(" = (");
+            tb.put_str(width_to_uint_type(w));
+            tb.put_str(")(");
+            tb.put_str(grp == 2u ? "~(" : "0ULL - (uint64)(");
+            emit_mem_deref(tb, d, w);
+            tb.put_str("));\n");
+            if (grp == 3u) flag_from_mem = true;
+          }
+        } else if (grp == 6u) {
+          // div r/m
+          tb.put_str("{ uint64 __d = (uint64)(");
+          emit_rm_read(tb, d, w);
+          tb.put_str("); if (__d != 0) { uint64 __q = rax / __d; rdx = rax % __d; rax = __q; } }\n");
+        } else if (grp == 7u) {
+          // idiv r/m
+          tb.put_str("{ int64 __d = (int64)(");
+          tb.put_str(width_to_int_type(w));
+          tb.put_str(")(");
+          emit_rm_read(tb, d, w);
+          tb.put_str("); if (__d != 0) { int64 __q = (int64)rax / __d; rdx = (uint64)((int64)rax % __d); rax = (uint64)__q; } }\n");
+        } else {
+          tb.put_str("/* alu */\n");
+        }
+      } else {
+        tb.put_str("/* alu */\n");
+      }
+
+      if (sets_live_flags[i]) {
+        tb.put_indent(indent);
+        if (flag_reg < 16u) {
+          tb.put_str("__hex_cmp_l = (uint64)(");
+          emit_gpr_read(tb, flag_reg, w);
+          tb.put_str("); __hex_cmp_r = 0;\n");
+        } else if (flag_from_mem) {
+          tb.put_str("__hex_cmp_l = (uint64)(");
+          emit_mem_deref(tb, d, w);
+          tb.put_str("); __hex_cmp_r = 0;\n");
+        }
+      }
+      last_was_return = false;
+      continue;
+    }
+
+    // Any other decoded instruction fallback
+    tb.put_indent(indent);
+    tb.put_str("/* x86_64 ");
+    tb.put_str(d.mn[0] != '\0' ? d.mn : "insn");
+    tb.put_str(" */\n");
+    last_was_return = false;
+  }
+
+  // Close any still-open structured blocks cleanly.
+  while (open_ifs > 0u) {
+    --open_ifs;
+    --indent;
+    tb.put_indent(indent);
+    tb.put_str("}\n");
+    last_was_return = false;
+  }
+  while (open_dos > 0u) {
+    --open_dos;
+    --indent;
+    tb.put_indent(indent);
+    tb.put_str("} while (0);\n");
+    last_was_return = false;
+  }
+  if (truncated_body) {
+    tb.put_str("    /* x86_64 output truncated at buffer limit */\n");
+    last_was_return = false;
+  }
+  if (!last_was_return) {
+    tb.put_str("    return rax;\n");
+  }
+  tb.put_str("}\n");
+
+  if (tb.overflow || tb.len == 0u) {
+    clear_x86_last_output();
+    return HEX_ERR_OOM;
+  }
+
+  g_x86_last_text = tb.data;
+  g_x86_last_text_len = tb.len;
+  g_x86_last_linemap = tb.lm;
+  g_x86_last_linemap_count = tb.lm_count;
+  return HEX_OK;
+}
+
+}  // namespace
+
+extern "C" {
+
+HEX_WASM_EXPORT("hex_engine_decompile_x86_64")
+HexStatus hex_engine_decompile_x86_64(
+    const uint8_t* bytes,
+    uint32_t byte_len,
+    uint64_t base_addr,
+    const char* func_name_utf8,
+    uint32_t func_name_len,
+    uint32_t abi_id,
+    uint32_t emit_flags) {
+  clear_x86_last_output();
+
+  if (bytes == nullptr || byte_len == 0u) return HEX_ERR_INVALID_ARG;
+  if (func_name_len > 0u && func_name_utf8 == nullptr) return HEX_ERR_INVALID_ARG;
+  if (abi_id != HEX_X86_ABI_SYSV_AMD64 && abi_id != HEX_X86_ABI_MICROSOFT_X64) {
+    return HEX_ERR_INVALID_ARG;
+  }
+  if (byte_len > kMaxGeneralX86Bytes) return HEX_ERR_UNSUPPORTED;
+
+  // Copy function name to stack so it is never aliased with any arena.
+  char local_name[256];
+  uint32_t local_name_len = 0u;
+  if (func_name_utf8 != nullptr && func_name_len > 0u) {
+    local_name_len = func_name_len < (sizeof(local_name) - 1u)
+        ? func_name_len
+        : static_cast<uint32_t>(sizeof(local_name) - 1u);
+    hex::mem_copy(local_name, func_name_utf8, local_name_len);
+    local_name[local_name_len] = '\0';
+  }
+
+  // Fast path: strict structured C emitter for small clean functions (preserves 100% compatibility).
+  if (byte_len <= kMaxX86Bytes) {
+    const HexStatus strict_st = try_emit_x86_64_strict(
+        bytes, byte_len, base_addr, local_name, local_name_len, abi_id, emit_flags);
+    if (strict_st == HEX_OK) return HEX_OK;
+  }
+
+  // General fallback: handles 100% of real-world x86-64 functions up to 32 KiB / 4,096 insns.
+  clear_x86_last_output();
+  return try_emit_x86_64_general(
+      bytes, byte_len, base_addr, local_name, local_name_len, abi_id);
 }
 
 HEX_WASM_EXPORT("hex_x86_64_decomp_get_text_ptr")

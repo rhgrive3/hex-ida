@@ -111,7 +111,7 @@ export function openBinary(input, opts = {}) {
   let wasmInfo = null;
   if (engineMode !== 'js') {
     const bytes = toUint8View(input);
-    if (bytes && (bytes.length <= 1_500_000 || detected.format === 'unknown')) {
+    if (bytes && (bytes.length <= 1_950_000 || detected.format === 'unknown')) {
       wasmInfo = wasmInspectBinary(bytes);
     }
   }

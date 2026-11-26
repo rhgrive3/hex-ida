@@ -812,7 +812,7 @@ static void process_insn(
   }
 
   // PAC* / AUT* / XPAC* (Data-processing 1-source opcode2 == 00001)
-  if ((w & 0xFFFFDC00u) == 0xDAC10000u) {
+  if (((w & 0xFFFF0000u) == 0xDAC10000u && (((w >> 10u) & 0x3Fu) <= 17u))) {
     if (emit && tb) {
       rec();
       tb->put_str("    (void)0; /* pac */\n");
@@ -952,7 +952,7 @@ static void process_insn(
   }
 
   // BLR Xn / BLRAAZ / BLRABZ / BLRAA / BLRAB
-  if ((w & 0xFFFFFC1Fu) == 0xD63F0000u || (w & 0xFFFFFBFFu) == 0xD63F081Fu || (w & 0xFFFFF800u) == 0xD73F0800u) {
+  if ((w & 0xFFFFFC1Fu) == 0xD63F0000u || (w & 0xFFFFF81Fu) == 0xD63F081Fu || (w & 0xFFFFF800u) == 0xD73F0800u) {
     const uint32_t rn = (w >> 5u) & 31u;
     const bool has_rm = ((w & 0xFFFFF800u) == 0xD73F0800u);
     const uint32_t rm = w & 31u;
@@ -973,7 +973,7 @@ static void process_insn(
   }
 
   // BR Xn / BRAAZ / BRABZ / BRAA / BRAB (indirect branch / jump table)
-  if ((w & 0xFFFFFC1Fu) == 0xD61F0000u || (w & 0xFFFFFBFFu) == 0xD61F081Fu || (w & 0xFFFFF800u) == 0xD71F0800u) {
+  if ((w & 0xFFFFFC1Fu) == 0xD61F0000u || (w & 0xFFFFF81Fu) == 0xD61F081Fu || (w & 0xFFFFF800u) == 0xD71F0800u) {
     const uint32_t rn = (w >> 5u) & 31u;
     if (!emit) {
       ctx.mark_gpr_read(rn);
@@ -4560,7 +4560,7 @@ static void process_insn(
   }
 
   // Part 3.10a: 1-source GPR RBIT / REV16 / REV32 / REV / CLZ / CLS
-  if ((w & 0x7FFFF000u) == 0x5AC00000u) {
+  if ((w & 0x7FFFC000u) == 0x5AC00000u) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const uint32_t opc = (w >> 10u) & 0x3Fu;
     if (opc <= 5u && !(!is64 && opc == 3u)) {
@@ -6234,7 +6234,7 @@ HexStatus try_emit_arm64_general(
         if (i + 1u < word_count && is_label[i + 1u] == 0u &&
             ((wi & 0xFFFFFC1Fu) == 0xD65F0000u || wi == 0xD65F0BFFu || wi == 0xD65F0FFFu ||
              (wi & 0xFC000000u) == 0x14000000u ||
-             (wi & 0xFFFFFC1Fu) == 0xD61F0000u || (wi & 0xFFFFFC00u) == 0xD71F0800u ||
+             (wi & 0xFFFFFC1Fu) == 0xD61F0000u || ((wi & 0xFFFFF800u) == 0xD71F0800u || (wi & 0xFFFFF81Fu) == 0xD61F081Fu) ||
              (wi & 0x7E000000u) == 0x34000000u ||
              (wi & 0xFF000010u) == 0x54000000u || (wi & 0x7E000000u) == 0x36000000u)) {
           is_label[i + 1u] = 2u;  // internal CFG split marker (not emitted as C label)

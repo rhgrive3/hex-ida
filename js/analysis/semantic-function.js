@@ -11,6 +11,7 @@ import {
   getEngineMode,
   isWasmEngineAvailable,
   recordFallback,
+  wasmDecompileX86_64Function,
   wasmDecompileX86_64SemanticFunction,
 } from '../core/hex-engine-bridge.js';
 import {
@@ -370,7 +371,6 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
   const engineMode = getEngineMode(options);
   const x86FastPathEligible = architectureId === 'x86_64'
     && options.canonicalProjectionOnly !== true
-    && !input.name
     && !input.cxxEvidence
     && !input.cxxEvidenceProvider
     && !input.functionPrototype
@@ -381,7 +381,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
   if (x86FastPathEligible && engineMode !== 'js') {
     const supportedAbiId = abiPlugin.id === 'sysv-amd64'
       ? 0
-      : (abiPlugin.id === 'microsoft-x64' ? 1 : -1);
+      : ((abiPlugin.id === 'microsoft-x64' || abiPlugin.id === 'microsoft-vectorcall') ? 1 : -1);
     if (supportedAbiId < 0) {
       recordFallback('x86_64_decompile:unsupported_abi');
     } else {
@@ -389,13 +389,26 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
       if (!contiguous) {
         recordFallback('x86_64_decompile:non_contiguous_bytes');
       } else {
-        const wasmResult = wasmDecompileX86_64SemanticFunction({
-          bytes: contiguous.bytes,
-          baseAddr: contiguous.baseAddr,
-          abiId: supportedAbiId,
-          insns: orderedInstructions,
-          _engine: options._engine ?? null,
-        });
+        const funcName = typeof input.name === 'string' ? input.name : '';
+        let wasmResult = !funcName
+          ? wasmDecompileX86_64SemanticFunction({
+            bytes: contiguous.bytes,
+            baseAddr: contiguous.baseAddr,
+            abiId: supportedAbiId,
+            insns: orderedInstructions,
+            _engine: options._engine ?? null,
+          })
+          : null;
+        if (!wasmResult) {
+          wasmResult = wasmDecompileX86_64Function({
+            bytes: contiguous.bytes,
+            baseAddr: contiguous.baseAddr,
+            funcName,
+            abiId: supportedAbiId,
+            insns: orderedInstructions,
+            _engine: options._engine ?? null,
+          });
+        }
         if (wasmResult) {
           abortIfRequested(options.signal);
           const cfg = {
