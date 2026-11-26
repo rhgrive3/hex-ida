@@ -1588,7 +1588,7 @@ export async function showPatchEditor(app, addr, insnArg, options = {}) {
   const l = list();
   l.append(groupRow(pick('よく使う書き換え', 'Common patches')));
   for (const s of suggestions) {
-    l.append(tapRow(s.label, { sub: s.why + '\n→ ' + s.text, onTap: () => apply(s.text) }));
+    l.append(tapRow(s.label, { sub: s.why + '\n→ ' + s.text, onTap: () => (s.hex ? applyRawHex(s.text) : apply(s.text)) }));
   }
   sheet.body.append(l);
 
@@ -1621,16 +1621,24 @@ export async function showPatchEditor(app, addr, insnArg, options = {}) {
   });
   sheet.body.append(field(hex, pick('16 進で書き換える', 'Patch hex'), applyHex));
 
+  function applyRawHex(text) {
+    const bytes = parseHexBytes(text);
+    if (!bytes || !bytes.length) { toast(pick('16進バイトの形式が不正です', 'Invalid hex bytes')); return; }
+    commit(bytes, text, { rawHex: true });
+  }
+
   async function apply(text) {
     const built = assemble(text, addr);
     if (built.error) { alertDialog(pick('組み立てられません', 'Assembly error'), built.error); return; }
     commit(built.bytes, text);
   }
 
-  async function commit(bytes, text) {
-    const valid = bytes.length === 4
-      ? validatePatchRange(region, addr, bytes.length, file && file.size, true)
-      : validateMultiInstructionPatchRange(region, addr, bytes.length, file && file.size);
+  async function commit(bytes, text, { rawHex = false } = {}) {
+    const valid = rawHex
+      ? validatePatchRange(region, addr, bytes.length, file && file.size, false)
+      : (bytes.length === 4
+        ? validatePatchRange(region, addr, bytes.length, file && file.size, true)
+        : validateMultiInstructionPatchRange(region, addr, bytes.length, file && file.size));
     if (valid.error) { alertDialog(pick('登録できません', 'Cannot stage patch'), valid.error); return; }
     const before = await app.backend.readAt(addr, bytes.length)
       .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);

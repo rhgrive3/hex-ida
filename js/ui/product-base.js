@@ -3496,15 +3496,18 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     if (intent.kind === 'empty') return;
     input.blur();
     if (intent.kind === 'ai') {
-      const compiled = compileGoal(intent.value);
-      if (compiled?.goal && app.store?.get?.('fileInfo')) {
-        rememberQuery(intent.value, app);
-        runInvestigation(app, intent.value);
-        input.value = '';
-        refreshHint();
-        return;
-      }
+      const explicitAi = /^[?？]/.test(String(intent.raw || '').trim());
       const assistant = getAssistant();
+      if (!explicitAi && app.store?.get?.('fileInfo')) {
+        const compiled = compileGoal(intent.value);
+        if (compiled?.goal) {
+          rememberQuery(intent.value, app);
+          runInvestigation(app, intent.value);
+          input.value = '';
+          refreshHint();
+          return;
+        }
+      }
       if (assistant) { assistant.ask(intent.value); input.value = ''; refreshHint(); return; }
       router.navigate('/investigate?q=' + encodeURIComponent(intent.value));
       return;
@@ -3759,7 +3762,7 @@ export function installProductUI(app) {
       routeHost.hidden = false;
       routeHost.replaceChildren();
       let view;
-      if (route.route.id === 'investigate') view = renderInvestigate(app, router, routeContext);
+      if (route.route.id === 'investigate') view = renderInvestigate(app, router, route, routeContext);
       else if (route.route.id === 'explorer') view = renderExplorer(app, router, route, routeContext);
       else if (route.route.id === 'function') view = renderFunctionWorkspace(app, router, route, routeContext);
       else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router, route);
