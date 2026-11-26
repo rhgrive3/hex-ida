@@ -5554,14 +5554,52 @@ static bool structurize_c_body(
         if (is_fallback && ret_idx < 0 && valid_scan && reached_eof && rel_d == 0 && ld == 0 &&
             a > 0u && depth_arr[a - 1u] == 0 && is_terminator(stmts[active[a - 1u]])) {
           const uint32_t rem = (acount - 1u) - a;
-          if (rem >= 1u && rem <= 12u) {
+          const SLine& last_sl = stmts[active[acount - 1u]];
+          if (rem >= 1u && rem <= 12u && last_sl.kind == 0u) {
             const char* lp = nullptr;
             uint32_t ll = 0u;
-            if (get_stmt_text(stmts[active[acount - 1u]], &lp, &ll) &&
-                !starts_with(lp, ll, "    (void)0;", 12u) &&
-                ends_with(lp, ll, ");", 2u)) {
-              ret_idx = static_cast<int32_t>(acount - 1u);
-              is_cold_eof = true;
+            if (get_stmt_text(last_sl, &lp, &ll) && ends_with(lp, ll, ");", 2u)) {
+              uint32_t p = 0u;
+              while (p < ll && lp[p] == ' ') ++p;
+              // Skip optional simple register assignment prefix `xN = ` or `wN = ` or `dN = `
+              uint32_t eq = p;
+              while (eq < ll && ((lp[eq] >= 'a' && lp[eq] <= 'z') || (lp[eq] >= '0' && lp[eq] <= '9') || lp[eq] == '_')) ++eq;
+              if (eq > p && eq + 3u <= ll && lp[eq] == ' ' && lp[eq + 1u] == '=' && lp[eq + 2u] == ' ') {
+                p = eq + 3u;
+              }
+              // Require an unconditional direct call `ident(...);`, excluding control keywords and casts `(type)...`
+              auto is_id0 = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; };
+              auto is_id = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; };
+              if (p < ll && is_id0(lp[p])) {
+                uint32_t id_end = p + 1u;
+                while (id_end < ll && is_id(lp[id_end])) ++id_end;
+                const uint32_t id_len = id_end - p;
+                const bool is_kw = (id_len == 2u && lp[p] == 'i' && lp[p + 1u] == 'f') ||
+                                   (id_len == 3u && lp[p] == 'f' && lp[p + 1u] == 'o' && lp[p + 2u] == 'r') ||
+                                   (id_len == 5u && starts_with(lp + p, id_len, "while", 5u)) ||
+                                   (id_len == 6u && starts_with(lp + p, id_len, "switch", 6u)) ||
+                                   (id_len == 6u && starts_with(lp + p, id_len, "return", 6u)) ||
+                                   (id_len == 6u && starts_with(lp + p, id_len, "sizeof", 6u));
+                if (!is_kw && id_end < ll && lp[id_end] == '(') {
+                  // Ensure the `(` at id_end matches the closing `)` right before `;`
+                  int32_t pdepth = 0;
+                  bool matches_end = false;
+                  for (uint32_t q = id_end; q + 1u < ll; ++q) {
+                    if (lp[q] == '(') ++pdepth;
+                    else if (lp[q] == ')') {
+                      --pdepth;
+                      if (pdepth == 0) {
+                        matches_end = (q + 2u == ll && lp[q + 1u] == ';');
+                        break;
+                      }
+                    }
+                  }
+                  if (matches_end) {
+                    ret_idx = static_cast<int32_t>(acount - 1u);
+                    is_cold_eof = true;
+                  }
+                }
+              }
             }
           }
         }
@@ -6814,7 +6852,7 @@ static bool structurize_c_body(
             end_cls.orig_line = stmts[end_pos].orig_line;
             insert_before(ins_pos, end_cls);
           } else {
-            const bool else_falls = (if_end > then_end + 1u) &&
+            const bool else_falls = (if_end == then_end + 1u) ||
                                     !(depth_arr[if_end - 1u] == id + 1 && is_terminator(stmts[active[if_end - 1u]]));
             if (else_falls) {
               uint32_t ins_pos = active[if_end];
@@ -6862,7 +6900,7 @@ static bool structurize_c_body(
           stmts[active[ju]].synth_len = hlen;
           stmts[active[ju]].brace_delta = 1;
           // 2. Lower index: then branch: append <S> before `} else {` if then falls through
-          const bool then_falls = (then_end > i + 1u) &&
+          const bool then_falls = (then_end == i + 1u) ||
                                   !(depth_arr[then_end - 1u] == id + 1 && is_terminator(stmts[active[then_end - 1u]]));
           if (then_falls) {
             uint32_t tins = active[then_end];
@@ -7381,6 +7419,7 @@ HexStatus try_emit_arm64_general(
 
   // Allocate temp tables in work_arena (scratch when available) and output buffers in emit_arena.
   hex::Arena& work_arena = g_general_scratch_arena ? *g_general_scratch_arena : emit_arena;
+  const size_t work_entry_mark = work_arena.used();
   uint8_t* is_label = work_arena.alloc<uint8_t>(word_count);
   uint8_t* has_back_edge = work_arena.alloc<uint8_t>(word_count);
   AnalysisCtx* ctx_ptr = work_arena.alloc<AnalysisCtx>(1u);
@@ -7822,7 +7861,7 @@ HexStatus try_emit_arm64_general(
   }
 
   if (&work_arena != &emit_arena) {
-    work_arena.reset();
+    work_arena.restore(work_entry_mark);
   }
   structurize_c_body(tb, body_start_off, body_start_line, work_arena, emit_arena);
   tb.put_str("}\n");
