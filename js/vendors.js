@@ -30,7 +30,11 @@
  * まず使われない（"vungle" という名前の自作クラスを書く人はいない）。
  */
 const VENDOR_PATTERNS = [
-  { vendor: 'IronSource', kind: 'ads', re: /ironsource|supersonic|levelplay/i },
+  { vendor: 'IronSource', kind: 'ads', re: /ironsource|supersonic|levelplay|IS_AD_UNIT_|LPM_AD_FORMAT_/i },
+  { vendor: 'Apple Swift/Foundation', kind: 'system', re: /^_?\$s(?:10Foundation|7SwiftUI|5UIKit|12CoreGraphics|7Combine|10ObjectiveC|8Dispatch|So\d+|ST|s\d+)/, textRe: /NSFoundation|SwiftUI/i },
+  { vendor: 'Apple System', kind: 'system', re: /^_+(?:nw_|objc_|swift_|SCNetwork|UIScrollView|UIView|UIApplication|NSLocale|NSDate|NSURL|NSTemporary|CFRunLoop|kCF|CGContext|CAAnimation|dispatch_|SKAdNetwork)/, textRe: /nw_path_enumerate_interfaces/i },
+  { vendor: 'Apple Security', kind: 'crypto', re: /^_+Sec(?:Key|Trust|Item|Random|Certificate|Policy)/ },
+  { vendor: 'Apple StoreKit', kind: 'purchase', re: /^_?\$s8StoreKit|^_+SK(?:Payment|Product|Receipt|Storefront|Store)/ },
   { vendor: 'AppLovin', kind: 'ads', re: /applovin|\bmax(mediation|adview|reward)/i },
   { vendor: 'Google Mobile Ads', kind: 'ads', re: /admob|googlemobileads|gadmob|interstitialad/i, textRe: /admob|googlemobileads|gadmob/i },
   { vendor: 'Unity Ads', kind: 'ads', re: /unityads|unityservices|unityanalytics/i },
@@ -193,7 +197,7 @@ const GAME_VALUE_GOALS = new Set([
 
 /** 広告以外の目的（自由入力を含む）で衝突とみなす SDK 種別。 */
 const NON_ADS_CONFLICT_KINDS = new Set([
-  'ads', 'analytics', 'marketing', 'support', 'media', 'ui', 'test',
+  'ads', 'analytics', 'marketing', 'support', 'media', 'ui', 'test', 'system',
 ]);
 
 /**
@@ -659,7 +663,11 @@ export function vendorOf(className, learned) {
  */
 export function vendorConflicts(goalId, vendor) {
   if (!vendor) return false;
+  if (vendor.kind === 'system') return true;
   if (GAME_VALUE_GOALS.has(goalId)) return true;
+  if (goalId === 'ads' && vendor.kind === 'ads') return false;
+  if (goalId === 'crypto' && vendor.kind === 'crypto') return false;
+  if (goalId === 'purchase' && vendor.kind === 'purchase') return false;
   if (goalId === 'ads') return false;
   return NON_ADS_CONFLICT_KINDS.has(vendor.kind);
 }

@@ -233,9 +233,12 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       if (matcher && !matcher.test(name) && !(normName && matcher.test(normName))) return;
       const m = matchName(goal, name);
       if (!m) return;
-      const role = numericSymbolRole(goal, name);
-      const roleRank = role === 'value' ? 2 : role === 'neutral' ? 1 : 0;
-      const roleMult = role === 'value' ? 1.6 : role === 'non-value' ? 0.4 : 1;
+      const isStub = /^_+(?:exp|exp2|exp10|expm1|frexp|ldexp|log|log2|log10|pow|sin|cos|tan|sqrt|floor|ceil|fabs|malloc|calloc|realloc|free|memcpy|memmove|memset|strlen|strcmp|printf|snprintf|abort|exit)$/.test(name)
+        || /^_+(?:objc_|swift_)/.test(name)
+        || /^_?\$s.*(?:Ma|Md|Mn|Ml|vw|vM|WT|Wl)$/.test(name);
+      const role = isStub ? 'non-value' : numericSymbolRole(goal, name);
+      const roleRank = isStub ? 0 : (role === 'value' ? 2 : role === 'neutral' ? 1 : 0);
+      const roleMult = isStub ? 0.2 : (role === 'value' ? 1.6 : role === 'non-value' ? 0.4 : 1);
       const mutInfo = symbolMutationKind(name);
       const mutatorRank = mutInfo.kind === 'mutator' ? 2 : mutInfo.kind === 'const-getter' ? 0 : 1;
       const mutatorMult = (wantsMutation && role !== 'non-value')

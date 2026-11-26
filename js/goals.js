@@ -92,6 +92,7 @@ export const GOALS = [
     avoid: [
       /(?:multi[\s_-]*)?concurren(cy|t)/i,
       /\bbid[\s_-]*floor\w*/i,
+      /\blocale\b|\bnslocale\b|currency[\s_-]*(?:identifier|code|symbol|formatter)|number[\s_-]*formatter/i,
       /price[\s_-]*floor\w*/i,
       /costume|acoustic|coincid(?:e|ent|ence)/i,
       /(?:white|load|audio|stereo|color|channel)[\s_-]*balance/i,
@@ -104,7 +105,8 @@ export const GOALS = [
     weak: [/rate/i, /probability/i, /rare/i, /reward/i, /確率/, /レア/, /排出/],
     avoid: [
       /generat(?:e|ed|es|or)|iterat(?:e|ed|es|or)|operat(?:e|ed|es|or)|separat(?:e|ed|es)|accelerat(?:e|ed|es)|migrat(?:e|ed|es)|integrat(?:e|ed|es)|accurate|strategy|infrared|rarely/i,
-      /(?:frame|sample|bit|refresh|baud|heart|tick|error|hit|miss)[\s_-]*rate/i,
+      /(?:frame|sample|bit|refresh|baud|heart|tick|error|hit|miss|deceleration|data|sampling|polling)[\s_-]*rate/i,
+      /enumerate[\s_-]*interfaces/i,
       /draw[\s_-]*(?:call|rect|in[\s_-]*rect|mesh|sprite|text|image|line|path|layer|buffer|pass|order|mode|index(?:ed)?|array|element|primitive|vertex|quad|triangle|canvas|context|surface|texture|shadow|view|node|gizmo|batch)/i,
     ],
     expects: { numeric: true, call: true },
@@ -192,6 +194,8 @@ export const GOALS = [
     avoid: [
       /(?:log|verbosity|battery|zoom|compression|mip(?:map)?|window|api|feature|debug|error|warning|trace|severity|nesting|indent)[\s_-]*level/i,
       /(?:crank|frank|prank|drank|shrank)/i,
+      /^_*(?:exp|exp2|exp10|expm1|frexp|ldexp)$/i,
+      /\b(?:exp10|exp2|expm1|frexp|ldexp|exponent|expect|expand|export|explicit|expression|exception)\b/i,
     ],
     expects: { numeric: true, store: true, compare: true },
   },
@@ -231,8 +235,9 @@ export const GOALS = [
   {
     id: 'speed', ja: '移動速度・スピード', en: 'Speed / movement', icon: '💨',
     strong: [/\bspeed\b/i, /move[\s_-]*speed/i, /velocity/i, /移動速度/, /スピード/, /速度/, /素早さ/],
-    weak: [/accel/i, /pace/i, /tempo/i, /\bwalk\b/i, /\brun\b/i, /敏捷/],
+    weak: [/accel/i, /\bpace\b/i, /tempo/i, /\bwalk\b/i, /\brun\b/i, /敏捷/],
     avoid: [
+      /white[\s_-]*space|coordinate[\s_-]*space|name[\s_-]*space|work[\s_-]*space|drag[\s_-]*gesture|minimum[\s_-]*distance|run[\s_-]*loop/i,
       /(?:download|upload|network|transfer|connection|playback|scroll|fan|clock|baud|cpu|gpu|link|write|read|disk|bit)[\s_-]*speed/i,
       /speed[\s_-]*(?:test|dial|limit|bump)/i,
       /(?:angular|scroll|swipe|pan|drag|flick|fling|scroll[\s_-]*view)[\s_-]*velocity/i,
@@ -247,7 +252,8 @@ export const GOALS = [
     avoid: [
       /\bcd[\s_-]*(?:rom|key|drive|player|track|audio|image|dir|path)\b/i,
       /(?:gcd|lcd|bcd|mcd|acd|icd|rcd|ucd)\b/i,
-      /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle)[\s_-]*(?:interval|delay)/i,
+      /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle|timeout|date)[\s_-]*(?:interval|delay)/i,
+      /url[\s_-]*request|cache[\s_-]*policy/i,
       /reload[\s_-]*(?:data|table|section|row|view|page|url|webview|config|script)/i,
     ],
     expects: { numeric: true, store: true, compare: true },
