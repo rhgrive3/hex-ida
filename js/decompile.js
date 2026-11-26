@@ -95,7 +95,7 @@ function tryWasmDecompile(model, opts) {
     return null;
   }
   const arch = detectModelArchitecture(model, opts);
-  if (arch !== 'arm64' && arch !== 'aarch64' && arch !== 'arm64_32') {
+  if (arch !== 'arm64' && arch !== 'aarch64' && arch !== 'arm64_32' && arch !== 'arm64e') {
     recordFallback(`decompile:non_arm64_arch:${arch}`);
     return null;
   }

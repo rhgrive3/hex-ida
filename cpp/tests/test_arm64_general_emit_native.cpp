@@ -126,7 +126,7 @@ void test_bcond_lslv_asrv_div_sp_prfm_ldnp_fcvtau_cas_csel() {
   assert(contains(txt, len, "x2 = *(uint64 *)((uintptr_t)(x0) + 16);"));
   assert(contains(txt, len, "x1 = *(uint64 *)((uintptr_t)(x0) + 24);\n    x0 = *(uint64 *)((uintptr_t)(x0) + 16);"));
   assert(contains(txt, len, "x3 = (uint32_t)round(d0);"));
-  assert(contains(txt, len, "(void)0; /* arm64 insn 0xC8A17C02 */"));
+  assert(contains(txt, len, "if (__old == (uint64_t)x1)"));
 }
 
 void test_self_recursion_and_cross_label_adrp() {
@@ -182,29 +182,32 @@ void test_guards_oom_and_table_overflow() {
   assert(hex::decompiler::passes::try_emit_arm64_general(
              four_words, 4u, 0x1000ULL, "oom", 3u, 0u, tiny_arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_OOM);
 
-  // Exceeding kMaxCallees (128) -> HEX_ERR_RESOURCE_LIMIT
-  uint32_t many_calls[520];
-  for (uint32_t i = 0u; i < 519u; ++i) {
-    many_calls[i] = 0x94000000u | ((0x400u + i * 2u) & 0x03FFFFFFu);
+  // Exceeding kMaxCallees (2048) -> HEX_ERR_RESOURCE_LIMIT
+  static uint8_t big_buf[1536u * 1024u];
+  hex::Arena big_arena;
+  big_arena.init_fixed(big_buf, sizeof(big_buf));
+  static uint32_t many_calls[2060];
+  for (uint32_t i = 0u; i < 2059u; ++i) {
+    many_calls[i] = 0x94000000u | ((0x1000u + i * 2u) & 0x03FFFFFFu);
   }
-  many_calls[519] = 0xd65f03c0u;
-  arena.reset();
+  many_calls[2059] = 0xd65f03c0u;
+  big_arena.reset();
   assert(hex::decompiler::passes::try_emit_arm64_general(
-             many_calls, 520u, 0x100000000ULL, "many_calls", 10u, 0u,
-             arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_RESOURCE_LIMIT);
+             many_calls, 2060u, 0x100000000ULL, "many_calls", 10u, 0u,
+             big_arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_RESOURCE_LIMIT);
 
-  // Exceeding kMaxGlobals (512) -> HEX_ERR_RESOURCE_LIMIT
-  uint32_t many_globals[520];
+  // Exceeding kMaxGlobals (2048) -> HEX_ERR_RESOURCE_LIMIT
+  static uint32_t many_globals[2060];
   many_globals[0] = 0x90000008u;  // adrp x8, #0x100000000
-  for (uint32_t i = 0u; i < 518u; ++i) {
+  for (uint32_t i = 0u; i < 2058u; ++i) {
     // ldr x9, [x8, #(i * 8)]
     many_globals[1u + i] = 0xf9400109u | ((i & 0xFFFu) << 10u);
   }
-  many_globals[519] = 0xd65f03c0u;
-  arena.reset();
+  many_globals[2059] = 0xd65f03c0u;
+  big_arena.reset();
   assert(hex::decompiler::passes::try_emit_arm64_general(
-             many_globals, 520u, 0x100000000ULL, "many_globals", 12u, 0u,
-             arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_RESOURCE_LIMIT);
+             many_globals, 2060u, 0x100000000ULL, "many_globals", 12u, 0u,
+             big_arena, &txt, &len, &lm, &lm_cnt) == HEX_ERR_RESOURCE_LIMIT);
 
   // Trailing label before '}' emits valid C11 `(void)0;`
   const uint32_t trailing_nop[] = { 0xb4000060u, 0xd2800020u, 0xd65f03c0u, 0xd503201fu };
@@ -227,7 +230,7 @@ void test_sparse_self_recursion_and_trailing_fallback_label() {
     0xb4000062u,  // cbz x2, +12 (targets idx 3 CAS fallback at end!)
     0xd1000442u,  // sub x2, x2, #1
     0x97fffffeu,  // bl self
-    0xc8a17c02u,  // loc_10000100C: cas x1, x2, [x0] -> must emit `(void)0; /* arm64 insn ... */`
+    0x04000000u,  // loc_10000100C: unallocated -> must emit `(void)0; /* arm64 insn ... */`
   };
   const char* txt = nullptr;
   uint32_t len = 0u;
@@ -239,7 +242,7 @@ void test_sparse_self_recursion_and_trailing_fallback_label() {
   assert_parens_balanced(txt, len);
   assert(contains(txt, len, "    sub_100001000(x0, a2, x2);"));
   assert(contains(txt, len, "if (x2 != 0) {"));
-  assert(contains(txt, len, "    (void)0; /* arm64 insn 0xC8A17C02 */\n}"));
+  assert(contains(txt, len, "    (void)0; /* arm64 insn 0x4000000 */\n}"));
 }
 
 
@@ -460,6 +463,170 @@ void test_wave26_structurizer_and_stubs() {
   }
 }
 
+
+void test_wave27_fixes_insns_and_structurizer_v3() {
+  static uint8_t buf[1536u * 1024u];
+  hex::Arena arena;
+  arena.init_fixed(buf, sizeof(buf));
+  const char* txt = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_cnt = 0u;
+
+  // (1) REV64.2S phase-ordering fix: rev64 v1.2s, v0.2s followed by 128-bit NEON on v0 only (v1 never marked q)
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0x0EA00801u,  // rev64 v1.2s, v0.2s
+      0x4EA01C00u,  // mov v0.16b, v0.16b (marks q0 only, NOT q1)
+      0xD65F03C0u,  // ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 3u, 0x100010000ULL, "rev64_phase", 11u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "double d1"));
+    assert(!contains(txt, len, "q1 = "));
+    assert(contains(txt, len, "__rv >> 32"));
+  }
+
+  // (2) LDPSW + FMAX + FNMUL + SBFX + FCSEL + SMULH + UMULH + RETAA + RETAB
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0x69410C02u,  // ldpsw x2, x3, [x0, #8]
+      0x1E624820u,  // fmax d0, d1, d2
+      0x1E628823u,  // fnmul d3, d1, d2
+      0x93442C24u,  // sbfx x4, x1, #4, #8 (immr=4, imms=11)
+      0xEB03005Fu,  // cmp x2, x3
+      0x1E630C00u,  // fcsel d0, d0, d3, eq
+      0x9B427C25u,  // smulh x5, x1, x2
+      0x9BC27C26u,  // umulh x6, x1, x2
+      0xB4000040u,  // cbz x0, +8 -> retaa
+      0xD65F0FFFu,  // retab
+      0xD65F0BFFu,  // retaa
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 11u, 0x100011000ULL, "wave27_insns", 12u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "(uint64)(int64_t)*(int32_t *)"));
+    assert(contains(txt, len, "(d1 > d2 ? d1 : d2)"));
+    assert(contains(txt, len, "-(d1 * d2)"));
+    assert(contains(txt, len, "(int64_t)(((uint64_t)x1 >> 4) << 56)) >> 56"));
+    assert(contains(txt, len, " ? d0 : d3;"));
+    assert(contains(txt, len, "(__int128)(int64_t)x1 * (__int128)(int64_t)x2) >> 64"));
+    assert(contains(txt, len, "(uint128)(uint64_t)x1 * (uint128)(uint64_t)x2) >> 64"));
+    assert(contains(txt, len, "return "));
+    assert(!contains(txt, len, "/* arm64 insn"));
+  }
+
+  // (3) Long symbol names (>128 chars and >512 chars safely truncated, not HEX_ERR_UNSUPPORTED)
+  {
+    arena.reset();
+    char name200[201];
+    name200[0] = 'f';
+    for (uint32_t i = 1u; i < 200u; ++i) name200[i] = 'a';
+    name200[200] = '\0';
+    const uint32_t w[] = { 0xD2800020u, 0xD65F03C0u };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 2u, 0x100012000ULL, name200, 200u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert(contains(txt, len, name200));
+
+    arena.reset();
+    char name600[601];
+    name600[0] = 'g';
+    for (uint32_t i = 1u; i < 600u; ++i) name600[i] = 'b';
+    name600[600] = '\0';
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 2u, 0x100012100ULL, name600, 600u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+  }
+
+  // (4) Structurizer Rule 0b (fallthrough goto deleted) + Rule 0c (DCE after unconditional return)
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0x14000001u,  // 0x00: b +4 (fallthrough to next insn -> Rule 0b deletes!)
+      0xD2800020u,  // 0x04: loc_...: mov x0, #1
+      0xD65F03C0u,  // 0x08: ret
+      0xD2800FA0u,  // 0x0c: mov x0, #125 (unreachable dead code -> Rule 0c deletes!)
+      0xD65F03C0u,  // 0x10: ret (unreachable)
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 5u, 0x100013000ULL, "rule_0b_0c", 10u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "goto "));
+    assert(!contains(txt, len, "0x7D"));
+    assert(!contains(txt, len, "125"));
+  }
+
+  // (5) Structurizer Rule 4b / 4c: multi-level if/else block-exit conditional skip
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0xB40000E0u,  // 0x00: cbz x0, +28 (0x1c -> L_end)
+      0xB40000C1u,  // 0x04: cbz x1, +24 (0x1c -> L_end)
+      0xB40000A2u,  // 0x08: cbz x2, +20 (0x1c -> L_end)
+      0x91000400u,  // 0x0c: add x0, x0, #1
+      0xB4000063u,  // 0x10: cbz x3, +12 (0x1c -> L_end)
+      0x91000800u,  // 0x14: add x0, x0, #2
+      0x91000C00u,  // 0x18: add x0, x0, #3
+      0xD65F03C0u,  // 0x1c: L_end: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 8u, 0x100014000ULL, "rule_4b_4c", 10u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (6) Structurizer Rule 5b: single-ref cold tail-block inlining
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0xB40000C0u,  // 0x00: cbz x0, +24 (0x18 -> L_cold)
+      0x91000400u,  // 0x04: add x0, x0, #1
+      0x91000800u,  // 0x08: L_join: add x0, x0, #2
+      0x91000C00u,  // 0x0c: add x0, x0, #3
+      0xD65F03C0u,  // 0x10: ret
+      0xD65F03C0u,  // 0x14: ret (terminator before L_cold)
+      0xD28000E0u,  // 0x18: L_cold: mov x0, #7
+      0x91001000u,  // 0x1c: add x0, x0, #4
+      0x17FFFFFBu,  // 0x20: b -20 (0x08 -> L_join)
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 9u, 0x100015000ULL, "rule_5b_cold", 12u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "x0 = 7;"));
+    assert(!contains(txt, len, "loc_100015018"));
+  }
+
+  // (7) Structurizer Rule 8: explicit `continue;` assertion inside a loop (including after an inner loop)
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0xF1000400u,  // 0x00: L_outer: subs x0, x0, #1
+      0xD1000421u,  // 0x04: L_inner: sub x1, x1, #1
+      0xB5FFFFE1u,  // 0x08: cbnz x1, -4 (0x04 -> L_inner)
+      0xB4000042u,  // 0x0c: cbz x2, +8 (0x14 -> L_cont)
+      0x91000463u,  // 0x10: add x3, x3, #1
+      0xB5FFFF60u,  // 0x14: L_cont: cbnz x0, -20 (0x00 -> L_outer)
+      0xD65F03C0u,  // 0x18: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 7u, 0x100016000ULL, "rule_8_continue", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "continue;"));
+    assert(!contains(txt, len, "goto "));
+  }
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -470,6 +637,7 @@ int main() {
   test_wave23_instructions_and_pass_sync();
   test_wave25_neon_fmov_1word_and_structurizer();
   test_wave26_structurizer_and_stubs();
+  test_wave27_fixes_insns_and_structurizer_v3();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }

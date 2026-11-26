@@ -1857,20 +1857,32 @@ export function createAppAnalysisQueryAdapter(app) {
           if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
             const entry = ensureCxxEvidenceProviderForApp(app);
             if (entry) {
-              await entry.buildPromise;
+              const builtIndex = await entry.buildPromise;
               throwIfAborted(options.signal);
               if (cxxMemberIndexForApp(app) !== entry.provider.memberIndex()) {
                 throw new Error('C++ recovery binding changed');
               }
-              try {
-                projectionIr = irFor(result.value.model, { ...architectureDecompilerOptions(app, result.value.model, result.value, options), ...(returnsValue ? { returnsValue } : {}), symbolFor });
-                cxxEvidence = entry.provider.projectForFunction({
-                  functionAddress: address != null ? BigInt(address) : null,
-                  functionName: name,
-                  ir: projectionIr,
-                });
-              } catch {
-                cxxEvidence = null;
+              let addrBig = null;
+              try { addrBig = address != null ? BigInt(address) : null; } catch { addrBig = null; }
+              const addrKey = addrBig != null ? addrBig.toString() : null;
+              const isCxxCandidate = Boolean(builtIndex && !builtIndex.empty && addrKey != null && (
+                Boolean(builtIndex.bySlotAddress?.has(addrKey)) ||
+                Boolean(builtIndex.symbolOwners?.has(addrKey)) ||
+                Boolean(builtIndex.typedArguments?.has(addrKey)) ||
+                builtIndex.symbolNameFor?.(addrBig) != null ||
+                (typeof name === 'string' && name.startsWith('_Z'))
+              ));
+              if (isCxxCandidate) {
+                try {
+                  projectionIr = irFor(result.value.model, { ...architectureDecompilerOptions(app, result.value.model, result.value, options), ...(returnsValue ? { returnsValue } : {}), symbolFor });
+                  cxxEvidence = entry.provider.projectForFunction({
+                    functionAddress: addrBig,
+                    functionName: name,
+                    ir: projectionIr,
+                  });
+                } catch {
+                  cxxEvidence = null;
+                }
               }
             }
           }

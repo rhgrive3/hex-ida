@@ -334,18 +334,23 @@ export function wasmDecodeArm64Batch(words, basePc = 0n) {
     return [];
   }
   try {
-    resetScratch(ex);
-    const inPtr = allocScratch(ex, count * 4);
-    const outPtr = allocScratch(ex, count * SIZEOF_HEX_ARM64_DECODED);
-    if (!inPtr || !outPtr) return noteFallback('arm64_decode', 'oom');
-    const inView = new Uint32Array(ex.memory.buffer, inPtr, count);
-    for (let i = 0; i < count; i += 1) inView[i] = words[i] >>> 0;
-    const status = ex.hex_arm64_decode_batch(inPtr, count, BigInt(basePc), outPtr);
-    if (status !== HEX_OK) return noteFallback('arm64_decode', `wasm_status_${status}`);
-    const mem = ex.memory.buffer;
+    const CHUNK_WORDS = 4096;
+    const basePcBig = BigInt(basePc);
     const out = new Array(count);
-    for (let i = 0; i < count; i += 1) {
-      out[i] = readArm64Decoded(mem, outPtr + i * SIZEOF_HEX_ARM64_DECODED);
+    for (let offset = 0; offset < count; offset += CHUNK_WORDS) {
+      const chunkCount = Math.min(CHUNK_WORDS, count - offset);
+      resetScratch(ex);
+      const inPtr = allocScratch(ex, chunkCount * 4);
+      const outPtr = allocScratch(ex, chunkCount * SIZEOF_HEX_ARM64_DECODED);
+      if (!inPtr || !outPtr) return noteFallback('arm64_decode', 'oom');
+      const inView = new Uint32Array(ex.memory.buffer, inPtr, chunkCount);
+      for (let i = 0; i < chunkCount; i += 1) inView[i] = words[offset + i] >>> 0;
+      const status = ex.hex_arm64_decode_batch(inPtr, chunkCount, basePcBig + BigInt(offset * 4), outPtr);
+      if (status !== HEX_OK) return noteFallback('arm64_decode', `wasm_status_${status}`);
+      const mem = ex.memory.buffer;
+      for (let i = 0; i < chunkCount; i += 1) {
+        out[offset + i] = readArm64Decoded(mem, outPtr + i * SIZEOF_HEX_ARM64_DECODED);
+      }
     }
     recordWasmCall('arm64_decode');
     return out;
@@ -368,45 +373,65 @@ export function wasmDecodeX86_64Batch(bytes, basePc = 0n) {
     return [];
   }
   try {
-    resetScratch(ex);
-    const maxInsns = bytes.length;
-    const inPtr = allocScratch(ex, bytes.length);
-    const outPtr = allocScratch(ex, maxInsns * SIZEOF_HEX_X86_DECODED);
-    const countPtr = allocScratch(ex, 8);
-    if (!inPtr || !outPtr || !countPtr) return noteFallback('x86_64_decode', 'oom');
-    new Uint8Array(ex.memory.buffer, inPtr, bytes.length).set(bytes);
-    const status = ex.hex_x86_64_decode_batch(inPtr, bytes.length, BigInt(basePc), outPtr, maxInsns, countPtr);
-    if (status !== HEX_OK) return noteFallback('x86_64_decode', `wasm_status_${status}`);
-    const mem = ex.memory.buffer;
-    const count = new DataView(mem).getUint32(countPtr, true);
-    const out = new Array(count);
-    for (let i = 0; i < count; i += 1) {
-      const base = outPtr + i * SIZEOF_HEX_X86_DECODED;
-      const dv = new DataView(mem, base, SIZEOF_HEX_X86_DECODED);
-      out[i] = {
-        pc: dv.getBigUint64(0, true),
-        target: dv.getBigUint64(8, true),
-        disp: dv.getBigInt64(16, true),
-        imm: dv.getBigInt64(24, true),
-        flags: dv.getUint32(32, true),
-        length: dv.getUint8(36),
-        kind: dv.getUint8(37),
-        cap: dv.getUint8(38),
-        rex: dv.getUint8(39),
-        opcode: dv.getUint8(40),
-        opcode2: dv.getUint8(41),
-        modrm: dv.getUint8(42),
-        sib: dv.getUint8(43),
-        opSize: dv.getUint8(44),
-        reg: dv.getUint8(45),
-        rm: dv.getUint8(46),
-        indexReg: dv.getUint8(47),
-        scale: dv.getUint8(48),
-        dispSize: dv.getUint8(49),
-        immSize: dv.getUint8(50),
-        valid: dv.getUint8(51) !== 0,
-        mn: readCString(mem, base + 52, 16),
-      };
+    const CHUNK_BYTES = 4096;
+    const basePcBig = BigInt(basePc);
+    const out = [];
+    let offset = 0;
+    while (offset < bytes.length) {
+      const chunkLen = Math.min(CHUNK_BYTES, bytes.length - offset);
+      resetScratch(ex);
+      const maxInsns = chunkLen;
+      const inPtr = allocScratch(ex, chunkLen);
+      const outPtr = allocScratch(ex, maxInsns * SIZEOF_HEX_X86_DECODED);
+      const countPtr = allocScratch(ex, 8);
+      if (!inPtr || !outPtr || !countPtr) return noteFallback('x86_64_decode', 'oom');
+      new Uint8Array(ex.memory.buffer, inPtr, chunkLen).set(bytes.subarray(offset, offset + chunkLen));
+      const status = ex.hex_x86_64_decode_batch(inPtr, chunkLen, basePcBig + BigInt(offset), outPtr, maxInsns, countPtr);
+      if (status !== HEX_OK) return noteFallback('x86_64_decode', `wasm_status_${status}`);
+      const mem = ex.memory.buffer;
+      const count = new DataView(mem).getUint32(countPtr, true);
+      let consumed = 0;
+      let hitInvalid = false;
+      for (let i = 0; i < count; i += 1) {
+        const base = outPtr + i * SIZEOF_HEX_X86_DECODED;
+        const dv = new DataView(mem, base, SIZEOF_HEX_X86_DECODED);
+        const ilen = dv.getUint8(36);
+        const valid = dv.getUint8(51) !== 0;
+        if (!valid && offset + chunkLen < bytes.length && consumed > 0 && chunkLen - consumed < 15) {
+          break;
+        }
+        out.push({
+          pc: dv.getBigUint64(0, true),
+          target: dv.getBigUint64(8, true),
+          disp: dv.getBigInt64(16, true),
+          imm: dv.getBigInt64(24, true),
+          flags: dv.getUint32(32, true),
+          length: ilen,
+          kind: dv.getUint8(37),
+          cap: dv.getUint8(38),
+          rex: dv.getUint8(39),
+          opcode: dv.getUint8(40),
+          opcode2: dv.getUint8(41),
+          modrm: dv.getUint8(42),
+          sib: dv.getUint8(43),
+          opSize: dv.getUint8(44),
+          reg: dv.getUint8(45),
+          rm: dv.getUint8(46),
+          indexReg: dv.getUint8(47),
+          scale: dv.getUint8(48),
+          dispSize: dv.getUint8(49),
+          immSize: dv.getUint8(50),
+          valid,
+          mn: readCString(mem, base + 52, 16),
+        });
+        consumed += ilen;
+        if (!valid || ilen === 0) {
+          hitInvalid = true;
+          break;
+        }
+      }
+      if (consumed === 0 || hitInvalid) break;
+      offset += consumed;
     }
     recordWasmCall('x86_64_decode');
     return out;
@@ -611,6 +636,9 @@ function parseElf64SectionsAndSyms(fileBytes) {
   return info;
 }
 
+const NORMALIZED_SECTIONS_CACHE = new WeakMap();
+const HEX_BYTE_LUT = Array.from({ length: 256 }, (_, b) => `0x${b.toString(16).padStart(2, '0')}`);
+
 function readBinaryBytesAt(addr, len, { readBytes, fileBytes, sections }) {
   const elfInfo = parseElf64SectionsAndSyms(fileBytes);
   if (elfInfo) {
@@ -630,24 +658,34 @@ function readBinaryBytesAt(addr, len, { readBytes, fileBytes, sections }) {
     return null;
   }
   if (fileBytes instanceof Uint8Array && Array.isArray(sections)) {
-    for (const sec of sections) {
-      if (!sec) continue;
-      let start, size, foff;
-      try {
-        start = BigInt(sec.address ?? sec.vmAddr ?? sec.addr ?? 0);
-        size = BigInt(sec.size ?? 0);
-        foff = sec.fileOffset != null ? BigInt(sec.fileOffset) : (sec.offset != null ? BigInt(sec.offset) : null);
-      } catch {
-        continue;
+    let norm = NORMALIZED_SECTIONS_CACHE.get(sections);
+    if (!norm) {
+      norm = [];
+      for (const sec of sections) {
+        if (!sec) continue;
+        let start, size, foff;
+        try {
+          start = BigInt(sec.address ?? sec.vmAddr ?? sec.addr ?? 0);
+          size = BigInt(sec.size ?? 0);
+          foff = sec.fileOffset != null ? BigInt(sec.fileOffset) : (sec.offset != null ? BigInt(sec.offset) : null);
+        } catch {
+          continue;
+        }
+        if (size <= 0n) continue;
+        const nobits = sec.name === '.bss' || sec.type === 'SHT_NOBITS' || Boolean(sec.nobits);
+        norm.push({ start, end: start + size, size, foff, nobits });
       }
-      if (size <= 0n) continue;
-      if (addr >= start && addr < start + size) {
-        if (sec.name === '.bss' || sec.type === 'SHT_NOBITS' || sec.nobits) return null;
-        if (foff == null) continue;
-        const delta = addr - start;
-        const avail = Number(size - delta);
+      NORMALIZED_SECTIONS_CACHE.set(sections, norm);
+    }
+    for (let i = 0; i < norm.length; i += 1) {
+      const sec = norm[i];
+      if (addr >= sec.start && addr < sec.end) {
+        if (sec.nobits) return null;
+        if (sec.foff == null) continue;
+        const delta = addr - sec.start;
+        const avail = Number(sec.size - delta);
         const take = Math.min(len, avail);
-        const offNum = Number(foff + delta);
+        const offNum = Number(sec.foff + delta);
         if (offNum >= 0 && offNum + take <= fileBytes.length && take > 0) {
           return fileBytes.subarray(offNum, offNum + take);
         }
@@ -750,6 +788,11 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
 
   // 1b. Inline-decompile internal .text helper callees (e.g. GCC func0.part.0) via WASM
   const helperDefs = [];
+  const inlinedHelperHexes = [];
+  const seenGlobalSyms = new Set();
+  for (const gm of out.matchAll(/^static\s+(?:_Alignas\(\d+\)\s+)?(?:const\s+)?(?:uint64|uint8_t|char\s*\*)\s+((?:__hex_)?global_[0-9A-Fa-f]+(?:_buf)?)/gm)) {
+    seenGlobalSyms.add(gm[1]);
+  }
   if (allowHelperInlining && fileBytes instanceof Uint8Array && out.includes('sub_') && out.includes('/* arguments unknown */')) {
     const elfInfo = parseElf64SectionsAndSyms(fileBytes);
     if (elfInfo) {
@@ -829,7 +872,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
         } else {
           out = out.replaceAll(`x0 = ${unknownCall};`, `x0 = (uint64)${callExpr};`);
           out = out.replaceAll(`return ${unknownCall};`, `return ${callExpr};`);
-          out = out.replaceAll(`${unknownCall};`, `x0 = (uint64)${callExpr};`);
+          out = out.replaceAll(`${unknownCall};`, `${callExpr};`);
         }
         // If helper expects more integer parameters than the outer function declared (tail-call forwarding), widen outer signature
         if (gi > 0) {
@@ -868,8 +911,15 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
           if (line.startsWith('#define _GNU_SOURCE') || line.startsWith('#pragma GCC optimize')) return false;
           if (line.startsWith('typedef ') || line.startsWith('/* hex: fixed-width')) return false;
           if (line.startsWith('static inline float __hex_u32_to_f32') || line.startsWith('static inline double __hex_u64_to_f64') || line.startsWith('static inline uint32_t __hex_f32_to_u32') || line.startsWith('static inline uint64_t __hex_f64_to_u64')) return false;
+          const gm = line.match(/^static\s+(?:_Alignas\(\d+\)\s+)?(?:const\s+)?(?:uint64|uint8_t|char\s*\*)\s+((?:__hex_)?global_[0-9A-Fa-f]+(?:_buf)?)/);
+          if (gm) {
+            const sym = gm[1];
+            if (seenGlobalSyms.has(sym)) return false;
+            seenGlobalSyms.add(sym);
+          }
           return true;
         });
+        inlinedHelperHexes.push(hex);
         helperDefs.push(hLines.join('\n').replace(`${hRet} sub_${hex}(`, `static ${hRet} sub_${hex}(`));
       }
     }
@@ -900,7 +950,9 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
       }
       changed = true;
       needUint8 = true;
-      const arr = Array.from(bytes, (b) => `0x${b.toString(16).padStart(2, '0')}`).join(', ');
+      const hexParts = new Array(bytes.length);
+      for (let bi = 0; bi < bytes.length; bi += 1) hexParts[bi] = HEX_BYTE_LUT[bytes[bi]];
+      const arr = hexParts.join(', ');
       return `static _Alignas(16) uint8_t __hex_global_${hex}_buf[${bytes.length}] = { ${arr} };`;
     });
     out = out.replace(/^static uint64 global_([0-9A-Fa-f]+) = 0;$/gm, (full, hex) => {
@@ -989,9 +1041,16 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   for (const td of extraTypedefs) hdrLines.push(td);
   const prefix = hdrLines.length > 0 ? `${hdrLines.join('\n')}\n` : '';
   if (helperDefs.length > 0) {
+    let hBlock = `${helperDefs.join('\n\n')}\n\n`;
+    for (const hHex of inlinedHelperHexes) {
+      hBlock = hBlock.replaceAll(`uint64 sub_${hHex} (__HEX_ANY_ARGS);\n`, '');
+      out = out.replaceAll(`uint64 sub_${hHex} (__HEX_ANY_ARGS);\n`, '');
+    }
+    if (hBlock.includes('uint128') && !out.includes('typedef unsigned __int128 uint128;')) {
+      hBlock = `typedef unsigned __int128 uint128;\n${hBlock}`;
+    }
     const fnSigIdx = out.search(/^(?:void|int|uint64|float|double)\s+[A-Za-z_][A-Za-z0-9_]*\([^)]*\)\n\{/m);
     if (fnSigIdx >= 0) {
-      const hBlock = `${helperDefs.join('\n\n')}\n\n`;
       out = out.slice(0, fnSigIdx) + hBlock + out.slice(fnSigIdx);
     }
   }
@@ -1003,7 +1062,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   const finalSigLine = finalLinesArr.findIndex((l) => outerSigRe.test(l));
   const exactAdded = (rawSigLine >= 0 && finalSigLine >= 0) ? Math.max(0, finalSigLine - rawSigLine) : hdrLines.length;
   const bodyAdded = Math.max(0, (finalLinesArr.length - Math.max(0, finalSigLine)) - (rawLinesArr.length - Math.max(0, rawSigLine)));
-  return { text: finalText, addedLines: exactAdded, bodyAddedLines: bodyAdded, rawSigLine, outerSigLine: finalSigLine };
+  return { text: finalText, lines: finalLinesArr, addedLines: exactAdded, bodyAddedLines: bodyAdded, rawSigLine, outerSigLine: finalSigLine };
 }
 
 export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null, symbolFor = null, readBytes = null, fileBytes = null, sections = null, allowHelperInlining = true } = {}) {
@@ -1050,8 +1109,11 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       nameStr = rawName;
     } else if (rawName.length > 0) {
       nameStr = rawName.replace(/^_+/, '').replace(/[^A-Za-z0-9_]/g, '_');
-      if (nameStr.length === 0 || /^[0-9]/.test(nameStr)) {
+      if (nameStr.length === 0) {
         return noteFallback('decompile', 'unsupported_symbol_name');
+      }
+      if (/^[0-9]/.test(nameStr)) {
+        nameStr = `fn_${nameStr}`;
       }
     }
     if (nameStr.length > 0) {
@@ -1121,7 +1183,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       rawLinemap.set(lineNo, list);
     }
 
-    const rawLines = pseudocode.split('\n');
+    const rawLines = post.lines || pseudocode.split('\n');
     const legacyRawRegDeclRe = /^\s*(?:u?int(?:8|16|32|64|128)(?:_t)?|float|double)\s+[xw]\d+;/;
     const hasGeneralQDecl = rawLines.some((l) => /^\s*uint128\s+q\d+\s*=\s*0;/.test(l));
     const isLegacyOutput = !hasGeneralQDecl && rawLines.some((l) => (
@@ -1740,34 +1802,42 @@ export function wasmDecodeRiscv64Batch(bytes, basePc = 0n) {
     return [];
   }
   try {
-    resetEngineScratch(ex);
-    const maxInsns = Math.ceil(bytes.length / 2);
-    const inPtr = allocEngineScratch(ex, bytes.length);
-    const outPtr = allocEngineScratch(ex, maxInsns * SIZEOF_HEX_RISCV64_DECODED);
-    const countPtr = allocEngineScratch(ex, 8);
-    if (!inPtr || !outPtr || !countPtr) return noteFallback('riscv64_decode', 'oom');
-    new Uint8Array(ex.memory.buffer, inPtr, bytes.length).set(bytes);
-    const status = ex.hex_riscv64_decode_batch(inPtr, bytes.length, BigInt(basePc), outPtr, maxInsns, countPtr);
-    if (status !== HEX_OK) return noteFallback('riscv64_decode', `wasm_status_${status}`);
-    const mem = ex.memory.buffer;
-    const count = new DataView(mem).getUint32(countPtr, true);
-    const out = new Array(count);
-    for (let i = 0; i < count; i += 1) {
-      const base = outPtr + i * SIZEOF_HEX_RISCV64_DECODED;
-      const dv = new DataView(mem, base, SIZEOF_HEX_RISCV64_DECODED);
-      out[i] = {
-        pc: dv.getBigUint64(0, true),
-        target: dv.getBigUint64(8, true),
-        imm: dv.getBigInt64(16, true),
-        raw: dv.getUint32(24, true),
-        length: dv.getUint8(28),
-        kind: dv.getUint8(29),
-        rd: dv.getUint8(30),
-        rs1: dv.getUint8(31),
-        rs2: dv.getUint8(32),
-        valid: dv.getUint8(33) !== 0,
-        mn: readCString(mem, base + 36, 24),
-      };
+    const CHUNK_BYTES = 4096;
+    const basePcBig = BigInt(basePc);
+    const out = [];
+    let offset = 0;
+    while (offset < bytes.length) {
+      const chunkLen = Math.min(CHUNK_BYTES, bytes.length - offset);
+      const maxInsns = Math.ceil(chunkLen / 2);
+      resetEngineScratch(ex);
+      const inPtr = allocEngineScratch(ex, chunkLen);
+      const outPtr = allocEngineScratch(ex, maxInsns * SIZEOF_HEX_RISCV64_DECODED);
+      if (!inPtr || !outPtr) return noteFallback('riscv64_decode', 'oom');
+      new Uint8Array(ex.memory.buffer, inPtr, chunkLen).set(bytes.subarray(offset, offset + chunkLen));
+      const count = ex.hex_riscv64_decode_batch(inPtr, chunkLen, basePcBig + BigInt(offset), outPtr, maxInsns) >>> 0;
+      const mem = ex.memory.buffer;
+      let consumed = 0;
+      for (let i = 0; i < count; i += 1) {
+        const base = outPtr + i * SIZEOF_HEX_RISCV64_DECODED;
+        const dv = new DataView(mem, base, SIZEOF_HEX_RISCV64_DECODED);
+        const ilen = dv.getUint8(28);
+        out.push({
+          pc: dv.getBigUint64(0, true),
+          target: dv.getBigUint64(8, true),
+          imm: dv.getBigInt64(16, true),
+          raw: dv.getUint32(24, true),
+          length: ilen,
+          kind: dv.getUint8(29),
+          rd: dv.getUint8(30),
+          rs1: dv.getUint8(31),
+          rs2: dv.getUint8(32),
+          valid: dv.getUint8(33) !== 0,
+          mn: readCString(mem, base + 36, 24),
+        });
+        consumed += ilen;
+      }
+      if (consumed === 0 || count === 0) break;
+      offset += consumed;
     }
     recordWasmCall('riscv64_decode');
     return out;
@@ -2396,7 +2466,50 @@ export function wasmExtractElfSymbols(
   const xindexLen = xindexBytes ? xindexBytes.length : 0;
   const outBytes = count * 32;
   if (symLen + strLen + xindexLen + outBytes + 256 > ELF_SYMBOLS_ARENA_BUDGET) {
-    return noteFallback('elf_symbols', 'input_too_large');
+    const avail = ELF_SYMBOLS_ARENA_BUDGET - strLen - 512;
+    const perSym = entSize + 32 + (xindexBytes ? 4 : 0);
+    const chunkSyms = avail > 0 ? Math.floor(avail / perSym) : 0;
+    if (chunkSyms < 64) {
+      return noteFallback('elf_symbols', 'input_too_large');
+    }
+    try {
+      const outCopy = new Uint8Array(outBytes);
+      const flags = (is64Bit ? 1 : 0) | (isBigEndian ? 2 : 0);
+      for (let start = 0; start < count; start += chunkSyms) {
+        const n = Math.min(chunkSyms, count - start);
+        const sSlice = symBytes.subarray(start * entSize, (start + n) * entSize);
+        const xSlice = xindexBytes && (start + n) * 4 <= xindexBytes.length
+          ? xindexBytes.subarray(start * 4, (start + n) * 4)
+          : null;
+        ex.hex_identity_reset();
+        const symPtr = ex.hex_identity_alloc(sSlice.length);
+        const strPtr = strLen > 0 ? ex.hex_identity_alloc(strLen) : 0;
+        const xPtr = xSlice && xSlice.length > 0 ? ex.hex_identity_alloc(xSlice.length) : 0;
+        const outPtr = ex.hex_identity_alloc(n * 32);
+        const outCountPtr = ex.hex_identity_alloc(4);
+        if (!symPtr || (strLen > 0 && !strPtr) || (xSlice && xSlice.length > 0 && !xPtr) || !outPtr || !outCountPtr) {
+          return noteFallback('elf_symbols', 'oom');
+        }
+        const memU8 = new Uint8Array(ex.memory.buffer);
+        memU8.set(sSlice, symPtr);
+        if (strLen > 0) memU8.set(strBytes, strPtr);
+        if (xSlice && xSlice.length > 0) memU8.set(xSlice, xPtr);
+        const status = ex.hex_elf_extract_symbols(
+          symPtr, sSlice.length >>> 0, entSize >>> 0, n >>> 0,
+          strPtr, strLen >>> 0, xPtr, (xSlice ? xSlice.length : 0) >>> 0,
+          flags >>> 0, outPtr, n >>> 0, outCountPtr,
+        );
+        if (status !== HEX_OK) return noteFallback('elf_symbols', `wasm_status_${status}`);
+        const mem = ex.memory.buffer;
+        const outCount = new DataView(mem).getUint32(outCountPtr, true);
+        if (outCount !== n) return noteFallback('elf_symbols', 'count_mismatch');
+        outCopy.set(new Uint8Array(mem, outPtr, n * 32), start * 32);
+      }
+      recordWasmCall('elf_symbols');
+      return { count, buffer: outCopy.buffer, view: new DataView(outCopy.buffer) };
+    } catch {
+      return noteFallback('elf_symbols', 'wasm_exception');
+    }
   }
 
   try {

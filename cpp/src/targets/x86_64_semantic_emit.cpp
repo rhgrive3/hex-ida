@@ -1,27 +1,42 @@
 #include "targets/x86_64_semantic_emit.hpp"
 
+#if defined(HEX_UNIFIED_WASM)
+namespace hex {
+namespace runtime {
+hex::Arena* shared_emit_arena();
+}  // namespace runtime
+}  // namespace hex
+#endif
+
 namespace {
 
-static constexpr uint32_t kArenaBytes = 64u * 1024u;
 static constexpr uint32_t kMaxInsns = 64u;
 static constexpr uint32_t kMaxTextCap = 4096u;
 static constexpr uint32_t kMaxLineMapEntries = 96u;
 
+#if !defined(HEX_UNIFIED_WASM)
+static constexpr uint32_t kArenaBytes = 64u * 1024u;
 alignas(16) static uint8_t g_x86_sem_emit_storage[kArenaBytes];
 static hex::Arena g_x86_sem_emit_arena;
 static bool g_x86_sem_arena_ready = false;
+#endif
+
+static hex::Arena& sem_emit_arena() {
+#if defined(HEX_UNIFIED_WASM)
+  return *hex::runtime::shared_emit_arena();
+#else
+  if (!g_x86_sem_arena_ready) {
+    g_x86_sem_emit_arena.init_fixed(g_x86_sem_emit_storage, sizeof(g_x86_sem_emit_storage));
+    g_x86_sem_arena_ready = true;
+  }
+  return g_x86_sem_emit_arena;
+#endif
+}
 
 static const char* g_text_ptr = nullptr;
 static uint32_t g_text_len = 0u;
 static const HexLineMapEntry* g_lm_ptr = nullptr;
 static uint32_t g_lm_count = 0u;
-
-static void ensure_arena_ready() {
-  if (!g_x86_sem_arena_ready) {
-    g_x86_sem_emit_arena.init_fixed(g_x86_sem_emit_storage, sizeof(g_x86_sem_emit_storage));
-    g_x86_sem_arena_ready = true;
-  }
-}
 
 static void clear_outputs() {
   g_text_ptr = nullptr;
@@ -342,7 +357,6 @@ HexStatus hex_engine_decompile_x86_64_semantic(
     uint32_t abi_id,
     uint32_t emit_flags) {
   (void)emit_flags;
-  ensure_arena_ready();
   clear_outputs();
 
   if (!bytes || byte_len == 0u || byte_len > 1024u || (abi_id != 0u && abi_id != 1u)) {
@@ -456,13 +470,14 @@ HexStatus hex_engine_decompile_x86_64_semantic(
     rbp_to_sp_entry = -8 - frame_size + lea_off;
   }
 
-  // Allocate text buffer and linemap on dedicated 64 KiB fixed arena with rollback.
-  g_x86_sem_emit_arena.reset();
-  const size_t arena_mark = g_x86_sem_emit_arena.used();
-  char* text_buf = g_x86_sem_emit_arena.alloc<char>(kMaxTextCap);
-  HexLineMapEntry* lm_buf = g_x86_sem_emit_arena.alloc<HexLineMapEntry>(kMaxLineMapEntries);
+  // Allocate text buffer and linemap on fixed emit arena with rollback.
+  hex::Arena& emit_arena = sem_emit_arena();
+  emit_arena.reset();
+  const size_t arena_mark = emit_arena.used();
+  char* text_buf = emit_arena.alloc<char>(kMaxTextCap);
+  HexLineMapEntry* lm_buf = emit_arena.alloc<HexLineMapEntry>(kMaxLineMapEntries);
   if (!text_buf || !lm_buf) {
-    g_x86_sem_emit_arena.restore(arena_mark);
+    emit_arena.restore(arena_mark);
     return HEX_ERR_OOM;
   }
   text_buf[0] = '\0';
@@ -776,7 +791,7 @@ HexStatus hex_engine_decompile_x86_64_semantic(
   }
 
   if (w.overflow) {
-    g_x86_sem_emit_arena.restore(arena_mark);
+    emit_arena.restore(arena_mark);
     return HEX_ERR_OOM;
   }
 

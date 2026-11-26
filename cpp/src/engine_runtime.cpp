@@ -14,6 +14,13 @@
 #include "decompiler/passes/arm64_udf_emit.hpp"
 #include "decompiler/passes/arm64_global_thunk_emit.hpp"
 #include "decompiler/passes/arm64_general_emit.hpp"
+namespace hex {
+namespace decompiler {
+namespace passes {
+void set_general_scratch_arena(hex::Arena* scratch);
+}  // namespace passes
+}  // namespace decompiler
+}  // namespace hex
 #endif
 
 namespace {
@@ -52,28 +59,38 @@ HexStatus try_specialized_arm64_passes(
   using PassFn = HexStatus (*)(
       const uint32_t*, uint32_t, uint64_t, const char*, uint32_t, uint32_t,
       hex::Arena&, const char**, uint32_t*, const HexLineMapEntry**, uint32_t*);
-  static const PassFn kPasses[] = {
-    &hex::decompiler::passes::try_emit_arm64_simple,
-    &hex::decompiler::passes::try_emit_arm64_memory,
-    &hex::decompiler::passes::try_emit_arm64_branch_loop,
-    &hex::decompiler::passes::try_emit_arm64_fp_atomic,
-    &hex::decompiler::passes::try_emit_arm64_calls,
-    &hex::decompiler::passes::try_emit_arm64_frame_bl,
-    &hex::decompiler::passes::try_emit_arm64_frame_vcall,
-    &hex::decompiler::passes::try_emit_arm64_frame_branch_bl,
-    &hex::decompiler::passes::try_emit_arm64_frame_multicall,
-    &hex::decompiler::passes::try_emit_arm64_objc,
-    &hex::decompiler::passes::try_emit_arm64_udf_tail,
-    &hex::decompiler::passes::try_emit_arm64_global_thunk,
-    &hex::decompiler::passes::try_emit_arm64_general,
+  struct PassDesc {
+    PassFn fn;
+    uint32_t min_words;
+    uint32_t max_words;
   };
-  for (size_t i = 0; i < sizeof(kPasses) / sizeof(kPasses[0]); ++i) {
+  static const PassDesc kPasses[] = {
+    {&hex::decompiler::passes::try_emit_arm64_simple,           1u,  64u},
+    {&hex::decompiler::passes::try_emit_arm64_memory,           1u,  64u},
+    {&hex::decompiler::passes::try_emit_arm64_branch_loop,      6u,   9u},
+    {&hex::decompiler::passes::try_emit_arm64_fp_atomic,        2u,   6u},
+    {&hex::decompiler::passes::try_emit_arm64_calls,            5u,  64u},
+    {&hex::decompiler::passes::try_emit_arm64_frame_bl,         7u,  11u},
+    {&hex::decompiler::passes::try_emit_arm64_frame_vcall,      8u,  10u},
+    {&hex::decompiler::passes::try_emit_arm64_frame_branch_bl, 20u,  20u},
+    {&hex::decompiler::passes::try_emit_arm64_frame_multicall, 22u,  64u},
+    {&hex::decompiler::passes::try_emit_arm64_objc,             8u,  14u},
+    {&hex::decompiler::passes::try_emit_arm64_udf_tail,         3u,  64u},
+    {&hex::decompiler::passes::try_emit_arm64_global_thunk,     2u,  64u},
+    {&hex::decompiler::passes::try_emit_arm64_general,          1u,  HEX_ENGINE_MAX_DECOMP_WORDS},
+  };
+  // O(1) pre-filter: passes 0..11 all reject word_count > 64; jump straight to general.
+  const size_t start_idx = (word_count > 64u) ? 12u : 0u;
+  for (size_t i = start_idx; i < sizeof(kPasses) / sizeof(kPasses[0]); ++i) {
+    if (word_count < kPasses[i].min_words || word_count > kPasses[i].max_words) {
+      continue;
+    }
     g_emit_arena.reset();
     const char* txt = nullptr;
     uint32_t txt_len = 0u;
     const HexLineMapEntry* lm = nullptr;
     uint32_t lm_cnt = 0u;
-    const HexStatus st = kPasses[i](
+    const HexStatus st = kPasses[i].fn(
         words, word_count, base_addr, func_name_utf8, func_name_len, emit_flags,
         g_emit_arena, &txt, &txt_len, &lm, &lm_cnt);
     if (st == HEX_OK && txt && txt_len > 0u) {
@@ -200,10 +217,14 @@ bool is_runtime_arm64_word_supported(uint32_t w, bool js_parity_mode) {
   if (!hex_arm64_is_decompiler_supported(w)) return false;
 
   // Variable shifts (LSLV/LSRV/ASRV): require rn != rm.
+  // In non-parity mode, reject ASRV (op2 == 2) so arm64_general_emit emits a
+  // signed arithmetic shift instead of c_emitter's unsigned CEMIT_BIN_SHR.
   if (kind == HEX_ARM64_KIND_SHIFT) {
     const uint32_t rn = (w >> 5) & 0x1fu;
     const uint32_t rm = (w >> 16) & 0x1fu;
     if (rn == rm) return false;
+    const uint32_t op2 = (w >> 10) & 3u;
+    if (!js_parity_mode && op2 == 2u) return false;
   }
 
   // Reject flag-setting ADDS/SUBS under JS parity (only plain ADD/SUB).
@@ -564,6 +585,16 @@ HexStatus lift_arm64_insn(
 namespace hex {
 namespace runtime {
 
+hex::Arena* shared_emit_arena() {
+  ensure_initialized();
+  return &g_emit_arena;
+}
+
+hex::Arena* shared_scratch_arena() {
+  ensure_initialized();
+  return &g_scratch_arena;
+}
+
 HexStatus bind_external_arenas(
     uint8_t* image_buf,
     size_t image_cap,
@@ -648,6 +679,7 @@ HexStatus hex_engine_decompile_arm64(
 
   // Guard caller-allocated inputs on g_scratch_arena (e.g., words / func_name_utf8)
   // and guarantee O(1) reclamation of all temporary pipeline buffers on every exit path.
+  const size_t scratch_entry_mark = g_scratch_arena.used();
   hex::ArenaScope scratch_scope(g_scratch_arena);
 
   // Stage 1: ARM64 capability gate (if primary straight-line SSA rejects, try specialized 0-diff passes).
@@ -676,9 +708,12 @@ HexStatus hex_engine_decompile_arm64(
 
   if (!primary_supported) {
 #if defined(HEX_HAS_DECOMP_PASSES)
+    g_scratch_arena.restore(scratch_entry_mark);
+    hex::decompiler::passes::set_general_scratch_arena(&g_scratch_arena);
     return try_specialized_arm64_passes(
         words, word_count, base_addr, func_name_utf8, func_name_len, emit_flags);
 #else
+    (void)scratch_entry_mark;
     return HEX_ERR_UNSUPPORTED;
 #endif
   }

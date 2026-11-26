@@ -14,6 +14,20 @@ constexpr const char* kJccMn[16] = {
     "js", "jns", "jp", "jnp", "jl", "jge", "jle", "jg",
 };
 
+constexpr const char* kCmovccMn[16] = {
+    "cmovo", "cmovno", "cmovb", "cmovae", "cmove", "cmovne", "cmovbe", "cmova",
+    "cmovs", "cmovns", "cmovp", "cmovnp", "cmovl", "cmovge", "cmovle", "cmovg",
+};
+
+constexpr const char* kSetccMn[16] = {
+    "seto", "setno", "setb", "setae", "sete", "setne", "setbe", "seta",
+    "sets", "setns", "setp", "setnp", "setl", "setge", "setle", "setg",
+};
+
+constexpr const char* kShiftMn[8] = {
+    "rol", "ror", "rcl", "rcr", "shl", "shr", nullptr, "sar",
+};
+
 inline void copy_mn(char dst[16], const char* src) {
   size_t i = 0;
   if (src != nullptr) {
@@ -341,7 +355,10 @@ HexStatus hex_x86_64_decode_one(
   r.init(bytes, len);
 
   bool has_66 = false;
-  bool unsupported_prefix = false;
+  bool has_f2 = false;
+  bool has_f3 = false;
+  uint8_t last_rep = 0u;
+  bool other_unsupported_prefix = false;
   uint8_t b = 0;
 
   // 1. Legacy prefixes (bounded by kMaxInsnBytes via Reader)
@@ -351,19 +368,30 @@ HexStatus hex_x86_64_decode_one(
       return HEX_OK;
     }
     if (b == 0x66u) {
-      if (has_66) unsupported_prefix = true;
+      if (has_66) other_unsupported_prefix = true;
       has_66 = true;
       out->flags |= HEX_X86_FLAG_HAS_66;
       continue;
     }
-    if (b == 0xf0u || b == 0xf2u || b == 0xf3u || b == 0x67u ||
+    if (b == 0xf2u) {
+      has_f2 = true;
+      last_rep = 0xf2u;
+      continue;
+    }
+    if (b == 0xf3u) {
+      has_f3 = true;
+      last_rep = 0xf3u;
+      continue;
+    }
+    if (b == 0xf0u || b == 0x67u ||
         b == 0x26u || b == 0x2eu || b == 0x36u || b == 0x3eu ||
         b == 0x64u || b == 0x65u) {
-      unsupported_prefix = true;
+      other_unsupported_prefix = true;
       continue;
     }
     break;
   }
+  const bool unsupported_prefix = other_unsupported_prefix || has_f2 || has_f3;
 
   // 2. Optional REX prefix (0x40..0x4F)
   uint8_t rex = 0u;
@@ -419,6 +447,30 @@ HexStatus hex_x86_64_decode_one(
       return HEX_OK;
     }
 
+    // 0F 10 / 0F 11: SSE/SSE2 movups / movupd / movss / movsd
+    if (op2 == 0x10u || op2 == 0x11u) {
+      if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+        fail_decode(r, *out);
+        return HEX_OK;
+      }
+      out->kind = HEX_X86_KIND_MOV;
+      if (last_rep == 0xf3u) {
+        out->op_size = 32u;
+        copy_mn(out->mn, "movss");
+      } else if (last_rep == 0xf2u) {
+        out->op_size = 64u;
+        copy_mn(out->mn, "movsd");
+      } else if (has_66) {
+        out->op_size = 128u;
+        copy_mn(out->mn, "movupd");
+      } else {
+        out->op_size = 128u;
+        copy_mn(out->mn, "movups");
+      }
+      finish_valid(r, *out, true);
+      return HEX_OK;
+    }
+
     // 0F 1F /0: multi-byte NOP r/m
     if (op2 == 0x1fu) {
       if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
@@ -428,6 +480,111 @@ HexStatus hex_x86_64_decode_one(
       out->kind = HEX_X86_KIND_NOP;
       out->op_size = def_size;
       copy_mn(out->mn, "nop");
+      finish_valid(r, *out, unsupported_prefix);
+      return HEX_OK;
+    }
+
+    // 0F 28 / 0F 29: SSE/SSE2 movaps / movapd
+    if (op2 == 0x28u || op2 == 0x29u) {
+      if (has_f2 || has_f3) {
+        fail_decode(r, *out);
+        return HEX_OK;
+      }
+      if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+        fail_decode(r, *out);
+        return HEX_OK;
+      }
+      out->kind = HEX_X86_KIND_MOV;
+      out->op_size = 128u;
+      copy_mn(out->mn, has_66 ? "movapd" : "movaps");
+      finish_valid(r, *out, true);
+      return HEX_OK;
+    }
+
+    // 0F 40..4F: CMOVcc r, r/m
+    if ((op2 & 0xf0u) == 0x40u) {
+      if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+        fail_decode(r, *out);
+        return HEX_OK;
+      }
+      out->kind = HEX_X86_KIND_MOV;
+      out->op_size = def_size;
+      copy_mn(out->mn, kCmovccMn[op2 & 0x0fu]);
+      finish_valid(r, *out, unsupported_prefix);
+      return HEX_OK;
+    }
+
+    // 0F 57: SSE/SSE2 xorps / xorpd
+    if (op2 == 0x57u) {
+      if (has_f2 || has_f3) {
+        fail_decode(r, *out);
+        return HEX_OK;
+      }
+      if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+        fail_decode(r, *out);
+        return HEX_OK;
+      }
+      out->kind = HEX_X86_KIND_ALU;
+      out->op_size = 128u;
+      copy_mn(out->mn, has_66 ? "xorpd" : "xorps");
+      finish_valid(r, *out, true);
+      return HEX_OK;
+    }
+
+    // 0F 6E / 0F 7E: SSE2 movd / movq (66 0F 6E/7E, F3 0F 7E)
+    if (op2 == 0x6eu || op2 == 0x7eu) {
+      if (op2 == 0x7eu && last_rep == 0xf3u) {
+        if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+          fail_decode(r, *out);
+          return HEX_OK;
+        }
+        out->kind = HEX_X86_KIND_MOV;
+        out->op_size = 64u;
+        copy_mn(out->mn, "movq");
+        finish_valid(r, *out, true);
+        return HEX_OK;
+      }
+      if (!has_f2 && !has_f3 && has_66) {
+        if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+          fail_decode(r, *out);
+          return HEX_OK;
+        }
+        out->kind = HEX_X86_KIND_MOV;
+        out->op_size = rex_w ? 64u : 32u;
+        copy_mn(out->mn, rex_w ? "movq" : "movd");
+        finish_valid(r, *out, true);
+        return HEX_OK;
+      }
+      fail_decode(r, *out);
+      return HEX_OK;
+    }
+
+    // 0F 6F / 0F 7F: SSE2 movdqa (66) / movdqu (F3)
+    if (op2 == 0x6fu || op2 == 0x7fu) {
+      if (last_rep == 0xf3u || (!has_f2 && has_66)) {
+        if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+          fail_decode(r, *out);
+          return HEX_OK;
+        }
+        out->kind = HEX_X86_KIND_MOV;
+        out->op_size = 128u;
+        copy_mn(out->mn, (last_rep == 0xf3u) ? "movdqu" : "movdqa");
+        finish_valid(r, *out, true);
+        return HEX_OK;
+      }
+      fail_decode(r, *out);
+      return HEX_OK;
+    }
+
+    // 0F 90..9F: SETcc r/m8
+    if ((op2 & 0xf0u) == 0x90u) {
+      if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+        fail_decode(r, *out);
+        return HEX_OK;
+      }
+      out->kind = HEX_X86_KIND_MOV;
+      out->op_size = 8u;
+      copy_mn(out->mn, kSetccMn[op2 & 0x0fu]);
       finish_valid(r, *out, unsupported_prefix);
       return HEX_OK;
     }
@@ -468,6 +625,23 @@ HexStatus hex_x86_64_decode_one(
       out->op_size = def_size;
       copy_mn(out->mn, "movsx");
       finish_valid(r, *out, unsupported_prefix);
+      return HEX_OK;
+    }
+
+    // 66 0F EF: SSE2 pxor
+    if (op2 == 0xefu) {
+      if (!has_f2 && !has_f3 && has_66) {
+        if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+          fail_decode(r, *out);
+          return HEX_OK;
+        }
+        out->kind = HEX_X86_KIND_ALU;
+        out->op_size = 128u;
+        copy_mn(out->mn, "pxor");
+        finish_valid(r, *out, true);
+        return HEX_OK;
+      }
+      fail_decode(r, *out);
       return HEX_OK;
     }
 
@@ -664,6 +838,28 @@ HexStatus hex_x86_64_decode_one(
     return HEX_OK;
   }
 
+  // 0x98: CBW (66) / CWDE (default) / CDQE (REX.W)
+  if (b == 0x98u) {
+    out->kind = HEX_X86_KIND_MOVSX;
+    out->op_size = def_size;
+    out->reg = 0u;
+    out->rm = 0u;
+    copy_mn(out->mn, rex_w ? "cdqe" : (has_66 ? "cbw" : "cwde"));
+    finish_valid(r, *out, unsupported_prefix);
+    return HEX_OK;
+  }
+
+  // 0x99: CWD (66) / CDQ (default) / CQO (REX.W)
+  if (b == 0x99u) {
+    out->kind = HEX_X86_KIND_MOVSX;
+    out->op_size = def_size;
+    out->reg = 2u;
+    out->rm = 0u;
+    copy_mn(out->mn, rex_w ? "cqo" : (has_66 ? "cwd" : "cdq"));
+    finish_valid(r, *out, unsupported_prefix);
+    return HEX_OK;
+  }
+
   // 0xA8 / 0xA9: TEST AL/rAX, imm
   if (b == 0xa8u || b == 0xa9u) {
     const uint8_t imm_sz = (b == 0xa8u) ? 1u : imm_bytes_for_op_size(def_size);
@@ -708,14 +904,14 @@ HexStatus hex_x86_64_decode_one(
     return HEX_OK;
   }
 
-  // 0xC1: Shift r/m, imm8 (shl /4, shr /5, sar /7)
-  if (b == 0xc1u) {
+  // 0xC0 / 0xC1: Shift/rotate r/m, imm8 (rol/ror/rcl/rcr/shl/shr/sar)
+  if (b == 0xc0u || b == 0xc1u) {
     if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
       fail_decode(r, *out);
       return HEX_OK;
     }
     const uint8_t grp = static_cast<uint8_t>((out->modrm >> 3) & 7u);
-    if (grp != 4u && grp != 5u && grp != 7u) {
+    if (kShiftMn[grp] == nullptr) {
       fail_decode(r, *out);
       return HEX_OK;
     }
@@ -724,8 +920,29 @@ HexStatus hex_x86_64_decode_one(
       return HEX_OK;
     }
     out->kind = HEX_X86_KIND_ALU;
-    out->op_size = def_size;
-    copy_mn(out->mn, grp == 4u ? "shl" : (grp == 5u ? "shr" : "sar"));
+    out->op_size = (b == 0xc0u) ? 8u : def_size;
+    copy_mn(out->mn, kShiftMn[grp]);
+    finish_valid(r, *out, unsupported_prefix);
+    return HEX_OK;
+  }
+
+  // 0xD0..0xD3: Group 2 shift/rotate by 1 (D0/D1) or CL (D2/D3)
+  if (b >= 0xd0u && b <= 0xd3u) {
+    if (!decode_modrm(r, rex_r, rex_x, rex_b, *out)) {
+      fail_decode(r, *out);
+      return HEX_OK;
+    }
+    const uint8_t grp = static_cast<uint8_t>((out->modrm >> 3) & 7u);
+    if (kShiftMn[grp] == nullptr) {
+      fail_decode(r, *out);
+      return HEX_OK;
+    }
+    out->kind = HEX_X86_KIND_ALU;
+    out->op_size = (b == 0xd0u || b == 0xd2u) ? 8u : def_size;
+    if (b == 0xd0u || b == 0xd1u) {
+      out->imm = 1;
+    }
+    copy_mn(out->mn, kShiftMn[grp]);
     finish_valid(r, *out, unsupported_prefix);
     return HEX_OK;
   }
@@ -851,6 +1068,20 @@ HexStatus hex_x86_64_decode_one(
       out->kind = HEX_X86_KIND_ALU;
       out->op_size = (b == 0xf6u) ? 8u : def_size;
       copy_mn(out->mn, grp == 2u ? "not" : "neg");
+      finish_valid(r, *out, unsupported_prefix);
+      return HEX_OK;
+    }
+    if (grp == 4u || grp == 5u) {
+      out->kind = HEX_X86_KIND_MUL;
+      out->op_size = (b == 0xf6u) ? 8u : def_size;
+      copy_mn(out->mn, grp == 4u ? "mul" : "imul");
+      finish_valid(r, *out, unsupported_prefix);
+      return HEX_OK;
+    }
+    if (grp == 6u || grp == 7u) {
+      out->kind = HEX_X86_KIND_ALU;
+      out->op_size = (b == 0xf6u) ? 8u : def_size;
+      copy_mn(out->mn, grp == 6u ? "div" : "idiv");
       finish_valid(r, *out, unsupported_prefix);
       return HEX_OK;
     }

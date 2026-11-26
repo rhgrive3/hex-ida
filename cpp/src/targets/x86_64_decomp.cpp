@@ -1,10 +1,17 @@
 #include "x86_64_decomp.hpp"
 #include "../cfg/loop_engine.hpp"
 
+#if defined(HEX_UNIFIED_WASM)
+namespace hex {
+namespace runtime {
+hex::Arena* shared_emit_arena();
+hex::Arena* shared_scratch_arena();
+}  // namespace runtime
+}  // namespace hex
+#endif
+
 namespace {
 
-constexpr uint32_t kX86WorkArenaBytes = 256u * 1024u;
-constexpr uint32_t kX86EmitArenaBytes = 512u * 1024u;
 constexpr uint32_t kMaxX86Bytes = 4096u;
 constexpr uint32_t kMaxX86Insns = 128u;
 constexpr uint32_t kMaxX86Blocks = 64u;
@@ -12,12 +19,43 @@ constexpr uint32_t kMaxStackSlots = 32u;
 constexpr uint32_t kMaxEmitBytes = 256u * 1024u;
 constexpr uint8_t kRegNone = 0xffu;
 
+#if !defined(HEX_UNIFIED_WASM)
+constexpr uint32_t kX86WorkArenaBytes = 256u * 1024u;
+constexpr uint32_t kX86EmitArenaBytes = 512u * 1024u;
+
 alignas(16) uint8_t g_x86_work_storage[kX86WorkArenaBytes];
 alignas(16) uint8_t g_x86_emit_storage[kX86EmitArenaBytes];
 
 hex::Arena g_x86_work_arena;
 hex::Arena g_x86_emit_arena;
 bool g_x86_arenas_init = false;
+
+void ensure_x86_arenas() {
+  if (!g_x86_arenas_init) {
+    g_x86_work_arena.init_fixed(g_x86_work_storage, sizeof(g_x86_work_storage));
+    g_x86_emit_arena.init_fixed(g_x86_emit_storage, sizeof(g_x86_emit_storage));
+    g_x86_arenas_init = true;
+  }
+}
+#endif
+
+hex::Arena& x86_work_arena() {
+#if defined(HEX_UNIFIED_WASM)
+  return *hex::runtime::shared_scratch_arena();
+#else
+  ensure_x86_arenas();
+  return g_x86_work_arena;
+#endif
+}
+
+hex::Arena& x86_emit_arena() {
+#if defined(HEX_UNIFIED_WASM)
+  return *hex::runtime::shared_emit_arena();
+#else
+  ensure_x86_arenas();
+  return g_x86_emit_arena;
+#endif
+}
 
 const char* g_x86_last_text = nullptr;
 uint32_t g_x86_last_text_len = 0u;
@@ -29,14 +67,6 @@ void clear_x86_last_output() {
   g_x86_last_text_len = 0u;
   g_x86_last_linemap = nullptr;
   g_x86_last_linemap_count = 0u;
-}
-
-void ensure_x86_arenas() {
-  if (!g_x86_arenas_init) {
-    g_x86_work_arena.init_fixed(g_x86_work_storage, sizeof(g_x86_work_storage));
-    g_x86_emit_arena.init_fixed(g_x86_emit_storage, sizeof(g_x86_emit_storage));
-    g_x86_arenas_init = true;
-  }
 }
 
 // x86_64 GPR indices:
@@ -752,7 +782,6 @@ HexStatus hex_engine_decompile_x86_64(
     uint32_t func_name_len,
     uint32_t abi_id,
     uint32_t emit_flags) {
-  ensure_x86_arenas();
   clear_x86_last_output();
 
   if (bytes == nullptr || byte_len == 0u) return HEX_ERR_INVALID_ARG;
@@ -773,11 +802,15 @@ HexStatus hex_engine_decompile_x86_64(
     local_name[local_name_len] = '\0';
   }
 
-  g_x86_work_arena.reset();
-  hex::ArenaScope work_scope(g_x86_work_arena);
+  hex::Arena& work_arena = x86_work_arena();
+#if !defined(HEX_UNIFIED_WASM)
+  work_arena.reset();
+#endif
+  // ArenaScope preserves caller-allocated input buffers on shared_scratch_arena().
+  hex::ArenaScope work_scope(work_arena);
 
   // Stage 1: Full-buffer fail-closed decode (supporting 1-byte `leave` 0xC9 as epilogue).
-  HexX86Decoded* decoded = g_x86_work_arena.alloc<HexX86Decoded>(kMaxX86Insns);
+  HexX86Decoded* decoded = work_arena.alloc<HexX86Decoded>(kMaxX86Insns);
   if (!decoded) return HEX_ERR_OOM;
 
   uint32_t off = 0u;
@@ -907,7 +940,7 @@ HexStatus hex_engine_decompile_x86_64(
 
   if (multi_block) {
     const HexStatus lst = hex_loop_analyze_arena(
-        g_x86_work_arena,
+        work_arena,
         num_blocks,
         succ_off,
         edge_cursor > 0u ? succ_dst_i32 : nullptr,
@@ -917,7 +950,7 @@ HexStatus hex_engine_decompile_x86_64(
         &loop_res);
     if (lst != HEX_OK) return lst;
     if (loop_res.num_loops > 0u) {
-      loop_headers_u32 = g_x86_work_arena.alloc<uint32_t>(loop_res.num_loops);
+      loop_headers_u32 = work_arena.alloc<uint32_t>(loop_res.num_loops);
       if (!loop_headers_u32) return HEX_ERR_OOM;
       for (uint32_t l = 0u; l < loop_res.num_loops; ++l) {
         loop_headers_u32[l] = static_cast<uint32_t>(loop_res.loop_header[l]);
@@ -926,7 +959,7 @@ HexStatus hex_engine_decompile_x86_64(
   }
 
   // Stage 4: Lift each basic block into CEmitInst SSA/mutable-var IR.
-  LiftBuilder builder(&g_x86_work_arena, abi_id, base_addr, multi_block);
+  LiftBuilder builder(&work_arena, abi_id, base_addr, multi_block);
   if (!builder.insts.reserve(static_cast<size_t>(insn_count) * 4u + 16u)) {
     return HEX_ERR_OOM;
   }
@@ -1044,7 +1077,7 @@ HexStatus hex_engine_decompile_x86_64(
   view.loop_parent = multi_block ? loop_res.loop_parent : nullptr;
   view.node_innermost_loop = multi_block ? loop_res.node_innermost_loop : nullptr;
 
-  hex::decompiler::bind_arena(&g_x86_emit_arena);
+  hex::decompiler::bind_arena(&x86_emit_arena());
   const int32_t emit_rc = hex_decomp_emit_c_ex(&view, kMaxEmitBytes, emit_flags);
   if (emit_rc != HEX_OK) {
     clear_x86_last_output();

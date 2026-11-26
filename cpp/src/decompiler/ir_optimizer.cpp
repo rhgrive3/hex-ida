@@ -1,5 +1,13 @@
 #include "ir_optimizer.hpp"
 
+#if defined(HEX_UNIFIED_WASM)
+namespace hex {
+namespace runtime {
+hex::Arena* shared_scratch_arena();
+}  // namespace runtime
+}  // namespace hex
+#endif
+
 namespace hex {
 namespace decomp {
 
@@ -843,6 +851,13 @@ HexStatus optimize_ir(
 
 namespace {
 
+#if defined(HEX_UNIFIED_WASM)
+// optimize_ir() uses ArenaScope without reset(), so sub-allocating from
+// shared_scratch_arena() preserves any live caller scratch allocations.
+Arena& default_opt_scratch() {
+  return *hex::runtime::shared_scratch_arena();
+}
+#else
 alignas(8) uint8_t g_opt_scratch_buf[256u * 1024u];
 Arena g_opt_scratch_arena;
 bool g_opt_scratch_ready = false;
@@ -854,6 +869,7 @@ Arena& default_opt_scratch() {
   }
   return g_opt_scratch_arena;
 }
+#endif
 
 }  // namespace
 
