@@ -1526,9 +1526,12 @@ function buildDecompiledLinesAndSourceMap(pseudocode, rawLinemap, baseAddrBig, a
 // x86_64 Decompiler WASM Bridge (Wave 8)
 // ---------------------------------------------------------------------------
 function resolveX86_64AbiId(abiId, abi) {
-  if (abiId != null) return Number(abiId) >>> 0;
-  if (typeof abi === 'string') {
-    const norm = abi.trim().toLowerCase();
+  const parseHint = (v) => {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number' && Number.isFinite(v)) return (v >>> 0) === 1 ? 1 : 0;
+    const norm = String(v).trim().toLowerCase();
+    if (norm === '1') return 1;
+    if (norm === '0') return 0;
     if (
       norm === 'microsoft-x64'
       || norm === 'microsoft-vectorcall'
@@ -1539,8 +1542,12 @@ function resolveX86_64AbiId(abiId, abi) {
     ) {
       return 1;
     }
-  }
-  return 0;
+    return 0;
+  };
+  const fromId = parseHint(abiId);
+  if (fromId != null) return fromId;
+  const fromAbi = parseHint(abi);
+  return fromAbi != null ? fromAbi : 0;
 }
 
 const X86_64_DECOMPILE_MAX_BYTES = 32768;
@@ -2022,14 +2029,14 @@ function runChunkedWasmStringScan(ex, bytes, ranges, {
               if (found >= 0) {
                 cut = found;
                 hasCleanBoundary = true;
-              } else if (cut <= pos) {
-                cut = Math.min(rEnd, pos + 2);
+              } else {
+                return noteFallback('strings', 'chunk_no_boundary');
               }
             } else {
               let found = -1;
               for (let c = cut; c >= pos + 4; c -= 1) {
                 const b = bytes[c - 1];
-                if (b === 0 || (b !== 9 && (b < 0x20 || b === 0x7f))) {
+                if (b === 0 || (b !== 9 && (b < 0x20 || b === 0x7f)) || b === 0xc0 || b === 0xc1 || b >= 0xf5) {
                   found = c;
                   break;
                 }
@@ -2038,13 +2045,7 @@ function runChunkedWasmStringScan(ex, bytes, ranges, {
                 cut = found;
                 hasCleanBoundary = true;
               } else {
-                // No non-printable terminator in chunk: back off at most 3 bytes to avoid
-                // splitting a UTF-8 multibyte codepoint at the chunk boundary.
-                let backed = 0;
-                while (cut > pos + 4 && backed < 3 && (bytes[cut] & 0xc0) === 0x80) {
-                  cut -= 1;
-                  backed += 1;
-                }
+                return noteFallback('strings', 'chunk_no_boundary');
               }
             }
           }

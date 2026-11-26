@@ -6279,7 +6279,7 @@ HexStatus try_emit_arm64_general(
             bctx.gpr_written_insn = 0u;
             process_insn(wi, pc, base_addr, word_count, bctx, bcmp, false, nullptr);
             if ((wi & 0xFC000000u) == 0x94000000u || (wi & 0xFFFFFC1Fu) == 0xD63F0000u ||
-                (wi & 0xFFFFFBFFu) == 0xD63F081Fu || (wi & 0xFFFFF800u) == 0xD73F0800u) {
+                (wi & 0xFFFFF81Fu) == 0xD63F081Fu || (wi & 0xFFFFF800u) == 0xD73F0800u) {
               bctx.gpr_written |= 0xFFu;
               bctx.fp_written |= 0xFFu;
             } else {
@@ -6295,7 +6295,7 @@ HexStatus try_emit_arm64_general(
           const uint32_t lw = words[last_i];
           const uint64_t lpc = base_addr + static_cast<uint64_t>(last_i) * 4ULL;
           if ((lw & 0xFFFFFC1Fu) == 0xD65F0000u || lw == 0xD65F0BFFu || lw == 0xD65F0FFFu ||
-              (lw & 0xFFFFFC1Fu) == 0xD61F0000u || (lw & 0xFFFFFBFFu) == 0xD61F081Fu || (lw & 0xFFFFF800u) == 0xD71F0800u) {
+              (lw & 0xFFFFFC1Fu) == 0xD61F0000u || (lw & 0xFFFFF81Fu) == 0xD61F081Fu || (lw & 0xFFFFF800u) == 0xD71F0800u) {
             // RET / RETAA / RETAB / BR / BRAA / BRAB: no internal successors
           } else if ((lw & 0xFC000000u) == 0x14000000u) {
             const uint64_t tgt = lpc + static_cast<uint64_t>(sign_extend(lw & 0x03FFFFFFu, 26u) * 4LL);

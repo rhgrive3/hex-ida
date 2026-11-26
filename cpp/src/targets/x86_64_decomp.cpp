@@ -1475,6 +1475,17 @@ static void emit_abi_call_args(GenTextBuf& tb, uint32_t abi_id, bool use_six_if_
   }
 }
 
+static void emit_abi_exact_args(GenTextBuf& tb, uint32_t abi_id, uint32_t n_params) {
+  static const char* const kSysV[6] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+  static const char* const kWin64[4] = {"rcx", "rdx", "r8", "r9"};
+  const uint32_t max_p = (abi_id == HEX_X86_ABI_MICROSOFT_X64) ? 4u : 6u;
+  const uint32_t cnt = (n_params < max_p) ? n_params : max_p;
+  for (uint32_t i = 0u; i < cnt; ++i) {
+    if (i > 0u) tb.put_str(", ");
+    tb.put_str((abi_id == HEX_X86_ABI_MICROSOFT_X64) ? kWin64[i] : kSysV[i]);
+  }
+}
+
 static bool is_flag_setting_alu(const GeneralInsn& gi) {
   if (gi.is_raw || gi.is_xchg || gi.is_leave) return false;
   const HexX86Decoded& d = gi.d;
@@ -2099,11 +2110,24 @@ HexStatus try_emit_x86_64_general(
   uint32_t open_ifs = 0u;
   uint32_t open_dos = 0u;
   bool last_was_return = false;
+  char self_sub[32];
+  {
+    uint32_t sp = 0u;
+    self_sub[sp++] = 's'; self_sub[sp++] = 'u'; self_sub[sp++] = 'b'; self_sub[sp++] = '_';
+    static const char kH[] = "0123456789ABCDEF";
+    char tmp[16]; uint32_t tn = 0u; uint64_t v = base_addr;
+    if (v == 0ULL) tmp[tn++] = '0';
+    else { while (v != 0ULL && tn < 16u) { tmp[tn++] = kH[v & 0xFu]; v >>= 4u; } }
+    while (tn > 0u) self_sub[sp++] = tmp[--tn];
+    self_sub[sp] = '\0';
+  }
   bool truncated_body = false;
+  uint32_t truncated_at = insn_count;
 
   for (uint32_t i = 0u; i < insn_count; ++i) {
-    if (tb.len + 512u >= tb.cap) {
+    if (tb.len + 2048u >= tb.cap) {
       truncated_body = true;
+      truncated_at = i;
       break;
     }
 
@@ -2168,6 +2192,11 @@ HexStatus try_emit_x86_64_general(
     }
 
     if (d.kind == HEX_X86_KIND_NOP) {
+      if (label_refs[i] > 0u) {
+        tb.put_indent(indent);
+        tb.put_str("(void)0;\n");
+        last_was_return = false;
+      }
       continue;
     }
 
@@ -2223,7 +2252,11 @@ HexStatus try_emit_x86_64_general(
         tb.put_str("rax = sub_");
         tb.put_u64_hex(d.target, true);
         tb.put_char('(');
-        emit_abi_call_args(tb, abi_id, true, gpr_used);
+        if (d.target == base_addr && str_eq(func_name, self_sub)) {
+          emit_abi_exact_args(tb, abi_id, num_params);
+        } else {
+          emit_abi_call_args(tb, abi_id, true, gpr_used);
+        }
         tb.put_str(");\n");
       } else {
         tb.put_str("rax = ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)(");
@@ -2253,7 +2286,11 @@ HexStatus try_emit_x86_64_general(
           tb.put_str("return sub_");
           tb.put_u64_hex(d.target, true);
           tb.put_char('(');
-          emit_abi_call_args(tb, abi_id, true, gpr_used);
+          if (d.target == base_addr && str_eq(func_name, self_sub)) {
+            emit_abi_exact_args(tb, abi_id, num_params);
+          } else {
+            emit_abi_call_args(tb, abi_id, true, gpr_used);
+          }
           tb.put_str(");\n");
           last_was_return = (open_ifs == 0u && open_dos == 0u);
         }
@@ -2304,7 +2341,11 @@ HexStatus try_emit_x86_64_general(
         tb.put_str(") return sub_");
         tb.put_u64_hex(d.target, true);
         tb.put_char('(');
-        emit_abi_call_args(tb, abi_id, true, gpr_used);
+        if (d.target == base_addr && str_eq(func_name, self_sub)) {
+          emit_abi_exact_args(tb, abi_id, num_params);
+        } else {
+          emit_abi_call_args(tb, abi_id, true, gpr_used);
+        }
         tb.put_str(");\n");
       }
       last_was_return = false;
@@ -2879,6 +2920,13 @@ HexStatus try_emit_x86_64_general(
   }
   if (truncated_body) {
     tb.put_str("    /* x86_64 output truncated at buffer limit */\n");
+    for (uint32_t k = truncated_at; k < insn_count; ++k) {
+      if (label_refs[k] > 0u) {
+        tb.put_str("loc_");
+        tb.put_u64_hex(insns[k].d.pc, true);
+        tb.put_str(": (void)0;\n");
+      }
+    }
     last_was_return = false;
   }
   if (!last_was_return) {

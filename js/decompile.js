@@ -148,13 +148,15 @@ function tryWasmDecompile(model, opts) {
       recordFallback('decompile:missing_x86_64_bytes');
       return null;
     }
+    const rawAbiId = opts?.abiId ?? model?.abiId ?? null;
     const abiHint = String(
-      opts?.abiId ?? model?.abiId ?? opts?.abi ?? model?.abi ?? opts?.platform ?? model?.platform ?? model?.profile?.platform ?? '',
+      opts?.abi ?? model?.abi ?? opts?.platform ?? model?.platform ?? model?.profile?.platform ?? '',
     ).trim().toLowerCase();
     const wasmRes = wasmDecompileX86_64Function({
       bytes,
       baseAddr,
       funcName,
+      abiId: rawAbiId,
       abi: abiHint,
       insns,
       _engine: opts?._engine ?? null,
