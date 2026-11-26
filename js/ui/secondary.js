@@ -241,7 +241,27 @@ function renderHelp(app, router) {
     onClick: () => app.openSample(),
   }));
   start.body.append(actions);
-  s.body.append(start.root, sectionTitle(pick('よくある質問', 'Frequently asked questions')));
+
+  const shortcuts = card(pick('キーボードショートカット', 'Keyboard Shortcuts'));
+  const shortcutRows = list();
+  const shortcutItems = [
+    ['Ctrl/Cmd+K · / · G', '検索 / ジャンプを開く', 'Open search / Jump to address'],
+    ['Esc · Alt+←/→ · ⌘[/]', '戻る / 履歴を前後移動', 'Back / Navigate history'],
+    ['N', '名前を付ける（リネーム）', 'Rename function or symbol'],
+    [';', 'メモを追加・編集', 'Add or edit comment'],
+    ['X', '相互参照（Xrefs）を表示', 'Show cross-references (Xrefs)'],
+    ['Space', 'アセンブリと疑似Cを切り替え', 'Toggle assembly / Pseudo-C'],
+    ['B', 'ブックマークを切り替え', 'Toggle bookmark'],
+    ['Ctrl/Cmd+Z', '直前の名前・メモ変更を元に戻す', 'Undo last rename or comment'],
+    ['Ctrl/Cmd+F', '現在の画面内を検索', 'Find in current view'],
+    ['?', 'ヘルプ・ショートカット一覧を開く', 'Open Help & shortcuts'],
+  ];
+  for (const [keys, ja, en] of shortcutItems) {
+    shortcutRows.append(listRow({ title: pick(ja, en), meta: keys }));
+  }
+  shortcuts.body.append(shortcutRows);
+
+  s.body.append(start.root, shortcuts.root, sectionTitle(pick('よくある質問', 'Frequently asked questions')));
 
   for (const [q, a] of FAQ) {
     const c = card(pick(q[0], q[1]));

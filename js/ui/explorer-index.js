@@ -108,26 +108,102 @@ function setHasAddr(set, addr) {
   return set.has(addr) || set.has(addr.toString());
 }
 
+function matchRank(nameLower, hexLower, q, hexQuery) {
+  if (!q) return 0;
+  if (nameLower === q || (hexQuery != null && hexLower === hexQuery) || hexLower === q) return 0;
+  if (nameLower.startsWith(q) || (hexQuery != null && hexLower.startsWith(hexQuery)) || hexLower.startsWith(q)) return 1;
+  if (nameLower.includes(q) || hexLower.includes(hexQuery ?? q)) return 2;
+  return -1;
+}
+
+function compareAddrBig(a, b) {
+  return a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0;
+}
+
+function sortMatchedEntries(matched, { sort, hasQuery, prioritySet, savedSet, editedSet }) {
+  const useSplitPriority = Boolean(savedSet || editedSet);
+  const priorityScoreOf = (addr) => {
+    if (useSplitPriority) {
+      return (setHasAddr(savedSet, addr) ? 1000 : 0) + (setHasAddr(editedSet, addr) ? 500 : 0);
+    }
+    return setHasAddr(prioritySet, addr) ? 1000 : 0;
+  };
+
+  if (sort === 'name') {
+    matched.sort((a, b) => {
+      if (hasQuery && a.rank !== b.rank) return a.rank - b.rank;
+      return a.nameLower.localeCompare(b.nameLower) || compareAddrBig(a, b);
+    });
+  } else if (sort === 'size') {
+    matched.sort((a, b) => {
+      const sa = a.size != null ? BigInt(a.size) : -1n;
+      const sb = b.size != null ? BigInt(b.size) : -1n;
+      if (sa !== sb) return sa > sb ? -1 : 1;
+      if (hasQuery && a.rank !== b.rank) return a.rank - b.rank;
+      return compareAddrBig(a, b);
+    });
+  } else if (sort === 'priority') {
+    matched.sort((a, b) => {
+      const pa = priorityScoreOf(a.addr);
+      const pb = priorityScoreOf(b.addr);
+      if (pa !== pb) return pb - pa;
+      if (hasQuery && a.rank !== b.rank) return a.rank - b.rank;
+      return compareAddrBig(a, b);
+    });
+  } else if (hasQuery) {
+    matched.sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : compareAddrBig(a, b)));
+  }
+}
+
 export async function queryFunctionsFast(
   app,
   query,
-  { offset = 0, limit = 120, sort = 'address', filterSet = null, prioritySet = null } = {},
+  { signal, offset = 0, limit = 120, sort = 'address', filterSet = null, prioritySet = null, savedSet = null, editedSet = null } = {},
 ) {
+  if (signal?.aborted) throw abortError();
+  const q = String(query || '').trim().toLowerCase();
+  const hexQuery = q.startsWith('0x') ? q.slice(2) : (q.startsWith('sub_') ? q.slice(4) : null);
+  const start = Math.max(0, Number.isSafeInteger(offset) ? offset : 0);
+  const count = Math.max(0, Number.isSafeInteger(limit) ? limit : 120);
+
   const symbols = app?.symbols;
   if (!symbols || !symbols.funcs) {
-    const rows = await queryFunctions(app, query, { offset, limit });
-    const list = Array.isArray(rows) ? rows : [];
+    const needsPostProcess = Boolean(filterSet || sort !== 'address' || q);
+    const fetchOffset = needsPostProcess ? 0 : start;
+    const fetchLimit = needsPostProcess ? Math.max(start + count, 2000) : count;
+    const rows = await queryFunctions(app, query, { signal, offset: fetchOffset, limit: fetchLimit });
+    if (signal?.aborted) throw abortError();
+    const rawList = Array.isArray(rows) ? rows : [];
+    const matched = [];
+    for (let i = 0; i < rawList.length; i++) {
+      const row = rawList[i];
+      const addr = typeof row.addr === 'bigint' ? row.addr : BigInt(row.addr);
+      if (filterSet && !setHasAddr(filterSet, addr)) continue;
+      const name = String(row.name || `sub_${addr.toString(16).toUpperCase()}`);
+      const nameLower = name.toLowerCase();
+      const hexLower = addr.toString(16);
+      const rank = q ? matchRank(nameLower, hexLower, q, hexQuery) : 0;
+      if (q && rank < 0) continue;
+      matched.push({ addr, name, nameLower, hexLower, size: row.size ?? null, rank });
+    }
+    if (needsPostProcess) {
+      sortMatchedEntries(matched, { sort, hasQuery: Boolean(q), prioritySet, savedSet, editedSet });
+      const items = matched.slice(start, start + count).map(({ addr, name, size }) => ({ addr, name, size }));
+      return {
+        items,
+        total: matched.length,
+        complete: rows?.completeness ? rows.completeness === 'complete' : true,
+      };
+    }
+    const items = matched.map(({ addr, name, size }) => ({ addr, name, size }));
     return {
-      items: list,
-      total: rows?.queryPage?.total ?? list.length,
+      items,
+      total: rows?.queryPage?.total ?? items.length,
       complete: rows?.completeness ? rows.completeness === 'complete' : true,
     };
   }
 
   const entries = getFunctionSearchIndex(symbols);
-  const q = String(query || '').trim().toLowerCase();
-  const hexQuery = q.startsWith('0x') ? q.slice(2) : (q.startsWith('sub_') ? q.slice(4) : null);
-
   let matched;
   if (!q && !filterSet) {
     matched = sort === 'address' ? entries : entries.slice();
@@ -136,31 +212,18 @@ export async function queryFunctionsFast(
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       if (filterSet && !setHasAddr(filterSet, entry.addr)) continue;
-      if (q && !entry.nameLower.includes(q) && !entry.hexLower.includes(hexQuery ?? q)) continue;
-      matched.push(entry);
+      if (q) {
+        const rank = matchRank(entry.nameLower, entry.hexLower, q, hexQuery);
+        if (rank < 0) continue;
+        matched.push({ ...entry, rank });
+      } else {
+        matched.push(entry);
+      }
     }
   }
 
-  if (sort === 'name') {
-    matched.sort((a, b) => a.nameLower.localeCompare(b.nameLower) || (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
-  } else if (sort === 'size') {
-    matched.sort((a, b) => {
-      const sa = a.size ?? -1n;
-      const sb = b.size ?? -1n;
-      if (sa !== sb) return sa > sb ? -1 : 1;
-      return a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0;
-    });
-  } else if (sort === 'priority') {
-    matched.sort((a, b) => {
-      const pa = setHasAddr(prioritySet, a.addr) ? 1 : 0;
-      const pb = setHasAddr(prioritySet, b.addr) ? 1 : 0;
-      if (pa !== pb) return pb - pa;
-      return a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0;
-    });
-  }
+  sortMatchedEntries(matched, { sort, hasQuery: Boolean(q), prioritySet, savedSet, editedSet });
 
-  const start = Math.max(0, Number.isSafeInteger(offset) ? offset : 0);
-  const count = Math.max(0, Number.isSafeInteger(limit) ? limit : 120);
   const total = matched.length;
   const items = matched.slice(start, start + count).map(({ addr, name, size }) => ({ addr, name, size }));
   return { items, total, complete: true };

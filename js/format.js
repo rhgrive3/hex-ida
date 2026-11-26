@@ -81,6 +81,63 @@ export function parseAddress(text) {
   return neg ? -v : v;
 }
 
+function toBigIntAddr(val) {
+  if (typeof val === 'bigint') return val;
+  if (typeof val === 'number' && Number.isSafeInteger(val) && val >= 0) return BigInt(val);
+  if (typeof val === 'string') return parseAddress(val);
+  return null;
+}
+
+function parseOffsetTerm(text) {
+  const s = String(text || '').trim().replace(/[\s_,]/g, '');
+  if (!s) return null;
+  try {
+    if (/^0x[0-9a-f]+$/i.test(s)) return BigInt(s);
+    if (/^#\d+$/.test(s)) return BigInt(s.slice(1));
+    if (/^\d+d?$/i.test(s)) return BigInt(s.replace(/d$/i, ''));
+  } catch { return null; }
+  return null;
+}
+
+/**
+ * Parse address arithmetic expressions such as "0x100040+0x10", "0x100040-16",
+ * "main+0x10", or "sub_100040+8". Plain addresses delegate to parseAddress().
+ */
+export function parseAddressExpr(raw, resolveSymbol) {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!s) return null;
+  const expr = /^(.+?)\s*([+-])\s*([^+-]+)$/.exec(s);
+  if (expr) {
+    const baseRaw = expr[1].trim();
+    const op = expr[2];
+    const offset = parseOffsetTerm(expr[3]);
+    if (baseRaw && offset != null) {
+      let base = null;
+      if (!/^0x/i.test(baseRaw) && typeof resolveSymbol === 'function') {
+        try { base = toBigIntAddr(resolveSymbol(baseRaw)); } catch { base = null; }
+      }
+      if (base == null) base = parseAddress(baseRaw);
+      if (base == null) {
+        const subHit = /^sub_([0-9a-f]+)$/i.exec(baseRaw);
+        if (subHit) {
+          try { base = BigInt('0x' + subHit[1]); } catch { base = null; }
+        }
+      }
+      if (base != null) {
+        const result = op === '+' ? base + offset : base - offset;
+        return result >= 0n ? result : null;
+      }
+    }
+  }
+  const plain = parseAddress(s);
+  if (plain != null) return plain;
+  if (typeof resolveSymbol === 'function') {
+    try { return toBigIntAddr(resolveSymbol(s)); } catch { return null; }
+  }
+  return null;
+}
+
 /**
  * Parse a hex byte pattern: "48 65 6C", "4865??6C", "0x48,0x65".
  * Returns {bytes: Uint8Array, mask: Uint8Array} or null.

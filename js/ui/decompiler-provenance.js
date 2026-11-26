@@ -13,7 +13,8 @@ const C_TOKEN = /(\/\*.*?\*\/|\/\/.*$)|("(?:\\.|[^"\\])*")|(^\s*#(?:include|defi
 const C_TOKEN_CLASS = ['tok-cmt', 'tok-str', 'tok-pp', 'tok-num', 'tok-kw', 'tok-type', 'tok-internal', 'tok-fn', 'tok-id'];
 const CMT_ADDR_RE = /^(\/\*\s*(?:block|entry|case)\s+)(0x[0-9a-fA-F]+)(\s*\*\/)$/;
 
-export function appendHighlighted(row, content, { isSig = false, resolveCallee = null, onOpenCallee = null, onOpenAddress = null } = {}) {
+export function appendHighlighted(row, content, { isSig = false, resolveCallee = null, onOpenCallee = null, onOpenAddress = null, onBookmarkAddress = null, text = null } = {}) {
+  const txt = typeof text === 'function' ? text : ((_ja, en) => en);
   let last = 0;
   C_TOKEN.lastIndex = 0;
   for (let match = C_TOKEN.exec(content); match; match = C_TOKEN.exec(content)) {
@@ -32,10 +33,24 @@ export function appendHighlighted(row, content, { isSig = false, resolveCallee =
           link.setAttribute('role', 'link');
           link.tabIndex = 0;
           link.setAttribute('data-addr', addrMatch[2]);
+          link.title = typeof onBookmarkAddress === 'function'
+            ? txt(`${addrMatch[2]} の命令へ移動（Shift+クリックでブックマーク）`, `Jump to ${addrMatch[2]} (Shift+click to bookmark)`)
+            : txt(`${addrMatch[2]} の命令へ移動`, `Jump to ${addrMatch[2]}`);
           link.addEventListener('click', (event) => {
             event.stopPropagation();
+            if (event.shiftKey && typeof onBookmarkAddress === 'function') {
+              onBookmarkAddress(addrBig);
+              return;
+            }
             onOpenAddress(addrBig);
           });
+          if (typeof onBookmarkAddress === 'function') {
+            link.addEventListener('contextmenu', (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onBookmarkAddress(addrBig);
+            });
+          }
           link.addEventListener('keydown', (event) => {
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
@@ -57,6 +72,7 @@ export function appendHighlighted(row, content, { isSig = false, resolveCallee =
         link.tabIndex = 0;
         link.setAttribute('role', 'link');
         link.setAttribute('data-tok', tokenText);
+        link.title = txt(`${tokenText} の疑似Cを開く`, `Open pseudocode for ${tokenText}`);
         link.addEventListener('click', (event) => {
           event.stopPropagation();
           onOpenCallee(addr, tokenText);
@@ -83,27 +99,71 @@ export function appendHighlighted(row, content, { isSig = false, resolveCallee =
   if (last < content.length) row.append(h('span', null, content.slice(last)));
 }
 
-export function attachTokenHighlight(codeEl) {
-  if (!codeEl || typeof codeEl.addEventListener !== 'function') return () => {};
-  let index = null;
+export function attachTokenHighlight(codeEl, { onHighlightChange } = {}) {
+  const notifyChange = typeof onHighlightChange === 'function' ? onHighlightChange : null;
+  if (!codeEl || typeof codeEl.addEventListener !== 'function') {
+    return {
+      clear() {},
+      next() {},
+      prev() {},
+      destroy() {},
+      get activeToken() { return null; },
+      get count() { return 0; },
+      get index() { return -1; },
+    };
+  }
+  let tokenIndex = null;
   let activeToken = null;
   let activeNodes = [];
+  let activeIdx = -1;
   const ensureIndex = () => {
-    if (index) return index;
-    index = new Map();
+    if (tokenIndex) return tokenIndex;
+    tokenIndex = new Map();
     for (const node of codeEl.querySelectorAll('[data-tok]')) {
       const tok = node.getAttribute('data-tok');
       if (!tok) continue;
-      let list = index.get(tok);
-      if (!list) { list = []; index.set(tok, list); }
+      let list = tokenIndex.get(tok);
+      if (!list) { list = []; tokenIndex.set(tok, list); }
       list.push(node);
     }
-    return index;
+    return tokenIndex;
   };
-  const clear = () => {
-    for (const node of activeNodes) node.classList.remove('tok-hit');
+  const emit = () => {
+    notifyChange?.({ token: activeToken, count: activeNodes.length, index: activeIdx });
+  };
+  const setCurrent = (nextIdx, scroll = false) => {
+    if (!activeNodes.length) {
+      activeIdx = -1;
+      return;
+    }
+    if (activeIdx >= 0 && activeIdx < activeNodes.length) {
+      activeNodes[activeIdx].classList.remove('tok-hit-current');
+    }
+    activeIdx = ((nextIdx % activeNodes.length) + activeNodes.length) % activeNodes.length;
+    const current = activeNodes[activeIdx];
+    current.classList.add('tok-hit-current');
+    if (scroll) current.scrollIntoView?.({ block: 'nearest' });
+  };
+  const clear = ({ silent = false } = {}) => {
+    const hadActive = activeToken != null || activeNodes.length > 0;
+    for (const node of activeNodes) {
+      node.classList.remove('tok-hit');
+      node.classList.remove('tok-hit-current');
+    }
     activeNodes = [];
     activeToken = null;
+    activeIdx = -1;
+    if (!silent && hadActive) emit();
+  };
+  const next = () => {
+    if (!activeNodes.length) return;
+    setCurrent(activeIdx + 1, true);
+    emit();
+  };
+  const prev = () => {
+    if (!activeNodes.length) return;
+    setCurrent(activeIdx - 1, true);
+    emit();
   };
   const onClick = (event) => {
     const target = event.target?.closest?.('[data-tok]');
@@ -118,21 +178,32 @@ export function attachTokenHighlight(codeEl) {
       clear();
       return;
     }
-    clear();
+    clear({ silent: true });
     const matches = ensureIndex().get(tok) || [];
     for (const node of matches) node.classList.add('tok-hit');
     activeToken = tok;
     activeNodes = matches;
+    const clickedIdx = matches.indexOf(target);
+    setCurrent(clickedIdx >= 0 ? clickedIdx : 0, false);
+    emit();
   };
   const onKeyDown = (event) => {
     if (event.key === 'Escape' && activeToken != null) clear();
   };
   codeEl.addEventListener('click', onClick);
   codeEl.addEventListener('keydown', onKeyDown);
-  return () => {
-    clear();
-    codeEl.removeEventListener('click', onClick);
-    codeEl.removeEventListener('keydown', onKeyDown);
+  return {
+    clear: () => clear(),
+    next,
+    prev,
+    destroy: () => {
+      clear({ silent: true });
+      codeEl.removeEventListener('click', onClick);
+      codeEl.removeEventListener('keydown', onKeyDown);
+    },
+    get activeToken() { return activeToken; },
+    get count() { return activeNodes.length; },
+    get index() { return activeIdx; },
   };
 }
 
@@ -473,7 +544,29 @@ export function createDecompilerProvenanceView(query, options = {}) {
     if (event.key === 'Enter') { event.preventDefault(); find.click(); }
   });
   input.disabled = find.disabled = !navigation.available;
+  if (Array.isArray(options.extraToolbarActions)) {
+    for (const extra of options.extraToolbarActions) {
+      if (extra) controls.append(extra);
+    }
+  }
   controls.append(input, find);
+
+  let tokenHighlight = null;
+  const tokNav = h('span', 'ui-tok-nav');
+  tokNav.hidden = true;
+  const tokCount = h('span', 'ui-hint mono');
+  const tokPrev = uiButton('↑', {
+    cls: 'ui-secondary-action',
+    ariaLabel: text('前の一致', 'Previous occurrence'),
+    onClick: () => tokenHighlight?.prev(),
+  });
+  const tokNext = uiButton('↓', {
+    cls: 'ui-secondary-action',
+    ariaLabel: text('次の一致', 'Next occurrence'),
+    onClick: () => tokenHighlight?.next(),
+  });
+  tokNav.append(tokCount, tokPrev, tokNext);
+  controls.append(tokNav);
 
   const lines = query?.value?.lines;
   if (Array.isArray(lines)) {
@@ -488,13 +581,27 @@ export function createDecompilerProvenanceView(query, options = {}) {
       } });
       controls.append(toggle);
     }
+    const fnComment = typeof options.functionComment === 'string' ? options.functionComment.trim() : '';
+    const makeCommentRow = () => {
+      const commentRow = h('span', 'ui-pseudocode-line is-fn-comment');
+      const commentLines = fnComment.split(/\r?\n/).map(part => `// ${part}`).join('\n');
+      commentRow.append(h('span', 'tok-cmt', commentLines), h('span', null, '\n'));
+      return commentRow;
+    };
+    let commentInserted = false;
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
       const content = line.kind === 'blank' ? '' : '    '.repeat(Math.max(0, line.indent || 0)) + line.text;
       const rowClasses = ['ui-pseudocode-line'];
       if (index < prelude) rowClasses.push('prelude');
       const isSig = line.kind === 'sig';
-      if (isSig) rowClasses.push('is-sig');
+      if (isSig) {
+        rowClasses.push('is-sig');
+        if (fnComment && !commentInserted) {
+          code.append(makeCommentRow());
+          commentInserted = true;
+        }
+      }
       if (line.kind === 'decl') {
         rowClasses.push('is-decl');
         if (lines[index + 1]?.kind !== 'decl') rowClasses.push('is-decl-last');
@@ -503,10 +610,14 @@ export function createDecompilerProvenanceView(query, options = {}) {
       const row = h('span', rowClasses.join(' '));
       appendHighlighted(row, content, {
         isSig,
+        text,
         resolveCallee: options.resolveCallee || null,
         onOpenCallee: options.onOpenCallee || null,
         onOpenAddress: typeof options.onNavigate === 'function'
           ? (address) => { if (!options.signal?.aborted && options.isCurrent?.() !== false) options.onNavigate(address); }
+          : null,
+        onBookmarkAddress: typeof options.onBookmarkAddress === 'function'
+          ? (address) => { if (!options.signal?.aborted && options.isCurrent?.() !== false) options.onBookmarkAddress(address); }
           : null,
       });
       if (index + 1 < lines.length) row.append(h('span', null, '\n'));
@@ -515,15 +626,36 @@ export function createDecompilerProvenanceView(query, options = {}) {
         row.tabIndex = 0;
         row.setAttribute('role', 'button');
         row.setAttribute('aria-label', text('行の根拠を見る: ', 'Inspect line origins: ') + content.trim());
-        row.addEventListener('click', () => select(() => navigation.selectLine(index)));
+        row.addEventListener('click', (event) => {
+          if (typeof window !== 'undefined' && window.getSelection?.()?.toString()) return;
+          const tokEl = event?.target?.closest?.('[data-tok]');
+          if (tokEl && row.contains?.(tokEl)) return;
+          select(() => navigation.selectLine(index));
+        });
         row.addEventListener('keydown', event => {
+          if (event.defaultPrevented) return;
           if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); return select(() => navigation.selectLine(index)); }
         });
       }
       rows.push(row);
       code.append(row);
     }
-    attachTokenHighlight(code);
+    if (fnComment && !commentInserted) {
+      code.prepend(makeCommentRow());
+    }
+    tokenHighlight = attachTokenHighlight(code, {
+      onHighlightChange: ({ token, count, index }) => {
+        if (!token || !count) {
+          tokNav.hidden = true;
+          tokCount.textContent = '';
+          tokCount.title = '';
+          return;
+        }
+        tokNav.hidden = false;
+        tokCount.textContent = `${index + 1}/${count}`;
+        tokCount.title = token;
+      },
+    });
   } else {
     const value = query?.value;
     const content = typeof value === 'string' ? value : value?.code;
@@ -533,5 +665,13 @@ export function createDecompilerProvenanceView(query, options = {}) {
     ? text('行を選ぶと元の命令を表示します。命令アドレスから逆引きもできます。', 'Select a line to inspect its instructions, or look up an instruction address.')
     : reasonText(navigation.reason) + text('行を選んで元の命令を見る機能は、この関数では使えません。', ' Selecting a line to see its instructions is not available here.') + ` (${navigation.reason})`;
   root.append(controls, code, status, details, history);
-  return Object.freeze({ root, code, navigation });
+  if (options.initialAddr != null && navigation.available) {
+    let initAddr = null;
+    try { initAddr = typeof options.initialAddr === 'bigint' ? options.initialAddr : BigInt(options.initialAddr); } catch { initAddr = null; }
+    if (initAddr != null && initAddr >= 0n) {
+      input.value = addrHex(initAddr);
+      void select(() => navigation.selectOrigin('addr', initAddr));
+    }
+  }
+  return Object.freeze({ root, code, navigation, tokenHighlight });
 }

@@ -1,7 +1,7 @@
 import { Sheet, el, button, list, groupRow, tapRow, toast, alertDialog, userError } from "../../ui.js";
 import { addrHex, addrText, parseAddress, parseHexPattern } from "../../format.js";
 import { numberPattern } from "../numeric-pattern.js";
-import { t } from "../../i18n.js";
+import { t, pick } from "../../i18n.js";
 import { queryStrings } from "../explorer-index.js";
 
 export function showJump(app) {
@@ -44,12 +44,51 @@ export function showJump(app) {
   }
   sheet.body.append(quick);
 
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  const savedBookmarks = (app.bookmarks?.list?.() || []).slice(0, 8);
+  if (savedBookmarks.length) {
+    const bmList = list();
+    bmList.append(groupRow(pick("★ ブックマーク", "★ Bookmarks")));
+    for (const bm of savedBookmarks) {
+      let bmAddr = null;
+      try { bmAddr = BigInt(bm.addr); } catch { continue; }
+      const hex = addrHex(bmAddr);
+      bmList.append(tapRow(bm.name || hex, {
+        sub: bm.note ? String(bm.note) : "",
+        right: hex,
+        onTap: () => {
+          sheet.close();
+          if (!app.goToAddress(bmAddr, { announce: true })) return;
+          const row = app.viewer?.rowOfAddress?.(bmAddr);
+          if (row != null) { app.viewer.select(row, false); app.store.set({ selectedRow: row }); }
+        },
+      }));
+    }
+    if (bmList.children.length > 1) sheet.body.append(bmList);
+  }
+
+  input.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "Enter") go();
+  });
   setTimeout(() => input.focus(), 50);
 
-  function resolveJumpTarget(raw) {
-    const direct = parseAddress(raw);
-    if (direct != null) return direct;
+  function parseAddressExpr(raw, resolveBase) {
+    const s = String(raw || "").trim();
+    const m = /^(.+?)\s*([+-])\s*([^+-]+)$/.exec(s);
+    if (!m) return null;
+    const baseStr = m[1].trim();
+    const op = m[2];
+    const offStr = m[3].trim();
+    if (!baseStr || !offStr) return null;
+    const offset = parseAddress(offStr);
+    if (offset == null || offset < 0n) return null;
+    const base = parseAddress(baseStr) ?? (typeof resolveBase === "function" ? resolveBase(baseStr) : null);
+    if (base == null) return null;
+    const result = op === "+" ? base + offset : base - offset;
+    return result >= 0n ? result : null;
+  }
+
+  function resolveSymbolOrBookmark(raw) {
     const q = String(raw || "").trim().toLowerCase();
     if (!q) return null;
     const bookmarks = app.bookmarks?.list?.() || [];
@@ -60,6 +99,14 @@ export function showJump(app) {
       }
     }
     const sym = app.symbols;
+    const renames = sym?.renames instanceof Map ? sym.renames : null;
+    if (renames) {
+      for (const [addrKey, name] of renames) {
+        if (String(name || "").toLowerCase() === q) {
+          try { return BigInt(addrKey); } catch { /* ignore */ }
+        }
+      }
+    }
     const names = sym && Array.isArray(sym.names) ? sym.names : [];
     for (let i = 0; i < names.length; i++) {
       if (String(names[i] || "").toLowerCase() === q && sym.addrs?.[i] != null) return sym.addrs[i];
@@ -72,10 +119,25 @@ export function showJump(app) {
         try { return BigInt(bm.addr); } catch { /* ignore */ }
       }
     }
+    if (renames) {
+      for (const [addrKey, name] of renames) {
+        if (String(name || "").toLowerCase().includes(q)) {
+          try { return BigInt(addrKey); } catch { /* ignore */ }
+        }
+      }
+    }
     for (let i = 0; i < names.length; i++) {
       if (String(names[i] || "").toLowerCase().includes(q) && sym.addrs?.[i] != null) return sym.addrs[i];
     }
     return null;
+  }
+
+  function resolveJumpTarget(raw) {
+    const direct = parseAddress(raw);
+    if (direct != null) return direct;
+    const expr = parseAddressExpr(raw, resolveSymbolOrBookmark);
+    if (expr != null) return expr;
+    return resolveSymbolOrBookmark(raw);
   }
 
   function go() {
@@ -245,10 +307,19 @@ export function showSearch(app) {
           sub: it.text,
           onTap: () => {
             sheet.close();
-            app.viewer.goToRow(it.row, "third");
-            app.viewer.mark(it.row);
-            app.viewer.select(it.row, false);
-            app.store.set({ selectedRow: it.row });
+            if (it.addr != null && typeof app.goToAddress === "function") {
+              app.goToAddress(it.addr, { announce: true });
+              const row = app.viewer?.rowOfAddress?.(it.addr) ?? it.row;
+              if (row != null) {
+                app.viewer?.select?.(row, false);
+                app.store?.set?.({ selectedRow: row });
+              }
+            } else {
+              app.viewer.goToRow(it.row, "third");
+              app.viewer.mark(it.row);
+              app.viewer.select(it.row, false);
+              app.store.set({ selectedRow: it.row });
+            }
           },
         }));
       }
@@ -472,8 +543,7 @@ export function showXrefs(app, target) {
         sub:`${addrHex(site)} · ${String(row.kind || row.refKind || 'reference')}`,
         onTap:() => {
           sheet.close();
-          if (fn?.start != null && app.openFunctionReport) app.openFunctionReport(fn.start);
-          else app.goToAddress(site, { announce:true });
+          app.goToAddress(site, { announce:true });
         },
       }));
     }

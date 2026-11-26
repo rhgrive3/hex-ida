@@ -292,6 +292,10 @@ button { font: inherit; color: inherit; }
   cursor: pointer;
 }
 .addrbar .addr-range + .addr-search { margin-left: 8px; }
+.addrbar .addr-star { flex: none; }
+@media (max-width: 1099px) {
+  #addr-range { display: none; }
+}
 
 .colhead {
   display: grid;

@@ -19,9 +19,9 @@ const OVERSCAN = 6;
 const IDLE_MS = 140;
 const PREFETCH_CHUNKS = 1;
 const HEX_ROW_BYTES = 4;
-const IMM_RE = /(#?-?0x[0-9a-f]+|#-?\d+)/gi;
-const TARGET_MN_RE = /^(?:b|bl|b\.[a-z0-9]+|cbz|cbnz|tbz|tbnz|call|jmp|j[a-z0-9]+|jal)$/i;
-const HEX_TARGET_RE = /^0x[0-9a-f]+$/i;
+const OPS_TOK_RE = /(#?-?0x[0-9a-f]+|#-?\d+)|\b([xw](?:30|[12]\d|\d)|[vqds](?:3[01]|[12]\d|\d)|sp|lr|fp|r(?:[abcd]x|[sd]i|[bs]p)|e(?:[abcd]x|[sd]i|[bs]p)|r(?:1[0-5]|[89])[dwb]?|xmm(?:1[0-5]|\d))\b/gi;
+const TARGET_MN_RE = /^(?:b|bl|b\.[a-z0-9]+|cbz|cbnz|tbz|tbnz|adrp|adr|callq?|jmpq?|j[a-z0-9]+|jal|loop(?:e|ne)?)$/i;
+const HEX_TARGET_RE = /^#?0x[0-9a-f]+$/i;
 const MAX_SAFE_ROW = BigInt(Number.MAX_SAFE_INTEGER);
 
 function rowIdentity(rowBig) { return rowBig <= MAX_SAFE_ROW ? Number(rowBig) : rowBig; }
@@ -71,6 +71,10 @@ export class CodeViewer {
     this.showNotes = false;
     this.noteStyle = 'ja';
     this.symbols = EMPTY_INDEX;
+    this.bookmarks = null;
+    this.commentFor = null;
+    this.highlightedReg = null;
+    this._onDocKeyDown = null;
     this.blockOverlay = null;
     this.blockRegionId = null;
     this._ctx = null;
@@ -258,7 +262,15 @@ export class CodeViewer {
   setMode(mode) {
     if (this.mode === mode) return;
     const previousMode = this.mode;
-    const visibleAnchor = this.topAddress() ?? this.rowAddress(this.selectedRow);
+    const top = this.topRow();
+    const visible = this.visibleRows();
+    const sel = this.selectedRow;
+    const selectedAddr = sel >= 0 ? this.rowAddress(sel) : null;
+    const selVisible = sel >= 0 && selectedAddr != null
+      && toRowBig(sel) >= toRowBig(top)
+      && toRowBig(sel) < toRowBig(top) + BigInt(visible);
+    const visibleAnchor = selVisible ? selectedAddr : (this.topAddress() ?? selectedAddr);
+    const anchorOffsetRows = selVisible ? Number(toRowBig(sel) - toRowBig(top)) : 0;
     let anchor = visibleAnchor;
     const leavingVariableAsm = previousMode === 'asm' && this.isVariableAsm();
     if (previousMode === 'hex' && mode === 'asm' && this.modeAddressAnchor != null && visibleAnchor != null) {
@@ -286,14 +298,30 @@ export class CodeViewer {
         this._recomputeWindow(false);
         if (anchor != null) {
           const rel = BigInt(anchor) - this.region.vmAddr;
-          if (rel >= 0n && rel < this.region.size) this.goToRow(rowIdentity(rel / 4n), 'top');
+          if (rel >= 0n && rel < this.region.size) {
+            const targetRow = rowIdentity(rel / 4n);
+            const topTarget = anchorOffsetRows > 0
+              ? this.clampRow(this._rowPlus(targetRow, -anchorOffsetRows))
+              : targetRow;
+            this.goToRow(topTarget, 'top');
+          }
         }
       } else if (this.fixedInstructionSize()) {
         const width = this.fixedInstructionSize();
         this._setTotalRows((this.region.size + BigInt(width - 1)) / BigInt(width));
         this.baseRow = 0;
         this._recomputeWindow(false);
-        if (anchor != null) this.goToAddress(anchor);
+        if (anchor != null) {
+          const targetRow = this.rowOfAddress(anchor);
+          if (targetRow != null) {
+            const topTarget = anchorOffsetRows > 0
+              ? this.clampRow(this._rowPlus(targetRow, -anchorOffsetRows))
+              : targetRow;
+            this.goToRow(topTarget, 'top');
+          } else {
+            this.goToAddress(anchor);
+          }
+        }
       } else {
         this.totalRows = this.variableRows.length;
         this.totalRowsBig = BigInt(this.totalRows);
@@ -302,6 +330,16 @@ export class CodeViewer {
         this._recomputeWindow(false);
         if (anchor != null) this._navigateVariable(anchor, { trusted:this.variableIndex.knownEntry(anchor) != null, where:'top' });
         else this._navigateVariable(this.region.vmAddr, { trusted:true, where:'top' });
+      }
+      if (selectedAddr != null) {
+        const remapped = this.rowOfAddress(selectedAddr);
+        if (remapped != null) {
+          this.selAnchor = remapped;
+          this.selFocus = remapped;
+        } else {
+          this.selAnchor = -1;
+          this.selFocus = -1;
+        }
       }
     }
     if (mode === 'asm') this.modeAddressAnchor = null;
@@ -335,8 +373,47 @@ export class CodeViewer {
   setSymbols(index) {
     this.symbols = index || EMPTY_INDEX;
     this._ctx = null;
-    for (const el of this.pool) { el._note = null; el._fn = null; }
+    for (const el of this.pool) { el._note = null; el._fn = null; el._ops = null; }
     this.invalidate();
+  }
+
+  setBookmarks(store) {
+    this.bookmarks = store || null;
+    this.invalidate();
+  }
+
+  setCommentProvider(fn) {
+    this.commentFor = typeof fn === 'function' ? fn : null;
+    for (const el of this.pool) el._note = null;
+    this.invalidate();
+  }
+
+  setHighlightedReg(reg) {
+    const next = reg ? String(reg).toLowerCase() : null;
+    if (this.highlightedReg === next) return;
+    this.highlightedReg = next;
+    this._syncRegHighlights();
+  }
+
+  clearHighlightedReg() {
+    this.setHighlightedReg(null);
+  }
+
+  _syncRegHighlights() {
+    const target = this.highlightedReg;
+    for (const el of this.pool) {
+      if (!el._o || el.style.display === 'none') continue;
+      this._applyRegHighlightToRow(el, target);
+    }
+  }
+
+  _applyRegHighlightToRow(el, target = this.highlightedReg) {
+    if (!el._o) return;
+    const spans = el._o.querySelectorAll ? el._o.querySelectorAll('.tok-reg') : [];
+    for (const s of spans) {
+      s.classList.toggle('tok-hit', !!target && s.dataset.reg === target);
+    }
+    el._opsHlReg = target;
   }
 
   _noteFor(row, idx, mn, ops, asmEntry) {
@@ -743,20 +820,30 @@ export class CodeViewer {
     if(this.mode==='hex'){const t=ascii===null?'':ascii;if(el._ascii!==t){el._s.textContent=t;el._ascii=t;}}
     if(this.mode==='asm'){if(el._mn!==mn){el._m.textContent=mn;el._mn=mn;}this._setOps(el,ops,mn);}else if(el._mn!==''){el._m.textContent='';el._mn='';this._setOps(el,'','');}
     const isFnStart=address!=null&&this.symbols.functionCount>0&&this.symbols.isFunctionStart(address);const blk=this.mode==='asm'&&row>=0?this.blockAt(row):null;
+    const rawComment=address!=null&&this.commentFor?this.commentFor(address):null;
+    const userComment=typeof rawComment==='string'&&rawComment.trim()?'// '+rawComment.trim():'';
     if(this.showNotes&&this.mode==='asm'){
       const fnName=isFnStart?(this.symbols.nameAt(address)||''):'';if(el._fn!==fnName){el._f.textContent=fnName?'▼ '+fnName:'';el._fn=fnName;}
       const blkName=blk?.title||'';if(el._sblkName!==blkName){el._bt.textContent=blkName?'▼ '+blkName:'';el._sblkName=blkName;}
-      let note='';if(mn&&mn!=='…'&&mn!=='???'&&fixedCtx)note=this._noteFor(row,fixedCtx.idx,mn,ops,fixedCtx.asmEntry);if(el._note!==note){el._nt.nodeValue=note;el._note=note;}
-    }else if(el._note!==''){el._nt.nodeValue='';el._note='';el._f.textContent='';el._fn='';el._bt.textContent='';el._sblkName='';}
+      let note=userComment;if(!note&&mn&&mn!=='…'&&mn!=='???'&&fixedCtx)note=this._noteFor(row,fixedCtx.idx,mn,ops,fixedCtx.asmEntry);if(el._note!==note){el._nt.nodeValue=note;el._note=note;}
+    }else if(userComment&&this.mode==='asm'){
+      if(el._fn!==''){el._f.textContent='';el._fn='';}
+      if(el._sblkName!==''){el._bt.textContent='';el._sblkName='';}
+      if(el._note!==userComment){el._nt.nodeValue=userComment;el._note=userComment;}
+    }else if(el._note!==''||el._fn!==''||el._sblkName!==''){el._nt.nodeValue='';el._note='';el._f.textContent='';el._fn='';el._bt.textContent='';el._sblkName='';}
     let cls='row';if(this.mode==='asm'){const k=mnemonicClass(mn);if(k)cls+=' '+k;if(!mn||mn==='…')cls+=' pending';const cg=instructionCategory(arch,mn);if(cg)cls+=' cat-'+cg;if(isFnStart)cls+=' fnstart';if(blk)cls+=' sblk sblk-'+blk.pos+' sblk-lv-'+blk.level;}else if(!bytes?.length)cls+=' pending';
+    if(address!=null&&this.bookmarks?.has?.(address))cls+=' bookmarked';
     if(row>=0&&row>=this._selLo&&row<=this._selHi){cls+=' sel';if(this._selLo!==this._selHi){if(row===this._selLo)cls+=' sel-first';if(row===this._selHi)cls+=' sel-last';}}if(row>=0&&row===this.markedRow)cls+=' hit';if(el._cls!==cls){el.className=cls;el._cls=cls;}
   }
 
   _setOps(el,str,mn='') {
     const isTargetMn=!!mn&&TARGET_MN_RE.test(mn);
-    if(el._ops===str&&el._opsTarget===isTargetMn)return;
-    el._ops=str;el._opsTarget=isTargetMn;const target=el._o;if(!str){target.textContent='';return;}
-    IMM_RE.lastIndex=0;let m=IMM_RE.exec(str);if(!m){target.textContent=str;return;}
+    if(el._ops===str&&el._opsTarget===isTargetMn){
+      if(el._opsHlReg!==this.highlightedReg)this._applyRegHighlightToRow(el,this.highlightedReg);
+      return;
+    }
+    el._ops=str;el._opsTarget=isTargetMn;el._opsHlReg=this.highlightedReg;const target=el._o;if(!str){target.textContent='';return;}
+    OPS_TOK_RE.lastIndex=0;let m=OPS_TOK_RE.exec(str);if(!m){target.textContent=str;return;}
     const container=typeof document.createDocumentFragment==='function'?document.createDocumentFragment():target;
     if(container===target)target.textContent='';
     let last=0;
@@ -764,13 +851,25 @@ export class CodeViewer {
       const idx=m.index;
       if(idx>last)container.appendChild(document.createTextNode(str.slice(last,idx)));
       const s=document.createElement('span');
-      const isTarget=isTargetMn&&HEX_TARGET_RE.test(m[0]);
-      s.className=isTarget?'tok-imm tok-target':'tok-imm';
-      if(isTarget)s.dataset.targetAddr=m[0];
-      s.textContent=m[0];container.appendChild(s);
+      if(m[1]){
+        const isTarget=isTargetMn&&HEX_TARGET_RE.test(m[1]);
+        s.className=isTarget?'tok-imm tok-target':'tok-imm';
+        if(isTarget){
+          const rawAddr=m[1].startsWith('#')?m[1].slice(1):m[1];
+          s.dataset.targetAddr=rawAddr;
+          try{const symName=this.symbols?.nameAt?.(BigInt(rawAddr))||'';if(symName)s.title=symName;}catch{}
+        }
+        s.textContent=m[1];
+      }else{
+        const reg=m[2].toLowerCase();
+        s.className=this.highlightedReg&&this.highlightedReg===reg?'tok-reg tok-hit':'tok-reg';
+        s.dataset.reg=reg;
+        s.textContent=m[2];
+      }
+      container.appendChild(s);
       last=idx+m[0].length;
-      if(m[0].length===0)IMM_RE.lastIndex++;
-      m=IMM_RE.exec(str);
+      if(m[0].length===0)OPS_TOK_RE.lastIndex++;
+      m=OPS_TOK_RE.exec(str);
     }
     if(last<str.length)container.appendChild(document.createTextNode(str.slice(last)));
     if(container!==target){target.textContent='';target.appendChild(container);}
@@ -806,6 +905,7 @@ export class CodeViewer {
     let suppressContextUntil = 0;
     let suppressTargetJumpUntil = 0;
     let lastTargetJump = 0;
+    let lastRegToggle = 0;
 
     const rowFrom = (target) => {
       if (!this.totalRows) return -1;
@@ -891,10 +991,18 @@ export class CodeViewer {
       }
       const row = rowFrom(e.target);
       if (row >= 0 && row === active.row) {
+        const regEl = e.target?.closest ? e.target.closest('.tok-reg') : null;
+        if (!this.rangeMode && regEl?.dataset?.reg) {
+          lastRegToggle = Date.now();
+          const reg = regEl.dataset.reg;
+          this.setHighlightedReg(this.highlightedReg === reg ? null : reg);
+          return;
+        }
         const targetEl = e.target?.closest ? e.target.closest('.tok-target') : null;
         if (!this.rangeMode && targetEl?.dataset?.targetAddr && typeof this.onJumpTarget === 'function') {
           try {
             lastTargetJump = Date.now();
+            this.select(row, false);
             this.onJumpTarget(BigInt(targetEl.dataset.targetAddr), row);
             return;
           } catch { /* fall back to row activation */ }
@@ -909,18 +1017,37 @@ export class CodeViewer {
         reset();
         return;
       }
-      if (this.rangeMode || typeof this.onJumpTarget !== 'function') return;
+      if (this.rangeMode) return;
       const now = Date.now();
-      if (now < suppressTargetJumpUntil || now - lastTargetJump < 300) return;
+      if (now < suppressTargetJumpUntil) return;
+      const regEl = e.target?.closest ? e.target.closest('.tok-reg') : null;
+      if (regEl?.dataset?.reg) {
+        if (now - lastRegToggle < 300) return;
+        lastRegToggle = now;
+        const reg = regEl.dataset.reg;
+        this.setHighlightedReg(this.highlightedReg === reg ? null : reg);
+        return;
+      }
+      if (typeof this.onJumpTarget !== 'function' || now - lastTargetJump < 300) return;
       const targetEl = e.target?.closest ? e.target.closest('.tok-target') : null;
       if (!targetEl?.dataset?.targetAddr) return;
       const row = rowFrom(targetEl);
       if (row < 0) return;
       try {
         lastTargetJump = now;
+        this.select(row, false);
         this.onJumpTarget(BigInt(targetEl.dataset.targetAddr), row);
       } catch { /* ignore invalid target */ }
     }, plainOpts);
+
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      this._onDocKeyDown = (e) => {
+        if (e.key === 'Escape' && this.highlightedReg && !e.defaultPrevented) {
+          this.clearHighlightedReg();
+        }
+      };
+      document.addEventListener('keydown', this._onDocKeyDown);
+    }
 
     this.vp.addEventListener('pointercancel', () => {
       suppressTargetJumpUntil = Date.now() + 450;
@@ -944,6 +1071,6 @@ export class CodeViewer {
   }
 
   dispose() {
-    if(this.disposed)return;this.disposed=true;this.variableNavigation++;this._abortVariableNavigation('viewer-disposed');this.variablePending=false;this.variablePendingAddress=null;this.variableIndex.dispose();clearTimeout(this.idleTimer);if(this.frame)cancelAnimationFrame(this.frame);this.frame=0;this._resetPointerGesture?.();this._resetPointerGesture=null;this._scrubberController?.abort();this._scrubberController=null;this._listenerController?.abort();this.__disposeDragReturnGuard?.();this.vp.removeEventListener('scroll',this._onScroll);
+    if(this.disposed)return;this.disposed=true;this.variableNavigation++;this._abortVariableNavigation('viewer-disposed');this.variablePending=false;this.variablePendingAddress=null;this.variableIndex.dispose();clearTimeout(this.idleTimer);if(this.frame)cancelAnimationFrame(this.frame);this.frame=0;this._resetPointerGesture?.();this._resetPointerGesture=null;this._scrubberController?.abort();this._scrubberController=null;this._listenerController?.abort();if(this._onDocKeyDown&&typeof document!=='undefined'&&typeof document.removeEventListener==='function'){document.removeEventListener('keydown',this._onDocKeyDown);this._onDocKeyDown=null;}this.__disposeDragReturnGuard?.();this.vp.removeEventListener('scroll',this._onScroll);
   }
 }

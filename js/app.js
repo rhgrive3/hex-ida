@@ -276,8 +276,13 @@ export class App {
     this.uiResume = { explorerFilter: 'all', explorerSort: 'address', lastFunctionTab: null };
     this._deltaReadyEpoch = -1;
     this._deltaReadySlice = -1;
+    this._undoStack = [];
+    this._redoStack = [];
+    this._undoLimit = 20;
+    this._applyingUndo = false;
     this.bookmarks = new BookmarkStore({
       onChange: () => {
+        this.viewer?.invalidate?.();
         if (this._applyingDelta) return;
         this.scheduleDeltaSave();
         this.workspace?.autosave?.();
@@ -376,24 +381,45 @@ export class App {
       onRangeChange: () => this.updateSelectionBar(),
       onJumpTarget: (addr) => this.goToAddress(addr, { announce: true, label: this.symbols?.nameAt?.(addr) || null }),
     });
+    this.viewer.setBookmarks?.(this.bookmarks);
+    this.viewer.setCommentProvider?.((addr) => this.notes?.comment?.(addr) || null);
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
     this.workspace = new ProductWorkspace(this);
     if (this.workspace && typeof this.workspace.autosave === 'function' && !this.workspace.autosave.__deltaWrapped) {
       const origAutosave = this.workspace.autosave.bind(this.workspace);
+      const annSignature = (arr) => {
+        if (!Array.isArray(arr)) return arr == null ? '' : String(arr);
+        let sig = String(arr.length);
+        for (let i = 0; i < arr.length; i++) {
+          const item = arr[i];
+          if (!item || typeof item !== 'object') {
+            sig += '|' + String(item);
+          } else {
+            sig += '|' + String(item.id ?? i) + ':' + String(item.updatedAt ?? item.createdAt ?? '') + ':' + String(item.text ?? item.note ?? item.title ?? '');
+          }
+        }
+        return sig;
+      };
+      const sameShallow = (a, b) => {
+        if (a === b) return true;
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+        return true;
+      };
       let prevAnnRef = this.projectAnnotations;
-      let prevAnnLen = Array.isArray(this.projectAnnotations) ? this.projectAnnotations.length : -1;
-      let prevAnnLast = Array.isArray(this.projectAnnotations) && prevAnnLen > 0
-        ? this.projectAnnotations[prevAnnLen - 1]
-        : null;
+      let prevAnnItems = Array.isArray(this.projectAnnotations) ? this.projectAnnotations.slice() : null;
+      let prevAnnSig = annSignature(this.projectAnnotations);
       const wrappedAutosave = (...args) => {
         const result = origAutosave(...args);
         const curRef = this.projectAnnotations;
-        const curLen = Array.isArray(curRef) ? curRef.length : -1;
-        const curLast = Array.isArray(curRef) && curLen > 0 ? curRef[curLen - 1] : null;
-        if (curRef !== prevAnnRef || curLen !== prevAnnLen || curLast !== prevAnnLast) {
+        const curSig = annSignature(curRef);
+        const changed = curRef !== prevAnnRef
+          || curSig !== prevAnnSig
+          || !sameShallow(curRef, prevAnnItems);
+        if (changed) {
           prevAnnRef = curRef;
-          prevAnnLen = curLen;
-          prevAnnLast = curLast;
+          prevAnnItems = Array.isArray(curRef) ? curRef.slice() : null;
+          prevAnnSig = curSig;
           if (!this._applyingDelta) this.scheduleDeltaSave();
         }
         return result;
@@ -559,6 +585,7 @@ export class App {
     const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable);
     if (e.key === 'Escape') {
       if (closeMenu() || closeTopSheet()) { e.preventDefault(); return; }
+      if (this.viewer.highlightedReg) { this.viewer.clearHighlightedReg(); e.preventDefault(); return; }
       if (this.viewer.rangeMode) { this.viewer.clearRange(); e.preventDefault(); }
       return;
     }
@@ -594,8 +621,25 @@ export class App {
         if (uiRoot()?.classList.contains('product-ui-ready')) return;
         e.preventDefault(); showSearch(this); break;
       case 'e': case 'E': e.preventDefault(); this.setExplain(!this.prefs.explain); break;
-      case 'ArrowDown': e.preventDefault(); shift ? v.extendByRows(1) : v.scrollByRows(1); break;
-      case 'ArrowUp': e.preventDefault(); shift ? v.extendByRows(-1) : v.scrollByRows(-1); break;
+      case 'ArrowDown':
+      case 'ArrowUp': {
+        e.preventDefault();
+        const delta = e.key === 'ArrowDown' ? 1 : -1;
+        if (shift) { v.extendByRows(delta); break; }
+        if (!v.totalRows) break;
+        const cur = v.selectedRow;
+        const next = cur >= 0 ? v.clampRow(v._rowPlus(cur, delta)) : v.topRow();
+        v.select(next, false);
+        v.revealRow(next);
+        const addr = v.rowAddress(next);
+        if (addr != null) {
+          if (this.dom.addrCur) this.dom.addrCur.textContent = addrHex(addr);
+          this.store.set({ selectedRow: next, currentAddress: addr });
+        } else {
+          this.store.set({ selectedRow: next });
+        }
+        break;
+      }
       case 'PageDown': case ' ': e.preventDefault(); shift ? v.extendByPages(1) : v.scrollByPages(1); break;
       case 'PageUp': e.preventDefault(); shift ? v.extendByPages(-1) : v.scrollByPages(-1); break;
       case 'Home': e.preventDefault(); shift ? v.extendToRow(0) : v.goToRow(0, 'top'); break;
@@ -1248,6 +1292,108 @@ export class App {
     }
   }
 
+  /* ── 編集 Undo / Redo スタック ───────────────────────────── */
+
+  recordUndo(entry) {
+    if (this._applyingUndo || !entry || typeof entry !== 'object') return false;
+    if (entry.type !== 'name' && entry.type !== 'comment' && entry.type !== 'patch') return false;
+    this._undoStack.push(entry);
+    if (this._undoStack.length > this._undoLimit) {
+      this._undoStack.splice(0, this._undoStack.length - this._undoLimit);
+    }
+    this._redoStack.length = 0;
+    return true;
+  }
+
+  _applyUndoEntry(entry, direction) {
+    const isUndo = direction === 'undo';
+    if (entry.type === 'name') {
+      const addr = BigInt(entry.addr);
+      const value = isUndo ? (entry.before ?? '') : (entry.after ?? '');
+      if (this.notes && this.notes !== EMPTY_NOTES) this.notes.setName(addr, value);
+      if (this.symbols && this.symbols !== EMPTY_INDEX) this.symbols.rename(addr, value);
+      this.viewer?.setSymbols?.(this.symbols);
+      this.updateChrome?.();
+      toast(isUndo ? pick('名前の変更を元に戻しました', 'Undid rename') : pick('名前の変更をやり直しました', 'Redid rename'));
+      return true;
+    }
+    if (entry.type === 'comment') {
+      const addr = BigInt(entry.addr);
+      const value = isUndo ? (entry.before ?? '') : (entry.after ?? '');
+      if (this.notes && this.notes !== EMPTY_NOTES) this.notes.setComment(addr, value);
+      this.viewer?.invalidate?.();
+      this.updateChrome?.();
+      toast(isUndo ? pick('コメントの変更を元に戻しました', 'Undid comment edit') : pick('コメントの変更をやり直しました', 'Redid comment edit'));
+      return true;
+    }
+    if (entry.type === 'patch') {
+      const offset = BigInt(entry.offset);
+      const isRemoval = entry.action === 'remove' || entry.after == null;
+      if (isUndo) {
+        if (isRemoval && entry.before) {
+          const prev = entry.before;
+          if (prev && typeof prev === 'object' && !ArrayBuffer.isView(prev) && !Array.isArray(prev) && prev.before && prev.after) {
+            this.patches.add(offset, prev.before, prev.after, prev.meta || entry.meta);
+          } else if (entry.origBytes) {
+            this.patches.add(offset, entry.origBytes, prev, entry.meta);
+          }
+        } else if (entry.prevPatch && entry.prevPatch.before && entry.prevPatch.after) {
+          this.patches.add(offset, entry.prevPatch.before, entry.prevPatch.after, entry.prevPatch.meta || entry.meta);
+        } else {
+          this.patches.remove(offset);
+        }
+      } else {
+        if (isRemoval) {
+          this.patches.remove(offset);
+        } else {
+          this.patches.add(offset, entry.before, entry.after, entry.meta);
+        }
+      }
+      this.store.set({ patches: this.patches.size });
+      this.viewer?.invalidate?.();
+      this.updateChrome?.();
+      toast(isUndo ? pick('パッチを元に戻しました', 'Undid patch') : pick('パッチをやり直しました', 'Redid patch'));
+      return true;
+    }
+    return false;
+  }
+
+  undoEdit() {
+    if (!this._undoStack.length) return false;
+    const entry = this._undoStack.pop();
+    this._applyingUndo = true;
+    try {
+      const ok = this._applyUndoEntry(entry, 'undo');
+      if (ok) {
+        this._redoStack.push(entry);
+        if (this._redoStack.length > this._undoLimit) {
+          this._redoStack.splice(0, this._redoStack.length - this._undoLimit);
+        }
+      }
+      return ok;
+    } finally {
+      this._applyingUndo = false;
+    }
+  }
+
+  redoEdit() {
+    if (!this._redoStack.length) return false;
+    const entry = this._redoStack.pop();
+    this._applyingUndo = true;
+    try {
+      const ok = this._applyUndoEntry(entry, 'redo');
+      if (ok) {
+        this._undoStack.push(entry);
+        if (this._undoStack.length > this._undoLimit) {
+          this._undoStack.splice(0, this._undoStack.length - this._undoLimit);
+        }
+      }
+      return ok;
+    } finally {
+      this._applyingUndo = false;
+    }
+  }
+
   /* ── 軽量デルタセッション永続化 ───────────────────────────── */
 
   _currentDeltaFingerprint() {
@@ -1626,6 +1772,8 @@ export class App {
     try {
       const previousNoteNames = this.notes && this.notes !== EMPTY_NOTES ? [...this.notes.names.keys()] : [];
       if (this.notes && this.notes !== EMPTY_NOTES) this.notes.clear();
+      this._undoStack.length = 0;
+      this._redoStack.length = 0;
       this.bookmarks?.clear?.({ silent: false });
       if (this.patches?.clear) {
         this.patches.clear();
@@ -1694,6 +1842,8 @@ export class App {
     }
     this._resetDeltaReadiness();
     this.noteAttachController?.abort();
+    this._undoStack.length = 0;
+    this._redoStack.length = 0;
     this.notes=EMPTY_NOTES;
     this.projectAnnotations = [];
     this.bookmarks?.clear?.({ silent: true });
@@ -1748,6 +1898,7 @@ export class App {
       const legacyV3=findLegacyV3NoteKey(file,info,sliceIndex);
       const notes=new NoteStore(id,[legacyV3,legacyV2,legacyNoteKeyForSlice(file,info,sliceIndex)]);
       notes.onChange = () => {
+        this.viewer?.invalidate?.();
         if (this._applyingDelta) return;
         this.scheduleDeltaSave();
         this.workspace?.autosave?.();
@@ -1757,6 +1908,8 @@ export class App {
         for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr,entry.name);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
+      } else {
+        this.viewer?.invalidate?.();
       }
       document.dispatchEvent(new CustomEvent('hex:notes-attached',{detail:{sliceIndex}}));
       return notes;
@@ -2071,6 +2224,8 @@ export class App {
     this._resetDeltaReadiness();
     this.symbols=EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
+    this._undoStack.length = 0;
+    this._redoStack.length = 0;
     this.notes=EMPTY_NOTES;
     this.projectAnnotations = [];
     this.bookmarks?.clear?.({ silent: true });

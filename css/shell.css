@@ -68,6 +68,9 @@
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-bg);
 }
+.product-ui-ready .ui-product-chrome:focus-within {
+  z-index: var(--ui-z-popover);
+}
 
 .product-ui-ready .ui-command-center {
   display: flex;
@@ -219,6 +222,7 @@
 
 @media (min-width: 900px) {
   .product-ui-ready .ui-chrome-back { order: -2; }
+  .product-ui-ready .ui-chrome-forward { order: -2; }
   /*
    * No left rail. The four destinations are compact tabs at the start of the
    * chrome row, which gives the code back the 76px the rail used to reserve

@@ -7,9 +7,9 @@ import {
   tabs, tabPanel, updateScreenTitle, sectionTitle, listRow, VirtualList, scrollStrip,
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
-import { addrHex, parseAddress, sizeText } from '../format.js';
+import * as formatMod from '../format.js';
 import { pick, isJa as i18nIsJa } from '../i18n.js';
-import { menu, copyText, toast, closeAllSheets, closeMenu, Sheet, el, button } from '../ui.js';
+import { menu, copyText, toast, closeAllSheets, closeMenu, Sheet, el, button, alertDialog } from '../ui.js';
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals, showPatches,
 } from '../tools.js';
@@ -21,7 +21,7 @@ import { cfgGraph, callGraph, renderGraph, graphLegend } from '../graphview.js';
 import { classifyFunction, discoverSubsystems } from '../recognition/classifier.js';
 import { traceAppFunction, runtimeEvidenceForApp } from '../runtime/app-runtime.js';
 import { installAssistant } from '../ai/ui/assistant.js';
-import { classifyOmnibox, intentLabel } from '../ai/interaction/omnibox.js';
+import { classifyOmnibox, intentLabel, COMMANDS } from '../ai/interaction/omnibox.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 import { productDescriptor } from '../platform/product-descriptor.js';
 import * as explorerIndex from './explorer-index.js';
@@ -43,6 +43,18 @@ const showCandidates = lazyProductPanel('showCandidates');
 const showClass = lazyProductPanel('showClass');
 const showJump = lazyProductPanel('showJump');
 const showSearchPanel = lazyProductPanel('showSearch');
+const showXrefs = lazyProductPanel('showXrefs');
+
+const { addrHex, parseAddress, sizeText } = formatMod;
+function parseAddressInput(app, q) {
+  if (typeof formatMod.parseAddressExpr === 'function') {
+    try {
+      const resolved = formatMod.parseAddressExpr(q, (name) => symbolAddress(app, name));
+      if (resolved != null) return BigInt(resolved);
+    } catch { /* fall through */ }
+  }
+  return parseAddress(q);
+}
 
 const ja = () => {
   const rootLang = uiRoot()?.lang;
@@ -60,6 +72,113 @@ function functionName(app, addr) {
   const sym = app.symbols;
   const raw = sym && (sym.nameAt?.(addr) || sym.label?.(addr));
   return raw || ('sub_' + BigInt(addr).toString(16).toUpperCase());
+}
+
+export function isFunctionStart(app, rawAddr) {
+  if (rawAddr == null) return false;
+  let big;
+  try { big = BigInt(rawAddr); } catch { return false; }
+  const regions = app?.store?.get?.('regions') || [];
+  const region = regions.find((r) => r && r.size > 0n && big >= r.vmAddr && big < r.vmAddr + r.size);
+  if (region && !region.exec) return false;
+  const sym = app?.symbols;
+  if (!sym) return false;
+  try {
+    const fn = sym.functionAt?.(big);
+    if (fn?.start != null && BigInt(fn.start) === big) return true;
+    const start = sym.functionStartAt?.(big);
+    if (start != null && BigInt(start) === big) return true;
+  } catch { /* ignore */ }
+  if (Array.isArray(sym.funcs) && sym.funcs.length) {
+    const idx = lowerBoundBigInt(sym.funcs, big);
+    if (idx < sym.funcs.length) {
+      try { if (BigInt(sym.funcs[idx]) === big) return true; } catch { /* ignore */ }
+    }
+  }
+  return false;
+}
+
+export function bookmarkLabel(app, rawAddr) {
+  if (rawAddr == null) return text('アドレス', 'Address');
+  let big;
+  try { big = BigInt(rawAddr); } catch { return String(rawAddr); }
+  const regions = app?.store?.get?.('regions') || [];
+  const region = regions.find((r) => r && r.size > 0n && big >= r.vmAddr && big < r.vmAddr + r.size);
+  const sym = app?.symbols;
+  const exactSym = sym && (sym.nameAt?.(big) || sym.label?.(big)) || null;
+  if (!region || region.exec) {
+    let start = null;
+    try { start = sym?.functionAt?.(big)?.start ?? sym?.functionStartAt?.(big) ?? null; } catch { start = null; }
+    if (start != null) {
+      const startBig = BigInt(start);
+      const fnName = functionName(app, startBig);
+      const offset = big - startBig;
+      return offset > 0n ? `${fnName}+0x${offset.toString(16).toUpperCase()}` : fnName;
+    }
+    if (exactSym) return exactSym;
+  }
+  if (exactSym) return exactSym;
+  const regName = region?.section || region?.name || text('データ', 'Data');
+  return `${regName} @ ${addressText(big)}`;
+}
+
+export function openAddressTarget(app, router, rawAddr, { preferTab } = {}) {
+  if (rawAddr == null || !router) return false;
+  let big;
+  try { big = BigInt(rawAddr); } catch { return false; }
+  const regions = app?.store?.get?.('regions') || [];
+  const region = regions.find((r) => r && r.size > 0n && big >= r.vmAddr && big < r.vmAddr + r.size);
+  const isExec = !region || !!region.exec;
+  if (isExec && isFunctionStart(app, big)) {
+    const verified = app?.validatedFunctionRange?.(big);
+    if (!verified || verified.ok) {
+      const tab = preferTab || app?.uiResume?.lastFunctionTab || 'overview';
+      const safeTab = FUNCTION_TABS.some((t) => t.id === tab) ? tab : 'overview';
+      return router.navigate('/function/' + big.toString() + '/' + safeTab);
+    }
+  }
+  return router.navigate('/code/' + big.toString());
+}
+
+export function syncRouteNavigation(app, router, route, routeContext = {}) {
+  if (!route) return;
+  const id = route.route?.id;
+  let label = '';
+  let navAddr = null;
+  if (id === 'code') {
+    if (route.params?.address) {
+      try { navAddr = BigInt(route.params.address); } catch { navAddr = null; }
+    }
+    const addr = navAddr ?? currentAddress(app);
+    label = addr != null ? bookmarkLabel(app, addr) : text('コード', 'Code');
+  } else if (id === 'function') {
+    if (route.params?.address) {
+      try { navAddr = BigInt(route.params.address); } catch { navAddr = null; }
+    }
+    label = navAddr != null ? functionName(app, navAddr) : text('関数', 'Function');
+  } else if (id === 'explorer') {
+    label = text('索引', 'Explorer');
+  } else if (id === 'results' || id === 'finding') {
+    label = text('結果', 'Results');
+  } else if (id === 'investigate') {
+    label = text('調べる', 'Investigate');
+  } else if (id === 'diff') {
+    label = text('バイナリ差分', 'Binary Diff');
+  } else {
+    label = id || '';
+  }
+  router?.setCurrentLabel?.(label);
+  if (!routeContext?.historyNavigation && (id === 'code' || id === 'function') && navAddr != null) {
+    const entry = app?.navigationEntry?.(navAddr, label) || {
+      key: route.fullPath || (`/${id}/${navAddr.toString()}`),
+      addr: navAddr,
+      label,
+    };
+    app?.navigation?.visit?.(entry);
+  }
+  if (app?.store?.get?.('fileInfo') && !app._applyingDelta) {
+    app.scheduleDeltaSave?.();
+  }
 }
 
 function bookmarkListOf(app) {
@@ -328,16 +447,26 @@ if (!app.store?.get?.('fileInfo')) {
   if (typeof app.listRecentDeltaBinaries === 'function') {
     const recentDeltaHost = h('div', 'ui-recent-delta-host');
     s.body.append(recentDeltaHost);
-    Promise.resolve(app.listRecentDeltaBinaries({ onlyWithDelta: true, limit: 8 })).then((entries) => {
+    const lastFilePromise = typeof app.analysisResume?.loadLastFile === 'function'
+      ? Promise.resolve(app.analysisResume.loadLastFile()).catch(() => null)
+      : Promise.resolve(null);
+    Promise.all([
+      Promise.resolve(app.listRecentDeltaBinaries({ onlyWithDelta: true, limit: 8 })),
+      lastFilePromise,
+    ]).then(([entries, saved]) => {
       if (disposed || !Array.isArray(entries) || !entries.length) return;
       const recentCard = card(text('最近のバイナリ（差分あり）', 'Recent binaries (with saved delta)'), {
         className: 'ui-recent-delta-card',
         subtitle: text('同じバイナリを開くと保存した差分を自動で復元します。', 'Open the matching binary to restore your saved changes automatically.'),
       });
       const list = h('div', 'ui-list');
+      const savedFile = saved?.file || null;
+      const savedName = savedFile?.name || saved?.name || '';
+      const savedHash = String(saved?.sha256 || saved?.meta?.sha256 || saved?.binaryId || saved?.meta?.binaryId || '');
       for (const entry of entries.slice(0, 8)) {
         const name = String(entry?.name || entry?.filename || entry?.fileName || text('バイナリ', 'Binary'));
-        const fp = String(entry?.sha256 || entry?.fingerprint || entry?.deltaKey || entry?.id || '').slice(0, 12);
+        const rawHash = String(entry?.sha256 || entry?.fingerprint || entry?.deltaKey || entry?.id || '');
+        const fp = rawHash.slice(0, 12);
         const count = deltaCountOf(entry);
         const ts = formatRecentTime(entry?.lastOpenedAt ?? entry?.lastOpened ?? entry?.updatedAt ?? entry?.timestamp);
         const subParts = [
@@ -345,10 +474,23 @@ if (!app.store?.get?.('fileInfo')) {
           text(`${count}件の差分`, `${count} changes`),
           ts || null,
         ].filter(Boolean);
+        const matchesSaved = Boolean(savedFile && (
+          (savedHash && rawHash && (savedHash === rawHash || rawHash.includes(savedHash) || savedHash.includes(rawHash)))
+          || (savedName && savedName === name)
+        ));
+        const instantBadge = matchesSaved
+          ? h('span', 'ui-badge ui-badge-confirmed', text('すぐ再開', 'Instant resume'))
+          : null;
         list.append(listRow({
           title: name,
           subtitle: subParts.join(' · '),
+          meta: matchesSaved ? '' : text('ローカルファイルを再選択', 'Re-select local file'),
+          badge: instantBadge,
           onClick: () => {
+            if (matchesSaved && typeof app.openFile === 'function') {
+              void app.openFile(savedFile, { restored: true });
+              return;
+            }
             toast(text(`「${name}」を選択すると前回の差分を自動で復元します。`, `Select "${name}" to restore its saved delta automatically.`));
             const registry = window.__hexUi?.actions;
             if (registry?.has?.('file.open') && typeof registry.run === 'function') registry.run('file.open');
@@ -528,14 +670,23 @@ async function matchingFunctionItems(app, query, options = {}) {
   if (typeof explorerIndex.queryFunctionsFast === 'function') {
     try {
       let prioritySet = options?.prioritySet || null;
-      if (!prioritySet && sortMode === 'priority') {
-        prioritySet = new Set();
-        for (const bm of bookmarkListOf(app)) {
-          if (bm?.addr != null) {
-            try { prioritySet.add(BigInt(bm.addr).toString()); } catch { /* ignore */ }
+      let savedSet = options?.savedSet || null;
+      let editedSet = options?.editedSet || null;
+      if (sortMode === 'priority') {
+        if (!savedSet) {
+          savedSet = new Set();
+          for (const bm of bookmarkListOf(app)) {
+            if (bm?.addr != null) {
+              try { savedSet.add(BigInt(bm.addr).toString()); } catch { /* ignore */ }
+            }
           }
         }
-        for (const key of collectEditedFunctions(app).keys()) prioritySet.add(key);
+        if (!editedSet) {
+          editedSet = new Set(collectEditedFunctions(app).keys());
+        }
+        if (!prioritySet) {
+          prioritySet = new Set([...savedSet, ...editedSet]);
+        }
       }
       const fast = await explorerIndex.queryFunctionsFast(app, q, {
         ...options,
@@ -543,6 +694,8 @@ async function matchingFunctionItems(app, query, options = {}) {
         limit,
         sort: sortMode,
         prioritySet,
+        savedSet,
+        editedSet,
       });
       if (Array.isArray(fast)) return fast;
       if (fast && Array.isArray(fast.items)) {
@@ -1106,7 +1259,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
     const serial = ++querySerial;
     const current = () => !disposed && !routeSignal.aborted && !signal.aborted && serial === querySerial;
     const q = search.value.trim();
-    const parsed = parseAddress(q);
+    const parsed = parseAddressInput(app, q);
     if (parsed != null && q) {
       showRows([{ addr: parsed }], (item) => listRow({ title: addressText(item.addr), subtitle: text('このアドレスへ移動', 'Jump to this address'), onClick: () => router.navigate('/code/' + item.addr.toString()) }), '');
       return;
@@ -1147,35 +1300,60 @@ function renderExplorer(app, router, route, routeContext = {}) {
         return null;
       };
 
+      const makeFnRowAction = (rowAddr, rowName, onToggled) => {
+        const isSaved = !!app.bookmarks?.has?.(rowAddr);
+        const star = makeStarButton(app, rowAddr, rowName, {
+          cls: 'ui-icon-action ui-star-btn ui-row-star',
+          stopPropagation: true,
+          onToggled,
+        });
+        if (!isSaved) return star;
+        const wrap = h('span', 'ui-row-actions');
+        const noteBtn = uiButton(text('メモ', 'Edit note'), {
+          cls: 'ui-secondary-action ui-row-note-btn',
+          ariaLabel: text('ブックマークメモを編集', 'Edit bookmark note'),
+          onClick: (event) => {
+            event.stopPropagation();
+            editBookmarkNote(app, rowAddr, rowName);
+          },
+        });
+        noteBtn.title = text('ブックマークメモを編集', 'Edit bookmark note');
+        wrap.append(noteBtn, star);
+        return wrap;
+      };
+
       if (filterMode === 'saved') {
         const ql = q.toLowerCase();
         const saved = bookmarkListOf(app).filter((bm) => {
           if (bm?.addr == null) return false;
+          const bAddr = BigInt(bm.addr);
+          const liveName = isFunctionStart(app, bAddr)
+            ? (app.symbols?.nameAt?.(bAddr) || bm.name || functionName(app, bAddr))
+            : (bm.name || bookmarkLabel(app, bAddr));
           if (!ql) return true;
           const tags = Array.isArray(bm?.tags) ? bm.tags.join(' ') : String(bm?.tag || '');
-          const hay = [bm?.name, bm?.note, tags, addressText(bm.addr)].filter(Boolean).join(' ').toLowerCase();
+          const hay = [liveName, bm?.name, bm?.note, tags, addressText(bAddr)].filter(Boolean).join(' ').toLowerCase();
           return hay.includes(ql);
         }).map((bm) => {
           const bAddr = BigInt(bm.addr);
-          return { ...bm, addr: bAddr, name: bm.name || functionName(app, bAddr), size: fnSizeOf(bAddr) };
+          const liveName = isFunctionStart(app, bAddr)
+            ? (app.symbols?.nameAt?.(bAddr) || bm.name || functionName(app, bAddr))
+            : (bm.name || bookmarkLabel(app, bAddr));
+          return { ...bm, addr: bAddr, name: liveName, size: fnSizeOf(bAddr) };
         });
         sortFunctionItems(saved, sortMode, app, editedMap);
         showRows(saved, (bm) => {
           const bAddr = BigInt(bm.addr);
-          const bName = bm.name || functionName(app, bAddr);
-          const star = makeStarButton(app, bAddr, bName, {
-            cls: 'ui-icon-action ui-star-btn ui-row-star',
-            stopPropagation: true,
-            onToggled: () => { syncFilterChips(); if (filterMode === 'saved') void update(); },
-          });
+          const bName = bm.name || bookmarkLabel(app, bAddr);
+          const action = makeFnRowAction(bAddr, bName, () => { syncFilterChips(); if (filterMode === 'saved') void update(); });
           const tags = Array.isArray(bm?.tags) ? bm.tags.join(', ') : String(bm?.tag || '');
           return listRow({
             title: bName,
             subtitle: buildFnSubtitle(bAddr, bm),
             meta: tags || (bm.size != null ? String(bm.size) + ' B' : ''),
             badge: makeEditedBadge(bAddr.toString()),
-            action: star,
-            onClick: () => router.navigate('/function/' + bAddr.toString() + '/overview'),
+            action,
+            onClick: () => openAddressTarget(app, router, bAddr),
           });
         }, text('保存済みの関数はありません。関数の ☆ を押すとここに追加されます。', 'No saved functions yet. Tap ☆ on any function to bookmark it.'));
         return;
@@ -1197,18 +1375,14 @@ function renderExplorer(app, router, route, routeContext = {}) {
         sortFunctionItems(editedRows, sortMode, app, editedMap);
         showRows(editedRows, (item) => {
           const itemAddr = BigInt(item.addr);
-          const star = makeStarButton(app, itemAddr, item.name, {
-            cls: 'ui-icon-action ui-star-btn ui-row-star',
-            stopPropagation: true,
-            onToggled: () => syncFilterChips(),
-          });
+          const action = makeFnRowAction(itemAddr, item.name, () => syncFilterChips());
           return listRow({
             title: item.name,
             subtitle: buildFnSubtitle(itemAddr),
             meta: item.size != null ? String(item.size) + ' B' : '',
             badge: makeEditedBadge(itemAddr.toString()),
-            action: star,
-            onClick: () => router.navigate('/function/' + itemAddr.toString() + '/overview'),
+            action,
+            onClick: () => openAddressTarget(app, router, itemAddr),
           });
         }, text('編集済みの関数はありません。名前の変更・メモ・型設定・パッチを行うとここに表示されます。', 'No edited functions yet. Rename, comment, type, or patch a function to see it here.'));
         return;
@@ -1220,18 +1394,14 @@ function renderExplorer(app, router, route, routeContext = {}) {
         if (!current()) return;
         showRows(items, (item) => {
           const itemAddr = BigInt(item.addr);
-          const star = makeStarButton(app, itemAddr, item.name, {
-            cls: 'ui-icon-action ui-star-btn ui-row-star',
-            stopPropagation: true,
-            onToggled: () => syncFilterChips(),
-          });
+          const action = makeFnRowAction(itemAddr, item.name, () => syncFilterChips());
           return listRow({
             title: item.name,
             subtitle: buildFnSubtitle(itemAddr),
             meta: item.size != null ? String(item.size) + ' B' : '',
             badge: makeEditedBadge(itemAddr.toString()),
-            action: star,
-            onClick: () => router.navigate('/function/' + itemAddr.toString() + '/overview'),
+            action,
+            onClick: () => openAddressTarget(app, router, itemAddr),
           });
         }, text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
           // A word that is not a function name is often in a string: offer that search.
@@ -1255,12 +1425,38 @@ function renderExplorer(app, router, route, routeContext = {}) {
       }), text('外部ライブラリ情報がありません。', 'No external library information is available.'));
       return;
     }
+    const makeAddrRowAction = (rawAddr, label) => {
+      if (rawAddr == null) return null;
+      let big;
+      try { big = BigInt(rawAddr); } catch { return null; }
+      const wrap = h('span', 'ui-row-actions');
+      const xrefBtn = uiButton('Xrefs', {
+        cls: 'ui-secondary-action ui-row-xrefs',
+        ariaLabel: text('参照元を見る', 'Show cross-references'),
+        onClick: (event) => {
+          event.stopPropagation();
+          requireFile(app, () => showXrefs(app, big));
+        },
+      });
+      xrefBtn.title = text('参照元を見る (X)', 'Show cross-references (X)');
+      const star = makeStarButton(app, big, label || bookmarkLabel(app, big), {
+        cls: 'ui-icon-action ui-star-btn ui-row-star',
+        stopPropagation: true,
+      });
+      wrap.append(xrefBtn, star);
+      return wrap;
+    };
     if (scope === 'strings') {
       content.replaceChildren(loadingState(text('文字列を集めています…', 'Collecting strings…')));
       try {
         const items = await stringItems(app, q, { signal, offset:queryOffset, limit:pageSize });
         if (!current()) return;
-        showRows(items, (item) => listRow({ title: item.text, subtitle: addressText(item.addr), onClick: () => { app.goToStringAddress(item.region, item.addr); router.navigate('/code/' + BigInt(item.addr).toString()); } }), text('文字列が見つかりません。', 'No strings were found.'));
+        showRows(items, (item) => listRow({
+          title: item.text,
+          subtitle: addressText(item.addr),
+          action: makeAddrRowAction(item.addr, bookmarkLabel(app, item.addr)),
+          onClick: () => { app.goToStringAddress(item.region, item.addr); router.navigate('/code/' + BigInt(item.addr).toString()); },
+        }), text('文字列が見つかりません。', 'No strings were found.'));
       } catch (err) {
         if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('文字列を表示できません', 'Could not show strings'), String(err && err.message || err)));
       }
@@ -1281,6 +1477,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
         title: item.name,
         subtitle: item.addr != null ? addressText(item.addr) + (item.region ? ' · ' + item.region : '') : '',
         meta: item.meta || '',
+        action: item.addr != null ? makeAddrRowAction(item.addr, item.name || bookmarkLabel(app, item.addr)) : null,
         onClick: item.addr != null ? () => router.navigate('/code/' + BigInt(item.addr).toString()) : () => requireFile(app, () => showGlobals(app)),
       }), text('データ構造・グローバル変数情報がありません。', 'No data structures or global variables found.'));
       return;
@@ -1290,13 +1487,25 @@ function renderExplorer(app, router, route, routeContext = {}) {
   const unsubBookmarks = scope === 'functions' ? (app.bookmarks?.subscribe?.(() => {
     if (disposed) return;
     syncFilterChips();
-    if (filterMode === 'saved' || filterMode === 'all') void update();
+    if (filterMode === 'saved' || filterMode === 'all' || filterMode === 'edited') void update();
   }) || null) : null;
-  const unsubNotes = scope === 'functions' ? (app.notes?.subscribe?.(() => {
+  let unsubNotes = null;
+  const bindNotes = () => {
+    if (typeof unsubNotes === 'function') { unsubNotes(); unsubNotes = null; }
+    if (scope !== 'functions') return;
+    unsubNotes = app.notes?.subscribe?.(() => {
+      if (disposed) return;
+      syncFilterChips();
+      void update();
+    }) || null;
+  };
+  bindNotes();
+  const onNotesAttached = () => {
     if (disposed) return;
-    syncFilterChips();
-    if (filterMode === 'edited' || filterMode === 'all') void update();
-  }) || null) : null;
+    bindNotes();
+    if (scope === 'functions') { syncFilterChips(); void update(); }
+  };
+  document.addEventListener('hex:notes-attached', onNotesAttached);
   const unsubStore = scope === 'functions' ? (app.store?.subscribe?.((_state, patch) => {
     if (disposed || !patch || !('patches' in patch)) return;
     syncFilterChips();
@@ -1314,6 +1523,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
     },
     dispose: () => {
       disposed = true;
+      document.removeEventListener('hex:notes-attached', onNotesAttached);
       if (typeof unsubBookmarks === 'function') unsubBookmarks();
       if (typeof unsubNotes === 'function') unsubNotes();
       if (typeof unsubStore === 'function') unsubStore();
@@ -1327,10 +1537,32 @@ function renderExplorer(app, router, route, routeContext = {}) {
 
 function codeViewState(app) {
   return {
-    getState: () => ({
-      topRow: app.viewer.topRow(), selectedRow: app.viewer.selectedRow,
-      mode: app.store.get('displayMode'), regionId: app.store.get('currentRegion')?.id || null,
-    }),
+    getState: () => {
+      const topRow = app.viewer.topRow();
+      const selectedRow = app.viewer.selectedRow;
+      let topAddress = null;
+      let selectedAddress = null;
+      try {
+        if (Number.isFinite(topRow) && topRow >= 0 && typeof app.viewer.rowAddress === 'function') {
+          const a = app.viewer.rowAddress(topRow);
+          if (a != null) topAddress = BigInt(a).toString();
+        }
+      } catch { /* ignore */ }
+      try {
+        if (Number.isFinite(selectedRow) && selectedRow >= 0 && typeof app.viewer.rowAddress === 'function') {
+          const a = app.viewer.rowAddress(selectedRow);
+          if (a != null) selectedAddress = BigInt(a).toString();
+        }
+      } catch { /* ignore */ }
+      return {
+        topRow,
+        selectedRow,
+        topAddress,
+        selectedAddress,
+        mode: app.store.get('displayMode'),
+        regionId: app.store.get('currentRegion')?.id || null,
+      };
+    },
     restoreState: (state) => {
       if (!state) return;
       if (state.regionId && app.store?.get?.('currentRegion')?.id !== state.regionId) {
@@ -1338,8 +1570,25 @@ function codeViewState(app) {
         if (region) app.selectRegion?.(region, { silent: true });
       }
       if (state.mode) app.setMode(state.mode);
-      if (Number.isFinite(state.topRow)) app.viewer.goToRow(state.topRow, 'top');
-      if (Number.isFinite(state.selectedRow) && state.selectedRow >= 0) app.viewer.select(state.selectedRow, false);
+      let topRow = Number.isFinite(state.topRow) ? state.topRow : null;
+      if (state.topAddress != null && typeof app.viewer.rowOfAddress === 'function') {
+        try {
+          const mapped = app.viewer.rowOfAddress(BigInt(state.topAddress));
+          if (mapped != null && mapped >= 0) topRow = mapped;
+        } catch { /* ignore */ }
+      }
+      if (topRow != null && Number.isFinite(topRow)) app.viewer.goToRow(topRow, 'top');
+      let selectedRow = Number.isFinite(state.selectedRow) && state.selectedRow >= 0 ? state.selectedRow : null;
+      if (state.selectedAddress != null && typeof app.viewer.rowOfAddress === 'function') {
+        try {
+          const mapped = app.viewer.rowOfAddress(BigInt(state.selectedAddress));
+          if (mapped != null && mapped >= 0) selectedRow = mapped;
+        } catch { /* ignore */ }
+      }
+      if (selectedRow != null && selectedRow >= 0) {
+        app.viewer.select(selectedRow, false);
+        app.store?.set?.({ selectedRow });
+      }
     },
   };
 }
@@ -1446,9 +1695,124 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   content.append(loadingState(text('関数を解析しています…', 'Analysing function…')));
   s.body.append(content);
   let disposed = false;
+  let pendingPseudoState = routeContext?.restoredState || null;
+  let activeProvenanceView = null;
+  let activeFindBar = null;
+  const unsubNotes = app.notes?.subscribe?.(() => {
+    if (disposed) return;
+    const liveName = functionName(app, addr);
+    if (s.heading) s.heading.textContent = liveName;
+    updateScreenTitle(s.root);
+    router.setCurrentLabel?.(liveName);
+  }) || null;
   const viewEpoch = app.backend?.gen;
   const viewSlice = app.store.get('sliceIndex');
   const viewCurrent = () => !disposed && app.backend?.gen === viewEpoch && app.store.get('sliceIndex') === viewSlice;
+
+  const selectedPseudocodeAddress = () => {
+    if (typeof activeProvenanceView?.selectedAddress === 'function') {
+      try {
+        const a = activeProvenanceView.selectedAddress();
+        if (a != null) return BigInt(a);
+      } catch { /* ignore */ }
+    }
+    const codeEl = content.querySelector('.ui-pseudocode');
+    if (codeEl) {
+      const selLine = codeEl.querySelector('.ui-pseudocode-line.selected');
+      const dataAddr = selLine?.dataset?.addr || selLine?.querySelector?.('[data-addr]')?.getAttribute?.('data-addr');
+      if (dataAddr) {
+        try { return BigInt(dataAddr); } catch { /* ignore */ }
+      }
+      const firstAddrBtn = content.querySelector('.ui-decompiler-provenance .ui-code-toolbar button');
+      if (firstAddrBtn && /^0x[0-9a-f]+$/i.test(firstAddrBtn.textContent?.trim() || '')) {
+        try { return BigInt(firstAddrBtn.textContent.trim()); } catch { /* ignore */ }
+      }
+    }
+    return addr;
+  };
+  s.root._selectedCodeAddress = selectedPseudocodeAddress;
+
+  const createPseudocodeFindBar = (codeEl) => {
+    const bar = h('div', 'ui-pseudocode-find');
+    bar.hidden = true;
+    const findInput = h('input', 'ui-pseudocode-find-input');
+    findInput.type = 'search';
+    findInput.placeholder = text('関数内を検索…', 'Find in function…');
+    findInput.setAttribute('aria-label', text('関数内を検索', 'Find in function'));
+    const countEl = h('span', 'ui-hint ui-pseudocode-find-count', '0/0');
+    let matches = [];
+    let matchIdx = -1;
+    const clearHighlights = () => {
+      for (const node of matches) node.classList.remove('ui-find-match', 'ui-find-active');
+      matches = [];
+      matchIdx = -1;
+      countEl.textContent = '0/0';
+    };
+    const focusMatch = (nextIdx) => {
+      if (!matches.length) { countEl.textContent = '0/0'; return; }
+      if (matchIdx >= 0 && matches[matchIdx]) matches[matchIdx].classList.remove('ui-find-active');
+      matchIdx = ((nextIdx % matches.length) + matches.length) % matches.length;
+      const node = matches[matchIdx];
+      node.classList.add('ui-find-active');
+      node.scrollIntoView?.({ block: 'center' });
+      countEl.textContent = `${matchIdx + 1}/${matches.length}`;
+    };
+    const runFind = () => {
+      clearHighlights();
+      const q = findInput.value.trim().toLowerCase();
+      if (!q || !codeEl) return;
+      const lines = codeEl.querySelectorAll('.ui-pseudocode-line');
+      for (const line of lines) {
+        if ((line.textContent || '').toLowerCase().includes(q)) {
+          line.classList.add('ui-find-match');
+          matches.push(line);
+        }
+      }
+      if (matches.length) focusMatch(0);
+    };
+    const closeBar = () => {
+      clearHighlights();
+      bar.hidden = true;
+    };
+    const openBar = () => {
+      bar.hidden = false;
+      findInput.focus();
+      findInput.select();
+      if (findInput.value.trim()) runFind();
+    };
+    const prevBtn = uiButton('↑', { cls: 'ui-icon-action', ariaLabel: text('前の一致', 'Previous match'), onClick: () => focusMatch(matchIdx - 1) });
+    const nextBtn = uiButton('↓', { cls: 'ui-icon-action', ariaLabel: text('次の一致', 'Next match'), onClick: () => focusMatch(matchIdx + 1) });
+    const closeBtn = uiButton('×', { cls: 'ui-icon-action', ariaLabel: text('検索を閉じる', 'Close find'), onClick: closeBar });
+    findInput.addEventListener('input', runFind);
+    findInput.addEventListener('keydown', (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeBar(); return; }
+      if (event.key === 'Enter') { event.preventDefault(); focusMatch(event.shiftKey ? matchIdx - 1 : matchIdx + 1); }
+    });
+    bar.append(findInput, countEl, prevBtn, nextBtn, closeBtn);
+    return { root: bar, open: openBar, close: closeBar };
+  };
+  s.root._openPseudocodeFind = () => activeFindBar?.open?.();
+
+  const applyPseudoState = (state) => {
+    if (!state) return;
+    const bodyTop = Number(state.bodyScrollTop ?? state.scrollTop) || 0;
+    s.body.scrollTop = bodyTop;
+    const codeEl = content.querySelector('.ui-pseudocode');
+    if (!codeEl) { pendingPseudoState = state; return; }
+    pendingPseudoState = null;
+    if (Number.isFinite(state.codeScrollTop)) codeEl.scrollTop = state.codeScrollTop;
+    if (Number.isSafeInteger(state.selectedLineIndex) && state.selectedLineIndex >= 0) {
+      const lineNodes = codeEl.querySelectorAll('.ui-pseudocode-line');
+      const targetLine = lineNodes[state.selectedLineIndex];
+      if (targetLine) {
+        for (const n of lineNodes) {
+          n.classList.toggle('selected', n === targetLine);
+          n.setAttribute('aria-current', n === targetLine ? 'true' : 'false');
+        }
+      }
+    }
+  };
 
   const rowMapper = () => {
     const region = app.store.get('currentRegion');
@@ -1551,14 +1915,36 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       if (index + 1 < rawLines.length) row.append(h('span', null, '\n'));
       code.append(row);
     }
-    attachTokenHighlight(code);
+    const hlBadge = h('span', 'ui-highlight-nav');
+    hlBadge.hidden = true;
+    const hlCount = h('span', 'ui-hint ui-highlight-count', '');
+    let tokHl = null;
+    const hlPrev = uiButton('↑', { cls: 'ui-icon-action', ariaLabel: text('前の出現', 'Previous occurrence'), onClick: () => tokHl?.prev?.() });
+    const hlNext = uiButton('↓', { cls: 'ui-icon-action', ariaLabel: text('次の出現', 'Next occurrence'), onClick: () => tokHl?.next?.() });
+    hlBadge.append(hlCount, hlPrev, hlNext);
+    tokHl = attachTokenHighlight(code, {
+      onHighlightChange: (info) => {
+        const count = Number(info?.count || 0);
+        if (!info || count <= 0) { hlBadge.hidden = true; return; }
+        const idx = Number.isSafeInteger(info.index) ? info.index + 1 : 1;
+        hlCount.textContent = `${idx}/${count}`;
+        hlBadge.hidden = false;
+      },
+    });
     let wrap = false;
-    const asmBtn = uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) });
+    activeProvenanceView = null;
+    const findBar = createPseudocodeFindBar(code);
+    activeFindBar = findBar;
+    const findBtn = uiButton(text('検索', 'Find'), { cls: 'ui-secondary-action', onClick: () => findBar.open() });
+    findBtn.title = text('関数内を検索 (Ctrl+F)', 'Find in function (Ctrl+F)');
+    const asmBtn = uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + selectedPseudocodeAddress().toString()) });
     asmBtn.title = text('アセンブリへ切り替え (Space)', 'Switch to assembly (Space)');
     toolbar.append(
       uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
       uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
+      findBtn,
       asmBtn,
+      hlBadge,
     );
     if (prelude > 0) {
       const toggle = uiButton(text(`型の定義を表示（${prelude} 行）`, `Show type definitions (${prelude} lines)`), {
@@ -1573,7 +1959,8 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       });
       toolbar.append(toggle);
     }
-    content.replaceChildren(toolbar, code);
+    content.replaceChildren(toolbar, findBar.root, code);
+    if (pendingPseudoState) applyPseudoState(pendingPseudoState);
   };
 
   const renderPseudocodeTab = async () => {
@@ -1586,7 +1973,31 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
           return;
         }
-        const toolbar = h('div', 'ui-code-toolbar');
+        let initialAddr = null;
+        const rawInitial = route.query?.get?.('addr');
+        if (rawInitial) {
+          try { initialAddr = BigInt(rawInitial); } catch { initialAddr = null; }
+        }
+        const functionComment = app.notes?.comment?.(addr) || '';
+        let wrap = false;
+        let codeRef = null;
+        let findBarRef = null;
+        const hlBadge = h('span', 'ui-highlight-nav');
+        hlBadge.hidden = true;
+        const hlCount = h('span', 'ui-hint ui-highlight-count', '');
+        let hlApi = null;
+        const hlPrev = uiButton('↑', { cls: 'ui-icon-action', ariaLabel: text('前の出現', 'Previous occurrence'), onClick: () => hlApi?.prev?.() });
+        const hlNext = uiButton('↓', { cls: 'ui-icon-action', ariaLabel: text('次の出現', 'Next occurrence'), onClick: () => hlApi?.next?.() });
+        hlBadge.append(hlCount, hlPrev, hlNext);
+
+        const copyBtn = uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => { if (codeRef) copyText(codeRef.textContent, text('疑似C', 'Pseudocode')); } });
+        const wrapBtn = uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; codeRef?.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } });
+        const findBtn = uiButton(text('検索', 'Find'), { cls: 'ui-secondary-action', onClick: () => findBarRef?.open?.() });
+        findBtn.title = text('関数内を検索 (Ctrl+F)', 'Find in function (Ctrl+F)');
+        const asmBtn = uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + selectedPseudocodeAddress().toString()) });
+        asmBtn.title = text('アセンブリへ切り替え (Space)', 'Switch to assembly (Space)');
+        const extraToolbarActions = [copyBtn, wrapBtn, findBtn, asmBtn, hlBadge];
+
         const provenanceView = createDecompilerProvenanceView(res, {
           text, signal:routeSignal,
           isCurrent:() => viewCurrent() && !routeSignal.aborted,
@@ -1594,17 +2005,47 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           onNavigate:address => router.navigate('/code/' + address.toString()),
           resolveCallee:(name) => symbolAddress(app, name),
           onOpenCallee:(targetAddr) => router.navigate('/function/' + BigInt(targetAddr).toString() + '/pseudocode'),
+          extraToolbarActions,
+          functionComment,
+          initialAddr,
+          onBookmarkAddress:(targetAddr) => {
+            if (targetAddr == null) return;
+            const big = BigInt(targetAddr);
+            const name = bookmarkLabel(app, big);
+            app.bookmarks?.toggle?.(big, { name });
+            const saved = !!app.bookmarks?.has?.(big);
+            toast(saved
+              ? text(`★「${name}」をブックマークしました。`, `★ Bookmarked "${name}".`)
+              : text(`☆「${name}」のブックマークを解除しました。`, `☆ Removed bookmark "${name}".`));
+          },
+          onHighlightChange:(info) => {
+            hlApi = info || null;
+            const count = Number(info?.count || 0);
+            if (!info || count <= 0) { hlBadge.hidden = true; return; }
+            const idx = Number.isSafeInteger(info.index) ? info.index + 1 : 1;
+            hlCount.textContent = `${idx}/${count}`;
+            hlBadge.hidden = false;
+          },
         });
+        activeProvenanceView = provenanceView;
         const code = provenanceView.code;
-        let wrap = false;
-        toolbar.append(
-          uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
-          uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
-          (() => { const b = uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }); b.title = text('アセンブリへ切り替え (Space)', 'Switch to assembly (Space)'); return b; })(),
-        );
-        content.replaceChildren(toolbar, provenanceView.root);
+        codeRef = code;
+        const findBar = createPseudocodeFindBar(code);
+        findBarRef = findBar;
+        activeFindBar = findBar;
+        if (!provenanceView.root.contains(copyBtn)) {
+          const innerToolbar = provenanceView.root.querySelector('.ui-code-toolbar');
+          if (innerToolbar) innerToolbar.prepend(copyBtn, wrapBtn, findBtn, asmBtn, hlBadge);
+        }
+        code.before(findBar.root);
+        content.replaceChildren(provenanceView.root);
         const notice = decompileNotice(res);
-        if (notice) toolbar.after(notice);
+        if (notice) {
+          const innerToolbar = provenanceView.root.querySelector('.ui-code-toolbar');
+          if (innerToolbar) innerToolbar.after(notice);
+          else provenanceView.root.prepend(notice);
+        }
+        if (pendingPseudoState) applyPseudoState(pendingPseudoState);
         return;
       } catch (err) {
         if (routeSignal.aborted) return;
@@ -1841,10 +2282,58 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       }
       const graph = callGraph(app.program, app.symbols, addr, {
         depth: 2, limit: 8, label: (a) => functionName(app, a),
-        onNode: (a) => router.navigate('/function/' + BigInt(a).toString() + '/overview'),
+        onNode: (a) => openAddressTarget(app, router, a),
       });
       const shell = h('div', 'ui-graph-shell');
-      shell.append(renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
+      const callsActions = h('div', 'ui-actions');
+      callsActions.append(uiButton(text('すべての参照元 (Xrefs)', 'All cross-references (Xrefs)'), {
+        cls: 'ui-secondary-action',
+        onClick: () => requireFile(app, () => showXrefs(app, addr)),
+      }));
+      shell.append(callsActions, renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
+
+      const listsGrid = h('div', 'ui-card-grid');
+      const callers = typeof app.program.callersOf === 'function' ? (app.program.callersOf(addr, 50) || []) : [];
+      const fnInfo = app.symbols?.functionAt?.(addr) || null;
+      const callees = typeof app.program.calleesOf === 'function'
+        ? (app.program.calleesOf(fnInfo?.start ?? addr, fnInfo?.end ?? null, 50) || [])
+        : [];
+      const callersCard = card(text(`呼び出し元 (${callers.length})`, `Callers (${callers.length})`));
+      if (!callers.length) {
+        callersCard.body.append(h('p', 'ui-sub', text('呼び出し元は見つかりませんでした。', 'No callers found.')));
+      } else {
+        const list = h('div', 'ui-list');
+        for (const item of callers) {
+          const target = item.addr != null ? BigInt(item.addr) : (item.site != null ? BigInt(item.site) : null);
+          if (target == null) continue;
+          list.append(listRow({
+            title: item.addr != null ? functionName(app, target) : bookmarkLabel(app, target),
+            subtitle: addressText(target),
+            meta: item.count > 1 ? `×${item.count}` : '',
+            onClick: () => (item.addr != null ? openAddressTarget(app, router, target) : router.navigate('/code/' + target.toString())),
+          }));
+        }
+        callersCard.body.append(list);
+      }
+      const calleesCard = card(text(`呼び出し先 (${callees.length})`, `Callees (${callees.length})`));
+      if (!callees.length) {
+        calleesCard.body.append(h('p', 'ui-sub', text('呼び出し先は見つかりませんでした。', 'No callees found.')));
+      } else {
+        const list = h('div', 'ui-list');
+        for (const item of callees) {
+          const target = item.addr != null ? BigInt(item.addr) : null;
+          if (target == null) continue;
+          list.append(listRow({
+            title: functionName(app, target),
+            subtitle: addressText(target),
+            meta: item.count > 1 ? `×${item.count}` : '',
+            onClick: () => openAddressTarget(app, router, target),
+          }));
+        }
+        calleesCard.body.append(list);
+      }
+      listsGrid.append(callersCard.root, calleesCard.root);
+      shell.append(listsGrid);
       content.replaceChildren(shell);
     } catch (err) {
       if (routeSignal.aborted) return;
@@ -2000,7 +2489,38 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     }
   })();
 
-  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; if (typeof unsubBookmarks === 'function') unsubBookmarks(); fallbackRouteController?.abort('function-workspace-disposed'); } };
+  return {
+    root: s.root,
+    getState: () => {
+      const codeEl = content.querySelector('.ui-pseudocode');
+      let selectedLineIndex = null;
+      if (codeEl) {
+        const lineNodes = codeEl.querySelectorAll('.ui-pseudocode-line');
+        for (let i = 0; i < lineNodes.length; i++) {
+          if (lineNodes[i].classList.contains('selected')) { selectedLineIndex = i; break; }
+        }
+      }
+      return {
+        scrollTop: s.body.scrollTop,
+        bodyScrollTop: s.body.scrollTop,
+        codeScrollTop: codeEl ? codeEl.scrollTop : 0,
+        selectedLineIndex,
+      };
+    },
+    restoreState: (state) => {
+      if (!state) return;
+      if (tab === 'pseudocode') applyPseudoState(state);
+      else s.body.scrollTop = Number(state.bodyScrollTop ?? state.scrollTop) || 0;
+    },
+    dispose: () => {
+      disposed = true;
+      activeProvenanceView = null;
+      activeFindBar = null;
+      if (typeof unsubBookmarks === 'function') unsubBookmarks();
+      if (typeof unsubNotes === 'function') unsubNotes();
+      fallbackRouteController?.abort('function-workspace-disposed');
+    },
+  };
 }
 
 export function findingIdentifier(item, idx) {
@@ -2154,39 +2674,86 @@ async function exportDeltaFromProduct(app) {
     toast(text('差分を書き出せませんでした: ', 'Could not export delta: ') + String(error?.message || error));
   }
 }
-async function importDeltaFromProduct(app) {
-  if (typeof app.importDeltaJson !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session import is unavailable.')); return; }
+function confirmActionDialog(title, message, confirmLabel, cancelLabel) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => { if (settled) return; settled = true; resolve(value); };
+    try {
+      alertDialog(title, message, {
+        confirmLabel,
+        cancelLabel,
+        onConfirm: () => done(true),
+        onCancel: () => done(false),
+      });
+    } catch {
+      done(typeof globalThis.confirm === 'function' ? globalThis.confirm(message) : false);
+    }
+  });
+}
+
+async function importDeltaFromProduct(app, router = null) {
+  if (typeof app.importDeltaJson !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session import is unavailable.')); return false; }
   const file = await pickOneFile('.json,application/json');
-  if (!file) return;
+  if (!file) return false;
   try {
     const raw = await file.text();
     let res = await app.importDeltaJson(raw);
     if (res?.hashMismatch) {
-      const proceed = typeof globalThis.confirm === 'function'
-        ? globalThis.confirm(text('この差分は別のバイナリで作成されています。強制的に読み込みますか？', 'This delta was created for a different binary. Import anyway?'))
-        : false;
+      const importedName = String(res?.record?.fingerprint?.name || file.name || text('不明', 'unknown'));
+      const importedHash = String(res?.record?.fingerprint?.sha256 || '').slice(0, 12) || '—';
+      const currentName = String(app.store?.get?.('fileInfo')?.name || text('現在', 'current'));
+      const currentHash = String(app._currentDeltaFingerprint?.()?.sha256 || app.store?.get?.('fileInfo')?.sha256 || '').slice(0, 12) || '—';
+      const msg = text(
+        `この差分は別のバイナリで作成されています。強制的に読み込みますか？\n\n差分: ${importedName} (${importedHash})\n現在: ${currentName} (${currentHash})`,
+        `This delta was created for a different binary. Import anyway?\n\nDelta: ${importedName} (${importedHash})\nCurrent: ${currentName} (${currentHash})`,
+      );
+      const proceed = await confirmActionDialog(
+        text('別のバイナリの差分です', 'Binary hash mismatch'),
+        msg,
+        text('強制的に読み込む', 'Import anyway'),
+        text('キャンセル', 'Cancel'),
+      );
       if (!proceed) {
         toast(text('差分の読み込みをキャンセルしました。', 'Delta import cancelled.'));
-        return;
+        return false;
       }
       res = await app.importDeltaJson(raw, { allowMismatch: true });
     }
     if (!res?.ok) {
       toast(text('差分を読み込めませんでした: ', 'Could not import delta: ') + String(res?.error || text('無効な差分ファイルです。', 'Invalid delta file.')));
-      return;
+      return false;
     }
     toast(text('差分を読み込みました。', 'Delta imported.'));
+    const activeRouter = router || window.__hexUi?.router || null;
+    if (activeRouter?.current?.fullPath) {
+      if (activeRouter.current.route?.id === 'code') app.viewer?.render?.();
+      else activeRouter._render(activeRouter.current.fullPath, { replace: true, restoredState: null });
+    }
+    return true;
   } catch (error) {
     toast(text('差分を読み込めませんでした: ', 'Could not import delta: ') + String(error?.message || error));
+    return false;
   }
 }
 async function resetDeltaFromProduct(app) {
-  if (typeof app.resetDeltaSession !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session reset is unavailable.')); return; }
+  if (typeof app.resetDeltaSession !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session reset is unavailable.')); return false; }
+  const confirmed = await confirmActionDialog(
+    text('差分セッションをリセットしますか？', 'Reset delta session?'),
+    text('このバイナリに自動保存されたブックマーク・名前・メモ・パッチの差分を削除します。この操作は元に戻せません。', 'This permanently deletes auto-saved bookmarks, renames, comments, and patch deltas for this binary. This cannot be undone.'),
+    text('リセット', 'Reset'),
+    text('キャンセル', 'Cancel'),
+  );
+  if (!confirmed) {
+    toast(text('リセットをキャンセルしました。', 'Reset cancelled.'));
+    return false;
+  }
   try {
     await app.resetDeltaSession();
     toast(text('差分セッションをリセットしました。', 'Delta session reset.'));
+    return true;
   } catch (error) {
     toast(text('差分セッションをリセットできませんでした: ', 'Could not reset delta session: ') + String(error?.message || error));
+    return false;
   }
 }
 
@@ -2355,28 +2922,32 @@ function installAddressBar(app, router, addrbar) {
   const fn = uiButton('', { cls: 'addr-fn addr-action', ariaLabel: text('この関数を開く', 'Open this function') });
   fn.hidden = true;
   cur?.after(fn);
-  const star = uiButton('☆', { cls: 'addr-star addr-action ui-star-btn', ariaLabel: text('ブックマークに追加', 'Bookmark function'), pressed: false });
+  const star = uiButton('☆', { cls: 'addr-star addr-action ui-star-btn', ariaLabel: text('ブックマークに追加', 'Bookmark address'), pressed: false });
   star.hidden = true;
   fn.after(star);
   let fnStart = null;
+  let curAddr = null;
   const syncAddrStar = () => {
-    if (fnStart == null) { star.hidden = true; return; }
-    const saved = !!app.bookmarks?.has?.(fnStart);
+    if (curAddr == null) { star.hidden = true; return; }
+    const saved = !!app.bookmarks?.has?.(curAddr);
+    const lbl = bookmarkLabel(app, curAddr);
     star.textContent = saved ? '★' : '☆';
     star.setAttribute('aria-pressed', String(saved));
-    star.setAttribute('aria-label', saved ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'));
-    star.title = saved ? text('ブックマークを解除 (B)', 'Remove bookmark (B)') : text('ブックマークに追加 (B)', 'Bookmark function (B)');
+    star.setAttribute('aria-label', saved
+      ? text(`${lbl} のブックマークを解除`, `Remove bookmark: ${lbl}`)
+      : text(`${lbl} をブックマークに追加`, `Bookmark: ${lbl}`));
+    star.title = `${lbl} (B)`;
     star.hidden = false;
   };
   const onStarClick = () => {
-    if (fnStart == null) return;
-    app.bookmarks?.toggle?.(fnStart, { name: functionName(app, fnStart) });
+    if (curAddr == null) return;
+    app.bookmarks?.toggle?.(curAddr, { name: bookmarkLabel(app, curAddr) });
     syncAddrStar();
   };
   star.addEventListener('click', onStarClick, sigOpts);
   detachFns.push(() => star.removeEventListener?.('click', onStarClick));
   const unsubAddrBookmarks = app.bookmarks?.subscribe?.(syncAddrStar) || null;
-  const onFnClick = () => { if (fnStart != null) router.navigate('/function/' + fnStart.toString() + '/overview'); };
+  const onFnClick = () => { if (fnStart != null) openAddressTarget(app, router, fnStart); };
   fn.addEventListener('click', onFnClick, sigOpts);
   detachFns.push(() => fn.removeEventListener?.('click', onFnClick));
 
@@ -2389,7 +2960,9 @@ function installAddressBar(app, router, addrbar) {
         toast(text('この位置の関数を特定できませんでした。', 'Could not identify a function at this address.'));
         return;
       }
-      router.navigate('/function/' + BigInt(target).toString() + '/pseudocode');
+      const targetBig = BigInt(target);
+      const query = curAddr != null && BigInt(curAddr) !== targetBig ? ('?addr=' + BigInt(curAddr).toString()) : '';
+      router.navigate('/function/' + targetBig.toString() + '/pseudocode' + query);
     }),
   });
   pseudo.hidden = true;
@@ -2435,6 +3008,7 @@ function installAddressBar(app, router, addrbar) {
       if (Number(row) >= top && Number(row) < top + visible) addr = viewer.rowAddress(row);
     }
     if (addr == null) addr = app.store.get('currentAddress') ?? null;
+    curAddr = addr;
     if (addr != null && cur) cur.textContent = addrHex(addr);
     const sym = app.symbols;
     let start = null;
@@ -2442,22 +3016,33 @@ function installAddressBar(app, router, addrbar) {
       try { start = sym.functionAt?.(addr)?.start ?? sym.functionStartAt?.(addr) ?? null; } catch { start = null; }
     }
     fnStart = start;
-    if (start == null) { fn.hidden = true; star.hidden = true; pseudo.hidden = true; return; }
+    syncAddrStar();
+    if (start == null) { fn.hidden = true; pseudo.hidden = true; return; }
     const offset = BigInt(addr) - BigInt(start);
     fn.textContent = functionName(app, start) + (offset > 0n ? '+0x' + offset.toString(16).toUpperCase() : '');
     fn.hidden = false;
-    syncAddrStar();
     pseudo.hidden = false;
   };
+  const scheduleUpdate = () => { if (!frame) frame = requestAnimationFrame(update); };
   const unsubscribe = app.store.subscribe((_state, patch) => {
     if (!patch || !('currentAddress' in patch || 'selectedRow' in patch || 'currentRegion' in patch || 'fileInfo' in patch)) return;
-    if (!frame) frame = requestAnimationFrame(update);
+    scheduleUpdate();
   });
+  let unsubAddrNotes = null;
+  const bindAddrNotes = () => {
+    if (typeof unsubAddrNotes === 'function') { unsubAddrNotes(); unsubAddrNotes = null; }
+    unsubAddrNotes = app.notes?.subscribe?.(scheduleUpdate) || null;
+  };
+  bindAddrNotes();
+  const onAddrNotesAttached = () => { bindAddrNotes(); scheduleUpdate(); };
+  document.addEventListener('hex:notes-attached', onAddrNotesAttached);
   update();
   const destroy = () => {
     ac?.abort();
     for (const off of detachFns) off();
     unsubscribe();
+    document.removeEventListener('hex:notes-attached', onAddrNotesAttached);
+    if (typeof unsubAddrNotes === 'function') unsubAddrNotes();
     if (typeof unsubAddrBookmarks === 'function') unsubAddrBookmarks();
     if (frame) cancelAnimationFrame(frame);
     fn.remove();
@@ -2468,12 +3053,52 @@ function installAddressBar(app, router, addrbar) {
   return { refreshLanguage, destroy };
 }
 
+const symbolLookupCache = new WeakMap();
+
+function getSymbolLookupMap(sym) {
+  const gen = sym.gen ?? 0;
+  const renameSize = sym.renames instanceof Map ? sym.renames.size : 0;
+  const cached = symbolLookupCache.get(sym);
+  if (cached && cached.gen === gen && cached.renameSize === renameSize) return cached.map;
+
+  const map = new Map();
+  const addAliases = (rawName, addr, overwrite = false) => {
+    const lower = String(rawName || '').trim().toLowerCase();
+    if (!lower) return;
+    if (overwrite || !map.has(lower)) map.set(lower, addr);
+    const stripped = lower.replace(/^(?:_|j_|imp_)+/, '');
+    if (stripped && stripped !== lower && (overwrite || !map.has(stripped))) {
+      map.set(stripped, addr);
+    }
+  };
+  const names = Array.isArray(sym.names) ? sym.names : [];
+  const addrs = Array.isArray(sym.addrs) ? sym.addrs : [];
+  for (let i = 0; i < names.length && i < addrs.length; i++) {
+    addAliases(names[i], addrs[i], false);
+  }
+  if (sym.renames instanceof Map) {
+    for (const [addrKey, renameVal] of sym.renames) {
+      if (!renameVal) continue;
+      try { addAliases(renameVal, BigInt(addrKey), true); } catch { /* ignore */ }
+    }
+  }
+  symbolLookupCache.set(sym, { gen, renameSize, map });
+  return map;
+}
+
 function symbolAddress(app, name) {
-  const sym = app.symbols;
-  const names = sym && Array.isArray(sym.names) ? sym.names : [];
-  const wanted = String(name || '').toLowerCase();
-  for (let i = 0; i < names.length; i++) {
-    if (String(names[i] || '').toLowerCase() === wanted) return sym.addrs[i];
+  const wanted = String(name || '').trim().toLowerCase();
+  if (!wanted) return null;
+  const sym = app?.symbols;
+  if (sym) {
+    const map = getSymbolLookupMap(sym);
+    const hit = map.get(wanted);
+    if (hit != null) return hit;
+    const stripped = wanted.replace(/^(?:_|j_|imp_)+/, '');
+    if (stripped && stripped !== wanted) {
+      const strippedHit = map.get(stripped);
+      if (strippedHit != null) return strippedHit;
+    }
   }
   const sub = /^sub_?([0-9a-f]+)$/i.exec(wanted);
   if (sub) { try { return BigInt('0x' + sub[1]); } catch { /* not an address */ } }
@@ -2551,18 +3176,33 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   };
 
   const openDropdownItem = (item, { toCode = false } = {}) => {
-    if (!item || item.addr == null) return;
+    if (!item) return;
+    if (item.kind === 'command') {
+      hideResults();
+      input.blur();
+      runCommand({ kind: 'command', command: item.command, value: item.command });
+      return;
+    }
+    if (item.addr == null) return;
     const addr = BigInt(item.addr);
     hideResults();
     input.blur();
-    if (toCode) {
+    if (item.kind === 'recent') {
+      router.navigate('/code/' + addr.toString());
+      return;
+    }
+    if (toCode || item.kind === 'address') {
       if (app.goToAddress(addr, { announce: true })) router.navigate('/code/' + addr.toString());
       return;
     }
-    router.navigate('/function/' + addr.toString() + '/pseudocode');
+    if (item.kind === 'saved') {
+      openAddressTarget(app, router, addr);
+      return;
+    }
+    openAddressTarget(app, router, addr, { preferTab: 'pseudocode' });
   };
 
-  const renderDropdown = (items) => {
+  const renderDropdown = (items, { autoSelectFirst = false } = {}) => {
     dropdownItems = items.slice(0, 10);
     activeIndex = -1;
     results.replaceChildren();
@@ -2580,7 +3220,11 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       const left = h('span', 'ui-command-result-main');
       if (item.badge) left.append(h('span', 'ui-command-result-badge', item.badge));
       left.append(h('span', 'ui-command-result-title', item.title));
-      const right = h('span', 'ui-command-result-addr mono', item.addr != null ? addressText(item.addr) : '');
+      if (item.note) left.append(h('span', 'ui-command-result-note', item.note));
+      const rightText = item.kind === 'command'
+        ? String(item.subtitle || '')
+        : (item.addr != null ? addressText(item.addr) : '');
+      const right = h('span', 'ui-command-result-addr mono', rightText);
       li.append(left, right);
       li.addEventListener('mousedown', (event) => { event.preventDefault(); });
       li.addEventListener('click', (event) => {
@@ -2590,6 +3234,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     });
     results.hidden = false;
     input.setAttribute('aria-expanded', 'true');
+    if (autoSelectFirst && dropdownItems.length > 0) setActiveIndex(0);
   };
 
   const recentNavEntries = () => {
@@ -2605,7 +3250,28 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     if (document.activeElement !== input) return;
     const raw = input.value.trim();
     const intent = classifyOmnibox(raw);
-    if (intent.kind === 'command' || intent.kind === 'ai') { hideResults(); return; }
+    if (intent.kind === 'ai') { hideResults(); return; }
+    if (intent.kind === 'command') {
+      const cq = String(intent.value || '').trim().toLowerCase();
+      const cmdItems = [];
+      for (const cmd of COMMANDS) {
+        if (!cq
+          || cmd.id.toLowerCase().includes(cq)
+          || cmd.ja.toLowerCase().includes(cq)
+          || cmd.en.toLowerCase().includes(cq)
+          || cmd.match.test(intent.value)) {
+          cmdItems.push({
+            kind: 'command',
+            badge: '>',
+            title: ja() ? cmd.ja : cmd.en,
+            subtitle: '>' + cmd.id,
+            command: cmd.id,
+          });
+        }
+      }
+      renderDropdown(cmdItems, { autoSelectFirst: true });
+      return;
+    }
     const out = [];
     const seen = new Set();
     const pushUnique = (entry) => {
@@ -2616,12 +3282,22 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       seen.add(key);
       out.push({ ...entry, addr: BigInt(entry.addr) });
     };
+    const clipNote = (val) => {
+      const sVal = String(val || '').replace(/\s+/g, ' ').trim();
+      return sVal.length > 44 ? sVal.slice(0, 43) + '…' : sVal;
+    };
 
     if (!raw) {
       const saved = bookmarkListOf(app);
       for (const bm of saved.slice(0, 6)) {
         if (bm?.addr == null) continue;
-        pushUnique({ kind: 'saved', badge: '★', title: bm.name || functionName(app, bm.addr), addr: bm.addr });
+        pushUnique({
+          kind: 'saved',
+          badge: '★',
+          title: bm.name || bookmarkLabel(app, bm.addr),
+          note: clipNote(bm.note),
+          addr: bm.addr,
+        });
       }
       const recents = recentNavEntries();
       for (let i = recents.length - 1; i >= 0 && out.length < 10; i--) {
@@ -2630,16 +3306,21 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
         if (a == null) continue;
         try {
           const big = BigInt(a);
-          pushUnique({ kind: 'recent', badge: '↺', title: entry?.name || functionName(app, big), addr: big });
+          pushUnique({
+            kind: 'recent',
+            badge: '↺',
+            title: entry?.label || entry?.name || bookmarkLabel(app, big),
+            addr: big,
+          });
         } catch { /* ignore */ }
       }
-      renderDropdown(out);
+      renderDropdown(out, { autoSelectFirst: false });
       return;
     }
 
-    const parsed = parseAddress(raw);
+    const parsed = parseAddressInput(app, raw);
     if (parsed != null) {
-      pushUnique({ kind: 'address', badge: '→', title: functionName(app, parsed), addr: parsed });
+      pushUnique({ kind: 'address', badge: '→', title: bookmarkLabel(app, parsed), addr: parsed });
     }
     const ql = raw.toLowerCase();
     for (const bm of bookmarkListOf(app)) {
@@ -2648,7 +3329,13 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       const tags = Array.isArray(bm?.tags) ? bm.tags.join(' ') : String(bm?.tag || '');
       const hay = [bm?.name, bm?.note, tags, addressText(bm.addr)].filter(Boolean).join(' ').toLowerCase();
       if (hay.includes(ql)) {
-        pushUnique({ kind: 'saved', badge: '★', title: bm.name || functionName(app, bm.addr), addr: bm.addr });
+        pushUnique({
+          kind: 'saved',
+          badge: '★',
+          title: bm.name || bookmarkLabel(app, bm.addr),
+          note: clipNote(bm.note),
+          addr: bm.addr,
+        });
       }
     }
     if (app.store?.get?.('fileInfo') && out.length < 10) {
@@ -2667,7 +3354,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       }
     }
     if (serial !== dropdownSerial || document.activeElement !== input) return;
-    renderDropdown(out);
+    renderDropdown(out, { autoSelectFirst: Boolean(raw) });
   };
 
   const scheduleDropdown = () => {
@@ -2684,8 +3371,10 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   input.addEventListener('input', () => { refreshHint(); scheduleDropdown(); });
   input.addEventListener('focus', () => { scheduleDropdown(); });
   input.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Escape') {
       if (!results.hidden) { event.preventDefault(); hideResults(); }
+      else { input.blur(); }
       return;
     }
     if (event.key === 'Tab') {
@@ -2746,13 +3435,13 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     }
     if (intent.kind === 'command' && runCommand(intent)) return;
     if (intent.kind === 'address') {
-      const addr = parseAddress(intent.value);
+      const addr = parseAddressInput(app, intent.value);
       // Navigate only when the address exists; a failed jump already explained why.
       if (addr != null) { if (app.goToAddress(addr, { announce: true })) router.navigate('/code/' + addr.toString()); return; }
     }
     if (intent.kind === 'symbol') {
       const addr = symbolAddress(app, intent.value);
-      if (addr != null) { router.navigate('/function/' + BigInt(addr).toString() + '/overview'); return; }
+      if (addr != null) { openAddressTarget(app, router, addr); return; }
     }
     if (intent.kind === 'string') {
       router.navigate('/explorer/strings?q=' + encodeURIComponent(intent.value));
@@ -2765,6 +3454,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   const refreshLanguage = () => {
     setPlaceholder();
     input.setAttribute('aria-label', text('検索と移動', 'Search and navigate'));
+    results.setAttribute('aria-label', text('クイックジャンプ候補', 'Instant jump results'));
     go.textContent = text('実行', 'Go');
     refreshHint();
   };
@@ -2799,21 +3489,78 @@ export function installProductUI(app) {
    * fixed` still resolves against the viewport here because the chrome uses a
    * plain background — a backdrop-filter on the parent would have trapped it.
    */
+  const navCanBack = () => !!(app.navigation?.canBack ?? app.navigation?.snapshot?.()?.canBack);
+  const navCanForward = () => !!(app.navigation?.canForward ?? app.navigation?.snapshot?.()?.canForward);
+  const canGoBack = () => router.canBack() || (router.current?.route?.id === 'code' && navCanBack());
+  const canGoForward = () => router.canForward() || (router.current?.route?.id === 'code' && navCanForward());
+  const goBack = () => {
+    if (router.canBack()) return router.back();
+    if (router.current?.route?.id === 'code' && navCanBack()) {
+      const ok = !!app.navigation?.back?.();
+      syncNavButtons();
+      return ok;
+    }
+    return false;
+  };
+  const goForward = () => {
+    if (router.canForward()) return router.forward();
+    if (router.current?.route?.id === 'code' && navCanForward()) {
+      const ok = !!app.navigation?.forward?.();
+      syncNavButtons();
+      return ok;
+    }
+    return false;
+  };
+  const openHistoryMenu = (event, direction) => {
+    const entries = router.historyEntries?.();
+    if (!Array.isArray(entries) || !entries.length) return;
+    event.preventDefault();
+    const curDepth = Number.isSafeInteger(router.depth) ? router.depth : 0;
+    const normalized = entries.map((e) => {
+      const delta = Number.isSafeInteger(e?.delta)
+        ? e.delta
+        : (Number.isSafeInteger(e?.depth) ? e.depth - curDepth : 0);
+      return { delta, label: e?.label || e?.path || String(delta) };
+    }).filter((e) => (direction < 0 ? e.delta < 0 : e.delta > 0));
+    if (!normalized.length) return;
+    normalized.sort((a, b) => (direction < 0 ? b.delta - a.delta : a.delta - b.delta));
+    const r = event.currentTarget.getBoundingClientRect();
+    menu(normalized.slice(0, 15).map((e) => ({
+      label: e.label,
+      action: () => { router.capture?.(); history.go(e.delta); },
+    })), r.left + r.width / 2, r.bottom + 4);
+  };
+
   const backBtn = uiButton(text('← 戻る', '← Back'), {
     cls: 'ui-chrome-back',
     ariaLabel: text('前の画面へ戻る', 'Go back'),
-    onClick: () => router.back(),
+    onClick: () => goBack(),
   });
-  backBtn.title = text('前の画面へ戻る (Alt+←)', 'Go back (Alt+Left)');
+  backBtn.title = text('前の画面へ戻る (Alt+← / Esc)', 'Go back (Alt+Left / Esc)');
   backBtn.hidden = true;
+  backBtn.addEventListener('contextmenu', (e) => openHistoryMenu(e, -1));
   const forwardBtn = uiButton('→', {
     cls: 'ui-chrome-forward',
     ariaLabel: text('次の画面へ進む', 'Go forward'),
-    onClick: () => router.forward(),
+    onClick: () => goForward(),
   });
   forwardBtn.title = text('次の画面へ進む (Alt+→)', 'Go forward (Alt+Right)');
   forwardBtn.hidden = true;
+  forwardBtn.addEventListener('contextmenu', (e) => openHistoryMenu(e, 1));
   chrome.append(backBtn, forwardBtn, nav);
+
+  const syncNavButtons = () => {
+    backBtn.hidden = !canGoBack();
+    forwardBtn.hidden = !canGoForward();
+    const backDest = router.backLabel?.() || '';
+    const fwdDest = router.forwardLabel?.() || '';
+    backBtn.title = backDest
+      ? text(`戻る: ${backDest} (Alt+← / Esc)`, `Back: ${backDest} (Alt+Left / Esc)`)
+      : text('前の画面へ戻る (Alt+← / Esc)', 'Go back (Alt+Left / Esc)');
+    forwardBtn.title = fwdDest
+      ? text(`進む: ${fwdDest} (Alt+→)`, `Forward: ${fwdDest} (Alt+Right)`)
+      : text('次の画面へ進む (Alt+→)', 'Go forward (Alt+Right)');
+  };
 
   const deltaStrip = h('div', 'ui-delta-strip');
   deltaStrip.setAttribute('role', 'status');
@@ -2821,28 +3568,48 @@ export function installProductUI(app) {
   const deltaText = h('span', 'ui-delta-strip-text');
   const deltaActions = h('div', 'ui-delta-strip-actions');
   const deltaExportBtn = uiButton(text('差分を書き出し (.json)', 'Export delta (.json)'), { cls: 'ui-secondary-action ui-delta-btn', onClick: () => requireFile(app, () => exportDeltaFromProduct(app)) });
-  const deltaImportBtn = uiButton(text('差分を読み込み (.json)', 'Import delta (.json)'), { cls: 'ui-secondary-action ui-delta-btn', onClick: () => requireFile(app, () => importDeltaFromProduct(app)) });
-  const deltaResetBtn = uiButton(text('リセット', 'Reset'), { cls: 'ui-secondary-action ui-delta-btn', onClick: async () => { await resetDeltaFromProduct(app); deltaDismissed = true; deltaStrip.hidden = true; } });
+  const deltaImportBtn = uiButton(text('差分を読み込み (.json)', 'Import delta (.json)'), { cls: 'ui-secondary-action ui-delta-btn', onClick: () => requireFile(app, () => importDeltaFromProduct(app, router)) });
+  const deltaResetBtn = uiButton(text('リセット', 'Reset'), { cls: 'ui-secondary-action ui-delta-btn', onClick: async () => { const ok = await resetDeltaFromProduct(app); if (ok) { deltaDismissed = true; deltaStrip.hidden = true; } } });
   const deltaDismissBtn = uiButton('×', { cls: 'ui-icon-action ui-delta-dismiss', ariaLabel: text('閉じる', 'Dismiss'), onClick: () => { deltaDismissed = true; deltaStrip.hidden = true; } });
   deltaActions.append(deltaExportBtn, deltaImportBtn, deltaResetBtn, deltaDismissBtn);
   deltaStrip.append(deltaText, deltaActions);
   chrome.after(deltaStrip);
   let deltaDismissed = false;
   let lastDeltaToken = null;
+  let appliedDeltaRouteToken = null;
+  let userNavigatedSinceFileOpen = false;
+  const resolveRestoredRoutePath = (rawPath) => {
+    const path = String(rawPath || '').trim();
+    if (!path || !path.startsWith('/')) return null;
+    const fnMatch = /^\/function\/([^/?#]+)(?:\/([^/?#]+))?/.exec(path);
+    if (fnMatch) {
+      let big;
+      try { big = BigInt(fnMatch[1]); } catch { return null; }
+      const verified = app.validatedFunctionRange?.(big);
+      if (!isFunctionStart(app, big) || (verified && !verified.ok)) {
+        return '/code/' + big.toString();
+      }
+    }
+    return path;
+  };
   const syncDeltaStrip = () => {
     const info = app.lastDeltaRestore ?? app.store?.get?.('deltaRestored') ?? null;
     if (!info) { deltaStrip.hidden = true; return; }
     if (info !== lastDeltaToken) { lastDeltaToken = info; deltaDismissed = false; }
+    if (info.restoredRoutePath && info !== appliedDeltaRouteToken && !userNavigatedSinceFileOpen && router?.started) {
+      appliedDeltaRouteToken = info;
+      const targetPath = resolveRestoredRoutePath(info.restoredRoutePath);
+      if (targetPath && router.current?.fullPath !== targetPath) {
+        router.navigate(targetPath, { replace: true });
+      }
+    }
+    syncNavButtons();
     if (deltaDismissed) { deltaStrip.hidden = true; return; }
     const count = deltaCountOf(info);
     if (count <= 0) { deltaStrip.hidden = true; return; }
     deltaText.textContent = text(`前回の続きを復元 (${count}件の差分)`, `Restored previous session (${count} changes)`);
     deltaStrip.hidden = false;
   };
-  const unsubDeltaStore = app.store?.subscribe?.((_state, patch) => {
-    if (!patch || 'deltaRestored' in patch || 'fileInfo' in patch) syncDeltaStrip();
-  }) || null;
-  syncDeltaStrip();
 
   let lastRouteId = null;
   let autoHexForData = false;
@@ -2862,14 +3629,16 @@ export function installProductUI(app) {
      * function tab to another) keep their sheets; sheets opened after the
      * change (the sample guide) are not affected.
      */
-    onState: ({ current, canBack, canForward }) => {
+    onState: ({ current }) => {
       const id = current?.route?.id || null;
       if (lastRouteId != null && id !== lastRouteId) { closeMenu(); closeAllSheets(); }
       lastRouteId = id;
-      backBtn.hidden = !canBack;
-      forwardBtn.hidden = !canForward;
+      syncNavButtons();
     },
     onRoute: (route, routeContext = {}) => {
+      if (!routeContext.replace && !routeContext.historyNavigation && route.fullPath !== '/code') {
+        userNavigatedSinceFileOpen = true;
+      }
       appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
       appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
       const activeNavId = route.route.id === 'finding' ? 'results' : route.route.id;
@@ -2901,6 +3670,7 @@ export function installProductUI(app) {
             }
           } catch { /* invalid deep link */ } finally { routingCodeAddress = false; }
         }
+        syncRouteNavigation(app, router, route, routeContext);
         return codeViewState(app);
       }
       routeHost.hidden = false;
@@ -2915,6 +3685,7 @@ export function installProductUI(app) {
       else view = renderSecondaryRoute(app, router, route, routeContext);
       routeHost.append(view.root);
       updateScreenTitle(view.root);
+      syncRouteNavigation(app, router, route, routeContext);
       requestAnimationFrame(() => routeHost.focus({ preventScroll: true }));
       const originalGet = view.getState;
       return {
@@ -2924,6 +3695,10 @@ export function installProductUI(app) {
       };
     },
   });
+  const unsubDeltaStore = app.store?.subscribe?.((_state, patch) => {
+    if (!patch || 'deltaRestored' in patch || 'fileInfo' in patch) syncDeltaStrip();
+  }) || null;
+  syncDeltaStrip();
 
   let assistant = null;
   const originalSelectSlice = typeof app.selectSlice === 'function' ? app.selectSlice.bind(app) : null;
@@ -2948,10 +3723,16 @@ export function installProductUI(app) {
   const originalGoToAddress = typeof app.goToAddress === 'function' ? app.goToAddress : null;
   if (originalGoToAddress) {
     app.goToAddress = function goToAddressAndShowCode(addr, options = {}) {
-      // Show Code first: the viewer cannot compute a scroll position while
-      // its view is hidden, and the jump would land on the wrong line.
-      if (options?.announce && !routingCodeAddress && router.current && router.current.route.id !== 'code' && addressIsMapped(app, addr)) {
-        router.navigate('/code');
+      // Route user-requested jumps through ProductRouter even when already on /code
+      // so browser Back/Forward and App.navigation stay unified.
+      if ((options?.announce || options?.history !== false) && !routingCodeAddress && router.current && addressIsMapped(app, addr)) {
+        try {
+          const targetBig = BigInt(addr);
+          if (router.navigate('/code/' + targetBig.toString(), { forcePush: true })) {
+            if (options?.announce) this.flash?.(targetBig);
+            return true;
+          }
+        } catch { /* fall through */ }
       }
       return originalGoToAddress.call(this, addr, options);
     };
@@ -2984,7 +3765,7 @@ export function installProductUI(app) {
   actions.register('navigate.explorer', () => router.navigate('/explorer/functions'));
   actions.register('navigate.results', () => router.navigate('/results'));
   actions.register('function.label', (addr) => functionName(app, BigInt(addr)));
-  actions.register('function.open', (addr, tab = 'overview') => router.navigate('/function/' + BigInt(addr).toString() + '/' + tab));
+  actions.register('function.open', (addr, tab) => openAddressTarget(app, router, addr, { preferTab: tab }));
 
   const cleanupViewport = installViewportBridge();
   const addressBar = installAddressBar(app, router, appRoot.querySelector('.addrbar'));
@@ -3004,10 +3785,43 @@ export function installProductUI(app) {
     const typing = !!(target && (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || target.isContentEditable));
     const key = String(event.key || '').toLowerCase();
     if ((event.metaKey || event.ctrlKey) && (key === 'k' || key === 'g')) { event.preventDefault(); actions.run('command.focus'); return; }
+    if ((event.metaKey || event.ctrlKey) && key === 'f') {
+      const curRoute = router.current;
+      if (curRoute?.route?.id === 'function' && curRoute?.params?.tab === 'pseudocode') {
+        const screenRoot = routeHost.querySelector('[data-screen="function"]');
+        if (typeof screenRoot?._openPseudocodeFind === 'function') {
+          event.preventDefault();
+          screenRoot._openPseudocodeFind();
+          return;
+        }
+      }
+    }
     if (typing) return;
-    const hasOverlay = !!document.querySelector('#overlays .sheet, .menu, .dialog');
-    if (!hasOverlay && ((event.altKey && event.key === 'ArrowLeft') || (event.metaKey && event.key === '['))) { event.preventDefault(); router.back(); return; }
-    if (!hasOverlay && ((event.altKey && event.key === 'ArrowRight') || (event.metaKey && event.key === ']'))) { event.preventDefault(); router.forward(); return; }
+    const hasOverlay = !!Boolean(document.getElementById('overlays')?.querySelector('.sheet, .menu, .dialog') || document.querySelector('.menu, .dialog'));
+    if (!hasOverlay && (event.metaKey || event.ctrlKey) && !event.altKey) {
+      if (key === 'z') {
+        if (event.shiftKey) {
+          if (typeof app.redoEdit === 'function') { event.preventDefault(); app.redoEdit(); return; }
+        } else if (typeof app.undoEdit === 'function') {
+          event.preventDefault(); app.undoEdit(); return;
+        }
+      } else if (event.ctrlKey && !event.metaKey && key === 'y' && typeof app.redoEdit === 'function') {
+        event.preventDefault(); app.redoEdit(); return;
+      }
+    }
+    if (!hasOverlay && ((event.altKey && event.key === 'ArrowLeft') || (event.metaKey && event.key === '['))) { event.preventDefault(); goBack(); return; }
+    if (!hasOverlay && ((event.altKey && event.key === 'ArrowRight') || (event.metaKey && event.key === ']'))) { event.preventDefault(); goForward(); return; }
+    if (event.key === 'Escape' && !hasOverlay && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const aiOpen = !!(assistant?.isOpen?.() || uiRoot()?.classList.contains('ai-open'));
+      const hasRangeMode = !!app.viewer?.rangeMode;
+      const hasTokHit = !!document.querySelector('.tok-hit');
+      const hasFindOpen = !!document.querySelector('.ui-pseudocode-find:not([hidden])');
+      if (!aiOpen && !hasRangeMode && !hasTokHit && !hasFindOpen && canGoBack()) {
+        event.preventDefault();
+        goBack();
+      }
+      return;
+    }
     if (hasOverlay || event.metaKey || event.ctrlKey || event.altKey) return;
     const interactiveControl = !!(target && (
       /^(BUTTON|A|SUMMARY)$/.test(tag)
@@ -3015,6 +3829,12 @@ export function installProductUI(app) {
         && !target.closest?.('.ui-pseudocode-line'))
       || target.closest?.('.tok-fn-link, .tok-addr-link')
     ));
+    if (event.key === '?') {
+      if (interactiveControl) return;
+      event.preventDefault();
+      router.navigate('/help');
+      return;
+    }
     if (key === '/' || (key === 'g' && !event.shiftKey)) {
       if (interactiveControl) return;
       event.preventDefault();
@@ -3045,7 +3865,14 @@ export function installProductUI(app) {
     if (key === 'n' && !event.shiftKey) {
       event.preventDefault();
       requireFile(app, () => {
-        const a = activeFnAddr();
+        let calleeAddr = null;
+        const focusedCallee = document.activeElement?.closest?.('.tok-fn-link')
+          || document.querySelector('.ui-pseudocode .tok-hit[data-tok]');
+        if (focusedCallee) {
+          const tok = focusedCallee.getAttribute('data-tok') || focusedCallee.textContent?.trim();
+          if (tok) calleeAddr = symbolAddress(app, tok);
+        }
+        const a = calleeAddr ?? activeFnAddr();
         if (a != null) showRename(app, a);
         else toast(text('対象の関数またはアドレスが見つかりません。', 'No target function or address selected.'));
       });
@@ -3063,6 +3890,18 @@ export function installProductUI(app) {
     if (key === 'x' && !event.shiftKey) {
       event.preventDefault();
       requireFile(app, () => {
+        if (routeId === 'code') {
+          const lineAddr = activeLineAddr();
+          if (lineAddr != null) {
+            const regions = app.store?.get?.('regions') || [];
+            const region = regions.find((r) => r && r.size > 0n && lineAddr >= r.vmAddr && lineAddr < r.vmAddr + r.size);
+            const fnAtLine = region?.exec ? currentFunctionAddr(app) : null;
+            if ((region && !region.exec) || fnAtLine == null) {
+              showXrefs(app, lineAddr);
+              return;
+            }
+          }
+        }
         const a = activeFnAddr();
         if (a != null) router.navigate('/function/' + BigInt(a).toString() + '/calls');
         else toast(text('対象の関数が見つかりません。', 'No target function selected.'));
@@ -3078,9 +3917,16 @@ export function installProductUI(app) {
           return;
         }
         if (routeId === 'function' && curRoute?.params?.tab === 'pseudocode') {
-          router.navigate('/code/' + BigInt(a).toString());
+          const screenRoot = routeHost.querySelector('[data-screen="function"]');
+          const jumpAddr = typeof screenRoot?._selectedCodeAddress === 'function'
+            ? (screenRoot._selectedCodeAddress() ?? a)
+            : a;
+          router.navigate('/code/' + BigInt(jumpAddr).toString());
         } else {
-          router.navigate('/function/' + BigInt(a).toString() + '/pseudocode');
+          const lineAddr = activeLineAddr();
+          const fnBig = BigInt(a);
+          const query = lineAddr != null && BigInt(lineAddr) !== fnBig ? ('?addr=' + BigInt(lineAddr).toString()) : '';
+          router.navigate('/function/' + fnBig.toString() + '/pseudocode' + query);
         }
       });
       return;
@@ -3088,14 +3934,14 @@ export function installProductUI(app) {
     if (key === 'b' && !event.shiftKey) {
       event.preventDefault();
       requireFile(app, () => {
-        const a = activeFnAddr();
-        if (a == null) {
-          toast(text('対象の関数が見つかりません。', 'No target function selected.'));
+        const targetAddr = routeId === 'code' ? activeLineAddr() : activeFnAddr();
+        if (targetAddr == null) {
+          toast(text('対象のアドレスが見つかりません。', 'No target address selected.'));
           return;
         }
-        const name = functionName(app, a);
-        app.bookmarks?.toggle?.(a, { name });
-        const saved = !!app.bookmarks?.has?.(a);
+        const name = bookmarkLabel(app, targetAddr);
+        app.bookmarks?.toggle?.(targetAddr, { name });
+        const saved = !!app.bookmarks?.has?.(targetAddr);
         toast(saved
           ? text(`★「${name}」をブックマークしました。`, `★ Bookmarked "${name}".`)
           : text(`☆「${name}」のブックマークを解除しました。`, `☆ Removed bookmark "${name}".`));
@@ -3113,6 +3959,8 @@ export function installProductUI(app) {
    * and the assistant is the thing you call when you have a question about it.
    */
   const onFileOpened = () => {
+    userNavigatedSinceFileOpen = false;
+    appliedDeltaRouteToken = null;
     router.navigate('/code');
     assistant?.refresh();
     /* On a phone or a narrow split the panel covers the code it is about to
@@ -3126,6 +3974,7 @@ export function installProductUI(app) {
     backBtn.textContent = text('← 戻る', '← Back');
     backBtn.setAttribute('aria-label', text('前の画面へ戻る', 'Go back'));
     forwardBtn.setAttribute('aria-label', text('次の画面へ進む', 'Go forward'));
+    syncNavButtons();
     deltaExportBtn.textContent = text('差分を書き出し (.json)', 'Export delta (.json)');
     deltaImportBtn.textContent = text('差分を読み込み (.json)', 'Import delta (.json)');
     deltaResetBtn.textContent = text('リセット', 'Reset');

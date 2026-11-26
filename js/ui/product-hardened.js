@@ -1,4 +1,4 @@
-import { installProductUI as installBaseProductUI, editBookmarkNote, makeStarButton } from './product.js';
+import { installProductUI as installBaseProductUI, editBookmarkNote, makeStarButton, bookmarkLabel, syncRouteNavigation } from './product.js';
 import { createProductSurfaceQueries } from '../analysis/query/product-surface.js';
 import { FUNCTION_TABS, EXPLORER_SCOPES } from './registry.js';
 import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, tabPanel, updateScreenTitle, listRow, VirtualList, scrollStrip } from './primitives.js';
@@ -289,6 +289,12 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
     },
   }));
   const s = screen(currentFunctionName(app, address), { id:'function', subtitle:addressText(address), actions });
+  const unsubNotes = app.notes?.subscribe?.(() => {
+    const liveName = currentFunctionName(app, address);
+    if (s.heading) s.heading.textContent = liveName;
+    updateScreenTitle(s.root);
+    router.setCurrentLabel?.(liveName);
+  }) || null;
   const tabbar = tabs(FUNCTION_TABS, 'overview', (next) => router.navigate(`/function/${address.toString()}/${next}`), { panelId:'ui-function-panel', label:text('関数の表示', 'Function views') });
   s.body.append(tabbar);
   const content = tabPanel(tabbar, 'ui-workspace-content');
@@ -370,7 +376,7 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
     }
   })();
 
-  return { root:s.root, dispose:() => { if (typeof unsubBookmarks === 'function') unsubBookmarks(); } };
+  return { root:s.root, dispose:() => { if (typeof unsubBookmarks === 'function') unsubBookmarks(); if (typeof unsubNotes === 'function') unsubNotes(); } };
 }
 
 function renderCanonicalClaims(app, router, route, meta, queries) {
@@ -541,12 +547,36 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
         host.replaceChildren(emptyState(text('見つかりません', 'Nothing found'), result.completeness === 'complete' ? text('完全走査済みです。', 'The relevant scope was completely scanned.') : text('まだ未走査領域があります。', 'There are still unscanned regions.')));
         return;
       }
-      const renderRow = (item) => listRow({
-        title:item.text,
-        subtitle:addressText(item.addr),
-        meta:item.region?.section || item.region?.name || '',
-        onClick:() => router.navigate(`/code/${BigInt(item.addr).toString()}`),
-      });
+      const renderRow = (item) => {
+        let bigAddr = null;
+        try { bigAddr = item.addr != null ? BigInt(item.addr) : null; } catch { bigAddr = null; }
+        let rowAction = null;
+        if (bigAddr != null) {
+          const wrap = h('span', 'ui-row-actions');
+          const xrefBtn = uiButton('Xrefs', {
+            cls: 'ui-secondary-action ui-row-xrefs',
+            ariaLabel: text('参照元を見る', 'Show cross-references'),
+            onClick: (event) => {
+              event.stopPropagation();
+              import('../panels.js').then((panels) => panels.showXrefs?.(app, bigAddr));
+            },
+          });
+          xrefBtn.title = text('参照元を見る (X)', 'Show cross-references (X)');
+          const star = makeStarButton(app, bigAddr, bookmarkLabel(app, bigAddr), {
+            cls: 'ui-icon-action ui-star-btn ui-row-star',
+            stopPropagation: true,
+          });
+          wrap.append(xrefBtn, star);
+          rowAction = wrap;
+        }
+        return listRow({
+          title:item.text,
+          subtitle:addressText(item.addr),
+          meta:item.region?.section || item.region?.name || '',
+          action:rowAction,
+          onClick:() => router.navigate(`/code/${BigInt(item.addr).toString()}`),
+        });
+      };
       virtual = new VirtualList({ items, rowHeight:64, ariaLabel:text('文字列検索結果', 'String search results'), renderRow });
       const nodes = [];
       if (result.completeness !== 'complete') {
@@ -599,6 +629,7 @@ export function installHardenedProductUI(app) {
         : renderCanonicalStrings(app, router, route, safeMeta, queries);
     routeHost.append(view.root);
     updateScreenTitle(view.root);
+    syncRouteNavigation(app, router, route, safeMeta);
     requestAnimationFrame(() => routeHost.focus({ preventScroll:true }));
     return wrapRouteView(view, routeHost);
   };
