@@ -25,7 +25,7 @@ export const GOALS = [
   {
     id: 'hp', ja: 'HP・体力', en: 'HP / health', icon: '❤️',
     strong: [/\bhp\b/i, /health/i, /\blife\b/i, /体力/, /ライフ/, /耐久/],
-    weak: [/damage/i, /heal/i, /revive/i, /回復/, /死亡/, /\bdie\b/i],
+    weak: [/damage/i, /ダメージ/, /heal/i, /revive/i, /回復/, /死亡/, /\bdie\b/i],
     /*
      * health は体力とは限らない。広告 SDK の死活監視（healthCheck）や
      * 端末情報（healthPercentile）まで拾うと、HP を探した人に
