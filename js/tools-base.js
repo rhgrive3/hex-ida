@@ -1171,7 +1171,7 @@ function notePersistenceFailure(app, action = pick('変更', 'Changes')) {
 export function showRename(app, addr) {
   const sheet = new Sheet(pick('名前を付ける', 'Rename'));
   const cur = app.symbols.nameAt(addr);
-  const initialName = app.notes.nameOf(addr) || '';
+  let initialName = app.notes.nameOf(addr) || '';
   let initialComment = app.notes.comment(addr) || '';
   sheet.body.append(el('div', 'hint',
     addrHex(addr) + '\n' +
@@ -1208,6 +1208,7 @@ export function showRename(app, addr) {
       app.viewer.setSymbols(app.symbols);
       app.updateChrome?.();
       app.recordUndo?.({ type: 'name', addr, before: initialName, after: '' });
+      initialName = '';
       if (!saved) { notePersistenceFailure(app, pick('名前の削除', 'Name removal')); return; }
       sheet.close();
       toast(pick('元の名前に戻しました', 'Restored original name'));
@@ -1434,7 +1435,7 @@ export function showPatches(app, targetAddr = null) {
         onTap: () => {
           menu([
             { label: pick('この場所へ移動', 'Jump to location'), action: () => { sheet.close(); if (it.addr != null) app.goToAddress(it.addr, { announce: true }); } },
-            { label: pick('この書き換えを取り消す', 'Undo this patch'), action: () => { app.patches.remove(it.offset); app.store?.set?.({ patches: app.patches.size }); render(); toast(pick('取り消しました', 'Undone')); } },
+            { label: pick('この書き換えを取り消す', 'Undo this patch'), action: () => { app.patches.remove(it.offset); app.recordUndo?.({ type: 'patch', action: 'remove', offset: it.offset, before: it, after: null, meta: { addr: it.addr, text: it.text } }); app.store?.set?.({ patches: app.patches.size }); render(); toast(pick('取り消しました', 'Undone')); } },
           ], window.innerWidth / 2, 200);
         },
       }));
@@ -1559,7 +1560,7 @@ export async function showPatchEditor(app, addr, insnArg, options = {}) {
     const undoBar = el('div', 'chips');
     undoBar.append(button(pick('元に戻す (Undo)', 'Undo patch'), 'chip danger', () => {
       app.patches.remove(activePatch.offset);
-      app.recordUndo?.({ type: 'patch', action: 'remove', offset: activePatch.offset, before: activePatch, after: null, meta: activePatch.meta });
+      app.recordUndo?.({ type: 'patch', action: 'remove', offset: activePatch.offset, before: activePatch, after: null, meta: { addr: activePatch.addr, text: activePatch.text } });
       app.store?.set?.({ patches: app.patches.size });
       onChange?.();
       sheet.close();
@@ -1630,9 +1631,10 @@ export async function showPatchEditor(app, addr, insnArg, options = {}) {
       alertDialog(pick('登録できません', 'Cannot stage patch'), pick('元のバイトを読み取れませんでした。', 'Could not read original bytes.'));
       return;
     }
+    const prevPatch = app.patches?.at?.(valid.fileOffset) || null;
     try {
       app.patches.add(valid.fileOffset, before, bytes, { addr, text });
-      app.recordUndo?.({ type: 'patch', action: 'add', offset: valid.fileOffset, before, after: bytes, meta: { addr, text } });
+      app.recordUndo?.({ type: 'patch', action: 'add', offset: valid.fileOffset, before, after: bytes, prevPatch, meta: { addr, text } });
       app.store?.set?.({ patches: app.patches.size });
     } catch (err) {
       alertDialog(pick('登録できません', 'Cannot stage patch'), userError(err, pick('既存のパッチと重なっています。先のパッチを元に戻してからお試しください。', 'Overlaps an existing patch. Undo the previous patch first.')));

@@ -1714,19 +1714,20 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   let activeFallbackTokHl = null;
   let activeFindBar = null;
   let unsubNotes = null;
+  const syncLiveName = () => {
+    if (disposed) return;
+    const liveName = functionName(app, addr);
+    if (s.heading) s.heading.textContent = liveName;
+    updateScreenTitle(s.root);
+    router.setCurrentLabel?.(liveName);
+  };
   const bindNotesSub = () => {
     if (typeof unsubNotes === 'function') { unsubNotes(); unsubNotes = null; }
-    unsubNotes = app.notes?.subscribe?.(() => {
-      if (disposed) return;
-      const liveName = functionName(app, addr);
-      if (s.heading) s.heading.textContent = liveName;
-      updateScreenTitle(s.root);
-      router.setCurrentLabel?.(liveName);
-    }) || null;
+    unsubNotes = app.notes?.subscribe?.(syncLiveName) || null;
   };
   bindNotesSub();
-  const onNotesAttached = () => { if (!disposed) bindNotesSub(); };
-  window.addEventListener('hex:notes-attached', onNotesAttached);
+  const onNotesAttached = () => { if (!disposed) { bindNotesSub(); syncLiveName(); } };
+  document.addEventListener('hex:notes-attached', onNotesAttached);
   const viewEpoch = app.backend?.gen;
   const viewSlice = app.store.get('sliceIndex');
   const viewCurrent = () => !disposed && app.backend?.gen === viewEpoch && app.store.get('sliceIndex') === viewSlice;
@@ -2532,7 +2533,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       activeFallbackTokHl?.destroy?.();
       activeFallbackTokHl = null;
       activeFindBar = null;
-      window.removeEventListener('hex:notes-attached', onNotesAttached);
+      document.removeEventListener('hex:notes-attached', onNotesAttached);
       if (typeof unsubBookmarks === 'function') unsubBookmarks();
       if (typeof unsubNotes === 'function') unsubNotes();
       fallbackRouteController?.abort('function-workspace-disposed');

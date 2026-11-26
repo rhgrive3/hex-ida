@@ -42,7 +42,7 @@ const QUESTION_TAIL = /[?？]\s*$/;
 const JA_QUESTION = /(どこ|どれ|なに|何|なぜ|どうやって|教えて|ですか|でしょうか|してる|している|したい|探して|調べて)/;
 const IDENTIFIER = /^[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*$/;
 const OBJC_METHOD = /^[+-]\s*\[[^\]]+\]$/;
-const ADDR_EXPR = /^(?:(?:0[xX][0-9a-fA-F]+|[0-9a-fA-F]{6,16})\s*[+-]\s*(?:0[xX][0-9a-fA-F]+|\d+)|[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*\s*(?:\+\s*(?:0[xX][0-9a-fA-F]+|\d+)|-\s*0[xX][0-9a-fA-F]+))$/;
+const ADDR_EXPR = /^(?:(?:0[xX][0-9a-fA-F]+|(?=[0-9a-fA-F]{6,16}\b)(?=.*[0-9])[0-9a-fA-F]{6,16})\s*[+-]\s*(?:0[xX][0-9a-fA-F]+|\d+)|[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*\s*(?:\+\s*(?:0[xX][0-9a-fA-F]+|\d+)|-\s*0[xX][0-9a-fA-F]+))$/;
 
 function stripPrefix(value, re) {
   return value.replace(re, '').trim();

@@ -1330,16 +1330,17 @@ export class App {
       const offset = BigInt(entry.offset);
       const isRemoval = entry.action === 'remove' || entry.after == null;
       try {
+        const metaOf = (p, fallback) => p?.meta || (p && (p.addr != null || p.text != null) ? { addr: p.addr, text: p.text } : fallback);
         if (isUndo) {
           if (isRemoval && entry.before) {
             const prev = entry.before;
             if (prev && typeof prev === 'object' && !ArrayBuffer.isView(prev) && !Array.isArray(prev) && prev.before && prev.after) {
-              this.patches.add(offset, prev.before, prev.after, prev.meta || entry.meta);
+              this.patches.add(offset, prev.before, prev.after, metaOf(prev, entry.meta));
             } else if (entry.origBytes) {
               this.patches.add(offset, entry.origBytes, prev, entry.meta);
             }
           } else if (entry.prevPatch && entry.prevPatch.before && entry.prevPatch.after) {
-            this.patches.add(offset, entry.prevPatch.before, entry.prevPatch.after, entry.prevPatch.meta || entry.meta);
+            this.patches.add(offset, entry.prevPatch.before, entry.prevPatch.after, metaOf(entry.prevPatch, entry.meta));
           } else {
             this.patches.remove(offset);
           }

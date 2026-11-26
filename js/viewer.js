@@ -342,6 +342,7 @@ export class CodeViewer {
         } else {
           this.selAnchor = -1;
           this.selFocus = -1;
+          if (this.rangeMode) { this.rangeMode = false; this.onRangeChange?.(); }
         }
       } else if (hadRangeSel) {
         const aRow = rangeAnchorAddr != null ? this.rowOfAddress(rangeAnchorAddr) : null;
@@ -349,9 +350,11 @@ export class CodeViewer {
         if (aRow != null && fRow != null) {
           this.selAnchor = aRow;
           this.selFocus = fRow;
+          this.onRangeChange?.();
         } else {
           this.selAnchor = -1;
           this.selFocus = -1;
+          if (this.rangeMode) { this.rangeMode = false; this.onRangeChange?.(); }
         }
       }
     }
@@ -1058,6 +1061,7 @@ export class CodeViewer {
       this._onDocKeyDown = (e) => {
         if (e.key !== 'Escape' || !this.highlightedReg || e.defaultPrevented) return;
         if (document.querySelector('.sheet, .menu, .dialog')) return;
+        e.preventDefault();
         this.clearHighlightedReg();
       };
       document.addEventListener('keydown', this._onDocKeyDown);

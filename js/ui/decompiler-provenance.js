@@ -666,6 +666,10 @@ export function createDecompilerProvenanceView(query, options = {}) {
         tokCount.title = token;
       },
     });
+    if (options.signal) {
+      if (options.signal.aborted) tokenHighlight.destroy();
+      else options.signal.addEventListener?.('abort', () => tokenHighlight?.destroy?.(), { once: true });
+    }
   } else {
     const value = query?.value;
     const content = typeof value === 'string' ? value : value?.code;
