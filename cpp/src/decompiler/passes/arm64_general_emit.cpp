@@ -557,7 +557,8 @@ static bool is_control_flow_or_call(uint32_t w) {
   if ((w & 0x7E000000u) == 0x34000000u) return true;  // CBZ/CBNZ
   if ((w & 0x7E000000u) == 0x36000000u) return true;  // TBZ/TBNZ
   if ((w & 0xFF000010u) == 0x54000000u) return true;  // B.cond
-  if ((w & 0xFFE0001Fu) == 0xD4200000u || (w & 0xFFE0001Fu) == 0xD4400000u || (w & 0xFFE0001Fu) == 0xD4000001u) return true;  // BRK/HLT/SVC
+  if ((w & 0xFF000000u) == 0xD4000000u) return true;  // Exception-generating (SVC/HVC/SMC/BRK/HLT)
+  if ((w & 0xFFFFFC1Fu) == 0xD69F0000u || w == 0xD69F0BFFu || w == 0xD69F0FFFu) return true;  // ERET/ERETAA/ERETAB
   return false;
 }
 

@@ -1287,6 +1287,24 @@ void test_wave33_track_b_readability() {
     }
     CHECK(found_mov42_line);
   }
+  // 10. Structured if-else diamond where both branches set flags for a merge-point SETNE.
+  // push rbx (53); test edi, edi (85 FF); je +4 (74 04); cmp esi, edx (39 D6); jmp +3 (EB 03);
+  // cmp ecx, r8d (44 39 C1); setne al (0F 95 C0); pop rbx (5B); ret (C3)
+  {
+    const uint8_t code[] = {
+        0x53, 0x85, 0xff, 0x74, 0x04, 0x39, 0xd6, 0xeb, 0x03,
+        0x44, 0x39, 0xc1, 0x0f, 0x95, 0xc0, 0x5b, 0xc3
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x490900ULL, "w33_ifelse_flag_diamond", 23u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string t = get_emitted_text();
+    // Both then-branch (`cmp esi, edx`) and else-branch (`cmp ecx, r8d`) must survive.
+    CHECK(t.find("__hex_cmp_l = (uint64)((uint32)rsi); __hex_cmp_r = (uint64)((uint32)rdx);") != std::string::npos);
+    CHECK(t.find("__hex_cmp_l = (uint64)((uint32)rcx); __hex_cmp_r = (uint64)((uint32)r8);") != std::string::npos);
+    CHECK(verify_c11_syntax(t, "w33_ifelse_flag_diamond"));
+  }
   std::printf("  [PASS] Wave 33 Track B: B1 fusion/liveness/test-self, B2 clean casts, B3 decl pruning + linemap\n");
 }
 

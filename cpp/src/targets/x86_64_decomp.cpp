@@ -1904,7 +1904,7 @@ static bool is_safe_cmp_gap_insn(const GeneralInsn& gi, uint32_t cmp_read_gprs, 
     if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u && mod != 3u) {
       return !cmp_reads_mem;
     }
-    return d.rm >= 16u || (cmp_read_gprs & (1u << d.rm)) == 0u;
+    return d.rm < 16u && (cmp_read_gprs & (1u << d.rm)) == 0u;
   }
 
   return false;
@@ -2836,8 +2836,20 @@ HexStatus try_emit_x86_64_general(
   bool flags_live = false;
   for (uint32_t rev = insn_count; rev > 0u; --rev) {
     const uint32_t i = rev - 1u;
-    if (skip_insn[i]) continue;
     const GeneralInsn& gi = insns[i];
+    if (skip_insn[i]) {
+      if (!gi.is_raw && !gi.is_leave && !gi.is_xchg &&
+          gi.d.kind == HEX_X86_KIND_JMP && target_idx[i] >= 0) {
+        flags_live = has_unfused_flag_reader &&
+                     flags_possibly_read_from(insns, target_idx, insn_count,
+                                              static_cast<uint32_t>(target_idx[i]));
+      }
+      if (orig_label_refs[i] > 0u) {
+        flags_live = has_unfused_flag_reader &&
+                     flags_possibly_read_from(insns, target_idx, insn_count, i);
+      }
+      continue;
+    }
     if (fused_src_cmp[i] < 0 && is_flag_reading_insn(gi)) {
       flags_live = true;
     } else if (!gi.is_raw && !gi.is_leave && !gi.is_xchg &&
