@@ -1070,6 +1070,116 @@ void test_wave30_structurizer_v5() {
   }
 }
 
+void test_wave31_zero_goto_state_machine() {
+  static uint8_t buf[1536u * 1024u];
+  static uint8_t scratch_buf[2560u * 1024u];
+  hex::Arena arena;
+  hex::Arena scratch;
+  arena.init_fixed(buf, sizeof(buf));
+  scratch.init_fixed(scratch_buf, sizeof(scratch_buf));
+  const char* txt = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_cnt = 0u;
+
+  auto enc_b = [](int32_t insn_delta) -> uint32_t {
+    return 0x14000000u | (static_cast<uint32_t>(insn_delta) & 0x03FFFFFFu);
+  };
+  auto enc_cbz = [](uint32_t reg, int32_t insn_delta) -> uint32_t {
+    return 0xB4000000u | ((static_cast<uint32_t>(insn_delta) & 0x7FFFFu) << 5u) | (reg & 31u);
+  };
+  auto enc_cbnz = [](uint32_t reg, int32_t insn_delta) -> uint32_t {
+    return 0xB5000000u | ((static_cast<uint32_t>(insn_delta) & 0x7FFFFu) << 5u) | (reg & 31u);
+  };
+  auto enc_add_imm = [](uint32_t rd, uint32_t rn, uint32_t imm) -> uint32_t {
+    return 0x91000000u | ((imm & 0xFFFu) << 10u) | ((rn & 31u) << 5u) | (rd & 31u);
+  };
+  auto enc_subs_imm = [](uint32_t rd, uint32_t rn, uint32_t imm) -> uint32_t {
+    return 0xD1000000u | ((imm & 0xFFFu) << 10u) | ((rn & 31u) << 5u) | (rd & 31u);
+  };
+  constexpr uint32_t kRet = 0xD65F03C0u;
+
+  hex::decompiler::passes::set_general_scratch_arena(&scratch);
+
+  // (1) Mode 1: Irreducible CFG (cross-entry gotos at loop_depth==0) with intact structured do-while loop.
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w[] = {
+      enc_cbz(2u, 5),            // 0: cbz x2, -> 5 (L_shared)
+      enc_b(6),                  // 1: b -> 7 (L_cond)
+      enc_add_imm(0u, 0u, 1u),   // 2: L_body: add x0, x0, #1
+      enc_subs_imm(4u, 4u, 1u),  // 3: L_inner: subs x4, x4, #1
+      enc_cbnz(4u, -1),          // 4: cbnz x4, -> 3 (intact do-while loop!)
+      enc_add_imm(0u, 0u, 2u),   // 5: L_shared: add x0, x0, #2
+      enc_add_imm(0u, 0u, 3u),   // 6: add x0, x0, #3
+      enc_subs_imm(1u, 1u, 1u),  // 7: L_cond: subs x1, x1, #1
+      enc_cbnz(1u, -6),          // 8: cbnz x1, -> 2 (L_body)
+      kRet,                      // 9: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100040000ULL, "w31_mode1_irred", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "goto "));
+    assert(contains(txt, len, "unsigned int __hex_state = 0u;"));
+    assert(contains(txt, len, "while (__hex_state != 0xFFFFFFFFu) {"));
+    assert(contains(txt, len, "switch (__hex_state) {"));
+    // Mode 1 preserves the intact inner do-while loop!
+    assert(contains(txt, len, "do {"));
+    assert(contains(txt, len, "} while ("));
+  }
+
+  // (2) Mode 2: Multi-level loop exit (residual goto inside inner loop -> loop_depth > 0 -> flat state machine).
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w[] = {
+      enc_subs_imm(0u, 0u, 1u),  // 0: L_outer: subs x0, x0, #1
+      enc_subs_imm(1u, 1u, 1u),  // 1: L_inner: subs x1, x1, #1
+      enc_cbz(2u, 4),            // 2: cbz x2, -> 6 (L_mid: 2-level loop exit!)
+      enc_cbnz(1u, -2),          // 3: cbnz x1, -> 1 (L_inner)
+      enc_add_imm(3u, 3u, 1u),   // 4: add x3, x3, #1
+      enc_cbnz(0u, -5),          // 5: cbnz x0, -> 0 (L_outer)
+      enc_add_imm(0u, 0u, 10u),  // 6: L_mid: add x0, x0, #10
+      enc_subs_imm(5u, 5u, 1u),  // 7: L_tail: subs x5, x5, #1
+      enc_cbnz(5u, -1),          // 8: cbnz x5, -> 7 (L_tail)
+      kRet,                      // 9: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100041000ULL, "w31_mode2_multilevel", 20u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "goto "));
+    assert(contains(txt, len, "unsigned int __hex_state = 0u;"));
+    assert(contains(txt, len, "switch (__hex_state) {"));
+    // Mode 2 flattened from pristine tb.data -> no do-while left!
+    assert(!contains(txt, len, "do {"));
+  }
+
+  // (3) Regression check: Structurizer v5 zero-goto functions STILL emit ZERO `switch (__hex_state)` (pure idiomatic C).
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w[] = {
+      enc_subs_imm(0u, 0u, 1u),  // 0: L_outer: subs x0, x0, #1
+      enc_cbz(1u, 2),            // 1: cbz x1, -> 3 (L_cont)
+      enc_add_imm(2u, 2u, 1u),   // 2: add x2, x2, #1
+      enc_cbnz(0u, -3),          // 3: L_cont: cbnz x0, -> 0 (L_outer)
+      kRet,                      // 4: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 5u, 0x100042000ULL, "w31_idiomatic_untouched", 23u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "goto "));
+    assert(!contains(txt, len, "switch (__hex_state)"));
+    assert(contains(txt, len, "do {"));
+  }
+
+  hex::decompiler::passes::set_general_scratch_arena(nullptr);
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -1083,6 +1193,7 @@ int main() {
   test_wave27_fixes_insns_and_structurizer_v3();
   test_wave29_structurizer_v4_and_wall_cleanup();
   test_wave30_structurizer_v5();
+  test_wave31_zero_goto_state_machine();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }

@@ -5077,26 +5077,399 @@ static const char* alloc_neg_cond(hex::Arena& arena, const char* cond, uint32_t 
   return dst;
 }
 
+static bool emit_flat_state_machine(
+    TextBuf& tb,
+    uint32_t body_start_off,
+    uint32_t body_start_line,
+    uint32_t raw_lines,
+    const char* fallback_ret,
+    hex::Arena& work_arena,
+    hex::Arena& emit_arena) {
+  if (body_start_off >= tb.len) return false;
+
+  // Helper to classify a flat line from pristine tb.data[body_start_off..tb.len].
+  auto parse_flat_line = [](const char* s, uint32_t llen, uint64_t* out_lid,
+                            uint32_t* out_cond_rel, uint32_t* out_cond_len) -> uint8_t {
+    if (llen > 5u && starts_with(s, llen, "loc_", 4u) && s[llen - 1u] == ':') {
+      uint64_t lid = 0ULL;
+      if (parse_hex_u64(s + 4u, llen - 5u, &lid)) {
+        *out_lid = lid;
+        return 1u;
+      }
+    } else if (llen > 14u && starts_with(s, llen, "    goto loc_", 13u) && s[llen - 1u] == ';') {
+      uint64_t lid = 0ULL;
+      if (parse_hex_u64(s + 13u, llen - 14u, &lid)) {
+        *out_lid = lid;
+        return 3u;
+      }
+    } else if (llen > 20u && starts_with(s, llen, "    if (", 8u) && s[llen - 1u] == ';') {
+      int found = -1;
+      for (int k = static_cast<int>(llen) - 12; k >= 8; --k) {
+        if (starts_with(s + k, llen - static_cast<uint32_t>(k), ") goto loc_", 11u)) {
+          found = k;
+          break;
+        }
+      }
+      if (found > 8) {
+        const uint32_t h_off = static_cast<uint32_t>(found) + 11u;
+        const uint32_t h_len = llen - 1u - h_off;
+        uint64_t lid = 0ULL;
+        if (parse_hex_u64(s + h_off, h_len, &lid)) {
+          *out_lid = lid;
+          *out_cond_rel = 8u;
+          *out_cond_len = static_cast<uint32_t>(found) - 8u;
+          return 2u;
+        }
+      }
+    }
+    return 0u;
+  };
+
+  // Pass 0: Quick zero-alloc scan to count labels & gotos.
+  uint32_t label_cnt = 0u;
+  uint32_t goto_cnt = 0u;
+  {
+    uint32_t cur = body_start_off;
+    while (cur < tb.len) {
+      uint32_t nl = cur;
+      while (nl < tb.len && tb.data[nl] != '\n') ++nl;
+      uint64_t lid = 0ULL;
+      uint32_t cr = 0u, cl = 0u;
+      const uint8_t kind = parse_flat_line(tb.data + cur, nl - cur, &lid, &cr, &cl);
+      if (kind == 1u) ++label_cnt;
+      else if (kind == 2u || kind == 3u) ++goto_cnt;
+      cur = (nl < tb.len) ? (nl + 1u) : tb.len;
+    }
+  }
+  if (goto_cnt == 0u) return false;
+
+  // Build single open-addressed hash table:
+  // ht_used: 0=empty, 1=referenced by goto, 2=defined+assigned sequential state_id.
+  uint32_t ht_cap = 256u;
+  const uint32_t ht_target = (label_cnt + 16u) * 4u;
+  while (ht_cap < ht_target && ht_cap < 262144u) ht_cap <<= 1u;
+  uint64_t* ht_keys = work_arena.alloc<uint64_t>(ht_cap);
+  uint32_t* ht_state = work_arena.alloc<uint32_t>(ht_cap);
+  uint8_t* ht_used = work_arena.alloc<uint8_t>(ht_cap);
+  if (!ht_keys || !ht_state || !ht_used) {
+    if (&work_arena != &emit_arena) {
+      ht_keys = emit_arena.alloc<uint64_t>(ht_cap);
+      ht_state = emit_arena.alloc<uint32_t>(ht_cap);
+      ht_used = emit_arena.alloc<uint8_t>(ht_cap);
+    }
+    if (!ht_keys || !ht_state || !ht_used) return false;
+  }
+  __builtin_memset(ht_used, 0, ht_cap);
+  const uint32_t ht_mask = ht_cap - 1u;
+
+  auto ht_mark_ref = [&](uint64_t key) {
+    uint32_t idx = static_cast<uint32_t>((key * 0x9E3779B97F4A7C15ULL) >> 32u) & ht_mask;
+    for (uint32_t probe = 0u; probe < ht_cap; ++probe) {
+      if (ht_used[idx] == 0u) {
+        ht_used[idx] = 1u;
+        ht_keys[idx] = key;
+        ht_state[idx] = 0xFFFFFFFEu;
+        return;
+      }
+      if (ht_keys[idx] == key) return;
+      idx = (idx + 1u) & ht_mask;
+    }
+  };
+  auto ht_lookup = [&](uint64_t key) -> int32_t {
+    uint32_t idx = static_cast<uint32_t>((key * 0x9E3779B97F4A7C15ULL) >> 32u) & ht_mask;
+    for (uint32_t probe = 0u; probe < ht_cap; ++probe) {
+      if (ht_used[idx] == 0u) return -1;
+      if (ht_keys[idx] == key) return static_cast<int32_t>(idx);
+      idx = (idx + 1u) & ht_mask;
+    }
+    return -1;
+  };
+  auto find_state = [&](uint64_t key) -> int64_t {
+    const int32_t idx = ht_lookup(key);
+    if (idx < 0 || ht_used[idx] != 2u) return -1;
+    return static_cast<int64_t>(ht_state[idx]);
+  };
+
+  // Pass 1a: Collect all referenced goto targets.
+  {
+    uint32_t cur = body_start_off;
+    while (cur < tb.len) {
+      uint32_t nl = cur;
+      while (nl < tb.len && tb.data[nl] != '\n') ++nl;
+      uint64_t lid = 0ULL;
+      uint32_t cr = 0u, cl = 0u;
+      const uint8_t kind = parse_flat_line(tb.data + cur, nl - cur, &lid, &cr, &cl);
+      if (kind == 2u || kind == 3u) ht_mark_ref(lid);
+      cur = (nl < tb.len) ? (nl + 1u) : tb.len;
+    }
+  }
+
+  // Pass 1b: Assign sequential state_ids to every defined & referenced label.
+  bool first_non_skip_checked = false;
+  uint32_t next_sid = 1u;
+  {
+    uint32_t cur = body_start_off;
+    while (cur < tb.len) {
+      uint32_t nl = cur;
+      while (nl < tb.len && tb.data[nl] != '\n') ++nl;
+      uint64_t lid = 0ULL;
+      uint32_t cr = 0u, cl = 0u;
+      const uint8_t kind = parse_flat_line(tb.data + cur, nl - cur, &lid, &cr, &cl);
+      if (kind == 1u) {
+        const int32_t idx = ht_lookup(lid);
+        if (idx >= 0 && ht_used[idx] == 1u) {
+          if (!first_non_skip_checked) {
+            first_non_skip_checked = true;
+            next_sid = 0u;
+          }
+          ht_used[idx] = 2u;
+          ht_state[idx] = next_sid++;
+        }
+      } else {
+        if (!first_non_skip_checked) {
+          first_non_skip_checked = true;
+          next_sid = 1u;
+        }
+      }
+      cur = (nl < tb.len) ? (nl + 1u) : tb.len;
+    }
+  }
+
+  const uint32_t max_orig = body_start_line + raw_lines + 4u;
+  uint32_t* line_remap = work_arena.alloc<uint32_t>(max_orig + 1u);
+  if (!line_remap && &work_arena != &emit_arena) {
+    line_remap = emit_arena.alloc<uint32_t>(max_orig + 1u);
+  }
+  if (!line_remap) return false;
+
+  auto serialize_flat = [&](char* dst, uint32_t dst_cap, uint32_t* out_wp, uint32_t* out_line_final) -> bool {
+    for (uint32_t i = 0u; i <= max_orig; ++i) line_remap[i] = 0u;
+    uint32_t wp = 0u;
+    bool overflow = false;
+    auto put_ch = [&](char ch) {
+      if (wp + 1u < dst_cap) dst[wp++] = ch;
+      else overflow = true;
+    };
+    auto put_mem = [&](const char* s, uint32_t l) {
+      if (wp + l < dst_cap) {
+        hex::mem_copy(dst + wp, s, l);
+        wp += l;
+      } else {
+        overflow = true;
+      }
+    };
+    auto put_u32 = [&](uint32_t v) {
+      char dbuf[12];
+      uint32_t dn = 0u;
+      if (v == 0u) dbuf[dn++] = '0';
+      else {
+        char tmp[12];
+        uint32_t tn = 0u;
+        while (v > 0u) {
+          tmp[tn++] = static_cast<char>('0' + (v % 10u));
+          v /= 10u;
+        }
+        while (tn > 0u) dbuf[dn++] = tmp[--tn];
+      }
+      put_mem(dbuf, dn);
+    };
+
+    // Copy prelude verbatim
+    put_mem(tb.data, body_start_off);
+    for (uint32_t l = 1u; l < body_start_line && l <= max_orig; ++l) line_remap[l] = l;
+
+    uint32_t out_line = body_start_line;
+    put_mem("    unsigned int __hex_state = 0u;\n", 35u);
+    put_mem("    while (__hex_state != 0xFFFFFFFFu) {\n", 41u);
+    put_mem("        switch (__hex_state) {\n", 31u);
+    put_mem("        case 0u:\n", 17u);
+    out_line += 4u;
+
+    bool in_case = true;
+    bool case_has_stmt = false;
+    bool last_was_term = false;
+    bool first_seen = false;
+
+    uint32_t cur = body_start_off;
+    uint32_t cur_line = body_start_line;
+    while (cur < tb.len && !overflow) {
+      uint32_t nl = cur;
+      while (nl < tb.len && tb.data[nl] != '\n') ++nl;
+      const uint32_t llen = nl - cur;
+      const char* s = tb.data + cur;
+      uint64_t lid = 0ULL;
+      uint32_t cr = 0u, cl = 0u;
+      const uint8_t kind = parse_flat_line(s, llen, &lid, &cr, &cl);
+
+      if (kind == 1u) {
+        const int64_t sid = find_state(lid);
+        if (sid >= 0) {
+          if (!first_seen && sid == 0) {
+            first_seen = true;
+            if (cur_line <= max_orig && line_remap[cur_line] == 0u) {
+              line_remap[cur_line] = (out_line > 1u) ? (out_line - 1u) : 1u;
+            }
+          } else {
+            first_seen = true;
+            if (in_case && (!case_has_stmt || !last_was_term)) {
+              put_mem("            __hex_state = ", 26u);
+              put_u32(static_cast<uint32_t>(sid));
+              put_mem("u; break;\n", 10u);
+              ++out_line;
+            }
+            if (cur_line <= max_orig && line_remap[cur_line] == 0u) {
+              line_remap[cur_line] = out_line;
+            }
+            put_mem("        case ", 13u);
+            put_u32(static_cast<uint32_t>(sid));
+            put_mem("u:\n", 3u);
+            ++out_line;
+            in_case = true;
+            case_has_stmt = false;
+            last_was_term = false;
+          }
+        }
+      } else if (kind == 3u) {
+        first_seen = true;
+        if (cur_line <= max_orig && line_remap[cur_line] == 0u) line_remap[cur_line] = out_line;
+        const int64_t sid = find_state(lid);
+        if (sid >= 0) {
+          put_mem("            __hex_state = ", 26u);
+          put_u32(static_cast<uint32_t>(sid));
+          put_mem("u; break;\n", 10u);
+        } else {
+          put_mem("        ", 8u);
+          put_mem(s, llen);
+          put_ch('\n');
+        }
+        ++out_line;
+        case_has_stmt = true;
+        last_was_term = true;
+      } else if (kind == 2u) {
+        first_seen = true;
+        if (cur_line <= max_orig && line_remap[cur_line] == 0u) line_remap[cur_line] = out_line;
+        const int64_t sid = find_state(lid);
+        if (sid >= 0) {
+          put_mem("            if (", 16u);
+          put_mem(s + cr, cl);
+          put_mem(") { __hex_state = ", 18u);
+          put_u32(static_cast<uint32_t>(sid));
+          put_mem("u; break; }\n", 12u);
+        } else {
+          put_mem("        ", 8u);
+          put_mem(s, llen);
+          put_ch('\n');
+        }
+        ++out_line;
+        case_has_stmt = true;
+        last_was_term = false;
+      } else {
+        first_seen = true;
+        if (cur_line <= max_orig && line_remap[cur_line] == 0u) line_remap[cur_line] = out_line;
+        put_mem("        ", 8u);
+        put_mem(s, llen);
+        put_ch('\n');
+        ++out_line;
+        case_has_stmt = true;
+        last_was_term = (starts_with(s, llen, "    return", 10u) && llen >= 11u && s[llen - 1u] == ';') ||
+                        starts_with(s, llen, "    __builtin_trap();", 21u);
+      }
+      cur = (nl < tb.len) ? (nl + 1u) : tb.len;
+      ++cur_line;
+    }
+
+    if (in_case && (!case_has_stmt || !last_was_term)) {
+      put_mem("            __hex_state = 0xFFFFFFFFu; break;\n", 46u);
+      ++out_line;
+    }
+    put_mem("        default:\n", 17u);
+    put_mem("            __hex_state = 0xFFFFFFFFu;\n", 39u);
+    put_mem("            break;\n", 19u);
+    put_mem("        }\n", 10u);
+    put_mem("    }\n", 6u);
+    out_line += 5u;
+    if (fallback_ret) {
+      uint32_t flen = 0u;
+      while (fallback_ret[flen] != '\0') ++flen;
+      put_mem(fallback_ret, flen);
+      ++out_line;
+    }
+    if (overflow || wp + 4u >= dst_cap) return false;
+    dst[wp] = '\0';
+    *out_wp = wp;
+    *out_line_final = out_line;
+    return true;
+  };
+
+  const size_t out_mark = work_arena.used();
+  const uint32_t est_cap = tb.len + (raw_lines * 16u) + 32768u;
+  uint32_t new_cap = (est_cap < tb.cap) ? est_cap : tb.cap;
+  char* out_mem = work_arena.alloc<char>(new_cap);
+  bool copy_back = true;
+  uint32_t wp = 0u;
+  uint32_t out_line = body_start_line;
+  bool ok = (out_mem != nullptr) && serialize_flat(out_mem, new_cap, &wp, &out_line);
+  if (!ok) {
+    work_arena.restore(out_mark);
+    const uint32_t big_cap = (est_cap > tb.cap) ? est_cap : (tb.len * 2u + 32768u);
+    out_mem = emit_arena.alloc<char>(big_cap);
+    copy_back = false;
+    if (out_mem) {
+      new_cap = big_cap;
+      ok = serialize_flat(out_mem, new_cap, &wp, &out_line);
+    }
+  }
+  if (!ok) return false;
+
+  uint32_t last_valid = (out_line > 1u) ? (out_line - 1u) : 1u;
+  for (int32_t l = static_cast<int32_t>(max_orig); l >= 1; --l) {
+    if (line_remap[l] != 0u) last_valid = line_remap[l];
+    else line_remap[l] = last_valid;
+  }
+  for (uint32_t k = 0u; k < tb.lm_count; ++k) {
+    const uint32_t ol = tb.lm[k].line_no;
+    if (ol >= 1u && ol <= max_orig) tb.lm[k].line_no = line_remap[ol];
+  }
+
+  if (copy_back) {
+    hex::mem_copy(tb.data, out_mem, wp + 1u);
+  } else {
+    tb.data = out_mem;
+    tb.cap = new_cap;
+  }
+  tb.len = wp;
+  tb.line_no = out_line;
+  return true;
+}
+
 static bool structurize_c_body(
     TextBuf& tb,
     uint32_t body_start_off,
     uint32_t body_start_line,
+    const char* fallback_ret,
     hex::Arena& work_arena,
     hex::Arena& emit_arena) {
   if (body_start_off >= tb.len) return false;
+  const size_t struct_mark = work_arena.used();
   const uint32_t body_len = tb.len - body_start_off;
   // Count lines in body
   uint32_t raw_lines = 0u;
   for (uint32_t i = body_start_off; i < tb.len; ++i) {
     if (tb.data[i] == '\n') ++raw_lines;
   }
-  if (raw_lines < 2u || raw_lines > 8192u) return false;
+  if (raw_lines < 2u) return false;
+  if (raw_lines > 8192u) {
+    return emit_flat_state_machine(tb, body_start_off, body_start_line, raw_lines, fallback_ret, work_arena, emit_arena);
+  }
 
   const uint32_t cap = raw_lines + raw_lines / 2u + 128u;
   SLine* stmts = work_arena.alloc<SLine>(cap);
   uint32_t* active = work_arena.alloc<uint32_t>(cap);
   int32_t* depth_arr = work_arena.alloc<int32_t>(cap);
-  if (!stmts || !active || !depth_arr) return false;
+  if (!stmts || !active || !depth_arr) {
+    work_arena.restore(struct_mark);
+    return emit_flat_state_machine(tb, body_start_off, body_start_line, raw_lines, fallback_ret, work_arena, emit_arena);
+  }
 
   // Open-addressed hash table for O(1) label ref-count lookups (built once per iteration).
   uint32_t ht_cap = 256u;
@@ -7269,6 +7642,323 @@ static bool structurize_c_body(
     if (!changed) break;
   }
 
+  // Wave 31: Hybrid 2-Mode State-Machine Residual Goto Eliminator (100% zero-goto guarantee).
+  {
+    uint32_t acount = 0u;
+    int32_t d = 0;
+    for (uint32_t i = 0u; i < n; ++i) {
+      if (stmts[i].kind == 5u) continue;
+      const bool is_else_hdr = (stmts[i].kind == 4u && stmts[i].brace_delta == 0 && stmts[i].synth &&
+                                starts_with(stmts[i].synth, stmts[i].synth_len, "    } else {", 12u));
+      if (stmts[i].brace_delta < 0) d += stmts[i].brace_delta;
+      active[acount] = i;
+      depth_arr[acount] = is_else_hdr ? (d - 1) : d;
+      if (stmts[i].brace_delta > 0) d += stmts[i].brace_delta;
+      ++acount;
+    }
+
+    uint32_t residual_gotos = 0u;
+    bool has_synth_goto = false;
+    for (uint32_t a = 0u; a < acount; ++a) {
+      const SLine& sl = stmts[active[a]];
+      if (sl.kind == 2u || sl.kind == 3u) {
+        ++residual_gotos;
+      } else if (sl.kind == 4u && sl.synth && sl.synth_len >= 5u) {
+        for (uint32_t c = 0u; c + 5u <= sl.synth_len; ++c) {
+          if (sl.synth[c] == 'g' && sl.synth[c + 1u] == 'o' && sl.synth[c + 2u] == 't' &&
+              sl.synth[c + 3u] == 'o' && sl.synth[c + 4u] == ' ') {
+            has_synth_goto = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (residual_gotos > 0u || has_synth_goto) {
+      // Check Mode 1 eligibility (Hybrid Structured-Region State Machine).
+      bool mode1_ok = (!has_synth_goto && d == 0);
+      if (mode1_ok) {
+        int32_t loop_stack[64];
+        uint32_t loop_depth = 0u;
+        for (uint32_t a = 0u; a < acount; ++a) {
+          const SLine& sl = stmts[active[a]];
+          if (sl.kind == 4u && sl.brace_delta > 0 && sl.synth &&
+              (starts_with(sl.synth, sl.synth_len, "    do {", 8u) ||
+               starts_with(sl.synth, sl.synth_len, "    while (", 11u) ||
+               starts_with(sl.synth, sl.synth_len, "    switch (", 12u))) {
+            if (loop_depth < 64u) loop_stack[loop_depth++] = depth_arr[a];
+            else { mode1_ok = false; break; }
+          } else if (sl.kind == 4u && sl.brace_delta < 0 && loop_depth > 0u &&
+                     depth_arr[a] == loop_stack[loop_depth - 1u]) {
+            --loop_depth;
+          }
+          if (sl.kind == 1u && depth_arr[a] != 0) {
+            mode1_ok = false;
+            break;
+          }
+          if ((sl.kind == 2u || sl.kind == 3u) && loop_depth > 0u) {
+            mode1_ok = false;
+            break;
+          }
+          if (loop_depth == 0u && sl.kind == 4u && sl.synth &&
+              (ends_with(sl.synth, sl.synth_len, "break;", 6u) ||
+               ends_with(sl.synth, sl.synth_len, "continue;", 9u))) {
+            mode1_ok = false;
+            break;
+          }
+        }
+        if (loop_depth != 0u) mode1_ok = false;
+      }
+
+      if (mode1_ok) {
+        build_ref_ht(acount);
+        uint32_t st_cap = ht_cap;
+        uint64_t* st_keys = work_arena.alloc<uint64_t>(st_cap);
+        uint32_t* st_vals = work_arena.alloc<uint32_t>(st_cap);
+        uint8_t* st_used = work_arena.alloc<uint8_t>(st_cap);
+        if (!st_keys || !st_vals || !st_used) {
+          mode1_ok = false;
+        } else {
+          __builtin_memset(st_used, 0, st_cap);
+          const uint32_t st_mask = st_cap - 1u;
+          auto st_find = [&](uint64_t key) -> int64_t {
+            uint32_t idx = static_cast<uint32_t>((key * 0x9E3779B97F4A7C15ULL) >> 32u) & st_mask;
+            for (uint32_t probe = 0u; probe < st_cap; ++probe) {
+              if (st_used[idx] == 0u) return -1;
+              if (st_keys[idx] == key) return static_cast<int64_t>(st_vals[idx]);
+              idx = (idx + 1u) & st_mask;
+            }
+            return -1;
+          };
+          auto st_insert = [&](uint64_t key, uint32_t val) -> bool {
+            uint32_t idx = static_cast<uint32_t>((key * 0x9E3779B97F4A7C15ULL) >> 32u) & st_mask;
+            for (uint32_t probe = 0u; probe < st_cap; ++probe) {
+              if (st_used[idx] == 0u) {
+                st_used[idx] = 1u;
+                st_keys[idx] = key;
+                st_vals[idx] = val;
+                return true;
+              }
+              if (st_keys[idx] == key) return true;
+              idx = (idx + 1u) & st_mask;
+            }
+            return false;
+          };
+
+          uint32_t first_non_skip = acount;
+          for (uint32_t a = 0u; a < acount; ++a) {
+            const SLine& sl = stmts[active[a]];
+            if (sl.kind == 1u && count_refs(sl.label_id, acount) == 0u) continue;
+            first_non_skip = a;
+            break;
+          }
+          uint32_t next_sid = (first_non_skip < acount && stmts[active[first_non_skip]].kind == 1u) ? 0u : 1u;
+          for (uint32_t a = 0u; a < acount && mode1_ok; ++a) {
+            const SLine& sl = stmts[active[a]];
+            if (sl.kind == 1u && count_refs(sl.label_id, acount) > 0u) {
+              if (st_find(sl.label_id) < 0) {
+                if (!st_insert(sl.label_id, next_sid++)) mode1_ok = false;
+              }
+            }
+          }
+          // Verify every active goto target resolves to a valid state_id.
+          for (uint32_t a = 0u; a < acount && mode1_ok; ++a) {
+            const SLine& sl = stmts[active[a]];
+            if ((sl.kind == 2u || sl.kind == 3u) && st_find(sl.label_id) < 0) {
+              mode1_ok = false;
+            }
+          }
+
+          if (mode1_ok) {
+            const uint32_t max_orig = body_start_line + raw_lines + 4u;
+            uint32_t* line_remap = work_arena.alloc<uint32_t>(max_orig + 1u);
+            if (!line_remap && &work_arena != &emit_arena) {
+              line_remap = emit_arena.alloc<uint32_t>(max_orig + 1u);
+            }
+            if (line_remap) {
+              auto serialize_mode1 = [&](char* dst, uint32_t dst_cap, uint32_t* out_wp, uint32_t* out_line_final) -> bool {
+                for (uint32_t i = 0u; i <= max_orig; ++i) line_remap[i] = 0u;
+                uint32_t wp = 0u;
+                bool overflow = false;
+                auto put_ch = [&](char ch) {
+                  if (wp + 1u < dst_cap) dst[wp++] = ch;
+                  else overflow = true;
+                };
+                auto put_mem = [&](const char* s, uint32_t l) {
+                  if (wp + l < dst_cap) {
+                    hex::mem_copy(dst + wp, s, l);
+                    wp += l;
+                  } else {
+                    overflow = true;
+                  }
+                };
+                auto put_u32 = [&](uint32_t v) {
+                  char dbuf[12];
+                  uint32_t dn = 0u;
+                  if (v == 0u) dbuf[dn++] = '0';
+                  else {
+                    char tmp[12];
+                    uint32_t tn = 0u;
+                    while (v > 0u) {
+                      tmp[tn++] = static_cast<char>('0' + (v % 10u));
+                      v /= 10u;
+                    }
+                    while (tn > 0u) dbuf[dn++] = tmp[--tn];
+                  }
+                  put_mem(dbuf, dn);
+                };
+
+                put_mem(tb.data, body_start_off);
+                for (uint32_t l = 1u; l < body_start_line && l <= max_orig; ++l) line_remap[l] = l;
+
+                uint32_t out_line = body_start_line;
+                put_mem("    unsigned int __hex_state = 0u;\n", 35u);
+                put_mem("    while (__hex_state != 0xFFFFFFFFu) {\n", 41u);
+                put_mem("        switch (__hex_state) {\n", 31u);
+                put_mem("        case 0u:\n", 17u);
+                out_line += 4u;
+
+                bool in_case = true;
+                bool case_has_stmt = false;
+                bool last_d0_was_term = false;
+                bool first_seen = false;
+
+                for (uint32_t a = 0u; a < acount && !overflow; ++a) {
+                  const SLine& sl = stmts[active[a]];
+                  if (sl.kind == 1u) {
+                    const int64_t sid = st_find(sl.label_id);
+                    if (sid < 0) continue;  // unreferenced label
+                    if (!first_seen && sid == 0) {
+                      first_seen = true;
+                      if (sl.orig_line <= max_orig && line_remap[sl.orig_line] == 0u) {
+                        line_remap[sl.orig_line] = (out_line > 1u) ? (out_line - 1u) : 1u;
+                      }
+                      continue;
+                    }
+                    first_seen = true;
+                    if (in_case && (!case_has_stmt || !last_d0_was_term)) {
+                      put_mem("            __hex_state = ", 26u);
+                      put_u32(static_cast<uint32_t>(sid));
+                      put_mem("u; break;\n", 10u);
+                      ++out_line;
+                    }
+                    if (sl.orig_line <= max_orig && line_remap[sl.orig_line] == 0u) {
+                      line_remap[sl.orig_line] = out_line;
+                    }
+                    put_mem("        case ", 13u);
+                    put_u32(static_cast<uint32_t>(sid));
+                    put_mem("u:\n", 3u);
+                    ++out_line;
+                    in_case = true;
+                    case_has_stmt = false;
+                    last_d0_was_term = false;
+                    continue;
+                  }
+
+                  first_seen = true;
+                  if (sl.orig_line <= max_orig && line_remap[sl.orig_line] == 0u) {
+                    line_remap[sl.orig_line] = out_line;
+                  }
+                  for (uint16_t sp = 0u; sp < sl.indent + 2u; ++sp) put_mem("    ", 4u);
+                  if (sl.kind == 3u) {
+                    const uint32_t sid = static_cast<uint32_t>(st_find(sl.label_id));
+                    put_mem("    __hex_state = ", 18u);
+                    put_u32(sid);
+                    put_mem("u; break;", 9u);
+                  } else if (sl.kind == 2u) {
+                    const uint32_t sid = static_cast<uint32_t>(st_find(sl.label_id));
+                    const char* cptr = (sl.cond_off == 0xFFFFFFFFu && sl.synth) ? sl.synth : (tb.data + sl.cond_off);
+                    put_mem("    if (", 8u);
+                    put_mem(cptr, sl.cond_len);
+                    put_mem(") { __hex_state = ", 18u);
+                    put_u32(sid);
+                    put_mem("u; break; }", 11u);
+                  } else if (sl.kind == 4u) {
+                    put_mem(sl.synth, sl.synth_len);
+                  } else {
+                    put_mem(tb.data + sl.off, sl.len);
+                  }
+                  put_ch('\n');
+                  ++out_line;
+                  case_has_stmt = true;
+                  if (depth_arr[a] == 0) {
+                    last_d0_was_term = (sl.kind == 3u) || is_return_stmt(sl) || is_trap_stmt(sl);
+                  }
+                }
+
+                if (in_case && (!case_has_stmt || !last_d0_was_term)) {
+                  put_mem("            __hex_state = 0xFFFFFFFFu; break;\n", 46u);
+                  ++out_line;
+                }
+                put_mem("        default:\n", 17u);
+                put_mem("            __hex_state = 0xFFFFFFFFu;\n", 39u);
+                put_mem("            break;\n", 19u);
+                put_mem("        }\n", 10u);
+                put_mem("    }\n", 6u);
+                out_line += 5u;
+                if (fallback_ret) {
+                  uint32_t flen = 0u;
+                  while (fallback_ret[flen] != '\0') ++flen;
+                  put_mem(fallback_ret, flen);
+                  ++out_line;
+                }
+                if (overflow || wp + 4u >= dst_cap) return false;
+                dst[wp] = '\0';
+                *out_wp = wp;
+                *out_line_final = out_line;
+                return true;
+              };
+
+              const size_t out_mark = work_arena.used();
+              const uint32_t est_cap = tb.len + (acount * 16u) + 32768u;
+              uint32_t new_cap = (est_cap < tb.cap) ? est_cap : tb.cap;
+              char* out_mem = work_arena.alloc<char>(new_cap);
+              bool copy_back = true;
+              uint32_t wp = 0u;
+              uint32_t out_line = body_start_line;
+              bool ok = (out_mem != nullptr) && serialize_mode1(out_mem, new_cap, &wp, &out_line);
+              if (!ok) {
+                work_arena.restore(out_mark);
+                const uint32_t big_cap = (est_cap > tb.cap) ? est_cap : (tb.len * 2u + 32768u);
+                out_mem = emit_arena.alloc<char>(big_cap);
+                copy_back = false;
+                if (out_mem) {
+                  new_cap = big_cap;
+                  ok = serialize_mode1(out_mem, new_cap, &wp, &out_line);
+                }
+              }
+              if (ok) {
+                uint32_t last_valid = (out_line > 1u) ? (out_line - 1u) : 1u;
+                for (int32_t l = static_cast<int32_t>(max_orig); l >= 1; --l) {
+                  if (line_remap[l] != 0u) last_valid = line_remap[l];
+                  else line_remap[l] = last_valid;
+                }
+                for (uint32_t k = 0u; k < tb.lm_count; ++k) {
+                  const uint32_t ol = tb.lm[k].line_no;
+                  if (ol >= 1u && ol <= max_orig) tb.lm[k].line_no = line_remap[ol];
+                }
+                if (copy_back) {
+                  hex::mem_copy(tb.data, out_mem, wp + 1u);
+                } else {
+                  tb.data = out_mem;
+                  tb.cap = new_cap;
+                }
+                tb.len = wp;
+                tb.line_no = out_line;
+                (void)body_len;
+                return true;
+              }
+            }
+          }
+        }
+      }
+
+      // Mode 2 fallback: Flat-CFG State Machine from pristine tb.data[body_start_off..tb.len].
+      work_arena.restore(struct_mark);
+      return emit_flat_state_machine(tb, body_start_off, body_start_line, raw_lines, fallback_ret, work_arena, emit_arena);
+    }
+  }
+
   if (!any_change) return false;
 
   // V4-0: Serialize into work_arena and copy back into tb.data so giant functions consume 0 extra emit_arena.
@@ -7863,7 +8553,17 @@ HexStatus try_emit_arm64_general(
   if (&work_arena != &emit_arena) {
     work_arena.restore(work_entry_mark);
   }
-  structurize_c_body(tb, body_start_off, body_start_line, work_arena, emit_arena);
+  const char* fallback_ret = nullptr;
+  if (ctx.returns_float) {
+    fallback_ret = ((ctx.fp_used & 1u) != 0u) ? "    return (float)d0;\n" : "    return 0.0f;\n";
+  } else if (ctx.returns_double) {
+    fallback_ret = ((ctx.fp_used & 1u) != 0u) ? "    return d0;\n" : "    return 0.0;\n";
+  } else if (ctx.returns_int32) {
+    fallback_ret = ((ctx.gpr_used & 1u) != 0u) ? "    return (int)(int32_t)x0;\n" : "    return 0;\n";
+  } else if (ctx.returns_value) {
+    fallback_ret = ((ctx.gpr_used & 1u) != 0u) ? "    return x0;\n" : "    return 0;\n";
+  }
+  structurize_c_body(tb, body_start_off, body_start_line, fallback_ret, work_arena, emit_arena);
   tb.put_str("}\n");
   if (tb.overflow || tb.len == 0u) return HEX_ERR_OOM;
 

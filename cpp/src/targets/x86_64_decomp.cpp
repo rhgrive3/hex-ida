@@ -878,54 +878,33 @@ static uint32_t sanitize_func_name(
   return out_len;
 }
 
-// Validate that strict C output has no undeclared `L_bbN` labels and no out-of-scope `vN` uses.
+// Validate that strict C output has zero `goto` statements and no out-of-scope `vN` uses.
 static bool validate_strict_c_output(const char* text, uint32_t len) {
   if (!text || len == 0u) return false;
-
-  // 1. Check every `goto L_bb<N>;` has a matching `L_bb<N>:` label definition.
-  for (uint32_t i = 0u; i + 10u < len; ++i) {
-    if (text[i] == 'g' && text[i + 1u] == 'o' && text[i + 2u] == 't' &&
-        text[i + 3u] == 'o' && text[i + 4u] == ' ' && text[i + 5u] == 'L' &&
-        text[i + 6u] == '_' && text[i + 7u] == 'b' && text[i + 8u] == 'b' &&
-        is_gen_digit(text[i + 9u])) {
-      uint32_t j = i + 9u;
-      while (j < len && is_gen_digit(text[j])) ++j;
-      if (j < len && text[j] == ';') {
-        const uint32_t lbl_start = i + 5u;
-        const uint32_t lbl_len = j - lbl_start;
-        bool found_def = false;
-        for (uint32_t k = 0u; k + lbl_len < len; ++k) {
-          if (k > 0u && text[k - 1u] != '\n' && text[k - 1u] != ' ') continue;
-          bool match = true;
-          for (uint32_t m = 0u; m < lbl_len; ++m) {
-            if (text[k + m] != text[lbl_start + m]) {
-              match = false;
-              break;
-            }
-          }
-          if (match && text[k + lbl_len] == ':') {
-            found_def = true;
-            break;
-          }
-        }
-        if (!found_def) return false;
-      }
-    }
-  }
-
-  // 2. Check every `v<N>` inside the function body is declared in an enclosing brace scope.
-  uint32_t body_pos = 0u;
-  while (body_pos < len && text[body_pos] != '{') ++body_pos;
-  if (body_pos >= len) return false;
-
-  constexpr uint32_t kTrackVars = 512u;
-  uint8_t var_depth[kTrackVars];
-  hex::mem_set(var_depth, 0, sizeof(var_depth));
-  uint32_t depth = 1u;
 
   auto is_ident_char = [](char c) -> bool {
     return is_gen_alpha(c) || is_gen_digit(c) || c == '_';
   };
+
+  uint32_t body_pos = 0u;
+  while (body_pos < len && text[body_pos] != '{') ++body_pos;
+  if (body_pos >= len) return false;
+
+  // 1. Reject any `goto ` statement inside the function body so irreducible or
+  //    partially structured strict CFGs fall through to the 0-goto general emitter.
+  for (uint32_t i = body_pos + 1u; i + 5u <= len; ++i) {
+    if (text[i] == 'g' && text[i + 1u] == 'o' && text[i + 2u] == 't' &&
+        text[i + 3u] == 'o' && (text[i + 4u] == ' ' || text[i + 4u] == '\t') &&
+        !is_ident_char(text[i - 1u])) {
+      return false;
+    }
+  }
+
+  // 2. Check every `v<N>` inside the function body is declared in an enclosing brace scope.
+  constexpr uint32_t kTrackVars = 512u;
+  uint8_t var_depth[kTrackVars];
+  hex::mem_set(var_depth, 0, sizeof(var_depth));
+  uint32_t depth = 1u;
   auto is_type_tok = [](const char* s, uint32_t n) -> bool {
     static const char* const kTypes[] = {
         "uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64"};
@@ -2175,10 +2154,11 @@ HexStatus try_emit_x86_64_general(
   }
 
   // Goto-reduction & structuring pass:
-  // 1) Fallthrough goto deletion: `goto L_next;` immediately before `L_next:`
+  // 1) Fallthrough jump deletion: `jmp/jcc L_next` immediately before `L_next:`
   for (uint32_t i = 0u; i < insn_count; ++i) {
     const GeneralInsn& gi = insns[i];
-    if (!gi.is_raw && gi.d.kind == HEX_X86_KIND_JMP &&
+    if (!gi.is_raw &&
+        (gi.d.kind == HEX_X86_KIND_JMP || gi.d.kind == HEX_X86_KIND_JCC) &&
         target_idx[i] == static_cast<int32_t>(i + 1u)) {
       skip_insn[i] = 1u;
       if (label_refs[i + 1u] > 0u) --label_refs[i + 1u];
@@ -2324,6 +2304,76 @@ HexStatus try_emit_x86_64_general(
     }
   }
 
+  // Check whether any residual `goto` would be emitted after structuring passes 1..5.
+  bool use_state_machine = false;
+  for (uint32_t i = 0u; i < insn_count; ++i) {
+    if (skip_insn[i]) continue;
+    const GeneralInsn& gi = insns[i];
+    if (gi.is_raw || gi.is_leave || gi.is_xchg) continue;
+    const HexX86Decoded& d = gi.d;
+    if (d.kind == HEX_X86_KIND_JMP) {
+      if ((d.flags & HEX_X86_FLAG_HAS_TARGET) != 0u && d.opcode != 0xffu &&
+          loop_ctrl[i] == 0u && target_idx[i] >= 0) {
+        use_state_machine = true;
+        break;
+      }
+    } else if (d.kind == HEX_X86_KIND_JCC) {
+      if (!if_open[i] && !do_close[i] && loop_ctrl[i] == 0u && target_idx[i] >= 0) {
+        use_state_machine = true;
+        break;
+      }
+    }
+  }
+
+  uint32_t* idx_to_state = nullptr;
+  if (use_state_machine) {
+    // Reset structured-plan arrays and rebuild raw internal jump targets
+    // for semantically exact C11 state-machine dispatch (0 gotos guaranteed).
+    hex::mem_set(if_open, 0, sizeof(uint8_t) * insn_count);
+    hex::mem_set(else_mid, 0, sizeof(uint8_t) * insn_count);
+    hex::mem_set(if_close, 0, sizeof(uint8_t) * insn_count);
+    hex::mem_set(do_open, 0, sizeof(uint8_t) * insn_count);
+    hex::mem_set(do_close, 0, sizeof(uint8_t) * insn_count);
+    hex::mem_set(loop_ctrl, 0, sizeof(uint8_t) * insn_count);
+    hex::mem_set(skip_insn, 0, sizeof(uint8_t) * insn_count);
+    hex::mem_set(jcc_inverted, 0, sizeof(uint8_t) * insn_count);
+    hex::mem_set(label_refs, 0, sizeof(uint16_t) * insn_count);
+
+    for (uint32_t i = 0u; i < insn_count; ++i) {
+      target_idx[i] = -1;
+      const GeneralInsn& gi = insns[i];
+      if (gi.is_raw || gi.is_leave || gi.is_xchg) continue;
+      const HexX86Decoded& d = gi.d;
+      if ((d.kind == HEX_X86_KIND_JMP || d.kind == HEX_X86_KIND_JCC) &&
+          (d.flags & HEX_X86_FLAG_HAS_TARGET) != 0u && d.opcode != 0xffu) {
+        const int32_t tidx = find_gen_insn_by_pc(insns, insn_count, d.target);
+        if (tidx >= 0) {
+          if (tidx == static_cast<int32_t>(i + 1u)) {
+            skip_insn[i] = 1u;
+          } else {
+            target_idx[i] = tidx;
+            if (label_refs[tidx] < 0xffffu) ++label_refs[tidx];
+          }
+        }
+      }
+    }
+
+    idx_to_state = work_arena.alloc<uint32_t>(insn_count > 0u ? insn_count : 1u);
+    if (!idx_to_state) return HEX_ERR_OOM;
+    for (uint32_t i = 0u; i < insn_count; ++i) {
+      idx_to_state[i] = 0xFFFFFFFFu;
+    }
+    if (insn_count > 0u) {
+      idx_to_state[0] = 0u;
+    }
+    uint32_t next_state = 1u;
+    for (uint32_t i = 1u; i < insn_count; ++i) {
+      if (label_refs[i] > 0u) {
+        idx_to_state[i] = next_state++;
+      }
+    }
+  }
+
   // Compute parameter count from param_used bitmask.
   uint32_t num_params = 0u;
   const uint32_t max_abi_params = (abi_id == HEX_X86_ABI_MICROSOFT_X64) ? 4u : 6u;
@@ -2391,13 +2441,21 @@ HexStatus try_emit_x86_64_general(
     }
   }
 
+  const bool is_main_fn = str_eq(func_name, "main");
+
   // Function signature.
   tb.record_line(base_addr);
-  tb.put_str("uint64 ");
+  tb.put_str(is_main_fn ? "int " : "uint64 ");
   tb.put_bytes(func_name, func_name_out_len);
   tb.put_char('(');
   if (num_params == 0u) {
     tb.put_str("void");
+  } else if (is_main_fn) {
+    if (num_params <= 2u) {
+      tb.put_str("int a1, char **a2");
+    } else {
+      tb.put_str("int a1, char **a2, char **a3");
+    }
   } else {
     for (uint32_t p = 0u; p < num_params; ++p) {
       if (p > 0u) tb.put_str(", ");
@@ -2436,13 +2494,28 @@ HexStatus try_emit_x86_64_general(
     } else {
       const int32_t pidx = abi_param_index(abi_id, static_cast<uint8_t>(r));
       if (pidx >= 0 && static_cast<uint32_t>(pidx) < num_params) {
-        tb.put_str(" = a");
-        tb.put_u64_dec(static_cast<uint32_t>(pidx) + 1u);
-        tb.put_str(";\n");
+        if (is_main_fn) {
+          if (pidx == 0) {
+            tb.put_str(" = (uint64)(int64)a1;\n");
+          } else if (pidx == 1) {
+            tb.put_str(" = (uint64)(uintptr_t)a2;\n");
+          } else if (pidx == 2) {
+            tb.put_str(" = (uint64)(uintptr_t)a3;\n");
+          } else {
+            tb.put_str(" = 0;\n");
+          }
+        } else {
+          tb.put_str(" = a");
+          tb.put_u64_dec(static_cast<uint32_t>(pidx) + 1u);
+          tb.put_str(";\n");
+        }
       } else {
         tb.put_str(" = 0;\n");
       }
     }
+  }
+  if (is_main_fn && num_params == 1u) {
+    tb.put_str("    (void)a2;\n");
   }
   for (uint32_t x = 0u; x < 16u; ++x) {
     if ((xmm_used & (1u << x)) == 0u) continue;
@@ -2456,8 +2529,17 @@ HexStatus try_emit_x86_64_general(
   uint32_t open_ifs = 0u;
   uint32_t open_dos = 0u;
   bool last_was_return = false;
+  bool prev_terminated = false;
   bool truncated_body = false;
   uint32_t truncated_at = insn_count;
+
+  if (use_state_machine) {
+    tb.put_str("    unsigned int __hex_state = 0u;\n");
+    tb.put_str("    while (__hex_state != 0xFFFFFFFFu) {\n");
+    tb.put_str("        switch (__hex_state) {\n");
+    tb.put_str("        case 0u:\n");
+    indent = 3u;
+  }
 
   for (uint32_t i = 0u; i < insn_count; ++i) {
     if (tb.len + 2048u >= tb.cap) {
@@ -2466,37 +2548,53 @@ HexStatus try_emit_x86_64_general(
       break;
     }
 
-    if (else_mid[i] && open_ifs > 0u) {
-      tb.put_indent(indent - 1u);
-      tb.put_str("} else {\n");
-      last_was_return = false;
-    }
+    if (use_state_machine) {
+      if (i > 0u && idx_to_state[i] != 0xFFFFFFFFu) {
+        if (!prev_terminated) {
+          tb.put_indent(indent);
+          tb.put_str("__hex_state = ");
+          tb.put_u64_dec(idx_to_state[i]);
+          tb.put_str("u; break;\n");
+        }
+        tb.put_indent(2u);
+        tb.put_str("case ");
+        tb.put_u64_dec(idx_to_state[i]);
+        tb.put_str("u:\n");
+        prev_terminated = false;
+      }
+    } else {
+      if (else_mid[i] && open_ifs > 0u) {
+        tb.put_indent(indent - 1u);
+        tb.put_str("} else {\n");
+        last_was_return = false;
+      }
 
-    if (if_close[i] && open_ifs > 0u) {
-      --open_ifs;
-      --indent;
-      tb.put_indent(indent);
-      tb.put_str("}\n");
-      last_was_return = false;
-    }
+      if (if_close[i] && open_ifs > 0u) {
+        --open_ifs;
+        --indent;
+        tb.put_indent(indent);
+        tb.put_str("}\n");
+        last_was_return = false;
+      }
 
-    if (label_refs[i] > 0u) {
-      tb.put_str("loc_");
-      tb.put_u64_hex(insns[i].d.pc, true);
-      tb.put_str(":\n");
-      last_was_return = false;
-    }
+      if (label_refs[i] > 0u) {
+        tb.put_str("loc_");
+        tb.put_u64_hex(insns[i].d.pc, true);
+        tb.put_str(":\n");
+        last_was_return = false;
+      }
 
-    if (do_open[i]) {
-      tb.put_indent(indent);
-      tb.put_str("do {\n");
-      ++open_dos;
-      ++indent;
-      last_was_return = false;
+      if (do_open[i]) {
+        tb.put_indent(indent);
+        tb.put_str("do {\n");
+        ++open_dos;
+        ++indent;
+        last_was_return = false;
+      }
     }
 
     if (skip_insn[i]) {
-      if (label_refs[i] > 0u) {
+      if (!use_state_machine && label_refs[i] > 0u) {
         tb.put_indent(indent);
         tb.put_str("(void)0;\n");
         last_was_return = false;
@@ -2514,6 +2612,7 @@ HexStatus try_emit_x86_64_general(
       tb.put_u8_hex2(gi.raw_byte);
       tb.put_str(" */\n");
       last_was_return = false;
+      prev_terminated = false;
       continue;
     }
 
@@ -2522,6 +2621,7 @@ HexStatus try_emit_x86_64_general(
       tb.put_indent(indent);
       tb.put_str("rsp = rbp; rbp = *(uint64*)(uintptr_t)rsp; rsp += 8;\n");
       last_was_return = false;
+      prev_terminated = false;
       continue;
     }
 
@@ -2538,11 +2638,12 @@ HexStatus try_emit_x86_64_general(
       tb.put_gpr(d.rm);
       tb.put_str(" = __t; }\n");
       last_was_return = false;
+      prev_terminated = false;
       continue;
     }
 
     if (d.kind == HEX_X86_KIND_NOP) {
-      if (label_refs[i] > 0u) {
+      if (!use_state_machine && label_refs[i] > 0u) {
         tb.put_indent(indent);
         tb.put_str("(void)0;\n");
         last_was_return = false;
@@ -2556,12 +2657,14 @@ HexStatus try_emit_x86_64_general(
                           : 64u;
 
     tb.record_line(d.pc);
+    prev_terminated = false;
 
     // RET
     if (d.kind == HEX_X86_KIND_RET) {
       tb.put_indent(indent);
-      tb.put_str("return rax;\n");
-      last_was_return = (open_ifs == 0u && open_dos == 0u);
+      tb.put_str(is_main_fn ? "return (int)rax;\n" : "return rax;\n");
+      last_was_return = (!use_state_machine && open_ifs == 0u && open_dos == 0u);
+      prev_terminated = true;
       continue;
     }
 
@@ -2636,21 +2739,28 @@ HexStatus try_emit_x86_64_general(
     if (d.kind == HEX_X86_KIND_JMP) {
       tb.put_indent(indent);
       if ((d.flags & HEX_X86_FLAG_HAS_TARGET) != 0u && d.opcode != 0xffu) {
-        if (loop_ctrl[i] == 1u) {
+        if (!use_state_machine && loop_ctrl[i] == 1u) {
           tb.put_str("break;\n");
           last_was_return = false;
-        } else if (loop_ctrl[i] == 2u) {
+        } else if (!use_state_machine && loop_ctrl[i] == 2u) {
           tb.put_str("continue;\n");
           last_was_return = false;
         } else if (target_idx[i] >= 0) {
-          tb.put_str("goto loc_");
-          tb.put_u64_hex(insns[target_idx[i]].d.pc, true);
-          tb.put_str(";\n");
+          if (use_state_machine) {
+            tb.put_str("__hex_state = ");
+            tb.put_u64_dec(idx_to_state[target_idx[i]]);
+            tb.put_str("u; break;\n");
+            prev_terminated = true;
+          } else {
+            tb.put_str("goto loc_");
+            tb.put_u64_hex(insns[target_idx[i]].d.pc, true);
+            tb.put_str(";\n");
+          }
           last_was_return = false;
         } else {
           const bool is_self_call = (d.target == base_addr && is_self_sub);
           if (is_self_call || contains_u64(callees, callee_count, d.target)) {
-            tb.put_str("return sub_");
+            tb.put_str(is_main_fn ? "return (int)sub_" : "return sub_");
             tb.put_u64_hex(d.target, true);
             tb.put_char('(');
             if (is_self_call) {
@@ -2660,16 +2770,19 @@ HexStatus try_emit_x86_64_general(
             }
             tb.put_str(");\n");
           } else {
-            tb.put_str("return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x");
+            tb.put_str(is_main_fn ? "return (int)((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x"
+                                  : "return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x");
             tb.put_u64_hex(d.target, true);
             tb.put_str("ULL)(");
             emit_abi_call_args(tb, abi_id, false, gpr_used);
             tb.put_str(");\n");
           }
-          last_was_return = (open_ifs == 0u && open_dos == 0u);
+          last_was_return = (!use_state_machine && open_ifs == 0u && open_dos == 0u);
+          prev_terminated = true;
         }
       } else {
-        tb.put_str("return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)(");
+        tb.put_str(is_main_fn ? "return (int)((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)("
+                              : "return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)(");
         if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
           emit_rm_read(tb, d, 64u, globals, global_count);
         } else {
@@ -2678,7 +2791,8 @@ HexStatus try_emit_x86_64_general(
         tb.put_str("))(");
         emit_abi_call_args(tb, abi_id, false, gpr_used);
         tb.put_str(");\n");
-        last_was_return = (open_ifs == 0u && open_dos == 0u);
+        last_was_return = (!use_state_machine && open_ifs == 0u && open_dos == 0u);
+        prev_terminated = true;
       }
       continue;
     }
@@ -2688,26 +2802,26 @@ HexStatus try_emit_x86_64_general(
       const uint8_t raw_cc = (d.opcode == 0x0fu) ? static_cast<uint8_t>(d.opcode2 & 0x0fu)
                                                  : static_cast<uint8_t>(d.opcode & 0x0fu);
       const uint8_t cc = jcc_inverted[i] ? static_cast<uint8_t>(raw_cc ^ 1u) : raw_cc;
-      if (if_open[i]) {
+      if (!use_state_machine && if_open[i]) {
         tb.put_indent(indent);
         tb.put_str("if (");
         emit_cc_expr(tb, static_cast<uint8_t>(cc ^ 1u));
         tb.put_str(") {\n");
         ++open_ifs;
         ++indent;
-      } else if (do_close[i] && open_dos > 0u) {
+      } else if (!use_state_machine && do_close[i] && open_dos > 0u) {
         --open_dos;
         --indent;
         tb.put_indent(indent);
         tb.put_str("} while (");
         emit_cc_expr(tb, cc);
         tb.put_str(");\n");
-      } else if (loop_ctrl[i] == 1u) {
+      } else if (!use_state_machine && loop_ctrl[i] == 1u) {
         tb.put_indent(indent);
         tb.put_str("if (");
         emit_cc_expr(tb, cc);
         tb.put_str(") break;\n");
-      } else if (loop_ctrl[i] == 2u) {
+      } else if (!use_state_machine && loop_ctrl[i] == 2u) {
         tb.put_indent(indent);
         tb.put_str("if (");
         emit_cc_expr(tb, cc);
@@ -2716,16 +2830,22 @@ HexStatus try_emit_x86_64_general(
         tb.put_indent(indent);
         tb.put_str("if (");
         emit_cc_expr(tb, cc);
-        tb.put_str(") goto loc_");
-        tb.put_u64_hex(insns[target_idx[i]].d.pc, true);
-        tb.put_str(";\n");
+        if (use_state_machine) {
+          tb.put_str(") { __hex_state = ");
+          tb.put_u64_dec(idx_to_state[target_idx[i]]);
+          tb.put_str("u; break; }\n");
+        } else {
+          tb.put_str(") goto loc_");
+          tb.put_u64_hex(insns[target_idx[i]].d.pc, true);
+          tb.put_str(";\n");
+        }
       } else {
         const bool is_self_call = (d.target == base_addr && is_self_sub);
         tb.put_indent(indent);
         tb.put_str("if (");
         emit_cc_expr(tb, cc);
         if (is_self_call || contains_u64(callees, callee_count, d.target)) {
-          tb.put_str(") return sub_");
+          tb.put_str(is_main_fn ? ") return (int)sub_" : ") return sub_");
           tb.put_u64_hex(d.target, true);
           tb.put_char('(');
           if (is_self_call) {
@@ -2735,7 +2855,8 @@ HexStatus try_emit_x86_64_general(
           }
           tb.put_str(");\n");
         } else {
-          tb.put_str(") return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x");
+          tb.put_str(is_main_fn ? ") return (int)((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x"
+                                : ") return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x");
           tb.put_u64_hex(d.target, true);
           tb.put_str("ULL)(");
           emit_abi_call_args(tb, abi_id, false, gpr_used);
@@ -3296,36 +3417,55 @@ HexStatus try_emit_x86_64_general(
     last_was_return = false;
   }
 
-  // Close any still-open structured blocks cleanly.
-  while (open_ifs > 0u) {
-    --open_ifs;
-    --indent;
-    tb.put_indent(indent);
-    tb.put_str("}\n");
-    last_was_return = false;
-  }
-  while (open_dos > 0u) {
-    --open_dos;
-    --indent;
-    tb.put_indent(indent);
-    tb.put_str("} while (0);\n");
-    last_was_return = false;
-  }
-  if (truncated_body) {
-    tb.put_str("    /* x86_64 output truncated at buffer limit */\n");
-    for (uint32_t k = truncated_at; k < insn_count; ++k) {
-      if (label_refs[k] > 0u) {
-        tb.put_str("loc_");
-        tb.put_u64_hex(insns[k].d.pc, true);
-        tb.put_str(": (void)0;\n");
-      }
+  if (use_state_machine) {
+    if (truncated_body) {
+      tb.put_indent(indent);
+      tb.put_str("/* x86_64 output truncated at buffer limit */\n");
+      prev_terminated = false;
     }
-    last_was_return = false;
+    if (!prev_terminated) {
+      tb.put_indent(indent);
+      tb.put_str("__hex_state = 0xFFFFFFFFu; break;\n");
+    }
+    tb.put_str("        default:\n");
+    tb.put_str("            __hex_state = 0xFFFFFFFFu;\n");
+    tb.put_str("            break;\n");
+    tb.put_str("        }\n");
+    tb.put_str("    }\n");
+    tb.put_str(is_main_fn ? "    return (int)rax;\n" : "    return rax;\n");
+    tb.put_str("}\n");
+  } else {
+    // Close any still-open structured blocks cleanly.
+    while (open_ifs > 0u) {
+      --open_ifs;
+      --indent;
+      tb.put_indent(indent);
+      tb.put_str("}\n");
+      last_was_return = false;
+    }
+    while (open_dos > 0u) {
+      --open_dos;
+      --indent;
+      tb.put_indent(indent);
+      tb.put_str("} while (0);\n");
+      last_was_return = false;
+    }
+    if (truncated_body) {
+      tb.put_str("    /* x86_64 output truncated at buffer limit */\n");
+      for (uint32_t k = truncated_at; k < insn_count; ++k) {
+        if (label_refs[k] > 0u) {
+          tb.put_str("loc_");
+          tb.put_u64_hex(insns[k].d.pc, true);
+          tb.put_str(": (void)0;\n");
+        }
+      }
+      last_was_return = false;
+    }
+    if (!last_was_return) {
+      tb.put_str(is_main_fn ? "    return (int)rax;\n" : "    return rax;\n");
+    }
+    tb.put_str("}\n");
   }
-  if (!last_was_return) {
-    tb.put_str("    return rax;\n");
-  }
-  tb.put_str("}\n");
 
   if (tb.overflow || tb.len == 0u) {
     clear_x86_last_output();

@@ -55,6 +55,22 @@ bool verify_c11_syntax(const std::string& code, const char* label) {
   return true;
 }
 
+bool verify_c11_syntax_werror(const std::string& code, const char* label) {
+  std::FILE* pipe = popen("clang -x c -std=c11 -Wall -Wextra -Werror -fsyntax-only -", "w");
+  if (!pipe) {
+    std::fprintf(stderr, "FAIL: popen(clang -Wall -Wextra -Werror) failed for %s\n", label);
+    return false;
+  }
+  const size_t written = std::fwrite(code.data(), 1, code.size(), pipe);
+  const int rc = pclose(pipe);
+  if (written != code.size() || rc != 0) {
+    std::fprintf(stderr, "FAIL: C11 -Wall -Wextra -Werror check failed for %s (rc=%d)\n--- CODE ---\n%s\n------------\n",
+                 label, rc, code.c_str());
+    return false;
+  }
+  return true;
+}
+
 void test_sysv_amd64_straight_line() {
   // 1. endbr64; lea eax, [rdi + rsi]; ret
   {
@@ -258,7 +274,7 @@ void test_negative_and_general_fallback() {
       {"trunc_lea", trunc_lea, sizeof(trunc_lea), 0x1000ULL, nullptr, "x86_64 raw 0x48"},
       {"lock_add", lock_add, sizeof(lock_add), 0x1000ULL, nullptr, "rax ="},
       {"oob_jmp", oob_jmp, sizeof(oob_jmp), 0x1000ULL, nullptr, "return sub_1042("},
-      {"bare_jcc", bare_jcc, sizeof(bare_jcc), 0x1000ULL, nullptr, "loc_1002:"},
+      {"bare_jcc", bare_jcc, sizeof(bare_jcc), 0x1000ULL, nullptr, "return rax;"},
       {"call_fn", call_fn, sizeof(call_fn), 0x1000ULL, nullptr, "rax = sub_1005("},
       {"no_ret", no_ret, sizeof(no_ret), 0x1000ULL, nullptr, "return rax;"},
       {"push_rbx", push_rbx, sizeof(push_rbx), 0x1000ULL, nullptr, "__hex_stack"},
@@ -275,6 +291,7 @@ void test_negative_and_general_fallback() {
     const std::string text = get_emitted_text();
     CHECK(!text.empty());
     CHECK(text.find(tc.must_contain) != std::string::npos);
+    CHECK(text.find("goto ") == std::string::npos);
     CHECK(hex_x86_64_decomp_get_linemap_ptr() != nullptr);
     CHECK(hex_x86_64_decomp_get_linemap_count() >= 1u);
     CHECK(verify_c11_syntax(text, tc.label));
@@ -542,6 +559,7 @@ void test_strict_undeclared_label_fallback() {
   const std::string text = get_emitted_text();
   CHECK(!text.empty());
   CHECK(text.find("L_bb") == std::string::npos);
+  CHECK(text.find("goto ") == std::string::npos);
   CHECK(verify_c11_syntax(text, "sqlite3RenameTokenRemap"));
   std::printf("  [PASS] strict undeclared-label fallback (sqlite3RenameTokenRemap)\n");
 }
@@ -569,6 +587,7 @@ void test_general_goto_reduction() {
     CHECK(text.find("if (") != std::string::npos);
     CHECK(text.find("} else {") != std::string::npos);
     CHECK(text.find("goto ") == std::string::npos);
+    CHECK(text.find("switch (__hex_state)") == std::string::npos);
     CHECK(verify_c11_syntax(text, "gen_if_else"));
   }
 
@@ -589,6 +608,7 @@ void test_general_goto_reduction() {
     const std::string text = get_emitted_text();
     CHECK(text.find("goto ") == std::string::npos);
     CHECK(text.find("loc_") == std::string::npos);
+    CHECK(text.find("switch (__hex_state)") == std::string::npos);
     CHECK(verify_c11_syntax(text, "gen_fallthrough_jmp"));
   }
 
@@ -618,6 +638,7 @@ void test_general_goto_reduction() {
     CHECK(text.find("loc_440208") == std::string::npos);
     CHECK(text.find("goto ") == std::string::npos);
     CHECK(text.find("if (__hex_cmp_l == __hex_cmp_r) {") != std::string::npos);
+    CHECK(text.find("switch (__hex_state)") == std::string::npos);
     CHECK(verify_c11_syntax(text, "gen_invert_guard"));
   }
 
@@ -657,6 +678,7 @@ void test_general_goto_reduction() {
     CHECK(text.find("continue;") != std::string::npos);
     CHECK(text.find("} while (") != std::string::npos);
     CHECK(text.find("goto ") == std::string::npos);
+    CHECK(text.find("switch (__hex_state)") == std::string::npos);
     CHECK(verify_c11_syntax(text, "gen_loop_break_cont"));
   }
   std::printf("  [PASS] goto reduction: if-else, fallthrough, inverted guard, break/continue\n");
@@ -758,6 +780,93 @@ void test_general_recursive_6param_and_cleanup() {
   std::printf("  [PASS] recursive 6-param SysV, name sanitization, 66+F3 movq, 512 callee cap\n");
 }
 
+void test_zero_goto_state_machine_and_main() {
+  // 1. Irreducible two-entry loop on general path (push rbx forces general emitter):
+  //   0x00: 53             push rbx
+  //   0x01: 31 c0          xor eax, eax
+  //   0x03: 83 ff 00       cmp edi, 0
+  //   0x06: 74 07          je +7 (-> 0x0f L_b)
+  //   0x08: 01 f0          L_a: add eax, esi
+  //   0x0a: 83 ee 01       sub esi, 1
+  //   0x0d: 74 07          je +7 (-> 0x16 L_done)
+  //   0x0f: 01 f8          L_b: add eax, edi
+  //   0x11: 83 ef 01       sub edi, 1
+  //   0x14: 75 f2          jne -14 (-> 0x08 L_a)
+  //   0x16: 5b             L_done: pop rbx
+  //   0x17: c3             ret
+  {
+    const uint8_t code[] = {
+        0x53,
+        0x31, 0xc0,
+        0x83, 0xff, 0x00,
+        0x74, 0x07,
+        0x01, 0xf0,
+        0x83, 0xee, 0x01,
+        0x74, 0x07,
+        0x01, 0xf8,
+        0x83, 0xef, 0x01,
+        0x75, 0xf2,
+        0x5b,
+        0xc3,
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x470000ULL, "irred_general", 13u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("goto ") == std::string::npos);
+    CHECK(text.find("switch (__hex_state)") != std::string::npos);
+    CHECK(text.find("case 0u:") != std::string::npos);
+    CHECK(verify_c11_syntax_werror(text, "irred_general"));
+  }
+
+  // 2. Irreducible two-entry loop with strict-eligible opcodes only:
+  //    Strict emitter rejects any `goto ` and falls through to general 0-goto state machine.
+  {
+    const uint8_t code[] = {
+        0x31, 0xc0,
+        0x83, 0xff, 0x00,
+        0x74, 0x07,
+        0x01, 0xf0,
+        0x83, 0xee, 0x01,
+        0x74, 0x07,
+        0x01, 0xf8,
+        0x83, 0xef, 0x01,
+        0x75, 0xf2,
+        0xc3,
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x470100ULL, "irred_strict_fallback", 21u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("goto ") == std::string::npos);
+    CHECK(text.find("switch (__hex_state)") != std::string::npos);
+    CHECK(verify_c11_syntax_werror(text, "irred_strict_fallback"));
+  }
+
+  // 3. C11 `main` signature on general path (`int main(int a1, char **a2)` + `return (int)rax;`)
+  {
+    const uint8_t code[] = {
+        0x53,        // push rbx
+        0x89, 0xf8,  // mov eax, edi
+        0x01, 0xf0,  // add eax, esi
+        0x5b,        // pop rbx
+        0xc3,        // ret
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x470200ULL, "main", 4u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("int main(int a1, char **a2)") != std::string::npos);
+    CHECK(text.find("return (int)rax;") != std::string::npos);
+    CHECK(text.find("goto ") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(text, "general_main"));
+  }
+  std::printf("  [PASS] 0-goto state-machine dispatcher (general + strict fallback) & C11 main\n");
+}
+
 }  // namespace
 
 int main() {
@@ -774,6 +883,7 @@ int main() {
   test_strict_undeclared_label_fallback();
   test_general_goto_reduction();
   test_general_recursive_6param_and_cleanup();
+  test_zero_goto_state_machine_and_main();
 
   if (g_failures == 0) {
     std::printf("test_x86_64_decomp_native (ASan+UBSan): ALL PASS\n");
