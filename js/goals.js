@@ -156,7 +156,7 @@ export const GOALS = [
       /セーブ/, /保存/, /記録/],
     weak: [/write/i, /store/i, /persist/i, /progress/i, /進行/],
     avoid: [
-      /restore|store[\s_-]*kit|store[\s_-]*front/i,
+      /restore|store[\s_-]*kit|store[\s_-]*front|store[\s_-]*view/i,
       /(?:app|play)[\s_-]*store/i,
       /(?:power|battery|energy)[\s_-]*sav(?:e|ing)/i,
       /save[\s_-]*(?:g[\s_-]*state|graphics|context|matrix|transform)/i,
@@ -192,7 +192,8 @@ export const GOALS = [
     strong: [/level_?up/i, /\blevel\b/i, /\bexp\b/i, /experience/i, /レベル/, /経験値/, /ランクアップ/],
     weak: [/upgrade/i, /grow/i, /rank/i, /強化/, /育成/],
     avoid: [
-      /(?:log|verbosity|battery|zoom|compression|mip(?:map)?|window|api|feature|debug|error|warning|trace|severity|nesting|indent)[\s_-]*level/i,
+      /(?:log|verbosity|battery|zoom|compression|mip(?:map)?|window|api|feature|debug|error|warning|trace|severity|nesting|indent|low)[\s_-]*level/i,
+      /\b(?:alloc(?:ator)?|prev->levels|even one level|level\s*>=\s*1)\b/i,
       /(?:crank|frank|prank|drank|shrank)/i,
       /^_*(?:exp|exp2|exp10|expm1|frexp|ldexp)$/i,
       /\b(?:exp10|exp2|expm1|frexp|ldexp|exponent|expect|expand|export|explicit|expression|exception)\b/i,
@@ -235,7 +236,7 @@ export const GOALS = [
   {
     id: 'speed', ja: '移動速度・スピード', en: 'Speed / movement', icon: '💨',
     strong: [/\bspeed\b/i, /move[\s_-]*speed/i, /velocity/i, /移動速度/, /スピード/, /速度/, /素早さ/],
-    weak: [/accel/i, /\bpace\b/i, /tempo/i, /\bwalk\b/i, /\brun\b/i, /敏捷/],
+    weak: [/accel/i, /\bpace\b/i, /\btempo\b/i, /\bwalk\b/i, /\brun\b/i, /敏捷/],
     avoid: [
       /white[\s_-]*space|coordinate[\s_-]*space|name[\s_-]*space|work[\s_-]*space|drag[\s_-]*gesture|minimum[\s_-]*distance|run[\s_-]*loop/i,
       /(?:download|upload|network|transfer|connection|playback|scroll|fan|clock|baud|cpu|gpu|link|write|read|disk|bit)[\s_-]*speed/i,
@@ -252,8 +253,8 @@ export const GOALS = [
     avoid: [
       /\bcd[\s_-]*(?:rom|key|drive|player|track|audio|image|dir|path)\b/i,
       /(?:gcd|lcd|bcd|mcd|acd|icd|rcd|ucd)\b/i,
-      /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle|timeout|date)[\s_-]*(?:interval|delay)/i,
-      /url[\s_-]*request|cache[\s_-]*policy/i,
+      /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle|timeout|date|reload|update|location|banner)[\s_-]*(?:interval|delay)/i,
+      /scheduleUpdateAfterInterval|onReloadInterval|url[\s_-]*request|cache[\s_-]*policy/i,
       /reload[\s_-]*(?:data|table|section|row|view|page|url|webview|config|script)/i,
     ],
     expects: { numeric: true, store: true, compare: true },

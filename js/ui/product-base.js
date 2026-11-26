@@ -447,8 +447,8 @@ for (const preset of [
   { label:text('HP・体力', 'HP / health'), query:text('HPを書き換える処理', 'where HP is written') },
   { label:text('攻撃力', 'Attack power'), query:text('攻撃力を決める・書き換える処理', 'where attack power is calculated or written') },
   { label:text('ダメージ計算', 'Damage calculation'), query:text('ダメージを計算して適用する処理', 'where damage is calculated and applied') },
-  { label:text('所持金・コイン', 'Money / coins'), query:text('所持金・コインを増減・保存する処理', 'where money or coins are changed and stored') },
-  { label:text('アイテム・所持品', 'Items / inventory'), query:text('アイテム・所持品を増減・保存する処理', 'where inventory items are changed and stored') },
+  { label:text('所持金・コイン', 'Money / coins'), query:text('所持金・コインを増減する処理', 'where money or coins are changed') },
+  { label:text('アイテム・所持品', 'Items / inventory'), query:text('アイテム・所持品を増減する処理', 'where inventory items are changed') },
   { label:text('広告・課金', 'Ads / IAP'), query:text('広告表示や課金・購入を判定する処理', 'where ads or in-app purchases are checked') },
   { label:text('無敵・クールダウン', 'Invincible / Cooldown'), query:text('無敵やクールダウン・移動速度を決める処理', 'where invincibility, cooldown, or speed is controlled') },
 ]) {

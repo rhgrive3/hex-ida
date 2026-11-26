@@ -144,7 +144,8 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     const m = matchText(goal, s.text);
     if (m) {
       seenStrings.add(dedupKey);
-      const diagFactor = isDiagnosticString(s.text) ? 0.45 : 1;
+      const isAssertOrSource = /(?:\.(?:cc|cpp|cxx|mm|h|hpp|swift)\b|->|\s(?:>=|<=|!=|==)\s)/.test(s.text);
+      const diagFactor = isAssertOrSource ? 0.15 : (isDiagnosticString(s.text) ? 0.45 : 1);
       matchedStrings.push({
         addr: s.addr,
         text: s.text,
