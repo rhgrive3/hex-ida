@@ -1629,7 +1629,8 @@ static void emit_gpr_read(GenTextBuf& tb, uint8_t reg, uint8_t op_size) {
   }
 }
 
-static void emit_gpr_write_prefix(GenTextBuf& tb, uint8_t reg, uint8_t op_size) {
+static void emit_gpr_write_prefix(GenTextBuf& tb, uint8_t reg, uint8_t op_size,
+                                  bool rhs_is_u32 = false) {
   tb.put_gpr(reg);
   if (op_size == 8u) {
     tb.put_str(" = (");
@@ -1639,15 +1640,20 @@ static void emit_gpr_write_prefix(GenTextBuf& tb, uint8_t reg, uint8_t op_size) 
     tb.put_str(" = (");
     tb.put_gpr(reg);
     tb.put_str(" & ~0xFFFFULL) | (uint64)(uint16)(");
-  } else if (op_size == 32u) {
+  } else if (op_size == 32u && !rhs_is_u32) {
     tb.put_str(" = (uint32)(");
   } else {
-    tb.put_str(" = (");
+    tb.put_str(" = ");
   }
 }
 
-static void emit_gpr_write_suffix(GenTextBuf& tb) {
-  tb.put_str(");\n");
+static void emit_gpr_write_suffix(GenTextBuf& tb, uint8_t op_size,
+                                  bool rhs_is_u32 = false) {
+  if (op_size == 8u || op_size == 16u || (op_size == 32u && !rhs_is_u32)) {
+    tb.put_str(");\n");
+  } else {
+    tb.put_str(";\n");
+  }
 }
 
 static void emit_abi_call_args(GenTextBuf& tb, uint32_t abi_id, bool use_six_if_sysv, uint32_t gpr_used_mask) {
@@ -1825,6 +1831,159 @@ static void emit_imm_typed(GenTextBuf& tb, int64_t imm, uint8_t op_size, bool is
   tb.put_imm_u64(iv);
 }
 
+static void cmp_read_info(const HexX86Decoded& d, uint32_t& read_gpr_mask, bool& reads_mem) {
+  read_gpr_mask = 0u;
+  reads_mem = false;
+  const uint8_t mod = static_cast<uint8_t>((d.modrm >> 6u) & 3u);
+  if (d.opcode == 0x3cu || d.opcode == 0x3du || d.opcode == 0xa8u || d.opcode == 0xa9u) {
+    read_gpr_mask |= (1u << 0u);
+    return;
+  }
+  if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
+    if ((d.opcode >= 0x38u && d.opcode <= 0x3bu) || d.opcode == 0x84u || d.opcode == 0x85u) {
+      if (d.reg < 16u) read_gpr_mask |= (1u << d.reg);
+    }
+    if (mod == 3u) {
+      if (d.rm < 16u) read_gpr_mask |= (1u << d.rm);
+    } else {
+      reads_mem = true;
+      if ((d.flags & HEX_X86_FLAG_RIP_REL) == 0u) {
+        if (d.rm != kRegNone && d.rm < 16u) read_gpr_mask |= (1u << d.rm);
+        if (d.index_reg != kRegNone && d.index_reg < 16u) read_gpr_mask |= (1u << d.index_reg);
+      }
+    }
+  }
+}
+
+static bool is_safe_cmp_gap_insn(const GeneralInsn& gi, uint32_t cmp_read_gprs, bool cmp_reads_mem) {
+  if (gi.is_raw || gi.is_leave || gi.is_xchg) return false;
+  const HexX86Decoded& d = gi.d;
+  if (d.kind == HEX_X86_KIND_NOP) return true;
+  const uint8_t mod = static_cast<uint8_t>((d.modrm >> 6u) & 3u);
+
+  if (is_sse2_insn(d)) {
+    // Allow SSE moves only (never clobbers flags; check GPR/mem writes).
+    if (d.opcode2 == 0x10u || d.opcode2 == 0x28u || d.opcode2 == 0x6fu || d.opcode2 == 0x6eu) {
+      return true;
+    }
+    if (d.opcode2 == 0x11u || d.opcode2 == 0x29u || d.opcode2 == 0x7fu) {
+      return (mod == 3u) || !cmp_reads_mem;
+    }
+    if (d.opcode2 == 0x7eu) {
+      if (gi.is_f3_movq != 0u) return true;
+      if (mod == 3u) return d.rm < 16u && (cmp_read_gprs & (1u << d.rm)) == 0u;
+      return !cmp_reads_mem;
+    }
+    return false;
+  }
+
+  if (d.kind == HEX_X86_KIND_MOV) {
+    if (d.opcode >= 0xb0u && d.opcode <= 0xbfu) {
+      return d.rm < 16u && (cmp_read_gprs & (1u << d.rm)) == 0u;
+    }
+    if (d.opcode == 0xc6u || d.opcode == 0xc7u || d.opcode == 0x88u || d.opcode == 0x89u) {
+      if (mod == 3u) return d.rm < 16u && (cmp_read_gprs & (1u << d.rm)) == 0u;
+      return !cmp_reads_mem;
+    }
+    if (d.opcode == 0x8au || d.opcode == 0x8bu) {
+      return d.reg < 16u && (cmp_read_gprs & (1u << d.reg)) == 0u;
+    }
+    return false;
+  }
+
+  if (d.kind == HEX_X86_KIND_LEA) {
+    return d.reg < 16u && (cmp_read_gprs & (1u << d.reg)) == 0u;
+  }
+
+  if (d.kind == HEX_X86_KIND_PUSH) {
+    return (cmp_read_gprs & (1u << 4u)) == 0u && !cmp_reads_mem;
+  }
+
+  if (d.kind == HEX_X86_KIND_POP) {
+    if ((cmp_read_gprs & (1u << 4u)) != 0u) return false;
+    if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u && mod != 3u) {
+      return !cmp_reads_mem;
+    }
+    return d.rm >= 16u || (cmp_read_gprs & (1u << d.rm)) == 0u;
+  }
+
+  return false;
+}
+
+static bool is_ident_start_ch(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static bool is_ident_cont_ch(char c) {
+  return is_ident_start_ch(c) || (c >= '0' && c <= '9');
+}
+
+static bool tok_eq(const char* s, uint32_t len, const char* lit) {
+  uint32_t i = 0u;
+  while (i < len && lit[i] != '\0') {
+    if (s[i] != lit[i]) return false;
+    ++i;
+  }
+  return i == len && lit[i] == '\0';
+}
+
+static void scan_body_used_locals(const char* data, uint32_t start, uint32_t end,
+                                  bool& used_hex_cmp, bool& used_hex_stack,
+                                  uint32_t& used_gpr_mask, uint32_t& used_xmm_mask) {
+  used_hex_cmp = false;
+  used_hex_stack = false;
+  used_gpr_mask = 0u;
+  used_xmm_mask = 0u;
+  uint32_t i = start;
+  while (i < end) {
+    const char c = data[i];
+    if (c == '/' && i + 1u < end && data[i + 1u] == '*') {
+      i += 2u;
+      while (i + 1u < end && !(data[i] == '*' && data[i + 1u] == '/')) ++i;
+      if (i + 1u < end) i += 2u;
+      continue;
+    }
+    if (!is_ident_start_ch(c)) {
+      ++i;
+      continue;
+    }
+    const uint32_t t0 = i;
+    ++i;
+    while (i < end && is_ident_cont_ch(data[i])) ++i;
+    const uint32_t tlen = i - t0;
+    const char* tok = data + t0;
+    if (tok[0] == '_') {
+      if (tok_eq(tok, tlen, "__hex_cmp_l") || tok_eq(tok, tlen, "__hex_cmp_r")) {
+        used_hex_cmp = true;
+      } else if (tok_eq(tok, tlen, "__hex_stack")) {
+        used_hex_stack = true;
+      }
+    } else if (tok[0] == 'r' && tlen >= 2u && tlen <= 3u) {
+      for (uint32_t r = 0u; r < 16u; ++r) {
+        if (tok_eq(tok, tlen, kGpr64Names[r])) {
+          used_gpr_mask |= (1u << r);
+          break;
+        }
+      }
+    } else if (tok[0] == 'x' && tlen >= 4u && tlen <= 5u &&
+               tok[1] == 'm' && tok[2] == 'm') {
+      uint32_t idx = 0u;
+      bool ok = true;
+      if (tlen == 5u && tok[3] == '0') ok = false;
+      for (uint32_t k = 3u; k < tlen && ok; ++k) {
+        if (tok[k] < '0' || tok[k] > '9') {
+          ok = false;
+          break;
+        }
+        idx = idx * 10u + static_cast<uint32_t>(tok[k] - '0');
+      }
+      if (ok && idx < 16u) {
+        used_xmm_mask |= (1u << idx);
+      }
+    }
+  }
+}
+
 static void emit_fused_cmp_expr(GenTextBuf& tb, const HexX86Decoded& cmp_d, uint8_t cc,
                                 const uint64_t* globals, uint32_t global_count) {
   const uint8_t c = static_cast<uint8_t>(cc & 0x0fu);
@@ -1833,6 +1992,10 @@ static void emit_fused_cmp_expr(GenTextBuf& tb, const HexX86Decoded& cmp_d, uint
                         ? cmp_d.op_size
                         : 64u;
   if (is_test_opcode(cmp_d.opcode)) {
+    const bool is_self_test =
+        (cmp_d.opcode == 0x84u || cmp_d.opcode == 0x85u) &&
+        (((cmp_d.modrm >> 6u) & 3u) == 3u) &&
+        (cmp_d.rm == cmp_d.reg);
     auto emit_and = [&]() {
       tb.put_char('(');
       if (cmp_d.opcode == 0x84u || cmp_d.opcode == 0x85u) {
@@ -1851,22 +2014,32 @@ static void emit_fused_cmp_expr(GenTextBuf& tb, const HexX86Decoded& cmp_d, uint
       tb.put_char(')');
     };
     if (c == 0x4u) {
-      emit_and();
+      if (is_self_test) emit_gpr_read(tb, cmp_d.rm, w);
+      else emit_and();
       tb.put_str(" == 0");
     } else if (c == 0x5u) {
-      emit_and();
+      if (is_self_test) emit_gpr_read(tb, cmp_d.rm, w);
+      else emit_and();
       tb.put_str(" != 0");
     } else if (c == 0x8u) {
-      tb.put_char('(');
-      tb.put_str(width_to_int_type(w));
-      tb.put_char(')');
-      emit_and();
+      if (is_self_test) {
+        emit_gpr_read_typed(tb, cmp_d.rm, w, true);
+      } else {
+        tb.put_char('(');
+        tb.put_str(width_to_int_type(w));
+        tb.put_char(')');
+        emit_and();
+      }
       tb.put_str(" < 0");
     } else {
-      tb.put_char('(');
-      tb.put_str(width_to_int_type(w));
-      tb.put_char(')');
-      emit_and();
+      if (is_self_test) {
+        emit_gpr_read_typed(tb, cmp_d.rm, w, true);
+      } else {
+        tb.put_char('(');
+        tb.put_str(width_to_int_type(w));
+        tb.put_char(')');
+        emit_and();
+      }
       tb.put_str(" >= 0");
     }
     return;
@@ -1970,7 +2143,7 @@ HexStatus try_emit_x86_64_general(
   uint16_t* orig_label_refs = hex::arena_alloc_zeroed<uint16_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* sets_live_flags = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* fused_cmp = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
-  uint8_t* fused_jcc = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  int32_t* fused_src_cmp = work_arena.alloc<int32_t>(kMaxGeneralX86Insns);
   uint8_t* if_open = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* else_mid = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* if_close = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
@@ -1982,7 +2155,7 @@ HexStatus try_emit_x86_64_general(
   uint64_t* callees = work_arena.alloc<uint64_t>(kMaxGeneralCallees);
   uint64_t* globals = work_arena.alloc<uint64_t>(kMaxGeneralGlobals);
   if (!insns || !target_idx || !label_refs || !orig_label_refs || !sets_live_flags ||
-      !fused_cmp || !fused_jcc || !if_open || !else_mid || !if_close || !do_open || !do_close ||
+      !fused_cmp || !fused_src_cmp || !if_open || !else_mid || !if_close || !do_open || !do_close ||
       !skip_insn || !jcc_inverted || !loop_ctrl || !callees || !globals) {
     return HEX_ERR_OOM;
   }
@@ -2573,47 +2746,79 @@ HexStatus try_emit_x86_64_general(
     }
   }
 
-  // Direct Compare Fusion: fuse adjacent CMP/TEST + JCC when JCC is not a label/boundary
-  // and no subsequent instruction reads flags on either branch path.
+  // Direct Compare Fusion: fuse CMP/TEST + JCC/CMOVcc/SETcc (gap = 0..4 within same basic block,
+  // skipping only non-flag-clobbering MOV/LEA/PUSH/POP/SSE-move/NOP instructions that do not
+  // clobber registers/memory read by CMP/TEST) when no subsequent instruction reads flags.
+  for (uint32_t i = 0u; i < insn_count; ++i) {
+    fused_src_cmp[i] = -1;
+  }
   for (uint32_t i = 0u; i + 1u < insn_count; ++i) {
-    if (skip_insn[i] || skip_insn[i + 1u]) continue;
+    if (skip_insn[i]) continue;
     const GeneralInsn& gi_cmp = insns[i];
-    const GeneralInsn& gi_jcc = insns[i + 1u];
     if (gi_cmp.is_raw || gi_cmp.is_leave || gi_cmp.is_xchg ||
         gi_cmp.d.kind != HEX_X86_KIND_CMP) {
       continue;
     }
-    if (gi_jcc.is_raw || gi_jcc.is_leave || gi_jcc.is_xchg ||
-        gi_jcc.d.kind != HEX_X86_KIND_JCC) {
-      continue;
-    }
-    if (orig_label_refs[i + 1u] != 0u) continue;
-    if (use_state_machine) {
-      if (idx_to_state[i + 1u] != 0xFFFFFFFFu) continue;
-    } else {
-      if (label_refs[i + 1u] != 0u || else_mid[i + 1u] != 0u ||
-          if_close[i + 1u] != 0u || do_open[i + 1u] != 0u) {
-        continue;
-      }
-    }
-    const uint8_t raw_cc = (gi_jcc.d.opcode == 0x0fu)
-                               ? static_cast<uint8_t>(gi_jcc.d.opcode2 & 0x0fu)
-                               : static_cast<uint8_t>(gi_jcc.d.opcode & 0x0fu);
-    const uint8_t cc = jcc_inverted[i + 1u] ? static_cast<uint8_t>(raw_cc ^ 1u) : raw_cc;
-    if (!can_fuse_cc_for_cmp(gi_cmp.d.opcode, cc)) continue;
+    uint32_t cmp_read_gprs = 0u;
+    bool cmp_reads_mem = false;
+    cmp_read_info(gi_cmp.d, cmp_read_gprs, cmp_reads_mem);
 
-    const uint32_t fall_idx = (jcc_inverted[i + 1u] && i + 2u < insn_count && skip_insn[i + 2u])
-                                  ? (i + 3u)
-                                  : (i + 2u);
-    if (flags_possibly_read_from(insns, target_idx, insn_count, fall_idx)) continue;
-    if (target_idx[i + 1u] >= 0) {
-      if (flags_possibly_read_from(insns, target_idx, insn_count,
-                                   static_cast<uint32_t>(target_idx[i + 1u]))) {
-        continue;
+    for (uint32_t gap = 0u; gap <= 4u; ++gap) {
+      const uint32_t j = i + 1u + gap;
+      if (j >= insn_count) break;
+      if (orig_label_refs[j] != 0u) break;
+      if (use_state_machine) {
+        if (idx_to_state[j] != 0xFFFFFFFFu) break;
+      } else {
+        if (label_refs[j] != 0u || else_mid[j] != 0u ||
+            if_close[j] != 0u || do_open[j] != 0u) {
+          break;
+        }
+      }
+      if (skip_insn[j]) continue;
+
+      const GeneralInsn& gi_u = insns[j];
+      const bool valid_u = (!gi_u.is_raw && !gi_u.is_leave && !gi_u.is_xchg);
+      const bool is_jcc = valid_u && (gi_u.d.kind == HEX_X86_KIND_JCC);
+      const bool is_cmov = valid_u && is_cmovcc_insn(gi_u.d);
+      const bool is_set = valid_u && is_setcc_insn(gi_u.d);
+      if (is_jcc || is_cmov || is_set) {
+        if (fused_src_cmp[j] >= 0) break;
+        uint8_t cc = 0u;
+        if (is_jcc) {
+          const uint8_t raw_cc = (gi_u.d.opcode == 0x0fu)
+                                     ? static_cast<uint8_t>(gi_u.d.opcode2 & 0x0fu)
+                                     : static_cast<uint8_t>(gi_u.d.opcode & 0x0fu);
+          cc = jcc_inverted[j] ? static_cast<uint8_t>(raw_cc ^ 1u) : raw_cc;
+        } else {
+          cc = static_cast<uint8_t>(gi_u.d.opcode2 & 0x0fu);
+        }
+        if (!can_fuse_cc_for_cmp(gi_cmp.d.opcode, cc)) break;
+
+        if (is_jcc) {
+          const uint32_t fall_idx =
+              (jcc_inverted[j] && j + 1u < insn_count && skip_insn[j + 1u]) ? (j + 2u) : (j + 1u);
+          if (flags_possibly_read_from(insns, target_idx, insn_count, fall_idx)) break;
+          if (target_idx[j] >= 0 &&
+              flags_possibly_read_from(insns, target_idx, insn_count,
+                                       static_cast<uint32_t>(target_idx[j]))) {
+            break;
+          }
+        } else {
+          if (flags_possibly_read_from(insns, target_idx, insn_count, j + 1u)) break;
+        }
+        fused_cmp[i] = 1u;
+        fused_src_cmp[j] = static_cast<int32_t>(i);
+        break;
+      }
+
+      if (!use_state_machine && (if_open[j] || do_close[j] || loop_ctrl[j] != 0u)) {
+        break;
+      }
+      if (!is_safe_cmp_gap_insn(gi_u, cmp_read_gprs, cmp_reads_mem)) {
+        break;
       }
     }
-    fused_cmp[i] = 1u;
-    fused_jcc[i + 1u] = 1u;
   }
 
   // Backward liveness pass for flags (only for non-fused flag readers).
@@ -2622,8 +2827,8 @@ HexStatus try_emit_x86_64_general(
     if (skip_insn[i]) continue;
     const GeneralInsn& gi = insns[i];
     if (gi.is_raw || gi.is_leave || gi.is_xchg) continue;
-    if ((gi.d.kind == HEX_X86_KIND_JCC && !fused_jcc[i]) ||
-        is_cmovcc_insn(gi.d) || is_setcc_insn(gi.d)) {
+    if (fused_src_cmp[i] < 0 &&
+        (gi.d.kind == HEX_X86_KIND_JCC || is_cmovcc_insn(gi.d) || is_setcc_insn(gi.d))) {
       has_unfused_flag_reader = true;
       break;
     }
@@ -2633,8 +2838,17 @@ HexStatus try_emit_x86_64_general(
     const uint32_t i = rev - 1u;
     if (skip_insn[i]) continue;
     const GeneralInsn& gi = insns[i];
-    if (!fused_jcc[i] && is_flag_reading_insn(gi)) {
+    if (fused_src_cmp[i] < 0 && is_flag_reading_insn(gi)) {
       flags_live = true;
+    } else if (!gi.is_raw && !gi.is_leave && !gi.is_xchg &&
+               (gi.d.kind == HEX_X86_KIND_RET || gi.d.kind == HEX_X86_KIND_CALL)) {
+      flags_live = false;
+    } else if (!gi.is_raw && !gi.is_leave && !gi.is_xchg &&
+               gi.d.kind == HEX_X86_KIND_JMP) {
+      flags_live = (target_idx[i] >= 0 && has_unfused_flag_reader)
+                       ? flags_possibly_read_from(insns, target_idx, insn_count,
+                                                  static_cast<uint32_t>(target_idx[i]))
+                       : false;
     } else if (!fused_cmp[i] && is_flag_setting_alu(gi)) {
       if (flags_live) {
         sets_live_flags[i] = 1u;
@@ -2642,7 +2856,8 @@ HexStatus try_emit_x86_64_general(
       flags_live = false;
     }
     if (orig_label_refs[i] > 0u) {
-      flags_live = has_unfused_flag_reader;
+      flags_live = has_unfused_flag_reader &&
+                   flags_possibly_read_from(insns, target_idx, insn_count, i);
     }
   }
   const bool needs_hex_cmp = has_unfused_flag_reader;
@@ -2739,16 +2954,9 @@ HexStatus try_emit_x86_64_general(
   }
   tb.put_str(")\n{\n");
 
-  // Local declarations.
-  bool emitted_decl = false;
+  // Local declarations (recorded for post-body dead local declaration pruning).
   if (uses_stack) {
-    tb.put_str("    static uint8_t __hex_stack[4096];\n");
     gpr_used |= (1u << 4u);
-    emitted_decl = true;
-  }
-  if (needs_hex_cmp) {
-    tb.put_str("    uint64 __hex_cmp_l = 0, __hex_cmp_r = 0;\n");
-    emitted_decl = true;
   }
   {
     static const uint8_t kSysVParams[6] = {7u, 6u, 2u, 1u, 8u, 9u};
@@ -2760,90 +2968,113 @@ HexStatus try_emit_x86_64_general(
       gpr_used |= (1u << preg);
     }
   }
-  uint8_t zero_gprs[16];
-  uint32_t zero_gpr_count = 0u;
-  for (uint32_t r = 0u; r < 16u; ++r) {
-    if ((gpr_used & (1u << r)) == 0u) continue;
-    if (r == 4u && uses_stack) {
-      tb.put_str("    uint64 rsp = (uint64)(uintptr_t)(__hex_stack + sizeof(__hex_stack) - 64);\n");
+  auto emit_local_decls = [&](GenTextBuf& dst, bool keep_stack, bool keep_cmp,
+                              uint32_t keep_gpr_mask, uint32_t keep_xmm_mask) {
+    bool emitted_decl = false;
+    if (keep_stack) {
+      dst.put_str("    static uint8_t __hex_stack[4096];\n");
       emitted_decl = true;
-    } else if (r == 5u && uses_stack) {
-      tb.put_str("    uint64 rbp = rsp;\n");
+    }
+    if (keep_cmp) {
+      dst.put_str("    uint64 __hex_cmp_l = 0, __hex_cmp_r = 0;\n");
       emitted_decl = true;
-    } else {
-      const int32_t pidx = abi_param_index(abi_id, static_cast<uint8_t>(r));
-      if (pidx >= 0 && static_cast<uint32_t>(pidx) < num_params) {
-        if (is_main_fn) {
-          if (pidx == 0) {
-            tb.put_str("    uint64 ");
-            tb.put_gpr(static_cast<uint8_t>(r));
-            tb.put_str(" = (uint64)(int64)a1;\n");
-            emitted_decl = true;
-          } else if (pidx == 1) {
-            tb.put_str("    uint64 ");
-            tb.put_gpr(static_cast<uint8_t>(r));
-            tb.put_str(" = (uint64)(uintptr_t)a2;\n");
-            emitted_decl = true;
-          } else if (pidx == 2) {
-            tb.put_str("    uint64 ");
-            tb.put_gpr(static_cast<uint8_t>(r));
-            tb.put_str(" = (uint64)(uintptr_t)a3;\n");
-            emitted_decl = true;
-          } else {
-            zero_gprs[zero_gpr_count++] = static_cast<uint8_t>(r);
-          }
-        } else {
-          tb.put_str("    uint64 ");
-          tb.put_gpr(static_cast<uint8_t>(r));
-          tb.put_str(" = a");
-          tb.put_u64_dec(static_cast<uint32_t>(pidx) + 1u);
-          tb.put_str(";\n");
+    }
+    uint8_t zero_gprs[16];
+    uint32_t zero_gpr_count = 0u;
+    for (uint32_t r = 0u; r < 16u; ++r) {
+      if ((gpr_used & (1u << r)) == 0u) continue;
+      if (r == 4u && uses_stack) {
+        if ((keep_gpr_mask & (1u << 4u)) != 0u) {
+          dst.put_str("    uint64 rsp = (uint64)(uintptr_t)(__hex_stack + sizeof(__hex_stack) - 64);\n");
+          emitted_decl = true;
+        }
+      } else if (r == 5u && uses_stack) {
+        if ((keep_gpr_mask & (1u << 5u)) != 0u) {
+          dst.put_str("    uint64 rbp = rsp;\n");
           emitted_decl = true;
         }
       } else {
-        zero_gprs[zero_gpr_count++] = static_cast<uint8_t>(r);
+        const int32_t pidx = abi_param_index(abi_id, static_cast<uint8_t>(r));
+        if (pidx >= 0 && static_cast<uint32_t>(pidx) < num_params) {
+          if (is_main_fn) {
+            if (pidx == 0) {
+              dst.put_str("    uint64 ");
+              dst.put_gpr(static_cast<uint8_t>(r));
+              dst.put_str(" = (uint64)(int64)a1;\n");
+              emitted_decl = true;
+            } else if (pidx == 1) {
+              dst.put_str("    uint64 ");
+              dst.put_gpr(static_cast<uint8_t>(r));
+              dst.put_str(" = (uint64)(uintptr_t)a2;\n");
+              emitted_decl = true;
+            } else if (pidx == 2) {
+              dst.put_str("    uint64 ");
+              dst.put_gpr(static_cast<uint8_t>(r));
+              dst.put_str(" = (uint64)(uintptr_t)a3;\n");
+              emitted_decl = true;
+            } else if ((keep_gpr_mask & (1u << r)) != 0u) {
+              zero_gprs[zero_gpr_count++] = static_cast<uint8_t>(r);
+            }
+          } else {
+            dst.put_str("    uint64 ");
+            dst.put_gpr(static_cast<uint8_t>(r));
+            dst.put_str(" = a");
+            dst.put_u64_dec(static_cast<uint32_t>(pidx) + 1u);
+            dst.put_str(";\n");
+            emitted_decl = true;
+          }
+        } else if ((keep_gpr_mask & (1u << r)) != 0u) {
+          zero_gprs[zero_gpr_count++] = static_cast<uint8_t>(r);
+        }
       }
     }
-  }
-  for (uint32_t zi = 0u; zi < zero_gpr_count; zi += 4u) {
-    tb.put_str("    uint64 ");
-    const uint32_t end = (zi + 4u < zero_gpr_count) ? (zi + 4u) : zero_gpr_count;
-    for (uint32_t k = zi; k < end; ++k) {
-      if (k > zi) tb.put_str(", ");
-      tb.put_gpr(zero_gprs[k]);
-      tb.put_str(" = 0");
+    for (uint32_t zi = 0u; zi < zero_gpr_count; zi += 4u) {
+      dst.put_str("    uint64 ");
+      const uint32_t end = (zi + 4u < zero_gpr_count) ? (zi + 4u) : zero_gpr_count;
+      for (uint32_t k = zi; k < end; ++k) {
+        if (k > zi) dst.put_str(", ");
+        dst.put_gpr(zero_gprs[k]);
+        dst.put_str(" = 0");
+      }
+      dst.put_str(";\n");
+      emitted_decl = true;
     }
-    tb.put_str(";\n");
-    emitted_decl = true;
-  }
-  uint8_t zero_xmms[16];
-  uint32_t zero_xmm_count = 0u;
-  for (uint32_t x = 0u; x < 16u; ++x) {
-    if ((xmm_used & (1u << x)) == 0u) continue;
-    zero_xmms[zero_xmm_count++] = static_cast<uint8_t>(x);
-  }
-  for (uint32_t xi = 0u; xi < zero_xmm_count; xi += 4u) {
-    tb.put_str("    uint64 ");
-    const uint32_t end = (xi + 4u < zero_xmm_count) ? (xi + 4u) : zero_xmm_count;
-    for (uint32_t k = xi; k < end; ++k) {
-      if (k > xi) tb.put_str(", ");
-      tb.put_xmm(zero_xmms[k]);
-      tb.put_str(" = 0");
+    uint8_t zero_xmms[16];
+    uint32_t zero_xmm_count = 0u;
+    for (uint32_t x = 0u; x < 16u; ++x) {
+      if ((xmm_used & (1u << x)) == 0u) continue;
+      if ((keep_xmm_mask & (1u << x)) == 0u) continue;
+      zero_xmms[zero_xmm_count++] = static_cast<uint8_t>(x);
     }
-    tb.put_str(";\n");
-    emitted_decl = true;
-  }
-  if (is_main_fn && num_params == 1u) {
-    tb.put_str("    (void)a2;\n");
-    emitted_decl = true;
-  }
-  if (use_state_machine) {
-    tb.put_str("    unsigned int __hex_state = 0u;\n");
-    emitted_decl = true;
-  }
-  if (emitted_decl) {
-    tb.put_char('\n');
-  }
+    for (uint32_t xi = 0u; xi < zero_xmm_count; xi += 4u) {
+      dst.put_str("    uint64 ");
+      const uint32_t end = (xi + 4u < zero_xmm_count) ? (xi + 4u) : zero_xmm_count;
+      for (uint32_t k = xi; k < end; ++k) {
+        if (k > xi) dst.put_str(", ");
+        dst.put_xmm(zero_xmms[k]);
+        dst.put_str(" = 0");
+      }
+      dst.put_str(";\n");
+      emitted_decl = true;
+    }
+    if (is_main_fn && num_params == 1u) {
+      dst.put_str("    (void)a2;\n");
+      emitted_decl = true;
+    }
+    if (use_state_machine) {
+      dst.put_str("    unsigned int __hex_state = 0u;\n");
+      emitted_decl = true;
+    }
+    if (emitted_decl) {
+      dst.put_char('\n');
+    }
+  };
+
+  const uint32_t decl_start_off = tb.len;
+  const uint32_t decl_start_line = tb.line_no;
+  emit_local_decls(tb, uses_stack, needs_hex_cmp, gpr_used, xmm_used);
+  const uint32_t body_start_off = tb.len;
+  const uint32_t body_start_line = tb.line_no;
 
   // Emit body statements.
   uint32_t indent = 1u;
@@ -3130,8 +3361,8 @@ HexStatus try_emit_x86_64_general(
                                                  : static_cast<uint8_t>(d.opcode & 0x0fu);
       const uint8_t cc = jcc_inverted[i] ? static_cast<uint8_t>(raw_cc ^ 1u) : raw_cc;
       auto emit_jcc_cond = [&](uint8_t cond_cc) {
-        if (fused_jcc[i] && i > 0u) {
-          emit_fused_cmp_expr(tb, insns[i - 1u].d, cond_cc, globals, global_count);
+        if (fused_src_cmp[i] >= 0) {
+          emit_fused_cmp_expr(tb, insns[fused_src_cmp[i]].d, cond_cc, globals, global_count);
         } else {
           emit_cc_expr(tb, cond_cc);
         }
@@ -3253,9 +3484,10 @@ HexStatus try_emit_x86_64_general(
           else emit_mem_deref(tb, d, 64u, globals, global_count);
           tb.put_str(";\n");
         } else if (mod == 3u) {
-          emit_gpr_write_prefix(tb, d.rm, (d.op_size == 32u) ? 32u : 64u);
+          const uint8_t sw = (d.op_size == 32u) ? 32u : 64u;
+          emit_gpr_write_prefix(tb, d.rm, sw);
           tb.put_xmm(d.reg);
-          emit_gpr_write_suffix(tb);
+          emit_gpr_write_suffix(tb, sw);
         } else {
           const uint8_t sw = (d.op_size == 32u) ? 32u : 64u;
           emit_mem_deref(tb, d, sw, globals, global_count);
@@ -3275,11 +3507,15 @@ HexStatus try_emit_x86_64_general(
       const uint8_t cc = static_cast<uint8_t>(d.opcode2 & 0x0fu);
       tb.put_indent(indent);
       tb.put_str("if (");
-      emit_cc_expr(tb, cc);
+      if (fused_src_cmp[i] >= 0) {
+        emit_fused_cmp_expr(tb, insns[fused_src_cmp[i]].d, cc, globals, global_count);
+      } else {
+        emit_cc_expr(tb, cc);
+      }
       tb.put_str(") ");
-      emit_gpr_write_prefix(tb, d.reg, w);
+      emit_gpr_write_prefix(tb, d.reg, w, true);
       emit_rm_read(tb, d, w, globals, global_count);
-      emit_gpr_write_suffix(tb);
+      emit_gpr_write_suffix(tb, w, true);
       last_was_return = false;
       continue;
     }
@@ -3287,16 +3523,23 @@ HexStatus try_emit_x86_64_general(
     // SETcc
     if (is_setcc_insn(d)) {
       const uint8_t cc = static_cast<uint8_t>(d.opcode2 & 0x0fu);
+      auto emit_set_cond = [&]() {
+        if (fused_src_cmp[i] >= 0) {
+          emit_fused_cmp_expr(tb, insns[fused_src_cmp[i]].d, cc, globals, global_count);
+        } else {
+          emit_cc_expr(tb, cc);
+        }
+      };
       tb.put_indent(indent);
       if (mod == 3u) {
         emit_gpr_write_prefix(tb, d.rm, 8u);
-        emit_cc_expr(tb, cc);
+        emit_set_cond();
         tb.put_str(" ? 1U : 0U");
-        emit_gpr_write_suffix(tb);
+        emit_gpr_write_suffix(tb, 8u);
       } else {
         emit_mem_deref(tb, d, 8u, globals, global_count);
         tb.put_str(" = (uint8)(");
-        emit_cc_expr(tb, cc);
+        emit_set_cond();
         tb.put_str(" ? 1U : 0U);\n");
       }
       last_was_return = false;
@@ -3305,7 +3548,7 @@ HexStatus try_emit_x86_64_general(
 
     // CMP / TEST
     if (d.kind == HEX_X86_KIND_CMP) {
-      if (!needs_hex_cmp) {
+      if (!needs_hex_cmp || !sets_live_flags[i]) {
         last_was_return = false;
         continue;
       }
@@ -3361,14 +3604,14 @@ HexStatus try_emit_x86_64_general(
     if (d.kind == HEX_X86_KIND_MOV) {
       tb.put_indent(indent);
       if (d.opcode >= 0xb0u && d.opcode <= 0xbfu) {
-        emit_gpr_write_prefix(tb, d.rm, w);
+        emit_gpr_write_prefix(tb, d.rm, w, true);
         tb.put_imm_u64(mask_imm_by_size(d.imm, w));
-        emit_gpr_write_suffix(tb);
+        emit_gpr_write_suffix(tb, w, true);
       } else if (d.opcode == 0xc6u || d.opcode == 0xc7u) {
         if (mod == 3u) {
-          emit_gpr_write_prefix(tb, d.rm, w);
+          emit_gpr_write_prefix(tb, d.rm, w, true);
           tb.put_imm_u64(mask_imm_by_size(d.imm, w));
-          emit_gpr_write_suffix(tb);
+          emit_gpr_write_suffix(tb, w, true);
         } else {
           emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_str(" = (");
@@ -3379,9 +3622,9 @@ HexStatus try_emit_x86_64_general(
         }
       } else if (d.opcode == 0x88u || d.opcode == 0x89u) {
         if (mod == 3u) {
-          emit_gpr_write_prefix(tb, d.rm, w);
+          emit_gpr_write_prefix(tb, d.rm, w, true);
           emit_gpr_read(tb, d.reg, w);
-          emit_gpr_write_suffix(tb);
+          emit_gpr_write_suffix(tb, w, true);
         } else {
           emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_str(" = ");
@@ -3389,9 +3632,9 @@ HexStatus try_emit_x86_64_general(
           tb.put_str(";\n");
         }
       } else if (d.opcode == 0x8au || d.opcode == 0x8bu) {
-        emit_gpr_write_prefix(tb, d.reg, w);
+        emit_gpr_write_prefix(tb, d.reg, w, true);
         emit_rm_read(tb, d, w, globals, global_count);
-        emit_gpr_write_suffix(tb);
+        emit_gpr_write_suffix(tb, w, true);
       } else {
         tb.put_str("/* mov */\n");
       }
@@ -3403,10 +3646,9 @@ HexStatus try_emit_x86_64_general(
     if (d.kind == HEX_X86_KIND_MOVZX) {
       const uint8_t src_w = (d.opcode2 == 0xb6u) ? 8u : 16u;
       tb.put_indent(indent);
-      emit_gpr_write_prefix(tb, d.reg, w);
-      tb.put_str("(uint64)");
+      emit_gpr_write_prefix(tb, d.reg, w, true);
       emit_rm_read(tb, d, src_w, globals, global_count);
-      emit_gpr_write_suffix(tb);
+      emit_gpr_write_suffix(tb, w, true);
       last_was_return = false;
       continue;
     }
@@ -3438,7 +3680,7 @@ HexStatus try_emit_x86_64_general(
         tb.put_str(")(");
         emit_rm_read(tb, d, src_w, globals, global_count);
         tb.put_char(')');
-        emit_gpr_write_suffix(tb);
+        emit_gpr_write_suffix(tb, w);
       }
       last_was_return = false;
       continue;
@@ -3449,7 +3691,7 @@ HexStatus try_emit_x86_64_general(
       tb.put_indent(indent);
       emit_gpr_write_prefix(tb, d.reg, w);
       emit_mem_addr_expr(tb, d, globals, global_count);
-      emit_gpr_write_suffix(tb);
+      emit_gpr_write_suffix(tb, w);
       last_was_return = false;
       continue;
     }
@@ -3477,17 +3719,17 @@ HexStatus try_emit_x86_64_general(
           tb.put_str("); rdx = 0;\n");
         }
       } else if (d.opcode == 0x0fu && d.opcode2 == 0xafu) {
-        emit_gpr_write_prefix(tb, d.reg, w);
+        emit_gpr_write_prefix(tb, d.reg, w, true);
         emit_gpr_read(tb, d.reg, w);
         tb.put_str(" * ");
         emit_rm_read(tb, d, w, globals, global_count);
-        emit_gpr_write_suffix(tb);
+        emit_gpr_write_suffix(tb, w, true);
       } else {
-        emit_gpr_write_prefix(tb, d.reg, w);
+        emit_gpr_write_prefix(tb, d.reg, w, true);
         emit_rm_read(tb, d, w, globals, global_count);
         tb.put_str(" * ");
         tb.put_imm_u64(mask_imm_by_size(d.imm, w));
-        emit_gpr_write_suffix(tb);
+        emit_gpr_write_suffix(tb, w, true);
       }
       last_was_return = false;
       continue;
@@ -3506,17 +3748,17 @@ HexStatus try_emit_x86_64_general(
         if (sub == 0u || sub == 1u) {
           if (mod == 3u) {
             if (grp == 6u && d.reg == d.rm) {
-              emit_gpr_write_prefix(tb, d.rm, w);
+              emit_gpr_write_prefix(tb, d.rm, w, true);
               tb.put_str("0");
-              emit_gpr_write_suffix(tb);
+              emit_gpr_write_suffix(tb, w, true);
             } else {
-              emit_gpr_write_prefix(tb, d.rm, w);
+              emit_gpr_write_prefix(tb, d.rm, w, true);
               emit_gpr_read(tb, d.rm, w);
               tb.put_char(' ');
               tb.put_str(op_s);
               tb.put_char(' ');
               emit_gpr_read(tb, d.reg, w);
-              emit_gpr_write_suffix(tb);
+              emit_gpr_write_suffix(tb, w, true);
             }
             flag_reg = d.rm;
           } else {
@@ -3534,27 +3776,27 @@ HexStatus try_emit_x86_64_general(
           }
         } else if (sub == 2u || sub == 3u) {
           if (grp == 6u && mod == 3u && d.reg == d.rm) {
-            emit_gpr_write_prefix(tb, d.reg, w);
+            emit_gpr_write_prefix(tb, d.reg, w, true);
             tb.put_str("0");
-            emit_gpr_write_suffix(tb);
+            emit_gpr_write_suffix(tb, w, true);
           } else {
-            emit_gpr_write_prefix(tb, d.reg, w);
+            emit_gpr_write_prefix(tb, d.reg, w, true);
             emit_gpr_read(tb, d.reg, w);
             tb.put_char(' ');
             tb.put_str(op_s);
             tb.put_char(' ');
             emit_rm_read(tb, d, w, globals, global_count);
-            emit_gpr_write_suffix(tb);
+            emit_gpr_write_suffix(tb, w, true);
           }
           flag_reg = d.reg;
         } else {
-          emit_gpr_write_prefix(tb, 0u, w);
+          emit_gpr_write_prefix(tb, 0u, w, true);
           emit_gpr_read(tb, 0u, w);
           tb.put_char(' ');
           tb.put_str(op_s);
           tb.put_char(' ');
           tb.put_imm_u64(mask_imm_by_size(d.imm, w));
-          emit_gpr_write_suffix(tb);
+          emit_gpr_write_suffix(tb, w, true);
           flag_reg = 0u;
         }
       } else if (d.opcode == 0x80u || d.opcode == 0x81u || d.opcode == 0x83u) {
@@ -3562,13 +3804,13 @@ HexStatus try_emit_x86_64_general(
         const char* op_s = alu_binop_str(grp);
         const uint64_t iv = mask_imm_by_size(d.imm, w);
         if (mod == 3u) {
-          emit_gpr_write_prefix(tb, d.rm, w);
+          emit_gpr_write_prefix(tb, d.rm, w, true);
           emit_gpr_read(tb, d.rm, w);
           tb.put_char(' ');
           tb.put_str(op_s);
           tb.put_char(' ');
           tb.put_imm_u64(iv);
-          emit_gpr_write_suffix(tb);
+          emit_gpr_write_suffix(tb, w, true);
           flag_reg = d.rm;
         } else {
           emit_mem_deref(tb, d, w, globals, global_count);
@@ -3652,7 +3894,7 @@ HexStatus try_emit_x86_64_general(
         if (mod == 3u) {
           emit_gpr_write_prefix(tb, d.rm, w);
           emit_shift_rhs();
-          emit_gpr_write_suffix(tb);
+          emit_gpr_write_suffix(tb, w);
           flag_reg = d.rm;
         } else {
           emit_mem_deref(tb, d, w, globals, global_count);
@@ -3667,12 +3909,12 @@ HexStatus try_emit_x86_64_general(
         const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
         const char* op_s = (grp == 0u) ? "+" : "-";
         if (mod == 3u) {
-          emit_gpr_write_prefix(tb, d.rm, w);
+          emit_gpr_write_prefix(tb, d.rm, w, true);
           emit_gpr_read(tb, d.rm, w);
           tb.put_char(' ');
           tb.put_str(op_s);
           tb.put_str(" 1");
-          emit_gpr_write_suffix(tb);
+          emit_gpr_write_suffix(tb, w, true);
           flag_reg = d.rm;
         } else {
           emit_mem_deref(tb, d, w, globals, global_count);
@@ -3700,7 +3942,7 @@ HexStatus try_emit_x86_64_general(
               emit_gpr_read(tb, d.rm, w);
               tb.put_char(')');
             }
-            emit_gpr_write_suffix(tb);
+            emit_gpr_write_suffix(tb, w);
             if (grp == 3u) flag_reg = d.rm;
           } else {
             emit_mem_deref(tb, d, w, globals, global_count);
@@ -3808,6 +4050,59 @@ HexStatus try_emit_x86_64_general(
   if (tb.overflow || tb.len == 0u) {
     clear_x86_last_output();
     return HEX_ERR_OOM;
+  }
+
+  // Post-body dead local declaration pruning: omit unused zero-init / stack / cmp locals
+  // in-place and adjust body linemap entries by delta_lines.
+  if (tb.len > body_start_off && body_start_off >= decl_start_off) {
+    bool used_hex_cmp = false;
+    bool used_hex_stack = false;
+    uint32_t used_gpr_mask = 0u;
+    uint32_t used_xmm_mask = 0u;
+    scan_body_used_locals(tb.data, body_start_off, tb.len,
+                          used_hex_cmp, used_hex_stack, used_gpr_mask, used_xmm_mask);
+    if (uses_stack) {
+      if ((used_gpr_mask & (1u << 5u)) != 0u) {
+        used_gpr_mask |= (1u << 4u);
+      }
+      if ((used_gpr_mask & (1u << 4u)) != 0u) {
+        used_hex_stack = true;
+      }
+    }
+    const bool keep_stack = uses_stack && used_hex_stack;
+    const bool keep_cmp = needs_hex_cmp && used_hex_cmp;
+
+    char pruned_decl[2048];
+    pruned_decl[0] = '\0';
+    GenTextBuf decl_tb{pruned_decl, sizeof(pruned_decl), 0u, 1u, false, nullptr, 0u, 0u};
+    emit_local_decls(decl_tb, keep_stack, keep_cmp, used_gpr_mask, used_xmm_mask);
+
+    const uint32_t old_decl_len = body_start_off - decl_start_off;
+    const uint32_t new_decl_len = decl_tb.len;
+    const uint32_t old_decl_lines = body_start_line - decl_start_line;
+    const uint32_t new_decl_lines = decl_tb.line_no - 1u;
+    if (!decl_tb.overflow && new_decl_len < old_decl_len && new_decl_lines <= old_decl_lines) {
+      const uint32_t body_len = tb.len - body_start_off;
+      for (uint32_t k = 0u; k < new_decl_len; ++k) {
+        tb.data[decl_start_off + k] = pruned_decl[k];
+      }
+      const uint32_t new_body_off = decl_start_off + new_decl_len;
+      for (uint32_t k = 0u; k < body_len; ++k) {
+        tb.data[new_body_off + k] = tb.data[body_start_off + k];
+      }
+      tb.len = new_body_off + body_len;
+      tb.data[tb.len] = '\0';
+
+      const uint32_t delta_lines = old_decl_lines - new_decl_lines;
+      if (delta_lines > 0u) {
+        for (uint32_t k = 0u; k < tb.lm_count; ++k) {
+          if (tb.lm[k].line_no >= body_start_line) {
+            tb.lm[k].line_no -= delta_lines;
+          }
+        }
+        tb.line_no -= delta_lines;
+      }
+    }
   }
 
   g_x86_last_text = tb.data;

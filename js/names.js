@@ -282,6 +282,7 @@ export class NoteStore {
     this.structs = [];           // 自分で作った構造体（types.js が読む）
     this.dirty = false;
     this.onChange = null;
+    this._listeners = new Set();
     this.load();
   }
 
@@ -289,10 +290,22 @@ export class NoteStore {
     this.onChange = typeof fn === 'function' ? fn : null;
   }
 
+  subscribe(fn) {
+    if (typeof fn !== 'function') throw new TypeError('note-subscriber-invalid');
+    this._listeners.add(fn);
+    return () => { this._listeners.delete(fn); };
+  }
+
   _notifyChange(kind, detail = null) {
-    if (typeof this.onChange !== 'function') return;
-    try { this.onChange({ kind, detail, count: this.count }); }
-    catch { /* observer isolation */ }
+    const event = { kind, detail, count: this.count };
+    if (typeof this.onChange === 'function') {
+      try { this.onChange(event); }
+      catch { /* observer isolation */ }
+    }
+    for (const fn of this._listeners) {
+      try { fn(event); }
+      catch { /* observer isolation */ }
+    }
   }
 
   /* ── 読み書き ─────────────────────────────────────────── */

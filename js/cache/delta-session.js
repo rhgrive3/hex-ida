@@ -26,6 +26,10 @@ const MAX_HISTORY_ENTRIES = 200;
 const DECIMAL_RE = /^\d+$/;
 const HEX_RE = /^0x[0-9a-f]+$/i;
 
+export const VALID_EXPLORER_FILTERS = new Set(['all', 'saved', 'edited']);
+export const VALID_EXPLORER_SORTS = new Set(['address', 'name', 'size', 'priority']);
+export const VALID_FUNCTION_TABS = new Set(['overview', 'pseudocode', 'flow', 'calls', 'evidence', 'runtime']);
+
 /* ── Address & Value Helpers ─────────────────────────────────── */
 
 function toBigIntAddress(value) {
@@ -308,6 +312,16 @@ function normalizeDeltaForStorage(input) {
       : history.length - 1;
   }
 
+  const explorerFilter = typeof rawResume.explorerFilter === 'string' && VALID_EXPLORER_FILTERS.has(rawResume.explorerFilter)
+    ? rawResume.explorerFilter
+    : 'all';
+  const explorerSort = typeof rawResume.explorerSort === 'string' && VALID_EXPLORER_SORTS.has(rawResume.explorerSort)
+    ? rawResume.explorerSort
+    : 'address';
+  const lastFunctionTab = typeof rawResume.lastFunctionTab === 'string' && VALID_FUNCTION_TABS.has(rawResume.lastFunctionTab)
+    ? rawResume.lastFunctionTab
+    : null;
+
   const resume = {
     lastAddress: toAddressDecimalString(rawResume.lastAddress),
     lastFunction: toAddressDecimalString(rawResume.lastFunction),
@@ -319,6 +333,9 @@ function normalizeDeltaForStorage(input) {
     history,
     historyIndex,
     lastGoal: normalizeLastGoal(rawResume.lastGoal),
+    explorerFilter,
+    explorerSort,
+    lastFunctionTab,
   };
 
   const updatedAt = Number.isFinite(Number(src.updatedAt)) ? Number(src.updatedAt) : Date.now();
@@ -363,6 +380,9 @@ function hydrateDeltaRecord(stored) {
       history: normalized.resume.history.map(hydrateHistoryEntry).filter(Boolean),
       historyIndex: normalized.resume.historyIndex,
       lastGoal: normalized.resume.lastGoal,
+      explorerFilter: normalized.resume.explorerFilter,
+      explorerSort: normalized.resume.explorerSort,
+      lastFunctionTab: normalized.resume.lastFunctionTab,
     },
   };
 }
@@ -732,7 +752,8 @@ export class DeltaSessionStore {
       return false;
     }
     const targetKey = this._lsKey(deltaKey);
-    const recents = this._readLsRecents().filter((r) => r.deltaKey !== deltaKey);
+    const rawRecents = this._readLsRecents();
+    const recents = rawRecents.filter((r) => r.deltaKey !== deltaKey);
     const recentsByKey = new Map(recents.map((r) => [r.deltaKey, r]));
 
     // Enforce total budget via LRU eviction of oldest entries.
@@ -745,6 +766,12 @@ export class DeltaSessionStore {
     });
 
     const evictedKeys = new Set();
+    const syncEvictedRecents = () => {
+      if (evictedKeys.size === 0) return;
+      const surviving = rawRecents.filter((r) => !evictedKeys.has(r.deltaKey));
+      this._writeLsRecents(surviving);
+    };
+
     while (currentTotal + bytes > this.maxTotalBytes && evictable.length > 0) {
       const victim = evictable.shift();
       try { this.localStorage.removeItem(victim.storageKey); } catch { /* ignore */ }
@@ -753,6 +780,7 @@ export class DeltaSessionStore {
     }
 
     if (currentTotal + bytes > this.maxTotalBytes) {
+      syncEvictedRecents();
       this.lastError = {
         code: 'TOTAL_QUOTA_EXCEEDED',
         bytes,
@@ -769,6 +797,7 @@ export class DeltaSessionStore {
         wrote = true;
       } catch (err) {
         if (evictable.length === 0) {
+          syncEvictedRecents();
           this.lastError = { code: err?.name || 'QUOTA_EXCEEDED', message: err?.message || String(err) };
           return false;
         }

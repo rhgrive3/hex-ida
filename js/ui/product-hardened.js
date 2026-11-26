@@ -1,9 +1,9 @@
-import { installProductUI as installBaseProductUI } from './product.js';
+import { installProductUI as installBaseProductUI, editBookmarkNote, makeStarButton } from './product.js';
 import { createProductSurfaceQueries } from '../analysis/query/product-surface.js';
 import { FUNCTION_TABS, EXPLORER_SCOPES } from './registry.js';
 import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, tabPanel, updateScreenTitle, listRow, VirtualList, scrollStrip } from './primitives.js';
 import { addrHex } from '../format.js';
-import { menu, Sheet, el, button, toast } from '../ui.js';
+import { menu } from '../ui.js';
 import { showRename, showComment, showPatches } from '../tools.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 
@@ -23,27 +23,6 @@ function addressText(value) {
 
 function currentFunctionName(app, address) {
   return app.symbols?.nameAt?.(address) || `sub_${BigInt(address).toString(16).toUpperCase()}`;
-}
-
-function editBookmarkNote(app, address, name) {
-  const sheet = new Sheet(text('ブックマークメモを編集', 'Edit bookmark note'));
-  const existing = app.bookmarks?.get?.(address)
-    ?? (app.bookmarks?.list?.() || []).find((b) => { try { return BigInt(b.addr) === BigInt(address); } catch { return false; } });
-  const field = el('div', 'field');
-  const input = el('input');
-  input.type = 'text';
-  input.value = String(existing?.note || '');
-  input.placeholder = text('メモを入力…', 'Enter note…');
-  const save = () => {
-    if (!app.bookmarks?.has?.(address)) app.bookmarks?.toggle?.(address, { name });
-    app.bookmarks?.setNote?.(address, { note: input.value.trim(), name });
-    sheet.close();
-    toast(text('ブックマークメモを保存しました。', 'Bookmark note saved.'));
-  };
-  field.append(input, button(text('保存', 'Save'), 'chip', save));
-  sheet.body.append(field);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
-  setTimeout(() => input.focus(), 50);
 }
 
 function noFileActions(app) {
@@ -289,24 +268,10 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
     s.body.append(errorState(text('関数アドレスが不正です', 'Invalid function address'), String(route.params.address || '')));
     return { root:s.root };
   }
+  app.setUiResume?.({ lastFunctionTab: 'overview' });
   const actions = h('div', 'ui-screen-actions');
-  const isStarred = () => !!app.bookmarks?.has?.(address);
-  const starBtn = uiButton(isStarred() ? '★' : '☆', {
-    cls: 'ui-icon-action ui-star-btn',
-    ariaLabel: isStarred() ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'),
-    pressed: isStarred(),
-    onClick: () => {
-      app.bookmarks?.toggle?.(address, { name: currentFunctionName(app, address) });
-      syncStar();
-    },
-  });
-  const syncStar = () => {
-    const saved = isStarred();
-    starBtn.textContent = saved ? '★' : '☆';
-    starBtn.setAttribute('aria-pressed', String(saved));
-    starBtn.setAttribute('aria-label', saved ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'));
-  };
-  const unsubBookmarks = app.bookmarks?.subscribe?.(syncStar) || null;
+  const starBtn = makeStarButton(app, address, currentFunctionName(app, address));
+  const unsubBookmarks = app.bookmarks?.subscribe?.(() => starBtn._syncStar?.()) || null;
   actions.append(starBtn, uiButton('•••', {
     cls: 'ui-icon-action',
     ariaLabel: text('関数の操作', 'Function actions'),

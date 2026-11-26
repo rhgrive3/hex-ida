@@ -1210,12 +1210,20 @@ export function showComment(app, addr) {
   const sheet = new Sheet('メモ');
   sheet.body.append(el('div', 'hint', addrHex(addr) + '\nこの行についてのメモを残します。'));
   const memo = textArea(app.notes.comment(addr) || '', 5);
-  sheet.body.append(memo);
-  sheet.body.append(field(el('span'), '保存', () => {
+  const save = () => {
     if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, 'メモ'); return; }
     sheet.close();
     toast('保存しました');
-  }));
+  };
+  memo.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      save();
+    }
+  });
+  sheet.body.append(memo);
+  sheet.body.append(field(el('span'), '保存', save));
+  setTimeout(() => memo.focus(), 50);
 }
 
 export function showNotes(app) {

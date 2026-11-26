@@ -1,4 +1,5 @@
 const stringCache = new WeakMap();
+const functionSearchCache = new WeakMap();
 const YIELD_EVERY = 4096;
 
 function abortError() {
@@ -47,8 +48,122 @@ export async function queryFunctions(app, query, { signal, offset = 0, limit = 2
     const addr = BigInt(row.address ?? row.startAddress ?? row.start ?? row.id);
     return { addr, name:row.name || `sub_${addr.toString(16).toUpperCase()}`, size:row.size ?? null };
   });
-  rows.sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
+  let alreadySorted = true;
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i - 1].addr > rows[i].addr) { alreadySorted = false; break; }
+  }
+  if (!alreadySorted) {
+    rows.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
+  }
   return attachQueryStatus(rows, result);
+}
+
+function getFunctionSearchIndex(symbols) {
+  const gen = symbols.gen ?? 0;
+  const cached = functionSearchCache.get(symbols);
+  if (cached && cached.gen === gen) return cached.entries;
+
+  const funcs = symbols.funcs;
+  const n = funcs.length;
+  const addrs = symbols.addrs || [];
+  const symNames = symbols.names || [];
+  const m = addrs.length;
+  const renames = symbols.renames instanceof Map ? symbols.renames : null;
+  const hasRenames = Boolean(renames && renames.size > 0);
+  const hasFnEnd = typeof symbols._functionEnd === 'function';
+  const funcEnds = symbols.funcEnds || null;
+
+  const entries = new Array(n);
+  let symIdx = 0;
+  for (let i = 0; i < n; i++) {
+    const addr = typeof funcs[i] === 'bigint' ? funcs[i] : BigInt(funcs[i]);
+    const hexLower = addr.toString(16);
+    let name = hasRenames ? (renames.get(addr.toString()) || null) : null;
+    while (symIdx < m && addrs[symIdx] < addr) symIdx++;
+    if (!name && symIdx < m && addrs[symIdx] === addr) {
+      name = symNames[symIdx] || null;
+    }
+    if (!name) name = `sub_${hexLower.toUpperCase()}`;
+    let end = null;
+    if (hasFnEnd) {
+      end = symbols._functionEnd(i);
+    } else if (funcEnds && i < funcEnds.length && funcEnds[i] != null && funcEnds[i] > addr) {
+      end = funcEnds[i];
+    }
+    const size = end != null && end > addr ? end - addr : null;
+    entries[i] = {
+      addr,
+      name,
+      nameLower: name.toLowerCase(),
+      hexLower,
+      size,
+    };
+  }
+  functionSearchCache.set(symbols, { gen, entries });
+  return entries;
+}
+
+function setHasAddr(set, addr) {
+  if (!set || typeof set.has !== 'function') return false;
+  return set.has(addr) || set.has(addr.toString());
+}
+
+export async function queryFunctionsFast(
+  app,
+  query,
+  { offset = 0, limit = 120, sort = 'address', filterSet = null, prioritySet = null } = {},
+) {
+  const symbols = app?.symbols;
+  if (!symbols || !symbols.funcs) {
+    const rows = await queryFunctions(app, query, { offset, limit });
+    const list = Array.isArray(rows) ? rows : [];
+    return {
+      items: list,
+      total: rows?.queryPage?.total ?? list.length,
+      complete: rows?.completeness ? rows.completeness === 'complete' : true,
+    };
+  }
+
+  const entries = getFunctionSearchIndex(symbols);
+  const q = String(query || '').trim().toLowerCase();
+  const hexQuery = q.startsWith('0x') ? q.slice(2) : (q.startsWith('sub_') ? q.slice(4) : null);
+
+  let matched;
+  if (!q && !filterSet) {
+    matched = sort === 'address' ? entries : entries.slice();
+  } else {
+    matched = [];
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (filterSet && !setHasAddr(filterSet, entry.addr)) continue;
+      if (q && !entry.nameLower.includes(q) && !entry.hexLower.includes(hexQuery ?? q)) continue;
+      matched.push(entry);
+    }
+  }
+
+  if (sort === 'name') {
+    matched.sort((a, b) => a.nameLower.localeCompare(b.nameLower) || (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
+  } else if (sort === 'size') {
+    matched.sort((a, b) => {
+      const sa = a.size ?? -1n;
+      const sb = b.size ?? -1n;
+      if (sa !== sb) return sa > sb ? -1 : 1;
+      return a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0;
+    });
+  } else if (sort === 'priority') {
+    matched.sort((a, b) => {
+      const pa = setHasAddr(prioritySet, a.addr) ? 1 : 0;
+      const pb = setHasAddr(prioritySet, b.addr) ? 1 : 0;
+      if (pa !== pb) return pb - pa;
+      return a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0;
+    });
+  }
+
+  const start = Math.max(0, Number.isSafeInteger(offset) ? offset : 0);
+  const count = Math.max(0, Number.isSafeInteger(limit) ? limit : 120);
+  const total = matched.length;
+  const items = matched.slice(start, start + count).map(({ addr, name, size }) => ({ addr, name, size }));
+  return { items, total, complete: true };
 }
 
 function stringIndexState(rows) {

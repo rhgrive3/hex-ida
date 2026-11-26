@@ -80,12 +80,12 @@ void test_adrp_invalidation_and_xzr_and_q_store() {
              words, 9u, 0x1008b0830ULL, nullptr, 0u, 0u,
              arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
   assert_parens_balanced(txt, len);
-  assert(contains(txt, len, "*(uint64 *)((uintptr_t)(x8))"));
+  assert(contains(txt, len, "*(uint64 *)(uintptr_t)x8"));
   assert(contains(txt, len, "(void)global_"));
   assert(!contains(txt, len, "0ULL = global_"));
   assert(contains(txt, len, "uint128 q0 = 0;"));
   assert(contains(txt, len, " = q0;"));
-  assert(contains(txt, len, "*(uint64 *)((uintptr_t)(x9))"));
+  assert(contains(txt, len, "*(uint64 *)(uintptr_t)x9"));
 }
 
 void test_bcond_lslv_asrv_div_sp_prfm_ldnp_fcvtau_cas_csel() {
@@ -156,7 +156,7 @@ void test_self_recursion_and_cross_label_adrp() {
   assert(!contains(txt, len, "uint64 sub_100001ABC (__HEX_ANY_ARGS);"));
   assert(contains(txt, len, "x0 = sub_100001abc(x0);"));
   assert(!contains(txt, len, "global_100001000"));
-  assert(contains(txt, len, "x8 = *(uint64 *)((uintptr_t)(x8));"));
+  assert(contains(txt, len, "x8 = *(uint64 *)(uintptr_t)x8;"));
 }
 
 void test_guards_oom_and_table_overflow() {
@@ -1312,6 +1312,229 @@ void test_wave32_readability_upgrades() {
   hex::decompiler::passes::set_general_scratch_arena(nullptr);
 }
 
+
+void test_wave33_track_a_readability() {
+  alignas(16) static uint8_t scratch_buf[512u * 1024u];
+  hex::Arena arena;
+  hex::Arena scratch;
+  arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+  scratch.init_fixed(scratch_buf, sizeof(scratch_buf));
+  const char* txt = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_cnt = 0u;
+  constexpr uint32_t kRet = 0xD65F03C0u;
+
+  hex::decompiler::passes::set_general_scratch_arena(&scratch);
+
+  // (1) A1: Non-adjacent CMP & FCMP fusion across non-clobbering instructions (gap = 3)
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w[] = {
+      0xEB01001Fu,  // 0: cmp x0, x1
+      0x91000442u,  // 1: add x2, x2, #1 (non-clobbering)
+      0x91000863u,  // 2: add x3, x3, #2 (non-clobbering)
+      0x540000C0u,  // 3: b.eq +24 -> 9 (ret)
+      0x1E612000u,  // 4: fcmp d0, d1
+      0x91000484u,  // 5: add x4, x4, #1 (non-clobbering)
+      0xD28000E5u,  // 6: mov x5, #7 (non-clobbering)
+      0x54000044u,  // 7: b.mi +8 -> 9 (ret)
+      0x91000400u,  // 8: add x0, x0, #1
+      kRet,         // 9: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100060000ULL, "w33_a1_nonadj", 13u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "__hex_nzcv"));
+    assert(contains(txt, len, "x0 == x1") || contains(txt, len, "x0 != x1"));
+    assert(contains(txt, len, "d0 < d1"));
+  }
+
+  // (2) A1 Soundness: Clobbering operand or crossing BL aborts fusion and keeps __hex_nzcv
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w_clob[] = {
+      0xEB01001Fu,  // 0: cmp x0, x1
+      0x91000400u,  // 1: add x0, x0, #1 (clobbers x0!)
+      0x54000040u,  // 2: b.eq +8 -> 4 (ret)
+      0x91000442u,  // 3: add x2, x2, #1
+      kRet,         // 4: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w_clob, 5u, 0x100061000ULL, "w33_a1_clobber", 14u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "__hex_nzcv"));
+
+    arena.reset();
+    scratch.reset();
+    const uint32_t w_call[] = {
+      0xEB01001Fu,  // 0: cmp x0, x1
+      0x94000010u,  // 1: bl +0x40 (call aborts fusion!)
+      0x54000040u,  // 2: b.eq +8 -> 4 (ret)
+      0x91000442u,  // 3: add x2, x2, #1
+      kRet,         // 4: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w_call, 5u, 0x100061100ULL, "w33_a1_call", 11u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "__hex_nzcv"));
+  }
+
+  // (3) A2: SUBS/ADDS (rd < 31) Z/N-flag fusion for EQ/NE/MI/PL + soundness guard for LT & clobber
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w[] = {
+      0xF1000400u,  // 0: subs x0, x0, #1
+      0x91000442u,  // 1: add x2, x2, #1 (non-clobbering)
+      0x540000A1u,  // 2: b.ne +20 -> 7 (ret)
+      0x2B020023u,  // 3: adds w3, w1, w2
+      0x54000064u,  // 4: b.mi +12 -> 7 (ret)
+      0x91000400u,  // 5: add x0, x0, #1
+      0x8B030000u,  // 6: add x0, x0, x3
+      kRet,         // 7: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 8u, 0x100062000ULL, "w33_a2_addsub_zn", 16u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "__hex_nzcv"));
+    assert(contains(txt, len, "x0 = x0 - 1;"));
+    assert(contains(txt, len, "x3 = (uint32_t)(x1 + (uint32_t)x2);"));
+    assert(contains(txt, len, "(int32_t)x3 < 0"));
+
+    // Soundness: SUBS + b.lt needs V flag -> MUST NOT fuse
+    arena.reset();
+    scratch.reset();
+    const uint32_t w_lt[] = {
+      0xF1000400u,  // 0: subs x0, x0, #1
+      0x5400004Bu,  // 1: b.lt +8 -> 3 (ret)
+      0x91000442u,  // 2: add x2, x2, #1
+      kRet,         // 3: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w_lt, 4u, 0x100062100ULL, "w33_a2_lt_guard", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "__hex_nzcv"));
+  }
+
+  // (4) A3: CCMP/CCMN + adjacent single-use consumer short-circuit fusion (&& and ||, outer fused & outer __hex_nzcv)
+  {
+    // (4a) else_val == false -> ((outer) && (inner)), ZERO __hex_nzcv
+    arena.reset();
+    scratch.reset();
+    const uint32_t w_and[] = {
+      0xF100001Fu,  // 0: cmp x0, #0
+      0xFA451824u,  // 1: ccmp x1, #5, #4, ne (if x0!=0 cmp(x1,5) else Z=1)
+      0x54000041u,  // 2: b.ne +8 -> 4 (ret) -- eval_nzcv_imm(4, NE) = false -> &&
+      0x91000400u,  // 3: add x0, x0, #1
+      kRet,         // 4: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w_and, 5u, 0x100063000ULL, "w33_a3_ccmp_and", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "__hex_nzcv"));
+    assert(contains(txt, len, "&&"));
+    assert(contains(txt, len, "x0 != 0"));
+    assert(contains(txt, len, "x1 != 5"));
+
+    // (4b) else_val == true -> (!(outer) || (inner)), ZERO __hex_nzcv
+    arena.reset();
+    scratch.reset();
+    const uint32_t w_or[] = {
+      0xF100001Fu,  // 0: cmp x0, #0
+      0xFA451824u,  // 1: ccmp x1, #5, #4, ne (if x0!=0 cmp(x1,5) else Z=1)
+      0x54000040u,  // 2: b.eq +8 -> 4 (ret) -- eval_nzcv_imm(4, EQ) = true -> ||
+      0x91000400u,  // 3: add x0, x0, #1
+      kRet,         // 4: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w_or, 5u, 0x100063100ULL, "w33_a3_ccmp_or", 14u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "__hex_nzcv"));
+    assert(contains(txt, len, "||"));
+    assert(contains(txt, len, "!(x0 != 0)"));
+    assert(contains(txt, len, "x1 == 5"));
+
+    // (4c) Outer from __hex_nzcv + CCMP + CSEL -> still fuses CCMP into CSEL (no else { __hex_nzcv = ... })
+    arena.reset();
+    scratch.reset();
+    const uint32_t w_nzcv[] = {
+      0xF100041Fu,  // 0: cmp x0, #1
+      0x91000400u,  // 1: add x0, x0, #1 (clobbers x0 -> outer CMP stays __hex_nzcv)
+      0xFA420820u,  // 2: ccmp x1, #2, #0, eq (if Z==1 cmp(x1,2) else 0)
+      0x9A840062u,  // 3: csel x2, x3, x4, eq
+      0xAA0203E0u,  // 4: mov x0, x2
+      kRet,         // 5: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w_nzcv, 6u, 0x100063200ULL, "w33_a3_ccmp_csel", 16u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "} else { __hex_nzcv ="));
+    assert(contains(txt, len, "(((__hex_nzcv & 4u) != 0u) && (x1 == 2)) ? x3 : x4;"));
+
+    // (4d) Soundness: NZCV live after consumer (two consumers after CCMP) -> MUST NOT fuse CCMP
+    arena.reset();
+    scratch.reset();
+    const uint32_t w_live[] = {
+      0xF100001Fu,  // 0: cmp x0, #0
+      0xFA451824u,  // 1: ccmp x1, #5, #4, ne
+      0x1A9F17E2u,  // 2: cset w2, eq
+      0x54000040u,  // 3: b.eq +8 -> 5 (ret)
+      0x91000400u,  // 4: add x0, x0, #1
+      kRet,         // 5: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w_live, 6u, 0x100063300ULL, "w33_a3_ccmp_live", 16u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "} else { __hex_nzcv = 4u; }"));
+  }
+
+  // (5) A4: SXTW cast cleanup, unified (uint64)(int64_t)(int32_t), zero-offset deref, and CSET bool cleanup
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w[] = {
+      0x93407C20u,  // 0: sxtw x0, w1
+      0x8B21C800u,  // 1: add x0, x0, w1, sxtw #2
+      0xF9400002u,  // 2: ldr x2, [x0]
+      0xF9000002u,  // 3: str x2, [x0]
+      0x7100001Fu,  // 4: cmp w0, #0
+      0x1A9F17E3u,  // 5: cset w3, eq (csinc w3, wzr, wzr, ne -> (uint64)((uint32_t)x0 == 0))
+      0x1E612000u,  // 6: fcmp d0, d1
+      0x1A9FC7E4u,  // 7: cset w4, le (csinc w4, wzr, wzr, gt -> NaN-safe (uint64)(!(d0 > d1)))
+      0x8B030080u,  // 8: add x0, x4, x3
+      kRet,         // 9: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100064000ULL, "w33_a4_cleanups", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "(int32_t)(uint32_t)"));
+    assert(!contains(txt, len, "(uint64_t)(int64_t)(int32_t)"));
+    assert(contains(txt, len, "x0 = (uint64)(int64_t)(int32_t)x1;"));
+    assert(contains(txt, len, "x2 = *(uint64 *)(uintptr_t)x0;"));
+    assert(contains(txt, len, "*(uint64 *)(uintptr_t)x0 = x2;"));
+    assert(!contains(txt, len, "((uintptr_t)(x0))"));
+    assert(!contains(txt, len, "? 0ULL : 1ULL"));
+    assert(contains(txt, len, "x3 = (uint64)((uint32_t)x0 == 0);"));
+    assert(contains(txt, len, "x4 = (uint64)(!(d0 > d1));"));
+    assert(!contains(txt, len, "d0 <= d1"));
+  }
+
+  hex::decompiler::passes::set_general_scratch_arena(nullptr);
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -1327,6 +1550,7 @@ int main() {
   test_wave30_structurizer_v5();
   test_wave31_zero_goto_state_machine();
   test_wave32_readability_upgrades();
+  test_wave33_track_a_readability();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }

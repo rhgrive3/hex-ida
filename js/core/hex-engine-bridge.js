@@ -831,21 +831,29 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
         if (spec.needInt64) needInt64 = true;
         for (const r of spec.regs) extraRegs.add(r);
         // Remove dummy prototype line
-        out = out.replace(new RegExp(`^uint64 sub_${hex} \\(__HEX_ANY_ARGS\\);\\n`, 'gm'), '');
+        const protoLine = `uint64 sub_${hex} (__HEX_ANY_ARGS);\n`;
+        if (out.includes(protoLine)) {
+          while (out.startsWith(protoLine)) out = out.slice(protoLine.length);
+          const nlProto = `\n${protoLine}`;
+          while (out.includes(nlProto)) out = out.replaceAll(nlProto, '\n');
+        }
         // Rewrite `x0 = sub_HEX(/* arguments unknown */);`
+        const bareCall = `sub_${hex}(/* arguments unknown */);`;
+        const assignCall = `x0 = ${bareCall}`;
+        const retCall = `return ${bareCall}`;
         if (spec.ret === 'void') {
-          out = out.replace(new RegExp(`x0 = sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call};`);
+          out = out.replaceAll(assignCall, `${spec.call};`);
           const voidTailRet = /^void\s+[A-Za-z_][A-Za-z0-9_]*\(/m.test(out) ? 'return;' : 'return 0;';
-          out = out.replace(new RegExp(`return sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call}; ${voidTailRet}`);
-          out = out.replace(new RegExp(`sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `${spec.call};`);
+          out = out.replaceAll(retCall, `${spec.call}; ${voidTailRet}`);
+          out = out.replaceAll(bareCall, `${spec.call};`);
         } else if (spec.ret === 'd0') {
-          out = out.replace(new RegExp(`x0 = sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `d0 = ${spec.call};`);
-          out = out.replace(new RegExp(`return sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `return ${spec.call};`);
-          out = out.replace(new RegExp(`sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `d0 = ${spec.call};`);
+          out = out.replaceAll(assignCall, `d0 = ${spec.call};`);
+          out = out.replaceAll(retCall, `return ${spec.call};`);
+          out = out.replaceAll(bareCall, `d0 = ${spec.call};`);
         } else {
-          out = out.replace(new RegExp(`x0 = sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `x0 = ${spec.call};`);
-          out = out.replace(new RegExp(`return sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `return ${spec.call};`);
-          out = out.replace(new RegExp(`sub_${hex}\\(\\/\\* arguments unknown \\*\\/\\);`, 'g'), `x0 = ${spec.call};`);
+          out = out.replaceAll(assignCall, `x0 = ${spec.call};`);
+          out = out.replaceAll(retCall, `return ${spec.call};`);
+          out = out.replaceAll(bareCall, `x0 = ${spec.call};`);
         }
       }
     }
@@ -1331,9 +1339,12 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       const rawLineNo = extractedLm[i].lineNo;
       const lineNo = rawLineNo + post.addedLines + (rawLineNo > bodyThreshold ? (post.bodyAddedLines || 0) : 0);
       const address = extractedLm[i].address;
-      const list = rawLinemap.get(lineNo) || [];
-      if (!list.includes(address)) list.push(address);
-      rawLinemap.set(lineNo, list);
+      let set = rawLinemap.get(lineNo);
+      if (!set) {
+        set = new Set();
+        rawLinemap.set(lineNo, set);
+      }
+      set.add(address);
     }
 
     const rawLines = post.lines || pseudocode.split('\n');
@@ -1421,7 +1432,8 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         kind = 'stmt';
       }
 
-      const mappedAddrs = rawLinemap.get(idx + 1) || [];
+      const mappedSet = rawLinemap.get(idx + 1);
+      const mappedAddrs = mappedSet ? Array.from(mappedSet) : [];
       const isBraceOrElse = kind === 'ctrl' && (
         trimmed === '{' || trimmed === '}' || trimmed === '} else {' || trimmed === 'else {'
       );
@@ -1545,9 +1557,12 @@ function readDecompileLinemap(mem, lmPtr, lmCount) {
       const off = lmPtr + i * SIZEOF_HEX_LINEMAP_ENTRY;
       const lineNo = dv.getUint32(off, true);
       const address = dv.getBigUint64(off + 8, true);
-      const list = rawLinemap.get(lineNo) || [];
-      if (!list.includes(address)) list.push(address);
-      rawLinemap.set(lineNo, list);
+      let set = rawLinemap.get(lineNo);
+      if (!set) {
+        set = new Set();
+        rawLinemap.set(lineNo, set);
+      }
+      set.add(address);
     }
   }
   return rawLinemap;
@@ -1579,7 +1594,8 @@ function buildDecompiledLinesAndSourceMap(pseudocode, rawLinemap, baseAddrBig, a
       kind = 'stmt';
     }
 
-    const mappedAddrs = rawLinemap.get(idx + 1) || [];
+    const mappedEntry = rawLinemap.get(idx + 1);
+    const mappedAddrs = mappedEntry ? (Array.isArray(mappedEntry) ? mappedEntry : Array.from(mappedEntry)) : [];
     const firstAddr = isPrelude || kind === 'decl' ? null : (kind === 'sig' ? baseAddrBig : (mappedAddrs[0] ?? null));
     const lineAddresses = isPrelude || kind === 'sig'
       ? [baseAddrBig]

@@ -269,10 +269,14 @@ struct CmpState {
   uint32_t rhs_reg;
   uint64_t rhs_imm;
   bool is_nzcv_var;
+  bool is_ccmp;
+  bool ccmp_else_val;
+  uint32_t ccmp_outer_cond;
+  const CmpState* ccmp_outer;
 };
 
 static inline CmpState make_nzcv_cmp(bool is32 = false) {
-  return CmpState{true, is32, false, false, false, false, false, 0u, 0u, 0ULL, true};
+  return CmpState{true, is32, false, false, false, false, false, 0u, 0u, 0ULL, true, false, false, 0u, nullptr};
 }
 
 struct AnalysisCtx {
@@ -484,7 +488,7 @@ static bool try_decode_fusable_cmp(uint32_t w, CmpState* out) {
     const uint32_t sh = (w >> 22u) & 1u;
     const uint64_t imm = static_cast<uint64_t>((w >> 10u) & 0xFFFu) << (sh ? 12u : 0u);
     const uint32_t rn = (w >> 5u) & 31u;
-    *out = CmpState{true, !is64, false, true, !is_sub, false, rn == 31u, rn, 0u, imm, false};
+    *out = CmpState{true, !is64, false, true, !is_sub, false, rn == 31u, rn, 0u, imm, false, false, false, 0u, nullptr};
     return true;
   }
   // CMP / CMN shifted register with imm6 == 0 (SUBS/ADDS with rd == 31)
@@ -493,7 +497,7 @@ static bool try_decode_fusable_cmp(uint32_t w, CmpState* out) {
     const bool is_sub = ((w >> 30u) & 1u) != 0u;
     const uint32_t rm = (w >> 16u) & 31u;
     const uint32_t rn = (w >> 5u) & 31u;
-    *out = CmpState{true, !is64, false, false, !is_sub, false, false, rn, rm, 0ULL, false};
+    *out = CmpState{true, !is64, false, false, !is_sub, false, false, rn, rm, 0ULL, false, false, false, 0u, nullptr};
     return true;
   }
   // TST immediate (ANDS imm with rd == 31)
@@ -502,7 +506,7 @@ static bool try_decode_fusable_cmp(uint32_t w, CmpState* out) {
     uint64_t imm = 0ULL;
     if (decode_bitmask_imm((w >> 22u) & 1u, (w >> 10u) & 0x3Fu, (w >> 16u) & 0x3Fu, is64, &imm)) {
       const uint32_t rn = (w >> 5u) & 31u;
-      *out = CmpState{true, !is64, false, true, false, true, false, rn, 0u, imm, false};
+      *out = CmpState{true, !is64, false, true, false, true, false, rn, 0u, imm, false, false, false, 0u, nullptr};
       return true;
     }
   }
@@ -512,7 +516,7 @@ static bool try_decode_fusable_cmp(uint32_t w, CmpState* out) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
     const uint32_t rm = (w >> 16u) & 31u;
     const uint32_t rn = (w >> 5u) & 31u;
-    *out = CmpState{true, !is64, false, false, false, true, false, rn, rm, 0ULL, false};
+    *out = CmpState{true, !is64, false, false, false, true, false, rn, rm, 0ULL, false, false, false, 0u, nullptr};
     return true;
   }
   // FCMP (reg or #0.0)
@@ -520,7 +524,99 @@ static bool try_decode_fusable_cmp(uint32_t w, CmpState* out) {
     const bool is_zero = ((w >> 3u) & 1u) != 0u;
     const uint32_t rm = (w >> 16u) & 31u;
     const uint32_t rn = (w >> 5u) & 31u;
-    *out = CmpState{true, false, true, is_zero, false, false, false, rn, rm, 0ULL, false};
+    *out = CmpState{true, false, true, is_zero, false, false, false, rn, rm, 0ULL, false, false, false, 0u, nullptr};
+    return true;
+  }
+  return false;
+}
+
+static bool try_decode_fusable_addsub_zn(uint32_t w, CmpState* out) {
+  // SUBS / ADDS immediate (S=1, rd < 31) -> Z/N flags match CMP rd, #0
+  if ((w & 0x1F800000u) == 0x11000000u && ((w >> 29u) & 1u) != 0u && (w & 31u) < 31u) {
+    const bool is64 = ((w >> 31u) & 1u) != 0u;
+    const uint32_t rd = w & 31u;
+    *out = CmpState{true, !is64, false, true, false, false, false, rd, 0u, 0ULL, false, false, false, 0u, nullptr};
+    return true;
+  }
+  // SUBS / ADDS shifted register (S=1, rd < 31) -> Z/N flags match CMP rd, #0
+  if ((w & 0x1F200000u) == 0x0B000000u && ((w >> 29u) & 1u) != 0u && (w & 31u) < 31u) {
+    const bool is64 = ((w >> 31u) & 1u) != 0u;
+    const uint32_t rd = w & 31u;
+    *out = CmpState{true, !is64, false, true, false, false, false, rd, 0u, 0ULL, false, false, false, 0u, nullptr};
+    return true;
+  }
+  return false;
+}
+
+static bool is_control_flow_or_call(uint32_t w) {
+  if ((w & 0xFC000000u) == 0x94000000u) return true;  // BL
+  if ((w & 0xFFFFFC1Fu) == 0xD63F0000u || (w & 0xFFFFF81Fu) == 0xD63F081Fu || (w & 0xFFFFF800u) == 0xD73F0800u) return true;  // BLR/BLRAA/BLRAB
+  if ((w & 0xFC000000u) == 0x14000000u) return true;  // B
+  if ((w & 0xFFFFFC1Fu) == 0xD61F0000u || (w & 0xFFFFF81Fu) == 0xD61F081Fu || (w & 0xFFFFF800u) == 0xD71F0800u) return true;  // BR/BRAA/BRAB
+  if ((w & 0xFFFFFC1Fu) == 0xD65F0000u || w == 0xD65F0BFFu || w == 0xD65F0FFFu) return true;  // RET/RETAA/RETAB
+  if ((w & 0x7E000000u) == 0x34000000u) return true;  // CBZ/CBNZ
+  if ((w & 0x7E000000u) == 0x36000000u) return true;  // TBZ/TBNZ
+  if ((w & 0xFF000010u) == 0x54000000u) return true;  // B.cond
+  if ((w & 0xFFE0001Fu) == 0xD4200000u || (w & 0xFFE0001Fu) == 0xD4400000u || (w & 0xFFE0001Fu) == 0xD4000001u) return true;  // BRK/HLT/SVC
+  return false;
+}
+
+static bool try_decode_ccmp(uint32_t w, CmpState* out_inner, uint32_t* out_outer_cond, uint32_t* out_nzcv_imm) {
+  if ((w & 0x3FE00410u) != 0x3A400000u) return false;
+  const bool is64 = ((w >> 31u) & 1u) != 0u;
+  const bool is_sub = ((w >> 30u) & 1u) != 0u;
+  const bool is_imm = ((w >> 11u) & 1u) != 0u;
+  const uint32_t rm_or_imm = (w >> 16u) & 31u;
+  const uint32_t cond = (w >> 12u) & 15u;
+  const uint32_t rn = (w >> 5u) & 31u;
+  const uint32_t nzcv_imm = w & 15u;
+  *out_inner = CmpState{true, !is64, false, is_imm, !is_sub, false, false, rn,
+                        is_imm ? 0u : rm_or_imm, is_imm ? static_cast<uint64_t>(rm_or_imm) : 0ULL,
+                        false, false, false, 0u, nullptr};
+  *out_outer_cond = cond;
+  *out_nzcv_imm = nzcv_imm;
+  return true;
+}
+
+static bool eval_nzcv_imm(uint32_t nzcv, uint32_t cond) {
+  const bool n = ((nzcv >> 3u) & 1u) != 0u;
+  const bool z = ((nzcv >> 2u) & 1u) != 0u;
+  const bool c = ((nzcv >> 1u) & 1u) != 0u;
+  const bool v = (nzcv & 1u) != 0u;
+  switch (cond & 0xFu) {
+    case 0x0u: return z;
+    case 0x1u: return !z;
+    case 0x2u: return c;
+    case 0x3u: return !c;
+    case 0x4u: return n;
+    case 0x5u: return !n;
+    case 0x6u: return v;
+    case 0x7u: return !v;
+    case 0x8u: return c && !z;
+    case 0x9u: return !c || z;
+    case 0xAu: return n == v;
+    case 0xBu: return n != v;
+    case 0xCu: return !z && (n == v);
+    case 0xDu: return z || (n != v);
+    default: return true;
+  }
+}
+
+static bool try_get_ccmp_consumer_cond(
+    uint32_t w, uint64_t pc, uint64_t base_addr, uint32_t word_count, uint32_t* out_cond) {
+  if ((w & 0xFF000010u) == 0x54000000u) {
+    const int64_t delta = sign_extend((w >> 5u) & 0x7FFFFu, 19u) * 4LL;
+    const uint64_t target = pc + static_cast<uint64_t>(delta);
+    if (!is_internal_target(target, base_addr, word_count, nullptr)) return false;
+    *out_cond = w & 0xFu;
+    return true;
+  }
+  if ((w & 0x3FE00800u) == 0x1A800000u) {
+    *out_cond = (w >> 12u) & 0xFu;
+    return true;
+  }
+  if ((w & 0xFF200C00u) == 0x1E200C00u && ((w >> 22u) & 3u) <= 1u) {
+    *out_cond = (w >> 12u) & 0xFu;
     return true;
   }
   return false;
@@ -601,7 +697,7 @@ static void emit_ext_reg(TextBuf& tb, uint32_t rm, uint32_t option, uint32_t imm
     case 3u: tb.put_str("(uint64_t)"); tb.put_reg_x(rm); break;
     case 4u: tb.put_str("(uint64_t)(int64_t)(int8_t)"); tb.put_reg_x(rm); break;
     case 5u: tb.put_str("(uint64_t)(int64_t)(int16_t)"); tb.put_reg_x(rm); break;
-    case 6u: tb.put_str("(uint64_t)(int64_t)(int32_t)"); tb.put_reg_x(rm); break;
+    case 6u: tb.put_str("(uint64)(int64_t)(int32_t)"); tb.put_reg_x(rm); break;
     default: tb.put_str("(uint64_t)(int64_t)"); tb.put_reg_x(rm); break;
   }
   if (imm3 != 0u) {
@@ -674,9 +770,76 @@ static void emit_nzcv_addsub_tail(TextBuf& tb, bool is64, bool is_sub, uint32_t 
   tb.put_str(" }\n");
 }
 
+static void emit_fused_addsub_clean(uint32_t w, uint64_t pc, AnalysisCtx& ctx, TextBuf& tb) {
+  if ((w & 0x1F800000u) == 0x11000000u) {
+    const bool is64 = ((w >> 31u) & 1u) != 0u;
+    const bool is_sub = ((w >> 30u) & 1u) != 0u;
+    const uint32_t sh = (w >> 22u) & 1u;
+    const uint64_t imm = static_cast<uint64_t>((w >> 10u) & 0xFFFu) << (sh ? 12u : 0u);
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    tb.record_line(pc);
+    tb.put_str("    ");
+    tb.put_reg_x(rd);
+    tb.put_str(" = ");
+    if (!is64) tb.put_str("(uint32_t)(");
+    tb.put_reg_x_or_sp(rn);
+    if (imm != 0ULL) {
+      tb.put_str(is_sub ? " - " : " + ");
+      tb.put_imm(imm);
+    }
+    if (!is64) tb.put_char(')');
+    tb.put_str(";\n");
+    ctx.clear_adrp(rd);
+    return;
+  }
+  if ((w & 0x1F200000u) == 0x0B000000u) {
+    const bool is64 = ((w >> 31u) & 1u) != 0u;
+    const bool is_sub = ((w >> 30u) & 1u) != 0u;
+    const uint32_t shift_type = (w >> 22u) & 3u;
+    const uint32_t rm = (w >> 16u) & 31u;
+    const uint32_t imm6 = (w >> 10u) & 0x3Fu;
+    const uint32_t rn = (w >> 5u) & 31u;
+    const uint32_t rd = w & 31u;
+    tb.record_line(pc);
+    tb.put_str("    ");
+    tb.put_reg_x(rd);
+    tb.put_str(" = ");
+    if (!is64) tb.put_str("(uint32_t)(");
+    if (rn == 31u && is_sub) {
+      tb.put_str("-");
+    } else {
+      tb.put_reg_x(rn);
+      tb.put_str(is_sub ? " - " : " + ");
+    }
+    emit_shifted_reg(tb, rm, shift_type, imm6, is64);
+    if (!is64) tb.put_char(')');
+    tb.put_str(";\n");
+    ctx.clear_adrp(rd);
+    return;
+  }
+}
+
 static void emit_cond_expr(TextBuf& tb, uint32_t cond, const CmpState& cmp) {
   if (!cmp.valid) {
     tb.put_str("(1)");
+    return;
+  }
+  if (cmp.is_ccmp && cmp.ccmp_outer) {
+    CmpState inner_only = cmp;
+    inner_only.is_ccmp = false;
+    inner_only.ccmp_outer = nullptr;
+    tb.put_char('(');
+    if (cmp.ccmp_else_val) {
+      tb.put_char('!');
+      emit_cond_expr(tb, cmp.ccmp_outer_cond, *cmp.ccmp_outer);
+      tb.put_str(" || ");
+    } else {
+      emit_cond_expr(tb, cmp.ccmp_outer_cond, *cmp.ccmp_outer);
+      tb.put_str(" && ");
+    }
+    emit_cond_expr(tb, cond, inner_only);
+    tb.put_char(')');
     return;
   }
   const uint32_t c = cond & 0xFu;
@@ -828,17 +991,39 @@ static void emit_mem_addr(TextBuf& tb, uint32_t rn, int64_t disp) {
   }
 }
 
-static void emit_mem_load_type(TextBuf& tb, uint32_t size_bits, bool is_signed, bool is_fp) {
+static const char* mem_load_type_name(uint32_t size_bits, bool is_signed, bool is_fp) {
   if (is_fp) {
-    if (size_bits == 128u) tb.put_str("*(uint128 *)(");
-    else if (size_bits == 64u) tb.put_str("*(double *)(");
-    else tb.put_str("*(float *)(");
-    return;
+    if (size_bits == 128u) return "uint128";
+    if (size_bits == 64u) return "double";
+    return "float";
   }
-  if (size_bits == 8u) tb.put_str(is_signed ? "*(int8_t *)(" : "*(uint8_t *)(");
-  else if (size_bits == 16u) tb.put_str(is_signed ? "*(int16_t *)(" : "*(uint16_t *)(");
-  else if (size_bits == 32u) tb.put_str(is_signed ? "*(int32_t *)(" : "*(uint32_t *)(");
-  else tb.put_str("*(uint64 *)(");
+  if (size_bits == 8u) return is_signed ? "int8_t" : "uint8_t";
+  if (size_bits == 16u) return is_signed ? "int16_t" : "uint16_t";
+  if (size_bits == 32u) return is_signed ? "int32_t" : "uint32_t";
+  return "uint64";
+}
+
+static void emit_mem_load_type(TextBuf& tb, uint32_t size_bits, bool is_signed, bool is_fp) {
+  tb.put_str("*(");
+  tb.put_str(mem_load_type_name(size_bits, is_signed, is_fp));
+  tb.put_str(" *)(");
+}
+
+static void emit_mem_deref_typed(TextBuf& tb, const char* type_name, uint32_t rn, int64_t disp) {
+  tb.put_str("*(");
+  tb.put_str(type_name);
+  if (disp == 0) {
+    tb.put_str(" *)(uintptr_t)");
+    tb.put_reg_x_or_sp(rn);
+  } else {
+    tb.put_str(" *)(");
+    emit_mem_addr(tb, rn, disp);
+    tb.put_char(')');
+  }
+}
+
+static void emit_mem_deref(TextBuf& tb, uint32_t size_bits, bool is_signed, bool is_fp, uint32_t rn, int64_t disp) {
+  emit_mem_deref_typed(tb, mem_load_type_name(size_bits, is_signed, is_fp), rn, disp);
 }
 
 static void mark_mem_types(AnalysisCtx& ctx, uint32_t size_bits, bool is_signed, bool is_fp) {
@@ -1692,7 +1877,7 @@ static void process_insn(
       tb->put_str(" = ");
       if (opc == 0u && is64 && immr == 0u && imms == 31u) {
         // SXTW
-        tb->put_str("(uint64)(int64_t)(int32_t)(uint32_t)");
+        tb->put_str("(uint64)(int64_t)(int32_t)");
         tb->put_reg_x(rn);
       } else if (opc == 0u && immr == 0u && imms == 7u) {
         tb->put_str(is64 ? "(uint64)(int64_t)(int8_t)" : "(uint32_t)(int32_t)(int8_t)");
@@ -1813,6 +1998,21 @@ static void process_insn(
       tb->put_str("    ");
       tb->put_reg_x(rd);
       tb->put_str(" = ");
+      if (!op_neg && op2 == 1u && rn == 31u && rm == 31u && cond < 0xEu && cmp.valid) {
+        // CSET rd, invert(cond) -> (uint64)(inv_cond) or (uint64)(!(cond))
+        const uint32_t inv_cond = cond ^ 1u;
+        tb->put_str("(uint64)");
+        if (cmp.is_nzcv_var || (!cmp.is_ccmp && cond_fusable_for_cmp(cmp, inv_cond))) {
+          emit_cond_expr(*tb, inv_cond, cmp);
+        } else {
+          tb->put_str("(!");
+          emit_cond_expr(*tb, cond, cmp);
+          tb->put_char(')');
+        }
+        tb->put_str(";\n");
+        ctx.clear_adrp(rd);
+        return;
+      }
       if (!is64) tb->put_str("(uint32_t)(");
       emit_cond_expr(*tb, cond, cmp);
       tb->put_str(" ? ");
@@ -2009,13 +2209,11 @@ static void process_insn(
             tb->put_reg_x(reg);
           }
           tb->put_str(is_ldpsw ? " = (uint64)(int64_t)" : " = ");
-          emit_mem_load_type(*tb, bits, is_ldpsw, is_fp);
-          emit_mem_addr(*tb, rn, off);
-          tb->put_str(");\n");
+          emit_mem_deref(*tb, bits, is_ldpsw, is_fp, rn, off);
+          tb->put_str(";\n");
         } else {
-          emit_mem_load_type(*tb, bits, false, is_fp);
-          emit_mem_addr(*tb, rn, off);
-          tb->put_str(") = ");
+          emit_mem_deref(*tb, bits, false, is_fp, rn, off);
+          tb->put_str(" = ");
           if (is_fp) {
             if (bits == 128u) tb->put_reg_q(reg);
             else if (bits == 32u) { tb->put_str("(float)"); tb->put_reg_d(reg); }
@@ -2257,8 +2455,8 @@ static void process_insn(
             tb->put_reg_x(rt);
           }
           tb->put_str(raw_q_sub ? " = (uint128)(" : " = ");
-          emit_mem_load_type(*tb, bits, raw_q_sub ? false : is_signed, raw_q_sub ? false : is_fp);
           if (is_regoff) {
+            emit_mem_load_type(*tb, bits, raw_q_sub ? false : is_signed, raw_q_sub ? false : is_fp);
             tb->put_str("(uintptr_t)(");
             tb->put_reg_x_or_sp(rn);
             tb->put_str(") + ");
@@ -2271,10 +2469,12 @@ static void process_insn(
             } else {
               tb->put_reg_x(rm);
             }
+            tb->put_str(raw_q_sub ? "));\n" : ");\n");
           } else {
-            emit_mem_addr(*tb, rn, (idx_mode == 1u || idx_mode == 3u) ? 0LL : disp);
+            emit_mem_deref(*tb, bits, raw_q_sub ? false : is_signed, raw_q_sub ? false : is_fp, rn,
+                           (idx_mode == 1u || idx_mode == 3u) ? 0LL : disp);
+            tb->put_str(raw_q_sub ? ");\n" : ";\n");
           }
-          tb->put_str(raw_q_sub ? "));\n" : ");\n");
           if (is_fp) {
             if (bits == 128u || raw_q_sub) emit_sync_q_to_d(tb, ctx, rt, bits == 64u);
             else emit_sync_d_to_q(tb, ctx, rt, bits == 64u);
@@ -2282,8 +2482,8 @@ static void process_insn(
             ctx.clear_adrp(rt);
           }
         } else {
-          emit_mem_load_type(*tb, bits, false, raw_q_sub ? false : is_fp);
           if (is_regoff) {
+            emit_mem_load_type(*tb, bits, false, raw_q_sub ? false : is_fp);
             tb->put_str("(uintptr_t)(");
             tb->put_reg_x_or_sp(rn);
             tb->put_str(") + ");
@@ -2296,10 +2496,12 @@ static void process_insn(
             } else {
               tb->put_reg_x(rm);
             }
+            tb->put_str(") = ");
           } else {
-            emit_mem_addr(*tb, rn, (idx_mode == 1u || idx_mode == 3u) ? 0LL : disp);
+            emit_mem_deref(*tb, bits, false, raw_q_sub ? false : is_fp, rn,
+                           (idx_mode == 1u || idx_mode == 3u) ? 0LL : disp);
+            tb->put_str(" = ");
           }
-          tb->put_str(") = ");
           if (is_fp) {
             if (bits == 128u) tb->put_reg_q(rt);
             else if (raw_q_sub) {
@@ -2398,17 +2600,15 @@ static void process_insn(
           tb->put_str("    ");
           tb->put_reg_x(rt);
           tb->put_str(" = ");
-          emit_mem_load_type(*tb, bits, false, false);
-          emit_mem_addr(*tb, rn, 0LL);
-          tb->put_str(");\n");
+          emit_mem_deref(*tb, bits, false, false, rn, 0LL);
+          tb->put_str(";\n");
           ctx.clear_adrp(rt);
         }
       } else {
         rec();
         tb->put_str("    ");
-        emit_mem_load_type(*tb, bits, false, false);
-        emit_mem_addr(*tb, rn, 0LL);
-        tb->put_str(") = ");
+        emit_mem_deref(*tb, bits, false, false, rn, 0LL);
+        tb->put_str(" = ");
         if (bits == 8u) tb->put_str("(uint8_t)");
         else if (bits == 16u) tb->put_str("(uint16_t)");
         else if (bits == 32u) tb->put_str("(uint32_t)");
@@ -4721,14 +4921,13 @@ static void process_insn(
             tb->put_str("    ");
             if (is_load) {
               tb->put_reg_q(rg);
-              tb->put_str(is_128 ? " = *(uint128 *)(" : " = (uint128)*(uint64_t *)(");
-              emit_mem_addr(*tb, rn, off);
-              tb->put_str(");\n");
+              tb->put_str(is_128 ? " = " : " = (uint128)");
+              emit_mem_deref_typed(*tb, is_128 ? "uint128" : "uint64_t", rn, off);
+              tb->put_str(";\n");
               emit_sync_q_to_d(tb, ctx, rg, sz == 3u);
             } else {
-              tb->put_str(is_128 ? "*(uint128 *)(" : "*(uint64_t *)(");
-              emit_mem_addr(*tb, rn, off);
-              tb->put_str(is_128 ? ") = " : ") = (uint64_t)");
+              emit_mem_deref_typed(*tb, is_128 ? "uint128" : "uint64_t", rn, off);
+              tb->put_str(is_128 ? " = " : " = (uint64_t)");
               tb->put_reg_q(rg);
               tb->put_str(";\n");
             }
@@ -5040,19 +5239,15 @@ static void process_insn(
       const char* ut = neon_utype(bits);
       tb->put_str("    { ");
       tb->put_str(ut);
-      tb->put_str(" __old = *(");
-      tb->put_str(ut);
-      tb->put_str(" *)(");
-      emit_mem_addr(*tb, rn, 0LL);
-      tb->put_str("); if (__old == (");
+      tb->put_str(" __old = ");
+      emit_mem_deref_typed(*tb, ut, rn, 0LL);
+      tb->put_str("; if (__old == (");
       tb->put_str(ut);
       tb->put_str(")");
       tb->put_reg_x(rs);
-      tb->put_str(") *(");
-      tb->put_str(ut);
-      tb->put_str(" *)(");
-      emit_mem_addr(*tb, rn, 0LL);
-      tb->put_str(") = (");
+      tb->put_str(") ");
+      emit_mem_deref_typed(*tb, ut, rn, 0LL);
+      tb->put_str(" = (");
       tb->put_str(ut);
       tb->put_str(")");
       tb->put_reg_x(rt);
@@ -5090,15 +5285,11 @@ static void process_insn(
         const char* ut = neon_utype(bits);
         tb->put_str("    { ");
         tb->put_str(ut);
-        tb->put_str(" __old = *(");
-        tb->put_str(ut);
-        tb->put_str(" *)(");
-        emit_mem_addr(*tb, rn, 0LL);
-        tb->put_str("); *(");
-        tb->put_str(ut);
-        tb->put_str(" *)(");
-        emit_mem_addr(*tb, rn, 0LL);
-        tb->put_str(") = ");
+        tb->put_str(" __old = ");
+        emit_mem_deref_typed(*tb, ut, rn, 0LL);
+        tb->put_str("; ");
+        emit_mem_deref_typed(*tb, ut, rn, 0LL);
+        tb->put_str(" = ");
         if (is_swp) {
           tb->put_str("(");
           tb->put_str(ut);
@@ -8412,8 +8603,10 @@ HexStatus try_emit_arm64_general(
   // and to soundly fuse adjacent single-use cmp/cmn/tst/fcmp + b.cc/csel/fcsel/ccmp/fccmp pairs.
   uint32_t live_in_gpr0 = ctx.gpr_read_before_write & 0xFFu;
   uint32_t live_in_fp0 = ctx.fp_read_before_write & 0xFFu;
-  uint8_t* fuse_cmp = work_arena.alloc<uint8_t>(word_count);
-  if (fuse_cmp) __builtin_memset(fuse_cmp, 0, word_count);
+  uint8_t* fuse_cmp_dist = work_arena.alloc<uint8_t>(word_count);
+  if (fuse_cmp_dist) __builtin_memset(fuse_cmp_dist, 0, word_count);
+  uint8_t* fuse_ccmp = work_arena.alloc<uint8_t>(word_count);
+  if (fuse_ccmp) __builtin_memset(fuse_ccmp, 0, word_count);
   {
     uint32_t* blk_id = work_arena.alloc<uint32_t>(word_count);
     uint32_t num_blks = 0u;
@@ -8566,8 +8759,10 @@ HexStatus try_emit_arm64_general(
         live_in_gpr0 = b_in_g[0] & ~uninit_local_mask;
         live_in_fp0 = b_in_f[0];
 
-        // Compute conservative single-use fuse_cmp[i] using exact CFG NZCV liveness.
-        if (fuse_cmp) {
+        // Compute conservative single-use fuse_cmp_dist[i] (A1: CMP/CMN/TST/FCMP gap 1..8,
+        // A2: SUBS/ADDS rd<31 Z/N-flag gap 1..6) and fuse_ccmp[i] (A3: CCMP/CCMN + adjacent consumer)
+        // using exact CFG NZCV liveness.
+        if (fuse_cmp_dist) {
           auto nzcv_live_after = [&](uint32_t k) -> bool {
             if (insn_writes_nzcv(words[k])) return false;
             const uint32_t b = blk_id[k];
@@ -8580,24 +8775,75 @@ HexStatus try_emit_arm64_general(
             return false;
           };
           for (uint32_t idx = 0u; idx + 1u < word_count; ++idx) {
-            if (is_label[idx + 1u] != 0u) continue;
             CmpState fcmp{};
-            if (!try_decode_fusable_cmp(words[idx], &fcmp)) continue;
-            uint32_t cond = 0u;
-            const uint64_t next_pc = base_addr + static_cast<uint64_t>(idx + 1u) * 4ULL;
-            if (!try_get_fusable_consumer_cond(words[idx + 1u], next_pc, base_addr, word_count, &cond)) continue;
-            if (!cond_fusable_for_cmp(fcmp, cond)) continue;
-            if (nzcv_live_after(idx + 1u)) continue;
-            fuse_cmp[idx] = 1u;
-            if (!fcmp.is_fp) {
-              const uint32_t cc = cond & 0xFu;
-              const bool need_signed = (cc == 0x4u || cc == 0x5u || cc == 0xAu || cc == 0xBu || cc == 0xCu || cc == 0xDu);
-              if (fcmp.is32) {
-                ctx.uses_uint32 = true;
-                if (need_signed) ctx.uses_int32 = true;
+            bool is_addsub_zn = false;
+            if (!try_decode_fusable_cmp(words[idx], &fcmp)) {
+              if (try_decode_fusable_addsub_zn(words[idx], &fcmp)) {
+                is_addsub_zn = true;
               } else {
-                ctx.uses_uint64_t = true;
-                if (need_signed) ctx.uses_int64_t = true;
+                // A3: CCMP/CCMN + adjacent single-use consumer (B.cc / CSET / CSEL / FCSEL)
+                if (fuse_ccmp && is_label[idx + 1u] == 0u) {
+                  CmpState inner_cmp{};
+                  uint32_t outer_cond = 0u;
+                  uint32_t nzcv_imm = 0u;
+                  if (try_decode_ccmp(words[idx], &inner_cmp, &outer_cond, &nzcv_imm)) {
+                    uint32_t consumer_cond = 0u;
+                    const uint64_t next_pc = base_addr + static_cast<uint64_t>(idx + 1u) * 4ULL;
+                    if (try_get_ccmp_consumer_cond(words[idx + 1u], next_pc, base_addr, word_count, &consumer_cond) &&
+                        cond_fusable_for_cmp(inner_cmp, consumer_cond) &&
+                        !nzcv_live_after(idx + 1u)) {
+                      fuse_ccmp[idx] = 1u;
+                    }
+                  }
+                }
+                continue;
+              }
+            }
+            const uint32_t max_k = is_addsub_zn ? 6u : 8u;
+            for (uint32_t k = 1u; k <= max_k && idx + k < word_count; ++k) {
+              if (is_label[idx + k] != 0u) break;
+              const uint32_t wk = words[idx + k];
+              const uint64_t pc_k = base_addr + static_cast<uint64_t>(idx + k) * 4ULL;
+              uint32_t cond = 0u;
+              if (try_get_fusable_consumer_cond(wk, pc_k, base_addr, word_count, &cond)) {
+                const uint32_t cc = cond & 0xFu;
+                const bool cond_ok = is_addsub_zn
+                    ? (cc == 0x0u || cc == 0x1u || cc == 0x4u || cc == 0x5u)
+                    : cond_fusable_for_cmp(fcmp, cond);
+                if (cond_ok && !nzcv_live_after(idx + k)) {
+                  fuse_cmp_dist[idx] = static_cast<uint8_t>(k);
+                  if (!fcmp.is_fp) {
+                    const bool need_signed = (cc == 0x4u || cc == 0x5u || cc == 0xAu || cc == 0xBu || cc == 0xCu || cc == 0xDu);
+                    if (fcmp.is32) {
+                      ctx.uses_uint32 = true;
+                      if (need_signed) ctx.uses_int32 = true;
+                    } else {
+                      ctx.uses_uint64_t = true;
+                      if (need_signed) ctx.uses_int64_t = true;
+                    }
+                  }
+                }
+                break;
+              }
+              if (is_control_flow_or_call(wk) || insn_reads_nzcv(wk) || insn_writes_nzcv(wk)) break;
+              __builtin_memset(bctx_ptr, 0, offsetof(AnalysisCtx, globals));
+              bctx_ptr->global_count = 0u;
+              bctx_ptr->callee_count = 0u;
+              CmpState scmp{};
+              process_insn(wk, pc_k, base_addr, word_count, *bctx_ptr, scmp, false, nullptr);
+              if (fcmp.is_fp) {
+                const uint32_t fp_mod = bctx_ptr->fp_written | bctx_ptr->q_used;
+                if ((fp_mod & (1u << fcmp.lhs_reg)) != 0u) break;
+                if (!fcmp.is_imm && (fp_mod & (1u << fcmp.rhs_reg)) != 0u) break;
+              } else {
+                if (fcmp.lhs_is_sp) {
+                  if (bctx_ptr->uses_sp) break;
+                } else if (fcmp.lhs_reg < 31u && (bctx_ptr->gpr_written_insn & (1u << fcmp.lhs_reg)) != 0u) {
+                  break;
+                }
+                if (!fcmp.is_imm && fcmp.rhs_reg < 31u && (bctx_ptr->gpr_written_insn & (1u << fcmp.rhs_reg)) != 0u) {
+                  break;
+                }
               }
             }
           }
@@ -8822,10 +9068,15 @@ HexStatus try_emit_arm64_general(
   const uint32_t body_start_line = tb.line_no;
   for (uint32_t r = 0u; r < 31u; ++r) { ctx.adrp_valid[r] = false; ctx.saved_adrp_valid[r] = false; ctx.adrp_consumed[r] = false; }
   cmp = ctx.uses_nzcv ? make_nzcv_cmp(false) : CmpState{};
+  CmpState pending_cmp{};
+  CmpState ccmp_outer_storage{};
+  uint32_t pending_consumer = 0u;
+  bool has_pending_cmp = false;
   bool pending_label = false;
   for (uint32_t i = 0u; i < word_count; ++i) {
     const uint64_t pc = base_addr + static_cast<uint64_t>(i) * 4ULL;
     if (is_label[i] != 0u) {
+      has_pending_cmp = false;
       const uint32_t pw = (i > 0u) ? words[i - 1u] : 0u;
       const bool after_term = (i > 0u) && (((pw & 0xFFFFFC1Fu) == 0xD65F0000u) || pw == 0xD65F0BFFu || pw == 0xD65F0FFFu || ((pw & 0xFC000000u) == 0x14000000u));
       for (uint32_t r = 0u; r < 31u; ++r) {
@@ -8842,17 +9093,55 @@ HexStatus try_emit_arm64_general(
       tb.put_str(":\n");
       pending_label = true;
     }
-    if (fuse_cmp && fuse_cmp[i] != 0u) {
+    bool consumed_pending = false;
+    if (has_pending_cmp && i == pending_consumer) {
+      cmp = pending_cmp;
+      has_pending_cmp = false;
+      consumed_pending = true;
+    }
+    if (fuse_ccmp && fuse_ccmp[i] != 0u && i + 1u < word_count) {
+      CmpState inner_cmp{};
+      uint32_t outer_cond = 0u;
+      uint32_t nzcv_imm = 0u;
+      uint32_t consumer_cond = 0u;
+      const uint64_t next_pc = base_addr + static_cast<uint64_t>(i + 1u) * 4ULL;
+      if (try_decode_ccmp(words[i], &inner_cmp, &outer_cond, &nzcv_imm) &&
+          try_get_ccmp_consumer_cond(words[i + 1u], next_pc, base_addr, word_count, &consumer_cond)) {
+        ccmp_outer_storage = cmp;
+        inner_cmp.is_ccmp = true;
+        inner_cmp.ccmp_else_val = eval_nzcv_imm(nzcv_imm, consumer_cond);
+        inner_cmp.ccmp_outer_cond = outer_cond;
+        inner_cmp.ccmp_outer = &ccmp_outer_storage;
+        pending_cmp = inner_cmp;
+        pending_consumer = i + 1u;
+        has_pending_cmp = true;
+        cmp = ctx.uses_nzcv ? make_nzcv_cmp(false) : CmpState{};
+        continue;
+      }
+    }
+    if (fuse_cmp_dist && fuse_cmp_dist[i] != 0u) {
       CmpState fcmp{};
       if (try_decode_fusable_cmp(words[i], &fcmp)) {
-        cmp = fcmp;
+        pending_cmp = fcmp;
+        pending_consumer = i + static_cast<uint32_t>(fuse_cmp_dist[i]);
+        has_pending_cmp = true;
+        continue;
+      }
+      if (try_decode_fusable_addsub_zn(words[i], &fcmp)) {
+        const uint32_t before_len = tb.len;
+        emit_fused_addsub_clean(words[i], pc, ctx, tb);
+        if (tb.len > before_len) pending_label = false;
+        pending_cmp = fcmp;
+        pending_consumer = i + static_cast<uint32_t>(fuse_cmp_dist[i]);
+        has_pending_cmp = true;
+        if (tb.overflow) return HEX_ERR_OOM;
         continue;
       }
     }
     const uint32_t before_len = tb.len;
     process_insn(words[i], pc, base_addr, word_count, ctx, cmp, true, &tb);
     if (tb.len > before_len) pending_label = false;
-    if (fuse_cmp && i > 0u && fuse_cmp[i - 1u] != 0u) {
+    if (consumed_pending) {
       cmp = ctx.uses_nzcv ? make_nzcv_cmp(false) : CmpState{};
     }
     if (tb.overflow) return HEX_ERR_OOM;

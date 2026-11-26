@@ -42,6 +42,9 @@ import { AnalysisResumeStore, captureAppAnalysisState, applyAppAnalysisState } f
 import {
   BookmarkStore,
   DeltaSessionStore,
+  VALID_EXPLORER_FILTERS,
+  VALID_EXPLORER_SORTS,
+  VALID_FUNCTION_TABS,
   makeDeltaKey,
   countDeltaItems,
   serializeDeltaJson,
@@ -270,6 +273,7 @@ export class App {
     this.lastDeltaRestore = null;
     this.onDeltaRestored = null;
     this.restoredRoutePath = null;
+    this.uiResume = { explorerFilter: 'all', explorerSort: 'address', lastFunctionTab: null };
     this._deltaReadyEpoch = -1;
     this._deltaReadySlice = -1;
     this.bookmarks = new BookmarkStore({
@@ -286,7 +290,7 @@ export class App {
       }
     });
     /* 命令の書き換え（patch.js）。保存を選ぶまでファイルには触らない。 */
-    this.patches = new PatchSet();
+    this.patches = this._createPatchSet();
     /* 追加した機能（plugins.js）。 */
     this.plugins = new PluginHost(this);
 
@@ -374,6 +378,29 @@ export class App {
     });
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
     this.workspace = new ProductWorkspace(this);
+    if (this.workspace && typeof this.workspace.autosave === 'function' && !this.workspace.autosave.__deltaWrapped) {
+      const origAutosave = this.workspace.autosave.bind(this.workspace);
+      let prevAnnRef = this.projectAnnotations;
+      let prevAnnLen = Array.isArray(this.projectAnnotations) ? this.projectAnnotations.length : -1;
+      let prevAnnLast = Array.isArray(this.projectAnnotations) && prevAnnLen > 0
+        ? this.projectAnnotations[prevAnnLen - 1]
+        : null;
+      const wrappedAutosave = (...args) => {
+        const result = origAutosave(...args);
+        const curRef = this.projectAnnotations;
+        const curLen = Array.isArray(curRef) ? curRef.length : -1;
+        const curLast = Array.isArray(curRef) && curLen > 0 ? curRef[curLen - 1] : null;
+        if (curRef !== prevAnnRef || curLen !== prevAnnLen || curLast !== prevAnnLast) {
+          prevAnnRef = curRef;
+          prevAnnLen = curLen;
+          prevAnnLast = curLast;
+          if (!this._applyingDelta) this.scheduleDeltaSave();
+        }
+        return result;
+      };
+      wrappedAutosave.__deltaWrapped = true;
+      this.workspace.autosave = wrappedAutosave;
+    }
     this.analysisQueries = createLazyAppAnalysisQueryAPI(this);
     this.analysisResume = new AnalysisResumeStore();
     this.analysisResumeReady = Promise.resolve(false);
@@ -1244,6 +1271,55 @@ export class App {
     };
   }
 
+  _createPatchSet(patches = new PatchSet()) {
+    const wrap = (method) => {
+      const orig = patches[method].bind(patches);
+      patches[method] = (...args) => {
+        const result = orig(...args);
+        if (!this._applyingDelta && this.patches === patches) {
+          this.store.set({ patches: this.patches.size });
+          this.scheduleDeltaSave();
+        }
+        return result;
+      };
+    };
+    wrap('add');
+    wrap('remove');
+    wrap('clear');
+    return patches;
+  }
+
+  setUiResume(patch) {
+    if (!patch || typeof patch !== 'object') return false;
+    let changed = false;
+    if ('explorerFilter' in patch) {
+      const val = patch.explorerFilter;
+      if (typeof val === 'string' && VALID_EXPLORER_FILTERS.has(val) && this.uiResume.explorerFilter !== val) {
+        this.uiResume.explorerFilter = val;
+        changed = true;
+      }
+    }
+    if ('explorerSort' in patch) {
+      const val = patch.explorerSort;
+      if (typeof val === 'string' && VALID_EXPLORER_SORTS.has(val) && this.uiResume.explorerSort !== val) {
+        this.uiResume.explorerSort = val;
+        changed = true;
+      }
+    }
+    if ('lastFunctionTab' in patch) {
+      const val = patch.lastFunctionTab;
+      const normalized = val === null ? null : (typeof val === 'string' && VALID_FUNCTION_TABS.has(val) ? val : undefined);
+      if (normalized !== undefined && this.uiResume.lastFunctionTab !== normalized) {
+        this.uiResume.lastFunctionTab = normalized;
+        changed = true;
+      }
+    }
+    if (changed && !this._applyingDelta) {
+      this.scheduleDeltaSave();
+    }
+    return changed;
+  }
+
   _currentDeltaKey() {
     const fp = this._currentDeltaFingerprint();
     return fp ? makeDeltaKey(fp) : null;
@@ -1286,6 +1362,9 @@ export class App {
       history: (this.navigation?.entries || []).slice(-100),
       historyIndex: Number.isSafeInteger(this.navigation?.index) ? this.navigation.index : -1,
       lastGoal: this.lastGoal?.text ? { text: String(this.lastGoal.text) } : null,
+      explorerFilter: this.uiResume?.explorerFilter || 'all',
+      explorerSort: this.uiResume?.explorerSort || 'address',
+      lastFunctionTab: this.uiResume?.lastFunctionTab ?? null,
     };
     return {
       format: 'hex-delta-session',
@@ -1369,6 +1448,18 @@ export class App {
       this.restoredRoutePath = typeof resume.routePath === 'string' && resume.routePath.trim()
         ? resume.routePath.trim()
         : null;
+
+      this.uiResume = {
+        explorerFilter: typeof resume.explorerFilter === 'string' && VALID_EXPLORER_FILTERS.has(resume.explorerFilter)
+          ? resume.explorerFilter
+          : 'all',
+        explorerSort: typeof resume.explorerSort === 'string' && VALID_EXPLORER_SORTS.has(resume.explorerSort)
+          ? resume.explorerSort
+          : 'address',
+        lastFunctionTab: typeof resume.lastFunctionTab === 'string' && VALID_FUNCTION_TABS.has(resume.lastFunctionTab)
+          ? resume.lastFunctionTab
+          : null,
+      };
 
       if (restoreNavigation && this.navigation && Array.isArray(resume.history) && resume.history.length) {
         const limit = this.navigation.limit > 0 ? this.navigation.limit : 40;
@@ -1552,6 +1643,7 @@ export class App {
       this.navigation?.reset?.(region ? this.navigationEntry(region.vmAddr, pick('解析の開始', 'Analysis start')) : null);
       this.lastDeltaRestore = null;
       this.restoredRoutePath = null;
+      this.uiResume = { explorerFilter: 'all', explorerSort: 'address', lastFunctionTab: null };
       this.store.set({ deltaRestored: null });
       this.updateChrome?.();
     } finally {
@@ -1607,8 +1699,9 @@ export class App {
     this.bookmarks?.clear?.({ silent: true });
     this.lastDeltaRestore=null;
     this.restoredRoutePath=null;
+    this.uiResume = { explorerFilter: 'all', explorerSort: 'address', lastFunctionTab: null };
     this.store.set({ deltaRestored: null });
-    this.patches=new PatchSet();
+    this.patches=this._createPatchSet();
     this.store.set({patches:0});
     this.setBusy(false);
     this.applySlice(sliceIndex,info);
@@ -1983,8 +2076,10 @@ export class App {
     this.bookmarks?.clear?.({ silent: true });
     this.lastDeltaRestore=null;
     this.restoredRoutePath=null;
+    this.uiResume = { explorerFilter: 'all', explorerSort: 'address', lastFunctionTab: null };
     this.store.set({ deltaRestored: null });
-    this.patches=new PatchSet();
+    this.patches = new PatchSet();
+    this._createPatchSet(this.patches);
     this.store.set({patches:0});
     const file=this.store.get('file');
     const epoch=this.backend.gen;
@@ -2015,7 +2110,9 @@ export class App {
   async importProjectFile(file){
     if(!this.store.get('fileInfo'))throw new Error('open-file-first');
     if(!this.workspace.identity)await this.workspace.bind();
-    const project=await this.workspace.importProject(file);this.activeProject=project;this.updateChrome();return project;
+    const project=await this.workspace.importProject(file);this.activeProject=project;this.updateChrome();
+    if (!this._applyingDelta) this.scheduleDeltaSave();
+    return project;
   }
 
   async loadDiffBaseline(file, options={}){return this.workspace.loadBaseline(file, options);}

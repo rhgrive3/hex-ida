@@ -632,3 +632,70 @@
 .product-ui-ready .ui-delta-strip-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-2); }
 .product-ui-ready .ui-delta-btn { min-height: 30px; padding: 4px 10px; font-size: var(--ui-font-xs); }
 .product-ui-ready .ui-delta-dismiss { min-width: 30px; min-height: 30px; padding: 2px 8px; }
+
+/* Wave 33 Track D: Interactive Pseudocode Tokens, Address Links & Explorer Filter/Sort */
+.product-ui-ready .ui-pseudocode [data-tok]:not(.tok-fn-link):not(.tok-addr-link) {
+  cursor: pointer;
+}
+.product-ui-ready .ui-pseudocode .tok-hit {
+  background: color-mix(in srgb, var(--ui-accent) 42%, transparent);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-accent) 70%, transparent);
+}
+.product-ui-ready .ui-pseudocode .tok-addr-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+.product-ui-ready .ui-pseudocode .tok-addr-link:hover,
+.product-ui-ready .ui-pseudocode .tok-addr-link:focus-visible {
+  color: #cfe3ff;
+  text-decoration-style: solid;
+}
+
+.product-ui-ready .ui-explorer-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-width: 0;
+}
+.product-ui-ready .ui-explorer-filter-chip {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 5px 11px;
+  font-size: var(--ui-font-sm);
+  white-space: nowrap;
+}
+.product-ui-ready .ui-explorer-sort {
+  margin-left: auto;
+  min-height: 36px;
+  padding: 5px 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: var(--ui-font-sm);
+  cursor: pointer;
+}
+.product-ui-ready .ui-edited-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ui-accent) 16%, var(--ui-surface));
+  color: var(--ui-accent-strong);
+  font-size: var(--ui-font-xs);
+  font-weight: 700;
+  line-height: 1;
+}
+.product-ui-ready .ui-explorer-content .ui-list-row-subtitle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

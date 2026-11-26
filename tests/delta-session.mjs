@@ -496,4 +496,166 @@ function createMockIndexedDB() {
   }
 }
 
+/* ── 7. C1: _saveLocalStorage evict-then-fail prunes recents ── */
+{
+  // (a1) Evict existing entries then fail with TOTAL_QUOTA_EXCEEDED
+  const ls1 = createMemoryLocalStorage();
+  const store1 = new DeltaSessionStore({
+    indexedDB: null,
+    localStorage: ls1,
+    maxEntryBytes: 10 * 1024,
+    maxTotalBytes: 2 * 1024,
+  });
+  const ok1 = await store1.save('evict_fail_old', {
+    fingerprint: { sha256: 'sha_old', name: 'Old.bin', size: 100 },
+    updatedAt: 100,
+    delta: { names: { '4096': 'old_fn' } },
+  });
+  assert.equal(ok1, true);
+  assert.equal((await store1.listRecent({ onlyWithDelta: false, limit: 10 })).length, 1);
+
+  // Entry larger than maxTotalBytes (2 KiB) but smaller than maxEntryBytes (10 KiB)
+  const bigComments = {};
+  for (let i = 0; i < 10; i++) bigComments[String(0x1000 + i * 4)] = 'Z'.repeat(300);
+  const ok2 = await store1.save('evict_fail_big', {
+    fingerprint: { sha256: 'sha_big', name: 'Big.bin', size: 200 },
+    updatedAt: 200,
+    delta: { comments: bigComments },
+  });
+  assert.equal(ok2, false);
+  assert.equal(store1.lastError?.code, 'TOTAL_QUOTA_EXCEEDED');
+  assert.equal(await store1.load('evict_fail_old'), null, 'victim entry should be evicted');
+  const recentsAfterTotalFail = await store1.listRecent({ onlyWithDelta: false, limit: 10 });
+  assert.deepEqual(recentsAfterTotalFail, [], 'evicted entry must be pruned from listRecent() after TOTAL_QUOTA_EXCEEDED');
+
+  // (a2) Evict existing entries then fail with QuotaExceededError (evictable.length === 0)
+  const ls2 = createMemoryLocalStorage({ quotaBytes: 2200 });
+  const store2 = new DeltaSessionStore({
+    indexedDB: null,
+    localStorage: ls2,
+    maxEntryBytes: 10 * 1024,
+    maxTotalBytes: 10 * 1024,
+  });
+  assert.equal(await store2.save('quota_old', {
+    fingerprint: { sha256: 'sha_q_old', name: 'QuotaOld.bin', size: 100 },
+    updatedAt: 100,
+    delta: { names: { '4096': 'q_old' } },
+  }), true);
+  assert.equal((await store2.listRecent({ onlyWithDelta: false, limit: 10 })).length, 1);
+
+  const okQuota = await store2.save('quota_new', {
+    fingerprint: { sha256: 'sha_q_new', name: 'QuotaNew.bin', size: 200 },
+    updatedAt: 200,
+    delta: { comments: bigComments },
+  });
+  assert.equal(okQuota, false);
+  assert.equal(store2.lastError?.code, 'QuotaExceededError');
+  assert.equal(await store2.load('quota_old'), null, 'victim entry should be evicted during quota retry');
+  const recentsAfterQuotaFail = await store2.listRecent({ onlyWithDelta: false, limit: 10 });
+  assert.deepEqual(recentsAfterQuotaFail, [], 'evicted entry must be pruned from listRecent() after QuotaExceededError');
+}
+
+/* ── 8. C3: resume UI fields round-trip & invalid rejection ─── */
+{
+  const ls = createMemoryLocalStorage();
+  const store = new DeltaSessionStore({ indexedDB: null, localStorage: ls });
+  const fp = { sha256: 'ui_resume_hash', name: 'UiResume.bin', size: 512 };
+  const key = makeDeltaKey(fp);
+
+  // Valid values round-trip via DeltaSessionStore + JSON serialize/parse
+  const payload = {
+    fingerprint: fp,
+    updatedAt: 7000,
+    delta: { names: { '4096': 'fn_ui' } },
+    resume: {
+      explorerFilter: 'saved',
+      explorerSort: 'priority',
+      lastFunctionTab: 'pseudocode',
+    },
+  };
+  assert.equal(await store.save(key, payload), true);
+  const loaded = await store.load(key);
+  assert.equal(loaded.version, DELTA_SESSION_VERSION);
+  assert.equal(loaded.resume.explorerFilter, 'saved');
+  assert.equal(loaded.resume.explorerSort, 'priority');
+  assert.equal(loaded.resume.lastFunctionTab, 'pseudocode');
+
+  const parsed = parseDeltaJson(serializeDeltaJson(payload));
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.record.resume.explorerFilter, 'saved');
+  assert.equal(parsed.record.resume.explorerSort, 'priority');
+  assert.equal(parsed.record.resume.lastFunctionTab, 'pseudocode');
+
+  // Invalid values rejected -> normalized to defaults
+  const badPayload = {
+    fingerprint: fp,
+    updatedAt: 7001,
+    delta: {},
+    resume: {
+      explorerFilter: 'invalid_filter',
+      explorerSort: 'random_sort',
+      lastFunctionTab: 'unknown_tab',
+    },
+  };
+  const parsedBad = parseDeltaJson(serializeDeltaJson(badPayload));
+  assert.equal(parsedBad.ok, true);
+  assert.equal(parsedBad.record.resume.explorerFilter, 'all');
+  assert.equal(parsedBad.record.resume.explorerSort, 'address');
+  assert.equal(parsedBad.record.resume.lastFunctionTab, null);
+
+  // Legacy v1 JSON without UI fields defaults cleanly
+  const legacyJson = JSON.stringify({
+    format: DELTA_SESSION_FORMAT,
+    version: DELTA_SESSION_VERSION,
+    fingerprint: fp,
+    delta: {},
+    resume: { displayMode: 'asm' },
+  });
+  const parsedLegacy = parseDeltaJson(legacyJson);
+  assert.equal(parsedLegacy.ok, true);
+  assert.equal(parsedLegacy.record.resume.explorerFilter, 'all');
+  assert.equal(parsedLegacy.record.resume.explorerSort, 'address');
+  assert.equal(parsedLegacy.record.resume.lastFunctionTab, null);
+}
+
+/* ── 9. C2: NoteStore.subscribe coexists with onChange ──────── */
+{
+  const prevLS = globalThis.localStorage;
+  globalThis.localStorage = createMemoryLocalStorage();
+  try {
+    const notes = new NoteStore('delta-subscribe-test');
+    const onChangeKinds = [];
+    const sub1Kinds = [];
+    const sub2Kinds = [];
+
+    notes.setOnChange((ev) => onChangeKinds.push(ev.kind));
+    const unsub1 = notes.subscribe((ev) => sub1Kinds.push(ev.kind));
+    // Throwing subscriber must be isolated and not block other subscribers
+    const unsubThrow = notes.subscribe(() => { throw new Error('boom'); });
+    const unsub2 = notes.subscribe((ev) => sub2Kinds.push(ev.kind));
+
+    notes.setName(0x2000n, 'alpha');
+    notes.setComment(0x2000n, 'note');
+    assert.deepEqual(onChangeKinds, ['save', 'name', 'comment']);
+    assert.deepEqual(sub1Kinds, ['save', 'name', 'comment']);
+    assert.deepEqual(sub2Kinds, ['save', 'name', 'comment']);
+
+    // Unsubscribe sub1; onChange and sub2 still fire
+    unsub1();
+    unsubThrow();
+    notes.setVarName(0x2000n, 'x0', 'self');
+    assert.deepEqual(sub1Kinds, ['save', 'name', 'comment']);
+    assert.deepEqual(onChangeKinds, ['save', 'name', 'comment', 'var']);
+    assert.deepEqual(sub2Kinds, ['save', 'name', 'comment', 'var']);
+
+    // Works even when onChange is null
+    notes.setOnChange(null);
+    notes.setType(0x2000n, 'ret', 'void');
+    assert.deepEqual(sub2Kinds, ['save', 'name', 'comment', 'var', 'type']);
+    unsub2();
+  } finally {
+    globalThis.localStorage = prevLS;
+  }
+}
+
 console.log('delta-session tests: PASS');

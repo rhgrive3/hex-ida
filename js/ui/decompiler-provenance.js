@@ -9,10 +9,11 @@ const EMPTY = Object.freeze([]);
  * Display-only C highlighting. Each token is a child span of its line, so the
  * line's text (what Copy and the provenance map see) stays byte-identical.
  */
-const C_TOKEN = /(\/\*.*?\*\/|\/\/.*$)|("(?:\\.|[^"\\])*")|(^\s*#(?:include|define|ifdef|ifndef|if|elif|else|endif|pragma)\b)|(\b0x[0-9a-fA-F]+\b|\b\d+\b)|\b(if|else|while|for|do|return|break|continue|switch|case|default|goto|typedef|struct|union|enum|sizeof|const|static|extern)\b|\b(void|bool|char|short|int|long|float|double|unsigned|signed|size_t|uintptr_t|intptr_t|u?int(?:8|16|32|64|128)(?:_t)?)\b|\b(__hex_(?:state|nzcv|stack_frame)\w*)\b|\b([A-Za-z_]\w*)(?=\s*\()/g;
-const C_TOKEN_CLASS = ['tok-cmt', 'tok-str', 'tok-pp', 'tok-num', 'tok-kw', 'tok-type', 'tok-internal', 'tok-fn'];
+const C_TOKEN = /(\/\*.*?\*\/|\/\/.*$)|("(?:\\.|[^"\\])*")|(^\s*#(?:include|define|ifdef|ifndef|if|elif|else|endif|pragma)\b)|(\b0x[0-9a-fA-F]+\b|\b\d+\b)|\b(if|else|while|for|do|return|break|continue|switch|case|default|goto|typedef|struct|union|enum|sizeof|const|static|extern)\b|\b(void|bool|char|short|int|long|float|double|unsigned|signed|size_t|uintptr_t|intptr_t|u?int(?:8|16|32|64|128)(?:_t)?)\b|\b(__hex_(?:state|nzcv|stack_frame)\w*)\b|\b([A-Za-z_]\w*)(?=\s*\()|\b([A-Za-z_]\w*)\b/g;
+const C_TOKEN_CLASS = ['tok-cmt', 'tok-str', 'tok-pp', 'tok-num', 'tok-kw', 'tok-type', 'tok-internal', 'tok-fn', 'tok-id'];
+const CMT_ADDR_RE = /^(\/\*\s*(?:block|entry|case)\s+)(0x[0-9a-fA-F]+)(\s*\*\/)$/;
 
-export function appendHighlighted(row, content, { isSig = false, resolveCallee = null, onOpenCallee = null } = {}) {
+export function appendHighlighted(row, content, { isSig = false, resolveCallee = null, onOpenCallee = null, onOpenAddress = null } = {}) {
   let last = 0;
   C_TOKEN.lastIndex = 0;
   for (let match = C_TOKEN.exec(content); match; match = C_TOKEN.exec(content)) {
@@ -21,6 +22,33 @@ export function appendHighlighted(row, content, { isSig = false, resolveCallee =
     const group = match.slice(1).findIndex(value => value !== undefined);
     const cls = C_TOKEN_CLASS[group] || null;
     const tokenText = match[0];
+    if (cls === 'tok-cmt' && typeof onOpenAddress === 'function') {
+      const addrMatch = CMT_ADDR_RE.exec(tokenText);
+      if (addrMatch) {
+        let addrBig = null;
+        try { addrBig = BigInt(addrMatch[2]); } catch { addrBig = null; }
+        if (addrBig != null) {
+          const link = h('span', 'tok-cmt tok-addr-link', addrMatch[2]);
+          link.setAttribute('role', 'link');
+          link.tabIndex = 0;
+          link.setAttribute('data-addr', addrMatch[2]);
+          link.addEventListener('click', (event) => {
+            event.stopPropagation();
+            onOpenAddress(addrBig);
+          });
+          link.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenAddress(addrBig);
+            }
+          });
+          row.append(h('span', 'tok-cmt', addrMatch[1]), link, h('span', 'tok-cmt', addrMatch[3]));
+          last = match.index + tokenText.length;
+          continue;
+        }
+      }
+    }
     if (cls === 'tok-fn' && !isSig && typeof resolveCallee === 'function' && typeof onOpenCallee === 'function') {
       let addr = null;
       try { addr = resolveCallee(tokenText); } catch { addr = null; }
@@ -28,6 +56,7 @@ export function appendHighlighted(row, content, { isSig = false, resolveCallee =
         const link = h('span', 'tok-fn tok-fn-link', tokenText);
         link.tabIndex = 0;
         link.setAttribute('role', 'link');
+        link.setAttribute('data-tok', tokenText);
         link.addEventListener('click', (event) => {
           event.stopPropagation();
           onOpenCallee(addr, tokenText);
@@ -44,17 +73,78 @@ export function appendHighlighted(row, content, { isSig = false, resolveCallee =
         continue;
       }
     }
-    row.append(h('span', cls, tokenText));
+    const span = h('span', cls, tokenText);
+    if (cls === 'tok-id' || cls === 'tok-internal' || cls === 'tok-fn') {
+      span.setAttribute('data-tok', tokenText);
+    }
+    row.append(span);
     last = match.index + tokenText.length;
   }
   if (last < content.length) row.append(h('span', null, content.slice(last)));
 }
 
+export function attachTokenHighlight(codeEl) {
+  if (!codeEl || typeof codeEl.addEventListener !== 'function') return () => {};
+  let index = null;
+  let activeToken = null;
+  let activeNodes = [];
+  const ensureIndex = () => {
+    if (index) return index;
+    index = new Map();
+    for (const node of codeEl.querySelectorAll('[data-tok]')) {
+      const tok = node.getAttribute('data-tok');
+      if (!tok) continue;
+      let list = index.get(tok);
+      if (!list) { list = []; index.set(tok, list); }
+      list.push(node);
+    }
+    return index;
+  };
+  const clear = () => {
+    for (const node of activeNodes) node.classList.remove('tok-hit');
+    activeNodes = [];
+    activeToken = null;
+  };
+  const onClick = (event) => {
+    const target = event.target?.closest?.('[data-tok]');
+    if (!target || !codeEl.contains(target)) {
+      if (activeToken != null) clear();
+      return;
+    }
+    if (target.classList.contains('tok-fn-link') || target.classList.contains('tok-addr-link')) return;
+    const tok = target.getAttribute('data-tok');
+    if (!tok) return;
+    if (activeToken === tok) {
+      clear();
+      return;
+    }
+    clear();
+    const matches = ensureIndex().get(tok) || [];
+    for (const node of matches) node.classList.add('tok-hit');
+    activeToken = tok;
+    activeNodes = matches;
+  };
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape' && activeToken != null) clear();
+  };
+  codeEl.addEventListener('click', onClick);
+  codeEl.addEventListener('keydown', onKeyDown);
+  return () => {
+    clear();
+    codeEl.removeEventListener('click', onClick);
+    codeEl.removeEventListener('keydown', onKeyDown);
+  };
+}
+
 // The self-contained typedef/comment/preprocessor header every result starts with.
 // Folded by default so the function itself is the first thing on screen.
+function lineTextOf(line) {
+  return typeof line === 'string' ? line : String(line?.text ?? '');
+}
+
 function isPreludeLine(line, hasSigAhead) {
-  if (line?.kind === 'sig') return false;
-  const text = String(line?.text ?? '').trim();
+  if (typeof line === 'object' && line?.kind === 'sig') return false;
+  const text = lineTextOf(line).trim();
   if (!text) return hasSigAhead;
   if (/^(\/\*.*\*\/|\/\/|#(?:if|ifdef|ifndef|elif|else|endif|pragma|include|define)\b)/.test(text)) return true;
   if (/^(?:typedef|static|extern)\b/.test(text) && (hasSigAhead || /;\s*$/.test(text))) return true;
@@ -62,8 +152,34 @@ function isPreludeLine(line, hasSigAhead) {
   return false;
 }
 
-function preludeLength(lines) {
-  const firstSig = lines.findIndex((line) => line?.kind === 'sig');
+export function findSignatureLineIndex(rawLines) {
+  if (!Array.isArray(rawLines) || !rawLines.length) return -1;
+  let inBlockComment = false;
+  for (let i = 0; i < rawLines.length; i++) {
+    const trimmed = lineTextOf(rawLines[i]).trim();
+    if (inBlockComment) {
+      if (trimmed.includes('*/')) inBlockComment = false;
+      continue;
+    }
+    if (!trimmed) continue;
+    if (trimmed.startsWith('/*')) {
+      if (!trimmed.includes('*/')) inBlockComment = true;
+      continue;
+    }
+    if (trimmed.startsWith('//') || trimmed.startsWith('#')) continue;
+    if (/^(?:typedef|static|extern)\b/.test(trimmed) && /;\s*$/.test(trimmed)) continue;
+    if (/;\s*$/.test(trimmed) && !trimmed.includes('{') && !trimmed.includes('}')) continue;
+    return i;
+  }
+  return -1;
+}
+
+export function preludeLength(lines) {
+  if (!Array.isArray(lines) || !lines.length) return 0;
+  let firstSig = lines.findIndex((line) => typeof line === 'object' && line?.kind === 'sig');
+  if (firstSig < 0 && typeof lines[0] === 'string') {
+    firstSig = findSignatureLineIndex(lines);
+  }
   const limit = firstSig >= 0 ? firstSig : lines.length;
   let count = 0;
   while (count < limit) {
@@ -389,6 +505,9 @@ export function createDecompilerProvenanceView(query, options = {}) {
         isSig,
         resolveCallee: options.resolveCallee || null,
         onOpenCallee: options.onOpenCallee || null,
+        onOpenAddress: typeof options.onNavigate === 'function'
+          ? (address) => { if (!options.signal?.aborted && options.isCurrent?.() !== false) options.onNavigate(address); }
+          : null,
       });
       if (index + 1 < lines.length) row.append(h('span', null, '\n'));
       const entity = query.value.renderProvenance?.entities?.[`L${index}:${line.kind ?? 'null'}`];
@@ -404,6 +523,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
       rows.push(row);
       code.append(row);
     }
+    attachTokenHighlight(code);
   } else {
     const value = query?.value;
     const content = typeof value === 'string' ? value : value?.code;

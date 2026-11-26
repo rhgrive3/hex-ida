@@ -24,10 +24,13 @@ import { installAssistant } from '../ai/ui/assistant.js';
 import { classifyOmnibox, intentLabel } from '../ai/interaction/omnibox.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 import { productDescriptor } from '../platform/product-descriptor.js';
-import { queryFunctions, queryStrings } from './explorer-index.js';
+import * as explorerIndex from './explorer-index.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 import { uiRoot } from '../ui-root.js';
-import { createDecompilerProvenanceView, appendHighlighted } from './decompiler-provenance.js';
+import {
+  createDecompilerProvenanceView, appendHighlighted, attachTokenHighlight,
+  preludeLength, findSignatureLineIndex,
+} from './decompiler-provenance.js';
 
 
 let _productPanelsPromise = null;
@@ -66,7 +69,7 @@ function bookmarkListOf(app) {
   } catch { return []; }
 }
 
-function editBookmarkNote(app, addr, name) {
+export function editBookmarkNote(app, addr, name) {
   const sheet = new Sheet(text('ブックマークメモを編集', 'Edit bookmark note'));
   const existing = app.bookmarks?.get?.(addr)
     ?? bookmarkListOf(app).find((b) => { try { return BigInt(b.addr) === BigInt(addr); } catch { return false; } });
@@ -87,8 +90,11 @@ function editBookmarkNote(app, addr, name) {
   setTimeout(() => input.focus(), 50);
 }
 
-function makeStarButton(app, addr, name, { cls = 'ui-icon-action ui-star-btn', stopPropagation = false, onToggled = null } = {}) {
+export function makeStarButton(app, addr, name, { cls = 'ui-icon-action ui-star-btn', stopPropagation = false, onToggled = null } = {}) {
   const isSaved = () => !!app.bookmarks?.has?.(addr);
+  const starTitle = (saved) => saved
+    ? text('ブックマークを解除 (B)', 'Remove bookmark (B)')
+    : text('ブックマークに追加 (B)', 'Bookmark function (B)');
   const btn = uiButton(isSaved() ? '★' : '☆', {
     cls,
     ariaLabel: isSaved() ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'),
@@ -100,11 +106,13 @@ function makeStarButton(app, addr, name, { cls = 'ui-icon-action ui-star-btn', s
       onToggled?.(isSaved());
     },
   });
+  btn.title = starTitle(isSaved());
   const sync = () => {
     const saved = isSaved();
     btn.textContent = saved ? '★' : '☆';
     btn.setAttribute('aria-pressed', String(saved));
     btn.setAttribute('aria-label', saved ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'));
+    btn.title = starTitle(saved);
   };
   btn._syncStar = sync;
   return btn;
@@ -383,9 +391,185 @@ function lowerBoundBigInt(array, value) {
   return lo;
 }
 
-async function matchingFunctionItems(app, query, options) {
+const VALID_EXPLORER_FILTERS = new Set(['all', 'saved', 'edited']);
+const VALID_EXPLORER_SORTS = new Set(['address', 'name', 'size', 'priority']);
+
+function resolveFunctionStart(app, rawAddr) {
+  if (rawAddr == null || rawAddr === '') return null;
+  let big;
+  try { big = BigInt(rawAddr); } catch { return null; }
+  try {
+    const fn = app?.symbols?.functionAt?.(big);
+    if (fn?.start != null) return BigInt(fn.start);
+    const start = app?.symbols?.functionStartAt?.(big);
+    if (start != null) return BigInt(start);
+  } catch { /* fall back to raw address */ }
+  return big;
+}
+
+export function collectEditedFunctions(app) {
+  const map = new Map();
+  const touch = (rawAddr, reason, commentText = null, preferComment = false) => {
+    const start = resolveFunctionStart(app, rawAddr);
+    if (start == null) return;
+    const key = start.toString();
+    let entry = map.get(key);
+    if (!entry) {
+      entry = { addr: start, reasons: new Set(), comment: null };
+      map.set(key, entry);
+    }
+    entry.reasons.add(reason);
+    if (commentText) {
+      if (!entry.comment || preferComment) entry.comment = String(commentText).trim();
+    }
+  };
+  const notes = app?.notes;
+  if (notes) {
+    if (notes.names instanceof Map) {
+      for (const [k, v] of notes.names) {
+        if (v) touch(k, 'rename');
+      }
+    } else if (typeof notes.nameEntries === 'function') {
+      for (const item of notes.nameEntries() || []) {
+        if (item?.name) touch(item.addr, 'rename');
+      }
+    }
+    if (notes.comments instanceof Map) {
+      for (const [k, v] of notes.comments) {
+        if (!v) continue;
+        const start = resolveFunctionStart(app, k);
+        let isStart = false;
+        try { isStart = start != null && BigInt(k) === start; } catch { isStart = false; }
+        touch(k, 'comment', v, isStart);
+      }
+    }
+    if (notes.vars instanceof Map) {
+      for (const [k, v] of notes.vars) {
+        if (!v) continue;
+        const sep = String(k).indexOf(':');
+        if (sep > 0) touch(String(k).slice(0, sep), 'var');
+      }
+    }
+    if (notes.types instanceof Map) {
+      for (const [k, v] of notes.types) {
+        if (!v) continue;
+        const sep = String(k).indexOf(':');
+        if (sep > 0) touch(String(k).slice(0, sep), 'type');
+      }
+    }
+  }
+  const patchList = typeof app?.patches?.list === 'function' ? app.patches.list() : [];
+  if (Array.isArray(patchList)) {
+    for (const patch of patchList) {
+      if (patch?.addr != null) touch(patch.addr, 'patch');
+    }
+  }
+  return map;
+}
+
+function sortFunctionItems(items, sortMode, app, editedMap = null) {
+  if (!Array.isArray(items) || items.length <= 1) return items;
+  const mode = VALID_EXPLORER_SORTS.has(sortMode) ? sortMode : 'address';
+  const compareAddr = (a, b) => {
+    try {
+      const aa = BigInt(a.addr);
+      const bb = BigInt(b.addr);
+      return aa < bb ? -1 : aa > bb ? 1 : 0;
+    } catch { return 0; }
+  };
+  if (mode === 'address') {
+    items.sort(compareAddr);
+    return items;
+  }
+  if (mode === 'name') {
+    items.sort((a, b) => {
+      const an = String(a.name || '').toLowerCase();
+      const bn = String(b.name || '').toLowerCase();
+      if (an < bn) return -1;
+      if (an > bn) return 1;
+      return compareAddr(a, b);
+    });
+    return items;
+  }
+  if (mode === 'size') {
+    items.sort((a, b) => {
+      const as = a.size != null && Number.isFinite(Number(a.size)) ? Number(a.size) : -1;
+      const bs = b.size != null && Number.isFinite(Number(b.size)) ? Number(b.size) : -1;
+      if (bs !== as) return bs - as;
+      return compareAddr(a, b);
+    });
+    return items;
+  }
+  if (mode === 'priority') {
+    const edited = editedMap || collectEditedFunctions(app);
+    const scoreOf = (item) => {
+      let score = Number.isFinite(Number(item?.priority ?? item?.score)) ? Number(item.priority ?? item.score) : 0;
+      try {
+        const big = BigInt(item.addr);
+        if (app?.bookmarks?.has?.(big)) score += 1000;
+        if (edited.has(big.toString())) score += 500;
+      } catch { /* ignore */ }
+      if (item.size != null && Number.isFinite(Number(item.size))) score += Math.min(200, Math.log2(1 + Math.max(0, Number(item.size))) * 10);
+      return score;
+    };
+    items.sort((a, b) => {
+      const diff = scoreOf(b) - scoreOf(a);
+      return diff !== 0 ? diff : compareAddr(a, b);
+    });
+  }
+  return items;
+}
+
+async function matchingFunctionItems(app, query, options = {}) {
   const q = String(query || '').trim();
-  return queryFunctions(app, q, options);
+  const sortMode = VALID_EXPLORER_SORTS.has(options?.sort) ? options.sort : 'address';
+  const offset = Number.isSafeInteger(options?.offset) && options.offset >= 0 ? options.offset : 0;
+  const limit = Number.isSafeInteger(options?.limit) && options.limit > 0 ? options.limit : 200;
+  if (typeof explorerIndex.queryFunctionsFast === 'function') {
+    try {
+      let prioritySet = options?.prioritySet || null;
+      if (!prioritySet && sortMode === 'priority') {
+        prioritySet = new Set();
+        for (const bm of bookmarkListOf(app)) {
+          if (bm?.addr != null) {
+            try { prioritySet.add(BigInt(bm.addr).toString()); } catch { /* ignore */ }
+          }
+        }
+        for (const key of collectEditedFunctions(app).keys()) prioritySet.add(key);
+      }
+      const fast = await explorerIndex.queryFunctionsFast(app, q, {
+        ...options,
+        offset,
+        limit,
+        sort: sortMode,
+        prioritySet,
+      });
+      if (Array.isArray(fast)) return fast;
+      if (fast && Array.isArray(fast.items)) {
+        const rows = fast.items;
+        const total = Number.isSafeInteger(fast.total) && fast.total >= 0 ? fast.total : rows.length;
+        const next = offset + rows.length < total ? offset + rows.length : null;
+        Object.defineProperty(rows, 'queryPage', {
+          value: { offset, limit, returned: rows.length, total, next },
+          enumerable: false,
+          configurable: true,
+        });
+        Object.defineProperty(rows, 'completeness', {
+          value: fast.complete === false ? 'partial' : 'complete',
+          enumerable: false,
+          configurable: true,
+        });
+        return rows;
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError') throw err;
+    }
+  }
+  const items = await explorerIndex.queryFunctions(app, q, options);
+  if (Array.isArray(items) && sortMode !== 'address') {
+    sortFunctionItems(items, sortMode, app);
+  }
+  return items;
 }
 function sectionItems(app, query) {
   const q = String(query || '').trim().toLowerCase();
@@ -397,7 +581,7 @@ function sectionItems(app, query) {
 
 async function stringItems(app, query, options) {
   const rows = await app.ensureStrings();
-  return queryStrings(rows || [], query, options);
+  return explorerIndex.queryStrings(rows || [], query, options);
 }
 let cachedClassesRef = null;
 let cachedClassEntities = null;
@@ -528,10 +712,34 @@ export function classItems(app, query) {
   return list;
 }
 
+let cachedDataRef = null;
+let cachedDataEntities = null;
+
 function getDataEntities(app) {
+  const regions = app.store?.get?.('regions') || [];
+  const symbols = app.symbols || null;
+  const symbolsGen = symbols?.gen ?? null;
+  const program = app.program || null;
+  const structs = app.structs || app.types?.structs || [];
+  const schemas = app.schemas || app.store?.get?.('schemas') || [];
+  const isJapanese = ja();
+
+  if (
+    cachedDataRef
+    && cachedDataRef.regions === regions
+    && cachedDataRef.symbols === symbols
+    && cachedDataRef.symbolsGen === symbolsGen
+    && cachedDataRef.program === program
+    && cachedDataRef.structs === structs
+    && cachedDataRef.schemas === schemas
+    && cachedDataRef.isJapanese === isJapanese
+    && cachedDataEntities
+  ) {
+    return cachedDataEntities;
+  }
+
   const items = [];
   const seen = new Set();
-  const regions = app.store?.get?.('regions') || [];
   const dataRegions = regions.filter((r) => r && !r.exec && (r.read || r.write));
 
   if (app.symbols) {
@@ -557,7 +765,7 @@ function getDataEntities(app) {
     } catch { /* ignore fallback */ }
   }
 
-  const structs = app.structs || app.types?.structs || [];
+
   if (Array.isArray(structs) || (structs instanceof Map)) {
     const list = structs instanceof Map ? structs.values() : structs;
     for (const s of list) {
@@ -578,7 +786,7 @@ function getDataEntities(app) {
     }
   }
 
-  const schemas = app.schemas || app.store?.get?.('schemas') || [];
+
   if (Array.isArray(schemas)) {
     for (const sch of schemas) {
       const files = sch.files?.join(', ') || '';
@@ -613,6 +821,8 @@ function getDataEntities(app) {
     });
   }
 
+  cachedDataRef = { regions, symbols, symbolsGen, program, structs, schemas, isJapanese };
+  cachedDataEntities = items;
   return items;
 }
 
@@ -737,32 +947,89 @@ function renderExplorer(app, router, route, routeContext = {}) {
   const pageSize = 200;
   let queryOffset = Number.isSafeInteger(restored?.offset) && restored.offset >= 0 ? restored.offset : 0;
   let pendingVirtualState = restored?.virtual ?? null;
-  let savedOnly = scope === 'functions' && Boolean(restored?.savedOnly);
+  const resumedFilter = app.uiResume?.explorerFilter;
+  const initialFilter = restored?.filterMode
+    ?? (restored?.savedOnly ? 'saved' : null)
+    ?? (VALID_EXPLORER_FILTERS.has(resumedFilter) ? resumedFilter : 'all');
+  let filterMode = scope === 'functions' && VALID_EXPLORER_FILTERS.has(initialFilter) ? initialFilter : 'all';
+  const resumedSort = app.uiResume?.explorerSort;
+  const initialSort = restored?.sortMode ?? (VALID_EXPLORER_SORTS.has(resumedSort) ? resumedSort : 'address');
+  let sortMode = VALID_EXPLORER_SORTS.has(initialSort) ? initialSort : 'address';
+  let allChip = null;
   let savedChip = null;
+  let editedChip = null;
+  let sortSelect = null;
   const searchRow = h('div', 'ui-explorer-search-row');
   searchRow.append(search);
-  const syncSavedChip = () => {
-    if (!savedChip) return;
-    const count = bookmarkListOf(app).length;
-    savedChip.textContent = text(`保存済み (★ ${count})`, `Saved (★ ${count})`);
-    savedChip.setAttribute('aria-pressed', String(savedOnly));
+  const syncFilterChips = () => {
+    if (allChip) {
+      allChip.textContent = text('すべて', 'All');
+      allChip.setAttribute('aria-pressed', String(filterMode === 'all'));
+    }
+    if (savedChip) {
+      const count = bookmarkListOf(app).length;
+      savedChip.textContent = text(`保存済み (★ ${count})`, `Saved (★ ${count})`);
+      savedChip.setAttribute('aria-pressed', String(filterMode === 'saved'));
+    }
+    if (editedChip) {
+      const count = collectEditedFunctions(app).size;
+      editedChip.textContent = text(`編集済み (✎ ${count})`, `Edited (✎ ${count})`);
+      editedChip.setAttribute('aria-pressed', String(filterMode === 'edited'));
+    }
   };
-  if (scope === 'functions') {
-    savedChip = uiButton('', {
-      cls: 'ui-secondary-action ui-saved-filter-chip',
-      pressed: savedOnly,
-      onClick: () => {
-        savedOnly = !savedOnly;
-        queryOffset = 0;
-        pendingVirtualState = null;
-        syncSavedChip();
-        void update();
-      },
-    });
-    syncSavedChip();
-    searchRow.append(savedChip);
-  }
+  const setFilterMode = (next) => {
+    if (!VALID_EXPLORER_FILTERS.has(next) || filterMode === next) return;
+    filterMode = next;
+    queryOffset = 0;
+    pendingVirtualState = null;
+    app.setUiResume?.({ explorerFilter: filterMode });
+    syncFilterChips();
+    void update();
+  };
   controls.append(scopes, searchRow);
+  if (scope === 'functions') {
+    const filterBar = h('div', 'ui-explorer-filter-bar');
+    allChip = uiButton('', {
+      cls: 'ui-secondary-action ui-explorer-filter-chip',
+      pressed: filterMode === 'all',
+      onClick: () => setFilterMode('all'),
+    });
+    savedChip = uiButton('', {
+      cls: 'ui-secondary-action ui-explorer-filter-chip ui-saved-filter-chip',
+      pressed: filterMode === 'saved',
+      onClick: () => setFilterMode(filterMode === 'saved' ? 'all' : 'saved'),
+    });
+    editedChip = uiButton('', {
+      cls: 'ui-secondary-action ui-explorer-filter-chip ui-edited-filter-chip',
+      pressed: filterMode === 'edited',
+      onClick: () => setFilterMode(filterMode === 'edited' ? 'all' : 'edited'),
+    });
+    sortSelect = h('select', 'ui-explorer-sort');
+    sortSelect.setAttribute('aria-label', text('並び順', 'Sort functions'));
+    for (const [val, lbl] of [
+      ['address', text('アドレス順', 'Address')],
+      ['name', text('名前順', 'Name')],
+      ['size', text('サイズ順', 'Size')],
+      ['priority', text('優先度順', 'Priority')],
+    ]) {
+      const opt = h('option', null, lbl);
+      opt.value = val;
+      if (val === sortMode) opt.selected = true;
+      sortSelect.append(opt);
+    }
+    sortSelect.addEventListener('change', () => {
+      const next = sortSelect.value;
+      if (!VALID_EXPLORER_SORTS.has(next)) return;
+      sortMode = next;
+      queryOffset = 0;
+      pendingVirtualState = null;
+      app.setUiResume?.({ explorerSort: sortMode });
+      void update();
+    });
+    syncFilterChips();
+    filterBar.append(allChip, savedChip, editedChip, sortSelect);
+    controls.append(filterBar);
+  }
   s.body.append(controls);
   const content = tabPanel(scopes, 'ui-explorer-content');
   s.body.append(content);
@@ -845,48 +1112,124 @@ function renderExplorer(app, router, route, routeContext = {}) {
       return;
     }
     if (scope === 'functions') {
-      if (savedOnly) {
+      const editedMap = collectEditedFunctions(app);
+      const bookmarkMap = new Map();
+      for (const bm of bookmarkListOf(app)) {
+        if (bm?.addr == null) continue;
+        try { bookmarkMap.set(BigInt(bm.addr).toString(), bm); } catch { /* ignore */ }
+      }
+      const previewClip = (val, max = 48) => {
+        const sVal = String(val || '').replace(/\s+/g, ' ').trim();
+        if (!sVal) return '';
+        return sVal.length > max ? sVal.slice(0, max - 1) + '…' : sVal;
+      };
+      const makeEditedBadge = (keyStr) => {
+        if (!editedMap.has(keyStr)) return null;
+        const badge = h('span', 'ui-edited-badge', '✎');
+        badge.title = text('編集済み', 'Edited');
+        badge.setAttribute('aria-label', text('編集済み', 'Edited'));
+        return badge;
+      };
+      const buildFnSubtitle = (addrBig, bm = null) => {
+        const keyStr = addrBig.toString();
+        const bmEntry = bm || bookmarkMap.get(keyStr);
+        const bmNote = previewClip(bmEntry?.note);
+        const editEntry = editedMap.get(keyStr);
+        const cmt = previewClip(editEntry?.comment || app.notes?.comment?.(addrBig));
+        const preview = bmNote ? ('★ ' + bmNote) : (cmt ? ('✎ ' + cmt) : '');
+        return [addressText(addrBig), preview].filter(Boolean).join(' · ');
+      };
+      const fnSizeOf = (addrBig) => {
+        try {
+          const fn = app.symbols?.functionAt?.(addrBig);
+          if (fn?.end != null && fn?.start != null && fn.end > fn.start) return Number(fn.end - fn.start);
+        } catch { /* ignore */ }
+        return null;
+      };
+
+      if (filterMode === 'saved') {
         const ql = q.toLowerCase();
         const saved = bookmarkListOf(app).filter((bm) => {
+          if (bm?.addr == null) return false;
           if (!ql) return true;
           const tags = Array.isArray(bm?.tags) ? bm.tags.join(' ') : String(bm?.tag || '');
-          const hay = [bm?.name, bm?.note, tags, bm?.addr != null ? addressText(bm.addr) : ''].filter(Boolean).join(' ').toLowerCase();
+          const hay = [bm?.name, bm?.note, tags, addressText(bm.addr)].filter(Boolean).join(' ').toLowerCase();
           return hay.includes(ql);
+        }).map((bm) => {
+          const bAddr = BigInt(bm.addr);
+          return { ...bm, addr: bAddr, name: bm.name || functionName(app, bAddr), size: fnSizeOf(bAddr) };
         });
+        sortFunctionItems(saved, sortMode, app, editedMap);
         showRows(saved, (bm) => {
           const bAddr = BigInt(bm.addr);
           const bName = bm.name || functionName(app, bAddr);
           const star = makeStarButton(app, bAddr, bName, {
             cls: 'ui-icon-action ui-star-btn ui-row-star',
             stopPropagation: true,
-            onToggled: () => { syncSavedChip(); if (savedOnly) void update(); },
+            onToggled: () => { syncFilterChips(); if (filterMode === 'saved') void update(); },
           });
           const tags = Array.isArray(bm?.tags) ? bm.tags.join(', ') : String(bm?.tag || '');
           return listRow({
             title: bName,
-            subtitle: [addressText(bAddr), bm.note || ''].filter(Boolean).join(' · '),
-            meta: tags,
+            subtitle: buildFnSubtitle(bAddr, bm),
+            meta: tags || (bm.size != null ? String(bm.size) + ' B' : ''),
+            badge: makeEditedBadge(bAddr.toString()),
             action: star,
             onClick: () => router.navigate('/function/' + bAddr.toString() + '/overview'),
           });
         }, text('保存済みの関数はありません。関数の ☆ を押すとここに追加されます。', 'No saved functions yet. Tap ☆ on any function to bookmark it.'));
         return;
       }
+
+      if (filterMode === 'edited') {
+        const ql = q.toLowerCase();
+        const editedRows = [];
+        for (const entry of editedMap.values()) {
+          const eAddr = entry.addr;
+          const eName = functionName(app, eAddr);
+          const bmEntry = bookmarkMap.get(eAddr.toString());
+          if (ql) {
+            const hay = [eName, addressText(eAddr), entry.comment, bmEntry?.note].filter(Boolean).join(' ').toLowerCase();
+            if (!hay.includes(ql)) continue;
+          }
+          editedRows.push({ addr: eAddr, name: eName, size: fnSizeOf(eAddr) });
+        }
+        sortFunctionItems(editedRows, sortMode, app, editedMap);
+        showRows(editedRows, (item) => {
+          const itemAddr = BigInt(item.addr);
+          const star = makeStarButton(app, itemAddr, item.name, {
+            cls: 'ui-icon-action ui-star-btn ui-row-star',
+            stopPropagation: true,
+            onToggled: () => syncFilterChips(),
+          });
+          return listRow({
+            title: item.name,
+            subtitle: buildFnSubtitle(itemAddr),
+            meta: item.size != null ? String(item.size) + ' B' : '',
+            badge: makeEditedBadge(itemAddr.toString()),
+            action: star,
+            onClick: () => router.navigate('/function/' + itemAddr.toString() + '/overview'),
+          });
+        }, text('編集済みの関数はありません。名前の変更・メモ・型設定・パッチを行うとここに表示されます。', 'No edited functions yet. Rename, comment, type, or patch a function to see it here.'));
+        return;
+      }
+
       content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
       try {
-        const items = await matchingFunctionItems(app, q, { signal, offset:queryOffset, limit:pageSize });
+        const items = await matchingFunctionItems(app, q, { signal, offset: queryOffset, limit: pageSize, sort: sortMode });
         if (!current()) return;
         showRows(items, (item) => {
           const itemAddr = BigInt(item.addr);
           const star = makeStarButton(app, itemAddr, item.name, {
             cls: 'ui-icon-action ui-star-btn ui-row-star',
             stopPropagation: true,
-            onToggled: () => syncSavedChip(),
+            onToggled: () => syncFilterChips(),
           });
           return listRow({
             title: item.name,
-            subtitle: addressText(itemAddr),
+            subtitle: buildFnSubtitle(itemAddr),
             meta: item.size != null ? String(item.size) + ' B' : '',
+            badge: makeEditedBadge(itemAddr.toString()),
             action: star,
             onClick: () => router.navigate('/function/' + itemAddr.toString() + '/overview'),
           });
@@ -946,20 +1289,39 @@ function renderExplorer(app, router, route, routeContext = {}) {
 
   const unsubBookmarks = scope === 'functions' ? (app.bookmarks?.subscribe?.(() => {
     if (disposed) return;
-    syncSavedChip();
-    if (savedOnly) void update();
+    syncFilterChips();
+    if (filterMode === 'saved' || filterMode === 'all') void update();
+  }) || null) : null;
+  const unsubNotes = scope === 'functions' ? (app.notes?.subscribe?.(() => {
+    if (disposed) return;
+    syncFilterChips();
+    if (filterMode === 'edited' || filterMode === 'all') void update();
+  }) || null) : null;
+  const unsubStore = scope === 'functions' ? (app.store?.subscribe?.((_state, patch) => {
+    if (disposed || !patch || !('patches' in patch)) return;
+    syncFilterChips();
+    if (filterMode === 'edited' || filterMode === 'all') void update();
   }) || null) : null;
   search.addEventListener('input', () => { queryOffset = 0; pendingVirtualState = null; clearTimeout(timer); timer = setTimeout(update, 120); });
   update();
   return {
     root: s.root,
-    getState: () => ({ query: search.value, offset:queryOffset, savedOnly, virtual: virtual?.getState() || null }),
+    getState: () => ({ query: search.value, offset: queryOffset, savedOnly: filterMode === 'saved', filterMode, sortMode, virtual: virtual?.getState() || null }),
     restoreState: (state) => {
       if (!state) return;
       if (virtual) virtual.restoreState(state.virtual);
       else pendingVirtualState = state.virtual ?? null;
     },
-    dispose: () => { disposed = true; if (typeof unsubBookmarks === 'function') unsubBookmarks(); queryScope.abort('explorer-disposed'); fallbackRouteController?.abort('explorer-disposed'); clearTimeout(timer); virtual?.dispose(); },
+    dispose: () => {
+      disposed = true;
+      if (typeof unsubBookmarks === 'function') unsubBookmarks();
+      if (typeof unsubNotes === 'function') unsubNotes();
+      if (typeof unsubStore === 'function') unsubStore();
+      queryScope.abort('explorer-disposed');
+      fallbackRouteController?.abort('explorer-disposed');
+      clearTimeout(timer);
+      virtual?.dispose();
+    },
   };
 }
 
@@ -1046,6 +1408,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   }
   const verifiedRange=app.validatedFunctionRange?.(addr);
   const tab = FUNCTION_TABS.some((x) => x.id === route.params.tab) ? route.params.tab : 'overview';
+  app.setUiResume?.({ lastFunctionTab: tab });
   if(verifiedRange && !verifiedRange.ok){
     /* Keep the tab bar: this used to replace the whole workspace, so the user
        was stuck on one tab with only a reason code and no way forward. */
@@ -1169,23 +1532,47 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     code.tabIndex = 0;
     const rawText = decompiledText(out);
     const rawLines = rawText.split('\n');
+    const sigIdx = findSignatureLineIndex(rawLines);
+    const prelude = preludeLength(rawLines);
     const calleeOpts = {
       resolveCallee: (name) => symbolAddress(app, name),
       onOpenCallee: (targetAddr) => router.navigate('/function/' + BigInt(targetAddr).toString() + '/pseudocode'),
+      onOpenAddress: (targetAddr) => router.navigate('/code/' + BigInt(targetAddr).toString()),
     };
+    if (prelude > 0) code.classList.add('fold-prelude');
     for (let index = 0; index < rawLines.length; index++) {
       const lineText = rawLines[index];
-      const row = h('span', 'ui-pseudocode-line');
-      appendHighlighted(row, lineText, { ...calleeOpts, isSig: index === 0 });
+      const rowClasses = ['ui-pseudocode-line'];
+      if (index < prelude) rowClasses.push('prelude');
+      const isSig = index === sigIdx;
+      if (isSig) rowClasses.push('is-sig');
+      const row = h('span', rowClasses.join(' '));
+      appendHighlighted(row, lineText, { ...calleeOpts, isSig });
       if (index + 1 < rawLines.length) row.append(h('span', null, '\n'));
       code.append(row);
     }
+    attachTokenHighlight(code);
     let wrap = false;
+    const asmBtn = uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) });
+    asmBtn.title = text('アセンブリへ切り替え (Space)', 'Switch to assembly (Space)');
     toolbar.append(
       uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
       uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
-      uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
+      asmBtn,
     );
+    if (prelude > 0) {
+      const toggle = uiButton(text(`型の定義を表示（${prelude} 行）`, `Show type definitions (${prelude} lines)`), {
+        cls: 'ui-secondary-action',
+        pressed: false,
+        onClick: () => {
+          const shown = !code.classList.contains('show-prelude');
+          code.classList.toggle('show-prelude', shown);
+          toggle.setAttribute('aria-pressed', String(shown));
+          toggle.textContent = shown ? text('型の定義をたたむ', 'Hide type definitions') : text(`型の定義を表示（${prelude} 行）`, `Show type definitions (${prelude} lines)`);
+        },
+      });
+      toolbar.append(toggle);
+    }
     content.replaceChildren(toolbar, code);
   };
 
@@ -1213,7 +1600,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         toolbar.append(
           uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
           uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
-          uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
+          (() => { const b = uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }); b.title = text('アセンブリへ切り替え (Space)', 'Switch to assembly (Space)'); return b; })(),
         );
         content.replaceChildren(toolbar, provenanceView.root);
         const notice = decompileNotice(res);
@@ -1978,6 +2365,7 @@ function installAddressBar(app, router, addrbar) {
     star.textContent = saved ? '★' : '☆';
     star.setAttribute('aria-pressed', String(saved));
     star.setAttribute('aria-label', saved ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'));
+    star.title = saved ? text('ブックマークを解除 (B)', 'Remove bookmark (B)') : text('ブックマークに追加 (B)', 'Bookmark function (B)');
     star.hidden = false;
   };
   const onStarClick = () => {
@@ -2005,7 +2393,7 @@ function installAddressBar(app, router, addrbar) {
     }),
   });
   pseudo.hidden = true;
-  pseudo.title = text('現在の関数を疑似Cで開く', 'Open current function as pseudocode');
+  pseudo.title = text('現在の関数を疑似Cで開く (Space)', 'Open current function as pseudocode (Space)');
 
   const search = uiButton(text('バイト検索', 'Find bytes'), {
     cls: 'addr-search',
@@ -2022,7 +2410,7 @@ function installAddressBar(app, router, addrbar) {
     if (regionLabel) { regionLabel.setAttribute('aria-label', sectionLabel); regionLabel.title = sectionLabel; }
     fn.setAttribute('aria-label', text('この関数を開く', 'Open this function'));
     syncAddrStar();
-    const pseudoTitle = text('現在の関数を疑似Cで開く', 'Open current function as pseudocode');
+    const pseudoTitle = text('現在の関数を疑似Cで開く (Space)', 'Open current function as pseudocode (Space)');
     pseudo.textContent = text('疑似C', 'Pseudo-C');
     pseudo.setAttribute('aria-label', pseudoTitle);
     pseudo.title = pseudoTitle;
@@ -2255,6 +2643,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     }
     const ql = raw.toLowerCase();
     for (const bm of bookmarkListOf(app)) {
+      if (out.length >= 10) break;
       if (bm?.addr == null) continue;
       const tags = Array.isArray(bm?.tags) ? bm.tags.join(' ') : String(bm?.tag || '');
       const hay = [bm?.name, bm?.note, tags, addressText(bm.addr)].filter(Boolean).join(' ').toLowerCase();
@@ -2262,11 +2651,11 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
         pushUnique({ kind: 'saved', badge: '★', title: bm.name || functionName(app, bm.addr), addr: bm.addr });
       }
     }
-    if (app.store?.get?.('fileInfo')) {
+    if (app.store?.get?.('fileInfo') && out.length < 10) {
       const controller = new AbortController();
       dropdownController = controller;
       try {
-        const fns = await queryFunctions(app, raw, { limit: 8, signal: controller.signal });
+        const fns = await matchingFunctionItems(app, raw, { limit: 8, signal: controller.signal });
         if (serial !== dropdownSerial || controller.signal.aborted || document.activeElement !== input) return;
         const len = Number(fns?.length || 0);
         for (let i = 0; i < len && out.length < 10; i++) {
@@ -2415,12 +2804,14 @@ export function installProductUI(app) {
     ariaLabel: text('前の画面へ戻る', 'Go back'),
     onClick: () => router.back(),
   });
+  backBtn.title = text('前の画面へ戻る (Alt+←)', 'Go back (Alt+Left)');
   backBtn.hidden = true;
   const forwardBtn = uiButton('→', {
     cls: 'ui-chrome-forward',
     ariaLabel: text('次の画面へ進む', 'Go forward'),
     onClick: () => router.forward(),
   });
+  forwardBtn.title = text('次の画面へ進む (Alt+→)', 'Go forward (Alt+Right)');
   forwardBtn.hidden = true;
   chrome.append(backBtn, forwardBtn, nav);
 
@@ -2609,12 +3000,107 @@ export function installProductUI(app) {
   }
   const shortcut = (event) => {
     const target = event.target;
-    const typing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+    const tag = target?.tagName || '';
+    const typing = !!(target && (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || target.isContentEditable));
     const key = String(event.key || '').toLowerCase();
     if ((event.metaKey || event.ctrlKey) && (key === 'k' || key === 'g')) { event.preventDefault(); actions.run('command.focus'); return; }
-    if (!typing && !event.metaKey && !event.ctrlKey && !event.altKey && (key === '/' || key === 'g')) { event.preventDefault(); actions.run('command.focus'); return; }
-    if (!typing && ((event.altKey && event.key === 'ArrowLeft') || (event.metaKey && event.key === '['))) { event.preventDefault(); router.back(); return; }
-    if (!typing && ((event.altKey && event.key === 'ArrowRight') || (event.metaKey && event.key === ']'))) { event.preventDefault(); router.forward(); return; }
+    if (typing) return;
+    const hasOverlay = !!document.querySelector('#overlays .sheet, .menu, .dialog');
+    if (!hasOverlay && ((event.altKey && event.key === 'ArrowLeft') || (event.metaKey && event.key === '['))) { event.preventDefault(); router.back(); return; }
+    if (!hasOverlay && ((event.altKey && event.key === 'ArrowRight') || (event.metaKey && event.key === ']'))) { event.preventDefault(); router.forward(); return; }
+    if (hasOverlay || event.metaKey || event.ctrlKey || event.altKey) return;
+    const interactiveControl = !!(target && (
+      /^(BUTTON|A|SUMMARY)$/.test(tag)
+      || (target.closest?.('button, a, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="listbox"]')
+        && !target.closest?.('.ui-pseudocode-line'))
+      || target.closest?.('.tok-fn-link, .tok-addr-link')
+    ));
+    if (key === '/' || (key === 'g' && !event.shiftKey)) {
+      if (interactiveControl) return;
+      event.preventDefault();
+      actions.run('command.focus');
+      return;
+    }
+    if (interactiveControl) return;
+    const curRoute = router.current;
+    const routeId = curRoute?.route?.id;
+    if (routeId !== 'code' && routeId !== 'function') return;
+    const activeFnAddr = () => {
+      if (routeId === 'function' && curRoute?.params?.address) {
+        try { return BigInt(curRoute.params.address); } catch { /* fall through */ }
+      }
+      return currentFunctionAddr(app) ?? currentAddress(app);
+    };
+    const activeLineAddr = () => {
+      if (routeId === 'code') {
+        const row = app.viewer?.selectedRow ?? app.store?.get?.('selectedRow');
+        if (row != null && row >= 0 && app.viewer?.rowAddress) {
+          const rowAddr = app.viewer.rowAddress(row);
+          if (rowAddr != null) return rowAddr;
+        }
+        return currentAddress(app) ?? currentFunctionAddr(app);
+      }
+      return activeFnAddr();
+    };
+    if (key === 'n' && !event.shiftKey) {
+      event.preventDefault();
+      requireFile(app, () => {
+        const a = activeFnAddr();
+        if (a != null) showRename(app, a);
+        else toast(text('対象の関数またはアドレスが見つかりません。', 'No target function or address selected.'));
+      });
+      return;
+    }
+    if (event.key === ';') {
+      event.preventDefault();
+      requireFile(app, () => {
+        const a = activeLineAddr();
+        if (a != null) showComment(app, a);
+        else toast(text('対象の行または関数が見つかりません。', 'No target line or function selected.'));
+      });
+      return;
+    }
+    if (key === 'x' && !event.shiftKey) {
+      event.preventDefault();
+      requireFile(app, () => {
+        const a = activeFnAddr();
+        if (a != null) router.navigate('/function/' + BigInt(a).toString() + '/calls');
+        else toast(text('対象の関数が見つかりません。', 'No target function selected.'));
+      });
+      return;
+    }
+    if (event.key === ' ' && !event.shiftKey) {
+      event.preventDefault();
+      requireFile(app, () => {
+        const a = activeFnAddr();
+        if (a == null) {
+          toast(text('対象の関数が見つかりません。', 'No target function selected.'));
+          return;
+        }
+        if (routeId === 'function' && curRoute?.params?.tab === 'pseudocode') {
+          router.navigate('/code/' + BigInt(a).toString());
+        } else {
+          router.navigate('/function/' + BigInt(a).toString() + '/pseudocode');
+        }
+      });
+      return;
+    }
+    if (key === 'b' && !event.shiftKey) {
+      event.preventDefault();
+      requireFile(app, () => {
+        const a = activeFnAddr();
+        if (a == null) {
+          toast(text('対象の関数が見つかりません。', 'No target function selected.'));
+          return;
+        }
+        const name = functionName(app, a);
+        app.bookmarks?.toggle?.(a, { name });
+        const saved = !!app.bookmarks?.has?.(a);
+        toast(saved
+          ? text(`★「${name}」をブックマークしました。`, `★ Bookmarked "${name}".`)
+          : text(`☆「${name}」のブックマークを解除しました。`, `☆ Removed bookmark "${name}".`));
+      });
+    }
   };
   document.addEventListener('keydown', shortcut, true);
 

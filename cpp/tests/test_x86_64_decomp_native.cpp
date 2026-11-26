@@ -1016,7 +1016,8 @@ void test_wave32_readability_and_compare_fusion() {
               HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
     const std::string t3 = get_emitted_text();
     CHECK(t3.find("if (((uint32)rdi & (uint32)rsi) != 0) {") != std::string::npos);
-    CHECK(t3.find("if ((int32)((uint32)rdi & (uint32)rdi) >= 0) {") != std::string::npos);
+    CHECK(t3.find("if ((int32)rdi >= 0) {") != std::string::npos);
+    CHECK(t3.find("(uint32)rdi & (uint32)rdi") == std::string::npos);
     CHECK(t3.find("__hex_cmp_l") == std::string::npos);
     CHECK(verify_c11_syntax_werror(t3, "fused_test_jcc"));
   }
@@ -1060,6 +1061,235 @@ void test_wave32_readability_and_compare_fusion() {
   std::printf("  [PASS] Wave 32 readability: case comments, grouped decls, fused CMP/TEST+JCC & soundness\n");
 }
 
+
+void test_wave33_track_b_readability() {
+  // B1a: Fused CMP + CMOVcc and CMP + SETcc (zero __hex_cmp_l / __hex_cmp_r).
+  {
+    const uint8_t cmp_cmov[] = {
+        0x53,              // push rbx
+        0x39, 0xf7,        // cmp edi, esi
+        0x0f, 0x4c, 0xc7,  // cmovl eax, edi
+        0x5b,              // pop rbx
+        0xc3,              // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              cmp_cmov, sizeof(cmp_cmov), 0x490000ULL, "b1_cmp_cmov", 11u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t = get_emitted_text();
+    CHECK(t.find("if ((int32)rdi < (int32)rsi) rax = (uint32)rdi;") != std::string::npos);
+    CHECK(t.find("__hex_cmp_l") == std::string::npos);
+    CHECK(t.find("goto ") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(t, "b1_cmp_cmov"));
+
+    const uint8_t cmp_setcc[] = {
+        0x53,              // push rbx
+        0x48, 0x39, 0xf7,  // cmp rdi, rsi
+        0x0f, 0x94, 0xc0,  // sete al
+        0x5b,              // pop rbx
+        0xc3,              // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              cmp_setcc, sizeof(cmp_setcc), 0x490100ULL, "b1_cmp_setcc", 12u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string ts = get_emitted_text();
+    CHECK(ts.find("rdi == rsi ? 1U : 0U") != std::string::npos);
+    CHECK(ts.find("__hex_cmp_l") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(ts, "b1_cmp_setcc"));
+  }
+
+  // B1b: Non-adjacent compare fusion (gap = 2 safe MOV+LEA) vs clobber negative cases.
+  {
+    // Safe gap=2: cmp edi, esi; mov ecx, 7; lea rdx, [rcx + 8]; je +3; add rax, rdx; pop rbx; ret
+    const uint8_t safe_gap[] = {
+        0x53,                          // push rbx
+        0x39, 0xf7,                    // cmp edi, esi
+        0xb9, 0x07, 0x00, 0x00, 0x00,  // mov ecx, 7
+        0x48, 0x8d, 0x51, 0x08,        // lea rdx, [rcx + 8]
+        0x74, 0x03,                    // je +3 (-> pop rbx)
+        0x48, 0x01, 0xd0,              // add rax, rdx
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              safe_gap, sizeof(safe_gap), 0x490200ULL, "b1_gap2_safe", 12u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string tg = get_emitted_text();
+    CHECK(tg.find("if ((uint32)rdi != (uint32)rsi) {") != std::string::npos);
+    CHECK(tg.find("__hex_cmp_l") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(tg, "b1_gap2_safe"));
+
+    // Unsafe gap=1 (clobbers edi read by cmp): cmp edi, esi; mov edi, 0; je +5; mov eax, 1; pop rbx; ret
+    const uint8_t clobber_reg[] = {
+        0x53,                          // push rbx
+        0x39, 0xf7,                    // cmp edi, esi
+        0xbf, 0x00, 0x00, 0x00, 0x00,  // mov edi, 0 (clobbers rdi!)
+        0x74, 0x05,                    // je +5
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              clobber_reg, sizeof(clobber_reg), 0x490300ULL, "b1_gap1_clobber_reg", 19u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string tcr = get_emitted_text();
+    CHECK(tcr.find("uint64 __hex_cmp_l = 0, __hex_cmp_r = 0;") != std::string::npos);
+    CHECK(verify_c11_syntax_werror(tcr, "b1_gap1_clobber_reg"));
+
+    // Unsafe gap=1 (CMP reads mem, intervening MOV writes mem):
+    // push rbx; cmp dword ptr [rdi], 0; mov dword ptr [rsi], eax; je +5; mov eax, 1; pop rbx; ret
+    const uint8_t clobber_mem[] = {
+        0x53,                          // push rbx
+        0x83, 0x3f, 0x00,              // cmp dword ptr [rdi], 0
+        0x89, 0x06,                    // mov dword ptr [rsi], eax
+        0x74, 0x05,                    // je +5
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              clobber_mem, sizeof(clobber_mem), 0x490400ULL, "b1_gap1_clobber_mem", 19u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string tcm = get_emitted_text();
+    CHECK(tcm.find("uint64 __hex_cmp_l = 0, __hex_cmp_r = 0;") != std::string::npos);
+    CHECK(verify_c11_syntax_werror(tcm, "b1_gap1_clobber_mem"));
+  }
+
+  // B1c: TEST r, r simplification (64-bit `test rax, rax; je` -> `rax != 0`).
+  {
+    const uint8_t test_self64[] = {
+        0x53,                          // push rbx
+        0x48, 0x85, 0xc0,              // test rax, rax
+        0x74, 0x05,                    // je +5 (-> pop rbx)
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              test_self64, sizeof(test_self64), 0x490500ULL, "b1_test_self64", 14u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t = get_emitted_text();
+    CHECK(t.find("if (rax != 0) {") != std::string::npos);
+    CHECK(t.find("rax & rax") == std::string::npos);
+    CHECK(t.find("__hex_cmp_l") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(t, "b1_test_self64"));
+  }
+
+  // B1d: Tightened backward flag liveness (CALL/RET clear flags_live, dead unfused CMP gated).
+  {
+    // push rbx; add eax, 1; call +0x100; cmp edi, esi; je +5; jl +3; add eax, 2; cmp r10, r11; pop rbx; ret
+    const uint8_t liveness_fn[] = {
+        0x53,                          // push rbx
+        0x83, 0xc0, 0x01,              // add eax, 1 (before CALL -> flags dead!)
+        0xe8, 0x00, 0x01, 0x00, 0x00,  // call +0x100
+        0x39, 0xf7,                    // cmp edi, esi (live: feeds je + jl)
+        0x74, 0x05,                    // je +5 (-> cmp r10, r11)
+        0x7c, 0x03,                    // jl +3 (-> cmp r10, r11)
+        0x83, 0xc0, 0x02,              // add eax, 2 (before dead cmp -> flags dead!)
+        0x4d, 0x39, 0xda,              // cmp r10, r11 (before RET -> dead unfused CMP!)
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              liveness_fn, sizeof(liveness_fn), 0x490600ULL, "b1_flag_liveness", 16u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t = get_emitted_text();
+    // Only ONE `__hex_cmp_l =` assignment should exist (from `cmp edi, esi`, NOT `add eax, 1` or `cmp r10, r11`).
+    const size_t first_cmp = t.find("__hex_cmp_l = (uint64)");
+    CHECK(first_cmp != std::string::npos);
+    CHECK(t.find("__hex_cmp_l = (uint64)", first_cmp + 1u) == std::string::npos);
+    // B3 should also prune dead r10/r11 declarations since `cmp r10, r11` was pruned!
+    CHECK(t.find("r10") == std::string::npos);
+    CHECK(t.find("r11") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(t, "b1_flag_liveness"));
+  }
+
+  // B2: Zero duplicate `(uint32)((uint32)...)` casts & redundant outer parens.
+  {
+    const uint8_t b2_code[] = {
+        0x53,                          // push rbx
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0x31, 0xc9,                    // xor ecx, ecx
+        0x89, 0xc2,                    // mov edx, eax
+        0x01, 0xf8,                    // add eax, edi
+        0x83, 0xe8, 0x03,              // sub eax, 3
+        0x0f, 0xaf, 0xc6,              // imul eax, esi
+        0x49, 0x89, 0xf8,              // mov r8, rdi
+        0x4d, 0x01, 0xc8,              // add r8, r9
+        0x48, 0x01, 0xc8,              // add rax, rcx
+        0x48, 0x01, 0xd0,              // add rax, rdx
+        0x4c, 0x01, 0xc0,              // add rax, r8
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              b2_code, sizeof(b2_code), 0x490700ULL, "b2_clean_casts", 14u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t = get_emitted_text();
+    CHECK(t.find("rax = 1;\n") != std::string::npos);
+    CHECK(t.find("rcx = 0;\n") != std::string::npos);
+    CHECK(t.find("rdx = (uint32)rax;\n") != std::string::npos);
+    CHECK(t.find("rax = (uint32)rax + (uint32)rdi;\n") != std::string::npos);
+    CHECK(t.find("rax = (uint32)rax - 3;\n") != std::string::npos);
+    CHECK(t.find("rax = (uint32)rax * (uint32)rsi;\n") != std::string::npos);
+    CHECK(t.find("r8 = rdi;\n") != std::string::npos);
+    CHECK(t.find("r8 = r8 + r9;\n") != std::string::npos);
+    CHECK(t.find("(uint32)((uint32)") == std::string::npos);
+    CHECK(t.find("rax = (uint32)(1)") == std::string::npos);
+    CHECK(t.find("r8 = (rdi)") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(t, "b2_clean_casts"));
+  }
+
+  // B3: Post-body dead local declaration pruning & exact linemap line_no adjustment.
+  {
+    // push rbx; cmp r12, r13; cmp r14, r15; mov eax, 42; pop rbx; ret
+    // Pass 1 marks r12..r15 used, B1 prunes both dead CMPs, B3 prunes the extra
+    // `uint64 r12 = 0, r13 = 0, r14 = 0, r15 = 0;` line and shifts body linemap line_no!
+    const uint8_t b3_code[] = {
+        0x53,                          // 0x490800: push rbx
+        0x4d, 0x39, 0xec,              // 0x490801: cmp r12, r13 (dead)
+        0x4d, 0x39, 0xfe,              // 0x490804: cmp r14, r15 (dead)
+        0xb8, 0x2a, 0x00, 0x00, 0x00,  // 0x490807: mov eax, 42
+        0x5b,                          // 0x49080C: pop rbx
+        0xc3,                          // 0x49080D: ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              b3_code, sizeof(b3_code), 0x490800ULL, "b3_prune_decls", 14u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t = get_emitted_text();
+    CHECK(t.find("r12") == std::string::npos);
+    CHECK(t.find("r13") == std::string::npos);
+    CHECK(t.find("r14") == std::string::npos);
+    CHECK(t.find("r15") == std::string::npos);
+    CHECK(t.find("rax = 42;\n") != std::string::npos);
+    CHECK(verify_c11_syntax_werror(t, "b3_prune_decls"));
+
+    // Verify linemap line_no matches actual line containing `rax = 42;`!
+    std::vector<std::string> lines;
+    size_t pos = 0u;
+    while (pos < t.size()) {
+      const size_t nl = t.find('\n', pos);
+      if (nl == std::string::npos) {
+        lines.push_back(t.substr(pos));
+        break;
+      }
+      lines.push_back(t.substr(pos, nl - pos));
+      pos = nl + 1u;
+    }
+    const HexLineMapEntry* lm = hex_x86_64_decomp_get_linemap_ptr();
+    const uint32_t lm_cnt = hex_x86_64_decomp_get_linemap_count();
+    bool found_mov42_line = false;
+    for (uint32_t k = 0u; k < lm_cnt; ++k) {
+      CHECK(lm[k].line_no >= 1u && lm[k].line_no <= lines.size());
+      if (lm[k].addr == 0x490807ULL) {
+        CHECK(lines[lm[k].line_no - 1u].find("rax = 42;") != std::string::npos);
+        found_mov42_line = true;
+      }
+    }
+    CHECK(found_mov42_line);
+  }
+  std::printf("  [PASS] Wave 33 Track B: B1 fusion/liveness/test-self, B2 clean casts, B3 decl pruning + linemap\n");
+}
+
 }  // namespace
 
 int main() {
@@ -1078,6 +1308,7 @@ int main() {
   test_general_recursive_6param_and_cleanup();
   test_zero_goto_state_machine_and_main();
   test_wave32_readability_and_compare_fusion();
+  test_wave33_track_b_readability();
 
   if (g_failures == 0) {
     std::printf("test_x86_64_decomp_native (ASan+UBSan): ALL PASS\n");
