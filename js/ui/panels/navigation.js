@@ -67,7 +67,7 @@ export function showJump(app) {
     const sub = /^sub_?([0-9a-f]+)$/i.exec(q);
     if (sub) { try { return BigInt("0x" + sub[1]); } catch { /* ignore */ } }
     for (const bm of bookmarks) {
-      const hay = [bm?.name, bm?.note, ...(Array.isArray(bm?.tags) ? bm.tags : [])].filter(Boolean).join(" ").toLowerCase();
+      const hay = [bm?.name, bm?.note, bm?.tag, ...(Array.isArray(bm?.tags) ? bm.tags : [])].filter(Boolean).join(" ").toLowerCase();
       if (hay.includes(q) && bm?.addr != null) {
         try { return BigInt(bm.addr); } catch { /* ignore */ }
       }

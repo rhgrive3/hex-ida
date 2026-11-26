@@ -963,12 +963,17 @@ export class DeltaSessionStore {
       }
     }
 
-    if (items === null) {
-      items = this._readLsRecents();
+    const mergedByKey = new Map();
+    const lsItems = this._readLsRecents();
+    for (const entry of [...(Array.isArray(items) ? items : []), ...(Array.isArray(lsItems) ? lsItems : [])]) {
+      if (!entry || typeof entry.deltaKey !== 'string') continue;
+      const prev = mergedByKey.get(entry.deltaKey);
+      if (!prev || Number(entry.lastOpenedAt || 0) > Number(prev.lastOpenedAt || 0)) {
+        mergedByKey.set(entry.deltaKey, entry);
+      }
     }
 
-    const sorted = items
-      .filter((entry) => entry && typeof entry.deltaKey === 'string')
+    const sorted = [...mergedByKey.values()]
       .sort((a, b) => Number(b.lastOpenedAt || 0) - Number(a.lastOpenedAt || 0));
 
     const filtered = onlyWithDelta

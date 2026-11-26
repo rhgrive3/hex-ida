@@ -363,7 +363,7 @@ export class App {
       onSelect: (row) => this.onSelectRow(row),
       onLongPress: (row, x, y) => instructionMenu(this, row, x, y),
       onRangeChange: () => this.updateSelectionBar(),
-      onJumpTarget: (addr, label) => this.goToAddress(addr, { announce: true, label }),
+      onJumpTarget: (addr) => this.goToAddress(addr, { announce: true, label: this.symbols?.nameAt?.(addr) || null }),
     });
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
     this.workspace = new ProductWorkspace(this);
@@ -1313,7 +1313,7 @@ export class App {
       }
 
       if (this.bookmarks) {
-        this.bookmarks.restore(Array.isArray(delta.bookmarks) ? delta.bookmarks : [], { silent: true });
+        this.bookmarks.restore(Array.isArray(delta.bookmarks) ? delta.bookmarks : []);
       }
 
       if (this.patches?.clear) {

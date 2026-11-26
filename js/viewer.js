@@ -804,6 +804,7 @@ export class CodeViewer {
     const CONTEXT_SUPPRESS_MS = 800;
     let gesture = null;
     let suppressContextUntil = 0;
+    let suppressTargetJumpUntil = 0;
     let lastTargetJump = 0;
 
     const rowFrom = (target) => {
@@ -848,6 +849,7 @@ export class CodeViewer {
         row,
         x: e.clientX,
         y: e.clientY,
+        moved: false,
         longFired: false,
         timer: 0,
       };
@@ -856,14 +858,18 @@ export class CodeViewer {
         gesture.timer = 0;
         gesture.longFired = true;
         suppressContextUntil = Date.now() + CONTEXT_SUPPRESS_MS;
+        suppressTargetJumpUntil = Date.now() + 450;
         openContext(gesture.row, gesture.x, gesture.y);
       }, LONG_PRESS_MS);
     }, passiveOpts);
 
     this.vp.addEventListener('pointermove', (e) => {
-      if (!gesture || e.pointerId !== gesture.pointerId || !gesture.timer) return;
-      if (Math.abs(e.clientX - gesture.x) > MOVE_TOLERANCE ||
-          Math.abs(e.clientY - gesture.y) > MOVE_TOLERANCE) clearTimer();
+      if (!gesture || e.pointerId !== gesture.pointerId) return;
+      if (Math.abs(e.clientX - gesture.x) >= MOVE_TOLERANCE ||
+          Math.abs(e.clientY - gesture.y) >= MOVE_TOLERANCE) {
+        gesture.moved = true;
+        clearTimer();
+      }
     }, passiveOpts);
 
     this.vp.addEventListener('pointerup', (e) => {
@@ -873,12 +879,17 @@ export class CodeViewer {
       gesture = null;
       if (active.longFired) {
         suppressContextUntil = Date.now() + CONTEXT_SUPPRESS_MS;
+        suppressTargetJumpUntil = Date.now() + 450;
+        return;
+      }
+      if (active.moved ||
+          Math.abs(e.clientX - active.x) >= MOVE_TOLERANCE ||
+          Math.abs(e.clientY - active.y) >= MOVE_TOLERANCE) {
+        suppressTargetJumpUntil = Date.now() + 450;
         return;
       }
       const row = rowFrom(e.target);
-      if (row >= 0 && row === active.row &&
-          Math.abs(e.clientX - active.x) < MOVE_TOLERANCE &&
-          Math.abs(e.clientY - active.y) < MOVE_TOLERANCE) {
+      if (row >= 0 && row === active.row) {
         const targetEl = e.target?.closest ? e.target.closest('.tok-target') : null;
         if (!this.rangeMode && targetEl?.dataset?.targetAddr && typeof this.onJumpTarget === 'function') {
           try {
@@ -893,18 +904,22 @@ export class CodeViewer {
 
     this.vp.addEventListener('click', (e) => {
       if (this.rangeMode || typeof this.onJumpTarget !== 'function') return;
-      if (Date.now() - lastTargetJump < 300) return;
+      const now = Date.now();
+      if (now < suppressTargetJumpUntil || now - lastTargetJump < 300) return;
       const targetEl = e.target?.closest ? e.target.closest('.tok-target') : null;
       if (!targetEl?.dataset?.targetAddr) return;
       const row = rowFrom(targetEl);
       if (row < 0) return;
       try {
-        lastTargetJump = Date.now();
+        lastTargetJump = now;
         this.onJumpTarget(BigInt(targetEl.dataset.targetAddr), row);
       } catch { /* ignore invalid target */ }
     }, plainOpts);
 
-    this.vp.addEventListener('pointercancel', reset, plainOpts);
+    this.vp.addEventListener('pointercancel', () => {
+      suppressTargetJumpUntil = Date.now() + 450;
+      reset();
+    }, plainOpts);
     this.vp.addEventListener('contextmenu', (e) => {
       const row = rowFrom(e.target);
       if (row < 0) return;

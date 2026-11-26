@@ -1773,7 +1773,21 @@ async function importDeltaFromProduct(app) {
   if (!file) return;
   try {
     const raw = await file.text();
-    await app.importDeltaJson(raw);
+    let res = await app.importDeltaJson(raw);
+    if (res?.hashMismatch) {
+      const proceed = typeof globalThis.confirm === 'function'
+        ? globalThis.confirm(text('この差分は別のバイナリで作成されています。強制的に読み込みますか？', 'This delta was created for a different binary. Import anyway?'))
+        : false;
+      if (!proceed) {
+        toast(text('差分の読み込みをキャンセルしました。', 'Delta import cancelled.'));
+        return;
+      }
+      res = await app.importDeltaJson(raw, { allowMismatch: true });
+    }
+    if (!res?.ok) {
+      toast(text('差分を読み込めませんでした: ', 'Could not import delta: ') + String(res?.error || text('無効な差分ファイルです。', 'Invalid delta file.')));
+      return;
+    }
     toast(text('差分を読み込みました。', 'Delta imported.'));
   } catch (error) {
     toast(text('差分を読み込めませんでした: ', 'Could not import delta: ') + String(error?.message || error));
@@ -2155,7 +2169,6 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     input.blur();
     if (toCode) {
       if (app.goToAddress(addr, { announce: true })) router.navigate('/code/' + addr.toString());
-      else router.navigate('/code/' + addr.toString());
       return;
     }
     router.navigate('/function/' + addr.toString() + '/pseudocode');
