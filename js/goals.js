@@ -45,7 +45,7 @@ export const GOALS = [
     strong: [/attack/i, /\batk\b/i, /power/i, /strength/i, /攻撃/, /こうげき/, /威力/],
     weak: [/damage/i, /weapon/i, /skill/i, /武器/, /スキル/],
     avoid: [
-      /power[\s_-]*(?:info|state|mode|sav(?:e|ing)|supply|management|battery|adapter|source|of[\s_-]*(?:2|two|10|ten)|consumption|usage|budget|button|key|off|on|thermal)/i,
+      /power[\s_-]*(?:info|state|mode|sav(?:e|ing)|supply|management|battery|adapter|source|of[\s_-]*(?:2|two|10|ten)|consumption|usage|budget|button|key|off|on|thermal|up[\s_-]*self[\s_-]*test)/i,
       /(?:signal|wifi|password|encryption|blur|shadow)[\s_-]*strength/i,
       /\b(?:(?:c|name)[\s_-]*)?str[\s_-]*(?:len|size|buf|ptr|cpy|cmp)\b/i,
     ],
@@ -252,10 +252,11 @@ export const GOALS = [
     weak: [/reload/i, /interval/i, /delay/i, /timer/i, /待機時間/],
     avoid: [
       /\bcd[\s_-]*(?:rom|key|drive|player|track|audio|image|dir|path)\b/i,
+      /\b(?:device|type|user|item|error|err|status|state|area|country|lang|shop|store|stage|event|char|unit|card|kind|group|category|mode|result|ret|http|zip|postal|pref|currency|client|server|app|os|platform|model|vendor|media|ad|campaign|promo|coupon|serial|product|order)[\s_-]*cd\b/i,
       /(?:gcd|lcd|bcd|mcd|acd|icd|rcd|ucd)\b/i,
       /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle|timeout|date|reload|update|location|banner)[\s_-]*(?:interval|delay)/i,
       /scheduleUpdateAfterInterval|onReloadInterval|viewability[\w\s-]*|anime[\s_-]*interval|animation[\s_-]*interval|cmtime\w*|repeatable[\s_-]*timer|block[\s_-]*queue|url[\s_-]*request|cache[\s_-]*policy/i,
-      /reload[\s_-]*(?:data|table|section|row|view|page|url|webview|config|script)/i,
+      /reload[\s_-]*(?:data|table|section|row|view|page|url|webview|config|script)|\bpreload\b|package\.preload/i,
     ],
     expects: { numeric: true, store: true, compare: true },
   },
@@ -900,10 +901,16 @@ function matchTextSingle(goal, s) {
   return best;
 }
 
+const OBFUSCATED_OR_TABLE_RE = /aAbBcCdDeFgG|\$[^\s$]{8,}\$/;
+const ASSET_OR_UI_PATH_RE = /\.(?:png|jpe?g|webp|gif|svg|dat|maanim|mamodel|plist|fnt|ttf|otf|wav|mp3|ogg|m4a|mp4|tsv|csv|prefab|shader)\b|\\(?:レイヤー|digit\b)|(?:win_dialog|win_number|win_percent|win_plus|number_data_|fukidashi|createUI|detailview::|pz_ui_|btn_eff_|all_num_|all_text_)/i;
+const DIALOGUE_PROSE_RE = /<[A-Za-z][^>]*>.*<\/[A-Za-z]+>|(?:ですよ|ますよ|ますね|ですか[？?]|ましたね|しましょう|ください[。！!]|んです[。！!])/;
+
 export function matchText(goal, text) {
   if (!goal || typeof text !== 'string') return null;
   const s = text;
   if (s.length < 2) return null;
+  if (OBFUSCATED_OR_TABLE_RE.test(s)) return null;
+  if (s.length >= 12 && (s.match(/[{}~^`$|&]/g) || []).length >= 4 && !/\b(?:function|return|if|for|while)\b/.test(s)) return null;
   const rawBest = matchTextSingle(goal, s);
   const norm = normalizeIdentifierBoundaries(s);
   const normBest = norm !== s ? matchTextSingle(goal, norm) : null;
@@ -919,8 +926,10 @@ export function matchText(goal, text) {
   let quality = 1;
   if (s.length > 160) quality -= 0.4;
   if (/^[\-_./\\%@#$*+0-9]+$/.test(s)) quality -= 0.5;
-  if (/[ぁ-んァ-ヶ一-龥]/.test(s)) quality += 0.1;
-  best.score *= Math.max(0.2, Math.min(1.1, quality));
+  if (DIALOGUE_PROSE_RE.test(s)) quality *= 0.25;
+  else if (ASSET_OR_UI_PATH_RE.test(s)) quality *= 0.35;
+  else if (/[ぁ-んァ-ヶ一-龥]/.test(s)) quality += 0.1;
+  best.score *= Math.max(0.15, Math.min(1.1, quality));
   return best;
 }
 

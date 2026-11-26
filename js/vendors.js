@@ -32,7 +32,7 @@
 const VENDOR_PATTERNS = [
   { vendor: 'IronSource', kind: 'ads', re: /ironsource|supersonic|levelplay|IS_AD_UNIT_|LPM_AD_FORMAT_|\b(?:IS(?:Prog|Banner|Rewarded|Interstitial|Adapter|Mediation|DemandOnly|Expired)|LPM)[A-Z]/i },
   { vendor: 'Apple Swift/Foundation', kind: 'system', re: /^_?\$s(?:10Foundation|7SwiftUI|5UIKit|12CoreGraphics|7Combine|10ObjectiveC|8Dispatch|So\d+|ST|s\d+)/, textRe: /NSFoundation|SwiftUI/i },
-  { vendor: 'Apple System', kind: 'system', re: /^_+(?:nw_|objc_|swift_|SCNetwork|UIScrollView|UIView|UIApplication|NSLocale|NSDate|NSURL|NSTemporary|CFRunLoop|kCF|CGContext|CAAnimation|CMTime|CMClock|dispatch_|SKAdNetwork)/, textRe: /nw_path_enumerate_interfaces/i },
+  { vendor: 'Apple System', kind: 'system', re: /^_+(?:nw_|objc_|swift_|SCNetwork|UIScrollView|UIView|UIApplication|NSLocale|NSDate|NSURL|NSTemporary|CFRunLoop|kCF|CGContext|CGRect|CGPoint|CGSize|CGImage|kCG|CAAnimation|CMTime|CMClock|dispatch_|SKAdNetwork)/, textRe: /nw_path_enumerate_interfaces/i },
   { vendor: 'Abseil', kind: 'system', re: /\babsl::|\babsl_|low_level_alloc/i },
   { vendor: 'Apple Security', kind: 'crypto', re: /^_+Sec(?:Key|Trust|Item|Random|Certificate|Policy)/ },
   { vendor: 'Apple StoreKit', kind: 'purchase', re: /^_?\$s8StoreKit|^_+SK(?:Payment|Product|Receipt|Storefront|Store)/ },
