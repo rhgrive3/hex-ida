@@ -368,3 +368,73 @@ export async function requestJevAlternative(query, local, options = {}) {
   return adviseWithJev(query, eligible, { enabled: true, mode: 'partial', maxChoices: 255,
     timeoutMs: Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000, signal: options.signal, isCurrent: options.isCurrent, client });
 }
+
+function compactFunctionChoice(candidate, symbols) {
+  const addr = candidate?.addr;
+  const name = candidate?.name || (addr != null ? symbols?.nameAt?.(addr) : '') || (addr != null ? `sub_${BigInt(addr).toString(16)}` : 'unknown');
+  const strings = (candidate?.reasons || [])
+    .filter((r) => r?.code === 'string-ref' && r?.detail?.text)
+    .slice(0, 3)
+    .map((r) => String(r.detail.text).replace(/\s+/g, ' ').slice(0, 80));
+  const refs = (candidate?.reasons || [])
+    .filter((r) => (r?.code === 'callee-name' || r?.code === 'caller-name') && r?.detail?.name)
+    .slice(0, 3)
+    .map((r) => String(r.detail.name).replace(/\s+/g, ' ').slice(0, 60));
+  const parts = [`fn: ${String(name).slice(0, 120)}`];
+  if (strings.length) parts.push(`strings: ${strings.join(' | ')}`);
+  if (refs.length) parts.push(`refs: ${refs.join(', ')}`);
+  return parts.join(' ; ');
+}
+
+export async function requestJevFunctionAlternative(query, candidates, options = {}) {
+  const none = { advisory: { source: 'none', candidate: null, confidence: null } };
+  if (options.enabled !== true || typeof query !== 'string' || !query.trim() || query.length > 2048) return none;
+  if (!Array.isArray(candidates) || candidates.length < 2) return none;
+  const apiKey = typeof options.apiKey === 'string' ? options.apiKey.trim() : '';
+  if (!apiKey || apiKey.length > 4096) return none;
+  const shortlist = candidates.slice(0, 24);
+  const criteria = Object.fromEntries(shortlist.map((c, idx) => [`c${idx}`, compactFunctionChoice(c, options.symbols)]));
+  criteria.none = 'None of the listed functions clearly matches the requested gameplay or application behaviour.';
+  const body = {
+    model: 'openjev',
+    state: { userPhrase: query.trim(), queryKind: 'function-shortlist' },
+    questions: {
+      pick: {
+        type: 'choice',
+        instructions: 'Select the single function most likely to implement the requested behaviour based on its name, referenced strings, and nearby calls. Avoid logging, analytics, UI labels, ad SDKs, and allocators. Choose none if uncertain.',
+        criteria,
+      },
+    },
+  };
+  const timeoutMs = Number.isSafeInteger(options.timeoutMs) && options.timeoutMs > 0 ? Math.min(options.timeoutMs, 15000) : 5000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort('jev-timeout'), timeoutMs);
+  const onParentAbort = () => controller.abort(options.signal?.reason || 'jev-cancelled');
+  options.signal?.addEventListener?.('abort', onParentAbort, { once: true });
+  try {
+    const endpoint = resolveJevEndpoint(options.endpoint);
+    const fetchImpl = typeof options.fetchImpl === 'function' ? options.fetchImpl : fetch;
+    const response = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!response?.ok) return none;
+    const payload = await response.json().catch(() => null);
+    if (options.isCurrent && options.isCurrent() !== true) return none;
+    const pickAns = payload?.answers?.pick;
+    if (payload?.model !== 'openjev' || pickAns?.type !== 'choice') return none;
+    const choice = String(pickAns.choice || '');
+    if (!/^c(?:0|[1-9]\d*)$/.test(choice)) return none;
+    const idx = Number(choice.slice(1));
+    if (!Number.isSafeInteger(idx) || idx < 0 || idx >= shortlist.length) return none;
+    const confidence = typeof pickAns.confidence === 'number' && Number.isFinite(pickAns.confidence) ? pickAns.confidence : null;
+    return { advisory: { source: 'jev', candidate: shortlist[idx], confidence } };
+  } catch {
+    return none;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener?.('abort', onParentAbort);
+  }
+}

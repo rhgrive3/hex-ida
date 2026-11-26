@@ -2,7 +2,8 @@ import { Sheet, el, button, list, tapRow, para, toast } from '../ui.js';
 import { pick } from '../i18n.js';
 import { pinpointField } from '../pinpoint.js';
 import { cxxMemberIndexForApp } from '../analysis/query/app-adapter.js';
-import { requestJevAlternative } from '../analysis/query/jev-advisory.js';
+import { requestJevAlternative, requestJevFunctionAlternative } from '../analysis/query/jev-advisory.js';
+import { addrHex } from '../format.js';
 import { showField } from './panels/field-access.js';
 
 // In-memory session key only (never persisted to localStorage or disk).
@@ -10,14 +11,17 @@ let sessionJevApiKey = '';
 
 // Optional, user-requested alternative for anonymous C++ fields. Opening
 // the result or recovering members never sends an external request.
-export function appendJevAlternativeAction(app, goal, current, host, parentSignal) {
+export function appendJevAlternativeAction(app, goal, current, host, parentSignal, options = {}) {
+  if (['confirmed', 'likely'].includes(current?.verdict)) return;
   const index = cxxMemberIndexForApp(app);
-  if (!index || index.fieldCount < 2 || ['confirmed', 'likely'].includes(current?.verdict)) return;
   const anonCandidates = Array.isArray(current?.candidates)
     ? current.candidates.filter(c => c?.source === 'cxx' && c.anonymous === true && !c.askedByName && !c.field?.conflict)
     : [];
-  const hasAnonInIndex = [...index.classes.values()].some(cls => cls.ivars.some(field => field.anonymous));
-  if (anonCandidates.length < 2 && !hasAnonInIndex) return;
+  const hasAnonFieldMode = Boolean(index && index.fieldCount >= 2
+    && (anonCandidates.length >= 2 || [...index.classes.values()].some(cls => cls.ivars.some(field => field.anonymous))));
+  const rankedFunctions = Array.isArray(options?.rankedCandidates) ? options.rankedCandidates : [];
+  const hasFunctionMode = !hasAnonFieldMode && rankedFunctions.length >= 2;
+  if (!hasAnonFieldMode && !hasFunctionMode) return;
   const actions = list();
   actions.append(tapRow(pick('Jevで候補を再判定（任意）', 'Re-rank candidates with Jev (optional)'), {
     sub: pick('現在の結果を保ったまま、候補を高速比較します。', 'Compare recovered candidates without overwriting the local result.'),
@@ -58,16 +62,20 @@ export function appendJevAlternativeAction(app, goal, current, host, parentSigna
         activeController = controller;
         running = true; submit.disabled = true; cancelBtn.hidden = false;
         status.textContent = pick('候補を比較しています…', 'Comparing candidates…');
-        const snapshot = index.snapshotId, revision = index.revision;
+        const initialGen = app?.backend?.gen;
+        const snapshot = index?.snapshotId, revision = index?.revision;
         const isCurrent = () => !controller.signal.aborted && !parentSignal?.aborted && sheet.root.isConnected
-          && cxxMemberIndexForApp(app) === index && index.snapshotId === snapshot && index.revision === revision;
+          && app?.backend?.gen === initialGen
+          && (!hasAnonFieldMode || (cxxMemberIndexForApp(app) === index && index.snapshotId === snapshot && index.revision === revision));
         try {
-          const local = anonCandidates.length >= 2
-            ? { ...current, candidates: anonCandidates }
-            : await pinpointField({ goal, cxxFields: index, symbols: app.symbols,
-              binaryContextPreference: true, limit: 400 });
-          const result = await requestJevAlternative(goal.text, local, { enabled: true, mode: 'partial',
-            apiKey, symbols: app.symbols, timeoutMs: 5000, signal: controller.signal, isCurrent });
+          const phrase = String(goal?.text || goal?.ja || goal?.en || '');
+          const result = hasAnonFieldMode
+            ? await requestJevAlternative(phrase, anonCandidates.length >= 2
+                ? { ...current, candidates: anonCandidates }
+                : await pinpointField({ goal, cxxFields: index, symbols: app.symbols, binaryContextPreference: true, limit: 400 }),
+              { enabled: true, mode: 'partial', apiKey, symbols: app.symbols, timeoutMs: 5000, signal: controller.signal, isCurrent })
+            : await requestJevFunctionAlternative(phrase, rankedFunctions,
+              { enabled: true, apiKey, symbols: app.symbols, timeoutMs: 5000, signal: controller.signal, isCurrent });
           if (!isCurrent()) return;
           const candidate = result.advisory.candidate;
           const conf = result.advisory.confidence;
@@ -75,10 +83,21 @@ export function appendJevAlternativeAction(app, goal, current, host, parentSigna
           status.textContent = candidate
             ? pick(`Jevの参考候補${confNote}です。ローカル結果は保持されています。`, `Jev suggestion${confNote}. Local result is unchanged.`)
             : pick('利用できる参考候補はありません。ローカル結果は保持されています。', 'No usable suggestion. Local result is unchanged.');
-          if (candidate) {
+          if (candidate && hasAnonFieldMode) {
             const row = list(); row.append(tapRow(`${candidate.className}.${candidate.field.name}`, {
               sub: pick('アクセス元の処理と根拠を確認する', 'Inspect access routines and evidence'),
               onTap: () => showField(app, candidate.className, candidate.field),
+            })); status.append(row);
+          } else if (candidate && candidate.addr != null) {
+            const label = app.symbols?.nameAt?.(candidate.addr) || `sub_${BigInt(candidate.addr).toString(16).toUpperCase()}`;
+            const row = list(); row.append(tapRow(label, {
+              sub: addrHex(BigInt(candidate.addr)),
+              right: '›',
+              onTap: () => {
+                sheet.close();
+                if (typeof options?.onOpenFunction === 'function') options.onOpenFunction(candidate.addr);
+                else app.goToFunction?.(BigInt(candidate.addr));
+              },
             })); status.append(row);
           }
         } catch (_) {

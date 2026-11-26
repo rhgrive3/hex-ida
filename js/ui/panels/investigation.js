@@ -176,7 +176,10 @@ export function showCandidates(app, goal) {
       host.append(answer);
     }
 
-    appendJevAlternativeAction(app, goal, pin, host, controller.signal);
+    appendJevAlternativeAction(app, goal, pin, host, controller.signal, {
+      rankedCandidates: result.ranked?.candidates || [],
+      onOpenFunction: (addr) => openFunction(app, sheet, addr, 'pseudocode'),
+    });
 
     const candidates = result.ranked?.candidates || [];
     if (!candidates.length) {

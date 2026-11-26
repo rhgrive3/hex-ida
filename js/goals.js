@@ -193,7 +193,7 @@ export const GOALS = [
     weak: [/upgrade/i, /grow/i, /rank/i, /強化/, /育成/],
     avoid: [
       /(?:log|verbosity|battery|zoom|compression|mip(?:map)?|window|api|feature|debug|error|warning|trace|severity|nesting|indent|low)[\s_-]*level/i,
-      /\b(?:alloc(?:ator)?|prev->levels|even one level|level\s*>=\s*1)\b/i,
+      /\b(?:alloc(?:ator)?|prev->levels|even one level|level\s*>=\s*1|skiplist\w*)\b|lla_skiplist\w*/i,
       /(?:crank|frank|prank|drank|shrank)/i,
       /^_*(?:exp|exp2|exp10|expm1|frexp|ldexp)$/i,
       /\b(?:exp10|exp2|expm1|frexp|ldexp|exponent|expect|expand|export|explicit|expression|exception)\b/i,
@@ -254,7 +254,7 @@ export const GOALS = [
       /\bcd[\s_-]*(?:rom|key|drive|player|track|audio|image|dir|path)\b/i,
       /(?:gcd|lcd|bcd|mcd|acd|icd|rcd|ucd)\b/i,
       /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle|timeout|date|reload|update|location|banner)[\s_-]*(?:interval|delay)/i,
-      /scheduleUpdateAfterInterval|onReloadInterval|url[\s_-]*request|cache[\s_-]*policy/i,
+      /scheduleUpdateAfterInterval|onReloadInterval|viewability[\w\s-]*|anime[\s_-]*interval|animation[\s_-]*interval|cmtime\w*|url[\s_-]*request|cache[\s_-]*policy/i,
       /reload[\s_-]*(?:data|table|section|row|view|page|url|webview|config|script)/i,
     ],
     expects: { numeric: true, store: true, compare: true },
