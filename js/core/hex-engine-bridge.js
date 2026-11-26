@@ -876,12 +876,14 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
       res = res.replaceAll(`return ${unknownCall};`, `${helperInfo.callExpr}; ${voidTailRet}`);
       res = res.replaceAll(`${unknownCall};`, `${helperInfo.callExpr};`);
     } else if (helperInfo.hRet === 'float' || helperInfo.hRet === 'double') {
+      const tailRet = callerRet === 'void' ? `${helperInfo.callExpr}; return;` : `return ${helperInfo.callExpr};`;
       res = res.replaceAll(`x0 = ${unknownCall};`, `d0 = ${helperInfo.callExpr};`);
-      res = res.replaceAll(`return ${unknownCall};`, `return ${helperInfo.callExpr};`);
+      res = res.replaceAll(`return ${unknownCall};`, tailRet);
       res = res.replaceAll(`${unknownCall};`, `d0 = ${helperInfo.callExpr};`);
     } else {
+      const tailRet = callerRet === 'void' ? `${helperInfo.callExpr}; return;` : `return ${helperInfo.callExpr};`;
       res = res.replaceAll(`x0 = ${unknownCall};`, `x0 = (uint64)${helperInfo.callExpr};`);
-      res = res.replaceAll(`return ${unknownCall};`, `return ${helperInfo.callExpr};`);
+      res = res.replaceAll(`return ${unknownCall};`, tailRet);
       res = res.replaceAll(`${unknownCall};`, `${helperInfo.callExpr};`);
     }
     return { code: res, matched: true };
@@ -1011,7 +1013,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
             if (prevKind === 'scalar') {
               if (!isBuf) return false;
               // Prefer buffer over scalar: remove earlier scalar declaration from outer and lifted helper globals
-              out = out.replace(new RegExp(`^static\s+uint64\s+global_${gHex}\s*=[^;]*;\n`, 'gim'), '');
+              out = out.replace(new RegExp(`^static\\s+uint64\\s+global_${gHex}\\s*=[^;]*;\\n`, 'gim'), '');
               for (let k = helperGlobals.length - 1; k >= 0; k -= 1) {
                 if (helperGlobals[k].gHex === gHex) helperGlobals.splice(k, 1);
               }
@@ -1411,7 +1413,6 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
           || trimmed.charCodeAt(0) === 100
           || trimmed.charCodeAt(0) === 118
           || trimmed.charCodeAt(0) === 108
-          || trimmed.charCodeAt(0) === 115
         )
         && bodyDeclRe.test(trimmed)
       ) {
