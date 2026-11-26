@@ -1645,6 +1645,131 @@ function countPureNumericArithmetic(insns) {
   return count;
 }
 
+const RMW_STACK_REGS = new Set(['sp', 'fp', 'x29', 'w29', 'rsp', 'rbp', 'esp', 'ebp', 'rip', 'eip']);
+const RMW_LOAD_RE = /^(?:ldr|ldur|ldrsw|ldrh|ldrb|ldursw|mov|movsx|movsxd|movzx|movss|movsd)$/i;
+const RMW_STORE_RE = /^(?:str|stur|strh|strb|mov|movss|movsd)$/i;
+const RMW_DIRECT_MEM_OP_RE = /^(?:add|sub|adc|sbb|inc|dec)$/i;
+const RMW_SUB_RE = /^(?:sub|subs|fsub|subss|subsd|dec|sbb)$/i;
+const RMW_ADD_RE = /^(?:add|adds|fadd|addss|addsd|inc|adc)$/i;
+const RMW_CLAMP_RE = /^(?:cmp|cmn|fcmp|csel|csinc|csinv|csneg|fmax|fmin|fmaxnm|fminnm|cmov\w+|b\.(?:le|lt|ge|gt|ls|lo|hi|hs|eq|ne)|cbz|cbnz|tbz|tbnz|j(?:le|l|ge|g|be|b|ae|a|s|ns|e|ne))$/i;
+const RMW_CALL_RE = /^(?:bl|blr|blraa|blrab|call|callq)$/i;
+
+function parseFieldMemRef(insn) {
+  if (insn?.memory && !insn.memory.stack && insn.memory.base) {
+    const base = String(insn.memory.base).toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    const off = insn.memory.offset != null ? String(insn.memory.offset) : '0';
+    return { base, offset: off, kind: insn.memory.kind || null };
+  }
+  const ops = String(insn?.operands || insn?.ops || '');
+  const mArm = /\[([xw]\d+|sp|fp)(?:,\s*#(-?0x[0-9a-f]+|-?\d+))?\]/i.exec(ops);
+  if (mArm) {
+    const base = mArm[1].toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    return { base, offset: (mArm[2] || '0').toLowerCase(), kind: null };
+  }
+  const mX86 = /\[([re]?(?:ax|bx|cx|dx|si|di|bp|sp)|r(?:[89]|1[0-5])d?)(?:\s*([+-])\s*(0x[0-9a-f]+|\d+))?\]/i.exec(ops);
+  if (mX86) {
+    const base = mX86[1].toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    const sign = mX86[2] === '-' ? '-' : '';
+    const off = mX86[3] ? `${sign}${mX86[3].toLowerCase()}` : '0';
+    return { base, offset: off, kind: null };
+  }
+  return null;
+}
+
+/**
+ * General-purpose Read-Modify-Write (+ clamp/bounds-check) field detector for
+ * ARM64 and x86-64 instruction streams. Excludes stack/frame slots.
+ */
+export function detectFieldRmwPatterns(insns) {
+  const list = Array.isArray(insns) ? insns : [];
+  const loads = new Map();
+  const fields = [];
+  let subRmwCount = 0;
+  let addRmwCount = 0;
+  let clampedRmwCount = 0;
+
+  for (let i = 0; i < list.length; i++) {
+    const insn = list[i];
+    const mn = String(insn?.mnemonic || insn?.mn || '').trim().toLowerCase();
+    if (!mn) continue;
+    if (RMW_CALL_RE.test(mn)) { loads.clear(); continue; }
+    const opsText = String(insn?.operands || insn?.ops || '').trim();
+    const firstComma = opsText.indexOf(',');
+    const dstOp = (firstComma >= 0 ? opsText.slice(0, firstComma) : opsText).trim();
+    const mem = parseFieldMemRef(insn);
+    const dstIsMem = dstOp.includes('[');
+
+    if (mem && RMW_DIRECT_MEM_OP_RE.test(mn) && dstIsMem) {
+      const hasSub = RMW_SUB_RE.test(mn);
+      const hasAdd = RMW_ADD_RE.test(mn);
+      let clamped = false;
+      for (let k = i + 1; k < Math.min(list.length, i + 5); k++) {
+        const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+        if (RMW_CLAMP_RE.test(km)) { clamped = true; break; }
+      }
+      if (hasSub) subRmwCount++; else if (hasAdd) addRmwCount++;
+      if (clamped) clampedRmwCount++;
+      fields.push({
+        base: mem.base, offset: mem.offset, kind: hasSub ? 'sub' : 'add', clamped,
+        loadAddr: insn.address ?? insn.addr ?? null,
+        storeAddr: insn.address ?? insn.addr ?? null,
+      });
+      continue;
+    }
+
+    if (mem) {
+      const key = `${mem.base}:${mem.offset}`;
+      const isStore = mem.kind === 'store'
+        || (RMW_STORE_RE.test(mn) && (mn.startsWith('st') || dstIsMem));
+      const isLoad = !isStore && (mem.kind === 'load' || RMW_LOAD_RE.test(mn));
+      if (isLoad) {
+        loads.set(key, { idx: i, addr: insn.address ?? insn.addr ?? null });
+        continue;
+      }
+      if (isStore) {
+        const prev = loads.get(key);
+        if (prev && i - prev.idx <= 16) {
+          let hasSub = false, hasAdd = false, clamped = false;
+          for (let k = prev.idx + 1; k < i; k++) {
+            const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+            if (RMW_SUB_RE.test(km)) hasSub = true;
+            if (RMW_ADD_RE.test(km)) hasAdd = true;
+            if (RMW_CLAMP_RE.test(km)) clamped = true;
+          }
+          if (hasSub || hasAdd) {
+            if (!clamped) {
+              for (let k = i + 1; k < Math.min(list.length, i + 4); k++) {
+                const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+                if (RMW_CLAMP_RE.test(km)) { clamped = true; break; }
+              }
+            }
+            if (hasSub) subRmwCount++; else addRmwCount++;
+            if (clamped) clampedRmwCount++;
+            fields.push({
+              base: mem.base, offset: mem.offset, kind: hasSub ? 'sub' : 'add', clamped,
+              loadAddr: prev.addr,
+              storeAddr: insn.address ?? insn.addr ?? null,
+            });
+            loads.delete(key);
+          }
+        }
+        continue;
+      }
+    }
+
+    if (!dstIsMem && dstOp) {
+      const dstBase = dstOp.toLowerCase();
+      for (const key of loads.keys()) {
+        if (key.startsWith(`${dstBase}:`)) loads.delete(key);
+      }
+    }
+  }
+  return { rmwCount: fields.length, subRmwCount, addRmwCount, clampedRmwCount, fields };
+}
+
 function verifyFormula(c, insns, goal) {
   if (!goal?.expects?.numeric) return null;
   const wanted = new Map();          // 定数 → それを書いている文言
@@ -1747,7 +1872,8 @@ async function verifyFunctionCandidate(c, goal, o) {
   const expects = goal.expects || {};
   const insns = model.instructions || [];
   if (!field && expects.store) {
-    const { set } = selfRegisters(model);
+    let set = new Set(['x0', 'rdi', 'rcx']);
+    try { const sr = selfRegisters(model); if (sr?.set) set = sr.set; } catch { /* lightweight model */ }
     const stores = insns.filter((i) => i.memory && i.memory.kind === 'store' &&
       !i.memory.stack && set.has(i.memory.base));
     if (stores.length) {
@@ -1757,6 +1883,20 @@ async function verifyFunctionCandidate(c, goal, o) {
   if (!field && expects.numeric && !c.evidence.some((e) => e.code === 'fn-numeric')) {
     const numCount = countPureNumericArithmetic(insns);
     if (numCount) c.evidence.push(evidence('fn-numeric', Math.min(1, numCount / 3), { n: numCount }));
+  }
+  if (expects.store) {
+    const rmw = detectFieldRmwPatterns(insns);
+    if (rmw.clampedRmwCount > 0) {
+      c.evidence.push(evidence('fn-field-rmw-clamped', Math.min(1, 0.7 + 0.15 * rmw.clampedRmwCount), {
+        count: rmw.clampedRmwCount, fields: rmw.fields.slice(0, 6),
+      }));
+      c.verifications.push({ what: 'field-rmw', clamped: true, fields: rmw.fields.slice(0, 6) });
+    } else if (rmw.rmwCount > 0) {
+      c.evidence.push(evidence('fn-field-rmw', Math.min(1, 0.55 + 0.15 * rmw.rmwCount), {
+        count: rmw.rmwCount, fields: rmw.fields.slice(0, 6),
+      }));
+      c.verifications.push({ what: 'field-rmw', clamped: false, fields: rmw.fields.slice(0, 6) });
+    }
   }
 
   /*

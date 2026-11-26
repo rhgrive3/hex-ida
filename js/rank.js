@@ -362,10 +362,11 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
             calleeNameHits++;
             if (factor > 0) addReason(seed, REASON.CALLEE_NAME, POINTS[REASON.CALLEE_NAME] * m.score * factor, { name, addr: callee.addr, site: callee.site });
           }
-          if (seedBaseScore >= 20) {
+          if (seedBaseScore >= 9) {
             const c = candidate(callee.addr, callee.site);
             if (c && c !== seed && !c.reasons.some((r) => r.code === REASON.CALLED_BY_MATCH)) {
-              addReason(c, REASON.CALLED_BY_MATCH, POINTS[REASON.CALLED_BY_MATCH], { from: seed.addr, fromName: seed.name, site: callee.site });
+              const scale = seedBaseScore >= 20 ? 1 : Math.max(0.45, seedBaseScore / 20);
+              addReason(c, REASON.CALLED_BY_MATCH, POINTS[REASON.CALLED_BY_MATCH] * scale, { from: seed.addr, fromName: seed.name, site: callee.site });
             }
           }
         }
@@ -382,10 +383,11 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
           callerNameHits++;
           if (factor > 0) addReason(seed, REASON.CALLER_NAME, POINTS[REASON.CALLER_NAME] * m.score * factor, { name, addr: caller.addr, site: caller.site });
         }
-        if (seedBaseScore >= 20) {
+        if (seedBaseScore >= 9) {
           const c = candidate(caller.addr, caller.site);
           if (c && c !== seed && !c.reasons.some((r) => r.code === REASON.CALLS_MATCH)) {
-            addReason(c, REASON.CALLS_MATCH, POINTS[REASON.CALLS_MATCH], { to: seed.addr, toName: seed.name, site: caller.site });
+            const scale = seedBaseScore >= 20 ? 1 : Math.max(0.45, seedBaseScore / 20);
+            addReason(c, REASON.CALLS_MATCH, POINTS[REASON.CALLS_MATCH] * scale, { to: seed.addr, toName: seed.name, site: caller.site });
           }
         }
       }
