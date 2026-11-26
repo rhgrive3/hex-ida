@@ -885,7 +885,9 @@ export class DeltaSessionStore {
   async load(deltaKey) {
     if (typeof deltaKey !== 'string' || !deltaKey.trim()) return null;
     const cleanKey = deltaKey.trim();
+    await this._writeChain.catch(() => {});
 
+    let idbRecord = null;
     const db = await this._openDb();
     if (db) {
       try {
@@ -894,26 +896,32 @@ export class DeltaSessionStore {
         const raw = await idbRequest(tx.objectStore(SESSIONS_STORE).get(cleanKey));
         await done;
         if (raw && raw.format === DELTA_SESSION_FORMAT && raw.version === DELTA_SESSION_VERSION) {
-          return hydrateDeltaRecord(raw);
+          idbRecord = hydrateDeltaRecord(raw);
         }
       } catch {
         // Fall through to localStorage fallback.
       }
     }
 
+    let lsRecord = null;
     if (this.localStorage) {
       try {
         const rawText = this.localStorage.getItem(this._lsKey(cleanKey));
-        if (!rawText) return null;
-        const parsed = JSON.parse(rawText);
-        if (parsed && parsed.format === DELTA_SESSION_FORMAT && parsed.version === DELTA_SESSION_VERSION) {
-          return hydrateDeltaRecord(parsed);
+        if (rawText) {
+          const parsed = JSON.parse(rawText);
+          if (parsed && parsed.format === DELTA_SESSION_FORMAT && parsed.version === DELTA_SESSION_VERSION) {
+            lsRecord = hydrateDeltaRecord(parsed);
+          }
         }
       } catch {
-        return null;
+        lsRecord = null;
       }
     }
-    return null;
+
+    if (idbRecord && lsRecord) {
+      return Number(lsRecord.updatedAt || 0) > Number(idbRecord.updatedAt || 0) ? lsRecord : idbRecord;
+    }
+    return idbRecord || lsRecord || null;
   }
 
   async remove(deltaKey) {
@@ -948,6 +956,7 @@ export class DeltaSessionStore {
 
   async listRecent({ onlyWithDelta = false, limit = 10 } = {}) {
     const cap = Number.isSafeInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : 10;
+    await this._writeChain.catch(() => {});
     let items = null;
 
     const db = await this._openDb();

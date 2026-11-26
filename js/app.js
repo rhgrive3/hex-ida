@@ -270,6 +270,8 @@ export class App {
     this.lastDeltaRestore = null;
     this.onDeltaRestored = null;
     this.restoredRoutePath = null;
+    this._deltaReadyEpoch = -1;
+    this._deltaReadySlice = -1;
     this.bookmarks = new BookmarkStore({
       onChange: () => {
         if (this._applyingDelta) return;
@@ -278,6 +280,11 @@ export class App {
       },
     });
     this.deltaSession = new DeltaSessionStore();
+    this.store.subscribe((_state, patch) => {
+      if (patch && 'patches' in patch && !this._applyingDelta && this._isDeltaReady()) {
+        this.scheduleDeltaSave();
+      }
+    });
     /* 命令の書き換え（patch.js）。保存を選ぶまでファイルには触らない。 */
     this.patches = new PatchSet();
     /* 追加した機能（plugins.js）。 */
@@ -1393,8 +1400,21 @@ export class App {
     }
   }
 
+  _isDeltaReady() {
+    return this._deltaReadyEpoch === this.backend.gen && this._deltaReadySlice === this.store.get('sliceIndex');
+  }
+
+  _resetDeltaReadiness() {
+    this._deltaReadyEpoch = -1;
+    this._deltaReadySlice = -1;
+    if (this._deltaSaveTimer != null) {
+      clearTimeout(this._deltaSaveTimer);
+      this._deltaSaveTimer = null;
+    }
+  }
+
   scheduleDeltaSave() {
-    if (this.sampleOpen || !this.store.get('fileInfo')) return false;
+    if (this.sampleOpen || !this.store.get('fileInfo') || !this._isDeltaReady()) return false;
     if (this._deltaSaveTimer != null) clearTimeout(this._deltaSaveTimer);
     this._deltaSaveTimer = setTimeout(() => {
       this._deltaSaveTimer = null;
@@ -1408,7 +1428,7 @@ export class App {
       clearTimeout(this._deltaSaveTimer);
       this._deltaSaveTimer = null;
     }
-    if (this.sampleOpen || !this.store.get('fileInfo')) return false;
+    if (this.sampleOpen || !this.store.get('fileInfo') || !this._isDeltaReady()) return false;
     const deltaKey = this._currentDeltaKey();
     if (!deltaKey) return false;
     try {
@@ -1421,30 +1441,36 @@ export class App {
   async restoreDeltaSession(epoch = this.backend.gen, sliceIndex = this.store.get('sliceIndex')) {
     if (this.sampleOpen || !this.store.get('fileInfo')) return null;
     if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return null;
+    if (this._isDeltaReady()) return this.lastDeltaRestore;
     const deltaKey = this._currentDeltaKey();
     if (!deltaKey) return null;
-    let record;
+    let record = null;
     try {
       record = await this.deltaSession.load(deltaKey);
+      if (!record || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return null;
+      this._applyDeltaRecord(record, { restoreNavigation: true });
+      const restoreInfo = {
+        deltaKey,
+        savedCount: record.savedCount,
+        updatedAt: record.updatedAt,
+        restoredRoutePath: this.restoredRoutePath,
+        lastAddress: record.resume?.lastAddress ?? null,
+        record,
+      };
+      this.lastDeltaRestore = restoreInfo;
+      this.store.set({ deltaRestored: restoreInfo });
+      if (typeof this.onDeltaRestored === 'function') {
+        try { this.onDeltaRestored(restoreInfo); } catch { /* observer isolation */ }
+      }
+      return restoreInfo;
     } catch {
       return null;
+    } finally {
+      if (epoch === this.backend.gen && this.store.get('sliceIndex') === sliceIndex) {
+        this._deltaReadyEpoch = epoch;
+        this._deltaReadySlice = sliceIndex;
+      }
     }
-    if (!record || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return null;
-    this._applyDeltaRecord(record, { restoreNavigation: true });
-    const restoreInfo = {
-      deltaKey,
-      savedCount: record.savedCount,
-      updatedAt: record.updatedAt,
-      restoredRoutePath: this.restoredRoutePath,
-      lastAddress: record.resume?.lastAddress ?? null,
-      record,
-    };
-    this.lastDeltaRestore = restoreInfo;
-    this.store.set({ deltaRestored: restoreInfo });
-    if (typeof this.onDeltaRestored === 'function') {
-      try { this.onDeltaRestored(restoreInfo); } catch { /* observer isolation */ }
-    }
-    return restoreInfo;
   }
 
   exportDeltaJson() {
@@ -1478,6 +1504,8 @@ export class App {
         savedCount: parsed.record.savedCount,
       };
     }
+    this._deltaReadyEpoch = this.backend.gen;
+    this._deltaReadySlice = this.store.get('sliceIndex');
     this._applyDeltaRecord(parsed.record, { restoreNavigation: true });
     await this.flushDeltaSave();
     this.workspace?.autosave?.();
@@ -1497,6 +1525,8 @@ export class App {
       clearTimeout(this._deltaSaveTimer);
       this._deltaSaveTimer = null;
     }
+    this._deltaReadyEpoch = this.backend.gen;
+    this._deltaReadySlice = this.store.get('sliceIndex');
     const deltaKey = this._currentDeltaKey();
     if (deltaKey) {
       try { await this.deltaSession.remove(deltaKey); } catch { /* best effort */ }
@@ -1570,8 +1600,10 @@ export class App {
       sliceIndex=info.slices.findIndex((entry)=>entry.info && entry.info.isArm64);
       if (sliceIndex < 0) sliceIndex=info.slices.findIndex((entry)=>entry.info);
     }
+    this._resetDeltaReadiness();
     this.noteAttachController?.abort();
     this.notes=EMPTY_NOTES;
+    this.projectAnnotations?.clear?.();
     this.bookmarks?.clear?.({ silent: true });
     this.lastDeltaRestore=null;
     this.restoredRoutePath=null;
@@ -1943,9 +1975,11 @@ export class App {
     this.backend.advanceEpoch();
     this.analysisResumeReady = Promise.resolve(false);
     this.forgetSemantics(true);
+    this._resetDeltaReadiness();
     this.symbols=EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
     this.notes=EMPTY_NOTES;
+    this.projectAnnotations?.clear?.();
     this.bookmarks?.clear?.({ silent: true });
     this.lastDeltaRestore=null;
     this.restoredRoutePath=null;

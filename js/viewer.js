@@ -868,6 +868,7 @@ export class CodeViewer {
       if (Math.abs(e.clientX - gesture.x) >= MOVE_TOLERANCE ||
           Math.abs(e.clientY - gesture.y) >= MOVE_TOLERANCE) {
         gesture.moved = true;
+        suppressTargetJumpUntil = Date.now() + 450;
         clearTimer();
       }
     }, passiveOpts);
@@ -903,6 +904,11 @@ export class CodeViewer {
     }, passiveOpts);
 
     this.vp.addEventListener('click', (e) => {
+      if (gesture?.moved || gesture?.longFired) {
+        suppressTargetJumpUntil = Date.now() + 450;
+        reset();
+        return;
+      }
       if (this.rangeMode || typeof this.onJumpTarget !== 'function') return;
       const now = Date.now();
       if (now < suppressTargetJumpUntil || now - lastTargetJump < 300) return;

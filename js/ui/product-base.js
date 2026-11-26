@@ -2299,12 +2299,17 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       if (!results.hidden) { event.preventDefault(); hideResults(); }
       return;
     }
+    if (event.key === 'Tab') {
+      if (!results.hidden) hideResults();
+      return;
+    }
     if (results.hidden || !dropdownItems.length) return;
     if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex(activeIndex < 0 ? 0 : activeIndex + 1); return; }
     if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex(activeIndex < 0 ? dropdownItems.length - 1 : activeIndex - 1); return; }
     if (event.key === 'Enter' && activeIndex >= 0 && dropdownItems[activeIndex]) {
       event.preventDefault();
-      openDropdownItem(dropdownItems[activeIndex], { toCode: event.shiftKey });
+      const chosen = dropdownItems[activeIndex];
+      openDropdownItem(chosen, { toCode: event.shiftKey || chosen.kind === 'address' });
     }
   });
   const onDocPointerDown = (event) => {
@@ -2439,6 +2444,7 @@ export function installProductUI(app) {
     if (info !== lastDeltaToken) { lastDeltaToken = info; deltaDismissed = false; }
     if (deltaDismissed) { deltaStrip.hidden = true; return; }
     const count = deltaCountOf(info);
+    if (count <= 0) { deltaStrip.hidden = true; return; }
     deltaText.textContent = text(`前回の続きを復元 (${count}件の差分)`, `Restored previous session (${count} changes)`);
     deltaStrip.hidden = false;
   };
@@ -2595,7 +2601,10 @@ export function installProductUI(app) {
   if (app.viewer) {
     app.viewer.onJumpTarget = (targetAddr) => {
       if (targetAddr == null) return;
-      router.navigate('/code/' + BigInt(targetAddr).toString());
+      const addr = BigInt(targetAddr);
+      if (!router.navigate('/code/' + addr.toString())) {
+        app.goToAddress(addr, { announce: true });
+      }
     };
   }
   const shortcut = (event) => {
