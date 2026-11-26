@@ -9,29 +9,65 @@ const EMPTY = Object.freeze([]);
  * Display-only C highlighting. Each token is a child span of its line, so the
  * line's text (what Copy and the provenance map see) stays byte-identical.
  */
-const C_TOKEN = /(\/\*.*?\*\/|\/\/.*$)|("(?:\\.|[^"\\])*")|(\b0x[0-9a-fA-F]+\b|\b\d+\b)|\b(if|else|while|for|do|return|break|continue|switch|case|default|goto|typedef|struct|union|enum|sizeof)\b|\b(void|bool|char|short|int|long|float|double|unsigned|signed|size_t|u?int(?:8|16|32|64|128)(?:_t)?)\b|\b([A-Za-z_]\w*)(?=\s*\()/g;
-const C_TOKEN_CLASS = ['tok-cmt', 'tok-str', 'tok-num', 'tok-kw', 'tok-type', 'tok-fn'];
+const C_TOKEN = /(\/\*.*?\*\/|\/\/.*$)|("(?:\\.|[^"\\])*")|(^\s*#(?:include|define|ifdef|ifndef|if|elif|else|endif|pragma)\b)|(\b0x[0-9a-fA-F]+\b|\b\d+\b)|\b(if|else|while|for|do|return|break|continue|switch|case|default|goto|typedef|struct|union|enum|sizeof|const|static|extern)\b|\b(void|bool|char|short|int|long|float|double|unsigned|signed|size_t|uintptr_t|intptr_t|u?int(?:8|16|32|64|128)(?:_t)?)\b|\b(__hex_(?:state|nzcv|stack_frame)\w*)\b|\b([A-Za-z_]\w*)(?=\s*\()/g;
+const C_TOKEN_CLASS = ['tok-cmt', 'tok-str', 'tok-pp', 'tok-num', 'tok-kw', 'tok-type', 'tok-internal', 'tok-fn'];
 
-function appendHighlighted(row, content) {
+export function appendHighlighted(row, content, { isSig = false, resolveCallee = null, onOpenCallee = null } = {}) {
   let last = 0;
   C_TOKEN.lastIndex = 0;
   for (let match = C_TOKEN.exec(content); match; match = C_TOKEN.exec(content)) {
     if (!match[0]) { C_TOKEN.lastIndex++; continue; }
     if (match.index > last) row.append(h('span', null, content.slice(last, match.index)));
     const group = match.slice(1).findIndex(value => value !== undefined);
-    row.append(h('span', C_TOKEN_CLASS[group] || null, match[0]));
-    last = match.index + match[0].length;
+    const cls = C_TOKEN_CLASS[group] || null;
+    const tokenText = match[0];
+    if (cls === 'tok-fn' && !isSig && typeof resolveCallee === 'function' && typeof onOpenCallee === 'function') {
+      let addr = null;
+      try { addr = resolveCallee(tokenText); } catch { addr = null; }
+      if (addr != null) {
+        const link = h('span', 'tok-fn tok-fn-link', tokenText);
+        link.tabIndex = 0;
+        link.setAttribute('role', 'link');
+        link.addEventListener('click', (event) => {
+          event.stopPropagation();
+          onOpenCallee(addr, tokenText);
+        });
+        link.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            event.stopPropagation();
+            onOpenCallee(addr, tokenText);
+          }
+        });
+        row.append(link);
+        last = match.index + tokenText.length;
+        continue;
+      }
+    }
+    row.append(h('span', cls, tokenText));
+    last = match.index + tokenText.length;
   }
   if (last < content.length) row.append(h('span', null, content.slice(last)));
 }
 
-// The self-contained typedef/comment header every result starts with. It is
-// folded by default so the function itself is the first thing on screen.
+// The self-contained typedef/comment/preprocessor header every result starts with.
+// Folded by default so the function itself is the first thing on screen.
+function isPreludeLine(line, hasSigAhead) {
+  if (line?.kind === 'sig') return false;
+  const text = String(line?.text ?? '').trim();
+  if (!text) return hasSigAhead;
+  if (/^(\/\*.*\*\/|\/\/|#(?:if|ifdef|ifndef|elif|else|endif|pragma|include|define)\b)/.test(text)) return true;
+  if (/^(?:typedef|static|extern)\b/.test(text) && (hasSigAhead || /;\s*$/.test(text))) return true;
+  if (hasSigAhead && /;\s*$/.test(text) && !text.includes('{') && !text.includes('}')) return true;
+  return false;
+}
+
 function preludeLength(lines) {
+  const firstSig = lines.findIndex((line) => line?.kind === 'sig');
+  const limit = firstSig >= 0 ? firstSig : lines.length;
   let count = 0;
-  while (count < lines.length) {
-    const text = String(lines[count]?.text ?? '').trim();
-    if (!/^(\/\*.*\*\/|typedef\b.*;)$/.test(text)) break;
+  while (count < limit) {
+    if (!isPreludeLine(lines[count], firstSig >= 0)) break;
     count++;
   }
   return count;
@@ -339,8 +375,21 @@ export function createDecompilerProvenanceView(query, options = {}) {
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
       const content = line.kind === 'blank' ? '' : '    '.repeat(Math.max(0, line.indent || 0)) + line.text;
-      const row = h('span', 'ui-pseudocode-line' + (index < prelude ? ' prelude' : ''));
-      appendHighlighted(row, content);
+      const rowClasses = ['ui-pseudocode-line'];
+      if (index < prelude) rowClasses.push('prelude');
+      const isSig = line.kind === 'sig';
+      if (isSig) rowClasses.push('is-sig');
+      if (line.kind === 'decl') {
+        rowClasses.push('is-decl');
+        if (lines[index + 1]?.kind !== 'decl') rowClasses.push('is-decl-last');
+      }
+      if (line.kind === 'case' || /^\s*(?:case\b|default\s*:)/.test(String(line.text || ''))) rowClasses.push('is-case');
+      const row = h('span', rowClasses.join(' '));
+      appendHighlighted(row, content, {
+        isSig,
+        resolveCallee: options.resolveCallee || null,
+        onOpenCallee: options.onOpenCallee || null,
+      });
       if (index + 1 < lines.length) row.append(h('span', null, '\n'));
       const entity = query.value.renderProvenance?.entities?.[`L${index}:${line.kind ?? 'null'}`];
       if (navigation.available && entity?.role === 'semantic') {

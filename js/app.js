@@ -39,6 +39,14 @@ import { createLazyAppAnalysisQueryAPI } from './analysis/query/lazy-app-adapter
 import { appProducerAbortError, waitForAppProducer } from './analysis/producer-wait.js';
 import { clearSchemaRecoveryTasks } from './analysis/schema-recovery-task.js';
 import { AnalysisResumeStore, captureAppAnalysisState, applyAppAnalysisState } from './cache/analysis-resume.js';
+import {
+  BookmarkStore,
+  DeltaSessionStore,
+  makeDeltaKey,
+  countDeltaItems,
+  serializeDeltaJson,
+  parseDeltaJson,
+} from './cache/delta-session.js';
 
 
 let _panelsModulePromise = null;
@@ -257,6 +265,19 @@ export class App {
     /* 自分で付けた名前・メモ・型（names.js）。ファイルごとに保存される。 */
     this.notes = EMPTY_NOTES;
     this.noteAttachController = null;
+    this._deltaSaveTimer = null;
+    this._applyingDelta = false;
+    this.lastDeltaRestore = null;
+    this.onDeltaRestored = null;
+    this.restoredRoutePath = null;
+    this.bookmarks = new BookmarkStore({
+      onChange: () => {
+        if (this._applyingDelta) return;
+        this.scheduleDeltaSave();
+        this.workspace?.autosave?.();
+      },
+    });
+    this.deltaSession = new DeltaSessionStore();
     /* 命令の書き換え（patch.js）。保存を選ぶまでファイルには触らない。 */
     this.patches = new PatchSet();
     /* 追加した機能（plugins.js）。 */
@@ -317,7 +338,10 @@ export class App {
     };
 
     this.navigation = new NavigationHistory({
-      onChange: (state) => this.renderNavigation(state),
+      onChange: (state) => {
+        this.renderNavigation(state);
+        if (!this._applyingDelta) this.scheduleDeltaSave();
+      },
       onNavigate: (entry) => this.restoreNavigation(entry),
     });
 
@@ -339,6 +363,7 @@ export class App {
       onSelect: (row) => this.onSelectRow(row),
       onLongPress: (row, x, y) => instructionMenu(this, row, x, y),
       onRangeChange: () => this.updateSelectionBar(),
+      onJumpTarget: (addr, label) => this.goToAddress(addr, { announce: true, label }),
     });
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
     this.workspace = new ProductWorkspace(this);
@@ -368,6 +393,7 @@ export class App {
     if (typeof window !== 'undefined') {
       this._analysisResumePageHide = () => {
         this.workspace?.autosave();
+        void this.flushDeltaSave();
         void this.persistAnalysisSession();
       };
       window.addEventListener('pagehide', this._analysisResumePageHide, { passive:true });
@@ -1188,10 +1214,331 @@ export class App {
     }
   }
 
+  /* ── 軽量デルタセッション永続化 ───────────────────────────── */
+
+  _currentDeltaFingerprint() {
+    const info = this.store.get('fileInfo') || null;
+    const file = this.store.get('file') || null;
+    if (!info && !file) return null;
+    const sliceIndex = this.store.get('sliceIndex') ?? -1;
+    const slice = sliceIndex >= 0 ? info?.slices?.[sliceIndex] || null : null;
+    const meta = slice?.info || {};
+    const rawHash = this.backend?.contentHash || this.backend?.binaryId || null;
+    const sha256 = typeof rawHash === 'string' && rawHash.trim() ? rawHash.trim().toLowerCase() : null;
+    return {
+      sha256,
+      prefix: sha256 ? sha256.slice(0, 16) : null,
+      name: info?.name || file?.name || null,
+      size: info?.size ?? file?.size ?? null,
+      format: info?.format || this.backend?.formatId || null,
+      sliceIndex,
+      uuid: meta.uuid || null,
+      architecture: this.store.get('architecture') || meta.architecture || meta.cpu || null,
+    };
+  }
+
+  _currentDeltaKey() {
+    const fp = this._currentDeltaFingerprint();
+    return fp ? makeDeltaKey(fp) : null;
+  }
+
+  _captureDeltaRecord() {
+    const fingerprint = this._currentDeltaFingerprint();
+    const notes = this.notes;
+    const hasNotes = Boolean(notes && notes !== EMPTY_NOTES);
+    const currentRegion = this.store.get('currentRegion') || null;
+    const currentAddress = this.store.get('currentAddress') ?? null;
+    const currentFn = currentAddress != null ? (this.symbols?.functionAt?.(currentAddress)?.start ?? null) : null;
+    const patches = (this.patches?.list?.() || []).map((entry) => ({
+      offset: entry.offset,
+      before: Array.from(entry.before || [], (b) => Number(b) & 255),
+      after: Array.from(entry.after || [], (b) => Number(b) & 255),
+      addr: entry.addr ?? null,
+      label: entry.label ?? null,
+      reason: entry.reason ?? null,
+    }));
+    const delta = {
+      names: hasNotes ? Object.fromEntries(notes.names) : {},
+      comments: hasNotes ? Object.fromEntries(notes.comments) : {},
+      vars: hasNotes ? Object.fromEntries(notes.vars) : {},
+      types: hasNotes ? Object.fromEntries(notes.types) : {},
+      structs: hasNotes && Array.isArray(notes.structs) ? notes.structs.slice() : [],
+      bookmarks: this.bookmarks?.list?.() || [],
+      patches,
+      projectAnnotations: Array.isArray(this.projectAnnotations) ? this.projectAnnotations.slice() : [],
+    };
+    const routePath = this.store.get('routePath')
+      || (typeof window !== 'undefined' && window.location?.hash ? window.location.hash.replace(/^#/, '') : null)
+      || null;
+    const resume = {
+      lastAddress: currentAddress,
+      lastFunction: currentFn,
+      lastRegionId: currentRegion?.id ?? null,
+      displayMode: this.store.get('displayMode') || null,
+      routePath,
+      history: (this.navigation?.entries || []).slice(-100),
+      historyIndex: Number.isSafeInteger(this.navigation?.index) ? this.navigation.index : -1,
+      lastGoal: this.lastGoal?.text ? { text: String(this.lastGoal.text) } : null,
+    };
+    return {
+      format: 'hex-delta-session',
+      version: 1,
+      fingerprint,
+      updatedAt: Date.now(),
+      savedCount: countDeltaItems(delta),
+      delta,
+      resume,
+    };
+  }
+
+  _applyDeltaRecord(record, { restoreNavigation = true } = {}) {
+    if (!record || typeof record !== 'object' || !record.delta) return false;
+    this._applyingDelta = true;
+    try {
+      const { delta, resume = {} } = record;
+      const notes = this.notes;
+      const previousNoteNames = notes && notes !== EMPTY_NOTES ? [...notes.names.keys()] : [];
+      if (notes && notes !== EMPTY_NOTES) {
+        notes.names.clear();
+        notes.comments.clear();
+        notes.vars.clear();
+        notes.types.clear();
+        for (const [k, v] of Object.entries(delta.names || {})) notes.names.set(k, v);
+        for (const [k, v] of Object.entries(delta.comments || {})) notes.comments.set(k, v);
+        for (const [k, v] of Object.entries(delta.vars || {})) notes.vars.set(k, v);
+        for (const [k, v] of Object.entries(delta.types || {})) notes.types.set(k, v);
+        notes.structs = Array.isArray(delta.structs) ? delta.structs.slice() : [];
+        notes.dirty = true;
+        if (notes.id) notes.save();
+      }
+
+      if (this.bookmarks) {
+        this.bookmarks.restore(Array.isArray(delta.bookmarks) ? delta.bookmarks : [], { silent: true });
+      }
+
+      if (this.patches?.clear) {
+        this.patches.clear();
+        for (const entry of delta.patches || []) {
+          if (entry?.offset == null) continue;
+          try {
+            this.patches.add(BigInt(entry.offset), entry.before || [], entry.after || [], {
+              addr: entry.addr ?? null,
+              label: entry.label ?? null,
+              reason: entry.reason ?? null,
+            });
+          } catch { /* ignore invalid/overlapping patch entries */ }
+        }
+        this.store.set({ patches: this.patches.list().length });
+      }
+
+      this.projectAnnotations = Array.isArray(delta.projectAnnotations)
+        ? delta.projectAnnotations.slice()
+        : [];
+
+      if (this.symbols && this.symbols !== EMPTY_INDEX) {
+        for (const addrKey of previousNoteNames) {
+          try { this.symbols.rename(BigInt(addrKey), ''); } catch { /* ignore */ }
+        }
+        if (notes && notes !== EMPTY_NOTES) {
+          for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr, entry.name);
+        } else {
+          for (const [k, v] of Object.entries(delta.names || {})) {
+            try { this.symbols.rename(BigInt(k), v); } catch { /* ignore */ }
+          }
+        }
+        this.viewer?.setSymbols?.(this.symbols);
+      }
+
+      if (resume.lastGoal?.text) {
+        this.lastGoal = { text: resume.lastGoal.text };
+      }
+
+      if (resume.displayMode === 'asm' || resume.displayMode === 'hex') {
+        if (resume.displayMode === 'hex' || this.store.get('canDisassemble')) {
+          this.setMode(resume.displayMode);
+        }
+      }
+
+      this.restoredRoutePath = typeof resume.routePath === 'string' && resume.routePath.trim()
+        ? resume.routePath.trim()
+        : null;
+
+      if (restoreNavigation && this.navigation && Array.isArray(resume.history) && resume.history.length) {
+        const limit = this.navigation.limit > 0 ? this.navigation.limit : 40;
+        this.navigation.entries = resume.history.slice(-limit);
+        const dropped = resume.history.length - this.navigation.entries.length;
+        const idx = Number(resume.historyIndex);
+        this.navigation.index = Number.isSafeInteger(idx)
+          ? Math.max(0, Math.min(this.navigation.entries.length - 1, idx - dropped))
+          : this.navigation.entries.length - 1;
+        this.navigation.onChange?.(this.navigation.snapshot());
+      }
+
+      if (restoreNavigation && resume.lastAddress != null) {
+        const regions = this.store.get('regions') || [];
+        const target = regions.find(
+          (r) => !r.zerofill && r.size > 0n && resume.lastAddress >= r.vmAddr && resume.lastAddress < r.vmAddr + r.size,
+        );
+        if (target) this.goToAddress(resume.lastAddress, { history: false });
+      } else if (restoreNavigation && resume.lastRegionId) {
+        const regions = this.store.get('regions') || [];
+        const target = regions.find((r) => r.id === resume.lastRegionId && !r.zerofill && r.size > 0n);
+        if (target) this.selectRegion(target, { silent: true });
+      }
+
+      this.updateChrome?.();
+      return true;
+    } finally {
+      this._applyingDelta = false;
+    }
+  }
+
+  scheduleDeltaSave() {
+    if (this.sampleOpen || !this.store.get('fileInfo')) return false;
+    if (this._deltaSaveTimer != null) clearTimeout(this._deltaSaveTimer);
+    this._deltaSaveTimer = setTimeout(() => {
+      this._deltaSaveTimer = null;
+      void this.flushDeltaSave();
+    }, 400);
+    return true;
+  }
+
+  async flushDeltaSave() {
+    if (this._deltaSaveTimer != null) {
+      clearTimeout(this._deltaSaveTimer);
+      this._deltaSaveTimer = null;
+    }
+    if (this.sampleOpen || !this.store.get('fileInfo')) return false;
+    const deltaKey = this._currentDeltaKey();
+    if (!deltaKey) return false;
+    try {
+      return await this.deltaSession.save(deltaKey, this._captureDeltaRecord());
+    } catch {
+      return false;
+    }
+  }
+
+  async restoreDeltaSession(epoch = this.backend.gen, sliceIndex = this.store.get('sliceIndex')) {
+    if (this.sampleOpen || !this.store.get('fileInfo')) return null;
+    if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return null;
+    const deltaKey = this._currentDeltaKey();
+    if (!deltaKey) return null;
+    let record;
+    try {
+      record = await this.deltaSession.load(deltaKey);
+    } catch {
+      return null;
+    }
+    if (!record || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return null;
+    this._applyDeltaRecord(record, { restoreNavigation: true });
+    const restoreInfo = {
+      deltaKey,
+      savedCount: record.savedCount,
+      updatedAt: record.updatedAt,
+      restoredRoutePath: this.restoredRoutePath,
+      lastAddress: record.resume?.lastAddress ?? null,
+      record,
+    };
+    this.lastDeltaRestore = restoreInfo;
+    this.store.set({ deltaRestored: restoreInfo });
+    if (typeof this.onDeltaRestored === 'function') {
+      try { this.onDeltaRestored(restoreInfo); } catch { /* observer isolation */ }
+    }
+    return restoreInfo;
+  }
+
+  exportDeltaJson() {
+    if (!this.store.get('fileInfo')) throw new Error('open-file-first');
+    const record = this._captureDeltaRecord();
+    const json = serializeDeltaJson(record);
+    const clean = String(record.fingerprint?.name || 'analysis')
+      .replace(/[^a-z0-9._-]+/gi, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 120) || 'analysis';
+    return {
+      filename: `${clean}.hexdelta.json`,
+      json,
+      savedCount: record.savedCount,
+    };
+  }
+
+  async importDeltaJson(text, { allowMismatch = false } = {}) {
+    if (!this.store.get('fileInfo')) throw new Error('open-file-first');
+    const expectedSha256 = this._currentDeltaFingerprint()?.sha256 || null;
+    const parsed = parseDeltaJson(text, expectedSha256);
+    if (!parsed.ok) {
+      return { ok: false, hashMismatch: false, error: parsed.error, savedCount: 0 };
+    }
+    if (parsed.hashMismatch && !allowMismatch) {
+      return {
+        ok: false,
+        hashMismatch: true,
+        error: 'binary-hash-mismatch',
+        record: parsed.record,
+        savedCount: parsed.record.savedCount,
+      };
+    }
+    this._applyDeltaRecord(parsed.record, { restoreNavigation: true });
+    await this.flushDeltaSave();
+    this.workspace?.autosave?.();
+    this.viewer?.setSymbols?.(this.symbols);
+    this.updateChrome?.();
+    return {
+      ok: true,
+      hashMismatch: parsed.hashMismatch,
+      error: null,
+      record: parsed.record,
+      savedCount: parsed.record.savedCount,
+    };
+  }
+
+  async resetDeltaSession() {
+    if (this._deltaSaveTimer != null) {
+      clearTimeout(this._deltaSaveTimer);
+      this._deltaSaveTimer = null;
+    }
+    const deltaKey = this._currentDeltaKey();
+    if (deltaKey) {
+      try { await this.deltaSession.remove(deltaKey); } catch { /* best effort */ }
+    }
+    this._applyingDelta = true;
+    try {
+      const previousNoteNames = this.notes && this.notes !== EMPTY_NOTES ? [...this.notes.names.keys()] : [];
+      if (this.notes && this.notes !== EMPTY_NOTES) this.notes.clear();
+      this.bookmarks?.clear?.({ silent: false });
+      if (this.patches?.clear) {
+        this.patches.clear();
+        this.store.set({ patches: 0 });
+      }
+      this.projectAnnotations = [];
+      this.lastGoal = null;
+      if (this.symbols && this.symbols !== EMPTY_INDEX) {
+        for (const addrKey of previousNoteNames) {
+          try { this.symbols.rename(BigInt(addrKey), ''); } catch { /* ignore */ }
+        }
+        this.viewer?.setSymbols?.(this.symbols);
+      }
+      const region = this.store.get('currentRegion');
+      this.navigation?.reset?.(region ? this.navigationEntry(region.vmAddr, pick('解析の開始', 'Analysis start')) : null);
+      this.lastDeltaRestore = null;
+      this.restoredRoutePath = null;
+      this.store.set({ deltaRestored: null });
+      this.updateChrome?.();
+    } finally {
+      this._applyingDelta = false;
+    }
+    return true;
+  }
+
+  listRecentDeltaBinaries({ onlyWithDelta = true, limit = 10 } = {}) {
+    return this.deltaSession.listRecent({ onlyWithDelta, limit });
+  }
+
   /* ── ファイルを開く ───────────────────────────────────────── */
 
   async openFile(file, opts) {
     if (!file) return;
+    void this.flushDeltaSave();
     void this.persistAnalysisSession();
     if (file.size === 0) { alertDialog(t('err.emptyTitle'), t('err.emptyText')); return; }
     const sampleOpen = !!(opts && opts.sample);
@@ -1225,6 +1572,10 @@ export class App {
     }
     this.noteAttachController?.abort();
     this.notes=EMPTY_NOTES;
+    this.bookmarks?.clear?.({ silent: true });
+    this.lastDeltaRestore=null;
+    this.restoredRoutePath=null;
+    this.store.set({ deltaRestored: null });
     this.patches=new PatchSet();
     this.store.set({patches:0});
     this.setBusy(false);
@@ -1244,6 +1595,7 @@ export class App {
       if (openEpoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
       if (!sampleOpen) void this.analysisResume.updateLastFileMeta({ binaryId, sliceIndex }).catch(() => {});
       const restored = await this.restoreAnalysisSession(binaryId, sliceIndex, openEpoch);
+      if (!sampleOpen) await this.restoreDeltaSession(openEpoch, sliceIndex);
       if (!restored && !sampleOpen) void this.persistAnalysisSession(['symbols']);
       if (restored && restoredOpen) toast(pick('前回の解析結果を復元しました', 'Restored the previous analysis results'));
       return restored;
@@ -1270,6 +1622,11 @@ export class App {
       // on every cold open merely to learn whether migration data exists.
       const legacyV3=findLegacyV3NoteKey(file,info,sliceIndex);
       const notes=new NoteStore(id,[legacyV3,legacyV2,legacyNoteKeyForSlice(file,info,sliceIndex)]);
+      notes.onChange = () => {
+        if (this._applyingDelta) return;
+        this.scheduleDeltaSave();
+        this.workspace?.autosave?.();
+      };
       this.notes=notes;
       if (this.symbols && this.symbols !== EMPTY_INDEX) {
         for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr,entry.name);
@@ -1577,6 +1934,7 @@ export class App {
   async selectSlice(index) {
     const info=this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
+    void this.flushDeltaSave();
     void this.persistAnalysisSession();
     this.workspace?.autosave();
     this.workspace?.invalidate();
@@ -1588,6 +1946,10 @@ export class App {
     this.symbols=EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
     this.notes=EMPTY_NOTES;
+    this.bookmarks?.clear?.({ silent: true });
+    this.lastDeltaRestore=null;
+    this.restoredRoutePath=null;
+    this.store.set({ deltaRestored: null });
     this.patches=new PatchSet();
     this.store.set({patches:0});
     const file=this.store.get('file');
@@ -1604,6 +1966,7 @@ export class App {
       if (!binaryId) { try { binaryId = await this.backend.ensureBinaryId(); } catch { return false; } }
       if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== index) return false;
       const restored = await this.restoreAnalysisSession(binaryId, index, epoch);
+      if (!this.sampleOpen) await this.restoreDeltaSession(epoch, index);
       if (!restored) void this.persistAnalysisSession(['symbols']);
       return restored;
     }).catch(() => false);
@@ -1656,6 +2019,7 @@ export class App {
     this.store.set({ displayMode: mode });
     this.viewer.setMode(mode);
     this.updateModeUI();
+    if (!this._applyingDelta) this.scheduleDeltaSave();
   }
 
   /* ── 移動 ─────────────────────────────────────────────────── */

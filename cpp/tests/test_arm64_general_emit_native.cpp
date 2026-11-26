@@ -1180,6 +1180,138 @@ void test_wave31_zero_goto_state_machine() {
   hex::decompiler::passes::set_general_scratch_arena(nullptr);
 }
 
+
+void test_wave32_readability_upgrades() {
+  alignas(16) static uint8_t scratch_buf[512u * 1024u];
+  hex::Arena arena;
+  hex::Arena scratch;
+  arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+  scratch.init_fixed(scratch_buf, sizeof(scratch_buf));
+  const char* txt = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_cnt = 0u;
+  constexpr uint32_t kRet = 0xD65F03C0u;
+
+  hex::decompiler::passes::set_general_scratch_arena(&scratch);
+
+  // (1) P0: Fused cmp w1, #0 + b.le, cmp x0, x20 + b.eq, tst x0, #1 + b.eq, fcmp d1, d0 + b.mi -> ZERO __hex_nzcv!
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w[] = {
+      0x7100003Fu,  // 0: cmp w1, #0
+      0x5400010Du,  // 1: b.le +32 -> 9 (ret)
+      0xEB14001Fu,  // 2: cmp x0, x20
+      0x540000C0u,  // 3: b.eq +24 -> 9 (ret)
+      0xF240001Fu,  // 4: tst x0, #1
+      0x54000080u,  // 5: b.eq +16 -> 9 (ret)
+      0x1E602020u,  // 6: fcmp d1, d0
+      0x54000044u,  // 7: b.mi +8 -> 9 (ret)
+      0x91000400u,  // 8: add x0, x0, #1
+      kRet,         // 9: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100050000ULL, "w32_fused_cmp", 13u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "__hex_nzcv"));
+    assert(contains(txt, len, "(int32_t)x1 <= 0"));
+    assert(contains(txt, len, "x0 != x20") || contains(txt, len, "x0 == x20"));
+    assert(contains(txt, len, "(x0 & 1) != 0") || contains(txt, len, "(x0 & 1) == 0"));
+    assert(contains(txt, len, "d1 < d0"));
+  }
+
+  // (2) P0 Soundness: FCMP + b.le is NaN-sensitive -> MUST keep __hex_nzcv (must NOT fuse).
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w[] = {
+      0x1E602020u,  // 0: fcmp d1, d0
+      0x5400004Du,  // 1: b.le +8 -> 3 (ret)
+      0x91000400u,  // 2: add x0, x0, #1
+      kRet,         // 3: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 4u, 0x100051000ULL, "w32_fcmp_nan_le", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "uint32_t __hex_nzcv = 0;"));
+    assert(contains(txt, len, "__hex_nzcv = (__fa == __fb)"));
+  }
+
+  // (3) P0: State-machine /* entry 0x... */ and /* block 0x... */ comments in Mode 1 & Mode 2.
+  {
+    arena.reset();
+    scratch.reset();
+    auto enc_cbz = [](uint32_t rt, int32_t off_insns) -> uint32_t {
+      return 0xB4000000u | ((static_cast<uint32_t>(off_insns) & 0x7FFFFu) << 5u) | (rt & 31u);
+    };
+    auto enc_cbnz = [](uint32_t rt, int32_t off_insns) -> uint32_t {
+      return 0xB5000000u | ((static_cast<uint32_t>(off_insns) & 0x7FFFFu) << 5u) | (rt & 31u);
+    };
+    auto enc_b = [](int32_t off_insns) -> uint32_t {
+      return 0x14000000u | (static_cast<uint32_t>(off_insns) & 0x03FFFFFFu);
+    };
+    auto enc_add_imm = [](uint32_t rd, uint32_t rn, uint32_t imm12) -> uint32_t {
+      return 0x91000000u | ((imm12 & 0xFFFu) << 10u) | ((rn & 31u) << 5u) | (rd & 31u);
+    };
+    auto enc_subs_imm = [](uint32_t rd, uint32_t rn, uint32_t imm12) -> uint32_t {
+      return 0xF1000000u | ((imm12 & 0xFFFu) << 10u) | ((rn & 31u) << 5u) | (rd & 31u);
+    };
+    const uint32_t w[] = {
+      enc_cbz(2u, 5),            // 0: cbz x2, -> 5
+      enc_b(6),                  // 1: b -> 7
+      enc_add_imm(0u, 0u, 1u),   // 2: L_body
+      enc_subs_imm(4u, 4u, 1u),  // 3: L_inner
+      enc_cbnz(4u, -1),          // 4: cbnz x4, -> 3
+      enc_add_imm(0u, 0u, 2u),   // 5: L_shared
+      enc_add_imm(0u, 0u, 3u),   // 6
+      enc_subs_imm(1u, 1u, 1u),  // 7: L_cond
+      enc_cbnz(1u, -6),          // 8: cbnz x1, -> 2
+      kRet,                      // 9: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100052000ULL, "w32_sm_comments", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "goto "));
+    assert(contains(txt, len, "case 0u: /* entry 0x100052000 */"));
+    assert(contains(txt, len, "/* block 0x100052"));
+  }
+
+  // (4) P1: Micro-peepholes (no (uint32_t)(uint32_t), no (int)(int32_t)x0, no >> 0, no (0ULL + 1ULL)) + grouped x8..x30 decls.
+  {
+    arena.reset();
+    scratch.reset();
+    const uint32_t w[] = {
+      0x2B020028u,  // 0: adds w8, w1, w2 (shifted reg, rd=8 -> emits __cb without duplicate (uint32_t)(uint32_t))
+      0x91000509u,  // 1: add x9, x8, #1
+      0x91000533u,  // 2: add x19, x9, #1
+      0x91000674u,  // 3: add x20, x19, #1
+      0x36000060u,  // 4: tbz w0, #0, +12 -> 7
+      0x7100001Fu,  // 5: cmp w0, #0
+      0x1A9F17E0u,  // 6: cset w0, eq (csinc w0, wzr, wzr, ne -> 1ULL, not (0ULL + 1ULL))
+      0x0B140000u,  // 7: add w0, w0, w20 (32-bit write to w0 -> returns int32)
+      kRet,         // 8: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 9u, 0x100053000ULL, "w32_peepholes", 13u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "(uint32_t)(uint32_t)"));
+    assert(!contains(txt, len, "(int)(int32_t)x0"));
+    assert(contains(txt, len, "return (int32_t)x0;"));
+    assert(!contains(txt, len, ">> 0)"));
+    assert(contains(txt, len, "(x0 & 1ULL)"));
+    assert(!contains(txt, len, "(0ULL + 1ULL)"));
+    assert(contains(txt, len, "1ULL"));
+    assert(contains(txt, len, "uint64 x8 = 0, x9 = 0, x19 = 0, x20 = 0;"));
+  }
+
+  hex::decompiler::passes::set_general_scratch_arena(nullptr);
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -1194,6 +1326,7 @@ int main() {
   test_wave29_structurizer_v4_and_wall_cleanup();
   test_wave30_structurizer_v5();
   test_wave31_zero_goto_state_machine();
+  test_wave32_readability_upgrades();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }

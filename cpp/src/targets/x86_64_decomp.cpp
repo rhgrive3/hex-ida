@@ -1696,6 +1696,217 @@ static bool is_flag_reading_insn(const GeneralInsn& gi) {
   return d.kind == HEX_X86_KIND_JCC || is_cmovcc_insn(d) || is_setcc_insn(d);
 }
 
+static bool is_test_opcode(uint8_t opcode) {
+  return opcode == 0x84u || opcode == 0x85u || opcode == 0xa8u || opcode == 0xa9u ||
+         opcode == 0xf6u || opcode == 0xf7u;
+}
+
+static bool is_adc_sbb_rcl_rcr(const GeneralInsn& gi) {
+  if (gi.is_raw || gi.is_xchg || gi.is_leave) return false;
+  const HexX86Decoded& d = gi.d;
+  if (d.kind != HEX_X86_KIND_ALU) return false;
+  if (d.opcode < 0x40u) {
+    const uint8_t grp = static_cast<uint8_t>((d.opcode >> 3u) & 7u);
+    return grp == 2u || grp == 3u;  // adc / sbb
+  }
+  if (d.opcode == 0x80u || d.opcode == 0x81u || d.opcode == 0x83u) {
+    const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+    return grp == 2u || grp == 3u;  // adc / sbb
+  }
+  if (d.opcode == 0xc0u || d.opcode == 0xc1u || (d.opcode >= 0xd0u && d.opcode <= 0xd3u)) {
+    const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+    return grp == 2u || grp == 3u;  // rcl / rcr
+  }
+  return false;
+}
+
+static bool reads_flags_conservatively(const GeneralInsn& gi) {
+  return is_flag_reading_insn(gi) || is_adc_sbb_rcl_rcr(gi);
+}
+
+static bool kills_all_flags(const GeneralInsn& gi) {
+  if (gi.is_raw || gi.is_xchg || gi.is_leave) return false;
+  const HexX86Decoded& d = gi.d;
+  if (is_sse2_insn(d)) return false;
+  if (d.kind == HEX_X86_KIND_CMP) return true;
+  if (d.kind == HEX_X86_KIND_ALU) {
+    if (d.opcode < 0x40u) {
+      const uint8_t grp = static_cast<uint8_t>((d.opcode >> 3u) & 7u);
+      return grp != 2u && grp != 3u;  // add, or, and, sub, xor
+    }
+    if (d.opcode == 0x80u || d.opcode == 0x81u || d.opcode == 0x83u) {
+      const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+      return grp != 2u && grp != 3u;
+    }
+    if (d.opcode == 0xf6u || d.opcode == 0xf7u) {
+      const uint8_t grp = static_cast<uint8_t>((d.modrm >> 3u) & 7u);
+      return grp == 3u;  // neg
+    }
+  }
+  return false;
+}
+
+static bool can_fuse_cc_for_cmp(uint8_t cmp_opcode, uint8_t cc) {
+  const uint8_t c = static_cast<uint8_t>(cc & 0x0fu);
+  if (is_test_opcode(cmp_opcode)) {
+    // TEST: je(4), jne(5), js(8), jns(9)
+    return c == 0x4u || c == 0x5u || c == 0x8u || c == 0x9u;
+  }
+  // CMP: jb(2), jae(3), je(4), jne(5), jbe(6), ja(7), jl(c), jge(d), jle(e), jg(f)
+  return (c >= 0x2u && c <= 0x7u) || (c >= 0xcu && c <= 0xfu);
+}
+
+static bool flags_possibly_read_from(const GeneralInsn* insns,
+                                     const int32_t* target_idx,
+                                     uint32_t insn_count,
+                                     uint32_t start_idx) {
+  uint32_t k = start_idx;
+  for (uint32_t steps = 0u; steps < 16u; ++steps) {
+    if (k >= insn_count) return false;
+    const GeneralInsn& gi = insns[k];
+    if (gi.is_raw) return true;
+    if (gi.is_leave || gi.is_xchg) {
+      ++k;
+      continue;
+    }
+    const HexX86Decoded& d = gi.d;
+    if (reads_flags_conservatively(gi)) return true;
+    if (kills_all_flags(gi)) return false;
+    if (d.kind == HEX_X86_KIND_RET || d.kind == HEX_X86_KIND_CALL) return false;
+    if (d.kind == HEX_X86_KIND_JMP) {
+      if (target_idx[k] < 0) return false;
+      k = static_cast<uint32_t>(target_idx[k]);
+      continue;
+    }
+    ++k;
+  }
+  return true;
+}
+
+static void emit_gpr_read_typed(GenTextBuf& tb, uint8_t reg, uint8_t op_size, bool is_signed) {
+  if (!is_signed) {
+    emit_gpr_read(tb, reg, op_size);
+    return;
+  }
+  tb.put_char('(');
+  tb.put_str(width_to_int_type(op_size));
+  tb.put_char(')');
+  tb.put_gpr(reg);
+}
+
+static void emit_rm_read_typed(GenTextBuf& tb, const HexX86Decoded& d, uint8_t op_size,
+                               bool is_signed, const uint64_t* globals, uint32_t global_count) {
+  const uint8_t mod = static_cast<uint8_t>((d.modrm >> 6u) & 3u);
+  if (mod == 3u) {
+    emit_gpr_read_typed(tb, d.rm, op_size, is_signed);
+  } else {
+    if (is_signed) {
+      tb.put_char('(');
+      tb.put_str(width_to_int_type(op_size));
+      tb.put_char(')');
+    }
+    emit_mem_deref(tb, d, op_size, globals, global_count);
+  }
+}
+
+static void emit_imm_typed(GenTextBuf& tb, int64_t imm, uint8_t op_size, bool is_signed) {
+  const uint64_t iv = mask_imm_by_size(imm, op_size);
+  if (is_signed) {
+    const bool need_cast = (op_size == 8u && iv >= 0x80ULL) ||
+                           (op_size == 16u && iv >= 0x8000ULL) ||
+                           (op_size == 32u && iv >= 0x80000000ULL) ||
+                           (op_size == 64u && iv > 0x7FFFFFFFULL);
+    if (need_cast) {
+      tb.put_char('(');
+      tb.put_str(width_to_int_type(op_size));
+      tb.put_char(')');
+    }
+  }
+  tb.put_imm_u64(iv);
+}
+
+static void emit_fused_cmp_expr(GenTextBuf& tb, const HexX86Decoded& cmp_d, uint8_t cc,
+                                const uint64_t* globals, uint32_t global_count) {
+  const uint8_t c = static_cast<uint8_t>(cc & 0x0fu);
+  const uint8_t w = (cmp_d.op_size == 8u || cmp_d.op_size == 16u ||
+                     cmp_d.op_size == 32u || cmp_d.op_size == 64u)
+                        ? cmp_d.op_size
+                        : 64u;
+  if (is_test_opcode(cmp_d.opcode)) {
+    auto emit_and = [&]() {
+      tb.put_char('(');
+      if (cmp_d.opcode == 0x84u || cmp_d.opcode == 0x85u) {
+        emit_rm_read(tb, cmp_d, w, globals, global_count);
+        tb.put_str(" & ");
+        emit_gpr_read(tb, cmp_d.reg, w);
+      } else if (cmp_d.opcode == 0xa8u || cmp_d.opcode == 0xa9u) {
+        emit_gpr_read(tb, 0u, w);
+        tb.put_str(" & ");
+        tb.put_imm_u64(mask_imm_by_size(cmp_d.imm, w));
+      } else {
+        emit_rm_read(tb, cmp_d, w, globals, global_count);
+        tb.put_str(" & ");
+        tb.put_imm_u64(mask_imm_by_size(cmp_d.imm, w));
+      }
+      tb.put_char(')');
+    };
+    if (c == 0x4u) {
+      emit_and();
+      tb.put_str(" == 0");
+    } else if (c == 0x5u) {
+      emit_and();
+      tb.put_str(" != 0");
+    } else if (c == 0x8u) {
+      tb.put_char('(');
+      tb.put_str(width_to_int_type(w));
+      tb.put_char(')');
+      emit_and();
+      tb.put_str(" < 0");
+    } else {
+      tb.put_char('(');
+      tb.put_str(width_to_int_type(w));
+      tb.put_char(')');
+      emit_and();
+      tb.put_str(" >= 0");
+    }
+    return;
+  }
+
+  const bool is_signed = (c >= 0xcu && c <= 0xfu);
+  const char* op = " == ";
+  switch (c) {
+    case 0x2u:
+    case 0xcu: op = " < "; break;
+    case 0x3u:
+    case 0xdu: op = " >= "; break;
+    case 0x4u: op = " == "; break;
+    case 0x5u: op = " != "; break;
+    case 0x6u:
+    case 0xeu: op = " <= "; break;
+    case 0x7u:
+    case 0xfu: op = " > "; break;
+    default: op = " == "; break;
+  }
+
+  if (cmp_d.opcode == 0x3cu || cmp_d.opcode == 0x3du) {
+    emit_gpr_read_typed(tb, 0u, w, is_signed);
+    tb.put_str(op);
+    emit_imm_typed(tb, cmp_d.imm, w, is_signed);
+  } else if (cmp_d.opcode == 0x80u || cmp_d.opcode == 0x81u || cmp_d.opcode == 0x83u) {
+    emit_rm_read_typed(tb, cmp_d, w, is_signed, globals, global_count);
+    tb.put_str(op);
+    emit_imm_typed(tb, cmp_d.imm, w, is_signed);
+  } else if (cmp_d.opcode == 0x38u || cmp_d.opcode == 0x39u) {
+    emit_rm_read_typed(tb, cmp_d, w, is_signed, globals, global_count);
+    tb.put_str(op);
+    emit_gpr_read_typed(tb, cmp_d.reg, w, is_signed);
+  } else {
+    emit_gpr_read_typed(tb, cmp_d.reg, w, is_signed);
+    tb.put_str(op);
+    emit_rm_read_typed(tb, cmp_d, w, is_signed, globals, global_count);
+  }
+}
+
 static void mark_reg_read(uint8_t reg, uint32_t abi_id, uint32_t& gpr_used,
                           uint32_t gpr_written, uint32_t& param_used) {
   if (reg >= 16u) return;
@@ -1756,7 +1967,10 @@ HexStatus try_emit_x86_64_general(
   GeneralInsn* insns = hex::arena_alloc_zeroed<GeneralInsn>(work_arena, kMaxGeneralX86Insns);
   int32_t* target_idx = work_arena.alloc<int32_t>(kMaxGeneralX86Insns);
   uint16_t* label_refs = hex::arena_alloc_zeroed<uint16_t>(work_arena, kMaxGeneralX86Insns);
+  uint16_t* orig_label_refs = hex::arena_alloc_zeroed<uint16_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* sets_live_flags = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* fused_cmp = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* fused_jcc = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* if_open = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* else_mid = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* if_close = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
@@ -1767,8 +1981,8 @@ HexStatus try_emit_x86_64_general(
   uint8_t* loop_ctrl = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint64_t* callees = work_arena.alloc<uint64_t>(kMaxGeneralCallees);
   uint64_t* globals = work_arena.alloc<uint64_t>(kMaxGeneralGlobals);
-  if (!insns || !target_idx || !label_refs || !sets_live_flags ||
-      !if_open || !else_mid || !if_close || !do_open || !do_close ||
+  if (!insns || !target_idx || !label_refs || !orig_label_refs || !sets_live_flags ||
+      !fused_cmp || !fused_jcc || !if_open || !else_mid || !if_close || !do_open || !do_close ||
       !skip_insn || !jcc_inverted || !loop_ctrl || !callees || !globals) {
     return HEX_ERR_OOM;
   }
@@ -2133,24 +2347,9 @@ HexStatus try_emit_x86_64_general(
     }
   }
 
-  // Backward liveness pass for flags (so flag-setting ALU updates __hex_cmp only when needed).
-  bool flags_live = false;
-  for (uint32_t rev = insn_count; rev > 0u; --rev) {
-    const uint32_t i = rev - 1u;
-    const GeneralInsn& gi = insns[i];
-    if (is_flag_reading_insn(gi)) {
-      flags_live = true;
-    } else if (is_flag_setting_alu(gi)) {
-      if (flags_live) {
-        sets_live_flags[i] = 1u;
-        uses_flags = true;
-      }
-      flags_live = false;
-    }
-    if (label_refs[i] > 0u) {
-      // Conservative at join points: flags might be live across a branch.
-      flags_live = uses_flags;
-    }
+  // Preserve raw branch-target counts before structuring passes decrement label_refs.
+  if (insn_count > 0u) {
+    hex::mem_copy(orig_label_refs, label_refs, sizeof(uint16_t) * insn_count);
   }
 
   // Goto-reduction & structuring pass:
@@ -2374,6 +2573,81 @@ HexStatus try_emit_x86_64_general(
     }
   }
 
+  // Direct Compare Fusion: fuse adjacent CMP/TEST + JCC when JCC is not a label/boundary
+  // and no subsequent instruction reads flags on either branch path.
+  for (uint32_t i = 0u; i + 1u < insn_count; ++i) {
+    if (skip_insn[i] || skip_insn[i + 1u]) continue;
+    const GeneralInsn& gi_cmp = insns[i];
+    const GeneralInsn& gi_jcc = insns[i + 1u];
+    if (gi_cmp.is_raw || gi_cmp.is_leave || gi_cmp.is_xchg ||
+        gi_cmp.d.kind != HEX_X86_KIND_CMP) {
+      continue;
+    }
+    if (gi_jcc.is_raw || gi_jcc.is_leave || gi_jcc.is_xchg ||
+        gi_jcc.d.kind != HEX_X86_KIND_JCC) {
+      continue;
+    }
+    if (orig_label_refs[i + 1u] != 0u) continue;
+    if (use_state_machine) {
+      if (idx_to_state[i + 1u] != 0xFFFFFFFFu) continue;
+    } else {
+      if (label_refs[i + 1u] != 0u || else_mid[i + 1u] != 0u ||
+          if_close[i + 1u] != 0u || do_open[i + 1u] != 0u) {
+        continue;
+      }
+    }
+    const uint8_t raw_cc = (gi_jcc.d.opcode == 0x0fu)
+                               ? static_cast<uint8_t>(gi_jcc.d.opcode2 & 0x0fu)
+                               : static_cast<uint8_t>(gi_jcc.d.opcode & 0x0fu);
+    const uint8_t cc = jcc_inverted[i + 1u] ? static_cast<uint8_t>(raw_cc ^ 1u) : raw_cc;
+    if (!can_fuse_cc_for_cmp(gi_cmp.d.opcode, cc)) continue;
+
+    const uint32_t fall_idx = (jcc_inverted[i + 1u] && i + 2u < insn_count && skip_insn[i + 2u])
+                                  ? (i + 3u)
+                                  : (i + 2u);
+    if (flags_possibly_read_from(insns, target_idx, insn_count, fall_idx)) continue;
+    if (target_idx[i + 1u] >= 0) {
+      if (flags_possibly_read_from(insns, target_idx, insn_count,
+                                   static_cast<uint32_t>(target_idx[i + 1u]))) {
+        continue;
+      }
+    }
+    fused_cmp[i] = 1u;
+    fused_jcc[i + 1u] = 1u;
+  }
+
+  // Backward liveness pass for flags (only for non-fused flag readers).
+  bool has_unfused_flag_reader = false;
+  for (uint32_t i = 0u; i < insn_count; ++i) {
+    if (skip_insn[i]) continue;
+    const GeneralInsn& gi = insns[i];
+    if (gi.is_raw || gi.is_leave || gi.is_xchg) continue;
+    if ((gi.d.kind == HEX_X86_KIND_JCC && !fused_jcc[i]) ||
+        is_cmovcc_insn(gi.d) || is_setcc_insn(gi.d)) {
+      has_unfused_flag_reader = true;
+      break;
+    }
+  }
+  bool flags_live = false;
+  for (uint32_t rev = insn_count; rev > 0u; --rev) {
+    const uint32_t i = rev - 1u;
+    if (skip_insn[i]) continue;
+    const GeneralInsn& gi = insns[i];
+    if (!fused_jcc[i] && is_flag_reading_insn(gi)) {
+      flags_live = true;
+    } else if (!fused_cmp[i] && is_flag_setting_alu(gi)) {
+      if (flags_live) {
+        sets_live_flags[i] = 1u;
+      }
+      flags_live = false;
+    }
+    if (orig_label_refs[i] > 0u) {
+      flags_live = has_unfused_flag_reader;
+    }
+  }
+  const bool needs_hex_cmp = has_unfused_flag_reader;
+  (void)uses_flags;
+
   // Compute parameter count from param_used bitmask.
   uint32_t num_params = 0u;
   const uint32_t max_abi_params = (abi_id == HEX_X86_ABI_MICROSOFT_X64) ? 4u : 6u;
@@ -2466,12 +2740,15 @@ HexStatus try_emit_x86_64_general(
   tb.put_str(")\n{\n");
 
   // Local declarations.
+  bool emitted_decl = false;
   if (uses_stack) {
     tb.put_str("    static uint8_t __hex_stack[4096];\n");
     gpr_used |= (1u << 4u);
+    emitted_decl = true;
   }
-  if (uses_flags) {
+  if (needs_hex_cmp) {
     tb.put_str("    uint64 __hex_cmp_l = 0, __hex_cmp_r = 0;\n");
+    emitted_decl = true;
   }
   {
     static const uint8_t kSysVParams[6] = {7u, 6u, 2u, 1u, 8u, 9u};
@@ -2483,45 +2760,89 @@ HexStatus try_emit_x86_64_general(
       gpr_used |= (1u << preg);
     }
   }
+  uint8_t zero_gprs[16];
+  uint32_t zero_gpr_count = 0u;
   for (uint32_t r = 0u; r < 16u; ++r) {
     if ((gpr_used & (1u << r)) == 0u) continue;
-    tb.put_str("    uint64 ");
-    tb.put_gpr(static_cast<uint8_t>(r));
     if (r == 4u && uses_stack) {
-      tb.put_str(" = (uint64)(uintptr_t)(__hex_stack + sizeof(__hex_stack) - 64);\n");
+      tb.put_str("    uint64 rsp = (uint64)(uintptr_t)(__hex_stack + sizeof(__hex_stack) - 64);\n");
+      emitted_decl = true;
     } else if (r == 5u && uses_stack) {
-      tb.put_str(" = rsp;\n");
+      tb.put_str("    uint64 rbp = rsp;\n");
+      emitted_decl = true;
     } else {
       const int32_t pidx = abi_param_index(abi_id, static_cast<uint8_t>(r));
       if (pidx >= 0 && static_cast<uint32_t>(pidx) < num_params) {
         if (is_main_fn) {
           if (pidx == 0) {
+            tb.put_str("    uint64 ");
+            tb.put_gpr(static_cast<uint8_t>(r));
             tb.put_str(" = (uint64)(int64)a1;\n");
+            emitted_decl = true;
           } else if (pidx == 1) {
+            tb.put_str("    uint64 ");
+            tb.put_gpr(static_cast<uint8_t>(r));
             tb.put_str(" = (uint64)(uintptr_t)a2;\n");
+            emitted_decl = true;
           } else if (pidx == 2) {
+            tb.put_str("    uint64 ");
+            tb.put_gpr(static_cast<uint8_t>(r));
             tb.put_str(" = (uint64)(uintptr_t)a3;\n");
+            emitted_decl = true;
           } else {
-            tb.put_str(" = 0;\n");
+            zero_gprs[zero_gpr_count++] = static_cast<uint8_t>(r);
           }
         } else {
+          tb.put_str("    uint64 ");
+          tb.put_gpr(static_cast<uint8_t>(r));
           tb.put_str(" = a");
           tb.put_u64_dec(static_cast<uint32_t>(pidx) + 1u);
           tb.put_str(";\n");
+          emitted_decl = true;
         }
       } else {
-        tb.put_str(" = 0;\n");
+        zero_gprs[zero_gpr_count++] = static_cast<uint8_t>(r);
       }
     }
   }
-  if (is_main_fn && num_params == 1u) {
-    tb.put_str("    (void)a2;\n");
+  for (uint32_t zi = 0u; zi < zero_gpr_count; zi += 4u) {
+    tb.put_str("    uint64 ");
+    const uint32_t end = (zi + 4u < zero_gpr_count) ? (zi + 4u) : zero_gpr_count;
+    for (uint32_t k = zi; k < end; ++k) {
+      if (k > zi) tb.put_str(", ");
+      tb.put_gpr(zero_gprs[k]);
+      tb.put_str(" = 0");
+    }
+    tb.put_str(";\n");
+    emitted_decl = true;
   }
+  uint8_t zero_xmms[16];
+  uint32_t zero_xmm_count = 0u;
   for (uint32_t x = 0u; x < 16u; ++x) {
     if ((xmm_used & (1u << x)) == 0u) continue;
+    zero_xmms[zero_xmm_count++] = static_cast<uint8_t>(x);
+  }
+  for (uint32_t xi = 0u; xi < zero_xmm_count; xi += 4u) {
     tb.put_str("    uint64 ");
-    tb.put_xmm(static_cast<uint8_t>(x));
-    tb.put_str(" = 0;\n");
+    const uint32_t end = (xi + 4u < zero_xmm_count) ? (xi + 4u) : zero_xmm_count;
+    for (uint32_t k = xi; k < end; ++k) {
+      if (k > xi) tb.put_str(", ");
+      tb.put_xmm(zero_xmms[k]);
+      tb.put_str(" = 0");
+    }
+    tb.put_str(";\n");
+    emitted_decl = true;
+  }
+  if (is_main_fn && num_params == 1u) {
+    tb.put_str("    (void)a2;\n");
+    emitted_decl = true;
+  }
+  if (use_state_machine) {
+    tb.put_str("    unsigned int __hex_state = 0u;\n");
+    emitted_decl = true;
+  }
+  if (emitted_decl) {
+    tb.put_char('\n');
   }
 
   // Emit body statements.
@@ -2534,10 +2855,11 @@ HexStatus try_emit_x86_64_general(
   uint32_t truncated_at = insn_count;
 
   if (use_state_machine) {
-    tb.put_str("    unsigned int __hex_state = 0u;\n");
     tb.put_str("    while (__hex_state != 0xFFFFFFFFu) {\n");
     tb.put_str("        switch (__hex_state) {\n");
-    tb.put_str("        case 0u:\n");
+    tb.put_str("        case 0u: /* entry 0x");
+    tb.put_u64_hex(base_addr, true);
+    tb.put_str(" */\n");
     indent = 3u;
   }
 
@@ -2559,7 +2881,9 @@ HexStatus try_emit_x86_64_general(
         tb.put_indent(2u);
         tb.put_str("case ");
         tb.put_u64_dec(idx_to_state[i]);
-        tb.put_str("u:\n");
+        tb.put_str("u: /* block 0x");
+        tb.put_u64_hex(insns[i].d.pc, true);
+        tb.put_str(" */\n");
         prev_terminated = false;
       }
     } else {
@@ -2599,6 +2923,9 @@ HexStatus try_emit_x86_64_general(
         tb.put_str("(void)0;\n");
         last_was_return = false;
       }
+      continue;
+    }
+    if (fused_cmp[i]) {
       continue;
     }
 
@@ -2802,10 +3129,17 @@ HexStatus try_emit_x86_64_general(
       const uint8_t raw_cc = (d.opcode == 0x0fu) ? static_cast<uint8_t>(d.opcode2 & 0x0fu)
                                                  : static_cast<uint8_t>(d.opcode & 0x0fu);
       const uint8_t cc = jcc_inverted[i] ? static_cast<uint8_t>(raw_cc ^ 1u) : raw_cc;
+      auto emit_jcc_cond = [&](uint8_t cond_cc) {
+        if (fused_jcc[i] && i > 0u) {
+          emit_fused_cmp_expr(tb, insns[i - 1u].d, cond_cc, globals, global_count);
+        } else {
+          emit_cc_expr(tb, cond_cc);
+        }
+      };
       if (!use_state_machine && if_open[i]) {
         tb.put_indent(indent);
         tb.put_str("if (");
-        emit_cc_expr(tb, static_cast<uint8_t>(cc ^ 1u));
+        emit_jcc_cond(static_cast<uint8_t>(cc ^ 1u));
         tb.put_str(") {\n");
         ++open_ifs;
         ++indent;
@@ -2814,22 +3148,22 @@ HexStatus try_emit_x86_64_general(
         --indent;
         tb.put_indent(indent);
         tb.put_str("} while (");
-        emit_cc_expr(tb, cc);
+        emit_jcc_cond(cc);
         tb.put_str(");\n");
       } else if (!use_state_machine && loop_ctrl[i] == 1u) {
         tb.put_indent(indent);
         tb.put_str("if (");
-        emit_cc_expr(tb, cc);
+        emit_jcc_cond(cc);
         tb.put_str(") break;\n");
       } else if (!use_state_machine && loop_ctrl[i] == 2u) {
         tb.put_indent(indent);
         tb.put_str("if (");
-        emit_cc_expr(tb, cc);
+        emit_jcc_cond(cc);
         tb.put_str(") continue;\n");
       } else if (target_idx[i] >= 0) {
         tb.put_indent(indent);
         tb.put_str("if (");
-        emit_cc_expr(tb, cc);
+        emit_jcc_cond(cc);
         if (use_state_machine) {
           tb.put_str(") { __hex_state = ");
           tb.put_u64_dec(idx_to_state[target_idx[i]]);
@@ -2843,7 +3177,7 @@ HexStatus try_emit_x86_64_general(
         const bool is_self_call = (d.target == base_addr && is_self_sub);
         tb.put_indent(indent);
         tb.put_str("if (");
-        emit_cc_expr(tb, cc);
+        emit_jcc_cond(cc);
         if (is_self_call || contains_u64(callees, callee_count, d.target)) {
           tb.put_str(is_main_fn ? ") return (int)sub_" : ") return sub_");
           tb.put_u64_hex(d.target, true);
@@ -2971,6 +3305,10 @@ HexStatus try_emit_x86_64_general(
 
     // CMP / TEST
     if (d.kind == HEX_X86_KIND_CMP) {
+      if (!needs_hex_cmp) {
+        last_was_return = false;
+        continue;
+      }
       tb.put_indent(indent);
       if (d.opcode == 0x84u || d.opcode == 0x85u) {
         tb.put_str("__hex_cmp_l = (uint64)(");

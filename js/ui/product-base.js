@@ -9,7 +9,7 @@ import {
 import { renderSecondaryRoute } from './secondary.js';
 import { addrHex, parseAddress, sizeText } from '../format.js';
 import { pick, isJa as i18nIsJa } from '../i18n.js';
-import { menu, copyText, toast, closeAllSheets, closeMenu } from '../ui.js';
+import { menu, copyText, toast, closeAllSheets, closeMenu, Sheet, el, button } from '../ui.js';
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals, showPatches,
 } from '../tools.js';
@@ -27,7 +27,7 @@ import { productDescriptor } from '../platform/product-descriptor.js';
 import { queryFunctions, queryStrings } from './explorer-index.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 import { uiRoot } from '../ui-root.js';
-import { createDecompilerProvenanceView } from './decompiler-provenance.js';
+import { createDecompilerProvenanceView, appendHighlighted } from './decompiler-provenance.js';
 
 
 let _productPanelsPromise = null;
@@ -57,6 +57,76 @@ function functionName(app, addr) {
   const sym = app.symbols;
   const raw = sym && (sym.nameAt?.(addr) || sym.label?.(addr));
   return raw || ('sub_' + BigInt(addr).toString(16).toUpperCase());
+}
+
+function bookmarkListOf(app) {
+  try {
+    const raw = app?.bookmarks?.list?.();
+    return Array.isArray(raw) ? raw : [];
+  } catch { return []; }
+}
+
+function editBookmarkNote(app, addr, name) {
+  const sheet = new Sheet(text('ブックマークメモを編集', 'Edit bookmark note'));
+  const existing = app.bookmarks?.get?.(addr)
+    ?? bookmarkListOf(app).find((b) => { try { return BigInt(b.addr) === BigInt(addr); } catch { return false; } });
+  const field = el('div', 'field');
+  const input = el('input');
+  input.type = 'text';
+  input.value = String(existing?.note || '');
+  input.placeholder = text('メモを入力…', 'Enter note…');
+  const save = () => {
+    if (!app.bookmarks?.has?.(addr)) app.bookmarks?.toggle?.(addr, { name });
+    app.bookmarks?.setNote?.(addr, { note: input.value.trim(), name });
+    sheet.close();
+    toast(text('ブックマークメモを保存しました。', 'Bookmark note saved.'));
+  };
+  field.append(input, button(text('保存', 'Save'), 'chip', save));
+  sheet.body.append(field);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+  setTimeout(() => input.focus(), 50);
+}
+
+function makeStarButton(app, addr, name, { cls = 'ui-icon-action ui-star-btn', stopPropagation = false, onToggled = null } = {}) {
+  const isSaved = () => !!app.bookmarks?.has?.(addr);
+  const btn = uiButton(isSaved() ? '★' : '☆', {
+    cls,
+    ariaLabel: isSaved() ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'),
+    pressed: isSaved(),
+    onClick: (event) => {
+      if (stopPropagation) event.stopPropagation();
+      app.bookmarks?.toggle?.(addr, { name });
+      sync();
+      onToggled?.(isSaved());
+    },
+  });
+  const sync = () => {
+    const saved = isSaved();
+    btn.textContent = saved ? '★' : '☆';
+    btn.setAttribute('aria-pressed', String(saved));
+    btn.setAttribute('aria-label', saved ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'));
+  };
+  btn._syncStar = sync;
+  return btn;
+}
+
+function deltaCountOf(info) {
+  if (!info || typeof info !== 'object') return 0;
+  const raw = info.savedCount ?? info.count ?? info.total ?? info.applied ?? info.deltaCount ?? info.changes;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (Array.isArray(raw)) return raw.length;
+  return 0;
+}
+
+function formatRecentTime(ts) {
+  if (ts == null) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return d.toLocaleString(ja() ? 'ja-JP' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return d.toISOString().slice(0, 16).replace('T', ' ');
+  }
 }
 
 function currentAddress(app) {
@@ -240,12 +310,48 @@ for (const preset of [
   }));
 }
 hero.body.append(suggestions, sectionTitle(text('よくある目的', 'Common goals')), commonGoals);
+let disposed = false;
 if (!app.store?.get?.('fileInfo')) {
   s.body.append(emptyState(
     text('ファイルが開かれていません', 'No binary open'),
     text('まずは解析したいバイナリを開くか、サンプルで操作を試してみてください。', 'Open a binary to investigate, or try the built-in sample first.'),
     noFileActions(app),
   ));
+  if (typeof app.listRecentDeltaBinaries === 'function') {
+    const recentDeltaHost = h('div', 'ui-recent-delta-host');
+    s.body.append(recentDeltaHost);
+    Promise.resolve(app.listRecentDeltaBinaries({ onlyWithDelta: true, limit: 8 })).then((entries) => {
+      if (disposed || !Array.isArray(entries) || !entries.length) return;
+      const recentCard = card(text('最近のバイナリ（差分あり）', 'Recent binaries (with saved delta)'), {
+        className: 'ui-recent-delta-card',
+        subtitle: text('同じバイナリを開くと保存した差分を自動で復元します。', 'Open the matching binary to restore your saved changes automatically.'),
+      });
+      const list = h('div', 'ui-list');
+      for (const entry of entries.slice(0, 8)) {
+        const name = String(entry?.name || entry?.filename || entry?.fileName || text('バイナリ', 'Binary'));
+        const fp = String(entry?.sha256 || entry?.fingerprint || entry?.deltaKey || entry?.id || '').slice(0, 12);
+        const count = deltaCountOf(entry);
+        const ts = formatRecentTime(entry?.lastOpenedAt ?? entry?.lastOpened ?? entry?.updatedAt ?? entry?.timestamp);
+        const subParts = [
+          fp ? fp : null,
+          text(`${count}件の差分`, `${count} changes`),
+          ts || null,
+        ].filter(Boolean);
+        list.append(listRow({
+          title: name,
+          subtitle: subParts.join(' · '),
+          onClick: () => {
+            toast(text(`「${name}」を選択すると前回の差分を自動で復元します。`, `Select "${name}" to restore its saved delta automatically.`));
+            const registry = window.__hexUi?.actions;
+            if (registry?.has?.('file.open') && typeof registry.run === 'function') registry.run('file.open');
+            else document.getElementById('file-input')?.click();
+          },
+        }));
+      }
+      recentCard.body.append(list);
+      recentDeltaHost.replaceChildren(recentCard.root);
+    }).catch(() => {});
+  }
 }
 s.body.append(hero.root);
 
@@ -265,7 +371,7 @@ s.body.append(hero.root);
     for (const q of recent) list.append(listRow({ title: q, onClick: () => { input.value = q; runInvestigation(app, q); } }));
     s.body.append(list);
   }
-  return { root: s.root, focus: () => input.focus() };
+  return { root: s.root, focus: () => input.focus(), dispose: () => { disposed = true; } };
 }
 
 function lowerBoundBigInt(array, value) {
@@ -631,7 +737,32 @@ function renderExplorer(app, router, route, routeContext = {}) {
   const pageSize = 200;
   let queryOffset = Number.isSafeInteger(restored?.offset) && restored.offset >= 0 ? restored.offset : 0;
   let pendingVirtualState = restored?.virtual ?? null;
-  controls.append(scopes, search);
+  let savedOnly = scope === 'functions' && Boolean(restored?.savedOnly);
+  let savedChip = null;
+  const searchRow = h('div', 'ui-explorer-search-row');
+  searchRow.append(search);
+  const syncSavedChip = () => {
+    if (!savedChip) return;
+    const count = bookmarkListOf(app).length;
+    savedChip.textContent = text(`保存済み (★ ${count})`, `Saved (★ ${count})`);
+    savedChip.setAttribute('aria-pressed', String(savedOnly));
+  };
+  if (scope === 'functions') {
+    savedChip = uiButton('', {
+      cls: 'ui-secondary-action ui-saved-filter-chip',
+      pressed: savedOnly,
+      onClick: () => {
+        savedOnly = !savedOnly;
+        queryOffset = 0;
+        pendingVirtualState = null;
+        syncSavedChip();
+        void update();
+      },
+    });
+    syncSavedChip();
+    searchRow.append(savedChip);
+  }
+  controls.append(scopes, searchRow);
   s.body.append(controls);
   const content = tabPanel(scopes, 'ui-explorer-content');
   s.body.append(content);
@@ -714,11 +845,52 @@ function renderExplorer(app, router, route, routeContext = {}) {
       return;
     }
     if (scope === 'functions') {
+      if (savedOnly) {
+        const ql = q.toLowerCase();
+        const saved = bookmarkListOf(app).filter((bm) => {
+          if (!ql) return true;
+          const tags = Array.isArray(bm?.tags) ? bm.tags.join(' ') : String(bm?.tag || '');
+          const hay = [bm?.name, bm?.note, tags, bm?.addr != null ? addressText(bm.addr) : ''].filter(Boolean).join(' ').toLowerCase();
+          return hay.includes(ql);
+        });
+        showRows(saved, (bm) => {
+          const bAddr = BigInt(bm.addr);
+          const bName = bm.name || functionName(app, bAddr);
+          const star = makeStarButton(app, bAddr, bName, {
+            cls: 'ui-icon-action ui-star-btn ui-row-star',
+            stopPropagation: true,
+            onToggled: () => { syncSavedChip(); if (savedOnly) void update(); },
+          });
+          const tags = Array.isArray(bm?.tags) ? bm.tags.join(', ') : String(bm?.tag || '');
+          return listRow({
+            title: bName,
+            subtitle: [addressText(bAddr), bm.note || ''].filter(Boolean).join(' · '),
+            meta: tags,
+            action: star,
+            onClick: () => router.navigate('/function/' + bAddr.toString() + '/overview'),
+          });
+        }, text('保存済みの関数はありません。関数の ☆ を押すとここに追加されます。', 'No saved functions yet. Tap ☆ on any function to bookmark it.'));
+        return;
+      }
       content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
       try {
         const items = await matchingFunctionItems(app, q, { signal, offset:queryOffset, limit:pageSize });
         if (!current()) return;
-        showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
+        showRows(items, (item) => {
+          const itemAddr = BigInt(item.addr);
+          const star = makeStarButton(app, itemAddr, item.name, {
+            cls: 'ui-icon-action ui-star-btn ui-row-star',
+            stopPropagation: true,
+            onToggled: () => syncSavedChip(),
+          });
+          return listRow({
+            title: item.name,
+            subtitle: addressText(itemAddr),
+            meta: item.size != null ? String(item.size) + ' B' : '',
+            action: star,
+            onClick: () => router.navigate('/function/' + itemAddr.toString() + '/overview'),
+          });
+        }, text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
           // A word that is not a function name is often in a string: offer that search.
           q ? uiButton(text(`「${q}」を文字列から探す`, `Search strings for "${q}"`), { cls: 'ui-secondary-action', onClick: () => router.navigate('/explorer/strings?q=' + encodeURIComponent(q)) }) : null);
       } catch (err) {
@@ -772,17 +944,22 @@ function renderExplorer(app, router, route, routeContext = {}) {
     }
   };
 
+  const unsubBookmarks = scope === 'functions' ? (app.bookmarks?.subscribe?.(() => {
+    if (disposed) return;
+    syncSavedChip();
+    if (savedOnly) void update();
+  }) || null) : null;
   search.addEventListener('input', () => { queryOffset = 0; pendingVirtualState = null; clearTimeout(timer); timer = setTimeout(update, 120); });
   update();
   return {
     root: s.root,
-    getState: () => ({ query: search.value, offset:queryOffset, virtual: virtual?.getState() || null }),
+    getState: () => ({ query: search.value, offset:queryOffset, savedOnly, virtual: virtual?.getState() || null }),
     restoreState: (state) => {
       if (!state) return;
       if (virtual) virtual.restoreState(state.virtual);
       else pendingVirtualState = state.virtual ?? null;
     },
-    dispose: () => { disposed = true; queryScope.abort('explorer-disposed'); fallbackRouteController?.abort('explorer-disposed'); clearTimeout(timer); virtual?.dispose(); },
+    dispose: () => { disposed = true; if (typeof unsubBookmarks === 'function') unsubBookmarks(); queryScope.abort('explorer-disposed'); fallbackRouteController?.abort('explorer-disposed'); clearTimeout(timer); virtual?.dispose(); },
   };
 }
 
@@ -885,11 +1062,14 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     return {root:s.root};
   }
   const actions = h('div', 'ui-screen-actions');
-  actions.append(uiButton('•••', { cls: 'ui-icon-action', ariaLabel: text('関数の操作', 'Function actions'), onClick: (e) => {
+  const starBtn = makeStarButton(app, addr, functionName(app, addr));
+  const unsubBookmarks = app.bookmarks?.subscribe?.(() => starBtn._syncStar?.()) || null;
+  actions.append(starBtn, uiButton('•••', { cls: 'ui-icon-action', ariaLabel: text('関数の操作', 'Function actions'), onClick: (e) => {
     const r = e.currentTarget.getBoundingClientRect();
     const assistant = window.__hexAi;
     menu([
       ...(assistant ? [askAiMenuItem(assistant, functionAiItems(assistant, { address: addr, name: functionName(app, addr) }), { x: r.left + r.width / 2, y: r.bottom + 4 })] : []),
+      { label: text('ブックマークメモを編集', 'Edit bookmark note'), action: () => editBookmarkNote(app, addr, functionName(app, addr)) },
       { label: text('名前を付ける', 'Rename'), action: () => showRename(app, addr) },
       { label: text('メモを書く', 'Comment'), action: () => showComment(app, addr) },
       { label: text('パッチ（命令の書き換え）', 'Patch instructions'), action: () => requireFile(app, () => showPatches(app, addr)) },
@@ -987,7 +1167,19 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     const toolbar = h('div', 'ui-code-toolbar');
     const code = h('pre', 'ui-pseudocode mono');
     code.tabIndex = 0;
-    code.textContent = decompiledText(out);
+    const rawText = decompiledText(out);
+    const rawLines = rawText.split('\n');
+    const calleeOpts = {
+      resolveCallee: (name) => symbolAddress(app, name),
+      onOpenCallee: (targetAddr) => router.navigate('/function/' + BigInt(targetAddr).toString() + '/pseudocode'),
+    };
+    for (let index = 0; index < rawLines.length; index++) {
+      const lineText = rawLines[index];
+      const row = h('span', 'ui-pseudocode-line');
+      appendHighlighted(row, lineText, { ...calleeOpts, isSig: index === 0 });
+      if (index + 1 < rawLines.length) row.append(h('span', null, '\n'));
+      code.append(row);
+    }
     let wrap = false;
     toolbar.append(
       uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
@@ -1013,6 +1205,8 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           isCurrent:() => viewCurrent() && !routeSignal.aborted,
           currentSnapshot:() => app.analysisQueries.snapshot({ signal:routeSignal }),
           onNavigate:address => router.navigate('/code/' + address.toString()),
+          resolveCallee:(name) => symbolAddress(app, name),
+          onOpenCallee:(targetAddr) => router.navigate('/function/' + BigInt(targetAddr).toString() + '/pseudocode'),
         });
         const code = provenanceView.code;
         let wrap = false;
@@ -1419,7 +1613,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     }
   })();
 
-  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; fallbackRouteController?.abort('function-workspace-disposed'); } };
+  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; if (typeof unsubBookmarks === 'function') unsubBookmarks(); fallbackRouteController?.abort('function-workspace-disposed'); } };
 }
 
 export function findingIdentifier(item, idx) {
@@ -1558,6 +1752,42 @@ async function importProjectFromProduct(app) {
   try { await app.importProjectFile(file); toast(text('プロジェクトを復元しました。','Project restored.')); }
   catch(error){const mismatch=error?.code==='HEX_PROJECT_BINARY_MISMATCH';toast(mismatch?text('このプロジェクトは現在のバイナリ/スライス用ではありません。','This project belongs to a different binary or slice.'):text('プロジェクトを読み込めませんでした: ','Could not import project: ')+String(error?.message||error));}
 }
+async function exportDeltaFromProduct(app) {
+  if (typeof app.exportDeltaJson !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session export is unavailable.')); return; }
+  try {
+    const data = await app.exportDeltaJson();
+    const filename = (data && typeof data === 'object' && typeof data.filename === 'string' && data.filename)
+      ? data.filename
+      : ((app.store.get('fileInfo')?.name || 'analysis') + '.hexdelta.json');
+    const body = data instanceof Blob ? data : (data && typeof data === 'object' && typeof data.json === 'string' ? data.json : (typeof data === 'string' ? data : JSON.stringify(data, null, 2)));
+    const blob = body instanceof Blob ? body : new Blob([body], { type: 'application/json' });
+    downloadBlob(blob, filename);
+    toast(text('差分を書き出しました。', 'Delta exported.'));
+  } catch (error) {
+    toast(text('差分を書き出せませんでした: ', 'Could not export delta: ') + String(error?.message || error));
+  }
+}
+async function importDeltaFromProduct(app) {
+  if (typeof app.importDeltaJson !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session import is unavailable.')); return; }
+  const file = await pickOneFile('.json,application/json');
+  if (!file) return;
+  try {
+    const raw = await file.text();
+    await app.importDeltaJson(raw);
+    toast(text('差分を読み込みました。', 'Delta imported.'));
+  } catch (error) {
+    toast(text('差分を読み込めませんでした: ', 'Could not import delta: ') + String(error?.message || error));
+  }
+}
+async function resetDeltaFromProduct(app) {
+  if (typeof app.resetDeltaSession !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session reset is unavailable.')); return; }
+  try {
+    await app.resetDeltaSession();
+    toast(text('差分セッションをリセットしました。', 'Delta session reset.'));
+  } catch (error) {
+    toast(text('差分セッションをリセットできませんでした: ', 'Could not reset delta session: ') + String(error?.message || error));
+  }
+}
 
 function renderDiff(app,router,routeContext = {}) {
   const s=screen(text('バイナリ差分','Binary Diff'),{id:'diff',subtitle:text('前のバージョンと現在のバージョンを関数単位で比較します。','Compare a previous version with the current binary at function granularity.')});
@@ -1616,6 +1846,9 @@ function renderAdvanced(app) {
   list.append(listRow({ title: text('解析ツール一覧', 'Analysis tools'), subtitle: text('パッチ・スクリプト・プラグイン等', 'Patching, scripting, plugins, etc.'), onClick: () => requireFile(app, () => showTools(app)) }));
   list.append(listRow({ title:text('プロジェクトを書き出す (.hexproj)','Export project (.hexproj)'), subtitle:text('名前・メモ・型・パッチ・解析結果・AI調査・移動履歴を保存','Save names, notes, types, patches, findings, AI investigation and navigation'), onClick:()=>requireFile(app,()=>exportProjectFromProduct(app)) }));
   list.append(listRow({ title:text('プロジェクトを読み込む','Import project'), subtitle:text('いま開いているファイルと同じファイルのときだけ復元します','Restores only when binary hash and slice identity match'), onClick:()=>requireFile(app,()=>importProjectFromProduct(app)) }));
+  list.append(listRow({ title:text('差分を書き出し (.json)','Export delta (.json)'), subtitle:text('ブックマーク・名前・メモの軽量差分を書き出します','Export lightweight delta of bookmarks, renames, and comments'), onClick:()=>requireFile(app,()=>exportDeltaFromProduct(app)) }));
+  list.append(listRow({ title:text('差分を読み込み (.json)','Import delta (.json)'), subtitle:text('保存した差分 JSON を現在のバイナリに適用します','Apply a saved delta JSON file to the current binary'), onClick:()=>requireFile(app,()=>importDeltaFromProduct(app)) }));
+  list.append(listRow({ title:text('差分セッションをリセット','Reset delta session'), subtitle:text('このバイナリに自動保存された差分を初期化します','Clear auto-saved delta session for this binary'), onClick:()=>requireFile(app,()=>resetDeltaFromProduct(app)) }));
   list.append(listRow({ title:text('バージョン差分','Binary Diff'), subtitle:text('前のバイナリと変更関数を比較','Compare changed functions against a previous binary'), onClick:()=>requireFile(app,()=>window.__hexUi?.router?.navigate('/diff')) }));
   s.body.append(list);
   return { root: s.root };
@@ -1721,7 +1954,26 @@ function installAddressBar(app, router, addrbar) {
   const fn = uiButton('', { cls: 'addr-fn addr-action', ariaLabel: text('この関数を開く', 'Open this function') });
   fn.hidden = true;
   cur?.after(fn);
+  const star = uiButton('☆', { cls: 'addr-star addr-action ui-star-btn', ariaLabel: text('ブックマークに追加', 'Bookmark function'), pressed: false });
+  star.hidden = true;
+  fn.after(star);
   let fnStart = null;
+  const syncAddrStar = () => {
+    if (fnStart == null) { star.hidden = true; return; }
+    const saved = !!app.bookmarks?.has?.(fnStart);
+    star.textContent = saved ? '★' : '☆';
+    star.setAttribute('aria-pressed', String(saved));
+    star.setAttribute('aria-label', saved ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'));
+    star.hidden = false;
+  };
+  const onStarClick = () => {
+    if (fnStart == null) return;
+    app.bookmarks?.toggle?.(fnStart, { name: functionName(app, fnStart) });
+    syncAddrStar();
+  };
+  star.addEventListener('click', onStarClick, sigOpts);
+  detachFns.push(() => star.removeEventListener?.('click', onStarClick));
+  const unsubAddrBookmarks = app.bookmarks?.subscribe?.(syncAddrStar) || null;
   const onFnClick = () => { if (fnStart != null) router.navigate('/function/' + fnStart.toString() + '/overview'); };
   fn.addEventListener('click', onFnClick, sigOpts);
   detachFns.push(() => fn.removeEventListener?.('click', onFnClick));
@@ -1755,6 +2007,7 @@ function installAddressBar(app, router, addrbar) {
     const sectionLabel = text('区画を切り替える', 'Switch section');
     if (regionLabel) { regionLabel.setAttribute('aria-label', sectionLabel); regionLabel.title = sectionLabel; }
     fn.setAttribute('aria-label', text('この関数を開く', 'Open this function'));
+    syncAddrStar();
     const pseudoTitle = text('現在の関数を疑似Cで開く', 'Open current function as pseudocode');
     pseudo.textContent = text('疑似C', 'Pseudo-C');
     pseudo.setAttribute('aria-label', pseudoTitle);
@@ -1787,10 +2040,11 @@ function installAddressBar(app, router, addrbar) {
       try { start = sym.functionAt?.(addr)?.start ?? sym.functionStartAt?.(addr) ?? null; } catch { start = null; }
     }
     fnStart = start;
-    if (start == null) { fn.hidden = true; pseudo.hidden = true; return; }
+    if (start == null) { fn.hidden = true; star.hidden = true; pseudo.hidden = true; return; }
     const offset = BigInt(addr) - BigInt(start);
     fn.textContent = functionName(app, start) + (offset > 0n ? '+0x' + offset.toString(16).toUpperCase() : '');
     fn.hidden = false;
+    syncAddrStar();
     pseudo.hidden = false;
   };
   const unsubscribe = app.store.subscribe((_state, patch) => {
@@ -1802,8 +2056,10 @@ function installAddressBar(app, router, addrbar) {
     ac?.abort();
     for (const off of detachFns) off();
     unsubscribe();
+    if (typeof unsubAddrBookmarks === 'function') unsubAddrBookmarks();
     if (frame) cancelAnimationFrame(frame);
     fn.remove();
+    star.remove();
     pseudo.remove();
     search.remove();
   };
@@ -1850,14 +2106,198 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   hint.setAttribute('aria-live', 'polite');
   const go = uiButton(text('実行', 'Go'), { cls: 'ui-command-go' });
   go.type = 'submit';
-  form.append(input, hint, go);
+  const results = h('ul', 'ui-command-results');
+  results.id = 'ui-command-results';
+  results.setAttribute('role', 'listbox');
+  results.setAttribute('aria-label', text('クイックジャンプ候補', 'Instant jump results'));
+  results.hidden = true;
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-controls', results.id);
+  input.setAttribute('aria-expanded', 'false');
+  form.append(input, hint, go, results);
+
+  let dropdownItems = [];
+  let activeIndex = -1;
+  let dropdownTimer = 0;
+  let dropdownSerial = 0;
+  let dropdownController = null;
+
+  const hideResults = () => {
+    clearTimeout(dropdownTimer);
+    dropdownController?.abort?.('dropdown-closed');
+    dropdownController = null;
+    dropdownItems = [];
+    activeIndex = -1;
+    results.hidden = true;
+    results.replaceChildren();
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+  };
+
+  const setActiveIndex = (next) => {
+    if (!dropdownItems.length) { activeIndex = -1; input.removeAttribute('aria-activedescendant'); return; }
+    activeIndex = ((next % dropdownItems.length) + dropdownItems.length) % dropdownItems.length;
+    const rows = results.children;
+    for (let i = 0; i < rows.length; i++) {
+      const selected = i === activeIndex;
+      rows[i].setAttribute('aria-selected', String(selected));
+      rows[i].classList.toggle('active', selected);
+    }
+    const activeRow = rows[activeIndex];
+    if (activeRow?.id) input.setAttribute('aria-activedescendant', activeRow.id);
+    activeRow?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const openDropdownItem = (item, { toCode = false } = {}) => {
+    if (!item || item.addr == null) return;
+    const addr = BigInt(item.addr);
+    hideResults();
+    input.blur();
+    if (toCode) {
+      if (app.goToAddress(addr, { announce: true })) router.navigate('/code/' + addr.toString());
+      else router.navigate('/code/' + addr.toString());
+      return;
+    }
+    router.navigate('/function/' + addr.toString() + '/pseudocode');
+  };
+
+  const renderDropdown = (items) => {
+    dropdownItems = items.slice(0, 10);
+    activeIndex = -1;
+    results.replaceChildren();
+    if (!dropdownItems.length) {
+      results.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+      return;
+    }
+    dropdownItems.forEach((item, idx) => {
+      const li = h('li', 'ui-command-result');
+      li.id = `ui-cmd-opt-${idx}`;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      const left = h('span', 'ui-command-result-main');
+      if (item.badge) left.append(h('span', 'ui-command-result-badge', item.badge));
+      left.append(h('span', 'ui-command-result-title', item.title));
+      const right = h('span', 'ui-command-result-addr mono', item.addr != null ? addressText(item.addr) : '');
+      li.append(left, right);
+      li.addEventListener('mousedown', (event) => { event.preventDefault(); });
+      li.addEventListener('click', (event) => {
+        openDropdownItem(item, { toCode: event.shiftKey || item.kind === 'address' });
+      });
+      results.append(li);
+    });
+    results.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  };
+
+  const recentNavEntries = () => {
+    const navObj = app.navigation;
+    const raw = typeof navObj?.entries === 'function' ? navObj.entries() : navObj?.entries;
+    return Array.isArray(raw) ? raw : [];
+  };
+
+  const refreshDropdown = async () => {
+    const serial = ++dropdownSerial;
+    dropdownController?.abort?.('dropdown-superseded');
+    dropdownController = null;
+    if (document.activeElement !== input) return;
+    const raw = input.value.trim();
+    const intent = classifyOmnibox(raw);
+    if (intent.kind === 'command' || intent.kind === 'ai') { hideResults(); return; }
+    const out = [];
+    const seen = new Set();
+    const pushUnique = (entry) => {
+      if (!entry || entry.addr == null || out.length >= 10) return;
+      let key;
+      try { key = BigInt(entry.addr).toString(); } catch { return; }
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ ...entry, addr: BigInt(entry.addr) });
+    };
+
+    if (!raw) {
+      const saved = bookmarkListOf(app);
+      for (const bm of saved.slice(0, 6)) {
+        if (bm?.addr == null) continue;
+        pushUnique({ kind: 'saved', badge: '★', title: bm.name || functionName(app, bm.addr), addr: bm.addr });
+      }
+      const recents = recentNavEntries();
+      for (let i = recents.length - 1; i >= 0 && out.length < 10; i--) {
+        const entry = recents[i];
+        const a = entry?.addr ?? entry?.address ?? entry;
+        if (a == null) continue;
+        try {
+          const big = BigInt(a);
+          pushUnique({ kind: 'recent', badge: '↺', title: entry?.name || functionName(app, big), addr: big });
+        } catch { /* ignore */ }
+      }
+      renderDropdown(out);
+      return;
+    }
+
+    const parsed = parseAddress(raw);
+    if (parsed != null) {
+      pushUnique({ kind: 'address', badge: '→', title: functionName(app, parsed), addr: parsed });
+    }
+    const ql = raw.toLowerCase();
+    for (const bm of bookmarkListOf(app)) {
+      if (bm?.addr == null) continue;
+      const tags = Array.isArray(bm?.tags) ? bm.tags.join(' ') : String(bm?.tag || '');
+      const hay = [bm?.name, bm?.note, tags, addressText(bm.addr)].filter(Boolean).join(' ').toLowerCase();
+      if (hay.includes(ql)) {
+        pushUnique({ kind: 'saved', badge: '★', title: bm.name || functionName(app, bm.addr), addr: bm.addr });
+      }
+    }
+    if (app.store?.get?.('fileInfo')) {
+      const controller = new AbortController();
+      dropdownController = controller;
+      try {
+        const fns = await queryFunctions(app, raw, { limit: 8, signal: controller.signal });
+        if (serial !== dropdownSerial || controller.signal.aborted || document.activeElement !== input) return;
+        const len = Number(fns?.length || 0);
+        for (let i = 0; i < len && out.length < 10; i++) {
+          const item = Array.isArray(fns) ? fns[i] : fns.itemAt?.(i);
+          if (item?.addr != null) pushUnique({ kind: 'function', badge: '', title: item.name || functionName(app, item.addr), addr: item.addr });
+        }
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+      }
+    }
+    if (serial !== dropdownSerial || document.activeElement !== input) return;
+    renderDropdown(out);
+  };
+
+  const scheduleDropdown = () => {
+    clearTimeout(dropdownTimer);
+    if (!input.value.trim()) { void refreshDropdown(); return; }
+    dropdownTimer = setTimeout(() => { void refreshDropdown(); }, 80);
+  };
 
   const refreshHint = () => {
     const intent = classifyOmnibox(input.value);
     hint.textContent = intent.kind === 'empty' ? '' : intentLabel(intent.kind, ja());
     form.dataset.intent = intent.kind;
   };
-  input.addEventListener('input', refreshHint);
+  input.addEventListener('input', () => { refreshHint(); scheduleDropdown(); });
+  input.addEventListener('focus', () => { scheduleDropdown(); });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (!results.hidden) { event.preventDefault(); hideResults(); }
+      return;
+    }
+    if (results.hidden || !dropdownItems.length) return;
+    if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex(activeIndex < 0 ? 0 : activeIndex + 1); return; }
+    if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex(activeIndex < 0 ? dropdownItems.length - 1 : activeIndex - 1); return; }
+    if (event.key === 'Enter' && activeIndex >= 0 && dropdownItems[activeIndex]) {
+      event.preventDefault();
+      openDropdownItem(dropdownItems[activeIndex], { toCode: event.shiftKey });
+    }
+  });
+  const onDocPointerDown = (event) => {
+    if (!form.contains(event.target)) hideResults();
+  };
+  document.addEventListener('pointerdown', onDocPointerDown);
 
   const runCommand = (intent) => {
     switch (intent.command) {
@@ -1887,6 +2327,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+    hideResults();
     const intent = classifyOmnibox(input.value);
     if (intent.kind === 'empty') return;
     input.blur();
@@ -1921,6 +2362,8 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     refreshHint();
   };
   const destroy = () => {
+    hideResults();
+    document.removeEventListener('pointerdown', onDocPointerDown);
     narrow?.removeEventListener?.('change', setPlaceholder);
     form.remove();
   };
@@ -1955,7 +2398,41 @@ export function installProductUI(app) {
     onClick: () => router.back(),
   });
   backBtn.hidden = true;
-  chrome.append(backBtn, nav);
+  const forwardBtn = uiButton('→', {
+    cls: 'ui-chrome-forward',
+    ariaLabel: text('次の画面へ進む', 'Go forward'),
+    onClick: () => router.forward(),
+  });
+  forwardBtn.hidden = true;
+  chrome.append(backBtn, forwardBtn, nav);
+
+  const deltaStrip = h('div', 'ui-delta-strip');
+  deltaStrip.setAttribute('role', 'status');
+  deltaStrip.hidden = true;
+  const deltaText = h('span', 'ui-delta-strip-text');
+  const deltaActions = h('div', 'ui-delta-strip-actions');
+  const deltaExportBtn = uiButton(text('差分を書き出し (.json)', 'Export delta (.json)'), { cls: 'ui-secondary-action ui-delta-btn', onClick: () => requireFile(app, () => exportDeltaFromProduct(app)) });
+  const deltaImportBtn = uiButton(text('差分を読み込み (.json)', 'Import delta (.json)'), { cls: 'ui-secondary-action ui-delta-btn', onClick: () => requireFile(app, () => importDeltaFromProduct(app)) });
+  const deltaResetBtn = uiButton(text('リセット', 'Reset'), { cls: 'ui-secondary-action ui-delta-btn', onClick: async () => { await resetDeltaFromProduct(app); deltaDismissed = true; deltaStrip.hidden = true; } });
+  const deltaDismissBtn = uiButton('×', { cls: 'ui-icon-action ui-delta-dismiss', ariaLabel: text('閉じる', 'Dismiss'), onClick: () => { deltaDismissed = true; deltaStrip.hidden = true; } });
+  deltaActions.append(deltaExportBtn, deltaImportBtn, deltaResetBtn, deltaDismissBtn);
+  deltaStrip.append(deltaText, deltaActions);
+  chrome.after(deltaStrip);
+  let deltaDismissed = false;
+  let lastDeltaToken = null;
+  const syncDeltaStrip = () => {
+    const info = app.lastDeltaRestore ?? app.store?.get?.('deltaRestored') ?? null;
+    if (!info) { deltaStrip.hidden = true; return; }
+    if (info !== lastDeltaToken) { lastDeltaToken = info; deltaDismissed = false; }
+    if (deltaDismissed) { deltaStrip.hidden = true; return; }
+    const count = deltaCountOf(info);
+    deltaText.textContent = text(`前回の続きを復元 (${count}件の差分)`, `Restored previous session (${count} changes)`);
+    deltaStrip.hidden = false;
+  };
+  const unsubDeltaStore = app.store?.subscribe?.((_state, patch) => {
+    if (!patch || 'deltaRestored' in patch || 'fileInfo' in patch) syncDeltaStrip();
+  }) || null;
+  syncDeltaStrip();
 
   let lastRouteId = null;
   let autoHexForData = false;
@@ -1975,11 +2452,12 @@ export function installProductUI(app) {
      * function tab to another) keep their sheets; sheets opened after the
      * change (the sample guide) are not affected.
      */
-    onState: ({ current, canBack }) => {
+    onState: ({ current, canBack, canForward }) => {
       const id = current?.route?.id || null;
       if (lastRouteId != null && id !== lastRouteId) { closeMenu(); closeAllSheets(); }
       lastRouteId = id;
       backBtn.hidden = !canBack;
+      forwardBtn.hidden = !canForward;
     },
     onRoute: (route, routeContext = {}) => {
       appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
@@ -2100,11 +2578,21 @@ export function installProductUI(app) {
 
   const cleanupViewport = installViewportBridge();
   const addressBar = installAddressBar(app, router, appRoot.querySelector('.addrbar'));
+  const prevJumpTarget = app.viewer ? app.viewer.onJumpTarget : null;
+  if (app.viewer) {
+    app.viewer.onJumpTarget = (targetAddr) => {
+      if (targetAddr == null) return;
+      router.navigate('/code/' + BigInt(targetAddr).toString());
+    };
+  }
   const shortcut = (event) => {
     const target = event.target;
     const typing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); actions.run('command.focus'); return; }
-    if (!typing && event.key === '/') { event.preventDefault(); actions.run('command.focus'); }
+    const key = String(event.key || '').toLowerCase();
+    if ((event.metaKey || event.ctrlKey) && (key === 'k' || key === 'g')) { event.preventDefault(); actions.run('command.focus'); return; }
+    if (!typing && !event.metaKey && !event.ctrlKey && !event.altKey && (key === '/' || key === 'g')) { event.preventDefault(); actions.run('command.focus'); return; }
+    if (!typing && ((event.altKey && event.key === 'ArrowLeft') || (event.metaKey && event.key === '['))) { event.preventDefault(); router.back(); return; }
+    if (!typing && ((event.altKey && event.key === 'ArrowRight') || (event.metaKey && event.key === ']'))) { event.preventDefault(); router.forward(); return; }
   };
   document.addEventListener('keydown', shortcut, true);
 
@@ -2129,6 +2617,12 @@ export function installProductUI(app) {
     nav.setAttribute('aria-label', text('主要ナビゲーション', 'Primary navigation'));
     backBtn.textContent = text('← 戻る', '← Back');
     backBtn.setAttribute('aria-label', text('前の画面へ戻る', 'Go back'));
+    forwardBtn.setAttribute('aria-label', text('次の画面へ進む', 'Go forward'));
+    deltaExportBtn.textContent = text('差分を書き出し (.json)', 'Export delta (.json)');
+    deltaImportBtn.textContent = text('差分を読み込み (.json)', 'Import delta (.json)');
+    deltaResetBtn.textContent = text('リセット', 'Reset');
+    deltaDismissBtn.setAttribute('aria-label', text('閉じる', 'Dismiss'));
+    syncDeltaStrip();
     more.setAttribute('aria-label', text('その他', 'More'));
     for (const item of PRIMARY_NAV) {
       const btn = nav.querySelector(`[data-route-id="${item.routeId}"]`);
@@ -2155,9 +2649,11 @@ export function installProductUI(app) {
     document.removeEventListener('hex:language-changed', onLanguageChanged);
     window.removeEventListener('pagehide', onPageHide);
     assistant?.destroy();
+    if (typeof unsubDeltaStore === 'function') unsubDeltaStore();
+    if (app.viewer) app.viewer.onJumpTarget = prevJumpTarget;
     if (originalSelectSlice) app.selectSlice = originalSelectSlice;
     if (originalGoToAddress) app.goToAddress = originalGoToAddress;
-    chrome.remove(); nav.remove(); routeHost.remove();
+    deltaStrip.remove(); chrome.remove(); nav.remove(); routeHost.remove();
     uiRoot()?.classList.remove('product-ui-ready');
   };
   window.__hexUi = { router, actions, destroy, routes: ROUTES, assistant };

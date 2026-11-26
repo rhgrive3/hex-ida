@@ -637,7 +637,8 @@ void test_general_goto_reduction() {
     // which short-forward `if` then structures cleanly with zero gotos.
     CHECK(text.find("loc_440208") == std::string::npos);
     CHECK(text.find("goto ") == std::string::npos);
-    CHECK(text.find("if (__hex_cmp_l == __hex_cmp_r) {") != std::string::npos);
+    CHECK(text.find("if ((uint32)rdi == 0) {") != std::string::npos);
+    CHECK(text.find("__hex_cmp_l") == std::string::npos);
     CHECK(text.find("switch (__hex_state)") == std::string::npos);
     CHECK(verify_c11_syntax(text, "gen_invert_guard"));
   }
@@ -867,6 +868,198 @@ void test_zero_goto_state_machine_and_main() {
   std::printf("  [PASS] 0-goto state-machine dispatcher (general + strict fallback) & C11 main\n");
 }
 
+void test_wave32_readability_and_compare_fusion() {
+  // 1. State-machine case comments: `case 0u: /* entry 0x... */` & `case 1u: /* block 0x... */`
+  {
+    const uint8_t code[] = {
+        0x53,              // 0x480000: push rbx
+        0x31, 0xc0,        // 0x480001: xor eax, eax
+        0x83, 0xff, 0x00,  // 0x480003: cmp edi, 0
+        0x74, 0x07,        // 0x480006: je +7 (-> 0x48000F)
+        0x01, 0xf0,        // 0x480008: L_a: add eax, esi
+        0x83, 0xee, 0x01,  // 0x48000A: sub esi, 1
+        0x74, 0x07,        // 0x48000D: je +7 (-> 0x480016)
+        0x01, 0xf8,        // 0x48000F: L_b: add eax, edi
+        0x83, 0xef, 0x01,  // 0x480011: sub edi, 1
+        0x75, 0xf2,        // 0x480014: jne -14 (-> 0x480008)
+        0x5b,              // 0x480016: L_done: pop rbx
+        0xc3,              // 0x480017: ret
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x480000ULL, "sm_comments", 11u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("case 0u: /* entry 0x480000 */") != std::string::npos);
+    CHECK(text.find("case 1u: /* block 0x480008 */") != std::string::npos);
+    CHECK(text.find("case 2u: /* block 0x48000F */") != std::string::npos);
+    CHECK(text.find("case 3u: /* block 0x480016 */") != std::string::npos);
+    CHECK(text.find("goto ") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(text, "sm_comments"));
+  }
+
+  // 2. Grouped zero-initialized scratch GPRs (4 per line), XMMs (4 per line),
+  //    own-line rsp/rbp/params, and blank-line separation before body.
+  {
+    const uint8_t code[] = {
+        0x55,                    // push rbp
+        0x48, 0x89, 0xe5,        // mov rbp, rsp
+        0x53,                    // push rbx
+        0x41, 0x54,              // push r12
+        0x41, 0x55,              // push r13
+        0x41, 0x56,              // push r14
+        0x48, 0x89, 0xf8,        // mov rax, rdi
+        0x66, 0x0f, 0xef, 0xc1,        // pxor xmm0, xmm1
+        0x66, 0x0f, 0xef, 0xc2,        // pxor xmm0, xmm2
+        0x66, 0x0f, 0xef, 0xc3,        // pxor xmm0, xmm3
+        0x66, 0x0f, 0xef, 0xc4,        // pxor xmm0, xmm4
+        0x66, 0x48, 0x0f, 0x7e, 0xc0,  // movq rax, xmm0
+        0x41, 0x5e,              // pop r14
+        0x41, 0x5d,              // pop r13
+        0x41, 0x5c,              // pop r12
+        0x5b,                    // pop rbx
+        0x5d,                    // pop rbp
+        0xc3,                    // ret
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x480100ULL, "grouped_decls", 13u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("    uint64 rsp = ") != std::string::npos);
+    CHECK(text.find("    uint64 rbp = rsp;\n") != std::string::npos);
+    CHECK(text.find("    uint64 rdi = a1;\n") != std::string::npos);
+    CHECK(text.find("    uint64 rax = 0, rbx = 0, r12 = 0, r13 = 0;\n") != std::string::npos);
+    CHECK(text.find("    uint64 r14 = 0;\n") != std::string::npos);
+    CHECK(text.find("    uint64 xmm0 = 0, xmm1 = 0, xmm2 = 0, xmm3 = 0;\n") != std::string::npos);
+    CHECK(text.find("    uint64 xmm4 = 0;\n\n    rsp -= 8;") != std::string::npos);
+    CHECK(text.find("__hex_cmp_l") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(text, "grouped_decls"));
+  }
+
+  // 3. Fused CMP + JCC (signed vs unsigned, 32-bit vs 64-bit) omits __hex_cmp_l/__hex_cmp_r
+  {
+    // 3a. Signed 32-bit jl: push rbx; cmp edi, esi; jl +5; mov eax, 1; jmp +5; mov eax, 2; pop rbx; ret
+    const uint8_t signed32[] = {
+        0x53,                          // push rbx
+        0x39, 0xf7,                    // cmp edi, esi
+        0x7c, 0x07,                    // jl +7 (-> mov eax, 2)
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0xeb, 0x05,                    // jmp +5 (-> pop rbx)
+        0xb8, 0x02, 0x00, 0x00, 0x00,  // mov eax, 2
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              signed32, sizeof(signed32), 0x480200ULL, "fused_cmp_s32", 13u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t1 = get_emitted_text();
+    // if-else negates jl -> jge (`(int32)rdi >= (int32)rsi`)
+    CHECK(t1.find("if ((int32)rdi >= (int32)rsi) {") != std::string::npos);
+    CHECK(t1.find("__hex_cmp_l") == std::string::npos);
+    CHECK(t1.find("__hex_cmp_r") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(t1, "fused_cmp_s32"));
+
+    // 3b. Unsigned 64-bit jb: push rbx; cmp rdi, rsi; jb +7; mov eax, 1; jmp +5; mov eax, 2; pop rbx; ret
+    const uint8_t unsigned64[] = {
+        0x53,
+        0x48, 0x39, 0xf7,              // cmp rdi, rsi
+        0x72, 0x07,                    // jb +7
+        0xb8, 0x01, 0x00, 0x00, 0x00,
+        0xeb, 0x05,
+        0xb8, 0x02, 0x00, 0x00, 0x00,
+        0x5b,
+        0xc3,
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              unsigned64, sizeof(unsigned64), 0x480300ULL, "fused_cmp_u64", 13u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t2 = get_emitted_text();
+    // if-else negates jb -> jae (`rdi >= rsi`)
+    CHECK(t2.find("if (rdi >= rsi) {") != std::string::npos);
+    CHECK(t2.find("__hex_cmp_l") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(t2, "fused_cmp_u64"));
+
+    // 3c. Signed 64-bit cmp rdi, -1; jge -> negated to `(int64)rdi < (int64)0xFFFFFFFFFFFFFFFFULL`
+    const uint8_t signed64_neg[] = {
+        0x53,
+        0x48, 0x83, 0xff, 0xff,        // cmp rdi, -1
+        0x7d, 0x05,                    // jge +5 (-> pop rbx)
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0x5b,
+        0xc3,
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              signed64_neg, sizeof(signed64_neg), 0x480380ULL, "fused_cmp_s64_neg", 17u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t2b = get_emitted_text();
+    CHECK(t2b.find("if ((int64)rdi < (int64)0xFFFFFFFFFFFFFFFFULL) {") != std::string::npos);
+    CHECK(t2b.find("__hex_cmp_l") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(t2b, "fused_cmp_s64_neg"));
+  }
+
+  // 4. Fused TEST + JCC (`je`, `js`) omits __hex_cmp_l/__hex_cmp_r
+  {
+    const uint8_t test_je_js[] = {
+        0x53,                          // push rbx
+        0x85, 0xf7,                    // test edi, esi
+        0x74, 0x05,                    // je +5 (-> test edi, edi)
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0x85, 0xff,                    // test edi, edi
+        0x78, 0x05,                    // js +5 (-> pop rbx)
+        0xb8, 0x02, 0x00, 0x00, 0x00,  // mov eax, 2
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              test_je_js, sizeof(test_je_js), 0x480400ULL, "fused_test_jcc", 14u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t3 = get_emitted_text();
+    CHECK(t3.find("if (((uint32)rdi & (uint32)rsi) != 0) {") != std::string::npos);
+    CHECK(t3.find("if ((int32)((uint32)rdi & (uint32)rdi) >= 0) {") != std::string::npos);
+    CHECK(t3.find("__hex_cmp_l") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(t3, "fused_test_jcc"));
+  }
+
+  // 5. Soundness negative cases: multiple JCCs or ADC after JCC must KEEP __hex_cmp_l/__hex_cmp_r
+  {
+    // 5a. cmp edi, esi; je +7; jl +5; mov eax, 1; pop rbx; ret
+    const uint8_t multi_jcc[] = {
+        0x53,                          // push rbx
+        0x39, 0xf7,                    // cmp edi, esi
+        0x74, 0x07,                    // je +7 (-> pop rbx)
+        0x7c, 0x05,                    // jl +5 (-> pop rbx)
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              multi_jcc, sizeof(multi_jcc), 0x480500ULL, "multi_jcc_nofuse", 16u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t4 = get_emitted_text();
+    CHECK(t4.find("uint64 __hex_cmp_l = 0, __hex_cmp_r = 0;") != std::string::npos);
+    CHECK(t4.find("goto ") == std::string::npos);
+    CHECK(verify_c11_syntax_werror(t4, "multi_jcc_nofuse"));
+
+    // 5b. cmp edi, esi; je +4; adc eax, edx; pop rbx; ret (ADC reads CF -> do NOT fuse!)
+    const uint8_t cmp_jcc_adc[] = {
+        0x53,        // push rbx
+        0x39, 0xf7,  // cmp edi, esi
+        0x74, 0x02,  // je +2 (-> pop rbx)
+        0x11, 0xd0,  // adc eax, edx
+        0x5b,        // pop rbx
+        0xc3,        // ret
+    };
+    CHECK(hex_engine_decompile_x86_64(
+              cmp_jcc_adc, sizeof(cmp_jcc_adc), 0x480600ULL, "cmp_jcc_adc_nofuse", 18u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    const std::string t5 = get_emitted_text();
+    CHECK(t5.find("uint64 __hex_cmp_l = 0, __hex_cmp_r = 0;") != std::string::npos);
+    CHECK(verify_c11_syntax_werror(t5, "cmp_jcc_adc_nofuse"));
+  }
+  std::printf("  [PASS] Wave 32 readability: case comments, grouped decls, fused CMP/TEST+JCC & soundness\n");
+}
+
 }  // namespace
 
 int main() {
@@ -884,6 +1077,7 @@ int main() {
   test_general_goto_reduction();
   test_general_recursive_6param_and_cleanup();
   test_zero_goto_state_machine_and_main();
+  test_wave32_readability_and_compare_fusion();
 
   if (g_failures == 0) {
     std::printf("test_x86_64_decomp_native (ASan+UBSan): ALL PASS\n");

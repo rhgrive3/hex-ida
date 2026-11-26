@@ -106,9 +106,9 @@ export function createChildTaskScope(parentSignal) {
 export class ProductRouter {
   constructor(routes, { defaultPath = '/investigate', onRoute, onState, onError } = {}) {
     this.routes = routes; this.defaultPath = normalize(defaultPath); this.onRoute = onRoute || (() => null); this.onState = onState || (() => {}); this.onError = onError || (() => {});
-    this.current = null; this.view = null; this.serial = 0; this.started = false; this.renderGeneration = 0; this.depth = 0;
+    this.current = null; this.view = null; this.serial = 0; this.started = false; this.renderGeneration = 0; this.depth = 0; this.maxDepth = 0;
     this.routeController = null;
-    this.onPop = () => { const raw = history.state; const state = ownedState(raw) ? raw : null; if (state) this.depth = state.depth; this._render(this.locationPath(), { historyNavigation: true }); };
+    this.onPop = () => { const raw = history.state; const state = ownedState(raw) ? raw : null; if (state) { this.depth = state.depth; if (this.depth > this.maxDepth) this.maxDepth = this.depth; } this._render(this.locationPath(), { historyNavigation: true }); };
     this.onHash = () => { const path = this.locationPath(); if (this.current?.fullPath === path) return; this._render(path, { historyNavigation: true, hashNavigation: true }); };
   }
 
@@ -122,8 +122,8 @@ export class ProductRouter {
     const path = this.locationPath();
     const raw = history.state;
     const state = raw && ownedState(raw) ? raw : null;
-    if (!state) { this.depth = 0; history.replaceState({ hexUi: true, key: ++this.serial, depth: 0, viewState: null }, '', routeHistoryUrl(path, window.location)); }
-    else { this.serial = Math.max(this.serial, Number(state.key) || 0); this.depth = state.depth; }
+    if (!state) { this.depth = 0; this.maxDepth = 0; history.replaceState({ hexUi: true, key: ++this.serial, depth: 0, viewState: null }, '', routeHistoryUrl(path, window.location)); }
+    else { this.serial = Math.max(this.serial, Number(state.key) || 0); this.depth = state.depth; this.maxDepth = Math.max(this.maxDepth, state.depth); }
     this._render(path, { replace: true, historyNavigation: true });
   }
 
@@ -150,17 +150,21 @@ export class ProductRouter {
     if (this.current && this.current.fullPath === path) return false;
     this.capture();
     const previousDepth = this.depth;
+    const previousMaxDepth = this.maxDepth;
     const nextDepth = replace ? previousDepth : previousDepth + 1;
+    const nextMaxDepth = replace ? Math.max(previousMaxDepth, nextDepth) : nextDepth;
 
     // Build the destination before committing browser history. If the route
     // renderer throws, the current view, URL and history stack must remain one
     // coherent state instead of leaving a dead entry that only looks opened.
     const generationBefore = this.renderGeneration;
     this.depth = nextDepth;
+    this.maxDepth = nextMaxDepth;
     const rendered = this._render(path, { replace, restoredState: null });
     if (!rendered) {
       if (this.renderGeneration === generationBefore || this.renderGeneration === generationBefore + 1) {
         this.depth = previousDepth;
+        this.maxDepth = previousMaxDepth;
       }
       return false;
     }
@@ -175,8 +179,9 @@ export class ProductRouter {
   }
 
   back() { if (!this.canBack()) return false; this.capture(); history.back(); return true; }
-  forward() { this.capture(); history.forward(); return true; }
+  forward() { if (!this.canForward()) return false; this.capture(); history.forward(); return true; }
   canBack() { return this.depth > 0; }
+  canForward() { return this.depth < this.maxDepth; }
 
   disposeView(view = this.view) { if (view && typeof view.dispose === 'function') { try { view.dispose(); } catch (error) { this._handleError(error, { phase: 'dispose' }); } } if (view === this.view) this.view = null; }
   _handleError(error, meta = {}) { try { this.onError(error, meta); } catch { /* error boundary must not throw into navigation */ } }
@@ -229,7 +234,7 @@ export class ProductRouter {
         try { nextView.restoreState(state); } catch (error) { this._handleError(error, { phase: 'restore', current: nextCurrent }); }
       });
     }
-    try { this.onState({ current: this.current, canBack: this.canBack() }); } catch (error) { this._handleError(error, { phase: 'state', current: this.current }); }
+    try { this.onState({ current: this.current, canBack: this.canBack(), canForward: this.canForward() }); } catch (error) { this._handleError(error, { phase: 'state', current: this.current }); }
     return true;
   }
 }

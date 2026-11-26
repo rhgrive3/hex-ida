@@ -296,12 +296,25 @@ export function sectionTitle(title, detail) {
   return wrap;
 }
 
-export function listRow({ title, subtitle, meta, badge, onClick, mono = false }) {
-  const tag = onClick ? 'button' : 'div';
+export function listRow({ title, subtitle, meta, badge, action, onClick, mono = false }) {
+  const interactive = typeof onClick === 'function';
+  const useButton = interactive && !action;
+  const tag = useButton ? 'button' : 'div';
   const row = h(tag, 'ui-list-row' + (mono ? ' mono' : ''));
-  if (onClick) {
+  if (useButton) {
     row.type = 'button';
     row.addEventListener('click', onClick);
+  } else if (interactive) {
+    row.setAttribute('role', 'button');
+    row.tabIndex = 0;
+    row.addEventListener('click', onClick);
+    row.addEventListener('keydown', (event) => {
+      if (event.target !== row) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        onClick(event);
+      }
+    });
   }
   const main = h('span', 'ui-list-row-main');
   main.append(h('strong', 'ui-list-row-title', title));
@@ -310,7 +323,8 @@ export function listRow({ title, subtitle, meta, badge, onClick, mono = false })
   const tail = h('span', 'ui-list-row-tail');
   if (badge) tail.append(badge);
   if (meta) tail.append(h('span', 'ui-list-row-meta', meta));
-  if (onClick) tail.append(h('span', 'ui-chevron', '›'));
+  if (action) tail.append(action);
+  if (interactive) tail.append(h('span', 'ui-chevron', '›'));
   if (tail.childNodes.length) row.append(tail);
   return row;
 }

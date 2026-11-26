@@ -47,8 +47,39 @@ export function showJump(app) {
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
   setTimeout(() => input.focus(), 50);
 
+  function resolveJumpTarget(raw) {
+    const direct = parseAddress(raw);
+    if (direct != null) return direct;
+    const q = String(raw || "").trim().toLowerCase();
+    if (!q) return null;
+    const bookmarks = app.bookmarks?.list?.() || [];
+    for (const bm of bookmarks) {
+      const name = String(bm?.name || "").toLowerCase();
+      if (name && name === q && bm?.addr != null) {
+        try { return BigInt(bm.addr); } catch { /* ignore */ }
+      }
+    }
+    const sym = app.symbols;
+    const names = sym && Array.isArray(sym.names) ? sym.names : [];
+    for (let i = 0; i < names.length; i++) {
+      if (String(names[i] || "").toLowerCase() === q && sym.addrs?.[i] != null) return sym.addrs[i];
+    }
+    const sub = /^sub_?([0-9a-f]+)$/i.exec(q);
+    if (sub) { try { return BigInt("0x" + sub[1]); } catch { /* ignore */ } }
+    for (const bm of bookmarks) {
+      const hay = [bm?.name, bm?.note, ...(Array.isArray(bm?.tags) ? bm.tags : [])].filter(Boolean).join(" ").toLowerCase();
+      if (hay.includes(q) && bm?.addr != null) {
+        try { return BigInt(bm.addr); } catch { /* ignore */ }
+      }
+    }
+    for (let i = 0; i < names.length; i++) {
+      if (String(names[i] || "").toLowerCase().includes(q) && sym.addrs?.[i] != null) return sym.addrs[i];
+    }
+    return null;
+  }
+
   function go() {
-    const v = parseAddress(input.value);
+    const v = resolveJumpTarget(input.value);
     if (v == null) { toast(t("jump.invalid")); return; }
     sheet.close();
     if (!app.goToAddress(v, { announce: true })) return;

@@ -20,6 +20,8 @@ const IDLE_MS = 140;
 const PREFETCH_CHUNKS = 1;
 const HEX_ROW_BYTES = 4;
 const IMM_RE = /(#?-?0x[0-9a-f]+|#-?\d+)/gi;
+const TARGET_MN_RE = /^(?:b|bl|b\.[a-z0-9]+|cbz|cbnz|tbz|tbnz|call|jmp|j[a-z0-9]+|jal)$/i;
+const HEX_TARGET_RE = /^0x[0-9a-f]+$/i;
 const MAX_SAFE_ROW = BigInt(Number.MAX_SAFE_INTEGER);
 
 function rowIdentity(rowBig) { return rowBig <= MAX_SAFE_ROW ? Number(rowBig) : rowBig; }
@@ -60,6 +62,7 @@ export class CodeViewer {
     this.onSelect = opts.onSelect || (() => {});
     this.onLongPress = opts.onLongPress || (() => {});
     this.onRangeChange = opts.onRangeChange || (() => {});
+    this.onJumpTarget = opts.onJumpTarget || null;
 
     this.region = null;
     this.mode = 'asm';
@@ -738,7 +741,7 @@ export class CodeViewer {
     const arch=this._frameArch!=null?this._frameArch:this.architectureId();
     const placeholder=isVarAsm?'··':'·· ·· ·· ··',hexText=hex===null?placeholder:hex;if(el._hex!==hexText){el._h.textContent=hexText;el._hex=hexText;}
     if(this.mode==='hex'){const t=ascii===null?'':ascii;if(el._ascii!==t){el._s.textContent=t;el._ascii=t;}}
-    if(this.mode==='asm'){if(el._mn!==mn){el._m.textContent=mn;el._mn=mn;}this._setOps(el,ops);}else if(el._mn!==''){el._m.textContent='';el._mn='';this._setOps(el,'');}
+    if(this.mode==='asm'){if(el._mn!==mn){el._m.textContent=mn;el._mn=mn;}this._setOps(el,ops,mn);}else if(el._mn!==''){el._m.textContent='';el._mn='';this._setOps(el,'','');}
     const isFnStart=address!=null&&this.symbols.functionCount>0&&this.symbols.isFunctionStart(address);const blk=this.mode==='asm'&&row>=0?this.blockAt(row):null;
     if(this.showNotes&&this.mode==='asm'){
       const fnName=isFnStart?(this.symbols.nameAt(address)||''):'';if(el._fn!==fnName){el._f.textContent=fnName?'▼ '+fnName:'';el._fn=fnName;}
@@ -749,8 +752,10 @@ export class CodeViewer {
     if(row>=0&&row>=this._selLo&&row<=this._selHi){cls+=' sel';if(this._selLo!==this._selHi){if(row===this._selLo)cls+=' sel-first';if(row===this._selHi)cls+=' sel-last';}}if(row>=0&&row===this.markedRow)cls+=' hit';if(el._cls!==cls){el.className=cls;el._cls=cls;}
   }
 
-  _setOps(el,str) {
-    if(el._ops===str)return;el._ops=str;const target=el._o;if(!str){target.textContent='';return;}
+  _setOps(el,str,mn='') {
+    const isTargetMn=!!mn&&TARGET_MN_RE.test(mn);
+    if(el._ops===str&&el._opsTarget===isTargetMn)return;
+    el._ops=str;el._opsTarget=isTargetMn;const target=el._o;if(!str){target.textContent='';return;}
     IMM_RE.lastIndex=0;let m=IMM_RE.exec(str);if(!m){target.textContent=str;return;}
     const container=typeof document.createDocumentFragment==='function'?document.createDocumentFragment():target;
     if(container===target)target.textContent='';
@@ -758,7 +763,11 @@ export class CodeViewer {
     while(m){
       const idx=m.index;
       if(idx>last)container.appendChild(document.createTextNode(str.slice(last,idx)));
-      const s=document.createElement('span');s.className='tok-imm';s.textContent=m[0];container.appendChild(s);
+      const s=document.createElement('span');
+      const isTarget=isTargetMn&&HEX_TARGET_RE.test(m[0]);
+      s.className=isTarget?'tok-imm tok-target':'tok-imm';
+      if(isTarget)s.dataset.targetAddr=m[0];
+      s.textContent=m[0];container.appendChild(s);
       last=idx+m[0].length;
       if(m[0].length===0)IMM_RE.lastIndex++;
       m=IMM_RE.exec(str);
@@ -795,6 +804,7 @@ export class CodeViewer {
     const CONTEXT_SUPPRESS_MS = 800;
     let gesture = null;
     let suppressContextUntil = 0;
+    let lastTargetJump = 0;
 
     const rowFrom = (target) => {
       if (!this.totalRows) return -1;
@@ -868,8 +878,31 @@ export class CodeViewer {
       const row = rowFrom(e.target);
       if (row >= 0 && row === active.row &&
           Math.abs(e.clientX - active.x) < MOVE_TOLERANCE &&
-          Math.abs(e.clientY - active.y) < MOVE_TOLERANCE) activate(row);
+          Math.abs(e.clientY - active.y) < MOVE_TOLERANCE) {
+        const targetEl = e.target?.closest ? e.target.closest('.tok-target') : null;
+        if (!this.rangeMode && targetEl?.dataset?.targetAddr && typeof this.onJumpTarget === 'function') {
+          try {
+            lastTargetJump = Date.now();
+            this.onJumpTarget(BigInt(targetEl.dataset.targetAddr), row);
+            return;
+          } catch { /* fall back to row activation */ }
+        }
+        activate(row);
+      }
     }, passiveOpts);
+
+    this.vp.addEventListener('click', (e) => {
+      if (this.rangeMode || typeof this.onJumpTarget !== 'function') return;
+      if (Date.now() - lastTargetJump < 300) return;
+      const targetEl = e.target?.closest ? e.target.closest('.tok-target') : null;
+      if (!targetEl?.dataset?.targetAddr) return;
+      const row = rowFrom(targetEl);
+      if (row < 0) return;
+      try {
+        lastTargetJump = Date.now();
+        this.onJumpTarget(BigInt(targetEl.dataset.targetAddr), row);
+      } catch { /* ignore invalid target */ }
+    }, plainOpts);
 
     this.vp.addEventListener('pointercancel', reset, plainOpts);
     this.vp.addEventListener('contextmenu', (e) => {
