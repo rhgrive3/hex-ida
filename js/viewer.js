@@ -339,6 +339,7 @@ export class CodeViewer {
         if (remapped != null) {
           this.selAnchor = remapped;
           this.selFocus = remapped;
+          if (this.rangeMode) this.onRangeChange?.();
         } else {
           this.selAnchor = -1;
           this.selFocus = -1;

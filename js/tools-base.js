@@ -1207,8 +1207,10 @@ export function showRename(app, addr) {
       app.symbols.rename(addr, '');
       app.viewer.setSymbols(app.symbols);
       app.updateChrome?.();
-      app.recordUndo?.({ type: 'name', addr, before: initialName, after: '' });
-      initialName = '';
+      if (initialName) {
+        app.recordUndo?.({ type: 'name', addr, before: initialName, after: '' });
+        initialName = '';
+      }
       if (!saved) { notePersistenceFailure(app, pick('名前の削除', 'Name removal')); return; }
       sheet.close();
       toast(pick('元の名前に戻しました', 'Restored original name'));
