@@ -2079,6 +2079,16 @@ HexStatus try_emit_x86_64_general(
   if (uses_flags) {
     tb.put_str("    uint64 __hex_cmp_l = 0, __hex_cmp_r = 0;\n");
   }
+  {
+    static const uint8_t kSysVParams[6] = {7u, 6u, 2u, 1u, 8u, 9u};
+    static const uint8_t kWin64Params[4] = {1u, 2u, 8u, 9u};
+    const uint32_t max_p = (abi_id == HEX_X86_ABI_MICROSOFT_X64) ? 4u : 6u;
+    const uint32_t cnt = (num_params < max_p) ? num_params : max_p;
+    for (uint32_t p_i = 0u; p_i < cnt; ++p_i) {
+      const uint8_t preg = (abi_id == HEX_X86_ABI_MICROSOFT_X64) ? kWin64Params[p_i] : kSysVParams[p_i];
+      gpr_used |= (1u << preg);
+    }
+  }
   for (uint32_t r = 0u; r < 16u; ++r) {
     if ((gpr_used & (1u << r)) == 0u) continue;
     tb.put_str("    uint64 ");
