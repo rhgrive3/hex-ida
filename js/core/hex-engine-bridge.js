@@ -852,12 +852,40 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   }
 
   // 1b. Inline-decompile internal .text helper callees (e.g. GCC func0.part.0) via WASM
-  const helperDefs = [];
-  const inlinedHelperHexes = [];
-  const seenGlobalSyms = new Set();
-  for (const gm of out.matchAll(/^static\s+(?:_Alignas\(\d+\)\s+)?(?:const\s+)?(?:(?:uint64|uint8_t)\s+|char\s*\*\s*)((?:__hex_)?global_[0-9A-Fa-f]+(?:_buf)?)/gm)) {
-    seenGlobalSyms.add(gm[1]);
+  const inlinedHelpers = [];
+  const helperGlobals = [];
+  const globalDeclRe = /^static\s+(?:_Alignas\(\d+\)\s+)?(?:const\s+)?(?:(?:uint64|uint8_t)\s+|char\s*\*\s*)(?:__hex_)?global_([0-9A-Fa-f]+)(_buf)?\b/;
+  const globalDefineRe = /^#define\s+global_([0-9A-Fa-f]+)\b/;
+  const seenGlobalKind = new Map();
+  const seenGlobalDefines = new Set();
+  for (const gm of out.matchAll(/^static\s+(?:_Alignas\(\d+\)\s+)?(?:const\s+)?(?:(?:uint64|uint8_t)\s+|char\s*\*\s*)(?:__hex_)?global_([0-9A-Fa-f]+)(_buf)?\b/gm)) {
+    const gHex = gm[1].toUpperCase();
+    const isBuf = Boolean(gm[2]);
+    seenGlobalKind.set(gHex, isBuf ? 'buf' : (seenGlobalKind.get(gHex) || 'scalar'));
   }
+  for (const dm of out.matchAll(/^#define\s+global_([0-9A-Fa-f]+)\b/gm)) {
+    seenGlobalDefines.add(dm[1].toUpperCase());
+  }
+  const rewriteHelperCalls = (code, callerRet, helperInfo) => {
+    const unknownCall = `sub_${helperInfo.hex}(/* arguments unknown */)`;
+    let res = code.replaceAll(`uint64 sub_${helperInfo.hex} (__HEX_ANY_ARGS);\n`, '');
+    if (!res.includes(unknownCall)) return { code: res, matched: false };
+    if (helperInfo.hRet === 'void') {
+      const voidTailRet = callerRet === 'void' ? 'return;' : 'return 0;';
+      res = res.replaceAll(`x0 = ${unknownCall};`, `${helperInfo.callExpr};`);
+      res = res.replaceAll(`return ${unknownCall};`, `${helperInfo.callExpr}; ${voidTailRet}`);
+      res = res.replaceAll(`${unknownCall};`, `${helperInfo.callExpr};`);
+    } else if (helperInfo.hRet === 'float' || helperInfo.hRet === 'double') {
+      res = res.replaceAll(`x0 = ${unknownCall};`, `d0 = ${helperInfo.callExpr};`);
+      res = res.replaceAll(`return ${unknownCall};`, `return ${helperInfo.callExpr};`);
+      res = res.replaceAll(`${unknownCall};`, `d0 = ${helperInfo.callExpr};`);
+    } else {
+      res = res.replaceAll(`x0 = ${unknownCall};`, `x0 = (uint64)${helperInfo.callExpr};`);
+      res = res.replaceAll(`return ${unknownCall};`, `return ${helperInfo.callExpr};`);
+      res = res.replaceAll(`${unknownCall};`, `${helperInfo.callExpr};`);
+    }
+    return { code: res, matched: true };
+  };
   if (allowHelperInlining && fileBytes instanceof Uint8Array && out.includes('sub_') && out.includes('/* arguments unknown */')) {
     const elfInfo = parseElf64SectionsAndSyms(fileBytes);
     if (elfInfo) {
@@ -910,35 +938,33 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
         const hParamsStr = sigM[3].trim();
         const hParams = hParamsStr === 'void' || !hParamsStr ? [] : hParamsStr.split(',').map((s) => s.trim());
         const callArgs = [];
+        const callRegs = [];
         let gi = 0, fi = 0;
         for (const hp of hParams) {
           if (hp.startsWith('float ') || hp.startsWith('double ')) {
             callArgs.push(hp.startsWith('float ') ? `(float)d${fi}` : `d${fi}`);
             extraRegs.add(`d${fi}`);
+            callRegs.push(`d${fi}`);
             fi++;
+          } else if (hp.startsWith('const char *')) {
+            callArgs.push(`(const char *)(uintptr_t)x${gi}`);
+            needUintptr = true;
+            extraRegs.add(`x${gi}`);
+            callRegs.push(`x${gi}`);
+            gi++;
           } else {
             callArgs.push(`x${gi}`);
             extraRegs.add(`x${gi}`);
+            callRegs.push(`x${gi}`);
             gi++;
           }
         }
+        if (hRet === 'float' || hRet === 'double') extraRegs.add('d0');
         const callExpr = `sub_${hex}(${callArgs.join(', ')})`;
+        const helperInfo = { hex, hRet, hParamsStr, callExpr, callRegs, def: '' };
         changed = true;
-        const unknownCall = `sub_${hex}(/* arguments unknown */)`;
-        out = out.replaceAll(`uint64 sub_${hex} (__HEX_ANY_ARGS);\n`, '');
-        if (hRet === 'void') {
-          out = out.replaceAll(`x0 = ${unknownCall};`, `${callExpr};`);
-          out = out.replaceAll(`return ${unknownCall};`, `${callExpr}; return;`);
-          out = out.replaceAll(`${unknownCall};`, `${callExpr};`);
-        } else if (hRet === 'float' || hRet === 'double') {
-          out = out.replaceAll(`x0 = ${unknownCall};`, `d0 = ${callExpr};`);
-          out = out.replaceAll(`return ${unknownCall};`, `return ${callExpr};`);
-          out = out.replaceAll(`${unknownCall};`, `d0 = ${callExpr};`);
-        } else {
-          out = out.replaceAll(`x0 = ${unknownCall};`, `x0 = (uint64)${callExpr};`);
-          out = out.replaceAll(`return ${unknownCall};`, `return ${callExpr};`);
-          out = out.replaceAll(`${unknownCall};`, `${callExpr};`);
-        }
+        const outerIsVoid = /^void\s+[A-Za-z_][A-Za-z0-9_]*\(/m.test(out);
+        out = rewriteHelperCalls(out, outerIsVoid ? 'void' : 'nonvoid', helperInfo).code;
         // If helper expects more integer parameters than the outer function declared (tail-call forwarding), widen outer signature
         if (gi > 0) {
           const outerSigM = out.match(/^(void|int|uint64|float|double) ([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)\n\{/m);
@@ -963,7 +989,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
             }
           }
         }
-        // Strip duplicate includes/typedefs/pragmas from helper body and keep its static globals + function
+        // Strip duplicate includes/typedefs/pragmas from helper body and deduplicate globals by hex address (preferring buffer over scalar)
         const cleanedHelper = hRes.pseudocode.replaceAll(
           '#if defined(__GNUC__) && !defined(__clang__)\n#pragma GCC optimize("no-strict-aliasing")\n#endif\n',
           ''
@@ -976,16 +1002,36 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
           if (line.startsWith('#define _GNU_SOURCE') || line.startsWith('#pragma GCC optimize')) return false;
           if (line.startsWith('typedef ') || line.startsWith('/* hex: fixed-width')) return false;
           if (line.startsWith('static inline float __hex_u32_to_f32') || line.startsWith('static inline double __hex_u64_to_f64') || line.startsWith('static inline uint32_t __hex_f32_to_u32') || line.startsWith('static inline uint64_t __hex_f64_to_u64')) return false;
-          const gm = line.match(/^static\s+(?:_Alignas\(\d+\)\s+)?(?:const\s+)?(?:(?:uint64|uint8_t)\s+|char\s*\*\s*)((?:__hex_)?global_[0-9A-Fa-f]+(?:_buf)?)/);
+          const gm = line.match(globalDeclRe);
           if (gm) {
-            const sym = gm[1];
-            if (seenGlobalSyms.has(sym)) return false;
-            seenGlobalSyms.add(sym);
+            const gHex = gm[1].toUpperCase();
+            const isBuf = Boolean(gm[2]);
+            const prevKind = seenGlobalKind.get(gHex);
+            if (prevKind === 'buf') return false;
+            if (prevKind === 'scalar') {
+              if (!isBuf) return false;
+              // Prefer buffer over scalar: remove earlier scalar declaration from outer and lifted helper globals
+              out = out.replace(new RegExp(`^static\s+uint64\s+global_${gHex}\s*=[^;]*;\n`, 'gim'), '');
+              for (let k = helperGlobals.length - 1; k >= 0; k -= 1) {
+                if (helperGlobals[k].gHex === gHex) helperGlobals.splice(k, 1);
+              }
+            }
+            seenGlobalKind.set(gHex, isBuf ? 'buf' : 'scalar');
+            helperGlobals.push({ gHex, line });
+            return false;
+          }
+          const dm = line.match(globalDefineRe);
+          if (dm) {
+            const gHex = dm[1].toUpperCase();
+            if (seenGlobalDefines.has(gHex)) return false;
+            seenGlobalDefines.add(gHex);
+            helperGlobals.push({ gHex, line });
+            return false;
           }
           return true;
         });
-        inlinedHelperHexes.push(hex);
-        helperDefs.push(hLines.join('\n').replace(`${hRet} sub_${hex}(`, `static ${hRet} sub_${hex}(`));
+        helperInfo.def = hLines.join('\n').replace(`${hRet} sub_${hex}(`, `static ${hRet} sub_${hex}(`);
+        inlinedHelpers.push(helperInfo);
       }
     }
   }
@@ -1094,7 +1140,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   if (/\b(?:floor|ceil|trunc|round|sqrt|fabs|rint)\s*\(/.test(out)) {
     headers.add('<math.h>');
   }
-  if (helperDefs.length > 0) {
+  if (inlinedHelpers.length > 0) {
     headers.add('<stdint.h>');
   }
   const hdrLines = [];
@@ -1105,11 +1151,51 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   for (const h of [...headers].sort()) hdrLines.push(`#include ${h}`);
   for (const td of extraTypedefs) hdrLines.push(td);
   const prefix = hdrLines.length > 0 ? `${hdrLines.join('\n')}\n` : '';
-  if (helperDefs.length > 0) {
-    let hBlock = `${helperDefs.join('\n\n')}\n\n`;
-    for (const hHex of inlinedHelperHexes) {
-      hBlock = hBlock.replaceAll(`uint64 sub_${hHex} (__HEX_ANY_ARGS);\n`, '');
-      out = out.replaceAll(`uint64 sub_${hHex} (__HEX_ANY_ARGS);\n`, '');
+  if (inlinedHelpers.length > 0) {
+    const rewrittenHelperDefs = inlinedHelpers.map((entry) => {
+      let body = entry.def;
+      const neededHelperRegs = new Set();
+      for (const target of inlinedHelpers) {
+        const rw = rewriteHelperCalls(body, entry.hRet, target);
+        body = rw.code;
+        if (rw.matched) {
+          for (const r of target.callRegs) neededHelperRegs.add(r);
+          if (target.hRet === 'float' || target.hRet === 'double') neededHelperRegs.add('d0');
+        }
+      }
+      if (neededHelperRegs.size > 0) {
+        const hMissingLocals = [];
+        for (const r of neededHelperRegs) {
+          if (r.startsWith('x')) {
+            if (!new RegExp(`\\buint64 ${r}\\b`).test(body)) {
+              const rIdx = Number(r.slice(1));
+              const hasParam = Number.isInteger(rIdx) && body.includes(`uint64 a${rIdx + 1}`);
+              hMissingLocals.push(`    uint64 ${r} = ${hasParam ? `a${rIdx + 1}` : '0'};`);
+            }
+          } else if (r.startsWith('d')) {
+            if (!new RegExp(`\\bdouble ${r}\\b`).test(body)) {
+              hMissingLocals.push(`    double ${r} = 0.0;`);
+            }
+          }
+        }
+        if (hMissingLocals.length > 0) {
+          const braceIdx = body.indexOf(')\n{\n');
+          if (braceIdx >= 0) {
+            body = body.slice(0, braceIdx + 4) + hMissingLocals.join('\n') + '\n' + body.slice(braceIdx + 4);
+          }
+        }
+      }
+      return body;
+    });
+    const forwardProtos = inlinedHelpers
+      .map((h) => `static ${h.hRet} sub_${h.hex}(${h.hParamsStr || 'void'});`)
+      .join('\n');
+    const liftedGlobalsStr = helperGlobals.length > 0
+      ? `${helperGlobals.map((g) => g.line).join('\n')}\n`
+      : '';
+    let hBlock = `${liftedGlobalsStr}${forwardProtos}\n\n${rewrittenHelperDefs.join('\n\n')}\n\n`;
+    for (const h of inlinedHelpers) {
+      out = out.replaceAll(`uint64 sub_${h.hex} (__HEX_ANY_ARGS);\n`, '');
     }
     if (hBlock.includes('uint128') && !out.includes('typedef unsigned __int128 uint128;')) {
       hBlock = `typedef unsigned __int128 uint128;\n${hBlock}`;
@@ -1258,16 +1344,22 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       || legacyRawRegDeclRe.test(l)
     ));
     const baseAddrBig = BigInt(baseAddr);
-    const addrToRow = new Map();
+    let addrToRow = null;
     if (Array.isArray(insns)) {
+      addrToRow = new Map();
       for (let i = 0; i < insns.length; i += 1) {
         if (insns[i]?.address != null) addrToRow.set(BigInt(insns[i].address), i);
       }
-    } else {
-      for (let i = 0; i < count; i += 1) {
-        addrToRow.set(baseAddrBig + BigInt(i * 4), i);
-      }
     }
+    const lookupRow = addrToRow
+      ? (addr) => addrToRow.get(addr)
+      : (addr) => {
+          if (typeof addr !== 'bigint' || addr < baseAddrBig) return undefined;
+          const delta = addr - baseAddrBig;
+          if ((delta & 3n) !== 0n) return undefined;
+          const row = Number(delta >> 2n);
+          return row < count ? row : undefined;
+        };
 
     const bodyDeclRe = /^(?:const\s+)?(?:u?int(?:8|16|32|64|128)(?:_t)?|float|double|vector128|void\s*\*|id|int|unsigned\s+int|long|char)\s+\*?[A-Za-z_]\w*(?:\s*\[[^\]]*\])?(?:\s*,\s*\*?[A-Za-z_]\w*(?:\s*\[[^\]]*\])?)*(?:\s*=\s*[^;]+)?\s*;$/;
     const synthAssignRe = /^x\d+\s*=\s*a\d+;$/;
@@ -1309,7 +1401,20 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         kind = 'ctrl';
       } else if (trimmed.startsWith('//') || trimmed.startsWith('/*')) {
         kind = 'comment';
-      } else if (bodyDeclRe.test(trimmed)) {
+      } else if (
+        trimmed.charCodeAt(trimmed.length - 1) === 59
+        && (
+          trimmed.charCodeAt(0) === 99
+          || trimmed.charCodeAt(0) === 117
+          || trimmed.charCodeAt(0) === 105
+          || trimmed.charCodeAt(0) === 102
+          || trimmed.charCodeAt(0) === 100
+          || trimmed.charCodeAt(0) === 118
+          || trimmed.charCodeAt(0) === 108
+          || trimmed.charCodeAt(0) === 115
+        )
+        && bodyDeclRe.test(trimmed)
+      ) {
         kind = 'decl';
       } else {
         kind = 'stmt';
@@ -1351,13 +1456,13 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
               : mappedAddrs.slice();
       }
       const lineRows = lineAddresses
-        .map((a) => addrToRow.get(a))
+        .map(lookupRow)
         .filter((r) => r !== undefined);
       lines.push({
         kind,
         indent,
         text: trimmed,
-        row: firstAddr != null ? (addrToRow.get(firstAddr) ?? null) : null,
+        row: firstAddr != null ? (lookupRow(firstAddr) ?? null) : null,
         addr: firstAddr,
         address: firstAddr,
         source: { addresses: lineAddresses, rows: lineRows },
@@ -1375,7 +1480,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
               ? []
               : mappedAddrs.slice();
         const rows = addresses
-          .map((a) => addrToRow.get(a))
+          .map(lookupRow)
           .filter((r) => r !== undefined);
         sourceMap.push({
           outputStartLine: bodyLineNo,
@@ -1530,6 +1635,7 @@ function resolveX86_64AbiId(abiId, abi) {
     if (v == null || v === '') return null;
     if (typeof v === 'number' && Number.isFinite(v)) return (v >>> 0) === 1 ? 1 : 0;
     const norm = String(v).trim().toLowerCase();
+    if (norm === '') return null;
     if (norm === '1') return 1;
     if (norm === '0') return 0;
     if (
@@ -2012,10 +2118,9 @@ function runChunkedWasmStringScan(ex, bytes, ranges, {
         let attemptChunkBytes = STRING_SCAN_CHUNK_BYTES;
         while (pos < rEnd && (splitUtf16Parity ? (totalSpans + evenCount < limit) : (totalSpans < limit))) {
           let cut = Math.min(rEnd, pos + attemptChunkBytes);
-          let hasCleanBoundary = cut >= rEnd;
           if (cut < rEnd) {
             if (isUtf16Pass) {
-              // Ensure 2-byte alignment relative to rStart AND prefer 4 consecutive NULs so both
+              // Ensure 2-byte alignment relative to rStart AND require 4 consecutive NULs so both
               // parity 0 and parity 1 UTF-16 code units terminate cleanly before cut.
               if (((cut - rStart) & 1) !== 0) cut -= 1;
               let found = -1;
@@ -2028,7 +2133,6 @@ function runChunkedWasmStringScan(ex, bytes, ranges, {
               }
               if (found >= 0) {
                 cut = found;
-                hasCleanBoundary = true;
               } else {
                 return noteFallback('strings', 'chunk_no_boundary');
               }
@@ -2043,7 +2147,6 @@ function runChunkedWasmStringScan(ex, bytes, ranges, {
               }
               if (found >= 0) {
                 cut = found;
-                hasCleanBoundary = true;
               } else {
                 return noteFallback('strings', 'chunk_no_boundary');
               }
@@ -2107,61 +2210,48 @@ function runChunkedWasmStringScan(ex, bytes, ranges, {
             return noteFallback('strings', 'span_cap_reached');
           }
 
-          let nextPos = cut;
-          let emitCount = outCount;
           if (outCount > 0) {
             const src = new Uint32Array(mem, outSpansPtr, outCount * 4);
-            if (!isUtf16Pass && !hasCleanBoundary && cut < rEnd) {
-              const lastBase = (outCount - 1) * 4;
-              const lastRelOff = src[lastBase];
-              const lastLen = src[lastBase + 1];
-              if (lastRelOff + lastLen === chunkLen && lastRelOff > 0) {
-                emitCount = outCount - 1;
-                nextPos = pos + lastRelOff;
+            if (splitUtf16Parity) {
+              let eLen = 0;
+              let oLen = 0;
+              for (let k = 0; k < outCount * 4; k += 4) {
+                if (((src[k] + pos) & 1) === 0) eLen += 1;
+                else oLen += 1;
               }
-            }
-            if (emitCount > 0) {
-              if (splitUtf16Parity) {
-                let eLen = 0;
-                let oLen = 0;
-                for (let k = 0; k < emitCount * 4; k += 4) {
-                  if (((src[k] + pos) & 1) === 0) eLen += 1;
-                  else oLen += 1;
+              const eArr = eLen > 0 ? new Uint32Array(eLen * 4) : null;
+              const oArr = oLen > 0 ? new Uint32Array(oLen * 4) : null;
+              let ei = 0;
+              let oi = 0;
+              for (let k = 0; k < outCount * 4; k += 4) {
+                const absOff = src[k] + pos;
+                if ((absOff & 1) === 0) {
+                  eArr[ei++] = absOff;
+                  eArr[ei++] = src[k + 1];
+                  eArr[ei++] = src[k + 2];
+                  eArr[ei++] = src[k + 3];
+                } else {
+                  oArr[oi++] = absOff;
+                  oArr[oi++] = src[k + 1];
+                  oArr[oi++] = src[k + 2];
+                  oArr[oi++] = src[k + 3];
                 }
-                const eArr = eLen > 0 ? new Uint32Array(eLen * 4) : null;
-                const oArr = oLen > 0 ? new Uint32Array(oLen * 4) : null;
-                let ei = 0;
-                let oi = 0;
-                for (let k = 0; k < emitCount * 4; k += 4) {
-                  const absOff = src[k] + pos;
-                  if ((absOff & 1) === 0) {
-                    eArr[ei++] = absOff;
-                    eArr[ei++] = src[k + 1];
-                    eArr[ei++] = src[k + 2];
-                    eArr[ei++] = src[k + 3];
-                  } else {
-                    oArr[oi++] = absOff;
-                    oArr[oi++] = src[k + 1];
-                    oArr[oi++] = src[k + 2];
-                    oArr[oi++] = src[k + 3];
-                  }
-                }
-                if (eArr) { evenChunks.push(eArr); evenCount += eLen; }
-                if (oArr) { oddChunks.push(oArr); }
-              } else {
-                const flatChunk = new Uint32Array(emitCount * 4);
-                for (let k = 0; k < emitCount * 4; k += 4) {
-                  flatChunk[k] = src[k] + pos;
-                  flatChunk[k + 1] = src[k + 1];
-                  flatChunk[k + 2] = src[k + 2];
-                  flatChunk[k + 3] = src[k + 3];
-                }
-                chunks.push(flatChunk);
-                totalSpans += emitCount;
               }
+              if (eArr) { evenChunks.push(eArr); evenCount += eLen; }
+              if (oArr) { oddChunks.push(oArr); }
+            } else {
+              const flatChunk = new Uint32Array(outCount * 4);
+              for (let k = 0; k < outCount * 4; k += 4) {
+                flatChunk[k] = src[k] + pos;
+                flatChunk[k + 1] = src[k + 1];
+                flatChunk[k + 2] = src[k + 2];
+                flatChunk[k + 3] = src[k + 3];
+              }
+              chunks.push(flatChunk);
+              totalSpans += outCount;
             }
           }
-          pos = nextPos;
+          pos = cut;
           attemptChunkBytes = STRING_SCAN_CHUNK_BYTES;
         }
         if (splitUtf16Parity) {

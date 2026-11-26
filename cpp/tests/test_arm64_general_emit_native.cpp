@@ -5,6 +5,10 @@
 
 #include "decompiler/passes/arm64_general_emit.hpp"
 
+namespace hex::decompiler::passes {
+void set_general_scratch_arena(hex::Arena* scratch);
+}
+
 namespace {
 
 alignas(16) uint8_t g_arena_buf[512u * 1024u];
@@ -627,6 +631,135 @@ void test_wave27_fixes_insns_and_structurizer_v3() {
   }
 }
 
+
+void test_wave29_structurizer_v4_and_wall_cleanup() {
+  static uint8_t buf[1536u * 1024u];
+  static uint8_t scratch_buf[1536u * 1024u];
+  hex::Arena arena;
+  hex::Arena scratch;
+  arena.init_fixed(buf, sizeof(buf));
+  scratch.init_fixed(scratch_buf, sizeof(scratch_buf));
+  const char* txt = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_cnt = 0u;
+
+  // (1) V4-1: Structured-`if` tail-`goto` -> `if (...) { ... } else { ... }` (0 gotos)
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0xB40000C0u,  // 0x00: cbz x0, +24 (0x18 -> L_cold)
+      0x91000400u,  // 0x04: add x0, x0, #1
+      0x91000800u,  // 0x08: L_join: add x0, x0, #2
+      0x91000C00u,  // 0x0c: add x0, x0, #3
+      0xD65F03C0u,  // 0x10: ret
+      0xD65F03C0u,  // 0x14: ret (terminator before L_cold)
+      0xD28000E0u,  // 0x18: L_cold: mov x0, #7
+      0x91001000u,  // 0x1c: add x0, x0, #4
+      0x17FFFFFBu,  // 0x20: b -20 (0x08 -> L_join)
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 9u, 0x100020000ULL, "v4_if_else", 10u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "} else {"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (2) V4-2: Generalized single-ref cold tail-block with inner `if-goto` and internal label
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0xB40000A0u,  // 0x00: cbz x0, +20 (0x14 -> L_cold)
+      0x91000400u,  // 0x04: add x0, x0, #1
+      0x91000800u,  // 0x08: L_join: add x0, x0, #2
+      0xD65F03C0u,  // 0x0c: ret
+      0xD65F03C0u,  // 0x10: ret (terminator before L_cold)
+      0x91000421u,  // 0x14: L_cold: add x1, x1, #1
+      0xB4000041u,  // 0x18: cbz x1, +8 (0x20 -> L_inner)
+      0x91002800u,  // 0x1c: add x0, x0, #10
+      0x91005000u,  // 0x20: L_inner: add x0, x0, #20
+      0x17FFFFF9u,  // 0x24: b -28 (0x08 -> L_join)
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100021000ULL, "v4_cold_inner_if", 16u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "x0 = x0 + 10;"));
+    assert(contains(txt, len, "x0 = x0 + 20;"));
+    assert(contains(txt, len, "} else {"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (3) V4-3: GCC pre-header alt-branch loop rotation (`goto L_hdr; L_alt: ... L_hdr: do { ... if (C) goto L_alt; ... } while (...)`)
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0x14000004u,  // 0x00: b +16 (0x10 -> L_hdr)
+      0x91000442u,  // 0x04: L_alt: add x2, x2, #1
+      0x91000863u,  // 0x08: add x3, x3, #2
+      0xB40000A3u,  // 0x0c: cbz x3, +20 (0x20 -> L_exit)
+      0xF1000400u,  // 0x10: L_hdr: subs x0, x0, #1
+      0xB4FFFF81u,  // 0x14: cbz x1, -16 (0x04 -> L_alt)
+      0x91000484u,  // 0x18: add x4, x4, #1
+      0xB5FFFFA0u,  // 0x1c: cbnz x0, -12 (0x10 -> L_hdr)
+      0xD65F03C0u,  // 0x20: L_exit: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 9u, 0x100022000ULL, "v4_loop_rotate", 14u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "while (1) {"));
+    assert(contains(txt, len, "continue;"));
+    assert(contains(txt, len, "break;"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (4) V4-0: Tight emit_arena + separate work_arena (zero extra emit_arena consumption during structurization)
+  {
+    // text_cap = 131072 + lm_cap = 4096 * sizeof(HexLineMapEntry) = 4096 * 16 = 65536 => ~196608 bytes
+    static uint8_t tight_emit_buf[200u * 1024u];
+    hex::Arena tight_emit;
+    tight_emit.init_fixed(tight_emit_buf, sizeof(tight_emit_buf));
+    scratch.reset();
+    hex::decompiler::passes::set_general_scratch_arena(&scratch);
+    const uint32_t w[] = {
+      0xB4000040u,  // cbz x0, +8
+      0x91000400u,  // add x0, x0, #1
+      0xD65F03C0u,  // ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 3u, 0x100023000ULL, "v4_tight_arena", 14u, 0u,
+               tight_emit, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    hex::decompiler::passes::set_general_scratch_arena(nullptr);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "if (x0 == 0) return x0;"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (5) Part 2: C11 -Wall cleanup: `__attribute__((unused))` on FP bitcast helpers & no FP self-copy `d0 = d0;`
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0x1E260003u,  // fmov w3, s0 (triggers uses_fp_bitcast)
+      0x1E604000u,  // fmov d0, d0 (self-copy: must be suppressed!)
+      0x1E604020u,  // fmov d0, d1 (non-self-copy: must still emit `d0 = d1;`)
+      0xD65F03C0u,  // ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 4u, 0x100024000ULL, "v4_wall_cleanup", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "__attribute__((unused))"));
+    assert(contains(txt, len, "static inline __HEX_UNUSED float __hex_u32_to_f32"));
+    assert(contains(txt, len, "static inline __HEX_UNUSED double __hex_u64_to_f64"));
+    assert(contains(txt, len, "static inline __HEX_UNUSED uint32_t __hex_f32_to_u32"));
+    assert(contains(txt, len, "static inline __HEX_UNUSED uint64_t __hex_f64_to_u64"));
+    assert(!contains(txt, len, "d0 = d0;"));
+    assert(contains(txt, len, "d0 = d1;"));
+  }
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -638,6 +771,7 @@ int main() {
   test_wave25_neon_fmov_1word_and_structurizer();
   test_wave26_structurizer_and_stubs();
   test_wave27_fixes_insns_and_structurizer_v3();
+  test_wave29_structurizer_v4_and_wall_cleanup();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }

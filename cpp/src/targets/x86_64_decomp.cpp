@@ -770,6 +770,216 @@ int32_t find_insn_by_pc(const HexX86Decoded* decoded, uint32_t count, uint64_t t
 }
 
 
+static inline bool is_gen_alpha(char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+static inline bool is_gen_digit(char c) {
+  return c >= '0' && c <= '9';
+}
+
+static bool str_eq(const char* a, const char* b) {
+  if (!a || !b) return false;
+  uint32_t i = 0u;
+  while (a[i] != '\0' && b[i] != '\0') {
+    if (a[i] != b[i]) return false;
+    ++i;
+  }
+  return a[i] == '\0' && b[i] == '\0';
+}
+
+static bool is_reserved_c11_or_reg_name(const char* s) {
+  static const char* const kReserved[] = {
+      // C11 keywords
+      "auto", "break", "case", "char", "const", "continue", "default", "do",
+      "double", "else", "enum", "extern", "float", "for", "goto", "if",
+      "inline", "int", "long", "register", "restrict", "return", "short",
+      "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+      "unsigned", "void", "volatile", "while",
+      "_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic",
+      "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local",
+      // Fixed-width prelude typedefs
+      "uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64",
+      "uint8_t", "uintptr_t",
+      // x86-64 GPR & XMM register names used as local variables
+      "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+      "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+      "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7",
+      "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
+  };
+  for (uint32_t i = 0u; i < static_cast<uint32_t>(sizeof(kReserved) / sizeof(kReserved[0])); ++i) {
+    if (str_eq(s, kReserved[i])) return true;
+  }
+  return false;
+}
+
+static uint32_t format_sub_name(uint64_t addr, char* out_buf, uint32_t out_cap) {
+  if (out_cap < 8u) return 0u;
+  uint32_t sp = 0u;
+  out_buf[sp++] = 's';
+  out_buf[sp++] = 'u';
+  out_buf[sp++] = 'b';
+  out_buf[sp++] = '_';
+  static const char kHi[] = "0123456789ABCDEF";
+  char tmp[16];
+  uint32_t tn = 0u;
+  uint64_t v = addr;
+  do {
+    tmp[tn++] = kHi[v & 0xFu];
+    v >>= 4u;
+  } while (v != 0ULL && tn < 16u);
+  while (tn > 0u && sp + 1u < out_cap) {
+    out_buf[sp++] = tmp[--tn];
+  }
+  out_buf[sp] = '\0';
+  return sp;
+}
+
+static uint32_t sanitize_func_name(
+    const char* raw,
+    uint32_t raw_len,
+    uint64_t base_addr,
+    char* out_buf,
+    uint32_t out_cap) {
+  if (out_cap < 16u) return 0u;
+  if (raw == nullptr || raw_len == 0u) {
+    return format_sub_name(base_addr, out_buf, out_cap);
+  }
+  uint32_t out_len = 0u;
+  if (is_gen_digit(raw[0])) {
+    out_buf[out_len++] = 'f';
+    out_buf[out_len++] = 'n';
+    out_buf[out_len++] = '_';
+  }
+  for (uint32_t i = 0u; i < raw_len && out_len + 1u < out_cap; ++i) {
+    const char c = raw[i];
+    if (is_gen_alpha(c) || is_gen_digit(c) || c == '_') {
+      out_buf[out_len++] = c;
+    } else {
+      out_buf[out_len++] = '_';
+    }
+  }
+  if (out_len == 0u) {
+    return format_sub_name(base_addr, out_buf, out_cap);
+  }
+  out_buf[out_len] = '\0';
+  if (is_reserved_c11_or_reg_name(out_buf)) {
+    const uint32_t max_body = (out_cap > 4u) ? (out_cap - 4u) : 0u;
+    const uint32_t keep = (out_len < max_body) ? out_len : max_body;
+    for (uint32_t k = keep; k > 0u; --k) {
+      out_buf[k + 2u] = out_buf[k - 1u];
+    }
+    out_buf[0] = 'f';
+    out_buf[1] = 'n';
+    out_buf[2] = '_';
+    out_len = keep + 3u;
+    out_buf[out_len] = '\0';
+  }
+  return out_len;
+}
+
+// Validate that strict C output has no undeclared `L_bbN` labels and no out-of-scope `vN` uses.
+static bool validate_strict_c_output(const char* text, uint32_t len) {
+  if (!text || len == 0u) return false;
+
+  // 1. Check every `goto L_bb<N>;` has a matching `L_bb<N>:` label definition.
+  for (uint32_t i = 0u; i + 10u < len; ++i) {
+    if (text[i] == 'g' && text[i + 1u] == 'o' && text[i + 2u] == 't' &&
+        text[i + 3u] == 'o' && text[i + 4u] == ' ' && text[i + 5u] == 'L' &&
+        text[i + 6u] == '_' && text[i + 7u] == 'b' && text[i + 8u] == 'b' &&
+        is_gen_digit(text[i + 9u])) {
+      uint32_t j = i + 9u;
+      while (j < len && is_gen_digit(text[j])) ++j;
+      if (j < len && text[j] == ';') {
+        const uint32_t lbl_start = i + 5u;
+        const uint32_t lbl_len = j - lbl_start;
+        bool found_def = false;
+        for (uint32_t k = 0u; k + lbl_len < len; ++k) {
+          if (k > 0u && text[k - 1u] != '\n' && text[k - 1u] != ' ') continue;
+          bool match = true;
+          for (uint32_t m = 0u; m < lbl_len; ++m) {
+            if (text[k + m] != text[lbl_start + m]) {
+              match = false;
+              break;
+            }
+          }
+          if (match && text[k + lbl_len] == ':') {
+            found_def = true;
+            break;
+          }
+        }
+        if (!found_def) return false;
+      }
+    }
+  }
+
+  // 2. Check every `v<N>` inside the function body is declared in an enclosing brace scope.
+  uint32_t body_pos = 0u;
+  while (body_pos < len && text[body_pos] != '{') ++body_pos;
+  if (body_pos >= len) return false;
+
+  constexpr uint32_t kTrackVars = 512u;
+  uint8_t var_depth[kTrackVars];
+  hex::mem_set(var_depth, 0, sizeof(var_depth));
+  uint32_t depth = 1u;
+
+  auto is_ident_char = [](char c) -> bool {
+    return is_gen_alpha(c) || is_gen_digit(c) || c == '_';
+  };
+  auto is_type_tok = [](const char* s, uint32_t n) -> bool {
+    static const char* const kTypes[] = {
+        "uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64"};
+    for (uint32_t t = 0u; t < 8u; ++t) {
+      const char* tn = kTypes[t];
+      uint32_t m = 0u;
+      while (tn[m] != '\0' && m < n && tn[m] == s[m]) ++m;
+      if (tn[m] == '\0' && m == n) return true;
+    }
+    return false;
+  };
+
+  for (uint32_t i = body_pos + 1u; i < len; ++i) {
+    const char c = text[i];
+    if (c == '{') {
+      ++depth;
+      continue;
+    }
+    if (c == '}') {
+      for (uint32_t k = 0u; k < kTrackVars; ++k) {
+        if (var_depth[k] == depth) var_depth[k] = 0u;
+      }
+      if (depth == 0u) return false;
+      --depth;
+      continue;
+    }
+    if (c == 'v' && i + 1u < len && is_gen_digit(text[i + 1u]) &&
+        (i == 0u || !is_ident_char(text[i - 1u]))) {
+      uint32_t j = i + 1u;
+      uint32_t vid = 0u;
+      while (j < len && is_gen_digit(text[j])) {
+        if (vid < kTrackVars) vid = vid * 10u + static_cast<uint32_t>(text[j] - '0');
+        ++j;
+      }
+      if (j < len && is_ident_char(text[j])) continue;
+      if (vid < kTrackVars) {
+        // Check if preceded by a fixed-width type token on the same line (declaration).
+        uint32_t p = i;
+        while (p > body_pos && text[p - 1u] == ' ') --p;
+        uint32_t tok_end = p;
+        while (p > body_pos && is_ident_char(text[p - 1u])) --p;
+        const bool is_decl = (tok_end > p) && is_type_tok(text + p, tok_end - p);
+        if (is_decl) {
+          var_depth[vid] = static_cast<uint8_t>(depth < 255u ? depth : 255u);
+        } else if (var_depth[vid] == 0u) {
+          return false;
+        }
+      }
+      i = j - 1u;
+    }
+  }
+  return depth == 0u;
+}
+
 // ============================================================================
 // Strict/Structured Fast-Path Emitter (small clean x86-64 functions)
 // ============================================================================
@@ -948,6 +1158,12 @@ HexStatus try_emit_x86_64_strict(
 
   // For multi-block functions (branches/loops), pre-allocate persistent variable IDs
   // for registers written in multiple blocks so cross-block/loop updates stay coherent.
+  bool reg_written_in_bb0[16];
+  uint16_t reg_max_width[16];
+  for (uint32_t r = 0u; r < 16u; ++r) {
+    reg_written_in_bb0[r] = false;
+    reg_max_width[r] = 0u;
+  }
   if (multi_block) {
     uint32_t reg_write_blocks[16];
     uint32_t reg_last_block[16];
@@ -979,9 +1195,13 @@ HexStatus try_emit_x86_64_strict(
             dst = d.rm;
           }
         }
-        if (dst < 16u && reg_last_block[dst] != b) {
-          reg_last_block[dst] = b;
-          ++reg_write_blocks[dst];
+        if (dst < 16u) {
+          if (b == 0u) reg_written_in_bb0[dst] = true;
+          if (d.op_size > reg_max_width[dst]) reg_max_width[dst] = d.op_size;
+          if (reg_last_block[dst] != b) {
+            reg_last_block[dst] = b;
+            ++reg_write_blocks[dst];
+          }
         }
       }
     }
@@ -996,6 +1216,25 @@ HexStatus try_emit_x86_64_strict(
   for (uint32_t b = 0u; b < num_blocks; ++b) {
     block_inst_off[b] = static_cast<uint32_t>(builder.insts.size());
     builder.has_cmp = false;
+
+    // Pre-declare multi-block fixed vars not written in entry bb0 at function scope
+    // so C11 branch scopes (if/else) never leave them undeclared in sibling blocks.
+    if (multi_block && b == 0u) {
+      for (uint32_t r = 0u; r < 16u; ++r) {
+        if (builder.reg_fixed_var[r] != CEMIT_IR_NO_VAL && !reg_written_in_bb0[r]) {
+          const uint16_t init_w = (reg_max_width[r] == 8u || reg_max_width[r] == 16u ||
+                                   reg_max_width[r] == 32u || reg_max_width[r] == 64u)
+                                      ? reg_max_width[r]
+                                      : 64u;
+          const uint32_t zc = builder.emit_const(init_w, 0u, base_addr);
+          if (builder.oom) return HEX_ERR_OOM;
+          builder.emit_inst_dst(
+              CEMIT_IR_COPY, 0u, init_w, builder.reg_fixed_var[r],
+              zc, CEMIT_IR_NO_VAL, 0u, base_addr);
+          if (builder.oom) return HEX_ERR_OOM;
+        }
+      }
+    }
 
     const uint32_t bs = block_start[b];
     const uint32_t be = block_end[b];
@@ -1066,8 +1305,15 @@ HexStatus try_emit_x86_64_strict(
     return static_cast<HexStatus>(emit_rc);
   }
 
-  g_x86_last_text = hex_decomp_get_text_ptr();
-  g_x86_last_text_len = hex_decomp_get_text_len();
+  const char* emitted_text = hex_decomp_get_text_ptr();
+  const uint32_t emitted_len = hex_decomp_get_text_len();
+  if (!validate_strict_c_output(emitted_text, emitted_len)) {
+    clear_x86_last_output();
+    return HEX_ERR_UNSUPPORTED;
+  }
+
+  g_x86_last_text = emitted_text;
+  g_x86_last_text_len = emitted_len;
   g_x86_last_linemap = hex_decomp_get_linemap_ptr();
   g_x86_last_linemap_count = hex_decomp_get_linemap_count();
   return HEX_OK;
@@ -1199,62 +1445,8 @@ struct GeneralInsn {
   uint8_t raw_byte;
   uint8_t is_xchg;
   uint8_t is_leave;
+  uint8_t is_f3_movq;
 };
-
-static inline bool is_gen_alpha(char c) {
-  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-}
-
-static inline bool is_gen_digit(char c) {
-  return c >= '0' && c <= '9';
-}
-
-static uint32_t sanitize_func_name(
-    const char* raw,
-    uint32_t raw_len,
-    uint64_t base_addr,
-    char* out_buf,
-    uint32_t out_cap) {
-  if (out_cap < 16u) return 0u;
-  if (raw == nullptr || raw_len == 0u) {
-    GenTextBuf tmp{out_buf, out_cap, 0u, 1u, false, nullptr, 0u, 0u};
-    tmp.put_str("sub_");
-    tmp.put_u64_hex(base_addr, true);
-    return tmp.len;
-  }
-  uint32_t out_len = 0u;
-  if (is_gen_digit(raw[0])) {
-    out_buf[out_len++] = 'f';
-    out_buf[out_len++] = 'n';
-    out_buf[out_len++] = '_';
-  }
-  for (uint32_t i = 0u; i < raw_len && out_len + 1u < out_cap; ++i) {
-    const char c = raw[i];
-    if (is_gen_alpha(c) || is_gen_digit(c) || c == '_') {
-      out_buf[out_len++] = c;
-    } else {
-      out_buf[out_len++] = '_';
-    }
-  }
-  if (out_len == 0u) {
-    GenTextBuf tmp{out_buf, out_cap, 0u, 1u, false, nullptr, 0u, 0u};
-    tmp.put_str("sub_");
-    tmp.put_u64_hex(base_addr, true);
-    return tmp.len;
-  }
-  out_buf[out_len] = '\0';
-  return out_len;
-}
-
-static bool str_eq(const char* a, const char* b) {
-  if (!a || !b) return false;
-  uint32_t i = 0u;
-  while (a[i] != '\0' && b[i] != '\0') {
-    if (a[i] != b[i]) return false;
-    ++i;
-  }
-  return a[i] == '\0' && b[i] == '\0';
-}
 
 static int32_t find_gen_insn_by_pc(const GeneralInsn* insns, uint32_t count, uint64_t target_pc) {
   uint32_t lo = 0u;
@@ -1269,13 +1461,22 @@ static int32_t find_gen_insn_by_pc(const GeneralInsn* insns, uint32_t count, uin
   return -1;
 }
 
-static void add_unique_u64(uint64_t* arr, uint32_t* count, uint32_t cap, uint64_t val) {
+static bool add_unique_u64(uint64_t* arr, uint32_t* count, uint32_t cap, uint64_t val) {
   for (uint32_t i = 0u; i < *count; ++i) {
-    if (arr[i] == val) return;
+    if (arr[i] == val) return true;
   }
   if (*count < cap) {
     arr[(*count)++] = val;
+    return true;
   }
+  return false;
+}
+
+static bool contains_u64(const uint64_t* arr, uint32_t count, uint64_t val) {
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (arr[i] == val) return true;
+  }
+  return false;
 }
 
 static const char* width_to_uint_type(uint8_t op_size) {
@@ -1355,10 +1556,17 @@ static void emit_cc_expr(GenTextBuf& tb, uint8_t cc) {
   }
 }
 
-static void emit_mem_addr_expr(GenTextBuf& tb, const HexX86Decoded& d) {
+static void emit_mem_addr_expr(GenTextBuf& tb, const HexX86Decoded& d,
+                               const uint64_t* globals, uint32_t global_count) {
   if ((d.flags & HEX_X86_FLAG_RIP_REL) != 0u) {
-    tb.put_str("(uint64)(uintptr_t)&global_");
-    tb.put_u64_hex(d.target, true);
+    if (contains_u64(globals, global_count, d.target)) {
+      tb.put_str("(uint64)(uintptr_t)&global_");
+      tb.put_u64_hex(d.target, true);
+    } else {
+      tb.put_str("(uint64)0x");
+      tb.put_u64_hex(d.target, true);
+      tb.put_str("ULL");
+    }
     return;
   }
   bool has_term = false;
@@ -1397,15 +1605,17 @@ static void emit_mem_addr_expr(GenTextBuf& tb, const HexX86Decoded& d) {
   }
 }
 
-static void emit_mem_deref(GenTextBuf& tb, const HexX86Decoded& d, uint8_t op_size) {
+static void emit_mem_deref(GenTextBuf& tb, const HexX86Decoded& d, uint8_t op_size,
+                           const uint64_t* globals, uint32_t global_count) {
   tb.put_str("*(");
   tb.put_str(width_to_uint_type(op_size));
   tb.put_str("*)(uintptr_t)(");
-  emit_mem_addr_expr(tb, d);
+  emit_mem_addr_expr(tb, d, globals, global_count);
   tb.put_char(')');
 }
 
-static void emit_rm_read(GenTextBuf& tb, const HexX86Decoded& d, uint8_t op_size) {
+static void emit_rm_read(GenTextBuf& tb, const HexX86Decoded& d, uint8_t op_size,
+                         const uint64_t* globals, uint32_t global_count) {
   const uint8_t mod = static_cast<uint8_t>((d.modrm >> 6u) & 3u);
   if (mod == 3u) {
     if (op_size == 8u) {
@@ -1421,7 +1631,7 @@ static void emit_rm_read(GenTextBuf& tb, const HexX86Decoded& d, uint8_t op_size
       tb.put_gpr(d.rm);
     }
   } else {
-    emit_mem_deref(tb, d, op_size);
+    emit_mem_deref(tb, d, op_size, globals, global_count);
   }
 }
 
@@ -1569,13 +1779,18 @@ HexStatus try_emit_x86_64_general(
   uint16_t* label_refs = hex::arena_alloc_zeroed<uint16_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* sets_live_flags = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* if_open = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* else_mid = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* if_close = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* do_open = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint8_t* do_close = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* skip_insn = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* jcc_inverted = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
+  uint8_t* loop_ctrl = hex::arena_alloc_zeroed<uint8_t>(work_arena, kMaxGeneralX86Insns);
   uint64_t* callees = work_arena.alloc<uint64_t>(kMaxGeneralCallees);
   uint64_t* globals = work_arena.alloc<uint64_t>(kMaxGeneralGlobals);
   if (!insns || !target_idx || !label_refs || !sets_live_flags ||
-      !if_open || !if_close || !do_open || !do_close || !callees || !globals) {
+      !if_open || !else_mid || !if_close || !do_open || !do_close ||
+      !skip_insn || !jcc_inverted || !loop_ctrl || !callees || !globals) {
     return HEX_ERR_OOM;
   }
 
@@ -1631,6 +1846,23 @@ HexStatus try_emit_x86_64_general(
     if (st == HEX_OK && gi.d.valid != 0u && gi.d.length > 0u &&
         static_cast<uint32_t>(gi.d.length) <= (byte_len - off) &&
         (gi.d.flags & (HEX_X86_FLAG_TRUNCATED | HEX_X86_FLAG_INVALID)) == 0u) {
+      if (gi.d.opcode == 0x0fu && gi.d.opcode2 == 0x7eu) {
+        uint8_t last_rep = 0u;
+        for (uint32_t p = 0u; p < static_cast<uint32_t>(gi.d.length); ++p) {
+          const uint8_t pb = bytes[off + p];
+          if (pb == 0xf2u || pb == 0xf3u) {
+            last_rep = pb;
+            continue;
+          }
+          if (pb == 0x66u || pb == 0xf0u || pb == 0x67u ||
+              pb == 0x26u || pb == 0x2eu || pb == 0x36u || pb == 0x3eu ||
+              pb == 0x64u || pb == 0x65u) {
+            continue;
+          }
+          break;
+        }
+        gi.is_f3_movq = (last_rep == 0xf3u) ? 1u : 0u;
+      }
       off += static_cast<uint32_t>(gi.d.length);
       ++insn_count;
       continue;
@@ -1773,8 +2005,7 @@ HexStatus try_emit_x86_64_general(
       if (d.opcode2 == 0x6eu) {
         if (mod == 3u) mark_reg_read(d.rm, abi_id, gpr_used, gpr_written, param_used);
       } else if (d.opcode2 == 0x7eu) {
-        const bool is_f3_movq = ((d.flags & HEX_X86_FLAG_HAS_66) == 0u);
-        if (is_f3_movq) {
+        if (gi.is_f3_movq != 0u) {
           if (mod == 3u && d.rm < 16u) xmm_used |= (1u << d.rm);
         } else {
           if (mod == 3u) mark_reg_write(d.rm, gpr_used, gpr_written);
@@ -1943,24 +2174,143 @@ HexStatus try_emit_x86_64_general(
     }
   }
 
-  // Simple structuring pass:
-  // 1) Short forward Jcc skip -> `if (!cond) { ... }`
-  // 2) Simple backward Jcc loop -> `do { ... } while (cond);`
+  // Goto-reduction & structuring pass:
+  // 1) Fallthrough goto deletion: `goto L_next;` immediately before `L_next:`
   for (uint32_t i = 0u; i < insn_count; ++i) {
     const GeneralInsn& gi = insns[i];
-    if (gi.is_raw || gi.d.kind != HEX_X86_KIND_JCC) continue;
+    if (!gi.is_raw && gi.d.kind == HEX_X86_KIND_JMP &&
+        target_idx[i] == static_cast<int32_t>(i + 1u)) {
+      skip_insn[i] = 1u;
+      if (label_refs[i + 1u] > 0u) --label_refs[i + 1u];
+    }
+  }
+
+  // 2) Inverted guard folding: `if (C) goto L_body; goto L_exit; L_body:` -> `if (!(C)) goto L_exit;`
+  for (uint32_t i = 0u; i + 2u < insn_count; ++i) {
+    if (skip_insn[i] || insns[i].is_raw || insns[i].d.kind != HEX_X86_KIND_JCC) continue;
+    if (target_idx[i] != static_cast<int32_t>(i + 2u)) continue;
+    if (skip_insn[i + 1u] || insns[i + 1u].is_raw || insns[i + 1u].d.kind != HEX_X86_KIND_JMP) continue;
+    if (label_refs[i + 1u] != 0u || target_idx[i + 1u] < 0) continue;
+    const int32_t exit_t = target_idx[i + 1u];
+    if (exit_t == static_cast<int32_t>(i + 2u)) continue;
+    if (label_refs[i + 2u] > 0u) --label_refs[i + 2u];
+    target_idx[i] = exit_t;
+    jcc_inverted[i] ^= 1u;
+    skip_insn[i + 1u] = 1u;
+  }
+
+  // 3) Backward Jcc loops -> `do { ... } while (cond);` with loop `break;` & `continue;`
+  for (uint32_t i = 0u; i < insn_count; ++i) {
+    const GeneralInsn& gi = insns[i];
+    if (skip_insn[i] || gi.is_raw || gi.d.kind != HEX_X86_KIND_JCC) continue;
+    const int32_t tidx = target_idx[i];
+    if (tidx < 0) continue;
+    const uint32_t t = static_cast<uint32_t>(tidx);
+    if (t < i && (i - t) <= 32u && label_refs[t] == 1u &&
+        do_open[t] == 0u && do_close[i] == 0u) {
+      bool ok = true;
+      uint32_t internal_to_latch = 0u;
+      for (uint32_t k = t; k <= i; ++k) {
+        if (if_open[k] || else_mid[k] || if_close[k] || do_open[k] || do_close[k]) {
+          ok = false;
+          break;
+        }
+        if (k < i && !skip_insn[k] && !insns[k].is_raw &&
+            (insns[k].d.kind == HEX_X86_KIND_JMP || insns[k].d.kind == HEX_X86_KIND_JCC) &&
+            target_idx[k] == static_cast<int32_t>(i)) {
+          ++internal_to_latch;
+        }
+      }
+      if (internal_to_latch != label_refs[i]) ok = false;
+      if (ok) {
+        do_open[t] = 1u;
+        do_close[i] = 1u;
+        label_refs[t] = 0u;
+        for (uint32_t k = t; k < i; ++k) {
+          if (skip_insn[k] || insns[k].is_raw) continue;
+          if (insns[k].d.kind != HEX_X86_KIND_JMP && insns[k].d.kind != HEX_X86_KIND_JCC) continue;
+          if (i + 1u < insn_count && target_idx[k] == static_cast<int32_t>(i + 1u)) {
+            loop_ctrl[k] = 1u;  // break;
+            if (label_refs[i + 1u] > 0u) --label_refs[i + 1u];
+          } else if (target_idx[k] == static_cast<int32_t>(i)) {
+            loop_ctrl[k] = 2u;  // continue;
+            if (label_refs[i] > 0u) --label_refs[i];
+          }
+        }
+      }
+    }
+  }
+
+  // 4) Forward `if-else` structuring:
+  //    `if (C) goto L_else; <then> goto L_end; L_else: <else> L_end:`
+  //    -> `if (!(C)) { <then> } else { <else> }`
+  for (uint32_t i = 0u; i < insn_count; ++i) {
+    const GeneralInsn& gi = insns[i];
+    if (skip_insn[i] || gi.is_raw || gi.d.kind != HEX_X86_KIND_JCC ||
+        loop_ctrl[i] != 0u || if_open[i] || do_close[i]) {
+      continue;
+    }
+    const int32_t t_else_i = target_idx[i];
+    if (t_else_i <= static_cast<int32_t>(i + 1u)) continue;
+    const uint32_t t_else = static_cast<uint32_t>(t_else_i);
+    if (t_else >= insn_count || (t_else - i) > 24u || label_refs[t_else] != 1u) continue;
+    const uint32_t j_end = t_else - 1u;
+    if (j_end <= i || skip_insn[j_end] || insns[j_end].is_raw ||
+        insns[j_end].d.kind != HEX_X86_KIND_JMP || loop_ctrl[j_end] != 0u) {
+      continue;
+    }
+    const int32_t t_end_i = target_idx[j_end];
+    if (t_end_i <= static_cast<int32_t>(t_else)) continue;
+    const uint32_t t_end = static_cast<uint32_t>(t_end_i);
+    if (t_end >= insn_count || (t_end - t_else) > 24u || label_refs[t_end] == 0u) continue;
+    if (else_mid[t_else] || if_close[t_end] || else_mid[t_end] || do_open[t_end] || do_close[j_end]) {
+      continue;
+    }
+    bool ok = true;
+    for (uint32_t k = i + 1u; k < t_end; ++k) {
+      if (if_open[k] || else_mid[k] || if_close[k] || do_open[k] || do_close[k]) {
+        ok = false;
+        break;
+      }
+      if (k != t_else && label_refs[k] > 0u) {
+        ok = false;
+        break;
+      }
+      if (k != j_end && !skip_insn[k] && !insns[k].is_raw &&
+          (insns[k].d.kind == HEX_X86_KIND_JCC || insns[k].d.kind == HEX_X86_KIND_JMP)) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) {
+      if_open[i] = 1u;
+      skip_insn[j_end] = 1u;
+      else_mid[t_else] = 1u;
+      if_close[t_end] = 1u;
+      label_refs[t_else] = 0u;
+      --label_refs[t_end];
+    }
+  }
+
+  // 5) Short forward Jcc skip -> `if (!cond) { ... }`
+  for (uint32_t i = 0u; i < insn_count; ++i) {
+    const GeneralInsn& gi = insns[i];
+    if (skip_insn[i] || gi.is_raw || gi.d.kind != HEX_X86_KIND_JCC ||
+        loop_ctrl[i] != 0u || if_open[i] || do_close[i]) {
+      continue;
+    }
     const int32_t tidx = target_idx[i];
     if (tidx < 0) continue;
     const uint32_t t = static_cast<uint32_t>(tidx);
     if (t > i + 1u && t <= i + 6u && label_refs[t] == 1u &&
-        if_open[i] == 0u && if_close[t] == 0u && do_open[t] == 0u) {
+        if_close[t] == 0u && else_mid[t] == 0u && do_open[t] == 0u) {
       bool ok = true;
       for (uint32_t k = i + 1u; k < t; ++k) {
-        if (label_refs[k] > 0u || if_open[k] || if_close[k] || do_open[k] || do_close[k]) {
+        if (label_refs[k] > 0u || if_open[k] || else_mid[k] || if_close[k] || do_open[k] || do_close[k]) {
           ok = false;
           break;
         }
-        if (!insns[k].is_raw &&
+        if (!skip_insn[k] && !insns[k].is_raw &&
             (insns[k].d.kind == HEX_X86_KIND_JCC || insns[k].d.kind == HEX_X86_KIND_JMP)) {
           ok = false;
           break;
@@ -1969,20 +2319,6 @@ HexStatus try_emit_x86_64_general(
       if (ok) {
         if_open[i] = 1u;
         if_close[t] = 1u;
-        label_refs[t] = 0u;
-      }
-    } else if (t < i && (i - t) <= 32u && label_refs[t] == 1u && label_refs[i] == 0u &&
-               do_open[t] == 0u && do_close[i] == 0u) {
-      bool ok = true;
-      for (uint32_t k = t; k <= i; ++k) {
-        if (if_open[k] || if_close[k] || do_open[k] || do_close[k]) {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) {
-        do_open[t] = 1u;
-        do_close[i] = 1u;
         label_refs[t] = 0u;
       }
     }
@@ -2033,6 +2369,10 @@ HexStatus try_emit_x86_64_general(
     tb.put_str(" = 0;\n");
   }
 
+  char self_sub[32];
+  format_sub_name(base_addr, self_sub, sizeof(self_sub));
+  const bool is_self_sub = str_eq(func_name, self_sub);
+
   // External callee prototypes.
   if (callee_count > 0u) {
     tb.put_str(
@@ -2043,12 +2383,8 @@ HexStatus try_emit_x86_64_general(
         "#define __HEX_ANY_ARGS\n"
         "#endif\n"
         "#endif\n");
-    char self_sub[32];
-    GenTextBuf self_tb{self_sub, sizeof(self_sub), 0u, 1u, false, nullptr, 0u, 0u};
-    self_tb.put_str("sub_");
-    self_tb.put_u64_hex(base_addr, true);
     for (uint32_t c = 0u; c < callee_count; ++c) {
-      if (callees[c] == base_addr && str_eq(func_name, self_sub)) continue;
+      if (callees[c] == base_addr && is_self_sub) continue;
       tb.put_str("uint64 sub_");
       tb.put_u64_hex(callees[c], true);
       tb.put_str("(__HEX_ANY_ARGS);\n");
@@ -2120,17 +2456,6 @@ HexStatus try_emit_x86_64_general(
   uint32_t open_ifs = 0u;
   uint32_t open_dos = 0u;
   bool last_was_return = false;
-  char self_sub[32];
-  {
-    uint32_t sp = 0u;
-    self_sub[sp++] = 's'; self_sub[sp++] = 'u'; self_sub[sp++] = 'b'; self_sub[sp++] = '_';
-    static const char kH[] = "0123456789ABCDEF";
-    char tmp[16]; uint32_t tn = 0u; uint64_t v = base_addr;
-    if (v == 0ULL) tmp[tn++] = '0';
-    else { while (v != 0ULL && tn < 16u) { tmp[tn++] = kH[v & 0xFu]; v >>= 4u; } }
-    while (tn > 0u) self_sub[sp++] = tmp[--tn];
-    self_sub[sp] = '\0';
-  }
   bool truncated_body = false;
   uint32_t truncated_at = insn_count;
 
@@ -2139,6 +2464,12 @@ HexStatus try_emit_x86_64_general(
       truncated_body = true;
       truncated_at = i;
       break;
+    }
+
+    if (else_mid[i] && open_ifs > 0u) {
+      tb.put_indent(indent - 1u);
+      tb.put_str("} else {\n");
+      last_was_return = false;
     }
 
     if (if_close[i] && open_ifs > 0u) {
@@ -2162,6 +2493,15 @@ HexStatus try_emit_x86_64_general(
       ++open_dos;
       ++indent;
       last_was_return = false;
+    }
+
+    if (skip_insn[i]) {
+      if (label_refs[i] > 0u) {
+        tb.put_indent(indent);
+        tb.put_str("(void)0;\n");
+        last_was_return = false;
+      }
+      continue;
     }
 
     const GeneralInsn& gi = insns[i];
@@ -2232,7 +2572,7 @@ HexStatus try_emit_x86_64_general(
       if ((d.flags & HEX_X86_FLAG_HAS_IMM) != 0u) {
         tb.put_imm_u64(static_cast<uint64_t>(d.imm));
       } else if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
-        emit_rm_read(tb, d, 64u);
+        emit_rm_read(tb, d, 64u, globals, global_count);
       } else if (d.rm < 16u) {
         tb.put_gpr(d.rm);
       } else {
@@ -2259,19 +2599,28 @@ HexStatus try_emit_x86_64_general(
     if (d.kind == HEX_X86_KIND_CALL) {
       tb.put_indent(indent);
       if ((d.flags & HEX_X86_FLAG_HAS_TARGET) != 0u && d.opcode == 0xe8u) {
-        tb.put_str("rax = sub_");
-        tb.put_u64_hex(d.target, true);
-        tb.put_char('(');
-        if (d.target == base_addr && str_eq(func_name, self_sub)) {
-          emit_abi_exact_args(tb, abi_id, num_params);
+        const bool is_self_call = (d.target == base_addr && is_self_sub);
+        if (is_self_call || contains_u64(callees, callee_count, d.target)) {
+          tb.put_str("rax = sub_");
+          tb.put_u64_hex(d.target, true);
+          tb.put_char('(');
+          if (is_self_call) {
+            emit_abi_exact_args(tb, abi_id, num_params);
+          } else {
+            emit_abi_call_args(tb, abi_id, true, gpr_used);
+          }
+          tb.put_str(");\n");
         } else {
-          emit_abi_call_args(tb, abi_id, true, gpr_used);
+          tb.put_str("rax = ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x");
+          tb.put_u64_hex(d.target, true);
+          tb.put_str("ULL)(");
+          emit_abi_call_args(tb, abi_id, false, gpr_used);
+          tb.put_str(");\n");
         }
-        tb.put_str(");\n");
       } else {
         tb.put_str("rax = ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)(");
         if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
-          emit_rm_read(tb, d, 64u);
+          emit_rm_read(tb, d, 64u, globals, global_count);
         } else {
           tb.put_str("0");
         }
@@ -2287,27 +2636,42 @@ HexStatus try_emit_x86_64_general(
     if (d.kind == HEX_X86_KIND_JMP) {
       tb.put_indent(indent);
       if ((d.flags & HEX_X86_FLAG_HAS_TARGET) != 0u && d.opcode != 0xffu) {
-        if (target_idx[i] >= 0) {
+        if (loop_ctrl[i] == 1u) {
+          tb.put_str("break;\n");
+          last_was_return = false;
+        } else if (loop_ctrl[i] == 2u) {
+          tb.put_str("continue;\n");
+          last_was_return = false;
+        } else if (target_idx[i] >= 0) {
           tb.put_str("goto loc_");
-          tb.put_u64_hex(d.target, true);
+          tb.put_u64_hex(insns[target_idx[i]].d.pc, true);
           tb.put_str(";\n");
           last_was_return = false;
         } else {
-          tb.put_str("return sub_");
-          tb.put_u64_hex(d.target, true);
-          tb.put_char('(');
-          if (d.target == base_addr && str_eq(func_name, self_sub)) {
-            emit_abi_exact_args(tb, abi_id, num_params);
+          const bool is_self_call = (d.target == base_addr && is_self_sub);
+          if (is_self_call || contains_u64(callees, callee_count, d.target)) {
+            tb.put_str("return sub_");
+            tb.put_u64_hex(d.target, true);
+            tb.put_char('(');
+            if (is_self_call) {
+              emit_abi_exact_args(tb, abi_id, num_params);
+            } else {
+              emit_abi_call_args(tb, abi_id, true, gpr_used);
+            }
+            tb.put_str(");\n");
           } else {
-            emit_abi_call_args(tb, abi_id, true, gpr_used);
+            tb.put_str("return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x");
+            tb.put_u64_hex(d.target, true);
+            tb.put_str("ULL)(");
+            emit_abi_call_args(tb, abi_id, false, gpr_used);
+            tb.put_str(");\n");
           }
-          tb.put_str(");\n");
           last_was_return = (open_ifs == 0u && open_dos == 0u);
         }
       } else {
         tb.put_str("return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)(");
         if ((d.flags & HEX_X86_FLAG_HAS_MODRM) != 0u) {
-          emit_rm_read(tb, d, 64u);
+          emit_rm_read(tb, d, 64u, globals, global_count);
         } else {
           tb.put_str("0");
         }
@@ -2321,8 +2685,9 @@ HexStatus try_emit_x86_64_general(
 
     // JCC
     if (d.kind == HEX_X86_KIND_JCC) {
-      const uint8_t cc = (d.opcode == 0x0fu) ? static_cast<uint8_t>(d.opcode2 & 0x0fu)
-                                             : static_cast<uint8_t>(d.opcode & 0x0fu);
+      const uint8_t raw_cc = (d.opcode == 0x0fu) ? static_cast<uint8_t>(d.opcode2 & 0x0fu)
+                                                 : static_cast<uint8_t>(d.opcode & 0x0fu);
+      const uint8_t cc = jcc_inverted[i] ? static_cast<uint8_t>(raw_cc ^ 1u) : raw_cc;
       if (if_open[i]) {
         tb.put_indent(indent);
         tb.put_str("if (");
@@ -2337,26 +2702,45 @@ HexStatus try_emit_x86_64_general(
         tb.put_str("} while (");
         emit_cc_expr(tb, cc);
         tb.put_str(");\n");
+      } else if (loop_ctrl[i] == 1u) {
+        tb.put_indent(indent);
+        tb.put_str("if (");
+        emit_cc_expr(tb, cc);
+        tb.put_str(") break;\n");
+      } else if (loop_ctrl[i] == 2u) {
+        tb.put_indent(indent);
+        tb.put_str("if (");
+        emit_cc_expr(tb, cc);
+        tb.put_str(") continue;\n");
       } else if (target_idx[i] >= 0) {
         tb.put_indent(indent);
         tb.put_str("if (");
         emit_cc_expr(tb, cc);
         tb.put_str(") goto loc_");
-        tb.put_u64_hex(d.target, true);
+        tb.put_u64_hex(insns[target_idx[i]].d.pc, true);
         tb.put_str(";\n");
       } else {
+        const bool is_self_call = (d.target == base_addr && is_self_sub);
         tb.put_indent(indent);
         tb.put_str("if (");
         emit_cc_expr(tb, cc);
-        tb.put_str(") return sub_");
-        tb.put_u64_hex(d.target, true);
-        tb.put_char('(');
-        if (d.target == base_addr && str_eq(func_name, self_sub)) {
-          emit_abi_exact_args(tb, abi_id, num_params);
+        if (is_self_call || contains_u64(callees, callee_count, d.target)) {
+          tb.put_str(") return sub_");
+          tb.put_u64_hex(d.target, true);
+          tb.put_char('(');
+          if (is_self_call) {
+            emit_abi_exact_args(tb, abi_id, num_params);
+          } else {
+            emit_abi_call_args(tb, abi_id, true, gpr_used);
+          }
+          tb.put_str(");\n");
         } else {
-          emit_abi_call_args(tb, abi_id, true, gpr_used);
+          tb.put_str(") return ((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x");
+          tb.put_u64_hex(d.target, true);
+          tb.put_str("ULL)(");
+          emit_abi_call_args(tb, abi_id, false, gpr_used);
+          tb.put_str(");\n");
         }
-        tb.put_str(");\n");
       }
       last_was_return = false;
       continue;
@@ -2374,7 +2758,7 @@ HexStatus try_emit_x86_64_general(
           tb.put_xmm(d.reg);
           tb.put_str(" ^= ");
           if (mod == 3u) tb.put_xmm(d.rm);
-          else emit_mem_deref(tb, d, 64u);
+          else emit_mem_deref(tb, d, 64u, globals, global_count);
           tb.put_str(";\n");
         }
       } else if (d.opcode2 == 0x10u || d.opcode2 == 0x28u || d.opcode2 == 0x6fu) {
@@ -2382,7 +2766,7 @@ HexStatus try_emit_x86_64_general(
         tb.put_xmm(d.reg);
         tb.put_str(" = ");
         if (mod == 3u) tb.put_xmm(d.rm);
-        else emit_mem_deref(tb, d, (d.op_size == 32u) ? 32u : 64u);
+        else emit_mem_deref(tb, d, (d.op_size == 32u) ? 32u : 64u, globals, global_count);
         tb.put_str(";\n");
       } else if (d.opcode2 == 0x11u || d.opcode2 == 0x29u || d.opcode2 == 0x7fu) {
         // store
@@ -2393,7 +2777,7 @@ HexStatus try_emit_x86_64_general(
           tb.put_str(";\n");
         } else {
           const uint8_t sw = (d.op_size == 32u) ? 32u : 64u;
-          emit_mem_deref(tb, d, sw);
+          emit_mem_deref(tb, d, sw, globals, global_count);
           tb.put_str(" = (");
           tb.put_str(width_to_uint_type(sw));
           tb.put_str(")");
@@ -2404,15 +2788,14 @@ HexStatus try_emit_x86_64_general(
         // movd/movq xmm, r/m
         tb.put_xmm(d.reg);
         tb.put_str(" = ");
-        emit_rm_read(tb, d, (d.op_size == 32u) ? 32u : 64u);
+        emit_rm_read(tb, d, (d.op_size == 32u) ? 32u : 64u, globals, global_count);
         tb.put_str(";\n");
       } else if (d.opcode2 == 0x7eu) {
-        const bool is_f3_movq = ((d.flags & HEX_X86_FLAG_HAS_66) == 0u);
-        if (is_f3_movq) {
+        if (gi.is_f3_movq != 0u) {
           tb.put_xmm(d.reg);
           tb.put_str(" = ");
           if (mod == 3u) tb.put_xmm(d.rm);
-          else emit_mem_deref(tb, d, 64u);
+          else emit_mem_deref(tb, d, 64u, globals, global_count);
           tb.put_str(";\n");
         } else if (mod == 3u) {
           emit_gpr_write_prefix(tb, d.rm, (d.op_size == 32u) ? 32u : 64u);
@@ -2420,7 +2803,7 @@ HexStatus try_emit_x86_64_general(
           emit_gpr_write_suffix(tb);
         } else {
           const uint8_t sw = (d.op_size == 32u) ? 32u : 64u;
-          emit_mem_deref(tb, d, sw);
+          emit_mem_deref(tb, d, sw, globals, global_count);
           tb.put_str(" = (");
           tb.put_str(width_to_uint_type(sw));
           tb.put_str(")");
@@ -2440,7 +2823,7 @@ HexStatus try_emit_x86_64_general(
       emit_cc_expr(tb, cc);
       tb.put_str(") ");
       emit_gpr_write_prefix(tb, d.reg, w);
-      emit_rm_read(tb, d, w);
+      emit_rm_read(tb, d, w, globals, global_count);
       emit_gpr_write_suffix(tb);
       last_was_return = false;
       continue;
@@ -2456,7 +2839,7 @@ HexStatus try_emit_x86_64_general(
         tb.put_str(" ? 1U : 0U");
         emit_gpr_write_suffix(tb);
       } else {
-        emit_mem_deref(tb, d, 8u);
+        emit_mem_deref(tb, d, 8u, globals, global_count);
         tb.put_str(" = (uint8)(");
         emit_cc_expr(tb, cc);
         tb.put_str(" ? 1U : 0U);\n");
@@ -2470,7 +2853,7 @@ HexStatus try_emit_x86_64_general(
       tb.put_indent(indent);
       if (d.opcode == 0x84u || d.opcode == 0x85u) {
         tb.put_str("__hex_cmp_l = (uint64)(");
-        emit_rm_read(tb, d, w);
+        emit_rm_read(tb, d, w, globals, global_count);
         tb.put_str(") & (uint64)(");
         emit_gpr_read(tb, d.reg, w);
         tb.put_str("); __hex_cmp_r = 0;\n");
@@ -2482,7 +2865,7 @@ HexStatus try_emit_x86_64_general(
         tb.put_str("; __hex_cmp_r = 0;\n");
       } else if (d.opcode == 0xf6u || d.opcode == 0xf7u) {
         tb.put_str("__hex_cmp_l = (uint64)(");
-        emit_rm_read(tb, d, w);
+        emit_rm_read(tb, d, w, globals, global_count);
         tb.put_str(") & ");
         tb.put_imm_u64(mask_imm_by_size(d.imm, w));
         tb.put_str("; __hex_cmp_r = 0;\n");
@@ -2494,13 +2877,13 @@ HexStatus try_emit_x86_64_general(
         tb.put_str(";\n");
       } else if (d.opcode == 0x80u || d.opcode == 0x81u || d.opcode == 0x83u) {
         tb.put_str("__hex_cmp_l = (uint64)(");
-        emit_rm_read(tb, d, w);
+        emit_rm_read(tb, d, w, globals, global_count);
         tb.put_str("); __hex_cmp_r = ");
         tb.put_imm_u64(mask_imm_by_size(d.imm, w));
         tb.put_str(";\n");
       } else if (d.opcode == 0x38u || d.opcode == 0x39u) {
         tb.put_str("__hex_cmp_l = (uint64)(");
-        emit_rm_read(tb, d, w);
+        emit_rm_read(tb, d, w, globals, global_count);
         tb.put_str("); __hex_cmp_r = (uint64)(");
         emit_gpr_read(tb, d.reg, w);
         tb.put_str(");\n");
@@ -2508,7 +2891,7 @@ HexStatus try_emit_x86_64_general(
         tb.put_str("__hex_cmp_l = (uint64)(");
         emit_gpr_read(tb, d.reg, w);
         tb.put_str("); __hex_cmp_r = (uint64)(");
-        emit_rm_read(tb, d, w);
+        emit_rm_read(tb, d, w, globals, global_count);
         tb.put_str(");\n");
       }
       last_was_return = false;
@@ -2528,7 +2911,7 @@ HexStatus try_emit_x86_64_general(
           tb.put_imm_u64(mask_imm_by_size(d.imm, w));
           emit_gpr_write_suffix(tb);
         } else {
-          emit_mem_deref(tb, d, w);
+          emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_str(" = (");
           tb.put_str(width_to_uint_type(w));
           tb.put_str(")");
@@ -2541,14 +2924,14 @@ HexStatus try_emit_x86_64_general(
           emit_gpr_read(tb, d.reg, w);
           emit_gpr_write_suffix(tb);
         } else {
-          emit_mem_deref(tb, d, w);
+          emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_str(" = ");
           emit_gpr_read(tb, d.reg, w);
           tb.put_str(";\n");
         }
       } else if (d.opcode == 0x8au || d.opcode == 0x8bu) {
         emit_gpr_write_prefix(tb, d.reg, w);
-        emit_rm_read(tb, d, w);
+        emit_rm_read(tb, d, w, globals, global_count);
         emit_gpr_write_suffix(tb);
       } else {
         tb.put_str("/* mov */\n");
@@ -2563,7 +2946,7 @@ HexStatus try_emit_x86_64_general(
       tb.put_indent(indent);
       emit_gpr_write_prefix(tb, d.reg, w);
       tb.put_str("(uint64)");
-      emit_rm_read(tb, d, src_w);
+      emit_rm_read(tb, d, src_w, globals, global_count);
       emit_gpr_write_suffix(tb);
       last_was_return = false;
       continue;
@@ -2594,7 +2977,7 @@ HexStatus try_emit_x86_64_general(
         tb.put_str("(uint64)(int64)(");
         tb.put_str(width_to_int_type(src_w));
         tb.put_str(")(");
-        emit_rm_read(tb, d, src_w);
+        emit_rm_read(tb, d, src_w, globals, global_count);
         tb.put_char(')');
         emit_gpr_write_suffix(tb);
       }
@@ -2606,7 +2989,7 @@ HexStatus try_emit_x86_64_general(
     if (d.kind == HEX_X86_KIND_LEA) {
       tb.put_indent(indent);
       emit_gpr_write_prefix(tb, d.reg, w);
-      emit_mem_addr_expr(tb, d);
+      emit_mem_addr_expr(tb, d, globals, global_count);
       emit_gpr_write_suffix(tb);
       last_was_return = false;
       continue;
@@ -2621,7 +3004,7 @@ HexStatus try_emit_x86_64_general(
           tb.put_str("rax = (uint64)(");
           emit_gpr_read(tb, 0u, w);
           tb.put_str(") * (uint64)(");
-          emit_rm_read(tb, d, w);
+          emit_rm_read(tb, d, w, globals, global_count);
           tb.put_str("); rdx = 0;\n");
         } else {
           tb.put_str("rax = (uint64)((int64)(");
@@ -2631,18 +3014,18 @@ HexStatus try_emit_x86_64_general(
           tb.put_str(" * (int64)(");
           tb.put_str(width_to_int_type(w));
           tb.put_str(")");
-          emit_rm_read(tb, d, w);
+          emit_rm_read(tb, d, w, globals, global_count);
           tb.put_str("); rdx = 0;\n");
         }
       } else if (d.opcode == 0x0fu && d.opcode2 == 0xafu) {
         emit_gpr_write_prefix(tb, d.reg, w);
         emit_gpr_read(tb, d.reg, w);
         tb.put_str(" * ");
-        emit_rm_read(tb, d, w);
+        emit_rm_read(tb, d, w, globals, global_count);
         emit_gpr_write_suffix(tb);
       } else {
         emit_gpr_write_prefix(tb, d.reg, w);
-        emit_rm_read(tb, d, w);
+        emit_rm_read(tb, d, w, globals, global_count);
         tb.put_str(" * ");
         tb.put_imm_u64(mask_imm_by_size(d.imm, w));
         emit_gpr_write_suffix(tb);
@@ -2678,11 +3061,11 @@ HexStatus try_emit_x86_64_general(
             }
             flag_reg = d.rm;
           } else {
-            emit_mem_deref(tb, d, w);
+            emit_mem_deref(tb, d, w, globals, global_count);
             tb.put_str(" = (");
             tb.put_str(width_to_uint_type(w));
             tb.put_str(")(");
-            emit_mem_deref(tb, d, w);
+            emit_mem_deref(tb, d, w, globals, global_count);
             tb.put_char(' ');
             tb.put_str(op_s);
             tb.put_char(' ');
@@ -2701,7 +3084,7 @@ HexStatus try_emit_x86_64_general(
             tb.put_char(' ');
             tb.put_str(op_s);
             tb.put_char(' ');
-            emit_rm_read(tb, d, w);
+            emit_rm_read(tb, d, w, globals, global_count);
             emit_gpr_write_suffix(tb);
           }
           flag_reg = d.reg;
@@ -2729,11 +3112,11 @@ HexStatus try_emit_x86_64_general(
           emit_gpr_write_suffix(tb);
           flag_reg = d.rm;
         } else {
-          emit_mem_deref(tb, d, w);
+          emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_str(" = (");
           tb.put_str(width_to_uint_type(w));
           tb.put_str(")(");
-          emit_mem_deref(tb, d, w);
+          emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_char(' ');
           tb.put_str(op_s);
           tb.put_char(' ');
@@ -2753,7 +3136,7 @@ HexStatus try_emit_x86_64_general(
             tb.put_str("((");
             tb.put_str(width_to_int_type(w));
             tb.put_str(")(");
-            emit_rm_read(tb, d, w);
+            emit_rm_read(tb, d, w, globals, global_count);
             tb.put_str(") >> ");
             if (by_cl) {
               tb.put_str("(rcx & ");
@@ -2768,7 +3151,7 @@ HexStatus try_emit_x86_64_general(
             const bool is_left = (grp == 0u || grp == 2u);
             const uint32_t rot_bits = (w == 64u) ? 64u : 32u;
             tb.put_str("(((");
-            emit_rm_read(tb, d, w);
+            emit_rm_read(tb, d, w, globals, global_count);
             tb.put_str(is_left ? ") << " : ") >> ");
             if (by_cl) {
               tb.put_str("(rcx & ");
@@ -2778,7 +3161,7 @@ HexStatus try_emit_x86_64_general(
               tb.put_u64_dec(imm_cnt);
             }
             tb.put_str(") | ((");
-            emit_rm_read(tb, d, w);
+            emit_rm_read(tb, d, w, globals, global_count);
             tb.put_str(is_left ? ") >> ((" : ") << ((");
             tb.put_u64_dec(rot_bits);
             tb.put_str(" - ");
@@ -2795,7 +3178,7 @@ HexStatus try_emit_x86_64_general(
           } else {
             // shl (4) / shr (5)
             tb.put_char('(');
-            emit_rm_read(tb, d, w);
+            emit_rm_read(tb, d, w, globals, global_count);
             tb.put_str((grp == 4u) ? " << " : " >> ");
             if (by_cl) {
               tb.put_str("(rcx & ");
@@ -2813,7 +3196,7 @@ HexStatus try_emit_x86_64_general(
           emit_gpr_write_suffix(tb);
           flag_reg = d.rm;
         } else {
-          emit_mem_deref(tb, d, w);
+          emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_str(" = (");
           tb.put_str(width_to_uint_type(w));
           tb.put_str(")");
@@ -2833,11 +3216,11 @@ HexStatus try_emit_x86_64_general(
           emit_gpr_write_suffix(tb);
           flag_reg = d.rm;
         } else {
-          emit_mem_deref(tb, d, w);
+          emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_str(" = (");
           tb.put_str(width_to_uint_type(w));
           tb.put_str(")(");
-          emit_mem_deref(tb, d, w);
+          emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_char(' ');
           tb.put_str(op_s);
           tb.put_str(" 1);\n");
@@ -2861,26 +3244,26 @@ HexStatus try_emit_x86_64_general(
             emit_gpr_write_suffix(tb);
             if (grp == 3u) flag_reg = d.rm;
           } else {
-            emit_mem_deref(tb, d, w);
+            emit_mem_deref(tb, d, w, globals, global_count);
             tb.put_str(" = (");
             tb.put_str(width_to_uint_type(w));
             tb.put_str(")(");
             tb.put_str(grp == 2u ? "~(" : "0ULL - (uint64)(");
-            emit_mem_deref(tb, d, w);
+            emit_mem_deref(tb, d, w, globals, global_count);
             tb.put_str("));\n");
             if (grp == 3u) flag_from_mem = true;
           }
         } else if (grp == 6u) {
           // div r/m
           tb.put_str("{ uint64 __d = (uint64)(");
-          emit_rm_read(tb, d, w);
+          emit_rm_read(tb, d, w, globals, global_count);
           tb.put_str("); if (__d != 0) { uint64 __q = rax / __d; rdx = rax % __d; rax = __q; } }\n");
         } else if (grp == 7u) {
           // idiv r/m
           tb.put_str("{ int64 __d = (int64)(");
           tb.put_str(width_to_int_type(w));
           tb.put_str(")(");
-          emit_rm_read(tb, d, w);
+          emit_rm_read(tb, d, w, globals, global_count);
           tb.put_str("); if (__d != 0) { int64 __q = (int64)rax / __d; rdx = (uint64)((int64)rax % __d); rax = (uint64)__q; } }\n");
         } else {
           tb.put_str("/* alu */\n");
@@ -2897,7 +3280,7 @@ HexStatus try_emit_x86_64_general(
           tb.put_str("); __hex_cmp_r = 0;\n");
         } else if (flag_from_mem) {
           tb.put_str("__hex_cmp_l = (uint64)(");
-          emit_mem_deref(tb, d, w);
+          emit_mem_deref(tb, d, w, globals, global_count);
           tb.put_str("); __hex_cmp_r = 0;\n");
         }
       }
@@ -2978,15 +3361,13 @@ HexStatus hex_engine_decompile_x86_64(
   }
   if (byte_len > kMaxGeneralX86Bytes) return HEX_ERR_UNSUPPORTED;
 
-  // Copy function name to stack so it is never aliased with any arena.
+  // Copy & sanitize function name to stack so it is never aliased with any arena
+  // and never collides with C11 keywords or x86-64 register names on either emitter path.
   char local_name[256];
   uint32_t local_name_len = 0u;
   if (func_name_utf8 != nullptr && func_name_len > 0u) {
-    local_name_len = func_name_len < (sizeof(local_name) - 1u)
-        ? func_name_len
-        : static_cast<uint32_t>(sizeof(local_name) - 1u);
-    hex::mem_copy(local_name, func_name_utf8, local_name_len);
-    local_name[local_name_len] = '\0';
+    local_name_len = sanitize_func_name(
+        func_name_utf8, func_name_len, base_addr, local_name, sizeof(local_name));
   }
 
   // Fast path: strict structured C emitter for small clean functions (preserves 100% compatibility).

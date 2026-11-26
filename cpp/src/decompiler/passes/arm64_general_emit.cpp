@@ -2288,6 +2288,18 @@ static void process_insn(
         else if (ftype == 1u) ctx.fp_double_mask |= (1u << rd);
       }
     } else if (tb) {
+      const bool is_plain_copy =
+          (opcode != 1u && opcode != 2u && opcode != 3u && opcode != 4u &&
+           opcode != 8u && opcode != 9u && opcode != 10u && opcode != 11u &&
+           opcode != 12u && opcode != 14u && opcode != 15u);
+      const bool dst_is_double_early = (opcode == 5u) || (opcode != 4u && ftype == 1u);
+      if (is_plain_copy && rd == rn) {
+        if ((ctx.q_used & (1u << rd)) != 0u) {
+          rec();
+          emit_sync_d_to_q(tb, ctx, rd, dst_is_double_early);
+        }
+        return;
+      }
       rec();
       tb->put_str("    ");
       tb->put_reg_d(rd);
@@ -5694,9 +5706,171 @@ static bool structurize_c_body(
     }
     if (changed) continue;
 
-    // Rule 5b: Single-Ref Cold Tail-Block Inlining (before Rule 2):
-    // If `L_cold:` has count_refs == 1, is preceded by a terminator, and has 1..8 straight-line `kind == 0`
-    // statements ending in `goto L_join;` or `return`, inline it at its single jump site and delete `L_cold:`.
+    // V4-3: GCC Pre-Header Alt-Branch Loop Rotation (right after Rule 1 / before Rule 2):
+    // Matches `goto L_hdr; L_alt: <B_alt>; L_hdr: do { ... if (C) goto L_alt; ... } while (W);` (or `while (1) { ... }`)
+    // where L_alt has 1 ref directly inside the loop, 1..16 balanced statements, and falls through to L_hdr.
+    for (uint32_t g = 0u; g + 4u < acount && !changed; ++g) {
+      const SLine& sg = stmts[active[g]];
+      if (sg.kind != 3u) continue;
+      const int32_t gd = depth_arr[g];
+      const uint32_t alt = g + 1u;
+      if (depth_arr[alt] != gd || stmts[active[alt]].kind != 1u) continue;
+      const uint64_t l_hdr = sg.label_id;
+      const uint64_t l_alt = stmts[active[alt]].label_id;
+      if (l_alt == l_hdr || count_refs(l_alt, acount) != 1u) continue;
+
+      // Scan L_alt+1 .. L_hdr (1..16 statements, balanced braces)
+      int32_t hdr_idx = -1;
+      int32_t rel_d = 0;
+      for (uint32_t k = alt + 1u; k < acount && k <= alt + 17u; ++k) {
+        if (depth_arr[k] < gd) break;
+        const SLine& sk = stmts[active[k]];
+        if (sk.brace_delta < 0) rel_d += sk.brace_delta;
+        if (rel_d < 0) break;
+        if (rel_d == 0 && sk.kind == 1u && sk.label_id == l_hdr) {
+          hdr_idx = static_cast<int32_t>(k);
+          break;
+        }
+        if (sk.brace_delta > 0) rel_d += sk.brace_delta;
+      }
+      if (hdr_idx < 0 || rel_d != 0) continue;
+      const uint32_t h = static_cast<uint32_t>(hdr_idx);
+      const uint32_t alt_cnt = h - (alt + 1u);
+      if (alt_cnt == 0u || alt_cnt > 16u) continue;
+      if (has_cross_entry(alt, h, acount) || has_bare_loop_ctrl(alt + 1u, h, gd)) continue;
+
+      const uint32_t lp = h + 1u;
+      if (lp + 2u >= acount || depth_arr[lp] != gd) continue;
+      const SLine& slp = stmts[active[lp]];
+      if (slp.kind != 4u || slp.brace_delta != 1 || !slp.synth) continue;
+      const bool is_do = starts_with(slp.synth, slp.synth_len, "    do {", 8u);
+      const bool is_while1 = starts_with(slp.synth, slp.synth_len, "    while (1) {", 15u);
+      if (!is_do && !is_while1) continue;
+
+      int32_t close_idx = -1;
+      for (uint32_t k = lp + 1u; k < acount; ++k) {
+        if (depth_arr[k] == gd && stmts[active[k]].brace_delta == -1) {
+          close_idx = static_cast<int32_t>(k);
+          break;
+        }
+      }
+      if (close_idx < 0) continue;
+      const uint32_t ci = static_cast<uint32_t>(close_idx);
+      const SLine& scls = stmts[active[ci]];
+      const char* w_ptr = nullptr;
+      uint32_t w_len = 0u;
+      bool convert_do_to_while1 = false;
+      if (is_do) {
+        if (!scls.synth || scls.synth_len <= 15u ||
+            !starts_with(scls.synth, scls.synth_len, "    } while (", 13u) ||
+            !ends_with(scls.synth, scls.synth_len, ");", 2u)) {
+          continue;
+        }
+        w_ptr = scls.synth + 13u;
+        w_len = scls.synth_len - 15u;
+        convert_do_to_while1 = !(w_len == 1u && w_ptr[0] == '1');
+      }
+
+      // Find the single `if (C) goto L_alt;` directly inside this loop (loop_depth == 0)
+      int32_t j_idx = -1;
+      bool has_bare_cont = false;
+      int32_t loop_stack[32];
+      uint32_t loop_depth = 0u;
+      for (uint32_t k = lp + 1u; k < ci; ++k) {
+        const SLine& sk = stmts[active[k]];
+        if (sk.kind == 4u && sk.brace_delta == 1 && sk.synth &&
+            (starts_with(sk.synth, sk.synth_len, "    do {", 8u) ||
+             starts_with(sk.synth, sk.synth_len, "    while (", 11u))) {
+          if (loop_depth < 32u) loop_stack[loop_depth++] = depth_arr[k];
+          else { j_idx = -1; break; }
+          continue;
+        }
+        if (sk.kind == 4u && sk.brace_delta == -1 && loop_depth > 0u &&
+            depth_arr[k] == loop_stack[loop_depth - 1u]) {
+          --loop_depth;
+          continue;
+        }
+        if (loop_depth > 0u) continue;
+        if (sk.kind == 2u && sk.label_id == l_alt) {
+          j_idx = static_cast<int32_t>(k);
+        } else if (convert_do_to_while1 && sk.kind == 4u && sk.synth &&
+                   ends_with(sk.synth, sk.synth_len, "continue;", 9u)) {
+          has_bare_cont = true;
+        }
+      }
+      if (j_idx < 0 || has_bare_cont) continue;
+      if (n + alt_cnt + 4u >= cap) continue;
+
+      const uint32_t ju = static_cast<uint32_t>(j_idx);
+      const SLine sj_copy = stmts[active[ju]];
+      const uint32_t j_stmt_pos = active[ju];
+      const uint32_t lp_stmt_pos = active[lp];
+      const uint32_t ci_stmt_pos = active[ci];
+      const uint16_t src_base_indent = stmts[active[g]].indent;
+      const uint16_t lp_indent = slp.indent;
+      const uint32_t ci_orig_line = scls.orig_line;
+
+      SLine alt_buf[16];
+      for (uint32_t k = 0u; k < alt_cnt; ++k) alt_buf[k] = stmts[active[alt + 1u + k]];
+      const bool need_cont = !is_terminator(alt_buf[alt_cnt - 1u]);
+
+      const char* cptr = (sj_copy.cond_off == 0xFFFFFFFFu) ? sj_copy.synth : (tb.data + sj_copy.cond_off);
+      uint32_t hlen = 0u, clen = 0u, contlen = 0u;
+      const char* if_hdr = alloc_synth(work_arena, "    if (", 8u, cptr, sj_copy.cond_len, ") {", 3u, &hlen);
+      const char* if_cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+      const char* cont_txt = need_cont ? alloc_synth(work_arena, "    continue;", 13u, "", 0u, "", 0u, &contlen) : "";
+      uint32_t w1len = 0u, brklen = 0u, w1clen = 0u;
+      const char* w1_hdr = convert_do_to_while1 ? alloc_synth(work_arena, "    while (1) {", 15u, "", 0u, "", 0u, &w1len) : "";
+      const char* brk_txt = convert_do_to_while1 ? alloc_neg_cond(work_arena, w_ptr, w_len, "    if (", 8u, ") break;", 8u, &brklen) : "";
+      const char* w1_cls = convert_do_to_while1 ? alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &w1clen) : "";
+
+      if (if_hdr && if_cls && cont_txt && w1_hdr && brk_txt && w1_cls) {
+        stmts[active[g]].kind = 5u;
+        for (uint32_t k = alt; k < h; ++k) stmts[active[k]].kind = 5u;
+        if (convert_do_to_while1) {
+          stmts[lp_stmt_pos].synth = w1_hdr;
+          stmts[lp_stmt_pos].synth_len = w1len;
+          stmts[ci_stmt_pos].synth = w1_cls;
+          stmts[ci_stmt_pos].synth_len = w1clen;
+          SLine brk_sl{};
+          brk_sl.kind = 4u; brk_sl.synth = brk_txt; brk_sl.synth_len = brklen; brk_sl.brace_delta = 0;
+          brk_sl.indent = static_cast<uint16_t>(lp_indent + 1u);
+          brk_sl.orig_line = ci_orig_line;
+          insert_before(ci_stmt_pos, brk_sl);  // ci_stmt_pos > j_stmt_pos so j_stmt_pos stays valid
+        }
+        stmts[j_stmt_pos].kind = 4u;
+        stmts[j_stmt_pos].synth = if_hdr;
+        stmts[j_stmt_pos].synth_len = hlen;
+        stmts[j_stmt_pos].brace_delta = 1;
+        uint32_t ins_pos = j_stmt_pos + 1u;
+        for (uint32_t k = 0u; k < alt_cnt; ++k) {
+          int32_t rel_ind = static_cast<int32_t>(alt_buf[k].indent) - static_cast<int32_t>(src_base_indent);
+          if (rel_ind < 0) rel_ind = 0;
+          alt_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + 1u + static_cast<uint32_t>(rel_ind));
+          insert_before(ins_pos++, alt_buf[k]);
+        }
+        if (need_cont) {
+          SLine cont_sl{};
+          cont_sl.kind = 4u; cont_sl.synth = cont_txt; cont_sl.synth_len = contlen; cont_sl.brace_delta = 0;
+          cont_sl.indent = static_cast<uint16_t>(sj_copy.indent + 1u);
+          cont_sl.orig_line = sj_copy.orig_line;
+          insert_before(ins_pos++, cont_sl);
+        }
+        SLine cls_sl{};
+        cls_sl.kind = 4u; cls_sl.synth = if_cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
+        cls_sl.indent = sj_copy.indent;
+        cls_sl.orig_line = sj_copy.orig_line;
+        insert_before(ins_pos, cls_sl);
+        changed = true;
+        any_change = true;
+      }
+    }
+    if (changed) continue;
+
+    // Rule 5b (V4-2): Generalized Single-Ref Cold Tail-Block Inlining (before Rule 2):
+    // If `L_cold:` has count_refs == 1, is preceded by a terminator, and has 1..32 balanced statements
+    // (kind 0, 2, 4, or internal kind 1 with all refs strictly inside (a, e]) ending in top-level `goto L_rejoin;`
+    // or `return`, inline it at its single jump site and delete `L_cold:`.
     for (uint32_t a = 1u; a + 1u < acount && !changed; ++a) {
       const SLine& sl = stmts[active[a]];
       if (sl.kind != 1u) continue;
@@ -5705,28 +5879,37 @@ static bool structurize_c_body(
       if (depth_arr[a - 1u] != ld || !is_terminator(stmts[active[a - 1u]])) continue;
 
       int32_t end_idx = -1;
-      for (uint32_t k = a + 1u; k < acount && k <= a + 9u; ++k) {
-        if (depth_arr[k] != ld) break;
+      int32_t rel_depth = 0;
+      for (uint32_t k = a + 1u; k < acount && k <= a + 32u; ++k) {
+        if (depth_arr[k] < ld) break;
         const SLine& sk = stmts[active[k]];
-        if (sk.kind == 3u) {
-          if (sk.label_id != sl.label_id && k > a + 1u && k <= a + 9u) {
-            end_idx = static_cast<int32_t>(k);
-          }
-          break;
-        }
-        if (sk.kind == 0u) {
-          if (is_return_stmt(sk)) {
-            if (k <= a + 8u) end_idx = static_cast<int32_t>(k);
+        const bool is_else_hdr = (sk.kind == 4u && sk.synth &&
+                                  starts_with(sk.synth, sk.synth_len, "    } else {", 12u));
+        if (sk.brace_delta < 0) rel_depth += sk.brace_delta;
+        if (rel_depth < 0) break;
+        if (rel_depth == 0 && !is_else_hdr && sk.brace_delta == 0) {
+          if (sk.kind == 3u) {
+            if (sk.label_id != sl.label_id && k > a + 1u) {
+              end_idx = static_cast<int32_t>(k);
+            }
             break;
           }
-          continue;
+          if (is_return_stmt(sk)) {
+            end_idx = static_cast<int32_t>(k);
+            break;
+          }
         }
-        break;
+        if (sk.kind != 0u && sk.kind != 1u && sk.kind != 2u && sk.kind != 4u &&
+            !(rel_depth > 0 && sk.kind == 3u)) {
+          break;
+        }
+        if (sk.brace_delta > 0) rel_depth += sk.brace_delta;
       }
-      if (end_idx < 0) continue;
+      if (end_idx < 0 || rel_depth != 0) continue;
       const uint32_t e = static_cast<uint32_t>(end_idx);
-      const uint32_t cnt = e - a;  // 1..9 statements (up to 8 body + 1 goto, or up to 8 incl return)
-      if (cnt == 0u || cnt > 9u) continue;
+      const uint32_t cnt = e - a;  // 1..32 statements
+      if (cnt == 0u || cnt > 32u) continue;
+      if (has_cross_entry(a, e, acount) || has_bare_loop_ctrl(a + 1u, e + 1u, ld)) continue;
 
       // Find the single jump site targeting L_cold
       int32_t j_idx = -1;
@@ -5741,19 +5924,23 @@ static bool structurize_c_body(
       const uint32_t ju = static_cast<uint32_t>(j_idx);
       if (ju >= a && ju <= e) continue;  // never self-inline
 
-      SLine blk_buf[10];
+      SLine blk_buf[32];
       for (uint32_t k = 0u; k < cnt; ++k) blk_buf[k] = stmts[active[a + 1u + k]];
+      const uint16_t src_base_indent = blk_buf[cnt - 1u].indent;
       const SLine sj_copy = stmts[active[ju]];
       const uint32_t j_stmt_pos = active[ju];
 
       if (sj_copy.kind == 3u) {
         if (n + cnt < cap) {
           for (uint32_t k = a; k <= e; ++k) stmts[active[k]].kind = 5u;
-          blk_buf[0].indent = sj_copy.indent;
+          for (uint32_t k = 0u; k < cnt; ++k) {
+            int32_t rel_ind = static_cast<int32_t>(blk_buf[k].indent) - static_cast<int32_t>(src_base_indent);
+            if (rel_ind < 0) rel_ind = 0;
+            blk_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + static_cast<uint32_t>(rel_ind));
+          }
           stmts[j_stmt_pos] = blk_buf[0];
           uint32_t ins_pos = j_stmt_pos + 1u;
           for (uint32_t k = 1u; k < cnt; ++k) {
-            blk_buf[k].indent = sj_copy.indent;
             insert_before(ins_pos++, blk_buf[k]);
           }
           changed = true;
@@ -5773,7 +5960,9 @@ static bool structurize_c_body(
             stmts[j_stmt_pos].brace_delta = 1;
             uint32_t ins_pos = j_stmt_pos + 1u;
             for (uint32_t k = 0u; k < cnt; ++k) {
-              blk_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + 1u);
+              int32_t rel_ind = static_cast<int32_t>(blk_buf[k].indent) - static_cast<int32_t>(src_base_indent);
+              if (rel_ind < 0) rel_ind = 0;
+              blk_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + 1u + static_cast<uint32_t>(rel_ind));
               insert_before(ins_pos++, blk_buf[k]);
             }
             SLine cls_sl{};
@@ -5850,6 +6039,86 @@ static bool structurize_c_body(
           hdr_sl.indent = sj_copy.indent;
           hdr_sl.orig_line = stmts[active[i]].orig_line;
           insert_before(active[i] + 1u, hdr_sl);
+          changed = true;
+          any_change = true;
+        }
+      }
+    }
+    if (changed) continue;
+
+    // V4-1: Structured-`if` Tail-`goto` -> `if-else` (right before Rule 3):
+    // Matches `if (C) { <then>; goto L_join; } <else> L_join:` where `if` has no existing `else`,
+    // `<else>` is non-empty with balanced braces and no cross-entry, and rewrites to `if (C) { <then>; } else { <else> } L_join:`.
+    {
+      int32_t best_vi = -1, best_vc = -1, best_ve = -1;
+      uint32_t best_vspan = 0xFFFFFFFFu;
+      for (uint32_t i = 0u; i + 4u < acount; ++i) {
+        const SLine& si = stmts[active[i]];
+        if (si.kind != 4u || si.brace_delta != 1 || !si.synth ||
+            !starts_with(si.synth, si.synth_len, "    if (", 8u)) {
+          continue;
+        }
+        const int32_t id = depth_arr[i];
+        int32_t close_idx = -1;
+        for (uint32_t k = i + 1u; k < acount; ++k) {
+          if (depth_arr[k] < id) break;
+          if (depth_arr[k] == id) {
+            const SLine& sk = stmts[active[k]];
+            if (sk.kind == 4u && sk.synth && starts_with(sk.synth, sk.synth_len, "    } else {", 12u)) {
+              break;  // already has an else branch
+            }
+            if (sk.kind == 4u && sk.brace_delta == -1 && sk.synth &&
+                starts_with(sk.synth, sk.synth_len, "    }", 5u) &&
+                !starts_with(sk.synth, sk.synth_len, "    } while (", 13u)) {
+              close_idx = static_cast<int32_t>(k);
+            }
+            break;
+          }
+        }
+        if (close_idx < 0 || static_cast<uint32_t>(close_idx) <= i + 1u) continue;
+        const uint32_t ci = static_cast<uint32_t>(close_idx);
+        const uint32_t gi = ci - 1u;
+        if (depth_arr[gi] != id + 1 || stmts[active[gi]].kind != 3u) continue;
+        const uint64_t l_join = stmts[active[gi]].label_id;
+        int32_t e_idx = -1;
+        for (uint32_t k = ci + 1u; k < acount; ++k) {
+          if (depth_arr[k] < id) break;
+          if (depth_arr[k] == id && stmts[active[k]].kind == 1u && stmts[active[k]].label_id == l_join) {
+            e_idx = static_cast<int32_t>(k);
+            break;
+          }
+        }
+        if (e_idx < 0 || static_cast<uint32_t>(e_idx) <= ci + 1u) continue;
+        const uint32_t ei = static_cast<uint32_t>(e_idx);
+        if (has_cross_entry(ci, ei, acount)) continue;
+        if ((ei - i) < best_vspan) {
+          best_vspan = ei - i;
+          best_vi = static_cast<int32_t>(i);
+          best_vc = static_cast<int32_t>(ci);
+          best_ve = static_cast<int32_t>(ei);
+        }
+      }
+      if (best_vi >= 0 && n + 2u < cap) {
+        const uint32_t i = static_cast<uint32_t>(best_vi);
+        const uint32_t ci = static_cast<uint32_t>(best_vc);
+        const uint32_t ei = static_cast<uint32_t>(best_ve);
+        uint32_t elen = 0u, clen = 0u;
+        const char* els = alloc_synth(work_arena, "    } else {", 12u, "", 0u, "", 0u, &elen);
+        const char* cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+        if (els && cls) {
+          const uint16_t base_ind = stmts[active[i]].indent;
+          stmts[active[ci - 1u]].kind = 5u;  // delete tail goto L_join;
+          stmts[active[ci]].kind = 4u;
+          stmts[active[ci]].synth = els;
+          stmts[active[ci]].synth_len = elen;
+          stmts[active[ci]].brace_delta = 0;
+          stmts[active[ci]].indent = base_ind;
+          for (uint32_t k = ci + 1u; k < ei; ++k) stmts[active[k]].indent++;
+          SLine cls_sl{};
+          cls_sl.kind = 4u; cls_sl.synth = cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
+          cls_sl.indent = base_ind;
+          cls_sl.orig_line = stmts[active[ei]].orig_line;
+          insert_before(active[ei], cls_sl);
           changed = true;
           any_change = true;
         }
@@ -6008,10 +6277,15 @@ static bool structurize_c_body(
 
   if (!any_change) return false;
 
-  // Rebuild text buffer into emit_arena (returned to caller) & remap linemap using work_arena
+  // V4-0: Serialize into work_arena and copy back into tb.data so giant functions consume 0 extra emit_arena.
   const uint32_t est_cap = tb.len + (tb.len / 2u) + 16384u;
   const uint32_t new_cap = (est_cap < tb.cap) ? est_cap : tb.cap;
-  char* out_mem = emit_arena.alloc<char>(new_cap);
+  char* out_mem = work_arena.alloc<char>(new_cap);
+  bool copy_back = true;
+  if (!out_mem && &work_arena != &emit_arena) {
+    out_mem = emit_arena.alloc<char>(new_cap);
+    copy_back = false;
+  }
   const uint32_t max_orig = body_start_line + raw_lines + 4u;
   uint32_t* line_remap = work_arena.alloc<uint32_t>(max_orig + 1u);
   if (!out_mem || !line_remap) return false;
@@ -6099,7 +6373,12 @@ static bool structurize_c_body(
     if (ol >= 1u && ol <= max_orig) tb.lm[k].line_no = line_remap[ol];
   }
 
-  tb.data = out_mem;
+  if (copy_back) {
+    hex::mem_copy(tb.data, out_mem, wp + 1u);
+  } else {
+    tb.data = out_mem;
+    tb.cap = new_cap;
+  }
   tb.len = wp;
   tb.line_no = out_line;
   (void)body_len;
@@ -6423,10 +6702,17 @@ HexStatus try_emit_arm64_general(
   }
   if (ctx.uses_fp_bitcast) {
     tb.put_str(
-        "static inline float __hex_u32_to_f32(uint32_t u) { union { uint32_t i; float f; } v; v.i = u; return v.f; }\n"
-        "static inline double __hex_u64_to_f64(uint64_t u) { union { uint64_t i; double d; } v; v.i = u; return v.d; }\n"
-        "static inline uint32_t __hex_f32_to_u32(float f) { union { uint32_t i; float f; } v; v.f = f; return v.i; }\n"
-        "static inline uint64_t __hex_f64_to_u64(double d) { union { uint64_t i; double d; } v; v.d = d; return v.i; }\n");
+        "#ifndef __HEX_UNUSED\n"
+        "#if defined(__GNUC__) || defined(__clang__)\n"
+        "#define __HEX_UNUSED __attribute__((unused))\n"
+        "#else\n"
+        "#define __HEX_UNUSED\n"
+        "#endif\n"
+        "#endif\n"
+        "static inline __HEX_UNUSED float __hex_u32_to_f32(uint32_t u) { union { uint32_t i; float f; } v; v.i = u; return v.f; }\n"
+        "static inline __HEX_UNUSED double __hex_u64_to_f64(uint64_t u) { union { uint64_t i; double d; } v; v.i = u; return v.d; }\n"
+        "static inline __HEX_UNUSED uint32_t __hex_f32_to_u32(float f) { union { uint32_t i; float f; } v; v.f = f; return v.i; }\n"
+        "static inline __HEX_UNUSED uint64_t __hex_f64_to_u64(double d) { union { uint64_t i; double d; } v; v.d = d; return v.i; }\n");
   }
 
   // Emit external globals.

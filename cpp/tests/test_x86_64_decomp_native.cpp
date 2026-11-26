@@ -174,6 +174,7 @@ void test_three_real_x86_64_binaries() {
     CHECK(text.find("if (") != std::string::npos);
     CHECK(text.find("return ") != std::string::npos);
     CHECK(text.find("*(uint32*)(") != std::string::npos);
+    CHECK(verify_c11_syntax(text, sp.name));
     std::printf("  [PASS] real binary %s: %zu bytes C, %u linemap entries\n",
                 sp.name, text.size(), lm_cnt);
   }
@@ -513,6 +514,250 @@ void test_repeated_emit_arena_zero_leak_and_scratch_survival() {
   std::printf("  [PASS] repeated emit arena zero-leak & scratch survival (80 iters)\n");
 }
 
+
+void test_strict_undeclared_label_fallback() {
+  // Exact 41-byte sqlite3RenameTokenRemap sequence from libsqlite3.so.0.8.6:
+  // Strict emitter previously emitted `goto L_bb7;` without defining `L_bb7:`.
+  // Validator now catches it and falls back cleanly to general C11 emitter.
+  const uint8_t code[] = {
+      0x48, 0x8b, 0x87, 0x98, 0x01, 0x00, 0x00,  // mov rax, [rdi+0x198]
+      0x48, 0x85, 0xc0,                          // test rax, rax
+      0x75, 0x0d,                                // jne +0x0d (-> 0x19)
+      0xeb, 0x1a,                                // jmp +0x1a (-> 0x28)
+      0x66, 0x90,                                // nop
+      0x48, 0x8b, 0x40, 0x18,                    // mov rax, [rax+0x18]
+      0x48, 0x85, 0xc0,                          // test rax, rax
+      0x74, 0x0f,                                // je +0x0f (-> 0x28)
+      0x48, 0x39, 0x10,                          // cmp [rax], rdx
+      0x75, 0xf2,                                // jne -0x0e (-> 0x10)
+      0x48, 0x89, 0x30,                          // mov [rax], rsi
+      0xc3,                                      // ret
+      0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00,        // nopw [rax+rax+0]
+      0xc3,                                      // ret
+  };
+  const HexStatus st = hex_engine_decompile_x86_64(
+      code, sizeof(code), 0x2e4e0ULL, "sqlite3RenameTokenRemap", 23u,
+      HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+  CHECK(st == HEX_OK);
+  const std::string text = get_emitted_text();
+  CHECK(!text.empty());
+  CHECK(text.find("L_bb") == std::string::npos);
+  CHECK(verify_c11_syntax(text, "sqlite3RenameTokenRemap"));
+  std::printf("  [PASS] strict undeclared-label fallback (sqlite3RenameTokenRemap)\n");
+}
+
+void test_general_goto_reduction() {
+  // 1. Forward if-else structuring:
+  //   push rbx; cmp edi, esi; je +7 (L_else); mov eax, 1; jmp +5 (L_end);
+  //   L_else: mov eax, 2; L_end: pop rbx; ret
+  {
+    const uint8_t code[] = {
+        0x53,                          // push rbx (routes to general emitter)
+        0x39, 0xf7,                    // cmp edi, esi
+        0x74, 0x07,                    // je +7 (-> L_else at +12)
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0xeb, 0x05,                    // jmp +5 (-> L_end at +17)
+        0xb8, 0x02, 0x00, 0x00, 0x00,  // L_else: mov eax, 2
+        0x5b,                          // L_end: pop rbx
+        0xc3,                          // ret
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x440000ULL, "gen_if_else", 11u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("if (") != std::string::npos);
+    CHECK(text.find("} else {") != std::string::npos);
+    CHECK(text.find("goto ") == std::string::npos);
+    CHECK(verify_c11_syntax(text, "gen_if_else"));
+  }
+
+  // 2. Fallthrough goto deletion:
+  //   push rbx; jmp +0 (next insn); mov eax, edi; pop rbx; ret
+  {
+    const uint8_t code[] = {
+        0x53,        // push rbx
+        0xeb, 0x00,  // jmp +0 (fallthrough to next insn)
+        0x89, 0xf8,  // mov eax, edi
+        0x5b,        // pop rbx
+        0xc3,        // ret
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x440100ULL, "gen_fallthrough_jmp", 19u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("goto ") == std::string::npos);
+    CHECK(text.find("loc_") == std::string::npos);
+    CHECK(verify_c11_syntax(text, "gen_fallthrough_jmp"));
+  }
+
+  // 3. Inverted guard folding:
+  //   push rbx; cmp edi, 0; je +2 (L_body); jmp +6 (L_exit);
+  //   L_body: mov eax, 1; pop rbx; ret; L_exit: mov eax, 2; pop rbx; ret
+  {
+    const uint8_t code[] = {
+        0x53,                          // push rbx
+        0x83, 0xff, 0x00,              // cmp edi, 0
+        0x74, 0x02,                    // je +2 (-> L_body at +8)
+        0xeb, 0x07,                    // jmp +7 (-> L_exit at +15)
+        0xb8, 0x01, 0x00, 0x00, 0x00,  // L_body: mov eax, 1
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+        0xb8, 0x02, 0x00, 0x00, 0x00,  // L_exit: mov eax, 2
+        0x5b,                          // pop rbx
+        0xc3,                          // ret
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x440200ULL, "gen_invert_guard", 16u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    // Inverted guard folds `je L_body; jmp L_exit; L_body:` into `jne L_exit;`,
+    // which short-forward `if` then structures cleanly with zero gotos.
+    CHECK(text.find("loc_440208") == std::string::npos);
+    CHECK(text.find("goto ") == std::string::npos);
+    CHECK(text.find("if (__hex_cmp_l == __hex_cmp_r) {") != std::string::npos);
+    CHECK(verify_c11_syntax(text, "gen_invert_guard"));
+  }
+
+  // 4. Loop `break;` and `continue;` inside `do { ... } while (...);`:
+  //   0x00: 53             push rbx
+  //   0x01: 31 c0          xor eax, eax
+  //   0x03: 83 c0 01       L_loop: add eax, 1
+  //   0x06: 39 f8          cmp eax, edi
+  //   0x08: 74 09          je +9 (-> 0x13 L_exit -> break;)
+  //   0x0a: 39 f0          cmp eax, esi
+  //   0x0c: 74 03          je +3 (-> 0x11 L_latch -> continue;)
+  //   0x0e: 83 c0 02       add eax, 2
+  //   0x11: 75 f0          L_latch: jne -16 (-> 0x03 L_loop)
+  //   0x13: 5b             L_exit: pop rbx
+  //   0x14: c3             ret
+  {
+    const uint8_t code[] = {
+        0x53,
+        0x31, 0xc0,
+        0x83, 0xc0, 0x01,
+        0x39, 0xf8,
+        0x74, 0x09,
+        0x39, 0xf0,
+        0x74, 0x03,
+        0x83, 0xc0, 0x02,
+        0x75, 0xf0,
+        0x5b,
+        0xc3,
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x440300ULL, "gen_loop_break_cont", 19u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("do {") != std::string::npos);
+    CHECK(text.find("break;") != std::string::npos);
+    CHECK(text.find("continue;") != std::string::npos);
+    CHECK(text.find("} while (") != std::string::npos);
+    CHECK(text.find("goto ") == std::string::npos);
+    CHECK(verify_c11_syntax(text, "gen_loop_break_cont"));
+  }
+  std::printf("  [PASS] goto reduction: if-else, fallthrough, inverted guard, break/continue\n");
+}
+
+void test_general_recursive_6param_and_cleanup() {
+  // 1. Recursive 6-param SysV self-call with unused r8:
+  //   0x00: 53                push rbx
+  //   0x01: 4c 89 c8          mov rax, r9     (uses 6th param r9, r8 untouched)
+  //   0x04: e8 f7 ff ff ff    call -9 (-> 0x00 self!)
+  //   0x09: 5b                pop rbx
+  //   0x0a: c3                ret
+  {
+    const uint8_t code[] = {
+        0x53,
+        0x4c, 0x89, 0xc8,
+        0xe8, 0xf7, 0xff, 0xff, 0xff,
+        0x5b,
+        0xc3,
+    };
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x450000ULL, nullptr, 0u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("uint64 sub_450000(uint64 a1, uint64 a2, uint64 a3, uint64 a4, uint64 a5, uint64 a6)") !=
+          std::string::npos);
+    CHECK(text.find("uint64 r8 = a5;") != std::string::npos);
+    CHECK(text.find("rax = sub_450000(rdi, rsi, rdx, rcx, r8, r9);") != std::string::npos);
+    CHECK(verify_c11_syntax(text, "recursive_6param_sysv"));
+  }
+
+  // 2. Keyword & register function name sanitization (both strict and general paths).
+  {
+    const uint8_t strict_ret[] = {0x31, 0xc0, 0xc3};
+    const uint8_t general_ret[] = {0x53, 0x5b, 0xc3};
+    const char* bad_names[] = {"default", "return", "register", "int", "rax", "r15", "xmm0", "uint64"};
+    for (const char* nm : bad_names) {
+      const uint32_t nlen = static_cast<uint32_t>(std::strlen(nm));
+      const std::string expected = std::string("fn_") + nm;
+
+      CHECK(hex_engine_decompile_x86_64(
+                strict_ret, sizeof(strict_ret), 0x451000ULL, nm, nlen,
+                HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+      std::string stext = get_emitted_text();
+      CHECK(stext.find(expected) != std::string::npos);
+      CHECK(verify_c11_syntax(stext, nm));
+
+      CHECK(hex_engine_decompile_x86_64(
+                general_ret, sizeof(general_ret), 0x452000ULL, nm, nlen,
+                HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+      std::string gtext = get_emitted_text();
+      CHECK(gtext.find(expected) != std::string::npos);
+      CHECK(verify_c11_syntax(gtext, nm));
+    }
+    // `main` is preserved (not prefixed).
+    CHECK(hex_engine_decompile_x86_64(
+              strict_ret, sizeof(strict_ret), 0x453000ULL, "main", 4u,
+              HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY) == HEX_OK);
+    CHECK(get_emitted_text().find("int32 main(void)") != std::string::npos);
+  }
+
+  // 3. Redundant 0x66 + 0xF3 prefix on 0F 7E (`66 F3 0F 7E C1` = `movq xmm0, xmm1`).
+  {
+    const uint8_t code[] = {0x66, 0xf3, 0x0f, 0x7e, 0xc1, 0xc3};
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code, sizeof(code), 0x454000ULL, "f3_66_movq", 10u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("xmm0 = xmm1;") != std::string::npos);
+    CHECK(verify_c11_syntax(text, "f3_66_movq"));
+  }
+
+  // 4. Callee table cap (> 512 unique callees) falls back to numeric function pointer cast.
+  {
+    std::vector<uint8_t> code;
+    code.reserve(516u * 5u + 1u);
+    for (uint32_t k = 0u; k < 515u; ++k) {
+      // e8 <rel32> targeting distinct addresses 0x500000 + k*16
+      const uint64_t next_pc = 0x460000ULL + static_cast<uint64_t>((k + 1u) * 5u);
+      const uint64_t tgt = 0x500000ULL + static_cast<uint64_t>(k * 16u);
+      const int32_t rel = static_cast<int32_t>(tgt - next_pc);
+      code.push_back(0xe8u);
+      code.push_back(static_cast<uint8_t>(rel & 0xff));
+      code.push_back(static_cast<uint8_t>((rel >> 8) & 0xff));
+      code.push_back(static_cast<uint8_t>((rel >> 16) & 0xff));
+      code.push_back(static_cast<uint8_t>((rel >> 24) & 0xff));
+    }
+    code.push_back(0xc3u);
+    const HexStatus st = hex_engine_decompile_x86_64(
+        code.data(), static_cast<uint32_t>(code.size()), 0x460000ULL, "many_callees", 12u,
+        HEX_X86_ABI_SYSV_AMD64, HEX_EMIT_FLAG_JS_PARITY);
+    CHECK(st == HEX_OK);
+    const std::string text = get_emitted_text();
+    CHECK(text.find("((uint64 (*)(uint64, uint64, uint64, uint64))(uintptr_t)0x") != std::string::npos);
+    CHECK(verify_c11_syntax(text, "many_callees"));
+  }
+  std::printf("  [PASS] recursive 6-param SysV, name sanitization, 66+F3 movq, 512 callee cap\n");
+}
+
 }  // namespace
 
 int main() {
@@ -526,6 +771,9 @@ int main() {
   test_general_sse2_and_unknown_opcodes();
   test_general_large_function_and_32k_limit();
   test_repeated_emit_arena_zero_leak_and_scratch_survival();
+  test_strict_undeclared_label_fallback();
+  test_general_goto_reduction();
+  test_general_recursive_6param_and_cleanup();
 
   if (g_failures == 0) {
     std::printf("test_x86_64_decomp_native (ASan+UBSan): ALL PASS\n");
