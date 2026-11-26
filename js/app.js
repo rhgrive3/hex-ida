@@ -1447,7 +1447,7 @@ export class App {
     let record = null;
     try {
       record = await this.deltaSession.load(deltaKey);
-      if (!record || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return null;
+      if (!record || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex || this._isDeltaReady()) return null;
       this._applyDeltaRecord(record, { restoreNavigation: true });
       const restoreInfo = {
         deltaKey,
@@ -1603,7 +1603,7 @@ export class App {
     this._resetDeltaReadiness();
     this.noteAttachController?.abort();
     this.notes=EMPTY_NOTES;
-    this.projectAnnotations?.clear?.();
+    this.projectAnnotations = [];
     this.bookmarks?.clear?.({ silent: true });
     this.lastDeltaRestore=null;
     this.restoredRoutePath=null;
@@ -1979,7 +1979,7 @@ export class App {
     this.symbols=EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
     this.notes=EMPTY_NOTES;
-    this.projectAnnotations?.clear?.();
+    this.projectAnnotations = [];
     this.bookmarks?.clear?.({ silent: true });
     this.lastDeltaRestore=null;
     this.restoredRoutePath=null;
