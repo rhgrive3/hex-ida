@@ -1,4 +1,4 @@
-import { matchText, matchName, numericSymbolRole, isDiagnosticString, normalizeCallableName, symbolMutationKind } from './goals.js';
+import { matchText, matchName, numericSymbolRole, isDiagnosticString, normalizeCallableName, normalizeIdentifierBoundaries, symbolMutationKind } from './goals.js';
 import { vendorOf, vendorInText, vendorConflicts, classFromSymbol } from './vendors.js';
 
 export const REASON = {
@@ -138,7 +138,10 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   const seenStrings = new Set();
   for (const s of strings || []) {
     if (!s || typeof s.text !== 'string') continue;
-    if (matcher && !matcher.test(s.text)) continue;
+    if (matcher && !matcher.test(s.text)) {
+      const normText = normalizeIdentifierBoundaries(s.text);
+      if (normText === s.text || !matcher.test(normText)) continue;
+    }
     const dedupKey = `${s.addr}:${s.text}`;
     if (seenStrings.has(dedupKey)) continue;
     const m = matchText(goal, s.text);
@@ -398,7 +401,8 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     const called = program.callCountOf(c.addr);
     if (called >= 3) {
       const isConstGetter = !!(c.name && symbolMutationKind(c.name).kind === 'const-getter');
-      const popPoints = isConstGetter ? POINTS[REASON.POPULAR] * 0.4 : POINTS[REASON.POPULAR];
+      const hasStrong = (c.strings || []).some((s) => s.score >= 0.8) || c.reasons.some((r) => r.code === REASON.NAME && r.points >= 18);
+      const popPoints = (isConstGetter || !hasStrong) ? POINTS[REASON.POPULAR] * 0.4 : POINTS[REASON.POPULAR];
       addReason(c, REASON.POPULAR, popPoints, { n: called, complete: !program.callsCapped });
     }
     c.calledCount = called;

@@ -235,10 +235,10 @@ export const GOALS = [
   },
   {
     id: 'speed', ja: '移動速度・スピード', en: 'Speed / movement', icon: '💨',
-    strong: [/\bspeed\b/i, /move[\s_-]*speed/i, /velocity/i, /移動速度/, /スピード/, /速度/, /素早さ/],
+    strong: [/\bspeed\b/i, /speed[\s_-]*up/i, /move[\s_-]*speed/i, /velocity/i, /移動速度/, /スピード/, /速度/, /素早さ/],
     weak: [/accel/i, /\bpace\b/i, /\btempo\b/i, /\bwalk\b/i, /\brun\b/i, /敏捷/],
     avoid: [
-      /white[\s_-]*space|coordinate[\s_-]*space|name[\s_-]*space|work[\s_-]*space|drag[\s_-]*gesture|minimum[\s_-]*distance|run[\s_-]*loop/i,
+      /white[\s_-]*space|coordinate[\s_-]*space|name[\s_-]*space|work[\s_-]*space|drag[\s_-]*gesture|minimum[\s_-]*distance|run[\s_-]*loop|run[\s_-]*on[\s_-]*(?:shared|main|background|ui)?[\s_-]*thread/i,
       /(?:download|upload|network|transfer|connection|playback|scroll|fan|clock|baud|cpu|gpu|link|write|read|disk|bit)[\s_-]*speed/i,
       /speed[\s_-]*(?:test|dial|limit|bump)/i,
       /(?:angular|scroll|swipe|pan|drag|flick|fling|scroll[\s_-]*view)[\s_-]*velocity/i,
@@ -254,7 +254,7 @@ export const GOALS = [
       /\bcd[\s_-]*(?:rom|key|drive|player|track|audio|image|dir|path)\b/i,
       /(?:gcd|lcd|bcd|mcd|acd|icd|rcd|ucd)\b/i,
       /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle|timeout|date|reload|update|location|banner)[\s_-]*(?:interval|delay)/i,
-      /scheduleUpdateAfterInterval|onReloadInterval|viewability[\w\s-]*|anime[\s_-]*interval|animation[\s_-]*interval|cmtime\w*|url[\s_-]*request|cache[\s_-]*policy/i,
+      /scheduleUpdateAfterInterval|onReloadInterval|viewability[\w\s-]*|anime[\s_-]*interval|animation[\s_-]*interval|cmtime\w*|repeatable[\s_-]*timer|block[\s_-]*queue|url[\s_-]*request|cache[\s_-]*policy/i,
       /reload[\s_-]*(?:data|table|section|row|view|page|url|webview|config|script)/i,
     ],
     expects: { numeric: true, store: true, compare: true },
@@ -870,10 +870,16 @@ function allMatches(re, s, hasAvoid) {
  *
  * @returns {{score:number, term:string}|null} 当てはまらなければ null
  */
-export function matchText(goal, text) {
-  if (!goal || typeof text !== 'string') return null;
-  const s = text;
-  if (s.length < 2) return null;
+export function normalizeIdentifierBoundaries(text) {
+  if (typeof text !== 'string' || text.length < 2) return text;
+  if (!/[_]|[a-z0-9][A-Z]|[A-Z]{2}[a-z]/.test(text)) return text;
+  return text
+    .replace(/_/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+}
+
+function matchTextSingle(goal, s) {
   let best = null;
   const blocked = avoidSpans(goal, s);
   const consider = (score, term, at) => {
@@ -891,6 +897,19 @@ export function matchText(goal, text) {
       consider(0.85 * term.weight, term.word, i);
     }
   }
+  return best;
+}
+
+export function matchText(goal, text) {
+  if (!goal || typeof text !== 'string') return null;
+  const s = text;
+  if (s.length < 2) return null;
+  const rawBest = matchTextSingle(goal, s);
+  const norm = normalizeIdentifierBoundaries(s);
+  const normBest = norm !== s ? matchTextSingle(goal, norm) : null;
+  let best = rawBest && normBest
+    ? (normBest.score > rawBest.score ? normBest : rawBest)
+    : (rawBest || normBest);
   if (!best) return null;
 
   /*
