@@ -5092,7 +5092,7 @@ static bool structurize_c_body(
   }
   if (raw_lines < 2u || raw_lines > 8192u) return false;
 
-  const uint32_t cap = raw_lines * 2u + 128u;
+  const uint32_t cap = raw_lines + raw_lines / 2u + 128u;
   SLine* stmts = work_arena.alloc<SLine>(cap);
   uint32_t* active = work_arena.alloc<uint32_t>(cap);
   int32_t* depth_arr = work_arena.alloc<int32_t>(cap);
@@ -5209,6 +5209,26 @@ static bool structurize_c_body(
     return true;
   };
 
+  auto get_stmt_text = [&](const SLine& x, const char** out_ptr, uint32_t* out_len) -> bool {
+    if (x.kind == 0u) {
+      *out_ptr = tb.data + x.off;
+      *out_len = x.len;
+      return true;
+    }
+    if (x.kind == 4u && x.synth) {
+      *out_ptr = x.synth;
+      *out_len = x.synth_len;
+      return true;
+    }
+    *out_ptr = nullptr;
+    *out_len = 0u;
+    return false;
+  };
+
+  auto strip4_ptr = [&](const char* ss, uint32_t slen) -> uint32_t {
+    return (slen >= 4u && ss[0] == ' ' && ss[1] == ' ' && ss[2] == ' ' && ss[3] == ' ') ? 4u : 0u;
+  };
+
   auto is_return_stmt = [&](const SLine& x) -> bool {
     if (x.kind == 0u) {
       const char* ns = tb.data + x.off;
@@ -5222,19 +5242,26 @@ static bool structurize_c_body(
     return false;
   };
 
+  auto is_trap_stmt = [&](const SLine& x) -> bool {
+    if (x.kind == 0u) {
+      const char* ns = tb.data + x.off;
+      return starts_with(ns, x.len, "    __builtin_trap();", 21u);
+    }
+    if (x.kind == 4u && x.synth && x.brace_delta == 0) {
+      return starts_with(x.synth, x.synth_len, "    __builtin_trap();", 21u);
+    }
+    return false;
+  };
+
   auto is_terminator = [&](const SLine& x) -> bool {
     if (x.kind == 3u) return true;
     if (is_return_stmt(x)) return true;
+    if (is_trap_stmt(x)) return true;
     if (x.kind == 4u && x.synth && x.brace_delta == 0) {
       return starts_with(x.synth, x.synth_len, "    break;", 10u) ||
              starts_with(x.synth, x.synth_len, "    continue;", 13u);
     }
     return false;
-  };
-
-  auto strip4_off = [&](const SLine& se) -> uint32_t {
-    const char* ss = tb.data + se.off;
-    return (se.len >= 4u && ss[0] == ' ' && ss[1] == ' ' && ss[2] == ' ' && ss[3] == ' ') ? 4u : 0u;
   };
 
   auto has_bare_loop_ctrl = [&](uint32_t a0, uint32_t a1, int32_t /*d*/) -> bool {
@@ -5276,6 +5303,12 @@ static bool structurize_c_body(
     return false;
   };
 
+  auto is_else_open = [&](uint32_t ck) -> bool {
+    const SLine& sc = stmts[active[ck]];
+    return sc.kind == 4u && sc.brace_delta == 0 && sc.synth &&
+           starts_with(sc.synth, sc.synth_len, "    } else {", 12u);
+  };
+
   auto is_if_else_close = [&](uint32_t ck) -> bool {
     const SLine& sc = stmts[active[ck]];
     if (sc.kind != 4u || sc.brace_delta != -1 || !sc.synth) return false;
@@ -5293,6 +5326,41 @@ static bool structurize_c_body(
       }
     }
     return false;
+  };
+
+  // V5-5: Step out of an enclosing IF/ELSE closing `}` or `} else { ... }` at depth `cur_d - 1`.
+  // Returns the active index immediately after the enclosing IF/ELSE block, or 0 if not an IF/ELSE boundary.
+  auto step_out_if_else = [&](uint32_t k, int32_t cur_d, uint32_t acount) -> uint32_t {
+    if (k >= acount || cur_d <= 0 || depth_arr[k] != cur_d - 1) return 0u;
+    if (is_if_else_close(k)) return k + 1u;
+    if (is_else_open(k)) {
+      for (uint32_t m = k + 1u; m < acount; ++m) {
+        if (depth_arr[m] < cur_d - 1) return 0u;
+        if (depth_arr[m] == cur_d - 1) {
+          return is_if_else_close(m) ? (m + 1u) : 0u;
+        }
+      }
+    }
+    return 0u;
+  };
+
+  // Returns the active index of the innermost enclosing loop header for `pos`, or -1 if outside any loop.
+  auto enclosing_loop_idx = [&](uint32_t pos) -> int32_t {
+    int32_t cur_d = depth_arr[pos];
+    if (cur_d <= 0) return -1;
+    for (int32_t k = static_cast<int32_t>(pos) - 1; k >= 0; --k) {
+      if (depth_arr[k] < cur_d) {
+        cur_d = depth_arr[k];
+        const SLine& sk = stmts[active[k]];
+        if (sk.kind == 4u && sk.brace_delta == 1 && sk.synth &&
+            (starts_with(sk.synth, sk.synth_len, "    do {", 8u) ||
+             starts_with(sk.synth, sk.synth_len, "    while (", 11u))) {
+          return k;
+        }
+        if (cur_d == 0) break;
+      }
+    }
+    return -1;
   };
 
   bool any_change = false;
@@ -5337,7 +5405,7 @@ static bool structurize_c_body(
     }
     if (changed) continue;
 
-    // Rule 0c: Unreachable Dead-Code Elimination (DCE) after unconditional goto/return/break/continue
+    // Rule 0c: Unreachable Dead-Code Elimination (DCE) after unconditional goto/return/break/continue/__builtin_trap
     for (uint32_t a = 0u; a + 1u < acount; ++a) {
       const SLine& sa = stmts[active[a]];
       if (!is_terminator(sa)) continue;
@@ -5346,7 +5414,7 @@ static bool structurize_c_body(
         if (depth_arr[k] != ad) break;
         SLine& sk = stmts[active[k]];
         if (sk.kind == 1u || sk.brace_delta != 0) break;
-        if (sk.kind == 4u && sk.synth && starts_with(sk.synth, sk.synth_len, "    } else {", 12u)) break;
+        if (is_else_open(k)) break;
         sk.kind = 5u;
         changed = true;
         any_change = true;
@@ -5354,18 +5422,20 @@ static bool structurize_c_body(
     }
     if (changed) continue;
 
-    // Rule 0d: Multi-level IF/ELSE block-exit fallthrough deletion for unconditional `goto L;`
-    // Deletes `goto L;` when crossing only IF/ELSE closing `}`s (never LOOP!) reaches `L:`.
+    // Rule 0d (V5-5): Multi-level IF/ELSE block-exit fallthrough deletion for unconditional `goto L;`
+    // Deletes `goto L;` when crossing only IF/ELSE closing `}`s or `} else { ... }`s (never LOOP!) reaches `L:`.
     for (uint32_t a = 0u; a + 2u < acount; ++a) {
       SLine& sa = stmts[active[a]];
       if (sa.kind != 3u || depth_arr[a] <= 0) continue;
       int32_t cur_d = depth_arr[a];
       uint32_t k = a + 1u;
       uint32_t crossed = 0u;
-      while (k < acount && cur_d > 0 && depth_arr[k] == cur_d - 1 && is_if_else_close(k)) {
+      while (k < acount && cur_d > 0) {
+        const uint32_t next_k = step_out_if_else(k, cur_d, acount);
+        if (next_k == 0u) break;
         --cur_d;
         ++crossed;
-        ++k;
+        k = next_k;
       }
       if (crossed > 0u && k < acount && stmts[active[k]].kind == 1u &&
           depth_arr[k] == cur_d && stmts[active[k]].label_id == sa.label_id) {
@@ -5406,7 +5476,6 @@ static bool structurize_c_body(
       SLine& s2 = stmts[active[a + 1u]];
       if (s1.kind == 2u && s2.kind == 2u && depth_arr[a] == depth_arr[a + 1u] && s1.label_id == s2.label_id &&
           s1.cond_len + s2.cond_len < 512u) {
-        // Combine into a single synthetic condition buffer stored in work_arena, keeping s1 as IF_GOTO
         const char* c1 = (s1.synth && s1.cond_off == 0xFFFFFFFFu) ? s1.synth : (tb.data + s1.cond_off);
         const char* c2 = (s2.synth && s2.cond_off == 0xFFFFFFFFu) ? s2.synth : (tb.data + s2.cond_off);
         const uint32_t mlen = 1u + s1.cond_len + 6u + s2.cond_len + 1u;
@@ -5431,98 +5500,175 @@ static bool structurize_c_body(
     }
     if (changed) continue;
 
-    // Rule 5: Early-return epilogue folding (up to 24 straight-line stmts ending in `return ...;`, bounded by bloat budget):
-    // Folds `goto L;` -> `<epilogue>` and `if (C) goto L;` -> `if (C) { <epilogue> }` (or `if (C) return ...;`).
-    for (uint32_t a = 0u; a + 1u < acount && !changed; ++a) {
-      const SLine& sl = stmts[active[a]];
-      if (sl.kind != 1u) continue;
-      const uint32_t refs = count_refs(sl.label_id, acount);
-      if (refs == 0u) continue;
-      const int32_t ld = depth_arr[a];
-      int32_t ret_idx = -1;
-      for (uint32_t k = a + 1u; k < acount && k <= a + 24u; ++k) {
-        if (depth_arr[k] != ld || stmts[active[k]].kind != 0u) break;
-        const SLine& sk = stmts[active[k]];
-        const char* ns = tb.data + sk.off;
-        if (starts_with(ns, sk.len, "    return", 10u) && sk.len >= 11u && ns[sk.len - 1u] == ';') {
-          ret_idx = static_cast<int32_t>(k);
-          break;
-        }
-      }
-      if (ret_idx < 0) continue;
-      const uint32_t ep_cnt = static_cast<uint32_t>(ret_idx) - a;  // 1..24 statements
-      // Avoid duplicating a multi-stmt fallthrough epilogue when only 1 jump targets it (let Rule 4 wrap the skip cleanly).
-      if (ep_cnt > 1u && refs == 1u && a > 0u && depth_arr[a - 1u] == ld && !is_terminator(stmts[active[a - 1u]])) continue;
-      if (refs * ep_cnt > 320u) continue;
-      // Compute combined inline epilogue text using identical strip4_off helper (bounded <= 1800 bytes)
-      uint32_t ep_bytes = 0u;
-      for (uint32_t e = 0u; e < ep_cnt; ++e) {
-        const SLine& se = stmts[active[a + 1u + e]];
-        ep_bytes += (se.len - strip4_off(se)) + (e > 0u ? 1u : 0u);
-      }
-      if (ep_bytes == 0u || ep_bytes > 1800u) continue;
-      if (r5_total_added + refs * ep_bytes > tb.cap / 4u) continue;
-      char* ep_txt = work_arena.alloc<char>(ep_bytes + 4u);
-      if (!ep_txt) continue;
-      uint32_t ep_len = 0u;
-      for (uint32_t e = 0u; e < ep_cnt; ++e) {
-        if (e > 0u) ep_txt[ep_len++] = ' ';
-        const SLine& se = stmts[active[a + 1u + e]];
-        const char* ss = tb.data + se.off;
-        const uint32_t start = strip4_off(se);
-        for (uint32_t z = start; z < se.len; ++z) ep_txt[ep_len++] = ss[z];
-      }
-      ep_txt[ep_len] = '\0';
-      for (uint32_t k = 0u; k < acount; ++k) {
-        SLine& sk = stmts[active[k]];
-        if (sk.kind == 3u && sk.label_id == sl.label_id) {
-          uint32_t rlen = 0u;
-          const char* rtxt = (ep_cnt == 1u)
-              ? alloc_synth(work_arena, "    ", 4u, ep_txt, ep_len, "", 0u, &rlen)
-              : alloc_synth(work_arena, "    { ", 6u, ep_txt, ep_len, " }", 2u, &rlen);
-          if (rtxt) {
-            sk.kind = 4u; sk.synth = rtxt; sk.synth_len = rlen; sk.brace_delta = 0;
-            r5_total_added += ep_len;
-            changed = true; any_change = true;
-          }
-        } else if (sk.kind == 2u && sk.label_id == sl.label_id) {
-          const char* cptr = (sk.cond_off == 0xFFFFFFFFu) ? sk.synth : (tb.data + sk.cond_off);
-          const uint32_t extra = (ep_cnt == 1u) ? 2u : 6u;
-          const uint32_t total = 8u + sk.cond_len + extra + ep_len;
-          char* rtxt = work_arena.alloc<char>(total + 1u);
-          if (rtxt) {
-            uint32_t wp2 = 0u;
-            const char* pfx = "    if (";
-            for (uint32_t z = 0u; z < 8u; ++z) rtxt[wp2++] = pfx[z];
-            for (uint32_t z = 0u; z < sk.cond_len; ++z) rtxt[wp2++] = cptr[z];
-            if (ep_cnt == 1u) {
-              rtxt[wp2++] = ')'; rtxt[wp2++] = ' ';
-              for (uint32_t z = 0u; z < ep_len; ++z) rtxt[wp2++] = ep_txt[z];
-            } else {
-              const char* mid = ") { ";
-              for (uint32_t z = 0u; z < 4u; ++z) rtxt[wp2++] = mid[z];
-              for (uint32_t z = 0u; z < ep_len; ++z) rtxt[wp2++] = ep_txt[z];
-              rtxt[wp2++] = ' '; rtxt[wp2++] = '}';
-            }
-            rtxt[wp2] = '\0';
-            sk.kind = 4u; sk.synth = rtxt; sk.synth_len = wp2; sk.brace_delta = 0;
-            r5_total_added += ep_len;
-            changed = true; any_change = true;
-          }
-        }
-      }
-    }
-    if (changed) continue;
+    // V5-1: Rule 5 epilogue folding helper (called both pre-Rule-4 and as post-Rule-4c fallback):
+    // Supports straight-line epilogues (<= 24 stmts) ending in `return ...;` / `{ ... return ...; }` (kind 0 or 4)
+    // or `__builtin_trap();`, balanced structured `if`/`else` epilogues (<= 16 stmts, no gotos/labels/loops),
+    // and depth-0 cold EOF noreturn blocks (1..12 balanced stmts preceded by a terminator, ending at EOF).
+    auto try_rule5 = [&](bool is_fallback) -> bool {
+      for (uint32_t a = 0u; a + 1u < acount; ++a) {
+        const SLine& sl = stmts[active[a]];
+        if (sl.kind != 1u) continue;
+        const uint32_t refs = count_refs(sl.label_id, acount);
+        if (refs == 0u) continue;
+        const int32_t ld = depth_arr[a];
 
-    // Rule 8: Loop-continue folding with proper nested-loop stack tracking:
-    // Inside `do { ... } while (C);` or `while (...) { ... }`, if `L_cont:` sits immediately before
-    // the loop's closing brace, rewrite `goto L_cont;` / `if (C2) goto L_cont;` (outside nested loops) into `continue;`.
+        int32_t ret_idx = -1;
+        int32_t rel_d = 0;
+        bool has_braces = false;
+        bool valid_scan = true;
+        bool reached_eof = false;
+        for (uint32_t k = a + 1u; k < acount && k <= a + 24u; ++k) {
+          if (depth_arr[k] < ld) { valid_scan = false; break; }
+          const SLine& sk = stmts[active[k]];
+          if (sk.kind != 0u && sk.kind != 4u) { valid_scan = false; break; }
+          if (sk.kind == 4u) {
+            if (!sk.synth) { valid_scan = false; break; }
+            if (starts_with(sk.synth, sk.synth_len, "    do {", 8u) ||
+                starts_with(sk.synth, sk.synth_len, "    while (", 11u) ||
+                starts_with(sk.synth, sk.synth_len, "    } while (", 13u) ||
+                ends_with(sk.synth, sk.synth_len, "break;", 6u) ||
+                ends_with(sk.synth, sk.synth_len, "continue;", 9u)) {
+              valid_scan = false;
+              break;
+            }
+          }
+          const bool is_eh = is_else_open(k);
+          if (sk.brace_delta < 0) {
+            rel_d += sk.brace_delta;
+            if (rel_d < 0) { valid_scan = false; break; }
+          }
+          if (sk.brace_delta != 0 || is_eh) has_braces = true;
+          if (rel_d == 0 && !is_eh && sk.brace_delta == 0) {
+            if (is_return_stmt(sk) || is_trap_stmt(sk)) {
+              if (!has_braces || (k - a) <= 16u) {
+                ret_idx = static_cast<int32_t>(k);
+              }
+              break;
+            }
+          }
+          if (sk.brace_delta > 0) rel_d += sk.brace_delta;
+          if (k + 1u == acount) reached_eof = true;
+        }
+
+        bool is_cold_eof = false;
+        if (is_fallback && ret_idx < 0 && valid_scan && reached_eof && rel_d == 0 && ld == 0 &&
+            a > 0u && depth_arr[a - 1u] == 0 && is_terminator(stmts[active[a - 1u]])) {
+          const uint32_t rem = (acount - 1u) - a;
+          if (rem >= 1u && rem <= 12u) {
+            const char* lp = nullptr;
+            uint32_t ll = 0u;
+            if (get_stmt_text(stmts[active[acount - 1u]], &lp, &ll) &&
+                !starts_with(lp, ll, "    (void)0;", 12u) &&
+                ends_with(lp, ll, ");", 2u)) {
+              ret_idx = static_cast<int32_t>(acount - 1u);
+              is_cold_eof = true;
+            }
+          }
+        }
+        if (ret_idx < 0) continue;
+
+        const uint32_t ep_cnt = static_cast<uint32_t>(ret_idx) - a;
+        if (ep_cnt == 0u) continue;
+        // Pre-Rule-4 skip: defer duplicating a multi-stmt 1-ref fallthrough epilogue so Rule 3/V4-1/Rule 4
+        // can form clean `if/else` first; the post-Rule-4c fallback (`is_fallback == true`) folds any remainder.
+        if (!is_fallback && !is_cold_eof && ep_cnt > 1u && refs == 1u && a > 0u &&
+            depth_arr[a - 1u] == ld && !is_terminator(stmts[active[a - 1u]])) {
+          continue;
+        }
+        if (refs * ep_cnt > 320u) continue;
+
+        // Compute combined inline epilogue text (bounded <= 1800 bytes)
+        uint32_t ep_bytes = 0u;
+        bool text_ok = true;
+        for (uint32_t e = 0u; e < ep_cnt; ++e) {
+          const SLine& se = stmts[active[a + 1u + e]];
+          const char* sptr = nullptr;
+          uint32_t slen = 0u;
+          if (!get_stmt_text(se, &sptr, &slen)) { text_ok = false; break; }
+          const uint32_t st = strip4_ptr(sptr, slen);
+          ep_bytes += (slen - st) + (e > 0u ? 1u : 0u);
+        }
+        if (!text_ok || ep_bytes == 0u || ep_bytes > 1800u) continue;
+        if (r5_total_added + refs * ep_bytes > tb.cap / 4u) continue;
+
+        char* ep_txt = work_arena.alloc<char>(ep_bytes + 4u);
+        if (!ep_txt) continue;
+        uint32_t ep_len = 0u;
+        for (uint32_t e = 0u; e < ep_cnt; ++e) {
+          if (e > 0u) ep_txt[ep_len++] = ' ';
+          const SLine& se = stmts[active[a + 1u + e]];
+          const char* ss = nullptr;
+          uint32_t slen = 0u;
+          get_stmt_text(se, &ss, &slen);
+          const uint32_t start = strip4_ptr(ss, slen);
+          for (uint32_t z = start; z < slen; ++z) ep_txt[ep_len++] = ss[z];
+        }
+        ep_txt[ep_len] = '\0';
+
+        const bool wrap_braces = (ep_cnt > 1u) || has_braces || (stmts[active[a + 1u]].kind == 4u);
+        uint32_t rewritten = 0u;
+        for (uint32_t k = 0u; k < acount; ++k) {
+          SLine& sk = stmts[active[k]];
+          if (sk.kind == 3u && sk.label_id == sl.label_id) {
+            uint32_t rlen = 0u;
+            const char* rtxt = (!wrap_braces)
+                ? alloc_synth(work_arena, "    ", 4u, ep_txt, ep_len, "", 0u, &rlen)
+                : alloc_synth(work_arena, "    { ", 6u, ep_txt, ep_len, " }", 2u, &rlen);
+            if (rtxt) {
+              sk.kind = 4u; sk.synth = rtxt; sk.synth_len = rlen; sk.brace_delta = 0;
+              r5_total_added += ep_len;
+              ++rewritten;
+            }
+          } else if (sk.kind == 2u && sk.label_id == sl.label_id) {
+            const char* cptr = (sk.cond_off == 0xFFFFFFFFu) ? sk.synth : (tb.data + sk.cond_off);
+            const uint32_t extra = (!wrap_braces) ? 2u : 6u;
+            const uint32_t total = 8u + sk.cond_len + extra + ep_len;
+            char* rtxt = work_arena.alloc<char>(total + 1u);
+            if (rtxt) {
+              uint32_t wp2 = 0u;
+              const char* pfx = "    if (";
+              for (uint32_t z = 0u; z < 8u; ++z) rtxt[wp2++] = pfx[z];
+              for (uint32_t z = 0u; z < sk.cond_len; ++z) rtxt[wp2++] = cptr[z];
+              if (!wrap_braces) {
+                rtxt[wp2++] = ')'; rtxt[wp2++] = ' ';
+                for (uint32_t z = 0u; z < ep_len; ++z) rtxt[wp2++] = ep_txt[z];
+              } else {
+                const char* mid = ") { ";
+                for (uint32_t z = 0u; z < 4u; ++z) rtxt[wp2++] = mid[z];
+                for (uint32_t z = 0u; z < ep_len; ++z) rtxt[wp2++] = ep_txt[z];
+                rtxt[wp2++] = ' '; rtxt[wp2++] = '}';
+              }
+              rtxt[wp2] = '\0';
+              sk.kind = 4u; sk.synth = rtxt; sk.synth_len = wp2; sk.brace_delta = 0;
+              r5_total_added += ep_len;
+              ++rewritten;
+            }
+          }
+        }
+        if (rewritten > 0u) {
+          if (is_cold_eof && rewritten == refs) {
+            for (uint32_t k = a; k < acount; ++k) stmts[active[k]].kind = 5u;
+          }
+          any_change = true;
+          return true;
+        }
+      }
+      return false;
+    };
+
+    if (try_rule5(false)) { changed = true; continue; }
+
+    // Rule 8 + V5-3b: Loop-continue folding with proper nested-loop stack tracking:
+    // (a) L_cont: immediately before loop closing brace -> continue;
+    // (b) V5-3b: L_hdr: immediately before `while (1) {` or `do { ... } while (W);` with back-edges
+    //     at loop_depth == 0 -> convert `do-while(W)` to `while (1) { ... if (!(W)) break; }` and emit `continue;`.
     for (uint32_t a = 0u; a < acount && !changed; ++a) {
       const SLine& sh = stmts[active[a]];
       if (sh.kind != 4u || sh.brace_delta != 1 || !sh.synth) continue;
-      const bool is_loop_hdr = starts_with(sh.synth, sh.synth_len, "    do {", 8u) ||
-                               starts_with(sh.synth, sh.synth_len, "    while (", 11u);
-      if (!is_loop_hdr) continue;
+      const bool is_do = starts_with(sh.synth, sh.synth_len, "    do {", 8u);
+      const bool is_while1 = starts_with(sh.synth, sh.synth_len, "    while (1) {", 15u);
+      const bool is_while_any = starts_with(sh.synth, sh.synth_len, "    while (", 11u);
+      if (!is_do && !is_while_any) continue;
       const int32_t ld = depth_arr[a];
       int32_t close_idx = -1;
       for (uint32_t k = a + 1u; k < acount; ++k) {
@@ -5531,40 +5677,141 @@ static bool structurize_c_body(
           break;
         }
       }
-      if (close_idx < 2 || stmts[active[close_idx - 1]].kind != 1u || depth_arr[close_idx - 1] != ld + 1) continue;
-      const uint64_t cont_lid = stmts[active[close_idx - 1]].label_id;
-      int32_t loop_stack[32];
-      uint32_t loop_depth = 0u;
-      for (uint32_t k = a + 1u; k < static_cast<uint32_t>(close_idx - 1); ++k) {
-        SLine& sk = stmts[active[k]];
-        if (sk.kind == 4u && sk.brace_delta == 1 && sk.synth &&
-            (starts_with(sk.synth, sk.synth_len, "    do {", 8u) ||
-             starts_with(sk.synth, sk.synth_len, "    while (", 11u))) {
-          if (loop_depth < 32u) loop_stack[loop_depth++] = depth_arr[k];
-          else break;
-          continue;
+      if (close_idx < 2) continue;
+      const uint32_t ci = static_cast<uint32_t>(close_idx);
+
+      // Rule 8a: L_cont: immediately before loop closing brace
+      if (stmts[active[ci - 1u]].kind == 1u && depth_arr[ci - 1u] == ld + 1) {
+        const uint64_t cont_lid = stmts[active[ci - 1u]].label_id;
+        int32_t loop_stack[32];
+        uint32_t loop_depth = 0u;
+        for (uint32_t k = a + 1u; k < ci - 1u; ++k) {
+          SLine& sk = stmts[active[k]];
+          if (sk.kind == 4u && sk.brace_delta == 1 && sk.synth &&
+              (starts_with(sk.synth, sk.synth_len, "    do {", 8u) ||
+               starts_with(sk.synth, sk.synth_len, "    while (", 11u))) {
+            if (loop_depth < 32u) loop_stack[loop_depth++] = depth_arr[k];
+            else break;
+            continue;
+          }
+          if (sk.kind == 4u && sk.brace_delta == -1 && loop_depth > 0u &&
+              depth_arr[k] == loop_stack[loop_depth - 1u]) {
+            --loop_depth;
+            continue;
+          }
+          if (loop_depth > 0u) continue;
+          if (sk.kind == 3u && sk.label_id == cont_lid) {
+            uint32_t clen2 = 0u;
+            const char* ctxt = alloc_synth(work_arena, "    continue;", 13u, "", 0u, "", 0u, &clen2);
+            if (ctxt) { sk.kind = 4u; sk.synth = ctxt; sk.synth_len = clen2; changed = true; any_change = true; }
+          } else if (sk.kind == 2u && sk.label_id == cont_lid) {
+            const char* cptr = (sk.cond_off == 0xFFFFFFFFu) ? sk.synth : (tb.data + sk.cond_off);
+            uint32_t clen2 = 0u;
+            const char* ctxt = alloc_synth(work_arena, "    if (", 8u, cptr, sk.cond_len, ") continue;", 11u, &clen2);
+            if (ctxt) { sk.kind = 4u; sk.synth = ctxt; sk.synth_len = clen2; changed = true; any_change = true; }
+          }
         }
-        if (sk.kind == 4u && sk.brace_delta == -1 && loop_depth > 0u &&
-            depth_arr[k] == loop_stack[loop_depth - 1u]) {
-          --loop_depth;
-          continue;
+        if (changed) break;
+      }
+
+      // V5-3b: L_hdr: immediately before `while (1) {` or `do { ... } while (W);`
+      if ((is_while1 || is_do) && a > 0u && stmts[active[a - 1u]].kind == 1u && depth_arr[a - 1u] == ld) {
+        const uint64_t hdr_lid = stmts[active[a - 1u]].label_id;
+        const SLine& scls = stmts[active[ci]];
+        const char* w_ptr = nullptr;
+        uint32_t w_len = 0u;
+        bool convert_do_to_while1 = false;
+        if (is_do) {
+          if (!scls.synth || scls.synth_len <= 15u ||
+              !starts_with(scls.synth, scls.synth_len, "    } while (", 13u) ||
+              !ends_with(scls.synth, scls.synth_len, ");", 2u)) {
+            continue;
+          }
+          w_ptr = scls.synth + 13u;
+          w_len = scls.synth_len - 15u;
+          convert_do_to_while1 = !(w_len == 1u && w_ptr[0] == '1');
         }
-        if (loop_depth > 0u) continue;
-        if (sk.kind == 3u && sk.label_id == cont_lid) {
-          uint32_t clen2 = 0u;
-          const char* ctxt = alloc_synth(work_arena, "    continue;", 13u, "", 0u, "", 0u, &clen2);
-          if (ctxt) { sk.kind = 4u; sk.synth = ctxt; sk.synth_len = clen2; changed = true; any_change = true; }
-        } else if (sk.kind == 2u && sk.label_id == cont_lid) {
-          const char* cptr = (sk.cond_off == 0xFFFFFFFFu) ? sk.synth : (tb.data + sk.cond_off);
-          uint32_t clen2 = 0u;
-          const char* ctxt = alloc_synth(work_arena, "    if (", 8u, cptr, sk.cond_len, ") continue;", 11u, &clen2);
-          if (ctxt) { sk.kind = 4u; sk.synth = ctxt; sk.synth_len = clen2; changed = true; any_change = true; }
+        uint32_t hit_cnt = 0u;
+        bool has_bare_cont = false;
+        int32_t loop_stack[32];
+        uint32_t loop_depth = 0u;
+        for (uint32_t k = a + 1u; k < ci; ++k) {
+          const SLine& sk = stmts[active[k]];
+          if (sk.kind == 4u && sk.brace_delta == 1 && sk.synth &&
+              (starts_with(sk.synth, sk.synth_len, "    do {", 8u) ||
+               starts_with(sk.synth, sk.synth_len, "    while (", 11u))) {
+            if (loop_depth < 32u) loop_stack[loop_depth++] = depth_arr[k];
+            else { hit_cnt = 0u; break; }
+            continue;
+          }
+          if (sk.kind == 4u && sk.brace_delta == -1 && loop_depth > 0u &&
+              depth_arr[k] == loop_stack[loop_depth - 1u]) {
+            --loop_depth;
+            continue;
+          }
+          if (loop_depth > 0u) continue;
+          if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == hdr_lid) {
+            ++hit_cnt;
+          } else if (convert_do_to_while1 && sk.kind == 4u && sk.synth &&
+                     ends_with(sk.synth, sk.synth_len, "continue;", 9u)) {
+            has_bare_cont = true;
+          }
+        }
+        if (hit_cnt > 0u && !has_bare_cont && (!convert_do_to_while1 || n + 1u < cap)) {
+          uint32_t w1len = 0u, brklen = 0u, w1clen = 0u;
+          const char* w1_hdr = convert_do_to_while1 ? alloc_synth(work_arena, "    while (1) {", 15u, "", 0u, "", 0u, &w1len) : "";
+          const char* brk_txt = convert_do_to_while1 ? alloc_neg_cond(work_arena, w_ptr, w_len, "    if (", 8u, ") break;", 8u, &brklen) : "";
+          const char* w1_cls = convert_do_to_while1 ? alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &w1clen) : "";
+          if (w1_hdr && brk_txt && w1_cls) {
+            const uint32_t lp_pos = active[a];
+            const uint32_t ci_pos = active[ci];
+            const uint16_t lp_ind = sh.indent;
+            const uint32_t ci_oline = scls.orig_line;
+            loop_depth = 0u;
+            for (uint32_t k = a + 1u; k < ci; ++k) {
+              SLine& sk = stmts[active[k]];
+              if (sk.kind == 4u && sk.brace_delta == 1 && sk.synth &&
+                  (starts_with(sk.synth, sk.synth_len, "    do {", 8u) ||
+                   starts_with(sk.synth, sk.synth_len, "    while (", 11u))) {
+                if (loop_depth < 32u) loop_stack[loop_depth++] = depth_arr[k];
+                else break;
+                continue;
+              }
+              if (sk.kind == 4u && sk.brace_delta == -1 && loop_depth > 0u &&
+                  depth_arr[k] == loop_stack[loop_depth - 1u]) {
+                --loop_depth;
+                continue;
+              }
+              if (loop_depth > 0u) continue;
+              if (sk.kind == 3u && sk.label_id == hdr_lid) {
+                uint32_t clen2 = 0u;
+                const char* ctxt = alloc_synth(work_arena, "    continue;", 13u, "", 0u, "", 0u, &clen2);
+                if (ctxt) { sk.kind = 4u; sk.synth = ctxt; sk.synth_len = clen2; changed = true; any_change = true; }
+              } else if (sk.kind == 2u && sk.label_id == hdr_lid) {
+                const char* cptr = (sk.cond_off == 0xFFFFFFFFu) ? sk.synth : (tb.data + sk.cond_off);
+                uint32_t clen2 = 0u;
+                const char* ctxt = alloc_synth(work_arena, "    if (", 8u, cptr, sk.cond_len, ") continue;", 11u, &clen2);
+                if (ctxt) { sk.kind = 4u; sk.synth = ctxt; sk.synth_len = clen2; changed = true; any_change = true; }
+              }
+            }
+            if (changed && convert_do_to_while1) {
+              stmts[lp_pos].synth = w1_hdr;
+              stmts[lp_pos].synth_len = w1len;
+              stmts[ci_pos].synth = w1_cls;
+              stmts[ci_pos].synth_len = w1clen;
+              SLine brk_sl{};
+              brk_sl.kind = 4u; brk_sl.synth = brk_txt; brk_sl.synth_len = brklen; brk_sl.brace_delta = 0;
+              brk_sl.indent = static_cast<uint16_t>(lp_ind + 1u);
+              brk_sl.orig_line = ci_oline;
+              insert_before(ci_pos, brk_sl);
+            }
+          }
         }
       }
     }
     if (changed) continue;
 
-    // Rule 6: Loop-exit goto -> break; with proper nested-loop stack tracking.
+    // Rule 6 (V5-5): Loop-exit goto -> break; with nested-loop tracking & `else`-skipping across enclosing IF/ELSE.
     for (uint32_t a = 0u; a < acount && !changed; ++a) {
       const SLine& sh = stmts[active[a]];
       if (sh.kind != 4u || sh.brace_delta != 1 || !sh.synth) continue;
@@ -5580,8 +5827,16 @@ static bool structurize_c_body(
         }
       }
       if (close_idx < 0 || static_cast<uint32_t>(close_idx) + 1u >= acount) continue;
-      const uint32_t nxt = static_cast<uint32_t>(close_idx) + 1u;
-      if (stmts[active[nxt]].kind != 1u || depth_arr[nxt] != ld) continue;
+      int32_t cur_d = ld;
+      uint32_t nxt = static_cast<uint32_t>(close_idx) + 1u;
+      while (nxt < acount && !(stmts[active[nxt]].kind == 1u && depth_arr[nxt] == cur_d)) {
+        if (cur_d <= 0) break;
+        const uint32_t stepped = step_out_if_else(nxt, cur_d, acount);
+        if (stepped == 0u) break;
+        --cur_d;
+        nxt = stepped;
+      }
+      if (nxt >= acount || stmts[active[nxt]].kind != 1u || depth_arr[nxt] != cur_d) continue;
       const uint64_t exit_lid = stmts[active[nxt]].label_id;
       int32_t loop_stack[32];
       uint32_t loop_depth = 0u;
@@ -5613,7 +5868,8 @@ static bool structurize_c_body(
     }
     if (changed) continue;
 
-    // Rule 1: GCC inverted loop: goto L_cond; L_body: <body>; L_cond: <0..12 straight stmts>; if (C) goto L_body;
+    // Rule 1 (V5-2): GCC inverted loop: goto L_cond; L_body: <body>; L_cond: <0..12 straight stmts>; if (C) goto L_body;
+    // Guarded by has_cross_entry(b, c, acount); supports refs(L_cond) >= 1 when no ref lies inside (b, e].
     for (uint32_t g = 0u; g + 3u < acount && !changed; ++g) {
       const SLine& sg = stmts[active[g]];
       if (sg.kind != 3u) continue;
@@ -5623,9 +5879,9 @@ static bool structurize_c_body(
       const uint64_t l_cond = sg.label_id;
       const uint64_t l_body = stmts[active[b]].label_id;
       if (l_cond == l_body) continue;
-      if (count_refs(l_cond, acount) != 1u || count_refs(l_body, acount) != 1u) continue;
+      const uint32_t cond_refs = count_refs(l_cond, acount);
+      if (cond_refs == 0u || count_refs(l_body, acount) != 1u) continue;
 
-      // Find L_cond at same depth gd with no depth drop below gd
       int32_t c_idx = -1;
       for (uint32_t k = b + 1u; k < acount; ++k) {
         if (depth_arr[k] < gd) break;
@@ -5636,9 +5892,8 @@ static bool structurize_c_body(
       }
       if (c_idx < 0 || static_cast<uint32_t>(c_idx) <= b + 1u) continue;
       const uint32_t c = static_cast<uint32_t>(c_idx);
-      if (has_bare_loop_ctrl(b + 1u, c, gd)) continue;
+      if (has_cross_entry(b, c, acount) || has_bare_loop_ctrl(b + 1u, c, gd)) continue;
 
-      // Check 0..12 straight OTHER stmts after c, ending with IF_GOTO -> l_body at depth gd
       int32_t e_idx = -1;
       for (uint32_t k = c + 1u; k < acount && k <= c + 13u; ++k) {
         if (depth_arr[k] != gd) break;
@@ -5651,17 +5906,36 @@ static bool structurize_c_body(
       }
       if (e_idx < 0) continue;
       const uint32_t e = static_cast<uint32_t>(e_idx);
+      if (cond_refs > 1u) {
+        bool cond_ref_blocked = false;
+        for (uint32_t k = b + 1u; k < acount; ++k) {
+          const SLine& sk = stmts[active[k]];
+          if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == l_cond) {
+            if (k <= e || depth_arr[k] == gd) {
+              cond_ref_blocked = true;
+              break;
+            }
+          }
+        }
+        if (cond_ref_blocked) continue;
+      }
       const SLine se_copy = stmts[active[e]];
+      const uint16_t base_indent = stmts[active[g]].indent;
 
       if (c + 1u == e) {
-        // Pure while (C) { <body> }
         uint32_t slen = 0u;
         const char* hdr = alloc_synth(work_arena, "    while (", 11u, (se_copy.cond_off == 0xFFFFFFFFu ? se_copy.synth : (tb.data + se_copy.cond_off)), se_copy.cond_len, ") {", 3u, &slen);
         uint32_t clen = 0u;
         const char* cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
         if (hdr && cls) {
-          stmts[active[g]].kind = 4u; stmts[active[g]].synth = hdr; stmts[active[g]].synth_len = slen; stmts[active[g]].brace_delta = 1;
-          stmts[active[b]].kind = 5u;
+          if (cond_refs > 1u) {
+            stmts[active[g]] = stmts[active[c]];
+            stmts[active[b]].kind = 4u; stmts[active[b]].synth = hdr; stmts[active[b]].synth_len = slen; stmts[active[b]].brace_delta = 1;
+            stmts[active[b]].indent = base_indent;
+          } else {
+            stmts[active[g]].kind = 4u; stmts[active[g]].synth = hdr; stmts[active[g]].synth_len = slen; stmts[active[g]].brace_delta = 1;
+            stmts[active[b]].kind = 5u;
+          }
           stmts[active[c]].kind = 5u;
           stmts[active[e]].kind = 4u; stmts[active[e]].synth = cls; stmts[active[e]].synth_len = clen; stmts[active[e]].brace_delta = -1;
           for (uint32_t k = b + 1u; k < c; ++k) stmts[active[k]].indent++;
@@ -5669,7 +5943,6 @@ static bool structurize_c_body(
           any_change = true;
         }
       } else {
-        // while (1) { <cond_stmts> if (!(C)) break; <body> }
         const uint32_t ncond = e - (c + 1u);
         if (n + ncond + 3u < cap) {
           uint32_t hlen = 0u, blen = 0u, clen = 0u;
@@ -5683,9 +5956,14 @@ static bool structurize_c_body(
               cond_buf[k].indent++;
               stmts[active[c + 1u + k]].kind = 5u;
             }
-            const uint32_t base_indent = stmts[active[g]].indent;
-            stmts[active[g]].kind = 4u; stmts[active[g]].synth = hdr; stmts[active[g]].synth_len = hlen; stmts[active[g]].brace_delta = 1;
-            stmts[active[b]].kind = 5u;
+            if (cond_refs > 1u) {
+              stmts[active[g]] = stmts[active[c]];
+              stmts[active[b]].kind = 4u; stmts[active[b]].synth = hdr; stmts[active[b]].synth_len = hlen; stmts[active[b]].brace_delta = 1;
+              stmts[active[b]].indent = base_indent;
+            } else {
+              stmts[active[g]].kind = 4u; stmts[active[g]].synth = hdr; stmts[active[g]].synth_len = hlen; stmts[active[g]].brace_delta = 1;
+              stmts[active[b]].kind = 5u;
+            }
             stmts[active[c]].kind = 5u;
             stmts[active[e]].kind = 4u; stmts[active[e]].synth = cls; stmts[active[e]].synth_len = clen; stmts[active[e]].brace_delta = -1;
             for (uint32_t k = b + 1u; k < c; ++k) stmts[active[k]].indent++;
@@ -5706,9 +5984,7 @@ static bool structurize_c_body(
     }
     if (changed) continue;
 
-    // V4-3: GCC Pre-Header Alt-Branch Loop Rotation (right after Rule 1 / before Rule 2):
-    // Matches `goto L_hdr; L_alt: <B_alt>; L_hdr: do { ... if (C) goto L_alt; ... } while (W);` (or `while (1) { ... }`)
-    // where L_alt has 1 ref directly inside the loop, 1..16 balanced statements, and falls through to L_hdr.
+    // V4-3 (V5-3c): GCC Pre-Header Alt-Branch Loop Rotation (cap raised 16 -> 64, allows both `if (C) goto` and `goto`):
     for (uint32_t g = 0u; g + 4u < acount && !changed; ++g) {
       const SLine& sg = stmts[active[g]];
       if (sg.kind != 3u) continue;
@@ -5719,10 +5995,9 @@ static bool structurize_c_body(
       const uint64_t l_alt = stmts[active[alt]].label_id;
       if (l_alt == l_hdr || count_refs(l_alt, acount) != 1u) continue;
 
-      // Scan L_alt+1 .. L_hdr (1..16 statements, balanced braces)
       int32_t hdr_idx = -1;
       int32_t rel_d = 0;
-      for (uint32_t k = alt + 1u; k < acount && k <= alt + 17u; ++k) {
+      for (uint32_t k = alt + 1u; k < acount && k <= alt + 65u; ++k) {
         if (depth_arr[k] < gd) break;
         const SLine& sk = stmts[active[k]];
         if (sk.brace_delta < 0) rel_d += sk.brace_delta;
@@ -5736,7 +6011,7 @@ static bool structurize_c_body(
       if (hdr_idx < 0 || rel_d != 0) continue;
       const uint32_t h = static_cast<uint32_t>(hdr_idx);
       const uint32_t alt_cnt = h - (alt + 1u);
-      if (alt_cnt == 0u || alt_cnt > 16u) continue;
+      if (alt_cnt == 0u || alt_cnt > 64u) continue;
       if (has_cross_entry(alt, h, acount) || has_bare_loop_ctrl(alt + 1u, h, gd)) continue;
 
       const uint32_t lp = h + 1u;
@@ -5771,7 +6046,7 @@ static bool structurize_c_body(
         convert_do_to_while1 = !(w_len == 1u && w_ptr[0] == '1');
       }
 
-      // Find the single `if (C) goto L_alt;` directly inside this loop (loop_depth == 0)
+      // Find the single `if (C) goto L_alt;` or `goto L_alt;` directly inside this loop (loop_depth == 0)
       int32_t j_idx = -1;
       bool has_bare_cont = false;
       int32_t loop_stack[32];
@@ -5791,7 +6066,7 @@ static bool structurize_c_body(
           continue;
         }
         if (loop_depth > 0u) continue;
-        if (sk.kind == 2u && sk.label_id == l_alt) {
+        if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == l_alt) {
           j_idx = static_cast<int32_t>(k);
         } else if (convert_do_to_while1 && sk.kind == 4u && sk.synth &&
                    ends_with(sk.synth, sk.synth_len, "continue;", 9u)) {
@@ -5810,14 +6085,18 @@ static bool structurize_c_body(
       const uint16_t lp_indent = slp.indent;
       const uint32_t ci_orig_line = scls.orig_line;
 
-      SLine alt_buf[16];
+      SLine alt_buf[64];
       for (uint32_t k = 0u; k < alt_cnt; ++k) alt_buf[k] = stmts[active[alt + 1u + k]];
       const bool need_cont = !is_terminator(alt_buf[alt_cnt - 1u]);
 
-      const char* cptr = (sj_copy.cond_off == 0xFFFFFFFFu) ? sj_copy.synth : (tb.data + sj_copy.cond_off);
       uint32_t hlen = 0u, clen = 0u, contlen = 0u;
-      const char* if_hdr = alloc_synth(work_arena, "    if (", 8u, cptr, sj_copy.cond_len, ") {", 3u, &hlen);
-      const char* if_cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+      const char* if_hdr = "";
+      const char* if_cls = "";
+      if (sj_copy.kind == 2u) {
+        const char* cptr = (sj_copy.cond_off == 0xFFFFFFFFu) ? sj_copy.synth : (tb.data + sj_copy.cond_off);
+        if_hdr = alloc_synth(work_arena, "    if (", 8u, cptr, sj_copy.cond_len, ") {", 3u, &hlen);
+        if_cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+      }
       const char* cont_txt = need_cont ? alloc_synth(work_arena, "    continue;", 13u, "", 0u, "", 0u, &contlen) : "";
       uint32_t w1len = 0u, brklen = 0u, w1clen = 0u;
       const char* w1_hdr = convert_do_to_while1 ? alloc_synth(work_arena, "    while (1) {", 15u, "", 0u, "", 0u, &w1len) : "";
@@ -5838,142 +6117,51 @@ static bool structurize_c_body(
           brk_sl.orig_line = ci_orig_line;
           insert_before(ci_stmt_pos, brk_sl);  // ci_stmt_pos > j_stmt_pos so j_stmt_pos stays valid
         }
-        stmts[j_stmt_pos].kind = 4u;
-        stmts[j_stmt_pos].synth = if_hdr;
-        stmts[j_stmt_pos].synth_len = hlen;
-        stmts[j_stmt_pos].brace_delta = 1;
-        uint32_t ins_pos = j_stmt_pos + 1u;
-        for (uint32_t k = 0u; k < alt_cnt; ++k) {
-          int32_t rel_ind = static_cast<int32_t>(alt_buf[k].indent) - static_cast<int32_t>(src_base_indent);
-          if (rel_ind < 0) rel_ind = 0;
-          alt_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + 1u + static_cast<uint32_t>(rel_ind));
-          insert_before(ins_pos++, alt_buf[k]);
+        if (sj_copy.kind == 2u) {
+          stmts[j_stmt_pos].kind = 4u;
+          stmts[j_stmt_pos].synth = if_hdr;
+          stmts[j_stmt_pos].synth_len = hlen;
+          stmts[j_stmt_pos].brace_delta = 1;
+          uint32_t ins_pos = j_stmt_pos + 1u;
+          for (uint32_t k = 0u; k < alt_cnt; ++k) {
+            int32_t rel_ind = static_cast<int32_t>(alt_buf[k].indent) - static_cast<int32_t>(src_base_indent);
+            if (rel_ind < 0) rel_ind = 0;
+            alt_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + 1u + static_cast<uint32_t>(rel_ind));
+            insert_before(ins_pos++, alt_buf[k]);
+          }
+          if (need_cont) {
+            SLine cont_sl{};
+            cont_sl.kind = 4u; cont_sl.synth = cont_txt; cont_sl.synth_len = contlen; cont_sl.brace_delta = 0;
+            cont_sl.indent = static_cast<uint16_t>(sj_copy.indent + 1u);
+            cont_sl.orig_line = sj_copy.orig_line;
+            insert_before(ins_pos++, cont_sl);
+          }
+          SLine cls_sl{};
+          cls_sl.kind = 4u; cls_sl.synth = if_cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
+          cls_sl.indent = sj_copy.indent;
+          cls_sl.orig_line = sj_copy.orig_line;
+          insert_before(ins_pos, cls_sl);
+        } else {
+          for (uint32_t k = 0u; k < alt_cnt; ++k) {
+            int32_t rel_ind = static_cast<int32_t>(alt_buf[k].indent) - static_cast<int32_t>(src_base_indent);
+            if (rel_ind < 0) rel_ind = 0;
+            alt_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + static_cast<uint32_t>(rel_ind));
+          }
+          stmts[j_stmt_pos] = alt_buf[0];
+          uint32_t ins_pos = j_stmt_pos + 1u;
+          for (uint32_t k = 1u; k < alt_cnt; ++k) {
+            insert_before(ins_pos++, alt_buf[k]);
+          }
+          if (need_cont) {
+            SLine cont_sl{};
+            cont_sl.kind = 4u; cont_sl.synth = cont_txt; cont_sl.synth_len = contlen; cont_sl.brace_delta = 0;
+            cont_sl.indent = sj_copy.indent;
+            cont_sl.orig_line = sj_copy.orig_line;
+            insert_before(ins_pos++, cont_sl);
+          }
         }
-        if (need_cont) {
-          SLine cont_sl{};
-          cont_sl.kind = 4u; cont_sl.synth = cont_txt; cont_sl.synth_len = contlen; cont_sl.brace_delta = 0;
-          cont_sl.indent = static_cast<uint16_t>(sj_copy.indent + 1u);
-          cont_sl.orig_line = sj_copy.orig_line;
-          insert_before(ins_pos++, cont_sl);
-        }
-        SLine cls_sl{};
-        cls_sl.kind = 4u; cls_sl.synth = if_cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
-        cls_sl.indent = sj_copy.indent;
-        cls_sl.orig_line = sj_copy.orig_line;
-        insert_before(ins_pos, cls_sl);
         changed = true;
         any_change = true;
-      }
-    }
-    if (changed) continue;
-
-    // Rule 5b (V4-2): Generalized Single-Ref Cold Tail-Block Inlining (before Rule 2):
-    // If `L_cold:` has count_refs == 1, is preceded by a terminator, and has 1..32 balanced statements
-    // (kind 0, 2, 4, or internal kind 1 with all refs strictly inside (a, e]) ending in top-level `goto L_rejoin;`
-    // or `return`, inline it at its single jump site and delete `L_cold:`.
-    for (uint32_t a = 1u; a + 1u < acount && !changed; ++a) {
-      const SLine& sl = stmts[active[a]];
-      if (sl.kind != 1u) continue;
-      if (count_refs(sl.label_id, acount) != 1u) continue;
-      const int32_t ld = depth_arr[a];
-      if (depth_arr[a - 1u] != ld || !is_terminator(stmts[active[a - 1u]])) continue;
-
-      int32_t end_idx = -1;
-      int32_t rel_depth = 0;
-      for (uint32_t k = a + 1u; k < acount && k <= a + 32u; ++k) {
-        if (depth_arr[k] < ld) break;
-        const SLine& sk = stmts[active[k]];
-        const bool is_else_hdr = (sk.kind == 4u && sk.synth &&
-                                  starts_with(sk.synth, sk.synth_len, "    } else {", 12u));
-        if (sk.brace_delta < 0) rel_depth += sk.brace_delta;
-        if (rel_depth < 0) break;
-        if (rel_depth == 0 && !is_else_hdr && sk.brace_delta == 0) {
-          if (sk.kind == 3u) {
-            if (sk.label_id != sl.label_id && k > a + 1u) {
-              end_idx = static_cast<int32_t>(k);
-            }
-            break;
-          }
-          if (is_return_stmt(sk)) {
-            end_idx = static_cast<int32_t>(k);
-            break;
-          }
-        }
-        if (sk.kind != 0u && sk.kind != 1u && sk.kind != 2u && sk.kind != 4u &&
-            !(rel_depth > 0 && sk.kind == 3u)) {
-          break;
-        }
-        if (sk.brace_delta > 0) rel_depth += sk.brace_delta;
-      }
-      if (end_idx < 0 || rel_depth != 0) continue;
-      const uint32_t e = static_cast<uint32_t>(end_idx);
-      const uint32_t cnt = e - a;  // 1..32 statements
-      if (cnt == 0u || cnt > 32u) continue;
-      if (has_cross_entry(a, e, acount) || has_bare_loop_ctrl(a + 1u, e + 1u, ld)) continue;
-
-      // Find the single jump site targeting L_cold
-      int32_t j_idx = -1;
-      for (uint32_t k = 0u; k < acount; ++k) {
-        const SLine& sk = stmts[active[k]];
-        if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == sl.label_id) {
-          j_idx = static_cast<int32_t>(k);
-          break;
-        }
-      }
-      if (j_idx < 0) continue;
-      const uint32_t ju = static_cast<uint32_t>(j_idx);
-      if (ju >= a && ju <= e) continue;  // never self-inline
-
-      SLine blk_buf[32];
-      for (uint32_t k = 0u; k < cnt; ++k) blk_buf[k] = stmts[active[a + 1u + k]];
-      const uint16_t src_base_indent = blk_buf[cnt - 1u].indent;
-      const SLine sj_copy = stmts[active[ju]];
-      const uint32_t j_stmt_pos = active[ju];
-
-      if (sj_copy.kind == 3u) {
-        if (n + cnt < cap) {
-          for (uint32_t k = a; k <= e; ++k) stmts[active[k]].kind = 5u;
-          for (uint32_t k = 0u; k < cnt; ++k) {
-            int32_t rel_ind = static_cast<int32_t>(blk_buf[k].indent) - static_cast<int32_t>(src_base_indent);
-            if (rel_ind < 0) rel_ind = 0;
-            blk_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + static_cast<uint32_t>(rel_ind));
-          }
-          stmts[j_stmt_pos] = blk_buf[0];
-          uint32_t ins_pos = j_stmt_pos + 1u;
-          for (uint32_t k = 1u; k < cnt; ++k) {
-            insert_before(ins_pos++, blk_buf[k]);
-          }
-          changed = true;
-          any_change = true;
-        }
-      } else if (sj_copy.kind == 2u) {
-        if (n + cnt + 2u < cap) {
-          const char* cptr = (sj_copy.cond_off == 0xFFFFFFFFu) ? sj_copy.synth : (tb.data + sj_copy.cond_off);
-          uint32_t hlen = 0u, clen = 0u;
-          const char* hdr = alloc_synth(work_arena, "    if (", 8u, cptr, sj_copy.cond_len, ") {", 3u, &hlen);
-          const char* cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
-          if (hdr && cls) {
-            for (uint32_t k = a; k <= e; ++k) stmts[active[k]].kind = 5u;
-            stmts[j_stmt_pos].kind = 4u;
-            stmts[j_stmt_pos].synth = hdr;
-            stmts[j_stmt_pos].synth_len = hlen;
-            stmts[j_stmt_pos].brace_delta = 1;
-            uint32_t ins_pos = j_stmt_pos + 1u;
-            for (uint32_t k = 0u; k < cnt; ++k) {
-              int32_t rel_ind = static_cast<int32_t>(blk_buf[k].indent) - static_cast<int32_t>(src_base_indent);
-              if (rel_ind < 0) rel_ind = 0;
-              blk_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + 1u + static_cast<uint32_t>(rel_ind));
-              insert_before(ins_pos++, blk_buf[k]);
-            }
-            SLine cls_sl{};
-            cls_sl.kind = 4u; cls_sl.synth = cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
-            cls_sl.indent = sj_copy.indent;
-            cls_sl.orig_line = sj_copy.orig_line;
-            insert_before(ins_pos, cls_sl);
-            changed = true;
-            any_change = true;
-          }
-        }
       }
     }
     if (changed) continue;
@@ -6046,9 +6234,171 @@ static bool structurize_c_body(
     }
     if (changed) continue;
 
-    // V4-1: Structured-`if` Tail-`goto` -> `if-else` (right before Rule 3):
-    // Matches `if (C) { <then>; goto L_join; } <else> L_join:` where `if` has no existing `else`,
-    // `<else>` is non-empty with balanced braces and no cross-entry, and rewrites to `if (C) { <then>; } else { <else> } L_join:`.
+    // V5-3a: GCC Latch-Before-Header Loop Un-Rotation:
+    // Matches `(goto L_hdr; || prev_is_term) L_latch: <LATCH (1..40 balanced stmts)> L_hdr: <BODY>`
+    // where <BODY> ends in terminator or `if (C) goto L_latch;`, L_latch has >= 1 back-edge from <BODY>
+    // and 0 refs outside (L_latch, end_of_BODY], and no bare loop control would be captured.
+    for (uint32_t latch = 1u; latch + 3u < acount && !changed; ++latch) {
+      const SLine& slatch = stmts[active[latch]];
+      if (slatch.kind != 1u) continue;
+      const int32_t gd = depth_arr[latch];
+      const uint32_t prev = latch - 1u;
+      if (depth_arr[prev] != gd) continue;
+      const SLine& sprev = stmts[active[prev]];
+      if (!is_terminator(sprev)) continue;
+      const bool has_leading_goto_cand = (sprev.kind == 3u);
+      const uint64_t l_latch = slatch.label_id;
+
+      // Scan 1..40 balanced statements to find L_hdr at depth gd
+      int32_t hdr_idx = -1;
+      int32_t rel_d = 0;
+      for (uint32_t k = latch + 1u; k < acount && k <= latch + 41u; ++k) {
+        if (depth_arr[k] < gd) break;
+        const SLine& sk = stmts[active[k]];
+        const bool is_eh = is_else_open(k);
+        if (sk.brace_delta < 0) rel_d += sk.brace_delta;
+        if (rel_d < 0) break;
+        if (rel_d == 0 && !is_eh && sk.kind == 1u && sk.label_id != l_latch) {
+          if (has_leading_goto_cand) {
+            if (sk.label_id == sprev.label_id) {
+              hdr_idx = static_cast<int32_t>(k);
+              break;
+            }
+          } else {
+            hdr_idx = static_cast<int32_t>(k);
+            break;
+          }
+        }
+        if (sk.brace_delta > 0) rel_d += sk.brace_delta;
+      }
+      if (hdr_idx < 0 || rel_d != 0) continue;
+      const uint32_t hdr = static_cast<uint32_t>(hdr_idx);
+      const uint32_t latch_cnt = hdr - (latch + 1u);
+      if (latch_cnt == 0u || latch_cnt > 40u) continue;
+      const uint64_t l_hdr = stmts[active[hdr]].label_id;
+      const bool has_leading_goto = has_leading_goto_cand && (sprev.label_id == l_hdr);
+
+      // Scan <BODY> from hdr + 1 until top-level terminator or `if (C) goto L_latch;` at depth gd
+      int32_t end_idx = -1;
+      int32_t brel_d = 0;
+      for (uint32_t k = hdr + 1u; k < acount; ++k) {
+        if (depth_arr[k] < gd) break;
+        const SLine& sk = stmts[active[k]];
+        const bool is_eh = is_else_open(k);
+        if (sk.brace_delta < 0) brel_d += sk.brace_delta;
+        if (brel_d < 0) break;
+        if (brel_d == 0 && !is_eh && sk.brace_delta == 0) {
+          if ((sk.kind == 2u && sk.label_id == l_latch) || is_terminator(sk)) {
+            end_idx = static_cast<int32_t>(k);
+            break;
+          }
+        }
+        if (sk.brace_delta > 0) brel_d += sk.brace_delta;
+      }
+      if (end_idx < 0 || brel_d != 0) continue;
+      const uint32_t bend = static_cast<uint32_t>(end_idx);
+
+      // Verify L_latch has >= 1 ref in (hdr, bend], 0 refs in (latch, hdr), and 0 refs outside [latch, bend]
+      uint32_t latch_refs_body = 0u;
+      bool latch_ref_bad = false;
+      for (uint32_t k = 0u; k < acount; ++k) {
+        const SLine& sk = stmts[active[k]];
+        if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == l_latch) {
+          if (k > hdr && k <= bend) ++latch_refs_body;
+          else { latch_ref_bad = true; break; }
+        }
+      }
+      if (latch_refs_body == 0u || latch_ref_bad) continue;
+
+      // Verify no cross-entry into any label in (latch, bend) except hdr
+      bool bad_cross = false;
+      for (uint32_t m = latch + 1u; m < bend && !bad_cross; ++m) {
+        if (m == hdr) continue;
+        const SLine& sm = stmts[active[m]];
+        if (sm.kind != 1u) continue;
+        const uint64_t lid = sm.label_id;
+        for (uint32_t k = 0u; k < latch; ++k) {
+          const SLine& sk = stmts[active[k]];
+          if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == lid) { bad_cross = true; break; }
+        }
+        for (uint32_t k = bend + 1u; k < acount && !bad_cross; ++k) {
+          const SLine& sk = stmts[active[k]];
+          if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == lid) { bad_cross = true; break; }
+        }
+      }
+      if (bad_cross) continue;
+      if (has_bare_loop_ctrl(latch + 1u, hdr, gd) || has_bare_loop_ctrl(hdr + 1u, bend + 1u, gd)) continue;
+
+      const uint32_t latch_total = hdr - latch;  // L_latch + 1..40 stmts (<= 41)
+      if (n + latch_total + 4u >= cap) continue;
+
+      const uint32_t hdr_refs = count_refs(l_hdr, acount);
+      const bool keep_hdr_lbl = (hdr_refs > (has_leading_goto ? 1u : 0u));
+      const uint16_t base_indent = stmts[active[prev]].indent;
+      const SLine sbend_copy = stmts[active[bend]];
+
+      uint32_t hlen = 0u, clen = 0u, brklen = 0u;
+      const char* w1_hdr = alloc_synth(work_arena, "    while (1) {", 15u, "", 0u, "", 0u, &hlen);
+      const char* w1_cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+      const bool bend_is_if_latch = (sbend_copy.kind == 2u && sbend_copy.label_id == l_latch);
+      const bool bend_is_goto_latch = (sbend_copy.kind == 3u && sbend_copy.label_id == l_latch);
+      const char* brk_txt = bend_is_if_latch
+          ? alloc_neg_cond(work_arena,
+                           (sbend_copy.cond_off == 0xFFFFFFFFu ? sbend_copy.synth : (tb.data + sbend_copy.cond_off)),
+                           sbend_copy.cond_len, "    if (", 8u, ") break;", 8u, &brklen)
+          : "";
+      if (w1_hdr && w1_cls && brk_txt) {
+        SLine latch_buf[44];
+        for (uint32_t k = 0u; k < latch_total; ++k) {
+          latch_buf[k] = stmts[active[latch + k]];
+          if (k > 0u) {
+            int32_t rel_ind = static_cast<int32_t>(latch_buf[k].indent) - static_cast<int32_t>(base_indent);
+            if (rel_ind < 0) rel_ind = 0;
+            latch_buf[k].indent = static_cast<uint16_t>(base_indent + 1u + static_cast<uint32_t>(rel_ind));
+          }
+        }
+        // 1. Indent body & rewrite body_end
+        for (uint32_t k = hdr + 1u; k <= bend; ++k) stmts[active[k]].indent++;
+        if (bend_is_if_latch) {
+          stmts[active[bend]].kind = 4u;
+          stmts[active[bend]].synth = brk_txt;
+          stmts[active[bend]].synth_len = brklen;
+          stmts[active[bend]].brace_delta = 0;
+        } else if (bend_is_goto_latch) {
+          stmts[active[bend]].kind = 5u;
+        }
+        // 2. Insert L_latch + <LATCH> + `}` right after active[bend] (higher index first!)
+        uint32_t ins_pos = active[bend] + 1u;
+        for (uint32_t k = 0u; k < latch_total; ++k) {
+          insert_before(ins_pos++, latch_buf[k]);
+        }
+        SLine cls_sl{};
+        cls_sl.kind = 4u; cls_sl.synth = w1_cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
+        cls_sl.indent = base_indent;
+        cls_sl.orig_line = sbend_copy.orig_line;
+        insert_before(ins_pos, cls_sl);
+        // 3. Delete leading goto L_hdr (if present) and original L_latch..<LATCH>
+        if (has_leading_goto) stmts[active[prev]].kind = 5u;
+        for (uint32_t k = latch; k < hdr; ++k) stmts[active[k]].kind = 5u;
+        // 4. Emit `while (1) {` at hdr (keeping L_hdr: above it if externally referenced)
+        SLine w1_sl{};
+        w1_sl.kind = 4u; w1_sl.synth = w1_hdr; w1_sl.synth_len = hlen; w1_sl.brace_delta = 1;
+        w1_sl.indent = base_indent;
+        w1_sl.orig_line = stmts[active[hdr]].orig_line;
+        if (keep_hdr_lbl) {
+          insert_before(active[hdr] + 1u, w1_sl);
+        } else {
+          stmts[active[hdr]] = w1_sl;
+        }
+        changed = true;
+        any_change = true;
+      }
+    }
+    if (changed) continue;
+
+    // V4-1 (V5-5 multi-level `else`-skipping) + V5-6 Twin-`goto` `if-else`:
+    // Matches `if (C) { <then>; goto L_join; } <else> (L_join: | enclosing-if-else->L_join: | goto L_join;)`
+    // where `if` has no existing `else` and `<else>` is non-empty with balanced braces and no cross-entry.
     {
       int32_t best_vi = -1, best_vc = -1, best_ve = -1;
       uint32_t best_vspan = 0xFFFFFFFFu;
@@ -6063,15 +6413,8 @@ static bool structurize_c_body(
         for (uint32_t k = i + 1u; k < acount; ++k) {
           if (depth_arr[k] < id) break;
           if (depth_arr[k] == id) {
-            const SLine& sk = stmts[active[k]];
-            if (sk.kind == 4u && sk.synth && starts_with(sk.synth, sk.synth_len, "    } else {", 12u)) {
-              break;  // already has an else branch
-            }
-            if (sk.kind == 4u && sk.brace_delta == -1 && sk.synth &&
-                starts_with(sk.synth, sk.synth_len, "    }", 5u) &&
-                !starts_with(sk.synth, sk.synth_len, "    } while (", 13u)) {
-              close_idx = static_cast<int32_t>(k);
-            }
+            if (is_else_open(k)) break;
+            if (is_if_else_close(k)) close_idx = static_cast<int32_t>(k);
             break;
           }
         }
@@ -6082,10 +6425,38 @@ static bool structurize_c_body(
         const uint64_t l_join = stmts[active[gi]].label_id;
         int32_t e_idx = -1;
         for (uint32_t k = ci + 1u; k < acount; ++k) {
-          if (depth_arr[k] < id) break;
-          if (depth_arr[k] == id && stmts[active[k]].kind == 1u && stmts[active[k]].label_id == l_join) {
-            e_idx = static_cast<int32_t>(k);
+          if (depth_arr[k] < id) {
+            // V5-5: Multi-level IF/ELSE exit check (crossing `}` or `} else { ... }`)
+            if (depth_arr[k] == id - 1 && id > 0) {
+              int32_t cur_d = id;
+              uint32_t wk = k;
+              uint32_t crossed = 0u;
+              while (wk < acount && cur_d > 0) {
+                const uint32_t next_wk = step_out_if_else(wk, cur_d, acount);
+                if (next_wk == 0u) break;
+                --cur_d;
+                ++crossed;
+                wk = next_wk;
+              }
+              if (crossed > 0u && wk < acount && stmts[active[wk]].kind == 1u &&
+                  depth_arr[wk] == cur_d && stmts[active[wk]].label_id == l_join) {
+                e_idx = static_cast<int32_t>(k);
+              }
+            }
             break;
+          }
+          if (depth_arr[k] == id) {
+            const SLine& sk = stmts[active[k]];
+            if (sk.kind == 1u && sk.label_id == l_join) {
+              e_idx = static_cast<int32_t>(k);
+              break;
+            }
+            // V5-6: Twin-`goto` `if-else`: `if (A) { <S1>; goto L; } <S2>; goto L;`
+            if (sk.kind == 3u && sk.label_id == l_join) {
+              e_idx = static_cast<int32_t>(k);
+              break;
+            }
+            if (is_terminator(sk)) break;
           }
         }
         if (e_idx < 0 || static_cast<uint32_t>(e_idx) <= ci + 1u) continue;
@@ -6126,7 +6497,8 @@ static bool structurize_c_body(
     }
     if (changed) continue;
 
-    // Rule 3: Diamond if-else: if (C) goto L1; <then> goto L2; L1: <else> L2: (innermost first)
+    // Rule 3 (V5-2): Diamond if-else: if (C) goto L1; <then> goto L2; L1: <else> L2: (innermost first)
+    // Guarded by has_cross_entry on BOTH branches so shared suffixes are never trapped inside else { ... }.
     int32_t best_ei = -1, best_em = -1, best_ee = -1;
     uint32_t best_espan = 0xFFFFFFFFu;
     for (uint32_t i = 0u; i + 4u < acount; ++i) {
@@ -6155,6 +6527,7 @@ static bool structurize_c_body(
       }
       if (e_idx < 0 || static_cast<uint32_t>(e_idx) <= m + 1u) continue;
       const uint32_t e = static_cast<uint32_t>(e_idx);
+      if (has_cross_entry(i, m - 1u, acount) || has_cross_entry(m, e, acount)) continue;
       if ((e - i) < best_espan) {
         best_espan = e - i;
         best_ei = static_cast<int32_t>(i);
@@ -6183,6 +6556,324 @@ static bool structurize_c_body(
         cls_sl.indent = si_copy.indent;
         cls_sl.orig_line = stmts[active[e]].orig_line;
         insert_before(active[e], cls_sl);
+        changed = true;
+        any_change = true;
+      }
+    }
+    if (changed) continue;
+
+    // V5-2: Small sibling-suffix duplication:
+    // `if (A) { ...; if (B) goto L_suf; [<rest>] } else { ...; L_suf: <1..8 straight stmts>; }` (and symmetric case).
+    for (uint32_t i = 0u; i + 5u < acount && !changed; ++i) {
+      const SLine& si = stmts[active[i]];
+      if (si.kind != 4u || si.brace_delta != 1 || !si.synth ||
+          !starts_with(si.synth, si.synth_len, "    if (", 8u)) {
+        continue;
+      }
+      const int32_t id = depth_arr[i];
+      int32_t else_idx = -1, end_idx = -1;
+      for (uint32_t k = i + 1u; k < acount; ++k) {
+        if (depth_arr[k] < id) break;
+        if (depth_arr[k] == id) {
+          if (else_idx < 0 && is_else_open(k)) {
+            else_idx = static_cast<int32_t>(k);
+          } else if (else_idx >= 0 && is_if_else_close(k)) {
+            end_idx = static_cast<int32_t>(k);
+            break;
+          } else {
+            break;
+          }
+        }
+      }
+      if (else_idx < 0 || end_idx < 0) continue;
+      const uint32_t ei = static_cast<uint32_t>(else_idx);
+      const uint32_t ci = static_cast<uint32_t>(end_idx);
+
+      // Try both directions: dir 0 = L_suf in else, jump in then; dir 1 = L_suf in then, jump in else.
+      for (uint32_t dir = 0u; dir < 2u && !changed; ++dir) {
+        const uint32_t src_b = (dir == 0u) ? (i + 1u) : (ei + 1u);
+        const uint32_t src_e = (dir == 0u) ? ei : ci;
+        const uint32_t dst_b = (dir == 0u) ? (ei + 1u) : (i + 1u);
+        const uint32_t dst_e = (dir == 0u) ? ci : ei;
+
+        // Find a label L_suf at depth id + 1 near the end of dst (1..8 straight stmts before dst_e)
+        for (uint32_t ls = (dst_e > dst_b + 8u ? dst_e - 9u : dst_b); ls + 1u < dst_e && !changed; ++ls) {
+          if (depth_arr[ls] != id + 1 || stmts[active[ls]].kind != 1u) continue;
+          const uint32_t suf_cnt = dst_e - (ls + 1u);
+          if (suf_cnt == 0u || suf_cnt > 8u) continue;
+          bool suf_ok = true;
+          uint32_t suf_bytes = 0u;
+          for (uint32_t k = ls + 1u; k < dst_e; ++k) {
+            const SLine& sk = stmts[active[k]];
+            if (depth_arr[k] != id + 1 || sk.brace_delta != 0 || (sk.kind != 0u && sk.kind != 4u)) {
+              suf_ok = false; break;
+            }
+            if (sk.kind == 4u && sk.synth &&
+                (ends_with(sk.synth, sk.synth_len, "break;", 6u) ||
+                 ends_with(sk.synth, sk.synth_len, "continue;", 9u) ||
+                 is_else_open(k))) {
+              suf_ok = false; break;
+            }
+            const char* sptr = nullptr;
+            uint32_t slen = 0u;
+            if (!get_stmt_text(sk, &sptr, &slen)) { suf_ok = false; break; }
+            suf_bytes += slen;
+          }
+          if (!suf_ok || r5_total_added + suf_bytes > tb.cap / 4u) continue;
+          const uint64_t l_suf = stmts[active[ls]].label_id;
+
+          // Look for a jump to l_suf in src_b..src_e at depth id + 1 (or exiting cleanly to src_e)
+          for (uint32_t j = src_b; j < src_e && !changed; ++j) {
+            const SLine& sj = stmts[active[j]];
+            if ((sj.kind != 2u && sj.kind != 3u) || sj.label_id != l_suf) continue;
+            if (depth_arr[j] != id + 1) continue;
+            if (j + 1u == src_e) {
+              // Tail of sibling branch: replace `goto L_suf;` with <suf>, or `if (B) goto L_suf;` with `if (B) { <suf> }`
+              if (n + suf_cnt + 2u >= cap) continue;
+              SLine suf_buf[8];
+              for (uint32_t k = 0u; k < suf_cnt; ++k) suf_buf[k] = stmts[active[ls + 1u + k]];
+              const SLine sj_copy = sj;
+              const uint32_t j_pos = active[j];
+              if (sj_copy.kind == 3u) {
+                for (uint32_t k = 0u; k < suf_cnt; ++k) suf_buf[k].indent = sj_copy.indent;
+                stmts[j_pos] = suf_buf[0];
+                uint32_t ins_pos = j_pos + 1u;
+                for (uint32_t k = 1u; k < suf_cnt; ++k) insert_before(ins_pos++, suf_buf[k]);
+                r5_total_added += suf_bytes;
+                changed = true; any_change = true;
+              } else {
+                const char* cptr = (sj_copy.cond_off == 0xFFFFFFFFu) ? sj_copy.synth : (tb.data + sj_copy.cond_off);
+                uint32_t hlen = 0u, clen = 0u;
+                const char* hdr = alloc_synth(work_arena, "    if (", 8u, cptr, sj_copy.cond_len, ") {", 3u, &hlen);
+                const char* cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+                if (hdr && cls) {
+                  stmts[j_pos].kind = 4u; stmts[j_pos].synth = hdr; stmts[j_pos].synth_len = hlen; stmts[j_pos].brace_delta = 1;
+                  uint32_t ins_pos = j_pos + 1u;
+                  for (uint32_t k = 0u; k < suf_cnt; ++k) {
+                    suf_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + 1u);
+                    insert_before(ins_pos++, suf_buf[k]);
+                  }
+                  SLine cls_sl{};
+                  cls_sl.kind = 4u; cls_sl.synth = cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
+                  cls_sl.indent = sj_copy.indent;
+                  cls_sl.orig_line = sj_copy.orig_line;
+                  insert_before(ins_pos, cls_sl);
+                  r5_total_added += suf_bytes;
+                  changed = true; any_change = true;
+                }
+              }
+            } else if (sj.kind == 2u && !has_cross_entry(j, src_e, acount)) {
+              // Mid-branch `if (B) goto L_suf; <rest>` -> `if (B) { <suf> } else { <rest> }`
+              if (n + suf_cnt + 3u >= cap) continue;
+              SLine suf_buf[8];
+              for (uint32_t k = 0u; k < suf_cnt; ++k) suf_buf[k] = stmts[active[ls + 1u + k]];
+              const SLine sj_copy = sj;
+              const char* cptr = (sj_copy.cond_off == 0xFFFFFFFFu) ? sj_copy.synth : (tb.data + sj_copy.cond_off);
+              uint32_t hlen = 0u, elen = 0u, clen = 0u;
+              const char* hdr = alloc_synth(work_arena, "    if (", 8u, cptr, sj_copy.cond_len, ") {", 3u, &hlen);
+              const char* els = alloc_synth(work_arena, "    } else {", 12u, "", 0u, "", 0u, &elen);
+              const char* cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+              if (hdr && els && cls) {
+                const uint32_t j_pos = active[j];
+                const uint32_t se_pos = active[src_e];
+                for (uint32_t k = j + 1u; k < src_e; ++k) stmts[active[k]].indent++;
+                SLine cls_sl{};
+                cls_sl.kind = 4u; cls_sl.synth = cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
+                cls_sl.indent = sj_copy.indent;
+                cls_sl.orig_line = stmts[se_pos].orig_line;
+                insert_before(se_pos, cls_sl);  // higher index first
+                stmts[j_pos].kind = 4u; stmts[j_pos].synth = hdr; stmts[j_pos].synth_len = hlen; stmts[j_pos].brace_delta = 1;
+                uint32_t ins_pos = j_pos + 1u;
+                for (uint32_t k = 0u; k < suf_cnt; ++k) {
+                  suf_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + 1u);
+                  insert_before(ins_pos++, suf_buf[k]);
+                }
+                SLine els_sl{};
+                els_sl.kind = 4u; els_sl.synth = els; els_sl.synth_len = elen; els_sl.brace_delta = 0;
+                els_sl.indent = sj_copy.indent;
+                els_sl.orig_line = sj_copy.orig_line;
+                insert_before(ins_pos, els_sl);
+                r5_total_added += suf_bytes;
+                changed = true; any_change = true;
+              }
+            }
+          }
+        }
+      }
+    }
+    if (changed) continue;
+
+    // V5-4: Post-`if-else` Short-Tail Sinking (`std::function` pattern):
+    // Matches `if (C1) { ...; if (C2) goto L_join; <A> } [else { <B> }] <S (1..8 straight stmts)> L_join:`
+    // (or symmetric with `if (C2) goto L_join; <A>` in `else`) and sinks `<S>` into both branches.
+    for (uint32_t i = 0u; i + 4u < acount && !changed; ++i) {
+      const SLine& si = stmts[active[i]];
+      if (si.kind != 4u || si.brace_delta != 1 || !si.synth ||
+          !starts_with(si.synth, si.synth_len, "    if (", 8u)) {
+        continue;
+      }
+      const int32_t id = depth_arr[i];
+      int32_t else_idx = -1, end_idx = -1;
+      for (uint32_t k = i + 1u; k < acount; ++k) {
+        if (depth_arr[k] < id) break;
+        if (depth_arr[k] == id) {
+          if (else_idx < 0 && is_else_open(k)) {
+            else_idx = static_cast<int32_t>(k);
+          } else if (is_if_else_close(k)) {
+            end_idx = static_cast<int32_t>(k);
+            break;
+          } else {
+            break;
+          }
+        }
+      }
+      if (end_idx < 0) continue;
+      const uint32_t if_end = static_cast<uint32_t>(end_idx);
+      const bool has_else = (else_idx >= 0);
+      const uint32_t then_end = has_else ? static_cast<uint32_t>(else_idx) : if_end;
+
+      // Scan <S> (1..8 straight-line non-terminator stmts at depth id) immediately followed by L_join:
+      int32_t join_idx = -1;
+      uint32_t s_bytes = 0u;
+      for (uint32_t k = if_end + 1u; k < acount && k <= if_end + 9u; ++k) {
+        if (depth_arr[k] != id) break;
+        const SLine& sk = stmts[active[k]];
+        if (sk.kind == 1u) {
+          if (k > if_end + 1u) join_idx = static_cast<int32_t>(k);
+          break;
+        }
+        if (sk.kind != 0u || sk.brace_delta != 0 || is_terminator(sk)) break;
+        s_bytes += sk.len;
+      }
+      if (join_idx < 0) continue;
+      const uint32_t ji = static_cast<uint32_t>(join_idx);
+      const uint32_t s_cnt = ji - (if_end + 1u);
+      if (s_cnt == 0u || s_cnt > 8u) continue;
+      if (r5_total_added + s_bytes * 2u > tb.cap / 4u) continue;
+      if (n + s_cnt * 2u + 5u >= cap) continue;
+      const uint64_t l_join = stmts[active[ji]].label_id;
+
+      // Check branch 0 (then) and, if has_else, branch 1 (else) for `if (C2) goto L_join; <A>`
+      for (uint32_t br = 0u; br < (has_else ? 2u : 1u) && !changed; ++br) {
+        const uint32_t b_start = (br == 0u) ? (i + 1u) : (then_end + 1u);
+        const uint32_t b_end = (br == 0u) ? then_end : if_end;
+        int32_t j_found = -1;
+        for (uint32_t k = b_start; k < b_end; ++k) {
+          if (depth_arr[k] == id + 1 && stmts[active[k]].kind == 2u && stmts[active[k]].label_id == l_join) {
+            j_found = static_cast<int32_t>(k);
+          }
+        }
+        if (j_found < 0) continue;
+        const uint32_t ju = static_cast<uint32_t>(j_found);
+        // Verify <A> = (ju + 1 .. b_end - 1) has no labels, gotos, or terminators so every path through <A> reaches <S>
+        bool a_ok = !has_cross_entry(ju, b_end, acount);
+        for (uint32_t k = ju + 1u; k < b_end && a_ok; ++k) {
+          const SLine& sk = stmts[active[k]];
+          if (sk.kind == 1u || sk.kind == 2u || sk.kind == 3u || is_terminator(sk)) {
+            a_ok = false;
+          } else if (sk.kind == 4u && sk.synth &&
+                     (ends_with(sk.synth, sk.synth_len, "break;", 6u) ||
+                      ends_with(sk.synth, sk.synth_len, "continue;", 9u))) {
+            a_ok = false;
+          }
+        }
+        if (!a_ok) continue;
+
+        SLine s_buf[8];
+        for (uint32_t k = 0u; k < s_cnt; ++k) s_buf[k] = stmts[active[if_end + 1u + k]];
+
+        const SLine sj_copy = stmts[active[ju]];
+        const char* cptr = (sj_copy.cond_off == 0xFFFFFFFFu) ? sj_copy.synth : (tb.data + sj_copy.cond_off);
+        uint32_t hlen = 0u, clen = 0u, elen = 0u;
+        const char* neg_hdr = alloc_neg_cond(work_arena, cptr, sj_copy.cond_len, "    if (", 8u, ") {", 3u, &hlen);
+        const char* cls_txt = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+        const char* els_txt = (!has_else) ? alloc_synth(work_arena, "    } else {", 12u, "", 0u, "", 0u, &elen) : "";
+        if (!neg_hdr || !cls_txt || !els_txt) continue;
+
+        const uint16_t base_ind = si.indent;
+        // Mark original <S> deleted first
+        for (uint32_t k = if_end + 1u; k < ji; ++k) stmts[active[k]].kind = 5u;
+
+        // Perform insertions in strictly descending stmts[] order to preserve earlier active[] indices!
+        if (br == 0u) {
+          // 1. Higher index: else branch (or add `else { <S> }`) at active[if_end]
+          if (!has_else) {
+            const uint32_t end_pos = active[if_end];
+            stmts[end_pos].synth = els_txt;
+            stmts[end_pos].synth_len = elen;
+            stmts[end_pos].brace_delta = 0;
+            uint32_t ins_pos = end_pos + 1u;
+            for (uint32_t k = 0u; k < s_cnt; ++k) {
+              SLine sc = s_buf[k];
+              sc.indent = static_cast<uint16_t>(base_ind + 1u);
+              insert_before(ins_pos++, sc);
+            }
+            SLine end_cls{};
+            end_cls.kind = 4u; end_cls.synth = cls_txt; end_cls.synth_len = clen; end_cls.brace_delta = -1;
+            end_cls.indent = base_ind;
+            end_cls.orig_line = stmts[end_pos].orig_line;
+            insert_before(ins_pos, end_cls);
+          } else {
+            const bool else_falls = (if_end > then_end + 1u) &&
+                                    !(depth_arr[if_end - 1u] == id + 1 && is_terminator(stmts[active[if_end - 1u]]));
+            if (else_falls) {
+              uint32_t ins_pos = active[if_end];
+              for (uint32_t k = 0u; k < s_cnt; ++k) {
+                SLine sc = s_buf[k];
+                sc.indent = static_cast<uint16_t>(base_ind + 1u);
+                insert_before(ins_pos++, sc);
+              }
+            }
+          }
+          // 2. Lower index: then branch: wrap <A> + <S> in `if (!(C2)) { <A> <S> }`
+          for (uint32_t k = ju + 1u; k < then_end; ++k) stmts[active[k]].indent++;
+          uint32_t ins_pos = active[then_end];
+          for (uint32_t k = 0u; k < s_cnt; ++k) {
+            SLine sc = s_buf[k];
+            sc.indent = static_cast<uint16_t>(sj_copy.indent + 1u);
+            insert_before(ins_pos++, sc);
+          }
+          SLine inner_cls{};
+          inner_cls.kind = 4u; inner_cls.synth = cls_txt; inner_cls.synth_len = clen; inner_cls.brace_delta = -1;
+          inner_cls.indent = sj_copy.indent;
+          inner_cls.orig_line = sj_copy.orig_line;
+          insert_before(ins_pos, inner_cls);
+          stmts[active[ju]].kind = 4u;
+          stmts[active[ju]].synth = neg_hdr;
+          stmts[active[ju]].synth_len = hlen;
+          stmts[active[ju]].brace_delta = 1;
+        } else {
+          // br == 1u (has_else is true):
+          // 1. Higher index: else branch: wrap <A> + <S> in `if (!(C2)) { <A> <S> }`
+          for (uint32_t k = ju + 1u; k < if_end; ++k) stmts[active[k]].indent++;
+          uint32_t ins_pos = active[if_end];
+          for (uint32_t k = 0u; k < s_cnt; ++k) {
+            SLine sc = s_buf[k];
+            sc.indent = static_cast<uint16_t>(sj_copy.indent + 1u);
+            insert_before(ins_pos++, sc);
+          }
+          SLine inner_cls{};
+          inner_cls.kind = 4u; inner_cls.synth = cls_txt; inner_cls.synth_len = clen; inner_cls.brace_delta = -1;
+          inner_cls.indent = sj_copy.indent;
+          inner_cls.orig_line = sj_copy.orig_line;
+          insert_before(ins_pos, inner_cls);
+          stmts[active[ju]].kind = 4u;
+          stmts[active[ju]].synth = neg_hdr;
+          stmts[active[ju]].synth_len = hlen;
+          stmts[active[ju]].brace_delta = 1;
+          // 2. Lower index: then branch: append <S> before `} else {` if then falls through
+          const bool then_falls = (then_end > i + 1u) &&
+                                  !(depth_arr[then_end - 1u] == id + 1 && is_terminator(stmts[active[then_end - 1u]]));
+          if (then_falls) {
+            uint32_t tins = active[then_end];
+            for (uint32_t k = 0u; k < s_cnt; ++k) {
+              SLine sc = s_buf[k];
+              sc.indent = static_cast<uint16_t>(base_ind + 1u);
+              insert_before(tins++, sc);
+            }
+          }
+        }
+        r5_total_added += s_bytes;
         changed = true;
         any_change = true;
       }
@@ -6229,31 +6920,33 @@ static bool structurize_c_body(
     }
     if (changed) continue;
 
-    // Rule 4b / 4c: Multi-level IF/ELSE block-exit conditional skip:
-    // Walks up one or more enclosing IF/ELSE closing `}`s (never LOOP!) to see if `L:` immediately follows.
+    // Rule 4b / 4c (V5-5): Multi-level IF/ELSE block-exit conditional skip with `else`-skipping:
+    // Walks up one or more enclosing IF/ELSE closing `}`s or `} else { ... }`s (never LOOP!) to see if `L:` follows.
     for (uint32_t i = 0u; i + 2u < acount && !changed; ++i) {
       const SLine& si = stmts[active[i]];
       if (si.kind != 2u || depth_arr[i] <= 0) continue;
       const int32_t id = depth_arr[i];
-      // Find matching closing brace at depth id - 1
       int32_t close_k = -1;
       for (uint32_t k = i + 1u; k < acount; ++k) {
         if (depth_arr[k] == id - 1) {
-          if (is_if_else_close(k)) close_k = static_cast<int32_t>(k);
+          if (is_if_else_close(k) || is_else_open(k)) close_k = static_cast<int32_t>(k);
           break;
         }
       }
-      if (close_k < 0 || static_cast<uint32_t>(close_k) <= i + 1u || static_cast<uint32_t>(close_k) + 1u >= acount) continue;
+      if (close_k < 0 || static_cast<uint32_t>(close_k) <= i + 1u) continue;
       const uint32_t ck = static_cast<uint32_t>(close_k);
       if (has_cross_entry(i, ck, acount)) continue;
-      // Walk up any additional enclosing IF/ELSE closing `}`s (never LOOP!)
-      int32_t cur_d = id - 1;
-      uint32_t lbl_k = ck + 1u;
-      while (lbl_k < acount && cur_d > 0 && depth_arr[lbl_k] == cur_d - 1 && is_if_else_close(lbl_k)) {
+      int32_t cur_d = id;
+      uint32_t lbl_k = ck;
+      uint32_t crossed = 0u;
+      while (lbl_k < acount && cur_d > 0) {
+        const uint32_t next_k = step_out_if_else(lbl_k, cur_d, acount);
+        if (next_k == 0u) break;
         --cur_d;
-        ++lbl_k;
+        ++crossed;
+        lbl_k = next_k;
       }
-      if (lbl_k < acount && stmts[active[lbl_k]].kind == 1u && depth_arr[lbl_k] == cur_d &&
+      if (crossed > 0u && lbl_k < acount && stmts[active[lbl_k]].kind == 1u && depth_arr[lbl_k] == cur_d &&
           stmts[active[lbl_k]].label_id == si.label_id && n + 1u < cap) {
         const SLine si_copy = si;
         uint32_t hlen = 0u, clen = 0u;
@@ -6272,6 +6965,269 @@ static bool structurize_c_body(
         }
       }
     }
+    if (changed) continue;
+
+    // Rule 5b (V4-2 moved after Rules 2/3/4 + V5-6 YWP safeguard + Small Multi-Ref Cold Tail Duplication):
+    // (a) Single-ref (`refs == 1`): 1..32 balanced stmts preceded by a terminator, ending in `goto L_rejoin` / `return` / `__builtin_trap()`.
+    //     Rejects `goto L_rejoin`-ended blocks containing external `IF_GOTO`s when inlined into an `if (C)` jump unless `L_rejoin` follows the jump's block.
+    // (b) Multi-ref (`2 <= refs <= 6`): 1..6 straight-line stmts (<= 1 internal `if_goto`), preceded by a terminator,
+    //     ending in `goto`/`return`/`break`/`continue`/`__builtin_trap()`, bounded by `r5_total_added` byte budget.
+    for (uint32_t a = 1u; a + 1u < acount && !changed; ++a) {
+      const SLine& sl = stmts[active[a]];
+      if (sl.kind != 1u) continue;
+      const uint32_t refs = count_refs(sl.label_id, acount);
+      if (refs == 0u || refs > 6u) continue;
+      const int32_t ld = depth_arr[a];
+      if (depth_arr[a - 1u] != ld || !is_terminator(stmts[active[a - 1u]])) continue;
+
+      if (refs == 1u) {
+        int32_t end_idx = -1;
+        int32_t rel_depth = 0;
+        for (uint32_t k = a + 1u; k < acount && k <= a + 32u; ++k) {
+          if (depth_arr[k] < ld) break;
+          const SLine& sk = stmts[active[k]];
+          const bool is_eh = is_else_open(k);
+          if (sk.brace_delta < 0) rel_depth += sk.brace_delta;
+          if (rel_depth < 0) break;
+          if (rel_depth == 0 && !is_eh && sk.brace_delta == 0) {
+            if (sk.kind == 3u) {
+              if (sk.label_id != sl.label_id && k > a + 1u) {
+                end_idx = static_cast<int32_t>(k);
+              }
+              break;
+            }
+            if (is_return_stmt(sk) || is_trap_stmt(sk)) {
+              end_idx = static_cast<int32_t>(k);
+              break;
+            }
+          }
+          if (sk.kind != 0u && sk.kind != 1u && sk.kind != 2u && sk.kind != 4u &&
+              !(rel_depth > 0 && sk.kind == 3u)) {
+            break;
+          }
+          if (sk.brace_delta > 0) rel_depth += sk.brace_delta;
+        }
+        if (end_idx < 0 || rel_depth != 0) continue;
+        const uint32_t e = static_cast<uint32_t>(end_idx);
+        const uint32_t cnt = e - a;
+        if (cnt == 0u || cnt > 32u) continue;
+        if (has_cross_entry(a, e, acount) || has_bare_loop_ctrl(a + 1u, e + 1u, ld)) continue;
+
+        int32_t j_idx = -1;
+        for (uint32_t k = 0u; k < acount; ++k) {
+          const SLine& sk = stmts[active[k]];
+          if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == sl.label_id) {
+            j_idx = static_cast<int32_t>(k);
+            break;
+          }
+        }
+        if (j_idx < 0) continue;
+        const uint32_t ju = static_cast<uint32_t>(j_idx);
+        if (ju >= a && ju <= e) continue;
+
+        // V5-6 YWP safeguard: if ending in `goto L_rejoin;` and jumping from `if (C) goto L_cold;`,
+        // reject if block contains any external IF_GOTO unless L_rejoin immediately follows the jump's block.
+        if (stmts[active[e]].kind == 3u && stmts[active[ju]].kind == 2u) {
+          bool has_ext_if_goto = false;
+          for (uint32_t k = a + 1u; k < e; ++k) {
+            const SLine& sk = stmts[active[k]];
+            if (sk.kind != 2u) continue;
+            bool internal_target = false;
+            for (uint32_t m = a + 1u; m < e; ++m) {
+              if (stmts[active[m]].kind == 1u && stmts[active[m]].label_id == sk.label_id) {
+                internal_target = true;
+                break;
+              }
+            }
+            if (!internal_target) { has_ext_if_goto = true; break; }
+          }
+          if (has_ext_if_goto) {
+            const uint64_t l_rejoin = stmts[active[e]].label_id;
+            bool rejoin_follows = false;
+            const int32_t jd = depth_arr[ju];
+            for (uint32_t k = ju + 1u; k < acount; ++k) {
+              if (depth_arr[k] < jd) break;
+              if (depth_arr[k] == jd && stmts[active[k]].kind == 1u && stmts[active[k]].label_id == l_rejoin) {
+                rejoin_follows = true;
+                break;
+              }
+            }
+            if (!rejoin_follows) continue;
+          }
+        }
+
+        SLine blk_buf[32];
+        for (uint32_t k = 0u; k < cnt; ++k) blk_buf[k] = stmts[active[a + 1u + k]];
+        const uint16_t src_base_indent = blk_buf[cnt - 1u].indent;
+        const SLine sj_copy = stmts[active[ju]];
+        const uint32_t j_stmt_pos = active[ju];
+
+        if (sj_copy.kind == 3u) {
+          if (n + cnt < cap) {
+            for (uint32_t k = a; k <= e; ++k) stmts[active[k]].kind = 5u;
+            for (uint32_t k = 0u; k < cnt; ++k) {
+              int32_t rel_ind = static_cast<int32_t>(blk_buf[k].indent) - static_cast<int32_t>(src_base_indent);
+              if (rel_ind < 0) rel_ind = 0;
+              blk_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + static_cast<uint32_t>(rel_ind));
+            }
+            stmts[j_stmt_pos] = blk_buf[0];
+            uint32_t ins_pos = j_stmt_pos + 1u;
+            for (uint32_t k = 1u; k < cnt; ++k) insert_before(ins_pos++, blk_buf[k]);
+            changed = true;
+            any_change = true;
+          }
+        } else if (sj_copy.kind == 2u) {
+          if (n + cnt + 2u < cap) {
+            const char* cptr = (sj_copy.cond_off == 0xFFFFFFFFu) ? sj_copy.synth : (tb.data + sj_copy.cond_off);
+            uint32_t hlen = 0u, clen = 0u;
+            const char* hdr = alloc_synth(work_arena, "    if (", 8u, cptr, sj_copy.cond_len, ") {", 3u, &hlen);
+            const char* cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+            if (hdr && cls) {
+              for (uint32_t k = a; k <= e; ++k) stmts[active[k]].kind = 5u;
+              stmts[j_stmt_pos].kind = 4u;
+              stmts[j_stmt_pos].synth = hdr;
+              stmts[j_stmt_pos].synth_len = hlen;
+              stmts[j_stmt_pos].brace_delta = 1;
+              uint32_t ins_pos = j_stmt_pos + 1u;
+              for (uint32_t k = 0u; k < cnt; ++k) {
+                int32_t rel_ind = static_cast<int32_t>(blk_buf[k].indent) - static_cast<int32_t>(src_base_indent);
+                if (rel_ind < 0) rel_ind = 0;
+                blk_buf[k].indent = static_cast<uint16_t>(sj_copy.indent + 1u + static_cast<uint32_t>(rel_ind));
+                insert_before(ins_pos++, blk_buf[k]);
+              }
+              SLine cls_sl{};
+              cls_sl.kind = 4u; cls_sl.synth = cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
+              cls_sl.indent = sj_copy.indent;
+              cls_sl.orig_line = sj_copy.orig_line;
+              insert_before(ins_pos, cls_sl);
+              changed = true;
+              any_change = true;
+            }
+          }
+        }
+      } else {
+        // V5-6: Small multi-ref cold tail duplication (2 <= refs <= 6, 1..6 straight-line stmts, <= 1 internal if_goto)
+        int32_t end_idx = -1;
+        uint32_t if_goto_cnt = 0u;
+        uint32_t blk_bytes = 0u;
+        for (uint32_t k = a + 1u; k < acount && k <= a + 6u; ++k) {
+          if (depth_arr[k] != ld) break;
+          const SLine& sk = stmts[active[k]];
+          if (sk.brace_delta != 0 || sk.kind == 1u || is_else_open(k)) break;
+          if (sk.kind == 2u) {
+            if (sk.label_id == sl.label_id) break;
+            ++if_goto_cnt;
+            if (if_goto_cnt > 1u) break;
+            blk_bytes += sk.cond_len + 24u;
+            continue;
+          }
+          if (sk.kind == 3u) {
+            if (sk.label_id != sl.label_id && k > a + 1u) {
+              blk_bytes += 20u;
+              end_idx = static_cast<int32_t>(k);
+            }
+            break;
+          }
+          const char* sptr = nullptr;
+          uint32_t slen = 0u;
+          if (!get_stmt_text(sk, &sptr, &slen)) break;
+          blk_bytes += slen;
+          if (is_terminator(sk)) {
+            end_idx = static_cast<int32_t>(k);
+            break;
+          }
+        }
+        if (end_idx < 0 || blk_bytes == 0u || blk_bytes > 600u) continue;
+        const uint32_t e = static_cast<uint32_t>(end_idx);
+        const uint32_t cnt = e - a;
+        if (cnt == 0u || cnt > 6u) continue;
+        if (r5_total_added + refs * blk_bytes > tb.cap / 4u) continue;
+        if (n + refs * (cnt + 2u) >= cap) continue;
+
+        const bool has_loop_ctrl = has_bare_loop_ctrl(a + 1u, e + 1u, ld);
+        const int32_t src_loop = has_loop_ctrl ? enclosing_loop_idx(a) : -1;
+
+        uint32_t j_list[6];
+        uint32_t j_cnt = 0u;
+        bool j_ok = true;
+        for (uint32_t k = 0u; k < acount; ++k) {
+          const SLine& sk = stmts[active[k]];
+          if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == sl.label_id) {
+            if (k >= a && k <= e) { j_ok = false; break; }
+            if (has_loop_ctrl && enclosing_loop_idx(k) != src_loop) { j_ok = false; break; }
+            if (j_cnt < 6u) j_list[j_cnt++] = k;
+            else { j_ok = false; break; }
+          }
+        }
+        if (!j_ok || j_cnt != refs) continue;
+
+        SLine blk_buf[6];
+        for (uint32_t k = 0u; k < cnt; ++k) blk_buf[k] = stmts[active[a + 1u + k]];
+
+        // Pre-allocate any needed `if (...) {` / `}` headers before mutating
+        const char* hdrs[6];
+        uint32_t hlens[6];
+        uint32_t clen = 0u;
+        const char* cls = alloc_synth(work_arena, "    }", 5u, "", 0u, "", 0u, &clen);
+        if (!cls) continue;
+        bool alloc_ok = true;
+        for (uint32_t r = 0u; r < j_cnt; ++r) {
+          const SLine& sj = stmts[active[j_list[r]]];
+          if (sj.kind == 2u) {
+            const char* cptr = (sj.cond_off == 0xFFFFFFFFu) ? sj.synth : (tb.data + sj.cond_off);
+            hdrs[r] = alloc_synth(work_arena, "    if (", 8u, cptr, sj.cond_len, ") {", 3u, &hlens[r]);
+            if (!hdrs[r]) { alloc_ok = false; break; }
+          } else {
+            hdrs[r] = nullptr;
+            hlens[r] = 0u;
+          }
+        }
+        if (!alloc_ok) continue;
+
+        // Mark cold tail deleted before inserting at jump sites in descending active[] order
+        for (uint32_t k = a; k <= e; ++k) stmts[active[k]].kind = 5u;
+        for (int32_t r = static_cast<int32_t>(j_cnt) - 1; r >= 0; --r) {
+          const uint32_t ju = j_list[r];
+          const SLine sj_copy = stmts[active[ju]];
+          const uint32_t j_pos = active[ju];
+          if (sj_copy.kind == 3u) {
+            SLine first = blk_buf[0];
+            first.indent = sj_copy.indent;
+            stmts[j_pos] = first;
+            uint32_t ins_pos = j_pos + 1u;
+            for (uint32_t k = 1u; k < cnt; ++k) {
+              SLine item = blk_buf[k];
+              item.indent = sj_copy.indent;
+              insert_before(ins_pos++, item);
+            }
+          } else {
+            stmts[j_pos].kind = 4u;
+            stmts[j_pos].synth = hdrs[r];
+            stmts[j_pos].synth_len = hlens[r];
+            stmts[j_pos].brace_delta = 1;
+            uint32_t ins_pos = j_pos + 1u;
+            for (uint32_t k = 0u; k < cnt; ++k) {
+              SLine item = blk_buf[k];
+              item.indent = static_cast<uint16_t>(sj_copy.indent + 1u);
+              insert_before(ins_pos++, item);
+            }
+            SLine cls_sl{};
+            cls_sl.kind = 4u; cls_sl.synth = cls; cls_sl.synth_len = clen; cls_sl.brace_delta = -1;
+            cls_sl.indent = sj_copy.indent;
+            cls_sl.orig_line = sj_copy.orig_line;
+            insert_before(ins_pos, cls_sl);
+          }
+        }
+        r5_total_added += refs * blk_bytes;
+        changed = true;
+        any_change = true;
+      }
+    }
+    if (changed) continue;
+
+    // V5-1: Post-Rule-4c Rule 5 fallback sweep (without the refs==1 && !prev_term skip)
+    if (try_rule5(true)) { changed = true; continue; }
+
     if (!changed) break;
   }
 
@@ -6865,6 +7821,9 @@ HexStatus try_emit_arm64_general(
     tb.put_str("    (void)0;\n");
   }
 
+  if (&work_arena != &emit_arena) {
+    work_arena.reset();
+  }
   structurize_c_body(tb, body_start_off, body_start_line, work_arena, emit_arena);
   tb.put_str("}\n");
   if (tb.overflow || tb.len == 0u) return HEX_ERR_OOM;

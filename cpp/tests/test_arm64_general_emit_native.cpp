@@ -760,6 +760,316 @@ void test_wave29_structurizer_v4_and_wall_cleanup() {
   }
 }
 
+
+
+void test_wave30_structurizer_v5() {
+  static uint8_t buf[1536u * 1024u];
+  static uint8_t scratch_buf[2560u * 1024u];
+  hex::Arena arena;
+  hex::Arena scratch;
+  arena.init_fixed(buf, sizeof(buf));
+  scratch.init_fixed(scratch_buf, sizeof(scratch_buf));
+  const char* txt = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_cnt = 0u;
+
+  auto enc_b = [](int32_t insn_delta) -> uint32_t {
+    return 0x14000000u | (static_cast<uint32_t>(insn_delta) & 0x03FFFFFFu);
+  };
+  auto enc_cbz = [](uint32_t reg, int32_t insn_delta) -> uint32_t {
+    return 0xB4000000u | ((static_cast<uint32_t>(insn_delta) & 0x7FFFFu) << 5u) | (reg & 31u);
+  };
+  auto enc_cbnz = [](uint32_t reg, int32_t insn_delta) -> uint32_t {
+    return 0xB5000000u | ((static_cast<uint32_t>(insn_delta) & 0x7FFFFu) << 5u) | (reg & 31u);
+  };
+  auto enc_add_imm = [](uint32_t rd, uint32_t rn, uint32_t imm) -> uint32_t {
+    return 0x91000000u | ((imm & 0xFFFu) << 10u) | ((rn & 31u) << 5u) | (rd & 31u);
+  };
+  auto enc_subs_imm = [](uint32_t rd, uint32_t rn, uint32_t imm) -> uint32_t {
+    return 0xF1000000u | ((imm & 0xFFFu) << 10u) | ((rn & 31u) << 5u) | (rd & 31u);
+  };
+  auto enc_mov_imm = [](uint32_t rd, uint32_t imm) -> uint32_t {
+    return 0xD2800000u | ((imm & 0xFFFFu) << 5u) | (rd & 31u);
+  };
+  constexpr uint32_t kRet = 0xD65F03C0u;
+  constexpr uint32_t kBrk = 0xD4200000u;
+
+  // (1) V5-0: work_arena reset before structurize_c_body allows tight separate scratch arena
+  {
+    static uint8_t tiny_scratch_buf[320u * 1024u];
+    hex::Arena tiny_scratch;
+    tiny_scratch.init_fixed(tiny_scratch_buf, sizeof(tiny_scratch_buf));
+    arena.reset();
+    hex::decompiler::passes::set_general_scratch_arena(&tiny_scratch);
+    const uint32_t w[] = {
+      enc_cbz(0u, 3),            // 0: cbz x0, -> 3
+      enc_add_imm(0u, 0u, 1u),   // 1: add x0, x0, #1
+      kRet,                      // 2: ret
+      enc_mov_imm(0u, 9u),       // 3: mov x0, #9
+      kRet,                      // 4: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 5u, 0x100030000ULL, "v5_0_arena_reset", 16u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    hex::decompiler::passes::set_general_scratch_arena(nullptr);
+    assert_parens_balanced(txt, len);
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (2) V5-1a: __builtin_trap() terminator + Rule 5 folding of kind==4u synthesized return block
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      enc_cbz(0u, 6),            // 0: cbz x0, -> 6 (L_trap)
+      enc_cbz(1u, 3),            // 1: cbz x1, -> 4 (L_mid)
+      enc_add_imm(0u, 0u, 1u),   // 2: add x0, x0, #1
+      kRet,                      // 3: ret
+      enc_add_imm(0u, 0u, 2u),   // 4: L_mid: add x0, x0, #2
+      enc_b(2),                  // 5: b -> 7 (L_ep)
+      kBrk,                      // 6: L_trap: brk #0 (__builtin_trap())
+      enc_add_imm(0u, 0u, 5u),   // 7: L_ep: add x0, x0, #5
+      kRet,                      // 8: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 9u, 0x100031000ULL, "v5_1_trap_kind4", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "__builtin_trap();"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (3) V5-1b: Rule 5 post-Rule-4c fallback (1-ref multi-stmt fallthrough epilogue jumped to from inside a loop)
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      enc_subs_imm(0u, 0u, 1u),  // 0: L_lp: subs x0, x0, #1
+      enc_cbz(1u, 3),            // 1: cbz x1, -> 4 (L_ep: 1-ref fallthrough epilogue!)
+      enc_cbnz(0u, -2),          // 2: cbnz x0, -> 0 (L_lp)
+      enc_add_imm(0u, 0u, 10u),  // 3: add x0, x0, #10 (non-terminator before L_ep!)
+      enc_add_imm(0u, 0u, 20u),  // 4: L_ep: add x0, x0, #20
+      enc_add_imm(0u, 0u, 30u),  // 5: add x0, x0, #30
+      kRet,                      // 6: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 7u, 0x100031500ULL, "v5_1_r5_fallback", 16u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "do {"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (4) V5-2a: Rule 1 has_cross_entry guard (must NOT trap shared label inside while(1)) + multi-ref Rule 1
+  {
+    arena.reset();
+    // Shared label L_shared inside Rule 1 body referenced from before `goto L_cond`:
+    // 0: cbz x2, -> 3 (L_shared)
+    // 1: b -> 5 (L_cond)
+    // 2: L_body: add x0, x0, #1
+    // 3: L_shared: add x0, x0, #2
+    // 4: add x0, x0, #3
+    // 5: L_cond: subs x1, x1, #1
+    // 6: cbnz x1, -> 2 (L_body)
+    // 7: ret
+    const uint32_t w_guard[] = {
+      enc_cbz(2u, 3),            // 0: cbz x2, -> 3 (L_shared)
+      enc_b(4),                  // 1: b -> 5 (L_cond)
+      enc_add_imm(0u, 0u, 1u),   // 2: L_body: add x0, x0, #1
+      enc_add_imm(0u, 0u, 2u),   // 3: L_shared: add x0, x0, #2
+      enc_add_imm(0u, 0u, 3u),   // 4: add x0, x0, #3
+      enc_subs_imm(1u, 1u, 1u),  // 5: L_cond: subs x1, x1, #1
+      enc_cbnz(1u, -4),          // 6: cbnz x1, -> 2 (L_body)
+      kRet,                      // 7: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w_guard, 8u, 0x100032000ULL, "v5_2_r1_cross_guard", 19u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    // Rule 1 MUST NOT have fired (would have converted `b L_cond` into `while (1) {` trapping L_shared).
+    assert(!contains(txt, len, "while (1) {"));
+
+    // Multi-ref Rule 1: external entry to L_cond before `b L_cond`, no ref inside (b, e]:
+    arena.reset();
+    const uint32_t w_multi[] = {
+      enc_cbz(2u, 5),            // 0: cbz x2, -> 5 (L_cond)
+      enc_add_imm(0u, 0u, 9u),   // 1: add x0, x0, #9
+      enc_b(3),                  // 2: b -> 5 (L_cond)
+      enc_add_imm(0u, 0u, 1u),   // 3: L_body: add x0, x0, #1
+      enc_add_imm(3u, 3u, 1u),   // 4: add x3, x3, #1
+      enc_subs_imm(1u, 1u, 1u),  // 5: L_cond: subs x1, x1, #1
+      enc_cbnz(1u, -3),          // 6: cbnz x1, -> 3 (L_body)
+      kRet,                      // 7: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w_multi, 8u, 0x100032100ULL, "v5_2_r1_multiref", 16u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "while (1) {"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (5) V5-3a: GCC Latch-Before-Header Loop Un-Rotation
+  {
+    arena.reset();
+    // 0: b -> 4 (L_hdr)
+    // 1: L_latch: add x2, x2, #1
+    // 2: add x3, x3, #2
+    // 3: subs x0, x0, #1
+    // 4: L_hdr: add x4, x4, #1
+    // 5: cbz x1, -> 7 (L_exit)
+    // 6: cbnz x0, -> 1 (L_latch)
+    // 7: L_exit: ret
+    const uint32_t w[] = {
+      enc_b(4),                  // 0: b -> 4 (L_hdr)
+      enc_add_imm(2u, 2u, 1u),   // 1: L_latch: add x2, x2, #1
+      enc_add_imm(3u, 3u, 2u),   // 2: add x3, x3, #2
+      enc_subs_imm(0u, 0u, 1u),  // 3: subs x0, x0, #1
+      enc_add_imm(4u, 4u, 1u),   // 4: L_hdr: add x4, x4, #1
+      enc_cbz(1u, 2),            // 5: cbz x1, -> 7 (L_exit)
+      enc_cbnz(0u, -5),          // 6: cbnz x0, -> 1 (L_latch)
+      kRet,                      // 7: L_exit: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 8u, 0x100033000ULL, "v5_3a_latch_unrot", 17u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "while (1) {"));
+    assert(contains(txt, len, "break;"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (6) V5-3b: Loop-Header Back-Edge -> `continue;` (converts do-while(W) to while(1) + break)
+  {
+    arena.reset();
+    // 0: cbz x4, -> 5 (L_after) -- wraps 1..4 in `if (x4 != 0) { ... }` (depth 1)
+    // 1: L_hdr: subs x0, x0, #1
+    // 2: cbz x2, -> 6 (L_cold)  -- Rule 5b inlines `L_cold` into `if (x2 == 0) { x3 += 1; goto L_hdr; }`
+    // 3: add x1, x1, #1
+    // 4: cbnz x0, -> 1 (L_hdr)  -- Rule 2 forms `L_hdr: do { ... } while (x0 != 0);` at depth 1
+    // 5: L_after: ret
+    // 6: L_cold: add x3, x3, #1 -- depth 0 cold tail targeting L_hdr
+    // 7: b -> 1 (L_hdr)         -- V5-3b converts `do-while` -> `while (1)` + `continue;` + `break;`!
+    const uint32_t w[] = {
+      enc_cbz(4u, 5),            // 0: cbz x4, -> 5 (L_after)
+      enc_subs_imm(0u, 0u, 1u),  // 1: L_hdr: subs x0, x0, #1
+      enc_cbz(2u, 5),            // 2: cbz x2, -> 7 (L_cold)
+      enc_add_imm(1u, 1u, 1u),   // 3: add x1, x1, #1
+      enc_cbnz(0u, -3),          // 4: cbnz x0, -> 1 (L_hdr)
+      enc_add_imm(4u, 4u, 7u),   // 5: L_after: add x4, x4, #7
+      kRet,                      // 6: ret
+      enc_add_imm(3u, 3u, 1u),   // 7: L_cold: add x3, x3, #1
+      enc_b(-7),                 // 8: b -> 1 (L_hdr)
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 9u, 0x100033500ULL, "v5_3b_hdr_continue", 18u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "while (1) {"));
+    assert(contains(txt, len, "continue;"));
+    assert(contains(txt, len, "break;"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (7) V5-4: Post-`if-else` Short-Tail Sinking (`std::function` pattern)
+  {
+    arena.reset();
+    // 0: cbz x0, -> 5 (L_else)
+    // 1: add x3, x3, #1
+    // 2: cbz x1, -> 8 (L_join)   -- skips <S> inside then branch!
+    // 3: add x0, x0, #10         -- <A>
+    // 4: b -> 6 (L_after_if)
+    // 5: L_else: add x0, x0, #20 -- <B>
+    // 6: L_after_if: add x2, x2, #7 -- <S> (post-if-else short tail before L_join)
+    // 7: add x2, x2, #8             -- <S>
+    // 8: L_join: add x0, x0, #1
+    // 9: ret
+    const uint32_t w[] = {
+      enc_cbz(0u, 5),            // 0: cbz x0, -> 5 (L_else)
+      enc_add_imm(3u, 3u, 1u),   // 1: add x3, x3, #1
+      enc_cbz(1u, 6),            // 2: cbz x1, -> 8 (L_join)
+      enc_add_imm(0u, 0u, 10u),  // 3: add x0, x0, #10
+      enc_b(2),                  // 4: b -> 6 (L_after_if)
+      enc_add_imm(0u, 0u, 20u),  // 5: L_else: add x0, x0, #20
+      enc_add_imm(2u, 2u, 7u),   // 6: L_after_if: add x2, x2, #7
+      enc_add_imm(2u, 2u, 8u),   // 7: add x2, x2, #8
+      enc_add_imm(0u, 0u, 1u),   // 8: L_join: add x0, x0, #1
+      kRet,                      // 9: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100034000ULL, "v5_4_tail_sink", 14u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "} else {"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (8) V5-5: `else`-skipping in Rule 4b & multi-level V4-1
+  {
+    arena.reset();
+    // 0: cbz x0, -> 5 (L_else)
+    // 1: cbz x1, -> 7 (L_after)  -- inside `then`, skips past `} else { ... }` to L_after!
+    // 2: add x0, x0, #1
+    // 3: add x0, x0, #2
+    // 4: b -> 7 (L_after)
+    // 5: L_else: add x0, x0, #9
+    // 6: add x0, x0, #10
+    // 7: L_after: add x0, x0, #100
+    // 8: ret
+    const uint32_t w[] = {
+      enc_cbz(0u, 5),            // 0: cbz x0, -> 5 (L_else)
+      enc_cbz(1u, 6),            // 1: cbz x1, -> 7 (L_after)
+      enc_add_imm(0u, 0u, 1u),   // 2: add x0, x0, #1
+      enc_add_imm(0u, 0u, 2u),   // 3: add x0, x0, #2
+      enc_b(3),                  // 4: b -> 7 (L_after)
+      enc_add_imm(0u, 0u, 9u),   // 5: L_else: add x0, x0, #9
+      enc_add_imm(0u, 0u, 10u),  // 6: add x0, x0, #10
+      enc_subs_imm(2u, 2u, 1u),  // 7: L_after: subs x2, x2, #1 (loop at L_after -> not an epilogue!)
+      enc_cbnz(2u, -1),          // 8: cbnz x2, -> 7
+      kRet,                      // 9: ret
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100035000ULL, "v5_5_else_skip", 14u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "} else {"));
+    assert(!contains(txt, len, "goto "));
+  }
+
+  // (9) V5-6: Small multi-ref cold tail duplication (2 <= refs <= 6, 1..6 straight stmts ending in goto)
+  {
+    arena.reset();
+    // 0: cbz x0, -> 7 (L_cold)
+    // 1: add x0, x0, #1
+    // 2: cbz x1, -> 7 (L_cold)
+    // 3: add x0, x0, #2
+    // 4: L_join: add x0, x0, #3
+    // 5: add x0, x0, #4
+    // 6: ret
+    // 7: L_cold: mov x0, #42     -- 2 refs, preceded by ret, ends in b L_join!
+    // 8: add x0, x0, #5
+    // 9: b -> 4 (L_join)
+    const uint32_t w[] = {
+      enc_cbz(0u, 7),            // 0: cbz x0, -> 7 (L_cold)
+      enc_add_imm(0u, 0u, 1u),   // 1: add x0, x0, #1
+      enc_cbz(1u, 5),            // 2: cbz x1, -> 7 (L_cold)
+      enc_add_imm(0u, 0u, 2u),   // 3: add x0, x0, #2
+      enc_add_imm(0u, 0u, 3u),   // 4: L_join: add x0, x0, #3
+      enc_add_imm(0u, 0u, 4u),   // 5: add x0, x0, #4
+      kRet,                      // 6: ret
+      enc_mov_imm(0u, 42u),      // 7: L_cold: mov x0, #42
+      enc_add_imm(0u, 0u, 5u),   // 8: add x0, x0, #5
+      enc_b(-5),                 // 9: b -> 4 (L_join)
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 10u, 0x100036000ULL, "v5_6_multiref_cold", 18u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "x0 = 42;"));
+    assert(!contains(txt, len, "loc_10003601C"));
+    assert(!contains(txt, len, "goto "));
+  }
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -772,6 +1082,7 @@ int main() {
   test_wave26_structurizer_and_stubs();
   test_wave27_fixes_insns_and_structurizer_v3();
   test_wave29_structurizer_v4_and_wall_cleanup();
+  test_wave30_structurizer_v5();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }
