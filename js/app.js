@@ -1329,25 +1329,30 @@ export class App {
     if (entry.type === 'patch') {
       const offset = BigInt(entry.offset);
       const isRemoval = entry.action === 'remove' || entry.after == null;
-      if (isUndo) {
-        if (isRemoval && entry.before) {
-          const prev = entry.before;
-          if (prev && typeof prev === 'object' && !ArrayBuffer.isView(prev) && !Array.isArray(prev) && prev.before && prev.after) {
-            this.patches.add(offset, prev.before, prev.after, prev.meta || entry.meta);
-          } else if (entry.origBytes) {
-            this.patches.add(offset, entry.origBytes, prev, entry.meta);
+      try {
+        if (isUndo) {
+          if (isRemoval && entry.before) {
+            const prev = entry.before;
+            if (prev && typeof prev === 'object' && !ArrayBuffer.isView(prev) && !Array.isArray(prev) && prev.before && prev.after) {
+              this.patches.add(offset, prev.before, prev.after, prev.meta || entry.meta);
+            } else if (entry.origBytes) {
+              this.patches.add(offset, entry.origBytes, prev, entry.meta);
+            }
+          } else if (entry.prevPatch && entry.prevPatch.before && entry.prevPatch.after) {
+            this.patches.add(offset, entry.prevPatch.before, entry.prevPatch.after, entry.prevPatch.meta || entry.meta);
+          } else {
+            this.patches.remove(offset);
           }
-        } else if (entry.prevPatch && entry.prevPatch.before && entry.prevPatch.after) {
-          this.patches.add(offset, entry.prevPatch.before, entry.prevPatch.after, entry.prevPatch.meta || entry.meta);
         } else {
-          this.patches.remove(offset);
+          if (isRemoval) {
+            this.patches.remove(offset);
+          } else {
+            this.patches.add(offset, entry.before, entry.after, entry.meta);
+          }
         }
-      } else {
-        if (isRemoval) {
-          this.patches.remove(offset);
-        } else {
-          this.patches.add(offset, entry.before, entry.after, entry.meta);
-        }
+      } catch {
+        toast(pick('パッチの元に戻す/やり直しが競合しました', 'Patch undo/redo conflicted with another patch'));
+        return false;
       }
       this.store.set({ patches: this.patches.size });
       this.viewer?.invalidate?.();
@@ -1356,6 +1361,11 @@ export class App {
       return true;
     }
     return false;
+  }
+
+  clearUndoHistory() {
+    this._undoStack.length = 0;
+    this._redoStack.length = 0;
   }
 
   undoEdit() {

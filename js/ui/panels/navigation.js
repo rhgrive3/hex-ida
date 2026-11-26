@@ -1,5 +1,5 @@
 import { Sheet, el, button, list, groupRow, tapRow, toast, alertDialog, userError } from "../../ui.js";
-import { addrHex, addrText, parseAddress, parseHexPattern } from "../../format.js";
+import { addrHex, addrText, parseAddress, parseAddressExpr, parseHexPattern } from "../../format.js";
 import { numberPattern } from "../numeric-pattern.js";
 import { t, pick } from "../../i18n.js";
 import { queryStrings } from "../explorer-index.js";
@@ -72,20 +72,30 @@ export function showJump(app) {
   });
   setTimeout(() => input.focus(), 50);
 
-  function parseAddressExpr(raw, resolveBase) {
-    const s = String(raw || "").trim();
-    const m = /^(.+?)\s*([+-])\s*([^+-]+)$/.exec(s);
-    if (!m) return null;
-    const baseStr = m[1].trim();
-    const op = m[2];
-    const offStr = m[3].trim();
-    if (!baseStr || !offStr) return null;
-    const offset = parseAddress(offStr);
-    if (offset == null || offset < 0n) return null;
-    const base = parseAddress(baseStr) ?? (typeof resolveBase === "function" ? resolveBase(baseStr) : null);
-    if (base == null) return null;
-    const result = op === "+" ? base + offset : base - offset;
-    return result >= 0n ? result : null;
+  function resolveExactSymbolOrBookmark(raw) {
+    const q = String(raw || "").trim().toLowerCase();
+    if (!q) return null;
+    const bookmarks = app.bookmarks?.list?.() || [];
+    for (const bm of bookmarks) {
+      const name = String(bm?.name || "").toLowerCase();
+      if (name && name === q && bm?.addr != null) {
+        try { return BigInt(bm.addr); } catch { /* ignore */ }
+      }
+    }
+    const sym = app.symbols;
+    const renames = sym?.renames instanceof Map ? sym.renames : null;
+    if (renames) {
+      for (const [addrKey, name] of renames) {
+        if (String(name || "").toLowerCase() === q) {
+          try { return BigInt(addrKey); } catch { /* ignore */ }
+        }
+      }
+    }
+    const names = sym && Array.isArray(sym.names) ? sym.names : [];
+    for (let i = 0; i < names.length; i++) {
+      if (String(names[i] || "").toLowerCase() === q && sym.addrs?.[i] != null) return sym.addrs[i];
+    }
+    return null;
   }
 
   function resolveSymbolOrBookmark(raw) {
@@ -133,10 +143,10 @@ export function showJump(app) {
   }
 
   function resolveJumpTarget(raw) {
-    const direct = parseAddress(raw);
-    if (direct != null) return direct;
-    const expr = parseAddressExpr(raw, resolveSymbolOrBookmark);
-    if (expr != null) return expr;
+    const exact = resolveExactSymbolOrBookmark(raw);
+    if (exact != null) return exact;
+    const expr = parseAddressExpr(raw, resolveExactSymbolOrBookmark);
+    if (expr != null && expr >= 0n) return expr;
     return resolveSymbolOrBookmark(raw);
   }
 

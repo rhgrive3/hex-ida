@@ -46,14 +46,27 @@ const showSearchPanel = lazyProductPanel('showSearch');
 const showXrefs = lazyProductPanel('showXrefs');
 
 const { addrHex, parseAddress, sizeText } = formatMod;
-function parseAddressInput(app, q) {
+function isExplicitAddressOrExpr(q) {
+  const s = String(q || '').trim();
+  if (!s) return false;
+  if (/^0x[0-9a-f]+$/i.test(s) || /^sub_[0-9a-f]+$/i.test(s)) return true;
+  if (/^[0-9a-f]{6,16}$/i.test(s) && /[0-9]/.test(s)) return true;
+  if (/[+-]/.test(s) && /^(?:(?:0x[0-9a-f]+|[0-9a-f]{6,16})\s*[+-]\s*(?:0x[0-9a-f]+|\d+)|[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*\s*(?:\+\s*(?:0x[0-9a-f]+|\d+)|-\s*0x[0-9a-f]+))$/i.test(s)) return true;
+  return false;
+}
+
+function parseAddressInput(app, q, { allowBareSymbol = true } = {}) {
+  const s = String(q || '').trim();
+  if (!s) return null;
+  if (!allowBareSymbol && !isExplicitAddressOrExpr(s)) return null;
   if (typeof formatMod.parseAddressExpr === 'function') {
     try {
-      const resolved = formatMod.parseAddressExpr(q, (name) => symbolAddress(app, name));
-      if (resolved != null) return BigInt(resolved);
+      const resolved = formatMod.parseAddressExpr(s, (name) => symbolAddress(app, name));
+      if (resolved != null && BigInt(resolved) >= 0n) return BigInt(resolved);
     } catch { /* fall through */ }
   }
-  return parseAddress(q);
+  const direct = parseAddress(q);
+  return direct != null && direct >= 0n ? direct : null;
 }
 
 const ja = () => {
@@ -475,8 +488,9 @@ if (!app.store?.get?.('fileInfo')) {
           ts || null,
         ].filter(Boolean);
         const matchesSaved = Boolean(savedFile && (
-          (savedHash && rawHash && (savedHash === rawHash || rawHash.includes(savedHash) || savedHash.includes(rawHash)))
-          || (savedName && savedName === name)
+          (savedHash && rawHash
+            ? (savedHash === rawHash || rawHash.includes(savedHash) || savedHash.includes(rawHash))
+            : (savedName && savedName === name))
         ));
         const instantBadge = matchesSaved
           ? h('span', 'ui-badge ui-badge-confirmed', text('すぐ再開', 'Instant resume'))
@@ -1259,7 +1273,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
     const serial = ++querySerial;
     const current = () => !disposed && !routeSignal.aborted && !signal.aborted && serial === querySerial;
     const q = search.value.trim();
-    const parsed = parseAddressInput(app, q);
+    const parsed = parseAddressInput(app, q, { allowBareSymbol: false });
     if (parsed != null && q) {
       showRows([{ addr: parsed }], (item) => listRow({ title: addressText(item.addr), subtitle: text('このアドレスへ移動', 'Jump to this address'), onClick: () => router.navigate('/code/' + item.addr.toString()) }), '');
       return;
@@ -1697,14 +1711,22 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   let disposed = false;
   let pendingPseudoState = routeContext?.restoredState || null;
   let activeProvenanceView = null;
+  let activeFallbackTokHl = null;
   let activeFindBar = null;
-  const unsubNotes = app.notes?.subscribe?.(() => {
-    if (disposed) return;
-    const liveName = functionName(app, addr);
-    if (s.heading) s.heading.textContent = liveName;
-    updateScreenTitle(s.root);
-    router.setCurrentLabel?.(liveName);
-  }) || null;
+  let unsubNotes = null;
+  const bindNotesSub = () => {
+    if (typeof unsubNotes === 'function') { unsubNotes(); unsubNotes = null; }
+    unsubNotes = app.notes?.subscribe?.(() => {
+      if (disposed) return;
+      const liveName = functionName(app, addr);
+      if (s.heading) s.heading.textContent = liveName;
+      updateScreenTitle(s.root);
+      router.setCurrentLabel?.(liveName);
+    }) || null;
+  };
+  bindNotesSub();
+  const onNotesAttached = () => { if (!disposed) bindNotesSub(); };
+  window.addEventListener('hex:notes-attached', onNotesAttached);
   const viewEpoch = app.backend?.gen;
   const viewSlice = app.store.get('sliceIndex');
   const viewCurrent = () => !disposed && app.backend?.gen === viewEpoch && app.store.get('sliceIndex') === viewSlice;
@@ -1723,7 +1745,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       if (dataAddr) {
         try { return BigInt(dataAddr); } catch { /* ignore */ }
       }
-      const firstAddrBtn = content.querySelector('.ui-decompiler-provenance .ui-code-toolbar button');
+      const firstAddrBtn = content.querySelector('.ui-decompiler-provenance .ui-provenance-details button');
       if (firstAddrBtn && /^0x[0-9a-f]+$/i.test(firstAddrBtn.textContent?.trim() || '')) {
         try { return BigInt(firstAddrBtn.textContent.trim()); } catch { /* ignore */ }
       }
@@ -1782,7 +1804,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     };
     const prevBtn = uiButton('↑', { cls: 'ui-icon-action', ariaLabel: text('前の一致', 'Previous match'), onClick: () => focusMatch(matchIdx - 1) });
     const nextBtn = uiButton('↓', { cls: 'ui-icon-action', ariaLabel: text('次の一致', 'Next match'), onClick: () => focusMatch(matchIdx + 1) });
-    const closeBtn = uiButton('×', { cls: 'ui-icon-action', ariaLabel: text('検索を閉じる', 'Close find'), onClick: closeBar });
+    const closeBtn = uiButton('×', { cls: 'ui-icon-action ui-find-close', ariaLabel: text('検索を閉じる', 'Close find'), onClick: closeBar });
     findInput.addEventListener('input', runFind);
     findInput.addEventListener('keydown', (event) => {
       if (event.isComposing || event.keyCode === 229) return;
@@ -1932,7 +1954,10 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       },
     });
     let wrap = false;
+    activeProvenanceView?.tokenHighlight?.destroy?.();
     activeProvenanceView = null;
+    activeFallbackTokHl?.destroy?.();
+    activeFallbackTokHl = tokHl;
     const findBar = createPseudocodeFindBar(code);
     activeFindBar = findBar;
     const findBtn = uiButton(text('検索', 'Find'), { cls: 'ui-secondary-action', onClick: () => findBar.open() });
@@ -1982,13 +2007,6 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         let wrap = false;
         let codeRef = null;
         let findBarRef = null;
-        const hlBadge = h('span', 'ui-highlight-nav');
-        hlBadge.hidden = true;
-        const hlCount = h('span', 'ui-hint ui-highlight-count', '');
-        let hlApi = null;
-        const hlPrev = uiButton('↑', { cls: 'ui-icon-action', ariaLabel: text('前の出現', 'Previous occurrence'), onClick: () => hlApi?.prev?.() });
-        const hlNext = uiButton('↓', { cls: 'ui-icon-action', ariaLabel: text('次の出現', 'Next occurrence'), onClick: () => hlApi?.next?.() });
-        hlBadge.append(hlCount, hlPrev, hlNext);
 
         const copyBtn = uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => { if (codeRef) copyText(codeRef.textContent, text('疑似C', 'Pseudocode')); } });
         const wrapBtn = uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; codeRef?.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } });
@@ -1996,7 +2014,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         findBtn.title = text('関数内を検索 (Ctrl+F)', 'Find in function (Ctrl+F)');
         const asmBtn = uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + selectedPseudocodeAddress().toString()) });
         asmBtn.title = text('アセンブリへ切り替え (Space)', 'Switch to assembly (Space)');
-        const extraToolbarActions = [copyBtn, wrapBtn, findBtn, asmBtn, hlBadge];
+        const extraToolbarActions = [copyBtn, wrapBtn, findBtn, asmBtn];
 
         const provenanceView = createDecompilerProvenanceView(res, {
           text, signal:routeSignal,
@@ -2018,15 +2036,10 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
               ? text(`★「${name}」をブックマークしました。`, `★ Bookmarked "${name}".`)
               : text(`☆「${name}」のブックマークを解除しました。`, `☆ Removed bookmark "${name}".`));
           },
-          onHighlightChange:(info) => {
-            hlApi = info || null;
-            const count = Number(info?.count || 0);
-            if (!info || count <= 0) { hlBadge.hidden = true; return; }
-            const idx = Number.isSafeInteger(info.index) ? info.index + 1 : 1;
-            hlCount.textContent = `${idx}/${count}`;
-            hlBadge.hidden = false;
-          },
         });
+        activeProvenanceView?.tokenHighlight?.destroy?.();
+        activeFallbackTokHl?.destroy?.();
+        activeFallbackTokHl = null;
         activeProvenanceView = provenanceView;
         const code = provenanceView.code;
         codeRef = code;
@@ -2035,7 +2048,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         activeFindBar = findBar;
         if (!provenanceView.root.contains(copyBtn)) {
           const innerToolbar = provenanceView.root.querySelector('.ui-code-toolbar');
-          if (innerToolbar) innerToolbar.prepend(copyBtn, wrapBtn, findBtn, asmBtn, hlBadge);
+          if (innerToolbar) innerToolbar.prepend(copyBtn, wrapBtn, findBtn, asmBtn);
         }
         code.before(findBar.root);
         content.replaceChildren(provenanceView.root);
@@ -2514,8 +2527,12 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     },
     dispose: () => {
       disposed = true;
+      activeProvenanceView?.tokenHighlight?.destroy?.();
       activeProvenanceView = null;
+      activeFallbackTokHl?.destroy?.();
+      activeFallbackTokHl = null;
       activeFindBar = null;
+      window.removeEventListener('hex:notes-attached', onNotesAttached);
       if (typeof unsubBookmarks === 'function') unsubBookmarks();
       if (typeof unsubNotes === 'function') unsubNotes();
       fallbackRouteController?.abort('function-workspace-disposed');
@@ -3232,6 +3249,10 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       });
       results.append(li);
     });
+    const rect = input.getBoundingClientRect?.();
+    if (rect && rect.bottom > 0) {
+      results.style.setProperty('--ui-omnibox-top', `${Math.ceil(rect.bottom + 4)}px`);
+    }
     results.hidden = false;
     input.setAttribute('aria-expanded', 'true');
     if (autoSelectFirst && dropdownItems.length > 0) setActiveIndex(0);
@@ -3318,7 +3339,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       return;
     }
 
-    const parsed = parseAddressInput(app, raw);
+    const parsed = parseAddressInput(app, raw, { allowBareSymbol: false });
     if (parsed != null) {
       pushUnique({ kind: 'address', badge: '→', title: bookmarkLabel(app, parsed), addr: parsed });
     }
@@ -3368,7 +3389,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     hint.textContent = intent.kind === 'empty' ? '' : intentLabel(intent.kind, ja());
     form.dataset.intent = intent.kind;
   };
-  input.addEventListener('input', () => { refreshHint(); scheduleDropdown(); });
+  input.addEventListener('input', () => { dropdownItems = []; activeIndex = -1; refreshHint(); scheduleDropdown(); });
   input.addEventListener('focus', () => { scheduleDropdown(); });
   input.addEventListener('keydown', (event) => {
     if (event.isComposing || event.keyCode === 229) return;
@@ -3512,7 +3533,10 @@ export function installProductUI(app) {
     return false;
   };
   const openHistoryMenu = (event, direction) => {
-    const entries = router.historyEntries?.();
+    const raw = router.historyEntries?.();
+    const entries = Array.isArray(raw)
+      ? raw
+      : (direction < 0 ? raw?.back : raw?.forward);
     if (!Array.isArray(entries) || !entries.length) return;
     event.preventDefault();
     const curDepth = Number.isSafeInteger(router.depth) ? router.depth : 0;
@@ -3707,6 +3731,8 @@ export function installProductUI(app) {
       const beforeEpoch = app.backend?.gen;
       const result = await originalSelectSlice(...args);
       if (app.backend?.gen !== beforeEpoch) {
+        userNavigatedSinceFileOpen = false;
+        appliedDeltaRouteToken = null;
         router.navigate('/code', { replace: true });
         assistant?.refresh();
         assistant?.collapse();
@@ -3725,7 +3751,7 @@ export function installProductUI(app) {
     app.goToAddress = function goToAddressAndShowCode(addr, options = {}) {
       // Route user-requested jumps through ProductRouter even when already on /code
       // so browser Back/Forward and App.navigation stay unified.
-      if ((options?.announce || options?.history !== false) && !routingCodeAddress && router.current && addressIsMapped(app, addr)) {
+      if (options?.history !== false && !routingCodeAddress && router.current && addressIsMapped(app, addr)) {
         try {
           const targetBig = BigInt(addr);
           if (router.navigate('/code/' + targetBig.toString(), { forcePush: true })) {
@@ -3815,8 +3841,13 @@ export function installProductUI(app) {
       const aiOpen = !!(assistant?.isOpen?.() || uiRoot()?.classList.contains('ai-open'));
       const hasRangeMode = !!app.viewer?.rangeMode;
       const hasTokHit = !!document.querySelector('.tok-hit');
-      const hasFindOpen = !!document.querySelector('.ui-pseudocode-find:not([hidden])');
-      if (!aiOpen && !hasRangeMode && !hasTokHit && !hasFindOpen && canGoBack()) {
+      const openFindBar = document.querySelector('.ui-pseudocode-find:not([hidden])');
+      if (openFindBar) {
+        openFindBar.querySelector('.ui-find-close')?.click();
+        event.preventDefault();
+        return;
+      }
+      if (!aiOpen && !hasRangeMode && !hasTokHit && canGoBack()) {
         event.preventDefault();
         goBack();
       }

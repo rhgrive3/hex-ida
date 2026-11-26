@@ -82,9 +82,12 @@ export function parseAddress(text) {
 }
 
 function toBigIntAddr(val) {
-  if (typeof val === 'bigint') return val;
+  if (typeof val === 'bigint') return val >= 0n ? val : null;
   if (typeof val === 'number' && Number.isSafeInteger(val) && val >= 0) return BigInt(val);
-  if (typeof val === 'string') return parseAddress(val);
+  if (typeof val === 'string') {
+    const v = parseAddress(val);
+    return v != null && v >= 0n ? v : null;
+  }
   return null;
 }
 
@@ -107,6 +110,12 @@ export function parseAddressExpr(raw, resolveSymbol) {
   if (typeof raw !== 'string') return null;
   const s = raw.trim();
   if (!s) return null;
+  if (!/^0x/i.test(s) && typeof resolveSymbol === 'function' && /[+-]/.test(s)) {
+    try {
+      const exactSym = toBigIntAddr(resolveSymbol(s));
+      if (exactSym != null) return exactSym;
+    } catch { /* fall through */ }
+  }
   const expr = /^(.+?)\s*([+-])\s*([^+-]+)$/.exec(s);
   if (expr) {
     const baseRaw = expr[1].trim();
@@ -117,7 +126,10 @@ export function parseAddressExpr(raw, resolveSymbol) {
       if (!/^0x/i.test(baseRaw) && typeof resolveSymbol === 'function') {
         try { base = toBigIntAddr(resolveSymbol(baseRaw)); } catch { base = null; }
       }
-      if (base == null) base = parseAddress(baseRaw);
+      if (base == null) {
+        const parsedBase = parseAddress(baseRaw);
+        if (parsedBase != null && parsedBase >= 0n) base = parsedBase;
+      }
       if (base == null) {
         const subHit = /^sub_([0-9a-f]+)$/i.exec(baseRaw);
         if (subHit) {
@@ -131,7 +143,7 @@ export function parseAddressExpr(raw, resolveSymbol) {
     }
   }
   const plain = parseAddress(s);
-  if (plain != null) return plain;
+  if (plain != null) return plain >= 0n ? plain : null;
   if (typeof resolveSymbol === 'function') {
     try { return toBigIntAddr(resolveSymbol(s)); } catch { return null; }
   }

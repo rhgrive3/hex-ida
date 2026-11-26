@@ -210,8 +210,7 @@ export class ProductRouter {
     const previousMaxDepth = this.maxDepth;
     const nextDepth = replace ? previousDepth : previousDepth + 1;
     const nextMaxDepth = replace ? Math.max(previousMaxDepth, nextDepth) : nextDepth;
-    const hadPrevSlot = this._stack.has(nextDepth);
-    const prevSlot = hadPrevSlot ? this._stack.get(nextDepth) : null;
+    const prevStack = new Map(this._stack);
 
     // Build the destination before committing browser history. If the route
     // renderer throws, the current view, URL and history stack must remain one
@@ -224,8 +223,7 @@ export class ProductRouter {
       if (this.renderGeneration === generationBefore || this.renderGeneration === generationBefore + 1) {
         this.depth = previousDepth;
         this.maxDepth = previousMaxDepth;
-        if (hadPrevSlot) this._stack.set(nextDepth, prevSlot);
-        else this._stack.delete(nextDepth);
+        this._stack = prevStack;
       }
       return false;
     }

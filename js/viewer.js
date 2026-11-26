@@ -266,6 +266,9 @@ export class CodeViewer {
     const visible = this.visibleRows();
     const sel = this.selectedRow;
     const selectedAddr = sel >= 0 ? this.rowAddress(sel) : null;
+    const hadRangeSel = this.selAnchor >= 0 && this.selFocus >= 0 && this.selAnchor !== this.selFocus;
+    const rangeAnchorAddr = hadRangeSel ? this.rowAddress(this.selAnchor) : null;
+    const rangeFocusAddr = hadRangeSel ? this.rowAddress(this.selFocus) : null;
     const selVisible = sel >= 0 && selectedAddr != null
       && toRowBig(sel) >= toRowBig(top)
       && toRowBig(sel) < toRowBig(top) + BigInt(visible);
@@ -336,6 +339,16 @@ export class CodeViewer {
         if (remapped != null) {
           this.selAnchor = remapped;
           this.selFocus = remapped;
+        } else {
+          this.selAnchor = -1;
+          this.selFocus = -1;
+        }
+      } else if (hadRangeSel) {
+        const aRow = rangeAnchorAddr != null ? this.rowOfAddress(rangeAnchorAddr) : null;
+        const fRow = rangeFocusAddr != null ? this.rowOfAddress(rangeFocusAddr) : null;
+        if (aRow != null && fRow != null) {
+          this.selAnchor = aRow;
+          this.selFocus = fRow;
         } else {
           this.selAnchor = -1;
           this.selFocus = -1;
@@ -833,6 +846,7 @@ export class CodeViewer {
     }else if(el._note!==''||el._fn!==''||el._sblkName!==''){el._nt.nodeValue='';el._note='';el._f.textContent='';el._fn='';el._bt.textContent='';el._sblkName='';}
     let cls='row';if(this.mode==='asm'){const k=mnemonicClass(mn);if(k)cls+=' '+k;if(!mn||mn==='…')cls+=' pending';const cg=instructionCategory(arch,mn);if(cg)cls+=' cat-'+cg;if(isFnStart)cls+=' fnstart';if(blk)cls+=' sblk sblk-'+blk.pos+' sblk-lv-'+blk.level;}else if(!bytes?.length)cls+=' pending';
     if(address!=null&&this.bookmarks?.has?.(address))cls+=' bookmarked';
+    if(userComment&&this.mode==='asm')cls+=' has-comment';
     if(row>=0&&row>=this._selLo&&row<=this._selHi){cls+=' sel';if(this._selLo!==this._selHi){if(row===this._selLo)cls+=' sel-first';if(row===this._selHi)cls+=' sel-last';}}if(row>=0&&row===this.markedRow)cls+=' hit';if(el._cls!==cls){el.className=cls;el._cls=cls;}
   }
 
@@ -1042,9 +1056,9 @@ export class CodeViewer {
 
     if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
       this._onDocKeyDown = (e) => {
-        if (e.key === 'Escape' && this.highlightedReg && !e.defaultPrevented) {
-          this.clearHighlightedReg();
-        }
+        if (e.key !== 'Escape' || !this.highlightedReg || e.defaultPrevented) return;
+        if (document.querySelector('.sheet, .menu, .dialog')) return;
+        this.clearHighlightedReg();
       };
       document.addEventListener('keydown', this._onDocKeyDown);
     }

@@ -162,7 +162,7 @@ export async function queryFunctionsFast(
 ) {
   if (signal?.aborted) throw abortError();
   const q = String(query || '').trim().toLowerCase();
-  const hexQuery = q.startsWith('0x') ? q.slice(2) : (q.startsWith('sub_') ? q.slice(4) : null);
+  const hexQuery = q.startsWith('0x') ? (q.slice(2) || null) : (q.startsWith('sub_') ? (q.slice(4) || null) : null);
   const start = Math.max(0, Number.isSafeInteger(offset) ? offset : 0);
   const count = Math.max(0, Number.isSafeInteger(limit) ? limit : 120);
 

@@ -289,12 +289,21 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
     },
   }));
   const s = screen(currentFunctionName(app, address), { id:'function', subtitle:addressText(address), actions });
-  const unsubNotes = app.notes?.subscribe?.(() => {
-    const liveName = currentFunctionName(app, address);
-    if (s.heading) s.heading.textContent = liveName;
-    updateScreenTitle(s.root);
-    router.setCurrentLabel?.(liveName);
-  }) || null;
+  let unsubNotes = null;
+  let overviewDisposed = false;
+  const bindNotesSub = () => {
+    if (typeof unsubNotes === 'function') { unsubNotes(); unsubNotes = null; }
+    unsubNotes = app.notes?.subscribe?.(() => {
+      if (overviewDisposed) return;
+      const liveName = currentFunctionName(app, address);
+      if (s.heading) s.heading.textContent = liveName;
+      updateScreenTitle(s.root);
+      router.setCurrentLabel?.(liveName);
+    }) || null;
+  };
+  bindNotesSub();
+  const onNotesAttached = () => { if (!overviewDisposed) bindNotesSub(); };
+  window.addEventListener('hex:notes-attached', onNotesAttached);
   const tabbar = tabs(FUNCTION_TABS, 'overview', (next) => router.navigate(`/function/${address.toString()}/${next}`), { panelId:'ui-function-panel', label:text('関数の表示', 'Function views') });
   s.body.append(tabbar);
   const content = tabPanel(tabbar, 'ui-workspace-content');
@@ -376,7 +385,7 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
     }
   })();
 
-  return { root:s.root, dispose:() => { if (typeof unsubBookmarks === 'function') unsubBookmarks(); if (typeof unsubNotes === 'function') unsubNotes(); } };
+  return { root:s.root, dispose:() => { overviewDisposed = true; window.removeEventListener('hex:notes-attached', onNotesAttached); if (typeof unsubBookmarks === 'function') unsubBookmarks(); if (typeof unsubNotes === 'function') unsubNotes(); } };
 }
 
 function renderCanonicalClaims(app, router, route, meta, queries) {

@@ -16,7 +16,9 @@
 @media (max-width: 899px), (pointer: coarse) {
   .product-ui-ready .ui-star-btn,
   .product-ui-ready .ui-row-star,
-  .product-ui-ready .ui-delta-dismiss {
+  .product-ui-ready .ui-delta-dismiss,
+  .product-ui-ready .ui-tok-nav button,
+  .product-ui-ready .ui-highlight-nav button {
     min-width: var(--ui-touch);
     min-height: var(--ui-touch);
   }
@@ -58,7 +60,7 @@
     position: fixed;
     left: var(--ui-space-3);
     right: var(--ui-space-3);
-    top: calc(var(--ui-safe-top, 0px) + 56px);
+    top: var(--ui-omnibox-top, calc(var(--ui-safe-top, 0px) + 104px));
   }
   .product-ui-ready .ui-explorer-filter-bar {
     flex-wrap: nowrap;

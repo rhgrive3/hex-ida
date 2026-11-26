@@ -188,10 +188,15 @@ export function attachTokenHighlight(codeEl, { onHighlightChange } = {}) {
     emit();
   };
   const onKeyDown = (event) => {
-    if (event.key === 'Escape' && activeToken != null) clear();
+    if (event.key !== 'Escape' || activeToken == null || event.defaultPrevented) return;
+    if (typeof document !== 'undefined' && document.querySelector?.('.sheet, .menu, .dialog')) return;
+    event.preventDefault();
+    clear();
   };
   codeEl.addEventListener('click', onClick);
-  codeEl.addEventListener('keydown', onKeyDown);
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('keydown', onKeyDown);
+  }
   return {
     clear: () => clear(),
     next,
@@ -199,7 +204,9 @@ export function attachTokenHighlight(codeEl, { onHighlightChange } = {}) {
     destroy: () => {
       clear({ silent: true });
       codeEl.removeEventListener('click', onClick);
-      codeEl.removeEventListener('keydown', onKeyDown);
+      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('keydown', onKeyDown);
+      }
     },
     get activeToken() { return activeToken; },
     get count() { return activeNodes.length; },
@@ -417,7 +424,8 @@ export function createDecompilerProvenanceView(query, options = {}) {
   const status = h('p', 'ui-hint');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
-  const details = h('div', 'ui-code-toolbar');
+  const details = h('div', 'ui-code-toolbar ui-provenance-details');
+  let currentSelectedAddr = null;
   const history = h('div', 'ui-provenance-history');
   const controls = h('div', 'ui-code-toolbar');
   const input = h('input', 'mono');
@@ -489,6 +497,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
     };
     showHistory(0);
     if (!outcome.entities.length) {
+      currentSelectedAddr = null;
       status.textContent = recordsWithHistory.length && recordsWithHistory.every(record => record.suppressedRender)
         ? text('初期表示での省略履歴があります。対応する表示行はありません。', 'Initial-render omission history exists. There is no corresponding rendered line.')
         : recordsWithHistory.length
@@ -498,6 +507,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
     }
     status.textContent = `${outcome.entities.length} ` + text('行が対応しています。', 'matching lines.');
     const addresses = [...new Set(outcome.entities.flatMap(entity => entity.origins.addresses).map(String))];
+    currentSelectedAddr = addresses.length ? BigInt(addresses[0]) : null;
     const records = [...new Set(outcome.entities.flatMap(entity => entity.recordRefs))];
     const kinds = [...new Set(records.map(index => query.value.renderProvenance.ledger[index]?.kind).filter(Boolean))];
     const renderAddresses = offset => {
@@ -673,5 +683,5 @@ export function createDecompilerProvenanceView(query, options = {}) {
       void select(() => navigation.selectOrigin('addr', initAddr));
     }
   }
-  return Object.freeze({ root, code, navigation, tokenHighlight });
+  return Object.freeze({ root, code, navigation, tokenHighlight, selectedAddress: () => currentSelectedAddr });
 }
