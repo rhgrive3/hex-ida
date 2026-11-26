@@ -1,4 +1,4 @@
-import { matchText, matchName, numericSymbolRole, isDiagnosticString } from './goals.js';
+import { matchText, matchName, numericSymbolRole, isDiagnosticString, normalizeCallableName, symbolMutationKind } from './goals.js';
 import { vendorOf, vendorInText, vendorConflicts, classFromSymbol } from './vendors.js';
 
 export const REASON = {
@@ -207,10 +207,21 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       }
       return a;
     };
+    const goalAction = goal.query?.action || goal.action || null;
+    const wantsMutation = !!(
+      (goal.expects && goal.expects.store)
+      || goalAction === 'increase'
+      || goalAction === 'decrease'
+      || goalAction === 'set'
+    );
     const compareNameMatch = (a, b) => (
       (a.vendorConflict ? 1 : 0) - (b.vendorConflict ? 1 : 0)
+      || (a.isVendor ? 1 : 0) - (b.isVendor ? 1 : 0)
       || b.effScore - a.effScore
       || b.roleRank - a.roleRank
+      || b.mutatorRank - a.mutatorRank
+      || a.leafLen - b.leafLen
+      || a.name.length - b.name.length
       || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
       || compareAddr(a.candAddr, b.candAddr)
       || compareAddr(a.a, b.a)
@@ -218,18 +229,29 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     const bestByCand = new Map();
     const considerSymbol = (a, name) => {
       if (!name || typeof name !== 'string') return;
-      if (matcher && !matcher.test(name)) return;
+      const normName = normalizeCallableName(name);
+      if (matcher && !matcher.test(name) && !(normName && matcher.test(normName))) return;
       const m = matchName(goal, name);
       if (!m) return;
       const role = numericSymbolRole(goal, name);
       const roleRank = role === 'value' ? 2 : role === 'neutral' ? 1 : 0;
       const roleMult = role === 'value' ? 1.6 : role === 'non-value' ? 0.4 : 1;
-      const effScore = m.score * roleMult;
+      const mutInfo = symbolMutationKind(name);
+      const mutatorRank = mutInfo.kind === 'mutator' ? 2 : mutInfo.kind === 'const-getter' ? 0 : 1;
+      const mutatorMult = (wantsMutation && role !== 'non-value')
+        ? (mutInfo.kind === 'mutator' ? 1.15 : mutInfo.kind === 'const-getter' ? 0.95 : 1)
+        : 1;
+      const effScore = m.score * roleMult * mutatorMult;
       const v = vendorOf(classFromSymbol(name) || name, vendors);
+      const isVendor = !!v;
       const vendorConflict = !!(v && vendorConflicts(goal.id, v));
+      const leafLen = mutInfo.leafLen || name.length;
       const candAddr = resolveCandAddr(a);
       const candKey = candAddr.toString();
-      const entry = { a, candAddr, candKey, name, m, role, roleRank, roleMult, effScore, vendorConflict };
+      const entry = {
+        a, candAddr, candKey, name, m, role, roleRank, roleMult, mutatorRank, mutatorMult,
+        effScore, isVendor, vendorConflict, leafLen,
+      };
       const prev = bestByCand.get(candKey);
       if (!prev || compareNameMatch(entry, prev) < 0) bestByCand.set(candKey, entry);
     };
@@ -271,11 +293,11 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       }
     }
     if (capped) notes.push('name-matches-capped');
-    for (const { candAddr, a, name, m, role, roleMult } of kept) {
+    for (const { candAddr, a, name, m, role, roleMult, mutatorMult } of kept) {
       const c = candidate(candAddr, a);
       if (!c) continue;
       c.name = c.name || name;
-      addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score * roleMult, { name, term: m.term, role });
+      addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score * roleMult * mutatorMult, { name, term: m.term, role });
     }
   }
 
@@ -287,10 +309,13 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     const vendor = vendorOfCandidate(c, vendors);
     if (!vendor) return;
     c.vendor = vendor;
-    if (vendorConflicts(goal.id, vendor)) addReason(c, REASON.VENDOR, POINTS[REASON.VENDOR], {
-      vendor: vendor.vendor, kind: vendor.kind, where: vendor.where,
-      name: vendor.name || null, text: vendor.text || null,
-    });
+    if (vendorConflicts(goal.id, vendor)) {
+      const penalty = vendor.confidence === 'low' ? POINTS[REASON.VENDOR] * 0.45 : POINTS[REASON.VENDOR];
+      addReason(c, REASON.VENDOR, penalty, {
+        vendor: vendor.vendor, kind: vendor.kind, where: vendor.where,
+        name: vendor.name || null, text: vendor.text || null,
+      });
+    }
   };
   for (const c of byAddr.values()) applyVendorPenalty(c);
 
@@ -367,7 +392,11 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     if (!hasProgram) break;
     if (c.score <= 10 && c.vendor && vendorConflicts(goal.id, c.vendor)) continue;
     const called = program.callCountOf(c.addr);
-    if (called >= 3) addReason(c, REASON.POPULAR, POINTS[REASON.POPULAR], { n: called, complete: !program.callsCapped });
+    if (called >= 3) {
+      const isConstGetter = !!(c.name && symbolMutationKind(c.name).kind === 'const-getter');
+      const popPoints = isConstGetter ? POINTS[REASON.POPULAR] * 0.4 : POINTS[REASON.POPULAR];
+      addReason(c, REASON.POPULAR, popPoints, { n: called, complete: !program.callsCapped });
+    }
     c.calledCount = called;
     const range = program.functionRange(c.addr);
     if (!range || range.start !== c.addr || range.end == null) continue;

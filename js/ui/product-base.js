@@ -373,15 +373,21 @@ function installViewportBridge() {
   };
 }
 
-function recentQueries() {
-  try { return JSON.parse(sessionStorage.getItem('hex.ui.recentQueries') || '[]'); } catch { return []; }
+function recentQueriesKey(app) {
+  const file = app?.store?.get?.('fileInfo');
+  const id = file?.name || file?.path || 'global';
+  return `hex.ui.recentQueries:${String(id).slice(0, 80)}`;
 }
 
-function rememberQuery(query) {
+function recentQueries(app) {
+  try { return JSON.parse(sessionStorage.getItem(recentQueriesKey(app)) || '[]'); } catch { return []; }
+}
+
+function rememberQuery(query, app) {
   const q = String(query || '').trim();
   if (!q) return;
-  const next = [q, ...recentQueries().filter((x) => x !== q)].slice(0, 6);
-  try { sessionStorage.setItem('hex.ui.recentQueries', JSON.stringify(next)); } catch { /* private mode */ }
+  const next = [q, ...recentQueries(app).filter((x) => x !== q)].slice(0, 6);
+  try { sessionStorage.setItem(recentQueriesKey(app), JSON.stringify(next)); } catch { /* private mode */ }
 }
 
 /*
@@ -407,11 +413,11 @@ function runInvestigation(app, query) {
   });
 }
 
-function renderInvestigate(app, router) {
+function renderInvestigate(app, router, route = null) {
   const s = screen(text('何を知りたい？', 'What do you want to know?'), {
     id: 'investigate',
-    subtitle: text('ツール名ではなく、知りたいことをそのまま入力してください。必要な探索方法はHexが選びます。',
-      'Describe the answer you need. Hex chooses the search strategy.'),
+    subtitle: text('探したい処理や値を入力すると、候補関数を自動で絞り込みます。',
+      'Enter what you want to find to rank candidate routines automatically.'),
   });
   const hero = card(null, { className: 'ui-investigate-hero' });
   const form = h('form', 'ui-goal-form');
@@ -426,16 +432,16 @@ function renderInvestigate(app, router) {
     event.preventDefault();
     const q = input.value.trim();
     if (!q) { input.focus(); return; }
-    rememberQuery(q);
+    rememberQuery(q, app);
     runInvestigation(app, q);
   });
   hero.body.append(form);
   const suggestions = h('div', 'ui-goal-suggestions');
   for (const q of [
     text('経験値が増える場所', 'where experience increases'),
-    text('通信している場所', 'network communication'),
+    text('通信している場所', 'network'),
     text('ガチャの結果を決める処理', 'where gacha results are decided'),
-  ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q); runInvestigation(app, q); } }));
+  ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q, app); runInvestigation(app, q); } }));
   const commonGoals = h('div', 'ui-goal-suggestions ui-purpose-presets');
 for (const preset of [
   { label:text('HP・体力', 'HP / health'), query:text('HPを書き換える処理', 'where HP is written') },
@@ -443,10 +449,12 @@ for (const preset of [
   { label:text('ダメージ計算', 'Damage calculation'), query:text('ダメージを計算して適用する処理', 'where damage is calculated and applied') },
   { label:text('所持金・コイン', 'Money / coins'), query:text('所持金・コインを増減・保存する処理', 'where money or coins are changed and stored') },
   { label:text('アイテム・所持品', 'Items / inventory'), query:text('アイテム・所持品を増減・保存する処理', 'where inventory items are changed and stored') },
+  { label:text('広告・課金', 'Ads / IAP'), query:text('広告表示や課金・購入を判定する処理', 'where ads or in-app purchases are checked') },
+  { label:text('無敵・クールダウン', 'Invincible / Cooldown'), query:text('無敵やクールダウン・移動速度を決める処理', 'where invincibility, cooldown, or speed is controlled') },
 ]) {
   commonGoals.append(uiButton(preset.label, {
     cls:'ui-suggestion ui-purpose-chip',
-    onClick:() => { input.value = preset.query; rememberQuery(preset.query); runInvestigation(app, preset.query); },
+    onClick:() => { input.value = preset.query; rememberQuery(preset.query, app); runInvestigation(app, preset.query); },
   }));
 }
 hero.body.append(suggestions, sectionTitle(text('よくある目的', 'Common goals')), commonGoals);
@@ -528,7 +536,15 @@ s.body.append(hero.root);
   }));
   s.body.append(overview.root);
 
-  const recent = recentQueries();
+  const initialQuery = route?.query?.get?.('q') || '';
+  if (initialQuery) {
+    input.value = initialQuery;
+    if (app.store?.get?.('fileInfo')) {
+      rememberQuery(initialQuery, app);
+      queueMicrotask(() => { if (!disposed) runInvestigation(app, initialQuery); });
+    }
+  }
+  const recent = recentQueries(app);
   if (recent.length) {
     s.body.append(sectionTitle(text('最近の調査', 'Recent investigations')));
     const list = h('div', 'ui-list');
@@ -1252,7 +1268,17 @@ function renderExplorer(app, router, route, routeContext = {}) {
       content.append(h('p', 'ui-partial-note', text('索引は一部です。未解析の領域を「該当なし」とは扱いません。', 'The index is partial; unanalysed regions are not treated as having no matches.')));
     }
     if (items?.complete === false) content.append(h('p', 'ui-partial-note', text('結果は一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial; unscanned regions are not treated as having no matches.')));
-    if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText, emptyAction)); return; }
+    if (!items || !Number(items.length)) {
+      const q = String(search.value || '').trim();
+      const fallbackAction = (!emptyAction && q)
+        ? uiButton(text(`「${q}」を自動解析で探す`, `Auto-investigate "${q}"`), {
+            cls: 'ui-primary-action',
+            onClick: () => runInvestigation(app, q),
+          })
+        : emptyAction;
+      content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText, fallbackAction));
+      return;
+    }
     virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text('索引の結果', 'Explorer results'), renderRow });
     content.append(virtual.root);
     if (pendingVirtualState) { virtual.restoreState(pendingVirtualState); pendingVirtualState = null; }
@@ -3201,6 +3227,13 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       runCommand({ kind: 'command', command: item.command, value: item.command });
       return;
     }
+    if (item.kind === 'investigate') {
+      hideResults();
+      input.blur();
+      rememberQuery(item.query, app);
+      runInvestigation(app, item.query);
+      return;
+    }
     if (item.addr == null) return;
     const addr = BigInt(item.addr);
     hideResults();
@@ -3239,7 +3272,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       if (item.badge) left.append(h('span', 'ui-command-result-badge', item.badge));
       left.append(h('span', 'ui-command-result-title', item.title));
       if (item.note) left.append(h('span', 'ui-command-result-note', item.note));
-      const rightText = item.kind === 'command'
+      const rightText = (item.kind === 'command' || item.kind === 'investigate')
         ? String(item.subtitle || '')
         : (item.addr != null ? addressText(item.addr) : '');
       const right = h('span', 'ui-command-result-addr mono', rightText);
@@ -3376,6 +3409,18 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       }
     }
     if (serial !== dropdownSerial || document.activeElement !== input) return;
+    if (raw && app.store?.get?.('fileInfo') && parsed == null) {
+      const compiled = compileGoal(raw);
+      if (compiled?.goal) {
+        out.push({
+          kind: 'investigate',
+          badge: '◎',
+          title: text(`「${raw}」を自動解析で探す`, `Auto-investigate "${raw}"`),
+          subtitle: text('自動解析', 'Auto'),
+          query: raw,
+        });
+      }
+    }
     renderDropdown(out, { autoSelectFirst: Boolean(raw) });
   };
 
@@ -3437,8 +3482,9 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
         if (target != null) router.navigate('/function/' + BigInt(target).toString() + '/pseudocode');
         else toast(text('この位置の関数を特定できませんでした。', 'Could not identify a function at this address.'));
       }); return true;
+      case 'investigate': router.navigate('/investigate'); return true;
       case 'ai': getAssistant()?.open(); return true;
-      case 'agent': getAssistant()?.ask(text('この一覧から調べたいことを教えてください。', 'Tell me what to investigate.'), { mode: 'agent' }); return true;
+      case 'agent': getAssistant()?.open({ mode: 'agent' }); return true;
       default: return false;
     }
   };
@@ -3450,12 +3496,24 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     if (intent.kind === 'empty') return;
     input.blur();
     if (intent.kind === 'ai') {
+      const compiled = compileGoal(intent.value);
+      if (compiled?.goal && app.store?.get?.('fileInfo')) {
+        rememberQuery(intent.value, app);
+        runInvestigation(app, intent.value);
+        input.value = '';
+        refreshHint();
+        return;
+      }
       const assistant = getAssistant();
       if (assistant) { assistant.ask(intent.value); input.value = ''; refreshHint(); return; }
-      router.navigate('/investigate');
+      router.navigate('/investigate?q=' + encodeURIComponent(intent.value));
       return;
     }
-    if (intent.kind === 'command' && runCommand(intent)) return;
+    if (intent.kind === 'command') {
+      if (runCommand(intent)) return;
+      toast(text(`不明なコマンドです: >${intent.value}`, `Unknown command: >${intent.value}`));
+      return;
+    }
     if (intent.kind === 'address') {
       const addr = parseAddressInput(app, intent.value);
       // Navigate only when the address exists; a failed jump already explained why.

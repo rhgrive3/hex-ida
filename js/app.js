@@ -1415,7 +1415,7 @@ export class App {
     const slice = sliceIndex >= 0 ? info?.slices?.[sliceIndex] || null : null;
     const meta = slice?.info || {};
     const rawHash = this.backend?.contentHash || this.backend?.binaryId || null;
-    const sha256 = typeof rawHash === 'string' && rawHash.trim() ? rawHash.trim().toLowerCase() : null;
+    const sha256 = typeof rawHash === 'string' && rawHash.trim() ? rawHash.trim().toLowerCase().replace(/^bin_sha256_/, '') : null;
     return {
       sha256,
       prefix: sha256 ? sha256.slice(0, 16) : null,
@@ -1494,6 +1494,7 @@ export class App {
       before: Array.from(entry.before || [], (b) => Number(b) & 255),
       after: Array.from(entry.after || [], (b) => Number(b) & 255),
       addr: entry.addr ?? null,
+      text: entry.text ?? null,
       label: entry.label ?? null,
       reason: entry.reason ?? null,
     }));
@@ -1534,7 +1535,7 @@ export class App {
     };
   }
 
-  _applyDeltaRecord(record, { restoreNavigation = true } = {}) {
+  _applyDeltaRecord(record, { restoreNavigation = true, mergeExisting = false } = {}) {
     if (!record || typeof record !== 'object' || !record.delta) return false;
     this._applyingDelta = true;
     try {
@@ -1542,6 +1543,10 @@ export class App {
       const notes = this.notes;
       const previousNoteNames = notes && notes !== EMPTY_NOTES ? [...notes.names.keys()] : [];
       if (notes && notes !== EMPTY_NOTES) {
+        const preNames = mergeExisting ? new Map(notes.names) : null;
+        const preComments = mergeExisting ? new Map(notes.comments) : null;
+        const preVars = mergeExisting ? new Map(notes.vars) : null;
+        const preTypes = mergeExisting ? new Map(notes.types) : null;
         notes.names.clear();
         notes.comments.clear();
         notes.vars.clear();
@@ -1550,6 +1555,12 @@ export class App {
         for (const [k, v] of Object.entries(delta.comments || {})) notes.comments.set(k, v);
         for (const [k, v] of Object.entries(delta.vars || {})) notes.vars.set(k, v);
         for (const [k, v] of Object.entries(delta.types || {})) notes.types.set(k, v);
+        if (mergeExisting) {
+          for (const [k, v] of preNames) notes.names.set(k, v);
+          for (const [k, v] of preComments) notes.comments.set(k, v);
+          for (const [k, v] of preVars) notes.vars.set(k, v);
+          for (const [k, v] of preTypes) notes.types.set(k, v);
+        }
         notes.structs = Array.isArray(delta.structs) ? delta.structs.slice() : [];
         notes.dirty = true;
         if (notes.id) notes.save();
@@ -1566,6 +1577,7 @@ export class App {
           try {
             this.patches.add(BigInt(entry.offset), entry.before || [], entry.after || [], {
               addr: entry.addr ?? null,
+              text: entry.text ?? null,
               label: entry.label ?? null,
               reason: entry.reason ?? null,
             });
@@ -1696,7 +1708,7 @@ export class App {
     try {
       record = await this.deltaSession.load(deltaKey);
       if (!record || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex || this._isDeltaReady()) return null;
-      this._applyDeltaRecord(record, { restoreNavigation: true });
+      this._applyDeltaRecord(record, { restoreNavigation: true, mergeExisting: true });
       const restoreInfo = {
         deltaKey,
         savedCount: record.savedCount,

@@ -158,6 +158,10 @@ function artifactIdentityOf(app) {
     : (typeof rawSlice === 'number' && Number.isSafeInteger(rawSlice) && rawSlice >= 0 ? rawSlice : -1);
   return `${binaryId}|slice:${sliceIndex}`;
 }
+function sameArtifactOrSettled(initial, current) {
+  if (initial === current) return true;
+  return typeof initial === 'string' && initial.startsWith('|slice:') && typeof current === 'string' && current.endsWith(initial);
+}
 function symbolsGenerationOf(app) { return app?.symbols?.gen ?? 0; }
 function programCacheKey(epoch, artifact, symbolsGeneration, key) {
   return `${epoch}:${artifact}:${symbolsGeneration}:${key}`;
@@ -378,7 +382,7 @@ function createStringEntry(app, key, initialOptions = {}) {
     let scannedBytes = 0, backendIncomplete = false, backendMalformed = false;
     for (let index = 0; index < use.length; index++) {
       throwIfAborted(controller.signal);
-      if (epoch !== epochOf(app) || artifact !== artifactIdentityOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
+      if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared strings'), { stale:true });
       if (budget.exhausted) { skipped.push(...use.slice(index).map((item) => item.region)); break; }
       const { region, bytes } = use[index];
       const limit = budget.requestLimit();
@@ -414,7 +418,7 @@ function createStringEntry(app, key, initialOptions = {}) {
       if (!backendMalformed && result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';
     }
     throwIfAborted(controller.signal);
-    if (epoch !== epochOf(app) || artifact !== artifactIdentityOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
+    if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared strings'), { stale:true });
     const truncated = !!budget.truncationReason || skipped.length > 0 || backendIncomplete;
     Object.assign(rows, {
       complete:!truncated,
@@ -491,7 +495,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     // symbols (#4487).
     await discovery;
     throwIfAborted(controller.signal);
-    if (epoch !== epochOf(app) || artifact !== artifactIdentityOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
+    if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared program'), { stale:true });
     const symbolsGeneration = symbolsGenerationOf(app);
     const nextCacheKey = programCacheKey(epoch, artifact, symbolsGeneration, key);
     if (nextCacheKey !== initialCacheKey) {
@@ -515,7 +519,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     let remainingBytes = regions.reduce((sum, region) => sum + BigInt(region.size), 0n);
     for (let index = 0; index < regions.length; index++) {
       throwIfAborted(controller.signal);
-      if (epoch !== epochOf(app) || artifact !== artifactIdentityOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
+      if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared program'), { stale:true });
       if (symbolsGeneration !== symbolsGenerationOf(app)) throw Object.assign(new Error('stale shared program symbols'), { stale:true });
       const region = regions[index], size = BigInt(region.size);
       const request = app.backend.scanProgram(region.id, (progress) => publishProgress(entry, {
@@ -545,7 +549,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     }
     if (app.symbols?.functionStartsComplete !== true) failures.push('function-discovery-incomplete');
     throwIfAborted(controller.signal);
-    if (epoch !== epochOf(app) || artifact !== artifactIdentityOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
+    if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared program'), { stale:true });
     if (symbolsGeneration !== symbolsGenerationOf(app)) {
       throw Object.assign(new Error('stale shared program symbols'), { stale:true });
     }

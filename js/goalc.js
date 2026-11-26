@@ -24,7 +24,7 @@
  *   3. ここで出す語は「手がかり」であって「正解」ではない。証明は命令が行う。
  */
 
-import { GOALS, parseGoal, expandTerms } from './goals.js';
+import { GOALS, parseGoal, expandTerms, SINGLE_CHAR_CJK_CONCEPTS, isIdentifierLikeQuery } from './goals.js';
 import { pick } from './i18n.js';
 
 /* ── 動き（ACTION） ─────────────────────────────────────────
@@ -88,7 +88,7 @@ const ENTITY_EXTRA = [
   { re: /\bxp\b|経験値|\bexp\b|experience/i, terms: ['exp', 'experience', 'xp', '経験値'], goal: 'level' },
   { re: /レア(度|リティ)|rarity|\brare\b/i, terms: ['rarity', 'rare', 'grade', 'tier', 'レア'], goal: 'gacha' },
   { re: /所持数|個数|在庫|stock|count\b/i, terms: ['count', 'num', 'amount', 'stock'], goal: 'item' },
-  { re: /クールダウン|再使用|cooldown/i, terms: ['cooldown', 'recast', 'interval'], goal: null },
+  { re: /クールダウン|再使用|cool[\s_-]*down|\bcd\b|recast/i, terms: ['cooldown', 'recast', 'cd', 'interval'], goal: 'cooldown' },
   { re: /チケット|ticket/i, terms: ['ticket', 'pass', 'チケット'], goal: null },
   { re: /ハート|heart/i, terms: ['heart', 'life', 'ハート'], goal: 'stamina' },
 ];
@@ -202,13 +202,19 @@ export function compileGoal(text) {
     for (const t of extra.terms) pushTerm(t);
     if (!entityGoal && extra.goal) entityGoal = GOALS.find((g) => g.id === extra.goal) || null;
   }
+  const expanded = expandTerms(raw);
+  for (const t of expanded) {
+    if (t.weight >= 1) pushTerm(t.word);
+  }
   if (entityGoal) {
+    for (const t of (goalTerms(entityGoal.id) || [])) pushTerm(t);
     // プリセットの語彙をそのまま使う（正規表現から素の語を取り出す）
     for (const re of entityGoal.strong) pushTerm(plainWord(re));
-    for (const t of (goalTerms(entityGoal.id) || [])) pushTerm(t);
   }
-  for (const t of expandTerms(raw)) {
-    if (t.weight >= 1) pushTerm(t.word);
+  if (!entityTerms.length) {
+    for (const t of expanded) {
+      if (t.weight >= 0.6) pushTerm(t.word);
+    }
   }
 
   /* ── 文脈 ── */
@@ -219,7 +225,7 @@ export function compileGoal(text) {
 
   /* ── 足りないもの ── */
   const missing = [];
-  if (raw.length < 2) missing.push('text');
+  if (raw.length < 2 && !SINGLE_CHAR_CJK_CONCEPTS.has(raw)) missing.push('text');
   if (!entityTerms.length) missing.push('entity');
   if (!action) missing.push('action');
 
@@ -257,16 +263,20 @@ export function compileGoal(text) {
       seenTerm.set(lower, mergedExtraTerms.length);
       mergedExtraTerms.push({ word: term, weight: 1 });
     }
+    const queryMeta = { action: action ? action.id : null, event: event ? event.id : null };
     compiledGoal = entityGoal
       ? Object.assign({}, entityGoal, {
           text: raw,
           extraTerms: mergedExtraTerms,
           free: false,
+          isPreset: !isIdentifierLikeQuery(raw),
           expects: mergedExpects,
+          query: queryMeta,
         })
       : Object.assign({}, parsedGoal, {
           extraTerms: mergedExtraTerms,
           expects: mergedExpects,
+          query: queryMeta,
         });
   }
 
@@ -310,9 +320,9 @@ const GOAL_TERMS = {
   damage: ['damage', 'dmg', 'ダメージ'],
   money: ['coin', 'gold', 'money', 'currency', 'gem', '所持金'],
   gacha: ['gacha', 'lottery', 'draw', 'summon', 'ガチャ'],
-  purchase: ['purchase', 'payment', 'billing', 'receipt'],
+  purchase: ['purchase', 'premium', 'vip', 'subscription', 'payment', 'billing', 'receipt'],
   login: ['login', 'auth', 'token', 'session'],
-  ads: ['ad', 'interstitial', 'rewarded', '広告'],
+  ads: ['noAds', 'removeAds', 'adFree', 'ad', 'interstitial', 'rewarded', '広告'],
   save: ['save', 'persist', 'userdefaults', 'セーブ'],
   network: ['http', 'api', 'request', 'session'],
   score: ['score', 'point', 'ranking', 'スコア'],
@@ -320,6 +330,9 @@ const GOAL_TERMS = {
   stamina: ['stamina', 'energy', 'スタミナ'],
   item: ['item', 'inventory', 'equip', 'アイテム'],
   anticheat: ['cheat', 'tamper', 'jailbreak', 'integrity'],
+  speed: ['speed', 'moveSpeed', 'velocity', '移動速度', 'スピード', '速度'],
+  cooldown: ['cooldown', 'recast', 'cd', 'クールダウン'],
+  crypto: ['encrypt', 'decrypt', 'cipher', 'aes', 'rsa', 'license', 'key', '暗号', '復号', '鍵'],
 };
 
 function goalTerms(id) { return Object.hasOwn(GOAL_TERMS, id) ? GOAL_TERMS[id] : null; }

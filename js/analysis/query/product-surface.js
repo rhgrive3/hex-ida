@@ -318,13 +318,20 @@ function canonicalClaimEvidenceIds(value) {
 }
 
 function claimRows(report, snapshot) {
-  const source = report?.findings || report?.results || report?.goals || [];
+  const structured = [
+    ...(Array.isArray(report?.confirmed) ? report.confirmed : []),
+    ...(Array.isArray(report?.pinned) ? report.pinned : []),
+    ...(Array.isArray(report?.goals) ? report.goals : []),
+  ];
+  const source = structured.length
+    ? [...structured, ...(Array.isArray(report?.findings) ? report.findings : [])]
+    : (report?.findings || report?.results || []);
   if (!Array.isArray(source)) return { rows:[], invalidCount:0 };
   const rows = [];
   let invalidCount = 0;
   for (let index = 0; index < source.length; index++) {
     const item = source[index];
-    const address = item?.addr ?? item?.address ?? item?.functionAddr ?? item?.function ?? null;
+    const address = item?.top?.addr ?? item?.addr ?? item?.address ?? item?.functionAddr ?? item?.function ?? null;
     const claimId = canonicalClaimId(item, index);
     const confidence = canonicalClaimConfidence(item?.confidence);
     const evidenceIds = canonicalClaimEvidenceIds(item?.evidenceIds);
@@ -334,7 +341,7 @@ function claimRows(report, snapshot) {
     }
     rows.push({
       claimId,
-      title:String(item?.title || item?.label || item?.goal?.text || item?.goal || 'Finding'),
+      title:String(item?.title || item?.label || item?.goal?.ja || item?.goal?.en || item?.goal?.text || item?.goal || 'Finding'),
       address,
       verdict:canonicalClaimVerdict(item),
       confidence,

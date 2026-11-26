@@ -13,7 +13,43 @@ const argumentBitsFor = context => (context.writtenArgumentBits??[]).slice(0,8)
 // This pure projection accepts an already validated view; unknown properties
 // (including descriptions, source labels, and oracle objects) are ignored.
 const JEV_MAX_RESPONSE_BYTES = 512 * 1024;
+const JEV_DEFAULT_ENDPOINT = 'https://api.openjev.sh/v1/systemone';
+const JEV_CACHE_MAX = 64;
+const jevSessionCache = new Map();
 const cmpCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+export function resolveJevEndpoint(baseUrl = null) {
+  if (typeof baseUrl === 'string' && /^https?:\/\//i.test(baseUrl.trim())) return baseUrl.trim();
+  const runtimeOrigin = typeof globalThis === 'object' && globalThis !== null ? globalThis.__HEX_RUNTIME_ORIGIN__ : null;
+  const opaqueOrigin = typeof location === 'object' && location !== null && location.origin === 'null';
+  if (opaqueOrigin && typeof runtimeOrigin === 'string' && /^https?:\/\//i.test(runtimeOrigin)) {
+    return `${runtimeOrigin.replace(/\/+$/, '')}/api/jev/systemone`;
+  }
+  return JEV_DEFAULT_ENDPOINT;
+}
+
+function jevCacheKey(query, policy, candidates) {
+  const keys = candidates.map(c => c?.key || '').join('|');
+  return `${policy}::${query}::${keys.length}:${keys.slice(0, 256)}`;
+}
+
+function readJevCache(key) {
+  if (!jevSessionCache.has(key)) return null;
+  const hit = jevSessionCache.get(key);
+  jevSessionCache.delete(key);
+  jevSessionCache.set(key, hit);
+  return hit;
+}
+
+function writeJevCache(key, value) {
+  if (!value) return;
+  if (jevSessionCache.has(key)) jevSessionCache.delete(key);
+  jevSessionCache.set(key, value);
+  while (jevSessionCache.size > JEV_CACHE_MAX) {
+    const oldest = jevSessionCache.keys().next().value;
+    jevSessionCache.delete(oldest);
+  }
+}
 
 async function readBoundedJevJson(response) {
   const cl = Number(response?.headers?.get?.('content-length'));
@@ -62,7 +98,7 @@ function validateJevChoicePayload(payload, candidates) {
   for (const [key, probability] of Object.entries(pick.probabilities)) {
     if (!/^c(?:0|[1-9]\d*)$/.test(key) || Number(key.slice(1)) >= candidates.length || !unit(probability)) return null;
   }
-  return { selectedKey: candidates[index].key, choiceIndex: index };
+  return { selectedKey: candidates[index].key, choiceIndex: index, confidence: pick.confidence, uniqueConfidence: unique.noul };
 }
 
 export function jevAdvisoryRequest(query, views) {
@@ -243,20 +279,26 @@ function memberRequestViews(candidates,contexts) {
   });
 }
 
-export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch,representation='value-flow-v3'}={}) {
+export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch,representation='value-flow-v3',baseUrl=null}={}) {
   if(typeof apiKey!=='string'||!apiKey.trim()||apiKey.length>4096)return null;
   if(!['value-flow-v3','argument-flow-v4'].includes(representation))return null;
+  const endpoint = resolveJevEndpoint(baseUrl);
   return Object.freeze({async call({query,candidates,signal}) {
     if(!Array.isArray(candidates)||candidates.length<2||candidates.length>255)return null;
     const contexts=cxxSemanticViews(candidates,symbols);
     if(!contexts||contexts.some(context=>!context))return null;
+    const cKey = jevCacheKey(query, representation, candidates);
+    const cached = readJevCache(cKey);
+    if (cached) return cached;
     const views=memberRequestViews(candidates,contexts);
-    const response=await fetchImpl('https://api.openjev.sh/v1/systemone',{
+    const response=await fetchImpl(endpoint,{
       method:'POST',headers:{authorization:`Bearer ${apiKey.trim()}`,'content-type':'application/json'},
       body:JSON.stringify((representation==='argument-flow-v4'?jevArgumentFlowRequest:jevValueFlowRequest)(query,views)),signal});
     if(!response.ok)return null;
     const payload = await readBoundedJevJson(response);
-    return validateJevChoicePayload(payload, candidates);
+    const parsed = validateJevChoicePayload(payload, candidates);
+    if (parsed) writeJevCache(cKey, parsed);
+    return parsed;
   }});
 }
 
@@ -301,20 +343,28 @@ export async function requestJevAlternative(query, local, options = {}) {
     || typeof query !== 'string' || query.length > 2048 || !Array.isArray(local?.candidates)
     || local.candidates.some(c => c.source !== 'cxx' || c.anonymous !== true || c.askedByName)) return fallback();
   } catch (_) { return fallback(); }
+  const endpoint = resolveJevEndpoint(options.baseUrl);
+  const eligible = { ...local, candidates: local.candidates.filter(c => !c?.field?.conflict) };
+  if (eligible.candidates.length < 2) return fallback();
   const client = { async call({ query: phrase, candidates, signal }) {
     const contexts = cxxSemanticViews(candidates, options.symbols);
     if (!contexts || contexts.some(c => !c)) return null;
+    const cKey = jevCacheKey(phrase, 'advisory-v2', candidates);
+    const cached = readJevCache(cKey);
+    if (cached) return cached;
     const views = candidates.map((c, i) => ({ ...contexts[i], offset: c.offset, size: c.size,
       recoveredType: c.recoveredType, type: c.type ?? c.field.type,
       readCount: c.field.readCount, writeCount: c.field.writeCount }));
-    const response = await (options.fetchImpl ?? fetch)('https://api.openjev.sh/v1/systemone', {
+    const response = await (options.fetchImpl ?? fetch)(endpoint, {
       method: 'POST', headers: { authorization: `Bearer ${options.apiKey.trim()}`, 'content-type': 'application/json' },
       body: JSON.stringify(jevAdvisoryRequest(phrase, views)), signal,
     });
     if (!response.ok) return null;
     const payload = await readBoundedJevJson(response);
-    return validateJevChoicePayload(payload, candidates);
+    const parsed = validateJevChoicePayload(payload, candidates);
+    if (parsed) writeJevCache(cKey, parsed);
+    return parsed;
   } };
-  return adviseWithJev(query, local, { enabled: true, mode: 'partial', maxChoices: 255,
-    timeoutMs: 15000, signal: options.signal, isCurrent: options.isCurrent, client });
+  return adviseWithJev(query, eligible, { enabled: true, mode: 'partial', maxChoices: 255,
+    timeoutMs: Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000, signal: options.signal, isCurrent: options.isCurrent, client });
 }

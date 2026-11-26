@@ -208,3 +208,26 @@
   .ai-panel .ai-icon-button { min-width: var(--ui-touch); min-height: var(--ui-touch); }
   .ai-turn-user { max-width: 100%; }
 }
+
+/* Wave 35: iPad & mobile touch ergonomics */
+@media (min-width: 700px) and (pointer: coarse) {
+  .sheet {
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 24px);
+  }
+}
+@media (max-width: 760px) {
+  .addrbar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .addrbar::-webkit-scrollbar { display: none; }
+  .addr-search,
+  .chip {
+    min-height: 44px;
+  }
+  input[type="password"],
+  .ui-pseudocode-find input {
+    font-size: 16px;
+  }
+}

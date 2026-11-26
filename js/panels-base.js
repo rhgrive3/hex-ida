@@ -1368,10 +1368,16 @@ function legacyViewOpeners(app, goal) {
 
 function openFunctionSurface(app, address, view = 'report', goal = app.lastGoal) {
   if (address == null) return false;
-  const start = functionStartOf(app, BigInt(address));
+  const addrBig = BigInt(address);
+  const start = functionStartOf(app, addrBig);
+  const router = productRouter();
+  if (view === 'pseudocode' && router && addrBig !== start) {
+    router.navigate(`/function/${start.toString()}/pseudocode?addr=${addrBig.toString()}`);
+    return true;
+  }
   const [target] = functionViews({ address: start, include: [view], ja: isJa() });
   return !!target && openFunctionView(target, {
-    router: productRouter(),
+    router,
     legacy: legacyViewOpeners(app, goal),
   });
 }

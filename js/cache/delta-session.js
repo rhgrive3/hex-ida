@@ -174,6 +174,7 @@ function normalizePatchForStorage(entry) {
     before,
     after,
     addr: toAddressDecimalString(entry.addr),
+    text: stringOrNull(entry.text, 160),
     label: stringOrNull(entry.label, 120),
     reason: stringOrNull(entry.reason, 240),
   };
@@ -190,6 +191,7 @@ function hydratePatch(entry) {
     before,
     after,
     addr: toBigIntAddress(entry.addr),
+    text: stringOrNull(entry.text, 160),
     label: stringOrNull(entry.label, 120),
     reason: stringOrNull(entry.reason, 240),
   };
@@ -634,8 +636,12 @@ function txDone(tx) {
 
 export class DeltaSessionStore {
   constructor(options = {}) {
-    this.indexedDB = options.indexedDB === undefined ? globalThis.indexedDB : options.indexedDB;
-    this.localStorage = options.localStorage === undefined ? globalThis.localStorage : options.localStorage;
+    let defaultIdb = null;
+    let defaultLs = null;
+    if (options.indexedDB === undefined) { try { defaultIdb = globalThis.indexedDB; } catch { defaultIdb = null; } }
+    if (options.localStorage === undefined) { try { defaultLs = globalThis.localStorage; } catch { defaultLs = null; } }
+    this.indexedDB = options.indexedDB === undefined ? defaultIdb : options.indexedDB;
+    this.localStorage = options.localStorage === undefined ? defaultLs : options.localStorage;
     this.maxEntryBytes = Number.isSafeInteger(options.maxEntryBytes) && options.maxEntryBytes > 0
       ? options.maxEntryBytes
       : MAX_DELTA_ENTRY_BYTES;

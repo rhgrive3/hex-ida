@@ -718,6 +718,7 @@ export class InvestigationService {
         goal,
         fields:context.fields,
         cxxFields:context.cxxFields,
+        binaryContextPreference:true,
         shapes:context.shapes,
         program:context.program,
         symbols:context.symbols,

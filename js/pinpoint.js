@@ -70,7 +70,7 @@ export function narrowedPriorCount(candidates, universe) {
    */
   const exact = candidates.filter((c) => c && c.askedByName);
   if (exact.length) return exact.length;
-  const primary = candidates.filter((c) => c && !(c.source === 'cxx' && c.recallLane));
+  const primary = candidates.filter((c) => c && !c.recallLane);
   const literal = primary.filter((c) => c.askedBySequence || c.askedByWords);
   if (literal.length && literal.length === primary.length) return literal.length;
   return Math.max(1, universe || candidates.length);
@@ -87,6 +87,7 @@ export function narrowedPriorCount(candidates, universe) {
 export function byRecallLane(a, b) {
   return ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
     || (b.fusion.logOdds - a.fusion.logOdds)
+    || ((b.fusion.rawLogOdds ?? b.fusion.logOdds) - (a.fusion.rawLogOdds ?? a.fusion.logOdds))
     || (a.source === 'cxx' || b.source === 'cxx'
       ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
       : 0);
@@ -745,7 +746,7 @@ export async function pinpointField(opts = {}) {
     changeSites: oldTopKey === newTopKey ? raw.changeSites : ((decision.top && (decision.top.changeSites || decision.top.sites)) || []),
   };
   const preferred = opts.binaryContextPreference === true
-    ? withCxxSemanticPreference(opts.goal?.text, result, opts.symbols) : result;
+    ? withCxxSemanticPreference(opts.goal?.text, result, opts.symbols, { policy: opts.cxxSemanticPolicy || 'object-context-v4', goal: opts.goal }) : result;
   return hydrateShapeChangeSites({ ...preferred, candidates: preferred.candidates.slice(0, requestedLimit) }, opts);
 }
 

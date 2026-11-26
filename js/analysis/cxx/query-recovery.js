@@ -183,10 +183,37 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
       if(first)selected.splice(selected.indexOf(first),1);
       return Object.freeze((first?[first,...selected]:selected).slice(0,maxFunctions).map(Object.freeze));
     },
-    plan(phrase,{maxFunctions=8,excludeOwners=new Set()}={}) {
+    plan(phrase,{maxFunctions=8,excludeOwners=new Set(),maxDeclaredSizeBytes=65536}={}) {
       if(!Number.isSafeInteger(maxFunctions)||maxFunctions<1||maxFunctions>32)throw new Error('C++ recovery function budget must be 1..32');
       if(!(excludeOwners instanceof Set))throw new Error('C++ recovery owner exclusions must be a set');
-      return Object.freeze(scoreRows(phrase).filter(row=>row.score>0&&!excludeOwners.has(row.className)).slice(0,maxFunctions).map(Object.freeze));
+      const ACCESSOR_VERB_RE = /^(?:get|set|add|sub|update|damage|spend|is|has)/i;
+      const eligible = scoreRows(phrase)
+        .filter(row=>row.score>0&&!excludeOwners.has(row.className)&&(row.sizeBytes==null||row.sizeBytes<=maxDeclaredSizeBytes))
+        .map(row => {
+          const leaf = String(row.methodName || row.name || '').split('(')[0].split('::').at(-1) || '';
+          const verbBoost = ACCESSOR_VERB_RE.test(leaf) ? 0.5 : 0;
+          return verbBoost ? { ...row, _planScore: row.score + verbBoost } : { ...row, _planScore: row.score };
+        })
+        .sort((a, b) => b._planScore - a._planScore);
+      const groups = new Map();
+      for (const row of eligible) {
+        const list = groups.get(row.className) || [];
+        list.push(row);
+        groups.set(row.className, list);
+      }
+      const picked = [];
+      for (let depth = 0; picked.length < maxFunctions; depth++) {
+        let added = false;
+        for (const list of groups.values()) {
+          if (depth < list.length && picked.length < maxFunctions) {
+            const { _planScore, ...clean } = list[depth];
+            picked.push(Object.freeze(clean));
+            added = true;
+          }
+        }
+        if (!added) break;
+      }
+      return Object.freeze(picked);
     },
   });
 }

@@ -77,6 +77,7 @@ const MAX_LEXICAL_RESCUE = 64;
  */
 const byRecallLane = (a, b) => ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
   || (b.fusion.logOdds - a.fusion.logOdds)
+  || ((b.fusion.rawLogOdds ?? b.fusion.logOdds) - (a.fusion.rawLogOdds ?? a.fusion.logOdds))
   || (a.source === 'cxx' || b.source === 'cxx'
     ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
     : 0);
@@ -292,7 +293,7 @@ export async function pinpointField(opts) {
            * クラスのメソッドを何本も読むのは重い。それは上位 2 つだけにする。
            * 3 位以下を深追いしても、決着には効かないので。
            */
-          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 2 }, fields);
+          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 4 }, fields);
         } catch { /* 1 個読めなくても、ほかは確かめる */ }
         if (c.evidence.length !== beforeLen) dirty.push(c);
         checked++;
@@ -1506,10 +1507,10 @@ const FORMULA_LOG_TAG_RE = /^\s*(?:\[[^\]]{1,40}\]\s*|<[A-Za-z0-9_.:-]{1,32}>\s*
 const FORMULA_SOURCE_LINE_RE = /\.(?:c|cc|cpp|cxx|h|hpp|m|mm|swift|java|kt|cs|rs|go):\d+/i;
 const FORMULA_CXX_SIG_RE = /(?:\b[A-Za-z_]\w*::[A-Za-z_~]\w*\s*\(|\b(?:const\s+)?(?:void|bool|int|float|double|char|size_t|u?int\d+_t|auto|std::\w+)\s+[A-Za-z_]\w*::|::[A-Za-z_]\w*<[^>]*>)/;
 const FORMULA_SYNTAX_RE = /(?:[+×÷*=<≥≤>]|(?:\d|\)|%[diuoxXfFeEgG])\s*[-\/]\s*(?:\d|\(|%[A-Za-z])|%[-+0 #]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|z|t|j|L)?[diuoxXfFeEgG]|\d+\s*%|\b(?:min|max|clamp|floor|ceil|round|mod)\s*\()/i;
-const FORMULA_INSN_RE = /^(?:add|adds|sub|subs|cmp|cmn|ccmp|ccmn|fcmp|fadd|fsub|fmul|fdiv|mov|movz|movn|movk|fmov|tst)$/i;
-const NUMERIC_MUL_DIV_RE = /^(mul|madd|msub|sdiv|udiv|fmul|fdiv)$/i;
-const NUMERIC_ADD_SUB_RE = /^(add|adds|sub|subs|fadd|fsub)$/i;
-const CTRL_BOUNDARY_RE = /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retaa$|retab$)/i;
+const FORMULA_INSN_RE = /^(?:add|adds|sub|subs|cmp|cmn|ccmp|ccmn|fcmp|fadd|fsub|fmul|fdiv|mov|movz|movn|movk|movzx|movsx|movsxd|fmov|tst|test|imul|mul|idiv|div|inc|dec|lea|addss|subss|mulss|divss|addsd|subsd|mulsd|divsd|comiss|comisd|ucomiss|ucomisd)$/i;
+const NUMERIC_MUL_DIV_RE = /^(mul|imul|madd|msub|sdiv|udiv|idiv|div|fmul|fdiv|mulss|divss|mulsd|divsd)$/i;
+const NUMERIC_ADD_SUB_RE = /^(add|adds|sub|subs|inc|dec|fadd|fsub|addss|subss|addsd|subsd)$/i;
+const CTRL_BOUNDARY_RE = /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retq$|retaa$|retab$|jmp$|jmpq$|j[a-z]{1,4}$|call$|callq$)/i;
 
 function isFormulaString(text) {
   if (typeof text !== 'string') return false;
@@ -1532,6 +1533,15 @@ function regIdentity(op) {
     if (s === 'fp' || s === 'x29' || s === 'w29') return 'fp';
     const m = /^[wx](\d+)$/.exec(s);
     if (m) return 'x' + m[1];
+    if (s === 'rsp' || s === 'esp') return 'sp';
+    if (s === 'rbp' || s === 'ebp') return 'fp';
+    const x86 = /^(?:[re]?([abcd])x|([abcd])[hl]|[re]?(si|di)l?|r(8|9|1[0-5])[dwb]?|xmm(\d+))$/.exec(s);
+    if (x86) {
+      if (x86[1] || x86[2]) return 'r' + (x86[1] || x86[2]) + 'x';
+      if (x86[3]) return 'r' + x86[3];
+      if (x86[4]) return 'r' + x86[4];
+      if (x86[5]) return 'xmm' + x86[5];
+    }
     return null;
   }
   if (op.k === 'reg') {

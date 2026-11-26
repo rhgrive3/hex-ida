@@ -448,7 +448,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
       rows[index].setAttribute('aria-current', active.has(index) ? 'true' : 'false');
     }
     if (outcome.state !== 'ready') {
-      status.textContent = reasonText(outcome.reason) + ` (${outcome.reason})`;
+      status.textContent = reasonText(outcome.reason);
       return;
     }
     const recordsWithHistory = (outcome.transforms ?? EMPTY).filter(record => record.originHistory || record.suppressedRender);
@@ -639,7 +639,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
         row.addEventListener('click', (event) => {
           if (typeof window !== 'undefined' && window.getSelection?.()?.toString()) return;
           const tokEl = event?.target?.closest?.('[data-tok]');
-          if (tokEl && row.contains?.(tokEl)) return;
+          if (tokEl && row.contains?.(tokEl) && (tokEl.classList.contains('tok-fn-link') || tokEl.classList.contains('tok-addr-link'))) return;
           select(() => navigation.selectLine(index));
         });
         row.addEventListener('keydown', event => {

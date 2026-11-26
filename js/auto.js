@@ -408,6 +408,7 @@ export async function autoAnalyze(opts) {
       const common = {
         goal, fields, program, symbols, strings, region, map: report.map,
         cxxFields: o.cxxFields || null,
+        binaryContextPreference: true,
         shapes: o.shapes || null, analyze: memo, scanAccess: o.scanAccess || null,
         isCancelled: cancelled, limit: 12,
       };
@@ -577,7 +578,7 @@ export async function autoAnalyze(opts) {
       const role = inferRole({
         name: symbols ? symbols.nameAt(t.addr) : null, owner, updates,
         apis: f.apis || [], selectors,
-        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: [],
+        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: program?.callersOf ? program.callersOf(t.addr).slice(0, 12).map((a) => symbols?.nameAt?.(a)).filter(Boolean) : [],
         comparisons: compares.length, conditionals: f.conditionals || 0,
         calls: f.calls || 0, stores: f.stores || 0, verified: true,
       });

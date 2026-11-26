@@ -882,6 +882,7 @@ export function fuse(items, opts) {
    * 「2 位との差が足りない」を作り出していた。実測したものと、
    * していないものが、同じ 100% で並んでいたため。
    */
+  const rawLogOdds = logOdds;
   if (!verified) logOdds = Math.min(logOdds, UNVERIFIED_CEIL);
 
   const rawProbability = 1 / (1 + Math.exp(-logOdds));
@@ -891,6 +892,7 @@ export function fuse(items, opts) {
 
   return {
     logOdds,
+    rawLogOdds,
     probability, rawProbability, calibrated,
     prior,
     items: detailed.sort((a, b) => b.applied - a.applied),

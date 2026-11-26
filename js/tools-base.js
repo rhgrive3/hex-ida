@@ -1432,15 +1432,19 @@ export function showPatches(app, targetAddr = null) {
     l.append(groupRow(pick('書き換えの一覧（' + items.length + '）', 'Staged patches (' + items.length + ')')));
     if (!items.length) l.append(tapRow(pick('まだありません', 'None yet'), { disabled: true, sub: pick('命令を長押しして「書き換える」から作れます。', 'Long-press an instruction and choose Patch to add one.') }));
     for (const it of items) {
-      l.append(tapRow((it.addr != null ? addrHex(it.addr) : '+' + it.offset) + '  ' + (it.text || ''), {
+      const row = tapRow((it.addr != null ? addrHex(it.addr) : '+' + it.offset) + '  ' + (it.text || ''), {
         sub: hexOf(it.before) + '  →  ' + hexOf(it.after),
         onTap: () => {
+          const rect = row.getBoundingClientRect?.();
+          const mx = rect ? Math.round(rect.left + rect.width / 2) : window.innerWidth / 2;
+          const my = rect ? Math.round(rect.bottom + 4) : 200;
           menu([
             { label: pick('この場所へ移動', 'Jump to location'), action: () => { sheet.close(); if (it.addr != null) app.goToAddress(it.addr, { announce: true }); } },
             { label: pick('この書き換えを取り消す', 'Undo this patch'), action: () => { app.patches.remove(it.offset); app.recordUndo?.({ type: 'patch', action: 'remove', offset: it.offset, before: it, after: null, meta: { addr: it.addr, text: it.text } }); app.store?.set?.({ patches: app.patches.size }); render(); toast(pick('取り消しました', 'Undone')); } },
-          ], window.innerWidth / 2, 200);
+          ], mx, my);
         },
-      }));
+      });
+      l.append(row);
     }
     body.append(l);
 
@@ -1578,7 +1582,9 @@ export async function showPatchEditor(app, addr, insnArg, options = {}) {
   const fnRem = fnRange && fnRange.end != null && BigInt(fnRange.end) > addr ? Number(BigInt(fnRange.end) - addr) : regionRem;
   const availableBytes = Math.max(0, Math.min(regionRem, fileRem, fnRem));
 
-  const suggestions = suggestPatches(insn ? insn.mnemonic : '', insn ? insn.operands : '', addr, { availableBytes });
+  const atFunctionStart = !fnRange || fnRange.start == null || BigInt(fnRange.start) === BigInt(addr);
+  const arch = app.store?.get?.('fileInfo')?.arch || '';
+  const suggestions = suggestPatches(insn ? insn.mnemonic : '', insn ? insn.operands : '', addr, { availableBytes, atFunctionStart, arch });
   const l = list();
   l.append(groupRow(pick('よく使う書き換え', 'Common patches')));
   for (const s of suggestions) {
@@ -1673,6 +1679,11 @@ async function savePatched(app) {
    ══════════════════════════════════════════════════════════ */
 
 export function showDebugger(app, addr) {
+  const arch = String(app?.store?.get?.('fileInfo')?.arch || '').toLowerCase();
+  if (arch && !instructionPatchArchitectureSupported(arch)) {
+    toast(pick(`エミュレータは現在 ARM64 のみ対応しています（現在: ${arch}）。`, `Emulator currently supports ARM64 only (current: ${arch}).`));
+    return null;
+  }
   let activeRun = null;
   const abortRun = (reason = 'debugger-operation-replaced') => {
     if (activeRun && !activeRun.signal.aborted) activeRun.abort(reason);

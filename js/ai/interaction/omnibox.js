@@ -34,7 +34,8 @@ export const COMMANDS = Object.freeze([
   { id: 'pseudocode', ja: '疑似Cを開く', en: 'Pseudocode', match: /^(pseudo|pseudocode|decompile|疑似c|逆コンパイル)$/i },
   { id: 'diff', ja: 'バイナリを比較', en: 'Diff', match: /^(diff|差分)$/i },
   { id: 'ai', ja: 'AIに聞く', en: 'Ask AI', match: /^(ai|ask|聞く|質問)$/i },
-  { id: 'agent', ja: 'エージェントで調べる', en: 'Investigate with Agent', match: /^(agent|investigate|調査|調べる)$/i },
+  { id: 'investigate', ja: '目的から自動解析', en: 'Auto-investigate goal', match: /^(investigate|auto|調査|調べる|自動解析)$/i },
+  { id: 'agent', ja: 'AIエージェントを開く', en: 'Open AI Agent', match: /^(agent|エージェント)$/i },
 ]);
 
 const HAS_JA = /[぀-ヿ㐀-鿿]/;

@@ -1,4 +1,5 @@
 const ABSOLUTE_SCHEME = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
+const ALLOWED_EXTERNAL_ORIGINS = new Set(['https://api.openjev.sh']);
 
 export function installUserscriptNetworkBridge({ apiBase = globalThis.__HEX_API_BASE__ } = {}) {
   if (globalThis.__HEX_NATIVE_FETCH__) return globalThis.fetch;
@@ -127,16 +128,16 @@ function targetFor(input, base) {
   if (!base) return { useBridge: false, url: input };
   if (input instanceof Request || input instanceof URL) {
     const url = new URL(input.url || input.href);
-    return { useBridge: url.origin === base.origin, url: url.href };
+    return { useBridge: url.origin === base.origin || ALLOWED_EXTERNAL_ORIGINS.has(url.origin), url: url.href };
   }
   const raw = String(input);
   const trimmed = raw.trim();
   if (!ABSOLUTE_SCHEME.test(trimmed) && !/^[\\/]{2}/.test(trimmed)) {
     const url = new URL(raw, base);
-    return { useBridge: url.origin === base.origin, url: url.href };
+    return { useBridge: url.origin === base.origin || ALLOWED_EXTERNAL_ORIGINS.has(url.origin), url: url.href };
   }
   const url = new URL(raw, location.href);
-  return { useBridge: url.origin === base.origin, url: url.href };
+  return { useBridge: url.origin === base.origin || ALLOWED_EXTERNAL_ORIGINS.has(url.origin), url: url.href };
 }
 
 function normalizeBase(value) {

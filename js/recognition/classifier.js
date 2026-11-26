@@ -1,9 +1,9 @@
 import { fingerprintFunction } from '../fingerprint/index.js';
 export const FUNCTION_CLASSES = Object.freeze(['APPLICATION','SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED','UNKNOWN']);
 
-const RUNTIME_IMPORTS = [/^_?objc_/, /^_?swift_/, /^_?dyld_/, /^_?__?cxa_/, /^_?pthread_/, /^_?malloc$/, /^_?free$/];
-const GENERATED = [/\bthunk\b/i, /^outlined(?: function)?\b/i, /block_invoke/i, /partial apply/i, /witness thunk/i, /metadata accessor/i];
-const RUNTIME_NAMES = [/^_?(?:objc_|swift_|dyld_|__?cxa_|pthread_)/i];
+const RUNTIME_IMPORTS = [/^_?objc_/, /^_?swift_/, /^_?dyld_/, /^_?__?cxa_/, /^_?pthread_/, /^_?malloc$/, /^_?free$/, /^il2cpp_/, /^mono_/];
+const GENERATED = [/\bthunk\b/i, /^outlined(?: function)?\b/i, /block_invoke/i, /partial apply/i, /witness thunk/i, /metadata accessor/i, /@plt$/i, /^__stub_helper/i, /^j_/, /^___cxx_global_var_init/i, /^il2cpp_codegen_/i, /^_?\$s.*T[aoWm]$/];
+const RUNTIME_NAMES = [/^_?(?:objc_|swift_|dyld_|__?cxa_|pthread_|il2cpp_(?!codegen_)|mono_|_?ZNSt|_?ZSt)/i, /^(?:std::|System\.|mscorlib\.|UnityEngine\.)/];
 
 function libraryBasename(value) {
   const text = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
@@ -40,6 +40,8 @@ function isAppleSystemLibrary(value) {
   if (/^libc\+\+(?:abi)?(?:\.[0-9]+)?\.dylib$/i.test(base)) return true;
   if (/^libdispatch\.dylib$/i.test(base)) return true;
   if (/^libswift[a-z0-9_]*\.dylib$/i.test(base)) return true;
+  if (/^(?:libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s|libart)\.so(?:\.\d+)*$/i.test(base)) return true;
+  if (/^(?:kernel32|ntdll|user32|advapi32|ucrtbase|msvcrt|vcruntime\d+)\.dll$/i.test(base)) return true;
   return false;
 }
 
@@ -122,9 +124,12 @@ const SUBSYSTEM_RULES = {
   'security/integrity': { strings: [/integrity|jailbreak|tamper|signature|checksum|receipt/i], calls: [/seccode|crypto|hash|verify|attest/i] },
   ads: { strings: [/rewarded.?ad|interstitial|admob|applovin|ironsource|unityads/i], calls: [/loadad|showad|adrequest/i] },
   analytics: { strings: [/analytics|event|telemetry|firebase|appsflyer|adjust(?:sdk|\.com|attribution)/i], calls: [/logevent|track|telemetry/i] },
+  crypto: { strings: [/aes[-_]?\d*|sha[-_]?\d+|hmac|chacha|rsa|cipher|decrypt|encrypt|secret[_-]?key/i], calls: [/cccrypt|evp_|aes_|sha\d+_|hmac|chacha|cipher|encrypt|decrypt/i] },
+  serialization: { strings: [/protobuf|flatbuffers|msgpack|json|base64|zlib/i], calls: [/parsefrom|serializeto|tojson|fromjson|base64|inflate|deflate/i] },
 };
 function discoverSubsystemsFromFingerprint(fp) {
-  const hayStrings = fp.strings, hayCalls = [...fp.calls, ...fp.imports];
+  const hayStrings = fp.strings;
+  const hayCalls = fp.name ? [fp.name, ...fp.calls, ...fp.imports] : [...fp.calls, ...fp.imports];
   const out = [];
   for (const [name, rule] of Object.entries(SUBSYSTEM_RULES)) {
     const stringHits = hayStrings.filter((s) => rule.strings.some((rx) => rx.test(s)));

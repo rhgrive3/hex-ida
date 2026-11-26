@@ -335,7 +335,7 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
           diagList.append(listRow({
             title:text('基本の分類', 'Base classification'),
             subtitle:classificationLabel(value.base.classification),
-            meta:value.base.knowledgeSourceId ? `knowledge ${value.base.knowledgeSourceId}` : '',
+            meta:'',
             badge:evidenceBadge(baseClassificationBadge(value, result)),
           }));
         }

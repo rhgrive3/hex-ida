@@ -164,7 +164,7 @@ export class CodeViewer {
     const cs = getComputedStyle(root);
     const line = parseFloat(cs.getPropertyValue('--line-h')) || 24;
     const note = parseFloat(cs.getPropertyValue('--note-h')) || 18;
-    const h = (this.showNotes && this.mode === 'asm') ? line + note : line;
+    const h = (this.showNotes && this.mode === 'asm' && this.fixedInstructionSize()) ? line + note : line;
     root.style.setProperty('--row-h', h + 'px');
     this.rowH = h;
     this._recomputeWindow(true);
