@@ -145,24 +145,26 @@ export class HexSigIndex {
       }
       recordWasmCall('hexsig');
       const res = decodeMatchResult32(new Uint8Array(ex.memory.buffer, outPtr, HSIG1_MATCH_RESULT_SIZE));
-      const matched = res.status !== 0 && res.entryIndex < this.entries.length;
-      const entry = matched ? this.entries[res.entryIndex] : null;
+      const hasCandidate = res.status !== 0 && res.entryIndex < this.entries.length;
+      const verdict = hasCandidate
+        ? (res.status === 3 ? HEXSIG_VERDICT.NEED_CG_TIEBREAK : HEXSIG_VERDICT.AUTO_NAME)
+        : HEXSIG_VERDICT.REJECT;
+      const matched = verdict === HEXSIG_VERDICT.AUTO_NAME;
+      const entry = hasCandidate ? this.entries[res.entryIndex] : null;
       return {
         engine: 'wasm',
         matched,
-        entryIndex: matched ? res.entryIndex : -1,
+        entryIndex: hasCandidate ? res.entryIndex : -1,
         symbolName: entry ? entry.symbolName : null,
         libId: res.libId,
         lib: this.getLib(res.libId),
         score1: res.confidence,
         score2: res.runnerUpConf,
         margin: Math.max(0, res.confidence - res.runnerUpConf),
-        verdict: matched
-          ? (res.status === 3 ? HEXSIG_VERDICT.NEED_CG_TIEBREAK : HEXSIG_VERDICT.AUTO_NAME)
-          : HEXSIG_VERDICT.REJECT,
-        layerMask: matched ? 1 : 0,
+        verdict,
+        layerMask: hasCandidate ? 1 : 0,
         runnerUpEntry: 0xffffffff,
-        exactPatternMatch: matched,
+        exactPatternMatch: hasCandidate,
         wasmResult: res,
       };
     } catch {

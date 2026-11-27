@@ -753,6 +753,25 @@ export class Til1View {
     return null;
   }
 
+  lookupBareSelector(selName) {
+    if (!selName || this.header.selCount === 0) return null;
+    if (!this._bareSelCache) {
+      this._bareSelCache = new Map();
+      for (let i = 0; i < this.header.selCount; i++) {
+        const p = this.selIndexOff + i * 12;
+        const absSigOff = this.view.getUint32(p + 8, true);
+        const rec = this._readSigAt(absSigOff, i);
+        const full = rec.name || '';
+        const colonIdx = full.indexOf(':');
+        const bare = colonIdx >= 0 ? full.slice(colonIdx + 1) : full;
+        if (bare && !this._bareSelCache.has(bare)) {
+          this._bareSelCache.set(bare, rec);
+        }
+      }
+    }
+    return this._bareSelCache.get(selName) || null;
+  }
+
   getTypeByTid(tid) {
     return this.typesByTid.get(tid & 0xFFFF) || null;
   }

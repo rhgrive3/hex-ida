@@ -140,7 +140,7 @@ function detectHintsFromCorpus(dylibs, symbols, strings, notes) {
  */
 export function fingerprintBinarySdk(input = {}) {
   const format = String(input.format || '').toLowerCase() ||
-    (input.loadCommands || input.buildVersion || input.dylibs ? 'macho'
+    (input.loadCommands || input.buildVersion || input.dylibs || input.libraries || input.metadata?.loadCommands ? 'macho'
       : input.dtNeeded || input.ptInterp || input.elfNotes ? 'elf'
         : input.dlls ? 'pe' : 'unknown');
 
@@ -156,14 +156,19 @@ export function fingerprintBinarySdk(input = {}) {
   let androidApiLevel = null;
 
   // --- Mach-O extraction ---
-  if (Array.isArray(input.dylibs)) {
-    for (const d of input.dylibs) {
+  const machoLibs = Array.isArray(input.dylibs)
+    ? input.dylibs
+    : (Array.isArray(input.libraries) ? input.libraries : []);
+  if (machoLibs.length > 0) {
+    for (const d of machoLibs) {
       if (typeof d === 'string') {
         dylibs.push(d);
-      } else if (d && typeof d === 'object' && d.name) {
-        dylibs.push(d.name);
+      } else if (d && typeof d === 'object') {
+        const libName = d.name || d.path || '';
+        if (!libName) continue;
+        dylibs.push(libName);
         if (d.currentVersion || d.compatibilityVersion) {
-          dylibVersions[d.name] = {
+          dylibVersions[libName] = {
             currentVersion: decodePackedMachoVersion(d.currentVersion),
             compatibilityVersion: decodePackedMachoVersion(d.compatibilityVersion),
           };
@@ -181,8 +186,11 @@ export function fingerprintBinarySdk(input = {}) {
   }
 
   // Parse LC_BUILD_VERSION / LC_VERSION_MIN_* from loadCommands or direct buildVersion
-  const loadCommands = Array.isArray(input.loadCommands) ? input.loadCommands : [];
-  const buildVersions = input.buildVersion ? [input.buildVersion] : [];
+  const loadCommands = Array.isArray(input.loadCommands)
+    ? input.loadCommands
+    : (Array.isArray(input.metadata?.loadCommands) ? input.metadata.loadCommands : []);
+  const rawBuildVer = input.buildVersion ?? input.metadata?.buildVersion;
+  const buildVersions = rawBuildVer ? [rawBuildVer] : [];
   for (const lc of loadCommands) {
     if (!lc || typeof lc !== 'object') continue;
     const cmd = String(lc.cmd || lc.type || '').toUpperCase();
