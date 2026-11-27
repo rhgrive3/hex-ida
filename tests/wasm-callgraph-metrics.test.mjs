@@ -10,6 +10,7 @@ import {
   getWasmCallCount,
   resetAllTelemetry,
 } from '../js/core/hex-engine-bridge.js';
+import { getHexEngineExports } from '../js/core/hex-engine-wasm.js';
 
 function loadStandaloneWasmExports() {
   const wasmPath = process.env.HEX_TEST_STANDALONE_WASM;
@@ -24,8 +25,26 @@ function loadStandaloneWasmExports() {
 
 const STANDALONE_EXPORTS = loadStandaloneWasmExports();
 
-function wasmOpts() {
-  return STANDALONE_EXPORTS ? { wasmExports: STANDALONE_EXPORTS } : {};
+function wasmOpts(extra = null) {
+  const base = STANDALONE_EXPORTS ? { wasmExports: STANDALONE_EXPORTS } : {};
+  return extra ? { ...base, ...extra } : base;
+}
+
+function activeWasmExports() {
+  return STANDALONE_EXPORTS || getHexEngineExports();
+}
+
+function buildLargeGraph(N = 45000) {
+  const src = new Uint32Array(N);
+  const dst = new Uint32Array(N);
+  for (let i = 0; i < N - 1; i++) {
+    src[i] = i;
+    dst[i] = i + 1;
+  }
+  // Close a small 3-node cycle at the end (N-1 -> N-3)
+  src[N - 1] = N - 1;
+  dst[N - 1] = N - 3;
+  return { N, src, dst };
 }
 
 function assertWasmMatchesJs(numNodes, edgeSrc, edgeDst, label = '') {
@@ -217,36 +236,83 @@ test('deep linear chain (1000 nodes) executes non-recursively in WASM and matche
   assert.equal(res.score[N - 1], 14); // in=1(12), out=0, two_hop=1(2)
 });
 
-test('exceeding 2,200,000-byte scratch budget records callgraph:exceeds_scratch and matches JS fallback', () => {
-  // activeN = 45000, activeE = 45000 -> needScratch + ioBytes > 2_200_000
-  const N = 45000;
-  const src = new Uint32Array(N);
-  const dst = new Uint32Array(N);
-  for (let i = 0; i < N - 1; i++) {
-    src[i] = i;
-    dst[i] = i + 1;
-  }
-  // Close a small 3-node cycle at the end (N-1 -> N-3)
-  src[N - 1] = N - 1;
-  dst[N - 1] = N - 3;
+test('large graph (N=45000, E=45000) runs in WASM via dynamic memory.grow, matches JS, and reuses extBase region', () => {
+  const { N, src, dst } = buildLargeGraph(45000);
+  const ex = activeWasmExports();
+  assert.ok(ex && ex.memory, 'expected active WASM exports with linear memory');
 
   resetAllTelemetry();
-  const autoRes = analyzeCallGraphMetrics(N, src, dst, wasmOpts());
+  const firstRes = analyzeCallGraphMetrics(N, src, dst, wasmOpts());
+  const bytesAfterFirst = ex.memory.buffer.byteLength;
+  const jsRes = analyzeCallGraphMetrics(N, src, dst, { engine: 'js' });
+
+  assert.equal(firstRes.engine, 'wasm');
+  assert.equal(firstRes.truncated, false);
+  assert.ok(getWasmCallCount('callgraph') >= 1);
+  assert.deepEqual(firstRes.scc, jsRes.scc);
+  assert.deepEqual(firstRes.role, jsRes.role);
+  assert.deepEqual(firstRes.score, jsRes.score);
+  assert.equal(firstRes.role[N - 1], CALLGRAPH_ROLE.RECURSIVE_SCC);
+  assert.equal(firstRes.scc[N - 1], N - 3);
+
+  // Second call on the same graph reuses extBase without growing linear memory again.
+  const secondRes = analyzeCallGraphMetrics(N, src, dst, wasmOpts());
+  const bytesAfterSecond = ex.memory.buffer.byteLength;
+
+  assert.equal(secondRes.engine, 'wasm');
+  assert.equal(bytesAfterSecond, bytesAfterFirst, 'expected extBase region reuse without additional memory.grow');
+  assert.deepEqual(secondRes.scc, jsRes.scc);
+  assert.deepEqual(secondRes.role, jsRes.role);
+  assert.deepEqual(secondRes.score, jsRes.score);
+});
+
+test('exceeding opts.maxWasmBytes falls back to JS with callgraph:exceeds_max_wasm_bytes telemetry', () => {
+  const { N, src, dst } = buildLargeGraph(45000);
+
+  resetAllTelemetry();
+  const autoRes = analyzeCallGraphMetrics(N, src, dst, wasmOpts({ maxWasmBytes: 2_300_000 }));
   const jsRes = analyzeCallGraphMetrics(N, src, dst, { engine: 'js' });
 
   assert.equal(autoRes.engine, 'js');
   assert.equal(autoRes.truncated, false);
-  if (STANDALONE_EXPORTS) {
-    assert.ok(
-      getFallbackCount('callgraph:exceeds_scratch') >= 1,
-      'expected callgraph:exceeds_scratch fallback telemetry'
-    );
-  }
+  assert.ok(
+    getFallbackCount('callgraph:exceeds_max_wasm_bytes') >= 1,
+    'expected callgraph:exceeds_max_wasm_bytes fallback telemetry'
+  );
   assert.deepEqual(autoRes.scc, jsRes.scc);
   assert.deepEqual(autoRes.role, jsRes.role);
   assert.deepEqual(autoRes.score, jsRes.score);
-  assert.equal(autoRes.role[N - 1], CALLGRAPH_ROLE.RECURSIVE_SCC);
-  assert.equal(autoRes.scc[N - 1], N - 3);
+});
+
+test('memory.grow throwing RangeError falls back to JS with callgraph:grow_failed telemetry', () => {
+  const { N, src, dst } = buildLargeGraph(45000);
+  const realExports = activeWasmExports();
+  assert.ok(realExports, 'expected active WASM exports');
+
+  const failingMemory = {
+    buffer: new ArrayBuffer(65536),
+    grow() {
+      throw new RangeError('WebAssembly.Memory.grow(): Unable to grow instance memory');
+    },
+  };
+  const mockExports = {
+    ...realExports,
+    memory: failingMemory,
+  };
+
+  resetAllTelemetry();
+  const autoRes = analyzeCallGraphMetrics(N, src, dst, { wasmExports: mockExports });
+  const jsRes = analyzeCallGraphMetrics(N, src, dst, { engine: 'js' });
+
+  assert.equal(autoRes.engine, 'js');
+  assert.equal(autoRes.truncated, false);
+  assert.ok(
+    getFallbackCount('callgraph:grow_failed') >= 1,
+    'expected callgraph:grow_failed fallback telemetry'
+  );
+  assert.deepEqual(autoRes.scc, jsRes.scc);
+  assert.deepEqual(autoRes.role, jsRes.role);
+  assert.deepEqual(autoRes.score, jsRes.score);
 });
 
 test('deterministic pseudo-random graph verifies engine === wasm and exact WASM === JS parity', () => {

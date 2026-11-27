@@ -24,6 +24,45 @@ const SIGNALS = [
   { id: 'path', level: 'low', re: /^\/(Users|var|private|tmp|Applications)\/[^\s"']{4,}/, max: 6 },
 ];
 
+function toSafeNonNegInt(v) {
+  let bi = null;
+  if (typeof v === 'bigint') bi = v;
+  else if (typeof v === 'number') bi = Number.isSafeInteger(v) ? BigInt(v) : null;
+  else if (typeof v === 'string' && v.trim()) {
+    try { bi = BigInt(v.trim()); } catch { bi = null; }
+  }
+  if (bi == null || bi < 0n || bi > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(bi);
+}
+
+function extractConstDataSectionsFromImage(image) {
+  if (!image || !Array.isArray(image.sections) || !(image.bytes instanceof Uint8Array)) return [];
+  const out = [];
+  for (let i = 0; i < image.sections.length; i++) {
+    const sec = image.sections[i];
+    if (!sec) continue;
+    const seg = typeof sec.segment === 'string' ? sec.segment : '';
+    const name = typeof sec.name === 'string' ? sec.name : '';
+    const isMachOConst = ((seg === '__DATA_CONST' || seg === '__TEXT' || seg === '__DATA') && name === '__const')
+      || name === '__DATA_CONST.__const'
+      || name === '__TEXT.__const'
+      || name === '__DATA.__const';
+    const isElfPeConst = name === '.rodata' || name === '.data.rel.ro' || name === '.rdata';
+    if (!isMachOConst && !isElfPeConst) continue;
+    const off = toSafeNonNegInt(sec.fileOffset);
+    const sz = toSafeNonNegInt(sec.fileSize ?? sec.size);
+    if (off == null || sz == null) continue;
+    if (off < 0 || sz < 16 || off + sz > image.bytes.length) continue;
+    const displayName = seg && !name.startsWith(`${seg}.`) ? `${seg}.${name}` : name;
+    out.push({
+      name: displayName,
+      bytes: image.bytes.subarray(off, off + sz),
+      va: sec.address ?? sec.va ?? null,
+    });
+  }
+  return out;
+}
+
 function lowerBoundBig(values, target) {
   let lo = 0, hi = values.length;
   while (lo < hi) {
@@ -643,7 +682,11 @@ export async function autoAnalyze(opts) {
       || (program && typeof program.textBytes === 'function' ? program.textBytes() : null);
     const dataBytes = o.dataBytes
       || (program && typeof program.dataBytes === 'function' ? program.dataBytes() : null);
-    if (codeBytes || dataBytes || program) {
+    const dataSections = Array.isArray(o.dataSections) && o.dataSections.length
+      ? o.dataSections
+      : extractConstDataSectionsFromImage(o.image);
+    const imageBase = o.imageBase ?? o.image?.imageBase ?? null;
+    if (codeBytes || dataBytes || program || (dataSections && dataSections.length > 0) || o.textConstBytes || o.image) {
       const textVa = o.textVa ?? (o.region?.vmAddr != null ? o.region.vmAddr : 0n);
       const textLo = o.textLo ?? (o.region?.vmAddr != null ? o.region.vmAddr : null);
       const textHi = o.textHi ?? (o.region?.vmAddr != null && o.region?.size != null
@@ -652,6 +695,12 @@ export async function autoAnalyze(opts) {
       const wa = runWasmStructuralAnalysis({
         codeBytes,
         dataBytes,
+        dataSections,
+        image: o.image,
+        textConstBytes: o.textConstBytes,
+        textConstVa: o.textConstVa,
+        dataVa: o.dataVa,
+        imageBase,
         textVa,
         textLo,
         textHi,
@@ -660,7 +709,7 @@ export async function autoAnalyze(opts) {
         program,
         symbols,
       });
-      if (wa.rmw || wa.vtables || wa.jumpTables || wa.constTables || wa.callgraph) {
+      if (wa.rmw || wa.x86Rmw || wa.vtables || wa.jumpTables || wa.constTables || wa.callgraph || wa.objcSwift || wa.xrefLinks) {
         report.wasmAnalysis = wa;
       }
     }

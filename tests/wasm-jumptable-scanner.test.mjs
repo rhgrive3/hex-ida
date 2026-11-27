@@ -290,3 +290,62 @@ test('6. WASM engine is active when HEX_TEST_STANDALONE_WASM is set and matches 
   assert.equal(wasmRes.tables[0].hasBounds, true);
   assert.equal(wasmRes.tables[0].hasTableVa, true);
 });
+
+test('7. exact maxOut sets truncated=false while maxOut+1 sets truncated=true with WASM === JS parity', () => {
+  const words = [];
+  for (let i = 0; i < 4; i++) {
+    words.push(
+      encCmpImm32(2, 5 + i),
+      encBHi(8),
+      encAdr(11, 0x40),
+      encLdr64Reg(12, 11, 2),
+      encBr(12),
+      RET,
+    );
+  }
+  const code = packInsns(words);
+  const textVa = 0x100000n;
+
+  const { wasmRes: exactRes } = runBothEngines(code, { textVa, maxOut: 4 });
+  assert.equal(exactRes.tables.length, 4);
+  assert.equal(exactRes.truncated, false);
+
+  const { wasmRes: truncRes } = runBothEngines(code, { textVa, maxOut: 3 });
+  assert.equal(truncRes.tables.length, 3);
+  assert.equal(truncRes.truncated, true);
+});
+
+test('8. adaptive bisection recovers dense single-chunk > CHUNK_MAX_OUT (8192) with exact tableVa and preserves small maxOut / leaf saturation', () => {
+  const totalCount = 8500;
+  const words = new Uint32Array(totalCount * 6);
+  for (let i = 0; i < totalCount; i++) {
+    const base = i * 6;
+    words[base + 0] = encCmpImm32(2, 4 + (i % 16));
+    words[base + 1] = encBHi(8);
+    words[base + 2] = encAdr(11, 0x40);
+    words[base + 3] = encLdr64Reg(12, 11, 2);
+    words[base + 4] = encBr(12);
+    words[base + 5] = RET;
+  }
+  const code = packInsns(words);
+  const textVa = 0x200000n;
+
+  // Single default chunk (204KB < 1.5MB) exceeds CHUNK_MAX_OUT (8192) -> adaptive bisection recovers all 8500 tables
+  const { wasmRes: denseRes } = runBothEngines(code, { textVa });
+  assert.equal(denseRes.tables.length, totalCount);
+  assert.equal(denseRes.truncated, false);
+
+  // Cross-check exact subchunk tableVa recalculation against small-chunk non-bisecting reference scan
+  const { wasmRes: refRes } = runBothEngines(code, { textVa, chunkSize: 8192 });
+  assert.deepEqual(denseRes.tables, refRes.tables);
+
+  // Explicit small maxOut (< CHUNK_MAX_OUT) must NOT bisect and must report truncated=true
+  const { wasmRes: smallMaxRes } = runBothEngines(code, { textVa, maxOut: 100 });
+  assert.equal(smallMaxRes.tables.length, 100);
+  assert.equal(smallMaxRes.truncated, true);
+
+  // Non-bisectable leaf chunk (chunkSize <= minBisectLen) saturating chunkMaxOut reports truncated=true
+  const { wasmRes: leafRes } = runBothEngines(code.subarray(0, 256), { textVa, chunkSize: 256, maxOut: 3 });
+  assert.equal(leafRes.tables.length, 3);
+  assert.equal(leafRes.truncated, true);
+});

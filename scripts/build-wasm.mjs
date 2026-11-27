@@ -84,6 +84,8 @@ const OPTIONAL_TARGET_SRCS = [
   'cpp/src/analysis/const_table_scanner.cpp',
   'cpp/src/analysis/callgraph_metrics_wasm.cpp',
   'cpp/src/analysis/behavior_classifier_wasm.cpp',
+  'cpp/src/analysis/x86_64_rmw_scanner.cpp',
+  'cpp/src/analysis/objc_swift_metadata_scanner.cpp',
   // v6 Beyond-IDA C++20 modules (Tracks 1-5)
   'cpp/src/analysis/type_arena.cpp',
   'cpp/src/analysis/sig_prop_wasm.cpp',

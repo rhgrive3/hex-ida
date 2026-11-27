@@ -8,6 +8,10 @@ import { getEngineMode, recordWasmCall, recordFallback } from '../core/hex-engin
 export const SCRATCH_CHUNK_MAX = 1536 * 1024;
 export const OVERLAP = 1024; // multiple of 8
 
+const SAFE_MAX_OUT = 262144;
+const CHUNK_MAX_OUT = 16384; // 256KB/chunk (16384 * 16B)
+const MAX_BISECT_DEPTH = 12;
+const DEFAULT_MAX_OUT = 32768;
 const STRIDED_ID_STRIDES = Object.freeze([8, 12, 16, 20, 24, 32, 40, 48, 64]);
 const RECORD_BYTES = 16;
 
@@ -310,32 +314,59 @@ function resolveChunkParams(chunkSizeOpt) {
 function runChunkedScan(u8, maxOut, effChunkSize, effOverlap, scanChunkFn) {
   const rawTables = [];
   let truncated = false;
-  let chunkStart = 0;
+  const alignMask = ~7;
+  const minBisectLen = Math.max((effOverlap * 4) & alignMask, 256);
+  const chunkMaxOut = Math.min(CHUNK_MAX_OUT, maxOut + 1);
 
+  function scanRange(start, end, depth) {
+    const chunkLen = end - start;
+    if (chunkLen < 16) return;
+
+    const chunkHits = scanChunkFn(u8, start, chunkLen, chunkMaxOut);
+    if (chunkMaxOut === CHUNK_MAX_OUT && chunkHits.length >= CHUNK_MAX_OUT) {
+      const mid = (start + Math.floor(chunkLen / 2)) & alignMask;
+      const leftEnd = Math.min(end, (mid + effOverlap) & alignMask);
+      const rightStart = Math.max(start, (mid - effOverlap) & alignMask);
+      if (depth < MAX_BISECT_DEPTH && chunkLen > minBisectLen && leftEnd < end && rightStart > start) {
+        scanRange(start, leftEnd, depth + 1);
+        scanRange(rightStart, end, depth + 1);
+        return;
+      }
+    }
+
+    if (chunkHits.length >= chunkMaxOut) {
+      truncated = true;
+    }
+    for (let i = 0; i < chunkHits.length; i++) {
+      rawTables.push(chunkHits[i]);
+    }
+  }
+
+  let chunkStart = 0;
   while (chunkStart < u8.length) {
     const chunkEnd = Math.min(u8.length, chunkStart + effChunkSize);
     const chunkLen = chunkEnd - chunkStart;
     if (chunkLen < 16) break;
-    const chunkHits = scanChunkFn(u8, chunkStart, chunkLen, maxOut);
-    if (chunkHits.length >= maxOut) truncated = true;
-    for (let i = 0; i < chunkHits.length; i++) {
-      rawTables.push(chunkHits[i]);
-    }
+
+    scanRange(chunkStart, chunkEnd, 0);
     if (chunkEnd >= u8.length) break;
     chunkStart = chunkEnd - effOverlap;
   }
 
   const merged = mergeChunkTables(rawTables);
   if (merged.length > maxOut) {
-    truncated = true;
     merged.length = maxOut;
+    truncated = true;
   }
   return { tables: merged, truncated };
 }
 
 export function scanConstTables(bytes, opts = {}) {
   const u8 = toU8(bytes);
-  const maxOut = Number.isFinite(opts?.maxOut) ? Math.max(0, Math.floor(opts.maxOut)) : 2048;
+  const rawMaxOut = opts?.maxOut;
+  const maxOut = (rawMaxOut != null && rawMaxOut !== '' && Number.isFinite(Number(rawMaxOut)))
+    ? Math.max(0, Math.min(SAFE_MAX_OUT, Math.floor(Number(rawMaxOut))))
+    : DEFAULT_MAX_OUT;
   const ex = resolveWasmExports(opts);
 
   if (!u8 || u8.length < 16 || maxOut <= 0) {

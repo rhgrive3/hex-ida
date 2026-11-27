@@ -23,6 +23,10 @@ import {
 
 const SCRATCH_CHUNK_MAX = 1536 * 1024;
 const OVERLAP = 128; // 8-byte aligned, 32 ARM64 instructions (> 24 + 4 lookback)
+const SAFE_MAX_OUT = 262144;
+const CHUNK_MAX_OUT = 8192; // 192KB/chunk (8192 * 24B)
+const MAX_BISECT_DEPTH = 12;
+const DEFAULT_MAX_OUT = 16384;
 const RECORD_BYTES = 24;
 const MAX_LOOKBACK_INSNS = 24;
 const MAX_CMP_LOOKBACK_INSNS = 4;
@@ -303,18 +307,33 @@ function scanChunkJs(chunkBytes, chunkTextVa, chunkMaxOut) {
 
 function runChunkedScan(u8, baseTextVa, maxOut, effectiveChunkSize, scanChunkFn) {
   const byBrOff = new Map();
-  let chunkStart = 0;
   let truncated = false;
-  const chunkMaxOut = Math.min(maxOut + 1, 32768);
+  const effOverlap = effectiveChunkSize > OVERLAP
+    ? OVERLAP
+    : Math.max(4, Math.min(OVERLAP, (effectiveChunkSize - 4) & ~3));
+  const alignMask = ~3;
+  const minBisectLen = Math.max((effOverlap * 4) & alignMask, 256);
+  const chunkMaxOut = Math.min(CHUNK_MAX_OUT, maxOut + 1);
 
-  while (chunkStart < u8.length) {
-    const chunkEnd = Math.min(u8.length, chunkStart + effectiveChunkSize);
-    const alignedLen = (chunkEnd - chunkStart) & ~3;
-    if (alignedLen < 4) break;
+  function scanRange(start, end, depth) {
+    const alignedLen = (end - start) & alignMask;
+    if (alignedLen < 4) return;
+    const alignedEnd = start + alignedLen;
 
-    const chunkSlice = u8.subarray(chunkStart, chunkStart + alignedLen);
-    const chunkTextVa = BigInt.asUintN(64, baseTextVa + BigInt(chunkStart));
+    const chunkSlice = u8.subarray(start, alignedEnd);
+    const chunkTextVa = BigInt.asUintN(64, baseTextVa + BigInt(start));
     const chunkHits = scanChunkFn(chunkSlice, chunkTextVa, chunkMaxOut);
+
+    if (chunkMaxOut === CHUNK_MAX_OUT && chunkHits.length >= CHUNK_MAX_OUT) {
+      const mid = (start + Math.floor(alignedLen / 2)) & alignMask;
+      const leftEnd = Math.min(alignedEnd, (mid + effOverlap) & alignMask);
+      const rightStart = Math.max(start, (mid - effOverlap) & alignMask);
+      if (depth < MAX_BISECT_DEPTH && alignedLen > minBisectLen && leftEnd < alignedEnd && rightStart > start) {
+        scanRange(start, leftEnd, depth + 1);
+        scanRange(rightStart, alignedEnd, depth + 1);
+        return;
+      }
+    }
 
     if (chunkHits.length >= chunkMaxOut) {
       truncated = true;
@@ -322,8 +341,8 @@ function runChunkedScan(u8, baseTextVa, maxOut, effectiveChunkSize, scanChunkFn)
 
     for (let i = 0; i < chunkHits.length; i++) {
       const h = chunkHits[i];
-      const absBrOff = chunkStart + h.brOff;
-      const absCmpOff = h.cmpOff === NO_CMP_OFF ? NO_CMP_OFF : (chunkStart + h.cmpOff);
+      const absBrOff = start + h.brOff;
+      const absCmpOff = h.cmpOff === NO_CMP_OFF ? NO_CMP_OFF : (start + h.cmpOff);
       const merged = {
         brOff: absBrOff,
         cmpOff: absCmpOff,
@@ -342,15 +361,24 @@ function runChunkedScan(u8, baseTextVa, maxOut, effectiveChunkSize, scanChunkFn)
         byBrOff.set(absBrOff, merged);
       }
     }
+  }
+
+  let chunkStart = 0;
+  while (chunkStart < u8.length) {
+    const chunkEnd = Math.min(u8.length, chunkStart + effectiveChunkSize);
+    const alignedLen = (chunkEnd - chunkStart) & alignMask;
+    if (alignedLen < 4) break;
+
+    scanRange(chunkStart, chunkStart + alignedLen, 0);
 
     if (chunkEnd >= u8.length) break;
-    chunkStart = chunkEnd - OVERLAP;
+    chunkStart = chunkEnd - effOverlap;
   }
 
   const tables = Array.from(byBrOff.values()).sort((a, b) => a.brOff - b.brOff);
   if (tables.length > maxOut) {
-    truncated = true;
     tables.length = maxOut;
+    truncated = true;
   }
   return { tables, truncated };
 }
@@ -359,7 +387,7 @@ export function scanArm64JumpTables(bytes, opts = {}) {
   const {
     textVa = 0n,
     arch = 'arm64',
-    maxOut = 1024,
+    maxOut: rawMaxOut = DEFAULT_MAX_OUT,
     chunkSize,
   } = opts || {};
 
@@ -368,7 +396,9 @@ export function scanArm64JumpTables(bytes, opts = {}) {
   }
 
   const u8 = toU8(bytes);
-  const maxOutVal = Math.max(0, Math.floor(Number(maxOut ?? 1024)));
+  const maxOutVal = (rawMaxOut != null && rawMaxOut !== '' && Number.isFinite(Number(rawMaxOut)))
+    ? Math.max(0, Math.min(SAFE_MAX_OUT, Math.floor(Number(rawMaxOut))))
+    : DEFAULT_MAX_OUT;
   const ex = resolveWasmExports(opts);
 
   if (!u8 || u8.length < 4 || maxOutVal === 0) {

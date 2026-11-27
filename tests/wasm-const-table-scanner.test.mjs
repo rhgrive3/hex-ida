@@ -227,3 +227,42 @@ test('7. handles invalid/short inputs and maxOut truncation identically between 
   assert.equal(trunc.wasmRes.tables.length, 2);
   assert.equal(trunc.wasmRes.truncated, true);
 });
+
+test('8. exact maxOut sets truncated=false while maxOut+1 sets truncated=true with WASM === JS parity', () => {
+  const buf = new Uint8Array(256);
+  writeF32Array(buf, 0x00, [1.0, 2.0, 3.0, 4.0]);
+  writeF32Array(buf, 0x20, [5.0, 6.0, 7.0, 8.0]);
+  writeF32Array(buf, 0x40, [9.0, 10.0, 11.0, 12.0]);
+
+  const exact = scanBoth(buf, { maxOut: 3 });
+  assert.equal(exact.wasmRes.tables.length, 3);
+  assert.equal(exact.wasmRes.truncated, false);
+
+  const trunc = scanBoth(buf, { maxOut: 2 });
+  assert.equal(trunc.wasmRes.tables.length, 2);
+  assert.equal(trunc.wasmRes.truncated, true);
+});
+
+test('9. adaptive bisection recovers dense single-chunk > CHUNK_MAX_OUT (16384) and preserves small maxOut / leaf saturation', () => {
+  const totalCount = 17000;
+  const strideBytes = 24; // 16B f32 table + 8B zero separator
+  const buf = new Uint8Array(totalCount * strideBytes);
+  for (let i = 0; i < totalCount; i++) {
+    writeF32Array(buf, i * strideBytes, [1.0, 2.0, 3.0, 4.0]);
+  }
+
+  // Single default chunk (408KB < 1.5MB) exceeds CHUNK_MAX_OUT (16384) -> adaptive bisection recovers all 17000 tables
+  const dense = scanBoth(buf);
+  assert.equal(dense.wasmRes.tables.length, totalCount);
+  assert.equal(dense.wasmRes.truncated, false);
+
+  // Explicit small maxOut (< CHUNK_MAX_OUT) must NOT bisect and must report truncated=true
+  const smallMax = scanBoth(buf, { maxOut: 100 });
+  assert.equal(smallMax.wasmRes.tables.length, 100);
+  assert.equal(smallMax.wasmRes.truncated, true);
+
+  // Non-bisectable leaf chunk (chunkSize <= minBisectLen) saturating chunkMaxOut reports truncated=true
+  const leaf = scanBoth(buf.subarray(0, 256), { chunkSize: 256, maxOut: 3 });
+  assert.equal(leaf.wasmRes.tables.length, 3);
+  assert.equal(leaf.wasmRes.truncated, true);
+});

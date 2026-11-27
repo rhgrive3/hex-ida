@@ -8,7 +8,10 @@ import { scanArm64RmwCore } from './arm64-insn-bits.js';
 
 const SCRATCH_CHUNK_MAX = 1536 * 1024;
 const OVERLAP = 128; // multiple of 8 (32 ARM64 instructions)
-const MAX_OUT_LIMIT = 4096;
+const SAFE_MAX_OUT = 262144;
+const CHUNK_MAX_OUT = 16384; // 320KB/chunk (16384 * 20B)
+const MAX_BISECT_DEPTH = 12;
+const DEFAULT_MAX_OUT = 65536;
 const RMW_HIT_BYTES = 20;
 
 function toU8(bytes) {
@@ -71,21 +74,24 @@ function resolveChunkSize(chunkSize) {
   return SCRATCH_CHUNK_MAX;
 }
 
-function mergeChunkHits(target, seen, chunkHits, chunkStart, maxOut) {
-  let truncated = false;
+function popcount8(v) {
+  let x = v & 0xFF;
+  let c = 0;
+  while (x) {
+    x &= (x - 1);
+    c++;
+  }
+  return c;
+}
+
+function mergeChunkHits(target, seen, chunkHits, chunkStart) {
   for (let i = 0; i < chunkHits.length; i++) {
     const h = chunkHits[i];
     const loadOff = h.loadOff + chunkStart;
     const storeOff = h.storeOff + chunkStart;
     const arithOff = h.arithOff + chunkStart;
     const key = `${loadOff}:${storeOff}`;
-    if (seen.has(key)) continue;
-    if (target.length >= maxOut) {
-      truncated = true;
-      break;
-    }
-    seen.add(key);
-    target.push({
+    const rec = {
       loadOff,
       storeOff,
       arithOff,
@@ -96,21 +102,59 @@ function mergeChunkHits(target, seen, chunkHits, chunkStart, maxOut) {
       isFloat: h.isFloat,
       width: h.width,
       flags: h.flags,
-    });
+    };
+    const prevIdx = seen.get(key);
+    if (prevIdx !== undefined) {
+      const prev = target[prevIdx];
+      if (popcount8(rec.flags) > popcount8(prev.flags) || (!prev.clamped && rec.clamped)) {
+        target[prevIdx] = rec;
+      }
+      continue;
+    }
+    seen.set(key, target.length);
+    target.push(rec);
   }
-  return truncated;
 }
 
 function runChunkedScan(u8, maxOut, effChunkSize, scanChunk) {
   const hits = [];
-  const seen = new Set();
+  const seen = new Map();
   let truncated = false;
 
-  const overlap = effChunkSize > OVERLAP
+  const effOverlap = effChunkSize > OVERLAP
     ? OVERLAP
     : Math.max(4, Math.min(OVERLAP, (effChunkSize - 4) & ~3));
-  // Request extra headroom so duplicates in the overlap window cannot starve new hits or truncation detection.
-  const chunkMaxOut = Math.min(MAX_OUT_LIMIT + 16, maxOut + 16);
+  const alignMask = ~3;
+  const minBisectLen = Math.max((effOverlap * 4) & alignMask, 256);
+  const chunkMaxOut = Math.min(CHUNK_MAX_OUT, maxOut + 1);
+
+  function scanRange(start, end, depth) {
+    const chunkLen = end - start;
+    if (chunkLen < 4) return true;
+
+    const chunk = u8.subarray(start, end);
+    const chunkHits = scanChunk(chunk, chunkMaxOut);
+    if (chunkHits === null) {
+      return false;
+    }
+
+    if (chunkMaxOut === CHUNK_MAX_OUT && chunkHits.length >= CHUNK_MAX_OUT) {
+      const mid = (start + Math.floor(chunkLen / 2)) & alignMask;
+      const leftEnd = Math.min(end, (mid + effOverlap) & alignMask);
+      const rightStart = Math.max(start, (mid - effOverlap) & alignMask);
+      if (depth < MAX_BISECT_DEPTH && chunkLen > minBisectLen && leftEnd < end && rightStart > start) {
+        if (!scanRange(start, leftEnd, depth + 1)) return false;
+        if (!scanRange(rightStart, end, depth + 1)) return false;
+        return true;
+      }
+    }
+
+    if (chunkHits.length >= chunkMaxOut) {
+      truncated = true;
+    }
+    mergeChunkHits(hits, seen, chunkHits, start);
+    return true;
+  }
 
   let chunkStart = 0;
   while (chunkStart < u8.length) {
@@ -118,17 +162,17 @@ function runChunkedScan(u8, maxOut, effChunkSize, scanChunk) {
     const chunkLen = chunkEnd - chunkStart;
     if (chunkLen < 4) break;
 
-    const chunk = u8.subarray(chunkStart, chunkEnd);
-    const chunkHits = scanChunk(chunk, chunkMaxOut);
-    if (chunkHits === null) {
+    if (!scanRange(chunkStart, chunkEnd, 0)) {
       return null;
     }
-    if (mergeChunkHits(hits, seen, chunkHits, chunkStart, maxOut)) {
-      truncated = true;
-      break;
-    }
     if (chunkEnd >= u8.length) break;
-    chunkStart = chunkEnd - overlap;
+    chunkStart = chunkEnd - effOverlap;
+  }
+
+  hits.sort((a, b) => (a.loadOff - b.loadOff) || (a.storeOff - b.storeOff));
+  if (hits.length > maxOut) {
+    hits.length = maxOut;
+    truncated = true;
   }
 
   return { hits, truncated };
@@ -166,7 +210,7 @@ function decodeWasmHits(buffer, outPtr, count) {
 export function scanArm64RmwFields(bytes, opts = {}) {
   const {
     arch = 'arm64',
-    maxOut: rawMaxOut = MAX_OUT_LIMIT,
+    maxOut: rawMaxOut = DEFAULT_MAX_OUT,
     chunkSize,
   } = opts || {};
 
@@ -174,9 +218,9 @@ export function scanArm64RmwFields(bytes, opts = {}) {
     return { hits: [], engine: 'js', truncated: false, unsupportedArch: true };
   }
 
-  const maxOut = Number.isFinite(rawMaxOut)
-    ? Math.max(0, Math.min(MAX_OUT_LIMIT, Math.floor(rawMaxOut)))
-    : MAX_OUT_LIMIT;
+  const maxOut = (rawMaxOut != null && rawMaxOut !== '' && Number.isFinite(Number(rawMaxOut)))
+    ? Math.max(0, Math.min(SAFE_MAX_OUT, Math.floor(Number(rawMaxOut))))
+    : DEFAULT_MAX_OUT;
 
   const u8 = toU8(bytes);
   if (!u8 || u8.length < 4 || maxOut === 0) {
