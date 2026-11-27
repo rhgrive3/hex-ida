@@ -360,6 +360,27 @@ export class TilLiteResolver {
         }
       }
     }
+    // Bare selector fallback (e.g. "alloc", "init" from __objc_methname without class prefix)
+    const rawBare = sel || (typeof clsOrKey === 'string'
+      ? (clsOrKey.includes(':') && !clsOrKey.endsWith(':')
+        ? clsOrKey.slice(clsOrKey.indexOf(':') + 1)
+        : (clsOrKey.startsWith('*:') ? clsOrKey.slice(2) : clsOrKey))
+      : null);
+    if (rawBare) {
+      for (const src of sources) {
+        if (!src.view || typeof src.view.lookupBareSelector !== 'function') continue;
+        const hit = src.view.lookupBareSelector(rawBare);
+        if (hit) {
+          return {
+            ...hit,
+            matchedName: hit.name || rawBare,
+            matchedSlotId: src.slotId,
+            source: src.source,
+            packId: src.packId,
+          };
+        }
+      }
+    }
     return null;
   }
 

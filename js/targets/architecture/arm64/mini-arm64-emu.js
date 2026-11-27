@@ -56,6 +56,40 @@ function signExtend(val, bits) {
   return (val << shift) >> shift;
 }
 
+function signExtendBig(val, bits) {
+  const shift = BigInt(64 - bits);
+  return BigInt.asIntN(64, (BigInt(val) << shift) >> shift);
+}
+
+function decodeBitmaskImmArm64(is64, nBit, immr, imms) {
+  if (!is64 && nBit !== 0) return null;
+  let len = 0;
+  const combined = ((nBit & 1) << 6) | (~imms & 0x3f);
+  for (let bit = 6; bit >= 1; bit--) {
+    if (((combined >>> bit) & 1) !== 0) {
+      len = bit;
+      break;
+    }
+  }
+  if (len < 1) return null;
+  const esize = 1 << len;
+  const levels = esize - 1;
+  const S = imms & levels;
+  const R = immr & levels;
+  if (S === levels) return null;
+  const welem = (1n << BigInt(S + 1)) - 1n;
+  let rotated = welem;
+  if (R !== 0) {
+    const mask = esize === 64 ? MASK64 : ((1n << BigInt(esize)) - 1n);
+    rotated = ((welem >> BigInt(R)) | (welem << BigInt(esize - R))) & mask;
+  }
+  let replicated = 0n;
+  for (let pos = 0; pos < 64; pos += esize) {
+    replicated |= (rotated << BigInt(pos));
+  }
+  return is64 ? (replicated & MASK64) : (replicated & MASK32);
+}
+
 /**
  * Exact C++ `shift_reg(v, shift_type, amount, is64)` parity:
  *   0=LSL, 1=LSR, 2=ASR, 3=ROR
@@ -450,6 +484,34 @@ export class MiniArm64Emu {
         break;
       }
 
+      // BR Xn
+      if (((w & 0xfffffc1f) >>> 0) === 0xd61f0000) {
+        const rn = (w >>> 5) & 0x1f;
+        const target = this.getGpr(rn);
+        if (target === null) break;
+        this.pc = target;
+        continue;
+      }
+
+      // BLR Xn
+      if (((w & 0xfffffc1f) >>> 0) === 0xd63f0000) {
+        const rn = (w >>> 5) & 0x1f;
+        const target = this.getGpr(rn);
+        if (target === null) break;
+        if (!this._isExecVa(target)) {
+          this.stopReason = HEX_EMU_STOP_REASON.EXT_CALL;
+          break;
+        }
+        if (this.callDepth >= this.cfg.maxCallDepth) {
+          this.stopReason = HEX_EMU_STOP_REASON.CALL_DEPTH;
+          break;
+        }
+        this.callDepth++;
+        this.setGpr(30, nextPc);
+        this.pc = target;
+        continue;
+      }
+
       // RET
       if (((w & 0xfffffc1f) >>> 0) === 0xd65f0000) {
         const rn = (w >>> 5) & 0x1f;
@@ -510,6 +572,26 @@ export class MiniArm64Emu {
         const masked = sf ? v : (v & MASK32);
         const taken = isNz ? (masked !== 0n) : (masked === 0n);
         this.pc = taken ? ((this.pc + BigInt(imm19 * 4)) & MASK64) : nextPc;
+        continue;
+      }
+
+      // TBZ / TBNZ
+      if ((w & 0x7e000000) === 0x36000000) {
+        const b5 = (w >>> 31) & 1;
+        const b40 = (w >>> 19) & 0x1f;
+        const bitPos = BigInt((b5 << 5) | b40);
+        const isNz = Boolean((w >>> 24) & 1);
+        const rt = w & 0x1f;
+        const v = this.getGpr(rt);
+        if (v === null) break;
+        const bitSet = ((v >> bitPos) & 1n) !== 0n;
+        const taken = isNz ? bitSet : !bitSet;
+        if (taken) {
+          const imm14 = signExtend((w >>> 5) & 0x3fff, 14);
+          this.pc = (this.pc + BigInt(imm14 * 4)) & MASK64;
+        } else {
+          this.pc = nextPc;
+        }
         continue;
       }
 
@@ -631,6 +713,195 @@ export class MiniArm64Emu {
         continue;
       }
 
+      // Logical Immediate: AND / ORR / EOR / ANDS (TST)
+      if ((w & 0x1f800000) === 0x12000000) {
+        const is64 = Boolean((w >>> 31) & 1);
+        const opc = (w >>> 29) & 3;
+        const nBit = (w >>> 22) & 1;
+        const immr = (w >>> 16) & 0x3f;
+        const imms = (w >>> 10) & 0x3f;
+        const rn = (w >>> 5) & 0x1f;
+        const rd = w & 0x1f;
+        const imm = decodeBitmaskImmArm64(is64, nBit, immr, imms);
+        if (imm === null) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        const a = this.getGpr(rn);
+        if (a === null) break;
+        const wMask = is64 ? MASK64 : MASK32;
+        const av = a & wMask;
+        let res = 0n;
+        if (opc === 0 || opc === 3) res = av & imm;
+        else if (opc === 1) res = av | imm;
+        else res = av ^ imm;
+        if (opc === 3) {
+          const signBit = is64 ? (1n << 63n) : (1n << 31n);
+          this.flags = { N: (res & signBit) !== 0n ? 1 : 0, Z: res === 0n ? 1 : 0, C: 0, V: 0 };
+        }
+        this.setGpr(rd, res & wMask, opc !== 3);
+        this.pc = nextPc;
+        continue;
+      }
+
+      // Data Processing 3-source: MADD / MSUB (MUL = MADD with Ra=31)
+      if ((w & 0x7fe00000) === 0x1b000000) {
+        const is64 = Boolean((w >>> 31) & 1);
+        const isSub = Boolean((w >>> 15) & 1);
+        const rm = (w >>> 16) & 0x1f;
+        const ra = (w >>> 10) & 0x1f;
+        const rn = (w >>> 5) & 0x1f;
+        const rd = w & 0x1f;
+        const a = this.getGpr(rn);
+        const b = this.getGpr(rm);
+        const acc = this.getGpr(ra);
+        if (a === null || b === null || acc === null) break;
+        const wMask = is64 ? MASK64 : MASK32;
+        const prod = (a & wMask) * (b & wMask);
+        const res = (isSub ? ((acc & wMask) - prod) : ((acc & wMask) + prod)) & wMask;
+        this.setGpr(rd, res);
+        this.pc = nextPc;
+        continue;
+      }
+
+      // Conditional Select: CSEL / CSINC / CSINV / CSNEG (bit 29 S must be 0)
+      if (((w & 0x3fe00800) >>> 0) === 0x1a800000) {
+        const is64 = Boolean((w >>> 31) & 1);
+        const op = Boolean((w >>> 30) & 1);
+        const rm = (w >>> 16) & 0x1f;
+        const cond = (w >>> 12) & 0xf;
+        const o2 = Boolean((w >>> 10) & 1);
+        const rn = (w >>> 5) & 0x1f;
+        const rd = w & 0x1f;
+        const wMask = is64 ? MASK64 : MASK32;
+        let res = 0n;
+        if (evalCond(cond, this.flags)) {
+          const v = this.getGpr(rn);
+          if (v === null) break;
+          res = v & wMask;
+        } else {
+          const v = this.getGpr(rm);
+          if (v === null) break;
+          res = v & wMask;
+          if (op) res = (~res) & wMask;
+          if (o2) res = (res + 1n) & wMask;
+        }
+        this.setGpr(rd, res);
+        this.pc = nextPc;
+        continue;
+      }
+
+      // Bitfield: SBFM / UBFM
+      if ((w & 0x1f800000) === 0x13000000) {
+        const is64 = Boolean((w >>> 31) & 1);
+        const opc = (w >>> 29) & 3;
+        const nBit = (w >>> 22) & 1;
+        const immr = (w >>> 16) & 0x3f;
+        const imms = (w >>> 10) & 0x3f;
+        const bits = is64 ? 64 : 32;
+        if (nBit !== (is64 ? 1 : 0) || immr >= bits || imms >= bits || (opc !== 0 && opc !== 2)) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        const rn = (w >>> 5) & 0x1f;
+        const rd = w & 0x1f;
+        const srcRaw = this.getGpr(rn);
+        if (srcRaw === null) break;
+        const wMask = is64 ? MASK64 : MASK32;
+        const src = srcRaw & wMask;
+        let res = 0n;
+        if (opc === 2) {
+          if (imms >= immr) {
+            const width = imms - immr + 1;
+            const mask = width === 64 ? MASK64 : ((1n << BigInt(width)) - 1n);
+            res = (src >> BigInt(immr)) & mask;
+          } else {
+            const lshift = BigInt(bits - immr);
+            const width = imms + 1;
+            const mask = width === 64 ? MASK64 : ((1n << BigInt(width)) - 1n);
+            res = ((src & mask) << lshift) & wMask;
+          }
+        } else {
+          if (imms >= immr) {
+            const width = imms - immr + 1;
+            const mask = width === 64 ? MASK64 : ((1n << BigInt(width)) - 1n);
+            res = BigInt.asUintN(64, signExtendBig((src >> BigInt(immr)) & mask, width)) & wMask;
+          } else {
+            const lshift = BigInt(bits - immr);
+            const width = imms + 1;
+            const mask = width === 64 ? MASK64 : ((1n << BigInt(width)) - 1n);
+            res = (BigInt.asUintN(64, signExtendBig(src & mask, width)) << lshift) & wMask;
+          }
+        }
+        this.setGpr(rd, res);
+        this.pc = nextPc;
+        continue;
+      }
+
+      // LDR Literal (GPR only)
+      if ((w & 0x3f000000) === 0x18000000) {
+        const opc = (w >>> 30) & 3;
+        const delta = signExtend((w >>> 5) & 0x7ffff, 19) * 4;
+        const addr = (this.pc + BigInt(delta)) & MASK64;
+        const rt = w & 0x1f;
+        if (opc === 0) {
+          const val = this.readInt(addr, 4);
+          if (val === null) break;
+          this.setGpr(rt, val & MASK32);
+        } else if (opc === 1) {
+          const val = this.readInt(addr, 8);
+          if (val === null) break;
+          this.setGpr(rt, val);
+        } else if (opc === 2) {
+          const val = this.readInt(addr, 4);
+          if (val === null) break;
+          this.setGpr(rt, BigInt.asUintN(64, signExtendBig(val, 32)));
+        } else {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        this.pc = nextPc;
+        continue;
+      }
+
+      // Load/Store Pair: LDP / STP (GPR only)
+      if ((w & 0x3e000000) === 0x28000000) {
+        const opc = (w >>> 30) & 3;
+        const mode = (w >>> 23) & 3;
+        const isLoad = Boolean((w >>> 22) & 1);
+        if ((opc !== 0 && opc !== 2) || mode === 0) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        const is64 = opc === 2;
+        const width = is64 ? 8 : 4;
+        const imm7 = BigInt(signExtend((w >>> 15) & 0x7f, 7) * width);
+        const rt2 = (w >>> 10) & 0x1f;
+        const rn = (w >>> 5) & 0x1f;
+        const rt = w & 0x1f;
+        const base = this.getGpr(rn, true);
+        if (base === null) break;
+        const addr = mode === 1 ? base : ((base + imm7) & MASK64);
+        if (isLoad) {
+          const v1 = this.readInt(addr, width);
+          const v2 = v1 === null ? null : this.readInt((addr + BigInt(width)) & MASK64, width);
+          if (v1 === null || v2 === null) break;
+          const wMask = is64 ? MASK64 : MASK32;
+          this.setGpr(rt, v1 & wMask);
+          this.setGpr(rt2, v2 & wMask);
+        } else {
+          const v1 = this.getGpr(rt);
+          const v2 = v1 === null ? null : this.getGpr(rt2);
+          if (v1 === null || v2 === null) break;
+          if (!this.writeInt(addr, v1, width, insnOff) || !this.writeInt((addr + BigInt(width)) & MASK64, v2, width, insnOff)) break;
+        }
+        if (mode === 1 || mode === 3) {
+          this.setGpr(rn, (base + imm7) & MASK64, true);
+        }
+        this.pc = nextPc;
+        continue;
+      }
+
       // Integer LDR / STR unsigned offset (bit 26 V=0)
       if ((w & 0x3f000000) === 0x39000000) {
         const size = (w >>> 30) & 3;
@@ -677,6 +948,48 @@ export class MiniArm64Emu {
           if (!this.writeInt(addr, v, width, insnOff)) break;
         }
         this.setGpr(rn, (base + simm9) & MASK64, true);
+        this.pc = nextPc;
+        continue;
+      }
+
+      // Load/Store Register (Register Offset; GPR only)
+      if ((w & 0x3f200c00) === 0x38200800) {
+        const size = (w >>> 30) & 3;
+        const opc = (w >>> 22) & 3;
+        const opt = (w >>> 13) & 7;
+        if ((size === 3 && opc === 2) || (opt !== 2 && opt !== 3 && opt !== 6 && opt !== 7)) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        const rm = (w >>> 16) & 0x1f;
+        const sBit = (w >>> 12) & 1;
+        const rn = (w >>> 5) & 0x1f;
+        const rt = w & 0x1f;
+        const width = 1 << size;
+        const shift = BigInt(sBit ? size : 0);
+        const base = this.getGpr(rn, true);
+        const rmVal = this.getGpr(rm);
+        if (base === null || rmVal === null) break;
+        let idxVal = rmVal;
+        if (opt === 2) idxVal = rmVal & MASK32;
+        else if (opt === 6) idxVal = BigInt.asUintN(64, signExtendBig(rmVal, 32));
+        const addr = (base + (idxVal << shift)) & MASK64;
+        if (opc === 0) {
+          const v = this.getGpr(rt);
+          if (v === null) break;
+          if (!this.writeInt(addr, v, width, insnOff)) break;
+        } else if (opc === 1) {
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, size === 3 ? v : (v & MASK32));
+        } else if (opc === 2) {
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, BigInt.asUintN(64, signExtendBig(v, width * 8)));
+        } else {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
         this.pc = nextPc;
         continue;
       }
@@ -882,7 +1195,13 @@ export function runMiniArm64EmuWasm(codeBytes, cfg = {}) {
 
     return {
       engine: 'wasm',
-      stopReason: faultCode === 1 ? HEX_EMU_STOP_REASON.RETURN_OK : faultCode === 2 ? HEX_EMU_STOP_REASON.STEP_LIMIT : HEX_EMU_STOP_REASON.UNSUPPORTED_INSN,
+      stopReason: faultCode === 1
+        ? HEX_EMU_STOP_REASON.RETURN_OK
+        : faultCode === 2
+          ? HEX_EMU_STOP_REASON.STEP_LIMIT
+          : (faultCode === 3 || faultCode === 4)
+            ? HEX_EMU_STOP_REASON.UNINIT_READ
+            : HEX_EMU_STOP_REASON.UNSUPPORTED_INSN,
       faultCode,
       stepsUsed: stepCount,
       x0,
