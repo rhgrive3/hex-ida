@@ -26,6 +26,7 @@ import {
 import { HEXSIG_ARCH_ARM64 } from '../js/analysis/signature/hex-sig-extractor.js';
 import { extractFunctionsFromMachO64 } from '../scripts/import-rizin-sigdb.mjs';
 import { exportBinExport2, importBinExport2 } from '../js/ui/export-interop.js';
+import { refineAppleSwiftDecompile } from '../js/decompiler/apple-arc-swift-pass.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -216,7 +217,7 @@ async function main() {
 
     const packGz = fs.readFileSync(path.join(ROOT, 'dist/hexsig-hub', selected[0].file));
     const loaded = await loadHexSigPack(selected[0], { gzBytes: new Uint8Array(packGz), verifySha256: true });
-    assert.equal(loaded.decoded.entryCount, 1000);
+    assert.equal(loaded.decoded.entryCount, 1500);
 
     const wasmMatcher = mountHexSigPackToWasm(loaded.rawBytes, loaded.decoded);
     assert.ok(wasmMatcher, 'ios-arm64-macho must mount cleanly in WASM Slot 4');
@@ -229,6 +230,9 @@ async function main() {
       'ios_sha256_transform', 'ios_chacha20_block', 'ios_crc32_update', 'ios_adler32_update',
       'ios_fnv1a64', 'ios_timingsafe_bcmp', 'ios_base64_encode', 'ios_utf8_validate',
       'ios_aes_mix_columns', 'ios_uleb128_decode', 'ios_murmur3_32', 'ios_sipround',
+      'ios_aes128_sub_shift', 'ios_aes128_key_expand', 'ios_rc4_crypt', 'ios_xxtea_encrypt',
+      'ios_tea_decrypt', 'ios_lz4_decompress', 'ios_hex_encode', 'ios_hex_decode',
+      'ios_url_percent_decode', 'ios_explicit_bzero', 'ios_poly1305_clamp', 'ios_pkcs7_unpad',
     ];
     for (const name of mustMatchArm64) {
       const fn = arm64Funcs.find((f) => f.name === name);
@@ -284,6 +288,83 @@ async function main() {
     assert.equal(decoded.ok, true);
     assert.ok(decoded.model.functions.some((f) => f.name === 'MyApp.ViewController.viewDidLoad() -> ()'));
     assert.ok(decoded.model.functions.some((f) => f.name === '_objc_msgSend$viewDidLoad'));
+  }));
+
+
+  // -------------------------------------------------------------------------
+  // 5. Apple ObjC / Swift ARC Noise Folding + _objc_msgSend$ Rewriting + 4-ABI Inline Demangle
+  // -------------------------------------------------------------------------
+  results.push(await runTest('Track 5: refineAppleSwiftDecompile folds ObjC/Swift ARC, rewrites _objc_msgSend$ & demangles 4 ABIs', () => {
+    const rawPseudoC = [
+      'id sub_100004000(id self, id req) {',
+      '  id v1 = objc_retainAutoreleasedReturnValue(_objc_msgSend$setObject:forKey:(self, req, @"token"));',
+      '  id v2 = swift_bridgeObjectRetain(_$s5MyApp14ViewControllerC11viewDidLoadyyF(self));',
+      '  id v3 = objc_msgSend(v1, "dataTaskWithRequest:completionHandler:", req, cb);',
+      '  int r = ?decrypt@CryptoEngine@MyApp@@QEAAHPEBE_K@Z(v2, 32);',
+      '  objc_release(v1);',
+      '  swift_bridgeObjectRelease(v2);',
+      '  objc_storeStrong(&v3, 0LL);',
+      '  return objc_autoreleaseReturnValue(v3);',
+      '}',
+    ].join('\n');
+
+    const { code, stats } = refineAppleSwiftDecompile(rawPseudoC);
+    assert.ok(code.includes('[self setObject:req forKey:@"token"]'), `objc_msgSend$ rewrite failed:\n${code}`);
+    assert.ok(code.includes('[v1 dataTaskWithRequest:req completionHandler:cb]'), `objc_msgSend rewrite failed:\n${code}`);
+    assert.ok(code.includes('MyApp.ViewController.viewDidLoad() -> ()'), `Swift inline demangle failed:\n${code}`);
+    assert.ok(code.includes('MyApp::CryptoEngine::decrypt'), `MSVC inline demangle failed:\n${code}`);
+    assert.ok(!code.includes('objc_retainAutoreleasedReturnValue'), 'ARC passthrough should be folded');
+    assert.ok(!code.includes('objc_release(v1);'), 'objc_release statement should be elided');
+    assert.ok(!code.includes('swift_bridgeObjectRelease(v2);'), 'swift_bridgeObjectRelease should be elided');
+    assert.ok(!code.includes('objc_storeStrong(&v3, 0LL);'), 'objc_storeStrong nil should be elided');
+    assert.ok(code.includes('[ARC/Swift: folded'), 'ARC summary comment should be emitted');
+    assert.equal(stats.objcStubsRewritten, 1);
+    assert.equal(stats.objcDirectRewritten, 1);
+    assert.equal(stats.arcLinesRemoved, 3);
+    assert.ok(stats.arcOpsFolded >= 6);
+    assert.equal(stats.symbolsDemangled, 2);
+  }));
+
+  // -------------------------------------------------------------------------
+  // 6. Windows PE Win32/Win64 Full TIL Pack (Ghidra windows_vs12_64.gdt) Live in WASM
+  // -------------------------------------------------------------------------
+  results.push(await runTest('Track 6: Windows PE fingerprint auto-selects win32-api-full & resolves Win32 APIs live in WASM', () => {
+    const tilManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'dist/til-hub/manifest.json'), 'utf8'));
+    assert.ok(tilManifest.totalEntries + tilManifest.totalTypes >= 13000, 'TIL-Hub should have >= 13000 defs across 11 packs');
+
+    const fp = fingerprintBinarySdk({
+      format: 'pe',
+      arch: 'x86_64',
+      platform: 'windows',
+      sdkVersion: '10.0',
+      dlls: ['kernel32.dll', 'ntdll.dll', 'advapi32.dll', 'user32.dll', 'ws2_32.dll'],
+      symbols: ['CreateFileW', 'VirtualAlloc', 'GetProcAddress'],
+    });
+    const match = matchSdkPacks(fp, tilManifest.packs);
+    assert.ok(match.selected.some((s) => s.pack.id === 'win32-api-full'), 'win32-api-full must be auto-selected for Windows PE');
+
+    const ex = getHexEngineExports();
+    const winBytes = fs.readFileSync(path.join(ROOT, 'dist/til-hub/win32-api-full.til1'));
+    assert.ok(winBytes.length <= 256 * 1024, 'win32-api-full <= 256 KiB Slot 1/2 cap');
+
+    ex.hex_til_purge_packs();
+    ex.hex_type_arena_reset_slot(8);
+    const ptr = ex.hex_type_arena_bump_alloc(8, winBytes.length, 8) >>> 0;
+    assert.ok(ptr > 0);
+    new Uint8Array(ex.memory.buffer, ptr, winBytes.length).set(winBytes);
+    assert.equal(ex.hex_til_mount(1, ptr, winBytes.length, 0x1000, 0x0a00), 0);
+
+    const enc = new TextEncoder();
+    for (const sym of ['CreateFileW', 'VirtualAlloc', 'VirtualProtect', 'GetProcAddress', 'LoadLibraryW', 'OpenProcess']) {
+      ex.hex_engine_scratch_reset();
+      const b = enc.encode(sym);
+      const sPtr = ex.hex_engine_scratch_alloc(b.length + 1, 8) >>> 0;
+      const oPtr = ex.hex_engine_scratch_alloc(64, 8) >>> 0;
+      const mem = new Uint8Array(ex.memory.buffer);
+      mem.set(b, sPtr);
+      mem[sPtr + b.length] = 0;
+      assert.equal(ex.hex_til_lookup_symbol(sPtr, b.length, 1 << 1, 0, oPtr), 0, `Win32 WASM lookup failed for ${sym}`);
+    }
   }));
 
   const passed = results.filter(Boolean).length;
