@@ -305,6 +305,48 @@ export async function autoAnalyze(opts) {
   report.engine = detectEngine(strings);
   report.features = groupByFeature(strings);
   report.findings = findings(strings, program, symbols);
+  const cryptoConstants = Array.isArray(o.cryptoConstants)
+    ? o.cryptoConstants
+    : (Array.isArray(o.cryptoScan?.constants) ? o.cryptoScan.constants : []);
+  const highEntropyWindows = Array.isArray(o.highEntropyWindows)
+    ? o.highEntropyWindows
+    : (Array.isArray(o.cryptoScan?.highEntropy) ? o.cryptoScan.highEntropy : []);
+  report.crypto = { constants: cryptoConstants, highEntropy: highEntropyWindows };
+  if (cryptoConstants.length) {
+    for (const hit of cryptoConstants.slice(0, 16)) {
+      const addr = toBigIntAddress(hit.address);
+      const span = Math.max(16, Math.min(Number(hit.length) || 16, 256));
+      const users = (program && addr != null)
+        ? program.functionsReferencing(addr, BigInt(span), 8)
+        : { length: 0, complete: false, map: () => [] };
+      const actionable = users.length > 0;
+      report.findings.push({
+        id: 'crypto', level: 'high',
+        text: `${hit.name} (${hit.id})${hit.section ? ` [${hit.section}]` : ''}`,
+        addr: addr ?? hit.address,
+        actionable,
+        status: actionable ? 'referenced' : 'unreferenced',
+        xrefsComplete: users.complete !== false,
+        users: users.map((u) => ({
+          addr: u.addr, site: u.site,
+          name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
+        })),
+      });
+    }
+  }
+  const packedWindows = highEntropyWindows.filter((w) => w && w.kind === 'encrypted-or-packed');
+  if (packedWindows.length) {
+    const top = packedWindows.slice().sort((a, b) => (b.entropy || 0) - (a.entropy || 0))[0];
+    report.findings.push({
+      id: 'crypto', level: 'medium',
+      text: `High-entropy region (${Number(top.entropy || 0).toFixed(2)} bits/byte, ${packedWindows.length} window${packedWindows.length > 1 ? 's' : ''})${top.section ? ` [${top.section}]` : ''}`,
+      addr: toBigIntAddress(top.address) ?? top.address,
+      actionable: false,
+      status: 'unreferenced',
+      xrefsComplete: true,
+      users: [],
+    });
+  }
 
   progress({ phase: 'map', done: 0, all: 1 });
   const fields = o.fields || null;
@@ -322,7 +364,7 @@ export async function autoAnalyze(opts) {
     if (cancelled()) { report.notes.push('cancelled'); return report; }
     progress({ phase: 'goals', done: i, all });
     const goal = goalFromPreset(GOALS[i].id);
-    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 12, vendors });
+    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 12, vendors, cryptoConstants });
     rankedByGoal.set(goal.id, { goal, ranked });
     if (ranked.candidates.length) {
       report.goals.push({

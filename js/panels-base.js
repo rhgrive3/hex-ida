@@ -1500,7 +1500,10 @@ async function prepare(app, box) {
       box.say(pick('値の増減のしかたを調べています…', 'Watching how values change…'));
     }
   });
-  return { strings, program, shapes };
+  const cryptoScan = typeof app.ensureCryptoScan === 'function'
+    ? await app.ensureCryptoScan().catch(() => null)
+    : null;
+  return { strings, program, shapes, cryptoScan };
 }
 
 /** 目的を選ぶボタンの並び。概要画面と「調べる」画面の両方で使う。 */
@@ -1696,7 +1699,7 @@ export function showOverview(app) {
       app.backend.onScanProgress = null;
     };
 
-    prepare(app, box).then(async ({ strings, program, shapes }) => {
+    prepare(app, box).then(async ({ strings, program, shapes, cryptoScan }) => {
       if (isStale()) return;
       let recognition=null;
       try { recognition=await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { recognition=null; }
@@ -1706,7 +1709,7 @@ export function showOverview(app) {
       const report = await autoAnalyze({
         cxxFields,
         strings, program, symbols: app.symbols, region, fields: app.fields,
-        shapes, recognition,
+        shapes, cryptoScan, recognition,
         analyze: makeAnalyzer(app, region, runController.signal),
         scanAccess: makeAccessScanner(app, region, runController.signal),
         isCancelled: () => isStale(),
@@ -3528,6 +3531,7 @@ export function showCandidates(app, goal) {
     const ranked = rankCandidates({
       goal, strings, program, symbols: app.symbols, region, limit: 40,
       vendors: vendorsOf(app.fields),
+      cryptoConstants: cryptoScan?.constants || null,
     });
     const pin = await pinnedFor(app, goal, {
       strings, program, shapes, region, box, ranked: ranked.candidates,

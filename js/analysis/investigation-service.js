@@ -658,7 +658,10 @@ export class InvestigationService {
     const shapesP = shapeNeeded ? this.collectShapes(options) : Promise.resolve(null);
     const metadataP = shapeNeeded ? this.ensureMetadata(options) : Promise.resolve({ fields:this.app.fields });
     const programP = metadataP.then(() => this.buildProgram(options));
-    const [strings, program, shapes] = await Promise.all([stringsP, programP, shapesP]);
+    const cryptoScanP = typeof this.app.ensureCryptoScan === 'function'
+      ? this.app.ensureCryptoScan().catch(() => null)
+      : Promise.resolve(null);
+    const [strings, program, shapes, cryptoScan] = await Promise.all([stringsP, programP, shapesP, cryptoScanP]);
     const metadata = await metadataP;
     abortIfNeeded(options.signal);
     const binding = captureAnalysisBinding(this.app, { program, shapes, fields:metadata?.fields ?? this.app.fields });
@@ -673,6 +676,7 @@ export class InvestigationService {
       strings,
       program:binding.program,
       shapes:binding.shapes,
+      cryptoScan,
       symbols:binding.symbols,
       fields:binding.fields,
       cxxFields:binding.cxxFields,
@@ -700,6 +704,7 @@ export class InvestigationService {
       region:context.region,
       limit:rankingLimit,
       vendors:vendorsOf(context.fields),
+      cryptoConstants:context.cryptoScan?.constants || null,
     });
     abortIfNeeded(options.signal);
     this.#syncPinSnapshot(context.snapshotId);
@@ -803,6 +808,7 @@ export class InvestigationService {
       fields:context.fields,
       cxxFields:context.cxxFields,
       shapes:context.shapes,
+      cryptoScan:context.cryptoScan || null,
       recognition,
       analyze:this.#addressAwareAnalyzer(options.signal || null),
       scanAccess:this.#globalAccessScanner(options.signal || null),

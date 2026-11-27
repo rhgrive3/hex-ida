@@ -6,7 +6,9 @@ import {
   classifyHighEntropyKind,
   scanCryptoConstants,
   analyzeCryptoInsnDensity,
+  scanBinaryRegionsCrypto,
 } from '../js/analysis/crypto-entropy.js';
+import { autoAnalyze } from '../js/auto.js';
 import { rankCandidates } from '../js/rank.js';
 import { pinpointFunction } from '../js/pinpoint-legacy.js';
 import { compileGoal } from '../js/goalc.js';
@@ -177,4 +179,93 @@ test('rankCandidates + pinpointFunction surface stripped crypto routines via cry
   });
   const c2000 = pin.candidates.find((c) => c.addr === 0x2000n);
   assert.ok(c2000.evidence.some((e) => e.code === 'fn-crypto-bitwise'), '1-XOR loop awarded fn-crypto-bitwise');
+});
+
+test('analyzeCryptoInsnDensity detects clang -O2/-O3 SIMD vectorized & AVX memory-source XOR loops', () => {
+  const simdXorLoop = analyzeCryptoInsnDensity([
+    { address: 0x70n, mnemonic: 'movdqu', operands: 'xmm1, xmmword ptr [rdi + rcx]' },
+    { address: 0x75n, mnemonic: 'movdqu', operands: 'xmm2, xmmword ptr [rdi + rcx + 0x10]' },
+    { address: 0x87n, mnemonic: 'pxor', operands: 'xmm1, xmm0' },
+    { address: 0x8bn, mnemonic: 'pxor', operands: 'xmm2, xmm0' },
+    { address: 0x8fn, mnemonic: 'movdqu', operands: 'xmmword ptr [rdi + rcx], xmm1' },
+    { address: 0x94n, mnemonic: 'movdqu', operands: 'xmmword ptr [rdi + rcx + 0x10], xmm2' },
+    { address: 0xaen, mnemonic: 'add', operands: 'rcx, 0x40' },
+    { address: 0xb6n, mnemonic: 'jne', operands: '0x70' },
+  ]);
+  assert.equal(simdXorLoop.hasXorLoop, true);
+  assert.equal(simdXorLoop.xorCount, 2);
+
+  const avxMemSrcLoop = analyzeCryptoInsnDensity([
+    { address: 0x200n, mnemonic: 'vpxor', operands: 'ymm1, ymm0, ymmword ptr [rdi + rcx]' },
+    { address: 0x205n, mnemonic: 'vmovdqu', operands: 'ymmword ptr [rdi + rcx], ymm1' },
+    { address: 0x20an, mnemonic: 'add', operands: 'rcx, 0x20' },
+    { address: 0x20en, mnemonic: 'jne', operands: '0x200' },
+  ]);
+  assert.equal(avxMemSrcLoop.hasXorLoop, true);
+  assert.equal(avxMemSrcLoop.xorCount, 1);
+
+  const avxZeroOnly = analyzeCryptoInsnDensity([
+    { address: 0x300n, mnemonic: 'vpxor', operands: 'ymm0, ymm0, ymm0' },
+    { address: 0x304n, mnemonic: 'vmovdqu', operands: 'ymmword ptr [rdi + rcx], ymm0' },
+    { address: 0x308n, mnemonic: 'add', operands: 'rcx, 0x20' },
+    { address: 0x30cn, mnemonic: 'jne', operands: '0x300' },
+  ]);
+  assert.equal(avxZeroOnly.hasXorLoop, false);
+  assert.equal(avxZeroOnly.xorCount, 0);
+});
+
+test('scanBinaryRegionsCrypto + autoAnalyze wire crypto constants & high-entropy regions end-to-end', async () => {
+  const raw = new Uint8Array(12288);
+  // .rodata at fileOffset=0, vmAddr=0x20000n, size=4096: embed AES S-Box at +0x80
+  raw.set([0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76], 0x80);
+  // .data at fileOffset=4096, vmAddr=0x30000n, size=4096: high-entropy encrypted payload
+  let seed = 0x13579bdf;
+  for (let i = 0; i < 4096; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    raw[4096 + i] = (seed >>> 24) & 0xff;
+  }
+  const fakeFile = {
+    slice(s, e) {
+      const sub = raw.slice(s, e);
+      return { arrayBuffer: async () => sub.buffer };
+    },
+  };
+  const regions = [
+    { section: '.rodata', fileOffset: 0n, vmAddr: 0x20000n, size: 4096n, exec: false, zerofill: false },
+    { section: '.data', fileOffset: 4096n, vmAddr: 0x30000n, size: 4096n, exec: false, zerofill: false },
+  ];
+  const cryptoScan = await scanBinaryRegionsCrypto(fakeFile, regions);
+  assert.equal(cryptoScan.constants.length, 1);
+  assert.equal(cryptoScan.constants[0].id, 'aes-sbox');
+  assert.equal(cryptoScan.constants[0].address, 0x20080n);
+  assert.equal(cryptoScan.constants[0].section, '.rodata');
+  assert.ok(cryptoScan.highEntropy.some((w) => w.kind === 'encrypted-or-packed' && w.address === 0x30000n));
+
+  const fnAddr = 0x10000n;
+  const program = {
+    callCount: 0,
+    refCount: 1,
+    statsComplete: true,
+    functionsReferencing(addr) {
+      if (addr === 0x20080n) return [{ addr: fnAddr, site: fnAddr + 4n }];
+      return [];
+    },
+    callersOf() { return []; },
+    calleesOf() { return []; },
+    statsOf() { return { inDegree: 1, outDegree: 0 }; },
+    functionRange(a) { return a === fnAddr ? { start: fnAddr, end: fnAddr + 64n } : null; },
+    callCountOf() { return 0; },
+  };
+  const symbols = {
+    functionCount: 1,
+    nameAt(a) { return a === fnAddr ? 'sub_10000' : null; },
+    at() { return { addr: fnAddr, size: 64n, name: 'sub_10000' }; },
+  };
+  const report = await autoAnalyze({ strings: [], program, symbols, cryptoScan, pinpointBudget: 0, deepLimit: 0 });
+  assert.equal(report.crypto.constants.length, 1);
+  assert.ok(report.findings.some((f) => f.id === 'crypto' && f.actionable && f.text.includes('AES S-Box')));
+  assert.ok(report.findings.some((f) => f.id === 'crypto' && f.text.includes('High-entropy region')));
+  const cryptoGoal = report.goals.find((g) => g.goal.id === 'crypto');
+  assert.ok(cryptoGoal, 'autoAnalyze must surface crypto goal from cryptoScan even with 0 strings');
+  assert.equal(cryptoGoal.best.addr, fnAddr);
 });
