@@ -21,6 +21,7 @@ import { compileSdkBatch } from '../js/analysis/types/core/sdk-batch-compiler.js
 import { sha256HexSync } from '../js/analysis/types/core/til-storage.js';
 import {
   extractPosixAndGhidraManifest,
+  extractAppleDarwinGdtManifest,
   compileGdtManifestToTil1,
 } from './import-ghidra-gdt.mjs';
 
@@ -36,7 +37,7 @@ export const TIL1_PACK_SLOT_MAX_BYTES = 256 * 1024; // WASM Slot 1/2 fixed capac
 const CURATED_PACK_SPECS = [
   {
     id: 'ios-sdk-core',
-    name: 'Apple iOS SDK Core',
+    name: 'Apple iOS SDK Core (UIKit/Foundation/CF/Security/Crypto/GCD/ObjC/Swift/Darwin)',
     version: '18.0.0',
     sdkVersion: '18.0',
     category: 'os',
@@ -44,37 +45,354 @@ const CURATED_PACK_SPECS = [
     matchRules: {
       platforms: ['ios', 'ios-simulator'],
       libc: 'libSystem',
-      dylibs: ['UIKit', 'Foundation', 'CoreFoundation', 'libSystem.B.dylib'],
-      hints: ['uikit', 'foundation', 'objc'],
+      dylibs: ['UIKit', 'Foundation', 'CoreFoundation', 'Security', 'libSystem.B.dylib'],
+      hints: ['uikit', 'foundation', 'corefoundation', 'objc', 'swift'],
     },
     conflicts: [],
-    requires: [],
+    requires: ['apple-darwin-full'],
     files: [
       {
-        path: 'uikit_core.h',
+        path: 'uikit_foundation_core.h',
         content: `
           typedef double CGFloat;
+          typedef int64_t NSInteger;
+          typedef uint64_t NSUInteger;
+          typedef int64_t CFIndex;
+          typedef uint64_t CFTypeID;
+          typedef uint64_t CFOptionFlags;
+          typedef uint32_t CFStringEncoding;
+          typedef int32_t OSStatus;
+          typedef int32_t kern_return_t;
+          typedef uint32_t mach_port_t;
+          typedef uint32_t CCCryptorStatus;
+          typedef uint32_t CCOperation;
+          typedef uint32_t CCAlgorithm;
+          typedef uint32_t CCOptions;
           typedef struct CGPoint { CGFloat x; CGFloat y; } CGPoint;
           typedef struct CGSize { CGFloat width; CGFloat height; } CGSize;
           typedef struct CGRect { CGPoint origin; CGSize size; } CGRect;
+          typedef struct CGAffineTransform { CGFloat a; CGFloat b; CGFloat c; CGFloat d; CGFloat tx; CGFloat ty; } CGAffineTransform;
           typedef struct UIEdgeInsets { CGFloat top; CGFloat left; CGFloat bottom; CGFloat right; } UIEdgeInsets;
+          typedef struct NSRange { NSUInteger location; NSUInteger length; } NSRange;
+          typedef struct CFRange { CFIndex location; CFIndex length; } CFRange;
           typedef enum UIControlState {
             UIControlStateNormal = 0,
-            UIControlStateHighlighted = 1 << 0,
-            UIControlStateDisabled = 1 << 1,
-            UIControlStateSelected = 1 << 2
+            UIControlStateHighlighted = 1,
+            UIControlStateDisabled = 2,
+            UIControlStateSelected = 4
           } UIControlState;
+          typedef enum SecTrustResultType {
+            kSecTrustResultInvalid = 0,
+            kSecTrustResultProceed = 1,
+            kSecTrustResultDeny = 3,
+            kSecTrustResultUnspecified = 4,
+            kSecTrustResultRecoverableTrustFailure = 5,
+            kSecTrustResultFatalTrustFailure = 6
+          } SecTrustResultType;
+          typedef enum CCAlgorithmEnum {
+            kCCAlgorithmAES128 = 0,
+            kCCAlgorithmDES = 1,
+            kCCAlgorithm3DES = 2,
+            kCCAlgorithmCAST = 3,
+            kCCAlgorithmRC4 = 4,
+            kCCAlgorithmRC2 = 5
+          } CCAlgorithmEnum;
+
+          /* UIKit & Foundation */
           int UIApplicationMain(int argc, char **argv, id principalClassName, id delegateClassName);
           void UIGraphicsBeginImageContextWithOptions(CGSize size, bool opaque, CGFloat scale);
           id UIGraphicsGetImageFromCurrentImageContext(void);
           void UIGraphicsEndImageContext(void);
+          void *UIGraphicsGetCurrentContext(void);
+          id UIImagePNGRepresentation(id image);
+          id UIImageJPEGRepresentation(id image, CGFloat compressionQuality);
           id NSStringFromCGRect(CGRect rect);
           id NSStringFromCGSize(CGSize size);
           id NSStringFromCGPoint(CGPoint point);
+          id NSStringFromUIEdgeInsets(UIEdgeInsets insets);
           id NSClassFromString(id aClassName);
           id NSStringFromClass(Class aClass);
           SEL NSSelectorFromString(id aSelectorName);
           id NSStringFromSelector(SEL aSelector);
+          void NSLog(id format, ...);
+          id NSHomeDirectory(void);
+          id NSTemporaryDirectory(void);
+          id NSSearchPathForDirectoriesInDomains(NSUInteger directory, NSUInteger domainMask, bool expandTilde);
+
+          /* CoreFoundation */
+          const void *CFRetain(const void *cf);
+          void CFRelease(const void *cf);
+          CFIndex CFGetRetainCount(const void *cf);
+          CFTypeID CFGetTypeID(const void *cf);
+          bool CFEqual(const void *cf1, const void *cf2);
+          const void *CFStringCreateWithCString(const void *alloc, const char *cStr, CFStringEncoding encoding);
+          bool CFStringGetCString(const void *theString, char *buffer, CFIndex bufferSize, CFStringEncoding encoding);
+          const char *CFStringGetCStringPtr(const void *theString, CFStringEncoding encoding);
+          CFIndex CFStringGetLength(const void *theString);
+          const void *CFDataCreate(const void *alloc, const uint8_t *bytes, CFIndex length);
+          const uint8_t *CFDataGetBytePtr(const void *theData);
+          CFIndex CFDataGetLength(const void *theData);
+          const void *CFDictionaryCreate(const void *alloc, const void **keys, const void **values, CFIndex numValues, const void *keyCallBacks, const void *valueCallBacks);
+          const void *CFDictionaryGetValue(const void *theDict, const void *key);
+          void CFDictionarySetValue(void *theDict, const void *key, const void *value);
+          CFIndex CFDictionaryGetCount(const void *theDict);
+          const void *CFArrayGetValueAtIndex(const void *theArray, CFIndex idx);
+          CFIndex CFArrayGetCount(const void *theArray);
+          const void *CFNumberCreate(const void *alloc, int32_t theType, const void *valuePtr);
+          bool CFNumberGetValue(const void *number, int32_t theType, void *valuePtr);
+          const void *CFBundleGetMainBundle(void);
+          const void *CFBundleGetIdentifier(const void *bundle);
+          const void *CFBundleGetInfoDictionary(const void *bundle);
+          const void *CFPreferencesCopyAppValue(const void *key, const void *applicationID);
+          void CFPreferencesSetAppValue(const void *key, const void *value, const void *applicationID);
+          bool CFPreferencesAppSynchronize(const void *applicationID);
+
+          /* Security Framework (Keychain, SecTrust, SecKey, SecRandom) */
+          OSStatus SecItemCopyMatching(const void *query, const void **result);
+          OSStatus SecItemAdd(const void *attributes, const void **result);
+          OSStatus SecItemUpdate(const void *query, const void *attributesToUpdate);
+          OSStatus SecItemDelete(const void *query);
+          int SecRandomCopyBytes(const void *rnd, size_t count, void *bytes);
+          bool SecTrustEvaluateWithError(const void *trust, const void **error);
+          OSStatus SecTrustEvaluate(const void *trust, uint32_t *result);
+          const void *SecTrustCopyPublicKey(const void *trust);
+          CFIndex SecTrustGetCertificateCount(const void *trust);
+          const void *SecTrustGetCertificateAtIndex(const void *trust, CFIndex ix);
+          const void *SecCertificateCreateWithData(const void *allocator, const void *data);
+          const void *SecCertificateCopyData(const void *certificate);
+          const void *SecKeyCreateRandomKey(const void *parameters, const void **error);
+          const void *SecKeyCreateEncryptedData(const void *key, const void *algorithm, const void *plaintext, const void **error);
+          const void *SecKeyCreateDecryptedData(const void *key, const void *algorithm, const void *ciphertext, const void **error);
+          const void *SecKeyCreateSignature(const void *key, const void *algorithm, const void *dataToSign, const void **error);
+          bool SecKeyVerifySignature(const void *key, const void *algorithm, const void *signedData, const void *signature, const void **error);
+          const void *SecAccessControlCreateWithFlags(const void *allocator, const void *protection, CFOptionFlags flags, const void **error);
+
+          /* CommonCrypto */
+          CCCryptorStatus CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
+          CCCryptorStatus CCCryptorCreate(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, void **cryptorRef);
+          CCCryptorStatus CCCryptorUpdate(void *cryptorRef, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
+          CCCryptorStatus CCCryptorFinal(void *cryptorRef, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
+          CCCryptorStatus CCCryptorRelease(void *cryptorRef);
+          uint8_t *CC_SHA256(const void *data, uint32_t len, uint8_t *md);
+          uint8_t *CC_SHA512(const void *data, uint32_t len, uint8_t *md);
+          uint8_t *CC_SHA1(const void *data, uint32_t len, uint8_t *md);
+          uint8_t *CC_MD5(const void *data, uint32_t len, uint8_t *md);
+          void CCHmac(uint32_t algorithm, const void *key, size_t keyLength, const void *data, size_t dataLength, void *macOut);
+          int CCKeyDerivationPBKDF(uint32_t algorithm, const char *password, size_t passwordLen, const uint8_t *salt, size_t saltLen, uint32_t prf, uint32_t rounds, uint8_t *derivedKey, size_t derivedKeyLen);
+
+          /* Grand Central Dispatch (libdispatch) */
+          void *dispatch_queue_create(const char *label, void *attr);
+          void *dispatch_get_global_queue(intptr_t identifier, uintptr_t flags);
+          void dispatch_async(void *queue, void *block);
+          void dispatch_sync(void *queue, void *block);
+          void dispatch_after(uint64_t when, void *queue, void *block);
+          void dispatch_once(intptr_t *predicate, void *block);
+          void dispatch_barrier_async(void *queue, void *block);
+          void dispatch_barrier_sync(void *queue, void *block);
+          void *dispatch_semaphore_create(intptr_t value);
+          intptr_t dispatch_semaphore_wait(void *dsema, uint64_t timeout);
+          intptr_t dispatch_semaphore_signal(void *dsema);
+          void *dispatch_group_create(void);
+          void dispatch_group_enter(void *group);
+          void dispatch_group_leave(void *group);
+          void dispatch_group_notify(void *group, void *queue, void *block);
+          void dispatch_retain(void *object);
+          void dispatch_release(void *object);
+          uint64_t dispatch_time(uint64_t when, int64_t delta);
+
+          /* Objective-C Runtime & ARC */
+          id objc_msgSend(id self, SEL op, ...);
+          id objc_msgSendSuper2(void *super_ptr, SEL op, ...);
+          id objc_retain(id obj);
+          void objc_release(id obj);
+          id objc_autorelease(id obj);
+          id objc_autoreleaseReturnValue(id obj);
+          id objc_retainAutoreleasedReturnValue(id obj);
+          id objc_claimAutoreleasedReturnValue(id obj);
+          id objc_retainAutorelease(id obj);
+          id objc_retainAutoreleaseReturnValue(id obj);
+          void objc_storeStrong(id *location, id obj);
+          id objc_initWeak(id *location, id val);
+          id objc_loadWeakRetained(id *location);
+          void objc_destroyWeak(id *location);
+          void *objc_autoreleasePoolPush(void);
+          void objc_autoreleasePoolPop(void *pool);
+          id objc_alloc(Class cls);
+          id objc_alloc_init(Class cls);
+          id objc_opt_new(Class cls);
+          Class objc_opt_class(id obj);
+          bool objc_opt_isKindOfClass(id obj, Class cls);
+          bool objc_opt_respondsToSelector(id obj, SEL sel);
+          Class objc_getClass(const char *name);
+          Class objc_lookUpClass(const char *name);
+          Class object_getClass(id obj);
+          const char *class_getName(Class cls);
+          Class class_getSuperclass(Class cls);
+          void *class_getInstanceMethod(Class cls, SEL name);
+          void *class_getClassMethod(Class cls, SEL name);
+          void *method_getImplementation(void *m);
+          void *method_setImplementation(void *m, void *imp);
+          void method_exchangeImplementations(void *m1, void *m2);
+          SEL sel_registerName(const char *str);
+          const char *sel_getName(SEL sel);
+          void objc_setAssociatedObject(id object, const void *key, id value, uintptr_t policy);
+          id objc_getAssociatedObject(id object, const void *key);
+
+          /* Swift 5/6 Runtime ABI (libswiftCore) */
+          void *swift_allocObject(const void *metadata, size_t requiredSize, size_t requiredAlignmentMask);
+          void swift_deallocObject(void *object, size_t allocatedSize, size_t allocatedAlignMask);
+          void *swift_retain(void *object);
+          void swift_release(void *object);
+          void *swift_bridgeObjectRetain(void *object);
+          void swift_bridgeObjectRelease(void *object);
+          void *swift_unknownObjectRetain(void *object);
+          void swift_unknownObjectRelease(void *object);
+          void *swift_weakInit(void *ref, void *value);
+          void *swift_weakLoadStrong(void *ref);
+          void swift_weakDestroy(void *ref);
+          void swift_beginAccess(void *pointer, void *buffer, uintptr_t flags, void *pc);
+          void swift_endAccess(void *buffer);
+          void swift_once(intptr_t *predicate, void *fn, void *context);
+          const void *swift_getTypeByMangledNameInContext(const char *typeNameStart, size_t typeNameLength, const void *context, const void *genericArgs);
+          const void *swift_getInitializedObjCClass(const void *c);
+          bool swift_dynamicCast(void *dest, void *src, const void *srcType, const void *targetType, uintptr_t flags);
+          const void *swift_conformsToProtocol(const void *type, const void *protocol);
+          void *swift_allocError(const void *type, const void *witnessTable, void *value, bool isTake);
+          void swift_errorRetain(void *error);
+          void swift_errorRelease(void *error);
+          void swift_willThrow(void *unused, void **error);
+          void *swift_task_alloc(size_t size);
+          void swift_task_dealloc(void *ptr);
+          void swift_task_switch(void *context, void *resumeFn, void *executor);
+          void swift_slowAlloc(size_t bytes, size_t alignMask);
+          void swift_slowDealloc(void *ptr, size_t bytes, size_t alignMask);
+
+          /* Darwin / Mach / dyld / os_log / Anti-tamper */
+          uint32_t _dyld_image_count(void);
+          const char *_dyld_get_image_name(uint32_t image_index);
+          const void *_dyld_get_image_header(uint32_t image_index);
+          intptr_t _dyld_get_image_vmaddr_slide(uint32_t image_index);
+          mach_port_t mach_task_self(void);
+          kern_return_t mach_vm_protect(mach_port_t target_task, uint64_t address, uint64_t size, int set_maximum, int new_protection);
+          kern_return_t mach_vm_read(mach_port_t target_task, uint64_t address, uint64_t size, uint64_t *data, uint32_t *dataCnt);
+          kern_return_t mach_vm_allocate(mach_port_t target, uint64_t *address, uint64_t size, int flags);
+          kern_return_t mach_vm_deallocate(mach_port_t target, uint64_t address, uint64_t size);
+          kern_return_t task_get_exception_ports(mach_port_t task, uint32_t mask, uint32_t *masks, uint32_t *count, mach_port_t *ports, uint32_t *behaviors, uint32_t *flavors);
+          int sysctl(int *name, uint32_t namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+          int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+          int ptrace(int request, int pid, void *addr, int data);
+          void *dlopen(const char *path, int mode);
+          void *dlsym(void *handle, const char *symbol);
+          int dladdr(const void *addr, void *info);
+          void *os_log_create(const char *subsystem, const char *category);
+          bool os_log_type_enabled(void *oslog, uint8_t type);
+          void _os_log_impl(void *dso, void *log, uint8_t type, const char *format, uint8_t *buf, uint32_t size);
+          uint32_t notify_post(const char *name);
+          void *xpc_connection_create_mach_service(const char *name, void *targetq, uint64_t flags);
+
+
+          /* CoreGraphics & QuartzCore */
+          void CGContextSaveGState(void *c);
+          void CGContextRestoreGState(void *c);
+          void CGContextDrawImage(void *c, CGRect rect, void *image);
+          void CGContextFillRect(void *c, CGRect rect);
+          void *CGBitmapContextCreate(void *data, size_t width, size_t height, size_t bitsPerComponent, size_t bytesPerRow, void *space, uint32_t bitmapInfo);
+          void *CGBitmapContextCreateImage(void *context);
+          void *CGColorSpaceCreateDeviceRGB(void);
+          void CGColorSpaceRelease(void *space);
+          void CGImageRelease(void *image);
+          void *CGPathCreateMutable(void);
+          void CGPathRelease(void *path);
+
+          /* Network.framework (iOS 12+ Modern Networking & TLS Pinning) */
+          void *nw_endpoint_create_host(const char *hostname, const char *port);
+          void *nw_parameters_create_secure_tcp(void *configure_tls, void *configure_tcp);
+          void *nw_connection_create(void *endpoint, void *parameters);
+          void nw_connection_set_queue(void *connection, void *queue);
+          void nw_connection_start(void *connection);
+          void nw_connection_cancel(void *connection);
+          void nw_connection_send(void *connection, void *content, void *context, bool is_complete, void *completion);
+          void nw_connection_receive(void *connection, uint32_t minimum_incomplete_length, uint32_t maximum_length, void *completion);
+          void *nw_tls_copy_sec_protocol_options(void *options);
+          void sec_protocol_options_set_verify_block(void *options, void *verify_block, void *verify_block_queue);
+          void sec_protocol_options_set_min_tls_protocol_version(void *options, uint16_t version);
+
+          /* Apple Compression.framework (LZFSE / LZ4 / ZLIB / LZMA) */
+          size_t compression_encode_buffer(uint8_t *dst_buffer, size_t dst_size, const uint8_t *src_buffer, size_t src_size, void *scratch_buffer, int algorithm);
+          size_t compression_decode_buffer(uint8_t *dst_buffer, size_t dst_size, const uint8_t *src_buffer, size_t src_size, void *scratch_buffer, int algorithm);
+          int compression_stream_init(void *stream, int operation, int algorithm);
+          int compression_stream_process(void *stream, int flags);
+          int compression_stream_destroy(void *stream);
+
+          /* Metal & Additional Security / Anti-Tamper */
+          id MTLCreateSystemDefaultDevice(void);
+          OSStatus SecTrustSetAnchorCertificates(const void *trust, const void *anchorCertificates);
+          const void *SecPolicyCreateSSL(bool server, const void *hostname);
+          int csops(int pid, uint32_t ops, void *useraddr, size_t usersize);
+          int sandbox_check(int pid, const char *operation, int type);
+
+          /* Extended UIKit / Foundation / Biometrics / WebKit / StoreKit Interfaces */
+          @interface UIApplication : NSObject
+          + (id)sharedApplication;
+          - (bool)openURL:(id)url;
+          - (bool)canOpenURL:(id)url;
+          @end
+          @interface UIWindow : NSObject
+          - (void)makeKeyAndVisible;
+          - (void)setRootViewController:(id)vc;
+          @end
+          @interface UINavigationController : NSObject
+          - (void)pushViewController:(id)vc animated:(bool)animated;
+          - (id)popViewControllerAnimated:(bool)animated;
+          @end
+          @interface UIAlertController : NSObject
+          + (id)alertControllerWithTitle:(id)title message:(id)message preferredStyle:(NSInteger)style;
+          - (void)addAction:(id)action;
+          @end
+          @interface NSURLRequest : NSObject
+          + (id)requestWithURL:(id)url;
+          - (id)URL;
+          - (id)HTTPMethod;
+          - (id)HTTPBody;
+          - (id)allHTTPHeaderFields;
+          @end
+          @interface NSMutableURLRequest : NSObject
+          - (void)setHTTPMethod:(id)method;
+          - (void)setHTTPBody:(id)body;
+          - (void)setValue:(id)value forHTTPHeaderField:(id)field;
+          @end
+          @interface NSData : NSObject
+          - (const void *)bytes;
+          - (NSUInteger)length;
+          - (id)base64EncodedStringWithOptions:(NSUInteger)options;
+          - (bool)writeToFile:(id)path atomically:(bool)useAuxiliaryFile;
+          @end
+          @interface NSString : NSObject
+          - (const char *)UTF8String;
+          - (NSUInteger)length;
+          - (bool)isEqualToString:(id)aString;
+          - (id)dataUsingEncoding:(NSUInteger)encoding;
+          @end
+          @interface NSNotificationCenter : NSObject
+          + (id)defaultCenter;
+          - (void)postNotificationName:(id)aName object:(id)anObject;
+          - (void)addObserver:(id)observer selector:(SEL)aSelector name:(id)aName object:(id)anObject;
+          @end
+          @interface LAContext : NSObject
+          - (bool)canEvaluatePolicy:(NSInteger)policy error:(id *)error;
+          - (void)evaluatePolicy:(NSInteger)policy localizedReason:(id)localizedReason reply:(id)reply;
+          @end
+          @interface WKWebView : NSObject
+          - (id)loadRequest:(id)request;
+          - (void)evaluateJavaScript:(id)javaScriptString completionHandler:(id)completionHandler;
+          @end
+          @interface SKPaymentQueue : NSObject
+          + (id)defaultQueue;
+          - (void)addPayment:(id)payment;
+          - (void)finishTransaction:(id)transaction;
+          @end
+
+          /* Core ObjC Interfaces (UIKit / Foundation / URLSession) */
           @interface UIView : NSObject
           - (void)addSubview:(id)view;
           - (void)removeFromSuperview;
@@ -84,7 +402,27 @@ const CURATED_PACK_SPECS = [
           @interface UIViewController : NSObject
           - (void)viewDidLoad;
           - (void)viewWillAppear:(bool)animated;
+          - (void)viewDidAppear:(bool)animated;
           - (void)presentViewController:(id)vc animated:(bool)flag completion:(id)completion;
+          - (void)dismissViewControllerAnimated:(bool)flag completion:(id)completion;
+          @end
+          @interface NSURLSession : NSObject
+          - (id)dataTaskWithRequest:(id)request completionHandler:(id)completionHandler;
+          - (id)dataTaskWithURL:(id)url completionHandler:(id)completionHandler;
+          @end
+          @interface NSUserDefaults : NSObject
+          - (id)objectForKey:(id)defaultName;
+          - (void)setObject:(id)value forKey:(id)defaultName;
+          - (id)stringForKey:(id)defaultName;
+          - (bool)boolForKey:(id)defaultName;
+          @end
+          @interface NSFileManager : NSObject
+          - (bool)fileExistsAtPath:(id)path;
+          - (id)contentsAtPath:(id)path;
+          @end
+          @interface NSJSONSerialization : NSObject
+          - (id)JSONObjectWithData:(id)data options:(NSUInteger)opt error:(id *)error;
+          - (id)dataWithJSONObject:(id)obj options:(NSUInteger)opt error:(id *)error;
           @end
         `,
       },
@@ -467,6 +805,60 @@ export async function buildTilHub({
       platforms: ['linux', 'macos', 'ios', 'android'],
       dylibs: ['libc.so.6', 'libc.so', 'libSystem.B.dylib'],
       hints: ['glibc', 'bionic', 'libsystem', 'musl'],
+    },
+    conflicts: [],
+    requires: [],
+  });
+
+
+  // 2b. Build Ghidra mac_osx.gdt (Apache-2.0) Apple Darwin / iOS / macOS full pack (<= 256 KiB WASM Slot 1/2)
+  const appleGdtManifest = extractAppleDarwinGdtManifest({
+    maxFunctions: 3400,
+    maxStructs: 360,
+    maxTypedefs: 260,
+    maxEnums: 80,
+  });
+  const { tilBytes: appleTilBytes, header: appleHeader } = compileGdtManifestToTil1(appleGdtManifest, {
+    packId: 'apple-darwin-full',
+    includeExtChunk: true,
+    maxExtLayouts: 100,
+    maxExtEnums: 50,
+  });
+  if (appleTilBytes.byteLength > TIL1_PACK_SLOT_MAX_BYTES) {
+    throw new Error(
+      `apple-darwin-full.til1 exceeds WASM Slot 1/2 256 KiB cap (${appleTilBytes.byteLength} > ${TIL1_PACK_SLOT_MAX_BYTES})`
+    );
+  }
+  const appleGzBytes = fflate.gzipSync(appleTilBytes, { level: 6, mtime: 0 });
+  const appleSha256 = sha256HexSync(appleTilBytes);
+  const appleGzSha256 = sha256HexSync(appleGzBytes);
+
+  fs.writeFileSync(path.join(outDir, 'apple-darwin-full.til1'), appleTilBytes);
+  fs.writeFileSync(path.join(outDir, 'apple-darwin-full.til1.gz'), appleGzBytes);
+
+  manifestPacks.push({
+    id: 'apple-darwin-full',
+    name: 'Apple Darwin / macOS / iOS Full (Ghidra mac_osx.gdt)',
+    version: '1.0.0',
+    sdkVersion: '18.0',
+    category: 'os',
+    source: 'official',
+    isCore: false,
+    file: 'apple-darwin-full.til1',
+    gzFile: 'apple-darwin-full.til1.gz',
+    rawBytes: appleTilBytes.byteLength,
+    gzBytes: appleGzBytes.byteLength,
+    sha256: appleSha256,
+    gzSha256: appleGzSha256,
+    checksumFnv32: appleHeader.checksumFnv32,
+    entryCount: appleHeader.entryCount,
+    selCount: appleHeader.selCount,
+    typeCount: appleHeader.typeCount,
+    matchRules: {
+      platforms: ['ios', 'ios-simulator', 'macos', 'mac-catalyst'],
+      libc: 'libSystem',
+      dylibs: ['libSystem.B.dylib', 'CoreFoundation', 'Foundation', 'Security'],
+      hints: ['libsystem', 'corefoundation', 'foundation', 'objc'],
     },
     conflicts: [],
     requires: [],

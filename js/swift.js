@@ -1,6 +1,7 @@
 /* Swift ABI metadata intelligence. */
 import { pagedReader } from './objc-legacy.js';
 import { parseSwiftGenericContext, parseSwiftCaptureSection } from './swift-context.js';
+import { demangleSymbol } from './analysis/types/core/symbol-demangler.js';
 
 const MAX_NAME = 512;
 const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
@@ -246,10 +247,32 @@ function freezeFieldRows(scan) {
   return scan;
 }
 
+function inferSwiftAccessorFromDemangled(text, suffixInfo) {
+  if (suffixInfo?.accessor) return suffixInfo.accessor;
+  if (/^(?:type metadata|nominal type descriptor|full type metadata|protocol conformance|protocol witness table|value witness|method descriptor|reflection metadata)/.test(text)) {
+    return 'metadata';
+  }
+  if (/\.getter\b/.test(text)) return 'getter';
+  if (/\.setter\b/.test(text)) return 'setter';
+  if (/\.modify\b/.test(text)) return 'modify';
+  return null;
+}
+
+function extractDemangledComponents(text, fallbackComponents) {
+  if (fallbackComponents.length > 0) return fallbackComponents;
+  const cleaned = text
+    .replace(/^(?:type metadata accessor for |type metadata for |nominal type descriptor for |protocol witness table for |method descriptor for |dispatch thunk of )/, '')
+    .split(/[(:<\s]/)[0];
+  return cleaned ? cleaned.split('.').filter(Boolean).slice(0, 12) : [];
+}
+
 export function demangleSwiftSymbol(symbol) {
   const original = String(symbol || ''), s = original.replace(/^_/, '');
-  if (!s.startsWith('$s') && !s.startsWith('$S')) return { original, demangled: original, parsed: false, partial: null, unsupported: false, components: [] };
-  let i = 2; const components = []; let malformed = false;
+  const isSwiftPrefix = s.startsWith('$s') || s.startsWith('$S') || s.startsWith('$e') || s.startsWith('T0') || original.startsWith('_T0') || original.startsWith('__T0');
+  if (!isSwiftPrefix) return { original, demangled: original, parsed: false, partial: null, unsupported: false, components: [] };
+
+  let i = (s.startsWith('$') || s.startsWith('T0')) ? 2 : 0;
+  const components = []; let malformed = false;
   while (i < s.length && components.length < 12) {
     const m = s.slice(i).match(/^(\d+)/); if (!m) break;
     const n = Number(m[1]); i += m[1].length;
@@ -257,6 +280,28 @@ export function demangleSwiftSymbol(symbol) {
     components.push(s.slice(i, i + n)); i += n;
   }
   const suffix = s.slice(i), suffixInfo = parseSupportedSwiftSuffix(suffix);
+
+  // Fast-path: use real Apple swiftlang/swift WASM demangler whenever it cleanly parses the symbol.
+  if (!malformed) {
+    const wasmDemangled = demangleSymbol(original);
+    if (wasmDemangled && wasmDemangled !== original) {
+      const hasAsync = /\basync\b/.test(wasmDemangled) || suffixInfo.async;
+      const hasThrows = /\bthrows\b/.test(wasmDemangled) || suffixInfo.throws;
+      return {
+        original,
+        demangled: wasmDemangled,
+        parsed: true,
+        partial: null,
+        unsupported: false,
+        components: extractDemangledComponents(wasmDemangled, components),
+        suffix,
+        async: hasAsync,
+        throws: hasThrows,
+        accessor: inferSwiftAccessorFromDemangled(wasmDemangled, suffixInfo),
+      };
+    }
+  }
+
   const supported = !malformed && components.length > 0 && suffixInfo.supported;
   const partial = components.length ? components.join('.') + (suffixInfo.async ? ' async' : '') + (suffixInfo.throws ? ' throws' : '') : null;
   return {

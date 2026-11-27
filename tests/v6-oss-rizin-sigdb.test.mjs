@@ -30,7 +30,7 @@ const manifest = runImportRizinSigdb({ quiet: false });
 
 assert.equal(manifest.schema, 'hex-hexsig-hub/v1');
 assert.equal(manifest.format, 'HSIG1');
-assert.equal(manifest.packs.length, 6, 'Should generate all 6 Rizin sigdb HSIG1 packs');
+assert.equal(manifest.packs.length, 7, 'Should generate all 7 HSIG1 packs (6 Rizin sigdb + ios-arm64-macho)');
 assert.ok(
   manifest.totalEntries >= 3000,
   `Expected >= 3,000 real Rizin sigdb signatures, got ${manifest.totalEntries}`
@@ -38,7 +38,7 @@ assert.ok(
 
 const manifestOnDisk = JSON.parse(fs.readFileSync(path.join(HUB_DIR, 'manifest.json'), 'utf8'));
 assert.equal(manifestOnDisk.totalEntries, manifest.totalEntries);
-assert.equal(manifestOnDisk.packs.length, 6);
+assert.equal(manifestOnDisk.packs.length, 7);
 
 const arm64PackMeta = manifest.packs.find((p) => p.packId === 'android-ndk-arm64');
 const opensslPackMeta = manifest.packs.find((p) => p.packId === 'ubuntu-openssl-x64');
