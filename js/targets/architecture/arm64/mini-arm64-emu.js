@@ -57,8 +57,7 @@ function signExtend(val, bits) {
 }
 
 function signExtendBig(val, bits) {
-  const shift = BigInt(64 - bits);
-  return BigInt.asIntN(64, (BigInt(val) << shift) >> shift);
+  return BigInt.asIntN(bits, BigInt(val));
 }
 
 function decodeBitmaskImmArm64(is64, nBit, immr, imms) {
@@ -512,9 +511,9 @@ export class MiniArm64Emu {
         continue;
       }
 
-      // RET
-      if (((w & 0xfffffc1f) >>> 0) === 0xd65f0000) {
-        const rn = (w >>> 5) & 0x1f;
+      // RET / RETAA / RETAB
+      if (((w & 0xfffffc1f) >>> 0) === 0xd65f0000 || w === 0xd65f0bff || w === 0xd65f0fff) {
+        const rn = (w === 0xd65f0bff || w === 0xd65f0fff) ? 30 : ((w >>> 5) & 0x1f);
         const target = this.getGpr(rn);
         if (target === null) break;
         if (this.callDepth > 0) this.callDepth--;
@@ -989,6 +988,43 @@ export class MiniArm64Emu {
         } else {
           this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
           break;
+        }
+        this.pc = nextPc;
+        continue;
+      }
+
+      // Load/Store Register (Unscaled Signed 9-bit Immediate: LDUR / STUR; GPR only)
+      if (((w & 0x3f200c00) >>> 0) === 0x38000000) {
+        const size = (w >>> 30) & 3;
+        const opc = (w >>> 22) & 3;
+        if ((size === 3 && opc === 2) || (opc === 3 && size >= 2)) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        const width = 1 << size;
+        const imm9 = BigInt(signExtend((w >>> 12) & 0x1ff, 9));
+        const rn = (w >>> 5) & 0x1f;
+        const rt = w & 0x1f;
+        const base = this.getGpr(rn, true);
+        if (base === null) break;
+        const addr = (base + imm9) & MASK64;
+        if (opc === 0) {
+          const v = this.getGpr(rt);
+          if (v === null) break;
+          if (!this.writeInt(addr, size === 3 ? v : (v & MASK32), width, insnOff)) break;
+        } else if (opc === 1) {
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, size === 3 ? v : (v & MASK32));
+        } else if (opc === 2) {
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, BigInt.asUintN(64, signExtendBig(v, width * 8)));
+        } else {
+          // opc === 3 && size < 2: 32-bit sign-extending LDURSB/LDURSH Wt
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, BigInt.asUintN(64, signExtendBig(v, width * 8)) & MASK32);
         }
         this.pc = nextPc;
         continue;

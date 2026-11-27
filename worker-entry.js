@@ -116,34 +116,10 @@ export default {
     if (url.pathname === '/runtime/bootstrap') return runtimeBootstrap(request, env, url);
     if (url.pathname.startsWith('/_runtime/')) return protectedRuntime(request, env, url);
     if (isPrivatePath(url.pathname)) return new Response('Not Found', { status: 404, headers: securityHeaders() });
+    if (url.pathname === '/api/jev/systemone') return handleOpenJevSystemOne(request);
     if (url.pathname.startsWith('/api/')) {
       const origin = request.headers.get('origin');
       if (request.method === 'OPTIONS') return apiPreflight(origin);
-      if (url.pathname === '/api/jev/systemone') {
-        if (request.method !== 'POST') return withApiCors(methodNotAllowed('POST'), origin);
-        const auth = request.headers.get('authorization') || '';
-        if (!/^Bearer\s+\S{4,4096}$/i.test(auth)) {
-          return withApiCors(json({ error: { code: 'unauthorized', message: 'OpenJev Bearer token is required.' } }, 401), origin);
-        }
-        const rawBody = await request.text();
-        if (new TextEncoder().encode(rawBody).byteLength > 512 * 1024) {
-          return withApiCors(json({ error: { code: 'payload_too_large', message: 'Request body exceeds 512 KB.' } }, 413), origin);
-        }
-        try {
-          const upstream = await fetch('https://api.openjev.sh/v1/systemone', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', authorization: auth },
-            body: rawBody,
-          });
-          const text = await upstream.text();
-          return withApiCors(new Response(text, {
-            status: upstream.status,
-            headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
-          }), origin);
-        } catch {
-          return withApiCors(json({ error: { code: 'upstream_error', message: 'OpenJev upstream request failed.' } }, 502), origin);
-        }
-      }
       if (isProviderSpendPath(url.pathname)) {
         const capability = request.headers.get(AI_CAPABILITY_HEADER);
         const verifyOptions = {
@@ -169,6 +145,34 @@ export default {
     return worker.fetch(request, env, executionCtx);
   },
 };
+
+async function handleOpenJevSystemOne(request) {
+  const origin = request.headers.get('origin');
+  if (request.method === 'OPTIONS') return apiPreflight(origin);
+  if (request.method !== 'POST') return withApiCors(methodNotAllowed('POST'), origin);
+  const auth = request.headers.get('authorization') || '';
+  if (!/^Bearer\s+\S{4,4096}$/i.test(auth)) {
+    return withApiCors(json({ error: { code: 'unauthorized', message: 'OpenJev Bearer token is required.' } }, 401), origin);
+  }
+  const rawBody = await request.text();
+  if (new TextEncoder().encode(rawBody).byteLength > 512 * 1024) {
+    return withApiCors(json({ error: { code: 'payload_too_large', message: 'Request body exceeds 512 KB.' } }, 413), origin);
+  }
+  try {
+    const upstream = await fetch('https://api.openjev.sh/v1/systemone', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: auth },
+      body: rawBody,
+    });
+    const text = await upstream.text();
+    return withApiCors(new Response(text, {
+      status: upstream.status,
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    }), origin);
+  } catch {
+    return withApiCors(json({ error: { code: 'upstream_error', message: 'OpenJev upstream request failed.' } }, 502), origin);
+  }
+}
 
 async function serveUserscript(request, env, url, metadataOnly) {
   if (!['GET', 'HEAD'].includes(request.method)) return methodNotAllowed('GET, HEAD');

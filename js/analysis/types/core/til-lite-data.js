@@ -271,6 +271,17 @@ export const CORE_TID = Object.freeze({
   VM_ADDRESS_T: 0x008B,
   VM_SIZE_T: 0x008C,
   OSSTATUS: 0x008D,
+  CFNUMBER_REF: 0x008E,
+  CFURL_REF: 0x008F,
+  CFBUNDLE_REF: 0x0090,
+  CFRUNLOOP_REF: 0x0091,
+  CFUUID_REF: 0x0092,
+  CGCONTEXT_REF: 0x0093,
+  CGIMAGE_REF: 0x0094,
+  CGCOLORSPACE_REF: 0x0095,
+  MACH_TIMEBASE_INFO_T: 0x0096,
+  SWIFT_METADATA: 0x0097,
+  SWIFT_HEAP_OBJECT: 0x0098,
 
   // Unity IL2CPP runtime types
   IL2CPP_OBJECT: 0x00A0,
@@ -384,6 +395,27 @@ const T_NSINT = makeHexTypeId({ baseTilId: CORE_TID.NSINTEGER });
 const T_NSUINT = makeHexTypeId({ baseTilId: CORE_TID.NSUINTEGER });
 const T_MACH_PORT = makeHexTypeId({ baseTilId: CORE_TID.MACH_PORT_T });
 const T_KERN_RET = makeHexTypeId({ baseTilId: CORE_TID.KERN_RETURN_T });
+const T_OSSTATUS = makeHexTypeId({ baseTilId: CORE_TID.OSSTATUS });
+const T_UINTPTR = makeHexTypeId({ baseTilId: CORE_TID.UINTPTR_T });
+const T_SIZE_PTR = hexPtr(CORE_TID.SIZE_T);
+const T_PROTOCOL = hexPtr(CORE_TID.OBJC_PROTOCOL, { kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CFARRAY = makeHexTypeId({ baseTilId: CORE_TID.CFARRAY_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CFDICT = makeHexTypeId({ baseTilId: CORE_TID.CFDICTIONARY_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CFDATA = makeHexTypeId({ baseTilId: CORE_TID.CFDATA_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CFNUMBER = makeHexTypeId({ baseTilId: CORE_TID.CFNUMBER_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CFURL = makeHexTypeId({ baseTilId: CORE_TID.CFURL_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CFBUNDLE = makeHexTypeId({ baseTilId: CORE_TID.CFBUNDLE_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CFRUNLOOP = makeHexTypeId({ baseTilId: CORE_TID.CFRUNLOOP_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CFUUID = makeHexTypeId({ baseTilId: CORE_TID.CFUUID_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CGCONTEXT = makeHexTypeId({ baseTilId: CORE_TID.CGCONTEXT_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CGIMAGE = makeHexTypeId({ baseTilId: CORE_TID.CGIMAGE_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CGCOLORSPACE = makeHexTypeId({ baseTilId: CORE_TID.CGCOLORSPACE_REF, kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
+const T_CGSIZE = makeHexTypeId({ baseTilId: CORE_TID.CGSIZE, kindTag: HEX_KIND.STRUCT });
+const T_CGRECT = makeHexTypeId({ baseTilId: CORE_TID.CGRECT, kindTag: HEX_KIND.STRUCT });
+const T_CGFLOAT = makeHexTypeId({ baseTilId: CORE_TID.CGFLOAT });
+const T_MACH_TIMEBASE_PTR = hexPtr(CORE_TID.MACH_TIMEBASE_INFO_T, { kindTag: HEX_KIND.STRUCT });
+const T_SWIFT_META_CPTR = hexPtr(CORE_TID.SWIFT_METADATA, { isConst: true, kindTag: HEX_KIND.STRUCT });
+const T_SWIFT_OBJ = hexPtr(CORE_TID.SWIFT_HEAP_OBJECT, { kindTag: HEX_KIND.OBJC_OR_SWIFT_OBJ });
 
 const T_IL2_OBJ = hexPtr(CORE_TID.IL2CPP_OBJECT, { kindTag: HEX_KIND.STRUCT });
 const T_IL2_CLASS = hexPtr(CORE_TID.IL2CPP_CLASS, { kindTag: HEX_KIND.STRUCT });
@@ -507,6 +539,17 @@ export const CORE_TIL_TYPES = Object.freeze([
   { tid: CORE_TID.VM_ADDRESS_T, name: 'vm_address_t', kind: HEX_KIND.SCALAR, bits: 64, qualifiers: 0, pointeeTid: TIL_PRIM.U64 },
   { tid: CORE_TID.VM_SIZE_T, name: 'vm_size_t', kind: HEX_KIND.SCALAR, bits: 64, qualifiers: 0, pointeeTid: TIL_PRIM.U64 },
   { tid: CORE_TID.OSSTATUS, name: 'OSStatus', kind: HEX_KIND.SCALAR, bits: 32, qualifiers: TYPE_QUAL.SIGNED, pointeeTid: TIL_PRIM.I32 },
+  { tid: CORE_TID.CFNUMBER_REF, name: 'CFNumberRef', kind: HEX_KIND.OBJC_OR_SWIFT_OBJ, bits: 64, qualifiers: TYPE_QUAL.CONST, pointeeTid: 0 },
+  { tid: CORE_TID.CFURL_REF, name: 'CFURLRef', kind: HEX_KIND.OBJC_OR_SWIFT_OBJ, bits: 64, qualifiers: TYPE_QUAL.CONST, pointeeTid: 0 },
+  { tid: CORE_TID.CFBUNDLE_REF, name: 'CFBundleRef', kind: HEX_KIND.OBJC_OR_SWIFT_OBJ, bits: 64, qualifiers: 0, pointeeTid: 0 },
+  { tid: CORE_TID.CFRUNLOOP_REF, name: 'CFRunLoopRef', kind: HEX_KIND.OBJC_OR_SWIFT_OBJ, bits: 64, qualifiers: 0, pointeeTid: 0 },
+  { tid: CORE_TID.CFUUID_REF, name: 'CFUUIDRef', kind: HEX_KIND.OBJC_OR_SWIFT_OBJ, bits: 64, qualifiers: TYPE_QUAL.CONST, pointeeTid: 0 },
+  { tid: CORE_TID.CGCONTEXT_REF, name: 'CGContextRef', kind: HEX_KIND.OBJC_OR_SWIFT_OBJ, bits: 64, qualifiers: 0, pointeeTid: 0 },
+  { tid: CORE_TID.CGIMAGE_REF, name: 'CGImageRef', kind: HEX_KIND.OBJC_OR_SWIFT_OBJ, bits: 64, qualifiers: 0, pointeeTid: 0 },
+  { tid: CORE_TID.CGCOLORSPACE_REF, name: 'CGColorSpaceRef', kind: HEX_KIND.OBJC_OR_SWIFT_OBJ, bits: 64, qualifiers: 0, pointeeTid: 0 },
+  { tid: CORE_TID.MACH_TIMEBASE_INFO_T, name: 'mach_timebase_info_data_t', kind: HEX_KIND.STRUCT, bits: 64, qualifiers: 0, pointeeTid: 0 },
+  { tid: CORE_TID.SWIFT_METADATA, name: 'SwiftMetadata', kind: HEX_KIND.STRUCT, bits: 0, qualifiers: 0, pointeeTid: 0 },
+  { tid: CORE_TID.SWIFT_HEAP_OBJECT, name: 'SwiftHeapObject', kind: HEX_KIND.OBJC_OR_SWIFT_OBJ, bits: 128, qualifiers: 0, pointeeTid: 0 },
 
   // IL2CPP
   { tid: CORE_TID.IL2CPP_OBJECT, name: 'Il2CppObject', kind: HEX_KIND.STRUCT, bits: 128, qualifiers: 0, pointeeTid: 0 },
@@ -1111,6 +1154,96 @@ export const CORE_TIL_FUNCTIONS = Object.freeze([
   fn('il2cpp_resolve_icall', T_FN_PTR, [T_CSTR], { category: 'il2cpp' }),
   fn('il2cpp_raise_exception', T_VOID, [T_IL2_EXC], { noreturn: true, category: 'il2cpp' }),
   fn('il2cpp_gc_collect', T_VOID, [T_I32], { category: 'il2cpp' }),
+
+  // --- CoreFoundation (iOS / macOS) ---
+  fn('CFArrayGetCount', T_I64, [T_CFARRAY], { category: 'corefoundation' }),
+  fn('CFArrayGetValueAtIndex', T_CVPTR, [T_CFARRAY, T_I64], { category: 'corefoundation' }),
+  fn('CFArrayCreate', T_CFARRAY, [T_CFALLOC, T_VPPTR, T_I64, T_CVPTR], { alloc: true, category: 'corefoundation' }),
+  fn('CFDictionaryGetValue', T_CVPTR, [T_CFDICT, T_CVPTR], { category: 'corefoundation' }),
+  fn('CFDictionaryCreate', T_CFDICT, [T_CFALLOC, T_VPPTR, T_VPPTR, T_I64, T_CVPTR, T_CVPTR], { alloc: true, category: 'corefoundation' }),
+  fn('CFDataGetBytePtr', T_CU8PTR, [T_CFDATA], { category: 'corefoundation' }),
+  fn('CFDataGetLength', T_I64, [T_CFDATA], { category: 'corefoundation' }),
+  fn('CFDataCreate', T_CFDATA, [T_CFALLOC, T_CU8PTR, T_I64], { alloc: true, category: 'corefoundation' }),
+  fn('CFStringGetLength', T_I64, [T_CFSTRING], { category: 'corefoundation' }),
+  fn('CFStringGetCString', T_BOOL, [T_CFSTRING, T_STR, T_I64, T_U32], { category: 'corefoundation' }),
+  fn('CFStringCreateWithBytes', T_CFSTRING, [T_CFALLOC, T_CU8PTR, T_I64, T_U32, T_BOOL], { alloc: true, category: 'corefoundation' }),
+  fn('CFNumberGetValue', T_BOOL, [T_CFNUMBER, T_I64, T_VPTR], { category: 'corefoundation' }),
+  fn('CFNumberCreate', T_CFNUMBER, [T_CFALLOC, T_I64, T_CVPTR], { alloc: true, category: 'corefoundation' }),
+  fn('CFURLCreateWithString', T_CFURL, [T_CFALLOC, T_CFSTRING, T_CFURL], { alloc: true, category: 'corefoundation' }),
+  fn('CFBundleGetMainBundle', T_CFBUNDLE, [], { category: 'corefoundation' }),
+  fn('CFBundleGetInfoDictionary', T_CFDICT, [T_CFBUNDLE], { category: 'corefoundation' }),
+  fn('CFPreferencesCopyAppValue', T_CVPTR, [T_CFSTRING, T_CFSTRING], { alloc: true, category: 'corefoundation' }),
+  fn('CFRunLoopGetMain', T_CFRUNLOOP, [], { category: 'corefoundation' }),
+  fn('CFRunLoopGetCurrent', T_CFRUNLOOP, [], { category: 'corefoundation' }),
+  fn('CFUUIDCreate', T_CFUUID, [T_CFALLOC], { alloc: true, category: 'corefoundation' }),
+  fn('CFUUIDCreateString', T_CFSTRING, [T_CFALLOC, T_CFUUID], { alloc: true, category: 'corefoundation' }),
+
+  // --- Dispatch (GCD) extensions ---
+  fn('dispatch_group_notify', T_VOID, [T_DISPATCH_GROUP, T_DISPATCH_QUEUE, T_ID], { category: 'darwin' }),
+  fn('dispatch_group_wait', T_I64, [T_DISPATCH_GROUP, T_DISPATCH_TIME], { category: 'darwin' }),
+  fn('dispatch_time', T_DISPATCH_TIME, [T_DISPATCH_TIME, T_I64], { category: 'darwin' }),
+  fn('dispatch_barrier_async', T_VOID, [T_DISPATCH_QUEUE, T_ID], { category: 'darwin' }),
+  fn('dispatch_async_f', T_VOID, [T_DISPATCH_QUEUE, T_VPTR, T_FN_PTR], { category: 'darwin' }),
+  fn('dispatch_once_f', T_VOID, [T_I64PTR, T_VPTR, T_FN_PTR], { category: 'darwin' }),
+
+  // --- ObjC Runtime extensions ---
+  fn('objc_moveWeak', T_VOID, [T_IDPTR, T_IDPTR], { category: 'objc' }),
+  fn('objc_allocateClassPair', T_CLASS, [T_CLASS, T_CSTR, T_SIZE], { alloc: true, category: 'objc' }),
+  fn('objc_registerClassPair', T_VOID, [T_CLASS], { category: 'objc' }),
+  fn('objc_getProtocol', T_PROTOCOL, [T_CSTR], { category: 'objc' }),
+  fn('objc_setAssociatedObject', T_VOID, [T_ID, T_CVPTR, T_ID, T_UINTPTR], { category: 'objc' }),
+  fn('objc_getAssociatedObject', T_ID, [T_ID, T_CVPTR], { category: 'objc' }),
+  fn('class_addMethod', T_BOOL, [T_CLASS, T_SEL, T_FN_PTR, T_CSTR], { category: 'objc' }),
+  fn('class_replaceMethod', T_FN_PTR, [T_CLASS, T_SEL, T_FN_PTR, T_CSTR], { category: 'objc' }),
+  fn('method_exchangeImplementations', T_VOID, [T_METHOD, T_METHOD], { category: 'objc' }),
+  fn('objc_retainAutorelease', T_ID, [T_ID], { category: 'objc' }),
+  fn('objc_unsafeClaimAutoreleasedReturnValue', T_ID, [T_ID], { category: 'objc' }),
+  fn('objc_enumerationMutation', T_VOID, [T_ID], { category: 'objc' }),
+
+  // --- Swift Runtime ---
+  fn('swift_allocObject', T_SWIFT_OBJ, [T_SWIFT_META_CPTR, T_SIZE, T_SIZE], { alloc: true, category: 'swift' }),
+  fn('swift_deallocObject', T_VOID, [T_SWIFT_OBJ, T_SIZE, T_SIZE], { free: true, category: 'swift' }),
+  fn('swift_retain', T_SWIFT_OBJ, [T_SWIFT_OBJ], { category: 'swift' }),
+  fn('swift_release', T_VOID, [T_SWIFT_OBJ], { free: true, category: 'swift' }),
+  fn('swift_bridgeObjectRetain', T_VPTR, [T_VPTR], { category: 'swift' }),
+  fn('swift_bridgeObjectRelease', T_VOID, [T_VPTR], { free: true, category: 'swift' }),
+  fn('swift_unknownObjectRetain', T_VPTR, [T_VPTR], { category: 'swift' }),
+  fn('swift_unknownObjectRelease', T_VOID, [T_VPTR], { free: true, category: 'swift' }),
+  fn('swift_beginAccess', T_VOID, [T_VPTR, T_VPTR, T_UINTPTR, T_VPTR], { category: 'swift' }),
+  fn('swift_endAccess', T_VOID, [T_VPTR], { category: 'swift' }),
+  fn('swift_once', T_VOID, [T_I64PTR, T_FN_PTR, T_VPTR], { category: 'swift' }),
+  fn('swift_dynamicCast', T_BOOL, [T_VPTR, T_VPTR, T_SWIFT_META_CPTR, T_SWIFT_META_CPTR, T_SIZE], { category: 'swift' }),
+  fn('swift_getWitnessTable', T_CVPTR, [T_CVPTR, T_SWIFT_META_CPTR, T_VPPTR], { category: 'swift' }),
+  fn('swift_getGenericMetadata', T_SWIFT_META_CPTR, [T_SIZE, T_CVPTR, T_CVPTR], { category: 'swift' }),
+  fn('swift_getTypeByMangledNameInContext', T_SWIFT_META_CPTR, [T_CSTR, T_SIZE, T_CVPTR, T_CVPTR], { category: 'swift' }),
+  fn('swift_errorRetain', T_VPTR, [T_VPTR], { category: 'swift' }),
+  fn('swift_errorRelease', T_VOID, [T_VPTR], { free: true, category: 'swift' }),
+  fn('swift_willThrow', T_VOID, [T_VPTR], { category: 'swift' }),
+  fn('swift_slowAlloc', T_VPTR, [T_SIZE, T_SIZE], { alloc: true, category: 'swift' }),
+  fn('swift_slowDealloc', T_VOID, [T_VPTR, T_SIZE, T_SIZE], { free: true, category: 'swift' }),
+  fn('swift_isUniquelyReferenced_nonNull_native', T_BOOL, [T_SWIFT_OBJ], { category: 'swift' }),
+
+  // --- UIKit / CoreGraphics / Security / CommonCrypto / Darwin ---
+  fn('UIApplicationMain', T_I32, [T_I32, T_STRPTR, T_ID, T_ID], { category: 'uikit' }),
+  fn('UIGraphicsBeginImageContextWithOptions', T_VOID, [T_CGSIZE, T_BOOL, T_CGFLOAT], { category: 'uikit' }),
+  fn('UIGraphicsEndImageContext', T_VOID, [], { category: 'uikit' }),
+  fn('UIGraphicsGetCurrentContext', T_CGCONTEXT, [], { category: 'uikit' }),
+  fn('CGContextDrawImage', T_VOID, [T_CGCONTEXT, T_CGRECT, T_CGIMAGE], { category: 'coregraphics' }),
+  fn('CGContextFillRect', T_VOID, [T_CGCONTEXT, T_CGRECT], { category: 'coregraphics' }),
+  fn('CGImageGetWidth', T_SIZE, [T_CGIMAGE], { category: 'coregraphics' }),
+  fn('CGImageGetHeight', T_SIZE, [T_CGIMAGE], { category: 'coregraphics' }),
+  fn('CGImageRelease', T_VOID, [T_CGIMAGE], { free: true, category: 'coregraphics' }),
+  fn('CGColorSpaceCreateDeviceRGB', T_CGCOLORSPACE, [], { alloc: true, category: 'coregraphics' }),
+  fn('SecItemCopyMatching', T_OSSTATUS, [T_CFDICT, T_VPPTR], { category: 'security' }),
+  fn('SecItemAdd', T_OSSTATUS, [T_CFDICT, T_VPPTR], { category: 'security' }),
+  fn('SecItemUpdate', T_OSSTATUS, [T_CFDICT, T_CFDICT], { category: 'security' }),
+  fn('SecItemDelete', T_OSSTATUS, [T_CFDICT], { category: 'security' }),
+  fn('SecRandomCopyBytes', T_I32, [T_CVPTR, T_SIZE, T_VPTR], { category: 'security' }),
+  fn('CC_SHA256', T_U8PTR, [T_CVPTR, T_U32, T_U8PTR], { category: 'security' }),
+  fn('CC_SHA1', T_U8PTR, [T_CVPTR, T_U32, T_U8PTR], { category: 'security' }),
+  fn('CC_MD5', T_U8PTR, [T_CVPTR, T_U32, T_U8PTR], { category: 'security' }),
+  fn('CCCrypt', T_I32, [T_U32, T_U32, T_U32, T_CVPTR, T_SIZE, T_CVPTR, T_CVPTR, T_SIZE, T_VPTR, T_SIZE, T_SIZE_PTR], { category: 'security' }),
+  fn('mach_timebase_info', T_KERN_RET, [T_MACH_TIMEBASE_PTR], { category: 'darwin' }),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -1140,6 +1273,36 @@ export const CORE_TIL_SELECTORS = Object.freeze([
   fn('-NSMutableDictionary:setObject:forKey:', T_VOID, [T_ID, T_SEL, T_ID, T_ID], { category: 'objc' }),
   fn('+NSData:dataWithBytes:length:', T_ID, [T_CLASS, T_SEL, T_CVPTR, T_NSUINT], { alloc: true, objcClassMethod: true, category: 'objc' }),
   fn('-NSData:bytes', T_CVPTR, [T_ID, T_SEL], { category: 'objc' }),
+  fn('-UIView:initWithFrame:', T_ID, [T_ID, T_SEL, T_CGRECT], { category: 'uikit' }),
+  fn('*:initWithFrame:', T_ID, [T_ID, T_SEL, T_CGRECT], { category: 'uikit' }),
+  fn('-UIViewController:viewDidLoad', T_VOID, [T_ID, T_SEL], { category: 'uikit' }),
+  fn('*:viewDidLoad', T_VOID, [T_ID, T_SEL], { category: 'uikit' }),
+  fn('*:objectForKey:', T_ID, [T_ID, T_SEL, T_ID], { category: 'objc' }),
+  fn('*:setObject:forKey:', T_VOID, [T_ID, T_SEL, T_ID, T_ID], { category: 'objc' }),
+  fn('*:stringWithFormat:', T_ID, [T_CLASS, T_SEL, T_ID], { alloc: true, variadic: true, fmtFamily: FMT_FAMILY.NSLOG, fmtArgIdx: 2, objcClassMethod: true, category: 'objc' }),
+  fn('*:dataWithBytes:length:', T_ID, [T_CLASS, T_SEL, T_CVPTR, T_NSUINT], { alloc: true, objcClassMethod: true, category: 'objc' }),
+  fn('*:bytes', T_CVPTR, [T_ID, T_SEL], { category: 'objc' }),
+  fn('*:objectAtIndex:', T_ID, [T_ID, T_SEL, T_NSUINT], { category: 'objc' }),
+  fn('-NSMutableArray:addObject:', T_VOID, [T_ID, T_SEL, T_ID], { category: 'objc' }),
+  fn('*:addObject:', T_VOID, [T_ID, T_SEL, T_ID], { category: 'objc' }),
+  fn('+UIApplication:sharedApplication', T_ID, [T_CLASS, T_SEL], { objcClassMethod: true, category: 'uikit' }),
+  fn('*:sharedApplication', T_ID, [T_CLASS, T_SEL], { objcClassMethod: true, category: 'uikit' }),
+  fn('+NSNotificationCenter:defaultCenter', T_ID, [T_CLASS, T_SEL], { objcClassMethod: true, category: 'objc' }),
+  fn('*:defaultCenter', T_ID, [T_CLASS, T_SEL], { objcClassMethod: true, category: 'objc' }),
+  fn('-NSNotificationCenter:addObserver:selector:name:object:', T_VOID, [T_ID, T_SEL, T_ID, T_SEL, T_ID, T_ID], { category: 'objc' }),
+  fn('*:addObserver:selector:name:object:', T_VOID, [T_ID, T_SEL, T_ID, T_SEL, T_ID, T_ID], { category: 'objc' }),
+  fn('-NSNotificationCenter:postNotificationName:object:', T_VOID, [T_ID, T_SEL, T_ID, T_ID], { category: 'objc' }),
+  fn('*:postNotificationName:object:', T_VOID, [T_ID, T_SEL, T_ID, T_ID], { category: 'objc' }),
+  fn('+NSUserDefaults:standardUserDefaults', T_ID, [T_CLASS, T_SEL], { objcClassMethod: true, category: 'objc' }),
+  fn('*:standardUserDefaults', T_ID, [T_CLASS, T_SEL], { objcClassMethod: true, category: 'objc' }),
+  fn('+NSURL:URLWithString:', T_ID, [T_CLASS, T_SEL, T_ID], { alloc: true, objcClassMethod: true, category: 'objc' }),
+  fn('*:URLWithString:', T_ID, [T_CLASS, T_SEL, T_ID], { alloc: true, objcClassMethod: true, category: 'objc' }),
+  fn('*:isEqualToString:', T_BOOL, [T_ID, T_SEL, T_ID], { category: 'objc' }),
+  fn('-NSObject:copy', T_ID, [T_ID, T_SEL], { alloc: true, category: 'objc' }),
+  fn('*:copy', T_ID, [T_ID, T_SEL], { alloc: true, category: 'objc' }),
+  fn('-NSObject:mutableCopy', T_ID, [T_ID, T_SEL], { alloc: true, category: 'objc' }),
+  fn('*:mutableCopy', T_ID, [T_ID, T_SEL], { alloc: true, category: 'objc' }),
+  fn('*:description', T_ID, [T_ID, T_SEL], { category: 'objc' }),
 ]);
 
 /**

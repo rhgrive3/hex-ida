@@ -438,6 +438,8 @@ export class App {
     this.analysisResumeReady = Promise.resolve(false);
     this.activeProject = null;
     this.v6 = attachV6Workbench(this);
+    this.v6Workbench = this.v6;
+    this._lastIngestedWasmAnalysis = null;
 
     this.applyTheme(this.prefs.theme || 'system');
     this.applyTextSize(this.prefs.textSize || 'm');
@@ -845,6 +847,7 @@ export class App {
     this.semantic = null;
     if (dropCache) {
       this.v6?.detach?.();
+      this._lastIngestedWasmAnalysis = null;
       clearSchemaRecoveryTasks(this);
       this.featureIndex = null;
       this.stringIndex = null;
@@ -1285,7 +1288,25 @@ export class App {
 
   /* ── 解析セッションの永続化 ───────────────────────────────── */
 
+  _syncAutoReportWasmAnalysis(report = this.autoReport?.report) {
+    const wa = report && typeof report === 'object' ? report.wasmAnalysis : null;
+    if (wa && wa !== this._lastIngestedWasmAnalysis) {
+      this._lastIngestedWasmAnalysis = wa;
+      try { this.v6Workbench?.ingestWasmAnalysis?.(wa); } catch { /* non-fatal */ }
+    }
+  }
+
+  demangleSymbolName(rawName, opts = null) {
+    return this.v6Workbench?.demangleDisplayName?.(rawName, opts) ?? rawName;
+  }
+
+  getFunctionEnrichment(funcVa, opts = {}) {
+    this._syncAutoReportWasmAnalysis();
+    return this.v6Workbench?.getFunctionEnrichment?.(funcVa, opts) ?? null;
+  }
+
   async persistAnalysisSession(fields = null) {
+    this._syncAutoReportWasmAnalysis();
     if (this.sampleOpen || !this.store.get('fileInfo')) return false;
     const sliceIndex = this.store.get('sliceIndex');
     if (!Number.isSafeInteger(sliceIndex) || sliceIndex < 0) return false;
@@ -1308,6 +1329,7 @@ export class App {
       const snapshot = await this.analysisResume.load(binaryId, sliceIndex);
       if (!snapshot || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
       const restored = applyAppAnalysisState(this, snapshot);
+      if (restored) this._syncAutoReportWasmAnalysis();
       if (!restored) await this.analysisResume.delete(binaryId, sliceIndex).catch(() => false);
       return restored;
     } catch {

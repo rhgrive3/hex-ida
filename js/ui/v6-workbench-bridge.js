@@ -14,13 +14,25 @@ import { TilPackManager } from '../analysis/types/core/til-pack-manager.js';
 import { DirtyConeIndex } from '../analysis/types/core/dirty-cone.js';
 import { TypeTransactionManager } from '../analysis/types/core/type-transaction.js';
 import { GlobalTypeMap } from '../analysis/types/core/global-type-map.js';
+import { demangleSymbol, detectMangleKind, DEMANGLE_KIND } from '../analysis/types/core/symbol-demangler.js';
+import { demangleSwift } from '../rtti.js';
 import { ManualSegmentMap } from '../analysis/recovery/manual-segment-map.js';
 import { FuncChunkTable } from '../analysis/recovery/func-chunk-table.js';
 import { CustomAbiStore } from '../analysis/recovery/custom-abi-spec.js';
 import { StackSlotOverrideRegistry } from '../analysis/recovery/stack-slot-override.js';
 import { ShiftedPtrRegistry } from '../analysis/recovery/shifted-ptr-spec.js';
 import { HexSigIndex } from '../analysis/signature/hex-sig-index.js';
-import { DeobfOverlayStore } from '../analysis/deobf/deobf-overlay-store.js';
+import { decodeHsig1Pack } from '../analysis/signature/hex-sig-pack.js';
+import {
+  HEXSIG_HUB_SCHEMA,
+  createHexSigHubLoader,
+  gunzipBounded,
+  mountHexSigPackToWasm,
+} from '../analysis/signature/hexsig-hub-loader.js';
+import { DeobfOverlayStore, DEOBF_RECORD_KIND } from '../analysis/deobf/deobf-overlay-store.js';
+import { unflattenCffIr, CFF_STATUS } from '../analysis/deobf/cff-unflatten.js';
+import { simplifyMbaDag } from '../analysis/deobf/mba-simplifier.js';
+import { createStlPatternRecognizer } from '../analysis/cxx/stl-pattern-recognizer.js';
 import { SliceService } from '../analysis/slicing/slice-service.js';
 import { JevQueryOverlay } from '../analysis/query/jev-overlay.js';
 import { createTypeEditPopoverController, renderTypeEditPopover } from './type-edit-popover.js';
@@ -28,6 +40,20 @@ import { createSlicePanelController, renderSlicePanel } from './slice-panel.js';
 import { createExportInteropController, renderExportInteropModal } from './export-interop.js';
 import { createManualRecoveryPopoverController, renderManualRecoveryPopover } from './manual-recovery-popover.js';
 import { refineAppleSwiftDecompile } from '../decompiler/apple-arc-swift-pass.js';
+
+const CALLGRAPH_ROLE_NAMES = Object.freeze({
+  0: 'normal',
+  1: 'leaf_compute',
+  2: 'dispatcher',
+  3: 'utility_hub',
+  4: 'recursive_scc',
+});
+
+const DEFAULT_HEXSIG_HUB_MANIFEST = Object.freeze({
+  schema: HEXSIG_HUB_SCHEMA,
+  format: 'HSIG1',
+  packs: [],
+});
 
 function normalizeVaHex(va) {
   if (va == null) return null;
@@ -47,6 +73,49 @@ function normalizeVaHex(va) {
     }
   }
   return null;
+}
+
+function toBigIntVa(va) {
+  if (va == null) return null;
+  if (typeof va === 'bigint') return va >= 0n ? va : null;
+  if (typeof va === 'number') return Number.isSafeInteger(va) && va >= 0 ? BigInt(va) : null;
+  if (typeof va === 'string') {
+    const t = va.trim();
+    if (!t) return null;
+    try {
+      const b = BigInt(t);
+      return b >= 0n ? b : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function toUint8Array(input) {
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  return null;
+}
+
+function isGzipBytes(bytes) {
+  return bytes instanceof Uint8Array && bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
+function incrementMapCount(map, key, delta = 1) {
+  if (!key) return;
+  map.set(key, (map.get(key) || 0) + delta);
+}
+
+function pushMapList(map, key, item) {
+  if (!key) return;
+  let list = map.get(key);
+  if (!list) {
+    list = [];
+    map.set(key, list);
+  }
+  list.push(item);
 }
 
 export class V6Workbench {
@@ -73,6 +142,7 @@ export class V6Workbench {
     this.shiftedPtrs = new ShiftedPtrRegistry();
     this.hexsigIndex = new HexSigIndex();
     this.deobfOverlay = new DeobfOverlayStore();
+    this.stlRecognizer = createStlPatternRecognizer(options.stlCacheCapacity);
     this.sliceService = new SliceService();
     this.jevOverlay = new JevQueryOverlay({
       globalTypeMap: this.globalTypeMap,
@@ -100,10 +170,488 @@ export class V6Workbench {
       transactionManager: this.typeTx,
     });
 
+    this._hexsigHubLoader = options.hexsigHubLoader || null;
+    this._hexsigHubConfig = options.hexsigHubConfig || null;
+    this._mountedHexSigPacks = new Map();
+    this._deobfSummaries = new Map();
+    this._stlByFunc = new Map();
+    this._wasmAnalysis = null;
+    this._wasmIndex = null;
+
     this._activePopoverCleanup = null;
     this._activePopoverKind = null;
     this._binaryKey = null;
     this._idleTimer = null;
+  }
+
+  demangleDisplayName(rawName, opts = null) {
+    if (typeof rawName !== 'string') return rawName == null ? '' : String(rawName);
+    if (!rawName) return '';
+
+    const kind = detectMangleKind(rawName);
+    if (kind !== DEMANGLE_KIND.NONE) {
+      const demangled = demangleSymbol(rawName, opts);
+      if (typeof demangled === 'string' && demangled.length > 0) {
+        return demangled;
+      }
+    }
+
+    const swift = demangleSwift(rawName);
+    if (typeof swift === 'string' && swift.length > 0) {
+      return swift;
+    }
+
+    return rawName;
+  }
+
+  getHexSigHubLoader(opts = null) {
+    if (this._hexsigHubLoader && !(opts && opts.manifest)) {
+      return this._hexsigHubLoader;
+    }
+    const cfg = {
+      ...(this._hexsigHubConfig || {}),
+      ...(opts || {}),
+    };
+    const manifest = cfg.manifest || DEFAULT_HEXSIG_HUB_MANIFEST;
+    const loader = createHexSigHubLoader({
+      manifest,
+      baseUrl: cfg.baseUrl || '',
+      fetchBytes: cfg.fetchBytes || null,
+      verifySha256: cfg.verifySha256 ?? true,
+    });
+    this._hexsigHubLoader = loader;
+    return loader;
+  }
+
+  mountHexSigPack(packBytes, meta = {}) {
+    const inputBytes = toUint8Array(packBytes);
+    if (!inputBytes || inputBytes.length === 0) {
+      return { ok: false, reason: 'invalid_pack_bytes', entryCount: 0, wasmMounted: false };
+    }
+
+    let rawBytes = inputBytes;
+    try {
+      if (isGzipBytes(inputBytes)) {
+        rawBytes = gunzipBounded(inputBytes, meta?.maxBytes, meta?.maxCompressedBytes);
+      }
+    } catch (err) {
+      return { ok: false, reason: err?.message || 'gunzip_failed', entryCount: 0, wasmMounted: false };
+    }
+
+    let decoded;
+    try {
+      decoded = decodeHsig1Pack(rawBytes);
+    } catch (err) {
+      return { ok: false, reason: err?.message || 'decode_failed', entryCount: 0, wasmMounted: false };
+    }
+
+    const packId = String(meta?.packId || `pack_${this._mountedHexSigPacks.size + 1}`);
+    if (meta && meta.libId != null && Number.isInteger(meta.libId) && meta.libId >= 0) {
+      this.hexsigIndex.libs[meta.libId] = {
+        libId: meta.libId,
+        packId,
+        vendor: meta.vendor || '',
+        kind: meta.libKind ?? meta.kind ?? 0,
+        libName: meta.libName || packId,
+      };
+    }
+
+    for (const entry of decoded.entries) {
+      this.hexsigIndex.addEntry(entry);
+    }
+
+    let wasmMount = null;
+    if (meta?.preferWasm !== false && meta?._engine !== 'js') {
+      wasmMount = mountHexSigPackToWasm(rawBytes, decoded, meta || {});
+    }
+
+    const record = {
+      packId,
+      meta: meta && typeof meta === 'object' ? { ...meta } : {},
+      entryCount: decoded.entryCount,
+      archMask: decoded.archMask,
+      wasmMounted: Boolean(wasmMount),
+      wasmMount,
+      decoded,
+    };
+    this._mountedHexSigPacks.set(packId, record);
+
+    return {
+      ok: true,
+      packId,
+      entryCount: decoded.entryCount,
+      archMask: decoded.archMask,
+      wasmMounted: Boolean(wasmMount),
+      wasmMount,
+      decoded,
+    };
+  }
+
+  runDeobfuscationPass({ funcVa, cfg = null, mbaNodes = null, opts = {} } = {}) {
+    const vaHex = normalizeVaHex(funcVa) || (funcVa != null ? String(funcVa) : null);
+    const passOpts = opts && typeof opts === 'object' ? opts : {};
+
+    let cffResult = null;
+    let cffRecovered = false;
+    if (cfg && typeof cfg === 'object') {
+      cffResult = unflattenCffIr(cfg, passOpts);
+      cffRecovered = cffResult?.statusCode === CFF_STATUS.RECOVERED;
+    }
+
+    const mbaResults = [];
+    let simplifiedCount = 0;
+    let nodesEliminated = 0;
+    if (Array.isArray(mbaNodes)) {
+      for (let i = 0; i < mbaNodes.length; i++) {
+        const item = mbaNodes[i];
+        if (!item || typeof item !== 'object') continue;
+        const dag = item.dag || item.expr || item;
+        const nodeVa = normalizeVaHex(item.insnVa ?? item.va);
+        const res = simplifyMbaDag(dag, passOpts);
+        mbaResults.push({
+          index: i,
+          insnVa: nodeVa,
+          ...res,
+        });
+        if (res?.simplified) {
+          simplifiedCount++;
+          nodesEliminated += Number(res.stats?.nodesEliminated ?? Math.max(0, (res.origCost ?? 0) - (res.newCost ?? 0)));
+          if (nodeVa) {
+            this.deobfOverlay.setAnnotation({
+              insnVa: nodeVa,
+              kind: DEOBF_RECORD_KIND.LOOP_DEOBF,
+              source: 'bounded_abstract_vm',
+              text: `MBA simplified (${res.stage || res.engine}, cost ${res.origCost ?? '?'}->${res.newCost ?? '?'})`,
+            });
+          }
+        }
+      }
+    }
+
+    let overlayCount = 0;
+    const summaryParts = [];
+    if (cffRecovered) {
+      summaryParts.push(`CFF recovered (real=${cffResult.stats?.realBlocks ?? 0}, spine=${cffResult.stats?.spineBlocks ?? 0})`);
+    }
+    if (simplifiedCount > 0) {
+      summaryParts.push(`MBA simplified (${simplifiedCount}/${mbaResults.length}, -${nodesEliminated} cost)`);
+    }
+
+    if (vaHex && summaryParts.length > 0) {
+      const wrote = this.deobfOverlay.setAnnotation({
+        insnVa: vaHex,
+        kind: DEOBF_RECORD_KIND.LOOP_DEOBF,
+        source: 'bounded_abstract_vm',
+        text: summaryParts.join(' + '),
+      });
+      if (wrote) overlayCount++;
+    }
+    for (const r of mbaResults) {
+      if (r.simplified && r.insnVa && r.insnVa !== vaHex) overlayCount++;
+    }
+
+    const summary = {
+      funcVa: vaHex,
+      cff: cffResult,
+      cffRecovered,
+      mba: {
+        total: mbaResults.length,
+        simplifiedCount,
+        nodesEliminated,
+        results: mbaResults,
+      },
+      overlayCount,
+      overlayRevision: this.deobfOverlay.revision,
+    };
+
+    if (vaHex) {
+      this._deobfSummaries.set(vaHex, summary);
+    }
+
+    return summary;
+  }
+
+  recognizeStlPattern(input = {}) {
+    const safeInput = input && typeof input === 'object' ? input : {};
+    const vaHex = normalizeVaHex(safeInput.funcVa ?? safeInput.va);
+    const funcKey = vaHex || (safeInput.funcKey != null ? String(safeInput.funcKey) : 'anonymous');
+
+    let normalizedInput = safeInput;
+    if (Array.isArray(safeInput.symbols) && safeInput.symbols.length > 0) {
+      const expanded = [];
+      for (const sym of safeInput.symbols) {
+        const s = String(sym);
+        expanded.push(s);
+        const demangled = this.demangleDisplayName(s);
+        if (demangled && demangled !== s) expanded.push(demangled);
+      }
+      normalizedInput = { ...safeInput, symbols: expanded };
+    }
+
+    const result = this.stlRecognizer.recognize(funcKey, normalizedInput);
+    if (vaHex) {
+      this._stlByFunc.set(vaHex, result);
+    }
+    return result;
+  }
+
+  ingestWasmAnalysis(wasmAnalysis) {
+    if (!wasmAnalysis || typeof wasmAnalysis !== 'object') {
+      this._wasmAnalysis = null;
+      this._wasmIndex = null;
+      return {
+        ok: false,
+        counts: {
+          rmw: 0,
+          x86Rmw: 0,
+          vtables: 0,
+          jumpTables: 0,
+          constTables: 0,
+          xrefFunctions: 0,
+          callgraphNodes: 0,
+          objcSwiftSections: 0,
+        },
+      };
+    }
+
+    const rmwHits = Array.isArray(wasmAnalysis.rmw?.hits)
+      ? wasmAnalysis.rmw.hits
+      : (Array.isArray(wasmAnalysis.rmw) ? wasmAnalysis.rmw : []);
+    const x86RmwHits = Array.isArray(wasmAnalysis.x86Rmw?.hits)
+      ? wasmAnalysis.x86Rmw.hits
+      : (Array.isArray(wasmAnalysis.x86Rmw) ? wasmAnalysis.x86Rmw : []);
+    const vtableList = Array.isArray(wasmAnalysis.vtables?.vtables)
+      ? wasmAnalysis.vtables.vtables
+      : (Array.isArray(wasmAnalysis.vtables) ? wasmAnalysis.vtables : []);
+    const jumpTableList = Array.isArray(wasmAnalysis.jumpTables?.tables)
+      ? wasmAnalysis.jumpTables.tables
+      : (Array.isArray(wasmAnalysis.jumpTables?.jumpTables)
+        ? wasmAnalysis.jumpTables.jumpTables
+        : (Array.isArray(wasmAnalysis.jumpTables) ? wasmAnalysis.jumpTables : []));
+    const constTableList = Array.isArray(wasmAnalysis.constTables?.tables)
+      ? wasmAnalysis.constTables.tables
+      : (Array.isArray(wasmAnalysis.constTables) ? wasmAnalysis.constTables : []);
+    const objcSwift = wasmAnalysis.objcSwift && typeof wasmAnalysis.objcSwift === 'object'
+      ? wasmAnalysis.objcSwift
+      : null;
+
+    const xrefByFunc = new Map();
+    const rawByFunc = wasmAnalysis.xrefLinks?.byFunction;
+    if (rawByFunc instanceof Map) {
+      for (const [k, entry] of rawByFunc.entries()) {
+        const key = normalizeVaHex(entry?.start ?? k);
+        if (key && entry && typeof entry === 'object') xrefByFunc.set(key, entry);
+      }
+    } else if (rawByFunc && typeof rawByFunc === 'object') {
+      for (const [k, entry] of Object.entries(rawByFunc)) {
+        const key = normalizeVaHex(entry?.start ?? k);
+        if (key && entry && typeof entry === 'object') xrefByFunc.set(key, entry);
+      }
+    }
+
+    const vtablesByFunc = new Map();
+    for (const v of vtableList) {
+      if (!v || typeof v !== 'object') continue;
+      const fnKey = normalizeVaHex(v.firstFnVa ?? v.funcVa);
+      if (fnKey) pushMapList(vtablesByFunc, fnKey, v);
+    }
+
+    const rmwCountByFunc = new Map();
+    for (const hit of rmwHits) {
+      if (!hit || typeof hit !== 'object') continue;
+      const fnKey = normalizeVaHex(hit.funcVa ?? hit.fnVa);
+      if (fnKey) incrementMapCount(rmwCountByFunc, fnKey, 1);
+    }
+    for (const hit of x86RmwHits) {
+      if (!hit || typeof hit !== 'object') continue;
+      const fnKey = normalizeVaHex(hit.funcVa ?? hit.fnVa);
+      if (fnKey) incrementMapCount(rmwCountByFunc, fnKey, 1);
+    }
+
+    const jumpTablesByFunc = new Map();
+    for (const jt of jumpTableList) {
+      if (!jt || typeof jt !== 'object') continue;
+      const fnKey = normalizeVaHex(jt.funcVa ?? jt.fnVa);
+      if (fnKey) pushMapList(jumpTablesByFunc, fnKey, jt);
+    }
+
+    const callgraphByFunc = new Map();
+    const cg = wasmAnalysis.callgraph;
+    if (cg && typeof cg === 'object') {
+      const nodes = Array.isArray(cg.nodes) ? cg.nodes : [];
+      const roles = cg.role;
+      const scores = cg.score;
+      const sccs = cg.scc;
+      for (let i = 0; i < nodes.length; i++) {
+        const rawNode = nodes[i];
+        const vaHex = normalizeVaHex(
+          typeof rawNode === 'object' && rawNode !== null
+            ? (rawNode.va ?? rawNode.addr ?? rawNode.address ?? rawNode.start)
+            : rawNode
+        );
+        if (!vaHex) continue;
+        const role = roles && i < roles.length ? Number(roles[i]) : 0;
+        const score = scores && i < scores.length ? Number(scores[i]) : 0;
+        const scc = sccs && i < sccs.length ? Number(sccs[i]) : null;
+        callgraphByFunc.set(vaHex, {
+          nodeIndex: i,
+          role,
+          roleName: CALLGRAPH_ROLE_NAMES[role] || 'normal',
+          score,
+          scc,
+        });
+      }
+    }
+
+    this._wasmAnalysis = wasmAnalysis;
+    this._wasmIndex = {
+      rmwHits,
+      x86RmwHits,
+      vtables: vtableList,
+      jumpTables: jumpTableList,
+      constTables: constTableList,
+      objcSwift,
+      xrefByFunc,
+      vtablesByFunc,
+      rmwCountByFunc,
+      jumpTablesByFunc,
+      callgraphByFunc,
+      textVa: toBigIntVa(wasmAnalysis.textVa),
+    };
+
+    const objcSwiftSections = Array.isArray(objcSwift?.sectionsScanned) ? objcSwift.sectionsScanned.length : 0;
+    return {
+      ok: true,
+      counts: {
+        rmw: rmwHits.length,
+        x86Rmw: x86RmwHits.length,
+        vtables: vtableList.length,
+        jumpTables: jumpTableList.length,
+        constTables: constTableList.length,
+        xrefFunctions: xrefByFunc.size,
+        callgraphNodes: callgraphByFunc.size,
+        objcSwiftSections,
+      },
+    };
+  }
+
+  _countRmwInRange(vaHex, startBig, endBig, textVaBig) {
+    const idx = this._wasmIndex;
+    if (!idx) return 0;
+    let count = idx.rmwCountByFunc.get(vaHex) || 0;
+    if (startBig == null || endBig == null || endBig <= startBig) return count;
+
+    const countHits = (hits) => {
+      let n = 0;
+      for (let i = 0; i < hits.length; i++) {
+        const h = hits[i];
+        if (!h || typeof h !== 'object') continue;
+        if (h.funcVa != null || h.fnVa != null) continue;
+        let hitVa = toBigIntVa(h.va ?? h.insnVa ?? h.loadVa ?? h.storeVa);
+        if (hitVa == null && textVaBig != null) {
+          const off = h.loadOff ?? h.storeOff ?? h.off;
+          if (typeof off === 'number' && Number.isFinite(off) && off >= 0) {
+            hitVa = textVaBig + BigInt(Math.trunc(off));
+          }
+        }
+        if (hitVa != null && hitVa >= startBig && hitVa < endBig) n++;
+      }
+      return n;
+    };
+
+    count += countHits(idx.rmwHits);
+    count += countHits(idx.x86RmwHits);
+    return count;
+  }
+
+  getFunctionEnrichment(funcVa, opts = {}) {
+    const vaHex = normalizeVaHex(funcVa);
+    const vaBig = toBigIntVa(funcVa);
+    const safeOpts = opts && typeof opts === 'object' ? opts : {};
+    const idx = this._wasmIndex;
+    const xref = vaHex && idx ? (idx.xrefByFunc.get(vaHex) || null) : null;
+
+    let rawName = typeof safeOpts.rawName === 'string' && safeOpts.rawName
+      ? safeOpts.rawName
+      : (typeof safeOpts.name === 'string' && safeOpts.name ? safeOpts.name : null);
+
+    if (!rawName && vaBig != null) {
+      try {
+        const fromSyms = this.app?.symbols?.nameAt?.(vaBig);
+        if (typeof fromSyms === 'string' && fromSyms) rawName = fromSyms;
+      } catch {
+        // Ignore symbol lookup errors on partial mocks.
+      }
+    }
+    if (!rawName && vaHex) {
+      const decKey = vaBig != null ? vaBig.toString() : null;
+      const fromNotes = this.app?.notes?.names?.get?.(vaHex)
+        ?? (decKey ? this.app?.notes?.names?.get?.(decKey) : null);
+      if (typeof fromNotes === 'string' && fromNotes) rawName = fromNotes;
+    }
+    if (!rawName && typeof xref?.name === 'string' && xref.name) {
+      rawName = xref.name;
+    }
+
+    const demangledName = rawName ? this.demangleDisplayName(rawName, safeOpts.demangleOpts || null) : null;
+    const displayName = demangledName || rawName || (vaHex ? `sub_${vaHex.slice(2)}` : null);
+
+    let tilSignature = null;
+    if (rawName && typeof this.tilResolver?.resolveSymbol === 'function') {
+      tilSignature = this.tilResolver.resolveSymbol(rawName, safeOpts.tilOpts || {}) || null;
+      if (!tilSignature && demangledName && demangledName !== rawName) {
+        tilSignature = this.tilResolver.resolveSymbol(demangledName, safeOpts.tilOpts || {}) || null;
+      }
+    }
+
+    const vtableRefs = Array.isArray(xref?.vtableRefs) && xref.vtableRefs.length > 0
+      ? xref.vtableRefs.slice()
+      : (vaHex && idx?.vtablesByFunc.get(vaHex) ? idx.vtablesByFunc.get(vaHex).slice() : []);
+    const constTableRefs = Array.isArray(xref?.constTableRefs) ? xref.constTableRefs.slice() : [];
+    const tags = Array.isArray(xref?.tags) ? xref.tags.slice() : [];
+    const callgraph = vaHex && idx ? (idx.callgraphByFunc.get(vaHex) || null) : null;
+
+    const endBig = toBigIntVa(safeOpts.funcEnd ?? xref?.end);
+    const textVaBig = toBigIntVa(safeOpts.textVa) ?? idx?.textVa ?? null;
+    const rmwHitCount = vaHex ? this._countRmwInRange(vaHex, vaBig, endBig, textVaBig) : 0;
+    const jumpTables = vaHex && idx?.jumpTablesByFunc.get(vaHex)
+      ? idx.jumpTablesByFunc.get(vaHex).slice()
+      : [];
+
+    const overlayAnnotation = vaHex ? (this.deobfOverlay?.getAnnotation?.(vaHex) || null) : null;
+    const overlaySummary = vaHex ? (this._deobfSummaries.get(vaHex) || null) : null;
+
+    let stl = null;
+    if (safeOpts.stlInput && typeof safeOpts.stlInput === 'object') {
+      stl = this.recognizeStlPattern({ funcVa: vaHex, ...safeOpts.stlInput });
+    } else if (vaHex) {
+      stl = this._stlByFunc.get(vaHex) || null;
+    }
+
+    return {
+      funcVa: vaHex,
+      rawName,
+      displayName,
+      demangledName,
+      tilSignature,
+      wasmHints: {
+        available: Boolean(idx),
+        vtableRefs,
+        constTableRefs,
+        tags,
+        callgraph,
+        rmwHitCount,
+        jumpTableCount: jumpTables.length,
+        jumpTables,
+        hasObjcSwift: Boolean(idx?.objcSwift),
+      },
+      deobfOverlay: {
+        hasOverlay: Boolean(overlayAnnotation || overlaySummary),
+        annotation: overlayAnnotation,
+        summary: overlaySummary,
+      },
+      stl,
+    };
   }
 
   getActivePopoverKind() {
@@ -384,6 +932,12 @@ export class V6Workbench {
     this.deobfOverlay?.clear?.();
     this.dirtyCone?.clear?.();
     this.typeTx?.clear?.();
+    this.stlRecognizer?.clear?.();
+    this._deobfSummaries.clear();
+    this._stlByFunc.clear();
+    this._mountedHexSigPacks.clear();
+    this._wasmAnalysis = null;
+    this._wasmIndex = null;
     if (this.hexdb) {
       try {
         if (typeof this.hexdb.close === 'function') void Promise.resolve(this.hexdb.close()).catch(() => {});

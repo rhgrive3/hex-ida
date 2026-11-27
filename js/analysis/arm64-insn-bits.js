@@ -42,7 +42,8 @@ export function isHwCrypto(w) {
 export function isRet(w) {
   w = w >>> 0;
   return (((w & 0xFFFFFC1F) >>> 0) === 0xD65F0000) ||
-    (((w & 0xFFFFFBFF) >>> 0) === 0xD65F0BFF);
+    w === 0xD65F0BFF ||
+    w === 0xD65F0FFF;
 }
 
 export function decodeBrReg(w) {

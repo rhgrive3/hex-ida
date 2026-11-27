@@ -666,9 +666,8 @@ export function vendorConflicts(goalId, vendor) {
   if (!vendor) return false;
   if (vendor.kind === 'system') return true;
   if (GAME_VALUE_GOALS.has(goalId)) return true;
-  if (goalId === 'ads' && vendor.kind === 'ads') return false;
-  if (goalId === 'crypto' && vendor.kind === 'crypto') return false;
-  if (goalId === 'purchase' && vendor.kind === 'purchase') return false;
   if (goalId === 'ads') return false;
+  if (goalId === 'crypto' && vendor.kind === 'crypto') return false;
+  if (goalId === 'purchase' && (vendor.kind === 'purchase' || vendor.kind === 'ads')) return false;
   return NON_ADS_CONFLICT_KINDS.has(vendor.kind);
 }

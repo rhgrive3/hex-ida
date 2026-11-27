@@ -83,8 +83,9 @@ inline bool is_hw_crypto(uint32_t w) {
 }
 
 inline bool is_ret(uint32_t w) {
-  return (w & 0xFFFFFC1Fu) == 0xD65F0000u ||
-         (w & 0xFFFFFBFFu) == 0xD65F0BFFu;
+  return (w & 0xFFFFFC1Fu) == 0xD65F0000u ||  // RET Xn
+         w == 0xD65F0BFFu ||                  // RETAA
+         w == 0xD65F0FFFu;                    // RETAB
 }
 
 inline bool is_br_reg(uint32_t w, uint8_t& rn) {
