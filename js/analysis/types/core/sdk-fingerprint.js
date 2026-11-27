@@ -69,6 +69,13 @@ function detectHintsFromCorpus(dylibs, symbols, strings, notes) {
   if (joinedLibs.includes('libobjc') || joinedSyms.includes('objc_msgSend')) hints.add('objc');
   if (joinedLibs.includes('libswiftcore') || joinedSyms.includes('$s') || joinedSyms.includes('_$s')) hints.add('swift');
   if (joinedLibs.includes('libsystem')) hints.add('libsystem');
+  if (joinedLibs.includes('security') || joinedSyms.includes('SecItemCopyMatching') || joinedSyms.includes('SecTrustEvaluate')) hints.add('security');
+  if (joinedLibs.includes('coregraphics') || joinedSyms.includes('CGContextDrawImage')) hints.add('coregraphics');
+  if (joinedLibs.includes('quartzcore') || joinedSyms.includes('CALayer')) hints.add('quartzcore');
+  if (joinedLibs.includes('network.framework') || joinedSyms.includes('nw_connection_create')) hints.add('network');
+  if (joinedLibs.includes('metal') || joinedSyms.includes('MTLCreateSystemDefaultDevice')) hints.add('metal');
+  if (joinedLibs.includes('webkit') || joinedSyms.includes('WKWebView')) hints.add('webkit');
+  if (joinedLibs.includes('localauthentication') || joinedSyms.includes('LAContext')) hints.add('localauthentication');
 
   // C/C++ Runtimes
   if (joinedLibs.includes('libc.so') || joinedLibs.includes('glibc') || joinedNotes.includes('gnu')) {

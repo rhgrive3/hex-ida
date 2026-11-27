@@ -39,6 +39,7 @@ import { createTypeEditPopoverController, renderTypeEditPopover } from './type-e
 import { createSlicePanelController, renderSlicePanel } from './slice-panel.js';
 import { createExportInteropController, renderExportInteropModal } from './export-interop.js';
 import { createManualRecoveryPopoverController, renderManualRecoveryPopover } from './manual-recovery-popover.js';
+import { refineAppleSwiftDecompile } from '../decompiler/apple-arc-swift-pass.js';
 
 const CALLGRAPH_ROLE_NAMES = Object.freeze({
   0: 'normal',

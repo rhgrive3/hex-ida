@@ -10,7 +10,23 @@ static constexpr uint32_t kMaxObjcNameLen = 256u;
 static constexpr uint32_t kMaxLineMapEntries = 48u;
 static constexpr uint32_t kTextCap = 2048u;
 
-static constexpr uint32_t kInsnRet = 0xD65F03C0u;
+static constexpr uint32_t kInsnRet     = 0xD65F03C0u;
+static constexpr uint32_t kInsnRetaa   = 0xD65F0BFFu;
+static constexpr uint32_t kInsnRetab   = 0xD65F0FFFu;
+static constexpr uint32_t kInsnPaciasp = 0xD503233Fu;
+static constexpr uint32_t kInsnPacibsp = 0xD503237Fu;
+static constexpr uint32_t kInsnAutiasp = 0xD50323BFu;
+static constexpr uint32_t kInsnAutibsp = 0xD50323FFu;
+
+static inline bool is_bti_or_pac_prologue(uint32_t w) {
+  return w == kInsnPacibsp || w == kInsnPaciasp || ((w & 0xFFFFFF3Fu) == 0xD503241Fu);
+}
+static inline bool is_pac_epilogue_auth(uint32_t w) {
+  return w == kInsnAutibsp || w == kInsnAutiasp;
+}
+static inline bool is_ret_or_retab(uint32_t w) {
+  return w == kInsnRet || w == kInsnRetab || w == kInsnRetaa;
+}
 
 static inline int64_t sign_extend_21(uint32_t v) {
   const uint32_t masked = v & 0x1FFFFFu;
@@ -244,24 +260,45 @@ HexStatus try_emit_arm64_objc(
     return HEX_ERR_UNSUPPORTED;
   }
 
-  // Only verified ObjC instruction counts (8, 12, or 14) are eligible.
-  if (word_count != 8u && word_count != 12u && word_count != 14u) {
+  if (base_addr > UINT64_MAX - static_cast<uint64_t>(word_count - 1u) * 4ULL) {
     return HEX_ERR_UNSUPPORTED;
   }
-  if (base_addr > UINT64_MAX - static_cast<uint64_t>(word_count - 1u) * 4ULL) {
+
+  // ARM64e PAC / BTI prologue peeling (e.g. BTI + PACIBSP)
+  const uint64_t entry_addr = base_addr;
+  uint32_t lead = 0u;
+  while (lead < 2u && lead < word_count && is_bti_or_pac_prologue(words[lead])) {
+    ++lead;
+  }
+  words += lead;
+  base_addr += static_cast<uint64_t>(lead) * 4ULL;
+  word_count -= lead;
+
+  // ARM64e epilogue check: ret / retab / retaa, optionally preceded by autibsp / autiasp
+  if (word_count < 8u || !is_ret_or_retab(words[word_count - 1u])) {
+    return HEX_ERR_UNSUPPORTED;
+  }
+  uint32_t ret_tail = 1u;
+  if (word_count >= 9u && words[word_count - 1u] == kInsnRet && is_pac_epilogue_auth(words[word_count - 2u])) {
+    ret_tail = 2u;
+  }
+  const uint32_t core_count = word_count - (ret_tail - 1u);
+
+  // Only verified ObjC core instruction counts (8, 12, or 14) are eligible.
+  if (core_count != 8u && core_count != 12u && core_count != 14u) {
     return HEX_ERR_UNSUPPORTED;
   }
 
   // Common prologue: sub sp, sp, #N; mov xR1, x0; str wR1, [sp, #self_off];
   //                  mov xR2, x1; str wR2, [sp, #cmd_off]
-  // Common epilogue: add sp, sp, #N; ret
+  // Common epilogue: add sp, sp, #N; [autibsp;] ret|retab
   uint64_t frame_size = 0ULL;
   uint64_t add_sp_size = 0ULL;
   if (!decode_sub_sp_imm64(words[0], &frame_size)) return HEX_ERR_UNSUPPORTED;
-  if (!decode_add_sp_imm64(words[word_count - 2u], &add_sp_size) || add_sp_size != frame_size) {
+  if (!decode_add_sp_imm64(words[core_count - 2u], &add_sp_size) || add_sp_size != frame_size) {
     return HEX_ERR_UNSUPPORTED;
   }
-  if (words[word_count - 1u] != kInsnRet) return HEX_ERR_UNSUPPORTED;
+  word_count = core_count;
 
   uint32_t r_self = 31u, rm_self = 31u;
   uint32_t str_self_rt = 31u, str_self_rn = 31u;
@@ -397,7 +434,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("int32 ");
     w.append_bytes(func_name, func_name_len);
     w.append_str("(void)\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("{\n");
@@ -406,7 +443,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_self_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 self;", base_addr);
@@ -414,7 +451,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_cmd_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 a2;", base_addr);
@@ -455,7 +492,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("static uint64 global_");
     w.append_u64_hex(global_addr, true);
     w.append_str(" = 0;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("#ifndef __hex_helper_sext_defined", base_addr);
@@ -466,7 +503,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("int32 ");
     w.append_bytes(func_name, func_name_len);
     w.append_str("(void)\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("{\n");
@@ -475,7 +512,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_self_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 self;", base_addr);
@@ -483,7 +520,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_cmd_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 a2;", base_addr);
@@ -491,7 +528,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint32 var_");
     w.append_u64_hex(self_off, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("    local_m");
@@ -532,13 +569,13 @@ HexStatus try_emit_arm64_objc(
     w.append_str("static uint64 global_");
     w.append_u64_hex(global_addr, true);
     w.append_str(" = 0;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("uint64 ");
     w.append_bytes(func_name, func_name_len);
     w.append_str("(uint64 a3)\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("{\n");
@@ -547,7 +584,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_self_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 self;", base_addr);
@@ -555,7 +592,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_cmd_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 a2;", base_addr);
@@ -563,7 +600,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_arg_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("    local_m");

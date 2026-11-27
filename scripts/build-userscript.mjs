@@ -6,6 +6,8 @@ import { access, readFile, mkdir, realpath, rm } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
+import { buildTilHub } from './build-til-hub.mjs';
+import { runImportRizinSigdb } from './import-rizin-sigdb.mjs';
 import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
 import { writeFileVerified, publishUserscriptFiles } from './userscript-publication.mjs';
 import { readResolvedRepositorySource, readStableRepositoryFile, resolveRepositorySource } from './stable-repository-source.mjs';
@@ -573,6 +575,8 @@ export async function buildUserscript() {
   const index = standaloneIndex(htmlSource, `/assets/${loaderName}`);
   await writeFile(resolve(dist, 'index.html'), index);
   await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
+  await buildTilHub({ outDir: resolve(dist, 'til-hub'), quiet: true });
+  runImportRizinSigdb({ outDir: resolve(dist, 'hexsig-hub'), quiet: true });
   await publishUserscriptFiles([
     { path:committedTemplate, expected:previousTemplateBytes, content:template },
     { path:releaseStatePath, expected:previousReleaseBytes, content:JSON.stringify(release.state, null, 2) + '\n' },
