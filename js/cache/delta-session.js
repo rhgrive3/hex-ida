@@ -9,7 +9,8 @@
  */
 
 export const DELTA_SESSION_FORMAT = 'hex-delta-session';
-export const DELTA_SESSION_VERSION = 1;
+export const DELTA_SESSION_VERSION = 2;
+export const SUPPORTED_DELTA_VERSIONS = new Set([1, 2]);
 export const MAX_BOOKMARKS = 500;
 export const MAX_RECENT_DELTAS = 25;
 export const MAX_DELTA_ENTRY_BYTES = 512 * 1024;      // 512 KiB per-binary
@@ -85,6 +86,25 @@ function byteLengthUtf8(text) {
     return new TextEncoder().encode(text).byteLength;
   }
   return Buffer.byteLength(text, 'utf8');
+}
+
+const FORBIDDEN_JSON_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function hasForbiddenJsonKeys(value, depth = 0, seen = new Set()) {
+  if (depth > 32 || !value || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      if (hasForbiddenJsonKeys(value[i], depth + 1, seen)) return true;
+    }
+    return false;
+  }
+  for (const key of Object.getOwnPropertyNames(value)) {
+    if (FORBIDDEN_JSON_KEYS.has(key)) return true;
+    if (hasForbiddenJsonKeys(value[key], depth + 1, seen)) return true;
+  }
+  return false;
 }
 
 function sanitizeJsonValue(value, depth = 0) {
@@ -288,8 +308,59 @@ function normalizeDeltaForStorage(input) {
     ? rawDelta.projectAnnotations.map((a) => sanitizeJsonValue(a)).filter((a) => a != null)
     : [];
 
+  const sanitizeArray = (arr) => (Array.isArray(arr) ? arr.map((x) => sanitizeJsonValue(x)).filter((x) => x != null) : []);
+  const sanitizeMapObj = (obj) => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+    const sanitized = sanitizeJsonValue(obj);
+    return sanitized && typeof sanitized === 'object' && !Array.isArray(sanitized) ? sanitized : {};
+  };
+  const sanitizeArrayOrMap = (val) => {
+    if (Array.isArray(val)) return sanitizeArray(val);
+    return sanitizeMapObj(val);
+  };
+
+  const manualSegments = sanitizeArray(rawDelta.manualSegments);
+  // Lossless v1->v2 migration of legacy structOverrides (array or object) -> manualSegments
+  const legacyOverrides = rawDelta.structOverrides ?? src.structOverrides;
+  if (Array.isArray(legacyOverrides)) {
+    for (const item of legacyOverrides) {
+      if (!item || typeof item !== 'object') continue;
+      const startBig = toBigIntAddress(item.startVa ?? item.va);
+      if (startBig == null) continue;
+      const byteLen = Number.isSafeInteger(Number(item.byteLen ?? item.size)) && Number(item.byteLen ?? item.size) > 0
+        ? Number(item.byteLen ?? item.size)
+        : 8;
+      manualSegments.push(sanitizeJsonValue({
+        startVa: `0x${startBig.toString(16)}`,
+        byteLen,
+        kind: 5,
+        migratedFromLegacyStructOverride: true,
+        ...(item.structName ? { structName: String(item.structName) } : {}),
+      }));
+    }
+  } else if (legacyOverrides && typeof legacyOverrides === 'object') {
+    for (const [rawKey, rawVal] of Object.entries(legacyOverrides)) {
+      if (FORBIDDEN_JSON_KEYS.has(rawKey)) continue;
+      const startBig = toBigIntAddress(rawKey);
+      if (startBig == null) continue;
+      const byteLen = rawVal && typeof rawVal === 'object' && Number.isSafeInteger(Number(rawVal.byteLen ?? rawVal.size)) && Number(rawVal.byteLen ?? rawVal.size) > 0
+        ? Number(rawVal.byteLen ?? rawVal.size)
+        : 8;
+      const structName = typeof rawVal === 'string'
+        ? rawVal
+        : (rawVal && typeof rawVal === 'object' && rawVal.structName ? String(rawVal.structName) : null);
+      manualSegments.push(sanitizeJsonValue({
+        startVa: `0x${startBig.toString(16)}`,
+        byteLen,
+        kind: 5,
+        migratedFromLegacyStructOverride: true,
+        ...(structName ? { structName } : {}),
+      }));
+    }
+  }
+
   const delta = {
-    names: normalizeStringMap(rawDelta.names, { addressKeys: true, maxValueLen: 120 }),
+    names: normalizeStringMap(rawDelta.names ?? rawDelta.renames, { addressKeys: true, maxValueLen: 120 }),
     comments: normalizeStringMap(rawDelta.comments, { addressKeys: true, maxValueLen: 500 }),
     vars: normalizeStringMap(rawDelta.vars, { addressKeys: false, maxValueLen: 120 }),
     types: normalizeStringMap(rawDelta.types, { addressKeys: false, maxValueLen: 80 }),
@@ -297,6 +368,13 @@ function normalizeDeltaForStorage(input) {
     bookmarks,
     patches,
     projectAnnotations,
+    displayHints: sanitizeMapObj(rawDelta.displayHints),
+    manualSegments,
+    funcChunks: sanitizeArray(rawDelta.funcChunks),
+    customAbis: sanitizeArrayOrMap(rawDelta.customAbis),
+    stackSlotOverrides: sanitizeArrayOrMap(rawDelta.stackSlotOverrides),
+    shiftedPtrs: sanitizeArrayOrMap(rawDelta.shiftedPtrs),
+    pinnedMasks: sanitizeMapObj(rawDelta.pinnedMasks),
   };
 
   const history = Array.isArray(rawResume.history)
@@ -372,6 +450,13 @@ function hydrateDeltaRecord(stored) {
       bookmarks: normalized.delta.bookmarks.map(hydrateBookmark).filter(Boolean),
       patches: normalized.delta.patches.map(hydratePatch).filter(Boolean),
       projectAnnotations: normalized.delta.projectAnnotations,
+      displayHints: normalized.delta.displayHints,
+      manualSegments: normalized.delta.manualSegments,
+      funcChunks: normalized.delta.funcChunks,
+      customAbis: normalized.delta.customAbis,
+      stackSlotOverrides: normalized.delta.stackSlotOverrides,
+      shiftedPtrs: normalized.delta.shiftedPtrs,
+      pinnedMasks: normalized.delta.pinnedMasks,
     },
     resume: {
       lastAddress: toBigIntAddress(normalized.resume.lastAddress),
@@ -426,12 +511,26 @@ export function countDeltaItems(delta) {
     + arrCount(delta.bookmarks)
     + arrCount(delta.patches)
     + arrCount(delta.projectAnnotations)
+    + mapCount(delta.displayHints)
+    + arrCount(delta.manualSegments)
+    + arrCount(delta.funcChunks)
+    + mapCount(delta.customAbis)
+    + mapCount(delta.stackSlotOverrides)
+    + mapCount(delta.shiftedPtrs)
+    + mapCount(delta.pinnedMasks)
   );
 }
 
 export function serializeDeltaJson(record) {
   const normalized = normalizeDeltaForStorage(record);
-  return JSON.stringify(normalized, null, 2);
+  const json = JSON.stringify(normalized, null, 2);
+  const bytes = byteLengthUtf8(json);
+  if (bytes > MAX_DELTA_ENTRY_BYTES) {
+    const err = new Error(`Delta JSON exceeds ${MAX_DELTA_ENTRY_BYTES} byte budget (${bytes} bytes)`);
+    err.code = 'DELTA_JSON_TOO_LARGE';
+    throw err;
+  }
+  return json;
 }
 
 export function parseDeltaJson(text, expectedSha256 = null) {
@@ -450,10 +549,13 @@ export function parseDeltaJson(text, expectedSha256 = null) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { ok: false, record: null, hashMismatch: false, error: 'delta-json-invalid-root' };
   }
+  if (hasForbiddenJsonKeys(parsed)) {
+    return { ok: false, record: null, hashMismatch: false, error: 'delta-json-forbidden-key' };
+  }
   if (parsed.format !== DELTA_SESSION_FORMAT) {
     return { ok: false, record: null, hashMismatch: false, error: 'delta-json-invalid-format' };
   }
-  if (parsed.version !== DELTA_SESSION_VERSION) {
+  if (!SUPPORTED_DELTA_VERSIONS.has(parsed.version)) {
     return { ok: false, record: null, hashMismatch: false, error: 'delta-json-unsupported-version' };
   }
   if (!parsed.delta || typeof parsed.delta !== 'object' || Array.isArray(parsed.delta)) {
@@ -718,7 +820,11 @@ export class DeltaSessionStore {
       const raw = this.localStorage.getItem(LS_RECENTS_KEY);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed.filter((r) => r && typeof r.deltaKey === 'string') : [];
+      if (!Array.isArray(parsed) || hasForbiddenJsonKeys(parsed)) return [];
+      return parsed
+        .filter((r) => r && typeof r === 'object' && !Array.isArray(r) && typeof r.deltaKey === 'string')
+        .map((r) => sanitizeJsonValue(r))
+        .filter((r) => r && typeof r.deltaKey === 'string');
     } catch {
       return [];
     }
@@ -930,7 +1036,7 @@ export class DeltaSessionStore {
         const done = txDone(tx);
         const raw = await idbRequest(tx.objectStore(SESSIONS_STORE).get(cleanKey));
         await done;
-        if (raw && raw.format === DELTA_SESSION_FORMAT && raw.version === DELTA_SESSION_VERSION) {
+        if (raw && raw.format === DELTA_SESSION_FORMAT && SUPPORTED_DELTA_VERSIONS.has(raw.version)) {
           idbRecord = hydrateDeltaRecord(raw);
         }
       } catch {
@@ -944,7 +1050,7 @@ export class DeltaSessionStore {
         const rawText = this.localStorage.getItem(this._lsKey(cleanKey));
         if (rawText) {
           const parsed = JSON.parse(rawText);
-          if (parsed && parsed.format === DELTA_SESSION_FORMAT && parsed.version === DELTA_SESSION_VERSION) {
+          if (parsed && parsed.format === DELTA_SESSION_FORMAT && SUPPORTED_DELTA_VERSIONS.has(parsed.version)) {
             lsRecord = hydrateDeltaRecord(parsed);
           }
         }

@@ -41,6 +41,7 @@ import { appProducerAbortError, waitForAppProducer } from './analysis/producer-w
 import { clearSchemaRecoveryTasks } from './analysis/schema-recovery-task.js';
 import { AnalysisResumeStore, captureAppAnalysisState, applyAppAnalysisState } from './cache/analysis-resume.js';
 import {
+  DELTA_SESSION_VERSION,
   BookmarkStore,
   DeltaSessionStore,
   VALID_EXPLORER_FILTERS,
@@ -51,6 +52,7 @@ import {
   serializeDeltaJson,
   parseDeltaJson,
 } from './cache/delta-session.js';
+import { attachV6Workbench } from './ui/v6-workbench-bridge.js';
 
 
 let _panelsModulePromise = null;
@@ -435,6 +437,7 @@ export class App {
     this.analysisResume = new AnalysisResumeStore();
     this.analysisResumeReady = Promise.resolve(false);
     this.activeProject = null;
+    this.v6 = attachV6Workbench(this);
 
     this.applyTheme(this.prefs.theme || 'system');
     this.applyTextSize(this.prefs.textSize || 'm');
@@ -841,6 +844,7 @@ export class App {
   forgetSemantics(dropCache) {
     this.semantic = null;
     if (dropCache) {
+      this.v6?.detach?.();
       clearSchemaRecoveryTasks(this);
       this.featureIndex = null;
       this.stringIndex = null;
@@ -1556,9 +1560,11 @@ export class App {
       explorerSort: this.uiResume?.explorerSort || 'address',
       lastFunctionTab: this.uiResume?.lastFunctionTab ?? null,
     };
+    const v6Delta = this.v6?.exportV2DeltaFields?.() || {};
+    Object.assign(delta, v6Delta);
     return {
       format: 'hex-delta-session',
-      version: 1,
+      version: DELTA_SESSION_VERSION,
       fingerprint,
       updatedAt: Date.now(),
       savedCount: countDeltaItems(delta),
@@ -1621,6 +1627,7 @@ export class App {
       this.projectAnnotations = Array.isArray(delta.projectAnnotations)
         ? delta.projectAnnotations.slice()
         : [];
+      this.v6?.importV2DeltaFields?.(delta);
 
       if (this.symbols && this.symbols !== EMPTY_INDEX) {
         for (const addrKey of previousNoteNames) {
@@ -1917,6 +1924,7 @@ export class App {
     const baseSymbolsReady = this.analysisBaseSymbolsReady || this.symbolsReady || Promise.resolve();
     if (!sampleOpen && !restoredOpen) void this.analysisResume.saveLastFile(file, { sliceIndex }).catch(() => {});
     this.analysisResumeReady = Promise.allSettled([projectReady, baseSymbolsReady]).then(async () => {
+      try { this.v6?.onBinaryReady?.(this._currentDeltaFingerprint?.()); } catch { /* non-fatal */ }
       if (openEpoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
       let binaryId = this.backend.binaryId;
       if (!binaryId) {
