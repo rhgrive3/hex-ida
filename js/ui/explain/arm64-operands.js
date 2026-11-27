@@ -25,6 +25,7 @@ function splitTop(s) {
 
 function bigOf(text) {
   try {
+    if (/^-0x/i.test(text)) return -BigInt(text.slice(1));
     if (/^0x/i.test(text)) return BigInt(text);
     if (/\./.test(text)) return null;              // 浮動小数点リテラル
     return BigInt(text);
@@ -107,7 +108,11 @@ function parseMem(text) {
     const reg = parseReg(p);
     if (reg) { if (mem.index) return null; mem.index = reg; continue; }
     const sh = SHIFT_RE.exec(p) || EXT_RE.exec(p);
-    if (sh) mem.shift = { op: sh[1].toLowerCase(), amount: sh[2] != null ? Number(bigOf(sh[2])) : null };
+    if (sh) {
+      const rawAmt = sh[2] != null ? bigOf(sh[2]) : null;
+      if (sh[2] != null && (rawAmt == null || rawAmt < 0n || rawAmt > BigInt(Number.MAX_SAFE_INTEGER))) return null;
+      mem.shift = { op: sh[1].toLowerCase(), amount: rawAmt != null ? Number(rawAmt) : null };
+    }
     // Keep unsupported address modifiers visible to the caller instead of
     // silently presenting the remaining components as a different address
     // (#4872, e.g. SVE's "MUL VL").
@@ -148,7 +153,10 @@ export function parseOperands(str) {
     }
     const sh = SHIFT_RE.exec(raw) || EXT_RE.exec(raw);
     if (sh && out.length) {
-      out[out.length - 1].shift = { op: sh[1].toLowerCase(), amount: sh[2] != null ? Number(bigOf(sh[2])) : null };
+      const rawAmt = sh[2] != null ? bigOf(sh[2]) : null;
+      if (sh[2] == null || (rawAmt != null && rawAmt >= 0n && rawAmt <= BigInt(Number.MAX_SAFE_INTEGER))) {
+        out[out.length - 1].shift = { op: sh[1].toLowerCase(), amount: rawAmt != null ? Number(rawAmt) : null };
+      }
       continue;
     }
     const imm = parseImm(raw);
@@ -296,7 +304,7 @@ const CONDS = {
 };
 
 export function condInfo(name) {
-  const c = CONDS[name];
+  const c = Object.hasOwn(CONDS, name) ? CONDS[name] : null;
   if (!c) return null;
   return { ja: c.ja, en: c.en, expr: c.expr, text: pick(c.ja, c.en) };
 }

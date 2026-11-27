@@ -70,7 +70,7 @@ export function narrowedPriorCount(candidates, universe) {
    */
   const exact = candidates.filter((c) => c && c.askedByName);
   if (exact.length) return exact.length;
-  const primary = candidates.filter((c) => c && !(c.source === 'cxx' && c.recallLane));
+  const primary = candidates.filter((c) => c && !c.recallLane);
   const literal = primary.filter((c) => c.askedBySequence || c.askedByWords);
   if (literal.length && literal.length === primary.length) return literal.length;
   return Math.max(1, universe || candidates.length);
@@ -87,6 +87,7 @@ export function narrowedPriorCount(candidates, universe) {
 export function byRecallLane(a, b) {
   return ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
     || (b.fusion.logOdds - a.fusion.logOdds)
+    || ((b.fusion.rawLogOdds ?? b.fusion.logOdds) - (a.fusion.rawLogOdds ?? a.fusion.logOdds))
     || (a.source === 'cxx' || b.source === 'cxx'
       ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
       : 0);
@@ -391,6 +392,7 @@ function guardedAnalyze(analyze, opts) {
       };
       controller.signal.addEventListener('abort', onControllerAbort, { once: true });
     });
+    timeout.catch(() => {});
     try {
       operation = analyze(...analyzeArgsWithSignal(args, controller.signal));
       return await Promise.race([Promise.resolve(operation), timeout]);
@@ -433,7 +435,7 @@ function groupAt(groups, key) {
 function sizeMatches(site, size) {
   const wanted = Number(size) || 0;
   if (wanted <= 0) return true;
-  return site?.size === wanted || (wanted > 8 && site?.size === 8);
+  return site?.size == null || site.size === wanted || (wanted > 8 && site.size === 8);
 }
 
 function safeOffsetKey(offset) {
@@ -527,7 +529,6 @@ function batchedScanAccess(scanAccess, opts) {
 
       const ms = accessTimeoutMs(opts);
       const controller = new AbortController();
-      const unlinkParent = linkParentSignal(controller, opts?.signal || null);
       let timer = null;
       let operation = null;
       let timedOut = false;
@@ -546,23 +547,23 @@ function batchedScanAccess(scanAccess, opts) {
         };
         controller.signal.addEventListener('abort', onControllerAbort, { once: true });
       });
+      timeout.catch(() => {});
       try {
         operation = scanAccess(toScan, { signal: controller.signal });
       } catch (error) {
         if (timer != null) clearTimeout(timer);
         if (onControllerAbort) controller.signal.removeEventListener('abort', onControllerAbort);
-        unlinkParent();
         state.failed = true;
         throw error;
       }
       const inFlight = Promise.race([Promise.resolve(operation), timeout])
         .then((groups) => {
-          if (!timedOut && opts?.signal?.aborted) return state.groups || emptyGroups();
+          if (timedOut || controller.signal.aborted) return state.groups || emptyGroups();
           mergeScannedGroups(state, toScan, groups);
           return state.groups;
         })
         .catch(() => {
-          if (timedOut || !opts?.signal?.aborted) {
+          if (timedOut || (!controller.signal.aborted && !isAborted())) {
             state.failed = true;
           }
           return state.groups || emptyGroups();
@@ -570,7 +571,6 @@ function batchedScanAccess(scanAccess, opts) {
         .finally(() => {
           if (timer != null) clearTimeout(timer);
           if (onControllerAbort) controller.signal.removeEventListener('abort', onControllerAbort);
-          unlinkParent();
           if (state.promise === inFlight) state.promise = null;
         });
       state.promise = inFlight;
@@ -743,10 +743,10 @@ export async function pinpointField(opts = {}) {
     candidates: ranked,
     priorCandidates,
     priorStableAcrossVerification: true,
-    changeSites: oldTopKey === newTopKey ? raw.changeSites : ((decision.top && decision.top.sites) || []),
+    changeSites: oldTopKey === newTopKey ? raw.changeSites : ((decision.top && (decision.top.changeSites || decision.top.sites)) || []),
   };
   const preferred = opts.binaryContextPreference === true
-    ? withCxxSemanticPreference(opts.goal?.text, result, opts.symbols) : result;
+    ? withCxxSemanticPreference(opts.goal?.text, result, opts.symbols, { policy: opts.cxxSemanticPolicy || 'object-context-v4', goal: opts.goal }) : result;
   return hydrateShapeChangeSites({ ...preferred, candidates: preferred.candidates.slice(0, requestedLimit) }, opts);
 }
 
@@ -778,7 +778,7 @@ export async function pinpoint(opts = {}) {
   }
 
   let fn = null;
-  if (!cancelled() && o.ranked && o.ranked.length) {
+  if (!cancelled() && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size) || o.shapesByGoal)) {
     fn = await pinpointFunction(Object.assign({}, o, {
       // Offset-only function verification cannot establish a C++ owner.
       field: field.top && field.top.source !== 'cxx' ? {

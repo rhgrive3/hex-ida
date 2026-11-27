@@ -1108,7 +1108,7 @@ async function swiftReflectionFunctionStarts(slice, lo, hi, requestId, epoch = c
          * first parse of a physical descriptor merges into the output. */
         for (const t of targets) out.add(t);
       }
-      if (cancelled(requestId, epoch)) return finish();
+      if (cancelled(requestId, epoch)) { markTruncated('cancelled'); return finish(); }
     }
   }
   function finish() {
@@ -1711,6 +1711,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
 
   const allocatedBytes = () => callFrom.byteLength + callTo.byteLength + refFrom.byteLength + refTo.byteLength + refKind.byteLength + kinds.byteLength;
   const canGrow = (temporaryBytes) => WORKER_BUDGET.withinProgramBudget(allocatedBytes(), temporaryBytes) && allocatedBytes() + temporaryBytes <= PROGRAM_INDEX_BUDGET_BYTES;
+  let reusableBlockWords = null;
 
   while (pos < total) {
     if (cancelled(requestId, epoch)) return { cancelled: true, __transfer: [] };
@@ -1719,12 +1720,22 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
     if (blk.length < 4) break;
     const n = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, n * 4);
+    let blockWords = null;
+    let blockKinds = null;
+    if (n >= 64 && typeof Words.classifyWordsBatch === 'function') {
+      if (!reusableBlockWords || reusableBlockWords.length < n) {
+        reusableBlockWords = new Uint32Array(n);
+      }
+      blockWords = reusableBlockWords.length === n ? reusableBlockWords : reusableBlockWords.subarray(0, n);
+      for (let i = 0; i < n; i++) blockWords[i] = dv.getUint32(i * 4, true);
+      blockKinds = Words.classifyWordsBatch(blockWords);
+    }
 
     for (let i = 0; i < n; i++, index++) {
-      const w = dv.getUint32(i * 4, true);
+      const w = blockWords ? blockWords[i] : dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
       provenance.enter(pc);
-      const kind = Words.classifyWord(w);
+      const kind = blockKinds ? blockKinds[i] : Words.classifyWord(w);
       if (index < kinds.length) kinds[index] = inlineCanonicalKinds ? canonicalProgramKind(w, kind) : kind;
 
       if (kind === Words.KIND.CALL || kind === Words.KIND.INDCALL) {
@@ -2087,14 +2098,16 @@ if (r != null && r !== 31) {
 continue;
         }
 
-        if (mem.load) {
-const r = mem.reg;
-if (r !== 31) {
-  spanOf[r] = 0;
-  pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
-  pDir[r] = 0; pClamp[r] = 0;
-  pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
-  pAmtSize[r] = 0; pAmtSpan[r] = 0;
+        if (mem.load || mem.prefetch) {
+if (mem.load && !mem.vector && !mem.prefetch) {
+  const r = mem.reg;
+  if (r !== 31) {
+    spanOf[r] = 0;
+    pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
+    pDir[r] = 0; pClamp[r] = 0;
+    pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
+    pAmtSize[r] = 0; pAmtSpan[r] = 0;
+  }
 }
 continue;
         }
@@ -2271,24 +2284,30 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
       if (kind !== Words.KIND.LOAD && kind !== Words.KIND.STORE && kind !== Words.KIND.ATOMIC) continue;
       const mem = Words.memoryAccess(w);
       if (!mem || mem.disp == null || mem.indexed) continue;
-      const slot = wanted.get(mem.disp.toString());
-      if (!slot || slot.out.length >= cap) continue;
-      // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
-      if (slot.size > 0 && mem.size !== slot.size && !(slot.size > 8 && mem.size === 8)) continue;
+      const hasPairElement = mem.pair && Number.isSafeInteger(mem.elementSize) && mem.elementSize > 0;
+      const accessSize = hasPairElement ? mem.elementSize : mem.size;
+      const baseDisp = mem.mode === 'post' ? 0n : mem.disp;
+      const disps = hasPairElement ? [baseDisp, baseDisp + BigInt(mem.elementSize)] : [baseDisp];
       const byteOff = pos + i * 4;
       const accessKinds = mem.rmw ? ['load', 'store'] : [mem.load ? 'load' : 'store'];
-      for (const accessKind of accessKinds) {
-        if (slot.out.length >= cap) break;
-        slot.out.push({
-          row: byteOff / 4,
-          addr: region.vmAddr + BigInt(byteOff),
-          kind: accessKind,
-          base: mem.base,
-          size: mem.size,
-          atomic: !!mem.atomic,
-          rmw: !!mem.rmw,
-        });
-        found++;
+      for (const disp of disps) {
+        const slot = wanted.get(disp.toString());
+        if (!slot || slot.out.length >= cap) continue;
+        // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
+        if (slot.size > 0 && accessSize !== slot.size && !(slot.size > 8 && accessSize === 8)) continue;
+        for (const accessKind of accessKinds) {
+          if (slot.out.length >= cap) break;
+          slot.out.push({
+            row: byteOff / 4,
+            addr: region.vmAddr + BigInt(byteOff),
+            kind: accessKind,
+            base: mem.base,
+            size: accessSize,
+            atomic: !!mem.atomic,
+            rmw: !!mem.rmw,
+          });
+          found++;
+        }
       }
     }
     pos += words * 4;
@@ -2375,7 +2394,8 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   const minLen = Math.max(2, Number(min) || STRINGS_MIN);
   const cap = Math.min(Number(limit) || STRINGS_LIMIT, STRINGS_LIMIT);
   const regionBytes = Number(region.size);
-  const total = Math.min(regionBytes, Math.max(0, Number(maxBytes == null ? regionBytes : maxBytes)));
+  const rawMaxBytes = maxBytes == null ? regionBytes : Number(maxBytes);
+  const total = Math.min(regionBytes, Math.max(0, Number.isFinite(rawMaxBytes) ? rawMaxBytes : regionBytes));
   const out = [];
   let pos = 0;                 // 次に読むファイル内の位置（region 先頭から）
   let runStart = -1;           // いま伸びている文字列の先頭
@@ -2495,12 +2515,12 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
       const pc = region.vmAddr + BigInt(byteOff);
       provenance.enter(pc);
 
+      const kind = Words.classifyWord(w);
       const direct = wordTarget(w, pc);
       if (direct !== null && direct === want) {
-        out.push({ row: byteOff / 4, addr: pc, kind: 'branch' });
+        out.push({ row: byteOff / 4, addr: pc, kind: kind === Words.KIND.LITERAL ? 'load' : 'branch' });
         if (out.length >= cap) break;
       }
-      const kind = Words.classifyWord(w);
       if (kind === Words.KIND.CALL || kind === Words.KIND.INDCALL ||
           kind === Words.KIND.CONDBR || kind === Words.KIND.BRANCH ||
           kind === Words.KIND.RET || kind === Words.KIND.TRAP) {
@@ -2602,6 +2622,7 @@ function vmToFile(addr) {
  * 「adrp + add で作ったアドレスに何があるか」を見せるために使う。
  */
 async function readAtAddress({ addr, len, text }) {
+  if (addr == null || typeof addr === 'boolean' || (typeof addr === 'string' && !addr.trim())) return { found: false };
   const at = BigInt(addr);
   const hit = vmToFile(at);
   if (!hit) return { found: false };
@@ -2781,7 +2802,9 @@ async function classifyExecutableCoverage({ gaps, regionIds, endian = 'little', 
             if (subOff + subLen <= blk.length) {
               classifySliceWords(blk, subOff, subLen, subVm);
             } else {
-              appendSpan(subVm, subVm + BigInt(subLen), 'unknown');
+              const readable = subOff < blk.length ? ((Math.min(subLen, blk.length - subOff)) & ~3) : 0;
+              if (readable > 0) classifySliceWords(blk, subOff, readable, subVm);
+              if (readable < subLen) appendSpan(subVm + BigInt(readable), subVm + BigInt(subLen), 'unknown');
             }
           }
         }
@@ -2822,12 +2845,67 @@ async function classifyExecutableCoverage({ gaps, regionIds, endian = 'little', 
 
 /* ── search ─────────────────────────────────────────────────── */
 
+function compileLegacyBytePattern(pattern, mask, foldAscii) {
+  const length = pattern && pattern.length;
+  if (!Number.isInteger(length) || length < 3 || length > 4096) return null;
+  const lowerByte = (b) => (b >= 65 && b <= 90 ? b + 32 : b);
+  const expected = new Uint8Array(length);
+  const masks = foldAscii ? null : new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    const pb = pattern[i];
+    if (typeof pb !== 'number' || !Number.isInteger(pb) || pb < 0 || pb > 255) return null;
+    expected[i] = foldAscii ? lowerByte(pb) : pb;
+    if (masks) {
+      const mb = mask && mask[i];
+      if (typeof mb !== 'number' || !Number.isInteger(mb) || mb < 0 || mb > 255) return null;
+      masks[i] = mb;
+    }
+  }
+  if (masks) {
+    let allZero = true;
+    for (let i = 0; i < length; i++) if (masks[i] !== 0) { allZero = false; break; }
+    if (allZero) {
+      let matches = true;
+      for (let i = 0; i < length; i++) if (expected[i] !== 0) { matches = false; break; }
+      return { find(bytes, from) { return matches && from <= bytes.length - length ? from : -1; } };
+    }
+  }
+  const skip = new Uint32Array(256);
+  skip.fill(length);
+  for (let i = 0; i < length - 1; i++) {
+    const distance = length - 1 - i;
+    if (!masks || masks[i] === 255) skip[expected[i]] = distance;
+    else {
+      const m = masks[i], e = expected[i];
+      for (let byte = 0; byte < 256; byte++) if ((byte & m) === e) skip[byte] = distance;
+    }
+  }
+  return {
+    find(bytes, from) {
+      const last = length - 1;
+      const end = bytes.length - length;
+      for (let at = from; at <= end;) {
+        const tail = foldAscii ? lowerByte(bytes[at + last]) : bytes[at + last];
+        let idx = last;
+        for (; idx >= 0; idx--) {
+          const actual = foldAscii ? lowerByte(bytes[at + idx]) : bytes[at + idx];
+          if (masks ? (actual & masks[idx]) !== expected[idx] : actual !== expected[idx]) break;
+        }
+        if (idx < 0) return at;
+        at += skip[tail];
+      }
+      return -1;
+    },
+  };
+}
+
 async function runSearch({ regionId, kind, query, hex, from, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
   const results = [];
   const total = Number(region.size);
-  const startByte = Math.max(0, Math.min(total, Number(from || 0)));
+  const rawFrom = Number(from ?? 0);
+  const startByte = Math.max(0, Math.min(total, Number.isFinite(rawFrom) ? rawFrom : 0));
   let scanned = 0;
   let capped = false;
 
@@ -2835,6 +2913,7 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     const pat = hex;
     if (!pat || !pat.bytes.length) throw new Error('Enter a hex pattern such as “FD 7B” or “D1??00”.');
     const plen = pat.bytes.length;
+    const matcher = compileLegacyBytePattern(pat.bytes, pat.mask, false);
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
@@ -2846,15 +2925,19 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
       const base = pos - carry.length;
       const limit = joined.length - plen + 1;
       for (let i = 0; i < limit; i++) {
-        let ok = true;
-        for (let j = 0; j < plen; j++) {
-          if ((joined[i + j] & pat.mask[j]) !== pat.bytes[j]) { ok = false; break; }
+        if (matcher) {
+          i = matcher.find(joined, i);
+          if (i < 0) break;
+        } else {
+          let ok = true;
+          for (let j = 0; j < plen; j++) {
+            if ((joined[i + j] & pat.mask[j]) !== pat.bytes[j]) { ok = false; break; }
+          }
+          if (!ok) continue;
         }
-        if (ok) {
-          const byteOff = base + i;
-          push(results, byteOff, region, joined, i, plen);
-          if (results.length >= SEARCH_LIMIT) { capped = true; break; }
-        }
+        const byteOff = base + i;
+        push(results, byteOff, region, joined, i, plen);
+        if (results.length >= SEARCH_LIMIT) { capped = true; break; }
       }
       pos += blk.length;
       scanned = pos - startByte;
@@ -2872,6 +2955,7 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     const lower = (b) => (b >= 65 && b <= 90 ? b + 32 : b);
     for (let i = 0; i < pat.length; i++) pat[i] = lower(pat[i]);
     const plen = pat.length;
+    const matcher = compileLegacyBytePattern(pat, null, true);
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
@@ -2883,11 +2967,16 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
       const base = pos - carry.length;
       const limit = joined.length - plen + 1;
       for (let i = 0; i < limit; i++) {
-        let ok = true;
-        for (let j = 0; j < plen; j++) {
-          if (lower(joined[i + j]) !== pat[j]) { ok = false; break; }
+        if (matcher) {
+          i = matcher.find(joined, i);
+          if (i < 0) break;
+        } else {
+          let ok = true;
+          for (let j = 0; j < plen; j++) {
+            if (lower(joined[i + j]) !== pat[j]) { ok = false; break; }
+          }
+          if (!ok) continue;
         }
-        if (!ok) continue;
         const byteOff = base + i;
         // 前後を少し添えて、どんな文字列の中の一致か分かるようにする
         let text = '';

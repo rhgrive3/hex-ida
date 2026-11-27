@@ -36,12 +36,44 @@ const ZERO = () => ({
 
 export function createMetrics(options = {}) {
   const filePath = options.path;
+  const COUNTER_KEYS = Object.keys(ZERO());
   let totals = { ...ZERO(), startedAt: new Date().toISOString() };
+  let delta = ZERO();
+  let loaded = false;
+  let resetPending = false;
+
+  function readFromDisk() {
+    if (!filePath) return null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      if (parsed && typeof parsed === "object") {
+        const base = { ...ZERO(), startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : new Date().toISOString() };
+        for (const key of COUNTER_KEYS) {
+          if (typeof parsed[key] === "number" && Number.isFinite(parsed[key])) {
+            base[key] = parsed[key];
+          }
+        }
+        return base;
+      }
+    } catch {
+      /* missing or corrupt metrics are simply replaced by a fresh set */
+    }
+    return null;
+  }
+
+  function ensureLoaded() {
+    if (loaded || resetPending || !filePath) return;
+    loaded = true;
+    const disk = readFromDisk();
+    if (disk) totals = disk;
+  }
 
   function record(patch = {}) {
+    ensureLoaded();
     for (const [key, value] of Object.entries(patch)) {
       if (typeof value === "number" && Number.isFinite(value)) {
         totals[key] = (totals[key] || 0) + value;
+        if (key in delta) delta[key] = (delta[key] || 0) + value;
       }
     }
     return totals;
@@ -79,6 +111,7 @@ export function createMetrics(options = {}) {
   }
 
   function snapshot() {
+    ensureLoaded();
     const averageLatencyMs =
       totals.openjevLatencySamples > 0 ? totals.openjevLatencyTotalMs / totals.openjevLatencySamples : 0;
     const removalRatio =
@@ -99,10 +132,22 @@ export function createMetrics(options = {}) {
   function save() {
     if (!filePath) return { saved: false };
     try {
+      if (!resetPending) {
+        const disk = readFromDisk();
+        if (disk) {
+          for (const key of COUNTER_KEYS) {
+            disk[key] = (disk[key] || 0) + (delta[key] || 0);
+          }
+          totals = disk;
+        }
+      }
+      loaded = true;
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      const tmp = `${filePath}.${process.pid}.tmp`;
+      const tmp = `${filePath}.${process.pid}.${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(snapshot(), null, 2), { mode: 0o600 });
       fs.renameSync(tmp, filePath);
+      delta = ZERO();
+      resetPending = false;
       return { saved: true };
     } catch {
       return { saved: false };
@@ -111,17 +156,19 @@ export function createMetrics(options = {}) {
 
   function reset() {
     totals = { ...ZERO(), startedAt: new Date().toISOString() };
+    delta = ZERO();
+    loaded = true;
+    resetPending = true;
     return totals;
   }
 
   function load() {
+    loaded = true;
+    resetPending = false;
+    delta = ZERO();
     if (!filePath) return snapshot();
-    try {
-      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-      if (parsed && typeof parsed === "object") totals = { ...ZERO(), ...parsed };
-    } catch {
-      /* missing or corrupt metrics are simply replaced by a fresh set */
-    }
+    const disk = readFromDisk();
+    if (disk) totals = disk;
     return snapshot();
   }
 

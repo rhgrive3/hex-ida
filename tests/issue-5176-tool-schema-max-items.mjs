@@ -20,7 +20,7 @@ const issueSchema = {
   // The issue's exact schema must keep maxItems:1 through sanitization.
   const out = sanitizeToolSchema(issueSchema);
   assert.equal(out.properties.xs.maxItems, 1, 'maxItems must survive the worker-boundary sanitizer');
-  assert.deepEqual(out.properties.xs.items, { type: 'string', properties: {} });
+  assert.deepEqual(out.properties.xs.items, { type: 'string' });
   assert.equal(out.properties.xs.type, 'array');
 }
 

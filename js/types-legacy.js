@@ -374,7 +374,7 @@ export function recoverStruct(model, reg) {
   const list = Array.from(members.values()).sort((a, b) => a.offset - b.offset);
   for (const m of list) {
     m.type = typeFromAccess(m.size, { signed: m.signed });
-    m.name = 'field_' + m.offset.toString(16).toUpperCase();
+    m.name = m.offset < 0 ? 'field_neg_' + Math.abs(m.offset).toString(16).toUpperCase() : 'field_' + m.offset.toString(16).toUpperCase();
   }
   const last = list[list.length - 1];
   return {
@@ -422,7 +422,7 @@ export class TypeStore {
     const s = this.get(structName);
     if (!s) return null;
     let m = s.members.find((x) => x.offset === offset);
-    if (!m) { m = { offset, size: 8, type: 'int64', name: 'field_' + offset.toString(16) }; s.members.push(m); }
+    if (!m) { m = { offset, size: 8, type: 'int64', name: offset < 0 ? 'field_neg_' + Math.abs(offset).toString(16) : 'field_' + offset.toString(16) }; s.members.push(m); }
     Object.assign(m, patch || {});
     if (patch && patch.type) m.size = sizeOfType(patch.type);
     s.members.sort((a, b) => a.offset - b.offset);
@@ -474,21 +474,27 @@ export class TypeStore {
 
   /** C のヘッダとして書き出す。 */
   toC(name) {
-    return structToC(this.get(name));
+    const s = this.get(name);
+    if (!s) return '';
+    return structToC(s);
   }
 }
 
 /** 構造体 1 つを C のかたちの文字列にする（保存していないものにも使える）。 */
 export function structToC(s) {
-  {
-    const lines = ['struct ' + s.name + ' {'];
-    let cursor = 0;
-    for (const m of s.members) {
-      if (m.offset > cursor) lines.push('    uint8 pad_' + cursor.toString(16) + '[' + (m.offset - cursor) + '];');
-      lines.push('    ' + m.type + ' ' + m.name + ';' + '   // +0x' + m.offset.toString(16).toUpperCase());
-      cursor = m.offset + (m.size || 8);
-    }
-    lines.push('};   // 全体で ' + s.size + ' バイト');
-    return lines.join('\n');
+  if (!s || typeof s !== 'object') return '';
+  const name = typeof s.name === 'string' && s.name ? s.name : 'anonymous';
+  const members = Array.isArray(s.members) ? s.members : [];
+  const lines = ['struct ' + name + ' {'];
+  let cursor = 0;
+  for (const m of members) {
+    if (!m || typeof m !== 'object') continue;
+    const offset = Number.isFinite(m.offset) ? m.offset : cursor;
+    if (offset > cursor) lines.push('    uint8 pad_' + cursor.toString(16) + '[' + (offset - cursor) + '];');
+    lines.push('    ' + m.type + ' ' + m.name + ';' + '   // +0x' + offset.toString(16).toUpperCase());
+    cursor = Math.max(cursor, offset + (m.size || 8));
   }
+  const size = s.size != null ? s.size : cursor;
+  lines.push('};   // 全体で ' + size + ' バイト');
+  return lines.join('\n');
 }

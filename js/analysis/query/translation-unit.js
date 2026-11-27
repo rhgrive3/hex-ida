@@ -37,6 +37,48 @@ const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
   ['int64', 'int64_t'], ['uint64', 'uint64_t'],
 ]));
 
+const EXTENDED_128_TYPE_ALIASES = Object.freeze(new Map([
+  ['uint128', 'unsigned __int128'],
+  ['int128', '__int128'],
+  ['vector128', 'unsigned __int128'],
+]));
+
+const STANDALONE_BINARY_GLOBALS_COMMENT = '/* hex: binary-backed global declarations (self-contained C output). */';
+const FIXED_WIDTH_PRELUDE_COMMENT = '/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */';
+
+const HEX_ANY_ARGS_GUARD = [
+  '#ifndef __HEX_ANY_ARGS',
+  '#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L',
+  '#define __HEX_ANY_ARGS ...',
+  '#else',
+  '#define __HEX_ANY_ARGS',
+  '#endif',
+  '#endif',
+].join('\n');
+
+const SAFE_COMPILER_BUILTINS = new Set([
+  '__builtin_bswap16', '__builtin_bswap32', '__builtin_bswap64',
+  '__builtin_clz', '__builtin_clzll', '__builtin_ctz', '__builtin_ctzll',
+  '__builtin_popcount', '__builtin_popcountll',
+  '__builtin_llround', '__builtin_llroundf', '__builtin_trap',
+  '__builtin_expect', '__builtin_unreachable',
+]);
+
+function isBinaryBackedGlobalPreludeComment(line) {
+  return String(line ?? '').trim() === STANDALONE_BINARY_GLOBALS_COMMENT;
+}
+
+function isFixedWidthPreludeComment(line) {
+  return String(line ?? '').trim() === FIXED_WIDTH_PRELUDE_COMMENT;
+}
+
+function isFixedWidth128Typedef(line) {
+  const trimmed = String(line ?? '').trim();
+  return trimmed === 'typedef unsigned __int128 uint128;'
+    || trimmed === 'typedef __int128 int128;'
+    || trimmed === 'typedef unsigned __int128 vector128;';
+}
+
 const C_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const KEYWORDS = new Set([
   'auto', 'break', 'case', 'char', 'const', 'continue', 'default', 'do', 'double',
@@ -49,7 +91,11 @@ const KEYWORDS = new Set([
   'true', 'false', 'NULL',
 ]);
 const PSEUDO_INTRINSIC = /^(?:phi|bit_extract|bit_insert|sext|zext|trunc|__arm64_[A-Za-z0-9_]*|__a64_[A-Za-z0-9_]*)$/;
-const SIMPLE_C_TYPE = /^(?:(?:const|volatile|restrict)\s+)*(?:void|bool|id|float|double|u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|uintptr_t|intptr_t|__int128|unsigned\s+__int128|(?:(?:signed|unsigned)\s+)?(?:char|short|int|long|long\s+long))(?:\s*\*)*$/;
+const MANGLED_EXTERNAL_SYMBOL = /^__(?:s|Z)[A-Za-z0-9_]+$/;
+function isReservedCompilerSymbol(name) {
+  return typeof name === 'string' && name.startsWith('__') && !MANGLED_EXTERNAL_SYMBOL.test(name);
+}
+const SIMPLE_C_TYPE = /^(?:(?:const|volatile|restrict)\s+)*(?:void|bool|id|float|double|u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|uintptr_t|intptr_t|uint128|int128|vector128|__int128|unsigned\s+__int128|(?:(?:signed|unsigned)\s+)?(?:char|short|int|long|long\s+long))(?:\s*\*)*$/;
 const ID_TYPE_USAGE = /(?:^|[\n;({,])\s*(?:(?:const|volatile|restrict|static|extern)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*|\(\s*(?:(?:const|volatile|restrict)\s+)*id\s*\*+\s*\)|(?:^|[=(,:?+\-*/%&|^<>!~;{]|\breturn\b)\s*\(\s*(?:(?:const|volatile|restrict)\s+)*id\s*\)\s*(?:[A-Za-z_0-9("'\[]|&(?!&)|\*(?!\*)|[~!](?!=))|typedef\s+void\s*\*\s*id\s*;/;
 
 function addressKey(value) {
@@ -94,21 +140,30 @@ function declarationBearingText(text) {
   return out;
 }
 
-function normalizedType(raw) {
+function normalizedType(raw, knownStructNames = null) {
   if (typeof raw !== 'string') return null;
   let type = raw.trim().replace(/\s+/g, ' ');
   for (const [alias, standard] of FIXED_WIDTH_ALIASES) {
-    type = type.replace(new RegExp(`\\b${alias}\\b`, 'g'), standard);
+    type = type.replace(new RegExp(`\\b${alias}\\b`, 'g'), () => standard);
+  }
+  for (const [alias, standard] of EXTENDED_128_TYPE_ALIASES) {
+    type = type.replace(new RegExp(`\\b${alias}\\b`, 'g'), () => standard);
   }
   if (!type || /\b(?:unknown|auto|closure|function)\b/i.test(type)) return null;
-  return SIMPLE_C_TYPE.test(type) ? type : null;
+  if (SIMPLE_C_TYPE.test(type)) return type;
+  if (knownStructNames && knownStructNames.size > 0) {
+    const sm = /^(?:(?:const|volatile|restrict)\s+)*(?:struct\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\s*\*)+$/.exec(type);
+    if (sm && knownStructNames.has(sm[1])) return type;
+  }
+  return null;
 }
 
 function headersForText(text, headers) {
   const source = declarationBearingText(text);
   if (/\b(?:u?int(?:8|16|32|64)_t|uintptr_t|intptr_t)\b/.test(source)) headers.add('<stdint.h>');
-  if (/\b(?:size_t|ptrdiff_t)\b/.test(source)) headers.add('<stddef.h>');
-  if (/\bbool\b/.test(source)) headers.add('<stdbool.h>');
+  if (/\b(?:NULL|size_t|ptrdiff_t)\b/.test(source)) headers.add('<stddef.h>');
+  if (/\b(?:bool|true|false)\b/.test(source)) headers.add('<stdbool.h>');
+  if (/\b(?:NAN|INFINITY)\b/.test(source)) headers.add('<math.h>');
 }
 
 function aliasContractsForText(text, headers, declarations, { ownTypedefsEmitted = true } = {}) {
@@ -154,10 +209,15 @@ function looksLikeSignature(text) {
 }
 
 function signatureFromText(text) {
+  let sawFixedWidthPreludeMarker = false;
   for (const rawLine of String(text ?? '').split(/\r?\n/)) {
     const line = rawLine.trim();
+    if (isFixedWidthPreludeComment(line)) {
+      sawFixedWidthPreludeMarker = true;
+      continue;
+    }
     if (!line || line.startsWith('/*') || line.startsWith('//') || line.startsWith('#')) continue;
-    if (isAllowedBodyPrefixLine(line)) continue;
+    if (isAllowedBodyPrefixLine(line) || (sawFixedWidthPreludeMarker && isFixedWidth128Typedef(line))) continue;
     if (looksLikeSignature(line)) return line;
     // The signature, when present, precedes the function body.
     if (line === '{' || line.endsWith('{')) break;
@@ -247,6 +307,81 @@ function parsePointerParameterIndices(declaration) {
   return pointerIndices.size ? pointerIndices : null;
 }
 
+function parseSignatureArity(declaration, name) {
+  if (typeof declaration !== 'string' || typeof name !== 'string' || !name) return null;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const nameMatch = new RegExp(`\\b${escaped}\\s*\\(`).exec(declaration);
+  if (!nameMatch) return null;
+  const openIdx = nameMatch.index + nameMatch[0].length - 1;
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openIdx; i < declaration.length; i++) {
+    const ch = declaration[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) { closeIdx = i; break; }
+    }
+  }
+  if (closeIdx < 0) return null;
+  const paramsText = declaration.slice(openIdx + 1, closeIdx).trim();
+  if (!paramsText || paramsText === '__HEX_ANY_ARGS') return null;
+  if (/^void$/i.test(paramsText)) return { min: 0, max: 0 };
+  const parts = splitTopLevelCommas(paramsText);
+  if (!parts.length) return null;
+  if (parts[parts.length - 1] === '...') {
+    return { min: parts.length - 1, max: Infinity };
+  }
+  return { min: parts.length, max: parts.length };
+}
+
+function hasNonCommentContent(rawText) {
+  const s = String(rawText ?? '');
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n' || ch === '\f' || ch === '\v') {
+      i++;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '*') {
+      const end = s.indexOf('*/', i + 2);
+      if (end < 0) return false;
+      i = end + 2;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '/') {
+      const end = s.indexOf('\n', i + 2);
+      if (end < 0) return false;
+      i = end + 1;
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function extractCallArgCount(codeText, rawBodyText, openIdx) {
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openIdx; i < codeText.length; i++) {
+    if (codeText[i] === '(') depth++;
+    else if (codeText[i] === ')') {
+      depth--;
+      if (depth === 0) { closeIdx = i; break; }
+    }
+  }
+  if (closeIdx < 0) return null;
+  const codeInner = codeText.slice(openIdx + 1, closeIdx);
+  const rawInner = rawBodyText.slice(openIdx + 1, closeIdx);
+  if (codeInner.trim().length === 0) {
+    if (ARGUMENTS_UNKNOWN.test(rawInner)) return { argCount: null, argumentsUnknown: true };
+    if (hasNonCommentContent(rawInner)) return { argCount: 1, argumentsUnknown: false };
+    return { argCount: 0, argumentsUnknown: false };
+  }
+  return { argCount: splitTopLevelCommas(codeInner).length, argumentsUnknown: false };
+}
+
 function extractCallArguments(codeText, openParenIdx) {
   let depth = 0;
   let closeIdx = -1;
@@ -316,7 +451,7 @@ function stripStandaloneGlobalPreludeLines(text) {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!sawSignature) {
-      if (isStandaloneGlobalPreludeComment(trimmed)) {
+      if (isStandaloneGlobalPreludeComment(trimmed) || isBinaryBackedGlobalPreludeComment(trimmed)) {
         inStandaloneGlobals = true;
         inStandalonePrototypes = false;
         inBitfieldHelpers = false;
@@ -356,6 +491,93 @@ function stripStandaloneGlobalPreludeLines(text) {
   return out.join('\n');
 }
 
+function extractBinaryBackedGlobalEvidenceFromPrelude(text) {
+  const entries = [];
+  let section = 'none';
+  for (const rawLine of String(text ?? '').split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
+    if (isBinaryBackedGlobalPreludeComment(trimmed)) {
+      section = 'binary';
+      continue;
+    }
+    if (isStandaloneGlobalPreludeComment(trimmed)) {
+      section = 'unresolved';
+      continue;
+    }
+    if (section !== 'none' && isStandaloneGlobalPreludeDeclaration(trimmed)) {
+      if (section === 'binary') {
+        const defMatch = /^#define\s+(global_([0-9A-Fa-f]+))\s+\((.+)\)\s*$/.exec(trimmed);
+        if (defMatch) {
+          const type = /\*\s*\(\s*uint128\s*\*\s*\)/.test(defMatch[3]) ? 'unsigned __int128' : 'uint64_t';
+          entries.push({
+            name: defMatch[1],
+            address: `0x${defMatch[2].toLowerCase()}`,
+            type,
+            provenance: 'closure-binary-data',
+          });
+          continue;
+        }
+        const u128Match = /^static\s+uint128\s+(global_([0-9A-Fa-f]+))\s*=/.exec(trimmed);
+        if (u128Match) {
+          entries.push({
+            name: u128Match[1],
+            address: `0x${u128Match[2].toLowerCase()}`,
+            type: 'unsigned __int128',
+            provenance: 'closure-binary-data',
+          });
+          continue;
+        }
+        const u64Match = /^static\s+uint64\s+(global_([0-9A-Fa-f]+))\s*=/.exec(trimmed);
+        if (u64Match) {
+          entries.push({
+            name: u64Match[1],
+            address: `0x${u64Match[2].toLowerCase()}`,
+            type: 'uint64_t',
+            provenance: 'closure-binary-data',
+          });
+          continue;
+        }
+      }
+      continue;
+    }
+    section = 'none';
+    if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed) && !isBitfieldHelperPreludeDeclaration(trimmed))) {
+      break;
+    }
+  }
+  return entries;
+}
+
+function extractUnresolvedArrayGlobalsFromPrelude(text) {
+  const names = new Set();
+  let section = 'none';
+  for (const rawLine of String(text ?? '').split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
+    if (isBinaryBackedGlobalPreludeComment(trimmed)) {
+      section = 'binary';
+      continue;
+    }
+    if (isStandaloneGlobalPreludeComment(trimmed)) {
+      section = 'unresolved';
+      continue;
+    }
+    if (section !== 'none' && isStandaloneGlobalPreludeDeclaration(trimmed)) {
+      if (section === 'unresolved') {
+        const arrMatch = /^static\s+uint8_t\s+(global_[0-9A-Fa-f]+)\s*\[/.exec(trimmed);
+        if (arrMatch) names.add(arrMatch[1]);
+      }
+      continue;
+    }
+    section = 'none';
+    if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed) && !isBitfieldHelperPreludeDeclaration(trimmed))) {
+      break;
+    }
+  }
+  return names;
+}
+
 /* Extract synthesized member-base struct typedefs emitted before the signature
  * so buildCTranslationUnit can hoist and deduplicate/merge them cleanly. */
 function extractSynthesizedStructTypedefs(text) {
@@ -385,7 +607,7 @@ function extractStandardHeaderIncludes(text) {
       continue;
     }
     if (isHelperPreludeLine(trimmed) || isBitfieldHelperPreludeComment(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) continue;
-    if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) break;
+    if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed) && !isStandaloneGlobalPreludeDeclaration(trimmed))) break;
   }
   return found;
 }
@@ -394,10 +616,10 @@ function extractStandardHeaderIncludes(text) {
  * one line and hide the lines after it. */
 function isAccountedBodyPrefix(prefix) {
   let pos = 0;
+  let sawFixedWidthPreludeMarker = false;
   let sawStandaloneGlobalsMarker = false;
   let sawStandalonePrototypesMarker = false;
   let sawBitfieldHelpersMarker = false;
-  let inBitfieldGuard = false;
   while (pos < prefix.length) {
     const triviaStart = pos;
     pos = skipBodyTrivia(prefix, pos);
@@ -405,7 +627,8 @@ function isAccountedBodyPrefix(prefix) {
     if (pos > triviaStart) {
       const skipped = prefix.slice(triviaStart, pos);
       for (const rawLine of skipped.split(/\r?\n/)) {
-        if (isStandaloneGlobalPreludeComment(rawLine)) sawStandaloneGlobalsMarker = true;
+        if (isFixedWidthPreludeComment(rawLine)) sawFixedWidthPreludeMarker = true;
+        if (isStandaloneGlobalPreludeComment(rawLine) || isBinaryBackedGlobalPreludeComment(rawLine)) sawStandaloneGlobalsMarker = true;
         if (isStandalonePrototypePreludeComment(rawLine)) sawStandalonePrototypesMarker = true;
         if (isBitfieldHelperPreludeComment(rawLine)) sawBitfieldHelpersMarker = true;
       }
@@ -416,6 +639,7 @@ function isAccountedBodyPrefix(prefix) {
     const line = prefix.slice(pos, end);
     const trimmedLine = line.trim();
     let ok = isReemittedPreludeDeclaration(line)
+      || (sawFixedWidthPreludeMarker && isFixedWidth128Typedef(trimmedLine))
       || isSynthesizedStructPreludeDeclaration(line)
       || (sawStandaloneGlobalsMarker && isStandaloneGlobalPreludeDeclaration(line))
       || (sawStandalonePrototypesMarker && isStandalonePrototypePreludeDeclaration(line))
@@ -495,9 +719,14 @@ function extractFaithfulBodyText(original) {
   }
   let sigIdx = -1;
   let sigBraceInLine = false;
+  let sawFixedWidthPreludeMarker = false;
   for (let i = 0; i < rawLines.length; i++) {
     const trimmed = rawLines[i].trim();
-    if (isAllowedBodyPrefixLine(trimmed)) continue;
+    if (isFixedWidthPreludeComment(trimmed)) {
+      sawFixedWidthPreludeMarker = true;
+      continue;
+    }
+    if (isAllowedBodyPrefixLine(trimmed) || (sawFixedWidthPreludeMarker && isFixedWidth128Typedef(trimmed))) continue;
     if (looksLikeSignature(trimmed)) { sigIdx = i; sigBraceInLine = false; break; }
     if (trimmed.includes('{')) {
       const before = trimmed.slice(0, trimmed.indexOf('{')).trim();
@@ -530,21 +759,22 @@ function extractFaithfulBodyText(original) {
   return { ok:true, bodyText:text.slice(openOffset, closeOffset + 1) };
 }
 
-function safeSignatureDeclaration(signature) {
+function safeSignatureDeclaration(signature, knownStructNames = null) {
   const text = String(signature ?? '').trim().replace(/\s*\{\s*$/, '');
   const open = text.indexOf('(');
   const close = text.lastIndexOf(')');
   if (open < 1 || close !== text.length - 1) return null;
   const prefix = text.slice(0, open).trim();
-  const words = prefix.split(/\s+/);
-  const name = words.at(-1);
-  const returnType = words.slice(0, -1).join(' ');
-  if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !normalizedType(returnType)) return null;
+  const headMatch = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(prefix);
+  if (!headMatch) return null;
+  const returnType = headMatch[1].trim();
+  const name = headMatch[2];
+  if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !normalizedType(returnType, knownStructNames)) return null;
   for (const group of text.slice(open + 1, close).split(',')) {
     const value = group.trim();
     if (!value || /^void$/i.test(value)) continue;
-    const parameter = /^(.*?)(?:\s+)([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
-    if (!parameter || !normalizedType(parameter[1])) return null;
+    const parameter = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+    if (!parameter || !normalizedType(parameter[1].trim(), knownStructNames)) return null;
   }
   return `${prefix}(${text.slice(open + 1, close)});`;
 }
@@ -609,7 +839,435 @@ function hasBalancedBraces(text) {
  * Anything else stays on the syntax-only placeholder with its explicit
  * unresolved entry: the unit keeps `partial` and no binary fact is invented.
  */
-const LABEL_STATEMENT = /^\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*$/;
+const NON_TYPE_KEYWORDS = new Set(['return', 'else', 'case', 'goto', 'do', 'sizeof', 'break', 'continue', 'default']);
+const DECL_LEADING_MODIFIERS = new Set(['static', 'const', 'volatile', 'register', 'restrict']);
+const DECL_COMPOUND_INT_MODIFIERS = new Set(['unsigned', 'signed', 'long', 'short']);
+const DECL_EXCLUDED_BASE_TYPES = new Set([
+  'sizeof', 'offsetof', '_Alignof',
+  'struct', 'union', 'enum', 'typedef',
+  'return', 'else', 'case', 'goto', 'do', 'break', 'continue', 'default',
+  'static', 'const', 'volatile', 'register', 'restrict', 'extern', 'inline',
+]);
+
+function isConstantArrayDimExpr(dim) {
+  const s = String(dim ?? '').trim();
+  if (!s) return true;
+  let stripped = s.replace(/\bsizeof\s*\([^()]*\)/g, () => ' 1 ');
+  stripped = stripped.replace(/\b0[xX][0-9A-Fa-f]+[uUlL]*\b/g, () => ' 1 ');
+  stripped = stripped.replace(/\b0[bB][01]+[uUlL]*\b/g, () => ' 1 ');
+  stripped = stripped.replace(/\b\d+[uUlL]*\b/g, () => ' 1 ');
+  return !/[A-Za-z_]/.test(stripped);
+}
+
+function stripTopLevelInitializer(decl) {
+  let depthParen = 0;
+  let depthBracket = 0;
+  let depthBrace = 0;
+  for (let i = 0; i < decl.length; i++) {
+    const ch = decl[i];
+    if (ch === '(') depthParen++;
+    else if (ch === ')' && depthParen > 0) depthParen--;
+    else if (ch === '[') depthBracket++;
+    else if (ch === ']' && depthBracket > 0) depthBracket--;
+    else if (ch === '{') depthBrace++;
+    else if (ch === '}' && depthBrace > 0) depthBrace--;
+    else if (ch === '=' && depthParen === 0 && depthBracket === 0 && depthBrace === 0) {
+      const prev = decl[i - 1] ?? '';
+      const next = decl[i + 1] ?? '';
+      if (prev !== '!' && prev !== '<' && prev !== '>' && next !== '=') {
+        return decl.slice(0, i).trim();
+      }
+    }
+  }
+  return decl.trim();
+}
+
+function parseLocalDeclaration(segment, context) {
+  let text = String(segment ?? '').trim();
+  if (text.endsWith(';')) text = text.slice(0, -1).trim();
+  if (!text) return null;
+
+  let pos = 0;
+  let sawCompoundInt = false;
+  while (pos < text.length) {
+    while (pos < text.length && /\s/.test(text[pos])) pos++;
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)\b/.exec(text.slice(pos));
+    if (!m) break;
+    const word = m[1];
+    if (DECL_LEADING_MODIFIERS.has(word)) {
+      pos += word.length;
+      continue;
+    }
+    if (DECL_COMPOUND_INT_MODIFIERS.has(word)) {
+      sawCompoundInt = true;
+      pos += word.length;
+      continue;
+    }
+    break;
+  }
+
+  while (pos < text.length && /\s/.test(text[pos])) pos++;
+  let baseType = null;
+  const baseMatch = /^([A-Za-z_][A-Za-z0-9_]*)\b/.exec(text.slice(pos));
+  if (baseMatch) {
+    const candidate = baseMatch[1];
+    const isValidBase = !DECL_EXCLUDED_BASE_TYPES.has(candidate)
+      && (TYPE_LIKE_IDENTIFIERS.has(candidate) || context.knownAliases.has(candidate));
+    if (isValidBase) {
+      baseType = candidate;
+      pos += candidate.length;
+      while (pos < text.length) {
+        while (pos < text.length && /\s/.test(text[pos])) pos++;
+        const qm = /^(?:const|volatile|restrict)\b/.exec(text.slice(pos));
+        if (!qm) break;
+        pos += qm[0].length;
+      }
+    } else if (sawCompoundInt) {
+      baseType = 'int';
+    } else {
+      return null;
+    }
+  } else if (sawCompoundInt) {
+    baseType = 'int';
+  } else {
+    return null;
+  }
+
+  const rest = text.slice(pos).trim();
+  if (!rest) return null;
+  const parts = splitTopLevelCommas(rest);
+  if (!parts.length) return null;
+
+  const declarators = [];
+  for (const rawDecl of parts) {
+    if (!rawDecl) return null;
+    const declHead = stripTopLevelInitializer(rawDecl);
+    if (!declHead) return null;
+    const fnPtrMatch = /^\s*(?:\*+\s*(?:(?:const|volatile|restrict)\s+)*)?\(\s*\*+\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\([^)]*\)\s*$/.exec(declHead);
+    if (fnPtrMatch) {
+      const name = fnPtrMatch[1];
+      if (NON_TYPE_KEYWORDS.has(name) || KEYWORDS.has(name)) return null;
+      declarators.push({ name, isPointer: true, isVla: false });
+      continue;
+    }
+    let head = declHead;
+    let hasPtrStar = false;
+    while (true) {
+      head = head.trimStart();
+      if (head.startsWith('*')) {
+        hasPtrStar = true;
+        head = head.slice(1);
+        continue;
+      }
+      const qm = /^(?:const|volatile|restrict)\b/.exec(head);
+      if (qm) {
+        head = head.slice(qm[0].length);
+        continue;
+      }
+      break;
+    }
+    let hasArrayDim = false;
+    let isVla = false;
+    while (true) {
+      const am = /\s*\[([^\]]*)\]\s*$/.exec(head);
+      if (!am) break;
+      hasArrayDim = true;
+      if (!isConstantArrayDimExpr(am[1])) isVla = true;
+      head = head.slice(0, am.index);
+    }
+    head = head.trim();
+    if (!C_IDENTIFIER.test(head) || NON_TYPE_KEYWORDS.has(head) || KEYWORDS.has(head)) return null;
+    declarators.push({
+      name: head,
+      isPointer: hasPtrStar || hasArrayDim || baseType === 'id',
+      isVla,
+    });
+  }
+  return declarators.length ? { baseType, declarators } : null;
+}
+
+function isLocalDeclarationStart(segment, context) {
+  return parseLocalDeclaration(segment, context) !== null;
+}
+
+function extractStatementSegment(codeText, startPos) {
+  let paren = 0;
+  let bracket = 0;
+  for (let i = startPos; i < codeText.length; i++) {
+    const ch = codeText[i];
+    if (ch === '(') paren++;
+    else if (ch === ')' && paren > 0) paren--;
+    else if (ch === '[') bracket++;
+    else if (ch === ']' && bracket > 0) bracket--;
+    else if (paren === 0 && bracket === 0 && (ch === ';' || ch === '{' || ch === '}')) {
+      return codeText.slice(startPos, i);
+    }
+  }
+  return codeText.slice(startPos);
+}
+
+function collectDeclaredLocals(codeText, context, declaredLocals, pointerLocals) {
+  let hasVla = false;
+  const registerDecl = (segment) => {
+    const parsed = parseLocalDeclaration(segment, context);
+    if (!parsed) return;
+    for (const d of parsed.declarators) {
+      declaredLocals.add(d.name);
+      if (d.isPointer) pointerLocals.add(d.name);
+      if (d.isVla) hasVla = true;
+    }
+  };
+
+  // Scan `for (<init>; ...)` headers for loop-scoped declarations.
+  for (const match of codeText.matchAll(/\bfor\s*\(/g)) {
+    const openIdx = match.index + match[0].length - 1;
+    let paren = 0;
+    let bracket = 0;
+    let brace = 0;
+    for (let i = openIdx + 1; i < codeText.length; i++) {
+      const ch = codeText[i];
+      if (ch === '(') paren++;
+      else if (ch === ')') {
+        if (paren === 0) break;
+        paren--;
+      } else if (ch === '[') bracket++;
+      else if (ch === ']' && bracket > 0) bracket--;
+      else if (ch === '{') brace++;
+      else if (ch === '}' && brace > 0) brace--;
+      else if (ch === ';' && paren === 0 && bracket === 0 && brace === 0) {
+        registerDecl(codeText.slice(openIdx + 1, i));
+        break;
+      }
+    }
+  }
+
+  // Scan statements at block/statement boundaries.
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let ternaryDepth = 0;
+  let stmtStart = -1;
+  for (let i = 0; i < codeText.length; i++) {
+    const ch = codeText[i];
+    if (ch === '(') { parenDepth++; continue; }
+    if (ch === ')') { if (parenDepth > 0) parenDepth--; continue; }
+    if (ch === '[') { bracketDepth++; continue; }
+    if (ch === ']') { if (bracketDepth > 0) bracketDepth--; continue; }
+    if (ch === '?') { ternaryDepth++; continue; }
+    if (ch === ':') {
+      if (ternaryDepth > 0) {
+        ternaryDepth--;
+      } else if (parenDepth === 0 && bracketDepth === 0) {
+        stmtStart = i + 1;
+      }
+      continue;
+    }
+    if (parenDepth === 0 && bracketDepth === 0 && ternaryDepth === 0) {
+      if (ch === '{' || ch === '}' || ch === ';') {
+        if (stmtStart >= 0 && i > stmtStart) {
+          registerDecl(codeText.slice(stmtStart, i));
+        }
+        stmtStart = i + 1;
+      }
+    }
+  }
+  return { hasVla };
+}
+
+function analyzeLabelsAndGotos(codeText, context) {
+  const definedLabels = new Set();
+  const labelTokenOffsets = new Set();
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let ternaryDepth = 0;
+  let atStmtBoundary = false;
+
+  const validateAfterColon = (colonIdx) => {
+    let nextPos = colonIdx + 1;
+    while (nextPos < codeText.length && /\s/.test(codeText[nextPos])) nextPos++;
+    if (nextPos >= codeText.length || codeText[nextPos] === '}') {
+      return { ok: false, reason: 'label-syntax-unavailable' };
+    }
+    const nextStmt = extractStatementSegment(codeText, nextPos);
+    if (isLocalDeclarationStart(nextStmt, context)) {
+      return { ok: false, reason: 'label-syntax-unavailable' };
+    }
+    return { ok: true };
+  };
+
+  for (let i = 0; i < codeText.length; i++) {
+    const ch = codeText[i];
+    if (/\s/.test(ch)) continue;
+    if (ch === '(') { parenDepth++; atStmtBoundary = false; continue; }
+    if (ch === ')') { if (parenDepth > 0) parenDepth--; atStmtBoundary = false; continue; }
+    if (ch === '[') { bracketDepth++; atStmtBoundary = false; continue; }
+    if (ch === ']') { if (bracketDepth > 0) bracketDepth--; atStmtBoundary = false; continue; }
+    if (ch === '?') { ternaryDepth++; atStmtBoundary = false; continue; }
+    if (ch === ':') {
+      if (ternaryDepth > 0) ternaryDepth--;
+      atStmtBoundary = false;
+      continue;
+    }
+    if (parenDepth === 0 && bracketDepth === 0 && ternaryDepth === 0) {
+      if (ch === '{' || ch === '}' || ch === ';') {
+        atStmtBoundary = true;
+        continue;
+      }
+      if (atStmtBoundary && /[A-Za-z_]/.test(ch)) {
+        const idMatch = /^[A-Za-z_][A-Za-z0-9_]*/.exec(codeText.slice(i));
+        const word = idMatch[0];
+        const afterWord = i + word.length;
+        if (word === 'case' && (afterWord >= codeText.length || !/[A-Za-z0-9_]/.test(codeText[afterWord]))) {
+          let p = 0;
+          let b = 0;
+          let t = 0;
+          let colonIdx = -1;
+          for (let j = afterWord; j < codeText.length; j++) {
+            const cj = codeText[j];
+            if (cj === '(') p++;
+            else if (cj === ')' && p > 0) p--;
+            else if (cj === '[') b++;
+            else if (cj === ']' && b > 0) b--;
+            else if (cj === '?') t++;
+            else if (cj === ':') {
+              if (t > 0) t--;
+              else if (p === 0 && b === 0) { colonIdx = j; break; }
+            } else if (p === 0 && b === 0 && (cj === ';' || cj === '{' || cj === '}')) {
+              break;
+            }
+          }
+          if (colonIdx >= 0) {
+            const chk = validateAfterColon(colonIdx);
+            if (!chk.ok) return chk;
+            i = colonIdx;
+            atStmtBoundary = true;
+            continue;
+          }
+        } else if (word === 'default') {
+          let j = afterWord;
+          while (j < codeText.length && /\s/.test(codeText[j])) j++;
+          if (codeText[j] === ':' && codeText[j + 1] !== ':') {
+            const chk = validateAfterColon(j);
+            if (!chk.ok) return chk;
+            i = j;
+            atStmtBoundary = true;
+            continue;
+          }
+        } else if (!KEYWORDS.has(word)) {
+          let j = afterWord;
+          while (j < codeText.length && /\s/.test(codeText[j])) j++;
+          if (codeText[j] === ':' && codeText[j + 1] !== ':') {
+            if (definedLabels.has(word)) {
+              return { ok: false, reason: 'duplicate-label-unavailable' };
+            }
+            definedLabels.add(word);
+            labelTokenOffsets.add(i);
+            const chk = validateAfterColon(j);
+            if (!chk.ok) return chk;
+            i = j;
+            atStmtBoundary = true;
+            continue;
+          }
+        }
+        i = afterWord - 1;
+        atStmtBoundary = false;
+        continue;
+      }
+    }
+    atStmtBoundary = false;
+  }
+
+  let hasGoto = false;
+  for (const match of codeText.matchAll(/\bgoto\b/g)) {
+    hasGoto = true;
+    let pos = match.index + 4;
+    while (pos < codeText.length && /\s/.test(codeText[pos])) pos++;
+    if (codeText[pos] === '*') return { ok: false, reason: 'goto-syntax-unavailable' };
+    const targetMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*;/.exec(codeText.slice(pos));
+    if (!targetMatch) return { ok: false, reason: 'goto-syntax-unavailable' };
+    const target = targetMatch[1];
+    if (!definedLabels.has(target)) return { ok: false, reason: 'goto-syntax-unavailable' };
+    labelTokenOffsets.add(pos);
+  }
+
+  return { ok: true, hasGoto, definedLabels, labelTokenOffsets };
+}
+
+function hasStatementMacroCallShape(codeText, context) {
+  for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^;()]*)\)\s*\(/g)) {
+    const name = match[1];
+    const inner = match[2];
+    if (context.keywordsLike.has(name)) continue;
+    if (TYPE_LIKE_IDENTIFIERS.has(name) || context.knownAliases.has(name)) continue;
+    if (/^\s*\*+\s*(?:(?:const|volatile|restrict)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*$/.test(inner)) continue;
+    return true;
+  }
+  return false;
+}
+
+const UNION_BITCAST_PREFIX = /\(\s*union\s*\{\s*(?:(uint32_t)\s+(u)\s*;\s*(float)\s+(f)|(uint64_t)\s+(u)\s*;\s*(double)\s+(f)|(float)\s+(f)\s*;\s*(uint32_t)\s+(u)|(double)\s+(f)\s*;\s*(uint64_t)\s+(u))\s*;\s*\}\s*\)\s*\{\s*\.\s*([uf])\s*=/g;
+
+function maskAnonymousUnionBitcasts(codeText) {
+  const chars = codeText.split('');
+  const bitcastMemberTokenOffsets = new Set();
+  for (const match of codeText.matchAll(UNION_BITCAST_PREFIX)) {
+    const isUFirst = Boolean(match[1] || match[5]);
+    const m1 = isUFirst ? 'u' : 'f';
+    const m2 = isUFirst ? 'f' : 'u';
+    const initMember = match[17];
+    if (initMember !== m1) continue;
+
+    const litOpenIdx = match.index + match[0].lastIndexOf('{');
+    const headerCloseIdx = codeText.lastIndexOf(')', litOpenIdx);
+    if (headerCloseIdx < match.index) continue;
+
+    let braceDepth = 0;
+    let parenDepth = 0;
+    let litCloseIdx = -1;
+    for (let i = litOpenIdx; i < codeText.length; i++) {
+      const ch = codeText[i];
+      if (ch === '{') braceDepth++;
+      else if (ch === '}') {
+        braceDepth--;
+        if (braceDepth === 0 && parenDepth === 0) { litCloseIdx = i; break; }
+        if (braceDepth < 0) break;
+      } else if (ch === '(') parenDepth++;
+      else if (ch === ')') {
+        parenDepth--;
+        if (parenDepth < 0) break;
+      }
+    }
+    if (litCloseIdx < 0) continue;
+
+    const afterClose = codeText.slice(litCloseIdx + 1);
+    const trailingMatch = /^(\s*\.\s*)([uf])\b/.exec(afterClose);
+    if (!trailingMatch || trailingMatch[2] !== m2) continue;
+    const trailingMemberOffset = litCloseIdx + 1 + trailingMatch[1].length;
+
+    const firstSemi = codeText.indexOf(';', match.index);
+    const secondSemi = firstSemi >= 0 ? codeText.indexOf(';', firstSemi + 1) : -1;
+    if (firstSemi < 0 || secondSemi < 0 || secondSemi > headerCloseIdx) continue;
+    let m1Offset = firstSemi - 1;
+    while (m1Offset >= match.index && /\s/.test(codeText[m1Offset])) m1Offset--;
+    let m2Offset = secondSemi - 1;
+    while (m2Offset >= firstSemi && /\s/.test(codeText[m2Offset])) m2Offset--;
+    const initDotIdx = codeText.indexOf('.', litOpenIdx);
+    if (initDotIdx < 0) continue;
+    let initMemberOffset = initDotIdx + 1;
+    while (initMemberOffset < codeText.length && /\s/.test(codeText[initMemberOffset])) initMemberOffset++;
+
+    if (codeText[m1Offset] !== m1 || codeText[m2Offset] !== m2 || codeText[initMemberOffset] !== m1) continue;
+
+    bitcastMemberTokenOffsets.add(m1Offset);
+    bitcastMemberTokenOffsets.add(m2Offset);
+    bitcastMemberTokenOffsets.add(initMemberOffset);
+    bitcastMemberTokenOffsets.add(trailingMemberOffset);
+
+    for (let k = match.index; k <= headerCloseIdx; k++) {
+      if (chars[k] !== '\n') chars[k] = ' ';
+    }
+  }
+  return { maskedCodeText: chars.join(''), bitcastMemberTokenOffsets };
+}
 
 function hasRawObjcMessageSyntax(codeText) {
   const len = codeText.length;
@@ -644,6 +1302,35 @@ function hasRawObjcMessageSyntax(codeText) {
     if (close < 0) continue;
     const afterClose = codeText.slice(close + 1).trimStart();
     if (afterClose.startsWith('=') && !afterClose.startsWith('==')) continue;
+    if (prev >= 0 && (codeText[prev] === '{' || codeText[prev] === ',')) {
+      let pos = 0;
+      let validChain = true;
+      while (pos < afterClose.length) {
+        while (pos < afterClose.length && /\s/.test(afterClose[pos])) pos++;
+        if (afterClose[pos] === '.') {
+          pos++;
+          while (pos < afterClose.length && /\s/.test(afterClose[pos])) pos++;
+          const fieldMatch = /^[A-Za-z_][A-Za-z0-9_]*/.exec(afterClose.slice(pos));
+          if (!fieldMatch) { validChain = false; break; }
+          pos += fieldMatch[0].length;
+        } else if (afterClose[pos] === '[') {
+          let subDepth = 0;
+          let subClosed = false;
+          for (; pos < afterClose.length; pos++) {
+            if (afterClose[pos] === '[') subDepth++;
+            else if (afterClose[pos] === ']') {
+              subDepth--;
+              if (subDepth === 0) { pos++; subClosed = true; break; }
+            }
+          }
+          if (!subClosed) { validChain = false; break; }
+        } else {
+          break;
+        }
+      }
+      while (pos < afterClose.length && /\s/.test(afterClose[pos])) pos++;
+      if (validChain && afterClose[pos] === '=' && afterClose[pos + 1] !== '=') continue;
+    }
     const inner = codeText.slice(i + 1, close).trim();
     if (!inner) continue;
     // Detect `[receiver selector]` or `[receiver sel:arg ...]` at top level.
@@ -680,7 +1367,7 @@ function identifierIsCovered(name, context) {
 }
 
 function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames, synthesizedStructs = new Map(), headers = new Set(), hoistedHelperNames = new Set() }) {
-  const keywordsLike = new Set([...KEYWORDS, ...FIXED_TYPELIKE_OPERATORS, '__asm', 'asm']);
+  const keywordsLike = new Set([...KEYWORDS, ...FIXED_TYPELIKE_OPERATORS, '__asm', 'asm', '__HEX_ANY_ARGS', 'NULL', 'true', 'false', 'NAN', 'INFINITY']);
   const prototypeNames = new Set();
   const variadicPrototypes = new Set();
   for (const row of prototypes) {
@@ -700,7 +1387,7 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
     fallbackNames.add(match[1]);
     if (/\[\]\s*;/.test(String(declaration))) fallbackArrayGlobals.add(match[1]);
   }
-  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), 'id', ...synthesizedStructs.keys()]);
+  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), ...EXTENDED_128_TYPE_ALIASES.keys(), 'id', '__int128', '__fp16', ...synthesizedStructs.keys()]);
   if (headers.has('<stdint.h>')) { knownAliases.add('uintptr_t'); knownAliases.add('intptr_t'); }
   if (headers.has('<stddef.h>') || headers.has('<stdlib.h>') || headers.has('<string.h>') || headers.has('<stdio.h>')) { knownAliases.add('size_t'); }
   if (headers.has('<stddef.h>')) { knownAliases.add('ptrdiff_t'); }
@@ -721,22 +1408,27 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
   // Selected definitions with a known recovered arity, filled by the caller.
   const knownAritySelected = new Set();
   const pointerParamPositions = new Map();
+  const knownArityBounds = new Map();
   for (const row of prototypes) {
     if (!row?.declaration || !C_IDENTIFIER.test(String(row.name ?? ''))) continue;
+    const protoName = String(row.name);
     const ptrIdx = parsePointerParameterIndices(row.declaration);
-    if (ptrIdx) pointerParamPositions.set(String(row.name), ptrIdx);
+    if (ptrIdx) pointerParamPositions.set(protoName, ptrIdx);
+    const bounds = parseSignatureArity(row.declaration, protoName);
+    if (bounds) knownArityBounds.set(protoName, bounds);
   }
   const stdlibHeaderFunctions = new Set();
   for (const [fnName, header] of STANDARD_C_LIBRARY_HEADERS) {
     if (headers.has(header)) stdlibHeaderFunctions.add(fnName);
   }
-  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, pointerParamPositions, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
+  const synthesizedStructNames = new Set(synthesizedStructs.keys());
+  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, knownArityBounds, pointerParamPositions, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructNames, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
 }
 
 function faithfulBodyEligibility(fn, context) {
   const original = String(fn?.pseudocode ?? fn?.source ?? '');
   if (!original.trim()) return { eligible:false, reason:'body-empty' };
-  const signature = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature);
+  const signature = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature, context.synthesizedStructNames);
   if (!signature) return { eligible:false, reason:'signature-unprovable' };
   const name = String(fn?.renderedName ?? fn?.name ?? '');
   if (!C_IDENTIFIER.test(name)) return { eligible:false, reason:'name-not-c-identifier' };
@@ -745,14 +1437,13 @@ function faithfulBodyEligibility(fn, context) {
   const bodyText = extracted.bodyText;
   if (!bodyText.startsWith('{')) return { eligible:false, reason:'body-start-unavailable' };
   if (!hasBalancedBraces(bodyText)) return { eligible:false, reason:'body-braces-unbalanced' };
-  const codeText = declarationBearingText(bodyText);
+  const rawCodeText = declarationBearingText(bodyText);
+  const { maskedCodeText: codeText, bitcastMemberTokenOffsets } = maskAnonymousUnionBitcasts(rawCodeText);
   if (/\b(?:typedef|struct|union|enum)\b/.test(codeText)) return { eligible:false, reason:'typelike-declaration-unavailable' };
-  for (const line of bodyText.split(/\r?\n/)) {
-    if (LABEL_STATEMENT.test(line)) return { eligible:false, reason:'label-syntax-unavailable' };
-  }
-  if (/\b[A-Za-z_][A-Za-z0-9_]*\s*\([^;()]*\)\s*\(/.test(codeText)) return { eligible:false, reason:'statement-macro-call-shape' };
-  if (/\b[A-Za-z_][A-Za-z0-9_]*\s+\d+\s*:/.test(codeText)) return { eligible:false, reason:'bitfield-syntax-unavailable' };
-  if (/\bgoto\b/.test(codeText)) return { eligible:false, reason:'goto-syntax-unavailable' };
+  const labelAnalysis = analyzeLabelsAndGotos(codeText, context);
+  if (!labelAnalysis.ok) return { eligible:false, reason:labelAnalysis.reason };
+  if (hasStatementMacroCallShape(codeText, context)) return { eligible:false, reason:'statement-macro-call-shape' };
+  if (/\b(?!case\b)[A-Za-z_][A-Za-z0-9_]*\s+\d+\s*:/.test(codeText)) return { eligible:false, reason:'bitfield-syntax-unavailable' };
   if (/\?\s*=/.test(codeText) || /=\s*\?\b/.test(codeText) || /\(\s*\?\s*[,)]/.test(codeText)) return { eligible:false, reason:'producer-placeholder-expression' };
   if (hasRawObjcMessageSyntax(codeText)) return { eligible:false, reason:'objc-message-syntax-unavailable' };
   if (/\b(?:__asm__|__asm|asm)\b/.test(codeText)) return { eligible:false, reason:'asm-syntax-unavailable' };
@@ -768,28 +1459,15 @@ function faithfulBodyEligibility(fn, context) {
     for (const group of signature.slice(sigOpen + 1, sigClose).split(',')) {
       const value = group.trim();
       if (!value || /^void$/i.test(value)) continue;
-      const param = /^(.*?)(?:\s+)([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+      const param = /^(.*?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
       if (param?.[2]) {
         declaredLocals.add(param[2]);
         if (param[1].includes('*') || /(?:^|\s)id(?:\s|$)/.test(param[1])) pointerLocals.add(param[2]);
       }
     }
   }
-  const NON_TYPE_KEYWORDS = new Set(['return', 'else', 'case', 'goto', 'do', 'sizeof', 'break', 'continue', 'default']);
-  for (const match of codeText.matchAll(/(^|\n)\s*(?:(?:const|volatile|unsigned|signed)\s+)*([A-Za-z_][A-Za-z0-9_]*)(\s*\*+)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^=]|;)/g)) {
-    if (NON_TYPE_KEYWORDS.has(match[2])) continue;
-    if (match[4]) {
-      declaredLocals.add(match[4]);
-      if ((match[3] && match[3].includes('*')) || match[2] === 'id') pointerLocals.add(match[4]);
-    }
-  }
-  for (const match of codeText.matchAll(/(^|\n)\s*(?:(?:const|volatile|unsigned|signed)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*(\*+)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^=]|;)/g)) {
-    if (NON_TYPE_KEYWORDS.has(match[2])) continue;
-    if (match[4]) {
-      declaredLocals.add(match[4]);
-      pointerLocals.add(match[4]);
-    }
-  }
+  const { hasVla } = collectDeclaredLocals(codeText, context, declaredLocals, pointerLocals);
+  if (labelAnalysis.hasGoto && hasVla) return { eligible:false, reason:'goto-syntax-unavailable' };
   // A `/* arguments unknown */` call site has no recovered argument count.
   // declarationBearingText erases that comment, so an arity-unknown site
   // becomes an empty argument list; detect it on the raw body (comment
@@ -803,7 +1481,13 @@ function faithfulBodyEligibility(fn, context) {
     if (ARGUMENTS_UNKNOWN.test(match[2])) arityUnknownCalls.add(match[1]);
   }
   for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)/g)) {
-    if (!context.keywordsLike.has(match[1])) arityUnknownCalls.add(match[1]);
+    if (context.keywordsLike.has(match[1])) continue;
+    const bounds = context.knownArityBounds?.get(match[1]);
+    if (bounds && bounds.min === 0 && bounds.max === 0) continue;
+    const openIdx = match.index + match[0].indexOf('(');
+    const closeIdx = match.index + match[0].length - 1;
+    const rawInner = bodyText.slice(openIdx + 1, closeIdx);
+    if (!hasNonCommentContent(rawInner)) arityUnknownCalls.add(match[1]);
   }
   for (const callee of arityUnknownCalls) {
     if (context.unprototypedFallbacks.has(callee)) continue;
@@ -812,6 +1496,26 @@ function faithfulBodyEligibility(fn, context) {
     }
     if (context.knownAritySelected.has(callee)) {
       return { eligible:false, reason:`arity-unknown-call-contradicts-selected-signature:${callee}` };
+    }
+    if (context.stdlibHeaderFunctions?.has(callee)) {
+      return { eligible:false, reason:`arity-unknown-call-contradicts-stdlib:${callee}` };
+    }
+  }
+  if (context.knownArityBounds?.size) {
+    for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const callee = match[1];
+      if (context.keywordsLike.has(callee) || TYPE_LIKE_IDENTIFIERS.has(callee)) continue;
+      const bounds = context.knownArityBounds.get(callee);
+      if (!bounds) continue;
+      const before = codeText.slice(0, match.index).trimEnd();
+      if (before.endsWith('->') || before.endsWith('.')) continue;
+      const openIdx = match.index + match[0].length - 1;
+      if (isFunctionPointerCastOrDeclAfterParen(codeText.slice(openIdx + 1))) continue;
+      const callInfo = extractCallArgCount(codeText, bodyText, openIdx);
+      if (!callInfo || callInfo.argCount === null) continue;
+      if (callInfo.argCount < bounds.min || callInfo.argCount > bounds.max) {
+        return { eligible:false, reason:`call-arity-mismatch:${callee}` };
+      }
     }
   }
   if (context.pointerParamPositions?.size) {
@@ -842,11 +1546,13 @@ function faithfulBodyEligibility(fn, context) {
     if (!context.fallbackArrayGlobals.has(name)) continue;
     const after = codeText.slice(match.index + name.length);
     if (/^\s*\[/.test(after)) continue;
-    if (codeText[match.index - 1] === '&') continue;
-    if (/\bsizeof\s*$/.test(codeText.slice(0, match.index))) continue;
+    const before = codeText.slice(0, match.index);
+    if (/(?:^|[^&])&\s*\(*\s*$/.test(before)) continue;
+    if (/\bsizeof\s*\(*\s*$/.test(before)) continue;
     return { eligible:false, reason:`global-byte-array-fallback-usage-unsupported:${name}` };
   }
   for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
+    if (labelAnalysis.labelTokenOffsets.has(match.index) || bitcastMemberTokenOffsets.has(match.index)) continue;
     const name = match[1];
     const before = codeText.slice(0, match.index).trimEnd();
     const after = codeText.slice(match.index + name.length);
@@ -863,6 +1569,7 @@ function faithfulBodyEligibility(fn, context) {
         || context.fallbackNames.has(name)
         || context.hoistedHelperNames?.has(name)
         || context.stdlibHeaderFunctions?.has(name)
+        || SAFE_COMPILER_BUILTINS.has(name)
       ) {
         continue;
       }
@@ -888,8 +1595,8 @@ function emittedFunctionAlias(fn, index) {
   return candidate && C_IDENTIFIER.test(candidate) ? candidate : `hex_tu_fn_${index}`;
 }
 
-function syntaxOnlyFunctionSource(signature, alias) {
-  const declaration = safeSignatureDeclaration(signature);
+function syntaxOnlyFunctionSource(signature, alias, knownStructNames = null) {
+  const declaration = safeSignatureDeclaration(signature, knownStructNames);
   return `${declaration ? declaration.slice(0, -1) : `void ${alias}(void)`}\n{\n    __builtin_trap(); /* hex-tu-fallback: body withheld; syntax-only placeholder. */\n}`;
 }
 
@@ -952,10 +1659,30 @@ function callRecord(inst, symbolFor) {
   return { target, name, prototype, indirect:inst?.extra?.indirect === true || inst?.indirect === true };
 }
 
-function explicitGlobalEvidence(fn, address, name) {
+function buildGlobalEvidenceIndex(evidence) {
+  if (!Array.isArray(evidence)) return null;
+  const byAddr = new Map();
+  const byName = new Map();
+  for (let idx = 0; idx < evidence.length; idx++) {
+    const item = evidence[idx];
+    const itemKey = addressKey(item?.address);
+    if (itemKey != null && !byAddr.has(itemKey)) byAddr.set(itemKey, { item, idx });
+    const itemName = item?.name;
+    if (!byName.has(itemName)) byName.set(itemName, { item, idx });
+  }
+  return { byAddr, byName };
+}
+
+function explicitGlobalEvidence(fn, address, name, evidenceIndex = null) {
   const evidence = fn?.globalEvidence;
   const key = addressKey(address);
   if (!evidence || key == null) return null;
+  if (evidenceIndex) {
+    const byAddrHit = evidenceIndex.byAddr.get(key) ?? null;
+    const byNameHit = evidenceIndex.byName.get(name) ?? null;
+    if (byAddrHit && byNameHit) return byAddrHit.idx <= byNameHit.idx ? byAddrHit.item : byNameHit.item;
+    return (byAddrHit ?? byNameHit)?.item ?? null;
+  }
   if (evidence instanceof Map) return evidence.get(key) ?? evidence.get(addressText(address)) ?? evidence.get(name) ?? null;
   if (Array.isArray(evidence)) return evidence.find((item) => addressKey(item?.address) === key || item?.name === name) ?? null;
   if (typeof evidence === 'object') return evidence[key] ?? evidence[addressText(address)] ?? evidence[name] ?? null;
@@ -971,19 +1698,29 @@ function locationType(fn, key) {
   return normalizedType(value?.name ?? value?.type ?? value?.cType ?? '');
 }
 
-function globalRecords(fn, symbolFor) {
+function isClosureBinaryProvenance(provenance) {
+  return provenance === 'closure-binary-data' || provenance === 'closure-binary-section';
+}
+
+function globalRecords(fn, symbolFor, preStrippedPseudocode = null, preDeclBearingCode = null) {
   const records = new Map();
+  const evidenceIndex = buildGlobalEvidenceIndex(fn?.globalEvidence);
   const remember = (address, name, type, provenance, size = null, rendered = false) => {
     const key = addressKey(address);
     if (key == null) return;
     const fallback = `global_${BigInt(key).toString(16).toUpperCase()}`;
     const chosen = C_IDENTIFIER.test(String(name ?? '')) ? String(name) : fallback;
     const row = records.get(key) ?? {
-      address:BigInt(key), names:new Set(), renderedNames:new Set(), types:new Set(), provenance:new Set(), sizes:new Set(),
+      address:BigInt(key), names:new Set(), renderedNames:new Set(),
+      irTypes:new Set(), closureBinaryTypes:new Set(),
+      provenance:new Set(), sizes:new Set(), hasArraySubscriptUse:false,
     };
     row.names.add(chosen);
     if (rendered) row.renderedNames.add(chosen);
-    if (type) row.types.add(type);
+    if (type) {
+      if (isClosureBinaryProvenance(provenance)) row.closureBinaryTypes.add(type);
+      else row.irTypes.add(type);
+    }
     if (provenance) row.provenance.add(provenance);
     if (Number.isSafeInteger(Number(size)) && Number(size) > 0) row.sizes.add(Number(size));
     records.set(key, row);
@@ -994,16 +1731,48 @@ function globalRecords(fn, symbolFor) {
     if (String(loc?.kind ?? '').toLowerCase() !== 'global' || loc?.address == null) continue;
     const address = loc.address;
     const symbol = symbolFor(address) ?? loc.name ?? null;
-    const explicit = explicitGlobalEvidence(fn, address, symbol);
+    const explicit = explicitGlobalEvidence(fn, address, symbol, evidenceIndex);
     const recovered = locationType(fn, loc.key);
-    const type = normalizedType(explicit?.type ?? explicit?.cType ?? '') ?? recovered;
-    remember(address, symbol, type, explicit?.provenance ?? (recovered ? 'recovered-location-type' : 'global-memory-location'), explicit?.size ?? loc?.size ?? inst?.size ?? null);
+    const explicitType = normalizedType(explicit?.type ?? explicit?.cType ?? '');
+    const explicitProv = explicit?.provenance ?? (explicitType ? 'explicit-global-evidence' : 'global-memory-location');
+    const size = explicit?.size ?? loc?.size ?? inst?.size ?? null;
+    if (explicitType) {
+      remember(address, symbol, explicitType, explicitProv, size);
+      if (recovered && isClosureBinaryProvenance(explicitProv)) {
+        remember(address, symbol, recovered, 'recovered-location-type', loc?.size ?? inst?.size ?? null);
+      }
+    } else if (recovered) {
+      remember(address, symbol, recovered, 'recovered-location-type', size);
+    } else {
+      remember(address, symbol, null, explicitProv, size);
+    }
   }
 
-  for (const match of stripStandaloneGlobalPreludeLines(fn?.pseudocode ?? '').matchAll(/\bglobal_([0-9A-Fa-f]+)\b/g)) {
+  const rawPseudocode = fn?.pseudocode ?? '';
+  const strippedPseudocode = preStrippedPseudocode ?? stripStandaloneGlobalPreludeLines(rawPseudocode);
+  for (const match of strippedPseudocode.matchAll(/\bglobal_([0-9A-Fa-f]+)\b/g)) {
     const address = BigInt(`0x${match[1]}`);
-    const explicit = explicitGlobalEvidence(fn, address, match[0]);
+    const explicit = explicitGlobalEvidence(fn, address, match[0], evidenceIndex);
     remember(address, match[0], normalizedType(explicit?.type ?? explicit?.cType ?? ''), explicit?.provenance ?? 'rendered-global-reference', explicit?.size ?? null, true);
+  }
+
+  for (const entry of extractBinaryBackedGlobalEvidenceFromPrelude(rawPseudocode)) {
+    remember(entry.address, entry.name, normalizedType(entry.type), entry.provenance, null, false);
+  }
+
+  const preludeArrayGlobals = extractUnresolvedArrayGlobalsFromPrelude(rawPseudocode);
+  const strippedCode = preDeclBearingCode ?? declarationBearingText(strippedPseudocode);
+  const subscriptedNames = new Set();
+  for (const match of strippedCode.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\[/g)) {
+    subscriptedNames.add(match[1]);
+  }
+  for (const row of records.values()) {
+    for (const gName of row.names) {
+      if (preludeArrayGlobals.has(gName) || subscriptedNames.has(gName)) {
+        row.hasArraySubscriptUse = true;
+        break;
+      }
+    }
   }
   return [...records.values()];
 }
@@ -1019,8 +1788,8 @@ function globalAddressForName(globalMap, name) {
   return null;
 }
 
-function callLikeCallees(source) {
-  const text = declarationBearingText(source);
+function callLikeCallees(source, preDeclBearingText = null) {
+  const text = preDeclBearingText ?? declarationBearingText(source);
   const names = new Set();
   for (const match of text.matchAll(/(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
     const name = match[1];
@@ -1034,9 +1803,10 @@ function callLikeCallees(source) {
   return [...names];
 }
 
-function globalLikeNames(source) {
+function globalLikeNames(source, preDeclBearingText = null) {
+  const text = preDeclBearingText ?? declarationBearingText(source);
   const names = new Set();
-  for (const match of declarationBearingText(source).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
+  for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
     const name = match[1];
     if (!C_IDENTIFIER.test(name)) continue;
     if (KEYWORDS.has(name)) continue;
@@ -1108,21 +1878,26 @@ export function buildCTranslationUnit(functions, options = {}) {
   const fallbackNames = new Set();
   const selectedDefinitionRows = [];
   const prototypeMap = new Map();
+  const prototypeNames = new Set();
   const globalMap = new Map();
+  const globalOrderByKey = new Map();
+  const globalKeyByName = new Map();
+  let nextGlobalOrder = 0;
+  const registerGlobalName = (name, key) => {
+    const keyOrder = globalOrderByKey.get(key);
+    const existingKey = globalKeyByName.get(name);
+    if (existingKey == null || keyOrder < globalOrderByKey.get(existingKey)) {
+      globalKeyByName.set(name, key);
+    }
+  };
   const helperMap = new Map();
   const unresolvedRows = [];
+  const unresolvedGlobalNames = new Set();
+  const strippedByIndex = new Array(functions.length);
 
-  const normalizedFunctions = functions.map((fn, index) => {
-    const originalPseudocode = String(fn?.pseudocode ?? fn?.source ?? '');
+  for (let index = 0; index < functions.length; index++) {
+    const originalPseudocode = String(functions[index]?.pseudocode ?? functions[index]?.source ?? '');
     if (!originalPseudocode.trim()) throw new TypeError(`translation-unit-function-source-required:${index}`);
-    const suppliedSignature = String(fn?.signature ?? '');
-    const originalSignature = looksLikeSignature(suppliedSignature)
-      ? suppliedSignature
-      : (signatureFromText(originalPseudocode) ?? (suppliedSignature || originalPseudocode.split(/\r?\n/, 1)[0] || ''));
-    const emittedName = emittedFunctionAlias({ signature: originalSignature, pseudocode: originalPseudocode }, index);
-    const safeSignature = safeSignatureDeclaration(originalSignature);
-    const emittedSignature = safeSignature ? safeSignature.slice(0, -1) : `void ${emittedName}(void)`;
-    const signature = emittedSignature;
     for (const structDef of extractSynthesizedStructTypedefs(originalPseudocode)) {
       let fieldMap = synthesizedStructs.get(structDef.name);
       if (!fieldMap) {
@@ -1130,9 +1905,26 @@ export function buildCTranslationUnit(functions, options = {}) {
         synthesizedStructs.set(structDef.name, fieldMap);
       }
       for (const field of structDef.fields) {
-        if (!fieldMap.has(field.name)) fieldMap.set(field.name, field.type);
+        const existingType = fieldMap.get(field.name);
+        if (existingType === undefined) fieldMap.set(field.name, field.type);
+        else if (existingType !== field.type) {
+          unresolvedRows.push(unresolved('unresolved-struct-field-conflict', `${structDef.name}.${field.name}`, 'synthesized-struct-field-type-conflict', { existingType, conflictingType: field.type }));
+        }
       }
     }
+  }
+  const synthesizedStructNames = new Set(synthesizedStructs.keys());
+
+  const normalizedFunctions = functions.map((fn, index) => {
+    const originalPseudocode = String(fn?.pseudocode ?? fn?.source ?? '');
+    const suppliedSignature = String(fn?.signature ?? '');
+    const originalSignature = looksLikeSignature(suppliedSignature)
+      ? suppliedSignature
+      : (signatureFromText(originalPseudocode) ?? (suppliedSignature || originalPseudocode.split(/\r?\n/, 1)[0] || ''));
+    const emittedName = emittedFunctionAlias({ signature: originalSignature, pseudocode: originalPseudocode }, index);
+    const safeSignature = safeSignatureDeclaration(originalSignature, synthesizedStructNames);
+    const emittedSignature = safeSignature ? safeSignature.slice(0, -1) : `void ${emittedName}(void)`;
+    const signature = emittedSignature;
     for (const header of extractStandardHeaderIncludes(originalPseudocode)) {
       headers.add(header);
     }
@@ -1145,6 +1937,7 @@ export function buildCTranslationUnit(functions, options = {}) {
       headersForText(blockText, headers);
     }
     const strippedPseudocode = stripStandaloneGlobalPreludeLines(originalPseudocode);
+    strippedByIndex[index] = strippedPseudocode;
     // A function's own typedef lines are never emitted (a faithful body is
     // the text after its signature), so they cannot stand in for the contract.
     aliasContractsForText(strippedPseudocode, headers, typeDeclarations, { ownTypedefsEmitted:false });
@@ -1157,7 +1950,7 @@ export function buildCTranslationUnit(functions, options = {}) {
       // counted as a parsed recovered function.
       renderedName:emittedName, signature, pseudocode:originalPseudocode,
       originalPseudocode, originalSignature,
-      sourcePseudocode:syntaxOnlyFunctionSource(originalSignature, emittedName),
+      sourcePseudocode:syntaxOnlyFunctionSource(originalSignature, emittedName, synthesizedStructNames),
       syntaxOnly:true,
     };
   });
@@ -1175,7 +1968,7 @@ export function buildCTranslationUnit(functions, options = {}) {
   // A definition must be declared before any call to it. Selected definitions
   // are evidence-backed, so their rendered signatures are safe to publish here.
   for (const fn of normalizedFunctions) {
-    const declaration = safeSignatureDeclaration(fn.signature);
+    const declaration = safeSignatureDeclaration(fn.signature, synthesizedStructNames);
     if (!declaration) continue;
     aliasContractsForText(declaration, headers, typeDeclarations);
     selectedDefinitionRows.push({ address:fn.address, name:fn.renderedName, declaration });
@@ -1203,7 +1996,7 @@ export function buildCTranslationUnit(functions, options = {}) {
         evidence = declaration ? 'selected-function-definition-signature' : null;
       }
       if (!declaration) {
-        if (!name.startsWith('__')) {
+        if (!isReservedCompilerSymbol(name)) {
           const fallback = fallbackPrototypeFor(name);
           if (fallback && !fallbackNames.has(name)) {
             fallbackNames.add(name);
@@ -1215,39 +2008,50 @@ export function buildCTranslationUnit(functions, options = {}) {
         continue;
       }
       headersForText(declaration, headers);
-      const key = `${name}\u0000${addressText(call.target) ?? ''}`;
+      const key = name;
       const prior = prototypeMap.get(key);
-      if (!prior) prototypeMap.set(key, { name, address:addressText(call.target), declaration, evidence, exact:call.prototype?.exact === true, conflict:false });
+      if (!prior) {
+        prototypeMap.set(key, { name, address:addressText(call.target), declaration, evidence, exact:call.prototype?.exact === true, conflict:false });
+        prototypeNames.add(name);
+      }
       else {
         if (prior.declaration !== declaration) prior.conflict = true;
         prior.exact = prior.exact && call.prototype?.exact === true;
       }
     }
 
-    for (const global of globalRecords(fn, symbolFor)) {
+    const fnScanSource = strippedByIndex[fn.index] ?? stripStandaloneGlobalPreludeLines(fn.pseudocode);
+    const fnDeclBearing = declarationBearingText(fnScanSource);
+    for (const global of globalRecords(fn, symbolFor, fnScanSource, fnDeclBearing)) {
       const key = addressKey(global.address);
       const prior = globalMap.get(key);
-      if (!prior) globalMap.set(key, global);
-      else {
+      if (!prior) {
+        globalMap.set(key, global);
+        globalOrderByKey.set(key, nextGlobalOrder++);
+      } else {
         for (const name of global.names) prior.names.add(name);
         for (const name of global.renderedNames) prior.renderedNames.add(name);
-        for (const type of global.types) prior.types.add(type);
+        for (const type of global.irTypes) prior.irTypes.add(type);
+        for (const type of global.closureBinaryTypes) prior.closureBinaryTypes.add(type);
         for (const provenance of global.provenance) prior.provenance.add(provenance);
         for (const size of global.sizes) prior.sizes.add(size);
+        if (global.hasArraySubscriptUse) prior.hasArraySubscriptUse = true;
       }
+      for (const name of global.names) registerGlobalName(name, key);
+      for (const name of global.renderedNames) registerGlobalName(name, key);
     }
 
-    const fnScanSource = stripStandaloneGlobalPreludeLines(fn.pseudocode);
-    for (const name of callLikeCallees(fnScanSource)) {
+    for (const name of callLikeCallees(fnScanSource, fnDeclBearing)) {
       if (selectedNames.has(name)) continue;
-      if ([...prototypeMap.values()].some((row) => row.name === name)) continue;
+      if (prototypeNames.has(name)) continue;
       if (helperMap.has(name)) continue;
       if (hoistedHelperNames.has(name)) continue;
+      if (SAFE_COMPILER_BUILTINS.has(name)) continue;
       if (STANDARD_C_LIBRARY_HEADERS.has(name)) {
         headers.add(STANDARD_C_LIBRARY_HEADERS.get(name));
         continue;
       }
-      if (name.startsWith('__')) {
+      if (isReservedCompilerSymbol(name)) {
         // Reserved compiler helpers are not redeclared; their unresolved row
         // remains explicit and a later syntax-only body can avoid using them.
       } else {
@@ -1270,9 +2074,9 @@ export function buildCTranslationUnit(functions, options = {}) {
       }
     }
 
-    for (const name of globalLikeNames(fnScanSource)) {
+    for (const name of globalLikeNames(fnScanSource, fnDeclBearing)) {
       if (selectedNames.has(name)) continue;
-      const address = globalAddressForName(globalMap, name);
+      const address = globalKeyByName.get(name) ?? null;
       if (address == null) {
         const fallback = fallbackGlobalFor(name);
         if (fallback && !fallbackNames.has(name)) {
@@ -1280,7 +2084,8 @@ export function buildCTranslationUnit(functions, options = {}) {
           fallbackDeclarations.push(fallback);
           headersForText('uint8_t', headers);
         }
-        if (!unresolvedRows.some((row) => row.kind === 'unresolved-global' && row.subject === name)) {
+        if (!unresolvedGlobalNames.has(name)) {
+          unresolvedGlobalNames.add(name);
           unresolvedRows.push(unresolved('unresolved-global', name, 'global-type-evidence-unavailable', {}));
         }
       }
@@ -1297,13 +2102,27 @@ export function buildCTranslationUnit(functions, options = {}) {
     const renderedNames = [...row.renderedNames].sort();
     const names = [...row.names].sort();
     const name = renderedNames[0] ?? names[0] ?? `global_${BigInt(key).toString(16).toUpperCase()}`;
-    const types = [...row.types].sort();
+    const irTypes = [...row.irTypes].sort();
+    const closureBinaryTypes = [...row.closureBinaryTypes].sort();
     let declaration = null;
+    let resolvedType = null;
     let reason = null;
     let fallback = null;
-    if (renderedNames.length > 1) reason = 'conflicting-rendered-global-identifiers';
-    else if (types.length === 1 && C_IDENTIFIER.test(name)) declaration = `extern ${types[0]} ${name};`;
-    else reason = types.length > 1 ? 'conflicting-global-type-evidence' : 'global-type-evidence-unavailable';
+    if (renderedNames.length > 1) {
+      reason = 'conflicting-rendered-global-identifiers';
+    } else if (irTypes.length === 1 && C_IDENTIFIER.test(name)) {
+      resolvedType = irTypes[0];
+      declaration = `extern ${resolvedType} ${name};`;
+    } else if (irTypes.length > 1) {
+      reason = 'conflicting-global-type-evidence';
+    } else if (closureBinaryTypes.length === 1 && !row.hasArraySubscriptUse && C_IDENTIFIER.test(name)) {
+      resolvedType = closureBinaryTypes[0];
+      declaration = `static ${resolvedType} ${name};`;
+    } else if (closureBinaryTypes.length > 1) {
+      reason = 'conflicting-global-type-evidence';
+    } else {
+      reason = 'global-type-evidence-unavailable';
+    }
     if (declaration) headersForText(declaration, headers);
     else {
       unresolvedRows.push(unresolved('unresolved-global', name, reason, { address:addressText(row.address) }));
@@ -1315,7 +2134,7 @@ export function buildCTranslationUnit(functions, options = {}) {
       }
     }
     return Object.freeze({
-      name, address:addressText(row.address), declaration, type:types.length === 1 ? types[0] : null,
+      name, address:addressText(row.address), declaration, type:resolvedType,
       size:[...row.sizes].sort((a, b) => a - b)[0] ?? null, provenance:[...row.provenance].sort(),
       certainty:declaration ? 'evidence-backed-nonexact' : 'unresolved', exact:false,
     });
@@ -1376,16 +2195,23 @@ export function buildCTranslationUnit(functions, options = {}) {
   // emitted faithfully, because its published declaration would reject the
   // call.
   for (const fn of normalizedFunctions) {
-    if (!C_IDENTIFIER.test(String(fn?.renderedName ?? ''))) continue;
-    const declaration = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature);
+    const fnName = String(fn?.renderedName ?? '');
+    if (!C_IDENTIFIER.test(fnName)) continue;
+    const emittedDecl = safeSignatureDeclaration(fn?.signature, synthesizedStructNames);
+    if (emittedDecl) {
+      const bounds = parseSignatureArity(emittedDecl, fnName);
+      if (bounds) eligibilityContext.knownArityBounds.set(fnName, bounds);
+      else eligibilityContext.knownArityBounds.delete(fnName);
+    }
+    const declaration = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature, synthesizedStructNames);
     if (!declaration) continue;
-    if (isUnprototypedDeclaration(declaration, String(fn.renderedName))) {
-      eligibilityContext.unprototypedFallbacks.add(String(fn.renderedName));
+    if (isUnprototypedDeclaration(declaration, fnName)) {
+      eligibilityContext.unprototypedFallbacks.add(fnName);
     } else {
-      eligibilityContext.knownAritySelected.add(String(fn.renderedName));
+      eligibilityContext.knownAritySelected.add(fnName);
     }
     const ptrIdx = parsePointerParameterIndices(declaration);
-    if (ptrIdx) eligibilityContext.pointerParamPositions.set(String(fn.renderedName), ptrIdx);
+    if (ptrIdx) eligibilityContext.pointerParamPositions.set(fnName, ptrIdx);
   }
   for (const fn of normalizedFunctions) {
     const verdict = faithfulBodyEligibility(fn, eligibilityContext);
@@ -1405,23 +2231,44 @@ export function buildCTranslationUnit(functions, options = {}) {
   }
   const unresolvedList = unresolvedRows.slice().sort((a, b) => `${a.kind}:${a.subject}`.localeCompare(`${b.kind}:${b.subject}`));
   const includes = [...headers].sort();
-  const typeDecls = [...[...typeDeclarations].sort(), ...synthesizedStructDecls];
   const fallbacks = fallbackDeclarations.slice().sort();
   const orderedFunctions = normalizedFunctions.slice().sort((a, b) => compareAddressThenName(a, b) || a.index - b.index);
-
   const hoistedHelpers = [...hoistedHelperBlocks.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([, blockText]) => blockText);
-  const sections = [];
-  if (includes.length) sections.push(includes.map((header) => `#include ${header}`).join('\n'));
-  if (typeDecls.length) sections.push(typeDecls.join('\n'));
-  if (hoistedHelpers.length) sections.push(hoistedHelpers.join('\n'));
   const declaredPrototypes = prototypes.filter((row) => row.declaration);
-  if (declaredPrototypes.length) sections.push(declaredPrototypes.map((row) => row.declaration).join('\n'));
   const declaredGlobals = globals.filter((row) => row.declaration);
-  if (declaredGlobals.length) sections.push(declaredGlobals.map((row) => row.declaration).join('\n'));
   const selectedDefinitionDeclarations = selectedDefinitionRows
     .sort(compareAddressThenName).map((row) => row.declaration);
+
+  const emittedTuCodeText = declarationBearingText([
+    ...selectedDefinitionDeclarations,
+    ...orderedFunctions.map((fn) => String(fn.sourcePseudocode ?? fn.pseudocode)),
+    ...synthesizedStructDecls,
+    ...declaredPrototypes.map((row) => row.declaration),
+    ...hoistedHelpers,
+    ...declaredGlobals.map((row) => row.declaration),
+  ].join('\n'));
+  for (const [alias, standard] of EXTENDED_128_TYPE_ALIASES) {
+    if (new RegExp(`\\b${alias}\\b`).test(emittedTuCodeText)) {
+      typeDeclarations.add(`typedef ${standard} ${alias};`);
+    }
+  }
+  const typeDecls = [...[...typeDeclarations].sort(), ...synthesizedStructDecls];
+
+  const anyArgsCheckText = declarationBearingText([
+    ...orderedFunctions.filter((fn) => !fn.syntaxOnly).map((fn) => String(fn.sourcePseudocode ?? '')),
+    ...declaredPrototypes.map((row) => row.declaration),
+  ].join('\n'));
+  const needsHexAnyArgsGuard = /\b__HEX_ANY_ARGS\b/.test(anyArgsCheckText);
+
+  const sections = [];
+  if (includes.length) sections.push(includes.map((header) => `#include ${header}`).join('\n'));
+  if (needsHexAnyArgsGuard) sections.push(HEX_ANY_ARGS_GUARD);
+  if (typeDecls.length) sections.push(typeDecls.join('\n'));
+  if (hoistedHelpers.length) sections.push(hoistedHelpers.join('\n'));
+  if (declaredPrototypes.length) sections.push(declaredPrototypes.map((row) => row.declaration).join('\n'));
+  if (declaredGlobals.length) sections.push(declaredGlobals.map((row) => row.declaration).join('\n'));
   if (selectedDefinitionDeclarations.length) sections.push(selectedDefinitionDeclarations.join('\n'));
   if (fallbacks.length) sections.push(`/* hex-tu-fallback-declarations: syntax-only fallbacks for evidence-missing externals; unresolved entries below stay explicit. */\n${fallbacks.join('\n')}`);
   if (unresolvedList.length) sections.push(unresolvedList.map(unresolvedComment).join('\n'));
@@ -1442,4 +2289,4 @@ export function buildCTranslationUnit(functions, options = {}) {
   });
 }
 
-export { normalizedType as normalizeCType };
+export { normalizedType as normalizeCType, parseSignatureArity };

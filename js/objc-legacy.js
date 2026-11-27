@@ -160,14 +160,15 @@ const MAX_NAME = 512;
  * @param {BigInt} [base] イメージの先頭（__TEXT の vmaddr）。無ければ足さない。
  */
 export function sanitizePointer(v, base, pointerFormat = null) {
-  if (v === 0n) return null;
+  if (typeof v !== 'bigint' || v === 0n) return null;
+  const baseBig = base == null ? null : BigInt(base);
   const format = pointerFormat == null ? null : Number(pointerFormat);
   if (format === 2 || format === 6) {
     if (((v >> 63n) & 1n) !== 0n) return null;
     const target = v & 0xfffffffffn;
     const high8 = (v >> 36n) & 0xffn;
     const reconstructed = target | (high8 << 56n);
-    if (format === 6) return base == null ? null : BigInt(base) + reconstructed;
+    if (format === 6) return baseBig == null ? null : baseBig + reconstructed;
     return reconstructed;
   }
   /* ARM64E chained fixup formats (dyld_chained_ptr_arm64e_*). They share auth /
@@ -181,16 +182,16 @@ export function sanitizePointer(v, base, pointerFormat = null) {
     if (((v >> 62n) & 1n) !== 0n) return null;    // bind ordinal, not an address
     if (auth) {
       // dyld chains "diversity+addr" authentication on bits 32..61 — no address.
-      if (base == null) return null;
-      return BigInt(base) + (v & 0xffffffffn);
+      if (baseBig == null) return null;
+      return baseBig + (v & 0xffffffffn);
     }
     const target = v & 0x7ffffffffffn;
     if (target === 0n) return null;
     const high8 = (v >> 43n) & 0xffn;
     const reconstructed = target | (high8 << 56n);
     if (format === 7 || format === 9 || format === 12) {
-      if (base == null) return null;
-      return BigInt(base) + reconstructed;
+      if (baseBig == null) return null;
+      return baseBig + reconstructed;
     }
     return reconstructed;
   }
@@ -201,7 +202,7 @@ export function sanitizePointer(v, base, pointerFormat = null) {
      interpret it as the same image-relative form instead of trying to read
      page zero.  Plain legacy VM pointers remain unchanged because they are
      already >= base. */
-  if (base != null && v < BigInt(base)) return BigInt(base) + v;
+  if (baseBig != null && v < baseBig) return baseBig + v;
   if (v < 0x0001000000000000n) return v;          // 素のポインタ（古い形式）
   const low = v & 0x0000000fffffffffn;
   if (low === 0n) return null;
@@ -214,7 +215,7 @@ export function sanitizePointer(v, base, pointerFormat = null) {
    *   たまたま同じ値だった別のクラスを親として拾ってしまう。）
    */
   if (v & 0x8000000000000000n) {
-    return (base == null || low >= base) ? low : null;
+    return (baseBig == null || low >= baseBig) ? low : null;
   }
 
   /*
@@ -222,7 +223,7 @@ export function sanitizePointer(v, base, pointerFormat = null) {
    * イメージ先頭からの距離が入っているもの（同 _64_OFFSET）。
    * 距離のほうは必ずイメージ先頭より小さいので、そこで見分けられる。
    */
-  if (base != null && low < base) return base + low;
+  if (baseBig != null && low < baseBig) return baseBig + low;
   return low;
 }
 
@@ -269,7 +270,15 @@ export function pagedReader(read, pageBytes = 65536, maxPages = 96, options = {}
   };
   return async function get(addr, len, soft) {
     if (signal?.aborted) return null;
-    if (addr == null || len <= 0) return null;
+    if (addr == null || !Number.isFinite(len) || len <= 0) return null;
+    if (typeof addr === 'bigint') {
+      if (addr < 0n) return null;
+    } else if (typeof addr === 'number') {
+      if (!Number.isSafeInteger(addr) || addr < 0) return null;
+      addr = BigInt(addr);
+    } else {
+      return null;
+    }
     const page = (addr / BigInt(pageBytes)) * BigInt(pageBytes);
     const off = Number(addr - page);
     if (off + len <= pageBytes) {
@@ -296,6 +305,8 @@ export function pagedReader(read, pageBytes = 65536, maxPages = 96, options = {}
 }
 
 /** 0 で終わる文字列を読む。読めなければ null。 */
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 async function cstring(get, addr) {
   if (addr == null) return null;
   // 区画の端に置かれた名前も読めるように、短い読み取りも受け取る。
@@ -305,7 +316,7 @@ async function cstring(get, addr) {
   const end = buf.indexOf(0);
   if (end <= 0) return null;
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(0, end));
+    const text = UTF8_FATAL_DECODER.decode(buf.subarray(0, end));
     return /[\u0000-\u001f\u007f]/u.test(text) ? null : text;
   } catch {
     return null;
@@ -684,24 +695,24 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
   if (!meta) {
     try {
       info.ivars = await readIvars(get, cleanPointer(get, readWord(get, ro, layout.roIvars)), info.instanceSize, completeness);
-    } catch { info.ivars = []; }
+    } catch { markLegacyPartial(completeness, 'ivar-read-error', 'invalidIvars'); info.ivars = []; }
     try {
       // 表が短くて baseProperties まで届かないことがある。届かなければ空のまま。
       if (ro.length >= layout.roProps + layout.pointerBytes) {
-        info.properties = await readProperties(get, cleanPointer(get, readWord(get, ro, layout.roProps)));
+        info.properties = await readProperties(get, cleanPointer(get, readWord(get, ro, layout.roProps)), completeness);
       }
-    } catch { info.properties = []; }
+    } catch { markLegacyPartial(completeness, 'property-read-error', 'invalidProperties'); info.properties = []; }
     try {
       if (ro.length >= layout.roProtocols + layout.pointerBytes) {
         info.protocols = await readProtocolList(get, cleanPointer(get, readWord(get, ro, layout.roProtocols)), completeness);
       }
-    } catch { info.protocols = []; }
+    } catch { markLegacyPartial(completeness, 'protocol-read-error', 'invalidProtocols'); info.protocols = []; }
   } else {
     try {
       if (ro.length >= layout.roProps + layout.pointerBytes) {
         info.classProperties = await readProperties(get, cleanPointer(get, readWord(get, ro, layout.roProps)), completeness, 'class-property');
       }
-    } catch { info.classProperties = []; }
+    } catch { markLegacyPartial(completeness, 'class-property-read-error', 'invalidProperties'); info.classProperties = []; }
   }
 
   // isa はメタクラス。そちらにクラスメソッド（+）が入っている。
@@ -766,11 +777,12 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
   if (classesCompleteness.misalignedBytes) markLegacyPartial(classesCompleteness, 'class-list-size-misaligned');
   if (classesCompleteness.capped) markLegacyPartial(classesCompleteness, 'class-budget');
 
+  const classListVmAddr = BigInt(classList.vmAddr);
   const get = pagedReader(read, 65536, 96, { signal: options?.signal });
   get.pointerBytes = PTR;
   get.base = imageBase != null
     ? BigInt(imageBase)
-    : (classList.vmAddr / 0x100000000n) * 0x100000000n;
+    : (classListVmAddr / 0x100000000n) * 0x100000000n;
   get.pointerFormat = pointerFormat ?? classList.pointerFormat ?? classList.pointer_format ?? null;
   get.validateImplementation = typeof options.validateImplementation === 'function' ? options.validateImplementation : null;
   get.requireImplementationProof = options.requireImplementationProof === true;
@@ -788,7 +800,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
         break;
       }
     }
-    const slot = classList.vmAddr + BigInt(i) * BigInt(PTR);
+    const slot = classListVmAddr + BigInt(i) * BigInt(PTR);
     let ptr;
     try { ptr = await pointer(get, slot); }
     catch { markLegacyPartial(classesCompleteness, 'class-slot-unreadable', 'unreadableSlots'); break; }

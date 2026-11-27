@@ -90,6 +90,7 @@ const FIXED_WIDTH_TYPES = Object.freeze(new Map([
 const PRELUDE_COMMENT = '/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */';
 const STRUCT_PRELUDE_COMMENT = '/* hex: synthesized member-base structs. */';
 const STANDALONE_GLOBALS_COMMENT = '/* hex: standalone external globals (stripped by translation unit packager). */';
+const STANDALONE_BINARY_GLOBALS_COMMENT = '/* hex: binary-backed global declarations (self-contained C output). */';
 const STANDALONE_PROTOTYPES_COMMENT = '/* hex: standalone external prototypes (stripped by translation unit packager). */';
 const BITFIELD_HELPERS_COMMENT = '/* hex: bitfield helpers (self-contained; guarded for translation unit inclusion). */';
 export const BIT_EXTRACT_HELPER_DEF = 'static inline uint64 bit_extract(uint64 val, unsigned int lsb, unsigned int width) { return (width == 0 || lsb >= 64) ? 0 : (width >= 64 ? (val >> lsb) : ((val >> lsb) & ((1ULL << width) - 1ULL))); }';
@@ -138,7 +139,8 @@ export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
   ['getchar', '<stdio.h>'], ['getc', '<stdio.h>'], ['fgetc', '<stdio.h>'], ['ungetc', '<stdio.h>'],
   ['fgets', '<stdio.h>'], ['getline', '<stdio.h>'],
   ['fopen', '<stdio.h>'], ['freopen', '<stdio.h>'], ['fclose', '<stdio.h>'], ['fflush', '<stdio.h>'],
-  ['fread', '<stdio.h>'], ['fwrite', '<stdio.h>'], ['fseek', '<stdio.h>'], ['ftell', '<stdio.h>'], ['rewind', '<stdio.h>'],
+  ['fread', '<stdio.h>'], ['fwrite', '<stdio.h>'], ['fseek', '<stdio.h>'], ['ftell', '<stdio.h>'], ['fseeko', '<stdio.h>'], ['ftello', '<stdio.h>'], ['rewind', '<stdio.h>'],
+  ['fdopen', '<stdio.h>'], ['popen', '<stdio.h>'], ['pclose', '<stdio.h>'], ['dprintf', '<stdio.h>'], ['vdprintf', '<stdio.h>'], ['asprintf', '<stdio.h>'], ['vasprintf', '<stdio.h>'],
   ['fgetpos', '<stdio.h>'], ['fsetpos', '<stdio.h>'], ['feof', '<stdio.h>'], ['ferror', '<stdio.h>'], ['clearerr', '<stdio.h>'],
   ['perror', '<stdio.h>'], ['remove', '<stdio.h>'], ['rename', '<stdio.h>'],
   ['tmpfile', '<stdio.h>'], ['tmpnam', '<stdio.h>'], ['setbuf', '<stdio.h>'], ['setvbuf', '<stdio.h>'], ['fileno', '<stdio.h>'],
@@ -289,9 +291,10 @@ const HEX_STATIC_INTRINSIC_DEFS = Object.freeze(new Map([
   ['ctz32', 'static inline uint32_t ctz32(uint32_t v) { return v ? (uint32_t)__builtin_ctz(v) : 32U; }'],
   ['ctz64', 'static inline uint64_t ctz64(uint64_t v) { return v ? (uint64_t)__builtin_ctzll(v) : 64ULL; }'],
   ['popcnt', 'static inline uint64_t popcnt(uint64_t v) { return (uint64_t)__builtin_popcountll(v); }'],
+  ['hex_f64_to_u64', 'static inline uint64_t hex_f64_to_u64(double v) { union { double d; uint64_t u; } x; x.d = v; return x.u; }'],
 ]));
 
-const ARM64_NZCV_COND_EXPRS = Object.freeze({
+const ARM64_NZCV_COND_EXPRS = Object.freeze(Object.assign(Object.create(null), {
   eq: 'Z', ne: '!Z',
   cs: 'C', hs: 'C',
   cc: '!C', lo: '!C',
@@ -301,23 +304,36 @@ const ARM64_NZCV_COND_EXPRS = Object.freeze({
   ge: '(N == V)', lt: '(N != V)',
   gt: '(!Z && (N == V))', le: '(Z || (N != V))',
   al: '1', nv: '1',
-});
+}));
 
 function hexIntrinsicHelperDef(name) {
   const fixed = HEX_STATIC_INTRINSIC_DEFS.get(name);
   if (fixed) return fixed;
-  const m = /^__arm64_nzcv_(add|sub|and)_([a-z]+)_(32|64)$/.exec(name);
+  const fsubMatch = /^__arm64_nzcv_fsub_([a-z]+)_(32|64)$/.exec(name);
+  if (fsubMatch) {
+    const [, cond, bits] = fsubMatch;
+    const condExpr = Object.hasOwn(ARM64_NZCV_COND_EXPRS, cond) ? ARM64_NZCV_COND_EXPRS[cond] : null;
+    if (!condExpr) return null;
+    const is32 = bits === '32';
+    const ut = is32 ? 'uint32_t' : 'uint64_t';
+    const ft = is32 ? 'float' : 'double';
+    const uaInit = is32 ? '(uint32_t)a' : 'a';
+    const ubInit = is32 ? '(uint32_t)b' : 'b';
+    return `static inline int ${name}(uint64_t a, uint64_t b) { union { ${ut} u; ${ft} f; } ua = { ${uaInit} }, ub = { ${ubInit} }; ${ft} fa = ua.f, fb = ub.f; int unord = (fa != fa || fb != fb); int N = (!unord && fa < fb); int Z = (!unord && fa == fb); int C = (unord || fa >= fb); int V = unord; (void)N; (void)Z; (void)C; (void)V; return ${condExpr}; }`;
+  }
+  const m = /^__arm64_nzcv_(add|sub|and)_([a-z]+)_(8|16|32|64)$/.exec(name);
   if (!m) return null;
   const [, op, cond, bits] = m;
-  const condExpr = ARM64_NZCV_COND_EXPRS[cond];
+  const condExpr = Object.hasOwn(ARM64_NZCV_COND_EXPRS, cond) ? ARM64_NZCV_COND_EXPRS[cond] : null;
   if (!condExpr) return null;
-  const is32 = bits === '32';
-  const ut = is32 ? 'uint32_t' : 'uint64_t';
-  const shift = is32 ? '31' : '63';
-  const zero = is32 ? '0U' : '0ULL';
-  const one = is32 ? '1U' : '1ULL';
-  const uaInit = is32 ? '(uint32_t)a' : 'a';
-  const ubInit = is32 ? '(uint32_t)b' : 'b';
+  const spec = bits === '8'
+    ? { ut: 'uint8_t', shift: '7', zero: '0U', one: '1U', uaInit: '(uint8_t)a', ubInit: '(uint8_t)b' }
+    : bits === '16'
+      ? { ut: 'uint16_t', shift: '15', zero: '0U', one: '1U', uaInit: '(uint16_t)a', ubInit: '(uint16_t)b' }
+      : bits === '32'
+        ? { ut: 'uint32_t', shift: '31', zero: '0U', one: '1U', uaInit: '(uint32_t)a', ubInit: '(uint32_t)b' }
+        : { ut: 'uint64_t', shift: '63', zero: '0ULL', one: '1ULL', uaInit: 'a', ubInit: 'b' };
+  const { ut, shift, zero, one, uaInit, ubInit } = spec;
   let opBody;
   if (op === 'add') {
     opBody = `${ut} r = (${ut})(ua + ub); int N = (int)((r >> ${shift}) & ${one}); int Z = (r == ${zero}); int C = (r < ua); int V = (int)((((~(ua ^ ub)) & (ua ^ r)) >> ${shift}) & ${one});`;
@@ -338,11 +354,12 @@ function isHexIntrinsicHelper(name) {
   return hexIntrinsicHelperDef(name) !== null;
 }
 
-function isEligibleIntrinsicHelper(name, renderedBody) {
+function isEligibleIntrinsicHelper(name, renderedBody, precleanedBody = null) {
   if (!isHexIntrinsicHelper(name)) return false;
   const requiredArity = ARITY_GUARDED_INTRINSICS.get(name);
   if (requiredArity != null) {
-    const { minArgs, maxArgs } = callSiteArityRange(declarationBearingSource(renderedBody), name);
+    const clean = precleanedBody != null ? precleanedBody : declarationBearingSource(renderedBody);
+    const { minArgs, maxArgs } = callSiteArityRange(clean, name);
     return minArgs === requiredArity && maxArgs === requiredArity;
   }
   return true;
@@ -365,10 +382,12 @@ export function isFixedWidthPreludeDeclaration(text) {
  * `typedef struct { uint64 field_0; ... } hex_struct_<name>;` */
 export function parseSynthesizedStructPreludeDeclaration(text) {
   const trimmed = String(text ?? '').trim();
-  const match = /^typedef\s+struct(?:\s+hex_struct_[A-Za-z0-9_]+)?\s*\{\s*([^}]+?)\s*\}\s*(hex_struct_[A-Za-z0-9_]+)\s*;$/.exec(trimmed);
+  const match = /^typedef\s+struct(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s*\{\s*([^}]+?)\s*\}\s*([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(trimmed);
   if (!match) return null;
-  const body = match[1].trim();
-  const name = match[2];
+  const tag = match[1];
+  const body = match[2].trim();
+  const name = match[3];
+  if ((tag && tag !== name) || KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name)) return null;
   const fields = [];
   for (const part of body.split(';')) {
     const item = part.trim();
@@ -587,71 +606,227 @@ export function extractHelperPreludeBlocks(text) {
 
 /* Remove comments and literals so identifier scans never read prose or asm
  * text.  Newlines are preserved so callers can still reason about lines. */
+function isIdentCharCode(c) {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+}
+
+function isNumBodyCode(c) {
+  return isIdentCharCode(c) || c === 46 /* '.' */ || c === 39 /* '\'' */;
+}
+
+function isWsAt(str, idx) {
+  const c = str.charCodeAt(idx);
+  return c === 32 || (c >= 9 && c <= 13) || (c >= 0x80 && /\s/.test(str[idx]));
+}
+
+function isPrecededByArrow(source, start) {
+  let i = start - 1;
+  while (i >= 0 && isWsAt(source, i)) i--;
+  return i >= 1 && source.charCodeAt(i) === 62 /* '>' */ && source.charCodeAt(i - 1) === 45 /* '-' */;
+}
+
+function isFollowedByArrow(source, end) {
+  let i = end;
+  const len = source.length;
+  while (i < len && isWsAt(source, i)) i++;
+  return i + 1 < len && source.charCodeAt(i) === 45 /* '-' */ && source.charCodeAt(i + 1) === 62 /* '>' */;
+}
+
+function isPointerCastSuffix(source, end) {
+  let i = end;
+  const len = source.length;
+  while (i < len && isWsAt(source, i)) i++;
+  let stars = 0;
+  while (i < len && source.charCodeAt(i) === 42 /* '*' */) { stars++; i++; }
+  if (stars === 0) return false;
+  while (i < len && isWsAt(source, i)) i++;
+  return i < len && source.charCodeAt(i) === 41 /* ')' */;
+}
+
 export function declarationBearingSource(text) {
   const source = String(text ?? '');
-  let out = '';
+  const len = source.length;
+  let parts = null;
+  let runStart = 0;
+  let spaceRun = 0;
   let state = 'code';
   let lineStart = true;
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i];
-    const next = source[i + 1];
+
+  const ensureParts = (flushEnd) => {
+    if (!parts) parts = [];
+    if (flushEnd > runStart) parts.push(source.slice(runStart, flushEnd));
+  };
+  const flushSpaces = () => {
+    if (spaceRun > 0) {
+      parts.push(' '.repeat(spaceRun));
+      spaceRun = 0;
+    }
+  };
+
+  for (let i = 0; i < len; i++) {
+    const code = source.charCodeAt(i);
+    const nextCode = i + 1 < len ? source.charCodeAt(i + 1) : -1;
     if (state === 'code') {
-      if (lineStart && ch === '#') { out += ' '; state = 'preproc'; lineStart = false; continue; }
-      if (ch === '/' && next === '/') { out += '  '; i++; state = 'line'; lineStart = false; continue; }
-      if (ch === '/' && next === '*') { out += '  '; i++; state = 'block'; continue; }
-      if (ch === '"') { out += ' '; state = 'string'; lineStart = false; continue; }
-      if (ch === "'") { out += ' '; state = 'char'; lineStart = false; continue; }
-      if (ch >= '0' && ch <= '9' && (i === 0 || !/[A-Za-z0-9_]/.test(source[i - 1]))) {
-        const isHex = ch === '0' && (next === 'x' || next === 'X');
+      if (lineStart && code === 35 /* '#' */) {
+        ensureParts(i);
+        spaceRun = 1;
+        state = 'preproc';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code === 47 /* '/' */ && nextCode === 47 /* '/' */) {
+        ensureParts(i);
+        spaceRun = 2;
+        i++;
+        state = 'line';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code === 47 /* '/' */ && nextCode === 42 /* '*' */) {
+        ensureParts(i);
+        spaceRun = 2;
+        i++;
+        state = 'block';
+        runStart = len;
+        continue;
+      }
+      if (code === 34 /* '"' */) {
+        ensureParts(i);
+        spaceRun = 1;
+        state = 'string';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code === 39 /* '\'' */) {
+        ensureParts(i);
+        spaceRun = 1;
+        state = 'char';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code >= 48 && code <= 57 && (i === 0 || !isIdentCharCode(source.charCodeAt(i - 1)))) {
+        const isHex = code === 48 && (nextCode === 120 /* 'x' */ || nextCode === 88 /* 'X' */);
         let j = i;
-        while (j < source.length) {
-          const c = source[j];
-          if (/[0-9A-Za-z_.']/.test(c)) {
-            const isExp = isHex ? (c === 'p' || c === 'P') : (c === 'e' || c === 'E');
-            if (isExp && (source[j + 1] === '+' || source[j + 1] === '-')) {
-              j += 2;
-              continue;
+        while (j < len) {
+          const cc = source.charCodeAt(j);
+          if (isNumBodyCode(cc)) {
+            const isExp = isHex ? (cc === 112 /* 'p' */ || cc === 80 /* 'P' */) : (cc === 101 /* 'e' */ || cc === 69 /* 'E' */);
+            if (isExp && j + 1 < len) {
+              const nc = source.charCodeAt(j + 1);
+              if (nc === 43 /* '+' */ || nc === 45 /* '-' */) {
+                j += 2;
+                continue;
+              }
             }
             j++;
           } else {
             break;
           }
         }
-        out += '0'.repeat(j - i);
+        ensureParts(i);
+        parts.push('0'.repeat(j - i));
+        runStart = j;
         i = j - 1;
         lineStart = false;
         continue;
       }
-      if (ch === '\n') lineStart = true;
-      else if (ch !== ' ' && ch !== '\t' && ch !== '\r') lineStart = false;
-      out += ch;
+      if (code === 10 /* '\n' */) lineStart = true;
+      else if (code !== 32 && code !== 9 && code !== 13) lineStart = false;
       continue;
     }
     if (state === 'preproc') {
-      if (ch === '\\' && next === '\n') { out += ' \n'; i++; continue; }
-      if (ch === '\\' && next === '\r' && source[i + 2] === '\n') { out += '  \n'; i += 2; continue; }
-      if (ch === '\n') { out += '\n'; state = 'code'; lineStart = true; }
-      else out += ' ';
+      if (code === 92 /* '\\' */ && nextCode === 10 /* '\n' */) {
+        spaceRun += 1;
+        flushSpaces();
+        parts.push('\n');
+        i++;
+        continue;
+      }
+      if (code === 92 /* '\\' */ && nextCode === 13 /* '\r' */ && i + 2 < len && source.charCodeAt(i + 2) === 10) {
+        spaceRun += 2;
+        flushSpaces();
+        parts.push('\n');
+        i += 2;
+        continue;
+      }
+      if (code === 10 /* '\n' */) {
+        flushSpaces();
+        parts.push('\n');
+        state = 'code';
+        lineStart = true;
+        runStart = i + 1;
+      } else {
+        spaceRun += 1;
+      }
       continue;
     }
-    if (state === 'line') { if (ch === '\n') { out += '\n'; state = 'code'; lineStart = true; } else out += ' '; continue; }
+    if (state === 'line') {
+      if (code === 10 /* '\n' */) {
+        flushSpaces();
+        parts.push('\n');
+        state = 'code';
+        lineStart = true;
+        runStart = i + 1;
+      } else {
+        spaceRun += 1;
+      }
+      continue;
+    }
     if (state === 'block') {
-      if (ch === '*' && next === '/') { out += '  '; i++; state = 'code'; }
-      else if (ch === '\n') { out += '\n'; lineStart = true; }
-      else out += ' ';
+      if (code === 42 /* '*' */ && nextCode === 47 /* '/' */) {
+        spaceRun += 2;
+        flushSpaces();
+        i++;
+        state = 'code';
+        runStart = i + 1;
+      } else if (code === 10 /* '\n' */) {
+        flushSpaces();
+        parts.push('\n');
+        lineStart = true;
+      } else {
+        spaceRun += 1;
+      }
       continue;
     }
-    if (ch === '\\') {
-      if (next === '\n') { out += ' \n'; i++; }
-      else if (next === '\r' && source[i + 2] === '\n') { out += '  \n'; i += 2; }
-      else if (i + 1 < source.length) { out += '  '; i++; }
-      else out += ' ';
+    if (code === 92 /* '\\' */) {
+      if (nextCode === 10 /* '\n' */) {
+        spaceRun += 1;
+        flushSpaces();
+        parts.push('\n');
+        i++;
+      } else if (nextCode === 13 /* '\r' */ && i + 2 < len && source.charCodeAt(i + 2) === 10) {
+        spaceRun += 2;
+        flushSpaces();
+        parts.push('\n');
+        i += 2;
+      } else if (i + 1 < len) {
+        spaceRun += 2;
+        i++;
+      } else {
+        spaceRun += 1;
+      }
       continue;
     }
-    if ((state === 'string' && ch === '"') || (state === 'char' && ch === "'")) { out += ' '; state = 'code'; }
-    else out += ch === '\n' ? '\n' : ' ';
+    if ((state === 'string' && code === 34 /* '"' */) || (state === 'char' && code === 39 /* '\'' */)) {
+      spaceRun += 1;
+      flushSpaces();
+      state = 'code';
+      runStart = i + 1;
+    } else if (code === 10 /* '\n' */) {
+      flushSpaces();
+      parts.push('\n');
+    } else {
+      spaceRun += 1;
+    }
   }
-  return out;
+  if (!parts) return source;
+  flushSpaces();
+  if (state === 'code' && runStart < len) parts.push(source.slice(runStart));
+  return parts.join('');
 }
 
 
@@ -814,8 +989,8 @@ function collectObjcSelectorOffsets(source) {
   return offsets;
 }
 
-export function scanIdentifierUses(text) {
-  const source = declarationBearingSource(text);
+export function scanIdentifierUses(text, precleanedSource = null) {
+  const source = precleanedSource != null ? precleanedSource : declarationBearingSource(text);
   const objcSelectorOffsets = collectObjcSelectorOffsets(source);
   const uses = new Map();
   const pattern = /[A-Za-z_][A-Za-z0-9_]*/g;
@@ -825,8 +1000,8 @@ export function scanIdentifierUses(text) {
     const end = start + name.length;
     const before = previousChar(source, start);
     const after = nextChar(source, end);
-    const memberName = before === '.' || source.slice(0, start).trimEnd().endsWith('->');
-    const memberBase = after === '.' || source.slice(end).trimStart().startsWith('->');
+    const memberName = before === '.' || isPrecededByArrow(source, start);
+    const memberBase = after === '.' || isFollowedByArrow(source, end);
     const callTarget = after === '(';
     const objcSelector = objcSelectorOffsets.has(start);
     const label = !objcSelector && after === ':' && startsStatement(source, start);
@@ -851,7 +1026,7 @@ export function scanIdentifierUses(text) {
     const isPointerCast = before === '('
       && registerType(name) == null
       && !/^(?:var|local|tmp|call|load|arg|phi)_/.test(name)
-      && /^\s*\*+\s*\)/.test(source.slice(end));
+      && isPointerCastSuffix(source, end);
     const castType = isPointerCast || isNonPointerCast;
     const tag = ['struct', 'union', 'enum'].includes(previousWord(source, start));
     const isValueUse = !callTarget && !memberName && !label && !gotoLabel && !castType && !tag && !objcSelector;
@@ -883,8 +1058,8 @@ export function scanIdentifierUses(text) {
  * Collect all member accesses (`base->field` and `base.field`) on non-member
  * base identifiers from the declaration-bearing source.
  */
-function collectMemberBaseAccesses(text) {
-  const source = declarationBearingSource(text);
+function collectMemberBaseAccesses(text, precleanedSource = null) {
+  const source = precleanedSource != null ? precleanedSource : declarationBearingSource(text);
   const accesses = new Map();
   const pattern = /([A-Za-z_][A-Za-z0-9_]*)\s*(->|\.)\s*([A-Za-z_][A-Za-z0-9_]*)/g;
   for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
@@ -893,7 +1068,7 @@ function collectMemberBaseAccesses(text) {
     const field = match[3];
     const start = match.index;
     const before = previousChar(source, start);
-    if (before === '.' || source.slice(0, start).trimEnd().endsWith('->')) continue;
+    if (before === '.' || isPrecededByArrow(source, start)) continue;
     if (['struct', 'union', 'enum', 'goto'].includes(previousWord(source, start))) continue;
     if (KEYWORDS.has(field)) continue;
     let rec = accesses.get(base);
@@ -1033,9 +1208,11 @@ function declaredNamesFromLines(lines) {
   for (const item of lines || []) {
     const cleanedRaw = declarationBearingSource(item?.text ?? '');
     if (item?.kind === 'decl') {
-      const defineGlobal = /^\s*#define\s+(global_[A-Za-z0-9_]+)\s+\(\s*(?:\*\s*\(\s*uint128\s*\*\s*\)\s*&\s*)?__hex_global_[A-Za-z0-9_]+_buf\s*\[\s*0\s*\]\s*\)\s*$/.exec(String(item?.text ?? ''));
-      if (defineGlobal) declared.add(defineGlobal[1]);
-      extractDeclaredNamesFromDeclText(cleanedRaw, declared);
+      if (braceDepth <= 1) {
+        const defineGlobal = /^\s*#define\s+(global_[A-Za-z0-9_]+)\s+\(\s*(?:\*\s*\(\s*uint128\s*\*\s*\)\s*&\s*)?__hex_global_[A-Za-z0-9_]+_buf\s*\[\s*0\s*\]\s*\)\s*$/.exec(String(item?.text ?? ''));
+        if (defineGlobal) declared.add(defineGlobal[1]);
+        extractDeclaredNamesFromDeclText(cleanedRaw, declared);
+      }
     } else if (item?.kind === 'stmt') {
       const cleaned = cleanedRaw.trim();
       if (/^typedef\b/.test(cleaned)) {
@@ -1044,7 +1221,9 @@ function declaredNamesFromLines(lines) {
         const tagMatch = /\b(?:struct|union|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(cleaned);
         if (tagMatch && !KEYWORDS.has(tagMatch[1])) declared.add(tagMatch[1]);
       } else if (braceDepth <= 1) {
-        const match = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(\s+(?:\*+\s*)*|\s*\*+\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.exec(cleaned);
+        const labelColon = findLeadingLabelColonIndex(cleaned);
+        const declCandidate = labelColon >= 0 ? cleaned.slice(labelColon + 1).replace(/^\s*;\s*/, '').trim() : cleaned;
+        const match = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(\s+(?:\*+\s*)*|\s*\*+\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.exec(declCandidate);
         if (match && !NON_DECL_STMT_HEADS.has(match[2]) && !KEYWORDS.has(match[4])) {
           const hasQualifier = match[1].trim().length > 0;
           const typeTok = match[2];
@@ -1057,7 +1236,7 @@ function declaredNamesFromLines(lines) {
             || definedTypes.has(typeTok);
           if (!hasStar || hasQualifier || knownType) {
             if (!/\b(?:struct|union|enum)\s+$/.test(match[1])) declared.add(typeTok);
-            for (const part of splitTopLevelCommas(cleaned.replace(/;\s*$/, ''))) {
+            for (const part of splitTopLevelCommas(declCandidate.replace(/;\s*$/, ''))) {
               const head = cutBeforeTopLevelAssign(part).replace(/\[[^\]]*\]/g, '').trim();
               const nm = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(head);
               if (nm && !KEYWORDS.has(nm[1])) declared.add(nm[1]);
@@ -1079,9 +1258,9 @@ const STANDARD_KNOWN_TYPES = new Set([
 ]);
 
 /* Extract pointer parameter bindings (`Thing * this`, `const Base * a2`) from a function signature. */
-function signaturePointerParams(signature) {
+function signaturePointerParams(signature, precleanedSig = null) {
   const result = [];
-  const text = declarationBearingSource(signature);
+  const text = precleanedSig != null ? precleanedSig : declarationBearingSource(signature);
   const open = text.indexOf('(');
   if (open < 0) return result;
   let depth = 0;
@@ -1182,8 +1361,8 @@ function callSiteArityRange(source, name) {
   return minArgs === Infinity ? { minArgs: 0, maxArgs: 0 } : { minArgs, maxArgs };
 }
 
-function signatureFunctionName(signature) {
-  const text = declarationBearingSource(signature);
+function signatureFunctionName(signature, precleanedSig = null) {
+  const text = precleanedSig != null ? precleanedSig : declarationBearingSource(signature);
   const open = text.indexOf('(');
   if (open < 0) return null;
   const tokens = [...text.slice(0, open).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
@@ -1191,9 +1370,9 @@ function signatureFunctionName(signature) {
 }
 
 /* Type names appearing in a function signature (return type and parameter types). */
-function signatureTypeNames(signature) {
+function signatureTypeNames(signature, precleanedSig = null) {
   const names = new Set();
-  const text = declarationBearingSource(signature);
+  const text = precleanedSig != null ? precleanedSig : declarationBearingSource(signature);
   const open = text.indexOf('(');
   if (open < 0) return names;
   const retTokens = [...text.slice(0, open).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
@@ -1252,7 +1431,10 @@ const REGISTER_CLASSES = Object.freeze([
   [/^[xX]\d+(?:_\d+)?$/, 'uint64'], [/^[wW]\d+(?:_\d+)?$/, 'uint32'],
   [/^[dD]\d+(?:_\d+)?$/, 'uint64'], [/^[sS]\d+(?:_\d+)?$/, 'uint32'],
   [/^[qQvV]\d+(?:_\d+)?$/, 'uint128'],
+  [/^(?:h(?:[0-9]|[12][0-9]|3[01])(?:_\d+)?)$/, 'uint16'],
+  [/^(?:b(?:[0-9]|[12][0-9]|3[01])(?:_\d+)?)$/, 'uint8'],
   [/^(?:sp|lr|fp|xzr|wzr|nzcv|fpcr|fpsr)$/, 'uint64'],
+  [/^(?:sp|lr|fp|nzcv)_\d+$/, 'uint64'],
 ]);
 
 function registerType(name) {
@@ -1300,15 +1482,66 @@ function resultEvidence(result) {
   };
 }
 
+function buildEvidenceIndex(result) {
+  const base = resultEvidence(result);
+  const stackSlotsByOffset = new Map();
+  for (const candidate of base.stackSlots) {
+    try {
+      const off = BigInt(candidate?.offset ?? candidate?.disp);
+      if (!stackSlotsByOffset.has(off)) stackSlotsByOffset.set(off, candidate);
+    } catch { /* ignore */ }
+  }
+  const localsBySlot = new Map();
+  const localsByOffset = new Map();
+  for (let i = 0; i < base.locals.length; i += 1) {
+    const candidate = base.locals[i];
+    // Preserve exact `.find()` semantics when `slot === null` (`slot?.name === undefined`):
+    // `undefined` must also be indexed as a valid Map key without filtering it out.
+    const slotKey = candidate?.slot;
+    if (!localsBySlot.has(slotKey)) localsBySlot.set(slotKey, i);
+    try {
+      const off = BigInt(candidate?.offset);
+      if (!localsByOffset.has(off)) localsByOffset.set(off, i);
+    } catch { /* ignore */ }
+  }
+  const argsByIndex = new Map();
+  for (const candidate of base.args) {
+    const idx = Number(candidate?.index);
+    if (!Number.isNaN(idx) && !argsByIndex.has(idx)) argsByIndex.set(idx, candidate);
+  }
+  return {
+    ...base,
+    indexed: true,
+    stackSlotsByOffset,
+    localsBySlot,
+    localsByOffset,
+    argsByIndex,
+  };
+}
+
 function recoveredStackType(name, evidence) {
   const offset = stackOffsetFromName(name);
   if (offset == null) return null;
-  const slot = evidence.stackSlots.find((candidate) => {
-    try { return BigInt(candidate?.offset ?? candidate?.disp) === offset; } catch { return false; }
-  }) ?? null;
-  const local = evidence.locals.find((candidate) =>
-    candidate?.slot === slot?.name || candidate?.slot === name
-    || (() => { try { return BigInt(candidate?.offset) === offset; } catch { return false; } })()) ?? null;
+  let slot = null;
+  let local = null;
+  if (evidence.indexed) {
+    slot = evidence.stackSlotsByOffset.get(offset) ?? null;
+    const slotIdx = evidence.localsBySlot.get(slot?.name);
+    const nameIdx = evidence.localsBySlot.get(name);
+    const offIdx = evidence.localsByOffset.get(offset);
+    let bestIdx = Infinity;
+    if (slotIdx !== undefined && slotIdx < bestIdx) bestIdx = slotIdx;
+    if (nameIdx !== undefined && nameIdx < bestIdx) bestIdx = nameIdx;
+    if (offIdx !== undefined && offIdx < bestIdx) bestIdx = offIdx;
+    local = bestIdx < Infinity ? evidence.locals[bestIdx] : null;
+  } else {
+    slot = evidence.stackSlots.find((candidate) => {
+      try { return BigInt(candidate?.offset ?? candidate?.disp) === offset; } catch { return false; }
+    }) ?? null;
+    local = evidence.locals.find((candidate) =>
+      candidate?.slot === slot?.name || candidate?.slot === name
+      || (() => { try { return BigInt(candidate?.offset) === offset; } catch { return false; } })()) ?? null;
+  }
   const recovered = usableRecoveredType(recoveredTypeName(local?.type))
     ?? usableRecoveredType(recoveredTypeName(local?.semanticType));
   if (recovered && FIXED_WIDTH_TYPES.has(recovered)) return recovered;
@@ -1320,11 +1553,11 @@ function recoveredStackType(name, evidence) {
  * recovered value type), then the naming class the producer itself used, then
  * the explicit 64-bit fallback.  Never a type name this closure cannot spell.
  */
-export function inferPointerTypedLocals(renderedBody, sigText) {
-  const source = declarationBearingSource(renderedBody);
-  const sigPtrNames = new Set(signaturePointerParams(sigText).map((item) => item.paramName));
+export function inferPointerTypedLocals(renderedBody, sigText, precleanedBody = null, precleanedSig = null) {
+  const source = precleanedBody != null ? precleanedBody : declarationBearingSource(renderedBody);
+  const cleanSig = precleanedSig != null ? precleanedSig : declarationBearingSource(sigText);
+  const sigPtrNames = new Set(signaturePointerParams(sigText, cleanSig).map((item) => item.paramName));
   const ptrParamRe = /(?:\bid\s+|\*\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?=[,)])/g;
-  const cleanSig = declarationBearingSource(sigText);
   for (let m = ptrParamRe.exec(cleanSig); m; m = ptrParamRe.exec(cleanSig)) {
     sigPtrNames.add(m[1]);
   }
@@ -1361,8 +1594,8 @@ export function inferPointerTypedLocals(renderedBody, sigText) {
   return ptrLocals;
 }
 
-function inferMutablePtrReturnLocals(renderedBody) {
-  const source = declarationBearingSource(renderedBody);
+function inferMutablePtrReturnLocals(renderedBody, precleanedBody = null) {
+  const source = precleanedBody != null ? precleanedBody : declarationBearingSource(renderedBody);
   const assignPattern = /(?:^|(?<=[;{}]))\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?!=)([^;{}]+);/gm;
   const stats = new Map();
   const isPtrRetCall = (expr) => {
@@ -1508,8 +1741,8 @@ function inferMutablePtrReturnLocals(renderedBody) {
   return result;
 }
 
-export function localDeclarationTypeFor(name, result) {
-  const evidence = resultEvidence(result);
+export function localDeclarationTypeFor(name, result, prebuiltEvidence = null) {
+  const evidence = prebuiltEvidence ?? resultEvidence(result);
   const stack = recoveredStackType(name, evidence);
   if (stack) return stack;
   const register = registerType(name);
@@ -1517,7 +1750,9 @@ export function localDeclarationTypeFor(name, result) {
   const argument = /^a(\d+)$/.exec(name);
   if (argument) {
     const index = Number(argument[1]) - 1;
-    const entry = evidence.args.find((candidate) => Number(candidate?.index) === index);
+    const entry = evidence.indexed
+      ? evidence.argsByIndex.get(index)
+      : evidence.args.find((candidate) => Number(candidate?.index) === index);
     const recovered = usableRecoveredType(recoveredTypeName(entry?.type));
     if (recovered) return recovered;
   }
@@ -1603,12 +1838,20 @@ function definedTypeAliases(lines) {
  * declaration already defines.  Deterministic order; no output when the text
  * is already self-contained.
  */
+const FIXED_WIDTH_TYPE_PATTERNS = Object.freeze(
+  [...FIXED_WIDTH_TYPES.entries()].map(([alias, builtin]) => Object.freeze([
+    alias,
+    builtin,
+    new RegExp(`\\b${escapeRegExp(alias)}\\b`),
+  ])),
+);
+
 export function fixedWidthPreludeLines(text, alreadyDefined = new Set()) {
   const source = declarationBearingSource(text);
   const lines = [];
-  for (const [alias, builtin] of FIXED_WIDTH_TYPES) {
+  for (const [alias, builtin, pattern] of FIXED_WIDTH_TYPE_PATTERNS) {
     if (alreadyDefined.has(alias)) continue;
-    if (!new RegExp(`\\b${escapeRegExp(alias)}\\b`).test(source)) continue;
+    if (!pattern.test(source)) continue;
     if (!lines.length) lines.push({ kind: 'decl', indent: 0, text: PRELUDE_COMMENT, row: null, addr: null, note: null });
     lines.push({ kind: 'decl', indent: 0, text: `typedef ${builtin} ${alias};`, row: null, addr: null, note: null });
   }
@@ -1677,8 +1920,14 @@ const LP64_SIZE_T_BUILTIN_PTR_ARGS = Object.freeze({
   strtok: { 0: 'char *', 1: 'const char *' },
   strtok_r: { 0: 'char *', 1: 'const char *', 2: 'char **' },
   memcpy: { 0: 'void *', 1: 'const void *' },
+  __memcpy_chk: { 0: 'void *', 1: 'const void *' },
+  memcpy_chk: { 0: 'void *', 1: 'const void *' },
   memmove: { 0: 'void *', 1: 'const void *' },
+  __memmove_chk: { 0: 'void *', 1: 'const void *' },
+  memmove_chk: { 0: 'void *', 1: 'const void *' },
   memset: { 0: 'void *' },
+  __memset_chk: { 0: 'void *' },
+  memset_chk: { 0: 'void *' },
   memcmp: { 0: 'const void *', 1: 'const void *' },
   memchr: { 0: 'const void *' },
   // <strings.h>
@@ -1771,8 +2020,53 @@ function skipBlockComment(text, start) {
   return end < 0 ? text.length - 1 : end + 1;
 }
 
+function splitExprCommentAffixes(raw) {
+  const s = String(raw ?? '');
+  let start = 0;
+  const len = s.length;
+  while (start < len) {
+    while (start < len && /\s/.test(s[start])) start++;
+    if (start + 1 < len && s[start] === '/' && s[start + 1] === '*') {
+      const close = s.indexOf('*/', start + 2);
+      if (close < 0) break;
+      start = close + 2;
+      continue;
+    }
+    break;
+  }
+  if (start >= len) {
+    return { lead: s, core: '', trail: '' };
+  }
+  let lastCodeEnd = start;
+  for (let i = start; i < len; i++) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(s, i);
+      lastCodeEnd = end + 1;
+      i = end;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '*') {
+      const close = s.indexOf('*/', i + 2);
+      if (close < 0) {
+        lastCodeEnd = len;
+        break;
+      }
+      i = close + 1;
+      continue;
+    }
+    if (/\s/.test(ch)) continue;
+    lastCodeEnd = i + 1;
+  }
+  return {
+    lead: s.slice(0, start),
+    core: s.slice(start, lastCodeEnd),
+    trail: s.slice(lastCodeEnd),
+  };
+}
+
 function stripOuterParens(text) {
-  let s = String(text ?? '').trim();
+  let s = splitExprCommentAffixes(text).core;
   while (s.startsWith('(') && s.endsWith(')')) {
     let depth = 0;
     let wrapsAll = true;
@@ -1787,7 +2081,7 @@ function stripOuterParens(text) {
       }
     }
     if (!wrapsAll) break;
-    s = s.slice(1, -1).trim();
+    s = splitExprCommentAffixes(s.slice(1, -1)).core;
   }
   return s;
 }
@@ -1890,7 +2184,8 @@ function isCastTypeText(castInner) {
   return null;
 }
 
-function classifyExprType(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+function classifyExprType(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null, depth = 0) {
+  if (depth > MAX_EXPR_REWRITE_DEPTH) return 'unknown';
   const t = stripOuterParens(expr);
   if (!t) return 'unknown';
 
@@ -1908,8 +2203,8 @@ function classifyExprType(expr, ptrNames, intNames, floatNames = null, selfCallS
   // 4. Top-level ternary (lowest precedence).
   const tern = findTopLevelTernary(t);
   if (tern) {
-    const t1 = classifyExprType(t.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec);
-    const t2 = classifyExprType(t.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec);
+    const t1 = classifyExprType(t.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const t2 = classifyExprType(t.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     if (t1 === 'ptr' && (t2 === 'ptr' || t2 === 'zero')) return 'ptr';
     if (t2 === 'ptr' && (t1 === 'ptr' || t1 === 'zero')) return 'ptr';
     if ((t1 === 'int' || t1 === 'zero') && (t2 === 'int' || t2 === 'zero')) return 'int';
@@ -1924,8 +2219,8 @@ function classifyExprType(expr, ptrNames, intNames, floatNames = null, selfCallS
     if (['||', '&&', '==', '!=', '<=', '>=', '<', '>', '|', '^', '&', '<<', '>>', '%'].includes(bin.op)) {
       return 'int';
     }
-    const leftT = classifyExprType(t.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec);
-    const rightT = classifyExprType(t.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec);
+    const leftT = classifyExprType(t.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const rightT = classifyExprType(t.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     if (['*', '/'].includes(bin.op)) {
       if (leftT === 'float' || rightT === 'float') return 'float';
       return 'int';
@@ -2100,6 +2395,7 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals, arrayGlobalName
   const nonStructPtrNames = new Set();
   const intNames = new Set();
   const floatNames = new Set();
+  const floatTypes = new Map();
   const selfParams = [];
   const cleanSig = declarationBearingSource(sigText);
   const open = cleanSig.indexOf('(');
@@ -2139,6 +2435,7 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals, arrayGlobalName
             ptrNames.add(fpNameMatch[1]);
             intNames.delete(fpNameMatch[1]);
             floatNames.delete(fpNameMatch[1]);
+            floatTypes.delete(fpNameMatch[1]);
           }
           continue;
         }
@@ -2165,8 +2462,10 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals, arrayGlobalName
           if (isNonStructPointerTypeText(paramType)) nonStructPtrNames.add(nameMatch[1]);
           intNames.delete(nameMatch[1]);
           floatNames.delete(nameMatch[1]);
+          floatTypes.delete(nameMatch[1]);
         } else if (isFloat) {
           floatNames.add(nameMatch[1]);
+          floatTypes.set(nameMatch[1], /\bfloat\b/.test(paramType) ? 'float' : 'double');
           intNames.delete(nameMatch[1]);
         } else if (isInt) {
           intNames.add(nameMatch[1]);
@@ -2203,8 +2502,12 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals, arrayGlobalName
         if (baseIsId || baseIsInt || baseIsFloat || baseType === 'void') nonStructPtrNames.add(varName);
         intNames.delete(varName);
         floatNames.delete(varName);
+        floatTypes.delete(varName);
       } else if (baseIsFloat) {
-        if (!ptrNames.has(varName)) floatNames.add(varName);
+        if (!ptrNames.has(varName)) {
+          floatNames.add(varName);
+          floatTypes.set(varName, baseType === 'float' ? 'float' : 'double');
+        }
       } else if (baseIsInt) {
         if (!ptrNames.has(varName) && !floatNames.has(varName)) intNames.add(varName);
       }
@@ -2218,13 +2521,14 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals, arrayGlobalName
       nonStructPtrNames.add(entry.name);
       intNames.delete(entry.name);
       floatNames.delete(entry.name);
+      floatTypes.delete(entry.name);
     } else if (!ptrNames.has(entry.name)) {
       intNames.add(entry.name);
     }
   }
 
   const selfCallSpec = selfName ? { name: selfName, retType, retIsPtr, retIsInt, retIsFloat, params: selfParams } : null;
-  return { ptrNames, nonStructPtrNames, intNames, floatNames, retType, retIsPtr, retIsInt, retIsFloat, selfCallSpec };
+  return { ptrNames, nonStructPtrNames, intNames, floatNames, floatTypes, retType, retIsPtr, retIsInt, retIsFloat, selfCallSpec };
 }
 
 function splitCallArgs(argStr) {
@@ -2258,7 +2562,26 @@ const BUILTIN_INT_ARGS = Object.freeze({
   bit_insert: new Set([0, 1]),
 });
 
+const STDLIB_REQUIRED_ARG_DEFAULTS = Object.freeze({
+  arc4random_uniform: ['0'],
+  malloc: ['0'],
+  calloc: ['0', '0'],
+  free: ['(void *)0'],
+  realloc: ['(void *)0', '0'],
+  strlen: ['""'],
+  memcpy: ['(void *)0', '(const void *)0', '0'],
+  memmove: ['(void *)0', '(const void *)0', '0'],
+  memset: ['(void *)0', '0', '0'],
+  memcmp: ['(const void *)0', '(const void *)0', '0'],
+  printf: ['""'],
+  puts: ['""'],
+  atoi: ['""'],
+  exit: ['0'],
+  _exit: ['0'],
+});
+
 function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+  if (text.indexOf('(') < 0) return text;
   let out = '';
   let i = 0;
   while (i < text.length) {
@@ -2279,10 +2602,11 @@ function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null, self
       let j = i;
       while (j < text.length && /[A-Za-z0-9_]/.test(text[j])) j++;
       const ident = text.slice(i, j);
-      const spec = LP64_SIZE_T_BUILTIN_PTR_ARGS[ident] || null;
-      const intArgSpec = !spec ? (BUILTIN_INT_ARGS[ident] || null) : null;
+      const spec = Object.hasOwn(LP64_SIZE_T_BUILTIN_PTR_ARGS, ident) ? LP64_SIZE_T_BUILTIN_PTR_ARGS[ident] : null;
+      const intArgSpec = !spec && Object.hasOwn(BUILTIN_INT_ARGS, ident) ? BUILTIN_INT_ARGS[ident] : null;
       const isSelfCall = !spec && !intArgSpec && selfCallSpec && ident === selfCallSpec.name && selfCallSpec.params.length > 0;
-      if (spec || intArgSpec || isSelfCall) {
+      const reqDefaults = Object.hasOwn(STDLIB_REQUIRED_ARG_DEFAULTS, ident) ? STDLIB_REQUIRED_ARG_DEFAULTS[ident] : null;
+      if (spec || intArgSpec || isSelfCall || reqDefaults) {
         let k = j;
         while (k < text.length && /\s/.test(text[k])) k++;
         if (text[k] === '(') {
@@ -2297,35 +2621,43 @@ function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null, self
           }
           if (closeIdx > k) {
             const rawArgs = splitCallArgs(text.slice(k + 1, closeIdx));
+            const hasNoRealArgs = rawArgs.length === 0
+              || (rawArgs.length === 1 && splitExprCommentAffixes(rawArgs[0]).core === '');
+            if (hasNoRealArgs && reqDefaults) {
+              out += `${text.slice(i, k + 1)}${reqDefaults.join(', ')} /* default arg */)`;
+              i = closeIdx + 1;
+              continue;
+            }
             const rewrittenArgs = rawArgs.map((rawArg, idx) => {
-              const nested = rewriteBuiltinPtrArgs(rawArg, ptrNames, intNames, floatNames, selfCallSpec);
-              const trimmed = nested.trim();
-              if (!trimmed) return nested;
-              const lead = nested.slice(0, nested.indexOf(trimmed));
-              const trail = nested.slice(nested.indexOf(trimmed) + trimmed.length);
+              const { lead, core, trail } = splitExprCommentAffixes(rawArg);
+              if (!core) return rawArg;
+              const harmonizedCore = harmonizeMixedTernaries(core, ptrNames, intNames, floatNames, selfCallSpec);
+              const nestedCore = rewriteBuiltinPtrArgs(harmonizedCore, ptrNames, intNames, floatNames, selfCallSpec);
+              const nested = `${lead}${nestedCore}${trail}`;
               if (spec) {
                 const castType = spec[idx];
                 if (!castType) return nested;
-                if (classifyExprType(trimmed, ptrNames, intNames, floatNames, selfCallSpec) === 'int') {
-                  return `${lead}(${castType})(uintptr_t)(${trimmed})${trail}`;
+                if (classifyExprType(nestedCore, ptrNames, intNames, floatNames, selfCallSpec) === 'int') {
+                  return `${lead}(${castType})(uintptr_t)(${nestedCore})${trail}`;
                 }
                 return nested;
               }
               if (intArgSpec) {
                 if (!intArgSpec.has(idx)) return nested;
-                if (classifyExprType(trimmed, ptrNames, intNames, floatNames, selfCallSpec) === 'ptr') {
-                  return `${lead}(uintptr_t)(${trimmed})${trail}`;
+                if (classifyExprType(nestedCore, ptrNames, intNames, floatNames, selfCallSpec) === 'ptr') {
+                  return `${lead}(uintptr_t)(${nestedCore})${trail}`;
                 }
                 return nested;
               }
+              if (!isSelfCall) return nested;
               const param = selfCallSpec.params[idx];
               if (!param || !param.type) return nested;
-              const argType = classifyExprType(trimmed, ptrNames, intNames, floatNames, selfCallSpec);
+              const argType = classifyExprType(nestedCore, ptrNames, intNames, floatNames, selfCallSpec);
               if (param.kind === 'ptr' && argType === 'int') {
-                return `${lead}(${param.type})(uintptr_t)(${trimmed})${trail}`;
+                return `${lead}(${param.type})(uintptr_t)(${nestedCore})${trail}`;
               }
               if (param.kind === 'int' && argType === 'ptr') {
-                return `${lead}(uintptr_t)(${trimmed})${trail}`;
+                return `${lead}(uintptr_t)(${nestedCore})${trail}`;
               }
               return nested;
             });
@@ -2416,9 +2748,9 @@ function rewriteParenthesizedSubexprs(text, transform) {
   return out;
 }
 
-function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null, depth = 0) {
   const s = String(expr ?? '');
-  if (!s.includes('?')) return s;
+  if (depth > MAX_EXPR_REWRITE_DEPTH || !s.includes('?')) return s;
   const trimmed = s.trim();
   if (!trimmed.includes('?')) return s;
   const lead = s.slice(0, s.indexOf(trimmed));
@@ -2427,9 +2759,9 @@ function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null, se
   // Split top-level ternary/binary operators first so each subexpression is visited once (O(N)).
   const tern = findTopLevelTernary(trimmed);
   if (tern) {
-    const cond = harmonizeMixedTernaries(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames, selfCallSpec);
-    let arm1 = harmonizeMixedTernaries(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec);
-    let arm2 = harmonizeMixedTernaries(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec);
+    const cond = harmonizeMixedTernaries(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    let arm1 = harmonizeMixedTernaries(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    let arm2 = harmonizeMixedTernaries(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     const t1 = classifyExprType(arm1, ptrNames, intNames, floatNames, selfCallSpec);
     const t2 = classifyExprType(arm2, ptrNames, intNames, floatNames, selfCallSpec);
     if (t1 === 'ptr' && t2 === 'int') {
@@ -2448,15 +2780,15 @@ function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null, se
 
   const bin = findLowestTopLevelBinaryOp(trimmed);
   if (bin) {
-    const left = harmonizeMixedTernaries(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec);
-    const right = harmonizeMixedTernaries(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec);
+    const left = harmonizeMixedTernaries(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const right = harmonizeMixedTernaries(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     return `${lead}${left}${trimmed.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
   }
 
   // Leaf/base case: no top-level operator; recurse into parenthesized/subscripted subexpressions once.
   const withNested = rewriteParenthesizedSubexprs(
     trimmed,
-    (inner) => harmonizeMixedTernaries(inner, ptrNames, intNames, floatNames, selfCallSpec),
+    (inner) => harmonizeMixedTernaries(inner, ptrNames, intNames, floatNames, selfCallSpec, depth + 1),
   );
   return `${lead}${withNested}${trail}`;
 }
@@ -2474,18 +2806,23 @@ const PTR_RETURNING_STDLIB_CALLS = new Set([
 
 const BITWISE_BIN_OPS = new Set(['&', '|', '^', '<<', '>>', '%']);
 
-function wrapFloatOperand(operand, floatNames) {
-  const trim = operand.trim();
-  if (!trim || !isFloatExpr(trim, floatNames)) return operand;
-  const lead = operand.slice(0, operand.indexOf(trim));
-  const trail = operand.slice(operand.indexOf(trim) + trim.length);
-  return `${lead}(uint64)(${trim})${trail}`;
+const MAX_EXPR_REWRITE_DEPTH = 96;
+
+function wrapBitwiseOperand(operand, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+  const { lead, core, trail } = splitExprCommentAffixes(operand);
+  if (!core) return operand;
+  if (isFloatExpr(core, floatNames)) {
+    return `${lead}hex_f64_to_u64(${core})${trail}`;
+  }
+  if (classifyExprType(core, ptrNames, intNames, floatNames, selfCallSpec) === 'ptr') {
+    return `${lead}(uintptr_t)(${core})${trail}`;
+  }
+  return operand;
 }
 
-function sanitizeFloatBitwiseOps(expr, floatNames) {
+function sanitizeBitwiseOps(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null, depth = 0) {
   const s = String(expr ?? '');
-  if (!/[&|^~%]|<<|>>/.test(s)) return s;
-  if ((!floatNames || floatNames.size === 0) && !/\d\.\d|\b(?:float|double)\b/.test(s)) return s;
+  if (depth > MAX_EXPR_REWRITE_DEPTH || !/[&|^~%]|<<|>>/.test(s)) return s;
   const trimmed = s.trim();
   if (!trimmed) return s;
   const lead = s.slice(0, s.indexOf(trimmed));
@@ -2494,32 +2831,32 @@ function sanitizeFloatBitwiseOps(expr, floatNames) {
   // Split top-level ternary/binary/unary operators first so each subexpression is visited once (O(N)).
   const tern = findTopLevelTernary(trimmed);
   if (tern) {
-    const cond = sanitizeFloatBitwiseOps(trimmed.slice(0, tern.qIdx), floatNames);
-    const arm1 = sanitizeFloatBitwiseOps(trimmed.slice(tern.qIdx + 1, tern.cIdx), floatNames);
-    const arm2 = sanitizeFloatBitwiseOps(trimmed.slice(tern.cIdx + 1), floatNames);
+    const cond = sanitizeBitwiseOps(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const arm1 = sanitizeBitwiseOps(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const arm2 = sanitizeBitwiseOps(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     return `${lead}${cond}?${arm1}:${arm2}${trail}`;
   }
 
   const bin = findLowestTopLevelBinaryOp(trimmed);
   if (bin) {
-    let left = sanitizeFloatBitwiseOps(trimmed.slice(0, bin.index), floatNames);
-    let right = sanitizeFloatBitwiseOps(trimmed.slice(bin.index + bin.len), floatNames);
+    let left = sanitizeBitwiseOps(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    let right = sanitizeBitwiseOps(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
     if (BITWISE_BIN_OPS.has(bin.op)) {
-      left = wrapFloatOperand(left, floatNames);
-      right = wrapFloatOperand(right, floatNames);
+      left = wrapBitwiseOperand(left, ptrNames, intNames, floatNames, selfCallSpec);
+      right = wrapBitwiseOperand(right, ptrNames, intNames, floatNames, selfCallSpec);
     }
     return `${lead}${left}${trimmed.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
   }
 
   if (trimmed.startsWith('~')) {
-    const inner = sanitizeFloatBitwiseOps(trimmed.slice(1), floatNames);
-    return `${lead}~${wrapFloatOperand(inner, floatNames)}${trail}`;
+    const inner = sanitizeBitwiseOps(trimmed.slice(1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    return `${lead}~${wrapBitwiseOperand(inner, ptrNames, intNames, floatNames, selfCallSpec)}${trail}`;
   }
 
   // Leaf/base case: no top-level operator; recurse into parenthesized/subscripted subexpressions once.
   const withNested = rewriteParenthesizedSubexprs(
     trimmed,
-    (inner) => sanitizeFloatBitwiseOps(inner, floatNames),
+    (inner) => sanitizeBitwiseOps(inner, ptrNames, intNames, floatNames, selfCallSpec, depth + 1),
   );
   return `${lead}${withNested}${trail}`;
 }
@@ -2674,8 +3011,94 @@ function allocSyntheticArrowStructType(baseKey, field, existingTypes, existingSt
   return structType;
 }
 
-function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, existingTypes = null, existingStructFields = null) {
-  if (!code.includes('->') || !badArrowBases.size) return code;
+function isNonStructParenArrowBase(inner, symTable) {
+  if (!symTable) return false;
+  const t = stripOuterParens(inner);
+  if (!t) return false;
+  const { ptrNames, nonStructPtrNames, intNames, floatNames, selfCallSpec } = symTable;
+
+  // Top-level type cast `(CastType)sub`
+  if (t.startsWith('(')) {
+    const closeIdx = findMatchingDelimRaw(t, 0, '(', ')');
+    if (closeIdx > 0 && closeIdx < t.length - 1) {
+      const castText = t.slice(1, closeIdx);
+      const castKind = isCastTypeText(castText);
+      if (castKind === 'ptr') return isNonStructPointerTypeText(castText);
+      if (castKind === 'int' || castKind === 'float') return true;
+    }
+  }
+
+  // Unary dereference `*(CastType)sub`
+  if (t.startsWith('*')) {
+    const rest = t.slice(1).trim();
+    if (rest.startsWith('(')) {
+      const closeIdx = findMatchingDelimRaw(rest, 0, '(', ')');
+      if (closeIdx > 0) {
+        const castText = rest.slice(1, closeIdx).trim();
+        const exprT = classifyExprType(t, ptrNames, intNames, floatNames, selfCallSpec);
+        if (exprT === 'int' || exprT === 'float') return true;
+        if (/\*\s*\*\s*$/.test(castText)) return isNonStructPointerTypeText(castText);
+      }
+    }
+  }
+
+  const exprType = classifyExprType(t, ptrNames, intNames, floatNames, selfCallSpec);
+  if (exprType === 'int' || exprType === 'float') return true;
+
+  if (nonStructPtrNames && nonStructPtrNames.size) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(t) && nonStructPtrNames.has(t)) return true;
+    const addSubMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*[+-]/.exec(t);
+    if (addSubMatch && nonStructPtrNames.has(addSubMatch[1])) return true;
+  }
+
+  return false;
+}
+
+function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, existingTypes = null, existingStructFields = null, symTable = null) {
+  if (!code.includes('->') || (!badArrowBases.size && !symTable)) return code;
+  const emitArrowChain = (startExpr, startChainKey, firstField, firstFieldEnd, forceWrapForPrevCast) => {
+    let expr = startExpr;
+    let chainKey = startChainKey;
+    let curEnd = firstFieldEnd;
+    let curField = firstField;
+    let lastWasOffsetDeref = false;
+    let hopCount = 0;
+    while (true) {
+      const offsetMatch = /^field_(?:0[xX])?([0-9A-Fa-f]+)$/.exec(curField);
+      if (offsetMatch) {
+        expr = `*(uint64 *)((uintptr_t)(${expr}) + 0x${offsetMatch[1]})`;
+        lastWasOffsetDeref = true;
+      } else {
+        const structType = allocSyntheticArrowStructType(chainKey, curField, existingTypes, existingStructFields, syntheticArrowStructs);
+        expr = `((${structType} *)(uintptr_t)(${expr}))->${curField}`;
+        lastWasOffsetDeref = false;
+      }
+      chainKey = `${chainKey}_${curField}`;
+      hopCount++;
+      let nextArrow = curEnd;
+      while (nextArrow < code.length && /\s/.test(code[nextArrow])) nextArrow++;
+      if (code[nextArrow] !== '-' || code[nextArrow + 1] !== '>') break;
+      let nfStart = nextArrow + 2;
+      while (nfStart < code.length && /\s/.test(code[nfStart])) nfStart++;
+      if (nfStart >= code.length || !/[A-Za-z_]/.test(code[nfStart])) break;
+      let nfEnd = nfStart;
+      while (nfEnd < code.length && /[A-Za-z0-9_]/.test(code[nfEnd])) nfEnd++;
+      const nextField = code.slice(nfStart, nfEnd);
+      if (KEYWORDS.has(nextField)) break;
+      curField = nextField;
+      curEnd = nfEnd;
+    }
+    if (lastWasOffsetDeref) {
+      let after = curEnd;
+      while (after < code.length && /\s/.test(code[after])) after++;
+      const nextTwo = code.slice(after, after + 2);
+      const needsWrap = forceWrapForPrevCast || hopCount > 1 || nextTwo === '++' || nextTwo === '--' || nextTwo === '->'
+        || code[after] === '[' || code[after] === '.';
+      return { text: needsWrap ? `(${expr})` : expr, end: curEnd };
+    }
+    return { text: forceWrapForPrevCast ? `(${expr})` : expr, end: curEnd };
+  };
+
   let out = '';
   let i = 0;
   while (i < code.length) {
@@ -2696,13 +3119,44 @@ function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, 
       i = end + 1;
       continue;
     }
+    if (ch === '(' && symTable) {
+      const prevCh = previousChar(code, i);
+      const prevWord = previousWord(code, i);
+      const isCallArgList = !!(prevWord && !KEYWORDS.has(prevWord) && /[A-Za-z0-9_]/.test(prevCh));
+      if (!isCallArgList) {
+        const closeIdx = findMatchingDelimRaw(code, i, '(', ')');
+        if (closeIdx > i) {
+          const inner = code.slice(i + 1, closeIdx);
+          const rewrittenInner = rewriteArrowAccessesInCode(inner, badArrowBases, syntheticArrowStructs, existingTypes, existingStructFields, symTable);
+          let k = closeIdx + 1;
+          while (k < code.length && /\s/.test(code[k])) k++;
+          if (code[k] === '-' && code[k + 1] === '>') {
+            let fStart = k + 2;
+            while (fStart < code.length && /\s/.test(code[fStart])) fStart++;
+            if (fStart < code.length && /[A-Za-z_]/.test(code[fStart])) {
+              let fEnd = fStart;
+              while (fEnd < code.length && /[A-Za-z0-9_]/.test(code[fEnd])) fEnd++;
+              const field = code.slice(fStart, fEnd);
+              if (!KEYWORDS.has(field) && isNonStructParenArrowBase(rewrittenInner, symTable)) {
+                const chain = emitArrowChain(`(${rewrittenInner})`, 'expr', field, fEnd, prevCh === ')');
+                out += chain.text;
+                i = chain.end;
+                continue;
+              }
+            }
+          }
+          out += `(${rewrittenInner})`;
+          i = closeIdx + 1;
+          continue;
+        }
+      }
+    }
     if (/[A-Za-z_]/.test(ch) && (i === 0 || !/[A-Za-z0-9_]/.test(code[i - 1]))) {
       let j = i;
       while (j < code.length && /[A-Za-z0-9_]/.test(code[j])) j++;
       const ident = code.slice(i, j);
       const beforeChar = previousChar(code, i);
-      const beforeTrimmed = code.slice(0, i).trimEnd();
-      const isMemberName = beforeChar === '.' || beforeTrimmed.endsWith('->');
+      const isMemberName = beforeChar === '.' || isPrecededByArrow(code, i);
       const prevWord = previousWord(code, i);
       if (!isMemberName && !['struct', 'union', 'enum', 'goto'].includes(prevWord) && badArrowBases.has(ident)) {
         let k = j;
@@ -2715,48 +3169,9 @@ function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, 
             while (fEnd < code.length && /[A-Za-z0-9_]/.test(code[fEnd])) fEnd++;
             const field = code.slice(fStart, fEnd);
             if (!KEYWORDS.has(field)) {
-              let expr = ident;
-              let chainKey = ident;
-              let curEnd = fEnd;
-              let curField = field;
-              let lastWasOffsetDeref = false;
-              let hopCount = 0;
-              while (true) {
-                const offsetMatch = /^field_(?:0[xX])?([0-9A-Fa-f]+)$/.exec(curField);
-                if (offsetMatch) {
-                  expr = `*(uint64 *)((uintptr_t)(${expr}) + 0x${offsetMatch[1]})`;
-                  lastWasOffsetDeref = true;
-                } else {
-                  const structType = allocSyntheticArrowStructType(chainKey, curField, existingTypes, existingStructFields, syntheticArrowStructs);
-                  expr = `((${structType} *)(uintptr_t)(${expr}))->${curField}`;
-                  lastWasOffsetDeref = false;
-                }
-                chainKey = `${chainKey}_${curField}`;
-                hopCount++;
-                let nextArrow = curEnd;
-                while (nextArrow < code.length && /\s/.test(code[nextArrow])) nextArrow++;
-                if (code[nextArrow] !== '-' || code[nextArrow + 1] !== '>') break;
-                let nfStart = nextArrow + 2;
-                while (nfStart < code.length && /\s/.test(code[nfStart])) nfStart++;
-                if (nfStart >= code.length || !/[A-Za-z_]/.test(code[nfStart])) break;
-                let nfEnd = nfStart;
-                while (nfEnd < code.length && /[A-Za-z0-9_]/.test(code[nfEnd])) nfEnd++;
-                const nextField = code.slice(nfStart, nfEnd);
-                if (KEYWORDS.has(nextField)) break;
-                curField = nextField;
-                curEnd = nfEnd;
-              }
-              if (lastWasOffsetDeref) {
-                let after = curEnd;
-                while (after < code.length && /\s/.test(code[after])) after++;
-                const nextTwo = code.slice(after, after + 2);
-                const needsWrap = hopCount > 1 || nextTwo === '++' || nextTwo === '--' || nextTwo === '->'
-                  || code[after] === '[' || code[after] === '.';
-                out += needsWrap ? `(${expr})` : expr;
-              } else {
-                out += expr;
-              }
-              i = curEnd;
+              const chain = emitArrowChain(ident, ident, field, fEnd, false);
+              out += chain.text;
+              i = chain.end;
               continue;
             }
           }
@@ -2776,14 +3191,14 @@ function rewriteNonStructArrowAccesses(lines, bodyOpen, symTable, existingTypes 
   const syntheticArrowStructs = new Map();
   if (bodyOpen < 0) return { lines, changed: false, syntheticArrowStructs };
   const badArrowBases = new Set([...symTable.intNames, ...(symTable.nonStructPtrNames || [])]);
-  if (!badArrowBases.size) return { lines, changed: false, syntheticArrowStructs };
+  if (!badArrowBases.size && !symTable) return { lines, changed: false, syntheticArrowStructs };
   let changed = false;
   const out = lines.map((item, index) => {
     if (index <= bodyOpen || !item || (item.kind !== 'stmt' && item.kind !== 'ctrl' && item.kind !== 'decl')) return item;
     const raw = String(item.text ?? '');
     if (!raw.includes('->')) return item;
     const { code, comment } = splitTrailingComment(raw);
-    const rewritten = rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, existingTypes, existingStructFields);
+    const rewritten = rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, existingTypes, existingStructFields, symTable);
     if (rewritten === code) return item;
     changed = true;
     return { ...item, text: rewritten + comment };
@@ -2791,26 +3206,231 @@ function rewriteNonStructArrowAccesses(lines, bodyOpen, symTable, existingTypes 
   return { lines: out, changed, syntheticArrowStructs };
 }
 
+function sanitizeFloatPointerCasts(expr, floatNames) {
+  const s = String(expr ?? '');
+  if (!floatNames?.size || !s.includes('*')) return s;
+  let out = '';
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(s, i);
+      out += s.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '*') {
+      const end = skipBlockComment(s, i);
+      out += s.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '/') {
+      out += s.slice(i);
+      break;
+    }
+    if (ch === '(') {
+      const closeType = findMatchingDelimRaw(s, i, '(', ')');
+      if (closeType > i) {
+        const castInner = s.slice(i + 1, closeType).trim();
+        if (/^(?:(?:const|volatile|struct|union|enum|unsigned|signed|long|short)\s+)*[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:const|volatile))*\s*\*+(?:\s*(?:const|volatile|restrict))*$/.test(castInner)) {
+          let k = closeType + 1;
+          while (k < n && /\s/.test(s[k])) k++;
+          if (s[k] === '(') {
+            const closeArg = findMatchingDelimRaw(s, k, '(', ')');
+            if (closeArg > k) {
+              const argRaw = s.slice(k + 1, closeArg);
+              const { lead, core, trail } = splitExprCommentAffixes(argRaw);
+              if (core && !/^\(\s*(?:uintptr_t|intptr_t)\s*\)/.test(core) && isFloatExpr(core, floatNames)) {
+                const sanitizedCore = sanitizeFloatPointerCasts(core, floatNames);
+                out += `(${castInner})(uintptr_t)(${lead}${sanitizedCore}${trail})`;
+                i = closeArg + 1;
+                continue;
+              }
+            }
+          } else {
+            const identMatch = /^([A-Za-z_][A-Za-z0-9_]*)\b/.exec(s.slice(k));
+            if (identMatch && floatNames.has(identMatch[1]) && !/^\s*\(/.test(s.slice(k + identMatch[1].length))) {
+              out += `(${castInner})(uintptr_t)${identMatch[1]}`;
+              i = k + identMatch[1].length;
+              continue;
+            }
+          }
+        }
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+function rewriteExprForIntConversion(expr, symTable) {
+  const { ptrNames, intNames, floatNames, selfCallSpec } = symTable;
+  const harmonized = harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames, selfCallSpec);
+  const withCalls = rewriteBuiltinPtrArgs(harmonized, ptrNames, intNames, floatNames, selfCallSpec);
+  const withBitwise = sanitizeBitwiseOps(withCalls, ptrNames, intNames, floatNames, selfCallSpec);
+  return sanitizeFloatPointerCasts(withBitwise, floatNames);
+}
+
+function findTopLevelControlBracedBlock(text) {
+  let paren = 0;
+  let bracket = 0;
+  let ternaryDepth = 0;
+  let lastColonWasTernary = false;
+  let lastTopLevelParenOpenIdx = -1;
+  let lastTopLevelParenCloseIdx = -1;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(text, i); continue; }
+    if (ch === '/' && text[i + 1] === '*') { i = skipBlockComment(text, i); continue; }
+    if (ch === '/' && text[i + 1] === '/') break;
+    if (ch === '(') {
+      if (paren === 0 && bracket === 0) lastTopLevelParenOpenIdx = i;
+      paren++;
+      continue;
+    }
+    if (ch === ')') {
+      if (paren > 0) {
+        paren--;
+        if (paren === 0 && bracket === 0) lastTopLevelParenCloseIdx = i;
+      }
+      continue;
+    }
+    if (ch === '[') { bracket++; continue; }
+    if (ch === ']') { if (bracket > 0) bracket--; continue; }
+    if (paren === 0 && bracket === 0) {
+      if (ch === '?') {
+        ternaryDepth++;
+        continue;
+      }
+      if (ch === ':') {
+        if (ternaryDepth > 0) {
+          ternaryDepth--;
+          lastColonWasTernary = true;
+        } else {
+          lastColonWasTernary = false;
+        }
+        continue;
+      }
+      if (ch === '{') {
+        const closeIdx = findMatchingDelimRaw(text, i, '{', '}');
+        if (closeIdx < 0) return null;
+        const beforeTrim = splitExprCommentAffixes(text.slice(0, i)).core;
+        let isControl = false;
+        if (!beforeTrim || beforeTrim.endsWith('}') || /\b(?:else|do)$/.test(beforeTrim)) {
+          isControl = true;
+        } else if (beforeTrim.endsWith(':') && ternaryDepth === 0 && !lastColonWasTernary) {
+          isControl = true;
+        } else if (beforeTrim.endsWith(')') && lastTopLevelParenOpenIdx >= 0 && lastTopLevelParenCloseIdx >= 0) {
+          const headWord = previousWord(text, lastTopLevelParenOpenIdx);
+          if (headWord === 'if' || headWord === 'for' || headWord === 'while' || headWord === 'switch') {
+            isControl = true;
+          }
+        }
+        if (isControl) return { openIdx: i, closeIdx };
+        i = closeIdx;
+      }
+    }
+  }
+  return null;
+}
+
+const OVERSIZED_INT_CANDIDATE_RE = /0[xX][0-9A-Fa-f]{17}|[0-9]{20}/;
+
+function sanitizeOversizedIntLiterals(code) {
+  if (!OVERSIZED_INT_CANDIDATE_RE.test(code)) return code;
+  let out = '';
+  let i = 0;
+  const len = code.length;
+  const MAX_U64 = 0xFFFFFFFFFFFFFFFFn;
+  while (i < len) {
+    const ch = code[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(code, i);
+      out += code.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && code[i + 1] === '/') {
+      out += code.slice(i);
+      break;
+    }
+    if (ch === '/' && code[i + 1] === '*') {
+      const end = skipBlockComment(code, i);
+      out += code.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch >= '0' && ch <= '9') {
+      const prevCh = i > 0 ? code[i - 1] : '';
+      if (!/[A-Za-z0-9_.]/.test(prevCh)) {
+        if (ch === '0' && (code[i + 1] === 'x' || code[i + 1] === 'X') && i + 2 < len && /[0-9A-Fa-f]/.test(code[i + 2])) {
+          let numEnd = i + 2;
+          while (numEnd < len && /[0-9A-Fa-f]/.test(code[numEnd])) numEnd++;
+          let end = numEnd;
+          while (end < len && /[uUlL]/.test(code[end])) end++;
+          const nextCh = end < len ? code[end] : '';
+          if (!/[A-Za-z0-9_.]/.test(nextCh)) {
+            const val = BigInt(code.slice(i, numEnd));
+            if (val > MAX_U64) {
+              out += `0x${BigInt.asUintN(64, val).toString(16)}ULL`;
+              i = end;
+              continue;
+            }
+          }
+          out += code.slice(i, end);
+          i = end;
+          continue;
+        }
+        let numEnd = i;
+        while (numEnd < len && code[numEnd] >= '0' && code[numEnd] <= '9') numEnd++;
+        let end = numEnd;
+        while (end < len && /[uUlL]/.test(code[end])) end++;
+        const nextCh = end < len ? code[end] : '';
+        if (!/[A-Za-z0-9_.]/.test(nextCh) && numEnd - i >= 20) {
+          const val = BigInt(code.slice(i, numEnd));
+          if (val > MAX_U64) {
+            out += `${BigInt.asUintN(64, val).toString(10)}ULL`;
+            i = end;
+            continue;
+          }
+        }
+        out += code.slice(i, end);
+        i = end;
+        continue;
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 function rewriteStatementForIntConversion(stmtText, symTable) {
-  const { ptrNames, intNames, floatNames, retType, retIsPtr, retIsInt, selfCallSpec } = symTable;
+  const { ptrNames, intNames, floatNames, floatTypes, retType, retIsPtr, retIsInt, retIsFloat, selfCallSpec } = symTable;
   let stmt = rewriteBuiltinPtrArgs(stmtText, ptrNames, intNames, floatNames, selfCallSpec);
 
   const { prefix: ctrlPrefix, rest: bodyStmt } = stripLeadingControlOrLabel(stmt);
   const sanitizedPrefix = ctrlPrefix
-    ? sanitizeFloatBitwiseOps(harmonizeMixedTernaries(ctrlPrefix, ptrNames, intNames, floatNames, selfCallSpec), floatNames)
+    ? rewriteExprForIntConversion(ctrlPrefix, symTable)
     : '';
 
   // Return statement (standalone or trailing after `if (...)` / `else` / `label:`).
   const retMatch = /^(\s*return\s+)([\s\S]+)$/.exec(bodyStmt);
   if (retMatch) {
     const prefix = sanitizedPrefix + retMatch[1];
-    let expr = sanitizeFloatBitwiseOps(harmonizeMixedTernaries(retMatch[2], ptrNames, intNames, floatNames, selfCallSpec), floatNames);
+    let expr = rewriteExprForIntConversion(retMatch[2], symTable);
     const exprTrim = expr.trim();
     const exprType = classifyExprType(exprTrim, ptrNames, intNames, floatNames, selfCallSpec);
     if (retIsPtr && exprType === 'int') {
       expr = `(${retType})(uintptr_t)(${exprTrim})`;
     } else if (retIsInt && exprType === 'ptr') {
       expr = `(uintptr_t)(${exprTrim})`;
+    } else if (retIsFloat && exprType === 'ptr') {
+      expr = `(${retType})(uintptr_t)(${exprTrim})`;
     }
     return prefix + expr;
   }
@@ -2827,7 +3447,7 @@ function rewriteStatementForIntConversion(stmtText, symTable) {
     const rhsBody = rawRhs.slice(rhsLead.length);
     let rhs = findTopLevelAssignment(rhsBody)
       ? rewriteStatementForIntConversion(rhsBody, symTable)
-      : sanitizeFloatBitwiseOps(harmonizeMixedTernaries(rhsBody, ptrNames, intNames, floatNames, selfCallSpec), floatNames);
+      : rewriteExprForIntConversion(rhsBody, symTable);
     const rhsTrim = rhs.trim();
 
     if (['&=', '|=', '^=', '<<=', '>>=', '%='].includes(op) && isFloatExpr(rhsTrim, floatNames)) {
@@ -2844,21 +3464,61 @@ function rewriteStatementForIntConversion(stmtText, symTable) {
     }
 
     const rhsType = classifyExprType(rhs.trim(), ptrNames, intNames, floatNames, selfCallSpec);
+    let lhsOut = null;
     if (lhsType === 'int' && rhsType === 'ptr') {
       rhs = `(uintptr_t)(${rhs.trim()})`;
     } else if (lhsType === 'ptr' && rhsType === 'int' && op === '=') {
       rhs = `(void *)(uintptr_t)(${rhs.trim()})`;
+    } else if (lhsType === 'float' && rhsType === 'ptr' && op === '=') {
+      const lhsIdx = lhsRaw.indexOf(lhsTrim);
+      const lhsLead = lhsIdx >= 0 ? lhsRaw.slice(0, lhsIdx) : '';
+      const lhsTrail = lhsIdx >= 0 ? lhsRaw.slice(lhsIdx + lhsTrim.length) : '';
+      const fpDerefMatch = /^\*\s*\(\s*(double|float)\s*\*\s*\)\s*([\s\S]+)$/.exec(lhsTrim);
+      if (fpDerefMatch) {
+        const fpType = fpDerefMatch[1];
+        const sanitizedAddr = rewriteExprForIntConversion(fpDerefMatch[2], symTable);
+        if (fpType === 'double') {
+          lhsOut = `${lhsLead}*(uint64_t *)${sanitizedAddr}${lhsTrail}`;
+          rhs = `(uintptr_t)(${rhs.trim()})`;
+        } else {
+          lhsOut = `${lhsLead}*(uint32_t *)${sanitizedAddr}${lhsTrail}`;
+          rhs = `(uint32_t)(uintptr_t)(${rhs.trim()})`;
+        }
+      } else {
+        const declaredFpMatch = /\b(float|double)\b/.exec(lhsTrim);
+        const floatType = (floatTypes && floatTypes.get(lhsTrim))
+          || (declaredFpMatch ? declaredFpMatch[1] : 'double');
+        rhs = `(${floatType})(uintptr_t)(${rhs.trim()})`;
+      }
     }
-    const lhsSanitized = sanitizeFloatBitwiseOps(harmonizeMixedTernaries(lhsRaw, ptrNames, intNames, floatNames, selfCallSpec), floatNames);
+    const lhsSanitized = lhsOut !== null ? lhsOut : rewriteExprForIntConversion(lhsRaw, symTable);
     return `${sanitizedPrefix}${lhsSanitized}${op}${rhsLead}${rhs}`;
   }
 
-  return sanitizedPrefix + sanitizeFloatBitwiseOps(harmonizeMixedTernaries(bodyStmt, ptrNames, intNames, floatNames, selfCallSpec), floatNames);
+  return sanitizedPrefix + rewriteExprForIntConversion(bodyStmt, symTable);
+}
+
+function rewriteCodeRegionForIntConversion(code, symTable) {
+  if (!code) return code;
+  const parts = splitTopLevelStatements(code);
+  return parts.map((part) => {
+    const block = findTopLevelControlBracedBlock(part.text);
+    if (block) {
+      const before = rewriteExprForIntConversion(part.text.slice(0, block.openIdx), symTable);
+      const inner = rewriteCodeRegionForIntConversion(part.text.slice(block.openIdx + 1, block.closeIdx), symTable);
+      const afterRaw = part.text.slice(block.closeIdx + 1) + (part.hasSemi ? ';' : '');
+      const after = rewriteCodeRegionForIntConversion(afterRaw, symTable);
+      return `${before}{${inner}}${after}`;
+    }
+    if (part.hasSemi) {
+      return `${rewriteStatementForIntConversion(part.text, symTable)};`;
+    }
+    return rewriteExprForIntConversion(part.text, symTable);
+  }).join('');
 }
 
 function applyIntConversionCoercions(lines, bodyOpen, symTable) {
   if (bodyOpen < 0) return { lines, changed: false };
-  const { ptrNames, intNames, floatNames, selfCallSpec } = symTable;
   let changed = false;
   const out = lines.map((item, index) => {
     if (index <= bodyOpen || !item || (item.kind !== 'stmt' && item.kind !== 'ctrl' && item.kind !== 'decl')) return item;
@@ -2866,20 +3526,10 @@ function applyIntConversionCoercions(lines, bodyOpen, symTable) {
     if (!raw.trim()) return item;
     const { code, comment } = splitTrailingComment(raw);
     if (!code.trim()) return item;
-    const parts = splitTopLevelStatements(code);
-    let lineChanged = false;
-    const rebuilt = parts.map((part) => {
-      if (!part.hasSemi) {
-        const withCalls = rewriteBuiltinPtrArgs(part.text, ptrNames, intNames, floatNames, selfCallSpec);
-        const nextText = sanitizeFloatBitwiseOps(harmonizeMixedTernaries(withCalls, ptrNames, intNames, floatNames, selfCallSpec), floatNames);
-        if (nextText !== part.text) lineChanged = true;
-        return nextText;
-      }
-      const nextText = rewriteStatementForIntConversion(part.text, symTable);
-      if (nextText !== part.text) lineChanged = true;
-      return `${nextText};`;
-    }).join('') + comment;
-    if (!lineChanged) return item;
+    const sanitizedCode = sanitizeOversizedIntLiterals(code);
+    const nextCode = rewriteCodeRegionForIntConversion(sanitizedCode, symTable);
+    const rebuilt = nextCode + comment;
+    if (rebuilt === raw) return item;
     changed = true;
     return { ...item, text: rebuilt };
   });
@@ -3111,7 +3761,7 @@ function isRelativeRelocation(rel) {
   return rel.kind === 'relative';
 }
 
-function createGlobalDataResolver(result, options) {
+export function createGlobalDataResolver(result, options) {
   const ctx = options?.context;
   const bin = options?.binary ?? options?.image ?? ctx?.binary ?? ctx?.image ?? result?.binary ?? null;
   const model = options?.model ?? ctx?.model ?? result?.model ?? result?.ir?.model ?? null;
@@ -3188,6 +3838,17 @@ function createGlobalDataResolver(result, options) {
     return null;
   };
 
+  const hasSectionAt = (addr) => {
+    if (addr == null || typeof addr === 'boolean') return false;
+    if (typeof addr === 'string' && !addr.trim()) return false;
+    try {
+      const addrBigInt = typeof addr === 'bigint' ? addr : BigInt(addr);
+      return findSection(addrBigInt) !== null;
+    } catch {
+      return false;
+    }
+  };
+
   const readBytesAt = (addr, maxLen) => {
     const entry = findSection(addr);
     if (entry) {
@@ -3199,8 +3860,13 @@ function createGlobalDataResolver(result, options) {
       const rel = Number(addr - entry.start);
       if (inlineBytes && rel >= 0 && rel < inlineBytes.length) {
         const n = Math.min(count, inlineBytes.length - rel);
-        const out = new Uint8Array(n);
-        for (let i = 0; i < n; i += 1) out[i] = inlineBytes[rel + i];
+        let out;
+        if (inlineBytes instanceof Uint8Array) {
+          out = inlineBytes.subarray(rel, rel + n);
+        } else {
+          out = new Uint8Array(n);
+          for (let i = 0; i < n; i += 1) out[i] = inlineBytes[rel + i];
+        }
         return { bytes: out, section: entry.sec, sectionEnd: entry.end };
       }
       const fileOffset = entry.sec.offset ?? entry.sec.fileOffset;
@@ -3208,8 +3874,13 @@ function createGlobalDataResolver(result, options) {
         const pos = Number(BigInt(fileOffset) + (addr - entry.start));
         if (pos >= 0 && pos < fileBytes.length) {
           const n = Math.min(count, fileBytes.length - pos);
-          const out = new Uint8Array(n);
-          for (let i = 0; i < n; i += 1) out[i] = fileBytes[pos + i];
+          let out;
+          if (fileBytes instanceof Uint8Array) {
+            out = fileBytes.subarray(pos, pos + n);
+          } else {
+            out = new Uint8Array(n);
+            for (let i = 0; i < n; i += 1) out[i] = fileBytes[pos + i];
+          }
           return { bytes: out, section: entry.sec, sectionEnd: entry.end };
         }
       }
@@ -3315,12 +3986,11 @@ function createGlobalDataResolver(result, options) {
       const remBytes = Number(entry.end - addr);
       maxScan = Math.min(maxWords, Math.ceil(remBytes / 8));
     }
-    for (const relAddr of relativeRelocs.keys()) {
-      if (relAddr >= addr && relAddr < addr + BigInt(maxWords * 8)) {
-        const diff = Number(relAddr - addr);
-        if (diff % 8 === 0) {
-          const idx = diff / 8 + 1;
-          if (idx > maxScan) maxScan = Math.min(maxWords, idx);
+    if (relativeRelocs.size > 0 && maxScan < maxWords) {
+      for (let i = maxWords - 1; i >= maxScan; i -= 1) {
+        if (relativeRelocs.has(addr + BigInt(i * 8))) {
+          maxScan = i + 1;
+          break;
         }
       }
     }
@@ -3340,7 +4010,252 @@ function createGlobalDataResolver(result, options) {
     return words.slice(0, lastNonZero + 1);
   };
 
-  return { hasData, resolveWord64, resolveUint128, resolveBufferWords };
+  return { hasData, hasSectionAt, resolveWord64, resolveUint128, resolveBufferWords };
+}
+
+function normalizeEvidenceAddress(raw) {
+  if (raw == null || typeof raw === 'boolean') return null;
+  if (typeof raw === 'bigint') return raw;
+  if (typeof raw === 'number') return Number.isInteger(raw) ? BigInt(raw) : null;
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!/^(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(t)) return null;
+    try {
+      return BigInt(t);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function normalizeKeyedEvidenceEntry(key, value) {
+  if (!value || typeof value !== 'object') return null;
+  const copy = { ...value };
+  if (copy.address == null) {
+    if (typeof key === 'bigint' || (typeof key === 'number' && Number.isInteger(key) && key >= 0)) {
+      copy.address = key;
+    } else if (typeof key === 'string' && /^(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(key.trim())) {
+      copy.address = key;
+    }
+  }
+  if (copy.name == null && typeof key === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    copy.name = key;
+  }
+  return copy;
+}
+
+function mergeClosureBinaryGlobalEvidence(existing, additions) {
+  const merged = [];
+  if (Array.isArray(existing)) {
+    for (const item of existing) merged.push(item);
+  } else if (existing instanceof Map) {
+    for (const [k, v] of existing.entries()) {
+      const normalized = normalizeKeyedEvidenceEntry(k, v);
+      if (normalized) merged.push(normalized);
+    }
+  } else if (existing && typeof existing === 'object') {
+    for (const [k, v] of Object.entries(existing)) {
+      const normalized = normalizeKeyedEvidenceEntry(k, v);
+      if (normalized) merged.push(normalized);
+    }
+  }
+  const seenNames = new Set();
+  const seenAddrs = new Set();
+  for (const item of merged) {
+    if (typeof item?.name === 'string' && item.name) seenNames.add(item.name);
+    const addr = normalizeEvidenceAddress(item?.address ?? item?.addr);
+    if (addr != null) seenAddrs.add(addr);
+  }
+  for (const entry of additions) {
+    if (seenNames.has(entry.name)) continue;
+    const addr = normalizeEvidenceAddress(entry.address);
+    if (addr != null && seenAddrs.has(addr)) continue;
+    merged.push(entry);
+    seenNames.add(entry.name);
+    if (addr != null) seenAddrs.add(addr);
+  }
+  return merged;
+}
+
+const LABEL_HYGIENE_DECL_MODIFIERS = new Set([
+  'static', 'const', 'volatile', 'register', 'restrict', 'unsigned', 'signed', 'long', 'short',
+]);
+
+function isLabelLikeLineText(cleaned) {
+  if (!cleaned) return false;
+  if (/^default\s*:\s*$/.test(cleaned)) return true;
+  if (/^case\b[^:]*:\s*$/.test(cleaned)) return true;
+  if (/^[A-Za-z_][A-Za-z0-9_]*:\s*$/.test(cleaned)) return true;
+  return false;
+}
+
+function isLocalVarDeclarationLine(item, cleaned, existingTypes) {
+  if (item?.kind === 'decl') return true;
+  if (item?.kind !== 'stmt' || !cleaned) return false;
+  if (/^(?:(?:static|const|volatile|register|restrict)\s+)*(?:struct|union|enum)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*\*+\s*|\s+)(?:\(\s*\*+\s*[A-Za-z_][A-Za-z0-9_]*\s*\)|[A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,|\()/.test(cleaned)) {
+    return true;
+  }
+  const headMatch = /^([A-Za-z_][A-Za-z0-9_]*)\b(.*)$/s.exec(cleaned);
+  if (!headMatch) return false;
+  const head = headMatch[1];
+  if (NON_DECL_STMT_HEADS.has(head)) return false;
+  const rest = headMatch[2].trim();
+  if (!rest) return false;
+  if (LABEL_HYGIENE_DECL_MODIFIERS.has(head)) {
+    return /^(?:(?:static|const|volatile|register|restrict|unsigned|signed|long|short)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\s+)?(?:\*+\s*(?:const\s+|volatile\s+|restrict\s+)*)*(?:\(\s*\*+\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\([^)]*\)|[A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.test(cleaned);
+  }
+  const isKnownType = FIXED_WIDTH_TYPES.has(head)
+    || STANDARD_KNOWN_TYPES.has(head)
+    || C_PRIMITIVE_TYPE_KEYWORDS.has(head)
+    || head === 'id'
+    || /^hex_struct_/.test(head)
+    || Boolean(existingTypes?.has(head));
+  if (isKnownType) {
+    return /^(?:\*+\s*(?:const\s+|volatile\s+|restrict\s+)*)*(?:\(\s*\*+\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\([^)]*\)|[A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.test(rest);
+  }
+  return false;
+}
+
+function findLeadingLabelColonIndex(rawText) {
+  const len = rawText.length;
+  let pos = 0;
+  let lastColonIdx = -1;
+  while (pos < len) {
+    // Skip whitespace and leading block comments.
+    while (pos < len) {
+      if (/\s/.test(rawText[pos])) { pos += 1; continue; }
+      if (rawText[pos] === '/' && rawText[pos + 1] === '*') {
+        const end = rawText.indexOf('*/', pos + 2);
+        if (end < 0) return lastColonIdx;
+        pos = end + 2;
+        continue;
+      }
+      if (rawText[pos] === '/' && rawText[pos + 1] === '/') return lastColonIdx;
+      break;
+    }
+    if (pos >= len) break;
+    const rest = rawText.slice(pos);
+    const defaultMatch = /^default\b\s*:(?!:)/.exec(rest);
+    if (defaultMatch) {
+      lastColonIdx = pos + defaultMatch[0].length - 1;
+      pos = lastColonIdx + 1;
+      continue;
+    }
+    const caseMatch = /^case\b(?![A-Za-z0-9_])/.exec(rest);
+    if (caseMatch) {
+      let k = pos + caseMatch[0].length;
+      let paren = 0;
+      let ternary = 0;
+      let found = -1;
+      while (k < len) {
+        const ch = rawText[k];
+        if (ch === '/' && rawText[k + 1] === '*') {
+          const end = rawText.indexOf('*/', k + 2);
+          if (end < 0) break;
+          k = end + 2;
+          continue;
+        }
+        if (ch === '/' && rawText[k + 1] === '/') break;
+        if (ch === '"' || ch === "'") {
+          const quote = ch;
+          k += 1;
+          while (k < len) {
+            if (rawText[k] === '\\') { k += 2; continue; }
+            if (rawText[k] === quote) { k += 1; break; }
+            k += 1;
+          }
+          continue;
+        }
+        if (ch === '(') { paren += 1; k += 1; continue; }
+        if (ch === ')') { if (paren > 0) paren -= 1; k += 1; continue; }
+        if (paren === 0 && ch === '?') { ternary += 1; k += 1; continue; }
+        if (paren === 0 && ch === ':') {
+          if (rawText[k + 1] === ':') { k += 2; continue; }
+          if (ternary > 0) { ternary -= 1; k += 1; continue; }
+          found = k;
+          break;
+        }
+        k += 1;
+      }
+      if (found < 0) break;
+      lastColonIdx = found;
+      pos = found + 1;
+      continue;
+    }
+    const identMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)/.exec(rest);
+    if (identMatch) {
+      lastColonIdx = pos + identMatch[0].length - 1;
+      pos = lastColonIdx + 1;
+      continue;
+    }
+    break;
+  }
+  return lastColonIdx;
+}
+
+function applyLabelHygiene(lines, bodyOpen, existingTypes, entrySource) {
+  if (bodyOpen < 0 || !Array.isArray(lines) || !lines.length) return { lines, changed: false };
+  const out = [];
+  let changed = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const item = lines[i];
+    if (i <= bodyOpen || item?.kind === 'comment') {
+      out.push(item);
+      continue;
+    }
+    const rawText = String(item?.text ?? '');
+    const cleaned = declarationBearingSource(rawText).trim();
+    if (!isLabelLikeLineText(cleaned)) {
+      const colonIdx = findLeadingLabelColonIndex(rawText);
+      if (colonIdx >= 0) {
+        const tail = rawText.slice(colonIdx + 1);
+        const tailClean = declarationBearingSource(tail).trim();
+        if (
+          tailClean
+          && !tailClean.startsWith(';')
+          && (tailClean === '}' || tailClean.startsWith('}') || isLocalVarDeclarationLine({ kind: 'stmt' }, tailClean, existingTypes))
+        ) {
+          const spacer = tail.length > 0 && (tail[0] === ' ' || tail[0] === '\t') ? '' : ' ';
+          out.push({
+            ...item,
+            text: `${rawText.slice(0, colonIdx + 1)} ;${spacer}${tail}`,
+          });
+          changed = true;
+          continue;
+        }
+      }
+      out.push(item);
+      continue;
+    }
+    out.push(item);
+    let nextItem = null;
+    let nextClean = '';
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const candidate = lines[j];
+      if (candidate?.kind === 'comment') continue;
+      const c = declarationBearingSource(candidate?.text ?? '').trim();
+      if (!c) continue;
+      nextItem = candidate;
+      nextClean = c;
+      break;
+    }
+    if (!nextItem) continue;
+    if (nextClean === '}' || nextClean.startsWith('}') || isLocalVarDeclarationLine(nextItem, nextClean, existingTypes)) {
+      const labelIndent = Number.isFinite(item?.indent) ? item.indent : 1;
+      out.push({
+        kind: 'stmt',
+        indent: Math.max(1, labelIndent),
+        text: ';',
+        row: item?.row ?? null,
+        addr: item?.addr ?? null,
+        note: null,
+        source: item?.source ?? entrySource,
+      });
+      changed = true;
+    }
+  }
+  return { lines: changed ? out : lines, changed };
 }
 
 export function closeFunctionOutput(result, options = {}) {
@@ -3352,9 +4267,11 @@ export function closeFunctionOutput(result, options = {}) {
 
   const declared = declaredNamesFromLines(lines);
   const sigText = String(lines[sigIndex].text ?? '');
+  const cleanSig = declarationBearingSource(sigText);
+  const sigTypes = signatureTypeNames(sigText, cleanSig);
   for (const name of parameterNames(sigText)) declared.add(name);
-  for (const name of signatureTypeNames(sigText)) declared.add(name);
-  const objcSigMatch = /[+-]\[([^\]]+)\]/.exec(declarationBearingSource(sigText));
+  for (const name of sigTypes) declared.add(name);
+  const objcSigMatch = /[+-]\[([^\]]+)\]/.exec(cleanSig);
   if (objcSigMatch) {
     for (const m of objcSigMatch[1].matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) declared.add(m[0]);
   }
@@ -3362,10 +4279,11 @@ export function closeFunctionOutput(result, options = {}) {
   const bodyOpen = lines.findIndex((item, index) => index > sigIndex && item?.kind === 'ctrl' && item?.text === '{');
   const renderedInitial = render(lines);
   const renderedBody = bodyOpen >= 0 ? render(lines.slice(bodyOpen)) : '';
-  const uses = scanIdentifierUses(renderedBody);
+  const cleanBody = declarationBearingSource(renderedBody);
+  const uses = scanIdentifierUses(renderedBody, cleanBody);
   const existingTypes = definedTypeAliases(lines);
 
-  const memberBaseAccesses = collectMemberBaseAccesses(renderedBody);
+  const memberBaseAccesses = collectMemberBaseAccesses(renderedBody, cleanBody);
   for (const baseName of memberBaseAccesses.keys()) {
     const useEntry = uses.get(baseName);
     if (useEntry) useEntry.memberBase = true;
@@ -3512,22 +4430,128 @@ export function closeFunctionOutput(result, options = {}) {
       if (!copyTargetsBySource.has(src)) copyTargetsBySource.set(src, new Set());
       copyTargetsBySource.get(src).add(lhs);
     }
+    const interestSet = new Set();
+    for (const entry of standaloneGlobals) {
+      const g = typeof entry === 'string' ? entry : entry.name;
+      if (!g) continue;
+      interestSet.add(g);
+      let frontier = [g];
+      for (let hop = 0; hop < 2 && frontier.length > 0; hop += 1) {
+        const next = [];
+        for (const name of frontier) {
+          const targets = copyTargetsBySource.get(name);
+          if (!targets) continue;
+          for (const alias of targets) {
+            if (!interestSet.has(alias)) {
+              interestSet.add(alias);
+              next.push(alias);
+            }
+          }
+        }
+        frontier = next;
+      }
+    }
+    const occByIdent = new Map();
+    const segSlices = [];
+    const segIdsByIdent = new Map();
+    {
+      // Preserve leading delimiter (';', '{', or '}') on every non-initial
+      // segment so '^' anchors never falsely match after '}' (#review_01).
+      const bodyLen = cleanedBodyForGlobals.length;
+      let segStart = 0;
+      let segIdx = 0;
+      let segIdents = null;
+      const flushSegment = (segEnd) => {
+        if (segIdents) {
+          segSlices[segIdx] = cleanedBodyForGlobals.slice(segStart, segEnd);
+          for (const name of segIdents) {
+            let list = segIdsByIdent.get(name);
+            if (!list) { list = []; segIdsByIdent.set(name, list); }
+            list.push(segIdx);
+          }
+          segIdents = null;
+        }
+        segIdx += 1;
+      };
+      for (let pos = 0; pos < bodyLen; pos += 1) {
+        const c = cleanedBodyForGlobals.charCodeAt(pos);
+        if (c === 59 /* ';' */ || c === 123 /* '{' */ || c === 125 /* '}' */) {
+          flushSegment(pos);
+          segStart = pos;
+          continue;
+        }
+        if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95) {
+          let end = pos + 1;
+          while (end < bodyLen && isIdentCharCode(cleanedBodyForGlobals.charCodeAt(end))) end += 1;
+          const ident = cleanedBodyForGlobals.slice(pos, end);
+          if (interestSet.has(ident)) {
+            let occ = occByIdent.get(ident);
+            if (!occ) { occ = []; occByIdent.set(ident, occ); }
+            occ.push(pos);
+            if (!segIdents) segIdents = new Set();
+            segIdents.add(ident);
+          }
+          pos = end - 1;
+        }
+      }
+      flushSegment(bodyLen);
+    }
+    const derefCache = new Map();
     const isIdentDereferenced = (ident) => {
+      if (derefCache.has(ident)) return derefCache.get(ident);
+      const occs = occByIdent.get(ident);
+      if (!occs || !occs.length) {
+        derefCache.set(ident, false);
+        return false;
+      }
+      const len = cleanedBodyForGlobals.length;
+      const identLen = ident.length;
+      // Direct O(1)-per-occurrence checks on cleanedBodyForGlobals for arrow (->),
+      // subscript ([), and unary deref (*ident / *(ident)), avoiding split('}') false positives.
+      for (let oi = 0; oi < occs.length; oi += 1) {
+        const start = occs[oi];
+        const end = start + identLen;
+        if (isFollowedByArrow(cleanedBodyForGlobals, end)) { derefCache.set(ident, true); return true; }
+        let k = end;
+        while (k < len && isWsAt(cleanedBodyForGlobals, k)) k += 1;
+        if (k < len && cleanedBodyForGlobals.charCodeAt(k) === 91 /* '[' */) { derefCache.set(ident, true); return true; }
+        let p = start - 1;
+        while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        if (p >= 0 && cleanedBodyForGlobals.charCodeAt(p) === 40 /* '(' */) {
+          p -= 1;
+          while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        }
+        if (p >= 0 && cleanedBodyForGlobals.charCodeAt(p) === 42 /* '*' */) {
+          let q = p - 1;
+          while (q >= 0 && isWsAt(cleanedBodyForGlobals, q)) q -= 1;
+          if (q < 0) { derefCache.set(ident, true); return true; }
+          const ch = cleanedBodyForGlobals[q];
+          if ('=({[,;:!?&|^~+-<>'.includes(ch)) { derefCache.set(ident, true); return true; }
+          if (isIdentCharCode(cleanedBodyForGlobals.charCodeAt(q)) && previousWord(cleanedBodyForGlobals, p) === 'return') {
+            derefCache.set(ident, true);
+            return true;
+          }
+        }
+      }
+      const segIds = segIdsByIdent.get(ident);
+      if (!segIds || !segIds.length) {
+        derefCache.set(ident, false);
+        return false;
+      }
       const esc = ident.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const arrowRe = new RegExp(`\\b${esc}\\s*->`);
-      if (arrowRe.test(cleanedBodyForGlobals)) return true;
-      const subscriptRe = new RegExp(`\\b${esc}\\s*\\[`);
-      if (subscriptRe.test(cleanedBodyForGlobals)) return true;
       const castDerefRe = new RegExp(
         `\\*\\s*\\([^;{}()]*\\*\\s*\\)\\s*\\(?\\s*(?:\\(\\s*(?:uintptr_t|intptr_t|[A-Za-z_][A-Za-z0-9_\\s]*\\*)\\s*\\)\\s*)?\\(?\\s*${esc}\\b`,
       );
-      if (castDerefRe.test(cleanedBodyForGlobals)) return true;
-      const unaryDerefRe = new RegExp(`(?:^|[=({[,;:!?&|^~+\\-<>]|\\breturn\\b)\\s*\\*\\s*\\(?\\s*${esc}\\b`);
-      if (unaryDerefRe.test(cleanedBodyForGlobals)) return true;
       const castArrowRe = new RegExp(
         `\\(\\s*\\([^;{}()]*\\*\\s*\\)\\s*(?:\\(\\s*(?:uintptr_t|intptr_t)\\s*\\)\\s*)?\\(?\\s*${esc}\\b[^;{}]*\\)\\s*(?:->|\\[)`,
       );
-      return castArrowRe.test(cleanedBodyForGlobals);
+      let matched = false;
+      for (let si = 0; si < segIds.length; si += 1) {
+        const seg = segSlices[segIds[si]];
+        if (castDerefRe.test(seg) || castArrowRe.test(seg)) { matched = true; break; }
+      }
+      derefCache.set(ident, matched);
+      return matched;
     };
     const isGlobalDereferenced = (globalName) => {
       if (isIdentDereferenced(globalName)) return true;
@@ -3550,15 +4574,13 @@ export function closeFunctionOutput(result, options = {}) {
       return false;
     };
     const hasOnlyAddressOfUses = (globalName) => {
-      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp(`\\b${esc}\\b`, 'g');
-      let sawAny = false;
-      for (let m = re.exec(cleanedBodyForGlobals); m; m = re.exec(cleanedBodyForGlobals)) {
-        sawAny = true;
-        let ampIdx = m.index - 1;
-        while (ampIdx >= 0 && /\s/.test(cleanedBodyForGlobals[ampIdx])) ampIdx--;
-        if (ampIdx < 0 || cleanedBodyForGlobals[ampIdx] !== '&') return false;
-        if (ampIdx >= 1 && cleanedBodyForGlobals[ampIdx - 1] === '&') return false;
+      const occs = occByIdent.get(globalName);
+      if (!occs || !occs.length) return false;
+      for (let oi = 0; oi < occs.length; oi += 1) {
+        let ampIdx = occs[oi] - 1;
+        while (ampIdx >= 0 && isWsAt(cleanedBodyForGlobals, ampIdx)) ampIdx--;
+        if (ampIdx < 0 || cleanedBodyForGlobals.charCodeAt(ampIdx) !== 38 /* '&' */) return false;
+        if (ampIdx >= 1 && cleanedBodyForGlobals.charCodeAt(ampIdx - 1) === 38 /* '&' */) return false;
         const beforeAmp = previousChar(cleanedBodyForGlobals, ampIdx);
         const isUnary = !beforeAmp
           || '=({[,;:!?|^~+-<>*/%'.includes(beforeAmp)
@@ -3566,7 +4588,7 @@ export function closeFunctionOutput(result, options = {}) {
           || (/[A-Za-z0-9_]/.test(beforeAmp) && previousWord(cleanedBodyForGlobals, ampIdx) === 'return');
         if (!isUnary) return false;
       }
-      return sawAny;
+      return true;
     };
     const align16 = (v) => Math.ceil(v / 16) * 16;
     const isCastBeforeIndex = (text, idx) => {
@@ -3602,15 +4624,29 @@ export function closeFunctionOutput(result, options = {}) {
       return false;
     };
     const isGlobalAddressTaken = (globalName) => {
-      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp(`(?<!&)&\\s*\\(?\\s*${esc}\\b`, 'g');
-      for (let m = re.exec(cleanedBodyForGlobals); m; m = re.exec(cleanedBodyForGlobals)) {
-        const idx = m.index;
-        if (/^\s*\)\s*->/.test(cleanedBodyForGlobals.slice(idx + m[0].length))) continue;
-        const prev = previousChar(cleanedBodyForGlobals, idx);
+      const occs = occByIdent.get(globalName);
+      if (!occs || !occs.length) return false;
+      const bodyLen = cleanedBodyForGlobals.length;
+      const nameLen = globalName.length;
+      for (let oi = 0; oi < occs.length; oi += 1) {
+        const start = occs[oi];
+        let p = start - 1;
+        while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        if (p >= 0 && cleanedBodyForGlobals.charCodeAt(p) === 40 /* '(' */) {
+          p -= 1;
+          while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        }
+        if (p < 0 || cleanedBodyForGlobals.charCodeAt(p) !== 38 /* '&' */) continue;
+        if (p >= 1 && cleanedBodyForGlobals.charCodeAt(p - 1) === 38 /* '&' */) continue;
+        let after = start + nameLen;
+        while (after < bodyLen && isWsAt(cleanedBodyForGlobals, after)) after += 1;
+        if (after < bodyLen && cleanedBodyForGlobals.charCodeAt(after) === 41 /* ')' */ && isFollowedByArrow(cleanedBodyForGlobals, after + 1)) {
+          continue;
+        }
+        const prev = previousChar(cleanedBodyForGlobals, p);
         if (!prev || '=({[,;:!?|^~+-<>*/%'.includes(prev)) return true;
-        if (prev === ')' && isCastBeforeIndex(cleanedBodyForGlobals, idx)) return true;
-        if (/[A-Za-z0-9_]/.test(prev) && previousWord(cleanedBodyForGlobals, idx) === 'return') return true;
+        if (prev === ')' && isCastBeforeIndex(cleanedBodyForGlobals, p)) return true;
+        if (/[A-Za-z0-9_]/.test(prev) && previousWord(cleanedBodyForGlobals, p) === 'return') return true;
       }
       return false;
     };
@@ -3622,25 +4658,36 @@ export function closeFunctionOutput(result, options = {}) {
       }
     }
     const isGlobalUsedAsUint128 = (globalName) => {
+      const segIds = segIdsByIdent.get(globalName);
+      if (!segIds || !segIds.length) return false;
       const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const u128Type = '(?:uint128|int128|vector128|(?:unsigned\\s+)?__int128)';
       const patterns = [
-        new RegExp(`\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)[^;{}]*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`),
+        new RegExp(`\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)[^;{}]*=(?!=)\\s*(?:\\([^;{}()]*\\)\\s*)*(?<!&)${esc}\\b`),
         new RegExp(`\\(\\s*${u128Type}\\s*\\)\\s*\\(?\\s*(?<!&)${esc}\\b`),
-        new RegExp(`(?:\\b${u128Type}\\s+[A-Za-z_][A-Za-z0-9_]*|\\b[qQvV]\\d+(?:_\\d+)?)\\s*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`),
+        new RegExp(`(?:\\b${u128Type}\\s+[A-Za-z_][A-Za-z0-9_]*|\\b[qQvV]\\d+(?:_\\d+)?)\\s*=(?!=)\\s*(?:\\([^;{}()]*\\)\\s*)*(?<!&)${esc}\\b`),
         new RegExp(`\\b${esc}\\s*=(?!=)\\s*(?:\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)|\\b[qQvV]\\d+(?:_\\d+)?\\b)`),
       ];
-      if (patterns.some((re) => re.test(cleanedBodyForGlobals))) return true;
+      for (let si = 0; si < segIds.length; si += 1) {
+        const seg = segSlices[segIds[si]];
+        if (patterns.some((re) => re.test(seg))) return true;
+      }
       if (u128LocalNames.size > 0) {
-        const assignRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=(?!=)\\s*(?:\\([^;{}]*\\)\\s*)*(?<!&)${esc}\\b`, 'g');
-        for (let m = assignRe.exec(cleanedBodyForGlobals); m; m = assignRe.exec(cleanedBodyForGlobals)) {
-          if (u128LocalNames.has(m[1])) return true;
+        const assignRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=(?!=)\\s*(?:\\([^;{}()]*\\)\\s*)*(?<!&)${esc}\\b`, 'g');
+        for (let si = 0; si < segIds.length; si += 1) {
+          const seg = segSlices[segIds[si]];
+          assignRe.lastIndex = 0;
+          for (let m = assignRe.exec(seg); m; m = assignRe.exec(seg)) {
+            if (u128LocalNames.has(m[1])) return true;
+          }
         }
       }
       return false;
     };
     const globalData = createGlobalDataResolver(result, options);
-    globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
+    const binaryPreludeLines = [];
+    const unresolvedPreludeLines = [];
+    const binaryEvidenceEntries = [];
     for (const entry of standaloneGlobals) {
       const access = memberBaseAccesses.get(entry.name);
       const globalAddr = parseGlobalHexAddress(entry.name);
@@ -3656,16 +4703,28 @@ export function closeFunctionOutput(result, options = {}) {
         }
         const byteSize = Math.min(65536, Math.max(64, align16(Math.max(maxFieldOffset + 8, access.fields.size * 8))));
         arrayGlobalNames.add(entry.name);
-        globalPrelude.push({
+        unresolvedPreludeLines.push({
           kind: 'decl', indent: 0, text: `static uint8_t ${entry.name}[${byteSize}] = {0};`,
           row: null, addr: null, note: null, source: entrySource,
         });
-      } else if (isGlobalAddressTaken(entry.name)) {
+        continue;
+      }
+      const isBinaryBacked = globalData.hasData && globalAddr != null && globalData.hasSectionAt(globalAddr);
+      const targetPrelude = isBinaryBacked ? binaryPreludeLines : unresolvedPreludeLines;
+      if (isBinaryBacked) {
+        binaryEvidenceEntries.push({
+          name: entry.name,
+          address: globalAddr,
+          type: usedAsUint128 ? 'unsigned __int128' : 'uint64_t',
+          provenance: 'closure-binary-data',
+        });
+      }
+      if (isGlobalAddressTaken(entry.name)) {
         const bufName = `__hex_${entry.name}_buf`;
         const bufWords = globalData.hasData ? globalData.resolveBufferWords(globalAddr, 512) : null;
         const initText = bufWords && bufWords.length ? `{ ${bufWords.join(', ')} }` : '{0}';
         const macroTarget = usedAsUint128 ? `*(uint128 *)&${bufName}[0]` : `${bufName}[0]`;
-        globalPrelude.push(
+        targetPrelude.push(
           {
             kind: 'decl', indent: 0, text: `static uint64 ${bufName}[512] = ${initText};`,
             row: null, addr: null, note: null, source: entrySource,
@@ -3679,7 +4738,7 @@ export function closeFunctionOutput(result, options = {}) {
         const u128Init = globalData.hasData ? globalData.resolveUint128(globalAddr) : null;
         if (u128Init?.kind === 'words') {
           const bufName = `__hex_${entry.name}_buf`;
-          globalPrelude.push(
+          targetPrelude.push(
             {
               kind: 'decl', indent: 0, text: `static uint64 ${bufName}[2] = { ${u128Init.words[0]}, ${u128Init.words[1]} };`,
               row: null, addr: null, note: null, source: entrySource,
@@ -3690,7 +4749,7 @@ export function closeFunctionOutput(result, options = {}) {
             },
           );
         } else {
-          globalPrelude.push({
+          targetPrelude.push({
             kind: 'decl', indent: 0, text: `static uint128 ${entry.name} = ${u128Init?.expr ?? '0'};`,
             row: null, addr: null, note: null, source: entrySource,
           });
@@ -3698,13 +4757,13 @@ export function closeFunctionOutput(result, options = {}) {
       } else if (isGlobalDereferenced(entry.name)) {
         const wordInit = globalData.hasData ? globalData.resolveWord64(globalAddr) : null;
         if (wordInit?.isPointer) {
-          globalPrelude.push({
+          targetPrelude.push({
             kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = ${wordInit.expr};`,
             row: null, addr: null, note: null, source: entrySource,
           });
         } else {
           const backingName = `__hex_${entry.name}_backing`;
-          globalPrelude.push(
+          targetPrelude.push(
             {
               kind: 'decl', indent: 0, text: `static uint64 ${backingName} = 0;`,
               row: null, addr: null, note: null, source: entrySource,
@@ -3717,18 +4776,29 @@ export function closeFunctionOutput(result, options = {}) {
         }
       } else {
         const wordInit = globalData.hasData ? globalData.resolveWord64(globalAddr) : null;
-        globalPrelude.push({
+        targetPrelude.push({
           kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = ${wordInit?.isNonZero ? wordInit.expr : '0'};`,
           row: null, addr: null, note: null, source: entrySource,
         });
       }
     }
+    if (binaryPreludeLines.length > 0) {
+      globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_BINARY_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
+      globalPrelude.push(...binaryPreludeLines);
+    }
+    if (unresolvedPreludeLines.length > 0) {
+      globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
+      globalPrelude.push(...unresolvedPreludeLines);
+    }
+    if (binaryEvidenceEntries.length > 0) {
+      result.globalEvidence = mergeClosureBinaryGlobalEvidence(result.globalEvidence, binaryEvidenceEntries);
+    }
   }
 
-  const idUsedAsType = signatureTypeNames(sigText).has('id')
+  const idUsedAsType = sigTypes.has('id')
     || Boolean(uses.get('id')?.castType)
     || Boolean(objcSigMatch)
-    || /(?:^|[\n;{])\s*(?:(?:const|volatile|restrict|static)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:=|;|\[|,)/.test(declarationBearingSource(renderedBody));
+    || /(?:^|[\n;{])\s*(?:(?:const|volatile|restrict|static)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:=|;|\[|,)/.test(cleanBody);
   const idTypedefPrelude = [];
   if (!existingTypes.has('id') && idUsedAsType) {
     idTypedefPrelude.push({
@@ -3743,8 +4813,8 @@ export function closeFunctionOutput(result, options = {}) {
     const m = /([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(d.text);
     return m ? m[1] : '';
   }).filter(Boolean));
-  const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText);
-  const mutablePtrReturnLocals = inferMutablePtrReturnLocals(renderedBody);
+  const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText, cleanBody, cleanSig);
+  const mutablePtrReturnLocals = inferMutablePtrReturnLocals(renderedBody, cleanBody);
   const syntheticStackFrameLayoutForSp = (bodyText) => {
     const cleaned = String(bodyText ?? '')
       .replace(/\/\*[\s\S]*?\*\//g, ' ')
@@ -3789,12 +4859,13 @@ export function closeFunctionOutput(result, options = {}) {
     }
     return { totalSize: belowSize + aboveSize, belowSize };
   };
+  const evidenceIndex = buildEvidenceIndex(result);
   const localDeclarations = [...uses.values()]
     .filter((entry) => isDeclarableLocal(entry, declared, declaredMemberBaseNames, existingTypes))
     .flatMap((entry) => {
       const declType = (() => {
         if (entry.subscriptBase && (entry.name === 'memory' || !entry.nonSubscriptValue)) return 'uint8_t *';
-        const t = localDeclarationTypeFor(entry.name, result);
+        const t = localDeclarationTypeFor(entry.name, result, evidenceIndex);
         if (t === 'uint64' && mutablePtrReturnLocals.has(entry.name)) return mutablePtrReturnLocals.get(entry.name);
         return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'const void *' : t;
       })();
@@ -3856,11 +4927,9 @@ export function closeFunctionOutput(result, options = {}) {
     existingTypes.add(structType);
   }
   const { lines: afterIntConv, changed: intConvChanged } = applyIntConversionCoercions(withArrowRewrites, bodyOpen, symTable);
-  const { lines: withDeclarations, changed: scalarArrowChanged } = applyScalarArrowRewrites(afterIntConv, bodyOpen, arrowRewriteBases);
-  const bodyChanged = arrowChanged || intConvChanged || scalarArrowChanged;
+  const { lines: afterScalarArrow, changed: scalarArrowChanged } = applyScalarArrowRewrites(afterIntConv, bodyOpen, arrowRewriteBases);
 
-  const withPostFixedPrelude = [...withDeclarations];
-  const sigPtrParams = signaturePointerParams(sigText);
+  const sigPtrParams = signaturePointerParams(sigText, cleanSig);
   const sigTypesByName = new Map();
   for (const { typeName, paramName } of sigPtrParams) {
     if (existingTypes.has(typeName)) continue;
@@ -3888,6 +4957,9 @@ export function closeFunctionOutput(result, options = {}) {
     });
     existingTypes.add(typeName);
   }
+  const { lines: withDeclarations, changed: labelHygieneChanged } = applyLabelHygiene(afterScalarArrow, bodyOpen, existingTypes, entrySource);
+  const bodyChanged = arrowChanged || intConvChanged || scalarArrowChanged || labelHygieneChanged;
+  const withPostFixedPrelude = [...withDeclarations];
 
   const atomicPrelude = atomicCompatPreludeLines(uses, lines, entrySource);
   const bitfieldHelperPrelude = bitfieldHelperPreludeLines(uses, lines, entrySource);
@@ -3901,7 +4973,7 @@ export function closeFunctionOutput(result, options = {}) {
     const m = /^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(String(l?.text ?? ''));
     if (m) macroDefinedCalls.add(m[1]);
   }
-  const sigFuncName = signatureFunctionName(sigText);
+  const sigFuncName = signatureFunctionName(sigText, cleanSig);
   const existingIncludes = new Set();
   const existingLineTexts = new Set();
   for (const l of lines) {
@@ -4002,8 +5074,8 @@ export function closeFunctionOutput(result, options = {}) {
   const intrinsicPrelude = [];
   for (const entry of [...uses.values()].sort((a, b) => compareAscii(a.name, b.name))) {
     if (!entry?.callTarget) continue;
-    if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || entry.name === sigFuncName) continue;
-    if (!isEligibleIntrinsicHelper(entry.name, renderedBody)) continue;
+    if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || bitfieldHelperNames.has(entry.name) || entry.name === sigFuncName) continue;
+    if (!isEligibleIntrinsicHelper(entry.name, renderedBody, cleanBody)) continue;
     const helperDef = hexIntrinsicHelperDef(entry.name);
     if (!helperDef) continue;
     const guard = `__hex_helper_${entry.name}_defined`;
@@ -4026,7 +5098,7 @@ export function closeFunctionOutput(result, options = {}) {
       && !STANDARD_C_LIBRARY_HEADERS.has(entry.name)
       && !GLIBC_STRIPPED_ALIAS_MAP.has(entry.name)
       && !GLIBC_CHK_PROTOTYPES.has(entry.name)
-      && !isEligibleIntrinsicHelper(entry.name, renderedBody)
+      && !isEligibleIntrinsicHelper(entry.name, renderedBody, cleanBody)
       && !macroDefinedCalls.has(entry.name)
       && !bitfieldHelperNames.has(entry.name)
       && !/^__builtin_/.test(entry.name)
@@ -4056,7 +5128,7 @@ export function closeFunctionOutput(result, options = {}) {
       });
     }
   }
-  const postFixedPrelude = [...idTypedefPrelude, ...structPrelude, ...globalPrelude, ...prototypePrelude, ...atomicPrelude, ...glibcAliasPrelude, ...intrinsicPrelude];
+  const postFixedPrelude = [...idTypedefPrelude, ...structPrelude, ...globalPrelude, ...prototypePrelude, ...atomicPrelude, ...bitfieldHelperPrelude, ...glibcAliasPrelude, ...intrinsicPrelude];
   if (postFixedPrelude.length) withPostFixedPrelude.splice(sigIndex, 0, ...postFixedPrelude);
 
   const prelude = fixedWidthPreludeLines(render(withPostFixedPrelude), existingTypes)

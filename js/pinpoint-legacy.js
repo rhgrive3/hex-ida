@@ -28,6 +28,8 @@
  *
  * 日本語は作らない。返すのは構造と、掛け算の内訳だけ。
  */
+import { analyzeCryptoInsnDensity } from './analysis/crypto-entropy.js';
+import { scanArm64RmwFields, classifyArm64Behavior, inferArm64Abi, fingerprintArm64Func } from './analysis/wasm-suite.js';
 import {
   matchField, typeFits, accessorKind, matchText, matchName, normalizeFieldName, fieldRole,
   extractCallableLeaf, numericSymbolRole,
@@ -77,6 +79,7 @@ const MAX_LEXICAL_RESCUE = 64;
  */
 const byRecallLane = (a, b) => ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
   || (b.fusion.logOdds - a.fusion.logOdds)
+  || ((b.fusion.rawLogOdds ?? b.fusion.logOdds) - (a.fusion.rawLogOdds ?? a.fusion.logOdds))
   || (a.source === 'cxx' || b.source === 'cxx'
     ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
     : 0);
@@ -292,7 +295,7 @@ export async function pinpointField(opts) {
            * クラスのメソッドを何本も読むのは重い。それは上位 2 つだけにする。
            * 3 位以下を深追いしても、決着には効かないので。
            */
-          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 2 });
+          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 4 }, fields);
         } catch { /* 1 個読めなくても、ほかは確かめる */ }
         if (c.evidence.length !== beforeLen) dirty.push(c);
         checked++;
@@ -312,7 +315,7 @@ export async function pinpointField(opts) {
   const top = result.top;
   if (top && top.source !== 'cxx' && o.scanAccess && !cancelled()) {
     try {
-      changeSites = await collectChangeSites(top, o);
+      changeSites = await collectChangeSites(top, o, fields);
     } catch { changeSites = []; }
   } else if (top) {
     changeSites = top.sites || [];
@@ -611,7 +614,7 @@ function charge(o, n) {
   if (o.budget && o.budget.left != null) o.budget.left -= (n || 1);
 }
 
-async function verifyCandidate(c, goal, o, how) {
+async function verifyCandidate(c, goal, o, how, fields = o.fields) {
   const analyze = o.analyze;
   const program = o.program;
   if (!analyze) return;
@@ -663,7 +666,7 @@ async function verifyCandidate(c, goal, o, how) {
    */
   if (deep && (!c.verified || !c.rmwFound)) {
     const methods = ((c.context.info && c.context.info.info ? c.context.info.info.methods : null) ||
-      methodsOfClass(o.fields, c.className))
+      methodsOfClass(fields, c.className))
       .filter((m) => m && m.addr != null && !analyzedAccessors.has(m.addr.toString()));
     const pick = pickMethodsToRead(methods, goal, 3);
     for (const m of pick) {
@@ -758,11 +761,11 @@ function readAccessGroup(groups, offset, size) {
   return null;
 }
 
-async function collectChangeSites(top, o) {
+async function collectChangeSites(top, o, fields = o.fields) {
   const req = [{ offset: top.offset, size: top.size || 0 }];
   const res = o.signal ? await o.scanAccess(req, { signal: o.signal }) : await o.scanAccess(req);
   const list = readAccessGroup(res, top.offset, top.size || 0) || [];
-  return groupSites(list, o.program, o.fields, top.className);
+  return groupSites(list, o.program, fields, top.className);
 }
 
 /**
@@ -1158,6 +1161,49 @@ export async function pinpointLocation(opts) {
  *   ranked  rank.js の候補（あれば再利用する）
  *   field   決まった値（あれば、それを触っているかで決め手にする）
  */
+function goalShapesFor(o, goal) {
+  if (!o || !goal) return [];
+  if (Array.isArray(o.shapesByGoal)) return o.shapesByGoal;
+  if (o.shapesByGoal instanceof Map) return o.shapesByGoal.get(goal.id) || [];
+  if (typeof o.shapesByGoal === 'function') return o.shapesByGoal(o.shapes, goal.id, 8) || [];
+  if (o.shapesByGoal && typeof o.shapesByGoal === 'object' && Array.isArray(o.shapesByGoal[goal.id])) {
+    return o.shapesByGoal[goal.id];
+  }
+  if (o.shapes && o.shapes.size) return shapesByGoal(o.shapes, goal.id, 8);
+  return [];
+}
+
+function collectShapeSeedFunctions(o, goal) {
+  const byKey = new Map();
+  const list = goalShapesFor(o, goal);
+  for (const sh of list.slice(0, 8)) {
+    if (!sh) continue;
+    const sites = Array.isArray(sh.sites) ? sh.sites : [];
+    for (const s of sites) {
+      const siteAddr = typeof s === 'object' && s != null ? s.addr : s;
+      if (siteAddr == null) continue;
+      let addr;
+      try { addr = typeof siteAddr === 'bigint' ? siteAddr : BigInt(siteAddr); } catch { continue; }
+      const range = o.program?.functionRange?.(addr);
+      const start = range?.start ?? o.program?.functionStartOf?.(addr) ?? o.symbols?.functionStartAt?.(addr) ?? addr;
+      let fnAddr;
+      try { fnAddr = typeof start === 'bigint' ? start : BigInt(start); } catch { continue; }
+      const key = fnAddr.toString();
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.sites++;
+        if ((sh.score ?? 0) > existing.score) {
+          existing.score = sh.score ?? existing.score;
+          existing.offset = sh.offset ?? existing.offset;
+        }
+      } else if (byKey.size < 12) {
+        byKey.set(key, { addr: fnAddr, offset: sh.offset ?? null, score: sh.score ?? 0.7, sites: 1 });
+      }
+    }
+  }
+  return byKey;
+}
+
 export async function pinpointFunction(opts) {
   const o = opts || {};
   const goal = o.goal;
@@ -1165,7 +1211,8 @@ export async function pinpointFunction(opts) {
   const progress = o.onProgress || (() => {});
   const cancelled = o.isCancelled || (() => false);
 
-  if (!goal || !ranked.length) {
+  const shapeSeeds = goal ? collectShapeSeedFunctions(o, goal) : new Map();
+  if (!goal || (!ranked.length && !shapeSeeds.size)) {
     return { goal, kind: 'function', verdict: VERDICT.NONE, top: null, candidates: [], checked: 0 };
   }
 
@@ -1173,9 +1220,65 @@ export async function pinpointFunction(opts) {
   const universe = Math.max(50, o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 2000);
 
   const candidates = ranked.slice(0, 40).map((c) => buildFunctionCandidate(c, goal, o));
+  const candByKey = new Map(candidates.map((c) => [c.key, c]));
+
+  // Attach shape-site seeds (works even when ranked is empty / zero-string binaries).
+  for (const [key, seed] of shapeSeeds.entries()) {
+    const strength = Math.max(0.4, Math.min(1, seed.score || 0.7));
+    const evItem = evidence('fn-shape-site', strength, {
+      offset: seed.offset, goal: goal.id, sites: seed.sites,
+    });
+    const existing = candByKey.get(key);
+    if (existing) {
+      if (!existing.evidence.some((e) => e.code === 'fn-shape-site')) existing.evidence.push(evItem);
+    } else {
+      const name = typeof o.symbols?.nameAt === 'function' ? (o.symbols.nameAt(seed.addr) || null) : null;
+      const cand = buildFunctionCandidate({ addr: seed.addr, name, reasons: [], strings: [] }, goal, o);
+      cand.evidence.push(evItem);
+      candidates.push(cand);
+      candByKey.set(key, cand);
+    }
+  }
+
   for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: universe });
   candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
   let result = decide(candidates);
+
+  // 1-hop stripped caller RMW expansion for top string-seeded candidates (max 2/seed, max 6 total).
+  const expandedCallers = [];
+  if (o.analyze && o.program && typeof o.program.callersOf === 'function' && goal.expects?.store) {
+    const stringSeeds = candidates.filter((c) => (c.strings || []).length > 0).slice(0, 4);
+    for (const seed of stringSeeds) {
+      if (expandedCallers.length >= 6) break;
+      let addedForSeed = 0;
+      const callers = o.program.callersOf(seed.addr, 8) || [];
+      for (const caller of callers) {
+        if (addedForSeed >= 2 || expandedCallers.length >= 6) break;
+        const rawAddr = typeof caller === 'object' && caller != null ? caller.addr : caller;
+        if (rawAddr == null) continue;
+        let callerAddr;
+        try { callerAddr = typeof rawAddr === 'bigint' ? rawAddr : BigInt(rawAddr); } catch { continue; }
+        if (callerAddr === seed.addr) continue;
+        const callerKey = callerAddr.toString();
+        if (candByKey.has(callerKey)) continue;
+        const callerName = typeof o.symbols?.nameAt === 'function' ? (o.symbols.nameAt(callerAddr) || null) : null;
+        if (callerName) continue;
+        const cand = buildFunctionCandidate({ addr: callerAddr, name: null, reasons: [], strings: [] }, goal, o);
+        cand.evidence.push(evidence('fn-callee-match', 0.45, {
+          to: seed.addr, toName: seed.name || null, site: caller?.site ?? null, via: '1-hop-caller',
+        }));
+        cand.fusion = fuse(cand.evidence, { candidates: universe });
+        candidates.push(cand);
+        candByKey.set(callerKey, cand);
+        expandedCallers.push(cand);
+        addedForSeed++;
+      }
+    }
+    if (expandedCallers.length) {
+      candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+      result = decide(candidates);
+    }
+  }
 
   let checked = 0;
   if (o.analyze) {
@@ -1190,6 +1293,25 @@ export async function pinpointFunction(opts) {
         if (cancelled() || spent(o)) break;
         seen.add(c.key);
         progress({ phase: 'verify-fn', done: checked, all: checked + targets.length });
+        charge(o);
+        const beforeLen = c.evidence.length;
+        try { await verifyFunctionCandidate(c, goal, o); } catch { /* 読めなくても続ける */ }
+        if (c.evidence.length !== beforeLen) dirty.push(c);
+        checked++;
+      }
+      if (dirty.length) {
+        for (const c of dirty) c.fusion = fuse(c.evidence, { candidates: universe });
+        candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+        result = decide(candidates);
+      }
+    }
+    if (expandedCallers.length && result.verdict !== VERDICT.CONFIRMED && !cancelled() && !spent(o)) {
+      const pendingCallers = expandedCallers.filter((c) => !seen.has(c.key));
+      const dirty = [];
+      for (const c of pendingCallers) {
+        if (cancelled() || spent(o)) break;
+        seen.add(c.key);
+        progress({ phase: 'verify-fn', done: checked, all: checked + pendingCallers.length });
         charge(o);
         const beforeLen = c.evidence.length;
         try { await verifyFunctionCandidate(c, goal, o); } catch { /* 読めなくても続ける */ }
@@ -1439,7 +1561,7 @@ function buildFunctionCandidate(c, goal, o) {
    */
   const fnRole = c.name ? numericSymbolRole(goal, c.name) : 'neutral';
   const hasVendorConflict = !!(c.vendor && vendorConflicts(goal.id, c.vendor));
-  const total = o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 0;
+  const total = Math.max(50, o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 2000);
   if (total > 0 && fnRole !== 'non-value' && !hasVendorConflict) {
     const seenText = new Set();
     const named = [];
@@ -1506,10 +1628,10 @@ const FORMULA_LOG_TAG_RE = /^\s*(?:\[[^\]]{1,40}\]\s*|<[A-Za-z0-9_.:-]{1,32}>\s*
 const FORMULA_SOURCE_LINE_RE = /\.(?:c|cc|cpp|cxx|h|hpp|m|mm|swift|java|kt|cs|rs|go):\d+/i;
 const FORMULA_CXX_SIG_RE = /(?:\b[A-Za-z_]\w*::[A-Za-z_~]\w*\s*\(|\b(?:const\s+)?(?:void|bool|int|float|double|char|size_t|u?int\d+_t|auto|std::\w+)\s+[A-Za-z_]\w*::|::[A-Za-z_]\w*<[^>]*>)/;
 const FORMULA_SYNTAX_RE = /(?:[+×÷*=<≥≤>]|(?:\d|\)|%[diuoxXfFeEgG])\s*[-\/]\s*(?:\d|\(|%[A-Za-z])|%[-+0 #]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|z|t|j|L)?[diuoxXfFeEgG]|\d+\s*%|\b(?:min|max|clamp|floor|ceil|round|mod)\s*\()/i;
-const FORMULA_INSN_RE = /^(?:add|adds|sub|subs|cmp|cmn|ccmp|ccmn|fcmp|fadd|fsub|fmul|fdiv|mov|movz|movn|movk|fmov|tst)$/i;
-const NUMERIC_MUL_DIV_RE = /^(mul|madd|msub|sdiv|udiv|fmul|fdiv)$/i;
-const NUMERIC_ADD_SUB_RE = /^(add|adds|sub|subs|fadd|fsub)$/i;
-const CTRL_BOUNDARY_RE = /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retaa$|retab$)/i;
+const FORMULA_INSN_RE = /^(?:add|adds|sub|subs|cmp|cmn|ccmp|ccmn|fcmp|fadd|fsub|fmul|fdiv|mov|movz|movn|movk|movzx|movsx|movsxd|fmov|tst|test|imul|mul|idiv|div|inc|dec|lea|addss|subss|mulss|divss|addsd|subsd|mulsd|divsd|comiss|comisd|ucomiss|ucomisd)$/i;
+const NUMERIC_MUL_DIV_RE = /^(mul|imul|madd|msub|sdiv|udiv|idiv|div|fmul|fdiv|mulss|divss|mulsd|divsd)$/i;
+const NUMERIC_ADD_SUB_RE = /^(add|adds|sub|subs|inc|dec|fadd|fsub|addss|subss|addsd|subsd)$/i;
+const CTRL_BOUNDARY_RE = /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retq$|retaa$|retab$|jmp$|jmpq$|j[a-z]{1,4}$|call$|callq$)/i;
 
 function isFormulaString(text) {
   if (typeof text !== 'string') return false;
@@ -1532,6 +1654,15 @@ function regIdentity(op) {
     if (s === 'fp' || s === 'x29' || s === 'w29') return 'fp';
     const m = /^[wx](\d+)$/.exec(s);
     if (m) return 'x' + m[1];
+    if (s === 'rsp' || s === 'esp') return 'sp';
+    if (s === 'rbp' || s === 'ebp') return 'fp';
+    const x86 = /^(?:[re]?([abcd])x|([abcd])[hl]|[re]?(si|di)l?|r(8|9|1[0-5])[dwb]?|xmm(\d+))$/.exec(s);
+    if (x86) {
+      if (x86[1] || x86[2]) return 'r' + (x86[1] || x86[2]) + 'x';
+      if (x86[3]) return 'r' + x86[3];
+      if (x86[4]) return 'r' + x86[4];
+      if (x86[5]) return 'xmm' + x86[5];
+    }
     return null;
   }
   if (op.k === 'reg') {
@@ -1633,6 +1764,132 @@ function countPureNumericArithmetic(insns) {
     prevAdrpReg = null;
   }
   return count;
+}
+
+const RMW_STACK_REGS = new Set(['sp', 'fp', 'x29', 'w29', 'rsp', 'rbp', 'esp', 'ebp', 'rip', 'eip']);
+const RMW_LOAD_RE = /^(?:ldr|ldur|ldrsw|ldrh|ldrb|ldursw|mov|movsx|movsxd|movzx|movss|movsd)$/i;
+const RMW_STORE_RE = /^(?:str|stur|strh|strb|mov|movss|movsd)$/i;
+const RMW_DIRECT_MEM_OP_RE = /^(?:add|sub|adc|sbb|inc|dec)$/i;
+const RMW_SUB_RE = /^(?:sub|subs|fsub|subss|subsd|dec|sbb)$/i;
+const RMW_ADD_RE = /^(?:add|adds|fadd|addss|addsd|inc|adc)$/i;
+const RMW_CLAMP_RE = /^(?:cmp|cmn|fcmp|csel|csinc|csinv|csneg|fmax|fmin|fmaxnm|fminnm|cmov\w+|b\.(?:le|lt|ge|gt|ls|lo|hi|hs|eq|ne)|cbz|cbnz|tbz|tbnz|j(?:le|l|ge|g|be|b|ae|a|s|ns|e|ne))$/i;
+const RMW_CALL_RE = /^(?:bl|blr|blraa|blrab|call|callq)$/i;
+
+function parseFieldMemRef(insn) {
+  if (insn?.memory && !insn.memory.stack && insn.memory.base) {
+    const base = String(insn.memory.base).toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    const rawOff = insn.memory.disp ?? insn.memory.offset;
+    const off = rawOff != null ? String(rawOff) : '0';
+    return { base, offset: off, kind: insn.memory.kind || null };
+  }
+  const ops = String(insn?.operands || insn?.ops || '');
+  const mArm = /\[([xw]\d+|sp|fp)(?:,\s*#(-?0x[0-9a-f]+|-?\d+))?\]/i.exec(ops);
+  if (mArm) {
+    const base = mArm[1].toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    return { base, offset: (mArm[2] || '0').toLowerCase(), kind: null };
+  }
+  const mX86 = /\[([re]?(?:ax|bx|cx|dx|si|di|bp|sp)|r(?:[89]|1[0-5])d?)(?:\s*([+-])\s*(0x[0-9a-f]+|\d+))?\]/i.exec(ops);
+  if (mX86) {
+    const base = mX86[1].toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    const sign = mX86[2] === '-' ? '-' : '';
+    const off = mX86[3] ? `${sign}${mX86[3].toLowerCase()}` : '0';
+    return { base, offset: off, kind: null };
+  }
+  return null;
+}
+
+/**
+ * General-purpose Read-Modify-Write (+ clamp/bounds-check) field detector for
+ * ARM64 and x86-64 instruction streams. Excludes stack/frame slots.
+ */
+export function detectFieldRmwPatterns(insns) {
+  const list = Array.isArray(insns) ? insns : [];
+  const loads = new Map();
+  const fields = [];
+  let subRmwCount = 0;
+  let addRmwCount = 0;
+  let clampedRmwCount = 0;
+
+  for (let i = 0; i < list.length; i++) {
+    const insn = list[i];
+    const mn = String(insn?.mnemonic || insn?.mn || '').trim().toLowerCase();
+    if (!mn) continue;
+    if (RMW_CALL_RE.test(mn)) { loads.clear(); continue; }
+    const opsText = String(insn?.operands || insn?.ops || '').trim();
+    const firstComma = opsText.indexOf(',');
+    const dstOp = (firstComma >= 0 ? opsText.slice(0, firstComma) : opsText).trim();
+    const mem = parseFieldMemRef(insn);
+    const dstIsMem = dstOp.includes('[');
+
+    if (mem && RMW_DIRECT_MEM_OP_RE.test(mn) && dstIsMem) {
+      const hasSub = RMW_SUB_RE.test(mn);
+      const hasAdd = RMW_ADD_RE.test(mn);
+      let clamped = false;
+      for (let k = i + 1; k < Math.min(list.length, i + 5); k++) {
+        const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+        if (RMW_CLAMP_RE.test(km)) { clamped = true; break; }
+      }
+      if (hasSub) subRmwCount++; else if (hasAdd) addRmwCount++;
+      if (clamped) clampedRmwCount++;
+      fields.push({
+        base: mem.base, offset: mem.offset, kind: hasSub ? 'sub' : 'add', clamped,
+        loadAddr: insn.address ?? insn.addr ?? null,
+        storeAddr: insn.address ?? insn.addr ?? null,
+      });
+      continue;
+    }
+
+    if (mem) {
+      const key = `${mem.base}:${mem.offset}`;
+      const isStore = mem.kind === 'store'
+        || (RMW_STORE_RE.test(mn) && (mn.startsWith('st') || dstIsMem));
+      const isLoad = !isStore && (mem.kind === 'load' || RMW_LOAD_RE.test(mn));
+      if (isLoad) {
+        loads.set(key, { idx: i, addr: insn.address ?? insn.addr ?? null });
+        continue;
+      }
+      if (isStore) {
+        const prev = loads.get(key);
+        if (prev && i - prev.idx <= 16) {
+          let hasSub = false, hasAdd = false, clamped = false;
+          for (let k = prev.idx + 1; k < i; k++) {
+            const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+            if (RMW_SUB_RE.test(km)) hasSub = true;
+            if (RMW_ADD_RE.test(km)) hasAdd = true;
+            if (RMW_CLAMP_RE.test(km)) clamped = true;
+          }
+          if (hasSub || hasAdd) {
+            if (!clamped) {
+              for (let k = i + 1; k < Math.min(list.length, i + 4); k++) {
+                const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+                if (RMW_CLAMP_RE.test(km)) { clamped = true; break; }
+              }
+            }
+            if (hasSub) subRmwCount++; else addRmwCount++;
+            if (clamped) clampedRmwCount++;
+            fields.push({
+              base: mem.base, offset: mem.offset, kind: hasSub ? 'sub' : 'add', clamped,
+              loadAddr: prev.addr,
+              storeAddr: insn.address ?? insn.addr ?? null,
+            });
+            loads.delete(key);
+          }
+        }
+        continue;
+      }
+    }
+
+    if (!dstIsMem && dstOp) {
+      const dstBase = dstOp.toLowerCase();
+      for (const key of loads.keys()) {
+        if (key.startsWith(`${dstBase}:`)) loads.delete(key);
+      }
+    }
+  }
+  return { rmwCount: fields.length, subRmwCount, addRmwCount, clampedRmwCount, fields };
 }
 
 function verifyFormula(c, insns, goal) {
@@ -1737,7 +1994,8 @@ async function verifyFunctionCandidate(c, goal, o) {
   const expects = goal.expects || {};
   const insns = model.instructions || [];
   if (!field && expects.store) {
-    const { set } = selfRegisters(model);
+    let set = new Set(['x0', 'rdi', 'rcx']);
+    try { const sr = selfRegisters(model); if (sr?.set) set = sr.set; } catch { /* lightweight model */ }
     const stores = insns.filter((i) => i.memory && i.memory.kind === 'store' &&
       !i.memory.stack && set.has(i.memory.base));
     if (stores.length) {
@@ -1747,6 +2005,89 @@ async function verifyFunctionCandidate(c, goal, o) {
   if (!field && expects.numeric && !c.evidence.some((e) => e.code === 'fn-numeric')) {
     const numCount = countPureNumericArithmetic(insns);
     if (numCount) c.evidence.push(evidence('fn-numeric', Math.min(1, numCount / 3), { n: numCount }));
+  }
+  if (expects.store) {
+    const rmw = detectFieldRmwPatterns(insns);
+    if (rmw.clampedRmwCount > 0) {
+      c.evidence.push(evidence('fn-field-rmw-clamped', Math.min(1, 0.7 + 0.15 * rmw.clampedRmwCount), {
+        count: rmw.clampedRmwCount, fields: rmw.fields.slice(0, 6),
+      }));
+      c.verifications.push({ what: 'field-rmw', clamped: true, fields: rmw.fields.slice(0, 6) });
+    } else if (rmw.rmwCount > 0) {
+      c.evidence.push(evidence('fn-field-rmw', Math.min(1, 0.55 + 0.15 * rmw.rmwCount), {
+        count: rmw.rmwCount, fields: rmw.fields.slice(0, 6),
+      }));
+      c.verifications.push({ what: 'field-rmw', clamped: false, fields: rmw.fields.slice(0, 6) });
+    }
+  }
+
+  // Optional WASM per-function structural analysis when raw ARM64 bytes are available.
+  try {
+    const fnRawBytes = (() => {
+      if (model.rawBytes instanceof Uint8Array && model.rawBytes.length >= 4) return model.rawBytes;
+      if (o.codeBytes instanceof Uint8Array && range && o.region?.vmAddr != null) {
+        const base = BigInt(o.region.vmAddr);
+        const startOff = Number(BigInt(c.addr) - base);
+        const endOff = range.end != null ? Number(BigInt(range.end) - base) : startOff;
+        if (startOff >= 0 && endOff > startOff && endOff <= o.codeBytes.length) {
+          return o.codeBytes.subarray(startOff, endOff);
+        }
+      }
+      return null;
+    })();
+    if (fnRawBytes && fnRawBytes.length >= 4) {
+      const fnArch = o.architecture || o.arch || model.architecture || model.arch || program?.architecture || program?.arch || 'arm64';
+      if (expects.store) {
+        const wasmRmw = scanArm64RmwFields(fnRawBytes, { arch: fnArch });
+        if (!wasmRmw.unsupportedArch && wasmRmw.hits.length) {
+          const hasClamped = c.evidence.some((e) => e.code === 'fn-field-rmw-clamped');
+          const hasAnyRmw = hasClamped || c.evidence.some((e) => e.code === 'fn-field-rmw');
+          const wasmClamped = wasmRmw.hits.filter((h) => h.clamped);
+          if (wasmClamped.length && !hasClamped) {
+            const prevIdx = c.evidence.findIndex((e) => e.code === 'fn-field-rmw');
+            const clampedEv = evidence('fn-field-rmw-clamped', Math.min(1, 0.7 + 0.15 * wasmClamped.length), {
+              count: wasmClamped.length,
+              fields: wasmClamped.slice(0, 6).map((h) => ({
+                base: 'x' + h.baseReg, offset: h.disp, kind: h.opKind === 1 ? 'sub' : 'add', clamped: true,
+              })),
+            });
+            if (prevIdx >= 0) c.evidence[prevIdx] = clampedEv;
+            else c.evidence.push(clampedEv);
+            c.verifications.push({ what: 'field-rmw', clamped: true, engine: wasmRmw.engine, count: wasmClamped.length });
+          } else if (!hasAnyRmw) {
+            c.evidence.push(evidence('fn-field-rmw', Math.min(1, 0.55 + 0.15 * wasmRmw.hits.length), {
+              count: wasmRmw.hits.length,
+              fields: wasmRmw.hits.slice(0, 6).map((h) => ({
+                base: 'x' + h.baseReg, offset: h.disp, kind: h.opKind === 1 ? 'sub' : 'add', clamped: false,
+              })),
+            }));
+            c.verifications.push({ what: 'field-rmw', clamped: false, engine: wasmRmw.engine, count: wasmRmw.hits.length });
+          }
+        }
+      }
+      const beh = classifyArm64Behavior(fnRawBytes, { arch: fnArch });
+      if (beh.valid) c.wasmBehavior = beh;
+      const abi = inferArm64Abi(fnRawBytes, { arch: fnArch });
+      if (abi.valid) c.wasmAbi = abi;
+      const fp = fingerprintArm64Func(fnRawBytes, { arch: fnArch });
+      if (fp.valid) c.wasmFingerprint = fp;
+    }
+  } catch { /* non-fatal: keep disassembly-based verification intact */ }
+
+  if (expects.crypto || goal?.id === 'crypto') {
+    const cd = analyzeCryptoInsnDensity(insns);
+    if (cd.hwCryptoCount > 0) {
+      c.evidence.push(evidence('fn-crypto-hw-insn', Math.min(1, 0.75 + 0.1 * cd.hwCryptoCount), {
+        hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount,
+      }));
+      c.verifications.push({ what: 'crypto-insn', hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount });
+    } else if (cd.highBitwiseDensity || cd.hasXorLoop) {
+      c.evidence.push(evidence('fn-crypto-bitwise', Math.min(1, 0.55 + Math.max(cd.bitwiseRatio, cd.hasXorLoop ? 0.25 : 0)), {
+        bitwiseCount: cd.bitwiseCount, bitwiseRatio: Math.round(cd.bitwiseRatio * 100) / 100,
+        xorCount: cd.xorCount, rotateCount: cd.rotateCount, hasXorLoop: cd.hasXorLoop,
+      }));
+      c.verifications.push({ what: 'crypto-bitwise', bitwiseCount: cd.bitwiseCount, xorCount: cd.xorCount, rotateCount: cd.rotateCount, hasXorLoop: cd.hasXorLoop });
+    }
   }
 
   /*
@@ -1784,7 +2125,7 @@ export async function pinpoint(opts) {
   }
 
   let fn = null;
-  if (!cancelled() && o.ranked && o.ranked.length) {
+  if (!cancelled() && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size) || o.shapesByGoal)) {
     fn = await pinpointFunction(Object.assign({}, o, {
       // Offset-only function verification cannot establish a C++ owner.
       field: field.top && field.top.source !== 'cxx' ? {

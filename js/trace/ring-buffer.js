@@ -39,15 +39,42 @@ function binaryPayloadBytes(event, limit) {
   return total;
 }
 
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+)?.get;
+
+const SAFE_TYPED_ARRAY_CTORS = Object.assign(Object.create(null), {
+  Int8Array,
+  Uint8Array,
+  Uint8ClampedArray,
+  Int16Array,
+  Uint16Array,
+  Int32Array,
+  Uint32Array,
+  Float32Array,
+  Float64Array,
+  ...(typeof BigInt64Array === 'function' ? { BigInt64Array } : {}),
+  ...(typeof BigUint64Array === 'function' ? { BigUint64Array } : {}),
+});
+
+function cloneArrayBufferView(value) {
+  const copiedBuffer = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+  if (value instanceof DataView) return new DataView(copiedBuffer);
+  let tag = null;
+  try { tag = TYPED_ARRAY_TAG_GETTER?.call(value) ?? null; } catch { tag = null; }
+  const Ctor = tag && Object.hasOwn(SAFE_TYPED_ARRAY_CTORS, tag) ? SAFE_TYPED_ARRAY_CTORS[tag] : null;
+  if (!Ctor) throw new TypeError('trace typed array is not wire serializable');
+  return new Ctor(copiedBuffer);
+}
+
 function cloneTraceValue(value, state = null, depth = 0) {
   const s = state || { seen: new WeakMap(), nodes: 0 };
   if (value == null || typeof value !== 'object') return value;
   if (depth > 48 || ++s.nodes > 20000) throw new RangeError('trace event is too deeply nested');
   if (s.seen.has(value)) return s.seen.get(value);
   if (ArrayBuffer.isView(value)) {
-    const out = value instanceof DataView
-      ? new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
-      : new value.constructor(value);
+    const out = cloneArrayBufferView(value);
     s.seen.set(value, out);
     return out;
   }
@@ -57,9 +84,7 @@ function cloneTraceValue(value, state = null, depth = 0) {
     return out;
   }
   if (value instanceof Date) {
-    const out = new Date(value.getTime());
-    s.seen.set(value, out);
-    return out;
+    throw new TypeError('trace object must be plain data');
   }
   const out = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
   s.seen.set(value, out);
@@ -111,11 +136,23 @@ export class TraceRingBuffer {
     this.maxBytes = boundedInteger(options.maxBytes, 2 * 1024 * 1024, 4096, 32 * 1024 * 1024, 'maxBytes');
     this.sampleRate = boundedInteger(options.sampleRate, 1, 1, 100000, 'sampleRate');
     this.filter = typeof options.filter === 'function' ? options.filter : null;
-    this.events = [];
+    this._ring = new Array(this.maxEvents);
+    this._head = 0;
+    this._count = 0;
+    this._eventsCache = null;
     this.bytes = 0;
     this.seen = 0;
     this.dropped = 0;
     this.aggregates = new Map();
+  }
+  get events() {
+    if (this._eventsCache) return this._eventsCache;
+    const out = new Array(this._count);
+    for (let i = 0; i < this._count; i++) {
+      out[i] = this._ring[(this._head + i) % this.maxEvents];
+    }
+    this._eventsCache = out;
+    return out;
   }
   _increment(type) { this.aggregates.set(type, (this.aggregates.get(type) || 0) + 1); }
   _decrement(type) {
@@ -156,16 +193,41 @@ export class TraceRingBuffer {
         configurable: true,
       });
     }
-    this.events.push(entry); this.bytes += size; this._increment(aggregateKey);
-    while (this.events.length > this.maxEvents || this.bytes > this.maxBytes) {
-      const old = this.events.shift(); this.bytes -= old.bytes || 0; this._decrement(old.aggregateKey || 'event'); this.dropped++;
+    if (this._count === this.maxEvents) {
+      const old = this._ring[this._head];
+      this._ring[this._head] = undefined;
+      this._head = (this._head + 1) % this.maxEvents;
+      this._count--;
+      this.bytes -= old.bytes || 0;
+      this._decrement(old.aggregateKey || 'event');
+      this.dropped++;
     }
+    const tail = (this._head + this._count) % this.maxEvents;
+    this._ring[tail] = entry;
+    this._count++;
+    this.bytes += size;
+    this._increment(aggregateKey);
+    while (this._count > 0 && this.bytes > this.maxBytes) {
+      const old = this._ring[this._head];
+      this._ring[this._head] = undefined;
+      this._head = (this._head + 1) % this.maxEvents;
+      this._count--;
+      this.bytes -= old.bytes || 0;
+      this._decrement(old.aggregateKey || 'event');
+      this.dropped++;
+    }
+    this._eventsCache = null;
     return true;
   }
-  clear() { this.events = []; this.bytes = 0; this.seen = 0; this.dropped = 0; this.aggregates.clear(); }
+  clear() { this._ring = new Array(this.maxEvents); this._head = 0; this._count = 0; this._eventsCache = null; this.bytes = 0; this.seen = 0; this.dropped = 0; this.aggregates.clear(); }
   snapshot({ limit = this.maxEvents } = {}) {
     const requested = typeof limit === 'number' && Number.isFinite(limit) ? limit : this.maxEvents;
-    const n = Math.max(0, Math.min(this.events.length, Math.floor(requested)));
-    return { events:this.events.slice(this.events.length - n).map(publicEvent), seen:this.seen, dropped:this.dropped, bytes:this.bytes, aggregates:Object.fromEntries(this.aggregates) };
+    const n = Math.max(0, Math.min(this._count, Math.floor(requested)));
+    const startOffset = this._count - n;
+    const out = new Array(n);
+    for (let i = 0; i < n; i++) {
+      out[i] = publicEvent(this._ring[(this._head + startOffset + i) % this.maxEvents]);
+    }
+    return { events: out, seen:this.seen, dropped:this.dropped, bytes:this.bytes, aggregates:Object.fromEntries(this.aggregates) };
   }
 }

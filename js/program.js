@@ -336,7 +336,7 @@ export class ProgramIndex {
       const site = this.callFrom[k], caller = this.functionStartOf(site);
       const key = caller != null ? caller.toString() : 's' + site.toString();
       if (!seen.has(key)) {
-        if (seen.size >= limit) { queryLimited = true; break; }
+        if (seen.size >= limit) { queryLimited = true; if (seen.size === 0) break; continue; }
         seen.set(key, { addr: caller, site, count: 0 });
       }
       seen.get(key).count++;
@@ -350,7 +350,7 @@ export class ProgramIndex {
       const from = this.callFrom[i]; if (end != null && from >= end) break;
       const to = this.callTo[i], key = to.toString();
       if (!out.has(key)) {
-        if (out.size >= limit) { queryLimited = true; break; }
+        if (out.size >= limit) { queryLimited = true; if (out.size === 0) break; continue; }
         out.set(key, { addr: to, site: from, count: 0 });
       }
       out.get(key).count++;
@@ -406,7 +406,7 @@ export class ProgramIndex {
     return completeness(out, this.refsCapped, 'refs', queryLimited, this.queryIncompleteReason);
   }
   statsOf(start, end) {
-    const stats = { total: 0, covered: true, arith: 0, mul: 0, div: 0, logic: 0, shift: 0, farith: 0, fmul: 0, fconv: 0, simd: 0, load: 0, store: 0, cmp: 0, condbr: 0, branch: 0, call: 0, indcall: 0, ret: 0, csel: 0, atomic: 0, movimm: 0, adrp: 0, trap: 0, other: 0 };
+    const stats = { total: 0, covered: true, arith: 0, mul: 0, div: 0, logic: 0, shift: 0, farith: 0, fmul: 0, fconv: 0, simd: 0, load: 0, store: 0, cmp: 0, condbr: 0, branch: 0, call: 0, indcall: 0, ret: 0, csel: 0, atomic: 0, movimm: 0, adrp: 0, trap: 0, other: 0, numeric: 0, memory: 0 };
     if (this.unsupported) { stats.covered = false; stats.unsupported = true; stats.incompleteReason = 'unsupported-program-analysis'; return stats; }
     const lastAddr=end!=null?BigInt(end):BigInt(start)+4n;
     const spans=this.kindRegions.length?this.kindRegions:[{vmAddr:BigInt(this.vmAddr||0),words:this.words,kinds:this.kinds,kindsCovered:this.kindsCovered}];

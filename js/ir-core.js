@@ -871,9 +871,36 @@ function instructionsBySemanticNodeIdFor(projected) {
   return entry.byNodeId;
 }
 
+function compareReachingRegisterCandidate(left, right) {
+  if (left.recency.scope !== right.recency.scope) return right.recency.scope - left.recency.scope;
+  if (left.recency.depth !== right.recency.depth) return right.recency.depth - left.recency.depth;
+  if (left.recency.row !== right.recency.row) return right.recency.row - left.recency.row;
+  if (left.recency.nonPhi !== right.recency.nonPhi) return right.recency.nonPhi - left.recency.nonPhi;
+  if (left.recency.instIndex !== right.recency.instIndex) return right.recency.instIndex - left.recency.instIndex;
+  if (left.width !== right.width) return right.width - left.width;
+  return right.id - left.id;
+}
+
 function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded = null, observation = null) {
   const regValues = reg == null ? (projected.values ?? []) : (valuesByRegFor(projected).get(reg) ?? []);
   const bitsNum = Number(bits);
+  const observeAll = Boolean(observation && !observation.unavailable);
+  if (!observeAll) {
+    let best = null;
+    for (let i = 0; i < regValues.length; i += 1) {
+      const value = regValues[i];
+      if (value === excluded || value.reg !== reg || value.kind === LEGACY_VK.UNDEF) continue;
+      if (!valueDominatesLegacyInstruction(value, inst, projected)) continue;
+      const candidate = {
+        value,
+        recency: legacyDefinitionRecency(value, inst, projected),
+        width: bitsNum > 0 && value.bits === bitsNum ? 1 : 0,
+        id: value.id ?? 0,
+      };
+      if (best === null || compareReachingRegisterCandidate(candidate, best) < 0) best = candidate;
+    }
+    return best ? best.value : null;
+  }
   const decorated = [];
   for (let i = 0; i < regValues.length; i += 1) {
     const value = regValues[i];
@@ -886,21 +913,11 @@ function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded
       id: value.id ?? 0,
     });
   }
-  decorated.sort((left, right) => {
-    if (left.recency.scope !== right.recency.scope) return right.recency.scope - left.recency.scope;
-    if (left.recency.depth !== right.recency.depth) return right.recency.depth - left.recency.depth;
-    if (left.recency.row !== right.recency.row) return right.recency.row - left.recency.row;
-    if (left.recency.nonPhi !== right.recency.nonPhi) return right.recency.nonPhi - left.recency.nonPhi;
-    if (left.recency.instIndex !== right.recency.instIndex) return right.recency.instIndex - left.recency.instIndex;
-    if (left.width !== right.width) return right.width - left.width;
-    return right.id - left.id;
-  });
+  decorated.sort(compareReachingRegisterCandidate);
   const candidates = decorated.map((item) => item.value);
-  if (observation && !observation.unavailable) {
-    if (candidates.length > 512) observation.unavailable = true;
-    else observation.candidates = Object.freeze(candidates.map(value => Object.freeze({ value,
-      definition:value.def, reg:value.reg, kind:value.kind, bits:value.bits, constant:value.const })));
-  }
+  if (candidates.length > 512) observation.unavailable = true;
+  else observation.candidates = Object.freeze(candidates.map(value => Object.freeze({ value,
+    definition:value.def, reg:value.reg, kind:value.kind, bits:value.bits, constant:value.const })));
   return candidates[0] ?? null;
 }
 
@@ -1217,9 +1234,11 @@ function sealFacadePreservedStateHistory(projected, observer, constants, typedRe
   } catch { /* Actual restoration is retained; unavailable history cannot become complete. */ }
 }
 
-function exactLegacyConstant(value, active = new Set(), observation = null) {
+const EXACT_LEGACY_CONST_MAX_DEPTH = 128;
+
+function exactLegacyConstant(value, active = new Set(), observation = null, depth = 0) {
   observeExactConstantRead(value, observation);
-  if (!value || active.has(value.id)) return null;
+  if (!value || depth > EXACT_LEGACY_CONST_MAX_DEPTH || active.has(value.id)) return null;
   if (value.const != null) {
     try { return BigInt(value.const); } catch { return null; }
   }
@@ -1230,14 +1249,14 @@ function exactLegacyConstant(value, active = new Set(), observation = null) {
   if (def.op === LEGACY_OP.CONST || def.op === LEGACY_OP.ADDR) {
     try { result = BigInt(def.extra?.value ?? def.extra?.target); } catch { result = null; }
   } else if (def.op === LEGACY_OP.MOV && def.args?.length === 1) {
-    const inner = exactLegacyConstant(def.args[0]?.value, active, observation);
+    const inner = exactLegacyConstant(def.args[0]?.value, active, observation, depth + 1);
     if (inner != null) {
       if (def.sub === 'trunc' || def.sub === 'zext') result = BigInt.asUintN(Number(value.bits || 64), inner);
       else if (def.sub == null || def.sub === 'copy' || def.sub === 'bitcast') result = inner;
     }
   } else if (def.op === LEGACY_OP.BIN && def.args?.length >= 2) {
-    const left = exactLegacyConstant(def.args[0]?.value, active, observation);
-    const right = exactLegacyConstant(def.args[1]?.value, active, observation);
+    const left = exactLegacyConstant(def.args[0]?.value, active, observation, depth + 1);
+    const right = exactLegacyConstant(def.args[1]?.value, active, observation, depth + 1);
     if (left != null && right != null) {
       const bits = Number(value.bits || 64);
       if (def.sub === 'add') result = left + right;
@@ -1925,23 +1944,42 @@ function hasInterveningClobberingCall(projected, value, retInst, reg, adapter) {
     if (clobbersReg(inst)) return true;
   }
   if (defInRetBlock) return false;
-  const retDoms = projected.dominators?.[retInst.block];
-  if (!(retDoms instanceof Set)) return false;
-  const defBlock = def?.block ?? null;
-  for (const domBlockIdx of retDoms) {
-    if (domBlockIdx === retInst.block) continue;
-    if (defBlock != null && domBlockIdx !== defBlock) {
-      const domDoms = projected.dominators?.[domBlockIdx];
-      if (!(domDoms instanceof Set) || !domDoms.has(defBlock)) continue;
+  const blocks = Array.isArray(projected.blocks) ? projected.blocks : [];
+  const defBlock = def?.block ?? 0;
+  // Walk backwards from retInst.block predecessors to defBlock so any path
+  // (including non-dominating diamond arms) carrying a clobbering CALL is caught.
+  const canReachRet = new Set();
+  const backStack = [];
+  for (const pred of blocks[retInst.block]?.preds || []) {
+    if (!canReachRet.has(pred)) { canReachRet.add(pred); backStack.push(pred); }
+  }
+  while (backStack.length) {
+    const cur = backStack.pop();
+    if (cur === defBlock) continue;
+    for (const pred of blocks[cur]?.preds || []) {
+      if (!canReachRet.has(pred)) { canReachRet.add(pred); backStack.push(pred); }
     }
-    const domInsts = projected.blocks?.[domBlockIdx]?.insts;
+  }
+  const fromDef = new Set([defBlock]);
+  const fwdStack = [defBlock];
+  while (fwdStack.length) {
+    const cur = fwdStack.pop();
+    for (const succ of blocks[cur]?.succs || []) {
+      if (succ === retInst.block || fromDef.has(succ)) continue;
+      if (canReachRet.has(succ)) { fromDef.add(succ); fwdStack.push(succ); }
+    }
+  }
+  for (const blockIdx of fromDef) {
+    if (blockIdx === retInst.block) continue;
+    if (blockIdx !== defBlock && !canReachRet.has(blockIdx)) continue;
+    const domInsts = blocks[blockIdx]?.insts;
     if (!Array.isArray(domInsts)) continue;
-    const startIdx = (defBlock != null && domBlockIdx === defBlock && def?.op !== LEGACY_OP.PHI)
+    const startIdx = (blockIdx === defBlock && def && def.op !== LEGACY_OP.PHI)
       ? domInsts.indexOf(def)
       : -1;
     for (let i = 0; i < domInsts.length; i += 1) {
       const inst = domInsts[i];
-      if (domBlockIdx === defBlock && def && def.op !== LEGACY_OP.PHI) {
+      if (blockIdx === defBlock && def && def.op !== LEGACY_OP.PHI) {
         if (startIdx >= 0 ? i <= startIdx : Number(inst.row) <= Number(def.row)) continue;
       }
       if (clobbersReg(inst)) return true;

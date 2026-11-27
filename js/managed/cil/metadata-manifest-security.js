@@ -79,18 +79,33 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
     if (table === 0x27 && typeNamespace.length !== 0) fail('cil-exported-type-nested-namespace-invalid');
     return { flags, typeDefId, typeName, typeNamespace, implementation: { table, rid, token: cilMetadataToken(table, rid) }, isForwarder };
   });
+  const resolvedByRid = new Map();
   for (const row of exportedTypes) {
+    if (resolvedByRid.has(row.rid)) {
+      row.resolvedImplementation = { ...resolvedByRid.get(row.rid) };
+      continue;
+    }
     const seen = new Set([row.rid]);
+    const chain = [row];
     let implementation = row.implementation;
     while (implementation.table === 0x27) {
+      if (resolvedByRid.has(implementation.rid)) {
+        implementation = resolvedByRid.get(implementation.rid);
+        break;
+      }
       admission?.chargeOperations(1);
       if (seen.has(implementation.rid)) fail('cil-exported-type-implementation-cycle');
       seen.add(implementation.rid);
       const target = exportedTypes[implementation.rid - 1];
       if (!target) fail('cil-exported-type-implementation-invalid');
+      chain.push(target);
       implementation = target.implementation;
     }
-    row.resolvedImplementation = { ...implementation };
+    const resolved = { ...implementation };
+    for (const node of chain) {
+      resolvedByRid.set(node.rid, resolved);
+      node.resolvedImplementation = { ...resolved };
+    }
   }
 
   const parentSize = codedIndexSize(counts, [0x02, 0x06, 0x20], 2), parentTables = [0x02, 0x06, 0x20];

@@ -235,8 +235,11 @@ export function shapeOfStep(expr) {
       if (holdsResult(cur.a) && !holdsResult(cur.b)) { muls.push(cur.b); cur = cur.a; continue; }
       if (holdsResult(cur.b) && !holdsResult(cur.a)) { muls.push(cur.a); cur = cur.b; continue; }
     }
-    if ((cur.op === 'sar' || cur.op === 'shr') && holdsResult(cur.a) && constOf(cur.b) != null) {
-      divs.push({ k: 'const', v: 1n << constOf(cur.b) }); cur = cur.a; continue;
+    if ((cur.op === 'sar' || cur.op === 'shr') && holdsResult(cur.a)) {
+      const sh = constOf(cur.b);
+      if (sh != null && sh > 0n && sh < 64n) {
+        divs.push({ k: 'const', v: 1n << sh }); cur = cur.a; continue;
+      }
     }
     break;
   }
@@ -539,8 +542,15 @@ export function findSink(model, vg, acc) {
     writesByRow.get(w.row).push(w);
   }
 
+  const isTailCall = (insn) => {
+    if (!insn) return false;
+    if (insn.isTailCall || insn.tailCall) return true;
+    const call = callByRow.get(insn.row);
+    return Boolean(call && (call.isTailCall || call.tailCall || call.kind === 'tail-call'));
+  };
+
   const successors = (insn) => {
-    if (!insn || insn.isReturn) return [];
+    if (!insn || insn.isReturn || isTailCall(insn)) return [];
     const fallthrough = nextRow.get(insn.row);
     if (insn.isBranch && !insn.isCall) {
       const target = insn.branchTarget == null ? null : rowAtAddress.get(insn.branchTarget.toString());

@@ -1,0 +1,1321 @@
+[
+  {
+    "id": "macho-sample-arm64",
+    "ok": true,
+    "size": 32952,
+    "format": "macho",
+    "arch": "arm64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "4294967296",
+    "entrypoint": "4294968544",
+    "sectionCount": 6,
+    "sections": [
+      {
+        "name": "__text",
+        "address": "4294968384",
+        "size": "252",
+        "fileOffset": "1088",
+        "fileSize": "252",
+        "exec": true
+      },
+      {
+        "name": "__stubs",
+        "address": "4294968636",
+        "size": "12",
+        "fileOffset": "1340",
+        "fileSize": "12",
+        "exec": true
+      },
+      {
+        "name": "__cstring",
+        "address": "4294968648",
+        "size": "156",
+        "fileOffset": "1352",
+        "fileSize": "156",
+        "exec": true
+      },
+      {
+        "name": "__got",
+        "address": "4294983680",
+        "size": "8",
+        "fileOffset": "16384",
+        "fileSize": "8",
+        "exec": false
+      },
+      {
+        "name": "__objc_classlist",
+        "address": "4294983936",
+        "size": "8",
+        "fileOffset": "16640",
+        "fileSize": "8",
+        "exec": false
+      },
+      {
+        "name": "__objc_const",
+        "address": "4294983944",
+        "size": "1016",
+        "fileOffset": "16648",
+        "fileSize": "1016",
+        "exec": false
+      }
+    ],
+    "functionCount": 6,
+    "functions": [
+      {
+        "name": "_add",
+        "address": "4294968384",
+        "size": "8"
+      },
+      {
+        "name": "_square",
+        "address": "4294968392",
+        "size": "8"
+      },
+      {
+        "name": "_sum_to",
+        "address": "4294968400",
+        "size": "36"
+      },
+      {
+        "name": "_greet",
+        "address": "4294968436",
+        "size": "28"
+      },
+      {
+        "name": "_apply_damage",
+        "address": "4294968464",
+        "size": "80"
+      },
+      {
+        "name": "_main",
+        "address": "4294968544",
+        "size": "0"
+      }
+    ],
+    "stringCount": 18
+  },
+  {
+    "id": "arm64-semantic-holdout",
+    "ok": true,
+    "size": 5568,
+    "format": "elf",
+    "arch": "arm64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "0",
+    "entrypoint": "4096",
+    "sectionCount": 11,
+    "sections": [
+      {
+        "name": "section_0",
+        "address": "0",
+        "size": "0",
+        "fileOffset": "0",
+        "fileSize": "0",
+        "exec": false
+      },
+      {
+        "name": ".comment",
+        "address": "0",
+        "size": "26",
+        "fileOffset": "4416",
+        "fileSize": "26",
+        "exec": false
+      },
+      {
+        "name": ".symtab",
+        "address": "0",
+        "size": "216",
+        "fileOffset": "4448",
+        "fileSize": "216",
+        "exec": false
+      },
+      {
+        "name": ".shstrtab",
+        "address": "0",
+        "size": "85",
+        "fileOffset": "4664",
+        "fileSize": "85",
+        "exec": false
+      },
+      {
+        "name": ".strtab",
+        "address": "0",
+        "size": "112",
+        "fileOffset": "4749",
+        "fileSize": "112",
+        "exec": false
+      },
+      {
+        "name": ".text",
+        "address": "4096",
+        "size": "108",
+        "fileOffset": "4096",
+        "fileSize": "108",
+        "exec": true
+      },
+      {
+        "name": ".interp",
+        "address": "69740",
+        "size": "27",
+        "fileOffset": "4204",
+        "fileSize": "27",
+        "exec": false
+      },
+      {
+        "name": ".dynsym",
+        "address": "69768",
+        "size": "24",
+        "fileOffset": "4232",
+        "fileSize": "24",
+        "exec": false
+      },
+      {
+        "name": ".gnu.hash",
+        "address": "69792",
+        "size": "28",
+        "fileOffset": "4256",
+        "fileSize": "28",
+        "exec": false
+      },
+      {
+        "name": ".dynstr",
+        "address": "69820",
+        "size": "1",
+        "fileOffset": "4284",
+        "fileSize": "1",
+        "exec": false
+      },
+      {
+        "name": ".dynamic",
+        "address": "135360",
+        "size": "128",
+        "fileOffset": "4288",
+        "fileSize": "128",
+        "exec": false
+      }
+    ],
+    "functionCount": 6,
+    "functions": [
+      {
+        "name": "arithmetic_wrap",
+        "address": "4096",
+        "size": "12"
+      },
+      {
+        "name": "conditional_value",
+        "address": "4108",
+        "size": "24"
+      },
+      {
+        "name": "memory_forward",
+        "address": "4132",
+        "size": "24"
+      },
+      {
+        "name": "direct_call",
+        "address": "4156",
+        "size": "32"
+      },
+      {
+        "name": "add_pair",
+        "address": "4188",
+        "size": "8"
+      },
+      {
+        "name": "unsupported_pair_exclusive",
+        "address": "4196",
+        "size": "8"
+      }
+    ],
+    "stringCount": 30
+  },
+  {
+    "id": "arm64-fpsimd-holdout",
+    "ok": true,
+    "size": 5520,
+    "format": "elf",
+    "arch": "arm64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "0",
+    "entrypoint": "4096",
+    "sectionCount": 11,
+    "sections": [
+      {
+        "name": "section_0",
+        "address": "0",
+        "size": "0",
+        "fileOffset": "0",
+        "fileSize": "0",
+        "exec": false
+      },
+      {
+        "name": ".comment",
+        "address": "0",
+        "size": "26",
+        "fileOffset": "4376",
+        "fileSize": "26",
+        "exec": false
+      },
+      {
+        "name": ".symtab",
+        "address": "0",
+        "size": "216",
+        "fileOffset": "4408",
+        "fileSize": "216",
+        "exec": false
+      },
+      {
+        "name": ".shstrtab",
+        "address": "0",
+        "size": "85",
+        "fileOffset": "4624",
+        "fileSize": "85",
+        "exec": false
+      },
+      {
+        "name": ".strtab",
+        "address": "0",
+        "size": "107",
+        "fileOffset": "4709",
+        "fileSize": "107",
+        "exec": false
+      },
+      {
+        "name": ".text",
+        "address": "4096",
+        "size": "68",
+        "fileOffset": "4096",
+        "fileSize": "68",
+        "exec": true
+      },
+      {
+        "name": ".interp",
+        "address": "69700",
+        "size": "27",
+        "fileOffset": "4164",
+        "fileSize": "27",
+        "exec": false
+      },
+      {
+        "name": ".dynsym",
+        "address": "69728",
+        "size": "24",
+        "fileOffset": "4192",
+        "fileSize": "24",
+        "exec": false
+      },
+      {
+        "name": ".gnu.hash",
+        "address": "69752",
+        "size": "28",
+        "fileOffset": "4216",
+        "fileSize": "28",
+        "exec": false
+      },
+      {
+        "name": ".dynstr",
+        "address": "69780",
+        "size": "1",
+        "fileOffset": "4244",
+        "fileSize": "1",
+        "exec": false
+      },
+      {
+        "name": ".dynamic",
+        "address": "135320",
+        "size": "128",
+        "fileOffset": "4248",
+        "fileSize": "128",
+        "exec": false
+      }
+    ],
+    "functionCount": 6,
+    "functions": [
+      {
+        "name": "fp_scalar_arith",
+        "address": "4096",
+        "size": "8"
+      },
+      {
+        "name": "fp_compare_branch",
+        "address": "4104",
+        "size": "24"
+      },
+      {
+        "name": "simd_vector_add",
+        "address": "4128",
+        "size": "8"
+      },
+      {
+        "name": "acquire_load",
+        "address": "4136",
+        "size": "8"
+      },
+      {
+        "name": "release_store",
+        "address": "4144",
+        "size": "8"
+      },
+      {
+        "name": "exclusive_pair",
+        "address": "4152",
+        "size": "12"
+      }
+    ],
+    "stringCount": 30
+  },
+  {
+    "id": "arm64-threaded-int",
+    "ok": true,
+    "size": 5464,
+    "format": "elf",
+    "arch": "arm64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "0",
+    "entrypoint": "4096",
+    "sectionCount": 12,
+    "sections": [
+      {
+        "name": "section_0",
+        "address": "0",
+        "size": "0",
+        "fileOffset": "0",
+        "fileSize": "0",
+        "exec": false
+      },
+      {
+        "name": ".comment",
+        "address": "0",
+        "size": "108",
+        "fileOffset": "4336",
+        "fileSize": "108",
+        "exec": false
+      },
+      {
+        "name": ".symtab",
+        "address": "0",
+        "size": "120",
+        "fileOffset": "4448",
+        "fileSize": "120",
+        "exec": false
+      },
+      {
+        "name": ".shstrtab",
+        "address": "0",
+        "size": "100",
+        "fileOffset": "4568",
+        "fileSize": "100",
+        "exec": false
+      },
+      {
+        "name": ".strtab",
+        "address": "0",
+        "size": "26",
+        "fileOffset": "4668",
+        "fileSize": "26",
+        "exec": false
+      },
+      {
+        "name": ".text",
+        "address": "4096",
+        "size": "24",
+        "fileOffset": "4096",
+        "fileSize": "24",
+        "exec": true
+      },
+      {
+        "name": ".interp",
+        "address": "69656",
+        "size": "27",
+        "fileOffset": "4120",
+        "fileSize": "27",
+        "exec": false
+      },
+      {
+        "name": ".dynsym",
+        "address": "69688",
+        "size": "24",
+        "fileOffset": "4152",
+        "fileSize": "24",
+        "exec": false
+      },
+      {
+        "name": ".gnu.hash",
+        "address": "69712",
+        "size": "28",
+        "fileOffset": "4176",
+        "fileSize": "28",
+        "exec": false
+      },
+      {
+        "name": ".dynstr",
+        "address": "69740",
+        "size": "1",
+        "fileOffset": "4204",
+        "fileSize": "1",
+        "exec": false
+      },
+      {
+        "name": ".dynamic",
+        "address": "135280",
+        "size": "128",
+        "fileOffset": "4208",
+        "fileSize": "128",
+        "exec": false
+      },
+      {
+        "name": ".relro_padding",
+        "address": "135408",
+        "size": "3856",
+        "fileOffset": "4336",
+        "fileSize": "0",
+        "exec": false
+      }
+    ],
+    "functionCount": 2,
+    "functions": [
+      {
+        "name": "entry",
+        "address": "4096",
+        "size": "16"
+      },
+      {
+        "name": "callee",
+        "address": "4112",
+        "size": "8"
+      }
+    ],
+    "stringCount": 26
+  },
+  {
+    "id": "arm64-threaded-mem",
+    "ok": true,
+    "size": 4640,
+    "format": "elf",
+    "arch": "arm64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "0",
+    "entrypoint": "4096",
+    "sectionCount": 5,
+    "sections": [
+      {
+        "name": "section_0",
+        "address": "0",
+        "size": "0",
+        "fileOffset": "0",
+        "fileSize": "0",
+        "exec": false
+      },
+      {
+        "name": ".symtab",
+        "address": "0",
+        "size": "96",
+        "fileOffset": "4160",
+        "fileSize": "96",
+        "exec": false
+      },
+      {
+        "name": ".strtab",
+        "address": "0",
+        "size": "24",
+        "fileOffset": "4256",
+        "fileSize": "24",
+        "exec": false
+      },
+      {
+        "name": ".shstrtab",
+        "address": "0",
+        "size": "33",
+        "fileOffset": "4280",
+        "fileSize": "33",
+        "exec": false
+      },
+      {
+        "name": ".text",
+        "address": "4096",
+        "size": "64",
+        "fileOffset": "4096",
+        "fileSize": "64",
+        "exec": true
+      }
+    ],
+    "functionCount": 3,
+    "functions": [
+      {
+        "name": "entry",
+        "address": "4096",
+        "size": "44"
+      },
+      {
+        "name": "callee",
+        "address": "4140",
+        "size": "8"
+      },
+      {
+        "name": "copy_word",
+        "address": "4148",
+        "size": "12"
+      }
+    ],
+    "stringCount": 11
+  },
+  {
+    "id": "arm64-dispatch-table",
+    "ok": true,
+    "size": 4720,
+    "format": "elf",
+    "arch": "arm64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "0",
+    "entrypoint": "4096",
+    "sectionCount": 5,
+    "sections": [
+      {
+        "name": "section_0",
+        "address": "0",
+        "size": "0",
+        "fileOffset": "0",
+        "fileSize": "0",
+        "exec": false
+      },
+      {
+        "name": ".symtab",
+        "address": "0",
+        "size": "96",
+        "fileOffset": "4240",
+        "fileSize": "96",
+        "exec": false
+      },
+      {
+        "name": ".strtab",
+        "address": "0",
+        "size": "24",
+        "fileOffset": "4336",
+        "fileSize": "24",
+        "exec": false
+      },
+      {
+        "name": ".shstrtab",
+        "address": "0",
+        "size": "33",
+        "fileOffset": "4360",
+        "fileSize": "33",
+        "exec": false
+      },
+      {
+        "name": ".text",
+        "address": "4096",
+        "size": "144",
+        "fileOffset": "4096",
+        "fileSize": "144",
+        "exec": true
+      }
+    ],
+    "functionCount": 3,
+    "functions": [
+      {
+        "name": "entry",
+        "address": "4096",
+        "size": "36"
+      },
+      {
+        "name": "callee",
+        "address": "4144",
+        "size": "8"
+      },
+      {
+        "name": "copy_word",
+        "address": "4152",
+        "size": "8"
+      }
+    ],
+    "stringCount": 11
+  },
+  {
+    "id": "arm64-gnu-b-key-cfi",
+    "ok": true,
+    "size": 1304,
+    "format": "elf",
+    "arch": "arm64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "4194304",
+    "entrypoint": "4194480",
+    "sectionCount": 7,
+    "sections": [
+      {
+        "name": "section_0",
+        "address": "0",
+        "size": "0",
+        "fileOffset": "0",
+        "fileSize": "0",
+        "exec": false
+      },
+      {
+        "name": ".symtab",
+        "address": "0",
+        "size": "432",
+        "fileOffset": "264",
+        "fileSize": "432",
+        "exec": false
+      },
+      {
+        "name": ".strtab",
+        "address": "0",
+        "size": "100",
+        "fileOffset": "696",
+        "fileSize": "100",
+        "exec": false
+      },
+      {
+        "name": ".shstrtab",
+        "address": "0",
+        "size": "57",
+        "fileOffset": "796",
+        "fileSize": "57",
+        "exec": false
+      },
+      {
+        "name": ".text",
+        "address": "4194480",
+        "size": "20",
+        "fileOffset": "176",
+        "fileSize": "20",
+        "exec": true
+      },
+      {
+        "name": ".eh_frame_hdr",
+        "address": "4194500",
+        "size": "20",
+        "fileOffset": "196",
+        "fileSize": "20",
+        "exec": false
+      },
+      {
+        "name": ".eh_frame",
+        "address": "4194520",
+        "size": "48",
+        "fileOffset": "216",
+        "fileSize": "48",
+        "exec": false
+      }
+    ],
+    "functionCount": 1,
+    "functions": [
+      {
+        "name": "_bkey_fn",
+        "address": "4194480",
+        "size": "20"
+      }
+    ],
+    "stringCount": 31
+  },
+  {
+    "id": "arm64_32-objc",
+    "ok": true,
+    "size": 3972,
+    "format": "macho",
+    "arch": "arm64_32",
+    "bits": 32,
+    "endian": "little",
+    "imageBase": "0",
+    "entrypoint": null,
+    "sectionCount": 13,
+    "sections": [
+      {
+        "name": "__text",
+        "address": "0",
+        "size": "168",
+        "fileOffset": "1096",
+        "fileSize": "168",
+        "exec": true
+      },
+      {
+        "name": "__objc_ivar",
+        "address": "168",
+        "size": "4",
+        "fileOffset": "1264",
+        "fileSize": "4",
+        "exec": true
+      },
+      {
+        "name": "__objc_data",
+        "address": "172",
+        "size": "40",
+        "fileOffset": "1268",
+        "fileSize": "40",
+        "exec": true
+      },
+      {
+        "name": "__objc_classname",
+        "address": "212",
+        "size": "14",
+        "fileOffset": "1308",
+        "fileSize": "14",
+        "exec": true
+      },
+      {
+        "name": "__objc_const",
+        "address": "228",
+        "size": "288",
+        "fileOffset": "1324",
+        "fileSize": "288",
+        "exec": true
+      },
+      {
+        "name": "__objc_methname",
+        "address": "516",
+        "size": "59",
+        "fileOffset": "1612",
+        "fileSize": "59",
+        "exec": true
+      },
+      {
+        "name": "__objc_methtype",
+        "address": "575",
+        "size": "19",
+        "fileOffset": "1671",
+        "fileSize": "19",
+        "exec": true
+      },
+      {
+        "name": "__data",
+        "address": "596",
+        "size": "52",
+        "fileOffset": "1692",
+        "fileSize": "52",
+        "exec": true
+      },
+      {
+        "name": "__objc_protolist",
+        "address": "648",
+        "size": "4",
+        "fileOffset": "1744",
+        "fileSize": "4",
+        "exec": true
+      },
+      {
+        "name": "__objc_classlist",
+        "address": "652",
+        "size": "4",
+        "fileOffset": "1748",
+        "fileSize": "4",
+        "exec": true
+      },
+      {
+        "name": "__objc_catlist",
+        "address": "656",
+        "size": "4",
+        "fileOffset": "1752",
+        "fileSize": "4",
+        "exec": true
+      },
+      {
+        "name": "__objc_imageinfo",
+        "address": "660",
+        "size": "8",
+        "fileOffset": "1756",
+        "fileSize": "8",
+        "exec": true
+      },
+      {
+        "name": "__compact_unwind",
+        "address": "668",
+        "size": "80",
+        "fileOffset": "1764",
+        "fileSize": "80",
+        "exec": true
+      }
+    ],
+    "functionCount": 4,
+    "functions": [
+      {
+        "name": "ltmp0",
+        "address": "0",
+        "size": "0"
+      },
+      {
+        "name": "-[Foo count]",
+        "address": "32",
+        "size": "0"
+      },
+      {
+        "name": "-[Foo setCount:]",
+        "address": "80",
+        "size": "0"
+      },
+      {
+        "name": "-[Foo(Cat) p]",
+        "address": "136",
+        "size": "0"
+      }
+    ],
+    "stringCount": 0
+  },
+  {
+    "id": "x86_64-sysv-elf",
+    "ok": true,
+    "size": 13576,
+    "format": "elf",
+    "arch": "x86_64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "0",
+    "entrypoint": "4198400",
+    "sectionCount": 13,
+    "sections": [
+      {
+        "name": "section_0",
+        "address": "0",
+        "size": "0",
+        "fileOffset": "0",
+        "fileSize": "0",
+        "exec": false
+      },
+      {
+        "name": ".comment",
+        "address": "0",
+        "size": "39",
+        "fileOffset": "12288",
+        "fileSize": "39",
+        "exec": false
+      },
+      {
+        "name": ".symtab",
+        "address": "0",
+        "size": "216",
+        "fileOffset": "12328",
+        "fileSize": "216",
+        "exec": false
+      },
+      {
+        "name": ".strtab",
+        "address": "0",
+        "size": "86",
+        "fileOffset": "12544",
+        "fileSize": "86",
+        "exec": false
+      },
+      {
+        "name": ".shstrtab",
+        "address": "0",
+        "size": "109",
+        "fileOffset": "12630",
+        "fileSize": "109",
+        "exec": false
+      },
+      {
+        "name": ".interp",
+        "address": "624",
+        "size": "28",
+        "fileOffset": "624",
+        "fileSize": "28",
+        "exec": false
+      },
+      {
+        "name": ".gnu.hash",
+        "address": "656",
+        "size": "28",
+        "fileOffset": "656",
+        "fileSize": "28",
+        "exec": false
+      },
+      {
+        "name": ".dynsym",
+        "address": "688",
+        "size": "24",
+        "fileOffset": "688",
+        "fileSize": "24",
+        "exec": false
+      },
+      {
+        "name": ".dynstr",
+        "address": "712",
+        "size": "1",
+        "fileOffset": "712",
+        "fileSize": "1",
+        "exec": false
+      },
+      {
+        "name": ".text",
+        "address": "4198400",
+        "size": "77",
+        "fileOffset": "4096",
+        "fileSize": "77",
+        "exec": true
+      },
+      {
+        "name": ".eh_frame_hdr",
+        "address": "4202496",
+        "size": "20",
+        "fileOffset": "8192",
+        "fileSize": "20",
+        "exec": false
+      },
+      {
+        "name": ".eh_frame",
+        "address": "4202520",
+        "size": "56",
+        "fileOffset": "8216",
+        "fileSize": "56",
+        "exec": false
+      },
+      {
+        "name": ".dynamic",
+        "address": "4210480",
+        "size": "208",
+        "fileOffset": "12080",
+        "fileSize": "208",
+        "exec": false
+      }
+    ],
+    "functionCount": 1,
+    "functions": [
+      {
+        "name": "p5_vertical_seed",
+        "address": "4198400",
+        "size": "77"
+      }
+    ],
+    "stringCount": 35
+  },
+  {
+    "id": "x86_64-pe-exe",
+    "ok": true,
+    "size": 2560,
+    "format": "pe",
+    "arch": "x86_64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "5368709120",
+    "entrypoint": "5368713216",
+    "sectionCount": 3,
+    "sections": [
+      {
+        "name": ".text",
+        "address": "5368713216",
+        "size": "84",
+        "fileOffset": "1024",
+        "fileSize": "84",
+        "exec": true
+      },
+      {
+        "name": ".rdata",
+        "address": "5368717312",
+        "size": "40",
+        "fileOffset": "1536",
+        "fileSize": "40",
+        "exec": false
+      },
+      {
+        "name": ".pdata",
+        "address": "5368721408",
+        "size": "12",
+        "fileOffset": "2048",
+        "fileSize": "12",
+        "exec": false
+      }
+    ],
+    "functionCount": 1,
+    "functions": [
+      {
+        "name": null,
+        "address": "5368713216",
+        "size": "84"
+      }
+    ],
+    "stringCount": 13
+  },
+  {
+    "id": "x86_64-macho-o",
+    "ok": true,
+    "size": 568,
+    "format": "macho",
+    "arch": "x86_64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "0",
+    "entrypoint": null,
+    "sectionCount": 2,
+    "sections": [
+      {
+        "name": "__text",
+        "address": "0",
+        "size": "77",
+        "fileOffset": "384",
+        "fileSize": "77",
+        "exec": true
+      },
+      {
+        "name": "__eh_frame",
+        "address": "80",
+        "size": "64",
+        "fileOffset": "464",
+        "fileSize": "64",
+        "exec": true
+      }
+    ],
+    "functionCount": 1,
+    "functions": [
+      {
+        "name": "_p5_vertical_seed",
+        "address": "0",
+        "size": "0"
+      }
+    ],
+    "stringCount": 0
+  },
+  {
+    "id": "x86_64-stripped-elf",
+    "ok": true,
+    "size": 2880,
+    "format": "elf",
+    "arch": "arm64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "2097152",
+    "entrypoint": "2163360",
+    "sectionCount": 11,
+    "sections": [
+      {
+        "name": "section_0",
+        "address": "0",
+        "size": "0",
+        "fileOffset": "0",
+        "fileSize": "0",
+        "exec": false
+      },
+      {
+        "name": ".comment",
+        "address": "0",
+        "size": "66",
+        "fileOffset": "856",
+        "fileSize": "66",
+        "exec": false
+      },
+      {
+        "name": ".symtab",
+        "address": "0",
+        "size": "768",
+        "fileOffset": "928",
+        "fileSize": "768",
+        "exec": false
+      },
+      {
+        "name": ".shstrtab",
+        "address": "0",
+        "size": "103",
+        "fileOffset": "1696",
+        "fileSize": "103",
+        "exec": false
+      },
+      {
+        "name": ".strtab",
+        "address": "0",
+        "size": "352",
+        "fileOffset": "1799",
+        "fileSize": "352",
+        "exec": false
+      },
+      {
+        "name": ".gnu_debuglink",
+        "address": "0",
+        "size": "20",
+        "fileOffset": "2152",
+        "fileSize": "20",
+        "exec": false
+      },
+      {
+        "name": ".note.gnu.build-id",
+        "address": "2097664",
+        "size": "36",
+        "fileOffset": "512",
+        "fileSize": "36",
+        "exec": false
+      },
+      {
+        "name": ".rodata",
+        "address": "2097704",
+        "size": "64",
+        "fileOffset": "552",
+        "fileSize": "64",
+        "exec": false
+      },
+      {
+        "name": ".text",
+        "address": "2163304",
+        "size": "124",
+        "fileOffset": "616",
+        "fileSize": "124",
+        "exec": true
+      },
+      {
+        "name": ".data.rel.ro",
+        "address": "2228968",
+        "size": "88",
+        "fileOffset": "744",
+        "fileSize": "88",
+        "exec": false
+      },
+      {
+        "name": ".data",
+        "address": "2294592",
+        "size": "24",
+        "fileOffset": "832",
+        "fileSize": "24",
+        "exec": false
+      }
+    ],
+    "functionCount": 9,
+    "functions": [
+      {
+        "name": "atexit",
+        "address": "2163304",
+        "size": "8"
+      },
+      {
+        "name": "read_fields",
+        "address": "2163312",
+        "size": "12"
+      },
+      {
+        "name": "virtual_call",
+        "address": "2163324",
+        "size": "32"
+      },
+      {
+        "name": "__cxa_pure_virtual",
+        "address": "2163356",
+        "size": "4"
+      },
+      {
+        "name": "_start",
+        "address": "2163360",
+        "size": "4"
+      },
+      {
+        "name": "_ZN4BaseD2Ev",
+        "address": "2163364",
+        "size": "4"
+      },
+      {
+        "name": "_ZNK5Thing6updateEi",
+        "address": "2163368",
+        "size": "16"
+      },
+      {
+        "name": "_ZN5ThingD0Ev",
+        "address": "2163384",
+        "size": "4"
+      },
+      {
+        "name": "_ZNK5Thing8interactEP4Base",
+        "address": "2163388",
+        "size": "40"
+      }
+    ],
+    "stringCount": 79
+  },
+  {
+    "id": "x86-pe-exe",
+    "ok": true,
+    "size": 2048,
+    "format": "pe",
+    "arch": "x86",
+    "bits": 32,
+    "endian": "little",
+    "imageBase": "4194304",
+    "entrypoint": "4198400",
+    "sectionCount": 2,
+    "sections": [
+      {
+        "name": ".text",
+        "address": "4198400",
+        "size": "72",
+        "fileOffset": "1024",
+        "fileSize": "72",
+        "exec": true
+      },
+      {
+        "name": ".rdata",
+        "address": "4202496",
+        "size": "28",
+        "fileOffset": "1536",
+        "fileSize": "28",
+        "exec": false
+      }
+    ],
+    "functionCount": 1,
+    "functions": [
+      {
+        "name": null,
+        "address": "4198400",
+        "size": "0"
+      }
+    ],
+    "stringCount": 8
+  },
+  {
+    "id": "corrupt-empty",
+    "ok": false,
+    "size": 0,
+    "errorName": "Error",
+    "errorMessage": "対応していない実行ファイル形式です（Mach-O / ELF / PE を判定できませんでした）。"
+  },
+  {
+    "id": "corrupt-bad-magic",
+    "ok": false,
+    "size": 64,
+    "errorName": "Error",
+    "errorMessage": "対応していない実行ファイル形式です（Mach-O / ELF / PE を判定できませんでした）。"
+  },
+  {
+    "id": "corrupt-truncated-elf",
+    "ok": false,
+    "size": 32,
+    "errorName": "BinaryReadError",
+    "errorMessage": "read outside file (64 bytes) @ 0x0"
+  },
+  {
+    "id": "corrupt-truncated-macho",
+    "ok": false,
+    "size": 24,
+    "errorName": "BinaryReadError",
+    "errorMessage": "read outside file (4 bytes) @ 0x18"
+  },
+  {
+    "id": "corrupt-truncated-pe",
+    "ok": false,
+    "size": 96,
+    "errorName": "Error",
+    "errorMessage": "対応していない実行ファイル形式です（Mach-O / ELF / PE を判定できませんでした）。"
+  },
+  {
+    "id": "corrupt-mutant-elf-shoff",
+    "ok": true,
+    "size": 5568,
+    "format": "elf",
+    "arch": "arm64",
+    "bits": 64,
+    "endian": "little",
+    "imageBase": "0",
+    "entrypoint": "4096",
+    "sectionCount": 0,
+    "sections": [],
+    "functionCount": 1,
+    "functions": [
+      {
+        "name": null,
+        "address": "4096",
+        "size": "0"
+      }
+    ],
+    "stringCount": 7
+  }
+]

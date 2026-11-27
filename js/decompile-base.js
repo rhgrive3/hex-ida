@@ -100,6 +100,9 @@ function finalize(result, model, opts) {
         completeness:'incomplete', reasons:Object.freeze(['switch-map-unavailable']) });
     }
   }
+  if (closed && typeof closed === 'object' && closed.objcSyntax == null) {
+    closed.objcSyntax = opts?.objcSyntax === 'c' ? 'c' : 'objc';
+  }
   return closed;
 }
 
@@ -445,8 +448,13 @@ function ensureLegacyLabel(lines, row, label, address) {
       && (functionIndent == null || (l.indent ?? 0) === functionIndent));
   }
   if (at < 0) at = Math.min(floor, lines.length);
-  const indent = Math.max(1, lines[at]?.indent || 1);
-  lines.splice(at, 0, { kind: 'label', indent, text: `${label}:`, row, addr: address, note: null });
+  const targetLine = lines[at];
+  const indent = Math.max(1, targetLine?.indent || 1);
+  const insertItems = [{ kind: 'label', indent, text: `${label}:`, row, addr: address, note: null }];
+  if (targetLine?.kind === 'ctrl' && targetLine?.text === '}') {
+    insertItems.push({ kind: 'stmt', indent: indent + 1, text: ';', row, addr: address, note: null });
+  }
+  lines.splice(at, 0, ...insertItems);
 }
 
 export function ensureLegacyLabelForTesting(lines, row, label, address = null) {
@@ -545,6 +553,44 @@ function cloneLegacyResult(legacy) {
   };
 }
 
+function hasBalancedBraces(lines) {
+  const src = (lines || []).map((l) => String(l?.text || '')).join('\n');
+  let depth = 0;
+  let inStr = null;
+  let inLineComment = false;
+  let inBlockComment = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    const next = src[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') { inBlockComment = false; i++; }
+      continue;
+    }
+    if (inStr) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+    if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+    if (ch === '"' || ch === "'") { inStr = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth < 0) return false;
+    }
+  }
+  return depth === 0;
+}
+
+export function hasBalancedBracesForTesting(lines) {
+  return hasBalancedBraces(lines);
+}
+
 function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, classification, getLegacy) {
   if (!classification.components.length || !classification.allException) return null;
   const closeCheck = semantic.lines?.findLastIndex?.((l) => l.kind === 'ctrl' && l.text === '}') ?? -1;
@@ -561,10 +607,12 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
     for (const block of blocks) {
       const rows = componentRows(semantic.ir, [block.index]);
       let rendered = (legacy.lines || []).filter((l) =>
-        l.kind !== 'sig' && !(l.kind === 'ctrl' && (l.text === '{' || l.text === '}')) && l.kind !== 'label' && lineBelongsToRows(l, rows, opts));
-      if (!rendered.length && block.endRow >= block.startRow) {
+        l.kind !== 'sig' && !(l.kind === 'ctrl' && (l.indent ?? 0) === 0 && (l.text === '{' || l.text === '}')) && l.kind !== 'label' && lineBelongsToRows(l, rows, opts));
+      if ((!rendered.length || !hasBalancedBraces(rendered)) && block.endRow >= block.startRow) {
         rendered = exactExceptionAssemblyLines(model, block);
         if (!rendered.length) return null; // never silently omit an EH block
+      } else if (rendered.length && !hasBalancedBraces(rendered)) {
+        return null;
       }
       regionLines.push({
         kind: 'label', indent: 1,
@@ -572,21 +620,32 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
         row: block.startRow, addr: blockAddress(semantic, semanticModel, opts, block.index), note: null,
       });
       for (const l of rendered) regionLines.push({ ...l, indent: Math.max(2, l.indent || 1) });
+      if (rendered.every((l) => l.kind === 'comment' || !String(l.text || '').trim())) {
+        regionLines.push({ kind: 'stmt', indent: 2, text: ';', row: block.startRow, addr: blockAddress(semantic, semanticModel, opts, block.index), note: null });
+      }
     }
   }
 
   // A landing pad may branch into the ordinary ARC cleanup tail. Those targets
   // need an explicit label in the semantic body so every preserved goto lands.
+  // Snapshot semantic.lines so a later failure rolls back any inserted labels.
+  const savedLines = semantic.lines.slice();
   for (const bi of detachedBlocks) {
     for (const succ of semantic.ir.blocks[bi]?.succ || []) {
       if (!detachedBlocks.has(succ) && classification.reachable.has(succ)) {
-        if (!ensureSemanticLabel(semantic, semanticModel, opts, succ)) return null;
+        if (!ensureSemanticLabel(semantic, semanticModel, opts, succ)) {
+          semantic.lines = savedLines;
+          return null;
+        }
       }
     }
   }
 
   const close = semantic.lines?.findLastIndex?.((l) => l.kind === 'ctrl' && l.text === '}') ?? -1;
-  if (close < 0) return null;
+  if (close < 0) {
+    semantic.lines = savedLines;
+    return null;
+  }
   semantic.lines.splice(close, 0,
     { kind: 'comment', indent: 1, text: '/* Exception landing pads — entered only by runtime unwinding. */', row: null, addr: null, note: null },
     ...regionLines,
@@ -717,6 +776,7 @@ export function decompile(model, opts = {}) {
       return finalize(result, semanticModel, semanticOpts);
     }
   } catch (error) {
+    if (isAbortError(error)) throw error;
     return finalize(augmentLegacy(
       getLegacy({ consume: true }),
       `Semantic IR decompiler fallback: ${error && error.message ? error.message : 'unknown error'}`,

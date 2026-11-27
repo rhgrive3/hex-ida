@@ -134,8 +134,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
       evidence:'unsupported-microsoft-vectorcall-variadic',
     };
   }
-  const parameters = parameterList(prototype);
-  if (!parameters) {
+  const conservativeUnknownArguments = (extra = {}) => {
     const srcs = [
       ...INTEGER_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:64, possible:true, mustUse:false, exact:false, certainty:'unknown' })),
       ...Array.from({ length:VECTOR_REGISTER_COUNT }, (_value, index) => ({ t:'reg', reg:`xmm${index}`, bits:128, possible:true, mustUse:false, exact:false, certainty:'unknown', wideVectorPossible:true })),
@@ -145,11 +144,21 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
       arguments:srcs.map((source) => ({ location:'register', reg:source.reg, bits:source.bits, possible:true, mustUse:false, exact:false, certainty:'unknown' })),
       stackArguments:[], stackArgsUnknown:true, stackArgsMayContainPointers:true,
       partial:true, evidence:'conservative-microsoft-vectorcall',
+      ...extra,
     };
-  }
+  };
+  const parameters = parameterList(prototype);
+  if (!parameters) return conservativeUnknownArguments();
 
   const returnResult = prototype ? vectorcallReturn(prototype, options) : null;
   const indirectResult = returnResult?.indirect === true || prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
+  if (!indirectResult && returnResult?.hiddenResultPossible === true) {
+    return conservativeUnknownArguments({
+      reason:returnResult.reason,
+      hiddenResultPossible:true,
+      returnClassification:'partial-hidden-result-possible',
+    });
+  }
   const positionBias = indirectResult ? 1 : 0;
 
   const srcs = [];
@@ -618,8 +627,8 @@ export const MICROSOFT_VECTORCALL_ABI = new ABIPlugin({
     // Register identity is schema data: never stringify arrays/objects into
     // an argument-register token (#5718).
     const id = typeof reg === 'string' ? reg.toLowerCase() : '';
-    const vectorIndex = VECTOR_ARGUMENT_REGISTERS.indexOf(id);
-    if (vectorIndex >= 0) return { kind:'argument', reg:id, index:vectorIndex, abiClass:'fp-or-vector' };
+    const vectorMatch = /^(xmm|ymm)([0-5])$/.exec(id);
+    if (vectorMatch) return { kind:'argument', reg:id, index:Number(vectorMatch[2]), abiClass:'fp-or-vector' };
     if (typeof reg !== 'string') return { kind:'incoming-register-state', reg:id };
     return MICROSOFT_X64_ABI.classifyEntryRegister(reg);
   },

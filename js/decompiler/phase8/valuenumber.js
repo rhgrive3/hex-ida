@@ -72,11 +72,25 @@ const SCALAR_OPERATORS = Object.freeze({
   bfx: new Set([null, 'bfx', 'sbfx', 'ubfx', 'extract']),
   bfi: new Set([null, 'bfi', 'bfxil', 'insert']),
 });
-function scalarAttribute(value) {
-  if (value == null) return null;
-  if (typeof value === 'boolean' || typeof value === 'string') return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
+function encodeScalar(value) {
+  if (value == null) return 'n';
+  if (typeof value === 'boolean') return value ? 'T' : 'F';
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('phase8.gvn.unproven-semantic-attribute');
+    return `#${value === 0 ? 0 : value}`;
+  }
+  if (typeof value === 'string') return `s${value.length}:${value}`;
   throw new TypeError('phase8.gvn.unproven-semantic-attribute');
+}
+function encodeAny(value) {
+  if (value == null) return 'n';
+  if (typeof value === 'boolean') return value ? 'T' : 'F';
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? `#${value === 0 ? 0 : value}` : 'n';
+  }
+  if (typeof value === 'string') return `s${value.length}:${value}`;
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? 'n' : `j${serialized.length}:${serialized}`;
 }
 function argumentKey(argument, valueKey) {
   const value = argument?.value;
@@ -85,16 +99,16 @@ function argumentKey(argument, valueKey) {
   if (key == null) return null;
   const bits = argument.bits ?? value.bits;
   if (!Number.isSafeInteger(bits) || bits <= 0) return null;
-  let shift = null;
+  let shiftKey = 'n';
   if (argument.shift != null) {
     const raw = argument.shift;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)
       || typeof raw.op !== 'string' || !raw.op.trim()
       || !Number.isSafeInteger(raw.amount) || raw.amount < 0) return null;
-    shift = [raw.op, raw.amount];
+    shiftKey = `S${raw.op.length}:${raw.op}#${raw.amount}`;
   }
   try {
-    return JSON.stringify([key, bits, shift, scalarAttribute(argument.extend), scalarAttribute(argument.signed)]);
+    return `${key.length}:${key}|${bits}|${shiftKey}|${encodeScalar(argument.extend)}|${encodeScalar(argument.signed)}`;
   } catch { return null; }
 }
 function scalarSemantics(instruction, produced, valueKey) {
@@ -103,8 +117,13 @@ function scalarSemantics(instruction, produced, valueKey) {
     || !Number.isSafeInteger(produced.bits) || produced.bits <= 0) return null;
   if (instruction.extra?.float != null && instruction.extra.float !== false) return null;
   try {
-    const attributes = SCALAR_ATTRIBUTES[instruction.op].map((field) => [field, scalarAttribute(instruction.extra?.[field])]);
-    let condition = null;
+    const fields = SCALAR_ATTRIBUTES[instruction.op];
+    let attrKey = '';
+    for (let i = 0; i < fields.length; i += 1) {
+      const field = fields[i];
+      attrKey += `|${field}=${encodeScalar(instruction.extra?.[field])}`;
+    }
+    let condKey = 'n';
     if (instruction.op === 'sel') {
       const predicate = instruction.conditionValue;
       const predicateKey = predicate == null ? null : valueKey(predicate);
@@ -113,15 +132,16 @@ function scalarSemantics(instruction, produced, valueKey) {
       if (code != null) {
         if (typeof code !== 'string' || !code.trim() || ['unknown', '?'].includes(code.trim().toLowerCase())) return null;
         if (predicate == null && (instruction.args?.length ?? 0) < 3) return null;
-        condition = ['condition-code', code, predicateKey];
+        condKey = `C|s${code.length}:${code}|${predicateKey == null ? 'n' : `s${predicateKey.length}:${predicateKey}`}`;
       } else if (predicate != null) {
-        condition = ['predicate-value', predicateKey];
+        condKey = `P|s${predicateKey.length}:${predicateKey}`;
       } else {
         // The generic select carries a one-bit predicate first. A legacy
         // flags-select with no condition code is not that representation.
         const first = instruction.args?.[0]?.value;
-        if (instruction.args?.length !== 3 || first?.bits !== 1 || valueKey(first) == null) return null;
-        condition = ['predicate-first', valueKey(first)];
+        const firstKey = first?.bits === 1 ? valueKey(first) : null;
+        if (instruction.args?.length !== 3 || firstKey == null) return null;
+        condKey = `F|s${firstKey.length}:${firstKey}`;
       }
     }
     if (instruction.op === 'bfx' || instruction.op === 'bfi') {
@@ -132,7 +152,7 @@ function scalarSemantics(instruction, produced, valueKey) {
       if (!Number.isSafeInteger(lsb) || lsb < 0 || !Number.isSafeInteger(width) || width <= 0
         || !Number.isSafeInteger(source?.bits) || lsb + width > source.bits) return null;
     }
-    return JSON.stringify([scalarAttribute(instruction.bits), attributes, condition]);
+    return `${encodeScalar(instruction.bits)}${attrKey}|${condKey}`;
   } catch { return null; }
 }
 
@@ -140,6 +160,57 @@ function fail(code) { throw new TypeError(code); }
 
 function memoryAccessOf(definition) {
   return definition?.extra?.memoryAccess ?? null;
+}
+
+function loadWidthBitsOf(definition) {
+  const access = memoryAccessOf(definition);
+  const widthBits = access?.widthBits;
+  return typeof widthBits === 'number' && Number.isSafeInteger(widthBits) && widthBits > 0 ? widthBits : null;
+}
+
+function normalizeLoadExtensionToken(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== 'string') return 'unknown';
+  const token = raw.trim().toLowerCase();
+  if (!token) return null;
+  if (token === 'sext' || token === 'sign' || token === 'sign-extend' || token === 'sign_extend' || token === 'signed' || token === 'sload') return 'sext';
+  if (token === 'zext' || token === 'zero' || token === 'zero-extend' || token === 'zero_extend' || token === 'unsigned' || token === 'zload') return 'zext';
+  if (token === 'raw' || token === 'none') return 'raw';
+  return 'unknown';
+}
+
+function loadExtensionKindOf(definition, producedBits, widthBits) {
+  const access = memoryAccessOf(definition);
+  const extra = definition?.extra ?? null;
+  const rawExt = extra?.extend ?? extra?.extension ?? access?.extend ?? access?.extension ?? definition?.sub ?? null;
+  if (rawExt != null) {
+    const normalized = normalizeLoadExtensionToken(rawExt);
+    if (normalized === 'unknown') return null;
+    if (normalized != null) return normalized;
+  }
+  const signedFlag = extra?.signed !== undefined ? extra.signed : access?.signed;
+  if (signedFlag === true) return widthBits < producedBits ? 'sext' : 'sext';
+  if (signedFlag === false) return widthBits < producedBits ? 'zext' : 'zext';
+  if (signedFlag != null) return null;
+  if (widthBits === producedBits) return 'raw';
+  return null;
+}
+
+function loadCongruenceKey(instruction, produced, version) {
+  if (!Number.isSafeInteger(produced?.bits) || produced.bits <= 0) {
+    return { ok: false, key: null, reason: 'load destination width is unknown' };
+  }
+  const widthBits = loadWidthBitsOf(instruction);
+  if (widthBits == null) {
+    return { ok: false, key: null, reason: 'load memory access width is unknown' };
+  }
+  const extension = loadExtensionKindOf(instruction, produced.bits, widthBits);
+  if (extension == null) {
+    return { ok: false, key: null, reason: 'load extension kind is unknown' };
+  }
+  const access = memoryAccessOf(instruction);
+  const key = `L|${encodeAny(instruction.loc.key)}|${produced.bits}|${widthBits}|${extension}|${encodeAny(access?.addressSpace ?? 'memory')}|${encodeAny(access?.volatility ?? null)}|${encodeAny(access?.atomic ?? null)}|${encodeAny(access?.ordering ?? null)}|${encodeAny(access?.endian ?? null)}|${instruction.extra?.float === true ? 'T' : 'F'}|${encodeAny(version)}`;
+  return { ok: true, key, widthBits, extension, reason: null };
 }
 
 /**
@@ -187,6 +258,9 @@ function loadIsReusable(definition) {
         : `access imposes ordering: ${access.ordering}`,
     };
   }
+  if (Array.isArray(access.faults) && access.faults.length > 0) {
+    return { ok: false, reason: `access can fault: ${access.faults.map((fault) => fault?.kind ?? String(fault)).join(', ')}` };
+  }
   if (definition.unknownAliasBarrier != null) {
     return { ok: false, reason: 'an unknown store lies between this load and its source' };
   }
@@ -210,7 +284,7 @@ function memoryVersionKey(definition) {
   const use = definition?.memUse;
   if (use == null) return null;
   const reaching = use.memDefs ?? use.reaching ?? null;
-  if (!Array.isArray(reaching)) return null;
+  if (!Array.isArray(reaching) || reaching.length === 0) return null;
   const ids = reaching.map((entry) => entry?.inst?.id ?? entry?.id ?? null);
   if (ids.some((id) => id == null)) return null;
   return ids.map(String).sort().join('|');
@@ -397,7 +471,9 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         if (!reusable.ok) { singleton(produced, reusable.reason); continue; }
         const version = memoryVersionKey(instruction);
         if (version == null) { singleton(produced, 'reaching memory definitions are not determined'); continue; }
-        const key = `load:${instruction.loc.key}:${produced.bits}:${version}`;
+        const loadKey = loadCongruenceKey(instruction, produced, version);
+        if (!loadKey.ok) { singleton(produced, loadKey.reason); continue; }
+        const key = loadKey.key;
         const existing = keyToNumber.get(key);
         if (existing == null) {
           const number = nextNumber++;
@@ -412,7 +488,7 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         if (earlier != null && dominates(dominatorsOf, earlier.def?.block, instruction.block)) {
           reuseCandidates.push({
             kind: 'load', valueId: produced.id, reuseOf: earlier.id,
-            proof: `same location ${instruction.loc.key} at ${produced.bits} bits, same reaching memory definitions, no unknown-store barrier, and the earlier load dominates`,
+            proof: `same location ${instruction.loc.key} at ${loadKey.widthBits}-bit access (${loadKey.extension}) to ${produced.bits} bits, same reaching memory definitions, no unknown-store barrier, and the earlier load dominates`,
           });
         }
         continue;
@@ -422,8 +498,24 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         singleton(produced, 'an operand or family-specific semantic attribute is not proven');
         continue;
       }
-      const ordering = instruction.op === 'bin' && COMMUTATIVE.has(instruction.sub) ? [...operands].sort() : operands;
-      const key = JSON.stringify([instruction.op, instruction.sub ?? null, produced.bits, ordering, semantics]);
+      const isCommutative = instruction.op === 'bin' && COMMUTATIVE.has(instruction.sub);
+      let ordKey;
+      if (isCommutative && operands.length === 2) {
+        const a = operands[0];
+        const b = operands[1];
+        ordKey = a <= b
+          ? `2|${a.length}:${a}|${b.length}:${b}`
+          : `2|${b.length}:${b}|${a.length}:${a}`;
+      } else {
+        const ordering = isCommutative ? [...operands].sort() : operands;
+        ordKey = `${ordering.length}`;
+        for (let oi = 0; oi < ordering.length; oi += 1) {
+          const item = ordering[oi];
+          ordKey += `|${item.length}:${item}`;
+        }
+      }
+      const sub = instruction.sub ?? null;
+      const key = `${instruction.op}|${sub == null ? 'n' : `s${sub.length}:${sub}`}|${produced.bits}|${ordKey}|${semantics}`;
       const existing = keyToNumber.get(key);
       if (existing == null) {
         const number = nextNumber++;

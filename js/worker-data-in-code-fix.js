@@ -8,15 +8,41 @@ const __dicFindXrefs = findXrefs;
 const __dicGuessFunctions = guessFunctions;
 const __dicRunSearch = runSearch;
 
+const __dicRangeCache = new WeakMap();
 function __dicRanges(region) {
-  return (Array.isArray(region?.dataInCode) ? region.dataInCode : [])
+  const raw = region?.dataInCode;
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const cached = __dicRangeCache.get(raw);
+  if (cached && cached.length === raw.length) return cached.ranges;
+  const sorted = raw
     .filter((entry) => entry?.address != null && Number(entry.length) > 0)
     .map((entry) => ({ start:BigInt(entry.address), end:BigInt(entry.address) + BigInt(entry.length) }))
     .sort((a,b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
+  const merged = [];
+  for (const r of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end) {
+      if (r.end > last.end) last.end = r.end;
+    } else {
+      merged.push({ start: r.start, end: r.end });
+    }
+  }
+  __dicRangeCache.set(raw, { length: raw.length, ranges: merged });
+  return merged;
 }
 function __dicContains(region, address, width = 1n) {
+  const ranges = __dicRanges(region);
+  if (ranges.length === 0) return false;
   const start = BigInt(address), end = start + BigInt(width);
-  return __dicRanges(region).some((range) => start < range.end && end > range.start);
+  let lo = 0, hi = ranges.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const range = ranges[mid];
+    if (end <= range.start) hi = mid - 1;
+    else if (start >= range.end) lo = mid + 1;
+    else return true;
+  }
+  return false;
 }
 function __dicCodeSpans(region, reasons = null) {
   const lo = BigInt(region.vmAddr), hi = lo + BigInt(region.size);
@@ -236,6 +262,9 @@ findXrefs = async function findXrefsDataInCode(args) {
   const original = region, results = [], cap = Math.min(Number(args.limit) || 2000, 2000);
   for (const span of spans) {
     const delta = span.start - BigInt(original.vmAddr);
+    if (delta < 0n || delta % 4n !== 0n) continue;
+    const rowBaseBig = delta / 4n;
+    const rowBase = Number(rowBaseBig);
     const sub = { ...original, fileOffset:BigInt(original.fileOffset)+delta, vmAddr:span.start, size:span.end-span.start, dataInCode:[] };
     const tempKey = __dicTempRegionKey(args.regionId);
     regions.set(tempKey, sub);
@@ -246,7 +275,15 @@ findXrefs = async function findXrefsDataInCode(args) {
       regions.delete(tempKey);
     }
     if (part?.cancelled) return { results, cancelled:true, capped:false };
-    results.push(...(part.results || []));
+    for (const entry of part?.results || []) {
+      if (entry && typeof entry.row === 'number') {
+        results.push({ ...entry, row: entry.row + rowBase });
+      } else if (entry && typeof entry.row === 'bigint') {
+        results.push({ ...entry, row: entry.row + rowBaseBig });
+      } else {
+        results.push(entry);
+      }
+    }
     if (results.length >= cap) break;
   }
   return { results:results.slice(0,cap), cancelled:false, capped:results.length>=cap };

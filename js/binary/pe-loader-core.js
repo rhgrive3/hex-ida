@@ -14,12 +14,37 @@ export const PE_METADATA_LIMITS = Object.freeze({
   wallClockMs: Infinity,
 });
 
+const PE_MAX_WARNINGS = 2048;
+const PE_WARNING_SETS = new WeakMap();
+const PE_REASON_SETS = new WeakMap();
+
+function pushPEWarning(image, warning) {
+  if (!warning) return;
+  let seen = PE_WARNING_SETS.get(image);
+  if (!seen) {
+    seen = new Set(image.warnings || []);
+    PE_WARNING_SETS.set(image, seen);
+  }
+  if (seen.has(warning)) return;
+  if (image.warnings.length >= PE_MAX_WARNINGS) return;
+  seen.add(warning);
+  image.warnings.push(warning);
+}
+
 function markPEPartial(image, reason, warning = null) {
   image.metadata ||= {};
   image.metadata.peMetadata ||= { complete: true, reasons: [] };
   image.metadata.peMetadata.complete = false;
-  if (!image.metadata.peMetadata.reasons.includes(reason)) image.metadata.peMetadata.reasons.push(reason);
-  if (warning && !image.warnings.includes(warning)) image.warnings.push(warning);
+  let reasonSet = PE_REASON_SETS.get(image);
+  if (!reasonSet) {
+    reasonSet = new Set(image.metadata.peMetadata.reasons);
+    PE_REASON_SETS.set(image, reasonSet);
+  }
+  if (!reasonSet.has(reason)) {
+    reasonSet.add(reason);
+    image.metadata.peMetadata.reasons.push(reason);
+  }
+  if (warning) pushPEWarning(image, warning);
 }
 
 // Budget limits and costs are typed evidence: only real safe-integer numbers
@@ -104,21 +129,179 @@ export function peExactMappingOwner(owner) {
   return !!owner && owner.source !== PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE;
 }
 
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const peOwnerIndexCache = new WeakMap();
+
+function sampleOwnerSig(owner) {
+  if (!owner) return null;
+  return {
+    ref: owner,
+    address: owner.address,
+    size: owner.size,
+    fileOffset: owner.fileOffset,
+    fileSize: owner.fileSize,
+    source: owner.source,
+    write: !!owner.perms?.write,
+  };
+}
+
+function sameOwnerSig(sig, owner) {
+  if (sig === null) return !owner;
+  return !!owner
+    && sig.ref === owner
+    && sig.address === owner.address
+    && sig.size === owner.size
+    && sig.fileOffset === owner.fileOffset
+    && sig.fileSize === owner.fileSize
+    && sig.source === owner.source
+    && sig.write === !!owner.perms?.write;
+}
+
+function sampleListSigs(list) {
+  const len = list.length;
+  if (len === 0) return null;
+  return [
+    sampleOwnerSig(list[0]),
+    sampleOwnerSig(list[len >>> 1]),
+    sampleOwnerSig(list[len - 1]),
+  ];
+}
+
+function sameListSigs(sigs, list) {
+  const len = list.length;
+  if (len === 0) return sigs === null;
+  if (sigs === null) return false;
+  return sameOwnerSig(sigs[0], list[0])
+    && sameOwnerSig(sigs[1], list[len >>> 1])
+    && sameOwnerSig(sigs[2], list[len - 1]);
+}
+
+function buildMergedMemoryIntervals(owners, writableOnly) {
+  const raw = [];
+  for (let i = 0; i < owners.length; i++) {
+    const owner = owners[i];
+    if (!owner || owner.address == null || owner.size == null) continue;
+    if (writableOnly && !owner.perms?.write) continue;
+    const ownerAddress = BigInt(owner.address);
+    const ownerSize = BigInt(owner.size);
+    if (ownerSize <= 0n) continue;
+    raw.push({ start: ownerAddress, end: ownerAddress + ownerSize });
+  }
+  if (raw.length <= 1) return raw;
+  raw.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
+  const merged = [raw[0]];
+  for (let i = 1; i < raw.length; i++) {
+    const prev = merged[merged.length - 1];
+    const curr = raw[i];
+    if (curr.start <= prev.end) {
+      if (curr.end > prev.end) prev.end = curr.end;
+    } else {
+      merged.push(curr);
+    }
+  }
+  return merged;
+}
+
+function buildPeOwnerIndex(image, sections, segments) {
+  const owners = [];
+  const fileItems = [];
+  let order = 0;
+  const collect = (list) => {
+    for (let i = 0; i < list.length; i++) {
+      const owner = list[i];
+      if (!peExactMappingOwner(owner)) continue;
+      owners.push(owner);
+      const itemOrder = order++;
+      if (owner.address == null || owner.fileOffset == null || owner.fileSize == null) continue;
+      const fileSize = BigInt(owner.fileSize);
+      if (fileSize <= 0n) continue;
+      const start = owner.address;
+      const end = start + fileSize;
+      fileItems.push({ owner, order: itemOrder, start, end, fileOffset: BigInt(owner.fileOffset), fileSize });
+    }
+  };
+  collect(sections);
+  collect(segments);
+  fileItems.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order));
+  const fileStarts = new Array(fileItems.length);
+  const filePrefixEnds = new Array(fileItems.length);
+  let maxEnd = null;
+  for (let i = 0; i < fileItems.length; i++) {
+    fileStarts[i] = fileItems[i].start;
+    if (maxEnd === null || fileItems[i].end > maxEnd) maxEnd = fileItems[i].end;
+    filePrefixEnds[i] = maxEnd;
+  }
+  return {
+    sectionsRef: image.sections,
+    sectionsLen: sections.length,
+    sectionsSigs: sampleListSigs(sections),
+    segmentsRef: image.segments,
+    segmentsLen: segments.length,
+    segmentsSigs: sampleListSigs(segments),
+    finalized: Boolean(image._finalized),
+    owners,
+    fileItems,
+    fileStarts,
+    filePrefixEnds,
+    allMemIntervals: null,
+    writeMemIntervals: null,
+  };
+}
+
+function getPeOwnerIndex(image) {
+  const sections = Array.isArray(image?.sections) ? image.sections : [];
+  const segments = Array.isArray(image?.segments) ? image.segments : [];
+  const finalized = Boolean(image?._finalized);
+  if (image && typeof image === 'object') {
+    const cached = peOwnerIndexCache.get(image);
+    if (cached
+      && cached.sectionsRef === image.sections
+      && cached.sectionsLen === sections.length
+      && cached.segmentsRef === image.segments
+      && cached.segmentsLen === segments.length
+      && cached.finalized === finalized
+      && sameListSigs(cached.sectionsSigs, sections)
+      && sameListSigs(cached.segmentsSigs, segments)) {
+      return cached;
+    }
+    const fresh = buildPeOwnerIndex(image, sections, segments);
+    peOwnerIndexCache.set(image, fresh);
+    return fresh;
+  }
+  return buildPeOwnerIndex(image || {}, sections, segments);
+}
+
 export function mappedFileRangeForRva(image, rva) {
   if (!Number.isInteger(rva) || rva <= 0) return null;
   const address = image.imageBase + BigInt(rva);
-  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
-  for (const owner of owners) {
-    if (!owner || owner.address == null || owner.fileOffset == null || owner.fileSize == null) continue;
-    const fileSize = BigInt(owner.fileSize);
-    if (fileSize <= 0n || address < owner.address || address >= owner.address + fileSize) continue;
-    const delta = address - owner.address;
-    const start = BigInt(owner.fileOffset) + delta;
-    const end = BigInt(owner.fileOffset) + fileSize;
-    if (start > BigInt(Number.MAX_SAFE_INTEGER) || end > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-    return { start: Number(start), end: Number(end), owner, address };
+  const { fileItems, fileStarts, filePrefixEnds } = getPeOwnerIndex(image);
+  let lo = 0, hi = fileStarts.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (fileStarts[mid] <= address) lo = mid + 1;
+    else hi = mid;
   }
-  return null;
+  const upper = lo;
+  if (upper === 0) return null;
+  lo = 0;
+  hi = upper;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (filePrefixEnds[mid] > address) hi = mid;
+    else lo = mid + 1;
+  }
+  let best = null;
+  for (let i = lo; i < upper; i++) {
+    const item = fileItems[i];
+    if (item.end <= address) continue;
+    if (best === null || item.order < best.order) best = item;
+  }
+  if (best === null) return null;
+  const delta = address - best.start;
+  const start = best.fileOffset + delta;
+  const end = best.fileOffset + best.fileSize;
+  if (start > MAX_SAFE_INTEGER_BIGINT || end > MAX_SAFE_INTEGER_BIGINT) return null;
+  return { start: Number(start), end: Number(end), owner: best.owner, address };
 }
 
 export function mappedFileSpanForRva(image, rva, size) {
@@ -132,21 +315,12 @@ export function mappedFileSpanForRva(image, rva, size) {
 function mappedMemorySpanForRva(image, rva, size, { writable = false } = {}) {
   if (!Number.isInteger(rva) || rva <= 0 || !Number.isSafeInteger(size) || size <= 0) return null;
   const address = image.imageBase + BigInt(rva), spanEnd = address + BigInt(size);
-  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
-  let cursor = address;
-  while (cursor < spanEnd) {
-    let coveredTo = cursor;
-    for (const owner of owners) {
-      if (!owner || owner.address == null || owner.size == null) continue;
-      if (writable && !owner.perms?.write) continue;
-      const ownerAddress = BigInt(owner.address), ownerSize = BigInt(owner.size);
-      if (ownerSize <= 0n) continue;
-      const ownerEnd = ownerAddress + ownerSize;
-      if (ownerAddress <= cursor && cursor < ownerEnd && ownerEnd > coveredTo) coveredTo = ownerEnd;
-    }
-    if (coveredTo === cursor) return null;
-    cursor = coveredTo;
-  }
+  const index = getPeOwnerIndex(image);
+  const intervals = writable
+    ? (index.writeMemIntervals ??= buildMergedMemoryIntervals(index.owners, true))
+    : (index.allMemIntervals ??= buildMergedMemoryIntervals(index.owners, false));
+  const hit = findMergedInterval(intervals, address, -1);
+  if (hit < 0 || spanEnd > intervals[hit].end) return null;
   return { address, spanEnd };
 }
 
@@ -156,20 +330,57 @@ function mappedFileRangeForAddress(image, address) {
   return mappedFileRangeForRva(image, Number(a - image.imageBase));
 }
 
+const PE_FAILED_STRING_SPANS = new WeakMap();
+function peFailedStringSpans(budget) {
+  let set = PE_FAILED_STRING_SPANS.get(budget);
+  if (!set) { set = new Set(); PE_FAILED_STRING_SPANS.set(budget, set); }
+  return set;
+}
+
 function mappedCStringAtRva(r, image, rva, budget, label) {
   const range = mappedFileRangeForRva(image, rva);
   if (!range) { budget.partial(`${label}:unmapped-string`, `Ignored ${label} string outside a file-backed mapping`); return ''; }
+  const rawMax = Math.min(1 << 16, range.end - range.start);
   const maxByStringBudget = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
-  const max = Math.min(1 << 16, range.end - range.start, maxByStringBudget);
+  const max = Math.min(rawMax, maxByStringBudget);
   if (max <= 0) return '';
-  // ByteView.cstring() tolerates a missing NUL and returns the whole span, so
-  // it would accept unterminated bytes as canonical metadata (#2187).
-  const nulAt = r.slice(range.start, max).indexOf(0);
-  if (nulAt < 0) {
+  const failed = peFailedStringSpans(budget);
+  const failKey = `${range.start}:${rawMax}`;
+  if (failed.has(failKey)) {
     budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
     return '';
   }
-  const value = r.cstring(range.start, max);
+  // ByteView.cstring() tolerates a missing NUL and returns the whole span, so
+  // it would accept unterminated bytes as canonical metadata (#2187).
+  let value;
+  if (typeof r.check === 'function' && typeof r.findZero === 'function' && typeof r.decodeString === 'function') {
+    r.check(range.start, max);
+    const nulPos = r.findZero(range.start, range.start + max);
+    if (nulPos < 0) {
+      budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+      if (maxByStringBudget < rawMax) {
+        budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+      } else {
+        failed.add(failKey);
+        budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+      }
+      return '';
+    }
+    value = r.decodeString(range.start, nulPos);
+  } else {
+    const nulAt = r.slice(range.start, max).indexOf(0);
+    if (nulAt < 0) {
+      budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+      if (maxByStringBudget < rawMax) {
+        budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+      } else {
+        failed.add(failKey);
+        budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+      }
+      return '';
+    }
+    value = r.cstring(range.start, max);
+  }
   const inputBytes = Math.min(max, value.length + 1);
   if (!budget.take({ inputBytes, stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
   return value;
@@ -177,14 +388,46 @@ function mappedCStringAtRva(r, image, rva, budget, label) {
 
 function mappedCStringAtOffset(r, start, end, budget, label) {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= end || end > r.length) return '';
-  const max = Math.min(1 << 16, end-start, Math.max(1, Math.floor(budget.remainingStringBytes/2)+1));
-  // Same contract as mappedCStringAtRva: no NUL inside the span -> not a string.
-  const nulAt = r.slice(start, max).indexOf(0);
-  if (nulAt < 0) {
+  const rawMax = Math.min(1 << 16, end - start);
+  const maxByStringBudget = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
+  const max = Math.min(rawMax, maxByStringBudget);
+  if (max <= 0) return '';
+  const failed = peFailedStringSpans(budget);
+  const failKey = `${start}:${rawMax}`;
+  if (failed.has(failKey)) {
     budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
     return '';
   }
-  const value = r.cstring(start,max);
+  // Same contract as mappedCStringAtRva: no NUL inside the span -> not a string.
+  let value;
+  if (typeof r.check === 'function' && typeof r.findZero === 'function' && typeof r.decodeString === 'function') {
+    r.check(start, max);
+    const nulPos = r.findZero(start, start + max);
+    if (nulPos < 0) {
+      budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+      if (maxByStringBudget < rawMax) {
+        budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+      } else {
+        failed.add(failKey);
+        budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+      }
+      return '';
+    }
+    value = r.decodeString(start, nulPos);
+  } else {
+    const nulAt = r.slice(start, max).indexOf(0);
+    if (nulAt < 0) {
+      budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+      if (maxByStringBudget < rawMax) {
+        budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+      } else {
+        failed.add(failKey);
+        budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+      }
+      return '';
+    }
+    value = r.cstring(start, max);
+  }
   if (!budget.take({ inputBytes:Math.min(max,value.length+1), stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
   return value;
 }
@@ -431,7 +674,9 @@ function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
   if (epilogCount === 0 && codeWords === 0) {
     const ext = mappedFileSpanForRva(image, xdataRva, 8);
     if (!ext || ext.start + 8 > r.length) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-extension', `Ignored truncated ARM64 .xdata extension at RVA 0x${xdataRva.toString(16)}`);
-    const word = r.u32(ext.start + 4); epilogCount = word & 0xffff; codeWords = (word >>> 16) & 0xff; headerBytes = 8;
+    const word = r.u32(ext.start + 4);
+    if ((word >>> 24) !== 0) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-extension-reserved', `Ignored ARM64 .xdata extension with non-zero reserved bits at RVA 0x${xdataRva.toString(16)}`);
+    epilogCount = word & 0xffff; codeWords = (word >>> 16) & 0xff; headerBytes = 8;
     if (!budget.take({ inputBytes:4, operations:1 }, 'arm64-xdata-extension')) return null;
   }
   const recordBytes = headerBytes + (packedEpilog ? 0 : epilogCount * 4) + codeWords * 4 + (hasHandler ? 4 : 0);
@@ -486,7 +731,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
         pendingZeroRecords = 0;
       }
       const ordered=previousBegin==null||(begin>previousBegin&&begin>=previousEnd);
-      if(!begin||finish<=begin||!ordered||!executableRvaRange(image,begin,finish-begin)){if(begin||finish)image.warnings.push(`Ignored ${!ordered?'overlapping/out-of-order':'invalid/unmapped'} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);meta.invalidRecords++;continue;}
+      if(!begin||finish<=begin||!ordered||!executableRvaRange(image,begin,finish-begin)){if(begin||finish)pushPEWarning(image, `Ignored ${!ordered?'overlapping/out-of-order':'invalid/unmapped'} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);meta.invalidRecords++;continue;}
       const decoded=parseX64UnwindDescriptor(r,image,{begin,finish,unwind},budget);
       previousBegin=begin;previousEnd=finish;
       if(!decoded)continue;
@@ -510,7 +755,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
         budget.partial('exception:internal-zero-record', `Ignored ${pendingZeroRecords} internal zero-filled ARM64 exception record(s) before a later record`);
         pendingZeroRecords = 0;
       }
-      if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
+      if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)pushPEWarning(image, `Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
       // AArch64 instructions are fixed 4-byte units: an exception range that
       // does not start on an instruction boundary cannot describe a real
       // function start, so it must not mint a high-confidence seed (#5667).
@@ -524,7 +769,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
         const packed=arm64PackedFrameFields(unwindData);
         if(packed.regI>10){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-registers',`Ignored ARM64 packed unwind entry with invalid RegI ${packed.regI} (x19-x28 hold at most 10 registers) at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
         if(packed.frameBytes<packed.saveAreaBytes){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-frame-size',`Ignored ARM64 packed unwind entry whose FrameSize ${packed.frameBytes} byte(s) cannot contain the mandatory ${packed.saveAreaBytes}-byte save/home area at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
-        const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
+        const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){pushPEWarning(image, `Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
         // #8787: a packed .pdata entry publishes a concrete `bytes`-wide extent, so
         // the whole extent must be file-backed. executableRvaRange() only proves the
         // virtual range is executable; validate the real backing before claiming the
@@ -533,7 +778,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       else if(flag===0){descriptor=parseArm64XdataDescriptor(r,image,begin,unwindData>>>0,budget);}
       else{invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-reserved-flag',`Ignored reserved ARM64 packed unwind flag at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
       if(!descriptor){previousBegin=begin;continue;}
-      if(previousEnd!=null&&begin<previousEnd){image.warnings.push(`Ignored overlapping ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
+      if(previousEnd!=null&&begin<previousEnd){pushPEWarning(image, `Ignored overlapping ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
       if(descriptor.fragment)recordExceptionFragment(image,'arm64-pdata',begin,descriptor.size,{encoding:descriptor.encoding||'xdata-fragment',xdataRva:descriptor.xdataRva??null});
       else image.functions.push(functionSeed(image.imageBase+BigInt(begin),{size:BigInt(descriptor.size),source:'exception',confidence:0.995}));
       meta.count++;previousBegin=begin;previousEnd=begin+descriptor.size;
@@ -710,7 +955,14 @@ export function resolveCoffSectionName(r, inlineName, ptrSymbols, count) {
   if (!Number.isSafeInteger(offset) || offset < 4 || offset >= stringSize || stringBase + offset >= r.length) return raw;
   const start = stringBase + offset;
   const max = Math.min(stringSize - offset, r.length - start);
-  if (max <= 0 || r.slice(start, max).indexOf(0) < 0) return raw;
+  if (max <= 0) return raw;
+  if (typeof r.check === 'function' && typeof r.findZero === 'function' && typeof r.decodeString === 'function') {
+    r.check(start, max);
+    const nulPos = r.findZero(start, start + max);
+    if (nulPos < 0) return raw;
+    return r.decodeString(start, nulPos) || raw;
+  }
+  if (r.slice(start, max).indexOf(0) < 0) return raw;
   return r.cstring(start, max) || raw;
 }
 
@@ -758,7 +1010,7 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
     // A callback address that is not on the architecture's instruction
     // boundary cannot be a function entry: mirror seedValidatedEntrypoint()'s
     // alignment contract so crafted tables cannot mint misplaced seeds (#5667).
-    const alignment=image.metadata?.machine===0xaa64||image.metadata?.machine===0xa641?4n:image.metadata?.machine===0x01c4?2n:1n;
+    const alignment=image.metadata?.machine===0xaa64?4n:image.metadata?.machine===0x01c4?2n:1n;
     if(target%alignment!==0n){budget.partial('tls:callback-target-alignment',`Ignored PE TLS callback target 0x${target.toString(16)} not ${alignment}-byte aligned`);continue;}
     // #8787: an aligned ARM64 callback whose first byte is file-backed but whose
     // remaining instruction bytes fall in zero-fill must not mint a seed; require
@@ -836,7 +1088,7 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
       // GuardCF targets are function entries: reject addresses that are not on
       // the architecture's instruction boundary (seedValidatedEntrypoint's
       // alignment contract), so crafted tables cannot mint misplaced seeds (#5667).
-      const alignment = image.metadata?.machine === 0xaa64 || image.metadata?.machine === 0xa641
+      const alignment = image.metadata?.machine === 0xaa64
         ? 4n
         : image.metadata?.machine === 0x01c4 ? 2n : 1n;
       if (address % alignment !== 0n) {

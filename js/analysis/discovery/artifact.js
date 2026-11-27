@@ -106,7 +106,11 @@ function ownArray(value, key, code) {
   return raw;
 }
 
-function canonicalTypedValue(value, code, seen = new WeakSet()) {
+const MAX_V1_CANONICAL_DEPTH = 64;
+const MAX_V1_CANONICAL_NODES = 65536;
+const MAX_V1_CANONICAL_BINARY_BYTES = 1024 * 1024;
+
+function canonicalTypedValue(value, code, seen = new WeakSet(), state = { depth: 0, nodes: 0, memo: new WeakMap() }) {
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
   if (typeof value === 'bigint') return { $type: 'bigint', value: value.toString() };
   if (typeof value === 'number') {
@@ -114,32 +118,42 @@ function canonicalTypedValue(value, code, seen = new WeakSet()) {
     return Object.is(value, -0) ? { $type: 'number', value: '-0' } : value;
   }
   if (typeof value !== 'object' || seen.has(value)) fail(code);
+  if (state.memo.has(value)) return state.memo.get(value);
+  if (state.depth >= MAX_V1_CANONICAL_DEPTH || ++state.nodes > MAX_V1_CANONICAL_NODES) fail(code);
   seen.add(value);
+  state.depth += 1;
   let result;
-  if (Array.isArray(value)) {
-    result = denseArray(value, code).map((item) => canonicalTypedValue(item, code, seen));
-  } else if (ArrayBuffer.isView(value)) {
-    result = { $type: value.constructor?.name ?? 'TypedArray', value: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
-  } else if (value instanceof ArrayBuffer) {
-    result = { $type: 'ArrayBuffer', value: Array.from(new Uint8Array(value)) };
-  } else {
-    plainRecord(value, code);
-    let descriptors;
-    try { descriptors = Object.getOwnPropertyDescriptors(value); } catch { fail(code); }
-    result = {};
-    for (const key of Object.keys(descriptors).sort(compareText)) {
-      if (key === '__proto__') fail(code);
-      const descriptor = descriptors[key];
-      if (!Object.hasOwn(descriptor, 'value')) fail(code);
-      Object.defineProperty(result, key, {
-        value: canonicalTypedValue(descriptor.value, code, seen),
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
+  try {
+    if (Array.isArray(value)) {
+      result = denseArray(value, code).map((item) => canonicalTypedValue(item, code, seen, state));
+    } else if (ArrayBuffer.isView(value)) {
+      if (value.byteLength > MAX_V1_CANONICAL_BINARY_BYTES) fail(code);
+      result = { $type: value.constructor?.name ?? 'TypedArray', value: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+    } else if (value instanceof ArrayBuffer) {
+      if (value.byteLength > MAX_V1_CANONICAL_BINARY_BYTES) fail(code);
+      result = { $type: 'ArrayBuffer', value: Array.from(new Uint8Array(value)) };
+    } else {
+      plainRecord(value, code);
+      let descriptors;
+      try { descriptors = Object.getOwnPropertyDescriptors(value); } catch { fail(code); }
+      result = {};
+      for (const key of Object.keys(descriptors).sort(compareText)) {
+        if (key === '__proto__') fail(code);
+        const descriptor = descriptors[key];
+        if (!Object.hasOwn(descriptor, 'value')) fail(code);
+        Object.defineProperty(result, key, {
+          value: canonicalTypedValue(descriptor.value, code, seen, state),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
     }
+    state.memo.set(value, result);
+  } finally {
+    state.depth -= 1;
+    seen.delete(value);
   }
-  seen.delete(value);
   return result;
 }
 
@@ -458,7 +472,7 @@ function createDiscoveryArtifactV1(input = {}) {
   plainRecord(input, 'discovery-artifact-input-invalid');
   const budget = normalizeDiscoveryArtifactBudget(ownData(input, 'artifactBudget', 'discovery-artifact-budget-invalid') ?? {});
   const binding = normalizeBindingV1(ownData(input, 'binding', 'discovery-artifact-binding-invalid') ?? {});
-  const status = plainRecord(ownData(input, 'status', 'discovery-artifact-status-invalid'), 'discovery-artifact-status-invalid');
+  const status = canonicalTypedValue(plainRecord(ownData(input, 'status', 'discovery-artifact-status-invalid'), 'discovery-artifact-status-invalid'), 'discovery-artifact-status-invalid');
   const evidenceInput = ownArray(input, 'evidence', 'discovery-artifact-evidence-invalid');
   const candidatesInput = ownArray(input, 'candidates', 'discovery-artifact-candidates-invalid');
   const intervalsInput = ownArray(input, 'byteIntervals', 'discovery-artifact-intervals-invalid');
@@ -934,6 +948,44 @@ function normalizeBudgetV2(input = {}) {
   return deepFreeze(result);
 }
 
+const PRODUCER_STATUS_STOP_REASONS_V2 = new Set([
+  'cancelled',
+  'budget-exhausted',
+  'memory-limit',
+  'iteration-limit',
+]);
+
+function normalizeFusionBudgetV2(input) {
+  if (input === undefined) return undefined;
+  const value = record(input, 'discovery-artifact-fusion-budget-invalid');
+  const result = {};
+  for (const name of ['maxCandidates', 'maxEvidencePerCandidate']) {
+    const raw = own(value, name, `discovery-artifact-fusion-budget-${name}-invalid`);
+    if (raw == null) continue;
+    if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 1) {
+      fail(`discovery-artifact-fusion-budget-${name}-invalid`);
+    }
+    result[name] = raw;
+  }
+  return deepFreeze(result);
+}
+
+function normalizeProducerStatusV2(input) {
+  if (input === undefined) return undefined;
+  const value = record(input, 'discovery-artifact-producer-status-invalid');
+  const truncated = own(value, 'truncated', 'discovery-artifact-producer-status-invalid');
+  if (typeof truncated !== 'boolean') fail('discovery-artifact-producer-status-invalid');
+  const stopReason = own(value, 'stopReason', 'discovery-artifact-producer-status-invalid') ?? null;
+  if (truncated) {
+    if (typeof stopReason !== 'string' || !PRODUCER_STATUS_STOP_REASONS_V2.has(stopReason)) {
+      fail('discovery-artifact-producer-status-invalid');
+    }
+  } else if (stopReason != null) {
+    fail('discovery-artifact-producer-status-invalid');
+  }
+  return deepFreeze({ truncated, stopReason });
+}
+
 function normalizeStatusV2(input) {
   const value = record(input, 'discovery-artifact-status-invalid');
   return createAnalysisStatus({
@@ -1088,17 +1140,24 @@ export function createDiscoveryArtifact(input = {}) {
   }
 
   const status = normalizeStatusV2(own(value, 'status', 'discovery-artifact-status-invalid'));
+  const fusionBudget = normalizeFusionBudgetV2(own(value, 'fusionBudget', 'discovery-artifact-fusion-budget-invalid'));
+  const producerStatus = normalizeProducerStatusV2(own(value, 'producerStatus', 'discovery-artifact-producer-status-invalid'));
+  if (producerStatus?.truncated === true && status.completeness === 'complete') {
+    fail('discovery-artifact-producer-status-mismatch');
+  }
   const binding = normalizeBindingV2(own(value, 'binding', 'discovery-artifact-binding-invalid') ?? {});
   if (binding.snapshotId != null && status.snapshotId !== binding.snapshotId) {
     fail('discovery-artifact-status-snapshot-mismatch');
   }
   const evidence = arrayItems(rawEvidence, 'discovery-artifact-evidence-invalid')
     .map((item) => createDiscoveryEvidence(item))
-    .sort((a, b) => canonicalTypedString(a).localeCompare(canonicalTypedString(b)));
+    .sort((a, b) => compareText(canonicalTypedString(a), canonicalTypedString(b)));
   const candidates = canonicalCandidatesV2(rawCandidates);
   const derivedCandidates = canonicalCandidatesV2(fuseFunctionCandidates(evidence, {
     architectureId: binding.architectureId ?? 'generic',
     snapshotId: status.snapshotId,
+    ...(fusionBudget ? { budget: fusionBudget } : {}),
+    ...(producerStatus ? { producerStatus } : {}),
   }).candidates);
   if (candidates.length !== derivedCandidates.length
       || candidates.some((candidate, index) => candidate.digest !== derivedCandidates[index].digest)) {
@@ -1106,19 +1165,20 @@ export function createDiscoveryArtifact(input = {}) {
   }
   const canonicalCandidateView = derivedCandidates;
   const producerRuns = arrayItems(rawRuns, 'discovery-artifact-producer-runs-invalid')
-    .map(normalizeProducerRunV2).sort((a, b) => a.id.localeCompare(b.id));
+    .map(normalizeProducerRunV2).sort((a, b) => compareText(a.id, b.id));
 
   const collisionSets = canonicalCandidateView.flatMap((candidate) => candidate.conflicts.map((conflict, index) => conflictRecordV2(candidate, conflict, index)))
-    .sort((a, b) => a.collisionId.localeCompare(b.collisionId));
-  const collisionIdsByStart = new Map();
+    .sort((a, b) => compareText(a.collisionId, b.collisionId));
+  const collisionIdsByKey = new Map();
   for (const collision of collisionSets) {
-    if (!collisionIdsByStart.has(collision.candidateStart)) collisionIdsByStart.set(collision.candidateStart, []);
-    collisionIdsByStart.get(collision.candidateStart).push(collision.collisionId);
+    const key = `${collision.architectureId ?? 'generic'}:${collision.candidateStart}`;
+    if (!collisionIdsByKey.has(key)) collisionIdsByKey.set(key, []);
+    collisionIdsByKey.get(key).push(collision.collisionId);
   }
   const intervalClaims = canonicalCandidateView.flatMap(candidateIntervalsV2)
-    .sort((a, b) => compareAddress(a.start, b.start) || compareAddress(a.end, b.end) || a.intervalId.localeCompare(b.intervalId));
+    .sort((a, b) => compareAddress(a.start, b.start) || compareAddress(a.end, b.end) || compareText(a.intervalId, b.intervalId));
   const references = evidence.filter((item) => REFERENCE_KINDS.has(item.kind) && item.start != null)
-    .map(referenceRecordV2).sort((a, b) => compareAddress(a.address, b.address) || a.memberId.localeCompare(b.memberId));
+    .map(referenceRecordV2).sort((a, b) => compareAddress(a.address, b.address) || compareText(a.memberId, b.memberId));
   if (intervalClaims.length > budget.maxIntervals || references.length > budget.maxReferences) {
     fail('discovery-artifact-budget-exhausted');
   }
@@ -1132,7 +1192,7 @@ export function createDiscoveryArtifact(input = {}) {
     startState: candidate.startState,
     extentState: candidate.extentState,
     exact: hasExactStart(candidate),
-    collisionIds: [...new Set(collisionIdsByStart.get(candidate.start) ?? [])].sort(),
+    collisionIds: [...new Set(collisionIdsByKey.get(`${candidate.architectureId ?? 'generic'}:${candidate.start}`) ?? [])].sort(compareText),
     startEvidenceIds: [...new Set(candidate.startEvidence.flatMap((item) => item.evidenceIds))].sort(),
     digest: candidate.digest,
   }));
@@ -1218,8 +1278,11 @@ export function verifyDiscoveryReparseV2(sourceBinding, reparsedArtifact, option
   if (sourceBinding.binding.snapshotId === reparsedArtifact.binding.snapshotId) {
     return deepFreeze({ ok: false, reason: 'discovery-reparse-stale-snapshot' });
   }
-  const expectedOutputHash = optionalToken(options?.expectedOutputHash, 'discovery-reparse-output-hash-required');
-  if (expectedOutputHash == null) return deepFreeze({ ok: false, reason: 'discovery-reparse-output-hash-required' });
+  const rawExpectedOutputHash = options?.expectedOutputHash;
+  if (typeof rawExpectedOutputHash !== 'string' || !rawExpectedOutputHash.trim()) {
+    return deepFreeze({ ok: false, reason: 'discovery-reparse-output-hash-required' });
+  }
+  const expectedOutputHash = rawExpectedOutputHash.trim();
   if (reparsedArtifact.binding.sourceHash !== expectedOutputHash) {
     return deepFreeze({ ok: false, reason: 'discovery-reparse-output-hash-mismatch' });
   }
@@ -1250,15 +1313,24 @@ export function verifyDiscoveryReparseV2(sourceBinding, reparsedArtifact, option
 export function attachDiscoveryArtifactToSearchResult(result, artifact) {
   if (!artifactIdentityValidV2(artifact)) return result;
   const rows = Array.isArray(result?.results) ? result.results : [];
-  const byStart = new Map(artifact.functionCandidates.map((candidate) => [candidate.start, candidate]));
+  const byArchStart = new Map();
+  const byStart = new Map();
+  for (const candidate of artifact.functionCandidates) {
+    const archKey = `${candidate.architectureId ?? 'generic'}:${candidate.start}`;
+    byArchStart.set(archKey, candidate);
+    if (!byStart.has(candidate.start)) byStart.set(candidate.start, candidate);
+    else byStart.set(candidate.start, null); // ambiguous across architectures
+  }
   return {
     ...(result && typeof result === 'object' && !Array.isArray(result) ? result : {}),
     results: rows.map((row) => {
       if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
       const raw = row.address ?? row.addr;
+      if (raw == null || typeof raw === 'boolean' || (typeof raw === 'string' && !raw.trim())) return row;
       let start;
-      try { start = BigInt(raw).toString(); } catch { return row; }
-      const candidate = byStart.get(start);
+      try { start = BigInt(typeof raw === 'string' ? raw.trim() : raw).toString(); } catch { return row; }
+      const rowArch = row.architectureId ?? row.architecture ?? artifact.binding?.architectureId ?? null;
+      const candidate = (rowArch != null ? byArchStart.get(`${rowArch}:${start}`) : null) ?? byStart.get(start);
       if (!candidate) return row;
       return {
         ...row,

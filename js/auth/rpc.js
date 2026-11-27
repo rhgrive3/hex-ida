@@ -41,6 +41,7 @@ export function createAuthRpcClient({ port, timeoutMs = 15000 } = {}) {
   let identity = ANONYMOUS_IDENTITY, closed = false, refreshGeneration = 0;
   const pending = new Map(), listeners = new Set();
   const update = (value) => { identity = safeIdentity(value); for (const listener of listeners) { try { listener(identity); } catch {} } return identity; };
+  const demote = () => { refreshGeneration++; return update(ANONYMOUS_IDENTITY); };
   const listener = (event) => {
     const message = event.data;
     if (closed || message?.protocol !== PROTOCOL) return;
@@ -55,7 +56,7 @@ export function createAuthRpcClient({ port, timeoutMs = 15000 } = {}) {
     if (closed || pending.size >= 8) return Promise.reject(new Error('HEX auth channel unavailable.'));
     const id = [...crypto.getRandomValues(new Uint8Array(16))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); update(ANONYMOUS_IDENTITY); reject(new Error('HEX auth channel timed out.')); }, timeoutMs);
+      const timer = setTimeout(() => { pending.delete(id); demote(); reject(new Error('HEX auth channel timed out.')); }, timeoutMs);
       pending.set(id, { method, resolve, reject, timer });
       try { port.postMessage({ protocol: PROTOCOL, kind: 'request', id, method, params }); }
       catch { clearTimeout(timer); pending.delete(id); reject(new Error('HEX auth channel unavailable.')); }
@@ -72,7 +73,7 @@ export function createAuthRpcClient({ port, timeoutMs = 15000 } = {}) {
         // A late failure may reflect a channel loss or a newer server-side
         // revocation than an already-applied success. Never let request order
         // preserve a privileged child identity after any authority failure.
-        if (!closed) { refreshGeneration++; update(ANONYMOUS_IDENTITY); }
+        if (!closed) demote();
       }
       return identity;
     },
@@ -82,15 +83,15 @@ export function createAuthRpcClient({ port, timeoutMs = 15000 } = {}) {
         const value = safeIdentity(await call('authorize', { policy }));
         if (closed) throw new Error('HEX auth channel closed.');
         // Parent identity broadcasts precede replies; never revive an older Admin.
-        const latest = generation === refreshGeneration ? update(value) : identity;
+        const latest = generation === refreshGeneration ? (refreshGeneration++, update(value)) : identity;
         if (!latest.capabilities.canUseDevAgent || (policy === 'yolo' && !latest.capabilities.canUseDevYolo)) throw new Error('Dev authorization denied.');
         return latest;
-      } catch (error) { update(ANONYMOUS_IDENTITY); throw error; }
+      } catch (error) { demote(); throw error; }
     },
     source: (kind) => kind === 'child' ? call('child') : Promise.reject(new Error('Parent source is not a child capability.')),
     aiCapability: () => call('ai-capability'),
     login: () => call('login'),
-    async logout() { try { await call('logout'); } finally { update(ANONYMOUS_IDENTITY); } },
-    close() { closed = true; port.removeEventListener('message', listener); for (const task of pending.values()) { clearTimeout(task.timer); task.reject(new Error('HEX auth channel closed.')); } pending.clear(); update(ANONYMOUS_IDENTITY); listeners.clear(); },
+    async logout() { refreshGeneration++; try { await call('logout'); } finally { demote(); } },
+    close() { closed = true; port.removeEventListener('message', listener); for (const task of pending.values()) { clearTimeout(task.timer); task.reject(new Error('HEX auth channel closed.')); } pending.clear(); demote(); listeners.clear(); },
   });
 }

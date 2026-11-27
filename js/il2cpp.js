@@ -76,7 +76,8 @@ function bindingBudget(options = {}) {
 }
 function cooperativeYield() { return new Promise((resolve)=>setTimeout(resolve,0)); }
 
-function utf8(bytes) { try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return null; } }
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+function utf8(bytes) { try { return UTF8_FATAL_DECODER.decode(bytes); } catch { return null; } }
 function layoutCandidates(version) {
   if (version === 27) return [{type:88,method:32,tokenAt:20,label:'27'}];
   if (version === 29) return [{type:88,method:32,tokenAt:20,label:'29'}];
@@ -208,6 +209,21 @@ function parseLiterals(ctx,budget){
     const o=index.offset+i*8;if(o+8>index.end)break;
     const len=ctx.dv.getInt32(o,true),off=ctx.dv.getInt32(o+4,true);
     if(len<0||len>1<<16||off<0||off+len>data.size)continue;
+    if(len>0)budget.check(0,0,len*2);
+    const text=utf8(ctx.u8.subarray(data.offset+off,data.offset+off+len));if(text!=null)out.push({index:i,text});
+  }return out;
+}
+async function parseLiteralsAsync(ctx,budget,options={}){
+  const index=ctx.pair('stringLiteral'),data=ctx.pair('stringLiteralData'),out=[];
+  if(!index.size||!data.size||index.size%8!==0)return out;
+  const count=Math.floor(index.size/8);
+  if(count>200000)throw budgetError('IL2CPP_METADATA_BUDGET','Too many IL2CPP string literals.');
+  for(let i=0;i<count;i++){
+    if((i&1023)===0){budget.check(1024);if(options.yield!==false)await cooperativeYield();}
+    const o=index.offset+i*8;if(o+8>index.end)break;
+    const len=ctx.dv.getInt32(o,true),off=ctx.dv.getInt32(o+4,true);
+    if(len<0||len>1<<16||off<0||off+len>data.size)continue;
+    if(len>0)budget.check(0,0,len*2);
     const text=utf8(ctx.u8.subarray(data.offset+off,data.offset+off+len));if(text!=null)out.push({index:i,text});
   }return out;
 }
@@ -281,7 +297,7 @@ async function parseLayoutAsync(ctx,layout,budget,options={}){
     const m=methods[i];const c=byIndex.get(m.classIndex);m.className=c?c.full:null;m.full=(c?c.full+'::':'')+m.name;
   }
   const images=parseImages(ctx,ctx.pair('images'),stringAt,typeCount,budget);
-  const literals=parseLiterals(ctx,budget);
+  const literals=await parseLiteralsAsync(ctx,budget,options);
   const score=(validTypeNames/Math.max(1,typeCount))*4+(validMethodNames/Math.max(1,methodCount))*3+(validOwners/Math.max(1,methodCount))*5+(validTokens/Math.max(1,validMethodNames))*2+(images.length?1:0);
   return{version,classes,methods,literals,images,warnings,typeSize:layout.type,methodSize:layout.method,layout:layout.label,_layoutScore:score,_counts:{typeCount,methodCount}};
 }
@@ -419,9 +435,38 @@ export async function bindMethodAddresses(meta, opts) {
   const budget=bindingBudget(o);
   const exec=regions.filter((r)=>r.exec&&r.size>0n);
   const data=regions.filter((r)=>!r.exec&&!r.zerofill&&r.size>=16n&&/(?:__(?:const|data|data_const|rodata)|^\.(?:data(?:\.rel\.ro(?:\..+)?)?|rodata(?:\..+)?)$)/.test(r.section||''));
-  const inExec=(raw)=>{let p=BigInt.asUintN(64,raw);p&=0x00ffffffffffffffn;return exec.some((r)=>p>=r.vmAddr&&p<r.vmAddr+r.size)?p:null;};
-  const containing=(addr,bytes)=>regions.find((r)=>addr>=r.vmAddr&&addr+BigInt(bytes)<=r.vmAddr+r.size);
-  const context={regions,data,exec,read,containing,inExec,budget};
+  const sortDisjoint=(list)=>{
+    const sorted=[...list].sort((a,b)=>(a.vmAddr<b.vmAddr?-1:a.vmAddr>b.vmAddr?1:0));
+    let disjoint=true;
+    for(let i=0;i<sorted.length;i++){
+      if(sorted[i].size<=0n||(i>0&&sorted[i].vmAddr<sorted[i-1].vmAddr+sorted[i-1].size)){disjoint=false;break;}
+    }
+    return{sorted,disjoint};
+  };
+  const floorRegion=(sorted,addr)=>{
+    let lo=0,hi=sorted.length-1,best=-1;
+    while(lo<=hi){
+      const mid=(lo+hi)>>1;
+      if(sorted[mid].vmAddr<=addr){best=mid;lo=mid+1;}else hi=mid-1;
+    }
+    return best>=0?sorted[best]:null;
+  };
+  const execIndex=sortDisjoint(exec);
+  const regionIndex=sortDisjoint(regions);
+  const dataDisjoint=sortDisjoint(data).disjoint;
+  const inExec=(raw)=>{
+    let p=BigInt.asUintN(64,raw);p&=0x00ffffffffffffffn;
+    if(execIndex.disjoint){const r=floorRegion(execIndex.sorted,p);return r&&p<r.vmAddr+r.size?p:null;}
+    return exec.some((r)=>p>=r.vmAddr&&p<r.vmAddr+r.size)?p:null;
+  };
+  const containing=(addr,bytes)=>{
+    if(regionIndex.disjoint){
+      const r=floorRegion(regionIndex.sorted,addr);
+      return r&&addr+BigInt(bytes)<=r.vmAddr+r.size?r:undefined;
+    }
+    return regions.find((r)=>addr>=r.vmAddr&&addr+BigInt(bytes)<=r.vmAddr+r.size);
+  };
+  const context={regions,data,dataDisjoint,exec,read,containing,inExec,budget};
   try{
     const modern=await bindCodeGenModules(meta,context,o);
     if(modern.bound)return{...modern,preferred:'codegen-modules'};
@@ -429,12 +474,17 @@ export async function bindMethodAddresses(meta, opts) {
 
     const expectedSlots=meta.methods.reduce((m,method)=>Math.max(m,Number(method.index)+1),0);
     const maxLegacyCount=expectedSlots+Math.max(32,Math.ceil(expectedSlots*0.01));
-    const candidates=[],seen=new Set();
+    const candidates=[],seen=dataDisjoint?null:new Set(),scannedEndByRegion=dataDisjoint?new Map():null;
     const complete=await scanDataChunks(context,48,async(r,base,bytes)=>{
       const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+      const scannedEnd=scannedEndByRegion?scannedEndByRegion.get(r):null;
+      let lastVisitedAddr=null;
       for(let at=0;at+48<=bytes.length;at+=8){
         budget.check(1);
-        const addr=r.vmAddr+base+BigInt(at); if(seen.has(addr.toString()))continue;seen.add(addr.toString());
+        const addr=r.vmAddr+base+BigInt(at);
+        if(scannedEnd!=null&&addr<scannedEnd)continue;
+        if(seen){if(seen.has(addr))continue;seen.add(addr);}
+        lastVisitedAddr=addr;
         const count64=dv.getBigUint64(at,true);if(count64<1n||count64>5_000_000n)continue;
         const count=Number(count64);if(count<expectedSlots||count>maxLegacyCount)continue;
         const table=dv.getBigUint64(at+8,true)&0x00ffffffffffffffn,sampleCount=Math.min(count,128);
@@ -453,6 +503,10 @@ export async function bindMethodAddresses(meta, opts) {
         budget.consumeCandidate();
         const coveragePenalty=Math.abs(count-expectedSlots)/Math.max(1,expectedSlots);
         candidates.push({addr,table,count,ratio,structurePairs:proven,score:ratio+proven*0.04-coveragePenalty*0.5});
+      }
+      if(scannedEndByRegion&&lastVisitedAddr!=null){
+        const nextEnd=lastVisitedAddr+8n;
+        if(scannedEnd==null||nextEnd>scannedEnd)scannedEndByRegion.set(r,nextEnd);
       }
     });
     if(!complete)return bindingFail(meta,budget,'scan-budget-exhausted','IL2CPP binding scanはbudget内に全候補を検証できなかったため、自動bindingしません。');
@@ -479,20 +533,73 @@ export async function bindMethodAddresses(meta, opts) {
 }
 
 async function bindCodeGenModules(meta,ctx,o={}){
-  const {data,containing,inExec,budget}=ctx,images=meta.images||[];if(!images.length)return{bound:0,candidate:null};
-  const raw=[],seen=new Set();
+  const {data,dataDisjoint,containing,inExec,budget}=ctx,images=meta.images||[];if(!images.length)return{bound:0,candidate:null};
+  const raw=[],seen=dataDisjoint?null:new Set(),scannedEndByRegion=dataDisjoint?new Map():null;
   const complete=await scanDataChunks(ctx,24,async(r,base,bytes)=>{
     const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+    const scannedEnd=scannedEndByRegion?scannedEndByRegion.get(r):null;
+    let lastVisitedAddr=null;
     for(let at=0;at+24<=bytes.length;at+=8){
-      budget.check(1);const addr=r.vmAddr+base+BigInt(at);if(seen.has(addr.toString()))continue;seen.add(addr.toString());
+      budget.check(1);
+      const addr=r.vmAddr+base+BigInt(at);
+      if(scannedEnd!=null&&addr<scannedEnd)continue;
+      lastVisitedAddr=addr;
       const namePtr=dv.getBigUint64(at,true)&0x00ffffffffffffffn,count=dv.getUint32(at+8,true),table=dv.getBigUint64(at+16,true)&0x00ffffffffffffffn;
       if(!count||count>meta.methods.length+4096||!containing(namePtr,1)||!containing(table,Math.min(count,32)*8))continue;
+      if(seen){if(seen.has(addr))continue;seen.add(addr);}
       budget.consumeCandidate();raw.push({addr,namePtr,count,table});
+    }
+    if(scannedEndByRegion&&lastVisitedAddr!=null){
+      const nextEnd=lastVisitedAddr+8n;
+      if(scannedEnd==null||nextEnd>scannedEnd)scannedEndByRegion.set(r,nextEnd);
     }
   });
   if(!complete)return{...bindingFail(meta,budget,'scan-budget-exhausted','CodeGenModule候補をbudget内に全走査できなかったため、自動bindingしません。'),blocked:true};
   const wanted=new Map(images.map((x)=>[x.name.toLowerCase(),x])),groups=new Map();
+  const sortedImages=[...images].filter((img)=>img.typeCount>0).sort((a,b)=>a.typeStart-b.typeStart);
+  let imageRangesDisjoint=true;
+  for(let i=1;i<sortedImages.length;i++){
+    if(sortedImages[i].typeStart<sortedImages[i-1].typeStart+sortedImages[i-1].typeCount){imageRangesDisjoint=false;break;}
+  }
+  const methodsByImage=new Map();
+  const ridsByImage=new Map();
+  if(imageRangesDisjoint){
+    for(const img of images)methodsByImage.set(img.index,[]);
+    for(const m of meta.methods){
+      budget.check(1);
+      if(!m.token)continue;
+      const ci=m.classIndex;
+      let lo=0,hi=sortedImages.length-1;
+      while(lo<=hi){
+        const mid=(lo+hi)>>>1,img=sortedImages[mid];
+        if(ci<img.typeStart)hi=mid-1;
+        else if(ci>=img.typeStart+img.typeCount)lo=mid+1;
+        else{methodsByImage.get(img.index).push(m);break;}
+      }
+    }
+  }
+  const methodsForImage=(image)=>{
+    let list=methodsByImage.get(image.index);
+    if(!list){
+      list=meta.methods.filter((m)=>m.classIndex>=image.typeStart&&m.classIndex<image.typeStart+image.typeCount&&m.token);
+      methodsByImage.set(image.index,list);
+    }
+    return list;
+  };
+  const ridsForImage=(image)=>{
+    let rids=ridsByImage.get(image.index);
+    if(!rids){
+      rids=[];
+      for(const m of methodsForImage(image)){
+        const rid=(m.token&0x00ffffff)-1;
+        if(rid>=0)rids.push(rid);
+      }
+      ridsByImage.set(image.index,rids);
+    }
+    return rids;
+  };
   for(const c of raw){
+    budget.check(1);
     const nameRegion=containing(c.namePtr,1);if(!nameRegion)continue;
     const avail=nameRegion.vmAddr+nameRegion.size-c.namePtr;
     const nameReadLen=avail>=160n?160:Number(avail);
@@ -503,22 +610,22 @@ async function bindCodeGenModules(meta,ctx,o={}){
     const dv=new DataView(sample.buffer,sample.byteOffset,sample.byteLength);let nonzero=0,executable=0;
     for(let i=0;i<sampleCount;i++){budget.check(1);const p=dv.getBigUint64(i*8,true);if(p)nonzero++;if(inExec(p)!=null)executable++;}
     if(!nonzero)continue;const executableRatio=executable/nonzero;if(executableRatio<0.85)continue;
-    const image=wanted.get(key),methods=meta.methods.filter((m)=>m.classIndex>=image.typeStart&&m.classIndex<image.typeStart+image.typeCount&&m.token);
-    const rids=methods.map((m)=>(m.token&0x00ffffff)-1).filter((rid)=>rid>=0);
+    const image=wanted.get(key),rids=ridsForImage(image);
+    if(!rids.length)continue;
     let covered=0,maxRid=-1;
-    for(const rid of rids){if(rid<c.count)covered++;if(rid>maxRid)maxRid=rid;}
-    const tokenCoverage=covered/Math.max(1,Math.min(rids.length,c.count));
+    for(const rid of rids){budget.check(1);if(rid<c.count)covered++;if(rid>maxRid)maxRid=rid;}
+    const tokenCoverage=covered/rids.length;
     const tail=maxRid>=0?Math.max(0,c.count-(maxRid+1)):c.count;
     const tailPenalty=maxRid>=0?Math.min(1,tail/Math.max(1,maxRid+1)):0;
     const score=executableRatio+tokenCoverage*0.75-tailPenalty*0.2;
     const item={...c,name,key,executableRatio,tokenCoverage,score,maxRid};
     if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);
   }
-  const selected=new Map(),ambiguous=[];const margin=o.moduleAmbiguityMargin??0.10;
+  const selected=new Map(),ambiguous=[];const margin=o.moduleAmbiguityMargin??0.10,minTokenCoverage=o.minTokenCoverage??0.25;
   for(const image of images){
     const key=image.name.toLowerCase(),list=(groups.get(key)||[]).sort((a,b)=>b.score-a.score||(a.addr<b.addr?-1:1));if(!list.length)continue;
     const best=list[0],second=list[1];
-    if(best.tokenCoverage<0.95){ambiguous.push({image:image.name,reason:'token-coverage',candidates:list.length});continue;}
+    if(best.tokenCoverage<minTokenCoverage){ambiguous.push({image:image.name,reason:'token-coverage',candidates:list.length});continue;}
     if(second&&best.score-second.score<margin){ambiguous.push({image:image.name,reason:'candidate-margin',candidates:list.length,margin:best.score-second.score});continue;}
     selected.set(image.index,best);
   }
@@ -530,7 +637,7 @@ async function bindCodeGenModules(meta,ctx,o={}){
   const staged=[];
   for(const image of images){
     const mod=selected.get(image.index);if(!mod)continue;
-    const methods=meta.methods.filter((m)=>m.classIndex>=image.typeStart&&m.classIndex<image.typeStart+image.typeCount&&m.token);
+    const methods=methodsForImage(image);
     const pairs=methods.map((method)=>({method,rid:(method.token&0x00ffffff)-1})).filter((x)=>x.rid>=0&&x.rid<mod.count);
     const values=await pointerValues(ctx,mod.table,mod.count,pairs.map((x)=>x.rid));if(!values)continue;
     for(const {method,rid} of pairs){const raw=values.get(rid);if(raw==null)continue;const address=inExec(raw);if(address!=null)staged.push({method,address,image,mod});}

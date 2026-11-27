@@ -15,7 +15,7 @@ export const READING_TASKS=Object.freeze(['inspect-bit-condition','trace-value',
 export function proposeMaskCondition(expression) {
   const e=snapshotContractData(expression,{allowBigInt:true,maxBytes:262144,maxNodes:4096});
   if(e?.kind!=='compare'||!['==','!='].includes(e.op)||e.comparisonDomain!=='integer'||e.effect!=='pure')return null;
-  const zero=x=>x?.kind==='const'&&typeof x.value==='bigint'&&BigInt.asUintN(x.bits,x.value)===0n;
+  const zero=x=>x?.kind==='const'&&typeof x.value==='bigint'&&Number.isSafeInteger(x.bits)&&x.bits>=1&&x.bits<=128&&BigInt.asUintN(x.bits,x.value)===0n;
   const masked=zero(e.right)?e.left:zero(e.left)?e.right:null;
   if(masked?.kind!=='binary'||!['and','&'].includes(masked.op)||masked.effect!=='pure')return null;
   const mask=masked.right?.kind==='const'?masked.right:masked.left?.kind==='const'?masked.left:null;
@@ -31,6 +31,7 @@ export function lowerMaskCondition(input) {
   if(c.schema!==TASK_IDIOM_SCHEMA||!Number.isSafeInteger(c.width)||c.width<1||c.width>128||typeof c.maskHex!=='string'||!/^0x[1-9a-f][0-9a-f]*$/.test(c.maskHex)||c.maskHex.length>34||BigInt(c.maskHex)>=(1n<<BigInt(c.width)))contractFail('task-idiom-contract');
   exactEnum(c.kind,['any-set','all-clear'],'task-idiom-kind');
   const e=c.sourceExpression;
+  if(!e||typeof e!=='object'||Array.isArray(e)||!c.operand||typeof c.operand!=='object'||Array.isArray(c.operand))contractFail('task-idiom-contract');
   const constant={kind:'const',bits:c.width,signed:false,effect:'pure',value:BigInt(c.maskHex)};
   return {kind:'compare',bits:1,signed:false,effect:'pure',op:c.kind==='any-set'?'!=':'==',compareSigned:e.compareSigned,comparisonDomain:'integer',
     left:{kind:'binary',bits:c.width,signed:c.operand.signed,effect:'pure',op:'and',left:c.operand,right:constant},

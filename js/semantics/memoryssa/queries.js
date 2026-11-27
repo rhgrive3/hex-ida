@@ -408,9 +408,15 @@ function forwardingRegionBase(region) {
   return null;
 }
 
+function compareText(left, right) {
+  const a = String(left ?? '');
+  const b = String(right ?? '');
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 const frozenIrIndexCache = new WeakMap();
 function frozenIrIndex(ir) {
-  if (!forwardingObject(ir) || !Object.isFrozen(ir)) return null;
+  if (!forwardingObject(ir) || !isCanonicalSemanticIrProducerArtifact(ir) || !Object.isFrozen(ir)) return null;
   const existing = frozenIrIndexCache.get(ir);
   if (existing !== undefined) return existing;
   const nodes = ir.nodes;
@@ -453,12 +459,15 @@ function forwardingCanonicalSourceNode(metadata, options) {
 }
 
 function forwardingQualifierNormalizationAllowed(sourceMemory, memory) {
-  if (!forwardingObject(sourceMemory) || !forwardingObject(memory)
-      || sourceMemory.volatility !== 'unknown' || sourceMemory.atomic !== 'unknown') return false;
+  if (!forwardingObject(sourceMemory) || !forwardingObject(memory)) return false;
+  const volOk = sourceMemory.volatility === false || sourceMemory.volatility === 'unknown';
+  const atomicOk = sourceMemory.atomic === false || sourceMemory.atomic === 'unknown';
+  if (!volOk || !atomicOk) return false;
   const normalized = {
     ...sourceMemory,
     volatility: false,
     atomic: false,
+    ordering: sourceMemory.ordering ?? 'unknown',
   };
   return stableStringify(normalized) === stableStringify(memory);
 }
@@ -1337,7 +1346,7 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     && isCanonicalMemorySsaProducerArtifact(memorySsa)
     && Object.isFrozen(memorySsa);
   const ir = options.ir;
-  const irCacheable = ir == null || (forwardingObject(ir) && Object.isFrozen(ir));
+  const irCacheable = ir == null || (forwardingObject(ir) && isCanonicalSemanticIrProducerArtifact(ir) && Object.isFrozen(ir));
   const gateKey = canonicalArtifact && irCacheable && !options.skipValidation
     && options.accessMetadata == null
     && options.consumerId === CANONICAL_MEMORY_FORWARDING_CONSUMER
@@ -2486,7 +2495,7 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
     // boundary must not race with an exact publication.
     forwardingScanTick(state);
     const winners = [...new Map([...byteMap.values()].map((lane) => [String(lane.definition.id), lane])).values()]
-      .sort((left, right) => left.order - right.order || String(left.definition.id).localeCompare(String(right.definition.id)));
+      .sort((left, right) => left.order - right.order || compareText(left.definition.id, right.definition.id));
     const coverage = coverageForUse();
     const proofIdentity = forwardingIdentity(artifact, use, context.useMeta, winners, stores, coverage, context, options);
     return forwardingRegisterExactFact(forwardingResult(FORWARD_EXACT, null, {
@@ -2611,22 +2620,26 @@ export function explainMemoryPath(memorySsa, useOrId, options = {}) {
   const definitions = definitionMap(memorySsa);
   const use = useFrom(memorySsa, useOrId);
   const visited = new Set();
+  const queued = new Set([use.reachingDefinitionId]);
   const work = [];
   memoryPathHeapPush(work, use.reachingDefinitionId);
   const nodes = [];
   const edges = [];
   while (work.length) {
     assertNotAborted(options);
-    if (visited.size >= maximum) fail('memory-ssa-query-budget-exceeded-max-definitions');
     const id = memoryPathHeapPop(work);
     if (visited.has(id)) continue;
+    if (visited.size >= maximum) fail('memory-ssa-query-budget-exceeded-max-definitions');
     visited.add(id);
     const definition = definitions.get(id);
     if (!definition) fail('memory-ssa-query-dangling-definition-link');
     nodes.push(definition);
     for (const previousId of definition.previousDefinitionIds) {
       edges.push({ from: definition.id, to: previousId, kind: 'previous' });
-      if (!visited.has(previousId)) memoryPathHeapPush(work, previousId);
+      if (!visited.has(previousId) && !queued.has(previousId)) {
+        queued.add(previousId);
+        memoryPathHeapPush(work, previousId);
+      }
     }
     for (const incoming of definition.incoming) {
       edges.push({
@@ -2635,13 +2648,16 @@ export function explainMemoryPath(memorySsa, useOrId, options = {}) {
         kind: 'phi-incoming',
         predecessorBlockId: incoming.predecessorBlockId,
       });
-      if (!visited.has(incoming.definitionId)) memoryPathHeapPush(work, incoming.definitionId);
+      if (!visited.has(incoming.definitionId) && !queued.has(incoming.definitionId)) {
+        queued.add(incoming.definitionId);
+        memoryPathHeapPush(work, incoming.definitionId);
+      }
     }
   }
-  nodes.sort((a, b) => a.id.localeCompare(b.id));
-  edges.sort((a, b) => a.from.localeCompare(b.from)
-    || a.to.localeCompare(b.to)
-    || a.kind.localeCompare(b.kind)
-    || String(a.predecessorBlockId ?? '').localeCompare(String(b.predecessorBlockId ?? '')));
+  nodes.sort((a, b) => compareText(a.id, b.id));
+  edges.sort((a, b) => compareText(a.from, b.from)
+    || compareText(a.to, b.to)
+    || compareText(a.kind, b.kind)
+    || compareText(a.predecessorBlockId ?? '', b.predecessorBlockId ?? ''));
   return deepFreeze({ use, nodes, edges });
 }

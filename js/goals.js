@@ -25,7 +25,7 @@ export const GOALS = [
   {
     id: 'hp', ja: 'HP・体力', en: 'HP / health', icon: '❤️',
     strong: [/\bhp\b/i, /health/i, /\blife\b/i, /体力/, /ライフ/, /耐久/],
-    weak: [/damage/i, /heal/i, /revive/i, /回復/, /死亡/, /\bdie\b/i],
+    weak: [/damage/i, /ダメージ/, /heal/i, /revive/i, /回復/, /死亡/, /\bdie\b/i],
     /*
      * health は体力とは限らない。広告 SDK の死活監視（healthCheck）や
      * 端末情報（healthPercentile）まで拾うと、HP を探した人に
@@ -45,7 +45,7 @@ export const GOALS = [
     strong: [/attack/i, /\batk\b/i, /power/i, /strength/i, /攻撃/, /こうげき/, /威力/],
     weak: [/damage/i, /weapon/i, /skill/i, /武器/, /スキル/],
     avoid: [
-      /power[\s_-]*(?:info|state|mode|sav(?:e|ing)|supply|management|battery|adapter|source|of[\s_-]*(?:2|two|10|ten)|consumption|usage|budget|button|key|off|on|thermal)/i,
+      /power[\s_-]*(?:info|state|mode|sav(?:e|ing)|supply|management|battery|adapter|source|of[\s_-]*(?:2|two|10|ten)|consumption|usage|budget|button|key|off|on|thermal|up[\s_-]*self[\s_-]*test)/i,
       /(?:signal|wifi|password|encryption|blur|shadow)[\s_-]*strength/i,
       /\b(?:(?:c|name)[\s_-]*)?str[\s_-]*(?:len|size|buf|ptr|cpy|cmp)\b/i,
     ],
@@ -91,8 +91,9 @@ export const GOALS = [
      */
     avoid: [
       /(?:multi[\s_-]*)?concurren(cy|t)/i,
-      /\bbid[\s_-]*floor\w*/i,
-      /price[\s_-]*floor\w*/i,
+      /\bbid[\s_-]*floor(?:[\s_-]*(?:currency|price|amount|usd|cpm|ecpm|value|rate)\b|\w*)/i,
+      /\blocale\b|\bnslocale\b|currency[\s_-]*(?:identifier|code|symbol|formatter)|number[\s_-]*formatter/i,
+      /price[\s_-]*floor(?:[\s_-]*(?:currency|price|amount|usd|cpm|ecpm|value|rate)\b|\w*)/i,
       /costume|acoustic|coincid(?:e|ent|ence)/i,
       /(?:white|load|audio|stereo|color|channel)[\s_-]*balance/i,
     ],
@@ -104,7 +105,8 @@ export const GOALS = [
     weak: [/rate/i, /probability/i, /rare/i, /reward/i, /確率/, /レア/, /排出/],
     avoid: [
       /generat(?:e|ed|es|or)|iterat(?:e|ed|es|or)|operat(?:e|ed|es|or)|separat(?:e|ed|es)|accelerat(?:e|ed|es)|migrat(?:e|ed|es)|integrat(?:e|ed|es)|accurate|strategy|infrared|rarely/i,
-      /(?:frame|sample|bit|refresh|baud|heart|tick|error|hit|miss)[\s_-]*rate/i,
+      /(?:frame|sample|bit|refresh|baud|heart|tick|error|hit|miss|deceleration|data|sampling|polling)[\s_-]*rate/i,
+      /enumerate[\s_-]*interfaces/i,
       /draw[\s_-]*(?:call|rect|in[\s_-]*rect|mesh|sprite|text|image|line|path|layer|buffer|pass|order|mode|index(?:ed)?|array|element|primitive|vertex|quad|triangle|canvas|context|surface|texture|shadow|view|node|gizmo|batch)/i,
     ],
     expects: { numeric: true, call: true },
@@ -113,11 +115,14 @@ export const GOALS = [
     id: 'purchase', ja: '購入・課金', en: 'Purchases', icon: '💳',
     strong: [/purchase/i, /payment/i, /billing/i, /receipt/i, /storekit/i, /\biap\b/i,
       /in[\s_-]?app/i, /\bsku\b/i, /entitlement/i, /transaction/i,
-      /subscription/i, /課金/, /購入/, /決済/, /レシート/],
+      /subscrib\w*/i, /subscription/i, /premium/i, /\bvip\b/i,
+      /課金/, /購入/, /決済/, /レシート/, /プレミアム/, /サブスク/],
     weak: [/price/i, /product/i, /restore/i, /価格/, /商品/],
     avoid: [
       /(?:ca|sql|sqlite|db|database|realm|core[\s_-]*data|begin|commit|rollback|write|read)[\s_-]*transaction/i,
       /restore[\s_-]*(?:g[\s_-]*state|state|context|window|view|frame|layout|focus|graphics|matrix|transform)/i,
+      /(?:event|topic|channel|pub[\s_-]*sub|observable|stream|notification|signal|redis|mqtt)[\s_-]*subscrib\w*/i,
+      /subscrib\w*[\s_-]*(?:event|topic|channel|observer|listener|callback)/i,
     ],
     expects: { call: true, compare: true },
   },
@@ -137,8 +142,10 @@ export const GOALS = [
   },
   {
     id: 'ads', ja: '広告', en: 'Advertising', icon: '📺',
-    strong: [/admob/i, /unityads/i, /applovin/i, /ironsource/i, /vungle/i, /tapjoy/i,
-      /interstitial/i, /rewarded/i, /banner_?ad/i, /広告/],
+    strong: [/remove[\s_-]*ads?/i, /no[\s_-]*ads?/i, /ad[\s_-]*free/i, /hide[\s_-]*ads?/i, /disable[\s_-]*ads?/i,
+      /広告(?:を)?(?:消|非表示|削除|オフ|除去|なし)/,
+      /interstitial/i, /rewarded/i, /banner_?ad/i, /広告/,
+      /admob/i, /unityads/i, /applovin/i, /ironsource/i, /vungle/i, /tapjoy/i],
     weak: [/\bads?\b/i, /impression/i, /campaign/i],
     avoid: [/\bad[\s_-]*hoc\b/i],
     expects: { call: true },
@@ -149,7 +156,7 @@ export const GOALS = [
       /セーブ/, /保存/, /記録/],
     weak: [/write/i, /store/i, /persist/i, /progress/i, /進行/],
     avoid: [
-      /restore|store[\s_-]*kit|store[\s_-]*front/i,
+      /restore|store[\s_-]*kit|store[\s_-]*front|store[\s_-]*view/i,
       /(?:app|play)[\s_-]*store/i,
       /(?:power|battery|energy)[\s_-]*sav(?:e|ing)/i,
       /save[\s_-]*(?:g[\s_-]*state|graphics|context|matrix|transform)/i,
@@ -185,8 +192,11 @@ export const GOALS = [
     strong: [/level_?up/i, /\blevel\b/i, /\bexp\b/i, /experience/i, /レベル/, /経験値/, /ランクアップ/],
     weak: [/upgrade/i, /grow/i, /rank/i, /強化/, /育成/],
     avoid: [
-      /(?:log|verbosity|battery|zoom|compression|mip(?:map)?|window|api|feature|debug|error|warning|trace|severity|nesting|indent)[\s_-]*level/i,
+      /(?:log|verbosity|battery|zoom|compression|mip(?:map)?|window|api|feature|debug|error|warning|trace|severity|nesting|indent|low)[\s_-]*level/i,
+      /\b(?:alloc(?:ator)?|prev->levels|even one level|level\s*>=\s*1|skiplist\w*)\b|lla_skiplist\w*/i,
       /(?:crank|frank|prank|drank|shrank)/i,
+      /^_*(?:exp|exp2|exp10|expm1|frexp|ldexp)$/i,
+      /\b(?:exp10|exp2|expm1|frexp|ldexp|exponent|expect|expand|export|explicit|expression|exception)\b/i,
     ],
     expects: { numeric: true, store: true, compare: true },
   },
@@ -223,6 +233,46 @@ export const GOALS = [
     ],
     expects: { compare: true, call: true },
   },
+  {
+    id: 'speed', ja: '移動速度・スピード', en: 'Speed / movement', icon: '💨',
+    strong: [/\bspeed\b/i, /speed[\s_-]*up/i, /move[\s_-]*speed/i, /velocity/i, /移動速度/, /スピード/, /速度/, /素早さ/],
+    weak: [/accel/i, /\bpace\b/i, /\btempo\b/i, /\bwalk\b/i, /\brun\b/i, /敏捷/],
+    avoid: [
+      /white[\s_-]*space|coordinate[\s_-]*space|name[\s_-]*space|work[\s_-]*space|drag[\s_-]*gesture|minimum[\s_-]*distance|run[\s_-]*loop|run[\s_-]*on[\s_-]*(?:shared|main|background|ui)?[\s_-]*thread/i,
+      /(?:download|upload|network|transfer|connection|playback|scroll|fan|clock|baud|cpu|gpu|link|write|read|disk|bit)[\s_-]*speed/i,
+      /speed[\s_-]*(?:test|dial|limit|bump)/i,
+      /(?:angular|scroll|swipe|pan|drag|flick|fling|scroll[\s_-]*view)[\s_-]*velocity/i,
+      /velocity[\s_-]*(?:tracker|in[\s_-]*view)/i,
+    ],
+    expects: { numeric: true, store: true },
+  },
+  {
+    id: 'cooldown', ja: 'クールダウン・CT', en: 'Cooldown', icon: '⏱️',
+    strong: [/cool[\s_-]*down/i, /\brecast\b/i, /\bcd\b/i, /クールダウン/, /再使用/],
+    weak: [/reload/i, /interval/i, /delay/i, /timer/i, /待機時間/],
+    avoid: [
+      /\bcd[\s_-]*(?:rom|key|drive|player|track|audio|image|dir|path)\b/i,
+      /\b(?:device|type|user|item|error|err|status|state|area|country|lang|shop|store|stage|event|char|unit|card|kind|group|category|mode|result|ret|http|zip|postal|pref|currency|client|server|app|os|platform|model|vendor|media|ad|campaign|promo|coupon|serial|product|order)[\s_-]*cd\b/i,
+      /(?:gcd|lcd|bcd|mcd|acd|icd|rcd|ucd)\b/i,
+      /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle|timeout|date|reload|update|location|banner)[\s_-]*(?:interval|delay)/i,
+      /scheduleUpdateAfterInterval|onReloadInterval|viewability[\w\s-]*|anime[\s_-]*interval|animation[\s_-]*interval|cmtime\w*|repeatable[\s_-]*timer|block[\s_-]*queue|url[\s_-]*request|cache[\s_-]*policy/i,
+      /reload[\s_-]*(?:data|table|section|row|view|page|url|webview|config|script)|\bpreload\b|package\.preload/i,
+    ],
+    expects: { numeric: true, store: true, compare: true },
+  },
+  {
+    id: 'crypto', ja: '暗号化・ライセンス', en: 'Crypto / license', icon: '🔐',
+    strong: [/encrypt\w*/i, /decrypt\w*/i, /cipher/i, /\baes\b/i, /\brsa\b/i, /licen[cs]e/i,
+      /暗号化?/, /復号/, /ライセンス/, /鍵/, /キー/],
+    weak: [/\bcrypto\b/i, /\bhmac\b/i, /\bsha(?:1|256|512)\b/i, /\bkey\b/i, /serial/i, /activation/i, /署名/],
+    avoid: [
+      /(?:key[\s_-]*(?:board|code|down|up|press|event|pad|chain|frame|path|window|word|value|binding|map|name|index|id|set|list|store|storage)|primary[\s_-]*key|foreign[\s_-]*key|sort[\s_-]*key|cache[\s_-]*key|hot[\s_-]*key|shortcut[\s_-]*key|enter[\s_-]*key|escape[\s_-]*key|arrow[\s_-]*key|meta[\s_-]*key|shift[\s_-]*key|ctrl[\s_-]*key)/i,
+      /(?:キー(?:ボード|入力|操作|バインド|コード|フレーム|ワード)|ホットキー|ショートカットキー)/,
+      /(?:mit|apache|bsd|gpl|lgpl|mpl|isc|zlib|open[\s_-]*source|third[\s_-]*party|copyright|notice|spdx)[\s_-]*licen[cs]e/i,
+      /licen[cs]e[\s_-]*(?:text|file|notice|header|agreement|url|link|page|view|dialog)/i,
+    ],
+    expects: { call: true, compare: true, crypto: true },
+  },
 ];
 
 /* ── 値（フィールド）の名前をあてるための語彙 ────────────────
@@ -256,6 +306,16 @@ export function normalizeFieldName(name) {
   return s.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+/** 基本的な英語の単数形・複数形ゆれ（coin/coins, gem/gems, item/items, point/points 等）を吸収する。 */
+function singularizeToken(w) {
+  if (!w || w.length < 4 || !/^[a-z]+$/.test(w)) return w;
+  if (w.endsWith('ies') && w.length >= 5) return w.slice(0, -3) + 'y';
+  if (/(?:ss|us|is)$/.test(w)) return w;
+  if (/(?:ch|sh|x|z)es$/.test(w) && w.length >= 5) return w.slice(0, -2);
+  if (w.endsWith('s')) return w.slice(0, -1);
+  return w;
+}
+
 /** 開いた名前 haystack の中に、開いた語の並び needle がそのまま入っている全位置を返す。 */
 function wordSequenceMatches(haystack, needle) {
   const h = ' ' + haystack + ' ';
@@ -269,6 +329,25 @@ function wordSequenceMatches(haystack, needle) {
     pos = idx + 1;
     if (out.length >= 8) break;
   }
+  if (out.length) return out;
+  const needleTokens = needle.split(' ').filter(Boolean);
+  if (!needleTokens.length) return out;
+  const needleStems = needleTokens.map(singularizeToken);
+  const hTokens = [];
+  for (const m of haystack.matchAll(/\S+/g)) {
+    hTokens.push({ start: m.index, stem: singularizeToken(m[0]) });
+  }
+  if (hTokens.length < needleStems.length) return out;
+  for (let i = 0; i <= hTokens.length - needleStems.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needleStems.length; j++) {
+      if (hTokens[i + j].stem !== needleStems[j]) { ok = false; break; }
+    }
+    if (ok) {
+      out.push(hTokens[i].start);
+      if (out.length >= 8) break;
+    }
+  }
   return out;
 }
 
@@ -278,10 +357,16 @@ function wordCoverage(haystack, needle, blocked = []) {
   if (!words.length) return 0;
   const have = new Set();
   for (const match of haystack.matchAll(/\S+/g)) {
-    if (!overlaps(blocked, match.index, match[0].length)) have.add(match[0]);
+    if (!overlaps(blocked, match.index, match[0].length)) {
+      have.add(match[0]);
+      const stem = singularizeToken(match[0]);
+      if (stem !== match[0]) have.add(stem);
+    }
   }
   let hit = 0;
-  for (const w of words) if (have.has(w)) hit++;
+  for (const w of words) {
+    if (have.has(w) || have.has(singularizeToken(w))) hit++;
+  }
   return hit / words.length;
 }
 
@@ -353,7 +438,8 @@ const FIELD_VOCAB = {
   purchase: {
     strong: [/\bpurchase\b/, /\bpayment\b/, /\bbilling\b/, /\breceipt\b/, /\bstore ?kit\b/,
       /\biap\b/, /\bin ?app\b/, /\bsku\b/, /\bentitlements?\b/, /\btransaction\b/,
-      /\bproduct\b/, /\bsubscription\b/, /課金/, /購入/],
+      /\bproduct\b/, /\bsubscrib\w*\b/, /\bsubscription\b/, /\bpremium\b/, /\bvip\b/,
+      /課金/, /購入/, /プレミアム/, /サブスク/],
     weak: [/\bprice\b/, /\bstore\b/, /\bpaid\b/],
     type: 'any', prefer: ['plain'],
   },
@@ -364,7 +450,8 @@ const FIELD_VOCAB = {
     type: 'any', prefer: ['plain'],
   },
   ads: {
-    strong: [/\bads?\b/, /\binterstitial\b/, /\brewarded\b/, /\bbanner\b/, /\badmob\b/, /広告/],
+    strong: [/\bno ?ads?\b/, /\bremove ?ads?\b/, /\bad ?free\b/, /\bhide ?ads?\b/, /\bdisable ?ads?\b/,
+      /\bads?\b/, /\binterstitial\b/, /\brewarded\b/, /\bbanner\b/, /\badmob\b/, /広告/],
     weak: [/\bimpression\b/, /\bplacement\b/],
     type: 'any', prefer: ['plain'],
   },
@@ -406,6 +493,23 @@ const FIELD_VOCAB = {
       /\bdebugger\b/, /改造/, /不正/],
     weak: [/\bdetect(ed)?\b/, /\bverified\b/, /\bvalid\b/],
     type: 'bool', prefer: ['flag', 'plain'],
+  },
+  speed: {
+    strong: [/\bspeed\b/, /\bmove ?speed\b/, /\bvelocity\b/, /\bvel\b/, /\bagility\b/, /\bagi\b/,
+      /移動速度/, /スピード/, /速度/, /素早さ/],
+    weak: [/\baccel(eration)?\b/, /\bpace\b/, /\bwalk ?speed\b/, /\brun ?speed\b/],
+    type: 'number', prefer: ['plain', 'current'],
+  },
+  cooldown: {
+    strong: [/\bcool ?down\b/, /\brecast\b/, /\bcd\b/, /クールダウン/, /再使用/],
+    weak: [/\breload\b/, /\binterval\b/, /\bdelay\b/, /\btimer\b/],
+    type: 'number', prefer: ['plain', 'current'],
+  },
+  crypto: {
+    strong: [/\bencrypt\w*\b/, /\bdecrypt\w*\b/, /\bcipher\b/, /\baes\b/, /\brsa\b/, /\blicen[cs]e\b/,
+      /\bcrypto\b/, /暗号/, /復号/, /ライセンス/, /鍵/, /キー/],
+    weak: [/\bhmac\b/, /\bsha\d+\b/, /\bkey\b/, /\biv\b/, /\bsalt\b/, /\bserial\b/, /\bactivation\b/],
+    type: 'any', prefer: ['plain'],
   },
 };
 
@@ -485,7 +589,7 @@ export function matchField(goal, name) {
   // 自由入力（プリセットにない目的）は、入力から開いた語で当てる
   for (const term of goal.extraTerms || []) {
     const w = normalizeFieldName(term.word);
-    if (!w || w.length < 2) continue;
+    if (!w || (w.length < 2 && !SINGLE_CHAR_CJK_CONCEPTS.has(w))) continue;
     for (const at of wordSequenceMatches(norm, w)) {
       if (overlaps(blocked, at, w.length)) continue;
       consider((norm === w ? 0.95 : 0.7) * (term.weight || 1), term.word, norm === w, false, false, at, false, w.length);
@@ -578,17 +682,23 @@ export function goalLabel(goal) {
  * 「敵にダメージを与える処理」と書かれても、バイナリの中にあるのは damage / dmg。
  * 日本語 → 実際に埋まっていそうな語、の橋渡しをする。
  */
+export const SINGLE_CHAR_CJK_CONCEPTS = new Set(['鍵', '石', '金', '敵']);
+
+const JA_VERB_SUFFIX_RE = /(?:したい|見たい|知りたい|探したい|増やす|増える|減らす|減る|消す|消える|変える|変わる|上げる|上がる|下げる|下がる|見る|探す|調べる|する|される|できる|なる|ある|いる|ない|ます|です|場所|処理|関数|方法|ところ)$/;
+
 const SYNONYMS = [
   [/ダメージ|damage|だめーじ/i, ['damage', 'dmg', 'hurt', 'ダメージ']],
   [/攻撃|こうげき|attack|\batk\b/i, ['attack', 'atk', 'attk', '攻撃']],
   [/防御|ぼうぎょ|defense|defence/i, ['defense', 'defence', 'def', '防御']],
   [/体力|\bhp\b|ヒットポイント|health/i, ['hp', 'health', 'life', '体力']],
-  [/所持金|お金|資金|通貨|コイン|\bcoins?\b|money|gold|wallet/i, ['coin', 'coins', 'gold', 'money', 'currency', 'wallet', '所持金']],
-  [/ジェム|(?:課金|魔法|魔晶|聖晶|有償|無償|ガチャ)石|\bgems?\b|jewel|diamond|crystal/i, ['gem', 'jewel', 'diamond', 'crystal', 'ジェム']],
+  [/所持金|お金|資金|通貨|コイン|\bcoins?\b|money|gold|wallet|(?:^|[\s、。])金(?:$|[\s、。をがはにのでへ])/i, ['coin', 'coins', 'gold', 'money', 'currency', 'wallet', '所持金']],
+  [/ジェム|(?:課金|魔法|魔晶|聖晶|有償|無償|ガチャ)石|(?:^|[\s、。])石(?:$|[\s、。をがはにのでへ])|\bgems?\b|jewel|diamond|crystal/i, ['gem', 'jewel', 'diamond', 'crystal', 'ジェム']],
   [/ガチャ|gacha|抽選|召喚/i, ['gacha', 'lottery', 'draw', 'summon', 'ガチャ']],
+  [/プレミアム|サブスク|premium|\bvip\b|subscrib\w*|subscription/i, ['premium', 'vip', 'subscription', 'subscribe', 'entitlement', 'purchase', 'プレミアム']],
   [/課金|購入|買|purchase|payment|iap|in-?app|sku|entitlement|storekit|receipt/i, ['purchase', 'payment', 'billing', 'receipt', 'iap', 'inapp', 'sku', 'entitlement', 'storekit', '購入']],
   [/チート|改造|不正|cheat|jailbreak|frida|tamper|\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b|magisk|ptrace|sslpinning/i, ['jailbreak', 'frida', 'tamper', 'cheat', 'rooted', 'rooting', 'magisk', 'ptrace', 'sslpinning', '改造', '不正']],
   [/ログイン|login|認証|\bauth(?:enticat\w*|oriz\w*|n|z)?\b/i, ['login', 'auth', 'signin', 'ログイン']],
+  [/広告(?:を)?(?:消|非表示|削除|オフ|除去|なし|カット|ブロック)|remove[\s_-]*ads?|no[\s_-]*ads?|ad[\s_-]*free/i, ['noAds', 'removeAds', 'adFree', 'ad', 'ads', '広告']],
   [/広告|\bads?\b/i, ['ad', 'ads', 'interstitial', 'rewarded', '広告']],
   [/セーブ|保存|save/i, ['save', 'store', 'persist', 'セーブ']],
   [/通信|サーバ|server|network|\bapi\b/i, ['http', 'api', 'request', 'session', '通信']],
@@ -600,7 +710,9 @@ const SYNONYMS = [
   [/味方|player|プレイヤー|自分/i, ['player', 'user', 'hero', 'プレイヤー']],
   [/時間|time|タイマー|timer/i, ['time', 'timer', 'duration']],
   [/回数|\bcounts?\b|カウント/i, ['count', 'num', 'times']],
-  [/速度|speed|スピード/i, ['speed', 'velocity', 'rate']],
+  [/移動速度|速度|素早さ|\bspeed\b|スピード|velocity/i, ['speed', 'moveSpeed', 'velocity', '速度', 'スピード']],
+  [/クールダウン|再使用|cool[\s_-]*down|\bcd\b|recast/i, ['cooldown', 'recast', 'cd', 'クールダウン']],
+  [/暗号化?|復号|ライセンス|鍵|(?:^|[\s、。])キー(?:$|[\s、。をがはにのでへ])|encrypt\w*|decrypt\w*|cipher|\baes\b|\brsa\b|licen[cs]e|\bcrypto\b/i, ['encrypt', 'decrypt', 'cipher', 'aes', 'rsa', 'license', 'crypto', 'key', '暗号', '復号', '鍵']],
   [/確率|probability|\brates?\b/i, ['rate', 'probability', 'chance', '確率']],
 ];
 
@@ -610,7 +722,7 @@ export function expandTerms(text) {
   const terms = [];
   const push = (word, weight) => {
     const w = String(word).trim();
-    if (w.length < 2) return;
+    if (w.length < 2 && !SINGLE_CHAR_CJK_CONCEPTS.has(w)) return;
     if (terms.some((x) => x.word.toLowerCase() === w.toLowerCase())) return;
     terms.push({ word: w, weight });
   };
@@ -620,9 +732,36 @@ export function expandTerms(text) {
   }
   // 入力そのものに含まれる単語も、そのまま手がかりにする（弱め）
   for (const token of raw.split(/[\s、。,.:;（）()「」"'/\\|+*]+/)) {
-    if (token.length >= 2 && !/^[はがのをにでとやもへ]+$/.test(token)) push(token, 0.6);
+    if (!token || /^[はがのをにでとやもへ]+$/.test(token)) continue;
+    if (token.length >= 2 || SINGLE_CHAR_CJK_CONCEPTS.has(token)) push(token, 0.6);
+    if (/[ぁ-んァ-ヶ一-龥]/.test(token)) {
+      for (const part of token.split(/[はがのをにでとへも]+/)) {
+        const cleaned = part.replace(JA_VERB_SUFFIX_RE, '').trim();
+        if (cleaned && cleaned !== token && (cleaned.length >= 2 || SINGLE_CHAR_CJK_CONCEPTS.has(cleaned)) && !/^[ぁ-ん]+$/.test(cleaned)) {
+          push(cleaned, 0.6);
+        } else if (part && part !== token && (part.length >= 2 || SINGLE_CHAR_CJK_CONCEPTS.has(part)) && !/^[ぁ-ん]+$/.test(part)) {
+          push(part, 0.6);
+        }
+      }
+    }
   }
   return terms;
+}
+
+/**
+ * 入力がコード上の識別子（CamelCase / snake_case / _prefix / 複数語）らしいか。
+ * 単一の汎用概念語（"coin", "hp", "gold", "score" 等）がプリセットに当たった場合は false とし、
+ * SDK 抑制の回避（askedByName）や複数形・同義語の切り落としを防ぐ。
+ */
+export function isIdentifierLikeQuery(raw) {
+  if (typeof raw !== 'string') return false;
+  const s = raw.trim();
+  if (!s) return false;
+  if (/^_/.test(s)) return true;
+  if (/[_.:/-]/.test(s)) return true;
+  if (/[a-z0-9][A-Z]/.test(s) || /[A-Z]{2,}[a-z]/.test(s)) return true;
+  if (/\s+/.test(s)) return true;
+  return false;
 }
 
 /**
@@ -646,7 +785,12 @@ export function parseGoal(text) {
   }
   const terms = expandTerms(raw);
   if (best && best.hit >= 2) {
-    return Object.assign({}, best.goal, { text: raw, extraTerms: terms, free: false });
+    return Object.assign({}, best.goal, {
+      text: raw,
+      extraTerms: terms,
+      free: false,
+      isPreset: !isIdentifierLikeQuery(raw),
+    });
   }
   return {
     id: 'free', free: true, text: raw,
@@ -727,12 +871,47 @@ function allMatches(re, s, hasAvoid) {
  *
  * @returns {{score:number, term:string}|null} 当てはまらなければ null
  */
-export function matchText(goal, text) {
-  if (!goal || typeof text !== 'string') return null;
-  const s = text;
-  if (s.length < 2) return null;
+export function normalizeIdentifierBoundaries(text) {
+  if (typeof text !== 'string' || text.length < 2) return text;
+  if (!/[_]|[a-z0-9][A-Z]|[A-Z]{2}[a-z]/.test(text)) return text;
+  return text
+    .replace(/_/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+}
+
+function mapAvoidSpansToNormalized(s, rawSpans) {
+  if (!rawSpans || !rawSpans.length) return [];
+  const posMap = new Array(s.length);
+  let outLen = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (i > 0 && c >= 65 && c <= 90) {
+      const prev = s.charCodeAt(i - 1);
+      const next = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+      const prevLowerOrDigit = (prev >= 97 && prev <= 122) || (prev >= 48 && prev <= 57);
+      const prevUpper = prev >= 65 && prev <= 90;
+      const nextLower = next >= 97 && next <= 122;
+      if (prevLowerOrDigit || (prevUpper && nextLower)) outLen++;
+    }
+    posMap[i] = outLen;
+    outLen++;
+  }
+  const mapped = [];
+  for (const [lo, hi] of rawSpans) {
+    if (lo < hi && lo >= 0 && hi <= s.length) {
+      mapped.push([posMap[lo], posMap[hi - 1] + 1]);
+    }
+  }
+  return mapped;
+}
+
+function matchTextSingle(goal, s, extraBlocked = null, precomputedBlocked = null) {
   let best = null;
-  const blocked = avoidSpans(goal, s);
+  const blocked = precomputedBlocked ? precomputedBlocked : avoidSpans(goal, s);
+  if (extraBlocked && extraBlocked.length) {
+    for (const span of extraBlocked) blocked.push(span);
+  }
   const consider = (score, term, at) => {
     if (at != null && overlaps(blocked, at, term.length)) return;
     if (!best || score > best.score) best = { score, term };
@@ -748,6 +927,106 @@ export function matchText(goal, text) {
       consider(0.85 * term.weight, term.word, i);
     }
   }
+  return best;
+}
+
+const OBFUSCATED_OR_TABLE_RE = /aAbBcCdDeFgG|\$[^\s$]{8,}\$/;
+const ASSET_OR_UI_PATH_RE = /\.(?:png|jpe?g|webp|gif|svg|dat|maanim|mamodel|plist|fnt|ttf|otf|wav|mp3|ogg|m4a|mp4|tsv|csv|prefab|shader)\b|\\(?:レイヤー|digit\b)|(?:win_dialog|win_number|win_percent|win_plus|number_data_|fukidashi|createUI|detailview::|pz_ui_|btn_eff_|all_num_|all_text_)/i;
+const DIALOGUE_PROSE_RE = /<[A-Za-z][^>]*>.*<\/[A-Za-z]+>|(?:ですよ|ますよ|ますね|ですか[？?]|ましたね|しましょう|ください[。！!]|んです[。！!])/;
+
+/**
+ * Detect binary data misdecoded as UTF-16LE/UTF-8 (random multi-script soup within a single token,
+ * unpaired surrogates, non-characters, or C1 controls) while preserving legitimate Japanese,
+ * Chinese, Korean, multilingual UI lists, emoji surrogate pairs, and icon-font PUA UI strings.
+ */
+export function isGarbledBinaryString(text) {
+  if (typeof text !== 'string' || text.length < 4) return false;
+  if (!/[^\x00-\x7f]/.test(text)) return false; // ASCII fast path
+  let broken = 0;
+  let nonAscii = 0;
+  let tokScripts = 0;
+  let tokPua = 0;
+  let tokLen = 0;
+
+  const isSep = (c) => (
+    c <= 0x20 || c === 0x2d || c === 0x2f || c === 0x7c || c === 0x2c || c === 0x3b
+    || c === 0x3a || c === 0x28 || c === 0x29 || c === 0x5b || c === 0x5d
+    || c === 0x3000 || c === 0x3001 || c === 0x3002 || c === 0x30fb
+    || c === 0xff0c || c === 0xff0f || c === 0xff5c
+  );
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (isSep(c)) {
+      if (tokPua >= 3 && tokPua * 3 >= tokLen) return true;
+      tokScripts = 0;
+      tokPua = 0;
+      tokLen = 0;
+      continue;
+    }
+    tokLen++;
+    if (c < 0x80) continue;
+    nonAscii++;
+
+    // Valid UTF-16 surrogate pair (e.g. emoji): advance past low surrogate cleanly
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i++;
+        continue;
+      }
+      broken++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      broken++;
+    } else if ((c >= 0x0080 && c <= 0x009f) || (c >= 0xfdd0 && c <= 0xfdef) || c >= 0xfffd) {
+      broken++;
+    } else if (c >= 0xe000 && c <= 0xf8ff) {
+      tokPua++;
+    } else if ((c >= 0x4e00 && c <= 0x9fff) || (c >= 0x3400 && c <= 0x4dbf)) {
+      tokScripts |= 1; // CJK Unified
+    } else if (c >= 0xac00 && c <= 0xd7af) {
+      tokScripts |= 2; // Hangul
+    } else if (c >= 0x0600 && c <= 0x07bf) {
+      tokScripts |= 4; // Arabic / Syriac / Thaana
+    } else if (c >= 0x0900 && c <= 0x0dff) {
+      tokScripts |= 8; // Indic
+    } else if (c >= 0x0400 && c <= 0x052f) {
+      tokScripts |= 16; // Cyrillic
+    } else if (c >= 0x0590 && c <= 0x05ff) {
+      tokScripts |= 32; // Hebrew
+    } else if ((c >= 0x0e00 && c <= 0x109f) || (c >= 0x1780 && c <= 0x17ff)) {
+      tokScripts |= 64; // Thai / Lao / Tibetan / Myanmar / Khmer
+    } else if ((c >= 0x1200 && c <= 0x16ff) || (c >= 0xa000 && c <= 0xabff)) {
+      tokScripts |= 128; // Ethiopic / Cherokee / Yi / Javanese / etc.
+    }
+
+    if (broken >= 2 || (broken >= 1 && nonAscii >= 3)) return true;
+    if (tokScripts) {
+      let sc = 0;
+      for (let m = tokScripts; m; m &= m - 1) sc++;
+      if (sc >= 3) return true;
+      if (sc >= 2 && tokPua >= 1) return true;
+    }
+  }
+  if (tokPua >= 3 && tokPua * 3 >= tokLen) return true;
+  return false;
+}
+
+export function matchText(goal, text) {
+  if (!goal || typeof text !== 'string') return null;
+  const s = text;
+  if (s.length < 2) return null;
+  if (OBFUSCATED_OR_TABLE_RE.test(s) || isGarbledBinaryString(s)) return null;
+  if (s.length >= 12 && (s.match(/[{}~^`$|&]/g) || []).length >= 4 && !/\b(?:function|return|if|for|while)\b/.test(s)) return null;
+  const rawBlocked = avoidSpans(goal, s);
+  const rawBest = matchTextSingle(goal, s, null, rawBlocked);
+  const norm = normalizeIdentifierBoundaries(s);
+  const normBest = norm !== s
+    ? matchTextSingle(goal, norm, rawBlocked.length ? mapAvoidSpansToNormalized(s, rawBlocked) : null)
+    : null;
+  let best = rawBest && normBest
+    ? (normBest.score > rawBest.score ? normBest : rawBest)
+    : (rawBest || normBest);
   if (!best) return null;
 
   /*
@@ -757,8 +1036,10 @@ export function matchText(goal, text) {
   let quality = 1;
   if (s.length > 160) quality -= 0.4;
   if (/^[\-_./\\%@#$*+0-9]+$/.test(s)) quality -= 0.5;
-  if (/[ぁ-んァ-ヶ一-龥]/.test(s)) quality += 0.1;
-  best.score *= Math.max(0.2, Math.min(1.1, quality));
+  if (DIALOGUE_PROSE_RE.test(s)) quality *= 0.25;
+  else if (ASSET_OR_UI_PATH_RE.test(s)) quality *= 0.35;
+  else if (/[ぁ-んァ-ヶ一-龥]/.test(s)) quality += 0.1;
+  best.score *= Math.max(0.15, Math.min(1.1, quality));
   return best;
 }
 
@@ -815,9 +1096,12 @@ function findExtraTermMatches(s, word) {
   return out;
 }
 
-const ACCESSOR_PREFIX_RE = /^(?:get|set|calc|calculate|compute|estimate|base|current|cur|total|effective|final|raw|actual|real|mod|modify|update|add|sub|apply|battle)\s+/;
-const PREDICATE_OR_UI_HEAD_RE = /^(?:is|can|has|should|was|format|render|draw|show|paint|print|log|dump|debug|trace|visit|serialize|deserialize)$/;
-const NON_VALUE_ROLE_TOKEN_RE = /^(?:animation|animator|panel|dialog|window|icon|tooltip|label|widget|controller|keyboard|visitor|hex|hexes|direction|projectile|climax|frame|swipe|cursor|click|log|logger|logging|logcat|configurator)$/;
+const ACCESSOR_PREFIX_RE = /^(?:get|set|calc|calculate|compute|estimate|base|current|cur|total|effective|final|raw|actual|real|mod|modify|update|add|sub|subtract|inc|increment|dec|decrement|apply|consume|spend|earn|gain|take|give|grant|award|deduct|battle)\s+/;
+const PREDICATE_HEAD_RE = /^(?:is|can|has|should|was)$/;
+const UI_LOG_TEST_HEAD_RE = /^(?:format|render|draw|show|paint|print|log|dump|debug|trace|visit|serialize|deserialize|animate|layout)$/;
+const NON_VALUE_ROLE_TOKEN_RE = /^(?:animation|animator|animate|panel|dialog|window|icon|tooltip|label|widget|controller|keyboard|visitor|hex|hexes|direction|projectile|climax|frame|swipe|cursor|click|log|logger|logging|logcat|configurator|hud|bar|gauge|button|sprite|shader|audio|sound|test|tests|mock|debug|serializer|deserializer|serialization|layout)$/;
+const MUTATOR_HEAD_RE = /^(?:set|add|sub|subtract|inc|increment|dec|decrement|apply|consume|spend|earn|gain|take|modify|mod|update|give|grant|award|deduct|change|reset|restore|refill|charge)$/;
+const GETTER_HEAD_RE = /^(?:get|read|fetch|peek|query|current|cur)$/;
 const DIAGNOSTIC_PREFIX_RE = /^(?:error|warning|warn|assert|assertion|fatal|debug|info|trace|undefined|invalid|failed|cannot|unable)\b/i;
 
 /**
@@ -982,29 +1266,79 @@ export function extractCallableLeaf(name) {
 }
 
 /**
- * 数値・ステータス系クエリ（expects.numeric）に対する関数シンボルの一般的な役割分類。
+ * 関数シンボル（ObjC / Itanium C++ / 通常関数）を検索・照合用の正規化文字列に開く。
+ * 例: `__ZN6Player7addCoinEi` → `player add coin`
+ */
+export function normalizeCallableName(name) {
+  if (typeof name !== 'string' || !name) return '';
+  const info = extractCallableLeaf(name);
+  const parts = [];
+  if (info.owner) {
+    const o = normalizeFieldName(info.owner.replace(/::+/g, ' '));
+    if (o) parts.push(o);
+  }
+  if (info.leaf) {
+    const l = normalizeFieldName(info.leaf.replace(/::+/g, ' '));
+    if (l) parts.push(l);
+  }
+  return parts.join(' ').trim();
+}
+
+/**
+ * 関数シンボルが値を書き換えるミューテータか const ゲッタかを判定する。
+ * @returns {{ kind: 'mutator'|'const-getter'|'getter'|'other', isConst: boolean, leafLen: number }}
+ */
+export function symbolMutationKind(name) {
+  if (typeof name !== 'string' || !name) {
+    return { kind: 'other', isConst: false, leafLen: 0 };
+  }
+  const info = extractCallableLeaf(name);
+  const leafNorm = normalizeFieldName(info.leaf);
+  const firstTok = leafNorm ? leafNorm.split(' ')[0] : '';
+  const leafLen = leafNorm ? leafNorm.length : name.length;
+  if (!info.isConst && MUTATOR_HEAD_RE.test(firstTok)) {
+    return { kind: 'mutator', isConst: false, leafLen };
+  }
+  if (info.isConst) {
+    return { kind: 'const-getter', isConst: true, leafLen };
+  }
+  if (GETTER_HEAD_RE.test(firstTok)) {
+    return { kind: 'getter', isConst: false, leafLen };
+  }
+  return { kind: 'other', isConst: false, leafLen };
+}
+
+/**
+ * 関数シンボルの役割分類。
+ * std:: グルー、コンストラクタ/デストラクタ、UI・描画・ログ・テスト・シリアライズ補助は
+ * 非数値ゴールや自由入力ゴールでも 'non-value' として降格する。
  * @returns {'value'|'non-value'|'neutral'}
  */
 export function numericSymbolRole(goal, name) {
-  if (!goal || !goal.expects || !goal.expects.numeric || typeof name !== 'string' || !name) return 'neutral';
+  if (!goal || typeof name !== 'string' || !name) return 'neutral';
   const info = extractCallableLeaf(name);
   if (info.isStdGlue) return 'non-value';
+  const isNumeric = !!(goal.expects && goal.expects.numeric);
   const leafNorm = normalizeFieldName(info.leaf);
-  if (!leafNorm) return 'neutral';
+  if (!leafNorm) return info.isCtorOrDtor ? 'non-value' : 'neutral';
   const leafTokens = leafNorm.split(' ');
   const ownerTokens = info.owner ? normalizeFieldName(info.owner).split(' ') : [];
   const askedTokens = new Set(normalizeFieldName(goal.text || '').split(' ').filter(Boolean));
 
   const isNonValueToken = (tok) => NON_VALUE_ROLE_TOKEN_RE.test(tok) && !askedTokens.has(tok);
-  const isPredicateHead = (tok) => (
-    PREDICATE_OR_UI_HEAD_RE.test(tok)
+  const isUiLogTestHead = (tok) => (
+    UI_LOG_TEST_HEAD_RE.test(tok)
     && !askedTokens.has(tok)
     && !(goal.id === 'gacha' && tok === 'draw')
   );
+  const isToFromJson = /\b(?:to|from) json\b/.test(leafNorm) && !askedTokens.has('json');
 
-  if (isPredicateHead(leafTokens[0])) return 'non-value';
-  if (leafTokens.length >= 2 && /^(?:is|can|has|should)$/.test(leafTokens[1]) && !askedTokens.has(leafTokens[1])) {
-    return 'non-value';
+  if (isUiLogTestHead(leafTokens[0]) || isToFromJson) return 'non-value';
+  if (isNumeric) {
+    if (PREDICATE_HEAD_RE.test(leafTokens[0]) && !askedTokens.has(leafTokens[0])) return 'non-value';
+    if (leafTokens.length >= 2 && /^(?:is|can|has|should)$/.test(leafTokens[1]) && !askedTokens.has(leafTokens[1])) {
+      return 'non-value';
+    }
   }
 
   let core = leafNorm;
@@ -1018,7 +1352,7 @@ export function numericSymbolRole(goal, name) {
   const hasLeafNonValue = leafTokens.some(isNonValueToken);
   if (hasLeafNonValue && !(coreHit && coreHit.exact)) return 'non-value';
   if (info.isCtorOrDtor) return 'non-value';
-  if (coreHit && (coreHit.exact || coreHit.score >= 0.7)) return 'value';
+  if (isNumeric && coreHit && (coreHit.exact || coreHit.score >= 0.7)) return 'value';
   return 'neutral';
 }
 
@@ -1033,8 +1367,12 @@ export function isDiagnosticString(text) {
   return false;
 }
 
-/** 名前（シンボル・Objective-C メソッド）との当てはまり。 */
+/** 名前（シンボル・Objective-C / Itanium C++ メソッド）との当てはまり。 */
 export function matchName(goal, name) {
   if (!goal || typeof name !== 'string') return null;
-  return matchText(goal, name);
+  const norm = normalizeCallableName(name);
+  const mNorm = norm && norm !== name ? matchText(goal, norm) : null;
+  const mRaw = matchText(goal, name);
+  if (mNorm && mRaw) return mNorm.score >= mRaw.score ? mNorm : mRaw;
+  return mNorm || mRaw;
 }

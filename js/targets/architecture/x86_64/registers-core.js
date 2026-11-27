@@ -191,5 +191,5 @@
     modeledFlags:Object.freeze(['CF','PF','AF','ZF','SF','OF','DF']),
     unsupportedVectorFamilies:Object.freeze(['xmm16-31','ymm16-31']),
   });
-  root.HexX86Registers = api;
+  Object.defineProperty(root, 'HexX86Registers', { value: api, writable: false, enumerable: true, configurable: false });
 })(globalThis);

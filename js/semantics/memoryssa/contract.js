@@ -1,6 +1,6 @@
 import { canonicalAddress, deepFreeze, jsonSafe, normalizeIdentity, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
-import { analyzeSemanticDominance } from '../cfg/index.js';
+import { analyzeSemanticDominance, dominatesBlock } from '../cfg/index.js';
 
 export const MEMORY_SSA_CONTRACT_VERSION = '2.0.0';
 export const MEMORY_SSA_ALIAS_RELATIONS = Object.freeze(['must', 'may', 'no', 'unknown']);
@@ -373,7 +373,6 @@ export function createMemorySsaContract(input, options = {}) {
   };
   // Dominance is computed at most once per contract validation (#5411).
   const dominanceCache = new Map();
-  const dominatorSetCache = new Map();
   for (const definition of definitions) {
     work();
     if (blocks && definition.blockId != null && !blocks.has(definition.blockId)) fail('memory-ssa-invalid-definition-block');
@@ -422,19 +421,11 @@ export function createMemorySsaContract(input, options = {}) {
     // (which it does not dominate) is not canonical MemorySSA. Definitions
     // without a block stay unpinned.
     const dominance = dominanceFor(cfg, dominanceCache);
-    for (const incoming of definition.incoming) {
+    if (dominance) for (const incoming of definition.incoming) {
       const prior = definitionById.get(incoming.definitionId);
       if (prior?.blockId == null || prior.blockId === incoming.predecessorBlockId) continue;
-      if (!cacheCfgFacts) {
-        const dominators = dominance?.dominators?.[incoming.predecessorBlockId];
-        if (!dominators?.includes(prior.blockId)) fail('memory-ssa-phi-incoming-edge-mismatch');
-      } else {
-        let dominators = dominatorSetCache.get(incoming.predecessorBlockId);
-        if (!dominators) {
-          dominators = new Set(dominance?.dominators?.[incoming.predecessorBlockId] ?? []);
-          dominatorSetCache.set(incoming.predecessorBlockId, dominators);
-        }
-        if (!dominators.has(prior.blockId)) fail('memory-ssa-phi-incoming-edge-mismatch');
+      if (!dominatesBlock(dominance, prior.blockId, incoming.predecessorBlockId)) {
+        fail('memory-ssa-phi-incoming-edge-mismatch');
       }
     }
   }

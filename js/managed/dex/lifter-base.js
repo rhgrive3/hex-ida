@@ -493,6 +493,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vA, bits: 32 });
           locationReads.push({ kind: 'register', index: vB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vA, bits: 32 });
+          producedValues.push({ bits: 32 });
           if (opcode === 0xb3 || opcode === 0xb4) {
             possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
           }
@@ -511,7 +512,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           mnemonic = 'binop-lit8';
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
-          producedValues.push({ bits: 32, constant: lit8 });
+          producedValues.push({ bits: 32 });
           if (opcode === 0xdb || opcode === 0xdc) {
             possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
           }

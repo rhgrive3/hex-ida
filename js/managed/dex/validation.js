@@ -1,7 +1,8 @@
 import { captureDexValidationMetadata as captureBase, validateDexMethod } from './validation-base.js';
 import { readDexUleb128, readDexSleb128 } from './leb128.js';
+import { dexMethodDefinitions } from './method-definitions.js';
 export { validateDexMethod };
-function entry(image,index){for(const c of image?.classes??[]){for(const m of c.directMethods??[])if(m.methodIdx===index)return m;for(const m of c.virtualMethods??[])if(m.methodIdx===index)return m}return null}
+function entry(image,index){try{return dexMethodDefinitions(image).get(index)??null}catch{return null}}
 function strictExceptions(image,index){
  const e=entry(image,index),bytes=image?.rawBytes;if(!e?.codeOff||!(bytes instanceof Uint8Array))return;
  const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),off=e.codeOff;if(off+16>bytes.length)throw new TypeError('dex-validation-truncated-code-item');

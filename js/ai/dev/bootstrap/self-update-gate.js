@@ -56,7 +56,7 @@ export class DevSelfUpdateGate {
   get activeIdentity() { return this.#active; }
 
   /* Arm the gate for a source change that is merged but not yet running. */
-  requireActivation(args = {}) {
+  requireActivation(args = {}, { allowOverwrite = true } = {}) {
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
       throw new TypeError('Dev self-update gate: activation arguments must be a plain object.');
     }
@@ -81,6 +81,18 @@ export class DevSelfUpdateGate {
     const nextCapabilities = new Set(assertCapabilities(capabilities));
     const nextReason = optionalText(reason, 'reason');
     const nextRequireReinitialization = requireReinitialization === true;
+    if (this.state === DEV_SELF_UPDATE_STATE.RELOAD_REQUIRED) {
+      if (allowOverwrite === false) {
+        const error = new Error('dev-self-update-gate-already-armed: cannot overwrite or relax an active reload-required gate.');
+        error.code = 'dev-self-update-gate-already-armed';
+        throw error;
+      }
+      if (this.#requireReinitialization && !nextRequireReinitialization) {
+        const error = new Error('dev-self-update-gate-downgrade-rejected: cannot relax requireReinitialization on an armed gate.');
+        error.code = 'dev-self-update-gate-downgrade-rejected';
+        throw error;
+      }
+    }
     this.#expected = expected;
     this.#capabilities = nextCapabilities;
     this.#reason = nextReason;

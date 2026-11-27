@@ -47,6 +47,7 @@ function createExtendedObjcBudget(opts = {}) {
       }
     },
     chargeRecords(amount = 1) {
+      if (this.exhausted) return false;
       this.records += amount;
       this.outputBytes += amount * OBJC_RECORD_OUTPUT_ESTIMATE;
       if (this.records > maxRecords) { this._stop('objc-extended-metadata-record-budget'); return false; }
@@ -130,6 +131,8 @@ async function decodedPointer(get, raw, storageAddress = null) {
 
 async function ptr(get, addr) { const b = await get(addr, pointerBytesOf(get)); return b ? decodedPointer(get, readWord(get, b, 0), addr) : null; }
 
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 async function decodeCString(get, addr) {
   for (let want = NAME_READ_INITIAL; want <= NAME_READ_MAX; want *= 2) {
     const b = await get(addr, Math.min(want, NAME_READ_MAX), true);
@@ -139,7 +142,7 @@ async function decodeCString(get, addr) {
       if (!end) return null;
       const bytes = b.subarray(0, end);
       try {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        const text = UTF8_FATAL_DECODER.decode(bytes);
         return /[\u0000-\u001f\u007f]/u.test(text) ? null : text;
       } catch { return null; }
     }
@@ -342,13 +345,28 @@ async function parseProtocol(get, address, opts = {}) {
       }
     }
   }
-  const fieldAddress = (offset) => decodedPointer(get, readWord(get, b, offset), address + BigInt(offset));
-  const name = await cstring(get, await fieldAddress(L.name)); if (!name) return null;
-  const inherited = await protocolRefs(get, await fieldAddress(L.protocols), opts);
-  const methods = await methodList(get, await fieldAddress(L.instanceMethods), name, false, 'protocol', opts);
-  const classMethods = await methodList(get, await fieldAddress(L.classMethods), name, true, 'protocol', opts);
-  const optionalInstanceMethods = await methodList(get, await fieldAddress(L.optionalInstanceMethods), name, false, 'protocol-optional', opts);
-  const optionalClassMethods = await methodList(get, await fieldAddress(L.optionalClassMethods), name, true, 'protocol-optional', opts);
+  const invalidFieldList = () => ({ items: [], completeness: { ...emptyListCompleteness(true), invalidEntries: 1, complete: false } });
+  const decodeField = async (offset) => {
+    const raw = readWord(get, b, offset);
+    const decoded = await decodedPointer(get, raw, address + BigInt(offset));
+    return { raw, decoded, failed: raw !== 0n && decoded == null };
+  };
+  const nameField = await decodeField(L.name);
+  const name = await cstring(get, nameField.decoded); if (!name) return null;
+  const protocolsField = await decodeField(L.protocols);
+  const instanceMethodsField = await decodeField(L.instanceMethods);
+  const classMethodsField = await decodeField(L.classMethods);
+  const optInstanceMethodsField = await decodeField(L.optionalInstanceMethods);
+  const optClassMethodsField = await decodeField(L.optionalClassMethods);
+  const instancePropertiesField = prefixComplete ? await decodeField(L.instanceProperties) : { raw: 0n, decoded: null, failed: false };
+  if (protocolsField.failed || instanceMethodsField.failed || classMethodsField.failed || optInstanceMethodsField.failed || optClassMethodsField.failed || instancePropertiesField.failed) {
+    layoutComplete = false;
+  }
+  const inherited = protocolsField.failed ? invalidFieldList() : await protocolRefs(get, protocolsField.decoded, opts);
+  const methods = instanceMethodsField.failed ? invalidFieldList() : await methodList(get, instanceMethodsField.decoded, name, false, 'protocol', opts);
+  const classMethods = classMethodsField.failed ? invalidFieldList() : await methodList(get, classMethodsField.decoded, name, true, 'protocol', opts);
+  const optionalInstanceMethods = optInstanceMethodsField.failed ? invalidFieldList() : await methodList(get, optInstanceMethodsField.decoded, name, false, 'protocol-optional', opts);
+  const optionalClassMethods = optClassMethodsField.failed ? invalidFieldList() : await methodList(get, optClassMethodsField.decoded, name, true, 'protocol-optional', opts);
   const methodCompleteness = {
     instanceMethods: methods.completeness,
     classMethods: classMethods.completeness,
@@ -356,7 +374,7 @@ async function parseProtocol(get, address, opts = {}) {
     optionalClassMethods: optionalClassMethods.completeness,
   };
   const completeness = { methods: methodCompleteness, protocols: inherited.completeness, complete: !opts?.signal?.aborted && layoutComplete && inherited.completeness.complete && Object.values(methodCompleteness).every((x) => x.complete === true) };
-  return { runtime: 'objc', kind: 'protocol', address, name, size, flags, protocols: inherited.items, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, optionalInstanceMethods: optionalInstanceMethods.items, optionalClassMethods: optionalClassMethods.items, instancePropertiesAddress: prefixComplete ? await fieldAddress(L.instanceProperties) : null, classPropertiesAddress, completeness };
+  return { runtime: 'objc', kind: 'protocol', address, name, size, flags, protocols: inherited.items, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, optionalInstanceMethods: optionalInstanceMethods.items, optionalClassMethods: optionalClassMethods.items, instancePropertiesAddress: instancePropertiesField.decoded, classPropertiesAddress, completeness };
 }
 
 function canonicalExternalClassName(name) {
@@ -453,8 +471,14 @@ async function parseCategory(get, address, classByAddress, opts = {}) {
   if (opts?.signal?.aborted) return null;
   const L = categoryLayout(pointerBytesOf(get));
   const b = await get(address, L.readBytes, true); if (!b || b.length < L.requiredBytes) return null;
-  const fieldAddress = (offset) => decodedPointer(get, readWord(get, b, offset), address + BigInt(offset));
-  const name = await cstring(get, await fieldAddress(L.name)); if (!name) return null;
+  const invalidFieldList = () => ({ items: [], completeness: { ...emptyListCompleteness(true), invalidEntries: 1, complete: false } });
+  const decodeField = async (offset) => {
+    const raw = readWord(get, b, offset);
+    const decoded = await decodedPointer(get, raw, address + BigInt(offset));
+    return { raw, decoded, failed: raw !== 0n && decoded == null };
+  };
+  const nameField = await decodeField(L.name);
+  const name = await cstring(get, nameField.decoded); if (!name) return null;
   const rawClassPointer = readWord(get, b, L.cls);
   const classAddress = await decodedPointer(get, rawClassPointer, address + BigInt(L.cls));
   const target = classAddress != null ? classByAddress.get(classAddress.toString()) : null;
@@ -466,12 +490,18 @@ async function parseCategory(get, address, classByAddress, opts = {}) {
     const external = await resolveExternalCategoryClassName(get, address + BigInt(L.cls));
     if (external) className = external;
   }
-  const methods = await methodList(get, await fieldAddress(L.instanceMethods), className, false, 'category', opts);
-  const classMethods = await methodList(get, await fieldAddress(L.classMethods), className, true, 'category', opts);
-  const protocols = await protocolRefs(get, await fieldAddress(L.protocols), opts);
+  const instanceMethodsField = await decodeField(L.instanceMethods);
+  const classMethodsField = await decodeField(L.classMethods);
+  const protocolsField = await decodeField(L.protocols);
+  const instancePropertiesField = await decodeField(L.instanceProperties);
+  const classPropertiesField = b.length >= L.readBytes ? await decodeField(L.classProperties) : { raw: 0n, decoded: null, failed: false };
+  const layoutComplete = !(instanceMethodsField.failed || classMethodsField.failed || protocolsField.failed || instancePropertiesField.failed || classPropertiesField.failed);
+  const methods = instanceMethodsField.failed ? invalidFieldList() : await methodList(get, instanceMethodsField.decoded, className, false, 'category', opts);
+  const classMethods = classMethodsField.failed ? invalidFieldList() : await methodList(get, classMethodsField.decoded, className, true, 'category', opts);
+  const protocols = protocolsField.failed ? invalidFieldList() : await protocolRefs(get, protocolsField.decoded, opts);
   const methodCompleteness = { instanceMethods: methods.completeness, classMethods: classMethods.completeness };
-  const completeness = { methods: methodCompleteness, protocols: protocols.completeness, complete: !opts?.signal?.aborted && protocols.completeness.complete && Object.values(methodCompleteness).every((x) => x.complete === true) };
-  return { runtime: 'objc', kind: 'category', address, name, classAddress, className, targetClass: className, target: className, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, protocols: protocols.items, instancePropertiesAddress: await fieldAddress(L.instanceProperties), classPropertiesAddress: b.length >= L.readBytes ? await fieldAddress(L.classProperties) : null, completeness };
+  const completeness = { methods: methodCompleteness, protocols: protocols.completeness, complete: !opts?.signal?.aborted && layoutComplete && protocols.completeness.complete && Object.values(methodCompleteness).every((x) => x.complete === true) };
+  return { runtime: 'objc', kind: 'category', address, name, classAddress, className, targetClass: className, target: className, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, protocols: protocols.items, instancePropertiesAddress: instancePropertiesField.decoded, classPropertiesAddress: classPropertiesField.decoded, completeness };
 }
 
 function pointerTableSize(value) {

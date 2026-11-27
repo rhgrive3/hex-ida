@@ -138,7 +138,7 @@ const WORKER_PRELUDE = String.raw`
   const OUTPUT_MAX_PER_SECOND = 96;
   let outputMessages = 0, outputBytes = 0, outputWindow = nativeNow(), outputWindowCount = 0;
   const outputSize = (value) => {
-    const seen = new NativeSet(); const stack=[value]; let bytes=0, nodes=0;
+    const seen = new NativeSet(); const buffers = new NativeSet(); const stack=[value]; let bytes=0, nodes=0;
     while (stack.length && bytes <= OUTPUT_MAX_BYTES) {
       const x=nativeArrayPop(stack); if (++nodes > 4096) return OUTPUT_MAX_BYTES + 1;
       if (x == null) { bytes+=4; continue; }
@@ -148,14 +148,20 @@ const WORKER_PRELUDE = String.raw`
       if (typeof x === 'undefined') { bytes+=4; continue; }
       let arrayBufferBytes = null;
       try { arrayBufferBytes = nativeArrayBufferByteLength(x); } catch {}
-      if (arrayBufferBytes !== null) { bytes += arrayBufferBytes; continue; }
+      if (arrayBufferBytes !== null) {
+        if (!nativeSetHas(buffers, x)) { nativeSetAdd(buffers, x); bytes += arrayBufferBytes; }
+        continue;
+      }
       if (nativeArrayBufferIsView(x)) {
         let buffer = null;
         try { buffer = nativeTypedArrayBuffer(x); }
         catch { try { buffer = nativeDataViewBuffer(x); } catch {} }
         if (!buffer) return OUTPUT_MAX_BYTES + 1;
-        try { bytes += nativeArrayBufferByteLength(buffer); }
-        catch { return OUTPUT_MAX_BYTES + 1; }
+        if (!nativeSetHas(buffers, buffer)) {
+          nativeSetAdd(buffers, buffer);
+          try { bytes += nativeArrayBufferByteLength(buffer); }
+          catch { return OUTPUT_MAX_BYTES + 1; }
+        }
         continue;
       }
       if (typeof x !== 'object') return OUTPUT_MAX_BYTES + 1;
@@ -222,49 +228,57 @@ const WORKER_PRELUDE = String.raw`
   try { Object.defineProperty(globalThis,'postMessage',{value:sendOutput,writable:false,configurable:false}); } catch {}
 
   const measure = (value, seen = new NativeSet(), limit = MAX_ARGUMENT_UNITS + 1, buffers = new NativeSet()) => {
-    if (limit <= 0 || value == null) return 0;
     const minUnits = typeof nativeMathMin === 'function' ? nativeMathMin : ((a, b) => (a < b ? a : b));
-    const type = typeof value;
-    if (type === 'string') return minUnits(limit, value.length * 2);
-    if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
-    if (type !== 'object') return 0;
-    const binary = binaryTransportBytes(value, buffers, BINARY_TRANSPORT_NATIVES_FOR_WORKER);
-    if (binary !== null) return binary < 0 ? limit : minUnits(limit, binary);
-    if (nativeSetHas(seen, value)) return 0;
-    nativeSetAdd(seen, value);
-    let n = 16;
-    const isArray = nativeArrayIsArray(value);
-    if (!isArray) {
-      let proto;
-      try { proto = nativeGetPrototypeOf(value); }
-      catch { nativeSetDelete(seen, value); return limit; }
-      if (proto !== NativeObjectPrototype && proto !== null) {
-        nativeSetDelete(seen, value);
-        return limit;
+    const MAX_DEPTH = 64;
+    const MAX_NODES = 65536;
+    let zeroSlots = 0;
+    let nodes = 0;
+    const chargeZeroSlot = (rem) => (++zeroSlots > 16 ? minUnits(rem, 8) : 0);
+    const walk = (val, rem, depth) => {
+      if (rem <= 0 || val == null) return 0;
+      const type = typeof val;
+      if (type === 'string') return minUnits(rem, val.length * 2);
+      if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
+      if (type !== 'object') return 0;
+      const binary = binaryTransportBytes(val, buffers, BINARY_TRANSPORT_NATIVES_FOR_WORKER);
+      if (binary !== null) return binary < 0 ? rem : minUnits(rem, binary);
+      if (nativeSetHas(seen, val)) return 0;
+      if (depth > MAX_DEPTH || ++nodes > MAX_NODES) return rem;
+      nativeSetAdd(seen, val);
+      let n = 16;
+      if (n >= rem) return rem;
+      const isArray = nativeArrayIsArray(val);
+      if (!isArray) {
+        let proto;
+        try { proto = nativeGetPrototypeOf(val); }
+        catch { return rem; }
+        if (proto !== NativeObjectPrototype && proto !== null) {
+          return rem;
+        }
       }
-    }
-    let keys;
-    try { keys = nativeKeys(value); }
-    catch { nativeSetDelete(seen, value); return limit; }
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      let descriptor;
-      try { descriptor = nativeDescriptor(value, key); }
-      catch { nativeSetDelete(seen, value); return limit; }
-      if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
-        nativeSetDelete(seen, value);
-        return limit;
+      let keys;
+      try { keys = nativeKeys(val); }
+      catch { return rem; }
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        let descriptor;
+        try { descriptor = nativeDescriptor(val, key); }
+        catch { return rem; }
+        if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+          return rem;
+        }
+        const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
+        if (!isIndex) {
+          n += minUnits(rem - n, key.length * 2);
+          if (n >= rem) break;
+        }
+        const childCost = walk(descriptor.value, rem - n, depth + 1);
+        n += childCost > 0 ? childCost : chargeZeroSlot(rem - n);
+        if (n >= rem) break;
       }
-      const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
-      if (!isIndex) {
-        n += minUnits(limit - n, key.length * 2);
-        if (n >= limit) break;
-      }
-      n += measure(descriptor.value, seen, limit - n, buffers);
-      if (n >= limit) break;
-    }
-    nativeSetDelete(seen, value);
-    return n;
+      return n;
+    };
+    return walk(value, limit, 0);
   };
 
   const prepareRpcArgs = (args, remainingUnits) => {
@@ -676,40 +690,56 @@ const FRAME = `<!doctype html><meta charset="utf-8">
 </script>`;
 
 function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1, buffers = new Set()) {
-  if (limit <= 0 || value == null) return 0;
-  const type = typeof value;
-  if (type === 'string') return Math.min(limit, value.length * 2);
-  if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
-  const binary = binaryTransportBytes(value, buffers, BINARY_TRANSPORT_NATIVES);
-  if (binary !== null) return binary < 0 ? limit : Math.min(limit, binary);
-  if (type !== 'object' || seen.has(value)) return 0;
-  seen.add(value);
-  let n = 16;
-  const isArray = Array.isArray(value);
-  if (isArray) {
-    for (const key of Object.keys(value)) {
-      const isIndex = key !== '4294967295' && key === '' + (key >>> 0);
+  const MAX_DEPTH = 64;
+  const MAX_NODES = 65536;
+  let zeroSlots = 0;
+  let nodes = 0;
+  const chargeZeroSlot = (rem) => (++zeroSlots > 16 ? Math.min(rem, 8) : 0);
+  const walk = (val, rem, depth) => {
+    if (rem <= 0 || val == null) return 0;
+    const type = typeof val;
+    if (type === 'string') return Math.min(rem, val.length * 2);
+    if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
+    if (type !== 'object') return 0;
+    const binary = binaryTransportBytes(val, buffers, BINARY_TRANSPORT_NATIVES);
+    if (binary !== null) return binary < 0 ? rem : Math.min(rem, binary);
+    if (seen.has(val)) return 0;
+    if (depth > MAX_DEPTH || ++nodes > MAX_NODES) return rem;
+    seen.add(val);
+    let n = 16;
+    if (n >= rem) return rem;
+    const isArray = Array.isArray(val);
+    if (!isArray) {
+      let proto;
+      try { proto = Object.getPrototypeOf(val); }
+      catch { return rem; }
+      if (proto !== Object.prototype && proto !== null) {
+        return rem;
+      }
+    }
+    let keys;
+    try { keys = Object.keys(val); }
+    catch { return rem; }
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      let descriptor;
+      try { descriptor = Object.getOwnPropertyDescriptor(val, key); }
+      catch { return rem; }
+      if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+        return rem;
+      }
+      const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
       if (!isIndex) {
-        n += Math.min(limit - n, key.length * 2);
-        if (n >= limit) break;
+        n += Math.min(rem - n, key.length * 2);
+        if (n >= rem) break;
       }
-      n += valueSize(value[key], seen, limit - n, buffers);
-      if (n >= limit) break;
+      const childCost = walk(descriptor.value, rem - n, depth + 1);
+      n += childCost > 0 ? childCost : chargeZeroSlot(rem - n);
+      if (n >= rem) break;
     }
-  } else {
-    for (const key of Object.keys(value)) {
-      n += Math.min(limit - n, key.length * 2);
-      if (n >= limit) break;
-    }
-    if (n < limit) {
-      for (const item of Object.values(value)) {
-        n += valueSize(item, seen, limit - n, buffers);
-        if (n >= limit) break;
-      }
-    }
-  }
-  seen.delete(value);
-  return n;
+    return n;
+  };
+  return walk(value, limit, 0);
 }
 
 function sandboxOutputSize(value) {
@@ -974,6 +1004,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
 
     channel.port1.onmessage = async (e) => {
       if (settled) return;
+      try {
       const m = e.data;
       if (!m || typeof m !== 'object' || typeof m.t !== 'string') {
         failBudget('不正なsandboxメッセージを受信したため停止しました。');
@@ -1029,7 +1060,11 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
           rpcOutputBytes += valueSize(value, new Set(), MAX_RPC_OUTPUT_BYTES + 1);
           if (rpcOutputBytes > MAX_RPC_OUTPUT_BYTES) return failBudget('RPC返却データ量の上限を超えたため停止しました。');
         } catch (err) {
-          error = (err && err.message) || String(err);
+          try {
+            error = (err && typeof err.message === 'string' && err.message) || String(err);
+          } catch {
+            error = 'RPCエラーが発生しました。';
+          }
         } finally {
           rpcConcurrent = Math.max(0, rpcConcurrent - 1);
         }
@@ -1054,10 +1089,19 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       } else {
         failBudget('未定義のsandbox制御メッセージを受信したため停止しました。');
       }
+      } catch {
+        failBudget('sandboxメッセージ処理中にエラーが発生したため停止しました。');
+      }
     };
 
-    frame.srcdoc = buildFrameSrcdoc();
-    document.body.append(frame);
+    try {
+      frame.srcdoc = buildFrameSrcdoc();
+      if (!document.body) throw new Error('document.body is unavailable');
+      document.body.append(frame);
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
   });
 }
 

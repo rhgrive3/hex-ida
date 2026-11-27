@@ -147,7 +147,13 @@ function isArm64FpAdvSimdBundle(instruction, bundle) {
   // Memory-family transfers use the same FP/AdvSIMD registers and access controls.
   const operands = Array.isArray(instruction?.ops) ? instruction.ops
     : Array.isArray(instruction?.operands) ? instruction.operands : [];
-  return operands.some((operand) => arm64RegisterOperand(operand)?.kind === 'vector');
+  return operands.some((operand) => {
+    if (arm64RegisterOperand(operand)?.kind === 'vector') return true;
+    if (operand?.k === 'list' && Array.isArray(operand.regs)) {
+      return operand.regs.some((reg) => arm64RegisterOperand(reg)?.kind === 'vector');
+    }
+    return false;
+  });
 }
 
 function decorateArm64FpAdvSimdAccessTrapEffects(instruction, bundle, context = {}) {

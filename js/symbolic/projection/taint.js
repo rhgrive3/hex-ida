@@ -8,7 +8,7 @@ export function projectTaint(result,{identity=result?.identity,modelIdentity=res
   const queryHash=stableDigest({identity,modelIdentity,assumptions:result.execution?.assumptions??[],values:result.values,edges:result.edges,sinks:result.sinks,status:result.status,memoryObservations:result.execution?.memoryObservationRequests??[]});
   const prefix=`taint:${queryHash}:`;
   const nodes=result.values.map(value=>createEvidenceNode({id:prefix+value.id,family:'SymbolicEvidence',
-    binaryId:identity.binaryId,targetEntityIds:value.valueId?[value.valueId]:[],semanticKind:'taint-flow',
+    binaryId:identity.binaryId,targetEntityIds:value.valueId!=null?[value.valueId]:[],semanticKind:'taint-flow',
     completeness:result.status==='complete'?'bounded':'partial',deterministic:true,
     payload:{identity,modelIdentity,valueId:value.valueId,observationId:value.observationId,taint:value.taint}}));
   const edges=result.edges.map(edge=>createEvidenceEdge({from:prefix+edge.to,to:prefix+edge.from,type:'derived-from',metadata:{flowKind:edge.kind}}));
@@ -21,9 +21,11 @@ export function projectTaint(result,{identity=result?.identity,modelIdentity=res
         targetEntityIds:model.valueId!=null?[model.valueId]:[],semanticKind:'taint-'+kind,
         completeness:result.status==='complete'?'bounded':'partial',deterministic:true,
         payload:{identity,modelIdentity,model}}));
-      const value=prefix+(model.observationId!=null?'observation:'+model.observationId:'value:'+model.valueId);
-      edges.push(createEvidenceEdge({from:kind==='source'?value:id,to:kind==='source'?id:value,
-        type:'derived-from',metadata:{flowKind:'model-'+kind}}));
+      if(model.observationId!=null||model.valueId!=null){
+        const value=prefix+(model.observationId!=null?'observation:'+model.observationId:'value:'+model.valueId);
+        edges.push(createEvidenceEdge({from:kind==='source'?value:id,to:kind==='source'?id:value,
+          type:'derived-from',metadata:{flowKind:'model-'+kind}}));
+      }
     }
   }
   const evidence=createSymbolicEvidence({queryKind:'taint-flow',claimKind:'symbolic-query',

@@ -292,6 +292,10 @@ button { font: inherit; color: inherit; }
   cursor: pointer;
 }
 .addrbar .addr-range + .addr-search { margin-left: 8px; }
+.addrbar .addr-star { flex: none; }
+@media (max-width: 1099px) {
+  #addr-range { display: none; }
+}
 
 .colhead {
   display: grid;
@@ -408,6 +412,23 @@ button { font: inherit; color: inherit; }
    --line-h + --note-h で決めているので、ここは行の中の配置だけ。 */
 
 .row .c-note { display: none; }
+
+:root:not(.with-notes) .mode-asm .row.has-comment {
+  grid-template-columns: var(--addr-w) var(--mn-w) minmax(0, auto) minmax(0, 1fr);
+}
+:root:not(.with-notes) .wide .mode-asm .row.has-comment {
+  grid-template-columns: var(--addr-w) var(--hex-w) var(--mn-w) minmax(0, auto) minmax(0, 1fr);
+}
+:root:not(.with-notes) .mode-asm .row.has-comment .c-note {
+  display: block;
+  padding-left: 1.5ch;
+  font-size: var(--note-size);
+  line-height: var(--line-h);
+  color: var(--code-cmt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 :root.with-notes .mode-asm .row {
   grid-template-rows: var(--line-h) var(--note-h);

@@ -87,7 +87,11 @@ function abortError(signal) {
 }
 function throwIfAborted(signal) { if (signal?.aborted) throw abortError(signal); }
 function awaitRequest(request, signal) {
-  throwIfAborted(signal);
+  if (signal?.aborted) {
+    try { request?.cancel?.(); } catch {}
+    if (request && typeof request.then === 'function') Promise.resolve(request).catch(() => {});
+    throw abortError(signal);
+  }
   if (!signal || !request || typeof request.then !== 'function') return Promise.resolve(request);
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -109,6 +113,13 @@ export function createApi(app, out, options = {}) {
     out(args.map((a) => format(a)).join(' '));
   };
   const MAX_STRING_SCAN = 10_000;
+  const MAX_SCRIPT_READ_BYTES = 1024 * 1024;
+  const boundedReadLength = (value, fallback) => {
+    if (value == null) return fallback;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.min(MAX_SCRIPT_READ_BYTES, Math.trunc(n));
+  };
   const signalOf = (context) => (isExecutionContext(context) && context.signal != null)
     ? context.signal
     : (options.signal ?? null);
@@ -256,7 +267,9 @@ export function createApi(app, out, options = {}) {
     },
 
     /** 名前を付ける（IDA の Rename）。 */
-    rename(addr, name) {
+    rename(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [addr, name] = args;
       const a = BigInt(addr);
       if (app.notes.setName(a, name) === false) return false;
       app.symbols.rename(a, name);
@@ -265,7 +278,9 @@ export function createApi(app, out, options = {}) {
     },
 
     /** その行にメモを書く。 */
-    comment(addr, text) {
+    comment(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [addr, text] = args;
       return app.notes.setComment(BigInt(addr), text) !== false;
     },
 
@@ -284,7 +299,8 @@ export function createApi(app, out, options = {}) {
       let [addr, len = 16, userContext = null] = args;
       if (!hasHostContext && !trailingContext && isExecutionContext(len)) { userContext = len; len = 16; }
       const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
-      const r = await awaitRequest(app.backend.readAt(BigInt(addr), len), signal);
+      const clampedLen = boundedReadLength(len, 16);
+      const r = await awaitRequest(app.backend.readAt(BigInt(addr), clampedLen), signal);
       return r && r.found ? r.bytes : null;
     },
 
@@ -294,7 +310,8 @@ export function createApi(app, out, options = {}) {
       let [addr, max = 200, userContext = null] = args;
       if (!hasHostContext && !trailingContext && isExecutionContext(max)) { userContext = max; max = 200; }
       const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
-      const r = await awaitRequest(app.backend.readAt(BigInt(addr), max, true), signal);
+      const clampedMax = boundedReadLength(max, 200);
+      const r = await awaitRequest(app.backend.readAt(BigInt(addr), clampedMax, true), signal);
       return r && r.found ? (r.text || null) : null;
     },
 
@@ -455,7 +472,7 @@ export function createApi(app, out, options = {}) {
       throwIfAborted(signal);
       if (!program) return {results:[],complete:false,completeness:'unsupported',reason:'program-index-unavailable',page:null};
       const results=Array.from(program.mostCalled(Math.max(1,Math.min(5000,Number(limit)||20))) || []);
-      const complete=program.graphCompleteness?.complete !== false && program.unsupported !== true && program.queryIncompleteReason == null;
+      const complete=program.graphCompleteness?.callsComplete !== false && program.unsupported !== true && program.queryIncompleteReason == null;
       return {results,complete,completeness:complete?'complete':'partial',reason:complete?null:(program.queryIncompleteReason||program.graphCompleteness?.reasons?.[0]||'program-partial'),page:null};
     },
 
@@ -541,7 +558,9 @@ export function createApi(app, out, options = {}) {
     /* ── 書き換え ─────────────────────────────────────── */
 
     /** 現在のarchitecture用に命令を組み立てる。 */
-    assemble(text, at) {
+    assemble(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [text, at = 0n] = args;
       const arch = architecture();
       const archAdapter = adapter();
       if (typeof archAdapter.assemble !== 'function') return unsupportedArchitectureResult('assemble', arch);
@@ -627,10 +646,13 @@ export function createApi(app, out, options = {}) {
      * Stateful emulator for scripts. Only the handle crosses the sandbox RPC;
      * sandbox.js presents it as an object with setup/step/run/get/set/... methods.
      */
-    emulatorCreate(addr = null, args = [], emuOptions = null) {
+    emulatorCreate(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 3);
+      throwIfAborted(signal);
+      const [addr = null, emuArgs = [], emuOptions = null] = args;
       if (emulators.size >= MAX_EMULATORS) throw new Error('同時に作れるエミュレータは16個までです。');
       const emu = makeEmulator(app, { applyPatches: emuOptions?.applyPatches !== false });
-      if (addr != null) emu.setup(BigInt(addr), (args || []).map((v) => BigInt(v)));
+      if (addr != null) emu.setup(BigInt(addr), (emuArgs || []).map((v) => BigInt(v)));
       const id = 'emu' + emulatorSeq++;
       emulators.set(id, emu);
       return { id, state: emulatorState(emu) };
@@ -638,11 +660,14 @@ export function createApi(app, out, options = {}) {
 
     /* Direct callers get the same clone-safe descriptor. In the sandbox, the
        special `hex.emulator()` proxy calls emulatorCreate automatically. */
-    emulator(addr = null, args = [], emuOptions = null) { return api.emulatorCreate(addr, args, emuOptions); },
+    emulator(...rawArgs) { return api.emulatorCreate(...rawArgs); },
 
-    emulatorSetup(id, addr, args = []) {
+    emulatorSetup(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 3);
+      throwIfAborted(signal);
+      const [id, addr, emuArgs = []] = args;
       const emu = emulatorOf(id);
-      emu.setup(BigInt(addr), (args || []).map((v) => BigInt(v)));
+      emu.setup(BigInt(addr), (emuArgs || []).map((v) => BigInt(v)));
       return emulatorState(emu);
     },
 
@@ -671,38 +696,72 @@ export function createApi(app, out, options = {}) {
       return { result, state: emulatorState(emu) };
     },
 
-    emulatorState(id) { return emulatorState(emulatorOf(id)); },
-    emulatorGetRegister(id, reg) { return emulatorOf(id).get(String(reg || '')); },
-    emulatorSetRegister(id, reg, value) {
+    emulatorState(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 1);
+      const [id] = args;
+      return emulatorState(emulatorOf(id));
+    },
+    emulatorGetRegister(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [id, reg] = args;
+      return emulatorOf(id).get(String(reg || ''));
+    },
+    emulatorSetRegister(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 3);
+      const [id, reg, value] = args;
       const emu = emulatorOf(id);
       emu.set(String(reg || ''), BigInt(value));
       return emu.get(String(reg || ''));
     },
 
-    async emulatorDump(id, addr, len = 64) {
+    async emulatorDump(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 3);
+      throwIfAborted(signal);
+      const [id, addr, len = 64] = args;
       const n = Math.max(0, Math.min(MAX_EMULATOR_DUMP, Math.trunc(Number(len) || 0)));
-      return emulatorOf(id).dump(BigInt(addr), n);
+      return awaitRequest(emulatorOf(id).dump(BigInt(addr), n), signal);
     },
 
-    async emulatorStore(id, addr, size, value) {
+    async emulatorStore(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 4);
+      throwIfAborted(signal);
+      const [id, addr, size, value] = args;
       const n = Math.trunc(Number(size));
       if (![1, 2, 4, 8].includes(n)) throw new Error('書き込みサイズは 1 / 2 / 4 / 8 バイトだけ使えます。');
-      await emulatorOf(id).store(BigInt(addr), n, BigInt(value));
+      await awaitRequest(emulatorOf(id).store(BigInt(addr), n, BigInt(value)), signal);
       return true;
     },
 
-    emulatorAddBreakpoint(id, addr) {
+    emulatorAddBreakpoint(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [id, addr] = args;
       const emu = emulatorOf(id);
       emu.breakpoints.add(BigInt(addr).toString());
       return true;
     },
-    emulatorRemoveBreakpoint(id, addr) {
+    emulatorRemoveBreakpoint(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [id, addr] = args;
       const emu = emulatorOf(id);
       return emu.breakpoints.delete(BigInt(addr).toString());
     },
-    emulatorBreakpoints(id) { return Array.from(emulatorOf(id).breakpoints, (v) => BigInt(v)); },
-    emulatorReset(id) { const emu = emulatorOf(id); emu.reset(); return emulatorState(emu); },
-    emulatorDestroy(id) { return emulators.delete(String(id || '')); },
+    emulatorBreakpoints(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 1);
+      const [id] = args;
+      return Array.from(emulatorOf(id).breakpoints, (v) => BigInt(v));
+    },
+    emulatorReset(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 1);
+      const [id] = args;
+      const emu = emulatorOf(id);
+      emu.reset();
+      return emulatorState(emu);
+    },
+    emulatorDestroy(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 1);
+      const [id] = args;
+      return emulators.delete(String(id || ''));
+    },
 
     /* ── 画面を動かす ─────────────────────────────────── */
 

@@ -6,6 +6,8 @@ import { access, readFile, mkdir, realpath, rm } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
+import { buildTilHub } from './build-til-hub.mjs';
+import { runImportRizinSigdb } from './import-rizin-sigdb.mjs';
 import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
 import { writeFileVerified, publishUserscriptFiles } from './userscript-publication.mjs';
 import { readResolvedRepositorySource, readStableRepositoryFile, resolveRepositorySource } from './stable-repository-source.mjs';
@@ -21,7 +23,7 @@ const releaseStatePath = resolve(root, 'userscript/release-version.json');
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/scan-worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 const OPTIONAL_BUNDLED_CLASSIC_ENTRIES = ['js/targets/architecture/x86_64/semantic-revalidation-worker.js'];
-const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js'];
+const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js', 'js/cache/hexdb/hexdb-worker.js'];
 
 async function bundleCss() {
   const result = await build({ absWorkingDir: root, stdin: { contents: '@import "./css/app.css";\n@import "./css/ux.css";', resolveDir: root, loader: 'css' }, bundle: true, write: false, minify: true, sourcemap: false, legalComments: 'none', target: ['safari17.4'] });
@@ -484,7 +486,7 @@ function scopeCss(source) {
     .replace(/(^|[{},])\s*body(?=[\s.#:[,{>+~])/g, '$1:scope');
   return `@scope (#hex-userscript-host){${translated}}#hex-userscript-host{position:fixed;inset:0;width:100vw;height:100dvh;z-index:2147483646;overflow:hidden;background:var(--bg);isolation:isolate}`;
 }
-function userscriptMetadata(version) { return `// ==UserScript==\n// @name         Hex for ChatGPT\n// @namespace    https://github.com/rhgrive3/hex\n// @version      ${version}\n// @description  Securely load the Hex binary analysis workbench on ChatGPT Web.\n// @match        https://chatgpt.com/*\n// @run-at       document-start\n// @inject-into  content\n// @grant        GM.xmlHttpRequest\n// @grant        GM.getValue\n// @grant        GM.setValue\n// @grant        GM.deleteValue\n// @connect      ida.rhgrive.workers.dev\n// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n// ==/UserScript==\n\n`; }
+function userscriptMetadata(version) { return `// ==UserScript==\n// @name         Hex for ChatGPT\n// @namespace    https://github.com/rhgrive3/hex\n// @version      ${version}\n// @description  Securely load the Hex binary analysis workbench on ChatGPT Web.\n// @match        https://chatgpt.com/*\n// @run-at       document-start\n// @inject-into  content\n// @grant        GM.xmlHttpRequest\n// @grant        GM.getValue\n// @grant        GM.setValue\n// @grant        GM.deleteValue\n// @connect      ida.rhgrive.workers.dev\n// @connect      api.openjev.sh\n// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n// ==/UserScript==\n\n`; }
 function publicManifest(value) { const { assetPath: _private, ...safe } = value; return safe; }
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 function b64(value) { return Buffer.from(value).toString('base64url'); }
@@ -573,6 +575,8 @@ export async function buildUserscript() {
   const index = standaloneIndex(htmlSource, `/assets/${loaderName}`);
   await writeFile(resolve(dist, 'index.html'), index);
   await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
+  await buildTilHub({ outDir: resolve(dist, 'til-hub'), quiet: true });
+  runImportRizinSigdb({ outDir: resolve(dist, 'hexsig-hub'), quiet: true });
   await publishUserscriptFiles([
     { path:committedTemplate, expected:previousTemplateBytes, content:template },
     { path:releaseStatePath, expected:previousReleaseBytes, content:JSON.stringify(release.state, null, 2) + '\n' },

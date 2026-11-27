@@ -35,7 +35,10 @@ export function composeContextBlock(context = {}) {
   return body ? '<workbench>\n' + body + '\n\nThis is workbench state, not an analysis result.\n</workbench>' : '';
 }
 function scopeBlock(scope) { return '<scope name="' + scope + '">\n' + (SCOPE_RULES[scope] || SCOPE_RULES.auto) + '\n</scope>'; }
-function intentBlock(intent) { return intent ? `<intent>\n${escapeTagText(clip(intent, 120))}\n</intent>` : ''; }
+function intentBlock(intent) {
+  const trimmed = typeof intent === 'string' ? intent.trim() : '';
+  return trimmed ? `<intent>\n${escapeTagText(clip(trimmed, 120))}\n</intent>` : '';
+}
 export function composePrompt(input = {}) {
   const mode = MODES.includes(input.mode) ? input.mode : 'chat';
   const style = STYLES.includes(input.style) ? input.style : 'beginner';

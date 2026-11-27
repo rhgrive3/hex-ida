@@ -66,15 +66,30 @@ export async function handleAITurn(request, env) {
     try {
       upstream = await fetch(adapter.endpoint, { method: 'POST', headers: adapter.headers, body: upstreamBody, signal: upstreamAbort.signal });
     } catch {
-      if (upstreamAbort.signal.aborted) { await cleanup(); return jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.'); }
+      if (upstreamAbort.signal.aborted) {
+        await cleanup();
+        return request.signal.aborted
+          ? jsonError(499, 'client_cancelled', 'The client disconnected during the provider request.')
+          : jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.');
+      }
       if (attempt === MAX_UPSTREAM_ATTEMPTS) { await cleanup(); return jsonError(502, 'upstream_unavailable', 'The analysis service could not be reached after retrying.'); }
-      if (!await waitForRetry(attempt, null, upstreamAbort.signal)) { await cleanup(); return jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.'); }
+      if (!await waitForRetry(attempt, null, upstreamAbort.signal)) {
+        await cleanup();
+        return request.signal.aborted
+          ? jsonError(499, 'client_cancelled', 'The client disconnected during the provider request.')
+          : jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.');
+      }
       continue;
     }
     if (upstream.ok) break;
     const failure = await readUpstreamFailure(upstream, responseByteLimit(adapter, payload.mode));
     if (!isRetryableUpstreamFailure(upstream.status, failure.code) || attempt === MAX_UPSTREAM_ATTEMPTS) { await cleanup(); return upstreamError(upstream.status, failure.code, upstream.headers.get('retry-after')); }
-    if (!await waitForRetry(attempt, upstream.headers.get('retry-after'), upstreamAbort.signal)) { await cleanup(); return jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.'); }
+    if (!await waitForRetry(attempt, upstream.headers.get('retry-after'), upstreamAbort.signal)) {
+      await cleanup();
+      return request.signal.aborted
+        ? jsonError(499, 'client_cancelled', 'The client disconnected during the provider request.')
+        : jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.');
+    }
   }
   if (!upstream?.ok) { await cleanup(); return jsonError(502, 'upstream_error', 'The analysis service returned an unexpected error.'); }
   let interaction;

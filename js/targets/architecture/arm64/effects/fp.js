@@ -105,10 +105,17 @@ function invalidFiniteShape(mnemonic, ops) {
   return !ordinary && !fixedPoint;
 }
 
+function isVectorOperand(op) {
+  return op?.k === 'elem'
+    || op?.k === 'list'
+    || (op?.k === 'reg' && op?.cls === 'vec' && Boolean(op?.arr));
+}
+
 export function liftArm64FpEffects(instruction, context = {}) {
   if (typeof instruction?.mnemonic !== 'string') return null;
   const mnemonic = instruction.mnemonic.trim().toLowerCase();
   const ops = operandsOf(instruction);
+  if (ops.some(isVectorOperand)) return null;
   if (invalidFiniteShape(mnemonic, ops)) {
     return liftArm64FpEffectsCore({ ...instruction, ops: [] }, context);
   }

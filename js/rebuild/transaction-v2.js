@@ -78,6 +78,7 @@ export const F6_BOUNDED_OPERATION_CELLS = Object.freeze([
 ]);
 const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
 const VALID_REBUILD_PROFILE_SUPPORT = new WeakSet();
+const CANONICAL_REBUILD_V2_VALIDATIONS = new WeakSet();
 
 // Identity-bearing fields must be primitive strings. String(value) makes
 // ['elf'], {toString(){return 'elf'}} and 'elf' indistinguishable, so a
@@ -142,7 +143,8 @@ function canonicalOutputIdentity(transactionId, outputHash) {
 
 function validationIdentityValid(validation) {
   try {
-    if (!validation || typeof validation.validationId !== 'string') return false;
+    if (!validation || typeof validation !== 'object' || typeof validation.validationId !== 'string') return false;
+    if (!CANONICAL_REBUILD_V2_VALIDATIONS.has(validation) || !Object.isFrozen(validation)) return false;
     const payload = clone(validation);
     delete payload.validationId;
     return validation.validationId === `rebuild-validation:${stableDigest(payload)}`;
@@ -196,19 +198,19 @@ function formatIdentityMismatch(result, transaction, expectedOutputHash) {
   const image = result.image;
   const formats = validatorIdentityValues(result, image, ['format'], 'format');
   if (formats.some((value) => typeof value !== 'string')) return 'validator-format-invalid';
-  if (formats.length && formats[0].toLowerCase() !== transaction.format) return 'validator-format-mismatch';
+  if (formats.some((value) => value.toLowerCase() !== transaction.format)) return 'validator-format-mismatch';
   const architectures = validatorIdentityValues(result, image, ['architecture', 'arch'], 'arch');
   if (architectures.some((value) => typeof value !== 'string')) return 'validator-architecture-invalid';
-  if (architectures.length && architectures[0].toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
+  if (architectures.some((value) => value.toLowerCase() !== transaction.architecture)) return 'validator-architecture-mismatch';
   const loaderVersions = validatorIdentityValues(result, image, ['loaderVersion', 'parserVersion'], 'loaderVersion');
   if (loaderVersions.some((value) => typeof value !== 'string')) return 'validator-loader-identity-invalid';
-  if (loaderVersions.length && loaderVersions[0] !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
+  if (loaderVersions.some((value) => value !== transaction.loaderVersion)) return 'validator-loader-identity-mismatch';
   const sourceHashes = validatorIdentityValues(result, image, ['sourceHash', 'inputHash'], 'sourceHash');
   if (sourceHashes.some((value) => typeof value !== 'string')) return 'validator-source-identity-invalid';
-  if (sourceHashes.length && sourceHashes[0].toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
+  if (sourceHashes.some((value) => value.toLowerCase() !== transaction.sourceHash)) return 'validator-source-identity-mismatch';
   const outputHashes = validatorIdentityValues(result, image, ['outputHash', 'bytesHash'], 'outputHash');
   if (outputHashes.some((value) => typeof value !== 'string')) return 'validator-output-identity-invalid';
-  if (outputHashes.length && outputHashes[0].toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
+  if (outputHashes.some((value) => value.toLowerCase() !== expectedOutputHash)) return 'validator-output-identity-mismatch';
   return null;
 }
 
@@ -1158,18 +1160,20 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     independentDifferential: independent ? (independent.status === 'passed' ? 'executed' : 'failed') : 'unavailable',
     independentOracleTrusted: transaction.requireIndependentOracle === true ? independentOracleTrusted : false,
   };
-  return deepFreeze({ ...validation, validationId: `rebuild-validation:${stableDigest(validation)}` });
+  const sealed = deepFreeze({ ...validation, validationId: `rebuild-validation:${stableDigest(validation)}` });
+  if (sealed.status === 'valid' && sealed.allRequiredExecuted === true) CANONICAL_REBUILD_V2_VALIDATIONS.add(sealed);
+  return sealed;
 }
 
 export async function publishRebuildTransaction(materialized, validation, options = {}) {
   if (!materialized || materialized.status !== 'materialized') return { status: 'rejected', reason: 'rebuild-v2-materialization-not-complete' };
   if (!validation || validation.schemaVersion !== REBUILD_VALIDATION_SCHEMA || validation.status !== 'valid' || validation.allRequiredExecuted !== true) return { status: 'rejected', reason: 'rebuild-v2-validation-not-green' };
   if (validation.transactionId !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-validation-transaction-mismatch' };
-  if (!validationIdentityValid(validation)) return { status: 'rejected', reason: 'rebuild-v2-validation-not-green' };
   if (!rebuildIdentityMatches(validation, materialized)) return { status: 'rejected', reason: 'rebuild-v2-validation-identity-mismatch' };
   if (validation.outputHash !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-validation-output-mismatch' };
   if (validation.outputIdentity !== materialized.outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-validation-output-identity-mismatch' };
   if (JSON.stringify(validation.requiredValidators) !== JSON.stringify(materialized.requiredValidators)) return { status: 'rejected', reason: 'rebuild-v2-validation-validator-set-mismatch' };
+  if (!validationIdentityValid(validation)) return { status: 'rejected', reason: 'rebuild-v2-validation-not-green' };
   try {
     if (hashBytes(materialized.bytes) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-materialization-output-tampered' };
   } catch (error) {

@@ -7,7 +7,7 @@ const REPORT_BINDINGS = new WeakMap();
 const STRING_STATES = new WeakMap();
 const BACKEND_IDS = new WeakMap();
 let nextBackendId = 1;
-const CANONICAL_VERDICTS = new Set(['confirmed','supported','likely','unverified','contradicted','unknown']);
+const CANONICAL_VERDICTS = new Set(['confirmed','supported','likely','inconclusive','unverified','contradicted','unknown']);
 
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -226,7 +226,7 @@ async function scanNextStringRegion(app, state, options = {}) {
   if (state.complete || state.cursor >= state.plan.length || state.budget.exhausted) {
     state.complete = state.cursor >= state.plan.length && !state.backendIncomplete && !state.truncationReason && !state.budget.truncationReason;
     state.truncationReason ||= state.budget.truncationReason || (state.backendIncomplete ? 'backend-partial' : state.cursor < state.plan.length ? 'collection-budget' : null);
-    return;
+    return false;
   }
   if (!state.inFlight) {
     const index = state.cursor;
@@ -234,7 +234,7 @@ async function scanNextStringRegion(app, state, options = {}) {
     const remaining = state.budget.requestLimit();
     if (remaining <= 0) {
       state.truncationReason ||= 'result-budget';
-      return;
+      return false;
     }
     const request = app.backend.strings(
       { regionId:item.region.id, min:4, maxBytes:item.bytes, limit:remaining },
@@ -318,13 +318,20 @@ function canonicalClaimEvidenceIds(value) {
 }
 
 function claimRows(report, snapshot) {
-  const source = report?.findings || report?.results || report?.goals || [];
+  const structured = [
+    ...(Array.isArray(report?.confirmed) ? report.confirmed : []),
+    ...(Array.isArray(report?.pinned) ? report.pinned : []),
+    ...(Array.isArray(report?.goals) ? report.goals : []),
+  ];
+  const source = structured.length
+    ? [...structured, ...(Array.isArray(report?.findings) ? report.findings : [])]
+    : (report?.findings || report?.results || []);
   if (!Array.isArray(source)) return { rows:[], invalidCount:0 };
   const rows = [];
   let invalidCount = 0;
   for (let index = 0; index < source.length; index++) {
     const item = source[index];
-    const address = item?.addr ?? item?.address ?? item?.functionAddr ?? item?.function ?? null;
+    const address = item?.top?.addr ?? item?.addr ?? item?.address ?? item?.functionAddr ?? item?.function ?? null;
     const claimId = canonicalClaimId(item, index);
     const confidence = canonicalClaimConfidence(item?.confidence);
     const evidenceIds = canonicalClaimEvidenceIds(item?.evidenceIds);
@@ -334,7 +341,7 @@ function claimRows(report, snapshot) {
     }
     rows.push({
       claimId,
-      title:String(item?.title || item?.label || item?.goal?.text || item?.goal || 'Finding'),
+      title:String(item?.title || item?.label || item?.goal?.ja || item?.goal?.en || item?.goal?.text || item?.goal || 'Finding'),
       address,
       verdict:canonicalClaimVerdict(item),
       confidence,
@@ -404,7 +411,10 @@ export function createProductSurfaceQueries(app) {
         abortIfNeeded(options.signal);
         const matches = matchingStrings(state, needle);
         if (matches.length >= offset + limit || state.complete || state.budget.exhausted || state.cursor >= state.plan.length) break;
-        await scanNextStringRegion(app, state, options);
+        const prevCursor = state.cursor;
+        const prevMatches = state.items?.length ?? matches.length;
+        const progressed = await scanNextStringRegion(app, state, options);
+        if (progressed === false || (state.cursor === prevCursor && (state.items?.length ?? matches.length) === prevMatches && state.budget.requestLimit() <= 0)) break;
       }
       const matches = matchingStrings(state, needle);
       const value = matches.slice(offset, offset + limit).map(({ normalizedText, ...row }) => row);

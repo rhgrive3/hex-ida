@@ -200,8 +200,12 @@ function sameComparisonOperand(leftId, rightId, context) {
     && Number.isInteger(context.valuesById.get(leftId)?.bits);
 }
 
-function comparisonCarrier(valueId, context, active = new Set()) {
-  if (!valueId || active.has(valueId)) return null;
+const COMPARISON_CARRIER_MAX_DEPTH = 128;
+
+function comparisonCarrier(valueId, context, active = new Set(), depth = 0) {
+  if (!valueId || depth > COMPARISON_CARRIER_MAX_DEPTH || active.has(valueId)) return null;
+  const memo = context.comparisonCarrierMemo || (context.comparisonCarrierMemo = new Map());
+  if (memo.has(valueId)) return memo.get(valueId);
   active.add(valueId);
   const producer = context.producerByValueId.get(valueId) ?? null;
   let result = null;
@@ -235,7 +239,7 @@ function comparisonCarrier(valueId, context, active = new Set()) {
         // Preserve the conditional-compare carrier produced by the ccmp/ccmn
         // inner add-with-carry compare (whose OP.CMP carries conditional
         // metadata) rather than returning null or borrowing the older guard.
-        const inner = comparisonCarrier(producer.inputs[1], context, active);
+        const inner = comparisonCarrier(producer.inputs[1], context, active, depth + 1);
         if (inner?.value) result = inner;
       } else {
         // Other conditional selects (e.g., FCCMP, CSEL) must not borrow an
@@ -256,12 +260,12 @@ function comparisonCarrier(valueId, context, active = new Set()) {
         const use = context.stateProjection.readUseByNodeId.get(producer.id) ?? null;
         const reaching = use == null ? null : context.stateProjection.definitionByValueId.get(use.valueId) ?? null;
         const sourceValueId = reaching?.proof?.sourceSemanticValueId ?? null;
-        if (sourceValueId) result = comparisonCarrier(sourceValueId, context, active);
+        if (sourceValueId) result = comparisonCarrier(sourceValueId, context, active, depth + 1);
       }
     } else {
       const candidates = [];
       for (const inputId of producer.inputs || []) {
-        const candidate = comparisonCarrier(inputId, context, active);
+        const candidate = comparisonCarrier(inputId, context, active, depth + 1);
         if (candidate) candidates.push(candidate);
       }
       const uniqueById = new Map(candidates.map((candidate) => [candidate.value.id, candidate]));
@@ -269,6 +273,7 @@ function comparisonCarrier(valueId, context, active = new Set()) {
     }
   }
   active.delete(valueId);
+  if (active.size === 0 || result !== null) memo.set(valueId, result);
   return result;
 }
 
@@ -412,17 +417,57 @@ function isFpStateVariable(variable) {
   return isAnyFpRegisterName(regId);
 }
 
+const frozenNodeConsumersCache = new WeakMap();
+function consumersMapForContext(context) {
+  if (context.consumersByValueId) return context.consumersByValueId;
+  const nodes = context.ir?.nodes;
+  if (!Array.isArray(nodes)) return null;
+  const frozen = Object.isFrozen(nodes);
+  if (frozen) {
+    const cached = frozenNodeConsumersCache.get(nodes);
+    if (cached) return cached;
+  }
+  const index = new Map();
+  for (let i = 0; i < nodes.length; i += 1) {
+    const candidate = nodes[i];
+    const inputs = candidate?.inputs;
+    if (!Array.isArray(inputs) || inputs.length === 0) continue;
+    let seenInputs = null;
+    for (let j = 0; j < inputs.length; j += 1) {
+      const inputId = inputs[j];
+      if (j > 0) {
+        if (seenInputs === null) {
+          if (inputId === inputs[0]) continue;
+          if (inputs.length > 2) { seenInputs = new Set([inputs[0], inputId]); }
+        } else {
+          if (seenInputs.has(inputId)) continue;
+          seenInputs.add(inputId);
+        }
+      }
+      let list = index.get(inputId);
+      if (!list) { list = []; index.set(inputId, list); }
+      list.push(candidate);
+    }
+  }
+  if (frozen) frozenNodeConsumersCache.set(nodes, index);
+  return index;
+}
+
 function valueWritesToScalarFpReg(valueId, context, maxDepth = 3) {
   if (valueId == null || !context) return false;
+  const consumersByValueId = consumersMapForContext(context);
+  if (!consumersByValueId) return false;
   const visited = new Set();
   const queue = [{ id: valueId, depth: 0 }];
-  while (queue.length > 0) {
-    const { id, depth } = queue.shift();
+  let head = 0;
+  while (head < queue.length) {
+    const { id, depth } = queue[head++];
     if (id == null || visited.has(id) || depth > maxDepth) continue;
     visited.add(id);
-    const consumers = context.consumersByValueId?.get(id)
-      ?? (context.ir?.nodes || []).filter((candidate) => candidate.inputs?.includes(id));
-    for (const consumer of consumers) {
+    const consumers = consumersByValueId.get(id);
+    if (!consumers) continue;
+    for (let i = 0; i < consumers.length; i += 1) {
+      const consumer = consumers[i];
       if (!consumer) continue;
       if (consumer.kind === 'state-write') {
         const meta = operationMetadata(consumer);
@@ -563,7 +608,7 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
   if (op === 'extract-bit' && inputValues.length >= 1) {
     setBasic(V1_OP.BFX, 'extract');
     const bit = operationMetadata(node).bit;
-    inst.extra.lsb = Number.isInteger(Number(bit)) ? Number(bit) : null;
+    inst.extra.lsb = typeof bit === 'number' && Number.isSafeInteger(bit) && bit >= 0 ? bit : null;
     inst.extra.width = 1;
     inst.extra.signed = false;
     return true;
@@ -623,8 +668,10 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
   if (op === 'insert-bits' && inputValues.length >= 2) {
     setBasic(V1_OP.BFI, 'insert');
     const metadata = operationMetadata(node);
-    inst.extra.lsb = Number.isInteger(Number(metadata.lsb)) ? Number(metadata.lsb) : null;
-    inst.extra.width = Number.isInteger(Number(metadata.fieldWidth ?? metadata.width)) ? Number(metadata.fieldWidth ?? metadata.width) : null;
+    const rawLsb = metadata.lsb;
+    const rawWidth = metadata.fieldWidth ?? metadata.width;
+    inst.extra.lsb = typeof rawLsb === 'number' && Number.isSafeInteger(rawLsb) && rawLsb >= 0 ? rawLsb : null;
+    inst.extra.width = typeof rawWidth === 'number' && Number.isSafeInteger(rawWidth) && rawWidth > 0 ? rawWidth : null;
     inst.extra.bitfieldKind = 'bfi';
     return inst.extra.lsb != null && inst.extra.width != null;
   }
@@ -632,14 +679,14 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
   return false;
 }
 
-const ARM64_SCALAR_FP_BINARY_OPS = Object.freeze({
+const ARM64_SCALAR_FP_BINARY_OPS = Object.freeze(Object.assign(Object.create(null), {
   'arm64.fp.fadd': 'fadd',
   'arm64.fp.fsub': 'fsub',
   'arm64.fp.fmul': 'fmul',
   'arm64.fp.fdiv': 'fdiv',
-});
+}));
 
-const ARM64_SCALAR_FP_UNARY_OPS = Object.freeze({
+const ARM64_SCALAR_FP_UNARY_OPS = Object.freeze(Object.assign(Object.create(null), {
   'arm64.fp.scvtf': 'scvtf',
   'arm64.fp.ucvtf': 'ucvtf',
   'arm64.fp.fcvtzs': 'fcvtzs',
@@ -659,7 +706,7 @@ const ARM64_SCALAR_FP_UNARY_OPS = Object.freeze({
   'arm64.fp.frintz': 'frintz',
   'arm64.fp.fcvt': 'fcvt',
   'arm64.fp.fsqrt': 'fsqrt',
-});
+}));
 
 const ARM64_SCALAR_FP_TO_SIGNED_INT = new Set(['fcvtzs', 'fcvtps', 'fcvtms', 'fcvtns', 'fcvtas']);
 const ARM64_SCALAR_FP_TO_UNSIGNED_INT = new Set(['fcvtzu', 'fcvtpu', 'fcvtmu', 'fcvtnu', 'fcvtau']);
@@ -730,7 +777,7 @@ function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues,
     }
   }
 
-  const binSub = ARM64_SCALAR_FP_BINARY_OPS[op];
+  const binSub = typeof op === 'string' && Object.hasOwn(ARM64_SCALAR_FP_BINARY_OPS, op) ? ARM64_SCALAR_FP_BINARY_OPS[op] : null;
   if (binSub && inputValues.length === 4) {
     setBasic(V1_OP.BIN, binSub, inputValues.slice(0, 2));
     inst.extra.float = true;
@@ -741,7 +788,7 @@ function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues,
     return true;
   }
 
-  const unSub = ARM64_SCALAR_FP_UNARY_OPS[op];
+  const unSub = typeof op === 'string' && Object.hasOwn(ARM64_SCALAR_FP_UNARY_OPS, op) ? ARM64_SCALAR_FP_UNARY_OPS[op] : null;
   if (unSub && inputValues.length === 3) {
     const primaryOutput = outputValues[0] ?? null;
     setBasic(V1_OP.UN, unSub, inputValues.slice(0, 1));
@@ -777,7 +824,7 @@ function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues,
     inst.extra.intrinsic = intrinsic;
     inst.extra.compatSource = 'exact-arm64-scalar-fp-intrinsic';
     suppressSecondaryFpsr();
-    const fcmpCarrier = context.comparisonCarrierByNodeId?.get(node.id) ?? primaryOutput ?? null;
+    const fcmpCarrier = context.comparisonCarrierByNodeId?.get(node.id) ?? outputValues[0] ?? null;
     for (const state of intrinsic.stateWrites || []) {
       const identity = legacyPublicStateIdentity(state);
       if (identity === 'nzcv' && fcmpCarrier && context.physicalStateCurrent) {

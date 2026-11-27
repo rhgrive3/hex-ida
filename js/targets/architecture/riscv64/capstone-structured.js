@@ -39,12 +39,37 @@
   const OPERAND_IMM = 2;
   const OPERAND_MEM = 3;
   const DECODE_MODES = new Set(['rv64im', 'rv64imc']);
+  const MAX_REG_CACHE_ENTRIES = 4096;
+  const moduleRegCaches = new WeakMap();
 
-  function u8(M, pointer) { return M.getValue(pointer, 'i8') & 0xff; }
-  function u16(M, pointer) { return M.getValue(pointer, 'i16') & 0xffff; }
-  function u32(M, pointer) { return M.getValue(pointer, 'i32') >>> 0; }
+  function u8(M, pointer) {
+    if (M.HEAPU8) return M.HEAPU8[pointer];
+    return M.getValue(pointer, 'i8') & 0xff;
+  }
+  function u16(M, pointer) {
+    if (M.HEAPU8) return M.HEAPU8[pointer] | (M.HEAPU8[pointer + 1] << 8);
+    return M.getValue(pointer, 'i16') & 0xffff;
+  }
+  function u32(M, pointer) {
+    if (M.HEAPU8) {
+      return (M.HEAPU8[pointer]
+        | (M.HEAPU8[pointer + 1] << 8)
+        | (M.HEAPU8[pointer + 2] << 16)
+        | (M.HEAPU8[pointer + 3] << 24)) >>> 0;
+    }
+    return M.getValue(pointer, 'i32') >>> 0;
+  }
   function i64(M, pointer) { return BigInt(M.getValue(pointer, 'i64')); }
   function u64FromI64(M, pointer) { return BigInt.asUintN(64, i64(M, pointer)); }
+
+  function copyBytes(M, pointer, length) {
+    if (M.HEAPU8) return M.HEAPU8.slice(pointer, pointer + length);
+    const out = new Uint8Array(length);
+    for (let index = 0; index < length; index++) {
+      out[index] = M.getValue(pointer + index, 'i8') & 0xff;
+    }
+    return out;
+  }
 
   function requiredString(value, code) {
     if (typeof value !== 'string') throw new TypeError(code);
@@ -72,11 +97,29 @@
     return value;
   }
 
+  function getHandleRegCache(M, handle) {
+    let byHandle = moduleRegCaches.get(M);
+    if (!byHandle) {
+      byHandle = new Map();
+      moduleRegCaches.set(M, byHandle);
+    }
+    let regCache = byHandle.get(handle);
+    if (!regCache) {
+      regCache = new Map();
+      byHandle.set(handle, regCache);
+    }
+    return regCache;
+  }
+
   function registerName(M, handle, id) {
     if (!id) return null;
+    const cache = M && typeof M === 'object' ? getHandleRegCache(M, handle) : null;
+    if (cache && cache.has(id)) return cache.get(id);
     try {
       const value = M.ccall('cs_reg_name', 'string', ['number', 'number'], [handle, id]);
-      return value ? String(value).toLowerCase() : null;
+      const normalized = value ? String(value).toLowerCase() : null;
+      if (cache && cache.size < MAX_REG_CACHE_ENTRIES) cache.set(id, normalized);
+      return normalized;
     } catch { return null; }
   }
 
@@ -130,7 +173,7 @@
     const address = u64FromI64(M, instructionPointer + 8);
     const expected = BigInt.asUintN(64, BigInt(options.address));
     if (address !== expected) throw new Error(`riscv64-decoder-address-mismatch:${address}:${expected}`);
-    const rawBytes = Uint8Array.from({ length: size }, (_unused, index) => u8(M, instructionPointer + ABI.instructionBytes + index));
+    const rawBytes = copyBytes(M, instructionPointer + ABI.instructionBytes, size);
     const mode = decodeMode(options.mode);
     const isaIdentity = optionalIdentity(options.isaIdentity, 'riscv64-decoder-invalid-isa-identity');
     const isaEvidence = optionalIdentity(options.isaEvidence, 'riscv64-decoder-invalid-isa-evidence');

@@ -175,7 +175,7 @@ export function registerIntegerFragmentChecker(registry, { work, onResult = null
         || row.attributes?.machineEffects?.architectureId !== 'arm64' || row.attributes.machineEffects.mode !== 'a64'
         || !row.outputs?.includes(f.semanticValueId) || origin?.length !== 1 || origin[0].binaryId !== f.source.binaryId
         || origin[0].start !== f.source.boundary || origin[0].end !== f.source.end
-        || !row.origin.virtualRanges?.some(v => BigInt(v.start) === virtualBoundary && BigInt(v.end) === virtualBoundary + 4n)
+        || !row.origin.virtualRanges?.some(v => { try { return BigInt(v?.start) === virtualBoundary && BigInt(v?.end) === virtualBoundary + 4n; } catch { return false; } })
         || r.ownerIdentity?.functionId !== f.functionId || r.value?.localId !== f.rangeLocalId
         || !r.bindings?.some(b => b.localId === f.rangeLocalId && b.semanticValueId === f.semanticValueId && b.bits === f.conclusion.bits)
         || r.value.conditionalOn?.length) return checked(result('rejected', 'integer-fragment-native-premise-binding-mismatch'));

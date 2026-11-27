@@ -113,7 +113,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
   }
 
   if (source.size < 8n) throw new Error('Mach-O universal header is truncated');
-  const head = magic.byteLength >= 8 ? magic.subarray(0, 8) : await source.readExactly(0n, 8, { signal: opts.signal });
+  const head = magic.byteLength >= 8 ? magic.subarray(0, 8) : await readBoundedRange(source, 0n, 8, opts.signal);
   const hr = new ByteView(head, { littleEndian: fat.littleEndian });
   const count = hr.u32(4);
   if (count > 128) throw new Error(`unreasonable Mach-O slice count ${count}`);
@@ -135,7 +135,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
   // #6317: probe past-end arm64 compatibility slice for FAT32
   if (fat.bits === 32 && extraSize === 20) {
     const compat = await probePastEndArm64SliceAsync(r, count, source.size, async (off, len) => {
-      return source.readExactly(off, len, { signal: opts.signal });
+      return readBoundedRange(source, off, len, opts.signal);
     }, all);
     if (compat) all.push(compat);
   }

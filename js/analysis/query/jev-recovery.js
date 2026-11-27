@@ -2,6 +2,43 @@
 // choices may direct existing Fast analysis; they cannot prove a field/owner.
 import { demangleCxx } from '../../rtti.js';
 
+const JEV_RECOVERY_MAX_RESPONSE_BYTES = 512 * 1024;
+
+async function readBoundedRecoveryJson(response) {
+  const cl = Number(response?.headers?.get?.('content-length'));
+  if (Number.isFinite(cl) && cl > JEV_RECOVERY_MAX_RESPONSE_BYTES) return null;
+  if (response?.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+        total += bytes.byteLength;
+        if (total > JEV_RECOVERY_MAX_RESPONSE_BYTES) {
+          await reader.cancel?.().catch?.(() => {});
+          return null;
+        }
+        chunks.push(bytes);
+      }
+    } finally {
+      reader.releaseLock?.();
+    }
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
+    try { return JSON.parse(new TextDecoder().decode(merged)); } catch { return null; }
+  }
+  if (typeof response?.text === 'function') {
+    const text = await response.text();
+    if (typeof text !== 'string' || new TextEncoder().encode(text).byteLength > JEV_RECOVERY_MAX_RESPONSE_BYTES) return null;
+    try { return JSON.parse(text); } catch { return null; }
+  }
+  return response.json();
+}
+
 export function createJevRecoveryClient({ apiKey, fetchImpl = fetch } = {}) {
   if (typeof apiKey !== 'string' || !apiKey.trim() || apiKey.length > 4096) return null;
   return Object.freeze({ async call({ query, choices, signal, requestPolicy = 'legacy' }) {
@@ -9,7 +46,7 @@ export function createJevRecoveryClient({ apiKey, fetchImpl = fetch } = {}) {
       method: 'POST', headers: { authorization: `Bearer ${apiKey.trim()}`, 'content-type': 'application/json' },
       body: JSON.stringify(jevRecoveryRequest(query, choices, { requestPolicy })), signal,
     });
-    return response.ok ? response.json() : null;
+    return response.ok ? readBoundedRecoveryJson(response) : null;
   } });
 }
 
@@ -25,7 +62,7 @@ function compactDescription(row) {
 export function jevRecoveryRequest(query, choices, { requestPolicy = 'legacy' } = {}) {
   if (!['legacy', COMPACT_POLICY, PARALLEL_POLICY].includes(requestPolicy)) throw new Error('unknown Jev retrieval request policy');
   if (compactPolicy(requestPolicy)) {
-    if (!Array.isArray(choices) || choices.length > 254) throw new Error('compact retrieval requires at most254 functions');
+    if (!Array.isArray(choices) || choices.length > 254) throw new Error('compact retrieval requires at most 254 functions');
     const criteria = Object.fromEntries(choices.map((row, index) => [`c${index}`, compactDescription(row)]));
     criteria.none = 'No listed method provides meaningful evidence for the requested stored value on the primary object.';
     const body={ model: 'openjev', state: { userPhrase: query, queryKind: 'release-function-retrieval' }, questions: {
@@ -45,7 +82,7 @@ export function jevRecoveryRequest(query, choices, { requestPolicy = 'legacy' } 
   const criteria = Object.fromEntries(choices.map((row, index) => [`c${index}`,
     `class: ${row.className.slice(0, 240)} | release method: ${String(row.symbolName
       ? demangleCxx(row.symbolName) ?? row.symbolName : row.methodName || 'unnamed').slice(0, 240)}
-      | address: 0x${row.address.toString(16)} | receiver evidence: ${row.proof}`.replace(/\s+/g, ' ')]));
+      | address: ${typeof row.address === 'string' && /^0[xX]/.test(row.address) ? row.address : `0x${row.address.toString(16)}`} | receiver evidence: ${row.proof}`.replace(/\s+/g, ' ')]));
   return { model: 'openjev', state: { userPhrase: query, queryKind: 'release-function-retrieval' }, questions: {
     object: { type: 'choice', instructions: 'Identify the primary object whose stored state the user asks about. Choose an existing method belonging to that object. Related objects and incidental actions in the question are weaker cues. Method names are release-binary context, not source field names.', criteria },
     pick: { type: 'choice', instructions: 'Choose an existing method most likely to access the requested stored value on the primary object. Prefer a value accessor to a helper that only matches an incidental action. This choice directs analysis only; it proves no binary fact.', criteria },

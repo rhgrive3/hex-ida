@@ -36,7 +36,7 @@ const ROLE_LABEL = {
 };
 
 export function roleLabel(role) {
-  const e = ROLE_LABEL[role] || ROLE_LABEL[ROLE.UNKNOWN];
+  const e = (typeof role === "string" && Object.hasOwn(ROLE_LABEL, role) ? ROLE_LABEL[role] : null) || ROLE_LABEL[ROLE.UNKNOWN];
   return pick(e[0], e[1]);
 }
 
@@ -166,12 +166,12 @@ const API_PHRASE = {
 };
 
 export function apiShort(id) {
-  const e = API_PHRASE[id];
+  const e = typeof id === "string" && Object.hasOwn(API_PHRASE, id) ? API_PHRASE[id] : null;
   return e ? pick(e[0][0], e[0][1]) : null;
 }
 
 export function apiLong(id) {
-  const e = API_PHRASE[id];
+  const e = typeof id === "string" && Object.hasOwn(API_PHRASE, id) ? API_PHRASE[id] : null;
   return e ? pick(e[1][0], e[1][1]) : null;
 }
 
@@ -187,7 +187,7 @@ const ARG_LABEL = {
 };
 
 function argLabel(role) {
-  const e = ARG_LABEL[role];
+  const e = typeof role === "string" && Object.hasOwn(ARG_LABEL, role) ? ARG_LABEL[role] : null;
   return e ? pick(e[0], e[1]) : null;
 }
 
@@ -238,7 +238,7 @@ export function describeValue(v) {
         : pick('メモリから読み出した値', 'a value read from memory');
     case 'callResult': {
       const api = v.call && v.call.api ? v.call.api : null;
-      if (api && api.ret && RET_LABEL[api.ret]) {
+      if (api && typeof api.ret === "string" && Object.hasOwn(RET_LABEL, api.ret) && RET_LABEL[api.ret]) {
         return pick(RET_LABEL[api.ret][0], RET_LABEL[api.ret][1]);
       }
       if (v.call && v.call.name) {
@@ -620,7 +620,7 @@ const FEATURE_LABEL = {
 };
 
 export function featureLabel(id) {
-  const e = FEATURE_LABEL[id];
+  const e = typeof id === "string" && Object.hasOwn(FEATURE_LABEL, id) ? FEATURE_LABEL[id] : null;
   return e ? pick(e[0], e[1]) : null;
 }
 
@@ -656,10 +656,12 @@ export function functionStory(model, name) {
   const who = label ? pick('この関数（' + label + '）', 'this function (' + label + ')') : pick('この処理', 'this routine');
   const Who = pick(who, who.charAt(0).toUpperCase() + who.slice(1));
 
+  const isJa = pick(true, false);
+  const featureLabels = f.features.map(featureLabel).filter(Boolean);
   if (f.features.length) {
-    purpose.push(pick(
-      Who + 'は、' + f.features.map(featureLabel).filter(Boolean).join('と') + 'に関わる処理をしています。',
-      Who + ' is involved in ' + f.features.map(featureLabel).filter(Boolean).join(' and ') + '.'));
+    purpose.push(isJa
+      ? Who + 'は、' + featureLabels.join('と') + 'に関わる処理をしています。'
+      : Who + ' is involved in ' + featureLabels.join(' and ') + '.');
   }
   /*
    * 呼んでいるメソッドの名前。人が付けた言葉がそのまま残っている唯一の場所なので、
@@ -667,12 +669,13 @@ export function functionStory(model, name) {
    */
   const sels = uniq((model.calls || []).map((c) => c.selector).filter(Boolean));
   if (sels.length) {
-    purpose.unshift(pick(
-      '「' + sels.slice(0, 8).join('」「') + '」' +
-        (sels.length > 8 ? ' など ' + sels.length + ' 個' : '') + 'というメソッドを呼んでいます。' +
-        'メソッドの名前は人が付けたものなので、この関数が何の担当かを知る手がかりになります。',
-      'It calls the methods ' + sels.slice(0, 8).map((x) => '“' + x + '”').join(', ') +
-        '. Method names are written by people, so they say a lot about what this is for.'));
+    const topSels = sels.slice(0, 8);
+    purpose.unshift(isJa
+      ? '「' + topSels.join('」「') + '」' +
+          (sels.length > 8 ? ' など ' + sels.length + ' 個' : '') + 'というメソッドを呼んでいます。' +
+          'メソッドの名前は人が付けたものなので、この関数が何の担当かを知る手がかりになります。'
+      : 'It calls the methods ' + topSels.map((x) => '“' + x + '”').join(', ') +
+          '. Method names are written by people, so they say a lot about what this is for.');
   }
   /*
    * 言語のしくみ（ARC・Swift ランタイム・C++ の下ごしらえ）は、
@@ -682,25 +685,29 @@ export function functionStory(model, name) {
   const meaty = f.apis.filter((a) => a.cat !== 'runtime');
   const apiPhrases = (meaty.length ? meaty : f.apis).map((a) => apiShort(a.id)).filter(Boolean);
   if (apiPhrases.length) {
-    purpose.push(pick(
-      '具体的には、' + uniq(apiPhrases).slice(0, 4).join('・') + 'といった処理を行っています。',
-      'Concretely it does the following: ' + uniq(apiPhrases).slice(0, 4).join(', ') + '.'));
+    const topApis = uniq(apiPhrases).slice(0, 4);
+    purpose.push(isJa
+      ? '具体的には、' + topApis.join('・') + 'といった処理を行っています。'
+      : 'Concretely it does the following: ' + topApis.join(', ') + '.');
   }
   if (f.strings && f.strings.length) {
-    purpose.push(pick(
-      '「' + f.strings.slice(0, 3).map((s) => trim(s, 24)).join('」「') + '」といった文字列を使っています。',
-      'It uses the text ' + f.strings.slice(0, 3).map((s) => '“' + trim(s, 24) + '”').join(', ') + '.'));
+    const topStrs = f.strings.slice(0, 3).map((s) => trim(s, 24));
+    purpose.push(isJa
+      ? '「' + topStrs.join('」「') + '」といった文字列を使っています。'
+      : 'It uses the text ' + topStrs.map((s) => '“' + s + '”').join(', ') + '.');
   }
   // 名前は分かるが意味は分からない呼び出し。ここから先へ辿るための手がかりになる。
-  const plain = (f.calledNames || []).filter((c) => !f.apis.some((a) => a.name === c.name));
+  const apiNames = new Set((f.apis || []).map((a) => a.name));
+  const plain = (f.calledNames || []).filter((c) => !apiNames.has(c.name));
   if (plain.length) {
-    const list = plain.slice(0, 4).map((c) => '「' + trim(shortName(c.name), 36) + '」').join('、');
-    purpose.push(pick(
-      list + (plain.length > 4 ? ' など ' + plain.length + ' 種類' : '') +
-        'という名前の処理を呼んでいます。それぞれが何をしているかは、その関数をたどると分かります。',
-      'It calls ' + plain.slice(0, 4).map((c) => '“' + trim(shortName(c.name), 36) + '”').join(', ') +
-        (plain.length > 4 ? ' and ' + (plain.length - 4) + ' more' : '') +
-        '. Follow each one to see what it does.'));
+    const topPlain = plain.slice(0, 4).map((c) => trim(shortName(c.name), 36));
+    purpose.push(isJa
+      ? topPlain.map((s) => '「' + s + '」').join('、') +
+          (plain.length > 4 ? ' など ' + plain.length + ' 種類' : '') +
+          'という名前の処理を呼んでいます。それぞれが何をしているかは、その関数をたどると分かります。'
+      : 'It calls ' + topPlain.map((s) => '“' + s + '”').join(', ') +
+          (plain.length > 4 ? ' and ' + (plain.length - 4) + ' more' : '') +
+          '. Follow each one to see what it does.');
   }
   if (f.loops) {
     purpose.push(pick('同じ処理を繰り返す部分があります。', 'Part of it repeats in a loop.'));
@@ -729,7 +736,7 @@ export function functionStory(model, name) {
     purpose,
     evidence,
     confidence: f.confidence,
-    features: f.features.map(featureLabel).filter(Boolean),
+    features: featureLabels,
   };
 }
 
@@ -753,8 +760,13 @@ function headlineOf(f, name) {
 }
 
 function uniq(arr) {
+  const seen = new Set();
   const out = [];
-  for (const a of arr) if (a && !out.includes(a)) out.push(a);
+  for (const a of arr) {
+    if (!a || seen.has(a)) continue;
+    seen.add(a);
+    out.push(a);
+  }
   return out;
 }
 
@@ -1000,6 +1012,11 @@ export function reasonText(r) {
       return pick(proof + 'から、これはアプリ本体ではなく ' + who + '（組み込んだ SDK）のものです。' +
         'ゲームの数値の答えにはなりません',
       proof + ' shows this belongs to ' + who + ', a bundled SDK — not to the game itself');
+    }
+    case 'crypto-const': {
+      const label = d.name || d.algo || pick('暗号定数テーブル', 'a cryptographic constant table');
+      return pick('暗号アルゴリズムの定数（' + trim(label, 32) + '）を参照している',
+        'references a cryptographic constant (' + trim(label, 32) + ')');
     }
     default:
       return '';
@@ -1505,7 +1522,7 @@ export function flowStepText(step) {
             'Another routine is called and its result is used.'),
       };
     case 'compute': {
-      const e = FLOW_COMPUTE[step.op] || null;
+      const e = (typeof step.op === "string" && Object.hasOwn(FLOW_COMPUTE, step.op) ? FLOW_COMPUTE[step.op] : null) || null;
       const other = (step.operands || []).map(num).find((x) => x != null);
       return {
         kind: step.kind,
@@ -2092,8 +2109,35 @@ export function proofText(item) {
         : pick('自分が持っている値へ ' + d.n + ' 回書き込んでいる',
           'it writes its own fields ' + d.n + ' times');
     case 'fn-store-observed':
-      return pick('オブジェクト領域への書き込み命令が ' + d.n + ' 回ある',
-        'it performs ' + d.n + ' non-stack store(s)');
+      return pick('オブジェクト領域への書き込み命令が ' + (d.n ?? 0) + ' 回ある',
+        'it performs ' + (d.n ?? 0) + ' non-stack store(s)');
+    case 'fn-shape-site': {
+      const off = d.offset != null ? hexOffset(d.offset) : '';
+      return pick(
+        (off ? 'オフセット ' + off + ' の' : '') + '目的に合う値更新の形（形状サイト）を含む処理である',
+        'contains a value-update shape site matching the goal' + (off ? ' at ' + off : ''));
+    }
+    case 'fn-field-rmw': {
+      const n = Number.isFinite(d.count) ? d.count : (Number.isFinite(d.n) ? d.n : 1);
+      return pick('オブジェクトの値を読み出して計算し書き戻す処理（RMW）が ' + n + ' か所ある',
+        'performs ' + n + ' object-field read-modify-write update(s)');
+    }
+    case 'fn-field-rmw-clamped': {
+      const n = Number.isFinite(d.count) ? d.count : (Number.isFinite(d.n) ? d.n : 1);
+      return pick('上下限チェック（クランプ）付きでオブジェクトの値を更新する処理が ' + n + ' か所ある',
+        'performs ' + n + ' clamped object-field read-modify-write update(s)');
+    }
+    case 'fn-crypto-bitwise': {
+      const n = Number.isFinite(d.bitwiseCount) ? d.bitwiseCount : (Number.isFinite(d.n) ? d.n : 0);
+      return pick(
+        (d.hasXorLoop ? 'XOR を含む繰り返し演算と' : '') + '高密度なビット演算（' + n + ' 命令）が観測された',
+        'shows high-density bitwise operations (' + n + ' instructions' + (d.hasXorLoop ? ', including an XOR loop' : '') + ')');
+    }
+    case 'fn-crypto-hw-insn': {
+      const n = Number.isFinite(d.hwCryptoCount) ? d.hwCryptoCount : (Number.isFinite(d.n) ? d.n : 1);
+      return pick('ハードウェア暗号命令（AES / SHA 等）を ' + n + ' 回実行している',
+        'executes ' + n + ' hardware cryptographic instruction(s)');
+    }
     case 'fn-owner-class':
       return pick('この処理を持っているクラスの名前が目的に合う', 'the owning class name fits');
     case 'fn-numeric':
@@ -2162,7 +2206,7 @@ const TOPIC_OBJECT = {
 
 /** 「を◯◯する」の目的語に置ける形の機能名。 */
 function topicObject(id) {
-  const o = TOPIC_OBJECT[id];
+  const o = typeof id === "string" && Object.hasOwn(TOPIC_OBJECT, id) ? TOPIC_OBJECT[id] : null;
   return o ? pick(o[0], o[1]) : topicLabel(id);
 }
 
@@ -2799,7 +2843,7 @@ const WORK_VERB = {
 /** 変更 1 件を、そのまま読み上げる。 */
 export function changeText(c) {
   if (!c) return '';
-  const verb = WORK_VERB[c.work] || WORK_VERB.set;
+  const verb = (typeof c.work === "string" && Object.hasOwn(WORK_VERB, c.work) ? WORK_VERB[c.work] : null) || WORK_VERB.set;
   const place = placeShort(c);
   const amt = amountShort(c.amount, c.base);
   const tail = [];

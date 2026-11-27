@@ -190,7 +190,7 @@ export function resolveVirtualTargetSet({
   const hasUnresolved = candidates.some((candidate) => candidate.unresolved);
 
   let completeness = 'complete';
-  if (!rttiPresent) { completeness = 'partial'; reason = reason || 'rtti-absent-derived-classes-unknown'; }
+  if (!rttiPresent && !closureProven) { completeness = 'partial'; reason = reason || 'rtti-absent-derived-classes-unknown'; }
   if (hasUnresolved) { completeness = 'partial'; reason = reason || 'slot-target-unresolved'; }
   if (!candidates.length) { completeness = 'unknown'; reason = reason || 'no-slot-evidence'; }
 

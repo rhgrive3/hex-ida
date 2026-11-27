@@ -8,7 +8,7 @@ import { t } from './i18n.js';
 import { uiRoot } from './ui-root.js';
 
 const overlays = () => document.getElementById('overlays');
-const pickUi = (ja, en) => (uiRoot()?.lang || navigator.language || 'ja')
+const pickUi = (ja, en) => (uiRoot()?.lang || (typeof navigator !== 'undefined' && navigator?.language) || 'ja')
   .toLowerCase().startsWith('ja') ? ja : en;
 
 export function el(tag, cls, text) {
@@ -290,6 +290,11 @@ export class Sheet {
    */
   close() {
     if (!this.root.isConnected) return;
+    if (parkedSheet && parkedSheet !== this) {
+      const previous = parkedSheet;
+      parkedSheet = null;
+      previous.destroyChain();
+    }
     this.park();
     parkedSheet = this;
     clearTimeout(parkTimer);
@@ -445,10 +450,21 @@ function viewportRect() {
   return { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height };
 }
 
+function isNodeLike(target) {
+  if (!target || typeof target !== 'object') return false;
+  if (typeof Node !== 'undefined') return target instanceof Node;
+  return typeof target.nodeType === 'number';
+}
+
+function isMenuTargetInside(container, target) {
+  if (!container || typeof container.contains !== 'function' || !isNodeLike(target)) return false;
+  return container.contains(target);
+}
+
 function armMenuDismiss(entry) {
   const created = Date.now();
   const outside = (e) => {
-    if (!openMenu || openMenu !== entry || entry.m.contains(e.target)) return;
+    if (!openMenu || openMenu !== entry || isMenuTargetInside(entry.m, e?.target)) return;
     if (Date.now() - created < 50) return;
     // Native context menus consume the first outside tap. Do the same here so
     // removing the transparent backdrop cannot accidentally activate a button
@@ -464,7 +480,7 @@ function armMenuDismiss(entry) {
     }
   };
   const move = (e) => {
-    if (e && e.target && entry.m.contains(e.target)) return;
+    if (e && isMenuTargetInside(entry.m, e.target)) return;
     if (Date.now() - created < 50 && (e?.type === 'resize' || e?.type === 'scroll' || e?.type === 'touchmove' || e?.type === 'orientationchange')) return;
     closeMenu();
   };
@@ -559,7 +575,7 @@ export function closeMenu() {
 
 /* ── Dialog ─────────────────────────────────────────────────── */
 
-export function alertDialog(title, message, { confirmLabel = t('btn.ok'), onConfirm } = {}) {
+export function alertDialog(title, message, { confirmLabel = t('btn.ok'), cancelLabel = t('btn.cancel'), onConfirm, onCancel } = {}) {
   closeMenu();
   const returnFocus = document.activeElement;
   const backdrop = el('div', 'backdrop');
@@ -568,20 +584,34 @@ export function alertDialog(title, message, { confirmLabel = t('btn.ok'), onConf
   d.setAttribute('aria-modal', 'true');
   d.append(el('h3', null, title), el('p', null, message));
   const actions = el('div', 'actions');
-  const key = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(); } };
-  const done = () => {
+  let closed = false;
+  const cleanup = () => {
+    if (closed) return false;
+    closed = true;
     document.removeEventListener('keydown', key, true);
     backdrop.remove(); d.remove();
     if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === 'function') {
       try { returnFocus.focus({ preventScroll: true }); } catch { /* best effort */ }
     }
+    return true;
+  };
+  const cancel = () => {
+    if (!cleanup()) return;
+    if (onCancel) onCancel();
+  };
+  const confirm = () => {
+    if (!cleanup()) return;
     if (onConfirm) onConfirm();
   };
-  const ok = button(confirmLabel, null, done);
+  const key = (e) => { if (e.key === 'Escape') { e.preventDefault(); cancel(); } };
+  if (onConfirm) {
+    actions.append(button(cancelLabel, null, cancel));
+  }
+  const ok = button(confirmLabel, null, confirm);
   actions.append(ok);
   d.append(actions);
   overlays().append(backdrop, d);
-  backdrop.addEventListener('click', done);
+  backdrop.addEventListener('click', cancel);
   document.addEventListener('keydown', key, true);
   requestAnimationFrame(() => ok.focus({ preventScroll: true }));
   return d;

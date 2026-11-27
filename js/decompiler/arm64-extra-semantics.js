@@ -267,6 +267,41 @@ function lowerUaddwCExpr(wideName, narrowName, dstArrangement, isHigh) {
   return `(${parts.join(' | ')})`;
 }
 
+function lowerPermuteCExpr(mnemonic, src1Name, src2Name, arrangement) {
+  const layout = ARRANGEMENT_LAYOUT[arrangement];
+  if (!layout) return null;
+  const { lanes, elemBits } = layout;
+  const half = lanes / 2;
+  const elemMask = hexLiteral((1n << BigInt(elemBits)) - 1n, 64);
+  const parts = [];
+  for (let i = 0; i < lanes; i++) {
+    let srcName;
+    let srcLane;
+    if (mnemonic === 'uzp1') {
+      srcName = i < half ? src1Name : src2Name;
+      srcLane = i < half ? 2 * i : 2 * (i - half);
+    } else if (mnemonic === 'uzp2') {
+      srcName = i < half ? src1Name : src2Name;
+      srcLane = i < half ? 2 * i + 1 : 2 * (i - half) + 1;
+    } else if (mnemonic === 'zip1') {
+      srcName = i % 2 === 0 ? src1Name : src2Name;
+      srcLane = i % 2 === 0 ? i / 2 : (i - 1) / 2;
+    } else if (mnemonic === 'zip2') {
+      srcName = i % 2 === 0 ? src1Name : src2Name;
+      srcLane = i % 2 === 0 ? half + i / 2 : half + (i - 1) / 2;
+    } else {
+      return null;
+    }
+    const srcBit = srcLane * elemBits;
+    const extracted = srcBit === 0
+      ? `((uint64_t)(${srcName}) & ${elemMask})`
+      : `((uint64_t)((${srcName}) >> ${srcBit}) & ${elemMask})`;
+    const dstBit = i * elemBits;
+    parts.push(dstBit === 0 ? `(unsigned __int128)${extracted}` : `((unsigned __int128)${extracted} << ${dstBit})`);
+  }
+  return `(${parts.join(' | ')})`;
+}
+
 function lowerAddvCExpr(srcName, srcArrangement) {
   const layout = ARRANGEMENT_LAYOUT[srcArrangement];
   if (!layout) return null;
@@ -327,8 +362,7 @@ function nzcvImmediateMatches(nzcv, cond) {
     case 'lt': return n !== v;
     case 'gt': return !z && n === v;
     case 'le': return z || n !== v;
-    case 'al': return true;
-    case 'nv': return false;
+    case 'al': case 'nv': return true;
     default: return false;
   }
 }
@@ -397,11 +431,12 @@ function parseComparisonContext(lineText, canonicalGpNames = false) {
 }
 
 function conditionExprFromContext(cond, cmpCtx) {
-  if (cond === 'al') return '1';
-  if (cond === 'nv') return '0';
-  if (!cmpCtx) return `(0 /* cond:${cond} */)`;
+  if (cond === 'al' || cond === 'nv') return '1';
+  if (!cmpCtx) return null;
   if (cmpCtx.kind === 'fccmp') {
+    if (!cmpCtx.guardExpr) return null;
     const fcmpExpr = conditionExprFromContext(cond, cmpCtx.fcmp);
+    if (!fcmpExpr) return null;
     const fallback = nzcvImmediateMatches(cmpCtx.nzcv, cond) ? '1' : '0';
     return `(${cmpCtx.guardExpr} ? ${fcmpExpr} : ${fallback})`;
   }
@@ -422,7 +457,7 @@ function conditionExprFromContext(cond, cmpCtx) {
       case 'hs': case 'cs': case 'pl': return `(!(${lhs} < ${rhs}))`;
       case 'vs': return `((${lhs} != ${lhs}) || (${rhs} != ${rhs}))`;
       case 'vc': return `((${lhs} == ${lhs}) && (${rhs} == ${rhs}))`;
-      default: return `(0 /* cond:${cond} */)`;
+      default: return null;
     }
   }
   const uType = bits === 32 ? 'uint32_t' : 'uint64_t';
@@ -433,7 +468,7 @@ function conditionExprFromContext(cond, cmpCtx) {
     if (cond === 'ne') return `(${masked} != 0)`;
     if (cond === 'mi') return `((${sType})${masked} < 0)`;
     if (cond === 'pl') return `((${sType})${masked} >= 0)`;
-    return `(0 /* cond:${cond} */)`;
+    return null;
   }
   if (kind === 'cmn') {
     const sum = `((${uType})(${lhs}) + (${uType})(${rhs}))`;
@@ -441,7 +476,7 @@ function conditionExprFromContext(cond, cmpCtx) {
     if (cond === 'ne') return `(${sum} != 0)`;
     if (cond === 'mi') return `((${sType})${sum} < 0)`;
     if (cond === 'pl') return `((${sType})${sum} >= 0)`;
-    return `(0 /* cond:${cond} */)`;
+    return null;
   }
   switch (cond) {
     case 'eq': return `((${uType})(${lhs}) == (${uType})(${rhs}))`;
@@ -456,7 +491,7 @@ function conditionExprFromContext(cond, cmpCtx) {
     case 'hs': case 'cs': return `((${uType})(${lhs}) >= (${uType})(${rhs}))`;
     case 'mi': return `((${sType})((${uType})(${lhs}) - (${uType})(${rhs})) < 0)`;
     case 'pl': return `((${sType})((${uType})(${lhs}) - (${uType})(${rhs})) >= 0)`;
-    default: return `(0 /* cond:${cond} */)`;
+    default: return null;
   }
 }
 
@@ -619,7 +654,8 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
       }
       const hi = isFloat ? '2147483648.0f' : '2147483647.5';
       const lo = isFloat ? '-2147483648.0f' : '-2147483648.5';
-      return `${dst.name} = (int32_t)(!((${src}) == (${src})) ? 0 : ((${src}) >= ${hi} ? 0x7fffffff : ((${src}) <= ${lo} ? (-0x7fffffff - 1) : (int32_t)${fn}(${src}))));`;
+      const castPrefix = canonicalGpNames ? '(uint64_t)(uint32_t)(int32_t)' : '(int32_t)';
+      return `${dst.name} = ${castPrefix}(!((${src}) == (${src})) ? 0 : ((${src}) >= ${hi} ? 0x7fffffff : ((${src}) <= ${lo} ? (-0x7fffffff - 1) : (int32_t)${fn}(${src}))));`;
     }
   }
 
@@ -632,6 +668,7 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
     if (dst && !dst.isZero && rn && rm && dst.bits === rn.bits && dst.bits === rm.bits && cond !== null) {
       const uType = dst.bits === 32 ? 'uint32_t' : 'uint64_t';
       const condExpr = conditionExprFromContext(cond, cmpCtx);
+      if (!condExpr) return null;
       const tVal = `(${uType})(${rn.name})`;
       let fVal = `(${uType})(${rm.name})`;
       if (mnemonic === 'csinc') fVal = `((${uType})(${rm.name}) + 1${dst.bits === 32 ? 'U' : 'ULL'})`;
@@ -648,6 +685,7 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
     const cond = canonicalConditionToken(operands[1]);
     if (dst && !dst.isZero && cond !== null && cond !== 'al' && cond !== 'nv') {
       const condExpr = conditionExprFromContext(cond, cmpCtx);
+      if (!condExpr) return null;
       const tVal = mnemonic === 'cset'
         ? (dst.bits === 32 ? '1U' : '1ULL')
         : (dst.bits === 32 ? '0xffffffffU' : '0xffffffffffffffffULL');
@@ -664,7 +702,9 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
     const cond = canonicalConditionToken(operands[3]);
     if (cond !== null && cond !== 'al' && cond !== 'nv') {
       if (standardC) {
-        return `${operands[0]} = ${conditionExprFromContext(cond, cmpCtx)} ? ${operands[1]} : ${operands[2]};`;
+        const condExpr = conditionExprFromContext(cond, cmpCtx);
+        if (!condExpr) return null;
+        return `${operands[0]} = ${condExpr} ? ${operands[1]} : ${operands[2]};`;
       }
       return `${operands[0]} = __a64_cond_${cond}() ? ${operands[1]} : ${operands[2]};`;
     }
@@ -682,6 +722,18 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
         }
         return `__a64_fccmp(${operands[0]}, ${operands[1]}, ${nzcv}, "${cond}");`;
       }
+    }
+  }
+
+  // MOVI scalar 64-bit immediate: `movi dN, #imm` writes the 64-bit byte mask
+  // into the low 64 bits of vN and clears the upper 64 bits.
+  if (mnemonic === 'movi' && operands.length === 2) {
+    const dst = scalarFpRegister(operands[0]);
+    if (dst && dst.elementBits === 64) {
+      const value = canonicalMovi2dImmediate(parseImm64(operands[1]));
+      if (value == null) return null;
+      if (standardC) return `${dst.name} = (unsigned __int128)0x${value.toString(16)}ULL;`;
+      return `${dst.name} = __a64_movi_d(0x${value.toString(16)});`;
     }
   }
 
@@ -806,6 +858,21 @@ function lowerOne(payload, { standardC = false, cmpCtx = null, canonicalGpNames 
     return `${dst.name} = __a64_bit_${dst.arrangement}(${dst.name}, ${source.name}, ${mask.name});`;
   }
 
+  // UZP1/UZP2/ZIP1/ZIP2: NEON permute over matching valid vector arrangements.
+  if (mnemonic === 'uzp1' || mnemonic === 'uzp2' || mnemonic === 'zip1' || mnemonic === 'zip2') {
+    if (operands.length !== 3) return null;
+    const dst = vectorRegister(operands[0]);
+    const src1 = vectorRegister(operands[1]);
+    const src2 = vectorRegister(operands[2]);
+    if (!dst?.arrangement || !ARRANGEMENT_LAYOUT[dst.arrangement]) return null;
+    if (src1?.arrangement !== dst.arrangement || src2?.arrangement !== dst.arrangement) return null;
+    if (standardC) {
+      const expr = lowerPermuteCExpr(mnemonic, src1.name, src2.name, dst.arrangement);
+      if (expr) return `${dst.name} = ${expr};`;
+    }
+    return `${dst.name} = __a64_${mnemonic}_${dst.arrangement}(${src1.name}, ${src2.name});`;
+  }
+
   // ADDV: add across vector, reducing every lane into the low element of one
   // scalar SIMD register. The scalar view is the low bits of the same physical
   // register the renderer names `vN`.
@@ -921,9 +988,13 @@ export function lowerArm64RawAssembly(result, options = {}) {
           && nzcv != null && nzcv >= 0 && nzcv <= 15
           && /^[sd]\d+$/i.test(ops[0]) && /^[sd]\d+$/i.test(ops[1])) {
         const guardExpr = conditionExprFromContext(guardCond, lastCmp);
-        const fcmp = { kind: 'fcmp', lhs: ops[0], rhs: ops[1], bits: ops[0][0].toLowerCase() === 's' ? 32 : 64 };
-        const regs = [...new Set([...cmpCtxRegs(lastCmp), ...cmpCtxRegs(fcmp)])];
-        lastCmp = { kind: 'fccmp', guardExpr, fcmp, nzcv, regs };
+        if (guardExpr) {
+          const fcmp = { kind: 'fcmp', lhs: ops[0], rhs: ops[1], bits: ops[0][0].toLowerCase() === 's' ? 32 : 64 };
+          const regs = [...new Set([...cmpCtxRegs(lastCmp), ...cmpCtxRegs(fcmp)])];
+          lastCmp = { kind: 'fccmp', guardExpr, fcmp, nzcv, regs };
+        } else {
+          lastCmp = null;
+        }
       } else {
         lastCmp = null;
       }

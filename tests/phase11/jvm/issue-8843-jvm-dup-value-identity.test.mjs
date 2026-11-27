@@ -126,7 +126,9 @@ test('#8843 new -> dup -> invokespecial shares one allocation identity through t
   // allocation authority and the surviving reference through `pop`.)
   const init = nodeFor(lowered, 'invokespecial');
   assert.equal(init.attributes.receiverAllocationId, allocationId);
-  assert.deepEqual(nodeFor(lowered, 'pop').inputs, [dup.outputs[1]]);
+  assert.deepEqual(init.inputs, [dup.outputs[1]]);
+  assert.deepEqual(init.outputs, []);
+  assert.deepEqual(nodeFor(lowered, 'pop').inputs, [dup.outputs[0]]);
 });
 
 test('#8843 a partial dup is not promoted to complete by the identity overlay', () => {

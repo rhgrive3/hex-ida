@@ -320,7 +320,7 @@ function bindStoreSpelling(node, known, state) {
   } catch { budget.edges = 0; budget.reasons.add('store-spelling-observation-unavailable'); }
 }
 function safeIdent(s, fallback = 'value') {
-  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
+  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
 }
 function constNode(v, value = v?.const ?? 0n) { return expr.constant(value, v?.bits || 64, v?.signed ?? null, origin(v?.def, v)); }
@@ -2217,9 +2217,9 @@ function buildValueRaw(v, state, flags = {}) {
       const subLower = sub.toLowerCase();
       const extWidthMap = { b: 8, h: 16, w: 32, '8': 8, '16': 16, '32': 32 };
       if (subLower === 'is-zero' || subLower === 'is_zero') {
-        out = expr.compare('eq', a, expr.constant(0, a.bits || 64, false, origin(d, v)), origin(d, v));
+        out = expr.compare('eq', a, expr.constant(0, a.bits || 64, false, origin(d, v)), false, origin(d, v));
       } else if (subLower === 'is-nonzero' || subLower === 'is_nonzero') {
-        out = expr.compare('ne', a, expr.constant(0, a.bits || 64, false, origin(d, v)), origin(d, v));
+        out = expr.compare('ne', a, expr.constant(0, a.bits || 64, false, origin(d, v)), false, origin(d, v));
       } else if (/^sxt/i.test(sub)) {
         const suffix = subLower.slice(3);
         const fromBits = extWidthMap[suffix] || Number(suffix) || a.bits || 32;
@@ -3253,7 +3253,7 @@ function cAstFromLines(result, state) {
     let semantic = known?.semantic || null;
     const switched = switchHistory && readSwitchLineHistory(line, state.ir);
     if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
-    const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic };
+    const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic, ...(typeof line.block === 'number' ? { block: line.block } : {}) };
     node.text = explicitProvenCppFieldOffsets(node.text, state);
     const initial = initialStatement || initialControl;
     const virtualSlot = initialStatement?.instruction
@@ -3583,7 +3583,7 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   advanced.cAst ||= validatedCAstFromLines(result, advanced);
   advanced.printed ||= printProgram(advanced.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
   const explanation = explainSemanticFacts(advanced.facts, result.summary);
-  const lines = advanced.cAst.body.map((n) => ({ kind: n.kind, indent: n.indent, text: n.text, row: n.source.rows[0] ?? null, addr: n.source.addresses[0] ?? null, note: null, source: n.source }));
+  const lines = advanced.cAst.body.map((n) => ({ kind: n.kind, indent: n.indent, text: n.text, row: n.source.rows[0] ?? null, addr: n.source.addresses[0] ?? null, note: null, source: n.source, ...(typeof n.block === 'number' ? { block: n.block } : {}) }));
   const enhanced = {
     ...result,
     lines,

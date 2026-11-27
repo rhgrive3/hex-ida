@@ -100,18 +100,43 @@ export function fingerprintFunction(image, fn, opts = {}) {
   return null;
 }
 
+function unrepresentableMappingSentinel(mapping) {
+  const text = `unrepresentable:${mapping.name ?? ''}:${mapping.address == null ? '' : BigInt(mapping.address).toString(16)}:${BigInt(mapping.fileSize ?? 0n).toString(16)}:${mapping.perms ?? ''}`;
+  return new TextEncoder().encode(text);
+}
+
+function throwIfFingerprintAborted(signal) {
+  if (!signal?.aborted) return;
+  const err = new Error('binary-fingerprint-aborted');
+  err.name = 'AbortError';
+  err.code = 'ABORT_ERR';
+  throw err;
+}
+
 function residentMappingChunk(image, mapping, offset, length) {
+  if (mapping.fileOffset == null) {
+    if (mapping.address != null && typeof image.readVirtual === 'function') {
+      return image.readVirtual(BigInt(mapping.address) + BigInt(offset), length);
+    }
+    return null;
+  }
   const fileOffset = BigInt(mapping.fileOffset) + BigInt(offset);
   const start = Number(fileOffset);
   if (!Number.isSafeInteger(start) || start < 0 || start + length > image.bytes.length) return null;
   return image.bytes.subarray(start, start + length);
 }
 
-async function sourceMappingChunk(image, mapping, offset, length) {
+async function sourceMappingChunk(image, mapping, offset, length, signal = null) {
+  if (mapping.fileOffset == null) {
+    if (mapping.address != null && typeof image.readVirtualAsync === 'function') {
+      return image.readVirtualAsync(BigInt(mapping.address) + BigInt(offset), length, { signal });
+    }
+    return null;
+  }
   const fileOffset = BigInt(mapping.fileOffset) + BigInt(offset);
-  if (image.source) return image.source.readExactly(fileOffset, length);
+  if (image.source) return image.source.readExactly(fileOffset, length, { signal });
   if (mapping.address != null && typeof image.readVirtualAsync === 'function') {
-    return image.readVirtualAsync(BigInt(mapping.address) + BigInt(offset), length);
+    return image.readVirtualAsync(BigInt(mapping.address) + BigInt(offset), length, { signal });
   }
   return null;
 }
@@ -202,15 +227,25 @@ function fingerprintImageResult(state, total, executableOnly) {
  */
 export function fingerprintImage(image, opts = {}) {
   const executableOnly = opts.executableOnly !== false;
+  const signal = opts.signal ?? null;
+  const maxBytes = opts.maxBytes == null ? null : byteCountOption(opts.maxBytes, Number.MAX_SAFE_INTEGER, 1);
   const chunkBytes = Math.min(1 << 20, byteCountOption(opts.chunkBytes, 256 * 1024, 4096));
   const ranges = fingerprintRanges(image, executableOnly);
 
   if (image.bytes) {
+    throwIfFingerprintAborted(signal);
     let state = { hi: FNV_OFFSET_HI, lo: FNV_OFFSET_LO }, total = 0;
     for (const mapping of ranges) {
+      throwIfFingerprintAborted(signal);
+      if (mapping.fileOffset == null) {
+        state = fnv1a64State(unrepresentableMappingSentinel(mapping), state);
+        continue;
+      }
       const size = BigInt(mapping.fileSize);
       for (let off = 0n; off < size;) {
+        throwIfFingerprintAborted(signal);
         const take = Number(size - off < BigInt(chunkBytes) ? size - off : BigInt(chunkBytes));
+        if (maxBytes != null && total + take > maxBytes) throw new RangeError('binary-fingerprint-max-bytes-exceeded');
         const bytes = requireMappingChunk(residentMappingChunk(image, mapping, off, take), take);
         state = fnv1a64State(bytes, state);
         total += bytes.length;
@@ -221,16 +256,24 @@ export function fingerprintImage(image, opts = {}) {
   }
 
   return (async () => {
+    throwIfFingerprintAborted(signal);
     let state = { hi: FNV_OFFSET_HI, lo: FNV_OFFSET_LO }, total = 0;
     const maxReadLength = Number.isSafeInteger(image.source?.maxReadLength) && image.source.maxReadLength > 0
       ? image.source.maxReadLength
       : chunkBytes;
     const sourceChunkBytes = Math.min(chunkBytes, maxReadLength);
     for (const mapping of ranges) {
+      throwIfFingerprintAborted(signal);
+      if (mapping.fileOffset == null) {
+        state = fnv1a64State(unrepresentableMappingSentinel(mapping), state);
+        continue;
+      }
       const size = BigInt(mapping.fileSize);
       for (let off = 0n; off < size;) {
+        throwIfFingerprintAborted(signal);
         const take = Number(size - off < BigInt(sourceChunkBytes) ? size - off : BigInt(sourceChunkBytes));
-        const bytes = requireMappingChunk(await sourceMappingChunk(image, mapping, off, take), take);
+        if (maxBytes != null && total + take > maxBytes) throw new RangeError('binary-fingerprint-max-bytes-exceeded');
+        const bytes = requireMappingChunk(await sourceMappingChunk(image, mapping, off, take, signal), take);
         state = fnv1a64State(bytes, state);
         total += bytes.length;
         off += BigInt(bytes.length);

@@ -36,15 +36,21 @@ function unique(values) {
 
 function safeBigInt(value) {
   if (value == null) return null;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
   if (typeof value === 'string') {
     // Only explicit integer syntax may become an address (#5825): BigInt('')
     // is 0n, which fabricated exact direct targets out of blank strings.
     const text = value.trim();
     if (!/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) return null;
-    try { return BigInt(text); } catch { return null; }
+    const negative = text.startsWith('-');
+    const body = negative || text.startsWith('+') ? text.slice(1) : text;
+    try {
+      const mag = BigInt(body);
+      return negative ? -mag : mag;
+    } catch { return null; }
   }
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
-  catch { return null; }
+  return null;
 }
 
 function valueWidth(value) {
@@ -274,10 +280,10 @@ function lowerValue(bundle, operation, options) {
     }
     return [legacy(bundle, operation, options, OP.MOV, { ...writes, srcs: srcs.slice(0, 1) })];
   }
-  if (BIN_OPS[head]) {
+  if (Object.hasOwn(BIN_OPS, head)) {
     return [legacy(bundle, operation, options, OP.BIN, { ...writes, sub: BIN_OPS[head], srcs })];
   }
-  if (UN_OPS[head]) {
+  if (Object.hasOwn(UN_OPS, head)) {
     return [legacy(bundle, operation, options, OP.UN, { ...writes, sub: UN_OPS[head], srcs: srcs.slice(0, 1) })];
   }
   if (COMPARE_OPS.has(head)) {
@@ -605,6 +611,7 @@ function loweringContext(bundle, options) {
       if (output?.kind === 'temporary' && output.temporaryId != null) producerByTemporary.set(String(output.temporaryId), operation);
     }
     for (const input of operation.inputs || []) addTemporaryUse(usedTemporaryIds, input);
+    for (const input of operation.effectSummary?.inputs || []) addTemporaryUse(usedTemporaryIds, input);
     addTemporaryUse(usedTemporaryIds, operation.value);
     addTemporaryUse(usedTemporaryIds, operation.access?.addressExpr);
   }

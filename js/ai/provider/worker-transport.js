@@ -55,30 +55,52 @@ export async function acquireDistributedQuota(request, env, sessionId) {
     if (!stub || typeof stub.acquire !== 'function' || typeof stub.release !== 'function') throw new Error('invalid quota stub');
     // A client disconnect while the quota wait is pending also ends the wait
     // here: the turn must never start an upstream fetch after the client is
-    // gone (#5617/#5626).
-    const disconnect = request?.signal && !request.signal.aborted
-      ? new Promise((_resolve, reject) => { request.signal.addEventListener('abort', () => reject(new Error('quota-acquire-disconnected')), { once: true }); })
-      : (request?.signal?.aborted ? Promise.reject(new Error('quota-acquire-disconnected')) : null);
-    const acquirePromise = stub.acquire({ sessionId: quotaSessionId(sessionId) });
-    let abandoned = false;
-    if (acquirePromise && typeof acquirePromise.then === 'function') {
-      acquirePromise.then((res) => {
-        if (abandoned && res?.allowed && res?.token) {
-          try {
-            const rel = stub.release(res.token);
-            if (rel && typeof rel.catch === 'function') rel.catch(() => {});
-          } catch {}
-        }
-      }).catch(() => {});
-    }
+    // gone (#5617/#5626). If the signal is already aborted, fail immediately
+    // without invoking stub.acquire().
+    const signal = request?.signal;
+    if (signal?.aborted) throw new Error('quota-acquire-disconnected');
+    let onAbort = null;
+    const disconnect = signal && typeof signal.addEventListener === 'function'
+      ? new Promise((_resolve, reject) => {
+        onAbort = () => reject(new Error('quota-acquire-disconnected'));
+        signal.addEventListener('abort', onAbort, { once: true });
+      })
+      : null;
+    if (disconnect) disconnect.catch(() => {});
     let result;
     try {
-      result = await (disconnect
-        ? Promise.race([boundedRpc(acquirePromise, 'acquire', env), disconnect])
-        : boundedRpc(acquirePromise, 'acquire', env));
-    } catch (err) {
-      abandoned = true;
-      throw err;
+      const acquirePromise = stub.acquire({ sessionId: quotaSessionId(sessionId) });
+      const settledAcquire = Promise.resolve(acquirePromise);
+      let abandoned = false;
+      let acquiredToken = null;
+      let releaseSent = false;
+      const releaseOrphan = (token) => {
+        if (releaseSent || !token) return;
+        releaseSent = true;
+        try {
+          const rel = stub.release(token);
+          if (rel && typeof rel.catch === 'function') rel.catch(() => {});
+        } catch {}
+      };
+      settledAcquire.then((res) => {
+        if (res?.allowed && res?.token) {
+          acquiredToken = res.token;
+          if (abandoned) releaseOrphan(acquiredToken);
+        }
+      }).catch(() => {});
+      try {
+        result = await (disconnect
+          ? Promise.race([boundedRpc(settledAcquire, 'acquire', env), disconnect])
+          : boundedRpc(settledAcquire, 'acquire', env));
+      } catch (err) {
+        abandoned = true;
+        if (acquiredToken) releaseOrphan(acquiredToken);
+        throw err;
+      }
+    } finally {
+      if (onAbort && typeof signal?.removeEventListener === 'function') {
+        signal.removeEventListener('abort', onAbort);
+      }
     }
     if (!result?.allowed) {
       const retrySeconds = Math.max(1, Math.ceil(Number(result?.retryAfterMs || 1000) / 1000));

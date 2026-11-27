@@ -41,13 +41,24 @@ export function recoverAggregateLayouts(ir, types, opts = {}) {
     let g = groups.get(root);
     if (!g) { g = { root, base, accesses:[], fixed:new Map(), indexed:[] }; groups.set(root,g); }
     const size = Number(inst.loc?.size || inst.addr?.size || inst.size || 0);
-    const disp = inst.loc?.disp ?? inst.addr?.disp ?? null;
+    const rawDisp = inst.loc?.disp ?? inst.addr?.disp ?? null;
+    let dispBigInt = null;
+    if (typeof rawDisp === 'bigint') dispBigInt = rawDisp;
+    else if (typeof rawDisp === 'number' && Number.isSafeInteger(rawDisp)) dispBigInt = BigInt(rawDisp);
+    else if (typeof rawDisp === 'string' && /^[+-]?(?:0x[0-9a-f]+|\d+)$/i.test(rawDisp.trim())) {
+      const trimmed = rawDisp.trim();
+      const neg = trimmed.startsWith('-');
+      const body = neg || trimmed.startsWith('+') ? trimmed.slice(1) : trimmed;
+      try { const m = BigInt(body); dispBigInt = neg ? -m : m; } catch { dispBigInt = null; }
+    }
     const indexed = !!inst.addr?.index;
-    const rec = { row:inst.row, ir:inst.id, op:inst.op, size, disp, indexed, scale:indexed ? (1 << Number(inst.addr?.scale || 0)) : null, key:inst.loc?.key || null };
+    const rawScale = Number(inst.addr?.scale || 0);
+    const scale = indexed && Number.isInteger(rawScale) && rawScale >= 0 && rawScale <= 16 ? (2 ** rawScale) : null;
+    const rec = { row:inst.row, ir:inst.id, op:inst.op, size, disp:rawDisp, indexed, scale, key:inst.loc?.key || null };
     g.accesses.push(rec);
     if (indexed) g.indexed.push(rec);
-    else if (disp != null) {
-      const k=String(disp); const xs=g.fixed.get(k)||[]; xs.push(rec); g.fixed.set(k,xs);
+    else if (dispBigInt != null) {
+      const k=dispBigInt.toString(); const xs=g.fixed.get(k)||[]; xs.push(rec); g.fixed.set(k,xs);
     }
   }
   const layouts=[];
@@ -82,7 +93,7 @@ export function recoverAggregateLayouts(ir, types, opts = {}) {
       }
       const field={ offset:off,
         size:width.size,
-        name:known?.name || `field_${off.toString(16).toUpperCase()}`,
+        name:known?.name || (off < 0n ? `field_neg_${(-off).toString(16).toUpperCase()}` : `field_${off.toString(16).toUpperCase()}`),
         type:known?.type || types?.locations?.get?.(xs[0]?.key) || null,
         confidence:known?.name ? (owner?.nominal ? 0.95 : 0.75) : 0.5,
         owner:owner?.key || null,

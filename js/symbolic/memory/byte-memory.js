@@ -23,14 +23,23 @@ function primitiveInteger(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   throw new QueryFailure('unsafe-integer');
 }
+const VALID_MEMORY_KINDS = new Set([
+  'const','fresh_symbol','unary','binary','compare','connective','ite','extract','concat','cast'
+]);
 // Structural equality, not a name/string/hash/solver-boolean alias heuristic.
 // Calls are bounded by the validated term size and the query work budget.
 function children(expr) {
-  if (['unary','extract','cast'].includes(expr.kind)) return [expr.arg];
-  if (['binary','compare','concat'].includes(expr.kind)) return [expr.left,expr.right];
-  if (expr.kind === 'connective') return expr.args;
-  if (expr.kind === 'ite') return [expr.cond,expr.thenExpr,expr.elseExpr];
-  return [];
+  switch (expr.kind) {
+    case 'unary':
+    case 'extract':
+    case 'cast': return [expr.arg];
+    case 'binary':
+    case 'compare':
+    case 'concat': return [expr.left,expr.right];
+    case 'connective': return expr.args;
+    case 'ite': return [expr.cond,expr.thenExpr,expr.elseExpr];
+    default: return [];
+  }
 }
 export function assertMemoryExpr(expr, guard, width = null) {
   const available=guard.limits.workItems-guard.metrics().workItems;
@@ -43,8 +52,8 @@ export function assertMemoryExpr(expr, guard, width = null) {
     guard.take('workItems');
     const [node,depth] = work.pop();
     if (!node || !Object.isFrozen(node) || !Object.isFrozen(node.sort) || depth > 128 ||
-        !['const','fresh_symbol','unary','binary','compare','connective','ite','extract','concat','cast'].includes(node.kind) ||
-        !['bool','bv'].includes(node.sort?.kind)) throw new QueryFailure('unsupported-expression');
+        !VALID_MEMORY_KINDS.has(node.kind) ||
+        (node.sort?.kind !== 'bool' && node.sort?.kind !== 'bv')) throw new QueryFailure('unsupported-expression');
     if (node.sort.kind === 'bv' && (!Number.isSafeInteger(node.sort.width) || node.sort.width < 1 || node.sort.width > 64)) throw new QueryFailure('unsupported-width');
     if (node.kind==='fresh_symbol' && (typeof node.symbolId!=='string'||!node.symbolId)) throw new QueryFailure('missing-canonical-symbol-id');
     if (seen.has(node)) continue;
@@ -60,8 +69,28 @@ function sameTerm(a,b,guard) {
     guard.take('workItems');
     const [x,y]=work.pop();if(x===y) continue;
     if(x.kind!==y.kind||x.sort.kind!==y.sort.kind||x.sort.width!==y.sort.width) return false;
-    if(x.kind==='fresh_symbol') {if(x.symbolId!==y.symbolId) return false;continue;}
-    if(['value','op','high','low','targetWidth'].some(k=>x[k]!==y[k])) return false;
+    switch(x.kind) {
+      case 'fresh_symbol':
+        if(x.symbolId!==y.symbolId) return false;
+        continue;
+      case 'const':
+        if(x.value!==y.value) return false;
+        continue;
+      case 'unary':
+      case 'binary':
+      case 'compare':
+      case 'connective':
+        if(x.op!==y.op) return false;
+        break;
+      case 'extract':
+        if(x.high!==y.high||x.low!==y.low) return false;
+        break;
+      case 'cast':
+        if(x.op!==y.op||x.targetWidth!==y.targetWidth) return false;
+        break;
+      default:
+        break;
+    }
     if(seen.get(x)?.has(y)) continue;
     if(!seen.has(x)) seen.set(x,new Set());seen.get(x).add(y);
     const xs=children(x),ys=children(y);if(xs.length!==ys.length) return false;

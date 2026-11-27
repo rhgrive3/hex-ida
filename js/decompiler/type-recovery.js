@@ -325,7 +325,7 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
   let bestDepth = -1;
   let bestRow = -1;
   for (const value of regValues) {
-    if (value.reg !== reg || !value.def || value.clobbered) continue;
+    if (value.reg !== reg || !value.def) continue;
     const def = value.def;
     if (def === atInst) continue;
     if (def.block === atInst.block) {
@@ -343,7 +343,7 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
       bestRow = row;
     }
   }
-  return best;
+  return best?.clobbered ? null : best;
 }
 
 /*
@@ -367,21 +367,42 @@ function buildCallDominanceIndex(ir) {
       callBlocks.push(blk);
     }
   }
-  return { firstCallRowByBlock, callBlocks };
+  return { firstCallRowByBlock, callBlocks, callBlockSet, domByCallCache: new Map() };
 }
 
 function dominatedByEarlierCall(ir, atInst, callIndex = null) {
   if (!ir || !atInst) return false;
-  const { firstCallRowByBlock, callBlocks } = callIndex || buildCallDominanceIndex(ir);
+  const index = callIndex || buildCallDominanceIndex(ir);
+  const { firstCallRowByBlock, callBlocks, callBlockSet, domByCallCache } = index;
   const blk = atInst.block ?? null;
   if (atInst.row != null) {
     const firstRow = firstCallRowByBlock.get(blk);
     if (firstRow != null && firstRow < atInst.row) return true;
   }
-  if (atInst.block != null) {
-    for (const cb of callBlocks) {
-      if (cb !== atInst.block && blockDominates(ir, cb, atInst.block)) return true;
+  if (atInst.block != null && callBlocks.length > 0) {
+    if (domByCallCache && domByCallCache.has(atInst.block)) {
+      return domByCallCache.get(atInst.block);
     }
+    let result = false;
+    const dom = ir.dominators?.[atInst.block];
+    if (dom && typeof dom.has === 'function') {
+      for (const cb of callBlocks) {
+        if (cb !== atInst.block && dom.has(cb)) { result = true; break; }
+      }
+    } else if (callBlockSet) {
+      let cur = atInst.block, guard = 0;
+      const limit = (ir.blocks?.length || 0) + 1;
+      while (cur != null && cur >= 0 && guard++ <= limit) {
+        cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+        if (cur !== atInst.block && callBlockSet.has(cur)) { result = true; break; }
+      }
+    } else {
+      for (const cb of callBlocks) {
+        if (cb !== atInst.block && blockDominates(ir, cb, atInst.block)) { result = true; break; }
+      }
+    }
+    domByCallCache?.set(atInst.block, result);
+    return result;
   }
   return false;
 }
@@ -859,9 +880,38 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   // Propagate floating-point evidence and scalar 32/64-bit float widths across
   // register-view MOV/bitcast/trunc/zext and PHI nodes so vN/qN <-> sN/dN chains
   // recover float/double arguments and return types.
-  for (let pass = 0; pass < 6; pass++) {
+  let hasAnyFloat = false;
+  for (const e of ev.values()) { if (e.floating > 0) { hasAnyFloat = true; break; } }
+  if (!hasAnyFloat) {
+    for (const e of locEv.values()) { if (e.floating > 0) { hasAnyFloat = true; break; } }
+  }
+  const fpPropInsts = [];
+  for (const inst of ir.instructions || []) {
+    if (inst.op === OP.MOV && inst.dst) {
+      const isScalarFpView = !inst.sub || inst.sub === 'trunc' || inst.sub === 'zext' || inst.sub === 'fmov' || inst.extra?.castKind === 'bitcast';
+      if (!isScalarFpView) continue;
+      if (inst.sub === 'fmov' && inst.extra?.float === true && inst.extra?.bitcopy !== true) hasAnyFloat = true;
+      fpPropInsts.push(inst);
+    } else if (inst.op === OP.LOAD && inst.dst) {
+      // Preserve lFor(inst.loc) registration side effect in locEv (returned in locations Map).
+      lFor(inst.loc);
+      fpPropInsts.push(inst);
+    } else if (inst.op === OP.STORE) {
+      if (valueOf(inst.args && inst.args[0])) lFor(inst.loc);
+      fpPropInsts.push(inst);
+    } else if (inst.op === OP.PHI && inst.dst) {
+      fpPropInsts.push(inst);
+    }
+  }
+  const fpPhiIncoming = hasAnyFloat ? new Map() : null;
+  if (hasAnyFloat) {
+    for (let i = 0; i < fpPropInsts.length; i++) {
+      if (fpPropInsts[i].op === OP.PHI) fpPhiIncoming.set(fpPropInsts[i], phiIncomingValues(fpPropInsts[i]));
+    }
+  }
+  for (let pass = 0; hasAnyFloat && pass < 6; pass++) {
     let changed = false;
-    for (const inst of ir.instructions || []) {
+    for (const inst of fpPropInsts) {
       if (inst.op === OP.MOV && inst.dst) {
         const src = valueOf(inst.args && inst.args[0]);
         if (!src) continue;
@@ -936,7 +986,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         }
       } else if (inst.op === OP.PHI && inst.dst) {
         const de = eFor(inst.dst);
-        const args = phiIncomingValues(inst);
+        const args = fpPhiIncoming.get(inst) || [];
         if (de && args.length) {
           const floatArgs = args.filter((a) => (eFor(a)?.floating || 0) > 0);
           if (floatArgs.length > 0 && de.floating === 0) {
@@ -1192,40 +1242,48 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         vals = fpVals;
       }
     }
+    const is32BitIntReturnMemo = new Map();
     const is32BitIntReturnValue = (val, seen = new Set()) => {
-      if (!val || seen.has(val)) return false;
+      if (!val) return false;
+      if (is32BitIntReturnMemo.has(val)) return is32BitIntReturnMemo.get(val);
+      if (seen.has(val)) return false;
       seen.add(val);
-      const vt = values.get(val.id);
-      if (vt && vt.kind !== 'unknown' && vt.name !== 'int32' && vt.name !== 'uint32' && vt.name !== 'bool') return false;
-      if (vt?.name === 'int32') return true;
-      if (typeof val.reg === 'string' && /^w\d+$/.test(val.reg)) return true;
-      if (val.bits === 32) return true;
-      const def = val.def;
-      if (!def) return false;
-      if (def.op === OP.CONST) return val.bits === 32 || val.const === 0xffffffffn;
-      if (def.op === OP.MOV) {
-        if (def.sub === 'zext' && Number(def.extra?.sourceBits) === 32) return true;
-        if (def.sub === 'trunc' && (Number(def.extra?.targetBits) === 32 || val.bits === 32)) return true;
-        if (val.const === 0xffffffffn) return true;
-        const src = valueOf(def.args?.[0]);
-        return src ? is32BitIntReturnValue(src, seen) : false;
+      let res = false;
+      try {
+        const vt = values.get(val.id);
+        if (vt && vt.kind !== 'unknown' && vt.name !== 'int32' && vt.name !== 'uint32' && vt.name !== 'bool') { res = false; }
+        else if (vt?.name === 'int32' || (typeof val.reg === 'string' && /^w\d+$/.test(val.reg)) || val.bits === 32) { res = true; }
+        else {
+          const def = val.def;
+          if (!def) res = false;
+          else if (def.op === OP.CONST) res = val.bits === 32 || val.const === 0xffffffffn;
+          else if (def.op === OP.MOV) {
+            if ((def.sub === 'zext' && Number(def.extra?.sourceBits) === 32)
+                || (def.sub === 'trunc' && (Number(def.extra?.targetBits) === 32 || val.bits === 32))
+                || val.const === 0xffffffffn) {
+              res = true;
+            } else {
+              const src = valueOf(def.args?.[0]);
+              res = src ? is32BitIntReturnValue(src, seen) : false;
+            }
+          } else if (def.op === OP.PHI) {
+            const incoming = phiIncomingValues(def).filter((arg) => !seen.has(arg));
+            res = incoming.length > 0 && incoming.every((arg) => is32BitIntReturnValue(arg, seen));
+          } else if (def.op === OP.SEL) {
+            const arms = (def.args || []).slice(0, 2).map(valueOf).filter(Boolean);
+            res = arms.length === 2 && arms.every((arg) => is32BitIntReturnValue(arg, seen));
+          } else if (def.op === OP.LOAD) {
+            res = Number(def.extra?.size) === 4 || Number(def.extra?.widthBits) === 32 || val.bits === 32;
+          } else if (def.op === OP.CALL) {
+            const sig = knownCallSignature(calleeNameOf(def));
+            res = sig?.retType === 'int';
+          }
+        }
+      } finally {
+        seen.delete(val);
       }
-      if (def.op === OP.PHI) {
-        const incoming = phiIncomingValues(def).filter((arg) => !seen.has(arg));
-        return incoming.length > 0 && incoming.every((arg) => is32BitIntReturnValue(arg, new Set(seen)));
-      }
-      if (def.op === OP.SEL) {
-        const arms = (def.args || []).slice(0, 2).map(valueOf).filter(Boolean);
-        return arms.length === 2 && arms.every((arg) => is32BitIntReturnValue(arg, new Set(seen)));
-      }
-      if (def.op === OP.LOAD) {
-        return Number(def.extra?.size) === 4 || Number(def.extra?.widthBits) === 32 || val.bits === 32;
-      }
-      if (def.op === OP.CALL) {
-        const sig = knownCallSignature(calleeNameOf(def));
-        return sig?.retType === 'int';
-      }
-      return false;
+      if (seen.size === 0) is32BitIntReturnMemo.set(val, res);
+      return res;
     };
     if (vals.length) {
       let picked = null;
@@ -1283,7 +1341,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     });
     if (filteredArgs.length !== args.length) {
       args.length = 0;
-      filteredArgs.forEach((a, idx) => args.push({ ...a, index: idx }));
+      filteredArgs.forEach((a) => args.push(a));
     }
   }
   const warnings = [];

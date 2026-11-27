@@ -16,28 +16,31 @@ function narrow() {
   return typeof window !== 'undefined' && window.innerWidth < 900;
 }
 
-function addressesEqual(a, b) {
-  try {
-    return BigInt(a) === BigInt(b);
-  } catch {
-    return false;
-  }
-}
-
 function toAddressBigInt(value) {
-  if (value == null) return null;
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(trimmed)) return null;
   try {
-    return BigInt(value);
+    return BigInt(trimmed);
   } catch {
     return null;
   }
 }
 
+function addressesEqual(a, b) {
+  const lhs = toAddressBigInt(a);
+  const rhs = toAddressBigInt(b);
+  return lhs != null && rhs != null && lhs === rhs;
+}
+
 function goToCode(app, ui, addr, { select = false } = {}) {
-  if (addr == null) return false;
-  const moved = app.goToAddress(addr, { announce: true });
+  const normalized = toAddressBigInt(addr);
+  if (normalized == null) return false;
+  const moved = app.goToAddress(normalized, { announce: true });
   if (!moved) return false;
-  if (ui && ui.router) ui.router.navigate('/code/' + addr.toString());
+  if (ui && ui.router) ui.router.navigate('/code/' + normalized.toString());
   if (select) {
     const region = app.store.get('currentRegion');
     if (region) {
@@ -62,9 +65,10 @@ export function createActionRunner(app, { ui, assistant } = {}) {
     const addr = action.address != null ? action.address : action.target != null ? action.target : null;
     switch (action.kind) {
       case 'open-function': {
-        if (addr == null) return;
-        app.goToFunction(addr);
-        if (ui && ui.router) ui.router.navigate('/code/' + addr.toString());
+        const targetAddr = toAddressBigInt(addr);
+        if (targetAddr == null) return;
+        app.goToFunction(targetAddr);
+        if (ui && ui.router) ui.router.navigate('/code/' + targetAddr.toString());
         if (narrow() && assistant) assistant.collapse();
         return;
       }
@@ -126,15 +130,17 @@ export function createActionRunner(app, { ui, assistant } = {}) {
       }
       case 'show-callers':
       case 'show-callees': {
-        if (addr == null || !ui || !ui.router) return;
-        ui.router.navigate('/function/' + addr.toString() + '/calls');
+        const targetAddr = toAddressBigInt(addr);
+        if (targetAddr == null || !ui || !ui.router) return;
+        ui.router.navigate('/function/' + targetAddr.toString() + '/calls');
         if (narrow() && assistant) assistant.collapse();
         return;
       }
       case 'show-cfg':
       case 'show-pseudocode': {
-        if (addr == null || !ui?.router) return;
-        ui.router.navigate('/function/' + BigInt(addr).toString() + (action.kind === 'show-cfg' ? '/flow' : '/pseudocode'));
+        const targetAddr = toAddressBigInt(addr);
+        if (targetAddr == null || !ui?.router) return;
+        ui.router.navigate('/function/' + targetAddr.toString() + (action.kind === 'show-cfg' ? '/flow' : '/pseudocode'));
         if (narrow() && assistant) assistant.collapse();
         return;
       }
@@ -142,20 +148,22 @@ export function createActionRunner(app, { ui, assistant } = {}) {
         // Schema-valid empty args must not escape the AIError boundary as a
         // raw TypeError (BigInt(null)): navigation without a target is a
         // no-op like the other null-guarded branches (#5383).
-        if (addr == null) return;
-        if (!goToCode(app, ui, BigInt(addr), { select: true })) return;
+        const targetAddr = toAddressBigInt(addr);
+        if (targetAddr == null) return;
+        if (!goToCode(app, ui, targetAddr, { select: true })) return;
         if (narrow() && assistant) assistant.collapse();
         return;
       }
       case 'trace-value': {
-        if (addr == null) return;
+        const targetAddr = toAddressBigInt(addr);
+        if (targetAddr == null) return;
         const semantic = app.semantic;
         const region = app.store.get('currentRegion');
         const model = semantic && semantic.model;
-        const insn = model?.instructions?.find((i) => i.address === addr || addressesEqual(i.address, addr));
-        const row = insn?.row ?? (app.viewer?.rowOfAddress ? app.viewer.rowOfAddress(addr) : null);
+        const insn = model?.instructions?.find((i) => i.address === targetAddr || addressesEqual(i.address, targetAddr));
+        const row = insn?.row ?? (app.viewer?.rowOfAddress ? app.viewer.rowOfAddress(targetAddr) : null);
         if (model && row != null && Number.isFinite(row)) showValueFlow(app, model, row, region);
-        else if (ui && ui.router) ui.router.navigate('/function/' + addr.toString() + '/overview');
+        else if (ui && ui.router) ui.router.navigate('/function/' + targetAddr.toString() + '/overview');
         if (narrow() && assistant) assistant.collapse();
         return;
       }

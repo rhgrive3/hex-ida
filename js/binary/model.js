@@ -230,21 +230,37 @@ function buildVirtualMappingRuns(items) {
     starts.push(previous);
     owners.push(bestActive());
   }
-  return { starts, owners };
+  return { starts, owners, lastIdx: -1 };
 }
 
 function lookupVirtualMapping(lookup, address) {
   const runs = lookup.runs;
+  if (runs) {
+    const starts = runs.starts;
+    const last = runs.lastIdx;
+    if (last >= 0 && address >= starts[last] && (last + 1 >= starts.length || address < starts[last + 1])) {
+      return runs.owners[last] || null;
+    }
+    let lo = 0;
+    let hi = starts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (starts[mid] <= address) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo === 0) return null;
+    runs.lastIdx = lo - 1;
+    return runs.owners[lo - 1] || null;
+  }
   let lo = 0;
-  let hi = runs ? runs.starts.length : lookup.starts.length;
-  const starts = runs ? runs.starts : lookup.starts;
+  let hi = lookup.starts.length;
+  const starts = lookup.starts;
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
     if (starts[mid] <= address) lo = mid + 1;
     else hi = mid;
   }
   if (lo === 0) return null;
-  if (runs) return runs.owners[lo - 1] || null;
   const upper = lo;
   let best = null;
   for (let i = upper - 1; i >= 0 && lookup.prefixEnds[i] > address; i--) {
@@ -540,10 +556,21 @@ export class BinaryImage {
     this.warnings = [];
     this.metadata = meta.metadata || {};
     this._finalized = false;
-    this._mappingLookups = { sections: null, segments: null, virtual: null, offsets: null };
+    this._mappingVersion = 0;
+    // Track array lengths (not object identity) to preserve #8772 Proxy-wrapping contract.
+    this._mappingLookups = {
+      sections: null,
+      segments: null,
+      virtual: null,
+      offsets: null,
+      sectionsLen: -1,
+      segmentsLen: -1,
+    };
+    this._lastOffsetLookupEntry = null;
     this._mappingSorted = { sections: null, segments: null };
     this._dataInCodeLookup = null;
     this._dataInCodeSorted = null;
+    this._chpeLookup = null;
   }
 
   addSegment(s) {
@@ -568,7 +595,9 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.segments = null;
     this._mappingLookups.virtual = null;
+    this._mappingVersion += 1;
     this._mappingLookups.offsets = null;
+    this._lastOffsetLookupEntry = null;
     this._mappingSorted.segments = null;
     return seg;
   }
@@ -598,13 +627,15 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingVersion += 1;
     this._mappingLookups.offsets = null;
+    this._lastOffsetLookupEntry = null;
     this._mappingSorted.sections = null;
     return sec;
   }
 
   addressToOffset(address) {
-    const a = strictBigIntOrNull(address);
+    const a = typeof address === 'bigint' ? address : strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
     const owner = this._virtualMappingAt(a);
     if (!owner) return null;
@@ -616,10 +647,60 @@ export class BinaryImage {
     return null;
   }
 
+  _ensureMappingLookupsFresh() {
+    const lookups = this._mappingLookups;
+    const secLen = Array.isArray(this.sections) ? this.sections.length : 0;
+    const segLen = Array.isArray(this.segments) ? this.segments.length : 0;
+    if (
+      (lookups.sectionsLen >= 0 && lookups.sectionsLen !== secLen)
+      || (lookups.segmentsLen >= 0 && lookups.segmentsLen !== segLen)
+    ) {
+      lookups.sections = null;
+      lookups.segments = null;
+      lookups.virtual = null;
+      lookups.offsets = null;
+      lookups.sectionsLen = secLen;
+      lookups.segmentsLen = segLen;
+      this._mappingSorted.sections = null;
+      this._mappingSorted.segments = null;
+      if (!Object.isFrozen(this)) this._lastOffsetLookupEntry = null;
+    }
+  }
+
   offsetToAddress(offset) {
-    const o = strictBigIntOrNull(offset);
+    const o = typeof offset === 'bigint' ? offset : strictBigIntOrNull(offset);
     if (o === null || o < 0n) return null;
-    if (!this._mappingLookups.offsets) this._mappingLookups.offsets = buildFileOffsetLookup(this.sections, this.segments);
+    this._ensureMappingLookupsFresh();
+    const cached = Object.isFrozen(this) ? null : this._lastOffsetLookupEntry;
+    if (
+      this._mappingLookups.offsets !== null
+      && this._mappingLookups.virtual !== null
+      && cached !== null
+      && o >= cached.start
+      && o < cached.end
+    ) {
+      const m = cached.mapping;
+      if (
+        m
+        && m.fileOffset === cached.fileOffset
+        && m.address === cached.addrBase
+        && m.fileSize === cached.fileSize
+        && m.size === cached.size
+        && m.source === cached.source
+        && m.flags === cached.flags
+      ) {
+        return cached.addrBase + (o - cached.fileOffset);
+      }
+      this._mappingLookups.offsets = null;
+      this._mappingLookups.virtual = null;
+      if (!Object.isFrozen(this)) this._lastOffsetLookupEntry = null;
+    }
+    if (!this._mappingLookups.offsets) {
+      this._mappingLookups.offsets = buildFileOffsetLookup(this.sections, this.segments);
+      this._mappingLookups.sectionsLen = Array.isArray(this.sections) ? this.sections.length : 0;
+      this._mappingLookups.segmentsLen = Array.isArray(this.segments) ? this.segments.length : 0;
+      if (!Object.isFrozen(this)) this._lastOffsetLookupEntry = null;
+    }
     const lookup = this._mappingLookups.offsets;
     const window = fileOffsetCandidateWindow(lookup, o);
     if (window === null) return null;
@@ -630,16 +711,60 @@ export class BinaryImage {
       if (!owner) return null;
       const delta = a - owner.address;
       const fileSize = owner.fileSize ?? 0n;
-      return delta < fileSize && (owner.fileOffset + delta) === o ? a : null;
+      return delta < fileSize && (owner.fileOffset + delta) === o ? { a, delta, fileSize } : null;
+    };
+    const cacheHit = (candidate, resolved) => {
+      const vRuns = this._mappingLookups.virtual?.runs;
+      if (!vRuns || vRuns.starts.length < 2) return;
+      const a = resolved.a;
+      let lo = 0;
+      let hi = vRuns.starts.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (vRuns.starts[mid] <= a) lo = mid + 1;
+        else hi = mid;
+      }
+      if (lo === 0 || lo >= vRuns.starts.length) return;
+      const runStart = vRuns.starts[lo - 1];
+      const runEnd = vRuns.starts[lo];
+      let safeEnd = candidate.end;
+      if (window.hi < lookup.starts.length && lookup.starts[window.hi] < safeEnd) {
+        safeEnd = lookup.starts[window.hi];
+      }
+      const runFileEnd = o + (runEnd - a);
+      if (runFileEnd < safeEnd) safeEnd = runFileEnd;
+      const ownerFileEnd = o + (resolved.fileSize - resolved.delta);
+      if (ownerFileEnd < safeEnd) safeEnd = ownerFileEnd;
+      let safeStart = o;
+      if (window.lo === window.hi - 1 && (window.lo === 0 || lookup.prefixEnds[window.lo - 1] <= candidate.start)) {
+        const runFileStart = o - (a - runStart);
+        safeStart = candidate.start > runFileStart ? candidate.start : runFileStart;
+      }
+      if (safeStart < safeEnd && !Object.isFrozen(this)) {
+        this._lastOffsetLookupEntry = {
+          start: safeStart,
+          end: safeEnd,
+          mapping: candidate.mapping,
+          fileOffset: candidate.mapping.fileOffset,
+          addrBase: candidate.mapping.address,
+          fileSize: candidate.mapping.fileSize,
+          size: candidate.mapping.size,
+          source: candidate.mapping.source,
+          flags: candidate.mapping.flags,
+        };
+      }
     };
     const first = firstFileOffsetCandidate(lookup, window, o);
     if (first !== null) {
       const resolved = resolve(first);
-      if (resolved !== null) return resolved;
+      if (resolved !== null) {
+        cacheHit(first, resolved);
+        return resolved.a;
+      }
     }
     for (const candidate of orderedFileOffsetCandidates(lookup, window, o)) {
       const resolved = resolve(candidate);
-      if (resolved !== null) return resolved;
+      if (resolved !== null) return resolved.a;
     }
     return null;
   }
@@ -647,18 +772,26 @@ export class BinaryImage {
   sectionAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
+    this._ensureMappingLookupsFresh();
     if (this._mappingSorted.sections === null) this._mappingSorted.sections = isAddressSorted(this.sections);
     if (!this._mappingSorted.sections) return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
-    if (!this._mappingLookups.sections) this._mappingLookups.sections = buildMappingLookup(this.sections);
+    if (!this._mappingLookups.sections) {
+      this._mappingLookups.sections = buildMappingLookup(this.sections);
+      this._mappingLookups.sectionsLen = Array.isArray(this.sections) ? this.sections.length : 0;
+    }
     return lookupMapping(this._mappingLookups.sections, a);
   }
 
   segmentAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
+    this._ensureMappingLookupsFresh();
     if (this._mappingSorted.segments === null) this._mappingSorted.segments = isAddressSorted(this.segments);
     if (!this._mappingSorted.segments) return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
-    if (!this._mappingLookups.segments) this._mappingLookups.segments = buildMappingLookup(this.segments);
+    if (!this._mappingLookups.segments) {
+      this._mappingLookups.segments = buildMappingLookup(this.segments);
+      this._mappingLookups.segmentsLen = Array.isArray(this.segments) ? this.segments.length : 0;
+    }
     return lookupMapping(this._mappingLookups.segments, a);
   }
 
@@ -688,51 +821,149 @@ export class BinaryImage {
         va = this.imageBase + addr;
       }
 
-      for (const entry of this.chpeCodeMap) {
-        if (!entry) continue;
-        if (rva !== null && entry.startRva != null && entry.endRva != null) {
-          if (rva >= entry.startRva && rva < entry.endRva) {
-            return entry.arch;
+      if (this.chpeCodeMap.length < 4) {
+        for (const entry of this.chpeCodeMap) {
+          if (!entry) continue;
+          if (rva !== null && entry.startRva != null && entry.endRva != null) {
+            if (rva >= entry.startRva && rva < entry.endRva) {
+              return entry.arch;
+            }
+          }
+          if (va !== null && entry.startAddress != null && entry.endAddress != null) {
+            if (va >= entry.startAddress && va < entry.endAddress) {
+              return entry.arch;
+            }
           }
         }
-        if (va !== null && entry.startAddress != null && entry.endAddress != null) {
-          if (va >= entry.startAddress && va < entry.endAddress) {
-            return entry.arch;
+        return null;
+      }
+      let lookup = this._chpeLookup;
+      if (!lookup || lookup.ref !== this.chpeCodeMap || lookup.len !== this.chpeCodeMap.length) {
+        const rvaItems = [];
+        const vaItems = [];
+        for (let order = 0; order < this.chpeCodeMap.length; order++) {
+          const entry = this.chpeCodeMap[order];
+          if (!entry) continue;
+          if (entry.startRva != null && entry.endRva != null && entry.endRva > entry.startRva) {
+            rvaItems.push({ start: entry.startRva, end: entry.endRva, order, arch: entry.arch });
+          }
+          if (entry.startAddress != null && entry.endAddress != null && entry.endAddress > entry.startAddress) {
+            vaItems.push({ start: entry.startAddress, end: entry.endAddress, order, arch: entry.arch });
+          }
+        }
+        rvaItems.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order));
+        vaItems.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order));
+        const rvaStarts = new Array(rvaItems.length);
+        const rvaPrefixEnds = new Array(rvaItems.length);
+        let maxRvaEnd = null;
+        for (let i = 0; i < rvaItems.length; i++) {
+          rvaStarts[i] = rvaItems[i].start;
+          if (maxRvaEnd === null || rvaItems[i].end > maxRvaEnd) maxRvaEnd = rvaItems[i].end;
+          rvaPrefixEnds[i] = maxRvaEnd;
+        }
+        const vaStarts = new Array(vaItems.length);
+        const vaPrefixEnds = new Array(vaItems.length);
+        let maxVaEnd = null;
+        for (let i = 0; i < vaItems.length; i++) {
+          vaStarts[i] = vaItems[i].start;
+          if (maxVaEnd === null || vaItems[i].end > maxVaEnd) maxVaEnd = vaItems[i].end;
+          vaPrefixEnds[i] = maxVaEnd;
+        }
+        lookup = { ref: this.chpeCodeMap, len: this.chpeCodeMap.length, rvaItems, rvaStarts, rvaPrefixEnds, vaItems, vaStarts, vaPrefixEnds };
+        this._chpeLookup = lookup;
+      }
+      let best = null;
+      if (rva !== null && lookup.rvaStarts.length > 0) {
+        let lo = 0, hi = lookup.rvaStarts.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (lookup.rvaStarts[mid] <= rva) lo = mid + 1;
+          else hi = mid;
+        }
+        const upper = lo;
+        if (upper > 0) {
+          lo = 0;
+          hi = upper;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (lookup.rvaPrefixEnds[mid] > rva) hi = mid;
+            else lo = mid + 1;
+          }
+          for (let i = lo; i < upper; i++) {
+            const item = lookup.rvaItems[i];
+            if (item.end <= rva) continue;
+            if (best === null || item.order < best.order) best = item;
           }
         }
       }
-      return null;
+      if (va !== null && lookup.vaStarts.length > 0) {
+        let lo = 0, hi = lookup.vaStarts.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (lookup.vaStarts[mid] <= va) lo = mid + 1;
+          else hi = mid;
+        }
+        const upper = lo;
+        if (upper > 0) {
+          lo = 0;
+          hi = upper;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (lookup.vaPrefixEnds[mid] > va) hi = mid;
+            else lo = mid + 1;
+          }
+          for (let i = lo; i < upper; i++) {
+            const item = lookup.vaItems[i];
+            if (item.end <= va) continue;
+            if (best === null || item.order < best.order) best = item;
+          }
+        }
+      }
+      return best ? best.arch : null;
     }
     return this.arch;
   }
 
   _virtualMappingAt(address) {
-    const a = strictBigIntOrNull(address);
+    const a = typeof address === 'bigint' ? address : strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    if (!this._mappingLookups.virtual) this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
+    this._ensureMappingLookupsFresh();
+    if (!this._mappingLookups.virtual) {
+      this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
+      this._mappingLookups.sectionsLen = Array.isArray(this.sections) ? this.sections.length : 0;
+      this._mappingLookups.segmentsLen = Array.isArray(this.segments) ? this.segments.length : 0;
+    }
     return lookupVirtualMapping(this._mappingLookups.virtual, a);
   }
 
   _nextMappingBoundary(current, owner) {
     // Issue #970: a narrower mapping starting inside `owner` (e.g. a zero-fill __bss
     // section inside a broader file-backed segment) ends the current chunk at its start.
-    const end = owner.address + owner.size;
-    let next = null;
-    const consider = (m) => {
-      if (m === owner || m.size <= 0n) return;
-      if (m.address <= current || m.address >= end) return;
-      if (m.size >= owner.size) return;
-      if (next === null || m.address < next) next = m.address;
-    };
-    for (const m of this.sections) {
-      if (sectionHasMappedAddress(m)) consider(m);
+    this._ensureMappingLookupsFresh();
+    if (!this._mappingLookups.virtual) {
+      this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
+      this._mappingLookups.sectionsLen = Array.isArray(this.sections) ? this.sections.length : 0;
+      this._mappingLookups.segmentsLen = Array.isArray(this.segments) ? this.segments.length : 0;
     }
-    for (const m of this.segments) consider(m);
-    return next;
+    const { items, starts } = this._mappingLookups.virtual;
+    const end = owner.address + owner.size;
+    let lo = 0;
+    let hi = starts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (starts[mid] <= current) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = lo; i < items.length; i++) {
+      const item = items[i];
+      if (item.start >= end) break;
+      if (item.mapping !== owner && item.size < owner.size) return item.start;
+    }
+    return null;
   }
 
   resolveVirtualMapping(address) {
-    const a = strictBigIntOrNull(address);
+    const a = typeof address === 'bigint' ? address : strictBigIntOrNull(address);
     if (a === null) return null;
     const owner = this._virtualMappingAt(a);
     if (!owner) return null;
@@ -809,7 +1040,7 @@ export class BinaryImage {
     const isExecutable = Boolean(sec ? sec.perms?.execute : seg?.perms?.execute);
     if (!isExecutable) return false;
 
-    const arch = this.arch;
+    const arch = (this.arch === 'arm64ec' && typeof this.archAt === 'function' ? this.archAt(a) : null) || this.arch;
     const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
     if (a % alignment !== 0n) return false;
 
@@ -817,6 +1048,7 @@ export class BinaryImage {
     const offStart = this.addressToOffset(a);
     const offEnd = this.addressToOffset(a + instructionBytes - 1n);
     if (offStart === null || offEnd === null) return false;
+    if (instructionBytes > 1n && offEnd !== offStart + instructionBytes - 1n) return false;
 
     const instEnd = a + instructionBytes;
     if (this._dataInCodeSorted === null) this._dataInCodeSorted = isDataInCodeAddressSorted(this.dataInCode);
@@ -1027,20 +1259,29 @@ export class BinaryImage {
     return this;
   }
 
-  finalize() {
-    const byAddr = (a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0;
+  finalize(opts = null) {
+    const byAddr = (a, b) => {
+      const aa = a?.address;
+      const bb = b?.address;
+      if (aa == null && bb == null) return 0;
+      if (aa == null) return 1;
+      if (bb == null) return -1;
+      return aa < bb ? -1 : aa > bb ? 1 : 0;
+    };
     this.segments.sort(byAddr);
     this.sections.sort(byAddr);
     this._mappingLookups.segments = null;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingVersion += 1;
     this._mappingLookups.offsets = null;
+    this._lastOffsetLookupEntry = null;
     this._mappingSorted.segments = true;
     this._mappingSorted.sections = true;
     this.symbols.sort(byAddr);
     this.exports.sort(byAddr);
     this.relocations.sort(byAddr);
-    this.functions = mergeFunctionSeeds(this.functions, { sections:this.sections, segments:this.segments });
+    this.functions = mergeFunctionSeeds(this.functions, { sections:this.sections, segments:this.segments, _consumeOwnedSeeds: opts?._consumeOwnedSeeds === true });
     if ((this.metadata?.hybrid || this.metadata?.isHybrid) && Array.isArray(this.functions)) {
       for (const f of this.functions) {
         if (f && f.address != null && !f.arch) {
@@ -1078,13 +1319,20 @@ export class BinaryImage {
   }
 
   toJSON() {
-    const convert = (v) => {
+    const seen = new WeakSet();
+    const convert = (v, depth = 0) => {
       if (typeof v === 'bigint') return v < 0n ? '-0x' + (-v).toString(16).toUpperCase() : '0x' + v.toString(16).toUpperCase();
-      if (Array.isArray(v)) return v.map(convert);
       if (v && typeof v === 'object') {
-        const out = {};
-        for (const [k, x] of Object.entries(v)) Object.defineProperty(out, k, { value: convert(x), enumerable: true, configurable: true, writable: true });
-        return out;
+        if (depth >= 64 || seen.has(v)) return '[Circular]';
+        seen.add(v);
+        try {
+          if (Array.isArray(v)) return v.map((item) => convert(item, depth + 1));
+          const out = {};
+          for (const [k, x] of Object.entries(v)) Object.defineProperty(out, k, { value: convert(x, depth + 1), enumerable: true, configurable: true, writable: true });
+          return out;
+        } finally {
+          seen.delete(v);
+        }
       }
       return v;
     };
@@ -1135,30 +1383,45 @@ function normalizedLoaderAnalysisWindow(raw, address, contracts) {
 }
 
 export function functionSeed(address, opts = {}) {
-  const canonicalAddress = strictBigIntOrNull(address);
+  const canonicalAddress = typeof address === 'bigint' ? address : strictBigIntOrNull(address);
   if (canonicalAddress === null) throw new TypeError('function-seed-address-must-be-exact-integer');
-  const size = opts.size == null ? null : strictBigIntOrNull(opts.size);
-  if (opts.size != null && size === null) throw new TypeError('function-seed-size-must-be-exact-integer');
-  const end = opts.end == null ? null : strictBigIntOrNull(opts.end);
-  if (opts.end != null && end === null) throw new TypeError('function-seed-end-must-be-exact-integer');
+  const rawSize = opts.size;
+  const size = rawSize == null ? null : (typeof rawSize === 'bigint' ? rawSize : strictBigIntOrNull(rawSize));
+  if (rawSize != null && size === null) throw new TypeError('function-seed-size-must-be-exact-integer');
+  const rawEnd = opts.end;
+  const end = rawEnd == null ? null : (typeof rawEnd === 'bigint' ? rawEnd : strictBigIntOrNull(rawEnd));
+  if (rawEnd != null && end === null) throw new TypeError('function-seed-end-must-be-exact-integer');
   const source = opts.source || 'heuristic';
-  const confidence = finiteConfidence(opts.confidence, 0.5);
+  const rawConf = opts.confidence;
+  const confidence = (typeof rawConf === 'number' && rawConf > 0 && rawConf <= 1)
+    ? rawConf
+    : finiteConfidence(rawConf, 0.5);
   const hasExtent = size != null || end != null;
-  const loaderEntryContracts = normalizedLoaderEntryContracts(opts.loaderEntryContracts ?? opts.loaderEntryContract, source);
-  const analysisWindow = normalizedLoaderAnalysisWindow(opts.analysisWindow, canonicalAddress, loaderEntryContracts);
+  const rawContracts = opts.loaderEntryContracts ?? opts.loaderEntryContract;
+  const loaderEntryContracts = (rawContracts == null || (Array.isArray(rawContracts) && rawContracts.length === 0))
+    ? []
+    : normalizedLoaderEntryContracts(rawContracts, source);
+  const analysisWindow = (opts.analysisWindow && loaderEntryContracts.length > 0)
+    ? normalizedLoaderAnalysisWindow(opts.analysisWindow, canonicalAddress, loaderEntryContracts)
+    : null;
+  const rawExactConf = opts.exactFunctionStartConfidence;
+  const exactFunctionStartConfidence = rawExactConf == null
+    ? (opts.exactFunctionStart === true || EXACT_FUNCTION_START_SOURCES.has(source) ? confidence : null)
+    : ((typeof rawExactConf === 'number' && rawExactConf > 0 && rawExactConf <= 1) ? rawExactConf : finiteConfidence(rawExactConf, 0));
+  const rawExtConf = opts.extentConfidence;
+  const extentConfidence = rawExtConf == null
+    ? (hasExtent ? confidence : null)
+    : ((typeof rawExtConf === 'number' && rawExtConf > 0 && rawExtConf <= 1) ? rawExtConf : finiteConfidence(rawExtConf, 0.5));
   return {
     address: canonicalAddress, size, end, name: opts.name || null,
     source, confidence, kind: opts.kind || 'function',
     exactFunctionStart: opts.exactFunctionStart === true,
-    exactFunctionStartConfidence: opts.exactFunctionStartConfidence == null
-      ? (opts.exactFunctionStart === true || EXACT_FUNCTION_START_SOURCES.has(source) ? confidence : null)
-      : finiteConfidence(opts.exactFunctionStartConfidence, 0),
+    exactFunctionStartConfidence,
     functionStartEvidence: opts.functionStartEvidence || null,
     loaderEntryContracts,
     analysisWindow,
     extentSource: opts.extentSource || (hasExtent ? source : null),
-    extentConfidence: opts.extentConfidence == null ? (hasExtent ? confidence : null)
-      : finiteConfidence(opts.extentConfidence, 0.5),
+    extentConfidence,
     extentInherited: !!opts.extentInherited,
     callingConvention: opts.callingConvention || null,
     abiMetadata: opts.abiMetadata == null ? null : { ...opts.abiMetadata },
@@ -1187,7 +1450,7 @@ function createMonotonicRegionLookup(regions) {
   };
 
   return (address) => {
-    const value = BigInt(address);
+    const value = typeof address === 'bigint' ? address : BigInt(address);
     if (lastAddress !== null && value < lastAddress) reset();
     lastAddress = value;
     while (cursor < ordered.length && ordered[cursor].start <= value) heap.push(ordered[cursor++]);
@@ -1197,121 +1460,268 @@ function createMonotonicRegionLookup(regions) {
   };
 }
 
+const SEED_SOURCE_RANK = Object.freeze(Object.assign(Object.create(null), {
+  symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4,
+  constructor: 4, export: 3, entrypoint: 2, heuristic: 1,
+}));
+
+function hasSeedSource(seed, target) {
+  if (Array.isArray(seed.sources)) return seed.sources.includes(target);
+  if (seed.sources instanceof Set) return seed.sources.has(target);
+  return seed.source === target;
+}
+
 export function mergeFunctionSeeds(input, context = {}) {
-  const rank = { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, constructor: 4, export: 3, entrypoint: 2, heuristic: 1 };
+  const rank = SEED_SOURCE_RANK;
+  const consumeOwned = context?._consumeOwnedSeeds === true;
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
-    const confidence = finiteConfidence(f0.confidence, 0.5);
-    const exactFunctionStartConfidence = f0.exactFunctionStartConfidence == null
+    const rawConf = f0.confidence;
+    const confidence = (typeof rawConf === 'number' && rawConf > 0 && rawConf <= 1)
+      ? rawConf
+      : finiteConfidence(rawConf, 0.5);
+    const rawExactConf = f0.exactFunctionStartConfidence;
+    const exactFunctionStartConfidence = rawExactConf == null
       ? (f0.exactFunctionStart === true || (!Array.isArray(f0.sources) && EXACT_FUNCTION_START_SOURCES.has(f0.source)) ? confidence : null)
-      : finiteConfidence(f0.exactFunctionStartConfidence, 0);
-    const address = strictBigIntOrNull(f0.address);
+      : ((typeof rawExactConf === 'number' && rawExactConf > 0 && rawExactConf <= 1) ? rawExactConf : finiteConfidence(rawExactConf, 0));
+    const address = typeof f0.address === 'bigint' ? f0.address : strictBigIntOrNull(f0.address);
     if (address === null) continue;
-    const size = f0.size == null ? null : strictBigIntOrNull(f0.size);
-    const end = f0.end == null ? null : strictBigIntOrNull(f0.end);
+    const size = f0.size == null ? null : (typeof f0.size === 'bigint' ? f0.size : strictBigIntOrNull(f0.size));
+    const end = f0.end == null ? null : (typeof f0.end === 'bigint' ? f0.end : strictBigIntOrNull(f0.end));
     // Raw providers may use exact numbers or numeric strings, but structured,
     // fractional, unsafe, and malformed extents are not promoted through
     // BigInt() coercion. Drop that seed at the canonical boundary (#5891).
     if ((f0.size != null && size === null) || (f0.end != null && end === null)) continue;
-    const loaderEntryContracts = normalizedLoaderEntryContracts(f0.loaderEntryContracts ?? f0.loaderEntryContract, [f0.source, ...(Array.isArray(f0.sources) ? f0.sources : [])]);
-    const analysisWindow = normalizedLoaderAnalysisWindow(f0.analysisWindow, address, loaderEntryContracts);
-    const f = {
-      ...f0,
-      address,
-      size,
-      end,
-      confidence,
-      exactFunctionStartConfidence,
-      loaderEntryContracts,
-      analysisWindow,
-      extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5),
-    };
-    if ((f.size != null || f.end != null) && !f.extentSource) f.extentSource = f.source || 'unknown';
-    if ((f.size != null || f.end != null) && f.extentConfidence == null) f.extentConfidence = Number(f.confidence ?? 0);
-    const k = f.address.toString();
+    const rawContracts = f0.loaderEntryContracts ?? f0.loaderEntryContract;
+    const loaderEntryContracts = (rawContracts == null || (Array.isArray(rawContracts) && rawContracts.length === 0))
+      ? []
+      : normalizedLoaderEntryContracts(
+        rawContracts,
+        [f0.source, ...(Array.isArray(f0.sources) ? f0.sources : [])],
+      );
+    const analysisWindow = (f0.analysisWindow && loaderEntryContracts.length > 0)
+      ? normalizedLoaderAnalysisWindow(f0.analysisWindow, address, loaderEntryContracts)
+      : null;
+    // Safe-integer Number key avoids V8 BigInt Map hashing overhead on 100k+ seeds (exact 1:1 with BigInt).
+    const k = (address >= 0n && address <= 9007199254740991n) ? Number(address) : address;
     const prev = m.get(k);
-    if (!prev) { m.set(k, f); continue; }
+    const rawExtConf = f0.extentConfidence;
+    const extentConfidenceVal = rawExtConf == null
+      ? ((size != null || end != null) ? Number(confidence ?? 0) : null)
+      : ((typeof rawExtConf === 'number' && rawExtConf > 0 && rawExtConf <= 1) ? rawExtConf : finiteConfidence(rawExtConf, 0.5));
+    const extentSourceVal = (size != null || end != null) ? (f0.extentSource || f0.source || 'unknown') : f0.extentSource;
+    if (!prev) {
+      let f;
+      if (consumeOwned) {
+        f = f0;
+        f.address = address;
+        f.size = size;
+        f.end = end;
+        f.confidence = confidence;
+        f.exactFunctionStartConfidence = exactFunctionStartConfidence;
+        f.loaderEntryContracts = loaderEntryContracts;
+        f.analysisWindow = analysisWindow;
+        f.extentConfidence = extentConfidenceVal;
+        if (extentSourceVal !== undefined) f.extentSource = extentSourceVal;
+      } else {
+        f = {
+          ...f0,
+          address,
+          size,
+          end,
+          confidence,
+          exactFunctionStartConfidence,
+          loaderEntryContracts,
+          analysisWindow,
+          extentConfidence: extentConfidenceVal,
+        };
+        if (extentSourceVal !== undefined) f.extentSource = extentSourceVal;
+      }
+      m.set(k, f);
+      continue;
+    }
     const prevRank = rank[prev.source] || 0;
-    const curRank = rank[f.source] || 0;
-    const best = curRank > prevRank || (curRank === prevRank && (f.confidence || 0) > (prev.confidence || 0)) ? f : prev;
-    const other = best === f ? prev : f;
-    if (!best.name && other.name) best.name = other.name;
-    if (!best.functionStartEvidence) best.functionStartEvidence = other.functionStartEvidence || null;
-    if (!best.callingConvention && other.callingConvention) best.callingConvention = other.callingConvention;
-    if (!best.abiMetadata && other.abiMetadata) best.abiMetadata = { ...other.abiMetadata };
-    if (!best.arch && other.arch) best.arch = other.arch;
-    best.loaderEntryContracts = [...new Set([
-      ...(prev.loaderEntryContracts || []),
-      ...(f.loaderEntryContracts || []),
-    ])].filter((item) => ELF_LOADER_ENTRY_CONTRACTS.has(item)).sort();
-    const bestWindow = normalizedLoaderAnalysisWindow(best.analysisWindow, best.address, best.loaderEntryContracts);
-    const otherWindow = normalizedLoaderAnalysisWindow(other.analysisWindow, best.address, best.loaderEntryContracts);
-    if (bestWindow && otherWindow && (bestWindow.end !== otherWindow.end || bestWindow.sectionIndex !== otherWindow.sectionIndex)) {
-      best.analysisWindow = null;
-      best.analysisWindowConflict = true;
+    const curRank = rank[f0.source] || 0;
+    const fWins = curRank > prevRank || (curRank === prevRank && (confidence || 0) > (prev.confidence || 0));
+    let best;
+    if (fWins) {
+      if (consumeOwned && f0 !== prev) {
+        best = f0;
+        best.address = address;
+        best.size = size;
+        best.end = end;
+        best.confidence = confidence;
+        best.exactFunctionStartConfidence = exactFunctionStartConfidence;
+        best.loaderEntryContracts = loaderEntryContracts;
+        best.analysisWindow = analysisWindow;
+        best.extentConfidence = extentConfidenceVal;
+        if (extentSourceVal !== undefined) best.extentSource = extentSourceVal;
+      } else {
+        best = {
+          ...f0,
+          address,
+          size,
+          end,
+          confidence,
+          exactFunctionStartConfidence,
+          loaderEntryContracts,
+          analysisWindow,
+          extentConfidence: extentConfidenceVal,
+        };
+        if (extentSourceVal !== undefined) best.extentSource = extentSourceVal;
+      }
+      if (!best.name && prev.name) best.name = prev.name;
+      if (!best.functionStartEvidence) best.functionStartEvidence = prev.functionStartEvidence || null;
+      if (!best.callingConvention && prev.callingConvention) best.callingConvention = prev.callingConvention;
+      if (!best.abiMetadata && prev.abiMetadata) best.abiMetadata = { ...prev.abiMetadata };
+      if (!best.arch && prev.arch) best.arch = prev.arch;
     } else {
-      best.analysisWindow = bestWindow || otherWindow || null;
+      best = prev;
+      if (!best.name && f0.name) best.name = f0.name;
+      if (!best.functionStartEvidence) best.functionStartEvidence = f0.functionStartEvidence || null;
+      if (!best.callingConvention && f0.callingConvention) best.callingConvention = f0.callingConvention;
+      if (!best.abiMetadata && f0.abiMetadata) best.abiMetadata = { ...f0.abiMetadata };
+      if (!best.arch && f0.arch) best.arch = f0.arch;
+    }
+    const prevContracts = prev.loaderEntryContracts;
+    if ((!prevContracts || prevContracts.length === 0) && loaderEntryContracts.length === 0) {
+      best.loaderEntryContracts = [];
+    } else {
+      best.loaderEntryContracts = [...new Set([
+        ...(prevContracts || []),
+        ...loaderEntryContracts,
+      ])].filter((item) => ELF_LOADER_ENTRY_CONTRACTS.has(item)).sort();
+    }
+    const otherWindowRaw = fWins ? prev.analysisWindow : analysisWindow;
+    if (best.analysisWindow == null && otherWindowRaw == null) {
+      best.analysisWindow = null;
+    } else {
+      const bestWindow = normalizedLoaderAnalysisWindow(best.analysisWindow, best.address, best.loaderEntryContracts);
+      const otherWindow = normalizedLoaderAnalysisWindow(otherWindowRaw, best.address, best.loaderEntryContracts);
+      if (bestWindow && otherWindow && (bestWindow.end !== otherWindow.end || bestWindow.sectionIndex !== otherWindow.sectionIndex)) {
+        best.analysisWindow = null;
+        best.analysisWindowConflict = true;
+      } else {
+        best.analysisWindow = bestWindow || otherWindow || null;
+      }
     }
     let inheritedExtent = false;
     const bestHasExtent = best.size != null || best.end != null;
-    const otherHasExtent = other.size != null || other.end != null;
+    const otherSize = fWins ? prev.size : size;
+    const otherEnd = fWins ? prev.end : end;
+    const otherHasExtent = otherSize != null || otherEnd != null;
     if (!bestHasExtent && otherHasExtent) {
-      best.size = other.size ?? null;
-      best.end = other.end ?? null;
+      best.size = otherSize ?? null;
+      best.end = otherEnd ?? null;
       inheritedExtent = true;
     }
     if (inheritedExtent) {
-      best.extentSource = other.extentSource || other.source || 'unknown';
-      best.extentConfidence = Number(other.extentConfidence ?? other.confidence ?? 0);
+      best.extentSource = fWins ? (prev.extentSource || prev.source || 'unknown') : (extentSourceVal || f0.source || 'unknown');
+      best.extentConfidence = fWins ? Number(prev.extentConfidence ?? prev.confidence ?? 0) : Number(extentConfidenceVal ?? confidence ?? 0);
       best.extentInherited = true;
     } else if ((best.size != null || best.end != null) && !best.extentSource) {
       best.extentSource = best.source || 'unknown';
       best.extentConfidence = Number(best.confidence ?? 0);
     }
-    best.sources = [...new Set([...(prev.sources || [prev.source]), ...(f.sources || [f.source])])];
-    const exactConfidences = [prev.exactFunctionStartConfidence, f.exactFunctionStartConfidence]
-      .filter((value) => Number.isFinite(value));
-    best.exactFunctionStartConfidence = exactConfidences.length ? Math.max(...exactConfidences) : null;
+    const prevSrcs = prev.sources;
+    const fSrcs = f0.sources;
+    if (!prevSrcs && !fSrcs) {
+      best.sources = prev.source === f0.source ? [prev.source] : [prev.source, f0.source];
+    } else {
+      const mergedSrcs = [];
+      if (prevSrcs) {
+        for (const s of prevSrcs) {
+          if (!mergedSrcs.includes(s)) mergedSrcs.push(s);
+        }
+      } else {
+        mergedSrcs.push(prev.source);
+      }
+      if (fSrcs) {
+        for (const s of fSrcs) {
+          if (!mergedSrcs.includes(s)) mergedSrcs.push(s);
+        }
+      } else if (!mergedSrcs.includes(f0.source)) {
+        mergedSrcs.push(f0.source);
+      }
+      best.sources = mergedSrcs;
+    }
+    const prevExConf = prev.exactFunctionStartConfidence;
+    const prevExOk = Number.isFinite(prevExConf);
+    const fExOk = Number.isFinite(exactFunctionStartConfidence);
+    best.exactFunctionStartConfidence = prevExOk && fExOk
+      ? (prevExConf >= exactFunctionStartConfidence ? prevExConf : exactFunctionStartConfidence)
+      : (prevExOk ? prevExConf : (fExOk ? exactFunctionStartConfidence : null));
     // Exactness authority and its confidence must come from the SAME evidence
     // record: adopting the exact marker of one seed while inflating the merged
     // confidence with an unrelated seed's score would synthesize
     // exactFunctionStart+high-confidence evidence that neither input carried
     // (#5950).
-    const exactCarrier = prev.exactFunctionStart ? prev : (f.exactFunctionStart ? f : null);
-    if (prev.exactFunctionStart && f.exactFunctionStart) {
+    const prevExact = !!prev.exactFunctionStart;
+    const curExact = !!f0.exactFunctionStart;
+    if (prevExact && curExact) {
       // Both records carry the exact marker: their confidences agree in kind.
       best.exactFunctionStart = true;
-      best.confidence = Math.max(prev.confidence || 0, f.confidence || 0);
-    } else if (exactCarrier) {
-      // Only one record proved exactness: the merged confidence is that
-      // record's own score, never the unrelated seed's (#5950).
+      best.confidence = Math.max(prev.confidence || 0, confidence || 0);
+    } else if (prevExact) {
       best.exactFunctionStart = true;
-      best.confidence = exactCarrier.confidence || 0;
+      best.confidence = prev.confidence || 0;
+    } else if (curExact) {
+      best.exactFunctionStart = true;
+      best.confidence = confidence || 0;
     } else {
       best.exactFunctionStart = false;
-      best.confidence = Math.max(prev.confidence || 0, f.confidence || 0);
+      best.confidence = Math.max(prev.confidence || 0, confidence || 0);
     }
-    m.set(k, best);
+    if (fWins) m.set(k, best);
   }
-  const out = [...m.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
+  const out = new Array(m.size);
+  let outIdx = 0;
+  let alreadySorted = true;
+  let prevAddr = null;
+  for (const val of m.values()) {
+    if (prevAddr !== null && val.address < prevAddr) alreadySorted = false;
+    prevAddr = val.address;
+    out[outIdx++] = val;
+  }
+  if (!alreadySorted) {
+    out.sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
+  }
   const regions = [...(context.sections || []), ...(context.segments || [])]
     .filter((r) => r && r.address != null && r.size != null && BigInt(r.size) > 0n && r.perms?.execute)
     .sort((a,b) => BigInt(a.size) < BigInt(b.size) ? -1 : BigInt(a.size) > BigInt(b.size) ? 1 : 0);
-  const regionFor = createMonotonicRegionLookup(regions);
+  const hasRegions = regions.length > 0;
+  const regionFor = hasRegions ? createMonotonicRegionLookup(regions) : null;
+  let cachedRegionIdx = -1;
+  let cachedRegionVal = null;
+  let cachedEndRegion = null;
+  let cachedEndVal = 0n;
   for (let i = 0; i < out.length; i++) {
     const f = out[i];
     if (f.end == null && f.size != null) f.end = f.address + f.size;
     if (f.size == null && f.end != null && f.end > f.address) f.size = f.end - f.address;
     if (f.size == null && i + 1 < out.length && out[i + 1].address > f.address) {
       const next = out[i + 1];
-      const sources = new Set(f.sources || [f.source]);
-      const nextSources = new Set(next.sources || [next.source]);
-      const provenFunctionStarts = sources.has('function_starts') && nextSources.has('function_starts');
+      const provenFunctionStarts = hasSeedSource(f, 'function_starts') && hasSeedSource(next, 'function_starts');
       const delta = next.address - f.address;
-      const currentRegion = regionFor(f.address), nextRegion = regionFor(next.address);
-      const sameCanonicalRegion = !regions.length || (currentRegion != null && currentRegion === nextRegion);
-      const withinRegionEnd = !currentRegion || next.address <= BigInt(currentRegion.address) + BigInt(currentRegion.size);
+      let currentRegion = null;
+      let sameCanonicalRegion = true;
+      if (hasRegions) {
+        currentRegion = cachedRegionIdx === i ? cachedRegionVal : regionFor(f.address);
+        const nextRegion = regionFor(next.address);
+        cachedRegionIdx = i + 1;
+        cachedRegionVal = nextRegion;
+        sameCanonicalRegion = currentRegion != null && currentRegion === nextRegion;
+      }
+      let withinRegionEnd = true;
+      if (currentRegion) {
+        if (currentRegion !== cachedEndRegion) {
+          cachedEndRegion = currentRegion;
+          cachedEndVal = (typeof currentRegion.address === 'bigint' ? currentRegion.address : BigInt(currentRegion.address))
+            + (typeof currentRegion.size === 'bigint' ? currentRegion.size : BigInt(currentRegion.size));
+        }
+        withinRegionEnd = next.address <= cachedEndVal;
+      }
       if (provenFunctionStarts && sameCanonicalRegion && withinRegionEnd && delta <= 0x1000000n) {
         f.size = delta; f.end = next.address;
         f.extentInferred = true;

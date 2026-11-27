@@ -1,9 +1,9 @@
 import { fingerprintFunction } from '../fingerprint/index.js';
 export const FUNCTION_CLASSES = Object.freeze(['APPLICATION','SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED','UNKNOWN']);
 
-const RUNTIME_IMPORTS = [/^_?objc_/, /^_?swift_/, /^_?dyld_/, /^_?__?cxa_/, /^_?pthread_/, /^_?malloc$/, /^_?free$/];
-const GENERATED = [/\bthunk\b/i, /^outlined(?: function)?\b/i, /block_invoke/i, /partial apply/i, /witness thunk/i, /metadata accessor/i];
-const RUNTIME_NAMES = [/^_?(?:objc_|swift_|dyld_|__?cxa_|pthread_)/i];
+const RUNTIME_IMPORTS = [/^_?objc_/, /^_?swift_/, /^_?dyld_/, /^_?__?cxa_/, /^_?pthread_/, /^_?malloc$/, /^_?free$/, /^il2cpp_/, /^mono_/];
+const GENERATED = [/\bthunk\b/i, /^outlined(?: function)?\b/i, /block_invoke/i, /partial apply/i, /witness thunk/i, /metadata accessor/i, /@plt$/i, /^__stub_helper/i, /^j_/, /^___cxx_global_var_init/i, /^il2cpp_codegen_/i, /^_?\$s.*T[aoWm]$/];
+const RUNTIME_NAMES = [/^_?(?:objc_|swift_|dyld_|__?cxa_|pthread_|il2cpp_(?!codegen_)|mono_|_?ZNSt|_?ZSt)/i, /^(?:std::|System\.|mscorlib\.|UnityEngine\.)/];
 
 function libraryBasename(value) {
   const text = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
@@ -40,6 +40,8 @@ function isAppleSystemLibrary(value) {
   if (/^libc\+\+(?:abi)?(?:\.[0-9]+)?\.dylib$/i.test(base)) return true;
   if (/^libdispatch\.dylib$/i.test(base)) return true;
   if (/^libswift[a-z0-9_]*\.dylib$/i.test(base)) return true;
+  if (/^(?:libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s|libart)\.so(?:\.\d+)*$/i.test(base)) return true;
+  if (/^(?:kernel32|ntdll|user32|advapi32|ucrtbase|msvcrt|vcruntime\d+)\.dll$/i.test(base)) return true;
   return false;
 }
 
@@ -102,7 +104,7 @@ function scoreFingerprint(fp, cls, context = {}) {
   if (context.calledFromApplication) score += 0.08;
   const penalties = { SYSTEM:0.7, RUNTIME:0.7, SDK:0.65, LIBRARY:0.65, GENERATED:0.75 };
   const hard = cls.hardSuppress === true && cls.confidence >= 0.8;
-  score -= hard ? (penalties[cls.classification] || 0) : (['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) ? 0.08 * Math.max(0,Math.min(1,cls.confidence || 0)) : 0);
+  score -= hard ? (Object.hasOwn(penalties, cls.classification) ? penalties[cls.classification] : 0) : (['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) ? 0.08 * Math.max(0,Math.min(1,cls.confidence || 0)) : 0);
   if (vendorConfidenceOf(context.vendor) >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
   return Math.max(0, Math.min(1, score));
 }
@@ -122,9 +124,12 @@ const SUBSYSTEM_RULES = {
   'security/integrity': { strings: [/integrity|jailbreak|tamper|signature|checksum|receipt/i], calls: [/seccode|crypto|hash|verify|attest/i] },
   ads: { strings: [/rewarded.?ad|interstitial|admob|applovin|ironsource|unityads/i], calls: [/loadad|showad|adrequest/i] },
   analytics: { strings: [/analytics|event|telemetry|firebase|appsflyer|adjust(?:sdk|\.com|attribution)/i], calls: [/logevent|track|telemetry/i] },
+  crypto: { strings: [/aes[-_]?\d*|sha[-_]?\d+|hmac|chacha|rsa|cipher|decrypt|encrypt|secret[_-]?key/i], calls: [/cccrypt|evp_|aes_|sha\d+_|hmac|chacha|cipher|encrypt|decrypt/i] },
+  serialization: { strings: [/protobuf|flatbuffers|msgpack|json|base64|zlib/i], calls: [/parsefrom|serializeto|tojson|fromjson|base64|inflate|deflate/i] },
 };
 function discoverSubsystemsFromFingerprint(fp) {
-  const hayStrings = fp.strings, hayCalls = [...fp.calls, ...fp.imports];
+  const hayStrings = fp.strings;
+  const hayCalls = fp.name ? [fp.name, ...fp.calls, ...fp.imports] : [...fp.calls, ...fp.imports];
   const out = [];
   for (const [name, rule] of Object.entries(SUBSYSTEM_RULES)) {
     const stringHits = hayStrings.filter((s) => rule.strings.some((rx) => rx.test(s)));
@@ -170,7 +175,7 @@ export function rankApplicationFunctions(functions = [], contextFor = () => ({})
 export function classificationMetrics(results = []) {
   const total = results.length || 1;
   const counts = Object.fromEntries(FUNCTION_CLASSES.map((x) => [x, 0]));
-  for (const item of results) { const c = item.classification?.classification || item.classification || 'UNKNOWN'; if (c in counts) counts[c]++; }
+  for (const item of results) { const c = item.classification?.classification || item.classification || 'UNKNOWN'; if (Object.hasOwn(counts, c)) counts[c]++; }
   const suppressed = counts.SYSTEM + counts.RUNTIME + counts.SDK + counts.LIBRARY + counts.GENERATED;
   return { total: results.length, counts, librarySuppressionRate: suppressed / total, applicationCodeReduction: suppressed / total, applicationVisibleRate: counts.APPLICATION / total };
 }

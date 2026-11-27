@@ -230,8 +230,12 @@ function callSymbol(instruction, options) {
   } catch {}
   const symbols = options?.binaryImage?.symbols;
   if (Array.isArray(symbols)) {
-    const key = BigInt(target);
-    return symbols.find((symbol) => symbol?.address != null && BigInt(symbol.address) === key) || null;
+    let key;
+    try { key = BigInt(target); } catch { return null; }
+    return symbols.find((symbol) => {
+      if (symbol?.address == null) return false;
+      try { return BigInt(symbol.address) === key; } catch { return false; }
+    }) || null;
   }
   return null;
 }
@@ -477,12 +481,18 @@ function registerSource(reg, bits = XLEN, extra = {}) {
 
 function align(value, alignment) { return Math.ceil(value / alignment) * alignment; }
 
+function isPowerOfTwoSafeInt(n) {
+  if (!Number.isSafeInteger(n) || n <= 0) return false;
+  const bn = BigInt(n);
+  return (bn & (bn - 1n)) === 0n;
+}
+
 function stackSlotAlignment(parameter, classified) {
   const rawAlign = parameter?.alignment ?? parameter?.align
     ?? parameter?.layout?.alignment ?? parameter?.layout?.align;
   if (rawAlign != null) {
     const n = Number(rawAlign);
-    if (!Number.isSafeInteger(n) || n <= 0 || (n & (n - 1)) !== 0) return null;
+    if (!isPowerOfTwoSafeInt(n)) return null;
     return Math.min(16, Math.max(8, n));
   }
   if (classified?.aggregate) {
@@ -493,7 +503,7 @@ function stackSlotAlignment(parameter, classified) {
         const mAlign = m?.alignment ?? m?.align ?? m?.layout?.alignment ?? m?.layout?.align;
         if (mAlign != null) {
           const n = Number(mAlign);
-          if (!Number.isSafeInteger(n) || n <= 0 || (n & (n - 1)) !== 0) return null;
+          if (!isPowerOfTwoSafeInt(n)) return null;
           if (n > maxAlign) maxAlign = n;
         } else if (m.bits != null) {
           const b = Number(m.bits);
@@ -672,7 +682,10 @@ function createClassifier(profile) {
      * closed to unknown instead of minting exact slots.
      */
     const explicitIndirectResult = prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
-    const returnDecision = explicitIndirectResult ? null : classifyReturn(prototype, options);
+    const returnOptions = vectorVariant
+      ? { ...options, callingConvention: 'riscv-vector-variant' }
+      : options;
+    const returnDecision = explicitIndirectResult ? null : classifyReturn(prototype, returnOptions);
     const derivedIndirectResult = returnDecision?.indirect === true;
     const returnSizeUnproven = returnDecision?.partial === true
       && returnDecision?.aggregate === true && returnDecision?.bits == null;
@@ -750,6 +763,16 @@ function createClassifier(profile) {
           unknownArgument(index, classified, 'vector-descriptor-conflict', { vector:classified.vector });
           return;
         }
+        if (classified.vector.fixedLength === true) {
+          if (classified.widthConflict) {
+            unknownArgument(index, classified, 'fixed-vector-width-evidence-conflict', {});
+            return;
+          }
+          if (!(classified.bits > 0 && classified.bitsDeclared)) {
+            unknownArgument(index, classified, 'fixed-length-vector-size-unproven', { vector:classified.vector });
+            return;
+          }
+        }
         if (variadicArgument) {
           const reg = variadicStackOnly ? undefined : INTEGER_ARGUMENT_REGISTERS[integerIndex];
           if (reg !== undefined) {
@@ -816,8 +839,8 @@ function createClassifier(profile) {
          * A fixed-length vector routed through the integer convention is not
          * an FP-flattening candidate at all (#5713). */
         const needed = bytes > XLEN / 8 ? 2 : 1;
-        const flattening = hardFloat && !classified.fixedVectorAggregate ? flattenAggregate(parameter, abiFlen) : null;
-        if (hardFloat && flattening == null && !classified.fixedVectorAggregate) {
+        const flattening = hardFloat && !variadicArgument && !classified.fixedVectorAggregate ? flattenAggregate(parameter, abiFlen) : null;
+        if (hardFloat && !variadicArgument && flattening == null && !classified.fixedVectorAggregate) {
           aggregatePartial = true;
           unknownArgument(index, classified, 'aggregate-hard-float-layout-unproven', { candidates:['fp-flattening','integer-convention'] });
           return;
@@ -871,8 +894,13 @@ function createClassifier(profile) {
             });
             return;
           }
+          const paddedAlign = stackSlotAlignment(parameter, classified);
+          if (paddedAlign == null) {
+            unknownArgument(index, classified, 'aggregate-alignment-invalid');
+            return;
+          }
           const paddedBytes = align(bytes, 8);
-          stackOffset = align(stackOffset, 8);
+          stackOffset = align(stackOffset, paddedAlign);
           const entry = {
             index, location:'stack', offset:stackOffset,
             offsetBase:'incoming-stack-arguments', bytes:paddedBytes,
@@ -884,6 +912,28 @@ function createClassifier(profile) {
           stackArguments.push(entry);
           stackOffset += paddedBytes;
           return;
+        }
+        if (variadicArgument && needed === 2 && stackSlotAlignment(parameter, classified) === 16) {
+          if (integerIndex % 2 === 1) integerIndex += 1;
+          if (integerIndex + needed > INTEGER_ARGUMENT_REGISTERS.length) {
+            variadicStackOnly = true;
+            stackOffset = align(stackOffset, 16);
+            const pieces = Array.from({ length:needed }, (_unused, piece) => aggregatePiece({
+              pieceIndex:piece,
+              stackOffset:stackOffset + piece * 8,
+              bits:Math.min(XLEN, Math.max(1, classified.bits - piece * XLEN)),
+              bytes:8,
+              byteOffset:piece * 8,
+              abiClass:'aggregate-memory',
+            }));
+            const entry = {
+              index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments',
+              bytes:16, abiClass:'aggregate-memory', pointer:false, bits:classified.bits,
+              pieces, variadic:true,
+            };
+            arguments_.push(entry); stackArguments.push(entry); stackOffset += 16;
+            return;
+          }
         }
         if (needed === 2 && integerIndex === INTEGER_ARGUMENT_REGISTERS.length - 1) {
           const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex++];
@@ -1102,8 +1152,8 @@ function createClassifier(profile) {
       arguments:arguments_,
       stackArguments,
       possibleRegisterInputs,
-      stackArgsUnknown:variadic,
-      stackArgsMayContainPointers:stackArgsMayContainPointers || variadic,
+      stackArgsUnknown:variadic || allocationUnknown,
+      stackArgsMayContainPointers:stackArgsMayContainPointers || variadic || allocationUnknown,
       aggregateClassification:aggregatePartial ? 'partial-unproven' : aggregateProven ? 'proven' : 'not-required',
       variadicClassification:variadic ? 'proven-named-then-integer-varargs' : 'not-variadic',
       anonymousArgumentFrontier:variadic ? {
@@ -1186,7 +1236,14 @@ function createClassifier(profile) {
       return { reg:null, bits, bytes:aggregateExtent.bytes, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
     }
-    const returnVector = !isPointer ? vectorDescriptor({ type, abiClass, ...(prototype.returnVector || {}), vector:prototype.vectorReturn === true || prototype.returnVector?.vector === true, mask:prototype.returnVector?.mask, lmul:prototype.returnVector?.lmul, tupleCount:prototype.returnVector?.tupleCount, fixedLengthVector:prototype.returnVector?.fixedLengthVector }) : null;
+    const returnVector = !isPointer ? vectorDescriptor({
+      type, abiClass, ...(prototype.returnVector || {}),
+      vector: prototype.vectorReturn === true || prototype.vector === true || prototype.returnVector?.vector === true,
+      mask: prototype.returnVector?.mask ?? prototype.mask,
+      lmul: prototype.returnVector?.lmul ?? prototype.lmul ?? prototype.LMUL,
+      tupleCount: prototype.returnVector?.tupleCount ?? prototype.tupleCount ?? prototype.nf ?? prototype.tuple,
+      fixedLengthVector: prototype.returnVector?.fixedLengthVector ?? prototype.fixedLengthVector ?? prototype.fixedLength,
+    }) : null;
     const vectorVariant = canonicalRiscvVectorCallingConvention(
       prototype.callingConvention || options.callingConvention,
     ) === 'riscv-vector-variant';
@@ -1237,6 +1294,17 @@ function createClassifier(profile) {
       if (returnVector.conflict) return { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector };
       let count;
       if (returnVector.fixedLength) {
+        const returnWidthAliases = [
+          Object.hasOwn(prototype, 'returnBits') ? prototype.returnBits : null,
+          Object.hasOwn(prototype, 'bits') ? prototype.bits : null,
+        ].filter((alias) => alias != null);
+        if (options?.returnBits == null && returnWidthAliases.length > 1
+          && new Set(returnWidthAliases.map((alias) => Number(alias))).size > 1) {
+          return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-width-evidence-conflict' };
+        }
+        if (!(bits > 0 && Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0)) {
+          return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-size-unproven' };
+        }
         // classifyFunctionReturn passes the whole request as options, so the
         // request-level ABI_VLEN evidence is already carried here.
         const abiVlen = Number(options?.abiVlen ?? prototype?.abiVlen);
@@ -1378,12 +1446,18 @@ function createRiscvAbi(profile) {
     // instead of degrading to 'unknown' (#6026).
     callingConventions:()=>Object.freeze([profile.id, ...RISCV_VECTOR_CALLING_CONVENTION_ALIASES]),
     classifyArguments,
-    classifyCallReturn:(instruction, options = {}) => classifyReturn(
-      callPrototypeOf(instruction, options),
-      instruction?.callingConvention == null
-        ? options
-        : { ...options, callingConvention:instruction.callingConvention },
-    ),
+    classifyCallReturn:(instruction, options = {}) => {
+      const proto = callPrototypeOf(instruction, options);
+      const effectiveCc = instruction?.callingConvention != null
+        ? instruction.callingConvention
+        : vectorVariantRequested(instruction, options, proto)
+          ? 'riscv-vector-variant'
+          : options?.callingConvention;
+      return classifyReturn(
+        proto,
+        effectiveCc == null ? options : { ...options, callingConvention: effectiveCc },
+      );
+    },
     classifyFunctionReturn:(options = {}) => classifyReturn(options.functionPrototype || options.prototype || {}, options),
     classifyEntryRegister:(reg) => {
       const id = String(reg || '').toLowerCase();

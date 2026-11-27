@@ -130,11 +130,18 @@ const CURRENT_VERSION = '1.23.2';
 
 // Explicitly supported boundary versions retain the validated layout.
 {
-  const bytes = makeTypeFixture({ ptrSize: 8 });
-  putEncodedName(bytes, 0x60, 'boundary');
-  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+  const bytes116 = makeTypeFixture({ ptrSize: 8 });
+  const encoded116 = new TextEncoder().encode('boundary');
+  bytes116[0x60] = 0;
+  bytes116[0x61] = (encoded116.length >> 8) & 0xff;
+  bytes116[0x62] = encoded116.length & 0xff;
+  bytes116.set(encoded116, 0x63);
+  assert.equal(parseGoTypeDescriptor(bytes116, 0, {
     ptrSize: 8, little: true, typesBase: 0, version: '1.16.0',
   })?.name, 'boundary');
+
+  const bytes = makeTypeFixture({ ptrSize: 8 });
+  putEncodedName(bytes, 0x60, 'boundary');
   assert.equal(parseGoTypeDescriptor(bytes, 0, {
     ptrSize: 8, little: true, typesBase: 0, version: '1.23.999',
   })?.name, 'boundary');

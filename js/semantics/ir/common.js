@@ -101,8 +101,10 @@ export function budgetLimit(options, key) {
 export function assertWithinBudget(length, options, key) {
   if (length > budgetLimit(options, key)) fail(`semantic-ir-budget-exceeded-${key}`);
 }
-function strictSerializable(value, code, seen = new WeakSet()) {
-  if (value == null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return;
+const MAX_SERIALIZABLE_DEPTH = 64;
+function strictSerializable(value, code, seen = new WeakSet(), depth = 0) {
+  if (depth > MAX_SERIALIZABLE_DEPTH) fail(code);
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) fail(code);
     return;
@@ -117,8 +119,8 @@ function strictSerializable(value, code, seen = new WeakSet()) {
   }
   if (typeof value !== 'object' || seen.has(value)) fail(code);
   seen.add(value);
-  if (Array.isArray(value)) for (const item of value) strictSerializable(item, code, seen);
-  else for (const item of Object.values(value)) strictSerializable(item, code, seen);
+  if (Array.isArray(value)) for (const item of value) strictSerializable(item, code, seen, depth + 1);
+  else for (const item of Object.values(value)) strictSerializable(item, code, seen, depth + 1);
   seen.delete(value);
 }
 export function serializable(value, code) {

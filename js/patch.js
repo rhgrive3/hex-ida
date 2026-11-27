@@ -238,9 +238,11 @@ export function decodeArm64PatchWord(wordVal, at = 0n) {
     const sf = (u >>> 31) & 1;
     const rn = (u >>> 5) & 0x1F;
     const rd = u & 0x1F;
-    const p = sf ? 'x' : 'w';
-    const spName = sf ? 'sp' : 'wsp';
-    return { mn: 'mov', ops: `${rd === 31 ? spName : p + rd}, ${rn === 31 ? spName : p + rn}` };
+    if (rd === 31 || rn === 31) {
+      const p = sf ? 'x' : 'w';
+      const spName = sf ? 'sp' : 'wsp';
+      return { mn: 'mov', ops: `${rd === 31 ? spName : p + rd}, ${rn === 31 ? spName : p + rn}` };
+    }
   }
   if ((u & 0x7C000000) === 0x14000000) {
     const isBl = (u >>> 31) & 1;
@@ -318,11 +320,23 @@ function regInfo(op) { const num = regNum(op); if (num == null) return null; ret
 function immOf(op) { if (!op) return null; if (op.k === 'imm') return op.value; if (op.k === 'other' && /^0x[0-9a-f]+$/.test(op.text)) return BigInt(op.text); return null; }
 
 export function suggestPatches(mn, opsStr, addr, options = {}) {
+  const arch = String(options?.arch || '').toLowerCase();
   const base = (mn || '').toLowerCase(); const out = [];
+  if (arch === 'x86_64' || arch === 'x64' || arch === 'amd64') {
+    out.push({ id: 'nop', label: '何もしない（nop / 90）', why: '1バイトの nop で置き換えます。', text: '90', hex: true });
+    if (options?.atFunctionStart !== false) {
+      out.push({ id: 'always_false', label: '常に 0 を返す（xor eax, eax; ret）', why: '戻り値 0 で即座に終了します。', text: '31 C0 C3', hex: true });
+      out.push({ id: 'always_true', label: '常に 1 を返す（mov eax, 1; ret）', why: '戻り値 1 で即座に終了します。', text: 'B8 01 00 00 00 C3', hex: true });
+      out.push({ id: 'always_9999', label: '常に 9999 を返す（mov eax, 9999; ret）', why: '数値系関数のテスト用に 9999 を返します。', text: 'B8 0F 27 00 00 C3', hex: true });
+      out.push({ id: 'always_neg1', label: '常に -1 を返す（mov eax, -1; ret）', why: '戻り値 -1 で即座に終了します。', text: 'B8 FF FF FF FF C3', hex: true });
+    }
+    void addr; return out;
+  }
   out.push({ id: 'nop', label: 'この命令を何もしない（nop）にする', why: '呼び出しやチェックを 1 つ飛ばして、どう変わるか試すときに使います。', text: 'nop' });
   const cond = /^b\.(\w+)$/.exec(base);
   if (cond) {
-    const inv = { eq: 'ne', ne: 'eq', lt: 'ge', ge: 'lt', gt: 'le', le: 'gt', hi: 'ls', ls: 'hi', hs: 'lo', lo: 'hs', cs: 'cc', cc: 'cs', mi: 'pl', pl: 'mi', vs: 'vc', vc: 'vs' }[cond[1]];
+    const invTable = Object.assign(Object.create(null), { eq: 'ne', ne: 'eq', lt: 'ge', ge: 'lt', gt: 'le', le: 'gt', hi: 'ls', ls: 'hi', hs: 'lo', lo: 'hs', cs: 'cc', cc: 'cs', mi: 'pl', pl: 'mi', vs: 'vc', vc: 'vs' });
+    const inv = invTable[cond[1]];
     const target = targetOf(opsStr);
     if (inv && target != null) {
       out.push({ id: 'invert', label: '条件を反対にする（b.' + cond[1] + ' → b.' + inv + '）', why: '「合っていたら通す」を「間違っていたら通す」に入れ替えます。判定の効き目を確かめられます。', text: 'b.' + inv + ' 0x' + target.toString(16) });
@@ -357,9 +371,10 @@ export function suggestPatches(mn, opsStr, addr, options = {}) {
   }
   if (base === 'ret') out.push({ id: 'brk', label: 'ここで止める（brk #0）', why: '通ったかどうかを確かめるための印です。', text: 'brk #0' });
   const availableBytes = Number(options?.availableBytes || 0);
-  if (availableBytes >= 8) {
+  if (availableBytes >= 8 && options?.atFunctionStart !== false) {
     out.push({ id: 'always_true', label: '常に true (1) を返す（mov w0, #1; ret）', why: 'この位置から先を実行せず、戻り値 1（true）で即座に関数を終了します（2 命令 / 8 バイト）。', text: 'mov w0, #1; ret', bytes: 8 });
     out.push({ id: 'always_false', label: '常に false (0) を返す（mov w0, #0; ret）', why: 'この位置から先を実行せず、戻り値 0（false）で即座に関数を終了します（2 命令 / 8 バイト）。', text: 'mov w0, #0; ret', bytes: 8 });
+    out.push({ id: 'always_9999', label: '常に 9999 を返す（mov w0, #9999; ret）', why: '数値系関数のテスト用に 9999 を返して終了します（2 命令 / 8 バイト）。', text: 'mov w0, #9999; ret', bytes: 8 });
     out.push({ id: 'always_neg1', label: '常に -1 を返す（movn w0, #0; ret）', why: 'この位置から先を実行せず、戻り値 -1 で即座に関数を終了します（2 命令 / 8 バイト）。', text: 'movn w0, #0; ret', bytes: 8 });
   }
   void addr; return out;

@@ -218,14 +218,35 @@ export function classifyTieredQuery(query, options = {}) {
 
 function providerEligible(provider, route, role, limits) {
   const cap = provider.contract;
-  if (route.analysis.maxBvWidth > cap.maxBvWidth) return false;
+  const bvWidthCaps = [
+    cap.maxBvWidth,
+    limits?.maxBvWidth,
+    ...(role === 'narrow' ? [limits?.exhaustiveMaxBvWidth] : []),
+  ].filter((value) => value != null);
+  const effectiveMaxBvWidth = bvWidthCaps.length ? Math.min(...bvWidthCaps) : cap.maxBvWidth;
+  if (route.analysis.maxBvWidth > effectiveMaxBvWidth) return false;
   if (route.analysis.symbols.some((symbol) => !cap.supportedSorts.includes(symbol.sort.kind))) return false;
-  if (cap.maxConstraints != null && route.constraintCount > cap.maxConstraints) return false;
-  if (cap.maxExprNodes != null && route.analysis.nodeCount > cap.maxExprNodes) return false;
-  if (cap.maxExprDepth != null && route.analysis.maxDepth > cap.maxExprDepth) return false;
+  const effectiveMaxConstraints = limits?.maxConstraints != null
+    ? Math.min(cap.maxConstraints ?? limits.maxConstraints, limits.maxConstraints)
+    : cap.maxConstraints;
+  if (effectiveMaxConstraints != null && route.constraintCount > effectiveMaxConstraints) return false;
+  const effectiveMaxExprNodes = limits?.maxExprNodes != null
+    ? Math.min(cap.maxExprNodes ?? limits.maxExprNodes, limits.maxExprNodes)
+    : cap.maxExprNodes;
+  if (effectiveMaxExprNodes != null && route.analysis.nodeCount > effectiveMaxExprNodes) return false;
+  const effectiveMaxExprDepth = limits?.maxExprDepth != null
+    ? Math.min(cap.maxExprDepth ?? limits.maxExprDepth, limits.maxExprDepth)
+    : cap.maxExprDepth;
+  if (effectiveMaxExprDepth != null && route.analysis.maxDepth > effectiveMaxExprDepth) return false;
   if (role === 'narrow') {
-    if (cap.maxAssignments != null && route.exhaustiveDomainSize &&
-        BigInt(route.exhaustiveDomainSize) > BigInt(cap.maxAssignments)) return false;
+    const assignmentCaps = [
+      cap.maxAssignments,
+      limits?.exhaustiveMaxAssignments,
+      limits?.maxAssignments,
+    ].filter((value) => value != null);
+    const effectiveMaxAssignments = assignmentCaps.length ? Math.min(...assignmentCaps) : null;
+    if (effectiveMaxAssignments != null && route.exhaustiveDomainSize &&
+        BigInt(route.exhaustiveDomainSize) > BigInt(effectiveMaxAssignments)) return false;
   }
   return true;
 }
@@ -340,7 +361,7 @@ class TieredSolverSession extends SolverSession {
       'no-exact-tier-eligible', { eligibility, attempts: [], engineBackend: null });
 
     const timeoutMs = options.timeoutMs;
-    const effectiveDeterministic = Boolean(options.deterministic === true || this.options.deterministic === true);
+    const effectiveDeterministic = options.deterministic !== undefined ? options.deterministic === true : this.options.deterministic === true;
     const deterministic = effectiveDeterministic && timeoutMs > 0;
     const deadline = !deterministic && timeoutMs > 0 ? (globalThis.performance?.now?.() ?? Date.now()) + timeoutMs : Infinity;
     const sessionSignal = this.options.signal || null;
@@ -423,9 +444,16 @@ class TieredSolverSession extends SolverSession {
             throw new TypeError('exact provider returned an invalid session');
           }
           const cap = captured.contract;
+          const effectiveNarrowAssignments = Math.min(
+            limits.exhaustiveMaxAssignments,
+            limits.maxAssignments ?? limits.exhaustiveMaxAssignments,
+            cap.maxAssignments ?? limits.exhaustiveMaxAssignments,
+          );
           const childLimits = {
             ...limits,
-            maxBvWidth: Math.min(limits.maxBvWidth, cap.maxBvWidth),
+            maxBvWidth: role === 'narrow'
+              ? Math.min(limits.exhaustiveMaxBvWidth, limits.maxBvWidth, cap.maxBvWidth)
+              : Math.min(limits.maxBvWidth, cap.maxBvWidth),
             maxConstraints: Math.min(limits.maxConstraints, cap.maxConstraints ?? limits.maxConstraints),
             maxExprNodes: Math.min(limits.maxExprNodes, cap.maxExprNodes ?? limits.maxExprNodes),
             maxExprDepth: Math.min(limits.maxExprDepth, cap.maxExprDepth ?? limits.maxExprDepth),
@@ -433,10 +461,10 @@ class TieredSolverSession extends SolverSession {
             maxClauses: Math.min(limits.maxClauses, cap.maxClauses ?? limits.maxClauses),
             maxDecisions: Math.min(limits.maxDecisions, cap.maxDecisions ?? limits.maxDecisions),
             maxPropagations: Math.min(limits.maxPropagations, cap.maxPropagations ?? limits.maxPropagations),
-            exhaustiveMaxAssignments: Math.min(limits.exhaustiveMaxAssignments, cap.maxAssignments ?? limits.exhaustiveMaxAssignments),
+            exhaustiveMaxAssignments: effectiveNarrowAssignments,
           };
           const remaining = deadline === Infinity ? timeoutMs : Math.max(1, Math.floor(deadline - (globalThis.performance?.now?.() ?? Date.now())));
-          if (role === 'narrow') childLimits.maxAssignments = childLimits.exhaustiveMaxAssignments;
+          if (role === 'narrow') childLimits.maxAssignments = effectiveNarrowAssignments;
           raw = await childSession.check(querySnapshot, {
             ...forwardedOptions,
             ...childLimits,

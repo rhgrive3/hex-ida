@@ -151,6 +151,7 @@ export async function checkAsyncEventOrder(source, request, { work } = {}) {
     if (consistent && use?.kind === 'use' && matching.includes(use) && alloc.length === 1 && ends.length === 1) {
       const started = await path(alloc[0].id, use.id, graph, maxDepth, work), ended = await path(use.id, ends[0].id, graph, maxDepth, work);
       const afterEnd = await path(ends[0].id, use.id, graph, maxDepth, work);
+      if (started.cut || ended.cut || afterEnd.cut) remaining.add('query-depth-cut');
       lifetime = { ...lifetime, relation: started.found && ended.found ? 'between-captured-boundaries-in-model' : afterEnd.found ? 'after-captured-end-in-model' : 'unknown',
         paths: { allocationToUse: started, useToEnd: ended, endToUse: afterEnd } };
     } else remaining.add('lifetime-instance-or-boundaries-open');

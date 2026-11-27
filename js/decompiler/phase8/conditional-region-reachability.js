@@ -218,6 +218,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
       return reject(execution.reason ?? 'incomplete-execution');
     }
     if (execution.assumptions.length || execution.memoryObservationRequests.length) return reject('conditional-execution-assumptions');
+    const blockByIndex = new Map((ir.blocks || []).map((b, i) => [b?.index ?? i, b]));
     const terms = [], faultTerms = [], armTerms = { yes:[], no:[] }, traversals = { yes:[], no:[] }, branchVisits = [];
     for (const [pathIndex, path] of paths.entries()) {
       guard.take('workItems');
@@ -231,7 +232,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
       guard.take('allocationUnits', conditions.length + 1); terms.push(term);
       if (terminalMode) {
         const control = path.control, endpoint = control.endpoint;
-        const ret = ir.blocks[endpoint.blockIndex]?.insts[endpoint.instructionIndex];
+        const ret = blockByIndex.get(endpoint.blockIndex)?.insts[endpoint.instructionIndex];
         const binding = faultBindings.get(ret), bundle = binding?.bundle;
         if (path.pathIndex !== pathIndex || !bundle || !faultBundles.has(bundle) || bundle.source !== ret
             || ret.returnTargetValue !== bundle.target || control.sourceValueId !== bundle.sourceValueId

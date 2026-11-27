@@ -1,0 +1,560 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Legacy C WASM targets (built automatically when source files are present).
+const LEGACY_C_TARGETS = [
+  {
+    name: 'byte-search',
+    src: 'wasm/byte_search.c',
+    outJs: 'js/platform/byte-search-wasm.js',
+    simd: true,
+    initialMemory: 262144,
+    maxMemory: 67108864,
+    exports: ['get_heap_base', 'find_one', 'find_all'],
+  },
+  {
+    name: 'string-scan',
+    src: 'wasm/string_scan.c',
+    outJs: 'js/bytesource/string-scan-wasm.js',
+    simd: true,
+    initialMemory: 524288,
+    maxMemory: 67108864,
+    exports: ['get_heap_base', 'scan_ascii_runs'],
+  },
+  {
+    name: 'sat-solver',
+    src: 'wasm/sat_solver.c',
+    outJs: 'js/symbolic/solver/sat-wasm.js',
+    simd: false,
+    initialMemory: 1048576,
+    maxMemory: 268435456,
+    exports: [
+      'get_heap_base',
+      'sat_reset',
+      'sat_init',
+      'sat_solve_slice',
+      'sat_get_assignment_ptr',
+      'sat_get_decisions',
+      'sat_get_propagations',
+    ],
+  },
+  {
+    name: 'fnv64',
+    src: 'wasm/fnv64.c',
+    outJs: 'js/core/identity/fnv64-wasm.js',
+    simd: false,
+    initialMemory: 262144,
+    maxMemory: 16777216,
+    exports: ['get_heap_base', 'fnv64_update'],
+  },
+];
+
+// C++20 unified hex_engine.wasm sources.
+const HEX_ENGINE_CPP_SRCS = [
+  'cpp/src/core/identity_engine.cpp',
+  'cpp/src/cfg/cfg_engine.cpp',
+  'cpp/src/cfg/loop_engine.cpp',
+  'cpp/src/binary/image_store.cpp',
+  'cpp/src/targets/arm64_decode.cpp',
+  'cpp/src/targets/x86_64_decode.cpp',
+  'cpp/src/semantics/resident_ir.cpp',
+  'cpp/src/decompiler/ir_optimizer.cpp',
+  'cpp/src/decompiler/c_emitter.cpp',
+];
+
+const OPTIONAL_TARGET_SRCS = [
+  'cpp/src/targets/x86_64_decomp.cpp',
+  'cpp/src/targets/x86_64_semantic_emit.cpp',
+  'cpp/src/targets/riscv64_decode.cpp',
+  'cpp/src/binary/string_scanner.cpp',
+  'cpp/src/binary/crypto_entropy_scanner.cpp',
+  'cpp/src/binary/elf_symbols.cpp',
+  'cpp/src/core/byte_search.cpp',
+  'cpp/src/core/sha256.cpp',
+  'cpp/src/analysis/rmw_field_scanner.cpp',
+  'cpp/src/analysis/vtable_rtti_scanner.cpp',
+  'cpp/src/analysis/func_fingerprint_wasm.cpp',
+  'cpp/src/analysis/jumptable_scanner.cpp',
+  'cpp/src/analysis/abi_param_scanner.cpp',
+  'cpp/src/analysis/const_table_scanner.cpp',
+  'cpp/src/analysis/callgraph_metrics_wasm.cpp',
+  'cpp/src/analysis/behavior_classifier_wasm.cpp',
+  'cpp/src/analysis/x86_64_rmw_scanner.cpp',
+  'cpp/src/analysis/objc_swift_metadata_scanner.cpp',
+  // v6 Beyond-IDA C++20 modules (Tracks 1-5)
+  'cpp/src/analysis/type_arena.cpp',
+  'cpp/src/analysis/sig_prop_wasm.cpp',
+  'cpp/src/analysis/til_engine.cpp',
+  'cpp/src/analysis/bitfield_struct_scanner.cpp',
+  'cpp/src/analysis/hexsig_engine.cpp',
+  'cpp/src/analysis/sparse_switch_lsda.cpp',
+  'cpp/src/recovery/manual_segment_map.cpp',
+  'cpp/src/recovery/func_chunk_cfg.cpp',
+  'cpp/src/recovery/custom_abi_spec.cpp',
+  'cpp/src/decompiler/region_decomp.cpp',
+  'cpp/src/decompiler/stack_web.cpp',
+  'cpp/src/decompiler/asm_island.cpp',
+  'cpp/src/decompiler/typed_emit_ctx.cpp',
+  'cpp/src/cfg/cff_unflatten.cpp',
+  'cpp/src/decompiler/mba_simplifier.cpp',
+  'cpp/src/analysis/mini_arm64_emu.cpp',
+  'cpp/src/analysis/deobf_eval_arm64.cpp',
+];
+
+const OPTIONAL_RUNTIME_SRCS = [
+  'cpp/src/engine_runtime.cpp',
+  'cpp/src/runtime/engine_runtime.cpp',
+];
+
+function buildLegacyCTarget(target, tmpDir) {
+  const srcPath = path.join(ROOT, target.src);
+  if (!fs.existsSync(srcPath)) return;
+
+  const rawWasm = path.join(tmpDir, `${target.name}.raw.wasm`);
+  const optWasm = path.join(ROOT, 'wasm', `${target.name}.wasm`);
+  const outJsPath = path.join(ROOT, target.outJs);
+
+  const clangArgs = [
+    '--target=wasm32',
+    '-O3',
+    '-nostdlib',
+    '-fno-builtin',
+    ...(target.simd ? ['-msimd128'] : []),
+    '-Wl,--no-entry',
+    `-Wl,--initial-memory=${target.initialMemory}`,
+    `-Wl,--max-memory=${target.maxMemory}`,
+    '-Wl,-z,stack-size=65536',
+    '-Wl,--stack-first',
+    ...target.exports.map((e) => `-Wl,--export=${e}`),
+    '-o',
+    rawWasm,
+    srcPath,
+  ];
+  execFileSync('clang', clangArgs, { stdio: 'inherit' });
+
+  fs.mkdirSync(path.dirname(optWasm), { recursive: true });
+  execFileSync(
+    'wasm-opt',
+    ['-O3', ...(target.simd ? ['--enable-simd'] : []), '-o', optWasm, rawWasm],
+    { stdio: 'inherit' },
+  );
+
+  const wasmBytes = fs.readFileSync(optWasm);
+  const compiledMod = new WebAssembly.Module(wasmBytes);
+  const modImports = WebAssembly.Module.imports(compiledMod);
+  if (modImports.length !== 0) {
+    throw new Error(`${target.name}.wasm must have 0 external imports, found ${modImports.length}: ${JSON.stringify(modImports)}`);
+  }
+  const b64 = wasmBytes.toString('base64');
+
+  const jsContent = `// Auto-generated by scripts/build-wasm.mjs from ${target.src}. Do not edit manually.
+const WASM_BASE64 = ${JSON.stringify(b64)};
+
+function decodeBase64(b64) {
+  if (typeof Buffer === 'function') {
+    const buf = Buffer.from(b64, 'base64');
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
+}
+
+let cachedBytes = null;
+let cachedModule = null;
+let simdSupported = null;
+
+export function isWasmSimdSupported() {
+  if (simdSupported !== null) return simdSupported;
+  if (typeof WebAssembly !== 'object' || typeof WebAssembly.validate !== 'function') {
+    simdSupported = false;
+    return false;
+  }
+  const probe = new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
+    0x03, 0x02, 0x01, 0x00,
+    0x0a, 0x16, 0x01, 0x14, 0x00,
+    0xfd, 0x0c, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0x0b,
+  ]);
+  try {
+    simdSupported = WebAssembly.validate(probe);
+  } catch {
+    simdSupported = false;
+  }
+  return simdSupported;
+}
+
+export function getWasmModule() {
+  if (cachedModule) return cachedModule;
+  if (typeof WebAssembly !== 'object') return null;
+  if (${target.simd ? '!isWasmSimdSupported()' : 'false'}) return null;
+  if (!cachedBytes) cachedBytes = decodeBase64(WASM_BASE64);
+  cachedModule = new WebAssembly.Module(cachedBytes);
+  return cachedModule;
+}
+
+export function createWasmInstance() {
+  const mod = getWasmModule();
+  if (!mod) return null;
+  return new WebAssembly.Instance(mod, {});
+}
+`;
+
+  fs.mkdirSync(path.dirname(outJsPath), { recursive: true });
+  fs.writeFileSync(outJsPath, jsContent, 'utf8');
+  console.log(`Built ${target.name}: ${wasmBytes.length} bytes -> ${target.outJs}`);
+}
+
+function buildHexEngineUnified(tmpDir) {
+  const srcs = [];
+  for (const rel of HEX_ENGINE_CPP_SRCS) {
+    const abs = path.join(ROOT, rel);
+    if (!fs.existsSync(abs)) {
+      throw new Error(`Missing required C++20 source for hex_engine.wasm: ${rel}`);
+    }
+    srcs.push(abs);
+  }
+  for (const rel of OPTIONAL_TARGET_SRCS) {
+    const abs = path.join(ROOT, rel);
+    if (fs.existsSync(abs)) {
+      srcs.push(abs);
+    }
+  }
+  let hasDecompPasses = false;
+  const decompPassesDir = path.join(ROOT, 'cpp/src/decompiler/passes');
+  if (fs.existsSync(decompPassesDir) && fs.statSync(decompPassesDir).isDirectory()) {
+    const passFiles = fs.readdirSync(decompPassesDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.cpp'))
+      .map((entry) => entry.name)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (const name of passFiles) {
+      srcs.push(path.join(decompPassesDir, name));
+    }
+    hasDecompPasses = passFiles.length > 0;
+  }
+  for (const rel of OPTIONAL_RUNTIME_SRCS) {
+    const abs = path.join(ROOT, rel);
+    if (fs.existsSync(abs)) {
+      srcs.push(abs);
+      break;
+    }
+  }
+
+  // Compile upstream LLVM ItaniumDemangle + RustDemangle TU with -Os and freestanding stub headers.
+  const extraObjs = [];
+  const llvmDemangleSrc = path.join(ROOT, 'cpp/src/analysis/llvm_demangle_wasm.cpp');
+  if (fs.existsSync(llvmDemangleSrc)) {
+    const stubInc = path.join(tmpDir, 'llvm-freestanding-inc');
+    fs.mkdirSync(path.join(stubInc, 'llvm', 'Demangle'), { recursive: true });
+    for (const rel of [
+      'algorithm', 'array', 'cassert', 'cctype', 'cstdint', 'cstdio',
+      'cstdlib', 'cstring', 'limits', 'new', 'string_view', 'type_traits',
+      'utility', 'llvm/Demangle/Demangle.h', 'llvm/Demangle/StringViewExtras.h',
+      'llvm/Demangle/Utility.h',
+    ]) {
+      fs.writeFileSync(path.join(stubInc, rel), '#pragma once\n', 'utf8');
+    }
+    const demangleObj = path.join(tmpDir, 'llvm_demangle_wasm.o');
+    execFileSync('clang++', [
+      '--target=wasm32',
+      '-std=c++20',
+      '-Os',
+      '-nostdlib',
+      '-fno-exceptions',
+      '-fno-rtti',
+      '-mbulk-memory',
+      '-ffunction-sections',
+      '-fdata-sections',
+      '-DHEX_UNIFIED_WASM=1',
+      ...(fs.existsSync(path.join(ROOT, 'cpp/src/analysis/swift_demangle_wasm.cpp')) ? ['-DHEX_HAS_SWIFT_DEMANGLE=1'] : []),
+      ...(fs.existsSync(path.join(ROOT, 'cpp/src/analysis/msvc_demangle_wasm.cpp')) ? ['-DHEX_HAS_MSVC_DEMANGLE=1'] : []),
+      `-I${path.join(ROOT, 'cpp/include')}`,
+      `-I${stubInc}`,
+      '-c',
+      '-o',
+      demangleObj,
+      llvmDemangleSrc,
+    ], { stdio: 'inherit' });
+    extraObjs.push(demangleObj);
+  }
+
+  // Compile Apple upstream swiftlang/swift Demangling TU with -Os and freestanding stub headers.
+  const swiftDemangleSrc = path.join(ROOT, 'cpp/src/analysis/swift_demangle_wasm.cpp');
+  if (fs.existsSync(swiftDemangleSrc)) {
+    const swiftStubInc = path.join(tmpDir, 'swift-freestanding-inc');
+    fs.mkdirSync(path.join(swiftStubInc, 'llvm', 'ADT'), { recursive: true });
+    fs.mkdirSync(path.join(swiftStubInc, 'llvm', 'Support'), { recursive: true });
+    fs.mkdirSync(path.join(swiftStubInc, 'swift', 'Basic'), { recursive: true });
+    for (const rel of [
+      'algorithm', 'array', 'assert.h', 'cassert', 'cctype', 'cstdint', 'cstdio',
+      'cstdlib', 'cstring', 'climits', 'functional', 'limits', 'memory', 'new',
+      'optional', 'stdio.h', 'stdlib.h', 'string', 'string_view', 'tuple',
+      'type_traits', 'utility', 'vector',
+      'llvm/ADT/StringRef.h', 'llvm/Support/Compiler.h',
+      'llvm/Support/Alignment.h', 'llvm/Support/ErrorHandling.h',
+      'swift/Basic/STLExtras.h',
+    ]) {
+      fs.writeFileSync(path.join(swiftStubInc, rel), '#pragma once\n', 'utf8');
+    }
+    fs.writeFileSync(path.join(swiftStubInc, 'inttypes.h'), [
+      '#pragma once',
+      '#define PRId64 "lld"',
+      '#define PRIu64 "llu"',
+      '#define PRIx64 "llx"',
+      '#define PRId32 "d"',
+      '#define PRIu32 "u"',
+      '#define PRIx32 "x"',
+      '',
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(swiftStubInc, 'swift/Basic/InlineBitfield.h'), [
+      '#pragma once',
+      '#include <cstdint>',
+      'namespace swift {',
+      'constexpr unsigned bitmax(unsigned a, unsigned b) { return a > b ? a : b; }',
+      'constexpr unsigned countBitsUsed(uint64_t arg) { return arg ? (1u + countBitsUsed(arg >> 1)) : 0u; }',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(swiftStubInc, 'swift/Basic/Unreachable.h'), '#pragma once\n#define swift_unreachable(msg) __builtin_unreachable()\n', 'utf8');
+    fs.writeFileSync(path.join(swiftStubInc, 'swift/Basic/LLVM.h'), [
+      '#pragma once',
+      'namespace swift {',
+      'using llvm::StringRef;',
+      'using llvm::StringLiteral;',
+      'using llvm::function_ref;',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+
+    const swiftObj = path.join(tmpDir, 'swift_demangle_wasm.o');
+    execFileSync('clang++', [
+      '--target=wasm32',
+      '-std=c++20',
+      '-Os',
+      '-nostdlib',
+      '-fno-exceptions',
+      '-fno-rtti',
+      '-mbulk-memory',
+      '-ffunction-sections',
+      '-fdata-sections',
+      '-DHEX_UNIFIED_WASM=1',
+      `-I${path.join(ROOT, 'cpp/include')}`,
+      `-I${path.join(ROOT, 'third_party/swift-demangle/include')}`,
+      `-I${swiftStubInc}`,
+      '-c',
+      '-o',
+      swiftObj,
+      swiftDemangleSrc,
+    ], { stdio: 'inherit' });
+    extraObjs.push(swiftObj);
+  }
+
+
+  // Compile LLVM upstream MicrosoftDemangle TU with -Os and freestanding stub headers.
+  const msvcDemangleSrc = path.join(ROOT, 'cpp/src/analysis/msvc_demangle_wasm.cpp');
+  if (fs.existsSync(msvcDemangleSrc)) {
+    const msvcStubInc = path.join(tmpDir, 'msvc-freestanding-inc');
+    fs.mkdirSync(path.join(msvcStubInc, 'llvm', 'Demangle'), { recursive: true });
+    for (const rel of [
+      'array', 'cassert', 'cctype', 'cstdint', 'cstdio', 'cstdlib', 'cstring',
+      'optional', 'string', 'string_view', 'tuple', 'utility',
+      'llvm/Demangle/Demangle.h', 'llvm/Demangle/DemangleConfig.h',
+      'llvm/Demangle/StringViewExtras.h', 'llvm/Demangle/Utility.h',
+    ]) {
+      fs.writeFileSync(path.join(msvcStubInc, rel), '#pragma once\n', 'utf8');
+    }
+    fs.writeFileSync(path.join(msvcStubInc, 'DemangleConfig.h'), '#pragma once\n', 'utf8');
+    fs.writeFileSync(
+      path.join(msvcStubInc, 'llvm/Demangle/MicrosoftDemangle.h'),
+      `#include "${path.join(ROOT, 'third_party/llvm-demangle/MicrosoftDemangle.h')}"\n`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(msvcStubInc, 'llvm/Demangle/MicrosoftDemangleNodes.h'),
+      `#include "${path.join(ROOT, 'third_party/llvm-demangle/MicrosoftDemangleNodes.h')}"\n`,
+      'utf8'
+    );
+    const msvcObj = path.join(tmpDir, 'msvc_demangle_wasm.o');
+    execFileSync('clang++', [
+      '--target=wasm32',
+      '-std=c++20',
+      '-Os',
+      '-nostdlib',
+      '-fno-exceptions',
+      '-fno-rtti',
+      '-mbulk-memory',
+      '-ffunction-sections',
+      '-fdata-sections',
+      '-DHEX_UNIFIED_WASM=1',
+      `-I${path.join(ROOT, 'cpp/include')}`,
+      `-I${msvcStubInc}`,
+      '-c',
+      '-o',
+      msvcObj,
+      msvcDemangleSrc,
+    ], { stdio: 'inherit' });
+    extraObjs.push(msvcObj);
+  }
+
+  const rawWasm = path.join(tmpDir, 'hex_engine.raw.wasm');
+  const optWasm = path.join(ROOT, 'wasm', 'hex_engine.wasm');
+  const outJsPath = path.join(ROOT, 'js/core/hex-engine-wasm.js');
+
+  const clangArgs = [
+    '--target=wasm32',
+    '-std=c++20',
+    '-O3',
+    '-nostdlib',
+    '-fno-exceptions',
+    '-fno-rtti',
+    '-mbulk-memory',
+    '-DHEX_UNIFIED_WASM=1',
+    ...(hasDecompPasses ? ['-DHEX_HAS_DECOMP_PASSES=1'] : []),
+    `-I${path.join(ROOT, 'cpp/include')}`,
+    `-I${path.join(ROOT, 'cpp/src')}`,
+    '-Wl,--no-entry',
+    '-Wl,--max-memory=67108864',
+    '-o',
+    rawWasm,
+    '-Wl,--gc-sections',
+    ...srcs,
+    ...extraObjs,
+  ];
+  execFileSync('clang++', clangArgs, { stdio: 'inherit' });
+
+  fs.mkdirSync(path.dirname(optWasm), { recursive: true });
+  execFileSync(
+    'wasm-opt',
+    ['-O3', '--enable-bulk-memory', '-o', optWasm, rawWasm],
+    { stdio: 'inherit' },
+  );
+
+  const wasmBytes = fs.readFileSync(optWasm);
+  const compiledMod = new WebAssembly.Module(wasmBytes);
+  const modImports = WebAssembly.Module.imports(compiledMod);
+  if (modImports.length !== 0) {
+    throw new Error(`hex_engine.wasm must have 0 external imports, found ${modImports.length}: ${JSON.stringify(modImports)}`);
+  }
+  const MAX_HEX_ENGINE_RAW_BYTES = Math.floor(1.40 * 1024 * 1024);
+  const MAX_HEX_ENGINE_GZIP_BYTES = 520 * 1024;
+  const gzipBytes = gzipSync(wasmBytes, { level: 9 }).length;
+  if (wasmBytes.length > MAX_HEX_ENGINE_RAW_BYTES) {
+    throw new Error(`hex_engine.wasm raw size ${wasmBytes.length} exceeds 1.40 MiB budget (${MAX_HEX_ENGINE_RAW_BYTES})`);
+  }
+  if (gzipBytes > MAX_HEX_ENGINE_GZIP_BYTES) {
+    throw new Error(`hex_engine.wasm gzip size ${gzipBytes} exceeds 520 KiB budget (${MAX_HEX_ENGINE_GZIP_BYTES})`);
+  }
+  console.log(`hex_engine.wasm budget OK: raw=${wasmBytes.length} B (${(wasmBytes.length/1024).toFixed(1)} KiB), gzip=${gzipBytes} B (${(gzipBytes/1024).toFixed(1)} KiB)`);
+  const b64 = wasmBytes.toString('base64');
+
+  const jsContent = `// Auto-generated by scripts/build-wasm.mjs (C++20 unified hex_engine.wasm). Do not edit manually.
+export const HEX_ENGINE_WASM_BASE64 = ${JSON.stringify(b64)};
+
+// Minimal valid WASM module executing memory.copy 0 0 (0xfc 0x0a 0x00 0x00).
+const BULK_MEMORY_PROBE_BYTES = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+  0x03, 0x02, 0x01, 0x00,
+  0x05, 0x03, 0x01, 0x00, 0x00,
+  0x0a, 0x0e, 0x01, 0x0c, 0x00,
+  0x41, 0x00, 0x41, 0x00, 0x41, 0x00,
+  0xfc, 0x0a, 0x00, 0x00,
+  0x0b,
+]);
+
+function decodeBase64(b64) {
+  if (typeof Buffer === 'function') {
+    const buf = Buffer.from(b64, 'base64');
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
+}
+
+function isJsEngineForced() {
+  const norm = (v) => (v == null ? '' : String(v).trim().toLowerCase());
+  const raw = (typeof globalThis === 'object' && globalThis !== null
+    ? (globalThis.HEX_ENGINE ?? globalThis.__HEX_ENGINE_MODE__)
+    : null)
+    ?? (typeof process === 'object' && process !== null && process.env
+      ? process.env.HEX_ENGINE
+      : null);
+  return norm(raw) === 'js';
+}
+
+let cachedBytes = null;
+let cachedExports = null;
+let bulkMemorySupported = null;
+
+export function isWasmBulkMemorySupported() {
+  if (bulkMemorySupported !== null) return bulkMemorySupported;
+  if (typeof WebAssembly !== 'object' || WebAssembly === null || typeof WebAssembly.validate !== 'function') {
+    bulkMemorySupported = false;
+    return false;
+  }
+  try {
+    bulkMemorySupported = WebAssembly.validate(BULK_MEMORY_PROBE_BYTES);
+  } catch {
+    bulkMemorySupported = false;
+  }
+  return bulkMemorySupported;
+}
+
+export function getHexEngineExports(opts = null) {
+  const forced = opts && opts._engine != null ? String(opts._engine).trim().toLowerCase() : null;
+  if (forced === 'js' || (forced !== 'wasm' && forced !== 'auto' && isJsEngineForced())) return null;
+  if (!isWasmBulkMemorySupported()) return null;
+  if (cachedExports !== null) return cachedExports;
+  if (typeof WebAssembly !== 'object' || WebAssembly === null) return null;
+  try {
+    if (!cachedBytes) cachedBytes = decodeBase64(HEX_ENGINE_WASM_BASE64);
+    const mod = new WebAssembly.Module(cachedBytes);
+    const inst = new WebAssembly.Instance(mod, {});
+    const ex = inst.exports;
+    if (typeof ex.hex_engine_init === 'function') {
+      ex.hex_engine_init();
+    } else if (typeof ex.hex_runtime_init === 'function') {
+      ex.hex_runtime_init();
+    }
+    cachedExports = ex;
+    return cachedExports;
+  } catch {
+    return null;
+  }
+}
+
+export function resetHexEngineForTest() {
+  cachedExports = null;
+  bulkMemorySupported = null;
+}
+`;
+
+  fs.mkdirSync(path.dirname(outJsPath), { recursive: true });
+  fs.writeFileSync(outJsPath, jsContent, 'utf8');
+  console.log(`Built hex_engine.wasm: ${wasmBytes.length} bytes (${srcs.length} C++20 units) -> js/core/hex-engine-wasm.js`);
+}
+
+const tmpDir = path.join(ROOT, '.wasm-build-tmp');
+fs.mkdirSync(tmpDir, { recursive: true });
+try {
+  for (const target of LEGACY_C_TARGETS) {
+    buildLegacyCTarget(target, tmpDir);
+  }
+  buildHexEngineUnified(tmpDir);
+} finally {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+}

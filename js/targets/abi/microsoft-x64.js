@@ -57,10 +57,10 @@ export function typeBits(type, fallback = 64) {
    * its first token (issue #5977). */
   const text = String(type || '').toLowerCase().replace(/\s+/g, ' ').trim();
   if (/\*|\b(?:pointer|ptr)\b/.test(text)) return 64;
-  if (/\b(?:bool|char|int8|uint8)\b/.test(text)) return 8;
-  if (/\b(?:short|int16|uint16)\b/.test(text)) return 16;
-  if (/\b(?:unsigned\s+)?long long\b|\b(?:double|int64|uint64)\b/.test(text)) return 64;
-  if (/\b(?:int|unsigned int|long|unsigned long|int32|uint32|float)\b/.test(text)) return 32;
+  if (/\b(?:bool|_bool|char|int8(?:_t)?|uint8(?:_t)?|i8|u8|byte)\b/.test(text)) return 8;
+  if (/\b(?:short|int16(?:_t)?|uint16(?:_t)?|i16|u16|half|fp16)\b/.test(text)) return 16;
+  if (/\b(?:unsigned\s+)?long long\b|\b(?:double|int64(?:_t)?|uint64(?:_t)?|i64|u64|f64)\b/.test(text)) return 64;
+  if (/\b(?:int|unsigned int|long|unsigned long|int32(?:_t)?|uint32(?:_t)?|i32|u32|float|f32)\b/.test(text)) return 32;
   return fallback;
 }
 
@@ -153,7 +153,7 @@ function conservativeUnknownArguments(extra = {}) {
   return {
     srcs,
     arguments:srcs.map((source, index) => ({
-      index:index % 4,
+      index,
       location:'register',
       reg:source.reg,
       bits:source.bits,
@@ -200,7 +200,7 @@ export function microsoftX64AggregateReturnDecision(descriptor, prototype, optio
       pieces:[{ pieceIndex:0, order:0, reg:'rax', abiClass:'integer-aggregate', bits, bytes, byteOffset:0 }],
     };
   }
-  if (nonTrivial || (bitsProven && !physicalPadding && ![8,16,32,64].includes(bits))) {
+  if (nonTrivial || (bitsProven && ((physicalBytes != null && physicalBytes > 8) || bits > 64 || (!physicalPadding && ![8,16,32,64].includes(bits))))) {
     return {
       kind:'indirect', bits:64, aggregate:true,
       pointeeBits:bitsProven ? bits : null,
@@ -565,7 +565,8 @@ export const MICROSOFT_X64_ABI = new ABIPlugin({
   classifyCallReturn:classifyMicrosoftX64CallReturn,
   classifyFunctionReturn:classifyMicrosoftX64FunctionReturn,
   classifyEntryRegister:(reg) => {
-    const id = String(reg || '').toLowerCase();
+    if (typeof reg !== 'string') return { kind:'incoming-register-state', reg:'' };
+    const id = reg.toLowerCase();
     const integerIndex = INTEGER_ARGUMENT_REGISTERS.indexOf(id);
     if (integerIndex >= 0) return { kind:'argument', reg:id, index:integerIndex, abiClass:'integer' };
     const vectorIndex = VECTOR_ARGUMENT_REGISTERS.indexOf(id);

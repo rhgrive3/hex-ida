@@ -151,9 +151,24 @@ export function probeDex(bytes) {
   return { supported: true, confidence: 1.0, ...versionInfo };
 }
 
+const ASCII_DECODER = new TextDecoder('ascii');
+
 function decodeMutf8(bytes, offset) {
   const { value: utf16Size, nextOffset } = readUleb128(bytes, offset);
+  const asciiLimit = Math.min(bytes.length, nextOffset + utf16Size);
   let pos = nextOffset;
+  while (pos < asciiLimit) {
+    const b = bytes[pos];
+    if (b === 0 || b >= 0x80) break;
+    pos++;
+  }
+  if (pos === nextOffset + utf16Size && pos < bytes.length && bytes[pos] === 0) {
+    return utf16Size === 0 ? '' : ASCII_DECODER.decode(bytes.subarray(nextOffset, pos));
+  }
+  if (pos === nextOffset + utf16Size && pos < bytes.length && bytes[pos] >= 0x01 && bytes[pos] <= 0x7f) {
+    fail('dex-malformed-string-data');
+  }
+  pos = nextOffset;
   const chars = [];
   let decodedUnits = 0;
   let terminated = false;
@@ -435,7 +450,8 @@ export function parseDex(bytes, options = {}) {
   }
 
   const classes=[];
-  let previousClassIdx = -1;
+  const definedClassIndex = new Map();
+  const classDeps = [];
   for(let i=0;i<classDefsSize;i++) {
     const off=classDefsOff+i*32;
     if(off+32>u8.length) fail('dex-truncated-class-defs');
@@ -447,8 +463,8 @@ export function parseDex(bytes, options = {}) {
     dataRange(annotationsOff,16,'dex-invalid-annotations-offset',4,true);
     dataRange(staticValuesOff,1,'dex-invalid-static-values-offset',1,true);
     const classType = requireClassType(types, classIdx, 'dex-invalid-class-definer-type');
-    if (classIdx <= previousClassIdx) fail('dex-class-defs-order-invalid');
-    previousClassIdx = classIdx;
+    if (definedClassIndex.has(classIdx)) fail('dex-class-defs-order-invalid');
+    definedClassIndex.set(classIdx, i);
     const directMethods=[],virtualMethods=[],staticFields=[],instanceFields=[];
     if(classDataOff>0) {
       dataRange(classDataOff,4,'dex-invalid-class-data-offset');
@@ -498,6 +514,7 @@ export function parseDex(bytes, options = {}) {
     // on AOSP contract violations — bounds, alignment, type_idx validity,
     // class (non-array/primitive) entries, and duplicates (#7620).
     let interfaceTypes = emptyTypeList.descriptors;
+    let interfaceTypeIndices = [];
     if(interfacesOff!==0){
       const list = decodeTypeList(interfacesOff, {
         headerCode:'dex-invalid-interfaces-offset',
@@ -507,8 +524,25 @@ export function parseDex(bytes, options = {}) {
       });
       validateInterfaceTypeList(interfacesOff, list);
       interfaceTypes = list.descriptors;
+      interfaceTypeIndices = list.typeIndices;
     }
+    classDeps.push({ index: i, superclassIdx, interfaceTypeIndices });
     classes.push({classType,accessFlags,superType:superclassIdx!==0xffffffff?requireClassType(types,superclassIdx,'dex-invalid-superclass-type'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,interfaceTypes,staticFields,instanceFields,directMethods,virtualMethods});
+  }
+
+  for (const dep of classDeps) {
+    if (dep.superclassIdx !== 0xffffffff) {
+      const superDefIdx = definedClassIndex.get(dep.superclassIdx);
+      if (superDefIdx !== undefined && superDefIdx >= dep.index) {
+        fail('dex-class-defs-order-invalid');
+      }
+    }
+    for (const ifaceIdx of dep.interfaceTypeIndices) {
+      const ifaceDefIdx = definedClassIndex.get(ifaceIdx);
+      if (ifaceDefIdx !== undefined && ifaceDefIdx >= dep.index) {
+        fail('dex-class-defs-order-invalid');
+      }
+    }
   }
 
   dexMethodDefinitions({ methods, classes });

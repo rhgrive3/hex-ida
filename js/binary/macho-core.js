@@ -6,6 +6,7 @@ import { cpuName, subtypeBase, cpuArchName, sliceArchName, selectDefaultFatSlice
 import { dyldCacheAuthority, malformedAppleCodeSignature, parseAppleCodeSignature } from '../apple/knowledge.js';
 import { deepFreeze } from '../core/identity/index.js';
 import { IncrementalSha256 } from '../cache/content-identity.js';
+import { getEngineMode, wasmSha256Hash } from '../core/hex-engine-bridge.js';
 
 
 const ISSUED_MACHO_IMAGES = new WeakMap();
@@ -35,13 +36,38 @@ function containerOffset(value) {
   throw new TypeError('Mach-O container offset must be a non-negative safe integer or bigint');
 }
 
-function residentDigest(bytes) {
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength > MACHO_METADATA_LIMITS.inputBytes) return null;
-  return `bin_sha256_${new IncrementalSha256().update(bytes).hexDigest()}`;
+const HEX_TABLE = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+const WASM_SHA256_FAST_LIMIT = 1048576;
+
+function digestBytesToHex(digest) {
+  let hex = '';
+  for (let i = 0; i < digest.length; i += 1) hex += HEX_TABLE[digest[i]];
+  return hex;
 }
 
-function sliceIdentity(binaryIdentity, bytes, offset, architecture) {
-  const digest = residentDigest(bytes);
+function sameByteSlice(a, b) {
+  return a === b || (
+    a instanceof Uint8Array
+    && b instanceof Uint8Array
+    && a.buffer === b.buffer
+    && a.byteOffset === b.byteOffset
+    && a.byteLength === b.byteLength
+  );
+}
+
+function residentDigest(bytes, engineOpts = undefined) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength > MACHO_METADATA_LIMITS.inputBytes) return null;
+  if (bytes.byteLength <= WASM_SHA256_FAST_LIMIT && getEngineMode(engineOpts) !== 'js' && typeof wasmSha256Hash === 'function') {
+    const raw = wasmSha256Hash(bytes, engineOpts);
+    if (raw instanceof Uint8Array && raw.length === 32) {
+      return `bin_sha256_${digestBytesToHex(raw)}`;
+    }
+  }
+  return `bin_sha256_${new IncrementalSha256(engineOpts).update(bytes).hexDigest()}`;
+}
+
+function sliceIdentity(binaryIdentity, bytes, offset, architecture, precomputedDigest = undefined, engineOpts = undefined) {
+  const digest = precomputedDigest !== undefined ? precomputedDigest : residentDigest(bytes, engineOpts);
   if (!binaryIdentity || !digest) return null;
   return `slice_macho_${architecture}_${offset.toString(16)}_${bytes.byteLength.toString(16)}_${digest.slice('bin_sha256_'.length)}`;
 }
@@ -215,7 +241,8 @@ const DYLIB_COMMANDS = new Set([
 export function parseMachO(input, opts = {}) {
   const bytes = new ByteView(input).bytes;
   const thinContainerOffset = containerOffset(opts.containerOffset);
-  const containerIdentity = residentDigest(bytes);
+  const engineOpts = opts?._engine != null ? { _engine: opts._engine } : undefined;
+  const containerIdentity = residentDigest(bytes, engineOpts);
   const kind = machoKind(bytes);
   if (!kind) throw new Error('not a Mach-O file');
   if (kind.fat) {
@@ -223,12 +250,15 @@ export function parseMachO(input, opts = {}) {
     if (!selected) throw new Error('Mach-O universal binary has no readable slice');
     const sub = bytes.subarray(Number(selected.offset), Number(selected.offset + selected.size));
     const selectedArchitecture = sliceArchName(selected);
+    const subDigest = sameByteSlice(sub, bytes) ? containerIdentity : residentDigest(sub, engineOpts);
     const image = parseThin(sub, {
       ...opts,
       containerOffset: selected.offset,
       [INTERNAL_RESIDENT_IDENTITY]: {
         binaryIdentity: containerIdentity,
-        sliceIdentity: sliceIdentity(containerIdentity, sub, selected.offset, selectedArchitecture),
+        sliceIdentity: sliceIdentity(containerIdentity, sub, selected.offset, selectedArchitecture, subDigest, engineOpts),
+        sliceDigest: subDigest,
+        sliceBytes: sub,
       },
     });
     image.metadata.fat = {
@@ -245,7 +275,9 @@ export function parseMachO(input, opts = {}) {
     containerOffset: thinContainerOffset,
     [INTERNAL_RESIDENT_IDENTITY]: {
       binaryIdentity: containerIdentity,
-      sliceIdentity: sliceIdentity(containerIdentity, bytes, thinContainerOffset, cpuArchName(cpu, subtype)),
+      sliceIdentity: sliceIdentity(containerIdentity, bytes, thinContainerOffset, cpuArchName(cpu, subtype), containerIdentity, engineOpts),
+      sliceDigest: containerIdentity,
+      sliceBytes: bytes,
     },
   });
 }
@@ -465,6 +497,8 @@ function parseThin(bytes, opts) {
     }
   }
 
+  if (linkeditData.dataInCode) parseDataInCode(r, linkeditData.dataInCode, image, metadataBudget);
+
   if (linkeditData.main) {
     image.entrypoint = image.offsetToAddress(linkeditData.main.entryoff);
     image.metadata.entrypointSource = 'LC_MAIN';
@@ -473,13 +507,12 @@ function parseThin(bytes, opts) {
     image.metadata.entrypointSource = 'LC_UNIXTHREAD';
   }
   if (image.entrypoint != null && image.entrypoint !== 0n) {
-    const entrySegment = image.segmentAt(image.entrypoint);
-    const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
     // The LC_UNIXTHREAD PC is an absolute address: unlike the LC_MAIN path
     // (whose entryoff maps through the file-backed table), it can land in a
     // segment's zero-fill tail, where no instruction byte exists. Require
+    // executable/aligned mapping, LC_DATA_IN_CODE exclusion, and contiguous
     // file backing before calling it a valid entrypoint (#5555).
-    if (entrySegment?.perms?.execute && image.entrypoint % alignment === 0n && image.addressToOffset(image.entrypoint) != null) {
+    if (image.isInstructionAllowed(image.entrypoint) && hasContiguousFileBackedInstruction(image, image.entrypoint)) {
       image.metadata.entrypointValid = true;
       image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
     } else {
@@ -489,7 +522,6 @@ function parseThin(bytes, opts) {
   }
 
   for (const st of symtabs) parseSymbolTable(r, st, image, bits, metadataBudget);
-  if (linkeditData.dataInCode) parseDataInCode(r, linkeditData.dataInCode, image, metadataBudget);
   const hadFunctionStarts = !!linkeditData.functionStarts;
   if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image, metadataBudget);
   parseCompactUnwind(r, image, metadataBudget);
@@ -544,31 +576,64 @@ function parseThin(bytes, opts) {
   }
 
   image.metadata.machoMetadata = metadataBudget.snapshot();
-  const issued = image.finalize();
+  const issued = image.finalize({ _consumeOwnedSeeds: true });
   const authoritySections = issued.sections.map(metadataMappingSnapshot);
   const authoritySegments = issued.segments.map(metadataMappingSnapshot);
   const residentBytes = issued.bytes instanceof Uint8Array ? issued.bytes : null;
-  const sourceDigest = residentDigest(residentBytes);
+  const engineOpts = opts?._engine != null ? { _engine: opts._engine } : undefined;
+  const sourceDigest = (
+    residentBytes !== null
+    && residentIdentity.sliceDigest !== undefined
+    && sameByteSlice(residentBytes, residentIdentity.sliceBytes)
+  ) ? residentIdentity.sliceDigest : residentDigest(residentBytes, engineOpts);
   const contentMatches = () => sourceDigest !== null
     && issued.bytes === residentBytes
-    && residentDigest(residentBytes) === sourceDigest;
+    && residentDigest(residentBytes, engineOpts) === sourceDigest;
   const createMetadataSource = () => {
     if (!contentMatches()) return null;
     const snapshot = residentBytes.slice();
-    if (residentDigest(snapshot) !== sourceDigest) return null;
+    if (residentDigest(snapshot, engineOpts) !== sourceDigest) return null;
     return deepFreeze({ readAt: canonicalResidentReader(snapshot, authoritySections, authoritySegments) });
   };
+  let rawBuildVersion = issued.metadata.buildVersion && typeof issued.metadata.buildVersion === 'object'
+    ? {
+      ...issued.metadata.buildVersion,
+      ...(Array.isArray(issued.metadata.buildVersion.tools)
+        ? { tools: issued.metadata.buildVersion.tools.map((t) => (t && typeof t === 'object' ? { ...t } : t)) }
+        : {}),
+    }
+    : issued.metadata.buildVersion;
+  let frozenBuildVersion;
+  let hasFrozenBuildVersion = false;
+  let frozenSections = null;
+  let frozenSegments = null;
+  let frozenChainedSites = null;
+  let frozenDyldCacheBinding;
+  let hasFrozenDyldCacheBinding = false;
   const authority = {
     binaryIdentity: boundIdentity(residentIdentity.binaryIdentity),
     sliceIdentity: boundIdentity(residentIdentity.sliceIdentity),
     architecture: issued.arch,
-    buildVersion: authoritySnapshot(issued.metadata.buildVersion),
+    get buildVersion() {
+      if (!hasFrozenBuildVersion) {
+        frozenBuildVersion = authoritySnapshot(rawBuildVersion);
+        rawBuildVersion = null;
+        hasFrozenBuildVersion = true;
+      }
+      return frozenBuildVersion;
+    },
     fileOffset: issued.fileOffset,
     fileSize: issued.fileSize,
     imageBase: issued.imageBase,
     platform: issued.platform,
-    sections: deepFreeze(authoritySections),
-    segments: deepFreeze(authoritySegments),
+    get sections() {
+      if (frozenSections === null) frozenSections = deepFreeze(authoritySections);
+      return frozenSections;
+    },
+    get segments() {
+      if (frozenSegments === null) frozenSegments = deepFreeze(authoritySegments);
+      return frozenSegments;
+    },
     createMetadataSource,
     sourceComplete: sourceDigest !== null,
     contentMatches,
@@ -576,9 +641,18 @@ function parseThin(bytes, opts) {
     get codeSignatureCommandsComplete() { return issued.metadata.codeSignatureCommandsComplete === true; },
     get codeSignature() { return issued.metadata.codeSignatureStructure ?? issued.metadata.codeSignature ?? null; },
     get chainedFixups() { return authoritySnapshot(issued.metadata.chainedFixups); },
-    chainedSites: deepFreeze(chainedPointerSites(issued)),
+    get chainedSites() {
+      if (frozenChainedSites === null) frozenChainedSites = deepFreeze(chainedPointerSites(issued));
+      return frozenChainedSites;
+    },
     dyldCache: opts.dyldCache ?? null,
-    dyldCacheBinding: authoritySnapshot(dyldCacheBinding),
+    get dyldCacheBinding() {
+      if (!hasFrozenDyldCacheBinding) {
+        frozenDyldCacheBinding = authoritySnapshot(dyldCacheBinding);
+        hasFrozenDyldCacheBinding = true;
+      }
+      return frozenDyldCacheBinding;
+    },
   };
   ISSUED_MACHO_IMAGES.set(issued, Object.freeze(authority));
   return issued;
@@ -684,9 +758,9 @@ function parseSegment64(r, p, cmdsize, image, order, sharedBudget = null) {
   const nsects = r.u32(p + 64);
   if (nsects > Math.floor((cmdsize - 72) / 80)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 68);
+  if (!budget.take({ objects: 1, operations: 1 + image.segments.length, estimatedHeapBytes: 256 }, 'segment')) return;
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
-  if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 256 }, 'segment')) return;
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
   order.push(seg);
   let q = p + 72;
@@ -722,9 +796,9 @@ function parseSegment32(r, p, cmdsize, image, order, sharedBudget = null) {
   const nsects = r.u32(p + 48);
   if (nsects > Math.floor((cmdsize - 56) / 68)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 52);
+  if (!budget.take({ objects: 1, operations: 1 + image.segments.length, estimatedHeapBytes: 256 }, 'segment')) return;
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
-  if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 256 }, 'segment')) return;
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
   order.push(seg);
   let q = p + 56;
@@ -828,6 +902,7 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
   for (const section of image.sections) {
     if (section && section.index >= 1) knownSectionOrdinals.add(section.index);
   }
+  let minUnterminatedStrx = Infinity;
   for (let i = 0; i < st.nsyms; i++) {
     if (!budget.take({ inputBytes:ent, records:1,objects:1,operations:2,estimatedHeapBytes:224 }, 'symbol-record')) break;
     const p = st.symoff + i * ent;
@@ -846,8 +921,16 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     // Bounded first-NUL scan rather than materializing the whole suffix: on a
     // sparse backing the old `subarray(strx, strsize).indexOf(0)` copied the
     // entire remaining string table once per symbol (O(nsyms x strsize), #8651).
+    if (strx >= minUnterminatedStrx) {
+      markMachOMetadataPartial(image, 'symbol-name-not-terminated');
+      budget.warn(`Mach-O symbol ${i} name has no NUL terminator before string-table end`);
+      continue;
+    }
     const nameEnd = r.findZero(st.stroff + strx, st.stroff + st.strsize);
+    const scannedBytes = nameEnd < 0 ? (st.strsize - strx) : (nameEnd - (st.stroff + strx) + 1);
+    if (!budget.take({ inputBytes: scannedBytes }, 'symbol-name-scan')) break;
     if (nameEnd < 0) {
+      if (strx < minUnterminatedStrx) minUnterminatedStrx = strx;
       markMachOMetadataPartial(image, 'symbol-name-not-terminated');
       budget.warn(`Mach-O symbol ${i} name has no NUL terminator before string-table end`);
       continue;
@@ -936,20 +1019,41 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
 }
 
 
+function instructionWidthForArch(arch) {
+  return (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32')
+    ? 4n
+    : arch === 'arm' ? 2n : 1n;
+}
+
+function hasContiguousFileBackedInstruction(image, address) {
+  const width = instructionWidthForArch(image.arch);
+  if (typeof image?.resolveVirtualMapping !== 'function') {
+    const seg = typeof image?.segmentAt === 'function' ? image.segmentAt(address) : null;
+    if (!seg || !seg.perms?.execute) return false;
+    const backedEnd = seg.address + BigInt(seg.fileSize ?? seg.size ?? 0n);
+    return address >= seg.address && address + width <= backedEnd;
+  }
+  const first = image.resolveVirtualMapping(address);
+  if (!first || first.kind !== 'file' || first.offset == null || first.available < width) return false;
+  for (let delta = 1n; delta < width; delta += 1n) {
+    const next = image.resolveVirtualMapping(address + delta);
+    if (!next || next.kind !== 'file' || next.offset !== first.offset + delta) return false;
+  }
+  return true;
+}
+
 function isSymbolFunctionCandidate(image, address, requirePureInstructions) {
   const sec = image.sectionAt(address);
   if (!sec || !sec.perms.execute) return false;
   if (requirePureInstructions && (sec.flags & S_ATTR_PURE_INSTRUCTIONS) === 0) return false;
 
-  const instructionBytes = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32')
-    ? 4n
-    : image.arch === 'arm' ? 2n : 1n;
+  const instructionBytes = instructionWidthForArch(image.arch);
   if (sec.size < instructionBytes || address > sec.address + sec.size - instructionBytes) return false;
 
   // Symbol metadata remains visible even when it cannot be strengthened into
   // exact function evidence. The shared check covers ISA alignment, executable
-  // ownership, file-backed bytes, and LC_DATA_IN_CODE exclusion (#8159).
-  return image.isInstructionAllowed(address);
+  // ownership, contiguous file-backed bytes, and LC_DATA_IN_CODE exclusion (#8159).
+  return image.isInstructionAllowed(address) && hasContiguousFileBackedInstruction(image, address);
 }
 
 function parseFunctionStarts(r, dc, image, sharedBudget = null) {
@@ -966,9 +1070,15 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
   let addr = image.imageBase;
   const maxAddress = image.bits === 32 ? 0xffffffffn : 0xffffffffffffffffn;
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
+  const alignMask = alignment > 1n ? alignment - 1n : 0n;
+  const width = instructionWidthForArch(image.arch);
+  const canFastPath = image.arch !== 'arm64ec' && typeof image.resolveVirtualMapping === 'function' && (!image.dataInCode || image.dataInCode.length === 0) && !(image.sections || []).some((s) => s?.source === 'unmapped-section');
+  let fastRunLo = 0n;
+  let fastRunHi = -1n;
+  const fnStartCost = { records: 1, operations: 1, estimatedHeapBytes: 32 };
   let terminated = false;
   while (p < end) {
-    if (!budget.take({ records:1, operations:1, estimatedHeapBytes:32 }, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
+    if (!budget.take(fnStartCost, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     let x;
     try { x = r.uleb(p, 10, end); }
     catch (e) {
@@ -984,19 +1094,58 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
     }
     const next = addr + x.value;
     addr = next;
-    const seg = image.segmentAt(addr);
-    if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n) || image.isDataInCode(addr)) {
-      status.complete = false; status.partialReason = 'invalid-entry';
-      image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
-      break;
-    }
-    // A segment's vm size may exceed its file size; the difference is loader
-    // zero-fill. A start with no file-backed instruction byte is not static
-    // evidence and must not become a 0.995-confidence seed (#5551).
-    if (image.addressToOffset(addr) == null) {
-      status.complete = false; status.partialReason = 'invalid-entry';
-      image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)} (no file-backed instruction bytes)`);
-      break;
+    const inFastRun = canFastPath
+      && addr >= fastRunLo
+      && addr + width <= fastRunHi
+      && (alignMask === 0n || (addr & alignMask) === 0n);
+    if (!inFastRun) {
+      const seg = image.segmentAt(addr);
+      if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n) || !image.isInstructionAllowed(addr)) {
+        status.complete = false; status.partialReason = 'invalid-entry';
+        image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
+        break;
+      }
+      // A segment's vm size may exceed its file size; the difference is loader
+      // zero-fill. A start without contiguous file-backed instruction bytes is
+      // not static evidence and must not become a 0.995-confidence seed (#5551).
+      if (!hasContiguousFileBackedInstruction(image, addr)) {
+        status.complete = false; status.partialReason = 'invalid-entry';
+        image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)} (no file-backed instruction bytes)`);
+        break;
+      }
+      if (canFastPath) {
+        // Compute a provably safe contiguous executable file-backed run [fastRunLo, fastRunHi)
+        // bounded by the current virtual-mapping run, section/segment bounds, and owner fileSize.
+        const vRuns = image._mappingLookups?.virtual?.runs;
+        if (vRuns && vRuns.starts.length >= 2) {
+          let lo = 0;
+          let hi = vRuns.starts.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (vRuns.starts[mid] <= addr) lo = mid + 1;
+            else hi = mid;
+          }
+          if (lo > 0 && lo < vRuns.starts.length) {
+            const runStart = vRuns.starts[lo - 1];
+            const runEnd = vRuns.starts[lo];
+            const owner = image._virtualMappingAt(addr);
+            const sec = image.sectionAt(addr);
+            if (owner && (!sec || sec.perms?.execute)) {
+              const ownerFileEnd = owner.address + (owner.fileSize ?? 0n);
+              const segEnd = seg.address + seg.size;
+              let safeHi = runEnd < ownerFileEnd ? runEnd : ownerFileEnd;
+              if (segEnd < safeHi) safeHi = segEnd;
+              if (sec && sec.address + sec.size < safeHi) safeHi = sec.address + sec.size;
+              let safeLo = runStart > seg.address ? runStart : seg.address;
+              if (sec && sec.address > safeLo) safeLo = sec.address;
+              if (addr >= safeLo && addr + width <= safeHi) {
+                fastRunLo = safeLo;
+                fastRunHi = safeHi;
+              }
+            }
+          }
+        }
+      }
     }
     if (!budget.take({ inputBytes:x.bytes, objects:1, estimatedHeapBytes:128 }, 'function-start-output')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     image.functions.push(functionSeed(addr, { source: 'function_starts', confidence: 0.995 }));
@@ -1330,6 +1479,14 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
       fail('entry-zero-fill-invalid', `function range 0x${candidate.startOffset.toString(16)}..0x${candidate.endOffset.toString(16)} extends into the executable zero-fill tail`, true);
       return;
     }
+    if (!hasContiguousFileBackedInstruction(image, start)) {
+      fail('entry-file-backing-invalid', `function offset 0x${candidate.startOffset.toString(16)} lacks contiguous file-backed instruction bytes`, true);
+      return;
+    }
+    if (typeof image?.isInstructionAllowed === 'function' && !image.isInstructionAllowed(start)) {
+      fail('entry-data-in-code-invalid', `function offset 0x${candidate.startOffset.toString(16)} overlaps LC_DATA_IN_CODE or is not an allowed instruction start`, true);
+      return;
+    }
     const continuation = (candidate.encoding & notFunctionStartMask) !== 0;
     if (continuation) {
       if (currentOwnerStart == null) {
@@ -1377,11 +1534,7 @@ function importIdentityAtSite(image, address) {
 }
 
 function isInterposeInstructionAllowed(image, address) {
-  if (!image.isInstructionAllowed(address)) return false;
-  const instructionBytes = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32')
-    ? 4n : image.arch === 'arm' ? 2n : 1n;
-  const mapping = image.resolveVirtualMapping(address);
-  return mapping?.kind === 'file' && mapping.available >= instructionBytes;
+  return image.isInstructionAllowed(address) && hasContiguousFileBackedInstruction(image, address);
 }
 
 function parseInterposingSections(r, image, bits, metadataBudget) {
@@ -1395,6 +1548,21 @@ function parseInterposingSections(r, image, bits, metadataBudget) {
   const tupleSize = ptrSize * 2;
   const tupleSizeBig = BigInt(tupleSize);
   const recoveredTargets = new Set();
+  const importBySite = new Map();
+  for (const imp of image.imports || []) {
+    for (const site of imp?.sites || []) {
+      if (!metadataBudget.take({ operations: 1 }, 'interpose-import-index')) break;
+      if (site?.address != null && !importBySite.has(site.address)) {
+        importBySite.set(site.address, {
+          name: imp.name || null,
+          library: imp.library || null,
+          ordinal: Number.isSafeInteger(imp.ordinal) ? imp.ordinal : null,
+          weak: !!imp.weak,
+          source: imp.source || null,
+        });
+      }
+    }
+  }
 
   for (const sec of sections) {
     const provenance = (sec.flags & 0xff) === S_INTERPOSING ? 'S_INTERPOSING' : '__DATA,__interpose';
@@ -1428,7 +1596,7 @@ function parseInterposingSections(r, image, bits, metadataBudget) {
       const rawReplacee = ptrSize === 8 ? r.u64(filePos + ptrSize) : BigInt(r.u32(filePos + ptrSize));
       const replacement = resolveMachOPointer(image, rawReplacement, { address: replacementSlotAddress });
       const replacee = resolveMachOPointer(image, rawReplacee, { address: replaceeSlotAddress });
-      const replaceeImport = replacee == null ? importIdentityAtSite(image, replaceeSlotAddress) : null;
+      const replaceeImport = replacee == null ? (importBySite.get(replaceeSlotAddress) ?? null) : null;
 
       let failureReason = null;
       if (replacement == null) failureReason = 'replacement-unresolved';
@@ -1508,7 +1676,7 @@ function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
     const count = Number(sec.size / ptrSizeBig);
     const secFileOffset = sec.fileOffset != null ? Number(sec.fileOffset) : null;
     const secFileSize = sec.fileSize != null ? Number(sec.fileSize) : 0;
-    const fileAvailable = (secFileOffset != null && secFileOffset <= r.length)
+    const fileAvailable = (secFileOffset != null && Number.isSafeInteger(secFileOffset) && secFileOffset >= 0 && secFileOffset <= r.length)
       ? Math.max(0, Math.min(secFileSize, r.length - secFileOffset))
       : 0;
     const safeCount = Math.min(count, Math.floor(fileAvailable / ptrSize));
@@ -1545,14 +1713,12 @@ function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
           failureReason = 'non-executable';
         } else if (target % alignment !== 0n) {
           failureReason = 'misaligned';
+        } else if (!hasContiguousFileBackedInstruction(image, target)) {
+          failureReason = 'not-file-backed';
+        } else if (!image.isInstructionAllowed(target)) {
+          failureReason = 'data-in-code';
         } else {
-          const offStart = image.addressToOffset(target);
-          const offEnd = image.addressToOffset(target + instructionBytes - 1n);
-          if (offStart == null || offEnd == null) {
-            failureReason = 'not-file-backed';
-          } else {
-            isValid = true;
-          }
+          isValid = true;
         }
       }
 
@@ -1645,10 +1811,12 @@ function parseInitFuncOffsets(r, image, metadataBudget) {
           failureReason = 'non-executable';
         } else if (target % alignment !== 0n) {
           failureReason = 'misaligned';
+        } else if (!hasContiguousFileBackedInstruction(image, target)) {
+          failureReason = 'not-file-backed';
+        } else if (!image.isInstructionAllowed(target)) {
+          failureReason = 'data-in-code';
         } else {
-          const mapping = image.resolveVirtualMapping(target);
-          if (mapping?.kind !== 'file' || mapping.available < instructionBytes) failureReason = 'not-file-backed';
-          else valid = true;
+          valid = true;
         }
       }
 
@@ -1688,13 +1856,11 @@ function parseDataInCode(r, dc, image, metadataBudget) {
 
   if (dc.offset > r.length || dc.size > r.length - dc.offset) {
     budget.partial('data-in-code:out-of-range', 'LC_DATA_IN_CODE data range exceeds input');
-    image.warnings.push('LC_DATA_IN_CODE data range exceeds input');
     return;
   }
 
   if (dc.size % 8 !== 0) {
     budget.partial('data-in-code:truncated', `LC_DATA_IN_CODE data size ${dc.size} is not a multiple of entry size 8`);
-    image.warnings.push(`LC_DATA_IN_CODE data size ${dc.size} is not a multiple of entry size 8`);
   }
 
   image.metadata.dataInCode = image.dataInCode;
@@ -1712,7 +1878,6 @@ function parseDataInCode(r, dc, image, metadataBudget) {
 
     if (offset > r.length || length > r.length - offset) {
       budget.partial('data-in-code:entry-out-of-range', `data_in_code_entry offset 0x${offset.toString(16)} length ${length} exceeds Mach-O slice`);
-      image.warnings.push(`data_in_code_entry offset 0x${offset.toString(16)} length ${length} exceeds Mach-O slice`);
       continue;
     }
 

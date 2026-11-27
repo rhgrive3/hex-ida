@@ -1,3 +1,17 @@
+const TYPED_ARRAY_CTORS = new Map([
+  ['[object Int8Array]', Int8Array],
+  ['[object Uint8Array]', Uint8Array],
+  ['[object Uint8ClampedArray]', Uint8ClampedArray],
+  ['[object Int16Array]', Int16Array],
+  ['[object Uint16Array]', Uint16Array],
+  ['[object Int32Array]', Int32Array],
+  ['[object Uint32Array]', Uint32Array],
+  ['[object Float32Array]', Float32Array],
+  ['[object Float64Array]', Float64Array],
+  ...(typeof BigInt64Array === 'function' ? [['[object BigInt64Array]', BigInt64Array]] : []),
+  ...(typeof BigUint64Array === 'function' ? [['[object BigUint64Array]', BigUint64Array]] : []),
+]);
+
 function cloneEventValue(value, seen = new Map()) {
   if (value == null || typeof value !== 'object') return value;
   if (seen.has(value)) return seen.get(value);
@@ -15,7 +29,9 @@ function cloneEventValue(value, seen = new Map()) {
       const buffer = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
       return new DataView(buffer);
     }
-    return new value.constructor(value);
+    const ctor = TYPED_ARRAY_CTORS.get(Object.prototype.toString.call(value));
+    const slice = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    return ctor ? new ctor(slice) : new Uint8Array(slice);
   }
   if (value instanceof Map) {
     const out = new Map();
@@ -32,7 +48,9 @@ function cloneEventValue(value, seen = new Map()) {
 
   const out = Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
   seen.set(value, out);
-  for (const [key, item] of Object.entries(value)) out[key] = cloneEventValue(item, seen);
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(out, key, { value: cloneEventValue(item, seen), enumerable: true, writable: true, configurable: true });
+  }
   return out;
 }
 
@@ -79,12 +97,13 @@ export function createSchedulerEventBuffer({ capacity = 128 } = {}) {
   let droppedCount = 0;
   return Object.freeze({
     onEvent(event) {
+      if (!event || typeof event !== 'object') throw new TypeError('event must be an object');
+      const details = snapshotEventValue(event.details ?? {});
+      const item = Object.freeze({ ...event, details });
       if (items.length >= cap) {
         items.shift();
         droppedCount++;
       }
-      const details = snapshotEventValue(event.details ?? {});
-      const item = Object.freeze({ ...event, details });
       items.push(item);
     },
     snapshot() {

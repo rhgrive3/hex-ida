@@ -23,18 +23,23 @@ async function canonicalVerificationIr(registry, functionAddress) {
   return model ? irFor(model) : null;
 }
 
-function rejectUntrustedExpr(value, label) {
+function rejectUntrustedExpr(value, label, seen = new WeakSet(), depth = 0) {
   if (value == null) return value;
+  if (depth > 64) {
+    throw new AIError('invalid_tool_call', `${label} exceeds maximum nesting depth.`);
+  }
+  if (typeof value !== 'object') return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) rejectUntrustedExpr(value[i], `${label}[${i}]`);
+    for (let i = 0; i < value.length; i++) rejectUntrustedExpr(value[i], `${label}[${i}]`, seen, depth + 1);
     return value;
   }
-  if (!value || typeof value !== 'object') return value;
   if (typeof value.kind === 'string' && value.sort && typeof value.sort === 'object') {
     throw new AIError('invalid_tool_call', `${label} must come from canonical Semantic IR; caller-supplied Expr DAG objects are not accepted.`);
   }
   for (const [key, nested] of Object.entries(value)) {
-    rejectUntrustedExpr(nested, `${label}.${key}`);
+    rejectUntrustedExpr(nested, `${label}.${key}`, seen, depth + 1);
   }
   return value;
 }
@@ -179,8 +184,8 @@ export function createHexToolRegistry(context = {}, options = {}) {
   if (context?.analysisAuthority !== 'AnalysisQueryAPI') return registry;
 
   if (typeof context.getDecompile === 'function') {
-    replace(registry, 'decompile_function', async ({ functionAddress }) => {
-      const value = await context.getDecompile(functionAddress, { signal:registry.executionSignal });
+    replace(registry, 'decompile_function', async ({ functionAddress }, execution = {}) => {
+      const value = await context.getDecompile(functionAddress, { signal:execution.signal ?? null });
       const text = typeof value?.text === 'string' ? value.text : '';
       const preview = text.slice(0, 30000);
       const previewTruncated = text.length > preview.length;

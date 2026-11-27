@@ -62,7 +62,7 @@ function overlap(a,b){return a.start<b.end&&b.start<a.end;}
 
 export async function queryDiscoveryLayout(options={}) {
   let budget,identity=null,started=performance.now(),controller,timer;
-  const stopped=reason=>deepFreeze({schemaVersion:DISCOVERY_LAYOUT_SCHEMA,identity,status:status(identity?.snapshotId??'unbound-discovery-layout','partial',reason==='cancelled'?'cancelled':reason==='timeout'?'timeout':/budget/.test(reason)?'budget-exhausted':reason==='stale-identity'?'dependency-mismatch':'unsupported-input'),reason,
+  const stopped=reason=>deepFreeze({schemaVersion:DISCOVERY_LAYOUT_SCHEMA,identity,status:status(identity?.snapshotId??'unbound-discovery-layout','partial',reason==='cancelled'?'cancelled':reason==='timeout'?'timeout':/budget|memory-limit|iteration-limit/.test(reason)?'budget-exhausted':reason==='stale-identity'?'dependency-mismatch':'unsupported-input'),reason,
     canRewrite:false,byteCoverage:'unknown',classificationCompleteness:'partial',segments:[],candidates:[],relocations:[],unmapped:[],evidence:{nodes:[],edges:[]},metrics:{resources:budget?.snapshot()??null,elapsedMs:performance.now()-started}});
   try {
     const request=record(options);identity=identityOf(request.identity);
@@ -119,7 +119,9 @@ export async function queryDiscoveryLayout(options={}) {
       let stop;
       const denied=new Promise((_,reject)=>{stop=()=>reject(new Error('cancelled'));signal?.addEventListener('abort',stop,{once:true});timer=setTimeout(()=>{controller.abort();reject(new Error('timeout'));},Math.max(1,Math.ceil(timeout-(performance.now()-started))));});
       try{
-        const value=await Promise.race([source.readExactly(offset,length,{signal:controller.signal}),denied]);check();
+        const readPromise=Promise.resolve(source.readExactly(offset,length,{signal:controller.signal}));
+        readPromise.catch(()=>{});
+        const value=await Promise.race([readPromise,denied]);check();
         if(typeof SharedArrayBuffer!=='undefined'&&value.buffer instanceof SharedArrayBuffer)fail('layout-shared-source-not-snapshot');
         return new Uint8Array(value);
       }finally{clearTimeout(timer);signal?.removeEventListener('abort',aborted);signal?.removeEventListener('abort',stop);}

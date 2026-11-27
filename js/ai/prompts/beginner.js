@@ -9,7 +9,7 @@ Lead with the practical conclusion. Explain the key reason in ordinary language.
 
 Do not oversimplify the actual technical result, and do not soften a weak result into a confident one. Do not dump raw assembly unless a specific line is the explanation.
 
-When it fits naturally, shape the answer as: the conclusion, why, what is still unknown, and what the user can do next. Do not force all four when fewer will do.
+Keep it short and direct: state the conclusion, key evidence, and next action. Skip filler, meta-explanations, and repetitive caveats.
 </style>`;
 
 export default BEGINNER_PROMPT;

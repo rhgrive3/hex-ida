@@ -55,7 +55,7 @@ function resultFlags(result, widthBits) {
 
 export function canonicalX86ConditionCode(conditionCode) {
   const code = String(conditionCode ?? '').trim().toLowerCase();
-  return CONDITION_ALIASES[code] ?? null;
+  return Object.hasOwn(CONDITION_ALIASES, code) ? CONDITION_ALIASES[code] : null;
 }
 
 export function evaluateX86ArithmeticFlags(operation, left, right, widthBits, { carryIn = 0 } = {}) {

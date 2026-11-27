@@ -204,9 +204,13 @@ export const loaderProducer = Object.freeze({
       if (address == null) continue;
       const rangeStart = toAddress(entry.start ?? entry.address);
       const rangeEnd = entry.end == null ? null : toAddress(entry.end);
-      const region = rangeStart != null && rangeEnd != null
-        ? { start: rangeStart, end: rangeEnd, ownership: 'exclusive' }
-        : entry.end == null && entry.sizeBytes != null && rangeStart != null ? regionFromSize(rangeStart, entry.sizeBytes) : null;
+      let region = null;
+      if (rangeStart != null && rangeEnd != null) {
+        if (BigInt(rangeEnd) <= BigInt(rangeStart)) continue;
+        region = { start: rangeStart, end: rangeEnd, ownership: 'exclusive' };
+      } else if (entry.end == null && entry.sizeBytes != null && rangeStart != null) {
+        try { region = regionFromSize(rangeStart, entry.sizeBytes); } catch { continue; }
+      }
       out.push(evidence('unwind-entry', {
         start: address,
         regions: region ? [region] : [],

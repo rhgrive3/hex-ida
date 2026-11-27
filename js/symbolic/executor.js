@@ -66,8 +66,14 @@ function op(name, ...args) {
       if (name === 'and') return c(a & b);
       if (name === 'or' || name === 'orr') return c(a | b);
       if (name === 'xor' || name === 'eor') return c(a ^ b);
-      if (name === 'shl') return c(a << b);
-      if (name === 'lshr') return c(a >> b);
+      if (name === 'shl') {
+        if (b < 0n || b > BigInt(MAX_EXECUTOR_WIDTH)) throw new RangeError('shift-out-of-range');
+        return c(a << b);
+      }
+      if (name === 'lshr') {
+        if (b < 0n) throw new RangeError('negative-shift');
+        return c(BigInt.asUintN(MAX_EXECUTOR_WIDTH, a) >> b);
+      }
       if (name === 'mul') return c(a * b);
     } catch { /* symbolic fallback */ }
   }
@@ -123,6 +129,9 @@ function cmp(name, a, b, options = {}) {
   if (rejected) return rejected;
   const bits = resolved.width;
   if (a?.sort || b?.sort) {
+    if ((!a?.sort && a?.kind !== SYM.CONST) || (!b?.sort && b?.kind !== SYM.CONST)) {
+      return unknown('unsupported-compare-operand', { op: name });
+    }
     const left = a.sort ? a : createBv(bits, a.value);
     const right = b.sort ? b : createBv(bits, b.value);
     return translateMemoryScalar({ op: OP.CMP, cond: name, signed: options.signed }, [left, right], bits);
@@ -148,7 +157,8 @@ function negate(condition) {
   if (!condition) return unknown('missing-condition');
   if (condition.sort) return createConnective('not', condition);
   if (condition.kind === SYM.CONST && condition.boolean) return { ...c(condition.value === 0n ? 1n : 0n), boolean:true };
-  const inverse = { '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' }[condition.op];
+  const inverseMap = { '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' };
+  const inverse = Object.hasOwn(inverseMap, condition.op) ? inverseMap[condition.op] : null;
   if (condition.kind === SYM.OP && inverse) return { ...condition, op: inverse };
   return { kind: SYM.OP, op: 'not', args: [condition], boolean: true };
 }
@@ -163,23 +173,39 @@ function constraintAllowed(existing, condition) {
   return true;
 }
 
-export function expressionText(e) {
+const EXPR_TEXT_MAX_DEPTH = 64;
+const EXPR_TEXT_MAX_NODES = 2048;
+const EXPR_TEXT_MAX_LEN = 4096;
+
+export function expressionText(e, state = null, depth = 0) {
   if (!e) return '?';
   if (e.sort && e.kind !== 'const') return `Expr<${e.sort.kind}${e.sort.width ?? ''}>#${computeStructuralHash(e)}`;
   if (e.kind === SYM.CONST) return e.value.toString();
   if (e.kind === SYM.SYMBOL) return e.name;
   if (e.kind === SYM.UNKNOWN) return 'unknown(' + e.reason + ')';
-  if (e.kind === SYM.ITE) return '(' + expressionText(e.condition) + ' ? ' + expressionText(e.then) + ' : ' + expressionText(e.else) + ')';
-    if (e.kind === SYM.OP) {
-  let body;
-  if (e.op === 'not') body = 'not ' + expressionText(e.args[0]);
-  else if (e.args.length === 1) body = e.op + '(' + expressionText(e.args[0]) + ')';
-  else body = '(' + expressionText(e.args[0]) + ' ' + e.op + ' ' + expressionText(e.args[1]) + ')';
-  const bits = typeof e.bits === 'number' ? e.bits : null;
-  return Number.isSafeInteger(bits) && bits > 0 ? `i${bits}${body}` : body;
-}
-
-  return '?';
+  const ctx = state || { memo: new WeakMap(), visiting: new WeakSet(), nodes: 0 };
+  if (ctx.memo.has(e)) return ctx.memo.get(e);
+  if (depth > EXPR_TEXT_MAX_DEPTH || ctx.nodes >= EXPR_TEXT_MAX_NODES || ctx.visiting.has(e)) return '<expr>';
+  ctx.nodes += 1;
+  ctx.visiting.add(e);
+  let out = '?';
+  try {
+    if (e.kind === SYM.ITE) {
+      out = '(' + expressionText(e.condition, ctx, depth + 1) + ' ? ' + expressionText(e.then, ctx, depth + 1) + ' : ' + expressionText(e.else, ctx, depth + 1) + ')';
+    } else if (e.kind === SYM.OP) {
+      let body;
+      if (e.op === 'not') body = 'not ' + expressionText(e.args[0], ctx, depth + 1);
+      else if (e.args.length === 1) body = e.op + '(' + expressionText(e.args[0], ctx, depth + 1) + ')';
+      else body = '(' + expressionText(e.args[0], ctx, depth + 1) + ' ' + e.op + ' ' + expressionText(e.args[1], ctx, depth + 1) + ')';
+      const bits = typeof e.bits === 'number' ? e.bits : null;
+      out = Number.isSafeInteger(bits) && bits > 0 ? `i${bits}${body}` : body;
+    }
+    if (out.length > EXPR_TEXT_MAX_LEN) out = out.slice(0, EXPR_TEXT_MAX_LEN) + '…';
+    ctx.memo.set(e, out);
+    return out;
+  } finally {
+    ctx.visiting.delete(e);
+  }
 }
 
 function cloneState(s) {
@@ -221,7 +247,7 @@ function argExpr(value, opts) {
   const index = Number(m[1]);
   const configured = opts && opts.symbolicArgs;
   if (configured && typeof configured === 'object') {
-    const v = configured[index] != null ? configured[index] : configured[reg];
+    const v = Object.hasOwn(configured, index) && configured[index] != null ? configured[index] : (Object.hasOwn(configured, reg) ? configured[reg] : undefined);
     if (typeof v === 'bigint' || typeof v === 'number') return c(v);
     if (typeof v === 'string') return symbolicArg(index, v);
     if (v && typeof v === 'object' && v.kind) return v;
@@ -397,8 +423,11 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
       le: { op: '<=', signed: true },
       gt: { op: '>', signed: true },
     };
-    const mapped = tstMap[code];
+    const mapped = Object.hasOwn(tstMap, code) ? tstMap[code] : null;
     if (!mapped) return unknown('unsupported-condition', { condition: condCode, sub });
+    if ((a?.sort || b?.sort) && ((!a?.sort && a?.kind !== SYM.CONST) || (!b?.sort && b?.kind !== SYM.CONST))) {
+      return unknown('unsupported-compare-operand', { condition: condCode, sub });
+    }
     const masked = a?.sort || b?.sort
       ? translateMemoryScalar({ op: OP.BIN, sub: 'and' }, [a.sort ? a : createBv(resolved.width, a.value), b.sort ? b : createBv(resolved.width, b.value)], resolved.width)
       : binOp('and', a, b, resolved.width);
@@ -412,8 +441,11 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
       mi: { op: '<', signed: true },
       pl: { op: '>=', signed: true },
     };
-    const mapped = cmnMap[code];
+    const mapped = Object.hasOwn(cmnMap, code) ? cmnMap[code] : null;
     if (!mapped) return unknown('unsupported-condition', { condition: condCode, sub });
+    if ((a?.sort || b?.sort) && ((!a?.sort && a?.kind !== SYM.CONST) || (!b?.sort && b?.kind !== SYM.CONST))) {
+      return unknown('unsupported-compare-operand', { condition: condCode, sub });
+    }
     const sum = a?.sort || b?.sort
       ? translateMemoryScalar({ op: OP.BIN, sub: 'add' }, [a.sort ? a : createBv(resolved.width, a.value), b.sort ? b : createBv(resolved.width, b.value)], resolved.width)
       : binOp('add', a, b, resolved.width);
@@ -463,10 +495,26 @@ function branchCondition(inst, state, ir, opts, memo) {
     return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n), { bits: resolved.width });
   }
   if (kind === 'tbz' || kind === 'tbnz') {
+    const resolved = resolveWidth([inst.args[0]?.bits, inst.args[0]?.value?.bits]);
+    const rejected = unsupportedWidth(resolved);
+    if (rejected) return rejected;
+    const width = resolved.width;
     const a = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-test-value');
-    const bit = BigInt(inst.extra && inst.extra.bit != null ? inst.extra.bit : 0);
-    const masked = op('and', op('lshr', a, c(bit)), c(1n));
-    return cmp(kind === 'tbz' ? '==' : '!=', masked, c(0n));
+    const rawBit = inst.extra && inst.extra.bit != null ? inst.extra.bit : 0;
+    let bit = null;
+    if (typeof rawBit === 'bigint') bit = rawBit;
+    else if (typeof rawBit === 'number' && Number.isSafeInteger(rawBit)) bit = BigInt(rawBit);
+    else if (typeof rawBit === 'string' && /^(?:0x[0-9a-f]+|\d+)$/i.test(rawBit.trim())) {
+      try { bit = BigInt(rawBit.trim()); } catch { bit = null; }
+    }
+    if (bit == null || bit < 0n || bit >= BigInt(width)) {
+      return unknown('unsupported-bit-test', { bit: rawBit, width });
+    }
+    const shifted = a?.kind === SYM.CONST
+      ? c(BigInt.asUintN(width, a.value) >> bit)
+      : op('lshr', a, c(bit));
+    const masked = op('and', shifted, c(1n));
+    return cmp(kind === 'tbz' ? '==' : '!=', masked, c(0n), { bits: width });
   }
   return conditionFromFlags(inst, state, ir, opts, memo, new Set());
 }

@@ -269,10 +269,11 @@ export function functionCandidates({ input, architectureId = 'generic', producer
   for (const producer of GENERIC_PRODUCERS) registry.register(producer);
   for (const producer of producers) registry.register(producer);
   const collected = registry.collect(input, architectureId, options);
+  const producerStatus = { truncated: collected.truncated, stopReason: collected.stopReason };
   const fused = fuseFunctionCandidates(collected.evidence, {
     architectureId,
     ...options,
-    producerStatus: { truncated: collected.truncated, stopReason: collected.stopReason },
+    producerStatus,
   });
   const canonicalProducerIds = new Set(GENERIC_PRODUCERS.map((producer) => producer.id));
   const evidenceCounts = new Map();
@@ -299,6 +300,8 @@ export function functionCandidates({ input, architectureId = 'generic', producer
       architectureId,
     },
     budget: options.artifactBudget ?? {},
+    ...(options.budget !== undefined ? { fusionBudget: options.budget } : {}),
+    producerStatus,
   });
   return { ...fused, artifact };
 }

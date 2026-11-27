@@ -47,11 +47,9 @@ export function createValidationBatch() {
     // observed graph changed during the batch, so no memoized answer may be
     // published.
     settle() {
-      const probe = globalThis.__hexPerfProbe; // PERF-PROBE
-      const t0 = probe ? performance.now() : 0; // PERF-PROBE
+      if (running || settled) throw new Error('validation-batch-invalid-state');
       let stale = 0;
       for (const { value, recheck } of rechecks) if (recheck() !== value) stale++;
-      if (probe) { probe.settleRechecks = (probe.settleRechecks || 0) + rechecks.length; probe.settleMs = (probe.settleMs || 0) + (performance.now() - t0); } // PERF-PROBE
       rechecks.length = 0;
       results = new WeakMap();
       writeResults = new WeakMap();
@@ -61,25 +59,6 @@ export function createValidationBatch() {
   };
   return Object.freeze(batch);
 }
-
-// PERF-PROBE-START (temporary instrumentation; removed before commit)
-function perfProbeRecord(perfProbe, t0, result, id) {
-  const t1 = performance.now();
-  perfProbe.calls++;
-  perfProbe.ms += t1 - t0;
-  let rec = perfProbe.obs.get(id);
-  if (!rec) { rec = { calls: 0, ms: 0, trueCount: 0, falseCount: 0, callers: perfProbe.stacks ? new Map() : null, origin: id.origin }; perfProbe.obs.set(id, rec); perfProbe.obsList.push(rec); }
-  rec.calls++;
-  rec.ms += t1 - t0;
-  if (result) rec.trueCount++; else rec.falseCount++;
-  if (perfProbe.stacks) {
-    const lines = (new Error().stack || '').split('\n');
-    const frame = lines.slice(2, 7).map(l => l.trim().replace(/^at\s+/, '').replace(/\s*\(file:\/\/[^)]*\)/, '')).join(' <- ');
-    perfProbe.callers.set(frame, (perfProbe.callers.get(frame) || 0) + 1);
-    if (rec.callers) rec.callers.set(frame, (rec.callers.get(frame) || 0) + 1);
-  }
-}
-// PERF-PROBE-END
 
 /** Shared bounded plain-data observation. No semantic evaluation or proof issuance.
  * Existing solver/decompiler entry points re-export these exact implementations. */
@@ -475,19 +454,12 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
       mutableRecords.push(rec);
     }
   }
-  // PERF-PROBE-START
-  const probeId = globalThis.__hexPerfProbe ? { origin: (new Error().stack || '').split('\n').slice(2, 6).map(l => l.trim().replace(/^at\s+/, '').replace(/\s*\(file:\/\/[^)]*\)/, '')).join(' <- ') } : {};
-  // PERF-PROBE-END
   const memoId = {};
   function matches(writes = null) {
     const batch = currentValidationBatch;
     if (batch !== null && (writes === null || Array.isArray(writes))) {
       const known = batch.known(memoId, writes);
-      if (known !== undefined) {
-        const probe = globalThis.__hexPerfProbe; // PERF-PROBE
-        if (probe) probe.memoHits = (probe.memoHits || 0) + 1; // PERF-PROBE
-        return known;
-      }
+      if (known !== undefined) return known;
       const result = matchesBody(writes);
       batch.remember(memoId, writes, result, () => matchesBody(writes));
       return result;
@@ -495,12 +467,6 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
     return matchesBody(writes);
   }
   function matchesBody(writes = null) {
-    const probe = globalThis.__hexPerfProbe; // PERF-PROBE
-    if (probe) { // PERF-PROBE
-      const t0 = performance.now(); let r;
-      try { r = matchesBodyCore(writes); } finally { perfProbeRecord(probe, t0, r, probeId); }
-      return r;
-    } // PERF-PROBE
     return matchesBodyCore(writes);
   }
   function matchesBodyCore(writes = null) {

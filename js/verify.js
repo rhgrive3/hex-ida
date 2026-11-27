@@ -291,11 +291,11 @@ export function fieldUse(model, offset, opts) {
         // An in-place transform such as `sub w8, w8, w2` still carries the
         // loaded field value. A write that does not read the tracked register
         // is a new definition and ends the chain.
-        if (next.writes.includes(reg) && !next.reads.includes(reg)) break;
+        if ((next.writes || []).includes(reg) && !(next.reads || []).includes(reg)) break;
         continue;
       }
-      if (!next.reads.includes(reg)) {
-        if (next.writes.includes(reg)) break;
+      if (!(next.reads || []).includes(reg)) {
+        if ((next.writes || []).includes(reg)) break;
         continue;
       }
       if ((mn === 'subs' || mn === 'adds') && !zeroView(next.ops?.[0]) && !hasFlagConsumer(byRow, next.row)) {

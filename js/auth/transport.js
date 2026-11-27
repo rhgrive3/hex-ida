@@ -20,7 +20,7 @@ export function createAuthTransport({ apiOrigin, fetchRef = globalThis.fetch?.bi
     try {
       const init = { method, headers, signal: controller.signal, credentials: web ? 'same-origin' : 'omit', cache: 'no-store', redirect: 'error', ...(body === undefined ? {} : { body: JSON.stringify(body) }) };
       const response = await abortable(() => manager ? gmRequest(manager, url.href, init, timeoutMs) : fetchRef(url.href, init), controller.signal);
-      if (!response.ok) { const error = new Error(`HEX authentication failed (${response.status}).`); error.status = response.status; throw error; }
+      if (!response.ok) { await response.body?.cancel?.().catch(() => {}); const error = new Error(`HEX authentication failed (${response.status}).`); error.status = response.status; throw error; }
       const text = await boundedResponseText(response, source ? 16 * 1024 * 1024 : 65536, controller.signal);
       return source ? { source: text, buildId: response.headers.get('x-hex-privileged-build') } : JSON.parse(text);
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }

@@ -171,17 +171,26 @@ export function createNativeAppleDispatchResolver({ snapshotId, getContext, reso
       const entries = indexScopedFunctionEntries(members.map(row => row.projection));
       work.charge('workUnits', Math.min(64, node.call.targetValueIds?.length ?? 0) * 512 + 1);
       const targets = [...scopedCallTargetRows(projection, node, entries, demand)].filter(row => row.address != null);
-      const read = () => ['objc-imp', 'swift-witness', 'swift-vtable'].flatMap(kind => recordsFor(context, { kind }, work).records);
-      const metadata = read(), before = digest(metadata), alternatives = [];
+      const selectors = new Set();
+      const readBase = () => ['objc-imp', 'swift-witness', 'swift-vtable'].flatMap(kind => recordsFor(context, { kind }, work).records);
+      const metadata = readBase(), selectorRecords = [], alternatives = [];
       for (const target of targets) {
         work.charge('workUnits', metadata.length + 1);
         for (const record of metadata) if (record.address != null && sameAddress(record.address, target.address)) alternatives.push({ record, target, selector: null });
         if (typeof context.symbolFor === 'function') {
           const symbol = await work.await(signal => context.symbolFor(BigInt(target.address), { signal }));
           const selector = typeof symbol === 'string' ? selectorFromSymbol(symbol) : null;
-          if (selector) for (const record of recordsFor(context, { kind: 'objc-selector', selector }, work).records) alternatives.push({ record, target, selector });
+          if (selector) {
+            selectors.add(selector);
+            const matched = recordsFor(context, { kind: 'objc-selector', selector }, work).records;
+            selectorRecords.push(...matched);
+            for (const record of matched) alternatives.push({ record, target, selector });
+          }
         }
       }
+      const sortedSelectors = [...selectors].sort();
+      const read = () => [...readBase(), ...sortedSelectors.flatMap(selector => recordsFor(context, { kind: 'objc-selector', selector }, work).records)];
+      const before = digest([...metadata, ...selectorRecords]);
       if (demand) {
         const cut = await nativeLoadCut(projection, node, work, query.maxHops);
         if (cut.cut) result.requirements.push('native-apple-load-dependency-cut');
@@ -240,7 +249,6 @@ export function createNativeAppleDispatchResolver({ snapshotId, getContext, reso
             provenance: { schema: 'dispatch-owner-reference/v1', id, worldId: world.id, binaryId: source.binaryId,
               artifactId: id, ownerRevision: NATIVE_APPLE_METADATA_VERSION, declaration } });
         }
-        current(context, source, world, read, before);
       }
       current(context, source, world, read, before);
       return result;

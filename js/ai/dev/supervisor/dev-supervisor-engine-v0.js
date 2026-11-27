@@ -141,7 +141,14 @@ export class DevSupervisorEngineV0 {
   }
 
   prepareBootstrapExtension() {
-    if (!this.bootstrapStage) this.bootstrapStage = this.extensionLoader.stage(DEV_BOOTSTRAP_EXTENSION);
+    if (!this.bootstrapStage) {
+      this.bootstrapStage = Promise.resolve()
+        .then(() => this.extensionLoader.stage(DEV_BOOTSTRAP_EXTENSION))
+        .catch((error) => {
+          this.bootstrapStage = null;
+          throw error;
+        });
+    }
     return this.bootstrapStage;
   }
 
@@ -269,6 +276,10 @@ export class DevSupervisorEngineV0 {
       this.rememberSupervisorSession(run);
     }
 
+    const existingPromptState = run.supervisorSessionKey ? this.supervisorPromptState.get(String(run.supervisorSessionKey)) : null;
+    if (existingPromptState) {
+      this.supervisorPromptState.set(String(run.supervisorSessionKey), { signature: existingPromptState.signature, deliveredHistory: 0 });
+    }
     this.#persistRun(run);
     input.onActivity?.({ label: 'Dev Supervisor', detail: run.status });
     if (!this.bridge || typeof this.bridge.request !== 'function') {
@@ -379,7 +390,7 @@ export class DevSupervisorEngineV0 {
 
           try {
             if (decision.tool === DEV_RUNTIME_ACTIVATION_TOOL) {
-              const result = this.selfUpdateGate.requireActivation(decision.arguments);
+              const result = this.selfUpdateGate.requireActivation(decision.arguments, { allowOverwrite: false });
               history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
               continue;
             }
@@ -698,8 +709,9 @@ function sanitize(value) {
   try { return JSON.parse(JSON.stringify(value)); } catch { return { error: 'non-json-tool-result' }; }
 }
 function normalizeConversationId(value) {
-  if (value == null) return null;
-  const text = String(value).trim();
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
   return text || null;
 }
 

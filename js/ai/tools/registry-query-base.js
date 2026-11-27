@@ -86,7 +86,7 @@ function installQueryOverrides(registry, context) {
     markQueryAuthority(await originalCurrent(args)));
 
   const originalInspect = registry.get('inspect_function_region')?.execute;
-  if (originalInspect) replace(registry, 'inspect_function_region', async (args) => {
+  if (originalInspect) replace(registry, 'inspect_function_region', async (args, execution = {}) => {
     if (args.view !== 'assembly' || typeof context.getInstructions !== 'function') return originalInspect(args);
     const params = {
       functionAddress:args.functionAddress,
@@ -111,7 +111,7 @@ function installQueryOverrides(registry, context) {
         const window = await context.getInstructions(args.functionAddress, {
           offset: pageOffset,
           limit: 500,
-          signal:registry.executionSignal,
+          signal:execution.signal ?? null,
         });
         const rows = pageRows(window);
         if (!rows.length) { scannedComplete = true; break; }
@@ -144,7 +144,7 @@ function installQueryOverrides(registry, context) {
     const page = await context.getInstructions(args.functionAddress, {
       offset,
       limit:count,
-      signal:registry.executionSignal,
+      signal:execution.signal ?? null,
     });
     const rows = pageRows(page).map((row, index) => ({
       id:row?.id ?? row?.instructionId ?? offset + index,
@@ -176,24 +176,24 @@ function installQueryOverrides(registry, context) {
     ['get_callees', 'getCallees', 'address', 100],
   ]) {
     if (typeof context[method] !== 'function') continue;
-    replace(registry, tool, async (args) => {
+    replace(registry, tool, async (args, execution = {}) => {
       const params = { [key]:args[key] };
       const paging = queryPaging(registry, tool, params, args.cursor);
       const limit = Math.max(1, Number(args.limit) || fallbackLimit);
       const value = await context[method](args[key], {
         limit,
         offset:paging.offset,
-        signal:registry.executionSignal,
+        signal:execution.signal ?? null,
       });
       return continuation(value, paging.offset, paging.makeCursor);
     });
   }
 
   if (typeof context.getCallers === 'function' && typeof context.getCallees === 'function') {
-    replace(registry, 'get_related_functions', async ({ functionAddress, limit = 24 }) => {
+    replace(registry, 'get_related_functions', async ({ functionAddress, limit = 24 }, execution = {}) => {
       const [callers, callees] = await Promise.all([
-        context.getCallers(functionAddress, { limit, offset:0, signal:registry.executionSignal }),
-        context.getCallees(functionAddress, { limit, offset:0, signal:registry.executionSignal }),
+        context.getCallers(functionAddress, { limit, offset:0, signal:execution.signal ?? null }),
+        context.getCallees(functionAddress, { limit, offset:0, signal:execution.signal ?? null }),
       ]);
       const normalizeSide = (value) => {
         if (value?.complete === true) return value;
@@ -242,12 +242,12 @@ function installQueryOverrides(registry, context) {
   }
 
   if (typeof context.findPaths === 'function') {
-    replace(registry, 'find_paths', async ({ from, to, maxDepth = 6, maxPaths = 8, maxVisited = 10000 }) => {
+    replace(registry, 'find_paths', async ({ from, to, maxDepth = 6, maxPaths = 8, maxVisited = 10000 }, execution = {}) => {
       const value = await context.findPaths(from, to, {
         maxDepth,
         maxPaths,
         maxVisited,
-        signal:registry.executionSignal,
+        signal:execution.signal ?? null,
       });
       return { ...(value || {}), analysisAuthority:'AnalysisQueryAPI' };
     });

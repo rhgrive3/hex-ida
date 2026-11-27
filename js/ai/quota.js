@@ -74,9 +74,12 @@ export function normalizeQuotaState(raw, now = Date.now(), config = AI_QUOTA) {
   }
 
   // Use the persisted window as the rollback anchor and cap survivor leases
-  // against the current clock so rollback cannot extend their wall lifetime.
-  const expiryThreshold = isRollback ? windowStarted : t;
-  const expiryCap = t + leaseMs;
+  // against the current clock when t + leaseMs still exceeds the anchor. Under
+  // a deep rollback (t + leaseMs <= windowStarted), cap against
+  // effectiveNow + leaseMs so newly issued and active leases are not discarded.
+  const effectiveNow = isRollback ? windowStarted : t;
+  const expiryThreshold = effectiveNow;
+  const expiryCap = t + leaseMs > expiryThreshold ? t + leaseMs : effectiveNow + leaseMs;
   const leases = {};
   if (raw?.leases && typeof raw.leases === 'object') {
     for (const [token, lease] of Object.entries(raw.leases)) {
@@ -162,7 +165,8 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
   state.count++;
   session.count++;
   setOwn(state.sessions, sessionId, session);
-  setOwn(state.leases, token, { sessionId, expiresAt: now + leaseMs });
+  const leaseExpiresAt = now + leaseMs > effectiveNow ? now + leaseMs : effectiveNow + leaseMs;
+  setOwn(state.leases, token, { sessionId, expiresAt: leaseExpiresAt });
   return {
     state,
     result: {

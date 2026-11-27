@@ -84,7 +84,10 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
     };
   }
   if (value instanceof ArrayBuffer) return { $bytes: Array.from(new Uint8Array(value)) };
-  if (value instanceof Date) return { $date: value.toISOString() };
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw new ArtifactError('artifact-key-invalid-date', 'Artifact key Date must be valid');
+    return { $date: value.toISOString() };
+  }
   if (typeof value !== 'object') return String(value);
   if (seen.has(value)) throw new ArtifactError('artifact-key-cyclic-value');
   seen.add(value);
@@ -397,12 +400,12 @@ export function encodeArtifactPayload(payload) {
   return encoder.encode(stableStringify(payload));
 }
 export function decodeArtifactPayload(bytes) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const view = normalizeArtifactPayloadBytes(bytes);
   try { return JSON.parse(decoder.decode(view)); }
   catch (error) { throw new ArtifactCorruptionError('artifact-payload-malformed', 'Artifact payload is not valid canonical JSON', { cause:String(error) }); }
 }
 export function artifactPayloadChecksum(bytes) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const view = normalizeArtifactPayloadBytes(bytes);
   return stableDigestBytes(view);
 }
 

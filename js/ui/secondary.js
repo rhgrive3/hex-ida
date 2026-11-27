@@ -241,7 +241,27 @@ function renderHelp(app, router) {
     onClick: () => app.openSample(),
   }));
   start.body.append(actions);
-  s.body.append(start.root, sectionTitle(pick('よくある質問', 'Frequently asked questions')));
+
+  const shortcuts = card(pick('キーボードショートカット', 'Keyboard Shortcuts'));
+  const shortcutRows = list();
+  const shortcutItems = [
+    ['Ctrl/Cmd+K · / · G', '検索 / ジャンプを開く', 'Open search / Jump to address'],
+    ['Esc · Alt+←/→ · ⌘[/]', '戻る / 履歴を前後移動', 'Back / Navigate history'],
+    ['N', '名前を付ける（リネーム）', 'Rename function or symbol'],
+    [';', 'メモを追加・編集', 'Add or edit comment'],
+    ['X', '相互参照（Xrefs）を表示', 'Show cross-references (Xrefs)'],
+    ['Space', 'アセンブリと疑似Cを切り替え', 'Toggle assembly / Pseudo-C'],
+    ['B', 'ブックマークを切り替え', 'Toggle bookmark'],
+    ['Ctrl/Cmd+Z', '直前の名前・メモ変更を元に戻す', 'Undo last rename or comment'],
+    ['Ctrl/Cmd+F', '現在の画面内を検索', 'Find in current view'],
+    ['?', 'ヘルプ・ショートカット一覧を開く', 'Open Help & shortcuts'],
+  ];
+  for (const [keys, ja, en] of shortcutItems) {
+    shortcutRows.append(listRow({ title: pick(ja, en), meta: keys }));
+  }
+  shortcuts.body.append(shortcutRows);
+
+  s.body.append(start.root, shortcuts.root, sectionTitle(pick('よくある質問', 'Frequently asked questions')));
 
   for (const [q, a] of FAQ) {
     const c = card(pick(q[0], q[1]));
@@ -311,7 +331,7 @@ function renderChapter(app, router, chapter) {
       const next = loadProgress();
       if (next[chapter.id]) delete next[chapter.id]; else next[chapter.id] = true;
       saveProgress(next);
-      router.navigate('/learn?chapter=' + chapter.id + '&v=' + Date.now(), { replace: true });
+      router.navigate('/learn?chapter=' + encodeURIComponent(chapter.id) + '&v=' + Date.now(), { replace: true });
     },
   }));
   s.body.append(navTop);
@@ -325,13 +345,13 @@ function renderChapter(app, router, chapter) {
 
   const nav = h('div', 'ui-learning-nav');
   if (index > 0) nav.append(uiButton(pick('← 前の章', '← Previous'), {
-    cls: 'ui-secondary-action', onClick: () => router.navigate('/learn?chapter=' + CHAPTERS[index - 1].id),
+    cls: 'ui-secondary-action', onClick: () => router.navigate('/learn?chapter=' + encodeURIComponent(CHAPTERS[index - 1].id)),
   }));
   if (index < CHAPTERS.length - 1) nav.append(uiButton(pick('次の章 →', 'Next →'), {
     cls: 'ui-primary-action',
     onClick: () => {
       const next = loadProgress(); next[chapter.id] = true; saveProgress(next);
-      router.navigate('/learn?chapter=' + CHAPTERS[index + 1].id);
+      router.navigate('/learn?chapter=' + encodeURIComponent(CHAPTERS[index + 1].id));
     },
   }));
   s.body.append(nav);
@@ -339,7 +359,7 @@ function renderChapter(app, router, chapter) {
 }
 
 function renderGlossary(router, selectedTerm) {
-  const entry = selectedTerm ? GLOSSARY[selectedTerm] : null;
+  const entry = selectedTerm && Object.hasOwn(GLOSSARY, selectedTerm) ? GLOSSARY[selectedTerm] : null;
   const s = screen(pick('用語集', 'Glossary'), {
     id: 'learn', subtitle: pick('解析で出てくる言葉を検索できます。', 'Search terms used throughout the analysis UI.'),
   });
@@ -355,7 +375,7 @@ function renderGlossary(router, selectedTerm) {
       term.body.append(sectionTitle(pick('関連する用語', 'Related terms')));
       const related = h('div', 'ui-setting-chips');
       for (const id of entry.related) {
-        if (!GLOSSARY[id]) continue;
+        if (!Object.hasOwn(GLOSSARY, id)) continue;
         related.append(uiButton(GLOSSARY[id].term, { cls: 'ui-secondary-action', onClick: () => router.navigate('/learn?term=' + encodeURIComponent(id)) }));
       }
       term.body.append(related);
@@ -377,7 +397,8 @@ function renderGlossary(router, selectedTerm) {
       return;
     }
     for (const id of ids) {
-      const item = GLOSSARY[id];
+      const item = Object.hasOwn(GLOSSARY, id) ? GLOSSARY[id] : null;
+      if (!item) continue;
       results.append(listRow({ title: item.term, subtitle: item.short, onClick: () => router.navigate('/learn?term=' + encodeURIComponent(id)) }));
     }
   };
@@ -416,7 +437,7 @@ function renderLearn(app, router, route) {
     title: pick(`第${index + 1}章`, `Chapter ${index + 1}`) + '　' + chapter.title,
     subtitle: chapter.subtitle,
     meta: progress[chapter.id] ? '✓' : '',
-    onClick: () => router.navigate('/learn?chapter=' + chapter.id),
+    onClick: () => router.navigate('/learn?chapter=' + encodeURIComponent(chapter.id)),
   })));
   s.body.append(rows);
   return { root: s.root };

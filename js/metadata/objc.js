@@ -67,7 +67,8 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     const incomplete = (reason) => createLanguageMetadataResult({
       providerId: this.id, providerVersion: this.version, ecosystem: 'objc',
       identity: createLanguageMetadataIdentity({
-        verdict: 'matched-partial', providerId: this.id, providerVersion: this.version,
+        verdict: this.binaryIdentity != null ? 'matched-partial' : 'identity-unavailable',
+        providerId: this.id, providerVersion: this.version,
         ecosystem: 'objc', binaryIdentity: this.binaryIdentity, architecture: this.architecture,
         platform: this.platform, method: 'objc-section-probe', detail: reason,
       }),
@@ -223,13 +224,18 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       .flatMap(item => [`objc-${item.kind}-metadata-incomplete`, ...(item.reasons || [])]);
     const coveredEntityIds = isComplete
       ? []
-      : [...this.types().records, ...this.methods().records].map((record) => record.entityId);
+      : [
+        ...APPLY_OBJC_PROBE(CANONICAL_OBJC_TYPES, this, []).records,
+        ...APPLY_OBJC_PROBE(CANONICAL_OBJC_METHODS, this, []).records,
+      ].map((record) => record.entityId);
     const hasIdentityBinding = this.binaryIdentity != null;
     // A pointer ABI the provider cannot decode is reported as an explicit
     // reason instead of arriving as an unexplained empty metadata set (#8280).
     const pointerAbiReason = model.pointerAbiReason
       ?? [
         ...(model.runtimeCompleteness?.classes?.reasons ?? []),
+        ...(model.runtimeCompleteness?.categories?.reasons ?? []),
+        ...(model.runtimeCompleteness?.protocols?.reasons ?? []),
         ...(model.completeness?.protocols?.reasons ?? []),
       ].find((reason) => typeof reason === 'string' && reason.startsWith('objc-pointer-abi'))
       ?? null;
@@ -416,6 +422,8 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
 // Canonical Apple issuance uses this lexical method reference, never the
 // externally mutable class prototype or an instance-supplied override.
 const CANONICAL_OBJC_PROBE = ObjcMetadataProvider.prototype.probe;
+const CANONICAL_OBJC_TYPES = ObjcMetadataProvider.prototype.types;
+const CANONICAL_OBJC_METHODS = ObjcMetadataProvider.prototype.methods;
 const APPLY_OBJC_PROBE = Reflect.apply;
 const CREATE_OBJC_CONTEXT = Object.create;
 

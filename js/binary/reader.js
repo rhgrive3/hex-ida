@@ -1,5 +1,23 @@
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
+let utf8LossyDecoder = undefined;
+function decodeUtf8Lossy(raw) {
+  if (utf8LossyDecoder === undefined) {
+    try { utf8LossyDecoder = new TextDecoder('utf-8', { fatal: false }); }
+    catch { utf8LossyDecoder = null; }
+  }
+  if (utf8LossyDecoder !== null) {
+    try { return utf8LossyDecoder.decode(raw); }
+    catch {}
+  }
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    out += c >= 0x20 && c <= 0x7e ? String.fromCharCode(c) : '\uFFFD';
+  }
+  return out;
+}
+
 function nonNegativeOffset(value, label = 'offset') {
   if (typeof value === 'bigint') {
     if (value < 0n) throw new TypeError(`${label} must be non-negative`);
@@ -104,14 +122,62 @@ export class ByteView {
     return { view: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset: 0 };
   }
 
-  u8(offset) { const x = this.data(offset, 1); return x.view.getUint8(x.offset); }
-  i8(offset) { const x = this.data(offset, 1); return x.view.getInt8(x.offset); }
-  u16(offset, le = this.littleEndian) { const x = this.data(offset, 2); return x.view.getUint16(x.offset, booleanValue(le, 'littleEndian')); }
-  i16(offset, le = this.littleEndian) { const x = this.data(offset, 2); return x.view.getInt16(x.offset, booleanValue(le, 'littleEndian')); }
-  u32(offset, le = this.littleEndian) { const x = this.data(offset, 4); return x.view.getUint32(x.offset, booleanValue(le, 'littleEndian')); }
-  i32(offset, le = this.littleEndian) { const x = this.data(offset, 4); return x.view.getInt32(x.offset, booleanValue(le, 'littleEndian')); }
-  u64(offset, le = this.littleEndian) { const x = this.data(offset, 8); return x.view.getBigUint64(x.offset, booleanValue(le, 'littleEndian')); }
-  i64(offset, le = this.littleEndian) { const x = this.data(offset, 8); return x.view.getBigInt64(x.offset, booleanValue(le, 'littleEndian')); }
+  u8(offset) {
+    if (this.view !== null && typeof offset === 'number' && Number.isInteger(offset) && offset >= 0 && offset < this.bytes.byteLength) {
+      return this.bytes[offset];
+    }
+    const x = this.data(offset, 1);
+    return x.view.getUint8(x.offset);
+  }
+  i8(offset) {
+    if (this.view !== null && typeof offset === 'number' && Number.isInteger(offset) && offset >= 0 && offset < this.bytes.byteLength) {
+      return this.view.getInt8(offset);
+    }
+    const x = this.data(offset, 1);
+    return x.view.getInt8(x.offset);
+  }
+  u16(offset, le = this.littleEndian) {
+    if (this.view !== null && typeof offset === 'number' && typeof le === 'boolean' && Number.isInteger(offset) && offset >= 0 && offset <= this.bytes.byteLength - 2) {
+      return this.view.getUint16(offset, le);
+    }
+    const x = this.data(offset, 2);
+    return x.view.getUint16(x.offset, booleanValue(le, 'littleEndian'));
+  }
+  i16(offset, le = this.littleEndian) {
+    if (this.view !== null && typeof offset === 'number' && typeof le === 'boolean' && Number.isInteger(offset) && offset >= 0 && offset <= this.bytes.byteLength - 2) {
+      return this.view.getInt16(offset, le);
+    }
+    const x = this.data(offset, 2);
+    return x.view.getInt16(x.offset, booleanValue(le, 'littleEndian'));
+  }
+  u32(offset, le = this.littleEndian) {
+    if (this.view !== null && typeof offset === 'number' && typeof le === 'boolean' && Number.isInteger(offset) && offset >= 0 && offset <= this.bytes.byteLength - 4) {
+      return this.view.getUint32(offset, le);
+    }
+    const x = this.data(offset, 4);
+    return x.view.getUint32(x.offset, booleanValue(le, 'littleEndian'));
+  }
+  i32(offset, le = this.littleEndian) {
+    if (this.view !== null && typeof offset === 'number' && typeof le === 'boolean' && Number.isInteger(offset) && offset >= 0 && offset <= this.bytes.byteLength - 4) {
+      return this.view.getInt32(offset, le);
+    }
+    const x = this.data(offset, 4);
+    return x.view.getInt32(x.offset, booleanValue(le, 'littleEndian'));
+  }
+  u64(offset, le = this.littleEndian) {
+    if (this.view !== null && typeof offset === 'number' && typeof le === 'boolean' && Number.isInteger(offset) && offset >= 0 && offset <= this.bytes.byteLength - 8) {
+      return this.view.getBigUint64(offset, le);
+    }
+    const x = this.data(offset, 8);
+    return x.view.getBigUint64(x.offset, booleanValue(le, 'littleEndian'));
+  }
+  i64(offset, le = this.littleEndian) {
+    if (this.view !== null && typeof offset === 'number' && typeof le === 'boolean' && Number.isInteger(offset) && offset >= 0 && offset <= this.bytes.byteLength - 8) {
+      return this.view.getBigInt64(offset, le);
+    }
+    const x = this.data(offset, 8);
+    return x.view.getBigInt64(x.offset, booleanValue(le, 'littleEndian'));
+  }
 
   slice(offset, size) {
     const o = this.check(offset, size);
@@ -234,12 +300,7 @@ export class ByteView {
         raw = this.bytes.subarray(o, exposedOffset(p));
       }
     }
-    try { return new TextDecoder('utf-8', { fatal: false }).decode(raw); }
-    catch {
-      let out = '';
-      for (const c of raw) out += c >= 0x20 && c <= 0x7e ? String.fromCharCode(c) : '\uFFFD';
-      return out;
-    }
+    return decodeUtf8Lossy(raw);
   }
 
   /**
@@ -275,7 +336,7 @@ export class ByteView {
       const remaining = endBig - p;
       const winEnd = p + (scanStepBig < remaining ? scanStepBig : remaining);
       const nul = this.bytes.subarray(exposedOffset(p), exposedOffset(winEnd)).indexOf(0);
-      if (nul >= 0) return Number(p) + nul;
+      if (nul >= 0) return exposedOffset(p + BigInt(nul));
     }
     return -1;
   }
@@ -293,12 +354,7 @@ export class ByteView {
     if (e == null || e > this.lengthBigInt) e = this.lengthBigInt;
     if (e < s) e = s;
     const raw = this.bytes.subarray(exposedOffset(s), exposedOffset(e));
-    try { return new TextDecoder('utf-8', { fatal: false }).decode(raw); }
-    catch {
-      let out = '';
-      for (const c of raw) out += c >= 0x20 && c <= 0x7e ? String.fromCharCode(c) : '\uFFFD';
-      return out;
-    }
+    return decodeUtf8Lossy(raw);
   }
 
   _lebEnd(end) {
@@ -320,11 +376,38 @@ export class ByteView {
       const start = checkedStart;
       const hardEnd = Number(hardEndBig);
       let p = start;
+      if (this.view !== null) {
+        const bytes = this.bytes;
+        let small = 0;
+        let shiftNum = 0;
+        let value = 0n;
+        let shift = 0n;
+        let wide = false;
+        for (let i = 0; i < byteLimit; i++, p++) {
+          if (p >= hardEnd) throw new BinaryReadError('ULEB128 crosses bounded substream', this.base + BigInt(p));
+          if (p >= bytes.byteLength) this.check(p, 1);
+          const b = bytes[p];
+          if (!wide) {
+            if (shiftNum < 28) {
+              small |= (b & 0x7f) << shiftNum;
+              if ((b & 0x80) === 0) return { value: BigInt(small), next: p + 1, bytes: p + 1 - start };
+              shiftNum += 7;
+              continue;
+            }
+            wide = true;
+            value = BigInt(small);
+            shift = BigInt(shiftNum);
+          }
+          value |= BigInt(b & 0x7f) << shift;
+          if ((b & 0x80) === 0) return { value, next: p + 1, bytes: p + 1 - start };
+          shift += 7n;
+        }
+        throw new BinaryReadError('ULEB128 is too long', this.base + BigInt(start));
+      }
       let value = 0n;
       let shift = 0n;
       for (let i = 0; i < byteLimit; i++, p++) {
         if (p >= hardEnd) throw new BinaryReadError('ULEB128 crosses bounded substream', this.base + BigInt(p));
-        this.check(p, 1);
         const b = this.u8(p);
         value |= BigInt(b & 0x7f) << shift;
         if ((b & 0x80) === 0) return { value, next: p + 1, bytes: p + 1 - start };
@@ -361,12 +444,45 @@ export class ByteView {
       const start = checkedStart;
       const hardEnd = Number(hardEndBig);
       let p = start;
+      if (this.view !== null) {
+        const bytes = this.bytes;
+        let small = 0;
+        let shiftNum = 0;
+        let value = 0n;
+        let shift = 0n;
+        let wide = false;
+        for (let i = 0; i < byteLimit; i++, p++) {
+          if (p >= hardEnd) throw new BinaryReadError('SLEB128 crosses bounded substream', this.base + BigInt(p));
+          if (p >= bytes.byteLength) this.check(p, 1);
+          const b = bytes[p];
+          if (!wide) {
+            if (shiftNum < 28) {
+              small |= (b & 0x7f) << shiftNum;
+              shiftNum += 7;
+              if ((b & 0x80) === 0) {
+                if (b & 0x40) small = (small << (32 - shiftNum)) >> (32 - shiftNum);
+                return { value: BigInt(small), next: p + 1, bytes: p + 1 - start };
+              }
+              continue;
+            }
+            wide = true;
+            value = BigInt(small);
+            shift = BigInt(shiftNum);
+          }
+          value |= BigInt(b & 0x7f) << shift;
+          shift += 7n;
+          if ((b & 0x80) === 0) {
+            if (b & 0x40) value |= (-1n) << shift;
+            return { value, next: p + 1, bytes: p + 1 - start };
+          }
+        }
+        throw new BinaryReadError('SLEB128 is too long', this.base + BigInt(start));
+      }
       let value = 0n;
       let shift = 0n;
       let b = 0;
       for (let i = 0; i < byteLimit; i++, p++) {
         if (p >= hardEnd) throw new BinaryReadError('SLEB128 crosses bounded substream', this.base + BigInt(p));
-        this.check(p, 1);
         b = this.u8(p);
         value |= BigInt(b & 0x7f) << shift;
         shift += 7n;
@@ -403,7 +519,8 @@ export function align(value, alignment) {
   const v = integerValue(value, 'value');
   const a = integerValue(alignment, 'alignment');
   if (a <= 0n) return v;
-  return (v + a - 1n) / a * a;
+  const rem = v % a;
+  return rem === 0n ? v : rem > 0n ? v + (a - rem) : v - rem;
 }
 
 export function inRange(value, start, size) {

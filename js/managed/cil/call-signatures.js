@@ -13,6 +13,7 @@ import {
   parseCilMethodSignature,
   parseCilLocalVarSignature,
   parseCilFieldSignature,
+  parseCilTypeSpecSignature,
   parseCilMethodSpecInstantiation,
   substituteCilMethodGeneric,
 } from './call-signature-types.js';
@@ -327,24 +328,56 @@ function readOptionalString(heap, index, code) {
   return Number.isSafeInteger(index) && index >= 1 ? readCilMetadataString(heap, index, code) : '';
 }
 
+const fieldListMonotonicCache = new WeakMap();
+function isFieldListMonotonic(index) {
+  let monotonic = fieldListMonotonicCache.get(index);
+  if (monotonic !== undefined) return monotonic;
+  const typeDefs = index.typeDefs;
+  const maxEnd = index.fieldDefs.length + 1;
+  monotonic = true;
+  let prev = 1;
+  for (let i = 0; i < typeDefs.length; i++) {
+    const begin = typeDefs[i].fieldList;
+    if (!Number.isSafeInteger(begin) || begin < prev || begin > maxEnd) { monotonic = false; break; }
+    prev = begin;
+  }
+  fieldListMonotonicCache.set(index, monotonic);
+  return monotonic;
+}
+
 function resolveFieldOwner(index, rid) {
+  const typeDefs = index.typeDefs;
   const fieldCount = index.fieldDefs.length;
-  if (index.typeDefs.length === 0) fail('cil-fielddef-owner-missing');
+  if (typeDefs.length === 0) fail('cil-fielddef-owner-missing');
   let owner = null;
-  for (let position = 0; position < index.typeDefs.length; position++) {
-    const row = index.typeDefs[position];
-    const begin = row.fieldList;
-    if (!Number.isSafeInteger(begin) || begin < 1 || begin > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
-    const next = position + 1 < index.typeDefs.length ? index.typeDefs[position + 1].fieldList : fieldCount + 1;
-    if (rid >= begin && rid < next) { owner = row; break; }
-    if (next < begin || next > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
+  let ownerIndex = -1;
+  if (isFieldListMonotonic(index)) {
+    let lo = 0, hi = typeDefs.length - 1, best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (typeDefs[mid].fieldList <= rid) { best = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    if (best >= 0) {
+      const next = best + 1 < typeDefs.length ? typeDefs[best + 1].fieldList : fieldCount + 1;
+      if (rid < next) { owner = typeDefs[best]; ownerIndex = best; }
+    }
+  } else {
+    for (let position = 0; position < typeDefs.length; position++) {
+      const row = typeDefs[position];
+      const begin = row.fieldList;
+      if (!Number.isSafeInteger(begin) || begin < 1 || begin > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
+      const next = position + 1 < typeDefs.length ? typeDefs[position + 1].fieldList : fieldCount + 1;
+      if (!Number.isSafeInteger(next) || next < begin || next > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
+      if (rid >= begin && rid < next) { owner = row; ownerIndex = position; break; }
+    }
   }
   if (!owner) fail('cil-fielddef-owner-missing');
   const name = readOptionalString(index.stringsHeap, owner.nameIndex, 'cil-field-owner-name-invalid');
   if (!name) fail('cil-field-owner-name-invalid');
   const namespace = readOptionalString(index.stringsHeap, owner.namespaceIndex, 'cil-field-owner-namespace-invalid');
   return {
-    declaringTypeToken: tokenFor(TYPE_DEF_TABLE, index.typeDefs.indexOf(owner) + 1),
+    declaringTypeToken: tokenFor(TYPE_DEF_TABLE, ownerIndex + 1),
     declaringType: `${namespace ? `${namespace}.` : ''}${name}`,
   };
 }
@@ -374,7 +407,9 @@ function resolveFieldIndexed(index, token) {
     } else {
       const parentTag = row.parent & 0x7;
       const parentRid = row.parent >>> 3;
-      if (parentTag > 2 || parentRid < 1) fail('cil-memberref-parent-invalid');
+      if ((parentTag !== 0 && parentTag !== 1 && parentTag !== 2 && parentTag !== 4) || parentRid < 1) {
+        fail('cil-memberref-parent-invalid');
+      }
       if (parentTag === 0) {
         if (parentRid > index.typeDefs.length) fail('cil-memberref-parent-out-of-range');
         const typeRow = index.typeDefs[parentRid - 1];
@@ -384,6 +419,31 @@ function resolveFieldIndexed(index, token) {
         owner = {
           declaringTypeToken: tokenFor(TYPE_DEF_TABLE, parentRid),
           declaringType: `${namespace ? `${namespace}.` : ''}${name}`,
+        };
+      } else if (parentTag === 1) {
+        if (parentRid > index.typeRefs.length) fail('cil-memberref-parent-out-of-range');
+      } else if (parentTag === 2) {
+        if (parentRid > index.moduleRefs.length) fail('cil-memberref-parent-out-of-range');
+      } else if (parentTag === 4) {
+        if (parentRid > index.typeSpecs.length) fail('cil-memberref-parent-out-of-range');
+        const typeSpecRow = index.typeSpecs[parentRid - 1];
+        const typeSpecBlob = readCilMetadataBlob(index.blobHeap, typeSpecRow.signatureBlobIndex,
+          'cil-field-owner-typespec-blob-invalid');
+        const typeSpec = parseCilTypeSpecSignature(typeSpecBlob, index.typeDefOrRefRowCounts);
+        let declaringType = null;
+        if (Number.isSafeInteger(typeSpec?.typeToken) && (typeSpec.typeToken & 0x03) === 0) {
+          const typeDefRid = typeSpec.typeToken >>> 2;
+          const typeRow = index.typeDefs[typeDefRid - 1];
+          if (typeRow) {
+            const name = readOptionalString(index.stringsHeap, typeRow.nameIndex, 'cil-field-owner-name-invalid');
+            const namespace = readOptionalString(index.stringsHeap, typeRow.namespaceIndex,
+              'cil-field-owner-namespace-invalid');
+            declaringType = `${namespace ? `${namespace}.` : ''}${name}`;
+          }
+        }
+        owner = {
+          declaringTypeToken: tokenFor(OWNER_TYPE_SPEC, parentRid),
+          declaringType,
         };
       }
     }
@@ -560,7 +620,7 @@ export function createCilCallStackEffect(kind, resolution) {  if (!['call', 'cal
   for (let index = signature.parameters.length - 1; index >= 0; index--) {
     consumedValues.push(Object.freeze({ id:`arg${index}`, ...signature.parameters[index] }));
   }
-  if (kind !== 'newobj' && signature.hasThis) consumedValues.push(Object.freeze({ id:'this' }));
+  if (kind !== 'newobj' && signature.hasThis && !signature.explicitThis) consumedValues.push(Object.freeze({ id:'this' }));
 
   const producedValues = [];
   if (kind === 'newobj') {

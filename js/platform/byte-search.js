@@ -4,7 +4,10 @@
  * skips only starts ruled out by the current window's final byte. Returning
  * each match separately lets the caller retain overlaps, paging and its cap.
  */
+import * as hexEngineBridge from '../core/hex-engine-bridge.js';
+
 const MAX_COMPILED_PATTERN = 4096;
+const WASM_MIN_SEARCH_BYTES = 4096;
 function lower(byte) { return byte >= 65 && byte <= 90 ? byte + 32 : byte; }
 
 function plainByteList(value, length) {
@@ -56,6 +59,21 @@ export function compileBytePattern(pattern, mask = null, foldAscii = false) {
   }
   return Object.freeze({
     find(bytes, from = 0) {
+      const mode = typeof hexEngineBridge.getEngineMode === 'function'
+        ? hexEngineBridge.getEngineMode()
+        : 'js';
+      const wasmByteSearchFind = hexEngineBridge.wasmByteSearchFind;
+      if (
+        bytes instanceof Uint8Array
+        && Number.isInteger(from)
+        && from >= 0
+        && mode !== 'js'
+        && (bytes.length - Math.max(0, from) >= WASM_MIN_SEARCH_BYTES || mode === 'wasm')
+        && typeof wasmByteSearchFind === 'function'
+      ) {
+        const wasmResult = wasmByteSearchFind(bytes, from, expected, masks, foldAscii);
+        if (typeof wasmResult === 'number') return wasmResult;
+      }
       const last = length - 1;
       const end = bytes.length - length;
       for (let at = from; at <= end;) {

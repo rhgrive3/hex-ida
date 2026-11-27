@@ -119,6 +119,10 @@ function demandArtifactIdentity(app) {
   const binaryId = typeof app?.backend?.binaryId === 'string' ? app.backend.binaryId : '';
   return `${binaryId}|slice:${recognitionSliceIndex(app)}`;
 }
+function sameDemandArtifactOrSettled(initial, current) {
+  if (initial === current) return true;
+  return typeof initial === 'string' && initial.startsWith('|slice:') && typeof current === 'string' && current.endsWith(initial);
+}
 function addressOf(value) {
   // Same canonical address-domain contract as the query adapter: an address
   // is a non-negative integer regardless of representation. Only the number
@@ -229,7 +233,7 @@ function waitForShared(entry, signal, onDetach = null) {
       try { entry.cancel?.(); } catch { /* cancellation is best-effort */ }
       try { entry.request?.cancel?.(); } catch { /* cancellation is best-effort */ }
     }
-    throw abortError(signal);
+    return Promise.reject(abortError(signal));
   }
   entry.waiters++;
   return new Promise((resolve, reject) => {
@@ -246,8 +250,9 @@ function waitForShared(entry, signal, onDetach = null) {
       if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1); detach();
       if (!entry.settled && entry.waiters === 0) {
         entry.cancelled = true;
-        entry.cancel?.();
-        entry.request?.cancel?.();
+        void Promise.resolve(entry.promise).catch(() => {});
+        try { entry.cancel?.(); } catch { /* cancellation is best-effort */ }
+        try { entry.request?.cancel?.(); } catch { /* cancellation is best-effort */ }
       }
       reject(abortError(signal));
     };
@@ -320,7 +325,7 @@ function installWorkerBackedIdentity(app) {
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
     // Do not create the first shared producer for a caller that has already
     // left. Cache hits remain usable without starting any new work (#4749).
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     let entry = this._binaryIdEntry;
     // #4611: a single-flight entry whose last waiter aborted is cancelled but
     // may not have settled yet; the owner must not hand it to a new caller.
@@ -506,7 +511,7 @@ function installCancellableFunctionDiscovery(app) {
   discoveryProducersByApp.set(app, producers);
   app.ensureFunctions = function demandFunctionDiscovery(region, rawOptions = {}) {
     const options = typeof rawOptions === 'function' ? { onProgress:rawOptions, signal:null } : (rawOptions || {});
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     const run = async () => {
       if (app.symbolsReady) {
         try { await app.symbolsReady; } catch { /* symbol seeds are optional */ }
@@ -565,7 +570,7 @@ function installCancellableFunctionDiscovery(app) {
           };
           for (let index = 0; index < unique.length; index++) {
             abortIfNeeded(producerController.signal);
-            if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+            if (epoch !== demandAnalysisEpoch(app) || !sameDemandArtifactOrSettled(artifact, demandArtifactIdentity(app))) throw Object.assign(new Error('stale function discovery'), { stale:true });
             const item = unique[index], size = BigInt(item.size);
             const share = remaining > 0 && remainingBytes > 0n
               ? Math.max(1, Math.min(remaining, Number((BigInt(remaining) * size + remainingBytes - 1n) / remainingBytes)))
@@ -581,7 +586,7 @@ function installCancellableFunctionDiscovery(app) {
             producerController.signal.addEventListener('abort', onAbort, { once:true });
             try {
               const result = await request;
-              if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+              if (epoch !== demandAnalysisEpoch(app) || !sameDemandArtifactOrSettled(artifact, demandArtifactIdentity(app))) throw Object.assign(new Error('stale function discovery'), { stale:true });
               if (result?.starts?.length) {
                 symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
                 symbols.guessed = true;
@@ -596,7 +601,7 @@ function installCancellableFunctionDiscovery(app) {
             remainingBytes -= size;
           }
           abortIfNeeded(producerController.signal);
-          if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+          if (epoch !== demandAnalysisEpoch(app) || !sameDemandArtifactOrSettled(artifact, demandArtifactIdentity(app))) throw Object.assign(new Error('stale function discovery'), { stale:true });
           const complete = results.length === unique.length && results.every((item) => item.complete === true);
           const coverage = await executableByteCoverage({
             regions:unique,
@@ -627,7 +632,7 @@ function installCancellableFunctionDiscovery(app) {
           // while the old read is in flight; only the current epoch may
           // publish functionDiscovery (#9219).
           abortIfNeeded(producerController.signal);
-          if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+          if (epoch !== demandAnalysisEpoch(app) || !sameDemandArtifactOrSettled(artifact, demandArtifactIdentity(app))) throw Object.assign(new Error('stale function discovery'), { stale:true });
           symbols.functionDiscovery = {
             complete, attempted:true, regionSetKey, discoveryKey, regions:results,
             reasons:[...new Set(reasons)], capped:results.some((item) => item.capped), coverage,

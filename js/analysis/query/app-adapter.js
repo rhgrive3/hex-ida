@@ -22,12 +22,74 @@ const MAX_FUNCTION_SCAN = 400_000;
 
 const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
   'profile',
+  'objcSyntax',
   'decompilerTimeBudgetMs',
   'phase8TimeBudgetMs',
   'phase8WorkBudget',
   'renderProvenanceBudget',
   'renderProvenanceBindingBudget',
 ]);
+
+const normalizeObjcSyntax = (v) => (v === 'c' ? 'c' : 'objc');
+
+const GLOBAL_EVIDENCE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const GLOBAL_EVIDENCE_ADDR_RE = /^(?:0[xX][0-9A-Fa-f]+|\d+)$/;
+
+function normalizeGlobalEvidenceAddress(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!GLOBAL_EVIDENCE_ADDR_RE.test(trimmed)) return null;
+    try { return BigInt(trimmed); } catch { return null; }
+  }
+  return null;
+}
+
+function normalizeGlobalEvidenceEntries(source) {
+  if (!source || typeof source !== 'object') return [];
+  const entries = [];
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      if (item && typeof item === 'object') entries.push({ ...item });
+    }
+    return entries;
+  }
+  const pairs = source instanceof Map ? source.entries() : Object.entries(source);
+  for (const [key, value] of pairs) {
+    if (!value || typeof value !== 'object') continue;
+    const entry = { ...value };
+    if (entry.address == null && normalizeGlobalEvidenceAddress(key) != null) {
+      entry.address = key;
+    }
+    if (entry.name == null && typeof key === 'string' && GLOBAL_EVIDENCE_IDENT_RE.test(key)) {
+      entry.name = key;
+    }
+    entries.push(entry);
+  }
+  return entries;
+}
+
+function mergeGlobalEvidence(primary, secondary) {
+  if (primary == null) return secondary ?? null;
+  if (secondary == null || secondary === primary) return primary;
+  const merged = [];
+  const seenNames = new Set();
+  const seenAddresses = new Set();
+  const addEntry = (entry) => {
+    const name = typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : null;
+    const addr = normalizeGlobalEvidenceAddress(entry.address);
+    if ((name != null && seenNames.has(name)) || (addr != null && seenAddresses.has(addr))) {
+      return;
+    }
+    if (name != null) seenNames.add(name);
+    if (addr != null) seenAddresses.add(addr);
+    merged.push(entry);
+  };
+  for (const entry of normalizeGlobalEvidenceEntries(primary)) addEntry(entry);
+  for (const entry of normalizeGlobalEvidenceEntries(secondary)) addEntry(entry);
+  return merged;
+}
 
 // Cache by the immutable source object, then by loaded slice index. An entry
 // also records the reader and SymbolIndex identities because either can be
@@ -353,15 +415,23 @@ function parseElfRelativeRelocations(fileBytes) {
     }
 
     const byteLenBig = BigInt(byteLen);
+    const MAX_ELF_RELOCATIONS_SCANNED = MAX_ELF_RELOCATIONS * 2;
+    let scannedEntries = 0;
+    const seenSpans = new Set();
     const seen = new Set();
     const scanRelaTable = (tableOffset, tableSize, entSize) => {
-      if (relocations.length >= MAX_ELF_RELOCATIONS) return;
+      if (relocations.length >= MAX_ELF_RELOCATIONS || scannedEntries >= MAX_ELF_RELOCATIONS_SCANNED) return;
       if (tableOffset < 0n || tableSize <= 0n || entSize < 24n) return;
       if (tableOffset > byteLenBig || tableSize > byteLenBig - tableOffset) return;
+      const spanKey = `${tableOffset}:${tableSize}:${entSize}`;
+      if (seenSpans.has(spanKey)) return;
+      seenSpans.add(spanKey);
       const countBig = tableSize / entSize;
-      const remaining = BigInt(MAX_ELF_RELOCATIONS - relocations.length);
-      const limit = Number(countBig < remaining ? countBig : remaining);
+      const remainingScanned = BigInt(MAX_ELF_RELOCATIONS_SCANNED - scannedEntries);
+      const limit = Number(countBig < remainingScanned ? countBig : remainingScanned);
       for (let i = 0; i < limit; i += 1) {
+        if (relocations.length >= MAX_ELF_RELOCATIONS || scannedEntries >= MAX_ELF_RELOCATIONS_SCANNED) break;
+        scannedEntries += 1;
         const entryOffBig = tableOffset + BigInt(i) * entSize;
         if (entryOffBig + 24n > byteLenBig) break;
         const off = Number(entryOffBig);
@@ -893,6 +963,7 @@ export const DECOMPILE_INTERNAL_FIELDS = Object.freeze([
   'semanticSuppressionHistory', 'semanticControlRenderHistory',
   'semanticStatementRenderHistory',
   'semanticStoreRenderHistory', 'switchRenderHistory', 'legacyFallback',
+  'objcSyntax', 'globalEvidence', 'wasmAccelerated',
 ]);
 
 const DECOMPILE_PUBLIC_FIELD_SET = new Set(DECOMPILE_PUBLIC_FIELDS);
@@ -1167,8 +1238,9 @@ export function createAppAnalysisQueryAdapter(app) {
       if (rowOffset > MAX_ROW || endRowExact > MAX_ROW || maxRowExact > MAX_ROW) {
         return unsupported(id, 'function-row-index-unrepresentable');
       }
+      if (maxRowExact < 0n) return unsupported(id, 'function-range-empty');
       const startRow = Number(rowOffset);
-      const maxRow = Math.max(0, Number(maxRowExact));
+      const maxRow = Number(maxRowExact);
       const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
       const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, { ...options, architecture });
@@ -1233,18 +1305,45 @@ export function createAppAnalysisQueryAdapter(app) {
     const returnsValue=(result?.value?.setsReturnValue??result?.value?.model?.facts?.setsReturnValue)===true?true:undefined;
     let projectionIr=null,cxxEvidence=null;
     if(result?.value?.model&&supportsArm64SemanticAnalysis(architectureOf(app))){
-      try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
-      if(projectionIr){
-        const entry=ensureCxxEvidenceProviderForApp(app);
-        if(entry){
-          await entry.buildPromise;
-          throwIfAborted(options.signal);
-          if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+      const entry=ensureCxxEvidenceProviderForApp(app);
+      if(entry){
+        const builtIndex=await entry.buildPromise;
+        throwIfAborted(options.signal);
+        if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+        if(builtIndex&&!builtIndex.empty){
+          let addrBig = null; try { addrBig = address != null ? BigInt(address) : null; } catch { addrBig = null; }
+          const addrKey = addrBig != null ? addrBig.toString() : null;
+          const fnSymName = addrBig == null ? null : app?.symbols?.nameAt?.(addrBig);
+          const isCxxCandidate = addrKey != null && (
+            Boolean(builtIndex.bySlotAddress?.has(addrKey)) ||
+            Boolean(builtIndex.symbolOwners?.has(addrKey)) ||
+            Boolean(builtIndex.typedArguments?.has(addrKey)) ||
+            builtIndex.symbolNameFor?.(addrBig) != null ||
+            (typeof fnSymName === 'string' && fnSymName.startsWith('_Z'))
+          );
+          if(isCxxCandidate){
+            try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
+            if(projectionIr){
+              try {
+                cxxEvidence=entry.provider.projectForFunction({functionAddress:addrBig,
+                  functionName:fnSymName,ir:projectionIr,
+                  enableTypedArguments:options.typedArgumentRecovery===true});
+              } catch {cxxEvidence=null;}
+            }
+          } else {
+            try {
+              entry.provider.projectForFunction({functionAddress:addrBig,
+                functionName:fnSymName,ir:null,
+                enableTypedArguments:options.typedArgumentRecovery===true});
+            } catch { cxxEvidence=null; }
+          }
+        } else {
           try {
-            cxxEvidence=entry.provider.projectForFunction({functionAddress:address!=null?BigInt(address):null,
-              functionName:address==null?null:app?.symbols?.nameAt?.(address),ir:projectionIr,
+            const addrBig = address != null ? BigInt(address) : null;
+            entry.provider.projectForFunction({functionAddress:addrBig,
+              functionName:addrBig==null?null:app?.symbols?.nameAt?.(addrBig),ir:null,
               enableTypedArguments:options.typedArgumentRecovery===true});
-          } catch {cxxEvidence=null;}
+          } catch { cxxEvidence=null; }
         }
       }
     }
@@ -1254,9 +1353,7 @@ export function createAppAnalysisQueryAdapter(app) {
   const adapter = {
     async currentIdentity(options = {}) {
       if (options.signal?.aborted) {
-        const error = options.signal.reason instanceof Error ? options.signal.reason : new Error('AbortError');
-        error.name = 'AbortError';
-        throw error;
+        throw abortError(options.signal);
       }
       const fileInfo = currentInfo(app);
       const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
@@ -1665,7 +1762,15 @@ export function createAppAnalysisQueryAdapter(app) {
         reason:result?.status?.reason ?? functionCompleteness?.reason ?? null,
         ...(functionCompleteness?.provenance != null ? { provenance:functionCompleteness.provenance } : {}),
       };
-      if (result?.value?.decompiler) {
+      const requestedObjcSyntax = options.objcSyntax != null ? normalizeObjcSyntax(options.objcSyntax) : null;
+      if (
+        result?.value?.decompiler
+        && (
+          requestedObjcSyntax == null
+          || normalizeObjcSyntax(result.value.decompiler.objcSyntax) === requestedObjcSyntax
+          || !result.value.model
+        )
+      ) {
         return publish(result.value.decompiler, result.status?.completeness, functionStatus);
       }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
@@ -1690,10 +1795,12 @@ export function createAppAnalysisQueryAdapter(app) {
         ...imageOptions,
         ...archOptions,
         ...decompilerOptionsFromQuery(options),
+        ...(requestedObjcSyntax != null ? { objcSyntax: requestedObjcSyntax } : {}),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
+        symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null,
         ...(returnsValue ? { returnsValue } : {}),
-        ...(projectionIr ? { ir:projectionIr } : {}),
+        ...(cxxEvidence && projectionIr ? { ir:projectionIr } : {}),
         ...(cxxEvidence ? { cxxEvidence } : {}),
       });
       return publish(projection, result.status?.completeness, functionStatus);
@@ -1733,7 +1840,14 @@ export function createAppAnalysisQueryAdapter(app) {
         }
         const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress ?? null;
         const name = address == null ? null : symbolFor(address);
-        let producer = result.value.decompiler ?? null;
+        const requestedObjcSyntax = options.objcSyntax != null ? normalizeObjcSyntax(options.objcSyntax) : 'c';
+        const cachedDecompiler = result.value.decompiler ?? null;
+        let producer = cachedDecompiler && (
+          normalizeObjcSyntax(cachedDecompiler.objcSyntax) === requestedObjcSyntax
+          || !result.value.model
+        )
+          ? cachedDecompiler
+          : null;
         if (!producer && result.value.model) {
           // Only positive return evidence is forwarded: `false` would force a void
           // return, while an absent fact must leave return inference to the IR.
@@ -1743,20 +1857,32 @@ export function createAppAnalysisQueryAdapter(app) {
           if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
             const entry = ensureCxxEvidenceProviderForApp(app);
             if (entry) {
-              await entry.buildPromise;
+              const builtIndex = await entry.buildPromise;
               throwIfAborted(options.signal);
               if (cxxMemberIndexForApp(app) !== entry.provider.memberIndex()) {
                 throw new Error('C++ recovery binding changed');
               }
-              try {
-                projectionIr = irFor(result.value.model, { ...architectureDecompilerOptions(app, result.value.model, result.value, options), ...(returnsValue ? { returnsValue } : {}), symbolFor });
-                cxxEvidence = entry.provider.projectForFunction({
-                  functionAddress: address != null ? BigInt(address) : null,
-                  functionName: name,
-                  ir: projectionIr,
-                });
-              } catch {
-                cxxEvidence = null;
+              let addrBig = null;
+              try { addrBig = address != null ? BigInt(address) : null; } catch { addrBig = null; }
+              const addrKey = addrBig != null ? addrBig.toString() : null;
+              const isCxxCandidate = Boolean(builtIndex && !builtIndex.empty && addrKey != null && (
+                Boolean(builtIndex.bySlotAddress?.has(addrKey)) ||
+                Boolean(builtIndex.symbolOwners?.has(addrKey)) ||
+                Boolean(builtIndex.typedArguments?.has(addrKey)) ||
+                builtIndex.symbolNameFor?.(addrBig) != null ||
+                (typeof name === 'string' && name.startsWith('_Z'))
+              ));
+              if (isCxxCandidate) {
+                try {
+                  projectionIr = irFor(result.value.model, { ...architectureDecompilerOptions(app, result.value.model, result.value, options), ...(returnsValue ? { returnsValue } : {}), symbolFor });
+                  cxxEvidence = entry.provider.projectForFunction({
+                    functionAddress: addrBig,
+                    functionName: name,
+                    ir: projectionIr,
+                  });
+                } catch {
+                  cxxEvidence = null;
+                }
               }
             }
           }
@@ -1770,6 +1896,7 @@ export function createAppAnalysisQueryAdapter(app) {
             ...imageOptions,
             ...archOptions,
             ...decompilerOptionsFromQuery(options),
+            objcSyntax: requestedObjcSyntax,
             name,
             addr:address,
             symbolFor,
@@ -1800,7 +1927,7 @@ export function createAppAnalysisQueryAdapter(app) {
           semanticIR:producer.semanticIR ?? result.value.semanticIR ?? null,
           types:producer.types ?? result.value.types ?? null,
           locationTypes:producer.locationTypes ?? result.value.locationTypes ?? null,
-          globalEvidence:producer.globalEvidence ?? result.value.globalEvidence ?? null,
+          globalEvidence:mergeGlobalEvidence(result.value.globalEvidence, producer.globalEvidence),
         });
       }
 

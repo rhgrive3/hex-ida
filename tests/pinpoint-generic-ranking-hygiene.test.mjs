@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  parseGoal, goalFromPreset, matchText, typeFits,
+  parseGoal, goalFromPreset, matchText, isGarbledBinaryString, typeFits,
   extractCallableLeaf, numericSymbolRole, isDiagnosticString,
 } from '../js/goals.js';
 import { exclusiveLR, VERDICT } from '../js/evidence.js';
@@ -195,4 +195,39 @@ test('std:: template glue, copy assignment, log helpers, and homonym avoids are 
   // Trailing log helpers are non-value unless explicitly queried
   assert.equal(numericSymbolRole(dmg, '__ZNK21BattleActionProcessor19addGenericDamageLogEv'), 'non-value');
   assert.equal(numericSymbolRole(hp, '__ZNK21BattleActionProcessor24addGenericDrainedLifeLogEv'), 'non-value');
+});
+
+test('isGarbledBinaryString rejects UTF-16LE binary-as-text gibberish without affecting real UI strings', () => {
+  // Real UTF-16LE misdecode garbage (multi-script soup within single token, PUA, unpaired surrogate, U+FFFD, C1 control)
+  assert.equal(isGarbledBinaryString('崽㩤癧ꦓ덽ꚕ石뚠꒓㥠엮\ue433'), true);
+  assert.equal(isGarbledBinaryString('石\uf29b퉶ぷ셏蔟薃餛䜽\uf237鮩蹀퐬邱'), true);
+  assert.equal(isGarbledBinaryString('石\ud801\udc00\ud802\ud803test'), true);
+  assert.equal(isGarbledBinaryString('石\ufffdテスト'), true);
+  assert.equal(isGarbledBinaryString('石\u0081\u0082\u0083'), true);
+
+  // Legitimate Japanese, Chinese (Simplified/Traditional), Korean, multilingual UI, emoji, and PUA icon UI must pass
+  assert.equal(isGarbledBinaryString('コインを100獲得しました'), false);
+  assert.equal(isGarbledBinaryString('魔法石を購入する'), false);
+  assert.equal(isGarbledBinaryString('获得100枚金币'), false);
+  assert.equal(isGarbledBinaryString('獲得100枚金幣'), false);
+  assert.equal(isGarbledBinaryString('코인을 획득했습니다'), false);
+  assert.equal(isGarbledBinaryString('English / 日本語 / 한국어 / Русский'), false);
+  assert.equal(isGarbledBinaryString('日本語・한국어・Русский'), false);
+  assert.equal(isGarbledBinaryString('\ue001\ue002\ue003コインを10000獲得しました'), false);
+  assert.equal(isGarbledBinaryString('🪙 100コイン獲得 🎉'), false);
+  assert.equal(isGarbledBinaryString('\ue001 100コイン'), false);
+  assert.equal(isGarbledBinaryString('\ue001コイン\ue002'), false);
+  assert.equal(isGarbledBinaryString('\ue001 魔法石 획득'), false);
+  assert.equal(isGarbledBinaryString('addCoin::d = '), false);
+  // Boundary values
+  assert.equal(isGarbledBinaryString(null), false);
+  assert.equal(isGarbledBinaryString('石a'), false);
+  assert.equal(isGarbledBinaryString('石ab'), false);
+
+  const moneyGoal = goalFromPreset('money');
+  assert.equal(matchText(moneyGoal, '崽㩤癧ꦓ덽ꚕ石뚠꒓㥠엮\ue433'), null);
+  assert.ok(matchText(moneyGoal, '魔法石を購入する'));
+  assert.ok(matchText(moneyGoal, '\ue001 100コイン'));
+  assert.ok(matchText(moneyGoal, '\ue001コイン\ue002'));
+  assert.ok(matchText(moneyGoal, '\ue001 魔法石 획득'));
 });

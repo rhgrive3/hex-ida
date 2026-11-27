@@ -3,8 +3,8 @@ import { expr, sameExpr, isPure } from '../ast/nodes.js';
 /* These recognizers operate on semantic expressions, not instruction adjacency. */
 export function recoverArm64ClangIdiom(root) {
   if (!root) return root;
-  if (root.kind === 'binary' && root.op === 'sub' && root.left?.kind === 'binary' && root.left.op === 'mul' && isPure(root.left)) {
-    return expr.intrinsic('msub', [root.left.left, root.left.right, root.right], root.bits, root.signed, root.source);
+  if (root.kind === 'binary' && root.op === 'sub' && root.right?.kind === 'binary' && root.right.op === 'mul' && isPure(root.right)) {
+    return expr.intrinsic('msub', [root.right.left, root.right.right, root.left], root.bits, root.signed, root.source);
   }
   if (root.kind === 'binary' && root.op === 'add' && root.left?.kind === 'binary' && root.left.op === 'mul' && isPure(root.left)) {
     return expr.intrinsic('madd', [root.left.left, root.left.right, root.right], root.bits, root.signed, root.source);

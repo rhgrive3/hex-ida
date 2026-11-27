@@ -1,6 +1,6 @@
 import { deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
-import { analyzeSemanticDominance } from '../cfg/index.js';
+import { analyzeSemanticDominance, dominatesBlock, withCanonicalDominanceFrontier } from '../cfg/index.js';
 
 export const SEMANTIC_SSA_CONTRACT_VERSION = '2.0.0';
 export const SEMANTIC_SSA_DEFINITION_KINDS = Object.freeze([
@@ -83,7 +83,7 @@ export function analyzeSemanticSsaDominance(cfg, options = {}) {
   }
   const dominanceFrontier = Object.fromEntries(Object.entries(frontier)
     .map(([blockId, ids]) => [blockId, [...ids].sort()]));
-  return deepFreeze({ ...dominance, dominanceFrontier });
+  return withCanonicalDominanceFrontier(dominance, dominanceFrontier);
 }
 
 function fail(code) { throw new TypeError(code); }
@@ -210,12 +210,16 @@ function cfgMaps(cfg) {
   return { blocks: new Map((cfg.blocks ?? []).map((block) => [block.id, block])) };
 }
 
-function dominanceFor(cfg, cache) {
+function dominanceFor(cfg, cache, options = {}) {
   if (!cfg) return null;
   if (!cache.has(cfg)) {
     try {
-      cache.set(cfg, analyzeSemanticDominance(cfg));
-    } catch {
+      const domOptions = {};
+      if (options?.signal) domOptions.signal = options.signal;
+      if (options?.budget) domOptions.budget = options.budget;
+      cache.set(cfg, analyzeSemanticDominance(cfg, domOptions));
+    } catch (error) {
+      if (error?.name === 'AbortError' || options?.signal?.aborted) throw error;
       // A CFG that cannot answer dominance keeps phi-edge validation at the
       // predecessor-membership level; everything else still fails closed.
       cache.set(cfg, null);
@@ -325,7 +329,6 @@ export function createSemanticSsaContract(input, options = {}) {
   };
   // Dominance is computed at most once per contract validation (#5413).
   const dominanceCache = new Map();
-  const dominatorSetCache = new Map();
   const useIds = new Set();
   for (const use of uses) {
     assertNotAborted(options);
@@ -384,7 +387,7 @@ export function createSemanticSsaContract(input, options = {}) {
     // it. A branch-local value attributed to the opposite predecessor (which
     // it does not dominate) is not canonical SSA. Definitions without a
     // block stay unpinned.
-    const dominance = dominanceFor(cfg, dominanceCache);
+    const dominance = dominanceFor(cfg, dominanceCache, options);
     for (const incoming of definition.incoming) {
       const prior = definitionByValue.get(incoming.valueId);
       if (hasVirtualEntry && incoming.predecessorBlockId === currentVirtualEntryPredecessor) {
@@ -392,13 +395,11 @@ export function createSemanticSsaContract(input, options = {}) {
         if (prior?.blockId !== cfg.entryBlockId) fail('semantic-ssa-entry-phi-seed-block-mismatch');
         continue;
       }
+      if (!dominance) continue;
       if (prior?.blockId == null || prior.blockId === incoming.predecessorBlockId) continue;
-      let dominators = dominatorSetCache.get(incoming.predecessorBlockId);
-      if (!dominators) {
-        dominators = new Set(dominance?.dominators?.[incoming.predecessorBlockId] ?? []);
-        dominatorSetCache.set(incoming.predecessorBlockId, dominators);
+      if (!dominatesBlock(dominance, prior.blockId, incoming.predecessorBlockId)) {
+        fail('semantic-ssa-phi-incoming-edge-mismatch');
       }
-      if (!dominators.has(prior.blockId)) fail('semantic-ssa-phi-incoming-edge-mismatch');
     }
   }
 

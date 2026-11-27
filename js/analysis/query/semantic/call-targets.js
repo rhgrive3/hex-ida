@@ -103,8 +103,13 @@ export function* scopedCallTargetRows(projection, node, index, nativeDemand = nu
       source: 'canonical-call-target-entity', sourceBinding: { callerInput: caller, calleeInput: target?.inputIdentity ?? null } });
   }
   for (const id of site.address == null ? values : [null]) {
-    const literal = id === null ? { address: unsignedAddress(site.address), reference: recordId, definitionId: node.id }
-      : literalTarget(projection, id) ?? rangedTarget(projection, id, demand);
+    let literal = null;
+    if (id === null) {
+      try { literal = { address: unsignedAddress(site.address, { bits: 64 }), reference: recordId, definitionId: node.id }; }
+      catch { literal = null; }
+    } else {
+      literal = literalTarget(projection, id) ?? rangedTarget(projection, id, demand);
+    }
     const ranged = Boolean(literal?.rangeFactIds);
     if (!literal) {
       yield deepFreeze({ ...common, targetFunctionId: null, address: null, inSelectedScope: false,

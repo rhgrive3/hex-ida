@@ -141,7 +141,7 @@ function ownDataProperty(input, key, code) {
 }
 
 function snapshotSerializableData(value, code, seen = new WeakSet()) {
-  if (value == null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return jsonSafe(value);
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return jsonSafe(value);
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) fail(code);
     return value;
@@ -301,7 +301,7 @@ function assertNotAborted(options) {
 }
 
 function strictSerializable(value, code, seen = new WeakSet()) {
-  if (value == null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) fail(code);
     return;
@@ -360,9 +360,12 @@ function undefinedResultMask(value) {
   fail(code);
 }
 
+const MAX_VALUE_WIDTH_BITS = 4096;
+
 function normalizeBitvectorValue(input) {
   assertAllowedKeys(input, ALLOWED_FIELDS.bitvectorValue, 'machine-effects-unexpected-value-field');
   const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-bitvector-width');
+  if (widthBits > MAX_VALUE_WIDTH_BITS) fail('machine-effects-invalid-bitvector-width');
   const out = { kind: 'bitvector', widthBits };
   if (input.value != null) {
     const value = bigintValue(input.value, 'machine-effects-invalid-bitvector-value');
@@ -375,6 +378,7 @@ function normalizeBitvectorValue(input) {
 function normalizeFloatValue(input) {
   assertAllowedKeys(input, ALLOWED_FIELDS.floatValue, 'machine-effects-unexpected-value-field');
   const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-float-width');
+  if (widthBits > MAX_VALUE_WIDTH_BITS) fail('machine-effects-invalid-float-width');
   const format = nonEmpty(input.format, 'machine-effects-float-format-required');
   const out = { kind: 'float', widthBits, format };
   if (input.bitPattern != null) {

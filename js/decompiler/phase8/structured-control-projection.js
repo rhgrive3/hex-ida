@@ -1007,6 +1007,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       addr: node.source?.addresses?.[0] ?? node.addr ?? null,
       note: null,
       source: node.source,
+      ...(typeof node.block === 'number' ? { block: node.block } : {}),
     };
     bindNodeExpressionHistory(node, line, result.ir, opts.shouldAbort);
     return line;

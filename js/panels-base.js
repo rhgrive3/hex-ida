@@ -63,7 +63,7 @@ import { VERDICT, verdictRank } from './evidence.js';
 import { roleFromReport, sketchRole, changesValue, stringLookup } from './role.js';
 import { describePurpose } from './purpose.js';
 import {
-  showDecompiler, showCfg, showCallGraphPanel, showTypes, showDebugger,
+  showTools, showDecompiler, showCfg, showCallGraphPanel, showTypes, showDebugger,
   showRename, showComment, showPatchEditor, showStructRecover, prettyName,
 } from './tools.js';
 import { purposeText, changeText } from './narrate.js';
@@ -75,7 +75,8 @@ import { functionViews, openFunctionView } from './ui/next-views.js';
 import { buildGeminiPayload, streamGemini } from './gemini.js';
 import { productDescriptor } from './platform/product-descriptor.js';
 
-export { showFileInfo, showSections, showStructure } from './ui/panels/file.js';
+import { showFileInfo, showSections, showStructure } from './ui/panels/file.js';
+export { showFileInfo, showSections, showStructure };
 export { showJump, showSearch } from './ui/panels/navigation.js';
 export { showSettings } from './ui/panels/settings.js';
 
@@ -109,13 +110,30 @@ export function showFunctions(app) {
   sheet.body.append(field, bar, status, results);
 
   let all = [];
+  let nameLower = [];
+  let addrHexLower = [];
+  const setAll = (listData) => {
+    all = listData;
+    const len = all.length;
+    nameLower = new Array(len);
+    addrHexLower = new Array(len);
+    for (let i = 0; i < len; i++) {
+      const f = all[i];
+      nameLower[i] = (f.name || '').toLowerCase();
+      addrHexLower[i] = f.addr.toString(16);
+    }
+  };
 
   const render = () => {
     const q = input.value.trim().toLowerCase();
-    const items = q
-      ? all.filter((f) => (f.name || '').toLowerCase().includes(q) ||
-                          f.addr.toString(16).includes(q.replace(/^0x/, '')))
-      : all;
+    let items = all;
+    if (q) {
+      const qHex = q.startsWith('0x') ? q.slice(2) : q;
+      items = [];
+      for (let i = 0; i < all.length; i++) {
+        if (nameLower[i].includes(q) || addrHexLower[i].includes(qHex)) items.push(all[i]);
+      }
+    }
     results.replaceChildren();
     let shown = 0;
     const PAGE = 120;
@@ -151,7 +169,7 @@ export function showFunctions(app) {
   const start = async () => {
     const sym = app.symbols;
     if (sym.functionCount > 0) {
-      all = sym.functionList(region);
+      setAll(sym.functionList(region));
       fill.style.width = '100%';
       status.textContent = sym.guessed
         ? t('functions.hintNoSymbols')
@@ -170,7 +188,7 @@ export function showFunctions(app) {
       const guessed = await req;
       if (activeRequest === req) activeRequest = null;
       fill.style.width = '100%';
-      all = guessed.functionList(region);
+      setAll(guessed.functionList(region));
       status.textContent = all.length ? t('functions.hintNoSymbols') : t('functions.none');
       render();
     } catch (err) {
@@ -710,11 +728,18 @@ export function showStrings(app) {
   sheet.body.append(chips, field, bar, status, results);
 
   let all = [];
+  let textLower = [];
   let active = targets[0] || null;
 
   const render = () => {
     const q = input.value.trim().toLowerCase();
-    const items = q ? all.filter((s) => s.text.toLowerCase().includes(q)) : all;
+    let items = all;
+    if (q) {
+      items = [];
+      for (let i = 0; i < all.length; i++) {
+        if (textLower[i].includes(q)) items.push(all[i]);
+      }
+    }
     results.replaceChildren();
     let shown = 0;
     const PAGE = 120;
@@ -761,6 +786,7 @@ export function showStrings(app) {
     for (const c of chips.children) c.setAttribute('aria-pressed', String(c._region === region));
     results.replaceChildren();
     all = [];
+    textLower = [];
     status.textContent = t('strings.scanning');
     fill.style.width = '0%';
     const progress = (p) => {
@@ -776,6 +802,8 @@ export function showStrings(app) {
       if (token !== scanToken || active !== region || !sheet.root.isConnected) return;
       fill.style.width = '100%';
       all = res.results;
+      textLower = new Array(all.length);
+      for (let i = 0; i < all.length; i++) textLower[i] = all[i].text.toLowerCase();
       status.textContent = t('strings.count', { n: all.length.toLocaleString() }) +
         (res.capped ? t('strings.capped', { n: all.length.toLocaleString() }) : '') +
         '\n' + t('strings.hint');
@@ -1151,6 +1179,49 @@ function wordValue(hex) {
   return v >>> 0;
 }
 
+function instructionJumpTarget(d) {
+  if (!d) return null;
+  if (d.target != null) {
+    try { return BigInt(d.target); } catch { /* ignore */ }
+  }
+  const mn = String(d.mnemonic || '').trim().toLowerCase();
+  const ops = String(d.operands || '').trim();
+  if (!mn || !ops) return null;
+  const branchOrCall = isBranch(mn) || isCall(mn) || /^(?:call|jmp|j[a-z]{1,4})$/.test(mn);
+  if (!branchOrCall) return null;
+  const lastOp = (ops.split(',').pop() || '').trim();
+  if (!lastOp || lastOp.includes('[')) return null;
+  const m = /^#?(0x[0-9a-fA-F]+)$/.exec(lastOp);
+  if (!m) return null;
+  try { return BigInt(m[1]); } catch { return null; }
+}
+
+function editInstructionBookmarkNote(app, addr) {
+  if (addr == null || !app.bookmarks) return;
+  const existing = app.bookmarks.get?.(addr)
+    ?? (app.bookmarks.list?.() || []).find((b) => { try { return BigInt(b.addr) === BigInt(addr); } catch { return false; } });
+  const sheet = new Sheet(pick('ブックマークメモを編集', 'Edit bookmark note'));
+  const field = el('div', 'field');
+  const input = el('input');
+  input.type = 'text';
+  input.value = String(existing?.note || '');
+  input.placeholder = pick('メモを入力…', 'Enter note…');
+  const name = existing?.name || app.symbols?.nameAt?.(addr) || addrHex(addr);
+  const save = () => {
+    if (!app.bookmarks.has?.(addr)) app.bookmarks.toggle?.(addr, { name });
+    app.bookmarks.setNote?.(addr, { note: input.value.trim(), name });
+    sheet.close();
+    toast(pick('ブックマークメモを保存しました', 'Bookmark note saved'));
+  };
+  field.append(input, button(pick('保存', 'Save'), 'chip', save));
+  sheet.body.append(field);
+  input.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') save();
+  });
+  setTimeout(() => { input.focus(); input.select?.(); }, 50);
+}
+
 export function instructionMenu(app, row, x, y) {
   const sel = app.viewer.rangeMode ? app.viewer.selectionRange() : null;
   if (sel) { rangeCopyMenu(app, x, y); return; }
@@ -1158,27 +1229,65 @@ export function instructionMenu(app, row, x, y) {
   const d = app.viewer.rowData(row) || {};
   const asm = ((d.mnemonic || '') + ' ' + (d.operands || '')).trim();
   const sb = semanticBlockAt(app, row);
+  const jumpTarget = instructionJumpTarget(d);
+  const jumpLabel = jumpTarget != null
+    ? (() => {
+        const targetSym = app.symbols?.nameAt?.(jumpTarget);
+        return targetSym ? prettyName(targetSym) : addrHex(jumpTarget);
+      })()
+    : null;
+  const hasBookmark = d.address != null && !!app.bookmarks?.has?.(d.address);
   /* AI は 1 行だけ足す。動詞は「AI に聞く…」の下に置いて、このメニューを太らせない。 */
   const assistant = typeof window !== 'undefined' ? window.__hexAi : null;
   menu([
     ...(d.address != null ? [{ header: addrHex(d.address), sub: asm || null }] : []),
     ...(assistant ? [askAiMenuItem(assistant, instructionAiItems(assistant, { address: d.address, text: asm }), { x, y })] : []),
-    { label: t('detail.title') + '…', action: () => showDetail(app, row) },
-    { label: pick('逆コンパイルして読む（C 風）', 'Decompile to C'),
+    ...(jumpTarget != null ? [{
+      label: pick(`${jumpLabel} へジャンプ`, `Jump to ${jumpLabel}`),
+      action: () => app.goToAddress(jumpTarget, { announce: true }),
+    }] : []),
+    { label: pick('疑似Cを開く (Space)', 'Open Pseudo-C (Space)'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'pseudocode') },
+    { label: pick('相互参照 (X)', 'Xrefs (X)'),
+      action: () => showXrefs(app, d.address) },
+    { label: pick('名前を付ける (N)', 'Rename (N)'),
+      action: () => showRename(app, functionStartOf(app, d.address)) },
+    { label: pick('メモを書く (;)', 'Comment (;)'),
+      action: () => showComment(app, d.address) },
+    ...(d.address != null && app.bookmarks ? [
+      {
+        label: hasBookmark
+          ? pick('☆ ブックマークを解除 (B)', '☆ Remove bookmark (B)')
+          : pick('★ このアドレスをブックマーク (B)', '★ Bookmark this address (B)'),
+        action: () => {
+          const name = app.symbols?.nameAt?.(d.address) || addrHex(d.address);
+          const added = app.bookmarks.toggle?.(d.address, { name });
+          app.updateChrome?.();
+          toast(added
+            ? pick('ブックマークに追加しました', 'Bookmark added')
+            : pick('ブックマークを解除しました', 'Bookmark removed'));
+        },
+      },
+      ...(hasBookmark ? [{
+        label: pick('ブックマークメモを編集', 'Edit bookmark note'),
+        action: () => editInstructionBookmarkNote(app, d.address),
+      }] : []),
+    ] : []),
+    { label: t('detail.copyAddress'), action: () => copyText(addrHex(d.address), t('toast.copyAddress')) },
+    { label: t('detail.copyHex'), action: () => copyText(d.bytes || '', t('toast.copyHex')) },
+    { label: t('detail.copyAsm'), action: () => copyText(asm, t('toast.copyAsm')) },
+    '-',
+    { label: t('detail.title') + '…', action: () => showDetail(app, row) },
     ...(sb ? [{
       label: pick('この処理を見る', 'Show this step') + '（' + blockTitle(sb) + '）',
       action: () => showBlockDetail(app, app.semantic.model, sb, app.store.get('currentRegion')),
     }] : []),
-    { label: pick('関数の概要を開く', 'Open function overview'),
+    { label: pick('この関数を調べる', 'Investigate this function'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'report') },
-    { label: pick('この関数を調べる（事実と推測）', 'Investigate this function'),
-      action: () => showFunctionReport(app, functionStartOf(app, d.address), app.lastGoal) },
     ...(sb ? [{
       label: pick('この値の行き先を追う', 'Follow this value'),
       action: () => showValueFlow(app, app.semantic.model, row, app.store.get('currentRegion')),
     }] : []),
-    { label: t('detail.findRefs'), action: () => showXrefs(app, d.address) },
     { label: pick('制御フロー図を見る', 'Show control-flow graph'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'flow') },
     { label: pick('呼び出し図を見る', 'Show call graph'),
@@ -1186,18 +1295,10 @@ export function instructionMenu(app, row, x, y) {
     { label: pick('引数と戻り値を調べる', 'Show arguments and return value'),
       action: () => showTypes(app, functionStartOf(app, d.address)) },
     { label: pick('アドレスの対応を見る', 'Show address mapping'), action: () => showAddressInfo(app, d.address) },
-    '-',
-    { label: pick('ここから実行してみる', 'Run from here'),
-      action: () => showDebugger(app, functionStartOf(app, d.address)) },
-    { label: pick('名前を付ける', 'Rename'),
-      action: () => showRename(app, functionStartOf(app, d.address)) },
-    { label: pick('この行にメモを書く', 'Add a comment'), action: () => showComment(app, d.address) },
     { label: pick('この命令を書き換える（パッチ）', 'Patch this instruction'),
       action: () => showPatchEditor(app, d.address, { mnemonic: d.mnemonic, operands: d.operands, address: d.address }) },
-    '-',
-    { label: t('detail.copyAddress'), action: () => copyText(addrHex(d.address), t('toast.copyAddress')) },
-    { label: t('detail.copyHex'), action: () => copyText(d.bytes || '', t('toast.copyHex')) },
-    { label: t('detail.copyAsm'), action: () => copyText(asm, t('toast.copyAsm')) },
+    { label: pick('ここから実行してみる', 'Run from here'),
+      action: () => showDebugger(app, functionStartOf(app, d.address)) },
     '-',
     { label: t('detail.selectRows'), action: () => app.startSelection(row) },
   ], x, y);
@@ -1267,10 +1368,16 @@ function legacyViewOpeners(app, goal) {
 
 function openFunctionSurface(app, address, view = 'report', goal = app.lastGoal) {
   if (address == null) return false;
-  const start = functionStartOf(app, BigInt(address));
+  const addrBig = BigInt(address);
+  const start = functionStartOf(app, addrBig);
+  const router = productRouter();
+  if (view === 'pseudocode' && router && addrBig !== start) {
+    router.navigate(`/function/${start.toString()}/pseudocode?addr=${addrBig.toString()}`);
+    return true;
+  }
   const [target] = functionViews({ address: start, include: [view], ja: isJa() });
   return !!target && openFunctionView(target, {
-    router: productRouter(),
+    router,
     legacy: legacyViewOpeners(app, goal),
   });
 }
@@ -1393,7 +1500,10 @@ async function prepare(app, box) {
       box.say(pick('値の増減のしかたを調べています…', 'Watching how values change…'));
     }
   });
-  return { strings, program, shapes };
+  const cryptoScan = typeof app.ensureCryptoScan === 'function'
+    ? await app.ensureCryptoScan().catch(() => null)
+    : null;
+  return { strings, program, shapes, cryptoScan };
 }
 
 /** 目的を選ぶボタンの並び。概要画面と「調べる」画面の両方で使う。 */
@@ -1579,6 +1689,9 @@ export function showOverview(app) {
     }
     const box = progressBox(later, pick('中身を調べています…', 'Looking inside…'));
     let cancelled = false;
+    const runEpoch = app.backend?.gen;
+    const runSlice = app.sliceIndex;
+    const isStale = () => cancelled || !sheet.root.isConnected || app.backend?.gen !== runEpoch || app.sliceIndex !== runSlice;
     const runController = new AbortController();
     sheet.onClose = () => {
       cancelled = true;
@@ -1586,19 +1699,20 @@ export function showOverview(app) {
       app.backend.onScanProgress = null;
     };
 
-    prepare(app, box).then(async ({ strings, program, shapes }) => {
-      if (cancelled || !sheet.root.isConnected) return;
+    prepare(app, box).then(async ({ strings, program, shapes, cryptoScan }) => {
+      if (isStale()) return;
       let recognition=null;
       try { recognition=await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { recognition=null; }
+      if (isStale()) return;
       const cxxFields = cxxMemberIndexForApp(app);
       const cxxRevision = cxxFields?.revision || 0;
       const report = await autoAnalyze({
         cxxFields,
         strings, program, symbols: app.symbols, region, fields: app.fields,
-        shapes, recognition,
+        shapes, cryptoScan, recognition,
         analyze: makeAnalyzer(app, region, runController.signal),
         scanAccess: makeAccessScanner(app, region, runController.signal),
-        isCancelled: () => cancelled || !sheet.root.isConnected,
+        isCancelled: () => isStale(),
         onProgress: (p) => {
           box.set({ done: p.done, all: p.all });
           /*
@@ -1611,7 +1725,7 @@ export function showOverview(app) {
         },
       });
       box.done();
-      if (cancelled || !sheet.root.isConnected) return;
+      if (isStale()) return;
       app.autoReport = { report, key: region ? region.id : null, gen: app.symbols.gen, cxxFields, cxxRevision };
       void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
       renderAutoReport(app, sheet, later, report, region);
@@ -1668,89 +1782,101 @@ async function pinnedFor(app, goal, ctx) {
       (app.autoReport.cxxRevision || 0) === (cxxFields?.revision || 0)) return fromAuto;
 
   if (!app.pinnedCache) app.pinnedCache = new Map();
-  const key = JSON.stringify([goal.id, goal.text, app.symbols.gen, cxxFields?.snapshotId, cxxFields?.revision]);
-  if (app.pinnedCache.has(key)) return app.pinnedCache.get(key);
-
   const region = ctx.region;
-  if (ctx.box) ctx.box.say(pick('値を 1 つに絞り込んでいます…', 'Narrowing down to one value…'));
-  const common = {
-    goal,
-    fields: app.fields,
-    cxxFields,
-    shapes: ctx.shapes || app.shapes || null,
-    program: ctx.program,
-    symbols: app.symbols,
-    strings: ctx.strings || [],
-    region,
-    map: report ? report.map : null,
-    // 形から立てた候補を開いて確かめるとき、参照している文言もそこで読む
-    textAt: stringLookup(ctx.strings || []),
-    signal: ctx.signal || null,
-    analyze: makeAnalyzer(app, region, ctx.signal || null),
-    scanAccess: makeAccessScanner(app, region, ctx.signal || null),
-    // 1 つの目的だけを見にきているので、ここでは予算を広く取る
-    budget: { left: 48 },
-    limit: 12,
-    onProgress: (x) => { if (ctx.box) ctx.box.set(x); },
-  };
-  let retryableFailure = false;
-  const attempt = async (operation) => {
-    try { return await operation(); }
-    catch (error) {
-      if (ctx.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR' ||
-          error?.code === 'pinpoint-analysis-timeout' || error?.code === 'pinpoint-access-timeout') {
-        retryableFailure = true;
+  const key = JSON.stringify([
+    goal.id, goal.text, app.backend?.gen ?? 0, app.sliceIndex ?? 0, region?.id ?? null,
+    app.symbols.gen, cxxFields?.snapshotId, cxxFields?.revision,
+  ]);
+  let entry = app.pinnedCache.get(key);
+  if (!entry) {
+    if (ctx.box) ctx.box.say(pick('値を 1 つに絞り込んでいます…', 'Narrowing down to one value…'));
+    const sharedController = new AbortController();
+    const common = {
+      goal,
+      fields: app.fields,
+      cxxFields,
+      shapes: ctx.shapes || app.shapes || null,
+      program: ctx.program,
+      symbols: app.symbols,
+      strings: ctx.strings || [],
+      region,
+      map: report ? report.map : null,
+      textAt: stringLookup(ctx.strings || []),
+      signal: sharedController.signal,
+      analyze: makeAnalyzer(app, region, sharedController.signal),
+      scanAccess: makeAccessScanner(app, region, sharedController.signal),
+      budget: { left: 48 },
+      limit: 12,
+      onProgress: (x) => { if (ctx.box) ctx.box.set(x); },
+    };
+    let retryableFailure = false;
+    const attempt = async (operation) => {
+      try { return await operation(); }
+      catch (error) {
+        if (sharedController.signal.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR' ||
+            error?.code === 'pinpoint-analysis-timeout' || error?.code === 'pinpoint-access-timeout') {
+          retryableFailure = true;
+        }
+        return null;
       }
-      return null;
+    };
+    const promise = (async () => {
+      let pin = null;
+      if (app.fields?.classCount || cxxFields?.fieldCount) {
+        pin = await attempt(() => pinpointField(common));
+      }
+      const undecided = (p) => !p || !p.top ||
+        verdictRank(p.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
+      if (undecided(pin) && ((ctx.ranked && ctx.ranked.length) || (common.shapes && common.shapes.size))) {
+        const loc = await attempt(() => pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked || [] })));
+        if (beats(loc, pin)) pin = loc;
+      }
+      if (undecided(pin) && ctx.ranked && ctx.ranked.length) {
+        const fn = await attempt(() => pinpointFunction(Object.assign({}, common, { ranked: ctx.ranked })));
+        if (beats(fn, pin)) pin = fn;
+      }
+      return pin;
+    })();
+    entry = { promise, controller: sharedController, waiters: 0, settled: false };
+    app.pinnedCache.set(key, entry);
+    promise.then(() => {
+      entry.settled = true;
+      if ((sharedController.signal.aborted || retryableFailure) && app.pinnedCache.get(key) === entry) {
+        app.pinnedCache.delete(key);
+      }
+    }, () => {
+      entry.settled = true;
+      if (app.pinnedCache.get(key) === entry) app.pinnedCache.delete(key);
+    });
+  }
+  const callerSignal = ctx.signal || null;
+  if (callerSignal?.aborted) return null;
+  entry.waiters += 1;
+  let released = false;
+  const release = (aborted) => {
+    if (released) return;
+    released = true;
+    entry.waiters = Math.max(0, entry.waiters - 1);
+    if (aborted && !entry.settled && entry.waiters === 0) {
+      if (!entry.controller.signal.aborted) entry.controller.abort('pinned-waiters-aborted');
+      if (app.pinnedCache.get(key) === entry) app.pinnedCache.delete(key);
     }
   };
-  const p = (async () => {
-    let pin = null;
-    if (app.fields?.classCount || cxxFields?.fieldCount) {
-      pin = await attempt(() => pinpointField(common));
-    }
-    /*
-     * クラス表から決まらなかったなら、形と命令から「場所」を決めにいく。
-     *
-     * ここは長いあいだ `!pin.top` のときしか走っていなかった。ところが
-     * クラス表がある C++ ゲームでは、pinpointField は必ず何かを 1 位に立てる
-     * （中身は広告 SDK の名前で、判定は「見つかりませんでした」）。top が
-     * ある以上ここが素通りされ、**命令から降りる道が 1 度も試されないまま**
-     * 「見つかりませんでした」と出ていた。battlecats の HP がまさにこれ。
-     * 決着していないなら、必ずもう一方も試して、良かったほうを採る。
-     */
-    const undecided = (p) => !p || !p.top ||
-      verdictRank(p.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
-    if (undecided(pin) && ((ctx.ranked && ctx.ranked.length) || (common.shapes && common.shapes.size))) {
-      const loc = await attempt(() => pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked || [] })));
-      if (beats(loc, pin)) pin = loc;
-    }
-    /*
-     * 値としては決まらなかった。それでも「その処理がどれか」は決まることがある。
-     *
-     * ゲーム本体が C++ のアプリでは、値の名前はどこにも残っていない代わりに、
-     * 「攻撃力アップ:%d 基ダ×(100+%d)÷100」のような、開発者が書いた計算式が残る。
-     * その文言を参照している関数が 1 個だけで、しかもその式の定数が命令の中に
-     * 実在するなら、処理としては確定できる。ここを呼んでいなかったので、
-     * 画面には「見つかりませんでした」しか出ていなかった。
-     */
-    if (undecided(pin) && ctx.ranked && ctx.ranked.length) {
-      const fn = await attempt(() => pinpointFunction(Object.assign({}, common, { ranked: ctx.ranked })));
-      if (beats(fn, pin)) pin = fn;
-    }
-    return pin;
-  })();
-  app.pinnedCache.set(key, p);
-  try {
-    const result = await p;
-    if ((ctx.signal?.aborted || retryableFailure) && app.pinnedCache.get(key) === p) {
-      app.pinnedCache.delete(key);
-    }
-    return result;
-  } catch (error) {
-    if (app.pinnedCache.get(key) === p) app.pinnedCache.delete(key);
-    throw error;
+  if (!callerSignal) {
+    try { return await entry.promise; }
+    finally { release(false); }
   }
+  return await new Promise((resolve, reject) => {
+    const onAbort = () => {
+      release(true);
+      resolve(null);
+    };
+    callerSignal.addEventListener('abort', onAbort, { once: true });
+    entry.promise.then(
+      (res) => { callerSignal.removeEventListener('abort', onAbort); release(false); resolve(res); },
+      (err) => { callerSignal.removeEventListener('abort', onAbort); release(false); reject(err); },
+    );
+  });
 }
 
 /**
@@ -1789,8 +1915,8 @@ function beats(next, cur) {
 const PURPOSE_ROWS = 10;
 
 /** 答えに選ばれた処理 1 個ぶんの「何をしているか」を、見出しの下に足す。 */
-async function describeAnswer(app, region, program, strings, addr, into) {
-  const analyze = makeAnalyzer(app, region);
+async function describeAnswer(app, region, program, strings, addr, into, signal = null) {
+  const analyze = makeAnalyzer(app, region, signal);
   if (!analyze || !into) return;
   const range = program ? program.functionRange(addr) : null;
   let model = null;
@@ -1993,11 +2119,14 @@ export function showClass(app, className) {
     const ul = list();
     for (const iv of info.ivars) {
       const type = typeWord(iv.type);
+      const hasOffset = iv.offset != null;
       ul.append(tapRow(plainFieldName(iv.name), {
-        sub: (type ? type + '  ·  ' : '') +
-          pick('先頭から ' + offsetHex(BigInt(iv.offset)) + ' の位置', 'at ' + offsetHex(BigInt(iv.offset))),
-        right: '›',
-        onTap: () => { sheet.close(); showField(app, className, iv); },
+        sub: (type ? type + '  ·  ' : '') + (hasOffset
+          ? pick('先頭から ' + offsetHex(BigInt(iv.offset)) + ' の位置', 'at ' + offsetHex(BigInt(iv.offset)))
+          : pick('オフセット不明', 'offset unknown')),
+        right: hasOffset ? '›' : '',
+        disabled: !hasOffset,
+        onTap: hasOffset ? () => { sheet.close(); showField(app, className, iv); } : undefined,
       }));
     }
     body.append(ul);
@@ -2367,12 +2496,12 @@ function appendNumberFlow(app, parent, addr, offset, fallback) {
   return host;
 }
 
-async function attachIrFlow(app, host, addr, offset) {
+async function attachIrFlow(app, host, addr, offset, signal = null) {
   if (!host || addr == null || !app.store.get('canDisassemble')) return;
   const window = functionAnalysisWindow(app, addr);
   if (!window) return;
   const { region, start, end } = window;
-  const analyze = makeAnalyzer(app, region);
+  const analyze = makeAnalyzer(app, region, signal);
   if (!analyze) return;
   let model = null;
   try {
@@ -3197,9 +3326,11 @@ export function showDataTables(app) {
   const out = el('div');
   body.append(out);
 
+  const schemaEpoch = app.backend?.gen;
+  const schemaSlice = app.sliceIndex;
   app.ensureSchemas((p) => box.set(p)).then((schemas) => {
     box.done();
-    if (!sheet.root.isConnected) return;
+    if (!sheet.root.isConnected || app.backend?.gen !== schemaEpoch || app.sliceIndex !== schemaSlice) return;
     if (!schemas || !schemas.length) {
       out.append(para(pick(
         'データファイルを読み込んでいるところが見つかりませんでした。',
@@ -3385,8 +3516,11 @@ export function showCandidates(app, goal) {
   const results = el('div');
   body.append(results);
 
+  const candEpoch = app.backend?.gen;
+  const candSlice = app.sliceIndex;
+  const isCandStale = () => !sheet.root.isConnected || app.backend?.gen !== candEpoch || app.sliceIndex !== candSlice;
   prepare(app, box).then(async ({ strings, program, shapes }) => {
-    if (!sheet.root.isConnected) { box.done(); return; }
+    if (isCandStale()) { box.done(); return; }
     const region = app.codeRegion();
 
     /*
@@ -3397,13 +3531,14 @@ export function showCandidates(app, goal) {
     const ranked = rankCandidates({
       goal, strings, program, symbols: app.symbols, region, limit: 40,
       vendors: vendorsOf(app.fields),
+      cryptoConstants: cryptoScan?.constants || null,
     });
     const pin = await pinnedFor(app, goal, {
       strings, program, shapes, region, box, ranked: ranked.candidates,
       signal: controller.signal,
     });
     box.done();
-    if (!sheet.root.isConnected) return;
+    if (isCandStale()) return;
     if ((!pin?.top || verdictRank(pin.verdict)<=verdictRank(VERDICT.AMBIGUOUS))
         && supportsArm64SemanticAnalysis(app.store?.get?.('architecture')??app.store?.get?.('capability')?.architecture)
         && app.symbols?.names?.some(name=>typeof name==='string'&&/^_?_Z/.test(name))) {
@@ -3647,10 +3782,17 @@ export function showCandidates(app, goal) {
   }).catch((err) => {
     box.done();
     if (sheet.root.isConnected) {
-      beginnerFailure(results, err, {
+      const codeRegion = app.codeRegion();
+      beginnerFailure(results, err, codeRegion && codeRegion.vmAddr != null ? {
         actionLabel: pick('逆アセンブリを見る', 'Show disassembly'),
-        onAction: () => { sheet.close(); app.goToAddress(app.codeRegion().vmAddr, { announce: true }); },
-      });
+        onAction: () => {
+          sheet.close();
+          const targetRegion = app.codeRegion();
+          if (targetRegion && targetRegion.vmAddr != null) {
+            app.goToAddress(targetRegion.vmAddr, { announce: true });
+          }
+        },
+      } : {});
     }
   });
 }
@@ -4111,7 +4253,8 @@ export function showFunctionReport(app, addr, goal) {
         nextStepsBlkRef.replaceWith(nextSteps);
         nextStepsBlkRef = nextSteps;
       }
-    }).catch(() => { /* relationship enrichment is optional */ });
+    }).catch(() => { /* relationship enrichment is optional */ })
+      .finally(() => { if (loadingNote && loadingNote.parentNode) loadingNote.remove(); });
   }).catch((err) => {
     box.done();
     if (controller.signal.aborted || err?.name === 'AbortError') return;
@@ -4540,17 +4683,32 @@ function geminiAnalysisSection(reportOrGetter, res, parentSignal = null) {
   output.setAttribute('role', 'document');
   section.append(status, output);
 
+  const MAX_GEMINI_MARKDOWN_CHARS = 512 * 1024;
+  const GEMINI_RENDER_THROTTLE_MS = 64;
   let controller = null;
   let markdownText = '';
   let renderFrame = 0;
+  let lastRenderAt = 0;
   const renderOutput = () => {
     renderFrame = 0;
+    lastRenderAt = Date.now();
     const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 72;
     renderGeminiMarkdown(output, markdownText);
     if (follow) output.scrollTop = output.scrollHeight;
   };
   const scheduleRender = () => {
-    if (!renderFrame) renderFrame = requestAnimationFrame(renderOutput);
+    if (renderFrame) return;
+    if (Date.now() - lastRenderAt < GEMINI_RENDER_THROTTLE_MS) {
+      renderFrame = requestAnimationFrame(() => {
+        if (Date.now() - lastRenderAt < GEMINI_RENDER_THROTTLE_MS) {
+          renderFrame = requestAnimationFrame(renderOutput);
+        } else {
+          renderOutput();
+        }
+      });
+      return;
+    }
+    renderFrame = requestAnimationFrame(renderOutput);
   };
   const flushRender = () => {
     if (renderFrame) cancelAnimationFrame(renderFrame);
@@ -4593,7 +4751,9 @@ function geminiAnalysisSection(reportOrGetter, res, parentSignal = null) {
     try {
       await streamGemini(payload, {
         onText: (chunk) => {
-          markdownText += chunk;
+          if (markdownText.length < MAX_GEMINI_MARKDOWN_CHARS) {
+            markdownText += String(chunk).slice(0, MAX_GEMINI_MARKDOWN_CHARS - markdownText.length);
+          }
           copy.disabled = !markdownText;
           scheduleRender();
         },
@@ -4624,7 +4784,10 @@ function geminiAnalysisSection(reportOrGetter, res, parentSignal = null) {
     if (controller) controller.abort();
   });
   if (parentSignal) {
-    const onParentAbort = () => { if (controller) controller.abort(); };
+    const onParentAbort = () => {
+      if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
+      if (controller) controller.abort();
+    };
     if (parentSignal.aborted) onParentAbort();
     else parentSignal.addEventListener('abort', onParentAbort, { once: true });
   }

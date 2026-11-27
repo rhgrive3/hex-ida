@@ -45,6 +45,7 @@ export const PROVENANCE_LOSS_REASONS = Object.freeze([
   'target-cap',
   'unsupported-operation',
 ]);
+const PROVENANCE_LOSS_REASON_SET = new Set(PROVENANCE_LOSS_REASONS);
 
 function fail(code) { throw new TypeError(code); }
 
@@ -170,15 +171,14 @@ function signedBounds(widthBits) {
 export function addRange(range, delta, widthBits) {
   const d = big(delta);
   if (d == null) return { range: UNBOUNDED_RANGE, lost: 'non-linear-arithmetic' };
-  if (rangeIsUnbounded(range)) {
-    const min = range.min == null ? null : range.min + d;
-    const max = range.max == null ? null : range.max + d;
-    return { range: createOffsetRange(min, max), lost: null };
-  }
-  const min = range.min + d;
-  const max = range.max + d;
   const bounds = signedBounds(widthBits);
-  if (!bounds || min < bounds.min || max > bounds.max) {
+  if (!bounds) {
+    return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
+  }
+  const min = range.min == null ? null : range.min + d;
+  const max = range.max == null ? null : range.max + d;
+  if ((min != null && (min < bounds.min || min > bounds.max))
+      || (max != null && (max < bounds.min || max > bounds.max))) {
     return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
   }
   return { range: createOffsetRange(min, max), lost: null };
@@ -285,7 +285,7 @@ function targetMatchesCanonicalProof(input, proof, rootIdentity) {
   const addressSpace = canonicalAddressSpace(input.addressSpace);
   const rootKind = typeof input.rootKind === 'string' ? input.rootKind : 'unknown';
   const rootEntityId = typeof input.rootEntityId === 'string' && input.rootEntityId.trim()
-    ? input.rootEntityId : null;
+    ? input.rootEntityId.trim() : null;
   return addressSpace === canonicalAddressSpace(proof.addressSpace)
     && rootKind === proofRootKind(proof)
     && stableStringify(canonicalIdentity) === stableStringify(proof.rootIdentity ?? null)
@@ -457,7 +457,7 @@ export function createPointsToSet(input = {}) {
   // imprecision: the alias layer maps these onto proof reasons, and a free-form
   // string there becomes an answer nobody can account for.
   for (const reason of lossReasons) {
-    if (!PROVENANCE_LOSS_REASONS.includes(reason)) fail(`points-to-unknown-loss-reason:${reason}`);
+    if (!PROVENANCE_LOSS_REASON_SET.has(reason)) fail(`points-to-unknown-loss-reason:${reason}`);
   }
   return deepFreeze({
     top,
@@ -480,7 +480,7 @@ function canonicalProofForTarget(target) {
   return targetMatchesCanonicalProof(target, proof) ? proof : null;
 }
 
-function mergeSameRootTargets(prior, target) {
+function mergeSameRootTargets(prior, target, offsetRange = joinRange(prior.offsetRange, target.offsetRange)) {
   const priorProof = canonicalProofForTarget(prior);
   const targetProof = canonicalProofForTarget(target);
   // A genuine root-descriptor proof is evidence about the shared storage, so a
@@ -490,15 +490,22 @@ function mergeSameRootTargets(prior, target) {
   const proof = priorProof && targetProof
     ? (priorProof.separationClass === targetProof.separationClass ? priorProof : null)
     : (priorProof ?? targetProof);
+  const priorStorage = prior.canonicalRootStorageClass ?? null;
+  const targetStorage = target.canonicalRootStorageClass ?? null;
+  const canonicalRootStorageClass = priorStorage && targetStorage
+    ? (priorStorage === targetStorage ? priorStorage : null)
+    : (priorStorage ?? targetStorage);
   const merged = {
     ...prior,
     separationClass: proof?.separationClass
       ?? (prior.separationClass === target.separationClass ? prior.separationClass : null),
     separationAuthority: proof ? 'root-descriptor' : null,
-    offsetRange: joinRange(prior.offsetRange, target.offsetRange),
+    offsetRange,
     widthBits: prior.widthBits === target.widthBits ? prior.widthBits : null,
     evidenceIds: [...prior.evidenceIds, ...target.evidenceIds],
   };
+  if (canonicalRootStorageClass != null) merged.canonicalRootStorageClass = canonicalRootStorageClass;
+  else delete merged.canonicalRootStorageClass;
   if (proof) merged[ROOT_DESCRIPTOR_PROOF] = proof;
   else delete merged[ROOT_DESCRIPTOR_PROOF];
   return createPointsToTarget(merged);
@@ -532,10 +539,13 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
       seenRoots.add(left.rootKey);
       const leftProof = canonicalProofForTarget(left);
       const rightProof = canonicalProofForTarget(right);
+      const leftStorage = left.canonicalRootStorageClass ?? null;
+      const rightStorage = right.canonicalRootStorageClass ?? null;
       if ((leftProof == null) !== (rightProof == null)
         || (leftProof != null && leftProof.separationClass !== rightProof.separationClass)
         || (leftProof == null && (left.separationClass !== right.separationClass
-          || left.separationAuthority !== right.separationAuthority))) {
+          || left.separationAuthority !== right.separationAuthority))
+        || leftStorage !== rightStorage) {
         reusable = false;
         break;
       }
@@ -564,15 +574,17 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
 /** Widening applied at loop headers once the iteration threshold is passed. */
 export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET) {
   const targetLimit = maxTargetsPerSet(budget);
-  if (next.top) return next;
   if (previous == null) return next;
-  if (previous.top) return previous;
+  if (previous.top || next.top) {
+    return createPointsToSet({ top: true, lossReasons: [...previous.lossReasons, ...next.lossReasons] });
+  }
   const priorByRoot = new Map(previous.targets.map((target) => [target.rootKey, target]));
   // A root that only `previous` holds must survive widening: widening may lose
   // precision but never drops a known reachable root — dropping it broke the
   // upper-bound law (previous ⊑ widened) and let the fixed point "converge"
   // below its own past state (#5358).
-  const rootsOnlyInPrevious = previous.targets.filter((target) => !next.targets.some((candidate) => candidate.rootKey === target.rootKey));
+  const nextRootKeys = new Set(next.targets.map((candidate) => candidate.rootKey));
+  const rootsOnlyInPrevious = previous.targets.filter((target) => !nextRootKeys.has(target.rootKey));
   let anyWidened = false;
   const targets = next.targets.map((target) => {
     const prior = priorByRoot.get(target.rootKey);
@@ -584,12 +596,12 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
     if (widenedRange.min !== target.offsetRange.min || widenedRange.max !== target.offsetRange.max) {
       anyWidened = true;
     }
-    return createPointsToTarget({ ...target, offsetRange: widenedRange });
+    return mergeSameRootTargets(prior, target, widenedRange);
   });
   if (rootsOnlyInPrevious.length) anyWidened = true;
   const merged = [...targets, ...rootsOnlyInPrevious];
   if (merged.length > targetLimit) {
-    return topPointsTo('target-cap');
+    return createPointsToSet({ top: true, lossReasons: [...previous.lossReasons, ...next.lossReasons, 'target-cap'] });
   }
   return createPointsToSet({
     targets: merged,
@@ -646,12 +658,60 @@ export function pointsToDigest(set) {
  * Monotonicity check used by the property tests: a join must never be lower in
  * the lattice than either input.
  */
+function targetsSortedByRootKey(targets) {
+  for (let i = 1; i < targets.length; i += 1) {
+    if (targets[i - 1].rootKey >= targets[i].rootKey) return false;
+  }
+  return true;
+}
+
+function pointsToLessOrEqualLinear(aTargets, bTargets, startIndex) {
+  for (let ai = startIndex; ai < aTargets.length; ai += 1) {
+    const target = aTargets[ai];
+    const other = bTargets.find((candidate) => candidate.rootKey === target.rootKey);
+    if (!other) return false;
+    const inner = target.offsetRange;
+    const outer = other.offsetRange;
+    if (outer.min != null && (inner.min == null || inner.min < outer.min)) return false;
+    if (outer.max != null && (inner.max == null || inner.max > outer.max)) return false;
+  }
+  return true;
+}
+
 export function pointsToLessOrEqual(a, b) {
   if (b.top) return true;
   if (a.top) return false;
-  for (const target of a.targets) {
-    const other = b.targets.find((candidate) => candidate.rootKey === target.rootKey);
-    if (!other) return false;
+  const aTargets = a.targets;
+  const bTargets = b.targets;
+  let bi = 0;
+  let prevAKey = null;
+  let prevBKey = null;
+  for (let ai = 0; ai < aTargets.length; ai += 1) {
+    const target = aTargets[ai];
+    const aKey = target.rootKey;
+    if (prevAKey !== null && prevAKey >= aKey) {
+      return pointsToLessOrEqualLinear(aTargets, bTargets, ai);
+    }
+    prevAKey = aKey;
+    while (bi < bTargets.length) {
+      const bKey = bTargets[bi].rootKey;
+      if (prevBKey !== null && prevBKey >= bKey) {
+        return pointsToLessOrEqualLinear(aTargets, bTargets, ai);
+      }
+      if (bKey < aKey) {
+        prevBKey = bKey;
+        bi += 1;
+        continue;
+      }
+      break;
+    }
+    if (bi >= bTargets.length || bTargets[bi].rootKey !== aKey) {
+      if (!targetsSortedByRootKey(bTargets)) {
+        return pointsToLessOrEqualLinear(aTargets, bTargets, ai);
+      }
+      return false;
+    }
+    const other = bTargets[bi];
     const inner = target.offsetRange;
     const outer = other.offsetRange;
     if (outer.min != null && (inner.min == null || inner.min < outer.min)) return false;

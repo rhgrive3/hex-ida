@@ -46,11 +46,14 @@ function unsignedValue(value, bits) {
 
 function flagsFor(sub, left, right, bits = 64) {
   if (sub === 'fsub') {
-    const a=Number(left), b=Number(right);
-    if (Number.isNaN(a) || Number.isNaN(b)) return { n:false, z:false, c:true, v:true, result:NaN, bits:widthOf(bits) };
-    if (a === b) return { n:false, z:true, c:true, v:false, result:0, bits:widthOf(bits) };
-    if (a < b) return { n:true, z:false, c:false, v:false, result:a-b, bits:widthOf(bits) };
-    return { n:false, z:false, c:true, v:false, result:a-b, bits:widthOf(bits) };
+    const w = widthOf(bits);
+    const a = w === 32 ? Math.fround(Number(left)) : Number(left);
+    const b = w === 32 ? Math.fround(Number(right)) : Number(right);
+    if (Number.isNaN(a) || Number.isNaN(b)) return { n:false, z:false, c:true, v:true, result:NaN, bits:w };
+    if (a === b) return { n:false, z:true, c:true, v:false, result:0, bits:w };
+    const diff = w === 32 ? Math.fround(a - b) : (a - b);
+    if (a < b) return { n:true, z:false, c:false, v:false, result:diff, bits:w };
+    return { n:false, z:false, c:true, v:false, result:diff, bits:w };
   }
   bits = widthOf(bits);
   const a = unsignedValue(left, bits);
@@ -104,7 +107,7 @@ export function evaluateNZCVCondition(sub, cond, left, right, bits) {
   } else {
     if (canonicalOperandValue(left) === null || canonicalOperandValue(right) === null) return null;
   }
-  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
+  const width = canonicalBits(bits, bits === undefined ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
   const f = flagsFor(producer, left, right, width);
   if (!f || !CONDITIONS.has(condition)) return null;
@@ -161,7 +164,7 @@ const COMPARE_INVERSE = Object.freeze({ eq: 'ne', ne: 'eq', lt: 'ge', le: 'gt', 
 // reconstruction preserves the original `comparisonDomain` so negation never
 // launders a floating compare into an integer one.
 export function invertBooleanCondition(condition) {
-  if (condition?.kind === 'compare' && COMPARE_INVERSE[condition.op]) {
+  if (condition?.kind === 'compare' && typeof condition.op === 'string' && Object.hasOwn(COMPARE_INVERSE, condition.op)) {
     const domain = condition.comparisonDomain;
     const exactComplement = domain !== 'floating' || condition.op === 'eq' || condition.op === 'ne';
     if (exactComplement) {
@@ -202,7 +205,7 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
   if (producer === null) return null;
   const condition = canonicalCondition(cond);
   if (condition === null) return null;
-  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
+  const width = canonicalBits(bits, bits === undefined ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
   if (!isExpressionNode(left) || !isExpressionNode(right)) return null;
   sub = producer;
@@ -304,7 +307,7 @@ function atomicOperandText(text) {
 
 export function renderNZCVCondition(sub, cond, leftText, rightText, bits, source = null) {
   if (typeof leftText !== 'string' || typeof rightText !== 'string') return null;
-  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
+  const width = canonicalBits(bits, bits === undefined ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
   const left = expr.variable(atomicOperandText(leftText), width, null, source);
   const right = expr.variable(atomicOperandText(rightText), width, null, source);

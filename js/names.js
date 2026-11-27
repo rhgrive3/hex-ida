@@ -281,7 +281,31 @@ export class NoteStore {
     this.types = new Map();      // 'func:key' -> 型
     this.structs = [];           // 自分で作った構造体（types.js が読む）
     this.dirty = false;
+    this.onChange = null;
+    this._listeners = new Set();
     this.load();
+  }
+
+  setOnChange(fn) {
+    this.onChange = typeof fn === 'function' ? fn : null;
+  }
+
+  subscribe(fn) {
+    if (typeof fn !== 'function') throw new TypeError('note-subscriber-invalid');
+    this._listeners.add(fn);
+    return () => { this._listeners.delete(fn); };
+  }
+
+  _notifyChange(kind, detail = null) {
+    const event = { kind, detail, count: this.count };
+    if (typeof this.onChange === 'function') {
+      try { this.onChange(event); }
+      catch { /* observer isolation */ }
+    }
+    for (const fn of this._listeners) {
+      try { fn(event); }
+      catch { /* observer isolation */ }
+    }
   }
 
   /* ── 読み書き ─────────────────────────────────────────── */
@@ -380,10 +404,10 @@ export class NoteStore {
       if (!legacyRaw) continue;
       try {
         const payload = JSON.parse(legacyRaw);
-        if (!payload || payload.cleared === true) continue;
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload.cleared === true) continue;
         this.legacyCandidate = { sourceId: old, payload };
-      } catch { }
-      return;
+        return;
+      } catch { continue; }
     }
   }
 
@@ -739,6 +763,7 @@ export class NoteStore {
       this.dirty = false;
       this.lastSaveError = this._cleanupStatus(cleanup);
       this.lastMutationSaved = true;
+      this._notifyChange('save');
       return true;
     } catch (error) {
       return this._saveFailure(error?.name || 'STORAGE_ERROR', error);
@@ -761,11 +786,14 @@ export class NoteStore {
 
   async transactionAsync(fn) {
     this._transactionDepth = (this._transactionDepth || 0) + 1;
+    let succeeded = false;
     try {
-      return await fn();
+      const result = await fn();
+      succeeded = true;
+      return result;
     } finally {
       this._transactionDepth--;
-      if (this._transactionDepth === 0 && this.dirty) {
+      if (succeeded && this._transactionDepth === 0 && this.dirty) {
         this.save();
       }
     }
@@ -782,8 +810,13 @@ export class NoteStore {
     if (clean) this.names.set(k, clean);
     else this.names.delete(k);
     this.dirty = true;
-    if (this._transactionDepth > 0 || !save) return true;
-    return this._persistDelta('names', k, clean || null);
+    if (this._transactionDepth > 0 || !save) {
+      this._notifyChange('name', { key: k, value: clean || null });
+      return true;
+    }
+    const ok = this._persistDelta('names', k, clean || null);
+    this._notifyChange('name', { key: k, value: clean || null });
+    return ok;
   }
 
   /** 保存済みの名前をぜんぶ [{addr, name}] で返す（起動時に索引へ流し込む）。 */
@@ -806,8 +839,13 @@ export class NoteStore {
     if (clean) this.comments.set(k, clean);
     else this.comments.delete(k);
     this.dirty = true;
-    if (this._transactionDepth > 0 || !save) return true;
-    return this._persistDelta('comments', k, clean || null);
+    if (this._transactionDepth > 0 || !save) {
+      this._notifyChange('comment', { key: k, value: clean || null });
+      return true;
+    }
+    const ok = this._persistDelta('comments', k, clean || null);
+    this._notifyChange('comment', { key: k, value: clean || null });
+    return ok;
   }
 
   commentCount() { return this.comments.size; }
@@ -823,8 +861,13 @@ export class NoteStore {
     if (clean) this.vars.set(kk, clean);
     else this.vars.delete(kk);
     this.dirty = true;
-    if (this._transactionDepth > 0 || !save) return true;
-    return this._persistDelta('vars', kk, clean || null);
+    if (this._transactionDepth > 0 || !save) {
+      this._notifyChange('var', { key: kk, value: clean || null });
+      return true;
+    }
+    const ok = this._persistDelta('vars', kk, clean || null);
+    this._notifyChange('var', { key: kk, value: clean || null });
+    return ok;
   }
 
   typeOf(func, k) { return this.types.get(key(func) + ':' + k) || null; }
@@ -836,8 +879,13 @@ export class NoteStore {
     if (clean) this.types.set(kk, clean);
     else this.types.delete(kk);
     this.dirty = true;
-    if (this._transactionDepth > 0 || !save) return true;
-    return this._persistDelta('types', kk, clean || null);
+    if (this._transactionDepth > 0 || !save) {
+      this._notifyChange('type', { key: kk, value: clean || null });
+      return true;
+    }
+    const ok = this._persistDelta('types', kk, clean || null);
+    this._notifyChange('type', { key: kk, value: clean || null });
+    return ok;
   }
 
   /* ── まとめて ─────────────────────────────────────────── */
@@ -848,7 +896,10 @@ export class NoteStore {
     this.names.clear(); this.comments.clear(); this.vars.clear(); this.types.clear();
     this.structs = [];
     this.dirty = true;
-    if (!this.id) return this._saveFailure('NO_ID');
+    if (!this.id) {
+      this._notifyChange('clear');
+      return this._saveFailure('NO_ID');
+    }
     // Keep the legacy payload intact for old app versions, but atomically write
     // a primary-key tombstone so this version never migrates it again.
     try {
@@ -859,14 +910,18 @@ export class NoteStore {
       this._snapshotState = SNAPSHOT_TOMBSTONE;
       this._snapshotGeneration = generation;
       this._snapshotLoadError = null;
+      this._deltaScanComplete = true;
+      this._unreadableDeltaKeys.clear();
       const cleanup = this._clearDeltas();
       this._cleanupPending = !cleanup.ok;
       this.dirty = false;
       this.lastSaveError = this._cleanupStatus(cleanup);
       this.lastMutationSaved = true;
       this.migratedFrom = null;
+      this._notifyChange('clear');
       return true;
     } catch (error) {
+      this._notifyChange('clear');
       return this._saveFailure(error?.name || 'STORAGE_ERROR', error);
     }
   }
@@ -886,16 +941,54 @@ export class NoteStore {
   /** 読み込み（書き出したものを戻す）。既存の内容とまぜる。 */
   fromJSON(text) {
     const o = JSON.parse(text);
-    if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');
+    if (!o || typeof o !== 'object' || Array.isArray(o)) throw new Error('invalid-notes-import');
     // Identity comparison stays type-preserving: a structured id must never
     // launder into this store's namespace through String() coercion (#5968).
     if (o.id != null && typeof o.id !== 'string') throw new Error('notes-file-mismatch');
     if (o.id != null && this.id != null && o.id !== this.id) throw new Error('notes-file-mismatch');
+    const plainSection = (value) => {
+      if (value == null) return null;
+      if (typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid-notes-import');
+      return value;
+    };
+    const names = plainSection(o.names);
+    const comments = plainSection(o.comments);
+    const vars = plainSection(o.vars);
+    const types = plainSection(o.types);
+    if (o.structs != null && !Array.isArray(o.structs)) throw new Error('invalid-notes-import');
     let n = 0;
-    for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
-    for (const [k, v] of Object.entries(o.comments || {})) { this.comments.set(k, v); n++; }
-    for (const [k, v] of Object.entries(o.vars || {})) { this.vars.set(k, v); n++; }
-    for (const [k, v] of Object.entries(o.types || {})) { this.types.set(k, v); n++; }
+    if (names) {
+      for (const [k, v] of Object.entries(names)) {
+        if (typeof v !== 'string') continue;
+        const clean = cleanName(v);
+        if (!clean) continue;
+        this.names.set(k, clean); n++;
+      }
+    }
+    if (comments) {
+      for (const [k, v] of Object.entries(comments)) {
+        if (typeof v !== 'string') continue;
+        const clean = v.slice(0, 500).trim();
+        if (!clean) continue;
+        this.comments.set(k, clean); n++;
+      }
+    }
+    if (vars) {
+      for (const [k, v] of Object.entries(vars)) {
+        if (typeof v !== 'string') continue;
+        const clean = cleanName(v);
+        if (!clean) continue;
+        this.vars.set(k, clean); n++;
+      }
+    }
+    if (types) {
+      for (const [k, v] of Object.entries(types)) {
+        if (typeof v !== 'string') continue;
+        const clean = v.slice(0, 80).trim();
+        if (!clean) continue;
+        this.types.set(k, clean); n++;
+      }
+    }
     if (Array.isArray(o.structs)) this.structs = this.structs.concat(o.structs);
     this.dirty = true;
     this.lastMutationSaved = this.save();

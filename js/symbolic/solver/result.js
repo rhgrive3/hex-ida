@@ -219,6 +219,7 @@ export function createSolverResult({
       lifecycle?.stale !== true &&
       lifecycle?.disposed !== true &&
       lifecycle?.budgetExceeded !== true &&
+      lifecycle?.late !== true &&
       modelLimitReason == null,
   });
 

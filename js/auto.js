@@ -12,6 +12,7 @@ import { buildAppMap, buildStringMap } from './appmap.js';
 import { pinpointField, pinpointFunction, pinpointLocation } from './pinpoint.js';
 import { VERDICT, verdictRank } from './evidence.js';
 import { inferRole } from './role.js';
+import { runWasmStructuralAnalysis } from './analysis/wasm-suite.js';
 
 const SIGNALS = [
   { id: 'endpoint', level: 'high', re: /^https?:\/\/[^\s"']{4,}/i, max: 12 },
@@ -22,6 +23,45 @@ const SIGNALS = [
   { id: 'debuglog', level: 'low', re: /\bdebug\b|verbose|assert|FIXME/i, caseRe: /\bTODO\b/, max: 4 },
   { id: 'path', level: 'low', re: /^\/(Users|var|private|tmp|Applications)\/[^\s"']{4,}/, max: 6 },
 ];
+
+function toSafeNonNegInt(v) {
+  let bi = null;
+  if (typeof v === 'bigint') bi = v;
+  else if (typeof v === 'number') bi = Number.isSafeInteger(v) ? BigInt(v) : null;
+  else if (typeof v === 'string' && v.trim()) {
+    try { bi = BigInt(v.trim()); } catch { bi = null; }
+  }
+  if (bi == null || bi < 0n || bi > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(bi);
+}
+
+function extractConstDataSectionsFromImage(image) {
+  if (!image || !Array.isArray(image.sections) || !(image.bytes instanceof Uint8Array)) return [];
+  const out = [];
+  for (let i = 0; i < image.sections.length; i++) {
+    const sec = image.sections[i];
+    if (!sec) continue;
+    const seg = typeof sec.segment === 'string' ? sec.segment : '';
+    const name = typeof sec.name === 'string' ? sec.name : '';
+    const isMachOConst = ((seg === '__DATA_CONST' || seg === '__TEXT' || seg === '__DATA') && name === '__const')
+      || name === '__DATA_CONST.__const'
+      || name === '__TEXT.__const'
+      || name === '__DATA.__const';
+    const isElfPeConst = name === '.rodata' || name === '.data.rel.ro' || name === '.rdata';
+    if (!isMachOConst && !isElfPeConst) continue;
+    const off = toSafeNonNegInt(sec.fileOffset);
+    const sz = toSafeNonNegInt(sec.fileSize ?? sec.size);
+    if (off == null || sz == null) continue;
+    if (off < 0 || sz < 16 || off + sz > image.bytes.length) continue;
+    const displayName = seg && !name.startsWith(`${seg}.`) ? `${seg}.${name}` : name;
+    out.push({
+      name: displayName,
+      bytes: image.bytes.subarray(off, off + sz),
+      va: sec.address ?? sec.va ?? null,
+    });
+  }
+  return out;
+}
 
 function lowerBoundBig(values, target) {
   let lo = 0, hi = values.length;
@@ -291,6 +331,7 @@ export async function autoAnalyze(opts) {
       statsComplete: program ? program.statsComplete : false,
       capped: !!(program && (program.callsCapped || program.refsCapped)),
     },
+    wasmAnalysis: null,
     notes: [],
   };
 
@@ -305,6 +346,48 @@ export async function autoAnalyze(opts) {
   report.engine = detectEngine(strings);
   report.features = groupByFeature(strings);
   report.findings = findings(strings, program, symbols);
+  const cryptoConstants = Array.isArray(o.cryptoConstants)
+    ? o.cryptoConstants
+    : (Array.isArray(o.cryptoScan?.constants) ? o.cryptoScan.constants : []);
+  const highEntropyWindows = Array.isArray(o.highEntropyWindows)
+    ? o.highEntropyWindows
+    : (Array.isArray(o.cryptoScan?.highEntropy) ? o.cryptoScan.highEntropy : []);
+  report.crypto = { constants: cryptoConstants, highEntropy: highEntropyWindows };
+  if (cryptoConstants.length) {
+    for (const hit of cryptoConstants.slice(0, 16)) {
+      const addr = toBigIntAddress(hit.address);
+      const span = Math.max(16, Math.min(Number(hit.length) || 16, 256));
+      const users = (program && addr != null)
+        ? program.functionsReferencing(addr, BigInt(span), 8)
+        : { length: 0, complete: false, map: () => [] };
+      const actionable = users.length > 0;
+      report.findings.push({
+        id: 'crypto', level: 'high',
+        text: `${hit.name} (${hit.id})${hit.section ? ` [${hit.section}]` : ''}`,
+        addr: addr ?? hit.address,
+        actionable,
+        status: actionable ? 'referenced' : 'unreferenced',
+        xrefsComplete: users.complete !== false,
+        users: users.map((u) => ({
+          addr: u.addr, site: u.site,
+          name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
+        })),
+      });
+    }
+  }
+  const packedWindows = highEntropyWindows.filter((w) => w && w.kind === 'encrypted-or-packed');
+  if (packedWindows.length) {
+    const top = packedWindows.slice().sort((a, b) => (b.entropy || 0) - (a.entropy || 0))[0];
+    report.findings.push({
+      id: 'crypto', level: 'medium',
+      text: `High-entropy region (${Number(top.entropy || 0).toFixed(2)} bits/byte, ${packedWindows.length} window${packedWindows.length > 1 ? 's' : ''})${top.section ? ` [${top.section}]` : ''}`,
+      addr: toBigIntAddress(top.address) ?? top.address,
+      actionable: false,
+      status: 'unreferenced',
+      xrefsComplete: true,
+      users: [],
+    });
+  }
 
   progress({ phase: 'map', done: 0, all: 1 });
   const fields = o.fields || null;
@@ -322,7 +405,7 @@ export async function autoAnalyze(opts) {
     if (cancelled()) { report.notes.push('cancelled'); return report; }
     progress({ phase: 'goals', done: i, all });
     const goal = goalFromPreset(GOALS[i].id);
-    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 12, vendors });
+    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 12, vendors, cryptoConstants });
     rankedByGoal.set(goal.id, { goal, ranked });
     if (ranked.candidates.length) {
       report.goals.push({
@@ -408,6 +491,7 @@ export async function autoAnalyze(opts) {
       const common = {
         goal, fields, program, symbols, strings, region, map: report.map,
         cxxFields: o.cxxFields || null,
+        binaryContextPreference: true,
         shapes: o.shapes || null, analyze: memo, scanAccess: o.scanAccess || null,
         isCancelled: cancelled, limit: 12,
       };
@@ -436,7 +520,7 @@ export async function autoAnalyze(opts) {
         if (beatsPin(locPin, best)) best = locPin;
       }
 
-      const canFindFunction = memo && ranked.length;
+      const canFindFunction = memo && (ranked.length || (common.shapes && common.shapes.size));
       if (canFindFunction && !(best && best.verdict === VERDICT.CONFIRMED && best.kind === 'field')) {
         let fieldHint = null;
         const named = alternatives.find((p) => p && p.kind === 'field' && p.top && p.top.source !== 'cxx' && settledPin(p));
@@ -577,7 +661,7 @@ export async function autoAnalyze(opts) {
       const role = inferRole({
         name: symbols ? symbols.nameAt(t.addr) : null, owner, updates,
         apis: f.apis || [], selectors,
-        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: [],
+        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: program?.callersOf ? program.callersOf(t.addr).slice(0, 12).map((a) => symbols?.nameAt?.(a)).filter(Boolean) : [],
         comparisons: compares.length, conditionals: f.conditionals || 0,
         calls: f.calls || 0, stores: f.stores || 0, verified: true,
       });
@@ -592,7 +676,48 @@ export async function autoAnalyze(opts) {
     report.deep.sort((a, b) => b.updates.length - a.updates.length || (b.goal ? 1 : 0) - (a.goal ? 1 : 0));
   }
 
-  progress({ phase: 'done', done: 1, all: 1 });
+  try {
+    const codeBytes = o.codeBytes
+      || (o.region && o.region.bytes instanceof Uint8Array ? o.region.bytes : null)
+      || (program && typeof program.textBytes === 'function' ? program.textBytes() : null);
+    const dataBytes = o.dataBytes
+      || (program && typeof program.dataBytes === 'function' ? program.dataBytes() : null);
+    const dataSections = Array.isArray(o.dataSections) && o.dataSections.length
+      ? o.dataSections
+      : extractConstDataSectionsFromImage(o.image);
+    const imageBase = o.imageBase ?? o.image?.imageBase ?? null;
+    if (codeBytes || dataBytes || program || (dataSections && dataSections.length > 0) || o.textConstBytes || o.image) {
+      const textVa = o.textVa ?? (o.region?.vmAddr != null ? o.region.vmAddr : 0n);
+      const textLo = o.textLo ?? (o.region?.vmAddr != null ? o.region.vmAddr : null);
+      const textHi = o.textHi ?? (o.region?.vmAddr != null && o.region?.size != null
+        ? BigInt(o.region.vmAddr) + BigInt(o.region.size)
+        : null);
+      const wa = runWasmStructuralAnalysis({
+        codeBytes,
+        dataBytes,
+        dataSections,
+        image: o.image,
+        textConstBytes: o.textConstBytes,
+        textConstVa: o.textConstVa,
+        dataVa: o.dataVa,
+        imageBase,
+        textVa,
+        textLo,
+        textHi,
+        arch: o.architecture || o.arch || program?.architecture || program?.arch || 'arm64',
+        ptrSize: o.ptrSize ?? 8,
+        program,
+        symbols,
+      });
+      if (wa.rmw || wa.x86Rmw || wa.vtables || wa.jumpTables || wa.constTables || wa.callgraph || wa.objcSwift || wa.xrefLinks) {
+        report.wasmAnalysis = wa;
+      }
+    }
+  } catch (error) {
+    diagnose('wasm-analysis', error);
+  }
+
+    progress({ phase: 'done', done: 1, all: 1 });
   return report;
 }
 
@@ -636,9 +761,10 @@ export function memoizeAnalysis(analyze) {
     // not collide with their primitive lookalikes through toString(), or a
     // malformed address would reuse another address's cached analysis.
     const keyPart = (value) => {
-      if (value == null) return 'null';
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
-      try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return null; }
+      if (value === null) return ['null', null];
+      if (value === undefined) return ['undefined', null];
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return [typeof value, String(value)];
+      try { return ['structured', stableDigest(jsonSafe(value))]; } catch { return null; }
     };
     const addrPart = keyPart(addr);
     const endPart = keyPart(end);
@@ -646,7 +772,7 @@ export function memoizeAnalysis(analyze) {
     // memoization preserves the analyzer's actual input and avoids sharing one
     // opaque sentinel across unrelated cyclic values (#3309).
     if (addrPart == null || endPart == null) return Promise.resolve().then(() => analyze(addr, end, options));
-    const key = `${addrPart}:${endPart}`;
+    const key = JSON.stringify([addrPart, endPart]);
     if (cache.has(key)) return cache.get(key);
     const p = Promise.resolve()
       .then(() => analyze(addr, end, options))

@@ -86,14 +86,11 @@ function isClassConstructorSource(value) {
   catch { return false; }
 }
 
-function isBoundClassConstructor(value) {
-  if (typeof value.name !== 'string' || !value.name.startsWith('bound ')) return false;
-  try {
-    Reflect.apply(value, undefined, []);
-    return false;
-  } catch (error) {
-    return error instanceof TypeError && /cannot be invoked without ['"]new['"]/.test(error.message);
-  }
+function isBoundClassConstructor(_value) {
+  // Never invoke arbitrary user callbacks during plugin registration to probe
+  // constructibility; direct class syntax is already rejected by
+  // isClassConstructorSource without executing user code.
+  return false;
 }
 
 function canonicalCallingConvention(value) {

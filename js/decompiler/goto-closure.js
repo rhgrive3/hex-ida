@@ -98,13 +98,16 @@ const MAX_LOOP_WRAP_ROUNDS = 512;
 // that is refused only at its last line — cannot put back the quadratic cost
 // this revision removed.  A region larger than this is refused, not guessed.
 const MAX_REGION_WALK = 256;
+const EMPTY_GOTO_TARGETS = Object.freeze([]);
 
 function textOf(line) {
   return typeof line?.text === 'string' ? line.text : '';
 }
 
 function labelNameOf(line) {
-  const match = LABEL_RE.exec(textOf(line));
+  const text = textOf(line);
+  if (!text.includes('loc_')) return null;
+  const match = LABEL_RE.exec(text);
   return match ? match[1] : null;
 }
 
@@ -136,25 +139,6 @@ function mayCarryBraces(text) {
   return text.includes('{') || text.includes('}');
 }
 
-/**
- * For every `}` line, the text of the construct it closes.  Null when the line
- * closes nothing (unbalanced input), which the callers treat as "not provable".
- */
-function closerOpenerTexts(lines) {
-  const stack = [];
-  const openers = new Array(lines.length).fill(null);
-  for (let index = 0; index < lines.length; index += 1) {
-    const text = textOf(lines[index]);
-    if (!mayCarryBraces(text)) continue;
-    const code = stripNonCode(text);
-    for (const character of code) {
-      if (character === '{') stack.push(text);
-      else if (character === '}') openers[index] = stack.pop() ?? null;
-    }
-  }
-  return openers;
-}
-
 function isCloserText(text) {
   return text.trim() === '}';
 }
@@ -169,11 +153,14 @@ function startsWithCloseBrace(value) {
 }
 
 function gotoTargetsIn(text) {
-  const targets = [];
+  if (!text.includes('goto')) return EMPTY_GOTO_TARGETS;
+  let targets = null;
   ANY_GOTO_RE.lastIndex = 0;
   let match;
-  while ((match = ANY_GOTO_RE.exec(text)) !== null) targets.push(match[1].toLowerCase());
-  return targets;
+  while ((match = ANY_GOTO_RE.exec(text)) !== null) {
+    (targets ??= []).push(match[1].toLowerCase());
+  }
+  return targets ?? EMPTY_GOTO_TARGETS;
 }
 
 /** Smallest element of a sorted ascending number list that is > value, or null. */
@@ -211,7 +198,7 @@ function analyzeLines(lines) {
     braceCache: new Array(count),
     occurrences: new Map(), labelAt: new Map(), jumpsTo: new Map(),
   };
-  const openers = closerOpenerTexts(lines);
+  const braceStack = [];
   for (let index = 0; index < count; index += 1) {
     info.steps += 1;
     const line = lines[index];
@@ -220,13 +207,41 @@ function analyzeLines(lines) {
     info.raw[index] = text;
     info.trim[index] = trimmed;
     info.indent[index] = indentOf(line);
-    if (!trimmed) info.blank[index] = 1;
-    else if (COMMENT_RE.test(trimmed)) info.comment[index] = 1;
-    if (trimmed) {
-      if (CASE_PREFIX_RE.test(trimmed)) info.caseLine[index] = 1;
-      else if (KEYWORD_STATEMENT_RE.test(trimmed)) info.keywordLine[index] = 1;
+    let opener = null;
+    let hasOpenBrace = false;
+    if (mayCarryBraces(text)) {
+      const code = stripNonCode(text);
+      let seq = null;
+      for (let ci = 0; ci < code.length; ci += 1) {
+        const ch = code.charCodeAt(ci);
+        if (ch === 123 /* '{' */) {
+          braceStack.push(text);
+          hasOpenBrace = true;
+          (seq ??= []).push(1);
+        } else if (ch === 125 /* '}' */) {
+          opener = braceStack.pop() ?? null;
+          (seq ??= []).push(-1);
+        }
+      }
+      info.braceCache[index] = seq;
+    } else {
+      info.braceCache[index] = null;
     }
-    const label = LABEL_RE.exec(text);
+    if (!trimmed) {
+      info.blank[index] = 1;
+    } else {
+      const c0 = trimmed.charCodeAt(0);
+      if (c0 === 47 /* '/' */ && trimmed.charCodeAt(1) === 42 /* '*' */ && COMMENT_RE.test(trimmed)) {
+        info.comment[index] = 1;
+      }
+      if ((c0 === 99 /* 'c' */ || c0 === 100 /* 'd' */) && CASE_PREFIX_RE.test(trimmed)) {
+        info.caseLine[index] = 1;
+      } else if ((c0 === 98 /* 'b' */ || c0 === 99 /* 'c' */) && KEYWORD_STATEMENT_RE.test(trimmed)) {
+        info.keywordLine[index] = 1;
+      }
+    }
+    const label = trimmed.length >= 5 && trimmed.charCodeAt(trimmed.length - 1) === 58 /* ':' */
+      && trimmed.startsWith('loc_') ? LABEL_RE.exec(text) : null;
     if (label) {
       info.labelRaw[index] = label[1];
       info.labelLower[index] = label[1].toLowerCase();
@@ -238,18 +253,23 @@ function analyzeLines(lines) {
     info.closer[index] = trimmed === '}' ? 1 : 0;
     const targets = gotoTargetsIn(text);
     info.gotoTargets[index] = targets;
-    for (const target of targets) {
-      const at = info.jumpsTo.get(target);
-      if (at) at.push(index); else info.jumpsTo.set(target, [index]);
+    if (targets.length > 0) {
+      for (const target of targets) {
+        const at = info.jumpsTo.get(target);
+        if (at) at.push(index); else info.jumpsTo.set(target, [index]);
+      }
+      info.uncond[index] = UNCOND_GOTO_RE.exec(text);
+      info.cond[index] = COND_GOTO_RE.exec(text);
+    } else {
+      info.uncond[index] = null;
+      info.cond[index] = null;
     }
-    info.uncond[index] = UNCOND_GOTO_RE.exec(text);
-    info.cond[index] = COND_GOTO_RE.exec(text);
     const transparent = info.labelKind[index] === 1 || info.comment[index] === 1
-      || (info.closer[index] === 1 && openers[index] != null && !LOOP_OPENER_RE.test(openers[index]));
+      || (info.closer[index] === 1 && opener != null && !LOOP_OPENER_RE.test(opener));
     if (info.blank[index]) info.walk[index] = WALK_SKIP;
     else if (info.labelLower[index] != null) info.walk[index] = WALK_LABEL;
     else if (info.comment[index]) info.walk[index] = WALK_SKIP;
-    else if (transparent) info.walk[index] = mayCarryBraces(text) && stripNonCode(text).includes('{') ? WALK_STOP : WALK_SKIP;
+    else if (transparent) info.walk[index] = hasOpenBrace ? WALK_STOP : WALK_SKIP;
     else info.walk[index] = WALK_STOP;
     if (info.walk[index] === WALK_STOP) info.walkStops.push(index);
   }
@@ -536,7 +556,7 @@ function closurePass(result, precomputedInfo = null) {
 
   const progress = stats.removedGotos > 0 || stats.removedLabels > 0
     || stats.guardBlocks > 0 || stats.ifElseRegions > 0;
-  return { lines: kept, stats, progress, steps: info.steps - startSteps };
+  return { lines: progress ? kept : lines, stats, progress, steps: info.steps - startSteps };
 }
 
 /**
@@ -910,6 +930,7 @@ export function eliminateAvoidableGotos(result, opts = {}, stats = null) {
       const outcome = closurePass({ ...result, lines: current }, nextInfo);
       totals.passes += 1;
       totals.scanSteps += outcome.steps;
+      if (!outcome.progress && nextInfo != null) return;
       const afterInfo = analyzeLines(outcome.lines);
       // A rewrite that would publish a label without a statement is a bug in the
       // rule that produced it, not a licence to emit the label.  The whole pass
@@ -932,16 +953,20 @@ export function eliminateAvoidableGotos(result, opts = {}, stats = null) {
   // then one more text fixpoint for the text the wraps rewrote.
   runTextFixpoint(entryInfo);
   const wrap = wrapBackwardLoops(current, result.ir, opts.shouldAbort);
-  totals.loopWraps += wrap.stats.loopWraps;
   totals.loopCandidates += wrap.stats.loopCandidates;
   totals.refusedLoopProof += wrap.stats.refusedLoopProof;
   totals.scanSteps += wrap.stats.scanSteps;
-  current = wrap.lines;
   if (wrap.stats.loopWraps > 0) {
-    const afterWrap = analyzeLines(current);
+    const candidate = wrap.lines;
+    const afterWrap = analyzeLines(candidate);
     totals.scanSteps += afterWrap.steps;
-    if (!labelAtEndOfBlock(current, afterWrap)) runTextFixpoint(afterWrap);
-    else totals.refusedPasses += 1;
+    if (!labelAtEndOfBlock(candidate, afterWrap)) {
+      current = candidate;
+      totals.loopWraps += wrap.stats.loopWraps;
+      runTextFixpoint(afterWrap);
+    } else {
+      totals.refusedPasses += 1;
+    }
   }
   if (current === lines || (totals.removedGotos === 0 && totals.removedLabels === 0
       && totals.guardBlocks === 0 && totals.ifElseRegions === 0 && totals.loopWraps === 0)) return finish(result);

@@ -205,7 +205,7 @@ export function describePurpose(o) {
       loadAddress: u.from ? u.from.address : null,
       confidence: u.confidence,
     };
-    if (o.fields && o.owner) {
+    if (o.fields && o.owner && o.owner.className != null) {
       /*
        * dataflow が証明した access provenance（self / 位置変数番地）を
        * そのまま resolver へ渡す。ここで落とすと、証明済み self が

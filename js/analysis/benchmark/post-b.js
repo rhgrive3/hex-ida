@@ -79,6 +79,7 @@ export function bindPostBProtocol(manifest, input, { manifestSha256, metricSha25
   if (!MANIFESTS.has(manifest)) contractFail('post-b-owned-manifest');
   sha256Text(manifestSha256);
   const data = snapshotContractData(input, { maxBytes: 1048576, maxNodes: 32768 });
+  const metricHashes = snapshotContractData(metricSha256, { maxBytes: 1048576, maxNodes: 32768 });
   const expected = manifest.cases.flatMap(sample => manifest.toolchainSlots.map(slot => `${sample.id}@${slot.id}`));
   if (!Array.isArray(data.cases) || data.cases.length !== expected.length || new Set(data.cases.map(row => row.caseId)).size !== expected.length
     || data.cases.some(row => !expected.includes(row.caseId))) contractFail('post-b-bound-cases-incomplete');
@@ -90,7 +91,7 @@ export function bindPostBProtocol(manifest, input, { manifestSha256, metricSha25
     denominatorSha256: manifestSha256, metrics: manifest.metrics.map(row => row.id) });
   const matrix = createCompetitiveMetricMatrix(protocol, { protocolId: protocol.id, definitionSha256: manifestSha256,
     caseStrata: protocol.cases.map(row => ({ caseId: row.caseId, stratumId: manifest.cases.find(sample => row.caseId.startsWith(sample.id + '@')).stratum })),
-    metrics: manifest.metrics.map(({ definition: _definition, ...row }) => ({ ...row, definitionSha256: sha256Text(metricSha256[row.id]) })) });
+    metrics: manifest.metrics.map(({ definition: _definition, ...row }) => ({ ...row, definitionSha256: sha256Text(Object.hasOwn(metricHashes, row.id) ? metricHashes[row.id] : undefined) })) });
   const cells = postBCells(manifest, protocol.repetitions).map(cell => normalizeCompetitiveMeasurement(protocol, {
     protocolId: protocol.id, caseId: cell.caseId, participantId: cell.participantId, metric: cell.metric, repetition: cell.repetition,
     state: cell.state, cacheState: cell.cacheState, binarySha256: protocol.cases.find(row => row.caseId === cell.caseId).binarySha256,

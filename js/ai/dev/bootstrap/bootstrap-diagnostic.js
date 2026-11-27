@@ -49,12 +49,14 @@ export function bootstrapStatusPresentation(status, { ja = false } = {}) {
 export function publishBootstrapDiagnostic(globalObject, status) {
   const target = globalObject || globalThis;
   let diagnostic = target?.[DIAGNOSTIC_KEY] || null;
-  if (!diagnostic) {
+  if (!diagnostic || diagnostic.element == null) {
     const documentRef = target?.document;
     const root = documentRef?.getElementById?.('ai-panel') || null;
     const ja = languageOf(target).startsWith('ja');
     diagnostic = installBootstrapDiagnostic({ panel: root ? { root } : null, ja, documentRef });
-    try { target[DIAGNOSTIC_KEY] = diagnostic; } catch {}
+    if (diagnostic.element != null) {
+      try { target[DIAGNOSTIC_KEY] = diagnostic; } catch {}
+    }
   }
   return diagnostic.set(status);
 }

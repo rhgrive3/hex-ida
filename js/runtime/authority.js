@@ -319,6 +319,7 @@ function admitPayloadResources(value, budget, seen, control = null) {
   control?.check();
   if (value === null || typeof value !== 'object') {
     budget.nodes += 1;
+    if (typeof value === 'string') budget.bytes += value.length * 2;
   } else {
     const binaryBytesUsed = binaryLeafResource(value);
     if (binaryBytesUsed !== null) {
@@ -349,7 +350,7 @@ function admitPayloadResources(value, budget, seen, control = null) {
 }
 
 function payloadRetainedBytes(value, seen = new WeakSet()) {
-  if (value === null || typeof value !== 'object') return 0;
+  if (value === null || typeof value !== 'object') return typeof value === 'string' ? value.length * 2 : 0;
   const leaf = binaryLeafResource(value);
   if (leaf !== null) return leaf;
   if (seen.has(value)) return 0;
@@ -791,7 +792,12 @@ export class RuntimeAuthorityTracker {
     const checked = validateRuntimeObservation(this.binding, observation, { ...options, minimumSequence: this.lastSequence + 1 });
     if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
     const retained = payloadRetainedBytes(observation.payload);
-    if (this.#retainedBytes + retained > this.maxRetainedPayloadBytes) {
+    let evictedBytes = 0;
+    const evictCount = Math.max(0, (this.#observations.length + 1) - this.maxObservations);
+    for (let i = 0; i < evictCount; i++) {
+      evictedBytes += payloadRetainedBytes(this.#observations[i].payload);
+    }
+    if ((this.#retainedBytes - evictedBytes) + retained > this.maxRetainedPayloadBytes) {
       return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-retained-payload-bytes-exceeded' });
     }
     this.lastSequence = observation.sequence;

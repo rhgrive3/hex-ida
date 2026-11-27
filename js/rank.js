@@ -1,20 +1,20 @@
-import { matchText, matchName, numericSymbolRole, isDiagnosticString } from './goals.js';
+import { matchText, matchName, numericSymbolRole, isDiagnosticString, normalizeCallableName, normalizeIdentifierBoundaries, symbolMutationKind } from './goals.js';
 import { vendorOf, vendorInText, vendorConflicts, classFromSymbol } from './vendors.js';
 
 export const REASON = {
   STRING_REF: 'string-ref', NAME: 'name-match', CALLEE_NAME: 'callee-name', CALLER_NAME: 'caller-name',
   CALLS_MATCH: 'calls-match', CALLED_BY_MATCH: 'called-by-match', NUMERIC: 'numeric', STORE: 'store',
-  COMPARE: 'compare', POPULAR: 'popular', SIZE_PENALTY: 'size-penalty', VENDOR: 'vendor', NO_EVIDENCE: 'no-evidence',
+  COMPARE: 'compare', POPULAR: 'popular', SIZE_PENALTY: 'size-penalty', VENDOR: 'vendor', CRYPTO_CONST: 'crypto-const', NO_EVIDENCE: 'no-evidence',
 };
 const POINTS = {
   [REASON.STRING_REF]: 20, [REASON.NAME]: 25, [REASON.CALLEE_NAME]: 12, [REASON.CALLER_NAME]: 10,
   [REASON.CALLS_MATCH]: 8, [REASON.CALLED_BY_MATCH]: 8, [REASON.NUMERIC]: 12, [REASON.STORE]: 8,
-  [REASON.COMPARE]: 6, [REASON.POPULAR]: 5, [REASON.SIZE_PENALTY]: -6, [REASON.VENDOR]: -34,
+  [REASON.COMPARE]: 6, [REASON.POPULAR]: 5, [REASON.SIZE_PENALTY]: -6, [REASON.VENDOR]: -34, [REASON.CRYPTO_CONST]: 32,
 };
 const KIND_OF = {
   [REASON.STRING_REF]: 'fact', [REASON.NAME]: 'fact', [REASON.CALLEE_NAME]: 'fact', [REASON.CALLER_NAME]: 'fact',
   [REASON.CALLS_MATCH]: 'inference', [REASON.CALLED_BY_MATCH]: 'inference', [REASON.NUMERIC]: 'fact', [REASON.STORE]: 'fact',
-  [REASON.COMPARE]: 'fact', [REASON.POPULAR]: 'fact', [REASON.SIZE_PENALTY]: 'inference', [REASON.VENDOR]: 'fact',
+  [REASON.COMPARE]: 'fact', [REASON.POPULAR]: 'fact', [REASON.SIZE_PENALTY]: 'inference', [REASON.VENDOR]: 'fact', [REASON.CRYPTO_CONST]: 'fact',
 };
 const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
 
@@ -83,7 +83,7 @@ function fairPrefix(values, max) {
   return { values: out, complete: false };
 }
 
-export function rankCandidates({ goal, strings, program, symbols, region, limit = 40, vendors = null }) {
+export function rankCandidates({ goal, strings, program, symbols, region, limit = 40, vendors = null, cryptoConstants = null }) {
   const notes = [], byAddr = new Map();
   if (!goal) return { candidates: [], matchedStrings: [], notes: ['no-goal'] };
   const resultLimit = typeof limit === 'number' && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
@@ -133,18 +133,44 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     c.score += points;
   };
 
+  if (hasProgram && Array.isArray(cryptoConstants) && cryptoConstants.length > 0 && (goal.id === 'crypto' || goal.expects?.crypto)) {
+    for (const hit of cryptoConstants.slice(0, 64)) {
+      if (hit?.address == null) continue;
+      const addr = BigInt(hit.address);
+      const bytes = Number.isSafeInteger(hit.length) && hit.length > 0 ? hit.length : 16;
+      const users = program.functionsReferencing(addr, bytes);
+      if (!users || !users.length) continue;
+      for (const u of users) {
+        const c = candidate(u.addr != null ? u.addr : u.site, u.site);
+        if (!c) continue;
+        addReason(c, REASON.CRYPTO_CONST, POINTS[REASON.CRYPTO_CONST], {
+          algo: hit.id, name: hit.name, addr, site: u.site,
+        });
+      }
+    }
+  }
+
   const matcher = combinedMatcher(goal);
   const matchedStrings = [];
   const seenStrings = new Set();
   for (const s of strings || []) {
     if (!s || typeof s.text !== 'string') continue;
-    if (matcher && !matcher.test(s.text)) continue;
+    if (matcher && !matcher.test(s.text)) {
+      const normText = normalizeIdentifierBoundaries(s.text);
+      if (normText === s.text || !matcher.test(normText)) continue;
+    }
     const dedupKey = `${s.addr}:${s.text}`;
     if (seenStrings.has(dedupKey)) continue;
     const m = matchText(goal, s.text);
     if (m) {
       seenStrings.add(dedupKey);
-      const diagFactor = isDiagnosticString(s.text) ? 0.45 : 1;
+      const trimmedText = s.text.trim();
+      const isAssertOrSource = /(?:\.(?:cc|cpp|cxx|mm|h|hpp|swift)\b|->|\s(?:>=|<=|!=|==)\s)/.test(s.text);
+      const isShortCmpAssert = trimmedText.length <= 48
+        && !/[%×÷]/.test(trimmedText)
+        && !/<\/?[A-Za-z]/.test(trimmedText)
+        && /^[A-Za-z_][\w.()\[\]\s]*\s*(?:>=|<=|!=|==|<|>)\s*(?:-?\d+(?:\.\d+)?|[A-Za-z_][\w.()]*)$/.test(trimmedText);
+      const diagFactor = isAssertOrSource ? 0.15 : (isShortCmpAssert ? 0.25 : (isDiagnosticString(s.text) ? 0.45 : 1));
       matchedStrings.push({
         addr: s.addr,
         text: s.text,
@@ -207,10 +233,21 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       }
       return a;
     };
+    const goalAction = goal.query?.action || goal.action || null;
+    const wantsMutation = !!(
+      (goal.expects && goal.expects.store)
+      || goalAction === 'increase'
+      || goalAction === 'decrease'
+      || goalAction === 'set'
+    );
     const compareNameMatch = (a, b) => (
       (a.vendorConflict ? 1 : 0) - (b.vendorConflict ? 1 : 0)
+      || (a.isVendor ? 1 : 0) - (b.isVendor ? 1 : 0)
       || b.effScore - a.effScore
       || b.roleRank - a.roleRank
+      || b.mutatorRank - a.mutatorRank
+      || a.leafLen - b.leafLen
+      || a.name.length - b.name.length
       || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
       || compareAddr(a.candAddr, b.candAddr)
       || compareAddr(a.a, b.a)
@@ -218,18 +255,32 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     const bestByCand = new Map();
     const considerSymbol = (a, name) => {
       if (!name || typeof name !== 'string') return;
-      if (matcher && !matcher.test(name)) return;
+      const normName = normalizeCallableName(name);
+      if (matcher && !matcher.test(name) && !(normName && matcher.test(normName))) return;
       const m = matchName(goal, name);
       if (!m) return;
-      const role = numericSymbolRole(goal, name);
-      const roleRank = role === 'value' ? 2 : role === 'neutral' ? 1 : 0;
-      const roleMult = role === 'value' ? 1.6 : role === 'non-value' ? 0.4 : 1;
-      const effScore = m.score * roleMult;
+      const isStub = /^_+(?:exp|exp2|exp10|expm1|frexp|ldexp|log|log2|log10|pow|sin|cos|tan|sqrt|floor|ceil|fabs|malloc|calloc|realloc|free|memcpy|memmove|memset|strlen|strcmp|printf|snprintf|abort|exit)$/.test(name)
+        || /^_+(?:objc_|swift_)/.test(name)
+        || /^_?\$s.*(?:Ma|Md|Mn|Ml|vw|vM|WT|Wl)$/.test(name);
+      const role = isStub ? 'non-value' : numericSymbolRole(goal, name);
+      const roleRank = isStub ? 0 : (role === 'value' ? 2 : role === 'neutral' ? 1 : 0);
+      const roleMult = isStub ? 0.2 : (role === 'value' ? 1.6 : role === 'non-value' ? 0.4 : 1);
+      const mutInfo = symbolMutationKind(name);
+      const mutatorRank = mutInfo.kind === 'mutator' ? 2 : mutInfo.kind === 'const-getter' ? 0 : 1;
+      const mutatorMult = (wantsMutation && role !== 'non-value')
+        ? (mutInfo.kind === 'mutator' ? 1.15 : mutInfo.kind === 'const-getter' ? 0.95 : 1)
+        : 1;
+      const effScore = m.score * roleMult * mutatorMult;
       const v = vendorOf(classFromSymbol(name) || name, vendors);
+      const isVendor = !!v;
       const vendorConflict = !!(v && vendorConflicts(goal.id, v));
+      const leafLen = mutInfo.leafLen || name.length;
       const candAddr = resolveCandAddr(a);
       const candKey = candAddr.toString();
-      const entry = { a, candAddr, candKey, name, m, role, roleRank, roleMult, effScore, vendorConflict };
+      const entry = {
+        a, candAddr, candKey, name, m, role, roleRank, roleMult, mutatorRank, mutatorMult,
+        effScore, isVendor, vendorConflict, leafLen,
+      };
       const prev = bestByCand.get(candKey);
       if (!prev || compareNameMatch(entry, prev) < 0) bestByCand.set(candKey, entry);
     };
@@ -271,11 +322,20 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       }
     }
     if (capped) notes.push('name-matches-capped');
-    for (const { candAddr, a, name, m, role, roleMult } of kept) {
+    for (const { candAddr, a, name, m, role, roleMult, mutatorMult } of kept) {
       const c = candidate(candAddr, a);
       if (!c) continue;
       c.name = c.name || name;
-      addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score * roleMult, { name, term: m.term, role });
+      const hadStringRef = c.reasons.some((r) => r.code === REASON.STRING_REF);
+      if (hadStringRef) {
+        for (const r of c.reasons) {
+          if (r.code !== REASON.STRING_REF || !(r.points > 0)) continue;
+          const reduced = Math.round(r.points * 0.5);
+          c.score -= (r.points - reduced);
+          r.points = reduced;
+        }
+      }
+      addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score * roleMult * mutatorMult, { name, term: m.term, role });
     }
   }
 
@@ -287,10 +347,13 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     const vendor = vendorOfCandidate(c, vendors);
     if (!vendor) return;
     c.vendor = vendor;
-    if (vendorConflicts(goal.id, vendor)) addReason(c, REASON.VENDOR, POINTS[REASON.VENDOR], {
-      vendor: vendor.vendor, kind: vendor.kind, where: vendor.where,
-      name: vendor.name || null, text: vendor.text || null,
-    });
+    if (vendorConflicts(goal.id, vendor)) {
+      const penalty = vendor.confidence === 'low' ? POINTS[REASON.VENDOR] * 0.45 : POINTS[REASON.VENDOR];
+      addReason(c, REASON.VENDOR, penalty, {
+        vendor: vendor.vendor, kind: vendor.kind, where: vendor.where,
+        name: vendor.name || null, text: vendor.text || null,
+      });
+    }
   };
   for (const c of byAddr.values()) applyVendorPenalty(c);
 
@@ -330,10 +393,11 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
             calleeNameHits++;
             if (factor > 0) addReason(seed, REASON.CALLEE_NAME, POINTS[REASON.CALLEE_NAME] * m.score * factor, { name, addr: callee.addr, site: callee.site });
           }
-          if (seedBaseScore >= 20) {
+          if (seedBaseScore >= 9) {
             const c = candidate(callee.addr, callee.site);
             if (c && c !== seed && !c.reasons.some((r) => r.code === REASON.CALLED_BY_MATCH)) {
-              addReason(c, REASON.CALLED_BY_MATCH, POINTS[REASON.CALLED_BY_MATCH], { from: seed.addr, fromName: seed.name, site: callee.site });
+              const scale = seedBaseScore >= 20 ? 1 : Math.max(0.45, seedBaseScore / 20);
+              addReason(c, REASON.CALLED_BY_MATCH, POINTS[REASON.CALLED_BY_MATCH] * scale, { from: seed.addr, fromName: seed.name, site: callee.site });
             }
           }
         }
@@ -350,10 +414,11 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
           callerNameHits++;
           if (factor > 0) addReason(seed, REASON.CALLER_NAME, POINTS[REASON.CALLER_NAME] * m.score * factor, { name, addr: caller.addr, site: caller.site });
         }
-        if (seedBaseScore >= 20) {
+        if (seedBaseScore >= 9) {
           const c = candidate(caller.addr, caller.site);
           if (c && c !== seed && !c.reasons.some((r) => r.code === REASON.CALLS_MATCH)) {
-            addReason(c, REASON.CALLS_MATCH, POINTS[REASON.CALLS_MATCH], { to: seed.addr, toName: seed.name, site: caller.site });
+            const scale = seedBaseScore >= 20 ? 1 : Math.max(0.45, seedBaseScore / 20);
+            addReason(c, REASON.CALLS_MATCH, POINTS[REASON.CALLS_MATCH] * scale, { to: seed.addr, toName: seed.name, site: caller.site });
           }
         }
       }
@@ -367,7 +432,12 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     if (!hasProgram) break;
     if (c.score <= 10 && c.vendor && vendorConflicts(goal.id, c.vendor)) continue;
     const called = program.callCountOf(c.addr);
-    if (called >= 3) addReason(c, REASON.POPULAR, POINTS[REASON.POPULAR], { n: called, complete: !program.callsCapped });
+    if (called >= 3) {
+      const isConstGetter = !!(c.name && symbolMutationKind(c.name).kind === 'const-getter');
+      const hasStrong = (c.strings || []).some((s) => s.score >= 0.8) || c.reasons.some((r) => r.code === REASON.NAME && r.points >= 18);
+      const popPoints = (isConstGetter || !hasStrong) ? POINTS[REASON.POPULAR] * 0.4 : POINTS[REASON.POPULAR];
+      addReason(c, REASON.POPULAR, popPoints, { n: called, complete: !program.callsCapped });
+    }
     c.calledCount = called;
     const range = program.functionRange(c.addr);
     if (!range || range.start !== c.addr || range.end == null) continue;

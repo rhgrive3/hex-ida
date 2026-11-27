@@ -93,11 +93,21 @@ function childrenOf(n) {
   }
 }
 
-function depthOf(n, d) {
+function depthOf(n, d, memo = new Map()) {
   if (!n || d > MAX_DEPTH) return d;
-  let max = d;
-  for (const c of childrenOf(n)) max = Math.max(max, depthOf(c, d + 1));
-  return max;
+  if (memo.has(n)) return Math.min(MAX_DEPTH + 1, d + memo.get(n));
+  memo.set(n, MAX_DEPTH + 1);
+  let height = 0;
+  for (const c of childrenOf(n)) {
+    const childDepth = depthOf(c, d + 1, memo);
+    height = Math.max(height, childDepth - d);
+    if (d + height > MAX_DEPTH) {
+      memo.set(n, height);
+      return d + height;
+    }
+  }
+  memo.set(n, height);
+  return d + height;
 }
 
 /** 深すぎる／大きすぎる式は、そのレジスタの名前に戻す（嘘をつくよりよい）。 */
@@ -207,7 +217,7 @@ export function bin(op, a, b, bits) {
     if (inner != null) {
       const lhs = a.op === 'add' ? inner : -inner;
       const rhs = op === 'add' ? cb : -cb;
-      const sum = lhs + rhs;
+      const sum = wrap(lhs + rhs, w);
       if (sum === 0n) return a.a;
       return sum > 0n ? node('bin', { op: 'add', a: a.a, b: constNode(sum) })
         : node('bin', { op: 'sub', a: a.a, b: constNode(-sum) });
@@ -224,7 +234,7 @@ export function bin(op, a, b, bits) {
   /* Nested fixed-width division is deliberately not reassociated: the first
      division's rounding/wrap is architectural state (notably INT_MIN / -1). */
 
-  return node('bin', { op, a, b });
+  return node('bin', bits === 32 ? { op, a, b, bits: 32 } : { op, a, b });
 }
 
 /** `x + (x << k)` の形か。基になっている値と、両辺の倍率を返す。 */
@@ -301,12 +311,17 @@ function truncDiv(a, b) {
   return q;                     // BigInt の / はすでに 0 方向へ切り捨てる
 }
 
+const IDEMPOTENT_UN_OPS = new Set([
+  'sxt8', 'sxt16', 'sxt32', 'sxt64',
+  'uxt8', 'uxt16', 'uxt32', 'uxt64',
+]);
+
 export function un(op, a) {
   if (!a) return null;
   const c = constOf(a);
   if (c != null) {
     switch (op) {
-      case 'neg': return constNode(-c);
+      case 'neg': return constNode(wrap(-c, 64));
       case 'not': return constNode(~c);
       case 'sxt8': return constNode(wrap(c, 8));
       case 'sxt16': return constNode(wrap(c, 16));
@@ -319,11 +334,11 @@ export function un(op, a) {
       default: break;
     }
   }
-  // 同じ幅への変換を重ねても意味は増えない
-  if (a.k === 'un' && a.op === op) return a;
-  if (op === 'sxt32' && a.k === 'un' && (a.op === 'sxt32' || a.op === 'sxt16' || a.op === 'sxt8')) return a;
   if (op === 'neg' && a.k === 'un' && a.op === 'neg') return a.a;
   if (op === 'not' && a.k === 'un' && a.op === 'not') return a.a;
+  // 同じ幅への変換を重ねても意味は増えない（冪等な幅変換のみ重複吸収）
+  if (IDEMPOTENT_UN_OPS.has(op) && a.k === 'un' && a.op === op) return a;
+  if (op === 'sxt32' && a.k === 'un' && (a.op === 'sxt32' || a.op === 'sxt16' || a.op === 'sxt8')) return a;
   return node('un', { op, a });
 }
 
@@ -1480,11 +1495,8 @@ function signFix(shifted, signBit) {
 
   const div = asMagicDivision(inner, shift);
   if (div) return div;
-  /*
-   * 魔法数ではなく、素直に 2 の冪で割っている形。
-   *   asr x9, x8, #3 ; add x0, x9, x8, lsr #63   →   x8 / 8
-   */
-  if (shift > 0n && shift < 63n) return bin('sdiv', inner, constNode(1n << shift), 64);
+  /* Post-shift sign-bit addition `(x >> shift) + (x >>> 63)` is not equivalent
+   * to signed division `x / (1 << shift)` for negative multiples of `2^shift`. */
   return null;
 }
 
@@ -1586,9 +1598,9 @@ function asMagicDivision(inner, shift, op) {
   const hi = magicHigh(core);
   if (hi) {
     let m = hi.m;
-    if (plusSelf) {
-      // 補正つき ＝ 魔法数は符号なしで読む
-      if (m < 0n) m += 1n << 64n;
+    if (plusSelf || kind === 'udiv') {
+      // 補正つき・または符号なし umulh ＝ 魔法数は符号なしで読む
+      if (m < 0n) m = BigInt.asUintN(64, m);
     } else if (m < 0n) return null;
     const d = divisorFromMagic(m, shift, 64);
     return d ? bin(kind, hi.n, constNode(d), 64) : null;
@@ -1654,12 +1666,20 @@ function hexOf(v) {
  */
 export function render(n, opts) {
   const o = opts || {};
-  return emit(n, 0, o, 0);
+  const maxLen = Number.isFinite(o.maxLen) && o.maxLen > 0 ? Math.floor(o.maxLen) : 0;
+  const budget = maxLen ? { remaining: maxLen, truncated: false } : null;
+  const out = emit(n, 0, budget ? { ...o, _budget: budget } : o, 0);
+  if (maxLen && out.length > maxLen) return out.slice(0, Math.max(0, maxLen - 3)) + '...';
+  return out;
 }
 
 function emit(n, prec, o, depth) {
   if (!n) return '0 /* unknown */';
   if (depth > MAX_DEPTH) return '0 /* truncated */';
+  if (o._budget) {
+    if (o._budget.remaining <= 0) { o._budget.truncated = true; return '...'; }
+    o._budget.remaining -= 1;
+  }
   if (o.nameOf) {
     const custom = o.nameOf(n);
     if (custom) return custom;
@@ -1759,13 +1779,13 @@ function emitFlagCondition(predicate, o, depth) {
   const a = emit(predicate.a, 0, o, depth + 1), b = emit(predicate.b, 0, o, depth + 1);
   if (producer === 'cmn') {
     const sum = `(${a} + ${b})`;
+    const unsignedTy = bits === 32 ? 'uint32' : 'uint64';
+    const signedTy = bits === 32 ? 'int32' : 'int64';
     switch (predicate.cc) {
-      case 'eq': return `${sum} == 0`;
-      case 'ne': return `${sum} != 0`;
-      case 'mi': case 'lt': return `${sum} < 0`;
-      case 'pl': case 'ge': return `${sum} >= 0`;
-      case 'le': return `${sum} <= 0`;
-      case 'gt': return `${sum} > 0`;
+      case 'eq': return `((${unsignedTy})${sum} == 0)`;
+      case 'ne': return `((${unsignedTy})${sum} != 0)`;
+      case 'mi': return `((${signedTy})${sum} < 0)`;
+      case 'pl': return `((${signedTy})${sum} >= 0)`;
       default: break;
     }
   }
@@ -1814,6 +1834,20 @@ function condSymbol(cc, cmp, o, depth) {
       const signedCast = bits === 32 ? 'int32' : 'int64';
       return '((' + signedCast + ')(' + lhs + ' - ' + rhs + ') ' + (cc === 'mi' ? '< 0' : '>= 0') + ')';
     }
+    if (cc === 'vs' || cc === 'vc') {
+      const lhs = emit(cmp.a, 11, o, depth + 1);
+      const rhs = cmp.b ? emit(cmp.b, 11, o, depth + 1) : '0';
+      if (isFp) {
+        return cc === 'vs'
+          ? '((' + lhs + ' != ' + lhs + ') || (' + rhs + ' != ' + rhs + '))'
+          : '((' + lhs + ' == ' + lhs + ') && (' + rhs + ' == ' + rhs + '))';
+      }
+      const uType = bits === 32 ? 'uint32' : 'uint64';
+      const shift = bits === 32 ? 31 : 63;
+      const ov = '(((((' + uType + ')(' + lhs + ') ^ (' + uType + ')(' + rhs + ')) & ((' + uType + ')(' + lhs + ') ^ ((' + uType + ')(' + lhs + ') - (' + uType + ')(' + rhs + ')))) >> ' + shift + ') & 1)';
+      return cc === 'vs' ? ov : '(!' + ov + ')';
+    }
+    if (cc === 'al' || cc === 'nv') return '1';
     if (!isFp && unsignedOps[cc]) {
       const unsignedCast = bits === 32 ? '(uint32)' : '(uint64)';
       const lhs = unsignedCast + emit(cmp.a, 11, o, depth + 1);

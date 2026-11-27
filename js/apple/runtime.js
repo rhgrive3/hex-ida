@@ -153,11 +153,22 @@ export function resolveAppleCall(index, call = {}) {
     || (selectorResolution?.candidates?.length ?? 0) > 0 || (imp?.candidates?.length ?? 0) > 0;
   if ((origin === 'objc' || msgSendEntry || explicitMessage) && hasDispatchEvidence) {
     if (imp && !msgSendEntry && (imp.candidates?.length || call.classMethod != null)) {
+      let text = null;
+      if (imp.resolved) {
+        if (call.style === 'c') {
+          const clean = (s) => String(s || '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+          const cls = clean(imp.resolved.className) || 'Obj';
+          const sel = clean(imp.resolved.selector) || 'imp';
+          text = `objc_${imp.resolved.classMethod ? 'cls' : 'inst'}_${cls}_${sel}`;
+        } else {
+          text = `${imp.resolved.classMethod ? '+' : '-'}[${imp.resolved.className} ${imp.resolved.selector}]`;
+        }
+      }
       return {
         runtime: 'objc', kind: 'imp', imp,
         resolved: imp.resolved,
         candidates: imp.candidates,
-        text: imp.resolved ? `${imp.resolved.classMethod ? '+' : '-'}[${imp.resolved.className} ${imp.resolved.selector}]` : null,
+        text,
       };
     }
     const defaultCallee = /objc_msgSendSuper2/.test(name) ? 'objc_msgSendSuper2' : 'objc_msgSend';

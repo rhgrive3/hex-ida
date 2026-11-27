@@ -45,7 +45,7 @@ const COND_OPS = {
   lo: '<', ls: '<=', hi: '>', hs: '>=',
   cc: '<', cs: '>=',
   mi: '< 0', pl: '>= 0', vs: 'overflow', vc: '!overflow',
-  al: 'true', nv: 'false',
+  al: 'true', nv: 'true',
 };
 
 /** 条件を反対にする（if の中身と外側を入れ替えるときに使う）。 */
@@ -83,7 +83,7 @@ export function decompile(model, opts) {
   const out = [];
   const warnings = [];
   if (!insns.length) {
-    return { lines: [line('comment', 0, '// 命令が読み取れませんでした。', null)], signature: '', types: null, warnings: ['命令なし'], labels: new Set() };
+    return { lines: [line('comment', 0, '// 命令が読み取れませんでした。', null)], signature: '', types: null, warnings: ['命令なし'], labels: new Set(), objcSyntax: o?.objcSyntax === 'c' ? 'c' : 'objc' };
   }
 
   const ctx = buildContext(model, o);
@@ -150,11 +150,28 @@ export function decompile(model, opts) {
     }
   }
 
+  const emittedBody = [];
   for (const l of body) {
     if (l.kind === 'label' && !state.labels.has(l.text.replace(/:$/, ''))) continue;
-    out.push(l);
+    emittedBody.push(l);
   }
-  out.push(line('ctrl', 0, '}', insns[insns.length - 1].row));
+  emittedBody.push(line('ctrl', 0, '}', insns[insns.length - 1].row));
+  for (let i = 0; i < emittedBody.length; i++) {
+    const l = emittedBody[i];
+    out.push(l);
+    if (l.kind === 'label') {
+      let next = null;
+      for (let j = i + 1; j < emittedBody.length; j++) {
+        const cand = emittedBody[j];
+        if (!cand || cand.kind === 'blank' || cand.kind === 'comment' || !String(cand.text || '').trim()) continue;
+        next = cand;
+        break;
+      }
+      if (next && next.kind === 'ctrl' && String(next.text || '').trim() === '}') {
+        out.push(line('stmt', (l.indent || 1) + 1, ';', l.row, l.addr));
+      }
+    }
+  }
 
   dedupeNotes(out);
   breatheOut(out);
@@ -174,7 +191,7 @@ export function decompile(model, opts) {
     warnings.push('訳せなかった命令が ' + ctx.unknown.size + ' 種類あります（__asm として残しています）。');
   }
 
-  return { lines: out, signature, types, warnings, labels: state.labels, ctx, coverage };
+  return { lines: out, signature, types, warnings, labels: state.labels, ctx, coverage, objcSyntax: o?.objcSyntax === 'c' ? 'c' : 'objc' };
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -323,7 +340,47 @@ function buildContext(model, o) {
   const symbolFor = nameReader(o.symbolFor);
   const { scalarFpKinds, vecRegs } = computeFpVecKinds(model, callOf, symbolFor);
 
+  let memWritesByRow = null;
+  if (values && Array.isArray(values.memWrites) && values.memWrites.length) {
+    memWritesByRow = new Map();
+    for (const w of values.memWrites) {
+      let arr = memWritesByRow.get(w.row);
+      if (!arr) { arr = []; memWritesByRow.set(w.row, arr); }
+      arr.push(w);
+    }
+  }
+  let writeRowsByReg = null;
+  let callRows = null;
+  const modelInsns = (model && model.instructions) || [];
+  let insnsSortedByRow = true;
+  let prevInsnRow = -Infinity;
+  for (let i = 0; i < modelInsns.length; i++) {
+    const r = modelInsns[i].row;
+    if (r == null || r < prevInsnRow) { insnsSortedByRow = false; break; }
+    prevInsnRow = r;
+  }
+  if (insnsSortedByRow && modelInsns.length) {
+    writeRowsByReg = new Map();
+    callRows = [];
+    for (let i = 0; i < modelInsns.length; i++) {
+      const insn = modelInsns[i];
+      if (insn.isCall) callRows.push(insn.row);
+      const writes = insn.writes;
+      if (writes) {
+        for (let j = 0; j < writes.length; j++) {
+          const wReg = writes[j];
+          let arr = writeRowsByReg.get(wReg);
+          if (!arr) { arr = []; writeRowsByReg.set(wReg, arr); }
+          arr.push(insn.row);
+        }
+      }
+    }
+  }
+
   return {
+    memWritesByRow,
+    writeRowsByReg,
+    callRows,
     model,
     opts: o,
     byRow,
@@ -1010,8 +1067,10 @@ function decideMaterial(model, vg) {
 }
 
 /** 変数として残したところで止めた、見た目の大きさ。 */
-function visibleSize(n, material, depth) {
+function visibleSize(n, material, depth, memo = new Map()) {
   if (!n || (depth || 0) > 24) return 1;
+  if (memo.has(n)) return memo.get(n);
+  memo.set(n, 1);
   let total = 1;
   const kids = n.k === 'bin' ? [n.a, n.b]
     : n.k === 'un' ? [n.a]
@@ -1020,8 +1079,9 @@ function visibleSize(n, material, depth) {
           : n.k === 'call' ? (n.args || []).map((a) => a.value) : [];
   for (const c of kids) {
     if (!c) continue;
-    total += material.has(c) ? 1 : visibleSize(c, material, (depth || 0) + 1);
+    total += material.has(c) ? 1 : visibleSize(c, material, (depth || 0) + 1, memo);
   }
+  memo.set(n, total);
   return total;
 }
 
@@ -1075,19 +1135,48 @@ function liveOutSets(model, blocks, blockOf) {
 
   const out = blocks.map(() => new Set());
   const inSet = blocks.map(() => new Set());
+  let converged = false;
   for (let round = 0; round < 40; round++) {
     let changed = false;
     for (let i = n - 1; i >= 0; i--) {
-      const o = new Set();
-      for (const s of succ[i]) for (const r of inSet[s]) o.add(r);
-      const ni = new Set(use[i]);
-      for (const r of o) if (!def[i].has(r)) ni.add(r);
-      if (ni.size !== inSet[i].size || o.size !== out[i].size) changed = true;
-      inSet[i] = ni; out[i] = o;
+      const o = out[i];
+      const ni = inSet[i];
+      const d = def[i];
+      const prevOutSize = o.size;
+      const prevInSize = ni.size;
+      if (round === 0) {
+        for (const r of use[i]) ni.add(r);
+      }
+      for (const s of succ[i]) {
+        for (const r of inSet[s]) {
+          o.add(r);
+          if (!d.has(r)) ni.add(r);
+        }
+      }
+      if (o.size !== prevOutSize || ni.size !== prevInSize) changed = true;
     }
-    if (!changed) break;
+    if (!changed) { converged = true; break; }
+  }
+  if (!converged) {
+    const allRegs = new Set();
+    for (let i = 0; i < n; i++) {
+      for (const r of use[i]) allRegs.add(r);
+      for (const r of def[i]) allRegs.add(r);
+    }
+    for (let i = 0; i < n; i++) for (const r of allRegs) out[i].add(r);
   }
   return out;
+}
+
+function hasRowInOpenRange(sortedRows, loExclusive, hiExclusive) {
+  if (!sortedRows || !sortedRows.length || loExclusive >= hiExclusive) return false;
+  let lo = 0, hi = sortedRows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (sortedRows[mid] <= loExclusive) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < sortedRows.length && sortedRows[lo] < hiExclusive;
 }
 
 /**
@@ -1116,6 +1205,11 @@ function isClobberedMatName(ctx, matName, targetNode, atRow, sourceReg = null, r
   if (!def || def.row == null) return false;
   const limitRow = atRow != null ? atRow : (regNode && regNode.row != null && regNode.row >= 0 ? regNode.row + 1 : null);
   if (limitRow == null) return false;
+  if (ctx.writeRowsByReg) {
+    if (hasRowInOpenRange(ctx.writeRowsByReg.get(matName), def.row, limitRow)) return true;
+    if (callerClobbered && hasRowInOpenRange(ctx.callRows, def.row, limitRow)) return true;
+    return false;
+  }
   const insns = (ctx.model && ctx.model.instructions) || [];
   for (const i of insns) {
     if (i.row <= def.row) continue;
@@ -1198,7 +1292,7 @@ function exprText(ctx, nodeValue, self, atRow = null, sourceReg = null) {
         return varOf(n.reg, ctx);
       }
       const formatCallNode = (c) => {
-        if (c.sel) return null;
+        if (c.sel ?? c.selector) return null;
         const label = callLabel(c, ctx);
         const calleeKey = c.name || label;
         const proto = knownCallPrototype(calleeKey);
@@ -1212,7 +1306,9 @@ function exprText(ctx, nodeValue, self, atRow = null, sourceReg = null) {
       };
       if (n === self) {
         if (n.k === 'bin' && n.op === 'ror') {
-          return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), n.bits === 32 ? 32 : 64);
+          const rorInsn = atRow != null ? ctx.byRow.get(atRow) : null;
+          const rorBits = n.bits === 32 || rorInsn?.ops?.[0]?.bits === 32 ? 32 : 64;
+          return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), rorBits);
         }
         if (n.k === 'call') {
           const formatted = formatCallNode(n);
@@ -1234,7 +1330,9 @@ function exprText(ctx, nodeValue, self, atRow = null, sourceReg = null) {
         if (formatted != null) return formatted;
       }
       if (n.k === 'bin' && n.op === 'ror') {
-        return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), n.bits === 32 ? 32 : 64);
+        const rorInsn = n.row != null ? ctx.byRow.get(n.row) : (atRow != null ? ctx.byRow.get(atRow) : null);
+        const rorBits = n.bits === 32 || rorInsn?.ops?.[0]?.bits === 32 ? 32 : 64;
+        return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), rorBits);
       }
       return null;
     },
@@ -1473,16 +1571,20 @@ function memNodeName(m, ctx) {
     if (named && named.name) {
       const resolvedBase = m.base ? exprText(ctx, m.base, null, m.row != null ? m.row : null) : null;
       const baseText = resolvedBase || varOf(m.baseReg, ctx);
-      return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
+      const fieldName = named.name.includes('$') ? sanitizeLegacyCallLabel(named.name) : named.name;
+      return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + fieldName;
     }
   }
   return null;
 }
 
+const isMalformedObjcSelector = (s) => typeof s !== 'string' || !s.length || !/^[A-Za-z_][A-Za-z0-9_:]*$/.test(s);
+
 function callLabel(c, ctx) {
   const custom = ctx.notes && c.target != null ? ctx.notes.nameOf(c.target) : null;
   if (custom) return sanitizeLegacyCallLabel(custom);
-  if (c.sel) return ctx.opts?.objcSyntax === 'c' ? 'objc_msgSend' : '[' + (c.sel) + ']';
+  const sel = c.sel ?? c.selector;
+  if (sel) return (ctx.opts?.objcSyntax === 'c' || isMalformedObjcSelector(sel)) ? 'objc_msgSend' : '[' + sel + ']';
   if (c.name) return sanitizeLegacyCallLabel(shortName(c.name));
   return c.target != null ? 'sub_' + c.target.toString(16).toUpperCase() : 'unknown_call';
 }
@@ -2184,7 +2286,7 @@ function condText(cond, ctx) {
   if (cond.kind === 'flag') {
     const op = COND_OPS[cond.cc] || cond.cc;
     if (cond.cc === 'al') return '1';
-    if (cond.cc === 'nv') return '0';
+    if (cond.cc === 'nv') return '1';
     if (!cond.cmp) return 'flag_' + cond.cc;
     if (Array.isArray(cond.cmp.ccmpChain) && cond.cmp.ccmpChain.length) {
       const evalNzcv = (nzcv, cc) => {
@@ -2230,11 +2332,16 @@ function condText(cond, ctx) {
       const expr = cond.cmp.op === 'bics'
         ? '(' + cond.cmp.left + ' & ~(' + cond.cmp.right + '))'
         : '(' + cond.cmp.left + ' & ' + cond.cmp.right + ')';
-      if (cond.cc === 'mi' || cond.cc === 'pl') {
-        const signedTy = cond.cmp.bits === 32 ? 'int32' : 'int64';
-        return '((' + signedTy + ')' + expr + (cond.cc === 'mi' ? ' < 0)' : ' >= 0)');
-      }
-      return expr + (cond.cc === 'eq' ? ' == 0' : ' != 0');
+      const signedTy = cond.cmp.bits === 32 ? 'int32' : 'int64';
+      if (cond.cc === 'eq') return expr + ' == 0';
+      if (cond.cc === 'ne') return expr + ' != 0';
+      if (cond.cc === 'mi' || cond.cc === 'lt') return '((' + signedTy + ')' + expr + ' < 0)';
+      if (cond.cc === 'pl' || cond.cc === 'ge') return '((' + signedTy + ')' + expr + ' >= 0)';
+      if (cond.cc === 'le') return '((' + signedTy + ')' + expr + ' <= 0)';
+      if (cond.cc === 'gt') return '((' + signedTy + ')' + expr + ' > 0)';
+      if (cond.cc === 'hi' || cond.cc === 'cs' || cond.cc === 'hs') return '0';
+      if (cond.cc === 'ls' || cond.cc === 'cc' || cond.cc === 'lo') return '1';
+      return expr + ' != 0';
     }
     if (cond.cmp.op === 'cmn' || cond.cmp.op === 'adds') {
       const sum = '(' + cond.cmp.left + ' + ' + cond.cmp.right + ')';
@@ -2335,14 +2442,18 @@ function sanitizeFallbackOperand(text) {
   return '0 /* ' + s.replace(/\*\//g, '* /') + ' */';
 }
 
-function operandText(op, ctx, insn) {
+function operandText(op, ctx, insn, opts = null) {
   if (!op) return '0 /* unknown */';
   if (op.k === 'reg') {
     const reg = regOf(op);
     const value = insn && ctx.values ? ctx.values.at(insn.row, reg) : null;
     const resolved = value ? exprText(ctx, value, null, insn ? insn.row : null, reg) : null;
     const base = resolved || varOf(reg, ctx);
-    return op.bits === 32 && op.cls === 'gp' ? '(int32)' + (resolved ? '(' + base + ')' : base) : base;
+    if (op.bits === 32 && op.cls === 'gp') {
+      const castTy = opts?.unsigned ? 'uint32' : 'int32';
+      return '(' + castTy + ')' + (resolved ? '(' + base + ')' : base);
+    }
+    return base;
   }
   if (op.k === 'imm') {
     if (op.value == null && op.float != null) return String(op.float);
@@ -2418,12 +2529,24 @@ function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
 
   const baseText = baseOverride != null ? baseOverride : (op.base ? operandText(op.base, ctx, insn) : varOf(base, ctx));
   const named = ctx.fieldFor ? ctx.fieldFor(base, Number(disp), insn ? insn.row : null) : null;
-  if (named && named.name) return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
+  if (named && named.name) {
+    const fieldName = named.name.includes('$') ? sanitizeLegacyCallLabel(named.name) : named.name;
+    return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + fieldName;
+  }
 
   const type = (!float && size === 16) ? 'uint128' : typeFromAccess(size, { float });
   const indexText = op.index ? operandText(op.index, ctx, insn) : null;
+  let indexScaled = indexText;
+  if (op.index && op.shift && op.shift.amount) {
+    const shOp = String(op.shift.op || 'lsl').toLowerCase();
+    const shAmt = Number(op.shift.amount);
+    if (shOp === 'lsr') indexScaled = '(' + indexText + ' >> ' + shAmt + ')';
+    else if (shOp === 'asr') indexScaled = '((int64)' + indexText + ' >> ' + shAmt + ')';
+    else if (Number.isSafeInteger(shAmt) && shAmt > 0 && shAmt <= 30) indexScaled = indexText + ' * ' + (1n << BigInt(shAmt)).toString();
+    else indexScaled = '(' + indexText + ' << ' + shAmt + ')';
+  }
   const inner = op.index
-    ? baseText + ' + ' + indexText + (op.shift && op.shift.amount ? ' * ' + (1 << op.shift.amount) : '')
+    ? baseText + ' + ' + indexScaled
     : (disp ? baseText + ' + ' + hexImm(disp) : baseText);
   if (/^global_[0-9A-F]+(?:\s*[+-]\s*(?:0x[0-9A-Fa-f]+|\d+))?$/.test(inner)) {
     return '*(' + type + ' *)(uintptr_t)(' + inner + ')';
@@ -2765,6 +2888,29 @@ function statementFor(insn, ctx, node, state) {
   /* スタックへの退避・復帰は「後片付け」なので隠す（読みやすさ優先） */
   if (isFrameHousekeeping(insn, ctx)) return null;
 
+  /* PC相対リテラルロード (ldr / ldrsw Xt, #addr) */
+  if (!insn.memory && (base === 'ldr' || base === 'ldrsw') && insn.ops.length === 2
+      && insn.ops[0]?.k === 'reg' && insn.ops[1]?.k === 'imm') {
+    const target = insn.pcRelTarget != null ? insn.pcRelTarget : insn.ops[1].value;
+    const litDst = insn.writes[0] || regOf(insn.ops[0]);
+    if (target != null && target >= 0n && litDst) {
+      const text = ctx.textOf.get(row);
+      if (text != null) return mk(varOf(litDst, ctx) + ' = "' + escapeText(text) + '";', { dst: litDst, pure: true, reads: [] });
+      const addrHex = '0x' + target.toString(16).toUpperCase() + 'ULL';
+      let loadExpr;
+      if (base === 'ldrsw') {
+        loadExpr = '(int64_t)(*(const int32_t *)(uintptr_t)' + addrHex + ')';
+      } else if (insn.ops[0].cls === 'fp' || insn.ops[0].cls === 'vec') {
+        const ft = insn.ops[0].bits === 32 ? 'float' : 'double';
+        loadExpr = '*(const ' + ft + ' *)(uintptr_t)' + addrHex;
+      } else {
+        const ut = insn.ops[0].bits === 32 ? 'uint32_t' : 'uint64_t';
+        loadExpr = '*(const ' + ut + ' *)(uintptr_t)' + addrHex;
+      }
+      return mk(varOf(litDst, ctx) + ' = ' + loadExpr + ';', { dst: litDst, reads: [] });
+    }
+  }
+
   /* メモリ */
   if (insn.memory) {
     const memStmt = memoryStatement(insn, ctx, mk, base);
@@ -2843,7 +2989,11 @@ function statementFor(insn, ctx, node, state) {
   if (base === 'movk') {
     const imm = insn.ops[1];
     const sh = imm && imm.shift && imm.shift.amount ? imm.shift.amount : 0;
-    return mk(varOf(dst, ctx) + ' |= ' + hexImm(imm && imm.value != null ? imm.value : 0n) + (sh ? ' << ' + sh : '') + ';',
+    const dstVar = varOf(dst, ctx);
+    const val = imm && imm.value != null ? imm.value : 0n;
+    const lane = sh ? '(' + hexImm(val) + 'ULL << ' + sh + ')' : hexImm(val);
+    const mask = sh ? '~(0xFFFFULL << ' + sh + ')' : '~0xFFFFULL';
+    return mk(dstVar + ' = (' + dstVar + ' & ' + mask + ') | ' + lane + ';',
       { dst, pure: true, note: '大きな定数を 16 ビットずつ組み立てています。' });
   }
 
@@ -2872,14 +3022,23 @@ function statementFor(insn, ctx, node, state) {
   };
   const operandBits = insn.ops[0]?.bits === 32 || insn.ops[0]?.width === 32 || /^w\d+$/i.test(insn.ops[0]?.name || '') ? 32 : 64;
   if ((base === 'ror' || base === 'rorv') && insn.ops.length >= 3 && dst) {
-    const a = operandText(insn.ops[1], ctx, insn);
-    const b = operandText(insn.ops[2], ctx, insn);
+    const a = operandText(insn.ops[1], ctx, insn, { unsigned: true });
+    const b = operandText(insn.ops[2], ctx, insn, { unsigned: true });
     return mk(varOf(dst, ctx) + ' = ' + rorExpr(a, b, operandBits) + ';', { dst, pure: true });
   }
   if (BIN[base] && insn.ops.length >= 3 && dst) {
-    const a = operandText(insn.ops[1], ctx, insn);
-    const b = operandText(insn.ops[2], ctx, insn);
+    if (base === 'smull' || base === 'umull') {
+      const isUnsigned = base === 'umull';
+      const wideTy = isUnsigned ? 'uint64' : 'int64';
+      const a = operandText(insn.ops[1], ctx, insn, { unsigned: isUnsigned });
+      const b = operandText(insn.ops[2], ctx, insn, { unsigned: isUnsigned });
+      return mk(varOf(dst, ctx) + ' = (' + wideTy + ')' + a + ' * (' + wideTy + ')' + b + ';', { dst, pure: true });
+    }
     const sh = insn.ops[2] && insn.ops[2].shift && insn.ops[2].shift.amount ? insn.ops[2].shift : null;
+    const unsignedOp = base === 'udiv' || base === 'lsr';
+    const unsignedB = base === 'udiv' || base === 'lsr' || sh?.op === 'lsr' || sh?.op === 'ror';
+    const a = operandText(insn.ops[1], ctx, insn, { unsigned: unsignedOp });
+    const b = operandText(insn.ops[2], ctx, insn, { unsigned: unsignedB });
     const expr = sh
       ? (sh.op === 'ror' ? rorExpr(b, sh.amount, operandBits) : '(' + b + ' ' + shiftOp(sh.op) + ' ' + sh.amount + ')')
       : b;
@@ -2959,11 +3118,32 @@ function statementFor(insn, ctx, node, state) {
   /* 型変換 */
   const cast = /^(sxtb|sxth|sxtw|uxtb|uxth|uxtw|scvtf|ucvtf|fcvtzs|fcvtzu|fcvt)$/.exec(base);
   if (cast && dst) {
-    const to = {
+    let to = {
       sxtb: 'int8', sxth: 'int16', sxtw: 'int32', uxtb: 'uint8', uxth: 'uint16', uxtw: 'uint32',
-      scvtf: 'double', ucvtf: 'double', fcvtzs: 'int64', fcvtzu: 'uint64', fcvt: 'double',
     }[base];
-    return mk(varOf(dst, ctx) + ' = (' + to + ')' + operandText(insn.ops[1], ctx, insn) + ';',
+    let src;
+    if (base === 'fcvt') {
+      to = fpRegWidth(insn.ops[0]) === 'float' ? 'float' : 'double';
+      src = operandText(insn.ops[1], ctx, insn);
+    } else if (base === 'scvtf' || base === 'ucvtf') {
+      to = fpRegWidth(insn.ops[0]) === 'float' ? 'float' : 'double';
+      if (base === 'ucvtf') {
+        const srcOp = insn.ops[1];
+        const srcIs32 = srcOp?.bits === 32 || srcOp?.width === 32 || /^w\d+$/i.test(srcOp?.name || srcOp?.text || '');
+        const rawSrc = operandText(srcOp, ctx, insn, { unsigned: true });
+        src = srcIs32
+          ? rawSrc
+          : (/^\(uint64\)/.test(rawSrc) ? rawSrc : '(uint64)' + (/^[A-Za-z_]\w*$/.test(rawSrc) ? rawSrc : '(' + rawSrc + ')'));
+      } else {
+        src = operandText(insn.ops[1], ctx, insn);
+      }
+    } else if (base === 'fcvtzs' || base === 'fcvtzu') {
+      to = (base === 'fcvtzs' ? 'int' : 'uint') + (operandBits === 32 ? '32' : '64');
+      src = operandText(insn.ops[1], ctx, insn);
+    } else {
+      src = operandText(insn.ops[1], ctx, insn);
+    }
+    return mk(varOf(dst, ctx) + ' = (' + to + ')' + src + ';',
       { dst, pure: true });
   }
   if (base === 'bfi' || base === 'bfxil' || base === 'ubfx' || base === 'sbfx' || base === 'ubfiz') {
@@ -3056,8 +3236,9 @@ function bitfieldExpr(base, dst, insn, ctx, bits = 64) {
 function rorExpr(value, amount, bits = 64) {
   const width = bits === 32 ? 32 : 64;
   const mask = width - 1;
+  const v = width === 32 && !/^\(uint32\)/.test(value) ? '(uint32)(' + value + ')' : value;
   const sh = '(' + amount + ' & ' + mask + ')';
-  return '((' + value + ' >> ' + sh + ') | (' + value + ' << ((' + width + ' - ' + sh + ') & ' + mask + ')))';
+  return '((' + v + ' >> ' + sh + ') | (' + v + ' << ((' + width + ' - ' + sh + ') & ' + mask + ')))';
 }
 
 function shiftOp(op) {
@@ -3327,8 +3508,8 @@ function memoryStatement(insn, ctx, mk, base) {
     }
     const dstOp0 = insn.ops[0];
     const isFpOrVecDst = fpRegWidth(dstOp0) != null || dstOp0?.cls === 'fp' || dstOp0?.cls === 'vec';
-    const loadRef = ctx.refOf.get(insn.row);
-    const text = (isFpOrVecDst || (loadRef && loadRef.load && !loadRef.viaPointer)) ? null : ctx.textOf.get(insn.row);
+    const isSubPointerLoad = elemSize < 8 || dstOp0?.bits === 32;
+    const text = (isFpOrVecDst || isSubPointerLoad) ? null : ctx.textOf.get(insn.row);
     if (text != null) {
       return wrapWb(mk(d0 + ' = "' + escapeText(text) + '";', { dst: insn.writes[0], pure: !hasWb }));
     }
@@ -3370,9 +3551,12 @@ function memoryStatement(insn, ctx, mk, base) {
 function storedValues(insn, ctx) {
   const vg = ctx.values;
   if (!vg) return [];
+  const list = ctx.memWritesByRow ? ctx.memWritesByRow.get(insn.row) : vg.memWrites;
+  if (!list || !list.length) return [];
   const out = [];
-  for (const w of vg.memWrites || []) {
-    if (w.row !== insn.row) continue;
+  for (let i = 0; i < list.length; i++) {
+    const w = list[i];
+    if (!ctx.memWritesByRow && w.row !== insn.row) continue;
     const text = w.value ? exprText(ctx, w.value, null, w.row) : null;
     out.push(text || null);
   }
@@ -3403,12 +3587,13 @@ function callStatement(insn, ctx, mk) {
   /* Objective-C のメソッド呼び出しは [obj method:…] で書く */
   const sel = call && call.selector ? call.selector : (name ? (/objc_msgSend(?:Super2?)?\$(.+)$/.exec(name) || [])[1] : null);
   if (sel) {
-    const argc = (sel.match(/:/g) || []).length;
+    const malformedSel = isMalformedObjcSelector(sel);
+    const argc = malformedSel ? 0 : (sel.match(/:/g) || []).length;
     const parts = argc ? sel.split(':').slice(0, argc) : [];
     const argv = [];
     for (let i = 0; i < argc; i++) argv.push(registerValueText(ctx, insn.row, 'x' + (i + 2)));
     const receiverValue = registerValueText(ctx, insn.row, 'x0');
-    if (ctx.opts?.objcSyntax === 'c') {
+    if (ctx.opts?.objcSyntax === 'c' || malformedSel) {
       const callee = /objc_msgSendSuper2/.test(name || '') ? 'objc_msgSendSuper2' : 'objc_msgSend';
       const stripAt = (v) => (typeof v === 'string' && /^@"/.test(v) ? v.slice(1) : v);
       const callArgs = [stripAt(receiverValue), JSON.stringify(sel), ...argv.map(stripAt)];
@@ -3426,8 +3611,14 @@ function callStatement(insn, ctx, mk) {
       ? parts.map((p, i) => p + ':' + argv[i]).join(' ')
       : sel;
     const receiver = needsParens(receiverValue) ? '(' + receiverValue + ')' : receiverValue;
-    return mk(nameForDef(ctx, insn.row, 'x0') + ' = [' + receiver + ' ' + body + '];',
-      { dst: 'x0', call: true, reads: ['x0'].concat(parts.map((_, i) => 'x' + (i + 2))),
+    const callExpr = '[' + receiver + ' ' + body + ']';
+    const text = isTail
+      ? (ctx.callerIsVoid ? callExpr + '; return;' : 'return ' + callExpr + ';')
+      : nameForDef(ctx, insn.row, 'x0') + ' = ' + callExpr + ';';
+    return mk(text,
+      { dst: isTail ? null : 'x0', call: true,
+        kind: isTail ? 'ctrl' : 'stmt',
+        reads: ['x0'].concat(parts.map((_, i) => 'x' + (i + 2))),
         note: 'Objective-C のメソッド「' + sel + '」を呼びます。' });
   }
 
@@ -3948,11 +4139,29 @@ function inlineTemporaries(stmts, ctx, blockInfo = {}) {
      */
     const lhs = /^([A-Za-z_]\w*)\s*=\s*/.exec(st.text.trim());
     const name = lhs ? lhs[1] : varOf(reg, ctx);
-    const readers = st.call
-      ? stmts.map((s, k) => k).filter((k) => k > i && !stmts[k].dropped && hasWholeWord(stmts[k].text, name))
-      : (uses.get(reg) || []).filter((j) => j > i);
-    if (readers.length !== 1) continue;
-    const j = readers[0];
+    let j = -1;
+    let readerCount = 0;
+    if (st.call) {
+      for (let k = i + 1; k < stmts.length; k++) {
+        if (!stmts[k].dropped && hasWholeWord(stmts[k].text, name)) {
+          j = k;
+          readerCount++;
+          if (readerCount > 1) break;
+        }
+      }
+    } else {
+      const regUses = uses.get(reg);
+      if (regUses) {
+        for (let ui = 0; ui < regUses.length; ui++) {
+          if (regUses[ui] > i) {
+            j = regUses[ui];
+            readerCount++;
+            if (readerCount > 1) break;
+          }
+        }
+      }
+    }
+    if (readerCount !== 1) continue;
     const target = stmts[j];
     if (!target || target.dropped) continue;
     if (target.call) continue;                   // 呼び出しの行に埋め込むと左辺まで書き換えてしまう
@@ -4010,14 +4219,30 @@ function inlineTemporaries(stmts, ctx, blockInfo = {}) {
       if (crossesCtrl) continue;
       const interveningDef = (defs.get(reg) || []).some((k) => k > i && k < j && !stmts[k].dropped);
       if (interveningDef) continue;
-      const clobberedRead = (st.reads || []).some((r) =>
-        (defs.get(r) || []).some((k) => k > i && k < j && !stmts[k].dropped) ||
-        stmts.some((mid, k) => k > i && k < j && !mid.dropped && mid.call && CALL_CLOBBER_REG.test(r))
-      ) || stmts.some((mid, k) => {
-        if (k <= i || k >= j || mid.dropped) return false;
-        const mlhs = /^([A-Za-z_]\w*)\s*=\s*/.exec(mid.text.trim());
-        return !!(mlhs && hasWholeWord(value, mlhs[1]));
-      });
+      let clobberedRead = false;
+      const stReads = st.reads || [];
+      let hasCallerClobberRead = false;
+      for (let ri = 0; ri < stReads.length; ri++) {
+        const r = stReads[ri];
+        const rDefs = defs.get(r);
+        if (rDefs) {
+          for (let di = 0; di < rDefs.length; di++) {
+            const dk = rDefs[di];
+            if (dk > i && dk < j && !stmts[dk].dropped) { clobberedRead = true; break; }
+          }
+        }
+        if (clobberedRead) break;
+        if (CALL_CLOBBER_REG.test(r)) hasCallerClobberRead = true;
+      }
+      if (!clobberedRead) {
+        for (let k = i + 1; k < j; k++) {
+          const mid = stmts[k];
+          if (mid.dropped) continue;
+          if (hasCallerClobberRead && mid.call) { clobberedRead = true; break; }
+          const mlhs = /^([A-Za-z_]\w*)\s*=\s*/.exec(mid.text.trim());
+          if (mlhs && hasWholeWord(value, mlhs[1])) { clobberedRead = true; break; }
+        }
+      }
       if (clobberedRead) continue;
       const isTemp = /^x(8|9|1[0-7])$/.test(reg);
       if (!laterDefs.length && !isTemp) continue; // あとで使われるかもしれない変数は残す
@@ -4072,14 +4297,21 @@ function removeDeadStores(stmts) {
   }
 }
 
+const GENERIC_ASSIGN_RHS_RE = /^[A-Za-z_]\w*\s*=\s*(.*);$/;
+
 function rightHandSide(text, reg) {
-  const m = new RegExp('^' + escapeRe(reg) + '\\s*=\\s*(.*);$').exec(text.trim());
-  if (!m) {
-    const m2 = /^[A-Za-z_]\w*\s*=\s*(.*);$/.exec(text.trim());
-    if (m2) return m2[1];
-    return null;
+  const trimmed = text.trim();
+  if (trimmed.endsWith(';') && trimmed.startsWith(reg)) {
+    let idx = reg.length;
+    while (idx < trimmed.length && /\s/.test(trimmed[idx])) idx++;
+    if (idx < trimmed.length && trimmed[idx] === '=') {
+      idx++;
+      while (idx < trimmed.length && /\s/.test(trimmed[idx])) idx++;
+      return trimmed.slice(idx, trimmed.length - 1);
+    }
   }
-  return m[1];
+  const m2 = GENERIC_ASSIGN_RHS_RE.exec(trimmed);
+  return m2 ? m2[1] : null;
 }
 
 function isWrappedInBalancedParens(expr) {
@@ -4111,13 +4343,42 @@ function needsParens(expr) {
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-function hasWholeWord(text, word) {
-  return new RegExp('(^|[^\\w>])' + escapeRe(word) + '($|[^\\w])').test(text);
+function isWordCode(c) {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
 }
 
+const EMPTY_WHOLE_WORD_RE = /(^|[^\w>])($|[^\w])/;
+
+function hasWholeWord(text, word) {
+  if (!word) return EMPTY_WHOLE_WORD_RE.test(text);
+  const wLen = word.length;
+  const tLen = text.length;
+  let pos = text.indexOf(word, 0);
+  while (pos !== -1) {
+    const leftOk = pos === 0 || (!isWordCode(text.charCodeAt(pos - 1)) && text.charCodeAt(pos - 1) !== 62);
+    const rightEnd = pos + wLen;
+    const rightOk = rightEnd === tLen || !isWordCode(text.charCodeAt(rightEnd));
+    if (leftOk && rightOk) return true;
+    pos = text.indexOf(word, pos + 1);
+  }
+  return false;
+}
+
+const WHOLE_WORD_REPLACE_RE_CACHE = new Map();
+const WHOLE_WORD_REPLACE_RE_CACHE_LIMIT = 256;
+
 function replaceWholeWord(text, word, value) {
-  return text.replace(new RegExp('(^|[^\\w>])' + escapeRe(word) + '($|[^\\w])', 'g'),
-    (m, a, b) => a + value + b);
+  let re = WHOLE_WORD_REPLACE_RE_CACHE.get(word);
+  if (!re) {
+    re = new RegExp('(?<![\\w>])' + escapeRe(word) + '(?!\\w)', 'g');
+    if (WHOLE_WORD_REPLACE_RE_CACHE.size >= WHOLE_WORD_REPLACE_RE_CACHE_LIMIT) {
+      const oldest = WHOLE_WORD_REPLACE_RE_CACHE.keys().next().value;
+      WHOLE_WORD_REPLACE_RE_CACHE.delete(oldest);
+    }
+    WHOLE_WORD_REPLACE_RE_CACHE.set(word, re);
+  }
+  re.lastIndex = 0;
+  return text.replace(re, () => value);
 }
 
 /* ── 変数の宣言 ─────────────────────────────────────────── */
@@ -4191,7 +4452,13 @@ function declarations(ctx, types, o, body) {
       continue;
     }
     const raw = (ctx.notes && ctx.funcAddr != null ? ctx.notes.typeOf(ctx.funcAddr, l.slot) : null) || l.type;
-    const type = raw === 'unknown' ? 'int64' : raw;
+    let type = raw === 'unknown' ? 'int64' : raw;
+    if (type === 'float' || type === 'double') {
+      const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\*\\s*\\([^;{}()]*\\*\\s*\\)\\s*\\([^;{}()]*\\b${esc}\\b`).test(text)) {
+        type = 'uint64';
+      }
+    }
     if (!byType.has(type)) byType.set(type, []);
     byType.get(type).push(name);
   }

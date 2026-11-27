@@ -47,7 +47,17 @@ function decodeBlockType(bytecode, pos, wasmModule, budget = null) {
   return { params: t.params.slice(), results: t.results.slice(), nextOffset: r.nextOffset, typeIndex: r.value, kind: 'type-index' };
 }
 
+function isTable64(tableType) {
+  if (!tableType) return false;
+  if (tableType.is64 === true) return true;
+  if (tableType.addressType === 'i64' || tableType.addressType === 0x7e) return true;
+  if (tableType.indexType === 'i64' || tableType.indexType === 0x7e) return true;
+  if (Number.isSafeInteger(tableType.flags) && (tableType.flags & 0x04) !== 0) return true;
+  return false;
+}
+
 function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleIndex(wasmModule)) {
+  if (!Number.isSafeInteger(funcIndex) || funcIndex < 0) fail('wasm-invalid-callee-index');
   const importedCount = moduleIndex.importedFunctionCount;
   let typeIndex;
   if (funcIndex < importedCount) typeIndex = moduleIndex.functionTypeIndices[funcIndex];
@@ -73,6 +83,7 @@ function unsupportedInstructionBoundary(bytecode, operandOffset, opcode) {
 }
 
 export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
+  if (!Number.isSafeInteger(funcIndex) || funcIndex < 0) fail('wasm-invalid-function-index');
   const methodId = createManagedMethodId(wasmModule.moduleId, funcIndex);
   const moduleIndex = wasmModuleIndex(wasmModule);
   const importedFuncs = moduleIndex.importedFunctions;
@@ -130,9 +141,12 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const currentFrame = () => controlStack[controlStack.length - 1];
   const consume = (count, code = 'wasm-stack-underflow') => {
     if (count <= 0) return;
-    if (currentStackHeight < count) {
-      if (!currentFrame()?.polymorphic) fail(code);
-      currentStackHeight = currentFrame()?.stackHeight ?? 0;
+    const frame = currentFrame();
+    if (!frame) fail('wasm-invalid-control-stack');
+    const frameHeight = frame.stackHeight;
+    if (currentStackHeight - frameHeight < count) {
+      if (!frame.polymorphic) fail(code);
+      currentStackHeight = frameHeight;
       return;
     }
     currentStackHeight -= count;
@@ -183,13 +197,13 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const kind = opcode === 0x02 ? 'block' : opcode === 0x03 ? 'loop' : 'if';
         mnemonic = kind;
         if (kind === 'if') { consumedValues.push({ id: 'cond', bits: 32 }); consume(1); }
-        if (currentStackHeight < bt.params.length && !currentFrame().polymorphic) fail('wasm-stack-underflow-block-params');
-        const baseHeight = Math.max(0, currentStackHeight - bt.params.length);
-        currentStackHeight = baseHeight + bt.params.length;
+        consume(bt.params.length, 'wasm-stack-underflow-block-params');
+        const baseHeight = currentStackHeight;
+        produce(bt.params.length);
         const frame = { id: `frame_${frameSeq++}`, kind, startOffset: opOffset, bodyOffset: pos, stackHeight: baseHeight, params: bt.params, results: bt.results, pendingBranches: [], polymorphic: false, elseSeen: false, ifEffect: null, elseEffect: null };
         controlStack.push(frame);
         if (kind === 'if') {
-          const ce = { kind: 'conditional-branch', targetOffset: null, structured: 'if-false' };
+          const ce = { kind: 'conditional-branch', targetOffset: pos, falseTargetOffset: null, structured: 'if' };
           frame.ifEffect = ce;
           controlEffects.push(ce);
         }
@@ -199,11 +213,11 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'else';
         const frame = currentFrame();
         if (!frame || frame.kind !== 'if' || frame.elseSeen) fail('wasm-invalid-else');
-        if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-if-then-stack');
+        if (frame.polymorphic ? currentStackHeight > frame.stackHeight + frame.results.length : currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-if-then-stack');
         frame.elseSeen = true;
         frame.polymorphic = false;
         currentStackHeight = frame.stackHeight + frame.params.length;
-        if (frame.ifEffect) frame.ifEffect.targetOffset = pos;
+        if (frame.ifEffect) frame.ifEffect.falseTargetOffset = pos;
         const ce = { kind: 'branch', targetOffset: null, structured: 'else-join' };
         frame.elseEffect = ce;
         frame.pendingBranches.push({ effect: ce, field: 'targetOffset' });
@@ -215,12 +229,12 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const frame = controlStack.pop();
         if (!frame) fail('wasm-unmatched-end');
         if (frame.kind === 'if' && !frame.elseSeen && !sameTypes(frame.params, frame.results)) fail('wasm-invalid-if-without-else-type');
-        if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-block-result-stack');
+        if (frame.polymorphic ? currentStackHeight > frame.stackHeight + frame.results.length : currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-block-result-stack');
         const continuation = pos;
         frame.endOffset = opOffset;
         frame.continuationOffset = continuation;
         for (const pending of frame.pendingBranches) pending.effect[pending.field] = continuation;
-        if (frame.kind === 'if' && frame.ifEffect && !frame.elseSeen) frame.ifEffect.targetOffset = continuation;
+        if (frame.kind === 'if' && frame.ifEffect && !frame.elseSeen) frame.ifEffect.falseTargetOffset = continuation;
         if (frame.kind === 'function') {
           if (pos !== bytecode.length) fail('wasm-trailing-bytes-after-function-end');
           if (!frame.polymorphic && funcType.results.length) {
@@ -242,6 +256,16 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const targetFrame = controlStack[controlStack.length - 1 - lr.value];
         mnemonic = opcode === 0x0c ? 'br' : 'br_if';
         if (opcode === 0x0d) { consumedValues.push({ id: 'cond', bits: 32 }); consume(1); }
+        const labelTypes = targetFrame.kind === 'loop' ? targetFrame.params : targetFrame.results;
+        if (labelTypes.length) {
+          preChargedValues += labelTypes.length;
+          budget.chargeValues(labelTypes.length);
+          for (let i = labelTypes.length - 1; i >= 0; i--) {
+            consumedValues.push({ id: `branch_${i}`, bits: typeBits(labelTypes[i]), type: labelTypes[i] });
+          }
+          consume(labelTypes.length, 'wasm-stack-underflow-branch');
+          if (opcode === 0x0d) produce(labelTypes.length);
+        }
         const ce = { kind: opcode === 0x0c ? 'branch' : 'conditional-branch', targetOffset: null, labelIdx: lr.value };
         labelTarget(targetFrame, ce);
         controlEffects.push(ce);
@@ -262,6 +286,16 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         for (const depth of labelDepths) if (depth >= controlStack.length) fail('wasm-invalid-branch-depth');
         mnemonic = 'br_table';
         consumedValues.push({ id: 'index', bits: 32 }); consume(1);
+        const defaultTargetFrame = controlStack[controlStack.length - 1 - labelDepths.at(-1)];
+        const tableLabelTypes = defaultTargetFrame.kind === 'loop' ? defaultTargetFrame.params : defaultTargetFrame.results;
+        if (tableLabelTypes.length) {
+          preChargedValues += tableLabelTypes.length;
+          budget.chargeValues(tableLabelTypes.length);
+          for (let i = tableLabelTypes.length - 1; i >= 0; i--) {
+            consumedValues.push({ id: `branch_${i}`, bits: typeBits(tableLabelTypes[i]), type: tableLabelTypes[i] });
+          }
+          consume(tableLabelTypes.length, 'wasm-stack-underflow-branch');
+        }
         const ce = { kind: 'switch', targetOffsets: new Array(labelDepths.length - 1).fill(null), defaultTargetOffset: null, labelDepths: labelDepths.slice(0, -1), defaultLabelDepth: labelDepths.at(-1) };
         const caseFrames = [];
         const caseHolders = [];
@@ -315,18 +349,23 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const tr = decodeUleb128(bytecode, pos); pos = tr.nextOffset;
         const type = wasmModule.types[tr.value]; if (!type) fail('wasm-invalid-call-indirect-type-index');
         const table = decodeUleb128(bytecode, pos); pos = table.nextOffset;
-        if (table.value >= moduleIndex.tableCount) fail('wasm-invalid-call-indirect-table-index');
+        const tableType = moduleIndex.tables[table.value];
+        if (!tableType) fail('wasm-invalid-call-indirect-table-index');
+        if (tableType.elemType !== 0x70) fail('wasm-invalid-call-indirect-table-type');
+        const table64 = isTable64(tableType);
+        const selectorType = table64 ? 0x7e : 0x7f;
+        const selectorBits = table64 ? 64 : 32;
         // #8711: same pre-admission boundary as `call` (plus the selector operand).
         preChargedValues = 1 + type.params.length + type.results.length;
         budget.chargeValues(preChargedValues);
         mnemonic = 'call_indirect';
-        consumedValues.push({ id: 'func_index', bits: 32 });
+        consumedValues.push({ id: 'func_index', bits: selectorBits, type: selectorType });
         for (let i = type.params.length - 1; i >= 0; i--) consumedValues.push({ id: `arg_${i}`, bits: typeBits(type.params[i]), type: type.params[i] });
         consume(1 + type.params.length, 'wasm-stack-underflow-call-indirect');
         for (let i = 0; i < type.results.length; i++) producedValues.push({ id: `result_${i}`, bits: typeBits(type.results[i]), type: type.results[i] });
         produce(type.results.length);
         callEffects.push({ typeIndex: tr.value, tableIndex: table.value, dispatchKind: 'indirect', unresolved: true, signature: { params: type.params, results: type.results } });
-        possibleExceptions.push({ kind: 'indirect-call-table-oob', tableIndex: table.value, condition: 'u32(selector)>=tableSize' });
+        possibleExceptions.push({ kind: 'indirect-call-table-oob', tableIndex: table.value, condition: table64 ? 'u64(selector)>=tableSize' : 'u32(selector)>=tableSize' });
         possibleExceptions.push({ kind: 'indirect-call-null-target', tableIndex: table.value, condition: 'selectedElement==null' });
         possibleExceptions.push({ kind: 'indirect-call-type-mismatch', tableIndex: table.value, typeIndex: tr.value, condition: 'selectedFunctionType!=declaredType' });
         break;
@@ -387,7 +426,9 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const memarg = decodeWasmMemarg(bytecode, pos); pos = memarg.nextOffset;
         const memory = validateWasmMemoryInstruction(memoryContext, opcode, memarg.align, memarg.memoryIndex);
         const bits = (opcode === 0x37 || opcode === 0x39) ? 64 : 32; const byteWidth = opcode === 0x3a ? 1 : opcode === 0x3b ? 2 : bits / 8;
-        mnemonic = opcode === 0x36 ? 'i32.store' : opcode === 0x37 ? 'i64.store' : 'store'; consumedValues.push({ id: 'val', bits }, { id: 'addr', bits: 32 }); consume(2); memoryEffects.push({ space: 'linear-memory', memoryIndex: memory.memoryIndex, byteWidth, offset: memarg.offset, align: memarg.align, isWrite: true });
+        mnemonic = opcode === 0x36 ? 'i32.store' : opcode === 0x37 ? 'i64.store' : opcode === 0x38 ? 'f32.store' : opcode === 0x39 ? 'f64.store' : 'store';
+        const valType = opcode === 0x38 ? { kind: 'float', widthBits: 32, format: 'binary32' } : opcode === 0x39 ? { kind: 'float', widthBits: 64, format: 'binary64' } : null;
+        consumedValues.push(valType ? { id: 'val', bits, type: valType } : { id: 'val', bits }, { id: 'addr', bits: 32 }); consume(2); memoryEffects.push({ space: 'linear-memory', memoryIndex: memory.memoryIndex, byteWidth, offset: memarg.offset, align: memarg.align, isWrite: true });
         possibleExceptions.push({ kind: 'linear-memory-oob', memoryIndex: memory.memoryIndex, condition: `effectiveAddress+${byteWidth}>memorySize` });
         break;
       }

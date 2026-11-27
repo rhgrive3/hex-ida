@@ -186,7 +186,7 @@ function createPassIndex(ir) {
       if (!block || block.index == null) continue;
       const insts = block.insts;
       if (!insts || !insts.length) { blockInstsDesc.set(block.index, []); continue; }
-      blockInstsDesc.set(block.index, [...insts].sort((a, b) => (b.row ?? -1) - (a.row ?? -1)));
+      blockInstsDesc.set(block.index, [...insts].sort((a, b) => (b.row ?? -1) - (a.row ?? -1) || (b.id ?? -1) - (a.id ?? -1)));
     }
   } else {
     for (const inst of ir?.instructions || []) {
@@ -196,7 +196,7 @@ function createPassIndex(ir) {
       list.push(inst);
     }
     for (const list of blockInstsDesc.values()) {
-      list.sort((a, b) => (b.row ?? -1) - (a.row ?? -1));
+      list.sort((a, b) => (b.row ?? -1) - (a.row ?? -1) || (b.id ?? -1) - (a.id ?? -1));
     }
   }
   const domDepthCache = new Map();
@@ -320,7 +320,7 @@ function controller(ir, merge, predecessors, opts, passIndex = null) {
 function storeValue(inst, key, values, expectedBytes = null) {
   if (inst?.op !== 'store' || inst.loc?.kind !== 'stack' || inst.loc?.key !== key) return null;
   const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
-  if (expectedBytes != null && expectedBytes > 0 && bytes > 0 && bytes !== expectedBytes) return null;
+  if (expectedBytes != null && expectedBytes > 0 && bytes !== expectedBytes) return null;
   let node = expressionOf(valueOf(inst.args?.[0]), values);
   if (!node) return null;
   const bits = bytes > 0 ? bytes * 8 : 0;
@@ -386,11 +386,144 @@ function storedViewProjectsValue(stored, expected, store) {
   return suffix.every((step, index) => step === b.steps[index]);
 }
 
-function committedStoreBarrier(inst, key) {
+function isStackLocationLike(locOrKey) {
+  if (!locOrKey) return false;
+  if (typeof locOrKey === 'string') {
+    return locOrKey.startsWith('stack:') || /^\[[^,\]]+,\s*#?-?\d+\]:s\d+$/.test(locOrKey);
+  }
+  if (locOrKey.kind === 'stack') return true;
+  if (locOrKey.kind != null) return false;
+  return typeof locOrKey.key === 'string' && isStackLocationLike(locOrKey.key);
+}
+
+function parseStackByteRange(locOrKey, fallbackSize = null) {
+  if (!locOrKey) return null;
+  const isObj = typeof locOrKey === 'object';
+  const key = isObj ? String(locOrKey.key || '') : String(locOrKey);
+  if (isObj && locOrKey.kind != null && locOrKey.kind !== 'stack') return null;
+
+  let base = null;
+  let scope = null;
+  let offset = null;
+  let size = null;
+  let named = null;
+
+  if (key) {
+    let m = /^stack:([^:]+):c(-?\d+):s(\d+)$/.exec(key);
+    if (m) {
+      base = m[1]; scope = 'c'; offset = BigInt(m[2]); size = Number(m[3]);
+    } else if ((m = /^stack:([^:]+):e(\d+):(-?\d+):s(\d+)$/.exec(key))) {
+      base = m[1]; scope = `e${m[2]}`; offset = BigInt(m[3]); size = Number(m[4]);
+    } else if ((m = /^stack:([^:+-]+)([+-]\d+):s(\d+)$/.exec(key))) {
+      base = m[1]; scope = isObj && locOrKey.frameEpoch != null ? `e${locOrKey.frameEpoch}` : null; offset = BigInt(m[2]); size = Number(m[3]);
+    } else if ((m = /^stack:([^:]+):(-?\d+):s(\d+)$/.exec(key))) {
+      base = m[1]; scope = isObj && locOrKey.frameEpoch != null ? `e${locOrKey.frameEpoch}` : null; offset = BigInt(m[2]); size = Number(m[3]);
+    } else if ((m = /^stack:(-?\d+):s(\d+)$/.exec(key))) {
+      base = isObj && locOrKey.baseReg != null ? String(locOrKey.baseReg) : '$frame';
+      scope = isObj && locOrKey.frameEpoch != null ? `e${locOrKey.frameEpoch}` : null;
+      offset = BigInt(m[1]);
+      size = Number(m[2]);
+    } else if ((m = /^stack:(-?\d+)$/.exec(key))) {
+      base = isObj && locOrKey.baseReg != null ? String(locOrKey.baseReg) : '$frame';
+      scope = isObj && locOrKey.frameEpoch != null ? `e${locOrKey.frameEpoch}` : null;
+      offset = BigInt(m[1]);
+    } else if ((m = /^stack:([^:]+):s(\d+)$/.exec(key))) {
+      named = m[1];
+      size = Number(m[2]);
+    } else if ((m = /^\[([^,\]]+),\s*#?(-?\d+)\]:s(\d+)$/.exec(key))) {
+      base = m[1].trim(); scope = isObj && locOrKey.frameEpoch != null ? `e${locOrKey.frameEpoch}` : null; offset = BigInt(m[2]); size = Number(m[3]);
+    }
+  }
+
+  const resolvedSize = Number.isSafeInteger(size) && size > 0
+    ? size
+    : (isObj && Number.isSafeInteger(Number(locOrKey.size)) && Number(locOrKey.size) > 0
+      ? Number(locOrKey.size)
+      : (Number.isSafeInteger(Number(fallbackSize)) && Number(fallbackSize) > 0 ? Number(fallbackSize) : null));
+
+  if (named != null) {
+    if (resolvedSize == null) return null;
+    const namedBase = isObj && locOrKey.baseReg != null ? String(locOrKey.baseReg) : '$frame';
+    const namedScope = isObj && locOrKey.frameEpoch != null ? `e${locOrKey.frameEpoch}` : null;
+    return { kind: 'named', base: namedBase, scope: namedScope, name: named, size: resolvedSize };
+  }
+
+  if (isObj && (base == null || offset == null)) {
+    if (locOrKey.baseReg != null && locOrKey.disp != null) {
+      try {
+        base = String(locOrKey.baseReg);
+        offset = BigInt(locOrKey.disp);
+        if (scope == null && locOrKey.frameEpoch != null) scope = `e${locOrKey.frameEpoch}`;
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  if (base == null || offset == null || resolvedSize == null) return null;
+  return { kind: 'range', base, scope, offset, size: resolvedSize };
+}
+
+function stackScopesCompatible(sa, sb) {
+  return sa === sb;
+}
+
+function isProvenStackAliasFree(locOrInst, loc = null) {
+  return loc?.stackAliasFree === true
+    || loc?.aliasProof?.noStackAlias === true
+    || locOrInst?.stackAliasFree === true
+    || locOrInst?.extra?.stackAliasFree === true
+    || locOrInst?.aliasProof?.noStackAlias === true;
+}
+
+function callHasProvenNoMemoryWrite(inst) {
+  if (!inst || inst.memoryBarrier === true) return false;
+  return inst.extra?.memoryWrite?.scope === 'none'
+    || inst.extra?.memoryEffects?.writes === 'none'
+    || inst.memoryEffectSummary?.mayWrite === false;
+}
+
+function stackLocationsOverlap(a, b, aSize = null, bSize = null) {
+  const keyA = typeof a === 'string' ? a : a?.key;
+  const keyB = typeof b === 'string' ? b : b?.key;
+  if (keyA && keyB && keyA === keyB) return true;
+  const stackA = isStackLocationLike(a);
+  const stackB = isStackLocationLike(b);
+  if (!stackA || !stackB) {
+    if (stackA && !stackB && isProvenStackAliasFree(b)) return false;
+    if (!stackA && stackB && isProvenStackAliasFree(a)) return false;
+    return true;
+  }
+  const ra = parseStackByteRange(a, aSize);
+  const rb = parseStackByteRange(b, bSize);
+  if (!ra || !rb) return true;
+  if (ra.base !== rb.base || !stackScopesCompatible(ra.scope, rb.scope)) return true;
+  if (ra.kind !== rb.kind) return true;
+  if (ra.kind === 'named') return ra.name === rb.name;
+  return ra.offset < rb.offset + BigInt(rb.size) && rb.offset < ra.offset + BigInt(ra.size);
+}
+
+function storeAccessBytes(inst) {
+  const bytes = Number(inst?.size || inst?.loc?.size || inst?.addr?.size || 0);
+  if (Number.isSafeInteger(bytes) && bytes > 0) return bytes;
+  const m = String(inst?.loc?.key || '').match(/:s(\d+)$/);
+  return m && Number(m[1]) > 0 ? Number(m[1]) : null;
+}
+
+function committedStoreBarrier(inst, key, targetLoc = null) {
   if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
-  if (inst?.op === 'call') return (inst.memKills || []).some((loc) => loc?.key === key);
+  const target = targetLoc || key;
+  const targetSize = targetLoc?.size ?? null;
+  if (inst?.op === 'call') {
+    if (callHasProvenNoMemoryWrite(inst)) return false;
+    if (!Array.isArray(inst.memKills) || inst.memKills.length === 0) return true;
+    return inst.memKills.some((loc) => !loc || loc.kind === 'unknown' || !loc.key
+      || stackLocationsOverlap(loc, target, loc?.size ?? null, targetSize));
+  }
   if (inst?.op !== 'store') return false;
-  return !inst.loc?.key || inst.loc?.kind === 'unknown' || inst.loc.key === key;
+  if (!inst.loc?.key || inst.loc?.kind === 'unknown') return true;
+  if (isStackLocationLike(target) && !isStackLocationLike(inst.loc) && isProvenStackAliasFree(inst, inst.loc)) return false;
+  return stackLocationsOverlap(inst.loc, target, storeAccessBytes(inst), targetSize);
 }
 
 function storeOfExactValue(ir, blockIndex, value) {
@@ -406,7 +539,7 @@ function storeOfExactValue(ir, blockIndex, value) {
       if (inst?.op === 'store' && inst.loc?.kind !== 'stack' && inst.loc?.kind !== 'unknown'
           && inst.loc?.key && storedViewProjectsValue(valueOf(inst.args?.[0]), value, inst)) {
         if (!dominates(ir, current, blockIndex)) return null;
-        if (later.some((candidate) => committedStoreBarrier(candidate, inst.loc.key))) return null;
+        if (later.some((candidate) => committedStoreBarrier(candidate, inst.loc.key, inst.loc))) return null;
         return inst;
       }
       later.push(inst);
@@ -540,15 +673,20 @@ function committedReturnValue(result, root, ret, opts = {}) {
   });
 }
 
-function unsafeBarrier(inst, key) {
+function unsafeBarrier(inst, key, expectedBytes = null, targetLoc = null) {
   if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
+  const target = targetLoc || key;
   if (inst?.op === 'call') {
-    // buildMemorySSA has already proven which locations this call can kill.
-    // A private caller stack slot is absent from memKills and is safe to carry
-    // through the call; an escaped stack address is present and remains a barrier.
-    return (inst.memKills || []).some((loc) => loc?.key === key);
+    if (callHasProvenNoMemoryWrite(inst)) return false;
+    if (!Array.isArray(inst.memKills) || inst.memKills.length === 0) return true;
+    return inst.memKills.some((loc) => !loc || loc.kind === 'unknown' || !loc.key
+      || stackLocationsOverlap(loc, target, loc?.size ?? null, expectedBytes));
   }
-  return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
+  if (inst?.op !== 'store') return false;
+  if (!inst.loc?.key || inst.loc?.kind === 'unknown') return true;
+  if (isStackLocationLike(inst.loc) && inst.loc.key === key) return false;
+  if (isStackLocationLike(target) && !isStackLocationLike(inst.loc) && isProvenStackAliasFree(inst, inst.loc)) return false;
+  return stackLocationsOverlap(inst.loc, target, storeAccessBytes(inst), expectedBytes);
 }
 
 function before(ir, block, row, passIndex = null) {
@@ -563,7 +701,7 @@ function before(ir, block, row, passIndex = null) {
   }
   return (ir.instructions || [])
     .filter((i) => i.block === block && (row == null || i.row < row))
-    .sort((a,b) => (b.row ?? -1) - (a.row ?? -1));
+    .sort((a,b) => (b.row ?? -1) - (a.row ?? -1) || (b.id ?? -1) - (a.id ?? -1));
 }
 
 function replayEngineRecords(engine, records, truncated) {
@@ -575,10 +713,10 @@ function replayEngineRecords(engine, records, truncated) {
   if (truncated) engine.truncated = true;
 }
 
-function resolveInner(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth, expectedBytes, memo, passIndex) {
+function resolveInner(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth, expectedBytes, memo, passIndex, targetLoc = null) {
   if (blockIndex == null || depth > 64) return { value:null, cycleTainted:false };
   if (depth > 0 && opts?.shouldAbort?.()) return { value:null, cycleTainted:true, aborted:true };
-  const memoKey = beforeRow == null && memo ? `${blockIndex}:${key}:${expectedBytes ?? ''}` : null;
+  const memoKey = beforeRow == null && memo ? `${blockIndex}:${key}:${expectedBytes ?? ''}:${targetLoc?.frameEpoch ?? ''}` : null;
   if (memoKey != null && memo.has(memoKey)) {
     const cached = memo.get(memoKey);
     replayEngineRecords(engine, cached.records, cached.engineTruncated);
@@ -598,7 +736,7 @@ function resolveInner(ir, blockIndex, beforeRow, key, values, opts, engine, acti
         resultValue = stored || null;
         return { value:resultValue, cycleTainted:false };
       }
-      if (unsafeBarrier(inst, key)) return { value:null, cycleTainted:false };
+      if (unsafeBarrier(inst, key, expectedBytes, targetLoc)) return { value:null, cycleTainted:false };
     }
 
     const block = passIndex?.blockByIndex.get(blockIndex) ?? ir.blocks?.[blockIndex];
@@ -606,7 +744,7 @@ function resolveInner(ir, blockIndex, beforeRow, key, values, opts, engine, acti
     if (!predecessors.length) return { value:null, cycleTainted:false };
     const incoming = [];
     for (let i = 0; i < predecessors.length; i++) {
-      const sub = resolveInner(ir, predecessors[i], null, key, values, opts, engine, active, depth + 1, expectedBytes, memo, passIndex);
+      const sub = resolveInner(ir, predecessors[i], null, key, values, opts, engine, active, depth + 1, expectedBytes, memo, passIndex, targetLoc);
       if (sub.cycleTainted) cycleTainted = true;
       if (sub.aborted) { aborted = true; return { value:null, cycleTainted:true, aborted:true }; }
       incoming.push(sub.value);
@@ -642,8 +780,8 @@ function resolveInner(ir, blockIndex, beforeRow, key, values, opts, engine, acti
   }
 }
 
-function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth = 0, expectedBytes = null, memo = new Map(), passIndex = null) {
-  return resolveInner(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth, expectedBytes, memo, passIndex).value;
+function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth = 0, expectedBytes = null, memo = new Map(), passIndex = null, targetLoc = null) {
+  return resolveInner(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth, expectedBytes, memo, passIndex, targetLoc).value;
 }
 
 function matchesTargetReturnNode(node, ret, singleRet) {
@@ -691,13 +829,14 @@ function rewriteReturn(result, expression, opts, ret = null, singleRet = true) {
   return true;
 }
 
-function committedStackSpillOnExactReturnPath(result, root, ret, passIndex = null) {
+function committedStackSpillOnExactReturnPath(result, root, ret, passIndex = null, targetLoc = null) {
+  const expectedBytes = Number(root.location?.size || (root.bits ? root.bits / 8 : 0)) || null;
   for (const inst of before(result.ir, ret.block, ret.row, passIndex)) {
     if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc.key === root.location.key) {
       const location = committedLocationForPhi(result, valueOf(inst.args?.[0]));
       return location ? { stackStore:inst, location } : null;
     }
-    if (unsafeBarrier(inst, root.location.key)) return null;
+    if (unsafeBarrier(inst, root.location.key, expectedBytes, targetLoc || root.location)) return null;
   }
   return null;
 }
@@ -767,9 +906,13 @@ export function recoverExactStackReturn(result, opts = {}) {
   }), opts.renderProvenanceBudget?.maxTransformRecords);
   const passIndex = createPassIndex(result.ir);
   let committed = committedReturnValue(result, root, ret, opts);
+  const rootLoadInst = (root.source?.ir || [])
+    .map((id) => (result.ir.instructions || []).find((i) => i.op === 'load' && i.id === id))
+    .find(Boolean) || null;
+  const targetLoc = rootLoadInst?.loc || root.location;
   let committedSpill = null;
   if (!committed) {
-    const proof = committedStackSpillOnExactReturnPath(result, root, ret, passIndex);
+    const proof = committedStackSpillOnExactReturnPath(result, root, ret, passIndex, targetLoc);
     if (proof) {
       committedSpill = proof.stackStore;
       committed = expr.load(proof.location, root.bits || 64, root.source, {
@@ -779,7 +922,7 @@ export function recoverExactStackReturn(result, opts = {}) {
     }
   }
   const expectedBytes = Number(root.location?.size || (Number(root.bits) > 0 ? Number(root.bits) / 8 : 0)) || null;
-  const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set(), 0, expectedBytes, new Map(), passIndex);
+  const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set(), 0, expectedBytes, new Map(), passIndex, targetLoc);
   const transitions = (result.cAst.body || [])
     .filter(node => matchesTargetReturnNode(node, ret, singleRet))
     .map(node => ({ node, before:node.semantic?.expression || root,

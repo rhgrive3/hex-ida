@@ -44,6 +44,25 @@ import { mergeSource } from '../ast/nodes.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 import { carryNodeExpressionHistory } from './line-expression-history.js';
 
+const FACT_EDGE_INDEX = new WeakMap();
+
+function getFactEdge(facts, from, to) {
+  const edges = facts?.edges;
+  if (!Array.isArray(edges) || edges.length === 0) return null;
+  let cached = FACT_EDGE_INDEX.get(facts);
+  if (!cached || cached.edgesRef !== edges || cached.length !== edges.length) {
+    const map = new Map();
+    for (let i = 0; i < edges.length; i += 1) {
+      const record = edges[i];
+      const key = `${record.from}->${record.to}`;
+      if (!map.has(key)) map.set(key, record);
+    }
+    cached = { edgesRef: edges, length: edges.length, map };
+    FACT_EDGE_INDEX.set(facts, cached);
+  }
+  return cached.map.get(`${from}->${to}`) ?? null;
+}
+
 // Version 2 adds refinement of an already-emitted loop construct: break and
 // continue rewrites still run when the upstream renderer already published the
 // while/do-while/for header for this region, instead of refusing the whole
@@ -431,7 +450,7 @@ function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, bloc
     if (!LOOP_NODE_TEXT.test(text) && !SWITCH_NODE_TEXT.test(text)) continue;
     if (blockOf(node) === proof.header) continue;
     const nested = findAlreadyProjectedSpan(body, index);
-    if (!nested) continue;
+    if (!nested) return null;
     nestedRanges.push(nested);
     index = nested.end;
   }
@@ -463,8 +482,7 @@ function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, bloc
     for (const target of targets) {
       const targetBlock = blockIndexAt(target);
       if (targetBlock == null) return null;
-      const edge = (ctx.facts?.edges ?? []).find((record) =>
-        record.from === owner && record.to === targetBlock) ?? null;
+      const edge = getFactEdge(ctx.facts, owner, targetBlock);
       if (!edge) return null;
       if (targets.length > 1) continue;
       if (edge.construct === 'loop-break') {
@@ -622,7 +640,7 @@ function projectOneLoop(body, proof, ctx) {
     if (!LOOP_NODE_TEXT.test(text) && !SWITCH_NODE_TEXT.test(text)) continue;
     if (blockOf(node) === proof.header) continue;
     const nested = findAlreadyProjectedSpan(body, index);
-    if (!nested) continue;
+    if (!nested) return null;
     nestedRanges.push(nested);
     index = nested.end;
   }
@@ -664,8 +682,7 @@ function projectOneLoop(body, proof, ctx) {
     for (const target of targets) {
       const targetBlock = blockIndexAt(target);
       if (targetBlock == null) return null;
-      const edge = (ctx.facts?.edges ?? []).find((record) =>
-        record.from === owner && record.to === targetBlock) ?? null;
+      const edge = getFactEdge(ctx.facts, owner, targetBlock);
       if (!edge) return null;
       if (targets.length > 1) continue;
       if (insideNestedConstruct(index)) continue;

@@ -2,14 +2,22 @@ const MAX_SWITCH_CASES = 4096;
 const MAX_MEMORY_SEGMENTS = 128;
 const MAX_MEMORY_BYTES = 32 * 1024 * 1024;
 const MAX_SEGMENT_BYTES = 16 * 1024 * 1024;
+const MAX_EXPRESSION_DEPTH = 16;
+const MAX_EXPRESSION_NODES = 64;
 const ADDRESS_LIMIT = 1n << 64n;
 const CONTROL_FLOW_KINDS = new Set(['fallthrough', 'call', 'branch', 'conditional-branch', 'return', 'unknown']);
+const OPAQUE_EXPRESSION = Object.freeze({ kind:'opaque-expression' });
+const EXPRESSION_METRICS = new WeakMap();
 
 function integer(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-  if (typeof value !== 'string' || !/^(?:-?(?:0|[1-9][0-9]*)|-?0x[0-9a-f]+)$/i.test(value.trim())) return null;
-  try { return BigInt(value.trim()); } catch { return null; }
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^(?:-?(?:0|[1-9][0-9]*)|-?0x[0-9a-f]+)$/i.test(trimmed)) return null;
+  try {
+    return trimmed.startsWith('-') ? -BigInt(trimmed.slice(1)) : BigInt(trimmed);
+  } catch { return null; }
 }
 
 function address(value) {
@@ -35,8 +43,65 @@ function immediate(operandValue) {
   return operandValue?.type === 'immediate' ? integer(operandValue.value) : null;
 }
 
+function expressionMetrics(value) {
+  if (!value || typeof value !== 'object') return { depth: 0, nodes: 0 };
+  return EXPRESSION_METRICS.get(value) ?? { depth: 1, nodes: 1 };
+}
+
+function boundExpression(node, children) {
+  let maxDepth = 0;
+  let totalNodes = 1;
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    if (!child || typeof child !== 'object' || child.kind === 'opaque-expression') {
+      return OPAQUE_EXPRESSION;
+    }
+    const metrics = expressionMetrics(child);
+    if (metrics.depth > maxDepth) maxDepth = metrics.depth;
+    totalNodes += metrics.nodes;
+    if (maxDepth + 1 > MAX_EXPRESSION_DEPTH || totalNodes > MAX_EXPRESSION_NODES) {
+      return OPAQUE_EXPRESSION;
+    }
+  }
+  EXPRESSION_METRICS.set(node, { depth: maxDepth + 1, nodes: totalNodes });
+  return node;
+}
+
+function serializeExpression(value, depth, budget) {
+  if (value === null) return 'null';
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (typeof value !== 'object') {
+    const primitive = JSON.stringify(value);
+    return primitive === undefined ? null : primitive;
+  }
+  if (value.kind === 'opaque-expression') return null;
+  if (depth > MAX_EXPRESSION_DEPTH) return null;
+  budget.remaining -= 1;
+  if (budget.remaining < 0) return null;
+  if (Array.isArray(value)) {
+    const parts = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      const child = serializeExpression(value[index], depth + 1, budget);
+      if (child == null) return null;
+      parts[index] = child;
+    }
+    return `[${parts.join(',')}]`;
+  }
+  const keys = Object.keys(value);
+  const parts = [];
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (value[key] === undefined) continue;
+    const child = serializeExpression(value[key], depth + 1, budget);
+    if (child == null) return null;
+    parts.push(`${JSON.stringify(key)}:${child}`);
+  }
+  return `{${parts.join(',')}}`;
+}
+
 function expressionKey(value) {
-  return value == null ? null : JSON.stringify(value);
+  if (value == null || typeof value !== 'object' || value.kind === 'opaque-expression') return null;
+  return serializeExpression(value, 0, { remaining: MAX_EXPRESSION_NODES });
 }
 
 function initialRegister(registerValue) {
@@ -48,8 +113,8 @@ function readRegister(registerValue, state) {
   if (registerValue.viewBits < registerValue.physicalBits) {
     const lsb = Number.isSafeInteger(registerValue.lsb) && registerValue.lsb >= 0 ? registerValue.lsb : 0;
     value = lsb > 0
-      ? { kind:'extract', value, lsb, widthBits:registerValue.viewBits }
-      : { kind:'truncate', value, widthBits:registerValue.viewBits };
+      ? boundExpression({ kind:'extract', value, lsb, widthBits:registerValue.viewBits }, [value])
+      : boundExpression({ kind:'truncate', value, widthBits:registerValue.viewBits }, [value]);
   }
   return value;
 }
@@ -59,13 +124,14 @@ function writeRegister(registerValue, value, state) {
   if (registerValue.viewBits < registerValue.physicalBits) {
     const lsb = Number.isSafeInteger(registerValue.lsb) && registerValue.lsb >= 0 ? registerValue.lsb : 0;
     if (registerValue.viewBits === 32 && registerValue.physicalBits === 64 && lsb === 0) {
-      fullValue = { kind:'zero-extend', value, fromBits:registerValue.viewBits, toBits:registerValue.physicalBits };
+      fullValue = boundExpression({ kind:'zero-extend', value, fromBits:registerValue.viewBits, toBits:registerValue.physicalBits }, [value]);
     } else {
       const prior = state.registers.get(registerValue.physicalId) ?? initialRegister(registerValue);
-      fullValue = { kind:'insert', into:prior, value, lsb, widthBits:registerValue.viewBits, physicalBits:registerValue.physicalBits };
+      fullValue = boundExpression({ kind:'insert', into:prior, value, lsb, widthBits:registerValue.viewBits, physicalBits:registerValue.physicalBits }, [prior, value]);
     }
   }
   state.registers.set(registerValue.physicalId, fullValue);
+  if (registerValue.physicalId === 'rbp') state.stack = [];
 }
 
 function stackAddress(memory) {
@@ -161,7 +227,7 @@ function readLittleEndian(segments, start, widthBytes) {
   return value;
 }
 
-function boundedFallthrough(instruction, comparison, instructions) {
+function boundedFallthrough(instruction, comparison, instructions, instructionIndex, instructionAddresses) {
   const family = String(instruction?.instructionFamily || instruction?.mnemonic || '').toLowerCase();
   if (family !== 'ja' && family !== 'jae') return null;
   if (!comparison || !['cmp', 'sub'].includes(comparison.op)) return null;
@@ -173,10 +239,12 @@ function boundedFallthrough(instruction, comparison, instructions) {
   const maximum = family === 'ja' ? comparison.rhs : comparison.rhs - 1n;
   if (maximum < 0n || maximum >= BigInt(MAX_SWITCH_CASES)) return null;
   const target = address(immediate(operand(instruction, 0)));
-  if (target == null || !instructions.some(item => address(item.address) === target)) return null;
-  const next = instructions[instructions.indexOf(instruction) + 1];
-  if (!next || address(next.address) !== address(instruction.address) + BigInt(instruction.length)) return null;
-  return { selector:comparison.lhs, selectorKey:expressionKey(comparison.lhs), min:0n, max:maximum,
+  if (target == null || !instructionAddresses.has(target.toString())) return null;
+  const next = instructions[instructionIndex + 1];
+  if (!next || address(next.address) !== BigInt.asUintN(64, address(instruction.address) + BigInt(instruction.length))) return null;
+  const selectorKey = expressionKey(comparison.lhs);
+  if (!selectorKey) return null;
+  return { selector:comparison.lhs, selectorKey, min:0n, max:maximum,
     defaultAddress:target, branchAddress:address(instruction.address),
     fallthroughAddress:address(next.address) };
 }
@@ -197,31 +265,28 @@ function controlFlowKind(instruction, classifyControlFlow) {
   return classified && classified !== 'fallthrough' ? classified : inferred;
 }
 
-function dispatchIsBounded(bounds, indirectJump, instructions, classifyControlFlow) {
+function dispatchIsBounded(bounds, indirectJump, instructions, flowMeta, addressToIndex) {
   const jumpAddress = address(indirectJump.address);
   if (!bounds || jumpAddress == null || bounds.defaultAddress >= bounds.fallthroughAddress
       && bounds.defaultAddress <= jumpAddress) return false;
-  const branchIndex = instructions.findIndex(item => address(item.address) === bounds.branchAddress);
-  const jumpIndex = instructions.findIndex(item => address(item.address) === jumpAddress);
+  const branchIndex = addressToIndex.get(bounds.branchAddress.toString()) ?? -1;
+  const jumpIndex = addressToIndex.get(jumpAddress.toString()) ?? -1;
   if (branchIndex < 0 || jumpIndex <= branchIndex) return false;
   for (let index = branchIndex + 1; index < jumpIndex; index += 1) {
-    if (controlFlowKind(instructions[index], classifyControlFlow) !== 'fallthrough') return false;
+    if (flowMeta.kinds[index] !== 'fallthrough') return false;
   }
-  for (let index = 0; index < instructions.length; index += 1) {
-    if (index === branchIndex || index === jumpIndex) continue;
-    const item = instructions[index];
-    const kind = controlFlowKind(item, classifyControlFlow);
-    if (kind === 'fallthrough' || kind === 'return') continue;
-    if (kind === 'unknown') return false;
-    const target = address(immediate(operand(item, 0)));
-    if (target == null) return false;
-    if (target >= bounds.fallthroughAddress && target <= jumpAddress) return false;
+  for (let i = 0; i < flowMeta.nonTrivial.length; i += 1) {
+    const entry = flowMeta.nonTrivial[i];
+    if (entry.index === branchIndex || entry.index === jumpIndex) continue;
+    if (entry.kind === 'unknown' || entry.target == null) return false;
+    if (entry.target >= bounds.fallthroughAddress && entry.target <= jumpAddress) return false;
   }
   return true;
 }
 
 function targetAddresses(segments, pattern, bounds) {
-  if (!pattern || !bounds || expressionKey(pattern.indexValue) !== bounds.selectorKey) return null;
+  const indexKey = pattern ? expressionKey(pattern.indexValue) : null;
+  if (!pattern || !bounds || !bounds.selectorKey || !indexKey || indexKey !== bounds.selectorKey) return null;
   const count = bounds.max - bounds.min + 1n;
   if (bounds.min !== 0n || count <= 0n || count > BigInt(MAX_SWITCH_CASES)) return null;
   const widthBytes = pattern.widthBits / 8;
@@ -288,7 +353,21 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
     const start = address(ordered[0].address);
     const segments = byteSegments(memorySegments, start);
     if (!segments) return [];
-    const instructionAddresses = new Set(ordered.map(item => address(item.address).toString()));
+    const instructionAddresses = new Set();
+    const addressToIndex = new Map();
+    const kinds = new Array(ordered.length);
+    const nonTrivial = [];
+    for (let i = 0; i < ordered.length; i += 1) {
+      const addrKey = address(ordered[i].address).toString();
+      instructionAddresses.add(addrKey);
+      addressToIndex.set(addrKey, i);
+      const kind = controlFlowKind(ordered[i], classifyControlFlow);
+      kinds[i] = kind;
+      if (kind !== 'fallthrough' && kind !== 'return') {
+        nonTrivial.push({ index: i, kind, target: kind === 'unknown' ? null : address(immediate(operand(ordered[i], 0))) });
+      }
+    }
+    const flowMeta = { kinds, nonTrivial };
     const state = { registers:new Map(), stack:[] };
     const recovered = [];
     let comparison = null;
@@ -305,11 +384,13 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
       if (family === 'jmp') {
         const registerJump = recoverAtIndirect(instruction, pendingJump);
         const pattern = registerJump;
-        if (!dispatchIsBounded(bounds, instruction, ordered, classifyControlFlow)) {
+        if (!dispatchIsBounded(bounds, instruction, ordered, flowMeta, addressToIndex)) {
           pendingJump = null;
           pendingTable = null;
           bounds = null;
           comparison = null;
+          state.registers.clear();
+          state.stack = [];
           continue;
         }
         const targets = pattern ? targetAddresses(segments, { ...pattern, instructionAddresses }, bounds) : null;
@@ -346,8 +427,8 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
         continue;
       }
 
-      const flowKind = controlFlowKind(instruction, classifyControlFlow);
-      const resolvedBounds = boundedFallthrough(instruction, comparison, ordered);
+      const flowKind = flowMeta.kinds[index];
+      const resolvedBounds = boundedFallthrough(instruction, comparison, ordered, index, instructionAddresses);
       if (resolvedBounds) bounds = resolvedBounds;
       else if (flowKind !== 'fallthrough') bounds = null;
       if (flowKind !== 'fallthrough' && !resolvedBounds) {
@@ -364,7 +445,7 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
           && second.memory?.segment == null && second.memory?.addressSizeBits === 64) {
         const destination = register(first), displacement = integer(second.memory.displacement);
         if (destination && displacement != null) {
-          const value = address(instruction.address) + BigInt(instruction.length) + displacement;
+          const value = BigInt.asUintN(64, address(instruction.address) + BigInt(instruction.length) + displacement);
           writeRegister(destination, { kind:'absolute-address', value:value.toString() }, state);
           pendingTable = null;
           pendingJump = null;
@@ -412,7 +493,7 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
           if (destination) writeRegister(destination, value ?? { kind:'unresolved-write', instructionAddress:String(instruction.address) }, state);
         } else if (first?.type === 'memory') {
           const value = registerSource(second, state);
-          storeStackValue(first, value, state);
+          if (!storeStackValue(first, value, state)) state.stack = [];
         }
         pendingTable = null;
         pendingJump = null;
@@ -426,7 +507,7 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
           : null;
         if (family === 'sub' && destination && constant != null) {
           const lhs = readRegister(destination, state);
-          writeRegister(destination, { kind:'subtract', left:lhs, right:constant.toString(), widthBits:destination.viewBits }, state);
+          writeRegister(destination, boundExpression({ kind:'subtract', left:lhs, right:constant.toString(), widthBits:destination.viewBits }, [lhs]), state);
         }
         pendingTable = null;
         pendingJump = null;
@@ -437,7 +518,7 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
         const destination = register(first), source = register(second);
         if (destination && source) {
           const left = readRegister(destination, state), right = readRegister(source, state);
-          writeRegister(destination, { kind:'add', left, right, widthBits:destination.viewBits }, state);
+          writeRegister(destination, boundExpression({ kind:'add', left, right, widthBits:destination.viewBits }, [left, right]), state);
         } else if (destination) writeRegister(destination, { kind:'unresolved-write', instructionAddress:String(instruction.address) }, state);
         comparison = null;
         pendingTable = null;
@@ -459,8 +540,25 @@ export function resolveX86SwitchTables(instructions, memorySegments, classifyCon
         for (const item of instruction.detail.operands) {
           if (!['write', 'read-write'].includes(item?.access)) continue;
           const written = register(item);
-          if (written) state.registers.delete(written.physicalId);
-          else if (item?.type === 'memory') storeStackValue(item, null, state);
+          if (written) {
+            state.registers.delete(written.physicalId);
+            if (written.physicalId === 'rbp') state.stack = [];
+          } else if (item?.type === 'memory') {
+            if (!storeStackValue(item, null, state)) state.stack = [];
+          }
+        }
+        const implicitLists = [instruction.detail.implicitWrites, instruction.detail.registersWritten];
+        for (const list of implicitLists) {
+          if (!Array.isArray(list)) continue;
+          for (const regItem of list) {
+            const physId = typeof regItem === 'string'
+              ? regItem.toLowerCase()
+              : (typeof regItem?.physicalId === 'string' ? regItem.physicalId : null);
+            if (physId) {
+              state.registers.delete(physId);
+              if (physId === 'rbp') state.stack = [];
+            }
+          }
         }
         if (!['mov', 'lea'].includes(family)) comparison = null;
       }

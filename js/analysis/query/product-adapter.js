@@ -15,7 +15,9 @@ function abortIfNeeded(signal) {
 }
 
 function waitForProducer(promise, signal) {
-  abortIfNeeded(signal);
+  if (signal?.aborted) {
+    try { abortIfNeeded(signal); } catch (error) { return Promise.reject(error); }
+  }
   if (!signal) return promise;
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -122,7 +124,7 @@ function canonicalIdentityDimension(value, fallback) {
 function runtimeEvidenceIdentity(app) {
   let rows = null;
   try { rows = runtimeEvidenceForApp(app); } catch { rows = null; }
-  if (!Array.isArray(rows)) return 'unavailable';
+  if (!Array.isArray(rows)) return canonicalIdentityDimension([], []);
   return canonicalIdentityDimension(rows, []);
 }
 
@@ -295,7 +297,9 @@ function settleFunctionDiscoveryRoute(app) {
   const producers = new Map();
   const safe = function singleFlightEnsureFunctions(region, rawOptions = {}) {
     const options = discoveryOptions(rawOptions);
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) {
+      try { abortIfNeeded(options.signal); } catch (error) { return Promise.reject(error); }
+    }
     const key = discoveryKey(app, region);
     if (key == null) {
       return waitForProducer(

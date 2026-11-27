@@ -144,18 +144,24 @@ class WorkerSolverSession extends SolverSession {
     } catch (error) {
       return createSolverResult({ status: SOLVER_STATUS.INVALID_QUERY, reason: `invalid-budget:${error.message}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: null, lifecycle: { publishable: false } });
     }
-    const route = classifyTieredQuery(query, workerOptions);
+    let querySnapshot;
+    try {
+      querySnapshot = structuredClone(query);
+    } catch (error) {
+      return createSolverResult({ status: SOLVER_STATUS.INVALID_QUERY, reason: `solver-worker-query-clone-failed:${error?.message || 'uncloneable-query'}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: null, lifecycle: { publishable: false } });
+    }
+    const route = classifyTieredQuery(querySnapshot, workerOptions);
     if (!route.supported) {
       return createSolverResult({
         status: route.status || SOLVER_STATUS.UNSUPPORTED,
         reason: route.reason,
         backend: this.backend.id,
         backendVersion: this.backend.version,
-        queryHash: route.status === SOLVER_STATUS.INVALID_QUERY ? null : query?.queryHash || null,
+        queryHash: route.status === SOLVER_STATUS.INVALID_QUERY ? null : querySnapshot?.queryHash || null,
         lifecycle: { budgetExceeded: route.status === SOLVER_STATUS.RESOURCE_LIMIT, publishable: false },
       });
     }
-    const queryValidation = validateVerificationQuery(query, { maxExprNodes: workerOptions.maxExprNodes });
+    const queryValidation = validateVerificationQuery(querySnapshot, { maxExprNodes: workerOptions.maxExprNodes });
     if (!queryValidation.valid) {
       return createSolverResult({
         status: queryValidation.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
@@ -172,7 +178,7 @@ class WorkerSolverSession extends SolverSession {
         reason: this.initializationError?.message || 'solver-worker-unavailable',
         backend: this.backend.id,
         backendVersion: this.backend.version,
-        queryHash: query?.queryHash || null,
+        queryHash: querySnapshot?.queryHash || null,
         lifecycle: { publishable: false },
       });
     }
@@ -182,20 +188,9 @@ class WorkerSolverSession extends SolverSession {
         reason: 'solver-worker-aborted',
         backend: this.backend.id,
         backendVersion: this.backend.version,
-        queryHash: query?.queryHash || null,
+        queryHash: querySnapshot?.queryHash || null,
         lifecycle: { cancelled: true, publishable: false },
       });
-    }
-
-    let querySnapshot;
-    try {
-      querySnapshot = structuredClone(query);
-    } catch (error) {
-      return createSolverResult({ status: SOLVER_STATUS.INVALID_QUERY, reason: `solver-worker-query-clone-failed:${error?.message || 'uncloneable-query'}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: null, lifecycle: { publishable: false } });
-    }
-    const clonedValidation = validateVerificationQuery(querySnapshot, { maxExprNodes: workerOptions.maxExprNodes });
-    if (!clonedValidation.valid || clonedValidation.recomputedHash !== queryValidation.recomputedHash) {
-      return createSolverResult({ status: SOLVER_STATUS.INVALID_QUERY, reason: 'solver-worker-cloned-query-identity-mismatch', backend: this.backend.id, backendVersion: this.backend.version, queryHash: null, lifecycle: { publishable: false } });
     }
     const requestId = String(++this.requestSequence);
     return new Promise((resolve) => {

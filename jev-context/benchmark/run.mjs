@@ -299,7 +299,7 @@ async function runWriteTime(mode, session) {
     JEV_PRUNING_HOME: home,
     JEV_PRUNING_THRESHOLD_TOKENS: "1",
     JEV_PRUNING_MODE: mode,
-    JEV_PRUNING_BACKGROUND: "false",
+    JEV_PRUNING_BACKGROUND: mode === "active" ? "false" : "true",
     JEV_PRUNING_KEEP_RECENT_ITEMS: "6",
   };
 
@@ -362,7 +362,7 @@ async function runWriteTime(mode, session) {
     } else {
       // Shadow: the adapter hands this to the detached worker, so the model call
       // never waits. Everything is kept; the decision is recorded for stats.
-      await pipeline.prewarm([raw], {
+      const warmed = await pipeline.prewarm([raw], {
         scope,
         mode,
         writeTime: true,
@@ -373,7 +373,7 @@ async function runWriteTime(mode, session) {
       const planned = { ...raw, tokens: estimateTokens(item.text || "") };
       mainTokensTotal += planned.tokens;
       survivors.push(planned);
-      totals.wouldDrop += 1;
+      totals.wouldDrop += warmed.wouldDrop || 0;
     }
   }
 

@@ -550,7 +550,7 @@ function line(kind, indent, text, row = null, addr = null, extra = null) {
 function valueOf(a) { return a && a.value ? a.value : null; }
 function hex(v) { return BigInt(v).toString(16).toUpperCase(); }
 function safeIdent(s, fallback = 'value') {
-  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
+  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
 }
 function paren(s) { return /^[-+]?\w+(?:->\w+|\.\w+|\[[^\]]+\])*$/.test(s) || /^0x[0-9A-F]+$/.test(s) ? s : `(${s})`; }
@@ -870,30 +870,30 @@ function frameBookkeepingRegisters(ctx) {
   if (ctx.ir?.compat?.projection === 'semantic-ir-v2-to-v1') return new Set();
   return new Set(['r29', 'r30']);
 }
-function instDefinesOrClobbersReg(inst, canonReg) {
+function instDefinesOrClobbersReg(inst, canonReg, isAArch64 = false) {
   if (!inst || !canonReg) return false;
   if (inst.op === OP.CALL) {
-    if (inst.dst?.reg && canonicalRegister(inst.dst.reg) === canonReg) return true;
+    if (inst.dst?.reg && canonicalRegister(inst.dst.reg, isAArch64) === canonReg) return true;
     if (!inst.dst) return true;
-    if (Array.isArray(inst.clobbers) && inst.clobbers.some((r) => canonicalRegister(r) === canonReg)) return true;
-    if (Array.isArray(inst.extra?.clobbers) && inst.extra.clobbers.some((r) => canonicalRegister(r) === canonReg)) return true;
+    if (Array.isArray(inst.clobbers) && inst.clobbers.some((r) => canonicalRegister(r, isAArch64) === canonReg)) return true;
+    if (Array.isArray(inst.extra?.clobbers) && inst.extra.clobbers.some((r) => canonicalRegister(r, isAArch64) === canonReg)) return true;
     return false;
   }
   if (inst.op === OP.CLOBBER) {
-    return !inst.dst?.reg || canonicalRegister(inst.dst.reg) === canonReg;
+    return !inst.dst?.reg || canonicalRegister(inst.dst.reg, isAArch64) === canonReg;
   }
   return false;
 }
 
-function valueClobberedBeforeRet(explicit, ret, canonReg, ir) {
+function valueClobberedBeforeRet(explicit, ret, canonReg, ir, isAArch64 = false) {
   if (!explicit || !ret || !canonReg || !ir || ret.block == null) return false;
-  if (explicit.reg && canonicalRegister(explicit.reg) !== canonReg) return false;
+  if (explicit.reg && canonicalRegister(explicit.reg, isAArch64) !== canonReg) return false;
   const def = explicit.def || null;
   const defBlock = def?.block ?? (ir.entry ?? 0);
   const retBlockObj = ir.blocks?.[ret.block];
   if (retBlockObj) {
     for (const inst of retBlockObj.insts || []) {
-      if (!instDefinesOrClobbersReg(inst, canonReg)) continue;
+      if (!instDefinesOrClobbersReg(inst, canonReg, isAArch64)) continue;
       if (!sameBlockPrecedes(ir, inst, ret)) continue;
       if (def && def.block === ret.block && !sameBlockPrecedes(ir, def, inst)) continue;
       return true;
@@ -902,7 +902,7 @@ function valueClobberedBeforeRet(explicit, ret, canonReg, ir) {
   if (defBlock !== ret.block && ir.blocks?.[defBlock]) {
     if (def && def.block === defBlock) {
       for (const inst of ir.blocks[defBlock].insts || []) {
-        if (sameBlockPrecedes(ir, def, inst) && instDefinesOrClobbersReg(inst, canonReg)) {
+        if (sameBlockPrecedes(ir, def, inst) && instDefinesOrClobbersReg(inst, canonReg, isAArch64)) {
           return true;
         }
       }
@@ -916,7 +916,7 @@ function valueClobberedBeforeRet(explicit, ret, canonReg, ir) {
       if (!blockCanReach(ir, bi, ret.block)) continue;
       const b = ir.blocks[bi];
       if (!b) continue;
-      if ((b.insts || []).some((inst) => instDefinesOrClobbersReg(inst, canonReg))) return true;
+      if ((b.insts || []).some((inst) => instDefinesOrClobbersReg(inst, canonReg, isAArch64))) return true;
       for (const s of b.succ || []) {
         if (!seen.has(s) && s !== ret.block) queue.push(s);
       }
@@ -929,13 +929,14 @@ function returnValueAt(ret, ctx) {
   if (ctx?.callerIsVoid) return null;
   const explicit=valueOf(ret?.args?.[0]);
   const reg=returnRegisterForContext(ctx);
+  const isAArch64 = isAArch64Context(ctx.ir, ctx.opts);
   if (explicit) {
-    if (reg && valueClobberedBeforeRet(explicit, ret, canonicalRegister(reg), ctx.ir)) {
-      return reachingRegisterValue(ctx.ir, ret, reg, isAArch64Context(ctx.ir, ctx.opts));
+    if (reg && valueClobberedBeforeRet(explicit, ret, canonicalRegister(reg, isAArch64), ctx.ir, isAArch64)) {
+      return reachingRegisterValue(ctx.ir, ret, reg, isAArch64);
     }
     return explicit;
   }
-  return reg ? reachingRegisterValue(ctx.ir, ret, reg, isAArch64Context(ctx.ir, ctx.opts)) : null;
+  return reg ? reachingRegisterValue(ctx.ir, ret, reg, isAArch64) : null;
 }
 
 function feedsReturn(value, ctx) {
@@ -1147,30 +1148,32 @@ function readOnlyShortCStringAt(addr, ctx) {
   return null;
 }
 
-function isAddressDerivedValue(value, depth = 0, seen = null) {
+function isAddressDerivedValue(value, depth = 0, seen = null, memo = null) {
   if (!value || depth > 64) return false;
   if (value.addressDerived === true || value.def?.extra?.addressDerived === true) return true;
-  const visited = seen || new Set();
   const visitKey = value.id != null ? value.id : value;
+  const cache = memo || new Map();
+  if (cache.has(visitKey)) return cache.get(visitKey);
+  const visited = seen || new Set();
   if (visited.has(visitKey)) return false;
   visited.add(visitKey);
+  let res = false;
   try {
     const op = value.def?.op;
-    if (!op) return false;
-    if (op === OP.ADDR) return true;
-    if (op === OP.MOV || (OP.CAST != null && op === OP.CAST) || op === 'cast') {
-      return isAddressDerivedValue(valueOf(value.def.args?.[0]), depth, visited);
+    if (!op) res = false;
+    else if (op === OP.ADDR) res = true;
+    else if (op === OP.MOV || (OP.CAST != null && op === OP.CAST) || op === 'cast') {
+      res = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth, visited, cache);
+    } else if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
+      const leftAddr = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1, visited, cache);
+      const rightAddr = isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1, visited, cache);
+      res = value.def.sub === 'sub' ? (leftAddr && !rightAddr) : (leftAddr || rightAddr);
     }
-    if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
-      const leftAddr = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1, visited);
-      const rightAddr = isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1, visited);
-      if (value.def.sub === 'sub') return leftAddr && !rightAddr;
-      return leftAddr || rightAddr;
-    }
-    return false;
   } finally {
     visited.delete(visitKey);
   }
+  if (visited.size === 0 || res === true) cache.set(visitKey, res);
+  return res;
 }
 
 function hasAddressRefForAddr(addr, defRow, ctx, { anyRow = false } = {}) {
@@ -1388,14 +1391,40 @@ function getValuesByReg(ir, isAArch64 = false) {
   return byReg;
 }
 
+const BLOCK_INST_POS_CACHE = new WeakMap();
+
 function blockInstPosition(ir, inst) {
   if (!ir || !inst || inst.block == null) return null;
   const block = ir.blocks?.[inst.block];
   if (!block) return null;
   if (inst.op === OP.PHI) return -1;
-  const insts = block.insts || [];
-  const idx = insts.indexOf(inst);
-  return idx >= 0 ? idx : null;
+  const insts = block.insts;
+  if (!Array.isArray(insts) || insts.length === 0) return null;
+  let cached = BLOCK_INST_POS_CACHE.get(insts);
+  if (!cached || cached.length !== insts.length) {
+    const map = new Map();
+    for (let i = 0; i < insts.length; i += 1) {
+      const cur = insts[i];
+      if (!map.has(cur)) map.set(cur, i);
+    }
+    cached = { length: insts.length, map };
+    BLOCK_INST_POS_CACHE.set(insts, cached);
+  }
+  let idx = cached.map.get(inst);
+  if (idx !== undefined && insts[idx] === inst) return idx;
+  if (idx !== undefined) {
+    // Array elements were modified in place with the same length; rebuild index.
+    const map = new Map();
+    for (let i = 0; i < insts.length; i += 1) {
+      const cur = insts[i];
+      if (!map.has(cur)) map.set(cur, i);
+    }
+    cached = { length: insts.length, map };
+    BLOCK_INST_POS_CACHE.set(insts, cached);
+    idx = map.get(inst);
+    return idx !== undefined ? idx : null;
+  }
+  return null;
 }
 
 function sameBlockPrecedes(ir, a, b) {
@@ -1589,25 +1618,48 @@ export function readSemanticLocalDeclaration(node, ir) {
     ? owner : null;
 }
 
+const DECL_WORD_TOKEN_RE = /[A-Za-z0-9_]+/g;
+const DECL_PURE_WORD_RE = /^[A-Za-z0-9_]+$/;
+
 function semanticLocalDeclarations(types, body, ctx) {
   const text = body.map((item) => item.text || '').join('\n');
+  const usedTokens = new Set();
+  DECL_WORD_TOKEN_RE.lastIndex = 0;
+  let tokMatch;
+  while ((tokMatch = DECL_WORD_TOKEN_RE.exec(text)) !== null) usedTokens.add(tokMatch[0]);
   const out = [];
   const seen = new Set();
-  for (const local of types.locals || []) {
+  const locals = types.locals || [];
+  let slotByName = null;
+  if (locals.length > 0 && Array.isArray(ctx.ir.stackSlots) && ctx.ir.stackSlots.length > 0) {
+    slotByName = new Map();
+    for (const candidate of ctx.ir.stackSlots) {
+      if (!slotByName.has(candidate.name)) slotByName.set(candidate.name, candidate);
+    }
+  }
+  for (const local of locals) {
     const name = String(local.slot || '');
     if (!/^[A-Za-z_]\w*$/.test(name) || seen.has(name)) continue;
-    if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) continue;
+    if (!usedTokens.has(name)) continue;
     const type = semanticLocalDeclarationType(local, ctx);
     if (!type) continue;
     seen.add(name);
     const node = line('decl', 1, `${type} ${name};`, null);
-    const slot = (ctx.ir.stackSlots || []).find(candidate => candidate.name === local.slot);
+    const slot = slotByName ? slotByName.get(local.slot) : undefined;
     if (slot?.key) localDeclarationOwners.set(node, Object.freeze({ ir:ctx.ir, slot, key:slot.key, name, type }));
     out.push(node);
   }
-  for (const [id, name] of ctx.materialNames || []) {
-    const value = (ctx.ir.values || []).find((candidate) => candidate.id === id);
-    if (!value?.def || seen.has(name) || !text.includes(name)) continue;
+  const materialNames = ctx.materialNames;
+  let valueById = null;
+  if (materialNames && (materialNames.size > 0 || materialNames.length > 0) && Array.isArray(ctx.ir.values)) {
+    valueById = new Map();
+    for (const candidate of ctx.ir.values) {
+      if (!valueById.has(candidate.id)) valueById.set(candidate.id, candidate);
+    }
+  }
+  for (const [id, name] of materialNames || []) {
+    const value = valueById ? valueById.get(id) : undefined;
+    if (!value?.def || seen.has(name) || (!usedTokens.has(name) && !text.includes(name))) continue;
     if (value.def.op === OP.LOAD) {
       const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
       const bits = [8, 16, 32, 64, 128].includes(Number(value.bits)) ? Number(value.bits) : 64;
@@ -1640,7 +1692,11 @@ function semanticLocalDeclarations(types, body, ctx) {
     for (const entry of phiEntries) {
       const name = entry?.name;
       if (!name || seen.has(name)) continue;
-      if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) continue;
+      if (DECL_PURE_WORD_RE.test(name)) {
+        if (!usedTokens.has(name)) continue;
+      } else if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) {
+        continue;
+      }
       seen.add(name);
       out.push(line('decl', 1, `${entry.type || 'uint64'} ${name};`, null));
     }
@@ -1813,6 +1869,16 @@ function isKnownStructPointerType(baseType) {
   return false;
 }
 
+const INT64_MAX_DISP = 9223372036854775807n;
+
+function normalizeSignedDisp64(raw) {
+  return BigInt.asIntN(64, BigInt(raw));
+}
+
+function formatSignedDispMagnitude(negDisp) {
+  return negDisp > INT64_MAX_DISP ? `${negDisp.toString()}ULL` : negDisp.toString();
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
   if (loc.kind === MK.STACK) {
@@ -1820,24 +1886,26 @@ export function renderMemoryLocation(loc, inst, ctx) {
       const size = Number(inst?.addr?.size || inst?.size || loc.size || 8);
       const elemType = memoryElementType(inst, size, ctx.types);
       if (loc.frameEpoch === 0 && (loc.baseReg === 'sp' || !loc.baseReg)) {
-        const disp = loc.disp != null ? BigInt(loc.disp) : 0n;
+        const disp = loc.disp != null ? normalizeSignedDisp64(loc.disp) : 0n;
         if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
         return disp < 0n
-          ? `*(${elemType} *)(uintptr_t)(sp - ${(-disp).toString()})`
+          ? `*(${elemType} *)(uintptr_t)(sp - ${formatSignedDispMagnitude(-disp)})`
           : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
       }
       if (inst?.addr?.base) {
         const base = renderValue(inst.addr.base, ctx);
-        const disp = inst.addr.disp != null ? BigInt(inst.addr.disp) : (loc.disp != null ? BigInt(loc.disp) : 0n);
+        const disp = inst.addr.disp != null
+          ? normalizeSignedDisp64(inst.addr.disp)
+          : (loc.disp != null ? normalizeSignedDisp64(loc.disp) : 0n);
         if (disp === 0n) return `*(${elemType} *)(uintptr_t)(${base})`;
         return disp < 0n
-          ? `*(${elemType} *)(uintptr_t)((${base}) - ${(-disp).toString()})`
+          ? `*(${elemType} *)(uintptr_t)((${base}) - ${formatSignedDispMagnitude(-disp)})`
           : `*(${elemType} *)(uintptr_t)((${base}) + ${disp.toString()})`;
       }
-      const disp = loc.disp != null ? BigInt(loc.disp) : 0n;
+      const disp = loc.disp != null ? normalizeSignedDisp64(loc.disp) : 0n;
       if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
       return disp < 0n
-        ? `*(${elemType} *)(uintptr_t)(sp - ${(-disp).toString()})`
+        ? `*(${elemType} *)(uintptr_t)(sp - ${formatSignedDispMagnitude(-disp)})`
         : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
     }
     return stackName(ctx, loc);
@@ -1854,7 +1922,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
       const index = renderValue(addr.index, ctx);
       const scale = Number(addr.scale || 0);
       const size = Number(addr.size || inst?.size || loc?.size || 0);
-      const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
+      const disp = addr.disp != null ? normalizeSignedDisp64(addr.disp) : 0n;
       const indexed = renderIndexedMemory(base, index, {
         extend: addr.extend || null,
         scale,
@@ -1870,7 +1938,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
       }
       if (size > 0 && scaleBytes > 0 && ((!isPtr && (scaleBytes !== size || disp !== 0n)) || (isPtr && disp !== 0n)) && ctx.opts?.phase8Optimize !== true) {
         const offsetExpr = scaleBytes === 1 ? `(${idxExpr})` : `(${idxExpr}) * ${scaleBytes}`;
-        const dispExpr = disp !== 0n ? (disp < 0n ? ` - ${(-disp).toString()}` : ` + ${disp.toString()}`) : '';
+        const dispExpr = disp !== 0n ? (disp < 0n ? ` - ${formatSignedDispMagnitude(-disp)}` : ` + ${disp.toString()}`) : '';
         return `*(${elemType} *)((uintptr_t)(${base}) + ${offsetExpr}${dispExpr})`;
       }
       return indexed;
@@ -1891,10 +1959,10 @@ export function renderMemoryLocation(loc, inst, ctx) {
       const base = renderValue(addr.base, ctx, suppressStr ? { suppressRodataString: true } : {});
       const size = Number(addr.size || inst?.size || loc?.size || 8);
       const elemType = memoryElementType(inst, size, ctx.types);
-      const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
+      const disp = addr.disp != null ? normalizeSignedDisp64(addr.disp) : 0n;
       if (disp !== 0n) {
         return disp < 0n
-          ? `*(${elemType} *)((uintptr_t)(${base}) - ${(-disp).toString()})`
+          ? `*(${elemType} *)((uintptr_t)(${base}) - ${formatSignedDispMagnitude(-disp)})`
           : `*(${elemType} *)((uintptr_t)(${base}) + ${disp.toString()})`;
       }
       return `*(${elemType} *)(uintptr_t)(${base})`;
@@ -1903,7 +1971,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
   }
   if (loc.kind === MK.FIELD) {
     const base = loc.base || addr.base;
-    const off = BigInt(loc.disp ?? addr.disp ?? 0);
+    const off = normalizeSignedDisp64(loc.disp ?? addr.disp ?? 0);
     const cxxRec = ctx.opts?.cxxEvidence?.receiver;
     const isReceiver = isReceiverAlias(base, cxxRec, ctx);
     const suppressStr = shouldSuppressRodataStringForMem(inst, loc, ctx.types, 0);
@@ -1921,7 +1989,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
       if (losesWidthOrType && elemType && !isKnownStructPointerType(baseType)) {
         if (off !== 0n) {
           return off < 0n
-            ? `*(${elemType} *)((uintptr_t)(${rawBaseText}) - ${(-off).toString()})`
+            ? `*(${elemType} *)((uintptr_t)(${rawBaseText}) - ${formatSignedDispMagnitude(-off)})`
             : `*(${elemType} *)((uintptr_t)(${rawBaseText}) + ${off.toString()})`;
         }
         return `*(${elemType} *)(uintptr_t)(${rawBaseText})`;
@@ -2127,6 +2195,7 @@ export function renderBranchCondition(inst, ctx, invert = false) {
 
 function selectAsMinMax(inst, ctx) {
   if (!inst || inst.op !== OP.SEL || inst.args.length < 3) return null;
+  if (inst.sub && inst.sub !== 'sel' && inst.sub !== 'csel' && inst.sub !== 'fcsel') return null;
   const t = valueOf(inst.args[0]), f = valueOf(inst.args[1]), flags = valueOf(inst.args[2]);
   const cmp = cmpFromFlags(flags);
   if (!cmp || cmp.args.length < 2 || cmp.sub !== 'sub' || cmp.extra?.conditional) return null;
@@ -2277,8 +2346,8 @@ function binText(inst, ctx) {
       if (isGlobalAddrText(b)) b = wrapPtrAsUintptr(b);
     }
   } else if (inst.sub === 'sub') {
-    if (isGlobalAddrText(a)) a = wrapPtrAsUintptr(a);
-    if ((!aPtr && bPtr) || isGlobalAddrText(b)) {
+    if ((aPtr && bPtr) || isGlobalAddrText(a)) a = wrapPtrAsUintptr(a);
+    if (bPtr || isGlobalAddrText(b)) {
       b = wrapPtrAsUintptr(b);
     }
   }
@@ -2471,9 +2540,10 @@ function parsePrintfFormatSpecifiers(fmt) {
 
 const CSTRING_CYCLE = Symbol('cstring-cycle');
 
-function resolveConstantCStringInner(value, ctx, seen) {
+function resolveConstantCStringInner(value, ctx, seen, memo = new Map()) {
   if (!value) return null;
   if (value.id != null) {
+    if (memo.has(value.id)) return memo.get(value.id);
     if (seen.has(value.id)) return CSTRING_CYCLE;
     seen.add(value.id);
   }
@@ -2504,18 +2574,23 @@ function resolveConstantCStringInner(value, ctx, seen) {
       return null;
     }
     if (d.op === OP.MOV || d.op === OP.CAST || d.op === 'cast') {
-      return resolveConstantCStringInner(valueOf(d.args?.[0]), ctx, seen);
+      const r = resolveConstantCStringInner(valueOf(d.args?.[0]), ctx, seen, memo);
+      if (value.id != null && r !== CSTRING_CYCLE) memo.set(value.id, r);
+      return r;
     }
     if (d.op === OP.PHI) {
       const rawIncoming = Array.isArray(d.incoming) && d.incoming.length
         ? d.incoming.map((x) => valueOf(x))
         : (d.args || []).map((x) => valueOf(x));
       const nonSelf = rawIncoming.filter((v) => v && v !== value && (value.id == null || v.id !== value.id));
-      if (!nonSelf.length) return null;
+      if (!nonSelf.length) {
+        if (value.id != null) memo.set(value.id, null);
+        return null;
+      }
       let common = null;
       let sawCycle = false;
       for (const inc of nonSelf) {
-        const s = resolveConstantCStringInner(inc, ctx, seen);
+        const s = resolveConstantCStringInner(inc, ctx, seen, memo);
         if (s === CSTRING_CYCLE) { sawCycle = true; continue; }
         if (s == null) return null;
         if (common == null) common = s;
@@ -2618,6 +2693,7 @@ function callRecord(inst, ctx) {
   } else {
     let override = null;
     try { override = ctx.opts.callPrototypeFor?.(target, name, inst) || null; } catch { override = null; }
+    if (!override) override = inst.callPrototype ?? inst.extra?.callPrototype ?? null;
     const knownSig = knownCallSignature(name);
     const knownProto = knownCallPrototype(name);
     const hasFpSigParams = !override && isAArch64
@@ -2681,6 +2757,42 @@ function callRecord(inst, ctx) {
             arityKnown = false;
             ctx.unknownCallArities++;
           }
+        } else if (!override && target != null && ctx.opts?.addr != null && target === ctx.opts.addr && Array.isArray(ctx.types?.args)) {
+          if (ctx.types.args.length === 0) {
+            logicalArgs = [];
+            sourceArgIndices = [];
+            arityKnown = true;
+          } else {
+            resolvedArgs = [];
+            for (let i = 0; i < ctx.types.args.length; i++) {
+              const a = ctx.types.args[i];
+              const reg = a?.reg ? String(a.reg) : `x${Number.isInteger(a?.index) ? a.index : i}`;
+              const gpMatch = /^[xw]([0-7])$/i.exec(reg);
+              if (gpMatch) {
+                const idx = Number(gpMatch[1]);
+                resolvedArgs.push({
+                  reg,
+                  value: values[idx] || null,
+                  text: argText[idx] ?? 'unknown',
+                  tickets: argumentTickets[idx] || [],
+                });
+              } else {
+                const fpMatch = /^([sdvq])([0-7])$/i.exec(reg);
+                const canon = canonicalRegister(reg, isAArch64);
+                let val = explicitArgs.get(canon) ?? explicitArgs.get(reg) ?? reachingRegisterValue(ctx.ir, inst, reg, isAArch64);
+                if (!val && fpMatch) {
+                  val = resolveFpCallArg(explicitArgs, ctx.ir, inst, Number(fpMatch[2]), fpMatch[1].toLowerCase() === 's');
+                }
+                const input = initialValueCursor(ctx);
+                const text = val ? renderValue(val, ctx) : null;
+                const tickets = input ? input.list.slice(input.start) : [];
+                resolvedArgs.push({ reg, value: val || null, text: text ?? 'unknown', tickets });
+              }
+            }
+            logicalArgs = resolvedArgs.map((a) => a.text);
+            sourceArgIndices = [];
+            arityKnown = true;
+          }
         } else {
           arityKnown = false;
           ctx.unknownCallArities++;
@@ -2742,7 +2854,8 @@ function callRecord(inst, ctx) {
   const info = {
     name, target, runtime: origin, args: logicalArgs, arityKnown, variadicPrefixOnly, sourceArgIndices, resolvedArgs,
     receiver: argText[0] || 'receiver', receiverType, selector,
-    ...(objcCMode ? { style: 'c', callee: objcCallee } : {}),
+    callee: objcCallee,
+    ...(objcCMode ? { style: 'c' } : {}),
     stubAddress: target, callingConvention: ctx.opts.swiftCallingConventionFor?.(target, name) || null,
     kind: ctx.opts.swiftDispatchFor?.(inst)?.kind || (inst.extra?.indirect ? 'indirect' : 'direct'),
     virtualSlot: slotEv,
@@ -2762,17 +2875,75 @@ function callRecord(inst, ctx) {
   return rec;
 }
 
+function sanitizeSwiftDollarTokens(text) {
+  const s = String(text || '');
+  if (!s.includes('$')) return s;
+  let out = '';
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let j = i + 1;
+      while (j < n) {
+        if (s[j] === '\\' && j + 1 < n) { j += 2; continue; }
+        if (s[j] === quote) { j++; break; }
+        j++;
+      }
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === '/' && i + 1 < n && s[i + 1] === '/') {
+      let j = i + 2;
+      while (j < n && s[j] !== '\n') j++;
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === '/' && i + 1 < n && s[i + 1] === '*') {
+      let j = i + 2;
+      while (j + 1 < n && !(s[j] === '*' && s[j + 1] === '/')) j++;
+      j = j + 1 < n ? j + 2 : n;
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (/[A-Za-z0-9_$]/.test(ch)) {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9_$]/.test(s[j])) j++;
+      const tok = s.slice(i, j);
+      if (tok.includes('$')) {
+        let sanitized = tok.replace(/\$/g, '_');
+        if (!sanitized || /^[0-9]/.test(sanitized)) sanitized = `swift_${sanitized}`;
+        out += sanitized;
+      } else {
+        out += tok;
+      }
+      i = j;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 function renderCall(inst, ctx) {
   const c = callRecord(inst, ctx);
   if (c.resolved.runtime === 'objc' && c.resolved.message) {
     if (ctx.opts?.objcSyntax === 'c' && /^\[/.test(c.resolved.message.text || '')) {
       const callee = c.callee || 'objc_msgSend';
-      const cArgs = [c.receiver, JSON.stringify(c.selector), ...(c.args || []).map((a) => String(a).replace(/^@(?=")/, ''))];
+      const stripAt = (v) => String(v).replace(/^@(?=")/, '');
+      const cArgs = [stripAt(c.receiver), JSON.stringify(c.selector), ...(c.args || []).map(stripAt)];
       return `${callee}(${cArgs.join(', ')})`;
     }
     return c.resolved.message.text;
   }
-  if (c.resolved.runtime === 'swift' && c.resolved.text) return c.resolved.text;
+  if (c.resolved.runtime === 'swift' && c.resolved.text) {
+    return sanitizeSwiftDollarTokens(c.resolved.text);
+  }
   const name = c.name ? safeIdent(c.name, 'unknown_call') : null;
   if (name) {
     const args = !c.arityKnown
@@ -2938,6 +3109,13 @@ function renderValueText(value, ctx, flags) {
         const looksAddrOrStr = (s) => typeof s === 'string' && (s.startsWith('"') || s.startsWith('&global_'));
         if (looksAddrOrStr(t) && !looksAddrOrStr(f)) f = renderSelArm(fVal, true);
         else if (looksAddrOrStr(f) && !looksAddrOrStr(t)) t = renderSelArm(tVal, true);
+        const negArm = (s) => (s.startsWith('-') ? `-(${s})` : `-${paren(s)}`);
+        if (d.sub === 'inc') f = `(${paren(f)} + 1)`;
+        else if (d.sub === 'inv') f = `~${paren(f)}`;
+        else if (d.sub === 'neg') f = negArm(f);
+        else if (d.sub === 'cinc') { f = t; t = `(${paren(t)} + 1)`; }
+        else if (d.sub === 'cinv') { f = t; t = `~${paren(t)}`; }
+        else if (d.sub === 'cneg') { f = t; t = negArm(t); }
         const cond = renderCmp(cmpFromFlags(valueOf(d.args?.[2])), d.cond, ctx);
         out = initialValueForm(ctx, 'select-conditional', `(${cond} ? ${t} : ${f})`);
       }
@@ -3920,18 +4098,27 @@ function samePhiIncomingValue(a, b) {
 
 function phiVariableType(value, ctx) {
   const safeDeclType = (t) => (t && !/[\[\]()]/.test(t) ? t : null);
+  const isPtrType = (t) => Boolean(t && (/\*$/.test(t) || t === 'id'));
+  const incomingTypes = new Set();
+  let hasNonSelfIncoming = false;
+  let allIncomingPtr = true;
+  for (const edge of value.def?.incoming || []) {
+    if (!edge?.value || edge.value.id === value.id) continue;
+    hasNonSelfIncoming = true;
+    const t = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(edge.value.id)));
+    if (t) incomingTypes.add(t);
+    if (!isPtrType(t) && !isZeroVal(edge.value)) allIncomingPtr = false;
+  }
+  const ptrSafe = hasNonSelfIncoming && allIncomingPtr;
   const recovered = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(value.id)));
-  if (recovered) return recovered;
+  if (recovered && (!isPtrType(recovered) || ptrSafe)) return recovered;
   if (floatConstValueOf(value) != null) {
     return Number(value.bits) === 32 ? 'float' : 'double';
   }
-  const incomingTypes = new Set();
-  for (const edge of value.def?.incoming || []) {
-    if (!edge?.value || edge.value.id === value.id) continue;
-    const t = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(edge.value.id)));
-    if (t) incomingTypes.add(t);
+  if (incomingTypes.size === 1) {
+    const only = [...incomingTypes][0];
+    if (!isPtrType(only) || ptrSafe) return only;
   }
-  if (incomingTypes.size === 1) return [...incomingTypes][0];
   const bits = [8, 16, 32, 64, 128].includes(Number(value.bits)) ? Number(value.bits) : 64;
   return `${value.signed === true ? 'int' : 'uint'}${bits}`;
 }
@@ -4034,6 +4221,19 @@ function buildPhiLowering(ctx) {
   };
 }
 
+const PHI_STRING_OR_WORD_RE = /"(?:\\.|[^"\\])*"|[A-Za-z0-9_]+/g;
+
+function extractPhiWordIdents(expr) {
+  const idents = new Set();
+  if (!expr) return idents;
+  PHI_STRING_OR_WORD_RE.lastIndex = 0;
+  let m;
+  while ((m = PHI_STRING_OR_WORD_RE.exec(expr)) !== null) {
+    if (m[0].charCodeAt(0) !== 34 /* '"' */) idents.add(m[0]);
+  }
+  return idents;
+}
+
 function exprReferencesIdent(expr, ident) {
   if (!expr || !ident || !expr.includes(ident)) return false;
   const stripped = expr.replace(/"(?:\\.|[^"\\])*"/g, '""');
@@ -4042,6 +4242,9 @@ function exprReferencesIdent(expr, ident) {
 
 function replaceIdentInExpr(expr, ident, replacement) {
   if (!expr || !ident || !expr.includes(ident)) return expr;
+  if (DECL_PURE_WORD_RE.test(ident)) {
+    return expr.replace(PHI_STRING_OR_WORD_RE, (tok) => (tok === ident ? replacement : tok));
+  }
   const re = new RegExp(`(?<![A-Za-z0-9_])${escapePhiRegExp(ident)}(?![A-Za-z0-9_])`, 'g');
   return expr.replace(/"(?:\\.|[^"\\])*"|[^"]+/g, (seg) => (seg.startsWith('"') ? seg : seg.replace(re, replacement)));
 }
@@ -4095,27 +4298,53 @@ function emitPhiCopiesForEdge(fromBi, toBi, out, ctx, indent, anchorInst = null)
     return line('stmt', indent, `${lhs} = ${rhs};`, fallbackRow, fallbackAddr, extra);
   };
 
+  const allPureWordDst = pending.every((item) => DECL_PURE_WORD_RE.test(item.dst));
+  let useCount = null;
+  if (allPureWordDst) {
+    useCount = new Map();
+    for (const item of pending) {
+      const idents = extractPhiWordIdents(item.rhs);
+      item.rhsIdents = idents;
+      for (const ident of idents) useCount.set(ident, (useCount.get(ident) || 0) + 1);
+    }
+  }
+
   let emitted = 0;
   while (pending.length) {
     let readyIdx = -1;
-    for (let i = 0; i < pending.length; i++) {
-      const dst = pending[i].dst;
-      let usedByOther = false;
-      for (let j = 0; j < pending.length; j++) {
-        if (i === j) continue;
-        if (exprReferencesIdent(pending[j].rhs, dst)) {
-          usedByOther = true;
+    if (useCount) {
+      for (let i = 0; i < pending.length; i++) {
+        const dst = pending[i].dst;
+        const totalUses = useCount.get(dst) || 0;
+        const selfUse = pending[i].rhsIdents.has(dst) ? 1 : 0;
+        if (totalUses - selfUse === 0) {
+          readyIdx = i;
           break;
         }
       }
-      if (!usedByOther) {
-        readyIdx = i;
-        break;
+    } else {
+      for (let i = 0; i < pending.length; i++) {
+        const dst = pending[i].dst;
+        let usedByOther = false;
+        for (let j = 0; j < pending.length; j++) {
+          if (i === j) continue;
+          if (exprReferencesIdent(pending[j].rhs, dst)) {
+            usedByOther = true;
+            break;
+          }
+        }
+        if (!usedByOther) {
+          readyIdx = i;
+          break;
+        }
       }
     }
 
     if (readyIdx >= 0) {
       const item = pending.splice(readyIdx, 1)[0];
+      if (useCount) {
+        for (const ident of item.rhsIdents) useCount.set(ident, (useCount.get(ident) || 1) - 1);
+      }
       out.push(makeCopyLine(item.dst, item.rhs, item.phi, item.value));
       emitted++;
     } else {
@@ -4126,8 +4355,21 @@ function emitPhiCopiesForEdge(fromBi, toBi, out, ctx, indent, anchorInst = null)
       lowering.temps.set(tmpName, { name: tmpName, type: victim.dstType });
       out.push(makeCopyLine(tmpName, victim.dst, victim.phi, victim.phi.dst));
       emitted++;
-      for (const item of pending) {
-        item.rhs = replaceIdentInExpr(item.rhs, victim.dst, tmpName);
+      if (useCount) {
+        for (const item of pending) {
+          if (!item.rhsIdents.has(victim.dst)) continue;
+          item.rhs = replaceIdentInExpr(item.rhs, victim.dst, tmpName);
+          item.rhsIdents.delete(victim.dst);
+          useCount.set(victim.dst, (useCount.get(victim.dst) || 1) - 1);
+          if (!item.rhsIdents.has(tmpName)) {
+            item.rhsIdents.add(tmpName);
+            useCount.set(tmpName, (useCount.get(tmpName) || 0) + 1);
+          }
+        }
+      } else {
+        for (const item of pending) {
+          item.rhs = replaceIdentInExpr(item.rhs, victim.dst, tmpName);
+        }
       }
     }
   }
@@ -4250,7 +4492,7 @@ export function recoverInductionVariables(ir, ctx = null) {
       let step = null;
       if (sameValue(a, phi.dst) && b?.const != null) step = stepDef.sub === 'add' ? b.const : -b.const;
       else if (stepDef.sub === 'add' && sameValue(b, phi.dst) && a?.const != null) step = a.const;
-      if (step == null) continue;
+      if (step == null || step === 0n) continue;
       const term = blockTerm(block);
       if (!term || term.op !== OP.CBR) continue;
       const name = `i${out.length || ''}`;
@@ -4994,6 +5236,14 @@ function faithfulCfg(ctx, indent = 1) {
         term, 'cfg-branch-goto', { target:next }, ctx));
     }
   }
+  for (let i = out.length - 1; i >= 0; i--) {
+    const cur = out[i];
+    if (!cur || cur.kind === 'comment' || !String(cur.text || '').trim()) continue;
+    if (cur.kind === 'label') {
+      out.push(line('stmt', indent + 1, ';', cur.row, cur.addr));
+    }
+    break;
+  }
   return out;
 }
 
@@ -5276,6 +5526,12 @@ export function decompileSemantic(model, rawOpts = {}) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
     ctx.materialNames = new Map(baseMaterialNames);
     ctx.exprCache.clear();
+    ctx.callCache.clear();
+    ctx.evidence.length = 0;
+    ctx.unknown = 0;
+    ctx.unknownCallArities = 0;
+    ctx.hoistedInductionDecls?.clear?.();
+    ctx.emittedInductionNames?.clear?.();
     if (ctx.phiLowering) {
       ctx.phiLowering.skippedPhiIds.clear();
       ctx.phiLowering.temps.clear();
@@ -5286,9 +5542,20 @@ export function decompileSemantic(model, rawOpts = {}) {
     // ctx.suppressed diagnostics unchanged, including the abandoned attempt.
     ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
     ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
+    ctx.storeRenderHistory.consumers = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    ctx.storeRenderHistory.edges = historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges);
     ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
+    ctx.statementRenderHistory.consumers = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    ctx.statementRenderHistory.edges = historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges);
     ctx.controlRenderHistory.events.length = 0; ctx.controlRenderHistory.reasons.clear();
-    if (ctx.conditionalRegionHistory) ctx.conditionalRegionHistory.events.length = 0;
+    ctx.controlRenderHistory.consumers = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    ctx.controlRenderHistory.edges = historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges);
+    if (ctx.conditionalRegionHistory) {
+      ctx.conditionalRegionHistory.events.length = 0;
+      ctx.conditionalRegionHistory.reasons.clear();
+      ctx.conditionalRegionHistory.remaining = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    }
+    beginInitialValueTrace(ctx);
     runBatchedEmission(() => {
       body.push(...faithfulCfg(ctx, 1));
     });
@@ -5338,6 +5605,7 @@ export function decompileSemantic(model, rawOpts = {}) {
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
     coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, emittedInductionNames: ctx.emittedInductionNames || new Map(), irPrimary: true, unknownInstructions: ctx.unknown, phase8Optimize: opts.phase8Optimize === true },
     semantic: true,
+    objcSyntax: opts?.objcSyntax === 'c' ? 'c' : 'objc',
   }, ctx), ctx), ctx), ctx, true), ctx);
   const bindings = new Map();
   for (const [id, name] of ctx.materialNames) {
