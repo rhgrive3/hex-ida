@@ -530,14 +530,13 @@ test('9. Mixed Pass 1 (absolute) / Pass 2 (chained_offset) / Pass 3 (relative32)
   assert.deepEqual(wasmSingle.vtables, wasmChunked.vtables);
 });
 
-test('10. CHUNK_MAX_OUT separation: cumulative maxOut > 4096 and exact small maxOut without off-by-one', () => {
+test('10. adaptive bisection recovers dense single-chunk > CHUNK_MAX_OUT (16384), recomputes relative32 dataVa, and preserves small maxOut / leaf saturation', () => {
   const textLo = 0x10000n;
   const textHi = 0x80000n;
 
-  // 4500 separate 3-entry vtables (each occupies 32 bytes: 24B entries + 8B zero separator) -> 144,000 bytes
-  // With chunkSize = 32768 (overlap = 2048), each chunk holds ~1024 vtables (< CHUNK_MAX_OUT = 4096),
-  // while cumulative total is 4500 (> 4096, < default maxOut = 65536).
-  const count = 4500;
+  // 17000 separate 3-entry absolute vtables (32 bytes each -> 544,000 bytes < 1.5MB single chunk)
+  // Exceeds CHUNK_MAX_OUT (16384), triggering adaptive bisection with truncated === false.
+  const count = 17000;
   const stride = 32;
   const buf = new Uint8Array(count * stride);
   for (let i = 0; i < count; i += 1) {
@@ -548,12 +547,35 @@ test('10. CHUNK_MAX_OUT separation: cumulative maxOut > 4096 and exact small max
     // base + 24 stays 0 (separator)
   }
 
-  const wasmRes = scanVtables(buf, baseOpts({ textLo, textHi, ptrSize: 8, chunkSize: 32768 }));
-  const jsRes = scanVtables(buf, { textLo, textHi, ptrSize: 8, chunkSize: 32768, engine: 'js' });
+  const wasmRes = scanVtables(buf, baseOpts({ textLo, textHi, ptrSize: 8 }));
+  const jsRes = scanVtables(buf, { textLo, textHi, ptrSize: 8, engine: 'js' });
   assert.equal(wasmRes.engine, 'wasm');
   assert.equal(wasmRes.vtables.length, count);
   assert.equal(wasmRes.truncated, false);
+  assert.equal(jsRes.truncated, false);
   assert.deepEqual(wasmRes.vtables, jsRes.vtables);
+
+  // Dense relative32 vtables (> CHUNK_MAX_OUT) verify per-subchunk computeChunkDataVa(subStart) recalculation
+  const relTextLo = 0x100000000n;
+  const relTextHi = 0x100080000n;
+  const relDataVa = 0x100100000n;
+  const relStride = 16; // 12B (3 relative32 slots) + 4B zero separator
+  const relBuf = new Uint8Array(count * relStride);
+  for (let i = 0; i < count; i += 1) {
+    const base = i * relStride;
+    const fnBase = relTextLo + BigInt(0x1000 + (i & 0xfff) * 16);
+    writeI32(relBuf, base + 0, Number(fnBase - (relDataVa + BigInt(base + 0))));
+    writeI32(relBuf, base + 4, Number((fnBase + 4n) - (relDataVa + BigInt(base + 4))));
+    writeI32(relBuf, base + 8, Number((fnBase + 8n) - (relDataVa + BigInt(base + 8))));
+  }
+  const relWasm = scanVtables(relBuf, baseOpts({ textLo: relTextLo, textHi: relTextHi, dataVa: relDataVa, ptrSize: 8 }));
+  const relJs = scanVtables(relBuf, { textLo: relTextLo, textHi: relTextHi, dataVa: relDataVa, ptrSize: 8, engine: 'js' });
+  assert.equal(relWasm.engine, 'wasm');
+  assert.equal(relWasm.vtables.length, count);
+  assert.equal(relWasm.truncated, false);
+  assert.equal(relJs.truncated, false);
+  assert.deepEqual(relWasm.vtables, relJs.vtables);
+  assert.equal(relWasm.vtables[count - 1].firstFnVa, relTextLo + BigInt(0x1000 + ((count - 1) & 0xfff) * 16));
 
   // Small maxOut boundary check: exact match must NOT set truncated, maxOut - 1 MUST set truncated
   const smallBuf = new Uint8Array(3 * 32);
@@ -575,6 +597,15 @@ test('10. CHUNK_MAX_OUT separation: cumulative maxOut > 4096 and exact small max
   assert.equal(wasmCut.vtables.length, 2);
   assert.equal(wasmCut.truncated, true);
   assert.deepEqual(wasmCut.vtables, jsCut.vtables);
+
+  // Non-bisectable leaf chunk (chunkSize <= minBisectLen) saturating chunkMaxOut reports truncated=true
+  const leafWasm = scanVtables(buf.subarray(0, 256), baseOpts({ textLo, textHi, ptrSize: 8, chunkSize: 256, maxOut: 4 }));
+  const leafJs = scanVtables(buf.subarray(0, 256), { textLo, textHi, ptrSize: 8, chunkSize: 256, maxOut: 4, engine: 'js' });
+  assert.equal(leafWasm.engine, 'wasm');
+  assert.equal(leafWasm.vtables.length, 4);
+  assert.equal(leafWasm.truncated, true);
+  assert.equal(leafJs.truncated, true);
+  assert.deepEqual(leafWasm.vtables, leafJs.vtables);
 });
 
 test('11. Fallback to JS when hex_scan_vtables_ext export is missing in mock wasmExports', () => {

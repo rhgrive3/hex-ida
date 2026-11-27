@@ -334,8 +334,8 @@ test('8. exact maxOut sets truncated=false while maxOut+1 sets truncated=true wi
   assert.deepStrictEqual(truncWasm.hits, truncJs.hits);
 });
 
-test('9. multi-chunk merge exceeds legacy 4096 cap and flags single-chunk CHUNK_MAX_OUT saturation', () => {
-  const totalCount = 4200;
+test('9. adaptive bisection recovers dense single-chunk > CHUNK_MAX_OUT (16384) and preserves small maxOut / leaf saturation', () => {
+  const totalCount = 17000;
   const words = new Uint32Array(totalCount * 3);
   for (let i = 0; i < totalCount; i++) {
     const disp = ((i & 0xFF) + 1) * 4;
@@ -345,23 +345,87 @@ test('9. multi-chunk merge exceeds legacy 4096 cap and flags single-chunk CHUNK_
   }
   const code = encodeWords(words);
 
-  // Small chunkSize keeps per-chunk hits well below CHUNK_MAX_OUT (4096) and merges all 4200 hits
-  const multiWasm = scanArm64RmwFields(code, wasmOpts({ chunkSize: 8192 }));
-  const multiJs = scanArm64RmwFields(code, { engine: 'js', chunkSize: 8192 });
-  assert.strictEqual(multiWasm.engine, 'wasm');
-  assert.strictEqual(multiJs.engine, 'js');
-  assert.strictEqual(multiWasm.hits.length, totalCount);
-  assert.strictEqual(multiWasm.truncated, false);
-  assert.strictEqual(multiJs.truncated, false);
-  assert.deepStrictEqual(multiWasm.hits, multiJs.hits);
+  // Single default chunk (204KB < 1.5MB) exceeds CHUNK_MAX_OUT (16384) -> adaptive bisection recovers all 17000 hits
+  const denseWasm = scanArm64RmwFields(code, wasmOpts());
+  const denseJs = scanArm64RmwFields(code, { engine: 'js' });
+  assert.strictEqual(denseWasm.engine, 'wasm');
+  assert.strictEqual(denseJs.engine, 'js');
+  assert.strictEqual(denseWasm.hits.length, totalCount);
+  assert.strictEqual(denseWasm.truncated, false);
+  assert.strictEqual(denseJs.truncated, false);
+  assert.deepStrictEqual(denseWasm.hits, denseJs.hits);
 
-  // Single-chunk scan hits CHUNK_MAX_OUT (4096) < DEFAULT_MAX_OUT (65536) and must report truncated=true
-  const satWasm = scanArm64RmwFields(code, wasmOpts());
-  const satJs = scanArm64RmwFields(code, { engine: 'js' });
-  assert.strictEqual(satWasm.engine, 'wasm');
-  assert.strictEqual(satJs.engine, 'js');
-  assert.strictEqual(satWasm.hits.length, 4096);
-  assert.strictEqual(satWasm.truncated, true);
-  assert.strictEqual(satJs.truncated, true);
-  assert.deepStrictEqual(satWasm.hits, satJs.hits);
+  // Explicit small maxOut (< CHUNK_MAX_OUT) must NOT bisect and must report truncated=true
+  const smallMaxWasm = scanArm64RmwFields(code, wasmOpts({ maxOut: 100 }));
+  const smallMaxJs = scanArm64RmwFields(code, { engine: 'js', maxOut: 100 });
+  assert.strictEqual(smallMaxWasm.engine, 'wasm');
+  assert.strictEqual(smallMaxJs.engine, 'js');
+  assert.strictEqual(smallMaxWasm.hits.length, 100);
+  assert.strictEqual(smallMaxWasm.truncated, true);
+  assert.strictEqual(smallMaxJs.truncated, true);
+  assert.deepStrictEqual(smallMaxWasm.hits, smallMaxJs.hits);
+
+  // Non-bisectable leaf chunk (chunkSize <= minBisectLen) saturating chunkMaxOut reports truncated=true
+  const leafWasm = scanArm64RmwFields(code.subarray(0, 256), wasmOpts({ chunkSize: 256, maxOut: 5 }));
+  const leafJs = scanArm64RmwFields(code.subarray(0, 256), { engine: 'js', chunkSize: 256, maxOut: 5 });
+  assert.strictEqual(leafWasm.engine, 'wasm');
+  assert.strictEqual(leafJs.engine, 'js');
+  assert.strictEqual(leafWasm.hits.length, 5);
+  assert.strictEqual(leafWasm.truncated, true);
+  assert.strictEqual(leafJs.truncated, true);
+  assert.deepStrictEqual(leafWasm.hits, leafJs.hits);
+});
+
+test('10. post-store clamp straddling bisection boundary is preserved as clamped=true via priority merge', () => {
+  const totalWords = 51072; // 204,288 bytes -> mid=102,144, leftEnd=mid+128=102,272 (word 25,568)
+  const words = new Uint32Array(totalWords);
+  words.fill(NOP);
+
+  const totalBytes = totalWords * 4;
+  const mid = Math.floor(totalBytes / 2) & ~3;
+  const leftEnd = mid + 128;
+  const boundaryWord = leftEnd / 4;
+
+  let expectedCount = 0;
+  for (let w = 0; w + 2 < boundaryWord - 4; w += 3) {
+    const disp = ((expectedCount & 0xFF) + 1) * 4;
+    words[w + 0] = ldrW(8, 0, disp);
+    words[w + 1] = addWImm(8, 8, 1);
+    words[w + 2] = strW(8, 0, disp);
+    expectedCount++;
+  }
+
+  // Place RMW immediately before leftEnd so strW is at leftEnd-4 and post-store cmp is at leftEnd
+  const targetLoadOff = (boundaryWord - 3) * 4;
+  const targetStoreOff = (boundaryWord - 1) * 4;
+  words[boundaryWord - 3] = ldrW(9, 1, 0x374);
+  words[boundaryWord - 2] = subWImm(9, 9, 1);
+  words[boundaryWord - 1] = strW(9, 1, 0x374);
+  words[boundaryWord] = cmpWImm(9, 0); // post-store clamp at exact leftEnd
+  expectedCount++;
+
+  for (let w = boundaryWord + 2; w + 2 < totalWords; w += 3) {
+    const disp = ((expectedCount & 0xFF) + 1) * 4;
+    words[w + 0] = ldrW(8, 0, disp);
+    words[w + 1] = addWImm(8, 8, 1);
+    words[w + 2] = strW(8, 0, disp);
+    expectedCount++;
+  }
+
+  assert.ok(expectedCount > 16384, `expected > 16384 hits to trigger bisection, got ${expectedCount}`);
+  const code = encodeWords(words);
+
+  const wasmRes = scanArm64RmwFields(code, wasmOpts());
+  const jsRes = scanArm64RmwFields(code, { engine: 'js' });
+  assert.strictEqual(wasmRes.engine, 'wasm');
+  assert.strictEqual(jsRes.engine, 'js');
+  assert.strictEqual(wasmRes.truncated, false);
+  assert.strictEqual(jsRes.truncated, false);
+  assert.strictEqual(wasmRes.hits.length, expectedCount);
+  assert.deepStrictEqual(wasmRes.hits, jsRes.hits);
+
+  const boundaryHit = wasmRes.hits.find((h) => h.loadOff === targetLoadOff && h.storeOff === targetStoreOff);
+  assert.ok(boundaryHit, 'boundary RMW hit must be present');
+  assert.strictEqual(boundaryHit.clamped, true, 'post-store clamp across bisection boundary must not be lost');
+  assert.strictEqual(boundaryHit.flags, 1);
 });

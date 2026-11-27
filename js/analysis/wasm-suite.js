@@ -15,6 +15,14 @@ import { inferArm64Abi, ABI_RET_KIND } from './wasm-abi-scanner.js';
 import { scanConstTables } from './wasm-const-table-scanner.js';
 import { analyzeCallGraphMetrics, CALLGRAPH_ROLE } from './wasm-callgraph-metrics.js';
 import { classifyArm64Behavior, BEHAVIOR_CATEGORY } from './wasm-behavior-classifier.js';
+import { scanX86_64RmwFields, classifyX86_64Behavior } from './wasm-x86-64-rmw-scanner.js';
+import {
+  scanObjcPtrList,
+  scanSwift5Rel32List,
+  scanSwift5FieldMd,
+  scanObjcSwiftMetadataFromImage,
+} from './wasm-objc-swift-scanner.js';
+import { linkWasmStructuralHints, normalizeFunctions } from './wasm-xref-linker.js';
 
 export {
   scanArm64RmwFields,
@@ -31,6 +39,14 @@ export {
   CALLGRAPH_ROLE,
   classifyArm64Behavior,
   BEHAVIOR_CATEGORY,
+  scanX86_64RmwFields,
+  classifyX86_64Behavior,
+  scanObjcPtrList,
+  scanSwift5Rel32List,
+  scanSwift5FieldMd,
+  scanObjcSwiftMetadataFromImage,
+  linkWasmStructuralHints,
+  normalizeFunctions,
 };
 
 function toBigIntOrNull(v) {
@@ -149,21 +165,35 @@ export function runWasmStructuralAnalysis(opts = {}) {
 
   const out = {
     rmw: null,
+    x86Rmw: null,
     vtables: null,
     jumpTables: null,
     constTables: null,
     callgraph: null,
+    objcSwift: null,
+    xrefLinks: null,
   };
 
-  if (o.codeBytes instanceof Uint8Array && o.codeBytes.length >= 4) {
-    out.rmw = scanArm64RmwFields(o.codeBytes, { ...common, arch, maxOut: o.rmwMaxOut });
-    const textVa = toBigIntOrNull(o.textVa) ?? toBigIntOrNull(o.baseVa) ?? 0n;
-    out.jumpTables = scanArm64JumpTables(o.codeBytes, {
-      ...common,
-      arch,
-      textVa,
-      maxOut: o.jumpTableMaxOut,
-    });
+  const archLower = String(arch || '').toLowerCase();
+  const isX86_64 = archLower === 'x86_64' || archLower === 'x64' || archLower === 'amd64';
+  if (o.codeBytes instanceof Uint8Array && o.codeBytes.length >= 1) {
+    if (o.codeBytes.length >= 4) {
+      out.rmw = scanArm64RmwFields(o.codeBytes, { ...common, arch, maxOut: o.rmwMaxOut });
+      const textVa = toBigIntOrNull(o.textVa) ?? toBigIntOrNull(o.baseVa) ?? 0n;
+      out.jumpTables = scanArm64JumpTables(o.codeBytes, {
+        ...common,
+        arch,
+        textVa,
+        maxOut: o.jumpTableMaxOut,
+      });
+    }
+    if (isX86_64) {
+      out.x86Rmw = scanX86_64RmwFields(o.codeBytes, {
+        ...common,
+        arch,
+        maxOut: o.rmwMaxOut,
+      });
+    }
   }
 
   const textLo = toBigIntOrNull(o.textLo);
@@ -341,6 +371,36 @@ export function runWasmStructuralAnalysis(opts = {}) {
           leafCount,
         },
       };
+    }
+  }
+
+  const objcSwiftImg = o.image || o.objcSwiftImage || null;
+  if (objcSwiftImg && Array.isArray(objcSwiftImg.sections) && objcSwiftImg.bytes instanceof Uint8Array) {
+    const meta = scanObjcSwiftMetadataFromImage(objcSwiftImg, {
+      ...common,
+      imageBase: imageBase != null ? imageBase : undefined,
+      stripPac: o.stripPac !== false,
+    });
+    if (meta && meta.sectionsScanned && meta.sectionsScanned.length > 0) {
+      out.objcSwift = meta;
+    }
+  }
+
+  const fnSource = o.functions ?? o.symbols ?? o.program ?? null;
+  if (fnSource && (out.vtables || out.constTables)) {
+    const xrefTextVa = toBigIntOrNull(o.textVa) ?? toBigIntOrNull(o.baseVa) ?? textLo;
+    const links = linkWasmStructuralHints({
+      codeBytes: o.codeBytes instanceof Uint8Array ? o.codeBytes : null,
+      textVa: xrefTextVa,
+      functions: fnSource,
+      vtables: out.vtables,
+      constTables: out.constTables,
+      dataVa: toBigIntOrNull(o.dataVa),
+      arch,
+      maxInsns: o.xrefMaxInsns,
+    });
+    if (links && links.stats && links.stats.functionsInput > 0) {
+      out.xrefLinks = links;
     }
   }
 
