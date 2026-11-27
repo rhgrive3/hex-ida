@@ -96,6 +96,7 @@ export const GOALS = [
       /price[\s_-]*floor\w*/i,
       /costume|acoustic|coincid(?:e|ent|ence)/i,
       /(?:white|load|audio|stereo|color|channel)[\s_-]*balance/i,
+      /\bskproduct\w*[\s\S]*\bprice\b|\bprice[\s_-]*locale\b|\bintroductory[\s_-]*price\b/i,
     ],
     expects: { numeric: true, store: true, compare: true },
   },
@@ -173,6 +174,7 @@ export const GOALS = [
       /(?:table|section|file|mach|elf|zip|png|wav)[\s_-]*header/i,
       /(?:audio|capture|media)[\s_-]*session/i,
       /\b(?:ar|vr|wc)[\s_-]*session/i,
+      /https?:\/\/go\/|\bmutex\s+deadlock\b|\brequest[\s\S]{0,40}\b(?:webview|metrics)[\s_-]*url\b|\brequests?\s+placement[\s_-]*id\b|\b(?:ads|ri)[\s_-]*endpoint\b/i,
     ],
     expects: { call: true },
   },
@@ -182,7 +184,8 @@ export const GOALS = [
     weak: [/point/i, /result/i, /record/i, /順位/],
     avoid: [
       /pointer|null[\s_-]*ptr|appoint/i,
-      /(?:end|break|check|entry|floating|code|mid|cg|focal|touch)[\s_-]*point/i,
+      /(?:end|break|check|entry|floating|code|mid|cg|focal|touch|ec)[\s_-]*point/i,
+      /\bec[\s_-]*group\b[\s\S]*\bpoint\b|\bec[\s_-]*group\b/i,
       /(?:audio|video|voice|screen|dns)[\s_-]*record/i,
     ],
     expects: { numeric: true, store: true, compare: true },
@@ -193,6 +196,7 @@ export const GOALS = [
     weak: [/upgrade/i, /grow/i, /rank/i, /強化/, /育成/],
     avoid: [
       /(?:log|verbosity|battery|zoom|compression|mip(?:map)?|window|api|feature|debug|error|warning|trace|severity|nesting|indent|low)[\s_-]*level/i,
+      /level[\s_-]*play/i,
       /\b(?:alloc(?:ator)?|prev->levels|even one level|level\s*>=\s*1|skiplist\w*)\b|lla_skiplist\w*/i,
       /(?:crank|frank|prank|drank|shrank)/i,
       /^_*(?:exp|exp2|exp10|expm1|frexp|ldexp)$/i,
@@ -230,6 +234,7 @@ export const GOALS = [
     avoid: [
       /secure[\s_-]*(?:text[\s_-]*entry|coding|enclave|connection|socket|transport|cookie|channel)/i,
       /(?:method|type|function|selector|block)[\s_-]*signature/i,
+      /detect\w*\s+(?:illegal|invalid)\s+recursion\s+in(?:to)?\s+mutex|\bmutex[\s_-]*(?:code|deadlock|recursion)\b/i,
     ],
     expects: { compare: true, call: true },
   },
@@ -254,7 +259,7 @@ export const GOALS = [
       /\bcd[\s_-]*(?:rom|key|drive|player|track|audio|image|dir|path)\b/i,
       /\b(?:device|type|user|item|error|err|status|state|area|country|lang|shop|store|stage|event|char|unit|card|kind|group|category|mode|result|ret|http|zip|postal|pref|currency|client|server|app|os|platform|model|vendor|media|ad|campaign|promo|coupon|serial|product|order)[\s_-]*cd\b/i,
       /(?:gcd|lcd|bcd|mcd|acd|icd|rcd|ucd)\b/i,
-      /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle|timeout|date|reload|update|location|banner)[\s_-]*(?:interval|delay)/i,
+      /(?:retry|reconnect|poll|polling|flush|heartbeat|sync|refresh|ping|animation|debounce|throttle|timeout|date|reload|update|location|banner|notification)[\s_-]*(?:interval|delay)/i,
       /scheduleUpdateAfterInterval|onReloadInterval|viewability[\w\s-]*|anime[\s_-]*interval|animation[\s_-]*interval|cmtime\w*|repeatable[\s_-]*timer|block[\s_-]*queue|url[\s_-]*request|cache[\s_-]*policy/i,
       /reload[\s_-]*(?:data|table|section|row|view|page|url|webview|config|script)|\bpreload\b|package\.preload/i,
     ],
@@ -902,7 +907,7 @@ function matchTextSingle(goal, s) {
 }
 
 const OBFUSCATED_OR_TABLE_RE = /aAbBcCdDeFgG|\$[^\s$]{8,}\$/;
-const ASSET_OR_UI_PATH_RE = /\.(?:png|jpe?g|webp|gif|svg|dat|maanim|mamodel|plist|fnt|ttf|otf|wav|mp3|ogg|m4a|mp4|tsv|csv|prefab|shader)\b|\\(?:レイヤー|digit\b)|(?:win_dialog|win_number|win_percent|win_plus|number_data_|fukidashi|createUI|detailview::|pz_ui_|btn_eff_|all_num_|all_text_)/i;
+const ASSET_OR_UI_PATH_RE = /\.(?:png|jpe?g|webp|gif|svg|dat|imgcut|maanim|mamodel|atlas|skel|spine|moc3?|uasset|pak|bundle|plist|fnt|ttf|otf|wav|mp3|ogg|m4a|mp4|tsv|csv|prefab|shader)\b|\\(?:レイヤー|digit\b)|(?:win_dialog|win_number|win_percent|win_plus|number_data_|fukidashi|createUI|detailview::|pz_ui_|btn_eff_|all_num_|all_text_|setVisible\s*\(\s*['"]button_|_error_[\w%]*_txt\d*\b)/i;
 const DIALOGUE_PROSE_RE = /<[A-Za-z][^>]*>.*<\/[A-Za-z]+>|(?:ですよ|ますよ|ますね|ですか[？?]|ましたね|しましょう|ください[。！!]|んです[。！!])/;
 
 export function matchText(goal, text) {

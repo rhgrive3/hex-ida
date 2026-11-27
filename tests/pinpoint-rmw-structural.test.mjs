@@ -122,3 +122,113 @@ test('stripped binary: 1-hop propagation + fn-field-rmw-clamped ranks RMW helper
   assert.ok(!c1200?.evidence?.some((e) => e.code === 'fn-field-rmw-clamped'), 'read-only 0x1200 has no RMW');
   assert.ok((c1100.fusion?.rawLogOdds ?? 0) > (c1200?.fusion?.rawLogOdds ?? -999), 'RMW+clamp callee outranks read-only peer');
 });
+
+import { foldShapes, byGoal as shapesByGoal, evidenceFor as shapeEvidenceFor, SHAPE, AMOUNT } from '../js/shapes.js';
+import { goalFromPreset, matchText } from '../js/goals.js';
+
+test('detectFieldRmwPatterns uses insn.memory.disp (BigInt/number) so distinct ARM64 offsets never collide', () => {
+  const insns = [
+    { address: 0x5000n, mnemonic: 'ldr', operands: 'w8, [x28, #0x48]', memory: { base: 'x28', disp: 0x48n, kind: 'load', stack: false } },
+    { address: 0x5004n, mnemonic: 'subs', operands: 'w8, w8, #1' },
+    { address: 0x5008n, mnemonic: 'b.lt', operands: '#0x5010' },
+    { address: 0x500cn, mnemonic: 'str', operands: 'w8, [x28, #0x48]', memory: { base: 'x28', disp: 0x48n, kind: 'store', stack: false } },
+    // Different offset 0x5c must NOT pair with a load from 0x48
+    { address: 0x5010n, mnemonic: 'ldr', operands: 'w9, [x28, #0x48]', memory: { base: 'x28', disp: 0x48n, kind: 'load', stack: false } },
+    { address: 0x5014n, mnemonic: 'add', operands: 'w9, w9, #1' },
+    { address: 0x5018n, mnemonic: 'str', operands: 'w9, [x28, #0x5c]', memory: { base: 'x28', disp: 0x5cn, kind: 'store', stack: false } },
+  ];
+  const res = detectFieldRmwPatterns(insns);
+  assert.equal(res.rmwCount, 1);
+  assert.equal(res.clampedRmwCount, 1);
+  assert.equal(res.fields[0].base, 'x28');
+  assert.equal(res.fields[0].offset, '0x48');
+});
+
+test('shapes.js surfaces clamped-decrease resources for hp/stamina and pure decrement-to-zero for cooldown', () => {
+  const scan = {
+    count: 5,
+    disp: new Uint32Array([0x30c, 0x30c, 0x30c, 0x374, 0x374]),
+    size: new Uint8Array([4, 4, 4, 4, 4]),
+    flags: new Uint8Array([
+      SHAPE.DECREASE | SHAPE.CLAMP,
+      SHAPE.DECREASE | SHAPE.CLAMP,
+      SHAPE.INCREASE,
+      SHAPE.DECREASE | SHAPE.CLAMP,
+      SHAPE.DECREASE | SHAPE.CLAMP,
+    ]),
+    amtKind: new Uint8Array([AMOUNT.NONE, AMOUNT.NONE, AMOUNT.NONE, AMOUNT.NONE, AMOUNT.NONE]),
+    amtDisp: new Uint32Array([0, 0, 0, 0, 0]),
+    addr: [0x1000n, 0x1020n, 0x1040n, 0x2000n, 0x2020n],
+    span: new Uint32Array([0x340, 0x340, 0x340, 0x380, 0x380]),
+  };
+  const shapes = foldShapes(scan);
+  const hpShapes = shapesByGoal(shapes, 'hp', 4);
+  // 0x30c has increases > 0 and cross=0 (money/self-resource), so only pure clamped drain 0x374 is surfaced for hp
+  assert.equal(hpShapes.length, 1);
+  assert.equal(hpShapes[0].offset, 0x374);
+  const cdShapes = shapesByGoal(shapes, 'cooldown', 4);
+  assert.equal(cdShapes.length, 1);
+  assert.equal(cdShapes[0].offset, 0x374);
+  const moneyEv = shapeEvidenceFor(shapes, 0x30c, 'hp');
+  assert.ok(!moneyEv.codes.some((c) => c.code === 'loc-resource-drain'));
+  const hpEv = shapeEvidenceFor(shapes, 0x374, 'hp');
+  assert.ok(hpEv.codes.some((c) => c.code === 'loc-resource-drain'));
+  const cdEv = shapeEvidenceFor(shapes, 0x374, 'cooldown');
+  assert.ok(cdEv.codes.some((c) => c.code === 'loc-resource-drain'));
+});
+
+test('pinpointFunction discovers stringless shape-seeded and 1-hop stripped RMW callers', async () => {
+  const goal = goalFromPreset('hp');
+  const scan = {
+    count: 2,
+    disp: new Uint32Array([0x30c, 0x30c]),
+    size: new Uint8Array([4, 4]),
+    flags: new Uint8Array([SHAPE.DECREASE | SHAPE.CLAMP, SHAPE.DECREASE | SHAPE.CLAMP]),
+    amtKind: new Uint8Array([AMOUNT.NONE, AMOUNT.NONE]),
+    amtDisp: new Uint32Array([0, 0]),
+    addr: [0x8010n, 0x8020n],
+    span: new Uint32Array([0x340, 0x340]),
+  };
+  const shapes = foldShapes(scan);
+  const symbols = {
+    functionCount: 200,
+    functionStartAt: (a) => (a >= 0x8000n && a < 0x8100n ? 0x8000n : null),
+    nameAt: () => null,
+  };
+  const analyze = async (addr) => {
+    if (addr === 0x8000n) {
+      return {
+        instructions: [
+          { address: 0x8008n, mnemonic: 'ldr', operands: 'w8, [x0, #0x30c]', memory: { base: 'x0', disp: 0x30cn, kind: 'load', stack: false } },
+          { address: 0x800cn, mnemonic: 'subs', operands: 'w8, w8, w1' },
+          { address: 0x8010n, mnemonic: 'csel', operands: 'w8, wzr, w8, lt' },
+          { address: 0x8014n, mnemonic: 'str', operands: 'w8, [x0, #0x30c]', memory: { base: 'x0', disp: 0x30cn, kind: 'store', stack: false } },
+          { address: 0x8018n, mnemonic: 'ret', operands: '' },
+        ],
+      };
+    }
+    return null;
+  };
+  const res = await pinpointFunction({
+    goal, ranked: [], shapes, symbols, analyze, functionCount: 200, budget: { left: 8 },
+  });
+  assert.ok(res.top, 'expected stringless shape-seeded candidate');
+  assert.equal(res.top.addr, 0x8000n);
+  assert.ok(res.top.evidence.some((e) => e.code === 'fn-shape-site'));
+  assert.ok(res.top.evidence.some((e) => e.code === 'fn-field-rmw-clamped'));
+});
+
+test('general-purpose avoids & rank deduplication eliminate SDK/crypto/mutex/asset/assert false positives', () => {
+  assert.equal(matchText(goalFromPreset('level'), '-[IronSourceSdk setLevelPlayRewardedVideoManualDelegate:]'), null);
+  assert.equal(matchText(goalFromPreset('score'), 'ECGroup::CreateECPoint: Failed to create point'), null);
+  assert.equal(matchText(goalFromPreset('anticheat'), 'detected illegal recursion into Mutex code'), null);
+  assert.equal(matchText(goalFromPreset('anticheat'), 'detected illegal recursion in Mutex code'), null);
+  assert.equal(matchText(goalFromPreset('network'), 'See http://go/deadlock'), null);
+  assert.equal(matchText(goalFromPreset('network'), 'Could not create a request. Webview url is null'), null);
+  const imgcut = matchText(goalFromPreset('item'), 'equipment_grade.imgcut');
+  const realItem = matchText(goalFromPreset('item'), 'equipmentNum');
+  assert.ok(imgcut && realItem && imgcut.score < realItem.score);
+  const btnJs = matchText(goalFromPreset('gacha'), "if (typeof setVisible === 'function') setVisible('button_gacha', true)");
+  const realGacha = matchText(goalFromPreset('gacha'), 'EventGacha');
+  assert.ok(btnJs && realGacha && btnJs.score < realGacha.score);
+});

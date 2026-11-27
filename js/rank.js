@@ -164,7 +164,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     const m = matchText(goal, s.text);
     if (m) {
       seenStrings.add(dedupKey);
-      const isAssertOrSource = /(?:\.(?:cc|cpp|cxx|mm|h|hpp|swift)\b|->|\s(?:>=|<=|!=|==)\s)/.test(s.text);
+      const isAssertOrSource = /(?:\.(?:cc|cpp|cxx|mm|h|hpp|swift)\b|->|\s(?:>=|<=|!=|==)\s|^\s*[A-Za-z_]\w*\s*(?:>=|<=|!=|==|>|<)\s*-?\d+\s*$)/.test(s.text);
       const diagFactor = isAssertOrSource ? 0.15 : (isDiagnosticString(s.text) ? 0.45 : 1);
       matchedStrings.push({
         addr: s.addr,
@@ -321,6 +321,14 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       const c = candidate(candAddr, a);
       if (!c) continue;
       c.name = c.name || name;
+      // Avoid double-counting when the exact symbol/ObjC selector string was already scored as STRING_REF
+      for (let ri = c.reasons.length - 1; ri >= 0; ri--) {
+        const r = c.reasons[ri];
+        if (r.code === REASON.STRING_REF && r.detail?.text === name) {
+          c.score -= r.points;
+          c.reasons.splice(ri, 1);
+        }
+      }
       addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score * roleMult * mutatorMult, { name, term: m.term, role });
     }
   }

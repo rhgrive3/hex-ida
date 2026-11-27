@@ -2106,6 +2106,21 @@ export function proofText(item) {
     case 'fn-store-observed':
       return pick('オブジェクト領域への書き込み命令が ' + d.n + ' 回ある',
         'it performs ' + d.n + ' non-stack store(s)');
+    case 'fn-field-rmw':
+      return pick('オブジェクトの同じフィールドを読んで計算し書き戻す処理がある',
+        'it reads, modifies, and writes back an object field');
+    case 'fn-field-rmw-clamped':
+      return pick('オブジェクトの同じフィールドを読んで計算し上下限チェック付きで書き戻す処理がある',
+        'it performs a clamped read-modify-write on an object field');
+    case 'fn-shape-site':
+      return pick('値の増減パターンの走査で候補となったフィールドを更新している',
+        'it updates a field identified by behavioural value-shape scanning');
+    case 'fn-crypto-bitwise':
+      return pick('暗号処理に特徴的なビット演算・ローテート・XOR ループが集中している',
+        'it has dense bitwise/rotate/XOR operations typical of cryptographic code');
+    case 'fn-crypto-hw-insn':
+      return pick('AES/SHA などのハードウェア暗号命令を直接実行している',
+        'it directly executes hardware cryptographic instructions (AES/SHA)');
     case 'fn-owner-class':
       return pick('この処理を持っているクラスの名前が目的に合う', 'the owning class name fits');
     case 'fn-numeric':

@@ -479,7 +479,7 @@ export async function autoAnalyze(opts) {
         if (beatsPin(locPin, best)) best = locPin;
       }
 
-      const canFindFunction = memo && ranked.length;
+      const canFindFunction = memo && (ranked.length || (common.shapes && common.shapes.size));
       if (canFindFunction && !(best && best.verdict === VERDICT.CONFIRMED && best.kind === 'field')) {
         let fieldHint = null;
         const named = alternatives.find((p) => p && p.kind === 'field' && p.top && p.top.source !== 'cxx' && settledPin(p));

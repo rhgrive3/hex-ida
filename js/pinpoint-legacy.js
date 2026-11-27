@@ -1167,7 +1167,8 @@ export async function pinpointFunction(opts) {
   const progress = o.onProgress || (() => {});
   const cancelled = o.isCancelled || (() => false);
 
-  if (!goal || !ranked.length) {
+  const hasShapes = !!(o.shapes && o.shapes.size);
+  if (!goal || (!ranked.length && !hasShapes)) {
     return { goal, kind: 'function', verdict: VERDICT.NONE, top: null, candidates: [], checked: 0 };
   }
 
@@ -1175,6 +1176,51 @@ export async function pinpointFunction(opts) {
   const universe = Math.max(50, o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 2000);
 
   const candidates = ranked.slice(0, 40).map((c) => buildFunctionCandidate(c, goal, o));
+  const byKey = new Map(candidates.map((c) => [c.key, c]));
+
+  // Structural shape-site seeding for stripped / stringless binaries
+  if (hasShapes && (o.symbols || o.program)) {
+    const goalShapes = shapesByGoal(o.shapes, goal.id, 4);
+    let shapeSeeded = 0;
+    for (const sh of goalShapes) {
+      if (shapeSeeded >= 3) break;
+      for (const site of sh.sites || []) {
+        if (shapeSeeded >= 3 || site?.addr == null) break;
+        const fnStart = o.symbols?.functionStartAt?.(site.addr)
+          ?? o.symbols?.functionAt?.(site.addr)?.start
+          ?? o.symbols?.functionAt?.(site.addr)?.addr
+          ?? o.program?.functionRange?.(site.addr)?.start
+          ?? null;
+        if (fnStart == null) continue;
+        const key = fnStart.toString();
+        const strength = Math.max(0.45, Math.min(1, sh.score || 0.6));
+        const ev = evidence('fn-shape-site', strength, {
+          offset: sh.offset, decreases: sh.decreases, increases: sh.increases,
+          clamped: sh.clamped, usedAsAmount: sh.usedAsAmount, site: site.addr,
+        });
+        if (byKey.has(key)) {
+          const existing = byKey.get(key);
+          if (!existing.evidence.some((e) => e.code === 'fn-shape-site')) existing.evidence.push(ev);
+        } else {
+          const name = o.symbols?.nameAt?.(fnStart) || null;
+          const owner = o.fields ? o.fields.ownerOf(fnStart) : null;
+          const synth = {
+            key, kind: 'function', addr: fnStart, name, owner,
+            stats: null, strings: [], evidence: [ev],
+            verifications: [], updates: [], fusion: null,
+          };
+          candidates.push(synth);
+          byKey.set(key, synth);
+          shapeSeeded++;
+        }
+      }
+    }
+  }
+
+  if (!candidates.length) {
+    return { goal, kind: 'function', verdict: VERDICT.NONE, top: null, candidates: [], checked: 0 };
+  }
+
   for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: universe });
   candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
   let result = decide(candidates);
@@ -1182,6 +1228,7 @@ export async function pinpointFunction(opts) {
   let checked = 0;
   if (o.analyze) {
     const seen = new Set();
+    let callerExpanded = 0;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       if (result.verdict === VERDICT.CONFIRMED) break;
       if (cancelled() || spent(o)) break;
@@ -1197,6 +1244,42 @@ export async function pinpointFunction(opts) {
         try { await verifyFunctionCandidate(c, goal, o); } catch { /* 読めなくても続ける */ }
         if (c.evidence.length !== beforeLen) dirty.push(c);
         checked++;
+
+        // 1-hop stripped caller RMW discovery: when a store-expecting goal's string-seeded
+        // helper (e.g. damage calc/log) has no field RMW of its own, inspect its direct callers
+        // for clamped/sub field RMW so stripped mutators surface cleanly.
+        if (goal.expects?.store && callerExpanded < 6 && !spent(o) && !cancelled() &&
+            c._rmw && c._rmw.rmwCount === 0 && o.program?.callersOf) {
+          const callers = o.program.callersOf(c.addr, 8);
+          if (callers.length > 0 && callers.length <= 6) {
+            let perSeed = 0;
+            for (const caller of callers) {
+              if (callerExpanded >= 6 || perSeed >= 2 || spent(o) || cancelled()) break;
+              if (caller?.addr == null || caller.addr === c.addr) continue;
+              const ck = caller.addr.toString();
+              if (byKey.has(ck) || seen.has(ck)) continue;
+              seen.add(ck);
+              charge(o);
+              const cname = o.symbols?.nameAt?.(caller.addr) || null;
+              const cowner = o.fields ? o.fields.ownerOf(caller.addr) : null;
+              const cc = {
+                key: ck, kind: 'function', addr: caller.addr, name: cname, owner: cowner,
+                stats: null, strings: [],
+                evidence: [evidence('fn-calls-match', 0.85, { to: c.addr, toName: c.name, site: caller.site })],
+                verifications: [], updates: [], fusion: null,
+              };
+              try { await verifyFunctionCandidate(cc, goal, o); } catch { /* continue */ }
+              checked++;
+              callerExpanded++;
+              perSeed++;
+              if (cc._rmw && (cc._rmw.clampedRmwCount > 0 || cc._rmw.subRmwCount > 0)) {
+                candidates.push(cc);
+                byKey.set(ck, cc);
+                dirty.push(cc);
+              }
+            }
+          }
+        }
       }
       if (dirty.length) {
         for (const c of dirty) c.fusion = fuse(c.evidence, { candidates: universe });
@@ -1655,11 +1738,19 @@ const RMW_ADD_RE = /^(?:add|adds|fadd|addss|addsd|inc|adc)$/i;
 const RMW_CLAMP_RE = /^(?:cmp|cmn|fcmp|csel|csinc|csinv|csneg|fmax|fmin|fmaxnm|fminnm|cmov\w+|b\.(?:le|lt|ge|gt|ls|lo|hi|hs|eq|ne)|cbz|cbnz|tbz|tbnz|j(?:le|l|ge|g|be|b|ae|a|s|ns|e|ne))$/i;
 const RMW_CALL_RE = /^(?:bl|blr|blraa|blrab|call|callq)$/i;
 
+function formatFieldOffset(raw) {
+  if (raw == null) return '0';
+  if (typeof raw === 'bigint') return raw === 0n ? '0' : (raw < 0n ? '-0x' + (-raw).toString(16) : '0x' + raw.toString(16));
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw === 0 ? '0' : (raw < 0 ? '-0x' + Math.trunc(-raw).toString(16) : '0x' + Math.trunc(raw).toString(16));
+  return String(raw).toLowerCase();
+}
+
 function parseFieldMemRef(insn) {
   if (insn?.memory && !insn.memory.stack && insn.memory.base) {
     const base = String(insn.memory.base).toLowerCase();
     if (RMW_STACK_REGS.has(base)) return null;
-    const off = insn.memory.offset != null ? String(insn.memory.offset) : '0';
+    const rawOff = insn.memory.disp != null ? insn.memory.disp : insn.memory.offset;
+    const off = formatFieldOffset(rawOff);
     return { base, offset: off, kind: insn.memory.kind || null };
   }
   const ops = String(insn?.operands || insn?.ops || '');
@@ -1887,6 +1978,7 @@ async function verifyFunctionCandidate(c, goal, o) {
   }
   if (expects.store) {
     const rmw = detectFieldRmwPatterns(insns);
+    c._rmw = rmw;
     if (rmw.clampedRmwCount > 0) {
       c.evidence.push(evidence('fn-field-rmw-clamped', Math.min(1, 0.7 + 0.15 * rmw.clampedRmwCount), {
         count: rmw.clampedRmwCount, fields: rmw.fields.slice(0, 6),

@@ -293,7 +293,16 @@ export function evidenceFor(folded, offset, goalId) {
     const resEntry = e.decreases > 0 ? e : (peer && peer.decreases > 0 ? peer : e);
     const decCross = decreaseCrossCount(resEntry);
     const decCall = decreaseCallCount(resEntry);
-    if (role.role === 'resource' && (decCross > 0 || decCall > 0)) codes.push({ code: 'loc-resource-drain', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, crossObject: decCross, identityKnown: resEntry.identityKnown } });
+    if (role.role === 'resource' && (decCross > 0 || decCall > 0)) {
+      codes.push({ code: 'loc-resource-drain', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, crossObject: decCross, identityKnown: resEntry.identityKnown } });
+    } else if (role.role === 'resource' && resEntry.clamped > 0 && resEntry.decreases >= 2 && resEntry.increases === 0) {
+      codes.push({ code: 'loc-resource-drain', strength: resourceScore(resEntry) * 0.85, detail: { offset, decreases: resEntry.decreases, increases: 0, clamped: resEntry.clamped, crossObject: 0, identityKnown: resEntry.identityKnown } });
+    }
+  } else if (goalId === 'cooldown') {
+    const resEntry = e.decreases > 0 ? e : (peer && peer.decreases > 0 ? peer : e);
+    if (role.role === 'resource' && resEntry.clamped > 0 && resEntry.decreases > 0 && resEntry.increases === 0) {
+      codes.push({ code: 'loc-resource-drain', strength: resourceScore(resEntry) * 0.85, detail: { offset, decreases: resEntry.decreases, increases: 0, clamped: resEntry.clamped, crossObject: 0, identityKnown: resEntry.identityKnown } });
+    }
   } else if (goalId === 'money' || goalId === 'score' || goalId === 'item' || goalId === 'level') {
     const resEntry = e.decreases > 0 ? e : (peer && peer.decreases > 0 ? peer : e);
     if (role.role === 'resource' && resEntry.crossObject === 0) codes.push({ code: 'loc-self-resource', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, identityKnown: resEntry.identityKnown } });
@@ -306,7 +315,20 @@ export function byGoal(folded, goalId, limit = 8) {
   const res = resources(folded, 24);
   switch (goalId) {
     case 'attack': case 'damage': return damageSources(folded, res, safeLimit);
-    case 'hp': case 'stamina': return res.filter((e) => decreaseCrossCount(e) > 0 || decreaseCallCount(e) > 0).slice(0, safeLimit);
+    case 'hp': case 'stamina': {
+      const primary = res.filter((e) => decreaseCrossCount(e) > 0 || decreaseCallCount(e) > 0);
+      if (primary.length >= safeLimit) return primary.slice(0, safeLimit);
+      const seen = new Set(primary.map((e) => e.key));
+      const clampedFallback = primary.length > 0 ? [] : res
+        .filter((e) => !seen.has(e.key) && e.clamped > 0 && e.decreases >= 2 && e.increases === 0)
+        .sort((a, b) => b.clamped - a.clamped || b.decreases - a.decreases || b.score - a.score);
+      return primary.concat(clampedFallback).slice(0, safeLimit);
+    }
+    case 'cooldown':
+      return res
+        .filter((e) => e.clamped > 0 && e.decreases > 0 && e.increases === 0)
+        .sort((a, b) => b.clamped - a.clamped || b.decreases - a.decreases || b.score - a.score)
+        .slice(0, safeLimit);
     case 'money': case 'score': return res.filter((e) => e.crossObject === 0).slice(0, safeLimit);
     case 'level': case 'item': return res.slice(0, safeLimit);
     default: return [];
