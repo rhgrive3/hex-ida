@@ -890,6 +890,15 @@ int32_t copy_result_to_user(const char* src, size_t src_len, bool truncated,
 
 }  // namespace
 
+#ifdef HEX_HAS_SWIFT_DEMANGLE
+extern "C" int32_t hex_demangle_swift_impl(
+    const uint8_t* in_ptr,
+    uint32_t in_len,
+    uint8_t* out_ptr,
+    uint32_t out_cap,
+    uint32_t* out_len);
+#endif
+
 extern "C" {
 
 HEX_WASM_EXPORT("hex_demangle_in_buf_ptr")
@@ -920,6 +929,15 @@ uint32_t* hex_demangle_out_len_ptr(void) {
 HEX_WASM_EXPORT("hex_demangle_detect_kind")
 uint32_t hex_demangle_detect_kind(const uint8_t* in_ptr, uint32_t in_len) {
   if (in_ptr == nullptr || in_len < 3u) return HEX_DEMANGLE_NONE;
+
+  // Swift 5+ ($s, $S, $e, _$s, _$S, _$e) and Swift 4 (_T0, __T0)
+  if ((in_ptr[0] == '$' && (in_ptr[1] == 's' || in_ptr[1] == 'S' || in_ptr[1] == 'e')) ||
+      (in_len >= 4u && in_ptr[0] == '_' && in_ptr[1] == '$' &&
+       (in_ptr[2] == 's' || in_ptr[2] == 'S' || in_ptr[2] == 'e')) ||
+      (in_ptr[0] == '_' && in_ptr[1] == 'T' && in_ptr[2] == '0') ||
+      (in_len >= 4u && in_ptr[0] == '_' && in_ptr[1] == '_' && in_ptr[2] == 'T' && in_ptr[3] == '0')) {
+    return HEX_DEMANGLE_SWIFT;
+  }
 
   if ((in_ptr[0] == '_' && in_ptr[1] == 'R') ||
       (in_len >= 4u && in_ptr[0] == '_' && in_ptr[1] == '_' && in_ptr[2] == 'R')) {
@@ -970,6 +988,12 @@ int32_t hex_demangle_symbol(
     sym += 1u;
     sym_len -= 1u;
   }
+
+#ifdef HEX_HAS_SWIFT_DEMANGLE
+  if (kind == HEX_DEMANGLE_SWIFT) {
+    return hex_demangle_swift_impl(in_ptr, in_len, out_ptr, out_cap, out_len);
+  }
+#endif
 
   if (kind == HEX_DEMANGLE_RUST_V0) {
     if (!is_rust_v0_nesting_safe(sym, sym_len)) {

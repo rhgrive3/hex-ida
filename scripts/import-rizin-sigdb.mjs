@@ -792,8 +792,254 @@ function compilePackFromSig(spec, sigPath, outDir) {
   };
 }
 
+
+// ---------------------------------------------------------------------------
+// 5b. Real Mach-O 64-bit ARM64 / ARM64e Object Extractor (ios-arm64-macho)
+// ---------------------------------------------------------------------------
+function popcount8(v) {
+  let x = v & 0xff, c = 0;
+  while (x) { x &= x - 1; c++; }
+  return c;
+}
+
+export function extractFunctionsFromMachO64(buf, { tag = '' } = {}) {
+  if (!(buf instanceof Uint8Array) || buf.length < 32) {
+    throw new Error('macho64: truncated header');
+  }
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const magic = dv.getUint32(0, true);
+  if (magic !== 0xfeedfacf) {
+    throw new Error(`macho64: invalid magic 0x${magic.toString(16)}`);
+  }
+  const ncmds = dv.getUint32(16, true);
+  let off = 32;
+  let textFileOff = 0;
+  let textSize = 0;
+  let textVmAddr = 0;
+  let symoff = 0;
+  let nsyms = 0;
+  let stroff = 0;
+  let strsize = 0;
+
+  for (let i = 0; i < ncmds; i++) {
+    if (off + 8 > buf.length) break;
+    const cmd = dv.getUint32(off, true);
+    const cmdsize = dv.getUint32(off + 4, true);
+    if (cmdsize < 8 || off + cmdsize > buf.length) break;
+    if (cmd === 0x19) {
+      // LC_SEGMENT_64
+      const nsects = dv.getUint32(off + 64, true);
+      let soff = off + 72;
+      for (let s = 0; s < nsects && soff + 80 <= off + cmdsize; s++) {
+        const sectname = Buffer.from(buf.subarray(soff, soff + 16)).toString('ascii').replace(/\0.*$/, '');
+        const segname = Buffer.from(buf.subarray(soff + 16, soff + 32)).toString('ascii').replace(/\0.*$/, '');
+        if (sectname === '__text' && segname === '__TEXT') {
+          textVmAddr = Number(dv.getBigUint64(soff + 32, true));
+          textSize = Number(dv.getBigUint64(soff + 40, true));
+          textFileOff = dv.getUint32(soff + 48, true);
+        }
+        soff += 80;
+      }
+    } else if (cmd === 0x02) {
+      // LC_SYMTAB
+      symoff = dv.getUint32(off + 8, true);
+      nsyms = dv.getUint32(off + 12, true);
+      stroff = dv.getUint32(off + 16, true);
+      strsize = dv.getUint32(off + 20, true);
+    }
+    off += cmdsize;
+  }
+
+  if (textSize === 0 || textFileOff + textSize > buf.length || nsyms === 0) {
+    return [];
+  }
+
+  const syms = [];
+  for (let i = 0; i < nsyms; i++) {
+    const eoff = symoff + i * 16;
+    if (eoff + 16 > buf.length) break;
+    const strx = dv.getUint32(eoff, true);
+    const nType = buf[eoff + 4];
+    const nSect = buf[eoff + 5];
+    const nValue = Number(dv.getBigUint64(eoff + 8, true));
+    // N_SECT (0x0e) in section 1 (__text), non-stab
+    if ((nType & 0xe0) !== 0 || (nType & 0x0e) !== 0x0e || nSect !== 1) continue;
+    if (strx >= strsize || stroff + strx >= buf.length) continue;
+    let end = stroff + strx;
+    while (end < stroff + strsize && end < buf.length && buf[end] !== 0) end++;
+    let name = Buffer.from(buf.subarray(stroff + strx, end)).toString('utf8');
+    if (name.startsWith('_')) name = name.slice(1);
+    if (!name || name.startsWith('ltmp') || name.startsWith('L_')) continue;
+    const relOff = nValue - textVmAddr;
+    if (relOff < 0 || relOff >= textSize) continue;
+    syms.push({ name: tag ? `${name}${tag}` : name, relOff });
+  }
+
+  syms.sort((a, b) => a.relOff - b.relOff);
+  const out = [];
+  for (let i = 0; i < syms.length; i++) {
+    const start = syms[i].relOff;
+    const next = i + 1 < syms.length ? syms[i + 1].relOff : textSize;
+    const fnLen = Math.min(32, Math.max(0, next - start));
+    if (fnLen < 8) continue;
+    const rawBytes = buf.subarray(textFileOff + start, textFileOff + start + fnLen);
+    const pattern = new Uint8Array(32);
+    const mask = new Uint8Array(32);
+    pattern.set(rawBytes.subarray(0, fnLen), 0);
+    mask.fill(0xff, 0, fnLen);
+    out.push({
+      name: syms[i].name,
+      patternLen: fnLen,
+      pattern,
+      mask,
+      isCollision: false,
+    });
+  }
+  return out;
+}
+
+function compileIosArm64MachoPack({ sigDir, iosObjDir, outDir }) {
+  const candidates = [];
+  const seenKeys = new Set();
+
+  // 1. Real clang-compiled Mach-O arm64 & arm64e (PAC) functions
+  const machoFiles = [
+    { file: 'ios_arm64_crypto.o', tag: '', bonus: 280 },
+    { file: 'ios_arm64e_pac_crypto.o', tag: '__arm64e', bonus: 260 },
+  ];
+  let machoExtracted = 0;
+  for (const mf of machoFiles) {
+    const abs = path.join(iosObjDir, mf.file);
+    if (!fs.existsSync(abs)) continue;
+    const funcs = extractFunctionsFromMachO64(fs.readFileSync(abs), { tag: mf.tag });
+    machoExtracted += funcs.length;
+    for (const fn of funcs) {
+      const aligned = alignArm64Pattern(fn.pattern, fn.mask, fn.patternLen);
+      if (aligned.prologueLen < 8) continue;
+      let fixedBits = 0;
+      for (let i = 0; i < aligned.prologueLen; i++) fixedBits += popcount8(aligned.msk[i]);
+      if (fixedBits < 24) continue;
+      const dedupeKey = `${Buffer.from(aligned.pat.subarray(0, aligned.prologueLen)).toString('hex')}|${Buffer.from(aligned.msk.subarray(0, aligned.prologueLen)).toString('hex')}`;
+      if (seenKeys.has(dedupeKey)) continue;
+      seenKeys.add(dedupeKey);
+      const density = fixedBits / (aligned.prologueLen * 8);
+      const hasWildcard = fixedBits < aligned.prologueLen * 8;
+      let flags = HEXSIG_ENTRY_FLAGS.VENDOR_LIB | HEXSIG_ENTRY_FLAGS.CRYPTO_LIB;
+      if (hasWildcard) flags |= HEXSIG_ENTRY_FLAGS.HAS_WILDCARDS;
+      candidates.push({
+        rankScore: 1200 + mf.bonus + Math.round(density * 500) + aligned.prologueLen * 4,
+        symbolName: fn.name,
+        arch: HEXSIG_ARCH_ARM64,
+        prologueLen: aligned.prologueLen,
+        minFuncLen: aligned.prologueLen,
+        libId: 7,
+        flags,
+        baseConfidence: Math.min(960, Math.max(820, Math.round(780 + density * 180))),
+        prologueHash64: fnv1a64(aligned.pat.subarray(0, aligned.prologueLen)),
+        pattern: aligned.pat,
+        wildcardMask: aligned.msk,
+        tailLen: 0,
+        tailOffset: 0,
+        tailCrc16: 0,
+        fixedBits,
+      });
+    }
+  }
+
+  // 2. Cross-OS AArch64 compiler-rt / libm / math / runtime routines (identical AArch64 ISA after PC-rel masking)
+  const arm64SigPath = path.join(sigDir, 'elf_arm_64_android-ndk.sig');
+  let sigExtracted = 0;
+  if (fs.existsSync(arm64SigPath)) {
+    const parsed = parseFlirtSig(fs.readFileSync(arm64SigPath));
+    sigExtracted = parsed.functions.length;
+    for (const fn of parsed.functions) {
+      const symbolName = String(fn.name || '').trim();
+      if (!symbolName || symbolName.length < 3 || symbolName.length > 96 || /^sub_|^loc_|^\.L/.test(symbolName)) continue;
+      if (!symbolName) continue;
+      // Keep only portable AArch64 runtime/math/compiler-rt/string/crypto routines (skip Android/bionic-only names)
+      if (/android|bionic|__system_property|dl_|pthread_internal/i.test(symbolName)) continue;
+      const aligned = alignArm64Pattern(fn.pattern, fn.mask, fn.patternLen);
+      if (aligned.prologueLen < 8) continue;
+      let fixedBits = 0;
+      for (let i = 0; i < aligned.prologueLen; i++) fixedBits += popcount8(aligned.msk[i]);
+      if (fixedBits < 24) continue;
+      const dedupeKey = `${symbolName}|${Buffer.from(aligned.pat.subarray(0, aligned.prologueLen)).toString('hex')}`;
+      if (seenKeys.has(dedupeKey)) continue;
+      seenKeys.add(dedupeKey);
+      const density = fixedBits / (aligned.prologueLen * 8);
+      const priority = scoreSymbolPriority(symbolName, 'runtime');
+      const rankScore = Math.round(density * 500) + aligned.prologueLen * 4 + priority - (fn.isCollision ? 120 : 0);
+      const hasWildcard = fixedBits < aligned.prologueLen * 8;
+      let flags = HEXSIG_ENTRY_FLAGS.VENDOR_LIB;
+      if (hasWildcard) flags |= HEXSIG_ENTRY_FLAGS.HAS_WILDCARDS;
+      candidates.push({
+        rankScore,
+        symbolName,
+        arch: HEXSIG_ARCH_ARM64,
+        prologueLen: aligned.prologueLen,
+        minFuncLen: aligned.prologueLen,
+        libId: 7,
+        flags,
+        baseConfidence: Math.min(960, Math.max(760, Math.round(740 + density * 200))),
+        prologueHash64: fnv1a64(aligned.pat.subarray(0, aligned.prologueLen)),
+        pattern: aligned.pat,
+        wildcardMask: aligned.msk,
+        tailLen: 0,
+        tailOffset: 0,
+        tailCrc16: 0,
+        fixedBits,
+      });
+    }
+  }
+
+  candidates.sort((a, b) => (b.rankScore - a.rankScore) || a.symbolName.localeCompare(b.symbolName));
+
+  const selected = [];
+  let estStrBytes = 0;
+  const seenNames = new Set();
+  for (const c of candidates) {
+    if (selected.length >= 1000) break;
+    const nameBytes = seenNames.has(c.symbolName) ? 0 : (Buffer.byteLength(c.symbolName, 'utf8') + 1);
+    const projectedSize = HSIG1_HEADER_SIZE + (selected.length + 1) * HSIG1_ENTRY_SIZE + estStrBytes + nameBytes;
+    if (projectedSize > HSIG1_MAX_SLOT4_BYTES) break;
+    seenNames.add(c.symbolName);
+    estStrBytes += nameBytes;
+    selected.push(c);
+  }
+
+  const hsigBlob = encodeHsig1Pack({ entries: selected, archMask: HEXSIG_ARCH_ARM64 });
+  const gzBlob = zlib.gzipSync(hsigBlob, { level: 9 });
+  const rawSha256 = crypto.createHash('sha256').update(hsigBlob).digest('hex');
+  const gzSha256 = crypto.createHash('sha256').update(gzBlob).digest('hex');
+  const outFile = 'ios-arm64-macho.hsig1.gz';
+  fs.writeFileSync(path.join(outDir, outFile), gzBlob);
+
+  return {
+    packId: 'ios-arm64-macho',
+    file: outFile,
+    sourceSig: 'ios_arm64_crypto.o + ios_arm64e_pac_crypto.o + aarch64-compiler-rt',
+    libName: 'iOS ARM64 / ARM64e Mach-O Crypto & Runtime',
+    vendor: 'apple-ios-macho',
+    libKind: 'crypto-runtime',
+    libId: 7,
+    arch: 'arm64',
+    archMask: HEXSIG_ARCH_ARM64,
+    format: 'macho',
+    platforms: ['ios', 'ios-simulator', 'macos'],
+    extractedCount: machoExtracted + sigExtracted,
+    uniqueCandidateCount: candidates.length,
+    entryCount: selected.length,
+    rawBytes: hsigBlob.length,
+    gzipBytes: gzBlob.length,
+    rawSha256,
+    gzipSha256: gzSha256,
+    sampleSymbols: selected.slice(0, 5).map((e) => e.symbolName),
+  };
+}
+
 export function runImportRizinSigdb({
   sigDir = path.join(ROOT, 'third_party/rizin-sigdb'),
+  iosObjDir = path.join(ROOT, 'third_party/ios-arm64-macho'),
   outDir = path.join(ROOT, 'dist/hexsig-hub'),
   quiet = false,
 } = {}) {
@@ -820,6 +1066,22 @@ export function runImportRizinSigdb({
     if (!quiet) {
       console.log(
         `[hexsig-hub] ${meta.packId.padEnd(22)} | extracted=${String(meta.extractedCount).padStart(6)} | kept=${String(meta.entryCount).padStart(4)} | raw=${(meta.rawBytes / 1024).toFixed(1).padStart(6)} KiB | gz=${(meta.gzipBytes / 1024).toFixed(1).padStart(5)} KiB | sha256=${meta.rawSha256.slice(0, 12)}`
+      );
+    }
+  }
+
+
+  // Build dedicated iOS ARM64 / ARM64e Mach-O pack when Mach-O objects are present
+  if (fs.existsSync(iosObjDir)) {
+    const iosMeta = compileIosArm64MachoPack({ sigDir, iosObjDir, outDir });
+    packs.push(iosMeta);
+    totalExtracted += iosMeta.extractedCount;
+    totalEntries += iosMeta.entryCount;
+    totalRawBytes += iosMeta.rawBytes;
+    totalGzipBytes += iosMeta.gzipBytes;
+    if (!quiet) {
+      console.log(
+        `[hexsig-hub] ${iosMeta.packId.padEnd(22)} | extracted=${String(iosMeta.extractedCount).padStart(6)} | kept=${String(iosMeta.entryCount).padStart(4)} | raw=${(iosMeta.rawBytes / 1024).toFixed(1).padStart(6)} KiB | gz=${(iosMeta.gzipBytes / 1024).toFixed(1).padStart(5)} KiB | sha256=${iosMeta.rawSha256.slice(0, 12)}`
       );
     }
   }

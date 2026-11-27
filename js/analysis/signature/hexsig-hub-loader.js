@@ -408,3 +408,37 @@ export function createHexSigHubLoader({ manifest, baseUrl = '', fetchBytes = nul
     },
   };
 }
+
+
+/**
+ * Select and rank HEX-SIG packs from a validated manifest for a target binary.
+ * Prioritizes exact format/platform match (e.g. Mach-O iOS -> ios-arm64-macho first),
+ * then matching architecture packs.
+ */
+export function selectHexSigPacksForBinary(manifest, {
+  arch = 'arm64',
+  format = '',
+  platform = '',
+} = {}) {
+  const packs = Array.isArray(manifest?.packs) ? manifest.packs : [];
+  const normArch = String(arch || '').toLowerCase().replace(/^aarch64$/, 'arm64').replace(/^arm64e$/, 'arm64').replace(/^x86_64$/, 'x64');
+  const normFmt = String(format || '').toLowerCase();
+  const normPlat = String(platform || '').toLowerCase();
+
+  const scored = [];
+  for (const p of packs) {
+    const pArch = String(p.arch || '').toLowerCase();
+    if (normArch && pArch && pArch !== normArch) continue;
+    let score = 100;
+    const pFmt = String(p.format || 'elf').toLowerCase();
+    if (normFmt && pFmt === normFmt) score += 200;
+    const pPlats = Array.isArray(p.platforms) ? p.platforms.map((x) => String(x).toLowerCase()) : [];
+    if (normPlat && pPlats.includes(normPlat)) score += 150;
+    if ((normFmt === 'macho' || normPlat.includes('ios') || normPlat.includes('mac')) && p.packId === 'ios-arm64-macho') {
+      score += 300;
+    }
+    scored.push({ pack: p, score });
+  }
+  scored.sort((a, b) => (b.score - a.score) || String(a.pack.packId).localeCompare(String(b.pack.packId)));
+  return scored.map((s) => s.pack);
+}

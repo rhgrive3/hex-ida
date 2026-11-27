@@ -14,6 +14,7 @@ enum HexDemangleKind {
   HEX_DEMANGLE_ITANIUM_CPP = 1u,
   HEX_DEMANGLE_RUST_V0     = 2u,
   HEX_DEMANGLE_RUST_LEGACY = 3u,
+  HEX_DEMANGLE_SWIFT       = 4u,
 };
 
 // Dedicated fixed I/O buffers (isolated from shared engine scratch / type arena)
@@ -33,11 +34,11 @@ HEX_WASM_EXPORT("hex_demangle_out_len_ptr")
 uint32_t* hex_demangle_out_len_ptr(void);
 
 // Detect mangling scheme without allocating or mutating state.
-// Returns HexDemangleKind (0=none, 1=itanium_cpp, 2=rust_v0, 3=rust_legacy).
+// Returns HexDemangleKind (0=none, 1=itanium_cpp, 2=rust_v0, 3=rust_legacy, 4=swift).
 HEX_WASM_EXPORT("hex_demangle_detect_kind")
 uint32_t hex_demangle_detect_kind(const uint8_t* in_ptr, uint32_t in_len);
 
-// Demangle a C++ Itanium, Rust v0, or Rust legacy symbol into out_ptr[0..out_cap).
+// Demangle a C++ Itanium, Rust v0, Rust legacy, or Swift symbol into out_ptr[0..out_cap).
 // Guarantees NUL termination (out_ptr[*out_len] == '\0') whenever out_cap >= 1.
 // Returns:
 //   HEX_OK (0)                on success (*out_len set to written UTF-8 byte length)

@@ -1,5 +1,5 @@
 /**
- * Symbol Demangler (C++ Itanium, Rust v0, Rust Legacy) — WASM-first with 1:1 JS fallback.
+ * Symbol Demangler (C++ Itanium, Rust v0, Rust Legacy, Apple Swift) — WASM-first with 1:1 JS fallback.
  * INV-005 compliant: ZERO imports from js/targets/architecture/.
  * Uses dedicated demangler I/O buffers (never touches shared engine scratch or type arena).
  * Telemetry contract: recordWasmCall('symbol_demangle') / recordFallback('symbol_demangle:<reason>').
@@ -13,6 +13,7 @@ export const DEMANGLE_KIND = Object.freeze({
   ITANIUM_CPP: 1,
   RUST_V0: 2,
   RUST_LEGACY: 3,
+  SWIFT: 4,
 });
 
 const DOMAIN = 'symbol_demangle';
@@ -24,6 +25,13 @@ const RUST_LEGACY_HASH_RE = /17h[0-9a-f]{16}E$/;
 
 export function detectMangleKind(name) {
   if (typeof name !== 'string' || name.length < 3) return DEMANGLE_KIND.NONE;
+  if (
+    name.startsWith('$s') || name.startsWith('$S') || name.startsWith('$e') ||
+    name.startsWith('_$s') || name.startsWith('_$S') || name.startsWith('_$e') ||
+    name.startsWith('_T0') || name.startsWith('__T0')
+  ) {
+    return DEMANGLE_KIND.SWIFT;
+  }
   if (name.startsWith('_R') || name.startsWith('__R')) return DEMANGLE_KIND.RUST_V0;
 
   // Match C++ is_rust_legacy_symbol: after optional Darwin '_' strip, "_ZN" + non-empty path + "17h<16hex>E" (>= 24 chars)
@@ -245,9 +253,34 @@ function demangleItaniumBasicJs(sym) {
   return `${baseName}(${params.join(', ')})`;
 }
 
+function demangleSwiftBasicJs(sym) {
+  const s = sym.startsWith('_') ? sym.slice(1) : sym;
+  const body = s.startsWith('$s') || s.startsWith('$S') || s.startsWith('$e')
+    ? s.slice(2)
+    : (s.startsWith('T0') ? s.slice(2) : null);
+  if (!body) return null;
+  let i = 0;
+  const parts = [];
+  while (i < body.length && parts.length < 16) {
+    const m = /^(\d+)/.exec(body.slice(i));
+    if (!m) break;
+    const len = parseInt(m[1], 10);
+    i += m[1].length;
+    if (!Number.isFinite(len) || len <= 0 || len > 512 || i + len > body.length) return null;
+    parts.push(body.slice(i, i + len));
+    i += len;
+    if (body[i] === 'C' || body[i] === 'V' || body[i] === 'O' || body[i] === 'P') i++;
+  }
+  if (parts.length === 0) return null;
+  const tail = body.slice(i);
+  const suffix = (tail.includes('Ya') ? ' async' : '') + (tail.includes('K') ? ' throws' : '');
+  return parts.join('.') + suffix;
+}
+
 export function demangleSymbolJsFallback(name) {
   const kind = detectMangleKind(name);
   if (kind === DEMANGLE_KIND.NONE) return null;
+  if (kind === DEMANGLE_KIND.SWIFT) return demangleSwiftBasicJs(name);
   if (kind === DEMANGLE_KIND.RUST_LEGACY) return demangleRustLegacyJs(name);
   if (kind === DEMANGLE_KIND.RUST_V0) return demangleRustV0Js(name);
   if (kind === DEMANGLE_KIND.ITANIUM_CPP) return demangleItaniumBasicJs(name);

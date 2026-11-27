@@ -751,6 +751,99 @@ export function extractPosixAndGhidraManifest({
   };
 }
 
+
+export const DEFAULT_APPLE_GDT_PATH = path.join(REPO_ROOT, 'third_party', 'ghidra-gdt', 'mac_osx.gdt');
+
+const APPLE_PRIORITY_RE = /^(?:CF|CG|NS|UI|Sec|CC|mach_|vm_|task_|thread_|host_|_dyld_|dyld_|objc_|dispatch_|os_|xpc_|audit_|asl_|kqueue|kevent|sysctl|ptrace|dlopen|dlsym|dladdr|notify_|sandbox_|csops|proc_|pthread_|posix_spawn|mprotect|mmap|socket|connect|send|recv)/;
+
+export function extractAppleDarwinGdtManifest({
+  gdtPath = DEFAULT_APPLE_GDT_PATH,
+  maxFunctions = 3400,
+  maxStructs = 360,
+  maxTypedefs = 260,
+  maxEnums = 80,
+} = {}) {
+  const gdtData = fs.existsSync(gdtPath)
+    ? parseGhidraGdt(gdtPath)
+    : { functions: [], structs: [], typedefs: [], enums: [], skippedCallbackDefs: 0 };
+
+  const fnMap = new Map();
+  for (const f of gdtData.functions) {
+    if (!f.name || f.name.length < 2 || f.name.length > 64) continue;
+    if (/^_[A-Z_]+$/.test(f.name) && !f.name.startsWith('_dyld_') && !f.name.startsWith('_os_')) continue;
+    if (!fnMap.has(f.name)) {
+      fnMap.set(f.name, { ...f, source: 'ghidra:mac_osx.gdt' });
+    }
+  }
+
+  const appleRank = (f) => {
+    if (APPLE_PRIORITY_RE.test(f.name)) return 0;
+    if (/^[a-z]/.test(f.name)) return 1;
+    return 2;
+  };
+  const selectedFunctions = Array.from(fnMap.values())
+    .sort((a, b) => {
+      const ra = appleRank(a);
+      const rb = appleRank(b);
+      if (ra !== rb) return ra - rb;
+      return asciiCmp(a.name, b.name);
+    })
+    .slice(0, maxFunctions);
+
+  const structMap = new Map();
+  for (const s of gdtData.structs) {
+    if (!s.name || s.name.startsWith('__') || s.name.length > 48) continue;
+    if (!structMap.has(s.name)) structMap.set(s.name, s);
+  }
+  const selectedStructs = Array.from(structMap.values())
+    .sort((a, b) => {
+      const ra = APPLE_PRIORITY_RE.test(a.name) ? 0 : 1;
+      const rb = APPLE_PRIORITY_RE.test(b.name) ? 0 : 1;
+      if (ra !== rb) return ra - rb;
+      return asciiCmp(a.name, b.name);
+    })
+    .slice(0, maxStructs);
+
+  const tdMap = new Map();
+  for (const td of gdtData.typedefs) {
+    if (!td.name || td.name.startsWith('__') || td.name.length > 48) continue;
+    if (!structMap.has(td.name) && !tdMap.has(td.name)) tdMap.set(td.name, td);
+  }
+  const selectedTypedefs = Array.from(tdMap.values())
+    .sort((a, b) => {
+      const ra = APPLE_PRIORITY_RE.test(a.name) ? 0 : 1;
+      const rb = APPLE_PRIORITY_RE.test(b.name) ? 0 : 1;
+      if (ra !== rb) return ra - rb;
+      return asciiCmp(a.name, b.name);
+    })
+    .slice(0, maxTypedefs);
+
+  const enumMap = new Map();
+  for (const e of gdtData.enums) {
+    if (!e.name || e.name.startsWith('__') || e.name.length > 48) continue;
+    if (!structMap.has(e.name) && !tdMap.has(e.name) && !enumMap.has(e.name)) enumMap.set(e.name, e);
+  }
+  const selectedEnums = Array.from(enumMap.values())
+    .sort((a, b) => asciiCmp(a.name, b.name))
+    .slice(0, maxEnums);
+
+  return {
+    schema: 'hex-gdt-manifest/v1',
+    name: 'apple-darwin-full',
+    moduleName: 'apple-darwin-full',
+    sources: {
+      ghidraGdt: fs.existsSync(gdtPath) ? path.basename(gdtPath) : null,
+      ghidraRawFunctions: gdtData.functions.length,
+      ghidraSkippedCallbackDefs: gdtData.skippedCallbackDefs || 0,
+      ghidraRawStructs: gdtData.structs.length,
+    },
+    structs: selectedStructs,
+    enums: selectedEnums,
+    typedefs: selectedTypedefs,
+    functions: selectedFunctions,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 4. Compile Manifest -> Compact TIL1 Binary (fits comfortably in WASM Slot 1/2 <= 256 KiB)
 // ---------------------------------------------------------------------------

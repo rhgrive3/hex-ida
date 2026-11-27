@@ -276,6 +276,7 @@ function buildHexEngineUnified(tmpDir) {
       '-ffunction-sections',
       '-fdata-sections',
       '-DHEX_UNIFIED_WASM=1',
+      ...(fs.existsSync(path.join(ROOT, 'cpp/src/analysis/swift_demangle_wasm.cpp')) ? ['-DHEX_HAS_SWIFT_DEMANGLE=1'] : []),
       `-I${path.join(ROOT, 'cpp/include')}`,
       `-I${stubInc}`,
       '-c',
@@ -284,6 +285,77 @@ function buildHexEngineUnified(tmpDir) {
       llvmDemangleSrc,
     ], { stdio: 'inherit' });
     extraObjs.push(demangleObj);
+  }
+
+  // Compile Apple upstream swiftlang/swift Demangling TU with -Os and freestanding stub headers.
+  const swiftDemangleSrc = path.join(ROOT, 'cpp/src/analysis/swift_demangle_wasm.cpp');
+  if (fs.existsSync(swiftDemangleSrc)) {
+    const swiftStubInc = path.join(tmpDir, 'swift-freestanding-inc');
+    fs.mkdirSync(path.join(swiftStubInc, 'llvm', 'ADT'), { recursive: true });
+    fs.mkdirSync(path.join(swiftStubInc, 'llvm', 'Support'), { recursive: true });
+    fs.mkdirSync(path.join(swiftStubInc, 'swift', 'Basic'), { recursive: true });
+    for (const rel of [
+      'algorithm', 'array', 'assert.h', 'cassert', 'cctype', 'cstdint', 'cstdio',
+      'cstdlib', 'cstring', 'climits', 'functional', 'limits', 'memory', 'new',
+      'optional', 'stdio.h', 'stdlib.h', 'string', 'string_view', 'tuple',
+      'type_traits', 'utility', 'vector',
+      'llvm/ADT/StringRef.h', 'llvm/Support/Compiler.h',
+      'llvm/Support/Alignment.h', 'llvm/Support/ErrorHandling.h',
+      'swift/Basic/STLExtras.h',
+    ]) {
+      fs.writeFileSync(path.join(swiftStubInc, rel), '#pragma once\n', 'utf8');
+    }
+    fs.writeFileSync(path.join(swiftStubInc, 'inttypes.h'), [
+      '#pragma once',
+      '#define PRId64 "lld"',
+      '#define PRIu64 "llu"',
+      '#define PRIx64 "llx"',
+      '#define PRId32 "d"',
+      '#define PRIu32 "u"',
+      '#define PRIx32 "x"',
+      '',
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(swiftStubInc, 'swift/Basic/InlineBitfield.h'), [
+      '#pragma once',
+      '#include <cstdint>',
+      'namespace swift {',
+      'constexpr unsigned bitmax(unsigned a, unsigned b) { return a > b ? a : b; }',
+      'constexpr unsigned countBitsUsed(uint64_t arg) { return arg ? (1u + countBitsUsed(arg >> 1)) : 0u; }',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(swiftStubInc, 'swift/Basic/Unreachable.h'), '#pragma once\n#define swift_unreachable(msg) __builtin_unreachable()\n', 'utf8');
+    fs.writeFileSync(path.join(swiftStubInc, 'swift/Basic/LLVM.h'), [
+      '#pragma once',
+      'namespace swift {',
+      'using llvm::StringRef;',
+      'using llvm::StringLiteral;',
+      'using llvm::function_ref;',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+
+    const swiftObj = path.join(tmpDir, 'swift_demangle_wasm.o');
+    execFileSync('clang++', [
+      '--target=wasm32',
+      '-std=c++20',
+      '-Os',
+      '-nostdlib',
+      '-fno-exceptions',
+      '-fno-rtti',
+      '-mbulk-memory',
+      '-ffunction-sections',
+      '-fdata-sections',
+      '-DHEX_UNIFIED_WASM=1',
+      `-I${path.join(ROOT, 'cpp/include')}`,
+      `-I${path.join(ROOT, 'third_party/swift-demangle/include')}`,
+      `-I${swiftStubInc}`,
+      '-c',
+      '-o',
+      swiftObj,
+      swiftDemangleSrc,
+    ], { stdio: 'inherit' });
+    extraObjs.push(swiftObj);
   }
 
   const rawWasm = path.join(tmpDir, 'hex_engine.raw.wasm');
