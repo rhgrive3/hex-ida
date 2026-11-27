@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 
 import { IncrementalSha256, sha256BlobHex } from '../../js/cache/content-identity.js';
+import { wasmSha256Hash } from '../../js/core/hex-engine-bridge.js';
 import {
+  getFallbackCount,
   getWasmCallCount,
   resetAllTelemetry,
 } from '../../js/core/wasm-telemetry.js';
@@ -196,4 +198,54 @@ test('Wave 14 SHA-256 WASM parity: sha256BlobHex matches JS and honors HEX_ENGIN
     if (prevGlobal === undefined) delete globalThis.HEX_ENGINE;
     else globalThis.HEX_ENGINE = prevGlobal;
   }
+});
+
+test('Wave 14 SHA-256 WASM parity: wasmSha256Hash streams buffers > 1MiB across padding boundaries', () => {
+  const sizes = [
+    1048576 + 1,
+    1048576 + 55,
+    1048576 + 56,
+    1048576 + 63,
+    1048576 + 64,
+    2 * 1048576 + 123,
+  ];
+
+  const cases = sizes.map((len) => {
+    const bytes = makePatternBytes(len, 0x517cc1b7 ^ len);
+    const expected = new Uint8Array(crypto.createHash('sha256').update(bytes).digest());
+    return { len, bytes, expected };
+  });
+
+  withEngineMode('auto', () => {
+    resetAllTelemetry();
+    cases.forEach(({ len, bytes, expected }, idx) => {
+      const before = getWasmCallCount('sha256');
+      const actual = wasmSha256Hash(bytes);
+      assert.ok(actual instanceof Uint8Array, `expected Uint8Array for size ${len}`);
+      assert.equal(actual.length, 32, `expected 32-byte digest for size ${len}`);
+      assert.deepEqual(actual, expected, `byte-for-byte parity mismatch for size ${len}`);
+      assert.equal(
+        getWasmCallCount('sha256'),
+        before + 1,
+        `expected sha256 WASM call count to increment on case ${idx} (${len}B)`,
+      );
+    });
+    assert.equal(
+      getFallbackCount('sha256:input_too_large'),
+      0,
+      'expected 0 sha256:input_too_large fallbacks for >1MiB streaming',
+    );
+  });
+
+  withEngineMode('js', () => {
+    resetAllTelemetry();
+    const res = wasmSha256Hash(cases[0].bytes);
+    assert.equal(res, null, 'HEX_ENGINE=js must return null from wasmSha256Hash');
+    assert.equal(getWasmCallCount('sha256'), 0, 'HEX_ENGINE=js must record 0 sha256 WASM calls');
+    assert.equal(
+      getFallbackCount('sha256:wasm_disabled'),
+      1,
+      'HEX_ENGINE=js must record sha256:wasm_disabled fallback',
+    );
+  });
 });
