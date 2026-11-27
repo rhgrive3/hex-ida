@@ -8,13 +8,24 @@ import { getEngineMode, recordWasmCall, recordFallback } from '../core/hex-engin
 const SCRATCH_CHUNK_MAX = 1536 * 1024;
 const OVERLAP = 2048; // multiple of 8
 const RECORD_BYTES = 32;
+const CHUNK_MAX_OUT = 4096;
+const SAFE_MAX_OUT = 262144;
+const DEFAULT_MAX_OUT = 65536;
 const PAC_MASK_48 = 0x0000ffffffffffffn;
+const U64_MAX = 0xffffffffffffffffn;
+const TARGET_MASK_36 = 0xfffffffffn;
 
 function toU8(bytes) {
   if (bytes instanceof Uint8Array) return bytes;
   if (ArrayBuffer.isView(bytes)) return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes);
   return null;
+}
+
+function encodingFromFlags(flags) {
+  if ((flags & 8) !== 0) return 'relative32';
+  if ((flags & 4) !== 0) return 'chained_offset';
+  return 'absolute';
 }
 
 function hasRequiredVtableExports(ex) {
@@ -58,13 +69,49 @@ function resolveWasmExports(opts) {
   }
 }
 
-function scanChunkJs(chunk, chunkStart, textLo, textHi, ptrSize, stripPac, chunkMaxOut) {
+function decodeChainedOffset64Js(raw, imageBase) {
+  if ((raw >> 63n) !== 0n) return null;
+  if (((raw >> 44n) & 0x7fn) !== 0n) return null;
+  if (((raw >> 36n) & 0xffn) !== 0n) return null;
+  const target = raw & TARGET_MASK_36;
+  if (target === 0n) return null;
+  if (target > U64_MAX - imageBase) return null;
+  return imageBase + target;
+}
+
+function resolveRelative32VaJs(dataVa, off, disp) {
+  if (disp === 0) return null;
+  const uoff = BigInt(off);
+  if (uoff > U64_MAX - dataVa) return null;
+  const slotVa = dataVa + uoff;
+  if (disp < 0) {
+    const mag = BigInt(-disp);
+    if (mag > slotVa) return null;
+    return slotVa - mag;
+  }
+  const pos = BigInt(disp);
+  if (pos > U64_MAX - slotVa) return null;
+  return slotVa + pos;
+}
+
+function scanChunkJs(
+  chunk,
+  chunkStart,
+  textLo,
+  textHi,
+  imageBase,
+  chunkDataVa,
+  ptrSize,
+  inFlags,
+  minLen,
+  chunkMaxOut,
+) {
   const len = chunk.length;
-  if (len < ptrSize * 3 || chunkMaxOut <= 0) return [];
+  if (len < minLen || chunkMaxOut <= 0) return [];
   const dv = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-  const effectiveStripPac = Boolean(stripPac && ptrSize === 8);
-  const lastStart = len - ptrSize * 3;
-  const lastSlot = len - ptrSize;
+  const effectiveStripPac = ((inFlags & 1) !== 0) && ptrSize === 8;
+  const enableChainedOffset = ((inFlags & 2) !== 0) && ptrSize === 8 && imageBase > 0n;
+  const enableRelative32 = ((inFlags & 4) !== 0) && chunkDataVa > 0n;
   const ptrMask = BigInt(ptrSize - 1);
   const out = [];
 
@@ -72,95 +119,206 @@ function scanChunkJs(chunk, chunkStart, textLo, textHi, ptrSize, stripPac, chunk
   const normVa = (raw) => (effectiveStripPac ? (raw & PAC_MASK_48) : raw);
   const isCode = (va) => va >= textLo && va < textHi && (va & 3n) === 0n;
 
-  let off = 0;
-  while (off <= lastStart && out.length < chunkMaxOut) {
-    const raw0 = readRaw(off);
-    const va0 = normVa(raw0);
-    if (!isCode(va0)) {
-      off += ptrSize;
-      continue;
-    }
+  // Pass 1: absolute pointers
+  if (len >= ptrSize * 3 && out.length < chunkMaxOut) {
+    const lastStart = len - ptrSize * 3;
+    const lastSlot = len - ptrSize;
+    let off = 0;
 
-    let entryCount = 1;
-    let pacStripped = effectiveStripPac && (raw0 >> 48n) !== 0n;
-    let runEnd = off + ptrSize;
-
-    while (runEnd <= lastSlot) {
-      const rawI = readRaw(runEnd);
-      const vaI = normVa(rawI);
-      if (!isCode(vaI)) break;
-      if (effectiveStripPac && (rawI >> 48n) !== 0n) pacStripped = true;
-      entryCount += 1;
-      runEnd += ptrSize;
-    }
-
-    if (entryCount >= 3) {
-      let offsetToTop = 0;
-      let rttiVa = 0n;
-      let hasRtti = false;
-
-      if (off >= 2 * ptrSize) {
-        const offTop = ptrSize === 8
-          ? dv.getBigInt64(off - 16, true)
-          : BigInt(dv.getInt32(off - 8, true));
-        const rttiRaw = readRaw(off - ptrSize);
-        const candRtti = normVa(rttiRaw);
-        const topOk = offTop >= -0x100000n && offTop <= 0n;
-        const rttiOk = candRtti !== 0n
-          && (candRtti & ptrMask) === 0n
-          && !(candRtti >= textLo && candRtti < textHi);
-        if (topOk && rttiOk) {
-          hasRtti = true;
-          offsetToTop = Number(offTop);
-          rttiVa = candRtti;
-        }
+    while (off <= lastStart && out.length < chunkMaxOut) {
+      const raw0 = readRaw(off);
+      const va0 = normVa(raw0);
+      if (!isCode(va0)) {
+        off += ptrSize;
+        continue;
       }
 
-      const flags = (hasRtti ? 1 : 0) | (pacStripped ? 2 : 0);
-      out.push({
-        vtableOff: chunkStart + off,
-        entryCount,
-        offsetToTop,
-        hasRtti,
-        pacStripped,
-        rttiVa,
-        firstFnVa: va0,
-        flags,
-      });
-    }
+      let entryCount = 1;
+      let pacStripped = effectiveStripPac && (raw0 >> 48n) !== 0n;
+      let runEnd = off + ptrSize;
 
-    off = runEnd;
+      while (runEnd <= lastSlot) {
+        const rawI = readRaw(runEnd);
+        const vaI = normVa(rawI);
+        if (!isCode(vaI)) break;
+        if (effectiveStripPac && (rawI >> 48n) !== 0n) pacStripped = true;
+        entryCount += 1;
+        runEnd += ptrSize;
+      }
+
+      if (entryCount >= 3) {
+        let offsetToTop = 0;
+        let rttiVa = 0n;
+        let hasRtti = false;
+
+        if (off >= 2 * ptrSize) {
+          const offTop = ptrSize === 8
+            ? dv.getBigInt64(off - 16, true)
+            : BigInt(dv.getInt32(off - 8, true));
+          const rttiRaw = readRaw(off - ptrSize);
+          const candRtti = normVa(rttiRaw);
+          const topOk = offTop >= -0x100000n && offTop <= 0n;
+          const rttiOk = candRtti !== 0n
+            && (candRtti & ptrMask) === 0n
+            && !(candRtti >= textLo && candRtti < textHi);
+          if (topOk && rttiOk) {
+            hasRtti = true;
+            offsetToTop = Number(offTop);
+            rttiVa = candRtti;
+          }
+        }
+
+        const flags = (hasRtti ? 1 : 0) | (pacStripped ? 2 : 0);
+        out.push({
+          vtableOff: chunkStart + off,
+          entryCount,
+          offsetToTop,
+          hasRtti,
+          pacStripped,
+          rttiVa,
+          firstFnVa: va0,
+          flags,
+          encoding: 'absolute',
+        });
+      }
+
+      off = runEnd;
+    }
+  }
+
+  // Pass 2: DYLD_CHAINED_PTR_64_OFFSET
+  if (enableChainedOffset && len >= 24 && out.length < chunkMaxOut) {
+    const lastStart = len - 24;
+    const lastSlot = len - 8;
+    let off = 0;
+
+    while (off <= lastStart && out.length < chunkMaxOut) {
+      const raw0 = dv.getBigUint64(off, true);
+      const va0 = decodeChainedOffset64Js(raw0, imageBase);
+      if (va0 === null || !isCode(va0) || isCode(normVa(raw0))) {
+        off += 8;
+        continue;
+      }
+
+      let entryCount = 1;
+      let runEnd = off + 8;
+
+      while (runEnd <= lastSlot) {
+        const rawI = dv.getBigUint64(runEnd, true);
+        const vaI = decodeChainedOffset64Js(rawI, imageBase);
+        if (vaI === null || !isCode(vaI) || isCode(normVa(rawI))) break;
+        entryCount += 1;
+        runEnd += 8;
+      }
+
+      if (entryCount >= 3) {
+        let offsetToTop = 0;
+        let rttiVa = 0n;
+        let hasRtti = false;
+
+        if (off >= 16) {
+          const offTop = dv.getBigInt64(off - 16, true);
+          const rttiRaw = dv.getBigUint64(off - 8, true);
+          const candRtti = decodeChainedOffset64Js(rttiRaw, imageBase);
+          const topOk = offTop >= -0x100000n && offTop <= 0n;
+          const rttiOk = candRtti !== null
+            && (candRtti & 7n) === 0n
+            && !(candRtti >= textLo && candRtti < textHi);
+          if (topOk && rttiOk) {
+            hasRtti = true;
+            offsetToTop = Number(offTop);
+            rttiVa = candRtti;
+          }
+        }
+
+        const flags = (hasRtti ? 1 : 0) | 4;
+        out.push({
+          vtableOff: chunkStart + off,
+          entryCount,
+          offsetToTop,
+          hasRtti,
+          pacStripped: false,
+          rttiVa,
+          firstFnVa: va0,
+          flags,
+          encoding: 'chained_offset',
+        });
+      }
+
+      off = runEnd;
+    }
+  }
+
+  // Pass 3: 32-bit relative vtables
+  if (enableRelative32 && len >= 12 && out.length < chunkMaxOut) {
+    const lastStart = len - 12;
+    const lastSlot = len - 4;
+    let off = 0;
+
+    while (off <= lastStart && out.length < chunkMaxOut) {
+      const disp0 = dv.getInt32(off, true);
+      const va0 = resolveRelative32VaJs(chunkDataVa, off, disp0);
+      if (va0 === null || !isCode(va0)) {
+        off += 4;
+        continue;
+      }
+
+      let entryCount = 1;
+      let runEnd = off + 4;
+
+      while (runEnd <= lastSlot) {
+        const dispI = dv.getInt32(runEnd, true);
+        const vaI = resolveRelative32VaJs(chunkDataVa, runEnd, dispI);
+        if (vaI === null || !isCode(vaI)) break;
+        entryCount += 1;
+        runEnd += 4;
+      }
+
+      if (entryCount >= 3) {
+        let offsetToTop = 0;
+        let rttiVa = 0n;
+        let hasRtti = false;
+
+        if (off >= 8) {
+          const offTop = dv.getInt32(off - 8, true);
+          const rttiDisp = dv.getInt32(off - 4, true);
+          const candRtti = resolveRelative32VaJs(chunkDataVa, off - 4, rttiDisp);
+          const topOk = offTop >= -0x100000 && offTop <= 0;
+          const rttiOk = candRtti !== null
+            && candRtti !== 0n
+            && (candRtti & 3n) === 0n
+            && !(candRtti >= textLo && candRtti < textHi);
+          if (topOk && rttiOk) {
+            hasRtti = true;
+            offsetToTop = offTop;
+            rttiVa = candRtti;
+          }
+        }
+
+        const flags = (hasRtti ? 1 : 0) | 8;
+        out.push({
+          vtableOff: chunkStart + off,
+          entryCount,
+          offsetToTop,
+          hasRtti,
+          pacStripped: false,
+          rttiVa,
+          firstFnVa: va0,
+          flags,
+          encoding: 'relative32',
+        });
+      }
+
+      off = runEnd;
+    }
   }
 
   return out;
 }
 
-function scanChunkWasm(ex, chunk, chunkStart, textLoLo, textLoHi, textHiLo, textHiHi, ptrSize, inFlags, chunkMaxOut) {
-  const len = chunk.length;
-  if (len < ptrSize * 3 || chunkMaxOut <= 0) return [];
-  ex.hex_engine_scratch_reset();
-  try {
-  const inPtr = ex.hex_engine_scratch_alloc(len);
-  const outPtr = ex.hex_engine_scratch_alloc(chunkMaxOut * RECORD_BYTES);
-  if (!inPtr || !outPtr) {
-    throw new Error('vtable_scanner:scratch_alloc_failed');
-  }
-  new Uint8Array(ex.memory.buffer, inPtr, len).set(chunk);
-  const count = ex.hex_scan_vtables(
-    inPtr,
-    len,
-    textLoLo,
-    textLoHi,
-    textHiLo,
-    textHiHi,
-    ptrSize,
-    inFlags,
-    outPtr,
-    chunkMaxOut,
-  ) >>> 0;
-
+function decodeWasmRecords(memoryBuffer, outPtr, count, chunkStart) {
   const out = new Array(count);
-  const dv = new DataView(ex.memory.buffer, outPtr, count * RECORD_BYTES);
+  const dv = new DataView(memoryBuffer, outPtr, count * RECORD_BYTES);
   for (let i = 0; i < count; i += 1) {
     const base = i * RECORD_BYTES;
     const vtableOff = chunkStart + dv.getUint32(base, true);
@@ -180,9 +338,76 @@ function scanChunkWasm(ex, chunk, chunkStart, textLoLo, textLoHi, textHiLo, text
       rttiVa: (rttiHi << 32n) | rttiLo,
       firstFnVa: (firstFnHi << 32n) | firstFnLo,
       flags,
+      encoding: encodingFromFlags(flags),
     };
   }
   return out;
+}
+
+function scanChunkWasm(
+  ex,
+  chunk,
+  chunkStart,
+  textLoLo,
+  textLoHi,
+  textHiLo,
+  textHiHi,
+  imageBaseLo,
+  imageBaseHi,
+  chunkDataVa,
+  ptrSize,
+  inFlags,
+  useExt,
+  minLen,
+  chunkMaxOut,
+) {
+  const len = chunk.length;
+  if (len < minLen || chunkMaxOut <= 0) return [];
+  ex.hex_engine_scratch_reset();
+  try {
+    const inPtr = ex.hex_engine_scratch_alloc(len);
+    const outPtr = ex.hex_engine_scratch_alloc(chunkMaxOut * RECORD_BYTES);
+    if (!inPtr || !outPtr) {
+      throw new Error('vtable_scanner:scratch_alloc_failed');
+    }
+    new Uint8Array(ex.memory.buffer, inPtr, len).set(chunk);
+
+    let count;
+    if (useExt) {
+      const dataVaLo = Number(chunkDataVa & 0xffffffffn) >>> 0;
+      const dataVaHi = Number((chunkDataVa >> 32n) & 0xffffffffn) >>> 0;
+      count = ex.hex_scan_vtables_ext(
+        inPtr,
+        len,
+        textLoLo,
+        textLoHi,
+        textHiLo,
+        textHiHi,
+        imageBaseLo,
+        imageBaseHi,
+        dataVaLo,
+        dataVaHi,
+        ptrSize,
+        inFlags,
+        outPtr,
+        chunkMaxOut,
+      ) >>> 0;
+    } else {
+      count = ex.hex_scan_vtables(
+        inPtr,
+        len,
+        textLoLo,
+        textLoHi,
+        textHiLo,
+        textHiHi,
+        ptrSize,
+        inFlags,
+        outPtr,
+        chunkMaxOut,
+      ) >>> 0;
+    }
+
+    return decodeWasmRecords(ex.memory.buffer, outPtr, count, chunkStart);
   } finally {
     ex.hex_engine_scratch_reset();
   }
@@ -190,40 +415,65 @@ function scanChunkWasm(ex, chunk, chunkStart, textLoLo, textLoHi, textHiLo, text
 
 /**
  * Merge chunk-local vtable records across overlapping chunks.
+ * Grouped by encoding (`absolute` / `chained_offset` / `relative32`).
  * Strictly overlapping intervals (`next.vtableOff < prevEnd`) are merged into
- * `[minStart, maxEnd)` preserving `minStart`-side metadata and OR-ing `pacStripped`.
+ * `[minStart, maxEnd)` preserving `minStart`-side metadata, OR-ing `pacStripped`,
+ * and preserving encoding bits (`bit2`/`bit3`) in `flags`.
  * Adjacent intervals (`next.vtableOff === prevEnd`) are never merged.
  */
 export function mergeVtableRuns(records, ptrSize) {
   if (!Array.isArray(records) || records.length === 0) return [];
-  const sorted = records.slice().sort((a, b) => a.vtableOff - b.vtableOff);
-  const merged = [];
 
-  for (let i = 0; i < sorted.length; i += 1) {
-    const rec = sorted[i];
-    const recEnd = rec.vtableOff + rec.entryCount * ptrSize;
-    if (merged.length === 0) {
-      merged.push({ ...rec });
-      continue;
+  const groups = new Map();
+  for (let i = 0; i < records.length; i += 1) {
+    const r = records[i];
+    const enc = r.encoding ?? ((r.flags & 8) ? 'relative32' : ((r.flags & 4) ? 'chained_offset' : 'absolute'));
+    let list = groups.get(enc);
+    if (!list) {
+      list = [];
+      groups.set(enc, list);
     }
-    const prev = merged[merged.length - 1];
-    const prevEnd = prev.vtableOff + prev.entryCount * ptrSize;
-    if (rec.vtableOff < prevEnd) {
-      const minStart = prev.vtableOff;
-      const maxEnd = recEnd > prevEnd ? recEnd : prevEnd;
-      prev.entryCount = Math.floor((maxEnd - minStart) / ptrSize);
-      prev.pacStripped = Boolean(prev.pacStripped || rec.pacStripped);
-      prev.flags = (prev.hasRtti ? 1 : 0) | (prev.pacStripped ? 2 : 0);
-    } else {
-      merged.push({ ...rec });
+    list.push(r);
+  }
+
+  const merged = [];
+  for (const [enc, list] of groups.entries()) {
+    const slotSize = enc === 'relative32' ? 4 : ptrSize;
+    const sorted = list.slice().sort((a, b) => a.vtableOff - b.vtableOff);
+    const groupMerged = [];
+
+    for (let i = 0; i < sorted.length; i += 1) {
+      const rec = sorted[i];
+      const recEnd = rec.vtableOff + rec.entryCount * slotSize;
+      if (groupMerged.length === 0) {
+        groupMerged.push({ ...rec });
+        continue;
+      }
+      const prev = groupMerged[groupMerged.length - 1];
+      const prevEnd = prev.vtableOff + prev.entryCount * slotSize;
+      if (rec.vtableOff < prevEnd) {
+        const minStart = prev.vtableOff;
+        const maxEnd = recEnd > prevEnd ? recEnd : prevEnd;
+        prev.entryCount = Math.floor((maxEnd - minStart) / slotSize);
+        prev.pacStripped = Boolean(prev.pacStripped || rec.pacStripped);
+        const encBits = (prev.flags ?? 0) & 12;
+        prev.flags = (prev.hasRtti ? 1 : 0) | (prev.pacStripped ? 2 : 0) | encBits;
+      } else {
+        groupMerged.push({ ...rec });
+      }
+    }
+
+    for (let i = 0; i < groupMerged.length; i += 1) {
+      merged.push(groupMerged[i]);
     }
   }
 
+  merged.sort((a, b) => (a.vtableOff - b.vtableOff) || ((a.flags ?? 0) - (b.flags ?? 0)));
   return merged;
 }
 
-function computeChunkParams(requestedChunkSize, ptrSize) {
-  const minChunk = ptrSize * 3;
+function computeChunkParams(requestedChunkSize, ptrSize, minLen) {
+  const minChunk = minLen;
   let chunkSize = SCRATCH_CHUNK_MAX;
   if (requestedChunkSize != null && Number.isFinite(Number(requestedChunkSize))) {
     const req = Math.floor(Number(requestedChunkSize));
@@ -244,19 +494,19 @@ function computeChunkParams(requestedChunkSize, ptrSize) {
   return { chunkSize, overlap };
 }
 
-function runChunkedScan(u8, chunkSize, overlap, ptrSize, maxOut, scanChunkFn) {
+function runChunkedScan(u8, chunkSize, overlap, ptrSize, minLen, maxOut, scanChunkFn) {
   const rawRecords = [];
-  const chunkMaxOut = maxOut + 1;
+  const chunkMaxOut = Math.min(CHUNK_MAX_OUT, maxOut + 1);
   let truncated = false;
   let chunkStart = 0;
 
   while (chunkStart < u8.length) {
     const chunkEnd = Math.min(u8.length, chunkStart + chunkSize);
     const chunkLen = chunkEnd - chunkStart;
-    if (chunkLen < ptrSize * 3) break;
+    if (chunkLen < minLen) break;
 
     const hits = scanChunkFn(u8.subarray(chunkStart, chunkEnd), chunkStart, chunkMaxOut);
-    if (hits.length > maxOut) {
+    if (hits.length >= chunkMaxOut) {
       truncated = true;
     }
     for (let i = 0; i < hits.length; i += 1) {
@@ -278,42 +528,76 @@ export function scanVtables(bytes, opts = {}) {
   const {
     textLo: rawTextLo = 0n,
     textHi: rawTextHi = 0n,
+    imageBase: rawImageBase = 0n,
+    dataVa: rawDataVa = 0n,
+    chainedOffset: rawChainedOffset,
+    relative32: rawRelative32,
     ptrSize: rawPtrSize = 8,
     stripPac = true,
-    maxOut: rawMaxOut = 4096,
+    maxOut: rawMaxOut = DEFAULT_MAX_OUT,
     chunkSize: rawChunkSize,
   } = opts || {};
 
   const u8 = toU8(bytes);
   const ptrSize = Number(rawPtrSize);
-  const maxOut = Number.isFinite(Number(rawMaxOut)) ? Math.floor(Number(rawMaxOut)) : 4096;
+  const maxOutNum = Number(rawMaxOut);
+  const maxOut = Number.isFinite(maxOutNum)
+    ? Math.max(0, Math.min(SAFE_MAX_OUT, Math.floor(maxOutNum)))
+    : DEFAULT_MAX_OUT;
+
   let textLo;
   let textHi;
+  let imageBase;
+  let dataVa;
   try {
     textLo = BigInt(rawTextLo ?? 0n);
     textHi = BigInt(rawTextHi ?? 0n);
+    imageBase = BigInt(rawImageBase ?? 0n);
+    dataVa = BigInt(rawDataVa ?? 0n);
   } catch {
     return { vtables: [], engine: 'js', truncated: false };
   }
 
-  const ex = resolveWasmExports(opts);
+  const hasValidImageBase = imageBase > 0n && imageBase <= U64_MAX;
+  const hasValidDataVa = dataVa > 0n && dataVa <= U64_MAX;
+  const enableChainedOffset = Boolean((rawChainedOffset ?? hasValidImageBase) && ptrSize === 8 && hasValidImageBase);
+  const enableRelative32 = Boolean((rawRelative32 ?? hasValidDataVa) && hasValidDataVa);
+  const useExt = enableChainedOffset || enableRelative32;
+
+  let ex = resolveWasmExports(opts);
+  if (ex && useExt && typeof ex.hex_scan_vtables_ext !== 'function') {
+    recordFallback('vtable_scanner:ext_export_missing');
+    ex = null;
+  }
+
+  const minLen = enableRelative32 ? 12 : (ptrSize * 3);
   const invalid = !u8
     || (ptrSize !== 4 && ptrSize !== 8)
-    || u8.length < ptrSize * 3
+    || u8.length < minLen
     || textHi <= textLo
     || maxOut <= 0;
   if (invalid) {
     return { vtables: [], engine: ex ? 'wasm' : 'js', truncated: false };
   }
 
-  const { chunkSize, overlap } = computeChunkParams(rawChunkSize, ptrSize);
+  const { chunkSize, overlap } = computeChunkParams(rawChunkSize, ptrSize, minLen);
+  const inFlags = ((stripPac && ptrSize === 8) ? 1 : 0)
+    | (enableChainedOffset ? 2 : 0)
+    | (enableRelative32 ? 4 : 0);
+
+  const computeChunkDataVa = (chunkStart) => {
+    if (!enableRelative32) return 0n;
+    const va = dataVa + BigInt(chunkStart);
+    return va <= U64_MAX ? va : 0n;
+  };
 
   if (ex) {
     const textLoLo = Number(textLo & 0xffffffffn) >>> 0;
     const textLoHi = Number((textLo >> 32n) & 0xffffffffn) >>> 0;
     const textHiLo = Number(textHi & 0xffffffffn) >>> 0;
     const textHiHi = Number((textHi >> 32n) & 0xffffffffn) >>> 0;
-    const inFlags = (stripPac && ptrSize === 8) ? 1 : 0;
+    const imageBaseLo = Number(imageBase & 0xffffffffn) >>> 0;
+    const imageBaseHi = Number((imageBase >> 32n) & 0xffffffffn) >>> 0;
 
     try {
       const { vtables, truncated } = runChunkedScan(
@@ -321,6 +605,7 @@ export function scanVtables(bytes, opts = {}) {
         chunkSize,
         overlap,
         ptrSize,
+        minLen,
         maxOut,
         (chunk, chunkStart, chunkMaxOut) => scanChunkWasm(
           ex,
@@ -330,8 +615,13 @@ export function scanVtables(bytes, opts = {}) {
           textLoHi,
           textHiLo,
           textHiHi,
+          imageBaseLo,
+          imageBaseHi,
+          computeChunkDataVa(chunkStart),
           ptrSize,
           inFlags,
+          useExt,
+          minLen,
           chunkMaxOut,
         ),
       );
@@ -347,14 +637,18 @@ export function scanVtables(bytes, opts = {}) {
     chunkSize,
     overlap,
     ptrSize,
+    minLen,
     maxOut,
     (chunk, chunkStart, chunkMaxOut) => scanChunkJs(
       chunk,
       chunkStart,
       textLo,
       textHi,
+      imageBase,
+      computeChunkDataVa(chunkStart),
       ptrSize,
-      stripPac,
+      inFlags,
+      minLen,
       chunkMaxOut,
     ),
   );

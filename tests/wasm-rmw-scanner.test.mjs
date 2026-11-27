@@ -302,3 +302,66 @@ test('7. FMAX clamped FP RMW and arm64e arch support match WASM === JS', () => {
   assert.equal(w.hits[0].disp, 0x10);
   assert.deepEqual(w.hits, j.hits);
 });
+
+test('8. exact maxOut sets truncated=false while maxOut+1 sets truncated=true with WASM === JS parity', () => {
+  const words = [];
+  for (let i = 0; i < 4; i++) {
+    const disp = 0x10 + i * 4;
+    words.push(
+      ldrW(8, 0, disp),
+      addWImm(8, 8, 1),
+      strW(8, 0, disp),
+    );
+  }
+  const code = encodeWords(words);
+
+  const exactWasm = scanArm64RmwFields(code, wasmOpts({ maxOut: 4 }));
+  const exactJs = scanArm64RmwFields(code, { engine: 'js', maxOut: 4 });
+  assert.strictEqual(exactWasm.engine, 'wasm');
+  assert.strictEqual(exactJs.engine, 'js');
+  assert.strictEqual(exactWasm.hits.length, 4);
+  assert.strictEqual(exactWasm.truncated, false);
+  assert.strictEqual(exactJs.truncated, false);
+  assert.deepStrictEqual(exactWasm.hits, exactJs.hits);
+
+  const truncWasm = scanArm64RmwFields(code, wasmOpts({ maxOut: 3 }));
+  const truncJs = scanArm64RmwFields(code, { engine: 'js', maxOut: 3 });
+  assert.strictEqual(truncWasm.engine, 'wasm');
+  assert.strictEqual(truncJs.engine, 'js');
+  assert.strictEqual(truncWasm.hits.length, 3);
+  assert.strictEqual(truncWasm.truncated, true);
+  assert.strictEqual(truncJs.truncated, true);
+  assert.deepStrictEqual(truncWasm.hits, truncJs.hits);
+});
+
+test('9. multi-chunk merge exceeds legacy 4096 cap and flags single-chunk CHUNK_MAX_OUT saturation', () => {
+  const totalCount = 4200;
+  const words = new Uint32Array(totalCount * 3);
+  for (let i = 0; i < totalCount; i++) {
+    const disp = ((i & 0xFF) + 1) * 4;
+    words[i * 3 + 0] = ldrW(8, 0, disp);
+    words[i * 3 + 1] = addWImm(8, 8, 1);
+    words[i * 3 + 2] = strW(8, 0, disp);
+  }
+  const code = encodeWords(words);
+
+  // Small chunkSize keeps per-chunk hits well below CHUNK_MAX_OUT (4096) and merges all 4200 hits
+  const multiWasm = scanArm64RmwFields(code, wasmOpts({ chunkSize: 8192 }));
+  const multiJs = scanArm64RmwFields(code, { engine: 'js', chunkSize: 8192 });
+  assert.strictEqual(multiWasm.engine, 'wasm');
+  assert.strictEqual(multiJs.engine, 'js');
+  assert.strictEqual(multiWasm.hits.length, totalCount);
+  assert.strictEqual(multiWasm.truncated, false);
+  assert.strictEqual(multiJs.truncated, false);
+  assert.deepStrictEqual(multiWasm.hits, multiJs.hits);
+
+  // Single-chunk scan hits CHUNK_MAX_OUT (4096) < DEFAULT_MAX_OUT (65536) and must report truncated=true
+  const satWasm = scanArm64RmwFields(code, wasmOpts());
+  const satJs = scanArm64RmwFields(code, { engine: 'js' });
+  assert.strictEqual(satWasm.engine, 'wasm');
+  assert.strictEqual(satJs.engine, 'js');
+  assert.strictEqual(satWasm.hits.length, 4096);
+  assert.strictEqual(satWasm.truncated, true);
+  assert.strictEqual(satJs.truncated, true);
+  assert.deepStrictEqual(satWasm.hits, satJs.hits);
+});

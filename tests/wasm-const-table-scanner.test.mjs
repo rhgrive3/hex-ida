@@ -227,3 +227,37 @@ test('7. handles invalid/short inputs and maxOut truncation identically between 
   assert.equal(trunc.wasmRes.tables.length, 2);
   assert.equal(trunc.wasmRes.truncated, true);
 });
+
+test('8. exact maxOut sets truncated=false while maxOut+1 sets truncated=true with WASM === JS parity', () => {
+  const buf = new Uint8Array(256);
+  writeF32Array(buf, 0x00, [1.0, 2.0, 3.0, 4.0]);
+  writeF32Array(buf, 0x20, [5.0, 6.0, 7.0, 8.0]);
+  writeF32Array(buf, 0x40, [9.0, 10.0, 11.0, 12.0]);
+
+  const exact = scanBoth(buf, { maxOut: 3 });
+  assert.equal(exact.wasmRes.tables.length, 3);
+  assert.equal(exact.wasmRes.truncated, false);
+
+  const trunc = scanBoth(buf, { maxOut: 2 });
+  assert.equal(trunc.wasmRes.tables.length, 2);
+  assert.equal(trunc.wasmRes.truncated, true);
+});
+
+test('9. multi-chunk merge exceeds legacy 2048 cap and flags single-chunk CHUNK_MAX_OUT saturation', () => {
+  const totalCount = 4200;
+  const strideBytes = 24; // 16B f32 table + 8B zero separator
+  const buf = new Uint8Array(totalCount * strideBytes);
+  for (let i = 0; i < totalCount; i++) {
+    writeF32Array(buf, i * strideBytes, [1.0, 2.0, 3.0, 4.0]);
+  }
+
+  // Small chunkSize keeps per-chunk tables well below CHUNK_MAX_OUT (4096) and merges all 4200 tables
+  const multi = scanBoth(buf, { chunkSize: 16384 });
+  assert.equal(multi.wasmRes.tables.length, totalCount);
+  assert.equal(multi.wasmRes.truncated, false);
+
+  // Single-chunk scan hits CHUNK_MAX_OUT (4096) < DEFAULT_MAX_OUT (32768) and must report truncated=true
+  const sat = scanBoth(buf);
+  assert.equal(sat.wasmRes.tables.length, 4096);
+  assert.equal(sat.wasmRes.truncated, true);
+});

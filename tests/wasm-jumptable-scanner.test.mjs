@@ -290,3 +290,53 @@ test('6. WASM engine is active when HEX_TEST_STANDALONE_WASM is set and matches 
   assert.equal(wasmRes.tables[0].hasBounds, true);
   assert.equal(wasmRes.tables[0].hasTableVa, true);
 });
+
+test('7. exact maxOut sets truncated=false while maxOut+1 sets truncated=true with WASM === JS parity', () => {
+  const words = [];
+  for (let i = 0; i < 4; i++) {
+    words.push(
+      encCmpImm32(2, 5 + i),
+      encBHi(8),
+      encAdr(11, 0x40),
+      encLdr64Reg(12, 11, 2),
+      encBr(12),
+      RET,
+    );
+  }
+  const code = packInsns(words);
+  const textVa = 0x100000n;
+
+  const { wasmRes: exactRes } = runBothEngines(code, { textVa, maxOut: 4 });
+  assert.equal(exactRes.tables.length, 4);
+  assert.equal(exactRes.truncated, false);
+
+  const { wasmRes: truncRes } = runBothEngines(code, { textVa, maxOut: 3 });
+  assert.equal(truncRes.tables.length, 3);
+  assert.equal(truncRes.truncated, true);
+});
+
+test('8. multi-chunk merge exceeds legacy 1024 cap and flags single-chunk CHUNK_MAX_OUT saturation', () => {
+  const totalCount = 2100;
+  const words = new Uint32Array(totalCount * 6);
+  for (let i = 0; i < totalCount; i++) {
+    const base = i * 6;
+    words[base + 0] = encCmpImm32(2, 4 + (i % 16));
+    words[base + 1] = encBHi(8);
+    words[base + 2] = encAdr(11, 0x40);
+    words[base + 3] = encLdr64Reg(12, 11, 2);
+    words[base + 4] = encBr(12);
+    words[base + 5] = RET;
+  }
+  const code = packInsns(words);
+  const textVa = 0x200000n;
+
+  // Small chunkSize keeps per-chunk tables well below CHUNK_MAX_OUT (2048) and merges all 2100 tables
+  const { wasmRes: multiRes } = runBothEngines(code, { textVa, chunkSize: 8192 });
+  assert.equal(multiRes.tables.length, totalCount);
+  assert.equal(multiRes.truncated, false);
+
+  // Single-chunk scan hits CHUNK_MAX_OUT (2048) < DEFAULT_MAX_OUT (16384) and must report truncated=true
+  const { wasmRes: satRes } = runBothEngines(code, { textVa });
+  assert.equal(satRes.tables.length, 2048);
+  assert.equal(satRes.truncated, true);
+});
