@@ -48,7 +48,7 @@ function toBigIntOrNull(v) {
 
 function extractCallGraphFromProgram(program, symbols) {
   if (!program || typeof program.calleesOf !== 'function') return null;
-  const limit = 65536;
+  const limit = 262144;
   const funcAddrs = [];
 
   if (symbols && symbols.funcs && typeof symbols.funcs.length === 'number') {
@@ -134,7 +134,8 @@ function extractCallGraphFromProgram(program, symbols) {
 
 /**
  * Run whole-binary / call-graph WASM structural analysis on whatever inputs are
- * available (`codeBytes`, `dataBytes`, `program`/`symbols`, or explicit `callgraph`).
+ * available (`codeBytes`, `dataBytes`, `textConstBytes`, `dataSections`,
+ * `program`/`symbols`, or explicit `callgraph`).
  *
  * @param {object} [opts]
  * @returns {object}
@@ -165,23 +166,145 @@ export function runWasmStructuralAnalysis(opts = {}) {
     });
   }
 
-  if (o.dataBytes instanceof Uint8Array && o.dataBytes.length >= 16) {
-    const textLo = toBigIntOrNull(o.textLo);
-    const textHi = toBigIntOrNull(o.textHi);
-    if (textLo != null && textHi != null && textHi > textLo) {
-      out.vtables = scanVtables(o.dataBytes, {
+  const textLo = toBigIntOrNull(o.textLo);
+  const textHi = toBigIntOrNull(o.textHi);
+  const imageBase = toBigIntOrNull(o.imageBase);
+  const hasExplicitSections = Array.isArray(o.dataSections) && o.dataSections.length > 0;
+  const hasTextConst = o.textConstBytes instanceof Uint8Array;
+
+  if (!hasExplicitSections && !hasTextConst) {
+    if (o.dataBytes instanceof Uint8Array && o.dataBytes.length >= 16) {
+      if (textLo != null && textHi != null && textHi > textLo) {
+        out.vtables = scanVtables(o.dataBytes, {
+          ...common,
+          textLo,
+          textHi,
+          ptrSize: o.ptrSize ?? 8,
+          stripPac: o.stripPac !== false,
+          imageBase,
+          dataVa: toBigIntOrNull(o.dataVa),
+          maxOut: o.vtableMaxOut,
+        });
+      }
+      out.constTables = scanConstTables(o.dataBytes, {
         ...common,
-        textLo,
-        textHi,
-        ptrSize: o.ptrSize ?? 8,
-        stripPac: o.stripPac !== false,
-        maxOut: o.vtableMaxOut,
+        maxOut: o.constTableMaxOut,
       });
     }
-    out.constTables = scanConstTables(o.dataBytes, {
-      ...common,
-      maxOut: o.constTableMaxOut,
-    });
+  } else {
+    const sections = [];
+    if (hasExplicitSections) {
+      for (let i = 0; i < o.dataSections.length; i++) {
+        const sec = o.dataSections[i];
+        if (sec && sec.bytes instanceof Uint8Array && sec.bytes.length >= 12) {
+          sections.push(sec);
+        }
+      }
+    } else {
+      if (o.dataBytes instanceof Uint8Array && o.dataBytes.length >= 12) {
+        sections.push({
+          name: o.dataName || 'data',
+          bytes: o.dataBytes,
+          va: o.dataVa ?? null,
+        });
+      }
+      if (
+        o.textConstBytes instanceof Uint8Array
+        && o.textConstBytes !== o.dataBytes
+        && o.textConstBytes.length >= 12
+      ) {
+        sections.push({
+          name: o.textConstName || '__TEXT.__const',
+          bytes: o.textConstBytes,
+          va: o.textConstVa ?? null,
+        });
+      }
+    }
+
+    const aggConstTables = [];
+    const constBySection = [];
+    let allConstWasm = true;
+    let anyConstTruncated = false;
+
+    const aggVtables = [];
+    const vtBySection = [];
+    let allVtWasm = true;
+    let anyVtTruncated = false;
+
+    for (let i = 0; i < sections.length; i++) {
+      const sec = sections[i];
+      const secName = sec.name || 'data';
+      const secVa = toBigIntOrNull(sec.va);
+
+      if (sec.scanConstTables !== false && sec.bytes.length >= 16) {
+        const ct = scanConstTables(sec.bytes, {
+          ...common,
+          maxOut: o.constTableMaxOut,
+        });
+        if (ct.engine !== 'wasm') allConstWasm = false;
+        if (ct.truncated) anyConstTruncated = true;
+        constBySection.push({
+          section: secName,
+          count: ct.tables.length,
+          engine: ct.engine,
+          truncated: Boolean(ct.truncated),
+        });
+        for (let j = 0; j < ct.tables.length; j++) {
+          const t = ct.tables[j];
+          aggConstTables.push({
+            ...t,
+            section: secName,
+            va: secVa != null ? secVa + BigInt(t.startOff) : null,
+          });
+        }
+      }
+
+      if (sec.scanVtables !== false && textLo != null && textHi != null && textHi > textLo) {
+        const vt = scanVtables(sec.bytes, {
+          ...common,
+          textLo,
+          textHi,
+          ptrSize: o.ptrSize ?? 8,
+          stripPac: o.stripPac !== false,
+          imageBase,
+          dataVa: secVa,
+          maxOut: o.vtableMaxOut,
+        });
+        if (vt.engine !== 'wasm') allVtWasm = false;
+        if (vt.truncated) anyVtTruncated = true;
+        vtBySection.push({
+          section: secName,
+          count: vt.vtables.length,
+          engine: vt.engine,
+          truncated: Boolean(vt.truncated),
+        });
+        for (let j = 0; j < vt.vtables.length; j++) {
+          const v = vt.vtables[j];
+          aggVtables.push({
+            ...v,
+            section: secName,
+            va: secVa != null ? secVa + BigInt(v.vtableOff) : null,
+          });
+        }
+      }
+    }
+
+    if (constBySection.length > 0) {
+      out.constTables = {
+        tables: aggConstTables,
+        engine: allConstWasm ? 'wasm' : 'js',
+        truncated: anyConstTruncated,
+        bySection: constBySection,
+      };
+    }
+    if (vtBySection.length > 0) {
+      out.vtables = {
+        vtables: aggVtables,
+        engine: allVtWasm ? 'wasm' : 'js',
+        truncated: anyVtTruncated,
+        bySection: vtBySection,
+      };
+    }
   }
 
   if (o.callgraph && typeof o.callgraph.numNodes === 'number' && o.callgraph.edgeSrc && o.callgraph.edgeDst) {

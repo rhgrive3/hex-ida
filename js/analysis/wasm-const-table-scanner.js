@@ -8,6 +8,9 @@ import { getEngineMode, recordWasmCall, recordFallback } from '../core/hex-engin
 export const SCRATCH_CHUNK_MAX = 1536 * 1024;
 export const OVERLAP = 1024; // multiple of 8
 
+const SAFE_MAX_OUT = 262144;
+const CHUNK_MAX_OUT = 4096; // 64KB/chunk (4096 * 16B)
+const DEFAULT_MAX_OUT = 32768;
 const STRIDED_ID_STRIDES = Object.freeze([8, 12, 16, 20, 24, 32, 40, 48, 64]);
 const RECORD_BYTES = 16;
 
@@ -311,13 +314,14 @@ function runChunkedScan(u8, maxOut, effChunkSize, effOverlap, scanChunkFn) {
   const rawTables = [];
   let truncated = false;
   let chunkStart = 0;
+  const chunkMaxOut = Math.min(CHUNK_MAX_OUT, maxOut + 1);
 
   while (chunkStart < u8.length) {
     const chunkEnd = Math.min(u8.length, chunkStart + effChunkSize);
     const chunkLen = chunkEnd - chunkStart;
     if (chunkLen < 16) break;
-    const chunkHits = scanChunkFn(u8, chunkStart, chunkLen, maxOut);
-    if (chunkHits.length >= maxOut) truncated = true;
+    const chunkHits = scanChunkFn(u8, chunkStart, chunkLen, chunkMaxOut);
+    if (chunkHits.length >= chunkMaxOut) truncated = true;
     for (let i = 0; i < chunkHits.length; i++) {
       rawTables.push(chunkHits[i]);
     }
@@ -327,15 +331,18 @@ function runChunkedScan(u8, maxOut, effChunkSize, effOverlap, scanChunkFn) {
 
   const merged = mergeChunkTables(rawTables);
   if (merged.length > maxOut) {
-    truncated = true;
     merged.length = maxOut;
+    truncated = true;
   }
   return { tables: merged, truncated };
 }
 
 export function scanConstTables(bytes, opts = {}) {
   const u8 = toU8(bytes);
-  const maxOut = Number.isFinite(opts?.maxOut) ? Math.max(0, Math.floor(opts.maxOut)) : 2048;
+  const rawMaxOut = opts?.maxOut;
+  const maxOut = (rawMaxOut != null && rawMaxOut !== '' && Number.isFinite(Number(rawMaxOut)))
+    ? Math.max(0, Math.min(SAFE_MAX_OUT, Math.floor(Number(rawMaxOut))))
+    : DEFAULT_MAX_OUT;
   const ex = resolveWasmExports(opts);
 
   if (!u8 || u8.length < 16 || maxOut <= 0) {

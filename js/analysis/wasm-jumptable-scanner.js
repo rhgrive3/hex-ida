@@ -23,6 +23,9 @@ import {
 
 const SCRATCH_CHUNK_MAX = 1536 * 1024;
 const OVERLAP = 128; // 8-byte aligned, 32 ARM64 instructions (> 24 + 4 lookback)
+const SAFE_MAX_OUT = 262144;
+const CHUNK_MAX_OUT = 2048; // 48KB/chunk (2048 * 24B)
+const DEFAULT_MAX_OUT = 16384;
 const RECORD_BYTES = 24;
 const MAX_LOOKBACK_INSNS = 24;
 const MAX_CMP_LOOKBACK_INSNS = 4;
@@ -305,7 +308,7 @@ function runChunkedScan(u8, baseTextVa, maxOut, effectiveChunkSize, scanChunkFn)
   const byBrOff = new Map();
   let chunkStart = 0;
   let truncated = false;
-  const chunkMaxOut = Math.min(maxOut + 1, 32768);
+  const chunkMaxOut = Math.min(CHUNK_MAX_OUT, maxOut + 1);
 
   while (chunkStart < u8.length) {
     const chunkEnd = Math.min(u8.length, chunkStart + effectiveChunkSize);
@@ -349,8 +352,8 @@ function runChunkedScan(u8, baseTextVa, maxOut, effectiveChunkSize, scanChunkFn)
 
   const tables = Array.from(byBrOff.values()).sort((a, b) => a.brOff - b.brOff);
   if (tables.length > maxOut) {
-    truncated = true;
     tables.length = maxOut;
+    truncated = true;
   }
   return { tables, truncated };
 }
@@ -359,7 +362,7 @@ export function scanArm64JumpTables(bytes, opts = {}) {
   const {
     textVa = 0n,
     arch = 'arm64',
-    maxOut = 1024,
+    maxOut: rawMaxOut = DEFAULT_MAX_OUT,
     chunkSize,
   } = opts || {};
 
@@ -368,7 +371,9 @@ export function scanArm64JumpTables(bytes, opts = {}) {
   }
 
   const u8 = toU8(bytes);
-  const maxOutVal = Math.max(0, Math.floor(Number(maxOut ?? 1024)));
+  const maxOutVal = (rawMaxOut != null && rawMaxOut !== '' && Number.isFinite(Number(rawMaxOut)))
+    ? Math.max(0, Math.min(SAFE_MAX_OUT, Math.floor(Number(rawMaxOut))))
+    : DEFAULT_MAX_OUT;
   const ex = resolveWasmExports(opts);
 
   if (!u8 || u8.length < 4 || maxOutVal === 0) {

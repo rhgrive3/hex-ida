@@ -7,6 +7,11 @@ import { getHexEngineExports, isWasmBulkMemorySupported } from '../core/hex-engi
 import { getEngineMode, recordWasmCall, recordFallback } from '../core/hex-engine-bridge.js';
 
 const SCRATCH_BUDGET_BYTES = 2_200_000;
+const DEFAULT_MAX_DYNAMIC_WASM_BYTES = 64 * 1024 * 1024;
+const HARD_MAX_DYNAMIC_WASM_BYTES = 128 * 1024 * 1024;
+const WASM_PAGE_BYTES = 65536;
+const WASM32_MAX_ADDR = 0xFFFF0000;
+const EXT_BASE_BY_MEMORY = new WeakMap();
 
 export const CALLGRAPH_ROLE = Object.freeze({
   NORMAL: 0,
@@ -18,6 +23,16 @@ export const CALLGRAPH_ROLE = Object.freeze({
 
 function align8(n) {
   return Math.ceil(n / 8) * 8;
+}
+
+function resolveMaxDynamicWasmBytes(opts) {
+  if (opts && opts.maxWasmBytes != null && opts.maxWasmBytes !== '' && typeof opts.maxWasmBytes !== 'boolean') {
+    const num = Number(opts.maxWasmBytes);
+    if (Number.isFinite(num)) {
+      return Math.max(0, Math.min(HARD_MAX_DYNAMIC_WASM_BYTES, Math.floor(num)));
+    }
+  }
+  return DEFAULT_MAX_DYNAMIC_WASM_BYTES;
 }
 
 function getWasmExports(opts) {
@@ -299,51 +314,127 @@ export function analyzeCallGraphMetrics(numNodes, edgeSrc, edgeDst, opts = {}) {
   const ex = getWasmExports(opts);
   if (ex) {
     try {
-      const ioBytes = align8(4 * activeE) * 2 + align8(4 * activeN) * 2 + align8(activeN);
       const needScratch = ex.hex_callgraph_scratch_bytes(activeN, activeE) >>> 0;
-      if (needScratch === 0 || needScratch + ioBytes > SCRATCH_BUDGET_BYTES) {
+      const ioBytes = align8(4 * activeE) * 2 + align8(4 * activeN) * 2 + align8(activeN);
+      const totalBytes = needScratch + ioBytes;
+
+      if (needScratch === 0) {
         recordFallback('callgraph:exceeds_scratch');
-      } else {
+      } else if (totalBytes <= SCRATCH_BUDGET_BYTES) {
         const scratch = createScratchAllocator(ex);
         try {
-        scratch.reset();
-        const srcPtr = activeE > 0 ? scratch.alloc(activeE * 4) : 0;
-        const dstPtr = activeE > 0 ? scratch.alloc(activeE * 4) : 0;
-        const scratchPtr = scratch.alloc(needScratch);
-        const outSccPtr = scratch.alloc(activeN * 4);
-        const outRolePtr = scratch.alloc(activeN);
-        const outScorePtr = scratch.alloc(activeN * 4);
+          scratch.reset();
+          const srcPtr = activeE > 0 ? scratch.alloc(activeE * 4) : 0;
+          const dstPtr = activeE > 0 ? scratch.alloc(activeE * 4) : 0;
+          const scratchPtr = scratch.alloc(needScratch);
+          const outSccPtr = scratch.alloc(activeN * 4);
+          const outRolePtr = scratch.alloc(activeN);
+          const outScorePtr = scratch.alloc(activeN * 4);
 
-        if ((activeE > 0 && (!srcPtr || !dstPtr)) || !scratchPtr || !outSccPtr || !outRolePtr || !outScorePtr) {
-          recordFallback('callgraph:oom');
-        } else {
-          if (activeE > 0) {
-            new Uint32Array(ex.memory.buffer, srcPtr, activeE).set(compSrc);
-            new Uint32Array(ex.memory.buffer, dstPtr, activeE).set(compDst);
-          }
-          const rc = ex.hex_analyze_callgraph(
-            activeN,
-            srcPtr,
-            dstPtr,
-            activeE,
-            scratchPtr,
-            needScratch,
-            outSccPtr,
-            outRolePtr,
-            outScorePtr
-          ) >>> 0;
-          if (rc !== activeN) {
-            recordFallback('callgraph:wasm_failed');
+          if ((activeE > 0 && (!srcPtr || !dstPtr)) || !scratchPtr || !outSccPtr || !outRolePtr || !outScorePtr) {
+            recordFallback('callgraph:oom');
           } else {
-            activeScc = new Uint32Array(ex.memory.buffer, outSccPtr, activeN).slice();
-            activeRole = new Uint8Array(ex.memory.buffer, outRolePtr, activeN).slice();
-            activeScore = new Uint32Array(ex.memory.buffer, outScorePtr, activeN).slice();
-            engine = 'wasm';
-            recordWasmCall('callgraph');
+            if (activeE > 0) {
+              new Uint32Array(ex.memory.buffer, srcPtr, activeE).set(compSrc);
+              new Uint32Array(ex.memory.buffer, dstPtr, activeE).set(compDst);
+            }
+            const rc = ex.hex_analyze_callgraph(
+              activeN,
+              srcPtr,
+              dstPtr,
+              activeE,
+              scratchPtr,
+              needScratch,
+              outSccPtr,
+              outRolePtr,
+              outScorePtr
+            ) >>> 0;
+            if (rc !== activeN) {
+              recordFallback('callgraph:wasm_failed');
+            } else {
+              activeScc = new Uint32Array(ex.memory.buffer, outSccPtr, activeN).slice();
+              activeRole = new Uint8Array(ex.memory.buffer, outRolePtr, activeN).slice();
+              activeScore = new Uint32Array(ex.memory.buffer, outScorePtr, activeN).slice();
+              engine = 'wasm';
+              recordWasmCall('callgraph');
+            }
           }
-        }
         } finally {
           scratch.reset();
+        }
+      } else {
+        const maxWasmBytes = resolveMaxDynamicWasmBytes(opts);
+        if (totalBytes > maxWasmBytes) {
+          recordFallback('callgraph:exceeds_max_wasm_bytes');
+        } else if (typeof ex.memory.grow !== 'function') {
+          recordFallback('callgraph:no_memory_grow');
+        } else {
+          let extBase = EXT_BASE_BY_MEMORY.get(ex.memory);
+          if (extBase === undefined) {
+            extBase = Math.max(8, align8(ex.memory.buffer.byteLength));
+            EXT_BASE_BY_MEMORY.set(ex.memory, extBase);
+          }
+
+          let cursor = extBase;
+          const srcPtr = activeE > 0 ? cursor : 0;
+          cursor += align8(activeE * 4);
+          const dstPtr = activeE > 0 ? cursor : 0;
+          cursor += align8(activeE * 4);
+          const scratchPtr = cursor;
+          cursor += align8(needScratch);
+          const outSccPtr = cursor;
+          cursor += align8(activeN * 4);
+          const outRolePtr = cursor;
+          cursor += align8(activeN);
+          const outScorePtr = cursor;
+          cursor += align8(activeN * 4);
+          const endPtr = cursor;
+
+          if (endPtr > WASM32_MAX_ADDR) {
+            recordFallback('callgraph:exceeds_wasm32_addr');
+          } else {
+            let growOk = true;
+            if (endPtr > ex.memory.buffer.byteLength) {
+              const deltaPages = Math.ceil((endPtr - ex.memory.buffer.byteLength) / WASM_PAGE_BYTES);
+              try {
+                const prev = ex.memory.grow(deltaPages);
+                if (prev < 0 || ex.memory.buffer.byteLength < endPtr) {
+                  recordFallback('callgraph:grow_failed');
+                  growOk = false;
+                }
+              } catch {
+                recordFallback('callgraph:grow_failed');
+                growOk = false;
+              }
+            }
+
+            if (growOk) {
+              if (activeE > 0) {
+                new Uint32Array(ex.memory.buffer, srcPtr, activeE).set(compSrc);
+                new Uint32Array(ex.memory.buffer, dstPtr, activeE).set(compDst);
+              }
+              const rc = ex.hex_analyze_callgraph(
+                activeN,
+                srcPtr,
+                dstPtr,
+                activeE,
+                scratchPtr,
+                needScratch,
+                outSccPtr,
+                outRolePtr,
+                outScorePtr
+              ) >>> 0;
+              if (rc !== activeN) {
+                recordFallback('callgraph:wasm_failed');
+              } else {
+                activeScc = new Uint32Array(ex.memory.buffer, outSccPtr, activeN).slice();
+                activeRole = new Uint8Array(ex.memory.buffer, outRolePtr, activeN).slice();
+                activeScore = new Uint32Array(ex.memory.buffer, outScorePtr, activeN).slice();
+                engine = 'wasm';
+                recordWasmCall('callgraph');
+              }
+            }
+          }
         }
       }
     } catch {

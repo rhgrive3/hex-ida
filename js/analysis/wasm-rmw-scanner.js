@@ -8,7 +8,9 @@ import { scanArm64RmwCore } from './arm64-insn-bits.js';
 
 const SCRATCH_CHUNK_MAX = 1536 * 1024;
 const OVERLAP = 128; // multiple of 8 (32 ARM64 instructions)
-const MAX_OUT_LIMIT = 4096;
+const SAFE_MAX_OUT = 262144;
+const CHUNK_MAX_OUT = 4096; // 80KB/chunk (4096 * 20B)
+const DEFAULT_MAX_OUT = 65536;
 const RMW_HIT_BYTES = 20;
 
 function toU8(bytes) {
@@ -71,8 +73,7 @@ function resolveChunkSize(chunkSize) {
   return SCRATCH_CHUNK_MAX;
 }
 
-function mergeChunkHits(target, seen, chunkHits, chunkStart, maxOut) {
-  let truncated = false;
+function mergeChunkHits(target, seen, chunkHits, chunkStart) {
   for (let i = 0; i < chunkHits.length; i++) {
     const h = chunkHits[i];
     const loadOff = h.loadOff + chunkStart;
@@ -80,10 +81,6 @@ function mergeChunkHits(target, seen, chunkHits, chunkStart, maxOut) {
     const arithOff = h.arithOff + chunkStart;
     const key = `${loadOff}:${storeOff}`;
     if (seen.has(key)) continue;
-    if (target.length >= maxOut) {
-      truncated = true;
-      break;
-    }
     seen.add(key);
     target.push({
       loadOff,
@@ -98,7 +95,6 @@ function mergeChunkHits(target, seen, chunkHits, chunkStart, maxOut) {
       flags: h.flags,
     });
   }
-  return truncated;
 }
 
 function runChunkedScan(u8, maxOut, effChunkSize, scanChunk) {
@@ -109,8 +105,7 @@ function runChunkedScan(u8, maxOut, effChunkSize, scanChunk) {
   const overlap = effChunkSize > OVERLAP
     ? OVERLAP
     : Math.max(4, Math.min(OVERLAP, (effChunkSize - 4) & ~3));
-  // Request extra headroom so duplicates in the overlap window cannot starve new hits or truncation detection.
-  const chunkMaxOut = Math.min(MAX_OUT_LIMIT + 16, maxOut + 16);
+  const chunkMaxOut = Math.min(CHUNK_MAX_OUT, maxOut + 1);
 
   let chunkStart = 0;
   while (chunkStart < u8.length) {
@@ -123,12 +118,18 @@ function runChunkedScan(u8, maxOut, effChunkSize, scanChunk) {
     if (chunkHits === null) {
       return null;
     }
-    if (mergeChunkHits(hits, seen, chunkHits, chunkStart, maxOut)) {
+    if (chunkHits.length >= chunkMaxOut) {
       truncated = true;
-      break;
     }
+    mergeChunkHits(hits, seen, chunkHits, chunkStart);
     if (chunkEnd >= u8.length) break;
     chunkStart = chunkEnd - overlap;
+  }
+
+  hits.sort((a, b) => (a.loadOff - b.loadOff) || (a.storeOff - b.storeOff));
+  if (hits.length > maxOut) {
+    hits.length = maxOut;
+    truncated = true;
   }
 
   return { hits, truncated };
@@ -166,7 +167,7 @@ function decodeWasmHits(buffer, outPtr, count) {
 export function scanArm64RmwFields(bytes, opts = {}) {
   const {
     arch = 'arm64',
-    maxOut: rawMaxOut = MAX_OUT_LIMIT,
+    maxOut: rawMaxOut = DEFAULT_MAX_OUT,
     chunkSize,
   } = opts || {};
 
@@ -174,9 +175,9 @@ export function scanArm64RmwFields(bytes, opts = {}) {
     return { hits: [], engine: 'js', truncated: false, unsupportedArch: true };
   }
 
-  const maxOut = Number.isFinite(rawMaxOut)
-    ? Math.max(0, Math.min(MAX_OUT_LIMIT, Math.floor(rawMaxOut)))
-    : MAX_OUT_LIMIT;
+  const maxOut = (rawMaxOut != null && rawMaxOut !== '' && Number.isFinite(Number(rawMaxOut)))
+    ? Math.max(0, Math.min(SAFE_MAX_OUT, Math.floor(Number(rawMaxOut))))
+    : DEFAULT_MAX_OUT;
 
   const u8 = toU8(bytes);
   if (!u8 || u8.length < 4 || maxOut === 0) {

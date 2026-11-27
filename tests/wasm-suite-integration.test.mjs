@@ -299,3 +299,152 @@ test('non-ARM64 ProgramIndex.architecture guards autoAnalyze and pinpointFunctio
   assert.equal(top.wasmAbi, undefined);
   assert.equal(top.wasmFingerprint, undefined);
 });
+
+test('runWasmStructuralAnalysis aggregates multiple dataSections (__DATA_CONST.__const + __TEXT.__const) with section, va, bySection on WASM', () => {
+  // Section 1: __DATA_CONST.__const -> strided_id table (stride=16, 6 entries) + Vtable
+  const dataConstBytes = new Uint8Array(256);
+  const dv1 = new DataView(dataConstBytes.buffer);
+  for (let i = 0; i < 6; i++) {
+    dv1.setUint32(i * 16, 100 + i, true);
+    dv1.setUint32(i * 16 + 4, 0xdeadbeef, true);
+  }
+  // Vtable header at offset 128 (offset_to_top=0, rtti=0x30000), entries at 144, 152, 160
+  dv1.setBigInt64(128, 0n, true);
+  dv1.setBigUint64(136, 0x30000n, true);
+  dv1.setBigUint64(144, 0x10040n, true);
+  dv1.setBigUint64(152, 0x10080n, true);
+  dv1.setBigUint64(160, 0x100c0n, true);
+
+  // Section 2: __TEXT.__const -> f32 table at offset 0 + f64 table at offset 32
+  const textConstBytes = new Uint8Array(128);
+  const dv2 = new DataView(textConstBytes.buffer);
+  dv2.setFloat32(0, 1.5, true);
+  dv2.setFloat32(4, 2.25, true);
+  dv2.setFloat32(8, 3.75, true);
+  dv2.setFloat32(12, 4.125, true);
+  dv2.setFloat64(32, 1.5, true);
+  dv2.setFloat64(40, 2.5, true);
+  dv2.setFloat64(48, 3.5, true);
+  dv2.setFloat64(56, 4.5, true);
+
+  const res = runWasmStructuralAnalysis({
+    dataSections: [
+      { name: '__DATA_CONST.__const', bytes: dataConstBytes, va: 0x200000n },
+      { name: '__TEXT.__const', bytes: textConstBytes, va: 0x180000n },
+    ],
+    imageBase: 0x100000n,
+    textLo: 0x10000n,
+    textHi: 0x20000n,
+    ptrSize: 8,
+  });
+
+  assert.ok(res.constTables);
+  assert.equal(res.constTables.engine, 'wasm');
+  assert.equal(res.constTables.bySection.length, 2);
+  assert.deepEqual(
+    res.constTables.bySection.map((s) => s.section),
+    ['__DATA_CONST.__const', '__TEXT.__const'],
+  );
+  assert.ok(res.constTables.bySection.every((s) => s.engine === 'wasm' && s.count >= 1));
+
+  const stridedHit = res.constTables.tables.find((t) => t.kind === 3 && t.section === '__DATA_CONST.__const');
+  assert.ok(stridedHit, 'strided_id table must be tagged with __DATA_CONST.__const');
+  assert.equal(stridedHit.va, 0x200000n + BigInt(stridedHit.startOff));
+
+  const f32Hit = res.constTables.tables.find((t) => t.kind === 1 && t.section === '__TEXT.__const');
+  const f64Hit = res.constTables.tables.find((t) => t.kind === 2 && t.section === '__TEXT.__const');
+  assert.ok(f32Hit, 'f32 table must be tagged with __TEXT.__const');
+  assert.equal(f32Hit.va, 0x180000n + BigInt(f32Hit.startOff));
+  assert.ok(f64Hit, 'f64 table must be tagged with __TEXT.__const');
+  assert.equal(f64Hit.va, 0x180000n + BigInt(f64Hit.startOff));
+
+  assert.ok(res.vtables);
+  const expectedVtEngine = typeof getHexEngineExports()?.hex_scan_vtables_ext === 'function' ? 'wasm' : 'js';
+  assert.equal(res.vtables.engine, expectedVtEngine);
+  assert.equal(res.vtables.bySection.length, 2);
+  assert.equal(res.vtables.vtables.length, 1);
+  assert.equal(res.vtables.vtables[0].section, '__DATA_CONST.__const');
+  assert.equal(res.vtables.vtables[0].va, 0x200000n + BigInt(res.vtables.vtables[0].vtableOff));
+});
+
+test('runWasmStructuralAnalysis combines dataBytes + textConstBytes and avoids double-scanning identical references', () => {
+  const dataBytes = new Uint8Array(64);
+  const dv1 = new DataView(dataBytes.buffer);
+  dv1.setFloat32(0, 1.5, true);
+  dv1.setFloat32(4, 2.25, true);
+  dv1.setFloat32(8, 3.75, true);
+  dv1.setFloat32(12, 4.125, true);
+
+  const textConstBytes = new Uint8Array(64);
+  const dv2 = new DataView(textConstBytes.buffer);
+  dv2.setFloat64(0, 1.5, true);
+  dv2.setFloat64(8, 2.5, true);
+  dv2.setFloat64(16, 3.5, true);
+  dv2.setFloat64(24, 4.5, true);
+
+  const combined = runWasmStructuralAnalysis({
+    dataBytes,
+    dataVa: 0x300000n,
+    textConstBytes,
+    textConstVa: 0x190000n,
+  });
+  assert.equal(combined.constTables.engine, 'wasm');
+  assert.equal(combined.constTables.bySection.length, 2);
+  assert.deepEqual(
+    combined.constTables.bySection.map((s) => s.section),
+    ['data', '__TEXT.__const'],
+  );
+  assert.ok(combined.constTables.tables.some((t) => t.section === 'data' && t.va === 0x300000n));
+  assert.ok(combined.constTables.tables.some((t) => t.section === '__TEXT.__const' && t.va === 0x190000n));
+
+  // Identical Uint8Array reference must not be double-scanned
+  const deduped = runWasmStructuralAnalysis({
+    dataBytes,
+    dataVa: 0x300000n,
+    textConstBytes: dataBytes,
+    textConstVa: 0x300000n,
+  });
+  assert.equal(deduped.constTables.engine, 'wasm');
+  assert.equal(deduped.constTables.bySection.length, 1);
+  assert.equal(deduped.constTables.bySection[0].section, 'data');
+  assert.equal(deduped.constTables.tables.length, deduped.constTables.bySection[0].count);
+});
+
+test('autoAnalyze extracts __TEXT.__const and __DATA_CONST.__const from o.image into report.wasmAnalysis', async () => {
+  const imageBytes = new Uint8Array(256);
+  const dv = new DataView(imageBytes.buffer);
+  // __TEXT.__const at fileOffset 0, size 64: f32 table
+  dv.setFloat32(0, 1.5, true);
+  dv.setFloat32(4, 2.25, true);
+  dv.setFloat32(8, 3.75, true);
+  dv.setFloat32(12, 4.125, true);
+  // __DATA_CONST.__const at fileOffset 64, size 64: f64 table
+  dv.setFloat64(64, 1.5, true);
+  dv.setFloat64(72, 2.5, true);
+  dv.setFloat64(80, 3.5, true);
+  dv.setFloat64(88, 4.5, true);
+
+  const mockImage = {
+    imageBase: 0x100000000n,
+    bytes: imageBytes,
+    sections: [
+      { segment: '__TEXT', name: '__const', fileOffset: 0, fileSize: 64, address: 0x100010000n },
+      { segment: '__DATA_CONST', name: '__const', fileOffset: 64, fileSize: 64, address: 0x100020000n },
+      { segment: '__TEXT', name: '__text', fileOffset: 128, fileSize: 64, address: 0x100004000n },
+    ],
+  };
+
+  const report = await autoAnalyze({
+    strings: [],
+    image: mockImage,
+    deepLimit: 0,
+  });
+
+  assert.ok(report.wasmAnalysis, 'report.wasmAnalysis must be populated from o.image sections');
+  assert.ok(report.wasmAnalysis.constTables);
+  assert.equal(report.wasmAnalysis.constTables.engine, 'wasm');
+  const sectionNames = report.wasmAnalysis.constTables.bySection.map((s) => s.section);
+  assert.ok(sectionNames.includes('__TEXT.__const'), 'bySection must include __TEXT.__const');
+  assert.ok(sectionNames.includes('__DATA_CONST.__const'), 'bySection must include __DATA_CONST.__const');
+  assert.equal(sectionNames.length, 2);
+});
