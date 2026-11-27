@@ -253,7 +253,7 @@ function buildContext(model, o) {
   for (const r of model.addressRefs || []) {
     if (r.text) textOf.set(r.row, r.text);
     if (r.addr != null) {
-      if (!refOf.has(r.row)) refOf.set(r.row, { addr: r.addr, load: !!r.load, bytes: r.bytes || null });
+      if (!refOf.has(r.row)) refOf.set(r.row, { addr: r.addr, load: !!r.load, viaPointer: !!r.viaPointer, bytes: r.bytes || null });
       else if (r.bytes && !refOf.get(r.row).bytes) refOf.get(r.row).bytes = r.bytes;
     }
   }
@@ -685,7 +685,15 @@ function decideMaterial(model, vg) {
       }
       continue;
     }
-    if (insn.isCall || insn.isTailCall || insn.tailCall) {
+    if (insn.memory && insn.memory.kind === 'load' && (insn.memory.mode === 'post' || insn.memory.mode === 'pre')) {
+      for (const w of insn.writes || []) {
+        if (w && w !== insn.memory.base) {
+          const lv = vg.defAt(insn.row, w);
+          if (lv && lv.k !== 'reg') material.add(lv);
+        }
+      }
+    }
+        if (insn.isCall || insn.isTailCall || insn.tailCall) {
       continue;
     }
     if (insn.data || insn.memory || insn.isBranch) continue;
@@ -1531,14 +1539,15 @@ function memNodeName(m, ctx) {
       return '*(' + type + ' *)(uintptr_t)(' + addrExpr + ')';
     }
   }
-  if (m.stack && m.disp != null) {
+  if (m.stack) {
     const b = m.baseReg === 'x29' ? 'x29' : 'sp';
-    const spDisp = toSpDisp(b, m.disp, ctx);
+    const disp = m.disp != null ? m.disp : 0n;
+    const spDisp = toSpDisp(b, disp, ctx);
     if (spDisp != null && isEscapedStackDisp(spDisp, ctx)) {
       const type = typeFromAccess(m.size || 8, { float: isFpMemNode(m, ctx) });
       return '*(' + type + ' *)(uintptr_t)' + stackAddrExpr(spDisp, ctx);
     }
-    return slotName(b, m.disp, ctx);
+    return slotName(b, disp, ctx);
   }
   /*
    * オペランドが `[sp, #N]` の形をしていなくても、番地の式が置き場を指していれば
@@ -2101,6 +2110,9 @@ function parseFlagProducer(p, ctx) {
     op: b,
     left: a ? operandText(a, ctx, p) : '?',
     right: c ? operandText(c, ctx, p) : '0',
+    leftOp: a || null,
+    rightOp: c || null,
+    cmpInsn: p,
     row: p.row,
     bits,
     inPlaceDst,
@@ -2111,7 +2123,7 @@ function clobbersNzcv(p) {
   if (!p) return false;
   if (p.isCall || p.isReturn) return true;
   const b = (p.mnemonic || '').toLowerCase();
-  if (/^(ccmp|ccmn|fccmp|fccmpe|negs|adcs|sbcs|ngcs|rmif|setf8|setf16|cfinv|axflag|xaflag)$/.test(b)) return true;
+  if (/^(fccmp|fccmpe|negs|adcs|sbcs|ngcs|rmif|setf8|setf16|cfinv|axflag|xaflag)$/.test(b)) return true;
   if (b === 'msr') {
     if (/^\s*nzcv\b/i.test(String(p.operands || ''))) return true;
     const op0 = p.ops?.[0];
@@ -2123,24 +2135,87 @@ function clobbersNzcv(p) {
 
 /** フラグを作った直前の cmp / subs / tst を探す（基本ブロック内→CFG前任者）。 */
 function findCompare(insn, ctx) {
+  const parseCcmpOp = (p) => {
+    const b = (p.mnemonic || '').toLowerCase();
+    if (b !== 'ccmp' && b !== 'ccmn') return null;
+    const ops = p.ops || [];
+    if (ops.length < 4) return null;
+    const a = ops[0], c = ops[1], nzcvOp = ops[2], condOp = ops[3];
+    const nzcv = nzcvOp && nzcvOp.k === 'imm' && nzcvOp.value != null ? Number(nzcvOp.value) & 0xf : null;
+    const cond = condOp && condOp.k === 'cond' ? String(condOp.cond || condOp.text || '').toLowerCase() : null;
+    if (nzcv == null || !cond) return null;
+    const bits = a && a.k === 'reg' && a.bits === 32 ? 32 : 64;
+    return {
+      op: b === 'ccmn' ? 'cmn' : 'cmp',
+      left: a ? operandText(a, ctx, p) : '?',
+      right: c ? operandText(c, ctx, p) : '0',
+      leftOp: a || null,
+      rightOp: c || null,
+      nzcv,
+      cond,
+      row: p.row,
+      bits,
+    };
+  };
   const scanRows = (rows, beforeRow) => {
+    const ccmpChain = [];
     for (let i = rows.length - 1; i >= 0; i--) {
       const r = rows[i];
       if (beforeRow != null && r >= beforeRow) continue;
       const p = ctx.byRow.get(r);
       if (!p || p.data) continue;
+      const cc = parseCcmpOp(p);
+      if (cc) { ccmpChain.push(cc); continue; }
       const hit = parseFlagProducer(p, ctx);
-      if (hit) return hit;
+      if (hit) {
+        if (ccmpChain.length) {
+          ccmpChain.reverse();
+          return Object.assign({}, hit, { ccmpChain });
+        }
+        return hit;
+      }
       if (clobbersNzcv(p)) return 'CLOBBERED';
     }
-    return null;
+    return ccmpChain.length ? 'CLOBBERED' : null;
   };
   const nodes = ctx.flowNodes;
   const bi = ctx.nodeOfRow ? ctx.nodeOfRow(insn.row) : -1;
   if (nodes && bi >= 0 && nodes[bi]) {
     const local = scanRows(nodes[bi].rows, insn.row);
     if (local === 'CLOBBERED') return null;
-    if (local) return local;
+    if (local) {
+      const clobberedBetween = new Set();
+      for (const r of nodes[bi].rows) {
+        if (r <= local.row || r >= insn.row) continue;
+        const mid = ctx.byRow.get(r);
+        if (!mid) continue;
+        for (const w of mid.writes || []) {
+          if (w && w !== 'nzcv') clobberedBetween.add(w);
+        }
+        const midBase = (mid.mnemonic || '').toLowerCase();
+        if (midBase === 'movi' && mid.ops?.[0]?.k === 'reg') {
+          const rk0 = regOf(mid.ops[0]);
+          if (rk0) clobberedBetween.add(rk0);
+        }
+      }
+      if (clobberedBetween.size && ctx.values) {
+        const resolveClobberedOp = (op, fallback) => {
+          const rk = op && op.k === 'reg' ? regOf(op) : null;
+          if (!rk || !clobberedBetween.has(rk)) return fallback;
+          const rawV = ctx.values.at(local.row, rk);
+          const v = rawV && rawV.k === 'reg' && rawV.prevDef ? rawV.prevDef : rawV;
+          if (!v || v.k === 'reg') return fallback;
+          const rendered = exprText(ctx, v, v, local.row);
+          return rendered || fallback;
+        };
+        const newLeft = resolveClobberedOp(local.leftOp, local.left);
+        const newRight = resolveClobberedOp(local.rightOp, local.right);
+        if (newLeft !== local.left || newRight !== local.right) {
+          return Object.assign({}, local, { left: newLeft, right: newRight });
+        }
+      }
+      return local;
+    }
     const resolvePred = (idx, depth, visited) => {
       if (depth > 6 || visited.has(idx)) return null;
       visited.add(idx);
@@ -2213,6 +2288,44 @@ function condText(cond, ctx) {
     if (cond.cc === 'al') return '1';
     if (cond.cc === 'nv') return '1';
     if (!cond.cmp) return 'flag_' + cond.cc;
+    if (Array.isArray(cond.cmp.ccmpChain) && cond.cmp.ccmpChain.length) {
+      const evalNzcv = (nzcv, cc) => {
+        const N = (nzcv >> 3) & 1, Z = (nzcv >> 2) & 1, C = (nzcv >> 1) & 1, V = nzcv & 1;
+        switch (cc) {
+          case 'eq': return Z === 1;
+          case 'ne': return Z === 0;
+          case 'cs': case 'hs': return C === 1;
+          case 'cc': case 'lo': return C === 0;
+          case 'mi': return N === 1;
+          case 'pl': return N === 0;
+          case 'vs': return V === 1;
+          case 'vc': return V === 0;
+          case 'hi': return C === 1 && Z === 0;
+          case 'ls': return C === 0 || Z === 1;
+          case 'ge': return N === V;
+          case 'lt': return N !== V;
+          case 'gt': return Z === 0 && N === V;
+          case 'le': return Z === 1 || N !== V;
+          default: return null;
+        }
+      };
+      const baseCmp = Object.assign({}, cond.cmp, { ccmpChain: null });
+      const evalChain = (idx, targetCc) => {
+        if (idx < 0) return condText({ kind: 'flag', cc: targetCc, cmp: baseCmp }, ctx);
+        const step = cond.cmp.ccmpChain[idx];
+        const fb = evalNzcv(step.nzcv, targetCc);
+        if (fb == null) return 'flag_' + targetCc;
+        const stepExpr = condText({ kind: 'flag', cc: targetCc, cmp: step }, ctx);
+        if (fb) {
+          const invCond = COND_INVERSE[step.cond] || step.cond;
+          const priorFalse = evalChain(idx - 1, invCond);
+          return '((' + priorFalse + ') || (' + stepExpr + '))';
+        }
+        const priorTrue = evalChain(idx - 1, step.cond);
+        return '((' + priorTrue + ') && (' + stepExpr + '))';
+      };
+      return evalChain(cond.cmp.ccmpChain.length - 1, cond.cc);
+    }
     if (cond.cc === 'vs') return 'flag_vs /* overflow(' + cond.cmp.left + ', ' + cond.cmp.right + ') */';
     if (cond.cc === 'vc') return '!flag_vs /* !overflow(' + cond.cmp.left + ', ' + cond.cmp.right + ') */';
     if (cond.cmp.op === 'tst' || cond.cmp.op === 'ands' || cond.cmp.op === 'bics') {
@@ -2394,7 +2507,7 @@ function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
         if (intLit != null) return intLit;
       }
     }
-    if (!float && size === 8) {
+    if (!float && (size === 8 || size === 16)) {
       return 'global_' + refAddr.toString(16).toUpperCase();
     }
     return '*(' + typeFromAccess(size, { float }) + ' *)0x' + refAddr.toString(16).toUpperCase();
@@ -2421,7 +2534,7 @@ function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
     return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + fieldName;
   }
 
-  const type = typeFromAccess(size, { float });
+  const type = (!float && size === 16) ? 'uint128' : typeFromAccess(size, { float });
   const indexText = op.index ? operandText(op.index, ctx, insn) : null;
   let indexScaled = indexText;
   if (op.index && op.shift && op.shift.amount) {
@@ -2809,12 +2922,16 @@ function statementFor(insn, ctx, node, state) {
 
   /* アドレス計算 (adrp / adr / adrp+add)。行き先が決まっていれば名前で書く */
   const ref = ctx.refOf.get(row);
+  const addExprDef = (base === 'add' && !ref && insn.ops.length >= 3 && insn.ops[2] && insn.ops[2].k === 'imm' && ctx.values)
+    ? ctx.values.defAt(row, insn.writes[0])
+    : null;
+  const addExprAddr = addExprDef && addExprDef.k === 'addr' && !addExprDef.partial ? addExprDef.addr : null;
   if (base === 'adrp' || base === 'adr' ||
-      (base === 'add' && ref && !ref.load && insn.ops.length >= 3 && insn.ops[2] && insn.ops[2].k === 'imm')) {
+      (base === 'add' && ((ref && !ref.load) || addExprAddr != null) && insn.ops.length >= 3 && insn.ops[2] && insn.ops[2].k === 'imm')) {
     const dst = insn.writes[0];
     const text = ctx.textOf.get(row);
     if (text != null) return mk(varOf(dst, ctx) + ' = "' + escapeText(text) + '";', { dst, pure: true });
-    const t = ref ? ref.addr : insn.pcRelTarget;
+    const t = ref ? ref.addr : (addExprAddr != null ? addExprAddr : insn.pcRelTarget);
     if (base === 'adrp' && !ref) {
       /* ページの先頭だけを作る途中。次の add / ldr と組で 1 つのアドレスになる */
       const pageExpr = t != null ? '0x' + t.toString(16).toUpperCase() : '0 /* unresolved adrp target */';
@@ -2823,7 +2940,11 @@ function statementFor(insn, ctx, node, state) {
     }
     const sym = t != null ? ctx.symbolFor(t) : null;
     const safeSym = sym ? sanitizeLegacyCallLabel(sym) : null;
-    const targetExpr = safeSym ? '&' + safeSym : (t != null ? '0x' + t.toString(16).toUpperCase() : '0 /* unresolved ' + base + ' target */');
+    const targetExpr = safeSym
+      ? '&' + safeSym
+      : (t != null
+        ? (t >= 0x1000n ? '(uintptr_t)&global_' + t.toString(16).toUpperCase() : '0x' + t.toString(16).toUpperCase())
+        : '0 /* unresolved ' + base + ' target */');
     return mk(varOf(dst, ctx) + ' = ' + targetExpr + ';',
       // 場所が 1 つに決まったので、もう手前のレジスタには依存していない
       { dst, pure: true, reads: [] });
@@ -3962,7 +4083,7 @@ function valueText(v, ctx, index) {
   if (v.kind === 'address' && v.addr != null) {
     const sym = ctx.symbolFor(v.addr);
     const safeSym = sym ? sanitizeLegacyCallLabel(sym) : null;
-    return safeSym ? '&' + safeSym : '0x' + v.addr.toString(16).toUpperCase();
+    return safeSym ? '&' + safeSym : (v.addr >= 0x1000n ? '(uintptr_t)&global_' + v.addr.toString(16).toUpperCase() : '0x' + v.addr.toString(16).toUpperCase());
   }
   return varOf('x' + index, ctx);
 }
@@ -4152,14 +4273,25 @@ function removeDeadStores(stmts) {
   for (let i = 0; i < stmts.length; i++) {
     const st = stmts[i];
     if (!st.dst || !st.pure || st.dropped || st.call) continue;
+    const lhsMatch = /^([A-Za-z_]\w*)\s*=/.exec((st.text || '').trim());
+    const lhsName = lhsMatch ? lhsMatch[1] : st.dst;
+    const isRenamedVar = lhsName !== st.dst;
+    const lhsRe = new RegExp('\\b' + escapeRe(lhsName) + '\\b');
     let redefined = false;
     let read = false;
     for (let j = i + 1; j < stmts.length; j++) {
       const other = stmts[j];
       if (other.dropped) continue;
       if (other.kind === 'label' || other.kind === 'ctrl') break;
-      if ((other.reads || []).includes(st.dst)) { read = true; break; }
-      if (other.dst === st.dst) { redefined = true; break; }
+      if (lhsRe.test(other.text || '')) { read = true; break; }
+      if (!isRenamedVar && (other.reads || []).includes(st.dst)) { read = true; break; }
+      const otherLhs = /^([A-Za-z_]\w*)\s*=/.exec((other.text || '').trim());
+      if (isRenamedVar) {
+        if (otherLhs && otherLhs[1] === lhsName) { redefined = true; break; }
+      } else if (other.dst === st.dst) {
+        redefined = true;
+        break;
+      }
     }
     if (redefined && !read) st.dropped = true;
   }

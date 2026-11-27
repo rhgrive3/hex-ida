@@ -4822,7 +4822,8 @@ export function closeFunctionOutput(result, options = {}) {
       .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
       .replace(/'(?:[^'\\]|\\.)*'/g, ' ');
     const usesSpAsStackPtr = /\bsp\s*[+-]\s*(?:0[xX][0-9A-Fa-f]+|\d+)/.test(cleaned)
-      || /\(\s*uintptr_t\s*\)\s*(?:\([^;{}]*\bsp\b[^;{}]*\)|sp\b)/.test(cleaned);
+      || /\(\s*uintptr_t\s*\)\s*(?:\([^;{}]*\bsp\b[^;{}]*\)|sp\b)/.test(cleaned)
+      || /\*\s*\([^)]*\*\s*\)\s*\(\s*sp\s*\)/.test(cleaned);
     if (!usesSpAsStackPtr) return null;
     let maxSub = 0;
     const subRe = /\bsp\b\s*-\s*(0[xX][0-9A-Fa-f]+|\d+)/g;
@@ -4833,7 +4834,9 @@ export function closeFunctionOutput(result, options = {}) {
       if (Number.isFinite(val) && val > maxSub) maxSub = val;
     }
     const hasPositiveSpRef = /\bsp\b\s*\+\s*(?:0[xX][0-9A-Fa-f]+|\d+)/.test(cleaned)
-      || /\(\s*uintptr_t\s*\)\s*(?:\(\s*sp\s*\)|sp\b)/.test(cleaned);
+      || /\(\s*uintptr_t\s*\)\s*(?:\(\s*sp\s*\)|sp\b)/.test(cleaned)
+      || /=\s*(?:\(\s*[^)]*\)\s*)?sp\s*;/.test(cleaned)
+      || /\*\s*\([^)]*\*\s*\)\s*\(\s*sp\s*\)/.test(cleaned);
     if (!hasPositiveSpRef) {
       const rounded = Math.ceil((maxSub + 256) / 16) * 16;
       return { totalSize: Math.min(65536, Math.max(4096, rounded)), belowSize: null };

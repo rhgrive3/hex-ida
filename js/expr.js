@@ -460,7 +460,7 @@ export function buildValues(model, opts) {
   const textOf = new Map();
   const rodataRows = new Set();
   for (const r of (model && model.addressRefs) || []) {
-    if (r.text != null) textOf.set(r.row, { text: r.text, addr: r.addr });
+    if (r.text != null) textOf.set(r.row, { text: r.text, addr: r.addr, load: !!r.load, viaPointer: !!r.viaPointer });
     if (r.load && r.bytes) rodataRows.add(r.row);
   }
   const lastRow = insns.length ? insns[insns.length - 1].row : 0;
@@ -487,6 +487,20 @@ export function buildValues(model, opts) {
     const restoring = m.disp != null && savedSlots.has((m.base || m.baseReg || 'sp') + ':' + m.disp.toString());
     return atEdge || frameish || restoring;
   };
+  const adrpWriteCounts = new Map();
+  const singleDefAdrpRegs = new Set();
+  for (const insn of insns) {
+    if (isEpilogueCalleeRestore(insn)) continue;
+    const b = (insn.mnemonic || '').toLowerCase();
+    for (const w of insn.writes || []) {
+      if (!w || w === 'nzcv' || w === 'sp' || w === 'zr') continue;
+      adrpWriteCounts.set(w, (adrpWriteCounts.get(w) || 0) + 1);
+      if (b === 'adrp') singleDefAdrpRegs.add(w);
+    }
+  }
+  for (const r of Array.from(singleDefAdrpRegs)) {
+    if (adrpWriteCounts.get(r) !== 1) singleDefAdrpRegs.delete(r);
+  }
 
   const regs = new Map();          // regKey -> ノード
   const stack = new Map();         // 'x29+16' -> ノード
@@ -545,6 +559,7 @@ export function buildValues(model, opts) {
     walk(val, (x) => {
       if (hit) return;
       if (x.k === 'reg' && x.reg === targetReg) { hit = true; return; }
+      if (x.k === 'mem' && x.baseReg === targetReg) { hit = true; return; }
       if (x.k === 'call') {
         const d = nodeDef.get(x);
         if (d && d.reg === targetReg) hit = true;
@@ -576,8 +591,11 @@ export function buildValues(model, opts) {
   };
   const evictReg = (otherKey, otherVal, row, clobberedReg = null) => {
     const replacement = regNode(otherKey, row);
-    if (otherVal && otherVal.k !== 'reg') replacement.prevDef = otherVal;
-    else if (otherVal && otherVal.prevDef) replacement.prevDef = otherVal.prevDef;
+    const staleMemBase = !!(clobberedReg && otherVal && otherVal.k === 'mem' && otherVal.baseReg === clobberedReg);
+    if (!staleMemBase) {
+      if (otherVal && otherVal.k !== 'reg') replacement.prevDef = otherVal;
+      else if (otherVal && otherVal.prevDef) replacement.prevDef = otherVal.prevDef;
+    }
     if (clobberedReg) replacement.clobberedReg = clobberedReg;
     regs.set(otherKey, replacement);
   };
@@ -658,8 +676,14 @@ export function buildValues(model, opts) {
       stack.clear();
       flags = null;               // どの道を通って来たか分からない ＝ 比較の結果も分からない
       const keepSp = spStable ? regs.get('sp') : null;
+      const keepAdrp = [];
+      for (const r of singleDefAdrpRegs) {
+        const v = regs.get(r);
+        if (v && v.k === 'addr' && v.partial) keepAdrp.push([r, v]);
+      }
       if (join.all) {
         regs.clear();
+        for (const [r, v] of keepAdrp) regs.set(r, v);
         if (join.loopWritten) {
           for (let a = 0; a <= 7; a++) {
             if (join.loopWritten.has('x' + a)) everWritten.add('x' + a);
@@ -828,7 +852,7 @@ export function buildValues(model, opts) {
           const step = pair ? BigInt(k * elemSize) : 0n;
           const effectiveDisp = (m.disp ?? 0n) + step;
           let v = null;
-          if (txt && k === 0 && dop.cls !== 'fp' && dop.cls !== 'vec') v = node('str', { addr: txt.addr, text: txt.text });
+          if (txt && k === 0 && dop.cls !== 'fp' && dop.cls !== 'vec' && (!txt.load || txt.viaPointer)) v = node('str', { addr: txt.addr, text: txt.text });
           else if (slot) {
             v = stackRead(m, effectiveDisp, elemSize);
           }
@@ -1009,6 +1033,8 @@ export function buildValues(model, opts) {
       emit(dst, un(base.startsWith('ngc') ? 'ngc' : 'neg', A()));
     } else if (base === 'fneg') {
       emit(dst, node('un', { op: 'fneg', a: A() }));
+    } else if (base === 'fabs') {
+      emit(dst, node('un', { op: 'fabs', a: A() }));
     } else if (base === 'mvn') {
       emit(dst, un('not', A()));
     } else if (base === 'madd') {
@@ -1666,7 +1692,11 @@ function emit(n, prec, o, depth) {
     case 'str': return '"' + escapeText(n.text) + '"';
     case 'addr': {
       const sym = n.sym || (o.symbolFor ? o.symbolFor(n.addr) : null);
-      return sym ? '&' + sym : '0x' + n.addr.toString(16).toUpperCase();
+      if (sym) return '&' + sym;
+      if (!n.partial && n.addr != null && n.addr >= 0x1000n) {
+        return '(uintptr_t)&global_' + n.addr.toString(16).toUpperCase();
+      }
+      return '0x' + n.addr.toString(16).toUpperCase();
     }
     case 'mem': return emitMem(n, o, depth);
     case 'call': return emitCall(n, o, depth);
@@ -1697,6 +1727,7 @@ function emitUn(n, prec, o, depth) {
   switch (n.op) {
     case 'neg': return '-' + inner;
     case 'fneg': return '-' + inner;
+    case 'fabs': return 'fabs(' + emit(n.a, 0, o, depth + 1) + ')';
     case 'not': return '~' + inner;
     case 'sxt8': return '(int8)' + inner;
     case 'sxt16': return '(int16)' + inner;
