@@ -250,6 +250,42 @@ function buildHexEngineUnified(tmpDir) {
     }
   }
 
+  // Compile upstream LLVM ItaniumDemangle + RustDemangle TU with -Os and freestanding stub headers.
+  const extraObjs = [];
+  const llvmDemangleSrc = path.join(ROOT, 'cpp/src/analysis/llvm_demangle_wasm.cpp');
+  if (fs.existsSync(llvmDemangleSrc)) {
+    const stubInc = path.join(tmpDir, 'llvm-freestanding-inc');
+    fs.mkdirSync(path.join(stubInc, 'llvm', 'Demangle'), { recursive: true });
+    for (const rel of [
+      'algorithm', 'array', 'cassert', 'cctype', 'cstdint', 'cstdio',
+      'cstdlib', 'cstring', 'limits', 'new', 'string_view', 'type_traits',
+      'utility', 'llvm/Demangle/Demangle.h', 'llvm/Demangle/StringViewExtras.h',
+      'llvm/Demangle/Utility.h',
+    ]) {
+      fs.writeFileSync(path.join(stubInc, rel), '#pragma once\n', 'utf8');
+    }
+    const demangleObj = path.join(tmpDir, 'llvm_demangle_wasm.o');
+    execFileSync('clang++', [
+      '--target=wasm32',
+      '-std=c++20',
+      '-Os',
+      '-nostdlib',
+      '-fno-exceptions',
+      '-fno-rtti',
+      '-mbulk-memory',
+      '-ffunction-sections',
+      '-fdata-sections',
+      '-DHEX_UNIFIED_WASM=1',
+      `-I${path.join(ROOT, 'cpp/include')}`,
+      `-I${stubInc}`,
+      '-c',
+      '-o',
+      demangleObj,
+      llvmDemangleSrc,
+    ], { stdio: 'inherit' });
+    extraObjs.push(demangleObj);
+  }
+
   const rawWasm = path.join(tmpDir, 'hex_engine.raw.wasm');
   const optWasm = path.join(ROOT, 'wasm', 'hex_engine.wasm');
   const outJsPath = path.join(ROOT, 'js/core/hex-engine-wasm.js');
@@ -270,7 +306,9 @@ function buildHexEngineUnified(tmpDir) {
     '-Wl,--max-memory=67108864',
     '-o',
     rawWasm,
+    '-Wl,--gc-sections',
     ...srcs,
+    ...extraObjs,
   ];
   execFileSync('clang++', clangArgs, { stdio: 'inherit' });
 

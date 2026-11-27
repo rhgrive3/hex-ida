@@ -17,6 +17,14 @@
  * with AbortController listener cleanup.
  */
 
+import {
+  encodeBinExport2,
+  decodeBinExport2,
+  CALL_GRAPH_VERTEX_TYPE,
+  COMMENT_TYPE,
+  MAX_BINEXPORT2_BYTES,
+} from './binexport2-writer.js';
+
 export const INTEROP_SCHEMA_ID = 'hex-ida-interop/v1';
 export const DWARF_SUMMARY_SCHEMA_ID = 'hex-dwarf-summary/v1';
 export const HEXDB_DELTA_FORMAT = 'hex-delta-session';
@@ -964,6 +972,152 @@ export function exportFridaSnippet(fn = {}, model = {}) {
   ].join('\n');
 }
 
+/* ── 5b. Google BinExport v2 (.BinExport) Protobuf Interop ───── */
+
+function bytesToBase64(bytes) {
+  if (typeof Buffer === 'function') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function base64ToBytes(raw) {
+  const b64 = String(raw ?? '').replace(/\s+/g, '');
+  if (b64.length === 0) {
+    throw new TypeError('Empty base64 payload');
+  }
+  const maxB64Len = Math.ceil((MAX_BINEXPORT2_BYTES * 4) / 3) + 4;
+  if (b64.length > maxB64Len) {
+    throw new RangeError(`Base64 payload exceeds maximum allowed size (${b64.length} > ${maxB64Len})`);
+  }
+  if (b64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) {
+    throw new TypeError('Malformed base64 payload');
+  }
+  if (typeof Buffer === 'function') {
+    return new Uint8Array(Buffer.from(b64, 'base64'));
+  }
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function buildBinExport2FromModel(model = {}) {
+  // If caller already supplied a native BinExport2 structure, pass through directly.
+  if (model.metaInformation || model.meta_information || model.callGraph || model.call_graph) {
+    return model;
+  }
+  const functions = Array.isArray(model.functions) ? model.functions : [];
+  const vertices = functions.map((fn) => ({
+    address: parseVaToBigInt(fn?.va) ?? 0n,
+    type: fn?.isImported ? CALL_GRAPH_VERTEX_TYPE.IMPORTED : CALL_GRAPH_VERTEX_TYPE.NORMAL,
+    mangledName: String(fn?.mangledName ?? fn?.name ?? ''),
+    demangledName: fn?.demangledName ? String(fn.demangledName) : undefined,
+  }));
+  const edges = Array.isArray(model.callEdges) ? model.callEdges : [];
+  const sections = (Array.isArray(model.sections) ? model.sections : []).map((s) => ({
+    address: parseVaToBigInt(s?.address ?? s?.va) ?? 0n,
+    size: parseVaToBigInt(s?.size) ?? 0n,
+    flagR: Boolean(s?.flagR ?? s?.flag_r ?? true),
+    flagW: Boolean(s?.flagW ?? s?.flag_w ?? false),
+    flagX: Boolean(s?.flagX ?? s?.flag_x ?? false),
+  }));
+  const libraries = (Array.isArray(model.libraries) ? model.libraries : []).map((l) => ({
+    isStatic: Boolean(l?.isStatic ?? l?.is_static),
+    loadAddress: parseVaToBigInt(l?.loadAddress ?? l?.load_address ?? 0n) ?? 0n,
+    name: String(l?.name ?? ''),
+  }));
+  const stringTable = [];
+  const comments = [];
+  const instructions = [];
+  const basicBlocks = [];
+  const flowGraphs = [];
+  functions.forEach((fn, idx) => {
+    const fnVa = parseVaToBigInt(fn?.va) ?? 0n;
+    const insnIdx = instructions.length;
+    const bbIdx = basicBlocks.length;
+    const commentIndices = [];
+    if (fn?.comment) {
+      const strIdx = stringTable.length;
+      const commentIdx = comments.length;
+      stringTable.push(String(fn.comment));
+      comments.push({ instructionIndex: insnIdx, stringTableIndex: strIdx, type: COMMENT_TYPE.FUNCTION });
+      commentIndices.push(commentIdx);
+    }
+    instructions.push({ address: fnVa, commentIndex: commentIndices });
+    basicBlocks.push({ instructionIndex: [{ beginIndex: insnIdx, endIndex: insnIdx + 1 }] });
+    flowGraphs.push({ entryBasicBlockIndex: bbIdx, basicBlockIndex: [bbIdx], edge: [] });
+  });
+
+  return {
+    metaInformation: {
+      executableName: String(model.binaryName ?? 'unnamed.bin'),
+      executableId: String(model.binarySha256 ?? ''),
+      architectureName: String(model.arch ?? 'arm64'),
+      timestamp: Number.isSafeInteger(model.timestamp) ? model.timestamp : 0,
+    },
+    instruction: instructions,
+    basicBlock: basicBlocks,
+    flowGraph: flowGraphs,
+    callGraph: { vertex: vertices, edge: edges },
+    section: sections,
+    library: libraries,
+    stringTable,
+    comment: comments,
+  };
+}
+
+export function exportBinExport2(model = {}) {
+  const protoModel = buildBinExport2FromModel(model);
+  const bytes = encodeBinExport2(protoModel);
+  return {
+    bytes,
+    byteLength: bytes.byteLength,
+    base64: bytesToBase64(bytes),
+  };
+}
+
+export function importBinExport2(input) {
+  try {
+    let bytes;
+    if (input instanceof Uint8Array) bytes = input;
+    else if (input instanceof ArrayBuffer) bytes = new Uint8Array(input);
+    else if (typeof input === 'string') bytes = base64ToBytes(input);
+    else return { ok: false, errors: ['Expected Uint8Array, ArrayBuffer, or base64 string'], data: null, model: null };
+
+    if (bytes.byteLength === 0) {
+      return { ok: false, errors: ['Empty BinExport2 payload'], data: null, model: null };
+    }
+
+    const data = decodeBinExport2(bytes);
+    const model = {
+      binaryName: data.metaInformation?.executableName ?? '',
+      binarySha256: data.metaInformation?.executableId ?? '',
+      arch: data.metaInformation?.architectureName ?? 'arm64',
+      functions: (data.callGraph?.vertex ?? []).map((v) => ({
+        va: `0x${(v.address ?? 0n).toString(16)}`,
+        name: v.demangledName || v.mangledName || `sub_${(v.address ?? 0n).toString(16)}`,
+        mangledName: v.mangledName ?? '',
+        demangledName: v.demangledName ?? '',
+        type: v.type,
+      })),
+      sections: data.section.map((s) => ({
+        address: `0x${(s.address ?? 0n).toString(16)}`,
+        size: Number(s.size ?? 0n),
+        flagR: s.flagR,
+        flagW: s.flagW,
+        flagX: s.flagX,
+      })),
+      libraries: data.library,
+    };
+    return { ok: true, errors: [], data, model };
+  } catch (err) {
+    return { ok: false, errors: [err?.message || String(err)], data: null, model: null };
+  }
+}
+
 /* ── 6. Contextual Export/Import Modal Controller & Safe View ── */
 
 export const EXPORT_FORMATS = Object.freeze([
@@ -971,6 +1125,7 @@ export const EXPORT_FORMATS = Object.freeze([
   'interop-json',
   'dwarf-json',
   'hexdb-delta-v2',
+  'binexport2',
 ]);
 
 export function createExportInteropController(options = {}) {
@@ -991,6 +1146,7 @@ export function createExportInteropController(options = {}) {
     if (fmt === 'interop-json') return JSON.stringify(exportInteropJson(model), null, 2);
     if (fmt === 'dwarf-json') return JSON.stringify(exportDwarfSummaryJson(model), null, 2);
     if (fmt === 'hexdb-delta-v2') return exportHexDbDeltaBundle(deltaState).json;
+    if (fmt === 'binexport2') return exportBinExport2(model).base64;
     return '';
   }
 
@@ -1055,6 +1211,8 @@ export function createExportInteropController(options = {}) {
       res = importHexDbDeltaBundle(raw);
     } else if (state.format === 'interop-json') {
       res = importInteropJson(raw);
+    } else if (state.format === 'binexport2') {
+      res = importBinExport2(raw);
     } else if (state.format === 'dwarf-json') {
       const v = validateDwarfSummaryJson(raw);
       res = { ok: v.valid, errors: v.errors, data: v.data };
@@ -1114,6 +1272,7 @@ export function renderExportInteropModal(controller, options = {}) {
     'interop-json': 'IDA/Ghidra JSON',
     'dwarf-json': 'DWARF Summary JSON',
     'hexdb-delta-v2': 'HEX-DB Delta v2',
+    binexport2: 'BinExport v2 (.BinExport)',
   };
   for (const fmt of EXPORT_FORMATS) {
     const btn = el('button', 'hex-export-tab', labels[fmt]);
