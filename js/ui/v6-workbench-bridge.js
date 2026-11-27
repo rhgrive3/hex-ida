@@ -40,6 +40,7 @@ import { createSlicePanelController, renderSlicePanel } from './slice-panel.js';
 import { createExportInteropController, renderExportInteropModal } from './export-interop.js';
 import { createManualRecoveryPopoverController, renderManualRecoveryPopover } from './manual-recovery-popover.js';
 import { refineAppleSwiftDecompile } from '../decompiler/apple-arc-swift-pass.js';
+import { formatCleanViewLines, formatCleanViewText } from '../decompiler/clean-view.js';
 
 const CALLGRAPH_ROLE_NAMES = Object.freeze({
   0: 'normal',
@@ -182,6 +183,19 @@ export class V6Workbench {
     this._activePopoverKind = null;
     this._binaryKey = null;
     this._idleTimer = null;
+  }
+
+  refineDecompiledCode(pseudoC, opts = {}) {
+    const hints = this.displayHints && typeof this.displayHints === 'object' ? this.displayHints : {};
+    const cleanViewHints = hints.cleanView && typeof hints.cleanView === 'object' ? hints.cleanView : {};
+    const safeOpts = opts && typeof opts === 'object' ? opts : {};
+    const mergedOpts = {
+      hideTypedefPrelude: safeOpts.hideTypedefPrelude ?? cleanViewHints.hideTypedefPrelude ?? hints.hideTypedefPrelude ?? true,
+      elideDeadSpills: safeOpts.elideDeadSpills ?? cleanViewHints.elideDeadSpills ?? hints.elideDeadSpills ?? true,
+      refineAppleSwift: safeOpts.refineAppleSwift ?? cleanViewHints.refineAppleSwift ?? hints.refineAppleSwift ?? true,
+      ...safeOpts,
+    };
+    return formatCleanViewText(pseudoC, mergedOpts);
   }
 
   demangleDisplayName(rawName, opts = null) {

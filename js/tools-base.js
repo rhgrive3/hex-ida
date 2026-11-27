@@ -26,6 +26,7 @@ import {
 } from './ui.js';
 import { addrHex } from './format.js';
 import { decompile, decompiledText } from './decompile.js';
+import { formatCleanViewLines } from './decompiler/clean-view.js';
 import { decompilerSourceRows, formatDecompilerSource, fullDecompilerSourceText, hasSingleDecompilerInstruction, primaryDecompilerAddress } from './decompiler/provenance.js';
 import { showDecompilerProvenanceSheet } from './ui/decompiler-provenance-sheet.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
@@ -383,6 +384,7 @@ export async function showDecompiler(app, addr) {
     return;
   }
   const map = rowMapper(app);
+  let cleanView = true;
   let showAsm = false;
   let showNotes = false;
   try { await app.ensureObjc?.(); } catch { /* ObjC metadata is optional */ }
@@ -421,6 +423,11 @@ export async function showDecompiler(app, addr) {
 
   /* 表示の切り替え。押せる状態が見て分かるように、入れたものは色を付ける。 */
   const chips = el('div', 'chips code-chips');
+  const cleanChip = button('Clean View', 'chip on', () => {
+    cleanView = !cleanView;
+    cleanChip.classList.toggle('on', cleanView);
+    render();
+  });
   const asmChip = button('アセンブリを併記', 'chip', () => {
     showAsm = !showAsm;
     asmChip.classList.toggle('on', showAsm);
@@ -431,8 +438,8 @@ export async function showDecompiler(app, addr) {
     noteChip.classList.toggle('on', showNotes);
     render();
   });
-  chips.append(asmChip, noteChip);
-  chips.append(button('コピー', 'chip', () => copyText(decompiledText(out), '逆コンパイル結果')));
+  chips.append(cleanChip, asmChip, noteChip);
+  chips.append(button('コピー', 'chip', () => copyText(getActiveDecompiledText(), '逆コンパイル結果')));
   chips.append(button('命令との双方向対応', 'chip', () => showDecompilerProvenanceSheet(app, addr)));
   chips.append(button('図で見る', 'chip', () => { sheet.close(); showCfg(app, addr); }));
   head.append(chips);
@@ -449,16 +456,43 @@ export async function showDecompiler(app, addr) {
   const byRow = new Map();
   for (const i of res.model.instructions) byRow.set(i.row, i);
 
-  const preparedLines = out.lines.map((l) => {
-    if (l.kind === 'blank') return { l, blank: true };
-    const sourceRows = decompilerSourceRows(l);
-    const sourceInsns = [];
-    for (let i = 0; i < sourceRows.length; i++) {
-      const insn = byRow.get(sourceRows[i]);
-      if (insn) sourceInsns.push(insn);
+  function prepareLines(lines) {
+    return lines.map((l) => {
+      if (l.kind === 'blank') return { l, blank: true };
+      const sourceRows = decompilerSourceRows(l);
+      const sourceInsns = [];
+      for (let i = 0; i < sourceRows.length; i++) {
+        const insn = byRow.get(sourceRows[i]);
+        if (insn) sourceInsns.push(insn);
+      }
+      return { l, blank: false, sourceInsns, primary: primaryDecompilerAddress(l) };
+    });
+  }
+
+  const rawPreparedLines = prepareLines(out.lines);
+  let cleanLinesCache = null;
+  let cleanPreparedCache = null;
+  function getCleanLines() {
+    if (!cleanLinesCache) {
+      const cleaned = formatCleanViewLines(out.lines, {
+        hideTypedefPrelude: true,
+        elideDeadSpills: true,
+        refineAppleSwift: true,
+      });
+      cleanLinesCache = Array.isArray(cleaned?.lines) ? cleaned.lines : out.lines;
     }
-    return { l, blank: false, sourceInsns, primary: primaryDecompilerAddress(l) };
-  });
+    return cleanLinesCache;
+  }
+  function getActivePreparedLines() {
+    if (!cleanView) return rawPreparedLines;
+    if (!cleanPreparedCache) {
+      cleanPreparedCache = prepareLines(getCleanLines());
+    }
+    return cleanPreparedCache;
+  }
+  function getActiveDecompiledText() {
+    return cleanView ? decompiledText({ ...out, lines: getCleanLines() }) : decompiledText(out);
+  }
 
   const rowLineMap = new WeakMap();
   codeWrap.addEventListener('click', (event) => {
@@ -473,6 +507,7 @@ export async function showDecompiler(app, addr) {
       : null;
     const container = frag || codeWrap;
     if (!frag) codeWrap.replaceChildren();
+    const preparedLines = getActivePreparedLines();
     for (let i = 0; i < preparedLines.length; i++) {
       const entry = preparedLines[i];
       const l = entry.l;

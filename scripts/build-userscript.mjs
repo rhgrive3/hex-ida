@@ -104,7 +104,7 @@ export async function bundle(entry, { format = 'iife', rewriteImportMeta = false
   const plugins = graphBinding
     ? [graphBinding.plugin]
     : (rewriteImportMeta ? [protectedImportMetaPlugin({ rootDir })] : []);
-  const result = await buildImpl({ absWorkingDir: rootDir, entryPoints: [entry], bundle: true, write: false, metafile: true, globalName, format, platform: 'browser', target: ['safari17.4'], charset: 'utf8', legalComments: 'none', minify: true, minifyIdentifiers: true, minifySyntax: true, minifyWhitespace: true, sourcemap: false, plugins });
+  const result = await buildImpl({ absWorkingDir: rootDir, entryPoints: [entry], bundle: true, write: false, metafile: true, globalName, format, platform: 'browser', target: ['safari17.4'], charset: 'utf8', legalComments: 'none', minify: true, minifyIdentifiers: true, minifySyntax: true, minifyWhitespace: true, sourcemap: false, ...(format === 'iife' ? { logOverride: { 'empty-import-meta': 'silent' } } : {}), plugins });
   const policyOptions = graphBinding ? { repoRoot: rootDir, provenance: graphBinding.provenance } : { repoRoot: rootDir };
   if (graph === 'standard') assertStandardGraph(result.metafile, entry, policyOptions);
   else if (graph) assertPrivilegedGraph(result.metafile, graph, policyOptions);
@@ -131,6 +131,7 @@ async function bundleInlinedClassic(entry, source) {
     bundle: true,
     write: false,
     format: 'iife',
+    logOverride: { 'empty-import-meta': 'silent' },
     platform: 'browser',
     target: ['safari17.4'],
     charset: 'utf8',
