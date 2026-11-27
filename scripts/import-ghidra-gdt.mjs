@@ -844,6 +844,89 @@ export function extractAppleDarwinGdtManifest({
   };
 }
 
+
+export const DEFAULT_WIN32_GDT_PATH = path.join(REPO_ROOT, 'third_party', 'ghidra-gdt', 'windows_vs12_64.gdt');
+
+const WIN32_PRIORITY_RE = /^(?:CreateFile|ReadFile|WriteFile|CloseHandle|VirtualAlloc|VirtualProtect|VirtualFree|HeapAlloc|HeapFree|LoadLibrary|GetProcAddress|GetModuleHandle|CreateProcess|OpenProcess|TerminateProcess|ReadProcessMemory|WriteProcessMemory|CreateRemoteThread|NtQuery|NtAllocate|NtProtect|Rtl|RegOpenKey|RegQueryValue|RegSetValue|Crypt|BCrypt|WinHttp|InternetOpen|HttpSendRequest|WSA|socket|connect|send|recv|GetLastError|SetLastError|CreateThread|WaitForSingleObject|EnterCriticalSection|LeaveCriticalSection|MessageBox|GetSystemInfo|IsDebuggerPresent|CheckRemoteDebuggerPresent|OutputDebugString|OpenProcessToken|AdjustTokenPrivileges)/;
+
+export function extractWin32GdtManifest({
+  gdtPath = DEFAULT_WIN32_GDT_PATH,
+  maxFunctions = 3400,
+  maxStructs = 360,
+  maxTypedefs = 260,
+  maxEnums = 80,
+} = {}) {
+  const gdtData = fs.existsSync(gdtPath)
+    ? parseGhidraGdt(gdtPath)
+    : { functions: [], structs: [], typedefs: [], enums: [], skippedCallbackDefs: 0 };
+
+  const fnMap = new Map();
+  for (const f of gdtData.functions) {
+    if (!f.name || f.name.length < 3 || f.name.length > 64) continue;
+    if (f.name.startsWith('__')) continue;
+    if (!fnMap.has(f.name)) {
+      fnMap.set(f.name, { ...f, source: 'ghidra:windows_vs12_64.gdt' });
+    }
+  }
+
+  const winRank = (f) => {
+    if (WIN32_PRIORITY_RE.test(f.name)) return 0;
+    if (/^[A-Z]/.test(f.name)) return 1;
+    return 2;
+  };
+  const selectedFunctions = Array.from(fnMap.values())
+    .sort((a, b) => {
+      const ra = winRank(a);
+      const rb = winRank(b);
+      if (ra !== rb) return ra - rb;
+      return asciiCmp(a.name, b.name);
+    })
+    .slice(0, maxFunctions);
+
+  const structMap = new Map();
+  for (const s of gdtData.structs) {
+    if (!s.name || s.name.startsWith('_') || s.name.length > 48) continue;
+    if (!structMap.has(s.name)) structMap.set(s.name, s);
+  }
+  const selectedStructs = Array.from(structMap.values())
+    .sort((a, b) => asciiCmp(a.name, b.name))
+    .slice(0, maxStructs);
+
+  const tdMap = new Map();
+  for (const td of gdtData.typedefs) {
+    if (!td.name || td.name.startsWith('_') || td.name.length > 48) continue;
+    if (!structMap.has(td.name) && !tdMap.has(td.name)) tdMap.set(td.name, td);
+  }
+  const selectedTypedefs = Array.from(tdMap.values())
+    .sort((a, b) => asciiCmp(a.name, b.name))
+    .slice(0, maxTypedefs);
+
+  const enumMap = new Map();
+  for (const e of gdtData.enums) {
+    if (!e.name || e.name.startsWith('_') || e.name.length > 48) continue;
+    if (!structMap.has(e.name) && !tdMap.has(e.name) && !enumMap.has(e.name)) enumMap.set(e.name, e);
+  }
+  const selectedEnums = Array.from(enumMap.values())
+    .sort((a, b) => asciiCmp(a.name, b.name))
+    .slice(0, maxEnums);
+
+  return {
+    schema: 'hex-gdt-manifest/v1',
+    name: 'win32-api-full',
+    moduleName: 'win32-api-full',
+    sources: {
+      ghidraGdt: fs.existsSync(gdtPath) ? path.basename(gdtPath) : null,
+      ghidraRawFunctions: gdtData.functions.length,
+      ghidraSkippedCallbackDefs: gdtData.skippedCallbackDefs || 0,
+      ghidraRawStructs: gdtData.structs.length,
+    },
+    structs: selectedStructs,
+    enums: selectedEnums,
+    typedefs: selectedTypedefs,
+    functions: selectedFunctions,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 4. Compile Manifest -> Compact TIL1 Binary (fits comfortably in WASM Slot 1/2 <= 256 KiB)
 // ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ import { createTypeEditPopoverController, renderTypeEditPopover } from './type-e
 import { createSlicePanelController, renderSlicePanel } from './slice-panel.js';
 import { createExportInteropController, renderExportInteropModal } from './export-interop.js';
 import { createManualRecoveryPopoverController, renderManualRecoveryPopover } from './manual-recovery-popover.js';
+import { refineAppleSwiftDecompile } from '../decompiler/apple-arc-swift-pass.js';
 
 function normalizeVaHex(va) {
   if (va == null) return null;

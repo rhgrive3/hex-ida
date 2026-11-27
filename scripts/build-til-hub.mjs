@@ -22,6 +22,7 @@ import { sha256HexSync } from '../js/analysis/types/core/til-storage.js';
 import {
   extractPosixAndGhidraManifest,
   extractAppleDarwinGdtManifest,
+  extractWin32GdtManifest,
   compileGdtManifestToTil1,
 } from './import-ghidra-gdt.mjs';
 
@@ -859,6 +860,59 @@ export async function buildTilHub({
       libc: 'libSystem',
       dylibs: ['libSystem.B.dylib', 'CoreFoundation', 'Foundation', 'Security'],
       hints: ['libsystem', 'corefoundation', 'foundation', 'objc'],
+    },
+    conflicts: [],
+    requires: [],
+  });
+
+
+  // 2c. Build Ghidra windows_vs12_64.gdt (Apache-2.0) Windows Win32/Win64 full pack (<= 256 KiB WASM Slot 1/2)
+  const win32GdtManifest = extractWin32GdtManifest({
+    maxFunctions: 3400,
+    maxStructs: 360,
+    maxTypedefs: 260,
+    maxEnums: 80,
+  });
+  const { tilBytes: win32TilBytes, header: win32Header } = compileGdtManifestToTil1(win32GdtManifest, {
+    packId: 'win32-api-full',
+    includeExtChunk: true,
+    maxExtLayouts: 100,
+    maxExtEnums: 50,
+  });
+  if (win32TilBytes.byteLength > TIL1_PACK_SLOT_MAX_BYTES) {
+    throw new Error(
+      `win32-api-full.til1 exceeds WASM Slot 1/2 256 KiB cap (${win32TilBytes.byteLength} > ${TIL1_PACK_SLOT_MAX_BYTES})`
+    );
+  }
+  const win32GzBytes = fflate.gzipSync(win32TilBytes, { level: 6, mtime: 0 });
+  const win32Sha256 = sha256HexSync(win32TilBytes);
+  const win32GzSha256 = sha256HexSync(win32GzBytes);
+
+  fs.writeFileSync(path.join(outDir, 'win32-api-full.til1'), win32TilBytes);
+  fs.writeFileSync(path.join(outDir, 'win32-api-full.til1.gz'), win32GzBytes);
+
+  manifestPacks.push({
+    id: 'win32-api-full',
+    name: 'Windows Win32 / Win64 API Full (Ghidra windows_vs12_64.gdt)',
+    version: '1.0.0',
+    sdkVersion: '10.0',
+    category: 'os',
+    source: 'official',
+    isCore: false,
+    file: 'win32-api-full.til1',
+    gzFile: 'win32-api-full.til1.gz',
+    rawBytes: win32TilBytes.byteLength,
+    gzBytes: win32GzBytes.byteLength,
+    sha256: win32Sha256,
+    gzSha256: win32GzSha256,
+    checksumFnv32: win32Header.checksumFnv32,
+    entryCount: win32Header.entryCount,
+    selCount: win32Header.selCount,
+    typeCount: win32Header.typeCount,
+    matchRules: {
+      platforms: ['windows'],
+      dylibs: ['kernel32.dll', 'ntdll.dll', 'advapi32.dll', 'user32.dll', 'ws2_32.dll'],
+      hints: [],
     },
     conflicts: [],
     requires: [],

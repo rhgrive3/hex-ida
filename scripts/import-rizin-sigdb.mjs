@@ -914,7 +914,7 @@ function compileIosArm64MachoPack({ sigDir, iosObjDir, outDir }) {
     const funcs = extractFunctionsFromMachO64(fs.readFileSync(abs), { tag: mf.tag });
     machoExtracted += funcs.length;
     for (const fn of funcs) {
-      const aligned = alignArm64Pattern(fn.pattern, fn.mask, fn.patternLen);
+      const aligned = alignArm64Pattern(fn.pattern.subarray(0, fn.patternLen), fn.mask.subarray(0, fn.patternLen));
       if (aligned.prologueLen < 8) continue;
       let fixedBits = 0;
       for (let i = 0; i < aligned.prologueLen; i++) fixedBits += popcount8(aligned.msk[i]);
@@ -958,7 +958,7 @@ function compileIosArm64MachoPack({ sigDir, iosObjDir, outDir }) {
       if (!symbolName) continue;
       // Keep only portable AArch64 runtime/math/compiler-rt/string/crypto routines (skip Android/bionic-only names)
       if (/android|bionic|__system_property|dl_|pthread_internal/i.test(symbolName)) continue;
-      const aligned = alignArm64Pattern(fn.pattern, fn.mask, fn.patternLen);
+      const aligned = alignArm64Pattern(fn.pattern.subarray(0, fn.patternLen), fn.mask.subarray(0, fn.patternLen));
       if (aligned.prologueLen < 8) continue;
       let fixedBits = 0;
       for (let i = 0; i < aligned.prologueLen; i++) fixedBits += popcount8(aligned.msk[i]);
@@ -998,7 +998,7 @@ function compileIosArm64MachoPack({ sigDir, iosObjDir, outDir }) {
   let estStrBytes = 0;
   const seenNames = new Set();
   for (const c of candidates) {
-    if (selected.length >= 1000) break;
+    if (selected.length >= 1500) break;
     const nameBytes = seenNames.has(c.symbolName) ? 0 : (Buffer.byteLength(c.symbolName, 'utf8') + 1);
     const projectedSize = HSIG1_HEADER_SIZE + (selected.length + 1) * HSIG1_ENTRY_SIZE + estStrBytes + nameBytes;
     if (projectedSize > HSIG1_MAX_SLOT4_BYTES) break;

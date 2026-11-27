@@ -265,6 +265,7 @@ HexStatus try_emit_arm64_objc(
   }
 
   // ARM64e PAC / BTI prologue peeling (e.g. BTI + PACIBSP)
+  const uint64_t entry_addr = base_addr;
   uint32_t lead = 0u;
   while (lead < 2u && lead < word_count && is_bti_or_pac_prologue(words[lead])) {
     ++lead;
@@ -433,7 +434,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("int32 ");
     w.append_bytes(func_name, func_name_len);
     w.append_str("(void)\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("{\n");
@@ -442,7 +443,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_self_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 self;", base_addr);
@@ -450,7 +451,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_cmd_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 a2;", base_addr);
@@ -491,7 +492,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("static uint64 global_");
     w.append_u64_hex(global_addr, true);
     w.append_str(" = 0;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("#ifndef __hex_helper_sext_defined", base_addr);
@@ -502,7 +503,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("int32 ");
     w.append_bytes(func_name, func_name_len);
     w.append_str("(void)\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("{\n");
@@ -511,7 +512,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_self_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 self;", base_addr);
@@ -519,7 +520,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_cmd_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 a2;", base_addr);
@@ -527,7 +528,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint32 var_");
     w.append_u64_hex(self_off, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("    local_m");
@@ -568,13 +569,13 @@ HexStatus try_emit_arm64_objc(
     w.append_str("static uint64 global_");
     w.append_u64_hex(global_addr, true);
     w.append_str(" = 0;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("uint64 ");
     w.append_bytes(func_name, func_name_len);
     w.append_str("(uint64 a3)\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("{\n");
@@ -583,7 +584,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_self_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 self;", base_addr);
@@ -591,7 +592,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_cmd_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     emit_line("    uint64 a2;", base_addr);
@@ -599,7 +600,7 @@ HexStatus try_emit_arm64_objc(
     w.append_str("    uint64 local_m");
     w.append_u64_hex(local_arg_mag, true);
     w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr);
+    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("    local_m");

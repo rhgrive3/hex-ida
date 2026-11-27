@@ -216,6 +216,63 @@ int main() {
                  expected, 5u, 13u, 0x1014ULL);
   }
 
+
+  // ARM64e PAC case 1: PACIBSP + ConstReturn + RETAB
+  {
+    const uint32_t w[9] = {
+        0xD503237Fu, // pacibsp
+        0xD10043FFu, 0xAA0003E8u, 0xB9000FE8u, 0xAA0103E8u,
+        0xB9000BE8u, 0x52800540u, 0x910043FFu,
+        0xD65F0FFFu, // retab
+    };
+    const char* expected =
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "typedef void * id;\n"
+        "int32 +[Bar answer](void)\n"
+        "{\n"
+        "    uint64 local_m4;\n"
+        "    uint64 self;\n"
+        "    uint64 local_m8;\n"
+        "    uint64 a2;\n"
+        "    local_m4 = self;\n"
+        "    local_m8 = a2;\n"
+        "    return 42;\n"
+        "}";
+    run_positive("arm64e_pac_const_return", w, 9u, 0x2000ULL, "+[Bar answer]",
+                 expected, 5u, 13u, 0x2018ULL);
+  }
+
+  // ARM64e PAC case 2: BTI + PACIBSP + ConstReturn + AUTIBSP + RET
+  {
+    const uint32_t w[11] = {
+        0xD503245Fu, // bti c
+        0xD503237Fu, // pacibsp
+        0xD10043FFu, 0xAA0003E8u, 0xB9000FE8u, 0xAA0103E8u,
+        0xB9000BE8u, 0x52800540u, 0x910043FFu,
+        0xD50323FFu, // autibsp
+        0xD65F03C0u, // ret
+    };
+    const char* expected =
+        "/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n"
+        "typedef __INT32_TYPE__ int32;\n"
+        "typedef __UINT64_TYPE__ uint64;\n"
+        "typedef void * id;\n"
+        "int32 +[Bar answer](void)\n"
+        "{\n"
+        "    uint64 local_m4;\n"
+        "    uint64 self;\n"
+        "    uint64 local_m8;\n"
+        "    uint64 a2;\n"
+        "    local_m4 = self;\n"
+        "    local_m8 = a2;\n"
+        "    return 42;\n"
+        "}";
+    run_positive("arm64e_bti_pac_aut_ret", w, 11u, 0x3000ULL, "+[Bar answer]",
+                 expected, 5u, 13u, 0x301CULL);
+  }
+
   // Negative / fail-closed tests
   {
     const uint32_t valid8[8] = {
