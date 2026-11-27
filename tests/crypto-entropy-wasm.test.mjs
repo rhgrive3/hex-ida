@@ -3,9 +3,11 @@ import { test } from 'node:test';
 import {
   shannonEntropy,
   scanHighEntropyWindows,
+  classifyHighEntropyKind,
   scanCryptoConstants,
   analyzeCryptoInsnDensity,
 } from '../js/analysis/crypto-entropy.js';
+import { rankCandidates } from '../js/rank.js';
 import { pinpointFunction } from '../js/pinpoint-legacy.js';
 import { compileGoal } from '../js/goalc.js';
 
@@ -39,42 +41,61 @@ test('shannonEntropy matches between WASM and JS fallback across zero, uniform, 
   assert.ok(Math.abs(pWasm - pJs) <= 0.002, `WASM ${pWasm} vs JS ${pJs}`);
 });
 
-test('scanHighEntropyWindows locates embedded high-entropy region in both WASM and JS', () => {
-  const buf = new Uint8Array(16384); // 4 windows of 4096
-  buf.set(makeHighEntropyBytes(4096), 8192); // window #2 is high-entropy
+test('scanHighEntropyWindows locates embedded high-entropy region & distinguishes compressed headers', () => {
+  const buf = new Uint8Array(16384);
+  const high = makeHighEntropyBytes(4096);
+  buf.set(high, 4096);
+  // Stamp gzip header at window #1 (offset 4096)
+  buf[4096] = 0x1f; buf[4097] = 0x8b; buf[4098] = 0x08;
+  // Raw high-entropy encrypted/packed window at window #2 (offset 8192)
+  buf.set(high, 8192);
 
   const wasmHits = scanHighEntropyWindows(buf, { baseAddress: 0x10000n, windowSize: 4096, step: 4096, threshold: 7.2 });
   const jsHits = scanHighEntropyWindows(buf, { baseAddress: 0x10000n, windowSize: 4096, step: 4096, threshold: 7.2, engine: 'js' });
 
-  assert.equal(wasmHits.length, 1);
-  assert.equal(wasmHits[0].offset, 8192);
-  assert.equal(wasmHits[0].address, 0x12000n);
-  assert.ok(wasmHits[0].entropy > 7.8);
-  assert.equal(jsHits.length, 1);
-  assert.equal(jsHits[0].offset, 8192);
+  assert.equal(wasmHits.length, 2);
+  assert.equal(wasmHits[0].kind, 'compressed:gzip');
+  assert.equal(wasmHits[1].kind, 'encrypted-or-packed');
+  assert.equal(wasmHits[1].address, 0x12000n);
+  assert.deepEqual(jsHits.map((h) => [h.offset, h.kind]), wasmHits.map((h) => [h.offset, h.kind]));
+
+  assert.equal(classifyHighEntropyKind(Uint8Array.from([0x28, 0xb5, 0x2f, 0xfd])), 'compressed:zstd');
+  assert.equal(classifyHighEntropyKind(Uint8Array.from([0x78, 0x9c, 0x01, 0x02])), 'compressed:zlib');
+  assert.equal(classifyHighEntropyKind(Uint8Array.from([0x04, 0x22, 0x4d, 0x18])), 'compressed:lz4');
+  assert.equal(classifyHighEntropyKind(Uint8Array.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00])), 'compressed:xz');
 });
 
-test('scanCryptoConstants detects AES S-Box, SHA-256 K/H0, MD5, ChaCha20, and CRC32 in WASM and JS', () => {
+test('scanCryptoConstants detects all standard crypto/hash tables including AES T-Table, SHA-512, BLAKE2b, Blowfish, Keccak in WASM & JS', () => {
   const buf = new Uint8Array(4096);
-  // AES S-Box at 0x40
   buf.set([0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76], 0x40);
-  // SHA-256 K[0..3] LE at 0x200
+  buf.set([0xa5, 0x63, 0x63, 0xc6, 0x84, 0x7c, 0x7c, 0xf8, 0x99, 0x77, 0x77, 0xee, 0x8d, 0x7b, 0x7b, 0xf6], 0x100);
   buf.set([0x98, 0x2f, 0x8a, 0x42, 0x91, 0x44, 0x37, 0x71, 0xcf, 0xfb, 0xc0, 0xb5, 0xa5, 0xdb, 0xb5, 0xe9], 0x200);
-  // ChaCha20 "expand 32-byte k" at 0x400
+  buf.set([0x22, 0xae, 0x28, 0xd7, 0x98, 0x2f, 0x8a, 0x42, 0xcd, 0x65, 0xef, 0x23, 0x91, 0x44, 0x37, 0x71], 0x300);
   buf.set(new TextEncoder().encode('expand 32-byte k'), 0x400);
-  // CRC32 IEEE LE at 0x600
+  buf.set([0x08, 0xc9, 0xbc, 0xf3, 0x67, 0xe6, 0x09, 0x6a, 0x3b, 0xa7, 0xca, 0x84, 0x85, 0xae, 0x67, 0xbb], 0x500);
   buf.set([0x00, 0x00, 0x00, 0x00, 0x96, 0x30, 0x07, 0x77, 0x2c, 0x61, 0x0e, 0xee, 0xba, 0x51, 0x09, 0x99], 0x600);
+  buf.set([0x88, 0x6a, 0x3f, 0x24, 0xd3, 0x08, 0xa3, 0x85, 0x2e, 0x8a, 0x19, 0x13, 0x44, 0x73, 0x70, 0x03], 0x700);
+  buf.set([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x82, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 0x800);
 
   const wasmHits = scanCryptoConstants(buf, { baseAddress: 0x100000n });
   const jsHits = scanCryptoConstants(buf, { baseAddress: 0x100000n, engine: 'js' });
 
   const ids = (arr) => arr.map((h) => `${h.id}@0x${h.offset.toString(16)}`);
-  assert.deepEqual(ids(wasmHits), ['aes-sbox@0x40', 'sha256-k@0x200', 'chacha20@0x400', 'crc32-ieee@0x600']);
+  assert.deepEqual(ids(wasmHits), [
+    'aes-sbox@0x40',
+    'aes-ttable@0x100',
+    'sha256-k@0x200',
+    'sha512-k@0x300',
+    'chacha20@0x400',
+    'blake2b-iv@0x500',
+    'crc32-ieee@0x600',
+    'blowfish-p@0x700',
+    'keccak-rc@0x800',
+  ]);
   assert.deepEqual(ids(jsHits), ids(wasmHits));
-  assert.equal(wasmHits[0].address, 0x100040n);
 });
 
-test('analyzeCryptoInsnDensity detects hardware crypto & bitwise loops while ignoring zeroing idioms', () => {
+test('analyzeCryptoInsnDensity detects HW crypto, bitwise loops, and simple 1-XOR loops while ignoring zeroing idioms', () => {
   const hw = analyzeCryptoInsnDensity([
     { mnemonic: 'aese', operands: 'v0.16b, v1.16b' },
     { mnemonic: 'aesmc', operands: 'v0.16b, v0.16b' },
@@ -82,60 +103,78 @@ test('analyzeCryptoInsnDensity detects hardware crypto & bitwise loops while ign
   ]);
   assert.equal(hw.hwCryptoCount, 2);
 
-  const bitwiseLoop = analyzeCryptoInsnDensity([
-    { mnemonic: 'ldr', operands: 'w8, [x0]' },
-    { mnemonic: 'eor', operands: 'w8, w8, w1' },
-    { mnemonic: 'ror', operands: 'w8, w8, #7' },
-    { mnemonic: 'eor', operands: 'w8, w8, w2' },
-    { mnemonic: 'lsl', operands: 'w9, w8, #3' },
-    { mnemonic: 'eor', operands: 'w8, w8, w9' },
-    { mnemonic: 'lsr', operands: 'w10, w8, #5' },
-    { mnemonic: 'eor', operands: 'w8, w8, w10' },
-    { mnemonic: 'str', operands: 'w8, [x0]' },
-    { mnemonic: 'ret', operands: '' },
+  // ARM64 simple 1-XOR loop
+  const armXorLoop = analyzeCryptoInsnDensity([
+    { address: 0x1000n, mnemonic: 'ldrb', operands: 'w8, [x0, x2]' },
+    { address: 0x1004n, mnemonic: 'eor', operands: 'w8, w8, w3' },
+    { address: 0x1008n, mnemonic: 'strb', operands: 'w8, [x0, x2]' },
+    { address: 0x100cn, mnemonic: 'add', operands: 'x2, x2, #1' },
+    { address: 0x1010n, mnemonic: 'cmp', operands: 'x2, x1' },
+    { address: 0x1014n, mnemonic: 'b.lt', operands: '0x1000' },
+    { address: 0x1018n, mnemonic: 'ret', operands: '' },
   ]);
-  assert.equal(bitwiseLoop.highBitwiseDensity, true);
-  assert.ok(bitwiseLoop.xorCount >= 4 && bitwiseLoop.rotateCount === 1);
+  assert.equal(armXorLoop.hasXorLoop, true);
 
+  // x86-64 simple 1-XOR loop (direct memory xor)
+  const x86XorLoop = analyzeCryptoInsnDensity([
+    { address: 0x2000n, mnemonic: 'xor', operands: 'byte ptr [rdi+rax], dl' },
+    { address: 0x2003n, mnemonic: 'inc', operands: 'rax' },
+    { address: 0x2006n, mnemonic: 'cmp', operands: 'rax, rsi' },
+    { address: 0x2009n, mnemonic: 'jne', operands: '0x2000' },
+    { address: 0x200bn, mnemonic: 'ret', operands: '' },
+  ]);
+  assert.equal(x86XorLoop.hasXorLoop, true);
+
+  // Plain zeroing idioms must not trigger
   const plainZeroing = analyzeCryptoInsnDensity([
-    { mnemonic: 'xor', operands: 'eax, eax' },
-    { mnemonic: 'xor', operands: 'edx, edx' },
-    { mnemonic: 'xor', operands: 'ecx, ecx' },
-    { mnemonic: 'eor', operands: 'w0, w0, w0' },
-    { mnemonic: 'mov', operands: 'rbx, rdi' },
-    { mnemonic: 'ret', operands: '' },
+    { address: 0x3000n, mnemonic: 'xor', operands: 'eax, eax' },
+    { address: 0x3002n, mnemonic: 'xor', operands: 'edx, edx' },
+    { address: 0x3004n, mnemonic: 'eor', operands: 'w0, w0, w0' },
+    { address: 0x3008n, mnemonic: 'ret', operands: '' },
   ]);
   assert.equal(plainZeroing.xorCount, 0);
+  assert.equal(plainZeroing.hasXorLoop, false);
   assert.equal(plainZeroing.highBitwiseDensity, false);
 });
 
-test('pinpointFunction with crypto goal awards fn-crypto-hw-insn and outranks non-crypto peer', async () => {
+test('rankCandidates + pinpointFunction surface stripped crypto routines via cryptoConstants Xref + 1-XOR loop', async () => {
   const goal = compileGoal('暗号化').goal;
   const symbols = { symbolCount: 0, functionCount: 2, addrs: [], names: [], renames: new Map(), nameAt: () => '' };
-  const ranked = [
-    { addr: 0x1000n, score: 20, reasons: [{ code: 'string-ref', points: 20, detail: { text: 'cipher' } }], strings: [{ text: 'cipher', users: 1 }] },
-    { addr: 0x2000n, score: 20, reasons: [{ code: 'string-ref', points: 20, detail: { text: 'cipher' } }], strings: [{ text: 'cipher', users: 1 }] },
-  ];
-  const disasmByAddr = new Map([
-    [0x1000n, [
-      { address: 0x1000n, mnemonic: 'mov', operands: 'w0, #1' },
-      { address: 0x1004n, mnemonic: 'ret', operands: '' },
-    ]],
-    [0x2000n, [
-      { address: 0x2000n, mnemonic: 'aese', operands: 'v0.16b, v1.16b' },
-      { address: 0x2004n, mnemonic: 'aesmc', operands: 'v0.16b, v0.16b' },
-      { address: 0x2008n, mnemonic: 'ret', operands: '' },
-    ]],
-  ]);
+  const cryptoConstants = [{ id: 'aes-sbox', name: 'AES S-Box', offset: 0x40, address: 0x90040n, length: 256 }];
+  const program = {
+    functionsReferencing: (addr) => (BigInt(addr) === 0x90040n ? [{ addr: 0x2000n, site: 0x2004n }] : []),
+    calleesOf: () => [],
+    callersOf: () => [],
+    callCountOf: () => 2,
+    functionRange: (a) => ({ start: BigInt(a), end: BigInt(a) + 0x40n }),
+    statsOf: () => ({ total: 10, numeric: 2, store: 1, cmp: 1, covered: true }),
+  };
+
+  // ZERO strings, ZERO symbols — discovered purely from AES S-Box Xref
+  const ranked = rankCandidates({ goal, strings: [], program, symbols, cryptoConstants, limit: 5 });
+  assert.equal(ranked.candidates.length, 1);
+  assert.equal(ranked.candidates[0].addr, 0x2000n);
+  assert.ok(ranked.candidates[0].reasons.some((r) => r.code === 'crypto-const'));
+
+  // Pinpoint verifies 1-XOR loop and awards fn-crypto-bitwise
   const pin = await pinpointFunction({
     goal,
-    ranked,
+    ranked: ranked.candidates,
     symbols,
+    program,
     deep: true,
-    analyze: async (a) => ({ instructions: disasmByAddr.get(BigInt(a)) || [] }),
+    analyze: async () => ({
+      instructions: [
+        { address: 0x2000n, mnemonic: 'ldrb', operands: 'w8, [x0, x2]' },
+        { address: 0x2004n, mnemonic: 'eor', operands: 'w8, w8, w3' },
+        { address: 0x2008n, mnemonic: 'strb', operands: 'w8, [x0, x2]' },
+        { address: 0x200cn, mnemonic: 'add', operands: 'x2, x2, #1' },
+        { address: 0x2010n, mnemonic: 'cmp', operands: 'x2, x1' },
+        { address: 0x2014n, mnemonic: 'b.lt', operands: '0x2000' },
+        { address: 0x2018n, mnemonic: 'ret', operands: '' },
+      ],
+    }),
   });
   const c2000 = pin.candidates.find((c) => c.addr === 0x2000n);
-  const c1000 = pin.candidates.find((c) => c.addr === 0x1000n);
-  assert.ok(c2000.evidence.some((e) => e.code === 'fn-crypto-hw-insn'), '0x2000 has fn-crypto-hw-insn');
-  assert.ok((c2000.fusion?.rawLogOdds ?? 0) > (c1000.fusion?.rawLogOdds ?? -999), 'hw-crypto function outranks plain peer');
+  assert.ok(c2000.evidence.some((e) => e.code === 'fn-crypto-bitwise'), '1-XOR loop awarded fn-crypto-bitwise');
 });

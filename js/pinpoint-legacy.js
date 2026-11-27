@@ -1907,12 +1907,12 @@ async function verifyFunctionCandidate(c, goal, o) {
         hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount,
       }));
       c.verifications.push({ what: 'crypto-insn', hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount });
-    } else if (cd.highBitwiseDensity) {
-      c.evidence.push(evidence('fn-crypto-bitwise', Math.min(1, 0.55 + cd.bitwiseRatio), {
+    } else if (cd.highBitwiseDensity || cd.hasXorLoop) {
+      c.evidence.push(evidence('fn-crypto-bitwise', Math.min(1, 0.55 + Math.max(cd.bitwiseRatio, cd.hasXorLoop ? 0.25 : 0)), {
         bitwiseCount: cd.bitwiseCount, bitwiseRatio: Math.round(cd.bitwiseRatio * 100) / 100,
-        xorCount: cd.xorCount, rotateCount: cd.rotateCount,
+        xorCount: cd.xorCount, rotateCount: cd.rotateCount, hasXorLoop: cd.hasXorLoop,
       }));
-      c.verifications.push({ what: 'crypto-bitwise', bitwiseCount: cd.bitwiseCount, xorCount: cd.xorCount, rotateCount: cd.rotateCount });
+      c.verifications.push({ what: 'crypto-bitwise', bitwiseCount: cd.bitwiseCount, xorCount: cd.xorCount, rotateCount: cd.rotateCount, hasXorLoop: cd.hasXorLoop });
     }
   }
 
