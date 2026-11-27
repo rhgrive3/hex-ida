@@ -8,7 +8,8 @@ import { getEngineMode, recordWasmCall, recordFallback } from '../core/hex-engin
 const SCRATCH_CHUNK_MAX = 1536 * 1024;
 const OVERLAP = 2048; // multiple of 8
 const RECORD_BYTES = 32;
-const CHUNK_MAX_OUT = 4096;
+const CHUNK_MAX_OUT = 16384; // 512KB/chunk (16384 * 32B)
+const MAX_BISECT_DEPTH = 12;
 const SAFE_MAX_OUT = 262144;
 const DEFAULT_MAX_OUT = 65536;
 const PAC_MASK_48 = 0x0000ffffffffffffn;
@@ -494,26 +495,46 @@ function computeChunkParams(requestedChunkSize, ptrSize, minLen) {
   return { chunkSize, overlap };
 }
 
-function runChunkedScan(u8, chunkSize, overlap, ptrSize, minLen, maxOut, scanChunkFn) {
+function runChunkedScan(u8, chunkSize, effOverlap, ptrSize, minLen, maxOut, scanChunkFn) {
   const rawRecords = [];
   const chunkMaxOut = Math.min(CHUNK_MAX_OUT, maxOut + 1);
+  const alignMask = ~7;
+  const minBisectLen = Math.max((effOverlap * 4) & alignMask, 256);
   let truncated = false;
-  let chunkStart = 0;
 
+  function scanRange(start, end, depth) {
+    const chunkLen = end - start;
+    if (chunkLen < minLen) return;
+
+    const chunkHits = scanChunkFn(u8.subarray(start, end), start, chunkMaxOut);
+    if (chunkMaxOut === CHUNK_MAX_OUT && chunkHits.length >= CHUNK_MAX_OUT) {
+      const mid = (start + Math.floor(chunkLen / 2)) & alignMask;
+      const leftEnd = Math.min(end, (mid + effOverlap) & alignMask);
+      const rightStart = Math.max(start, (mid - effOverlap) & alignMask);
+      if (depth < MAX_BISECT_DEPTH && chunkLen > minBisectLen && leftEnd < end && rightStart > start) {
+        scanRange(start, leftEnd, depth + 1);
+        scanRange(rightStart, end, depth + 1);
+        return;
+      }
+    }
+
+    if (chunkHits.length >= chunkMaxOut) {
+      truncated = true;
+    }
+    for (let i = 0; i < chunkHits.length; i += 1) {
+      rawRecords.push(chunkHits[i]);
+    }
+  }
+
+  let chunkStart = 0;
   while (chunkStart < u8.length) {
     const chunkEnd = Math.min(u8.length, chunkStart + chunkSize);
     const chunkLen = chunkEnd - chunkStart;
     if (chunkLen < minLen) break;
 
-    const hits = scanChunkFn(u8.subarray(chunkStart, chunkEnd), chunkStart, chunkMaxOut);
-    if (hits.length >= chunkMaxOut) {
-      truncated = true;
-    }
-    for (let i = 0; i < hits.length; i += 1) {
-      rawRecords.push(hits[i]);
-    }
+    scanRange(chunkStart, chunkEnd, 0);
     if (chunkEnd >= u8.length) break;
-    chunkStart = chunkEnd - overlap;
+    chunkStart = chunkEnd - effOverlap;
   }
 
   const merged = mergeVtableRuns(rawRecords, ptrSize);

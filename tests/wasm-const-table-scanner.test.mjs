@@ -243,21 +243,26 @@ test('8. exact maxOut sets truncated=false while maxOut+1 sets truncated=true wi
   assert.equal(trunc.wasmRes.truncated, true);
 });
 
-test('9. multi-chunk merge exceeds legacy 2048 cap and flags single-chunk CHUNK_MAX_OUT saturation', () => {
-  const totalCount = 4200;
+test('9. adaptive bisection recovers dense single-chunk > CHUNK_MAX_OUT (16384) and preserves small maxOut / leaf saturation', () => {
+  const totalCount = 17000;
   const strideBytes = 24; // 16B f32 table + 8B zero separator
   const buf = new Uint8Array(totalCount * strideBytes);
   for (let i = 0; i < totalCount; i++) {
     writeF32Array(buf, i * strideBytes, [1.0, 2.0, 3.0, 4.0]);
   }
 
-  // Small chunkSize keeps per-chunk tables well below CHUNK_MAX_OUT (4096) and merges all 4200 tables
-  const multi = scanBoth(buf, { chunkSize: 16384 });
-  assert.equal(multi.wasmRes.tables.length, totalCount);
-  assert.equal(multi.wasmRes.truncated, false);
+  // Single default chunk (408KB < 1.5MB) exceeds CHUNK_MAX_OUT (16384) -> adaptive bisection recovers all 17000 tables
+  const dense = scanBoth(buf);
+  assert.equal(dense.wasmRes.tables.length, totalCount);
+  assert.equal(dense.wasmRes.truncated, false);
 
-  // Single-chunk scan hits CHUNK_MAX_OUT (4096) < DEFAULT_MAX_OUT (32768) and must report truncated=true
-  const sat = scanBoth(buf);
-  assert.equal(sat.wasmRes.tables.length, 4096);
-  assert.equal(sat.wasmRes.truncated, true);
+  // Explicit small maxOut (< CHUNK_MAX_OUT) must NOT bisect and must report truncated=true
+  const smallMax = scanBoth(buf, { maxOut: 100 });
+  assert.equal(smallMax.wasmRes.tables.length, 100);
+  assert.equal(smallMax.wasmRes.truncated, true);
+
+  // Non-bisectable leaf chunk (chunkSize <= minBisectLen) saturating chunkMaxOut reports truncated=true
+  const leaf = scanBoth(buf.subarray(0, 256), { chunkSize: 256, maxOut: 3 });
+  assert.equal(leaf.wasmRes.tables.length, 3);
+  assert.equal(leaf.wasmRes.truncated, true);
 });

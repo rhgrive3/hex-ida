@@ -448,3 +448,95 @@ test('autoAnalyze extracts __TEXT.__const and __DATA_CONST.__const from o.image 
   assert.ok(sectionNames.includes('__DATA_CONST.__const'), 'bySection must include __DATA_CONST.__const');
   assert.equal(sectionNames.length, 2);
 });
+
+test('runWasmStructuralAnalysis populates x86Rmw on x86_64 while keeping rmw unsupportedArch', () => {
+  // sub dword ptr [rdi + 0x10], eax (29 47 10); ret (c3)
+  const x86Code = new Uint8Array([0x29, 0x47, 0x10, 0xc3]);
+  const res = runWasmStructuralAnalysis({
+    codeBytes: x86Code,
+    arch: 'x86_64',
+    textVa: 0x401000n,
+  });
+  assert.equal(res.rmw.unsupportedArch, true);
+  assert.ok(res.x86Rmw);
+  assert.equal(res.x86Rmw.engine, 'wasm');
+  assert.equal(res.x86Rmw.hits.length, 1);
+  assert.equal(res.x86Rmw.hits[0].disp, 0x10);
+  assert.equal(res.x86Rmw.hits[0].opKind, 1);
+});
+
+test('autoAnalyze extracts ObjC/Swift metadata via WASM without altering constTables.bySection and links xrefs', async () => {
+  const imageBytes = new Uint8Array(256);
+  const dv = new DataView(imageBytes.buffer);
+  // __TEXT.__const at off 0, size 32: f32 table
+  dv.setFloat32(0, 1.5, true);
+  dv.setFloat32(4, 2.25, true);
+  dv.setFloat32(8, 3.75, true);
+  dv.setFloat32(12, 4.125, true);
+  // __DATA_CONST.__const at off 32, size 48: vtable (offset_to_top=0, rtti=0x100050000, 3 fn ptrs)
+  dv.setBigInt64(32, 0n, true);
+  dv.setBigUint64(40, 0x100050000n, true);
+  dv.setBigUint64(48, 0x100004000n, true);
+  dv.setBigUint64(56, 0x100004040n, true);
+  dv.setBigUint64(64, 0x100004080n, true);
+  // __DATA_CONST.__objc_classlist at off 80, size 16: 2 chained offset pointers
+  dv.setBigUint64(80, 0x0000000000060000n, true);
+  dv.setBigUint64(88, 0x0000000000060100n, true);
+  // __TEXT.__swift5_types at off 96, size 8: 2 rel32 entries
+  dv.setInt32(96, 0x100, true);
+  dv.setInt32(100, 0x200, true);
+  // __TEXT.__swift5_fieldmd at off 104, size 28: 1 FieldDescriptor with 1 field (recordSize=12)
+  dv.setInt32(104, 0x40, true); // mangled_type_name
+  dv.setInt32(108, 0, true);    // superclass
+  dv.setUint16(112, 0, true);   // kind = struct
+  dv.setUint16(114, 12, true);  // record_size
+  dv.setUint32(116, 1, true);   // num_fields
+
+  const mockImage = {
+    imageBase: 0x100000000n,
+    bytes: imageBytes,
+    sections: [
+      { segment: '__TEXT', name: '__const', fileOffset: 0, fileSize: 32, address: 0x100010000n },
+      { segment: '__DATA_CONST', name: '__const', fileOffset: 32, fileSize: 48, address: 0x100020000n },
+      { segment: '__DATA_CONST', name: '__objc_classlist', fileOffset: 80, fileSize: 16, address: 0x100030000n },
+      { segment: '__TEXT', name: '__swift5_types', fileOffset: 96, fileSize: 8, address: 0x100040000n },
+      { segment: '__TEXT', name: '__swift5_fieldmd', fileOffset: 104, fileSize: 28, address: 0x100041000n },
+    ],
+  };
+
+  // ARM64 code at 0x100004000: ADRP X8, +0xC000 (0x100010000); ADD X8, X8, #0; RET
+  // adrp x8, #12 pages (immlo=0, immhi=3): 0x90000068
+  // add x8, x8, #0 (64-bit): 0x91000108
+  // ret: 0xd65f03c0
+  const codeBytes = packInsns([0x90000068, 0x91000108, 0xd65f03c0]);
+  const syms = new SymbolIndex();
+  syms.addFunctions([0x100004000n]);
+
+  const report = await autoAnalyze({
+    strings: [],
+    image: mockImage,
+    symbols: syms,
+    codeBytes,
+    region: { vmAddr: 0x100004000n, size: 0x1000n },
+    deepLimit: 0,
+  });
+
+  assert.ok(report.wasmAnalysis);
+  // constTables.bySection must still contain only the 2 __const sections
+  assert.deepEqual(
+    report.wasmAnalysis.constTables.bySection.map((s) => s.section),
+    ['__TEXT.__const', '__DATA_CONST.__const'],
+  );
+  // objcSwift must be populated on WASM
+  assert.ok(report.wasmAnalysis.objcSwift);
+  assert.equal(report.wasmAnalysis.objcSwift.engine, 'wasm');
+  assert.equal(report.wasmAnalysis.objcSwift.counts.objcClassList, 2);
+  assert.equal(report.wasmAnalysis.objcSwift.counts.swift5Types, 2);
+  assert.equal(report.wasmAnalysis.objcSwift.counts.swift5FieldMd, 1);
+  // xrefLinks must link both Vtable and ConstTable to 0x100004000
+  assert.ok(report.wasmAnalysis.xrefLinks);
+  const fnEntry = report.wasmAnalysis.xrefLinks.byFunction['0x100004000'];
+  assert.ok(fnEntry, 'function 0x100004000 must be linked in xrefLinks');
+  assert.ok(fnEntry.tags.includes('vtable_member'));
+  assert.ok(fnEntry.tags.includes('const_f32_ref'));
+});

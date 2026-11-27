@@ -315,8 +315,8 @@ test('7. exact maxOut sets truncated=false while maxOut+1 sets truncated=true wi
   assert.equal(truncRes.truncated, true);
 });
 
-test('8. multi-chunk merge exceeds legacy 1024 cap and flags single-chunk CHUNK_MAX_OUT saturation', () => {
-  const totalCount = 2100;
+test('8. adaptive bisection recovers dense single-chunk > CHUNK_MAX_OUT (8192) with exact tableVa and preserves small maxOut / leaf saturation', () => {
+  const totalCount = 8500;
   const words = new Uint32Array(totalCount * 6);
   for (let i = 0; i < totalCount; i++) {
     const base = i * 6;
@@ -330,13 +330,22 @@ test('8. multi-chunk merge exceeds legacy 1024 cap and flags single-chunk CHUNK_
   const code = packInsns(words);
   const textVa = 0x200000n;
 
-  // Small chunkSize keeps per-chunk tables well below CHUNK_MAX_OUT (2048) and merges all 2100 tables
-  const { wasmRes: multiRes } = runBothEngines(code, { textVa, chunkSize: 8192 });
-  assert.equal(multiRes.tables.length, totalCount);
-  assert.equal(multiRes.truncated, false);
+  // Single default chunk (204KB < 1.5MB) exceeds CHUNK_MAX_OUT (8192) -> adaptive bisection recovers all 8500 tables
+  const { wasmRes: denseRes } = runBothEngines(code, { textVa });
+  assert.equal(denseRes.tables.length, totalCount);
+  assert.equal(denseRes.truncated, false);
 
-  // Single-chunk scan hits CHUNK_MAX_OUT (2048) < DEFAULT_MAX_OUT (16384) and must report truncated=true
-  const { wasmRes: satRes } = runBothEngines(code, { textVa });
-  assert.equal(satRes.tables.length, 2048);
-  assert.equal(satRes.truncated, true);
+  // Cross-check exact subchunk tableVa recalculation against small-chunk non-bisecting reference scan
+  const { wasmRes: refRes } = runBothEngines(code, { textVa, chunkSize: 8192 });
+  assert.deepEqual(denseRes.tables, refRes.tables);
+
+  // Explicit small maxOut (< CHUNK_MAX_OUT) must NOT bisect and must report truncated=true
+  const { wasmRes: smallMaxRes } = runBothEngines(code, { textVa, maxOut: 100 });
+  assert.equal(smallMaxRes.tables.length, 100);
+  assert.equal(smallMaxRes.truncated, true);
+
+  // Non-bisectable leaf chunk (chunkSize <= minBisectLen) saturating chunkMaxOut reports truncated=true
+  const { wasmRes: leafRes } = runBothEngines(code.subarray(0, 256), { textVa, chunkSize: 256, maxOut: 3 });
+  assert.equal(leafRes.tables.length, 3);
+  assert.equal(leafRes.truncated, true);
 });

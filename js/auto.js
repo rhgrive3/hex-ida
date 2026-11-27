@@ -686,7 +686,7 @@ export async function autoAnalyze(opts) {
       ? o.dataSections
       : extractConstDataSectionsFromImage(o.image);
     const imageBase = o.imageBase ?? o.image?.imageBase ?? null;
-    if (codeBytes || dataBytes || program || (dataSections && dataSections.length > 0) || o.textConstBytes) {
+    if (codeBytes || dataBytes || program || (dataSections && dataSections.length > 0) || o.textConstBytes || o.image) {
       const textVa = o.textVa ?? (o.region?.vmAddr != null ? o.region.vmAddr : 0n);
       const textLo = o.textLo ?? (o.region?.vmAddr != null ? o.region.vmAddr : null);
       const textHi = o.textHi ?? (o.region?.vmAddr != null && o.region?.size != null
@@ -696,6 +696,7 @@ export async function autoAnalyze(opts) {
         codeBytes,
         dataBytes,
         dataSections,
+        image: o.image,
         textConstBytes: o.textConstBytes,
         textConstVa: o.textConstVa,
         dataVa: o.dataVa,
@@ -708,7 +709,7 @@ export async function autoAnalyze(opts) {
         program,
         symbols,
       });
-      if (wa.rmw || wa.vtables || wa.jumpTables || wa.constTables || wa.callgraph) {
+      if (wa.rmw || wa.x86Rmw || wa.vtables || wa.jumpTables || wa.constTables || wa.callgraph || wa.objcSwift || wa.xrefLinks) {
         report.wasmAnalysis = wa;
       }
     }
