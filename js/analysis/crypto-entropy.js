@@ -1,7 +1,7 @@
 /**
  * General-purpose static cryptographic constant detection (FindCrypt-style),
- * Shannon entropy analysis (WASM-accelerated with JS fallback), and
- * bitwise/crypto instruction density scoring for ARM64 & x86-64.
+ * Shannon entropy + compression-magic classification (WASM-accelerated with JS
+ * fallback), and ARM64/x86-64 bitwise / 1-XOR loop / HW-crypto density scoring.
  */
 import { getHexEngineExports, isWasmBulkMemorySupported } from '../core/hex-engine-wasm.js';
 import { getEngineMode, recordWasmCall, recordFallback } from '../core/hex-engine-bridge.js';
@@ -9,26 +9,44 @@ import { getEngineMode, recordWasmCall, recordFallback } from '../core/hex-engin
 const SCRATCH_CHUNK_MAX = 1536 * 1024; // stay comfortably inside 2.5MB WASM scratch arena
 
 export const CRYPTO_ALGO_BY_ID = Object.freeze({
-  1: { id: 'aes-sbox', name: 'AES S-Box' },
-  2: { id: 'aes-inv-sbox', name: 'AES Inverse S-Box' },
-  3: { id: 'sha256-k', name: 'SHA-256 Round Constants (K)' },
-  4: { id: 'sha256-h0', name: 'SHA-256 Initial Hash (H0)' },
-  5: { id: 'md5-t', name: 'MD5 Sine Constants (T)' },
-  6: { id: 'chacha20', name: 'ChaCha20 / Salsa20 Sigma' },
-  7: { id: 'crc32-ieee', name: 'CRC32 IEEE Table' },
+  1:  { id: 'aes-sbox',     name: 'AES S-Box' },
+  2:  { id: 'aes-inv-sbox', name: 'AES Inverse S-Box' },
+  3:  { id: 'sha256-k',     name: 'SHA-256 Round Constants (K)' },
+  4:  { id: 'sha256-h0',    name: 'SHA-256 Initial Hash (H0)' },
+  5:  { id: 'md5-t',        name: 'MD5 Sine Constants (T)' },
+  6:  { id: 'chacha20',     name: 'ChaCha20 / Salsa20 Sigma' },
+  7:  { id: 'crc32-ieee',   name: 'CRC32 IEEE Table' },
+  8:  { id: 'aes-ttable',   name: 'AES T-Table (Te0/Td0)' },
+  9:  { id: 'sha512-k',     name: 'SHA-512 Round Constants (K)' },
+  10: { id: 'sha1-h0',      name: 'SHA-1 Initial Hash (H0)' },
+  11: { id: 'blake2b-iv',   name: 'BLAKE2b IV' },
+  12: { id: 'blowfish-p',   name: 'Blowfish P-Array' },
+  13: { id: 'keccak-rc',    name: 'Keccak / SHA-3 Round Constants' },
 });
 
 const JS_CRYPTO_SIGS = Object.freeze([
-  { algoId: 1, reportLen: 256, bytes: Uint8Array.from([0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76]) },
-  { algoId: 2, reportLen: 256, bytes: Uint8Array.from([0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb]) },
-  { algoId: 3, reportLen: 256, bytes: Uint8Array.from([0x98, 0x2f, 0x8a, 0x42, 0x91, 0x44, 0x37, 0x71, 0xcf, 0xfb, 0xc0, 0xb5, 0xa5, 0xdb, 0xb5, 0xe9]) },
-  { algoId: 3, reportLen: 256, bytes: Uint8Array.from([0x42, 0x8a, 0x2f, 0x98, 0x71, 0x37, 0x44, 0x91, 0xb5, 0xc0, 0xfb, 0xcf, 0xe9, 0xb5, 0xdb, 0xa5]) },
-  { algoId: 4, reportLen: 32,  bytes: Uint8Array.from([0x67, 0xe6, 0x09, 0x6a, 0x85, 0xae, 0x67, 0xbb, 0x72, 0xf3, 0x6e, 0x3c, 0x3a, 0xf5, 0x4f, 0xa5]) },
-  { algoId: 4, reportLen: 32,  bytes: Uint8Array.from([0x6a, 0x09, 0xe6, 0x67, 0xbb, 0x67, 0xae, 0x85, 0x3c, 0x6e, 0xf3, 0x72, 0xa5, 0x4f, 0xf5, 0x3a]) },
-  { algoId: 5, reportLen: 256, bytes: Uint8Array.from([0x78, 0xa4, 0x6a, 0xd7, 0x56, 0xb7, 0xc7, 0xe8, 0xdb, 0x70, 0x20, 0x24, 0xee, 0xce, 0xbd, 0xc1]) },
-  { algoId: 6, reportLen: 16,  bytes: Uint8Array.from([0x65, 0x78, 0x70, 0x61, 0x6e, 0x64, 0x20, 0x33, 0x32, 0x2d, 0x62, 0x79, 0x74, 0x65, 0x20, 0x6b]) },
-  { algoId: 6, reportLen: 16,  bytes: Uint8Array.from([0x65, 0x78, 0x70, 0x61, 0x6e, 0x64, 0x20, 0x31, 0x36, 0x2d, 0x62, 0x79, 0x74, 0x65, 0x20, 0x6b]) },
-  { algoId: 7, reportLen: 1024, bytes: Uint8Array.from([0x00, 0x00, 0x00, 0x00, 0x96, 0x30, 0x07, 0x77, 0x2c, 0x61, 0x0e, 0xee, 0xba, 0x51, 0x09, 0x99]) },
+  { algoId: 1,  reportLen: 256,  bytes: Uint8Array.from([0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76]) },
+  { algoId: 2,  reportLen: 256,  bytes: Uint8Array.from([0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb]) },
+  { algoId: 3,  reportLen: 256,  bytes: Uint8Array.from([0x98, 0x2f, 0x8a, 0x42, 0x91, 0x44, 0x37, 0x71, 0xcf, 0xfb, 0xc0, 0xb5, 0xa5, 0xdb, 0xb5, 0xe9]) },
+  { algoId: 3,  reportLen: 256,  bytes: Uint8Array.from([0x42, 0x8a, 0x2f, 0x98, 0x71, 0x37, 0x44, 0x91, 0xb5, 0xc0, 0xfb, 0xcf, 0xe9, 0xb5, 0xdb, 0xa5]) },
+  { algoId: 4,  reportLen: 32,   bytes: Uint8Array.from([0x67, 0xe6, 0x09, 0x6a, 0x85, 0xae, 0x67, 0xbb, 0x72, 0xf3, 0x6e, 0x3c, 0x3a, 0xf5, 0x4f, 0xa5]) },
+  { algoId: 4,  reportLen: 32,   bytes: Uint8Array.from([0x6a, 0x09, 0xe6, 0x67, 0xbb, 0x67, 0xae, 0x85, 0x3c, 0x6e, 0xf3, 0x72, 0xa5, 0x4f, 0xf5, 0x3a]) },
+  { algoId: 5,  reportLen: 256,  bytes: Uint8Array.from([0x78, 0xa4, 0x6a, 0xd7, 0x56, 0xb7, 0xc7, 0xe8, 0xdb, 0x70, 0x20, 0x24, 0xee, 0xce, 0xbd, 0xc1]) },
+  { algoId: 6,  reportLen: 16,   bytes: Uint8Array.from([0x65, 0x78, 0x70, 0x61, 0x6e, 0x64, 0x20, 0x33, 0x32, 0x2d, 0x62, 0x79, 0x74, 0x65, 0x20, 0x6b]) },
+  { algoId: 6,  reportLen: 16,   bytes: Uint8Array.from([0x65, 0x78, 0x70, 0x61, 0x6e, 0x64, 0x20, 0x31, 0x36, 0x2d, 0x62, 0x79, 0x74, 0x65, 0x20, 0x6b]) },
+  { algoId: 7,  reportLen: 1024, bytes: Uint8Array.from([0x00, 0x00, 0x00, 0x00, 0x96, 0x30, 0x07, 0x77, 0x2c, 0x61, 0x0e, 0xee, 0xba, 0x51, 0x09, 0x99]) },
+  { algoId: 8,  reportLen: 1024, bytes: Uint8Array.from([0xa5, 0x63, 0x63, 0xc6, 0x84, 0x7c, 0x7c, 0xf8, 0x99, 0x77, 0x77, 0xee, 0x8d, 0x7b, 0x7b, 0xf6]) },
+  { algoId: 8,  reportLen: 1024, bytes: Uint8Array.from([0xc6, 0x63, 0x63, 0xa5, 0xf8, 0x7c, 0x7c, 0x84, 0xee, 0x77, 0x77, 0x99, 0xf6, 0x7b, 0x7b, 0x8d]) },
+  { algoId: 8,  reportLen: 1024, bytes: Uint8Array.from([0x50, 0xa7, 0xf4, 0x51, 0x53, 0x65, 0x41, 0x7e, 0xc3, 0xa4, 0x17, 0x1a, 0x96, 0x5e, 0x27, 0x3a]) },
+  { algoId: 8,  reportLen: 1024, bytes: Uint8Array.from([0x51, 0xf4, 0xa7, 0x50, 0x7e, 0x41, 0x65, 0x53, 0x1a, 0x17, 0xa4, 0xc3, 0x3a, 0x27, 0x5e, 0x96]) },
+  { algoId: 9,  reportLen: 640,  bytes: Uint8Array.from([0x22, 0xae, 0x28, 0xd7, 0x98, 0x2f, 0x8a, 0x42, 0xcd, 0x65, 0xef, 0x23, 0x91, 0x44, 0x37, 0x71]) },
+  { algoId: 9,  reportLen: 640,  bytes: Uint8Array.from([0x42, 0x8a, 0x2f, 0x98, 0xd7, 0x28, 0xae, 0x22, 0x71, 0x37, 0x44, 0x91, 0x23, 0xef, 0x65, 0xcd]) },
+  { algoId: 10, reportLen: 20,   bytes: Uint8Array.from([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10]) },
+  { algoId: 10, reportLen: 20,   bytes: Uint8Array.from([0x67, 0x45, 0x23, 0x01, 0xef, 0xcd, 0xab, 0x89, 0x98, 0xba, 0xdc, 0xfe, 0x10, 0x32, 0x54, 0x76]) },
+  { algoId: 11, reportLen: 64,   bytes: Uint8Array.from([0x08, 0xc9, 0xbc, 0xf3, 0x67, 0xe6, 0x09, 0x6a, 0x3b, 0xa7, 0xca, 0x84, 0x85, 0xae, 0x67, 0xbb]) },
+  { algoId: 12, reportLen: 72,   bytes: Uint8Array.from([0x88, 0x6a, 0x3f, 0x24, 0xd3, 0x08, 0xa3, 0x85, 0x2e, 0x8a, 0x19, 0x13, 0x44, 0x73, 0x70, 0x03]) },
+  { algoId: 12, reportLen: 72,   bytes: Uint8Array.from([0x24, 0x3f, 0x6a, 0x88, 0x85, 0xa3, 0x08, 0xd3, 0x13, 0x19, 0x8a, 0x2e, 0x03, 0x70, 0x73, 0x44]) },
+  { algoId: 13, reportLen: 192,  bytes: Uint8Array.from([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x82, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]) },
 ]);
 
 function toU8(bytes) {
@@ -79,9 +97,23 @@ function shannonEntropyJs(u8) {
 }
 
 /**
- * Compute Shannon entropy (0.000 .. 8.000 bits/byte) of a byte buffer.
- * Uses C++20/WASM when available and buffer fits scratch arena; falls back to JS.
+ * Distinguish well-known compressed stream headers from generic encrypted/packed data.
  */
+export function classifyHighEntropyKind(bytes, offset = 0) {
+  const u8 = toU8(bytes);
+  if (!u8 || offset < 0 || offset + 4 > u8.length) return 'encrypted-or-packed';
+  const b0 = u8[offset], b1 = u8[offset + 1], b2 = u8[offset + 2], b3 = u8[offset + 3];
+  if (b0 === 0x1f && b1 === 0x8b && b2 === 0x08) return 'compressed:gzip';
+  if (b0 === 0x28 && b1 === 0xb5 && b2 === 0x2f && b3 === 0xfd) return 'compressed:zstd';
+  if (b0 === 0x04 && b1 === 0x22 && b2 === 0x4d && b3 === 0x18) return 'compressed:lz4';
+  if (b0 === 0x50 && b1 === 0x4b && b2 === 0x03 && b3 === 0x04) return 'compressed:zip';
+  if (offset + 6 <= u8.length && b0 === 0xfd && b1 === 0x37 && b2 === 0x7a && b3 === 0x58 && u8[offset + 4] === 0x5a && u8[offset + 5] === 0x00) {
+    return 'compressed:xz';
+  }
+  if (b0 === 0x78 && (b1 === 0x01 || b1 === 0x5e || b1 === 0x9c || b1 === 0xda)) return 'compressed:zlib';
+  return 'encrypted-or-packed';
+}
+
 export function shannonEntropy(bytes, opts = null) {
   const u8 = toU8(bytes);
   if (!u8 || u8.length === 0) return 0;
@@ -103,10 +135,6 @@ export function shannonEntropy(bytes, opts = null) {
   return shannonEntropyJs(u8);
 }
 
-/**
- * Scan a buffer for high-entropy windows (encrypted/compressed/packed regions).
- * Returns [{ offset, address, size, entropy }].
- */
 export function scanHighEntropyWindows(bytes, {
   baseAddress = 0n,
   windowSize = 4096,
@@ -139,6 +167,7 @@ export function scanHighEntropyWindows(bytes, {
             address: base + BigInt(offset),
             size: windowSize,
             entropy: pairs[i * 2 + 1] / 1000,
+            kind: classifyHighEntropyKind(u8, offset),
           });
         }
         recordWasmCall('crypto_entropy');
@@ -149,22 +178,22 @@ export function scanHighEntropyWindows(bytes, {
     }
   }
 
-  // JS fallback
   const out = [];
   for (let pos = 0; pos + windowSize <= u8.length && out.length < maxHits; pos += stepSize) {
     const ent = shannonEntropyJs(u8.subarray(pos, pos + windowSize));
     if (Math.round(ent * 1000) >= threshX1000) {
-      out.push({ offset: pos, address: base + BigInt(pos), size: windowSize, entropy: ent });
+      out.push({
+        offset: pos,
+        address: base + BigInt(pos),
+        size: windowSize,
+        entropy: ent,
+        kind: classifyHighEntropyKind(u8, pos),
+      });
     }
   }
   return out;
 }
 
-/**
- * Scan a byte buffer for standard cryptographic constant tables (AES S-Box,
- * SHA-256 K/H0, MD5, ChaCha20, CRC32). Chunked across WASM scratch arena for
- * arbitrarily large binaries; falls back to JS when HEX_ENGINE=js.
- */
 export function scanCryptoConstants(bytes, {
   baseAddress = 0n,
   maxHits = 64,
@@ -213,7 +242,6 @@ export function scanCryptoConstants(bytes, {
     }
   }
 
-  // JS fallback
   const out = [];
   const limit = u8.length - 16;
   for (let i = 0; i <= limit && out.length < maxHits; i++) {
@@ -238,6 +266,9 @@ const CRYPTO_HW_RE = /^(?:aese|aesd|aesmc|aesimc|sha1[chmp]|sha1su[01]|sha256h2?
 const BITWISE_XOR_RE = /^(?:eor|eon|xor|pxor|vpxor|xorps|xorpd)$/i;
 const BITWISE_ROT_RE = /^(?:ror|extr|rol|rorx|shld|shrd)$/i;
 const BITWISE_SHIFT_RE = /^(?:lsl|lsr|asr|shl|shr|sar|sal|bic|orn|and|ands|orr|not|andn|pand|por|pslld|psrld|psllq|psrlq)$/i;
+const LOOP_BRANCH_RE = /^(?:b|b\.\w+|cbz|cbnz|tbz|tbnz|jmp|je|jne|jz|jnz|jl|jle|jg|jge|jb|jbe|ja|jae|loop\w*)$/i;
+const LOOP_LOAD_RE = /^(?:ldrb|ldrh|ldr|ldur|ldurb|mov|movzx|movsx)$/i;
+const LOOP_STORE_RE = /^(?:strb|strh|str|stur|sturb|mov)$/i;
 
 function isZeroingXor(mn, opsText) {
   if (!/^(?:eor|xor|pxor|xorps|xorpd)$/i.test(mn)) return false;
@@ -247,9 +278,15 @@ function isZeroingXor(mn, opsText) {
   return false;
 }
 
+function parseBranchTarget(opsText) {
+  const m = /#?(0x[0-9a-f]+)/i.exec(String(opsText || ''));
+  if (!m) return null;
+  try { return BigInt(m[1]); } catch { return null; }
+}
+
 /**
- * Analyze ARM64 / x86-64 instruction stream for hardware crypto instructions
- * and high bitwise/XOR/rotate density (excluding register-zeroing idioms).
+ * Analyze ARM64 / x86-64 instruction stream for hardware crypto instructions,
+ * high bitwise/XOR/rotate density, and simple single-XOR loops (load -> xor -> store + backedge).
  */
 export function analyzeCryptoInsnDensity(insns) {
   const list = Array.isArray(insns) ? insns : [];
@@ -258,8 +295,18 @@ export function analyzeCryptoInsnDensity(insns) {
   let xorCount = 0;
   let rotateCount = 0;
   let shiftMaskCount = 0;
+  let hasXorLoop = false;
 
-  for (const insn of list) {
+  const addrToIndex = new Map();
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i]?.address ?? list[i]?.addr;
+    if (a != null) {
+      try { addrToIndex.set(BigInt(a), i); } catch { /* ignore */ }
+    }
+  }
+
+  for (let i = 0; i < list.length; i++) {
+    const insn = list[i];
     const mn = String(insn?.mnemonic || insn?.mn || '').trim();
     if (!mn) continue;
     total++;
@@ -278,6 +325,29 @@ export function analyzeCryptoInsnDensity(insns) {
     }
     if (BITWISE_SHIFT_RE.test(mn)) {
       shiftMaskCount++;
+      continue;
+    }
+    if (!hasXorLoop && LOOP_BRANCH_RE.test(mn)) {
+      const target = parseBranchTarget(opsText);
+      const startIdx = target != null ? addrToIndex.get(target) : undefined;
+      if (startIdx != null && startIdx < i && i - startIdx <= 32) {
+        let sawLoad = false, sawXor = false, sawStore = false;
+        for (let k = startIdx; k < i; k++) {
+          const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim();
+          const ko = String(list[k]?.operands || list[k]?.ops || '');
+          const firstComma = ko.indexOf(',');
+          const dstIsMem = (firstComma >= 0 ? ko.slice(0, firstComma) : ko).includes('[');
+          if (BITWISE_XOR_RE.test(km) && !isZeroingXor(km, ko)) {
+            sawXor = true;
+            if (dstIsMem) { sawLoad = true; sawStore = true; }
+          } else if (LOOP_STORE_RE.test(km) && (km.toLowerCase().startsWith('st') || dstIsMem)) {
+            sawStore = true;
+          } else if (LOOP_LOAD_RE.test(km) && ko.includes('[') && !dstIsMem) {
+            sawLoad = true;
+          }
+        }
+        if (sawLoad && sawXor && sawStore) hasXorLoop = true;
+      }
     }
   }
   const bitwiseCount = xorCount + rotateCount + shiftMaskCount;
@@ -292,5 +362,6 @@ export function analyzeCryptoInsnDensity(insns) {
     bitwiseCount,
     bitwiseRatio,
     highBitwiseDensity,
+    hasXorLoop,
   };
 }

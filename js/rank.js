@@ -4,17 +4,17 @@ import { vendorOf, vendorInText, vendorConflicts, classFromSymbol } from './vend
 export const REASON = {
   STRING_REF: 'string-ref', NAME: 'name-match', CALLEE_NAME: 'callee-name', CALLER_NAME: 'caller-name',
   CALLS_MATCH: 'calls-match', CALLED_BY_MATCH: 'called-by-match', NUMERIC: 'numeric', STORE: 'store',
-  COMPARE: 'compare', POPULAR: 'popular', SIZE_PENALTY: 'size-penalty', VENDOR: 'vendor', NO_EVIDENCE: 'no-evidence',
+  COMPARE: 'compare', POPULAR: 'popular', SIZE_PENALTY: 'size-penalty', VENDOR: 'vendor', CRYPTO_CONST: 'crypto-const', NO_EVIDENCE: 'no-evidence',
 };
 const POINTS = {
   [REASON.STRING_REF]: 20, [REASON.NAME]: 25, [REASON.CALLEE_NAME]: 12, [REASON.CALLER_NAME]: 10,
   [REASON.CALLS_MATCH]: 8, [REASON.CALLED_BY_MATCH]: 8, [REASON.NUMERIC]: 12, [REASON.STORE]: 8,
-  [REASON.COMPARE]: 6, [REASON.POPULAR]: 5, [REASON.SIZE_PENALTY]: -6, [REASON.VENDOR]: -34,
+  [REASON.COMPARE]: 6, [REASON.POPULAR]: 5, [REASON.SIZE_PENALTY]: -6, [REASON.VENDOR]: -34, [REASON.CRYPTO_CONST]: 32,
 };
 const KIND_OF = {
   [REASON.STRING_REF]: 'fact', [REASON.NAME]: 'fact', [REASON.CALLEE_NAME]: 'fact', [REASON.CALLER_NAME]: 'fact',
   [REASON.CALLS_MATCH]: 'inference', [REASON.CALLED_BY_MATCH]: 'inference', [REASON.NUMERIC]: 'fact', [REASON.STORE]: 'fact',
-  [REASON.COMPARE]: 'fact', [REASON.POPULAR]: 'fact', [REASON.SIZE_PENALTY]: 'inference', [REASON.VENDOR]: 'fact',
+  [REASON.COMPARE]: 'fact', [REASON.POPULAR]: 'fact', [REASON.SIZE_PENALTY]: 'inference', [REASON.VENDOR]: 'fact', [REASON.CRYPTO_CONST]: 'fact',
 };
 const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
 
@@ -83,7 +83,7 @@ function fairPrefix(values, max) {
   return { values: out, complete: false };
 }
 
-export function rankCandidates({ goal, strings, program, symbols, region, limit = 40, vendors = null }) {
+export function rankCandidates({ goal, strings, program, symbols, region, limit = 40, vendors = null, cryptoConstants = null }) {
   const notes = [], byAddr = new Map();
   if (!goal) return { candidates: [], matchedStrings: [], notes: ['no-goal'] };
   const resultLimit = typeof limit === 'number' && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
@@ -132,6 +132,23 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     c.reasons.push({ code, points: Math.round(points), kind: reasonKind(code), detail: detail || null });
     c.score += points;
   };
+
+  if (hasProgram && Array.isArray(cryptoConstants) && cryptoConstants.length > 0 && (goal.id === 'crypto' || goal.expects?.crypto)) {
+    for (const hit of cryptoConstants.slice(0, 64)) {
+      if (hit?.address == null) continue;
+      const addr = BigInt(hit.address);
+      const bytes = Number.isSafeInteger(hit.length) && hit.length > 0 ? hit.length : 16;
+      const users = program.functionsReferencing(addr, bytes);
+      if (!users || !users.length) continue;
+      for (const u of users) {
+        const c = candidate(u.addr != null ? u.addr : u.site, u.site);
+        if (!c) continue;
+        addReason(c, REASON.CRYPTO_CONST, POINTS[REASON.CRYPTO_CONST], {
+          algo: hit.id, name: hit.name, addr, site: u.site,
+        });
+      }
+    }
+  }
 
   const matcher = combinedMatcher(goal);
   const matchedStrings = [];
