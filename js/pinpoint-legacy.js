@@ -28,6 +28,7 @@
  *
  * 日本語は作らない。返すのは構造と、掛け算の内訳だけ。
  */
+import { analyzeCryptoInsnDensity } from './analysis/crypto-entropy.js';
 import {
   matchField, typeFits, accessorKind, matchText, matchName, normalizeFieldName, fieldRole,
   extractCallableLeaf, numericSymbolRole,
@@ -1896,6 +1897,22 @@ async function verifyFunctionCandidate(c, goal, o) {
         count: rmw.rmwCount, fields: rmw.fields.slice(0, 6),
       }));
       c.verifications.push({ what: 'field-rmw', clamped: false, fields: rmw.fields.slice(0, 6) });
+    }
+  }
+
+  if (expects.crypto || goal?.id === 'crypto') {
+    const cd = analyzeCryptoInsnDensity(insns);
+    if (cd.hwCryptoCount > 0) {
+      c.evidence.push(evidence('fn-crypto-hw-insn', Math.min(1, 0.75 + 0.1 * cd.hwCryptoCount), {
+        hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount,
+      }));
+      c.verifications.push({ what: 'crypto-insn', hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount });
+    } else if (cd.highBitwiseDensity) {
+      c.evidence.push(evidence('fn-crypto-bitwise', Math.min(1, 0.55 + cd.bitwiseRatio), {
+        bitwiseCount: cd.bitwiseCount, bitwiseRatio: Math.round(cd.bitwiseRatio * 100) / 100,
+        xorCount: cd.xorCount, rotateCount: cd.rotateCount,
+      }));
+      c.verifications.push({ what: 'crypto-bitwise', bitwiseCount: cd.bitwiseCount, xorCount: cd.xorCount, rotateCount: cd.rotateCount });
     }
   }
 

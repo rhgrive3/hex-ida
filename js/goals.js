@@ -271,7 +271,7 @@ export const GOALS = [
       /(?:mit|apache|bsd|gpl|lgpl|mpl|isc|zlib|open[\s_-]*source|third[\s_-]*party|copyright|notice|spdx)[\s_-]*licen[cs]e/i,
       /licen[cs]e[\s_-]*(?:text|file|notice|header|agreement|url|link|page|view|dialog)/i,
     ],
-    expects: { call: true, compare: true },
+    expects: { call: true, compare: true, crypto: true },
   },
 ];
 

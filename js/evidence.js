@@ -361,6 +361,8 @@ export const EVIDENCE = deepFreeze({
   'fn-store-observed':  { lr: 1.9,  family: FAMILY.USAGE,    kind: 'fact' },
   'fn-field-rmw':       { lr: 2.8,  family: FAMILY.USAGE,    kind: 'fact' },
   'fn-field-rmw-clamped': { lr: 3.8, family: FAMILY.USAGE,   kind: 'fact' },
+  'fn-crypto-bitwise':    { lr: 3.2, family: FAMILY.USAGE,   kind: 'fact' },
+  'fn-crypto-hw-insn':    { lr: 6.5, family: FAMILY.USAGE,   kind: 'fact' },
   'fn-owner-class':     { lr: 3.4,  family: FAMILY.CONTEXT,  kind: 'fact', id: true },
   'fn-numeric':         { lr: 2.2,  family: FAMILY.USAGE,    kind: 'fact' },
   'fn-called-often':    { lr: 1.7,  family: FAMILY.USAGE,    kind: 'fact' },
