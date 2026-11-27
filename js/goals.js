@@ -91,9 +91,9 @@ export const GOALS = [
      */
     avoid: [
       /(?:multi[\s_-]*)?concurren(cy|t)/i,
-      /\bbid[\s_-]*floor\w*/i,
+      /\bbid[\s_-]*floor(?:[\s_-]*(?:currency|price|amount|usd|cpm|ecpm|value|rate)\b|\w*)/i,
       /\blocale\b|\bnslocale\b|currency[\s_-]*(?:identifier|code|symbol|formatter)|number[\s_-]*formatter/i,
-      /price[\s_-]*floor\w*/i,
+      /price[\s_-]*floor(?:[\s_-]*(?:currency|price|amount|usd|cpm|ecpm|value|rate)\b|\w*)/i,
       /costume|acoustic|coincid(?:e|ent|ence)/i,
       /(?:white|load|audio|stereo|color|channel)[\s_-]*balance/i,
     ],
@@ -880,9 +880,38 @@ export function normalizeIdentifierBoundaries(text) {
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
 }
 
-function matchTextSingle(goal, s) {
+function mapAvoidSpansToNormalized(s, rawSpans) {
+  if (!rawSpans || !rawSpans.length) return [];
+  const posMap = new Array(s.length);
+  let outLen = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (i > 0 && c >= 65 && c <= 90) {
+      const prev = s.charCodeAt(i - 1);
+      const next = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+      const prevLowerOrDigit = (prev >= 97 && prev <= 122) || (prev >= 48 && prev <= 57);
+      const prevUpper = prev >= 65 && prev <= 90;
+      const nextLower = next >= 97 && next <= 122;
+      if (prevLowerOrDigit || (prevUpper && nextLower)) outLen++;
+    }
+    posMap[i] = outLen;
+    outLen++;
+  }
+  const mapped = [];
+  for (const [lo, hi] of rawSpans) {
+    if (lo < hi && lo >= 0 && hi <= s.length) {
+      mapped.push([posMap[lo], posMap[hi - 1] + 1]);
+    }
+  }
+  return mapped;
+}
+
+function matchTextSingle(goal, s, extraBlocked = null, precomputedBlocked = null) {
   let best = null;
-  const blocked = avoidSpans(goal, s);
+  const blocked = precomputedBlocked ? precomputedBlocked : avoidSpans(goal, s);
+  if (extraBlocked && extraBlocked.length) {
+    for (const span of extraBlocked) blocked.push(span);
+  }
   const consider = (score, term, at) => {
     if (at != null && overlaps(blocked, at, term.length)) return;
     if (!best || score > best.score) best = { score, term };
@@ -989,9 +1018,12 @@ export function matchText(goal, text) {
   if (s.length < 2) return null;
   if (OBFUSCATED_OR_TABLE_RE.test(s) || isGarbledBinaryString(s)) return null;
   if (s.length >= 12 && (s.match(/[{}~^`$|&]/g) || []).length >= 4 && !/\b(?:function|return|if|for|while)\b/.test(s)) return null;
-  const rawBest = matchTextSingle(goal, s);
+  const rawBlocked = avoidSpans(goal, s);
+  const rawBest = matchTextSingle(goal, s, null, rawBlocked);
   const norm = normalizeIdentifierBoundaries(s);
-  const normBest = norm !== s ? matchTextSingle(goal, norm) : null;
+  const normBest = norm !== s
+    ? matchTextSingle(goal, norm, rawBlocked.length ? mapAvoidSpansToNormalized(s, rawBlocked) : null)
+    : null;
   let best = rawBest && normBest
     ? (normBest.score > rawBest.score ? normBest : rawBest)
     : (rawBest || normBest);

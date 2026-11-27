@@ -621,11 +621,11 @@ async function bindCodeGenModules(meta,ctx,o={}){
     const item={...c,name,key,executableRatio,tokenCoverage,score,maxRid};
     if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);
   }
-  const selected=new Map(),ambiguous=[];const margin=o.moduleAmbiguityMargin??0.10;
+  const selected=new Map(),ambiguous=[];const margin=o.moduleAmbiguityMargin??0.10,minTokenCoverage=o.minTokenCoverage??0.25;
   for(const image of images){
     const key=image.name.toLowerCase(),list=(groups.get(key)||[]).sort((a,b)=>b.score-a.score||(a.addr<b.addr?-1:1));if(!list.length)continue;
     const best=list[0],second=list[1];
-    if(best.tokenCoverage<0.95){ambiguous.push({image:image.name,reason:'token-coverage',candidates:list.length});continue;}
+    if(best.tokenCoverage<minTokenCoverage){ambiguous.push({image:image.name,reason:'token-coverage',candidates:list.length});continue;}
     if(second&&best.score-second.score<margin){ambiguous.push({image:image.name,reason:'candidate-margin',candidates:list.length,margin:best.score-second.score});continue;}
     selected.set(image.index,best);
   }

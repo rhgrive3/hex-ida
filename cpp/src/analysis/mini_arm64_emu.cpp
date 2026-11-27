@@ -270,8 +270,8 @@ HexStatus hex_arm64_emu_step(
   uint64_t next_pc = cur_pc + 4ULL;
   ++state->step_count;
 
-  // 1. NOP
-  if (insn == 0xD503201Fu) {
+  // 1. NOP / PAC / BTI hints (NOP, PACIAZ/SP, PACIBZ/SP, AUTIAZ/SP, AUTIBZ/SP, XPACLRI, BTI)
+  if ((insn & 0xFFFFF01Fu) == 0xD503201Fu) {
     state->pc = next_pc;
     return HEX_OK;
   }
@@ -289,8 +289,8 @@ HexStatus hex_arm64_emu_step(
     state->pc = target;
     return HEX_OK;
   }
-  if ((insn & 0xFFFFFC1Fu) == 0xD65F0000u) {
-    const uint32_t rn = (insn >> 5) & 31u;
+  if ((insn & 0xFFFFFC1Fu) == 0xD65F0000u || insn == 0xD65F0BFFu || insn == 0xD65F0FFFu) {
+    const uint32_t rn = (insn == 0xD65F0BFFu || insn == 0xD65F0FFFu) ? 30u : ((insn >> 5) & 31u);
     const uint64_t target = read_gpr(state, rn, false, true);
     state->pc = target;
     if (target == HEX_ARM64_EMU_SENTINEL_LR) {
@@ -759,6 +759,49 @@ HexStatus hex_arm64_emu_step(
       write_gpr(state, rt, static_cast<uint64_t>(sign_extend(v, width * 8u)), false, true);
     } else {
       return set_fault(state, HEX_ARM64_FAULT_UNSUPPORTED_INSN, HEX_ERR_UNSUPPORTED);
+    }
+    state->pc = next_pc;
+    return HEX_OK;
+  }
+
+  // 21. Load/Store Register (Unscaled Signed 9-bit Immediate: LDUR / STUR; GPR only)
+  if ((insn & 0x3F200C00u) == 0x38000000u) {
+    const uint32_t size = (insn >> 30) & 3u;
+    const uint32_t opc = (insn >> 22) & 3u;
+    // Reject PRFUM (size==3 && opc==2) and unallocated (opc==3 && size>=2)
+    if ((size == 3u && opc == 2u) || (opc == 3u && size >= 2u)) {
+      return set_fault(state, HEX_ARM64_FAULT_UNSUPPORTED_INSN, HEX_ERR_UNSUPPORTED);
+    }
+    const uint32_t width = 1u << size;
+    const int64_t imm9 = sign_extend((insn >> 12) & 0x1FFu, 9u);
+    const uint32_t rn = (insn >> 5) & 31u;
+    const uint32_t rt = insn & 31u;
+    const uint64_t addr = read_gpr(state, rn, true, true) + static_cast<uint64_t>(imm9);
+
+    if (opc == 0u) {
+      const uint64_t v = read_gpr(state, rt, false, size == 3u);
+      if (!mem_write(state, addr, width, v)) {
+        return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
+      }
+    } else if (opc == 1u) {
+      uint64_t v = 0ULL;
+      if (!mem_read(state, code_ptr, eff_len, addr, width, v)) {
+        return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
+      }
+      write_gpr(state, rt, v, false, size == 3u);
+    } else if (opc == 2u) {
+      uint64_t v = 0ULL;
+      if (!mem_read(state, code_ptr, eff_len, addr, width, v)) {
+        return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
+      }
+      write_gpr(state, rt, static_cast<uint64_t>(sign_extend(v, width * 8u)), false, true);
+    } else {
+      // opc == 3u && size < 2u: 32-bit sign-extending LDURSB/LDURSH Wt
+      uint64_t v = 0ULL;
+      if (!mem_read(state, code_ptr, eff_len, addr, width, v)) {
+        return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
+      }
+      write_gpr(state, rt, static_cast<uint64_t>(sign_extend(v, width * 8u)), false, false);
     }
     state->pc = next_pc;
     return HEX_OK;
