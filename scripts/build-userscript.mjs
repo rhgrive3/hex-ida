@@ -21,7 +21,7 @@ const releaseStatePath = resolve(root, 'userscript/release-version.json');
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/scan-worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 const OPTIONAL_BUNDLED_CLASSIC_ENTRIES = ['js/targets/architecture/x86_64/semantic-revalidation-worker.js'];
-const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js'];
+const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js', 'js/cache/hexdb/hexdb-worker.js'];
 
 async function bundleCss() {
   const result = await build({ absWorkingDir: root, stdin: { contents: '@import "./css/app.css";\n@import "./css/ux.css";', resolveDir: root, loader: 'css' }, bundle: true, write: false, minify: true, sourcemap: false, legalComments: 'none', target: ['safari17.4'] });

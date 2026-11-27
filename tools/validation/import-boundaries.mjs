@@ -27,6 +27,11 @@ const FUTURE_GENERIC_DIRS = [
   'js/semantics/memoryssa',
   'js/analysis/alias',
   'js/analysis/dataflow',
+  'js/analysis/types/core',
+  'js/analysis/signature',
+  'js/analysis/slicing',
+  'js/analysis/recovery',
+  'js/analysis/deobf',
 ];
 
 function walk(dir, out = []) {

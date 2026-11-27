@@ -3915,6 +3915,14 @@ export function installProductUI(app) {
       }
       return;
     }
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && key === 'z' && !/^(INPUT|TEXTAREA|SELECT)$/.test(tag) && app?.v6) {
+      if (event.shiftKey ? app.v6.typeTx?.canRedo?.() : app.v6.typeTx?.canUndo?.()) {
+        event.preventDefault();
+        if (event.shiftKey) app.v6.redoTypeEdit();
+        else app.v6.undoTypeEdit();
+        return;
+      }
+    }
     if (hasOverlay || event.metaKey || event.ctrlKey || event.altKey) return;
     const interactiveControl = !!(target && (
       /^(BUTTON|A|SUMMARY)$/.test(tag)
@@ -3923,7 +3931,15 @@ export function installProductUI(app) {
       || target.closest?.('.tok-fn-link, .tok-addr-link')
     ));
     if (event.key === '?') {
-      if (interactiveControl) return;
+      if (key === 'y' && !event.shiftKey && target?.closest?.('.tok-fn-link, .tok-addr-link, [data-entity-kind]') && app?.v6) {
+      event.preventDefault();
+      const tokEl = target.closest('.tok-fn-link, .tok-addr-link, [data-entity-kind]');
+      const tokName = tokEl.getAttribute('data-tok') || tokEl.textContent?.trim() || '';
+      const tokAddr = symbolAddress(app, tokName) ?? currentFunctionAddr(app) ?? currentAddress(app);
+      app.v6.openTypeEditPopover({ va: tokAddr, name: tokName, kind: tokEl.getAttribute('data-entity-kind') || 'function' });
+      return;
+    }
+    if (interactiveControl) return;
       event.preventDefault();
       router.navigate('/help');
       return;
@@ -3955,6 +3971,29 @@ export function installProductUI(app) {
       }
       return activeFnAddr();
     };
+    if (key === 'y' && app?.v6) {
+      event.preventDefault();
+      requireFile(app, () => {
+        const a = activeFnAddr();
+        if (event.shiftKey) app.v6.openManualRecoveryPopover({ va: a });
+        else app.v6.openTypeEditPopover({ va: a });
+      });
+      return;
+    }
+    if (key === 's' && event.shiftKey && app?.v6) {
+      event.preventDefault();
+      requireFile(app, () => {
+        app.v6.openSlicePanel({ va: activeLineAddr() });
+      });
+      return;
+    }
+    if (key === 'e' && event.shiftKey && app?.v6) {
+      event.preventDefault();
+      requireFile(app, () => {
+        app.v6.openExportInteropModal();
+      });
+      return;
+    }
     if (key === 'n' && !event.shiftKey) {
       event.preventDefault();
       requireFile(app, () => {
@@ -4095,6 +4134,7 @@ export function installProductUI(app) {
   const destroy = () => {
     router.stop(); cleanupViewport(); addressBar.destroy(); commandCenter.destroy();
     document.removeEventListener('keydown', shortcut, true);
+    app?.v6?.closeActivePopover?.();
     document.removeEventListener('hex:file-opened', onFileOpened);
     document.removeEventListener('hex:language-changed', onLanguageChanged);
     window.removeEventListener('pagehide', onPageHide);
