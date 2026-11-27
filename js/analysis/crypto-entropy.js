@@ -263,15 +263,15 @@ export function scanCryptoConstants(bytes, {
 }
 
 const CRYPTO_HW_RE = /^(?:aese|aesd|aesmc|aesimc|sha1[chmp]|sha1su[01]|sha256h2?|sha256su[01]|sha512h2?|sha512su[01]|pmull2?|crc32c?[bhwdx]|aesenc|aesenclast|aesdec|aesdeclast|aesimc|aeskeygenassist|vaes\w+|sha256rnds2|sha256msg[12]|sha1rnds4|sha1nexte|sha1msg[12]|pclmulqdq|vpclmulqdq)$/i;
-const BITWISE_XOR_RE = /^(?:eor|eon|xor|pxor|vpxor|xorps|xorpd)$/i;
+const BITWISE_XOR_RE = /^(?:eor|eor3|eon|xor|pxor|vpxor|vpxord|vpxorq|xorps|xorpd|vxorps|vxorpd)$/i;
 const BITWISE_ROT_RE = /^(?:ror|extr|rol|rorx|shld|shrd)$/i;
 const BITWISE_SHIFT_RE = /^(?:lsl|lsr|asr|shl|shr|sar|sal|bic|orn|and|ands|orr|not|andn|pand|por|pslld|psrld|psllq|psrlq)$/i;
 const LOOP_BRANCH_RE = /^(?:b|b\.\w+|cbz|cbnz|tbz|tbnz|jmp|je|jne|jz|jnz|jl|jle|jg|jge|jb|jbe|ja|jae|loop\w*)$/i;
-const LOOP_LOAD_RE = /^(?:ldrb|ldrh|ldr|ldur|ldurb|mov|movzx|movsx)$/i;
-const LOOP_STORE_RE = /^(?:strb|strh|str|stur|sturb|mov)$/i;
+const LOOP_LOAD_RE = /^(?:ldrb|ldrh|ldr|ldur|ldurb|ldurh|ld1|ldp|mov|movzx|movsx|movq|movd|movdqu|movdqa|movups|movaps|vmovdqu\w*|vmovdqa\w*|vmovups|vmovaps)$/i;
+const LOOP_STORE_RE = /^(?:strb|strh|str|stur|sturb|sturh|st1|stp|mov|movq|movd|movdqu|movdqa|movups|movaps|vmovdqu\w*|vmovdqa\w*|vmovups|vmovaps)$/i;
 
 function isZeroingXor(mn, opsText) {
-  if (!/^(?:eor|xor|pxor|xorps|xorpd)$/i.test(mn)) return false;
+  if (!/^(?:eor|xor|pxor|vpxor|vpxord|vpxorq|xorps|xorpd|vxorps|vxorpd)$/i.test(mn)) return false;
   const parts = opsText.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
   if (parts.length === 2) return parts[0] === parts[1];
   if (parts.length === 3) return parts[1] === parts[2];
@@ -330,7 +330,7 @@ export function analyzeCryptoInsnDensity(insns) {
     if (!hasXorLoop && LOOP_BRANCH_RE.test(mn)) {
       const target = parseBranchTarget(opsText);
       const startIdx = target != null ? addrToIndex.get(target) : undefined;
-      if (startIdx != null && startIdx < i && i - startIdx <= 32) {
+      if (startIdx != null && startIdx < i && i - startIdx <= 64) {
         let sawLoad = false, sawXor = false, sawStore = false;
         for (let k = startIdx; k < i; k++) {
           const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim();
@@ -340,6 +340,7 @@ export function analyzeCryptoInsnDensity(insns) {
           if (BITWISE_XOR_RE.test(km) && !isZeroingXor(km, ko)) {
             sawXor = true;
             if (dstIsMem) { sawLoad = true; sawStore = true; }
+            else if (ko.includes('[')) { sawLoad = true; }
           } else if (LOOP_STORE_RE.test(km) && (km.toLowerCase().startsWith('st') || dstIsMem)) {
             sawStore = true;
           } else if (LOOP_LOAD_RE.test(km) && ko.includes('[') && !dstIsMem) {
@@ -364,4 +365,72 @@ export function analyzeCryptoInsnDensity(insns) {
     highBitwiseDensity,
     hasXorLoop,
   };
+}
+
+/**
+ * Scan binary file regions (prioritizing rodata/const/data then executable code)
+ * for cryptographic constants and high-entropy encrypted/packed windows.
+ */
+export async function scanBinaryRegionsCrypto(file, regions, {
+  maxBytes = 16 * 1024 * 1024,
+  maxConstHits = 64,
+  maxEntropyHits = 32,
+  windowSize = 4096,
+  step = 4096,
+  threshold = 7.2,
+  engine = null,
+} = {}) {
+  const empty = { constants: [], highEntropy: [], scannedBytes: 0, complete: true };
+  if (!file || typeof file.slice !== 'function' || !Array.isArray(regions) || regions.length === 0) {
+    return empty;
+  }
+  const priority = (r) => {
+    const s = String(r?.section || r?.name || '').toLowerCase();
+    if (/rodata|const|rdata/.test(s)) return 0;
+    if (/data/.test(s) && !r?.exec) return 1;
+    if (r?.exec || /text/.test(s)) return 2;
+    return 3;
+  };
+  const live = regions
+    .filter((r) => r && !r.zerofill && r.size != null && BigInt(r.size) >= 16n && r.fileOffset != null && BigInt(r.fileOffset) >= 0n)
+    .sort((a, b) => priority(a) - priority(b));
+
+  const constants = [];
+  const highEntropy = [];
+  let scannedBytes = 0;
+  let complete = true;
+
+  for (const r of live) {
+    if (scannedBytes >= maxBytes) { complete = false; break; }
+    const avail = maxBytes - scannedBytes;
+    const rawSize = Number(BigInt(r.size));
+    if (!Number.isFinite(rawSize) || rawSize < 16) continue;
+    const take = Math.min(rawSize, avail);
+    if (take < rawSize) complete = false;
+    const fileOff = Number(BigInt(r.fileOffset));
+    if (!Number.isSafeInteger(fileOff) || fileOff < 0) continue;
+    let buf;
+    try {
+      buf = new Uint8Array(await file.slice(fileOff, fileOff + take).arrayBuffer());
+    } catch {
+      complete = false;
+      continue;
+    }
+    if (buf.length < 16) continue;
+    scannedBytes += buf.length;
+    const baseAddress = BigInt(r.vmAddr ?? 0n);
+    const section = String(r.section || r.name || '');
+
+    if (constants.length < maxConstHits) {
+      const hits = scanCryptoConstants(buf, { baseAddress, maxHits: maxConstHits - constants.length, engine });
+      for (const h of hits) constants.push({ ...h, section });
+    }
+    if (highEntropy.length < maxEntropyHits && buf.length >= windowSize) {
+      const wins = scanHighEntropyWindows(buf, {
+        baseAddress, windowSize, step, threshold, maxHits: maxEntropyHits - highEntropy.length, engine,
+      });
+      for (const w of wins) highEntropy.push({ ...w, section });
+    }
+  }
+  return { constants, highEntropy, scannedBytes, complete };
 }

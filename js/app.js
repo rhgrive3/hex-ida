@@ -6,6 +6,7 @@
  * それに panels.js のシート群をつなぐ。
  */
 import { Store, loadPrefs, savePrefs } from './state.js';
+import { scanBinaryRegionsCrypto } from './analysis/crypto-entropy.js';
 import { Backend } from './backend.js';
 import { CodeViewer } from './viewer.js';
 import { addrHex, addrText, sizeText } from './format.js';
@@ -247,6 +248,9 @@ export class App {
     this.schemasBusyGeneration = -1;
     this.stringsBusy = null;
     this.stringsBusyEpoch = -1;
+    this.cryptoScan = null;
+    this.cryptoScanBusy = null;
+    this.cryptoScanBusyEpoch = -1;
     this.lastGoal = null;       // 直近に調べた目的
     // Objective-C のクラスとフィールド。x0+0x20 を self.hp と言えるようにする索引。
     this.fields = EMPTY_FIELDS;
@@ -840,6 +844,9 @@ export class App {
       clearSchemaRecoveryTasks(this);
       this.featureIndex = null;
       this.stringIndex = null;
+      this.cryptoScan = null;
+      this.cryptoScanBusy = null;
+      this.cryptoScanBusyEpoch = -1;
       this.autoReport = null;
       this.pinnedCache = null;
       this.fields = EMPTY_FIELDS;
@@ -1095,6 +1102,31 @@ export class App {
    * 文字列を集める。__cstring などが第一候補で、なければ今のセクション。
    * ファイル単位でキャッシュする（何度も走査しない）。
    */
+  /**
+   * 暗号定数（AES/SHA/ChaCha20等）と高エントロピー領域をファイル単位で走査・キャッシュする。
+   */
+  async ensureCryptoScan() {
+    if (this.cryptoScan) return this.cryptoScan;
+    const epoch = this.backend?.gen ?? 0;
+    if (this.cryptoScanBusy && this.cryptoScanBusyEpoch === epoch) return this.cryptoScanBusy;
+    this.cryptoScanBusyEpoch = epoch;
+    this.cryptoScanBusy = (async () => {
+      try {
+        const res = await scanBinaryRegionsCrypto(this.backend?.file, this.store.get('regions') || []);
+        if (epoch === (this.backend?.gen ?? 0)) this.cryptoScan = res;
+        return epoch === (this.backend?.gen ?? 0) ? res : null;
+      } catch {
+        return { constants: [], highEntropy: [], scannedBytes: 0, complete: false };
+      } finally {
+        if (this.cryptoScanBusyEpoch === epoch) {
+          this.cryptoScanBusy = null;
+          this.cryptoScanBusyEpoch = -1;
+        }
+      }
+    })();
+    return this.cryptoScanBusy;
+  }
+
   async ensureStrings(onProgress) {
     if (this.analysisResumeReady) { try { await this.analysisResumeReady; } catch { /* best effort */ } }
     // Positional `(onProgress)` is the canonical signature; an options object
