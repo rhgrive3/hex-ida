@@ -15,6 +15,7 @@ enum HexDemangleKind {
   HEX_DEMANGLE_RUST_V0     = 2u,
   HEX_DEMANGLE_RUST_LEGACY = 3u,
   HEX_DEMANGLE_SWIFT       = 4u,
+  HEX_DEMANGLE_MSVC_CPP    = 5u,
 };
 
 // Dedicated fixed I/O buffers (isolated from shared engine scratch / type arena)

@@ -290,6 +290,108 @@ const CURATED_PACK_SPECS = [
           uint32_t notify_post(const char *name);
           void *xpc_connection_create_mach_service(const char *name, void *targetq, uint64_t flags);
 
+
+          /* CoreGraphics & QuartzCore */
+          void CGContextSaveGState(void *c);
+          void CGContextRestoreGState(void *c);
+          void CGContextDrawImage(void *c, CGRect rect, void *image);
+          void CGContextFillRect(void *c, CGRect rect);
+          void *CGBitmapContextCreate(void *data, size_t width, size_t height, size_t bitsPerComponent, size_t bytesPerRow, void *space, uint32_t bitmapInfo);
+          void *CGBitmapContextCreateImage(void *context);
+          void *CGColorSpaceCreateDeviceRGB(void);
+          void CGColorSpaceRelease(void *space);
+          void CGImageRelease(void *image);
+          void *CGPathCreateMutable(void);
+          void CGPathRelease(void *path);
+
+          /* Network.framework (iOS 12+ Modern Networking & TLS Pinning) */
+          void *nw_endpoint_create_host(const char *hostname, const char *port);
+          void *nw_parameters_create_secure_tcp(void *configure_tls, void *configure_tcp);
+          void *nw_connection_create(void *endpoint, void *parameters);
+          void nw_connection_set_queue(void *connection, void *queue);
+          void nw_connection_start(void *connection);
+          void nw_connection_cancel(void *connection);
+          void nw_connection_send(void *connection, void *content, void *context, bool is_complete, void *completion);
+          void nw_connection_receive(void *connection, uint32_t minimum_incomplete_length, uint32_t maximum_length, void *completion);
+          void *nw_tls_copy_sec_protocol_options(void *options);
+          void sec_protocol_options_set_verify_block(void *options, void *verify_block, void *verify_block_queue);
+          void sec_protocol_options_set_min_tls_protocol_version(void *options, uint16_t version);
+
+          /* Apple Compression.framework (LZFSE / LZ4 / ZLIB / LZMA) */
+          size_t compression_encode_buffer(uint8_t *dst_buffer, size_t dst_size, const uint8_t *src_buffer, size_t src_size, void *scratch_buffer, int algorithm);
+          size_t compression_decode_buffer(uint8_t *dst_buffer, size_t dst_size, const uint8_t *src_buffer, size_t src_size, void *scratch_buffer, int algorithm);
+          int compression_stream_init(void *stream, int operation, int algorithm);
+          int compression_stream_process(void *stream, int flags);
+          int compression_stream_destroy(void *stream);
+
+          /* Metal & Additional Security / Anti-Tamper */
+          id MTLCreateSystemDefaultDevice(void);
+          OSStatus SecTrustSetAnchorCertificates(const void *trust, const void *anchorCertificates);
+          const void *SecPolicyCreateSSL(bool server, const void *hostname);
+          int csops(int pid, uint32_t ops, void *useraddr, size_t usersize);
+          int sandbox_check(int pid, const char *operation, int type);
+
+          /* Extended UIKit / Foundation / Biometrics / WebKit / StoreKit Interfaces */
+          @interface UIApplication : NSObject
+          + (id)sharedApplication;
+          - (bool)openURL:(id)url;
+          - (bool)canOpenURL:(id)url;
+          @end
+          @interface UIWindow : NSObject
+          - (void)makeKeyAndVisible;
+          - (void)setRootViewController:(id)vc;
+          @end
+          @interface UINavigationController : NSObject
+          - (void)pushViewController:(id)vc animated:(bool)animated;
+          - (id)popViewControllerAnimated:(bool)animated;
+          @end
+          @interface UIAlertController : NSObject
+          + (id)alertControllerWithTitle:(id)title message:(id)message preferredStyle:(NSInteger)style;
+          - (void)addAction:(id)action;
+          @end
+          @interface NSURLRequest : NSObject
+          + (id)requestWithURL:(id)url;
+          - (id)URL;
+          - (id)HTTPMethod;
+          - (id)HTTPBody;
+          - (id)allHTTPHeaderFields;
+          @end
+          @interface NSMutableURLRequest : NSObject
+          - (void)setHTTPMethod:(id)method;
+          - (void)setHTTPBody:(id)body;
+          - (void)setValue:(id)value forHTTPHeaderField:(id)field;
+          @end
+          @interface NSData : NSObject
+          - (const void *)bytes;
+          - (NSUInteger)length;
+          - (id)base64EncodedStringWithOptions:(NSUInteger)options;
+          - (bool)writeToFile:(id)path atomically:(bool)useAuxiliaryFile;
+          @end
+          @interface NSString : NSObject
+          - (const char *)UTF8String;
+          - (NSUInteger)length;
+          - (bool)isEqualToString:(id)aString;
+          - (id)dataUsingEncoding:(NSUInteger)encoding;
+          @end
+          @interface NSNotificationCenter : NSObject
+          + (id)defaultCenter;
+          - (void)postNotificationName:(id)aName object:(id)anObject;
+          - (void)addObserver:(id)observer selector:(SEL)aSelector name:(id)aName object:(id)anObject;
+          @end
+          @interface LAContext : NSObject
+          - (bool)canEvaluatePolicy:(NSInteger)policy error:(id *)error;
+          - (void)evaluatePolicy:(NSInteger)policy localizedReason:(id)localizedReason reply:(id)reply;
+          @end
+          @interface WKWebView : NSObject
+          - (id)loadRequest:(id)request;
+          - (void)evaluateJavaScript:(id)javaScriptString completionHandler:(id)completionHandler;
+          @end
+          @interface SKPaymentQueue : NSObject
+          + (id)defaultQueue;
+          - (void)addPayment:(id)payment;
+          - (void)finishTransaction:(id)transaction;
+          @end
+
           /* Core ObjC Interfaces (UIKit / Foundation / URLSession) */
           @interface UIView : NSObject
           - (void)addSubview:(id)view;

@@ -277,6 +277,7 @@ function buildHexEngineUnified(tmpDir) {
       '-fdata-sections',
       '-DHEX_UNIFIED_WASM=1',
       ...(fs.existsSync(path.join(ROOT, 'cpp/src/analysis/swift_demangle_wasm.cpp')) ? ['-DHEX_HAS_SWIFT_DEMANGLE=1'] : []),
+      ...(fs.existsSync(path.join(ROOT, 'cpp/src/analysis/msvc_demangle_wasm.cpp')) ? ['-DHEX_HAS_MSVC_DEMANGLE=1'] : []),
       `-I${path.join(ROOT, 'cpp/include')}`,
       `-I${stubInc}`,
       '-c',
@@ -356,6 +357,53 @@ function buildHexEngineUnified(tmpDir) {
       swiftDemangleSrc,
     ], { stdio: 'inherit' });
     extraObjs.push(swiftObj);
+  }
+
+
+  // Compile LLVM upstream MicrosoftDemangle TU with -Os and freestanding stub headers.
+  const msvcDemangleSrc = path.join(ROOT, 'cpp/src/analysis/msvc_demangle_wasm.cpp');
+  if (fs.existsSync(msvcDemangleSrc)) {
+    const msvcStubInc = path.join(tmpDir, 'msvc-freestanding-inc');
+    fs.mkdirSync(path.join(msvcStubInc, 'llvm', 'Demangle'), { recursive: true });
+    for (const rel of [
+      'array', 'cassert', 'cctype', 'cstdint', 'cstdio', 'cstdlib', 'cstring',
+      'optional', 'string', 'string_view', 'tuple', 'utility',
+      'llvm/Demangle/Demangle.h', 'llvm/Demangle/DemangleConfig.h',
+      'llvm/Demangle/StringViewExtras.h', 'llvm/Demangle/Utility.h',
+    ]) {
+      fs.writeFileSync(path.join(msvcStubInc, rel), '#pragma once\n', 'utf8');
+    }
+    fs.writeFileSync(path.join(msvcStubInc, 'DemangleConfig.h'), '#pragma once\n', 'utf8');
+    fs.writeFileSync(
+      path.join(msvcStubInc, 'llvm/Demangle/MicrosoftDemangle.h'),
+      `#include "${path.join(ROOT, 'third_party/llvm-demangle/MicrosoftDemangle.h')}"\n`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(msvcStubInc, 'llvm/Demangle/MicrosoftDemangleNodes.h'),
+      `#include "${path.join(ROOT, 'third_party/llvm-demangle/MicrosoftDemangleNodes.h')}"\n`,
+      'utf8'
+    );
+    const msvcObj = path.join(tmpDir, 'msvc_demangle_wasm.o');
+    execFileSync('clang++', [
+      '--target=wasm32',
+      '-std=c++20',
+      '-Os',
+      '-nostdlib',
+      '-fno-exceptions',
+      '-fno-rtti',
+      '-mbulk-memory',
+      '-ffunction-sections',
+      '-fdata-sections',
+      '-DHEX_UNIFIED_WASM=1',
+      `-I${path.join(ROOT, 'cpp/include')}`,
+      `-I${msvcStubInc}`,
+      '-c',
+      '-o',
+      msvcObj,
+      msvcDemangleSrc,
+    ], { stdio: 'inherit' });
+    extraObjs.push(msvcObj);
   }
 
   const rawWasm = path.join(tmpDir, 'hex_engine.raw.wasm');

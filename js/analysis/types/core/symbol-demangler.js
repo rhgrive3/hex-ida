@@ -14,6 +14,7 @@ export const DEMANGLE_KIND = Object.freeze({
   RUST_V0: 2,
   RUST_LEGACY: 3,
   SWIFT: 4,
+  MSVC_CPP: 5,
 });
 
 const DOMAIN = 'symbol_demangle';
@@ -25,6 +26,7 @@ const RUST_LEGACY_HASH_RE = /17h[0-9a-f]{16}E$/;
 
 export function detectMangleKind(name) {
   if (typeof name !== 'string' || name.length < 3) return DEMANGLE_KIND.NONE;
+  if (name.startsWith('?') && name.length >= 4) return DEMANGLE_KIND.MSVC_CPP;
   if (
     name.startsWith('$s') || name.startsWith('$S') || name.startsWith('$e') ||
     name.startsWith('_$s') || name.startsWith('_$S') || name.startsWith('_$e') ||

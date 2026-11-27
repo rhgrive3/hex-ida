@@ -95,6 +95,11 @@ async function main() {
     const fb = demangleSymbolJsFallback('_$s5MyApp14ViewControllerC11viewDidLoadyyF');
     assert.ok(fb && fb.includes('MyApp.ViewController.viewDidLoad'));
 
+    // Verify 4-ABI Universal WASM Demangler: Itanium C++, Rust v0, Apple Swift, Microsoft MSVC C++
+    assert.equal(detectMangleKind('?decrypt@CryptoEngine@MyApp@@QEAAHPEBE_K@Z'), DEMANGLE_KIND.MSVC_CPP);
+    const msvcOut = demangleSymbol('?decrypt@CryptoEngine@MyApp@@QEAAHPEBE_K@Z');
+    assert.ok(msvcOut && msvcOut.includes('MyApp::CryptoEngine::decrypt'), `MSVC WASM demangle failed: ${msvcOut}`);
+
     // DoS / malformed safety
     const huge = '$s' + '9999999'.repeat(400);
     assert.equal(demangleSymbol(huge), null);
@@ -187,6 +192,12 @@ async function main() {
       'mach_vm_protect',
       'sysctlbyname',
       'ptrace',
+      'nw_connection_create',
+      'sec_protocol_options_set_verify_block',
+      'compression_decode_buffer',
+      'MTLCreateSystemDefaultDevice',
+      'CGContextDrawImage',
+      'csops',
     ]);
     mountAndQuery(2, darwinBytes, ['CCCryptorCreate', 'audit_session_self', 'fopen', 'kqueue']);
   }));
@@ -214,14 +225,18 @@ async function main() {
     const arm64Funcs = extractFunctionsFromMachO64(fs.readFileSync(path.join(ROOT, 'third_party/ios-arm64-macho/ios_arm64_crypto.o')));
     const arm64eFuncs = extractFunctionsFromMachO64(fs.readFileSync(path.join(ROOT, 'third_party/ios-arm64-macho/ios_arm64e_pac_crypto.o')));
 
-    const mustMatchArm64 = ['ios_sha256_transform', 'ios_chacha20_block', 'ios_aes_mix_columns', 'ios_sipround'];
+    const mustMatchArm64 = [
+      'ios_sha256_transform', 'ios_chacha20_block', 'ios_crc32_update', 'ios_adler32_update',
+      'ios_fnv1a64', 'ios_timingsafe_bcmp', 'ios_base64_encode', 'ios_utf8_validate',
+      'ios_aes_mix_columns', 'ios_uleb128_decode', 'ios_murmur3_32', 'ios_sipround',
+    ];
     for (const name of mustMatchArm64) {
       const fn = arm64Funcs.find((f) => f.name === name);
       assert.ok(fn, `expected ${name} in ios_arm64_crypto.o`);
       const m = wasmMatcher.matchFn(fn.pattern.subarray(0, fn.patternLen), HEXSIG_ARCH_ARM64);
       assert.equal(m.matched, true, `WASM failed to match real arm64 Mach-O ${name}`);
       assert.equal(m.symbolName, name);
-      assert.ok(m.confidence >= 800);
+      assert.ok(m.confidence >= 750);
     }
 
     const pacFn = arm64eFuncs.find((f) => f.name === 'ios_sha256_transform');

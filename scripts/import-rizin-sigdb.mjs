@@ -441,27 +441,27 @@ function alignArm64Pattern(rawPat, rawMask) {
     const w = ((rawPat[off]) | (rawPat[off + 1] << 8) | (rawPat[off + 2] << 16) | (rawPat[off + 3] << 24)) >>> 0;
 
     let normMask = 0xffffffff;
-    if ((wMask & 0xfc000000) === 0xfc000000) {
-      if ((w & 0x1f000000) === 0x10000000) {
+    if (((wMask & 0xfc000000) >>> 0) === 0xfc000000) {
+      if (((w & 0x1f000000) >>> 0) === 0x10000000) {
         normMask = 0x9f00001f;
         const rd = w & 31;
         if (rd < 31) adrpMask |= (1 << rd);
-      } else if ((w & 0x7c000000) === 0x14000000) {
+      } else if (((w & 0x7c000000) >>> 0) === 0x14000000) {
         normMask = 0xfc000000;
-      } else if ((w & 0xff000010) === 0x54000000) {
+      } else if (((w & 0xff000010) >>> 0) === 0x54000000) {
         normMask = 0xff00001f;
-      } else if ((w & 0x7e000000) === 0x34000000) {
+      } else if (((w & 0x7e000000) >>> 0) === 0x34000000) {
         normMask = 0xff00001f;
-      } else if ((w & 0x7e000000) === 0x36000000) {
+      } else if (((w & 0x7e000000) >>> 0) === 0x36000000) {
         normMask = 0xfff8001f;
-      } else if ((w & 0x3b000000) === 0x18000000) {
+      } else if (((w & 0x3b000000) >>> 0) === 0x18000000) {
         normMask = 0xff00001f;
-      } else if ((w & 0x7f800000) === 0x11000000) {
+      } else if (((w & 0x7f800000) >>> 0) === 0x11000000) {
         const rn = (w >>> 5) & 31;
         const rd = w & 31;
         if (rn < 31 && (adrpMask & (1 << rn)) !== 0) normMask = 0xffc003ff;
         if (rd < 31) adrpMask &= ~(1 << rd);
-      } else if ((w & 0x3b000000) === 0x39000000) {
+      } else if (((w & 0x3b000000) >>> 0) === 0x39000000) {
         const rn = (w >>> 5) & 31;
         const rt = w & 31;
         if (rn < 31 && (adrpMask & (1 << rn)) !== 0) normMask = 0xffc003ff;
