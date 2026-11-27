@@ -1,7 +1,7 @@
 import { Sheet, el, button, list, groupRow, tapRow, toast, alertDialog, userError } from "../../ui.js";
-import { addrHex, addrText, parseAddress, parseHexPattern } from "../../format.js";
+import { addrHex, addrText, parseAddress, parseAddressExpr, parseHexPattern } from "../../format.js";
 import { numberPattern } from "../numeric-pattern.js";
-import { t } from "../../i18n.js";
+import { t, pick } from "../../i18n.js";
 import { queryStrings } from "../explorer-index.js";
 
 export function showJump(app) {
@@ -44,11 +44,114 @@ export function showJump(app) {
   }
   sheet.body.append(quick);
 
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  const savedBookmarks = (app.bookmarks?.list?.() || []).slice(0, 8);
+  if (savedBookmarks.length) {
+    const bmList = list();
+    bmList.append(groupRow(pick("★ ブックマーク", "★ Bookmarks")));
+    for (const bm of savedBookmarks) {
+      let bmAddr = null;
+      try { bmAddr = BigInt(bm.addr); } catch { continue; }
+      const hex = addrHex(bmAddr);
+      bmList.append(tapRow(bm.name || hex, {
+        sub: bm.note ? String(bm.note) : "",
+        right: hex,
+        onTap: () => {
+          sheet.close();
+          if (!app.goToAddress(bmAddr, { announce: true })) return;
+          const row = app.viewer?.rowOfAddress?.(bmAddr);
+          if (row != null) { app.viewer.select(row, false); app.store.set({ selectedRow: row }); }
+        },
+      }));
+    }
+    if (bmList.children.length > 1) sheet.body.append(bmList);
+  }
+
+  input.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "Enter") go();
+  });
   setTimeout(() => input.focus(), 50);
 
+  function resolveExactSymbolOrBookmark(raw) {
+    const q = String(raw || "").trim().toLowerCase();
+    if (!q) return null;
+    const bookmarks = app.bookmarks?.list?.() || [];
+    for (const bm of bookmarks) {
+      const name = String(bm?.name || "").toLowerCase();
+      if (name && name === q && bm?.addr != null) {
+        try { return BigInt(bm.addr); } catch { /* ignore */ }
+      }
+    }
+    const sym = app.symbols;
+    const renames = sym?.renames instanceof Map ? sym.renames : null;
+    if (renames) {
+      for (const [addrKey, name] of renames) {
+        if (String(name || "").toLowerCase() === q) {
+          try { return BigInt(addrKey); } catch { /* ignore */ }
+        }
+      }
+    }
+    const names = sym && Array.isArray(sym.names) ? sym.names : [];
+    for (let i = 0; i < names.length; i++) {
+      if (String(names[i] || "").toLowerCase() === q && sym.addrs?.[i] != null) return sym.addrs[i];
+    }
+    return null;
+  }
+
+  function resolveSymbolOrBookmark(raw) {
+    const q = String(raw || "").trim().toLowerCase();
+    if (!q) return null;
+    const bookmarks = app.bookmarks?.list?.() || [];
+    for (const bm of bookmarks) {
+      const name = String(bm?.name || "").toLowerCase();
+      if (name && name === q && bm?.addr != null) {
+        try { return BigInt(bm.addr); } catch { /* ignore */ }
+      }
+    }
+    const sym = app.symbols;
+    const renames = sym?.renames instanceof Map ? sym.renames : null;
+    if (renames) {
+      for (const [addrKey, name] of renames) {
+        if (String(name || "").toLowerCase() === q) {
+          try { return BigInt(addrKey); } catch { /* ignore */ }
+        }
+      }
+    }
+    const names = sym && Array.isArray(sym.names) ? sym.names : [];
+    for (let i = 0; i < names.length; i++) {
+      if (String(names[i] || "").toLowerCase() === q && sym.addrs?.[i] != null) return sym.addrs[i];
+    }
+    const sub = /^sub_?([0-9a-f]+)$/i.exec(q);
+    if (sub) { try { return BigInt("0x" + sub[1]); } catch { /* ignore */ } }
+    for (const bm of bookmarks) {
+      const hay = [bm?.name, bm?.note, bm?.tag, ...(Array.isArray(bm?.tags) ? bm.tags : [])].filter(Boolean).join(" ").toLowerCase();
+      if (hay.includes(q) && bm?.addr != null) {
+        try { return BigInt(bm.addr); } catch { /* ignore */ }
+      }
+    }
+    if (renames) {
+      for (const [addrKey, name] of renames) {
+        if (String(name || "").toLowerCase().includes(q)) {
+          try { return BigInt(addrKey); } catch { /* ignore */ }
+        }
+      }
+    }
+    for (let i = 0; i < names.length; i++) {
+      if (String(names[i] || "").toLowerCase().includes(q) && sym.addrs?.[i] != null) return sym.addrs[i];
+    }
+    return null;
+  }
+
+  function resolveJumpTarget(raw) {
+    const exact = resolveExactSymbolOrBookmark(raw);
+    if (exact != null) return exact;
+    const expr = parseAddressExpr(raw, resolveExactSymbolOrBookmark);
+    if (expr != null && expr >= 0n) return expr;
+    return resolveSymbolOrBookmark(raw);
+  }
+
   function go() {
-    const v = parseAddress(input.value);
+    const v = resolveJumpTarget(input.value);
     if (v == null) { toast(t("jump.invalid")); return; }
     sheet.close();
     if (!app.goToAddress(v, { announce: true })) return;
@@ -214,10 +317,19 @@ export function showSearch(app) {
           sub: it.text,
           onTap: () => {
             sheet.close();
-            app.viewer.goToRow(it.row, "third");
-            app.viewer.mark(it.row);
-            app.viewer.select(it.row, false);
-            app.store.set({ selectedRow: it.row });
+            if (it.addr != null && typeof app.goToAddress === "function") {
+              app.goToAddress(it.addr, { announce: true });
+              const row = app.viewer?.rowOfAddress?.(it.addr) ?? it.row;
+              if (row != null) {
+                app.viewer?.select?.(row, false);
+                app.store?.set?.({ selectedRow: row });
+              }
+            } else {
+              app.viewer.goToRow(it.row, "third");
+              app.viewer.mark(it.row);
+              app.viewer.select(it.row, false);
+              app.store.set({ selectedRow: it.row });
+            }
           },
         }));
       }
@@ -441,8 +553,7 @@ export function showXrefs(app, target) {
         sub:`${addrHex(site)} · ${String(row.kind || row.refKind || 'reference')}`,
         onTap:() => {
           sheet.close();
-          if (fn?.start != null && app.openFunctionReport) app.openFunctionReport(fn.start);
-          else app.goToAddress(site, { announce:true });
+          app.goToAddress(site, { announce:true });
         },
       }));
     }

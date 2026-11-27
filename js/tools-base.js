@@ -1155,91 +1155,161 @@ export async function showGlobals(app) {
    名前とメモ
    ══════════════════════════════════════════════════════════ */
 
-function notePersistenceFailure(app, action = '変更') {
+function notePersistenceFailure(app, action = pick('変更', 'Changes')) {
   const code = app.notes?.lastSaveError?.code || 'STORAGE_ERROR';
-  alertDialog('保存できませんでした',
-    `${action}はこの画面には残っていますが、端末へ保存できていません（${code}）。\n` +
-    '「自分で付けた名前とメモ」を開くと保存の再試行と書き出しができます。ページを閉じる前にバックアップしてください。');
+  alertDialog(
+    pick('保存できませんでした', 'Could not save'),
+    pick(
+      `${action}はこの画面には残っていますが、端末へ保存できていません（${code}）。\n` +
+      '「自分で付けた名前とメモ」を開くと保存の再試行と書き出しができます。ページを閉じる前にバックアップしてください。',
+      `${action} remain active in this view, but could not be saved locally (${code}).\n` +
+      'Open "Saved names & notes" to retry saving or export a backup before closing the page.',
+    ),
+  );
 }
 
 export function showRename(app, addr) {
-  const sheet = new Sheet('名前を付ける');
+  const sheet = new Sheet(pick('名前を付ける', 'Rename'));
   const cur = app.symbols.nameAt(addr);
+  let initialName = app.notes.nameOf(addr) || '';
+  let initialComment = app.notes.comment(addr) || '';
   sheet.body.append(el('div', 'hint',
     addrHex(addr) + '\n' +
-    '分かったことに、その場で名前を付けておきます。\n' +
-    '命令一覧・関数一覧・呼び出し元まで、いっぺんに新しい名前になります。'));
-  if (cur) sheet.body.append(kvRow('いまの名前', readableName(cur)));
+    pick(
+      '分かったことに、その場で名前を付けておきます。\n命令一覧・関数一覧・呼び出し元まで、いっぺんに新しい名前になります。',
+      'Assign a custom name here. It updates disassembly, functions, and cross-references immediately.',
+    )));
+  if (cur) sheet.body.append(kvRow(pick('いまの名前', 'Current name'), readableName(cur)));
 
-  const nameIn = input('例: ダメージ計算', app.notes.nameOf(addr) || '');
-  sheet.body.append(field(nameIn, '決定', apply));
-  nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') apply(); });
-  setTimeout(() => nameIn.focus(), 50);
+  const nameIn = input(pick('例: ダメージ計算', 'e.g. calc_damage'), initialName);
+  sheet.body.append(field(nameIn, pick('決定', 'Save'), apply));
+  nameIn.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') apply();
+  });
+  setTimeout(() => { nameIn.focus(); nameIn.select?.(); }, 50);
 
-  const memo = textArea(app.notes.comment(addr) || '', 4);
-  sheet.body.append(heading('メモ（覚えておきたいこと）'), memo);
-  sheet.body.append(field(el('span'), 'メモを保存', () => {
-    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, 'メモ'); return; }
-    toast('メモを保存しました');
+  const memo = textArea(initialComment, 4);
+  sheet.body.append(heading(pick('メモ（覚えておきたいこと）', 'Comment')), memo);
+  sheet.body.append(field(el('span'), pick('メモを保存', 'Save comment'), () => {
+    const nextComment = memo.value.trim();
+    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
+    if (nextComment !== initialComment) {
+      app.recordUndo?.({ type: 'comment', addr, before: initialComment, after: nextComment });
+      initialComment = nextComment;
+    }
+    toast(nextComment ? pick('メモを保存しました', 'Comment saved') : pick('メモを削除しました', 'Comment deleted'));
   }));
 
-  if (app.notes.nameOf(addr)) {
-    sheet.body.append(button('付けた名前を消す', 'tb-btn danger', () => {
+  if (initialName) {
+    sheet.body.append(button(pick('付けた名前を消す', 'Remove custom name'), 'tb-btn danger', () => {
       const saved = app.notes.setName(addr, '');
       app.symbols.rename(addr, '');
       app.viewer.setSymbols(app.symbols);
-      if (!saved) { notePersistenceFailure(app, '名前の削除'); return; }
+      app.updateChrome?.();
+      if (initialName) {
+        app.recordUndo?.({ type: 'name', addr, before: initialName, after: '' });
+        initialName = '';
+      }
+      if (!saved) { notePersistenceFailure(app, pick('名前の削除', 'Name removal')); return; }
       sheet.close();
-      toast('元の名前に戻しました');
+      toast(pick('元の名前に戻しました', 'Restored original name'));
     }));
   }
 
   function apply() {
     const v = nameIn.value.trim();
-    const saved = app.notes.setName(addr, v);
+    const savedName = app.notes.setName(addr, v);
     app.symbols.rename(addr, v);
     app.viewer.setSymbols(app.symbols);
-    app.updateChrome();
-    if (!saved) { notePersistenceFailure(app, '名前'); return; }
+    const nextComment = memo.value.trim();
+    let savedComment = true;
+    if (nextComment !== initialComment) {
+      savedComment = app.notes.setComment(addr, memo.value);
+      app.recordUndo?.({ type: 'comment', addr, before: initialComment, after: nextComment });
+      initialComment = nextComment;
+    }
+    app.updateChrome?.();
+    if (v !== initialName) {
+      app.recordUndo?.({ type: 'name', addr, before: initialName, after: v });
+      initialName = v;
+    }
+    if (!savedName) { notePersistenceFailure(app, pick('名前', 'Name')); return; }
+    if (!savedComment) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
     sheet.close();
-    toast(v ? '「' + v + '」にしました' : '元の名前に戻しました');
+    toast(v ? pick('「' + v + '」にしました', `Renamed to "${v}"`) : pick('元の名前に戻しました', 'Restored original name'));
   }
 }
 
 export function showComment(app, addr) {
-  const sheet = new Sheet('メモ');
-  sheet.body.append(el('div', 'hint', addrHex(addr) + '\nこの行についてのメモを残します。'));
-  const memo = textArea(app.notes.comment(addr) || '', 5);
-  sheet.body.append(memo);
-  sheet.body.append(field(el('span'), '保存', () => {
-    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, 'メモ'); return; }
+  const sheet = new Sheet(pick('メモ', 'Comment'));
+  const before = app.notes.comment(addr) || '';
+  sheet.body.append(el('div', 'hint', addrHex(addr) + '\n' + pick('この行についてのメモを残します。', 'Attach a note to this address.')));
+  const memo = textArea(before, 5);
+  const save = () => {
+    const after = memo.value.trim();
+    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
+    if (after !== before) {
+      app.recordUndo?.({ type: 'comment', addr, before, after });
+    }
     sheet.close();
-    toast('保存しました');
-  }));
+    toast(after ? pick('保存しました', 'Comment saved') : pick('メモを削除しました', 'Comment deleted'));
+  };
+  memo.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      save();
+    }
+  });
+  sheet.body.append(memo);
+  const actions = field(el('span'), pick('保存', 'Save'), save);
+  if (before) {
+    actions.append(button(pick('削除', 'Delete'), 'chip danger', () => {
+      if (!app.notes.setComment(addr, '')) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
+      app.recordUndo?.({ type: 'comment', addr, before, after: '' });
+      sheet.close();
+      toast(pick('メモを削除しました', 'Comment deleted'));
+    }));
+  }
+  sheet.body.append(actions);
+  setTimeout(() => { memo.focus(); memo.select?.(); }, 50);
 }
 
 export function showNotes(app) {
-  const sheet = new Sheet('自分で付けた名前とメモ');
+  const sheet = new Sheet(pick('自分で付けた名前とメモ', 'Saved names & notes'));
   const render = () => {
     body.replaceChildren();
     if (app.notes.dirty) {
-      const warning = noteBox('まだ端末へ保存できていない変更があります。ページを閉じる前に再試行するか、下の「書き出す」でバックアップしてください。', 'warn');
+      const warning = noteBox(pick(
+        'まだ端末へ保存できていない変更があります。ページを閉じる前に再試行するか、下の「書き出す」でバックアップしてください。',
+        'Some changes have not been saved locally yet. Retry saving or export a backup before closing the page.',
+      ), 'warn');
       const retry = el('div', 'chips');
-      retry.append(button('保存を再試行', 'chip', () => {
-        if (app.notes.save()) { toast('保存しました'); render(); }
-        else notePersistenceFailure(app, '変更');
+      retry.append(button(pick('保存を再試行', 'Retry save'), 'chip', () => {
+        if (app.notes.save()) { toast(pick('保存しました', 'Saved')); render(); }
+        else notePersistenceFailure(app, pick('変更', 'Changes'));
       }));
       warning.append(retry);
       body.append(warning);
     }
     const names = app.notes.nameEntries();
-    body.append(el('div', 'hint',
+    const comments = [];
+    if (app.notes?.comments instanceof Map) {
+      for (const [k, v] of app.notes.comments) {
+        if (!v) continue;
+        try { comments.push({ addr: BigInt(k), text: v }); } catch { /* skip */ }
+      }
+    }
+    body.append(el('div', 'hint', pick(
       '名前 ' + names.length + ' 個、メモ ' + app.notes.commentCount() + ' 個。\n' +
-      'この端末のブラウザに保存されています（どこにも送信されません）。'));
+      'この端末のブラウザに保存されています（どこにも送信されません）。',
+      `${names.length} names, ${app.notes.commentCount()} comments.\n` +
+      'Stored locally in this browser (never uploaded).',
+    )));
 
     const l = list();
-    l.append(groupRow('名前'));
-    if (!names.length) l.append(tapRow('まだありません', { disabled: true }));
+    l.append(groupRow(pick('名前', 'Names')));
+    if (!names.length) l.append(tapRow(pick('まだありません', 'None yet'), { disabled: true }));
     for (const n of names.slice(0, 300)) {
       l.append(tapRow(n.name, {
         sub: addrHex(n.addr),
@@ -1248,38 +1318,67 @@ export function showNotes(app) {
     }
     body.append(l);
 
+    const cl = list();
+    cl.append(groupRow(pick('メモ', 'Comments')));
+    if (!comments.length) cl.append(tapRow(pick('まだありません', 'None yet'), { disabled: true }));
+    for (const c of comments.slice(0, 300)) {
+      const row = tapRow(c.text, {
+        sub: addrHex(c.addr),
+        onTap: () => { sheet.close(); app.goToAddress(c.addr, { announce: true }); },
+      });
+      const del = button(pick('削除', 'Delete'), 'chip danger', (e) => {
+        e.stopPropagation();
+        const prev = app.notes.comment(c.addr) || '';
+        if (!app.notes.setComment(c.addr, '')) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
+        app.recordUndo?.({ type: 'comment', addr: c.addr, before: prev, after: '' });
+        render();
+        toast(pick('メモを削除しました', 'Comment deleted'));
+      });
+      del.addEventListener('keydown', (e) => e.stopPropagation());
+      row.append(del);
+      cl.append(row);
+    }
+    body.append(cl);
+
     const chips = el('div', 'chips');
-    chips.append(button('書き出す（バックアップ）', 'chip', () => {
-      copyText(app.notes.toJSON(), 'メモ');
+    chips.append(button(pick('書き出す（バックアップ）', 'Export (backup)'), 'chip', () => {
+      copyText(app.notes.toJSON(), pick('メモ', 'Notes'));
     }));
-    chips.append(button('読み込む', 'chip', () => {
-      const sh = new Sheet('読み込む');
-      sh.body.append(para('書き出した内容を貼り付けてください。いまの内容と合わさります。'));
+    chips.append(button(pick('読み込む', 'Import'), 'chip', () => {
+      const sh = new Sheet(pick('読み込む', 'Import notes'));
+      sh.body.append(para(pick('書き出した内容を貼り付けてください。いまの内容と合わさります。', 'Paste exported JSON. Entries will be merged with your current notes.')));
       const ta = textArea('', 8);
-      sh.body.append(ta, field(el('span'), '取り込む', () => {
+      sh.body.append(ta, field(el('span'), pick('取り込む', 'Import'), () => {
         try {
           const n = app.notes.fromJSON(ta.value);
           for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, e.name);
           app.viewer.setSymbols(app.symbols);
+          app.updateChrome?.();
           sh.close();
           render();
-          if (!app.notes.lastMutationSaved) { notePersistenceFailure(app, '取り込み'); return; }
-          toast(n + ' 件を取り込みました');
-        } catch (err) { alertDialog('読み込めません', userError(err, 'メモの形式を確認してください。')); }
+          if (!app.notes.lastMutationSaved) { notePersistenceFailure(app, pick('取り込み', 'Import')); return; }
+          toast(pick(n + ' 件を取り込みました', `Imported ${n} items`));
+        } catch (err) { alertDialog(pick('読み込めません', 'Import failed'), userError(err, pick('メモの形式を確認してください。', 'Check the JSON format.'))); }
       }));
     }));
-    chips.append(button('全部消す', 'chip danger', () => {
-      alertDialog('全部消しますか', 'このファイルに付けた名前とメモを消します。元に戻せません。', {
-        confirmLabel: '消す',
-        onConfirm: () => {
-          for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
-          const saved = app.notes.clear();
-          app.viewer.setSymbols(app.symbols);
-          render();
-          if (!saved) { notePersistenceFailure(app, '全消去'); return; }
-          toast('消しました');
+    chips.append(button(pick('全部消す', 'Clear all'), 'chip danger', () => {
+      alertDialog(
+        pick('全部消しますか', 'Clear all notes?'),
+        pick('このファイルに付けた名前とメモを消します。元に戻せません。', 'Delete all custom names and comments for this file? This cannot be undone.'),
+        {
+          confirmLabel: pick('消す', 'Clear'),
+          onConfirm: () => {
+            for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
+            const saved = app.notes.clear();
+            app.clearUndoHistory?.();
+            app.viewer.setSymbols(app.symbols);
+            app.updateChrome?.();
+            render();
+            if (!saved) { notePersistenceFailure(app, pick('全消去', 'Clear all')); return; }
+            toast(pick('消しました', 'Cleared'));
+          },
         },
-      });
+      );
     }));
     body.append(chips);
   };
@@ -1333,15 +1432,19 @@ export function showPatches(app, targetAddr = null) {
     l.append(groupRow(pick('書き換えの一覧（' + items.length + '）', 'Staged patches (' + items.length + ')')));
     if (!items.length) l.append(tapRow(pick('まだありません', 'None yet'), { disabled: true, sub: pick('命令を長押しして「書き換える」から作れます。', 'Long-press an instruction and choose Patch to add one.') }));
     for (const it of items) {
-      l.append(tapRow((it.addr != null ? addrHex(it.addr) : '+' + it.offset) + '  ' + (it.text || ''), {
+      const row = tapRow((it.addr != null ? addrHex(it.addr) : '+' + it.offset) + '  ' + (it.text || ''), {
         sub: hexOf(it.before) + '  →  ' + hexOf(it.after),
         onTap: () => {
+          const rect = row.getBoundingClientRect?.();
+          const mx = rect ? Math.round(rect.left + rect.width / 2) : window.innerWidth / 2;
+          const my = rect ? Math.round(rect.bottom + 4) : 200;
           menu([
             { label: pick('この場所へ移動', 'Jump to location'), action: () => { sheet.close(); if (it.addr != null) app.goToAddress(it.addr, { announce: true }); } },
-            { label: pick('この書き換えを取り消す', 'Undo this patch'), action: () => { app.patches.remove(it.offset); app.store?.set?.({ patches: app.patches.size }); render(); toast(pick('取り消しました', 'Undone')); } },
-          ], window.innerWidth / 2, 200);
+            { label: pick('この書き換えを取り消す', 'Undo this patch'), action: () => { app.patches.remove(it.offset); app.recordUndo?.({ type: 'patch', action: 'remove', offset: it.offset, before: it, after: null, meta: { addr: it.addr, text: it.text } }); app.store?.set?.({ patches: app.patches.size }); render(); toast(pick('取り消しました', 'Undone')); } },
+          ], mx, my);
         },
-      }));
+      });
+      l.append(row);
     }
     body.append(l);
 
@@ -1357,7 +1460,7 @@ export function showPatches(app, targetAddr = null) {
       chips.append(button(pick('アドレスを指定して書き換える', 'Patch by address'), 'chip', () => {
         const sh = new Sheet(pick('場所を指定', 'Choose address'));
         const a = input('0x100004000', targetAddr != null ? addrHex(targetAddr) : undefined);
-        sh.body.append(para(pick('書き換えたい命令のアドレスを入れてください。', 'Enter the address of the instruction to patch.')), field(a, pick('進む', 'Next'), async () => {
+        const goAddr = async () => {
           let addr;
           const raw = a.value.trim();
           if (!raw) { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
@@ -1365,14 +1468,35 @@ export function showPatches(app, targetAddr = null) {
           sh.close();
           const insn = await instructionAt(app, addr);
           showPatchEditor(app, addr, insn, { onChange: render });
-        }));
+        };
+        a.addEventListener('keydown', (e) => {
+          if (e.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter') { e.preventDefault(); goAddr(); }
+        });
+        sh.body.append(para(pick('書き換えたい命令のアドレスを入れてください。', 'Enter the address of the instruction to patch.')), field(a, pick('進む', 'Next'), goAddr));
+        setTimeout(() => { a.focus(); a.select?.(); }, 50);
       }));
     } else {
       body.append(noteBox(capability.reason));
     }
     if (items.length) {
       chips.append(button(pick('書き換えたファイルを保存', 'Export patched file'), 'chip strong', () => savePatched(app)));
-      chips.append(button(pick('全部取り消す', 'Clear all'), 'chip danger', () => { app.patches.clear(); app.store?.set?.({ patches: app.patches.size }); render(); }));
+      chips.append(button(pick('全部取り消す', 'Clear all'), 'chip danger', () => {
+        alertDialog(
+          pick('すべてのパッチを取り消しますか？', 'Clear all patches?'),
+          pick(`${items.length} 件の書き換えをすべて取り消します。元に戻せません。`, `Remove all ${items.length} staged patches? This cannot be undone.`),
+          {
+            confirmLabel: pick('全部取り消す', 'Clear all'),
+            onConfirm: () => {
+              app.patches.clear();
+              app.clearUndoHistory?.();
+              app.store?.set?.({ patches: app.patches.size });
+              render();
+              toast(pick('すべてのパッチを取り消しました', 'All patches cleared'));
+            },
+          },
+        );
+      }));
     }
     body.append(chips);
   };
@@ -1442,6 +1566,7 @@ export async function showPatchEditor(app, addr, insnArg, options = {}) {
     const undoBar = el('div', 'chips');
     undoBar.append(button(pick('元に戻す (Undo)', 'Undo patch'), 'chip danger', () => {
       app.patches.remove(activePatch.offset);
+      app.recordUndo?.({ type: 'patch', action: 'remove', offset: activePatch.offset, before: activePatch, after: null, meta: { addr: activePatch.addr, text: activePatch.text } });
       app.store?.set?.({ patches: app.patches.size });
       onChange?.();
       sheet.close();
@@ -1457,39 +1582,64 @@ export async function showPatchEditor(app, addr, insnArg, options = {}) {
   const fnRem = fnRange && fnRange.end != null && BigInt(fnRange.end) > addr ? Number(BigInt(fnRange.end) - addr) : regionRem;
   const availableBytes = Math.max(0, Math.min(regionRem, fileRem, fnRem));
 
-  const suggestions = suggestPatches(insn ? insn.mnemonic : '', insn ? insn.operands : '', addr, { availableBytes });
+  const atFunctionStart = !fnRange || fnRange.start == null || BigInt(fnRange.start) === BigInt(addr);
+  const arch = app.store?.get?.('fileInfo')?.arch || '';
+  const suggestions = suggestPatches(insn ? insn.mnemonic : '', insn ? insn.operands : '', addr, { availableBytes, atFunctionStart, arch });
   const l = list();
-  l.append(groupRow('よく使う書き換え'));
+  l.append(groupRow(pick('よく使う書き換え', 'Common patches')));
   for (const s of suggestions) {
-    l.append(tapRow(s.label, { sub: s.why + '\n→ ' + s.text, onTap: () => apply(s.text) }));
+    l.append(tapRow(s.label, { sub: s.why + '\n→ ' + s.text, onTap: () => (s.hex ? applyRawHex(s.text) : apply(s.text)) }));
   }
   sheet.body.append(l);
 
-  sheet.body.append(heading('自分で書く'));
-  const asm = input('例: mov w0, #1 または mov w0, #1; ret');
-  sheet.body.append(field(asm, '書き換える', () => apply(asm.value)));
-  sheet.body.append(el('div', 'hint',
+  sheet.body.append(heading(pick('自分で書く', 'Custom patch')));
+  const asm = input(pick('例: mov w0, #1 または mov w0, #1; ret', 'e.g. mov w0, #1 or mov w0, #1; ret'));
+  asm.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') { e.preventDefault(); apply(asm.value); }
+  });
+  sheet.body.append(field(asm, pick('書き換える', 'Patch'), () => apply(asm.value)));
+  sheet.body.append(el('div', 'hint', pick(
     '使えるのは nop / ret / brk / mov / movz / movn / b / bl / b.条件 / cbz / cbnz / tbz / tbnz です（; 区切りで複数命令も可）。\n' +
-    'それ以外は 16 進で直接どうぞ（例: 1F 20 03 D5）。'));
+    'それ以外は 16 進で直接どうぞ（例: 1F 20 03 D5）。',
+    'Supports nop / ret / brk / mov / movz / movn / b / bl / b.<cond> / cbz / cbnz / tbz / tbnz (separate multiple instructions with ;).\n' +
+    'For other instructions, enter raw hex bytes below (e.g. 1F 20 03 D5).',
+  )));
 
   const hex = input('1F 20 03 D5');
-  sheet.body.append(field(hex, '16 進で書き換える', () => {
+  const applyHex = () => {
     const bytes = parseHexBytes(hex.value);
-    if (!bytes || bytes.length < 4 || bytes.length % 4 !== 0) { toast('4 バイト単位（8 桁の倍数）で指定してください'); return; }
+    if (!bytes || bytes.length < 4 || bytes.length % 4 !== 0) {
+      toast(pick('4 バイト単位（8 桁の倍数）で指定してください', 'Specify a multiple of 4 bytes (8 hex digits).'));
+      return;
+    }
     commit(bytes, hex.value);
-  }));
+  };
+  hex.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') { e.preventDefault(); applyHex(); }
+  });
+  sheet.body.append(field(hex, pick('16 進で書き換える', 'Patch hex'), applyHex));
+
+  function applyRawHex(text) {
+    const bytes = parseHexBytes(text);
+    if (!bytes || !bytes.length) { toast(pick('16進バイトの形式が不正です', 'Invalid hex bytes')); return; }
+    commit(bytes, text, { rawHex: true });
+  }
 
   async function apply(text) {
     const built = assemble(text, addr);
-    if (built.error) { alertDialog('組み立てられません', built.error); return; }
+    if (built.error) { alertDialog(pick('組み立てられません', 'Assembly error'), built.error); return; }
     commit(built.bytes, text);
   }
 
-  async function commit(bytes, text) {
-    const valid = bytes.length === 4
-      ? validatePatchRange(region, addr, bytes.length, file && file.size, true)
-      : validateMultiInstructionPatchRange(region, addr, bytes.length, file && file.size);
-    if (valid.error) { alertDialog('登録できません', valid.error); return; }
+  async function commit(bytes, text, { rawHex = false } = {}) {
+    const valid = rawHex
+      ? validatePatchRange(region, addr, bytes.length, file && file.size, false)
+      : (bytes.length === 4
+        ? validatePatchRange(region, addr, bytes.length, file && file.size, true)
+        : validateMultiInstructionPatchRange(region, addr, bytes.length, file && file.size));
+    if (valid.error) { alertDialog(pick('登録できません', 'Cannot stage patch'), valid.error); return; }
     const before = await app.backend.readAt(addr, bytes.length)
       .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
     if (!isAppEpochCurrent(app, snap, sheet)) return;
@@ -1497,8 +1647,10 @@ export async function showPatchEditor(app, addr, insnArg, options = {}) {
       alertDialog(pick('登録できません', 'Cannot stage patch'), pick('元のバイトを読み取れませんでした。', 'Could not read original bytes.'));
       return;
     }
+    const prevPatch = app.patches?.at?.(valid.fileOffset) || null;
     try {
       app.patches.add(valid.fileOffset, before, bytes, { addr, text });
+      app.recordUndo?.({ type: 'patch', action: 'add', offset: valid.fileOffset, before, after: bytes, prevPatch, meta: { addr, text } });
       app.store?.set?.({ patches: app.patches.size });
     } catch (err) {
       alertDialog(pick('登録できません', 'Cannot stage patch'), userError(err, pick('既存のパッチと重なっています。先のパッチを元に戻してからお試しください。', 'Overlaps an existing patch. Undo the previous patch first.')));
@@ -1535,6 +1687,11 @@ async function savePatched(app) {
    ══════════════════════════════════════════════════════════ */
 
 export function showDebugger(app, addr) {
+  const arch = String(app?.store?.get?.('fileInfo')?.arch || '').toLowerCase();
+  if (arch && !instructionPatchArchitectureSupported(arch)) {
+    toast(pick(`エミュレータは現在 ARM64 のみ対応しています（現在: ${arch}）。`, `Emulator currently supports ARM64 only (current: ${arch}).`));
+    return null;
+  }
   let activeRun = null;
   const abortRun = (reason = 'debugger-operation-replaced') => {
     if (activeRun && !activeRun.signal.aborted) activeRun.abort(reason);

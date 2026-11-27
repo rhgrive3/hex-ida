@@ -6,6 +6,7 @@ import { cpuName, subtypeBase, cpuArchName, sliceArchName, selectDefaultFatSlice
 import { dyldCacheAuthority, malformedAppleCodeSignature, parseAppleCodeSignature } from '../apple/knowledge.js';
 import { deepFreeze } from '../core/identity/index.js';
 import { IncrementalSha256 } from '../cache/content-identity.js';
+import { getEngineMode, wasmSha256Hash } from '../core/hex-engine-bridge.js';
 
 
 const ISSUED_MACHO_IMAGES = new WeakMap();
@@ -35,13 +36,38 @@ function containerOffset(value) {
   throw new TypeError('Mach-O container offset must be a non-negative safe integer or bigint');
 }
 
-function residentDigest(bytes) {
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength > MACHO_METADATA_LIMITS.inputBytes) return null;
-  return `bin_sha256_${new IncrementalSha256().update(bytes).hexDigest()}`;
+const HEX_TABLE = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+const WASM_SHA256_FAST_LIMIT = 1048576;
+
+function digestBytesToHex(digest) {
+  let hex = '';
+  for (let i = 0; i < digest.length; i += 1) hex += HEX_TABLE[digest[i]];
+  return hex;
 }
 
-function sliceIdentity(binaryIdentity, bytes, offset, architecture) {
-  const digest = residentDigest(bytes);
+function sameByteSlice(a, b) {
+  return a === b || (
+    a instanceof Uint8Array
+    && b instanceof Uint8Array
+    && a.buffer === b.buffer
+    && a.byteOffset === b.byteOffset
+    && a.byteLength === b.byteLength
+  );
+}
+
+function residentDigest(bytes, engineOpts = undefined) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength > MACHO_METADATA_LIMITS.inputBytes) return null;
+  if (bytes.byteLength <= WASM_SHA256_FAST_LIMIT && getEngineMode(engineOpts) !== 'js' && typeof wasmSha256Hash === 'function') {
+    const raw = wasmSha256Hash(bytes, engineOpts);
+    if (raw instanceof Uint8Array && raw.length === 32) {
+      return `bin_sha256_${digestBytesToHex(raw)}`;
+    }
+  }
+  return `bin_sha256_${new IncrementalSha256(engineOpts).update(bytes).hexDigest()}`;
+}
+
+function sliceIdentity(binaryIdentity, bytes, offset, architecture, precomputedDigest = undefined, engineOpts = undefined) {
+  const digest = precomputedDigest !== undefined ? precomputedDigest : residentDigest(bytes, engineOpts);
   if (!binaryIdentity || !digest) return null;
   return `slice_macho_${architecture}_${offset.toString(16)}_${bytes.byteLength.toString(16)}_${digest.slice('bin_sha256_'.length)}`;
 }
@@ -215,7 +241,8 @@ const DYLIB_COMMANDS = new Set([
 export function parseMachO(input, opts = {}) {
   const bytes = new ByteView(input).bytes;
   const thinContainerOffset = containerOffset(opts.containerOffset);
-  const containerIdentity = residentDigest(bytes);
+  const engineOpts = opts?._engine != null ? { _engine: opts._engine } : undefined;
+  const containerIdentity = residentDigest(bytes, engineOpts);
   const kind = machoKind(bytes);
   if (!kind) throw new Error('not a Mach-O file');
   if (kind.fat) {
@@ -223,12 +250,15 @@ export function parseMachO(input, opts = {}) {
     if (!selected) throw new Error('Mach-O universal binary has no readable slice');
     const sub = bytes.subarray(Number(selected.offset), Number(selected.offset + selected.size));
     const selectedArchitecture = sliceArchName(selected);
+    const subDigest = sameByteSlice(sub, bytes) ? containerIdentity : residentDigest(sub, engineOpts);
     const image = parseThin(sub, {
       ...opts,
       containerOffset: selected.offset,
       [INTERNAL_RESIDENT_IDENTITY]: {
         binaryIdentity: containerIdentity,
-        sliceIdentity: sliceIdentity(containerIdentity, sub, selected.offset, selectedArchitecture),
+        sliceIdentity: sliceIdentity(containerIdentity, sub, selected.offset, selectedArchitecture, subDigest, engineOpts),
+        sliceDigest: subDigest,
+        sliceBytes: sub,
       },
     });
     image.metadata.fat = {
@@ -245,7 +275,9 @@ export function parseMachO(input, opts = {}) {
     containerOffset: thinContainerOffset,
     [INTERNAL_RESIDENT_IDENTITY]: {
       binaryIdentity: containerIdentity,
-      sliceIdentity: sliceIdentity(containerIdentity, bytes, thinContainerOffset, cpuArchName(cpu, subtype)),
+      sliceIdentity: sliceIdentity(containerIdentity, bytes, thinContainerOffset, cpuArchName(cpu, subtype), containerIdentity, engineOpts),
+      sliceDigest: containerIdentity,
+      sliceBytes: bytes,
     },
   });
 }
@@ -544,31 +576,64 @@ function parseThin(bytes, opts) {
   }
 
   image.metadata.machoMetadata = metadataBudget.snapshot();
-  const issued = image.finalize();
+  const issued = image.finalize({ _consumeOwnedSeeds: true });
   const authoritySections = issued.sections.map(metadataMappingSnapshot);
   const authoritySegments = issued.segments.map(metadataMappingSnapshot);
   const residentBytes = issued.bytes instanceof Uint8Array ? issued.bytes : null;
-  const sourceDigest = residentDigest(residentBytes);
+  const engineOpts = opts?._engine != null ? { _engine: opts._engine } : undefined;
+  const sourceDigest = (
+    residentBytes !== null
+    && residentIdentity.sliceDigest !== undefined
+    && sameByteSlice(residentBytes, residentIdentity.sliceBytes)
+  ) ? residentIdentity.sliceDigest : residentDigest(residentBytes, engineOpts);
   const contentMatches = () => sourceDigest !== null
     && issued.bytes === residentBytes
-    && residentDigest(residentBytes) === sourceDigest;
+    && residentDigest(residentBytes, engineOpts) === sourceDigest;
   const createMetadataSource = () => {
     if (!contentMatches()) return null;
     const snapshot = residentBytes.slice();
-    if (residentDigest(snapshot) !== sourceDigest) return null;
+    if (residentDigest(snapshot, engineOpts) !== sourceDigest) return null;
     return deepFreeze({ readAt: canonicalResidentReader(snapshot, authoritySections, authoritySegments) });
   };
+  let rawBuildVersion = issued.metadata.buildVersion && typeof issued.metadata.buildVersion === 'object'
+    ? {
+      ...issued.metadata.buildVersion,
+      ...(Array.isArray(issued.metadata.buildVersion.tools)
+        ? { tools: issued.metadata.buildVersion.tools.map((t) => (t && typeof t === 'object' ? { ...t } : t)) }
+        : {}),
+    }
+    : issued.metadata.buildVersion;
+  let frozenBuildVersion;
+  let hasFrozenBuildVersion = false;
+  let frozenSections = null;
+  let frozenSegments = null;
+  let frozenChainedSites = null;
+  let frozenDyldCacheBinding;
+  let hasFrozenDyldCacheBinding = false;
   const authority = {
     binaryIdentity: boundIdentity(residentIdentity.binaryIdentity),
     sliceIdentity: boundIdentity(residentIdentity.sliceIdentity),
     architecture: issued.arch,
-    buildVersion: authoritySnapshot(issued.metadata.buildVersion),
+    get buildVersion() {
+      if (!hasFrozenBuildVersion) {
+        frozenBuildVersion = authoritySnapshot(rawBuildVersion);
+        rawBuildVersion = null;
+        hasFrozenBuildVersion = true;
+      }
+      return frozenBuildVersion;
+    },
     fileOffset: issued.fileOffset,
     fileSize: issued.fileSize,
     imageBase: issued.imageBase,
     platform: issued.platform,
-    sections: deepFreeze(authoritySections),
-    segments: deepFreeze(authoritySegments),
+    get sections() {
+      if (frozenSections === null) frozenSections = deepFreeze(authoritySections);
+      return frozenSections;
+    },
+    get segments() {
+      if (frozenSegments === null) frozenSegments = deepFreeze(authoritySegments);
+      return frozenSegments;
+    },
     createMetadataSource,
     sourceComplete: sourceDigest !== null,
     contentMatches,
@@ -576,9 +641,18 @@ function parseThin(bytes, opts) {
     get codeSignatureCommandsComplete() { return issued.metadata.codeSignatureCommandsComplete === true; },
     get codeSignature() { return issued.metadata.codeSignatureStructure ?? issued.metadata.codeSignature ?? null; },
     get chainedFixups() { return authoritySnapshot(issued.metadata.chainedFixups); },
-    chainedSites: deepFreeze(chainedPointerSites(issued)),
+    get chainedSites() {
+      if (frozenChainedSites === null) frozenChainedSites = deepFreeze(chainedPointerSites(issued));
+      return frozenChainedSites;
+    },
     dyldCache: opts.dyldCache ?? null,
-    dyldCacheBinding: authoritySnapshot(dyldCacheBinding),
+    get dyldCacheBinding() {
+      if (!hasFrozenDyldCacheBinding) {
+        frozenDyldCacheBinding = authoritySnapshot(dyldCacheBinding);
+        hasFrozenDyldCacheBinding = true;
+      }
+      return frozenDyldCacheBinding;
+    },
   };
   ISSUED_MACHO_IMAGES.set(issued, Object.freeze(authority));
   return issued;
@@ -996,9 +1070,15 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
   let addr = image.imageBase;
   const maxAddress = image.bits === 32 ? 0xffffffffn : 0xffffffffffffffffn;
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
+  const alignMask = alignment > 1n ? alignment - 1n : 0n;
+  const width = instructionWidthForArch(image.arch);
+  const canFastPath = image.arch !== 'arm64ec' && typeof image.resolveVirtualMapping === 'function' && (!image.dataInCode || image.dataInCode.length === 0) && !(image.sections || []).some((s) => s?.source === 'unmapped-section');
+  let fastRunLo = 0n;
+  let fastRunHi = -1n;
+  const fnStartCost = { records: 1, operations: 1, estimatedHeapBytes: 32 };
   let terminated = false;
   while (p < end) {
-    if (!budget.take({ records:1, operations:1, estimatedHeapBytes:32 }, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
+    if (!budget.take(fnStartCost, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     let x;
     try { x = r.uleb(p, 10, end); }
     catch (e) {
@@ -1014,19 +1094,58 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
     }
     const next = addr + x.value;
     addr = next;
-    const seg = image.segmentAt(addr);
-    if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n) || !image.isInstructionAllowed(addr)) {
-      status.complete = false; status.partialReason = 'invalid-entry';
-      image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
-      break;
-    }
-    // A segment's vm size may exceed its file size; the difference is loader
-    // zero-fill. A start without contiguous file-backed instruction bytes is
-    // not static evidence and must not become a 0.995-confidence seed (#5551).
-    if (!hasContiguousFileBackedInstruction(image, addr)) {
-      status.complete = false; status.partialReason = 'invalid-entry';
-      image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)} (no file-backed instruction bytes)`);
-      break;
+    const inFastRun = canFastPath
+      && addr >= fastRunLo
+      && addr + width <= fastRunHi
+      && (alignMask === 0n || (addr & alignMask) === 0n);
+    if (!inFastRun) {
+      const seg = image.segmentAt(addr);
+      if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n) || !image.isInstructionAllowed(addr)) {
+        status.complete = false; status.partialReason = 'invalid-entry';
+        image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
+        break;
+      }
+      // A segment's vm size may exceed its file size; the difference is loader
+      // zero-fill. A start without contiguous file-backed instruction bytes is
+      // not static evidence and must not become a 0.995-confidence seed (#5551).
+      if (!hasContiguousFileBackedInstruction(image, addr)) {
+        status.complete = false; status.partialReason = 'invalid-entry';
+        image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)} (no file-backed instruction bytes)`);
+        break;
+      }
+      if (canFastPath) {
+        // Compute a provably safe contiguous executable file-backed run [fastRunLo, fastRunHi)
+        // bounded by the current virtual-mapping run, section/segment bounds, and owner fileSize.
+        const vRuns = image._mappingLookups?.virtual?.runs;
+        if (vRuns && vRuns.starts.length >= 2) {
+          let lo = 0;
+          let hi = vRuns.starts.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (vRuns.starts[mid] <= addr) lo = mid + 1;
+            else hi = mid;
+          }
+          if (lo > 0 && lo < vRuns.starts.length) {
+            const runStart = vRuns.starts[lo - 1];
+            const runEnd = vRuns.starts[lo];
+            const owner = image._virtualMappingAt(addr);
+            const sec = image.sectionAt(addr);
+            if (owner && (!sec || sec.perms?.execute)) {
+              const ownerFileEnd = owner.address + (owner.fileSize ?? 0n);
+              const segEnd = seg.address + seg.size;
+              let safeHi = runEnd < ownerFileEnd ? runEnd : ownerFileEnd;
+              if (segEnd < safeHi) safeHi = segEnd;
+              if (sec && sec.address + sec.size < safeHi) safeHi = sec.address + sec.size;
+              let safeLo = runStart > seg.address ? runStart : seg.address;
+              if (sec && sec.address > safeLo) safeLo = sec.address;
+              if (addr >= safeLo && addr + width <= safeHi) {
+                fastRunLo = safeLo;
+                fastRunHi = safeHi;
+              }
+            }
+          }
+        }
+      }
     }
     if (!budget.take({ inputBytes:x.bytes, objects:1, estimatedHeapBytes:128 }, 'function-start-output')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     image.functions.push(functionSeed(addr, { source: 'function_starts', confidence: 0.995 }));

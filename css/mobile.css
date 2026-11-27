@@ -8,6 +8,31 @@
   .product-ui-ready .ui-screen { max-width: 760px; }
   .product-ui-ready .addrbar .addr-fn { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .product-ui-ready .addrbar .addr-pseudo { min-height: var(--ui-touch); padding: 6px 12px; }
+  .product-ui-ready .ui-command-results {
+    max-height: min(45dvh, calc(var(--ui-visual-height, 100dvh) - 110px - var(--ui-keyboard-inset, 0px)));
+  }
+}
+
+@media (max-width: 899px), (pointer: coarse) {
+  .product-ui-ready .ui-star-btn,
+  .product-ui-ready .ui-row-star,
+  .product-ui-ready .ui-delta-dismiss,
+  .product-ui-ready .ui-tok-nav button,
+  .product-ui-ready .ui-highlight-nav button {
+    min-width: var(--ui-touch);
+    min-height: var(--ui-touch);
+  }
+  .product-ui-ready .addrbar .addr-star {
+    flex: none;
+    min-width: var(--ui-touch);
+    min-height: var(--ui-touch);
+  }
+  .product-ui-ready .ui-delta-btn,
+  .product-ui-ready .ui-explorer-filter-chip,
+  .product-ui-ready .ui-explorer-sort,
+  .product-ui-ready .ui-command-result {
+    min-height: var(--ui-touch);
+  }
 }
 
 @media (max-width: 599px) {
@@ -29,7 +54,21 @@
   .product-ui-ready .titlebar .tb-title { text-align: left; }
   .product-ui-ready .titlebar .tb-btn { min-height: var(--ui-touch); min-width: var(--ui-touch); padding-inline: 8px; }
   .product-ui-ready .ui-product-chrome { min-height: 50px; padding-block: 3px; }
-  .product-ui-ready .ui-chrome-back { padding-inline: 8px; font-size: var(--ui-font-xs); }
+  .product-ui-ready .ui-chrome-back,
+  .product-ui-ready .ui-chrome-forward { padding-inline: 8px; font-size: var(--ui-font-xs); }
+  .product-ui-ready .ui-command-results {
+    position: fixed;
+    left: var(--ui-space-3);
+    right: var(--ui-space-3);
+    top: var(--ui-omnibox-top, calc(var(--ui-safe-top, 0px) + 104px));
+  }
+  .product-ui-ready .ui-explorer-filter-bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .product-ui-ready .ui-explorer-filter-bar::-webkit-scrollbar { display: none; }
   .product-ui-ready .ui-command-go { display: none; }
   .product-ui-ready .ui-global-command { font-size: 16px; }
   .product-ui-ready .ui-route-host input,
@@ -133,6 +172,7 @@
     padding: 3px max(3px, var(--ui-safe-right)) 3px 3px;
   }
   .product-ui-ready .ui-nav-item { min-height: var(--ui-touch); font-size: 10px; }
+  .product-ui-ready .ui-delta-strip { padding-right: calc(72px + var(--ui-safe-right, 0px)); }
   .product-ui-ready .ui-route-host { padding-top: var(--ui-space-2); padding-right: calc(72px + var(--ui-safe-right)); padding-bottom: var(--ui-space-2); }
   .product-ui-ready .ui-code-route .statusbar { padding-bottom: 0; padding-right: 70px; }
   .product-ui-ready .ui-code-route .viewwrap { margin-right: 66px; }
@@ -167,4 +207,27 @@
   .ai-panel .ai-seg { padding-inline: 8px; font-size: 12px; }
   .ai-panel .ai-icon-button { min-width: var(--ui-touch); min-height: var(--ui-touch); }
   .ai-turn-user { max-width: 100%; }
+}
+
+/* Wave 35: iPad & mobile touch ergonomics */
+@media (min-width: 700px) and (pointer: coarse) {
+  .sheet {
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 24px);
+  }
+}
+@media (max-width: 760px) {
+  .addrbar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .addrbar::-webkit-scrollbar { display: none; }
+  .addr-search,
+  .chip {
+    min-height: 44px;
+  }
+  input[type="password"],
+  .ui-pseudocode-find input {
+    font-size: 16px;
+  }
 }

@@ -1179,6 +1179,49 @@ function wordValue(hex) {
   return v >>> 0;
 }
 
+function instructionJumpTarget(d) {
+  if (!d) return null;
+  if (d.target != null) {
+    try { return BigInt(d.target); } catch { /* ignore */ }
+  }
+  const mn = String(d.mnemonic || '').trim().toLowerCase();
+  const ops = String(d.operands || '').trim();
+  if (!mn || !ops) return null;
+  const branchOrCall = isBranch(mn) || isCall(mn) || /^(?:call|jmp|j[a-z]{1,4})$/.test(mn);
+  if (!branchOrCall) return null;
+  const lastOp = (ops.split(',').pop() || '').trim();
+  if (!lastOp || lastOp.includes('[')) return null;
+  const m = /^#?(0x[0-9a-fA-F]+)$/.exec(lastOp);
+  if (!m) return null;
+  try { return BigInt(m[1]); } catch { return null; }
+}
+
+function editInstructionBookmarkNote(app, addr) {
+  if (addr == null || !app.bookmarks) return;
+  const existing = app.bookmarks.get?.(addr)
+    ?? (app.bookmarks.list?.() || []).find((b) => { try { return BigInt(b.addr) === BigInt(addr); } catch { return false; } });
+  const sheet = new Sheet(pick('ブックマークメモを編集', 'Edit bookmark note'));
+  const field = el('div', 'field');
+  const input = el('input');
+  input.type = 'text';
+  input.value = String(existing?.note || '');
+  input.placeholder = pick('メモを入力…', 'Enter note…');
+  const name = existing?.name || app.symbols?.nameAt?.(addr) || addrHex(addr);
+  const save = () => {
+    if (!app.bookmarks.has?.(addr)) app.bookmarks.toggle?.(addr, { name });
+    app.bookmarks.setNote?.(addr, { note: input.value.trim(), name });
+    sheet.close();
+    toast(pick('ブックマークメモを保存しました', 'Bookmark note saved'));
+  };
+  field.append(input, button(pick('保存', 'Save'), 'chip', save));
+  sheet.body.append(field);
+  input.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') save();
+  });
+  setTimeout(() => { input.focus(); input.select?.(); }, 50);
+}
+
 export function instructionMenu(app, row, x, y) {
   const sel = app.viewer.rangeMode ? app.viewer.selectionRange() : null;
   if (sel) { rangeCopyMenu(app, x, y); return; }
@@ -1186,27 +1229,65 @@ export function instructionMenu(app, row, x, y) {
   const d = app.viewer.rowData(row) || {};
   const asm = ((d.mnemonic || '') + ' ' + (d.operands || '')).trim();
   const sb = semanticBlockAt(app, row);
+  const jumpTarget = instructionJumpTarget(d);
+  const jumpLabel = jumpTarget != null
+    ? (() => {
+        const targetSym = app.symbols?.nameAt?.(jumpTarget);
+        return targetSym ? prettyName(targetSym) : addrHex(jumpTarget);
+      })()
+    : null;
+  const hasBookmark = d.address != null && !!app.bookmarks?.has?.(d.address);
   /* AI は 1 行だけ足す。動詞は「AI に聞く…」の下に置いて、このメニューを太らせない。 */
   const assistant = typeof window !== 'undefined' ? window.__hexAi : null;
   menu([
     ...(d.address != null ? [{ header: addrHex(d.address), sub: asm || null }] : []),
     ...(assistant ? [askAiMenuItem(assistant, instructionAiItems(assistant, { address: d.address, text: asm }), { x, y })] : []),
-    { label: t('detail.title') + '…', action: () => showDetail(app, row) },
-    { label: pick('逆コンパイルして読む（C 風）', 'Decompile to C'),
+    ...(jumpTarget != null ? [{
+      label: pick(`${jumpLabel} へジャンプ`, `Jump to ${jumpLabel}`),
+      action: () => app.goToAddress(jumpTarget, { announce: true }),
+    }] : []),
+    { label: pick('疑似Cを開く (Space)', 'Open Pseudo-C (Space)'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'pseudocode') },
+    { label: pick('相互参照 (X)', 'Xrefs (X)'),
+      action: () => showXrefs(app, d.address) },
+    { label: pick('名前を付ける (N)', 'Rename (N)'),
+      action: () => showRename(app, functionStartOf(app, d.address)) },
+    { label: pick('メモを書く (;)', 'Comment (;)'),
+      action: () => showComment(app, d.address) },
+    ...(d.address != null && app.bookmarks ? [
+      {
+        label: hasBookmark
+          ? pick('☆ ブックマークを解除 (B)', '☆ Remove bookmark (B)')
+          : pick('★ このアドレスをブックマーク (B)', '★ Bookmark this address (B)'),
+        action: () => {
+          const name = app.symbols?.nameAt?.(d.address) || addrHex(d.address);
+          const added = app.bookmarks.toggle?.(d.address, { name });
+          app.updateChrome?.();
+          toast(added
+            ? pick('ブックマークに追加しました', 'Bookmark added')
+            : pick('ブックマークを解除しました', 'Bookmark removed'));
+        },
+      },
+      ...(hasBookmark ? [{
+        label: pick('ブックマークメモを編集', 'Edit bookmark note'),
+        action: () => editInstructionBookmarkNote(app, d.address),
+      }] : []),
+    ] : []),
+    { label: t('detail.copyAddress'), action: () => copyText(addrHex(d.address), t('toast.copyAddress')) },
+    { label: t('detail.copyHex'), action: () => copyText(d.bytes || '', t('toast.copyHex')) },
+    { label: t('detail.copyAsm'), action: () => copyText(asm, t('toast.copyAsm')) },
+    '-',
+    { label: t('detail.title') + '…', action: () => showDetail(app, row) },
     ...(sb ? [{
       label: pick('この処理を見る', 'Show this step') + '（' + blockTitle(sb) + '）',
       action: () => showBlockDetail(app, app.semantic.model, sb, app.store.get('currentRegion')),
     }] : []),
-    { label: pick('関数の概要を開く', 'Open function overview'),
+    { label: pick('この関数を調べる', 'Investigate this function'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'report') },
-    { label: pick('この関数を調べる（事実と推測）', 'Investigate this function'),
-      action: () => showFunctionReport(app, functionStartOf(app, d.address), app.lastGoal) },
     ...(sb ? [{
       label: pick('この値の行き先を追う', 'Follow this value'),
       action: () => showValueFlow(app, app.semantic.model, row, app.store.get('currentRegion')),
     }] : []),
-    { label: t('detail.findRefs'), action: () => showXrefs(app, d.address) },
     { label: pick('制御フロー図を見る', 'Show control-flow graph'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'flow') },
     { label: pick('呼び出し図を見る', 'Show call graph'),
@@ -1214,18 +1295,10 @@ export function instructionMenu(app, row, x, y) {
     { label: pick('引数と戻り値を調べる', 'Show arguments and return value'),
       action: () => showTypes(app, functionStartOf(app, d.address)) },
     { label: pick('アドレスの対応を見る', 'Show address mapping'), action: () => showAddressInfo(app, d.address) },
-    '-',
-    { label: pick('ここから実行してみる', 'Run from here'),
-      action: () => showDebugger(app, functionStartOf(app, d.address)) },
-    { label: pick('名前を付ける', 'Rename'),
-      action: () => showRename(app, functionStartOf(app, d.address)) },
-    { label: pick('この行にメモを書く', 'Add a comment'), action: () => showComment(app, d.address) },
     { label: pick('この命令を書き換える（パッチ）', 'Patch this instruction'),
       action: () => showPatchEditor(app, d.address, { mnemonic: d.mnemonic, operands: d.operands, address: d.address }) },
-    '-',
-    { label: t('detail.copyAddress'), action: () => copyText(addrHex(d.address), t('toast.copyAddress')) },
-    { label: t('detail.copyHex'), action: () => copyText(d.bytes || '', t('toast.copyHex')) },
-    { label: t('detail.copyAsm'), action: () => copyText(asm, t('toast.copyAsm')) },
+    { label: pick('ここから実行してみる', 'Run from here'),
+      action: () => showDebugger(app, functionStartOf(app, d.address)) },
     '-',
     { label: t('detail.selectRows'), action: () => app.startSelection(row) },
   ], x, y);
@@ -1295,10 +1368,16 @@ function legacyViewOpeners(app, goal) {
 
 function openFunctionSurface(app, address, view = 'report', goal = app.lastGoal) {
   if (address == null) return false;
-  const start = functionStartOf(app, BigInt(address));
+  const addrBig = BigInt(address);
+  const start = functionStartOf(app, addrBig);
+  const router = productRouter();
+  if (view === 'pseudocode' && router && addrBig !== start) {
+    router.navigate(`/function/${start.toString()}/pseudocode?addr=${addrBig.toString()}`);
+    return true;
+  }
   const [target] = functionViews({ address: start, include: [view], ja: isJa() });
   return !!target && openFunctionView(target, {
-    router: productRouter(),
+    router,
     legacy: legacyViewOpeners(app, goal),
   });
 }

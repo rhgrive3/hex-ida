@@ -28,6 +28,7 @@
  *
  * 日本語は作らない。返すのは構造と、掛け算の内訳だけ。
  */
+import { analyzeCryptoInsnDensity } from './analysis/crypto-entropy.js';
 import {
   matchField, typeFits, accessorKind, matchText, matchName, normalizeFieldName, fieldRole,
   extractCallableLeaf, numericSymbolRole,
@@ -77,6 +78,7 @@ const MAX_LEXICAL_RESCUE = 64;
  */
 const byRecallLane = (a, b) => ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
   || (b.fusion.logOdds - a.fusion.logOdds)
+  || ((b.fusion.rawLogOdds ?? b.fusion.logOdds) - (a.fusion.rawLogOdds ?? a.fusion.logOdds))
   || (a.source === 'cxx' || b.source === 'cxx'
     ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
     : 0);
@@ -292,7 +294,7 @@ export async function pinpointField(opts) {
            * クラスのメソッドを何本も読むのは重い。それは上位 2 つだけにする。
            * 3 位以下を深追いしても、決着には効かないので。
            */
-          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 2 }, fields);
+          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 4 }, fields);
         } catch { /* 1 個読めなくても、ほかは確かめる */ }
         if (c.evidence.length !== beforeLen) dirty.push(c);
         checked++;
@@ -1506,10 +1508,10 @@ const FORMULA_LOG_TAG_RE = /^\s*(?:\[[^\]]{1,40}\]\s*|<[A-Za-z0-9_.:-]{1,32}>\s*
 const FORMULA_SOURCE_LINE_RE = /\.(?:c|cc|cpp|cxx|h|hpp|m|mm|swift|java|kt|cs|rs|go):\d+/i;
 const FORMULA_CXX_SIG_RE = /(?:\b[A-Za-z_]\w*::[A-Za-z_~]\w*\s*\(|\b(?:const\s+)?(?:void|bool|int|float|double|char|size_t|u?int\d+_t|auto|std::\w+)\s+[A-Za-z_]\w*::|::[A-Za-z_]\w*<[^>]*>)/;
 const FORMULA_SYNTAX_RE = /(?:[+×÷*=<≥≤>]|(?:\d|\)|%[diuoxXfFeEgG])\s*[-\/]\s*(?:\d|\(|%[A-Za-z])|%[-+0 #]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|z|t|j|L)?[diuoxXfFeEgG]|\d+\s*%|\b(?:min|max|clamp|floor|ceil|round|mod)\s*\()/i;
-const FORMULA_INSN_RE = /^(?:add|adds|sub|subs|cmp|cmn|ccmp|ccmn|fcmp|fadd|fsub|fmul|fdiv|mov|movz|movn|movk|fmov|tst)$/i;
-const NUMERIC_MUL_DIV_RE = /^(mul|madd|msub|sdiv|udiv|fmul|fdiv)$/i;
-const NUMERIC_ADD_SUB_RE = /^(add|adds|sub|subs|fadd|fsub)$/i;
-const CTRL_BOUNDARY_RE = /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retaa$|retab$)/i;
+const FORMULA_INSN_RE = /^(?:add|adds|sub|subs|cmp|cmn|ccmp|ccmn|fcmp|fadd|fsub|fmul|fdiv|mov|movz|movn|movk|movzx|movsx|movsxd|fmov|tst|test|imul|mul|idiv|div|inc|dec|lea|addss|subss|mulss|divss|addsd|subsd|mulsd|divsd|comiss|comisd|ucomiss|ucomisd)$/i;
+const NUMERIC_MUL_DIV_RE = /^(mul|imul|madd|msub|sdiv|udiv|idiv|div|fmul|fdiv|mulss|divss|mulsd|divsd)$/i;
+const NUMERIC_ADD_SUB_RE = /^(add|adds|sub|subs|inc|dec|fadd|fsub|addss|subss|addsd|subsd)$/i;
+const CTRL_BOUNDARY_RE = /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retq$|retaa$|retab$|jmp$|jmpq$|j[a-z]{1,4}$|call$|callq$)/i;
 
 function isFormulaString(text) {
   if (typeof text !== 'string') return false;
@@ -1532,6 +1534,15 @@ function regIdentity(op) {
     if (s === 'fp' || s === 'x29' || s === 'w29') return 'fp';
     const m = /^[wx](\d+)$/.exec(s);
     if (m) return 'x' + m[1];
+    if (s === 'rsp' || s === 'esp') return 'sp';
+    if (s === 'rbp' || s === 'ebp') return 'fp';
+    const x86 = /^(?:[re]?([abcd])x|([abcd])[hl]|[re]?(si|di)l?|r(8|9|1[0-5])[dwb]?|xmm(\d+))$/.exec(s);
+    if (x86) {
+      if (x86[1] || x86[2]) return 'r' + (x86[1] || x86[2]) + 'x';
+      if (x86[3]) return 'r' + x86[3];
+      if (x86[4]) return 'r' + x86[4];
+      if (x86[5]) return 'xmm' + x86[5];
+    }
     return null;
   }
   if (op.k === 'reg') {
@@ -1633,6 +1644,131 @@ function countPureNumericArithmetic(insns) {
     prevAdrpReg = null;
   }
   return count;
+}
+
+const RMW_STACK_REGS = new Set(['sp', 'fp', 'x29', 'w29', 'rsp', 'rbp', 'esp', 'ebp', 'rip', 'eip']);
+const RMW_LOAD_RE = /^(?:ldr|ldur|ldrsw|ldrh|ldrb|ldursw|mov|movsx|movsxd|movzx|movss|movsd)$/i;
+const RMW_STORE_RE = /^(?:str|stur|strh|strb|mov|movss|movsd)$/i;
+const RMW_DIRECT_MEM_OP_RE = /^(?:add|sub|adc|sbb|inc|dec)$/i;
+const RMW_SUB_RE = /^(?:sub|subs|fsub|subss|subsd|dec|sbb)$/i;
+const RMW_ADD_RE = /^(?:add|adds|fadd|addss|addsd|inc|adc)$/i;
+const RMW_CLAMP_RE = /^(?:cmp|cmn|fcmp|csel|csinc|csinv|csneg|fmax|fmin|fmaxnm|fminnm|cmov\w+|b\.(?:le|lt|ge|gt|ls|lo|hi|hs|eq|ne)|cbz|cbnz|tbz|tbnz|j(?:le|l|ge|g|be|b|ae|a|s|ns|e|ne))$/i;
+const RMW_CALL_RE = /^(?:bl|blr|blraa|blrab|call|callq)$/i;
+
+function parseFieldMemRef(insn) {
+  if (insn?.memory && !insn.memory.stack && insn.memory.base) {
+    const base = String(insn.memory.base).toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    const off = insn.memory.offset != null ? String(insn.memory.offset) : '0';
+    return { base, offset: off, kind: insn.memory.kind || null };
+  }
+  const ops = String(insn?.operands || insn?.ops || '');
+  const mArm = /\[([xw]\d+|sp|fp)(?:,\s*#(-?0x[0-9a-f]+|-?\d+))?\]/i.exec(ops);
+  if (mArm) {
+    const base = mArm[1].toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    return { base, offset: (mArm[2] || '0').toLowerCase(), kind: null };
+  }
+  const mX86 = /\[([re]?(?:ax|bx|cx|dx|si|di|bp|sp)|r(?:[89]|1[0-5])d?)(?:\s*([+-])\s*(0x[0-9a-f]+|\d+))?\]/i.exec(ops);
+  if (mX86) {
+    const base = mX86[1].toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    const sign = mX86[2] === '-' ? '-' : '';
+    const off = mX86[3] ? `${sign}${mX86[3].toLowerCase()}` : '0';
+    return { base, offset: off, kind: null };
+  }
+  return null;
+}
+
+/**
+ * General-purpose Read-Modify-Write (+ clamp/bounds-check) field detector for
+ * ARM64 and x86-64 instruction streams. Excludes stack/frame slots.
+ */
+export function detectFieldRmwPatterns(insns) {
+  const list = Array.isArray(insns) ? insns : [];
+  const loads = new Map();
+  const fields = [];
+  let subRmwCount = 0;
+  let addRmwCount = 0;
+  let clampedRmwCount = 0;
+
+  for (let i = 0; i < list.length; i++) {
+    const insn = list[i];
+    const mn = String(insn?.mnemonic || insn?.mn || '').trim().toLowerCase();
+    if (!mn) continue;
+    if (RMW_CALL_RE.test(mn)) { loads.clear(); continue; }
+    const opsText = String(insn?.operands || insn?.ops || '').trim();
+    const firstComma = opsText.indexOf(',');
+    const dstOp = (firstComma >= 0 ? opsText.slice(0, firstComma) : opsText).trim();
+    const mem = parseFieldMemRef(insn);
+    const dstIsMem = dstOp.includes('[');
+
+    if (mem && RMW_DIRECT_MEM_OP_RE.test(mn) && dstIsMem) {
+      const hasSub = RMW_SUB_RE.test(mn);
+      const hasAdd = RMW_ADD_RE.test(mn);
+      let clamped = false;
+      for (let k = i + 1; k < Math.min(list.length, i + 5); k++) {
+        const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+        if (RMW_CLAMP_RE.test(km)) { clamped = true; break; }
+      }
+      if (hasSub) subRmwCount++; else if (hasAdd) addRmwCount++;
+      if (clamped) clampedRmwCount++;
+      fields.push({
+        base: mem.base, offset: mem.offset, kind: hasSub ? 'sub' : 'add', clamped,
+        loadAddr: insn.address ?? insn.addr ?? null,
+        storeAddr: insn.address ?? insn.addr ?? null,
+      });
+      continue;
+    }
+
+    if (mem) {
+      const key = `${mem.base}:${mem.offset}`;
+      const isStore = mem.kind === 'store'
+        || (RMW_STORE_RE.test(mn) && (mn.startsWith('st') || dstIsMem));
+      const isLoad = !isStore && (mem.kind === 'load' || RMW_LOAD_RE.test(mn));
+      if (isLoad) {
+        loads.set(key, { idx: i, addr: insn.address ?? insn.addr ?? null });
+        continue;
+      }
+      if (isStore) {
+        const prev = loads.get(key);
+        if (prev && i - prev.idx <= 16) {
+          let hasSub = false, hasAdd = false, clamped = false;
+          for (let k = prev.idx + 1; k < i; k++) {
+            const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+            if (RMW_SUB_RE.test(km)) hasSub = true;
+            if (RMW_ADD_RE.test(km)) hasAdd = true;
+            if (RMW_CLAMP_RE.test(km)) clamped = true;
+          }
+          if (hasSub || hasAdd) {
+            if (!clamped) {
+              for (let k = i + 1; k < Math.min(list.length, i + 4); k++) {
+                const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+                if (RMW_CLAMP_RE.test(km)) { clamped = true; break; }
+              }
+            }
+            if (hasSub) subRmwCount++; else addRmwCount++;
+            if (clamped) clampedRmwCount++;
+            fields.push({
+              base: mem.base, offset: mem.offset, kind: hasSub ? 'sub' : 'add', clamped,
+              loadAddr: prev.addr,
+              storeAddr: insn.address ?? insn.addr ?? null,
+            });
+            loads.delete(key);
+          }
+        }
+        continue;
+      }
+    }
+
+    if (!dstIsMem && dstOp) {
+      const dstBase = dstOp.toLowerCase();
+      for (const key of loads.keys()) {
+        if (key.startsWith(`${dstBase}:`)) loads.delete(key);
+      }
+    }
+  }
+  return { rmwCount: fields.length, subRmwCount, addRmwCount, clampedRmwCount, fields };
 }
 
 function verifyFormula(c, insns, goal) {
@@ -1737,7 +1873,8 @@ async function verifyFunctionCandidate(c, goal, o) {
   const expects = goal.expects || {};
   const insns = model.instructions || [];
   if (!field && expects.store) {
-    const { set } = selfRegisters(model);
+    let set = new Set(['x0', 'rdi', 'rcx']);
+    try { const sr = selfRegisters(model); if (sr?.set) set = sr.set; } catch { /* lightweight model */ }
     const stores = insns.filter((i) => i.memory && i.memory.kind === 'store' &&
       !i.memory.stack && set.has(i.memory.base));
     if (stores.length) {
@@ -1747,6 +1884,36 @@ async function verifyFunctionCandidate(c, goal, o) {
   if (!field && expects.numeric && !c.evidence.some((e) => e.code === 'fn-numeric')) {
     const numCount = countPureNumericArithmetic(insns);
     if (numCount) c.evidence.push(evidence('fn-numeric', Math.min(1, numCount / 3), { n: numCount }));
+  }
+  if (expects.store) {
+    const rmw = detectFieldRmwPatterns(insns);
+    if (rmw.clampedRmwCount > 0) {
+      c.evidence.push(evidence('fn-field-rmw-clamped', Math.min(1, 0.7 + 0.15 * rmw.clampedRmwCount), {
+        count: rmw.clampedRmwCount, fields: rmw.fields.slice(0, 6),
+      }));
+      c.verifications.push({ what: 'field-rmw', clamped: true, fields: rmw.fields.slice(0, 6) });
+    } else if (rmw.rmwCount > 0) {
+      c.evidence.push(evidence('fn-field-rmw', Math.min(1, 0.55 + 0.15 * rmw.rmwCount), {
+        count: rmw.rmwCount, fields: rmw.fields.slice(0, 6),
+      }));
+      c.verifications.push({ what: 'field-rmw', clamped: false, fields: rmw.fields.slice(0, 6) });
+    }
+  }
+
+  if (expects.crypto || goal?.id === 'crypto') {
+    const cd = analyzeCryptoInsnDensity(insns);
+    if (cd.hwCryptoCount > 0) {
+      c.evidence.push(evidence('fn-crypto-hw-insn', Math.min(1, 0.75 + 0.1 * cd.hwCryptoCount), {
+        hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount,
+      }));
+      c.verifications.push({ what: 'crypto-insn', hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount });
+    } else if (cd.highBitwiseDensity) {
+      c.evidence.push(evidence('fn-crypto-bitwise', Math.min(1, 0.55 + cd.bitwiseRatio), {
+        bitwiseCount: cd.bitwiseCount, bitwiseRatio: Math.round(cd.bitwiseRatio * 100) / 100,
+        xorCount: cd.xorCount, rotateCount: cd.rotateCount,
+      }));
+      c.verifications.push({ what: 'crypto-bitwise', bitwiseCount: cd.bitwiseCount, xorCount: cd.xorCount, rotateCount: cd.rotateCount });
+    }
   }
 
   /*

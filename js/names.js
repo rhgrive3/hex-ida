@@ -281,7 +281,31 @@ export class NoteStore {
     this.types = new Map();      // 'func:key' -> 型
     this.structs = [];           // 自分で作った構造体（types.js が読む）
     this.dirty = false;
+    this.onChange = null;
+    this._listeners = new Set();
     this.load();
+  }
+
+  setOnChange(fn) {
+    this.onChange = typeof fn === 'function' ? fn : null;
+  }
+
+  subscribe(fn) {
+    if (typeof fn !== 'function') throw new TypeError('note-subscriber-invalid');
+    this._listeners.add(fn);
+    return () => { this._listeners.delete(fn); };
+  }
+
+  _notifyChange(kind, detail = null) {
+    const event = { kind, detail, count: this.count };
+    if (typeof this.onChange === 'function') {
+      try { this.onChange(event); }
+      catch { /* observer isolation */ }
+    }
+    for (const fn of this._listeners) {
+      try { fn(event); }
+      catch { /* observer isolation */ }
+    }
   }
 
   /* ── 読み書き ─────────────────────────────────────────── */
@@ -739,6 +763,7 @@ export class NoteStore {
       this.dirty = false;
       this.lastSaveError = this._cleanupStatus(cleanup);
       this.lastMutationSaved = true;
+      this._notifyChange('save');
       return true;
     } catch (error) {
       return this._saveFailure(error?.name || 'STORAGE_ERROR', error);
@@ -785,8 +810,13 @@ export class NoteStore {
     if (clean) this.names.set(k, clean);
     else this.names.delete(k);
     this.dirty = true;
-    if (this._transactionDepth > 0 || !save) return true;
-    return this._persistDelta('names', k, clean || null);
+    if (this._transactionDepth > 0 || !save) {
+      this._notifyChange('name', { key: k, value: clean || null });
+      return true;
+    }
+    const ok = this._persistDelta('names', k, clean || null);
+    this._notifyChange('name', { key: k, value: clean || null });
+    return ok;
   }
 
   /** 保存済みの名前をぜんぶ [{addr, name}] で返す（起動時に索引へ流し込む）。 */
@@ -809,8 +839,13 @@ export class NoteStore {
     if (clean) this.comments.set(k, clean);
     else this.comments.delete(k);
     this.dirty = true;
-    if (this._transactionDepth > 0 || !save) return true;
-    return this._persistDelta('comments', k, clean || null);
+    if (this._transactionDepth > 0 || !save) {
+      this._notifyChange('comment', { key: k, value: clean || null });
+      return true;
+    }
+    const ok = this._persistDelta('comments', k, clean || null);
+    this._notifyChange('comment', { key: k, value: clean || null });
+    return ok;
   }
 
   commentCount() { return this.comments.size; }
@@ -826,8 +861,13 @@ export class NoteStore {
     if (clean) this.vars.set(kk, clean);
     else this.vars.delete(kk);
     this.dirty = true;
-    if (this._transactionDepth > 0 || !save) return true;
-    return this._persistDelta('vars', kk, clean || null);
+    if (this._transactionDepth > 0 || !save) {
+      this._notifyChange('var', { key: kk, value: clean || null });
+      return true;
+    }
+    const ok = this._persistDelta('vars', kk, clean || null);
+    this._notifyChange('var', { key: kk, value: clean || null });
+    return ok;
   }
 
   typeOf(func, k) { return this.types.get(key(func) + ':' + k) || null; }
@@ -839,8 +879,13 @@ export class NoteStore {
     if (clean) this.types.set(kk, clean);
     else this.types.delete(kk);
     this.dirty = true;
-    if (this._transactionDepth > 0 || !save) return true;
-    return this._persistDelta('types', kk, clean || null);
+    if (this._transactionDepth > 0 || !save) {
+      this._notifyChange('type', { key: kk, value: clean || null });
+      return true;
+    }
+    const ok = this._persistDelta('types', kk, clean || null);
+    this._notifyChange('type', { key: kk, value: clean || null });
+    return ok;
   }
 
   /* ── まとめて ─────────────────────────────────────────── */
@@ -851,7 +896,10 @@ export class NoteStore {
     this.names.clear(); this.comments.clear(); this.vars.clear(); this.types.clear();
     this.structs = [];
     this.dirty = true;
-    if (!this.id) return this._saveFailure('NO_ID');
+    if (!this.id) {
+      this._notifyChange('clear');
+      return this._saveFailure('NO_ID');
+    }
     // Keep the legacy payload intact for old app versions, but atomically write
     // a primary-key tombstone so this version never migrates it again.
     try {
@@ -870,8 +918,10 @@ export class NoteStore {
       this.lastSaveError = this._cleanupStatus(cleanup);
       this.lastMutationSaved = true;
       this.migratedFrom = null;
+      this._notifyChange('clear');
       return true;
     } catch (error) {
+      this._notifyChange('clear');
       return this._saveFailure(error?.name || 'STORAGE_ERROR', error);
     }
   }

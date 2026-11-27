@@ -30,7 +30,12 @@
  * まず使われない（"vungle" という名前の自作クラスを書く人はいない）。
  */
 const VENDOR_PATTERNS = [
-  { vendor: 'IronSource', kind: 'ads', re: /ironsource|supersonic|levelplay/i },
+  { vendor: 'IronSource', kind: 'ads', re: /ironsource|supersonic|levelplay|IS_AD_UNIT_|LPM_AD_FORMAT_|\b(?:IS(?:Prog|Banner|Rewarded|Interstitial|Adapter|Mediation|DemandOnly|Expired)|LPM)[A-Z]/i },
+  { vendor: 'Apple Swift/Foundation', kind: 'system', re: /^_?\$s(?:10Foundation|7SwiftUI|5UIKit|12CoreGraphics|7Combine|10ObjectiveC|8Dispatch|So\d+|ST|s\d+)/, textRe: /NSFoundation|SwiftUI/i },
+  { vendor: 'Apple System', kind: 'system', re: /^_+(?:nw_|objc_|swift_|SCNetwork|UIScrollView|UIView|UIApplication|NSLocale|NSDate|NSURL|NSTemporary|CFRunLoop|kCF|CGContext|CGRect|CGPoint|CGSize|CGImage|kCG|CAAnimation|CMTime|CMClock|dispatch_|SKAdNetwork)/, textRe: /nw_path_enumerate_interfaces/i },
+  { vendor: 'Abseil', kind: 'system', re: /\babsl::|\babsl_|low_level_alloc/i },
+  { vendor: 'Apple Security', kind: 'crypto', re: /^_+Sec(?:Key|Trust|Item|Random|Certificate|Policy)/ },
+  { vendor: 'Apple StoreKit', kind: 'purchase', re: /^_?\$s8StoreKit|^_+SK(?:Payment|Product|Receipt|Storefront|Store)/ },
   { vendor: 'AppLovin', kind: 'ads', re: /applovin|\bmax(mediation|adview|reward)/i },
   { vendor: 'Google Mobile Ads', kind: 'ads', re: /admob|googlemobileads|gadmob|interstitialad/i, textRe: /admob|googlemobileads|gadmob/i },
   { vendor: 'Unity Ads', kind: 'ads', re: /unityads|unityservices|unityanalytics/i },
@@ -43,7 +48,7 @@ const VENDOR_PATTERNS = [
   { vendor: 'InMobi', kind: 'ads', re: /inmobi/i },
   { vendor: 'Fyber', kind: 'ads', re: /fyber|digitalturbine/i },
   { vendor: 'Smaato', kind: 'ads', re: /smaato/i },
-  { vendor: 'PubMatic', kind: 'ads', re: /pubmatic|openwrap/i },
+  { vendor: 'PubMatic', kind: 'ads', re: /pubmatic|openwrap|\bPOB(?:Location|Banner|Ad|Bid|Interstitial|Rewarded|Monitor|Manager|Looper)[A-Z]/i },
   { vendor: 'Moloco', kind: 'ads', re: /moloco/i },
   { vendor: 'BidMachine', kind: 'ads', re: /bidmachine/i },
   { vendor: 'Ogury', kind: 'ads', re: /ogury/i },
@@ -96,6 +101,19 @@ const VENDOR_PATTERNS = [
   { vendor: 'gRPC', kind: 'library', re: /^_?grpc_|\bgrpc::/ },
   { vendor: 'double-conversion', kind: 'library', re: /\bdouble_conversion::/ },
   { vendor: 'TBB', kind: 'library', re: /\btbb::/ },
+  { vendor: 'Unity', kind: 'engine', re: /\bUnityEngine(?:::|\.)|_ZN11UnityEngine|\bUnity(?:Player|AppController|View|Main|SendMessage)\b/ },
+  { vendor: 'IL2CPP', kind: 'runtime', re: /^_?il2cpp_|\bil2cpp::|_ZN6il2cpp/ },
+  { vendor: 'Unreal Engine', kind: 'engine', re: /\b(?:FEngineLoop|UGameEngine|UEngine|UWorld|AActor|UObjectBase|FMemory|FName|FString|TArray)::|_ZN(?:11FEngineLoop|11UGameEngine|7UEngine|11UObjectBase)|\bUnrealEngine\b/ },
+  { vendor: 'Cocos2d-x', kind: 'engine', re: /\bcocos2d::|_ZN7cocos2d|\bCC(?:Director|Scene|Layer|Sprite|Node|Action|Texture2D|Application)\b/ },
+  { vendor: 'Spine', kind: 'media', re: /\bspine::|_ZN5spine|^_?sp(?:Skeleton|AnimationState|TrackEntry|Atlas|Bone|Slot)_/ },
+  { vendor: 'Box2D', kind: 'library', re: /\bb2(?:World|Body|Fixture|Shape|PolygonShape|CircleShape|Joint|Contact|BroadPhase|DynamicTree)\b|_ZN\d+b2(?:World|Body|Fixture|Shape|Joint|Contact)/ },
+  { vendor: 'Lua', kind: 'runtime', re: /^_?lua(?:L)?_(?:open|close|newstate|pcall|call|push|to|get|set|raw|load|do|check|opt|register|error|next|type|typename|gc|sethook)/ },
+  { vendor: 'V8', kind: 'runtime', re: /\bv8::(?:internal::)?(?:Isolate|Context|Local|Value|Object|Function|String|Script|Heap|Handle)|_ZN2v88internal|_ZN2v87Isolate/ },
+  { vendor: 'nlohmann::json', kind: 'library', re: /\bnlohmann::|_ZN8nlohmann/ },
+  { vendor: 'RapidJSON', kind: 'library', re: /\brapidjson::|_ZN9rapidjson/ },
+  { vendor: 'FlatBuffers', kind: 'library', re: /\bflatbuffers::|_ZN11flatbuffers/ },
+  { vendor: 'GoogleTest', kind: 'test', re: /\btesting::(?:Test|AssertionResult|UnitTest|internal::)|_ZN7testing(?:4Test|8internal|8UnitTest)/ },
+  { vendor: 'XCTest', kind: 'test', re: /\bXCTest(?:Case|Suite|Expectation|Run|Observer)?\b|_XCT(?:Assert|Fail|RegisterFailure)/ },
 
   /* Apple システム FW（C++ の C* クラスや UI* と衝突しない明示 API 列挙のみ） */
   { vendor: 'CoreFoundation', kind: 'library', re: /^_?CF(?:String|Array|Dictionary|Data|Number|URL|Bundle|RunLoop|Allocator|Release|Retain|Equal|Hash|Copy|GetTypeID|Preferences|Stream|ReadStream|WriteStream|Socket|NotificationCenter|Error|Date|TimeZone|Locale|Calendar|Set|Bag|Tree|BitVector|BinaryHeap|UUID|PlugIn|MachPort|MessagePort|FileDescriptor)\w*/ },
@@ -175,7 +193,12 @@ const VENDOR_PREFIXES = {
 /** ゲームの数値を探しているのに、SDK の値を答えてはいけない目的。 */
 const GAME_VALUE_GOALS = new Set([
   'hp', 'attack', 'defense', 'damage', 'money', 'level', 'stamina',
-  'item', 'score', 'gacha',
+  'item', 'score', 'gacha', 'speed', 'cooldown',
+]);
+
+/** 広告以外の目的（自由入力を含む）で衝突とみなす SDK 種別。 */
+const NON_ADS_CONFLICT_KINDS = new Set([
+  'ads', 'analytics', 'marketing', 'support', 'media', 'ui', 'test', 'system',
 ]);
 
 /**
@@ -641,7 +664,11 @@ export function vendorOf(className, learned) {
  */
 export function vendorConflicts(goalId, vendor) {
   if (!vendor) return false;
-  if (!GAME_VALUE_GOALS.has(goalId)) return false;
-  if (vendor.via === 'cluster' || vendor.confidence === 'low') return false;
-  return true;
+  if (vendor.kind === 'system') return true;
+  if (GAME_VALUE_GOALS.has(goalId)) return true;
+  if (goalId === 'ads' && vendor.kind === 'ads') return false;
+  if (goalId === 'crypto' && vendor.kind === 'crypto') return false;
+  if (goalId === 'purchase' && vendor.kind === 'purchase') return false;
+  if (goalId === 'ads') return false;
+  return NON_ADS_CONFLICT_KINDS.has(vendor.kind);
 }

@@ -1,4 +1,5 @@
 import { fnv64Text, fnv64Hex } from './fnv64.js';
+import { getEngineMode, wasmStableStringify, wasmStableDigest } from '../hex-engine-bridge.js';
 
 const ID_SCHEMA_VERSION = 1;
 const HEX_RE = /^[0-9a-f]+$/i;
@@ -210,20 +211,109 @@ export function jsonSafe(value, seen = null) {
   return out;
 }
 
+function hasCustomToJson() {
+  return typeof Object.prototype.toJSON === 'function'
+    || typeof Array.prototype.toJSON === 'function'
+    || typeof String.prototype.toJSON === 'function'
+    || typeof Number.prototype.toJSON === 'function'
+    || typeof Boolean.prototype.toJSON === 'function';
+}
+
+function hasLoneSurrogate(str) {
+  for (let i = 0, n = str.length; i < n; i += 1) {
+    const c = str.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      if (i + 1 >= n) return true;
+      const next = str.charCodeAt(i + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      i += 1;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isWasmJsonSafe(val) {
+  if (val === null) return true;
+  const t = typeof val;
+  if (t === 'boolean') return true;
+  if (t === 'string') return !hasLoneSurrogate(val);
+  if (t === 'number') return Number.isSafeInteger(val) || (val >= -1e21 && val <= 1e21);
+  if (t !== 'object') return false;
+  if (Array.isArray(val)) {
+    for (let i = 0; i < val.length; i += 1) {
+      if (!(i in val)) continue;
+      if (!isWasmJsonSafe(val[i])) return false;
+    }
+    return true;
+  }
+  const keys = Object.keys(val);
+  for (let i = 0; i < keys.length; i += 1) {
+    const k = keys[i];
+    if (hasLoneSurrogate(k)) return false;
+    if (!isWasmJsonSafe(val[k])) return false;
+  }
+  return true;
+}
+
+const WASM_IDENTITY_MIN_STRING_LEN = 64;
+const WASM_IDENTITY_AUTO_MIN_STRING_LEN = 512;
+const WASM_IDENTITY_AUTO_MIN_CONTAINER_LEN = 16;
+
+function shouldUseWasmForSafeValue(safe, mode = getEngineMode()) {
+  if (safe === null) return false;
+  const t = typeof safe;
+  const minStr = mode === 'wasm' ? WASM_IDENTITY_MIN_STRING_LEN : WASM_IDENTITY_AUTO_MIN_STRING_LEN;
+  const minCont = mode === 'wasm' ? 1 : WASM_IDENTITY_AUTO_MIN_CONTAINER_LEN;
+  if (t === 'string') return safe.length >= minStr;
+  if (t !== 'object') return false;
+  if (Array.isArray(safe)) return safe.length >= minCont;
+  return Object.keys(safe).length >= minCont;
+}
+
+function isTrivialInlineDigestValue(value, mode = getEngineMode()) {
+  if (value === null) return true;
+  const t = typeof value;
+  const minStr = mode === 'wasm' ? WASM_IDENTITY_MIN_STRING_LEN : WASM_IDENTITY_AUTO_MIN_STRING_LEN;
+  const minCont = mode === 'wasm' ? 1 : WASM_IDENTITY_AUTO_MIN_CONTAINER_LEN;
+  if (t === 'string') return value.length < minStr;
+  if (t !== 'object') return true;
+  if (Array.isArray(value)) return value.length < minCont;
+  if (isCanonicalPlainObject(value)) return Object.keys(value).length < minCont;
+  return false;
+}
+
 export function stableStringify(value) {
-  return JSON.stringify(jsonSafe(value));
+  const safe = jsonSafe(value);
+  if (safe === undefined) return undefined;
+  if (!hasCustomToJson() && shouldUseWasmForSafeValue(safe) && isWasmJsonSafe(safe)) {
+    const wasmText = wasmStableStringify(safe);
+    if (wasmText !== null) return wasmText;
+  }
+  return JSON.stringify(safe);
 }
 
 const FNV_OFFSET_LOW = 0x84222325;
 const FNV_OFFSET_HIGH = 0xcbf29ce4;
 
 export function stableDigest(value) {
-  if (value === undefined || (Array.isArray(value) && value.map !== Array.prototype.map)
-      || typeof Object.prototype.toJSON === 'function' || typeof Array.prototype.toJSON === 'function'
-      || typeof String.prototype.toJSON === 'function' || typeof Number.prototype.toJSON === 'function'
-      || typeof Boolean.prototype.toJSON === 'function') {
+  const customToJson = hasCustomToJson();
+  if (value === undefined || (Array.isArray(value) && value.map !== Array.prototype.map) || customToJson) {
     const text = stableStringify(value);
     return fnv64Text(text) + fnv64Text(text, FNV_OFFSET_HIGH, FNV_OFFSET_LOW);
+  }
+  let target = value;
+  const mode = getEngineMode();
+  if (mode !== 'js' && !isTrivialInlineDigestValue(value, mode)) {
+    const safe = jsonSafe(value);
+    if (safe !== undefined && shouldUseWasmForSafeValue(safe, mode) && isWasmJsonSafe(safe)) {
+      const wasmHash = typeof safe === 'string'
+        ? wasmStableDigest(JSON.stringify(safe))
+        : wasmStableDigest(safe);
+      if (wasmHash !== null) return wasmHash;
+    }
+    target = safe;
   }
   let aLow = FNV_OFFSET_LOW; let aHigh = FNV_OFFSET_HIGH;
   let bLow = FNV_OFFSET_HIGH; let bHigh = FNV_OFFSET_LOW;
@@ -403,7 +493,7 @@ export function stableDigest(value) {
       seen.delete(cur);
     }
   };
-  streamValue(value);
+  streamValue(target);
   return fnv64Hex(aLow, aHigh) + fnv64Hex(bLow, bHigh);
 }
 
@@ -785,15 +875,39 @@ export function normalizeIdentity(value, code) {
 }
 
 export function deepFreeze(value, seen = null) {
-  if (!value || typeof value !== 'object') return value;
+  if (value == null || typeof value !== 'object') return value;
   if (Object.isFrozen(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
-  const active = seen ?? new WeakSet();
-  if (active.has(value)) return value;
-  active.add(value);
-  const keys = Object.keys(value);
-  for (let i = 0; i < keys.length; i += 1) deepFreeze(value[keys[i]], active);
-  const frozen = Object.freeze(value);
-  return frozen;
+  if (seen && seen.has(value)) return value;
+  let active = seen;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      const child = value[i];
+      if (child != null && typeof child === 'object' && !Object.isFrozen(child)) {
+        if (!active) {
+          active = new WeakSet();
+          active.add(value);
+        } else if (!active.has(value)) {
+          active.add(value);
+        }
+        deepFreeze(child, active);
+      }
+    }
+  } else {
+    const keys = Object.keys(value);
+    for (let i = 0; i < keys.length; i += 1) {
+      const child = value[keys[i]];
+      if (child != null && typeof child === 'object' && !Object.isFrozen(child)) {
+        if (!active) {
+          active = new WeakSet();
+          active.add(value);
+        } else if (!active.has(value)) {
+          active.add(value);
+        }
+        deepFreeze(child, active);
+      }
+    }
+  }
+  return Object.freeze(value);
 }
 
 export const IDENTITY_SCHEMA_VERSION = ID_SCHEMA_VERSION;

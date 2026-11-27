@@ -6,6 +6,7 @@
  * what pressing Enter will do before pressing it.
  *
  *   0x100458c00        -> address
+ *   0x100458c00+0x10   -> address
  *   sub_100458C00      -> symbol
  *   "reward"           -> string
  *   > rename           -> command
@@ -33,7 +34,8 @@ export const COMMANDS = Object.freeze([
   { id: 'pseudocode', ja: '疑似Cを開く', en: 'Pseudocode', match: /^(pseudo|pseudocode|decompile|疑似c|逆コンパイル)$/i },
   { id: 'diff', ja: 'バイナリを比較', en: 'Diff', match: /^(diff|差分)$/i },
   { id: 'ai', ja: 'AIに聞く', en: 'Ask AI', match: /^(ai|ask|聞く|質問)$/i },
-  { id: 'agent', ja: 'エージェントで調べる', en: 'Investigate with Agent', match: /^(agent|investigate|調査|調べる)$/i },
+  { id: 'investigate', ja: '目的から自動解析', en: 'Auto-investigate goal', match: /^(investigate|auto|調査|調べる|自動解析)$/i },
+  { id: 'agent', ja: 'AIエージェントを開く', en: 'Open AI Agent', match: /^(agent|エージェント)$/i },
 ]);
 
 const HAS_JA = /[぀-ヿ㐀-鿿]/;
@@ -41,6 +43,7 @@ const QUESTION_TAIL = /[?？]\s*$/;
 const JA_QUESTION = /(どこ|どれ|なに|何|なぜ|どうやって|教えて|ですか|でしょうか|してる|している|したい|探して|調べて)/;
 const IDENTIFIER = /^[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*$/;
 const OBJC_METHOD = /^[+-]\s*\[[^\]]+\]$/;
+const ADDR_EXPR = /^(?:(?:0[xX][0-9a-fA-F]+|(?=[0-9a-fA-F]{6,16}\b)(?=[0-9a-fA-F]*[0-9])[0-9a-fA-F]{6,16})\s*[+-]\s*(?:0[xX][0-9a-fA-F]+|\d+)|[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*\s*(?:\+\s*(?:0[xX][0-9a-fA-F]+|\d+)|-\s*0[xX][0-9a-fA-F]+))$/;
 
 function stripPrefix(value, re) {
   return value.replace(re, '').trim();
@@ -69,7 +72,7 @@ export function classifyOmnibox(input) {
     return { kind: 'string', value: value.slice(1, -1), raw };
   }
 
-  if (/^0[xX][0-9a-fA-F]+$/.test(value) || (/^[0-9a-fA-F]{6,16}$/.test(value) && /[0-9]/.test(value))) {
+  if (/^0[xX][0-9a-fA-F]+$/.test(value) || (/^[0-9a-fA-F]{6,16}$/.test(value) && /[0-9]/.test(value)) || ADDR_EXPR.test(value)) {
     return { kind: 'address', value, raw };
   }
   if (/^sub_[0-9a-fA-F]+$/i.test(value) || OBJC_METHOD.test(value)) {

@@ -121,13 +121,13 @@ const STRINGS = {
     /* ── ジャンプ ── */
     'jump.title': 'アドレスへジャンプ',
     'jump.hint':
-      '16進数で入力します（例: 10000C448 または 0x10000C448）。' +
+      '16進アドレス（例: 0x10000C448）、base+offset（例: main+0x10）、シンボル名、またはブックマーク名で移動できます。' +
       '今のセクションは {from} 〜 {to} の範囲です。',
     'jump.group': 'よく使う移動先',
     'jump.sectionStart': 'このセクションの先頭',
     'jump.sectionEnd': 'このセクションの末尾',
     'jump.entry': 'プログラムの開始地点',
-    'jump.invalid': '16進数のアドレスを入力してください（例: 0x10000C448）。',
+    'jump.invalid': '16進アドレス（例: 0x10000C448）、base+offset、シンボル名、またはブックマーク名を入力してください。',
 
     /* ── 検索 ── */
     'search.title': '検索',
@@ -498,12 +498,12 @@ const STRINGS = {
       '__cstring holds strings, __data holds writable values.',
 
     'jump.title': 'Go to Address',
-    'jump.hint': 'Accepts 10000C448 or 0x10000C448. This section covers {from} – {to}.',
+    'jump.hint': 'Accepts hex addresses (0x10000C448), base+offset (e.g. main+0x10), symbol names, or bookmarks. This section covers {from} – {to}.',
     'jump.group': 'JUMP TO',
     'jump.sectionStart': 'Start of section',
     'jump.sectionEnd': 'End of section',
     'jump.entry': 'Entry point',
-    'jump.invalid': 'Enter a hexadecimal address, e.g. 0x10000C448.',
+    'jump.invalid': 'Enter a hex address (e.g. 0x10000C448), base+offset, symbol name, or bookmark.',
 
     'search.title': 'Search',
     'search.kind.asm': 'Instruction',

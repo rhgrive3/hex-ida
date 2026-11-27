@@ -7,9 +7,9 @@ import {
   tabs, tabPanel, updateScreenTitle, sectionTitle, listRow, VirtualList, scrollStrip,
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
-import { addrHex, parseAddress, sizeText } from '../format.js';
+import * as formatMod from '../format.js';
 import { pick, isJa as i18nIsJa } from '../i18n.js';
-import { menu, copyText, toast, closeAllSheets, closeMenu } from '../ui.js';
+import { menu, copyText, toast, closeAllSheets, closeMenu, Sheet, el, button, alertDialog } from '../ui.js';
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals, showPatches,
 } from '../tools.js';
@@ -21,13 +21,16 @@ import { cfgGraph, callGraph, renderGraph, graphLegend } from '../graphview.js';
 import { classifyFunction, discoverSubsystems } from '../recognition/classifier.js';
 import { traceAppFunction, runtimeEvidenceForApp } from '../runtime/app-runtime.js';
 import { installAssistant } from '../ai/ui/assistant.js';
-import { classifyOmnibox, intentLabel } from '../ai/interaction/omnibox.js';
+import { classifyOmnibox, intentLabel, COMMANDS } from '../ai/interaction/omnibox.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 import { productDescriptor } from '../platform/product-descriptor.js';
-import { queryFunctions, queryStrings } from './explorer-index.js';
+import * as explorerIndex from './explorer-index.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 import { uiRoot } from '../ui-root.js';
-import { createDecompilerProvenanceView } from './decompiler-provenance.js';
+import {
+  createDecompilerProvenanceView, appendHighlighted, attachTokenHighlight,
+  preludeLength, findSignatureLineIndex,
+} from './decompiler-provenance.js';
 
 
 let _productPanelsPromise = null;
@@ -40,6 +43,31 @@ const showCandidates = lazyProductPanel('showCandidates');
 const showClass = lazyProductPanel('showClass');
 const showJump = lazyProductPanel('showJump');
 const showSearchPanel = lazyProductPanel('showSearch');
+const showXrefs = lazyProductPanel('showXrefs');
+
+const { addrHex, parseAddress, sizeText } = formatMod;
+function isExplicitAddressOrExpr(q) {
+  const s = String(q || '').trim();
+  if (!s) return false;
+  if (/^0x[0-9a-f]+$/i.test(s) || /^sub_[0-9a-f]+$/i.test(s)) return true;
+  if (/^[0-9a-f]{6,16}$/i.test(s) && /[0-9]/.test(s)) return true;
+  if (/[+-]/.test(s) && /^(?:(?:0x[0-9a-f]+|[0-9a-f]{6,16})\s*[+-]\s*(?:0x[0-9a-f]+|\d+)|[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*\s*(?:\+\s*(?:0x[0-9a-f]+|\d+)|-\s*0x[0-9a-f]+))$/i.test(s)) return true;
+  return false;
+}
+
+function parseAddressInput(app, q, { allowBareSymbol = true } = {}) {
+  const s = String(q || '').trim();
+  if (!s) return null;
+  if (!allowBareSymbol && !isExplicitAddressOrExpr(s)) return null;
+  if (typeof formatMod.parseAddressExpr === 'function') {
+    try {
+      const resolved = formatMod.parseAddressExpr(s, (name) => symbolAddress(app, name));
+      if (resolved != null && BigInt(resolved) >= 0n) return BigInt(resolved);
+    } catch { /* fall through */ }
+  }
+  const direct = parseAddress(q);
+  return direct != null && direct >= 0n ? direct : null;
+}
 
 const ja = () => {
   const rootLang = uiRoot()?.lang;
@@ -57,6 +85,188 @@ function functionName(app, addr) {
   const sym = app.symbols;
   const raw = sym && (sym.nameAt?.(addr) || sym.label?.(addr));
   return raw || ('sub_' + BigInt(addr).toString(16).toUpperCase());
+}
+
+export function isFunctionStart(app, rawAddr) {
+  if (rawAddr == null) return false;
+  let big;
+  try { big = BigInt(rawAddr); } catch { return false; }
+  const regions = app?.store?.get?.('regions') || [];
+  const region = regions.find((r) => r && r.size > 0n && big >= r.vmAddr && big < r.vmAddr + r.size);
+  if (region && !region.exec) return false;
+  const sym = app?.symbols;
+  if (!sym) return false;
+  try {
+    const fn = sym.functionAt?.(big);
+    if (fn?.start != null && BigInt(fn.start) === big) return true;
+    const start = sym.functionStartAt?.(big);
+    if (start != null && BigInt(start) === big) return true;
+  } catch { /* ignore */ }
+  if (Array.isArray(sym.funcs) && sym.funcs.length) {
+    const idx = lowerBoundBigInt(sym.funcs, big);
+    if (idx < sym.funcs.length) {
+      try { if (BigInt(sym.funcs[idx]) === big) return true; } catch { /* ignore */ }
+    }
+  }
+  return false;
+}
+
+export function bookmarkLabel(app, rawAddr) {
+  if (rawAddr == null) return text('アドレス', 'Address');
+  let big;
+  try { big = BigInt(rawAddr); } catch { return String(rawAddr); }
+  const regions = app?.store?.get?.('regions') || [];
+  const region = regions.find((r) => r && r.size > 0n && big >= r.vmAddr && big < r.vmAddr + r.size);
+  const sym = app?.symbols;
+  const exactSym = sym && (sym.nameAt?.(big) || sym.label?.(big)) || null;
+  if (!region || region.exec) {
+    let start = null;
+    try { start = sym?.functionAt?.(big)?.start ?? sym?.functionStartAt?.(big) ?? null; } catch { start = null; }
+    if (start != null) {
+      const startBig = BigInt(start);
+      const fnName = functionName(app, startBig);
+      const offset = big - startBig;
+      return offset > 0n ? `${fnName}+0x${offset.toString(16).toUpperCase()}` : fnName;
+    }
+    if (exactSym) return exactSym;
+  }
+  if (exactSym) return exactSym;
+  const regName = region?.section || region?.name || text('データ', 'Data');
+  return `${regName} @ ${addressText(big)}`;
+}
+
+export function openAddressTarget(app, router, rawAddr, { preferTab } = {}) {
+  if (rawAddr == null || !router) return false;
+  let big;
+  try { big = BigInt(rawAddr); } catch { return false; }
+  const regions = app?.store?.get?.('regions') || [];
+  const region = regions.find((r) => r && r.size > 0n && big >= r.vmAddr && big < r.vmAddr + r.size);
+  const isExec = !region || !!region.exec;
+  if (isExec && isFunctionStart(app, big)) {
+    const verified = app?.validatedFunctionRange?.(big);
+    if (!verified || verified.ok) {
+      const tab = preferTab || app?.uiResume?.lastFunctionTab || 'overview';
+      const safeTab = FUNCTION_TABS.some((t) => t.id === tab) ? tab : 'overview';
+      return router.navigate('/function/' + big.toString() + '/' + safeTab);
+    }
+  }
+  return router.navigate('/code/' + big.toString());
+}
+
+export function syncRouteNavigation(app, router, route, routeContext = {}) {
+  if (!route) return;
+  const id = route.route?.id;
+  let label = '';
+  let navAddr = null;
+  if (id === 'code') {
+    if (route.params?.address) {
+      try { navAddr = BigInt(route.params.address); } catch { navAddr = null; }
+    }
+    const addr = navAddr ?? currentAddress(app);
+    label = addr != null ? bookmarkLabel(app, addr) : text('コード', 'Code');
+  } else if (id === 'function') {
+    if (route.params?.address) {
+      try { navAddr = BigInt(route.params.address); } catch { navAddr = null; }
+    }
+    label = navAddr != null ? functionName(app, navAddr) : text('関数', 'Function');
+  } else if (id === 'explorer') {
+    label = text('索引', 'Explorer');
+  } else if (id === 'results' || id === 'finding') {
+    label = text('結果', 'Results');
+  } else if (id === 'investigate') {
+    label = text('調べる', 'Investigate');
+  } else if (id === 'diff') {
+    label = text('バイナリ差分', 'Binary Diff');
+  } else {
+    label = id || '';
+  }
+  router?.setCurrentLabel?.(label);
+  if (!routeContext?.historyNavigation && (id === 'code' || id === 'function') && navAddr != null) {
+    const entry = app?.navigationEntry?.(navAddr, label) || {
+      key: route.fullPath || (`/${id}/${navAddr.toString()}`),
+      addr: navAddr,
+      label,
+    };
+    app?.navigation?.visit?.(entry);
+  }
+  if (app?.store?.get?.('fileInfo') && !app._applyingDelta) {
+    app.scheduleDeltaSave?.();
+  }
+}
+
+function bookmarkListOf(app) {
+  try {
+    const raw = app?.bookmarks?.list?.();
+    return Array.isArray(raw) ? raw : [];
+  } catch { return []; }
+}
+
+export function editBookmarkNote(app, addr, name) {
+  const sheet = new Sheet(text('ブックマークメモを編集', 'Edit bookmark note'));
+  const existing = app.bookmarks?.get?.(addr)
+    ?? bookmarkListOf(app).find((b) => { try { return BigInt(b.addr) === BigInt(addr); } catch { return false; } });
+  const field = el('div', 'field');
+  const input = el('input');
+  input.type = 'text';
+  input.value = String(existing?.note || '');
+  input.placeholder = text('メモを入力…', 'Enter note…');
+  const save = () => {
+    if (!app.bookmarks?.has?.(addr)) app.bookmarks?.toggle?.(addr, { name });
+    app.bookmarks?.setNote?.(addr, { note: input.value.trim(), name });
+    sheet.close();
+    toast(text('ブックマークメモを保存しました。', 'Bookmark note saved.'));
+  };
+  field.append(input, button(text('保存', 'Save'), 'chip', save));
+  sheet.body.append(field);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+  setTimeout(() => input.focus(), 50);
+}
+
+export function makeStarButton(app, addr, name, { cls = 'ui-icon-action ui-star-btn', stopPropagation = false, onToggled = null } = {}) {
+  const isSaved = () => !!app.bookmarks?.has?.(addr);
+  const starTitle = (saved) => saved
+    ? text('ブックマークを解除 (B)', 'Remove bookmark (B)')
+    : text('ブックマークに追加 (B)', 'Bookmark function (B)');
+  const btn = uiButton(isSaved() ? '★' : '☆', {
+    cls,
+    ariaLabel: isSaved() ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'),
+    pressed: isSaved(),
+    onClick: (event) => {
+      if (stopPropagation) event.stopPropagation();
+      app.bookmarks?.toggle?.(addr, { name });
+      sync();
+      onToggled?.(isSaved());
+    },
+  });
+  btn.title = starTitle(isSaved());
+  const sync = () => {
+    const saved = isSaved();
+    btn.textContent = saved ? '★' : '☆';
+    btn.setAttribute('aria-pressed', String(saved));
+    btn.setAttribute('aria-label', saved ? text('ブックマークを解除', 'Remove bookmark') : text('ブックマークに追加', 'Bookmark function'));
+    btn.title = starTitle(saved);
+  };
+  btn._syncStar = sync;
+  return btn;
+}
+
+function deltaCountOf(info) {
+  if (!info || typeof info !== 'object') return 0;
+  const raw = info.savedCount ?? info.count ?? info.total ?? info.applied ?? info.deltaCount ?? info.changes;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (Array.isArray(raw)) return raw.length;
+  return 0;
+}
+
+function formatRecentTime(ts) {
+  if (ts == null) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return d.toLocaleString(ja() ? 'ja-JP' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return d.toISOString().slice(0, 16).replace('T', ' ');
+  }
 }
 
 function currentAddress(app) {
@@ -163,15 +373,21 @@ function installViewportBridge() {
   };
 }
 
-function recentQueries() {
-  try { return JSON.parse(sessionStorage.getItem('hex.ui.recentQueries') || '[]'); } catch { return []; }
+function recentQueriesKey(app) {
+  const file = app?.store?.get?.('fileInfo');
+  const id = file?.name || file?.path || 'global';
+  return `hex.ui.recentQueries:${String(id).slice(0, 80)}`;
 }
 
-function rememberQuery(query) {
+function recentQueries(app) {
+  try { return JSON.parse(sessionStorage.getItem(recentQueriesKey(app)) || '[]'); } catch { return []; }
+}
+
+function rememberQuery(query, app) {
   const q = String(query || '').trim();
   if (!q) return;
-  const next = [q, ...recentQueries().filter((x) => x !== q)].slice(0, 6);
-  try { sessionStorage.setItem('hex.ui.recentQueries', JSON.stringify(next)); } catch { /* private mode */ }
+  const next = [q, ...recentQueries(app).filter((x) => x !== q)].slice(0, 6);
+  try { sessionStorage.setItem(recentQueriesKey(app), JSON.stringify(next)); } catch { /* private mode */ }
 }
 
 /*
@@ -197,11 +413,11 @@ function runInvestigation(app, query) {
   });
 }
 
-function renderInvestigate(app, router) {
+function renderInvestigate(app, router, route = null) {
   const s = screen(text('何を知りたい？', 'What do you want to know?'), {
     id: 'investigate',
-    subtitle: text('ツール名ではなく、知りたいことをそのまま入力してください。必要な探索方法はHexが選びます。',
-      'Describe the answer you need. Hex chooses the search strategy.'),
+    subtitle: text('探したい処理や値を入力すると、候補関数を自動で絞り込みます。',
+      'Enter what you want to find to rank candidate routines automatically.'),
   });
   const hero = card(null, { className: 'ui-investigate-hero' });
   const form = h('form', 'ui-goal-form');
@@ -216,36 +432,98 @@ function renderInvestigate(app, router) {
     event.preventDefault();
     const q = input.value.trim();
     if (!q) { input.focus(); return; }
-    rememberQuery(q);
+    rememberQuery(q, app);
     runInvestigation(app, q);
   });
   hero.body.append(form);
   const suggestions = h('div', 'ui-goal-suggestions');
   for (const q of [
     text('経験値が増える場所', 'where experience increases'),
-    text('通信している場所', 'network communication'),
+    text('通信している場所', 'network'),
     text('ガチャの結果を決める処理', 'where gacha results are decided'),
-  ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q); runInvestigation(app, q); } }));
+  ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q, app); runInvestigation(app, q); } }));
   const commonGoals = h('div', 'ui-goal-suggestions ui-purpose-presets');
 for (const preset of [
   { label:text('HP・体力', 'HP / health'), query:text('HPを書き換える処理', 'where HP is written') },
   { label:text('攻撃力', 'Attack power'), query:text('攻撃力を決める・書き換える処理', 'where attack power is calculated or written') },
   { label:text('ダメージ計算', 'Damage calculation'), query:text('ダメージを計算して適用する処理', 'where damage is calculated and applied') },
-  { label:text('所持金・コイン', 'Money / coins'), query:text('所持金・コインを増減・保存する処理', 'where money or coins are changed and stored') },
-  { label:text('アイテム・所持品', 'Items / inventory'), query:text('アイテム・所持品を増減・保存する処理', 'where inventory items are changed and stored') },
+  { label:text('所持金・コイン', 'Money / coins'), query:text('所持金・コインを増減する処理', 'where money or coins are changed') },
+  { label:text('アイテム・所持品', 'Items / inventory'), query:text('アイテム・所持品を増減する処理', 'where inventory items are changed') },
+  { label:text('広告・課金', 'Ads / IAP'), query:text('広告表示や課金・購入を判定する処理', 'where ads or in-app purchases are checked') },
+  { label:text('無敵・クールダウン', 'Invincible / Cooldown'), query:text('無敵やクールダウン・移動速度を決める処理', 'where invincibility, cooldown, or speed is controlled') },
 ]) {
   commonGoals.append(uiButton(preset.label, {
     cls:'ui-suggestion ui-purpose-chip',
-    onClick:() => { input.value = preset.query; rememberQuery(preset.query); runInvestigation(app, preset.query); },
+    onClick:() => { input.value = preset.query; rememberQuery(preset.query, app); runInvestigation(app, preset.query); },
   }));
 }
 hero.body.append(suggestions, sectionTitle(text('よくある目的', 'Common goals')), commonGoals);
+let disposed = false;
 if (!app.store?.get?.('fileInfo')) {
   s.body.append(emptyState(
     text('ファイルが開かれていません', 'No binary open'),
     text('まずは解析したいバイナリを開くか、サンプルで操作を試してみてください。', 'Open a binary to investigate, or try the built-in sample first.'),
     noFileActions(app),
   ));
+  if (typeof app.listRecentDeltaBinaries === 'function') {
+    const recentDeltaHost = h('div', 'ui-recent-delta-host');
+    s.body.append(recentDeltaHost);
+    const lastFilePromise = typeof app.analysisResume?.loadLastFile === 'function'
+      ? Promise.resolve(app.analysisResume.loadLastFile()).catch(() => null)
+      : Promise.resolve(null);
+    Promise.all([
+      Promise.resolve(app.listRecentDeltaBinaries({ onlyWithDelta: true, limit: 8 })),
+      lastFilePromise,
+    ]).then(([entries, saved]) => {
+      if (disposed || !Array.isArray(entries) || !entries.length) return;
+      const recentCard = card(text('最近のバイナリ（差分あり）', 'Recent binaries (with saved delta)'), {
+        className: 'ui-recent-delta-card',
+        subtitle: text('同じバイナリを開くと保存した差分を自動で復元します。', 'Open the matching binary to restore your saved changes automatically.'),
+      });
+      const list = h('div', 'ui-list');
+      const savedFile = saved?.file || null;
+      const savedName = savedFile?.name || saved?.name || '';
+      const savedHash = String(saved?.sha256 || saved?.meta?.sha256 || saved?.binaryId || saved?.meta?.binaryId || '');
+      for (const entry of entries.slice(0, 8)) {
+        const name = String(entry?.name || entry?.filename || entry?.fileName || text('バイナリ', 'Binary'));
+        const rawHash = String(entry?.sha256 || entry?.fingerprint || entry?.deltaKey || entry?.id || '');
+        const fp = rawHash.slice(0, 12);
+        const count = deltaCountOf(entry);
+        const ts = formatRecentTime(entry?.lastOpenedAt ?? entry?.lastOpened ?? entry?.updatedAt ?? entry?.timestamp);
+        const subParts = [
+          fp ? fp : null,
+          text(`${count}件の差分`, `${count} changes`),
+          ts || null,
+        ].filter(Boolean);
+        const matchesSaved = Boolean(savedFile && (
+          (savedHash && rawHash
+            ? (savedHash === rawHash || rawHash.includes(savedHash) || savedHash.includes(rawHash))
+            : (savedName && savedName === name))
+        ));
+        const instantBadge = matchesSaved
+          ? h('span', 'ui-badge ui-badge-confirmed', text('すぐ再開', 'Instant resume'))
+          : null;
+        list.append(listRow({
+          title: name,
+          subtitle: subParts.join(' · '),
+          meta: matchesSaved ? '' : text('ローカルファイルを再選択', 'Re-select local file'),
+          badge: instantBadge,
+          onClick: () => {
+            if (matchesSaved && typeof app.openFile === 'function') {
+              void app.openFile(savedFile, { restored: true });
+              return;
+            }
+            toast(text(`「${name}」を選択すると前回の差分を自動で復元します。`, `Select "${name}" to restore its saved delta automatically.`));
+            const registry = window.__hexUi?.actions;
+            if (registry?.has?.('file.open') && typeof registry.run === 'function') registry.run('file.open');
+            else document.getElementById('file-input')?.click();
+          },
+        }));
+      }
+      recentCard.body.append(list);
+      recentDeltaHost.replaceChildren(recentCard.root);
+    }).catch(() => {});
+  }
 }
 s.body.append(hero.root);
 
@@ -258,14 +536,22 @@ s.body.append(hero.root);
   }));
   s.body.append(overview.root);
 
-  const recent = recentQueries();
+  const initialQuery = route?.query?.get?.('q') || '';
+  if (initialQuery) {
+    input.value = initialQuery;
+    if (app.store?.get?.('fileInfo')) {
+      rememberQuery(initialQuery, app);
+      queueMicrotask(() => { if (!disposed) runInvestigation(app, initialQuery); });
+    }
+  }
+  const recent = recentQueries(app);
   if (recent.length) {
     s.body.append(sectionTitle(text('最近の調査', 'Recent investigations')));
     const list = h('div', 'ui-list');
     for (const q of recent) list.append(listRow({ title: q, onClick: () => { input.value = q; runInvestigation(app, q); } }));
     s.body.append(list);
   }
-  return { root: s.root, focus: () => input.focus() };
+  return { root: s.root, focus: () => input.focus(), dispose: () => { disposed = true; } };
 }
 
 function lowerBoundBigInt(array, value) {
@@ -277,9 +563,196 @@ function lowerBoundBigInt(array, value) {
   return lo;
 }
 
-async function matchingFunctionItems(app, query, options) {
+const VALID_EXPLORER_FILTERS = new Set(['all', 'saved', 'edited']);
+const VALID_EXPLORER_SORTS = new Set(['address', 'name', 'size', 'priority']);
+
+function resolveFunctionStart(app, rawAddr) {
+  if (rawAddr == null || rawAddr === '') return null;
+  let big;
+  try { big = BigInt(rawAddr); } catch { return null; }
+  try {
+    const fn = app?.symbols?.functionAt?.(big);
+    if (fn?.start != null) return BigInt(fn.start);
+    const start = app?.symbols?.functionStartAt?.(big);
+    if (start != null) return BigInt(start);
+  } catch { /* fall back to raw address */ }
+  return big;
+}
+
+export function collectEditedFunctions(app) {
+  const map = new Map();
+  const touch = (rawAddr, reason, commentText = null, preferComment = false) => {
+    const start = resolveFunctionStart(app, rawAddr);
+    if (start == null) return;
+    const key = start.toString();
+    let entry = map.get(key);
+    if (!entry) {
+      entry = { addr: start, reasons: new Set(), comment: null };
+      map.set(key, entry);
+    }
+    entry.reasons.add(reason);
+    if (commentText) {
+      if (!entry.comment || preferComment) entry.comment = String(commentText).trim();
+    }
+  };
+  const notes = app?.notes;
+  if (notes) {
+    if (notes.names instanceof Map) {
+      for (const [k, v] of notes.names) {
+        if (v) touch(k, 'rename');
+      }
+    } else if (typeof notes.nameEntries === 'function') {
+      for (const item of notes.nameEntries() || []) {
+        if (item?.name) touch(item.addr, 'rename');
+      }
+    }
+    if (notes.comments instanceof Map) {
+      for (const [k, v] of notes.comments) {
+        if (!v) continue;
+        const start = resolveFunctionStart(app, k);
+        let isStart = false;
+        try { isStart = start != null && BigInt(k) === start; } catch { isStart = false; }
+        touch(k, 'comment', v, isStart);
+      }
+    }
+    if (notes.vars instanceof Map) {
+      for (const [k, v] of notes.vars) {
+        if (!v) continue;
+        const sep = String(k).indexOf(':');
+        if (sep > 0) touch(String(k).slice(0, sep), 'var');
+      }
+    }
+    if (notes.types instanceof Map) {
+      for (const [k, v] of notes.types) {
+        if (!v) continue;
+        const sep = String(k).indexOf(':');
+        if (sep > 0) touch(String(k).slice(0, sep), 'type');
+      }
+    }
+  }
+  const patchList = typeof app?.patches?.list === 'function' ? app.patches.list() : [];
+  if (Array.isArray(patchList)) {
+    for (const patch of patchList) {
+      if (patch?.addr != null) touch(patch.addr, 'patch');
+    }
+  }
+  return map;
+}
+
+function sortFunctionItems(items, sortMode, app, editedMap = null) {
+  if (!Array.isArray(items) || items.length <= 1) return items;
+  const mode = VALID_EXPLORER_SORTS.has(sortMode) ? sortMode : 'address';
+  const compareAddr = (a, b) => {
+    try {
+      const aa = BigInt(a.addr);
+      const bb = BigInt(b.addr);
+      return aa < bb ? -1 : aa > bb ? 1 : 0;
+    } catch { return 0; }
+  };
+  if (mode === 'address') {
+    items.sort(compareAddr);
+    return items;
+  }
+  if (mode === 'name') {
+    items.sort((a, b) => {
+      const an = String(a.name || '').toLowerCase();
+      const bn = String(b.name || '').toLowerCase();
+      if (an < bn) return -1;
+      if (an > bn) return 1;
+      return compareAddr(a, b);
+    });
+    return items;
+  }
+  if (mode === 'size') {
+    items.sort((a, b) => {
+      const as = a.size != null && Number.isFinite(Number(a.size)) ? Number(a.size) : -1;
+      const bs = b.size != null && Number.isFinite(Number(b.size)) ? Number(b.size) : -1;
+      if (bs !== as) return bs - as;
+      return compareAddr(a, b);
+    });
+    return items;
+  }
+  if (mode === 'priority') {
+    const edited = editedMap || collectEditedFunctions(app);
+    const scoreOf = (item) => {
+      let score = Number.isFinite(Number(item?.priority ?? item?.score)) ? Number(item.priority ?? item.score) : 0;
+      try {
+        const big = BigInt(item.addr);
+        if (app?.bookmarks?.has?.(big)) score += 1000;
+        if (edited.has(big.toString())) score += 500;
+      } catch { /* ignore */ }
+      if (item.size != null && Number.isFinite(Number(item.size))) score += Math.min(200, Math.log2(1 + Math.max(0, Number(item.size))) * 10);
+      return score;
+    };
+    items.sort((a, b) => {
+      const diff = scoreOf(b) - scoreOf(a);
+      return diff !== 0 ? diff : compareAddr(a, b);
+    });
+  }
+  return items;
+}
+
+async function matchingFunctionItems(app, query, options = {}) {
   const q = String(query || '').trim();
-  return queryFunctions(app, q, options);
+  const sortMode = VALID_EXPLORER_SORTS.has(options?.sort) ? options.sort : 'address';
+  const offset = Number.isSafeInteger(options?.offset) && options.offset >= 0 ? options.offset : 0;
+  const limit = Number.isSafeInteger(options?.limit) && options.limit > 0 ? options.limit : 200;
+  if (typeof explorerIndex.queryFunctionsFast === 'function') {
+    try {
+      let prioritySet = options?.prioritySet || null;
+      let savedSet = options?.savedSet || null;
+      let editedSet = options?.editedSet || null;
+      if (sortMode === 'priority') {
+        if (!savedSet) {
+          savedSet = new Set();
+          for (const bm of bookmarkListOf(app)) {
+            if (bm?.addr != null) {
+              try { savedSet.add(BigInt(bm.addr).toString()); } catch { /* ignore */ }
+            }
+          }
+        }
+        if (!editedSet) {
+          editedSet = new Set(collectEditedFunctions(app).keys());
+        }
+        if (!prioritySet) {
+          prioritySet = new Set([...savedSet, ...editedSet]);
+        }
+      }
+      const fast = await explorerIndex.queryFunctionsFast(app, q, {
+        ...options,
+        offset,
+        limit,
+        sort: sortMode,
+        prioritySet,
+        savedSet,
+        editedSet,
+      });
+      if (Array.isArray(fast)) return fast;
+      if (fast && Array.isArray(fast.items)) {
+        const rows = fast.items;
+        const total = Number.isSafeInteger(fast.total) && fast.total >= 0 ? fast.total : rows.length;
+        const next = offset + rows.length < total ? offset + rows.length : null;
+        Object.defineProperty(rows, 'queryPage', {
+          value: { offset, limit, returned: rows.length, total, next },
+          enumerable: false,
+          configurable: true,
+        });
+        Object.defineProperty(rows, 'completeness', {
+          value: fast.complete === false ? 'partial' : 'complete',
+          enumerable: false,
+          configurable: true,
+        });
+        return rows;
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError') throw err;
+    }
+  }
+  const items = await explorerIndex.queryFunctions(app, q, options);
+  if (Array.isArray(items) && sortMode !== 'address') {
+    sortFunctionItems(items, sortMode, app);
+  }
+  return items;
 }
 function sectionItems(app, query) {
   const q = String(query || '').trim().toLowerCase();
@@ -291,7 +764,7 @@ function sectionItems(app, query) {
 
 async function stringItems(app, query, options) {
   const rows = await app.ensureStrings();
-  return queryStrings(rows || [], query, options);
+  return explorerIndex.queryStrings(rows || [], query, options);
 }
 let cachedClassesRef = null;
 let cachedClassEntities = null;
@@ -422,10 +895,34 @@ export function classItems(app, query) {
   return list;
 }
 
+let cachedDataRef = null;
+let cachedDataEntities = null;
+
 function getDataEntities(app) {
+  const regions = app.store?.get?.('regions') || [];
+  const symbols = app.symbols || null;
+  const symbolsGen = symbols?.gen ?? null;
+  const program = app.program || null;
+  const structs = app.structs || app.types?.structs || [];
+  const schemas = app.schemas || app.store?.get?.('schemas') || [];
+  const isJapanese = ja();
+
+  if (
+    cachedDataRef
+    && cachedDataRef.regions === regions
+    && cachedDataRef.symbols === symbols
+    && cachedDataRef.symbolsGen === symbolsGen
+    && cachedDataRef.program === program
+    && cachedDataRef.structs === structs
+    && cachedDataRef.schemas === schemas
+    && cachedDataRef.isJapanese === isJapanese
+    && cachedDataEntities
+  ) {
+    return cachedDataEntities;
+  }
+
   const items = [];
   const seen = new Set();
-  const regions = app.store?.get?.('regions') || [];
   const dataRegions = regions.filter((r) => r && !r.exec && (r.read || r.write));
 
   if (app.symbols) {
@@ -451,7 +948,7 @@ function getDataEntities(app) {
     } catch { /* ignore fallback */ }
   }
 
-  const structs = app.structs || app.types?.structs || [];
+
   if (Array.isArray(structs) || (structs instanceof Map)) {
     const list = structs instanceof Map ? structs.values() : structs;
     for (const s of list) {
@@ -472,7 +969,7 @@ function getDataEntities(app) {
     }
   }
 
-  const schemas = app.schemas || app.store?.get?.('schemas') || [];
+
   if (Array.isArray(schemas)) {
     for (const sch of schemas) {
       const files = sch.files?.join(', ') || '';
@@ -507,6 +1004,8 @@ function getDataEntities(app) {
     });
   }
 
+  cachedDataRef = { regions, symbols, symbolsGen, program, structs, schemas, isJapanese };
+  cachedDataEntities = items;
   return items;
 }
 
@@ -631,7 +1130,89 @@ function renderExplorer(app, router, route, routeContext = {}) {
   const pageSize = 200;
   let queryOffset = Number.isSafeInteger(restored?.offset) && restored.offset >= 0 ? restored.offset : 0;
   let pendingVirtualState = restored?.virtual ?? null;
-  controls.append(scopes, search);
+  const resumedFilter = app.uiResume?.explorerFilter;
+  const initialFilter = restored?.filterMode
+    ?? (restored?.savedOnly ? 'saved' : null)
+    ?? (VALID_EXPLORER_FILTERS.has(resumedFilter) ? resumedFilter : 'all');
+  let filterMode = scope === 'functions' && VALID_EXPLORER_FILTERS.has(initialFilter) ? initialFilter : 'all';
+  const resumedSort = app.uiResume?.explorerSort;
+  const initialSort = restored?.sortMode ?? (VALID_EXPLORER_SORTS.has(resumedSort) ? resumedSort : 'address');
+  let sortMode = VALID_EXPLORER_SORTS.has(initialSort) ? initialSort : 'address';
+  let allChip = null;
+  let savedChip = null;
+  let editedChip = null;
+  let sortSelect = null;
+  const searchRow = h('div', 'ui-explorer-search-row');
+  searchRow.append(search);
+  const syncFilterChips = () => {
+    if (allChip) {
+      allChip.textContent = text('すべて', 'All');
+      allChip.setAttribute('aria-pressed', String(filterMode === 'all'));
+    }
+    if (savedChip) {
+      const count = bookmarkListOf(app).length;
+      savedChip.textContent = text(`保存済み (★ ${count})`, `Saved (★ ${count})`);
+      savedChip.setAttribute('aria-pressed', String(filterMode === 'saved'));
+    }
+    if (editedChip) {
+      const count = collectEditedFunctions(app).size;
+      editedChip.textContent = text(`編集済み (✎ ${count})`, `Edited (✎ ${count})`);
+      editedChip.setAttribute('aria-pressed', String(filterMode === 'edited'));
+    }
+  };
+  const setFilterMode = (next) => {
+    if (!VALID_EXPLORER_FILTERS.has(next) || filterMode === next) return;
+    filterMode = next;
+    queryOffset = 0;
+    pendingVirtualState = null;
+    app.setUiResume?.({ explorerFilter: filterMode });
+    syncFilterChips();
+    void update();
+  };
+  controls.append(scopes, searchRow);
+  if (scope === 'functions') {
+    const filterBar = h('div', 'ui-explorer-filter-bar');
+    allChip = uiButton('', {
+      cls: 'ui-secondary-action ui-explorer-filter-chip',
+      pressed: filterMode === 'all',
+      onClick: () => setFilterMode('all'),
+    });
+    savedChip = uiButton('', {
+      cls: 'ui-secondary-action ui-explorer-filter-chip ui-saved-filter-chip',
+      pressed: filterMode === 'saved',
+      onClick: () => setFilterMode(filterMode === 'saved' ? 'all' : 'saved'),
+    });
+    editedChip = uiButton('', {
+      cls: 'ui-secondary-action ui-explorer-filter-chip ui-edited-filter-chip',
+      pressed: filterMode === 'edited',
+      onClick: () => setFilterMode(filterMode === 'edited' ? 'all' : 'edited'),
+    });
+    sortSelect = h('select', 'ui-explorer-sort');
+    sortSelect.setAttribute('aria-label', text('並び順', 'Sort functions'));
+    for (const [val, lbl] of [
+      ['address', text('アドレス順', 'Address')],
+      ['name', text('名前順', 'Name')],
+      ['size', text('サイズ順', 'Size')],
+      ['priority', text('優先度順', 'Priority')],
+    ]) {
+      const opt = h('option', null, lbl);
+      opt.value = val;
+      if (val === sortMode) opt.selected = true;
+      sortSelect.append(opt);
+    }
+    sortSelect.addEventListener('change', () => {
+      const next = sortSelect.value;
+      if (!VALID_EXPLORER_SORTS.has(next)) return;
+      sortMode = next;
+      queryOffset = 0;
+      pendingVirtualState = null;
+      app.setUiResume?.({ explorerSort: sortMode });
+      void update();
+    });
+    syncFilterChips();
+    filterBar.append(allChip, savedChip, editedChip, sortSelect);
+    controls.append(filterBar);
+  }
   s.body.append(controls);
   const content = tabPanel(scopes, 'ui-explorer-content');
   s.body.append(content);
@@ -687,7 +1268,17 @@ function renderExplorer(app, router, route, routeContext = {}) {
       content.append(h('p', 'ui-partial-note', text('索引は一部です。未解析の領域を「該当なし」とは扱いません。', 'The index is partial; unanalysed regions are not treated as having no matches.')));
     }
     if (items?.complete === false) content.append(h('p', 'ui-partial-note', text('結果は一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial; unscanned regions are not treated as having no matches.')));
-    if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText, emptyAction)); return; }
+    if (!items || !Number(items.length)) {
+      const q = String(search.value || '').trim();
+      const fallbackAction = (!emptyAction && q)
+        ? uiButton(text(`「${q}」を自動解析で探す`, `Auto-investigate "${q}"`), {
+            cls: 'ui-primary-action',
+            onClick: () => runInvestigation(app, q),
+          })
+        : emptyAction;
+      content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText, fallbackAction));
+      return;
+    }
     virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text('索引の結果', 'Explorer results'), renderRow });
     content.append(virtual.root);
     if (pendingVirtualState) { virtual.restoreState(pendingVirtualState); pendingVirtualState = null; }
@@ -708,17 +1299,151 @@ function renderExplorer(app, router, route, routeContext = {}) {
     const serial = ++querySerial;
     const current = () => !disposed && !routeSignal.aborted && !signal.aborted && serial === querySerial;
     const q = search.value.trim();
-    const parsed = parseAddress(q);
+    const parsed = parseAddressInput(app, q, { allowBareSymbol: false });
     if (parsed != null && q) {
       showRows([{ addr: parsed }], (item) => listRow({ title: addressText(item.addr), subtitle: text('このアドレスへ移動', 'Jump to this address'), onClick: () => router.navigate('/code/' + item.addr.toString()) }), '');
       return;
     }
     if (scope === 'functions') {
+      const editedMap = collectEditedFunctions(app);
+      const bookmarkMap = new Map();
+      for (const bm of bookmarkListOf(app)) {
+        if (bm?.addr == null) continue;
+        try { bookmarkMap.set(BigInt(bm.addr).toString(), bm); } catch { /* ignore */ }
+      }
+      const previewClip = (val, max = 48) => {
+        const sVal = String(val || '').replace(/\s+/g, ' ').trim();
+        if (!sVal) return '';
+        return sVal.length > max ? sVal.slice(0, max - 1) + '…' : sVal;
+      };
+      const makeEditedBadge = (keyStr) => {
+        if (!editedMap.has(keyStr)) return null;
+        const badge = h('span', 'ui-edited-badge', '✎');
+        badge.title = text('編集済み', 'Edited');
+        badge.setAttribute('aria-label', text('編集済み', 'Edited'));
+        return badge;
+      };
+      const buildFnSubtitle = (addrBig, bm = null) => {
+        const keyStr = addrBig.toString();
+        const bmEntry = bm || bookmarkMap.get(keyStr);
+        const bmNote = previewClip(bmEntry?.note);
+        const editEntry = editedMap.get(keyStr);
+        const cmt = previewClip(editEntry?.comment || app.notes?.comment?.(addrBig));
+        const preview = bmNote ? ('★ ' + bmNote) : (cmt ? ('✎ ' + cmt) : '');
+        return [addressText(addrBig), preview].filter(Boolean).join(' · ');
+      };
+      const fnSizeOf = (addrBig) => {
+        try {
+          const fn = app.symbols?.functionAt?.(addrBig);
+          if (fn?.end != null && fn?.start != null && fn.end > fn.start) return Number(fn.end - fn.start);
+        } catch { /* ignore */ }
+        return null;
+      };
+
+      const makeFnRowAction = (rowAddr, rowName, onToggled) => {
+        const isSaved = !!app.bookmarks?.has?.(rowAddr);
+        const star = makeStarButton(app, rowAddr, rowName, {
+          cls: 'ui-icon-action ui-star-btn ui-row-star',
+          stopPropagation: true,
+          onToggled,
+        });
+        if (!isSaved) return star;
+        const wrap = h('span', 'ui-row-actions');
+        const noteBtn = uiButton(text('メモ', 'Edit note'), {
+          cls: 'ui-secondary-action ui-row-note-btn',
+          ariaLabel: text('ブックマークメモを編集', 'Edit bookmark note'),
+          onClick: (event) => {
+            event.stopPropagation();
+            editBookmarkNote(app, rowAddr, rowName);
+          },
+        });
+        noteBtn.title = text('ブックマークメモを編集', 'Edit bookmark note');
+        wrap.append(noteBtn, star);
+        return wrap;
+      };
+
+      if (filterMode === 'saved') {
+        const ql = q.toLowerCase();
+        const saved = bookmarkListOf(app).filter((bm) => {
+          if (bm?.addr == null) return false;
+          const bAddr = BigInt(bm.addr);
+          const liveName = isFunctionStart(app, bAddr)
+            ? (app.symbols?.nameAt?.(bAddr) || bm.name || functionName(app, bAddr))
+            : (bm.name || bookmarkLabel(app, bAddr));
+          if (!ql) return true;
+          const tags = Array.isArray(bm?.tags) ? bm.tags.join(' ') : String(bm?.tag || '');
+          const hay = [liveName, bm?.name, bm?.note, tags, addressText(bAddr)].filter(Boolean).join(' ').toLowerCase();
+          return hay.includes(ql);
+        }).map((bm) => {
+          const bAddr = BigInt(bm.addr);
+          const liveName = isFunctionStart(app, bAddr)
+            ? (app.symbols?.nameAt?.(bAddr) || bm.name || functionName(app, bAddr))
+            : (bm.name || bookmarkLabel(app, bAddr));
+          return { ...bm, addr: bAddr, name: liveName, size: fnSizeOf(bAddr) };
+        });
+        sortFunctionItems(saved, sortMode, app, editedMap);
+        showRows(saved, (bm) => {
+          const bAddr = BigInt(bm.addr);
+          const bName = bm.name || bookmarkLabel(app, bAddr);
+          const action = makeFnRowAction(bAddr, bName, () => { syncFilterChips(); if (filterMode === 'saved') void update(); });
+          const tags = Array.isArray(bm?.tags) ? bm.tags.join(', ') : String(bm?.tag || '');
+          return listRow({
+            title: bName,
+            subtitle: buildFnSubtitle(bAddr, bm),
+            meta: tags || (bm.size != null ? String(bm.size) + ' B' : ''),
+            badge: makeEditedBadge(bAddr.toString()),
+            action,
+            onClick: () => openAddressTarget(app, router, bAddr),
+          });
+        }, text('保存済みの関数はありません。関数の ☆ を押すとここに追加されます。', 'No saved functions yet. Tap ☆ on any function to bookmark it.'));
+        return;
+      }
+
+      if (filterMode === 'edited') {
+        const ql = q.toLowerCase();
+        const editedRows = [];
+        for (const entry of editedMap.values()) {
+          const eAddr = entry.addr;
+          const eName = functionName(app, eAddr);
+          const bmEntry = bookmarkMap.get(eAddr.toString());
+          if (ql) {
+            const hay = [eName, addressText(eAddr), entry.comment, bmEntry?.note].filter(Boolean).join(' ').toLowerCase();
+            if (!hay.includes(ql)) continue;
+          }
+          editedRows.push({ addr: eAddr, name: eName, size: fnSizeOf(eAddr) });
+        }
+        sortFunctionItems(editedRows, sortMode, app, editedMap);
+        showRows(editedRows, (item) => {
+          const itemAddr = BigInt(item.addr);
+          const action = makeFnRowAction(itemAddr, item.name, () => syncFilterChips());
+          return listRow({
+            title: item.name,
+            subtitle: buildFnSubtitle(itemAddr),
+            meta: item.size != null ? String(item.size) + ' B' : '',
+            badge: makeEditedBadge(itemAddr.toString()),
+            action,
+            onClick: () => openAddressTarget(app, router, itemAddr),
+          });
+        }, text('編集済みの関数はありません。名前の変更・メモ・型設定・パッチを行うとここに表示されます。', 'No edited functions yet. Rename, comment, type, or patch a function to see it here.'));
+        return;
+      }
+
       content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
       try {
-        const items = await matchingFunctionItems(app, q, { signal, offset:queryOffset, limit:pageSize });
+        const items = await matchingFunctionItems(app, q, { signal, offset: queryOffset, limit: pageSize, sort: sortMode });
         if (!current()) return;
-        showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
+        showRows(items, (item) => {
+          const itemAddr = BigInt(item.addr);
+          const action = makeFnRowAction(itemAddr, item.name, () => syncFilterChips());
+          return listRow({
+            title: item.name,
+            subtitle: buildFnSubtitle(itemAddr),
+            meta: item.size != null ? String(item.size) + ' B' : '',
+            badge: makeEditedBadge(itemAddr.toString()),
+            action,
+            onClick: () => openAddressTarget(app, router, itemAddr),
+          });
+        }, text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
           // A word that is not a function name is often in a string: offer that search.
           q ? uiButton(text(`「${q}」を文字列から探す`, `Search strings for "${q}"`), { cls: 'ui-secondary-action', onClick: () => router.navigate('/explorer/strings?q=' + encodeURIComponent(q)) }) : null);
       } catch (err) {
@@ -740,12 +1465,38 @@ function renderExplorer(app, router, route, routeContext = {}) {
       }), text('外部ライブラリ情報がありません。', 'No external library information is available.'));
       return;
     }
+    const makeAddrRowAction = (rawAddr, label) => {
+      if (rawAddr == null) return null;
+      let big;
+      try { big = BigInt(rawAddr); } catch { return null; }
+      const wrap = h('span', 'ui-row-actions');
+      const xrefBtn = uiButton('Xrefs', {
+        cls: 'ui-secondary-action ui-row-xrefs',
+        ariaLabel: text('参照元を見る', 'Show cross-references'),
+        onClick: (event) => {
+          event.stopPropagation();
+          requireFile(app, () => showXrefs(app, big));
+        },
+      });
+      xrefBtn.title = text('参照元を見る (X)', 'Show cross-references (X)');
+      const star = makeStarButton(app, big, label || bookmarkLabel(app, big), {
+        cls: 'ui-icon-action ui-star-btn ui-row-star',
+        stopPropagation: true,
+      });
+      wrap.append(xrefBtn, star);
+      return wrap;
+    };
     if (scope === 'strings') {
       content.replaceChildren(loadingState(text('文字列を集めています…', 'Collecting strings…')));
       try {
         const items = await stringItems(app, q, { signal, offset:queryOffset, limit:pageSize });
         if (!current()) return;
-        showRows(items, (item) => listRow({ title: item.text, subtitle: addressText(item.addr), onClick: () => { app.goToStringAddress(item.region, item.addr); router.navigate('/code/' + BigInt(item.addr).toString()); } }), text('文字列が見つかりません。', 'No strings were found.'));
+        showRows(items, (item) => listRow({
+          title: item.text,
+          subtitle: addressText(item.addr),
+          action: makeAddrRowAction(item.addr, bookmarkLabel(app, item.addr)),
+          onClick: () => { app.goToStringAddress(item.region, item.addr); router.navigate('/code/' + BigInt(item.addr).toString()); },
+        }), text('文字列が見つかりません。', 'No strings were found.'));
       } catch (err) {
         if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('文字列を表示できません', 'Could not show strings'), String(err && err.message || err)));
       }
@@ -766,32 +1517,92 @@ function renderExplorer(app, router, route, routeContext = {}) {
         title: item.name,
         subtitle: item.addr != null ? addressText(item.addr) + (item.region ? ' · ' + item.region : '') : '',
         meta: item.meta || '',
+        action: item.addr != null ? makeAddrRowAction(item.addr, item.name || bookmarkLabel(app, item.addr)) : null,
         onClick: item.addr != null ? () => router.navigate('/code/' + BigInt(item.addr).toString()) : () => requireFile(app, () => showGlobals(app)),
       }), text('データ構造・グローバル変数情報がありません。', 'No data structures or global variables found.'));
       return;
     }
   };
 
+  const unsubBookmarks = scope === 'functions' ? (app.bookmarks?.subscribe?.(() => {
+    if (disposed) return;
+    syncFilterChips();
+    if (filterMode === 'saved' || filterMode === 'all' || filterMode === 'edited') void update();
+  }) || null) : null;
+  let unsubNotes = null;
+  const bindNotes = () => {
+    if (typeof unsubNotes === 'function') { unsubNotes(); unsubNotes = null; }
+    if (scope !== 'functions') return;
+    unsubNotes = app.notes?.subscribe?.(() => {
+      if (disposed) return;
+      syncFilterChips();
+      void update();
+    }) || null;
+  };
+  bindNotes();
+  const onNotesAttached = () => {
+    if (disposed) return;
+    bindNotes();
+    if (scope === 'functions') { syncFilterChips(); void update(); }
+  };
+  document.addEventListener('hex:notes-attached', onNotesAttached);
+  const unsubStore = scope === 'functions' ? (app.store?.subscribe?.((_state, patch) => {
+    if (disposed || !patch || !('patches' in patch)) return;
+    syncFilterChips();
+    if (filterMode === 'edited' || filterMode === 'all') void update();
+  }) || null) : null;
   search.addEventListener('input', () => { queryOffset = 0; pendingVirtualState = null; clearTimeout(timer); timer = setTimeout(update, 120); });
   update();
   return {
     root: s.root,
-    getState: () => ({ query: search.value, offset:queryOffset, virtual: virtual?.getState() || null }),
+    getState: () => ({ query: search.value, offset: queryOffset, savedOnly: filterMode === 'saved', filterMode, sortMode, virtual: virtual?.getState() || null }),
     restoreState: (state) => {
       if (!state) return;
       if (virtual) virtual.restoreState(state.virtual);
       else pendingVirtualState = state.virtual ?? null;
     },
-    dispose: () => { disposed = true; queryScope.abort('explorer-disposed'); fallbackRouteController?.abort('explorer-disposed'); clearTimeout(timer); virtual?.dispose(); },
+    dispose: () => {
+      disposed = true;
+      document.removeEventListener('hex:notes-attached', onNotesAttached);
+      if (typeof unsubBookmarks === 'function') unsubBookmarks();
+      if (typeof unsubNotes === 'function') unsubNotes();
+      if (typeof unsubStore === 'function') unsubStore();
+      queryScope.abort('explorer-disposed');
+      fallbackRouteController?.abort('explorer-disposed');
+      clearTimeout(timer);
+      virtual?.dispose();
+    },
   };
 }
 
 function codeViewState(app) {
   return {
-    getState: () => ({
-      topRow: app.viewer.topRow(), selectedRow: app.viewer.selectedRow,
-      mode: app.store.get('displayMode'), regionId: app.store.get('currentRegion')?.id || null,
-    }),
+    getState: () => {
+      const topRow = app.viewer.topRow();
+      const selectedRow = app.viewer.selectedRow;
+      let topAddress = null;
+      let selectedAddress = null;
+      try {
+        if (Number.isFinite(topRow) && topRow >= 0 && typeof app.viewer.rowAddress === 'function') {
+          const a = app.viewer.rowAddress(topRow);
+          if (a != null) topAddress = BigInt(a).toString();
+        }
+      } catch { /* ignore */ }
+      try {
+        if (Number.isFinite(selectedRow) && selectedRow >= 0 && typeof app.viewer.rowAddress === 'function') {
+          const a = app.viewer.rowAddress(selectedRow);
+          if (a != null) selectedAddress = BigInt(a).toString();
+        }
+      } catch { /* ignore */ }
+      return {
+        topRow,
+        selectedRow,
+        topAddress,
+        selectedAddress,
+        mode: app.store.get('displayMode'),
+        regionId: app.store.get('currentRegion')?.id || null,
+      };
+    },
     restoreState: (state) => {
       if (!state) return;
       if (state.regionId && app.store?.get?.('currentRegion')?.id !== state.regionId) {
@@ -799,8 +1610,25 @@ function codeViewState(app) {
         if (region) app.selectRegion?.(region, { silent: true });
       }
       if (state.mode) app.setMode(state.mode);
-      if (Number.isFinite(state.topRow)) app.viewer.goToRow(state.topRow, 'top');
-      if (Number.isFinite(state.selectedRow) && state.selectedRow >= 0) app.viewer.select(state.selectedRow, false);
+      let topRow = Number.isFinite(state.topRow) ? state.topRow : null;
+      if (state.topAddress != null && typeof app.viewer.rowOfAddress === 'function') {
+        try {
+          const mapped = app.viewer.rowOfAddress(BigInt(state.topAddress));
+          if (mapped != null && mapped >= 0) topRow = mapped;
+        } catch { /* ignore */ }
+      }
+      if (topRow != null && Number.isFinite(topRow)) app.viewer.goToRow(topRow, 'top');
+      let selectedRow = Number.isFinite(state.selectedRow) && state.selectedRow >= 0 ? state.selectedRow : null;
+      if (state.selectedAddress != null && typeof app.viewer.rowOfAddress === 'function') {
+        try {
+          const mapped = app.viewer.rowOfAddress(BigInt(state.selectedAddress));
+          if (mapped != null && mapped >= 0) selectedRow = mapped;
+        } catch { /* ignore */ }
+      }
+      if (selectedRow != null && selectedRow >= 0) {
+        app.viewer.select(selectedRow, false);
+        app.store?.set?.({ selectedRow });
+      }
     },
   };
 }
@@ -869,6 +1697,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   }
   const verifiedRange=app.validatedFunctionRange?.(addr);
   const tab = FUNCTION_TABS.some((x) => x.id === route.params.tab) ? route.params.tab : 'overview';
+  app.setUiResume?.({ lastFunctionTab: tab });
   if(verifiedRange && !verifiedRange.ok){
     /* Keep the tab bar: this used to replace the whole workspace, so the user
        was stuck on one tab with only a reason code and no way forward. */
@@ -885,11 +1714,14 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     return {root:s.root};
   }
   const actions = h('div', 'ui-screen-actions');
-  actions.append(uiButton('•••', { cls: 'ui-icon-action', ariaLabel: text('関数の操作', 'Function actions'), onClick: (e) => {
+  const starBtn = makeStarButton(app, addr, functionName(app, addr));
+  const unsubBookmarks = app.bookmarks?.subscribe?.(() => starBtn._syncStar?.()) || null;
+  actions.append(starBtn, uiButton('•••', { cls: 'ui-icon-action', ariaLabel: text('関数の操作', 'Function actions'), onClick: (e) => {
     const r = e.currentTarget.getBoundingClientRect();
     const assistant = window.__hexAi;
     menu([
       ...(assistant ? [askAiMenuItem(assistant, functionAiItems(assistant, { address: addr, name: functionName(app, addr) }), { x: r.left + r.width / 2, y: r.bottom + 4 })] : []),
+      { label: text('ブックマークメモを編集', 'Edit bookmark note'), action: () => editBookmarkNote(app, addr, functionName(app, addr)) },
       { label: text('名前を付ける', 'Rename'), action: () => showRename(app, addr) },
       { label: text('メモを書く', 'Comment'), action: () => showComment(app, addr) },
       { label: text('パッチ（命令の書き換え）', 'Patch instructions'), action: () => requireFile(app, () => showPatches(app, addr)) },
@@ -903,9 +1735,133 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   content.append(loadingState(text('関数を解析しています…', 'Analysing function…')));
   s.body.append(content);
   let disposed = false;
+  let pendingPseudoState = routeContext?.restoredState || null;
+  let activeProvenanceView = null;
+  let activeFallbackTokHl = null;
+  let activeFindBar = null;
+  let unsubNotes = null;
+  const syncLiveName = () => {
+    if (disposed) return;
+    const liveName = functionName(app, addr);
+    if (s.heading) s.heading.textContent = liveName;
+    updateScreenTitle(s.root);
+    router.setCurrentLabel?.(liveName);
+  };
+  const bindNotesSub = () => {
+    if (typeof unsubNotes === 'function') { unsubNotes(); unsubNotes = null; }
+    unsubNotes = app.notes?.subscribe?.(syncLiveName) || null;
+  };
+  bindNotesSub();
+  const onNotesAttached = () => { if (!disposed) { bindNotesSub(); syncLiveName(); } };
+  document.addEventListener('hex:notes-attached', onNotesAttached);
   const viewEpoch = app.backend?.gen;
   const viewSlice = app.store.get('sliceIndex');
   const viewCurrent = () => !disposed && app.backend?.gen === viewEpoch && app.store.get('sliceIndex') === viewSlice;
+
+  const selectedPseudocodeAddress = () => {
+    if (typeof activeProvenanceView?.selectedAddress === 'function') {
+      try {
+        const a = activeProvenanceView.selectedAddress();
+        if (a != null) return BigInt(a);
+      } catch { /* ignore */ }
+    }
+    const codeEl = content.querySelector('.ui-pseudocode');
+    if (codeEl) {
+      const selLine = codeEl.querySelector('.ui-pseudocode-line.selected');
+      const dataAddr = selLine?.dataset?.addr || selLine?.querySelector?.('[data-addr]')?.getAttribute?.('data-addr');
+      if (dataAddr) {
+        try { return BigInt(dataAddr); } catch { /* ignore */ }
+      }
+      const firstAddrBtn = content.querySelector('.ui-decompiler-provenance .ui-provenance-details button');
+      if (firstAddrBtn && /^0x[0-9a-f]+$/i.test(firstAddrBtn.textContent?.trim() || '')) {
+        try { return BigInt(firstAddrBtn.textContent.trim()); } catch { /* ignore */ }
+      }
+    }
+    return addr;
+  };
+  s.root._selectedCodeAddress = selectedPseudocodeAddress;
+
+  const createPseudocodeFindBar = (codeEl) => {
+    const bar = h('div', 'ui-pseudocode-find');
+    bar.hidden = true;
+    const findInput = h('input', 'ui-pseudocode-find-input');
+    findInput.type = 'search';
+    findInput.placeholder = text('関数内を検索…', 'Find in function…');
+    findInput.setAttribute('aria-label', text('関数内を検索', 'Find in function'));
+    const countEl = h('span', 'ui-hint ui-pseudocode-find-count', '0/0');
+    let matches = [];
+    let matchIdx = -1;
+    const clearHighlights = () => {
+      for (const node of matches) node.classList.remove('ui-find-match', 'ui-find-active');
+      matches = [];
+      matchIdx = -1;
+      countEl.textContent = '0/0';
+    };
+    const focusMatch = (nextIdx) => {
+      if (!matches.length) { countEl.textContent = '0/0'; return; }
+      if (matchIdx >= 0 && matches[matchIdx]) matches[matchIdx].classList.remove('ui-find-active');
+      matchIdx = ((nextIdx % matches.length) + matches.length) % matches.length;
+      const node = matches[matchIdx];
+      node.classList.add('ui-find-active');
+      node.scrollIntoView?.({ block: 'center' });
+      countEl.textContent = `${matchIdx + 1}/${matches.length}`;
+    };
+    const runFind = () => {
+      clearHighlights();
+      const q = findInput.value.trim().toLowerCase();
+      if (!q || !codeEl) return;
+      const lines = codeEl.querySelectorAll('.ui-pseudocode-line');
+      for (const line of lines) {
+        if ((line.textContent || '').toLowerCase().includes(q)) {
+          line.classList.add('ui-find-match');
+          matches.push(line);
+        }
+      }
+      if (matches.length) focusMatch(0);
+    };
+    const closeBar = () => {
+      clearHighlights();
+      bar.hidden = true;
+    };
+    const openBar = () => {
+      bar.hidden = false;
+      findInput.focus();
+      findInput.select();
+      if (findInput.value.trim()) runFind();
+    };
+    const prevBtn = uiButton('↑', { cls: 'ui-icon-action', ariaLabel: text('前の一致', 'Previous match'), onClick: () => focusMatch(matchIdx - 1) });
+    const nextBtn = uiButton('↓', { cls: 'ui-icon-action', ariaLabel: text('次の一致', 'Next match'), onClick: () => focusMatch(matchIdx + 1) });
+    const closeBtn = uiButton('×', { cls: 'ui-icon-action ui-find-close', ariaLabel: text('検索を閉じる', 'Close find'), onClick: closeBar });
+    findInput.addEventListener('input', runFind);
+    findInput.addEventListener('keydown', (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeBar(); return; }
+      if (event.key === 'Enter') { event.preventDefault(); focusMatch(event.shiftKey ? matchIdx - 1 : matchIdx + 1); }
+    });
+    bar.append(findInput, countEl, prevBtn, nextBtn, closeBtn);
+    return { root: bar, open: openBar, close: closeBar };
+  };
+  s.root._openPseudocodeFind = () => activeFindBar?.open?.();
+
+  const applyPseudoState = (state) => {
+    if (!state) return;
+    const bodyTop = Number(state.bodyScrollTop ?? state.scrollTop) || 0;
+    s.body.scrollTop = bodyTop;
+    const codeEl = content.querySelector('.ui-pseudocode');
+    if (!codeEl) { pendingPseudoState = state; return; }
+    pendingPseudoState = null;
+    if (Number.isFinite(state.codeScrollTop)) codeEl.scrollTop = state.codeScrollTop;
+    if (Number.isSafeInteger(state.selectedLineIndex) && state.selectedLineIndex >= 0) {
+      const lineNodes = codeEl.querySelectorAll('.ui-pseudocode-line');
+      const targetLine = lineNodes[state.selectedLineIndex];
+      if (targetLine) {
+        for (const n of lineNodes) {
+          n.classList.toggle('selected', n === targetLine);
+          n.setAttribute('aria-current', n === targetLine ? 'true' : 'false');
+        }
+      }
+    }
+  };
 
   const rowMapper = () => {
     const region = app.store.get('currentRegion');
@@ -987,14 +1943,76 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     const toolbar = h('div', 'ui-code-toolbar');
     const code = h('pre', 'ui-pseudocode mono');
     code.tabIndex = 0;
-    code.textContent = decompiledText(out);
+    const rawText = decompiledText(out);
+    const rawLines = rawText.split('\n');
+    const sigIdx = findSignatureLineIndex(rawLines);
+    const prelude = preludeLength(rawLines);
+    const calleeOpts = {
+      resolveCallee: (name) => symbolAddress(app, name),
+      onOpenCallee: (targetAddr) => router.navigate('/function/' + BigInt(targetAddr).toString() + '/pseudocode'),
+      onOpenAddress: (targetAddr) => router.navigate('/code/' + BigInt(targetAddr).toString()),
+    };
+    if (prelude > 0) code.classList.add('fold-prelude');
+    for (let index = 0; index < rawLines.length; index++) {
+      const lineText = rawLines[index];
+      const rowClasses = ['ui-pseudocode-line'];
+      if (index < prelude) rowClasses.push('prelude');
+      const isSig = index === sigIdx;
+      if (isSig) rowClasses.push('is-sig');
+      const row = h('span', rowClasses.join(' '));
+      appendHighlighted(row, lineText, { ...calleeOpts, isSig });
+      if (index + 1 < rawLines.length) row.append(h('span', null, '\n'));
+      code.append(row);
+    }
+    const hlBadge = h('span', 'ui-highlight-nav');
+    hlBadge.hidden = true;
+    const hlCount = h('span', 'ui-hint ui-highlight-count', '');
+    let tokHl = null;
+    const hlPrev = uiButton('↑', { cls: 'ui-icon-action', ariaLabel: text('前の出現', 'Previous occurrence'), onClick: () => tokHl?.prev?.() });
+    const hlNext = uiButton('↓', { cls: 'ui-icon-action', ariaLabel: text('次の出現', 'Next occurrence'), onClick: () => tokHl?.next?.() });
+    hlBadge.append(hlCount, hlPrev, hlNext);
+    tokHl = attachTokenHighlight(code, {
+      onHighlightChange: (info) => {
+        const count = Number(info?.count || 0);
+        if (!info || count <= 0) { hlBadge.hidden = true; return; }
+        const idx = Number.isSafeInteger(info.index) ? info.index + 1 : 1;
+        hlCount.textContent = `${idx}/${count}`;
+        hlBadge.hidden = false;
+      },
+    });
     let wrap = false;
+    activeProvenanceView?.tokenHighlight?.destroy?.();
+    activeProvenanceView = null;
+    activeFallbackTokHl?.destroy?.();
+    activeFallbackTokHl = tokHl;
+    const findBar = createPseudocodeFindBar(code);
+    activeFindBar = findBar;
+    const findBtn = uiButton(text('検索', 'Find'), { cls: 'ui-secondary-action', onClick: () => findBar.open() });
+    findBtn.title = text('関数内を検索 (Ctrl+F)', 'Find in function (Ctrl+F)');
+    const asmBtn = uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + selectedPseudocodeAddress().toString()) });
+    asmBtn.title = text('アセンブリへ切り替え (Space)', 'Switch to assembly (Space)');
     toolbar.append(
       uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
       uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
-      uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
+      findBtn,
+      asmBtn,
+      hlBadge,
     );
-    content.replaceChildren(toolbar, code);
+    if (prelude > 0) {
+      const toggle = uiButton(text(`型の定義を表示（${prelude} 行）`, `Show type definitions (${prelude} lines)`), {
+        cls: 'ui-secondary-action',
+        pressed: false,
+        onClick: () => {
+          const shown = !code.classList.contains('show-prelude');
+          code.classList.toggle('show-prelude', shown);
+          toggle.setAttribute('aria-pressed', String(shown));
+          toggle.textContent = shown ? text('型の定義をたたむ', 'Hide type definitions') : text(`型の定義を表示（${prelude} 行）`, `Show type definitions (${prelude} lines)`);
+        },
+      });
+      toolbar.append(toggle);
+    }
+    content.replaceChildren(toolbar, findBar.root, code);
+    if (pendingPseudoState) applyPseudoState(pendingPseudoState);
   };
 
   const renderPseudocodeTab = async () => {
@@ -1007,23 +2025,67 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
           return;
         }
-        const toolbar = h('div', 'ui-code-toolbar');
+        let initialAddr = null;
+        const rawInitial = route.query?.get?.('addr');
+        if (rawInitial) {
+          try { initialAddr = BigInt(rawInitial); } catch { initialAddr = null; }
+        }
+        const functionComment = app.notes?.comment?.(addr) || '';
+        let wrap = false;
+        let codeRef = null;
+        let findBarRef = null;
+
+        const copyBtn = uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => { if (codeRef) copyText(codeRef.textContent, text('疑似C', 'Pseudocode')); } });
+        const wrapBtn = uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; codeRef?.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } });
+        const findBtn = uiButton(text('検索', 'Find'), { cls: 'ui-secondary-action', onClick: () => findBarRef?.open?.() });
+        findBtn.title = text('関数内を検索 (Ctrl+F)', 'Find in function (Ctrl+F)');
+        const asmBtn = uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + selectedPseudocodeAddress().toString()) });
+        asmBtn.title = text('アセンブリへ切り替え (Space)', 'Switch to assembly (Space)');
+        const extraToolbarActions = [copyBtn, wrapBtn, findBtn, asmBtn];
+
         const provenanceView = createDecompilerProvenanceView(res, {
           text, signal:routeSignal,
           isCurrent:() => viewCurrent() && !routeSignal.aborted,
           currentSnapshot:() => app.analysisQueries.snapshot({ signal:routeSignal }),
           onNavigate:address => router.navigate('/code/' + address.toString()),
+          resolveCallee:(name) => symbolAddress(app, name),
+          onOpenCallee:(targetAddr) => router.navigate('/function/' + BigInt(targetAddr).toString() + '/pseudocode'),
+          extraToolbarActions,
+          functionComment,
+          initialAddr,
+          onBookmarkAddress:(targetAddr) => {
+            if (targetAddr == null) return;
+            const big = BigInt(targetAddr);
+            const name = bookmarkLabel(app, big);
+            app.bookmarks?.toggle?.(big, { name });
+            const saved = !!app.bookmarks?.has?.(big);
+            toast(saved
+              ? text(`★「${name}」をブックマークしました。`, `★ Bookmarked "${name}".`)
+              : text(`☆「${name}」のブックマークを解除しました。`, `☆ Removed bookmark "${name}".`));
+          },
         });
+        activeProvenanceView?.tokenHighlight?.destroy?.();
+        activeFallbackTokHl?.destroy?.();
+        activeFallbackTokHl = null;
+        activeProvenanceView = provenanceView;
         const code = provenanceView.code;
-        let wrap = false;
-        toolbar.append(
-          uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
-          uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
-          uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
-        );
-        content.replaceChildren(toolbar, provenanceView.root);
+        codeRef = code;
+        const findBar = createPseudocodeFindBar(code);
+        findBarRef = findBar;
+        activeFindBar = findBar;
+        if (!provenanceView.root.contains(copyBtn)) {
+          const innerToolbar = provenanceView.root.querySelector('.ui-code-toolbar');
+          if (innerToolbar) innerToolbar.prepend(copyBtn, wrapBtn, findBtn, asmBtn);
+        }
+        code.before(findBar.root);
+        content.replaceChildren(provenanceView.root);
         const notice = decompileNotice(res);
-        if (notice) toolbar.after(notice);
+        if (notice) {
+          const innerToolbar = provenanceView.root.querySelector('.ui-code-toolbar');
+          if (innerToolbar) innerToolbar.after(notice);
+          else provenanceView.root.prepend(notice);
+        }
+        if (pendingPseudoState) applyPseudoState(pendingPseudoState);
         return;
       } catch (err) {
         if (routeSignal.aborted) return;
@@ -1260,10 +2322,58 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       }
       const graph = callGraph(app.program, app.symbols, addr, {
         depth: 2, limit: 8, label: (a) => functionName(app, a),
-        onNode: (a) => router.navigate('/function/' + BigInt(a).toString() + '/overview'),
+        onNode: (a) => openAddressTarget(app, router, a),
       });
       const shell = h('div', 'ui-graph-shell');
-      shell.append(renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
+      const callsActions = h('div', 'ui-actions');
+      callsActions.append(uiButton(text('すべての参照元 (Xrefs)', 'All cross-references (Xrefs)'), {
+        cls: 'ui-secondary-action',
+        onClick: () => requireFile(app, () => showXrefs(app, addr)),
+      }));
+      shell.append(callsActions, renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
+
+      const listsGrid = h('div', 'ui-card-grid');
+      const callers = typeof app.program.callersOf === 'function' ? (app.program.callersOf(addr, 50) || []) : [];
+      const fnInfo = app.symbols?.functionAt?.(addr) || null;
+      const callees = typeof app.program.calleesOf === 'function'
+        ? (app.program.calleesOf(fnInfo?.start ?? addr, fnInfo?.end ?? null, 50) || [])
+        : [];
+      const callersCard = card(text(`呼び出し元 (${callers.length})`, `Callers (${callers.length})`));
+      if (!callers.length) {
+        callersCard.body.append(h('p', 'ui-sub', text('呼び出し元は見つかりませんでした。', 'No callers found.')));
+      } else {
+        const list = h('div', 'ui-list');
+        for (const item of callers) {
+          const target = item.addr != null ? BigInt(item.addr) : (item.site != null ? BigInt(item.site) : null);
+          if (target == null) continue;
+          list.append(listRow({
+            title: item.addr != null ? functionName(app, target) : bookmarkLabel(app, target),
+            subtitle: addressText(target),
+            meta: item.count > 1 ? `×${item.count}` : '',
+            onClick: () => (item.addr != null ? openAddressTarget(app, router, target) : router.navigate('/code/' + target.toString())),
+          }));
+        }
+        callersCard.body.append(list);
+      }
+      const calleesCard = card(text(`呼び出し先 (${callees.length})`, `Callees (${callees.length})`));
+      if (!callees.length) {
+        calleesCard.body.append(h('p', 'ui-sub', text('呼び出し先は見つかりませんでした。', 'No callees found.')));
+      } else {
+        const list = h('div', 'ui-list');
+        for (const item of callees) {
+          const target = item.addr != null ? BigInt(item.addr) : null;
+          if (target == null) continue;
+          list.append(listRow({
+            title: functionName(app, target),
+            subtitle: addressText(target),
+            meta: item.count > 1 ? `×${item.count}` : '',
+            onClick: () => openAddressTarget(app, router, target),
+          }));
+        }
+        calleesCard.body.append(list);
+      }
+      listsGrid.append(callersCard.root, calleesCard.root);
+      shell.append(listsGrid);
       content.replaceChildren(shell);
     } catch (err) {
       if (routeSignal.aborted) return;
@@ -1419,7 +2529,42 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     }
   })();
 
-  return { root: s.root, getState: () => ({ scrollTop: s.body.scrollTop }), restoreState: (state) => { if (state) s.body.scrollTop = Number(state.scrollTop) || 0; }, dispose: () => { disposed = true; fallbackRouteController?.abort('function-workspace-disposed'); } };
+  return {
+    root: s.root,
+    getState: () => {
+      const codeEl = content.querySelector('.ui-pseudocode');
+      let selectedLineIndex = null;
+      if (codeEl) {
+        const lineNodes = codeEl.querySelectorAll('.ui-pseudocode-line');
+        for (let i = 0; i < lineNodes.length; i++) {
+          if (lineNodes[i].classList.contains('selected')) { selectedLineIndex = i; break; }
+        }
+      }
+      return {
+        scrollTop: s.body.scrollTop,
+        bodyScrollTop: s.body.scrollTop,
+        codeScrollTop: codeEl ? codeEl.scrollTop : 0,
+        selectedLineIndex,
+      };
+    },
+    restoreState: (state) => {
+      if (!state) return;
+      if (tab === 'pseudocode') applyPseudoState(state);
+      else s.body.scrollTop = Number(state.bodyScrollTop ?? state.scrollTop) || 0;
+    },
+    dispose: () => {
+      disposed = true;
+      activeProvenanceView?.tokenHighlight?.destroy?.();
+      activeProvenanceView = null;
+      activeFallbackTokHl?.destroy?.();
+      activeFallbackTokHl = null;
+      activeFindBar = null;
+      document.removeEventListener('hex:notes-attached', onNotesAttached);
+      if (typeof unsubBookmarks === 'function') unsubBookmarks();
+      if (typeof unsubNotes === 'function') unsubNotes();
+      fallbackRouteController?.abort('function-workspace-disposed');
+    },
+  };
 }
 
 export function findingIdentifier(item, idx) {
@@ -1558,6 +2703,103 @@ async function importProjectFromProduct(app) {
   try { await app.importProjectFile(file); toast(text('プロジェクトを復元しました。','Project restored.')); }
   catch(error){const mismatch=error?.code==='HEX_PROJECT_BINARY_MISMATCH';toast(mismatch?text('このプロジェクトは現在のバイナリ/スライス用ではありません。','This project belongs to a different binary or slice.'):text('プロジェクトを読み込めませんでした: ','Could not import project: ')+String(error?.message||error));}
 }
+async function exportDeltaFromProduct(app) {
+  if (typeof app.exportDeltaJson !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session export is unavailable.')); return; }
+  try {
+    const data = await app.exportDeltaJson();
+    const filename = (data && typeof data === 'object' && typeof data.filename === 'string' && data.filename)
+      ? data.filename
+      : ((app.store.get('fileInfo')?.name || 'analysis') + '.hexdelta.json');
+    const body = data instanceof Blob ? data : (data && typeof data === 'object' && typeof data.json === 'string' ? data.json : (typeof data === 'string' ? data : JSON.stringify(data, null, 2)));
+    const blob = body instanceof Blob ? body : new Blob([body], { type: 'application/json' });
+    downloadBlob(blob, filename);
+    toast(text('差分を書き出しました。', 'Delta exported.'));
+  } catch (error) {
+    toast(text('差分を書き出せませんでした: ', 'Could not export delta: ') + String(error?.message || error));
+  }
+}
+function confirmActionDialog(title, message, confirmLabel, cancelLabel) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => { if (settled) return; settled = true; resolve(value); };
+    try {
+      alertDialog(title, message, {
+        confirmLabel,
+        cancelLabel,
+        onConfirm: () => done(true),
+        onCancel: () => done(false),
+      });
+    } catch {
+      done(typeof globalThis.confirm === 'function' ? globalThis.confirm(message) : false);
+    }
+  });
+}
+
+async function importDeltaFromProduct(app, router = null) {
+  if (typeof app.importDeltaJson !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session import is unavailable.')); return false; }
+  const file = await pickOneFile('.json,application/json');
+  if (!file) return false;
+  try {
+    const raw = await file.text();
+    let res = await app.importDeltaJson(raw);
+    if (res?.hashMismatch) {
+      const importedName = String(res?.record?.fingerprint?.name || file.name || text('不明', 'unknown'));
+      const importedHash = String(res?.record?.fingerprint?.sha256 || '').slice(0, 12) || '—';
+      const currentName = String(app.store?.get?.('fileInfo')?.name || text('現在', 'current'));
+      const currentHash = String(app._currentDeltaFingerprint?.()?.sha256 || app.store?.get?.('fileInfo')?.sha256 || '').slice(0, 12) || '—';
+      const msg = text(
+        `この差分は別のバイナリで作成されています。強制的に読み込みますか？\n\n差分: ${importedName} (${importedHash})\n現在: ${currentName} (${currentHash})`,
+        `This delta was created for a different binary. Import anyway?\n\nDelta: ${importedName} (${importedHash})\nCurrent: ${currentName} (${currentHash})`,
+      );
+      const proceed = await confirmActionDialog(
+        text('別のバイナリの差分です', 'Binary hash mismatch'),
+        msg,
+        text('強制的に読み込む', 'Import anyway'),
+        text('キャンセル', 'Cancel'),
+      );
+      if (!proceed) {
+        toast(text('差分の読み込みをキャンセルしました。', 'Delta import cancelled.'));
+        return false;
+      }
+      res = await app.importDeltaJson(raw, { allowMismatch: true });
+    }
+    if (!res?.ok) {
+      toast(text('差分を読み込めませんでした: ', 'Could not import delta: ') + String(res?.error || text('無効な差分ファイルです。', 'Invalid delta file.')));
+      return false;
+    }
+    toast(text('差分を読み込みました。', 'Delta imported.'));
+    const activeRouter = router || window.__hexUi?.router || null;
+    if (activeRouter?.current?.fullPath) {
+      if (activeRouter.current.route?.id === 'code') app.viewer?.render?.();
+      else activeRouter._render(activeRouter.current.fullPath, { replace: true, restoredState: null });
+    }
+    return true;
+  } catch (error) {
+    toast(text('差分を読み込めませんでした: ', 'Could not import delta: ') + String(error?.message || error));
+    return false;
+  }
+}
+async function resetDeltaFromProduct(app) {
+  if (typeof app.resetDeltaSession !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session reset is unavailable.')); return false; }
+  const confirmed = await confirmActionDialog(
+    text('差分セッションをリセットしますか？', 'Reset delta session?'),
+    text('このバイナリに自動保存されたブックマーク・名前・メモ・パッチの差分を削除します。この操作は元に戻せません。', 'This permanently deletes auto-saved bookmarks, renames, comments, and patch deltas for this binary. This cannot be undone.'),
+    text('リセット', 'Reset'),
+    text('キャンセル', 'Cancel'),
+  );
+  if (!confirmed) {
+    toast(text('リセットをキャンセルしました。', 'Reset cancelled.'));
+    return false;
+  }
+  try {
+    await app.resetDeltaSession();
+    toast(text('差分セッションをリセットしました。', 'Delta session reset.'));
+    return true;
+  } catch (error) {
+    toast(text('差分セッションをリセットできませんでした: ', 'Could not reset delta session: ') + String(error?.message || error));
+    return false;
+  }
+}
 
 function renderDiff(app,router,routeContext = {}) {
   const s=screen(text('バイナリ差分','Binary Diff'),{id:'diff',subtitle:text('前のバージョンと現在のバージョンを関数単位で比較します。','Compare a previous version with the current binary at function granularity.')});
@@ -1616,6 +2858,9 @@ function renderAdvanced(app) {
   list.append(listRow({ title: text('解析ツール一覧', 'Analysis tools'), subtitle: text('パッチ・スクリプト・プラグイン等', 'Patching, scripting, plugins, etc.'), onClick: () => requireFile(app, () => showTools(app)) }));
   list.append(listRow({ title:text('プロジェクトを書き出す (.hexproj)','Export project (.hexproj)'), subtitle:text('名前・メモ・型・パッチ・解析結果・AI調査・移動履歴を保存','Save names, notes, types, patches, findings, AI investigation and navigation'), onClick:()=>requireFile(app,()=>exportProjectFromProduct(app)) }));
   list.append(listRow({ title:text('プロジェクトを読み込む','Import project'), subtitle:text('いま開いているファイルと同じファイルのときだけ復元します','Restores only when binary hash and slice identity match'), onClick:()=>requireFile(app,()=>importProjectFromProduct(app)) }));
+  list.append(listRow({ title:text('差分を書き出し (.json)','Export delta (.json)'), subtitle:text('ブックマーク・名前・メモの軽量差分を書き出します','Export lightweight delta of bookmarks, renames, and comments'), onClick:()=>requireFile(app,()=>exportDeltaFromProduct(app)) }));
+  list.append(listRow({ title:text('差分を読み込み (.json)','Import delta (.json)'), subtitle:text('保存した差分 JSON を現在のバイナリに適用します','Apply a saved delta JSON file to the current binary'), onClick:()=>requireFile(app,()=>importDeltaFromProduct(app)) }));
+  list.append(listRow({ title:text('差分セッションをリセット','Reset delta session'), subtitle:text('このバイナリに自動保存された差分を初期化します','Clear auto-saved delta session for this binary'), onClick:()=>requireFile(app,()=>resetDeltaFromProduct(app)) }));
   list.append(listRow({ title:text('バージョン差分','Binary Diff'), subtitle:text('前のバイナリと変更関数を比較','Compare changed functions against a previous binary'), onClick:()=>requireFile(app,()=>window.__hexUi?.router?.navigate('/diff')) }));
   s.body.append(list);
   return { root: s.root };
@@ -1721,8 +2966,32 @@ function installAddressBar(app, router, addrbar) {
   const fn = uiButton('', { cls: 'addr-fn addr-action', ariaLabel: text('この関数を開く', 'Open this function') });
   fn.hidden = true;
   cur?.after(fn);
+  const star = uiButton('☆', { cls: 'addr-star addr-action ui-star-btn', ariaLabel: text('ブックマークに追加', 'Bookmark address'), pressed: false });
+  star.hidden = true;
+  fn.after(star);
   let fnStart = null;
-  const onFnClick = () => { if (fnStart != null) router.navigate('/function/' + fnStart.toString() + '/overview'); };
+  let curAddr = null;
+  const syncAddrStar = () => {
+    if (curAddr == null) { star.hidden = true; return; }
+    const saved = !!app.bookmarks?.has?.(curAddr);
+    const lbl = bookmarkLabel(app, curAddr);
+    star.textContent = saved ? '★' : '☆';
+    star.setAttribute('aria-pressed', String(saved));
+    star.setAttribute('aria-label', saved
+      ? text(`${lbl} のブックマークを解除`, `Remove bookmark: ${lbl}`)
+      : text(`${lbl} をブックマークに追加`, `Bookmark: ${lbl}`));
+    star.title = `${lbl} (B)`;
+    star.hidden = false;
+  };
+  const onStarClick = () => {
+    if (curAddr == null) return;
+    app.bookmarks?.toggle?.(curAddr, { name: bookmarkLabel(app, curAddr) });
+    syncAddrStar();
+  };
+  star.addEventListener('click', onStarClick, sigOpts);
+  detachFns.push(() => star.removeEventListener?.('click', onStarClick));
+  const unsubAddrBookmarks = app.bookmarks?.subscribe?.(syncAddrStar) || null;
+  const onFnClick = () => { if (fnStart != null) openAddressTarget(app, router, fnStart); };
   fn.addEventListener('click', onFnClick, sigOpts);
   detachFns.push(() => fn.removeEventListener?.('click', onFnClick));
 
@@ -1735,11 +3004,13 @@ function installAddressBar(app, router, addrbar) {
         toast(text('この位置の関数を特定できませんでした。', 'Could not identify a function at this address.'));
         return;
       }
-      router.navigate('/function/' + BigInt(target).toString() + '/pseudocode');
+      const targetBig = BigInt(target);
+      const query = curAddr != null && BigInt(curAddr) !== targetBig ? ('?addr=' + BigInt(curAddr).toString()) : '';
+      router.navigate('/function/' + targetBig.toString() + '/pseudocode' + query);
     }),
   });
   pseudo.hidden = true;
-  pseudo.title = text('現在の関数を疑似Cで開く', 'Open current function as pseudocode');
+  pseudo.title = text('現在の関数を疑似Cで開く (Space)', 'Open current function as pseudocode (Space)');
 
   const search = uiButton(text('バイト検索', 'Find bytes'), {
     cls: 'addr-search',
@@ -1755,7 +3026,8 @@ function installAddressBar(app, router, addrbar) {
     const sectionLabel = text('区画を切り替える', 'Switch section');
     if (regionLabel) { regionLabel.setAttribute('aria-label', sectionLabel); regionLabel.title = sectionLabel; }
     fn.setAttribute('aria-label', text('この関数を開く', 'Open this function'));
-    const pseudoTitle = text('現在の関数を疑似Cで開く', 'Open current function as pseudocode');
+    syncAddrStar();
+    const pseudoTitle = text('現在の関数を疑似Cで開く (Space)', 'Open current function as pseudocode (Space)');
     pseudo.textContent = text('疑似C', 'Pseudo-C');
     pseudo.setAttribute('aria-label', pseudoTitle);
     pseudo.title = pseudoTitle;
@@ -1780,6 +3052,7 @@ function installAddressBar(app, router, addrbar) {
       if (Number(row) >= top && Number(row) < top + visible) addr = viewer.rowAddress(row);
     }
     if (addr == null) addr = app.store.get('currentAddress') ?? null;
+    curAddr = addr;
     if (addr != null && cur) cur.textContent = addrHex(addr);
     const sym = app.symbols;
     let start = null;
@@ -1787,35 +3060,89 @@ function installAddressBar(app, router, addrbar) {
       try { start = sym.functionAt?.(addr)?.start ?? sym.functionStartAt?.(addr) ?? null; } catch { start = null; }
     }
     fnStart = start;
+    syncAddrStar();
     if (start == null) { fn.hidden = true; pseudo.hidden = true; return; }
     const offset = BigInt(addr) - BigInt(start);
     fn.textContent = functionName(app, start) + (offset > 0n ? '+0x' + offset.toString(16).toUpperCase() : '');
     fn.hidden = false;
     pseudo.hidden = false;
   };
+  const scheduleUpdate = () => { if (!frame) frame = requestAnimationFrame(update); };
   const unsubscribe = app.store.subscribe((_state, patch) => {
     if (!patch || !('currentAddress' in patch || 'selectedRow' in patch || 'currentRegion' in patch || 'fileInfo' in patch)) return;
-    if (!frame) frame = requestAnimationFrame(update);
+    scheduleUpdate();
   });
+  let unsubAddrNotes = null;
+  const bindAddrNotes = () => {
+    if (typeof unsubAddrNotes === 'function') { unsubAddrNotes(); unsubAddrNotes = null; }
+    unsubAddrNotes = app.notes?.subscribe?.(scheduleUpdate) || null;
+  };
+  bindAddrNotes();
+  const onAddrNotesAttached = () => { bindAddrNotes(); scheduleUpdate(); };
+  document.addEventListener('hex:notes-attached', onAddrNotesAttached);
   update();
   const destroy = () => {
     ac?.abort();
     for (const off of detachFns) off();
     unsubscribe();
+    document.removeEventListener('hex:notes-attached', onAddrNotesAttached);
+    if (typeof unsubAddrNotes === 'function') unsubAddrNotes();
+    if (typeof unsubAddrBookmarks === 'function') unsubAddrBookmarks();
     if (frame) cancelAnimationFrame(frame);
     fn.remove();
+    star.remove();
     pseudo.remove();
     search.remove();
   };
   return { refreshLanguage, destroy };
 }
 
+const symbolLookupCache = new WeakMap();
+
+function getSymbolLookupMap(sym) {
+  const gen = sym.gen ?? 0;
+  const renameSize = sym.renames instanceof Map ? sym.renames.size : 0;
+  const cached = symbolLookupCache.get(sym);
+  if (cached && cached.gen === gen && cached.renameSize === renameSize) return cached.map;
+
+  const map = new Map();
+  const addAliases = (rawName, addr, overwrite = false) => {
+    const lower = String(rawName || '').trim().toLowerCase();
+    if (!lower) return;
+    if (overwrite || !map.has(lower)) map.set(lower, addr);
+    const stripped = lower.replace(/^(?:_|j_|imp_)+/, '');
+    if (stripped && stripped !== lower && (overwrite || !map.has(stripped))) {
+      map.set(stripped, addr);
+    }
+  };
+  const names = Array.isArray(sym.names) ? sym.names : [];
+  const addrs = Array.isArray(sym.addrs) ? sym.addrs : [];
+  for (let i = 0; i < names.length && i < addrs.length; i++) {
+    addAliases(names[i], addrs[i], false);
+  }
+  if (sym.renames instanceof Map) {
+    for (const [addrKey, renameVal] of sym.renames) {
+      if (!renameVal) continue;
+      try { addAliases(renameVal, BigInt(addrKey), true); } catch { /* ignore */ }
+    }
+  }
+  symbolLookupCache.set(sym, { gen, renameSize, map });
+  return map;
+}
+
 function symbolAddress(app, name) {
-  const sym = app.symbols;
-  const names = sym && Array.isArray(sym.names) ? sym.names : [];
-  const wanted = String(name || '').toLowerCase();
-  for (let i = 0; i < names.length; i++) {
-    if (String(names[i] || '').toLowerCase() === wanted) return sym.addrs[i];
+  const wanted = String(name || '').trim().toLowerCase();
+  if (!wanted) return null;
+  const sym = app?.symbols;
+  if (sym) {
+    const map = getSymbolLookupMap(sym);
+    const hit = map.get(wanted);
+    if (hit != null) return hit;
+    const stripped = wanted.replace(/^(?:_|j_|imp_)+/, '');
+    if (stripped && stripped !== wanted) {
+      const strippedHit = map.get(stripped);
+      if (strippedHit != null) return strippedHit;
+    }
   }
   const sub = /^sub_?([0-9a-f]+)$/i.exec(wanted);
   if (sub) { try { return BigInt('0x' + sub[1]); } catch { /* not an address */ } }
@@ -1850,14 +3177,290 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   hint.setAttribute('aria-live', 'polite');
   const go = uiButton(text('実行', 'Go'), { cls: 'ui-command-go' });
   go.type = 'submit';
-  form.append(input, hint, go);
+  const results = h('ul', 'ui-command-results');
+  results.id = 'ui-command-results';
+  results.setAttribute('role', 'listbox');
+  results.setAttribute('aria-label', text('クイックジャンプ候補', 'Instant jump results'));
+  results.hidden = true;
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-controls', results.id);
+  input.setAttribute('aria-expanded', 'false');
+  form.append(input, hint, go, results);
+
+  let dropdownItems = [];
+  let activeIndex = -1;
+  let dropdownTimer = 0;
+  let dropdownSerial = 0;
+  let dropdownController = null;
+
+  const hideResults = () => {
+    clearTimeout(dropdownTimer);
+    dropdownController?.abort?.('dropdown-closed');
+    dropdownController = null;
+    dropdownItems = [];
+    activeIndex = -1;
+    results.hidden = true;
+    results.replaceChildren();
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+  };
+
+  const setActiveIndex = (next) => {
+    if (!dropdownItems.length) { activeIndex = -1; input.removeAttribute('aria-activedescendant'); return; }
+    activeIndex = ((next % dropdownItems.length) + dropdownItems.length) % dropdownItems.length;
+    const rows = results.children;
+    for (let i = 0; i < rows.length; i++) {
+      const selected = i === activeIndex;
+      rows[i].setAttribute('aria-selected', String(selected));
+      rows[i].classList.toggle('active', selected);
+    }
+    const activeRow = rows[activeIndex];
+    if (activeRow?.id) input.setAttribute('aria-activedescendant', activeRow.id);
+    activeRow?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const openDropdownItem = (item, { toCode = false } = {}) => {
+    if (!item) return;
+    if (item.kind === 'command') {
+      hideResults();
+      input.blur();
+      runCommand({ kind: 'command', command: item.command, value: item.command });
+      return;
+    }
+    if (item.kind === 'investigate') {
+      hideResults();
+      input.blur();
+      rememberQuery(item.query, app);
+      runInvestigation(app, item.query);
+      return;
+    }
+    if (item.addr == null) return;
+    const addr = BigInt(item.addr);
+    hideResults();
+    input.blur();
+    if (item.kind === 'recent') {
+      router.navigate('/code/' + addr.toString());
+      return;
+    }
+    if (toCode || item.kind === 'address') {
+      if (app.goToAddress(addr, { announce: true })) router.navigate('/code/' + addr.toString());
+      return;
+    }
+    if (item.kind === 'saved') {
+      openAddressTarget(app, router, addr);
+      return;
+    }
+    openAddressTarget(app, router, addr, { preferTab: 'pseudocode' });
+  };
+
+  const renderDropdown = (items, { autoSelectFirst = false } = {}) => {
+    dropdownItems = items.slice(0, 10);
+    activeIndex = -1;
+    results.replaceChildren();
+    if (!dropdownItems.length) {
+      results.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+      return;
+    }
+    dropdownItems.forEach((item, idx) => {
+      const li = h('li', 'ui-command-result');
+      li.id = `ui-cmd-opt-${idx}`;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      const left = h('span', 'ui-command-result-main');
+      if (item.badge) left.append(h('span', 'ui-command-result-badge', item.badge));
+      left.append(h('span', 'ui-command-result-title', item.title));
+      if (item.note) left.append(h('span', 'ui-command-result-note', item.note));
+      const rightText = (item.kind === 'command' || item.kind === 'investigate')
+        ? String(item.subtitle || '')
+        : (item.addr != null ? addressText(item.addr) : '');
+      const right = h('span', 'ui-command-result-addr mono', rightText);
+      li.append(left, right);
+      li.addEventListener('mousedown', (event) => { event.preventDefault(); });
+      li.addEventListener('click', (event) => {
+        openDropdownItem(item, { toCode: event.shiftKey || item.kind === 'address' });
+      });
+      results.append(li);
+    });
+    const rect = input.getBoundingClientRect?.();
+    if (rect && rect.bottom > 0) {
+      results.style.setProperty('--ui-omnibox-top', `${Math.ceil(rect.bottom + 4)}px`);
+    }
+    results.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    if (autoSelectFirst && dropdownItems.length > 0) setActiveIndex(0);
+  };
+
+  const recentNavEntries = () => {
+    const navObj = app.navigation;
+    const raw = typeof navObj?.entries === 'function' ? navObj.entries() : navObj?.entries;
+    return Array.isArray(raw) ? raw : [];
+  };
+
+  const refreshDropdown = async () => {
+    const serial = ++dropdownSerial;
+    dropdownController?.abort?.('dropdown-superseded');
+    dropdownController = null;
+    if (document.activeElement !== input) return;
+    const raw = input.value.trim();
+    const intent = classifyOmnibox(raw);
+    if (intent.kind === 'ai') { hideResults(); return; }
+    if (intent.kind === 'command') {
+      const cq = String(intent.value || '').trim().toLowerCase();
+      const cmdItems = [];
+      for (const cmd of COMMANDS) {
+        if (!cq
+          || cmd.id.toLowerCase().includes(cq)
+          || cmd.ja.toLowerCase().includes(cq)
+          || cmd.en.toLowerCase().includes(cq)
+          || cmd.match.test(intent.value)) {
+          cmdItems.push({
+            kind: 'command',
+            badge: '>',
+            title: ja() ? cmd.ja : cmd.en,
+            subtitle: '>' + cmd.id,
+            command: cmd.id,
+          });
+        }
+      }
+      renderDropdown(cmdItems, { autoSelectFirst: true });
+      return;
+    }
+    const out = [];
+    const seen = new Set();
+    const pushUnique = (entry) => {
+      if (!entry || entry.addr == null || out.length >= 10) return;
+      let key;
+      try { key = BigInt(entry.addr).toString(); } catch { return; }
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ ...entry, addr: BigInt(entry.addr) });
+    };
+    const clipNote = (val) => {
+      const sVal = String(val || '').replace(/\s+/g, ' ').trim();
+      return sVal.length > 44 ? sVal.slice(0, 43) + '…' : sVal;
+    };
+
+    if (!raw) {
+      const saved = bookmarkListOf(app);
+      for (const bm of saved.slice(0, 6)) {
+        if (bm?.addr == null) continue;
+        pushUnique({
+          kind: 'saved',
+          badge: '★',
+          title: bm.name || bookmarkLabel(app, bm.addr),
+          note: clipNote(bm.note),
+          addr: bm.addr,
+        });
+      }
+      const recents = recentNavEntries();
+      for (let i = recents.length - 1; i >= 0 && out.length < 10; i--) {
+        const entry = recents[i];
+        const a = entry?.addr ?? entry?.address ?? entry;
+        if (a == null) continue;
+        try {
+          const big = BigInt(a);
+          pushUnique({
+            kind: 'recent',
+            badge: '↺',
+            title: entry?.label || entry?.name || bookmarkLabel(app, big),
+            addr: big,
+          });
+        } catch { /* ignore */ }
+      }
+      renderDropdown(out, { autoSelectFirst: false });
+      return;
+    }
+
+    const parsed = parseAddressInput(app, raw, { allowBareSymbol: false });
+    if (parsed != null) {
+      pushUnique({ kind: 'address', badge: '→', title: bookmarkLabel(app, parsed), addr: parsed });
+    }
+    const ql = raw.toLowerCase();
+    for (const bm of bookmarkListOf(app)) {
+      if (out.length >= 10) break;
+      if (bm?.addr == null) continue;
+      const tags = Array.isArray(bm?.tags) ? bm.tags.join(' ') : String(bm?.tag || '');
+      const hay = [bm?.name, bm?.note, tags, addressText(bm.addr)].filter(Boolean).join(' ').toLowerCase();
+      if (hay.includes(ql)) {
+        pushUnique({
+          kind: 'saved',
+          badge: '★',
+          title: bm.name || bookmarkLabel(app, bm.addr),
+          note: clipNote(bm.note),
+          addr: bm.addr,
+        });
+      }
+    }
+    if (app.store?.get?.('fileInfo') && out.length < 10) {
+      const controller = new AbortController();
+      dropdownController = controller;
+      try {
+        const fns = await matchingFunctionItems(app, raw, { limit: 8, signal: controller.signal });
+        if (serial !== dropdownSerial || controller.signal.aborted || document.activeElement !== input) return;
+        const len = Number(fns?.length || 0);
+        for (let i = 0; i < len && out.length < 10; i++) {
+          const item = Array.isArray(fns) ? fns[i] : fns.itemAt?.(i);
+          if (item?.addr != null) pushUnique({ kind: 'function', badge: '', title: item.name || functionName(app, item.addr), addr: item.addr });
+        }
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+      }
+    }
+    if (serial !== dropdownSerial || document.activeElement !== input) return;
+    if (raw && app.store?.get?.('fileInfo') && parsed == null) {
+      const compiled = compileGoal(raw);
+      if (compiled?.goal) {
+        out.push({
+          kind: 'investigate',
+          badge: '◎',
+          title: text(`「${raw}」を自動解析で探す`, `Auto-investigate "${raw}"`),
+          subtitle: text('自動解析', 'Auto'),
+          query: raw,
+        });
+      }
+    }
+    renderDropdown(out, { autoSelectFirst: Boolean(raw) });
+  };
+
+  const scheduleDropdown = () => {
+    clearTimeout(dropdownTimer);
+    if (!input.value.trim()) { void refreshDropdown(); return; }
+    dropdownTimer = setTimeout(() => { void refreshDropdown(); }, 80);
+  };
 
   const refreshHint = () => {
     const intent = classifyOmnibox(input.value);
     hint.textContent = intent.kind === 'empty' ? '' : intentLabel(intent.kind, ja());
     form.dataset.intent = intent.kind;
   };
-  input.addEventListener('input', refreshHint);
+  input.addEventListener('input', () => { dropdownItems = []; activeIndex = -1; refreshHint(); scheduleDropdown(); });
+  input.addEventListener('focus', () => { scheduleDropdown(); });
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Escape') {
+      if (!results.hidden) { event.preventDefault(); hideResults(); }
+      else { input.blur(); }
+      return;
+    }
+    if (event.key === 'Tab') {
+      if (!results.hidden) hideResults();
+      return;
+    }
+    if (results.hidden || !dropdownItems.length) return;
+    if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex(activeIndex < 0 ? 0 : activeIndex + 1); return; }
+    if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex(activeIndex < 0 ? dropdownItems.length - 1 : activeIndex - 1); return; }
+    if (event.key === 'Enter' && activeIndex >= 0 && dropdownItems[activeIndex]) {
+      event.preventDefault();
+      const chosen = dropdownItems[activeIndex];
+      openDropdownItem(chosen, { toCode: event.shiftKey || chosen.kind === 'address' });
+    }
+  });
+  const onDocPointerDown = (event) => {
+    if (!form.contains(event.target)) hideResults();
+  };
+  document.addEventListener('pointerdown', onDocPointerDown);
 
   const runCommand = (intent) => {
     switch (intent.command) {
@@ -1879,32 +3482,49 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
         if (target != null) router.navigate('/function/' + BigInt(target).toString() + '/pseudocode');
         else toast(text('この位置の関数を特定できませんでした。', 'Could not identify a function at this address.'));
       }); return true;
+      case 'investigate': router.navigate('/investigate'); return true;
       case 'ai': getAssistant()?.open(); return true;
-      case 'agent': getAssistant()?.ask(text('この一覧から調べたいことを教えてください。', 'Tell me what to investigate.'), { mode: 'agent' }); return true;
+      case 'agent': getAssistant()?.open({ mode: 'agent' }); return true;
       default: return false;
     }
   };
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+    hideResults();
     const intent = classifyOmnibox(input.value);
     if (intent.kind === 'empty') return;
     input.blur();
     if (intent.kind === 'ai') {
+      const explicitAi = /^[?？]/.test(String(intent.raw || '').trim());
       const assistant = getAssistant();
+      if (!explicitAi && app.store?.get?.('fileInfo')) {
+        const compiled = compileGoal(intent.value);
+        if (compiled?.goal) {
+          rememberQuery(intent.value, app);
+          runInvestigation(app, intent.value);
+          input.value = '';
+          refreshHint();
+          return;
+        }
+      }
       if (assistant) { assistant.ask(intent.value); input.value = ''; refreshHint(); return; }
-      router.navigate('/investigate');
+      router.navigate('/investigate?q=' + encodeURIComponent(intent.value));
       return;
     }
-    if (intent.kind === 'command' && runCommand(intent)) return;
+    if (intent.kind === 'command') {
+      if (runCommand(intent)) return;
+      toast(text(`不明なコマンドです: >${intent.value}`, `Unknown command: >${intent.value}`));
+      return;
+    }
     if (intent.kind === 'address') {
-      const addr = parseAddress(intent.value);
+      const addr = parseAddressInput(app, intent.value);
       // Navigate only when the address exists; a failed jump already explained why.
       if (addr != null) { if (app.goToAddress(addr, { announce: true })) router.navigate('/code/' + addr.toString()); return; }
     }
     if (intent.kind === 'symbol') {
       const addr = symbolAddress(app, intent.value);
-      if (addr != null) { router.navigate('/function/' + BigInt(addr).toString() + '/overview'); return; }
+      if (addr != null) { openAddressTarget(app, router, addr); return; }
     }
     if (intent.kind === 'string') {
       router.navigate('/explorer/strings?q=' + encodeURIComponent(intent.value));
@@ -1917,10 +3537,13 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   const refreshLanguage = () => {
     setPlaceholder();
     input.setAttribute('aria-label', text('検索と移動', 'Search and navigate'));
+    results.setAttribute('aria-label', text('クイックジャンプ候補', 'Instant jump results'));
     go.textContent = text('実行', 'Go');
     refreshHint();
   };
   const destroy = () => {
+    hideResults();
+    document.removeEventListener('pointerdown', onDocPointerDown);
     narrow?.removeEventListener?.('change', setPlaceholder);
     form.remove();
   };
@@ -1949,13 +3572,130 @@ export function installProductUI(app) {
    * fixed` still resolves against the viewport here because the chrome uses a
    * plain background — a backdrop-filter on the parent would have trapped it.
    */
+  const navCanBack = () => !!(app.navigation?.canBack ?? app.navigation?.snapshot?.()?.canBack);
+  const navCanForward = () => !!(app.navigation?.canForward ?? app.navigation?.snapshot?.()?.canForward);
+  const canGoBack = () => router.canBack() || (router.current?.route?.id === 'code' && navCanBack());
+  const canGoForward = () => router.canForward() || (router.current?.route?.id === 'code' && navCanForward());
+  const goBack = () => {
+    if (router.canBack()) return router.back();
+    if (router.current?.route?.id === 'code' && navCanBack()) {
+      const ok = !!app.navigation?.back?.();
+      syncNavButtons();
+      return ok;
+    }
+    return false;
+  };
+  const goForward = () => {
+    if (router.canForward()) return router.forward();
+    if (router.current?.route?.id === 'code' && navCanForward()) {
+      const ok = !!app.navigation?.forward?.();
+      syncNavButtons();
+      return ok;
+    }
+    return false;
+  };
+  const openHistoryMenu = (event, direction) => {
+    const raw = router.historyEntries?.();
+    const entries = Array.isArray(raw)
+      ? raw
+      : (direction < 0 ? raw?.back : raw?.forward);
+    if (!Array.isArray(entries) || !entries.length) return;
+    event.preventDefault();
+    const curDepth = Number.isSafeInteger(router.depth) ? router.depth : 0;
+    const normalized = entries.map((e) => {
+      const delta = Number.isSafeInteger(e?.delta)
+        ? e.delta
+        : (Number.isSafeInteger(e?.depth) ? e.depth - curDepth : 0);
+      return { delta, label: e?.label || e?.path || String(delta) };
+    }).filter((e) => (direction < 0 ? e.delta < 0 : e.delta > 0));
+    if (!normalized.length) return;
+    normalized.sort((a, b) => (direction < 0 ? b.delta - a.delta : a.delta - b.delta));
+    const r = event.currentTarget.getBoundingClientRect();
+    menu(normalized.slice(0, 15).map((e) => ({
+      label: e.label,
+      action: () => { router.capture?.(); history.go(e.delta); },
+    })), r.left + r.width / 2, r.bottom + 4);
+  };
+
   const backBtn = uiButton(text('← 戻る', '← Back'), {
     cls: 'ui-chrome-back',
     ariaLabel: text('前の画面へ戻る', 'Go back'),
-    onClick: () => router.back(),
+    onClick: () => goBack(),
   });
+  backBtn.title = text('前の画面へ戻る (Alt+← / Esc)', 'Go back (Alt+Left / Esc)');
   backBtn.hidden = true;
-  chrome.append(backBtn, nav);
+  backBtn.addEventListener('contextmenu', (e) => openHistoryMenu(e, -1));
+  const forwardBtn = uiButton('→', {
+    cls: 'ui-chrome-forward',
+    ariaLabel: text('次の画面へ進む', 'Go forward'),
+    onClick: () => goForward(),
+  });
+  forwardBtn.title = text('次の画面へ進む (Alt+→)', 'Go forward (Alt+Right)');
+  forwardBtn.hidden = true;
+  forwardBtn.addEventListener('contextmenu', (e) => openHistoryMenu(e, 1));
+  chrome.append(backBtn, forwardBtn, nav);
+
+  const syncNavButtons = () => {
+    backBtn.hidden = !canGoBack();
+    forwardBtn.hidden = !canGoForward();
+    const backDest = router.backLabel?.() || '';
+    const fwdDest = router.forwardLabel?.() || '';
+    backBtn.title = backDest
+      ? text(`戻る: ${backDest} (Alt+← / Esc)`, `Back: ${backDest} (Alt+Left / Esc)`)
+      : text('前の画面へ戻る (Alt+← / Esc)', 'Go back (Alt+Left / Esc)');
+    forwardBtn.title = fwdDest
+      ? text(`進む: ${fwdDest} (Alt+→)`, `Forward: ${fwdDest} (Alt+Right)`)
+      : text('次の画面へ進む (Alt+→)', 'Go forward (Alt+Right)');
+  };
+
+  const deltaStrip = h('div', 'ui-delta-strip');
+  deltaStrip.setAttribute('role', 'status');
+  deltaStrip.hidden = true;
+  const deltaText = h('span', 'ui-delta-strip-text');
+  const deltaActions = h('div', 'ui-delta-strip-actions');
+  const deltaExportBtn = uiButton(text('差分を書き出し (.json)', 'Export delta (.json)'), { cls: 'ui-secondary-action ui-delta-btn', onClick: () => requireFile(app, () => exportDeltaFromProduct(app)) });
+  const deltaImportBtn = uiButton(text('差分を読み込み (.json)', 'Import delta (.json)'), { cls: 'ui-secondary-action ui-delta-btn', onClick: () => requireFile(app, () => importDeltaFromProduct(app, router)) });
+  const deltaResetBtn = uiButton(text('リセット', 'Reset'), { cls: 'ui-secondary-action ui-delta-btn', onClick: async () => { const ok = await resetDeltaFromProduct(app); if (ok) { deltaDismissed = true; deltaStrip.hidden = true; } } });
+  const deltaDismissBtn = uiButton('×', { cls: 'ui-icon-action ui-delta-dismiss', ariaLabel: text('閉じる', 'Dismiss'), onClick: () => { deltaDismissed = true; deltaStrip.hidden = true; } });
+  deltaActions.append(deltaExportBtn, deltaImportBtn, deltaResetBtn, deltaDismissBtn);
+  deltaStrip.append(deltaText, deltaActions);
+  chrome.after(deltaStrip);
+  let deltaDismissed = false;
+  let lastDeltaToken = null;
+  let appliedDeltaRouteToken = null;
+  let userNavigatedSinceFileOpen = false;
+  const resolveRestoredRoutePath = (rawPath) => {
+    const path = String(rawPath || '').trim();
+    if (!path || !path.startsWith('/')) return null;
+    const fnMatch = /^\/function\/([^/?#]+)(?:\/([^/?#]+))?/.exec(path);
+    if (fnMatch) {
+      let big;
+      try { big = BigInt(fnMatch[1]); } catch { return null; }
+      const verified = app.validatedFunctionRange?.(big);
+      if (!isFunctionStart(app, big) || (verified && !verified.ok)) {
+        return '/code/' + big.toString();
+      }
+    }
+    return path;
+  };
+  const syncDeltaStrip = () => {
+    const info = app.lastDeltaRestore ?? app.store?.get?.('deltaRestored') ?? null;
+    if (!info) { deltaStrip.hidden = true; return; }
+    if (info !== lastDeltaToken) { lastDeltaToken = info; deltaDismissed = false; }
+    if (info.restoredRoutePath && info !== appliedDeltaRouteToken && !userNavigatedSinceFileOpen && router?.started) {
+      appliedDeltaRouteToken = info;
+      const targetPath = resolveRestoredRoutePath(info.restoredRoutePath);
+      if (targetPath && router.current?.fullPath !== targetPath) {
+        router.navigate(targetPath, { replace: true });
+      }
+    }
+    syncNavButtons();
+    if (deltaDismissed) { deltaStrip.hidden = true; return; }
+    const count = deltaCountOf(info);
+    if (count <= 0) { deltaStrip.hidden = true; return; }
+    deltaText.textContent = text(`前回の続きを復元 (${count}件の差分)`, `Restored previous session (${count} changes)`);
+    deltaStrip.hidden = false;
+  };
 
   let lastRouteId = null;
   let autoHexForData = false;
@@ -1975,13 +3715,16 @@ export function installProductUI(app) {
      * function tab to another) keep their sheets; sheets opened after the
      * change (the sample guide) are not affected.
      */
-    onState: ({ current, canBack }) => {
+    onState: ({ current }) => {
       const id = current?.route?.id || null;
       if (lastRouteId != null && id !== lastRouteId) { closeMenu(); closeAllSheets(); }
       lastRouteId = id;
-      backBtn.hidden = !canBack;
+      syncNavButtons();
     },
     onRoute: (route, routeContext = {}) => {
+      if (!routeContext.replace && !routeContext.historyNavigation && route.fullPath !== '/code') {
+        userNavigatedSinceFileOpen = true;
+      }
       appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
       appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
       const activeNavId = route.route.id === 'finding' ? 'results' : route.route.id;
@@ -2013,12 +3756,13 @@ export function installProductUI(app) {
             }
           } catch { /* invalid deep link */ } finally { routingCodeAddress = false; }
         }
+        syncRouteNavigation(app, router, route, routeContext);
         return codeViewState(app);
       }
       routeHost.hidden = false;
       routeHost.replaceChildren();
       let view;
-      if (route.route.id === 'investigate') view = renderInvestigate(app, router, routeContext);
+      if (route.route.id === 'investigate') view = renderInvestigate(app, router, route, routeContext);
       else if (route.route.id === 'explorer') view = renderExplorer(app, router, route, routeContext);
       else if (route.route.id === 'function') view = renderFunctionWorkspace(app, router, route, routeContext);
       else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router, route);
@@ -2027,6 +3771,7 @@ export function installProductUI(app) {
       else view = renderSecondaryRoute(app, router, route, routeContext);
       routeHost.append(view.root);
       updateScreenTitle(view.root);
+      syncRouteNavigation(app, router, route, routeContext);
       requestAnimationFrame(() => routeHost.focus({ preventScroll: true }));
       const originalGet = view.getState;
       return {
@@ -2036,6 +3781,10 @@ export function installProductUI(app) {
       };
     },
   });
+  const unsubDeltaStore = app.store?.subscribe?.((_state, patch) => {
+    if (!patch || 'deltaRestored' in patch || 'fileInfo' in patch) syncDeltaStrip();
+  }) || null;
+  syncDeltaStrip();
 
   let assistant = null;
   const originalSelectSlice = typeof app.selectSlice === 'function' ? app.selectSlice.bind(app) : null;
@@ -2044,6 +3793,8 @@ export function installProductUI(app) {
       const beforeEpoch = app.backend?.gen;
       const result = await originalSelectSlice(...args);
       if (app.backend?.gen !== beforeEpoch) {
+        userNavigatedSinceFileOpen = false;
+        appliedDeltaRouteToken = null;
         router.navigate('/code', { replace: true });
         assistant?.refresh();
         assistant?.collapse();
@@ -2060,10 +3811,16 @@ export function installProductUI(app) {
   const originalGoToAddress = typeof app.goToAddress === 'function' ? app.goToAddress : null;
   if (originalGoToAddress) {
     app.goToAddress = function goToAddressAndShowCode(addr, options = {}) {
-      // Show Code first: the viewer cannot compute a scroll position while
-      // its view is hidden, and the jump would land on the wrong line.
-      if (options?.announce && !routingCodeAddress && router.current && router.current.route.id !== 'code' && addressIsMapped(app, addr)) {
-        router.navigate('/code');
+      // Route user-requested jumps through ProductRouter even when already on /code
+      // so browser Back/Forward and App.navigation stay unified.
+      if (options?.history !== false && !routingCodeAddress && router.current && addressIsMapped(app, addr)) {
+        try {
+          const targetBig = BigInt(addr);
+          if (router.navigate('/code/' + targetBig.toString(), { forcePush: true })) {
+            if (options?.announce) this.flash?.(targetBig);
+            return true;
+          }
+        } catch { /* fall through */ }
       }
       return originalGoToAddress.call(this, addr, options);
     };
@@ -2096,15 +3853,193 @@ export function installProductUI(app) {
   actions.register('navigate.explorer', () => router.navigate('/explorer/functions'));
   actions.register('navigate.results', () => router.navigate('/results'));
   actions.register('function.label', (addr) => functionName(app, BigInt(addr)));
-  actions.register('function.open', (addr, tab = 'overview') => router.navigate('/function/' + BigInt(addr).toString() + '/' + tab));
+  actions.register('function.open', (addr, tab) => openAddressTarget(app, router, addr, { preferTab: tab }));
 
   const cleanupViewport = installViewportBridge();
   const addressBar = installAddressBar(app, router, appRoot.querySelector('.addrbar'));
+  const prevJumpTarget = app.viewer ? app.viewer.onJumpTarget : null;
+  if (app.viewer) {
+    app.viewer.onJumpTarget = (targetAddr) => {
+      if (targetAddr == null) return;
+      const addr = BigInt(targetAddr);
+      if (!router.navigate('/code/' + addr.toString())) {
+        app.goToAddress(addr, { announce: true });
+      }
+    };
+  }
   const shortcut = (event) => {
     const target = event.target;
-    const typing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); actions.run('command.focus'); return; }
-    if (!typing && event.key === '/') { event.preventDefault(); actions.run('command.focus'); }
+    const tag = target?.tagName || '';
+    const typing = !!(target && (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || target.isContentEditable));
+    const key = String(event.key || '').toLowerCase();
+    if ((event.metaKey || event.ctrlKey) && (key === 'k' || key === 'g')) { event.preventDefault(); actions.run('command.focus'); return; }
+    if ((event.metaKey || event.ctrlKey) && key === 'f') {
+      const curRoute = router.current;
+      if (curRoute?.route?.id === 'function' && curRoute?.params?.tab === 'pseudocode') {
+        const screenRoot = routeHost.querySelector('[data-screen="function"]');
+        if (typeof screenRoot?._openPseudocodeFind === 'function') {
+          event.preventDefault();
+          screenRoot._openPseudocodeFind();
+          return;
+        }
+      }
+    }
+    if (typing) return;
+    const hasOverlay = !!Boolean(document.getElementById('overlays')?.querySelector('.sheet, .menu, .dialog') || document.querySelector('.menu, .dialog'));
+    if (!hasOverlay && (event.metaKey || event.ctrlKey) && !event.altKey) {
+      if (key === 'z') {
+        if (event.shiftKey) {
+          if (typeof app.redoEdit === 'function') { event.preventDefault(); app.redoEdit(); return; }
+        } else if (typeof app.undoEdit === 'function') {
+          event.preventDefault(); app.undoEdit(); return;
+        }
+      } else if (event.ctrlKey && !event.metaKey && key === 'y' && typeof app.redoEdit === 'function') {
+        event.preventDefault(); app.redoEdit(); return;
+      }
+    }
+    if (!hasOverlay && ((event.altKey && event.key === 'ArrowLeft') || (event.metaKey && event.key === '['))) { event.preventDefault(); goBack(); return; }
+    if (!hasOverlay && ((event.altKey && event.key === 'ArrowRight') || (event.metaKey && event.key === ']'))) { event.preventDefault(); goForward(); return; }
+    if (event.key === 'Escape' && !hasOverlay && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const aiOpen = !!(assistant?.isOpen?.() || uiRoot()?.classList.contains('ai-open'));
+      const hasRangeMode = !!app.viewer?.rangeMode;
+      const hasTokHit = !!document.querySelector('.tok-hit');
+      const openFindBar = document.querySelector('.ui-pseudocode-find:not([hidden])');
+      if (openFindBar) {
+        openFindBar.querySelector('.ui-find-close')?.click();
+        event.preventDefault();
+        return;
+      }
+      if (!aiOpen && !hasRangeMode && !hasTokHit && canGoBack()) {
+        event.preventDefault();
+        goBack();
+      }
+      return;
+    }
+    if (hasOverlay || event.metaKey || event.ctrlKey || event.altKey) return;
+    const interactiveControl = !!(target && (
+      /^(BUTTON|A|SUMMARY)$/.test(tag)
+      || (target.closest?.('button, a, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="listbox"]')
+        && !target.closest?.('.ui-pseudocode-line'))
+      || target.closest?.('.tok-fn-link, .tok-addr-link')
+    ));
+    if (event.key === '?') {
+      if (interactiveControl) return;
+      event.preventDefault();
+      router.navigate('/help');
+      return;
+    }
+    if (key === '/' || (key === 'g' && !event.shiftKey)) {
+      if (interactiveControl) return;
+      event.preventDefault();
+      actions.run('command.focus');
+      return;
+    }
+    if (interactiveControl) return;
+    const curRoute = router.current;
+    const routeId = curRoute?.route?.id;
+    if (routeId !== 'code' && routeId !== 'function') return;
+    const activeFnAddr = () => {
+      if (routeId === 'function' && curRoute?.params?.address) {
+        try { return BigInt(curRoute.params.address); } catch { /* fall through */ }
+      }
+      return currentFunctionAddr(app) ?? currentAddress(app);
+    };
+    const activeLineAddr = () => {
+      if (routeId === 'code') {
+        const row = app.viewer?.selectedRow ?? app.store?.get?.('selectedRow');
+        if (row != null && row >= 0 && app.viewer?.rowAddress) {
+          const rowAddr = app.viewer.rowAddress(row);
+          if (rowAddr != null) return rowAddr;
+        }
+        return currentAddress(app) ?? currentFunctionAddr(app);
+      }
+      return activeFnAddr();
+    };
+    if (key === 'n' && !event.shiftKey) {
+      event.preventDefault();
+      requireFile(app, () => {
+        let calleeAddr = null;
+        const focusedCallee = document.activeElement?.closest?.('.tok-fn-link')
+          || document.querySelector('.ui-pseudocode .tok-hit[data-tok]');
+        if (focusedCallee) {
+          const tok = focusedCallee.getAttribute('data-tok') || focusedCallee.textContent?.trim();
+          if (tok) calleeAddr = symbolAddress(app, tok);
+        }
+        const a = calleeAddr ?? activeFnAddr();
+        if (a != null) showRename(app, a);
+        else toast(text('対象の関数またはアドレスが見つかりません。', 'No target function or address selected.'));
+      });
+      return;
+    }
+    if (event.key === ';') {
+      event.preventDefault();
+      requireFile(app, () => {
+        const a = activeLineAddr();
+        if (a != null) showComment(app, a);
+        else toast(text('対象の行または関数が見つかりません。', 'No target line or function selected.'));
+      });
+      return;
+    }
+    if (key === 'x' && !event.shiftKey) {
+      event.preventDefault();
+      requireFile(app, () => {
+        if (routeId === 'code') {
+          const lineAddr = activeLineAddr();
+          if (lineAddr != null) {
+            const regions = app.store?.get?.('regions') || [];
+            const region = regions.find((r) => r && r.size > 0n && lineAddr >= r.vmAddr && lineAddr < r.vmAddr + r.size);
+            const fnAtLine = region?.exec ? currentFunctionAddr(app) : null;
+            if ((region && !region.exec) || fnAtLine == null) {
+              showXrefs(app, lineAddr);
+              return;
+            }
+          }
+        }
+        const a = activeFnAddr();
+        if (a != null) router.navigate('/function/' + BigInt(a).toString() + '/calls');
+        else toast(text('対象の関数が見つかりません。', 'No target function selected.'));
+      });
+      return;
+    }
+    if (event.key === ' ' && !event.shiftKey) {
+      event.preventDefault();
+      requireFile(app, () => {
+        const a = activeFnAddr();
+        if (a == null) {
+          toast(text('対象の関数が見つかりません。', 'No target function selected.'));
+          return;
+        }
+        if (routeId === 'function' && curRoute?.params?.tab === 'pseudocode') {
+          const screenRoot = routeHost.querySelector('[data-screen="function"]');
+          const jumpAddr = typeof screenRoot?._selectedCodeAddress === 'function'
+            ? (screenRoot._selectedCodeAddress() ?? a)
+            : a;
+          router.navigate('/code/' + BigInt(jumpAddr).toString());
+        } else {
+          const lineAddr = activeLineAddr();
+          const fnBig = BigInt(a);
+          const query = lineAddr != null && BigInt(lineAddr) !== fnBig ? ('?addr=' + BigInt(lineAddr).toString()) : '';
+          router.navigate('/function/' + fnBig.toString() + '/pseudocode' + query);
+        }
+      });
+      return;
+    }
+    if (key === 'b' && !event.shiftKey) {
+      event.preventDefault();
+      requireFile(app, () => {
+        const targetAddr = routeId === 'code' ? activeLineAddr() : activeFnAddr();
+        if (targetAddr == null) {
+          toast(text('対象のアドレスが見つかりません。', 'No target address selected.'));
+          return;
+        }
+        const name = bookmarkLabel(app, targetAddr);
+        app.bookmarks?.toggle?.(targetAddr, { name });
+        const saved = !!app.bookmarks?.has?.(targetAddr);
+        toast(saved
+          ? text(`★「${name}」をブックマークしました。`, `★ Bookmarked "${name}".`)
+          : text(`☆「${name}」のブックマークを解除しました。`, `☆ Removed bookmark "${name}".`));
+      });
+    }
   };
   document.addEventListener('keydown', shortcut, true);
 
@@ -2117,6 +4052,8 @@ export function installProductUI(app) {
    * and the assistant is the thing you call when you have a question about it.
    */
   const onFileOpened = () => {
+    userNavigatedSinceFileOpen = false;
+    appliedDeltaRouteToken = null;
     router.navigate('/code');
     assistant?.refresh();
     /* On a phone or a narrow split the panel covers the code it is about to
@@ -2129,6 +4066,13 @@ export function installProductUI(app) {
     nav.setAttribute('aria-label', text('主要ナビゲーション', 'Primary navigation'));
     backBtn.textContent = text('← 戻る', '← Back');
     backBtn.setAttribute('aria-label', text('前の画面へ戻る', 'Go back'));
+    forwardBtn.setAttribute('aria-label', text('次の画面へ進む', 'Go forward'));
+    syncNavButtons();
+    deltaExportBtn.textContent = text('差分を書き出し (.json)', 'Export delta (.json)');
+    deltaImportBtn.textContent = text('差分を読み込み (.json)', 'Import delta (.json)');
+    deltaResetBtn.textContent = text('リセット', 'Reset');
+    deltaDismissBtn.setAttribute('aria-label', text('閉じる', 'Dismiss'));
+    syncDeltaStrip();
     more.setAttribute('aria-label', text('その他', 'More'));
     for (const item of PRIMARY_NAV) {
       const btn = nav.querySelector(`[data-route-id="${item.routeId}"]`);
@@ -2155,9 +4099,11 @@ export function installProductUI(app) {
     document.removeEventListener('hex:language-changed', onLanguageChanged);
     window.removeEventListener('pagehide', onPageHide);
     assistant?.destroy();
+    if (typeof unsubDeltaStore === 'function') unsubDeltaStore();
+    if (app.viewer) app.viewer.onJumpTarget = prevJumpTarget;
     if (originalSelectSlice) app.selectSlice = originalSelectSlice;
     if (originalGoToAddress) app.goToAddress = originalGoToAddress;
-    chrome.remove(); nav.remove(); routeHost.remove();
+    deltaStrip.remove(); chrome.remove(); nav.remove(); routeHost.remove();
     uiRoot()?.classList.remove('product-ui-ready');
   };
   window.__hexUi = { router, actions, destroy, routes: ROUTES, assistant };

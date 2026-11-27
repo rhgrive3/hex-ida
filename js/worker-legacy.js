@@ -1711,6 +1711,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
 
   const allocatedBytes = () => callFrom.byteLength + callTo.byteLength + refFrom.byteLength + refTo.byteLength + refKind.byteLength + kinds.byteLength;
   const canGrow = (temporaryBytes) => WORKER_BUDGET.withinProgramBudget(allocatedBytes(), temporaryBytes) && allocatedBytes() + temporaryBytes <= PROGRAM_INDEX_BUDGET_BYTES;
+  let reusableBlockWords = null;
 
   while (pos < total) {
     if (cancelled(requestId, epoch)) return { cancelled: true, __transfer: [] };
@@ -1719,12 +1720,22 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
     if (blk.length < 4) break;
     const n = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, n * 4);
+    let blockWords = null;
+    let blockKinds = null;
+    if (n >= 64 && typeof Words.classifyWordsBatch === 'function') {
+      if (!reusableBlockWords || reusableBlockWords.length < n) {
+        reusableBlockWords = new Uint32Array(n);
+      }
+      blockWords = reusableBlockWords.length === n ? reusableBlockWords : reusableBlockWords.subarray(0, n);
+      for (let i = 0; i < n; i++) blockWords[i] = dv.getUint32(i * 4, true);
+      blockKinds = Words.classifyWordsBatch(blockWords);
+    }
 
     for (let i = 0; i < n; i++, index++) {
-      const w = dv.getUint32(i * 4, true);
+      const w = blockWords ? blockWords[i] : dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
       provenance.enter(pc);
-      const kind = Words.classifyWord(w);
+      const kind = blockKinds ? blockKinds[i] : Words.classifyWord(w);
       if (index < kinds.length) kinds[index] = inlineCanonicalKinds ? canonicalProgramKind(w, kind) : kind;
 
       if (kind === Words.KIND.CALL || kind === Words.KIND.INDCALL) {

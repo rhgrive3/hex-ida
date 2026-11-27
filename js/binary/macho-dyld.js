@@ -62,17 +62,23 @@ function rememberChainedPointerSite(image, address, fileOffset, raw, pointerForm
   let sites = CHAINED_POINTER_SITES.get(image);
   if (!sites) { sites = new Map(); CHAINED_POINTER_SITES.set(image, sites); }
   advancePointerMetadata(image);
-  const key = BigInt(address);
-  const candidates = sites.get(key) ?? [];
+  const key = typeof address === 'bigint' ? address : BigInt(address);
+  const sliceOff = typeof fileOffset === 'bigint' ? fileOffset : BigInt(fileOffset);
+  const imgOff = typeof image.fileOffset === 'bigint' ? image.fileOffset : BigInt(image.fileOffset ?? 0);
+  const rawBig = typeof raw === 'bigint' ? raw : BigInt(raw);
+  let candidates = sites.get(key);
+  if (!candidates) {
+    candidates = [];
+    sites.set(key, candidates);
+  }
   candidates.push({
     address: key,
-    fileOffset: BigInt(image.fileOffset ?? 0) + BigInt(fileOffset),
-    sliceFileOffset: BigInt(fileOffset),
-    raw: BigInt(raw),
+    fileOffset: imgOff + sliceOff,
+    sliceFileOffset: sliceOff,
+    raw: rawBig,
     pointerFormat,
     decoded: { ...decoded, authentication: decoded.authentication ? { ...decoded.authentication } : null },
   });
-  sites.set(key, candidates);
   return candidates.length > 1;
 }
 
@@ -480,8 +486,23 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
 
     if (!width) { fail(`segment ${segIndex} uses unsupported pointer format ${pointerFormat}`); continue; }
 
+    const widthBig = BigInt(width);
+    const segFileEndOff = segFileOffset + segFileSize;
+    const rLenBig = BigInt(r.length);
+    const imgFileOffsetBig = typeof image.fileOffset === 'bigint' ? image.fileOffset : BigInt(image.fileOffset ?? 0);
+    const chainedPageCost = { inputBytes: 2, records: 1, operations: 1, estimatedHeapBytes: 16 };
+    const chainedPtrCost = { inputBytes: width, records: 1, operations: 1, estimatedHeapBytes: 16 };
+    const chainedBindSiteCost = { objects: 1, operations: 1, estimatedHeapBytes: 112 };
+    const decodeOpts = {
+      maxValidPointer,
+      dyldCache: image.metadata?.dyldCache ?? null,
+      binaryIdentity: internalIdentity?.dyldCacheBinding?.binaryIdentity ?? null,
+      sliceIdentity: internalIdentity?.dyldCacheBinding?.sliceIdentity ?? null,
+      architecture: internalIdentity?.architecture ?? internalIdentity?.dyldCacheBinding?.architecture ?? null,
+    };
+
     for (let page = 0; page < pageCount; page++) {
-      if(!budget.take({inputBytes:2,records:1,operations:1,estimatedHeapBytes:16},'chained-page')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
+      if(!budget.take(chainedPageCost,'chained-page')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
       const start = r.u16(p + 22 + page * 2);
       if (start === 0xffff) continue;
       const pageFailureEpoch = failureEpoch;
@@ -508,30 +529,25 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
       const pageAddressEnd = segAddress + pageVmEnd;
       const fileBackedAddressEnd = segAddress + pageFileEnd;
       for (const chainStart of starts) {
-        if (chainStart >= pageSize || BigInt(chainStart) + BigInt(width) > pageVmEnd - pageOffset || BigInt(chainStart) + BigInt(width) > pageFileEnd - pageOffset) {
+        const chainStartBig = BigInt(chainStart);
+        if (chainStart >= pageSize || chainStartBig + widthBig > pageVmEnd - pageOffset || chainStartBig + widthBig > pageFileEnd - pageOffset) {
           fail(`segment ${segIndex} page ${page} chain start 0x${chainStart.toString(16)} is outside file-backed page data`);
           continue;
         }
-        let address = pageAddress + BigInt(chainStart);
+        let address = pageAddress + chainStartBig;
         let terminated = false;
         for (let guard = 0; guard < 100000; guard++) {
-          if(!budget.take({inputBytes:width,records:1,operations:1,estimatedHeapBytes:16},'chained-pointer')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pointer chain');status.bindingSites=decoded;return status;}
-          if (address < pageAddress || address + BigInt(width) > pageAddressEnd || address + BigInt(width) > fileBackedAddressEnd) {
+          if(!budget.take(chainedPtrCost,'chained-pointer')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pointer chain');status.bindingSites=decoded;return status;}
+          if (address < pageAddress || address + widthBig > pageAddressEnd || address + widthBig > fileBackedAddressEnd) {
             fail(`segment ${segIndex} page ${page} chain leaves its page or file-backed segment range`); break;
           }
           const off = image.addressToOffset(address);
           const expectedOff = segFileOffset + (address - segAddress);
-          if (off == null || BigInt(off) !== expectedOff || expectedOff + BigInt(width) > segFileOffset + segFileSize || expectedOff + BigInt(width) > BigInt(r.length)) {
+          if (off == null || (typeof off === 'bigint' ? off : BigInt(off)) !== expectedOff || expectedOff + widthBig > segFileEndOff || expectedOff + widthBig > rLenBig) {
             fail(`segment ${segIndex} page ${page} chain address is not backed by its owning segment`); break;
           }
           const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
-          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, {
-            maxValidPointer,
-            dyldCache: image.metadata?.dyldCache ?? null,
-            binaryIdentity: internalIdentity?.dyldCacheBinding?.binaryIdentity ?? null,
-            sliceIdentity: internalIdentity?.dyldCacheBinding?.sliceIdentity ?? null,
-            architecture: internalIdentity?.architecture ?? internalIdentity?.dyldCacheBinding?.architecture ?? null,
-          });
+          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, decodeOpts);
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
           if (d.invalidReason) { fail(`segment ${segIndex} pointer format ${pointerFormat} has ${d.invalidReason}`); break; }
           if (rememberChainedPointerSite(image, address, expectedOff, raw, pointerFormat, d)) {
@@ -545,12 +561,12 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             if (!imp) {
               fail(`invalid bind ordinal ${d.ordinal} does not reference a parsed chained import`);
             } else {
-              if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
+              if(!budget.take(chainedBindSiteCost,'chained-bind-site')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
               imp.sites.push({
                 address,
                 offset: expectedOff,
                 sliceOffset: expectedOff,
-                containerOffset: BigInt(image.fileOffset ?? 0) + expectedOff,
+                containerOffset: imgFileOffsetBig + expectedOff,
                 kind: 'chained-bind',
                 pointerFormat,
                 storageWidth: d.storageWidth,
@@ -562,9 +578,9 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             }
           }
           if (!d.next) { terminated = true; break; }
-          const delta = BigInt(d.next) * BigInt(d.stride);
+          const delta = BigInt(d.next * d.stride);
           const nextAddress = address + delta;
-          if (delta <= 0n || nextAddress <= address || nextAddress + BigInt(width) > pageAddressEnd || nextAddress + BigInt(width) > fileBackedAddressEnd) {
+          if (delta <= 0n || nextAddress <= address || nextAddress + widthBig > pageAddressEnd || nextAddress + widthBig > fileBackedAddressEnd) {
             fail(`segment ${segIndex} page ${page} chained next leaves its page`); break;
           }
           address = nextAddress;

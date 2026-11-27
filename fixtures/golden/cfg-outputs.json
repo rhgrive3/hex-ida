@@ -1,0 +1,500 @@
+[
+  {
+    "binary": "macho-sample-arm64",
+    "func": "_add",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "macho-sample-arm64",
+    "func": "_square",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "macho-sample-arm64",
+    "func": "_sum_to",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "macho-sample-arm64",
+    "func": "_greet",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "macho-sample-arm64",
+    "func": "_apply_damage",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "macho-sample-arm64",
+    "func": "_main",
+    "entry": 0,
+    "succs": [
+      [],
+      []
+    ],
+    "idom": [
+      -1,
+      -1
+    ],
+    "ipdom": [
+      null,
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-semantic-holdout",
+    "func": "arithmetic_wrap",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-semantic-holdout",
+    "func": "conditional_value",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-semantic-holdout",
+    "func": "memory_forward",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-semantic-holdout",
+    "func": "direct_call",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-semantic-holdout",
+    "func": "add_pair",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-semantic-holdout",
+    "func": "unsupported_pair_exclusive",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-fpsimd-holdout",
+    "func": "fp_scalar_arith",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-fpsimd-holdout",
+    "func": "fp_compare_branch",
+    "entry": 0,
+    "succs": [
+      [],
+      []
+    ],
+    "idom": [
+      -1,
+      -1
+    ],
+    "ipdom": [
+      null,
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-fpsimd-holdout",
+    "func": "simd_vector_add",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-fpsimd-holdout",
+    "func": "acquire_load",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-fpsimd-holdout",
+    "func": "release_store",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-fpsimd-holdout",
+    "func": "exclusive_pair",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-threaded-int",
+    "func": "entry",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-threaded-int",
+    "func": "callee",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-threaded-mem",
+    "func": "entry",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-threaded-mem",
+    "func": "callee",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-threaded-mem",
+    "func": "copy_word",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-dispatch-table",
+    "func": "entry",
+    "entry": 0,
+    "succs": [
+      [],
+      []
+    ],
+    "idom": [
+      -1,
+      -1
+    ],
+    "ipdom": [
+      null,
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-dispatch-table",
+    "func": "callee",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-dispatch-table",
+    "func": "copy_word",
+    "entry": 0,
+    "succs": [
+      [],
+      []
+    ],
+    "idom": [
+      -1,
+      -1
+    ],
+    "ipdom": [
+      null,
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  },
+  {
+    "binary": "arm64-gnu-b-key-cfi",
+    "func": "_bkey_fn",
+    "entry": 0,
+    "succs": [
+      []
+    ],
+    "idom": [
+      -1
+    ],
+    "ipdom": [
+      null
+    ],
+    "reachable": [
+      0
+    ],
+    "backEdges": []
+  }
+]

@@ -963,7 +963,7 @@ export const DECOMPILE_INTERNAL_FIELDS = Object.freeze([
   'semanticSuppressionHistory', 'semanticControlRenderHistory',
   'semanticStatementRenderHistory',
   'semanticStoreRenderHistory', 'switchRenderHistory', 'legacyFallback',
-  'objcSyntax', 'globalEvidence',
+  'objcSyntax', 'globalEvidence', 'wasmAccelerated',
 ]);
 
 const DECOMPILE_PUBLIC_FIELD_SET = new Set(DECOMPILE_PUBLIC_FIELDS);
@@ -1305,19 +1305,45 @@ export function createAppAnalysisQueryAdapter(app) {
     const returnsValue=(result?.value?.setsReturnValue??result?.value?.model?.facts?.setsReturnValue)===true?true:undefined;
     let projectionIr=null,cxxEvidence=null;
     if(result?.value?.model&&supportsArm64SemanticAnalysis(architectureOf(app))){
-      try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
-      if(projectionIr){
-        const entry=ensureCxxEvidenceProviderForApp(app);
-        if(entry){
-          await entry.buildPromise;
-          throwIfAborted(options.signal);
-          if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+      const entry=ensureCxxEvidenceProviderForApp(app);
+      if(entry){
+        const builtIndex=await entry.buildPromise;
+        throwIfAborted(options.signal);
+        if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+        if(builtIndex&&!builtIndex.empty){
+          let addrBig = null; try { addrBig = address != null ? BigInt(address) : null; } catch { addrBig = null; }
+          const addrKey = addrBig != null ? addrBig.toString() : null;
+          const fnSymName = addrBig == null ? null : app?.symbols?.nameAt?.(addrBig);
+          const isCxxCandidate = addrKey != null && (
+            Boolean(builtIndex.bySlotAddress?.has(addrKey)) ||
+            Boolean(builtIndex.symbolOwners?.has(addrKey)) ||
+            Boolean(builtIndex.typedArguments?.has(addrKey)) ||
+            builtIndex.symbolNameFor?.(addrBig) != null ||
+            (typeof fnSymName === 'string' && fnSymName.startsWith('_Z'))
+          );
+          if(isCxxCandidate){
+            try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
+            if(projectionIr){
+              try {
+                cxxEvidence=entry.provider.projectForFunction({functionAddress:addrBig,
+                  functionName:fnSymName,ir:projectionIr,
+                  enableTypedArguments:options.typedArgumentRecovery===true});
+              } catch {cxxEvidence=null;}
+            }
+          } else {
+            try {
+              entry.provider.projectForFunction({functionAddress:addrBig,
+                functionName:fnSymName,ir:null,
+                enableTypedArguments:options.typedArgumentRecovery===true});
+            } catch { cxxEvidence=null; }
+          }
+        } else {
           try {
             const addrBig = address != null ? BigInt(address) : null;
-            cxxEvidence=entry.provider.projectForFunction({functionAddress:addrBig,
-              functionName:addrBig==null?null:app?.symbols?.nameAt?.(addrBig),ir:projectionIr,
+            entry.provider.projectForFunction({functionAddress:addrBig,
+              functionName:addrBig==null?null:app?.symbols?.nameAt?.(addrBig),ir:null,
               enableTypedArguments:options.typedArgumentRecovery===true});
-          } catch {cxxEvidence=null;}
+          } catch { cxxEvidence=null; }
         }
       }
     }
@@ -1772,8 +1798,9 @@ export function createAppAnalysisQueryAdapter(app) {
         ...(requestedObjcSyntax != null ? { objcSyntax: requestedObjcSyntax } : {}),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
+        symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null,
         ...(returnsValue ? { returnsValue } : {}),
-        ...(projectionIr ? { ir:projectionIr } : {}),
+        ...(cxxEvidence && projectionIr ? { ir:projectionIr } : {}),
         ...(cxxEvidence ? { cxxEvidence } : {}),
       });
       return publish(projection, result.status?.completeness, functionStatus);
@@ -1830,20 +1857,32 @@ export function createAppAnalysisQueryAdapter(app) {
           if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
             const entry = ensureCxxEvidenceProviderForApp(app);
             if (entry) {
-              await entry.buildPromise;
+              const builtIndex = await entry.buildPromise;
               throwIfAborted(options.signal);
               if (cxxMemberIndexForApp(app) !== entry.provider.memberIndex()) {
                 throw new Error('C++ recovery binding changed');
               }
-              try {
-                projectionIr = irFor(result.value.model, { ...architectureDecompilerOptions(app, result.value.model, result.value, options), ...(returnsValue ? { returnsValue } : {}), symbolFor });
-                cxxEvidence = entry.provider.projectForFunction({
-                  functionAddress: address != null ? BigInt(address) : null,
-                  functionName: name,
-                  ir: projectionIr,
-                });
-              } catch {
-                cxxEvidence = null;
+              let addrBig = null;
+              try { addrBig = address != null ? BigInt(address) : null; } catch { addrBig = null; }
+              const addrKey = addrBig != null ? addrBig.toString() : null;
+              const isCxxCandidate = Boolean(builtIndex && !builtIndex.empty && addrKey != null && (
+                Boolean(builtIndex.bySlotAddress?.has(addrKey)) ||
+                Boolean(builtIndex.symbolOwners?.has(addrKey)) ||
+                Boolean(builtIndex.typedArguments?.has(addrKey)) ||
+                builtIndex.symbolNameFor?.(addrBig) != null ||
+                (typeof name === 'string' && name.startsWith('_Z'))
+              ));
+              if (isCxxCandidate) {
+                try {
+                  projectionIr = irFor(result.value.model, { ...architectureDecompilerOptions(app, result.value.model, result.value, options), ...(returnsValue ? { returnsValue } : {}), symbolFor });
+                  cxxEvidence = entry.provider.projectForFunction({
+                    functionAddress: addrBig,
+                    functionName: name,
+                    ir: projectionIr,
+                  });
+                } catch {
+                  cxxEvidence = null;
+                }
               }
             }
           }
