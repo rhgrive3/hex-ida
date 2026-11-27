@@ -12,6 +12,7 @@ import { buildAppMap, buildStringMap } from './appmap.js';
 import { pinpointField, pinpointFunction, pinpointLocation } from './pinpoint.js';
 import { VERDICT, verdictRank } from './evidence.js';
 import { inferRole } from './role.js';
+import { runWasmStructuralAnalysis } from './analysis/wasm-suite.js';
 
 const SIGNALS = [
   { id: 'endpoint', level: 'high', re: /^https?:\/\/[^\s"']{4,}/i, max: 12 },
@@ -291,6 +292,7 @@ export async function autoAnalyze(opts) {
       statsComplete: program ? program.statsComplete : false,
       capped: !!(program && (program.callsCapped || program.refsCapped)),
     },
+    wasmAnalysis: null,
     notes: [],
   };
 
@@ -479,7 +481,7 @@ export async function autoAnalyze(opts) {
         if (beatsPin(locPin, best)) best = locPin;
       }
 
-      const canFindFunction = memo && ranked.length;
+      const canFindFunction = memo && (ranked.length || (common.shapes && common.shapes.size));
       if (canFindFunction && !(best && best.verdict === VERDICT.CONFIRMED && best.kind === 'field')) {
         let fieldHint = null;
         const named = alternatives.find((p) => p && p.kind === 'field' && p.top && p.top.source !== 'cxx' && settledPin(p));
@@ -635,7 +637,38 @@ export async function autoAnalyze(opts) {
     report.deep.sort((a, b) => b.updates.length - a.updates.length || (b.goal ? 1 : 0) - (a.goal ? 1 : 0));
   }
 
-  progress({ phase: 'done', done: 1, all: 1 });
+  try {
+    const codeBytes = o.codeBytes
+      || (o.region && o.region.bytes instanceof Uint8Array ? o.region.bytes : null)
+      || (program && typeof program.textBytes === 'function' ? program.textBytes() : null);
+    const dataBytes = o.dataBytes
+      || (program && typeof program.dataBytes === 'function' ? program.dataBytes() : null);
+    if (codeBytes || dataBytes || program) {
+      const textVa = o.textVa ?? (o.region?.vmAddr != null ? o.region.vmAddr : 0n);
+      const textLo = o.textLo ?? (o.region?.vmAddr != null ? o.region.vmAddr : null);
+      const textHi = o.textHi ?? (o.region?.vmAddr != null && o.region?.size != null
+        ? BigInt(o.region.vmAddr) + BigInt(o.region.size)
+        : null);
+      const wa = runWasmStructuralAnalysis({
+        codeBytes,
+        dataBytes,
+        textVa,
+        textLo,
+        textHi,
+        arch: o.architecture || o.arch || program?.architecture || program?.arch || 'arm64',
+        ptrSize: o.ptrSize ?? 8,
+        program,
+        symbols,
+      });
+      if (wa.rmw || wa.vtables || wa.jumpTables || wa.constTables || wa.callgraph) {
+        report.wasmAnalysis = wa;
+      }
+    }
+  } catch (error) {
+    diagnose('wasm-analysis', error);
+  }
+
+    progress({ phase: 'done', done: 1, all: 1 });
   return report;
 }
 

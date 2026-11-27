@@ -75,6 +75,14 @@ const OPTIONAL_TARGET_SRCS = [
   'cpp/src/binary/elf_symbols.cpp',
   'cpp/src/core/byte_search.cpp',
   'cpp/src/core/sha256.cpp',
+  'cpp/src/analysis/rmw_field_scanner.cpp',
+  'cpp/src/analysis/vtable_rtti_scanner.cpp',
+  'cpp/src/analysis/func_fingerprint_wasm.cpp',
+  'cpp/src/analysis/jumptable_scanner.cpp',
+  'cpp/src/analysis/abi_param_scanner.cpp',
+  'cpp/src/analysis/const_table_scanner.cpp',
+  'cpp/src/analysis/callgraph_metrics_wasm.cpp',
+  'cpp/src/analysis/behavior_classifier_wasm.cpp',
 ];
 
 const OPTIONAL_RUNTIME_SRCS = [

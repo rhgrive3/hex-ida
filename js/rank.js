@@ -164,8 +164,13 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     const m = matchText(goal, s.text);
     if (m) {
       seenStrings.add(dedupKey);
+      const trimmedText = s.text.trim();
       const isAssertOrSource = /(?:\.(?:cc|cpp|cxx|mm|h|hpp|swift)\b|->|\s(?:>=|<=|!=|==)\s)/.test(s.text);
-      const diagFactor = isAssertOrSource ? 0.15 : (isDiagnosticString(s.text) ? 0.45 : 1);
+      const isShortCmpAssert = trimmedText.length <= 48
+        && !/[%×÷]/.test(trimmedText)
+        && !/<\/?[A-Za-z]/.test(trimmedText)
+        && /^[A-Za-z_][\w.()\[\]\s]*\s*(?:>=|<=|!=|==|<|>)\s*(?:-?\d+(?:\.\d+)?|[A-Za-z_][\w.()]*)$/.test(trimmedText);
+      const diagFactor = isAssertOrSource ? 0.15 : (isShortCmpAssert ? 0.25 : (isDiagnosticString(s.text) ? 0.45 : 1));
       matchedStrings.push({
         addr: s.addr,
         text: s.text,
@@ -321,6 +326,15 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       const c = candidate(candAddr, a);
       if (!c) continue;
       c.name = c.name || name;
+      const hadStringRef = c.reasons.some((r) => r.code === REASON.STRING_REF);
+      if (hadStringRef) {
+        for (const r of c.reasons) {
+          if (r.code !== REASON.STRING_REF || !(r.points > 0)) continue;
+          const reduced = Math.round(r.points * 0.5);
+          c.score -= (r.points - reduced);
+          r.points = reduced;
+        }
+      }
       addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score * roleMult * mutatorMult, { name, term: m.term, role });
     }
   }

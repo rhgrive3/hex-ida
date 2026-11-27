@@ -61,6 +61,12 @@ function decreaseCrossCount(e) {
 function decreaseCallCount(e) {
   return typeof e?.decreaseAmountFromCall === 'number' ? e.decreaseAmountFromCall : (e?.amountFromCall || 0);
 }
+function isPrimaryResourceDrain(e) {
+  return decreaseCrossCount(e) > 0 || decreaseCallCount(e) > 0;
+}
+function isPureClampedDrain(e) {
+  return (e?.clamped || 0) > 0 && (e?.decreases || 0) >= 2 && (e?.increases || 0) === 0;
+}
 
 /**
  * Aggregate by object-provenance + displacement when provenance is available.
@@ -292,8 +298,16 @@ export function evidenceFor(folded, offset, goalId) {
   } else if (goalId === 'hp' || goalId === 'stamina') {
     const resEntry = e.decreases > 0 ? e : (peer && peer.decreases > 0 ? peer : e);
     const decCross = decreaseCrossCount(resEntry);
-    const decCall = decreaseCallCount(resEntry);
-    if (role.role === 'resource' && (decCross > 0 || decCall > 0)) codes.push({ code: 'loc-resource-drain', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, crossObject: decCross, identityKnown: resEntry.identityKnown } });
+    const hasPrimary = res.some(isPrimaryResourceDrain);
+    const matchesDrain = isPrimaryResourceDrain(resEntry) || (!hasPrimary && isPureClampedDrain(resEntry));
+    if (role.role === 'resource' && matchesDrain) {
+      codes.push({ code: 'loc-resource-drain', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, crossObject: decCross, identityKnown: resEntry.identityKnown } });
+    }
+  } else if (goalId === 'cooldown') {
+    const resEntry = e.decreases > 0 ? e : (peer && peer.decreases > 0 ? peer : e);
+    if (role.role === 'resource' && (resEntry.clamped || 0) > 0 && (resEntry.decreases || 0) > 0) {
+      codes.push({ code: 'loc-self-resource', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, identityKnown: resEntry.identityKnown } });
+    }
   } else if (goalId === 'money' || goalId === 'score' || goalId === 'item' || goalId === 'level') {
     const resEntry = e.decreases > 0 ? e : (peer && peer.decreases > 0 ? peer : e);
     if (role.role === 'resource' && resEntry.crossObject === 0) codes.push({ code: 'loc-self-resource', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, identityKnown: resEntry.identityKnown } });
@@ -306,7 +320,11 @@ export function byGoal(folded, goalId, limit = 8) {
   const res = resources(folded, 24);
   switch (goalId) {
     case 'attack': case 'damage': return damageSources(folded, res, safeLimit);
-    case 'hp': case 'stamina': return res.filter((e) => decreaseCrossCount(e) > 0 || decreaseCallCount(e) > 0).slice(0, safeLimit);
+    case 'hp': case 'stamina': {
+      const primary = res.filter(isPrimaryResourceDrain);
+      return (primary.length ? primary : res.filter(isPureClampedDrain)).slice(0, safeLimit);
+    }
+    case 'cooldown': return res.filter((e) => (e.clamped || 0) > 0 && (e.decreases || 0) > 0).slice(0, safeLimit);
     case 'money': case 'score': return res.filter((e) => e.crossObject === 0).slice(0, safeLimit);
     case 'level': case 'item': return res.slice(0, safeLimit);
     default: return [];
