@@ -269,3 +269,25 @@ test('scanBinaryRegionsCrypto + autoAnalyze wire crypto constants & high-entropy
   assert.ok(cryptoGoal, 'autoAnalyze must surface crypto goal from cryptoScan even with 0 strings');
   assert.equal(cryptoGoal.best.addr, fnAddr);
 });
+
+test('scanHighEntropyWindows >1.5MB chunked WASM matches JS fallback exactly across chunk boundaries', () => {
+  const buf = new Uint8Array(2 * 1024 * 1024); // 2MB > 1.5MB SCRATCH_CHUNK_MAX
+  let seed = 0x55aa1234;
+  // Embed high-entropy regions straddling the 1.5MB chunk boundary (1536KB = 0x180000)
+  for (const start of [0x10000, 0x17f000, 0x180000, 0x1e0000]) {
+    for (let i = 0; i < 4096; i++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      buf[start + i] = (seed >>> 24) & 0xff;
+    }
+  }
+  const wasmAligned = scanHighEntropyWindows(buf, { baseAddress: 0x400000n, windowSize: 4096, step: 4096, threshold: 7.2 });
+  const jsAligned = scanHighEntropyWindows(buf, { baseAddress: 0x400000n, windowSize: 4096, step: 4096, threshold: 7.2, engine: 'js' });
+  assert.deepEqual(wasmAligned, jsAligned);
+  assert.equal(wasmAligned.length, 4);
+
+  // Overlapping step (step=2048 < windowSize=4096) across chunk boundary
+  const wasmOverlap = scanHighEntropyWindows(buf, { baseAddress: 0x400000n, windowSize: 4096, step: 2048, threshold: 7.2 });
+  const jsOverlap = scanHighEntropyWindows(buf, { baseAddress: 0x400000n, windowSize: 4096, step: 2048, threshold: 7.2, engine: 'js' });
+  assert.deepEqual(wasmOverlap, jsOverlap);
+  assert.ok(wasmOverlap.length >= 4);
+});
