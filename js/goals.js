@@ -905,11 +905,89 @@ const OBFUSCATED_OR_TABLE_RE = /aAbBcCdDeFgG|\$[^\s$]{8,}\$/;
 const ASSET_OR_UI_PATH_RE = /\.(?:png|jpe?g|webp|gif|svg|dat|maanim|mamodel|plist|fnt|ttf|otf|wav|mp3|ogg|m4a|mp4|tsv|csv|prefab|shader)\b|\\(?:レイヤー|digit\b)|(?:win_dialog|win_number|win_percent|win_plus|number_data_|fukidashi|createUI|detailview::|pz_ui_|btn_eff_|all_num_|all_text_)/i;
 const DIALOGUE_PROSE_RE = /<[A-Za-z][^>]*>.*<\/[A-Za-z]+>|(?:ですよ|ますよ|ますね|ですか[？?]|ましたね|しましょう|ください[。！!]|んです[。！!])/;
 
+/**
+ * Detect binary data misdecoded as UTF-16LE/UTF-8 (random multi-script soup within a single token,
+ * unpaired surrogates, non-characters, or C1 controls) while preserving legitimate Japanese,
+ * Chinese, Korean, multilingual UI lists, emoji surrogate pairs, and icon-font PUA UI strings.
+ */
+export function isGarbledBinaryString(text) {
+  if (typeof text !== 'string' || text.length < 4) return false;
+  if (!/[^\x00-\x7f]/.test(text)) return false; // ASCII fast path
+  let broken = 0;
+  let nonAscii = 0;
+  let tokScripts = 0;
+  let tokPua = 0;
+  let tokLen = 0;
+
+  const isSep = (c) => (
+    c <= 0x20 || c === 0x2d || c === 0x2f || c === 0x7c || c === 0x2c || c === 0x3b
+    || c === 0x3a || c === 0x28 || c === 0x29 || c === 0x5b || c === 0x5d
+    || c === 0x3000 || c === 0x3001 || c === 0x3002 || c === 0x30fb
+    || c === 0xff0c || c === 0xff0f || c === 0xff5c
+  );
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (isSep(c)) {
+      if (tokPua >= 3 && tokPua * 3 >= tokLen) return true;
+      tokScripts = 0;
+      tokPua = 0;
+      tokLen = 0;
+      continue;
+    }
+    tokLen++;
+    if (c < 0x80) continue;
+    nonAscii++;
+
+    // Valid UTF-16 surrogate pair (e.g. emoji): advance past low surrogate cleanly
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i++;
+        continue;
+      }
+      broken++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      broken++;
+    } else if ((c >= 0x0080 && c <= 0x009f) || (c >= 0xfdd0 && c <= 0xfdef) || c >= 0xfffd) {
+      broken++;
+    } else if (c >= 0xe000 && c <= 0xf8ff) {
+      tokPua++;
+    } else if ((c >= 0x4e00 && c <= 0x9fff) || (c >= 0x3400 && c <= 0x4dbf)) {
+      tokScripts |= 1; // CJK Unified
+    } else if (c >= 0xac00 && c <= 0xd7af) {
+      tokScripts |= 2; // Hangul
+    } else if (c >= 0x0600 && c <= 0x07bf) {
+      tokScripts |= 4; // Arabic / Syriac / Thaana
+    } else if (c >= 0x0900 && c <= 0x0dff) {
+      tokScripts |= 8; // Indic
+    } else if (c >= 0x0400 && c <= 0x052f) {
+      tokScripts |= 16; // Cyrillic
+    } else if (c >= 0x0590 && c <= 0x05ff) {
+      tokScripts |= 32; // Hebrew
+    } else if ((c >= 0x0e00 && c <= 0x109f) || (c >= 0x1780 && c <= 0x17ff)) {
+      tokScripts |= 64; // Thai / Lao / Tibetan / Myanmar / Khmer
+    } else if ((c >= 0x1200 && c <= 0x16ff) || (c >= 0xa000 && c <= 0xabff)) {
+      tokScripts |= 128; // Ethiopic / Cherokee / Yi / Javanese / etc.
+    }
+
+    if (broken >= 2 || (broken >= 1 && nonAscii >= 3)) return true;
+    if (tokScripts) {
+      let sc = 0;
+      for (let m = tokScripts; m; m &= m - 1) sc++;
+      if (sc >= 3) return true;
+      if (sc >= 2 && tokPua >= 1) return true;
+    }
+  }
+  if (tokPua >= 3 && tokPua * 3 >= tokLen) return true;
+  return false;
+}
+
 export function matchText(goal, text) {
   if (!goal || typeof text !== 'string') return null;
   const s = text;
   if (s.length < 2) return null;
-  if (OBFUSCATED_OR_TABLE_RE.test(s)) return null;
+  if (OBFUSCATED_OR_TABLE_RE.test(s) || isGarbledBinaryString(s)) return null;
   if (s.length >= 12 && (s.match(/[{}~^`$|&]/g) || []).length >= 4 && !/\b(?:function|return|if|for|while)\b/.test(s)) return null;
   const rawBest = matchTextSingle(goal, s);
   const norm = normalizeIdentifierBoundaries(s);
