@@ -75,12 +75,45 @@ function lookupEnv(name, id, env) {
   return undefined;
 }
 
-export function evaluateExpr(expr, env = null) {
-  if (!expr) {
-    return { status: EVAL_STATUS.UNKNOWN, reason: 'missing-expression' };
+export function evaluateExpr(expr, env = null, options = {}) {
+  const maxDepth = Number.isSafeInteger(options?.maxDepth) && options.maxDepth >= 0 ? options.maxDepth : 512;
+  const maxSteps = Number.isSafeInteger(options?.maxSteps) && options.maxSteps >= 0 ? options.maxSteps : 100000;
+  const memo = new Map();
+  const visiting = new Set();
+  let steps = 0;
+
+  function evaluateNode(node, depth) {
+    if (!node) {
+      return { status: EVAL_STATUS.UNKNOWN, reason: 'missing-expression' };
+    }
+    steps += 1;
+    if (steps > maxSteps) {
+      return { status: EVAL_STATUS.UNKNOWN, reason: 'evaluation-cost-limit' };
+    }
+    if (memo.has(node)) {
+      return memo.get(node);
+    }
+    if (visiting.has(node)) {
+      return { status: EVAL_STATUS.UNKNOWN, reason: 'cyclic-expression' };
+    }
+    if (depth > maxDepth) {
+      return { status: EVAL_STATUS.UNKNOWN, reason: 'evaluation-depth-limit' };
+    }
+    visiting.add(node);
+    let result;
+    try {
+      result = evaluateUncached(node, depth);
+    } finally {
+      visiting.delete(node);
+    }
+    if (result.reason !== 'evaluation-depth-limit') {
+      memo.set(node, result);
+    }
+    return result;
   }
 
-  switch (expr.kind) {
+  function evaluateUncached(expr, depth) {
+    switch (expr.kind) {
     case EXPR_KIND.CONST:
       return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: expr.value };
 
@@ -131,7 +164,7 @@ export function evaluateExpr(expr, env = null) {
       };
 
     case EXPR_KIND.UNARY: {
-      const sub = evaluateExpr(expr.arg, env);
+      const sub = evaluateNode(expr.arg, depth + 1);
       if (sub.status !== EVAL_STATUS.VALUE) return sub;
       const w = expr.sort.width;
       let val;
@@ -142,9 +175,9 @@ export function evaluateExpr(expr, env = null) {
     }
 
     case EXPR_KIND.BINARY: {
-      const l = evaluateExpr(expr.left, env);
+      const l = evaluateNode(expr.left, depth + 1);
       if (l.status !== EVAL_STATUS.VALUE) return l;
-      const r = evaluateExpr(expr.right, env);
+      const r = evaluateNode(expr.right, depth + 1);
       if (r.status !== EVAL_STATUS.VALUE) return r;
       const w = expr.sort.width;
       let val;
@@ -168,9 +201,9 @@ export function evaluateExpr(expr, env = null) {
     }
 
     case EXPR_KIND.COMPARE: {
-      const l = evaluateExpr(expr.left, env);
+      const l = evaluateNode(expr.left, depth + 1);
       if (l.status !== EVAL_STATUS.VALUE) return l;
-      const r = evaluateExpr(expr.right, env);
+      const r = evaluateNode(expr.right, depth + 1);
       if (r.status !== EVAL_STATUS.VALUE) return r;
       const w = expr.left.sort.width;
       let res;
@@ -192,14 +225,14 @@ export function evaluateExpr(expr, env = null) {
 
     case EXPR_KIND.CONNECTIVE: {
       if (expr.op === BOOL_CONNECTIVE_OP.NOT) {
-        const sub = evaluateExpr(expr.args[0], env);
+        const sub = evaluateNode(expr.args[0], depth + 1);
         if (sub.status !== EVAL_STATUS.VALUE) return sub;
         return { status: EVAL_STATUS.VALUE, sort: boolSort(), value: !sub.value };
       }
       if (expr.op === BOOL_CONNECTIVE_OP.AND) {
         let hasPending = null;
         for (const a of expr.args) {
-          const res = evaluateExpr(a, env);
+          const res = evaluateNode(a, depth + 1);
           if (res.status === EVAL_STATUS.VALUE && res.value === false) {
             return { status: EVAL_STATUS.VALUE, sort: boolSort(), value: false };
           }
@@ -213,7 +246,7 @@ export function evaluateExpr(expr, env = null) {
       if (expr.op === BOOL_CONNECTIVE_OP.OR) {
         let hasPending = null;
         for (const a of expr.args) {
-          const res = evaluateExpr(a, env);
+          const res = evaluateNode(a, depth + 1);
           if (res.status === EVAL_STATUS.VALUE && res.value === true) {
             return { status: EVAL_STATUS.VALUE, sort: boolSort(), value: true };
           }
@@ -227,18 +260,18 @@ export function evaluateExpr(expr, env = null) {
       if (expr.op === BOOL_CONNECTIVE_OP.XOR) {
         let count = 0;
         for (const a of expr.args) {
-          const res = evaluateExpr(a, env);
+          const res = evaluateNode(a, depth + 1);
           if (res.status !== EVAL_STATUS.VALUE) return res;
           if (res.value) count++;
         }
         return { status: EVAL_STATUS.VALUE, sort: boolSort(), value: count % 2 === 1 };
       }
       if (expr.op === BOOL_CONNECTIVE_OP.IMPLIES) {
-        const p = evaluateExpr(expr.args[0], env);
+        const p = evaluateNode(expr.args[0], depth + 1);
         if (p.status === EVAL_STATUS.VALUE && p.value === false) {
           return { status: EVAL_STATUS.VALUE, sort: boolSort(), value: true };
         }
-        const q = evaluateExpr(expr.args[1], env);
+        const q = evaluateNode(expr.args[1], depth + 1);
         if (q.status === EVAL_STATUS.VALUE && q.value === true) {
           return { status: EVAL_STATUS.VALUE, sort: boolSort(), value: true };
         }
@@ -247,16 +280,16 @@ export function evaluateExpr(expr, env = null) {
         return { status: EVAL_STATUS.VALUE, sort: boolSort(), value: !p.value || q.value };
       }
       if (expr.op === BOOL_CONNECTIVE_OP.EQ) {
-        const l = evaluateExpr(expr.args[0], env);
+        const l = evaluateNode(expr.args[0], depth + 1);
         if (l.status !== EVAL_STATUS.VALUE) return l;
-        const r = evaluateExpr(expr.args[1], env);
+        const r = evaluateNode(expr.args[1], depth + 1);
         if (r.status !== EVAL_STATUS.VALUE) return r;
         return { status: EVAL_STATUS.VALUE, sort: boolSort(), value: l.value === r.value };
       }
       if (expr.op === BOOL_CONNECTIVE_OP.NE) {
-        const l = evaluateExpr(expr.args[0], env);
+        const l = evaluateNode(expr.args[0], depth + 1);
         if (l.status !== EVAL_STATUS.VALUE) return l;
-        const r = evaluateExpr(expr.args[1], env);
+        const r = evaluateNode(expr.args[1], depth + 1);
         if (r.status !== EVAL_STATUS.VALUE) return r;
         return { status: EVAL_STATUS.VALUE, sort: boolSort(), value: l.value !== r.value };
       }
@@ -264,31 +297,31 @@ export function evaluateExpr(expr, env = null) {
     }
 
     case EXPR_KIND.ITE: {
-      const c = evaluateExpr(expr.cond, env);
+      const c = evaluateNode(expr.cond, depth + 1);
       if (c.status === EVAL_STATUS.VALUE) {
-        return c.value ? evaluateExpr(expr.thenExpr, env) : evaluateExpr(expr.elseExpr, env);
+        return c.value ? evaluateNode(expr.thenExpr, depth + 1) : evaluateNode(expr.elseExpr, depth + 1);
       }
       return c;
     }
 
     case EXPR_KIND.EXTRACT: {
-      const sub = evaluateExpr(expr.arg, env);
+      const sub = evaluateNode(expr.arg, depth + 1);
       if (sub.status !== EVAL_STATUS.VALUE) return sub;
       const val = bvExtract(sub.value, expr.arg.sort.width, expr.high, expr.low);
       return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: val };
     }
 
     case EXPR_KIND.CONCAT: {
-      const l = evaluateExpr(expr.left, env);
+      const l = evaluateNode(expr.left, depth + 1);
       if (l.status !== EVAL_STATUS.VALUE) return l;
-      const r = evaluateExpr(expr.right, env);
+      const r = evaluateNode(expr.right, depth + 1);
       if (r.status !== EVAL_STATUS.VALUE) return r;
       const val = bvConcat(l.value, expr.left.sort.width, r.value, expr.right.sort.width);
       return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: val };
     }
 
     case EXPR_KIND.CAST: {
-      const sub = evaluateExpr(expr.arg, env);
+      const sub = evaluateNode(expr.arg, depth + 1);
       if (sub.status !== EVAL_STATUS.VALUE) return sub;
       const fw = expr.arg.sort.width;
       const tw = expr.targetWidth;
@@ -302,5 +335,8 @@ export function evaluateExpr(expr, env = null) {
 
     default:
       return { status: EVAL_STATUS.UNKNOWN, reason: `unknown-expr-kind-${expr.kind}` };
+    }
   }
+
+  return evaluateNode(expr, 0);
 }

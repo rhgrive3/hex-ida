@@ -106,14 +106,29 @@ function u64(buf, off, little = true) {
   return val;
 }
 
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
 function readPtr(buf, off, ptrSize, little = true) {
-  return ptrSize === 4 ? BigInt(u32(buf, off, little) ?? 0) : (u64(buf, off, little) ?? 0n);
+  if (ptrSize === 4) {
+    const v = u32(buf, off, little);
+    return v == null ? null : BigInt(v);
+  }
+  return u64(buf, off, little);
 }
+
+function readSafePtrNumber(buf, off, ptrSize, little = true) {
+  const val = readPtr(buf, off, ptrSize, little);
+  if (val == null || val > MAX_SAFE_BIGINT) return null;
+  return Number(val);
+}
+
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+const UTF8_LENIENT_DECODER = new TextDecoder('utf-8', { fatal: false });
 
 function decodeCString(buf, off, end) {
   if (off < 0 || end <= off || end > buf.length) return null;
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(off, end));
+    return UTF8_FATAL_DECODER.decode(buf.subarray(off, end));
   } catch {
     return null;
   }
@@ -162,7 +177,7 @@ function isValidSectionOffset(value, length) {
 export function findGoBuildVersion(buffer) {
   if (!buffer || buffer.length < 16) return null;
   // Look for `\xff Go buildinf:` magic or `go1.` string pattern
-  const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer.subarray(0, Math.min(buffer.length, 1024 * 1024)));
+  const text = UTF8_LENIENT_DECODER.decode(buffer.subarray(0, Math.min(buffer.length, 1024 * 1024)));
   const match = text.match(/\bgo(1\.\d+(?:\.\d+)?(?:[a-zA-Z0-9_.-]+)?)\b/);
   return match ? match[1] : null;
 }
@@ -219,36 +234,69 @@ export function parsePclntabHeader(buf) {
   let pclnOff = 0;
   let ftabOff = 0;
 
+  let funcnametabOffRaw = 0n;
+  let cutabOffRaw = 0n;
+  let filetabOffRaw = 0n;
+  let pctabOffRaw = 0n;
+  let pclnOffRaw = 0n;
+
   if (magicInfo.version === '1.2') {
-    nfunc = Number(readPtr(buf, 8, ptrSize, little));
+    const nfuncVal = readSafePtrNumber(buf, 8, ptrSize, little);
+    if (nfuncVal == null) return { valid: false, reason: 'pclntab-offset-overflow' };
+    nfunc = nfuncVal;
     ftabOff = 8 + ptrSize;
   } else if (magicInfo.version === '1.16') {
-    nfunc = Number(readPtr(buf, 8, ptrSize, little));
-    nfiles = Number(readPtr(buf, 8 + ptrSize, ptrSize, little));
-    funcnametabOff = Number(readPtr(buf, 8 + 2 * ptrSize, ptrSize, little));
-    cutabOff = Number(readPtr(buf, 8 + 3 * ptrSize, ptrSize, little));
-    filetabOff = Number(readPtr(buf, 8 + 4 * ptrSize, ptrSize, little));
-    pctabOff = Number(readPtr(buf, 8 + 5 * ptrSize, ptrSize, little));
-    pclnOff = Number(readPtr(buf, 8 + 6 * ptrSize, ptrSize, little));
+    const nfuncVal = readSafePtrNumber(buf, 8, ptrSize, little);
+    const nfilesVal = readSafePtrNumber(buf, 8 + ptrSize, ptrSize, little);
+    if (nfuncVal == null || nfilesVal == null) {
+      return { valid: false, reason: 'pclntab-offset-overflow' };
+    }
+    nfunc = nfuncVal;
+    nfiles = nfilesVal;
+    funcnametabOffRaw = readPtr(buf, 8 + 2 * ptrSize, ptrSize, little);
+    cutabOffRaw = readPtr(buf, 8 + 3 * ptrSize, ptrSize, little);
+    filetabOffRaw = readPtr(buf, 8 + 4 * ptrSize, ptrSize, little);
+    pctabOffRaw = readPtr(buf, 8 + 5 * ptrSize, ptrSize, little);
+    pclnOffRaw = readPtr(buf, 8 + 6 * ptrSize, ptrSize, little);
   } else {
     // 1.18 and 1.20+
-    nfunc = Number(readPtr(buf, 8, ptrSize, little));
-    nfiles = Number(readPtr(buf, 8 + ptrSize, ptrSize, little));
+    const nfuncVal = readSafePtrNumber(buf, 8, ptrSize, little);
+    const nfilesVal = readSafePtrNumber(buf, 8 + ptrSize, ptrSize, little);
+    if (nfuncVal == null || nfilesVal == null) {
+      return { valid: false, reason: 'pclntab-offset-overflow' };
+    }
+    nfunc = nfuncVal;
+    nfiles = nfilesVal;
     textStart = readPtr(buf, 8 + 2 * ptrSize, ptrSize, little);
-    funcnametabOff = Number(readPtr(buf, 8 + 3 * ptrSize, ptrSize, little));
-    cutabOff = Number(readPtr(buf, 8 + 4 * ptrSize, ptrSize, little));
-    filetabOff = Number(readPtr(buf, 8 + 5 * ptrSize, ptrSize, little));
-    pctabOff = Number(readPtr(buf, 8 + 6 * ptrSize, ptrSize, little));
-    pclnOff = Number(readPtr(buf, 8 + 7 * ptrSize, ptrSize, little));
+    funcnametabOffRaw = readPtr(buf, 8 + 3 * ptrSize, ptrSize, little);
+    cutabOffRaw = readPtr(buf, 8 + 4 * ptrSize, ptrSize, little);
+    filetabOffRaw = readPtr(buf, 8 + 5 * ptrSize, ptrSize, little);
+    pctabOffRaw = readPtr(buf, 8 + 6 * ptrSize, ptrSize, little);
+    pclnOffRaw = readPtr(buf, 8 + 7 * ptrSize, ptrSize, little);
   }
 
   if (magicInfo.version !== '1.2') {
-    const tableOffsets = { funcnametabOff, cutabOff, filetabOff, pctabOff, pclnOff };
-    for (const [offsetName, offset] of Object.entries(tableOffsets)) {
+    const rawTableOffsets = {
+      funcnametabOff: funcnametabOffRaw,
+      cutabOff: cutabOffRaw,
+      filetabOff: filetabOffRaw,
+      pctabOff: pctabOffRaw,
+      pclnOff: pclnOffRaw,
+    };
+    for (const [offsetName, rawOffset] of Object.entries(rawTableOffsets)) {
+      if (rawOffset > MAX_SAFE_BIGINT) {
+        return { valid: false, reason: 'invalid-table-offset', offsetName, offset: rawOffset };
+      }
+      const offset = Number(rawOffset);
       if (!isValidSectionOffset(offset, buf.length)) {
         return { valid: false, reason: 'invalid-table-offset', offsetName, offset };
       }
     }
+    funcnametabOff = Number(funcnametabOffRaw);
+    cutabOff = Number(cutabOffRaw);
+    filetabOff = Number(filetabOffRaw);
+    pctabOff = Number(pctabOffRaw);
+    pclnOff = Number(pclnOffRaw);
     ftabOff = pclnOff;
   }
 
@@ -439,7 +487,12 @@ export function parseGoFunctions(buf, header, options = {}) {
       entryPC = header.textStart + BigInt(entryOff);
     } else {
       entryPC = readPtr(buf, slot, header.ptrSize, header.little);
-      funcOff = Number(readPtr(buf, slot + header.ptrSize, header.ptrSize, header.little));
+      const funcOffVal = readSafePtrNumber(buf, slot + header.ptrSize, header.ptrSize, header.little);
+      if (entryPC == null || funcOffVal == null) {
+        invalidEntries++;
+        continue;
+      }
+      funcOff = funcOffVal;
     }
 
     const funcPos = funcDataBase + funcOff;
@@ -585,7 +638,7 @@ function resolveGoTypeLayout(version) {
   const patch = match[2] == null ? 0 : Number(match[2]);
   if (!Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)) return null;
   if (minor < GO_TYPE_LAYOUT_MIN_MINOR || minor > GO_TYPE_LAYOUT_MAX_MINOR) return null;
-  return GO_TYPE_LAYOUT_CURRENT;
+  return { ...GO_TYPE_LAYOUT_CURRENT, minor };
 }
 
 /**
@@ -599,8 +652,9 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   if (!layout || (ptrSize !== 4 && ptrSize !== 8)) return null;
   if (!Number.isSafeInteger(typeOff) || typeOff < 0 || typeOff > buf.length - layout.headerBytes(ptrSize)) return null;
 
-  const size = Number(readPtr(buf, typeOff, ptrSize, little));
-  const ptrdata = Number(readPtr(buf, typeOff + ptrSize, ptrSize, little));
+  const size = readSafePtrNumber(buf, typeOff, ptrSize, little);
+  const ptrdata = readSafePtrNumber(buf, typeOff + ptrSize, ptrSize, little);
+  if (size == null || ptrdata == null) return null;
   const hash = u32(buf, typeOff + ptrSize * 2, little);
   const tflag = u8(buf, typeOff + ptrSize * 2 + 4);
   const align = u8(buf, typeOff + ptrSize * 2 + 5);
@@ -615,13 +669,27 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   let name = null;
   if (Number.isSafeInteger(options.typesBase) && nameOff != null) {
     const strPos = options.typesBase + nameOff;
-    if (Number.isSafeInteger(strPos) && strPos >= 0 && strPos <= buf.length - 2) {
-      // Go name structure has 1 byte header flag followed by length varint
-      const lenInfo = readUvarint(buf, strPos + 1);
-      if (lenInfo && strPos + 1 + lenInfo.bytesRead + lenInfo.value <= buf.length) {
+    if (Number.isSafeInteger(strPos) && strPos >= 0) {
+      let nameOffset = null;
+      let nameLength = null;
+      if (layout.minor === 16) {
+        // Go 1.16 reflect.name has a 1-byte header flag followed by a 2-byte big-endian length.
+        if (strPos <= buf.length - 3) {
+          nameLength = (buf[strPos + 1] << 8) | buf[strPos + 2];
+          nameOffset = strPos + 3;
+        }
+      } else if (strPos <= buf.length - 2) {
+        // Go 1.17+ reflect.name has a 1-byte header flag followed by a uvarint length.
+        const lenInfo = readUvarint(buf, strPos + 1);
+        if (lenInfo) {
+          nameLength = lenInfo.value;
+          nameOffset = strPos + 1 + lenInfo.bytesRead;
+        }
+      }
+      if (nameOffset != null && nameLength != null && nameOffset + nameLength <= buf.length) {
         try {
-          name = new TextDecoder('utf-8', { fatal: true }).decode(
-            buf.subarray(strPos + 1 + lenInfo.bytesRead, strPos + 1 + lenInfo.bytesRead + lenInfo.value)
+          name = UTF8_FATAL_DECODER.decode(
+            buf.subarray(nameOffset, nameOffset + nameLength)
           );
         } catch {
           name = null;
@@ -672,6 +740,8 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
   }
 
   probe() {
+    this.cachedHeader = null;
+    this.cachedFunctions = null;
     if (!this.pclntabBuffer || this.pclntabBuffer.length === 0) {
       // A section-table hit is metadata evidence even when its bytes were not
       // supplied for scanning. Keep that state distinct from a stripped

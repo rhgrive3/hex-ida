@@ -59,15 +59,28 @@ export function withSymbolAllocatorTransaction(run) {
   }
 }
 
+const BV_UNARY_OP_SET = new Set(Object.values(BV_UNARY_OP));
+const BV_BINARY_OP_SET = new Set(Object.values(BV_BINARY_OP));
+const BV_COMPARE_OP_SET = new Set(Object.values(BV_COMPARE_OP));
+const BOOL_CONNECTIVE_OP_SET = new Set(Object.values(BOOL_CONNECTIVE_OP));
+const CAST_OP_SET = new Set(Object.values(CAST_OP));
+
+const BOOL_TRUE = Object.freeze({
+  kind: EXPR_KIND.CONST,
+  sort: boolSort(),
+  value: true,
+});
+const BOOL_FALSE = Object.freeze({
+  kind: EXPR_KIND.CONST,
+  sort: boolSort(),
+  value: false,
+});
+
 export function createBool(value) {
   if (typeof value !== 'boolean') {
     throw new TypeError(`createBool: value must be a boolean, got ${value}`);
   }
-  return Object.freeze({
-    kind: EXPR_KIND.CONST,
-    sort: boolSort(),
-    value,
-  });
+  return value ? BOOL_TRUE : BOOL_FALSE;
 }
 
 export function createBv(width, value) {
@@ -94,7 +107,7 @@ export function createFreshSymbol(sort, name, meta = {}) {
     sort,
     name,
     symbolId: id,
-    meta: Object.freeze({ ...meta }),
+    meta: meta && typeof meta === 'object' ? deepFreezePlainJson(JSON.parse(JSON.stringify(meta))) : Object.freeze({}),
   });
 }
 
@@ -130,7 +143,7 @@ export function restoreFreshSymbol(sort, name, symbolId, meta = {}) {
     sort,
     name,
     symbolId,
-    meta: Object.freeze({ ...meta }),
+    meta: meta && typeof meta === 'object' ? deepFreezePlainJson(JSON.parse(JSON.stringify(meta))) : Object.freeze({}),
   });
 }
 
@@ -148,7 +161,7 @@ export function createUnknownSemantic(sort, reason, detail = null) {
 }
 
 export function createUnary(op, arg) {
-  if (!Object.values(BV_UNARY_OP).includes(op)) {
+  if (!BV_UNARY_OP_SET.has(op)) {
     throw new TypeError(`createUnary: unknown BV unary op '${op}'`);
   }
   if (!arg || !isBvSort(arg.sort)) {
@@ -163,7 +176,7 @@ export function createUnary(op, arg) {
 }
 
 export function createBinary(op, left, right) {
-  if (!Object.values(BV_BINARY_OP).includes(op)) {
+  if (!BV_BINARY_OP_SET.has(op)) {
     throw new TypeError(`createBinary: unknown BV binary op '${op}'`);
   }
   if (!left || !isBvSort(left.sort)) {
@@ -187,7 +200,7 @@ export function createBinary(op, left, right) {
 }
 
 export function createCompare(op, left, right) {
-  if (!Object.values(BV_COMPARE_OP).includes(op)) {
+  if (!BV_COMPARE_OP_SET.has(op)) {
     throw new TypeError(`createCompare: unknown BV compare op '${op}'`);
   }
   if (!left || !isBvSort(left.sort)) {
@@ -222,7 +235,7 @@ export function createConnective(op, ...args) {
 // limit. Use the same constructor validation without a variadic call.
 export function createConnectiveFromArray(op, args) {
   if (!Array.isArray(args)) throw new TypeError('createConnective: arguments must be an array');
-  if (!Object.values(BOOL_CONNECTIVE_OP).includes(op)) {
+  if (!BOOL_CONNECTIVE_OP_SET.has(op)) {
     throw new TypeError(`createConnective: unknown boolean connective op '${op}'`);
   }
   if (args.length === 0) {
@@ -314,7 +327,7 @@ export function createConcat(left, right) {
 }
 
 export function createCast(op, arg, targetWidth) {
-  if (!Object.values(CAST_OP).includes(op)) {
+  if (!CAST_OP_SET.has(op)) {
     throw new TypeError(`createCast: unknown cast op '${op}'`);
   }
   if (!arg || !isBvSort(arg.sort)) {

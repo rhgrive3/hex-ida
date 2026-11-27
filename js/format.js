@@ -20,19 +20,27 @@ export function addrHex(v, pad = 8) {
 
 /** "F6 57 BD A9" or "F657BDA9" */
 export function bytesHex(u8, off, len, spaced = true) {
+  if (!u8 || typeof u8.length !== 'number') return '';
+  const start = Math.max(0, Math.trunc(Number(off) || 0));
+  const count = Math.max(0, Math.trunc(Number(len) || 0));
+  const end = Math.min(u8.length, start + count);
   let s = '';
-  for (let i = 0; i < len; i++) {
-    if (spaced && i) s += ' ';
-    s += HEX2[u8[off + i]];
+  for (let i = start; i < end; i++) {
+    if (spaced && i > start) s += ' ';
+    s += HEX2[u8[i]];
   }
   return s;
 }
 
 /** Printable ASCII rendering for hex mode. */
 export function bytesAscii(u8, off, len) {
+  if (!u8 || typeof u8.length !== 'number') return '';
+  const start = Math.max(0, Math.trunc(Number(off) || 0));
+  const count = Math.max(0, Math.trunc(Number(len) || 0));
+  const end = Math.min(u8.length, start + count);
   let s = '';
-  for (let i = 0; i < len; i++) {
-    const c = u8[off + i];
+  for (let i = start; i < end; i++) {
+    const c = u8[i];
     s += (c >= 0x20 && c < 0x7f) ? String.fromCharCode(c) : '.';
   }
   return s;
@@ -41,6 +49,7 @@ export function bytesAscii(u8, off, len) {
 /** 24.7 MB */
 export function sizeText(n) {
   const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return '0' + pick(' バイト', ' bytes');
   if (v < 1024) return v + pick(' バイト', ' bytes');
   const units = ['KB', 'MB', 'GB', 'TB'];
   let i = -1, x = v;
@@ -70,6 +79,75 @@ export function parseAddress(text) {
   } catch { return null; }
   if (v < 0n) return null;
   return neg ? -v : v;
+}
+
+function toBigIntAddr(val) {
+  if (typeof val === 'bigint') return val >= 0n ? val : null;
+  if (typeof val === 'number' && Number.isSafeInteger(val) && val >= 0) return BigInt(val);
+  if (typeof val === 'string') {
+    const v = parseAddress(val);
+    return v != null && v >= 0n ? v : null;
+  }
+  return null;
+}
+
+function parseOffsetTerm(text) {
+  const s = String(text || '').trim().replace(/[\s_,]/g, '');
+  if (!s) return null;
+  try {
+    if (/^0x[0-9a-f]+$/i.test(s)) return BigInt(s);
+    if (/^#\d+$/.test(s)) return BigInt(s.slice(1));
+    if (/^\d+d?$/i.test(s)) return BigInt(s.replace(/d$/i, ''));
+  } catch { return null; }
+  return null;
+}
+
+/**
+ * Parse address arithmetic expressions such as "0x100040+0x10", "0x100040-16",
+ * "main+0x10", or "sub_100040+8". Plain addresses delegate to parseAddress().
+ */
+export function parseAddressExpr(raw, resolveSymbol) {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!s) return null;
+  if (!/^0x/i.test(s) && typeof resolveSymbol === 'function' && /[+-]/.test(s)) {
+    try {
+      const exactSym = toBigIntAddr(resolveSymbol(s));
+      if (exactSym != null) return exactSym;
+    } catch { /* fall through */ }
+  }
+  const expr = /^(.+?)\s*([+-])\s*([^+-]+)$/.exec(s);
+  if (expr) {
+    const baseRaw = expr[1].trim();
+    const op = expr[2];
+    const offset = parseOffsetTerm(expr[3]);
+    if (baseRaw && offset != null) {
+      let base = null;
+      if (!/^0x/i.test(baseRaw) && typeof resolveSymbol === 'function') {
+        try { base = toBigIntAddr(resolveSymbol(baseRaw)); } catch { base = null; }
+      }
+      if (base == null) {
+        const parsedBase = parseAddress(baseRaw);
+        if (parsedBase != null && parsedBase >= 0n) base = parsedBase;
+      }
+      if (base == null) {
+        const subHit = /^sub_([0-9a-f]+)$/i.exec(baseRaw);
+        if (subHit) {
+          try { base = BigInt('0x' + subHit[1]); } catch { base = null; }
+        }
+      }
+      if (base != null) {
+        const result = op === '+' ? base + offset : base - offset;
+        return result >= 0n ? result : null;
+      }
+    }
+  }
+  const plain = parseAddress(s);
+  if (plain != null) return plain >= 0n ? plain : null;
+  if (typeof resolveSymbol === 'function') {
+    try { return toBigIntAddr(resolveSymbol(s)); } catch { return null; }
+  }
+  return null;
 }
 
 /**

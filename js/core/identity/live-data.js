@@ -14,6 +14,11 @@ import { isReusableOriginSet } from './origin.js';
 // The batch is bound to one synchronous pass execution and is never retained
 // across decompiles, functions, passes or analysis epochs.
 let currentValidationBatch = null;
+export function withoutValidationBatch(fn) {
+  const previous = currentValidationBatch;
+  currentValidationBatch = null;
+  try { return fn(); } finally { currentValidationBatch = previous; }
+}
 export function createValidationBatch() {
   let running = false, settled = false;
   let results = new WeakMap();
@@ -42,11 +47,9 @@ export function createValidationBatch() {
     // observed graph changed during the batch, so no memoized answer may be
     // published.
     settle() {
-      const probe = globalThis.__hexPerfProbe; // PERF-PROBE
-      const t0 = probe ? performance.now() : 0; // PERF-PROBE
+      if (running || settled) throw new Error('validation-batch-invalid-state');
       let stale = 0;
       for (const { value, recheck } of rechecks) if (recheck() !== value) stale++;
-      if (probe) { probe.settleRechecks = (probe.settleRechecks || 0) + rechecks.length; probe.settleMs = (probe.settleMs || 0) + (performance.now() - t0); } // PERF-PROBE
       rechecks.length = 0;
       results = new WeakMap();
       writeResults = new WeakMap();
@@ -57,47 +60,48 @@ export function createValidationBatch() {
   return Object.freeze(batch);
 }
 
-// PERF-PROBE-START (temporary instrumentation; removed before commit)
-function perfProbeRecord(perfProbe, t0, result, id) {
-  const t1 = performance.now();
-  perfProbe.calls++;
-  perfProbe.ms += t1 - t0;
-  let rec = perfProbe.obs.get(id);
-  if (!rec) { rec = { calls: 0, ms: 0, trueCount: 0, falseCount: 0, callers: perfProbe.stacks ? new Map() : null, origin: id.origin }; perfProbe.obs.set(id, rec); perfProbe.obsList.push(rec); }
-  rec.calls++;
-  rec.ms += t1 - t0;
-  if (result) rec.trueCount++; else rec.falseCount++;
-  if (perfProbe.stacks) {
-    const lines = (new Error().stack || '').split('\n');
-    const frame = lines.slice(2, 7).map(l => l.trim().replace(/^at\s+/, '').replace(/\s*\(file:\/\/[^)]*\)/, '')).join(' <- ');
-    perfProbe.callers.set(frame, (perfProbe.callers.get(frame) || 0) + 1);
-    if (rec.callers) rec.callers.set(frame, (rec.callers.get(frame) || 0) + 1);
-  }
-}
-// PERF-PROBE-END
-
 /** Shared bounded plain-data observation. No semantic evaluation or proof issuance.
  * Existing solver/decompiler entry points re-export these exact implementations. */
+const ARRAY_INDEX_RE = /^(0|[1-9]\d*)$/;
+const MAX_PROJECTION_BIGINT = 1n << 1024n;
+const MIN_PROJECTION_BIGINT = -MAX_PROJECTION_BIGINT;
+
 export function ownDataEntries(value, maxEntries = 40000) {
   if (!value || typeof value !== 'object') throw new TypeError('noncanonical-data-object');
   const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
   if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
     throw new TypeError('noncanonical-data-prototype');
   }
-  if (array && value.length > maxEntries) throw new TypeError('data-entry-budget-exceeded');
+  const arrLen = array ? value.length : 0;
+  if (array && arrLen > maxEntries) throw new TypeError('data-entry-budget-exceeded');
   const keys = Reflect.ownKeys(value);
-  if (keys.length > maxEntries + (array ? 1 : 0)) throw new TypeError('data-entry-budget-exceeded');
+  const keyCount = keys.length;
+  if (keyCount > maxEntries + (array ? 1 : 0)) throw new TypeError('data-entry-budget-exceeded');
   const entries = [];
-  for (const key of keys) {
-    if (array && key === 'length') continue;
-    if (typeof key !== 'string') throw new TypeError('symbol-keyed-data');
-    if (array && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length)) throw new TypeError('noncanonical-data-array');
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError('accessor-data');
-    if (!descriptor.enumerable) throw new TypeError('non-enumerable-data');
-    entries.push([key, descriptor.value]);
+  if (array) {
+    for (let i = 0; i < keyCount; i += 1) {
+      const key = keys[i];
+      if (key === 'length') continue;
+      if (typeof key !== 'string') throw new TypeError('symbol-keyed-data');
+      const idx = entries.length;
+      const fastOk = idx < arrLen && (idx < 10 ? (key.length === 1 && key.charCodeAt(0) === 0x30 + idx) : key === String(idx));
+      if (!fastOk && (!ARRAY_INDEX_RE.test(key) || Number(key) >= arrLen)) throw new TypeError('noncanonical-data-array');
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError('accessor-data');
+      if (!descriptor.enumerable) throw new TypeError('non-enumerable-data');
+      entries.push([key, descriptor.value]);
+    }
+    if (entries.length !== arrLen) throw new TypeError('sparse-data-array');
+  } else {
+    for (let i = 0; i < keyCount; i += 1) {
+      const key = keys[i];
+      if (typeof key !== 'string') throw new TypeError('symbol-keyed-data');
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError('accessor-data');
+      if (!descriptor.enumerable) throw new TypeError('non-enumerable-data');
+      entries.push([key, descriptor.value]);
+    }
   }
-  if (array && entries.length !== value.length) throw new TypeError('sparse-data-array');
   return entries;
 }
 
@@ -109,12 +113,46 @@ export const PROJECTION_LIMITS = Object.freeze({nodes:10000,edges:100000,depth:9
 export const ORIGIN_CERTIFICATION_LIMITS = Object.freeze({ nodes:100000, edges:1000000, expandedUnits:2000000 });
 export const DATA_CERTIFICATION_LIMITS = Object.freeze({ nodes:100000, edges:1000000, expandedUnits:2000000 });
 const normalizationChecks = new WeakMap();
+const guardOrigins = new WeakMap();
+const ALWAYS_TRUE = () => true;
+guardOrigins.set(ALWAYS_TRUE, []);
 const normalizationGuard = (origins, guards) => {
-  const current = (seen = new WeakSet()) => {
-    if (seen.has(current)) return true;
-    seen.add(current);
-    return origins.every(isReusableOriginSet) && guards.every(check => check(seen));
+  let flat = null;
+  let seenOrigins = null;
+  const addOrigin = (origin) => {
+    if (flat === null) {
+      flat = [origin];
+      return;
+    }
+    if (flat.length === 1) {
+      if (flat[0] === origin) return;
+      flat.push(origin);
+      return;
+    }
+    if (seenOrigins === null) {
+      seenOrigins = new Set(flat);
+    }
+    if (!seenOrigins.has(origin)) {
+      seenOrigins.add(origin);
+      flat.push(origin);
+    }
   };
+  for (let i = 0; i < origins.length; i += 1) addOrigin(origins[i]);
+  for (let i = 0; i < guards.length; i += 1) {
+    const sub = guardOrigins.get(guards[i]);
+    if (sub) {
+      for (let j = 0; j < sub.length; j += 1) addOrigin(sub[j]);
+    }
+  }
+  if (flat === null) return ALWAYS_TRUE;
+  const list = flat;
+  const current = () => {
+    for (let i = 0; i < list.length; i += 1) {
+      if (!isReusableOriginSet(list[i])) return false;
+    }
+    return true;
+  };
+  guardOrigins.set(current, list);
   return current;
 };
 
@@ -180,41 +218,60 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
   }
   function scalarCost(value) {
     if (value == null || typeof value === 'boolean') return 1;
-    if (typeof value === 'bigint') {
-      if (value >= (1n<<1024n) || value <= -(1n<<1024n)) throw new TypeError('projection-bigint-budget');
+    const t = typeof value;
+    if (t === 'number') {
+      if (Number.isFinite(value)) return 1;
+      throw new TypeError('projection-non-data');
+    }
+    if (t === 'string') {
+      if (value.length > PROJECTION_LIMITS.string) throw new TypeError('projection-string-budget');
+      return value.length + 1;
+    }
+    if (t === 'bigint') {
+      if (value >= MAX_PROJECTION_BIGINT || value <= MIN_PROJECTION_BIGINT) throw new TypeError('projection-bigint-budget');
       return 128;
     }
-    if (typeof value === 'number' && Number.isFinite(value)) return 1;
-    if (typeof value === 'string') {
-      if (value.length > PROJECTION_LIMITS.string) throw new TypeError('projection-string-budget');
-      return value.length+1;
-    }
-    if (typeof value !== 'object') throw new TypeError('projection-non-data');
+    if (t !== 'object') throw new TypeError('projection-non-data');
     return null;
   }
   function chargeData(work) {
-    for (const key of Object.keys(dataCertification)) {
-      dataCertification[key] += work[key] ?? 0;
-      if (dataCertification[key] > DATA_CERTIFICATION_LIMITS[key]) throw new TypeError('projection-data-certification-budget');
+    if (work.nodes) {
+      dataCertification.nodes += work.nodes;
+      if (dataCertification.nodes > DATA_CERTIFICATION_LIMITS.nodes) throw new TypeError('projection-data-certification-budget');
+    }
+    if (work.edges) {
+      dataCertification.edges += work.edges;
+      if (dataCertification.edges > DATA_CERTIFICATION_LIMITS.edges) throw new TypeError('projection-data-certification-budget');
+    }
+    if (work.expandedUnits) {
+      dataCertification.expandedUnits += work.expandedUnits;
+      if (dataCertification.expandedUnits > DATA_CERTIFICATION_LIMITS.expandedUnits) throw new TypeError('projection-data-certification-budget');
     }
   }
-  function eligible(value, active = new WeakSet(), depth = 1) {
+  function eligible(value, active = null, depth = 1) {
     check();
     if (value === null || typeof value !== 'object') return 0;
-    if (!Object.isFrozen(value) || active.has(value) || depth > PROJECTION_LIMITS.depth) return null;
+    if (!Object.isFrozen(value) || depth > PROJECTION_LIMITS.depth) return null;
+    if (active !== null && active.has(value)) return null;
     if (data.eligibility.has(value)) return data.eligibility.get(value);
-    chargeData({ nodes:1 }); eligibilityNodes++;
+    dataCertification.nodes += 1;
+    if (dataCertification.nodes > DATA_CERTIFICATION_LIMITS.nodes) throw new TypeError('projection-data-certification-budget');
+    eligibilityNodes++;
     const entries = ownDataEntries(value, DATA_CERTIFICATION_LIMITS.edges - dataCertification.edges);
-    chargeData({ edges:entries.length }); eligibilityEdges += entries.length;
-    active.add(value);
+    dataCertification.edges += entries.length;
+    if (dataCertification.edges > DATA_CERTIFICATION_LIMITS.edges) throw new TypeError('projection-data-certification-budget');
+    eligibilityEdges += entries.length;
+    const seenActive = active ?? new WeakSet();
+    seenActive.add(value);
     let height = 1;
-    for (const [key, child] of entries) {
-      if (key === 'uses') continue;
-      const childHeight = eligible(child, active, depth + 1);
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      if (entry[0] === 'uses') continue;
+      const childHeight = eligible(entry[1], seenActive, depth + 1);
       if (childHeight == null) { height = null; break; }
-      height = Math.max(height, childHeight + 1);
+      if (childHeight + 1 > height) height = childHeight + 1;
     }
-    active.delete(value);
+    seenActive.delete(value);
     data.eligibility.set(value, height);
     return height;
   }
@@ -377,19 +434,32 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
   }
   check();
   const normalizationCurrent = normalizationGuard(originCertificates, dataGuards);
-  // PERF-PROBE-START
-  const probeId = globalThis.__hexPerfProbe ? { origin: (new Error().stack || '').split('\n').slice(2, 6).map(l => l.trim().replace(/^at\s+/, '').replace(/\s*\(file:\/\/[^)]*\)/, '')).join(' <- ') } : {};
-  // PERF-PROBE-END
+  const frozenRecords = [];
+  const mutableRecords = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const rec = records[i];
+    if (rec.ownFrozen) {
+      frozenRecords.push(rec);
+    } else {
+      const ents = rec.entries;
+      const len = ents.length;
+      const entryKeys = new Array(len);
+      const entryValues = new Array(len);
+      for (let j = 0; j < len; j += 1) {
+        entryKeys[j] = ents[j][0];
+        entryValues[j] = ents[j][1];
+      }
+      rec.entryKeys = entryKeys;
+      rec.entryValues = entryValues;
+      mutableRecords.push(rec);
+    }
+  }
   const memoId = {};
   function matches(writes = null) {
     const batch = currentValidationBatch;
     if (batch !== null && (writes === null || Array.isArray(writes))) {
       const known = batch.known(memoId, writes);
-      if (known !== undefined) {
-        const probe = globalThis.__hexPerfProbe; // PERF-PROBE
-        if (probe) probe.memoHits = (probe.memoHits || 0) + 1; // PERF-PROBE
-        return known;
-      }
+      if (known !== undefined) return known;
       const result = matchesBody(writes);
       batch.remember(memoId, writes, result, () => matchesBody(writes));
       return result;
@@ -397,12 +467,6 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
     return matchesBody(writes);
   }
   function matchesBody(writes = null) {
-    const probe = globalThis.__hexPerfProbe; // PERF-PROBE
-    if (probe) { // PERF-PROBE
-      const t0 = performance.now(); let r;
-      try { r = matchesBodyCore(writes); } finally { perfProbeRecord(probe, t0, r, probeId); }
-      return r;
-    } // PERF-PROBE
     return matchesBodyCore(writes);
   }
   function matchesBodyCore(writes = null) {
@@ -411,24 +475,50 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
       // fields still bind the exact envelope identity; copied/equal origins or
       // an ambient normalization-hook change cannot refresh an old binding.
       if (!normalizationCurrent()) return false;
-      let changed = null;
-      if (writes != null) {
-        if (!Array.isArray(writes) || writes.length > PROJECTION_LIMITS.nodes) return false;
-        changed = new WeakMap();
-        for (const write of writes) {
-          const own = key => Object.getOwnPropertyDescriptor(write, key)?.value;
-          const object = own('object'), key = own('key');
-          if (!object || typeof object !== 'object' || typeof key !== 'string') return false;
-          if (!changed.has(object)) changed.set(object, new Map());
-          const byKey = changed.get(object);
-          if (!byKey.has(key)) byKey.set(key, []);
-          const beforePresent = own('beforePresent'), afterPresent = own('afterPresent');
-          if ((beforePresent !== undefined && typeof beforePresent !== 'boolean')
-              || (afterPresent !== undefined && typeof afterPresent !== 'boolean')
-              || (beforePresent === false && own('before') !== undefined)
-              || (afterPresent === false && own('after') !== undefined)) return false;
-          byKey.get(key).push({ before:own('before'), after:own('after'), beforePresent, afterPresent });
+      if (writes == null) {
+        for (let i = 0; i < frozenRecords.length; i += 1) {
+          const rec = frozenRecords[i];
+          if (!Object.isFrozen(rec.value) || Object.getPrototypeOf(rec.value) !== rec.prototype) return false;
         }
+        for (let i = 0; i < mutableRecords.length; i += 1) {
+          const rec = mutableRecords[i];
+          const value = rec.value;
+          if (Object.getPrototypeOf(value) !== rec.prototype) return false;
+          const arrayLength = rec.arrayLength;
+          if (arrayLength != null) {
+            const currentLength = Object.getOwnPropertyDescriptor(value, 'length')?.value;
+            if (currentLength !== arrayLength) return false;
+            const keys = Reflect.ownKeys(value);
+            if (keys.length !== arrayLength + 1) return false;
+          } else {
+            const keys = Reflect.ownKeys(value);
+            if (keys.length !== rec.entryKeys.length) return false;
+          }
+          const entryKeys = rec.entryKeys;
+          const entryValues = rec.entryValues;
+          for (let j = 0; j < entryKeys.length; j += 1) {
+            const descriptor = Object.getOwnPropertyDescriptor(value, entryKeys[j]);
+            if (!descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable
+                || !Object.is(descriptor.value, entryValues[j])) return false;
+          }
+        }
+        return true;
+      }
+      if (!Array.isArray(writes) || writes.length > PROJECTION_LIMITS.nodes) return false;
+      const changed = new WeakMap();
+      for (const write of writes) {
+        const own = key => Object.getOwnPropertyDescriptor(write, key)?.value;
+        const object = own('object'), key = own('key');
+        if (!object || typeof object !== 'object' || typeof key !== 'string') return false;
+        if (!changed.has(object)) changed.set(object, new Map());
+        const byKey = changed.get(object);
+        if (!byKey.has(key)) byKey.set(key, []);
+        const beforePresent = own('beforePresent'), afterPresent = own('afterPresent');
+        if ((beforePresent !== undefined && typeof beforePresent !== 'boolean')
+            || (afterPresent !== undefined && typeof afterPresent !== 'boolean')
+            || (beforePresent === false && own('before') !== undefined)
+            || (afterPresent === false && own('after') !== undefined)) return false;
+        byKey.get(key).push({ before:own('before'), after:own('after'), beforePresent, afterPresent });
       }
       for (const {value,prototype,entries,arrayLength,ownFrozen} of records) {
         // Frozen own data/prototype cannot change. Descendants still have
@@ -438,7 +528,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
         // Recheck liveness: a frozen target may still be behind a revoked or
         // throwing Proxy. Object.isFrozen probes its descriptor invariants,
         // while ordinary frozen objects use the engine's integrity fast path.
-        if (ownFrozen && !changed?.has(value)) {
+        if (ownFrozen && !changed.has(value)) {
           if (!Object.isFrozen(value) || Object.getPrototypeOf(value)!==prototype) return false;
           continue;
         }
@@ -449,7 +539,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
           // new index recorded. This comparator still grants no writer authority.
           if (!Number.isSafeInteger(currentLength) || currentLength < arrayLength || currentLength > PROJECTION_LIMITS.edges) return false;
           let expected = arrayLength, started = false;
-          for (const write of changed?.get(value)?.get('length') || []) {
+          for (const write of changed.get(value)?.get('length') || []) {
             if (!started && !Object.is(write.before, expected)) continue;
             started = true;
             if (write.beforePresent === false || write.afterPresent === false || !Object.is(write.before, expected)
@@ -460,15 +550,15 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
         }
         const keys=Reflect.ownKeys(value);
         if (arrayLength != null && keys.length !== currentLength + 1) return false;
-        if (arrayLength == null ? keys.length !== entries.length || changed?.has(value) : currentLength > arrayLength) {
+        if (arrayLength == null ? keys.length !== entries.length || changed.has(value) : currentLength > arrayLength) {
           // Only an explicitly described absent-to-own-data write can account
           // for a new field. This remains pure matching, never writer admission.
           const originalKeys = new Set(entries.map(([key]) => key));
           for (const key of keys) if (!originalKeys.has(key)) {
             if (arrayLength != null && key === 'length') continue;
-            if (arrayLength != null && (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key)
+            if (arrayLength != null && (typeof key !== 'string' || !ARRAY_INDEX_RE.test(key)
                 || Number(key) < arrayLength || Number(key) >= currentLength)) return false;
-            const writes = changed?.get(value)?.get(key), first = writes?.[0];
+            const writes = changed.get(value)?.get(key), first = writes?.[0];
             if (!first || first.beforePresent !== false || first.before !== undefined) return false;
             let expected = first.after, present = first.afterPresent !== false;
             for (const write of writes.slice(1)) {
@@ -486,7 +576,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
           if (!descriptor || !Object.is(descriptor.value,previous)) {
             if (arrayLength != null && !descriptor) return false;
             let expected = previous, present = true, started = false;
-            for (const write of changed?.get(value)?.get(key) || []) {
+            for (const write of changed.get(value)?.get(key) || []) {
               if (!started && (write.beforePresent === false || !Object.is(write.before, expected))) continue;
               started = true;
               if ((write.beforePresent !== false) !== present || !Object.is(write.before, expected)) return false;

@@ -16,8 +16,10 @@ const MAX_INLINE_EXCERPT_CHARS = 8 * 1024;
 const SENSITIVE_ATTRIBUTE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|api[-_]?key)/i;
 const SENSITIVE_INLINE_NEEDLE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage|api[-_]?key)/i;
 const SAFE_HTML_ATTRIBUTE = /^(?:id|class|role|title|name|type|placeholder|href|for|tabindex|disabled|checked|selected|aria-[\w-]+|data-[\w-]+)$/i;
-const SENSITIVE_SCRIPT_ASSIGNMENT = /((?:["']?)[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage|api[-_]?key)[\w$.-]*(?:["']?)\s*[:=]\s*)(["'`])([^"'`\r\n]{0,2048})(["'`])/gi;
+const SENSITIVE_SCRIPT_ASSIGNMENT = /((?:["']?)[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage|api[-_]?key)[\w$.-]*(?:["']?)\s*[:=]\s*)(["'`])((?:\\[^\r\n]|(?!\2)[^\\\r\n]){0,2048})(\2)/gi;
+const SENSITIVE_ESCAPED_SCRIPT_ASSIGNMENT = /((?:\\")?[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage|api[-_]?key)[\w$.-]*(?:\\")?\s*[:=]\s*)\\"(?:\\\\|\\(?!")[^\r\n]|[^\\\r\n]){0,2048}\\"/gi;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
+const JWT_VALUE = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}(?![A-Za-z0-9_-])/g;
 
 export class ParentPageInspector {
   constructor({ document = globalThis.document, location = globalThis.location, fetchRef = globalThis.fetch?.bind(globalThis) } = {}) {
@@ -127,7 +129,7 @@ export class ParentPageInspector {
     if (!response || response.ok === false || Number(response.status || 0) >= 400) {
       throw inspectorError('script-fetch-failed', `Loaded script fetch failed (${response?.status || 'unknown'}).`);
     }
-    const source = String(await response.text());
+    const { text: source, truncated } = await readBoundedResponseText(response, MAX_SCRIPT_OFFSET);
     const needle = args.needle == null ? '' : boundedText(args.needle, 160);
     if (needle) {
       const contextChars = boundedInteger(args.contextChars, 64, MAX_CONTEXT_CHARS, 768);
@@ -136,6 +138,7 @@ export class ParentPageInspector {
         kind: 'chatgpt-page-script-source',
         src: publicScriptUrl(url),
         totalChars: source.length,
+        truncated,
         needle,
         excerpts: literalExcerpts(source, needle, contextChars, maxMatches),
       };
@@ -147,6 +150,7 @@ export class ParentPageInspector {
       kind: 'chatgpt-page-script-source',
       src: publicScriptUrl(url),
       totalChars: source.length,
+      truncated,
       offset,
       nextOffset: offset + text.length < source.length ? offset + text.length : null,
       text,
@@ -272,16 +276,64 @@ function inlineLiteralExcerpts(source, needle, contextChars, maxMatches, maxTota
   return out;
 }
 
+async function readBoundedResponseText(response, maxChars = MAX_SCRIPT_OFFSET) {
+  if (response?.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let truncated = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = typeof value === 'string'
+          ? value
+          : decoder.decode(value, { stream: true });
+        if (text.length + chunk.length > maxChars) {
+          text += chunk.slice(0, maxChars - text.length);
+          truncated = true;
+          try { await reader.cancel('script source exceeds limit'); } catch {}
+          break;
+        }
+        text += chunk;
+      }
+      if (!truncated) {
+        const tail = decoder.decode();
+        if (tail) {
+          if (text.length + tail.length > maxChars) {
+            text += tail.slice(0, maxChars - text.length);
+            truncated = true;
+          } else {
+            text += tail;
+          }
+        }
+      }
+    } finally {
+      try { reader.releaseLock?.(); } catch {}
+    }
+    return { text, truncated };
+  }
+  const raw = String(await response.text());
+  if (raw.length > maxChars) {
+    return { text: raw.slice(0, maxChars), truncated: true };
+  }
+  return { text: raw, truncated: false };
+}
+
 function sanitizeInlineScriptExcerpt(value) {
   return String(value)
+    .replace(SENSITIVE_ESCAPED_SCRIPT_ASSIGNMENT, (_match, prefix) => `${prefix}\\"[redacted]\\"`)
     .replace(SENSITIVE_SCRIPT_ASSIGNMENT, (_match, prefix, quote, _secret, closeQuote) => `${prefix}${quote}[redacted]${closeQuote}`)
-    .replace(BEARER_VALUE, 'Bearer [redacted]');
+    .replace(BEARER_VALUE, 'Bearer [redacted]')
+    .replace(JWT_VALUE, '[redacted]');
 }
 
 function sanitizeOuterHtml(node, maxChars) {
   let clone = null;
   try { clone = node.cloneNode?.(true) || null; } catch {}
   if (clone) {
+    const rootTag = String(clone?.tagName || '').toLowerCase();
+    if (['script', 'style', 'noscript', 'template', 'iframe', 'object', 'embed'].includes(rootTag)) return '';
     const all = [clone, ...(clone.querySelectorAll?.('*') || [])];
     for (const element of all) {
       const tag = String(element?.tagName || '').toLowerCase();
@@ -364,8 +416,11 @@ function classTokens(node) {
 function isEditable(node) {
   const tag = String(node?.tagName || '').toLowerCase();
   if (['input', 'textarea'].includes(tag)) return true;
+  if (node?.isContentEditable === true) return true;
+  const hasAttr = typeof node?.hasAttribute === 'function' ? node.hasAttribute('contenteditable') : false;
   const editable = safeAttribute(node, 'contenteditable');
-  return editable === '' || editable === 'true' || node?.isContentEditable === true;
+  if (hasAttr) return editable === null || editable === '' || editable.toLowerCase() === 'true';
+  return editable === '' || editable?.toLowerCase?.() === 'true';
 }
 
 function boundedText(value, max) {

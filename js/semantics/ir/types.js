@@ -64,6 +64,8 @@ export function createSemanticVariableRef(input) {
   return deepFreeze(out);
 }
 
+function compareCodeUnit(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+
 function normalizeFaults(value) {
   if (value == null) return [];
   return array(value, 'semantic-ir-invalid-faults').map((item) => {
@@ -73,7 +75,7 @@ function normalizeFaults(value) {
     if (item.condition != null) out.condition = serializable(item.condition, 'semantic-ir-invalid-fault-condition');
     if (item.detail != null) out.detail = serializable(item.detail, 'semantic-ir-invalid-fault-detail');
     return out;
-  }).sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
+  }).sort((a, b) => compareCodeUnit(stableStringify(a), stableStringify(b)));
 }
 
 export function createSemanticMemoryAccess(input) {
@@ -122,8 +124,8 @@ export function createSemanticIntrinsicSummary(input) {
   return deepFreeze({
     inputs: uniqueStrings(input.inputs ?? [], 'semantic-ir-invalid-intrinsic-inputs', false),
     outputs: uniqueStrings(input.outputs ?? [], 'semantic-ir-invalid-intrinsic-outputs', false),
-    stateReads: array(input.stateReads ?? [], 'semantic-ir-invalid-intrinsic-state-reads').map(createSemanticVariableRef).sort((a, b) => a.key.localeCompare(b.key)),
-    stateWrites: array(input.stateWrites ?? [], 'semantic-ir-invalid-intrinsic-state-writes').map(createSemanticVariableRef).sort((a, b) => a.key.localeCompare(b.key)),
+    stateReads: array(input.stateReads ?? [], 'semantic-ir-invalid-intrinsic-state-reads').map(createSemanticVariableRef).sort((a, b) => compareCodeUnit(a.key, b.key)),
+    stateWrites: array(input.stateWrites ?? [], 'semantic-ir-invalid-intrinsic-state-writes').map(createSemanticVariableRef).sort((a, b) => compareCodeUnit(a.key, b.key)),
     memoryRead: createSemanticMemoryScope(input.memoryRead),
     memoryWrite: createSemanticMemoryScope(input.memoryWrite),
     controlEffects: array(input.controlEffects ?? [], 'semantic-ir-invalid-intrinsic-control-effects').map((value) => serializable(value, 'semantic-ir-invalid-intrinsic-control-effect')),
@@ -149,10 +151,10 @@ export function createSemanticCallSummary(input) {
   const out = {
     targetValueIds: sortedUniqueStrings(input.targetValueIds ?? [], 'semantic-ir-invalid-call-target-values'),
     targetEntityIds: sortedUniqueStrings(input.targetEntityIds ?? [], 'semantic-ir-invalid-call-target-entities'),
-    arguments: uniqueStrings(input.arguments ?? [], 'semantic-ir-invalid-call-arguments', false),
+    arguments: array(input.arguments ?? [], 'semantic-ir-invalid-call-arguments').map((value) => nonEmpty(value, 'semantic-ir-invalid-call-arguments')),
     returns: uniqueStrings(input.returns ?? [], 'semantic-ir-invalid-call-returns', false),
-    stateReads: array(input.stateReads ?? [], 'semantic-ir-invalid-call-state-reads').map(createSemanticVariableRef).sort((a, b) => a.key.localeCompare(b.key)),
-    stateWrites: array(input.stateWrites ?? [], 'semantic-ir-invalid-call-state-writes').map(createSemanticVariableRef).sort((a, b) => a.key.localeCompare(b.key)),
+    stateReads: array(input.stateReads ?? [], 'semantic-ir-invalid-call-state-reads').map(createSemanticVariableRef).sort((a, b) => compareCodeUnit(a.key, b.key)),
+    stateWrites: array(input.stateWrites ?? [], 'semantic-ir-invalid-call-state-writes').map(createSemanticVariableRef).sort((a, b) => compareCodeUnit(a.key, b.key)),
     memoryRead: createSemanticMemoryScope(input.memoryRead),
     memoryWrite: createSemanticMemoryScope(input.memoryWrite),
     controlEffects: array(input.controlEffects ?? [], 'semantic-ir-invalid-call-control-effects').map((value) => serializable(value, 'semantic-ir-invalid-call-control-effect')),

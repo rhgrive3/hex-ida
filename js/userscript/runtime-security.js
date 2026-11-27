@@ -28,16 +28,27 @@ export async function verifyRuntimeSession(value, signingKey, { now = Date.now()
   const expected = await hmac(parts[0], signingKey, 'sign');
   if (!constantTimeBytes(expected, actual)) return null;
   try {
-    const payload = JSON.parse(new TextDecoder().decode(decodeBase64URL(parts[0])));
+    if (!parts[0]) return null;
+    const payloadBytes = decodeBase64URL(parts[0]);
+    if (encodeBase64URL(payloadBytes) !== parts[0]) return null;
+    const payload = JSON.parse(new TextDecoder().decode(payloadBytes));
     if (payload?.v !== 1 || !tokenString(payload.sid, 8, 128) || !tokenString(payload.bid, 8, 128) || !tokenString(payload.rid, 8, 128)) return null;
-    if (requireUnexpired && Number(payload.exp) <= Math.floor(now / 1000)) return null;
+    if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) return null;
+    if (requireUnexpired && (!Number.isFinite(now) || payload.exp <= Math.floor(now / 1000))) return null;
     return payload;
   } catch { return null; }
 }
 
 export function publicRuntimeManifest(value) { const { assetPath: _private, ...safe } = value || {}; return safe; }
 export function encodeBase64URL(bytes) { let binary = ''; for (const value of bytes) binary += String.fromCharCode(value); return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, ''); }
-export function decodeBase64URL(value) { const raw = String(value).replaceAll('-', '+').replaceAll('_', '/'); const binary = atob(raw + '='.repeat((4 - raw.length % 4) % 4)); return Uint8Array.from(binary, (char) => char.charCodeAt(0)); }
+export function decodeBase64URL(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1) {
+    throw new Error('Invalid Base64URL encoding');
+  }
+  const raw = value.replaceAll('-', '+').replaceAll('_', '/');
+  const binary = atob(raw + '='.repeat((4 - raw.length % 4) % 4));
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
 export function constantTimeBytes(a, b) { if (a.length !== b.length) return false; let diff = 0; for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i]; return diff === 0; }
 
 async function hmac(value, rawKey) {

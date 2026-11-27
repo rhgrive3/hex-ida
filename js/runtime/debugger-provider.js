@@ -254,7 +254,7 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           kind: 'memory-write',
           target: { address },
           requestedChange: { bytes },
-          parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          parentInterventionIds: callOptions?.parentInterventionIds ?? [],
           sequence: ++interventionSequence,
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);
@@ -345,7 +345,8 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     };
     session.newProviderEpoch = (reason = 'debugger-provider-epoch-changed') => {
       if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
-      const next = session.epoch + 1;
+      const prevEpoch = session.epoch;
+      const next = prevEpoch + 1;
       const capture = { epoch: next, events: [], overflowed: false };
       epochHandoffCapture = capture;
       try {
@@ -355,6 +356,16 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
         epochHandoffCapture = null;
       }
       if (capture.overflowed) {
+        let rolledBack = false;
+        if (typeof this.adapter.setEpoch === 'function') {
+          try {
+            this.adapter.setEpoch(prevEpoch);
+            rolledBack = true;
+          } catch {}
+        }
+        if (!rolledBack) {
+          Promise.resolve(session.close()).catch(() => {});
+        }
         throw new DebugAdapterError('runtime-epoch-handoff-overflow',
           'next-generation events exceeded the handoff buffer; the epoch transition fails closed');
       }

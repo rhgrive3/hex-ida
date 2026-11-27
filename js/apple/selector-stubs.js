@@ -5,7 +5,7 @@ function selectorFromSymbol(name) {
   let m = n.match(/(?:^|_)objc_msgSend\$([^\s]+)$/);
   if (m) return m[1];
   m = n.match(/(?:^|_)objc_msgSend(?:_fixup)?[_$]([^\s]+)$/);
-  if (m && m[1] && !/^(fixup|stub)$/.test(m[1])) return m[1];
+  if (m && m[1] && !/^(fixup|stub|stret|fpret|fp2ret|debug|noarg)(?:_(?:fixup|stub|debug))?$/.test(m[1])) return m[1];
   return null;
 }
 

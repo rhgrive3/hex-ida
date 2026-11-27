@@ -15,20 +15,26 @@ export function resolveX86EffectiveCount(ctx, operand, widthBits, { rotate = fal
   if (operand.type === 'immediate') {
     const masked = Number(BigInt(operand.value) & mask);
     const count = rotate ? masked % width : masked;
-    return Object.freeze({ value:ctx.constant(8, BigInt(count)), knownCount:count });
+    return Object.freeze({
+      value:ctx.constant(8, BigInt(count)),
+      knownCount:count,
+      flagValue:ctx.constant(8, BigInt(masked)),
+      knownFlagCount:masked,
+    });
   }
   if (operand.type !== 'register' || operand.register?.id !== 'cl') return null;
   const raw = ctx.readRegister(operand);
   if (!raw) return null;
-  let value = ctx.valueOp('and', [raw,ctx.constant(8,mask)], 8, {
+  const maskedValue = ctx.valueOp('and', [raw,ctx.constant(8,mask)], 8, {
     semantic:'x86-effective-count-mask', source:'cl', mask:Number(mask),
   });
+  let value = maskedValue;
   if (rotate && width < 32) {
-    value = ctx.valueOp('urem', [value,ctx.constant(8,BigInt(width))], 8, {
+    value = ctx.valueOp('urem', [maskedValue,ctx.constant(8,BigInt(width))], 8, {
       semantic:'x86-rotate-count-modulo-width', widthBits:width,
     });
   }
-  return Object.freeze({ value, knownCount:null });
+  return Object.freeze({ value, knownCount:null, flagValue:maskedValue, knownFlagCount:null });
 }
 
 export function x86ShiftResultRule(operation) {

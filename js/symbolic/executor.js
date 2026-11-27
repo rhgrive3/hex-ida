@@ -66,8 +66,14 @@ function op(name, ...args) {
       if (name === 'and') return c(a & b);
       if (name === 'or' || name === 'orr') return c(a | b);
       if (name === 'xor' || name === 'eor') return c(a ^ b);
-      if (name === 'shl') return c(a << b);
-      if (name === 'lshr') return c(a >> b);
+      if (name === 'shl') {
+        if (b < 0n || b > BigInt(MAX_EXECUTOR_WIDTH)) throw new RangeError('shift-out-of-range');
+        return c(a << b);
+      }
+      if (name === 'lshr') {
+        if (b < 0n) throw new RangeError('negative-shift');
+        return c(BigInt.asUintN(MAX_EXECUTOR_WIDTH, a) >> b);
+      }
       if (name === 'mul') return c(a * b);
     } catch { /* symbolic fallback */ }
   }
@@ -123,6 +129,9 @@ function cmp(name, a, b, options = {}) {
   if (rejected) return rejected;
   const bits = resolved.width;
   if (a?.sort || b?.sort) {
+    if ((!a?.sort && a?.kind !== SYM.CONST) || (!b?.sort && b?.kind !== SYM.CONST)) {
+      return unknown('unsupported-compare-operand', { op: name });
+    }
     const left = a.sort ? a : createBv(bits, a.value);
     const right = b.sort ? b : createBv(bits, b.value);
     return translateMemoryScalar({ op: OP.CMP, cond: name, signed: options.signed }, [left, right], bits);
@@ -148,7 +157,8 @@ function negate(condition) {
   if (!condition) return unknown('missing-condition');
   if (condition.sort) return createConnective('not', condition);
   if (condition.kind === SYM.CONST && condition.boolean) return { ...c(condition.value === 0n ? 1n : 0n), boolean:true };
-  const inverse = { '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' }[condition.op];
+  const inverseMap = { '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' };
+  const inverse = Object.hasOwn(inverseMap, condition.op) ? inverseMap[condition.op] : null;
   if (condition.kind === SYM.OP && inverse) return { ...condition, op: inverse };
   return { kind: SYM.OP, op: 'not', args: [condition], boolean: true };
 }
@@ -163,23 +173,39 @@ function constraintAllowed(existing, condition) {
   return true;
 }
 
-export function expressionText(e) {
+const EXPR_TEXT_MAX_DEPTH = 64;
+const EXPR_TEXT_MAX_NODES = 2048;
+const EXPR_TEXT_MAX_LEN = 4096;
+
+export function expressionText(e, state = null, depth = 0) {
   if (!e) return '?';
   if (e.sort && e.kind !== 'const') return `Expr<${e.sort.kind}${e.sort.width ?? ''}>#${computeStructuralHash(e)}`;
   if (e.kind === SYM.CONST) return e.value.toString();
   if (e.kind === SYM.SYMBOL) return e.name;
   if (e.kind === SYM.UNKNOWN) return 'unknown(' + e.reason + ')';
-  if (e.kind === SYM.ITE) return '(' + expressionText(e.condition) + ' ? ' + expressionText(e.then) + ' : ' + expressionText(e.else) + ')';
-    if (e.kind === SYM.OP) {
-  let body;
-  if (e.op === 'not') body = 'not ' + expressionText(e.args[0]);
-  else if (e.args.length === 1) body = e.op + '(' + expressionText(e.args[0]) + ')';
-  else body = '(' + expressionText(e.args[0]) + ' ' + e.op + ' ' + expressionText(e.args[1]) + ')';
-  const bits = typeof e.bits === 'number' ? e.bits : null;
-  return Number.isSafeInteger(bits) && bits > 0 ? `i${bits}${body}` : body;
-}
-
-  return '?';
+  const ctx = state || { memo: new WeakMap(), visiting: new WeakSet(), nodes: 0 };
+  if (ctx.memo.has(e)) return ctx.memo.get(e);
+  if (depth > EXPR_TEXT_MAX_DEPTH || ctx.nodes >= EXPR_TEXT_MAX_NODES || ctx.visiting.has(e)) return '<expr>';
+  ctx.nodes += 1;
+  ctx.visiting.add(e);
+  let out = '?';
+  try {
+    if (e.kind === SYM.ITE) {
+      out = '(' + expressionText(e.condition, ctx, depth + 1) + ' ? ' + expressionText(e.then, ctx, depth + 1) + ' : ' + expressionText(e.else, ctx, depth + 1) + ')';
+    } else if (e.kind === SYM.OP) {
+      let body;
+      if (e.op === 'not') body = 'not ' + expressionText(e.args[0], ctx, depth + 1);
+      else if (e.args.length === 1) body = e.op + '(' + expressionText(e.args[0], ctx, depth + 1) + ')';
+      else body = '(' + expressionText(e.args[0], ctx, depth + 1) + ' ' + e.op + ' ' + expressionText(e.args[1], ctx, depth + 1) + ')';
+      const bits = typeof e.bits === 'number' ? e.bits : null;
+      out = Number.isSafeInteger(bits) && bits > 0 ? `i${bits}${body}` : body;
+    }
+    if (out.length > EXPR_TEXT_MAX_LEN) out = out.slice(0, EXPR_TEXT_MAX_LEN) + '…';
+    ctx.memo.set(e, out);
+    return out;
+  } finally {
+    ctx.visiting.delete(e);
+  }
 }
 
 function cloneState(s) {
@@ -190,6 +216,7 @@ function cloneState(s) {
     memory: new Map(s.memory),
     byteMemory: s.byteMemory?.fork(),
     scalarCache: new Map(s.scalarCache), inputExpressions: s.inputExpressions, valueIdentities: s.valueIdentities, semanticIdentities: s.semanticIdentities,
+    comparisonCarriers: s.comparisonCarriers,
     taint: s.taint, control: s.control,
     enforceExecutionOrder: s.enforceExecutionOrder, executingInstruction: null,
     values: new Map(s.values),
@@ -220,7 +247,7 @@ function argExpr(value, opts) {
   const index = Number(m[1]);
   const configured = opts && opts.symbolicArgs;
   if (configured && typeof configured === 'object') {
-    const v = configured[index] != null ? configured[index] : configured[reg];
+    const v = Object.hasOwn(configured, index) && configured[index] != null ? configured[index] : (Object.hasOwn(configured, reg) ? configured[reg] : undefined);
     if (typeof v === 'bigint' || typeof v === 'number') return c(v);
     if (typeof v === 'string') return symbolicArg(index, v);
     if (v && typeof v === 'object' && v.kind) return v;
@@ -271,9 +298,17 @@ function evalValue(value, state, ir, opts, memo, active) {
       out = chosen ? evalValue(chosen, state, ir, opts, memo, active) : unknown('ambiguous-phi', { instruction: d.id });
     } else if (d.op === OP.BIN && d.args.length >= 2 && ['add', 'sub', 'and', 'or', 'xor', 'orr', 'eor', 'shl', 'lshr', 'ashr', 'mul'].includes(d.sub)) {
       const resolved = resolveWidth([d.dst?.bits, value?.bits]);
-      const lhs = evalValue(d.args[0].value, state, ir, opts, memo, active);
-      const rhs = evalValue(d.args[1].value, state, ir, opts, memo, active);
-      out = unsupportedWidth(resolved) || binOp(d.sub, lhs, rhs, resolved.width);
+      const rejected = unsupportedWidth(resolved);
+      if (rejected) out = rejected;
+      else {
+        const rawLhs = evalValue(d.args[0].value, state, ir, opts, memo, active);
+        const rawRhs = evalValue(d.args[1].value, state, ir, opts, memo, active);
+        const lhs = applyOperandShift(rawLhs, d.args[0].shift, resolved.width);
+        const rhs = applyOperandShift(rawRhs, d.args[1].shift, resolved.width);
+        if (d.args[0].shift && lhs.kind === SYM.UNKNOWN) out = lhs;
+        else if (d.args[1].shift && rhs.kind === SYM.UNKNOWN) out = rhs;
+        else out = binOp(d.sub, lhs, rhs, resolved.width);
+      }
     } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
       const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
       const m = /^(sxt|uxt)(8|16|32|64)?/.exec(d.sub || '');
@@ -317,20 +352,107 @@ function evalValue(value, state, ir, opts, memo, active) {
   return out;
 }
 
+function applyOperandShift(expr, shift, width) {
+  if (!shift) return expr;
+  if (!expr || expr.kind === SYM.UNKNOWN) return expr;
+  if (expr.sort) return unknown('unsupported-operand-shift', { shift });
+  const shiftOp = typeof shift.op === 'string' ? shift.op.toLowerCase() : '';
+  const rawAmount = shift.amount;
+  const amount = typeof rawAmount === 'bigint'
+    ? (rawAmount >= 0n && rawAmount < BigInt(width) ? Number(rawAmount) : null)
+    : (typeof rawAmount === 'number' && Number.isSafeInteger(rawAmount) && rawAmount >= 0 && rawAmount < width ? rawAmount : null);
+  if (amount == null || !['lsl', 'lsr', 'asr', 'ror'].includes(shiftOp)) {
+    return unknown('unsupported-operand-shift', { shift });
+  }
+  if (amount === 0) {
+    return expr.kind === SYM.CONST ? c(BigInt.asUintN(width, expr.value)) : expr;
+  }
+  if (shiftOp === 'lsl') return binOp('shl', expr, c(BigInt(amount)), width);
+  if (shiftOp === 'lsr') return binOp('lshr', expr, c(BigInt(amount)), width);
+  if (shiftOp === 'asr') return binOp('ashr', expr, c(BigInt(amount)), width);
+  if (expr.kind === SYM.CONST) {
+    const v = BigInt.asUintN(width, expr.value);
+    const a = BigInt(amount);
+    const w = BigInt(width);
+    return c(BigInt.asUintN(width, (v >> a) | (v << (w - a))));
+  }
+  const right = binOp('lshr', expr, c(BigInt(amount)), width);
+  const left = binOp('shl', expr, c(BigInt(width - amount)), width);
+  if (right.kind === SYM.UNKNOWN) return right;
+  if (left.kind === SYM.UNKNOWN) return left;
+  return binOp('or', right, left, width);
+}
+
 function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
   if (!cmpInst || cmpInst.op !== OP.CMP || cmpInst.args.length < 2) return unknown('unsupported-compare');
-  const info = COND[condCode];
-  if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
-  const a = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
-  const b = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
+  if (cmpInst.float || cmpInst.extra?.float || cmpInst.sub === 'fsub') {
+    return unknown('unsupported-float-compare', { sub: cmpInst.sub || null });
+  }
+  if (cmpInst.conditional || cmpInst.extra?.conditional) {
+    return unknown('unsupported-conditional-compare', { cond: cmpInst.cond || cmpInst.extra?.cond || null });
+  }
+  const sub = cmpInst.sub == null ? 'sub' : String(cmpInst.sub).toLowerCase();
+  if (!['sub', 'cmp', 'and', 'add'].includes(sub)) {
+    return unknown('unsupported-compare', { sub });
+  }
   const resolved = resolveWidth([
     cmpInst.args[0]?.bits,
     cmpInst.args[0]?.value?.bits,
     cmpInst.args[1]?.bits,
     cmpInst.args[1]?.value?.bits,
+    cmpInst.bits,
   ]);
   const rejected = unsupportedWidth(resolved);
   if (rejected) return rejected;
+  const rawA = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
+  const rawB = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
+  const a = applyOperandShift(rawA, cmpInst.args[0].shift, resolved.width);
+  const b = applyOperandShift(rawB, cmpInst.args[1].shift, resolved.width);
+  if (cmpInst.args[0].shift && a.kind === SYM.UNKNOWN) return a;
+  if (cmpInst.args[1].shift && b.kind === SYM.UNKNOWN) return b;
+  const code = typeof condCode === 'string' ? condCode.toLowerCase() : '';
+  if (sub === 'and') {
+    // tst: N = (a & b)[w-1], Z = ((a & b) == 0), C = 0, V = 0
+    const tstMap = {
+      eq: { op: '==', signed: null },
+      ne: { op: '!=', signed: null },
+      mi: { op: '<', signed: true },
+      pl: { op: '>=', signed: true },
+      lt: { op: '<', signed: true },
+      ge: { op: '>=', signed: true },
+      le: { op: '<=', signed: true },
+      gt: { op: '>', signed: true },
+    };
+    const mapped = Object.hasOwn(tstMap, code) ? tstMap[code] : null;
+    if (!mapped) return unknown('unsupported-condition', { condition: condCode, sub });
+    if ((a?.sort || b?.sort) && ((!a?.sort && a?.kind !== SYM.CONST) || (!b?.sort && b?.kind !== SYM.CONST))) {
+      return unknown('unsupported-compare-operand', { condition: condCode, sub });
+    }
+    const masked = a?.sort || b?.sort
+      ? translateMemoryScalar({ op: OP.BIN, sub: 'and' }, [a.sort ? a : createBv(resolved.width, a.value), b.sort ? b : createBv(resolved.width, b.value)], resolved.width)
+      : binOp('and', a, b, resolved.width);
+    return cmp(mapped.op, masked, c(0n), { bits: resolved.width, signed: mapped.signed });
+  }
+  if (sub === 'add') {
+    // cmn: flags from (a + b). Only Z/N-only conditions avoid V/C overflow ambiguity.
+    const cmnMap = {
+      eq: { op: '==', signed: null },
+      ne: { op: '!=', signed: null },
+      mi: { op: '<', signed: true },
+      pl: { op: '>=', signed: true },
+    };
+    const mapped = Object.hasOwn(cmnMap, code) ? cmnMap[code] : null;
+    if (!mapped) return unknown('unsupported-condition', { condition: condCode, sub });
+    if ((a?.sort || b?.sort) && ((!a?.sort && a?.kind !== SYM.CONST) || (!b?.sort && b?.kind !== SYM.CONST))) {
+      return unknown('unsupported-compare-operand', { condition: condCode, sub });
+    }
+    const sum = a?.sort || b?.sort
+      ? translateMemoryScalar({ op: OP.BIN, sub: 'add' }, [a.sort ? a : createBv(resolved.width, a.value), b.sort ? b : createBv(resolved.width, b.value)], resolved.width)
+      : binOp('add', a, b, resolved.width);
+    return cmp(mapped.op, sum, c(0n), { bits: resolved.width, signed: mapped.signed });
+  }
+  const info = COND[condCode];
+  if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
   return cmp(info.op, a, b, { bits: resolved.width, signed: info.signed });
 }
 
@@ -366,14 +488,33 @@ function branchCondition(inst, state, ir, opts, memo) {
     return foldMemoryScalarExpression(condition, expression.sort.width);
   }
   if ((kind === 'cbz' || kind === 'cbnz') && inst.args[0]) {
+    const resolved = resolveWidth([inst.args[0].bits, inst.args[0].value?.bits]);
+    const rejected = unsupportedWidth(resolved);
+    if (rejected) return rejected;
     const a = evalValue(inst.args[0].value, state, ir, opts, memo, new Set());
-    return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n));
+    return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n), { bits: resolved.width });
   }
   if (kind === 'tbz' || kind === 'tbnz') {
+    const resolved = resolveWidth([inst.args[0]?.bits, inst.args[0]?.value?.bits]);
+    const rejected = unsupportedWidth(resolved);
+    if (rejected) return rejected;
+    const width = resolved.width;
     const a = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-test-value');
-    const bit = BigInt(inst.extra && inst.extra.bit != null ? inst.extra.bit : 0);
-    const masked = op('and', op('lshr', a, c(bit)), c(1n));
-    return cmp(kind === 'tbz' ? '==' : '!=', masked, c(0n));
+    const rawBit = inst.extra && inst.extra.bit != null ? inst.extra.bit : 0;
+    let bit = null;
+    if (typeof rawBit === 'bigint') bit = rawBit;
+    else if (typeof rawBit === 'number' && Number.isSafeInteger(rawBit)) bit = BigInt(rawBit);
+    else if (typeof rawBit === 'string' && /^(?:0x[0-9a-f]+|\d+)$/i.test(rawBit.trim())) {
+      try { bit = BigInt(rawBit.trim()); } catch { bit = null; }
+    }
+    if (bit == null || bit < 0n || bit >= BigInt(width)) {
+      return unknown('unsupported-bit-test', { bit: rawBit, width });
+    }
+    const shifted = a?.kind === SYM.CONST
+      ? c(BigInt.asUintN(width, a.value) >> bit)
+      : op('lshr', a, c(bit));
+    const masked = op('and', shifted, c(1n));
+    return cmp(kind === 'tbz' ? '==' : '!=', masked, c(0n), { bits: width });
   }
   return conditionFromFlags(inst, state, ir, opts, memo, new Set());
 }
@@ -667,8 +808,14 @@ export function symbolicExecute(ir, opts = {}) {
     const timeoutMs = Math.min(
       boundedLimit(opts.timeoutMs, 250, 5000, 'timeoutMs'),
       boundedLimit(opts.byteMemory.timeoutMs, 250, 5000, 'byteMemory.timeoutMs'));
-    const memoryOptions = { ...opts.byteMemory, timeoutMs, signal: opts.signal ?? opts.byteMemory.signal,
-      isCancelled: opts.isCancelled ?? opts.byteMemory.isCancelled };
+    const memoryOptions = {
+      ...opts.byteMemory,
+      timeoutMs,
+      signal: opts.signal ?? opts.byteMemory.signal,
+      isCancelled: opts.isCancelled ?? opts.byteMemory.isCancelled,
+      ...(opts.deterministic !== undefined ? { deterministic: opts.deterministic } : {}),
+      ...(opts.deterministicTransforms !== undefined ? { deterministicTransforms: opts.deterministicTransforms } : {}),
+    };
     memory = opts.byteMemory.initialState == null ? createByteMemory(memoryOptions)
       : forkByteMemoryForExecution(opts.byteMemory.initialState, memoryOptions);
     // The caller cannot change canonical argument bindings during execution.

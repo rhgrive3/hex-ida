@@ -53,11 +53,11 @@ export function semanticEvidenceItems(facts, opts) {
   for (const f of facts || []) {
     for (const e of f && f.evidence || []) {
       if (!e) continue;
+      const strength=boundedStrength(f.confidence);
+      if (strength <= 0) continue;
       const key = e.group || e.id || ('ir-row:' + String(e.row));
       if (seen.has(key)) continue;
       seen.add(key);
-      const strength=boundedStrength(f.confidence);
-      if (strength <= 0) continue;
       const verified=isExplicitSemanticProof(f,e);
       out.push(adapterEvidence(
         verified ? 'semantic-ir-proof' : 'semantic-ir-observation',

@@ -85,7 +85,7 @@ function physicalValueForViewWrite(ctx, descriptor, oldPhysical, viewValue, meta
   return viewValue;
 }
 
-function writeConditionalRegister(ctx, destination, condition, trueValue, { falseValue = null } = {}) {
+function writeConditionalRegister(ctx, destination, condition, trueValue, { falseValue = null, zeroExtend32FalsePath = false } = {}) {
   const descriptor = destination?.register;
   if (!descriptor) return false;
   const physical = x86RegisterOperand(descriptor.physicalId);
@@ -94,13 +94,21 @@ function writeConditionalRegister(ctx, destination, condition, trueValue, { fals
   if (!oldPhysical) return false;
 
   const truePhysical = physicalValueForViewWrite(ctx, descriptor, oldPhysical, trueValue, { conditionalWrite:true });
-  const falsePhysical = falseValue == null
+  let resolvedFalseValue = falseValue;
+  if (resolvedFalseValue == null && zeroExtend32FalsePath && descriptor.writePolicy === 'zero-extend-32') {
+    resolvedFalseValue = ctx.readRegister(destination);
+    if (!resolvedFalseValue) return false;
+  }
+  const falsePhysical = resolvedFalseValue == null
     ? oldPhysical
-    : physicalValueForViewWrite(ctx, descriptor, oldPhysical, falseValue, { conditionalWrite:true, zeroCountPath:true });
+    : physicalValueForViewWrite(ctx, descriptor, oldPhysical, resolvedFalseValue, {
+        conditionalWrite:true,
+        ...(falseValue != null ? { zeroCountPath:true } : { zeroExtend32FalsePath:true }),
+      });
   const finalPhysical = ctx.valueOp('select', [condition,truePhysical,falsePhysical], descriptor.physicalBits, {
     semantic:'x86-conditional-register-write',
     destinationView:descriptor.id,
-    falsePathViewWrite:falseValue != null,
+    falsePathViewWrite:resolvedFalseValue != null,
   });
   return ctx.writeRegister(physical, finalPhysical);
 }
@@ -263,7 +271,9 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     }
     const count = resolveX86EffectiveCount(ctx, source, destination.widthBits, { rotate });
     if (!count) return ctx.partial(`x86-${family}-count-source-unmodelled`, ['registers','flags']);
-    if (count.knownCount === 0) {
+    const knownFlagCount = rotate ? (count.knownFlagCount ?? count.knownCount) : count.knownCount;
+    const flagCountValue = rotate ? (count.flagValue ?? count.value) : count.value;
+    if (knownFlagCount === 0) {
       return ctx.finish({
         family:'integer',
         statePreservation:{ proven:true, reason:`x86-${family}-zero-effective-count-preserves-physical-destination-and-flags` },
@@ -284,8 +294,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
         exactArchitecturalSummary:true,
       },
     });
-    if (count.knownCount == null) {
-      const zero = ctx.valueOp('is-zero', [count.value], 1, { widthBits:8, semantic:'x86-effective-count-zero' });
+    if (knownFlagCount == null) {
+      const zero = ctx.valueOp('is-zero', [flagCountValue], 1, { widthBits:8, semantic:'x86-effective-count-zero' });
       const nonzero = ctx.valueOp('not-bool', [zero], 1, { semantic:'x86-effective-count-nonzero' });
       if (!writeConditionalRegister(ctx, destination, nonzero, result)) {
         return ctx.partial(`x86-${family}-destination-unmodelled`, ['registers','flags']);
@@ -293,8 +303,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     } else if (!ctx.writeRegister(destination, result)) {
       return ctx.partial(`x86-${family}-destination-unmodelled`, ['registers','flags']);
     }
-    if (rotate) emitX86RotateFlags(ctx, operation, result, count.value, destination.widthBits, { knownCount:count.knownCount });
-    else emitX86ShiftFlags(ctx, operation, value, result, count.value, destination.widthBits, { knownCount:count.knownCount });
+    if (rotate) emitX86RotateFlags(ctx, operation, result, flagCountValue, destination.widthBits, { knownCount:knownFlagCount });
+    else emitX86ShiftFlags(ctx, operation, value, result, flagCountValue, destination.widthBits, { knownCount:knownFlagCount });
     return ctx.finish({
       family:'integer',
       metadata:{ operation, widthBits:destination.widthBits, effectiveCount:count.knownCount, countSource:source.type },
@@ -382,10 +392,17 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     const condition = emitX86Condition(ctx, code);
     const sourceValue = ctx.readOperand(source, destination.widthBits);
     if (!condition || !sourceValue) return ctx.partial(`x86-${family}-condition-or-source-unmodelled`, ['registers','flags']);
-    if (!writeConditionalRegister(ctx, destination, condition, sourceValue)) return ctx.partial(`x86-${family}-destination-unmodelled`, ['registers','flags']);
+    if (!writeConditionalRegister(ctx, destination, condition, sourceValue, { zeroExtend32FalsePath:true })) return ctx.partial(`x86-${family}-destination-unmodelled`, ['registers','flags']);
     return ctx.finish({
       family:'integer',
-      metadata:{ operation:family, conditionCode:code, conditionalDestinationWrite:true, falsePathPreservesPhysicalRegister:true, flagsModified:false },
+      metadata:{
+        operation:family,
+        conditionCode:code,
+        conditionalDestinationWrite:true,
+        falsePathPreservesPhysicalRegister:destination.widthBits !== 32,
+        falsePathZeroExtendsUpperBits:destination.widthBits === 32,
+        flagsModified:false,
+      },
     });
   }
 

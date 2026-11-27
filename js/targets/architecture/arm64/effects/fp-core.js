@@ -289,7 +289,8 @@ function immediateValue(op, widthBits, asFloat) {
     const format = FLOAT_FORMAT[widthBits];
     if (!format) return null;
     if (op.bitPattern != null) return createFloatValue(widthBits, format, { bitPattern: op.bitPattern });
-    if (op.float === 0 || op.float === 0.0) return createFloatValue(widthBits, format, { bitPattern: 0n });
+    if (Object.is(op.float, 0)) return createFloatValue(widthBits, format, { bitPattern: 0n });
+    if (Object.is(op.float, -0)) return createFloatValue(widthBits, format, { bitPattern: 1n << BigInt(widthBits - 1) });
     if (op.float != null) return createFloatValue(widthBits, format, { semanticValue: String(op.float) });
     return null;
   }
@@ -374,8 +375,8 @@ function exactBitwise(instruction, context, mnemonic, ops) {
   const srcBits = scalarWidth(src) || dstBits;
   const dstGp = dst?.cls === 'gp' || dst?.cls === 'zr';
   const srcGp = src?.cls === 'gp' || src?.cls === 'zr';
-  const fpToGpHalf = mnemonic === 'fmov' && src?.cls === 'fp' && srcBits === 16 && dstGp && dstBits === 32;
-  const gpToFpHalf = mnemonic === 'fmov' && srcGp && srcBits === 32 && dst?.cls === 'fp' && dstBits === 16;
+  const fpToGpHalf = mnemonic === 'fmov' && src?.cls === 'fp' && srcBits === 16 && dstGp && (dstBits === 32 || dstBits === 64);
+  const gpToFpHalf = mnemonic === 'fmov' && srcGp && (srcBits === 32 || srcBits === 64) && dst?.cls === 'fp' && dstBits === 16;
   const sameWidthFp = dst?.cls === 'fp' && src?.cls === 'fp' && dstBits === srcBits && [16,32,64].includes(dstBits);
   const sameWidthTransfer = mnemonic === 'fmov'
     && ((dstGp && src?.cls === 'fp') || (dst?.cls === 'fp' && srcGp))
@@ -466,7 +467,7 @@ function compare(instruction, context, mnemonic, ops) {
   const condition = ops.find((op) => op?.k === 'cond')?.text;
   const nzcv = ops.find((op,index) => index >= 2 && op?.k === 'imm' && op?.value != null)?.value;
   const conditional = mnemonic.startsWith('fccmp');
-  const rhsIsZero = rhs?.k === 'imm' && (Number(rhs.float) === 0 || rhs.bitPattern === 0n || rhs.bitPattern === '0');
+  const rhsIsZero = rhs?.k === 'imm' && ((typeof rhs.float === 'number' && Object.is(rhs.float, 0)) || rhs.bitPattern === 0n || rhs.bitPattern === '0');
   if ((!rhsIsZero && (rhs?.k !== 'reg' || scalarWidth(rhs) !== width))
     || (conditional && (!/^(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(String(condition || '').toLowerCase())
       || nzcv == null || nzcv < 0n || nzcv > 15n))) {
@@ -546,7 +547,7 @@ function envIntrinsic(instruction, context, mnemonic, ops) {
       return partial(instruction, context, `${mnemonic}-integer-source-invalid`, ['registers','other'], operations);
     }
   } else if (conversionToInteger) {
-    if (!['gp','zr'].includes(dst?.cls) || dataSources[0]?.cls !== 'fp' || ![16,32,64].includes(scalarWidth(dataSources[0]))) {
+    if (!['gp','zr'].includes(dst?.cls) || ![32,64].includes(dstWidth) || dataSources[0]?.cls !== 'fp' || ![16,32,64].includes(scalarWidth(dataSources[0]))) {
       return partial(instruction, context, `${mnemonic}-conversion-operands-invalid`, ['registers','other'], operations);
     }
   } else if (dst?.cls !== 'fp' || dataSources.some((op)=>op?.cls !== 'fp' || scalarWidth(op) !== dstWidth)) {

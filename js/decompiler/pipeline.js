@@ -130,11 +130,11 @@ function relationalSignCondition(inst, cond) {
 /* CNEG/CINC/CINV are aliases of CSNEG/CSINC/CSINV with the condition inverted. */
 function normalizeConditionalSelectAliases(ir) {
   const changes = [];
-  const alias = { cneg:'neg', cinc:'inc', cinv:'inv' };
+  const alias = Object.assign(Object.create(null), { cneg:'neg', cinc:'inc', cinv:'inv' });
   for (const inst of ir?.instructions || []) {
-    const replacement = alias[inst?.sub];
+    const replacement = typeof inst?.sub === 'string' && Object.hasOwn(alias, inst.sub) ? alias[inst.sub] : null;
     if (replacement) {
-      let inverse = INVERSE_CONDITION[inst.cond];
+      let inverse = typeof inst.cond === 'string' && Object.hasOwn(INVERSE_CONDITION, inst.cond) ? INVERSE_CONDITION[inst.cond] : null;
       if (!inverse) continue;
       inverse = relationalSignCondition(inst, inverse);
       changes.push({ inst, sub:inst.sub, cond:inst.cond });
@@ -211,6 +211,47 @@ function canonicalScalarReturnRegister(result, opts = {}) {
   return null;
 }
 
+function returnDefBlockDominates(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const dom = ir?.dominators?.[to];
+  if (dom && typeof dom.has === 'function') return dom.has(from);
+  let cur = to, guard = 0;
+  while (cur != null && cur >= 0 && guard++ <= (ir?.blocks?.length || 0) + 1) {
+    cur = ir?.idom?.[cur] ?? ir?.blocks?.[cur]?.idom ?? -1;
+    if (cur === from) return true;
+  }
+  return false;
+}
+
+function returnDefBlockDepth(ir, block) {
+  let depth = 0, cur = block, guard = 0;
+  while (cur != null && cur >= 0 && guard++ <= (ir?.blocks?.length || 0) + 1) {
+    depth++;
+    cur = ir?.idom?.[cur] ?? ir?.blocks?.[cur]?.idom ?? -1;
+  }
+  return depth;
+}
+
+function returnBlockCanReach(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const seen = new Set([from]);
+  const stack = [from];
+  while (stack.length) {
+    const current = stack.pop();
+    const successors = ir?.blocks?.[current]?.succ ?? ir?.blocks?.[current]?.successors ?? [];
+    for (const edge of successors) {
+      const next = edge && typeof edge === 'object' ? (edge.to ?? edge.block ?? edge.id) : edge;
+      if (next == null || seen.has(next)) continue;
+      if (next === to) return true;
+      seen.add(next);
+      stack.push(next);
+    }
+  }
+  return false;
+}
+
 function latestReturnStackLoad(ir, ret, returnRegister) {
   const explicit = valueOf(ret?.args?.[0]);
   if (explicit?.def?.op === 'load' && explicit.def.loc?.kind === 'stack') return { value: explicit, load: explicit.def };
@@ -221,11 +262,48 @@ function latestReturnStackLoad(ir, ret, returnRegister) {
   // redefines that register (#914). Never substitute AAPCS64's x0 here: on
   // RISC-V it is the hardwired zero register.
   if (!returnRegister) return null;
-  let value = null, bestRow = -Infinity;
+
+  if (ret?.block == null) {
+    let value = null, bestRow = -Infinity;
+    for (const candidate of ir?.values || []) {
+      const def = candidate?.def;
+      if (candidate?.reg !== returnRegister || !def || (ret?.row != null && def.row >= ret.row)) continue;
+      if (def.row > bestRow) { value = candidate; bestRow = def.row; }
+    }
+    return value?.def?.op === 'load' && value.def.loc?.kind === 'stack' ? { value, load:value.def } : null;
+  }
+
+  let value = null, bestDepth = -1, bestRow = -Infinity, bestSameBlock = false;
   for (const candidate of ir?.values || []) {
     const def = candidate?.def;
-    if (candidate?.reg !== returnRegister || !def || (ret?.row != null && def.row >= ret.row)) continue;
-    if (def.row > bestRow) { value = candidate; bestRow = def.row; }
+    if (candidate?.reg !== returnRegister || !def || def === ret) continue;
+    if (def.block === ret.block) {
+      if (ret.row != null && (def.row == null || def.row >= ret.row)) continue;
+      if (!bestSameBlock || (def.row ?? -Infinity) > bestRow) {
+        value = candidate; bestRow = def.row ?? -Infinity; bestSameBlock = true;
+      }
+      continue;
+    }
+    if (bestSameBlock || !returnDefBlockDominates(ir, def.block, ret.block)) continue;
+    const depth = returnDefBlockDepth(ir, def.block);
+    if (depth > bestDepth || (depth === bestDepth && (def.row ?? -Infinity) > bestRow)) {
+      value = candidate; bestDepth = depth; bestRow = def.row ?? -Infinity;
+    }
+  }
+  if (!bestSameBlock && value?.def) {
+    const candDef = value.def;
+    for (const other of ir?.values || []) {
+      const def = other?.def;
+      if (other === value || other?.reg !== returnRegister || !def || def === ret) continue;
+      const reachesRet = def.block === ret.block
+        ? (def.row != null && ret.row != null && def.row < ret.row)
+        : returnBlockCanReach(ir, def.block, ret.block);
+      if (!reachesRet) continue;
+      const mayOverride = def.block === candDef.block
+        ? (def.row != null && candDef.row != null && def.row > candDef.row)
+        : returnBlockCanReach(ir, candDef.block, def.block);
+      if (mayOverride) return null;
+    }
   }
   return value?.def?.op === 'load' && value.def.loc?.kind === 'stack' ? { value, load:value.def } : null;
 }
@@ -240,7 +318,9 @@ function latestReturnInstruction(ir) {
 
 function reanchorExactStackReturn(result, opts = {}) {
   if (!result?.semanticAst || !result?.ir) return result;
-  const ret = latestReturnInstruction(result.ir);
+  const returns = (result.ir.instructions || []).filter((inst) => inst?.op === 'ret');
+  if (returns.length !== 1) return result;
+  const ret = returns[0];
   const returnRegister = canonicalScalarReturnRegister(result, opts);
   const found = ret ? latestReturnStackLoad(result.ir, ret, returnRegister) : null;
   if (!found?.load?.loc?.key) return result;
@@ -290,32 +370,44 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
       return definitionId != null && fact.contributingDefinitionIds.includes(String(definitionId));
     }) || null;
   };
+  let stackLoadsByRow = null;
   let changed = false;
   for (const node of result.cAst.body || []) {
     if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
     if (/\blocal_[0-9A-F]+\b/i.test(String(node.text || ''))) continue;
+    if (ret.row == null) continue;
+    if (!stackLoadsByRow) {
+      stackLoadsByRow = new Map();
+      for (const inst of result.ir.instructions || []) {
+        if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || inst.row >= ret.row) continue;
+        const rowKey = String(inst.row);
+        const bucket = stackLoadsByRow.get(rowKey);
+        if (bucket) bucket.push(inst);
+        else stackLoadsByRow.set(rowKey, [inst]);
+      }
+    }
     const current = sourceOf(node.source);
     const sourceRows = new Set((current.rows || []).map((row) => String(row)));
     let load = null;
-    for (const inst of result.ir.instructions || []) {
-      if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
-      if (!sourceRows.has(String(inst.row))) continue;
-      const fact = inst.memoryForwarding ?? inst.extra?.memoryForwarding ?? null;
-      const store = inst.reachingStore || ((fact && isCanonicalExactMemoryForwarding(fact,
-        canonicalMemoryForwardingContextForLoad(fact, inst,
-          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext)))
-        ? contributingStore(inst.loc.key, fact)
-        : null);
-      if (!store || store.row == null) continue;
-      if (!sourceRows.has(String(store.row))) continue;
-      if (!load || inst.row > load.row) load = inst;
+    let spill = null;
+    for (const rowKey of sourceRows) {
+      const bucket = stackLoadsByRow.get(rowKey);
+      if (!bucket) continue;
+      for (const inst of bucket) {
+        const fact = inst.memoryForwarding ?? inst.extra?.memoryForwarding ?? null;
+        const store = inst.reachingStore || ((fact && isCanonicalExactMemoryForwarding(fact,
+          canonicalMemoryForwardingContextForLoad(fact, inst,
+            inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext)))
+          ? contributingStore(inst.loc.key, fact)
+          : null);
+        if (!store || store.row == null) continue;
+        if (!sourceRows.has(String(store.row))) continue;
+        if (!load || inst.row > load.row) {
+          load = inst;
+          spill = store;
+        }
+      }
     }
-    const spillFact = load?.memoryForwarding ?? load?.extra?.memoryForwarding ?? null;
-    const spill = load?.reachingStore || (isCanonicalExactMemoryForwarding(spillFact,
-      canonicalMemoryForwardingContextForLoad(spillFact, load,
-        load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))
-      ? contributingStore(load.loc.key, spillFact)
-      : null);
     if (!load || !spill) continue;
     const spillRow = String(spill.row);
     const alignedAddresses = current.addresses.length === current.rows.length;
@@ -393,9 +485,14 @@ function structuredControlProjectionOptions(model, opts) {
 function attachSourceBoundRenderProvenance(result, analysis, analysisIdentityBinding, opts) {
   const bound = boundAnalysisIdentityForIr(analysisIdentityBinding, result.ir);
   const identity = bound?.valid === true ? bound : canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  const snapshotId = identity?.valid === true ? identity.identity.snapshotId : null;
+  if (opts.deferRenderProvenance === true) {
+    opts._onDeferRenderProvenance?.(snapshotId);
+    return result;
+  }
   const renderProvenance = buildRenderProvenance({
     result,
-    snapshotId:identity?.valid === true ? identity.identity.snapshotId : null,
+    snapshotId,
     budget:opts.renderProvenanceBudget,
     shouldAbort:opts.shouldAbort,
   });
@@ -431,8 +528,17 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
       );
       if (structuringStage.ledger?.published === true && structuringStage.analysis
           && structuringStage.ledger.sourceCompleteness === 'complete') {
+        const beforeStructuring = projected;
+        const structOpts = opts.deferRenderProvenance === true
+          ? { ...opts, renderProvenance: false, analysisIdentityBinding: structuringStage.analysisIdentityBinding }
+          : { ...opts, analysisIdentityBinding: structuringStage.analysisIdentityBinding };
         projected = applyStructuredControlProjection(projected, structuringStage.analysis,
-          structuredControlProjectionOptions(model, { ...opts, analysisIdentityBinding:structuringStage.analysisIdentityBinding }));
+          structuredControlProjectionOptions(model, structOpts));
+        if (opts.deferRenderProvenance === true && projected !== beforeStructuring) {
+          const identity = boundAnalysisIdentityForIr(structuringStage.analysisIdentityBinding, projected.ir)
+            ?? canonicalAnalysisIdentity({ ir: projected.ir, analysis: structuringStage.analysis });
+          opts._onDeferRenderProvenance?.(identity?.valid === true ? identity.identity.snapshotId : null);
+        }
       }
     }
     const pipeline = projected.ctx?.decompilerPipeline;
@@ -509,7 +615,16 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
   const projectionOpts = { ...opts, analysisIdentityBinding:stage.analysisIdentityBinding };
   updated = applyPhase8Projection(updated, stage.analysis, projectionOpts);
   if (allowsStructuredControlProjection(opts)) {
-    updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, projectionOpts));
+    const beforeStructuring = updated;
+    const structOpts = opts.deferRenderProvenance === true
+      ? { ...projectionOpts, renderProvenance: false }
+      : projectionOpts;
+    updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, structOpts));
+    if (opts.deferRenderProvenance === true && updated !== beforeStructuring) {
+      const identity = boundAnalysisIdentityForIr(stage.analysisIdentityBinding, updated.ir)
+        ?? canonicalAnalysisIdentity({ ir: updated.ir, analysis: stage.analysis });
+      opts._onDeferRenderProvenance?.(identity?.valid === true ? identity.identity.snapshotId : null);
+    }
   }
   return updated;
 }
@@ -642,9 +757,9 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
       elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started });
     const final = rememberProducerProjection({ ...projected, proofOptimization },
       { phase8PrepareProof:true, phase8ProofOnlyRewrites:proofOnlyRewrites, shouldAbort:aborted });
-    if (!current() || aborted() || !isProducerProjection(final) || !current()) return fail('cancelled-or-stale-at-final-publication');
+    if (aborted() || !isProducerProjection(final) || !current()) return fail('cancelled-or-stale-at-final-publication');
     return final;
-  } catch (error) { return fail(guard?.reason() ?? error.reason ?? 'invalid-or-unsupported-condition-optimization'); }
+  } catch (error) { return fail(guard?.reason() ?? error?.reason ?? 'invalid-or-unsupported-condition-optimization'); }
 }
 
 /** Demand-driven asynchronous proof path. The representation result comes from
@@ -734,7 +849,7 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
       planId:plan.planId,scope:plan.observableScope,taintEvidence:plan.taintEvidence,taintMetrics:plan.taintMetrics,taint:plan.taintResult,
       phase8OptimizeStage:projected.ctx?.decompilerPipeline?.phase8ElapsedMs ?? null,
       elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started});
-    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-before-projection-publication');
+    if (aborted()) return fail('cancelled-before-projection-publication');
     const final=rememberProducerProjection({...projected,proofOptimization},{phase8PrepareProof:true,
       phase8ProofOnlyRewrites:proofOnlyRewrites,shouldAbort:aborted});
     if(aborted() || !isProducerProjection(final) || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-or-stale-at-final-publication');

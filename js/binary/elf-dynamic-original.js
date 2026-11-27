@@ -226,7 +226,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
         // The scan stops at the terminating NUL; charging the whole 1 MiB
         // window per name exhausted the budget after ~8 DT_NEEDED entries.
         const window = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
-        const scanned = name === "" ? window : Math.min(window, decoded + 1);
+        const scanned = name === "" ? Math.min(window, 1) : Math.min(window, decoded + 1);
         dynamicStringScanBytes += Math.max(0, scanned);
       }
     }
@@ -354,7 +354,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   image.metadata.programDynamicSymbolBudget = symbolBudget.snapshot();
   if (opts.relocations !== false) attachDynamicRelocations(image, relocs, symbols);
   checkRiscvVariantCcTag(image, tags, relocs, symbols);
-  attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, !relocationBudget.stopped);
+  attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, !relocationBudget.stopped, symbols, symbolBudget);
 
   image.metadata.programDynamic = {
     entries: ordered.length,
@@ -403,11 +403,11 @@ function decodeAarch64PltTail(r, image, address) {
     || ((w2 >>> 5) & 0x1f) !== 16 || (w2 & 0x1f) !== 16) return null;
   if (((w3 & AARCH64_BR_MASK) >>> 0) !== AARCH64_BR || ((w3 >>> 5) & 0x1f) !== 17) return null;
 
-  const page = (address & ~0xfffn) + decodeAarch64AdrpPageDelta(w0);
+  const page = BigInt.asUintN(64, (address & ~0xfffn) + decodeAarch64AdrpPageDelta(w0));
   const ldrOffset = BigInt((w1 >>> 10) & 0xfff) * 8n;
   const shift = ((w2 >>> 22) & 1) === 1 ? 12n : 0n;
   const addOffset = BigInt((w2 >>> 10) & 0xfff) << shift;
-  return { gotSlot: page + ldrOffset, addTarget: page + addOffset };
+  return { gotSlot: BigInt.asUintN(64, page + ldrOffset), addTarget: BigInt.asUintN(64, page + addOffset) };
 }
 
 function decodeAarch64PltResolver(r, image, address) {
@@ -454,6 +454,7 @@ function dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComp
   }
 
   const jumpSlots = [];
+  const jumpEntries = [];
   const seen = new Set();
   const count = Number(countBig);
   for (let i = 0; i < count; i++) {
@@ -465,8 +466,9 @@ function dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComp
     if (seen.has(key)) return null;
     seen.add(key);
     jumpSlots.push(offset);
+    jumpEntries.push({ gotSlot: offset, symIndex: rel.symIndex });
   }
-  return { dtPltgot, jumpSlots };
+  return { dtPltgot, jumpSlots, jumpEntries };
 }
 
 // Exhaustive uniqueness scanning reads every executable file byte. That is
@@ -499,6 +501,16 @@ function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocati
     return true;
   };
 
+  const buildMatch = (address, gotAnchored) => ({
+    address,
+    gotAnchored,
+    thunks: dynamic.jumpEntries.map((entry, i) => ({
+      address: address + AAELF64_PLT_RESOLVER_BYTES + AAELF64_PLT_THUNK_BYTES * BigInt(i),
+      gotSlot: entry.gotSlot,
+      symIndex: entry.symIndex,
+    })),
+  });
+
   const executableSegments = [];
   let executableFileBytes = 0n;
   for (const segment of image.segments || []) {
@@ -524,7 +536,7 @@ function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocati
       else if (value !== anchor) return null;
     }
     if (anchor == null || anchor === 0n || (anchor & 3n) !== 0n) return null;
-    return structurallyMatches(anchor) ? { address: anchor, gotAnchored: true } : null;
+    return structurallyMatches(anchor) ? buildMatch(anchor, true) : null;
   }
 
   // PT_LOAD is the runtime authority. We inspect every aligned address in its
@@ -544,13 +556,13 @@ function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocati
       if (matches.size > 1) return null;
     }
   }
-  return matches.size === 1 ? { address: matches.values().next().value, gotAnchored: false } : null;
+  return matches.size === 1 ? buildMatch(matches.values().next().value, false) : null;
 }
 
-function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete) {
+function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete, symbols = [], symbolBudget = null) {
   const match = findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete);
   if (match == null) return;
-  const { address, gotAnchored } = match;
+  const { address, gotAnchored, thunks } = match;
   // The finder proves the full 32-byte PLT0 extent: STP head, GOT-linked
   // resolver tail (DT_PLTGOT+16), 3x NOP padding, ordered R_AARCH64_JUMP_SLOT
   // thunks immediately following, a single candidate (unique executable
@@ -573,6 +585,48 @@ function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, reloca
     source: 'elf-plt-structure',
     ...(gotAnchored ? { candidate: 'got-initial-value' } : {}),
   };
+  if (symbolBudget?.stopped || !Array.isArray(thunks) || !thunks.length) return;
+  const byIndex = new Map();
+  const addDynSymbol = (sym) => {
+    if (sym && Number.isSafeInteger(sym.index) && sym.index > 0 && !byIndex.has(sym.index)) {
+      byIndex.set(sym.index, sym);
+    }
+  };
+  for (const sym of symbols || []) addDynSymbol(sym);
+  for (const sym of image.symbols || []) {
+    if (sym?.source === 'dynsym' || sym?.source === 'PT_DYNAMIC') addDynSymbol(sym);
+  }
+  if (!byIndex.size) return;
+  const existingPltStubs = new Set();
+  for (const sym of image.symbols || []) {
+    if (sym?.source === 'elf-plt-structure' && sym.address != null && sym.name) {
+      existingPltStubs.add(`${sym.address}:${sym.name}`);
+    }
+  }
+  for (const thunk of thunks) {
+    if (!Number.isSafeInteger(thunk.symIndex) || thunk.symIndex <= 0) continue;
+    const sym = byIndex.get(thunk.symIndex);
+    if (!sym || typeof sym.name !== 'string' || !sym.name) continue;
+    const dedupeKey = `${thunk.address}:${sym.name}`;
+    if (existingPltStubs.has(dedupeKey)) continue;
+    existingPltStubs.add(dedupeKey);
+    image.symbols.push({
+      name: sym.name,
+      address: thunk.address,
+      size: AAELF64_PLT_THUNK_BYTES,
+      kind: 'stub',
+      stub: true,
+      binding: sym.binding ?? 'global',
+      defined: true,
+      sectionIndex: null,
+      source: 'elf-plt-structure',
+      symbolIndex: sym.index,
+      gotAddress: thunk.gotSlot,
+      version: sym.version ?? null,
+      versionLibrary: sym.versionLibrary ?? null,
+      addressDomain: 'virtual',
+    });
+  }
 }
 
 function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, tags, versions = new Map(), budget = null) {
@@ -627,7 +681,7 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const isArm32 = Number(image?.metadata?.machine) === 40 || image?.arch === 'arm';
     const isThumb = isArm32 && (type === 2 || type === STT_GNU_IFUNC) && (value & 1n) === 1n;
     const effectiveValue = isThumb ? (value & ~1n) : value;
-    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : effectiveValue, originalValue: value, isThumb, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, aarch64VariantPcsFlag, aarch64VariantPcs, callingConvention: aarch64VariantPcs ? 'aarch64-variant-pcs' : riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:effectiveValue, resolution:'runtime-resolver' } : {}) };
+    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : sectionIdentity.known ? effectiveValue : null, originalValue: value, isThumb, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, aarch64VariantPcsFlag, aarch64VariantPcs, callingConvention: aarch64VariantPcs ? 'aarch64-variant-pcs' : riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:effectiveValue, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);

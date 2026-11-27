@@ -275,9 +275,34 @@ export function applyWorkspaceProject(app, project){
     currentFunction:app?.store?.get?.('currentAddress')??null,
     project:app.project,
     workspaceProject:app.workspace?.project,
+    symbolRenames:app.symbols?.renames instanceof Map?[...app.symbols.renames.entries()]:null,
   };
-  const addedSessionIds=[];
+  const priorSessions=new Map();
+  const touchedSessionIds=new Set();
   const restoreMaps=(target,entries)=>{ target.clear(); for(const [k,v] of entries) target.set(k,v); };
+  const syncSymbolRenames=(targetEntries,clearExtraAddresses=[])=>{
+    if(!app.symbols||typeof app.symbols.rename!=='function')return;
+    const nextByKey=new Map();
+    for(const [addr,name] of targetEntries){
+      const big=asBigInt(addr);
+      if(big!=null&&name)nextByKey.set(big.toString(),[big,name]);
+    }
+    const staleAddresses=new Map();
+    if(app.symbols.renames instanceof Map){
+      for(const key of app.symbols.renames.keys()){
+        if(!nextByKey.has(key)){
+          const big=asBigInt(key);
+          if(big!=null)staleAddresses.set(big.toString(),big);
+        }
+      }
+    }
+    for(const addr of clearExtraAddresses){
+      const big=asBigInt(addr);
+      if(big!=null&&!nextByKey.has(big.toString()))staleAddresses.set(big.toString(),big);
+    }
+    for(const big of staleAddresses.values())app.symbols.rename(big,'');
+    for(const [big,name] of nextByKey.values())app.symbols.rename(big,name);
+  };
   const rollback=()=>{
     app.project=previous.project;
     if(app.workspace)app.workspace.project=previous.workspaceProject;
@@ -288,6 +313,13 @@ export function applyWorkspaceProject(app, project){
     notes.structs=previous.structs;
     notes.dirty=previous.dirty;
     if(app.patches?.clear){ app.patches.clear(); for(const p of previous.patches) app.patches.add(p.offset,p.before,p.after,{addr:p.addr,label:p.label,reason:p.reason}); }
+    if(app.symbols){
+      const restoreTarget=previous.symbolRenames!==null?previous.symbolRenames:previous.names;
+      try{
+        syncSymbolRenames(restoreTarget,stagedNames.map(([addr])=>addr));
+        app.viewer?.setSymbols?.(app.symbols);
+      }catch{ /* best-effort */ }
+    }
     app.autoReport=previous.autoReport;
     app.projectAnnotations=previous.projectAnnotations;
     app.lastGoal=previous.lastGoal;
@@ -301,7 +333,13 @@ export function applyWorkspaceProject(app, project){
     if(previous.currentFunction!=null&&app?.store?.set){ try{ app.store.set({ currentAddress: previous.currentFunction }); }catch{ /* best-effort */ } }
     // Undo session records this call published before the failure (memory only;
     // `register` never durably persists, so no queued delete is needed).
-    if(canRegisterSessions)for(const id of addedSessionIds)sessionStore.sessions.delete(id);
+    // Pre-existing sessions with colliding IDs are restored rather than deleted.
+    if(canRegisterSessions){
+      for(const id of touchedSessionIds){
+        if(priorSessions.has(id))sessionStore.sessions.set(id,priorSessions.get(id));
+        else sessionStore.sessions.delete(id);
+      }
+    }
     // Re-persist the restored note state so durable storage matches memory.
     try{ notes.save(); }catch{ /* the rethrow still signals the failed import */ }
   };
@@ -316,7 +354,7 @@ export function applyWorkspaceProject(app, project){
     notes.dirty=true;
     app.patches.clear();
     for(const [offset,before,after,meta] of stagedPatches)app.patches.add(offset,before,after,meta);
-    if(app.symbols){for(const entry of notes.nameEntries())app.symbols.rename(entry.addr,entry.name);app.viewer?.setSymbols?.(app.symbols);}
+    if(app.symbols){syncSymbolRenames(notes.nameEntries().map((entry)=>[entry.addr,entry.name]),previous.names.map(([addr])=>addr));app.viewer?.setSymbols?.(app.symbols);}
     const findings=project.findings;
     if(findings&&typeof findings==='object'&&!Array.isArray(findings)
       &&(Array.isArray(findings.confirmed)||Array.isArray(findings.evidence))){
@@ -330,9 +368,15 @@ export function applyWorkspaceProject(app, project){
       }:null;
     }
     app.projectAnnotations=Array.isArray(project.projectAnnotations)?project.projectAnnotations.slice():[];
+    const captureSessionPrior=(id)=>{
+      if(!id||touchedSessionIds.has(id))return;
+      touchedSessionIds.add(id);
+      if(sessionStore.sessions.has(id))priorSessions.set(id,sessionStore.sessions.get(id));
+    };
     for(const candidate of sessionCandidates){
-      if(sessionStore.register(candidate.record))addedSessionIds.push(candidate.record.id);
-      else if(sessionStore.sessions.has(candidate.id))addedSessionIds.push(candidate.id);
+      captureSessionPrior(candidate.record.id);
+      if(candidate.id!==candidate.record.id)captureSessionPrior(candidate.id);
+      sessionStore.register(candidate.record);
     }
     // Restore last query
     if(navigation.lastQuery){
@@ -505,7 +549,24 @@ export class ProductWorkspace{
     finally{if(listenerRegistered)signal.removeEventListener('abort',onAbort);}
   }
   async diff(options={}){
-    if(this.busy)return this.busy;
+    const threshold=options.threshold??0.62;
+    const matchBudget=options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536};
+    const optionsKey=JSON.stringify({threshold,matchBudget});
+    const waitWithSignal=(promise,signal)=>{
+      if(!signal)return promise;
+      if(signal.aborted){Promise.resolve(promise).catch(()=>{});return Promise.reject(abortError());}
+      return new Promise((resolve,reject)=>{
+        const onAbort=()=>{cleanup();reject(abortError());};
+        const cleanup=()=>{signal.removeEventListener('abort',onAbort);};
+        signal.addEventListener('abort',onAbort,{once:true});
+        Promise.resolve(promise).then((v)=>{cleanup();resolve(v);},(e)=>{cleanup();reject(e);});
+      });
+    };
+    if(this.busy){
+      if(this._busyKey===optionsKey)return waitWithSignal(this.busy,options.signal);
+      try{await waitWithSignal(this.busy,options.signal);}catch(e){if(options.signal?.aborted)throw e;}
+      throwIfAborted(options.signal);
+    }
     const revision=this.bindingRevision, baseline=this.baseline;
     let task;
     task=(async()=>{
@@ -515,7 +576,7 @@ export class ProductWorkspace{
       try{await this.app.ensureRecognition?.({maxFunctions:MAX_DIFF_FUNCTIONS,knowledgeLimit:0,signal:options.signal});}catch(error){if(options.signal?.aborted)throwIfAborted(options.signal);/* symbol fallback remains valid */}
       throwIfAborted(options.signal);assertCurrent();
       const current=createCompactFunctionSet(this.app?.symbols,this.identity?.metadata?.architecture,MAX_DIFF_FUNCTIONS), before=baseline.functions;
-      let result=await runDiffInWorker(before,current,{mode:'fast',signal:options.signal,threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
+      let result=await runDiffInWorker(before,current,{mode:'fast',signal:options.signal,threshold,matchBudget});
       assertCurrent();
       result=demoteLowInformationAbsenceClaims(result);
       const inputsComplete=before.complete===true&&current.complete===true;
@@ -526,8 +587,8 @@ export class ProductWorkspace{
       result.provenance={baselineHash:baseline.hash,currentHash:this.identity?.hash||null,architecture:baseline.architecture,currentArchitecture:this.identity?.metadata?.architecture||null,baselineName:baseline.info?.name||baseline.file?.name||null,currentName:this.identity?.metadata?.name||null,complete:false,functionSetsComplete:inputsComplete,fingerprintProfile:before.evidenceProfile,evidenceSymmetric:true};
       assertCurrent();
       this.diffState=result;return result;
-    })().finally(()=>{if(this.busy===task)this.busy=null;});
-    this.busy=task;return task;
+    })().finally(()=>{if(this.busy===task){this.busy=null;this._busyKey=null;}});
+    this.busy=task;this._busyKey=optionsKey;return task;
   }
   getBinaryDiff(){return this.diffState;}
   invalidate(){this.bindSequence++;this.identity=null;this._resetBoundState();}

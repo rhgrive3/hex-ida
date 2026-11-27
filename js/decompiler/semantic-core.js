@@ -7,17 +7,18 @@
  */
 
 import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition, mayAliasProvenance } from '../ir.js';
+import { abiAdapterForIr } from '../ir-core.js';
 import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
 import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
 import { buildAppleRuntimeIndex, resolveAppleCall, shouldFoldRuntimeCall, runtimeOriginForSymbol } from '../apple/runtime.js';
-import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
+import { callArgumentIndices, knownCallPrototype, knownCallSignature } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
-import { renderIndexedMemory } from './address-semantics.js';
+import { renderIndexedMemory, renderExtendedIndex } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
 import { captureProjectionIrData, captureRecoveryIrData, captureRecoveryDominators, PROJECTION_LIMITS } from './phase8/projection-origin.js';
-import { createProjectionIrObserver, ownDataEntries } from '../core/identity/live-data.js';
+import { createProjectionIrObserver, createValidationBatch, ownDataEntries } from '../core/identity/live-data.js';
 import { expressionOriginHistory } from './rewrite/engine.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -107,11 +108,11 @@ function finishConditionalRegion(marker, out, ctx, branch, selection, separator,
   history.remaining -= cost;
   history.events.push(Object.freeze({ record:binding.records[0], branch,
     selection:Object.freeze({ ...selection }), header, separator, close,
-    nodes:Object.freeze(out.slice(marker.start)), joinBlock, joinPhis:Object.freeze([...phis]),
+    nodes:Object.freeze(out.slice(marker.start).filter(n => !n || n.__emptyBlockAnchor === undefined)), joinBlock, joinPhis:Object.freeze([...phis]),
     arms:Object.freeze(['yes', 'no'].map(role => {
       const arm = marker.arms.find(item => item.role === role);
       return Object.freeze({ role, entryBlock:ctx.ir.blocks[selection[role]],
-        nodes:Object.freeze(arm ? out.slice(arm.start, arm.end) : []), emittedBlocks:Object.freeze(arm?.blocks ?? []) });
+        nodes:Object.freeze(arm ? out.slice(arm.start, arm.end).filter(n => !n || n.__emptyBlockAnchor === undefined) : []), emittedBlocks:Object.freeze(arm?.blocks ?? []) });
     })),
   }));
 }
@@ -244,9 +245,19 @@ function beginStatementRenderHistory(ctx) {
       return descriptor ? !!now && Object.hasOwn(now, 'value') && now.enumerable && now.value === descriptor.value : !now;
     };
     const size = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
-    history.canonical = { isCurrent:() => sameData(ctx.model, 'calls', callsDescriptor) && sameData(ctx.ir, 'args', argsDescriptor)
+    const rawIsCurrent = () => sameData(ctx.model, 'calls', callsDescriptor) && sameData(ctx.ir, 'args', argsDescriptor)
       && (args == null || Object.getPrototypeOf(args) === Map.prototype && !Reflect.ownKeys(args).length && size.call(args) === bindings.length
-        && bindings.every(([key, value]) => Map.prototype.has.call(args, key) && Map.prototype.get.call(args, key) === value)) && observation.matches() };
+        && bindings.every(([key, value]) => Map.prototype.has.call(args, key) && Map.prototype.get.call(args, key) === value)) && observation.matches();
+    const token = {};
+    history.canonical = { isCurrent:() => {
+      const batch = ctx.validationBatch;
+      if (!batch) return rawIsCurrent();
+      const known = batch.known(token, null);
+      if (known !== undefined) return known;
+      const current = rawIsCurrent();
+      batch.remember(token, null, current, rawIsCurrent);
+      return current;
+    } };
   } catch { history.edges = 0; }
 }
 
@@ -301,7 +312,7 @@ function beginControlRenderHistory(ctx) {
     const data = captureProjectionIrData(plain);
     history.edges -= sets.edges + post.edges + data.metrics.edges;
     if (history.edges < 0) throw new Error('initial-control-budget');
-    history.canonical = { isCurrent:() => { try { return ctx.statementRenderHistory.canonical.isCurrent()
+    const rawIsCurrent = () => { try { return ctx.statementRenderHistory.canonical.isCurrent()
       && roots.every(({ object, key, descriptor }) => {
         const now = Object.getOwnPropertyDescriptor(object, key);
         return descriptor ? !!now && Object.hasOwn(now, 'value') && now.enumerable && now.value === descriptor.value : !now;
@@ -309,7 +320,17 @@ function beginControlRenderHistory(ctx) {
         if (Object.getOwnPropertyDescriptor(loops, key)?.value !== loop) return false;
         const now = ownDataEntries(loop, 16);
         return now.length === fields.length && fields.every(([name, value], index) => now[index][0] === name && now[index][1] === value);
-      }) && sets.matches() && post.matches() && data.matches(); } catch { return false; } } };
+      }) && sets.matches() && post.matches() && data.matches(); } catch { return false; } };
+    const token = {};
+    history.canonical = { isCurrent:() => {
+      const batch = ctx.validationBatch;
+      if (!batch) return rawIsCurrent();
+      const known = batch.known(token, null);
+      if (known !== undefined) return known;
+      const current = rawIsCurrent();
+      batch.remember(token, null, current, rawIsCurrent);
+      return current;
+    } };
   } catch { history.edges = 0; }
 }
 
@@ -529,7 +550,7 @@ function line(kind, indent, text, row = null, addr = null, extra = null) {
 function valueOf(a) { return a && a.value ? a.value : null; }
 function hex(v) { return BigInt(v).toString(16).toUpperCase(); }
 function safeIdent(s, fallback = 'value') {
-  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
+  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
 }
 function paren(s) { return /^[-+]?\w+(?:->\w+|\.\w+|\[[^\]]+\])*$/.test(s) || /^0x[0-9A-F]+$/.test(s) ? s : `(${s})`; }
@@ -585,14 +606,24 @@ export function isExactOperandForwardMove(def) {
     && Array.isArray(def.args) && def.args.length === 1;
 }
 
-function dependencySource(value, ctx, seen = new Set(), depth = 0) {
-  if (!value || depth > MAX_EXPR_DEPTH || seen.has(value.id)) return sourceOf();
-  seen.add(value.id);
+function dependencySource(value, ctx, seen = null, depth = 0) {
+  if (!value || depth > MAX_EXPR_DEPTH) return sourceOf();
+  const isTopLevel = seen === null && depth === 0;
+  if (isTopLevel && ctx?.depSourceCache?.has(value.id)) {
+    return ctx.depSourceCache.get(value.id);
+  }
+  const visited = seen || new Set();
+  if (visited.has(value.id)) return sourceOf();
+  visited.add(value.id);
   const d = value.def;
-  if (!d) return sourceOf({ ssaUse: value.id });
+  if (!d) {
+    const res = sourceOf({ ssaUse: value.id });
+    if (isTopLevel && ctx?.depSourceCache) ctx.depSourceCache.set(value.id, res);
+    return res;
+  }
   const parts = [sourceForInst(d), sourceOf({ ssaDef: value.id })];
   if (d.op === OP.PHI) {
-    for (const incoming of d.incoming || []) parts.push(dependencySource(incoming.value, ctx, seen, depth + 1));
+    for (const incoming of d.incoming || []) parts.push(dependencySource(incoming.value, ctx, visited, depth + 1));
   } else if (d.op === OP.LOAD) {
     // A fixed stack slot's SP/FP arithmetic is frame-construction provenance,
     // not source provenance for the value loaded from that slot. Including it
@@ -600,17 +631,19 @@ function dependencySource(value, ctx, seen = new Set(), depth = 0) {
     // to own later C statements. Keep the load itself, but stop at the stack
     // memory boundary. Non-stack addressing still retains its base/index defs.
     if (d.loc?.kind !== MK.STACK) {
-      parts.push(dependencySource(d.addr?.base, ctx, seen, depth + 1));
-      parts.push(dependencySource(d.addr?.index, ctx, seen, depth + 1));
+      parts.push(dependencySource(d.addr?.base, ctx, visited, depth + 1));
+      parts.push(dependencySource(d.addr?.index, ctx, visited, depth + 1));
     }
   } else if (isExactOperandForwardMove(d)) {
     // The forwarded operand is the exact stored identity behind the replaced
     // fixed-stack load. Provenance stops here exactly like the stack-load
     // boundary above: the spill/reload plumbing is not source provenance.
   } else {
-    for (const arg of d.args || []) parts.push(dependencySource(valueOf(arg), ctx, seen, depth + 1));
+    for (const arg of d.args || []) parts.push(dependencySource(valueOf(arg), ctx, visited, depth + 1));
   }
-  return mergeSource(...parts);
+  const merged = mergeSource(...parts);
+  if (isTopLevel && ctx?.depSourceCache) ctx.depSourceCache.set(value.id, merged);
+  return merged;
 }
 
 /**
@@ -671,8 +704,15 @@ function storeSource(inst, ctx) {
 
 function callSource(inst, call, ctx) {
   const parts = [sourceForInst(inst, 'call')];
-  for (const index of call?.sourceArgIndices || []) {
-    parts.push(dependencySource(reachingRegisterValue(ctx.ir, inst, `x${index}`), ctx));
+  if (Array.isArray(call?.resolvedArgs)) {
+    for (const arg of call.resolvedArgs) {
+      if (arg?.value) parts.push(dependencySource(arg.value, ctx));
+    }
+  } else {
+    const isAArch64 = isAArch64Context(ctx.ir, ctx.opts);
+    for (const index of call?.sourceArgIndices || []) {
+      parts.push(dependencySource(reachingRegisterValue(ctx.ir, inst, `x${index}`, isAArch64), ctx));
+    }
   }
   return mergeSource(...parts);
 }
@@ -715,10 +755,32 @@ function renderValueAt(value, atInst, ctx) {
   return storedValueAlias(value, atInst, ctx) || renderValue(value, ctx);
 }
 
-function canonicalRegister(reg) {
+function isAArch64Context(ir, opts = null) {
+  const adapter = opts?.abiAdapter || abiAdapterForIr(ir) || null;
+  if (adapter) {
+    const id = String(adapter.id || adapter.name || '').toLowerCase();
+    const archId = String(adapter.architectureId || adapter.arch || '').toLowerCase();
+    return id === 'aapcs64' || archId === 'arm64' || archId === 'aarch64'
+      || /^(?:aapcs64|arm64|aarch64)/.test(id);
+  }
+  const arch = String(
+    ir?.compat?.architectureId || ir?.architectureId || ir?.arch || ir?.architecture
+    || opts?.architectureId || opts?.arch || opts?.architecture || '',
+  ).toLowerCase();
+  if (arch) return /^(?:arm64|aarch64|aapcs64)/.test(arch);
+  if (ir?.compat?.projection === 'semantic-ir-v2-to-v1') return false;
+  return true;
+}
+
+function canonicalRegister(reg, isAArch64 = false) {
   const text = String(reg || '').toLowerCase();
   const m = /^[wx](\d+)$/.exec(text);
-  return m ? `r${m[1]}` : text;
+  if (m) return `r${m[1]}`;
+  if (isAArch64) {
+    const fp = /^[bhsdqv]([0-9]|[12][0-9]|3[01])$/.exec(text);
+    if (fp) return `v${fp[1]}`;
+  }
+  return text;
 }
 
 function loadReachedByStore(load, store, ctx) {
@@ -731,14 +793,44 @@ function loadReachedByStore(load, store, ctx) {
   return definitionId != null && fact.contributingDefinitionIds.includes(String(definitionId));
 }
 
+function resolveEffectiveReturnType(opts, types, funcAddr) {
+  const explicit = String(opts?.returnType || opts?.functionPrototype?.returnType || opts?.prototype?.returnType || '').trim();
+  const sigRet = String(opts?.notes?.typeOf?.(funcAddr, 'ret') || types?.ret?.type || 'void').trim() || 'void';
+  const sigReturnType = sigRet === 'unknown' ? 'uint64' : sigRet;
+  const abiReturnType = explicit || sigReturnType;
+  return { sigReturnType, abiReturnType };
+}
+
+function isRenderableReturnValue(rv) {
+  return Boolean(rv && ((rv.uses || []).length || rv.const != null || rv.def));
+}
+
+function zeroReturnLiteralForContext(ctx) {
+  return /^(?:float|double|__fp16)\b/i.test(String(ctx?.callerReturnType || '').trim()) ? '0.0' : '0';
+}
+
+function renderReturnStatement(rv, ctx) {
+  if (ctx?.callerIsVoid) return 'return;';
+  if (isRenderableReturnValue(rv)) return `return ${renderValue(rv, ctx)};`;
+  if (ctx?.callerIsVoid === false) return `return ${zeroReturnLiteralForContext(ctx)};`;
+  return 'return;';
+}
+
+function isVoidCalleeTailCall(term, opts) {
+  if (knownVoidCall(term, opts)) return true;
+  if (term?.callPrototype?.returnsValue === false || term?.extra?.callPrototype?.returnsValue === false) return true;
+  const protoReturnType = String(term?.callPrototype?.returnType || term?.extra?.callPrototype?.returnType || '').trim();
+  return /^void\s*$/i.test(protoReturnType);
+}
+
 function returnRegisterForContext(ctx) {
-  const type=String(ctx.opts?.returnType || ctx.opts?.functionPrototype?.returnType || ctx.opts?.prototype?.returnType || ctx.types?.ret?.type || '').toLowerCase();
-  if (!type || type === 'void') return null;
+  const type = String(ctx.abiReturnType || ctx.opts?.returnType || ctx.opts?.functionPrototype?.returnType || ctx.opts?.prototype?.returnType || ctx.callerReturnType || ctx.types?.ret?.type || '').toLowerCase();
+  if (!type || /^void\s*$/i.test(type)) return null;
   // The calling convention owns this, not the decompiler. Assuming `x0` is the
   // result register is an AArch64 fact; on RISC-V `x0` is hardwired zero, so a
   // hardcoded name would read the wrong location entirely. Callers that supply
   // no ABI adapter are the legacy AArch64 IR facade, whose behaviour is kept.
-  const adapter = ctx.opts?.abiAdapter || null;
+  const adapter = ctx.opts?.abiAdapter || abiAdapterForIr(ctx.ir) || null;
   // A scalar compatibility value is publishable only when the canonical ABI
   // reports exactly one complete register location.  Aggregate returns must
   // remain represented by their complete physical pieces downstream.
@@ -778,11 +870,73 @@ function frameBookkeepingRegisters(ctx) {
   if (ctx.ir?.compat?.projection === 'semantic-ir-v2-to-v1') return new Set();
   return new Set(['r29', 'r30']);
 }
+function instDefinesOrClobbersReg(inst, canonReg, isAArch64 = false) {
+  if (!inst || !canonReg) return false;
+  if (inst.op === OP.CALL) {
+    if (inst.dst?.reg && canonicalRegister(inst.dst.reg, isAArch64) === canonReg) return true;
+    if (!inst.dst) return true;
+    if (Array.isArray(inst.clobbers) && inst.clobbers.some((r) => canonicalRegister(r, isAArch64) === canonReg)) return true;
+    if (Array.isArray(inst.extra?.clobbers) && inst.extra.clobbers.some((r) => canonicalRegister(r, isAArch64) === canonReg)) return true;
+    return false;
+  }
+  if (inst.op === OP.CLOBBER) {
+    return !inst.dst?.reg || canonicalRegister(inst.dst.reg, isAArch64) === canonReg;
+  }
+  return false;
+}
+
+function valueClobberedBeforeRet(explicit, ret, canonReg, ir, isAArch64 = false) {
+  if (!explicit || !ret || !canonReg || !ir || ret.block == null) return false;
+  if (explicit.reg && canonicalRegister(explicit.reg, isAArch64) !== canonReg) return false;
+  const def = explicit.def || null;
+  const defBlock = def?.block ?? (ir.entry ?? 0);
+  const retBlockObj = ir.blocks?.[ret.block];
+  if (retBlockObj) {
+    for (const inst of retBlockObj.insts || []) {
+      if (!instDefinesOrClobbersReg(inst, canonReg, isAArch64)) continue;
+      if (!sameBlockPrecedes(ir, inst, ret)) continue;
+      if (def && def.block === ret.block && !sameBlockPrecedes(ir, def, inst)) continue;
+      return true;
+    }
+  }
+  if (defBlock !== ret.block && ir.blocks?.[defBlock]) {
+    if (def && def.block === defBlock) {
+      for (const inst of ir.blocks[defBlock].insts || []) {
+        if (sameBlockPrecedes(ir, def, inst) && instDefinesOrClobbersReg(inst, canonReg, isAArch64)) {
+          return true;
+        }
+      }
+    }
+    const seen = new Set([defBlock]);
+    const queue = [...(ir.blocks[defBlock].succ || [])];
+    while (queue.length) {
+      const bi = queue.pop();
+      if (seen.has(bi) || bi === ret.block) continue;
+      seen.add(bi);
+      if (!blockCanReach(ir, bi, ret.block)) continue;
+      const b = ir.blocks[bi];
+      if (!b) continue;
+      if ((b.insts || []).some((inst) => instDefinesOrClobbersReg(inst, canonReg, isAArch64))) return true;
+      for (const s of b.succ || []) {
+        if (!seen.has(s) && s !== ret.block) queue.push(s);
+      }
+    }
+  }
+  return false;
+}
+
 function returnValueAt(ret, ctx) {
+  if (ctx?.callerIsVoid) return null;
   const explicit=valueOf(ret?.args?.[0]);
-  if (explicit) return explicit;
   const reg=returnRegisterForContext(ctx);
-  return reg ? reachingRegisterValue(ctx.ir, ret, reg) : null;
+  const isAArch64 = isAArch64Context(ctx.ir, ctx.opts);
+  if (explicit) {
+    if (reg && valueClobberedBeforeRet(explicit, ret, canonicalRegister(reg, isAArch64), ctx.ir, isAArch64)) {
+      return reachingRegisterValue(ctx.ir, ret, reg, isAArch64);
+    }
+    return explicit;
+  }
+  return reg ? reachingRegisterValue(ctx.ir, ret, reg, isAArch64) : null;
 }
 
 function feedsReturn(value, ctx) {
@@ -794,13 +948,50 @@ function feedsReturn(value, ctx) {
   return false;
 }
 
+const LOAD_INDEX_CACHE = new WeakMap();
+
+function getLoadLookupIndex(ir) {
+  const instructions = ir?.instructions || [];
+  let cached = LOAD_INDEX_CACHE.get(ir);
+  if (cached && cached.length === instructions.length && cached.ref === instructions) return cached;
+  const memByLocKey = new Map();
+  const loadsByForwardingDefId = new Map();
+  for (const x of instructions) {
+    if (x?.op !== OP.LOAD) continue;
+    const locKey = x.loc?.key;
+    if (locKey != null) {
+      let bucket = memByLocKey.get(locKey);
+      if (!bucket) { bucket = []; memByLocKey.set(locKey, bucket); }
+      bucket.push(x);
+    }
+    const defIds = x.memoryForwarding?.contributingDefinitionIds;
+    if (Array.isArray(defIds)) {
+      for (const id of defIds) {
+        const key = String(id);
+        let bucket = loadsByForwardingDefId.get(key);
+        if (!bucket) { bucket = []; loadsByForwardingDefId.set(key, bucket); }
+        if (bucket[bucket.length - 1] !== x) bucket.push(x);
+      }
+    }
+  }
+  cached = { length: instructions.length, ref: instructions, memByLocKey, loadsByForwardingDefId };
+  LOAD_INDEX_CACHE.set(ir, cached);
+  return cached;
+}
+
 /* Hide only stack stores whose loads prove register preservation/return spill. */
 function isMechanicalStackSpill(inst, ctx) {
   if (inst?.op !== OP.STORE || inst.loc?.kind !== MK.STACK) return false;
   const stored = valueOf(inst.args?.[0]);
   const reg = canonicalRegister(stored?.reg);
   if (reg && frameBookkeepingRegisters(ctx).has(reg)) return true; // frame pointer / return address save
-  const loads = (ctx.ir.instructions || []).filter((x) => loadReachedByStore(x, inst, ctx));
+  const definitionId = inst.memDef?.definitionId ?? inst.extra?.memoryDefinitionId ?? null;
+  if (definitionId == null) return false;
+  const idx = getLoadLookupIndex(ctx.ir);
+  const byDef = idx.loadsByForwardingDefId.get(String(definitionId)) || [];
+  const byLoc = inst.loc?.key != null ? (idx.memByLocKey.get(inst.loc.key) || []) : byDef;
+  const candidates = byDef.length <= byLoc.length ? byDef : byLoc;
+  const loads = candidates.filter((x) => loadReachedByStore(x, inst, ctx));
   if (!loads.length) return false;
   return loads.every((load) =>
     (reg && canonicalRegister(load.dst?.reg) === reg) || feedsReturn(load.dst, ctx));
@@ -813,6 +1004,210 @@ function cStringLiteral(text) {
   return JSON.stringify(text).replace(/\\\\([nrt])/g, '\\$1');
 }
 
+function isProvablyReadOnlyDataSection(sec) {
+  if (!sec || typeof sec !== 'object') return false;
+  if (sec.exec === true || sec.executable === true || sec.writable === true || sec.write === true
+      || sec.zerofill === true || sec.nobits === true) return false;
+  const permRaw = sec.perm ?? sec.perms ?? sec.prot;
+  if (typeof permRaw === 'string') {
+    const p = permRaw.trim().toLowerCase();
+    if (/[wx]/.test(p) || !/r/.test(p)) return false;
+  }
+  const shFlags = sec.shFlags ?? sec.sh_flags;
+  if (typeof shFlags === 'number' || typeof shFlags === 'bigint') {
+    const f = BigInt(shFlags);
+    if ((f & 1n) !== 0n || (f & 4n) !== 0n) return false; // SHF_WRITE | SHF_EXECINSTR
+  }
+  const name = String(sec.name ?? sec.section ?? sec.sectname ?? '').trim();
+  if (/^(?:\.[st]?bss(?:\.|$)|__bss$|__common$|\.[st]?data(?:\.|$)|__data$|\.text(?:\.|$)|__text$|\.plt(?:\.|$)|\.got(?:\.|$))/i.test(name)) {
+    return false;
+  }
+  if (/^(?:\.rodata(?:\.|$)|\.rdata(?:\.|$)|__cstring$|__const$|__ustring$|__TEXT,__cstring$|__TEXT,__const$)/i.test(name)) {
+    return true;
+  }
+  if (sec.readOnly === true || sec.readonly === true) return true;
+  if (sec.readable === true && sec.writable === false && sec.executable === false) return true;
+  if (typeof permRaw === 'string' && /^r-?-$/i.test(permRaw.trim())) return true;
+  return false;
+}
+
+function sectionAddressBounds(sec) {
+  if (!sec || typeof sec !== 'object') return null;
+  const rawStart = sec.addr ?? sec.vaddr ?? sec.va ?? sec.start ?? sec.address;
+  if (rawStart == null) return null;
+  let start;
+  try { start = BigInt(rawStart); } catch { return null; }
+  const rawSize = sec.size ?? sec.memsz ?? sec.length ?? sec.bytes?.length ?? sec.data?.length;
+  if (rawSize == null) return null;
+  let size;
+  try { size = BigInt(rawSize); } catch { return null; }
+  if (size <= 0n) return null;
+  return { start, end: start + size };
+}
+
+function readByteFromSection(sec, target, start, ctx) {
+  const rel = Number(target - start);
+  const inlineBytes = sec.bytes ?? sec.data;
+  if (inlineBytes && rel >= 0 && rel < inlineBytes.length) {
+    return inlineBytes[rel];
+  }
+  const fileOffset = sec.offset ?? sec.fileOffset;
+  const fileBytes = ctx.opts?.fileBytes ?? ctx.opts?.bytes ?? ctx.opts?.binary?.bytes;
+  if (fileOffset != null && fileBytes) {
+    const pos = Number(BigInt(fileOffset) + (target - start));
+    if (pos >= 0 && pos < fileBytes.length) return fileBytes[pos];
+  }
+  try {
+    const direct = ctx.opts?.readByte?.(target) ?? ctx.opts?.byteAt?.(target) ?? ctx.opts?.binary?.readByte?.(target);
+    if (typeof direct === 'number') return direct;
+    const buf = ctx.opts?.readBytes?.(target, 1) ?? ctx.opts?.binary?.readBytes?.(target, 1);
+    if (buf && buf.length >= 1) return buf[0];
+  } catch { /* optional reader */ }
+  return null;
+}
+
+function findSectionForAddress(target, ctx) {
+  try {
+    const directSec = ctx.opts?.sectionFor?.(target) ?? ctx.opts?.regionFor?.(target);
+    if (directSec) {
+      const bounds = sectionAddressBounds(directSec);
+      if (!bounds || (target >= bounds.start && target < bounds.end)) {
+        return { sec: directSec, start: bounds ? bounds.start : target, end: bounds ? bounds.end : null };
+      }
+    }
+  } catch { /* optional lookup */ }
+  const lists = [
+    ctx.opts?.sections, ctx.opts?.segments, ctx.opts?.regions,
+    ctx.opts?.binary?.sections, ctx.opts?.binary?.segments, ctx.opts?.binary?.regions,
+    ctx.model?.sections, ctx.model?.regions,
+  ];
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const sec of list) {
+      const bounds = sectionAddressBounds(sec);
+      if (bounds && target >= bounds.start && target < bounds.end) {
+        return { sec, start: bounds.start, end: bounds.end };
+      }
+    }
+  }
+  return null;
+}
+
+function isKnownDataOrDeclaredGlobal(target, ctx) {
+  if (target == null) return false;
+  const secInfo = findSectionForAddress(target, ctx);
+  if (secInfo?.sec) {
+    const name = String(secInfo.sec.name ?? secInfo.sec.section ?? secInfo.sec.sectname ?? '').trim();
+    if (/^(?:\.[st]?(?:data|bss|rodata)(?:\.|$)|__(?:data|bss|common|const|cstring|rodata)(?:$|\.))|\.(?:data|bss|rodata)\b/i.test(name)) {
+      return true;
+    }
+  }
+  try {
+    if (ctx.opts?.symbolFor?.(target)) return true;
+  } catch { /* optional lookup */ }
+  const hexKey = hex(target);
+  const globalName = `global_${hexKey}`;
+  for (const container of [ctx.opts?.globals, ctx.model?.globals, ctx.ir?.globals]) {
+    if (!container) continue;
+    if (container instanceof Set || container instanceof Map) {
+      if (container.has(target) || container.has(hexKey) || container.has(globalName)) return true;
+    } else if (Array.isArray(container)) {
+      for (const g of container) {
+        if (g === target || g === globalName || g?.name === globalName) return true;
+        if (g?.address != null) {
+          try { if (BigInt(g.address) === target) return true; } catch { /* ignore */ }
+        }
+      }
+    } else if (typeof container === 'object') {
+      if (globalName in container || hexKey in container || String(target) in container) return true;
+    }
+  }
+  return false;
+}
+
+function readOnlyShortCStringAt(addr, ctx) {
+  let target;
+  try { target = BigInt(addr); } catch { return null; }
+  const foundSec = findSectionForAddress(target, ctx);
+  const matched = foundSec?.sec || null;
+  const matchedStart = foundSec?.start ?? null;
+  const matchedEnd = foundSec?.end ?? null;
+  if (!matched || !isProvablyReadOnlyDataSection(matched)) return null;
+  // Recover empty ("") and short 1-3 byte NUL-terminated printable ASCII literals
+  // (e.g. "-1", "NO", "YES", "No", "Yes") that string scanners with min-length 4 skip.
+  const bytes = [];
+  for (let i = 0; i <= 3; i++) {
+    const pos = target + BigInt(i);
+    if (matchedEnd != null && pos >= matchedEnd) return null;
+    const byte = readByteFromSection(matched, pos, matchedStart, ctx);
+    if (byte == null) return null;
+    if (byte === 0) return JSON.stringify(String.fromCharCode(...bytes));
+    if (byte < 0x20 || byte > 0x7e) return null;
+    bytes.push(byte);
+  }
+  return null;
+}
+
+function isAddressDerivedValue(value, depth = 0, seen = null, memo = null) {
+  if (!value || depth > 64) return false;
+  if (value.addressDerived === true || value.def?.extra?.addressDerived === true) return true;
+  const visitKey = value.id != null ? value.id : value;
+  const cache = memo || new Map();
+  if (cache.has(visitKey)) return cache.get(visitKey);
+  const visited = seen || new Set();
+  if (visited.has(visitKey)) return false;
+  visited.add(visitKey);
+  let res = false;
+  try {
+    const op = value.def?.op;
+    if (!op) res = false;
+    else if (op === OP.ADDR) res = true;
+    else if (op === OP.MOV || (OP.CAST != null && op === OP.CAST) || op === 'cast') {
+      res = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth, visited, cache);
+    } else if (op === OP.BIN && (value.def.sub === 'add' || value.def.sub === 'sub')) {
+      const leftAddr = isAddressDerivedValue(valueOf(value.def.args?.[0]), depth + 1, visited, cache);
+      const rightAddr = isAddressDerivedValue(valueOf(value.def.args?.[1]), depth + 1, visited, cache);
+      res = value.def.sub === 'sub' ? (leftAddr && !rightAddr) : (leftAddr || rightAddr);
+    }
+  } finally {
+    visited.delete(visitKey);
+  }
+  if (visited.size === 0 || res === true) cache.set(visitKey, res);
+  return res;
+}
+
+function hasAddressRefForAddr(addr, defRow, ctx, { anyRow = false } = {}) {
+  if (addr == null) return false;
+  let target;
+  try { target = BigInt(addr); } catch { return false; }
+  for (const ref of ctx?.model?.addressRefs || []) {
+    if (ref?.addr == null) continue;
+    if (!anyRow && ref.row !== defRow) continue;
+    try { if (BigInt(ref.addr) === target) return true; } catch { /* malformed ref */ }
+  }
+  return false;
+}
+
+function foldedAddressOfBin(inst) {
+  if (!inst || inst.op !== OP.BIN || (inst.sub !== 'add' && inst.sub !== 'sub')) return null;
+  const lv = valueOf(inst.args?.[0]);
+  const rv = valueOf(inst.args?.[1]);
+  const lc = lv?.const ?? (lv?.def?.op === OP.ADDR ? (lv.def.extra?.value ?? lv.def.extra?.target ?? null) : null);
+  const rc = rv?.const ?? (rv?.def?.op === OP.ADDR ? (rv.def.extra?.value ?? rv.def.extra?.target ?? null) : null);
+  if (lc == null || rc == null) return null;
+  try {
+    return inst.sub === 'add' ? BigInt(lc) + BigInt(rc) : BigInt(lc) - BigInt(rc);
+  } catch {
+    return null;
+  }
+}
+
+function formatAddressOrGlobal(addr, ctx) {
+  const target = BigInt(addr);
+  const sym = ctx.opts?.symbolFor?.(target);
+  return sym ? safeIdent(sym) : `&global_${hex(target)}`;
+}
+
 function stringLiteralAt(addr, ctx) {
   if (addr == null) return null;
   try {
@@ -823,19 +1218,46 @@ function stringLiteralAt(addr, ctx) {
     if (ref?.addr == null || typeof ref.text !== 'string') continue;
     try { if (BigInt(ref.addr) === BigInt(addr)) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
   }
-  return null;
+  return readOnlyShortCStringAt(addr, ctx);
 }
 
 function stringLiteralForValue(value, ctx) {
   if (value?.const == null) return null;
   const defRow = value.def?.row;
+  let hasAddressRefProof = false;
   for (const ref of ctx.model.addressRefs || []) {
-    if (ref?.row !== defRow || ref?.addr == null || typeof ref.text !== 'string') continue;
-    try { if (BigInt(ref.addr) === BigInt(value.const)) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
+    if (ref?.row !== defRow || ref?.addr == null) continue;
+    let matchesAddr = false;
+    try { matchesAddr = BigInt(ref.addr) === BigInt(value.const); } catch { /* malformed ref */ }
+    if (!matchesAddr) continue;
+    if (typeof ref.text === 'string') return cStringLiteral(ref.text);
+    hasAddressRefProof = true;
   }
-  // A direct ADR/ADRP value is intrinsically address-like. For arithmetic
-  // constants require the exact row+addressRef proof above.
-  return value.def?.op === OP.ADDR ? stringLiteralAt(value.const, ctx) : null;
+  // A direct ADR/ADRP value (or folded adrp+add derived from OP.ADDR), or a value
+  // backed by an exact row+addr entry in model.addressRefs, is provably address-like.
+  // Plain arithmetic constants without addressRef proof never query stringFor.
+  return (hasAddressRefProof || isAddressDerivedValue(value)) ? stringLiteralAt(value.const, ctx) : null;
+}
+
+function resolveAddressConstForValue(value, ctx, { allowAnyAddressRef = false, forceAddress = false } = {}) {
+  if (!value) return null;
+  const rawAddr = value.const ?? (value.def?.op === OP.CONST ? value.def.extra?.value : null);
+  if (rawAddr == null) return null;
+  let target;
+  try { target = BigInt(rawAddr); } catch { return null; }
+  const defRow = value.def?.row;
+  const derived = isAddressDerivedValue(value);
+  let hasRef = hasAddressRefForAddr(target, defRow, ctx, { anyRow: allowAnyAddressRef });
+  if (!derived && !hasRef && !allowAnyAddressRef && isKnownDataOrDeclaredGlobal(target, ctx)) {
+    hasRef = hasAddressRefForAddr(target, defRow, ctx, { anyRow: true });
+  }
+  if (!derived && !hasRef && !forceAddress) return null;
+  const literal = stringLiteralForValue(value, ctx) || stringLiteralAt(target, ctx);
+  if (literal) return { kind: 'string', text: literal };
+  if (target !== 0n && (derived || hasRef)) {
+    return { kind: 'address', text: formatAddressOrGlobal(target, ctx) };
+  }
+  return null;
 }
 
 function formatFloatConst(v, bits = 64) {
@@ -848,38 +1270,274 @@ function formatFloatConst(v, bits = 64) {
   return Number(bits || 64) <= 32 ? text + 'f' : text;
 }
 
-function formatConst(v, bits = 64, signed = null) {
+function floatConstValueOf(value) {
+  if (!value) return null;
+  if (value.floatConst != null) return value.floatConst;
+  if (typeof value.float === 'number') return value.float;
+  const d = value.def;
+  if (d?.op === OP.CONST) {
+    if (d.extra?.floatConst != null) return d.extra.floatConst;
+    if (typeof d.extra?.float === 'number') return d.extra.float;
+    if (d.extra?.constKind === 'float' && (value.const != null || d.extra?.value != null)) {
+      return value.const ?? d.extra.value;
+    }
+  }
+  if (value.constKind === 'float' && (value.const != null || d?.extra?.value != null)) {
+    return value.const ?? d?.extra?.value;
+  }
+  return null;
+}
+
+function formatConst(v, bits = 64, signed = null, constKind = null) {
   if (v == null) return 'unknown';
+  if (constKind === 'float') return formatFloatConst(v, bits);
   return integerText(v, bits, signed);
 }
 
+const DOM_DEPTH_CACHE = new WeakMap();
+
 function dominatorDepth(ir, block) {
+  if (block == null || block < 0) return 0;
+  const blocks = ir?.blocks || [];
+  let cached = DOM_DEPTH_CACHE.get(ir);
+  if (!cached || cached.blockCount !== blocks.length || cached.idomRef !== ir.idom) {
+    cached = { blockCount: blocks.length, idomRef: ir.idom, depths: new Int32Array(blocks.length) };
+    DOM_DEPTH_CACHE.set(ir, cached);
+  }
+  const depths = cached.depths;
+  if (block < depths.length && depths[block] > 0) return depths[block];
+  const maxSteps = blocks.length + 1;
   let d = 0, b = block, guard = 0;
-  while (b != null && b >= 0 && guard++ < ir.blocks.length + 2) { d++; b = ir.idom?.[b] ?? ir.blocks[b]?.idom ?? -1; }
+  const path = [];
+  while (b != null && b >= 0 && guard++ <= maxSteps) {
+    if (b < depths.length && depths[b] > 0) {
+      d += depths[b];
+      break;
+    }
+    path.push(b);
+    d++;
+    b = ir.idom?.[b] ?? blocks[b]?.idom ?? -1;
+  }
+  if (guard <= maxSteps) {
+    for (let i = 0; i < path.length; i++) {
+      const bi = path[i];
+      if (bi >= 0 && bi < depths.length) depths[bi] = d - i;
+    }
+  }
   return d;
 }
 
-/** SSA value reaching a call/block point, based only on dominance/version facts. */
-export function reachingRegisterValue(ir, atInst, reg) {
+function defBlockDominates(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const dom = ir.dominators?.[to];
+  if (dom && typeof dom.has === 'function') return dom.has(from);
+  let cur = to, guard = 0;
+  while (cur != null && cur >= 0 && guard++ <= (ir.blocks?.length || 0) + 1) {
+    cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+    if (cur === from) return true;
+  }
+  return false;
+}
+
+const BLOCK_REACH_CACHE = new WeakMap();
+const VALUES_BY_REG_CACHE = new WeakMap();
+
+function getReachableBlockSet(ir, from) {
+  let perIr = BLOCK_REACH_CACHE.get(ir);
+  const blockCount = ir?.blocks?.length || 0;
+  if (!perIr || perIr.blockCount !== blockCount) {
+    perIr = { blockCount, map: new Map() };
+    BLOCK_REACH_CACHE.set(ir, perIr);
+  }
+  let seen = perIr.map.get(from);
+  if (seen) return seen;
+  seen = new Set([from]);
+  const stack = [from];
+  while (stack.length) {
+    const current = stack.pop();
+    const successors = ir.blocks?.[current]?.succ ?? ir.blocks?.[current]?.successors ?? [];
+    for (const edge of successors) {
+      const next = edge && typeof edge === 'object' ? (edge.to ?? edge.block ?? edge.id) : edge;
+      if (next == null || seen.has(next)) continue;
+      seen.add(next);
+      stack.push(next);
+    }
+  }
+  perIr.map.set(from, seen);
+  return seen;
+}
+
+function getValuesByReg(ir, isAArch64 = false) {
+  const values = ir?.values || [];
+  const flag = Boolean(isAArch64);
+  let cached = VALUES_BY_REG_CACHE.get(ir);
+  if (!cached || cached.length !== values.length) {
+    cached = { length: values.length, std: null, aarch64: null };
+    VALUES_BY_REG_CACHE.set(ir, cached);
+  }
+  const existing = flag ? cached.aarch64 : cached.std;
+  if (existing) return existing;
+  const byReg = new Map();
+  for (const v of values) {
+    if (!v?.reg || !v.def) continue;
+    const key = canonicalRegister(v.reg, flag);
+    let list = byReg.get(key);
+    if (!list) { list = []; byReg.set(key, list); }
+    list.push(v);
+  }
+  if (flag) cached.aarch64 = byReg;
+  else cached.std = byReg;
+  return byReg;
+}
+
+const BLOCK_INST_POS_CACHE = new WeakMap();
+
+function blockInstPosition(ir, inst) {
+  if (!ir || !inst || inst.block == null) return null;
+  const block = ir.blocks?.[inst.block];
+  if (!block) return null;
+  if (inst.op === OP.PHI) return -1;
+  const insts = block.insts;
+  if (!Array.isArray(insts) || insts.length === 0) return null;
+  let cached = BLOCK_INST_POS_CACHE.get(insts);
+  if (!cached || cached.length !== insts.length) {
+    const map = new Map();
+    for (let i = 0; i < insts.length; i += 1) {
+      const cur = insts[i];
+      if (!map.has(cur)) map.set(cur, i);
+    }
+    cached = { length: insts.length, map };
+    BLOCK_INST_POS_CACHE.set(insts, cached);
+  }
+  let idx = cached.map.get(inst);
+  if (idx !== undefined && insts[idx] === inst) return idx;
+  if (idx !== undefined) {
+    // Array elements were modified in place with the same length; rebuild index.
+    const map = new Map();
+    for (let i = 0; i < insts.length; i += 1) {
+      const cur = insts[i];
+      if (!map.has(cur)) map.set(cur, i);
+    }
+    cached = { length: insts.length, map };
+    BLOCK_INST_POS_CACHE.set(insts, cached);
+    idx = map.get(inst);
+    return idx !== undefined ? idx : null;
+  }
+  return null;
+}
+
+function sameBlockPrecedes(ir, a, b) {
+  const aPos = blockInstPosition(ir, a);
+  const bPos = blockInstPosition(ir, b);
+  if (aPos != null && bPos != null) return aPos < bPos;
+  return a.row != null && b.row != null && a.row < b.row;
+}
+
+function sameBlockFollows(ir, a, b) {
+  const aPos = blockInstPosition(ir, a);
+  const bPos = blockInstPosition(ir, b);
+  if (aPos != null && bPos != null) return aPos > bPos;
+  if (a.row == null || b.row == null) return false;
+  return a.row > b.row;
+}
+
+function blockCanReach(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  return getReachableBlockSet(ir, from).has(to);
+}
+
+function definitionCanReachUse(ir, definition, atInst) {
+  if (definition.block === atInst.block) {
+    return sameBlockPrecedes(ir, definition, atInst);
+  }
+  return blockCanReach(ir, definition.block, atInst.block);
+}
+
+function definitionMayOverrideCandidate(ir, definition, candidateDefinition) {
+  if (!candidateDefinition) return true;
+  if (definition.block === candidateDefinition.block) {
+    return sameBlockFollows(ir, definition, candidateDefinition);
+  }
+  return blockCanReach(ir, candidateDefinition.block, definition.block);
+}
+
+export function reachingRegisterValue(ir, atInst, reg, optsOrIsAArch64 = undefined) {
   if (!ir || !atInst || !reg) return null;
+  const isAArch64 = typeof optsOrIsAArch64 === 'boolean'
+    ? optsOrIsAArch64
+    : isAArch64Context(ir, optsOrIsAArch64);
+  const canonReg = canonicalRegister(reg, isAArch64);
+  const regValues = getValuesByReg(ir, isAArch64).get(canonReg) || [];
   let best = ir.args?.get?.(reg) || null;
-  let bestDepth = -1, bestRow = -Infinity;
-  for (const v of ir.values || []) {
-    if (v.reg !== reg || !v.def) continue;
+  if (!best && ir.args?.entries) {
+    for (const [argReg, argVal] of ir.args.entries()) {
+      if (canonicalRegister(argReg, isAArch64) === canonReg) { best = argVal; break; }
+    }
+  }
+  let bestDepth = -1, bestRow = -Infinity, bestPos = -Infinity, bestSameBlock = false;
+  for (const v of regValues) {
+    if (canonicalRegister(v.reg, isAArch64) !== canonReg || !v.def) continue;
     const d = v.def;
     if (d === atInst) continue;
     if (d.block === atInst.block) {
-      if (d.row == null || atInst.row == null || d.row >= atInst.row) continue;
-      const depth = 100000 + d.row;
-      if (depth > bestDepth) { best = v; bestDepth = depth; bestRow = d.row; }
+      if (!sameBlockPrecedes(ir, d, atInst)) continue;
+      const dPos = blockInstPosition(ir, d);
+      const isBetter = !bestSameBlock
+        || (dPos != null && bestPos > -Infinity ? dPos > bestPos : (d.row ?? -Infinity) > bestRow);
+      if (isBetter) {
+        best = v; bestPos = dPos ?? -Infinity; bestRow = d.row ?? -Infinity; bestSameBlock = true;
+      }
       continue;
     }
-    const dom = ir.dominators?.[atInst.block];
-    if (!dom || !dom.has(d.block)) continue;
+    if (bestSameBlock || !defBlockDominates(ir, d.block, atInst.block)) continue;
     const depth = dominatorDepth(ir, d.block);
-    if (depth > bestDepth || (depth === bestDepth && (d.row ?? -Infinity) > bestRow)) {
-      best = v; bestDepth = depth; bestRow = d.row ?? -Infinity;
+    const dPos = blockInstPosition(ir, d);
+    const sameDepthBetter = depth === bestDepth && (
+      (dPos != null && bestPos > -Infinity && best?.def?.block === d.block)
+        ? dPos > bestPos
+        : (d.row ?? -Infinity) > bestRow
+    );
+    if (depth > bestDepth || sameDepthBetter) {
+      best = v; bestDepth = depth; bestPos = dPos ?? -Infinity; bestRow = d.row ?? -Infinity;
     }
+  }
+  if (bestSameBlock) return best?.clobbered ? null : best;
+
+  const blockPhis = ir.blocks?.[atInst.block]?.phis;
+  if (Array.isArray(blockPhis)) {
+    for (const phi of blockPhis) {
+      const dst = phi?.dst;
+      if (dst && !dst.clobbered && canonicalRegister(dst.reg, isAArch64) === canonReg) {
+        return dst;
+      }
+    }
+  }
+
+  const stripCopyChain = (val) => {
+    let cur = val;
+    const seen = new Set();
+    while (cur && cur.def && cur.def.op === OP.MOV
+      && (!cur.def.sub || cur.def.sub === 'mov' || cur.def.sub === 'copy')
+      && cur.def.args?.length === 1) {
+      const next = valueOf(cur.def.args[0]);
+      if (!next || next === cur) break;
+      const key = cur.id != null ? cur.id : cur;
+      if (seen.has(key)) break;
+      seen.add(key);
+      cur = next;
+    }
+    return cur;
+  };
+  const bestRoot = best ? stripCopyChain(best) : null;
+  const candidateDefinition = best?.def ?? null;
+  for (const v of regValues) {
+    if (v === best || canonicalRegister(v.reg, isAArch64) !== canonReg || !v.def) continue;
+    if (bestRoot && stripCopyChain(v) === bestRoot) continue;
+    const d = v.def;
+    if (d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;
+    if (definitionMayOverrideCandidate(ir, d, candidateDefinition)) return null;
   }
   return best?.clobbered ? null : best;
 }
@@ -960,30 +1618,93 @@ export function readSemanticLocalDeclaration(node, ir) {
     ? owner : null;
 }
 
+const DECL_WORD_TOKEN_RE = /[A-Za-z0-9_]+/g;
+const DECL_PURE_WORD_RE = /^[A-Za-z0-9_]+$/;
+
 function semanticLocalDeclarations(types, body, ctx) {
   const text = body.map((item) => item.text || '').join('\n');
+  const usedTokens = new Set();
+  DECL_WORD_TOKEN_RE.lastIndex = 0;
+  let tokMatch;
+  while ((tokMatch = DECL_WORD_TOKEN_RE.exec(text)) !== null) usedTokens.add(tokMatch[0]);
   const out = [];
   const seen = new Set();
-  for (const local of types.locals || []) {
+  const locals = types.locals || [];
+  let slotByName = null;
+  if (locals.length > 0 && Array.isArray(ctx.ir.stackSlots) && ctx.ir.stackSlots.length > 0) {
+    slotByName = new Map();
+    for (const candidate of ctx.ir.stackSlots) {
+      if (!slotByName.has(candidate.name)) slotByName.set(candidate.name, candidate);
+    }
+  }
+  for (const local of locals) {
     const name = String(local.slot || '');
     if (!/^[A-Za-z_]\w*$/.test(name) || seen.has(name)) continue;
-    if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) continue;
+    if (!usedTokens.has(name)) continue;
     const type = semanticLocalDeclarationType(local, ctx);
     if (!type) continue;
     seen.add(name);
     const node = line('decl', 1, `${type} ${name};`, null);
-    const slot = (ctx.ir.stackSlots || []).find(candidate => candidate.name === local.slot);
+    const slot = slotByName ? slotByName.get(local.slot) : undefined;
     if (slot?.key) localDeclarationOwners.set(node, Object.freeze({ ir:ctx.ir, slot, key:slot.key, name, type }));
     out.push(node);
   }
-  for (const [id, name] of ctx.materialNames || []) {
-    const value = (ctx.ir.values || []).find((candidate) => candidate.id === id);
-    if (value?.def?.op !== OP.LOAD || seen.has(name) || !text.includes(name)) continue;
-    const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
-    const bits = [8, 16, 32, 64].includes(Number(value.bits)) ? Number(value.bits) : 64;
-    const type = recovered || `${value.signed === true ? 'int' : 'uint'}${bits}`;
+  const materialNames = ctx.materialNames;
+  let valueById = null;
+  if (materialNames && (materialNames.size > 0 || materialNames.length > 0) && Array.isArray(ctx.ir.values)) {
+    valueById = new Map();
+    for (const candidate of ctx.ir.values) {
+      if (!valueById.has(candidate.id)) valueById.set(candidate.id, candidate);
+    }
+  }
+  for (const [id, name] of materialNames || []) {
+    const value = valueById ? valueById.get(id) : undefined;
+    if (!value?.def || seen.has(name) || (!usedTokens.has(name) && !text.includes(name))) continue;
+    if (value.def.op === OP.LOAD) {
+      const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
+      const bits = [8, 16, 32, 64, 128].includes(Number(value.bits)) ? Number(value.bits) : 64;
+      const elemType = memoryElementType(value.def, bits / 8, ctx.types);
+      const fpLoadType = (elemType === 'float' || elemType === 'double') ? elemType : null;
+      const type = recovered || fpLoadType || `${value.signed === true ? 'int' : 'uint'}${bits}`;
+      seen.add(name);
+      out.push(line('decl', 1, `${type} ${name};`, null));
+    } else if (value.def.op === OP.CALL) {
+      const callOpts = ctx.callByRow ? { ...(ctx.opts || {}), callByRow: ctx.callByRow } : ctx.opts;
+      const calleeName = callCalleeNameForOrder(value.def, callOpts);
+      const sig = calleeName ? knownCallSignature(calleeName) : null;
+      const retType = sig?.retType;
+      const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
+      const fpType = (retType === 'double' || retType === 'float')
+        ? retType
+        : ((recovered === 'double' || recovered === 'float') ? recovered : null);
+      if (fpType) {
+        seen.add(name);
+        out.push(line('decl', 1, `${fpType} ${name};`, null));
+      }
+    }
+  }
+  const phiLowering = ctx.phiLowering;
+  if (phiLowering) {
+    const phiEntries = [
+      ...(phiLowering.vars ? phiLowering.vars.values() : []),
+      ...(phiLowering.temps ? phiLowering.temps.values() : []),
+    ];
+    for (const entry of phiEntries) {
+      const name = entry?.name;
+      if (!name || seen.has(name)) continue;
+      if (DECL_PURE_WORD_RE.test(name)) {
+        if (!usedTokens.has(name)) continue;
+      } else if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) {
+        continue;
+      }
+      seen.add(name);
+      out.push(line('decl', 1, `${entry.type || 'uint64'} ${name};`, null));
+    }
+  }
+  for (const [name, type] of ctx.hoistedInductionDecls || []) {
+    if (!name || seen.has(name)) continue;
     seen.add(name);
-    out.push(line('decl', 1, `${type} ${name};`, null));
+    out.push(line('decl', 1, `${type || 'int64'} ${name};`, null));
   }
   return out;
 }
@@ -999,9 +1720,196 @@ function cppMemberTypeSuffix(base, offset, ctx) {
   return label ? ` /* ${label} */` : '';
 }
 
+export function memoryElementType(inst, sizeBytes, types = null) {
+  const raw = Number(sizeBytes || 0);
+  const bytes = (raw === 1 || raw === 2 || raw === 4 || raw === 8 || raw === 16) ? raw : 8;
+  const val = inst?.op === OP.STORE ? inst?.args?.[0]?.value : inst?.dst;
+  const unwrappedVal = val ? unwrapValue(val) : null;
+  const inferred = (val && types?.values?.get?.(val.id))
+    || (unwrappedVal && types?.values?.get?.(unwrappedVal.id))
+    || (inst?.loc?.key && types?.locations?.get?.(inst.loc.key))
+    || null;
+  const inferredName = typeNameOf(inferred);
+  const valTypeName = typeNameOf(val?.type || val?.semanticType || unwrappedVal?.type || unwrappedVal?.semanticType);
+  const isFp = inst?.float === true
+    || inst?.isFloat === true
+    || inst?.extra?.float === true
+    || inst?.extra?.isFloat === true
+    || inst?.addr?.float === true
+    || val?.constKind === 'float'
+    || val?.floatConst != null
+    || typeof val?.float === 'number'
+    || (val?.float != null && val?.const == null)
+    || unwrappedVal?.constKind === 'float'
+    || unwrappedVal?.floatConst != null
+    || typeof unwrappedVal?.float === 'number'
+    || val?.def?.extra?.float === true
+    || typeof val?.def?.extra?.float === 'number'
+    || (val?.reg != null && /^[sd]\d+$/i.test(String(val.reg)))
+    || (unwrappedVal?.reg != null && /^[sd]\d+$/i.test(String(unwrappedVal.reg)))
+    || inferred?.kind === 'float'
+    || inferred?.kind === 'floating'
+    || inferred?.cType === 'float'
+    || inferred?.cType === 'double'
+    || inferred?.name === 'float'
+    || inferred?.name === 'double'
+    || inferredName === 'float'
+    || inferredName === 'double'
+    || valTypeName === 'float'
+    || valTypeName === 'double'
+    || (typeof inst?.sub === 'string' && /^(?:fldr|fstr|fload|fstore|movss|movsd|vmovss|vmovsd)/i.test(inst.sub))
+    || (typeof inst?.mnemonic === 'string' && /^(?:fldr|fstr|movss|movsd|vmovss|vmovsd)/i.test(inst.mnemonic));
+  if (isFp && bytes === 4) return 'float';
+  if (isFp && bytes === 8) return 'double';
+  if (bytes === 16) return 'uint128';
+  const isSigned = inst?.signed === true
+    || inst?.extra?.signed === true
+    || inst?.addr?.signed === true
+    || (typeof inst?.sub === 'string' && /^(?:ldrs[bhw]|ldurs[bhw]|sload|signed)/i.test(inst.sub))
+    || (typeof inst?.mnemonic === 'string' && /^(?:ldrs[bhw]|ldurs[bhw]|movs[xzb]|movsxd)/i.test(inst.mnemonic))
+    || (inst?.op === OP.LOAD && inst?.dst?.signed === true);
+  const prefix = isSigned ? 'int' : 'uint';
+  return `${prefix}${bytes * 8}_t`;
+}
+
+function shouldSuppressRodataStringForMem(inst, loc, types, defaultSize = 0) {
+  const size = Number(inst?.addr?.size || inst?.size || loc?.size || defaultSize);
+  if (size > 1) return true;
+  if (inst?.extra?.float === true || inst?.dst?.kind === 'float') return true;
+  const dstType = types?.values?.get?.(inst?.dst?.id);
+  if (dstType && (dstType.kind === 'float' || dstType.name === 'float' || dstType.name === 'double')) return true;
+  const elem = size > 0 ? memoryElementType(inst, size, types) : null;
+  if (elem === 'float' || elem === 'double') return true;
+  return false;
+}
+
+function isSpDerivedValue(v, memo = new Map(), depth = 0) {
+  if (!v || depth > 12) return false;
+  if (v.id != null && memo.has(v.id)) return memo.get(v.id);
+  if (v.id != null) memo.set(v.id, false);
+  let res = false;
+  if (String(v.reg || '').toLowerCase() === 'sp') {
+    res = true;
+  } else if (v.def) {
+    const d = v.def;
+    if (d.op === OP.MOV) {
+      res = isSpDerivedValue(valueOf(d.args?.[0]), memo, depth + 1);
+    } else if (d.op === OP.BIN && (d.sub === 'add' || d.sub === 'sub')) {
+      res = isSpDerivedValue(valueOf(d.args?.[0]), memo, depth + 1)
+        || (d.sub === 'add' && isSpDerivedValue(valueOf(d.args?.[1]), memo, depth + 1));
+    } else if (d.op === OP.PHI) {
+      res = (d.incoming || []).some((inc) => isSpDerivedValue(inc?.value, memo, depth + 1));
+    }
+  }
+  if (v.id != null) memo.set(v.id, res);
+  return res;
+}
+
+function hasEscapedStackFrame(ctx) {
+  if (!ctx?.ir) return false;
+  if (ctx._hasEscapedStackFrame !== undefined) return ctx._hasEscapedStackFrame;
+  const memo = new Map();
+  let escaped = false;
+  const checkCallArg = (v) => {
+    if (!v) return false;
+    const reg = String(v.reg || '').toLowerCase();
+    if (reg === 'sp' || reg === 'x29' || reg === 'fp') return false;
+    return isSpDerivedValue(v, memo);
+  };
+  for (const inst of ctx.ir.instructions || []) {
+    if (!inst) continue;
+    if (inst.op === OP.CALL) {
+      if ((inst.args || []).some((a) => checkCallArg(valueOf(a)))) { escaped = true; break; }
+      if (Array.isArray(inst.callArguments)) {
+        for (const desc of inst.callArguments) {
+          const directVal = desc?.value?.value ?? desc?.value ?? (desc?.kind && Array.isArray(desc?.uses) ? desc : null);
+          if (checkCallArg(directVal)) { escaped = true; break; }
+        }
+        if (escaped) break;
+      }
+      for (let i = 0; i < 8; i++) {
+        if (checkCallArg(reachingRegisterValue(ctx.ir, inst, 'x' + i))) { escaped = true; break; }
+      }
+      if (escaped) break;
+    } else if (inst.op === OP.PHI) {
+      const dstReg = String(inst.dst?.reg || '').toLowerCase();
+      if (dstReg !== 'sp' && (inst.incoming || []).some((inc) => isSpDerivedValue(inc?.value, memo))) {
+        escaped = true;
+        break;
+      }
+    } else if (inst.op === OP.STORE) {
+      if (isSpDerivedValue(valueOf(inst.args?.[0]), memo)) { escaped = true; break; }
+      if (inst.loc?.kind !== MK.STACK && (isSpDerivedValue(inst.addr?.base, memo) || isSpDerivedValue(inst.loc?.base, memo))) {
+        escaped = true;
+        break;
+      }
+    } else if (inst.op === OP.LOAD) {
+      if (inst.loc?.kind !== MK.STACK && (isSpDerivedValue(inst.addr?.base, memo) || isSpDerivedValue(inst.loc?.base, memo))) {
+        escaped = true;
+        break;
+      }
+    } else if (inst.op === OP.RET) {
+      if ((inst.args || []).some((a) => isSpDerivedValue(valueOf(a), memo))) { escaped = true; break; }
+    }
+  }
+  ctx._hasEscapedStackFrame = escaped;
+  return escaped;
+}
+
+const PRIMITIVE_POINTER_RE = /^(?:const\s+)?(?:void|char|signed\s+char|unsigned\s+char|short|unsigned\s+short|int|unsigned\s+int|long|unsigned\s+long|long\s+long|unsigned\s+long\s+long|float|double|bool|_Bool|size_t|ssize_t|ptrdiff_t|intptr_t|uintptr_t|u?int(?:8|16|32|64|128)(?:_t)?)\s*\*+$/i;
+
+function isKnownStructPointerType(baseType) {
+  if (!baseType || typeof baseType !== 'object') return false;
+  if (baseType.kind === 'struct' || baseType.pointee?.kind === 'struct') return true;
+  if (baseType.className || baseType.semanticType?.className || baseType.pointee?.className) return true;
+  if (baseType.kind === 'pointer') {
+    const label = String(baseType.cType || baseType.name || '').trim();
+    if (label && /\*$/.test(label) && !PRIMITIVE_POINTER_RE.test(label)) return true;
+  }
+  return false;
+}
+
+const INT64_MAX_DISP = 9223372036854775807n;
+
+function normalizeSignedDisp64(raw) {
+  return BigInt.asIntN(64, BigInt(raw));
+}
+
+function formatSignedDispMagnitude(negDisp) {
+  return negDisp > INT64_MAX_DISP ? `${negDisp.toString()}ULL` : negDisp.toString();
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
-  if (loc.kind === MK.STACK) return stackName(ctx, loc);
+  if (loc.kind === MK.STACK) {
+    if (ctx?.opts?.phase8Optimize !== true && hasEscapedStackFrame(ctx)) {
+      const size = Number(inst?.addr?.size || inst?.size || loc.size || 8);
+      const elemType = memoryElementType(inst, size, ctx.types);
+      if (loc.frameEpoch === 0 && (loc.baseReg === 'sp' || !loc.baseReg)) {
+        const disp = loc.disp != null ? normalizeSignedDisp64(loc.disp) : 0n;
+        if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
+        return disp < 0n
+          ? `*(${elemType} *)(uintptr_t)(sp - ${formatSignedDispMagnitude(-disp)})`
+          : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
+      }
+      if (inst?.addr?.base) {
+        const base = renderValue(inst.addr.base, ctx);
+        const disp = inst.addr.disp != null
+          ? normalizeSignedDisp64(inst.addr.disp)
+          : (loc.disp != null ? normalizeSignedDisp64(loc.disp) : 0n);
+        if (disp === 0n) return `*(${elemType} *)(uintptr_t)(${base})`;
+        return disp < 0n
+          ? `*(${elemType} *)(uintptr_t)((${base}) - ${formatSignedDispMagnitude(-disp)})`
+          : `*(${elemType} *)(uintptr_t)((${base}) + ${disp.toString()})`;
+      }
+      const disp = loc.disp != null ? normalizeSignedDisp64(loc.disp) : 0n;
+      if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
+      return disp < 0n
+        ? `*(${elemType} *)(uintptr_t)(sp - ${formatSignedDispMagnitude(-disp)})`
+        : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
+    }
+    return stackName(ctx, loc);
+  }
   if (loc.kind === MK.GLOBAL) {
     const name = ctx.opts.symbolFor?.(loc.address);
     return name ? safeIdent(name, `global_${hex(loc.address)}`) : `global_${hex(loc.address)}`;
@@ -1009,13 +1917,31 @@ export function renderMemoryLocation(loc, inst, ctx) {
   const addr = inst?.addr || {};
   if (loc.kind === MK.UNKNOWN) {
     if (addr.base && addr.index) {
-      const base = renderValue(addr.base, ctx);
+      const suppressStr = shouldSuppressRodataStringForMem(inst, loc, ctx.types, 0);
+      const base = renderValue(addr.base, ctx, suppressStr ? { suppressRodataString: true } : {});
       const index = renderValue(addr.index, ctx);
-      return renderIndexedMemory(base, index, {
+      const scale = Number(addr.scale || 0);
+      const size = Number(addr.size || inst?.size || loc?.size || 0);
+      const disp = addr.disp != null ? normalizeSignedDisp64(addr.disp) : 0n;
+      const indexed = renderIndexedMemory(base, index, {
         extend: addr.extend || null,
-        scale: addr.scale || 0,
-        size: Number(addr.size || 0),
+        scale,
+        size,
       });
+      const baseType = ctx.types?.values?.get?.(addr.base.id);
+      const isPtr = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(base);
+      const scaleBytes = Number.isInteger(scale) && scale >= 0 && scale <= 4 ? (2 ** scale) : -1;
+      const elemType = memoryElementType(inst, size, ctx.types);
+      const idxExpr = renderExtendedIndex(index, addr.extend || null);
+      if (!isPtr && size > 0 && scaleBytes === size && disp === 0n) {
+        return `((${elemType} *)(uintptr_t)(${base}))[${idxExpr}]`;
+      }
+      if (size > 0 && scaleBytes > 0 && ((!isPtr && (scaleBytes !== size || disp !== 0n)) || (isPtr && disp !== 0n)) && ctx.opts?.phase8Optimize !== true) {
+        const offsetExpr = scaleBytes === 1 ? `(${idxExpr})` : `(${idxExpr}) * ${scaleBytes}`;
+        const dispExpr = disp !== 0n ? (disp < 0n ? ` - ${formatSignedDispMagnitude(-disp)}` : ` + ${disp.toString()}`) : '';
+        return `*(${elemType} *)((uintptr_t)(${base}) + ${offsetExpr}${dispExpr})`;
+      }
+      return indexed;
     }
     if (addr.base && addr.disp != null) {
       const cxxRec = ctx.opts?.cxxEvidence?.receiver;
@@ -1028,17 +1954,47 @@ export function renderMemoryLocation(loc, inst, ctx) {
         return `this->${field}${cppMemberTypeSuffix(addr.base, off, ctx)}`;
       }
     }
+    if (addr.base && ctx.opts?.phase8Optimize !== true) {
+      const suppressStr = shouldSuppressRodataStringForMem(inst, loc, ctx.types, 8);
+      const base = renderValue(addr.base, ctx, suppressStr ? { suppressRodataString: true } : {});
+      const size = Number(addr.size || inst?.size || loc?.size || 8);
+      const elemType = memoryElementType(inst, size, ctx.types);
+      const disp = addr.disp != null ? normalizeSignedDisp64(addr.disp) : 0n;
+      if (disp !== 0n) {
+        return disp < 0n
+          ? `*(${elemType} *)((uintptr_t)(${base}) - ${formatSignedDispMagnitude(-disp)})`
+          : `*(${elemType} *)((uintptr_t)(${base}) + ${disp.toString()})`;
+      }
+      return `*(${elemType} *)(uintptr_t)(${base})`;
+    }
     return 'memory_unknown';
   }
   if (loc.kind === MK.FIELD) {
     const base = loc.base || addr.base;
-    const off = loc.disp ?? 0n;
+    const off = normalizeSignedDisp64(loc.disp ?? addr.disp ?? 0);
     const cxxRec = ctx.opts?.cxxEvidence?.receiver;
     const isReceiver = isReceiverAlias(base, cxxRec, ctx);
-    const baseText = isReceiver ? 'this' : renderValue(base, ctx, { asBase: true });
+    const suppressStr = shouldSuppressRodataStringForMem(inst, loc, ctx.types, 0);
+    const rawBaseText = isReceiver ? 'this' : renderValue(base, ctx, suppressStr ? { asBase: true, suppressRodataString: true } : { asBase: true });
+    const baseText = /^[A-Za-z_][A-Za-z0-9_]*$/.test(rawBaseText) ? rawBaseText : `(${rawBaseText})`;
     let known = null;
     try { known = ctx.opts.fieldFor?.(addr.baseReg || base?.reg || null, off, inst?.row); } catch { known = null; }
     if (!known) known = objcIvar(ctx, base, off);
+    if (!known && !isReceiver && ctx.opts?.phase8Optimize !== true) {
+      const baseType = ctx.types?.values?.get?.(base?.id) || null;
+      const effBytes = Number(addr.size || inst?.size || loc?.size || 0);
+      const elemType = effBytes > 0 ? memoryElementType(inst, effBytes, ctx.types) : null;
+      const losesWidthOrType = effBytes === 1 || effBytes === 2 || effBytes === 4
+        || effBytes === 16 || (effBytes === 8 && elemType === 'double');
+      if (losesWidthOrType && elemType && !isKnownStructPointerType(baseType)) {
+        if (off !== 0n) {
+          return off < 0n
+            ? `*(${elemType} *)((uintptr_t)(${rawBaseText}) - ${formatSignedDispMagnitude(-off)})`
+            : `*(${elemType} *)((uintptr_t)(${rawBaseText}) + ${off.toString()})`;
+        }
+        return `*(${elemType} *)(uintptr_t)(${rawBaseText})`;
+      }
+    }
     const field = safeIdent(known?.name || `field_${hex(off)}`, `field_${hex(off)}`);
     const typeSuffix = isReceiver ? cppMemberTypeSuffix(base, off, ctx) : '';
     return `${baseText}->${field}${typeSuffix}`;
@@ -1050,6 +2006,20 @@ function argName(v, ctx) {
   const cxxRec = ctx.opts?.cxxEvidence?.receiver;
   if (isReceiverAlias(v, cxxRec, ctx)) return 'this';
   if (!v?.reg) return `v${v?.id ?? 0}`;
+  const isAArch64 = isAArch64Context(ctx.ir, ctx.opts);
+  const typeArgs = Array.isArray(ctx.types?.args) ? ctx.types.args : [];
+  if (typeArgs.length) {
+    let matched = v.id != null ? typeArgs.find((a) => a && a.valueId === v.id) : null;
+    if (!matched && v.reg) {
+      const canon = canonicalRegister(v.reg, isAArch64);
+      matched = typeArgs.find((a) => a?.reg && canonicalRegister(a.reg, isAArch64) === canon) || null;
+    }
+    if (matched && Number.isInteger(matched.index) && matched.index >= 0) {
+      const n = matched.index;
+      if (n === 0 && (ctx.opts.receiverType || ctx.opts.methodKind === 'objc')) return 'self';
+      return ctx.opts.argNames?.[n] || `a${n + 1}`;
+    }
+  }
   const m = /^x([0-7])$/.exec(v.reg);
   if (!m) return safeIdent(v.label || v.reg);
   const n = Number(m[1]);
@@ -1057,19 +2027,136 @@ function argName(v, ctx) {
   return ctx.opts.argNames?.[n] || `a${n + 1}`;
 }
 
-function cmpFromFlags(flagValue) {
-  const d = flagValue?.def;
-  return d && d.op === OP.CMP ? d : null;
+function isFloatCmpProducer(inst, flagValue) {
+  if (!inst) return false;
+  if (inst.op === 'fcmp' || inst.op === 'fcmpe') return true;
+  if (inst.op === OP.CMP && (inst.float === true || /^f(?:c)?cmp[e]?$/i.test(String(inst.sub || inst.extra?.mnemonic || inst.extra?.op || '')))) return true;
+  if (inst.op === OP.BIN || inst.op === OP.UNKNOWN || inst.op === OP.UN) {
+    const mn = String(inst.sub || inst.extra?.mnemonic || inst.extra?.op || '');
+    if (/^f(?:c)?cmp[e]?$/i.test(mn)) return true;
+    if (inst.op === OP.BIN && inst.sub === 'fsub' && (flagValue?.reg === 'nzcv' || inst.dst?.reg === 'nzcv')) return true;
+  }
+  return false;
 }
 
-function renderCmp(cmp, cond, ctx, atInst = cmp) {
+function cmpFromFlags(flagValue, seen = new Set()) {
+  if (!flagValue) return null;
+  if (flagValue.id != null) {
+    if (seen.has(flagValue.id)) return null;
+    seen.add(flagValue.id);
+  }
+  const d = flagValue.def;
+  if (!d) return null;
+  if (d.op === OP.CMP || isFloatCmpProducer(d, flagValue)) return d;
+  if (d.op === OP.MOV || d.op === OP.CAST || d.op === 'cast') {
+    return cmpFromFlags(valueOf(d.args?.[0]), seen);
+  }
+  return null;
+}
+
+function nzcvMatchesCond(nzcv, cond) {
+  const bits = Number(nzcv || 0) & 0xf;
+  const n = (bits & 8) !== 0;
+  const z = (bits & 4) !== 0;
+  const c = (bits & 2) !== 0;
+  const v = (bits & 1) !== 0;
+  switch (String(cond || '').toLowerCase()) {
+    case 'eq': return z;
+    case 'ne': return !z;
+    case 'hs': case 'cs': return c;
+    case 'lo': case 'cc': return !c;
+    case 'mi': return n;
+    case 'pl': return !n;
+    case 'vs': return v;
+    case 'vc': return !v;
+    case 'hi': return c && !z;
+    case 'ls': return !c || z;
+    case 'ge': return n === v;
+    case 'lt': return n !== v;
+    case 'gt': return !z && n === v;
+    case 'le': return z || n !== v;
+    case 'al': case 'nv': return true;
+    default: return null;
+  }
+}
+
+const irValueByIdCache = new WeakMap();
+
+function lookupIrValueById(ir, id) {
+  if (!ir || id == null) return null;
+  let byId = irValueByIdCache.get(ir);
+  if (!byId || byId.size < (ir.values?.length || 0)) {
+    byId = new Map();
+    for (const v of ir.values || []) {
+      if (v && v.id != null) byId.set(v.id, v);
+    }
+    irValueByIdCache.set(ir, byId);
+  }
+  return byId.get(id) || null;
+}
+
+function resolveConditionalArg(ref, fallbackArg, ctx) {
+  if (ref == null) return valueOf(fallbackArg);
+  if (typeof ref === 'object') return valueOf(ref) ?? (ref && (ref.id != null || ref.reg != null || ref.const != null || ref.kind != null) ? ref : null);
+  const fb = valueOf(fallbackArg);
+  if (fb && fb.id === ref) return fb;
+  return lookupIrValueById(ctx?.ir, ref) ?? fb;
+}
+
+function resolveConditionalGuard(ref, fallbackArg, ctx) {
+  if (ref != null && typeof ref === 'object') {
+    if (ref.op === OP.CMP) return ref;
+    if (ref.def) return cmpFromFlags(ref);
+    return cmpFromFlags(valueOf(ref));
+  }
+  if (ref != null) {
+    const fb = valueOf(fallbackArg);
+    if (fb && fb.id === ref) return cmpFromFlags(fb);
+    const found = lookupIrValueById(ctx?.ir, ref);
+    if (found) return cmpFromFlags(found);
+  }
+  return cmpFromFlags(valueOf(fallbackArg));
+}
+
+function normalizeConditionalInnerOp(op) {
+  const s = String(op || 'sub').toLowerCase();
+  if (s === 'sub' || s === 'subs' || s === 'cmp' || s === 'ccmp') return 'sub';
+  if (s === 'add' || s === 'adds' || s === 'cmn' || s === 'ccmn') return 'add';
+  if (s === 'and' || s === 'ands' || s === 'tst') return 'and';
+  if (s === 'bic' || s === 'bics') return 'bic';
+  if (s === 'fsub' || s === 'fcmp' || s === 'fcmpe' || s === 'fccmp' || s === 'fccmpe') return 'fsub';
+  return s;
+}
+
+function renderCmp(cmp, cond, ctx, atInst = cmp, depth = 0) {
   if (!cmp) return cond ? `condition_${cond}` : 'condition';
+  if (cmp.extra?.conditional === true && depth < 8) {
+    const extra = cmp.extra;
+    const guardCmp = resolveConditionalGuard(extra.guardCmp, cmp.args?.[2], ctx);
+    const guardExpr = renderCmp(guardCmp, extra.guardCond ?? extra.cond, ctx, atInst, depth + 1);
+    const innerLhsVal = resolveConditionalArg(extra.innerLhs, cmp.args?.[0], ctx);
+    const innerRhsVal = resolveConditionalArg(extra.innerRhs, cmp.args?.[1], ctx);
+    const innerA = renderValueAt(innerLhsVal, atInst, ctx);
+    const innerB = renderValueAt(innerRhsVal, atInst, ctx);
+    const innerBits = Number(extra.innerBits || cmp.bits || innerLhsVal?.bits || innerRhsVal?.bits || 64);
+    const innerOp = normalizeConditionalInnerOp(extra.innerOp || cmp.sub || 'sub');
+    const innerExpr = renderNZCVCondition(innerOp, cond, innerA, innerB, innerBits, {
+      address: cmp.address,
+      row: cmp.row,
+      ir: cmp.id,
+      evidence: [{ reason: `AArch64 conditional ${innerOp} NZCV semantics` }],
+    }) || `${innerA} /* ${cond || 'flags'} */`;
+    const fallbackBool = nzcvMatchesCond(extra.fallbackNzcv, cond);
+    if (fallbackBool === false) return `(${guardExpr} && ${innerExpr})`;
+    if (fallbackBool === true) return `(!(${guardExpr}) || ${innerExpr})`;
+  }
   const aValue = valueOf(cmp.args?.[0]);
   const bValue = valueOf(cmp.args?.[1]);
   const a = renderValueAt(aValue, atInst, ctx);
   const b = renderValueAt(bValue, atInst, ctx);
   const bits = Number(cmp.bits || aValue?.bits || bValue?.bits || 64);
-  const rendered = renderNZCVCondition(cmp.sub || 'sub', cond, a, b, bits, {
+  const subOp = normalizeConditionalInnerOp(cmp.sub || (isFloatCmpProducer(cmp, null) ? 'fsub' : 'sub'));
+  const rendered = renderNZCVCondition(subOp, cond, a, b, bits, {
     address: cmp.address,
     row: cmp.row,
     ir: cmp.id,
@@ -1083,7 +2170,8 @@ export function renderBranchCondition(inst, ctx, invert = false) {
   const kind = inst.extra?.kind || inst.sub || '';
   let s;
   if (kind === 'cbz' || kind === 'cbnz') {
-    s = `${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} ${kind === 'cbz' ? '==' : '!='} 0`;
+    const val = renderValueAt(valueOf(inst.args?.[0]), inst, ctx);
+    s = `${paren(val)} ${kind === 'cbz' ? '==' : '!='} 0`;
   } else if (kind === 'tbz' || kind === 'tbnz') {
     const bit = inst.extra?.bit ?? 0;
     s = `((${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} >> ${bit}) & 1) ${kind === 'tbz' ? '==' : '!='} 0`;
@@ -1107,6 +2195,7 @@ export function renderBranchCondition(inst, ctx, invert = false) {
 
 function selectAsMinMax(inst, ctx) {
   if (!inst || inst.op !== OP.SEL || inst.args.length < 3) return null;
+  if (inst.sub && inst.sub !== 'sel' && inst.sub !== 'csel' && inst.sub !== 'fcsel') return null;
   const t = valueOf(inst.args[0]), f = valueOf(inst.args[1]), flags = valueOf(inst.args[2]);
   const cmp = cmpFromFlags(flags);
   if (!cmp || cmp.args.length < 2 || cmp.sub !== 'sub' || cmp.extra?.conditional) return null;
@@ -1118,11 +2207,11 @@ function selectAsMinMax(inst, ctx) {
   // but their strings are not selected by this min/max producer.
   selectInitialValueTickets(cursor);
   const aa = renderValue(a, ctx), bb = renderValue(b, ctx);
-  if (cond === 'gt' || cond === 'hi') {
+  if (cond === 'gt') {
     if (sameValue(t, b) && sameValue(f, a)) return initialValueForm(ctx, 'select-min', `min(${aa}, ${bb})`);
     if (sameValue(t, a) && sameValue(f, b)) return initialValueForm(ctx, 'select-max', `max(${aa}, ${bb})`);
   }
-  if (cond === 'lt' || cond === 'lo') {
+  if (cond === 'lt') {
     if (sameValue(t, b) && sameValue(f, a)) return initialValueForm(ctx, 'select-max', `max(${aa}, ${bb})`);
     if (sameValue(t, a) && sameValue(f, b)) return initialValueForm(ctx, 'select-min', `min(${aa}, ${bb})`);
   }
@@ -1130,9 +2219,138 @@ function selectAsMinMax(inst, ctx) {
   return null;
 }
 
+const INTEGER_ONLY_BIN_OPS = new Set([
+  'mul', 'smull', 'umull', 'sdiv', 'udiv',
+  'and', 'or', 'xor', 'bic', 'shl', 'lshr', 'ashr', 'ror',
+  'mod', 'rem', 'smod', 'umod', 'srem', 'urem',
+]);
+
+function typeLooksLikePointer(t) {
+  if (!t) return false;
+  if (typeof t === 'string') return t.includes('*');
+  if (t.kind === 'pointer' || t.semanticType?.kind === 'pointer') return true;
+  if (typeof t.cType === 'string' && t.cType.includes('*')) return true;
+  const name = typeNameOf(t);
+  return typeof name === 'string' && name.includes('*');
+}
+
+function isPointerTypedOperand(val, renderedText, ctx, seen = new Set()) {
+  if (typeof renderedText === 'string') {
+    const trimmed = renderedText.trim();
+    if (/^\(\s*(?:uintptr_t|intptr_t|u?int(?:8|16|32|64|128)(?:_t)?|size_t|ssize_t|ptrdiff_t|long|int|unsigned|float|double)\s*\)/.test(trimmed)) {
+      return false;
+    }
+    if ((trimmed.startsWith('&') && !trimmed.startsWith('&&'))
+        || (trimmed.startsWith('"') && trimmed.endsWith('"'))
+        || /^\(\s*(?:const\s+|volatile\s+|struct\s+|union\s+|enum\s+)?[A-Za-z_][A-Za-z0-9_\s]*\*+\s*\)/.test(trimmed)) {
+      return true;
+    }
+    if (Array.isArray(ctx?.types?.args) && !/(?:uintptr_t|intptr_t|uint64|int64|uint32|int32|size_t|\*\(|\[)/.test(trimmed)) {
+      for (const a of ctx.types.args) {
+        if (!a || !(typeLooksLikePointer(a.type) || typeLooksLikePointer(a.semanticType))) continue;
+        const pName = `a${Number(a.index) + 1}`;
+        if (new RegExp(`\\b${pName}\\b`).test(trimmed) && /^[()\sA-Za-z0-9_+-]+$/.test(trimmed)) {
+          return true;
+        }
+      }
+    }
+  }
+  if (!val) return false;
+  if (val.id != null) {
+    if (seen.has(val.id)) return false;
+    seen.add(val.id);
+  }
+  if (val.isPointer === true || typeLooksLikePointer(val.type) || typeLooksLikePointer(val.semanticType)) return true;
+  if (typeLooksLikePointer(ctx?.types?.values?.get?.(val.id))) return true;
+  if (val.kind === VK.ARG && Array.isArray(ctx?.types?.args)) {
+    for (const a of ctx.types.args) {
+      if (a && (a.valueId === val.id || (val.reg && a.reg === val.reg))) {
+        if (typeLooksLikePointer(a.type) || typeLooksLikePointer(a.semanticType)) return true;
+      }
+    }
+  }
+  if (val.kind === VK.ARG && val.reg) {
+    const m = /^[xr](\d+)$/.exec(String(val.reg).toLowerCase());
+    const idx = m ? Number(m[1]) : null;
+    for (const pt of [ctx?.opts?.argTypes, ctx?.opts?.paramTypes, ctx?.ir?.signature?.params]) {
+      if (!pt) continue;
+      if (Array.isArray(pt) && idx != null && typeLooksLikePointer(pt[idx]?.type ?? pt[idx])) return true;
+      if (pt instanceof Map && typeLooksLikePointer(pt.get(val.reg))) return true;
+    }
+  }
+  if (typeof renderedText === 'string' && ctx?.types?.locals) {
+    const trimmed = renderedText.trim();
+    for (const local of ctx.types.locals) {
+      if (String(local.slot || '') === trimmed) {
+        if (typeLooksLikePointer(local.type) || typeLooksLikePointer(local.semanticType)
+            || typeLooksLikePointer(semanticLocalDeclarationType(local, ctx))) {
+          return true;
+        }
+      }
+    }
+  }
+  const d = val.def;
+  if (!d) return false;
+  if (d.op === OP.ADDR) return true;
+  if (d.op === OP.CONST && resolveAddressConstForValue(val, ctx)) return true;
+  if (d.op === OP.MOV) return isPointerTypedOperand(valueOf(d.args?.[0]), null, ctx, seen);
+  if (d.op === OP.CAST || d.op === 'cast') {
+    const castType = val.type || ctx?.types?.values?.get?.(val.id);
+    if (castType && typeNameOf(castType) !== 'unknown' && !typeLooksLikePointer(castType)) return false;
+    return isPointerTypedOperand(valueOf(d.args?.[0]), null, ctx, seen);
+  }
+  if (d.op === OP.SEL) {
+    return isPointerTypedOperand(valueOf(d.args?.[0]), null, ctx, seen)
+      || isPointerTypedOperand(valueOf(d.args?.[1]), null, ctx, seen);
+  }
+  if (d.op === OP.BIN) {
+    if (d.sub === 'add') {
+      const l = isPointerTypedOperand(valueOf(d.args?.[0]), null, ctx, seen);
+      const r = isPointerTypedOperand(valueOf(d.args?.[1]), null, ctx, seen);
+      return l !== r;
+    }
+    if (d.sub === 'sub') {
+      const l = isPointerTypedOperand(valueOf(d.args?.[0]), null, ctx, seen);
+      const r = isPointerTypedOperand(valueOf(d.args?.[1]), null, ctx, seen);
+      return l && !r;
+    }
+    return false;
+  }
+  if (d.op === OP.PHI) {
+    return false;
+  }
+  return false;
+}
+
+function wrapPtrAsUintptr(text) {
+  return `(uintptr_t)(${text})`;
+}
+
 function binText(inst, ctx) {
-  const a = renderValue(valueOf(inst.args?.[0]), ctx);
-  const b = renderValue(valueOf(inst.args?.[1]), ctx);
+  const aVal = valueOf(inst.args?.[0]);
+  const bVal = valueOf(inst.args?.[1]);
+  let a = renderValue(aVal, ctx);
+  let b = renderValue(bVal, ctx);
+  const aPtr = isPointerTypedOperand(aVal, a, ctx);
+  const bPtr = isPointerTypedOperand(bVal, b, ctx);
+  const isGlobalAddrText = (text) => /^&global_[0-9a-fA-F]+$/.test(String(text || '').trim());
+  if (INTEGER_ONLY_BIN_OPS.has(inst.sub)) {
+    if (aPtr) a = wrapPtrAsUintptr(a);
+    if (bPtr) b = wrapPtrAsUintptr(b);
+  } else if (inst.sub === 'add') {
+    if (aPtr && bPtr) {
+      a = wrapPtrAsUintptr(a);
+      b = wrapPtrAsUintptr(b);
+    } else {
+      if (isGlobalAddrText(a)) a = wrapPtrAsUintptr(a);
+      if (isGlobalAddrText(b)) b = wrapPtrAsUintptr(b);
+    }
+  } else if (inst.sub === 'sub') {
+    if ((aPtr && bPtr) || isGlobalAddrText(a)) a = wrapPtrAsUintptr(a);
+    if (bPtr || isGlobalAddrText(b)) {
+      b = wrapPtrAsUintptr(b);
+    }
+  }
   const op = {
     add: '+', sub: '-', mul: '*', smull: '*', umull: '*', sdiv: '/', udiv: '/',
     and: '&', or: '|', xor: '^', bic: '& ~', shl: '<<', lshr: '>>', ashr: '>>', ror: 'ror',
@@ -1144,14 +2362,267 @@ function binText(inst, ctx) {
 }
 
 function unaryText(inst, ctx) {
-  const a = renderValue(valueOf(inst.args?.[0]), ctx);
-  if (inst.sub === 'neg' || inst.sub === 'fneg') return `-${paren(a)}`;
-  if (inst.sub === 'not') return `~${paren(a)}`;
-  if (inst.sub === 'abs' || inst.sub === 'fabs') return `abs(${a})`;
-  if (inst.sub === 'sqrt' || inst.sub === 'fsqrt') return `sqrt(${a})`;
+  const srcVal = valueOf(inst.args?.[0]);
+  let a = renderValue(srcVal, ctx);
+  const sub = String(inst.sub || '').toLowerCase();
+  const castBits = inst.bits ?? inst.dst?.bits;
+  const srcBits = srcVal?.bits ?? inst.args?.[0]?.bits ?? (/^s\d+$/i.test(String(srcVal?.reg || '')) ? 32 : 64);
+  const srcIsFloat = Number(srcBits) === 32;
+  const dstIsFloat = Number(castBits) === 32 || (castBits == null && srcIsFloat);
+  if ((sub === 'neg' || sub === 'not') && isPointerTypedOperand(srcVal, a, ctx)) {
+    a = wrapPtrAsUintptr(a);
+  }
+  if (sub === 'neg' || sub === 'fneg') return `-${paren(a)}`;
+  if (sub === 'not') return `~${paren(a)}`;
+  if (sub === 'is-zero' || sub === 'is_zero') return `(${a}) == 0`;
+  if (sub === 'is-nonzero' || sub === 'is_nonzero') return `(${a}) != 0`;
+  if (sub === 'abs') return `abs(${a})`;
+  if (sub === 'fabs') {
+    const fBits = Number(inst.bits ?? inst.dst?.bits ?? srcVal?.bits ?? (srcIsFloat ? 32 : 64));
+    return `${fBits === 32 ? 'fabsf' : 'fabs'}(${a})`;
+  }
+  if (sub === 'sqrt' || sub === 'fsqrt') return `${dstIsFloat ? 'sqrtf' : 'sqrt'}(${a})`;
+  if (sub === 'frinta' || sub === 'frintn') return `${dstIsFloat ? 'roundf' : 'round'}(${a})`;
+  if (sub === 'frintm') return `${dstIsFloat ? 'floorf' : 'floor'}(${a})`;
+  if (sub === 'frintp') return `${dstIsFloat ? 'ceilf' : 'ceil'}(${a})`;
+  if (sub === 'frintz') return `${dstIsFloat ? 'truncf' : 'trunc'}(${a})`;
+  const extMap = { sxtb: 'int8', sxth: 'int16', sxtw: 'int32', uxtb: 'uint8', uxth: 'uint16', uxtw: 'uint32' };
+  if (extMap[inst.sub]) return `(${extMap[inst.sub]})${paren(a)}`;
   if (/^sxt/.test(inst.sub || '')) return `(${inst.sub.replace('sxt', 'int')})${paren(a)}`;
   if (/^uxt/.test(inst.sub || '')) return `(${inst.sub.replace('uxt', 'uint')})${paren(a)}`;
+  const sintType = castBits === 32 ? 'int32_t' : 'int64_t';
+  const uintType = castBits === 32 ? 'uint32_t' : 'uint64_t';
+  const intSrcBits = Number(inst.args?.[0]?.bits ?? srcVal?.bits ?? 64);
+  if (sub === 'fcvtzs' || sub === 'f2i') return `((${sintType})(double)${paren(a)})`;
+  if (sub === 'fcvtzu' || sub === 'f2u') return `((${uintType})(double)${paren(a)})`;
+  if (sub === 'fcvtps') return `((${sintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${a}))`;
+  if (sub === 'fcvtms') return `((${sintType})${srcIsFloat ? 'floorf' : 'floor'}(${a}))`;
+  if (sub === 'fcvtas' || sub === 'fcvtns') return `((${sintType})${srcIsFloat ? 'roundf' : 'round'}(${a}))`;
+  if (sub === 'fcvtpu') return `((${uintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${a}))`;
+  if (sub === 'fcvtmu') return `((${uintType})${srcIsFloat ? 'floorf' : 'floor'}(${a}))`;
+  if (sub === 'fcvtau' || sub === 'fcvtnu') return `((${uintType})${srcIsFloat ? 'roundf' : 'round'}(${a}))`;
+  if (sub === 'scvtf' || sub === 'i2f') return `((${castBits === 32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'int32_t' : 'int64_t'})${paren(a)})`;
+  if (sub === 'ucvtf' || sub === 'u2f') return `((${castBits === 32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'uint32_t' : 'uint64_t'})${paren(a)})`;
+  if (sub === 'fcvt') return `((${castBits === 32 ? 'float' : 'double'})${paren(a)})`;
   return `${safeIdent(inst.sub || 'un')}(${a})`;
+}
+
+function explicitCallArgByReg(inst, isAArch64 = false) {
+  const byReg = new Map();
+  if (!inst) return byReg;
+  const callArgs = Array.isArray(inst.callArguments) ? inst.callArguments : null;
+  const args = Array.isArray(inst.args) ? inst.args : null;
+  if (callArgs) {
+    for (let k = 0; k < callArgs.length; k++) {
+      const desc = callArgs[k];
+      const reg = desc?.reg ?? desc?.location?.registerId ?? null;
+      if (!reg) continue;
+      const canon = canonicalRegister(reg, isAArch64);
+      const directVal = desc?.value?.value ?? desc?.value ?? (desc?.kind && Array.isArray(desc?.uses) ? desc : null);
+      if (directVal && directVal.def !== inst && !directVal.clobbered && directVal.kind !== VK.UNDEF && !byReg.has(canon)) {
+        byReg.set(canon, directVal);
+      }
+    }
+    if (args && callArgs.length === args.length) {
+      for (let k = 0; k < callArgs.length; k++) {
+        const desc = callArgs[k];
+        const reg = desc?.reg ?? desc?.location?.registerId ?? null;
+        if (!reg) continue;
+        const canon = canonicalRegister(reg, isAArch64);
+        const v = valueOf(args[k]);
+        if (v && v.def !== inst && !v.clobbered && v.kind !== VK.UNDEF && !byReg.has(canon)) {
+          byReg.set(canon, v);
+        }
+      }
+    }
+  }
+  if (args && (!inst.extra?.indirect || callArgs)) {
+    for (const arg of args) {
+      const v = valueOf(arg);
+      if (!v || v.def === inst || v.clobbered || v.kind === VK.UNDEF || !v.reg) continue;
+      const canon = canonicalRegister(v.reg, isAArch64);
+      if (!byReg.has(canon)) byReg.set(canon, v);
+    }
+  }
+  return byReg;
+}
+
+const PRINTF_FORMAT_ARG_INDEX = new Map([
+  ['printf', 0],
+  ['fprintf', 1],
+  ['sprintf', 1],
+  ['snprintf', 2],
+  ['dprintf', 1],
+  ['asprintf', 1],
+  ['sprintf_chk', 3],
+  ['snprintf_chk', 4],
+]);
+
+function decodeCStringLiteral(text) {
+  if (typeof text !== 'string' || text.length < 2 || text[0] !== '"' || text[text.length - 1] !== '"') return null;
+  let out = '';
+  for (let i = 1; i < text.length - 1; i++) {
+    const ch = text[i];
+    if (ch === '\\') {
+      if (i + 1 >= text.length - 1) return null;
+      const esc = text[++i];
+      if (esc === 'n') out += '\n';
+      else if (esc === 'r') out += '\r';
+      else if (esc === 't') out += '\t';
+      else if (esc === '\\') out += '\\';
+      else if (esc === '"') out += '"';
+      else if (esc === "'") out += "'";
+      else if (esc === '0') out += '\0';
+      else if (esc === 'x') {
+        const hexM = /^[0-9a-fA-F]{1,2}/.exec(text.slice(i + 1, text.length - 1));
+        if (!hexM) return null;
+        out += String.fromCharCode(parseInt(hexM[0], 16));
+        i += hexM[0].length;
+      } else {
+        out += esc;
+      }
+    } else if (ch === '"') {
+      return null;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function parsePrintfFormatSpecifiers(fmt) {
+  const specs = [];
+  let i = 0;
+  while (i < fmt.length) {
+    if (fmt[i] !== '%') { i++; continue; }
+    i++;
+    if (i >= fmt.length) return null;
+    if (fmt[i] === '%') { i++; continue; }
+    // Flags
+    while (i < fmt.length && "-+ #0'".includes(fmt[i])) i++;
+    // Reject positional arguments (%1$d)
+    if (i < fmt.length && fmt[i] >= '1' && fmt[i] <= '9') {
+      let j = i;
+      while (j < fmt.length && fmt[j] >= '0' && fmt[j] <= '9') j++;
+      if (fmt[j] === '$') return null;
+    }
+    // Width
+    if (i < fmt.length && fmt[i] === '*') {
+      specs.push('gp');
+      i++;
+    } else {
+      while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+    }
+    // Precision
+    if (i < fmt.length && fmt[i] === '.') {
+      i++;
+      if (i < fmt.length && fmt[i] === '*') {
+        specs.push('gp');
+        i++;
+      } else {
+        while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+      }
+    }
+    // Length modifiers
+    if (i + 1 < fmt.length && (fmt.slice(i, i + 2) === 'hh' || fmt.slice(i, i + 2) === 'll')) {
+      i += 2;
+    } else if (i < fmt.length && 'hljztL'.includes(fmt[i])) {
+      i++;
+    }
+    if (i >= fmt.length) return null;
+    const conv = fmt[i++];
+    if ('aAeEfFgG'.includes(conv)) specs.push('fp');
+    else if ('diuoxXcspn'.includes(conv)) specs.push('gp');
+    else return null;
+  }
+  return specs;
+}
+
+const CSTRING_CYCLE = Symbol('cstring-cycle');
+
+function resolveConstantCStringInner(value, ctx, seen, memo = new Map()) {
+  if (!value) return null;
+  if (value.id != null) {
+    if (memo.has(value.id)) return memo.get(value.id);
+    if (seen.has(value.id)) return CSTRING_CYCLE;
+    seen.add(value.id);
+  }
+  try {
+    if (value.const != null) {
+      const lit = stringLiteralForValue(value, ctx);
+      if (lit) return decodeCStringLiteral(lit);
+    }
+    const d = value.def;
+    if (!d) return null;
+    if (d.op === OP.ADDR) {
+      const addr = value.const ?? d.extra?.value ?? d.extra?.target;
+      const lit = stringLiteralForValue(value, ctx) || stringLiteralAt(addr, ctx);
+      if (lit) return decodeCStringLiteral(lit);
+      return null;
+    }
+    if (d.op === OP.CONST && d.extra?.value != null) {
+      const resolved = resolveAddressConstForValue(value, ctx);
+      if (resolved?.kind === 'string') return decodeCStringLiteral(resolved.text);
+      return null;
+    }
+    if (d.op === OP.BIN && (d.sub === 'add' || d.sub === 'sub') && isAddressDerivedValue(value)) {
+      const folded = foldedAddressOfBin(d);
+      if (folded != null) {
+        const lit = stringLiteralAt(folded, ctx);
+        if (lit) return decodeCStringLiteral(lit);
+      }
+      return null;
+    }
+    if (d.op === OP.MOV || d.op === OP.CAST || d.op === 'cast') {
+      const r = resolveConstantCStringInner(valueOf(d.args?.[0]), ctx, seen, memo);
+      if (value.id != null && r !== CSTRING_CYCLE) memo.set(value.id, r);
+      return r;
+    }
+    if (d.op === OP.PHI) {
+      const rawIncoming = Array.isArray(d.incoming) && d.incoming.length
+        ? d.incoming.map((x) => valueOf(x))
+        : (d.args || []).map((x) => valueOf(x));
+      const nonSelf = rawIncoming.filter((v) => v && v !== value && (value.id == null || v.id !== value.id));
+      if (!nonSelf.length) {
+        if (value.id != null) memo.set(value.id, null);
+        return null;
+      }
+      let common = null;
+      let sawCycle = false;
+      for (const inc of nonSelf) {
+        const s = resolveConstantCStringInner(inc, ctx, seen, memo);
+        if (s === CSTRING_CYCLE) { sawCycle = true; continue; }
+        if (s == null) return null;
+        if (common == null) common = s;
+        else if (common !== s) return null;
+      }
+      if (common != null) return common;
+      return sawCycle ? CSTRING_CYCLE : null;
+    }
+    return null;
+  } finally {
+    if (value.id != null) seen.delete(value.id);
+  }
+}
+
+function resolveConstantCString(value, ctx, seen = new Set()) {
+  const res = resolveConstantCStringInner(value, ctx, seen);
+  return res === CSTRING_CYCLE ? null : res;
+}
+
+function resolveFpCallArg(explicitArgs, ir, inst, fpIdx, isFloat) {
+  const order = isFloat
+    ? [`s${fpIdx}`, `d${fpIdx}`, `v${fpIdx}`, `q${fpIdx}`]
+    : [`d${fpIdx}`, `v${fpIdx}`, `q${fpIdx}`, `s${fpIdx}`];
+  for (const reg of order) {
+    const v = explicitArgs.get(reg);
+    if (v) return v;
+  }
+  for (const reg of order) {
+    const v = reachingRegisterValue(ir, inst, reg);
+    if (v) return v;
+  }
+  return null;
 }
 
 function callRecord(inst, ctx) {
@@ -1161,7 +2632,7 @@ function callRecord(inst, ctx) {
     return ctx.callCache.get(inst.id);
   }
   const target = inst.extra?.target ?? null;
-  const modelCall = (ctx.model.calls || []).find((c) => c.row === inst.row) || null;
+  const modelCall = ctx.callByRow ? (ctx.callByRow.get(inst.row) || null) : ((ctx.model.calls || []).find((c) => c.row === inst.row) || null);
   let name = modelCall?.name || (target != null ? ctx.opts.symbolFor?.(target) : null) || inst.extra?.name || '';
   // A direct call whose target address has neither a symbol nor a model name must keep
   // that proven target explicit. Falling through to renderCall's operand fallback would
@@ -1170,8 +2641,13 @@ function callRecord(inst, ctx) {
   // legacy renderer (`sub_<HEX>`), and leaves genuinely indirect calls untouched.
   if (!name && target != null) name = `sub_${hex(target)}`;
 
+  const isAArch64 = isAArch64Context(ctx.ir, ctx.opts);
+  const explicitArgs = explicitCallArgByReg(inst, isAArch64);
   const values = [];
-  for (let i = 0; i < 8; i++) values.push(reachingRegisterValue(ctx.ir, inst, 'x' + i));
+  for (let i = 0; i < 8; i++) {
+    const reg = 'x' + i;
+    values.push(explicitArgs.get(canonicalRegister(reg, isAArch64)) ?? reachingRegisterValue(ctx.ir, inst, reg, isAArch64));
+  }
   const slotEv = currentCppVirtualSlot(ctx.opts, ctx.ir, inst, values[0]);
 
   if (slotEv && slotEv.exactTargetKnown && slotEv.exactTargetAddress != null) {
@@ -1180,7 +2656,7 @@ function callRecord(inst, ctx) {
       name = resolved;
     }
   }
-  const cursor = initialValueCursor(ctx), argumentTickets = [];
+  const cursor = initialValueCursor(ctx), argumentTickets = [], extraArgTickets = [];
   const argText = values.map((v) => {
     const input = initialValueCursor(ctx);
     const text = v ? renderValue(v, ctx) : null;
@@ -1201,6 +2677,7 @@ function callRecord(inst, ctx) {
 
   let logicalArgs = [];
   let sourceArgIndices = [];
+  let resolvedArgs = null;
   let arityKnown = true;
   let variadicPrefixOnly = false;
   if (objc) {
@@ -1216,36 +2693,169 @@ function callRecord(inst, ctx) {
   } else {
     let override = null;
     try { override = ctx.opts.callPrototypeFor?.(target, name, inst) || null; } catch { override = null; }
-    const indexes = callArgumentIndices({ name, modelCall, override, defaultCallArgs: ctx.opts.defaultCallArgs });
-    if (indexes == null) {
-      if (slotEv) {
-        if (slotEv.argumentCount != null) {
-          logicalArgs = Array.from({ length: slotEv.argumentCount }, (_, i) => argText[i] ?? 'unknown');
-          sourceArgIndices = Array.from({ length: slotEv.argumentCount }, (_, i) => i).filter((i) => values[i]);
-          arityKnown = true;
+    if (!override) override = inst.callPrototype ?? inst.extra?.callPrototype ?? null;
+    const knownSig = knownCallSignature(name);
+    const knownProto = knownCallPrototype(name);
+    const hasFpSigParams = !override && isAArch64
+      && Array.isArray(knownSig?.paramTypes)
+      && knownSig.paramTypes.some((t) => t === 'float' || t === 'double');
+    if (hasFpSigParams) {
+      resolvedArgs = [];
+      let gpIdx = 0;
+      let fpIdx = 0;
+      for (const paramType of knownSig.paramTypes) {
+        if (paramType === 'float' || paramType === 'double') {
+          const idx = fpIdx++;
+          const reg = paramType === 'float' ? `s${idx}` : `d${idx}`;
+          const val = idx < 8
+            ? (explicitArgs.get(canonicalRegister(reg, true)) ?? reachingRegisterValue(ctx.ir, inst, reg, true))
+            : null;
+          const input = initialValueCursor(ctx);
+          const text = val ? renderValue(val, ctx) : null;
+          const tickets = input ? input.list.slice(input.start) : [];
+          resolvedArgs.push({ reg, value: val || null, text: text ?? 'unknown', tickets });
         } else {
-          // The virtual-dispatch proof establishes the receiver, not the full
-          // callee prototype. Preserve receiver readability as a lower bound
-          // but keep arity unknown so additional arguments are never erased.
-          logicalArgs = values[0] ? [argText[0] || 'this'] : [];
-          sourceArgIndices = values[0] ? [0] : [];
+          const idx = gpIdx++;
+          const reg = `x${idx}`;
+          if (idx < 8) {
+            resolvedArgs.push({
+              reg,
+              value: values[idx] || null,
+              text: argText[idx] ?? 'unknown',
+              tickets: argumentTickets[idx] || [],
+            });
+          } else {
+            const val = explicitArgs.get(canonicalRegister(reg, true)) ?? reachingRegisterValue(ctx.ir, inst, reg, true);
+            const input = initialValueCursor(ctx);
+            const text = val ? renderValue(val, ctx) : null;
+            const tickets = input ? input.list.slice(input.start) : [];
+            resolvedArgs.push({ reg, value: val || null, text: text ?? 'unknown', tickets });
+          }
+        }
+      }
+      logicalArgs = resolvedArgs.map((a) => a.text);
+      sourceArgIndices = [];
+      arityKnown = true;
+      variadicPrefixOnly = !!knownProto?.variadic;
+    } else {
+      let indexes = callArgumentIndices({ name, modelCall, override, defaultCallArgs: ctx.opts.defaultCallArgs });
+      if (knownProto && !knownProto.variadic && Array.isArray(indexes) && indexes.length > knownProto.arity) {
+        indexes = indexes.slice(0, knownProto.arity);
+      }
+      if (indexes == null) {
+        if (slotEv) {
+          if (slotEv.argumentCount != null) {
+            logicalArgs = Array.from({ length: slotEv.argumentCount }, (_, i) => argText[i] ?? 'unknown');
+            sourceArgIndices = Array.from({ length: slotEv.argumentCount }, (_, i) => i).filter((i) => values[i]);
+            arityKnown = true;
+          } else {
+            // The virtual-dispatch proof establishes the receiver, not the full
+            // callee prototype. Preserve receiver readability as a lower bound
+            // but keep arity unknown so additional arguments are never erased.
+            logicalArgs = values[0] ? [argText[0] || 'this'] : [];
+            sourceArgIndices = values[0] ? [0] : [];
+            arityKnown = false;
+            ctx.unknownCallArities++;
+          }
+        } else if (!override && target != null && ctx.opts?.addr != null && target === ctx.opts.addr && Array.isArray(ctx.types?.args)) {
+          if (ctx.types.args.length === 0) {
+            logicalArgs = [];
+            sourceArgIndices = [];
+            arityKnown = true;
+          } else {
+            resolvedArgs = [];
+            for (let i = 0; i < ctx.types.args.length; i++) {
+              const a = ctx.types.args[i];
+              const reg = a?.reg ? String(a.reg) : `x${Number.isInteger(a?.index) ? a.index : i}`;
+              const gpMatch = /^[xw]([0-7])$/i.exec(reg);
+              if (gpMatch) {
+                const idx = Number(gpMatch[1]);
+                resolvedArgs.push({
+                  reg,
+                  value: values[idx] || null,
+                  text: argText[idx] ?? 'unknown',
+                  tickets: argumentTickets[idx] || [],
+                });
+              } else {
+                const fpMatch = /^([sdvq])([0-7])$/i.exec(reg);
+                const canon = canonicalRegister(reg, isAArch64);
+                let val = explicitArgs.get(canon) ?? explicitArgs.get(reg) ?? reachingRegisterValue(ctx.ir, inst, reg, isAArch64);
+                if (!val && fpMatch) {
+                  val = resolveFpCallArg(explicitArgs, ctx.ir, inst, Number(fpMatch[2]), fpMatch[1].toLowerCase() === 's');
+                }
+                const input = initialValueCursor(ctx);
+                const text = val ? renderValue(val, ctx) : null;
+                const tickets = input ? input.list.slice(input.start) : [];
+                resolvedArgs.push({ reg, value: val || null, text: text ?? 'unknown', tickets });
+              }
+            }
+            logicalArgs = resolvedArgs.map((a) => a.text);
+            sourceArgIndices = [];
+            arityKnown = true;
+          }
+        } else {
           arityKnown = false;
           ctx.unknownCallArities++;
         }
       } else {
-        arityKnown = false;
-        ctx.unknownCallArities++;
+        logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
+        sourceArgIndices = indexes.filter((i) => values[i]);
+        variadicPrefixOnly = !!knownProto?.variadic && !override;
+        if (variadicPrefixOnly) {
+          const normName = knownProto?.name || String(name || '').replace(/^_+/, '').replace(/@.*$/, '');
+          const fmtArgIdx = PRINTF_FORMAT_ARG_INDEX.get(normName);
+          if (fmtArgIdx != null && fmtArgIdx < argText.length) {
+            const fmtStr = resolveConstantCString(values[fmtArgIdx], ctx) ?? decodeCStringLiteral(argText[fmtArgIdx]);
+            const specs = fmtStr != null ? parsePrintfFormatSpecifiers(fmtStr) : null;
+            if (specs) {
+              let nextGp = indexes.length;
+              let nextFp = 0;
+              const recoveredArgs = [];
+              const recoveredGpIndices = [];
+              const recoveredFpTickets = [];
+              let allResolved = true;
+              for (const kind of specs) {
+                if (kind === 'fp') {
+                  if (!isAArch64 || nextFp >= 8) { allResolved = false; break; }
+                  const fpVal = explicitArgs.get(`d${nextFp}`)
+                    ?? explicitArgs.get(`v${nextFp}`)
+                    ?? explicitArgs.get(`q${nextFp}`)
+                    ?? explicitArgs.get(`s${nextFp}`)
+                    ?? reachingRegisterValue(ctx.ir, inst, `d${nextFp}`, isAArch64)
+                    ?? reachingRegisterValue(ctx.ir, inst, `v${nextFp}`, isAArch64)
+                    ?? reachingRegisterValue(ctx.ir, inst, `s${nextFp}`, isAArch64);
+                  if (!fpVal) { allResolved = false; break; }
+                  const fpInput = initialValueCursor(ctx);
+                  recoveredArgs.push(renderValue(fpVal, ctx));
+                  if (fpInput) recoveredFpTickets.push(...fpInput.list.slice(fpInput.start));
+                  nextFp++;
+                } else {
+                  if (nextGp >= 8 || !values[nextGp] || argText[nextGp] == null) { allResolved = false; break; }
+                  recoveredArgs.push(argText[nextGp]);
+                  recoveredGpIndices.push(nextGp);
+                  nextGp++;
+                }
+              }
+              if (allResolved) {
+                logicalArgs = [...logicalArgs, ...recoveredArgs];
+                sourceArgIndices = [...sourceArgIndices, ...recoveredGpIndices];
+                if (recoveredFpTickets.length) extraArgTickets.push(...recoveredFpTickets);
+                variadicPrefixOnly = false;
+              }
+            }
+          }
+        }
       }
-    } else {
-      logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
-      sourceArgIndices = indexes.filter((i) => values[i]);
-      variadicPrefixOnly = !!knownCallPrototype(name)?.variadic && !override;
     }
   }
 
+  const objcCMode = ctx.opts?.objcSyntax === 'c';
+  const objcCallee = /objc_msgSendSuper2/.test(name || '') ? 'objc_msgSendSuper2' : 'objc_msgSend';
   const info = {
-    name, target, runtime: origin, args: logicalArgs, arityKnown, variadicPrefixOnly, sourceArgIndices,
+    name, target, runtime: origin, args: logicalArgs, arityKnown, variadicPrefixOnly, sourceArgIndices, resolvedArgs,
     receiver: argText[0] || 'receiver', receiverType, selector,
+    callee: objcCallee,
+    ...(objcCMode ? { style: 'c' } : {}),
     stubAddress: target, callingConvention: ctx.opts.swiftCallingConventionFor?.(target, name) || null,
     kind: ctx.opts.swiftDispatchFor?.(inst)?.kind || (inst.extra?.indirect ? 'indirect' : 'direct'),
     virtualSlot: slotEv,
@@ -1256,22 +2866,89 @@ function callRecord(inst, ctx) {
   ctx.callCache.set(inst.id, rec);
   const trace = initialValueTraces.get(ctx);
   if (trace) {
-    const selected = sourceArgIndices.flatMap(index => argumentTickets[index]);
+    const selected = Array.isArray(resolvedArgs)
+      ? resolvedArgs.flatMap((a) => a.tickets || [])
+      : [...sourceArgIndices.flatMap(index => argumentTickets[index]), ...extraArgTickets];
     if (selected.length) trace.calls.set(inst.id, Object.freeze(selected));
     selectInitialValueTickets(cursor, selected);
   }
   return rec;
 }
 
+function sanitizeSwiftDollarTokens(text) {
+  const s = String(text || '');
+  if (!s.includes('$')) return s;
+  let out = '';
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let j = i + 1;
+      while (j < n) {
+        if (s[j] === '\\' && j + 1 < n) { j += 2; continue; }
+        if (s[j] === quote) { j++; break; }
+        j++;
+      }
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === '/' && i + 1 < n && s[i + 1] === '/') {
+      let j = i + 2;
+      while (j < n && s[j] !== '\n') j++;
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === '/' && i + 1 < n && s[i + 1] === '*') {
+      let j = i + 2;
+      while (j + 1 < n && !(s[j] === '*' && s[j + 1] === '/')) j++;
+      j = j + 1 < n ? j + 2 : n;
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (/[A-Za-z0-9_$]/.test(ch)) {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9_$]/.test(s[j])) j++;
+      const tok = s.slice(i, j);
+      if (tok.includes('$')) {
+        let sanitized = tok.replace(/\$/g, '_');
+        if (!sanitized || /^[0-9]/.test(sanitized)) sanitized = `swift_${sanitized}`;
+        out += sanitized;
+      } else {
+        out += tok;
+      }
+      i = j;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 function renderCall(inst, ctx) {
   const c = callRecord(inst, ctx);
-  if (c.resolved.runtime === 'objc' && c.resolved.message) return c.resolved.message.text;
-  if (c.resolved.runtime === 'swift' && c.resolved.text) return c.resolved.text;
+  if (c.resolved.runtime === 'objc' && c.resolved.message) {
+    if (ctx.opts?.objcSyntax === 'c' && /^\[/.test(c.resolved.message.text || '')) {
+      const callee = c.callee || 'objc_msgSend';
+      const stripAt = (v) => String(v).replace(/^@(?=")/, '');
+      const cArgs = [stripAt(c.receiver), JSON.stringify(c.selector), ...(c.args || []).map(stripAt)];
+      return `${callee}(${cArgs.join(', ')})`;
+    }
+    return c.resolved.message.text;
+  }
+  if (c.resolved.runtime === 'swift' && c.resolved.text) {
+    return sanitizeSwiftDollarTokens(c.resolved.text);
+  }
   const name = c.name ? safeIdent(c.name, 'unknown_call') : null;
   if (name) {
     const args = !c.arityKnown
-      ? (c.virtualSlot && c.receiver ? `${c.receiver}, /* additional arguments unknown */` : '/* arguments unknown */')
-      : c.args.join(', ') + (c.variadicPrefixOnly ? `${c.args.length ? ', ' : ''}/* varargs unknown */` : '');
+      ? (c.virtualSlot && c.receiver ? `${c.receiver} /* , additional arguments unknown */` : '/* arguments unknown */')
+      : c.args.join(', ') + (c.variadicPrefixOnly ? (c.args.length ? ' /* , varargs unknown */' : '/* varargs unknown */') : '');
     return `${name}(${args})`;
   }
   const targetValue = valueOf(inst.args?.[0]);
@@ -1279,7 +2956,7 @@ function renderCall(inst, ctx) {
     const receiver = c.receiver || 'this';
     const args = c.arityKnown
       ? (c.args.length ? c.args.join(', ') : receiver)
-      : `${receiver}, /* additional arguments unknown */`;
+      : `${receiver} /* , additional arguments unknown */`;
     return `(*(code **)(...))(${args})`;
   }
   return `unknown_call(${targetValue ? renderValue(targetValue, ctx) : '/* target unknown */'})`;
@@ -1329,7 +3006,7 @@ function renderValueText(value, ctx, flags) {
     if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) return initialValueForm(ctx, 'cxx-this-receiver', 'this');
     return initialValueForm(ctx, 'materialized-reference', ctx.materialNames.get(value.id));
   }
-  const key = `${value.id}:${flags.asBase ? 'b' : 'v'}`;
+  const key = `${value.id}:${flags.asBase ? 'b' : 'v'}${flags.suppressRodataString ? ':noStr' : ''}`;
   if (ctx.exprCache.has(key)) {
     const trace = initialValueTraces.get(ctx), cached = trace?.memo.get(key);
     if (trace?.active) {
@@ -1338,20 +3015,59 @@ function renderValueText(value, ctx, flags) {
     }
     return initialValueForm(ctx, 'memo-reuse', ctx.exprCache.get(key));
   }
-  if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) return initialValueForm(ctx, 'bounded-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
+  const topLevel = ctx.exprActive.size === 0;
+  if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) {
+    ctx.exprFallbackHit = true;
+    return initialValueForm(ctx, 'bounded-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
+  }
+  const prevFallbackHit = ctx.exprFallbackHit === true;
+  ctx.exprFallbackHit = false;
   ctx.exprActive.add(value.id);
   let out = null;
+  let fallbackHit = false;
+  try {
   if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) out = initialValueForm(ctx, 'cxx-this-receiver', 'this');
-  if (!out && (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null))) out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(value.floatConst ?? value.float, value.bits));
-  if (!out && value.const != null && value.def?.op !== OP.ADDR) out = initialValueForm(ctx, 'precomputed-integer-or-literal', stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits));
+  const floatConstVal = floatConstValueOf(value);
+  if (!out && floatConstVal != null) {
+    out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(floatConstVal, value.bits ?? value.def?.bits ?? 64));
+  }
+  if (!out && value.const != null && value.def?.op !== OP.ADDR) {
+    const resolvedAddr = !flags.suppressRodataString ? resolveAddressConstForValue(value, ctx) : null;
+    if (resolvedAddr?.kind === 'string') {
+      out = initialValueForm(ctx, 'precomputed-integer-or-literal', resolvedAddr.text);
+    } else if (resolvedAddr?.kind === 'address') {
+      out = initialValueForm(ctx, 'address', resolvedAddr.text);
+    } else {
+      out = initialValueForm(ctx, 'precomputed-integer-or-literal', formatConst(value.const, value.bits));
+    }
+  }
   if (!out && value.kind === VK.ARG) out = initialValueForm(ctx, 'argument', argName(value, ctx));
   const d = value.def;
   if (!out && d) {
-    if (d.op === OP.CONST) out = initialValueForm(ctx, 'constant-definition', (value.constKind === 'float' || value.floatConst != null || value.float != null)
-      ? formatFloatConst(value.floatConst ?? value.float, value.bits)
-      : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null));
-    else if (d.op === OP.MOV) out = initialValueForm(ctx, 'mov-operand', renderValue(valueOf(d.args?.[0]), ctx));
-    else if (d.op === OP.BIN) out = initialValueForm(ctx, 'binary', binText(d, ctx));
+    if (d.op === OP.CONST) {
+      const constFloat = floatConstValueOf(value);
+      const isFloatConst = constFloat != null;
+      const resolvedAddr = (!isFloatConst && !flags.suppressRodataString) ? resolveAddressConstForValue(value, ctx) : null;
+      if (resolvedAddr?.kind === 'string') out = initialValueForm(ctx, 'constant-definition', resolvedAddr.text);
+      else if (resolvedAddr?.kind === 'address') out = initialValueForm(ctx, 'address', resolvedAddr.text);
+      else out = initialValueForm(ctx, 'constant-definition', isFloatConst
+        ? formatFloatConst(constFloat, value.bits ?? d.bits ?? 64)
+        : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null));
+    } else if (d.op === OP.MOV) out = initialValueForm(ctx, 'mov-operand', renderValue(valueOf(d.args?.[0]), ctx, flags.suppressRodataString ? { suppressRodataString: true } : {}));
+    else if (d.op === OP.BIN) {
+      let foldedText = null;
+      if ((d.sub === 'add' || d.sub === 'sub') && isAddressDerivedValue(value)) {
+        const foldedAddr = foldedAddressOfBin(d);
+        if (foldedAddr != null) {
+          const literal = !flags.suppressRodataString ? stringLiteralAt(foldedAddr, ctx) : null;
+          if (literal) foldedText = literal;
+          else if (foldedAddr !== 0n) foldedText = formatAddressOrGlobal(foldedAddr, ctx);
+        }
+      }
+      out = foldedText
+        ? initialValueForm(ctx, 'address', foldedText)
+        : initialValueForm(ctx, 'binary', binText(d, ctx));
+    }
     else if (d.op === OP.UN) out = initialValueForm(ctx, 'unary', unaryText(d, ctx));
     else if (d.op === OP.MAC) {
       const a = renderValue(valueOf(d.args?.[0]), ctx), b0 = renderValue(valueOf(d.args?.[1]), ctx), c0 = renderValue(valueOf(d.args?.[2]), ctx);
@@ -1360,11 +3076,11 @@ function renderValueText(value, ctx, flags) {
       const c=widen==='signed'?`(int64_t)(int32_t)${paren(c0)}`:widen==='unsigned'?`(uint64_t)(uint32_t)${paren(c0)}`:c0;
       out = initialValueForm(ctx, 'multiply-accumulate', d.sub === 'msub' ? `${paren(a)} - ${paren(b)} * ${paren(c)}` : `${paren(a)} + ${paren(b)} * ${paren(c)}`);
     } else if (d.op === OP.BFX) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
+      const a = renderValue(valueOf(d.args?.[0]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? 0;
       if (d.extra?.toward === 'left') out = initialValueForm(ctx, 'bitfield-insert-zero', `${d.extra?.signed?'__arm64_sbfiz':'__arm64_ubfiz'}(${a}, ${l}, ${w})`);
       else out = initialValueForm(ctx, 'bit-extract', `${d.extra?.signed?'__arm64_sbfx':'bit_extract'}(${a}, ${l}, ${w})`);
     } else if (d.op === OP.BFI) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
+      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? 0;
       out = initialValueForm(ctx, 'bit-insert', d.extra?.bitfieldKind === 'bfxil' ? `bit_insert(${a}, bit_extract(${b}, ${l}, ${w}), 0, ${w})` : `bit_insert(${a}, ${b}, ${l}, ${w})`);
     } else if (d.op === OP.LOAD) {
       if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
@@ -1377,27 +3093,73 @@ function renderValueText(value, ctx, flags) {
     } else if (d.op === OP.SEL) {
       out = selectAsMinMax(d, ctx);
       if (!out) {
-        const t = renderValue(valueOf(d.args?.[0]), ctx), f = renderValue(valueOf(d.args?.[1]), ctx);
+        const tVal = valueOf(d.args?.[0]), fVal = valueOf(d.args?.[1]);
+        const renderSelArm = (armVal, siblingIsAddr = false) => {
+          if (armVal && !(ctx.materialNames?.has(armVal.id))) {
+            const resolved = resolveAddressConstForValue(armVal, ctx, {
+              allowAnyAddressRef: true,
+              forceAddress: siblingIsAddr,
+            });
+            if (resolved) return resolved.text;
+          }
+          return renderValue(armVal, ctx);
+        };
+        let t = renderSelArm(tVal, false);
+        let f = renderSelArm(fVal, false);
+        const looksAddrOrStr = (s) => typeof s === 'string' && (s.startsWith('"') || s.startsWith('&global_'));
+        if (looksAddrOrStr(t) && !looksAddrOrStr(f)) f = renderSelArm(fVal, true);
+        else if (looksAddrOrStr(f) && !looksAddrOrStr(t)) t = renderSelArm(tVal, true);
+        const negArm = (s) => (s.startsWith('-') ? `-(${s})` : `-${paren(s)}`);
+        if (d.sub === 'inc') f = `(${paren(f)} + 1)`;
+        else if (d.sub === 'inv') f = `~${paren(f)}`;
+        else if (d.sub === 'neg') f = negArm(f);
+        else if (d.sub === 'cinc') { f = t; t = `(${paren(t)} + 1)`; }
+        else if (d.sub === 'cinv') { f = t; t = `~${paren(t)}`; }
+        else if (d.sub === 'cneg') { f = t; t = negArm(t); }
         const cond = renderCmp(cmpFromFlags(valueOf(d.args?.[2])), d.cond, ctx);
         out = initialValueForm(ctx, 'select-conditional', `(${cond} ? ${t} : ${f})`);
       }
     } else if (d.op === OP.ADDR) {
       const addr = value.const ?? d.extra?.value ?? d.extra?.target;
-      const literal = stringLiteralForValue(value, ctx) || stringLiteralAt(addr, ctx);
+      const literal = flags.suppressRodataString ? null : (stringLiteralForValue(value, ctx) || stringLiteralAt(addr, ctx));
       out = initialValueForm(ctx, 'address', literal || (addr != null ? (ctx.opts.symbolFor?.(addr) ? safeIdent(ctx.opts.symbolFor(addr)) : `&global_${hex(addr)}`) : 'address_unknown'));
-    } else if (d.op === OP.CALL) out = initialValueForm(ctx, 'call', renderCall(d, ctx));
+    } else if (d.op === OP.CALL) {
+      const canonical = d.dst || ctx.callResultByInst?.get(d) || null;
+      if (ctx.opts?.phase8Optimize !== true && value !== canonical && !isSameCallReturnFamily(value.reg, canonical?.reg)) {
+        if (isCallClobberedValue(value)) {
+          out = initialValueForm(ctx, 'call-clobber', '0');
+        } else {
+          out = initialValueForm(ctx, 'register-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
+        }
+      } else {
+        out = initialValueForm(ctx, 'call', renderCall(d, ctx));
+      }
+    }
     else if (d.op === OP.PHI) {
-      const parts = (d.incoming || []).map((x) => renderValue(x.value, ctx)).filter(Boolean);
-      const uniq = [...new Set(parts)];
-      if (uniq.length === 1) out = initialValueForm(ctx, 'phi-deduplication', uniq[0]);
-      else out = initialValueForm(ctx, 'phi-multiple', `phi(${uniq.join(', ')})`);
+      if (ctx.phiVarNames?.has(value.id) && !flags.ignorePhiVar) {
+        out = initialValueForm(ctx, 'phi-variable', ctx.phiVarNames.get(value.id));
+      } else {
+        const nonSelf = (d.incoming || []).filter((x) => x?.value && x.value.id !== value.id);
+        const sourceList = nonSelf.length ? nonSelf : (d.incoming || []);
+        const parts = sourceList.map((x) => renderValue(x.value, ctx)).filter(Boolean);
+        const uniq = [...new Set(parts)];
+        if (uniq.length === 1) out = initialValueForm(ctx, 'phi-deduplication', uniq[0]);
+        else out = initialValueForm(ctx, 'phi-multiple', `phi(${uniq.join(', ')})`);
+      }
     }
   }
   if (!out) out = initialValueForm(ctx, 'register-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
-  ctx.exprActive.delete(value.id);
-  ctx.exprCache.set(key, out);
-  const trace = initialValueTraces.get(ctx);
-  if (trace?.active) trace.memo.set(key, trace.active);
+  } finally {
+    fallbackHit = ctx.exprFallbackHit === true;
+    ctx.exprFallbackHit = topLevel ? false : Boolean(prevFallbackHit || fallbackHit);
+    ctx.exprActive.delete(value.id);
+    if (topLevel) ctx.exprNodes = 0;
+  }
+  if (!fallbackHit) {
+    ctx.exprCache.set(key, out);
+    const trace = initialValueTraces.get(ctx);
+    if (trace?.active) trace.memo.set(key, trace.active);
+  }
   return out;
 }
 
@@ -1652,7 +3414,7 @@ function earlyExitConditionalContinuation(header, yes, no, ctx, state, stop = nu
       if (!closed) break;
     }
     if (!closed) continue;
-    return { ...candidate, bodyBlocks:done, loopContinuation };
+    return { ...candidate, bodyBlocks:done, loopContinuation, bodyReachesContinuation: reachedContinuation };
   }
   return null;
 }
@@ -1822,20 +3584,96 @@ function terminalConditionalPartition(header, yes, no, ctx, state, allowed = nul
 function materialization(ctx) {
   const names = new Map();
   const instructions = ctx.ir.instructions || [];
+  const blocks = ctx.ir.blocks || [];
   const position = new Map(instructions.map((inst, index) => [inst, index]));
   const strongPrefix = new Array(instructions.length + 1).fill(0);
   const storePositions = [];
+  const blockRange = new Map();
+  const blockHasStrong = new Set();
+  const blockStores = new Map();
   const strongOrderingBarrier = (inst) => inst?.op === OP.CALL ||
     inst?.op === OP.CLOBBER || inst?.op === OP.UNKNOWN;
   for (let i = 0; i < instructions.length; i++) {
-    strongPrefix[i + 1] = strongPrefix[i] + (strongOrderingBarrier(instructions[i]) ? 1 : 0);
-    if (instructions[i]?.op === OP.STORE) storePositions.push(i);
+    const inst = instructions[i];
+    const isStrong = strongOrderingBarrier(inst);
+    strongPrefix[i + 1] = strongPrefix[i] + (isStrong ? 1 : 0);
+    const bi = inst?.block;
+    if (bi != null) {
+      const range = blockRange.get(bi);
+      if (range) {
+        if (i < range.start) range.start = i;
+        if (i > range.end) range.end = i;
+      } else {
+        blockRange.set(bi, { start: i, end: i });
+      }
+      if (isStrong) blockHasStrong.add(bi);
+      if (inst?.op === OP.STORE) {
+        let list = blockStores.get(bi);
+        if (!list) { list = []; blockStores.set(bi, list); }
+        list.push(inst);
+      }
+    }
+    if (inst?.op === OP.STORE) storePositions.push(i);
   }
+  const preds = new Map();
+  for (let bi = 0; bi < blocks.length; bi++) {
+    for (const s of blocks[bi]?.succ || []) {
+      let list = preds.get(s);
+      if (!list) { list = []; preds.set(s, list); }
+      list.push(bi);
+    }
+  }
+  const cycleBlocksCache = new Map();
+  const cycleBlocksFor = (originBlock) => {
+    if (originBlock == null || !blocks[originBlock]) return null;
+    if (cycleBlocksCache.has(originBlock)) return cycleBlocksCache.get(originBlock);
+    const fwd = new Set();
+    const stack = [...(blocks[originBlock].succ || [])];
+    while (stack.length) {
+      const b = stack.pop();
+      if (fwd.has(b)) continue;
+      fwd.add(b);
+      for (const s of blocks[b]?.succ || []) {
+        if (!fwd.has(s)) stack.push(s);
+      }
+    }
+    if (!fwd.has(originBlock)) {
+      cycleBlocksCache.set(originBlock, null);
+      return null;
+    }
+    const cycle = new Set();
+    const bstack = [originBlock];
+    while (bstack.length) {
+      const b = bstack.pop();
+      if (cycle.has(b)) continue;
+      cycle.add(b);
+      for (const p of preds.get(b) || []) {
+        if (fwd.has(p) && !cycle.has(p)) bstack.push(p);
+      }
+    }
+    cycleBlocksCache.set(originBlock, cycle);
+    return cycle;
+  };
+  const blockHasAliasingBarrier = (load, bi) => {
+    if (blockHasStrong.has(bi)) return true;
+    const stores = blockStores.get(bi);
+    if (!stores) return false;
+    for (const store of stores) {
+      if (mayAliasProvenance(load?.loc, store?.loc)) return true;
+    }
+    return false;
+  };
   const barrierBetween = (load, current, from, to) => {
     if (to <= from + 1) return false;
     if (strongPrefix[to] - strongPrefix[from + 1] > 0) return true;
-    for (const index of storePositions) {
-      if (index <= from) continue;
+    let lo = 0, hi = storePositions.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (storePositions[mid] <= from) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let k = lo; k < storePositions.length; k++) {
+      const index = storePositions[k];
       if (index >= to) break;
       const store = instructions[index];
       if (!mayAliasProvenance(load?.loc, store?.loc)) continue;
@@ -1847,33 +3685,173 @@ function materialization(ctx) {
     }
     return false;
   };
+  const pathBlocksCache = new Map();
+  const blocksBetween = (fromBlock, toBlock, includeTarget) => {
+    if (fromBlock == null || toBlock == null || !blocks[fromBlock] || !blocks[toBlock]) return null;
+    const key = `${fromBlock}:${toBlock}:${includeTarget ? 1 : 0}`;
+    if (pathBlocksCache.has(key)) return pathBlocksCache.get(key);
+    const fwd = new Set();
+    const stack = [...(blocks[fromBlock].succ || [])];
+    while (stack.length) {
+      const b = stack.pop();
+      if (fwd.has(b)) continue;
+      fwd.add(b);
+      for (const s of blocks[b]?.succ || []) {
+        if (!fwd.has(s)) stack.push(s);
+      }
+    }
+    if (!fwd.has(toBlock)) {
+      pathBlocksCache.set(key, null);
+      return null;
+    }
+    const between = new Set();
+    const bstack = includeTarget ? [toBlock] : [...(preds.get(toBlock) || [])];
+    while (bstack.length) {
+      const b = bstack.pop();
+      if (!fwd.has(b) || between.has(b)) continue;
+      between.add(b);
+      if (b === fromBlock) continue;
+      for (const p of preds.get(b) || []) {
+        if (fwd.has(p) && !between.has(p)) bstack.push(p);
+      }
+    }
+    between.delete(fromBlock);
+    if (!includeTarget) between.delete(toBlock);
+    pathBlocksCache.set(key, between);
+    return between;
+  };
+  const loopOfBlock = (bi) => {
+    if (bi == null) return null;
+    if (ctx.graph?.loopByNode?.has(bi)) return ctx.graph.loopByNode.get(bi);
+    for (const lp of ctx.ir.loops || []) {
+      if (lp?.nodes?.has?.(bi) || (Array.isArray(lp?.nodes) && lp.nodes.includes(bi))) return lp;
+    }
+    return null;
+  };
+  const implicitRetUses = new Map();
+  for (const ret of ctx.returnInsts || []) {
+    if (ret?.args?.length) continue;
+    const rv = returnValueAt(ret, ctx);
+    if (rv?.id != null) {
+      let list = implicitRetUses.get(rv.id);
+      if (!list) { list = []; implicitRetUses.set(rv.id, list); }
+      list.push(ret);
+    }
+  }
+  const phiHasLiveUse = (phiInst) => {
+    const seenPhis = new Set();
+    const stack = [phiInst];
+    while (stack.length) {
+      const p = stack.pop();
+      const dst = p?.dst;
+      if (!dst || seenPhis.has(dst.id)) continue;
+      seenPhis.add(dst.id);
+      if (implicitRetUses.has(dst.id)) return true;
+      for (const u of dst.uses || []) {
+        if (!u || u === p || u.clobbered) continue;
+        if (u.op === OP.PHI) stack.push(u);
+        else return true;
+      }
+    }
+    return false;
+  };
   const crossesBarrier = (value) => {
     const def = value?.def;
     const di = position.get(def);
     if (di == null) return false;
     const originBlock = def.block;
+    const originLoop = loopOfBlock(originBlock);
     const seenValues = new Set();
     const queue = [value];
     while (queue.length) {
       const current = queue.pop();
       if (!current || seenValues.has(current.id)) continue;
       seenValues.add(current.id);
-      for (const use of current.uses || []) {
+      const uses = [...(current.uses || []), ...(implicitRetUses.get(current.id) || [])];
+      for (const use of uses) {
         if (use === current.def || use?.clobbered) continue;
+        if (use.op === OP.PHI && !phiHasLiveUse(use)) continue;
         const ui = position.get(use);
-        if (ui == null || ui <= di) continue;
-        // Moving an observation into another Basic Block can make it conditional
-        // (or move it to another path), changing faults/MMIO semantics even if
-        // no explicit store/call sits between the two textual rows.
-        if (use.block !== originBlock) return true;
-        const currentDef = current.def || def;
-        const currentIndex = position.get(currentDef);
-        if (currentIndex != null && barrierBetween(def, current, currentIndex, ui)) return true;
-        // Follow pure SSA transforms transitively. A load feeding add/cmp/select
-        // can otherwise appear safe at its direct use while the derived value is
-        // finally consumed only after a side-effect barrier.
-        if (use.dst && use.op !== OP.CALL && use.op !== OP.LOAD &&
-            use.op !== OP.STORE && use.op !== OP.CLOBBER && use.op !== OP.UNKNOWN) {
+        if (use.op !== OP.PHI && use.block != null && use.block !== originBlock) return true;
+        if (use.op === OP.PHI) {
+          const originRange = blockRange.get(originBlock);
+          if (originRange && barrierBetween(def, current, di, originRange.end + 1)) return true;
+          for (const inc of use.incoming || []) {
+            if (inc?.value !== current || inc.from == null) continue;
+            if (loopOfBlock(inc.from) !== originLoop) return true;
+            if (inc.from === originBlock) {
+              const cycle = cycleBlocksFor(originBlock);
+              if (cycle) {
+                for (const bi of cycle) {
+                  if (blockHasAliasingBarrier(def, bi)) return true;
+                }
+              }
+              continue;
+            }
+            const between = blocksBetween(originBlock, inc.from, true);
+            if (between) {
+              for (const bi of between) {
+                if (blockHasAliasingBarrier(def, bi)) return true;
+              }
+            }
+          }
+        } else if (ui == null) {
+          continue;
+        } else if (ui > di) {
+          const currentDef = current.def || def;
+          const currentIndex = position.get(currentDef);
+          const fromIndex = currentIndex != null && currentIndex < ui ? Math.min(di, currentIndex) : di;
+          if (barrierBetween(def, current, fromIndex, ui)) return true;
+        } else if (use.block === originBlock) {
+          // Same-block use at or before `def` (e.g. loop back-edge):
+          // check barriers after `di`, before `ui`, or in any cycle block.
+          const cycle = cycleBlocksFor(originBlock);
+          if (cycle) {
+            const range = blockRange.get(originBlock);
+            if (range) {
+              if (barrierBetween(def, current, di, range.end + 1)) return true;
+              if (barrierBetween(def, current, range.start - 1, ui)) return true;
+            }
+            for (const bi of cycle) {
+              if (bi === originBlock) continue;
+              if (blockHasAliasingBarrier(def, bi)) return true;
+            }
+          }
+        } else {
+          // Cross-block use with ui <= di (e.g. loop header PHI or consumer block
+          // ordered before def block in linear IR): check tail of originBlock,
+          // head of use.block (for non-PHI), and all intermediate/loop blocks.
+          const originRange = blockRange.get(originBlock);
+          if (originRange && barrierBetween(def, current, di, originRange.end + 1)) return true;
+          if (use.op === OP.PHI) {
+            for (const inc of use.incoming || []) {
+              if (inc?.value !== current || inc.from == null) continue;
+              if (inc.from === originBlock) continue;
+              const between = blocksBetween(originBlock, inc.from, true);
+              if (between) {
+                for (const bi of between) {
+                  if (blockHasAliasingBarrier(def, bi)) return true;
+                }
+              }
+            }
+          } else {
+            return true;
+          }
+        }
+        // Follow pure SSA transforms transitively — and trivial PHIs (e.g.
+        // loop-invariant self-loop PHIs like phi(x, self)) which buildPhiLowering
+        // collapses back to their single non-self incoming value instead of
+        // materializing a PHI variable on the incoming edge.
+        const isTrivialPhiUse = use.op === OP.PHI && use.dst && (() => {
+          const nonSelf = (use.incoming || [])
+            .map((e) => e?.value)
+            .filter((val) => val != null && val.id !== use.dst.id);
+          if (!nonSelf.length) return false;
+          const first = nonSelf[0];
+          return nonSelf.every((val) => val === first || samePhiIncomingValue(val, first));
+        })();
+        if (use.dst && (isTrivialPhiUse || (use.op !== OP.PHI && use.op !== OP.CALL && use.op !== OP.LOAD &&
+            use.op !== OP.STORE && use.op !== OP.CLOBBER && use.op !== OP.UNKNOWN))) {
           queue.push(use.dst);
         }
       }
@@ -1883,7 +3861,7 @@ function materialization(ctx) {
   for (const v of ctx.ir.values || []) {
     if (!v.def) continue;
     const meaningfulUses = (v.uses || []).filter((u) => u !== v.def && !u.clobbered);
-    if (!meaningfulUses.length) continue;
+    if (!meaningfulUses.length && !implicitRetUses.has(v.id)) continue;
     if (v.def.op === OP.CALL) {
       names.set(v.id, `call_${v.id}`);
       continue;
@@ -1898,6 +3876,144 @@ function materialization(ctx) {
     if (v.def.op === OP.LOAD && crossesBarrier(v)) names.set(v.id, `load_${v.id}`);
   }
   return names;
+}
+
+const CALL_INT_RETURN_REG_ORDER = [
+  'x0', 'w0', 'rax', 'eax', 'ax', 'al', 'r0', 'a0', 'x10',
+];
+const CALL_FP_RETURN_REG_ORDER = [
+  'd0', 's0', 'v0', 'q0', 'h0', 'b0', 'xmm0', 'ymm0', 'zmm0', 'fa0', 'f10', 'st0',
+];
+const CALL_RETURN_REG_ORDER = [
+  ...CALL_INT_RETURN_REG_ORDER,
+  ...CALL_FP_RETURN_REG_ORDER,
+];
+const CALL_FP_FIRST_REG_ORDER = [
+  ...CALL_FP_RETURN_REG_ORDER,
+  ...CALL_INT_RETURN_REG_ORDER,
+];
+const CALL_INT_RETURN_REGS = new Set(CALL_INT_RETURN_REG_ORDER);
+const CALL_FP_RETURN_REGS = new Set(CALL_FP_RETURN_REG_ORDER);
+const CALL_MULTI_RETURN_REGS = new Set([
+  'x1', 'w1', 'rdx', 'edx', 'dx', 'dl', 'r1', 'a1', 'x11',
+  'd1', 's1', 'v1', 'q1', 'h1', 'b1',
+  'd2', 's2', 'v2', 'q2', 'h2', 'b2',
+  'd3', 's3', 'v3', 'q3', 'h3', 'b3',
+  'xmm1', 'ymm1', 'zmm1', 'fa1', 'f11', 'st1',
+]);
+
+function callReturnRegFamily(reg) {
+  if (!reg) return null;
+  const r = String(reg).toLowerCase();
+  if (CALL_INT_RETURN_REGS.has(r)) return 'int';
+  if (CALL_FP_RETURN_REGS.has(r)) return 'fp';
+  return null;
+}
+
+export function isSameCallReturnFamily(aReg, bReg) {
+  if (!aReg || !bReg) return false;
+  const a = String(aReg).toLowerCase();
+  const b = String(bReg).toLowerCase();
+  if (a === b) return true;
+  const fa = callReturnRegFamily(a);
+  return fa != null && fa === callReturnRegFamily(b);
+}
+
+export function isCallClobberedValue(v) {
+  if (!v) return false;
+  if (v.clobbered === true) return true;
+  if (v.kind === VK.UNDEF && v.unknown === true) {
+    const r = String(v.reg || '').toLowerCase();
+    if (r && !CALL_INT_RETURN_REGS.has(r) && !CALL_FP_RETURN_REGS.has(r) && !CALL_MULTI_RETURN_REGS.has(r)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function callCalleeNameForOrder(inst, opts = null) {
+  if (!inst) return null;
+  if (inst.extra?.name) return inst.extra.name;
+  const fromRow = opts?.callByRow?.get?.(inst.row)?.name;
+  if (fromRow) return fromRow;
+  const target = inst.extra?.target ?? inst.target;
+  if (target != null && opts?.symbolFor) {
+    try { return opts.symbolFor(target) || null; } catch { return null; }
+  }
+  return null;
+}
+
+function knownVoidCall(inst, opts = null) {
+  const calleeName = callCalleeNameForOrder(inst, opts);
+  const sig = calleeName ? knownCallSignature(calleeName) : null;
+  return sig?.retType === 'void';
+}
+
+export function buildCallResultMap(ir, materialNames = null, opts = null) {
+  const byInst = new Map();
+  const candidatesByInst = new Map();
+  for (const v of ir?.values || []) {
+    const def = v?.def;
+    if (!def || def.op !== OP.CALL) continue;
+    if (knownVoidCall(def, opts)) continue;
+    if (def.dst === v) {
+      byInst.set(def, v);
+      continue;
+    }
+    if (materialNames) {
+      if (!materialNames.has(v.id)) continue;
+    } else if (!(v.uses || []).some((u) => u !== def && !u.clobbered)) {
+      continue;
+    }
+    let list = candidatesByInst.get(def);
+    if (!list) {
+      list = [];
+      candidatesByInst.set(def, list);
+    }
+    list.push(v);
+  }
+  for (const [inst, list] of candidatesByInst) {
+    if (byInst.has(inst)) continue;
+    const calleeName = callCalleeNameForOrder(inst, opts);
+    const sig = calleeName ? knownCallSignature(calleeName) : null;
+    if (sig?.retType === 'void') continue;
+    if (inst.dst) {
+      byInst.set(inst, inst.dst);
+      continue;
+    }
+    if (inst.returnReg) {
+      const targetReg = String(inst.returnReg).toLowerCase();
+      const exact = list.find((v) => String(v.reg || '').toLowerCase() === targetReg);
+      if (exact) {
+        byInst.set(inst, exact);
+        continue;
+      }
+    }
+    const prefersFp = sig?.retType === 'float' || sig?.retType === 'double' || sig?.retType === 'long double';
+    const order = prefersFp ? CALL_FP_FIRST_REG_ORDER : CALL_RETURN_REG_ORDER;
+    let picked = null;
+    for (const reg of order) {
+      const match = list.find((v) => String(v.reg || '').toLowerCase() === reg);
+      if (match) {
+        picked = match;
+        break;
+      }
+    }
+    if (!picked && list.length === 1 && !list[0].reg) {
+      picked = list[0];
+    }
+    if (picked) byInst.set(inst, picked);
+  }
+  return byInst;
+}
+
+function callResultValue(inst, ctx) {
+  if (!inst) return null;
+  const callOpts = ctx?.callByRow ? { ...(ctx?.opts || {}), callByRow: ctx.callByRow } : ctx?.opts;
+  if (knownVoidCall(inst, callOpts)) return null;
+  if (inst.dst) return ctx.materialNames.has(inst.dst.id) ? inst.dst : null;
+  const candidate = ctx.callResultByInst?.get(inst) || null;
+  return candidate && ctx.materialNames.has(candidate.id) ? candidate : null;
 }
 
 function rmwOperand(rmw, ctx) {
@@ -1963,6 +4079,347 @@ function evidenceOf(inst, reason) {
   return { row: inst.row, address: inst.address ?? null, ir: inst.id, op: inst.op, text: inst.text || null, reason };
 }
 
+function escapePhiRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function samePhiIncomingValue(a, b) {
+  if (sameValue(a, b)) return true;
+  const ua = unwrapValue(a), ub = unwrapValue(b);
+  if (!ua || !ub) return false;
+  if (ua.const != null && ub.const != null && ua.const === ub.const && ua.def?.op !== OP.ADDR && ub.def?.op !== OP.ADDR) {
+    return true;
+  }
+  if (ua.floatConst != null && ub.floatConst != null && Object.is(ua.floatConst, ub.floatConst)) {
+    return true;
+  }
+  return false;
+}
+
+function phiVariableType(value, ctx) {
+  const safeDeclType = (t) => (t && !/[\[\]()]/.test(t) ? t : null);
+  const isPtrType = (t) => Boolean(t && (/\*$/.test(t) || t === 'id'));
+  const incomingTypes = new Set();
+  let hasNonSelfIncoming = false;
+  let allIncomingPtr = true;
+  for (const edge of value.def?.incoming || []) {
+    if (!edge?.value || edge.value.id === value.id) continue;
+    hasNonSelfIncoming = true;
+    const t = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(edge.value.id)));
+    if (t) incomingTypes.add(t);
+    if (!isPtrType(t) && !isZeroVal(edge.value)) allIncomingPtr = false;
+  }
+  const ptrSafe = hasNonSelfIncoming && allIncomingPtr;
+  const recovered = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(value.id)));
+  if (recovered && (!isPtrType(recovered) || ptrSafe)) return recovered;
+  if (floatConstValueOf(value) != null) {
+    return Number(value.bits) === 32 ? 'float' : 'double';
+  }
+  if (incomingTypes.size === 1) {
+    const only = [...incomingTypes][0];
+    if (!isPtrType(only) || ptrSafe) return only;
+  }
+  const bits = [8, 16, 32, 64, 128].includes(Number(value.bits)) ? Number(value.bits) : 64;
+  return `${value.signed === true ? 'int' : 'uint'}${bits}`;
+}
+
+function buildPhiLowering(ctx) {
+  if (ctx?.opts?.phase8Optimize === true) {
+    return { varNames: new Map(), edgeCopies: new Map(), decls: [], skippedPhiIds: new Set(), temps: new Map(), tempCounter: 0, baseReserved: new Set(), reserved: new Set() };
+  }
+  const ir = ctx.ir;
+  const blocks = ir.blocks || [];
+  const reachable = ctx.graph?.reachable || new Set(blocks.map((_, i) => i));
+  const reserved = new Set();
+  for (const local of ctx.types?.locals || []) {
+    if (local?.slot) reserved.add(String(local.slot));
+  }
+  for (const name of ctx.materialNames?.values?.() || []) reserved.add(name);
+  for (const iv of ctx.inductions || []) {
+    if (iv?.name) reserved.add(iv.name);
+  }
+  const argCount = ir.args instanceof Map ? ir.args.size : 0;
+  for (let i = 1; i <= argCount; i++) reserved.add(`a${i}`);
+
+  const vars = new Map();
+  const varNames = new Map();
+  const edgeCopies = new Map();
+
+  const allocName = (base) => {
+    let name = base;
+    let suffix = 1;
+    while (reserved.has(name)) name = `${base}_${suffix++}`;
+    reserved.add(name);
+    return name;
+  };
+
+  for (let bi = 0; bi < blocks.length; bi++) {
+    if (!reachable.has(bi)) continue;
+    const block = blocks[bi];
+    if (!block) continue;
+    const seenPhiIds = new Set();
+    const phis = [...(block.phis || []), ...(block.insts || []).filter((inst) => inst?.op === OP.PHI)];
+    for (const phi of phis) {
+      if (!phi || phi.op !== OP.PHI || !phi.dst || phi.dst.id == null) continue;
+      if (seenPhiIds.has(phi.dst.id)) continue;
+      seenPhiIds.add(phi.dst.id);
+
+      const v = phi.dst;
+      const meaningfulUses = (v.uses || []).filter((u) => u !== phi && !u?.clobbered);
+      if (!meaningfulUses.length && !feedsReturn(v, ctx)) continue;
+
+      const rawIncoming = Array.isArray(phi.incoming) ? phi.incoming.filter((e) => e && e.value != null) : [];
+      if (rawIncoming.length < 2) continue;
+
+      let validCfg = true;
+      const byPred = new Map();
+      for (const edge of rawIncoming) {
+        const from = edge.from;
+        if (!Number.isInteger(from) || !blocks[from] || !(blocks[from].succ || []).includes(bi)) {
+          validCfg = false;
+          break;
+        }
+        if (byPred.has(from)) {
+          if (!samePhiIncomingValue(byPred.get(from), edge.value)) {
+            validCfg = false;
+            break;
+          }
+        } else {
+          byPred.set(from, edge.value);
+        }
+      }
+      if (!validCfg || byPred.size < 2) continue;
+
+      const nonSelf = [...byPred.values()].filter((val) => val.id !== v.id);
+      if (nonSelf.length <= 1) continue;
+      const first = nonSelf[0];
+      if (nonSelf.every((val) => samePhiIncomingValue(val, first))) continue;
+
+      const name = allocName(`phi_${v.id}`);
+      const type = phiVariableType(v, ctx);
+      vars.set(v.id, { id: v.id, name, type, value: v, phi, block: bi });
+      varNames.set(v.id, name);
+
+      for (const [from, val] of byPred) {
+        if (!reachable.has(from)) continue;
+        const edgeKey = `${from}->${bi}`;
+        if (!edgeCopies.has(edgeKey)) edgeCopies.set(edgeKey, []);
+        edgeCopies.get(edgeKey).push({ phi, dstId: v.id, dstName: name, dstType: type, value: val });
+      }
+    }
+  }
+
+  return {
+    vars,
+    varNames,
+    edgeCopies,
+    reserved,
+    baseReserved: new Set(reserved),
+    temps: new Map(),
+    tempCounter: 0,
+    skippedPhiIds: new Set(),
+  };
+}
+
+const PHI_STRING_OR_WORD_RE = /"(?:\\.|[^"\\])*"|[A-Za-z0-9_]+/g;
+
+function extractPhiWordIdents(expr) {
+  const idents = new Set();
+  if (!expr) return idents;
+  PHI_STRING_OR_WORD_RE.lastIndex = 0;
+  let m;
+  while ((m = PHI_STRING_OR_WORD_RE.exec(expr)) !== null) {
+    if (m[0].charCodeAt(0) !== 34 /* '"' */) idents.add(m[0]);
+  }
+  return idents;
+}
+
+function exprReferencesIdent(expr, ident) {
+  if (!expr || !ident || !expr.includes(ident)) return false;
+  const stripped = expr.replace(/"(?:\\.|[^"\\])*"/g, '""');
+  return new RegExp(`(?<![A-Za-z0-9_])${escapePhiRegExp(ident)}(?![A-Za-z0-9_])`).test(stripped);
+}
+
+function replaceIdentInExpr(expr, ident, replacement) {
+  if (!expr || !ident || !expr.includes(ident)) return expr;
+  if (DECL_PURE_WORD_RE.test(ident)) {
+    return expr.replace(PHI_STRING_OR_WORD_RE, (tok) => (tok === ident ? replacement : tok));
+  }
+  const re = new RegExp(`(?<![A-Za-z0-9_])${escapePhiRegExp(ident)}(?![A-Za-z0-9_])`, 'g');
+  return expr.replace(/"(?:\\.|[^"\\])*"|[^"]+/g, (seg) => (seg.startsWith('"') ? seg : seg.replace(re, replacement)));
+}
+
+function activeEdgeCopies(fromBi, toBi, ctx) {
+  const lowering = ctx.phiLowering;
+  if (!lowering || fromBi == null || toBi == null) return [];
+  const raw = lowering.edgeCopies.get(`${fromBi}->${toBi}`);
+  if (!raw || !raw.length) return [];
+  const skipped = lowering.skippedPhiIds;
+  return skipped?.size ? raw.filter((c) => !skipped.has(c.dstId)) : raw;
+}
+
+function hasPhiCopiesForEdge(fromBi, toBi, ctx) {
+  const copies = activeEdgeCopies(fromBi, toBi, ctx);
+  if (!copies.length) return false;
+  return copies.some((c) => c.value?.id !== c.dstId);
+}
+
+function emitPhiCopiesForEdge(fromBi, toBi, out, ctx, indent, anchorInst = null) {
+  const copies = activeEdgeCopies(fromBi, toBi, ctx);
+  if (!copies.length) return 0;
+  const lowering = ctx.phiLowering;
+
+  const pending = [];
+  for (const c of copies) {
+    if (c.value?.id === c.dstId) continue;
+    resetInitialValueOwner(ctx);
+    const rhs = renderValue(c.value, ctx);
+    if (rhs === c.dstName) continue;
+    pending.push({
+      dst: c.dstName,
+      dstType: c.dstType,
+      rhs,
+      phi: c.phi,
+      value: c.value,
+    });
+  }
+  resetInitialValueOwner(ctx);
+  if (!pending.length) return 0;
+
+  const fallbackRow = anchorInst?.row ?? ctx.ir.blocks[fromBi]?.endRow ?? null;
+  const fallbackAddr = anchorInst?.address ?? ctx.blockAddress(fromBi);
+  const makeCopyLine = (lhs, rhs, phi, incomingValue) => {
+    const source = mergeSource(
+      sourceForInst(phi, 'phi-out-of-ssa'),
+      dependencySource(incomingValue, ctx),
+      anchorInst ? sourceForInst(anchorInst, 'phi-edge') : sourceOf(),
+    );
+    const extra = typeof fromBi === 'number' ? { source, block: fromBi } : { source };
+    return line('stmt', indent, `${lhs} = ${rhs};`, fallbackRow, fallbackAddr, extra);
+  };
+
+  const allPureWordDst = pending.every((item) => DECL_PURE_WORD_RE.test(item.dst));
+  let useCount = null;
+  if (allPureWordDst) {
+    useCount = new Map();
+    for (const item of pending) {
+      const idents = extractPhiWordIdents(item.rhs);
+      item.rhsIdents = idents;
+      for (const ident of idents) useCount.set(ident, (useCount.get(ident) || 0) + 1);
+    }
+  }
+
+  let emitted = 0;
+  while (pending.length) {
+    let readyIdx = -1;
+    if (useCount) {
+      for (let i = 0; i < pending.length; i++) {
+        const dst = pending[i].dst;
+        const totalUses = useCount.get(dst) || 0;
+        const selfUse = pending[i].rhsIdents.has(dst) ? 1 : 0;
+        if (totalUses - selfUse === 0) {
+          readyIdx = i;
+          break;
+        }
+      }
+    } else {
+      for (let i = 0; i < pending.length; i++) {
+        const dst = pending[i].dst;
+        let usedByOther = false;
+        for (let j = 0; j < pending.length; j++) {
+          if (i === j) continue;
+          if (exprReferencesIdent(pending[j].rhs, dst)) {
+            usedByOther = true;
+            break;
+          }
+        }
+        if (!usedByOther) {
+          readyIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (readyIdx >= 0) {
+      const item = pending.splice(readyIdx, 1)[0];
+      if (useCount) {
+        for (const ident of item.rhsIdents) useCount.set(ident, (useCount.get(ident) || 1) - 1);
+      }
+      out.push(makeCopyLine(item.dst, item.rhs, item.phi, item.value));
+      emitted++;
+    } else {
+      const victim = pending[0];
+      let tmpName = `phi_tmp_${lowering.tempCounter++}`;
+      while (lowering.reserved.has(tmpName)) tmpName = `phi_tmp_${lowering.tempCounter++}`;
+      lowering.reserved.add(tmpName);
+      lowering.temps.set(tmpName, { name: tmpName, type: victim.dstType });
+      out.push(makeCopyLine(tmpName, victim.dst, victim.phi, victim.phi.dst));
+      emitted++;
+      if (useCount) {
+        for (const item of pending) {
+          if (!item.rhsIdents.has(victim.dst)) continue;
+          item.rhs = replaceIdentInExpr(item.rhs, victim.dst, tmpName);
+          item.rhsIdents.delete(victim.dst);
+          useCount.set(victim.dst, (useCount.get(victim.dst) || 1) - 1);
+          if (!item.rhsIdents.has(tmpName)) {
+            item.rhsIdents.add(tmpName);
+            useCount.set(tmpName, (useCount.get(tmpName) || 0) + 1);
+          }
+        }
+      } else {
+        for (const item of pending) {
+          item.rhs = replaceIdentInExpr(item.rhs, victim.dst, tmpName);
+        }
+      }
+    }
+  }
+  return emitted;
+}
+
+function loopExitHasCompetingPhiEdges(loop, exit, ctx) {
+  if (!hasPhiCopiesForEdge(loop.header, exit, ctx)) return false;
+  for (const node of loop.nodes || []) {
+    if (node === loop.header) continue;
+    const succs = ctx.ir.blocks[node]?.succ || [];
+    if (succs.includes(exit)) return true;
+  }
+  return false;
+}
+
+function computeForLoopHandledPhis(ctx) {
+  const skipped = new Set();
+  const loops = ctx.ir.loops || [];
+  for (const loop of loops) {
+    const block = ctx.ir.blocks[loop.header];
+    const term = block ? blockTerm(block) : null;
+    if (!term || term.op !== OP.CBR || (block.succ || []).length !== 2) continue;
+    const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
+    const yesInside = loop.nodes.has(yes), noInside = loop.nodes.has(no);
+    if (yesInside === noInside) continue;
+    const bodyStart = yesInside ? yes : no;
+    const exit = yesInside ? no : yes;
+    if (bodyStart === loop.header || blockHasObservableStatements(block, ctx)) continue;
+    if (loop.exits.size !== 1) continue;
+    if (loopExitHasCompetingPhiEdges(loop, exit, ctx)) continue;
+    // Check if nested loop would be rejected by emitRegion's nestedLoop guard
+    let blockedByOuter = false;
+    for (const outer of loops) {
+      if (outer === loop || outer.nodes.size <= loop.nodes.size) continue;
+      if ([...loop.nodes].every((n) => outer.nodes.has(n))) {
+        const exitsInside = [...loop.exits].every((e) => outer.nodes.has(e));
+        const pureHeader = (block.insts || []).every((inst) => ![OP.CALL, OP.STORE, OP.UNKNOWN, OP.CLOBBER].includes(inst.op));
+        if (!exitsInside || !pureHeader) { blockedByOuter = true; break; }
+      }
+    }
+    if (blockedByOuter) continue;
+    const iv = (ctx.inductions || []).find((x) => x.loop.header === loop.header);
+    if (iv && iv.init && iv.conditionInst === term && iv.value?.id != null) {
+      skipped.add(iv.value.id);
+    }
+  }
+  return skipped;
+}
+
 function emitBlockStatements(block, out, ctx, indent) {
   const term = blockTerm(block);
   for (const inst of block.insts || []) {
@@ -1992,11 +4449,13 @@ function emitBlockStatements(block, out, ctx, indent) {
       }
       const call = renderCall(inst, ctx);
       const extra = { source: callSource(inst, c, ctx) };
-      const node = inst.dst && ctx.materialNames.has(inst.dst.id)
-        ? line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra)
+      const callDst = callResultValue(inst, ctx);
+      const callDstName = callDst ? ctx.materialNames.get(callDst.id) : null;
+      const node = callDstName
+        ? line('stmt', indent, `${callDstName} = ${call};`, inst.row, inst.address, extra)
         : line('stmt', indent, `${call};`, inst.row, inst.address, extra);
-      const resultBinding = inst.dst && ctx.materialNames.has(inst.dst.id)
-        ? Object.freeze({ name:ctx.materialNames.get(inst.dst.id), callText:`${call};`, value:inst.dst }) : null;
+      const resultBinding = callDstName
+        ? Object.freeze({ name: callDstName, callText: `${call};`, value: callDst }) : null;
       retainStatementRenderLine(node, inst, c, ctx, null, resultBinding);
       out.push(node);
       ctx.evidence.push(evidenceOf(inst, c.resolved.runtime === 'objc' ? 'Objective-C dispatch' : c.resolved.runtime === 'swift' ? 'Swift dispatch' : 'call'));
@@ -2033,7 +4492,7 @@ export function recoverInductionVariables(ir, ctx = null) {
       let step = null;
       if (sameValue(a, phi.dst) && b?.const != null) step = stepDef.sub === 'add' ? b.const : -b.const;
       else if (stepDef.sub === 'add' && sameValue(b, phi.dst) && a?.const != null) step = a.const;
-      if (step == null) continue;
+      if (step == null || step === 0n) continue;
       const term = blockTerm(block);
       if (!term || term.op !== OP.CBR) continue;
       const name = `i${out.length || ''}`;
@@ -2045,6 +4504,101 @@ export function recoverInductionVariables(ir, ctx = null) {
   return out;
 }
 
+function inductionUsedOutsideLoop(iv, loop, ctx) {
+  if (!iv?.value || !loop?.nodes) return false;
+  const queue = [iv.value];
+  const visited = new Set([iv.value.id]);
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const u of cur.uses || []) {
+      if (!u) continue;
+      if (u.block != null && !loop.nodes.has(u.block)) return true;
+      if (u.dst && !visited.has(u.dst.id)) {
+        if (u.op === OP.PHI && u.block != null && loop.nodes.has(u.block)) continue;
+        if (ctx?.materialNames?.has?.(u.dst.id)) continue;
+        visited.add(u.dst.id);
+        queue.push(u.dst);
+      }
+    }
+  }
+  for (const ret of ctx?.returnInsts || []) {
+    if (ret?.block != null && !loop.nodes.has(ret.block)) {
+      const rv = returnValueAt(ret, ctx);
+      if (rv && visited.has(rv.id)) return true;
+    }
+  }
+  return false;
+}
+
+function blockHasObservableStatements(block, ctx) {
+  const term = blockTerm(block);
+  for (const inst of block?.insts || []) {
+    if (inst === term) continue;
+    if (inst.op === OP.LOAD) {
+      if (inst.dst && ctx.materialNames.has(inst.dst.id)) return true;
+    } else if (inst.op === OP.STORE) {
+      if (!isMechanicalStackSpill(inst, ctx)) return true;
+    } else if (inst.op === OP.CALL) {
+      const c = callRecord(inst, ctx);
+      if (!shouldFoldRuntimeCall(c.name, { expert: ctx.opts.expert })) return true;
+    } else if (inst.op === OP.UNKNOWN) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function backedgePhisConflictWithConditionOrExit(loop, exit, cond, ctx) {
+  const backedgeCopies = activeEdgeCopies(loop.header, loop.header, ctx).filter((c) => c.value?.id !== c.dstId);
+  if (!backedgeCopies.length) return false;
+  const written = backedgeCopies.map((c) => c.dstName).filter(Boolean);
+  for (const name of written) {
+    if (exprReferencesIdent(cond, name)) return true;
+  }
+  const exitCopies = activeEdgeCopies(loop.header, exit, ctx).filter((c) => c.value?.id !== c.dstId);
+  for (const ec of exitCopies) {
+    resetInitialValueOwner(ctx);
+    const rhs = renderValue(ec.value, ctx);
+    for (const name of written) {
+      if (exprReferencesIdent(rhs, name)) return true;
+    }
+  }
+  resetInitialValueOwner(ctx);
+  const outsideRetValIds = new Set();
+  for (const ret of ctx.returnInsts || []) {
+    if (!ret || ret.args?.length || ret.block == null || loop.nodes.has(ret.block)) continue;
+    const rv = returnValueAt(ret, ctx);
+    if (rv?.id != null) outsideRetValIds.add(rv.id);
+  }
+  for (const c of backedgeCopies) {
+    const phiDst = c.phi?.dst || (ctx.ir?.values || []).find((v) => v?.id === c.dstId);
+    if (!phiDst) continue;
+    const seen = new Set();
+    const queue = [phiDst];
+    while (queue.length) {
+      const cur = queue.pop();
+      if (!cur || seen.has(cur.id)) continue;
+      seen.add(cur.id);
+      if (outsideRetValIds.has(cur.id)) return true;
+      for (const use of cur.uses || []) {
+        if (!use || use === cur.def || use.clobbered) continue;
+        if (use.op === OP.PHI) {
+          for (const inc of use.incoming || []) {
+            if (inc?.value !== cur) continue;
+            if (inc.from != null && !loop.nodes.has(inc.from)) return true;
+          }
+          continue;
+        }
+        if (use.block != null && !loop.nodes.has(use.block)) return true;
+        if (use.dst && !ctx.materialNames?.has(use.dst.id)) {
+          queue.push(use.dst);
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function loopRender(loop, block, term, ctx, state, indent, stop) {
   if (!term || term.op !== OP.CBR || block.succ.length !== 2) return null;
   const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
@@ -2052,26 +4606,67 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
   if (yesInside === noInside) return null;
   const bodyStart = yesInside ? yes : no;
   const exit = yesInside ? no : yes;
+  if (loopExitHasCompetingPhiEdges(loop, exit, ctx)) return null;
   const earlyReturnProof = loop.exits.size === 1 ? null : provenTerminalLoopExits(loop, exit, ctx, state);
   if (loop.exits.size !== 1 && !earlyReturnProof) return null;
   const invert = !yesInside;
+  const isSelfLoop = bodyStart === loop.header;
+  const hasHeaderStmts = blockHasObservableStatements(block, ctx);
+  if (isSelfLoop || hasHeaderStmts) {
+    const lines = [retainControlRenderLine(line('ctrl', indent, 'do {', term.row, term.address, { source: controlSource(term, ctx) }),
+      term, 'while-loop', { header:loop.header, bodyStart, exit, invert, inductionValueId:null }, ctx)];
+    emitBlockStatements(block, lines, ctx, indent + 1);
+    if (isSelfLoop) {
+      const cond = renderBranchCondition(term, ctx, invert);
+      if (backedgePhisConflictWithConditionOrExit(loop, exit, cond, ctx)) {
+        const exitCond = renderBranchCondition(term, ctx, !invert);
+        lines.push(line('ctrl', indent + 1, `if (${exitCond}) break;`, term.row, term.address, { source: controlSource(term, ctx) }));
+        emitPhiCopiesForEdge(loop.header, loop.header, lines, ctx, indent + 1, term);
+        lines.push(line('ctrl', indent, '} while (1);'));
+      } else {
+        emitPhiCopiesForEdge(loop.header, loop.header, lines, ctx, indent + 1, term);
+        lines.push(line('ctrl', indent, `} while (${cond});`, term.row, term.address, { source: controlSource(term, ctx) }));
+      }
+      emitPhiCopiesForEdge(loop.header, exit, lines, ctx, indent, term);
+    } else {
+      const exitCond = renderBranchCondition(term, ctx, !invert);
+      lines.push(line('ctrl', indent + 1, `if (${exitCond}) break;`, term.row, term.address, { source: controlSource(term, ctx) }));
+      emitPhiCopiesForEdge(loop.header, bodyStart, lines, ctx, indent + 1, term);
+      const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit,
+        loopBreakProof:provenSingleExitLoop(loop, exit, ctx, state), loopEarlyReturnProof:earlyReturnProof };
+      emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes, term);
+      lines.push(line('ctrl', indent, '} while (1);'));
+      emitPhiCopiesForEdge(loop.header, exit, lines, ctx, indent, term);
+    }
+    return { lines, next: exit === stop ? stop : exit, emittedHeader: true };
+  }
   const iv = ctx.inductions.find((x) => x.loop.header === loop.header);
   let head, form = 'while-loop';
-  if (iv && iv.init && iv.conditionInst === term) {
+  if (iv && iv.init && iv.conditionInst === term && (!ctx.phiLowering || ctx.phiLowering.skippedPhiIds.has(iv.value.id))) {
     form = 'for-loop';
+    (ctx.emittedInductionNames ??= new Map()).set(iv.value.id, iv.name);
     ctx.materialNames.set(iv.value.id, iv.name);
+    ctx.exprCache.clear();
     const init = renderValue(iv.init, ctx, { ignoreMaterial: true });
     let cond = renderBranchCondition(term, ctx, invert);
     const step = iv.step === 1n ? `${iv.name}++` : iv.step === -1n ? `${iv.name}--` : `${iv.name} += ${iv.step}`;
-    head = `for (${typeNameOf(ctx.types.values.get(iv.value.id)) === 'unknown' ? 'int64' : typeNameOf(ctx.types.values.get(iv.value.id))} ${iv.name} = ${init}; ${cond}; ${step})`;
+    const ivType = typeNameOf(ctx.types.values.get(iv.value.id)) === 'unknown' ? 'int64' : typeNameOf(ctx.types.values.get(iv.value.id));
+    if (inductionUsedOutsideLoop(iv, loop, ctx)) {
+      (ctx.hoistedInductionDecls ??= new Map()).set(iv.name, ivType);
+      head = `for (${iv.name} = ${init}; ${cond}; ${step})`;
+    } else {
+      head = `for (${ivType} ${iv.name} = ${init}; ${cond}; ${step})`;
+    }
   } else head = `while (${renderBranchCondition(term, ctx, invert)})`;
   const lines = [retainControlRenderLine(line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) }),
     term, form, { header:loop.header, bodyStart, exit, invert, inductionValueId:form === 'for-loop' ? iv.value.id : null }, ctx)];
+  emitPhiCopiesForEdge(loop.header, bodyStart, lines, ctx, indent + 1, term);
   const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit,
     loopBreakProof:provenSingleExitLoop(loop, exit, ctx, state), loopEarlyReturnProof:earlyReturnProof };
-  emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes);
+  emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes, term);
   lines.push(line('ctrl', indent, '}'));
-  return { lines, next: exit === stop ? stop : exit };
+  emitPhiCopiesForEdge(loop.header, exit, lines, ctx, indent, term);
+  return { lines, next: exit === stop ? stop : exit, emittedHeader: false };
 }
 
 // Bind a conditional `break` to the existing loop record.  This is deliberately
@@ -2181,23 +4776,54 @@ function provenTerminalLoopExits(loop, normalExit, ctx, state) {
   return Object.freeze({ loop, header, normalExit, targets:Object.freeze([...earlyTargets].sort((a, b) => a - b)) });
 }
 
-function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
-  let bi = start, guard = 0;
+function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTerm = null) {
+  let bi = start, guard = 0, prevTerm = fromTerm;
   while (bi != null && bi !== stop && guard++ < MAX_BLOCKS) {
     resetInitialValueOwner(ctx);
-    if (allowed && !allowed.has(bi)) return;
-    if (state.activeLoop && bi === state.loopHeader) return;
+    if (allowed && !allowed.has(bi)) {
+      if (state.activeLoop && bi === state.loopExit) {
+        out.push(retainControlRenderLine(
+          line('ctrl', indent, 'break;', prevTerm?.row ?? null, prevTerm?.address ?? null, { source: prevTerm ? controlSource(prevTerm, ctx) : jumpTargetSource(bi, ctx) }),
+          prevTerm ?? null, 'loop-break', { target: bi, header: state.loopHeader }, ctx));
+        return;
+      }
+      state.gotoTargets?.add(bi);
+      const gotoSource = prevTerm
+        ? mergeSource(controlSource(prevTerm, ctx), jumpTargetSource(bi, ctx))
+        : jumpTargetSource(bi, ctx);
+      out.push(retainControlRenderLine(
+        line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, prevTerm?.row ?? null, prevTerm?.address ?? null, { source: gotoSource }),
+        prevTerm ?? null, 'revisit-goto', { target: bi, stop, loopHeader: state.loopHeader ?? null }, ctx));
+      state.gotos++;
+      return;
+    }
+    if (state.activeLoop && bi === state.loopHeader) {
+      out.push(retainControlRenderLine(
+        line('ctrl', indent, 'continue;', prevTerm?.row ?? null, prevTerm?.address ?? null, { source: prevTerm ? controlSource(prevTerm, ctx) : jumpTargetSource(bi, ctx) }),
+        prevTerm ?? null, 'loop-continue', { target: bi, header: state.loopHeader }, ctx));
+      return;
+    }
     if (state.visited.has(bi)) {
       // HEX-C4-03: a residual goto is a control-flow claim, so it must carry
-      // the canonical origin of the block it jumps into. Emitting it
-      // sourceless made the claim unauditable from the rendered line.
-      out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, null, null, { source: jumpTargetSource(bi, ctx) }),
-        null, 'revisit-goto', { target:bi, stop, loopHeader:state.loopHeader ?? null }, ctx));
+      // the canonical origin of both the jumping instruction (when known) and
+      // the block it jumps into. Attributing a revisit goto solely to its
+      // target block causes downstream control projection to misclassify it as
+      // belonging to the target block rather than the predecessor branch.
+      state.gotoTargets?.add(bi);
+      const gotoSource = prevTerm
+        ? mergeSource(controlSource(prevTerm, ctx), jumpTargetSource(bi, ctx))
+        : jumpTargetSource(bi, ctx);
+      out.push(retainControlRenderLine(
+        line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, prevTerm?.row ?? null, prevTerm?.address ?? null, { source: gotoSource }),
+        prevTerm ?? null, 'revisit-goto', { target:bi, stop, loopHeader:state.loopHeader ?? null }, ctx));
       state.gotos++; return;
     }
     state.visited.add(bi);
     const block = ctx.ir.blocks[bi];
     if (!block) return;
+    const currentBi = bi;
+    const blockStartLen = out.length;
+    try {
 
     const loop = ctx.graph.loopByHeader.get(bi);
     const term = blockTerm(block);
@@ -2212,30 +4838,48 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       // loop must not move a repeated statement out of it. LOAD expressions
       // remain in the condition/body and are evaluated on each iteration.
       && block.insts.every(inst => ![OP.CALL,OP.STORE,OP.UNKNOWN,OP.CLOBBER].includes(inst.op));
+    let term2;
     if (loop && (!state.activeLoop || nestedLoop)) {
-      emitBlockStatements(block, out, ctx, indent);
       const lr = loopRender(loop, block, term, ctx, state, indent, stop);
-      if (lr) { out.push(...lr.lines); bi = lr.next; continue; }
+      if (lr) {
+        if (!lr.emittedHeader) term2 = emitBlockStatements(block, out, ctx, indent);
+        else term2 = term;
+        out.push(...lr.lines);
+        prevTerm = term2 ?? term ?? block.insts?.[block.insts.length - 1] ?? null;
+        bi = lr.next;
+        continue;
+      }
+      term2 = emitBlockStatements(block, out, ctx, indent);
+    } else {
+      term2 = emitBlockStatements(block, out, ctx, indent);
     }
-
-    const term2 = emitBlockStatements(block, out, ctx, indent);
-    if (!term2) { bi = block.succ.length === 1 ? block.succ[0] : null; continue; }
+    if (!term2) {
+      const lastInst = block.insts?.[block.insts.length - 1] ?? null;
+      const next = block.succ.length === 1 ? block.succ[0] : null;
+      if (next != null) emitPhiCopiesForEdge(bi, next, out, ctx, indent, lastInst);
+      prevTerm = lastInst; bi = next; continue;
+    }
     if (term2.op === OP.RET) {
       const rv = returnValueAt(term2, ctx);
-      const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
+      const text = renderReturnStatement(rv, ctx);
       const node = line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) });
       retainStatementRenderLine(node, term2, rv, ctx);
       out.push(node); ctx.evidence.push(evidenceOf(term2, 'return')); return;
     }
     if (term2.op === OP.BR) {
+      if (term2.extra?.isTailCall && (term2.extra?.name || term2.extra?.target != null)) {
+        emitTailCallBranch(term2, out, ctx, indent);
+        return;
+      }
       const next = block.succ[0] ?? null;
+      if (next != null) emitPhiCopiesForEdge(bi, next, out, ctx, indent, term2);
       if (state.activeLoop && next === state.loopHeader) { out.push(retainControlRenderLine(line('ctrl', indent, 'continue;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
         term2, 'loop-continue', { target:next, header:state.loopHeader }, ctx)); return; }
       if (state.activeLoop && next === state.loopExit) { out.push(retainControlRenderLine(line('ctrl', indent, 'break;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
         term2, 'loop-break', { target:next, header:state.loopHeader }, ctx)); return; }
       if (next === stop) return;
-      if (next != null && !state.visited.has(next) && (!allowed || allowed.has(next))) { bi = next; continue; }
-      if (next != null) { out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) }),
+      if (next != null && !state.visited.has(next) && (!allowed || allowed.has(next))) { prevTerm = term2; bi = next; continue; }
+      if (next != null) { state.gotoTargets?.add(next); out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) }),
         term2, 'residual-branch-goto', { target:next, stop }, ctx)); state.gotos++; }
       return;
     }
@@ -2246,12 +4890,30 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         out.push(retainControlRenderLine(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'switch-header', { switch:sw }, ctx));
         for (const c of sw.cases || []) {
-          out.push(retainControlRenderLine(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }),
-            term2, 'switch-case-goto', { switch:sw, case:c }, ctx));
+          state.gotoTargets?.add(c.block);
+          if (hasPhiCopiesForEdge(bi, c.block, ctx)) {
+            out.push(line('ctrl', indent + 1, `case ${c.value}: {`, null, null, { source: jumpTargetSource(c.block, ctx) }));
+            emitPhiCopiesForEdge(bi, c.block, out, ctx, indent + 2, term2);
+            out.push(retainControlRenderLine(line('stmt', indent + 2, `goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }),
+              term2, 'switch-case-goto', { switch:sw, case:c }, ctx));
+            out.push(line('ctrl', indent + 1, '}'));
+          } else {
+            out.push(retainControlRenderLine(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }),
+              term2, 'switch-case-goto', { switch:sw, case:c }, ctx));
+          }
         }
         if (sw.defaultBlock != null) {
-          out.push(retainControlRenderLine(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }),
-            term2, 'switch-default-goto', { switch:sw, target:sw.defaultBlock }, ctx));
+          state.gotoTargets?.add(sw.defaultBlock);
+          if (hasPhiCopiesForEdge(bi, sw.defaultBlock, ctx)) {
+            out.push(line('ctrl', indent + 1, 'default: {', null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }));
+            emitPhiCopiesForEdge(bi, sw.defaultBlock, out, ctx, indent + 2, term2);
+            out.push(retainControlRenderLine(line('stmt', indent + 2, `goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }),
+              term2, 'switch-default-goto', { switch:sw, target:sw.defaultBlock }, ctx));
+            out.push(line('ctrl', indent + 1, '}'));
+          } else {
+            out.push(retainControlRenderLine(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }),
+              term2, 'switch-default-goto', { switch:sw, target:sw.defaultBlock }, ctx));
+          }
         }
         out.push(line('ctrl', indent, '}')); state.gotos += (sw.cases || []).length + (sw.defaultBlock != null ? 1 : 0); return;
       }
@@ -2273,8 +4935,10 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         const cond = renderBranchCondition(term2, ctx, invert);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source:controlSource(term2, ctx) }),
           term2, 'one-sided-if', { yes, no, earlyReturn:true, target:earlyTarget, header:earlyReturnProof.header, invert }, ctx));
-        emitRegion(earlyTarget, null, out, ctx, state, indent + 1, null);
+        emitPhiCopiesForEdge(bi, earlyTarget, out, ctx, indent + 1, term2);
+        emitRegion(earlyTarget, null, out, ctx, state, indent + 1, null, term2);
         out.push(line('ctrl', indent, '}'));
+        emitPhiCopiesForEdge(bi, earlyReturnProof.header, out, ctx, indent, term2);
         return;
       }
       // A conditional whose two proven targets are this loop's own header and
@@ -2296,9 +4960,11 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         const breakNode = retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source:controlSource(term2, ctx) }),
           term2, 'loop-break', { target:breakTarget, header:continueTarget, conditional:true, invert }, ctx);
         out.push(breakNode);
+        emitPhiCopiesForEdge(bi, breakTarget, out, ctx, indent + 1, term2);
         out.push(retainControlRenderLine(line('ctrl', indent + 1, 'break;', term2.row, term2.address, { source:mergeSource(controlSource(term2, ctx), jumpTargetSource(breakTarget, ctx)) }),
           term2, 'loop-break', { target:breakTarget, header:continueTarget, conditional:true, invert }, ctx));
         out.push(line('ctrl', indent, '}'));
+        emitPhiCopiesForEdge(bi, continueTarget, out, ctx, indent, term2);
         return;
       }
       const join = ctx.graph.immediatePostDominators?.[bi];
@@ -2315,36 +4981,54 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
           out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
             term2, 'one-sided-if', { yes, no, join, invert, bodyStart }, ctx));
           startConditionalArm(region, out);
-          emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed);
+          emitPhiCopiesForEdge(bi, bodyStart, out, ctx, indent + 1, term2);
+          emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed, term2);
           finishConditionalArm(region, out, state, yesEmpty ? 'no' : 'yes', ctx);
+          if (hasPhiCopiesForEdge(bi, join, ctx)) {
+            separator = line('ctrl', indent, '} else {'); out.push(separator);
+            startConditionalArm(region, out);
+            emitPhiCopiesForEdge(bi, join, out, ctx, indent + 1, term2);
+            finishConditionalArm(region, out, state, yesEmpty ? 'yes' : 'no', ctx);
+          }
           close = line('ctrl', indent, '}'); out.push(close);
         } else {
           const cond = renderBranchCondition(term2, ctx);
           out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
             term2, 'if-else', { yes, no, join }, ctx));
           startConditionalArm(region, out);
-          emitRegion(yes, join, out, ctx, state, indent + 1, allowed);
+          emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 1, term2);
+          emitRegion(yes, join, out, ctx, state, indent + 1, allowed, term2);
           finishConditionalArm(region, out, state, 'yes', ctx);
           separator = line('ctrl', indent, '} else {'); out.push(separator);
           startConditionalArm(region, out);
-          emitRegion(no, join, out, ctx, state, indent + 1, allowed);
+          emitPhiCopiesForEdge(bi, no, out, ctx, indent + 1, term2);
+          emitRegion(no, join, out, ctx, state, indent + 1, allowed, term2);
           finishConditionalArm(region, out, state, 'no', ctx);
           close = line('ctrl', indent, '}'); out.push(close);
         }
         finishConditionalRegion(region, out, ctx, term2,
-          { header:bi, yes, no, join, invert:yesEmpty !== noEmpty && yesEmpty, form:yesEmpty !== noEmpty ? 'one-sided-if' : 'if-else' }, separator, close);
-        bi = join; continue;
+          { header:bi, yes, no, join, invert:yesEmpty !== noEmpty && yesEmpty, form:(yesEmpty !== noEmpty && !separator) ? 'one-sided-if' : 'if-else' }, separator, close);
+        prevTerm = null; bi = join; continue;
       }
       const earlyExit = join == null && branch.exact
         ? earlyExitConditionalContinuation(bi, yes, no, ctx, state, stop, allowed) : null;
       if (earlyExit) {
         const cond = renderBranchCondition(term2, ctx, earlyExit.invert);
+        const needsElseForPhi = earlyExit.bodyReachesContinuation && hasPhiCopiesForEdge(bi, earlyExit.continuation, ctx);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
-          term2, 'one-sided-if', { yes, no, join:earlyExit.continuation, invert:earlyExit.invert,
+          term2, needsElseForPhi ? 'if-else' : 'one-sided-if', { yes, no, join:earlyExit.continuation, invert:earlyExit.invert,
             bodyStart:earlyExit.bodyStart, earlyExit:true }, ctx));
-        emitRegion(earlyExit.bodyStart, earlyExit.continuation, out, ctx, state, indent + 1, allowed);
-        out.push(line('ctrl', indent, '}'));
-        bi = earlyExit.continuation; continue;
+        emitPhiCopiesForEdge(bi, earlyExit.bodyStart, out, ctx, indent + 1, term2);
+        emitRegion(earlyExit.bodyStart, earlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
+        if (needsElseForPhi) {
+          out.push(line('ctrl', indent, '} else {'));
+          emitPhiCopiesForEdge(bi, earlyExit.continuation, out, ctx, indent + 1, term2);
+          out.push(line('ctrl', indent, '}'));
+        } else {
+          out.push(line('ctrl', indent, '}'));
+          emitPhiCopiesForEdge(bi, earlyExit.continuation, out, ctx, indent, term2);
+        }
+        prevTerm = null; bi = earlyExit.continuation; continue;
       }
       const sharedEarlyExit = join == null && branch.exact
         ? sharedEarlyExitContinuation(bi, yes, no, ctx, state, allowed) : null;
@@ -2352,11 +5036,13 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         const cond = renderBranchCondition(term2, ctx);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'if-else', { yes, no, join:sharedEarlyExit.continuation, earlyExitShared:true }, ctx));
-        emitRegion(yes, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed);
+        emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 1, term2);
+        emitRegion(yes, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '} else {'));
-        emitRegion(no, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed);
+        emitPhiCopiesForEdge(bi, no, out, ctx, indent + 1, term2);
+        emitRegion(no, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '}'));
-        bi = sharedEarlyExit.continuation; continue;
+        prevTerm = null; bi = sharedEarlyExit.continuation; continue;
       }
       const terminal = join == null && branch.exact
         ? terminalConditionalPartition(bi, yes, no, ctx, state, allowed) : null;
@@ -2364,50 +5050,199 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         const cond = renderBranchCondition(term2, ctx);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'if-else', { yes, no, join:null, terminal:true }, ctx));
-        emitRegion(yes, null, out, ctx, state, indent + 1, allowed);
+        emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 1, term2);
+        emitRegion(yes, null, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '} else {'));
-        emitRegion(no, null, out, ctx, state, indent + 1, allowed);
+        emitPhiCopiesForEdge(bi, no, out, ctx, indent + 1, term2);
+        emitRegion(no, null, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '}'));
         return;
       }
       const cond = renderBranchCondition(term2, ctx);
-      if (yes != null) out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
-        term2, 'residual-conditional-goto', { yes, no, join }, ctx));
-      if (no != null) out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }),
-        term2, 'residual-false-goto', { yes, no, join }, ctx));
+      if (yes != null) {
+        state.gotoTargets?.add(yes);
+        if (hasPhiCopiesForEdge(bi, yes, ctx)) {
+          const copyLines = [];
+          emitPhiCopiesForEdge(bi, yes, copyLines, ctx, indent + 1, term2);
+          if (copyLines.length) {
+            const copyStmts = copyLines.map((l) => l.text).join(' ');
+            out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) { ${copyStmts} goto loc_${hex(ctx.blockAddress(yes))}; }`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(yes, ctx)) }),
+              term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+          } else {
+            out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+              term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+          }
+        } else {
+          out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+            term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+        }
+      }
+      if (no != null) {
+        state.gotoTargets?.add(no);
+        emitPhiCopiesForEdge(bi, no, out, ctx, indent, term2);
+        out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }),
+          term2, 'residual-false-goto', { yes, no, join }, ctx));
+      }
       state.gotos += (yes != null ? 1 : 0) + (no != null ? 1 : 0); return;
+    }
+    } finally {
+      if (state.blockAnchors && !state.blockAnchors.has(currentBi)) {
+        if (out.length > blockStartLen) {
+          state.blockAnchors.set(currentBi, { firstNode: out[blockStartLen], indent });
+        } else {
+          const marker = { __emptyBlockAnchor: currentBi, indent };
+          out.push(marker);
+          state.blockAnchors.set(currentBi, { firstNode: marker, empty: true, indent });
+        }
+      }
     }
   }
 }
 
+export function hasUnbalancedBracesInLines(nodes) {
+  let depth = 0;
+  let inBlockComment = false;
+  for (const n of nodes) {
+    const raw = n?.text;
+    if (!raw) continue;
+    let inString = false;
+    let inChar = false;
+    for (let i = 0; i < raw.length; i += 1) {
+      const ch = raw[i];
+      const next = raw[i + 1];
+      if (inBlockComment) {
+        if (ch === '*' && next === '/') {
+          inBlockComment = false;
+          i += 1;
+        }
+        continue;
+      }
+      if (inString) {
+        if (ch === '\\') { i += 1; continue; }
+        if (ch === '"') inString = false;
+        continue;
+      }
+      if (inChar) {
+        if (ch === '\\') { i += 1; continue; }
+        if (ch === '\'') inChar = false;
+        continue;
+      }
+      if (ch === '/' && next === '*') {
+        inBlockComment = true;
+        i += 1;
+        continue;
+      }
+      if (ch === '/' && next === '/') {
+        break;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '\'') {
+        inChar = true;
+        continue;
+      }
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth < 0) return true;
+      }
+    }
+  }
+  return depth !== 0;
+}
+
+function emitTailCallBranch(term, out, ctx, indent) {
+  const c = callRecord(term, ctx);
+  const callText = renderCall(term, ctx);
+  let text;
+  if (ctx?.callerIsVoid) {
+    text = `${callText}; return;`;
+  } else if (isVoidCalleeTailCall(term, ctx?.opts)) {
+    text = ctx?.callerIsVoid === false
+      ? `${callText}; return ${zeroReturnLiteralForContext(ctx)};`
+      : `${callText}; return;`;
+  } else {
+    text = `return ${callText};`;
+  }
+  const node = line('stmt', indent, text, term.row, term.address, {
+    source: mergeSource(controlSource(term, ctx), sourceForInst(term, 'tail-call')),
+  });
+  retainStatementRenderLine(node, term, c, ctx);
+  out.push(node);
+  ctx.evidence.push(evidenceOf(term, 'tail-call'));
+}
+
 function faithfulCfg(ctx, indent = 1) {
   const out = [];
+  const emittedLabels = new Set();
   const reachable = ctx.graph.reachable || new Set(ctx.ir.blocks.map((b) => b.index));
   for (const bi of [...reachable].sort((a, b) => ctx.ir.blocks[a].startRow - ctx.ir.blocks[b].startRow)) {
     const block = ctx.ir.blocks[bi];
-    const label = line('label', indent, `loc_${hex(ctx.blockAddress(bi))}:`, block.startRow, ctx.blockAddress(bi));
-    // Keep the public label shape unchanged; its private producer retains the
-    // canonical destination source without inventing a branch instruction.
-    out.push(retainControlRenderLine(label, null, 'cfg-label', { target:bi,
-      source:sourceOf({ row:block.startRow, address:label.addr, ir:block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
+    const labelText = `loc_${hex(ctx.blockAddress(bi))}:`;
+    if (!emittedLabels.has(labelText)) {
+      emittedLabels.add(labelText);
+      const label = line('label', indent, labelText, block.startRow, ctx.blockAddress(bi));
+      // Keep the public label shape unchanged; its private producer retains the
+      // canonical destination source without inventing a branch instruction.
+      out.push(retainControlRenderLine(label, null, 'cfg-label', { target:bi,
+        source:sourceOf({ row:block.startRow, address:label.addr, ir:block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
+    }
     const term = emitBlockStatements(block, out, ctx, indent + 1);
-    if (!term) continue;
+    if (!term) {
+      if ((block.succ || []).length === 1) {
+        const lastInst = block.insts?.[block.insts.length - 1] ?? null;
+        emitPhiCopiesForEdge(bi, block.succ[0], out, ctx, indent + 1, lastInst);
+      }
+      continue;
+    }
     if (term.op === OP.RET) {
       const rv = returnValueAt(term, ctx);
-      const node = line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) });
+      const node = line('stmt', indent + 1, renderReturnStatement(rv, ctx), term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) });
       retainStatementRenderLine(node, term, rv, ctx);
       out.push(node);
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
-      if (yes != null) out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }),
-        term, 'cfg-conditional-goto', { yes, no }, ctx));
-      if (no != null) out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }),
-        term, 'cfg-false-goto', { yes, no }, ctx));
+      if (yes != null) {
+        const cond = renderBranchCondition(term, ctx);
+        if (hasPhiCopiesForEdge(bi, yes, ctx)) {
+          const copyLines = [];
+          emitPhiCopiesForEdge(bi, yes, copyLines, ctx, indent + 2, term);
+          if (copyLines.length) {
+            const copyStmts = copyLines.map((l) => l.text).join(' ');
+            out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${cond}) { ${copyStmts} goto loc_${hex(ctx.blockAddress(yes))}; }`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(yes, ctx)) }),
+              term, 'cfg-conditional-goto', { yes, no }, ctx));
+          } else {
+            out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }),
+              term, 'cfg-conditional-goto', { yes, no }, ctx));
+          }
+        } else {
+          out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }),
+            term, 'cfg-conditional-goto', { yes, no }, ctx));
+        }
+      }
+      if (no != null) {
+        emitPhiCopiesForEdge(bi, no, out, ctx, indent + 1, term);
+        out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }),
+          term, 'cfg-false-goto', { yes, no }, ctx));
+      }
+    } else if (term.op === OP.BR && term.extra?.isTailCall && (term.extra?.name || term.extra?.target != null)) {
+      emitTailCallBranch(term, out, ctx, indent + 1);
     } else if (term.op === OP.BR && block.succ[0] != null) {
       const next = block.succ[0];
+      emitPhiCopiesForEdge(bi, next, out, ctx, indent + 1, term);
       out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(next))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(next, ctx)) }),
         term, 'cfg-branch-goto', { target:next }, ctx));
     }
+  }
+  for (let i = out.length - 1; i >= 0; i--) {
+    const cur = out[i];
+    if (!cur || cur.kind === 'comment' || !String(cur.text || '').trim()) continue;
+    if (cur.kind === 'label') {
+      out.push(line('stmt', indent + 1, ';', cur.row, cur.addr));
+    }
+    break;
   }
   return out;
 }
@@ -2440,7 +5275,10 @@ function runtimeFromOpts(opts) {
 /** Main IR-first entry point. */
 export function decompileSemantic(model, rawOpts = {}) {
   const opts = applyDecompilerProfile(rawOpts);
-  const ir = opts.ir || irFor(model, { rowOfAddress: opts.rowOfAddress });
+  const ir = opts.ir != null ? opts.ir : irFor(model, {
+    rowOfAddress: opts.rowOfAddress,
+    ...(typeof opts.symbolFor === 'function' ? { symbolFor: opts.symbolFor } : {}),
+  });
   if (!ir || !ir.instructions?.length) return null;
   const runtime = runtimeFromOpts(opts);
   const types = inferSemanticTypes(ir, model, { runtime, abiAdapter: opts.abiAdapter ?? null });
@@ -2463,14 +5301,28 @@ export function decompileSemantic(model, rawOpts = {}) {
       }
     }
   }
+  const funcAddr = opts.addr ?? firstAddr;
+  const { sigReturnType, abiReturnType } = resolveEffectiveReturnType(opts, types, funcAddr);
   const ctx = {
     ir, model, opts, runtime, types, graph, rmw,
+    funcAddr,
+    callerReturnType: sigReturnType,
+    callerIsVoid: /^void\s*$/i.test(sigReturnType),
+    abiReturnType,
     projectionIrObserver:createProjectionIrObserver({ deterministicTransforms:opts.deterministicTransforms === true }),
     rmwByStore: new Map(rmw.map((r) => [r.store.id, r])),
     storedValueAliases: buildStoredValueAliases(ir),
     returnInsts: (ir.instructions || []).filter((i) => i.op === OP.RET),
     exprCache: new Map(), exprActive: new Set(), exprNodes: 0,
-    callCache: new Map(), evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
+    callCache: new Map(), depSourceCache: new Map(), validationBatch: null,
+    callByRow: (() => {
+      const map = new Map();
+      for (const c of model.calls || []) {
+        if (c && !map.has(c.row)) map.set(c.row, c);
+      }
+      return map;
+    })(),
+    evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
     suppressionHistory: { events:[], reasons:new Set(), limit:Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
       && opts.renderProvenanceBudget.maxTransformRecords >= 0 ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, 1024) : 1024 },
     storeRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
@@ -2499,28 +5351,214 @@ export function decompileSemantic(model, rawOpts = {}) {
   beginControlRenderHistory(ctx);
   beginInitialValueTrace(ctx);
   ctx.materialNames = materialization(ctx);
+  ctx.callResultByInst = buildCallResultMap(ir, ctx.materialNames, {
+    callByRow: ctx.callByRow,
+    symbolFor: ctx.opts?.symbolFor,
+  });
+  if (ctx.types?.values instanceof Map) {
+    const callTypeOpts = { callByRow: ctx.callByRow, symbolFor: ctx.opts?.symbolFor };
+    for (const [callInst, canonical] of ctx.callResultByInst) {
+      if (!canonical || canonical.id == null) continue;
+      const calleeName = callCalleeNameForOrder(callInst, callTypeOpts);
+      const sig = calleeName ? knownCallSignature(calleeName) : null;
+      if (sig?.retType === 'double' || sig?.retType === 'float') {
+        const curType = typeNameOf(ctx.types.values.get(canonical.id));
+        if (curType !== 'double' && curType !== 'float') {
+          ctx.types.values.set(canonical.id, {
+            kind: 'float',
+            bits: sig.retType === 'float' ? 32 : 64,
+            name: sig.retType,
+            cType: sig.retType,
+          });
+        }
+      }
+    }
+  }
+  for (const v of ir.values || []) {
+    const def = v?.def;
+    if (!def || def.op !== OP.CALL || !ctx.materialNames.has(v.id)) continue;
+    const canonical = def.dst || ctx.callResultByInst.get(def) || null;
+    if (canonical && v !== canonical) {
+      if (isSameCallReturnFamily(v.reg, canonical.reg)) {
+        const canonicalCallName = `call_${canonical.id}`;
+        ctx.materialNames.set(v.id, canonicalCallName);
+        ctx.materialNames.set(canonical.id, canonicalCallName);
+      } else if (isCallClobberedValue(v) && ctx.opts?.phase8Optimize !== true) {
+        ctx.materialNames.delete(v.id);
+      }
+    } else if (!canonical && isCallClobberedValue(v) && ctx.opts?.phase8Optimize !== true) {
+      ctx.materialNames.delete(v.id);
+    }
+  }
   ctx.inductions = recoverInductionVariables(ir, ctx);
+  ctx.phiLowering = buildPhiLowering(ctx);
+  ctx.phiVarNames = ctx.phiLowering.varNames;
+  ctx.exprCache.clear();
+  const baseMaterialNames = new Map(ctx.materialNames);
+  ctx.phiLowering.skippedPhiIds = computeForLoopHandledPhis(ctx);
 
   const name = safeIdent(opts.notes?.nameOf?.(opts.addr) || opts.name || model.name || `sub_${hex(opts.addr ?? firstAddr)}`, 'sub');
   const signature = semanticSignature(name, types, opts.notes, opts.addr ?? firstAddr, opts, ir);
   const body = [];
   const state = { visited: new Set(), gotos: 0, activeLoop: null, loopHeader: null, loopExit: null,
+    gotoTargets: new Set(), blockAnchors: new Map(),
     terminalProofBudget: { remaining: terminalProofSteps(opts) } };
-  emitRegion(ir.entry || 0, null, body, ctx, state, 1);
+  const runBatchedEmission = (fn) => {
+    const validation = createValidationBatch();
+    ctx.validationBatch = validation;
+    try {
+      validation.run(fn);
+    } finally {
+      ctx.validationBatch = null;
+    }
+    if (validation.settle() > 0) {
+      if (ctx.statementRenderHistory.events.length || ctx.statementRenderHistory.canonical?.isCurrent() === false) {
+        ctx.statementRenderHistory.edges = 0;
+        ctx.statementRenderHistory.reasons.add('initial-statement-binding-unavailable');
+      }
+      if (ctx.controlRenderHistory.events.length || ctx.controlRenderHistory.canonical?.isCurrent() === false) {
+        ctx.controlRenderHistory.edges = 0;
+        ctx.controlRenderHistory.reasons.add('initial-control-binding-unavailable');
+      }
+      if (ctx.storeRenderHistory.events.length) {
+        ctx.storeRenderHistory.edges = 0;
+        ctx.storeRenderHistory.reasons.add('initial-store-binding-unavailable');
+      }
+    }
+  };
 
+  let missing = [];
+  let hasUndefinedLabel = false;
+  let hasUnbalancedBraces = false;
   const reachable = graph.reachable || new Set();
-  const missing = [...reachable].filter((b) => !state.visited.has(b));
-  let coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
-  if (missing.length) {
+  let coverage;
+  runBatchedEmission(() => {
+    emitRegion(ir.entry || 0, null, body, ctx, state, 1);
+    missing = [...reachable].filter((b) => !state.visited.has(b));
+    coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
+    if (!missing.length) {
+      const anchorToBi = new Map();
+      for (const [bi, anchor] of state.blockAnchors) {
+        if (!anchor?.firstNode) continue;
+        let list = anchorToBi.get(anchor.firstNode);
+        if (!list) {
+          list = [];
+          anchorToBi.set(anchor.firstNode, list);
+        }
+        list.push({ bi, empty: !!anchor.empty, indent: anchor.indent });
+      }
+      const emittedLabels = new Set();
+      const resolvedBody = [];
+      for (let i = 0; i < body.length; i += 1) {
+        const node = body[i];
+        const infos = anchorToBi.get(node);
+        if (infos) {
+          for (const info of infos) {
+            if (state.gotoTargets.has(info.bi)) {
+              const block = ctx.ir.blocks[info.bi];
+              const labelText = `loc_${hex(ctx.blockAddress(info.bi))}:`;
+              if (!emittedLabels.has(labelText) && block) {
+                emittedLabels.add(labelText);
+                const label = line('label', Math.max(0, info.indent - 1), labelText, block.startRow, ctx.blockAddress(info.bi));
+                resolvedBody.push(retainControlRenderLine(label, null, 'cfg-label', { target: info.bi,
+                  source: sourceOf({ row: block.startRow, address: label.addr, ir: block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
+                if (info.empty) {
+                  resolvedBody.push(line('stmt', info.indent, ';', block.startRow, ctx.blockAddress(info.bi), { source: jumpTargetSource(info.bi, ctx) }));
+                }
+              }
+            }
+          }
+        }
+        if (node && node.__emptyBlockAnchor !== undefined) continue;
+        resolvedBody.push(node);
+      }
+      for (const bi of state.gotoTargets) {
+        const labelText = `loc_${hex(ctx.blockAddress(bi))}:`;
+        if (!emittedLabels.has(labelText)) {
+          hasUndefinedLabel = true;
+          break;
+        }
+      }
+      if (!hasUndefinedLabel) {
+        for (const n of resolvedBody) {
+          const text = n?.text;
+          if (!text || !text.includes('goto ')) continue;
+          for (const m of text.matchAll(/\bgoto\s+(loc_[0-9A-Fa-f]+)\s*;/g)) {
+            if (!emittedLabels.has(`${m[1]}:`)) {
+              hasUndefinedLabel = true;
+              break;
+            }
+          }
+          if (hasUndefinedLabel) break;
+        }
+      }
+      if (!hasUndefinedLabel && hasUnbalancedBracesInLines(resolvedBody)) {
+        hasUnbalancedBraces = true;
+      }
+      body.length = 0;
+      for (const node of resolvedBody) body.push(node);
+      if (ctx.conditionalRegionHistory?.events?.length) {
+        const bodyIndex = new Map(body.map((n, idx) => [n, idx]));
+        ctx.conditionalRegionHistory.events = ctx.conditionalRegionHistory.events.map((region) => {
+          const startIdx = bodyIndex.get(region.header);
+          const endIdx = bodyIndex.get(region.close);
+          if (startIdx == null || endIdx == null || endIdx < startIdx) return region;
+          const updatedNodes = Object.freeze(body.slice(startIdx, endIdx + 1));
+          if (updatedNodes.length === region.nodes.length && updatedNodes.every((n, idx) => n === region.nodes[idx])) return region;
+          const sepIdx = region.separator ? bodyIndex.get(region.separator) : null;
+          const firstRole = region.selection?.invert ? 'no' : 'yes';
+          const updatedArms = Object.freeze(region.arms.map((arm) => {
+            if (region.separator && sepIdx != null) {
+              const armNodes = arm.role === firstRole
+                ? body.slice(startIdx + 1, sepIdx)
+                : body.slice(sepIdx + 1, endIdx);
+              return Object.freeze({ ...arm, nodes: Object.freeze(armNodes) });
+            }
+            const armNodes = arm.role === firstRole ? body.slice(startIdx + 1, endIdx) : [];
+            return Object.freeze({ ...arm, nodes: Object.freeze(armNodes) });
+          }));
+          return Object.freeze({ ...region, nodes: updatedNodes, arms: updatedArms });
+        });
+      }
+    }
+  });
+  if (missing.length || hasUndefinedLabel || hasUnbalancedBraces) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
+    ctx.materialNames = new Map(baseMaterialNames);
+    ctx.exprCache.clear();
+    ctx.callCache.clear();
+    ctx.evidence.length = 0;
+    ctx.unknown = 0;
+    ctx.unknownCallArities = 0;
+    ctx.hoistedInductionDecls?.clear?.();
+    ctx.emittedInductionNames?.clear?.();
+    if (ctx.phiLowering) {
+      ctx.phiLowering.skippedPhiIds.clear();
+      ctx.phiLowering.temps.clear();
+      ctx.phiLowering.tempCounter = 0;
+      ctx.phiLowering.reserved = new Set(ctx.phiLowering.baseReserved);
+    }
     // Only the selected final emission belongs to the history. Keep legacy
     // ctx.suppressed diagnostics unchanged, including the abandoned attempt.
     ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
     ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
+    ctx.storeRenderHistory.consumers = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    ctx.storeRenderHistory.edges = historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges);
     ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
+    ctx.statementRenderHistory.consumers = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    ctx.statementRenderHistory.edges = historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges);
     ctx.controlRenderHistory.events.length = 0; ctx.controlRenderHistory.reasons.clear();
-    if (ctx.conditionalRegionHistory) ctx.conditionalRegionHistory.events.length = 0;
-    body.push(...faithfulCfg(ctx, 1));
+    ctx.controlRenderHistory.consumers = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    ctx.controlRenderHistory.edges = historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges);
+    if (ctx.conditionalRegionHistory) {
+      ctx.conditionalRegionHistory.events.length = 0;
+      ctx.conditionalRegionHistory.reasons.clear();
+      ctx.conditionalRegionHistory.remaining = historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+    }
+    beginInitialValueTrace(ctx);
+    runBatchedEmission(() => {
+      body.push(...faithfulCfg(ctx, 1));
+    });
     coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
   }
 
@@ -2565,8 +5603,9 @@ export function decompileSemantic(model, rawOpts = {}) {
   const result = bindConditionalRegionHistory(bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
-    coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
+    coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, emittedInductionNames: ctx.emittedInductionNames || new Map(), irPrimary: true, unknownInstructions: ctx.unknown, phase8Optimize: opts.phase8Optimize === true },
     semantic: true,
+    objcSyntax: opts?.objcSyntax === 'c' ? 'c' : 'objc',
   }, ctx), ctx), ctx), ctx, true), ctx);
   const bindings = new Map();
   for (const [id, name] of ctx.materialNames) {

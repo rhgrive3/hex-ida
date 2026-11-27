@@ -4,14 +4,16 @@ import { OP, COND } from './ir-core.js';
 import { normalizeIntegerValue, normalizeRangeDomain } from './range-domain.js';
 import { valueRange } from './ir-base.js';
 
-function projectedConstant(value, active = new Set()) {
-  if (!value || active.has(value)) return null;
+const PROJECTED_CONST_MAX_DEPTH = 128;
+
+function projectedConstant(value, active = new Set(), depth = 0) {
+  if (!value || depth > PROJECTED_CONST_MAX_DEPTH || active.has(value)) return null;
   const bits = Math.max(1, Math.min(64, Number(value.bits || 64)));
   if (value.const != null) return BigInt.asUintN(bits, BigInt(value.const));
   const def = value.def;
   if (!def || !Array.isArray(def.args)) return null;
   active.add(value);
-  const input = (index) => projectedConstant(def.args[index]?.value, active);
+  const input = (index) => projectedConstant(def.args[index]?.value, active, depth + 1);
   let result = null;
   if (def.op === OP.MOV && def.args.length === 1) {
     const v = input(0);
@@ -173,9 +175,12 @@ export function rangeOnBranch(ir, branch, taken = true) {
   };
 }
 
+const publicBranchConstraintsCache = new WeakMap();
+
 export function branchConstraints(ir) {
   if (!ir) return [];
-  if (ir._branchConstraints) return ir._branchConstraints;
+  const cached = publicBranchConstraintsCache.get(ir);
+  if (cached) return cached;
   const out = [];
   for (const inst of ir.instructions || []) {
     if (inst.op !== OP.CBR) continue;
@@ -183,6 +188,7 @@ export function branchConstraints(ir) {
     const no = rangeOnBranch(ir, inst, false);
     if (yes || no) out.push({ branch:inst, taken:yes, fallthrough:no });
   }
+  publicBranchConstraintsCache.set(ir, out);
   ir._branchConstraints = out;
   return out;
 }

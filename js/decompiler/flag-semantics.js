@@ -46,11 +46,14 @@ function unsignedValue(value, bits) {
 
 function flagsFor(sub, left, right, bits = 64) {
   if (sub === 'fsub') {
-    const a=Number(left), b=Number(right);
-    if (Number.isNaN(a) || Number.isNaN(b)) return { n:false, z:false, c:true, v:true, result:NaN, bits:widthOf(bits) };
-    if (a === b) return { n:false, z:true, c:true, v:false, result:0, bits:widthOf(bits) };
-    if (a < b) return { n:true, z:false, c:false, v:false, result:a-b, bits:widthOf(bits) };
-    return { n:false, z:false, c:true, v:false, result:a-b, bits:widthOf(bits) };
+    const w = widthOf(bits);
+    const a = w === 32 ? Math.fround(Number(left)) : Number(left);
+    const b = w === 32 ? Math.fround(Number(right)) : Number(right);
+    if (Number.isNaN(a) || Number.isNaN(b)) return { n:false, z:false, c:true, v:true, result:NaN, bits:w };
+    if (a === b) return { n:false, z:true, c:true, v:false, result:0, bits:w };
+    const diff = w === 32 ? Math.fround(a - b) : (a - b);
+    if (a < b) return { n:true, z:false, c:false, v:false, result:diff, bits:w };
+    return { n:false, z:false, c:true, v:false, result:diff, bits:w };
   }
   bits = widthOf(bits);
   const a = unsignedValue(left, bits);
@@ -104,7 +107,7 @@ export function evaluateNZCVCondition(sub, cond, left, right, bits) {
   } else {
     if (canonicalOperandValue(left) === null || canonicalOperandValue(right) === null) return null;
   }
-  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
+  const width = canonicalBits(bits, bits === undefined ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
   const f = flagsFor(producer, left, right, width);
   if (!f || !CONDITIONS.has(condition)) return null;
@@ -161,7 +164,7 @@ const COMPARE_INVERSE = Object.freeze({ eq: 'ne', ne: 'eq', lt: 'ge', le: 'gt', 
 // reconstruction preserves the original `comparisonDomain` so negation never
 // launders a floating compare into an integer one.
 export function invertBooleanCondition(condition) {
-  if (condition?.kind === 'compare' && COMPARE_INVERSE[condition.op]) {
+  if (condition?.kind === 'compare' && typeof condition.op === 'string' && Object.hasOwn(COMPARE_INVERSE, condition.op)) {
     const domain = condition.comparisonDomain;
     const exactComplement = domain !== 'floating' || condition.op === 'eq' || condition.op === 'ne';
     if (exactComplement) {
@@ -202,7 +205,7 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
   if (producer === null) return null;
   const condition = canonicalCondition(cond);
   if (condition === null) return null;
-  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
+  const width = canonicalBits(bits, bits === undefined ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
   if (!isExpressionNode(left) || !isExpressionNode(right)) return null;
   sub = producer;
@@ -217,6 +220,8 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
       case 'ls': return directCompare('le', left, right, true, bits, source, 'floating');
       case 'ge': return directCompare('ge', left, right, true, bits, source, 'floating');
       case 'gt': return directCompare('gt', left, right, true, bits, source, 'floating');
+      case 'hi': return expr.unary('lnot', directCompare('le', left, right, true, bits, source, 'floating'), 1, false, source);
+      case 'pl': case 'hs': case 'cs': return expr.unary('lnot', directCompare('lt', left, right, true, bits, source, 'floating'), 1, false, source);
       default: return intrinsicCondition(sub, cond, left, right, bits, source);
     }
   }
@@ -266,12 +271,46 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
   return intrinsicCondition(sub, cond, left, right, bits, source);
 }
 
+function atomicOperandText(text) {
+  const s = text.trim();
+  if (!s) return text;
+  if (/^-?(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(s) || /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return text;
+  // Already wrapped in a single matching outer pair of parentheses.
+  if (s[0] === '(' && s[s.length - 1] === ')') {
+    let depth = 0, wrapsAll = true;
+    for (let i = 0; i < s.length - 1; i++) {
+      if (s[i] === '(') depth++;
+      else if (s[i] === ')') { depth--; if (depth === 0) { wrapsAll = false; break; } }
+    }
+    if (wrapsAll) return text;
+  }
+  // Only parenthesize when an unparenthesized binary/ternary operator is present at top level.
+  let depth = 0, hasTopOp = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (
+      ch === '&' || ch === '|' || ch === '^' || ch === '?' || ch === ':'
+      || ch === '<' || ch === '>' || ch === '='
+      || ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === ','
+    )) {
+      // Skip "->" member access and leading unary "+", "-", "*".
+      if (ch === '>' && i > 0 && s[i - 1] === '-') continue;
+      if (ch === '-' && (i === 0 || s[i + 1] === '>')) continue;
+      if ((ch === '+' || ch === '*') && i === 0) continue;
+      hasTopOp = true; break;
+    }
+  }
+  return hasTopOp ? `(${s})` : text;
+}
+
 export function renderNZCVCondition(sub, cond, leftText, rightText, bits, source = null) {
   if (typeof leftText !== 'string' || typeof rightText !== 'string') return null;
-  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
+  const width = canonicalBits(bits, bits === undefined ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
-  const left = expr.variable(leftText, width, null, source);
-  const right = expr.variable(rightText, width, null, source);
+  const left = expr.variable(atomicOperandText(leftText), width, null, source);
+  const right = expr.variable(atomicOperandText(rightText), width, null, source);
   const condition = buildNZCVConditionExpression(sub, cond, left, right, width, source);
   return condition ? printExpression(condition) : null;
 }

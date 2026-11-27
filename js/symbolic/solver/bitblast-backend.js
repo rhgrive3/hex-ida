@@ -17,8 +17,13 @@ import {
   BOOL_CONNECTIVE_OP,
   CAST_OP,
 } from '../expr/kinds.js';
+import { ownDataEntries } from '../expr/data-boundary.js';
 import { validateSatModel } from '../verify/validate-model.js';
-import { validateVerificationQuery } from '../verify/query.js';
+import {
+  QUERY_METADATA_MAX_DEPTH,
+  QUERY_METADATA_MAX_NODES,
+  validateVerificationQuery,
+} from '../verify/query.js';
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
 import { analyzeSolverExpressions } from './query-analysis.js';
 import { effectivePositiveSafeInteger, requirePositiveSafeInteger } from './limits.js';
@@ -53,12 +58,66 @@ function monotonicNow() {
   return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
 }
 
-function deadlineFrom(options) {
-  const timeoutMs = options?.timeoutMs;
-  if (options?.deterministic === true && typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0) return Infinity;
-  return typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0
-    ? monotonicNow() + timeoutMs
-    : Infinity;
+function deadlineFrom(options, sessionOptions = null) {
+  const timeoutMs = options?.timeoutMs !== undefined ? options.timeoutMs : sessionOptions?.timeoutMs;
+  const hasPositiveTimeout = typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0;
+  const deterministic = options?.deterministic !== undefined
+    ? options.deterministic === true
+    : sessionOptions?.deterministic === true;
+  if (deterministic && hasPositiveTimeout) return Infinity;
+  return hasPositiveTimeout ? monotonicNow() + timeoutMs : Infinity;
+}
+
+function scaledSnapshotBudget(value, multiplier, extra) {
+  const ceiling = Number.MAX_SAFE_INTEGER;
+  return value > Math.floor((ceiling - extra) / multiplier)
+    ? ceiling
+    : value * multiplier + extra;
+}
+
+function snapshotCanonicalQuery(query, maxExprNodes) {
+  const maxNodes = scaledSnapshotBudget(maxExprNodes, 8, QUERY_METADATA_MAX_NODES + 64);
+  const maxEdges = scaledSnapshotBudget(maxExprNodes, 16, QUERY_METADATA_MAX_NODES * 4 + 256);
+  const maxDepth = scaledSnapshotBudget(maxExprNodes, 1, QUERY_METADATA_MAX_DEPTH + 16);
+  const cloneContainer = (value) => Array.isArray(value)
+    ? []
+    : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
+  const root = cloneContainer(query);
+  const copies = new WeakMap([[query, root]]);
+  const pending = [{ source: query, target: root, depth: 0 }];
+  let nodeCount = 1;
+  let edgeCount = 0;
+
+  while (pending.length) {
+    const frame = pending.pop();
+    if (frame.depth > maxDepth) throw new RangeError('solver-query-snapshot-budget-exceeded');
+    const entries = ownDataEntries(frame.source, Math.max(0, maxEdges - edgeCount));
+    edgeCount += entries.length;
+    if (edgeCount > maxEdges) throw new RangeError('solver-query-snapshot-budget-exceeded');
+
+    for (const [key, value] of entries) {
+      let snapshot = value;
+      if (value && typeof value === 'object') {
+        snapshot = copies.get(value);
+        if (!snapshot) {
+          if (nodeCount >= maxNodes) throw new RangeError('solver-query-snapshot-budget-exceeded');
+          const depth = frame.depth + 1;
+          if (depth > maxDepth) throw new RangeError('solver-query-snapshot-budget-exceeded');
+          snapshot = cloneContainer(value);
+          copies.set(value, snapshot);
+          nodeCount++;
+          pending.push({ source: value, target: snapshot, depth });
+        }
+      }
+      Object.defineProperty(frame.target, key, {
+        value: snapshot,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+  return root;
 }
 
 class CnfBuilder {
@@ -70,14 +129,15 @@ class CnfBuilder {
     this.clauses = [];
     this.expressionMemo = new WeakMap();
     this.symbolBits = new Map();
-    this.gateMemo = new Map();
+    this.binGateMemo = [null, new Map(), new Map(), new Map()];
+    this.iteGateMemo = new Map();
     this.trueLiteral = this.newVariable();
     this.addClause([this.trueLiteral]);
   }
 
   guard() {
     if (this.signal?.aborted) throw new LimitError('cancelled');
-    if (monotonicNow() >= this.deadline) throw new LimitError('timeout');
+    if (this.deadline !== Infinity && monotonicNow() >= this.deadline) throw new LimitError('timeout');
   }
 
   newVariable() {
@@ -89,14 +149,44 @@ class CnfBuilder {
 
   addClause(literals) {
     this.guard();
-    const unique = [];
-    const seen = new Set();
-    for (const literal of literals) {
-      if (!Number.isSafeInteger(literal) || literal === 0) throw new LimitError('invalid-cnf-literal');
-      if (seen.has(-literal)) return;
-      if (!seen.has(literal)) {
-        seen.add(literal);
-        unique.push(literal);
+    let unique;
+    if (Array.isArray(literals) && literals.length <= 3) {
+      const len = literals.length;
+      if (len === 0) {
+        unique = [];
+      } else if (len === 1) {
+        const l0 = literals[0];
+        if (!Number.isSafeInteger(l0) || l0 === 0) throw new LimitError('invalid-cnf-literal');
+        unique = [l0];
+      } else if (len === 2) {
+        const l0 = literals[0];
+        if (!Number.isSafeInteger(l0) || l0 === 0) throw new LimitError('invalid-cnf-literal');
+        const l1 = literals[1];
+        if (!Number.isSafeInteger(l1) || l1 === 0) throw new LimitError('invalid-cnf-literal');
+        if (l1 === -l0) return;
+        unique = l1 === l0 ? [l0] : [l0, l1];
+      } else {
+        const l0 = literals[0];
+        if (!Number.isSafeInteger(l0) || l0 === 0) throw new LimitError('invalid-cnf-literal');
+        const l1 = literals[1];
+        if (!Number.isSafeInteger(l1) || l1 === 0) throw new LimitError('invalid-cnf-literal');
+        if (l1 === -l0) return;
+        const l2 = literals[2];
+        if (!Number.isSafeInteger(l2) || l2 === 0) throw new LimitError('invalid-cnf-literal');
+        if (l2 === -l0 || l2 === -l1) return;
+        if (l1 === l0) unique = l2 === l0 ? [l0] : [l0, l2];
+        else unique = (l2 === l0 || l2 === l1) ? [l0, l1] : [l0, l1, l2];
+      }
+    } else {
+      unique = [];
+      const seen = new Set();
+      for (const literal of literals) {
+        if (!Number.isSafeInteger(literal) || literal === 0) throw new LimitError('invalid-cnf-literal');
+        if (seen.has(-literal)) return;
+        if (!seen.has(literal)) {
+          seen.add(literal);
+          unique.push(literal);
+        }
       }
     }
     this.clauses.push(unique);
@@ -105,14 +195,40 @@ class CnfBuilder {
 
   constant(value) { return value ? this.trueLiteral : -this.trueLiteral; }
 
-  memoGate(kind, inputs, build) {
-    const keyInputs = (kind === 'and' || kind === 'or' || kind === 'xor')
-      ? [...inputs].sort((a, b) => a - b)
-      : inputs;
-    const key = `${kind}:${keyInputs.join(',')}`;
-    if (this.gateMemo.has(key)) return this.gateMemo.get(key);
+  memoBinaryGate(opCode, a, b, build) {
+    if (a > b) { const tmp = a; a = b; b = tmp; }
+    const table = this.binGateMemo[opCode];
+    let inner = table.get(a);
+    if (inner !== undefined) {
+      const existing = inner.get(b);
+      if (existing !== undefined) return existing;
+    }
     const output = build();
-    this.gateMemo.set(key, output);
+    if (inner === undefined) {
+      inner = new Map();
+      table.set(a, inner);
+    }
+    inner.set(b, output);
+    return output;
+  }
+
+  memoIteGate(condition, thenLiteral, elseLiteral, build) {
+    let byThen = this.iteGateMemo.get(condition);
+    let byElse = byThen !== undefined ? byThen.get(thenLiteral) : undefined;
+    if (byElse !== undefined) {
+      const existing = byElse.get(elseLiteral);
+      if (existing !== undefined) return existing;
+    }
+    const output = build();
+    if (byThen === undefined) {
+      byThen = new Map();
+      this.iteGateMemo.set(condition, byThen);
+    }
+    if (byElse === undefined) {
+      byElse = new Map();
+      byThen.set(thenLiteral, byElse);
+    }
+    byElse.set(elseLiteral, output);
     return output;
   }
 
@@ -122,7 +238,7 @@ class CnfBuilder {
     if (a === this.trueLiteral) return b;
     if (b === this.trueLiteral) return a;
     if (a === -this.trueLiteral || b === -this.trueLiteral) return this.constant(false);
-    return this.memoGate('and', [a, b], () => {
+    return this.memoBinaryGate(1, a, b, () => {
       const out = this.newVariable();
       this.addClause([-out, a]);
       this.addClause([-out, b]);
@@ -137,7 +253,7 @@ class CnfBuilder {
     if (a === -this.trueLiteral) return b;
     if (b === -this.trueLiteral) return a;
     if (a === this.trueLiteral || b === this.trueLiteral) return this.constant(true);
-    return this.memoGate('or', [a, b], () => {
+    return this.memoBinaryGate(2, a, b, () => {
       const out = this.newVariable();
       this.addClause([out, -a]);
       this.addClause([out, -b]);
@@ -153,7 +269,7 @@ class CnfBuilder {
     if (b === -this.trueLiteral) return a;
     if (a === this.trueLiteral) return -b;
     if (b === this.trueLiteral) return -a;
-    return this.memoGate('xor', [a, b], () => {
+    return this.memoBinaryGate(3, a, b, () => {
       const out = this.newVariable();
       this.addClause([-a, -b, -out]);
       this.addClause([a, b, -out]);
@@ -169,7 +285,7 @@ class CnfBuilder {
     if (condition === -this.trueLiteral) return elseLiteral;
     if (thenLiteral === this.trueLiteral && elseLiteral === -this.trueLiteral) return condition;
     if (thenLiteral === -this.trueLiteral && elseLiteral === this.trueLiteral) return -condition;
-    return this.memoGate('ite', [condition, thenLiteral, elseLiteral], () => {
+    return this.memoIteGate(condition, thenLiteral, elseLiteral, () => {
       const out = this.newVariable();
       this.addClause([-condition, -thenLiteral, out]);
       this.addClause([-condition, thenLiteral, -out]);
@@ -471,23 +587,28 @@ async function solveCnf(builder, { signal, deadline, limits }) {
     if (clause.length === 1 && !enqueue(clause[0])) return { status: 'unsat', assignment, decisions, propagations };
   }
 
-  async function guard() {
+  let decisionCursor = 0;
+
+  function checkGuardSync() {
     if (signal?.aborted) return 'cancelled';
-    if (monotonicNow() >= deadline) return 'timeout';
+    if (deadline !== Infinity && monotonicNow() >= deadline) return 'timeout';
     if (decisions > limits.maxDecisions) return 'decision-budget-exceeded';
     if (propagations > limits.maxPropagations) return 'propagation-budget-exceeded';
-    if (propagations - yieldedAt >= limits.yieldEvery) {
-      yieldedAt = propagations;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      if (signal?.aborted) return 'cancelled';
-      if (monotonicNow() >= deadline) return 'timeout';
-    }
+    if (propagations - yieldedAt >= limits.yieldEvery) return 'yield';
     return null;
   }
 
-  async function propagate() {
+  async function handleYield() {
+    yieldedAt = propagations;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (signal?.aborted) return 'cancelled';
+    if (deadline !== Infinity && monotonicNow() >= deadline) return 'timeout';
+    return null;
+  }
+
+  function propagateSync() {
     while (propagationHead < trail.length) {
-      const guardResult = await guard();
+      const guardResult = checkGuardSync();
       if (guardResult) return guardResult;
       const falseLiteral = -trail[propagationHead++];
       const list = watches[literalIndex(falseLiteral)];
@@ -529,10 +650,12 @@ async function solveCnf(builder, { signal, deadline, limits }) {
   }
 
   function decisionLiteral() {
-    for (const clause of clauses) {
+    for (let i = decisionCursor; i < clauses.length; i++) {
+      const clause = clauses[i];
       let satisfied = false;
       let candidate = 0;
-      for (const literal of clause) {
+      for (let j = 0; j < clause.length; j++) {
+        const literal = clause[j];
         const value = literalValue(literal, assignment);
         if (value === 1) {
           satisfied = true;
@@ -540,9 +663,12 @@ async function solveCnf(builder, { signal, deadline, limits }) {
         }
         if (value === 0 && candidate === 0) candidate = literal;
       }
-      if (!satisfied && candidate !== 0) return candidate;
-      if (!satisfied && candidate === 0) return null;
+      if (!satisfied) {
+        decisionCursor = i;
+        return candidate !== 0 ? candidate : null;
+      }
     }
+    decisionCursor = clauses.length;
     return 0;
   }
 
@@ -551,29 +677,50 @@ async function solveCnf(builder, { signal, deadline, limits }) {
     propagationHead = Math.min(propagationHead, mark);
   }
 
-  async function search() {
-    const propagation = await propagate();
-    if (propagation === 'conflict') return 'unsat';
-    if (propagation) return propagation;
-    const literal = decisionLiteral();
-    if (literal === null) return 'unsat';
-    if (literal === 0) return 'sat';
-    decisions++;
-    const guardResult = await guard();
-    if (guardResult) return guardResult;
-    const mark = trail.length;
-    for (const choice of [-Math.abs(literal), Math.abs(literal)]) {
-      if (enqueue(choice)) {
-        const result = await search();
-        if (result === 'sat') return result;
-        if (result !== 'unsat') return result;
-      }
-      restore(mark);
+  const frames = [];
+  let status = 'unsat';
+  outer: while (true) {
+    let propagation = propagateSync();
+    while (propagation === 'yield') {
+      const yieldGuard = await handleYield();
+      if (yieldGuard) { status = yieldGuard; break outer; }
+      propagation = propagateSync();
     }
-    return 'unsat';
-  }
+    if (propagation && propagation !== 'conflict') { status = propagation; break; }
 
-  const status = await search();
+    let backtrack = propagation === 'conflict';
+    if (!backtrack) {
+      const literal = decisionLiteral();
+      if (literal === 0) { status = 'sat'; break; }
+      if (literal === null) {
+        backtrack = true;
+      } else {
+        decisions++;
+        let guardResult = checkGuardSync();
+        if (guardResult === 'yield') guardResult = await handleYield();
+        if (guardResult) { status = guardResult; break; }
+        const absLit = Math.abs(literal);
+        const mark = trail.length;
+        const savedCursor = decisionCursor;
+        frames.push({ absLit, mark, phase: 0, savedCursor });
+        if (enqueue(-absLit)) continue;
+        backtrack = true;
+      }
+    }
+
+    while (backtrack) {
+      if (frames.length === 0) { status = 'unsat'; break outer; }
+      const top = frames[frames.length - 1];
+      restore(top.mark);
+      decisionCursor = top.savedCursor;
+      if (top.phase === 0) {
+        top.phase = 1;
+        if (enqueue(top.absLit)) backtrack = false;
+      } else {
+        frames.pop();
+      }
+    }
+  }
   return { status, assignment, decisions, propagations };
 }
 
@@ -618,30 +765,54 @@ class BitBlastSolverSession extends SolverSession {
         lifecycle: { budgetExceeded: queryValidation.limitExceeded === true, publishable: false },
       });
     }
-    const constraints = query.constraints;
-    const expressions = [...constraints, ...(query.assertion ? [query.assertion] : [])];
+    let querySnapshot;
+    try {
+      querySnapshot = snapshotCanonicalQuery(query, limits.maxExprNodes);
+    } catch (error) {
+      const limitExceeded = error instanceof RangeError && error.message === 'solver-query-snapshot-budget-exceeded';
+      return createSolverResult({
+        ...resultBase,
+        queryHash: null,
+        status: limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: limitExceeded ? 'solver-query-snapshot-budget-exceeded' : 'solver-query-snapshot-failed',
+        lifecycle: { budgetExceeded: limitExceeded, publishable: false },
+      });
+    }
+    const snapshotValidation = validateVerificationQuery(querySnapshot, { maxExprNodes: limits.maxExprNodes });
+    if (!snapshotValidation.valid || snapshotValidation.recomputedHash !== queryValidation.recomputedHash) {
+      return createSolverResult({
+        ...resultBase,
+        queryHash: null,
+        status: snapshotValidation.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: snapshotValidation.valid ? 'solver-query-snapshot-identity-mismatch' : snapshotValidation.reason,
+        lifecycle: { budgetExceeded: snapshotValidation.limitExceeded === true, publishable: false },
+      });
+    }
+    const snapshotResultBase = { ...resultBase, queryHash: querySnapshot.queryHash };
+    const constraints = querySnapshot.constraints;
+    const expressions = [...constraints, ...(querySnapshot.assertion ? [querySnapshot.assertion] : [])];
     if (constraints.length > limits.maxConstraints) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }
     const collected = analyzeSolverExpressions(expressions, { maxExprNodes: limits.maxExprNodes, maxExprDepth: limits.maxExprDepth });
     if (collected.limitExceeded) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }
     if (collected.depthExceeded) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-depth-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-depth-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }
     if (collected.unsupportedReason) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: collected.unsupportedReason, lifecycle: { publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: collected.unsupportedReason, lifecycle: { publishable: false } });
     }
     if (constraints.some((constraint) => constraint?.sort?.kind !== SORT_KIND.BOOL) ||
-        (query.assertion && query.assertion.sort?.kind !== SORT_KIND.BOOL)) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', lifecycle: { publishable: false } });
+        (querySnapshot.assertion && querySnapshot.assertion.sort?.kind !== SORT_KIND.BOOL)) {
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', lifecycle: { publishable: false } });
     }
     if (collected.maxBvWidth > limits.maxBvWidth) {
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${limits.maxBvWidth}`, lifecycle: { publishable: false } });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${limits.maxBvWidth}`, lifecycle: { publishable: false } });
     }
 
-    const deadline = deadlineFrom(options);
+    const deadline = deadlineFrom(options, this.options);
     let builder;
     try {
       builder = new CnfBuilder(limits, signal, deadline);
@@ -653,7 +824,7 @@ class BitBlastSolverSession extends SolverSession {
           : error.reason.startsWith('unsupported-') ? SOLVER_STATUS.UNSUPPORTED
             : SOLVER_STATUS.RESOURCE_LIMIT;
       return createSolverResult({
-        ...resultBase,
+        ...snapshotResultBase,
         status,
         reason: error.reason,
         stats: { solveTimeMs: monotonicNow() - startedAt },
@@ -661,7 +832,21 @@ class BitBlastSolverSession extends SolverSession {
       });
     }
 
-    const solved = await solveCnf(builder, { signal, deadline, limits });
+    let solved;
+    try {
+      solved = await solveCnf(builder, { signal, deadline, limits });
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return createSolverResult({
+          ...snapshotResultBase,
+          status: SOLVER_STATUS.RESOURCE_LIMIT,
+          reason: 'cnf-search-resource-limit',
+          stats: { solveTimeMs: monotonicNow() - startedAt },
+          lifecycle: { budgetExceeded: true, publishable: false },
+        });
+      }
+      throw error;
+    }
     const stats = {
       solveTimeMs: monotonicNow() - startedAt,
       nodesEvaluated: solved.decisions,
@@ -675,20 +860,20 @@ class BitBlastSolverSession extends SolverSession {
       const model = extractModel(collected.symbols, builder, solved.assignment);
       const bindingValidation = validateExactModelBindings(collected.symbols, model);
       if (!bindingValidation.valid) {
-        return createSolverResult({ ...resultBase, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: `exact-model-binding-validation-failed:${bindingValidation.reason}`, stats, lifecycle: { publishable: false } });
+        return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: `exact-model-binding-validation-failed:${bindingValidation.reason}`, stats, lifecycle: { publishable: false } });
       }
-      const validation = validateSatModel(query, model);
+      const validation = validateSatModel(querySnapshot, model);
       if (!validation.valid) {
-        return createSolverResult({ ...resultBase, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: `independent-model-validation-failed:${validation.reason}`, stats, lifecycle: { publishable: false } });
+        return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: `independent-model-validation-failed:${validation.reason}`, stats, lifecycle: { publishable: false } });
       }
-      return createSolverResult({ ...resultBase, status: SOLVER_STATUS.SAT, model, stats });
+      return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.SAT, model, stats });
     }
-    if (solved.status === 'unsat') return createSolverResult({ ...resultBase, status: SOLVER_STATUS.UNSAT, stats });
+    if (solved.status === 'unsat') return createSolverResult({ ...snapshotResultBase, status: SOLVER_STATUS.UNSAT, stats });
     const status = solved.status === 'cancelled' ? SOLVER_STATUS.CANCELLED
       : solved.status === 'timeout' ? SOLVER_STATUS.TIMEOUT
         : SOLVER_STATUS.RESOURCE_LIMIT;
     return createSolverResult({
-      ...resultBase,
+      ...snapshotResultBase,
       status,
       reason: solved.status,
       stats,

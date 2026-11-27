@@ -99,26 +99,42 @@ function sortedMapEntries(map) {
   return entries;
 }
 
-function canonicalize(val) {
+const MAX_EVIDENCE_CANONICAL_DEPTH = 64;
+
+function canonicalize(val, seen = new WeakSet(), depth = 0) {
   if (val === null || typeof val !== 'object') {
-    if (typeof val === 'bigint') return `0x${val.toString(16)}`;
+    if (typeof val === 'bigint') return val < 0n ? `-0x${(-val).toString(16)}` : `0x${val.toString(16)}`;
+    if (typeof val === 'number' && !Number.isFinite(val)) {
+      throw new TypeError('createSymbolicEvidence: non-finite number is not canonicalizable');
+    }
     return val;
   }
-  if (val instanceof Map) {
-    let out = {};
-    for (const { key, value } of sortedMapEntries(val)) {
-      out = canonicalOwn(out, key, canonicalize(value));
+  if (depth >= MAX_EVIDENCE_CANONICAL_DEPTH) {
+    throw new TypeError('createSymbolicEvidence: maximum nesting depth exceeded');
+  }
+  if (seen.has(val)) {
+    throw new TypeError('createSymbolicEvidence: cyclic structure is not canonicalizable');
+  }
+  seen.add(val);
+  try {
+    if (val instanceof Map) {
+      let out = {};
+      for (const { key, value } of sortedMapEntries(val)) {
+        out = canonicalOwn(out, key, canonicalize(value, seen, depth + 1));
+      }
+      return out;
     }
-    return out;
+    if (Array.isArray(val)) {
+      return val.map((item) => canonicalize(item, seen, depth + 1));
+    }
+    let sorted = {};
+    for (const k of Object.keys(val).sort()) {
+      sorted = canonicalOwn(sorted, k, canonicalize(val[k], seen, depth + 1));
+    }
+    return sorted;
+  } finally {
+    seen.delete(val);
   }
-  if (Array.isArray(val)) {
-    return val.map(canonicalize);
-  }
-  let sorted = {};
-  for (const k of Object.keys(val).sort()) {
-    sorted = canonicalOwn(sorted, k, canonicalize(val[k]));
-  }
-  return sorted;
 }
 
 export function computeEvidenceId({
@@ -133,8 +149,20 @@ export function computeEvidenceId({
   targetEntities = [],
   proofAuthority = PROOF_AUTHORITY.NONE,
   capabilityFingerprint = null,
+  assumptionsFingerprint = undefined,
+  preconditionStatus = undefined,
+  validationStatus = undefined,
+  completeness = undefined,
+  proofStatement = undefined,
+  architecture = undefined,
+  bitWidth = undefined,
+  proofScope = undefined,
+  exprSchemaVersion = undefined,
+  translatorVersion = undefined,
+  semanticIrVersion = undefined,
+  witnessModelDigest = undefined,
 }) {
-  const canonicalPayload = canonicalize({
+  const payload = {
     schemaVersion,
     queryKind: String(queryKind),
     claimKind: String(claimKind),
@@ -146,7 +174,20 @@ export function computeEvidenceId({
     proofAuthority: String(proofAuthority),
     capabilityFingerprint: capabilityFingerprint == null ? null : String(capabilityFingerprint),
     targetEntities: Array.isArray(targetEntities) ? targetEntities.map(String).sort() : [],
-  });
+  };
+  if (assumptionsFingerprint !== undefined) payload.assumptionsFingerprint = assumptionsFingerprint;
+  if (preconditionStatus !== undefined) payload.preconditionStatus = preconditionStatus;
+  if (validationStatus !== undefined) payload.validationStatus = validationStatus;
+  if (completeness !== undefined) payload.completeness = completeness;
+  if (proofStatement !== undefined) payload.proofStatement = proofStatement;
+  if (architecture !== undefined) payload.architecture = architecture;
+  if (bitWidth !== undefined) payload.bitWidth = bitWidth;
+  if (proofScope !== undefined) payload.proofScope = proofScope;
+  if (exprSchemaVersion !== undefined) payload.exprSchemaVersion = exprSchemaVersion;
+  if (translatorVersion !== undefined) payload.translatorVersion = translatorVersion;
+  if (semanticIrVersion !== undefined) payload.semanticIrVersion = semanticIrVersion;
+  if (witnessModelDigest !== undefined) payload.witnessModelDigest = witnessModelDigest;
+  const canonicalPayload = canonicalize(payload);
   const digest = sha256Hex(JSON.stringify(canonicalPayload));
   return `ev_${digest.slice(0, 32)}`;
 }
@@ -338,6 +379,9 @@ export function createSymbolicEvidence({
       normalizedWitness = canonicalize(witnessModel);
     }
   }
+  if (verdict === EVIDENCE_VERDICT.REFUTED && normalizedWitness === null) {
+    throw new Error('createSymbolicEvidence: refuted evidence requires an object or Map witness model');
+  }
 
   // Normalize origins
   let normalizedOrigins = origins;
@@ -358,6 +402,10 @@ export function createSymbolicEvidence({
     normalizedOrigins = canonicalize(origins);
   }
 
+  const normalizedProofScope = proofScope ? canonicalize(proofScope) : null;
+  const assumptionsFingerprint = stableDigest(normalizedAssumptions);
+  const witnessModelDigest = normalizedWitness != null ? stableDigest(normalizedWitness) : null;
+
   const id = computeEvidenceId({
     schemaVersion: EVIDENCE_SCHEMA_VERSION,
     queryKind,
@@ -370,6 +418,18 @@ export function createSymbolicEvidence({
     solverStatus,
     verdict,
     targetEntities: normalizedTargets,
+    assumptionsFingerprint,
+    preconditionStatus: normPreconditionStatus,
+    validationStatus: normValidationStatus,
+    completeness: normCompleteness,
+    proofStatement: String(proofStatement),
+    architecture,
+    bitWidth,
+    proofScope: normalizedProofScope,
+    exprSchemaVersion: String(exprSchemaVersion),
+    translatorVersion: String(translatorVersion),
+    semanticIrVersion: String(semanticIrVersion),
+    witnessModelDigest,
   });
 
   const record = {
@@ -399,8 +459,8 @@ export function createSymbolicEvidence({
     limits: limits ? canonicalize(limits) : null,
     architecture,
     bitWidth,
-    proofScope: proofScope ? canonicalize(proofScope) : null,
-    assumptionsFingerprint: stableDigest(normalizedAssumptions),
+    proofScope: normalizedProofScope,
+    assumptionsFingerprint,
     metadata: metadata ? canonicalize(metadata) : null,
   };
 
@@ -460,17 +520,35 @@ function isCanonicalSymbolicEvidence(evidence) {
   if (typeof evidence.architecture !== 'string' || evidence.architecture.length === 0) return false;
   if (evidence.bitWidth !== null && (typeof evidence.bitWidth !== 'number' || !Number.isSafeInteger(evidence.bitWidth) || evidence.bitWidth <= 0)) return false;
   if (typeof evidence.proofStatement !== 'string' || evidence.proofStatement.length === 0) return false;
-  return computeEvidenceId({
-    schemaVersion: evidence.schemaVersion,
-    queryKind: evidence.queryKind,
-    claimKind: evidence.claimKind,
-    queryHash: evidence.queryHash,
-    backendId: evidence.backendId,
-    backendVersion: evidence.backendVersion,
-    solverStatus: evidence.solverStatus,
-    verdict: evidence.verdict,
-    targetEntities: evidence.targetEntities,
-    proofAuthority: evidence.proofAuthority,
-    capabilityFingerprint: evidence.capabilityFingerprint,
-  }) === evidence.id;
+  if (!Array.isArray(evidence.assumptions)) return false;
+  if (evidence.assumptionsFingerprint !== stableDigest(evidence.assumptions)) return false;
+  try {
+    return computeEvidenceId({
+      schemaVersion: evidence.schemaVersion,
+      queryKind: evidence.queryKind,
+      claimKind: evidence.claimKind,
+      queryHash: evidence.queryHash,
+      backendId: evidence.backendId,
+      backendVersion: evidence.backendVersion,
+      solverStatus: evidence.solverStatus,
+      verdict: evidence.verdict,
+      targetEntities: evidence.targetEntities,
+      proofAuthority: evidence.proofAuthority,
+      capabilityFingerprint: evidence.capabilityFingerprint,
+      assumptionsFingerprint: evidence.assumptionsFingerprint,
+      preconditionStatus: evidence.preconditionStatus,
+      validationStatus: evidence.validationStatus,
+      completeness: evidence.completeness,
+      proofStatement: evidence.proofStatement,
+      architecture: evidence.architecture,
+      bitWidth: evidence.bitWidth,
+      proofScope: evidence.proofScope,
+      exprSchemaVersion: evidence.exprSchemaVersion,
+      translatorVersion: evidence.translatorVersion,
+      semanticIrVersion: evidence.semanticIrVersion,
+      witnessModelDigest: evidence.witnessModel != null ? stableDigest(evidence.witnessModel) : null,
+    }) === evidence.id;
+  } catch {
+    return false;
+  }
 }

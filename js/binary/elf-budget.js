@@ -30,11 +30,48 @@ function metadataCost(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+export const ELF_MAX_PARTIAL_REASONS = 256;
+export const ELF_MAX_PARTIAL_WARNINGS = 256;
+
+const partialTrackingByImage = new WeakMap();
+
+function partialTrackingOf(image, meta) {
+  let state = partialTrackingByImage.get(image);
+  if (!state) {
+    state = {
+      reasons: new Set(meta.reasons),
+      warnings: new Set(Array.isArray(image.warnings) ? image.warnings : []),
+      warningsAdded: 0,
+      warningsCapped: false,
+    };
+    partialTrackingByImage.set(image, state);
+  }
+  return state;
+}
+
 export function markELFMetadataPartial(image, reason, warning = null) {
   const meta = metadataOf(image);
   meta.complete = false;
-  if (!meta.reasons.includes(reason)) meta.reasons.push(reason);
-  if (warning && !image.warnings.includes(warning)) image.warnings.push(warning);
+  const state = partialTrackingOf(image, meta);
+  if (reason && !state.reasons.has(reason) && state.reasons.size < ELF_MAX_PARTIAL_REASONS) {
+    state.reasons.add(reason);
+    meta.reasons.push(reason);
+  }
+  if (warning && Array.isArray(image.warnings) && !state.warnings.has(warning)) {
+    if (state.warningsAdded < ELF_MAX_PARTIAL_WARNINGS - 1) {
+      state.warnings.add(warning);
+      state.warningsAdded++;
+      image.warnings.push(warning);
+    } else if (!state.warningsCapped) {
+      state.warningsCapped = true;
+      const capMessage = `ELF metadata partial warnings exceeded limit (${ELF_MAX_PARTIAL_WARNINGS}); further warnings suppressed`;
+      if (!state.warnings.has(capMessage)) {
+        state.warnings.add(capMessage);
+        state.warningsAdded++;
+        image.warnings.push(capMessage);
+      }
+    }
+  }
 }
 
 /** Shared budget for SHT symbols/relocations/unwind decoded JS output. */
@@ -65,27 +102,52 @@ export function createELFMetadataBudget(image, options = {}) {
     checkpoint() {
       if (stopped) return false;
       if (signal?.aborted) return stop('aborted');
-      if (Date.now() - started > limits.wallClockMs) return stop('wall-clock');
+      if (limits.wallClockMs !== Infinity && Date.now() - started > limits.wallClockMs) return stop('wall-clock');
       return true;
     },
     take(cost = {}, reason = 'metadata') {
       if (stopped) return false;
       if (signal?.aborted) return stop('aborted');
-      const amounts = Object.create(null);
-      amounts.operations = metadataCost(cost.operations);
-      if (amounts.operations == null) return stop(`${reason}:operations:invalid-cost`);
-      if (used.operations + amounts.operations >= nextTimeCheck) {
-        nextTimeCheck = used.operations + amounts.operations + 1024;
-        if (Date.now() - started > limits.wallClockMs) return stop('wall-clock');
+      const cOperations = metadataCost(cost.operations);
+      if (cOperations === null) return stop(`${reason}:operations:invalid-cost`);
+      if (used.operations + cOperations >= nextTimeCheck) {
+        nextTimeCheck = used.operations + cOperations + 1024;
+        if (limits.wallClockMs !== Infinity && Date.now() - started > limits.wallClockMs) return stop('wall-clock');
       }
-      for (const key of Object.keys(used)) {
-        const amount = key === 'operations' ? amounts.operations : metadataCost(cost[key]);
-        if (amount == null) return stop(`${reason}:${key}:invalid-cost`);
-        amounts[key] = amount;
-        const next = used[key] + amount;
-        if (!Number.isFinite(next) || next > limits[key]) return stop(`${reason}:${key}`);
-      }
-      for (const key of Object.keys(used)) used[key] += amounts[key];
+      const cInputBytes = metadataCost(cost.inputBytes);
+      if (cInputBytes === null) return stop(`${reason}:inputBytes:invalid-cost`);
+      const nInputBytes = used.inputBytes + cInputBytes;
+      if (!Number.isFinite(nInputBytes) || nInputBytes > limits.inputBytes) return stop(`${reason}:inputBytes`);
+
+      const cRecords = metadataCost(cost.records);
+      if (cRecords === null) return stop(`${reason}:records:invalid-cost`);
+      const nRecords = used.records + cRecords;
+      if (!Number.isFinite(nRecords) || nRecords > limits.records) return stop(`${reason}:records`);
+
+      const cObjects = metadataCost(cost.objects);
+      if (cObjects === null) return stop(`${reason}:objects:invalid-cost`);
+      const nObjects = used.objects + cObjects;
+      if (!Number.isFinite(nObjects) || nObjects > limits.objects) return stop(`${reason}:objects`);
+
+      const cStringBytes = metadataCost(cost.stringBytes);
+      if (cStringBytes === null) return stop(`${reason}:stringBytes:invalid-cost`);
+      const nStringBytes = used.stringBytes + cStringBytes;
+      if (!Number.isFinite(nStringBytes) || nStringBytes > limits.stringBytes) return stop(`${reason}:stringBytes`);
+
+      const nOperations = used.operations + cOperations;
+      if (!Number.isFinite(nOperations) || nOperations > limits.operations) return stop(`${reason}:operations`);
+
+      const cEstimatedHeapBytes = metadataCost(cost.estimatedHeapBytes);
+      if (cEstimatedHeapBytes === null) return stop(`${reason}:estimatedHeapBytes:invalid-cost`);
+      const nEstimatedHeapBytes = used.estimatedHeapBytes + cEstimatedHeapBytes;
+      if (!Number.isFinite(nEstimatedHeapBytes) || nEstimatedHeapBytes > limits.estimatedHeapBytes) return stop(`${reason}:estimatedHeapBytes`);
+
+      used.inputBytes = nInputBytes;
+      used.records = nRecords;
+      used.objects = nObjects;
+      used.stringBytes = nStringBytes;
+      used.operations = nOperations;
+      used.estimatedHeapBytes = nEstimatedHeapBytes;
       return true;
     },
     partial(reason, warning = null) { markELFMetadataPartial(image, reason, warning); return false; },

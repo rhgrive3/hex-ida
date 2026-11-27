@@ -261,7 +261,9 @@ export async function nativeMemoryDispatchCandidates(projection, node, demand, r
       const targetAddress = transformTarget(source.bytes, access.endian, plan);
       if (targetAddress % 4n !== 0n) { requirements.push('native-table-target-alignment-unqualified'); continue; }
       const targets = selected.filter(target => target.inputIdentity.binaryId === input.binaryId
-        && target.inputIdentity.sourceLocation?.sliceId === input.sourceLocation?.sliceId
+        && target.inputIdentity.sourceLocation != null && input.sourceLocation != null
+        && target.inputIdentity.sourceLocation.sliceId === input.sourceLocation.sliceId
+        && target.inputIdentity.sourceLocation.start != null
         && BigInt(target.inputIdentity.sourceLocation.start) === targetAddress);
       const target = targets.length === 1 ? targets[0] : null;
       const declaration = { source, access, transforms: plan.transforms, rangeEvidenceIds: values.evidenceIds,

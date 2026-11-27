@@ -5,6 +5,8 @@ import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-
 import { normalizeSemanticCompatibilityLine } from './semantic-core.js';
 
 const switchLines = new WeakMap(), switchHistories = new WeakMap();
+const LABEL_LINE_RE = /^\s*(loc_[0-9A-Fa-f]+):\s*$/;
+const TEXTUAL_GOTO_RE = /goto (loc_[0-9a-f]+);/gi;
 const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
 
 export function readSwitchLineHistory(line, ir) {
@@ -209,12 +211,22 @@ function terminalSwitchCasePlan(result, cases, defaultAddress, at) {
   if (new Set(keys).size !== keys.length) return null;
 
   const labelAt = new Map();
+  const gotoTargets = new Set();
   for (let i = 0; i < result.lines.length; i++) {
-    const m = String(result.lines[i]?.text || '').match(/^\s*(loc_[0-9A-Fa-f]+):\s*$/);
-    if (!m) continue;
-    const key = m[1].toUpperCase();
-    if (labelAt.has(key)) return null;
-    labelAt.set(key, i);
+    const text = String(result.lines[i]?.text || '');
+    const m = LABEL_LINE_RE.exec(text);
+    if (m) {
+      const key = m[1].toUpperCase();
+      if (labelAt.has(key)) return null;
+      labelAt.set(key, i);
+    }
+    if (text.length >= 10) {
+      TEXTUAL_GOTO_RE.lastIndex = 0;
+      let gm;
+      while ((gm = TEXTUAL_GOTO_RE.exec(text)) !== null) {
+        gotoTargets.add(gm[1].toUpperCase());
+      }
+    }
   }
   if (keys.some(key => !labelAt.has(key))) return null;
 
@@ -222,14 +234,28 @@ function terminalSwitchCasePlan(result, cases, defaultAddress, at) {
   // deliberately conservative: descriptor-owned dispatch is the only entry we
   // are willing to replace in this pass.
   for (const key of keys) {
-    const needle = `GOTO ${key};`;
-    if (result.lines.some(line => String(line?.text || '').toUpperCase().includes(needle))) return null;
+    if (gotoTargets.has(key)) return null;
   }
+
+  const canFallThroughIntoLabel = (start) => {
+    for (let prev = start - 1; prev >= 0; prev--) {
+      const line = result.lines[prev];
+      const text = String(line?.text || "").trim();
+      if (!text || line?.kind === "comment" || text.startsWith("//") || /^\/\*[\s\S]*\*\/$/.test(text)) continue;
+      if (prev >= at.start && prev < at.end) return false;
+      if (line?.kind === "label" || /^loc_[0-9A-Fa-f]+:$/.test(text)) return false;
+      if (text === "{" || text === "}") return false;
+      if (/^(?:return(?:\s+[^;]+)?|goto\s+[^;]+|break|continue)\s*;$/.test(text)) return false;
+      return true;
+    }
+    return false;
+  };
 
   const ranges = [];
   for (const key of keys) {
     const start = labelAt.get(key);
     if (start <= at.start) return null;
+    if (canFallThroughIntoLabel(start)) return null;
     let end = start + 1;
     while (end < result.lines.length) {
       const line = result.lines[end];
@@ -272,7 +298,17 @@ function materializeVerifiedLabels(result, index, addresses) {
     if (row == null) continue;
     while (ti < targets.length && targets[ti].row <= row) placements.push({ ...targets[ti++], at: li });
   }
-  const closing = result.lines.findIndex((l) => l?.kind === 'ctrl' && l.text === '}');
+  let closing = -1;
+  for (let i = result.lines.length - 1; i >= 0; i--) {
+    const l = result.lines[i];
+    if (l?.kind === 'ctrl' && l.text === '}' && (l.indent || 0) === 0) { closing = i; break; }
+  }
+  if (closing < 0) {
+    for (let i = result.lines.length - 1; i >= 0; i--) {
+      const l = result.lines[i];
+      if (l?.kind === 'ctrl' && l.text === '}') { closing = i; break; }
+    }
+  }
   if (closing < 0) return false;
   while (ti < targets.length) placements.push({ ...targets[ti++], at: closing });
   placements.sort((a, b) => b.at - a.at || b.row - a.row);
@@ -298,6 +334,7 @@ export function structureKnownSwitches(result, model, opts = {}) {
     if (previous.records.length > history.maximum) history.reasons.add('switch-history-budget');
   } else if (result.switchRenderHistory) history.reasons.add('switch-history-unavailable');
   const index = targetIndex(result, model);
+  let structuredAny = false;
   for (const sw of descriptors) {
     if (!sw || sw.row == null || !Array.isArray(sw.cases) || sw.cases.length < 2) continue;
     const cases = sw.cases.map((c) => normalizedCase(c, result, opts, index));
@@ -360,13 +397,34 @@ export function structureKnownSwitches(result, model, opts = {}) {
     const expr = String(sw.expr || sw.reg || 'switch_value');
     const terminal = terminalSwitchCasePlan(result, cases, defaultAddress, at);
     if (terminal) {
-      // Remove the original label-delimited bodies from the bottom up.  Reuse
-      // the exact body line objects in the switch so existing statement/control
-      // provenance remains attached; indentation is cosmetic and is therefore
-      // intentionally left untouched.
-      for (const range of [...terminal.ranges].sort((a, b) => b.start - a.start)) {
-        result.lines.splice(range.start, range.end - range.start);
+      // Remove the original label-delimited bodies in one in-place pass while
+      // preserving `result.lines` array identity, reusing exact line objects,
+      // and evicting removed labels from `index.labels`.
+      const ascRanges = [...terminal.ranges].sort((a, b) => a.start - b.start);
+      const lines = result.lines;
+      let write = 0;
+      let read = 0;
+      for (let ri = 0; ri < ascRanges.length; ri += 1) {
+        const range = ascRanges[ri];
+        while (read < range.start) {
+          if (write !== read) lines[write] = lines[read];
+          write += 1;
+          read += 1;
+        }
+        while (read < range.end) {
+          const line = lines[read];
+          if (line?.kind === 'label' && typeof line.text === 'string') {
+            index.labels.delete(line.text.replace(/:$/, '').toUpperCase());
+          }
+          read += 1;
+        }
       }
+      while (read < lines.length) {
+        if (write !== read) lines[write] = lines[read];
+        write += 1;
+        read += 1;
+      }
+      lines.length = write;
     }
     const generated = [{ kind: 'ctrl', indent: at.indent, text: `switch (${expr}) {`, row: sw.row, addr: null, note: null }];
     const repl = [generated[0]];
@@ -377,8 +435,7 @@ export function structureKnownSwitches(result, model, opts = {}) {
         row: sw.row, addr: cases[i].address, note: null };
       generated.push(caseLine); repl.push(caseLine);
       if (terminal) {
-        const body = terminal.byKey.get(key).body;
-        for (const line of body) line.indent = Math.max(line.indent || 0, at.indent + 2);
+        const body = terminal.byKey.get(key).body.map((line) => ({ ...line, indent: Math.max(line.indent || 0, at.indent + 2) }));
         repl.push(...body);
       }
     }
@@ -389,8 +446,7 @@ export function structureKnownSwitches(result, model, opts = {}) {
         row: sw.row, addr: defaultAddress, note: null };
       generated.push(defaultLine); repl.push(defaultLine);
       if (terminal) {
-        const body = terminal.byKey.get(key).body;
-        for (const line of body) line.indent = Math.max(line.indent || 0, at.indent + 2);
+        const body = terminal.byKey.get(key).body.map((line) => ({ ...line, indent: Math.max(line.indent || 0, at.indent + 2) }));
         repl.push(...body);
       }
     }
@@ -400,9 +456,10 @@ export function structureKnownSwitches(result, model, opts = {}) {
     try { retainSwitchHistory(result, model, sw, generated, removed, at.start, opts, history, index); }
     catch { history.reasons.add('switch-history-unavailable'); }
     result.evidence = [...(result.evidence || []), { row: sw.row, address: sw.address ?? null, op: 'switch', reason: 'verified jump-table/switch descriptor', cases: cases.map((c, i) => ({ value: values[i], target: c.address })) }];
-    result.pseudocode = textOf(result.lines);
+    structuredAny = true;
     result.ctx = { ...(result.ctx || {}), structuredSwitches: (result.ctx?.structuredSwitches || 0) + 1 };
   }
+  if (structuredAny) result.pseudocode = textOf(result.lines);
   if (history.records.length || history.reasons.size) {
     result.switchRenderHistory = Object.freeze({ scope:'switch-render-producer',
       completeness:history.reasons.size ? 'incomplete' : 'complete', reasons:Object.freeze([...history.reasons]) });

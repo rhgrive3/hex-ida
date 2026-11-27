@@ -13,7 +13,8 @@ export function applyMachOTlvInitializers(thinInput, image) {
   const budget = ensureMachOMetadataBudget(image);
   if (budget.stopped) return image;
   const r = new ByteView(thinInput, { littleEndian: image.endian !== 'big' });
-  const ptrSize = image.bits === 64 ? 8 : image.bits === 32 ? 4 : 0;
+  const validBits = image.bits === 32 || image.bits === 64;
+  const ptrSize = !validBits ? 0 : (image.arch === 'arm64_32' || image.bits === 32 ? 4 : 8);
   if (!ptrSize) {
     budget.partial('tlv-init:unsupported-pointer-width', `Unsupported Mach-O pointer width ${image.bits}`);
     return image;
@@ -28,7 +29,7 @@ export function applyMachOTlvInitializers(thinInput, image) {
   const seeds = [];
   image.metadata.tlvInitializers ||= [];
 
-  for (const section of sections) {
+  scan: for (const section of sections) {
     if (section.size % ptrSizeBig !== 0n) {
       budget.partial(
         'tlv-init:truncated-section',
@@ -58,10 +59,10 @@ export function applyMachOTlvInitializers(thinInput, image) {
     }
 
     for (let index = 0; index < safeCount; index++) {
-      if (!budget.take({ inputBytes:ptrSize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'tlv-init')) return image;
+      if (!budget.take({ inputBytes:ptrSize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'tlv-init')) break scan;
       const slotAddress = section.address + BigInt(index * ptrSize);
       const slotOffset = sectionFileOffset + index * ptrSize;
-      const raw = image.bits === 64 ? r.u64(slotOffset) : BigInt(r.u32(slotOffset));
+      const raw = ptrSize === 8 ? r.u64(slotOffset) : BigInt(r.u32(slotOffset));
       const target = resolveMachOPointer(image, raw, { address:slotAddress });
 
       let valid = false;
@@ -75,6 +76,7 @@ export function applyMachOTlvInitializers(thinInput, image) {
         if (!executable) reason = 'non-executable';
         else if (instructionBytes == null) reason = 'unsupported-isa';
         else if (target % instructionBytes !== 0n) reason = 'misaligned';
+        else if (typeof image.isDataInCode === 'function' && image.isDataInCode(target)) reason = 'data-in-code';
         else {
           const first = image.addressToOffset(target);
           if (first == null) reason = 'not-file-backed';

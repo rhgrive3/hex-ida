@@ -75,6 +75,7 @@ export function createFunctionPager(fetchPage) {
   let done = false;
   let completeness = 'complete';
   let total = null;
+  let totalInvalidated = false;
 
   return {
     get hasMore() { return !done; },
@@ -96,11 +97,15 @@ export function createFunctionPager(fetchPage) {
       } else if (typeof rawTotal !== 'number' || !Number.isSafeInteger(rawTotal) || rawTotal < requestedOffset + value.length) {
         completeness = 'partial';
         total = null;
+        totalInvalidated = true;
+      } else if (totalInvalidated) {
+        total = null;
       } else if (total == null) {
         total = rawTotal;
       } else if (total !== rawTotal) {
         completeness = 'partial';
         total = null;
+        totalInvalidated = true;
       }
 
       if (!page || !Object.hasOwn(page, 'next')) {
@@ -181,7 +186,18 @@ function summaryNextViews(app, sheet, address) {
 export function showFunctions(app) {
   const region = app.store.get('currentRegion');
   if (!region) { toast('先にファイルを開いてください。'); return; }
-  const sheet = new Sheet('関数');
+  let sequence = 0;
+  let controller = null;
+  let debounceTimer = 0;
+  const sheet = new Sheet('関数', {
+    onClose:() => {
+      clearTimeout(debounceTimer);
+      debounceTimer = 0;
+      sequence++;
+      controller?.abort('functions-sheet-closed');
+      controller = null;
+    },
+  });
   const status = el('div', 'hint', '関数を確認しています…');
   const field = el('div', 'field');
   const input = el('input');
@@ -194,8 +210,6 @@ export function showFunctions(app) {
   const results = list();
   sheet.body.append(field, status, results);
 
-  let sequence = 0;
-  let controller = null;
   let pager = null;
   let loaded = 0;
   let loading = false;
@@ -226,6 +240,7 @@ export function showFunctions(app) {
   };
 
   const updateMore = (current, completeness, total) => {
+    updateStatus(completeness, total);
     if (!pager?.hasMore) {
       more?.remove();
       more = null;
@@ -236,7 +251,6 @@ export function showFunctions(app) {
       ? t('search.showMore', { n:Math.max(0, total - loaded).toLocaleString() })
       : t('search.more')));
     results.append(more);
-    updateStatus(completeness, total);
   };
 
   const loadMore = async (current) => {
@@ -256,7 +270,7 @@ export function showFunctions(app) {
         updateMore(current, pager.completeness, pager.total);
       }
     } finally {
-      loading = false;
+      if (current === sequence) loading = false;
     }
   };
 
@@ -273,7 +287,7 @@ export function showFunctions(app) {
     more = null;
     try {
       const page = await pager.next({ signal:controller.signal });
-      if (current !== sequence) return;
+      if (current !== sequence || controller.signal.aborted || !sheet.root.isConnected) return;
       if (page.unsupported) {
         const reason = page.status?.reason ? `（${page.status.reason}）` : '';
         status.textContent = `関数一覧は現在の解析経路では利用できません${reason}。`;
@@ -291,7 +305,13 @@ export function showFunctions(app) {
       alertDialog('関数を調べられませんでした', userError(error));
     }
   };
-  input.addEventListener('input', () => { void render(); });
+  input.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = 0;
+      void render();
+    }, 120);
+  });
   void render();
 }
 
@@ -309,10 +329,13 @@ export function showFunctionSummary(app, row) {
   const status = el('div', 'hint', '同じ解析スナップショットから要約を作っています…');
   sheet.body.append(status);
 
+  const initialGen = app?.backend?.gen;
+  const initialFile = app?.store?.get?.('fileInfo');
+  const isCurrentBinary = () => app?.backend?.gen === initialGen && app?.store?.get?.('fileInfo') === initialFile;
   void (async () => {
     try {
       const bundle = await analysisBundle(app, BigInt(address), { signal:controller.signal });
-      if (controller.signal.aborted || !sheet.root.isConnected) return;
+      if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
       status.remove();
 
       const fn = bundle.fn;
@@ -367,7 +390,7 @@ export function showFunctionSummary(app, row) {
       const views = summaryNextViews(app, sheet, target);
       if (views) sheet.body.append(views);
     } catch (error) {
-      if (controller.signal.aborted || error?.name === 'AbortError') return;
+      if (controller.signal.aborted || error?.name === 'AbortError' || !isCurrentBinary()) return;
       status.textContent = '';
       alertDialog('解析できませんでした', userError(error));
     }

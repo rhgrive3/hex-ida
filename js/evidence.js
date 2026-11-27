@@ -98,6 +98,7 @@ const CODE_GROUP = [
   [/^cfg-|^control-|^branch-|^loop-/, GROUP.CONTROLFLOW],
   [/^ai-|^gemini-|^plugin-/, GROUP.EXTERNAL],
   [/formula|comprehend|purpose/, GROUP.SEMANTIC],
+  [/^role-(?:verb-selector|topic-agree)$/, GROUP.METADATA],
 ];
 
 /** その証拠はどの出どころから来ているか。 */
@@ -105,8 +106,8 @@ export function groupOf(item) {
   if (!item) return GROUP.METADATA;
   const code = typeof item === 'string' ? item : (item.code || '');
   for (const [re, g] of CODE_GROUP) if (re.test(code)) return g;
-  const family = typeof item === 'string' ? (EVIDENCE[code] || {}).family : item.family;
-  return FAMILY_GROUP[family] || GROUP.METADATA;
+  const family = typeof item === 'string' ? (Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code].family : undefined) : item.family;
+  return Object.hasOwn(FAMILY_GROUP, family) ? FAMILY_GROUP[family] : GROUP.METADATA;
 }
 
 /**
@@ -130,9 +131,18 @@ const CANONICAL_GROUPS = new Set(Object.values(GROUP));
 export function independentGroupCount(fusion) {
   if (!fusion) return 0;
   if (Array.isArray(fusion.items)) {
-    const seen = new Set();
-    for (const it of fusion.items) if (it && it.applied > 0) seen.add(groupOf(it));
-    return seen.size;
+    const netByGroup = new Map();
+    for (const it of fusion.items) {
+      if (!it || typeof it.applied !== 'number' || !Number.isFinite(it.applied) || it.applied === 0) continue;
+      const g = canonicalRegisteredGroup(it.code);
+      if (!g) continue;
+      netByGroup.set(g, (netByGroup.get(g) || 0) + it.applied);
+    }
+    let count = 0;
+    for (const sum of netByGroup.values()) {
+      if (sum > 0) count++;
+    }
+    return count;
   }
   if (Array.isArray(fusion.groups)) {
     const distinct = new Set();
@@ -153,12 +163,14 @@ export function independentGroupCount(fusion) {
 }
 
 /* 1 つの系統だけで到達できる尤度比の上限。
-   名前がどれだけ当たっても、それだけでは 60 倍を超えられない。 */
+   role-accessor-metadata (70) / role-accessor-match (80) / role-verb-selector (80)
+   の単一証拠を切り捨てない水準としつつ、名前＋サイズのみの未検証候補が
+   単独で likely (p >= 0.85) へ跳ねない範囲（NAME <= 120）に抑える。 */
 const FAMILY_CAP = {
-  [FAMILY.NAME]: 60,
+  [FAMILY.NAME]: 120,
   [FAMILY.TYPE]: 6,
   [FAMILY.CONTEXT]: 25,
-  [FAMILY.USAGE]: 30,
+  [FAMILY.USAGE]: 80,
   [FAMILY.STRUCT]: 12,
   [FAMILY.VERIFIED]: 4000,   // 実測だけは強い。ただし後述のとおり単独では確定にしない
   /*
@@ -213,7 +225,7 @@ export const EVIDENCE = deepFreeze({
   /* 値（フィールド）を特定するための証拠 */
   /* 打ち込まれた名前が、そのまま変数の名前だった。名前で探した人への直球の答え。 */
   'field-name-asked':   { lr: 400,  family: FAMILY.NAME,     kind: 'fact', id: true },
-  'field-name-contains':{ lr: 120,  family: FAMILY.NAME,     kind: 'fact', id: true },
+  'field-name-contains':{ lr: 58,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-words': { lr: 45, family: FAMILY.NAME, kind: 'fact', id: true },
   'field-name-exact':   { lr: 55,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-strong':  { lr: 16,   family: FAMILY.NAME,     kind: 'fact', id: true },
@@ -279,9 +291,9 @@ export const EVIDENCE = deepFreeze({
    * 「他のオブジェクトの、0 で止められる値を減らすための量として使われている」は
    * 攻撃力そのものの定義になっている。名前が無くても、これは名指しになる。
    */
-  'loc-damage-source':  { lr: 8,    family: FAMILY.USAGE,    kind: 'verified', id: true },
-  'loc-resource-drain': { lr: 7,    family: FAMILY.USAGE,    kind: 'verified', id: true },
-  'loc-self-resource':  { lr: 5,    family: FAMILY.USAGE,    kind: 'verified', id: true },
+  'loc-damage-source':  { lr: 8,    family: FAMILY.USAGE,    kind: 'fact', id: true },
+  'loc-resource-drain': { lr: 7,    family: FAMILY.USAGE,    kind: 'fact', id: true },
+  'loc-self-resource':  { lr: 5,    family: FAMILY.USAGE,    kind: 'fact', id: true },
   /*
    * 同じ位置が「減らされる側」とも「減らす量の側」とも読める。
    *
@@ -346,6 +358,12 @@ export const EVIDENCE = deepFreeze({
   // すでに特定できている値を触っている＝目的に結びついている
   'fn-touches-field':   { lr: 14,   family: FAMILY.VERIFIED, kind: 'verified', id: true },
   'fn-writes-field':    { lr: 26,   family: FAMILY.VERIFIED, kind: 'verified', id: true },
+  'fn-store-observed':  { lr: 1.9,  family: FAMILY.USAGE,    kind: 'fact' },
+  'fn-field-rmw':       { lr: 2.8,  family: FAMILY.USAGE,    kind: 'fact' },
+  'fn-field-rmw-clamped': { lr: 3.8, family: FAMILY.USAGE,   kind: 'fact' },
+  'fn-crypto-bitwise':    { lr: 3.2, family: FAMILY.USAGE,   kind: 'fact' },
+  'fn-crypto-hw-insn':    { lr: 6.5, family: FAMILY.USAGE,   kind: 'fact' },
+  'fn-shape-site':        { lr: 5.5, family: FAMILY.USAGE,   kind: 'fact', id: true },
   'fn-owner-class':     { lr: 3.4,  family: FAMILY.CONTEXT,  kind: 'fact', id: true },
   'fn-numeric':         { lr: 2.2,  family: FAMILY.USAGE,    kind: 'fact' },
   'fn-called-often':    { lr: 1.7,  family: FAMILY.USAGE,    kind: 'fact' },
@@ -427,17 +445,17 @@ export const EVIDENCE = deepFreeze({
 
 /** その証拠は「目的に結びつける」ものか。裏打ちするだけのものか。 */
 export function isIdentifying(code) {
-  const e = EVIDENCE[code];
+  const e = Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null;
   return !!(e && e.id);
 }
 
-export function evidenceInfo(code) { return EVIDENCE[code] || null; }
+export function evidenceInfo(code) { return Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null; }
 export function evidenceFamily(code) {
-  const e = EVIDENCE[code];
+  const e = Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null;
   return e ? e.family : FAMILY.CONTEXT;
 }
 export function evidenceKind(code) {
-  const e = EVIDENCE[code];
+  const e = Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null;
   return e ? e.kind : 'inference';
 }
 
@@ -508,7 +526,7 @@ function countAuthority(value, fallback) {
  * @param {object} [detail] 画面に出すための材料（名前・アドレス・回数…）
  */
 export function evidence(code, strength, detail, lr) {
-  const info = EVIDENCE[code];
+  const info = Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null;
   const s = strength == null ? 1 : finiteStrength(strength, 0);
   const fallbackLr = finitePositiveLr(info?.lr, 1);
   const normalizedLr = finitePositiveLr(lr, fallbackLr);
@@ -550,8 +568,10 @@ export function exclusiveLR(total, users, score, text) {
   const totalC = observationCount(total, 0);
   const usersC = observationCount(users, 1);
   if (totalC === null || usersC === null) return 0;
+  if (totalC > 0 && users === 0) return 0;
   const n = Math.max(2, totalC);
   const k = Math.max(1, usersC);
+  if (totalC > 0 && k >= totalC) return 0;
   if (typeof score !== 'number' || !Number.isFinite(score)) return 0;
   if (k > EXCLUSIVE_MAX_USERS) return 0;        // 何十か所からも使われる語は名指しではない
   if (!namesBehaviour(text)) return 0;
@@ -581,11 +601,32 @@ export function exclusiveLR(total, users, score, text) {
  *                    拡張子付きの識別子。何をするかは何も言っていない。
  */
 function namesBehaviour(text) {
-  const s = String(text == null ? '' : text);
-  if (!s) return true;                     // 文言が渡っていないなら判定しない
-  if (/%[-+ 0-9.#]*[@a-zA-Z]/.test(s)) return true;   // 書式指定があれば人に見せる文言
-  // 拡張子付きの識別子＝素材（.maanim / .mamodel のように長い拡張子もある）
-  if (/^[\w./\\-]+\.[a-zA-Z][a-zA-Z0-9]{1,7}$/.test(s)) return false;
+  if (text == null) return true;           // 文言が渡っていないなら判定しない
+  if (typeof text !== 'string') return false;
+  const s = text.trim();
+  if (!s) return false;
+  // 拡張子付きの識別子・パス＝素材（%d 付き素材パス・.maanim / .mamodel のように長い拡張子も含む）
+  if (/^[\w./\\%+-]+\.[a-zA-Z][a-zA-Z0-9]{1,7}$/.test(s)) return false;
+  if (/^(?:\/|\.\.?\/|[\w.%+-]+\/[\w.%+-]+\/)[\w./\\%+-]*$/.test(s)) return false;
+  // 先頭 [TAG] / <TAG> を除去してログ・診断文言を検査する
+  const stripped = s.replace(/^(?:\s*(?:\[[^\]]{1,40}\]|<[^>]{1,40}>)\s*[:\-]?\s*)+/, '').trim();
+  if (!stripped) return false;
+  // 英語のエラー・アサートログ接頭辞は、排他的な機能名指しではない（計算式表記は残す）
+  if (/^(?:error|warning|warn|assert|assertion|fatal|debug|info|trace|log|err|crit|critical|panic|exception|undefined|invalid|failed|cannot|unable)\b/i.test(stripped) && !/[×÷]/.test(stripped)) return false;
+  if (/\bassertion\s+failed\b/i.test(stripped)) return false;
+  if (/\b[\w./\\-]+\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|m|mm|swift|java|kt|cs|js|mjs|ts|py|rs|go|lua|rb|php):\d+\b/i.test(stripped)) return false;
+  if (/https?:\/\//i.test(stripped)) return false;
+  if (/(?:->|::|=)/.test(stripped)) return false;
+  if (/^\/(?:\\.|[^/\\\r\n])+\/[gimsuyvd]*$/.test(stripped)) return false;
+  // C++ 関数シグネチャ・Qt Signal/Slot
+  if (/^(?:(?:virtual|static|inline|const|constexpr|extern|unsigned|signed|volatile|override)\s+)*(?:void|bool|char|short|int|long|float|double|size_t|u?int(?:8|16|32|64)_t|auto|[A-Z]\w*(?:<[^>]+>)?)\s*[*&]?\s*[A-Za-z_~]\w*\s*\([^)]*\)(?:\s*(?:const|noexcept|override|final))*\s*;?$/.test(stripped)) return false;
+  if (/^(?:[12][A-Za-z_]\w*\([^)]*\)|(?:SIGNAL|SLOT)\s*\(.+\))$/.test(stripped)) return false;
+  // 実 printf / ObjC 書式指定子があれば人に見せる文言（%20p 等の URL エンコード・ポインタ指定子は除外）
+  if (/(?<!%)%(?:[1-9]\d*\$)?[-+#0]*(?:\*|\d+)?(?:\.(?:\*|\d+))?(?:(?:hh|ll|[hlztjL])?[diuoxXfFeEgGsc]|@)(?![A-Za-z0-9_])/.test(s)) return true;
+  // 配列添字付きコード識別子（例: cdef_y_pri_strength[i]）
+  if (/^[A-Za-z_][\w.]*\[[^\]]+\]$/.test(s)) return false;
+  // 空白も日本語も持たない単一のコード識別子・ドット/スラッシュキー・マングル名・URL エンコード片
+  if (!/\s/.test(s) && !/[ぁ-んァ-ヶ一-龥]/.test(s) && /^[A-Za-z0-9_.:/$+%-]+$/.test(s)) return false;
   return true;
 }
 
@@ -603,6 +644,7 @@ export function rarityLR(total, matching) {
   const totalC = observationCount(total, 0);
   const matchingC = observationCount(matching, 1);
   if (totalC === null || matchingC === null) return 0;
+  if (totalC > 0 && matching === 0) return 0;
   const n = Math.max(2, totalC);
   const k = Math.max(1, matchingC);
   if (k >= n) return 0;
@@ -641,11 +683,35 @@ const DAMPING_RATE = { [FAMILY.NAMING]: 0.45 };
 
 function damping(nth, family) {
   if (nth <= 0) return 1;
-  const rate = DAMPING_RATE[family] != null ? DAMPING_RATE[family] : 1.2;
+  const rate = Object.hasOwn(DAMPING_RATE, family) ? DAMPING_RATE[family] : 1.2;
   return 1 / (1 + nth * rate);
 }
 
 const LN = Math.log;
+const LN_10 = LN(10);
+const DEFAULT_FAMILY_LOG_CAP = LN(20);
+const FAMILY_LOG_CAP = Object.freeze(
+  Object.fromEntries(Object.entries(FAMILY_CAP).map(([k, v]) => [k, LN(v)]))
+);
+const REGISTERED_CODE_GROUP = (() => {
+  const map = Object.create(null);
+  for (const table of [EVIDENCE, ADAPTER_EVIDENCE]) {
+    for (const code of Object.keys(table)) {
+      if (Object.hasOwn(map, code)) continue;
+      let resolved = null;
+      for (const [re, g] of CODE_GROUP) {
+        if (re.test(code)) { resolved = g; break; }
+      }
+      if (!resolved) {
+        const fam = table[code].family;
+        const fg = Object.hasOwn(FAMILY_GROUP, fam) ? FAMILY_GROUP[fam] : null;
+        if (typeof fg === 'string' && CANONICAL_GROUPS.has(fg)) resolved = fg;
+      }
+      map[code] = resolved;
+    }
+  }
+  return Object.freeze(map);
+})();
 
 /**
  * 証拠を合成する。
@@ -668,84 +734,93 @@ export function fuse(items, opts) {
   const absent = countAuthority(o.absent, 40);
   const candidates = countAuthority(o.candidates, 200);
   const n = Math.max(2, candidates + absent);
-  const prior = o.prior != null
+  const prior = typeof o.prior === 'number' && Number.isFinite(o.prior)
     ? Math.max(1e-9, Math.min(0.5, o.prior))
     : 1 / n;
   let logOdds = LN(prior / (1 - prior));
 
-  // 系統ごとに、割引を掛けながら足す
+  // 系統ごとに、割引を掛けながら足す（正の寄与上限は負の証拠と分離して管理する）
   const perFamily = new Map();
-  const counted = new Map();          // 同じ code が何回目か
+  const posPerFamily = new Map();
+  const counted = new Map();          // 同じ code が何回目か（正の寄与のみ進める）
   const detailed = [];
 
-  const byEffect = (a, b) => {
-    // 効きの大きいものから採る。割引は後ろに回した方が損が小さい。
-    const ea = Math.abs(LN(Math.max(1e-6, a.lr)) * a.strength);
-    const eb = Math.abs(LN(Math.max(1e-6, b.lr)) * b.strength);
-    return eb - ea;
-  };
-  const all = (items || []).filter((x) => x && x.code).map((x) => {
-    /*
-     * fuse() は evidence() / adapterEvidence() の出力だけを受理する。
-     * 生の object が family/kind/id/lr/strength を自由に名乗ることを許すと、
-     * EVIDENCE 表に無い code だけで confirmed を捏造できる（#5972）。
-     * factory 出力は mint 時 producer + code から authority を再導出し、
-     * 呼び出し側の family/kind/id や後付け code mutation は採用しない。
-     * lr だけは実測チャネルとして factory が明示的に渡した値を優先する
-     * （family cap が歯止めになる）。
-     */
-    const provenance = x && FACTORY_PROVENANCE.get(x);
-    if (!provenance) {
-      throw new TypeError(`raw-evidence-item-rejected:${x && x.code}`);
+  const identifying = [];
+  const corroborating = [];
+  if (items) {
+    for (let i = 0; i < items.length; i++) {
+      const x = items[i];
+      if (!x || !x.code) continue;
+      /*
+       * fuse() は evidence() / adapterEvidence() の出力だけを受理する。
+       * 生の object が family/kind/id/lr/strength を自由に名乗ることを許すと、
+       * EVIDENCE 表に無い code だけで confirmed を捏造できる（#5972）。
+       * factory 出力は mint 時 producer + code から authority を再導出し、
+       * 呼び出し側の family/kind/id や後付け code mutation は採用しない。
+       * lr だけは実測チャネルとして factory が明示的に渡した値を優先する
+       * （family cap が歯止めになる）。
+       */
+      const provenance = FACTORY_PROVENANCE.get(x);
+      if (!provenance) {
+        throw new TypeError(`raw-evidence-item-rejected:${x && x.code}`);
+      }
+      if (!Object.is(provenance.code, x.code)) {
+        throw new TypeError('evidence-code-mutated');
+      }
+      const info = provenance.producer === ADAPTER_EVIDENCE_FACTORY
+        ? (Object.hasOwn(ADAPTER_EVIDENCE, provenance.code) ? ADAPTER_EVIDENCE[provenance.code] : null)
+        : (Object.hasOwn(EVIDENCE, provenance.code) ? EVIDENCE[provenance.code] : null);
+      /*
+       * family/kind/id の authority は producer に対応する表が持つ。通常 evidence()
+       * から adapter-only code を mint しても ADAPTER_EVIDENCE authority は得られず、
+       * 表に無い static code と同じ弱い既定（CONTEXT / inference / 非識別）に落ちる。
+       */
+      const strength = finiteStrength(x.strength, x.strength == null ? 1 : 0);
+      const item = {
+        code: provenance.code,
+        strength,
+        lr: provenance.lr,
+        family: info ? info.family : FAMILY.CONTEXT,
+        kind: info ? info.kind : 'inference',
+        id: !!(info && info.id),
+        detail: x.detail || null,
+      };
+      const rawDelta = LN(Math.max(1e-6, item.lr)) * strength;
+      const entry = { item, rawDelta, absDelta: Math.abs(rawDelta) };
+      if (item.id) identifying.push(entry);
+      else corroborating.push(entry);
     }
-    if (!Object.is(provenance.code, x.code)) {
-      throw new TypeError('evidence-code-mutated');
-    }
-    const info = provenance.producer === ADAPTER_EVIDENCE_FACTORY
-      ? (Object.hasOwn(ADAPTER_EVIDENCE, provenance.code) ? ADAPTER_EVIDENCE[provenance.code] : null)
-      : (EVIDENCE[provenance.code] || null);
-    /*
-     * family/kind/id の authority は producer に対応する表が持つ。通常 evidence()
-     * から adapter-only code を mint しても ADAPTER_EVIDENCE authority は得られず、
-     * 表に無い static code と同じ弱い既定（CONTEXT / inference / 非識別）に落ちる。
-     */
-    return {
-      code: provenance.code,
-      strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
-      lr: provenance.lr,
-      family: info ? info.family : FAMILY.CONTEXT,
-      kind: info ? info.kind : 'inference',
-      id: !!(info && info.id),
-      detail: x.detail || null,
-    };
-  });
+  }
   /*
    * 目的に結びつける証拠を先に処理する。そのあとで、裏打ちの証拠を
    * 「結びつきがどれだけ強いか」に応じて割り引く。順番に意味がある。
+   * 効きの大きいものから採る。割引は後ろに回した方が損が小さい。
    */
-  const identifying = all.filter((x) => x.id).sort(byEffect);
-  const corroborating = all.filter((x) => !x.id).sort(byEffect);
+  const byAbsDelta = (a, b) => b.absDelta - a.absDelta;
+  identifying.sort(byAbsDelta);
+  corroborating.sort(byAbsDelta);
 
-  const apply = (it, scale) => {
-    const lr = Math.max(1e-6, it.lr);
+  const apply = (entry, scale) => {
+    const it = entry.item;
     const family = it.family || FAMILY.CONTEXT;
     const key = family + ':' + it.code;
-    const nth = counted.get(key) || 0;
-    counted.set(key, nth + 1);
 
-    // 1 件の効き（対数オッズ）。濃さで指数を落とし、重複で割り引く。
-    let delta = LN(lr) * (it.strength == null ? 1 : it.strength) * damping(nth, family);
-    // 打ち消す証拠（尤度比が 1 未満）は割り引かない。危険側に倒さないため。
-    if (delta > 0) delta *= scale;
-
-    // 系統ごとの上限。名前だけで確定させないための歯止め。
-    const cap = LN(FAMILY_CAP[family] != null ? FAMILY_CAP[family] : 20);
-    const already = perFamily.get(family) || 0;
+    // 1 件の効き（対数オッズ）。打ち消す証拠（delta <= 0）は重複割引・上限の消費を行わない。
+    let delta = entry.rawDelta;
+    let nth = 0;
     if (delta > 0) {
-      const room = Math.max(0, cap - already);
+      nth = counted.get(key) || 0;
+      counted.set(key, nth + 1);
+      delta *= damping(nth, family) * scale;
+
+      // 系統ごとの上限。正の寄与だけで管理し、負の証拠が上限枠を水増ししないようにする。
+      const cap = Object.hasOwn(FAMILY_LOG_CAP, family) ? FAMILY_LOG_CAP[family] : DEFAULT_FAMILY_LOG_CAP;
+      const posAlready = posPerFamily.get(family) || 0;
+      const room = Math.max(0, cap - posAlready);
       if (delta > room) delta = room;
+      posPerFamily.set(family, posAlready + delta);
     }
-    perFamily.set(family, already + delta);
+    perFamily.set(family, (perFamily.get(family) || 0) + delta);
 
     if (delta !== 0) {
       logOdds += delta;
@@ -759,8 +834,8 @@ export function fuse(items, opts) {
   };
 
   let idLogOdds = 0;
-  for (const it of identifying) {
-    const d = apply(it, 1);
+  for (let i = 0; i < identifying.length; i++) {
+    const d = apply(identifying[i], 1);
     if (d > 0) idLogOdds += d;
   }
 
@@ -772,8 +847,8 @@ export function fuse(items, opts) {
    * だから目的への結びつきが無いときは、ほとんど効かせない（2 割）。
    * 結びつきが十分に強ければ（10 倍以上）、そのまま効かせる。
    */
-  const scale = 0.2 + 0.8 * Math.max(0, Math.min(1, idLogOdds / LN(10)));
-  for (const it of corroborating) apply(it, scale);
+  const scale = 0.2 + 0.8 * Math.max(0, Math.min(1, idLogOdds / LN_10));
+  for (let i = 0; i < corroborating.length; i++) apply(corroborating[i], scale);
 
   const families = new Set();
   /*
@@ -783,15 +858,21 @@ export function fuse(items, opts) {
    * 合成そのものはこれまでどおり系統で行い（数字は変えない）、
    * 「どれだけ独立しているか」を別に持って、判定と画面に渡す。
    */
-  const groups = new Map();
+  const byGroup = new Map();
   let verified = 0;
   for (const d of detailed) {
     if (d.applied > 0) {
       families.add(d.family);
-      const g = groupOf(d);
-      groups.set(g, (groups.get(g) || 0) + d.applied);
+    }
+    if (typeof d.applied === 'number' && Number.isFinite(d.applied) && d.applied !== 0) {
+      const g = canonicalRegisteredGroup(d.code);
+      if (g) byGroup.set(g, (byGroup.get(g) || 0) + d.applied);
     }
     if (d.kind === 'verified' && d.applied > 0) verified++;
+  }
+  const positiveGroups = [];
+  for (const [g, sum] of byGroup.entries()) {
+    if (sum > 0) positiveGroups.push(g);
   }
 
   /*
@@ -806,20 +887,24 @@ export function fuse(items, opts) {
    * 「2 位との差が足りない」を作り出していた。実測したものと、
    * していないものが、同じ 100% で並んでいたため。
    */
+  const rawLogOdds = logOdds;
   if (!verified) logOdds = Math.min(logOdds, UNVERIFIED_CEIL);
 
   const rawProbability = 1 / (1 + Math.exp(-logOdds));
-  const probability = o.calibration ? calibrateProbability(rawProbability, o.calibration) : rawProbability;
+  const calPts = validCalibrationPoints(o.calibration);
+  const calibrated = calPts.length > 0;
+  const probability = calibrated ? calibrateProbability(rawProbability, calPts) : rawProbability;
 
   return {
     logOdds,
-    probability, rawProbability, calibrated: !!o.calibration,
+    rawLogOdds,
+    probability, rawProbability, calibrated,
     prior,
     items: detailed.sort((a, b) => b.applied - a.applied),
     families: Array.from(families),
-    groups: Array.from(groups.keys()),
-    independentGroups: groups.size,
-    byGroup: Object.fromEntries(groups),
+    groups: positiveGroups,
+    independentGroups: positiveGroups.length,
+    byGroup: Object.fromEntries(byGroup),
     verified,
     identifying: idLogOdds,
     corroborationScale: scale,
@@ -884,7 +969,7 @@ const AMBIGUOUS_FLOOR = 0.05;
 const VERDICT_ORDER = { none: 0, ambiguous: 1, likely: 2, confirmed: 3 };
 
 /** 決着の強さを比べる。UI と auto.js の並び替えはこれ 1 本に寄せる。 */
-export function verdictRank(v) { return VERDICT_ORDER[v] || 0; }
+export function verdictRank(v) { return Object.hasOwn(VERDICT_ORDER, v) ? VERDICT_ORDER[v] : 0; }
 
 function finiteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -943,16 +1028,9 @@ const TRUSTED_LIKELY_GROUPS = Object.freeze([GROUP.METADATA, GROUP.STRUCTURAL]);
  * P4 strong-verdict admission must not use groupOf()'s legacy unknown→metadata
  * fallback as authority. Resolve only registered evidence codes here.
  */
-function canonicalAppliedGroup(it) {
-  if (!it || !(it.applied > 0) || typeof it.code !== 'string') return null;
-  const info = Object.hasOwn(EVIDENCE, it.code)
-    ? EVIDENCE[it.code]
-    : (Object.hasOwn(ADAPTER_EVIDENCE, it.code) ? ADAPTER_EVIDENCE[it.code] : null);
-  if (!info) return null;
-
-  for (const [re, g] of CODE_GROUP) if (re.test(it.code)) return g;
-  const g = FAMILY_GROUP[info.family];
-  return typeof g === 'string' && CANONICAL_GROUPS.has(g) ? g : null;
+function canonicalRegisteredGroup(code) {
+  if (typeof code !== 'string') return null;
+  return Object.hasOwn(REGISTERED_CODE_GROUP, code) ? REGISTERED_CODE_GROUP[code] : null;
 }
 
 /* 観測された出どころの集合。検証を通せなければ null（＝例外は通らない）。 */
@@ -962,12 +1040,18 @@ function observedGroupSet(fusion, evidenceItems) {
   const sourceItems = Array.isArray(fusion.items) ? fusion.items : evidenceItems;
   if (!Array.isArray(sourceItems)) return null;
 
-  const itemsSet = new Set();
+  const netByGroup = new Map();
   for (const it of sourceItems) {
-    if (!it || !(it.applied > 0)) continue;
-    const g = canonicalAppliedGroup(it);
+    if (!it || typeof it !== 'object') return null;
+    if (typeof it.applied !== 'number' || !Number.isFinite(it.applied)) return null;
+    if (it.applied === 0) continue;
+    const g = canonicalRegisteredGroup(it.code);
     if (!g) return null;
-    itemsSet.add(g);
+    netByGroup.set(g, (netByGroup.get(g) || 0) + it.applied);
+  }
+  const itemsSet = new Set();
+  for (const [g, sum] of netByGroup.entries()) {
+    if (sum > 0) itemsSet.add(g);
   }
   if (!itemsSet.size) return null;
 
@@ -1011,9 +1095,11 @@ function likelyGroupsGate(fusion, independent, opts) {
 export function verdictForFusions(topFusion, runnerFusion, opts) {
   const authority = fusionAuthority(topFusion);
   const rivalAuthority = runnerFusion ? fusionAuthority(runnerFusion) : null;
-  const margin = !runnerFusion ? Infinity
-    : (authority.logOdds !== null && rivalAuthority.logOdds !== null
-      ? authority.logOdds - rivalAuthority.logOdds : -Infinity);
+  const margin = authority.logOdds === null
+    ? -Infinity
+    : (!runnerFusion ? Infinity
+      : (rivalAuthority.logOdds !== null
+        ? authority.logOdds - rivalAuthority.logOdds : -Infinity));
   const marginRatio = margin === Infinity ? Infinity : Math.exp(margin);
   const probability = authority.probability === null ? 0 : authority.probability;
 
@@ -1107,7 +1193,7 @@ export function decide(ranked, opts) {
    * 「足りないもの」なので、天井に当たったかどうかに関わらず必ず書き残す。
    */
   const cap = opts && opts.maxVerdict;
-  if (cap && verdict !== VERDICT.NONE) {
+  if (typeof cap === 'string' && Object.hasOwn(VERDICT_ORDER, cap) && verdict !== VERDICT.NONE) {
     if (verdictRank(verdict) > verdictRank(cap)) verdict = cap;
     if (!missing.includes('no-name')) missing.push('no-name');
   }
@@ -1140,7 +1226,7 @@ export function starsOf(probability, verdict) {
  * 同じ理由が何度も出ないよう、code ごとに束ねて効きの大きい順にする。
  */
 export function explain(fusion, limit = 12) {
-  if (!fusion) return [];
+  if (!fusion || !Array.isArray(fusion.items)) return [];
   const merged = new Map();
   for (const it of fusion.items) {
     const key = it.code;
@@ -1161,10 +1247,18 @@ export function explain(fusion, limit = 12) {
     .slice(0, limit);
 }
 
+function validCalibrationPoints(curve) {
+  if (!Array.isArray(curve)) return [];
+  return curve
+    .filter((p) => p && typeof p.score === 'number' && Number.isFinite(p.score)
+      && typeof p.observed === 'number' && Number.isFinite(p.observed))
+    .sort((a, b) => a.score - b.score);
+}
+
 /** Apply a monotone hold-out calibration curve [{score, observed}]. */
 export function calibrateProbability(score, curve) {
-  const pts = (curve || []).filter((p) => Number.isFinite(p.score) && Number.isFinite(p.observed))
-    .slice().sort((a, b) => a.score - b.score);
+  if (typeof score !== 'number' || !Number.isFinite(score)) return 0;
+  const pts = validCalibrationPoints(curve);
   if (!pts.length) return Math.max(0, Math.min(1, score));
   if (score <= pts[0].score) return Math.max(0, Math.min(1, pts[0].observed));
   for (let i = 1; i < pts.length; i++) {
@@ -1178,8 +1272,10 @@ export function calibrateProbability(score, curve) {
 
 /** Brier score and reliability bins for a labelled hold-out corpus. */
 export function calibrationReport(samples, binCount = 10) {
-  const valid = (samples || []).filter((x) => Number.isFinite(x.score) && (x.outcome === 0 || x.outcome === 1));
-  const bins = Array.from({ length: Math.max(2, binCount) }, () => ({ count: 0, predicted: 0, observed: 0 }));
+  const list = Array.isArray(samples) ? samples : [];
+  const valid = list.filter((x) => x && typeof x.score === 'number' && Number.isFinite(x.score) && (x.outcome === 0 || x.outcome === 1));
+  const count = typeof binCount === 'number' && Number.isSafeInteger(binCount) && binCount >= 2 && binCount <= 100 ? binCount : 10;
+  const bins = Array.from({ length: count }, () => ({ count: 0, predicted: 0, observed: 0 }));
   let sum = 0;
   for (const x of valid) {
     const p = Math.max(0, Math.min(1, x.score));

@@ -12,8 +12,7 @@ import { ArtifactHotCache } from './hot-cache.js';
 import { createArtifactBackend } from './backends.js';
 import {
   artifactHotEntrySize,
-  canonicalStoredRecord,
-  normalizeStoredPayloadBytes,
+  validateArtifactRecordShape,
   validateStoredArtifact,
   validateUpstreamRecordIdentity,
 } from './storage/integrity.js';
@@ -35,6 +34,14 @@ const UPSTREAM_BUDGET_EXHAUSTED = 'budget-exhausted';
 // the observed bytes cannot be trusted either way. Callers must retry rather
 // than fail-closed to a miss, mirroring the parent's own epoch retry.
 const UPSTREAM_MUTATED = 'mutated';
+const DEFAULT_MAX_IDENTITY_PROOFS = 4096;
+const DEFAULT_MAX_EPOCHS = 4096;
+
+function positiveBound(value, fallback, errorCode) {
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new TypeError(errorCode);
+  return value;
+}
 
 function aborted(signal) {
   if (!signal?.aborted) return;
@@ -77,14 +84,28 @@ export class ArtifactStore {
   #retiredDependencyRegistries = new Set();
   #readReceipts = new WeakMap();
   #quarantined = new Map();
+  #maxIdentityProofs;
+  #maxEpochs;
+  #nextEpoch = 0;
+  #prunedEpoch = 0;
 
-  constructor({ backend = createArtifactBackend(), hotCache = new ArtifactHotCache(), corruptionPolicy = 'delete' } = {}) {
+  constructor({
+    backend = createArtifactBackend(),
+    hotCache = new ArtifactHotCache(),
+    corruptionPolicy = 'delete',
+    maxIdentityProofs = DEFAULT_MAX_IDENTITY_PROOFS,
+    maxEpochs = DEFAULT_MAX_EPOCHS,
+  } = {}) {
     const backendHooks = snapshotCallableHooks(backend, ['getRaw', 'putAtomic', 'delete', 'capabilities', 'close'], 'artifact-backend-invalid');
+    const deleteIfMatches = typeof backend?.deleteIfMatches === 'function' ? backend.deleteIfMatches.bind(backend) : null;
+    const fullBackendHooks = Object.freeze({ ...backendHooks, deleteIfMatches });
     const hotCacheHooks = snapshotCallableHooks(hotCache, ['get', 'put', 'delete', 'clear', 'stats'], 'artifact-hot-cache-invalid');
     if (!['delete', 'retain'].includes(corruptionPolicy)) throw new TypeError('artifact-corruption-policy-invalid');
+    this.#maxIdentityProofs = positiveBound(maxIdentityProofs, DEFAULT_MAX_IDENTITY_PROOFS, 'artifact-identity-proofs-bound-invalid');
+    this.#maxEpochs = positiveBound(maxEpochs, DEFAULT_MAX_EPOCHS, 'artifact-epochs-bound-invalid');
     this.backend = backend;
     this.hotCache = hotCache;
-    this.#backendHooks = backendHooks;
+    this.#backendHooks = fullBackendHooks;
     this.#hotCacheHooks = hotCacheHooks;
     this.corruptionPolicy = corruptionPolicy;
     this.mutations = new Map();
@@ -166,13 +187,48 @@ export class ArtifactStore {
     return this.capabilities().persistent ? 'persistent' : 'memory';
   }
 
+  #recordIdentityProof(artifactId, record) {
+    const id = requireArtifactId(artifactId);
+    this.#identityProofs.delete(id);
+    this.#identityProofs.set(id, record);
+    while (this.#identityProofs.size > this.#maxIdentityProofs) {
+      const oldest = this.#identityProofs.keys().next().value;
+      if (oldest === undefined) break;
+      this.#identityProofs.delete(oldest);
+    }
+  }
+
+  #getIdentityProof(artifactId) {
+    const id = requireArtifactId(artifactId);
+    if (!this.#identityProofs.has(id)) return null;
+    const record = this.#identityProofs.get(id);
+    this.#identityProofs.delete(id);
+    this.#identityProofs.set(id, record);
+    return record;
+  }
+
+  #pruneEpochs() {
+    if (this.epochs.size <= this.#maxEpochs) return;
+    for (const [key, value] of this.epochs) {
+      if (this.epochs.size <= this.#maxEpochs) break;
+      if (this.mutations.has(key)) continue;
+      this.epochs.delete(key);
+      if (value > this.#prunedEpoch) this.#prunedEpoch = value;
+    }
+  }
+
   #epoch(artifactId) {
-    return this.epochs.get(requireArtifactId(artifactId)) || 0;
+    const id = requireArtifactId(artifactId);
+    return this.epochs.get(id) ?? this.#prunedEpoch;
   }
 
   #bumpEpoch(artifactId) {
     const id = requireArtifactId(artifactId);
-    this.epochs.set(id, this.#epoch(id) + 1);
+    const next = ++this.#nextEpoch;
+    this.epochs.delete(id);
+    this.epochs.set(id, next);
+    this.#pruneEpochs();
+    return next;
   }
 
   async #waitForMutation(artifactId) {
@@ -186,8 +242,9 @@ export class ArtifactStore {
     const previous = this.mutations.get(id);
     const priorSettled = previous ? previous.catch(() => {}) : Promise.resolve();
     const current = priorSettled.then(async () => {
+      const epochBefore = this.#epoch(id);
       this.#bumpEpoch(id);
-      try { return await operation(); }
+      try { return await operation(epochBefore); }
       finally { this.#bumpEpoch(id); }
     });
     this.mutations.set(id, current);
@@ -213,7 +270,9 @@ export class ArtifactStore {
     this.metrics.requests++;
     if (this.#quarantined.has(artifactId)) return { status:'quarantined', artifactId, reason:this.#quarantined.get(artifactId).reason };
 
-    for (;;) {
+    const MAX_MUTATION_RETRIES = 64;
+    for (let attempt = 0; ; attempt++) {
+      if (attempt >= MAX_MUTATION_RETRIES) throw new ArtifactStorageError('artifact-mutation-retries-exhausted');
       await this.#waitForMutation(artifactId);
       aborted(options.signal);
       if (this.#quarantined.has(artifactId)) return { status:'quarantined', artifactId, reason:this.#quarantined.get(artifactId).reason };
@@ -221,9 +280,7 @@ export class ArtifactStore {
       const cached = this.#hotCacheHooks.get(artifactId);
       if (cached) {
         try {
-          const payloadBytes = normalizeStoredPayloadBytes(cached.payloadBytes);
-          const record = canonicalStoredRecord(cached.record);
-          const validated = validateStoredArtifact({ record, payload:payloadBytes }, {
+          const validated = validateStoredArtifact({ record:cached.record, payload:cached.payloadBytes }, {
             artifactId,
             descriptor,
             allowIncomplete:options.allowIncomplete,
@@ -281,7 +338,7 @@ export class ArtifactStore {
           { record:validated.record, payloadBytes:validated.payloadBytes },
           artifactHotEntrySize(validated.record, validated.payloadBytes),
         );
-        this.#identityProofs.set(artifactId, validated.record);
+        this.#recordIdentityProof(artifactId, validated.record);
         if (source === 'persistent') this.metrics.persistentHits++;
         else this.metrics.memoryHits++;
         return this.#observedHit(source, artifactId, validated, epoch, options);
@@ -319,18 +376,19 @@ export class ArtifactStore {
     const { artifactId, epoch, record, payloadBytes } = observed;
     if (this.#quarantined.has(artifactId)) return { status:'quarantined', artifactId, ...this.#quarantined.get(artifactId) };
     if (this.#quarantined.size >= 1024) throw new ArtifactStorageError('artifact-quarantine-cap');
-    return this.#withMutation(artifactId, async () => {
+    return this.#withMutation(artifactId, async (epochBefore) => {
       aborted(signal);
-      // withMutation increments once on entry. A newer publish/delete must not
-      // be removed because an older read happened to fail its replay.
-      if (this.#epoch(artifactId) !== epoch + 1) return { status:'stale', artifactId, reason:'quarantine-observation-superseded' };
+      // Compare the pre-entry epoch against the observed read epoch so a newer
+      // publish/delete (even after epoch-map pruning) cannot be withdrawn by
+      // an older read, while unrelated mutations never cause false staleness.
+      if (epochBefore !== epoch) return { status:'stale', artifactId, reason:'quarantine-observation-superseded' };
       this.#quarantined.set(artifactId, Object.freeze({ reason, persistentWithdrawal:false }));
       this.#hotCacheHooks.delete(artifactId); this.#identityProofs.delete(artifactId);
       this.metrics.quarantines++;
       let removed = false;
-      if (typeof this.backend.deleteIfMatches === 'function') {
+      if (this.#backendHooks.deleteIfMatches) {
         // An abort after this point must never restore rejected canonical data.
-        removed = await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
+        removed = await this.#backendHooks.deleteIfMatches(artifactId, record, payloadBytes);
       }
       const verdict = Object.freeze({ reason, persistentWithdrawal:removed === true });
       this.#quarantined.set(artifactId, verdict);
@@ -402,9 +460,9 @@ export class ArtifactStore {
           // store is authoritative.
           validateUpstreamRecordIdentity(validated.record, {
             expectedArtifactId:upstreamId,
-            provenIdentity:this.#identityProofs.get(upstreamId) ?? null,
+            provenIdentity:this.#getIdentityProof(upstreamId),
           });
-          this.#identityProofs.set(upstreamId, validated.record);
+          this.#recordIdentityProof(upstreamId, validated.record);
           this.metrics.readBytes += validated.payloadBytes.byteLength;
           const upstreamStatus = await this.#upstreamsValid(validated.record, options, ctx);
           if (upstreamStatus !== UPSTREAM_VALID) return upstreamStatus;
@@ -439,8 +497,12 @@ export class ArtifactStore {
       this.#hotCacheHooks.delete(artifactId);
       this.#identityProofs.delete(requireArtifactId(artifactId));
       try {
-        if (record && payloadBytes != null && typeof this.backend.deleteIfMatches === 'function') {
-          return await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
+        const hasValidPayloadBytes = payloadBytes instanceof Uint8Array || payloadBytes instanceof ArrayBuffer || ArrayBuffer.isView(payloadBytes);
+        if (record && hasValidPayloadBytes && this.#backendHooks.deleteIfMatches) {
+          return await this.#backendHooks.deleteIfMatches(artifactId, record, payloadBytes);
+        }
+        if (payloadBytes != null && !hasValidPayloadBytes) {
+          return await this.#backendHooks.delete(artifactId);
         }
         return false;
       } catch (error) {
@@ -554,7 +616,7 @@ export class ArtifactStore {
         this.#hotCacheHooks.delete(artifactId);
         if (!writeResult?.duplicate) {
           try {
-            if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
+            if (this.#backendHooks.deleteIfMatches) await this.#backendHooks.deleteIfMatches(artifactId, record, payloadBytes);
             else await this.#backendHooks.delete(artifactId);
           } catch { /* cancellation remains the primary result */ }
         }
@@ -565,9 +627,10 @@ export class ArtifactStore {
       let canonicalPayloadBytes;
       let returnedPayload;
       try {
-        canonicalRecord = canonicalStoredRecord(writeResult?.record ?? record);
-        canonicalPayloadBytes = normalizeStoredPayloadBytes(writeResult?.payload ?? payloadBytes);
-        const storedView = { record:canonicalRecord, payload:canonicalPayloadBytes };
+        const rawRecord = writeResult?.record ?? record;
+        const rawPayload = writeResult?.payload ?? payloadBytes;
+        validateArtifactRecordShape(rawRecord);
+        const storedView = { record:rawRecord, payload:rawPayload };
         if (Object.hasOwn(writeResult || {}, 'storageEnvelopeSchemaVersion')) storedView.storageEnvelopeSchemaVersion = writeResult.storageEnvelopeSchemaVersion;
         if (Object.hasOwn(writeResult || {}, 'recordChecksum')) storedView.recordChecksum = writeResult.recordChecksum;
         const validated = validateStoredArtifact(
@@ -582,7 +645,7 @@ export class ArtifactStore {
         this.#hotCacheHooks.delete(artifactId);
         if (!writeResult?.duplicate) {
           try {
-            if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
+            if (this.#backendHooks.deleteIfMatches) await this.#backendHooks.deleteIfMatches(artifactId, record, payloadBytes);
             else await this.#backendHooks.delete(artifactId);
           } catch { /* preserve the original post-publication failure */ }
         }
@@ -594,7 +657,7 @@ export class ArtifactStore {
         { record:canonicalRecord, payloadBytes:canonicalPayloadBytes },
         artifactHotEntrySize(canonicalRecord, canonicalPayloadBytes),
       );
-      this.#identityProofs.set(artifactId, canonicalRecord);
+      this.#recordIdentityProof(artifactId, canonicalRecord);
       this.metrics.publishes++;
       this.metrics.publishBytes += canonicalPayloadBytes.byteLength;
       if (writeResult?.duplicate) this.metrics.duplicatePuts++;
@@ -643,6 +706,10 @@ export class ArtifactStore {
     const pending = [...this.mutations.values()];
     if (pending.length) await Promise.allSettled(pending);
     this.#hotCacheHooks.clear();
+    this.#identityProofs.clear();
+    this.epochs.clear();
+    this.#prunedEpoch = ++this.#nextEpoch;
+    this.#quarantined.clear();
     this.#dependencyRegistries.clear();
     this.#retiredDependencyRegistries.clear();
     await this.#backendHooks.close();
@@ -662,5 +729,11 @@ export class ArtifactStore {
 export function createArtifactStore(options = {}) {
   const backend = options.backend ?? createArtifactBackend(options);
   const hotCache = options.hotCache ?? new ArtifactHotCache(options.hotCacheOptions);
-  return new ArtifactStore({ backend, hotCache, corruptionPolicy:options.corruptionPolicy });
+  return new ArtifactStore({
+    backend,
+    hotCache,
+    corruptionPolicy:options.corruptionPolicy,
+    maxIdentityProofs:options.maxIdentityProofs,
+    maxEpochs:options.maxEpochs,
+  });
 }

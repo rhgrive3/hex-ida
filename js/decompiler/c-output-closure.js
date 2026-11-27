@@ -2,10 +2,10 @@
  * Final public C output closure.
  *
  * The text a caller copies out of a result must be a C unit that parses on its
- * own, as far as function-local storage and type spelling are concerned.  Two
- * closures run on the already-final public lines, after every textual producer
- * (semantic emitter, legacy emitter, switch/loop repair, ARM64 raw lowering)
- * has finished:
+ * own, as far as function-local storage, member-base structs, standalone
+ * external globals, and type spelling are concerned.  Four closures run on the
+ * already-final public lines, after every textual producer (semantic emitter,
+ * legacy emitter, switch/loop repair, ARM64 raw lowering) has finished:
  *
  *   1. Fixed-width type prelude.  Emitted C uses the decompiler's own spelling
  *      for integer types (`uint64`, `int32`, ...) and, inside expressions, the
@@ -16,7 +16,19 @@
  *      signature, and identical typedef repetition is valid C11 inside one
  *      translation unit, so concatenated functions still parse.
  *
- *   2. Local declarations.  Every identifier the final text reads or writes
+ *   2. Member-base struct & pointer/value closure.  When an undeclared
+ *      identifier is used as a member base (`a1->field_0`, `s.field_0`), a
+ *      minimal deterministic `typedef struct { uint64 field_0; ... } hex_struct_<name>;`
+ *      is emitted before the signature and `<type> *<name>;` (for `->`) or
+ *      `<type> <name>;` (for `.` only) is declared at the top of the body.
+ *
+ *   3. Standalone external globals.  Undeclared `global_*` value references
+ *      receive a clearly-marked `extern uint64 global_XXXX;` prelude block
+ *      before the signature so single-function output compiles standalone.
+ *      The translation unit packager strips that prelude block and retains its
+ *      own evidence-backed / byte-array fallback global contract.
+ *
+ *   4. Local declarations.  Every identifier the final text reads or writes
  *      that has no declaration anywhere in the function is declared once at
  *      the top of the body.  The declared type is the recovered type when the
  *      result carries one that is safe to spell, and otherwise the explicit
@@ -25,14 +37,11 @@
  *      width, or 64-bit for an untyped temporary.
  *
  * Deliberately out of scope here:
- *   - globals (`global_*`), callees (`sub_*`, named functions) and
- *     pseudo-intrinsics are not declared by this closure.  The translation
- *     unit packager owns those declarations: it sees every selected function
- *     and evidence-based prototypes, while a per-function declaration could
- *     contradict that evidence.  They stay visible exactly as emitted.
- *   - member bases (`self->hp`, `p->x`) are never declared: a fabricated
- *     scalar type would turn the member access itself into an error.  Their
- *     status is unchanged from the emitter.
+ *   - callees (`sub_*`, named functions) and pseudo-intrinsics are not
+ *     declared by this closure.  The translation unit packager owns those
+ *     declarations: it sees every selected function and evidence-based
+ *     prototypes, while a per-function declaration could contradict that
+ *     evidence.  They stay visible exactly as emitted.
  *
  * Provenance: every injected line is bound to the signature's own origin
  * (its source, or its row/address when the legacy path carries no source
@@ -47,7 +56,7 @@ const KEYWORDS = new Set([
   'auto', 'break', 'case', 'char', 'const', 'continue', 'default', 'do', 'double',
   'else', 'enum', 'extern', 'float', 'for', 'goto', 'if', 'inline', 'int', 'long',
   'register', 'restrict', 'return', 'short', 'signed', 'sizeof', 'static', 'struct',
-  'switch', 'typedef', 'union', 'unsigned', 'void', 'volatile', 'while', '_Bool',
+  'switch', 'typedef', 'union', 'unsigned', 'void', 'volatile', 'while', '_Bool', 'bool',
   '_Static_assert', '__asm', '__asm__', 'asm', 'true', 'false', 'NULL',
 ]);
 
@@ -79,6 +88,282 @@ const FIXED_WIDTH_TYPES = Object.freeze(new Map([
 ]));
 
 const PRELUDE_COMMENT = '/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */';
+const STRUCT_PRELUDE_COMMENT = '/* hex: synthesized member-base structs. */';
+const STANDALONE_GLOBALS_COMMENT = '/* hex: standalone external globals (stripped by translation unit packager). */';
+const STANDALONE_BINARY_GLOBALS_COMMENT = '/* hex: binary-backed global declarations (self-contained C output). */';
+const STANDALONE_PROTOTYPES_COMMENT = '/* hex: standalone external prototypes (stripped by translation unit packager). */';
+const BITFIELD_HELPERS_COMMENT = '/* hex: bitfield helpers (self-contained; guarded for translation unit inclusion). */';
+export const BIT_EXTRACT_HELPER_DEF = 'static inline uint64 bit_extract(uint64 val, unsigned int lsb, unsigned int width) { return (width == 0 || lsb >= 64) ? 0 : (width >= 64 ? (val >> lsb) : ((val >> lsb) & ((1ULL << width) - 1ULL))); }';
+export const BIT_INSERT_HELPER_DEF = 'static inline uint64 bit_insert(uint64 dst, uint64 src, unsigned int lsb, unsigned int width) { if (width == 0 || lsb >= 64) return dst; uint64 mask = width >= 64 ? ~0ULL : ((1ULL << width) - 1ULL); return (dst & ~(mask << lsb)) | ((src & mask) << lsb); }';
+
+export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
+  // <stdlib.h>
+  ['malloc', '<stdlib.h>'], ['calloc', '<stdlib.h>'], ['realloc', '<stdlib.h>'], ['free', '<stdlib.h>'],
+  ['aligned_alloc', '<stdlib.h>'],
+  ['strtol', '<stdlib.h>'], ['strtoul', '<stdlib.h>'], ['strtoll', '<stdlib.h>'], ['strtoull', '<stdlib.h>'],
+  ['strtod', '<stdlib.h>'], ['strtof', '<stdlib.h>'], ['strtold', '<stdlib.h>'],
+  ['atoi', '<stdlib.h>'], ['atol', '<stdlib.h>'], ['atoll', '<stdlib.h>'], ['atof', '<stdlib.h>'],
+  ['abs', '<stdlib.h>'], ['labs', '<stdlib.h>'], ['llabs', '<stdlib.h>'],
+  ['div', '<stdlib.h>'], ['ldiv', '<stdlib.h>'], ['lldiv', '<stdlib.h>'],
+  ['qsort', '<stdlib.h>'], ['bsearch', '<stdlib.h>'],
+  ['exit', '<stdlib.h>'], ['_Exit', '<stdlib.h>'], ['quick_exit', '<stdlib.h>'], ['atexit', '<stdlib.h>'],
+  ['abort', '<stdlib.h>'], ['system', '<stdlib.h>'], ['getenv', '<stdlib.h>'],
+  ['rand', '<stdlib.h>'], ['srand', '<stdlib.h>'],
+  ['arc4random', '<stdlib.h>'], ['arc4random_buf', '<stdlib.h>'], ['arc4random_uniform', '<stdlib.h>'],
+  ['mblen', '<stdlib.h>'], ['mbtowc', '<stdlib.h>'], ['wctomb', '<stdlib.h>'],
+  ['mbstowcs', '<stdlib.h>'], ['wcstombs', '<stdlib.h>'],
+  // <string.h>
+  ['strlen', '<string.h>'], ['strnlen', '<string.h>'],
+  ['strcpy', '<string.h>'], ['stpcpy', '<string.h>'], ['strncpy', '<string.h>'], ['strcat', '<string.h>'], ['strncat', '<string.h>'],
+  ['strdup', '<string.h>'], ['strndup', '<string.h>'],
+  ['strcmp', '<string.h>'], ['strncmp', '<string.h>'], ['strcoll', '<string.h>'], ['strxfrm', '<string.h>'],
+  ['strchr', '<string.h>'], ['strrchr', '<string.h>'], ['strstr', '<string.h>'],
+  ['strpbrk', '<string.h>'], ['strspn', '<string.h>'], ['strcspn', '<string.h>'],
+  ['strtok', '<string.h>'], ['strtok_r', '<string.h>'], ['strerror', '<string.h>'],
+  ['memcpy', '<string.h>'], ['memmove', '<string.h>'], ['memset', '<string.h>'],
+  ['memcmp', '<string.h>'], ['memchr', '<string.h>'],
+  // <strings.h>
+  ['strcasecmp', '<strings.h>'], ['strncasecmp', '<strings.h>'],
+  ['bzero', '<strings.h>'], ['bcopy', '<strings.h>'], ['bcmp', '<strings.h>'],
+  ['ffs', '<strings.h>'],
+  // glibc _FORTIFY_SOURCE <string.h> checked entrypoints
+  ['__memcpy_chk', '<string.h>'], ['__memmove_chk', '<string.h>'], ['__memset_chk', '<string.h>'],
+  ['__strcpy_chk', '<string.h>'], ['__stpcpy_chk', '<string.h>'], ['__strncpy_chk', '<string.h>'],
+  ['__strcat_chk', '<string.h>'], ['__strncat_chk', '<string.h>'],
+  // <stdio.h>
+  ['printf', '<stdio.h>'], ['fprintf', '<stdio.h>'], ['sprintf', '<stdio.h>'], ['snprintf', '<stdio.h>'],
+  ['vprintf', '<stdio.h>'], ['vfprintf', '<stdio.h>'], ['vsprintf', '<stdio.h>'], ['vsnprintf', '<stdio.h>'],
+  ['scanf', '<stdio.h>'], ['fscanf', '<stdio.h>'], ['sscanf', '<stdio.h>'],
+  ['vscanf', '<stdio.h>'], ['vfscanf', '<stdio.h>'], ['vsscanf', '<stdio.h>'],
+  ['puts', '<stdio.h>'], ['fputs', '<stdio.h>'], ['putchar', '<stdio.h>'], ['putc', '<stdio.h>'], ['fputc', '<stdio.h>'],
+  ['getchar', '<stdio.h>'], ['getc', '<stdio.h>'], ['fgetc', '<stdio.h>'], ['ungetc', '<stdio.h>'],
+  ['fgets', '<stdio.h>'], ['getline', '<stdio.h>'],
+  ['fopen', '<stdio.h>'], ['freopen', '<stdio.h>'], ['fclose', '<stdio.h>'], ['fflush', '<stdio.h>'],
+  ['fread', '<stdio.h>'], ['fwrite', '<stdio.h>'], ['fseek', '<stdio.h>'], ['ftell', '<stdio.h>'], ['fseeko', '<stdio.h>'], ['ftello', '<stdio.h>'], ['rewind', '<stdio.h>'],
+  ['fdopen', '<stdio.h>'], ['popen', '<stdio.h>'], ['pclose', '<stdio.h>'], ['dprintf', '<stdio.h>'], ['vdprintf', '<stdio.h>'], ['asprintf', '<stdio.h>'], ['vasprintf', '<stdio.h>'],
+  ['fgetpos', '<stdio.h>'], ['fsetpos', '<stdio.h>'], ['feof', '<stdio.h>'], ['ferror', '<stdio.h>'], ['clearerr', '<stdio.h>'],
+  ['perror', '<stdio.h>'], ['remove', '<stdio.h>'], ['rename', '<stdio.h>'],
+  ['tmpfile', '<stdio.h>'], ['tmpnam', '<stdio.h>'], ['setbuf', '<stdio.h>'], ['setvbuf', '<stdio.h>'], ['fileno', '<stdio.h>'],
+  // glibc _FORTIFY_SOURCE <stdio.h> checked entrypoints
+  ['__sprintf_chk', '<stdio.h>'], ['__snprintf_chk', '<stdio.h>'],
+  ['__fprintf_chk', '<stdio.h>'], ['__printf_chk', '<stdio.h>'],
+  ['__vsprintf_chk', '<stdio.h>'], ['__vsnprintf_chk', '<stdio.h>'],
+  // <math.h>
+  ['sqrt', '<math.h>'], ['sqrtf', '<math.h>'], ['sqrtl', '<math.h>'],
+  ['cbrt', '<math.h>'], ['cbrtf', '<math.h>'], ['cbrtl', '<math.h>'],
+  ['pow', '<math.h>'], ['powf', '<math.h>'], ['powl', '<math.h>'],
+  ['hypot', '<math.h>'], ['hypotf', '<math.h>'], ['hypotl', '<math.h>'],
+  ['fabs', '<math.h>'], ['fabsf', '<math.h>'], ['fabsl', '<math.h>'],
+  ['floor', '<math.h>'], ['floorf', '<math.h>'], ['floorl', '<math.h>'],
+  ['ceil', '<math.h>'], ['ceilf', '<math.h>'], ['ceill', '<math.h>'],
+  ['round', '<math.h>'], ['roundf', '<math.h>'], ['roundl', '<math.h>'],
+  ['lround', '<math.h>'], ['lroundf', '<math.h>'], ['lroundl', '<math.h>'],
+  ['llround', '<math.h>'], ['llroundf', '<math.h>'], ['llroundl', '<math.h>'],
+  ['trunc', '<math.h>'], ['truncf', '<math.h>'], ['truncl', '<math.h>'],
+  ['rint', '<math.h>'], ['rintf', '<math.h>'], ['rintl', '<math.h>'],
+  ['lrint', '<math.h>'], ['lrintf', '<math.h>'], ['lrintl', '<math.h>'],
+  ['llrint', '<math.h>'], ['llrintf', '<math.h>'], ['llrintl', '<math.h>'],
+  ['nearbyint', '<math.h>'], ['nearbyintf', '<math.h>'], ['nearbyintl', '<math.h>'],
+  ['fmod', '<math.h>'], ['fmodf', '<math.h>'], ['fmodl', '<math.h>'],
+  ['remainder', '<math.h>'], ['remainderf', '<math.h>'], ['remainderl', '<math.h>'],
+  ['remquo', '<math.h>'], ['remquof', '<math.h>'], ['remquol', '<math.h>'],
+  ['modf', '<math.h>'], ['modff', '<math.h>'], ['modfl', '<math.h>'],
+  ['copysign', '<math.h>'], ['copysignf', '<math.h>'], ['copysignl', '<math.h>'],
+  ['fmax', '<math.h>'], ['fmaxf', '<math.h>'], ['fmaxl', '<math.h>'],
+  ['fmin', '<math.h>'], ['fminf', '<math.h>'], ['fminl', '<math.h>'],
+  ['fdim', '<math.h>'], ['fdimf', '<math.h>'], ['fdiml', '<math.h>'],
+  ['fma', '<math.h>'], ['fmaf', '<math.h>'], ['fmal', '<math.h>'],
+  ['sin', '<math.h>'], ['sinf', '<math.h>'], ['sinl', '<math.h>'],
+  ['cos', '<math.h>'], ['cosf', '<math.h>'], ['cosl', '<math.h>'],
+  ['tan', '<math.h>'], ['tanf', '<math.h>'], ['tanl', '<math.h>'],
+  ['asin', '<math.h>'], ['asinf', '<math.h>'], ['asinl', '<math.h>'],
+  ['acos', '<math.h>'], ['acosf', '<math.h>'], ['acosl', '<math.h>'],
+  ['atan', '<math.h>'], ['atanf', '<math.h>'], ['atanl', '<math.h>'],
+  ['atan2', '<math.h>'], ['atan2f', '<math.h>'], ['atan2l', '<math.h>'],
+  ['sinh', '<math.h>'], ['sinhf', '<math.h>'], ['sinhl', '<math.h>'],
+  ['cosh', '<math.h>'], ['coshf', '<math.h>'], ['coshl', '<math.h>'],
+  ['tanh', '<math.h>'], ['tanhf', '<math.h>'], ['tanhl', '<math.h>'],
+  ['asinh', '<math.h>'], ['asinhf', '<math.h>'], ['asinhl', '<math.h>'],
+  ['acosh', '<math.h>'], ['acoshf', '<math.h>'], ['acoshl', '<math.h>'],
+  ['atanh', '<math.h>'], ['atanhf', '<math.h>'], ['atanhl', '<math.h>'],
+  ['exp', '<math.h>'], ['expf', '<math.h>'], ['expl', '<math.h>'],
+  ['exp2', '<math.h>'], ['exp2f', '<math.h>'], ['exp2l', '<math.h>'],
+  ['expm1', '<math.h>'], ['expm1f', '<math.h>'], ['expm1l', '<math.h>'],
+  ['log', '<math.h>'], ['logf', '<math.h>'], ['logl', '<math.h>'],
+  ['log10', '<math.h>'], ['log10f', '<math.h>'], ['log10l', '<math.h>'],
+  ['log2', '<math.h>'], ['log2f', '<math.h>'], ['log2l', '<math.h>'],
+  ['log1p', '<math.h>'], ['log1pf', '<math.h>'], ['log1pl', '<math.h>'],
+  ['ldexp', '<math.h>'], ['ldexpf', '<math.h>'], ['ldexpl', '<math.h>'],
+  ['frexp', '<math.h>'], ['frexpf', '<math.h>'], ['frexpl', '<math.h>'],
+  ['scalbn', '<math.h>'], ['scalbnf', '<math.h>'], ['scalbnl', '<math.h>'],
+  ['ilogb', '<math.h>'], ['ilogbf', '<math.h>'], ['ilogbl', '<math.h>'],
+  ['logb', '<math.h>'], ['logbf', '<math.h>'], ['logbl', '<math.h>'],
+  ['erf', '<math.h>'], ['erff', '<math.h>'], ['erfl', '<math.h>'],
+  ['erfc', '<math.h>'], ['erfcf', '<math.h>'], ['erfcl', '<math.h>'],
+  ['tgamma', '<math.h>'], ['tgammaf', '<math.h>'], ['tgammal', '<math.h>'],
+  ['lgamma', '<math.h>'], ['lgammaf', '<math.h>'], ['lgammal', '<math.h>'],
+  ['nan', '<math.h>'], ['nanf', '<math.h>'], ['nanl', '<math.h>'],
+  ['nextafter', '<math.h>'], ['nextafterf', '<math.h>'], ['nextafterl', '<math.h>'],
+  ['isnan', '<math.h>'], ['isinf', '<math.h>'], ['isfinite', '<math.h>'],
+  ['signbit', '<math.h>'], ['fpclassify', '<math.h>'],
+  // <ctype.h>
+  ['isalpha', '<ctype.h>'], ['isdigit', '<ctype.h>'], ['isalnum', '<ctype.h>'],
+  ['isspace', '<ctype.h>'], ['isupper', '<ctype.h>'], ['islower', '<ctype.h>'],
+  ['isxdigit', '<ctype.h>'], ['ispunct', '<ctype.h>'], ['isprint', '<ctype.h>'],
+  ['isgraph', '<ctype.h>'], ['iscntrl', '<ctype.h>'], ['isblank', '<ctype.h>'],
+  ['tolower', '<ctype.h>'], ['toupper', '<ctype.h>'],
+  ['isascii', '<ctype.h>'], ['toascii', '<ctype.h>'],
+  ['__ctype_b_loc', '<ctype.h>'], ['__ctype_tolower_loc', '<ctype.h>'], ['__ctype_toupper_loc', '<ctype.h>'],
+  // <errno.h>
+  ['__errno_location', '<errno.h>'],
+]));
+
+const STANDARD_C_HEADER_SET = new Set([
+  ...STANDARD_C_LIBRARY_HEADERS.values(),
+  '<stdarg.h>',
+  '<stddef.h>',
+  '<stdint.h>',
+  '<stdbool.h>',
+]);
+
+const GLIBC_CHK_PROTOTYPES = Object.freeze(new Map([
+  ['__sprintf_chk', { header: '<stdio.h>', proto: 'extern int __sprintf_chk(char *, int, size_t, const char *, ...);', guardFortify: true }],
+  ['__snprintf_chk', { header: '<stdio.h>', proto: 'extern int __snprintf_chk(char *, size_t, int, size_t, const char *, ...);', guardFortify: true }],
+  ['__fprintf_chk', { header: '<stdio.h>', proto: 'extern int __fprintf_chk(FILE *, int, const char *, ...);', guardFortify: true }],
+  ['__printf_chk', { header: '<stdio.h>', proto: 'extern int __printf_chk(int, const char *, ...);', guardFortify: true }],
+  ['__vsprintf_chk', { header: '<stdio.h>', extraHeaders: ['<stdarg.h>'], proto: 'extern int __vsprintf_chk(char *, int, size_t, const char *, va_list);', guardFortify: true }],
+  ['__vsnprintf_chk', { header: '<stdio.h>', extraHeaders: ['<stdarg.h>'], proto: 'extern int __vsnprintf_chk(char *, size_t, int, size_t, const char *, va_list);', guardFortify: true }],
+  ['__memcpy_chk', { header: '<string.h>', proto: 'extern void *__memcpy_chk(void *, const void *, size_t, size_t);', guardFortify: false }],
+  ['__memmove_chk', { header: '<string.h>', proto: 'extern void *__memmove_chk(void *, const void *, size_t, size_t);', guardFortify: false }],
+  ['__memset_chk', { header: '<string.h>', proto: 'extern void *__memset_chk(void *, int, size_t, size_t);', guardFortify: false }],
+  ['__strcpy_chk', { header: '<string.h>', proto: 'extern char *__strcpy_chk(char *, const char *, size_t);', guardFortify: false }],
+  ['__stpcpy_chk', { header: '<string.h>', proto: 'extern char *__stpcpy_chk(char *, const char *, size_t);', guardFortify: false }],
+  ['__strncpy_chk', { header: '<string.h>', proto: 'extern char *__strncpy_chk(char *, const char *, size_t, size_t);', guardFortify: false }],
+  ['__strcat_chk', { header: '<string.h>', proto: 'extern char *__strcat_chk(char *, const char *, size_t);', guardFortify: false }],
+  ['__strncat_chk', { header: '<string.h>', proto: 'extern char *__strncat_chk(char *, const char *, size_t, size_t);', guardFortify: false }],
+  ['__stack_chk_fail', { header: null, proto: 'extern void __stack_chk_fail(void);', guardFortify: false }],
+]));
+
+const GLIBC_CHK_PROTO_SET = new Set([...GLIBC_CHK_PROTOTYPES.values()].map((v) => v.proto));
+
+const GLIBC_STRIPPED_ALIAS_MAP = Object.freeze(new Map([
+  ['ctype_b_loc', { header: '<ctype.h>', target: '__ctype_b_loc' }],
+  ['ctype_tolower_loc', { header: '<ctype.h>', target: '__ctype_tolower_loc' }],
+  ['ctype_toupper_loc', { header: '<ctype.h>', target: '__ctype_toupper_loc' }],
+  ['errno_location', { header: '<errno.h>', target: '__errno_location' }],
+  ['sprintf_chk', { header: '<stdio.h>', target: '__sprintf_chk' }],
+  ['snprintf_chk', { header: '<stdio.h>', target: '__snprintf_chk' }],
+  ['fprintf_chk', { header: '<stdio.h>', target: '__fprintf_chk' }],
+  ['printf_chk', { header: '<stdio.h>', target: '__printf_chk' }],
+  ['vsprintf_chk', { header: '<stdio.h>', extraHeaders: ['<stdarg.h>'], target: '__vsprintf_chk' }],
+  ['vsnprintf_chk', { header: '<stdio.h>', extraHeaders: ['<stdarg.h>'], target: '__vsnprintf_chk' }],
+  ['memcpy_chk', { header: '<string.h>', target: '__memcpy_chk' }],
+  ['memmove_chk', { header: '<string.h>', target: '__memmove_chk' }],
+  ['memset_chk', { header: '<string.h>', target: '__memset_chk' }],
+  ['strcpy_chk', { header: '<string.h>', target: '__strcpy_chk' }],
+  ['stpcpy_chk', { header: '<string.h>', target: '__stpcpy_chk' }],
+  ['strncpy_chk', { header: '<string.h>', target: '__strncpy_chk' }],
+  ['strcat_chk', { header: '<string.h>', target: '__strcat_chk' }],
+  ['strncat_chk', { header: '<string.h>', target: '__strncat_chk' }],
+  ['stack_chk_fail', { header: null, target: '__stack_chk_fail' }],
+]));
+
+const HEX_STATIC_INTRINSIC_DEFS = Object.freeze(new Map([
+  ['sext', 'static inline int64_t sext(uint64_t v) { return (int64_t)(int32_t)(uint32_t)v; }'],
+  ['zext', 'static inline uint64_t zext(uint64_t v) { return (uint64_t)(uint32_t)v; }'],
+  ['bit_extract', 'static inline uint64_t bit_extract(uint64_t v, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return 0ULL; uint64_t m = width >= 64U ? ~0ULL : ((1ULL << width) - 1ULL); return (v >> lsb) & m; }'],
+  ['bit_insert', 'static inline uint64_t bit_insert(uint64_t dst, uint64_t src, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return dst; uint64_t m = width >= 64U ? ~0ULL : ((1ULL << width) - 1ULL); return (dst & ~(m << lsb)) | ((src & m) << lsb); }'],
+  ['__arm64_ubfiz', 'static inline uint64_t __arm64_ubfiz(uint64_t v, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return 0ULL; uint64_t m = width >= 64U ? ~0ULL : ((1ULL << width) - 1ULL); return (v & m) << lsb; }'],
+  ['__arm64_sbfiz', 'static inline int64_t __arm64_sbfiz(uint64_t v, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return 0LL; unsigned s = width >= 64U ? 0U : (64U - width); int64_t sv = (int64_t)(v << s) >> s; return (int64_t)((uint64_t)sv << lsb); }'],
+  ['__arm64_sbfx', 'static inline int64_t __arm64_sbfx(uint64_t v, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return 0LL; uint64_t u = v >> lsb; unsigned s = width >= 64U ? 0U : (64U - width); return (int64_t)(u << s) >> s; }'],
+  ['is_zero', 'static inline int is_zero(uint64_t v) { return v == 0ULL; }'],
+  ['min', 'static inline int64_t min(int64_t a, int64_t b) { return a < b ? a : b; }'],
+  ['max', 'static inline int64_t max(int64_t a, int64_t b) { return a > b ? a : b; }'],
+  ['ror', 'static inline uint64_t ror(uint64_t v, unsigned n) { n &= 63U; return n ? ((v >> n) | (v << (64U - n))) : v; }'],
+  ['rol', 'static inline uint64_t rol(uint64_t v, unsigned n) { n &= 63U; return n ? ((v << n) | (v >> (64U - n))) : v; }'],
+  ['bswap16', 'static inline uint16_t bswap16(uint16_t v) { return __builtin_bswap16(v); }'],
+  ['bswap32', 'static inline uint32_t bswap32(uint32_t v) { return __builtin_bswap32(v); }'],
+  ['bswap64', 'static inline uint64_t bswap64(uint64_t v) { return __builtin_bswap64(v); }'],
+  ['clz', 'static inline uint64_t clz(uint64_t v) { return v ? (uint64_t)__builtin_clzll(v) : 64ULL; }'],
+  ['clz32', 'static inline uint32_t clz32(uint32_t v) { return v ? (uint32_t)__builtin_clz(v) : 32U; }'],
+  ['clz64', 'static inline uint64_t clz64(uint64_t v) { return v ? (uint64_t)__builtin_clzll(v) : 64ULL; }'],
+  ['ctz', 'static inline uint64_t ctz(uint64_t v) { return v ? (uint64_t)__builtin_ctzll(v) : 64ULL; }'],
+  ['ctz32', 'static inline uint32_t ctz32(uint32_t v) { return v ? (uint32_t)__builtin_ctz(v) : 32U; }'],
+  ['ctz64', 'static inline uint64_t ctz64(uint64_t v) { return v ? (uint64_t)__builtin_ctzll(v) : 64ULL; }'],
+  ['popcnt', 'static inline uint64_t popcnt(uint64_t v) { return (uint64_t)__builtin_popcountll(v); }'],
+  ['hex_f64_to_u64', 'static inline uint64_t hex_f64_to_u64(double v) { union { double d; uint64_t u; } x; x.d = v; return x.u; }'],
+]));
+
+const ARM64_NZCV_COND_EXPRS = Object.freeze(Object.assign(Object.create(null), {
+  eq: 'Z', ne: '!Z',
+  cs: 'C', hs: 'C',
+  cc: '!C', lo: '!C',
+  mi: 'N', pl: '!N',
+  vs: 'V', vc: '!V',
+  hi: '(C && !Z)', ls: '(!C || Z)',
+  ge: '(N == V)', lt: '(N != V)',
+  gt: '(!Z && (N == V))', le: '(Z || (N != V))',
+  al: '1', nv: '1',
+}));
+
+function hexIntrinsicHelperDef(name) {
+  const fixed = HEX_STATIC_INTRINSIC_DEFS.get(name);
+  if (fixed) return fixed;
+  const fsubMatch = /^__arm64_nzcv_fsub_([a-z]+)_(32|64)$/.exec(name);
+  if (fsubMatch) {
+    const [, cond, bits] = fsubMatch;
+    const condExpr = Object.hasOwn(ARM64_NZCV_COND_EXPRS, cond) ? ARM64_NZCV_COND_EXPRS[cond] : null;
+    if (!condExpr) return null;
+    const is32 = bits === '32';
+    const ut = is32 ? 'uint32_t' : 'uint64_t';
+    const ft = is32 ? 'float' : 'double';
+    const uaInit = is32 ? '(uint32_t)a' : 'a';
+    const ubInit = is32 ? '(uint32_t)b' : 'b';
+    return `static inline int ${name}(uint64_t a, uint64_t b) { union { ${ut} u; ${ft} f; } ua = { ${uaInit} }, ub = { ${ubInit} }; ${ft} fa = ua.f, fb = ub.f; int unord = (fa != fa || fb != fb); int N = (!unord && fa < fb); int Z = (!unord && fa == fb); int C = (unord || fa >= fb); int V = unord; (void)N; (void)Z; (void)C; (void)V; return ${condExpr}; }`;
+  }
+  const m = /^__arm64_nzcv_(add|sub|and)_([a-z]+)_(8|16|32|64)$/.exec(name);
+  if (!m) return null;
+  const [, op, cond, bits] = m;
+  const condExpr = Object.hasOwn(ARM64_NZCV_COND_EXPRS, cond) ? ARM64_NZCV_COND_EXPRS[cond] : null;
+  if (!condExpr) return null;
+  const spec = bits === '8'
+    ? { ut: 'uint8_t', shift: '7', zero: '0U', one: '1U', uaInit: '(uint8_t)a', ubInit: '(uint8_t)b' }
+    : bits === '16'
+      ? { ut: 'uint16_t', shift: '15', zero: '0U', one: '1U', uaInit: '(uint16_t)a', ubInit: '(uint16_t)b' }
+      : bits === '32'
+        ? { ut: 'uint32_t', shift: '31', zero: '0U', one: '1U', uaInit: '(uint32_t)a', ubInit: '(uint32_t)b' }
+        : { ut: 'uint64_t', shift: '63', zero: '0ULL', one: '1ULL', uaInit: 'a', ubInit: 'b' };
+  const { ut, shift, zero, one, uaInit, ubInit } = spec;
+  let opBody;
+  if (op === 'add') {
+    opBody = `${ut} r = (${ut})(ua + ub); int N = (int)((r >> ${shift}) & ${one}); int Z = (r == ${zero}); int C = (r < ua); int V = (int)((((~(ua ^ ub)) & (ua ^ r)) >> ${shift}) & ${one});`;
+  } else if (op === 'sub') {
+    opBody = `${ut} r = (${ut})(ua - ub); int N = (int)((r >> ${shift}) & ${one}); int Z = (r == ${zero}); int C = (ua >= ub); int V = (int)((((ua ^ ub) & (ua ^ r)) >> ${shift}) & ${one});`;
+  } else {
+    opBody = `${ut} r = (${ut})(ua & ub); int N = (int)((r >> ${shift}) & ${one}); int Z = (r == ${zero}); int C = 0; int V = 0;`;
+  }
+  return `static inline int ${name}(uint64_t a, uint64_t b) { ${ut} ua = ${uaInit}, ub = ${ubInit}; ${opBody} (void)N; (void)Z; (void)C; (void)V; return ${condExpr}; }`;
+}
+
+const ARITY_GUARDED_INTRINSICS = Object.freeze(new Map([
+  ['min', 2],
+  ['max', 2],
+]));
+
+function isHexIntrinsicHelper(name) {
+  return hexIntrinsicHelperDef(name) !== null;
+}
+
+function isEligibleIntrinsicHelper(name, renderedBody, precleanedBody = null) {
+  if (!isHexIntrinsicHelper(name)) return false;
+  const requiredArity = ARITY_GUARDED_INTRINSICS.get(name);
+  if (requiredArity != null) {
+    const clean = precleanedBody != null ? precleanedBody : declarationBearingSource(renderedBody);
+    const { minArgs, maxArgs } = callSiteArityRange(clean, name);
+    return minArgs === requiredArity && maxArgs === requiredArity;
+  }
+  return true;
+}
 
 const SIMPLE_DECLARABLE = /^(?:unsigned\s+)?(?:char|short|int|long|long\s+long|long\s+long\s+int|__int128)$|^void \*$/;
 
@@ -93,34 +378,455 @@ export function isFixedWidthPreludeDeclaration(text) {
   return !!match && FIXED_WIDTH_TYPES.get(match[2]) === match[1].replace(/\s+/g, ' ');
 }
 
+/* Parse a synthesized member-base struct typedef emitted by this closure:
+ * `typedef struct { uint64 field_0; ... } hex_struct_<name>;` */
+export function parseSynthesizedStructPreludeDeclaration(text) {
+  const trimmed = String(text ?? '').trim();
+  const match = /^typedef\s+struct(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s*\{\s*([^}]+?)\s*\}\s*([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(trimmed);
+  if (!match) return null;
+  const tag = match[1];
+  const body = match[2].trim();
+  const name = match[3];
+  if ((tag && tag !== name) || KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name)) return null;
+  const fields = [];
+  for (const part of body.split(';')) {
+    const item = part.trim();
+    if (!item) continue;
+    const fieldMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(item);
+    if (!fieldMatch || !FIXED_WIDTH_TYPES.has(fieldMatch[1]) || KEYWORDS.has(fieldMatch[2])) return null;
+    fields.push({ type: fieldMatch[1], name: fieldMatch[2] });
+  }
+  if (!fields.length) return null;
+  return { name, fields };
+}
+
+export function isSynthesizedStructPreludeDeclaration(text) {
+  return parseSynthesizedStructPreludeDeclaration(text) !== null;
+}
+
+export function isStandaloneGlobalPreludeComment(text) {
+  return String(text ?? '').trim() === STANDALONE_GLOBALS_COMMENT;
+}
+
+export function isStandaloneGlobalPreludeDeclaration(text) {
+  const trimmed = String(text ?? '').trim();
+  if (/^static\s+uint8_t\s+global_[A-Za-z0-9_]+\s*\[\s*\d+\s*\]\s*=\s*\{\s*0\s*\}\s*;$/.test(trimmed)) return true;
+  const bufDef = /^#define\s+(global_[A-Za-z0-9_]+)\s+\(\s*(?:\*\s*\(\s*uint128\s*\*\s*\)\s*&\s*)?(__hex_global_[A-Za-z0-9_]+_buf)\s*\[\s*0\s*\]\s*\)$/.exec(trimmed);
+  if (bufDef) return bufDef[2] === `__hex_${bufDef[1]}_buf`;
+  const bufArr = /^static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(__hex_global_[A-Za-z0-9_]+_buf)\s*\[\s*\d+\s*\]\s*=\s*\{[\s\S]*\}\s*;$/.exec(trimmed);
+  if (bufArr) return FIXED_WIDTH_TYPES.has(bufArr[1]);
+  const match = /^(?:extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+|__hex_global_[A-Za-z0-9_]+_backing)\s*=\s*0\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*&\s*(__hex_global_[A-Za-z0-9_]+_backing)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*(?:0|0x[0-9a-fA-F]+ULL|\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*"(?:[^"\\]|\\.)*"|\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL|\(\s*\(\s*\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL\s*<<\s*64\s*\)\s*\|\s*\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL\s*\))\s*;)$/.exec(trimmed);
+  if (!match) return false;
+  if (match[6] && match[7] !== `__hex_${match[6]}_backing`) return false;
+  const typeName = match[1] || match[3] || match[5] || match[8];
+  return !!typeName && FIXED_WIDTH_TYPES.has(typeName);
+}
+
+export function isStandalonePrototypePreludeComment(text) {
+  return String(text ?? '').trim() === STANDALONE_PROTOTYPES_COMMENT;
+}
+
+export function isStandalonePrototypePreludeDeclaration(text) {
+  const trimmed = String(text ?? '').trim();
+  if (trimmed === '#ifndef __HEX_ANY_ARGS'
+    || trimmed === '#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L'
+    || trimmed === '#define __HEX_ANY_ARGS ...'
+    || trimmed === '#else'
+    || trimmed === '#define __HEX_ANY_ARGS'
+    || trimmed === '#endif') return true;
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((?:\s*|\s*__HEX_ANY_ARGS\s*|\s*uint64\s*,\s*\.\.\.\s*|\s*\.\.\.\s*)\)\s*;$/.exec(trimmed);
+  return !!match && FIXED_WIDTH_TYPES.has(match[1]) && !KEYWORDS.has(match[2]);
+}
+
+export function isIdTypedefPreludeDeclaration(text) {
+  return String(text ?? '').trim() === 'typedef void * id;';
+}
+
+export function parseStandardHeaderInclude(text) {
+  const match = /^#include\s*(<[A-Za-z0-9_./+-]+>)$/.exec(String(text ?? '').trim());
+  return match && STANDARD_C_HEADER_SET.has(match[1]) ? match[1] : null;
+}
+
+export function isStandardHeaderInclude(text) {
+  return parseStandardHeaderInclude(text) !== null;
+}
+
+export function isBitfieldHelperPreludeComment(text) {
+  return String(text ?? '').trim() === BITFIELD_HELPERS_COMMENT;
+}
+
+export function parseBitfieldHelperDefinition(text) {
+  const trimmed = String(text ?? '').trim();
+  if (trimmed === BIT_EXTRACT_HELPER_DEF) return 'bit_extract';
+  if (trimmed === BIT_INSERT_HELPER_DEF) return 'bit_insert';
+  const m = /^static\s+inline\s+uint64(?:_t)?\s+(bit_extract|bit_insert)\s*\(/.exec(trimmed);
+  return m ? m[1] : null;
+}
+
+export function isBitfieldHelperPreludeDeclaration(text) {
+  const trimmed = String(text ?? '').trim();
+  return /^#(?:ifndef|define)\s+__hex_(?:helper_)?bit_(?:extract|insert)_defined$/.test(trimmed)
+    || parseBitfieldHelperDefinition(trimmed) !== null
+    || /^static\s+inline\s+uint64(?:_t)?\s+bit_(?:extract|insert)\s*\(/.test(trimmed);
+}
+
+export function bitfieldHelperBlockText(name) {
+  if (name === 'bit_extract') {
+    return [
+      '#ifndef __hex_bit_extract_defined',
+      '#define __hex_bit_extract_defined',
+      BIT_EXTRACT_HELPER_DEF,
+      '#endif',
+    ].join('\n');
+  }
+  if (name === 'bit_insert') {
+    return [
+      '#ifndef __hex_bit_insert_defined',
+      '#define __hex_bit_insert_defined',
+      BIT_INSERT_HELPER_DEF,
+      '#endif',
+    ].join('\n');
+  }
+  return null;
+}
+
+const ATOMIC_COMPAT_LINES = new Set([
+  '#ifndef __hex_atomic_load_defined',
+  '#define __hex_atomic_load_defined',
+  '#define __atomic_load(ptr) __atomic_load_n((ptr), __ATOMIC_SEQ_CST)',
+  '#ifndef __hex_atomic_store_defined',
+  '#define __hex_atomic_store_defined',
+  '#define __atomic_store(ptr, val) (__atomic_store_n((ptr), (val), __ATOMIC_SEQ_CST), 0)',
+]);
+
+export function isHelperPreludeLine(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return false;
+  if (trimmed === '#endif') return true;
+  if (isBitfieldHelperPreludeComment(trimmed) || isBitfieldHelperPreludeDeclaration(trimmed)) return true;
+  if (ATOMIC_COMPAT_LINES.has(trimmed)) return true;
+  if (trimmed === '#if defined(__GLIBC__)'
+    || trimmed === '#if !defined(__USE_FORTIFY_LEVEL) || __USE_FORTIFY_LEVEL == 0') return true;
+  if (GLIBC_CHK_PROTO_SET.has(trimmed)) return true;
+  const helperGuard = /^#(?:ifndef|define)\s+__hex_helper_([A-Za-z0-9_]+)_defined$/.exec(trimmed);
+  if (helperGuard && isHexIntrinsicHelper(helperGuard[1])) return true;
+  const staticInline = /^static\s+inline\s+[A-Za-z0-9_\s*]+?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(trimmed);
+  if (staticInline) {
+    const expected = hexIntrinsicHelperDef(staticInline[1]);
+    if (expected && trimmed === expected) return true;
+  }
+  const glibcIfndef = /^#ifndef\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(trimmed);
+  if (glibcIfndef && GLIBC_STRIPPED_ALIAS_MAP.has(glibcIfndef[1])) return true;
+  const glibcDefine = /^#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(trimmed);
+  if (glibcDefine && GLIBC_STRIPPED_ALIAS_MAP.get(glibcDefine[1])?.target === glibcDefine[2]) return true;
+  return false;
+}
+export function extractHelperPreludeBlocks(text) {
+  const rawLines = String(text ?? '').split(/\r?\n/);
+  const blocks = [];
+  let i = 0;
+  while (i < rawLines.length) {
+    const trimmed = rawLines[i].trim();
+    if (!trimmed || trimmed.startsWith('/*') || trimmed.startsWith('//')) { i++; continue; }
+    // Intrinsic helper block: #ifndef __hex_helper_<name>_defined ... #endif
+    const helperGuard = /^#ifndef\s+__hex_(?:helper_)?([A-Za-z0-9_]+)_defined$/.exec(trimmed);
+    if (helperGuard && isHexIntrinsicHelper(helperGuard[1])) {
+      const name = helperGuard[1];
+      const blockLines = [trimmed];
+      let j = i + 1;
+      while (j < rawLines.length) {
+        const t = rawLines[j].trim();
+        blockLines.push(t);
+        if (t === '#endif') break;
+        j++;
+      }
+      if (blockLines[blockLines.length - 1] === '#endif') {
+        blocks.push({ key: `helper:${name}`, names: [name], lines: blockLines });
+        i = j + 1;
+        continue;
+      }
+    }
+    // Atomic compat block: #ifndef __hex_atomic_(load|store)_defined ... #endif
+    const atomicGuard = /^#ifndef\s+__hex_atomic_(load|store)_defined$/.exec(trimmed);
+    if (atomicGuard) {
+      const name = `__atomic_${atomicGuard[1]}`;
+      const blockLines = [trimmed];
+      let j = i + 1;
+      while (j < rawLines.length) {
+        const t = rawLines[j].trim();
+        blockLines.push(t);
+        if (t === '#endif') break;
+        j++;
+      }
+      if (blockLines[blockLines.length - 1] === '#endif') {
+        blocks.push({ key: `atomic:${name}`, names: [name], lines: blockLines });
+        i = j + 1;
+        continue;
+      }
+    }
+    // Guarded GLIBC alias / *_chk block: #if defined(__GLIBC__) ... #endif (tracks nested #if/#ifndef)
+    if (trimmed === '#if defined(__GLIBC__)') {
+      const blockLines = [trimmed];
+      const names = new Set();
+      let depth = 1;
+      let j = i + 1;
+      while (j < rawLines.length && depth > 0) {
+        const t = rawLines[j].trim();
+        blockLines.push(t);
+        if (/^#if(?:n?def)?\b/.test(t)) depth++;
+        else if (t === '#endif') depth--;
+        const defM = /^#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(t);
+        if (defM) { names.add(defM[1]); names.add(defM[2]); }
+        const extM = /^extern\s+[^;]*?\b(__[A-Za-z0-9_]+_chk(?:_fail)?)\s*\(/.exec(t);
+        if (extM) names.add(extM[1]);
+        j++;
+      }
+      if (depth === 0 && names.size > 0) {
+        const sortedNames = [...names].sort();
+        blocks.push({ key: `glibc:${sortedNames.join(',')}`, names: sortedNames, lines: blockLines });
+        i = j;
+        continue;
+      }
+    }
+    // Stop once we reach a function signature / body opening (excluding synthesized structs and other known prelude lines)
+    if (!isFixedWidthPreludeDeclaration(trimmed)
+      && !isSynthesizedStructPreludeDeclaration(trimmed)
+      && !isStandaloneGlobalPreludeDeclaration(trimmed)
+      && !isStandalonePrototypePreludeDeclaration(trimmed)
+      && !isIdTypedefPreludeDeclaration(trimmed)
+      && !isStandardHeaderInclude(trimmed)
+      && !isHelperPreludeLine(trimmed)) {
+      break;
+    }
+    i++;
+  }
+  return blocks;
+
+}
+
 /* Remove comments and literals so identifier scans never read prose or asm
  * text.  Newlines are preserved so callers can still reason about lines. */
+function isIdentCharCode(c) {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+}
+
+function isNumBodyCode(c) {
+  return isIdentCharCode(c) || c === 46 /* '.' */ || c === 39 /* '\'' */;
+}
+
+function isWsAt(str, idx) {
+  const c = str.charCodeAt(idx);
+  return c === 32 || (c >= 9 && c <= 13) || (c >= 0x80 && /\s/.test(str[idx]));
+}
+
+function isPrecededByArrow(source, start) {
+  let i = start - 1;
+  while (i >= 0 && isWsAt(source, i)) i--;
+  return i >= 1 && source.charCodeAt(i) === 62 /* '>' */ && source.charCodeAt(i - 1) === 45 /* '-' */;
+}
+
+function isFollowedByArrow(source, end) {
+  let i = end;
+  const len = source.length;
+  while (i < len && isWsAt(source, i)) i++;
+  return i + 1 < len && source.charCodeAt(i) === 45 /* '-' */ && source.charCodeAt(i + 1) === 62 /* '>' */;
+}
+
+function isPointerCastSuffix(source, end) {
+  let i = end;
+  const len = source.length;
+  while (i < len && isWsAt(source, i)) i++;
+  let stars = 0;
+  while (i < len && source.charCodeAt(i) === 42 /* '*' */) { stars++; i++; }
+  if (stars === 0) return false;
+  while (i < len && isWsAt(source, i)) i++;
+  return i < len && source.charCodeAt(i) === 41 /* ')' */;
+}
+
 export function declarationBearingSource(text) {
   const source = String(text ?? '');
-  let out = '';
+  const len = source.length;
+  let parts = null;
+  let runStart = 0;
+  let spaceRun = 0;
   let state = 'code';
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i];
-    const next = source[i + 1];
+  let lineStart = true;
+
+  const ensureParts = (flushEnd) => {
+    if (!parts) parts = [];
+    if (flushEnd > runStart) parts.push(source.slice(runStart, flushEnd));
+  };
+  const flushSpaces = () => {
+    if (spaceRun > 0) {
+      parts.push(' '.repeat(spaceRun));
+      spaceRun = 0;
+    }
+  };
+
+  for (let i = 0; i < len; i++) {
+    const code = source.charCodeAt(i);
+    const nextCode = i + 1 < len ? source.charCodeAt(i + 1) : -1;
     if (state === 'code') {
-      if (ch === '/' && next === '/') { out += '  '; i++; state = 'line'; continue; }
-      if (ch === '/' && next === '*') { out += '  '; i++; state = 'block'; continue; }
-      if (ch === '"') { out += ' '; state = 'string'; continue; }
-      if (ch === "'") { out += ' '; state = 'char'; continue; }
-      out += ch;
+      if (lineStart && code === 35 /* '#' */) {
+        ensureParts(i);
+        spaceRun = 1;
+        state = 'preproc';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code === 47 /* '/' */ && nextCode === 47 /* '/' */) {
+        ensureParts(i);
+        spaceRun = 2;
+        i++;
+        state = 'line';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code === 47 /* '/' */ && nextCode === 42 /* '*' */) {
+        ensureParts(i);
+        spaceRun = 2;
+        i++;
+        state = 'block';
+        runStart = len;
+        continue;
+      }
+      if (code === 34 /* '"' */) {
+        ensureParts(i);
+        spaceRun = 1;
+        state = 'string';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code === 39 /* '\'' */) {
+        ensureParts(i);
+        spaceRun = 1;
+        state = 'char';
+        lineStart = false;
+        runStart = len;
+        continue;
+      }
+      if (code >= 48 && code <= 57 && (i === 0 || !isIdentCharCode(source.charCodeAt(i - 1)))) {
+        const isHex = code === 48 && (nextCode === 120 /* 'x' */ || nextCode === 88 /* 'X' */);
+        let j = i;
+        while (j < len) {
+          const cc = source.charCodeAt(j);
+          if (isNumBodyCode(cc)) {
+            const isExp = isHex ? (cc === 112 /* 'p' */ || cc === 80 /* 'P' */) : (cc === 101 /* 'e' */ || cc === 69 /* 'E' */);
+            if (isExp && j + 1 < len) {
+              const nc = source.charCodeAt(j + 1);
+              if (nc === 43 /* '+' */ || nc === 45 /* '-' */) {
+                j += 2;
+                continue;
+              }
+            }
+            j++;
+          } else {
+            break;
+          }
+        }
+        ensureParts(i);
+        parts.push('0'.repeat(j - i));
+        runStart = j;
+        i = j - 1;
+        lineStart = false;
+        continue;
+      }
+      if (code === 10 /* '\n' */) lineStart = true;
+      else if (code !== 32 && code !== 9 && code !== 13) lineStart = false;
       continue;
     }
-    if (state === 'line') { if (ch === '\n') { out += '\n'; state = 'code'; } else out += ' '; continue; }
+    if (state === 'preproc') {
+      if (code === 92 /* '\\' */ && nextCode === 10 /* '\n' */) {
+        spaceRun += 1;
+        flushSpaces();
+        parts.push('\n');
+        i++;
+        continue;
+      }
+      if (code === 92 /* '\\' */ && nextCode === 13 /* '\r' */ && i + 2 < len && source.charCodeAt(i + 2) === 10) {
+        spaceRun += 2;
+        flushSpaces();
+        parts.push('\n');
+        i += 2;
+        continue;
+      }
+      if (code === 10 /* '\n' */) {
+        flushSpaces();
+        parts.push('\n');
+        state = 'code';
+        lineStart = true;
+        runStart = i + 1;
+      } else {
+        spaceRun += 1;
+      }
+      continue;
+    }
+    if (state === 'line') {
+      if (code === 10 /* '\n' */) {
+        flushSpaces();
+        parts.push('\n');
+        state = 'code';
+        lineStart = true;
+        runStart = i + 1;
+      } else {
+        spaceRun += 1;
+      }
+      continue;
+    }
     if (state === 'block') {
-      if (ch === '*' && next === '/') { out += '  '; i++; state = 'code'; }
-      else out += ch === '\n' ? '\n' : ' ';
+      if (code === 42 /* '*' */ && nextCode === 47 /* '/' */) {
+        spaceRun += 2;
+        flushSpaces();
+        i++;
+        state = 'code';
+        runStart = i + 1;
+      } else if (code === 10 /* '\n' */) {
+        flushSpaces();
+        parts.push('\n');
+        lineStart = true;
+      } else {
+        spaceRun += 1;
+      }
       continue;
     }
-    if (ch === '\\') { out += '  '; i++; continue; }
-    if ((state === 'string' && ch === '"') || (state === 'char' && ch === "'")) { out += ' '; state = 'code'; }
-    else out += ch === '\n' ? '\n' : ' ';
+    if (code === 92 /* '\\' */) {
+      if (nextCode === 10 /* '\n' */) {
+        spaceRun += 1;
+        flushSpaces();
+        parts.push('\n');
+        i++;
+      } else if (nextCode === 13 /* '\r' */ && i + 2 < len && source.charCodeAt(i + 2) === 10) {
+        spaceRun += 2;
+        flushSpaces();
+        parts.push('\n');
+        i += 2;
+      } else if (i + 1 < len) {
+        spaceRun += 2;
+        i++;
+      } else {
+        spaceRun += 1;
+      }
+      continue;
+    }
+    if ((state === 'string' && code === 34 /* '"' */) || (state === 'char' && code === 39 /* '\'' */)) {
+      spaceRun += 1;
+      flushSpaces();
+      state = 'code';
+      runStart = i + 1;
+    } else if (code === 10 /* '\n' */) {
+      flushSpaces();
+      parts.push('\n');
+    } else {
+      spaceRun += 1;
+    }
   }
-  return out;
+  if (!parts) return source;
+  flushSpaces();
+  if (state === 'code' && runStart < len) parts.push(source.slice(runStart));
+  return parts.join('');
 }
 
 
@@ -163,8 +869,129 @@ function startsStatement(source, index) {
  * records how it is used, which is what lets the closure tell an undeclared
  * local from a member name, a label, a cast type or a callee.
  */
-export function scanIdentifierUses(text) {
-  const source = declarationBearingSource(text);
+function findMatchingDelimiter(source, openIdx, openCh, closeCh) {
+  let depth = 0;
+  for (let i = openIdx; i < source.length; i++) {
+    if (source[i] === openCh) depth++;
+    else if (source[i] === closeCh) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+const OBJC_EXPR_START_KEYWORDS = new Set(['return', 'case', 'else', 'do']);
+
+/*
+ * Identify ObjC selector token offsets inside balanced `[receiver sel]` and
+ * `[receiver part0:arg0 part1:arg1]` message sends in declaration-bearing
+ * source.  C array subscripts `ident[idx]` are excluded.
+ */
+function collectObjcSelectorOffsets(source) {
+  const offsets = new Set();
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] !== '[') continue;
+    const before = previousChar(source, i);
+    if (before === "]" || (/[A-Za-z0-9_]/.test(before) && !OBJC_EXPR_START_KEYWORDS.has(previousWord(source, i)))) continue;
+    const closeIdx = findMatchingDelimiter(source, i, '[', ']');
+    if (closeIdx < 0) continue;
+
+    // Advance past receiver expression.
+    let p = i + 1;
+    while (p < closeIdx && /\s/.test(source[p])) p++;
+    if (p >= closeIdx) continue;
+    while (p < closeIdx && (source[p] === '*' || source[p] === '&' || source[p] === '@' || source[p] === '!' || source[p] === '~')) {
+      p++;
+      while (p < closeIdx && /\s/.test(source[p])) p++;
+    }
+    if (p >= closeIdx) continue;
+    if (source[p] === '[') {
+      const m = findMatchingDelimiter(source, p, '[', ']');
+      if (m < 0 || m >= closeIdx) continue;
+      p = m + 1;
+    } else if (source[p] === '(') {
+      const m = findMatchingDelimiter(source, p, '(', ')');
+      if (m < 0 || m >= closeIdx) continue;
+      p = m + 1;
+    } else if (/[A-Za-z_]/.test(source[p])) {
+      while (p < closeIdx && /[A-Za-z0-9_]/.test(source[p])) p++;
+    } else {
+      continue;
+    }
+    // Consume tightly attached postfix operators on the receiver (arr[0], p->x, s.x, fn()).
+    while (p < closeIdx) {
+      if (source[p] === '[') {
+        const m = findMatchingDelimiter(source, p, '[', ']');
+        if (m < 0 || m >= closeIdx) break;
+        p = m + 1;
+      } else if (source[p] === '(') {
+        const m = findMatchingDelimiter(source, p, '(', ')');
+        if (m < 0 || m >= closeIdx) break;
+        p = m + 1;
+      } else if (source[p] === '.') {
+        p++;
+        while (p < closeIdx && /\s/.test(source[p])) p++;
+        while (p < closeIdx && /[A-Za-z0-9_]/.test(source[p])) p++;
+      } else if (source[p] === '-' && source[p + 1] === '>') {
+        p += 2;
+        while (p < closeIdx && /\s/.test(source[p])) p++;
+        while (p < closeIdx && /[A-Za-z0-9_]/.test(source[p])) p++;
+      } else {
+        break;
+      }
+    }
+
+    let afterRecv = p;
+    while (afterRecv < closeIdx && /\s/.test(source[afterRecv])) afterRecv++;
+    if (afterRecv === p || afterRecv >= closeIdx) continue;
+
+    // Case 1: 0-arg selector `[receiver sel]` where a single identifier sits before `]`.
+    if (/[A-Za-z_]/.test(source[afterRecv])) {
+      let idEnd = afterRecv;
+      while (idEnd < closeIdx && /[A-Za-z0-9_]/.test(source[idEnd])) idEnd++;
+      let tail = idEnd;
+      while (tail < closeIdx && /\s/.test(source[tail])) tail++;
+      if (tail === closeIdx) {
+        offsets.add(afterRecv);
+        continue;
+      }
+    }
+
+    // Case 2: multi-arg selector `[receiver part0:arg0 part1:arg1]`.
+    let parenDepth = 0;
+    let bracketDepth = 0;
+    let ternaryDepth = 0;
+    let cur = afterRecv;
+    while (cur < closeIdx) {
+      const ch = source[cur];
+      if (ch === '(') { parenDepth++; cur++; continue; }
+      if (ch === ')') { if (parenDepth > 0) parenDepth--; cur++; continue; }
+      if (ch === '[') { bracketDepth++; cur++; continue; }
+      if (ch === ']') { if (bracketDepth > 0) bracketDepth--; cur++; continue; }
+      if (parenDepth === 0 && bracketDepth === 0) {
+        if (ch === '?') { ternaryDepth++; cur++; continue; }
+        if (ch === ':') { if (ternaryDepth > 0) ternaryDepth--; cur++; continue; }
+        if (/[A-Za-z_]/.test(ch)) {
+          const tokStart = cur;
+          while (cur < closeIdx && /[A-Za-z0-9_]/.test(source[cur])) cur++;
+          let look = cur;
+          while (look < closeIdx && /\s/.test(source[look])) look++;
+          if (look < closeIdx && source[look] === ':' && ternaryDepth === 0) {
+            offsets.add(tokStart);
+          }
+          continue;
+        }
+      }
+      cur++;
+    }
+  }
+  return offsets;
+}
+
+export function scanIdentifierUses(text, precleanedSource = null) {
+  const source = precleanedSource != null ? precleanedSource : declarationBearingSource(text);
+  const objcSelectorOffsets = collectObjcSelectorOffsets(source);
   const uses = new Map();
   const pattern = /[A-Za-z_][A-Za-z0-9_]*/g;
   for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
@@ -173,16 +1000,41 @@ export function scanIdentifierUses(text) {
     const end = start + name.length;
     const before = previousChar(source, start);
     const after = nextChar(source, end);
-    const memberName = before === '.' || source.slice(0, start).trimEnd().endsWith('->');
-    const memberBase = after === '.' || source.slice(end).startsWith('->');
+    const memberName = before === '.' || isPrecededByArrow(source, start);
+    const memberBase = after === '.' || isFollowedByArrow(source, end);
     const callTarget = after === '(';
-    const label = after === ':' && startsStatement(source, start);
+    const objcSelector = objcSelectorOffsets.has(start);
+    const label = !objcSelector && after === ':' && startsStatement(source, start);
     const gotoLabel = previousWord(source, start) === 'goto';
-    const castType = before === '(' && after === '*';
+    const isNonPointerCast = (() => {
+      if (before !== '(' || after !== ')') return false;
+      if (registerType(name) != null || /^(?:var|local|tmp|call|load|arg|phi)_/.test(name)) return false;
+      let openIdx = start - 1;
+      while (openIdx >= 0 && /\s/.test(source[openIdx])) openIdx--;
+      const wordBeforeOpen = previousWord(source, openIdx);
+      if (['if', 'while', 'switch', 'for', 'sizeof', 'typeof', 'alignof', '_Alignof'].includes(wordBeforeOpen)) return false;
+      let closeIdx = end;
+      while (closeIdx < source.length && /\s/.test(source[closeIdx])) closeIdx++;
+      let afterClose = closeIdx + 1;
+      while (afterClose < source.length && /\s/.test(source[afterClose])) afterClose++;
+      if (afterClose >= source.length) return false;
+      const ch = source[afterClose];
+      if (/[A-Za-z0-9_~]/.test(ch)) return true;
+      if (ch === '!' && source[afterClose + 1] !== '=') return true;
+      return false;
+    })();
+    const isPointerCast = before === '('
+      && registerType(name) == null
+      && !/^(?:var|local|tmp|call|load|arg|phi)_/.test(name)
+      && isPointerCastSuffix(source, end);
+    const castType = isPointerCast || isNonPointerCast;
     const tag = ['struct', 'union', 'enum'].includes(previousWord(source, start));
+    const isValueUse = !callTarget && !memberName && !label && !gotoLabel && !castType && !tag && !objcSelector;
+    const subscriptBase = isValueUse && after === '[';
     const entry = uses.get(name) ?? {
       name, firstIndex: start, callTarget: false, callTargetOnly: true, memberName: false,
-      memberBase: false, label: false, gotoLabel: false, castType: false, tag: false, value: false,
+      memberBase: false, label: false, gotoLabel: false, castType: false, tag: false,
+      objcSelector: false, subscriptBase: false, nonSubscriptValue: false, value: false,
     };
     entry.callTarget ||= callTarget;
     if (!callTarget) entry.callTargetOnly = false;
@@ -191,21 +1043,357 @@ export function scanIdentifierUses(text) {
     entry.label ||= label || gotoLabel;
     entry.castType ||= castType;
     entry.tag ||= tag;
-    if (!callTarget && !memberName && !label && !gotoLabel && !castType && !tag) entry.value = true;
+    entry.objcSelector ||= objcSelector;
+    entry.subscriptBase ||= subscriptBase;
+    if (isValueUse) {
+      entry.value = true;
+      if (!subscriptBase) entry.nonSubscriptValue = true;
+    }
     uses.set(name, entry);
   }
   return uses;
 }
 
+/*
+ * Collect all member accesses (`base->field` and `base.field`) on non-member
+ * base identifiers from the declaration-bearing source.
+ */
+function collectMemberBaseAccesses(text, precleanedSource = null) {
+  const source = precleanedSource != null ? precleanedSource : declarationBearingSource(text);
+  const accesses = new Map();
+  const pattern = /([A-Za-z_][A-Za-z0-9_]*)\s*(->|\.)\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
+    const base = match[1];
+    const op = match[2];
+    const field = match[3];
+    const start = match.index;
+    const before = previousChar(source, start);
+    if (before === '.' || isPrecededByArrow(source, start)) continue;
+    if (['struct', 'union', 'enum', 'goto'].includes(previousWord(source, start))) continue;
+    if (KEYWORDS.has(field)) continue;
+    let rec = accesses.get(base);
+    if (!rec) {
+      rec = { fields: new Set(), hasArrow: false, hasDot: false };
+      accesses.set(base, rec);
+    }
+    rec.fields.add(field);
+    if (op === '->') rec.hasArrow = true;
+    else rec.hasDot = true;
+  }
+  const ptrArithPattern = /\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:[+]|-(?!>))[^()]*\)\s*->\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+  for (let match = ptrArithPattern.exec(source); match; match = ptrArithPattern.exec(source)) {
+    const base = match[1];
+    const field = match[2];
+    if (KEYWORDS.has(base) || KEYWORDS.has(field)) continue;
+    let rec = accesses.get(base);
+    if (!rec) {
+      rec = { fields: new Set(), hasArrow: false, hasDot: false };
+      accesses.set(base, rec);
+    }
+    rec.fields.add(field);
+    rec.hasArrow = true;
+  }
+  const addrOfPattern = /\(\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*->\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+  for (let match = addrOfPattern.exec(source); match; match = addrOfPattern.exec(source)) {
+    const base = match[1];
+    const field = match[2];
+    if (KEYWORDS.has(base) || KEYWORDS.has(field)) continue;
+    let rec = accesses.get(base);
+    if (!rec) {
+      rec = { fields: new Set(), hasArrow: false, hasDot: false, hasAddrOfArrow: false };
+      accesses.set(base, rec);
+    }
+    rec.fields.add(field);
+    rec.hasArrow = true;
+    rec.hasAddrOfArrow = true;
+  }
+  return accesses;
+}
 
-/* Names a declaration line or a prelude typedef line introduces. */
+
+const NON_DECL_STMT_HEADS = new Set([
+  'return', 'goto', 'if', 'else', 'for', 'while', 'do', 'switch',
+  'case', 'default', 'break', 'continue', 'sizeof',
+]);
+
+const C_PRIMITIVE_TYPE_KEYWORDS = new Set([
+  'void', 'char', 'short', 'int', 'long', 'float', 'double', '_Bool', 'bool', '__int128',
+]);
+
+function splitTopLevelCommas(text) {
+  const parts = [];
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '(') paren++;
+    else if (ch === ')') { if (paren > 0) paren--; }
+    else if (ch === '[') bracket++;
+    else if (ch === ']') { if (bracket > 0) bracket--; }
+    else if (ch === '{') brace++;
+    else if (ch === '}') { if (brace > 0) brace--; }
+    else if (ch === ',' && paren === 0 && bracket === 0 && brace === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+function cutBeforeTopLevelAssign(text) {
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '(') paren++;
+    else if (ch === ')') { if (paren > 0) paren--; }
+    else if (ch === '[') bracket++;
+    else if (ch === ']') { if (bracket > 0) bracket--; }
+    else if (ch === '{') brace++;
+    else if (ch === '}') { if (brace > 0) brace--; }
+    else if (ch === '=' && paren === 0 && bracket === 0 && brace === 0 && text[i + 1] !== '=' && text[i - 1] !== '!' && text[i - 1] !== '<' && text[i - 1] !== '>') {
+      return text.slice(0, i);
+    }
+  }
+  return text;
+}
+
+function extractDeclaredNamesFromDeclText(cleaned, outSet) {
+  const trimmed = cleaned.trim().replace(/;\s*$/, '').trim();
+  if (!trimmed) return;
+  if (/^typedef\b/.test(trimmed)) {
+    const aliasMatch = /\b([A-Za-z_][A-Za-z0-9_]*)$/.exec(trimmed);
+    if (aliasMatch && !KEYWORDS.has(aliasMatch[1])) outSet.add(aliasMatch[1]);
+    const tagMatch = /\b(?:struct|union|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(trimmed);
+    if (tagMatch && !KEYWORDS.has(tagMatch[1])) outSet.add(tagMatch[1]);
+    return;
+  }
+  const beforeAssign = cutBeforeTopLevelAssign(trimmed).trim();
+  const openParen = beforeAssign.indexOf('(');
+  if (openParen >= 0) {
+    const fnPtrMatch = /\(\s*\*+\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/.exec(beforeAssign);
+    if (fnPtrMatch && !KEYWORDS.has(fnPtrMatch[1])) {
+      outSet.add(fnPtrMatch[1]);
+      return;
+    }
+    const beforeParen = beforeAssign.slice(0, openParen).trim();
+    const fnNameMatch = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(beforeParen);
+    if (fnNameMatch && !KEYWORDS.has(fnNameMatch[1])) outSet.add(fnNameMatch[1]);
+    return;
+  }
+  const declarators = splitTopLevelCommas(trimmed);
+  for (let idx = 0; idx < declarators.length; idx++) {
+    const head = cutBeforeTopLevelAssign(declarators[idx]).replace(/\[[^\]]*\]/g, '').trim();
+    const tokens = [...head.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
+    const name = tokens.at(-1);
+    if (name && !KEYWORDS.has(name)) outSet.add(name);
+    if (idx === 0 && tokens.length >= 2) {
+      for (let t = 0; t < tokens.length - 1; t++) {
+        const tok = tokens[t];
+        if (!KEYWORDS.has(tok) && !/^(?:struct|union|enum)$/.test(tokens[t - 1] || '')) outSet.add(tok);
+      }
+    }
+  }
+}
+
+/* Names a declaration line, stmt-kind local declaration, or prelude typedef line introduces. */
 function declaredNamesFromLines(lines) {
   const declared = new Set();
+  const definedTypes = definedTypeAliases(lines);
+  let braceDepth = 0;
   for (const item of lines || []) {
-    if (item?.kind !== 'decl') continue;
-    for (const match of declarationBearingSource(item.text).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) declared.add(match[0]);
+    const cleanedRaw = declarationBearingSource(item?.text ?? '');
+    if (item?.kind === 'decl') {
+      if (braceDepth <= 1) {
+        const defineGlobal = /^\s*#define\s+(global_[A-Za-z0-9_]+)\s+\(\s*(?:\*\s*\(\s*uint128\s*\*\s*\)\s*&\s*)?__hex_global_[A-Za-z0-9_]+_buf\s*\[\s*0\s*\]\s*\)\s*$/.exec(String(item?.text ?? ''));
+        if (defineGlobal) declared.add(defineGlobal[1]);
+        extractDeclaredNamesFromDeclText(cleanedRaw, declared);
+      }
+    } else if (item?.kind === 'stmt') {
+      const cleaned = cleanedRaw.trim();
+      if (/^typedef\b/.test(cleaned)) {
+        const aliasMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(cleaned);
+        if (aliasMatch && !KEYWORDS.has(aliasMatch[1])) declared.add(aliasMatch[1]);
+        const tagMatch = /\b(?:struct|union|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(cleaned);
+        if (tagMatch && !KEYWORDS.has(tagMatch[1])) declared.add(tagMatch[1]);
+      } else if (braceDepth <= 1) {
+        const labelColon = findLeadingLabelColonIndex(cleaned);
+        const declCandidate = labelColon >= 0 ? cleaned.slice(labelColon + 1).replace(/^\s*;\s*/, '').trim() : cleaned;
+        const match = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(\s+(?:\*+\s*)*|\s*\*+\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.exec(declCandidate);
+        if (match && !NON_DECL_STMT_HEADS.has(match[2]) && !KEYWORDS.has(match[4])) {
+          const hasQualifier = match[1].trim().length > 0;
+          const typeTok = match[2];
+          const hasStar = match[3].includes('*');
+          const knownType = FIXED_WIDTH_TYPES.has(typeTok)
+            || STANDARD_KNOWN_TYPES.has(typeTok)
+            || C_PRIMITIVE_TYPE_KEYWORDS.has(typeTok)
+            || typeTok === 'id'
+            || /^hex_struct_/.test(typeTok)
+            || definedTypes.has(typeTok);
+          if (!hasStar || hasQualifier || knownType) {
+            if (!/\b(?:struct|union|enum)\s+$/.test(match[1])) declared.add(typeTok);
+            for (const part of splitTopLevelCommas(declCandidate.replace(/;\s*$/, ''))) {
+              const head = cutBeforeTopLevelAssign(part).replace(/\[[^\]]*\]/g, '').trim();
+              const nm = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(head);
+              if (nm && !KEYWORDS.has(nm[1])) declared.add(nm[1]);
+            }
+          }
+        }
+      }
+    }
+    for (const ch of cleanedRaw) {
+      if (ch === '{') braceDepth++;
+      else if (ch === '}' && braceDepth > 0) braceDepth--;
+    }
   }
   return declared;
+}
+
+const STANDARD_KNOWN_TYPES = new Set([
+  'size_t', 'ssize_t', 'ptrdiff_t', 'uintptr_t', 'intptr_t', 'wchar_t', 'va_list', 'FILE',
+]);
+
+/* Extract pointer parameter bindings (`Thing * this`, `const Base * a2`) from a function signature. */
+function signaturePointerParams(signature, precleanedSig = null) {
+  const result = [];
+  const text = precleanedSig != null ? precleanedSig : declarationBearingSource(signature);
+  const open = text.indexOf('(');
+  if (open < 0) return result;
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '(') depth++;
+    else if (text[i] === ')') { depth--; if (!depth) { close = i; break; } }
+  }
+  if (close <= open) return result;
+  for (const rawGroup of text.slice(open + 1, close).split(',')) {
+    const group = rawGroup.trim();
+    if (!group || group === 'void' || !group.includes('*')) continue;
+    const match = /^(?:(?:const|volatile|restrict|struct|union|enum)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*(?:const\s+|volatile\s+|restrict\s+)*\*+\s*(?:const\s+|volatile\s+|restrict\s+)*([A-Za-z_][A-Za-z0-9_]*)$/.exec(group);
+    if (!match) continue;
+    const typeName = match[1];
+    const paramName = match[2];
+    if (KEYWORDS.has(typeName) || FIXED_WIDTH_TYPES.has(typeName) || STANDARD_KNOWN_TYPES.has(typeName)) continue;
+    result.push({ typeName, paramName });
+  }
+  return result;
+}
+
+function atomicCompatPreludeLines(uses, existingLines, entrySource) {
+  const out = [];
+  const hasMacro = (name) => (existingLines || []).some((l) => String(l?.text ?? '').includes(`#define ${name}(`));
+  if (uses.get('__atomic_load')?.callTarget && !hasMacro('__atomic_load')) {
+    out.push(
+      { kind: 'decl', indent: 0, text: '#ifndef __hex_atomic_load_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __hex_atomic_load_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __atomic_load(ptr) __atomic_load_n((ptr), __ATOMIC_SEQ_CST)', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+    );
+  }
+  if (uses.get('__atomic_store')?.callTarget && !hasMacro('__atomic_store')) {
+    out.push(
+      { kind: 'decl', indent: 0, text: '#ifndef __hex_atomic_store_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __hex_atomic_store_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __atomic_store(ptr, val) (__atomic_store_n((ptr), (val), __ATOMIC_SEQ_CST), 0)', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+    );
+  }
+  return out;
+}
+
+
+
+function bitfieldHelperPreludeLines(uses, existingLines, entrySource) {
+  const out = [];
+  const hasHelper = (macroName, fnName) => (existingLines || []).some((l) => {
+    const t = String(l?.text ?? '');
+    return t.includes(`#define ${macroName}`) || t.includes(`static inline uint64 ${fnName}(`);
+  });
+  const needExtract = uses.get('bit_extract')?.callTarget && !hasHelper('__hex_bit_extract_defined', 'bit_extract');
+  const needInsert = uses.get('bit_insert')?.callTarget && !hasHelper('__hex_bit_insert_defined', 'bit_insert');
+  if (needExtract || needInsert) {
+    out.push({ kind: 'decl', indent: 0, text: BITFIELD_HELPERS_COMMENT, row: null, addr: null, note: null, source: entrySource });
+  }
+  if (needExtract) {
+    out.push(
+      { kind: 'decl', indent: 0, text: '#ifndef __hex_bit_extract_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __hex_bit_extract_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: BIT_EXTRACT_HELPER_DEF, row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+    );
+  }
+  if (needInsert) {
+    out.push(
+      { kind: 'decl', indent: 0, text: '#ifndef __hex_bit_insert_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __hex_bit_insert_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: BIT_INSERT_HELPER_DEF, row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+    );
+  }
+  return out;
+}
+
+function callSiteArityRange(source, name) {
+  const re = new RegExp('\\b' + escapeRegExp(name) + '\\s*\\(', 'g');
+  let minArgs = Infinity;
+  let maxArgs = 0;
+  for (let m = re.exec(source); m; m = re.exec(source)) {
+    let i = m.index + m[0].length;
+    let depth = 1;
+    let commas = 0;
+    let hasNonSpace = false;
+    while (i < source.length && depth > 0) {
+      const ch = source[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth === 0) break; }
+      else if (ch === ',' && depth === 1) commas++;
+      else if (!/\s/.test(ch) && depth === 1) hasNonSpace = true;
+      i++;
+    }
+    const argc = hasNonSpace ? commas + 1 : 0;
+    if (argc < minArgs) minArgs = argc;
+    if (argc > maxArgs) maxArgs = argc;
+  }
+  return minArgs === Infinity ? { minArgs: 0, maxArgs: 0 } : { minArgs, maxArgs };
+}
+
+function signatureFunctionName(signature, precleanedSig = null) {
+  const text = precleanedSig != null ? precleanedSig : declarationBearingSource(signature);
+  const open = text.indexOf('(');
+  if (open < 0) return null;
+  const tokens = [...text.slice(0, open).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
+  return tokens.length ? tokens[tokens.length - 1] : null;
+}
+
+/* Type names appearing in a function signature (return type and parameter types). */
+function signatureTypeNames(signature, precleanedSig = null) {
+  const names = new Set();
+  const text = precleanedSig != null ? precleanedSig : declarationBearingSource(signature);
+  const open = text.indexOf('(');
+  if (open < 0) return names;
+  const retTokens = [...text.slice(0, open).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
+  for (let i = 0; i < retTokens.length - 1; i++) names.add(retTokens[i]);
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '(') depth++;
+    else if (text[i] === ')') { depth--; if (!depth) { close = i; break; } }
+  }
+  if (close > open) {
+    for (const group of text.slice(open + 1, close).split(',')) {
+      const tokens = [...group.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
+      if (tokens.length >= 2) {
+        for (let i = 0; i < tokens.length - 1; i++) names.add(tokens[i]);
+      } else if (tokens.length === 1 && !KEYWORDS.has(tokens[0])) {
+        names.add(tokens[0]);
+      }
+    }
+  }
+  return names;
 }
 
 /* Parameter names of `returnType name(uint64 a1, uint32 a2)`, if any. */
@@ -243,7 +1431,10 @@ const REGISTER_CLASSES = Object.freeze([
   [/^[xX]\d+(?:_\d+)?$/, 'uint64'], [/^[wW]\d+(?:_\d+)?$/, 'uint32'],
   [/^[dD]\d+(?:_\d+)?$/, 'uint64'], [/^[sS]\d+(?:_\d+)?$/, 'uint32'],
   [/^[qQvV]\d+(?:_\d+)?$/, 'uint128'],
+  [/^(?:h(?:[0-9]|[12][0-9]|3[01])(?:_\d+)?)$/, 'uint16'],
+  [/^(?:b(?:[0-9]|[12][0-9]|3[01])(?:_\d+)?)$/, 'uint8'],
   [/^(?:sp|lr|fp|xzr|wzr|nzcv|fpcr|fpsr)$/, 'uint64'],
+  [/^(?:sp|lr|fp|nzcv)_\d+$/, 'uint64'],
 ]);
 
 function registerType(name) {
@@ -291,15 +1482,66 @@ function resultEvidence(result) {
   };
 }
 
+function buildEvidenceIndex(result) {
+  const base = resultEvidence(result);
+  const stackSlotsByOffset = new Map();
+  for (const candidate of base.stackSlots) {
+    try {
+      const off = BigInt(candidate?.offset ?? candidate?.disp);
+      if (!stackSlotsByOffset.has(off)) stackSlotsByOffset.set(off, candidate);
+    } catch { /* ignore */ }
+  }
+  const localsBySlot = new Map();
+  const localsByOffset = new Map();
+  for (let i = 0; i < base.locals.length; i += 1) {
+    const candidate = base.locals[i];
+    // Preserve exact `.find()` semantics when `slot === null` (`slot?.name === undefined`):
+    // `undefined` must also be indexed as a valid Map key without filtering it out.
+    const slotKey = candidate?.slot;
+    if (!localsBySlot.has(slotKey)) localsBySlot.set(slotKey, i);
+    try {
+      const off = BigInt(candidate?.offset);
+      if (!localsByOffset.has(off)) localsByOffset.set(off, i);
+    } catch { /* ignore */ }
+  }
+  const argsByIndex = new Map();
+  for (const candidate of base.args) {
+    const idx = Number(candidate?.index);
+    if (!Number.isNaN(idx) && !argsByIndex.has(idx)) argsByIndex.set(idx, candidate);
+  }
+  return {
+    ...base,
+    indexed: true,
+    stackSlotsByOffset,
+    localsBySlot,
+    localsByOffset,
+    argsByIndex,
+  };
+}
+
 function recoveredStackType(name, evidence) {
   const offset = stackOffsetFromName(name);
   if (offset == null) return null;
-  const slot = evidence.stackSlots.find((candidate) => {
-    try { return BigInt(candidate?.offset ?? candidate?.disp) === offset; } catch { return false; }
-  }) ?? null;
-  const local = evidence.locals.find((candidate) =>
-    candidate?.slot === slot?.name || candidate?.slot === name
-    || (() => { try { return BigInt(candidate?.offset) === offset; } catch { return false; } })()) ?? null;
+  let slot = null;
+  let local = null;
+  if (evidence.indexed) {
+    slot = evidence.stackSlotsByOffset.get(offset) ?? null;
+    const slotIdx = evidence.localsBySlot.get(slot?.name);
+    const nameIdx = evidence.localsBySlot.get(name);
+    const offIdx = evidence.localsByOffset.get(offset);
+    let bestIdx = Infinity;
+    if (slotIdx !== undefined && slotIdx < bestIdx) bestIdx = slotIdx;
+    if (nameIdx !== undefined && nameIdx < bestIdx) bestIdx = nameIdx;
+    if (offIdx !== undefined && offIdx < bestIdx) bestIdx = offIdx;
+    local = bestIdx < Infinity ? evidence.locals[bestIdx] : null;
+  } else {
+    slot = evidence.stackSlots.find((candidate) => {
+      try { return BigInt(candidate?.offset ?? candidate?.disp) === offset; } catch { return false; }
+    }) ?? null;
+    local = evidence.locals.find((candidate) =>
+      candidate?.slot === slot?.name || candidate?.slot === name
+      || (() => { try { return BigInt(candidate?.offset) === offset; } catch { return false; } })()) ?? null;
+  }
   const recovered = usableRecoveredType(recoveredTypeName(local?.type))
     ?? usableRecoveredType(recoveredTypeName(local?.semanticType));
   if (recovered && FIXED_WIDTH_TYPES.has(recovered)) return recovered;
@@ -311,8 +1553,196 @@ function recoveredStackType(name, evidence) {
  * recovered value type), then the naming class the producer itself used, then
  * the explicit 64-bit fallback.  Never a type name this closure cannot spell.
  */
-export function localDeclarationTypeFor(name, result) {
-  const evidence = resultEvidence(result);
+export function inferPointerTypedLocals(renderedBody, sigText, precleanedBody = null, precleanedSig = null) {
+  const source = precleanedBody != null ? precleanedBody : declarationBearingSource(renderedBody);
+  const cleanSig = precleanedSig != null ? precleanedSig : declarationBearingSource(sigText);
+  const sigPtrNames = new Set(signaturePointerParams(sigText, cleanSig).map((item) => item.paramName));
+  const ptrParamRe = /(?:\bid\s+|\*\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?=[,)])/g;
+  for (let m = ptrParamRe.exec(cleanSig); m; m = ptrParamRe.exec(cleanSig)) {
+    sigPtrNames.add(m[1]);
+  }
+  const rawText = String(renderedBody ?? '');
+  const assignPattern = /(?:^|(?<=[;{}]))\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?!=)([^;{}]+);/gm;
+  const stats = new Map();
+  const isStringOrPtrExpr = (expr) => {
+    const t = expr.trim();
+    if (!t) return false;
+    if (sigPtrNames.has(t)) return true;
+    if (/^"(?:[^"\\]|\\.)*"$/.test(t)) return true;
+    if (/^&\s*[A-Za-z_][A-Za-z0-9_]*$/.test(t)) return true;
+    if (/^\([^()]*\*\s*\)/.test(t)) return true;
+    const tern = /^[^?]+\?\s*([^:]+)\s*:\s*(.+)$/.exec(t);
+    if (tern && isStringOrPtrExpr(tern[1]) && isStringOrPtrExpr(tern[2])) return true;
+    return false;
+  };
+  for (let m = assignPattern.exec(rawText); m; m = assignPattern.exec(rawText)) {
+    const lhs = m[1];
+    const rhs = m[2].trim();
+    if (/^\s*(?:return|if|while|for|switch|typedef|extern)\b/.test(lhs)) continue;
+    let st = stats.get(lhs);
+    if (!st) { st = { ptrAssigns: 0, nonPtrAssigns: 0 }; stats.set(lhs, st); }
+    if (isStringOrPtrExpr(rhs)) st.ptrAssigns++;
+    else st.nonPtrAssigns++;
+  }
+  const ptrLocals = new Set();
+  for (const [name, st] of stats.entries()) {
+    if (st.ptrAssigns > 0 && st.nonPtrAssigns === 0) {
+      const arithRe = new RegExp('\\b' + escapeRegExp(name) + '\\b\\s*(?:[+*&|^%/-]|<<|>>|\\[)|(?:[+*&|^%/-]|<<|>>)\\s*\\b' + escapeRegExp(name) + '\\b');
+      if (!arithRe.test(source)) ptrLocals.add(name);
+    }
+  }
+  return ptrLocals;
+}
+
+function inferMutablePtrReturnLocals(renderedBody, precleanedBody = null) {
+  const source = precleanedBody != null ? precleanedBody : declarationBearingSource(renderedBody);
+  const assignPattern = /(?:^|(?<=[;{}]))\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?!=)([^;{}]+);/gm;
+  const stats = new Map();
+  const isPtrRetCall = (expr) => {
+    const t = stripOuterParens(expr);
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(t);
+    if (!m || !t.endsWith(')') || !STDLIB_PTR_RETURN_FUNCTIONS.has(m[1])) return false;
+    const openIdx = t.indexOf('(', m[1].length);
+    return openIdx >= 0 && findMatchingDelimRaw(t, openIdx, '(', ')') === t.length - 1;
+  };
+  for (let m = assignPattern.exec(source); m; m = assignPattern.exec(source)) {
+    const lhs = m[1];
+    const rhs = m[2].trim();
+    if (/^\s*(?:return|if|while|for|switch|typedef|extern)\b/.test(lhs)) continue;
+    let st = stats.get(lhs);
+    if (!st) { st = { ptrRetAssigns: 0, otherAssigns: 0 }; stats.set(lhs, st); }
+    if (isPtrRetCall(rhs)) st.ptrRetAssigns++;
+    else st.otherAssigns++;
+  }
+  const isTypeCastExpr = (inner) => {
+    const t = inner.trim();
+    if (!t || /[+\-/%&|^~?!:=<>,.;[\]{}]/.test(t)) return false;
+    const tokens = t.replace(/\*/g, ' ').trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return false;
+    return tokens.every((tok) =>
+      FIXED_WIDTH_TYPES.has(tok)
+      || STANDARD_KNOWN_TYPES.has(tok)
+      || /^(?:const|volatile|restrict|unsigned|signed|char|short|int|long|float|double|void|struct|union|enum|_Bool|bool|id)$/.test(tok));
+  };
+  const isPrecededByCast = (pos) => {
+    let j = pos - 1;
+    while (j >= 0 && /\s/.test(source[j])) j--;
+    if (j < 0 || source[j] !== ')') return false;
+    let depth = 0;
+    let openIdx = -1;
+    for (let k = j; k >= 0; k--) {
+      if (source[k] === ')') depth++;
+      else if (source[k] === '(') {
+        depth--;
+        if (depth === 0) { openIdx = k; break; }
+      }
+    }
+    if (openIdx < 0) return false;
+    if (!isTypeCastExpr(source.slice(openIdx + 1, j))) return false;
+    let prev = openIdx - 1;
+    while (prev >= 0 && /\s/.test(source[prev])) prev--;
+    if (prev >= 0 && /[A-Za-z0-9_)\]]/.test(source[prev])) {
+      const wordMatch = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(source.slice(0, prev + 1));
+      if (!wordMatch || !/^(?:return|case)$/.test(wordMatch[1])) return false;
+    }
+    return true;
+  };
+  const hasDisqualifyingEnclosingContext = (name) => {
+    const occRe = new RegExp('\\b' + escapeRegExp(name) + '\\b', 'g');
+    for (let m = occRe.exec(source); m; m = occRe.exec(source)) {
+      const occStart = m.index;
+      const occEnd = occStart + name.length;
+      if (isPrecededByCast(occStart)) continue;
+      let curLeft = occStart;
+      let curRight = occEnd;
+      while (true) {
+        let parenDepth = 0;
+        let brackDepth = 0;
+        let openIdx = -1;
+        let openCh = '';
+        for (let k = curLeft - 1; k >= 0; k--) {
+          const ch = source[k];
+          if (ch === ')') parenDepth++;
+          else if (ch === ']') brackDepth++;
+          else if (ch === '(') {
+            if (parenDepth > 0) parenDepth--;
+            else { openIdx = k; openCh = '('; break; }
+          } else if (ch === '[') {
+            if (brackDepth > 0) brackDepth--;
+            else { openIdx = k; openCh = '['; break; }
+          } else if ((ch === ';' || ch === '{' || ch === '}') && parenDepth === 0 && brackDepth === 0) {
+            break;
+          }
+        }
+        if (openIdx < 0) break;
+        if (openCh === '[') return true;
+        const closeIdx = findMatchingDelimRaw(source, openIdx, '(', ')');
+        if (closeIdx < 0 || closeIdx < curRight) break;
+        let prev = openIdx - 1;
+        while (prev >= 0 && /\s/.test(source[prev])) prev--;
+        if (prev >= 0 && /[A-Za-z0-9_]/.test(source[prev])) {
+          const wordMatch = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(source.slice(0, prev + 1));
+          if (!wordMatch || !/^(?:return|case)$/.test(wordMatch[1])) break;
+        }
+        if (isPrecededByCast(openIdx)) break;
+        if (prev >= 0) {
+          const pc = source[prev];
+          if (pc === '~' || pc === '-' || pc === '^' || pc === '*' || pc === '/' || pc === '%' || pc === '[') return true;
+          if (pc === '&' && source[prev - 1] !== '&') return true;
+          if (pc === '|' && source[prev - 1] !== '|') return true;
+          if ((pc === '<' && source[prev - 1] === '<') || (pc === '>' && source[prev - 1] === '>')) return true;
+        }
+        let next = closeIdx + 1;
+        while (next < source.length && /\s/.test(source[next])) next++;
+        if (next < source.length) {
+          const nc = source[next];
+          if (nc === '^' || nc === '*' || nc === '/' || nc === '%') return true;
+          if (nc === '&' && source[next + 1] !== '&') return true;
+          if (nc === '|' && source[next + 1] !== '|') return true;
+          if ((nc === '<' && source[next + 1] === '<') || (nc === '>' && source[next + 1] === '>')) return true;
+          if (nc === '-' && source[next + 1] !== '>' && source[next + 1] !== '-') {
+            let rhs = next + 1;
+            while (rhs < source.length && /\s/.test(source[rhs])) rhs++;
+            const rhsIdent = /^([A-Za-z_][A-Za-z0-9_]*)/.exec(source.slice(rhs));
+            if (!rhsIdent || rhsIdent[1] !== name) return true;
+          }
+        }
+        curLeft = openIdx;
+        curRight = closeIdx + 1;
+      }
+    }
+    return false;
+  };
+  const candidates = new Set();
+  for (const [name, st] of stats.entries()) {
+    if (st.ptrRetAssigns > 0 && st.otherAssigns === 0) {
+      const esc = escapeRegExp(name);
+      const badOpRe = new RegExp('\\b' + esc + '\\b\\s*(?:\\+=|[*&|^%/-]|<<|>>|\\[)|(?:[~*&|^%/-]|<<|>>)\\s*\\b' + esc + '\\b');
+      if (!badOpRe.test(source) && !hasDisqualifyingEnclosingContext(name)) candidates.add(name);
+    }
+  }
+  // Reject pointer+pointer additions (e.g. p + q), which are hard C errors on void */char *
+  for (const name of [...candidates]) {
+    const esc = escapeRegExp(name);
+    const addRe = new RegExp('\\b' + esc + '\\b\\s*\\+\\s*(?:\\([^)]*\\)\\s*)?([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*)\\s*\\+\\s*(?:\\([^)]*\\)\\s*)?\\b' + esc + '\\b', 'g');
+    let hasPtrPtr = false;
+    for (let m = addRe.exec(source); m; m = addRe.exec(source)) {
+      const other = m[1] || m[2];
+      if (other && (other === name || candidates.has(other))) { hasPtrPtr = true; break; }
+    }
+    if (hasPtrPtr) candidates.delete(name);
+  }
+  const result = new Map();
+  for (const name of candidates) {
+    const esc = escapeRegExp(name);
+    const plusRe = new RegExp('\\b' + esc + '\\b\\s*\\+|\\+\\s*\\b' + esc + '\\b');
+    result.set(name, plusRe.test(source) ? 'char *' : 'void *');
+  }
+  return result;
+}
+
+export function localDeclarationTypeFor(name, result, prebuiltEvidence = null) {
+  const evidence = prebuiltEvidence ?? resultEvidence(result);
   const stack = recoveredStackType(name, evidence);
   if (stack) return stack;
   const register = registerType(name);
@@ -320,7 +1750,9 @@ export function localDeclarationTypeFor(name, result) {
   const argument = /^a(\d+)$/.exec(name);
   if (argument) {
     const index = Number(argument[1]) - 1;
-    const entry = evidence.args.find((candidate) => Number(candidate?.index) === index);
+    const entry = evidence.indexed
+      ? evidence.argsByIndex.get(index)
+      : evidence.args.find((candidate) => Number(candidate?.index) === index);
     const recovered = usableRecoveredType(recoveredTypeName(entry?.type));
     if (recovered) return recovered;
   }
@@ -332,17 +1764,43 @@ export function localDeclarationTypeFor(name, result) {
   return 'uint64';
 }
 
-function isDeclarableLocal(entry, declared) {
+function isDeclarableLocal(entry, declared, declaredMemberBases = null, existingTypes = null) {
   const name = entry?.name;
   if (!name || !entry.value || declared.has(name)) return false;
-  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name)) return false;
-  if (entry.callTarget || entry.memberName || entry.memberBase || entry.castType || entry.tag) return false;
-  if (entry.label || entry.gotoLabel) return false;
-  // External symbols and pseudo-intrinsics are the translation unit packager's
-  // declarations, never a fabricated function-local variable.
+  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name) || (name === 'id' && existingTypes?.has('id')) || name === '__HEX_ANY_ARGS') return false;
+  const handledAsMemberBase = declaredMemberBases ? declaredMemberBases.has(name) : entry.memberBase;
+  if (entry.callTarget || handledAsMemberBase || entry.castType) return false;
+  // External symbols and pseudo-intrinsics are never fabricated as function-local variables.
   if (/^global_/.test(name)) return false;
   if (/^(?:sub_|func_|fn_|unknown_call$|loc_|__)/.test(name)) return false;
   return true;
+}
+
+function isDeclarableMemberBase(entry, declared) {
+  const name = entry?.name;
+  if (!name || !entry.memberBase || declared.has(name)) return false;
+  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name)) return false;
+  if (entry.callTarget || entry.memberName || entry.castType || entry.tag) return false;
+  if (entry.label || entry.gotoLabel) return false;
+  if (/^global_/.test(name)) return false;
+  if (/^(?:sub_|func_|fn_|unknown_call$|loc_|__)/.test(name)) return false;
+  return true;
+}
+
+function isDeclarableStandaloneGlobal(entry, declared) {
+  const name = entry?.name;
+  if (!name || !entry.value || declared.has(name)) return false;
+  if (!/^global_[A-Za-z0-9_]+$/.test(name)) return false;
+  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name)) return false;
+  if (entry.callTarget || entry.memberName || entry.castType || entry.tag) return false;
+  if (entry.label || entry.gotoLabel) return false;
+  return true;
+}
+
+function compareAscii(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 export function renderedText(lines) {
@@ -367,8 +1825,9 @@ function entryOriginSource(sigLine) {
 function definedTypeAliases(lines) {
   const defined = new Set();
   for (const item of lines || []) {
-    if (item?.kind !== 'decl') continue;
-    const match = /^\s*typedef\b[\s\S]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(String(item.text ?? ''));
+    if (item?.kind !== 'decl' && item?.kind !== 'stmt') continue;
+    const cleaned = declarationBearingSource(item.text);
+    const match = /^\s*typedef\b[\s\S]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*;\s*$/.exec(cleaned);
     if (match) defined.add(match[1]);
   }
   return defined;
@@ -379,16 +1838,1702 @@ function definedTypeAliases(lines) {
  * declaration already defines.  Deterministic order; no output when the text
  * is already self-contained.
  */
+const FIXED_WIDTH_TYPE_PATTERNS = Object.freeze(
+  [...FIXED_WIDTH_TYPES.entries()].map(([alias, builtin]) => Object.freeze([
+    alias,
+    builtin,
+    new RegExp(`\\b${escapeRegExp(alias)}\\b`),
+  ])),
+);
+
 export function fixedWidthPreludeLines(text, alreadyDefined = new Set()) {
   const source = declarationBearingSource(text);
   const lines = [];
-  for (const [alias, builtin] of FIXED_WIDTH_TYPES) {
+  for (const [alias, builtin, pattern] of FIXED_WIDTH_TYPE_PATTERNS) {
     if (alreadyDefined.has(alias)) continue;
-    if (!new RegExp(`\\b${escapeRegExp(alias)}\\b`).test(source)) continue;
+    if (!pattern.test(source)) continue;
     if (!lines.length) lines.push({ kind: 'decl', indent: 0, text: PRELUDE_COMMENT, row: null, addr: null, note: null });
     lines.push({ kind: 'decl', indent: 0, text: `typedef ${builtin} ${alias};`, row: null, addr: null, note: null });
   }
   return lines;
+}
+
+
+const STDLIB_PTR_RETURN_FUNCTIONS = Object.freeze(new Set([
+  // <stdlib.h>
+  'malloc', 'calloc', 'realloc', 'aligned_alloc', 'bsearch', 'getenv',
+  // <string.h>
+  'strcpy', 'stpcpy', 'strncpy', 'strcat', 'strncat', 'strdup', 'strndup',
+  'strchr', 'strrchr', 'strstr', 'strpbrk', 'strtok', 'strtok_r', 'strerror',
+  'memcpy', 'memmove', 'memset', 'memchr',
+  // <strings.h>
+  'index', 'rindex',
+  // <stdio.h>
+  'fgets', 'fopen', 'freopen', 'tmpfile', 'tmpnam',
+]));
+
+const LP64_SIZE_T_BUILTIN_PTR_ARGS = Object.freeze({
+  // <stdlib.h>
+  realloc: { 0: 'void *' },
+  free: { 0: 'void *' },
+  strtol: { 0: 'const char *', 1: 'char **' },
+  strtoul: { 0: 'const char *', 1: 'char **' },
+  strtoll: { 0: 'const char *', 1: 'char **' },
+  strtoull: { 0: 'const char *', 1: 'char **' },
+  strtod: { 0: 'const char *', 1: 'char **' },
+  strtof: { 0: 'const char *', 1: 'char **' },
+  strtold: { 0: 'const char *', 1: 'char **' },
+  atoi: { 0: 'const char *' },
+  atol: { 0: 'const char *' },
+  atoll: { 0: 'const char *' },
+  atof: { 0: 'const char *' },
+  qsort: { 0: 'void *', 3: 'int (*)(const void *, const void *)' },
+  bsearch: { 0: 'const void *', 1: 'const void *', 4: 'int (*)(const void *, const void *)' },
+  atexit: { 0: 'void (*)(void)' },
+  system: { 0: 'const char *' },
+  getenv: { 0: 'const char *' },
+  mblen: { 0: 'const char *' },
+  mbtowc: { 0: 'void *', 1: 'const char *' },
+  wctomb: { 0: 'char *' },
+  mbstowcs: { 0: 'void *', 1: 'const char *' },
+  wcstombs: { 0: 'char *', 1: 'const void *' },
+  // <string.h>
+  strlen: { 0: 'const char *' },
+  strnlen: { 0: 'const char *' },
+  strcpy: { 0: 'char *', 1: 'const char *' },
+  stpcpy: { 0: 'char *', 1: 'const char *' },
+  strncpy: { 0: 'char *', 1: 'const char *' },
+  strcat: { 0: 'char *', 1: 'const char *' },
+  strncat: { 0: 'char *', 1: 'const char *' },
+  strdup: { 0: 'const char *' },
+  strndup: { 0: 'const char *' },
+  strcmp: { 0: 'const char *', 1: 'const char *' },
+  strncmp: { 0: 'const char *', 1: 'const char *' },
+  strcoll: { 0: 'const char *', 1: 'const char *' },
+  strxfrm: { 0: 'char *', 1: 'const char *' },
+  strchr: { 0: 'const char *' },
+  strrchr: { 0: 'const char *' },
+  strstr: { 0: 'const char *', 1: 'const char *' },
+  strpbrk: { 0: 'const char *', 1: 'const char *' },
+  strspn: { 0: 'const char *', 1: 'const char *' },
+  strcspn: { 0: 'const char *', 1: 'const char *' },
+  strtok: { 0: 'char *', 1: 'const char *' },
+  strtok_r: { 0: 'char *', 1: 'const char *', 2: 'char **' },
+  memcpy: { 0: 'void *', 1: 'const void *' },
+  __memcpy_chk: { 0: 'void *', 1: 'const void *' },
+  memcpy_chk: { 0: 'void *', 1: 'const void *' },
+  memmove: { 0: 'void *', 1: 'const void *' },
+  __memmove_chk: { 0: 'void *', 1: 'const void *' },
+  memmove_chk: { 0: 'void *', 1: 'const void *' },
+  memset: { 0: 'void *' },
+  __memset_chk: { 0: 'void *' },
+  memset_chk: { 0: 'void *' },
+  memcmp: { 0: 'const void *', 1: 'const void *' },
+  memchr: { 0: 'const void *' },
+  // <strings.h>
+  strcasecmp: { 0: 'const char *', 1: 'const char *' },
+  strncasecmp: { 0: 'const char *', 1: 'const char *' },
+  bzero: { 0: 'void *' },
+  bcopy: { 0: 'const void *', 1: 'void *' },
+  bcmp: { 0: 'const void *', 1: 'const void *' },
+  index: { 0: 'const char *' },
+  rindex: { 0: 'const char *' },
+  // <stdio.h>
+  printf: { 0: 'const char *' },
+  fprintf: { 0: 'void *', 1: 'const char *' },
+  sprintf: { 0: 'char *', 1: 'const char *' },
+  snprintf: { 0: 'char *', 2: 'const char *' },
+  vprintf: { 0: 'const char *' },
+  vfprintf: { 0: 'void *', 1: 'const char *' },
+  vsprintf: { 0: 'char *', 1: 'const char *' },
+  vsnprintf: { 0: 'char *', 2: 'const char *' },
+  scanf: { 0: 'const char *' },
+  fscanf: { 0: 'void *', 1: 'const char *' },
+  sscanf: { 0: 'const char *', 1: 'const char *' },
+  vscanf: { 0: 'const char *' },
+  vfscanf: { 0: 'void *', 1: 'const char *' },
+  vsscanf: { 0: 'const char *', 1: 'const char *' },
+  puts: { 0: 'const char *' },
+  fputs: { 0: 'const char *', 1: 'void *' },
+  putc: { 1: 'void *' },
+  fputc: { 1: 'void *' },
+  getc: { 0: 'void *' },
+  fgetc: { 0: 'void *' },
+  ungetc: { 1: 'void *' },
+  fgets: { 0: 'char *', 2: 'void *' },
+  getline: { 0: 'char **', 1: 'size_t *', 2: 'void *' },
+  fopen: { 0: 'const char *', 1: 'const char *' },
+  freopen: { 0: 'const char *', 1: 'const char *', 2: 'void *' },
+  fclose: { 0: 'void *' },
+  fflush: { 0: 'void *' },
+  fread: { 0: 'void *', 3: 'void *' },
+  fwrite: { 0: 'const void *', 3: 'void *' },
+  fseek: { 0: 'void *' },
+  ftell: { 0: 'void *' },
+  rewind: { 0: 'void *' },
+  fgetpos: { 0: 'void *', 1: 'void *' },
+  fsetpos: { 0: 'void *', 1: 'const void *' },
+  feof: { 0: 'void *' },
+  ferror: { 0: 'void *' },
+  clearerr: { 0: 'void *' },
+  perror: { 0: 'const char *' },
+  remove: { 0: 'const char *' },
+  rename: { 0: 'const char *', 1: 'const char *' },
+  tmpnam: { 0: 'char *' },
+  setbuf: { 0: 'void *', 1: 'char *' },
+  setvbuf: { 0: 'void *', 1: 'char *' },
+  fileno: { 0: 'void *' },
+  // <math.h>
+  remquo: { 2: 'int *' },
+  remquof: { 2: 'int *' },
+  remquol: { 2: 'int *' },
+  modf: { 1: 'double *' },
+  modff: { 1: 'float *' },
+  modfl: { 1: 'long double *' },
+  frexp: { 1: 'int *' },
+  frexpf: { 1: 'int *' },
+  frexpl: { 1: 'int *' },
+  nan: { 0: 'const char *' },
+  nanf: { 0: 'const char *' },
+  nanl: { 0: 'const char *' },
+  // <wchar.h> / <time.h>
+  wcslen: { 0: 'const void *' },
+  strftime: { 0: 'char *', 2: 'const char *', 3: 'const void *' },
+});
+
+const INT_TYPE_WORDS = new Set([
+  'char', 'short', 'int', 'long', 'signed', 'unsigned', '_Bool', 'bool', '__int128',
+  'size_t', 'ssize_t', 'ptrdiff_t', 'uintptr_t', 'intptr_t', 'wchar_t',
+]);
+
+function skipQuoted(text, start) {
+  const quote = text[start];
+  for (let i = start + 1; i < text.length; i++) {
+    if (text[i] === '\\') { i++; continue; }
+    if (text[i] === quote) return i;
+  }
+  return text.length - 1;
+}
+
+function skipBlockComment(text, start) {
+  const end = text.indexOf('*/', start + 2);
+  return end < 0 ? text.length - 1 : end + 1;
+}
+
+function splitExprCommentAffixes(raw) {
+  const s = String(raw ?? '');
+  let start = 0;
+  const len = s.length;
+  while (start < len) {
+    while (start < len && /\s/.test(s[start])) start++;
+    if (start + 1 < len && s[start] === '/' && s[start + 1] === '*') {
+      const close = s.indexOf('*/', start + 2);
+      if (close < 0) break;
+      start = close + 2;
+      continue;
+    }
+    break;
+  }
+  if (start >= len) {
+    return { lead: s, core: '', trail: '' };
+  }
+  let lastCodeEnd = start;
+  for (let i = start; i < len; i++) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(s, i);
+      lastCodeEnd = end + 1;
+      i = end;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '*') {
+      const close = s.indexOf('*/', i + 2);
+      if (close < 0) {
+        lastCodeEnd = len;
+        break;
+      }
+      i = close + 1;
+      continue;
+    }
+    if (/\s/.test(ch)) continue;
+    lastCodeEnd = i + 1;
+  }
+  return {
+    lead: s.slice(0, start),
+    core: s.slice(start, lastCodeEnd),
+    trail: s.slice(lastCodeEnd),
+  };
+}
+
+function stripOuterParens(text) {
+  let s = splitExprCommentAffixes(text).core;
+  while (s.startsWith('(') && s.endsWith(')')) {
+    let depth = 0;
+    let wrapsAll = true;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === '"' || ch === "'") { i = skipQuoted(s, i); continue; }
+      if (ch === '/' && s[i + 1] === '*') { i = skipBlockComment(s, i); continue; }
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        if (depth === 0 && i < s.length - 1) { wrapsAll = false; break; }
+      }
+    }
+    if (!wrapsAll) break;
+    s = splitExprCommentAffixes(s.slice(1, -1)).core;
+  }
+  return s;
+}
+
+function findTopLevelTernary(expr) {
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  let qIdx = -1;
+  let qDepth = 0;
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(expr, i); continue; }
+    if (ch === '/' && expr[i + 1] === '*') { i = skipBlockComment(expr, i); continue; }
+    if (ch === '(') { paren++; continue; }
+    if (ch === ')') { if (paren > 0) paren--; continue; }
+    if (ch === '[') { bracket++; continue; }
+    if (ch === ']') { if (bracket > 0) bracket--; continue; }
+    if (ch === '{') { brace++; continue; }
+    if (ch === '}') { if (brace > 0) brace--; continue; }
+    if (paren === 0 && bracket === 0 && brace === 0) {
+      if (ch === '?') {
+        if (qIdx < 0) qIdx = i;
+        qDepth++;
+      } else if (ch === ':' && qIdx >= 0) {
+        qDepth--;
+        if (qDepth === 0) return { qIdx, cIdx: i };
+      }
+    }
+  }
+  return null;
+}
+
+function findLowestTopLevelBinaryOp(expr) {
+  // Returns { op, index, len, prec } for lowest-precedence binary operator at depth 0.
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  let best = null;
+  let prevNonWs = '';
+  const isUnaryPos = () => prevNonWs === '' || /[=(,[?:!~+\-*/%&|^<>]/.test(prevNonWs);
+
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(expr, i); prevNonWs = '"'; continue; }
+    if (ch === '/' && expr[i + 1] === '*') { i = skipBlockComment(expr, i); continue; }
+    if (/\s/.test(ch)) continue;
+    if (ch === '(') { paren++; prevNonWs = ch; continue; }
+    if (ch === ')') { if (paren > 0) paren--; prevNonWs = ch; continue; }
+    if (ch === '[') { bracket++; prevNonWs = ch; continue; }
+    if (ch === ']') { if (bracket > 0) bracket--; prevNonWs = ch; continue; }
+    if (ch === '{') { brace++; prevNonWs = ch; continue; }
+    if (ch === '}') { if (brace > 0) brace--; prevNonWs = ch; continue; }
+
+    if (paren === 0 && bracket === 0 && brace === 0 && !isUnaryPos()) {
+      const two = expr.slice(i, i + 2);
+      let op = null;
+      let len = 1;
+      let prec = 99;
+      if (two === '||') { op = two; len = 2; prec = 1; }
+      else if (two === '&&') { op = two; len = 2; prec = 2; }
+      else if (ch === '|' && expr[i + 1] !== '=') { op = '|'; prec = 3; }
+      else if (ch === '^' && expr[i + 1] !== '=') { op = '^'; prec = 4; }
+      else if (ch === '&' && expr[i + 1] !== '=') { op = '&'; prec = 5; }
+      else if (two === '==' || two === '!=') { op = two; len = 2; prec = 6; }
+      else if (two === '<=' || two === '>=') { op = two; len = 2; prec = 7; }
+      else if ((ch === '<' || ch === '>') && expr[i + 1] !== ch) { op = ch; prec = 7; }
+      else if (two === '<<' || two === '>>') { op = two; len = 2; prec = 8; }
+      else if (ch === '+' && expr[i + 1] !== '+' && expr[i + 1] !== '=') { op = '+'; prec = 9; }
+      else if (ch === '-' && expr[i + 1] !== '-' && expr[i + 1] !== '>' && expr[i + 1] !== '=') { op = '-'; prec = 9; }
+      else if ((ch === '*' || ch === '/' || ch === '%') && expr[i + 1] !== '=') { op = ch; prec = 10; }
+
+      if (op) {
+        if (!best || prec <= best.prec) best = { op, index: i, len, prec };
+        if (len === 2) i++;
+        prevNonWs = op[op.length - 1];
+        continue;
+      }
+    }
+    prevNonWs = ch;
+  }
+  return best;
+}
+
+function isCastTypeText(castInner) {
+  const s = castInner.trim().replace(/\s+/g, ' ');
+  if (!s) return null;
+  if (s === 'id') return 'ptr';
+  if (/^(?:(?:const|volatile|restrict|struct|union|enum|unsigned|signed|short|long)\s+)*[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:const|volatile|restrict))*\s*\*+(?:\s*(?:const|volatile|restrict))*$/.test(s)) {
+    return 'ptr';
+  }
+  if (/^\s*(?:const\s+|volatile\s+)?(?:void|char|short|int|long|unsigned|signed|__int128)\b.*\*\s*$/.test(s)) {
+    return 'ptr';
+  }
+  if (/^(?:(?:const|volatile)\s+)*(?:float|double|long\s+double)$/.test(s)) return 'float';
+  if (FIXED_WIDTH_TYPES.has(s) || INT_TYPE_WORDS.has(s) || s === 'vector128') return 'int';
+  if (/^(?:(?:const|volatile|unsigned|signed|short|long)\s+)*(?:char|short|int|long|_Bool|bool|__int128)$/.test(s)) {
+    return 'int';
+  }
+  return null;
+}
+
+function classifyExprType(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null, depth = 0) {
+  if (depth > MAX_EXPR_REWRITE_DEPTH) return 'unknown';
+  const t = stripOuterParens(expr);
+  if (!t) return 'unknown';
+
+  // 1. Null / zero constants.
+  if (/^(?:0(?:[xX]0+)?[uUlL]*|NULL)$/.test(t)) return 'zero';
+
+  // 2. String literal.
+  if (/^"(?:[^"\\]|\\.)*"$/.test(t)) return 'ptr';
+
+  // 3. Non-zero numeric or char literal.
+  if (/^(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|\d+)[uUlL]*$/.test(t)) return 'int';
+  if (/^(?:\d+\.\d*(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+|\.\d+(?:[eE][+-]?\d+)?|0[xX][0-9A-Fa-f]*(?:\.[0-9A-Fa-f]+)?[pP][+-]?\d+)[fFlL]?$/.test(t)) return 'float';
+  if (/^'(?:[^'\\]|\\.)+'$/.test(t)) return 'int';
+
+  // 4. Top-level ternary (lowest precedence).
+  const tern = findTopLevelTernary(t);
+  if (tern) {
+    const t1 = classifyExprType(t.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const t2 = classifyExprType(t.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    if (t1 === 'ptr' && (t2 === 'ptr' || t2 === 'zero')) return 'ptr';
+    if (t2 === 'ptr' && (t1 === 'ptr' || t1 === 'zero')) return 'ptr';
+    if ((t1 === 'int' || t1 === 'zero') && (t2 === 'int' || t2 === 'zero')) return 'int';
+    if (t1 === 'float' || t2 === 'float') return 'float';
+    if ((t1 === 'ptr' && t2 === 'int') || (t1 === 'int' && t2 === 'ptr')) return 'mixed';
+    return 'unknown';
+  }
+
+  // 5. Top-level binary operator.
+  const bin = findLowestTopLevelBinaryOp(t);
+  if (bin) {
+    if (['||', '&&', '==', '!=', '<=', '>=', '<', '>', '|', '^', '&', '<<', '>>', '%'].includes(bin.op)) {
+      return 'int';
+    }
+    const leftT = classifyExprType(t.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const rightT = classifyExprType(t.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    if (['*', '/'].includes(bin.op)) {
+      if (leftT === 'float' || rightT === 'float') return 'float';
+      return 'int';
+    }
+    if (bin.op === '+') {
+      if (leftT === 'ptr' || rightT === 'ptr') return 'ptr';
+      if (leftT === 'float' || rightT === 'float') return 'float';
+      return 'int';
+    }
+    if (bin.op === '-') {
+      if (leftT === 'ptr' && rightT !== 'ptr') return 'ptr';
+      if (leftT === 'float' || rightT === 'float') return 'float';
+      return 'int';
+    }
+  }
+
+  // 6. Top-level C cast `(Type)subexpr`.
+  if (t.startsWith('(')) {
+    let depth = 0;
+    let closeIdx = -1;
+    for (let i = 0; i < t.length; i++) {
+      const ch = t[i];
+      if (ch === '"' || ch === "'") { i = skipQuoted(t, i); continue; }
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth === 0) { closeIdx = i; break; } }
+    }
+    if (closeIdx > 0 && closeIdx < t.length - 1) {
+      const castKind = isCastTypeText(t.slice(1, closeIdx));
+      if (castKind) return castKind;
+      // Indirect function pointer call: ((uint64 (*)(...))...)(args)
+      const rest = t.slice(closeIdx + 1).trim();
+      if (rest.startsWith('(') && rest.endsWith(')')) {
+        const inner = t.slice(1, closeIdx).trim();
+        if (/^\(\s*(?:id|[^()]+\*)\s*\(\s*\*\s*\)/.test(inner)) return 'ptr';
+        return 'int';
+      }
+      // Parenthesized member access `(expr)->field` or `(expr).field` or subscript `(expr)[i]`
+      if (/^(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*$/.test(rest)) return 'int';
+      if (rest.startsWith('[') && rest.endsWith(']')) return 'int';
+    }
+  }
+
+  // 7. Unary dereference `*(Type *)(...)`.
+  if (t.startsWith('*')) {
+    const rest = t.slice(1).trim();
+    if (rest.startsWith('(')) {
+      const closeIdx = rest.indexOf(')');
+      if (closeIdx > 0) {
+        const inner = rest.slice(1, closeIdx).trim();
+        if (/\*\s*\*\s*$/.test(inner)) return 'ptr';
+        const base = inner.replace(/\*+\s*$/, '').trim().replace(/^(?:const|volatile)\s+/, '').replace(/\s+/g, ' ');
+        if (base === 'id') return 'ptr';
+        if (base === 'float' || base === 'double' || base === 'long double') return 'float';
+        if (FIXED_WIDTH_TYPES.has(base) || INT_TYPE_WORDS.has(base)) return 'int';
+      }
+    }
+    return 'unknown';
+  }
+
+  // 8. Address-of `&expr`.
+  if (t.startsWith('&') && !t.startsWith('&&')) return 'ptr';
+
+  // 9. Unary !, ~, +, -.
+  if (/^[!~]/.test(t)) return 'int';
+  if (/^[+-]/.test(t)) {
+    const innerT = classifyExprType(t.slice(1), ptrNames, intNames, floatNames, selfCallSpec);
+    return innerT === 'float' ? 'float' : 'int';
+  }
+
+  // 10. ObjC message send `[recv sel]` -> leave unknown so ObjC display mode stays untouched.
+  if (t.startsWith('[')) return 'unknown';
+
+  // 11. Direct function call `fn(...)`.
+  const callMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(t);
+  if (callMatch && t.endsWith(')')) {
+    const callee = callMatch[1];
+    if (PTR_RETURNING_STDLIB_CALLS.has(callee) || STDLIB_PTR_RETURN_FUNCTIONS.has(callee)) return 'ptr';
+    if (selfCallSpec && callee === selfCallSpec.name) {
+      if (selfCallSpec.retIsPtr) return 'ptr';
+      if (selfCallSpec.retIsFloat) return 'float';
+      if (selfCallSpec.retIsInt) return 'int';
+    }
+    return 'int';
+  }
+
+  // 12. Array subscript `base[...]` or member access `a->f` / `s.f` or postfix `a++`/`a--`.
+  if (/^[A-Za-z_][A-Za-z0-9_]*\s*\[/.test(t) && t.endsWith(']')) return 'int';
+  if (/^[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*)+$/.test(t)) return 'int';
+  const postInc = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--)$/.exec(t);
+  if (postInc) {
+    if (ptrNames.has(postInc[1])) return 'ptr';
+    if (intNames.has(postInc[1])) return 'int';
+  }
+
+  // 13. Single identifier.
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(t)) {
+    if (ptrNames.has(t)) return 'ptr';
+    if (floatNames && floatNames.has(t)) return 'float';
+    if (intNames.has(t)) return 'int';
+  }
+
+  return 'unknown';
+}
+
+function isFloatExpr(expr, floatNames) {
+  const t = stripOuterParens(expr);
+  if (!t) return false;
+  if (/^(?:\d+\.\d*(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+|\.\d+(?:[eE][+-]?\d+)?|0[xX][0-9A-Fa-f]*(?:\.[0-9A-Fa-f]+)?[pP][+-]?\d+)[fFlL]?$/.test(t)) {
+    return true;
+  }
+  const tern = findTopLevelTernary(t);
+  if (tern) {
+    return isFloatExpr(t.slice(tern.qIdx + 1, tern.cIdx), floatNames)
+      || isFloatExpr(t.slice(tern.cIdx + 1), floatNames);
+  }
+  const bin = findLowestTopLevelBinaryOp(t);
+  if (bin) {
+    if (['+', '-', '*', '/'].includes(bin.op)) {
+      return isFloatExpr(t.slice(0, bin.index), floatNames)
+        || isFloatExpr(t.slice(bin.index + bin.len), floatNames);
+    }
+    return false;
+  }
+  if (t.startsWith('(')) {
+    let depth = 0;
+    let closeIdx = -1;
+    for (let i = 0; i < t.length; i++) {
+      const ch = t[i];
+      if (ch === '"' || ch === "'") { i = skipQuoted(t, i); continue; }
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth === 0) { closeIdx = i; break; } }
+    }
+    if (closeIdx > 0 && closeIdx < t.length - 1) {
+      const castKind = isCastTypeText(t.slice(1, closeIdx));
+      if (castKind === 'float') return true;
+      if (castKind === 'int' || castKind === 'ptr') return false;
+    }
+  }
+  if (t.startsWith('*')) {
+    const rest = t.slice(1).trim();
+    if (rest.startsWith('(')) {
+      const closeIdx = rest.indexOf(')');
+      if (closeIdx > 0) {
+        const base = rest.slice(1, closeIdx).replace(/\*+\s*$/, '').trim().replace(/^(?:const|volatile)\s+/, '').replace(/\s+/g, ' ');
+        if (base === 'float' || base === 'double' || base === 'long double') return true;
+      }
+    }
+    return false;
+  }
+  if (/^[+-]/.test(t) && !t.startsWith('++') && !t.startsWith('--')) {
+    return isFloatExpr(t.slice(1), floatNames);
+  }
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(t) && floatNames && floatNames.has(t)) return true;
+  return false;
+}
+
+function isNonStructPointerTypeText(typeText) {
+  const cleaned = String(typeText ?? '')
+    .replace(/\*+/g, ' ')
+    .replace(/\b(?:const|volatile|restrict|static|extern|register)\b/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!cleaned) return false;
+  if (cleaned === 'void' || cleaned === 'id' || cleaned === 'float' || cleaned === 'double' || cleaned === 'long double') return true;
+  if (FIXED_WIDTH_TYPES.has(cleaned) || INT_TYPE_WORDS.has(cleaned)) return true;
+  if (/^(?:(?:unsigned|signed|short|long)\s+)*(?:char|short|int|long|_Bool|bool|__int128)$/.test(cleaned)) return true;
+  return false;
+}
+
+function buildSymbolTypeTable(sigText, lines, standaloneGlobals, arrayGlobalNames = null) {
+  const ptrNames = new Set();
+  const nonStructPtrNames = new Set();
+  const intNames = new Set();
+  const floatNames = new Set();
+  const floatTypes = new Map();
+  const selfParams = [];
+  const cleanSig = declarationBearingSource(sigText);
+  const open = cleanSig.indexOf('(');
+  const selfName = signatureFunctionName(sigText);
+  let retType = '';
+  let retIsPtr = false;
+  let retIsInt = false;
+  let retIsFloat = false;
+
+  if (open >= 0) {
+    let prefix = cleanSig.slice(0, open).trim();
+    if (/[+-]\[[^\]]+\]\s*$/.test(prefix)) {
+      prefix = prefix.replace(/[+-]\[[^\]]+\]\s*$/, '').trim();
+    } else {
+      prefix = prefix.replace(/[A-Za-z_][A-Za-z0-9_]*\s*$/, '').trim();
+    }
+    prefix = prefix.replace(/^(?:(?:static|extern|inline|__inline__|__inline)\s+)+/, '').trim();
+    retType = prefix.replace(/\s+/g, ' ');
+    retIsPtr = retType.includes('*') || retType === 'id';
+    retIsFloat = !retIsPtr && /\b(?:float|double)\b/.test(retType);
+    retIsInt = !retIsPtr && !retIsFloat && retType !== 'void' && retType.length > 0;
+
+    const close = findMatchingDelimiter(cleanSig, open, '(', ')');
+    if (close > open) {
+      let paramIdx = 0;
+      for (const rawGroup of splitTopLevelCommas(cleanSig.slice(open + 1, close))) {
+        const group = rawGroup.trim();
+        if (!group || group === 'void' || group === '...') continue;
+        if (group.includes('(*')) {
+          const fpNameMatch = /\(\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/.exec(group);
+          selfParams.push({
+            index: paramIdx++,
+            type: null,
+            kind: 'other',
+          });
+          if (fpNameMatch && !KEYWORDS.has(fpNameMatch[1])) {
+            ptrNames.add(fpNameMatch[1]);
+            intNames.delete(fpNameMatch[1]);
+            floatNames.delete(fpNameMatch[1]);
+            floatTypes.delete(fpNameMatch[1]);
+          }
+          continue;
+        }
+        const isArray = /\[[^\]]*\]\s*$/.test(group);
+        const isPtr = group.includes('*') || /^(?:const\s+|volatile\s+)?id\b/.test(group) || isArray;
+        const nameMatch = /([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^\]]*\])*\s*$/.exec(group);
+        const hasParamName = !!(nameMatch && !KEYWORDS.has(nameMatch[1]) && !FIXED_WIDTH_TYPES.has(nameMatch[1]));
+        let paramType = hasParamName
+          ? group.slice(0, nameMatch.index).trim().replace(/\s+/g, ' ')
+          : group.replace(/(?:\s*\[[^\]]*\])+\s*$/, '').trim().replace(/\s+/g, ' ');
+        if (isArray && paramType) {
+          paramType = paramType.endsWith('*') ? `${paramType}*` : `${paramType} *`;
+        }
+        const isFloat = !isPtr && /\b(?:float|double)\b/.test(group);
+        const isInt = !isPtr && !isFloat && !/\b(?:struct|union)\b/.test(group);
+        selfParams.push({
+          index: paramIdx++,
+          type: paramType || (isPtr ? 'void *' : 'uint64'),
+          kind: isPtr ? 'ptr' : isFloat ? 'float' : isInt ? 'int' : 'other',
+        });
+        if (!hasParamName) continue;
+        if (isPtr) {
+          ptrNames.add(nameMatch[1]);
+          if (isNonStructPointerTypeText(paramType)) nonStructPtrNames.add(nameMatch[1]);
+          intNames.delete(nameMatch[1]);
+          floatNames.delete(nameMatch[1]);
+          floatTypes.delete(nameMatch[1]);
+        } else if (isFloat) {
+          floatNames.add(nameMatch[1]);
+          floatTypes.set(nameMatch[1], /\bfloat\b/.test(paramType) ? 'float' : 'double');
+          intNames.delete(nameMatch[1]);
+        } else if (isInt) {
+          intNames.add(nameMatch[1]);
+        }
+      }
+    }
+  }
+
+  for (const item of lines || []) {
+    if (!item || (item.kind !== 'decl' && item.kind !== 'stmt')) continue;
+    const cleaned = declarationBearingSource(item.text).trim();
+    if (!cleaned || /^typedef\b/.test(cleaned) || cleaned.startsWith('#')) continue;
+    const noSemi = cleaned.replace(/;\s*$/, '').trim();
+    const declarators = splitTopLevelCommas(noSemi);
+    const firstHead = cutBeforeTopLevelAssign(declarators[0] || '').trim();
+    if (!firstHead || firstHead.includes('(')) continue;
+    const baseMatch = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)\b/.exec(firstHead);
+    if (!baseMatch || NON_DECL_STMT_HEADS.has(baseMatch[2])) continue;
+    const baseType = baseMatch[2];
+    const baseIsFloat = baseType === 'float' || baseType === 'double';
+    const baseIsId = baseType === 'id';
+    const baseIsInt = FIXED_WIDTH_TYPES.has(baseType) || INT_TYPE_WORDS.has(baseType);
+    for (let idx = 0; idx < declarators.length; idx++) {
+      const part = cutBeforeTopLevelAssign(declarators[idx]).trim();
+      const body = idx === 0 ? part.slice(baseMatch[0].length).trim() : part;
+      if (!body) continue;
+      const isPtr = baseIsId || body.includes('*') || /\[[^\]]*\]\s*$/.test(body);
+      const nameMatch = /([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^\]]*\])?\s*$/.exec(body);
+      if (!nameMatch || KEYWORDS.has(nameMatch[1])) continue;
+      const varName = nameMatch[1];
+      if (isPtr) {
+        if (idx === 0 && !baseIsId && !body.startsWith('*') && !/\[[^\]]*\]\s*$/.test(body)) continue;
+        ptrNames.add(varName);
+        if (baseIsId || baseIsInt || baseIsFloat || baseType === 'void') nonStructPtrNames.add(varName);
+        intNames.delete(varName);
+        floatNames.delete(varName);
+        floatTypes.delete(varName);
+      } else if (baseIsFloat) {
+        if (!ptrNames.has(varName)) {
+          floatNames.add(varName);
+          floatTypes.set(varName, baseType === 'float' ? 'float' : 'double');
+        }
+      } else if (baseIsInt) {
+        if (!ptrNames.has(varName) && !floatNames.has(varName)) intNames.add(varName);
+      }
+    }
+  }
+
+  for (const entry of standaloneGlobals || []) {
+    if (!entry?.name) continue;
+    if (arrayGlobalNames?.has?.(entry.name)) {
+      ptrNames.add(entry.name);
+      nonStructPtrNames.add(entry.name);
+      intNames.delete(entry.name);
+      floatNames.delete(entry.name);
+      floatTypes.delete(entry.name);
+    } else if (!ptrNames.has(entry.name)) {
+      intNames.add(entry.name);
+    }
+  }
+
+  const selfCallSpec = selfName ? { name: selfName, retType, retIsPtr, retIsInt, retIsFloat, params: selfParams } : null;
+  return { ptrNames, nonStructPtrNames, intNames, floatNames, floatTypes, retType, retIsPtr, retIsInt, retIsFloat, selfCallSpec };
+}
+
+function splitCallArgs(argStr) {
+  const args = [];
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  let start = 0;
+  for (let i = 0; i < argStr.length; i++) {
+    const ch = argStr[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(argStr, i); continue; }
+    if (ch === '/' && argStr[i + 1] === '*') { i = skipBlockComment(argStr, i); continue; }
+    if (ch === '(') paren++;
+    else if (ch === ')') { if (paren > 0) paren--; }
+    else if (ch === '[') bracket++;
+    else if (ch === ']') { if (bracket > 0) bracket--; }
+    else if (ch === '{') brace++;
+    else if (ch === '}') { if (brace > 0) brace--; }
+    else if (ch === ',' && paren === 0 && bracket === 0 && brace === 0) {
+      args.push(argStr.slice(start, i));
+      start = i + 1;
+    }
+  }
+  const tail = argStr.slice(start);
+  if (args.length || tail.trim().length) args.push(tail);
+  return args;
+}
+
+const BUILTIN_INT_ARGS = Object.freeze({
+  bit_extract: new Set([0]),
+  bit_insert: new Set([0, 1]),
+});
+
+const STDLIB_REQUIRED_ARG_DEFAULTS = Object.freeze({
+  arc4random_uniform: ['0'],
+  malloc: ['0'],
+  calloc: ['0', '0'],
+  free: ['(void *)0'],
+  realloc: ['(void *)0', '0'],
+  strlen: ['""'],
+  memcpy: ['(void *)0', '(const void *)0', '0'],
+  memmove: ['(void *)0', '(const void *)0', '0'],
+  memset: ['(void *)0', '0', '0'],
+  memcmp: ['(const void *)0', '(const void *)0', '0'],
+  printf: ['""'],
+  puts: ['""'],
+  atoi: ['""'],
+  exit: ['0'],
+  _exit: ['0'],
+});
+
+function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+  if (text.indexOf('(') < 0) return text;
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(text, i);
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const end = skipBlockComment(text, i);
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(ch) && (i === 0 || !/[A-Za-z0-9_.]/.test(text[i - 1])) && !(i >= 2 && text.slice(i - 2, i) === '->')) {
+      let j = i;
+      while (j < text.length && /[A-Za-z0-9_]/.test(text[j])) j++;
+      const ident = text.slice(i, j);
+      const spec = Object.hasOwn(LP64_SIZE_T_BUILTIN_PTR_ARGS, ident) ? LP64_SIZE_T_BUILTIN_PTR_ARGS[ident] : null;
+      const intArgSpec = !spec && Object.hasOwn(BUILTIN_INT_ARGS, ident) ? BUILTIN_INT_ARGS[ident] : null;
+      const isSelfCall = !spec && !intArgSpec && selfCallSpec && ident === selfCallSpec.name && selfCallSpec.params.length > 0;
+      const reqDefaults = Object.hasOwn(STDLIB_REQUIRED_ARG_DEFAULTS, ident) ? STDLIB_REQUIRED_ARG_DEFAULTS[ident] : null;
+      if (spec || intArgSpec || isSelfCall || reqDefaults) {
+        let k = j;
+        while (k < text.length && /\s/.test(text[k])) k++;
+        if (text[k] === '(') {
+          let depth = 0;
+          let closeIdx = -1;
+          for (let m = k; m < text.length; m++) {
+            const c = text[m];
+            if (c === '"' || c === "'") { m = skipQuoted(text, m); continue; }
+            if (c === '/' && text[m + 1] === '*') { m = skipBlockComment(text, m); continue; }
+            if (c === '(') depth++;
+            else if (c === ')') { depth--; if (depth === 0) { closeIdx = m; break; } }
+          }
+          if (closeIdx > k) {
+            const rawArgs = splitCallArgs(text.slice(k + 1, closeIdx));
+            const hasNoRealArgs = rawArgs.length === 0
+              || (rawArgs.length === 1 && splitExprCommentAffixes(rawArgs[0]).core === '');
+            if (hasNoRealArgs && reqDefaults) {
+              out += `${text.slice(i, k + 1)}${reqDefaults.join(', ')} /* default arg */)`;
+              i = closeIdx + 1;
+              continue;
+            }
+            const rewrittenArgs = rawArgs.map((rawArg, idx) => {
+              const { lead, core, trail } = splitExprCommentAffixes(rawArg);
+              if (!core) return rawArg;
+              const harmonizedCore = harmonizeMixedTernaries(core, ptrNames, intNames, floatNames, selfCallSpec);
+              const nestedCore = rewriteBuiltinPtrArgs(harmonizedCore, ptrNames, intNames, floatNames, selfCallSpec);
+              const nested = `${lead}${nestedCore}${trail}`;
+              if (spec) {
+                const castType = spec[idx];
+                if (!castType) return nested;
+                if (classifyExprType(nestedCore, ptrNames, intNames, floatNames, selfCallSpec) === 'int') {
+                  return `${lead}(${castType})(uintptr_t)(${nestedCore})${trail}`;
+                }
+                return nested;
+              }
+              if (intArgSpec) {
+                if (!intArgSpec.has(idx)) return nested;
+                if (classifyExprType(nestedCore, ptrNames, intNames, floatNames, selfCallSpec) === 'ptr') {
+                  return `${lead}(uintptr_t)(${nestedCore})${trail}`;
+                }
+                return nested;
+              }
+              if (!isSelfCall) return nested;
+              const param = selfCallSpec.params[idx];
+              if (!param || !param.type) return nested;
+              const argType = classifyExprType(nestedCore, ptrNames, intNames, floatNames, selfCallSpec);
+              if (param.kind === 'ptr' && argType === 'int') {
+                return `${lead}(${param.type})(uintptr_t)(${nestedCore})${trail}`;
+              }
+              if (param.kind === 'int' && argType === 'ptr') {
+                return `${lead}(uintptr_t)(${nestedCore})${trail}`;
+              }
+              return nested;
+            });
+            out += text.slice(i, k + 1) + rewrittenArgs.join(',') + ')';
+            i = closeIdx + 1;
+            continue;
+          }
+        }
+      }
+      out += ident;
+      i = j;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+function findMatchingDelimRaw(text, openIdx, openCh, closeCh) {
+  let depth = 0;
+  for (let i = openIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(text, i); continue; }
+    if (ch === '/' && text[i + 1] === '*') { i = skipBlockComment(text, i); continue; }
+    if (ch === openCh) depth++;
+    else if (ch === closeCh) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function rewriteParenthesizedSubexprs(text, transform) {
+  let out = '';
+  let i = 0;
+  let prevNonWs = '';
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(text, i);
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      prevNonWs = '"';
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const end = skipBlockComment(text, i);
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '[') {
+      const closeIdx = findMatchingDelimRaw(text, i, '[', ']');
+      if (closeIdx > i) {
+        const isCSubscript = prevNonWs === ')' || prevNonWs === ']' || /[A-Za-z0-9_]/.test(prevNonWs);
+        if (isCSubscript) {
+          const inner = text.slice(i + 1, closeIdx);
+          out += `[${transform(inner)}]`;
+        } else {
+          // ObjC message send `[recv sel:...]` -> preserve untouched.
+          out += text.slice(i, closeIdx + 1);
+        }
+        i = closeIdx + 1;
+        prevNonWs = ']';
+        continue;
+      }
+    }
+    if (ch === '(') {
+      const closeIdx = findMatchingDelimRaw(text, i, '(', ')');
+      if (closeIdx > i) {
+        const inner = text.slice(i + 1, closeIdx);
+        const parts = splitCallArgs(inner);
+        const rewritten = parts.length > 1
+          ? parts.map((p) => transform(p)).join(',')
+          : transform(inner);
+        out += `(${rewritten})`;
+        i = closeIdx + 1;
+        prevNonWs = ')';
+        continue;
+      }
+    }
+    out += ch;
+    if (!/\s/.test(ch)) prevNonWs = ch;
+    i++;
+  }
+  return out;
+}
+
+function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null, depth = 0) {
+  const s = String(expr ?? '');
+  if (depth > MAX_EXPR_REWRITE_DEPTH || !s.includes('?')) return s;
+  const trimmed = s.trim();
+  if (!trimmed.includes('?')) return s;
+  const lead = s.slice(0, s.indexOf(trimmed));
+  const trail = s.slice(s.indexOf(trimmed) + trimmed.length);
+
+  // Split top-level ternary/binary operators first so each subexpression is visited once (O(N)).
+  const tern = findTopLevelTernary(trimmed);
+  if (tern) {
+    const cond = harmonizeMixedTernaries(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    let arm1 = harmonizeMixedTernaries(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    let arm2 = harmonizeMixedTernaries(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const t1 = classifyExprType(arm1, ptrNames, intNames, floatNames, selfCallSpec);
+    const t2 = classifyExprType(arm2, ptrNames, intNames, floatNames, selfCallSpec);
+    if (t1 === 'ptr' && t2 === 'int') {
+      const a1Trim = arm1.trim();
+      const a1Lead = arm1.slice(0, arm1.indexOf(a1Trim));
+      const a1Trail = arm1.slice(arm1.indexOf(a1Trim) + a1Trim.length);
+      arm1 = `${a1Lead}(uintptr_t)(${a1Trim})${a1Trail}`;
+    } else if (t1 === 'int' && t2 === 'ptr') {
+      const a2Trim = arm2.trim();
+      const a2Lead = arm2.slice(0, arm2.indexOf(a2Trim));
+      const a2Trail = arm2.slice(arm2.indexOf(a2Trim) + a2Trim.length);
+      arm2 = `${a2Lead}(uintptr_t)(${a2Trim})${a2Trail}`;
+    }
+    return `${lead}${cond}?${arm1}:${arm2}${trail}`;
+  }
+
+  const bin = findLowestTopLevelBinaryOp(trimmed);
+  if (bin) {
+    const left = harmonizeMixedTernaries(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const right = harmonizeMixedTernaries(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    return `${lead}${left}${trimmed.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
+  }
+
+  // Leaf/base case: no top-level operator; recurse into parenthesized/subscripted subexpressions once.
+  const withNested = rewriteParenthesizedSubexprs(
+    trimmed,
+    (inner) => harmonizeMixedTernaries(inner, ptrNames, intNames, floatNames, selfCallSpec, depth + 1),
+  );
+  return `${lead}${withNested}${trail}`;
+}
+
+const PTR_RETURNING_STDLIB_CALLS = new Set([
+  'malloc', 'calloc', 'realloc', 'aligned_alloc',
+  'strdup', 'strndup', 'strchr', 'strrchr', 'strstr', 'strpbrk', 'strtok', 'strtok_r', 'strerror',
+  'memcpy', 'memmove', 'memset', 'memchr',
+  'fopen', 'freopen', 'fgets', 'tmpfile', 'getenv', 'bsearch',
+  '__errno_location', '__ctype_b_loc', '__ctype_tolower_loc', '__ctype_toupper_loc',
+  'errno_location', 'ctype_b_loc', 'ctype_tolower_loc', 'ctype_toupper_loc',
+  '__memcpy_chk', 'memcpy_chk', '__memmove_chk', 'memmove_chk', '__memset_chk', 'memset_chk',
+  '__strcpy_chk', 'strcpy_chk', '__stpcpy_chk', 'stpcpy_chk', '__strncpy_chk', 'strncpy_chk', '__strcat_chk', 'strcat_chk', '__strncat_chk', 'strncat_chk',
+]);
+
+const BITWISE_BIN_OPS = new Set(['&', '|', '^', '<<', '>>', '%']);
+
+const MAX_EXPR_REWRITE_DEPTH = 96;
+
+function wrapBitwiseOperand(operand, ptrNames, intNames, floatNames = null, selfCallSpec = null) {
+  const { lead, core, trail } = splitExprCommentAffixes(operand);
+  if (!core) return operand;
+  if (isFloatExpr(core, floatNames)) {
+    return `${lead}hex_f64_to_u64(${core})${trail}`;
+  }
+  if (classifyExprType(core, ptrNames, intNames, floatNames, selfCallSpec) === 'ptr') {
+    return `${lead}(uintptr_t)(${core})${trail}`;
+  }
+  return operand;
+}
+
+function sanitizeBitwiseOps(expr, ptrNames, intNames, floatNames = null, selfCallSpec = null, depth = 0) {
+  const s = String(expr ?? '');
+  if (depth > MAX_EXPR_REWRITE_DEPTH || !/[&|^~%]|<<|>>/.test(s)) return s;
+  const trimmed = s.trim();
+  if (!trimmed) return s;
+  const lead = s.slice(0, s.indexOf(trimmed));
+  const trail = s.slice(s.indexOf(trimmed) + trimmed.length);
+
+  // Split top-level ternary/binary/unary operators first so each subexpression is visited once (O(N)).
+  const tern = findTopLevelTernary(trimmed);
+  if (tern) {
+    const cond = sanitizeBitwiseOps(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const arm1 = sanitizeBitwiseOps(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    const arm2 = sanitizeBitwiseOps(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    return `${lead}${cond}?${arm1}:${arm2}${trail}`;
+  }
+
+  const bin = findLowestTopLevelBinaryOp(trimmed);
+  if (bin) {
+    let left = sanitizeBitwiseOps(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    let right = sanitizeBitwiseOps(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    if (BITWISE_BIN_OPS.has(bin.op)) {
+      left = wrapBitwiseOperand(left, ptrNames, intNames, floatNames, selfCallSpec);
+      right = wrapBitwiseOperand(right, ptrNames, intNames, floatNames, selfCallSpec);
+    }
+    return `${lead}${left}${trimmed.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
+  }
+
+  if (trimmed.startsWith('~')) {
+    const inner = sanitizeBitwiseOps(trimmed.slice(1), ptrNames, intNames, floatNames, selfCallSpec, depth + 1);
+    return `${lead}~${wrapBitwiseOperand(inner, ptrNames, intNames, floatNames, selfCallSpec)}${trail}`;
+  }
+
+  // Leaf/base case: no top-level operator; recurse into parenthesized/subscripted subexpressions once.
+  const withNested = rewriteParenthesizedSubexprs(
+    trimmed,
+    (inner) => sanitizeBitwiseOps(inner, ptrNames, intNames, floatNames, selfCallSpec, depth + 1),
+  );
+  return `${lead}${withNested}${trail}`;
+}
+
+function splitTrailingComment(lineText) {
+  let i = 0;
+  while (i < lineText.length) {
+    const ch = lineText[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(lineText, i) + 1; continue; }
+    if (ch === '/' && lineText[i + 1] === '/') {
+      return { code: lineText.slice(0, i), comment: lineText.slice(i) };
+    }
+    if (ch === '/' && lineText[i + 1] === '*') {
+      const end = skipBlockComment(lineText, i);
+      if (!lineText.slice(end + 1).trim()) {
+        return { code: lineText.slice(0, i), comment: lineText.slice(i) };
+      }
+      i = end + 1;
+      continue;
+    }
+    i++;
+  }
+  return { code: lineText, comment: '' };
+}
+
+function splitTopLevelStatements(code) {
+  const parts = [];
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  let start = 0;
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(code, i); continue; }
+    if (ch === '/' && code[i + 1] === '*') { i = skipBlockComment(code, i); continue; }
+    if (ch === '(') paren++;
+    else if (ch === ')') { if (paren > 0) paren--; }
+    else if (ch === '[') bracket++;
+    else if (ch === ']') { if (bracket > 0) bracket--; }
+    else if (ch === '{') brace++;
+    else if (ch === '}') { if (brace > 0) brace--; }
+    else if (ch === ';' && paren === 0 && bracket === 0 && brace === 0) {
+      parts.push({ text: code.slice(start, i), hasSemi: true });
+      start = i + 1;
+    }
+  }
+  if (start < code.length) parts.push({ text: code.slice(start), hasSemi: false });
+  return parts;
+}
+
+function findTopLevelAssignment(stmt) {
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  for (let i = 0; i < stmt.length; i++) {
+    const ch = stmt[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(stmt, i); continue; }
+    if (ch === '/' && stmt[i + 1] === '*') { i = skipBlockComment(stmt, i); continue; }
+    if (ch === '(') { paren++; continue; }
+    if (ch === ')') { if (paren > 0) paren--; continue; }
+    if (ch === '[') { bracket++; continue; }
+    if (ch === ']') { if (bracket > 0) bracket--; continue; }
+    if (ch === '{') { brace++; continue; }
+    if (ch === '}') { if (brace > 0) brace--; continue; }
+    if (paren === 0 && bracket === 0 && brace === 0 && ch === '=' && stmt[i + 1] !== '=') {
+      const prev = stmt[i - 1] || '';
+      const prev2 = stmt.slice(Math.max(0, i - 2), i);
+      if (prev === '!' || prev === '<' || prev === '>') {
+        if (prev2 === '<<' || prev2 === '>>') {
+          return { op: `${prev2}=`, start: i - 2, end: i + 1 };
+        }
+        continue;
+      }
+      if (['+', '-', '*', '/', '%', '&', '|', '^'].includes(prev)) {
+        return { op: `${prev}=`, start: i - 1, end: i + 1 };
+      }
+      return { op: '=', start: i, end: i + 1 };
+    }
+  }
+  return null;
+}
+
+function stripLeadingControlOrLabel(stmt) {
+  let prefix = '';
+  let rest = stmt;
+  for (;;) {
+    const lbl = /^(\s*[A-Za-z_][A-Za-z0-9_]*\s*:(?!:)\s*)/.exec(rest);
+    if (lbl && !/^\s*(?:case|default)\b/.test(lbl[1])) {
+      prefix += lbl[1];
+      rest = rest.slice(lbl[1].length);
+      continue;
+    }
+    const elseM = /^(\s*else\s+)/.exec(rest);
+    if (elseM) {
+      prefix += elseM[1];
+      rest = rest.slice(elseM[1].length);
+      continue;
+    }
+    const ifM = /^(\s*if\s*)\(/.exec(rest);
+    if (ifM) {
+      const openIdx = ifM[1].length;
+      const closeIdx = findMatchingDelimRaw(rest, openIdx, '(', ')');
+      if (closeIdx > openIdx) {
+        let after = closeIdx + 1;
+        while (after < rest.length && /\s/.test(rest[after])) after++;
+        if (after < rest.length && rest[after] !== '{') {
+          prefix += rest.slice(0, after);
+          rest = rest.slice(after);
+          continue;
+        }
+      }
+    }
+    break;
+  }
+  return { prefix, rest };
+}
+
+function classifyLhsDeclType(lhsText) {
+  const cleaned = declarationBearingSource(lhsText).trim();
+  const match = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(\s+(?:\*+\s*)*|\s*\*+\s*)([A-Za-z_][A-Za-z0-9_]*)$/.exec(cleaned);
+  if (!match || NON_DECL_STMT_HEADS.has(match[2]) || KEYWORDS.has(match[4])) return null;
+  const typeTok = match[2];
+  if (match[3].includes('*') || typeTok === 'id') return 'ptr';
+  if (typeTok === 'float' || typeTok === 'double') return 'float';
+  if (FIXED_WIDTH_TYPES.has(typeTok) || INT_TYPE_WORDS.has(typeTok)) return 'int';
+  return null;
+}
+
+function allocSyntheticArrowStructType(baseKey, field, existingTypes, existingStructFields, syntheticArrowStructs) {
+  const baseName = `hex_struct_${baseKey}`;
+  const compatible = (name) => {
+    if (!existingTypes || !existingTypes.has(name)) return true;
+    const knownFields = existingStructFields && existingStructFields.get(name);
+    return !!(knownFields && knownFields.has(field));
+  };
+  let structType = baseName;
+  if (!compatible(structType)) {
+    structType = `${baseName}_arrow`;
+    let suffix = 2;
+    while (!compatible(structType)) {
+      structType = `${baseName}_arrow_${suffix++}`;
+    }
+  }
+  if (!existingTypes || !existingTypes.has(structType)) {
+    let fields = syntheticArrowStructs.get(structType);
+    if (!fields) {
+      fields = new Set();
+      syntheticArrowStructs.set(structType, fields);
+    }
+    fields.add(field);
+  }
+  return structType;
+}
+
+function isNonStructParenArrowBase(inner, symTable) {
+  if (!symTable) return false;
+  const t = stripOuterParens(inner);
+  if (!t) return false;
+  const { ptrNames, nonStructPtrNames, intNames, floatNames, selfCallSpec } = symTable;
+
+  // Top-level type cast `(CastType)sub`
+  if (t.startsWith('(')) {
+    const closeIdx = findMatchingDelimRaw(t, 0, '(', ')');
+    if (closeIdx > 0 && closeIdx < t.length - 1) {
+      const castText = t.slice(1, closeIdx);
+      const castKind = isCastTypeText(castText);
+      if (castKind === 'ptr') return isNonStructPointerTypeText(castText);
+      if (castKind === 'int' || castKind === 'float') return true;
+    }
+  }
+
+  // Unary dereference `*(CastType)sub`
+  if (t.startsWith('*')) {
+    const rest = t.slice(1).trim();
+    if (rest.startsWith('(')) {
+      const closeIdx = findMatchingDelimRaw(rest, 0, '(', ')');
+      if (closeIdx > 0) {
+        const castText = rest.slice(1, closeIdx).trim();
+        const exprT = classifyExprType(t, ptrNames, intNames, floatNames, selfCallSpec);
+        if (exprT === 'int' || exprT === 'float') return true;
+        if (/\*\s*\*\s*$/.test(castText)) return isNonStructPointerTypeText(castText);
+      }
+    }
+  }
+
+  const exprType = classifyExprType(t, ptrNames, intNames, floatNames, selfCallSpec);
+  if (exprType === 'int' || exprType === 'float') return true;
+
+  if (nonStructPtrNames && nonStructPtrNames.size) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(t) && nonStructPtrNames.has(t)) return true;
+    const addSubMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*[+-]/.exec(t);
+    if (addSubMatch && nonStructPtrNames.has(addSubMatch[1])) return true;
+  }
+
+  return false;
+}
+
+function rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, existingTypes = null, existingStructFields = null, symTable = null) {
+  if (!code.includes('->') || (!badArrowBases.size && !symTable)) return code;
+  const emitArrowChain = (startExpr, startChainKey, firstField, firstFieldEnd, forceWrapForPrevCast) => {
+    let expr = startExpr;
+    let chainKey = startChainKey;
+    let curEnd = firstFieldEnd;
+    let curField = firstField;
+    let lastWasOffsetDeref = false;
+    let hopCount = 0;
+    while (true) {
+      const offsetMatch = /^field_(?:0[xX])?([0-9A-Fa-f]+)$/.exec(curField);
+      if (offsetMatch) {
+        expr = `*(uint64 *)((uintptr_t)(${expr}) + 0x${offsetMatch[1]})`;
+        lastWasOffsetDeref = true;
+      } else {
+        const structType = allocSyntheticArrowStructType(chainKey, curField, existingTypes, existingStructFields, syntheticArrowStructs);
+        expr = `((${structType} *)(uintptr_t)(${expr}))->${curField}`;
+        lastWasOffsetDeref = false;
+      }
+      chainKey = `${chainKey}_${curField}`;
+      hopCount++;
+      let nextArrow = curEnd;
+      while (nextArrow < code.length && /\s/.test(code[nextArrow])) nextArrow++;
+      if (code[nextArrow] !== '-' || code[nextArrow + 1] !== '>') break;
+      let nfStart = nextArrow + 2;
+      while (nfStart < code.length && /\s/.test(code[nfStart])) nfStart++;
+      if (nfStart >= code.length || !/[A-Za-z_]/.test(code[nfStart])) break;
+      let nfEnd = nfStart;
+      while (nfEnd < code.length && /[A-Za-z0-9_]/.test(code[nfEnd])) nfEnd++;
+      const nextField = code.slice(nfStart, nfEnd);
+      if (KEYWORDS.has(nextField)) break;
+      curField = nextField;
+      curEnd = nfEnd;
+    }
+    if (lastWasOffsetDeref) {
+      let after = curEnd;
+      while (after < code.length && /\s/.test(code[after])) after++;
+      const nextTwo = code.slice(after, after + 2);
+      const needsWrap = forceWrapForPrevCast || hopCount > 1 || nextTwo === '++' || nextTwo === '--' || nextTwo === '->'
+        || code[after] === '[' || code[after] === '.';
+      return { text: needsWrap ? `(${expr})` : expr, end: curEnd };
+    }
+    return { text: forceWrapForPrevCast ? `(${expr})` : expr, end: curEnd };
+  };
+
+  let out = '';
+  let i = 0;
+  while (i < code.length) {
+    const ch = code[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(code, i);
+      out += code.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && code[i + 1] === '/') {
+      out += code.slice(i);
+      break;
+    }
+    if (ch === '/' && code[i + 1] === '*') {
+      const end = skipBlockComment(code, i);
+      out += code.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '(' && symTable) {
+      const prevCh = previousChar(code, i);
+      const prevWord = previousWord(code, i);
+      const isCallArgList = !!(prevWord && !KEYWORDS.has(prevWord) && /[A-Za-z0-9_]/.test(prevCh));
+      if (!isCallArgList) {
+        const closeIdx = findMatchingDelimRaw(code, i, '(', ')');
+        if (closeIdx > i) {
+          const inner = code.slice(i + 1, closeIdx);
+          const rewrittenInner = rewriteArrowAccessesInCode(inner, badArrowBases, syntheticArrowStructs, existingTypes, existingStructFields, symTable);
+          let k = closeIdx + 1;
+          while (k < code.length && /\s/.test(code[k])) k++;
+          if (code[k] === '-' && code[k + 1] === '>') {
+            let fStart = k + 2;
+            while (fStart < code.length && /\s/.test(code[fStart])) fStart++;
+            if (fStart < code.length && /[A-Za-z_]/.test(code[fStart])) {
+              let fEnd = fStart;
+              while (fEnd < code.length && /[A-Za-z0-9_]/.test(code[fEnd])) fEnd++;
+              const field = code.slice(fStart, fEnd);
+              if (!KEYWORDS.has(field) && isNonStructParenArrowBase(rewrittenInner, symTable)) {
+                const chain = emitArrowChain(`(${rewrittenInner})`, 'expr', field, fEnd, prevCh === ')');
+                out += chain.text;
+                i = chain.end;
+                continue;
+              }
+            }
+          }
+          out += `(${rewrittenInner})`;
+          i = closeIdx + 1;
+          continue;
+        }
+      }
+    }
+    if (/[A-Za-z_]/.test(ch) && (i === 0 || !/[A-Za-z0-9_]/.test(code[i - 1]))) {
+      let j = i;
+      while (j < code.length && /[A-Za-z0-9_]/.test(code[j])) j++;
+      const ident = code.slice(i, j);
+      const beforeChar = previousChar(code, i);
+      const isMemberName = beforeChar === '.' || isPrecededByArrow(code, i);
+      const prevWord = previousWord(code, i);
+      if (!isMemberName && !['struct', 'union', 'enum', 'goto'].includes(prevWord) && badArrowBases.has(ident)) {
+        let k = j;
+        while (k < code.length && /\s/.test(code[k])) k++;
+        if (code[k] === '-' && code[k + 1] === '>') {
+          let fStart = k + 2;
+          while (fStart < code.length && /\s/.test(code[fStart])) fStart++;
+          if (fStart < code.length && /[A-Za-z_]/.test(code[fStart])) {
+            let fEnd = fStart;
+            while (fEnd < code.length && /[A-Za-z0-9_]/.test(code[fEnd])) fEnd++;
+            const field = code.slice(fStart, fEnd);
+            if (!KEYWORDS.has(field)) {
+              const chain = emitArrowChain(ident, ident, field, fEnd, false);
+              out += chain.text;
+              i = chain.end;
+              continue;
+            }
+          }
+        }
+      }
+      out += ident;
+      i = j;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+function rewriteNonStructArrowAccesses(lines, bodyOpen, symTable, existingTypes = null, existingStructFields = null) {
+  const syntheticArrowStructs = new Map();
+  if (bodyOpen < 0) return { lines, changed: false, syntheticArrowStructs };
+  const badArrowBases = new Set([...symTable.intNames, ...(symTable.nonStructPtrNames || [])]);
+  if (!badArrowBases.size && !symTable) return { lines, changed: false, syntheticArrowStructs };
+  let changed = false;
+  const out = lines.map((item, index) => {
+    if (index <= bodyOpen || !item || (item.kind !== 'stmt' && item.kind !== 'ctrl' && item.kind !== 'decl')) return item;
+    const raw = String(item.text ?? '');
+    if (!raw.includes('->')) return item;
+    const { code, comment } = splitTrailingComment(raw);
+    const rewritten = rewriteArrowAccessesInCode(code, badArrowBases, syntheticArrowStructs, existingTypes, existingStructFields, symTable);
+    if (rewritten === code) return item;
+    changed = true;
+    return { ...item, text: rewritten + comment };
+  });
+  return { lines: out, changed, syntheticArrowStructs };
+}
+
+function sanitizeFloatPointerCasts(expr, floatNames) {
+  const s = String(expr ?? '');
+  if (!floatNames?.size || !s.includes('*')) return s;
+  let out = '';
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(s, i);
+      out += s.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '*') {
+      const end = skipBlockComment(s, i);
+      out += s.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '/') {
+      out += s.slice(i);
+      break;
+    }
+    if (ch === '(') {
+      const closeType = findMatchingDelimRaw(s, i, '(', ')');
+      if (closeType > i) {
+        const castInner = s.slice(i + 1, closeType).trim();
+        if (/^(?:(?:const|volatile|struct|union|enum|unsigned|signed|long|short)\s+)*[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:const|volatile))*\s*\*+(?:\s*(?:const|volatile|restrict))*$/.test(castInner)) {
+          let k = closeType + 1;
+          while (k < n && /\s/.test(s[k])) k++;
+          if (s[k] === '(') {
+            const closeArg = findMatchingDelimRaw(s, k, '(', ')');
+            if (closeArg > k) {
+              const argRaw = s.slice(k + 1, closeArg);
+              const { lead, core, trail } = splitExprCommentAffixes(argRaw);
+              if (core && !/^\(\s*(?:uintptr_t|intptr_t)\s*\)/.test(core) && isFloatExpr(core, floatNames)) {
+                const sanitizedCore = sanitizeFloatPointerCasts(core, floatNames);
+                out += `(${castInner})(uintptr_t)(${lead}${sanitizedCore}${trail})`;
+                i = closeArg + 1;
+                continue;
+              }
+            }
+          } else {
+            const identMatch = /^([A-Za-z_][A-Za-z0-9_]*)\b/.exec(s.slice(k));
+            if (identMatch && floatNames.has(identMatch[1]) && !/^\s*\(/.test(s.slice(k + identMatch[1].length))) {
+              out += `(${castInner})(uintptr_t)${identMatch[1]}`;
+              i = k + identMatch[1].length;
+              continue;
+            }
+          }
+        }
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+function rewriteExprForIntConversion(expr, symTable) {
+  const { ptrNames, intNames, floatNames, selfCallSpec } = symTable;
+  const harmonized = harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames, selfCallSpec);
+  const withCalls = rewriteBuiltinPtrArgs(harmonized, ptrNames, intNames, floatNames, selfCallSpec);
+  const withBitwise = sanitizeBitwiseOps(withCalls, ptrNames, intNames, floatNames, selfCallSpec);
+  return sanitizeFloatPointerCasts(withBitwise, floatNames);
+}
+
+function findTopLevelControlBracedBlock(text) {
+  let paren = 0;
+  let bracket = 0;
+  let ternaryDepth = 0;
+  let lastColonWasTernary = false;
+  let lastTopLevelParenOpenIdx = -1;
+  let lastTopLevelParenCloseIdx = -1;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(text, i); continue; }
+    if (ch === '/' && text[i + 1] === '*') { i = skipBlockComment(text, i); continue; }
+    if (ch === '/' && text[i + 1] === '/') break;
+    if (ch === '(') {
+      if (paren === 0 && bracket === 0) lastTopLevelParenOpenIdx = i;
+      paren++;
+      continue;
+    }
+    if (ch === ')') {
+      if (paren > 0) {
+        paren--;
+        if (paren === 0 && bracket === 0) lastTopLevelParenCloseIdx = i;
+      }
+      continue;
+    }
+    if (ch === '[') { bracket++; continue; }
+    if (ch === ']') { if (bracket > 0) bracket--; continue; }
+    if (paren === 0 && bracket === 0) {
+      if (ch === '?') {
+        ternaryDepth++;
+        continue;
+      }
+      if (ch === ':') {
+        if (ternaryDepth > 0) {
+          ternaryDepth--;
+          lastColonWasTernary = true;
+        } else {
+          lastColonWasTernary = false;
+        }
+        continue;
+      }
+      if (ch === '{') {
+        const closeIdx = findMatchingDelimRaw(text, i, '{', '}');
+        if (closeIdx < 0) return null;
+        const beforeTrim = splitExprCommentAffixes(text.slice(0, i)).core;
+        let isControl = false;
+        if (!beforeTrim || beforeTrim.endsWith('}') || /\b(?:else|do)$/.test(beforeTrim)) {
+          isControl = true;
+        } else if (beforeTrim.endsWith(':') && ternaryDepth === 0 && !lastColonWasTernary) {
+          isControl = true;
+        } else if (beforeTrim.endsWith(')') && lastTopLevelParenOpenIdx >= 0 && lastTopLevelParenCloseIdx >= 0) {
+          const headWord = previousWord(text, lastTopLevelParenOpenIdx);
+          if (headWord === 'if' || headWord === 'for' || headWord === 'while' || headWord === 'switch') {
+            isControl = true;
+          }
+        }
+        if (isControl) return { openIdx: i, closeIdx };
+        i = closeIdx;
+      }
+    }
+  }
+  return null;
+}
+
+const OVERSIZED_INT_CANDIDATE_RE = /0[xX][0-9A-Fa-f]{17}|[0-9]{20}/;
+
+function sanitizeOversizedIntLiterals(code) {
+  if (!OVERSIZED_INT_CANDIDATE_RE.test(code)) return code;
+  let out = '';
+  let i = 0;
+  const len = code.length;
+  const MAX_U64 = 0xFFFFFFFFFFFFFFFFn;
+  while (i < len) {
+    const ch = code[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(code, i);
+      out += code.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && code[i + 1] === '/') {
+      out += code.slice(i);
+      break;
+    }
+    if (ch === '/' && code[i + 1] === '*') {
+      const end = skipBlockComment(code, i);
+      out += code.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch >= '0' && ch <= '9') {
+      const prevCh = i > 0 ? code[i - 1] : '';
+      if (!/[A-Za-z0-9_.]/.test(prevCh)) {
+        if (ch === '0' && (code[i + 1] === 'x' || code[i + 1] === 'X') && i + 2 < len && /[0-9A-Fa-f]/.test(code[i + 2])) {
+          let numEnd = i + 2;
+          while (numEnd < len && /[0-9A-Fa-f]/.test(code[numEnd])) numEnd++;
+          let end = numEnd;
+          while (end < len && /[uUlL]/.test(code[end])) end++;
+          const nextCh = end < len ? code[end] : '';
+          if (!/[A-Za-z0-9_.]/.test(nextCh)) {
+            const val = BigInt(code.slice(i, numEnd));
+            if (val > MAX_U64) {
+              out += `0x${BigInt.asUintN(64, val).toString(16)}ULL`;
+              i = end;
+              continue;
+            }
+          }
+          out += code.slice(i, end);
+          i = end;
+          continue;
+        }
+        let numEnd = i;
+        while (numEnd < len && code[numEnd] >= '0' && code[numEnd] <= '9') numEnd++;
+        let end = numEnd;
+        while (end < len && /[uUlL]/.test(code[end])) end++;
+        const nextCh = end < len ? code[end] : '';
+        if (!/[A-Za-z0-9_.]/.test(nextCh) && numEnd - i >= 20) {
+          const val = BigInt(code.slice(i, numEnd));
+          if (val > MAX_U64) {
+            out += `${BigInt.asUintN(64, val).toString(10)}ULL`;
+            i = end;
+            continue;
+          }
+        }
+        out += code.slice(i, end);
+        i = end;
+        continue;
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+function rewriteStatementForIntConversion(stmtText, symTable) {
+  const { ptrNames, intNames, floatNames, floatTypes, retType, retIsPtr, retIsInt, retIsFloat, selfCallSpec } = symTable;
+  let stmt = rewriteBuiltinPtrArgs(stmtText, ptrNames, intNames, floatNames, selfCallSpec);
+
+  const { prefix: ctrlPrefix, rest: bodyStmt } = stripLeadingControlOrLabel(stmt);
+  const sanitizedPrefix = ctrlPrefix
+    ? rewriteExprForIntConversion(ctrlPrefix, symTable)
+    : '';
+
+  // Return statement (standalone or trailing after `if (...)` / `else` / `label:`).
+  const retMatch = /^(\s*return\s+)([\s\S]+)$/.exec(bodyStmt);
+  if (retMatch) {
+    const prefix = sanitizedPrefix + retMatch[1];
+    let expr = rewriteExprForIntConversion(retMatch[2], symTable);
+    const exprTrim = expr.trim();
+    const exprType = classifyExprType(exprTrim, ptrNames, intNames, floatNames, selfCallSpec);
+    if (retIsPtr && exprType === 'int') {
+      expr = `(${retType})(uintptr_t)(${exprTrim})`;
+    } else if (retIsInt && exprType === 'ptr') {
+      expr = `(uintptr_t)(${exprTrim})`;
+    } else if (retIsFloat && exprType === 'ptr') {
+      expr = `(${retType})(uintptr_t)(${exprTrim})`;
+    }
+    return prefix + expr;
+  }
+
+  // General assignment (bare ident, deref store `*(T *)(...) = ...`, member, decl initializer, compound assign).
+  const assign = findTopLevelAssignment(bodyStmt);
+  if (assign) {
+    const lhsRaw = bodyStmt.slice(0, assign.start);
+    const lhsTrim = lhsRaw.trim();
+    const op = assign.op;
+    const rawRhs = bodyStmt.slice(assign.end);
+    const rhsLeadMatch = /^(\s*)/.exec(rawRhs);
+    const rhsLead = rhsLeadMatch ? rhsLeadMatch[1] : '';
+    const rhsBody = rawRhs.slice(rhsLead.length);
+    let rhs = findTopLevelAssignment(rhsBody)
+      ? rewriteStatementForIntConversion(rhsBody, symTable)
+      : rewriteExprForIntConversion(rhsBody, symTable);
+    const rhsTrim = rhs.trim();
+
+    if (['&=', '|=', '^=', '<<=', '>>=', '%='].includes(op) && isFloatExpr(rhsTrim, floatNames)) {
+      rhs = `(uint64)(${rhsTrim})`;
+    }
+
+    let lhsType = null;
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(lhsTrim) && !NON_DECL_STMT_HEADS.has(lhsTrim)) {
+      if (intNames.has(lhsTrim)) lhsType = 'int';
+      else if (ptrNames.has(lhsTrim)) lhsType = 'ptr';
+      else if (floatNames && floatNames.has(lhsTrim)) lhsType = 'float';
+    } else {
+      lhsType = classifyLhsDeclType(lhsTrim) ?? classifyExprType(lhsTrim, ptrNames, intNames, floatNames, selfCallSpec);
+    }
+
+    const rhsType = classifyExprType(rhs.trim(), ptrNames, intNames, floatNames, selfCallSpec);
+    let lhsOut = null;
+    if (lhsType === 'int' && rhsType === 'ptr') {
+      rhs = `(uintptr_t)(${rhs.trim()})`;
+    } else if (lhsType === 'ptr' && rhsType === 'int' && op === '=') {
+      rhs = `(void *)(uintptr_t)(${rhs.trim()})`;
+    } else if (lhsType === 'float' && rhsType === 'ptr' && op === '=') {
+      const lhsIdx = lhsRaw.indexOf(lhsTrim);
+      const lhsLead = lhsIdx >= 0 ? lhsRaw.slice(0, lhsIdx) : '';
+      const lhsTrail = lhsIdx >= 0 ? lhsRaw.slice(lhsIdx + lhsTrim.length) : '';
+      const fpDerefMatch = /^\*\s*\(\s*(double|float)\s*\*\s*\)\s*([\s\S]+)$/.exec(lhsTrim);
+      if (fpDerefMatch) {
+        const fpType = fpDerefMatch[1];
+        const sanitizedAddr = rewriteExprForIntConversion(fpDerefMatch[2], symTable);
+        if (fpType === 'double') {
+          lhsOut = `${lhsLead}*(uint64_t *)${sanitizedAddr}${lhsTrail}`;
+          rhs = `(uintptr_t)(${rhs.trim()})`;
+        } else {
+          lhsOut = `${lhsLead}*(uint32_t *)${sanitizedAddr}${lhsTrail}`;
+          rhs = `(uint32_t)(uintptr_t)(${rhs.trim()})`;
+        }
+      } else {
+        const declaredFpMatch = /\b(float|double)\b/.exec(lhsTrim);
+        const floatType = (floatTypes && floatTypes.get(lhsTrim))
+          || (declaredFpMatch ? declaredFpMatch[1] : 'double');
+        rhs = `(${floatType})(uintptr_t)(${rhs.trim()})`;
+      }
+    }
+    const lhsSanitized = lhsOut !== null ? lhsOut : rewriteExprForIntConversion(lhsRaw, symTable);
+    return `${sanitizedPrefix}${lhsSanitized}${op}${rhsLead}${rhs}`;
+  }
+
+  return sanitizedPrefix + rewriteExprForIntConversion(bodyStmt, symTable);
+}
+
+function rewriteCodeRegionForIntConversion(code, symTable) {
+  if (!code) return code;
+  const parts = splitTopLevelStatements(code);
+  return parts.map((part) => {
+    const block = findTopLevelControlBracedBlock(part.text);
+    if (block) {
+      const before = rewriteExprForIntConversion(part.text.slice(0, block.openIdx), symTable);
+      const inner = rewriteCodeRegionForIntConversion(part.text.slice(block.openIdx + 1, block.closeIdx), symTable);
+      const afterRaw = part.text.slice(block.closeIdx + 1) + (part.hasSemi ? ';' : '');
+      const after = rewriteCodeRegionForIntConversion(afterRaw, symTable);
+      return `${before}{${inner}}${after}`;
+    }
+    if (part.hasSemi) {
+      return `${rewriteStatementForIntConversion(part.text, symTable)};`;
+    }
+    return rewriteExprForIntConversion(part.text, symTable);
+  }).join('');
+}
+
+function applyIntConversionCoercions(lines, bodyOpen, symTable) {
+  if (bodyOpen < 0) return { lines, changed: false };
+  let changed = false;
+  const out = lines.map((item, index) => {
+    if (index <= bodyOpen || !item || (item.kind !== 'stmt' && item.kind !== 'ctrl' && item.kind !== 'decl')) return item;
+    const raw = String(item.text ?? '');
+    if (!raw.trim()) return item;
+    const { code, comment } = splitTrailingComment(raw);
+    if (!code.trim()) return item;
+    const sanitizedCode = sanitizeOversizedIntLiterals(code);
+    const nextCode = rewriteCodeRegionForIntConversion(sanitizedCode, symTable);
+    const rebuilt = nextCode + comment;
+    if (rebuilt === raw) return item;
+    changed = true;
+    return { ...item, text: rebuilt };
+  });
+  return { lines: out, changed };
 }
 
 /*
@@ -399,6 +3544,720 @@ export function fixedWidthPreludeLines(text, alreadyDefined = new Set()) {
  * derived artifact (for example an index-keyed render provenance map) after the
  * line array changed.
  */
+function collectDeclaredStructPointerNames(sigText, lines) {
+  const structPtrs = new Set();
+  const isStructLikeType = (typeTok, hasStructTag) => {
+    if (hasStructTag) return true;
+    if (!typeTok || KEYWORDS.has(typeTok) || FIXED_WIDTH_TYPES.has(typeTok)
+      || STANDARD_KNOWN_TYPES.has(typeTok) || C_PRIMITIVE_TYPE_KEYWORDS.has(typeTok)
+      || typeTok === 'id') return false;
+    return true;
+  };
+
+  const cleanSig = declarationBearingSource(sigText);
+  const open = cleanSig.indexOf('(');
+  if (open >= 0) {
+    const close = findMatchingDelimiter(cleanSig, open, '(', ')');
+    if (close > open) {
+      for (const rawGroup of cleanSig.slice(open + 1, close).split(',')) {
+        const group = rawGroup.trim();
+        if (!group || group === 'void' || group === '...' || !group.includes('*')) continue;
+        const m = /^((?:(?:const|volatile|restrict|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)\s*(?:const\s+|volatile\s+|restrict\s+)*\*+\s*(?:const\s+|volatile\s+|restrict\s+)*([A-Za-z_][A-Za-z0-9_]*)$/.exec(group);
+        if (!m) continue;
+        const hasStructTag = /\b(?:struct|union)\s+$/.test(m[1]);
+        if (isStructLikeType(m[2], hasStructTag)) structPtrs.add(m[3]);
+      }
+    }
+  }
+
+  for (const item of lines || []) {
+    if (!item || (item.kind !== 'decl' && item.kind !== 'stmt')) continue;
+    const cleaned = declarationBearingSource(item.text).trim();
+    if (!cleaned || /^typedef\b/.test(cleaned) || cleaned.startsWith('#')) continue;
+    const noSemi = cleaned.replace(/;\s*$/, '').trim();
+    const declarators = splitTopLevelCommas(noSemi);
+    const firstHead = cutBeforeTopLevelAssign(declarators[0] || '').trim();
+    if (!firstHead || firstHead.includes('(')) continue;
+    const baseMatch = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)\b/.exec(firstHead);
+    if (!baseMatch || NON_DECL_STMT_HEADS.has(baseMatch[2])) continue;
+    const hasStructTag = /\b(?:struct|union)\s+$/.test(baseMatch[1]);
+    if (!isStructLikeType(baseMatch[2], hasStructTag)) continue;
+    for (let idx = 0; idx < declarators.length; idx++) {
+      const part = cutBeforeTopLevelAssign(declarators[idx]).trim();
+      const body = idx === 0 ? part.slice(baseMatch[0].length).trim() : part;
+      if (!body || !body.includes('*')) continue;
+      const nm = /([A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(body);
+      if (nm && !KEYWORDS.has(nm[1])) structPtrs.add(nm[1]);
+    }
+  }
+  return structPtrs;
+}
+
+function isDeclaredScalarArrowBase(entry, declared, structPtrNames) {
+  const name = entry?.name;
+  if (!name || !entry.memberBase || !declared.has(name) || structPtrNames.has(name)) return false;
+  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name) || STANDARD_KNOWN_TYPES.has(name)) return false;
+  if (entry.callTarget || entry.memberName || entry.castType || entry.tag) return false;
+  if (entry.label || entry.gotoLabel) return false;
+  if (/^global_/.test(name)) return false;
+  if (/^(?:sub_|func_|fn_|unknown_call$|loc_|__)/.test(name)) return false;
+  return true;
+}
+
+function rewriteScalarArrowBasesInLine(text, arrowRewriteBases) {
+  if (!arrowRewriteBases.size || !text.includes('->')) return { text, changed: false };
+  let out = '';
+  let i = 0;
+  let changed = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(text, i);
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '/') {
+      out += text.slice(i);
+      break;
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const end = skipBlockComment(text, i);
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '(') {
+      const closeIdx = findMatchingDelimRaw(text, i, '(', ')');
+      if (closeIdx > i) {
+        let after = closeIdx + 1;
+        while (after < text.length && /\s/.test(text[after])) after++;
+        if (text.slice(after, after + 2) === '->' && !/\(\s*uintptr_t\s*\)\s*$/.test(out)) {
+          const inner = text.slice(i + 1, closeIdx);
+          const addrOfM = /^\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(inner);
+          if (addrOfM && arrowRewriteBases.has(addrOfM[1])) {
+            const structType = arrowRewriteBases.get(addrOfM[1]);
+            out += `((${structType} *)(uintptr_t)(${inner.trim()}))->`;
+            i = after + 2;
+            changed = true;
+            continue;
+          }
+          const arithM = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:[+]|-(?!>))[\s\S]*$/.exec(inner);
+          if (arithM && arrowRewriteBases.has(arithM[1])) {
+            const structType = arrowRewriteBases.get(arithM[1]);
+            const rewrittenInner = rewriteScalarArrowBasesInLine(inner.trim(), arrowRewriteBases).text;
+            out += `((${structType} *)(uintptr_t)(${rewrittenInner}))->`;
+            i = after + 2;
+            changed = true;
+            continue;
+          }
+        }
+      }
+    }
+    if (/[A-Za-z_]/.test(ch) && (i === 0 || !/[A-Za-z0-9_]/.test(text[i - 1]))) {
+      let j = i;
+      while (j < text.length && /[A-Za-z0-9_]/.test(text[j])) j++;
+      const ident = text.slice(i, j);
+      if (arrowRewriteBases.has(ident)) {
+        let prev = i - 1;
+        while (prev >= 0 && /\s/.test(text[prev])) prev--;
+        const afterMemberOp = (prev >= 0 && text[prev] === '.')
+          || (prev >= 1 && text[prev - 1] === '-' && text[prev] === '>');
+        if (!afterMemberOp) {
+          let next = j;
+          while (next < text.length && /\s/.test(text[next])) next++;
+          if (text.slice(next, next + 2) === '->') {
+            const structType = arrowRewriteBases.get(ident);
+            out += `((${structType} *)(uintptr_t)(${ident}))->`;
+            i = next + 2;
+            changed = true;
+            continue;
+          }
+        }
+      }
+      out += ident;
+      i = j;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return { text: out, changed };
+}
+
+function applyScalarArrowRewrites(lines, bodyOpen, arrowRewriteBases) {
+  if (bodyOpen < 0 || !arrowRewriteBases.size) return { lines, changed: false };
+  let changed = false;
+  const out = lines.map((item, index) => {
+    if (index <= bodyOpen || !item || (item.kind !== 'stmt' && item.kind !== 'ctrl' && item.kind !== 'decl')) return item;
+    const raw = String(item.text ?? '');
+    if (!raw.includes('->')) return item;
+    const res = rewriteScalarArrowBasesInLine(raw, arrowRewriteBases);
+    if (!res.changed) return item;
+    changed = true;
+    return { ...item, text: res.text };
+  });
+  return { lines: out, changed };
+}
+
+function parseGlobalHexAddress(name) {
+  const m = /^global_([0-9A-Fa-f]+)$/.exec(String(name ?? ''));
+  if (!m) return null;
+  try { return BigInt(`0x${m[1]}`); } catch { return null; }
+}
+
+function formatCStringLiteral(str) {
+  let out = '"';
+  for (let i = 0; i < str.length; i += 1) {
+    const ch = str[i];
+    const code = str.charCodeAt(i);
+    if (ch === '\\') out += '\\\\';
+    else if (ch === '"') out += '\\"';
+    else if (ch === '\n') out += '\\n';
+    else if (ch === '\r') out += '\\r';
+    else if (ch === '\t') out += '\\t';
+    else if (code >= 0x20 && code <= 0x7e) out += ch;
+    else out += `\\${(code & 0xff).toString(8).padStart(3, '0')}`;
+  }
+  out += '"';
+  return out;
+}
+
+function sectionBoundsForGlobal(sec) {
+  if (!sec || typeof sec !== 'object') return null;
+  const rawStart = sec.addr ?? sec.vaddr ?? sec.va ?? sec.start ?? sec.address;
+  if (rawStart == null) return null;
+  let start;
+  try { start = BigInt(rawStart); } catch { return null; }
+  const rawSize = sec.size ?? sec.memsz ?? sec.length ?? sec.bytes?.length ?? sec.data?.length;
+  if (rawSize == null) return null;
+  let size;
+  try { size = BigInt(rawSize); } catch { return null; }
+  if (size <= 0n) return null;
+  return { start, end: start + size };
+}
+
+function isUninitializedBssSection(sec) {
+  if (!sec || typeof sec !== 'object') return false;
+  if (sec.nobits === true || sec.type === 8 || sec.type === 'SHT_NOBITS') return true;
+  const name = String(sec.name ?? sec.region ?? '');
+  return /^\.bss(?:\.|$)/i.test(name);
+}
+
+function isReadOnlyDataSection(sec) {
+  if (!sec || typeof sec !== 'object') return false;
+  if (sec.readOnly === true || sec.readonly === true) return true;
+  if (sec.readable === true && sec.writable === false && sec.executable === false) return true;
+  const name = String(sec.name ?? sec.region ?? '');
+  return /(?:^|,)\.(?:rodata|rdata)(?:\.|\$|$)|(?:^|,)__(?:cstring|const|ustring|oslog)(?:$|\b)/i.test(name);
+}
+
+function isRelativeRelocation(rel) {
+  if (!rel || typeof rel !== 'object') return false;
+  const t = rel.type ?? rel.r_type ?? rel.typeName;
+  if (t === 1027 || t === 8) return true;
+  if (typeof t === 'string' && /^(?:R_AARCH64_RELATIVE|R_X86_64_RELATIVE|RELATIVE)$/i.test(t.trim())) return true;
+  if (typeof rel.typeName === 'string' && /^(?:R_AARCH64_RELATIVE|R_X86_64_RELATIVE)$/i.test(rel.typeName.trim())) return true;
+  return rel.kind === 'relative';
+}
+
+export function createGlobalDataResolver(result, options) {
+  const ctx = options?.context;
+  const bin = options?.binary ?? options?.image ?? ctx?.binary ?? ctx?.image ?? result?.binary ?? null;
+  const model = options?.model ?? ctx?.model ?? result?.model ?? result?.ir?.model ?? null;
+  const sectionLists = [
+    options?.sections, options?.segments, options?.regions,
+    bin?.sections, bin?.segments, bin?.regions,
+    ctx?.sections, ctx?.segments, ctx?.regions,
+    model?.sections, model?.regions,
+    result?.sections,
+  ];
+  const sections = [];
+  for (const list of sectionLists) {
+    if (!Array.isArray(list)) continue;
+    for (const sec of list) {
+      const bounds = sectionBoundsForGlobal(sec);
+      if (bounds) sections.push({ sec, start: bounds.start, end: bounds.end });
+    }
+  }
+  const fileBytes = options?.fileBytes ?? options?.bytes
+    ?? bin?.bytes ?? bin?.raw
+    ?? ctx?.fileBytes ?? ctx?.bytes
+    ?? result?.fileBytes ?? null;
+  const directReadBytes = options?.readBytes ?? bin?.readBytes ?? ctx?.readBytes ?? null;
+  const directReadByte = options?.readByte ?? options?.byteAt ?? bin?.readByte ?? ctx?.readByte ?? null;
+  const stringFor = options?.stringFor ?? ctx?.stringFor ?? null;
+
+  const relativeRelocs = new Map();
+  const relocLists = [
+    options?.relocations, bin?.relocations, ctx?.relocations, model?.relocations, result?.relocations,
+  ];
+  for (const list of relocLists) {
+    if (!Array.isArray(list)) continue;
+    for (const rel of list) {
+      if (!isRelativeRelocation(rel)) continue;
+      const rawAddr = rel.address ?? rel.offset ?? rel.r_offset ?? rel.addr;
+      const rawTarget = rel.target ?? rel.addend ?? rel.r_addend;
+      if (rawAddr == null || rawTarget == null) continue;
+      try {
+        relativeRelocs.set(BigInt(rawAddr), BigInt(rawTarget));
+      } catch { /* ignore malformed relocation */ }
+    }
+  }
+
+  const directStringRefs = new Map();
+  const indirectStringRefs = new Map();
+  const addrRefLists = [
+    options?.addressRefs, model?.addressRefs, ctx?.addressRefs, result?.addressRefs,
+  ];
+  for (const list of addrRefLists) {
+    if (!Array.isArray(list)) continue;
+    for (const ref of list) {
+      if (ref?.addr == null || typeof ref.text !== 'string') continue;
+      try {
+        const a = BigInt(ref.addr);
+        if (ref.viaPointer) {
+          if (!indirectStringRefs.has(a)) indirectStringRefs.set(a, ref.text);
+        } else if (!directStringRefs.has(a)) {
+          directStringRefs.set(a, ref.text);
+        }
+      } catch { /* ignore malformed addressRef */ }
+    }
+  }
+
+  const hasData = sections.length > 0
+    || Boolean(directReadBytes)
+    || Boolean(directReadByte)
+    || relativeRelocs.size > 0
+    || indirectStringRefs.size > 0;
+
+  const findSection = (addr) => {
+    for (const entry of sections) {
+      if (addr >= entry.start && addr < entry.end) return entry;
+    }
+    return null;
+  };
+
+  const hasSectionAt = (addr) => {
+    if (addr == null || typeof addr === 'boolean') return false;
+    if (typeof addr === 'string' && !addr.trim()) return false;
+    try {
+      const addrBigInt = typeof addr === 'bigint' ? addr : BigInt(addr);
+      return findSection(addrBigInt) !== null;
+    } catch {
+      return false;
+    }
+  };
+
+  const readBytesAt = (addr, maxLen) => {
+    const entry = findSection(addr);
+    if (entry) {
+      if (isUninitializedBssSection(entry.sec)) return null;
+      const avail = Number(entry.end - addr);
+      const count = Math.min(maxLen, avail);
+      if (count <= 0) return null;
+      const inlineBytes = entry.sec.bytes ?? entry.sec.data;
+      const rel = Number(addr - entry.start);
+      if (inlineBytes && rel >= 0 && rel < inlineBytes.length) {
+        const n = Math.min(count, inlineBytes.length - rel);
+        let out;
+        if (inlineBytes instanceof Uint8Array) {
+          out = inlineBytes.subarray(rel, rel + n);
+        } else {
+          out = new Uint8Array(n);
+          for (let i = 0; i < n; i += 1) out[i] = inlineBytes[rel + i];
+        }
+        return { bytes: out, section: entry.sec, sectionEnd: entry.end };
+      }
+      const fileOffset = entry.sec.offset ?? entry.sec.fileOffset;
+      if (fileOffset != null && fileBytes) {
+        const pos = Number(BigInt(fileOffset) + (addr - entry.start));
+        if (pos >= 0 && pos < fileBytes.length) {
+          const n = Math.min(count, fileBytes.length - pos);
+          let out;
+          if (fileBytes instanceof Uint8Array) {
+            out = fileBytes.subarray(pos, pos + n);
+          } else {
+            out = new Uint8Array(n);
+            for (let i = 0; i < n; i += 1) out[i] = fileBytes[pos + i];
+          }
+          return { bytes: out, section: entry.sec, sectionEnd: entry.end };
+        }
+      }
+    }
+    try {
+      if (typeof directReadBytes === 'function') {
+        const buf = directReadBytes(addr, maxLen);
+        if (buf && buf.length > 0) {
+          const out = buf instanceof Uint8Array ? buf : Uint8Array.from(buf);
+          return { bytes: out, section: entry?.sec ?? null, sectionEnd: entry?.end ?? null };
+        }
+      }
+      if (typeof directReadByte === 'function') {
+        const arr = [];
+        for (let i = 0; i < maxLen; i += 1) {
+          const b = directReadByte(addr + BigInt(i));
+          if (typeof b !== 'number') break;
+          arr.push(b & 0xff);
+        }
+        if (arr.length > 0) {
+          return { bytes: Uint8Array.from(arr), section: entry?.sec ?? null, sectionEnd: entry?.end ?? null };
+        }
+      }
+    } catch { /* optional reader */ }
+    return null;
+  };
+
+  const resolveCStringAt = (addr) => {
+    try {
+      if (typeof stringFor === 'function') {
+        const s = stringFor(addr);
+        if (typeof s === 'string') return s;
+      }
+    } catch { /* optional resolver */ }
+    if (directStringRefs.has(addr)) return directStringRefs.get(addr);
+    const read = readBytesAt(addr, 256);
+    if (!read || !read.bytes.length) return null;
+    const chars = [];
+    for (let i = 0; i < read.bytes.length; i += 1) {
+      const b = read.bytes[i];
+      if (b === 0) {
+        if (chars.length === 0 && !isReadOnlyDataSection(read.section)) return null;
+        return String.fromCharCode(...chars);
+      }
+      if ((b >= 0x20 && b <= 0x7e) || b === 0x09 || b === 0x0a || b === 0x0d) {
+        chars.push(b);
+      } else {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  const decodeLE = (bytes, offset, count) => {
+    let v = 0n;
+    for (let i = count - 1; i >= 0; i -= 1) {
+      v = (v << 8n) | BigInt(bytes[offset + i]);
+    }
+    return v;
+  };
+
+  const resolveWord64 = (addr) => {
+    if (addr == null) return null;
+    if (relativeRelocs.has(addr)) {
+      const target = relativeRelocs.get(addr);
+      const str = resolveCStringAt(target);
+      if (str !== null) {
+        return { expr: `(uint64)(uintptr_t)${formatCStringLiteral(str)}`, isPointer: true, isNonZero: true };
+      }
+    }
+    if (indirectStringRefs.has(addr)) {
+      const str = indirectStringRefs.get(addr);
+      return { expr: `(uint64)(uintptr_t)${formatCStringLiteral(str)}`, isPointer: true, isNonZero: true };
+    }
+    const read = readBytesAt(addr, 8);
+    if (!read || read.bytes.length < 4) return null;
+    const width = Math.min(8, read.bytes.length);
+    const val = decodeLE(read.bytes, 0, width);
+    if (val === 0n) return { expr: '0', isPointer: false, isNonZero: false, value: 0n };
+    return { expr: `0x${val.toString(16)}ULL`, isPointer: false, isNonZero: true, value: val };
+  };
+
+  const resolveUint128 = (addr) => {
+    if (addr == null) return null;
+    const w0 = resolveWord64(addr);
+    const w1 = resolveWord64(addr + 8n);
+    if (!w0 && !w1) return null;
+    if (w0?.isPointer || w1?.isPointer) {
+      return { kind: 'words', words: [w0?.expr ?? '0', w1?.expr ?? '0'] };
+    }
+    const lo = w0?.value ?? 0n;
+    const hi = w1?.value ?? 0n;
+    if (hi === 0n && lo === 0n) return { kind: 'scalar', expr: '0' };
+    if (hi === 0n) return { kind: 'scalar', expr: `(uint128)0x${lo.toString(16)}ULL` };
+    return { kind: 'scalar', expr: `(((uint128)0x${hi.toString(16)}ULL << 64) | (uint128)0x${lo.toString(16)}ULL)` };
+  };
+
+  const resolveBufferWords = (addr, maxWords = 512) => {
+    if (addr == null || !hasData) return null;
+    const entry = findSection(addr);
+    let maxScan = 0;
+    if (entry && !isUninitializedBssSection(entry.sec)) {
+      const remBytes = Number(entry.end - addr);
+      maxScan = Math.min(maxWords, Math.ceil(remBytes / 8));
+    }
+    if (relativeRelocs.size > 0 && maxScan < maxWords) {
+      for (let i = maxWords - 1; i >= maxScan; i -= 1) {
+        if (relativeRelocs.has(addr + BigInt(i * 8))) {
+          maxScan = i + 1;
+          break;
+        }
+      }
+    }
+    if (maxScan === 0 && (directReadBytes || directReadByte || indirectStringRefs.has(addr))) {
+      maxScan = Math.min(maxWords, 16);
+    }
+    if (maxScan <= 0) return null;
+    const words = [];
+    let lastNonZero = -1;
+    for (let i = 0; i < maxScan; i += 1) {
+      const w = resolveWord64(addr + BigInt(i * 8));
+      const expr = w?.isNonZero ? w.expr : '0';
+      words.push(expr);
+      if (w?.isNonZero) lastNonZero = i;
+    }
+    if (lastNonZero < 0) return null;
+    return words.slice(0, lastNonZero + 1);
+  };
+
+  return { hasData, hasSectionAt, resolveWord64, resolveUint128, resolveBufferWords };
+}
+
+function normalizeEvidenceAddress(raw) {
+  if (raw == null || typeof raw === 'boolean') return null;
+  if (typeof raw === 'bigint') return raw;
+  if (typeof raw === 'number') return Number.isInteger(raw) ? BigInt(raw) : null;
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!/^(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(t)) return null;
+    try {
+      return BigInt(t);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function normalizeKeyedEvidenceEntry(key, value) {
+  if (!value || typeof value !== 'object') return null;
+  const copy = { ...value };
+  if (copy.address == null) {
+    if (typeof key === 'bigint' || (typeof key === 'number' && Number.isInteger(key) && key >= 0)) {
+      copy.address = key;
+    } else if (typeof key === 'string' && /^(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(key.trim())) {
+      copy.address = key;
+    }
+  }
+  if (copy.name == null && typeof key === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    copy.name = key;
+  }
+  return copy;
+}
+
+function mergeClosureBinaryGlobalEvidence(existing, additions) {
+  const merged = [];
+  if (Array.isArray(existing)) {
+    for (const item of existing) merged.push(item);
+  } else if (existing instanceof Map) {
+    for (const [k, v] of existing.entries()) {
+      const normalized = normalizeKeyedEvidenceEntry(k, v);
+      if (normalized) merged.push(normalized);
+    }
+  } else if (existing && typeof existing === 'object') {
+    for (const [k, v] of Object.entries(existing)) {
+      const normalized = normalizeKeyedEvidenceEntry(k, v);
+      if (normalized) merged.push(normalized);
+    }
+  }
+  const seenNames = new Set();
+  const seenAddrs = new Set();
+  for (const item of merged) {
+    if (typeof item?.name === 'string' && item.name) seenNames.add(item.name);
+    const addr = normalizeEvidenceAddress(item?.address ?? item?.addr);
+    if (addr != null) seenAddrs.add(addr);
+  }
+  for (const entry of additions) {
+    if (seenNames.has(entry.name)) continue;
+    const addr = normalizeEvidenceAddress(entry.address);
+    if (addr != null && seenAddrs.has(addr)) continue;
+    merged.push(entry);
+    seenNames.add(entry.name);
+    if (addr != null) seenAddrs.add(addr);
+  }
+  return merged;
+}
+
+const LABEL_HYGIENE_DECL_MODIFIERS = new Set([
+  'static', 'const', 'volatile', 'register', 'restrict', 'unsigned', 'signed', 'long', 'short',
+]);
+
+function isLabelLikeLineText(cleaned) {
+  if (!cleaned) return false;
+  if (/^default\s*:\s*$/.test(cleaned)) return true;
+  if (/^case\b[^:]*:\s*$/.test(cleaned)) return true;
+  if (/^[A-Za-z_][A-Za-z0-9_]*:\s*$/.test(cleaned)) return true;
+  return false;
+}
+
+function isLocalVarDeclarationLine(item, cleaned, existingTypes) {
+  if (item?.kind === 'decl') return true;
+  if (item?.kind !== 'stmt' || !cleaned) return false;
+  if (/^(?:(?:static|const|volatile|register|restrict)\s+)*(?:struct|union|enum)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*\*+\s*|\s+)(?:\(\s*\*+\s*[A-Za-z_][A-Za-z0-9_]*\s*\)|[A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,|\()/.test(cleaned)) {
+    return true;
+  }
+  const headMatch = /^([A-Za-z_][A-Za-z0-9_]*)\b(.*)$/s.exec(cleaned);
+  if (!headMatch) return false;
+  const head = headMatch[1];
+  if (NON_DECL_STMT_HEADS.has(head)) return false;
+  const rest = headMatch[2].trim();
+  if (!rest) return false;
+  if (LABEL_HYGIENE_DECL_MODIFIERS.has(head)) {
+    return /^(?:(?:static|const|volatile|register|restrict|unsigned|signed|long|short)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\s+)?(?:\*+\s*(?:const\s+|volatile\s+|restrict\s+)*)*(?:\(\s*\*+\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\([^)]*\)|[A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.test(cleaned);
+  }
+  const isKnownType = FIXED_WIDTH_TYPES.has(head)
+    || STANDARD_KNOWN_TYPES.has(head)
+    || C_PRIMITIVE_TYPE_KEYWORDS.has(head)
+    || head === 'id'
+    || /^hex_struct_/.test(head)
+    || Boolean(existingTypes?.has(head));
+  if (isKnownType) {
+    return /^(?:\*+\s*(?:const\s+|volatile\s+|restrict\s+)*)*(?:\(\s*\*+\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\([^)]*\)|[A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.test(rest);
+  }
+  return false;
+}
+
+function findLeadingLabelColonIndex(rawText) {
+  const len = rawText.length;
+  let pos = 0;
+  let lastColonIdx = -1;
+  while (pos < len) {
+    // Skip whitespace and leading block comments.
+    while (pos < len) {
+      if (/\s/.test(rawText[pos])) { pos += 1; continue; }
+      if (rawText[pos] === '/' && rawText[pos + 1] === '*') {
+        const end = rawText.indexOf('*/', pos + 2);
+        if (end < 0) return lastColonIdx;
+        pos = end + 2;
+        continue;
+      }
+      if (rawText[pos] === '/' && rawText[pos + 1] === '/') return lastColonIdx;
+      break;
+    }
+    if (pos >= len) break;
+    const rest = rawText.slice(pos);
+    const defaultMatch = /^default\b\s*:(?!:)/.exec(rest);
+    if (defaultMatch) {
+      lastColonIdx = pos + defaultMatch[0].length - 1;
+      pos = lastColonIdx + 1;
+      continue;
+    }
+    const caseMatch = /^case\b(?![A-Za-z0-9_])/.exec(rest);
+    if (caseMatch) {
+      let k = pos + caseMatch[0].length;
+      let paren = 0;
+      let ternary = 0;
+      let found = -1;
+      while (k < len) {
+        const ch = rawText[k];
+        if (ch === '/' && rawText[k + 1] === '*') {
+          const end = rawText.indexOf('*/', k + 2);
+          if (end < 0) break;
+          k = end + 2;
+          continue;
+        }
+        if (ch === '/' && rawText[k + 1] === '/') break;
+        if (ch === '"' || ch === "'") {
+          const quote = ch;
+          k += 1;
+          while (k < len) {
+            if (rawText[k] === '\\') { k += 2; continue; }
+            if (rawText[k] === quote) { k += 1; break; }
+            k += 1;
+          }
+          continue;
+        }
+        if (ch === '(') { paren += 1; k += 1; continue; }
+        if (ch === ')') { if (paren > 0) paren -= 1; k += 1; continue; }
+        if (paren === 0 && ch === '?') { ternary += 1; k += 1; continue; }
+        if (paren === 0 && ch === ':') {
+          if (rawText[k + 1] === ':') { k += 2; continue; }
+          if (ternary > 0) { ternary -= 1; k += 1; continue; }
+          found = k;
+          break;
+        }
+        k += 1;
+      }
+      if (found < 0) break;
+      lastColonIdx = found;
+      pos = found + 1;
+      continue;
+    }
+    const identMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)/.exec(rest);
+    if (identMatch) {
+      lastColonIdx = pos + identMatch[0].length - 1;
+      pos = lastColonIdx + 1;
+      continue;
+    }
+    break;
+  }
+  return lastColonIdx;
+}
+
+function applyLabelHygiene(lines, bodyOpen, existingTypes, entrySource) {
+  if (bodyOpen < 0 || !Array.isArray(lines) || !lines.length) return { lines, changed: false };
+  const out = [];
+  let changed = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const item = lines[i];
+    if (i <= bodyOpen || item?.kind === 'comment') {
+      out.push(item);
+      continue;
+    }
+    const rawText = String(item?.text ?? '');
+    const cleaned = declarationBearingSource(rawText).trim();
+    if (!isLabelLikeLineText(cleaned)) {
+      const colonIdx = findLeadingLabelColonIndex(rawText);
+      if (colonIdx >= 0) {
+        const tail = rawText.slice(colonIdx + 1);
+        const tailClean = declarationBearingSource(tail).trim();
+        if (
+          tailClean
+          && !tailClean.startsWith(';')
+          && (tailClean === '}' || tailClean.startsWith('}') || isLocalVarDeclarationLine({ kind: 'stmt' }, tailClean, existingTypes))
+        ) {
+          const spacer = tail.length > 0 && (tail[0] === ' ' || tail[0] === '\t') ? '' : ' ';
+          out.push({
+            ...item,
+            text: `${rawText.slice(0, colonIdx + 1)} ;${spacer}${tail}`,
+          });
+          changed = true;
+          continue;
+        }
+      }
+      out.push(item);
+      continue;
+    }
+    out.push(item);
+    let nextItem = null;
+    let nextClean = '';
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const candidate = lines[j];
+      if (candidate?.kind === 'comment') continue;
+      const c = declarationBearingSource(candidate?.text ?? '').trim();
+      if (!c) continue;
+      nextItem = candidate;
+      nextClean = c;
+      break;
+    }
+    if (!nextItem) continue;
+    if (nextClean === '}' || nextClean.startsWith('}') || isLocalVarDeclarationLine(nextItem, nextClean, existingTypes)) {
+      const labelIndent = Number.isFinite(item?.indent) ? item.indent : 1;
+      out.push({
+        kind: 'stmt',
+        indent: Math.max(1, labelIndent),
+        text: ';',
+        row: item?.row ?? null,
+        addr: item?.addr ?? null,
+        note: null,
+        source: item?.source ?? entrySource,
+      });
+      changed = true;
+    }
+  }
+  return { lines: changed ? out : lines, changed };
+}
+
 export function closeFunctionOutput(result, options = {}) {
   if (!result || !Array.isArray(result.lines) || !result.lines.length) return result;
   const render = typeof options.render === 'function' ? options.render : renderedText;
@@ -407,28 +4266,880 @@ export function closeFunctionOutput(result, options = {}) {
   if (sigIndex < 0) return result;
 
   const declared = declaredNamesFromLines(lines);
-  for (const name of parameterNames(String(lines[sigIndex].text ?? ''))) declared.add(name);
-  const uses = scanIdentifierUses(render(lines));
+  const sigText = String(lines[sigIndex].text ?? '');
+  const cleanSig = declarationBearingSource(sigText);
+  const sigTypes = signatureTypeNames(sigText, cleanSig);
+  for (const name of parameterNames(sigText)) declared.add(name);
+  for (const name of sigTypes) declared.add(name);
+  const objcSigMatch = /[+-]\[([^\]]+)\]/.exec(cleanSig);
+  if (objcSigMatch) {
+    for (const m of objcSigMatch[1].matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) declared.add(m[0]);
+  }
   const entrySource = entryOriginSource(lines[sigIndex]);
+  const bodyOpen = lines.findIndex((item, index) => index > sigIndex && item?.kind === 'ctrl' && item?.text === '{');
+  const renderedInitial = render(lines);
+  const renderedBody = bodyOpen >= 0 ? render(lines.slice(bodyOpen)) : '';
+  const cleanBody = declarationBearingSource(renderedBody);
+  const uses = scanIdentifierUses(renderedBody, cleanBody);
+  const existingTypes = definedTypeAliases(lines);
+
+  const memberBaseAccesses = collectMemberBaseAccesses(renderedBody, cleanBody);
+  for (const baseName of memberBaseAccesses.keys()) {
+    const useEntry = uses.get(baseName);
+    if (useEntry) useEntry.memberBase = true;
+  }
+  const structPrelude = [];
+  const memberBaseDeclarations = [];
+  const arrowRewriteBases = new Map();
+  if (bodyOpen >= 0) {
+    const memberBases = [...uses.values()]
+      .filter((entry) => isDeclarableMemberBase(entry, declared))
+      .sort((a, b) => compareAscii(a.name, b.name));
+    for (const entry of memberBases) {
+      const access = memberBaseAccesses.get(entry.name);
+      if (!access || !access.fields.size) continue;
+      const structType = `hex_struct_${entry.name}`;
+      if (!existingTypes.has(structType)) {
+        const fieldsText = [...access.fields].sort(compareAscii).map((field) => `uint64 ${field};`).join(' ');
+        if (!structPrelude.length) {
+          structPrelude.push({ kind: 'decl', indent: 0, text: STRUCT_PRELUDE_COMMENT, row: null, addr: null, note: null, source: entrySource });
+        }
+        structPrelude.push({
+          kind: 'decl', indent: 0, text: `typedef struct { ${fieldsText} } ${structType};`,
+          row: null, addr: null, note: null, source: entrySource,
+        });
+        existingTypes.add(structType);
+      }
+      const declText = access.hasArrow ? `${structType} *${entry.name};` : `${structType} ${entry.name};`;
+      memberBaseDeclarations.push({
+        kind: 'decl', indent: 1, text: declText,
+        row: null, addr: null, note: null, source: entrySource,
+      });
+    }
+
+    const declaredStructPtrs = collectDeclaredStructPointerNames(sigText, lines);
+    const scalarArrowBases = [...uses.values()]
+      .filter((entry) => isDeclaredScalarArrowBase(entry, declared, declaredStructPtrs))
+      .sort((a, b) => compareAscii(a.name, b.name));
+    for (const entry of scalarArrowBases) {
+      const access = memberBaseAccesses.get(entry.name);
+      if (!access || !access.hasArrow || !access.fields.size) continue;
+      const structType = `hex_struct_${entry.name}`;
+      if (!existingTypes.has(structType)) {
+        const fieldsText = [...access.fields].sort(compareAscii).map((field) => `uint64 ${field};`).join(' ');
+        if (!structPrelude.length) {
+          structPrelude.push({ kind: 'decl', indent: 0, text: STRUCT_PRELUDE_COMMENT, row: null, addr: null, note: null, source: entrySource });
+        }
+        structPrelude.push({
+          kind: 'decl', indent: 0, text: `typedef struct ${structType} { ${fieldsText} } ${structType};`,
+          row: null, addr: null, note: null, source: entrySource,
+        });
+        existingTypes.add(structType);
+      }
+      arrowRewriteBases.set(entry.name, structType);
+    }
+  }
+
+  const standaloneGlobals = [...uses.values()]
+    .filter((entry) => isDeclarableStandaloneGlobal(entry, declared))
+    .sort((a, b) => compareAscii(a.name, b.name));
+  const arrayGlobalNames = new Set();
+  if (bodyOpen >= 0) {
+    for (const entry of standaloneGlobals) {
+      const access = memberBaseAccesses.get(entry.name);
+      if (!access || !access.hasAddrOfArrow || !access.fields.size) continue;
+      const structType = `hex_struct_${entry.name}`;
+      if (!existingTypes.has(structType)) {
+        const fieldsText = [...access.fields].sort(compareAscii).map((field) => `uint64 ${field};`).join(' ');
+        if (!structPrelude.length) {
+          structPrelude.push({ kind: 'decl', indent: 0, text: STRUCT_PRELUDE_COMMENT, row: null, addr: null, note: null, source: entrySource });
+        }
+        structPrelude.push({
+          kind: 'decl', indent: 0, text: `typedef struct ${structType} { ${fieldsText} } ${structType};`,
+          row: null, addr: null, note: null, source: entrySource,
+        });
+        existingTypes.add(structType);
+      }
+      arrowRewriteBases.set(entry.name, structType);
+    }
+  }
+  const globalPrelude = [];
+  if (standaloneGlobals.length) {
+    const cleanedBodyForGlobals = String(renderedBody ?? '')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/[^\n]*/g, ' ')
+      .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+      .replace(/'(?:[^'\\]|\\.)*'/g, ' ');
+    const extractCopySourceIdent = (rawRhs) => {
+      let s = String(rawRhs || '').trim();
+      for (let i = 0; i < 8; i += 1) {
+        let changed = false;
+        while (s.startsWith('(') && s.endsWith(')')) {
+          let depth = 0;
+          let wrapsAll = true;
+          for (let j = 0; j < s.length - 1; j += 1) {
+            if (s[j] === '(') depth += 1;
+            else if (s[j] === ')') {
+              depth -= 1;
+              if (depth === 0) {
+                wrapsAll = false;
+                break;
+              }
+            }
+          }
+          if (!wrapsAll) break;
+          s = s.slice(1, -1).trim();
+          changed = true;
+        }
+        const castMatch = /^\(\s*(?:(?:const|volatile|restrict|unsigned|signed|long|short|struct|enum|union)\s+)*[A-Za-z_][A-Za-z0-9_]*(?:\s*\*+)*\s*\)\s*(.+)$/s.exec(s);
+        if (castMatch) {
+          s = castMatch[1].trim();
+          changed = true;
+        }
+        if (!changed) break;
+      }
+      s = s.replace(/\s*[+-]\s*(?:0[xX][0-9A-Fa-f]+|\d+)[uUlL]*$/, '').trim();
+      while (s.startsWith('(') && s.endsWith(')')) {
+        let depth = 0;
+        let wrapsAll = true;
+        for (let j = 0; j < s.length - 1; j += 1) {
+          if (s[j] === '(') depth += 1;
+          else if (s[j] === ')') {
+            depth -= 1;
+            if (depth === 0) {
+              wrapsAll = false;
+              break;
+            }
+          }
+        }
+        if (!wrapsAll) break;
+        s = s.slice(1, -1).trim();
+      }
+      const identMatch = /^([A-Za-z_][A-Za-z0-9_]*)$/.exec(s);
+      return identMatch ? identMatch[1] : null;
+    };
+    const copyTargetsBySource = new Map();
+    for (const rawSeg of cleanedBodyForGlobals.split(/[;{}]/)) {
+      const stmt = rawSeg.trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*\s*:\s*)+/, '').trim();
+      if (!stmt) continue;
+      const assignMatch = /^(?:(?:const|volatile|restrict|static|register|unsigned|signed|long|short|struct|enum|union)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\s*(?:\*+\s*|\s+))?([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*(.+)$/s.exec(stmt);
+      if (!assignMatch) continue;
+      const lhs = assignMatch[1];
+      const src = extractCopySourceIdent(assignMatch[2]);
+      if (!src || lhs === src) continue;
+      if (!copyTargetsBySource.has(src)) copyTargetsBySource.set(src, new Set());
+      copyTargetsBySource.get(src).add(lhs);
+    }
+    const interestSet = new Set();
+    for (const entry of standaloneGlobals) {
+      const g = typeof entry === 'string' ? entry : entry.name;
+      if (!g) continue;
+      interestSet.add(g);
+      let frontier = [g];
+      for (let hop = 0; hop < 2 && frontier.length > 0; hop += 1) {
+        const next = [];
+        for (const name of frontier) {
+          const targets = copyTargetsBySource.get(name);
+          if (!targets) continue;
+          for (const alias of targets) {
+            if (!interestSet.has(alias)) {
+              interestSet.add(alias);
+              next.push(alias);
+            }
+          }
+        }
+        frontier = next;
+      }
+    }
+    const occByIdent = new Map();
+    const segSlices = [];
+    const segIdsByIdent = new Map();
+    {
+      // Preserve leading delimiter (';', '{', or '}') on every non-initial
+      // segment so '^' anchors never falsely match after '}' (#review_01).
+      const bodyLen = cleanedBodyForGlobals.length;
+      let segStart = 0;
+      let segIdx = 0;
+      let segIdents = null;
+      const flushSegment = (segEnd) => {
+        if (segIdents) {
+          segSlices[segIdx] = cleanedBodyForGlobals.slice(segStart, segEnd);
+          for (const name of segIdents) {
+            let list = segIdsByIdent.get(name);
+            if (!list) { list = []; segIdsByIdent.set(name, list); }
+            list.push(segIdx);
+          }
+          segIdents = null;
+        }
+        segIdx += 1;
+      };
+      for (let pos = 0; pos < bodyLen; pos += 1) {
+        const c = cleanedBodyForGlobals.charCodeAt(pos);
+        if (c === 59 /* ';' */ || c === 123 /* '{' */ || c === 125 /* '}' */) {
+          flushSegment(pos);
+          segStart = pos;
+          continue;
+        }
+        if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95) {
+          let end = pos + 1;
+          while (end < bodyLen && isIdentCharCode(cleanedBodyForGlobals.charCodeAt(end))) end += 1;
+          const ident = cleanedBodyForGlobals.slice(pos, end);
+          if (interestSet.has(ident)) {
+            let occ = occByIdent.get(ident);
+            if (!occ) { occ = []; occByIdent.set(ident, occ); }
+            occ.push(pos);
+            if (!segIdents) segIdents = new Set();
+            segIdents.add(ident);
+          }
+          pos = end - 1;
+        }
+      }
+      flushSegment(bodyLen);
+    }
+    const derefCache = new Map();
+    const isIdentDereferenced = (ident) => {
+      if (derefCache.has(ident)) return derefCache.get(ident);
+      const occs = occByIdent.get(ident);
+      if (!occs || !occs.length) {
+        derefCache.set(ident, false);
+        return false;
+      }
+      const len = cleanedBodyForGlobals.length;
+      const identLen = ident.length;
+      // Direct O(1)-per-occurrence checks on cleanedBodyForGlobals for arrow (->),
+      // subscript ([), and unary deref (*ident / *(ident)), avoiding split('}') false positives.
+      for (let oi = 0; oi < occs.length; oi += 1) {
+        const start = occs[oi];
+        const end = start + identLen;
+        if (isFollowedByArrow(cleanedBodyForGlobals, end)) { derefCache.set(ident, true); return true; }
+        let k = end;
+        while (k < len && isWsAt(cleanedBodyForGlobals, k)) k += 1;
+        if (k < len && cleanedBodyForGlobals.charCodeAt(k) === 91 /* '[' */) { derefCache.set(ident, true); return true; }
+        let p = start - 1;
+        while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        if (p >= 0 && cleanedBodyForGlobals.charCodeAt(p) === 40 /* '(' */) {
+          p -= 1;
+          while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        }
+        if (p >= 0 && cleanedBodyForGlobals.charCodeAt(p) === 42 /* '*' */) {
+          let q = p - 1;
+          while (q >= 0 && isWsAt(cleanedBodyForGlobals, q)) q -= 1;
+          if (q < 0) { derefCache.set(ident, true); return true; }
+          const ch = cleanedBodyForGlobals[q];
+          if ('=({[,;:!?&|^~+-<>'.includes(ch)) { derefCache.set(ident, true); return true; }
+          if (isIdentCharCode(cleanedBodyForGlobals.charCodeAt(q)) && previousWord(cleanedBodyForGlobals, p) === 'return') {
+            derefCache.set(ident, true);
+            return true;
+          }
+        }
+      }
+      const segIds = segIdsByIdent.get(ident);
+      if (!segIds || !segIds.length) {
+        derefCache.set(ident, false);
+        return false;
+      }
+      const esc = ident.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const castDerefRe = new RegExp(
+        `\\*\\s*\\([^;{}()]*\\*\\s*\\)\\s*\\(?\\s*(?:\\(\\s*(?:uintptr_t|intptr_t|[A-Za-z_][A-Za-z0-9_\\s]*\\*)\\s*\\)\\s*)?\\(?\\s*${esc}\\b`,
+      );
+      const castArrowRe = new RegExp(
+        `\\(\\s*\\([^;{}()]*\\*\\s*\\)\\s*(?:\\(\\s*(?:uintptr_t|intptr_t)\\s*\\)\\s*)?\\(?\\s*${esc}\\b[^;{}]*\\)\\s*(?:->|\\[)`,
+      );
+      let matched = false;
+      for (let si = 0; si < segIds.length; si += 1) {
+        const seg = segSlices[segIds[si]];
+        if (castDerefRe.test(seg) || castArrowRe.test(seg)) { matched = true; break; }
+      }
+      derefCache.set(ident, matched);
+      return matched;
+    };
+    const isGlobalDereferenced = (globalName) => {
+      if (isIdentDereferenced(globalName)) return true;
+      const visited = new Set([globalName]);
+      let frontier = [globalName];
+      for (let hop = 0; hop < 2 && frontier.length > 0; hop += 1) {
+        const next = [];
+        for (const name of frontier) {
+          const targets = copyTargetsBySource.get(name);
+          if (!targets) continue;
+          for (const alias of targets) {
+            if (visited.has(alias)) continue;
+            visited.add(alias);
+            if (isIdentDereferenced(alias)) return true;
+            next.push(alias);
+          }
+        }
+        frontier = next;
+      }
+      return false;
+    };
+    const hasOnlyAddressOfUses = (globalName) => {
+      const occs = occByIdent.get(globalName);
+      if (!occs || !occs.length) return false;
+      for (let oi = 0; oi < occs.length; oi += 1) {
+        let ampIdx = occs[oi] - 1;
+        while (ampIdx >= 0 && isWsAt(cleanedBodyForGlobals, ampIdx)) ampIdx--;
+        if (ampIdx < 0 || cleanedBodyForGlobals.charCodeAt(ampIdx) !== 38 /* '&' */) return false;
+        if (ampIdx >= 1 && cleanedBodyForGlobals.charCodeAt(ampIdx - 1) === 38 /* '&' */) return false;
+        const beforeAmp = previousChar(cleanedBodyForGlobals, ampIdx);
+        const isUnary = !beforeAmp
+          || '=({[,;:!?|^~+-<>*/%'.includes(beforeAmp)
+          || (beforeAmp === ')' && isCastBeforeIndex(cleanedBodyForGlobals, ampIdx))
+          || (/[A-Za-z0-9_]/.test(beforeAmp) && previousWord(cleanedBodyForGlobals, ampIdx) === 'return');
+        if (!isUnary) return false;
+      }
+      return true;
+    };
+    const align16 = (v) => Math.ceil(v / 16) * 16;
+    const isCastBeforeIndex = (text, idx) => {
+      let closeIdx = idx - 1;
+      while (closeIdx >= 0 && /\s/.test(text[closeIdx])) closeIdx -= 1;
+      if (closeIdx < 0 || text[closeIdx] !== ')') return false;
+      let depth = 0;
+      let openIdx = -1;
+      for (let j = closeIdx; j >= 0; j -= 1) {
+        if (text[j] === ')') depth += 1;
+        else if (text[j] === '(') {
+          depth -= 1;
+          if (depth === 0) {
+            openIdx = j;
+            break;
+          }
+        }
+      }
+      if (openIdx < 0) return false;
+      const inner = text.slice(openIdx + 1, closeIdx).trim();
+      if (!inner) return false;
+      if (/\*\s*(?:const|volatile|restrict)?\s*$/.test(inner)) return true;
+      const stripped = inner.replace(/\b(?:const|volatile|restrict|unsigned|signed|short|long|struct|union|enum)\b/g, ' ').trim();
+      if (!stripped) return true;
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(stripped)) {
+        return FIXED_WIDTH_TYPES.has(stripped)
+          || STANDARD_KNOWN_TYPES.has(stripped)
+          || C_PRIMITIVE_TYPE_KEYWORDS.has(stripped)
+          || stripped === 'id'
+          || /^hex_struct_/.test(stripped)
+          || existingTypes.has(stripped);
+      }
+      return false;
+    };
+    const isGlobalAddressTaken = (globalName) => {
+      const occs = occByIdent.get(globalName);
+      if (!occs || !occs.length) return false;
+      const bodyLen = cleanedBodyForGlobals.length;
+      const nameLen = globalName.length;
+      for (let oi = 0; oi < occs.length; oi += 1) {
+        const start = occs[oi];
+        let p = start - 1;
+        while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        if (p >= 0 && cleanedBodyForGlobals.charCodeAt(p) === 40 /* '(' */) {
+          p -= 1;
+          while (p >= 0 && isWsAt(cleanedBodyForGlobals, p)) p -= 1;
+        }
+        if (p < 0 || cleanedBodyForGlobals.charCodeAt(p) !== 38 /* '&' */) continue;
+        if (p >= 1 && cleanedBodyForGlobals.charCodeAt(p - 1) === 38 /* '&' */) continue;
+        let after = start + nameLen;
+        while (after < bodyLen && isWsAt(cleanedBodyForGlobals, after)) after += 1;
+        if (after < bodyLen && cleanedBodyForGlobals.charCodeAt(after) === 41 /* ')' */ && isFollowedByArrow(cleanedBodyForGlobals, after + 1)) {
+          continue;
+        }
+        const prev = previousChar(cleanedBodyForGlobals, p);
+        if (!prev || '=({[,;:!?|^~+-<>*/%'.includes(prev)) return true;
+        if (prev === ')' && isCastBeforeIndex(cleanedBodyForGlobals, p)) return true;
+        if (/[A-Za-z0-9_]/.test(prev) && previousWord(cleanedBodyForGlobals, p) === 'return') return true;
+      }
+      return false;
+    };
+    const u128LocalNames = new Set();
+    {
+      const u128DeclRe = /\b(?:uint128|int128|vector128|(?:unsigned\s+)?__int128)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/g;
+      for (let m = u128DeclRe.exec(cleanedBodyForGlobals); m; m = u128DeclRe.exec(cleanedBodyForGlobals)) {
+        u128LocalNames.add(m[1]);
+      }
+    }
+    const isGlobalUsedAsUint128 = (globalName) => {
+      const segIds = segIdsByIdent.get(globalName);
+      if (!segIds || !segIds.length) return false;
+      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const u128Type = '(?:uint128|int128|vector128|(?:unsigned\\s+)?__int128)';
+      const patterns = [
+        new RegExp(`\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)[^;{}]*=(?!=)\\s*(?:\\([^;{}()]*\\)\\s*)*(?<!&)${esc}\\b`),
+        new RegExp(`\\(\\s*${u128Type}\\s*\\)\\s*\\(?\\s*(?<!&)${esc}\\b`),
+        new RegExp(`(?:\\b${u128Type}\\s+[A-Za-z_][A-Za-z0-9_]*|\\b[qQvV]\\d+(?:_\\d+)?)\\s*=(?!=)\\s*(?:\\([^;{}()]*\\)\\s*)*(?<!&)${esc}\\b`),
+        new RegExp(`\\b${esc}\\s*=(?!=)\\s*(?:\\*\\s*\\(\\s*(?:const\\s+)?${u128Type}\\s*\\*\\s*\\)|\\b[qQvV]\\d+(?:_\\d+)?\\b)`),
+      ];
+      for (let si = 0; si < segIds.length; si += 1) {
+        const seg = segSlices[segIds[si]];
+        if (patterns.some((re) => re.test(seg))) return true;
+      }
+      if (u128LocalNames.size > 0) {
+        const assignRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=(?!=)\\s*(?:\\([^;{}()]*\\)\\s*)*(?<!&)${esc}\\b`, 'g');
+        for (let si = 0; si < segIds.length; si += 1) {
+          const seg = segSlices[segIds[si]];
+          assignRe.lastIndex = 0;
+          for (let m = assignRe.exec(seg); m; m = assignRe.exec(seg)) {
+            if (u128LocalNames.has(m[1])) return true;
+          }
+        }
+      }
+      return false;
+    };
+    const globalData = createGlobalDataResolver(result, options);
+    const binaryPreludeLines = [];
+    const unresolvedPreludeLines = [];
+    const binaryEvidenceEntries = [];
+    for (const entry of standaloneGlobals) {
+      const access = memberBaseAccesses.get(entry.name);
+      const globalAddr = parseGlobalHexAddress(entry.name);
+      const usedAsUint128 = isGlobalUsedAsUint128(entry.name);
+      if (access?.hasAddrOfArrow && access.fields.size && hasOnlyAddressOfUses(entry.name)) {
+        let maxFieldOffset = 0;
+        for (const field of access.fields) {
+          const fm = /^field_(?:0[xX])?([0-9A-Fa-f]+)$/.exec(field);
+          if (fm) {
+            const off = parseInt(fm[1], 16);
+            if (Number.isFinite(off) && off > maxFieldOffset) maxFieldOffset = off;
+          }
+        }
+        const byteSize = Math.min(65536, Math.max(64, align16(Math.max(maxFieldOffset + 8, access.fields.size * 8))));
+        arrayGlobalNames.add(entry.name);
+        unresolvedPreludeLines.push({
+          kind: 'decl', indent: 0, text: `static uint8_t ${entry.name}[${byteSize}] = {0};`,
+          row: null, addr: null, note: null, source: entrySource,
+        });
+        continue;
+      }
+      const isBinaryBacked = globalData.hasData && globalAddr != null && globalData.hasSectionAt(globalAddr);
+      const targetPrelude = isBinaryBacked ? binaryPreludeLines : unresolvedPreludeLines;
+      if (isBinaryBacked) {
+        binaryEvidenceEntries.push({
+          name: entry.name,
+          address: globalAddr,
+          type: usedAsUint128 ? 'unsigned __int128' : 'uint64_t',
+          provenance: 'closure-binary-data',
+        });
+      }
+      if (isGlobalAddressTaken(entry.name)) {
+        const bufName = `__hex_${entry.name}_buf`;
+        const bufWords = globalData.hasData ? globalData.resolveBufferWords(globalAddr, 512) : null;
+        const initText = bufWords && bufWords.length ? `{ ${bufWords.join(', ')} }` : '{0}';
+        const macroTarget = usedAsUint128 ? `*(uint128 *)&${bufName}[0]` : `${bufName}[0]`;
+        targetPrelude.push(
+          {
+            kind: 'decl', indent: 0, text: `static uint64 ${bufName}[512] = ${initText};`,
+            row: null, addr: null, note: null, source: entrySource,
+          },
+          {
+            kind: 'decl', indent: 0, text: `#define ${entry.name} (${macroTarget})`,
+            row: null, addr: null, note: null, source: entrySource,
+          },
+        );
+      } else if (usedAsUint128) {
+        const u128Init = globalData.hasData ? globalData.resolveUint128(globalAddr) : null;
+        if (u128Init?.kind === 'words') {
+          const bufName = `__hex_${entry.name}_buf`;
+          targetPrelude.push(
+            {
+              kind: 'decl', indent: 0, text: `static uint64 ${bufName}[2] = { ${u128Init.words[0]}, ${u128Init.words[1]} };`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+            {
+              kind: 'decl', indent: 0, text: `#define ${entry.name} (*(uint128 *)&${bufName}[0])`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+          );
+        } else {
+          targetPrelude.push({
+            kind: 'decl', indent: 0, text: `static uint128 ${entry.name} = ${u128Init?.expr ?? '0'};`,
+            row: null, addr: null, note: null, source: entrySource,
+          });
+        }
+      } else if (isGlobalDereferenced(entry.name)) {
+        const wordInit = globalData.hasData ? globalData.resolveWord64(globalAddr) : null;
+        if (wordInit?.isPointer) {
+          targetPrelude.push({
+            kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = ${wordInit.expr};`,
+            row: null, addr: null, note: null, source: entrySource,
+          });
+        } else {
+          const backingName = `__hex_${entry.name}_backing`;
+          targetPrelude.push(
+            {
+              kind: 'decl', indent: 0, text: `static uint64 ${backingName} = 0;`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+            {
+              kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = (uint64)(uintptr_t)&${backingName};`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+          );
+        }
+      } else {
+        const wordInit = globalData.hasData ? globalData.resolveWord64(globalAddr) : null;
+        targetPrelude.push({
+          kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = ${wordInit?.isNonZero ? wordInit.expr : '0'};`,
+          row: null, addr: null, note: null, source: entrySource,
+        });
+      }
+    }
+    if (binaryPreludeLines.length > 0) {
+      globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_BINARY_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
+      globalPrelude.push(...binaryPreludeLines);
+    }
+    if (unresolvedPreludeLines.length > 0) {
+      globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
+      globalPrelude.push(...unresolvedPreludeLines);
+    }
+    if (binaryEvidenceEntries.length > 0) {
+      result.globalEvidence = mergeClosureBinaryGlobalEvidence(result.globalEvidence, binaryEvidenceEntries);
+    }
+  }
+
+  const idUsedAsType = sigTypes.has('id')
+    || Boolean(uses.get('id')?.castType)
+    || Boolean(objcSigMatch)
+    || /(?:^|[\n;{])\s*(?:(?:const|volatile|restrict|static)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:=|;|\[|,)/.test(cleanBody);
+  const idTypedefPrelude = [];
+  if (!existingTypes.has('id') && idUsedAsType) {
+    idTypedefPrelude.push({
+      kind: 'decl', indent: 0, text: 'typedef void * id;',
+      row: null, addr: null, note: null, source: entrySource,
+    });
+    existingTypes.add('id');
+    declared.add('id');
+  }
+
+  const declaredMemberBaseNames = new Set(memberBaseDeclarations.map((d) => {
+    const m = /([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(d.text);
+    return m ? m[1] : '';
+  }).filter(Boolean));
+  const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText, cleanBody, cleanSig);
+  const mutablePtrReturnLocals = inferMutablePtrReturnLocals(renderedBody, cleanBody);
+  const syntheticStackFrameLayoutForSp = (bodyText) => {
+    const cleaned = String(bodyText ?? '')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/[^\n]*/g, ' ')
+      .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+      .replace(/'(?:[^'\\]|\\.)*'/g, ' ');
+    const usesSpAsStackPtr = /\bsp\s*[+-]\s*(?:0[xX][0-9A-Fa-f]+|\d+)/.test(cleaned)
+      || /\(\s*uintptr_t\s*\)\s*(?:\([^;{}]*\bsp\b[^;{}]*\)|sp\b)/.test(cleaned)
+      || /\*\s*\([^)]*\*\s*\)\s*\(\s*sp\s*\)/.test(cleaned);
+    if (!usesSpAsStackPtr) return null;
+    let maxSub = 0;
+    const subRe = /\bsp\b\s*-\s*(0[xX][0-9A-Fa-f]+|\d+)/g;
+    for (let m = subRe.exec(cleaned); m; m = subRe.exec(cleaned)) {
+      const val = (m[1].startsWith('0x') || m[1].startsWith('0X'))
+        ? parseInt(m[1], 16)
+        : parseInt(m[1], 10);
+      if (Number.isFinite(val) && val > maxSub) maxSub = val;
+    }
+    const hasPositiveSpRef = /\bsp\b\s*\+\s*(?:0[xX][0-9A-Fa-f]+|\d+)/.test(cleaned)
+      || /\(\s*uintptr_t\s*\)\s*(?:\(\s*sp\s*\)|sp\b)/.test(cleaned)
+      || /=\s*(?:\(\s*[^)]*\)\s*)?sp\s*;/.test(cleaned)
+      || /\*\s*\([^)]*\*\s*\)\s*\(\s*sp\s*\)/.test(cleaned);
+    if (!hasPositiveSpRef) {
+      const rounded = Math.ceil((maxSub + 256) / 16) * 16;
+      return { totalSize: Math.min(65536, Math.max(4096, rounded)), belowSize: null };
+    }
+    let maxAdd = 0;
+    const addRe = /\bsp\b\s*\+\s*(0[xX][0-9A-Fa-f]+|\d+)/g;
+    for (let m = addRe.exec(cleaned); m; m = addRe.exec(cleaned)) {
+      const val = (m[1].startsWith('0x') || m[1].startsWith('0X'))
+        ? parseInt(m[1], 16)
+        : parseInt(m[1], 10);
+      if (Number.isFinite(val) && val > maxAdd) maxAdd = val;
+    }
+    let belowSize = Math.max(4096, Math.ceil((maxSub + 256) / 16) * 16);
+    let aboveSize = Math.max(4096, Math.ceil((maxAdd + 256) / 16) * 16);
+    if (belowSize + aboveSize > 65536) {
+      const MAX_FRAME = 65536, MIN_SIDE = 256;
+      const capBelow = Math.max(MIN_SIDE, Math.min(belowSize, MAX_FRAME - Math.min(aboveSize, MAX_FRAME / 2)));
+      belowSize = Math.floor(capBelow / 16) * 16;
+      aboveSize = Math.max(MIN_SIDE, Math.floor((MAX_FRAME - belowSize) / 16) * 16);
+    }
+    return { totalSize: belowSize + aboveSize, belowSize };
+  };
+  const evidenceIndex = buildEvidenceIndex(result);
   const localDeclarations = [...uses.values()]
-    .filter((entry) => isDeclarableLocal(entry, declared))
-    .map((entry) => ({
-      kind: 'decl', indent: 1, text: `${localDeclarationTypeFor(entry.name, result)} ${entry.name};`,
+    .filter((entry) => isDeclarableLocal(entry, declared, declaredMemberBaseNames, existingTypes))
+    .flatMap((entry) => {
+      const declType = (() => {
+        if (entry.subscriptBase && (entry.name === 'memory' || !entry.nonSubscriptValue)) return 'uint8_t *';
+        const t = localDeclarationTypeFor(entry.name, result, evidenceIndex);
+        if (t === 'uint64' && mutablePtrReturnLocals.has(entry.name)) return mutablePtrReturnLocals.get(entry.name);
+        return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'const void *' : t;
+      })();
+      if (entry.name === 'sp' && declType === 'uint64') {
+        const frame = syntheticStackFrameLayoutForSp(renderedBody);
+        if (frame && frame.totalSize > 0) {
+          const spInit = frame.belowSize == null
+            ? 'uint64 sp = (uintptr_t)(__hex_stack_frame + sizeof(__hex_stack_frame));'
+            : `uint64 sp = (uintptr_t)(__hex_stack_frame + ${frame.belowSize});`;
+          return [
+            {
+              kind: 'decl', indent: 1, text: `uint8_t __hex_stack_frame[${frame.totalSize}] = {0};`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+            {
+              kind: 'decl', indent: 1, text: spInit,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+          ];
+        }
+      }
+      const init = entry.name === 'memory' && declType === 'uint8_t *' ? ' = (uint8_t *)0' : '';
+      return [{
+        kind: 'decl', indent: 1, text: `${declType} ${entry.name}${init};`,
+        row: null, addr: null, note: null, source: entrySource,
+      }];
+    });
+
+  const allBodyDeclarations = [...memberBaseDeclarations, ...localDeclarations];
+  const withDeclarationsRaw = allBodyDeclarations.length && bodyOpen >= 0
+    ? [...lines.slice(0, bodyOpen + 1), ...allBodyDeclarations, ...lines.slice(bodyOpen + 1)]
+    : lines;
+
+  const existingStructFields = new Map();
+  for (const item of [...lines, ...structPrelude]) {
+    const parsed = parseSynthesizedStructPreludeDeclaration(item?.text);
+    if (!parsed) continue;
+    let fset = existingStructFields.get(parsed.name);
+    if (!fset) {
+      fset = new Set();
+      existingStructFields.set(parsed.name, fset);
+    }
+    for (const f of parsed.fields) fset.add(f.name);
+    existingTypes.add(parsed.name);
+  }
+  const symTable = buildSymbolTypeTable(sigText, withDeclarationsRaw, standaloneGlobals, arrayGlobalNames);
+  const { lines: withArrowRewrites, changed: arrowChanged, syntheticArrowStructs } = rewriteNonStructArrowAccesses(withDeclarationsRaw, bodyOpen, symTable, existingTypes, existingStructFields);
+  for (const structType of [...syntheticArrowStructs.keys()].sort(compareAscii)) {
+    if (existingTypes.has(structType)) continue;
+    const fields = syntheticArrowStructs.get(structType);
+    if (!fields || !fields.size) continue;
+    if (!structPrelude.length) {
+      structPrelude.push({ kind: 'decl', indent: 0, text: STRUCT_PRELUDE_COMMENT, row: null, addr: null, note: null, source: entrySource });
+    }
+    structPrelude.push({
+      kind: 'decl', indent: 0, text: `typedef struct { ${[...fields].sort(compareAscii).map((f) => `uint64 ${f};`).join(' ')} } ${structType};`,
+      row: null, addr: null, note: null, source: entrySource,
+    });
+    existingTypes.add(structType);
+  }
+  const { lines: afterIntConv, changed: intConvChanged } = applyIntConversionCoercions(withArrowRewrites, bodyOpen, symTable);
+  const { lines: afterScalarArrow, changed: scalarArrowChanged } = applyScalarArrowRewrites(afterIntConv, bodyOpen, arrowRewriteBases);
+
+  const sigPtrParams = signaturePointerParams(sigText, cleanSig);
+  const sigTypesByName = new Map();
+  for (const { typeName, paramName } of sigPtrParams) {
+    if (existingTypes.has(typeName)) continue;
+    let fields = sigTypesByName.get(typeName);
+    if (!fields) {
+      fields = new Set();
+      sigTypesByName.set(typeName, fields);
+    }
+    const access = memberBaseAccesses.get(paramName);
+    if (access && access.fields.size) {
+      for (const f of access.fields) fields.add(f);
+    }
+  }
+  for (const typeName of [...sigTypesByName.keys()].sort(compareAscii)) {
+    const fields = sigTypesByName.get(typeName);
+    if (!structPrelude.length) {
+      structPrelude.push({ kind: 'decl', indent: 0, text: STRUCT_PRELUDE_COMMENT, row: null, addr: null, note: null, source: entrySource });
+    }
+    const typedefText = fields && fields.size
+      ? `typedef struct ${typeName} { ${[...fields].sort(compareAscii).map((f) => `uint64 ${f};`).join(' ')} } ${typeName};`
+      : `typedef struct ${typeName} ${typeName};`;
+    structPrelude.push({
+      kind: 'decl', indent: 0, text: typedefText,
+      row: null, addr: null, note: null, source: entrySource,
+    });
+    existingTypes.add(typeName);
+  }
+  const { lines: withDeclarations, changed: labelHygieneChanged } = applyLabelHygiene(afterScalarArrow, bodyOpen, existingTypes, entrySource);
+  const bodyChanged = arrowChanged || intConvChanged || scalarArrowChanged || labelHygieneChanged;
+  const withPostFixedPrelude = [...withDeclarations];
+
+  const atomicPrelude = atomicCompatPreludeLines(uses, lines, entrySource);
+  const bitfieldHelperPrelude = bitfieldHelperPreludeLines(uses, lines, entrySource);
+  const bitfieldHelperNames = new Set();
+  for (const l of [...lines, ...bitfieldHelperPrelude]) {
+    const helperName = parseBitfieldHelperDefinition(l?.text);
+    if (helperName) bitfieldHelperNames.add(helperName);
+  }
+  const macroDefinedCalls = new Set();
+  for (const l of [...lines, ...atomicPrelude]) {
+    const m = /^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(String(l?.text ?? ''));
+    if (m) macroDefinedCalls.add(m[1]);
+  }
+  const sigFuncName = signatureFunctionName(sigText, cleanSig);
+  const existingIncludes = new Set();
+  const existingLineTexts = new Set();
+  for (const l of lines) {
+    const rawLineText = String(l?.text ?? '').trim();
+    if (rawLineText) existingLineTexts.add(rawLineText);
+    const inc = /^#include\s*(<[A-Za-z0-9_./+-]+>)/.exec(rawLineText);
+    if (inc) existingIncludes.add(inc[1]);
+  }
+  const neededStdlibHeaders = new Set();
+  const glibcAliasPrelude = [];
+  const existingMacroNames = new Set();
+  for (const l of lines) {
+    const m = /^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(String(l?.text ?? ''));
+    if (m) existingMacroNames.add(m[1]);
+  }
+  const emittedChkProtos = new Set();
+  for (const entry of [...uses.values()].sort((a, b) => compareAscii(a.name, b.name))) {
+    if (!entry?.callTarget) continue;
+    if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || entry.name === sigFuncName) continue;
+    const header = STANDARD_C_LIBRARY_HEADERS.get(entry.name);
+    if (header && !existingIncludes.has(header)) neededStdlibHeaders.add(header);
+    const aliasInfo = GLIBC_STRIPPED_ALIAS_MAP.get(entry.name);
+    const chkTarget = aliasInfo ? aliasInfo.target : entry.name;
+    const chkInfo = GLIBC_CHK_PROTOTYPES.get(chkTarget);
+    if (chkInfo) {
+      if (chkInfo.header && !existingIncludes.has(chkInfo.header)) neededStdlibHeaders.add(chkInfo.header);
+      for (const extraH of chkInfo.extraHeaders || []) {
+        if (!existingIncludes.has(extraH)) neededStdlibHeaders.add(extraH);
+      }
+    }
+    if (aliasInfo) {
+      if (aliasInfo.header && !existingIncludes.has(aliasInfo.header)) neededStdlibHeaders.add(aliasInfo.header);
+      for (const extraH of aliasInfo.extraHeaders || []) {
+        if (!existingIncludes.has(extraH)) neededStdlibHeaders.add(extraH);
+      }
+      const needAlias = !existingMacroNames.has(entry.name);
+      const needProto = Boolean(chkInfo && !existingLineTexts.has(chkInfo.proto) && !emittedChkProtos.has(chkTarget));
+      if (needAlias || needProto) {
+        glibcAliasPrelude.push(
+          { kind: 'decl', indent: 0, text: '#if defined(__GLIBC__)', row: null, addr: null, note: null, source: entrySource },
+        );
+        if (needProto) {
+          if (chkInfo.guardFortify) {
+            glibcAliasPrelude.push(
+              { kind: 'decl', indent: 0, text: '#if !defined(__USE_FORTIFY_LEVEL) || __USE_FORTIFY_LEVEL == 0', row: null, addr: null, note: null, source: entrySource },
+              { kind: 'decl', indent: 0, text: chkInfo.proto, row: null, addr: null, note: null, source: entrySource },
+              { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+            );
+          } else {
+            glibcAliasPrelude.push(
+              { kind: 'decl', indent: 0, text: chkInfo.proto, row: null, addr: null, note: null, source: entrySource },
+            );
+          }
+          emittedChkProtos.add(chkTarget);
+          existingLineTexts.add(chkInfo.proto);
+        }
+        if (needAlias) {
+          glibcAliasPrelude.push(
+            { kind: 'decl', indent: 0, text: `#ifndef ${entry.name}`, row: null, addr: null, note: null, source: entrySource },
+            { kind: 'decl', indent: 0, text: `#define ${entry.name} ${aliasInfo.target}`, row: null, addr: null, note: null, source: entrySource },
+            { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+          );
+          existingMacroNames.add(entry.name);
+        }
+        glibcAliasPrelude.push(
+          { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+        );
+      }
+    } else if (chkInfo && !existingLineTexts.has(chkInfo.proto) && !emittedChkProtos.has(chkTarget)) {
+      glibcAliasPrelude.push(
+        { kind: 'decl', indent: 0, text: '#if defined(__GLIBC__)', row: null, addr: null, note: null, source: entrySource },
+      );
+      if (chkInfo.guardFortify) {
+        glibcAliasPrelude.push(
+          { kind: 'decl', indent: 0, text: '#if !defined(__USE_FORTIFY_LEVEL) || __USE_FORTIFY_LEVEL == 0', row: null, addr: null, note: null, source: entrySource },
+          { kind: 'decl', indent: 0, text: chkInfo.proto, row: null, addr: null, note: null, source: entrySource },
+          { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+        );
+      } else {
+        glibcAliasPrelude.push(
+          { kind: 'decl', indent: 0, text: chkInfo.proto, row: null, addr: null, note: null, source: entrySource },
+        );
+      }
+      glibcAliasPrelude.push(
+        { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+      );
+      emittedChkProtos.add(chkTarget);
+      existingLineTexts.add(chkInfo.proto);
+    }
+  }
+  const stdlibIncludePrelude = [...neededStdlibHeaders]
+    .sort(compareAscii)
+    .map((header) => ({
+      kind: 'decl', indent: 0, text: `#include ${header}`,
       row: null, addr: null, note: null, source: entrySource,
     }));
-  const bodyOpen = lines.findIndex((item, index) => index > sigIndex && item?.kind === 'ctrl' && item?.text === '{');
-  const withDeclarations = localDeclarations.length && bodyOpen >= 0
-    ? [...lines.slice(0, bodyOpen + 1), ...localDeclarations, ...lines.slice(bodyOpen + 1)]
-    : lines;
-  const prelude = fixedWidthPreludeLines(render(withDeclarations), definedTypeAliases(lines))
-    .map((item) => ({ ...item, source: entrySource }));
-  if (!localDeclarations.length && !prelude.length) return result;
 
-  const next = [...withDeclarations];
-  if (prelude.length) next.splice(sigIndex, 0, ...prelude);
+  const intrinsicPrelude = [];
+  for (const entry of [...uses.values()].sort((a, b) => compareAscii(a.name, b.name))) {
+    if (!entry?.callTarget) continue;
+    if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || bitfieldHelperNames.has(entry.name) || entry.name === sigFuncName) continue;
+    if (!isEligibleIntrinsicHelper(entry.name, renderedBody, cleanBody)) continue;
+    const helperDef = hexIntrinsicHelperDef(entry.name);
+    if (!helperDef) continue;
+    const guard = `__hex_helper_${entry.name}_defined`;
+    if (existingMacroNames.has(guard)) continue;
+    intrinsicPrelude.push(
+      { kind: 'decl', indent: 0, text: `#ifndef ${guard}`, row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: `#define ${guard}`, row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: helperDef, row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+    );
+    existingMacroNames.add(guard);
+  }
+
+  const standalonePrototypes = [...uses.values()]
+    .filter((entry) => entry?.callTarget
+      && !declared.has(entry.name)
+      && !KEYWORDS.has(entry.name)
+      && !FIXED_WIDTH_TYPES.has(entry.name)
+      && !STANDARD_KNOWN_TYPES.has(entry.name)
+      && !STANDARD_C_LIBRARY_HEADERS.has(entry.name)
+      && !GLIBC_STRIPPED_ALIAS_MAP.has(entry.name)
+      && !GLIBC_CHK_PROTOTYPES.has(entry.name)
+      && !isEligibleIntrinsicHelper(entry.name, renderedBody, cleanBody)
+      && !macroDefinedCalls.has(entry.name)
+      && !bitfieldHelperNames.has(entry.name)
+      && !/^__builtin_/.test(entry.name)
+      && entry.name !== '__HEX_ANY_ARGS'
+      && entry.name !== sigFuncName)
+    .sort((a, b) => compareAscii(a.name, b.name));
+  const prototypePrelude = [];
+  const needsAnyArgsMacro = (standalonePrototypes.length > 0 || /\b__HEX_ANY_ARGS\b/.test(renderedInitial))
+    && !lines.some((l) => String(l?.text ?? '').includes('#define __HEX_ANY_ARGS'));
+  if (needsAnyArgsMacro || standalonePrototypes.length) {
+    prototypePrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_PROTOTYPES_COMMENT, row: null, addr: null, note: null, source: entrySource });
+    if (needsAnyArgsMacro) {
+      prototypePrelude.push(
+        { kind: 'decl', indent: 0, text: '#ifndef __HEX_ANY_ARGS', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#define __HEX_ANY_ARGS ...', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#else', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#define __HEX_ANY_ARGS', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+      );
+    }
+    for (const entry of standalonePrototypes) {
+      prototypePrelude.push({
+        kind: 'decl', indent: 0, text: `uint64 ${entry.name} (__HEX_ANY_ARGS);`,
+        row: null, addr: null, note: null, source: entrySource,
+      });
+    }
+  }
+  const postFixedPrelude = [...idTypedefPrelude, ...structPrelude, ...globalPrelude, ...prototypePrelude, ...atomicPrelude, ...bitfieldHelperPrelude, ...glibcAliasPrelude, ...intrinsicPrelude];
+  if (postFixedPrelude.length) withPostFixedPrelude.splice(sigIndex, 0, ...postFixedPrelude);
+
+  const prelude = fixedWidthPreludeLines(render(withPostFixedPrelude), existingTypes)
+    .map((item) => ({ ...item, source: entrySource }));
+  if (!allBodyDeclarations.length && !postFixedPrelude.length && !prelude.length && !stdlibIncludePrelude.length && !bodyChanged) return result;
+
+  const next = [...withPostFixedPrelude];
+  const leadingPrelude = [...stdlibIncludePrelude, ...prelude];
+  if (leadingPrelude.length) next.splice(sigIndex, 0, ...leadingPrelude);
   result.lines = next;
   result.pseudocode = render(next);
   if (typeof options.onLinesChanged === 'function') options.onLinesChanged(result);
   return result;
 }
-

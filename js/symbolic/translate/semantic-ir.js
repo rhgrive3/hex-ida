@@ -24,7 +24,7 @@ export function translateSemanticIR(target, options = {}) {
   let semanticUnknowns = 0, workItems = 0, maximumDepth = 0;
   let maxWork = 250000, maxDepth = 128, timeout = 250;
   const start = monotonicNow();
-  const deterministic = (options.deterministic === true || options.deterministicTransforms === true) && timeout > 0;
+  let deterministic = false;
   function tick(amount = 1) {
     if (options.signal?.aborted || options.isCancelled?.()) throw new QueryFailure('cancelled');
     if (!deterministic && monotonicNow() - start >= timeout) throw new QueryFailure('deadline');
@@ -136,7 +136,7 @@ export function translateSemanticIR(target, options = {}) {
       else expression = visitInstruction(def, width, depth + 1);
     } else if (val.const != null) expression = literalExpression(null, width, val);
     else expression = unknown(width, 'value-without-definition', val);
-    if (expression?.kind === 'unknown_semantic' && !unsupportedEntities.some(e => e.reason === expression.reason)) {
+    if (expression?.kind === 'unknown_semantic' && !unsupportedEntities.some(e => e.id === (id ?? null) && e.reason === expression.reason)) {
       semanticUnknowns++; unsupportedEntities.push(Object.freeze({ id:id ?? null, reason:expression.reason }));
     }
     if (['bool','boolean'].includes(val.machineType?.kind) && expression?.sort.kind !== 'bool'
@@ -210,6 +210,7 @@ export function translateSemanticIR(target, options = {}) {
     maxWork = boundedLimit(options.maxWorkItems, 250000, 250000, 'maxWorkItems');
     maxDepth = boundedLimit(options.maxDepth, 128, 128, 'maxDepth');
     timeout = boundedLimit(options.timeoutMs, 250, 5000, 'timeoutMs');
+    deterministic = (options.deterministic === true || options.deterministicTransforms === true) && timeout > 0;
     tick();
     if (!Number.isSafeInteger(defaultWidth) || defaultWidth < 1 || defaultWidth > 65536) throw new QueryFailure('invalid-default-width');
     if (target == null || (data(target, 'op') == null && data(target, 'id') == null

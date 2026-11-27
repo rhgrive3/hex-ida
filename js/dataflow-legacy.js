@@ -125,7 +125,8 @@ export function selfRegisters(model) {
       const src = insn.reads.find((r) => live.has(r));
       if (src && dst) {
         // 64 ビット幅のコピーだけを認める（w レジスタへのコピーは値の切り出し）
-        const wide = /^x\d+$/.test(dst) || dst === 'sp';
+        const dstOp = insn.ops?.[0];
+        const wide = dst === 'sp' || (dstOp?.k === 'reg' && Number.isFinite(dstOp.bits) ? dstOp.bits === 64 : /^x\d+$/.test(dst));
         if (wide) {
           close(dst, insn.row);
           open(dst, insn.row); set.add(dst); at.set(dst, insn.row);
@@ -179,6 +180,7 @@ const ARITH_OPS = new Set([
   'add', 'adds', 'sub', 'subs', 'mul', 'madd', 'msub', 'smull', 'umull', 'sdiv', 'udiv',
   'and', 'orr', 'eor', 'bic', 'lsl', 'lsr', 'asr', 'neg', 'mvn',
   'fadd', 'fsub', 'fmul', 'fdiv', 'fmadd', 'fmsub', 'fneg', 'fmov',
+  'fmax', 'fmin', 'fmaxnm', 'fminnm',
   'movz', 'mov', 'movk', 'sxtw', 'uxtw', 'sxth', 'uxth', 'sxtb', 'uxtb', 'csel', 'csinc',
 ]);
 
@@ -195,18 +197,34 @@ function updateKind(sameLocation, loadInsn, steps) {
 }
 const COPY_OPS = new Set(['mov', 'fmov', 'movz', 'sxtw', 'uxtw', 'sxtb', 'uxtb', 'sxth', 'uxth']);
 
+function isLegacyBicSignMask(insn) {
+  const ops = insn?.ops || [];
+  if (ops.length < 3) return false;
+  const src1 = regKeyOf(ops[1]);
+  const src2 = regKeyOf(ops[2]);
+  if (!src1 || src1 !== src2) return false;
+  const sh = ops[2]?.shift;
+  if (sh && String(sh.op || '').toLowerCase() === 'asr' && (Number(sh.amount) === 31 || Number(sh.amount) === 63)) {
+    return true;
+  }
+  const text = (insn.operands || '') + ' ' + (insn.text || '');
+  return /,\s*asr\s*#(?:31|63)\b/i.test(text);
+}
+
 /** その命令が「値をいじっている」なら、何をどうしたか。 */
 function operationOf(insn) {
   const base = insn.mnemonic.toLowerCase();
   if (!ARITH_OPS.has(base)) return null;
   const imm = insn.ops.find((o) => o.k === 'imm' && (o.value != null || o.float != null));
-  return {
+  const out = {
     op: base,
     imm: imm ? (imm.value != null ? imm.value : null) : null,
     immFloat: imm && imm.float != null ? imm.float : null,
     row: insn.row,
     address: insn.address,
   };
+  if (base === 'bic' && isLegacyBicSignMask(insn)) out.signMaskClamp = true;
+  return out;
 }
 
 /**
@@ -351,7 +369,7 @@ export function findValueUpdates(model, opts) {
    唯一の手がかりになる。 */
 
 /* 中身を変えずに写すだけの命令。ここは素通りして、その先を見にいく。 */
-const PASS_OPS = new Set(['mov', 'fmov', 'sxtw', 'uxtw', 'sxtb', 'uxtb', 'sxth', 'uxth', 'orr']);
+const PASS_OPS = new Set(['mov', 'fmov', 'sxtw', 'uxtw', 'sxtb', 'uxtb', 'sxth', 'uxth']);
 /* 呼び出しの直後の x0 は「呼んだ先が決めた値」。 */
 const RET_REG = 'x0';
 /* 呼び出しで壊れるレジスタ（AAPCS64）。x19〜x28 は呼ばれた側が元に戻す。 */
@@ -445,7 +463,7 @@ export function traceOrigin(model, row, reg, opts) {
         return { kind: 'imm', value, row: found.row, crossedJoin };
       }
     }
-    if (PASS_OPS.has(mn)) {
+    if (PASS_OPS.has(mn) || (mn === 'orr' && isOrrMovAlias(found))) {
       const src = found.reads.find((r) => r !== want) || found.reads[0] || null;
       if (!src) return null;
       want = src; at = found.row; continue;         // 写しただけ。その先を見る。
@@ -467,7 +485,10 @@ export function traceOrigin(model, row, reg, opts) {
 const AMOUNT_OPS = new Set(['add', 'adds', 'sub', 'subs', 'mul', 'madd', 'msub',
   'smull', 'umull', 'sdiv', 'udiv', 'fadd', 'fsub', 'fmul', 'fdiv', 'lsl', 'lsr', 'asr']);
 /* 「0 未満にしない」「上限で止める」の定番。ゲームの資源には必ず付く。 */
-const CLAMP_OPS = new Set(['bic', 'csel', 'csinc', 'csneg', 'csinv', 'smax', 'smin', 'umax', 'umin']);
+const CLAMP_OPS = new Set([
+  'bic', 'csel', 'csinc', 'csneg', 'csinv', 'smax', 'smin', 'umax', 'umin',
+  'fmax', 'fmin', 'fmaxnm', 'fminnm',
+]);
 
 /**
  * 1 件の更新について、「いくら」「どこから来た量で」変えたのかを求める。
@@ -478,12 +499,13 @@ const CLAMP_OPS = new Set(['bic', 'csel', 'csinc', 'csneg', 'csinv', 'smax', 'sm
  */
 export function amountOf(model, update) {
   const steps = (update && update.steps) || [];
+  const activeSteps = steps.filter((s) => s && !s.signMaskClampPart);
   let amount = null;
   let scaled = false;
   let clamped = false;
   let cappedBy = null;
-  for (const s of steps) {
-    if (CLAMP_OPS.has(s.op)) {
+  for (const s of activeSteps) {
+    if (s.signMaskClamp === true || (s.op !== 'bic' && CLAMP_OPS.has(s.op))) {
       clamped = true;
       /*
        * 何で止めているのか。
@@ -519,10 +541,10 @@ export function amountOf(model, update) {
    * `add w8, w8, #1` は steps に imm として入っている。
    */
   if (!amount) {
-    const withImm = steps.find((s) => AMOUNT_OPS.has(s.op) && s.imm != null);
+    const withImm = activeSteps.find((s) => AMOUNT_OPS.has(s.op) && s.imm != null);
     if (withImm) amount = { kind: 'imm', value: withImm.imm, op: withImm.op, row: withImm.row };
   }
-  return { amount, clamped, scaled, cappedBy, ops: steps.map((s) => s.op) };
+  return { amount, clamped, scaled, cappedBy, ops: activeSteps.map((s) => s.op) };
 }
 
 /**
@@ -546,8 +568,9 @@ export function amountOf(model, update) {
  * この形のとき、フィールドの位置は命令の中の即値としてそのまま書いてある。
  */
 const PROPERTY_HELPERS = [
-  { re: /objc_getProperty/, kind: 'read', reg: 'x2' },
-  { re: /objc_setProperty/, kind: 'write', reg: 'x2' },
+  { re: /objc_getProperty/, kind: 'read', reg: 'x2', valueReg: 'x0' },
+  { re: /objc_setProperty_(?:atomic|nonatomic)(?:_copy)?\b/, kind: 'write', reg: 'x3', valueReg: 'x2' },
+  { re: /objc_setProperty/, kind: 'write', reg: 'x2', valueReg: 'x3' },
 ];
 
 /*
@@ -593,7 +616,7 @@ function selfOffsetIn(model, insns, at, self, reg) {
     for (let k = from - 1; k >= 0 && from - k <= 32; k--) {
       if (insns[k].writes.includes(want)) { found = k; break; }
     }
-    if (found == null) return self.isSelf(want, at) ? { disp: 0n } : null;
+    if (found == null) return insns[at] && self.isSelf(want, insns[at].row) ? { disp: 0n } : null;
     const insn = insns[found];
     const base = insn.mnemonic.toLowerCase();
     if (base === 'add' && insn.ops.length >= 3 && insn.ops[1] && insn.ops[1].k === 'reg') {
@@ -656,14 +679,14 @@ function propertyHelperUpdates(model, insns, self) {
     if (at < 0) continue;
     const disp = immediateArg(insns, at, hit.reg);
     if (disp == null) continue;
-    out.push(helperUpdate(hit.kind, { disp }, c));
+    out.push(helperUpdate(hit.kind, { disp }, c, hit.valueReg));
   }
   return out;
 }
 
 /** 代行関数ごしのフィールド操作を、ふつうの読み書きと同じ形にそろえる。 */
-function helperUpdate(kind, where, call) {
-  const reg = kind === 'read' ? 'x0' : 'x3';
+function helperUpdate(kind, where, call, valueReg = null) {
+  const reg = valueReg ?? (kind === 'read' ? 'x0' : 'x3');
   const disp = where.disp != null ? where.disp : null;
   const indexAddr = where.indexAddr != null ? where.indexAddr : null;
   const key = 'x0@' + (indexAddr != null ? 'iv' + indexAddr.toString() : String(disp));

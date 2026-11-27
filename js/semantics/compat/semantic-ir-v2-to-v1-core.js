@@ -507,6 +507,7 @@ export function buildLegacyValues(ir, ssa) {
   const ssaByValue = new Map(ssa?.definitions?.map((definition) => [definition.valueId, definition]) || []);
   const scalarBySemanticValue = canonicalScalarDefinitionBySemanticValue(ssa);
   const semanticById = new Map(ir.values.map((value) => [value.id, value]));
+  const nodeById = new Map((ir.nodes || []).map((node) => [node.id, node]));
   const stateByKey = stateIdentityByVariableKey(ir, ssa);
   const versions = variableVersions(ir, ssa, stateByKey);
   const values = [];
@@ -581,7 +582,15 @@ export function buildLegacyValues(ir, ssa) {
     });
     if (definition.kind === 'unknown') {
       value.unknown = true;
-      if (definition.variableKey != null) value.clobbered = true;
+      const defNode = definition.sourceEntityId == null ? null : nodeById.get(definition.sourceEntityId) ?? null;
+      const isCallReturn = defNode?.kind === 'call' && (
+        (Array.isArray(defNode.outputs) && (defNode.outputs.includes(definition.valueId)
+          || (sourceSemanticValueId != null && defNode.outputs.includes(sourceSemanticValueId))))
+        || (Array.isArray(defNode.call?.returns) && (defNode.call.returns.includes(definition.valueId)
+          || (sourceSemanticValueId != null && defNode.call.returns.includes(sourceSemanticValueId))))
+        || /^(?:x0|w0|d0|s0|v0|q0|rax|eax|xmm0|a0|fa0|r0)$/.test(String(publicIdentity || ''))
+      );
+      if (definition.variableKey != null && !isCallReturn) value.clobbered = true;
     }
     if (definition.kind === 'undef') value.undefined = true;
     byId.set(definition.valueId, value);
@@ -591,9 +600,22 @@ export function buildLegacyValues(ir, ssa) {
 }
 
 export function makeArg(value) { return value ? { value, bits: value.bits || 64 } : null; }
+const valueUseSets = new WeakMap();
 export function addUse(value, inst) {
-  if (!value || !inst || value.uses.includes(inst)) return;
-  value.uses.push(inst);
+  if (!value || !inst) return;
+  const uses = value.uses;
+  if (uses.length < 16 && !valueUseSets.has(value)) {
+    if (!uses.includes(inst)) uses.push(inst);
+    return;
+  }
+  let entry = valueUseSets.get(value);
+  if (!entry || entry.arrayRef !== uses || entry.set.size !== uses.length) {
+    entry = { arrayRef: uses, set: new Set(uses) };
+    valueUseSets.set(value, entry);
+  }
+  if (entry.set.has(inst)) return;
+  entry.set.add(inst);
+  uses.push(inst);
 }
 export function attachArgs(inst, values) {
   inst.args = values.filter(Boolean).map(makeArg);

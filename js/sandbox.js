@@ -16,6 +16,7 @@ const MAX_SANDBOX_OUTPUT_BYTES = 256 * 1024;
 const MAX_SANDBOX_OUTPUT_PER_SECOND = 96;
 const MAX_PLUGIN_DEFINITIONS = 64;
 const MAX_PLUGIN_METADATA_BYTES = 8192;
+const SANDBOX_EXECUTION_CONTEXT = Symbol('hex.sandbox.executionContext');
 
 /*
  * One binary transport-size contract for every sandbox estimator (#8668/#8694).
@@ -82,6 +83,10 @@ const WORKER_PRELUDE = String.raw`
   const nativeStructuredClone = globalThis.structuredClone.bind(globalThis);
   const NativeObjectPrototype = Object.prototype;
   const NativeSet = Set;
+  const NativeMap = Map;
+  const NativePromise = Promise;
+  const NativeError = Error;
+  const nativeMathMin = Math.min.bind(Math);
   const nativeArrayIsArray = Array.isArray.bind(Array);
   const nativeArrayBufferIsView = ArrayBuffer.isView.bind(ArrayBuffer);
   const nativeGetPrototypeOf = Object.getPrototypeOf.bind(Object);
@@ -91,6 +96,12 @@ const WORKER_PRELUDE = String.raw`
   const nativeSetHas = Function.prototype.call.bind(Set.prototype.has);
   const nativeSetAdd = Function.prototype.call.bind(Set.prototype.add);
   const nativeSetDelete = Function.prototype.call.bind(Set.prototype.delete);
+  const nativeMapGet = Function.prototype.call.bind(Map.prototype.get);
+  const nativeMapSet = Function.prototype.call.bind(Map.prototype.set);
+  const nativeMapDelete = Function.prototype.call.bind(Map.prototype.delete);
+  const nativeMapSize = Function.prototype.call.bind(
+    Object.getOwnPropertyDescriptor(Map.prototype, 'size').get
+  );
   const nativeArrayPop = Function.prototype.call.bind(Array.prototype.pop);
   const nativeArrayPush = Function.prototype.call.bind(Array.prototype.push);
   const nativeArrayBufferByteLength = Function.prototype.call.bind(
@@ -120,14 +131,14 @@ const WORKER_PRELUDE = String.raw`
   let seq = 1;
   let totalRpc = 0;
   let argumentUnits = 0;
-  const waiting = new Map();
+  const waiting = new NativeMap();
   let controlPostMessage = null;
   const OUTPUT_MAX_MESSAGES = 256;
   const OUTPUT_MAX_BYTES = 256 * 1024;
   const OUTPUT_MAX_PER_SECOND = 96;
   let outputMessages = 0, outputBytes = 0, outputWindow = nativeNow(), outputWindowCount = 0;
   const outputSize = (value) => {
-    const seen = new NativeSet(); const stack=[value]; let bytes=0, nodes=0;
+    const seen = new NativeSet(); const buffers = new NativeSet(); const stack=[value]; let bytes=0, nodes=0;
     while (stack.length && bytes <= OUTPUT_MAX_BYTES) {
       const x=nativeArrayPop(stack); if (++nodes > 4096) return OUTPUT_MAX_BYTES + 1;
       if (x == null) { bytes+=4; continue; }
@@ -137,14 +148,20 @@ const WORKER_PRELUDE = String.raw`
       if (typeof x === 'undefined') { bytes+=4; continue; }
       let arrayBufferBytes = null;
       try { arrayBufferBytes = nativeArrayBufferByteLength(x); } catch {}
-      if (arrayBufferBytes !== null) { bytes += arrayBufferBytes; continue; }
+      if (arrayBufferBytes !== null) {
+        if (!nativeSetHas(buffers, x)) { nativeSetAdd(buffers, x); bytes += arrayBufferBytes; }
+        continue;
+      }
       if (nativeArrayBufferIsView(x)) {
         let buffer = null;
         try { buffer = nativeTypedArrayBuffer(x); }
         catch { try { buffer = nativeDataViewBuffer(x); } catch {} }
         if (!buffer) return OUTPUT_MAX_BYTES + 1;
-        try { bytes += nativeArrayBufferByteLength(buffer); }
-        catch { return OUTPUT_MAX_BYTES + 1; }
+        if (!nativeSetHas(buffers, buffer)) {
+          nativeSetAdd(buffers, buffer);
+          try { bytes += nativeArrayBufferByteLength(buffer); }
+          catch { return OUTPUT_MAX_BYTES + 1; }
+        }
         continue;
       }
       if (typeof x !== 'object') return OUTPUT_MAX_BYTES + 1;
@@ -211,47 +228,57 @@ const WORKER_PRELUDE = String.raw`
   try { Object.defineProperty(globalThis,'postMessage',{value:sendOutput,writable:false,configurable:false}); } catch {}
 
   const measure = (value, seen = new NativeSet(), limit = MAX_ARGUMENT_UNITS + 1, buffers = new NativeSet()) => {
-    if (limit <= 0 || value == null) return 0;
-    const type = typeof value;
-    if (type === 'string') return Math.min(limit, value.length * 2);
-    if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
-    if (type !== 'object') return 0;
-    const binary = binaryTransportBytes(value, buffers, BINARY_TRANSPORT_NATIVES_FOR_WORKER);
-    if (binary !== null) return binary < 0 ? limit : Math.min(limit, binary);
-    if (nativeSetHas(seen, value)) return 0;
-    nativeSetAdd(seen, value);
-    let n = 16;
-    const isArray = nativeArrayIsArray(value);
-    if (!isArray) {
-      let proto;
-      try { proto = nativeGetPrototypeOf(value); }
-      catch { nativeSetDelete(seen, value); return limit; }
-      if (proto !== NativeObjectPrototype && proto !== null) {
-        nativeSetDelete(seen, value);
-        return limit;
+    const minUnits = typeof nativeMathMin === 'function' ? nativeMathMin : ((a, b) => (a < b ? a : b));
+    const MAX_DEPTH = 64;
+    const MAX_NODES = 65536;
+    let zeroSlots = 0;
+    let nodes = 0;
+    const chargeZeroSlot = (rem) => (++zeroSlots > 16 ? minUnits(rem, 8) : 0);
+    const walk = (val, rem, depth) => {
+      if (rem <= 0 || val == null) return 0;
+      const type = typeof val;
+      if (type === 'string') return minUnits(rem, val.length * 2);
+      if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
+      if (type !== 'object') return 0;
+      const binary = binaryTransportBytes(val, buffers, BINARY_TRANSPORT_NATIVES_FOR_WORKER);
+      if (binary !== null) return binary < 0 ? rem : minUnits(rem, binary);
+      if (nativeSetHas(seen, val)) return 0;
+      if (depth > MAX_DEPTH || ++nodes > MAX_NODES) return rem;
+      nativeSetAdd(seen, val);
+      let n = 16;
+      if (n >= rem) return rem;
+      const isArray = nativeArrayIsArray(val);
+      if (!isArray) {
+        let proto;
+        try { proto = nativeGetPrototypeOf(val); }
+        catch { return rem; }
+        if (proto !== NativeObjectPrototype && proto !== null) {
+          return rem;
+        }
       }
-    }
-    let keys;
-    try { keys = nativeKeys(value); }
-    catch { nativeSetDelete(seen, value); return limit; }
-    for (const key of keys) {
-      let descriptor;
-      try { descriptor = nativeDescriptor(value, key); }
-      catch { nativeSetDelete(seen, value); return limit; }
-      if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
-        nativeSetDelete(seen, value);
-        return limit;
+      let keys;
+      try { keys = nativeKeys(val); }
+      catch { return rem; }
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        let descriptor;
+        try { descriptor = nativeDescriptor(val, key); }
+        catch { return rem; }
+        if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+          return rem;
+        }
+        const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
+        if (!isIndex) {
+          n += minUnits(rem - n, key.length * 2);
+          if (n >= rem) break;
+        }
+        const childCost = walk(descriptor.value, rem - n, depth + 1);
+        n += childCost > 0 ? childCost : chargeZeroSlot(rem - n);
+        if (n >= rem) break;
       }
-      const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
-      if (!isIndex) {
-        n += Math.min(limit - n, key.length * 2);
-        if (n >= limit) break;
-      }
-      n += measure(descriptor.value, seen, limit - n, buffers);
-      if (n >= limit) break;
-    }
-    nativeSetDelete(seen, value);
-    return n;
+      return n;
+    };
+    return walk(value, limit, 0);
   };
 
   const prepareRpcArgs = (args, remainingUnits) => {
@@ -267,30 +294,30 @@ const WORKER_PRELUDE = String.raw`
     return { args: ownedArgs, units };
   };
 
-  const rpc = (method, args) => new Promise((resolve, reject) => {
+  const rpc = (method, args) => new NativePromise((resolve, reject) => {
     if (typeof method !== 'string' || method.length === 0 || method.length > MAX_METHOD_LENGTH) {
-      reject(new Error('RPCメソッド名が無効です。'));
+      reject(new NativeError('RPCメソッド名が無効です。'));
       return;
     }
-    if (waiting.size >= MAX_OUTSTANDING_RPC) {
+    if (nativeMapSize(waiting) >= MAX_OUTSTANDING_RPC) {
       send({ t: 'budgetExceeded', error: 'RPC同時実行数の上限を超えました。' });
-      reject(new Error('RPC同時実行数の上限を超えました。'));
+      reject(new NativeError('RPC同時実行数の上限を超えました。'));
       return;
     }
     if (++totalRpc > MAX_TOTAL_RPC) {
       send({ t: 'budgetExceeded', error: 'RPC総数の上限を超えました。' });
-      reject(new Error('RPC総数の上限を超えました。'));
+      reject(new NativeError('RPC総数の上限を超えました。'));
       return;
     }
     const prepared = prepareRpcArgs(args, MAX_ARGUMENT_UNITS - argumentUnits);
     if (!prepared) {
       send({ t: 'budgetExceeded', error: 'RPC引数サイズの上限を超えました。' });
-      reject(new Error('RPC引数サイズの上限を超えました。'));
+      reject(new NativeError('RPC引数サイズの上限を超えました。'));
       return;
     }
     argumentUnits += prepared.units;
     const id = seq++;
-    waiting.set(id, { resolve, reject });
+    nativeMapSet(waiting, id, { resolve, reject });
     send({ t: 'rpc', id, method, args: prepared.args });
   });
 
@@ -316,8 +343,8 @@ const WORKER_PRELUDE = String.raw`
       if (typeof prop !== 'string' || prop === 'then' || prop === '__proto__' || prop === 'constructor') return undefined;
       if (prop === 'hex') return (value, pad = 8) => '0x' + BigInt(value).toString(16).toUpperCase().padStart(pad, '0');
       if (prop === 'emulator') {
-        return async (addr = null, args = []) => {
-          const created = await rpc('emulatorCreate', [addr, args]);
+        return async (addr = null, args = [], options = null) => {
+          const created = await rpc('emulatorCreate', options == null ? [addr, args] : [addr, args, options]);
           if (!created || !created.id) throw new Error('エミュレータを作れませんでした。');
           return emulatorProxy(created.id);
         };
@@ -389,10 +416,10 @@ const WORKER_PRELUDE = String.raw`
       try { close(); } catch {}
       return;
     }
-    const p = waiting.get(m.id);
+    const p = nativeMapGet(waiting, m.id);
     if (!p) return;
-    waiting.delete(m.id);
-    m.error ? p.reject(new Error(m.error)) : p.resolve(m.value);
+    nativeMapDelete(waiting, m.id);
+    m.error ? p.reject(new NativeError(m.error)) : p.resolve(m.value);
   };
 
   const errorText = (err) => String(err && err.message ? err.message : err).slice(0, MAX_ERROR_LENGTH);
@@ -663,46 +690,94 @@ const FRAME = `<!doctype html><meta charset="utf-8">
 </script>`;
 
 function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1, buffers = new Set()) {
-  if (limit <= 0 || value == null) return 0;
-  const type = typeof value;
-  if (type === 'string') return Math.min(limit, value.length * 2);
-  if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
-  const binary = binaryTransportBytes(value, buffers, BINARY_TRANSPORT_NATIVES);
-  if (binary !== null) return binary < 0 ? limit : Math.min(limit, binary);
-  if (type !== 'object' || seen.has(value)) return 0;
-  seen.add(value);
-  let n = 16;
-  const isArray = Array.isArray(value);
-  if (isArray) {
-    for (const key of Object.keys(value)) {
-      const isIndex = key !== '4294967295' && key === '' + (key >>> 0);
+  const MAX_DEPTH = 64;
+  const MAX_NODES = 65536;
+  let zeroSlots = 0;
+  let nodes = 0;
+  const chargeZeroSlot = (rem) => (++zeroSlots > 16 ? Math.min(rem, 8) : 0);
+  const walk = (val, rem, depth) => {
+    if (rem <= 0 || val == null) return 0;
+    const type = typeof val;
+    if (type === 'string') return Math.min(rem, val.length * 2);
+    if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
+    if (type !== 'object') return 0;
+    const binary = binaryTransportBytes(val, buffers, BINARY_TRANSPORT_NATIVES);
+    if (binary !== null) return binary < 0 ? rem : Math.min(rem, binary);
+    if (seen.has(val)) return 0;
+    if (depth > MAX_DEPTH || ++nodes > MAX_NODES) return rem;
+    seen.add(val);
+    let n = 16;
+    if (n >= rem) return rem;
+    const isArray = Array.isArray(val);
+    if (!isArray) {
+      let proto;
+      try { proto = Object.getPrototypeOf(val); }
+      catch { return rem; }
+      if (proto !== Object.prototype && proto !== null) {
+        return rem;
+      }
+    }
+    let keys;
+    try { keys = Object.keys(val); }
+    catch { return rem; }
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      let descriptor;
+      try { descriptor = Object.getOwnPropertyDescriptor(val, key); }
+      catch { return rem; }
+      if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+        return rem;
+      }
+      const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
       if (!isIndex) {
-        n += Math.min(limit - n, key.length * 2);
-        if (n >= limit) break;
+        n += Math.min(rem - n, key.length * 2);
+        if (n >= rem) break;
       }
-      n += valueSize(value[key], seen, limit - n, buffers);
-      if (n >= limit) break;
+      const childCost = walk(descriptor.value, rem - n, depth + 1);
+      n += childCost > 0 ? childCost : chargeZeroSlot(rem - n);
+      if (n >= rem) break;
     }
-  } else {
-    for (const key of Object.keys(value)) {
-      n += Math.min(limit - n, key.length * 2);
-      if (n >= limit) break;
-    }
-    if (n < limit) {
-      for (const item of Object.values(value)) {
-        n += valueSize(item, seen, limit - n, buffers);
-        if (n >= limit) break;
-      }
-    }
-  }
-  seen.delete(value);
-  return n;
+    return n;
+  };
+  return walk(value, limit, 0);
 }
 
 function sandboxOutputSize(value) {
   const seen = new Set();
+  const buffers = new Set();
   const stack = [value];
   const over = MAX_SANDBOX_OUTPUT_BYTES + 1;
+  const measureBinary = (typeof binaryTransportBytes === 'function' && typeof BINARY_TRANSPORT_NATIVES === 'object' && BINARY_TRANSPORT_NATIVES)
+    ? (x) => binaryTransportBytes(x, buffers, BINARY_TRANSPORT_NATIVES)
+    : (() => {
+      const abByteLength = Function.prototype.call.bind(
+        Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get
+      );
+      const taBuffer = Function.prototype.call.bind(
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'buffer').get
+      );
+      const dvBuffer = Function.prototype.call.bind(
+        Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get
+      );
+      return (x) => {
+        let len = null;
+        let backing = null;
+        try {
+          len = abByteLength(x);
+        } catch {
+          if (!ArrayBuffer.isView(x)) return null;
+          try { backing = taBuffer(x); }
+          catch { try { backing = dvBuffer(x); } catch {} }
+          if (backing == null) return -1;
+          try { len = abByteLength(backing); } catch { return -1; }
+        }
+        if (typeof len !== 'number' || !(len >= 0) || len % 1 !== 0) return -1;
+        const owner = backing === null ? x : backing;
+        if (buffers.has(owner)) return 0;
+        buffers.add(owner);
+        return len;
+      };
+    })();
   let bytes = 0;
   let nodes = 0;
   while (stack.length && bytes <= MAX_SANDBOX_OUTPUT_BYTES) {
@@ -713,7 +788,12 @@ function sandboxOutputSize(value) {
     if (typeof x === 'number' || typeof x === 'bigint') { bytes += 16; continue; }
     if (typeof x === 'boolean') { bytes += 4; continue; }
     if (typeof x === 'undefined') { bytes += 4; continue; }
-    if (x instanceof ArrayBuffer || ArrayBuffer.isView(x)) { bytes += x.byteLength; continue; }
+    const binary = measureBinary(x);
+    if (binary !== null) {
+      if (binary === -1 || binary < 0) return over;
+      bytes += binary;
+      continue;
+    }
     if (typeof x !== 'object') return over;
     if (seen.has(x)) continue;
     seen.add(x);
@@ -785,6 +865,33 @@ const MAX_TIMER_DELAY = 2_147_483_647;
 function normalizeSandboxTimeout(timeout) {
   if (typeof timeout !== 'number' || !Number.isSafeInteger(timeout) || timeout <= 0) return null;
   return Math.min(MAX_TIMER_DELAY, Math.max(50, timeout));
+}
+
+const NONCE_RE = /^[A-Za-z0-9+/_-]{1,512}={0,2}$/;
+
+function inheritedCspNonce(doc = typeof document !== 'undefined' ? document : null) {
+  if (!doc) return '';
+  const readValid = (el) => {
+    const raw = (el && (el.nonce || el.getAttribute?.('nonce'))) || '';
+    const trimmed = String(raw).trim();
+    return NONCE_RE.test(trimmed) ? trimmed : '';
+  };
+  const current = readValid(doc.currentScript);
+  if (current) return current;
+  const scripts = doc.querySelectorAll?.('script') || [];
+  for (const el of scripts) {
+    const valid = readValid(el);
+    if (valid) return valid;
+  }
+  return '';
+}
+
+function buildFrameSrcdoc(nonce = inheritedCspNonce()) {
+  const validNonce = typeof nonce === 'string' && NONCE_RE.test(nonce.trim()) ? nonce.trim() : '';
+  if (!validNonce) return FRAME;
+  return FRAME
+    .replace("script-src 'unsafe-inline' blob:;", `script-src 'nonce-${validNonce}' blob:;`)
+    .replace('<script>\n', `<script nonce="${validNonce}">\n`);
 }
 
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal, expectedDefinition }) {
@@ -897,6 +1004,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
 
     channel.port1.onmessage = async (e) => {
       if (settled) return;
+      try {
       const m = e.data;
       if (!m || typeof m !== 'object' || typeof m.t !== 'string') {
         failBudget('不正なsandboxメッセージを受信したため停止しました。');
@@ -940,15 +1048,23 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
           const allowed = api && typeof m.method === 'string' && Object.prototype.hasOwnProperty.call(api, m.method);
           const fn = allowed ? api[m.method] : null;
           if (typeof fn !== 'function') throw new Error('許可されていないAPIです: ' + m.method);
-          // All host APIs receive a final execution context. Existing JS APIs
-          // harmlessly ignore the extra argument; long-running adapters can
-          // observe signal and cancel backend/worker work immediately.
-          value = await fn(...m.args, { signal: runController.signal });
+          // All host APIs receive a final branded execution context that
+          // cannot be forged across structuredClone or shadowed by untrusted
+          // positional arguments.
+          const hostContext = Object.freeze({
+            [SANDBOX_EXECUTION_CONTEXT]: true,
+            signal: runController.signal,
+          });
+          value = await fn(...m.args, hostContext);
           if (runController.signal.aborted) return;
           rpcOutputBytes += valueSize(value, new Set(), MAX_RPC_OUTPUT_BYTES + 1);
           if (rpcOutputBytes > MAX_RPC_OUTPUT_BYTES) return failBudget('RPC返却データ量の上限を超えたため停止しました。');
         } catch (err) {
-          error = (err && err.message) || String(err);
+          try {
+            error = (err && typeof err.message === 'string' && err.message) || String(err);
+          } catch {
+            error = 'RPCエラーが発生しました。';
+          }
         } finally {
           rpcConcurrent = Math.max(0, rpcConcurrent - 1);
         }
@@ -973,11 +1089,20 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       } else {
         failBudget('未定義のsandbox制御メッセージを受信したため停止しました。');
       }
+      } catch {
+        failBudget('sandboxメッセージ処理中にエラーが発生したため停止しました。');
+      }
     };
 
-    frame.srcdoc = FRAME;
-    document.body.append(frame);
+    try {
+      frame.srcdoc = buildFrameSrcdoc();
+      if (!document.body) throw new Error('document.body is unavailable');
+      document.body.append(frame);
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
   });
 }
 
-export { MAX_PLUGIN_DEFINITIONS, MAX_PLUGIN_METADATA_BYTES };
+export { MAX_PLUGIN_DEFINITIONS, MAX_PLUGIN_METADATA_BYTES, SANDBOX_EXECUTION_CONTEXT, buildFrameSrcdoc, inheritedCspNonce };

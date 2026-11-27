@@ -6,6 +6,7 @@
  * what pressing Enter will do before pressing it.
  *
  *   0x100458c00        -> address
+ *   0x100458c00+0x10   -> address
  *   sub_100458C00      -> symbol
  *   "reward"           -> string
  *   > rename           -> command
@@ -27,8 +28,14 @@ export const COMMANDS = Object.freeze([
   { id: 'advanced', ja: '高度な機能', en: 'Advanced', match: /^(advanced|lab|高度)$/i },
   { id: 'search', ja: '命令・バイト列を検索', en: 'Search', match: /^(search|find|検索|探す)$/i },
   { id: 'jump', ja: 'アドレスへジャンプ', en: 'Jump', match: /^(jump|goto|go|ジャンプ|移動)$/i },
+  { id: 'patch', ja: 'パッチ一覧を開く', en: 'Patches', match: /^(patch|patches|パッチ|書き換え)$/i },
+  { id: 'export', ja: 'プロジェクトを書き出す', en: 'Export', match: /^(export|hexproj|save|書き出し|書き出す|保存)$/i },
+  { id: 'import', ja: 'プロジェクトを読み込む', en: 'Import', match: /^(import|load|読み込み|読み込む|復元)$/i },
+  { id: 'pseudocode', ja: '疑似Cを開く', en: 'Pseudocode', match: /^(pseudo|pseudocode|decompile|疑似c|逆コンパイル)$/i },
+  { id: 'diff', ja: 'バイナリを比較', en: 'Diff', match: /^(diff|差分)$/i },
   { id: 'ai', ja: 'AIに聞く', en: 'Ask AI', match: /^(ai|ask|聞く|質問)$/i },
-  { id: 'agent', ja: 'エージェントで調べる', en: 'Investigate with Agent', match: /^(agent|investigate|調査|調べる)$/i },
+  { id: 'investigate', ja: '目的から自動解析', en: 'Auto-investigate goal', match: /^(investigate|auto|調査|調べる|自動解析)$/i },
+  { id: 'agent', ja: 'AIエージェントを開く', en: 'Open AI Agent', match: /^(agent|エージェント)$/i },
 ]);
 
 const HAS_JA = /[぀-ヿ㐀-鿿]/;
@@ -36,6 +43,7 @@ const QUESTION_TAIL = /[?？]\s*$/;
 const JA_QUESTION = /(どこ|どれ|なに|何|なぜ|どうやって|教えて|ですか|でしょうか|してる|している|したい|探して|調べて)/;
 const IDENTIFIER = /^[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*$/;
 const OBJC_METHOD = /^[+-]\s*\[[^\]]+\]$/;
+const ADDR_EXPR = /^(?:(?:0[xX][0-9a-fA-F]+|(?=[0-9a-fA-F]{6,16}\b)(?=[0-9a-fA-F]*[0-9])[0-9a-fA-F]{6,16})\s*[+-]\s*(?:0[xX][0-9a-fA-F]+|\d+)|[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*\s*(?:\+\s*(?:0[xX][0-9a-fA-F]+|\d+)|-\s*0[xX][0-9a-fA-F]+))$/;
 
 function stripPrefix(value, re) {
   return value.replace(re, '').trim();
@@ -59,10 +67,12 @@ export function classifyOmnibox(input) {
     const hit = COMMANDS.find((command) => command.match.test(body));
     return { kind: 'command', value: body, command: hit ? hit.id : null, raw };
   }
-  const quoted = /^["'“”「](.*)["'“”」]$/.exec(value);
-  if (quoted) return { kind: 'string', value: quoted[1], raw };
+  const QUOTE_PAIRS = { '"': '"', "'": "'", '“': '”', '”': '”', '「': '」' };
+  if (value.length >= 2 && Object.hasOwn(QUOTE_PAIRS, value[0]) && QUOTE_PAIRS[value[0]] === value[value.length - 1]) {
+    return { kind: 'string', value: value.slice(1, -1), raw };
+  }
 
-  if (/^0[xX][0-9a-fA-F]+$/.test(value) || /^[0-9a-fA-F]{6,16}$/.test(value)) {
+  if (/^0[xX][0-9a-fA-F]+$/.test(value) || (/^[0-9a-fA-F]{6,16}$/.test(value) && /[0-9]/.test(value)) || ADDR_EXPR.test(value)) {
     return { kind: 'address', value, raw };
   }
   if (/^sub_[0-9a-fA-F]+$/i.test(value) || OBJC_METHOD.test(value)) {

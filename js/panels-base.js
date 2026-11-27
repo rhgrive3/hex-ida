@@ -63,7 +63,7 @@ import { VERDICT, verdictRank } from './evidence.js';
 import { roleFromReport, sketchRole, changesValue, stringLookup } from './role.js';
 import { describePurpose } from './purpose.js';
 import {
-  showDecompiler, showCfg, showCallGraphPanel, showTypes, showDebugger,
+  showTools, showDecompiler, showCfg, showCallGraphPanel, showTypes, showDebugger,
   showRename, showComment, showPatchEditor, showStructRecover, prettyName,
 } from './tools.js';
 import { purposeText, changeText } from './narrate.js';
@@ -75,7 +75,8 @@ import { functionViews, openFunctionView } from './ui/next-views.js';
 import { buildGeminiPayload, streamGemini } from './gemini.js';
 import { productDescriptor } from './platform/product-descriptor.js';
 
-export { showFileInfo, showSections, showStructure } from './ui/panels/file.js';
+import { showFileInfo, showSections, showStructure } from './ui/panels/file.js';
+export { showFileInfo, showSections, showStructure };
 export { showJump, showSearch } from './ui/panels/navigation.js';
 export { showSettings } from './ui/panels/settings.js';
 
@@ -84,8 +85,13 @@ export { showSettings } from './ui/panels/settings.js';
 export function showFunctions(app) {
   const region = app.store.get('currentRegion');
   if (!region) { toast(t('err.openFirst')); return; }
+  let activeRequest = null;
   const sheet = new Sheet(t('functions.title'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      if (activeRequest?.requestId != null) app.backend.cancelSearch(activeRequest);
+      activeRequest = null;
+      app.backend.onScanProgress = null;
+    },
   });
 
   const status = el('div', 'hint', '');
@@ -104,13 +110,30 @@ export function showFunctions(app) {
   sheet.body.append(field, bar, status, results);
 
   let all = [];
+  let nameLower = [];
+  let addrHexLower = [];
+  const setAll = (listData) => {
+    all = listData;
+    const len = all.length;
+    nameLower = new Array(len);
+    addrHexLower = new Array(len);
+    for (let i = 0; i < len; i++) {
+      const f = all[i];
+      nameLower[i] = (f.name || '').toLowerCase();
+      addrHexLower[i] = f.addr.toString(16);
+    }
+  };
 
   const render = () => {
     const q = input.value.trim().toLowerCase();
-    const items = q
-      ? all.filter((f) => (f.name || '').toLowerCase().includes(q) ||
-                          f.addr.toString(16).includes(q.replace(/^0x/, '')))
-      : all;
+    let items = all;
+    if (q) {
+      const qHex = q.startsWith('0x') ? q.slice(2) : q;
+      items = [];
+      for (let i = 0; i < all.length; i++) {
+        if (nameLower[i].includes(q) || addrHexLower[i].includes(qHex)) items.push(all[i]);
+      }
+    }
     results.replaceChildren();
     let shown = 0;
     const PAGE = 120;
@@ -146,7 +169,7 @@ export function showFunctions(app) {
   const start = async () => {
     const sym = app.symbols;
     if (sym.functionCount > 0) {
-      all = sym.functionList(region);
+      setAll(sym.functionList(region));
       fill.style.width = '100%';
       status.textContent = sym.guessed
         ? t('functions.hintNoSymbols')
@@ -157,12 +180,15 @@ export function showFunctions(app) {
     // LC_FUNCTION_STARTS がない → 命令の並びから推測する（推測は app 側に一本化）
     status.textContent = t('functions.analyzing');
     try {
-      const guessed = await app.ensureFunctions(region, (p) => {
+      const req = app.ensureFunctions(region, (p) => {
         if (!p.all) return;
         fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
       });
+      activeRequest = req;
+      const guessed = await req;
+      if (activeRequest === req) activeRequest = null;
       fill.style.width = '100%';
-      all = guessed.functionList(region);
+      setAll(guessed.functionList(region));
       status.textContent = all.length ? t('functions.hintNoSymbols') : t('functions.none');
       render();
     } catch (err) {
@@ -207,22 +233,33 @@ export function showFunctionSummary(app, row) {
     endRow = Math.min(app.viewer.totalRows - 1, row + 512);
   }
 
-  const sheet = new Sheet(t('functions.summaryTitle'));
+  const controller = new AbortController();
+  const sheet = new Sheet(t('functions.summaryTitle'), {
+    onClose: () => controller.abort('function-summary-closed'),
+  });
   const status = el('div', 'hint', t('functions.analyzing'));
   const bar = el('div', 'progress');
   const fill = el('i');
   bar.append(fill);
   sheet.body.append(bar, status);
 
+  const epoch = app.backend.gen;
+  const sliceIndex = app.store?.get?.('sliceIndex');
+  const isCurrent = () => sheet.root.isConnected !== false && epoch === app.backend.gen && sliceIndex === app.store?.get?.('sliceIndex');
   analyzeFunctionCached(app.backend, region, startRow, endRow, sym,
-    (p) => { fill.style.width = Math.round(p * 100) + '%'; }, { architecture })
+    (p) => {
+      if (controller.signal.aborted || !isCurrent()) return;
+      fill.style.width = Math.round(p * 100) + '%';
+    }, { architecture, signal: controller.signal })
     .then((res) => {
+      if (controller.signal.aborted || !isCurrent()) return;
       status.remove();
       bar.remove();
       applySemantic(app, region, res);
       renderFunctionSummary(app, sheet, res, name, region);
     })
     .catch((err) => {
+      if (controller.signal.aborted || err?.name === 'AbortError' || !isCurrent()) return;
       status.textContent = '';
       alertDialog(t('search.failed'), userError(err));
     });
@@ -532,11 +569,15 @@ function rawSection(app, sheet, res, name, region) {
 export function showFeatures(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
+  const epoch = app.backend?.gen;
+  const sliceIndex = app.store?.get?.('sliceIndex');
   const controller = new AbortController();
+  let activeRequest = null;
   const sheet = new Sheet(pick('機能から探す', 'Find by feature'), {
     onClose: () => {
       controller.abort('features-sheet-closed');
-      app.backend.cancelSearch();
+      if (activeRequest?.requestId != null) app.backend.cancelSearch(activeRequest);
+      activeRequest = null;
       app.backend.onScanProgress = null;
     },
   });
@@ -591,19 +632,28 @@ export function showFeatures(app) {
     if (!p.all) return;
     fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
   };
-  collectStrings(app, progress).then(async (strings) => {
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+  const isCurrent = () => (
+    !controller.signal.aborted
+    && sheet.root.isConnected
+    && epoch === app.backend?.gen
+    && sliceIndex === app.store?.get?.('sliceIndex')
+  );
+  const req = collectStrings(app, progress);
+  activeRequest = req;
+  req.then(async (strings) => {
+    if (activeRequest === req) activeRequest = null;
+    if (!isCurrent()) return;
     const index = await classifyFeaturesAndEngineAsync(strings, {
       signal: controller.signal,
       onProgress: (done, all) => {
-        if (all) fill.style.width = Math.min(100, Math.round((done / all) * 100)) + '%';
+        if (all && isCurrent()) fill.style.width = Math.min(100, Math.round((done / all) * 100)) + '%';
       },
     });
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (!isCurrent()) return;
     app.featureIndex = index;
     render(index);
   }).catch((err) => {
-    if (controller.signal.aborted) return;
+    if (!isCurrent() || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') return;
     bar.remove();
     status.textContent = '';
     alertDialog(t('search.failed'), userError(err));
@@ -641,8 +691,17 @@ function trimText(s, n) {
 export function showStrings(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
+  let activeRequest = null;
+  let scanToken = 0;
   const sheet = new Sheet(t('strings.title'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      scanToken++;
+      if (activeRequest) {
+        app.backend.cancelSearch(activeRequest);
+        activeRequest = null;
+      }
+      app.backend.onScanProgress = null;
+    },
   });
 
   /* 文字列は __cstring などにまとまっている。なければ今のセクションを見る。 */
@@ -669,11 +728,18 @@ export function showStrings(app) {
   sheet.body.append(chips, field, bar, status, results);
 
   let all = [];
+  let textLower = [];
   let active = targets[0] || null;
 
   const render = () => {
     const q = input.value.trim().toLowerCase();
-    const items = q ? all.filter((s) => s.text.toLowerCase().includes(q)) : all;
+    let items = all;
+    if (q) {
+      items = [];
+      for (let i = 0; i < all.length; i++) {
+        if (textLower[i].includes(q)) items.push(all[i]);
+      }
+    }
     results.replaceChildren();
     let shown = 0;
     const PAGE = 120;
@@ -711,25 +777,40 @@ export function showStrings(app) {
   input.addEventListener('input', render);
 
   const scan = async (region) => {
+    const token = ++scanToken;
+    if (activeRequest) {
+      app.backend.cancelSearch(activeRequest);
+      activeRequest = null;
+    }
     active = region;
     for (const c of chips.children) c.setAttribute('aria-pressed', String(c._region === region));
     results.replaceChildren();
     all = [];
+    textLower = [];
     status.textContent = t('strings.scanning');
     fill.style.width = '0%';
     const progress = (p) => {
+      if (token !== scanToken || active !== region || !sheet.root.isConnected) return;
       if (!p.all) return;
       fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
     };
+    const request = app.backend.strings({ regionId: region.id, min: 4 }, progress);
+    activeRequest = request;
     try {
-      const res = await app.backend.strings({ regionId: region.id, min: 4 }, progress);
+      const res = await request;
+      if (activeRequest === request) activeRequest = null;
+      if (token !== scanToken || active !== region || !sheet.root.isConnected) return;
       fill.style.width = '100%';
       all = res.results;
+      textLower = new Array(all.length);
+      for (let i = 0; i < all.length; i++) textLower[i] = all[i].text.toLowerCase();
       status.textContent = t('strings.count', { n: all.length.toLocaleString() }) +
         (res.capped ? t('strings.capped', { n: all.length.toLocaleString() }) : '') +
         '\n' + t('strings.hint');
       render();
     } catch (err) {
+      if (activeRequest === request) activeRequest = null;
+      if (token !== scanToken || active !== region || !sheet.root.isConnected) return;
       status.textContent = '';
       alertDialog(t('search.failed'), userError(err));
     }
@@ -750,8 +831,13 @@ function showXrefsLegacy(app, target) {
   const region = app.store.get('currentRegion');
   if (!region) return;
   const codeRegion = pickCodeRegion(app) || region;
+  let request = null;
   const sheet = new Sheet(t('xref.title'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      if (request) app.backend.cancelSearch(request);
+      request = null;
+      app.backend.onScanProgress = null;
+    },
   });
 
   sheet.body.append(el('div', 'hint',
@@ -770,8 +856,7 @@ function showXrefsLegacy(app, target) {
     fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
   };
 
-  const request = app.backend.xrefs({ regionId: codeRegion.id, target }, progress);
-  sheet.onClose = () => request.cancel();
+  request = app.backend.xrefs({ regionId: codeRegion.id, target }, progress);
   request.then((res) => {
     fill.style.width = '100%';
     if (!res.results.length) { status.textContent = t('xref.none'); return; }
@@ -1094,6 +1179,49 @@ function wordValue(hex) {
   return v >>> 0;
 }
 
+function instructionJumpTarget(d) {
+  if (!d) return null;
+  if (d.target != null) {
+    try { return BigInt(d.target); } catch { /* ignore */ }
+  }
+  const mn = String(d.mnemonic || '').trim().toLowerCase();
+  const ops = String(d.operands || '').trim();
+  if (!mn || !ops) return null;
+  const branchOrCall = isBranch(mn) || isCall(mn) || /^(?:call|jmp|j[a-z]{1,4})$/.test(mn);
+  if (!branchOrCall) return null;
+  const lastOp = (ops.split(',').pop() || '').trim();
+  if (!lastOp || lastOp.includes('[')) return null;
+  const m = /^#?(0x[0-9a-fA-F]+)$/.exec(lastOp);
+  if (!m) return null;
+  try { return BigInt(m[1]); } catch { return null; }
+}
+
+function editInstructionBookmarkNote(app, addr) {
+  if (addr == null || !app.bookmarks) return;
+  const existing = app.bookmarks.get?.(addr)
+    ?? (app.bookmarks.list?.() || []).find((b) => { try { return BigInt(b.addr) === BigInt(addr); } catch { return false; } });
+  const sheet = new Sheet(pick('ブックマークメモを編集', 'Edit bookmark note'));
+  const field = el('div', 'field');
+  const input = el('input');
+  input.type = 'text';
+  input.value = String(existing?.note || '');
+  input.placeholder = pick('メモを入力…', 'Enter note…');
+  const name = existing?.name || app.symbols?.nameAt?.(addr) || addrHex(addr);
+  const save = () => {
+    if (!app.bookmarks.has?.(addr)) app.bookmarks.toggle?.(addr, { name });
+    app.bookmarks.setNote?.(addr, { note: input.value.trim(), name });
+    sheet.close();
+    toast(pick('ブックマークメモを保存しました', 'Bookmark note saved'));
+  };
+  field.append(input, button(pick('保存', 'Save'), 'chip', save));
+  sheet.body.append(field);
+  input.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') save();
+  });
+  setTimeout(() => { input.focus(); input.select?.(); }, 50);
+}
+
 export function instructionMenu(app, row, x, y) {
   const sel = app.viewer.rangeMode ? app.viewer.selectionRange() : null;
   if (sel) { rangeCopyMenu(app, x, y); return; }
@@ -1101,27 +1229,65 @@ export function instructionMenu(app, row, x, y) {
   const d = app.viewer.rowData(row) || {};
   const asm = ((d.mnemonic || '') + ' ' + (d.operands || '')).trim();
   const sb = semanticBlockAt(app, row);
+  const jumpTarget = instructionJumpTarget(d);
+  const jumpLabel = jumpTarget != null
+    ? (() => {
+        const targetSym = app.symbols?.nameAt?.(jumpTarget);
+        return targetSym ? prettyName(targetSym) : addrHex(jumpTarget);
+      })()
+    : null;
+  const hasBookmark = d.address != null && !!app.bookmarks?.has?.(d.address);
   /* AI は 1 行だけ足す。動詞は「AI に聞く…」の下に置いて、このメニューを太らせない。 */
   const assistant = typeof window !== 'undefined' ? window.__hexAi : null;
   menu([
     ...(d.address != null ? [{ header: addrHex(d.address), sub: asm || null }] : []),
     ...(assistant ? [askAiMenuItem(assistant, instructionAiItems(assistant, { address: d.address, text: asm }), { x, y })] : []),
-    { label: t('detail.title') + '…', action: () => showDetail(app, row) },
-    { label: pick('逆コンパイルして読む（C 風）', 'Decompile to C'),
+    ...(jumpTarget != null ? [{
+      label: pick(`${jumpLabel} へジャンプ`, `Jump to ${jumpLabel}`),
+      action: () => app.goToAddress(jumpTarget, { announce: true }),
+    }] : []),
+    { label: pick('疑似Cを開く (Space)', 'Open Pseudo-C (Space)'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'pseudocode') },
+    { label: pick('相互参照 (X)', 'Xrefs (X)'),
+      action: () => showXrefs(app, d.address) },
+    { label: pick('名前を付ける (N)', 'Rename (N)'),
+      action: () => showRename(app, functionStartOf(app, d.address)) },
+    { label: pick('メモを書く (;)', 'Comment (;)'),
+      action: () => showComment(app, d.address) },
+    ...(d.address != null && app.bookmarks ? [
+      {
+        label: hasBookmark
+          ? pick('☆ ブックマークを解除 (B)', '☆ Remove bookmark (B)')
+          : pick('★ このアドレスをブックマーク (B)', '★ Bookmark this address (B)'),
+        action: () => {
+          const name = app.symbols?.nameAt?.(d.address) || addrHex(d.address);
+          const added = app.bookmarks.toggle?.(d.address, { name });
+          app.updateChrome?.();
+          toast(added
+            ? pick('ブックマークに追加しました', 'Bookmark added')
+            : pick('ブックマークを解除しました', 'Bookmark removed'));
+        },
+      },
+      ...(hasBookmark ? [{
+        label: pick('ブックマークメモを編集', 'Edit bookmark note'),
+        action: () => editInstructionBookmarkNote(app, d.address),
+      }] : []),
+    ] : []),
+    { label: t('detail.copyAddress'), action: () => copyText(addrHex(d.address), t('toast.copyAddress')) },
+    { label: t('detail.copyHex'), action: () => copyText(d.bytes || '', t('toast.copyHex')) },
+    { label: t('detail.copyAsm'), action: () => copyText(asm, t('toast.copyAsm')) },
+    '-',
+    { label: t('detail.title') + '…', action: () => showDetail(app, row) },
     ...(sb ? [{
       label: pick('この処理を見る', 'Show this step') + '（' + blockTitle(sb) + '）',
       action: () => showBlockDetail(app, app.semantic.model, sb, app.store.get('currentRegion')),
     }] : []),
-    { label: pick('関数の概要を開く', 'Open function overview'),
+    { label: pick('この関数を調べる', 'Investigate this function'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'report') },
-    { label: pick('この関数を調べる（事実と推測）', 'Investigate this function'),
-      action: () => showFunctionReport(app, functionStartOf(app, d.address), app.lastGoal) },
     ...(sb ? [{
       label: pick('この値の行き先を追う', 'Follow this value'),
       action: () => showValueFlow(app, app.semantic.model, row, app.store.get('currentRegion')),
     }] : []),
-    { label: t('detail.findRefs'), action: () => showXrefs(app, d.address) },
     { label: pick('制御フロー図を見る', 'Show control-flow graph'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'flow') },
     { label: pick('呼び出し図を見る', 'Show call graph'),
@@ -1129,18 +1295,10 @@ export function instructionMenu(app, row, x, y) {
     { label: pick('引数と戻り値を調べる', 'Show arguments and return value'),
       action: () => showTypes(app, functionStartOf(app, d.address)) },
     { label: pick('アドレスの対応を見る', 'Show address mapping'), action: () => showAddressInfo(app, d.address) },
-    '-',
-    { label: pick('ここから実行してみる', 'Run from here'),
-      action: () => showDebugger(app, functionStartOf(app, d.address)) },
-    { label: pick('名前を付ける', 'Rename'),
-      action: () => showRename(app, functionStartOf(app, d.address)) },
-    { label: pick('この行にメモを書く', 'Add a comment'), action: () => showComment(app, d.address) },
     { label: pick('この命令を書き換える（パッチ）', 'Patch this instruction'),
       action: () => showPatchEditor(app, d.address, { mnemonic: d.mnemonic, operands: d.operands, address: d.address }) },
-    '-',
-    { label: t('detail.copyAddress'), action: () => copyText(addrHex(d.address), t('toast.copyAddress')) },
-    { label: t('detail.copyHex'), action: () => copyText(d.bytes || '', t('toast.copyHex')) },
-    { label: t('detail.copyAsm'), action: () => copyText(asm, t('toast.copyAsm')) },
+    { label: pick('ここから実行してみる', 'Run from here'),
+      action: () => showDebugger(app, functionStartOf(app, d.address)) },
     '-',
     { label: t('detail.selectRows'), action: () => app.startSelection(row) },
   ], x, y);
@@ -1210,10 +1368,16 @@ function legacyViewOpeners(app, goal) {
 
 function openFunctionSurface(app, address, view = 'report', goal = app.lastGoal) {
   if (address == null) return false;
-  const start = functionStartOf(app, BigInt(address));
+  const addrBig = BigInt(address);
+  const start = functionStartOf(app, addrBig);
+  const router = productRouter();
+  if (view === 'pseudocode' && router && addrBig !== start) {
+    router.navigate(`/function/${start.toString()}/pseudocode?addr=${addrBig.toString()}`);
+    return true;
+  }
   const [target] = functionViews({ address: start, include: [view], ja: isJa() });
   return !!target && openFunctionView(target, {
-    router: productRouter(),
+    router,
     legacy: legacyViewOpeners(app, goal),
   });
 }
@@ -1336,7 +1500,10 @@ async function prepare(app, box) {
       box.say(pick('値の増減のしかたを調べています…', 'Watching how values change…'));
     }
   });
-  return { strings, program, shapes };
+  const cryptoScan = typeof app.ensureCryptoScan === 'function'
+    ? await app.ensureCryptoScan().catch(() => null)
+    : null;
+  return { strings, program, shapes, cryptoScan };
 }
 
 /** 目的を選ぶボタンの並び。概要画面と「調べる」画面の両方で使う。 */
@@ -1437,7 +1604,7 @@ export function showOverview(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
   const sheet = new Sheet(pick('このアプリを解析しました', 'This app has been analysed'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => { app.backend.onScanProgress = null; },
   });
   const body = sheet.body;
 
@@ -1522,6 +1689,9 @@ export function showOverview(app) {
     }
     const box = progressBox(later, pick('中身を調べています…', 'Looking inside…'));
     let cancelled = false;
+    const runEpoch = app.backend?.gen;
+    const runSlice = app.sliceIndex;
+    const isStale = () => cancelled || !sheet.root.isConnected || app.backend?.gen !== runEpoch || app.sliceIndex !== runSlice;
     const runController = new AbortController();
     sheet.onClose = () => {
       cancelled = true;
@@ -1529,19 +1699,20 @@ export function showOverview(app) {
       app.backend.onScanProgress = null;
     };
 
-    prepare(app, box).then(async ({ strings, program, shapes }) => {
-      if (cancelled || !sheet.root.isConnected) return;
+    prepare(app, box).then(async ({ strings, program, shapes, cryptoScan }) => {
+      if (isStale()) return;
       let recognition=null;
       try { recognition=await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { recognition=null; }
+      if (isStale()) return;
       const cxxFields = cxxMemberIndexForApp(app);
       const cxxRevision = cxxFields?.revision || 0;
       const report = await autoAnalyze({
         cxxFields,
         strings, program, symbols: app.symbols, region, fields: app.fields,
-        shapes, recognition,
+        shapes, cryptoScan, recognition,
         analyze: makeAnalyzer(app, region, runController.signal),
         scanAccess: makeAccessScanner(app, region, runController.signal),
-        isCancelled: () => cancelled || !sheet.root.isConnected,
+        isCancelled: () => isStale(),
         onProgress: (p) => {
           box.set({ done: p.done, all: p.all });
           /*
@@ -1554,7 +1725,7 @@ export function showOverview(app) {
         },
       });
       box.done();
-      if (cancelled || !sheet.root.isConnected) return;
+      if (isStale()) return;
       app.autoReport = { report, key: region ? region.id : null, gen: app.symbols.gen, cxxFields, cxxRevision };
       void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
       renderAutoReport(app, sheet, later, report, region);
@@ -1611,89 +1782,101 @@ async function pinnedFor(app, goal, ctx) {
       (app.autoReport.cxxRevision || 0) === (cxxFields?.revision || 0)) return fromAuto;
 
   if (!app.pinnedCache) app.pinnedCache = new Map();
-  const key = JSON.stringify([goal.id, goal.text, app.symbols.gen, cxxFields?.snapshotId, cxxFields?.revision]);
-  if (app.pinnedCache.has(key)) return app.pinnedCache.get(key);
-
   const region = ctx.region;
-  if (ctx.box) ctx.box.say(pick('値を 1 つに絞り込んでいます…', 'Narrowing down to one value…'));
-  const common = {
-    goal,
-    fields: app.fields,
-    cxxFields,
-    shapes: ctx.shapes || app.shapes || null,
-    program: ctx.program,
-    symbols: app.symbols,
-    strings: ctx.strings || [],
-    region,
-    map: report ? report.map : null,
-    // 形から立てた候補を開いて確かめるとき、参照している文言もそこで読む
-    textAt: stringLookup(ctx.strings || []),
-    signal: ctx.signal || null,
-    analyze: makeAnalyzer(app, region, ctx.signal || null),
-    scanAccess: makeAccessScanner(app, region, ctx.signal || null),
-    // 1 つの目的だけを見にきているので、ここでは予算を広く取る
-    budget: { left: 48 },
-    limit: 12,
-    onProgress: (x) => { if (ctx.box) ctx.box.set(x); },
-  };
-  let retryableFailure = false;
-  const attempt = async (operation) => {
-    try { return await operation(); }
-    catch (error) {
-      if (ctx.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR' ||
-          error?.code === 'pinpoint-analysis-timeout' || error?.code === 'pinpoint-access-timeout') {
-        retryableFailure = true;
+  const key = JSON.stringify([
+    goal.id, goal.text, app.backend?.gen ?? 0, app.sliceIndex ?? 0, region?.id ?? null,
+    app.symbols.gen, cxxFields?.snapshotId, cxxFields?.revision,
+  ]);
+  let entry = app.pinnedCache.get(key);
+  if (!entry) {
+    if (ctx.box) ctx.box.say(pick('値を 1 つに絞り込んでいます…', 'Narrowing down to one value…'));
+    const sharedController = new AbortController();
+    const common = {
+      goal,
+      fields: app.fields,
+      cxxFields,
+      shapes: ctx.shapes || app.shapes || null,
+      program: ctx.program,
+      symbols: app.symbols,
+      strings: ctx.strings || [],
+      region,
+      map: report ? report.map : null,
+      textAt: stringLookup(ctx.strings || []),
+      signal: sharedController.signal,
+      analyze: makeAnalyzer(app, region, sharedController.signal),
+      scanAccess: makeAccessScanner(app, region, sharedController.signal),
+      budget: { left: 48 },
+      limit: 12,
+      onProgress: (x) => { if (ctx.box) ctx.box.set(x); },
+    };
+    let retryableFailure = false;
+    const attempt = async (operation) => {
+      try { return await operation(); }
+      catch (error) {
+        if (sharedController.signal.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR' ||
+            error?.code === 'pinpoint-analysis-timeout' || error?.code === 'pinpoint-access-timeout') {
+          retryableFailure = true;
+        }
+        return null;
       }
-      return null;
+    };
+    const promise = (async () => {
+      let pin = null;
+      if (app.fields?.classCount || cxxFields?.fieldCount) {
+        pin = await attempt(() => pinpointField(common));
+      }
+      const undecided = (p) => !p || !p.top ||
+        verdictRank(p.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
+      if (undecided(pin) && ((ctx.ranked && ctx.ranked.length) || (common.shapes && common.shapes.size))) {
+        const loc = await attempt(() => pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked || [] })));
+        if (beats(loc, pin)) pin = loc;
+      }
+      if (undecided(pin) && ctx.ranked && ctx.ranked.length) {
+        const fn = await attempt(() => pinpointFunction(Object.assign({}, common, { ranked: ctx.ranked })));
+        if (beats(fn, pin)) pin = fn;
+      }
+      return pin;
+    })();
+    entry = { promise, controller: sharedController, waiters: 0, settled: false };
+    app.pinnedCache.set(key, entry);
+    promise.then(() => {
+      entry.settled = true;
+      if ((sharedController.signal.aborted || retryableFailure) && app.pinnedCache.get(key) === entry) {
+        app.pinnedCache.delete(key);
+      }
+    }, () => {
+      entry.settled = true;
+      if (app.pinnedCache.get(key) === entry) app.pinnedCache.delete(key);
+    });
+  }
+  const callerSignal = ctx.signal || null;
+  if (callerSignal?.aborted) return null;
+  entry.waiters += 1;
+  let released = false;
+  const release = (aborted) => {
+    if (released) return;
+    released = true;
+    entry.waiters = Math.max(0, entry.waiters - 1);
+    if (aborted && !entry.settled && entry.waiters === 0) {
+      if (!entry.controller.signal.aborted) entry.controller.abort('pinned-waiters-aborted');
+      if (app.pinnedCache.get(key) === entry) app.pinnedCache.delete(key);
     }
   };
-  const p = (async () => {
-    let pin = null;
-    if (app.fields?.classCount || cxxFields?.fieldCount) {
-      pin = await attempt(() => pinpointField(common));
-    }
-    /*
-     * クラス表から決まらなかったなら、形と命令から「場所」を決めにいく。
-     *
-     * ここは長いあいだ `!pin.top` のときしか走っていなかった。ところが
-     * クラス表がある C++ ゲームでは、pinpointField は必ず何かを 1 位に立てる
-     * （中身は広告 SDK の名前で、判定は「見つかりませんでした」）。top が
-     * ある以上ここが素通りされ、**命令から降りる道が 1 度も試されないまま**
-     * 「見つかりませんでした」と出ていた。battlecats の HP がまさにこれ。
-     * 決着していないなら、必ずもう一方も試して、良かったほうを採る。
-     */
-    const undecided = (p) => !p || !p.top ||
-      verdictRank(p.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
-    if (undecided(pin) && ((ctx.ranked && ctx.ranked.length) || (common.shapes && common.shapes.size))) {
-      const loc = await attempt(() => pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked || [] })));
-      if (beats(loc, pin)) pin = loc;
-    }
-    /*
-     * 値としては決まらなかった。それでも「その処理がどれか」は決まることがある。
-     *
-     * ゲーム本体が C++ のアプリでは、値の名前はどこにも残っていない代わりに、
-     * 「攻撃力アップ:%d 基ダ×(100+%d)÷100」のような、開発者が書いた計算式が残る。
-     * その文言を参照している関数が 1 個だけで、しかもその式の定数が命令の中に
-     * 実在するなら、処理としては確定できる。ここを呼んでいなかったので、
-     * 画面には「見つかりませんでした」しか出ていなかった。
-     */
-    if (undecided(pin) && ctx.ranked && ctx.ranked.length) {
-      const fn = await attempt(() => pinpointFunction(Object.assign({}, common, { ranked: ctx.ranked })));
-      if (beats(fn, pin)) pin = fn;
-    }
-    return pin;
-  })();
-  app.pinnedCache.set(key, p);
-  try {
-    const result = await p;
-    if ((ctx.signal?.aborted || retryableFailure) && app.pinnedCache.get(key) === p) {
-      app.pinnedCache.delete(key);
-    }
-    return result;
-  } catch (error) {
-    if (app.pinnedCache.get(key) === p) app.pinnedCache.delete(key);
-    throw error;
+  if (!callerSignal) {
+    try { return await entry.promise; }
+    finally { release(false); }
   }
+  return await new Promise((resolve, reject) => {
+    const onAbort = () => {
+      release(true);
+      resolve(null);
+    };
+    callerSignal.addEventListener('abort', onAbort, { once: true });
+    entry.promise.then(
+      (res) => { callerSignal.removeEventListener('abort', onAbort); release(false); resolve(res); },
+      (err) => { callerSignal.removeEventListener('abort', onAbort); release(false); reject(err); },
+    );
+  });
 }
 
 /**
@@ -1732,8 +1915,8 @@ function beats(next, cur) {
 const PURPOSE_ROWS = 10;
 
 /** 答えに選ばれた処理 1 個ぶんの「何をしているか」を、見出しの下に足す。 */
-async function describeAnswer(app, region, program, strings, addr, into) {
-  const analyze = makeAnalyzer(app, region);
+async function describeAnswer(app, region, program, strings, addr, into, signal = null) {
+  const analyze = makeAnalyzer(app, region, signal);
   if (!analyze || !into) return;
   const range = program ? program.functionRange(addr) : null;
   let model = null;
@@ -1751,33 +1934,40 @@ async function describeAnswer(app, region, program, strings, addr, into) {
     'What this routine does: ' + text), 'sub'));
 }
 
-async function fillPurpose(app, region, program, strings, rows) {
-  const analyze = makeAnalyzer(app, region);
+async function fillPurpose(app, region, program, strings, rows, signal = null) {
+  const analyze = makeAnalyzer(app, region, signal);
   if (!analyze || !rows || !rows.length) return;
   const lookup = stringLookup(strings || []);
-  for (const r of rows.slice(0, PURPOSE_ROWS)) {
-    if (!r.row.isConnected) return;                 // 閉じられた。追いかけない。
-    const range = program ? program.functionRange(r.addr) : null;
-    let model = null;
-    try { model = await analyze(r.addr, range ? range.end : null); } catch { model = null; }
-    if (!model) continue;
-    let text = '';
-    try {
-      const owner = app.fields ? app.fields.ownerOf(r.addr) : null;
-      text = purposeText(describePurpose({
-        model, addr: r.addr, fields: app.fields, owner, textAt: lookup,
-      }));
-    } catch { text = ''; }
-    if (!text) continue;
-    const sub = r.row.querySelector('.sub');
-    if (!sub) continue;
-    /*
-     * 「たぶん 🎒 アイテムに関わる処理（判定）」のような下見は、ここで消す。
-     * 命令から確かめた文と、名前から当てた推測を並べると、読む人は
-     * どちらを信じればいいのか分からなくなる。確かめたほうだけを残す。
-     */
-    sub.textContent = text + '\n' + r.rest;
-  }
+  const targets = rows.slice(0, PURPOSE_ROWS);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < targets.length) {
+      const r = targets[cursor++];
+      if (signal?.aborted || !r.row.isConnected) return; // 閉じられた。追いかけない。
+      const range = program ? program.functionRange(r.addr) : null;
+      let model = null;
+      try { model = await analyze(r.addr, range ? range.end : null); } catch { model = null; }
+      if (signal?.aborted || !model || !r.row.isConnected) continue;
+      let text = '';
+      try {
+        const owner = app.fields ? app.fields.ownerOf(r.addr) : null;
+        text = purposeText(describePurpose({
+          model, addr: r.addr, fields: app.fields, owner, textAt: lookup,
+        }));
+      } catch { text = ''; }
+      if (!text) continue;
+      const sub = r.row.querySelector('.sub');
+      if (!sub) continue;
+      /*
+       * 「たぶん 🎒 アイテムに関わる処理（判定）」のような下見は、ここで消す。
+       * 命令から確かめた文と、名前から当てた推測を並べると、読む人は
+       * どちらを信じればいいのか分からなくなる。確かめたほうだけを残す。
+       */
+      sub.textContent = text + '\n' + r.rest;
+    }
+  };
+  const concurrency = Math.min(3, targets.length);
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 }
 
 /** 自動解析の深掘り用。関数 1 つを解析してモデルだけ返す。 */
@@ -1929,11 +2119,14 @@ export function showClass(app, className) {
     const ul = list();
     for (const iv of info.ivars) {
       const type = typeWord(iv.type);
+      const hasOffset = iv.offset != null;
       ul.append(tapRow(plainFieldName(iv.name), {
-        sub: (type ? type + '  ·  ' : '') +
-          pick('先頭から ' + offsetHex(BigInt(iv.offset)) + ' の位置', 'at ' + offsetHex(BigInt(iv.offset))),
-        right: '›',
-        onTap: () => { sheet.close(); showField(app, className, iv); },
+        sub: (type ? type + '  ·  ' : '') + (hasOffset
+          ? pick('先頭から ' + offsetHex(BigInt(iv.offset)) + ' の位置', 'at ' + offsetHex(BigInt(iv.offset)))
+          : pick('オフセット不明', 'offset unknown')),
+        right: hasOffset ? '›' : '',
+        disabled: !hasOffset,
+        onTap: hasOffset ? () => { sheet.close(); showField(app, className, iv); } : undefined,
       }));
     }
     body.append(ul);
@@ -1963,8 +2156,13 @@ export function showClass(app, className) {
 }
 
 function showFieldLegacy(app, className, field) {
+  let fieldRequest = null;
   const sheet = new Sheet(className + '.' + plainFieldName(field.name), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      if (fieldRequest) app.backend.cancelSearch(fieldRequest);
+      fieldRequest = null;
+      app.backend.onScanProgress = null;
+    },
   });
   const body = sheet.body;
 
@@ -1987,14 +2185,16 @@ function showFieldLegacy(app, className, field) {
   const results = el('div');
   body.append(results);
 
+  fieldRequest = app.backend.fieldAccess({
+    regionId: (app.codeRegion() || {}).id,
+    offset: field.offset,
+    size: field.size || 0,
+  });
   Promise.all([
     app.ensureProgram(),
-    app.backend.fieldAccess({
-      regionId: (app.codeRegion() || {}).id,
-      offset: field.offset,
-      size: field.size || 0,
-    }),
+    fieldRequest,
   ]).then(([program, res]) => {
+    fieldRequest = null;
     box.done();
     if (!sheet.root.isConnected) return;
 
@@ -2296,12 +2496,12 @@ function appendNumberFlow(app, parent, addr, offset, fallback) {
   return host;
 }
 
-async function attachIrFlow(app, host, addr, offset) {
+async function attachIrFlow(app, host, addr, offset, signal = null) {
   if (!host || addr == null || !app.store.get('canDisassemble')) return;
   const window = functionAnalysisWindow(app, addr);
   if (!window) return;
   const { region, start, end } = window;
-  const analyze = makeAnalyzer(app, region);
+  const analyze = makeAnalyzer(app, region, signal);
   if (!analyze) return;
   let model = null;
   try {
@@ -3126,9 +3326,11 @@ export function showDataTables(app) {
   const out = el('div');
   body.append(out);
 
+  const schemaEpoch = app.backend?.gen;
+  const schemaSlice = app.sliceIndex;
   app.ensureSchemas((p) => box.set(p)).then((schemas) => {
     box.done();
-    if (!sheet.root.isConnected) return;
+    if (!sheet.root.isConnected || app.backend?.gen !== schemaEpoch || app.sliceIndex !== schemaSlice) return;
     if (!schemas || !schemas.length) {
       out.append(para(pick(
         'データファイルを読み込んでいるところが見つかりませんでした。',
@@ -3314,8 +3516,11 @@ export function showCandidates(app, goal) {
   const results = el('div');
   body.append(results);
 
+  const candEpoch = app.backend?.gen;
+  const candSlice = app.sliceIndex;
+  const isCandStale = () => !sheet.root.isConnected || app.backend?.gen !== candEpoch || app.sliceIndex !== candSlice;
   prepare(app, box).then(async ({ strings, program, shapes }) => {
-    if (!sheet.root.isConnected) { box.done(); return; }
+    if (isCandStale()) { box.done(); return; }
     const region = app.codeRegion();
 
     /*
@@ -3326,13 +3531,14 @@ export function showCandidates(app, goal) {
     const ranked = rankCandidates({
       goal, strings, program, symbols: app.symbols, region, limit: 40,
       vendors: vendorsOf(app.fields),
+      cryptoConstants: cryptoScan?.constants || null,
     });
     const pin = await pinnedFor(app, goal, {
       strings, program, shapes, region, box, ranked: ranked.candidates,
       signal: controller.signal,
     });
     box.done();
-    if (!sheet.root.isConnected) return;
+    if (isCandStale()) return;
     if ((!pin?.top || verdictRank(pin.verdict)<=verdictRank(VERDICT.AMBIGUOUS))
         && supportsArm64SemanticAnalysis(app.store?.get?.('architecture')??app.store?.get?.('capability')?.architecture)
         && app.symbols?.names?.some(name=>typeof name==='string'&&/^_?_Z/.test(name))) {
@@ -3572,14 +3778,21 @@ export function showCandidates(app, goal) {
      * 一覧を出したあとに 1 個ずつ開いて、言えたものから差し替えていく
      * （待たせないために、描画のあとで走らせる）。
      */
-    fillPurpose(app, region, program, strings, rows);
+    fillPurpose(app, region, program, strings, rows, controller.signal);
   }).catch((err) => {
     box.done();
     if (sheet.root.isConnected) {
-      beginnerFailure(results, err, {
+      const codeRegion = app.codeRegion();
+      beginnerFailure(results, err, codeRegion && codeRegion.vmAddr != null ? {
         actionLabel: pick('逆アセンブリを見る', 'Show disassembly'),
-        onAction: () => { sheet.close(); app.goToAddress(app.codeRegion().vmAddr, { announce: true }); },
-      });
+        onAction: () => {
+          sheet.close();
+          const targetRegion = app.codeRegion();
+          if (targetRegion && targetRegion.vmAddr != null) {
+            app.goToAddress(targetRegion.vmAddr, { announce: true });
+          }
+        },
+      } : {});
     }
   });
 }
@@ -3985,34 +4198,66 @@ export function showFunctionReport(app, addr, goal) {
   const later = el('div');
   body.append(later);
 
-  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done:p, all:1 }), { architecture })
+  const reportEpoch = app.backend?.gen;
+  const reportSlice = app.store?.get?.('sliceIndex');
+  const isReportCurrent = () => !controller.signal.aborted && sheet.root.isConnected !== false
+    && reportEpoch === app.backend?.gen && reportSlice === app.store?.get?.('sliceIndex');
+  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => { if (isReportCurrent()) box.set({ done:p, all:1 }); }, { architecture, signal: controller.signal })
   .then((res) => {
     box.done();
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (!isReportCurrent()) return;
     applySemantic(app, region, res);
-    const render = (program) => {
-      if (controller.signal.aborted || !sheet.root.isConnected) return;
+    let loadingNote = null;
+    let currentReport = null;
+    let callBlkRef = null;
+    let nextStepsBlkRef = null;
+    const getReport = () => currentReport;
+    const renderInitial = () => {
+      if (!isReportCurrent()) return;
       const report = buildFunctionReport({
-        model:res.model, region, symbols:sym, program, goal, name,
+        model:res.model, region, symbols:sym, program:null, goal, name,
         fields:app.fields, owner:app.ownerOf(start),
       });
       report.role = roleFromReport(report, { apis:res.model.facts.apis });
+      currentReport = report;
       later.replaceChildren();
-      renderFunctionReport(app, sheet, later, report, res, region, goal);
-      if (!program) later.prepend(para(pick(
+      const refs = renderFunctionReport(app, sheet, later, getReport, res, region, goal, controller.signal);
+      callBlkRef = refs.callBlk;
+      nextStepsBlkRef = refs.nextStepsBlk;
+      loadingNote = para(pick(
         '呼び出し関係は別に取得中です。ここまでの内容はこの関数自身の命令から得た結果です。',
-        'Call relationships are loading separately; the report shown now comes from this function itself.'), 'sub'));
+        'Call relationships are loading separately; the report shown now comes from this function itself.'), 'sub');
+      later.prepend(loadingNote);
     };
     // First useful paint is function-local and cannot be failed by global graph work.
-    render(null);
+    renderInitial();
     Promise.resolve().then(() => {
-      if (controller.signal.aborted) return null;
+      if (!isReportCurrent()) return null;
       return app.ensureProgram();
     }).then((program) => {
-      if (program) render(program);
-    }).catch(() => { /* relationship enrichment is optional */ });
+      if (!program || !isReportCurrent()) return;
+      if (loadingNote && loadingNote.parentNode) loadingNote.remove();
+      const updated = buildFunctionReport({
+        model:res.model, region, symbols:sym, program, goal, name,
+        fields:app.fields, owner:app.ownerOf(start),
+      });
+      updated.role = currentReport?.role ?? roleFromReport(updated, { apis:res.model.facts.apis });
+      currentReport = updated;
+      const nextCallBlk = buildCallRelationshipsBlock(app, sheet, updated, goal);
+      if (callBlkRef && callBlkRef.parentNode) {
+        callBlkRef.replaceWith(nextCallBlk);
+        callBlkRef = nextCallBlk;
+      }
+      const nextSteps = buildNextStepsBlock(updated);
+      if (nextStepsBlkRef && nextStepsBlkRef.parentNode) {
+        nextStepsBlkRef.replaceWith(nextSteps);
+        nextStepsBlkRef = nextSteps;
+      }
+    }).catch(() => { /* relationship enrichment is optional */ })
+      .finally(() => { if (loadingNote && loadingNote.parentNode) loadingNote.remove(); });
   }).catch((err) => {
     box.done();
+    if (controller.signal.aborted || err?.name === 'AbortError') return;
     if (sheet.root.isConnected) {
       beginnerFailure(later, err, {
         actionLabel: pick('逆アセンブリを見る', 'Show disassembly'),
@@ -4022,7 +4267,9 @@ export function showFunctionReport(app, addr, goal) {
   });
 }
 
-function renderFunctionReport(app, sheet, body, report, res, region, goal) {
+function renderFunctionReport(app, sheet, body, reportOrGetter, res, region, goal, signal = null) {
+  const getReport = typeof reportOrGetter === 'function' ? reportOrGetter : () => reportOrGetter;
+  const report = getReport();
   const id = report.identity;
 
   const head = el('div', 'fn-head');
@@ -4057,10 +4304,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
    * 命令をまたいで式に戻したものは、数え上げとはまるで別の情報量を持つので、
    * 事実・推測より **先に** 出す。
    */
-  if (report.comprehension) {
-    const cs = comprehensionSection(app, report.comprehension, sheet, region);
-    if (cs) body.append(cs);
-  }
+  /* 1 段目 — まずは C やアセンブリを知らなくても読める 1 文要約と箇条書き */
   body.append(el('div', 'lead', oneLiner(report, id.name)));
   const what = whatItDoes(report);
   if (what.length) {
@@ -4073,20 +4317,26 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     }
     body.append(ul0);
   }
+  /* 2 段目 — 復元した計算式（必要な人向けの詳細） */
+  if (report.comprehension) {
+    const cs = comprehensionSection(app, report.comprehension, sheet, region);
+    if (cs) body.append(cs);
+  }
 
-  body.append(geminiAnalysisSection(report, res));
+  body.append(geminiAnalysisSection(getReport, res, signal));
 
   /* 3. 詳しく — 事実 / 推測 / 分からないこと。既定では畳んでおく。 */
   body.append(disclosure(pick('詳しく見る（事実・推測・分からないこと）',
     'Show the detail (facts, inferences, unknowns)'), {
     build: (into) => {
+      const latestReport = getReport();
       into.append(storySection(app, res.model, id.name, sheet));
 
       const factBlk = block(pick('確かなこと（バイナリから直接読めたこと）',
         'Facts — read directly from the binary'));
       const ful = list();
       let shown = 0;
-      for (const f of report.facts) {
+      for (const f of latestReport.facts) {
         const text = factText(f);
         if (!text) continue;
         shown++;
@@ -4110,7 +4360,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
       const infBlk = block(pick('ここから推測できること', 'What can be inferred from that'));
       const iul = list();
       let inferred = 0;
-      for (const i of report.inferences) {
+      for (const i of latestReport.inferences) {
         const text = inferenceText(i);
         if (!text) continue;
         inferred++;
@@ -4130,7 +4380,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
 
       const unkBlk = block(pick('このツールでは分からないこと', 'What this tool cannot tell you'));
       const uul = list();
-      for (const u of report.unknowns) {
+      for (const u of latestReport.unknowns) {
         const text = unknownText(u);
         if (text) {
           uul.append(tapRow(text, {
@@ -4152,8 +4402,12 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
       'Here a value is read, changed and written back — the first place to look if you want to change it.')));
     const eul = list();
     for (const e of report.editTargets) {
-      eul.append(tapRow(addrHex(e.address), {
-        sub: updateLines(e).join('\n'),
+      const lines = updateLines(e);
+      const primaryTitle = lines[0] || pick('値の書き換え箇所', 'Value write location');
+      const subParts = lines.slice(1);
+      subParts.push(addrHex(e.address));
+      eul.append(tapRow(primaryTitle, {
+        sub: subParts.join('\n'),
         tag: certaintyWord(e.level === 'confirmed' ? 'fact' : 'inference'),
         tagClass: e.level === 'confirmed' ? 'tag-fact' : 'tag-infer',
         onTap: () => { sheet.close(); showValueFlow(app, res.model, e.row, region); },
@@ -4168,6 +4422,63 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
   }
 
   /* 6. 呼び出し関係 */
+  const callBlk = buildCallRelationshipsBlock(app, sheet, report, goal);
+  body.append(callBlk);
+
+  /* 7. 処理の流れ（制御フロー） */
+  body.append(disclosure(pick('処理の流れを見る（条件分岐とループ）', 'Show the flow (branches and loops)'), {
+    build: (into) => into.append(cfgSection(app, report, region, sheet)),
+  }));
+
+  /* 8. 処理のまとまり → ARM64（従来の道筋をそのまま残す） */
+  body.append(disclosure(pick('処理のまとまりを見る', 'Show the steps'), {
+    build: (into) => into.append(blockListSection(app, res.model, sheet, region)),
+  }));
+  body.append(disclosure(pick('ARM64 を見る（命令と数字）', 'Show the ARM64 details'), {
+    build: (into) => into.append(rawSection(app, sheet, res, id.name, region)),
+  }));
+
+  /* 9. 次に何をすればいいか */
+  const nextStepsBlk = buildNextStepsBlock(report);
+  body.append(nextStepsBlk);
+
+  /* 10. どこからでも降りられるようにする */
+  const views = nextViewsRow(app, id.startAddr, { sheet, goal, exclude: ['report'], primary: 'pseudocode' });
+  if (views) body.append(views);
+
+  const actions = el('div', 'detail-actions');
+  actions.append(button(pick('アドレスの対応を見る', 'Show address mapping'), 'chip', () => {
+    showAddressInfo(app, id.startAddr);
+  }));
+  actions.append(button(pick('16 進で見る', 'Show the raw bytes'), 'chip', () => {
+    sheet.close();
+    app.goToAddress(id.startAddr, { announce: true });
+    app.setMode('hex');
+  }));
+  actions.append(button(pick('レポートをコピー', 'Copy report'), 'chip', () => {
+    copyText(body.innerText, pick('関数レポート', 'function report'));
+  }));
+  body.append(actions);
+  return { callBlk, nextStepsBlk };
+}
+
+function buildNextStepsBlock(report) {
+  const nb = block(pick('次に確認すること', 'What to check next'));
+  const nl = el('ul', 'story-steps');
+  report.nextSteps.forEach((s, i) => {
+    const text = nextStepText(s);
+    if (!text) return;
+    const li = el('li');
+    li.append(el('i', null, String(i + 1) + '.'));
+    li.append(el('span', null, text));
+    nl.append(li);
+  });
+  nb.append(nl);
+  return nb;
+}
+
+function buildCallRelationshipsBlock(app, sheet, report, goal) {
+  const id = report.identity;
   const callBlk = block(pick('呼び出し関係', 'Call relationships'));
   const cul = list();
   cul.append(groupRow(pick('この関数を呼んでいる (' + report.callers.length + ')',
@@ -4206,52 +4517,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     sheet.close();
     showCallGraph(app, id.startAddr);
   }));
-  body.append(callBlk);
-
-  /* 7. 処理の流れ（制御フロー） */
-  body.append(disclosure(pick('処理の流れを見る（条件分岐とループ）', 'Show the flow (branches and loops)'), {
-    build: (into) => into.append(cfgSection(app, report, region, sheet)),
-  }));
-
-  /* 8. 処理のまとまり → ARM64（従来の道筋をそのまま残す） */
-  body.append(disclosure(pick('処理のまとまりを見る', 'Show the steps'), {
-    build: (into) => into.append(blockListSection(app, res.model, sheet, region)),
-  }));
-  body.append(disclosure(pick('ARM64 を見る（命令と数字）', 'Show the ARM64 details'), {
-    build: (into) => into.append(rawSection(app, sheet, res, id.name, region)),
-  }));
-
-  /* 9. 次に何をすればいいか */
-  const nb = block(pick('次に確認すること', 'What to check next'));
-  const nl = el('ul', 'story-steps');
-  report.nextSteps.forEach((s, i) => {
-    const text = nextStepText(s);
-    if (!text) return;
-    const li = el('li');
-    li.append(el('i', null, String(i + 1) + '.'));
-    li.append(el('span', null, text));
-    nl.append(li);
-  });
-  nb.append(nl);
-  body.append(nb);
-
-  /* 10. どこからでも降りられるようにする */
-  const views = nextViewsRow(app, id.startAddr, { sheet, goal, exclude: ['report'], primary: 'pseudocode' });
-  if (views) body.append(views);
-
-  const actions = el('div', 'detail-actions');
-  actions.append(button(pick('アドレスの対応を見る', 'Show address mapping'), 'chip', () => {
-    showAddressInfo(app, id.startAddr);
-  }));
-  actions.append(button(pick('16 進で見る', 'Show the raw bytes'), 'chip', () => {
-    sheet.close();
-    app.goToAddress(id.startAddr, { announce: true });
-    app.setMode('hex');
-  }));
-  actions.append(button(pick('レポートをコピー', 'Copy report'), 'chip', () => {
-    copyText(body.innerText, pick('関数レポート', 'function report'));
-  }));
-  body.append(actions);
+  return callBlk;
 }
 
 /** GeminiのMarkdownを、HTML文字列を使わず安全なDOMとして組み立てる。 */
@@ -4362,7 +4628,9 @@ function renderGeminiMarkdown(target, source) {
 }
 
 /** Geminiへ送るのは、この関数に関係する上限付きの根拠だけにする。 */
-function geminiAnalysisSection(report, res) {
+function geminiAnalysisSection(reportOrGetter, res, parentSignal = null) {
+  const getReport = typeof reportOrGetter === 'function' ? reportOrGetter : () => reportOrGetter;
+  const initialReport = getReport();
   const section = block(pick('AIにこの関数を聞く', 'Ask AI about this function'));
   section.classList.add('gemini-analysis');
   section.append(para(pick(
@@ -4380,7 +4648,7 @@ function geminiAnalysisSection(report, res) {
   question.value = pick(
     'この関数の役割と、値が書き込まれる経路を根拠となるARM64命令とともに説明してください。',
     'Explain this function’s role and the path by which it writes values, citing the relevant ARM64 instructions.');
-  label.htmlFor = 'gemini-question-' + String(report.identity.startAddr);
+  label.htmlFor = 'gemini-question-' + String(initialReport.identity.startAddr);
   question.id = label.htmlFor;
   section.append(label, question);
 
@@ -4415,17 +4683,32 @@ function geminiAnalysisSection(report, res) {
   output.setAttribute('role', 'document');
   section.append(status, output);
 
+  const MAX_GEMINI_MARKDOWN_CHARS = 512 * 1024;
+  const GEMINI_RENDER_THROTTLE_MS = 64;
   let controller = null;
   let markdownText = '';
   let renderFrame = 0;
+  let lastRenderAt = 0;
   const renderOutput = () => {
     renderFrame = 0;
+    lastRenderAt = Date.now();
     const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 72;
     renderGeminiMarkdown(output, markdownText);
     if (follow) output.scrollTop = output.scrollHeight;
   };
   const scheduleRender = () => {
-    if (!renderFrame) renderFrame = requestAnimationFrame(renderOutput);
+    if (renderFrame) return;
+    if (Date.now() - lastRenderAt < GEMINI_RENDER_THROTTLE_MS) {
+      renderFrame = requestAnimationFrame(() => {
+        if (Date.now() - lastRenderAt < GEMINI_RENDER_THROTTLE_MS) {
+          renderFrame = requestAnimationFrame(renderOutput);
+        } else {
+          renderOutput();
+        }
+      });
+      return;
+    }
+    renderFrame = requestAnimationFrame(renderOutput);
   };
   const flushRender = () => {
     if (renderFrame) cancelAnimationFrame(renderFrame);
@@ -4448,7 +4731,7 @@ function geminiAnalysisSection(report, res) {
     }
     let payload;
     try {
-      payload = buildGeminiPayload(report, res.model, text, thinking.value);
+      payload = buildGeminiPayload(getReport(), res.model, text, thinking.value);
     } catch (err) {
       console.error('[hex] could not prepare Gemini context', err);
       status.textContent = pick('解析対象を準備できませんでした。逆コンパイル結果は引き続き確認できます。',
@@ -4468,7 +4751,9 @@ function geminiAnalysisSection(report, res) {
     try {
       await streamGemini(payload, {
         onText: (chunk) => {
-          markdownText += chunk;
+          if (markdownText.length < MAX_GEMINI_MARKDOWN_CHARS) {
+            markdownText += String(chunk).slice(0, MAX_GEMINI_MARKDOWN_CHARS - markdownText.length);
+          }
           copy.disabled = !markdownText;
           scheduleRender();
         },
@@ -4498,6 +4783,14 @@ function geminiAnalysisSection(report, res) {
   cancel.addEventListener('click', () => {
     if (controller) controller.abort();
   });
+  if (parentSignal) {
+    const onParentAbort = () => {
+      if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
+      if (controller) controller.abort();
+    };
+    if (parentSignal.aborted) onParentAbort();
+    else parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  }
   return section;
 }
 
@@ -4575,13 +4868,16 @@ function cfgSection(app, report, region, sheet) {
 /* ── 呼び出しグラフ（上へも下へも辿れる） ───────────────── */
 
 export function showCallGraph(app, addr) {
+  const epoch = app.backend?.gen;
+  const sliceIndex = app.store?.get?.('sliceIndex');
+  const isCurrent = () => sheet.root.isConnected !== false && epoch === app.backend?.gen && sliceIndex === app.store?.get?.('sliceIndex');
   const sheet = new Sheet(pick('呼び出しの流れ', 'Call graph'), { size: 'wide' });
   const body = sheet.body;
   const box = progressBox(body, pick('呼び出し関係を調べています…', 'Mapping calls…'));
 
-  app.ensureProgram((p) => box.set(p)).then((program) => {
+  app.ensureProgram((p) => { if (isCurrent()) box.set(p); }).then((program) => {
     box.done();
-    if (!sheet.root.isConnected) return;
+    if (!isCurrent()) return;
     if (!program) {
       body.append(para(pick('呼び出し関係を取り出せませんでした。', 'No call relationships could be extracted.')));
       return;

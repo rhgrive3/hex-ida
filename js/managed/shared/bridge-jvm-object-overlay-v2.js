@@ -68,13 +68,13 @@ function machineTypeKey(machineType) {
 // explicit alias authority (`duplicatedValueId` plus group membership) and the
 // source value's evidence, instead of an invented unary computation.
 const DUPLICATED_VALUE_EVIDENCE = Object.freeze(
-  ['constant', 'isNull', 'valueType', 'referenceKind', 'stringRef'],
+  ['constant', 'isNull', 'valueType', 'referenceKind', 'stringRef', 'allocationId', 'allocatedClass', 'allocationState', 'fresh'],
 );
 
 function applyDupIdentityAuthority({ dupPlans, nodeReplacements, valueReplacements, valuesById }) {
   for (const plan of dupPlans) {
     if (!plan.inputId || plan.duplicates.length === 0) continue;
-    const source = valuesById.get(plan.inputId);
+    const source = valueReplacements.get(plan.inputId) ?? valuesById.get(plan.inputId);
     if (!source) continue;
     const resultIds = [plan.surviving, ...plan.duplicates];
     const machineType = machineTypeKey(source.machineType);
@@ -102,8 +102,10 @@ function applyDupIdentityAuthority({ dupPlans, nodeReplacements, valueReplacemen
       },
     });
     for (const resultId of resultIds) {
-      valueReplacements.set(resultId, replaceValueMetadata(valuesById.get(resultId), {
+      const current = valueReplacements.get(resultId) ?? valuesById.get(resultId);
+      valueReplacements.set(resultId, replaceValueMetadata(current, {
         ...evidence,
+        ...(current.metadata ?? {}),
         duplicatedValueId: plan.inputId,
         duplicateValueIds: resultIds,
       }));
@@ -134,6 +136,8 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
   const nodeReplacements = new Map();
   const valueReplacements = new Map();
   const dupPlans = [];
+  let valuesById = null;
+  const getValuesById = () => (valuesById ??= new Map(old.values.map((value) => [value.id, value])));
   let changed = false;
 
   for (const node of old.nodes) {
@@ -169,8 +173,9 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
           typeTestPredicate: predicate.predicateKind,
         },
       });
+      const valueIndex = getValuesById();
       for (const outputId of node.outputs) {
-        const value = old.values.find((candidate) => candidate.id === outputId);
+        const value = valueIndex.get(outputId);
         if (value) valueReplacements.set(outputId, replaceValueMetadata(value, predicate));
       }
       continue;
@@ -207,8 +212,9 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
           ...(isArrayAllocation ? { allocationKind: 'array' } : {}),
         },
       });
+      const valueIndex = getValuesById();
       for (const outputId of node.outputs) {
-        const value = old.values.find((candidate) => candidate.id === outputId);
+        const value = valueIndex.get(outputId);
         if (value) valueReplacements.set(outputId, replaceValueMetadata(value, allocation));
       }
       continue;
@@ -226,10 +232,11 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
           ...(allocationIds.length ? { allocationIds, preservesAllocationIdentity: true } : {}),
         },
       });
+      const valueIndex = getValuesById();
       for (let index = 0; index < node.outputs.length; index += 1) {
         const entry = allocations[index];
         if (!entry) continue;
-        const value = old.values.find((candidate) => candidate.id === node.outputs[index]);
+        const value = valueIndex.get(node.outputs[index]);
         if (value) valueReplacements.set(value.id, replaceValueMetadata(value, entry));
       }
       if (allocation == null || allocationIds.length <= 1) {
@@ -271,7 +278,7 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
       dupPlans,
       nodeReplacements,
       valueReplacements,
-      valuesById: new Map(old.values.map((value) => [value.id, value])),
+      valuesById: getValuesById(),
     });
   }
   const nodes = old.nodes.map((node) => nodeReplacements.get(node.id) ?? node);

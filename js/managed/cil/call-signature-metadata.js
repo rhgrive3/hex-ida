@@ -189,7 +189,7 @@ export function buildCilCallMetadataIndex(bytes) {
           nameIndex: readIndex(view, rowPos + 4, stringIndexSize, 'cil-call-signature-typedef-truncated'),
           namespaceIndex: readIndex(view, rowPos + 4 + stringIndexSize, stringIndexSize,
             'cil-call-signature-typedef-truncated'),
-          fieldList: readIndex(view, rowPos + 6 + 2 * stringIndexSize + extendsSize,
+          fieldList: readIndex(view, rowPos + 4 + 2 * stringIndexSize + extendsSize,
             tableIndexSize(rowCounts, FIELD_DEF_TABLE),
             'cil-call-signature-typedef-truncated'),
         }));
@@ -337,13 +337,15 @@ export function readCilMetadataBlob(heap, index, code) {
   return heap.subarray(length.next, length.next + length.value);
 }
 
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 export function readCilMetadataString(heap, index, code) {
   if (!(heap instanceof Uint8Array) || !Number.isSafeInteger(index) || index < 1 || index >= heap.length) fail(code);
   let end = index;
   while (end < heap.length && heap[end] !== 0) end++;
   if (end >= heap.length || end === index) fail(code);
   try {
-    return new TextDecoder('utf-8', { fatal:true }).decode(heap.subarray(index, end));
+    return UTF8_FATAL_DECODER.decode(heap.subarray(index, end));
   } catch {
     fail(code);
   }

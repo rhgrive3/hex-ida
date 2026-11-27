@@ -148,8 +148,14 @@ function collectTopics(input) {
   if (input.owner && input.owner.className) push('class', input.owner.className);
   for (const sel of (input.selectors || []).slice(0, 12)) push('selector', sel, 0.8);
   for (const s of (input.strings || []).slice(0, 24)) push('string', s.text != null ? s.text : s, 1);
-  for (const c of (input.callees || []).slice(0, 24)) push('callee', c.name || c, 0.9);
-  for (const c of (input.callers || []).slice(0, 24)) push('caller', c.name || c, 0.9);
+  for (const c of (input.callees || []).slice(0, 24)) {
+    const label = typeof c === 'string' ? c : c?.name;
+    if (typeof label === 'string' && label) push('callee', label, 0.9);
+  }
+  for (const c of (input.callers || []).slice(0, 24)) {
+    const label = typeof c === 'string' ? c : c?.name;
+    if (typeof label === 'string' && label) push('caller', label, 0.9);
+  }
 
   for (const g of GOALS) {
     for (const t of texts) {
@@ -222,21 +228,92 @@ function subjectOfChain(chain) {
   };
 }
 
+const SHIFT_OPS = new Set(['lsl', 'lsr', 'asr']);
+const NON_COMMUTATIVE_OPS = new Set(['sub', 'subs', 'fsub', 'sdiv', 'udiv', 'fdiv', 'lsl', 'lsr', 'asr']);
+const ARITH_PRIMARY_OPS = new Set([
+  'add', 'adds', 'fadd',
+  'sub', 'subs', 'fsub', 'msub',
+  'mul', 'madd', 'fmul', 'lsl',
+  'sdiv', 'udiv', 'fdiv', 'lsr', 'asr',
+]);
+const BIT_PRIMARY_OPS = new Set(['and', 'orr', 'eor', 'bic']);
+
+function selectPrimaryStep(steps) {
+  if (!steps.length) return null;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (!s || s.signMaskClampPart || s.signMaskClamp) continue;
+    if (ARITH_PRIMARY_OPS.has(s.op)) return s;
+  }
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (!s || s.signMaskClampPart || s.signMaskClamp) continue;
+    if (BIT_PRIMARY_OPS.has(s.op)) return s;
+  }
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (!s || s.signMaskClampPart) continue;
+    if (OP_ACTION[s.op]) return s;
+  }
+  return steps[steps.length - 1];
+}
+
+function shiftImmToFactor(imm) {
+  if (imm == null) return null;
+  if (typeof imm !== 'bigint' && !(typeof imm === 'number' && Number.isSafeInteger(imm))) return null;
+  const shift = BigInt(imm);
+  if (shift < 0n || shift > 53n) return null;
+  return 1n << shift;
+}
+
 function actionOfUpdate(u) {
   // 素の読み書き（アクセサ）。計算が挟まっていないので、動作はそのまま決まる。
   if (u.kind === 'read') return { action: ACTION.GET, amount: null, op: null };
   if (u.kind === 'write') return { action: ACTION.SET, amount: null, op: null };
   const steps = u.steps || [];
-  const last = steps.length ? steps[steps.length - 1] : null;
-  if (!last) {
+  const primary = selectPrimaryStep(steps);
+  if (!primary) {
     // 読んだ値をそのまま別の場所へ置いている（値の移動）
     return { action: ACTION.SET, amount: null, op: null };
   }
-  let action = OP_ACTION[last.op] || ACTION.SET;
-  const amount = last.imm != null ? last.imm : null;
+  const inverted = NON_COMMUTATIVE_OPS.has(primary.op) && primary.sourceOnLeft === false;
+  let action = inverted ? ACTION.SET : (OP_ACTION[primary.op] || ACTION.SET);
+  let amount = inverted ? null : (primary.imm != null ? primary.imm : null);
+  if (!inverted && SHIFT_OPS.has(primary.op) && amount != null) {
+    amount = shiftImmToFactor(amount);
+  }
   // 0 を入れているならリセット。「設定する」より、こちらの方が伝わる。
-  if (action === ACTION.SET && amount != null && amount === 0n) action = ACTION.CLEAR;
-  return { action, amount, op: last.op, float: last.immFloat != null ? last.immFloat : null };
+  if (action === ACTION.SET && amount != null && (amount === 0n || amount === 0)) action = ACTION.CLEAR;
+  return { action, amount, op: primary.op, float: !inverted && primary.immFloat != null ? primary.immFloat : null };
+}
+
+const WRITE_IO_RE = /(?:^|[_:\s])(write|fwrite|pwrite|fputs|fputc|save|put|insert|replace|delete|remove|sync(?:hronize)?|flush|commit|writeToFile|CFPreferencesSet)/i;
+const WRITE_IO_CS_RE = /(?:^|[_:\s])(?:[Ss]tore(?!d(?:\b|[A-Z_])|[Ff]ront|::)|STORE(?!D(?:\b|_)|FRONT|::)|set[A-Z_])/;
+const READ_IO_RE = /(?:^|[_:\s])(read|fread|pread|fgets|fgetc|load|fetch|select|query|objectForKey|stringForKey|integerForKey|boolForKey|floatForKey|doubleForKey|dataForKey|arrayForKey|dictionaryForKey|valueForKey|contentsOfFile|CFPreferencesCopy|sqlite3_column)/i;
+const READ_IO_CS_RE = /(?:^|[_:\s])get(?:[A-Z_]|(?=[(:\s]|$))/;
+
+function classifyStorageAction(input, api) {
+  const hints = [];
+  if (api && api.name) hints.push(String(api.name));
+  if (input.name) hints.push(String(input.name));
+  if (input.owner && input.owner.sel) hints.push(String(input.owner.sel));
+  for (const sel of (input.selectors || [])) if (sel) hints.push(String(sel));
+  for (const c of (input.callees || [])) {
+    const n = typeof c === 'string' ? c : (c && c.name);
+    if (n) hints.push(String(n));
+  }
+  const hasWriteHint = hints.some((h) => WRITE_IO_RE.test(h) || WRITE_IO_CS_RE.test(h));
+  if (hasWriteHint) return ACTION.SAVE;
+  const hasReadHint = hints.some((h) => READ_IO_RE.test(h) || READ_IO_CS_RE.test(h));
+  if (hasReadHint) return ACTION.LOAD;
+  // 非スタックへの書き込み更新がある場合は保存とみなす
+  const hasNonStackWrite = (input.updates || []).some(
+    (u) => u && u.kind !== 'read' && u.location && !u.location.stack,
+  );
+  if (hasNonStackWrite) return ACTION.SAVE;
+  // ARM64 非リーフ関数のプロローグ stp（x29/x30・callee-saved 退避 1〜2 回）で
+  // 読み出し専用関数が ACTION.SAVE に誤倒れするのを防ぐ。
+  return (input.stores || 0) > 2 ? ACTION.SAVE : ACTION.LOAD;
 }
 
 /** 値を触っていない関数の動作を、呼んでいる相手と命令の形から決める。 */
@@ -245,8 +322,7 @@ function actionOfShape(input) {
   for (const a of apis) {
     if (a.id === 'objc_alloc') return { action: ACTION.MAKE, api: a };
     if (a.id === 'prefs' || a.id === 'database' || a.id === 'file' || a.id === 'filemanager') {
-      // 書き込みが 1 つも無いなら、保存ではなく読み出し
-      return { action: (input.stores || 0) > 0 ? ACTION.SAVE : ACTION.LOAD, api: a };
+      return { action: classifyStorageAction(input, a), api: a };
     }
     const mapped = API_ACTION[a.cat];
     if (mapped) return { action: mapped, api: a };
@@ -263,11 +339,17 @@ function actionOfShape(input) {
 function accessorSpec(owner) {
   const sel = owner?.sel;
   if (typeof sel !== 'string' || !sel) return null;
-  const set = /^set(.+):$/.exec(sel);
-  if (set && set[1]) return { kind: 'write', name: set[1].replace(/^_+/, '').toLowerCase(), selector: sel };
+  const set = /^set([^:]+):$/.exec(sel);
+  if (set && set[1]) {
+    const name = set[1].replace(/^_+/, '').toLowerCase();
+    if (name) return { kind: 'write', name, selector: sel };
+  }
   // 引数なし selector だけを getter とみなす。`foo:` のような通常メソッドを
   // getter 扱いすると、たまたま同名の ivar を読んだだけで誤固定する。
-  if (!sel.includes(':')) return { kind: 'read', name: sel.replace(/^_+/, '').toLowerCase(), selector: sel };
+  if (!sel.includes(':')) {
+    const name = sel.replace(/^_+/, '').toLowerCase();
+    if (name) return { kind: 'read', name, selector: sel };
+  }
   return null;
 }
 
@@ -438,6 +520,7 @@ function buildCandidates(input, topics) {
         if (m) {
           items.push(evidence('role-subject-field', clamp01(m.score), {
             name: subject.name, className: subject.className, term: m.term, exact: m.exact,
+            kind: u?.kind ?? null,
           }));
           if (goal && subject.type) {
             const fit = typeFits(goal, subject.type);
@@ -582,16 +665,18 @@ export function inferRole(input) {
   }
   const claims = Array.from(byClaim.values()).sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
 
-  const d = decide(claims);
-  let top = d.top || candidates[0];
   /* For a runtime-declared property accessor, the public semantic action is
      the selector contract itself. A setter may read the old value for KVO/ARC
      and a lazy getter may write a cache; those internal operations must not
      rename `setFoo:` to a getter or `foo` to a setter. Prefer the synthetic
-     metadata-accessor claim when it exists, while keeping instruction evidence
-     visible as supporting/alternative behaviour. */
+     metadata-accessor claim when it exists, and re-run decide() with it at
+     the head so verdict/missing/marginRatio/runnerUp stay consistent. */
   const contract = candidates.find((c) => c.update && c.update.__metadataAccessor);
-  if (contract) top = contract;
+  const decidedClaims = contract
+    ? [contract, ...claims.filter((c) => c !== contract && claimKey(c) !== claimKey(contract))]
+    : claims;
+  const d = decide(decidedClaims);
+  const top = d.top || contract || candidates[0];
   const missing = d.missing.slice();
 
   let verdict = d.verdict;
@@ -634,13 +719,18 @@ export function inferRole(input) {
    * 動作（+1 している）は決まっていても、機能が決まっていないことはある。
    * その 2 つは別々に決着させて、決まっていない方は名乗らない。
    */
-  const rival = candidates.find((c) => c !== top && c.topic && c.topic !== top.topic);
+  const topClaim = claimKey(top);
+  const sameClaimRivals = top.topic
+    ? candidates.filter((c) => c !== top && claimKey(c) === topClaim && c.topic !== top.topic)
+    : [];
+  const strongestRival = sameClaimRivals[0] || null;
+  const rivalNamed = sameClaimRivals.find((c) => c.topic) || null;
   const topicSettled = !top.topic ? false
-    : (!rival || (top.fusion.logOdds - rival.fusion.logOdds) >= Math.log(4));
+    : (!strongestRival || (top.fusion.logOdds - strongestRival.fusion.logOdds) >= Math.log(4));
   if (top.topic && !topicSettled && !missing.includes('role-topic-unsettled')) {
     missing.push('role-topic-unsettled');
   }
-  const rivalTopic = !topicSettled && rival ? rival.topic : null;
+  const rivalTopic = top.topic && !topicSettled && rivalNamed ? rivalNamed.topic : null;
 
   /*
    * 「ほかの読み方」は、決着の判定とは別に選ぶ。
@@ -683,7 +773,7 @@ export function inferRole(input) {
     missing,
     depth: input.verified ? 'full' : 'sketch',
     // 上位いくつかは、UI で「ほかの読み方」として出せるように残す
-    others: candidates.slice(1, 4).map((c) => ({
+    others: candidates.filter((c) => c !== top).slice(0, 3).map((c) => ({
       action: c.action, amount: c.amount, subject: c.subject, topic: c.topic,
       probability: c.fusion.probability,
     })),
@@ -731,12 +821,88 @@ export function roleFromReport(report, extra) {
  * 見えないので、動作は「呼んでいる相手」と「命令の統計」からしか言わない。
  * verified を渡さないので、ここから「確定」は絶対に出ない。 */
 
+const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+function utf8ByteLength(text) {
+  if (typeof text !== 'string' || !text.length) return 0;
+  if (UTF8_ENCODER) return UTF8_ENCODER.encode(text).length;
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i++; }
+      else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+function toBigIntAddress(addr) {
+  if (typeof addr === 'bigint') return addr >= 0n ? addr : null;
+  if (typeof addr === 'number') return Number.isSafeInteger(addr) && addr >= 0 ? BigInt(addr) : null;
+  if (typeof addr === 'string') {
+    const text = addr.trim();
+    if (/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(text)) {
+      try {
+        const v = BigInt(text);
+        return v >= 0n ? v : null;
+      } catch { return null; }
+    }
+  }
+  return null;
+}
+
+function producerByteExtentWindow(text) {
+  let minRaw = 0;
+  let maxRaw = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 0x5c && (text[i + 1] === 't' || text[i + 1] === 'r' || text[i + 1] === 'n')) {
+      minRaw += 1;
+      maxRaw += 2;
+      i++;
+      continue;
+    }
+    const unit = text.codePointAt(i);
+    if (unit > 0xffff) i++;
+    const width = unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+    minRaw += width;
+    maxRaw += width;
+  }
+  return { minRaw, maxRaw };
+}
+
+function validatedStringByteLength(s) {
+  const text = typeof s?.text === 'string' ? s.text : '';
+  const carried = s?.byteLength;
+  if (typeof carried === 'number' && Number.isSafeInteger(carried) && carried > 0) {
+    const { minRaw, maxRaw } = producerByteExtentWindow(text);
+    if (carried >= minRaw && carried <= maxRaw) return carried;
+  }
+  return utf8ByteLength(text);
+}
+
 /** 文字列一覧（{addr,text} の配列）を、アドレスから引ける形にする。1 回だけ作る。 */
+const STRING_LOOKUP_CACHE = new WeakMap();
+
 export function stringLookup(list) {
   if (!list) return () => null;
-  if (list.__lookup) return list.__lookup;
-  const sorted = list.slice().sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
-  const fn = (addr) => {
+  const cached = typeof list === 'object' ? STRING_LOOKUP_CACHE.get(list) : null;
+  if (cached && cached.length === list.length && cached.first === list[0] && cached.last === list[list.length - 1]) {
+    return cached.fn;
+  }
+  const sorted = [];
+  for (const s of list) {
+    if (!s) continue;
+    const addr = toBigIntAddress(s.addr);
+    if (addr == null) continue;
+    sorted.push({ addr, entry: s });
+  }
+  sorted.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
+  const fn = (rawAddr) => {
+    const addr = toBigIntAddress(rawAddr);
     if (addr == null) return null;
     let lo = 0, hi = sorted.length - 1, best = -1;
     while (lo <= hi) {
@@ -745,12 +911,15 @@ export function stringLookup(list) {
       else hi = mid - 1;
     }
     if (best < 0) return null;
-    const s = sorted[best];
-    // 文字列の途中を指していることもある。長さの外なら別物。
-    const len = BigInt((s.text || '').length + 1);
-    return addr < s.addr + len ? s : null;
+    const hit = sorted[best];
+    // 文字列の途中を指していることもある。UTF-8 バイト長の外なら別物。
+    const bytes = validatedStringByteLength(hit.entry);
+    const len = BigInt(bytes + 1);
+    return addr < hit.addr + len ? hit.entry : null;
   };
-  try { Object.defineProperty(list, '__lookup', { value: fn, enumerable: false }); } catch { /* 凍結配列なら諦める */ }
+  if (typeof list === 'object') {
+    STRING_LOOKUP_CACHE.set(list, { length: list.length, first: list[0], last: list[list.length - 1], fn });
+  }
   return fn;
 }
 

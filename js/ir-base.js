@@ -111,6 +111,133 @@ export function hasUnknownStoreBarrier(ir, from, to) {
  * STORE(MK.UNKNOWN) is a may-alias write to every non-stack object/global state.
  * Never let a concrete reaching-store proof pass through it.
  */
+function buildBarrierReachabilityIndex(ir, barriers) {
+  const blocks = ir.blocks;
+  if (!Array.isArray(blocks) || blocks.length === 0) return null;
+  const blockCount = blocks.length;
+  const words = (blockCount + 31) >>> 5;
+  const reachFrom = new Array(blockCount);
+  const reachTo = new Array(blockCount);
+  for (let i = 0; i < blockCount; i += 1) {
+    reachFrom[i] = new Uint32Array(words);
+    reachTo[i] = new Uint32Array(words);
+  }
+  const work = new Int32Array(blockCount);
+  for (let start = 0; start < blockCount; start += 1) {
+    const bits = reachFrom[start];
+    bits[start >>> 5] |= (1 << (start & 31));
+    reachTo[start][start >>> 5] |= (1 << (start & 31));
+    let top = 0;
+    work[top++] = start;
+    while (top > 0) {
+      const b = work[--top];
+      const succs = blocks[b]?.succ;
+      if (!succs) continue;
+      for (let i = 0; i < succs.length; i += 1) {
+        const s = succs[i];
+        if (s < 0 || s >= blockCount) continue;
+        const w = s >>> 5;
+        const m = 1 << (s & 31);
+        if ((bits[w] & m) === 0) {
+          bits[w] |= m;
+          reachTo[s][start >>> 5] |= (1 << (start & 31));
+          work[top++] = s;
+        }
+      }
+    }
+  }
+  const barrierBlockMask = new Uint32Array(words);
+  const barriersByBlock = new Map();
+  for (let i = 0; i < barriers.length; i += 1) {
+    const inst = barriers[i];
+    const b = inst?.block;
+    if (b == null || b < 0 || b >= blockCount) return null;
+    barrierBlockMask[b >>> 5] |= (1 << (b & 31));
+    let list = barriersByBlock.get(b);
+    if (!list) { list = []; barriersByBlock.set(b, list); }
+    list.push({ inst, idx: i, row: inst.row == null ? -1 : inst.row });
+  }
+  return {
+    blockCount,
+    words,
+    reachFrom,
+    reachTo,
+    barrierBlockMask,
+    barriersByBlock,
+    findFirstBetween(from, to) {
+      if (!from || !to) return null;
+      const fb = from.block;
+      const tb = to.block;
+      if (fb == null || tb == null || fb < 0 || tb < 0 || fb >= blockCount || tb >= blockCount) {
+        return unknownStoreBetween(ir, from, to, barriers);
+      }
+      const fromRow = from.row == null ? -1 : from.row;
+      const toRow = to.row == null ? -1 : to.row;
+      const fbReach = reachFrom[fb];
+      const tbReach = reachTo[tb];
+      const canReachTo = (fbReach[tb >>> 5] & (1 << (tb & 31))) !== 0;
+      let bestInst = null;
+      let bestIdx = Infinity;
+
+      const fromList = barriersByBlock.get(fb);
+      if (fromList) {
+        if (fb === tb) {
+          for (let i = 0; i < fromList.length; i += 1) {
+            const item = fromList[i];
+            if (item.idx >= bestIdx) break;
+            if (fromRow < item.row && item.row < toRow) {
+              bestInst = item.inst;
+              bestIdx = item.idx;
+              break;
+            }
+          }
+        } else if (canReachTo) {
+          for (let i = 0; i < fromList.length; i += 1) {
+            const item = fromList[i];
+            if (item.idx >= bestIdx) break;
+            if (fromRow < item.row) {
+              bestInst = item.inst;
+              bestIdx = item.idx;
+              break;
+            }
+          }
+        }
+      }
+
+      if (fb !== tb && canReachTo) {
+        const toList = barriersByBlock.get(tb);
+        if (toList) {
+          for (let i = 0; i < toList.length; i += 1) {
+            const item = toList[i];
+            if (item.idx >= bestIdx) break;
+            if (item.row < toRow) {
+              bestInst = item.inst;
+              bestIdx = item.idx;
+              break;
+            }
+          }
+        }
+      }
+
+      for (let w = 0; w < words; w += 1) {
+        let mask = fbReach[w] & tbReach[w] & barrierBlockMask[w];
+        while (mask !== 0) {
+          const lsb = mask & -mask;
+          const b = (w << 5) + (31 - Math.clz32(lsb));
+          mask ^= lsb;
+          if (b === fb || b === tb) continue;
+          const first = barriersByBlock.get(b)[0];
+          if (first.idx < bestIdx) {
+            bestInst = first.inst;
+            bestIdx = first.idx;
+          }
+        }
+      }
+      return bestInst;
+    },
+  };
+}
+
 function hardenUnknownStores(ir) {
   if (!ir || !ir.instructions) return ir;
   const barriers = unknownStores(ir);
@@ -119,6 +246,7 @@ function hardenUnknownStores(ir) {
     return ir;
   }
 
+  const barrierIndex = buildBarrierReachabilityIndex(ir, barriers);
   let blocked = 0;
   for (const load of ir.instructions) {
     if (load.op !== OP.LOAD) continue;
@@ -132,7 +260,9 @@ function hardenUnknownStores(ir) {
       continue;
     }
     if (!load.reachingStore) continue;
-    const barrier = unknownStoreBetween(ir, load.reachingStore, load, barriers);
+    const barrier = barrierIndex
+      ? barrierIndex.findFirstBetween(load.reachingStore, load)
+      : unknownStoreBetween(ir, load.reachingStore, load, barriers);
     if (!barrier) continue;
     load.reachingStore = null;
     load.memUse = {
@@ -388,9 +518,11 @@ export function rangeOnBranch(ir, branch, taken = true) {
   };
 }
 
+const branchConstraintsCache = new WeakMap();
+
 export function branchConstraints(ir) {
   if (!ir) return [];
-  if (ir._branchConstraints) return ir._branchConstraints;
+  if (branchConstraintsCache.has(ir)) return branchConstraintsCache.get(ir);
   const out = [];
   for (const inst of ir.instructions || []) {
     if (inst.op !== OP.CBR) continue;
@@ -398,7 +530,7 @@ export function branchConstraints(ir) {
     const no = rangeOnBranch(ir, inst, false);
     if (yes || no) out.push({ branch: inst, taken: yes, fallthrough: no });
   }
-  ir._branchConstraints = out;
+  branchConstraintsCache.set(ir, out);
   return out;
 }
 
@@ -415,35 +547,51 @@ function originIdentity(o) {
 }
 
 const originMemo = new WeakMap();
-export function originOf(value, active) {
+const ORIGIN_MAX_DEPTH = 128;
+export function originOf(value, active, state = null) {
   if (!value) return null;
   if (originMemo.has(value)) return originMemo.get(value);
   const visiting = active || new Set();
-  if (visiting.has(value)) return null;
+  const tracker = state || { sawCycle: false, depth: 0 };
+  if (visiting.has(value) || tracker.depth > ORIGIN_MAX_DEPTH) {
+    tracker.sawCycle = true;
+    return null;
+  }
   visiting.add(value);
+  const prevSawCycle = tracker.sawCycle;
+  tracker.sawCycle = false;
+  tracker.depth += 1;
   const def = value.def;
   let out = null;
-  if (def && def.op === OP.LOAD && def.loc) {
-    if (def.loc.kind === MK.GLOBAL) out = { kind: 'global', address: def.loc.address, location: def.loc, row: def.row, addressOfInstruction: def.address };
-    else out = { kind: def.loc.kind === MK.STACK ? 'stack' : 'field', location: def.loc, row: def.row, address: def.address };
-  } else if (def && def.op === OP.CALL) {
-    out = { kind: 'call', target: def.extra && def.extra.target != null ? def.extra.target : null,
-      instructionId: def.id, row: def.row, address: def.address };
-  } else if (def && (def.op === OP.MOV || (def.op === OP.UN && /^(sxt|uxt|fmov)/.test(def.sub || ''))) && def.args[0]) {
-    out = originOf(def.args[0].value, visiting);
-  } else if (def && def.op === OP.PHI && def.args && def.args.length) {
-    const os = def.args.map((a) => originOf(a && a.value, visiting));
-    const keys = os.map(originIdentity);
-    if (keys[0] && keys.every((k) => k === keys[0])) out = os[0];
-  } else if (value.kind === VK.ARG && /^x[0-7]$/.test(String(value.reg || ''))) {
-    out = { kind: 'argument', reg: value.reg };
-  } else if (value.const != null) {
-    out = { kind: 'constant', value: value.const };
-  } else if (def) {
-    out = { kind: 'computed', op: def.op, sub: def.sub || null, row: def.row, address: def.address };
+  try {
+    if (def && def.op === OP.LOAD && def.loc) {
+      if (def.loc.kind === MK.GLOBAL) out = { kind: 'global', address: def.loc.address, location: def.loc, row: def.row, addressOfInstruction: def.address };
+      else if (def.loc.kind === MK.STACK) out = { kind: 'stack', location: def.loc, row: def.row, address: def.address };
+      else if (def.loc.kind === MK.FIELD) out = { kind: 'field', location: def.loc, row: def.row, address: def.address };
+      else out = { kind: 'unknown', location: def.loc, row: def.row, address: def.address };
+    } else if (def && def.op === OP.CALL) {
+      out = { kind: 'call', target: def.extra && def.extra.target != null ? def.extra.target : null,
+        instructionId: def.id, row: def.row, address: def.address };
+    } else if (def && (def.op === OP.MOV || (def.op === OP.UN && /^(sxt|uxt|fmov)/.test(def.sub || ''))) && def.args[0]) {
+      out = originOf(def.args[0].value, visiting, tracker);
+    } else if (def && def.op === OP.PHI && def.args && def.args.length) {
+      const os = def.args.map((a) => originOf(a && a.value, visiting, tracker));
+      const keys = os.map(originIdentity);
+      if (keys[0] && keys.every((k) => k === keys[0])) out = os[0];
+    } else if (value.kind === VK.ARG && /^x[0-7]$/.test(String(value.reg || ''))) {
+      out = { kind: 'argument', reg: value.reg };
+    } else if (value.const != null) {
+      out = { kind: 'constant', value: value.const };
+    } else if (def) {
+      out = { kind: 'computed', op: def.op, sub: def.sub || null, row: def.row, address: def.address };
+    }
+  } finally {
+    tracker.depth -= 1;
+    visiting.delete(value);
   }
-  visiting.delete(value);
-  originMemo.set(value, out);
+  const subtreeHitCycle = tracker.sawCycle;
+  tracker.sawCycle = prevSawCycle || subtreeHitCycle;
+  if (!subtreeHitCycle) originMemo.set(value, out);
   return out;
 }
 
@@ -454,19 +602,58 @@ export function buildIR(model, opts) {
   promoteResolvedGlobals(ir);
   hardenUnknownStores(ir);
   annotateValueRanges(ir);
-  branchConstraints(ir);
   return ir;
 }
 
 const irCache = new WeakMap();
+const irNullCache = new WeakMap();
+function irForNullCacheKey(mode, opts) {
+  if (opts == null) return mode;
+  if (typeof opts !== 'object') return null;
+  const proto = Object.getPrototypeOf(opts);
+  if (proto !== Object.prototype && proto !== null) return null;
+  const keys = Object.keys(opts);
+  if (keys.length === 0) return mode;
+  let returnsValue = undefined;
+  for (let i = 0; i < keys.length; i += 1) {
+    const k = keys[i];
+    const desc = Object.getOwnPropertyDescriptor(opts, k);
+    if (!desc || !Object.hasOwn(desc, 'value')) return null;
+    const v = desc.value;
+    if (v === undefined) continue;
+    if (k === 'returnsValue' && (typeof v === 'boolean' || v === null)) {
+      returnsValue = v;
+      continue;
+    }
+    return null;
+  }
+  return returnsValue === undefined ? mode : `${mode}:rv=${String(returnsValue)}`;
+}
+
 export function irFor(model, opts) {
   if (!model || !model.instructions || !model.instructions.length) return null;
-  const cacheable = opts == null || Object.keys(opts).length === 0;
   const mode = getSemanticMigrationMode();
+  const nullKey = irForNullCacheKey(mode, opts);
+  if (nullKey !== null && irNullCache.get(model)?.has(nullKey)) return null;
+  const cacheable = opts == null
+    || (typeof opts === 'object' && (Object.getPrototypeOf(opts) === Object.prototype || Object.getPrototypeOf(opts) === null) && Object.keys(opts).length === 0);
   const byMode = cacheable ? irCache.get(model) : null;
   if (byMode?.has(mode)) return byMode.get(mode);
   let ir = null;
   try { ir = buildIR(model, opts); } catch { ir = null; }
+  if (ir === null) {
+    if (nullKey !== null) {
+      let failed = irNullCache.get(model);
+      if (!failed) irNullCache.set(model, failed = new Set());
+      failed.add(nullKey);
+    }
+    if (cacheable) {
+      const next = byMode ?? new Map();
+      next.set(mode, null);
+      if (!byMode) irCache.set(model, next);
+    }
+    return null;
+  }
   if (cacheable) {
     const next = byMode ?? new Map();
     next.set(mode, ir);

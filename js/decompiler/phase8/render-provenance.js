@@ -1,3 +1,4 @@
+import { createValidationBatch } from '../../core/identity/live-data.js';
 import { sourceOf } from '../ast/nodes.js';
 import { compatOperationEventCandidate } from '../pipeline-core.js';
 import { renderProvenanceRecord, MAX_EXPRESSION_CONSUMER_WITNESSES } from './contract.js';
@@ -22,6 +23,7 @@ const readFacadeTypedResultHistory = carried('typedResult', readOriginalTypedRes
 const readFacadeStackEscapeHistory = carried('stackEscape', readOriginalStackEscapeHistory);
 const readFacadeAbiBindingHistory = carried('abiBinding', readOriginalAbiBindingHistory);
 
+const EN_COLLATOR = new Intl.Collator('en');
 const PUBLIC_STATE_RULES = Object.freeze(['suppress-unused-entry-state', 'reorder-public-state-slot', 'renumber-public-state-version']);
 
 // Both representations remain inspectable. A normalization attached to its
@@ -140,7 +142,7 @@ function canonicalList(values, sortNumeric) {
   }
   out.sort((left, right) => {
     if (sortNumeric && typeof left === 'number' && typeof right === 'number') return left - right;
-    return String(left).localeCompare(String(right), 'en');
+    return EN_COLLATOR.compare(String(left), String(right));
   });
   return out;
 }
@@ -150,7 +152,7 @@ function canonicalList(values, sortNumeric) {
 function sortLedgerAddresses(out) {
   out.sort((left, right) => {
     if (typeof left === 'bigint' && typeof right === 'bigint') return left < right ? -1 : left > right ? 1 : 0;
-    return String(left).localeCompare(String(right), 'en');
+    return EN_COLLATOR.compare(String(left), String(right));
   });
   return out;
 }
@@ -177,7 +179,7 @@ function canonicalOrigins(raw) {
     ssaRefs: [
       ...canonicalList(typed.ssaDefs.map((value) => `def:${value}`), false),
       ...canonicalList(typed.ssaUses.map((value) => `use:${value}`), false),
-    ].sort((left, right) => left.localeCompare(right, 'en')),
+    ].sort(EN_COLLATOR.compare),
   };
 }
 
@@ -483,6 +485,42 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   if (snapshotId != null && (typeof snapshotId !== 'string' || snapshotId.length === 0)) fail('phase8-render-provenance-snapshot-required');
   const resolvedBudget = validateBudget(budget);
   if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
+  const validation = createValidationBatch();
+  let output;
+  let recheckLive = null;
+  validation.run(() => {
+    output = buildRenderProvenanceCore({
+      result,
+      snapshotId,
+      resolvedBudget,
+      shouldAbort,
+      onCaptureRecheck: (fn) => { recheckLive = fn; },
+    });
+  });
+  if (output?.completeness === 'cancelled' || output?.reasons?.includes('cancelled')) return output;
+  // Run live-data stale checks outside the initial validation batch (inside a
+  // fresh batch so neither this batch nor any outer batch can shadow live
+  // answers, while still deduplicating shared observations across boundLines).
+  let extraReasons = [];
+  if (typeof recheckLive === 'function') {
+    const recheckBatch = createValidationBatch();
+    recheckBatch.run(() => { extraReasons = recheckLive(); });
+  }
+  if (extraReasons.length > 0) {
+    const mergedReasons = [...new Set([
+      ...(output?.reasons || []),
+      ...extraReasons,
+    ])];
+    return Object.freeze({
+      ...output,
+      completeness: 'incomplete',
+      reasons: Object.freeze(mergedReasons),
+    });
+  }
+  return output;
+}
+
+function buildRenderProvenanceCore({ result, snapshotId, resolvedBudget, shouldAbort, onCaptureRecheck }) {
 
   const reasons = new Set();
   const publicState = readPublicStateNormalization(result.ir);
@@ -805,8 +843,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   }
 
   const reverseObject = {};
-  for (const key of [...reverse.keys()].sort((left, right) => left.localeCompare(right, 'en'))) {
-    reverseObject[key] = Object.freeze([...reverse.get(key)].sort((left, right) => left.localeCompare(right, 'en')));
+  for (const key of [...reverse.keys()].sort(EN_COLLATOR.compare)) {
+    reverseObject[key] = Object.freeze([...reverse.get(key)].sort(EN_COLLATOR.compare));
   }
 
   const publishRecord = (record, recordIndex, entityRefs) => {
@@ -826,7 +864,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
       ssaDefs:Object.freeze(canonicalList(typedOrigin.ssaDefs, false)),
       ssaUses:Object.freeze(canonicalList(typedOrigin.ssaUses, false)),
     }),
-    producedRefs:Object.freeze([...entityRefs].sort((left, right) => left.localeCompare(right, 'en'))),
+    producedRefs:Object.freeze([...entityRefs].sort(EN_COLLATOR.compare)),
     // Transform-local render tombstones never identify a current line or a
     // canonical semantic entity. Public copied metadata cannot bind one.
     removedRefs:Object.freeze(record.renderedRemoval && entityRefs.size
@@ -852,16 +890,31 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   for (const refs of Object.values(transformReverse)) Object.freeze(refs);
 
   let completeness = 'complete';
-  if (publicState && readPublicStateNormalization(result.ir) !== publicState) reasons.add('stale-public-state-history');
-  if (preservedState && readFacadePreservedStateHistory(result.ir) !== preservedState) reasons.add('stale-abi-state-history');
-  if (publicLocation && readFacadeLocationHistory(result.ir) !== publicLocation) reasons.add('stale-public-location-history');
-  if (typedResult && readFacadeTypedResultHistory(result.ir) !== typedResult) reasons.add('stale-typed-call-result-history');
-  if (stackEscape && readFacadeStackEscapeHistory(result.ir) !== stackEscape) reasons.add('stale-stack-escape-history');
-  if (abiBinding && readFacadeAbiBindingHistory(result.ir) !== abiBinding) reasons.add('stale-abi-binding-history');
-  if (committedViews && readSemanticViewHistory(result.ir) !== committedViews) reasons.add('stale-committed-view-history');
-  if (suppressions && readSemanticSuppressionHistory(result) !== suppressions) reasons.add('stale-semantic-suppression-history');
-  if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
-    reasons.add('stale-expression-binding');
+  const collectStaleReasons = () => {
+    const staleReasons = [];
+    if (publicState && readPublicStateNormalization(result.ir) !== publicState) staleReasons.push('stale-public-state-history');
+    if (preservedState && readFacadePreservedStateHistory(result.ir) !== preservedState) staleReasons.push('stale-abi-state-history');
+    if (publicLocation && readFacadeLocationHistory(result.ir) !== publicLocation) staleReasons.push('stale-public-location-history');
+    if (typedResult && readFacadeTypedResultHistory(result.ir) !== typedResult) staleReasons.push('stale-typed-call-result-history');
+    if (stackEscape && readFacadeStackEscapeHistory(result.ir) !== stackEscape) staleReasons.push('stale-stack-escape-history');
+    if (abiBinding && readFacadeAbiBindingHistory(result.ir) !== abiBinding) staleReasons.push('stale-abi-binding-history');
+    if (committedViews && readSemanticViewHistory(result.ir) !== committedViews) staleReasons.push('stale-committed-view-history');
+    if (suppressions && readSemanticSuppressionHistory(result) !== suppressions) staleReasons.push('stale-semantic-suppression-history');
+    if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
+      staleReasons.push('stale-expression-binding');
+    }
+    if ((switches && readSwitchRenderHistory(result) !== switches)
+        || (initialStores && readSemanticStoreRenderHistory(result) !== initialStores)
+        || (initialStatements && readSemanticStatementRenderHistory(result) !== initialStatements)
+        || (initialControls && readSemanticControlRenderHistory(result) !== initialControls)) {
+      staleReasons.push('stale-render-provenance-observation');
+    }
+    return staleReasons;
+  };
+  if (typeof onCaptureRecheck === 'function') {
+    onCaptureRecheck(collectStaleReasons);
+  } else {
+    for (const r of collectStaleReasons()) reasons.add(r);
   }
   if (snapshotId == null) {
     reasons.add('missing-snapshot');

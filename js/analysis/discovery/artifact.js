@@ -106,7 +106,11 @@ function ownArray(value, key, code) {
   return raw;
 }
 
-function canonicalTypedValue(value, code, seen = new WeakSet()) {
+const MAX_V1_CANONICAL_DEPTH = 64;
+const MAX_V1_CANONICAL_NODES = 65536;
+const MAX_V1_CANONICAL_BINARY_BYTES = 1024 * 1024;
+
+function canonicalTypedValue(value, code, seen = new WeakSet(), state = { depth: 0, nodes: 0, memo: new WeakMap() }) {
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
   if (typeof value === 'bigint') return { $type: 'bigint', value: value.toString() };
   if (typeof value === 'number') {
@@ -114,32 +118,42 @@ function canonicalTypedValue(value, code, seen = new WeakSet()) {
     return Object.is(value, -0) ? { $type: 'number', value: '-0' } : value;
   }
   if (typeof value !== 'object' || seen.has(value)) fail(code);
+  if (state.memo.has(value)) return state.memo.get(value);
+  if (state.depth >= MAX_V1_CANONICAL_DEPTH || ++state.nodes > MAX_V1_CANONICAL_NODES) fail(code);
   seen.add(value);
+  state.depth += 1;
   let result;
-  if (Array.isArray(value)) {
-    result = denseArray(value, code).map((item) => canonicalTypedValue(item, code, seen));
-  } else if (ArrayBuffer.isView(value)) {
-    result = { $type: value.constructor?.name ?? 'TypedArray', value: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
-  } else if (value instanceof ArrayBuffer) {
-    result = { $type: 'ArrayBuffer', value: Array.from(new Uint8Array(value)) };
-  } else {
-    plainRecord(value, code);
-    let descriptors;
-    try { descriptors = Object.getOwnPropertyDescriptors(value); } catch { fail(code); }
-    result = {};
-    for (const key of Object.keys(descriptors).sort(compareText)) {
-      if (key === '__proto__') fail(code);
-      const descriptor = descriptors[key];
-      if (!Object.hasOwn(descriptor, 'value')) fail(code);
-      Object.defineProperty(result, key, {
-        value: canonicalTypedValue(descriptor.value, code, seen),
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
+  try {
+    if (Array.isArray(value)) {
+      result = denseArray(value, code).map((item) => canonicalTypedValue(item, code, seen, state));
+    } else if (ArrayBuffer.isView(value)) {
+      if (value.byteLength > MAX_V1_CANONICAL_BINARY_BYTES) fail(code);
+      result = { $type: value.constructor?.name ?? 'TypedArray', value: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+    } else if (value instanceof ArrayBuffer) {
+      if (value.byteLength > MAX_V1_CANONICAL_BINARY_BYTES) fail(code);
+      result = { $type: 'ArrayBuffer', value: Array.from(new Uint8Array(value)) };
+    } else {
+      plainRecord(value, code);
+      let descriptors;
+      try { descriptors = Object.getOwnPropertyDescriptors(value); } catch { fail(code); }
+      result = {};
+      for (const key of Object.keys(descriptors).sort(compareText)) {
+        if (key === '__proto__') fail(code);
+        const descriptor = descriptors[key];
+        if (!Object.hasOwn(descriptor, 'value')) fail(code);
+        Object.defineProperty(result, key, {
+          value: canonicalTypedValue(descriptor.value, code, seen, state),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
     }
+    state.memo.set(value, result);
+  } finally {
+    state.depth -= 1;
+    seen.delete(value);
   }
-  seen.delete(value);
   return result;
 }
 
@@ -330,6 +344,17 @@ function referenceMemberV1(reference) {
   });
 }
 
+function upperBoundBigInt(sortedValues, target) {
+  let low = 0;
+  let high = sortedValues.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (sortedValues[mid] <= target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
 function buildCollisionsV1(intervals, candidates, references, budget) {
   let checks = 0;
   const collisions = new Map();
@@ -338,43 +363,58 @@ function buildCollisionsV1(intervals, candidates, references, budget) {
     return checks <= budget.maxCollisionChecks;
   };
 
-  for (let leftIndex = 0; leftIndex < intervals.length; leftIndex += 1) {
-    const left = intervals[leftIndex];
-    for (let rightIndex = leftIndex + 1; rightIndex < intervals.length; rightIndex += 1) {
-      const right = intervals[rightIndex];
-      if (BigInt(right.start) >= BigInt(left.end)) break;
+  const indexedIntervals = intervals.map((interval) => ({
+    interval,
+    start: BigInt(interval.start),
+    end: BigInt(interval.end),
+  }));
+
+  for (let leftIndex = 0; leftIndex < indexedIntervals.length; leftIndex += 1) {
+    const leftEntry = indexedIntervals[leftIndex];
+    const left = leftEntry.interval;
+    for (let rightIndex = leftIndex + 1; rightIndex < indexedIntervals.length; rightIndex += 1) {
+      const rightEntry = indexedIntervals[rightIndex];
+      if (rightEntry.start >= leftEntry.end) break;
       if (!consume()) return { ok: false, reason: 'collisionV1-work', checks, collisions: [] };
-      if (BigInt(left.start) >= BigInt(right.end)) continue;
+      if (leftEntry.start >= rightEntry.end) continue;
+      const right = rightEntry.interval;
       const distinctFunctions = left.kind === 'code' && right.kind === 'code'
         && left.candidateStart != null && right.candidateStart != null
         && left.candidateStart !== right.candidateStart;
       const codeData = (left.kind === 'code' && right.kind === 'data')
         || (left.kind === 'data' && right.kind === 'code');
       if (!distinctFunctions && !codeData) continue;
-      const start = BigInt(left.start) > BigInt(right.start) ? left.start : right.start;
-      const end = BigInt(left.end) < BigInt(right.end) ? left.end : right.end;
+      const start = leftEntry.start > rightEntry.start ? left.start : right.start;
+      const end = leftEntry.end < rightEntry.end ? left.end : right.end;
       const item = collisionV1(distinctFunctions ? 'function-overlap' : 'code-data', [intervalMemberV1(left), intervalMemberV1(right)], { start, end });
       collisions.set(item.collisionId, item);
     }
   }
 
-  const codeIntervals = intervals.filter((interval) => interval.kind === 'code');
-  for (const interval of codeIntervals) {
-    for (const candidate of candidates) {
+  const codeIntervals = indexedIntervals.filter((entry) => entry.interval.kind === 'code');
+  const candidateStarts = candidates.map((candidate) => BigInt(candidate.start));
+  for (const entry of codeIntervals) {
+    const interval = entry.interval;
+    for (let k = upperBoundBigInt(candidateStarts, entry.start);
+         k < candidates.length && candidateStarts[k] < entry.end;
+         k += 1) {
       if (!consume()) return { ok: false, reason: 'collisionV1-work', checks, collisions: [] };
+      const candidate = candidates[k];
       if (interval.candidateStart === candidate.start) continue;
-      if (BigInt(interval.start) < BigInt(candidate.start) && BigInt(candidate.start) < BigInt(interval.end)) {
-        const item = collisionV1('function-contained-start', [intervalMemberV1(interval), candidateMemberV1(candidate)], null, candidate.start);
-        collisions.set(item.collisionId, item);
-      }
+      const item = collisionV1('function-contained-start', [intervalMemberV1(interval), candidateMemberV1(candidate)], null, candidate.start);
+      collisions.set(item.collisionId, item);
     }
   }
 
-  for (const reference of references) {
-    for (const interval of codeIntervals) {
+  const referenceAddresses = references.map((reference) => BigInt(reference.address));
+  for (const entry of codeIntervals) {
+    const interval = entry.interval;
+    for (let k = upperBoundBigInt(referenceAddresses, entry.start);
+         k < references.length && referenceAddresses[k] < entry.end;
+         k += 1) {
       if (!consume()) return { ok: false, reason: 'collisionV1-work', checks, collisions: [] };
-      if (BigInt(interval.start) < BigInt(reference.address) && BigInt(reference.address) < BigInt(interval.end)
-          && interval.candidateStart !== reference.address) {
+      const reference = references[k];
+      if (interval.candidateStart !== reference.address) {
         const item = collisionV1('code-reference', [intervalMemberV1(interval), referenceMemberV1(reference)], null, reference.address);
         collisions.set(item.collisionId, item);
       }
@@ -432,7 +472,7 @@ function createDiscoveryArtifactV1(input = {}) {
   plainRecord(input, 'discovery-artifact-input-invalid');
   const budget = normalizeDiscoveryArtifactBudget(ownData(input, 'artifactBudget', 'discovery-artifact-budget-invalid') ?? {});
   const binding = normalizeBindingV1(ownData(input, 'binding', 'discovery-artifact-binding-invalid') ?? {});
-  const status = plainRecord(ownData(input, 'status', 'discovery-artifact-status-invalid'), 'discovery-artifact-status-invalid');
+  const status = canonicalTypedValue(plainRecord(ownData(input, 'status', 'discovery-artifact-status-invalid'), 'discovery-artifact-status-invalid'), 'discovery-artifact-status-invalid');
   const evidenceInput = ownArray(input, 'evidence', 'discovery-artifact-evidence-invalid');
   const candidatesInput = ownArray(input, 'candidates', 'discovery-artifact-candidates-invalid');
   const intervalsInput = ownArray(input, 'byteIntervals', 'discovery-artifact-intervals-invalid');
@@ -607,13 +647,18 @@ export function functionDiscoveryArtifact({
   for (const producer of GENERIC_PRODUCERS) registry.register(producer);
   for (const producer of producers) registry.register(producer);
   const artifactBudgetNormalized = normalizeDiscoveryArtifactBudget(artifactBudget);
-  const { evidence, producerIds } = registry.collect(input, architectureId, { ...options, snapshotId });
+  const { evidence, producerIds, truncated, stopReason } = registry.collect(input, architectureId, { ...options, snapshotId });
   const applicable = new Map(registry.for(architectureId).map((producer) => [producer.id, producer]));
   if (evidence.some((item) => item.authority === 'authoritative'
       && !isCanonicalDiscoveryProducer(applicable.get(item.producerId)))) {
     throw new TypeError('discovery-artifact-authoritative-evidence-untrusted');
   }
-  const fused = fuseFunctionCandidates(evidence, { architectureId, ...options, snapshotId });
+  const fused = fuseFunctionCandidates(evidence, {
+    architectureId,
+    ...options,
+    snapshotId,
+    producerStatus: { truncated, stopReason },
+  });
   const evidenceCountByProducer = new Map();
   for (const item of evidence) {
     evidenceCountByProducer.set(item.producerId, (evidenceCountByProducer.get(item.producerId) ?? 0) + 1);
@@ -742,11 +787,11 @@ export function verifyDiscoveryReparseV1(sourceBinding, reparsedArtifact, { expe
     }
   }
   const sourceCollisionIds = sourceBinding.collisionSets.map((item) => item.collisionId).sort(compareText);
-  const outputCollisionIds = reparsedArtifact.collisionSets.map((item) => item.collisionId).sort(compareText);
+  const outputCollisionIds = new Set(reparsedArtifact.collisionSets.map((item) => item.collisionId));
   const sourceReferenceIds = sourceBinding.references.map((item) => item.referenceId).sort(compareText);
-  const outputReferenceIds = reparsedArtifact.references.map((item) => item.referenceId).sort(compareText);
-  const missingCollisionIds = sourceCollisionIds.filter((id) => !outputCollisionIds.includes(id));
-  const missingReferenceIds = sourceReferenceIds.filter((id) => !outputReferenceIds.includes(id));
+  const outputReferenceIds = new Set(reparsedArtifact.references.map((item) => item.referenceId));
+  const missingCollisionIds = sourceCollisionIds.filter((id) => !outputCollisionIds.has(id));
+  const missingReferenceIds = sourceReferenceIds.filter((id) => !outputReferenceIds.has(id));
   const ok = missingCandidateIds.length === 0
     && promotedCandidateIds.length === 0
     && missingCandidateConflictIds.length === 0
@@ -903,6 +948,44 @@ function normalizeBudgetV2(input = {}) {
   return deepFreeze(result);
 }
 
+const PRODUCER_STATUS_STOP_REASONS_V2 = new Set([
+  'cancelled',
+  'budget-exhausted',
+  'memory-limit',
+  'iteration-limit',
+]);
+
+function normalizeFusionBudgetV2(input) {
+  if (input === undefined) return undefined;
+  const value = record(input, 'discovery-artifact-fusion-budget-invalid');
+  const result = {};
+  for (const name of ['maxCandidates', 'maxEvidencePerCandidate']) {
+    const raw = own(value, name, `discovery-artifact-fusion-budget-${name}-invalid`);
+    if (raw == null) continue;
+    if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 1) {
+      fail(`discovery-artifact-fusion-budget-${name}-invalid`);
+    }
+    result[name] = raw;
+  }
+  return deepFreeze(result);
+}
+
+function normalizeProducerStatusV2(input) {
+  if (input === undefined) return undefined;
+  const value = record(input, 'discovery-artifact-producer-status-invalid');
+  const truncated = own(value, 'truncated', 'discovery-artifact-producer-status-invalid');
+  if (typeof truncated !== 'boolean') fail('discovery-artifact-producer-status-invalid');
+  const stopReason = own(value, 'stopReason', 'discovery-artifact-producer-status-invalid') ?? null;
+  if (truncated) {
+    if (typeof stopReason !== 'string' || !PRODUCER_STATUS_STOP_REASONS_V2.has(stopReason)) {
+      fail('discovery-artifact-producer-status-invalid');
+    }
+  } else if (stopReason != null) {
+    fail('discovery-artifact-producer-status-invalid');
+  }
+  return deepFreeze({ truncated, stopReason });
+}
+
 function normalizeStatusV2(input) {
   const value = record(input, 'discovery-artifact-status-invalid');
   return createAnalysisStatus({
@@ -1057,17 +1140,24 @@ export function createDiscoveryArtifact(input = {}) {
   }
 
   const status = normalizeStatusV2(own(value, 'status', 'discovery-artifact-status-invalid'));
+  const fusionBudget = normalizeFusionBudgetV2(own(value, 'fusionBudget', 'discovery-artifact-fusion-budget-invalid'));
+  const producerStatus = normalizeProducerStatusV2(own(value, 'producerStatus', 'discovery-artifact-producer-status-invalid'));
+  if (producerStatus?.truncated === true && status.completeness === 'complete') {
+    fail('discovery-artifact-producer-status-mismatch');
+  }
   const binding = normalizeBindingV2(own(value, 'binding', 'discovery-artifact-binding-invalid') ?? {});
   if (binding.snapshotId != null && status.snapshotId !== binding.snapshotId) {
     fail('discovery-artifact-status-snapshot-mismatch');
   }
   const evidence = arrayItems(rawEvidence, 'discovery-artifact-evidence-invalid')
     .map((item) => createDiscoveryEvidence(item))
-    .sort((a, b) => canonicalTypedString(a).localeCompare(canonicalTypedString(b)));
+    .sort((a, b) => compareText(canonicalTypedString(a), canonicalTypedString(b)));
   const candidates = canonicalCandidatesV2(rawCandidates);
   const derivedCandidates = canonicalCandidatesV2(fuseFunctionCandidates(evidence, {
     architectureId: binding.architectureId ?? 'generic',
     snapshotId: status.snapshotId,
+    ...(fusionBudget ? { budget: fusionBudget } : {}),
+    ...(producerStatus ? { producerStatus } : {}),
   }).candidates);
   if (candidates.length !== derivedCandidates.length
       || candidates.some((candidate, index) => candidate.digest !== derivedCandidates[index].digest)) {
@@ -1075,19 +1165,20 @@ export function createDiscoveryArtifact(input = {}) {
   }
   const canonicalCandidateView = derivedCandidates;
   const producerRuns = arrayItems(rawRuns, 'discovery-artifact-producer-runs-invalid')
-    .map(normalizeProducerRunV2).sort((a, b) => a.id.localeCompare(b.id));
+    .map(normalizeProducerRunV2).sort((a, b) => compareText(a.id, b.id));
 
   const collisionSets = canonicalCandidateView.flatMap((candidate) => candidate.conflicts.map((conflict, index) => conflictRecordV2(candidate, conflict, index)))
-    .sort((a, b) => a.collisionId.localeCompare(b.collisionId));
-  const collisionIdsByStart = new Map();
+    .sort((a, b) => compareText(a.collisionId, b.collisionId));
+  const collisionIdsByKey = new Map();
   for (const collision of collisionSets) {
-    if (!collisionIdsByStart.has(collision.candidateStart)) collisionIdsByStart.set(collision.candidateStart, []);
-    collisionIdsByStart.get(collision.candidateStart).push(collision.collisionId);
+    const key = `${collision.architectureId ?? 'generic'}:${collision.candidateStart}`;
+    if (!collisionIdsByKey.has(key)) collisionIdsByKey.set(key, []);
+    collisionIdsByKey.get(key).push(collision.collisionId);
   }
   const intervalClaims = canonicalCandidateView.flatMap(candidateIntervalsV2)
-    .sort((a, b) => compareAddress(a.start, b.start) || compareAddress(a.end, b.end) || a.intervalId.localeCompare(b.intervalId));
+    .sort((a, b) => compareAddress(a.start, b.start) || compareAddress(a.end, b.end) || compareText(a.intervalId, b.intervalId));
   const references = evidence.filter((item) => REFERENCE_KINDS.has(item.kind) && item.start != null)
-    .map(referenceRecordV2).sort((a, b) => compareAddress(a.address, b.address) || a.memberId.localeCompare(b.memberId));
+    .map(referenceRecordV2).sort((a, b) => compareAddress(a.address, b.address) || compareText(a.memberId, b.memberId));
   if (intervalClaims.length > budget.maxIntervals || references.length > budget.maxReferences) {
     fail('discovery-artifact-budget-exhausted');
   }
@@ -1101,7 +1192,7 @@ export function createDiscoveryArtifact(input = {}) {
     startState: candidate.startState,
     extentState: candidate.extentState,
     exact: hasExactStart(candidate),
-    collisionIds: [...new Set(collisionIdsByStart.get(candidate.start) ?? [])].sort(),
+    collisionIds: [...new Set(collisionIdsByKey.get(`${candidate.architectureId ?? 'generic'}:${candidate.start}`) ?? [])].sort(compareText),
     startEvidenceIds: [...new Set(candidate.startEvidence.flatMap((item) => item.evidenceIds))].sort(),
     digest: candidate.digest,
   }));
@@ -1187,16 +1278,21 @@ export function verifyDiscoveryReparseV2(sourceBinding, reparsedArtifact, option
   if (sourceBinding.binding.snapshotId === reparsedArtifact.binding.snapshotId) {
     return deepFreeze({ ok: false, reason: 'discovery-reparse-stale-snapshot' });
   }
-  const expectedOutputHash = optionalToken(options?.expectedOutputHash, 'discovery-reparse-output-hash-required');
-  if (expectedOutputHash == null) return deepFreeze({ ok: false, reason: 'discovery-reparse-output-hash-required' });
+  const rawExpectedOutputHash = options?.expectedOutputHash;
+  if (typeof rawExpectedOutputHash !== 'string' || !rawExpectedOutputHash.trim()) {
+    return deepFreeze({ ok: false, reason: 'discovery-reparse-output-hash-required' });
+  }
+  const expectedOutputHash = rawExpectedOutputHash.trim();
   if (reparsedArtifact.binding.sourceHash !== expectedOutputHash) {
     return deepFreeze({ ok: false, reason: 'discovery-reparse-output-hash-mismatch' });
   }
 
+  const outputCollisionIds = new Set(reparsedArtifact.collisionSets.map((item) => item.collisionId));
+  const outputReferenceIds = new Set(reparsedArtifact.references.map((item) => item.memberId));
   const missingCollisionIds = ids(sourceBinding.collisionSets, 'collisionId')
-    .filter((id) => !ids(reparsedArtifact.collisionSets, 'collisionId').includes(id));
+    .filter((id) => !outputCollisionIds.has(id));
   const missingReferenceIds = ids(sourceBinding.references, 'memberId')
-    .filter((id) => !ids(reparsedArtifact.references, 'memberId').includes(id));
+    .filter((id) => !outputReferenceIds.has(id));
   const candidatesPreserved = sameCanonical(
     sourceBinding.functionCandidates.map(candidateProjection),
     reparsedArtifact.functionCandidates.map(candidateProjection),
@@ -1217,15 +1313,24 @@ export function verifyDiscoveryReparseV2(sourceBinding, reparsedArtifact, option
 export function attachDiscoveryArtifactToSearchResult(result, artifact) {
   if (!artifactIdentityValidV2(artifact)) return result;
   const rows = Array.isArray(result?.results) ? result.results : [];
-  const byStart = new Map(artifact.functionCandidates.map((candidate) => [candidate.start, candidate]));
+  const byArchStart = new Map();
+  const byStart = new Map();
+  for (const candidate of artifact.functionCandidates) {
+    const archKey = `${candidate.architectureId ?? 'generic'}:${candidate.start}`;
+    byArchStart.set(archKey, candidate);
+    if (!byStart.has(candidate.start)) byStart.set(candidate.start, candidate);
+    else byStart.set(candidate.start, null); // ambiguous across architectures
+  }
   return {
     ...(result && typeof result === 'object' && !Array.isArray(result) ? result : {}),
     results: rows.map((row) => {
       if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
       const raw = row.address ?? row.addr;
+      if (raw == null || typeof raw === 'boolean' || (typeof raw === 'string' && !raw.trim())) return row;
       let start;
-      try { start = BigInt(raw).toString(); } catch { return row; }
-      const candidate = byStart.get(start);
+      try { start = BigInt(typeof raw === 'string' ? raw.trim() : raw).toString(); } catch { return row; }
+      const rowArch = row.architectureId ?? row.architecture ?? artifact.binding?.architectureId ?? null;
+      const candidate = (rowArch != null ? byArchStart.get(`${rowArch}:${start}`) : null) ?? byStart.get(start);
       if (!candidate) return row;
       return {
         ...row,

@@ -285,7 +285,7 @@ export class SolverSession {
 
     this._inFlight.set(token, record);
 
-    const deterministic = (optionValues.deterministic === true || this.options.deterministic === true) && timeoutMs > 0;
+    const deterministic = (optionValues.deterministic !== undefined ? optionValues.deterministic === true : this.options.deterministic === true) && timeoutMs > 0;
 
     if (!deterministic && timeoutMs > 0) {
       record.timer = setTimeout(() => {

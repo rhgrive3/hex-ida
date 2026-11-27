@@ -50,6 +50,8 @@
  *   sel     条件で選ぶ      cc, a, b, cmp
  */
 
+import { knownCallSignature } from './decompiler/call-prototypes.js';
+
 const MAX_DEPTH = 22;      // これより深い木は読めないので、途中で切って reg に戻す
 const MAX_NODES = 160;     // 1 つの式が抱えてよいノード数
 
@@ -91,11 +93,21 @@ function childrenOf(n) {
   }
 }
 
-function depthOf(n, d) {
+function depthOf(n, d, memo = new Map()) {
   if (!n || d > MAX_DEPTH) return d;
-  let max = d;
-  for (const c of childrenOf(n)) max = Math.max(max, depthOf(c, d + 1));
-  return max;
+  if (memo.has(n)) return Math.min(MAX_DEPTH + 1, d + memo.get(n));
+  memo.set(n, MAX_DEPTH + 1);
+  let height = 0;
+  for (const c of childrenOf(n)) {
+    const childDepth = depthOf(c, d + 1, memo);
+    height = Math.max(height, childDepth - d);
+    if (d + height > MAX_DEPTH) {
+      memo.set(n, height);
+      return d + height;
+    }
+  }
+  memo.set(n, height);
+  return d + height;
 }
 
 /** 深すぎる／大きすぎる式は、そのレジスタの名前に戻す（嘘をつくよりよい）。 */
@@ -205,7 +217,7 @@ export function bin(op, a, b, bits) {
     if (inner != null) {
       const lhs = a.op === 'add' ? inner : -inner;
       const rhs = op === 'add' ? cb : -cb;
-      const sum = lhs + rhs;
+      const sum = wrap(lhs + rhs, w);
       if (sum === 0n) return a.a;
       return sum > 0n ? node('bin', { op: 'add', a: a.a, b: constNode(sum) })
         : node('bin', { op: 'sub', a: a.a, b: constNode(-sum) });
@@ -222,7 +234,7 @@ export function bin(op, a, b, bits) {
   /* Nested fixed-width division is deliberately not reassociated: the first
      division's rounding/wrap is architectural state (notably INT_MIN / -1). */
 
-  return node('bin', { op, a, b });
+  return node('bin', bits === 32 ? { op, a, b, bits: 32 } : { op, a, b });
 }
 
 /** `x + (x << k)` の形か。基になっている値と、両辺の倍率を返す。 */
@@ -256,11 +268,18 @@ function foldConst(op, a, b, w) {
     case 'and': return a & b;
     case 'or': return a | b;
     case 'xor': return a ^ b;
-    case 'shl': return b >= 0n && b < 64n ? a << b : null;
-    case 'sar': return b >= 0n && b < 64n ? a >> b : null;
+    case 'shl': {
+      const width = w || 64;
+      return b >= 0n && b < BigInt(width) ? a << b : null;
+    }
+    case 'sar': {
+      const width = w || 64;
+      return b >= 0n && b < BigInt(width) ? BigInt.asIntN(width, a) >> b : null;
+    }
     case 'shr': {
-      if (!(b >= 0n && b < 64n)) return null;
-      const m = MASK[w] || MASK[64];
+      const width = w || 64;
+      if (!(b >= 0n && b < BigInt(width))) return null;
+      const m = MASK[width] || MASK[64];
       return (a & m) >> b;
     }
     case 'sdiv': {
@@ -272,9 +291,16 @@ function foldConst(op, a, b, w) {
       return rhs === 0n ? 0n : lhs / rhs;
     }
     case 'smod':
-    case 'srem': return b === 0n ? null : a - truncDiv(a, b) * b;
+    case 'srem': {
+      const width = w || 64;
+      const lhs = BigInt.asIntN(width, a), rhs = BigInt.asIntN(width, b);
+      return rhs === 0n ? null : lhs - truncDiv(lhs, rhs) * rhs;
+    }
     case 'umod':
-    case 'urem': return b === 0n ? null : a % b;
+    case 'urem': {
+      const lhs = BigInt.asUintN(w, a), rhs = BigInt.asUintN(w, b);
+      return rhs === 0n ? null : lhs % rhs;
+    }
     default: return null;
   }
 }
@@ -285,12 +311,17 @@ function truncDiv(a, b) {
   return q;                     // BigInt の / はすでに 0 方向へ切り捨てる
 }
 
+const IDEMPOTENT_UN_OPS = new Set([
+  'sxt8', 'sxt16', 'sxt32', 'sxt64',
+  'uxt8', 'uxt16', 'uxt32', 'uxt64',
+]);
+
 export function un(op, a) {
   if (!a) return null;
   const c = constOf(a);
   if (c != null) {
     switch (op) {
-      case 'neg': return constNode(-c);
+      case 'neg': return constNode(wrap(-c, 64));
       case 'not': return constNode(~c);
       case 'sxt8': return constNode(wrap(c, 8));
       case 'sxt16': return constNode(wrap(c, 16));
@@ -298,14 +329,16 @@ export function un(op, a) {
       case 'uxt8': return constNode(c & 0xffn);
       case 'uxt16': return constNode(c & 0xffffn);
       case 'uxt32': return constNode(c & 0xffffffffn);
+      case 'sxt64': return constNode(wrap(c, 64));
+      case 'uxt64': return constNode(c & MASK[64]);
       default: break;
     }
   }
-  // 同じ幅への変換を重ねても意味は増えない
-  if (a.k === 'un' && a.op === op) return a;
-  if (op === 'sxt32' && a.k === 'un' && (a.op === 'sxt32' || a.op === 'sxt16' || a.op === 'sxt8')) return a;
   if (op === 'neg' && a.k === 'un' && a.op === 'neg') return a.a;
   if (op === 'not' && a.k === 'un' && a.op === 'not') return a.a;
+  // 同じ幅への変換を重ねても意味は増えない（冪等な幅変換のみ重複吸収）
+  if (IDEMPOTENT_UN_OPS.has(op) && a.k === 'un' && a.op === op) return a;
+  if (op === 'sxt32' && a.k === 'un' && (a.op === 'sxt32' || a.op === 'sxt16' || a.op === 'sxt8')) return a;
   return node('un', { op, a });
 }
 
@@ -425,8 +458,48 @@ export function buildValues(model, opts) {
   const callRows = new Map();
   for (const c of (model && model.calls) || []) callRows.set(c.row, c);
   const textOf = new Map();
+  const rodataRows = new Set();
   for (const r of (model && model.addressRefs) || []) {
-    if (r.text != null) textOf.set(r.row, { text: r.text, addr: r.addr });
+    if (r.text != null) textOf.set(r.row, { text: r.text, addr: r.addr, load: !!r.load, viaPointer: !!r.viaPointer });
+    if (r.load && r.bytes) rodataRows.add(r.row);
+  }
+  const lastRow = insns.length ? insns[insns.length - 1].row : 0;
+  const savedSlots = new Set();
+  const calleeSavedOnly = (insn) => {
+    const r = (insn.ops || []).filter((x) => x.k === 'reg');
+    return r.length > 0 && r.every((x) => x.cls === 'gp' && x.num >= 19 && x.num <= 30);
+  };
+  for (const insn of insns) {
+    const m = insn.memory;
+    if (!m || !m.stack || m.kind !== 'store' || m.disp == null) continue;
+    if (!/^(stp|str|stur)$/.test((insn.mnemonic || '').toLowerCase())) continue;
+    if (calleeSavedOnly(insn)) savedSlots.add((m.base || m.baseReg || 'sp') + ':' + m.disp.toString());
+  }
+  const isEpilogueCalleeRestore = (insn) => {
+    const b = (insn.mnemonic || '').toLowerCase();
+    const m = insn.memory;
+    if (!m || !m.stack || m.kind !== 'load' || !/^(ldp|ldr|ldur)$/.test(b)) return false;
+    if (!calleeSavedOnly(insn)) return false;
+    const r = (insn.ops || []).filter((x) => x.k === 'reg');
+    const atEdge = insn.row >= lastRow - 8;
+    const frameish = m.mode === 'pre' || m.mode === 'post' ||
+      r.some((x) => x.cls === 'gp' && (x.num === 29 || x.num === 30));
+    const restoring = m.disp != null && savedSlots.has((m.base || m.baseReg || 'sp') + ':' + m.disp.toString());
+    return atEdge || frameish || restoring;
+  };
+  const adrpWriteCounts = new Map();
+  const singleDefAdrpRegs = new Set();
+  for (const insn of insns) {
+    if (isEpilogueCalleeRestore(insn)) continue;
+    const b = (insn.mnemonic || '').toLowerCase();
+    for (const w of insn.writes || []) {
+      if (!w || w === 'nzcv' || w === 'sp' || w === 'zr') continue;
+      adrpWriteCounts.set(w, (adrpWriteCounts.get(w) || 0) + 1);
+      if (b === 'adrp') singleDefAdrpRegs.add(w);
+    }
+  }
+  for (const r of Array.from(singleDefAdrpRegs)) {
+    if (adrpWriteCounts.get(r) !== 1) singleDefAdrpRegs.delete(r);
   }
 
   const regs = new Map();          // regKey -> ノード
@@ -480,13 +553,78 @@ export function buildValues(model, opts) {
     regs.set(key, fresh);
     return fresh;
   };
-  const set = (key, v, row) => {
+  const dependsOnRegOrCall = (val, targetReg) => {
+    if (!val) return false;
+    let hit = false;
+    walk(val, (x) => {
+      if (hit) return;
+      if (x.k === 'reg' && x.reg === targetReg) { hit = true; return; }
+      if (x.k === 'mem' && x.baseReg === targetReg) { hit = true; return; }
+      if (x.k === 'call') {
+        const d = nodeDef.get(x);
+        if (d && d.reg === targetReg) hit = true;
+      }
+    });
+    return hit;
+  };
+  const dependsOnCallClobber = (val) => {
+    if (!val) return false;
+    let hit = false;
+    walk(val, (x) => {
+      if (hit) return;
+      if (x.k === 'reg' && CALL_CLOBBER.test(x.reg || '')) { hit = true; return; }
+      if (x.k === 'call') {
+        const d = nodeDef.get(x);
+        if (d && CALL_CLOBBER.test(d.reg || '')) hit = true;
+      }
+    });
+    return hit;
+  };
+  const hasNonRodataMem = (val) => {
+    if (!val) return false;
+    let hit = false;
+    walk(val, (x) => {
+      if (hit) return;
+      if (x.k === 'mem' && !(x.row != null && rodataRows.has(x.row))) hit = true;
+    });
+    return hit;
+  };
+  const evictReg = (otherKey, otherVal, row, clobberedReg = null) => {
+    const replacement = regNode(otherKey, row);
+    const staleMemBase = !!(clobberedReg && otherVal && otherVal.k === 'mem' && otherVal.baseReg === clobberedReg);
+    if (!staleMemBase) {
+      if (otherVal && otherVal.k !== 'reg') replacement.prevDef = otherVal;
+      else if (otherVal && otherVal.prevDef) replacement.prevDef = otherVal.prevDef;
+    }
+    if (clobberedReg) replacement.clobberedReg = clobberedReg;
+    regs.set(otherKey, replacement);
+  };
+  const invalidateDependents = (writtenKey, row) => {
+    if (!writtenKey || writtenKey === 'zr') return;
+    if (writtenKey === 'sp' && spStable) return;
+    for (const [otherKey, otherVal] of Array.from(regs.entries())) {
+      if (otherKey === writtenKey) continue;
+      if (dependsOnRegOrCall(otherVal, writtenKey)) {
+        evictReg(otherKey, otherVal, row, writtenKey);
+      }
+    }
+  };
+  const invalidateMemDependents = (row) => {
+    for (const [otherKey, otherVal] of Array.from(regs.entries())) {
+      if (!otherVal || otherVal.k === 'reg') continue;
+      if (hasNonRodataMem(otherVal)) {
+        evictReg(otherKey, otherVal, row);
+      }
+    }
+  };
+  const set = (key, v, row, skipInvalidate) => {
     if (!key || key === 'zr') return;
     /*
      * 割り算の定型は 3〜5 命令にまたがるので、値を置く直前にたたむ。
      * ここでたたんでおくと、その先の式にも割り算の形のまま伝わる。
      */
     regs.set(key, bounded(foldMagic(v, 0), key, row));
+    if (!skipInvalidate) invalidateDependents(key, row);
   };
 
   /** オペランド 1 つを式にする。 */
@@ -538,8 +676,22 @@ export function buildValues(model, opts) {
       stack.clear();
       flags = null;               // どの道を通って来たか分からない ＝ 比較の結果も分からない
       const keepSp = spStable ? regs.get('sp') : null;
-      if (join.all) regs.clear();
-      else for (const k of Array.from(regs.keys())) if (join.killed.has(k)) regs.delete(k);
+      const keepAdrp = [];
+      for (const r of singleDefAdrpRegs) {
+        const v = regs.get(r);
+        if (v && v.k === 'addr' && v.partial) keepAdrp.push([r, v]);
+      }
+      if (join.all) {
+        regs.clear();
+        for (const [r, v] of keepAdrp) regs.set(r, v);
+        if (join.loopWritten) {
+          for (let a = 0; a <= 7; a++) {
+            if (join.loopWritten.has('x' + a)) everWritten.add('x' + a);
+          }
+        }
+      } else {
+        for (const k of Array.from(regs.keys())) if (join.killed.has(k)) regs.delete(k);
+      }
       if (keepSp) regs.set('sp', keepSp);
     }
 
@@ -561,15 +713,31 @@ export function buildValues(model, opts) {
      * x0〜x7 を読む。ここで記録しておかないと、「この呼び出しに何を渡したか」に
      * 誰も答えられない — 擬似 C の引数がレジスタ名のままになる。
      */
-    if (insn.isCall) for (let a = 0; a <= 7; a++) snapshot['x' + a] = get('x' + a, row);
+    if (insn.isCall || insn.isTailCall || insn.tailCall) {
+      for (let a = 0; a <= 7; a++) {
+        snapshot['x' + a] = get('x' + a, row);
+        snapshot['v' + a] = get('v' + a, row);
+      }
+    }
+    if (insn.isReturn && regs.has('v0')) snapshot['v0'] = regs.get('v0');
     reads.set(row, snapshot);
     for (const w of insn.writes) everWritten.add(w);
-    if (insn.isCall) for (let a = 0; a <= 17; a++) everWritten.add('x' + a);
+    if (insn.isCall) {
+      for (let a = 0; a <= 17; a++) everWritten.add('x' + a);
+      for (let a = 0; a <= 7; a++) everWritten.add('v' + a);
+      for (let a = 16; a <= 31; a++) everWritten.add('v' + a);
+    }
 
-    if (insn.data) { for (const w of insn.writes) regs.delete(w); continue; }
+    if (insn.data) {
+      for (const w of insn.writes) {
+        regs.delete(w);
+        invalidateDependents(w, row);
+      }
+      continue;
+    }
 
     const made = {};
-    const emit = (key, v) => {
+    const emit = (key, v, skipInvalidate) => {
       if (!key || key === 'zr' || !v) return;
       // A write to Wn architecturally clears Xn[63:32]. Keep that fact in the
       // value graph instead of letting stale upper bits survive.
@@ -577,7 +745,7 @@ export function buildValues(model, opts) {
       if (writtenOp && writtenOp.k === 'reg' && writtenOp.cls === 'gp' && writtenOp.bits === 32 && key === regKeyOf(writtenOp)) {
         v = un('uxt32', v);
       }
-      set(key, v, row);
+      set(key, v, row, skipInvalidate);
       made[key] = regs.get(key);
       // どの命令がこの値を作ったか。擬似 C が「変数として残すか、埋め込むか」を決めるのに要る。
       if (!nodeDef.has(made[key])) nodeDef.set(made[key], { row, reg: key });
@@ -611,6 +779,10 @@ export function buildValues(model, opts) {
         args.pop();
       }
       const name = call ? call.name : null;
+      const resolvedName = name || (insn.callTarget != null && typeof o.symbolFor === 'function' ? o.symbolFor(insn.callTarget) : null);
+      const resolveSig = typeof o.knownCallSignature === 'function' ? o.knownCallSignature : knownCallSignature;
+      const sig = resolvedName ? resolveSig(resolvedName) : null;
+      const isFpRet = !!(sig && (sig.retType === 'float' || sig.retType === 'double'));
       const ret = node('call', {
         row, name: name || null,
         target: insn.callTarget != null ? insn.callTarget : null,
@@ -627,8 +799,17 @@ export function buildValues(model, opts) {
        * 番地が外へ出た時点で置き場の記憶は捨てる。
        */
       if (args.some((a) => escapesStack(a.value))) stack.clear();
-      for (const k of Array.from(regs.keys())) if (CALL_CLOBBER.test(k)) regs.delete(k);
-      emit('x0', ret);
+      for (const k of Array.from(regs.keys())) {
+        if (CALL_CLOBBER.test(k)) regs.delete(k);
+      }
+      for (const [otherKey, otherVal] of Array.from(regs.entries())) {
+        if (dependsOnCallClobber(otherVal)) {
+          evictReg(otherKey, otherVal, row, 'call');
+        }
+      }
+      invalidateMemDependents(row);
+      const retReg = isFpRet ? 'v0' : 'x0';
+      emit(retReg, ret);
       defs.set(row, made);
       continue;
     }
@@ -638,8 +819,12 @@ export function buildValues(model, opts) {
       const t = insn.pcRelTarget;
       const dst = insn.writes[0];
       if (dst && t != null) {
-        emit(dst, node('addr', { addr: t, partial: base === 'adrp' }));
-      } else if (dst) regs.delete(dst);
+        const txt = base === 'adr' ? textOf.get(row) : null;
+        emit(dst, txt ? node('str', { addr: t, text: txt.text }) : node('addr', { addr: t, partial: base === 'adrp' }));
+      } else if (dst) {
+        regs.delete(dst);
+        invalidateDependents(dst, row);
+      }
       defs.set(row, made);
       continue;
     }
@@ -660,19 +845,20 @@ export function buildValues(model, opts) {
         // the address registers.
         const baseValBefore = m.base ? regs.get(m.base) : null;
         const indexValBefore = m.index ? regs.get(m.index) : null;
+        const skipInv = isEpilogueCalleeRestore(insn);
         list.forEach((dop, k) => {
           const key = regKeyOf(dop);
           if (!key || key === m.base && memOp && (memOp.mode === 'pre' || memOp.mode === 'post')) return;
           const step = pair ? BigInt(k * elemSize) : 0n;
           const effectiveDisp = (m.disp ?? 0n) + step;
           let v = null;
-          if (txt && k === 0) v = node('str', { addr: txt.addr, text: txt.text });
+          if (txt && k === 0 && dop.cls !== 'fp' && dop.cls !== 'vec' && (!txt.load || txt.viaPointer)) v = node('str', { addr: txt.addr, text: txt.text });
           else if (slot) {
             v = stackRead(m, effectiveDisp, elemSize);
           }
           if (!v) {
             const baseVal = baseValBefore;
-            const absolute = baseVal && baseVal.k === 'addr'
+            const absolute = baseVal && (baseVal.k === 'addr' || baseVal.k === 'str') && baseVal.addr != null
               ? baseVal.addr + effectiveDisp : null;
             v = node('mem', {
               baseReg: m.base,
@@ -685,7 +871,7 @@ export function buildValues(model, opts) {
                * ÷100 の段が式として出なくなり、文言との一致が 93% → 78% に落ちた。
                * 置き場は baseReg と disp だけで 1 つに決まるので、木は要らない。
                */
-              base: (m.stack || baseVal == null || baseVal.k === 'reg') ? null : baseVal,
+              base: (m.stack || baseVal == null || (baseVal.k === 'reg' && !baseVal.prevDef)) ? null : baseVal,
               disp: effectiveDisp === 0n ? null : effectiveDisp,
               index: m.index ? applyShift(indexValBefore || regNode(m.index, row), memOp && memOp.shift, 64) : null,
               indexShift: memOp && memOp.shift ? { ...memOp.shift } : null,
@@ -698,14 +884,16 @@ export function buildValues(model, opts) {
               stack: !!m.stack, addr: absolute, row,
             });
           }
-          emit(key, v);
+          emit(key, v, skipInv);
         });
         // 後置・前置インデックスはベースも進む
         if (memOp && (memOp.mode === 'pre' || memOp.mode === 'post') && m.base && m.writebackDisp != null) {
-          emit(m.base, bin('add', baseValBefore || regNode(m.base, row), constNode(m.writebackDisp), 64));
+          emit(m.base, bin('add', baseValBefore || regNode(m.base, row), constNode(m.writebackDisp), 64), skipInv);
         }
       } else {
         memoryEpoch++;
+        const baseValBefore = m.base ? get(m.base, row) : null;
+        const indexValBefore = m.index ? get(m.index, row) : null;
         const srcs = insn.ops.filter((x) => x.k === 'reg' && (!insn.writes.includes(regKeyOf(x)) || insn.reads.includes(regKeyOf(x))));
         const pair = base === 'stp' || base === 'stnp';
         const list = pair ? srcs.slice(0, 2) : srcs.slice(0, 1);
@@ -717,21 +905,30 @@ export function buildValues(model, opts) {
           if (slot) stackWrite(m, effectiveDisp, elemSize, v);
           memWrites.push({
             row, address: insn.address, baseReg: m.base,
+            base: baseValBefore,
             disp: effectiveDisp === 0n ? null : effectiveDisp,
             size: elemSize, stack: !!m.stack,
-            index: m.index || null, value: v,
+            index: m.index || null,
+            indexVal: indexValBefore,
+            value: v,
           });
         });
         if (memOp && (memOp.mode === 'pre' || memOp.mode === 'post') && m.base && m.writebackDisp != null) {
-          emit(m.base, bin('add', get(m.base, row), constNode(m.writebackDisp), 64));
+          emit(m.base, bin('add', baseValBefore || get(m.base, row), constNode(m.writebackDisp), 64));
         }
+        invalidateMemDependents(row);
       }
       defs.set(row, made);
       continue;
     }
 
     if (insn.isReturn) {
-      returns.push({ row, address: insn.address, value: regs.get('x0') || null });
+      returns.push({
+        row,
+        address: insn.address,
+        value: regs.get('x0') || null,
+        fpValue: regs.has('v0') ? regs.get('v0') : null,
+      });
       defs.set(row, made);
       continue;
     }
@@ -743,6 +940,7 @@ export function buildValues(model, opts) {
     const A = () => valueOf(insn.ops[1], row, bits);
     const B = () => valueOf(insn.ops[2], row, bits);
     /* 末尾に s の付く演算（subs / adds / ands / adcs / sbcs …）もフラグを立てる。 */
+    const prevFlags = flags;
     const knownFlagWriter = /^(subs|adds|ands|bics|negs|adcs|sbcs|ngcs|cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn)$/.test(base);
     const unsupportedFlagWriter = /^(rmif|setf8|setf16)$/.test(base);
     if (unsupportedFlagWriter) flags = null;
@@ -755,7 +953,20 @@ export function buildValues(model, opts) {
 
     if (base === 'mov' || base === 'fmov' || base === 'movz') {
       const txt = textOf.get(row);
-      emit(dst, txt ? node('str', { addr: txt.addr, text: txt.text }) : valueOf(insn.ops[1], row, bits));
+      const srcOp = insn.ops[1];
+      const isFpOrVecDst = !!(dstOp && (dstOp.cls === 'fp' || dstOp.cls === 'vec'));
+      const isFpOrVecSrc = !!(srcOp && srcOp.k === 'reg' && (srcOp.cls === 'fp' || srcOp.cls === 'vec'));
+      const isGpDst = !!(dstOp && dstOp.cls === 'gp');
+      const isGpSrc = !!(srcOp && srcOp.k === 'reg' && (srcOp.cls === 'gp' || srcOp.cls === 'zr'));
+      if (base === 'fmov' && isFpOrVecDst && isGpSrc) {
+        const w = (regBits(srcOp) === 32 || regBits(dstOp) === 32) ? 32 : 64;
+        emit(dst, un(w === 32 ? 'bitcast_u32_f32' : 'bitcast_u64_f64', valueOf(srcOp, row, w)));
+      } else if (base === 'fmov' && isGpDst && isFpOrVecSrc) {
+        const w = (regBits(dstOp) === 32 || regBits(srcOp) === 32) ? 32 : 64;
+        emit(dst, un(w === 32 ? 'bitcast_f32_u32' : 'bitcast_f64_u64', valueOf(srcOp, row, w)));
+      } else {
+        emit(dst, (txt && !isFpOrVecDst) ? node('str', { addr: txt.addr, text: txt.text }) : valueOf(srcOp, row, bits));
+      }
     } else if (base === 'movn') {
       emit(dst, un('not', valueOf(insn.ops[1], row, bits)));
     } else if (base === 'movk') {
@@ -771,7 +982,10 @@ export function buildValues(model, opts) {
       if (prev && prev.k === 'const' && imm && imm.value != null) {
         const cleared = prev.v & ~(0xffffn << sh);
         emit(dst, constNode(wrap(cleared | ((imm.value & 0xffffn) << sh), 64)));
-      } else regs.delete(dst);
+      } else if (dst) {
+        regs.delete(dst);
+        invalidateDependents(dst, row);
+      }
     } else if (base === 'add' && insn.ops[2] && insn.ops[2].k === 'imm') {
       // adrp と組でアドレスを完成させる形
       const src = regs.get(regKeyOf(insn.ops[1]));
@@ -781,6 +995,30 @@ export function buildValues(model, opts) {
         emit(dst, txt ? node('str', { addr: full, text: txt.text })
           : node('addr', { addr: full, partial: false, sym: o.symbolFor ? o.symbolFor(full) : null }));
       } else emit(dst, bin('add', A(), B(), bits));
+    } else if (base === 'sbc' || base === 'sbcs' || base === 'adc' || base === 'adcs') {
+      const isSub = base === 'sbc' || base === 'sbcs';
+      const op = isSub ? 'sub' : 'add';
+      const a = A(), b = B();
+      let expr = null;
+      if (prevFlags && prevFlags.a && prevFlags.b) {
+        const cc = isSub ? 'lo' : 'hs';
+        const known = conditionFromNzcv(nzcvForConstants(prevFlags), cc);
+        if (known != null) {
+          expr = bin(op, bin(op, a, b, bits), known ? constNode(1n) : ZERO, bits);
+        } else {
+          const cmp = compareCompatible(prevFlags);
+          if (cmp) {
+            const carryTerm = node('sel', { cc, cmp, predicate: null, a: constNode(1n), b: ZERO });
+            expr = bin(op, bin(op, a, b, bits), carryTerm, bits);
+          } else if (prevFlags.op === 'adds' || prevFlags.op === 'cmn') {
+            const prevBits = Math.max(1, Math.min(64, Number(prevFlags.bits) || 64));
+            const sum = bin('add', prevFlags.a, prevFlags.b, prevBits);
+            const carryTerm = node('sel', { cc: isSub ? 'hs' : 'lo', cmp: { op: 'cmp', a: sum, b: prevFlags.a, bits: prevBits }, predicate: null, a: constNode(1n), b: ZERO });
+            expr = bin(op, bin(op, a, b, bits), carryTerm, bits);
+          }
+        }
+      }
+      emit(dst, expr || bin(BIN_MN[base] || op, a, b, bits));
     } else if (BIN_MN[base]) {
       const variableShift = /^(lslv|lsrv|asrv|rorv)$/.test(base);
       const rhs = variableShift ? bin('and', B(), constNode(BigInt(bits - 1)), bits) : B();
@@ -795,6 +1033,8 @@ export function buildValues(model, opts) {
       emit(dst, un(base.startsWith('ngc') ? 'ngc' : 'neg', A()));
     } else if (base === 'fneg') {
       emit(dst, node('un', { op: 'fneg', a: A() }));
+    } else if (base === 'fabs') {
+      emit(dst, node('un', { op: 'fabs', a: A() }));
     } else if (base === 'mvn') {
       emit(dst, un('not', A()));
     } else if (base === 'madd') {
@@ -809,15 +1049,18 @@ export function buildValues(model, opts) {
       emit(dst, un('neg', bin('mul', A(), B(), bits)));
     } else if (base === 'smull' || base === 'umull') {
       const ext = base === 'smull' ? 'sxt32' : 'uxt32';
-      emit(dst, bin('mul', un(ext, valueOf(insn.ops[1], row, 32)), un(ext, valueOf(insn.ops[2], row, 32)), 64));
+      const wide = base === 'smull' ? 'sxt64' : 'uxt64';
+      emit(dst, bin('mul', un(wide, un(ext, valueOf(insn.ops[1], row, 32))), un(wide, un(ext, valueOf(insn.ops[2], row, 32))), 64));
     } else if (base === 'smaddl' || base === 'umaddl') {
       const ext = base === 'smaddl' ? 'sxt32' : 'uxt32';
+      const wide = base === 'smaddl' ? 'sxt64' : 'uxt64';
       emit(dst, bin('add', valueOf(insn.ops[3], row, 64),
-        bin('mul', un(ext, valueOf(insn.ops[1], row, 32)), un(ext, valueOf(insn.ops[2], row, 32)), 64), 64));
+        bin('mul', un(wide, un(ext, valueOf(insn.ops[1], row, 32))), un(wide, un(ext, valueOf(insn.ops[2], row, 32))), 64), 64));
     } else if (base === 'smsubl' || base === 'umsubl') {
       const ext = base === 'smsubl' ? 'sxt32' : 'uxt32';
+      const wide = base === 'smsubl' ? 'sxt64' : 'uxt64';
       emit(dst, bin('sub', valueOf(insn.ops[3], row, 64),
-        bin('mul', un(ext, valueOf(insn.ops[1], row, 32)), un(ext, valueOf(insn.ops[2], row, 32)), 64), 64));
+        bin('mul', un(wide, un(ext, valueOf(insn.ops[1], row, 32))), un(wide, un(ext, valueOf(insn.ops[2], row, 32))), 64), 64));
     } else if (base === 'smulh' || base === 'umulh') {
       // 積の上位 64 ビット。単体では意味を持たないので、印を付けて持ち回る。
       emit(dst, node('bin', { op: base === 'smulh' ? 'smulh' : 'umulh', a: A(), b: B() }));
@@ -830,14 +1073,32 @@ export function buildValues(model, opts) {
       const width = insn.ops[3] && insn.ops[3].value != null ? insn.ops[3].value : 0n;
       const destinationWidth = BigInt(bits);
       if (lsb < 0n || width <= 0n || lsb >= destinationWidth || width > destinationWidth - lsb) {
-        if (dst) regs.delete(dst);
+        if (dst) {
+          regs.delete(dst);
+          invalidateDependents(dst, row);
+        }
       } else {
         const shifted = bin('shr', A(), constNode(lsb), bits);
         const extracted = width === destinationWidth ? shifted : bin('and', shifted, constNode((1n << width) - 1n), bits);
         emit(dst, base === 'sbfx' ? signExtendExtractedField(extracted, width, bits) : extracted);
       }
+    } else if (base === 'fsqrt') {
+      const isF32 = dstOp && (dstOp.bits === 32 || /^s\d+$/i.test(String(dstOp.text || '').trim()));
+      emit(dst, node('un', { op: isF32 ? 'sqrtf' : 'sqrt', a: A() }));
+    } else if (/^frint[anmpz]$/.test(base)) {
+      const isF32 = dstOp && (dstOp.bits === 32 || /^s\d+$/i.test(String(dstOp.text || '').trim()));
+      const fnBase = { frinta: 'round', frintn: 'round', frintm: 'floor', frintp: 'ceil', frintz: 'trunc' }[base];
+      emit(dst, node('un', { op: isF32 ? fnBase + 'f' : fnBase, a: A() }));
+    } else if (/^fcvt[mpna][su]$/.test(base)) {
+      const srcOp = insn.ops[1];
+      const isSrcF32 = srcOp && (srcOp.bits === 32 || /^s\d+$/i.test(String(srcOp.text || '').trim()));
+      const fnBase = { m: 'floor', p: 'ceil', n: 'round', a: 'round' }[base[4]];
+      const fn = isSrcF32 ? fnBase + 'f' : fnBase;
+      const isSigned = base[5] === 's';
+      const castOp = (isSigned ? 'sxt' : 'uxt') + (bits === 32 ? '32' : '64');
+      emit(dst, un(castOp, node('un', { op: fn, a: valueOf(srcOp, row, isSrcF32 ? 32 : 64) })));
     } else if (base === 'csel' || base === 'csinc' || base === 'csinv' || base === 'csneg' ||
-               base === 'cset' || base === 'csetm' || base === 'cinc') {
+               base === 'cset' || base === 'csetm' || base === 'cinc' || base === 'cinv' || base === 'cneg') {
       emit(dst, selectNode(insn, row, valueOf, bits, flags));
     } else if (base === 'ccmp' || base === 'ccmn') {
       // CCMP/CCMN writes compare flags only when its condition is true and an
@@ -862,7 +1123,10 @@ export function buildValues(model, opts) {
         bits: cbits,
       };
     } else if (insn.writes.length) {
-      for (const w of insn.writes) regs.delete(w);
+      for (const w of insn.writes) {
+        regs.delete(w);
+        invalidateDependents(w, row);
+      }
     }
 
     defs.set(row, made);
@@ -872,7 +1136,7 @@ export function buildValues(model, opts) {
   for (const insn of insns) if (insn.address != null) rowAddress.set(insn.row, insn.address);
 
   return {
-    reads, defs, memWrites, returns, nodeDef, rowAddress,
+    reads, defs, memWrites, returns, nodeDef, rowAddress, joins,
     /** その行に入る時点での reg の値。 */
     at(row, reg) {
       const s = reads.get(row);
@@ -935,7 +1199,11 @@ function joinInfo(model, insns) {
   /* 各行が書き換えるレジスタ（呼び出しは壊すレジスタも含める）。 */
   const kills = insns.map((insn) => {
     const set = new Set(insn.writes);
-    if (insn.isCall) for (let a = 0; a <= 17; a++) { set.add('x' + a); set.add('v' + (a < 8 ? a : 0)); }
+    if (insn.isCall) {
+      for (let a = 0; a <= 17; a++) set.add('x' + a);
+      for (let a = 0; a <= 7; a++) set.add('v' + a);
+      for (let a = 16; a <= 31; a++) set.add('v' + a);
+    }
     return set;
   });
 
@@ -943,12 +1211,21 @@ function joinInfo(model, insns) {
     const from = sources.get(row) || [];
     if (!from.length || hasIndirect) { out.set(row, { all: true }); continue; }
     let lo = row;
+    let hi = row;
     let backwards = false;
     for (const s of from) {
-      if (s >= row) { backwards = true; break; }
+      if (s >= row) { backwards = true; hi = Math.max(hi, s); }
       lo = Math.min(lo, s);
     }
-    if (backwards) { out.set(row, { all: true }); continue; }
+    if (backwards) {
+      const loopWritten = new Set();
+      const a = rowOf.get(row), b = rowOf.get(hi);
+      if (a != null && b != null) {
+        for (let i = a; i <= b; i++) for (const k of kills[i]) loopWritten.add(k);
+      }
+      out.set(row, { all: true, loopWritten });
+      continue;
+    }
     const a = rowOf.get(lo), b = rowOf.get(row);
     if (a == null || b == null || b - a > 400) { out.set(row, { all: true }); continue; }
     const killed = new Set();
@@ -983,9 +1260,9 @@ function nzcvForConstants(flags) {
   const width = BigInt(bits), mask = (1n << width) - 1n, sign = 1n << (width - 1n);
   const a = BigInt.asUintN(bits, av), b = BigInt.asUintN(bits, bv);
   let result = 0n, c = false, v = false;
-  if (flags.op === 'adds' || flags.op === 'cmn' || flags.op === 'adcs') {
+  if (flags.op === 'adds' || flags.op === 'cmn') {
     const full = a + b; result = full & mask; c = full > mask; v = ((~(a ^ b) & (a ^ result) & sign) !== 0n);
-  } else if (flags.op === 'subs' || flags.op === 'cmp' || flags.op === 'negs' || flags.op === 'sbcs' || flags.op === 'ngcs') {
+  } else if (flags.op === 'subs' || flags.op === 'cmp' || flags.op === 'negs') {
     result = (a - b) & mask; c = a >= b; v = (((a ^ b) & (a ^ result) & sign) !== 0n);
   } else if (flags.op === 'ands' || flags.op === 'tst') {
     result = a & b;
@@ -1011,7 +1288,9 @@ function conditionFromNzcv(f, cc) {
 
 function compareCompatible(flags) {
   if (!flags || !flags.a || !flags.b) return null;
-  if (['cmp','subs','negs','fcmp','fcmpe'].includes(flags.op)) return { a:flags.a, b:flags.b };
+  if (['cmp','subs','negs','fcmp','fcmpe'].includes(flags.op)) {
+    return { op: flags.op, a: flags.a, b: flags.b, bits: Math.max(1, Math.min(64, Number(flags.bits) || 64)) };
+  }
   return null;
 }
 
@@ -1041,6 +1320,16 @@ function selectNode(insn, row, valueOf, bits, flags) {
     if (known != null) return known ? inc : a;
     return node('sel', { cc:cond, cmp, predicate, a:inc, b:a });
   }
+  if (base === 'cinv') {
+    const inv = un('not', a);
+    if (known != null) return known ? inv : a;
+    return node('sel', { cc:cond, cmp, predicate, a:inv, b:a });
+  }
+  if (base === 'cneg') {
+    const neg = un('neg', a);
+    if (known != null) return known ? neg : a;
+    return node('sel', { cc:cond, cmp, predicate, a:neg, b:a });
+  }
   let alt = b;
   if (base === 'csinc') alt = bin('add', b, constNode(1n), bits);
   else if (base === 'csinv') alt = un('not', b);
@@ -1055,13 +1344,17 @@ function selectNode(insn, row, valueOf, bits, flags) {
 /** cond ? a : b が min / max の形になっていれば、その 1 つのノードにする。 */
 function minMaxOf(cc, cmp, a, b) {
   if (!cc || !cmp || !cmp.a || !cmp.b) return null;
+  const isFp = cmp.op === 'fcmp' || cmp.op === 'fcmpe';
   const LOW = { lt: 'min', le: 'min', gt: 'max', ge: 'max', lo: 'umin', ls: 'umin', hi: 'umax', hs: 'umax' };
   const op = LOW[cc];
   if (!op) return null;
+  if (isFp && (op === 'umin' || op === 'umax')) return null;
   const flip = { min: 'max', max: 'min', umin: 'umax', umax: 'umin' };
+  const isSigned32 = (op === 'min' || op === 'max') && cmp.bits === 32 && cmp.op !== 'fcmp' && cmp.op !== 'fcmpe';
+  const signed32 = (x) => (isSigned32 && constOf(x) == null ? un('sxt32', stripPatternUxt32(x)) : x);
   /* 「小さければ左」なら min、「小さければ右」なら max（大小が入れ替わる）。 */
-  if (same(cmp.a, a) && same(cmp.b, b)) return node('bin', { op, a, b });
-  if (same(cmp.a, b) && same(cmp.b, a)) return node('bin', { op: flip[op], a: b, b: a });
+  if (same(cmp.a, a) && same(cmp.b, b)) return node('bin', { op, a: signed32(a), b: signed32(b) });
+  if (same(cmp.a, b) && same(cmp.b, a)) return node('bin', { op: flip[op], a: signed32(b), b: signed32(a) });
   return null;
 }
 
@@ -1202,11 +1495,8 @@ function signFix(shifted, signBit) {
 
   const div = asMagicDivision(inner, shift);
   if (div) return div;
-  /*
-   * 魔法数ではなく、素直に 2 の冪で割っている形。
-   *   asr x9, x8, #3 ; add x0, x9, x8, lsr #63   →   x8 / 8
-   */
-  if (shift > 0n && shift < 63n) return bin('sdiv', inner, constNode(1n << shift), 64);
+  /* Post-shift sign-bit addition `(x >> shift) + (x >>> 63)` is not equivalent
+   * to signed division `x / (1 << shift)` for negative multiples of `2^shift`. */
   return null;
 }
 
@@ -1308,9 +1598,9 @@ function asMagicDivision(inner, shift, op) {
   const hi = magicHigh(core);
   if (hi) {
     let m = hi.m;
-    if (plusSelf) {
-      // 補正つき ＝ 魔法数は符号なしで読む
-      if (m < 0n) m += 1n << 64n;
+    if (plusSelf || kind === 'udiv') {
+      // 補正つき・または符号なし umulh ＝ 魔法数は符号なしで読む
+      if (m < 0n) m = BigInt.asUintN(64, m);
     } else if (m < 0n) return null;
     const d = divisorFromMagic(m, shift, 64);
     return d ? bin(kind, hi.n, constNode(d), 64) : null;
@@ -1350,13 +1640,12 @@ function magicHigh(n) {
 const PREC = {
   min: 14, max: 14, umin: 14, umax: 14,
   or: 4, xor: 5, and: 6, shl: 8, shr: 8, sar: 8, ror: 8,
-  add: 9, sub: 9, fadd: 9, fsub: 9, mul: 10, fmul: 10, fdiv: 10, sdiv: 10, udiv: 10, smod: 10, umod: 10, srem: 10, urem: 10,
+  add: 9, sub: 9, adc: 9, sbc: 9, fadd: 9, fsub: 9, mul: 10, fmul: 10, fdiv: 10, sdiv: 10, udiv: 10, smod: 10, umod: 10, srem: 10, urem: 10,
   smulh: 10, umulh: 10,
 };
 const SYM = {
-  add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', fdiv: '/', sdiv: '/', udiv: '/', smod: '%', umod: '%', srem: '%', urem: '%',
-  and: '&', or: '|', xor: '^', shl: '<<', shr: '>>', sar: '>>', ror: '>>>',
-  smulh: '*hi', umulh: '*hi',
+  add: '+', sub: '-', adc: '+', sbc: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', fdiv: '/', sdiv: '/', udiv: '/', smod: '%', umod: '%', srem: '%', urem: '%',
+  and: '&', or: '|', xor: '^', shl: '<<', shr: '>>', sar: '>>',
 };
 
 function hexOf(v) {
@@ -1377,14 +1666,20 @@ function hexOf(v) {
  */
 export function render(n, opts) {
   const o = opts || {};
-  const out = emit(n, 0, o, 0);
-  const max = o.maxLen || 220;
-  return out.length > max ? out.slice(0, max - 1) + '…' : out;
+  const maxLen = Number.isFinite(o.maxLen) && o.maxLen > 0 ? Math.floor(o.maxLen) : 0;
+  const budget = maxLen ? { remaining: maxLen, truncated: false } : null;
+  const out = emit(n, 0, budget ? { ...o, _budget: budget } : o, 0);
+  if (maxLen && out.length > maxLen) return out.slice(0, Math.max(0, maxLen - 3)) + '...';
+  return out;
 }
 
 function emit(n, prec, o, depth) {
-  if (!n) return '?';
-  if (depth > MAX_DEPTH) return '…';
+  if (!n) return '0 /* unknown */';
+  if (depth > MAX_DEPTH) return '0 /* truncated */';
+  if (o._budget) {
+    if (o._budget.remaining <= 0) { o._budget.truncated = true; return '...'; }
+    o._budget.remaining -= 1;
+  }
   if (o.nameOf) {
     const custom = o.nameOf(n);
     if (custom) return custom;
@@ -1397,7 +1692,11 @@ function emit(n, prec, o, depth) {
     case 'str': return '"' + escapeText(n.text) + '"';
     case 'addr': {
       const sym = n.sym || (o.symbolFor ? o.symbolFor(n.addr) : null);
-      return sym ? '&' + sym : '0x' + n.addr.toString(16).toUpperCase();
+      if (sym) return '&' + sym;
+      if (!n.partial && n.addr != null && n.addr >= 0x1000n) {
+        return '(uintptr_t)&global_' + n.addr.toString(16).toUpperCase();
+      }
+      return '0x' + n.addr.toString(16).toUpperCase();
     }
     case 'mem': return emitMem(n, o, depth);
     case 'call': return emitCall(n, o, depth);
@@ -1409,8 +1708,9 @@ function emit(n, prec, o, depth) {
       return prec > 3 ? '(' + t + ')' : t;
     }
     case 'bin': {
-      /* min / max は中置きでは書けないので、関数の形で出す。 */
-      if (n.op === 'min' || n.op === 'max' || n.op === 'umin' || n.op === 'umax') {
+      /* min / max / ror / smulh / umulh は C の中置き演算子にないので、関数の形で出す。 */
+      if (n.op === 'min' || n.op === 'max' || n.op === 'umin' || n.op === 'umax'
+          || n.op === 'ror' || n.op === 'smulh' || n.op === 'umulh') {
         return n.op + '(' + emit(n.a, 0, o, depth + 1) + ', ' + emit(n.b, 0, o, depth + 1) + ')';
       }
       const p = PREC[n.op] || 9;
@@ -1418,7 +1718,7 @@ function emit(n, prec, o, depth) {
         emit(n.b, p + 1, o, depth + 1);
       return p < prec ? '(' + t + ')' : t;
     }
-    default: return '?';
+    default: return '0 /* unknown */';
   }
 }
 
@@ -1427,6 +1727,7 @@ function emitUn(n, prec, o, depth) {
   switch (n.op) {
     case 'neg': return '-' + inner;
     case 'fneg': return '-' + inner;
+    case 'fabs': return 'fabs(' + emit(n.a, 0, o, depth + 1) + ')';
     case 'not': return '~' + inner;
     case 'sxt8': return '(int8)' + inner;
     case 'sxt16': return '(int16)' + inner;
@@ -1434,6 +1735,12 @@ function emitUn(n, prec, o, depth) {
     case 'uxt8': return '(uint8)' + inner;
     case 'uxt16': return '(uint16)' + inner;
     case 'uxt32': return '(uint32)' + inner;
+    case 'sxt64': return '(int64)' + inner;
+    case 'uxt64': return '(uint64)' + inner;
+    case 'bitcast_u32_f32': return '((union { uint32_t u; float f; }){ .u = (uint32_t)(' + inner + ') }.f)';
+    case 'bitcast_u64_f64': return '((union { uint64_t u; double f; }){ .u = (uint64_t)(' + inner + ') }.f)';
+    case 'bitcast_f32_u32': return '((union { float f; uint32_t u; }){ .f = (float)(' + inner + ') }.u)';
+    case 'bitcast_f64_u64': return '((union { double f; uint64_t u; }){ .f = (double)(' + inner + ') }.u)';
     default: void prec; return n.op + '(' + inner + ')';
   }
 }
@@ -1453,7 +1760,7 @@ function emitMem(n, o, depth) {
    * 住所は式として組み立ててから文字にする。そうしないと
    * `*(uint32 *)((sp - 400) + 28)` のように、足し算がほどけないまま出てしまう。
    */
-  let addr = n.base || regNode(n.baseReg || '?', n.row);
+  let addr = n.base || regNode(n.baseReg || 'unknown_base', n.row);
   if (n.index) addr = bin('add', addr, n.index, 64);
   if (n.disp != null && n.disp !== 0n) addr = bin('add', addr, constNode(n.disp), 64);
   return '*(' + type + ' *)(' + emit(addr, 0, o, depth + 1) + ')';
@@ -1461,7 +1768,7 @@ function emitMem(n, o, depth) {
 
 function emitCall(n, o, depth) {
   const label = (o.callName && o.callName(n)) || n.name ||
-    (n.target != null ? 'sub_' + n.target.toString(16).toUpperCase() : '(*func)');
+    (n.target != null ? 'sub_' + n.target.toString(16).toUpperCase() : 'unknown_call');
   const args = (n.args || []).map((a) => emit(a.value, 0, o, depth + 1));
   return label + '(' + args.join(', ') + ')';
 }
@@ -1470,6 +1777,29 @@ function emitFlagCondition(predicate, o, depth) {
   if (!predicate || predicate.k !== 'flagcond') return 'flag_unknown';
   const producer = String(predicate.producer || 'unknown'), bits = Number(predicate.bits || 64);
   const a = emit(predicate.a, 0, o, depth + 1), b = emit(predicate.b, 0, o, depth + 1);
+  if (producer === 'cmn') {
+    const sum = `(${a} + ${b})`;
+    const unsignedTy = bits === 32 ? 'uint32' : 'uint64';
+    const signedTy = bits === 32 ? 'int32' : 'int64';
+    switch (predicate.cc) {
+      case 'eq': return `((${unsignedTy})${sum} == 0)`;
+      case 'ne': return `((${unsignedTy})${sum} != 0)`;
+      case 'mi': return `((${signedTy})${sum} < 0)`;
+      case 'pl': return `((${signedTy})${sum} >= 0)`;
+      default: break;
+    }
+  }
+  if (producer === 'ands' || producer === 'tst' || producer === 'bics') {
+    const res = producer === 'bics' ? `((${a}) & ~(${b}))` : `((${a}) & (${b}))`;
+    const signedTy = bits === 32 ? 'int32' : 'int64';
+    switch (predicate.cc) {
+      case 'eq': return `(${res} == 0)`;
+      case 'ne': return `(${res} != 0)`;
+      case 'mi': return `((${signedTy})${res} < 0)`;
+      case 'pl': return `((${signedTy})${res} >= 0)`;
+      default: break;
+    }
+  }
   const stem = `${producer}${bits}(${a}, ${b})`;
   const n=`N_${stem}`, z=`Z_${stem}`, c=`C_${stem}`, v=`V_${stem}`;
   switch (predicate.cc) {
@@ -1487,9 +1817,48 @@ function condSymbol(cc, cmp, o, depth) {
   const ops = {
     eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=',
     lo: '<', ls: '<=', hi: '>', hs: '>=', cc: '<', cs: '>=',
-    mi: '< 0', pl: '>= 0',
   };
+  const unsignedOps = { lo: '<', ls: '<=', hi: '>', hs: '>=', cc: '<', cs: '>=' };
   if (cmp && cmp.a) {
+    const isFp = cmp.op === 'fcmp' || cmp.op === 'fcmpe';
+    const bits = Number(cmp.bits) === 32 ? 32 : 64;
+    const is32 = bits === 32 && !isFp;
+    if (cc === 'mi' || cc === 'pl') {
+      if (isFp) {
+        const lhs = emit(cmp.a, 7, o, depth + 1);
+        const rhs = cmp.b ? emit(cmp.b, 8, o, depth + 1) : '0';
+        return cc === 'mi' ? (lhs + ' < ' + rhs) : ('!(' + lhs + ' < ' + rhs + ')');
+      }
+      const lhs = emit(cmp.a, 9, o, depth + 1);
+      const rhs = cmp.b ? emit(cmp.b, 10, o, depth + 1) : '0';
+      const signedCast = bits === 32 ? 'int32' : 'int64';
+      return '((' + signedCast + ')(' + lhs + ' - ' + rhs + ') ' + (cc === 'mi' ? '< 0' : '>= 0') + ')';
+    }
+    if (cc === 'vs' || cc === 'vc') {
+      const lhs = emit(cmp.a, 11, o, depth + 1);
+      const rhs = cmp.b ? emit(cmp.b, 11, o, depth + 1) : '0';
+      if (isFp) {
+        return cc === 'vs'
+          ? '((' + lhs + ' != ' + lhs + ') || (' + rhs + ' != ' + rhs + '))'
+          : '((' + lhs + ' == ' + lhs + ') && (' + rhs + ' == ' + rhs + '))';
+      }
+      const uType = bits === 32 ? 'uint32' : 'uint64';
+      const shift = bits === 32 ? 31 : 63;
+      const ov = '(((((' + uType + ')(' + lhs + ') ^ (' + uType + ')(' + rhs + ')) & ((' + uType + ')(' + lhs + ') ^ ((' + uType + ')(' + lhs + ') - (' + uType + ')(' + rhs + ')))) >> ' + shift + ') & 1)';
+      return cc === 'vs' ? ov : '(!' + ov + ')';
+    }
+    if (cc === 'al' || cc === 'nv') return '1';
+    if (!isFp && unsignedOps[cc]) {
+      const unsignedCast = bits === 32 ? '(uint32)' : '(uint64)';
+      const lhs = unsignedCast + emit(cmp.a, 11, o, depth + 1);
+      const rhs = unsignedCast + (cmp.b ? emit(cmp.b, 11, o, depth + 1) : '0');
+      return lhs + ' ' + unsignedOps[cc] + ' ' + rhs;
+    }
+    if (is32 && (cc === 'lt' || cc === 'le' || cc === 'gt' || cc === 'ge')) {
+      const aStr = constOf(cmp.a) != null ? emit(cmp.a, 7, o, depth + 1) : '(int32)(' + emit(cmp.a, 0, o, depth + 1) + ')';
+      const bStr = !cmp.b ? '0' : (constOf(cmp.b) != null ? emit(cmp.b, 8, o, depth + 1) : '(int32)(' + emit(cmp.b, 0, o, depth + 1) + ')');
+      return aStr + ' ' + ops[cc] + ' ' + bStr;
+    }
     return emit(cmp.a, 7, o, depth + 1) + ' ' + (ops[cc] || cc) + ' ' +
       (cmp.b ? emit(cmp.b, 8, o, depth + 1) : '0');
   }
@@ -1504,8 +1873,11 @@ export function typeName(size, signed) {
 // Input is the string scanner's display form (tab/CR/LF already written as
 // \t, \r, \n); keep those escapes instead of doubling their backslash.
 function escapeText(s) {
-  return String(s == null ? '' : s).replace(/\\(?![nrt])/g, '\\\\').replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t').slice(0, 90);
+  return String(s == null ? '' : s).slice(0, 90)
+    .replace(/\\(?![nrt])/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
+    .replace(/[\x00-\x1f\x7f]/g, (ch) => '\\' + ch.charCodeAt(0).toString(8).padStart(3, '0'));
 }
 
 /* ────────────────────────────────────────────────────────────

@@ -133,6 +133,48 @@ const WIDTH_PRESERVING_CASTS = new Set(['copy', 'bitcast']);
 const WIDTH_CHANGING_CASTS = new Set(['zext', 'sext', 'trunc']);
 const ADDRESS_INTEGER_MACHINE_KINDS = new Set(['bitvector', 'address']);
 const INTEGER_CONSTANT_KINDS = new Set(['bitvector', 'integer']);
+const CANONICAL_PROOF_NODE_KINDS = new Set(['state-read', 'const', 'copy', 'address', 'binary', 'intrinsic']);
+const CANONICAL_BINARY_OPS = new Set(['add', 'sub', 'add-with-carry']);
+const NON_POINTER_MACHINE_KINDS = new Set(['float', 'boolean', 'predicate', 'flags', 'void']);
+
+function createIndexMinHeap() {
+  const heap = [];
+  const push = (value) => {
+    heap.push(value);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      if (heap[index] >= heap[parent]) break;
+      const tmp = heap[index];
+      heap[index] = heap[parent];
+      heap[parent] = tmp;
+      index = parent;
+    }
+  };
+  const pop = () => {
+    if (heap.length === 0) return -1;
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && heap[left] < heap[smallest]) smallest = left;
+        if (right < heap.length && heap[right] < heap[smallest]) smallest = right;
+        if (smallest === index) break;
+        const tmp = heap[index];
+        heap[index] = heap[smallest];
+        heap[smallest] = tmp;
+        index = smallest;
+      }
+    }
+    return top;
+  };
+  return { push, pop, get size() { return heap.length; } };
+}
 
 function parseInteger(candidate) {
   if (candidate == null) return null;
@@ -350,7 +392,10 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
     list.push(use);
     usesBySource.set(sourceId, list);
   }
-  for (const list of usesBySource.values()) list.sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  for (const list of usesBySource.values()) list.sort((left, right) => {
+    const a = String(left.id), b = String(right.id);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
   for (const metadata of accessMetadata) {
     if (options.signal?.aborted) return failBoundary('partial', 'cancelled');
     const id = String(metadata?.memorySsaEntityId ?? '');
@@ -751,10 +796,31 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const canonicalOptions = options.canonicalOptions ?? {};
   const configuredAddressSpace = canonicalOptions?.addressSpace ?? null;
   for (const id of values.keys()) {
+    const value = values.get(id);
+    if (!value || value.kind === 'unknown' || value.kind === 'undef') {
+      canonical.set(id, null);
+      continue;
+    }
+    const machineKind = value.machineType?.kind;
+    if (NON_POINTER_MACHINE_KINDS.has(machineKind)) {
+      canonical.set(id, null);
+      continue;
+    }
+    const defNode = value.definitionNodeId == null ? null : nodes.get(String(value.definitionNodeId));
+    if (defNode != null) {
+      if (!CANONICAL_PROOF_NODE_KINDS.has(defNode.kind)
+          || (defNode.kind === 'intrinsic' && String(defNode.operator ?? '').toLowerCase() !== 'add-with-carry')
+          || (defNode.kind === 'binary' && !CANONICAL_BINARY_OPS.has(String(defNode.operator ?? '').toLowerCase()))
+          || (defNode.kind === 'const' && value.machineType != null && typeof value.machineType === 'object'
+            && !Array.isArray(value.machineType) && Object.hasOwn(value.machineType, 'kind')
+            && !ADDRESS_INTEGER_MACHINE_KINDS.has(machineKind))) {
+        canonical.set(id, null);
+        continue;
+      }
+    }
     let proof;
     try {
-      const value = values.get(id);
-      const valueSpace = value?.machineType?.kind === 'address' && value.machineType.addressSpace != null
+      const valueSpace = machineKind === 'address' && value.machineType.addressSpace != null
         ? value.machineType.addressSpace
         : null;
       // A global caller authority and the per-value machine type are both
@@ -779,11 +845,14 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     const node = value?.definitionNodeId == null ? null : nodes.get(String(value.definitionNodeId));
     return blockRank.get(node?.blockId) ?? Number.MAX_SAFE_INTEGER;
   };
-  const irOrder = [...values.keys()].sort((left, right) => rankOf(left) - rankOf(right) || left.localeCompare(right));
+  const cmpText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const irRank = new Map();
+  for (const id of values.keys()) irRank.set(id, rankOf(id));
+  const irOrder = [...values.keys()].sort((left, right) => irRank.get(left) - irRank.get(right) || cmpText(left, right));
   const ssaOrder = [...ssaDefinitions.keys()].sort((left, right) => {
     const leftRank = blockRank.get(ssaDefinitions.get(left).blockId) ?? Number.MAX_SAFE_INTEGER;
     const rightRank = blockRank.get(ssaDefinitions.get(right).blockId) ?? Number.MAX_SAFE_INTEGER;
-    return leftRank - rightRank || left.localeCompare(right);
+    return leftRank - rightRank || cmpText(left, right);
   });
 
   const irState = new Map(irOrder.map((id) => [id, BOTTOM_POINTS_TO]));
@@ -791,12 +860,35 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const irPrevious = new Map();
   const ssaPrevious = new Map();
 
-  const irGet = (id) => irState.get(String(id)) ?? topPointsTo('unsupported-operation');
-  const ssaGet = (id) => ssaState.get(String(id)) ?? topPointsTo('unsupported-operation');
+  const summaryEvalCache = new Map();
+  const irDependents = new Map();
+  const ssaDependents = new Map();
+  let activeConsumer = null;
+  const recordDep = (table, key) => {
+    if (activeConsumer === null) return;
+    let bucket = table.get(key);
+    if (!bucket) {
+      bucket = new Set();
+      table.set(key, bucket);
+    }
+    bucket.add(activeConsumer);
+  };
+
+  const irGet = (id) => {
+    const key = String(id);
+    recordDep(irDependents, key);
+    return irState.get(key) ?? topPointsTo('unsupported-operation');
+  };
+  const ssaGet = (id) => {
+    const key = String(id);
+    recordDep(ssaDependents, key);
+    return ssaState.get(key) ?? topPointsTo('unsupported-operation');
+  };
 
   function transferLoadedPointer(id) {
     const candidate = memoryBoundary.candidates.get(String(id));
     if (!candidate) return { candidate: null, set: null };
+    recordDep(irDependents, candidate.storedValueId);
     const storedSet = irState.get(candidate.storedValueId);
     // The stored value may be visited later in this iteration. Keep the seed
     // at BOTTOM until it is available so a valid proof can converge without
@@ -817,14 +909,24 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     };
   }
 
+  const EMPTY_ARRAY = Object.freeze([]);
+  const reachingSsaCache = new Map();
   /** Reaching SSA values for one `state-read`, matched on variable identity. */
   function reachingSsaValues(node) {
+    const nodeKey = String(node.id);
+    const cached = reachingSsaCache.get(nodeKey);
+    if (cached !== undefined) return cached;
     const variableKey = String(node.variable?.key ?? '');
-    if (!variableKey) return [];
-    const uses = (ssaUsesByEntity.get(String(node.id)) ?? []).filter((use) => (
+    if (!variableKey) {
+      reachingSsaCache.set(nodeKey, EMPTY_ARRAY);
+      return EMPTY_ARRAY;
+    }
+    const uses = (ssaUsesByEntity.get(nodeKey) ?? []).filter((use) => (
       String(use.proof?.variableIdentity?.key ?? use.proof?.sourceVariableKey ?? '') === variableKey
     ));
-    return [...new Set(uses.map((use) => String(use.valueId)))].sort();
+    const result = [...new Set(uses.map((use) => String(use.valueId)))].sort();
+    reachingSsaCache.set(nodeKey, result);
+    return result;
   }
 
   function transferSsa(ssaValueId) {
@@ -897,7 +999,10 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     }
     if (WIDTH_CHANGING_CASTS.has(node.kind) && node.inputs.length === 1) {
       const inputValue = values.get(String(node.inputs[0]));
-      const inputWidth = widthOf(inputValue, null);
+      const inputNode = inputValue?.definitionNodeId == null
+        ? null
+        : nodes.get(String(inputValue.definitionNodeId));
+      const inputWidth = widthOf(inputValue, inputNode);
       // Narrowing or re-widening a pointer destroys provenance: the recovered
       // bits are no longer proof of which object the pointer came from.
       if (inputWidth == null || width == null || inputWidth !== width) return topPointsTo('integer-to-pointer');
@@ -924,6 +1029,9 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       if (leftConstant != null && operator === 'add') {
         return shiftSet(irGet(node.inputs[1]), leftConstant, width);
       }
+      if (leftConstant != null && operator === 'sub') {
+        return topPointsTo('non-linear-arithmetic');
+      }
       // Neither operand is a constant, so we cannot tell which side is the
       // pointer. Both sides' roots must survive: taking only the left operand
       // would drop the right one's targets, and a points-to set that is missing
@@ -931,8 +1039,12 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       const left = irGet(node.inputs[0]);
       const right = irGet(node.inputs[1]);
       if (left.top || right.top) return topPointsTo('non-linear-arithmetic');
+      if (operator === 'sub' && right.targets.length > 0) {
+        return topPointsTo('non-linear-arithmetic');
+      }
       const merged = joinPointsTo(left, right, budget);
-      if (merged.top || pointsToIsBottom(merged)) return topPointsTo('non-linear-arithmetic');
+      if (merged.top) return topPointsTo('non-linear-arithmetic');
+      if (pointsToIsBottom(merged)) return BOTTOM_POINTS_TO;
       // The displacement is unbounded, so every surviving root keeps its
       // identity and loses its offset.
       return createPointsToSet({
@@ -966,21 +1078,31 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
           ?? (typeof options.summaryProvider === 'function' ? options.summaryProvider(calleeId) : null);
         if (options.signal?.aborted) return topPointsTo('unresolved-call');
         if (calleeSummary == null) return topPointsTo('unresolved-call');
-        const dependencyIds = summaryDependencyIds(options, calleeId, calleeSummary);
+        let summaryEval = summaryEvalCache.get(calleeId);
+        if (!summaryEval || summaryEval.summary !== calleeSummary) {
+          const computedDependencyIds = summaryDependencyIds(options, calleeId, calleeSummary);
+          const computedIdentityMatches = computedDependencyIds == null ? false : summaryIdentityMatches(calleeSummary, {
+            functionId: calleeId,
+            snapshotId: options.snapshotId ?? 'snapshot-unbound',
+            analyzerId: options.summaryAnalyzerId ?? options.expectedSummaryAnalyzerId ?? summaryIdentity.analyzerId ?? null,
+            analyzerVersion: options.summaryAnalyzerVersion
+              ?? options.expectedSummaryAnalyzerVersion
+              ?? summaryIdentity.analyzerVersion
+              ?? null,
+          });
+          summaryEval = {
+            summary: calleeSummary,
+            dependencyIds: computedDependencyIds,
+            identityMatches: computedIdentityMatches,
+          };
+          summaryEvalCache.set(calleeId, summaryEval);
+        }
+        const { dependencyIds, identityMatches } = summaryEval;
         if (dependencyIds == null) {
           markSummaryDependencyFailure();
           return topPointsTo('unresolved-call');
         }
         for (const dependencyId of dependencyIds) calleeSummaryDependencyIds.add(dependencyId);
-        const identityMatches = summaryIdentityMatches(calleeSummary, {
-          functionId: calleeId,
-          snapshotId: options.snapshotId ?? 'snapshot-unbound',
-          analyzerId: options.summaryAnalyzerId ?? options.expectedSummaryAnalyzerId ?? summaryIdentity.analyzerId ?? null,
-          analyzerVersion: options.summaryAnalyzerVersion
-            ?? options.expectedSummaryAnalyzerVersion
-            ?? summaryIdentity.analyzerVersion
-            ?? null,
-        });
         if (!identityMatches) {
           // A supplied summary for a different function/snapshot/analyzer is a
           // dependency mismatch, not an ordinary unresolved call. Keep the
@@ -989,9 +1111,18 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
           return topPointsTo('unresolved-call');
         }
         if (!isCompleteStatus(calleeSummary.status) || calleeSummary.unknownCallEffects.length) return topPointsTo('unresolved-call');
-        const alternatives = calleeSummary.returnProvenance.filter(
-          (prov) => Number(prov.returnIndex ?? 0) === returnIndex,
-        );
+        let byReturnIndex = summaryEval.returnProvenanceByIndex;
+        if (!byReturnIndex) {
+          byReturnIndex = new Map();
+          for (const prov of calleeSummary.returnProvenance) {
+            const idxKey = Number(prov.returnIndex ?? 0);
+            let list = byReturnIndex.get(idxKey);
+            if (!list) { list = []; byReturnIndex.set(idxKey, list); }
+            list.push(prov);
+          }
+          summaryEval.returnProvenanceByIndex = byReturnIndex;
+        }
+        const alternatives = byReturnIndex.get(returnIndex) ?? EMPTY_ARRAY;
         if (!alternatives.length) return topPointsTo('unresolved-call');
         // Join every return alternative from every proven candidate. A missing
         // alternative is unknown, never an empty contribution to this union.
@@ -999,12 +1130,15 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
           let candidate;
           if (prov.kind === 'arg' && prov.argIndex != null && argumentIds?.[prov.argIndex] != null) {
             const argSet = irGet(argumentIds[prov.argIndex]);
-            if (argSet.top || pointsToIsBottom(argSet)) return topPointsTo('unresolved-call');
+            if (argSet.top) return topPointsTo('unresolved-call');
+            if (pointsToIsBottom(argSet)) return BOTTOM_POINTS_TO;
             let offset;
             try { offset = BigInt(prov.offset ?? 0n); }
             catch { return topPointsTo('unresolved-call'); }
-            const shifted = offset !== 0n ? shiftSet(argSet, offset, width ?? 64) : argSet;
-            const argumentWidth = widthOf(values.get(String(argumentIds[prov.argIndex])));
+            const shifted = offset !== 0n ? shiftSet(argSet, offset, width) : argSet;
+            const argValue = values.get(String(argumentIds[prov.argIndex]));
+            const argNode = argValue?.definitionNodeId == null ? null : nodes.get(String(argValue.definitionNodeId));
+            const argumentWidth = widthOf(argValue, argNode);
             candidate = createPointsToSet({
               targets: shifted.targets.map((target) => createPointsToTarget({
                 ...target,
@@ -1020,7 +1154,7 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
               top: shifted.top,
             });
           } else {
-            const target = targetFromReturnProvenance(prov, width ?? 64, evidenceIds);
+            const target = targetFromReturnProvenance(prov, width, evidenceIds);
             if (!target) return topPointsTo('unresolved-call');
             candidate = createPointsToSet({ targets: [target] });
           }
@@ -1037,34 +1171,105 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     return topPointsTo('unsupported-operation');
   }
 
+  const ssaHeap = createIndexMinHeap();
+  const irHeap = createIndexMinHeap();
+  const inSsaHeap = new Uint8Array(ssaOrder.length);
+  const inIrHeap = new Uint8Array(irOrder.length);
+  const inSsaNext = new Uint8Array(ssaOrder.length);
+  const inIrNext = new Uint8Array(irOrder.length);
+  let ssaNextDirty = [];
+  let irNextDirty = [];
+  for (let i = 0; i < ssaOrder.length; i += 1) { inSsaHeap[i] = 1; ssaHeap.push(i); }
+  for (let i = 0; i < irOrder.length; i += 1) { inIrHeap[i] = 1; irHeap.push(i); }
+
+  const enqueueSsa = (idx, activeKind, activeIdx) => {
+    if (activeKind === 's' && idx <= activeIdx) {
+      if (!inSsaNext[idx]) { inSsaNext[idx] = 1; ssaNextDirty.push(idx); }
+    } else if (!inSsaHeap[idx]) {
+      inSsaHeap[idx] = 1;
+      ssaHeap.push(idx);
+    }
+  };
+  const enqueueIr = (idx, activeKind, activeIdx) => {
+    if (activeKind === 'i' && idx <= activeIdx) {
+      if (!inIrNext[idx]) { inIrNext[idx] = 1; irNextDirty.push(idx); }
+    } else if (!inIrHeap[idx]) {
+      inIrHeap[idx] = 1;
+      irHeap.push(idx);
+    }
+  };
+  const markDependentsDirty = (table, id, activeKind, activeIdx) => {
+    const bucket = table.get(id);
+    if (!bucket) return;
+    for (const consumer of bucket) {
+      if (consumer >= 0) enqueueSsa(consumer, activeKind, activeIdx);
+      else enqueueIr(~consumer, activeKind, activeIdx);
+    }
+  };
+
   let iterations = 0;
   let changed = true;
   let stopReason = null;
+  const everChangedSsa = new Uint8Array(ssaOrder.length);
+  const everChangedSsaList = [];
+  const everChangedIr = new Uint8Array(irOrder.length);
+  const everChangedIrList = [];
   while (changed) {
     if (options.signal?.aborted) { stopReason = 'cancelled'; break; }
     if (iterations >= budget.maxIterations) { stopReason = 'iteration-limit'; break; }
     iterations += 1;
     changed = false;
     const widening = iterations > budget.widenAfterIterations;
+    if (iterations === budget.widenAfterIterations + 1) {
+      for (let i = 0; i < everChangedSsaList.length; i += 1) {
+        const idx = everChangedSsaList[i];
+        if (!inSsaHeap[idx]) { inSsaHeap[idx] = 1; ssaHeap.push(idx); }
+      }
+      for (let i = 0; i < everChangedIrList.length; i += 1) {
+        const idx = everChangedIrList[i];
+        if (!inIrHeap[idx]) { inIrHeap[idx] = 1; irHeap.push(idx); }
+      }
+    }
 
-    const step = (order, state, previous, transfer) => {
-      for (const id of order) {
+    const step = (order, heap, inHeap, nextDirty, inNext, kindPrefix, dependentsTable, state, previous, transfer, everChangedFlags, everChangedList) => {
+      while (heap.size > 0) {
         if (options.signal?.aborted) {
           stopReason = 'cancelled';
           return;
         }
+        const idx = heap.pop();
+        inHeap[idx] = 0;
+        const id = order[idx];
         const current = state.get(id);
-        const joined = joinPointsTo(current, transfer(id), budget);
+        activeConsumer = kindPrefix === 's' ? idx : ~idx;
+        let transferred;
+        try {
+          transferred = transfer(id);
+        } finally {
+          activeConsumer = null;
+        }
+        const joined = joinPointsTo(current, transferred, budget);
         const next = widening ? widenPointsTo(previous.get(id) ?? current, joined, budget) : joined;
         if (!pointsToEqual(current, next)) {
           previous.set(id, current);
           state.set(id, next);
           changed = true;
+          if (!widening && !everChangedFlags[idx]) {
+            everChangedFlags[idx] = 1;
+            everChangedList.push(idx);
+          }
+          markDependentsDirty(dependentsTable, id, kindPrefix, idx);
         }
       }
+      for (let i = 0; i < nextDirty.length; i += 1) {
+        const idx = nextDirty[i];
+        inNext[idx] = 0;
+        if (!inHeap[idx]) { inHeap[idx] = 1; heap.push(idx); }
+      }
+      nextDirty.length = 0;
     };
-    step(ssaOrder, ssaState, ssaPrevious, transferSsa);
-    step(irOrder, irState, irPrevious, transferIr);
+    step(ssaOrder, ssaHeap, inSsaHeap, ssaNextDirty, inSsaNext, 's', ssaDependents, ssaState, ssaPrevious, transferSsa, everChangedSsa, everChangedSsaList);
+    step(irOrder, irHeap, inIrHeap, irNextDirty, inIrNext, 'i', irDependents, irState, irPrevious, transferIr, everChangedIr, everChangedIrList);
   }
 
   // Bottom is the fixed-point seed, never an answer. A value the solve never
@@ -1112,7 +1317,7 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     }
   }
   const diagnosticList = [...diagnostics.entries()]
-    .sort(([left], [right]) => String(left).localeCompare(String(right)))
+    .sort(([left], [right]) => cmpText(String(left), String(right)))
     .map(([valueId, reason]) => ({ valueId, reason }));
   const recovery = memoryBoundary.provided ? {
     bindingState: memoryBoundary.state,

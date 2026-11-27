@@ -76,9 +76,9 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
     this.markObservationProgress('requireActivation', this.progressFingerprint({ args, result }));
   }
 
-  async executeWithinToolBoundary(operation) {
-    const result = await super.executeWithinToolBoundary(operation);
-    this.markToolProgress();
+  async executeWithinToolBoundary(operation, options = {}) {
+    const result = await super.executeWithinToolBoundary(operation, options);
+    if (options?.trackProgress !== false) this.markToolProgress();
     return result;
   }
 

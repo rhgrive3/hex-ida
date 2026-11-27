@@ -15,18 +15,83 @@
     encoding:456,
   });
 
-  function u8(M, pointer) { return M.getValue(pointer, 'i8') & 0xff; }
-  function u16(M, pointer) { return M.getValue(pointer, 'i16') & 0xffff; }
-  function u32(M, pointer) { return M.getValue(pointer, 'i32') >>> 0; }
-  function i32(M, pointer) { return M.getValue(pointer, 'i32') | 0; }
+  const MAX_NAME_CACHE_ENTRIES = 4096;
+  const moduleNameCaches = new WeakMap();
+
+  const LEGACY_PREFIX_LUT = new Uint8Array(256);
+  for (const byte of [0xf0, 0xf2, 0xf3, 0x2e, 0x36, 0x3e, 0x26, 0x64, 0x65, 0x66, 0x67]) {
+    LEGACY_PREFIX_LUT[byte] = 1;
+  }
+  const EMPTY_UNAVAILABLE_FACTS = Object.freeze([]);
+  const VEX_EVEX_UNAVAILABLE_FACTS = Object.freeze(['decoded-vex-evex-bitfields']);
+  const RFLAGS_X87_FAMILIES = new Set(['fcomi', 'fcomip', 'fcompi', 'fucomi', 'fucomip', 'fucompi']);
+
+  function u8(M, pointer) {
+    if (M.HEAPU8) return M.HEAPU8[pointer];
+    return M.getValue(pointer, 'i8') & 0xff;
+  }
+  function u16(M, pointer) {
+    if (M.HEAPU8) return M.HEAPU8[pointer] | (M.HEAPU8[pointer + 1] << 8);
+    return M.getValue(pointer, 'i16') & 0xffff;
+  }
+  function u32(M, pointer) {
+    if (M.HEAPU8) {
+      return (M.HEAPU8[pointer]
+        | (M.HEAPU8[pointer + 1] << 8)
+        | (M.HEAPU8[pointer + 2] << 16)
+        | (M.HEAPU8[pointer + 3] << 24)) >>> 0;
+    }
+    return M.getValue(pointer, 'i32') >>> 0;
+  }
+  function i32(M, pointer) {
+    if (M.HEAPU8) {
+      return (M.HEAPU8[pointer]
+        | (M.HEAPU8[pointer + 1] << 8)
+        | (M.HEAPU8[pointer + 2] << 16)
+        | (M.HEAPU8[pointer + 3] << 24)) | 0;
+    }
+    return M.getValue(pointer, 'i32') | 0;
+  }
   function i64(M, pointer) { return BigInt(M.getValue(pointer, 'i64')); }
   function u64FromI64(M, pointer) { return BigInt.asUintN(64, i64(M, pointer)); }
 
+  function copyBytes(M, pointer, length) {
+    if (M.HEAPU8) return M.HEAPU8.slice(pointer, pointer + length);
+    const out = new Uint8Array(length);
+    for (let index = 0; index < length; index++) {
+      out[index] = M.getValue(pointer + index, 'i8') & 0xff;
+    }
+    return out;
+  }
+
+  function getHandleStringCache(M, handle, functionName) {
+    let byHandle = moduleNameCaches.get(M);
+    if (!byHandle) {
+      byHandle = new Map();
+      moduleNameCaches.set(M, byHandle);
+    }
+    let handleCache = byHandle.get(handle);
+    if (!handleCache) {
+      handleCache = Object.create(null);
+      byHandle.set(handle, handleCache);
+    }
+    let fnCache = handleCache[functionName];
+    if (!fnCache) {
+      fnCache = new Map();
+      handleCache[functionName] = fnCache;
+    }
+    return fnCache;
+  }
+
   function capstoneString(M, functionName, handle, id) {
     if (!id) return null;
+    const cache = M && typeof M === 'object' ? getHandleStringCache(M, handle, functionName) : null;
+    if (cache && cache.has(id)) return cache.get(id);
     try {
       const value = M.ccall(functionName, 'string', ['number','number'], [handle, id]);
-      return value ? String(value).toLowerCase() : null;
+      const normalized = value ? String(value).toLowerCase() : null;
+      if (cache && cache.size < MAX_NAME_CACHE_ENTRIES) cache.set(id, normalized);
+      return normalized;
     } catch { return null; }
   }
 
@@ -49,8 +114,7 @@
 
   function vectorPrefix(rawBytes) {
     let cursor = 0;
-    const legacy = new Set([0xf0,0xf2,0xf3,0x2e,0x36,0x3e,0x26,0x64,0x65,0x66,0x67]);
-    while (cursor < rawBytes.length && legacy.has(rawBytes[cursor])) cursor++;
+    while (cursor < rawBytes.length && LEGACY_PREFIX_LUT[rawBytes[cursor]] === 1) cursor++;
     // REX cannot legally precede a VEX/XOP/EVEX escape prefix (#UD per
     // AMD64 APM Vol.3); such a byte sequence is not a vector-prefixed
     // instruction and must not produce vector prefix metadata.
@@ -161,7 +225,7 @@
     const address = u64FromI64(M, instructionPointer + 8);
     const expected = BigInt.asUintN(64, BigInt(options.address));
     if (address !== expected) throw new Error(`x86-decoder-address-mismatch:${address}:${expected}`);
-    const rawBytes = Uint8Array.from({ length:size }, (_unused, index) => u8(M, instructionPointer + ABI.instructionBytes + index));
+    const rawBytes = copyBytes(M, instructionPointer + ABI.instructionBytes, size);
     const opcodeId = u32(M, instructionPointer);
     const opcodeName = capstoneString(M, 'cs_insn_name', handle, opcodeId);
     const mnemonic = M.UTF8ToString(instructionPointer + 42);
@@ -199,25 +263,37 @@
     for (let index = 0; index < operandCount; index++) {
       operands.push(operand(M, handle, x86 + ABI.operands + index * ABI.operandStride, index));
     }
-    const legacyPrefixes = Uint8Array.from({ length:4 }, (_unused, index) => u8(M, x86 + index)).filter((value) => value !== 0);
-    const opcodeBytes = Uint8Array.from({ length:4 }, (_unused, index) => u8(M, x86 + 4 + index));
+    const p0 = u8(M, x86);
+    const p1 = u8(M, x86 + 1);
+    const p2 = u8(M, x86 + 2);
+    const p3 = u8(M, x86 + 3);
+    const legacyCount = (p0 !== 0 ? 1 : 0) + (p1 !== 0 ? 1 : 0) + (p2 !== 0 ? 1 : 0) + (p3 !== 0 ? 1 : 0);
+    const legacyPrefixes = new Uint8Array(legacyCount);
+    if (legacyCount > 0) {
+      let pos = 0;
+      if (p0 !== 0) legacyPrefixes[pos++] = p0;
+      if (p1 !== 0) legacyPrefixes[pos++] = p1;
+      if (p2 !== 0) legacyPrefixes[pos++] = p2;
+      if (p3 !== 0) legacyPrefixes[pos] = p3;
+    }
+    const opcodeBytes = copyBytes(M, x86 + 4, 4);
     const encoding = x86 + ABI.encoding;
     const implicitReads = implicitRegisters(M, handle, detailPointer, 0, 40, 20);
     const implicitWrites = implicitRegisters(M, handle, detailPointer, 42, 82, 20);
     const groupList = groups(M, handle, detailPointer);
     const isFpuGroup = groupList.some((group) => String(group?.name || '').toLowerCase() === 'fpu');
     const normalizedFamily = String(opcodeName || mnemonic || '').toLowerCase();
-    const usesRflags = normalizedFamily.startsWith('fcmov')
-      || ['fcomi', 'fcomip', 'fcompi', 'fucomi', 'fucomip', 'fucompi'].includes(normalizedFamily);
+    const usesRflags = normalizedFamily.startsWith('fcmov') || RFLAGS_X87_FAMILIES.has(normalizedFamily);
     // Retain #6910's producer-side union discriminator. Capstone omits the
     // FPU group for some stack-register forms (e.g. FSTP ST(0)). FEMMS is the
     // non-x87 3DNow! exception to the decoded f* namespace (#6133).
     const isX87Mnemonic = (normalizedFamily.startsWith('f') && normalizedFamily !== 'femms')
       || normalizedFamily === 'wait';
     const flagsKind = (isFpuGroup || isX87Mnemonic) && !usesRflags ? 'fpu-flags' : 'eflags';
+    const vecPrefix = vectorPrefix(rawBytes);
     const detail = Object.freeze({
       abiContractVersion:ABI.contractVersion,
-      prefixes:Object.freeze({ legacy:legacyPrefixes, rex:u8(M, x86 + 8) || null, vector:vectorPrefix(rawBytes) }),
+      prefixes:Object.freeze({ legacy:legacyPrefixes, rex:u8(M, x86 + 8) || null, vector:vecPrefix }),
       opcodeBytes,
       addressSizeBits:u8(M, x86 + 9) * 8,
       modrm:u8(M, x86 + 10),
@@ -243,7 +319,7 @@
         immediateOffset:u8(M, encoding + 3),
         immediateSize:u8(M, encoding + 4),
       }),
-      unavailableFacts:Object.freeze(vectorPrefix(rawBytes)?.fieldsVerified === false ? ['decoded-vex-evex-bitfields'] : []),
+      unavailableFacts:vecPrefix?.fieldsVerified === false ? VEX_EVEX_UNAVAILABLE_FACTS : EMPTY_UNAVAILABLE_FACTS,
     });
     return Object.freeze({ ...base, detailAvailable:true, detailStatus:'complete', detail });
   }

@@ -249,8 +249,10 @@ function collectJvmControlFlowJoins(bytecode, exceptionTable) {
     const boundary = decodeJvmInstructionBoundary(bytecode, offset);
     if (!boundary.complete || boundary.end <= offset) break;
     const opcode = bytecode[offset];
-    if (opcode >= 0x99 && opcode <= 0xa8) {
+    if ((opcode >= 0x99 && opcode <= 0xa8) || opcode === 0xc6 || opcode === 0xc7) {
       joinOffsets.add(offset + view.getInt16(offset + 1, false));
+    } else if (opcode === 0xc8 || opcode === 0xc9) {
+      joinOffsets.add(offset + view.getInt32(offset + 1, false));
     } else if (opcode === 0xa9) {
       dynamicJump = true;
     } else if (opcode === 0xaa) {
@@ -269,7 +271,7 @@ function collectJvmControlFlowJoins(bytecode, exceptionTable) {
       joinOffsets.add(offset + view.getInt32(pos, false));
       const pairs = view.getInt32(pos + 4, false);
       if (Number.isSafeInteger(pairs) && pairs > 0) {
-        for (let i = 0; i < pairs; i += 1) joinOffsets.add(offset + view.getInt32(pos + 8 + i * 8, false));
+        for (let i = 0; i < pairs; i += 1) joinOffsets.add(offset + view.getInt32(pos + 12 + i * 8, false));
       }
     } else if (opcode === 0xc4 && bytecode[offset + 1] === 0xa9) {
       dynamicJump = true;
@@ -626,7 +628,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           else {
             locationReads.push({ kind: 'local', index: locIdx, bits: 32 });
             locationWrites.push({ kind: 'local', index: locIdx, bits: 32 });
-            producedValues.push({ bits: 32, constant: imm });
+            producedValues.push({ bits: 32, constant: imm, stackNeutral: true });
           }
         }
         break;
@@ -840,9 +842,9 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           });
           consumedValues.push(...signature.consumedValues);
           producedValues.push(...signature.producedValues);
-          // JVMS §6.5: `invokespecial <init>` pops the objectref and pushes that
-          // same objectref back, so the receiver's slot count cancels out and the
-          // arguments leave the stack.
+          // JVMS §6.5: invoke* pops its arguments (and receiver for non-static
+          // calls) and pushes only a non-void return value (`invokespecial <init>`
+          // is void-returning with producedSlots === 0 and producedValues === []).
           currentStackHeight += signature.producedSlots - signature.consumedSlots;
         }
         break;
@@ -981,7 +983,11 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     }
 
     for (let i = 0; i < consumedValues.length; i += 1) stackCategories.pop();
-    for (const value of producedValues) stackCategories.push(jvmProducedValueCategory(value));
+    if (opcode !== 0x84) {
+      for (const value of producedValues) {
+        if (!value?.stackNeutral) stackCategories.push(jvmProducedValueCategory(value));
+      }
+    }
     if (completeness !== 'exact') stackModelTrusted = false;
     if (controlEffects.some((effect) =>
       effect?.kind === 'branch' || effect?.kind === 'return' || effect?.kind === 'throw')) {

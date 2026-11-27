@@ -180,10 +180,24 @@ export function createAgentTools(context, opts = {}) {
   const ctx = context || {};
   const models = new Map();
   const wrapped = { ...ctx };
+  const modelKey = (value) => {
+    const addr = asAddress(value);
+    if (addr == null) return null;
+    if (wrapped.program && typeof wrapped.program.functionRange === 'function') {
+      try {
+        const range = wrapped.program.functionRange(addr);
+        if (range && range.start != null) {
+          const start = asAddress(range.start);
+          if (start != null) return start.toString();
+        }
+      } catch { /* fall back to the raw address key */ }
+    }
+    return addr.toString();
+  };
   if (typeof ctx.analyze === 'function') {
     wrapped.analyze = async (address, end) => {
       const model = await ctx.analyze(address, end);
-      const key = asAddress(address)?.toString();
+      const key = modelKey(address);
       if (key != null) models.set(key, model);
       return model;
     };
@@ -228,6 +242,7 @@ export function createAgentTools(context, opts = {}) {
   const originalCallees = tools.get_callees;
   tools.get_callees = async (address, options) => {
     const addr = asAddress(address);
+    if (addr == null) throw new AgentToolError('invalid-argument', 'get_callees requires a valid address', { field: 'address' });
     let range = null;
     // Let the core report an unavailable Program query when no Program was
     // supplied.  A missing range on an existing Program remains a distinct
@@ -251,7 +266,7 @@ export function createAgentTools(context, opts = {}) {
     const original = tools[name];
     tools[name] = async (address, ...args) => {
       const result = await original(address, ...args);
-      const key = asAddress(address)?.toString();
+      const key = modelKey(address);
       const reason = key == null ? null : semanticSourceReason(models.get(key));
       return reason ? forceIncomplete(result, reason) : result;
     };
@@ -308,7 +323,14 @@ export function createAgentTools(context, opts = {}) {
       if (await proveExactLimitComplete(name, args, result, scope)) result = markExactComplete(result);
       if (scope.scopeTruncated) result = { ...forceIncomplete(result, 'function-budget'), scopeTruncated:true, scopedFunctions:scope.addresses.length };
       else {
-        const reason = scope.addresses.map((addr) => semanticSourceReason(models.get(addr.toString()))).find(Boolean) ?? null;
+        const usesCustomExplain = name === 'explain_evidence' && typeof ctx.explainEvidence === 'function';
+        const stoppedByLimit = result && result.complete === false && result.reason === 'result-limit';
+        const reason = usesCustomExplain ? null : scope.addresses.map((addr) => {
+          const key = modelKey(addr);
+          if (key == null) return null;
+          if (stoppedByLimit && !models.has(key)) return null;
+          return semanticSourceReason(models.get(key));
+        }).find(Boolean) ?? null;
         if (reason) result = forceIncomplete(result, reason);
         result = { ...result, scopeTruncated:false, scopedFunctions:scope.addresses.length };
       }

@@ -23,7 +23,7 @@ function createSnapshotStorage() {
       key += `${kind}:${values.length}:[`;
       for (const value of values) {
         if (typeof value === 'string' && value.length > 2048
-            || typeof value === 'bigint' && value >= (1n << 1024n)) return snapshot;
+            || typeof value === 'bigint' && (value >= (1n << 1024n) || value <= -(1n << 1024n))) return snapshot;
         // Length-prefix primitive text directly. JSON serialization could
         // execute an inherited toJSON hook on the encoding's own arrays.
         const text = Object.is(value, -0) ? '-0' : String(value);
@@ -106,11 +106,32 @@ function validateRule(rule) {
   return Object.freeze({ cost: () => 0, repeatability: 'fixed-point', ...rule });
 }
 
+function buildPhaseGroups(rules) {
+  const byPhase = new Map();
+  for (const rule of rules) {
+    let group = byPhase.get(rule.phase);
+    if (!group) {
+      group = [];
+      byPhase.set(rule.phase, group);
+    }
+    group.push(rule);
+  }
+  const groups = [];
+  for (const [phase, phaseRules] of byPhase.entries()) {
+    groups.push(Object.freeze({ phase, rules: Object.freeze(phaseRules) }));
+  }
+  return Object.freeze(groups);
+}
+
 export class RewriteEngine {
   #snapshotStorage = createSnapshotStorage();
+  #rulesSnapshot;
+  #phaseGroups;
 
   constructor(rules = [], budget = {}) {
     this.rules = rules.map(validateRule);
+    this.#rulesSnapshot = this.rules;
+    this.#phaseGroups = buildPhaseGroups(this.rules);
     this.budget = { ...DEFAULT_REWRITE_BUDGET, ...budget };
     this.budget.timeBudgetMs = validTimeBudgetMs(this.budget.timeBudgetMs, DEFAULT_REWRITE_BUDGET.timeBudgetMs);
     this.budget.maxIterations = validWorkLimit(this.budget.maxIterations, DEFAULT_REWRITE_BUDGET.maxIterations);
@@ -146,8 +167,8 @@ export class RewriteEngine {
     const proof = [];
     const stats = { iterations: 0, applications: 0, budgetExceeded: false,
       workBudgetExceeded: false, deadlineExceeded: false, externalAbort: false,
-      elapsedMs: 0, byRule: {} };
-    const phases = [...new Set(this.rules.map((r) => r.phase))];
+      elapsedMs: 0, byRule: Object.create(null) };
+    const phaseGroups = this.rules === this.#rulesSnapshot ? this.#phaseGroups : buildPhaseGroups(this.rules);
     let current = root;
     let deadlineChecks = 0;
 
@@ -192,6 +213,12 @@ export class RewriteEngine {
       return reason ? markBudgetExceeded(reason) : false;
     };
 
+    const overNonCountBudget = (forceDeadlineCheck = false) => {
+      if (stats.applications >= this.budget.maxApplications) return markBudgetExceeded('work-budget');
+      const reason = deadlineFailure(forceDeadlineCheck);
+      return reason ? markBudgetExceeded(reason) : false;
+    };
+
     const visitIterative = (rootNode, rules) => {
       if (!rootNode) return rootNode;
       const rewritten = new Map();
@@ -201,7 +228,10 @@ export class RewriteEngine {
         const frame = stack.pop();
         const n = frame.n;
         if (!n || rewritten.has(n)) continue;
-        if (overBudget(n)) { stats.budgetExceeded = true; rewritten.set(n, n); continue; }
+        // `overBudget(current, true)` already verified `nodeCount(rootNode) <= nodeBudget`.
+        // Every unmodified subtree `n` satisfies `Reach(n) <= Reach(rootNode)`, so
+        // `nodeCount(n) <= nodeBudget` holds without re-walking `n`.
+        if (stats.budgetExceeded || overNonCountBudget()) { stats.budgetExceeded = true; rewritten.set(n, n); break; }
         if (!frame.exit) {
           if (active.has(n)) { rewritten.set(n, n); continue; }
           active.add(n);
@@ -211,7 +241,13 @@ export class RewriteEngine {
           continue;
         }
 
-        let candidate = mapChildren(n, (child) => rewritten.get(child) || child);
+        const kids = children(n);
+        let childrenChanged = false;
+        for (let i = 0; i < kids.length; i++) {
+          const c = kids[i];
+          if (c && rewritten.get(c) && rewritten.get(c) !== c) { childrenChanged = true; break; }
+        }
+        let candidate = childrenChanged ? mapChildren(n, (child) => rewritten.get(child) || child) : n;
         // The node-budget check is a pure function of the candidate subtree, but
         // the loop below consulted it once per rule over the same unchanged
         // candidate. Count once per distinct candidate instead: same work bound,
@@ -221,8 +257,10 @@ export class RewriteEngine {
         // `candidate` in place; `candidateCount` is cleared whenever the loop
         // replaces `candidate` with a rule's `next`.
         let candidateCount = null;
+        let candidateKnownWithinBudget = !childrenChanged;
         const overCandidateWork = () => {
           if (stats.applications >= this.budget.maxApplications) return true;
+          if (candidateKnownWithinBudget) return false;
           if (candidateCount == null) candidateCount = nodeCount(candidate, new Set(), this.budget.nodeBudget);
           return candidateCount > this.budget.nodeBudget;
         };
@@ -252,6 +290,7 @@ export class RewriteEngine {
           stats.byRule[rule.name] = (stats.byRule[rule.name] || 0) + 1;
           candidate = next;
           candidateCount = null;
+          candidateKnownWithinBudget = false;
           if (rule.repeatability === 'once') break;
         }
         rewritten.set(n, candidate);
@@ -260,8 +299,7 @@ export class RewriteEngine {
       return rewritten.get(rootNode) || rootNode;
     };
 
-    for (const phase of phases) {
-      const rules = this.rules.filter((r) => r.phase === phase);
+    for (const { rules } of phaseGroups) {
       let iterations = 0, fixedPoint = false;
       while (iterations < this.budget.maxIterations) {
         // Check once at each fixed-point iteration so a single expensive rule
@@ -271,10 +309,13 @@ export class RewriteEngine {
         if (overBudget(current, true)) { stats.budgetExceeded = true; break; }
         iterations++;
         stats.iterations++;
-        const before = structuralKey(current);
+        const appsBefore = stats.applications;
+        const prevRoot = current;
         current = visitIterative(current, rules);
-        const after = structuralKey(current);
-        if (before === after) { fixedPoint = true; break; }
+        if (stats.applications === appsBefore || structuralKey(prevRoot) === structuralKey(current)) {
+          fixedPoint = true;
+          break;
+        }
         if (stats.budgetExceeded) break;
       }
       if (stats.budgetExceeded) break;
@@ -323,6 +364,12 @@ export class RewriteHistoryJournal {
   }
 
   mark() { return { length:this.records.length, truncated:this.truncated }; }
-  rollback(mark) { this.records.length = mark.length; this.truncated = mark.truncated; }
+  rollback(mark) {
+    if (!mark || !Number.isInteger(mark.length) || mark.length < 0 || mark.length > this.records.length) {
+      throw new RangeError('rewrite-history-journal-invalid-mark');
+    }
+    this.records.length = mark.length;
+    this.truncated = Boolean(mark.truncated);
+  }
   recordsSince(mark) { return Object.freeze(this.records.slice(mark.length)); }
 }

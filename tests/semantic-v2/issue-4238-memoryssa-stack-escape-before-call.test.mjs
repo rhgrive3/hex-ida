@@ -25,7 +25,7 @@ const unknownCall = (id) => ({
 });
 const spRead = {
   id: 'read_sp', kind: 'state-read', blockId: 'entry', inputs: [], outputs: ['v_sp'],
-  variable: { key: 'phys.sp', kind: 'physical-state', scope: 'function', physicalIdentity: { kind: 'register', registerId: 'sp' } },
+  variable: { key: 'phys.fp', kind: 'physical-state', scope: 'function', physicalIdentity: { kind: 'register', registerId: 'fp' } },
   origin: origin('read_sp'),
 };
 const const8 = { id: 'const_8', kind: 'const', blockId: 'entry', operator: 'const', inputs: [], outputs: ['v_c8'], attributes: { bitvectorValue: { kind: 'bitvector', widthBits: 64, value: 8n } }, origin: origin('const_8') };

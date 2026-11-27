@@ -10,6 +10,7 @@ import { buildRenderProvenance } from './decompiler/phase8/render-provenance.js'
 import { applyDecompilerProfile } from './decompiler/profiles.js';
 import { closeFunctionOutput } from './decompiler/c-output-closure.js';
 import { eliminateAvoidableGotos } from './decompiler/goto-closure.js';
+import { lowerArm64RawAssembly } from './decompiler/arm64-extra-semantics.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
@@ -31,10 +32,13 @@ function asmCount(result) {
 
 function normalizeCompatibility(result) {
   if (!result) return result;
+  let changed = false;
   for (const l of result.lines || []) {
+    const before = l?.text;
     normalizeProjectedCompatibilityLine(l, result.ir);
+    if (l?.text !== before) changed = true;
   }
-  if (result.semantic) result.pseudocode = textOf(result.lines);
+  if (result.semantic && (changed || !result.pseudocode)) result.pseudocode = textOf(result.lines);
   return result;
 }
 
@@ -61,20 +65,45 @@ function augmentLegacy(fallback, reason, semantic = null) {
 
 function finalize(result, model, opts) {
   opts = applyDecompilerProfile(opts);
-  result = normalizeCompatibility(structureKnownSwitches(result, model, opts));
-  if (result?.semantic) result = enhanceSemanticDecompilation(result, model, { ...opts, renderProvenance:true });
+  result = structureKnownSwitches(result, model, opts);
   result = normalizeCompatibility(result);
-  if (!result?.semantic && result?.switchRenderHistory) {
+  let deferredProvenance = false;
+  let deferredSnapshotId = null;
+  if (result?.semantic) {
+    result = enhanceSemanticDecompilation(result, model, {
+      ...opts,
+      renderProvenance: true,
+      deferRenderProvenance: true,
+      _onDeferRenderProvenance: (snapshotId) => {
+        deferredProvenance = true;
+        deferredSnapshotId = snapshotId ?? null;
+      },
+    });
+  }
+  result = normalizeCompatibility(result);
+  const prevLowerings = result?.ctx?.exactArm64FallbackLowerings || 0;
+  result = lowerArm64RawAssembly(result, { ...opts, model });
+  const loweredArm64 = (result?.ctx?.exactArm64FallbackLowerings || 0) > prevLowerings;
+  const closed = closePublicCOutput(result, opts, {
+    forceRefreshProvenance: loweredArm64 || deferredProvenance,
+    deferredProvenance,
+    deferredSnapshotId,
+    model,
+  });
+  if (!closed?.semantic && closed?.switchRenderHistory) {
     // No semantic-mode promotion or invented analysis snapshot for fallback
     // output. Missing snapshot identity remains explicit in the shared map.
-    try { result.renderProvenance = buildRenderProvenance({ result, budget:opts.renderProvenanceBudget, shouldAbort:opts.shouldAbort }); }
+    try { closed.renderProvenance = buildRenderProvenance({ result: closed, budget: opts.renderProvenanceBudget, shouldAbort: opts.shouldAbort }); }
     catch {
-      result.renderProvenance = null;
-      result.expressionHistoryBinding = Object.freeze({ scope:'producer-consumer-observations',
+      closed.renderProvenance = null;
+      closed.expressionHistoryBinding = Object.freeze({ scope:'producer-consumer-observations',
         completeness:'incomplete', reasons:Object.freeze(['switch-map-unavailable']) });
     }
   }
-  return closePublicCOutput(result, opts);
+  if (closed && typeof closed === 'object' && closed.objcSyntax == null) {
+    closed.objcSyntax = opts?.objcSyntax === 'c' ? 'c' : 'objc';
+  }
+  return closed;
 }
 
 /*
@@ -89,25 +118,36 @@ function finalize(result, model, opts) {
  * keys stay aligned with the published lines instead of a shifted pre-closure
  * index space.
  */
-function refreshRenderProvenance(closed, opts) {
+function isAbortError(error) {
+  return Boolean(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR'));
+}
+
+function refreshRenderProvenance(closed, opts, internal = {}) {
   const previous = closed.renderProvenance ?? null;
-  if (!previous) return;
+  if (!previous && !internal.deferredProvenance) return;
+  const snapshotId = internal.deferredProvenance
+    ? (internal.deferredSnapshotId ?? previous?.snapshotId ?? null)
+    : (previous?.snapshotId ?? null);
   try {
     closed.renderProvenance = buildRenderProvenance({
       result: closed,
-      snapshotId: previous.snapshotId ?? null,
+      snapshotId,
       budget: opts.renderProvenanceBudget,
       shouldAbort: opts.shouldAbort,
     });
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     // Keep the previous observation rather than publishing a silently
     // unbound map for the changed line array.
-    closed.renderProvenance = previous;
+    closed.renderProvenance = previous ?? null;
   }
 }
 
-function closePublicCOutput(result, opts = {}) {
-  if (!result?.lines?.length) return result;
+function closePublicCOutput(result, opts = {}, internal = {}) {
+  if (!result?.lines?.length) {
+    if (result && internal.deferredProvenance) refreshRenderProvenance(result, opts, internal);
+    return result;
+  }
   // Provably redundant jumps go first: the declaration closure below must
   // declare storage for the text that will actually be published, and a jump
   // that is gone cannot leave an address nobody reads behind.  Either closure
@@ -120,8 +160,27 @@ function closePublicCOutput(result, opts = {}) {
     shouldAbort: opts.shouldAbort,
     onLinesChanged: noteLinesChanged,
   });
-  const closed = closeFunctionOutput(withoutJumps, { render: textOf, onLinesChanged: noteLinesChanged });
-  if (linesChanged) refreshRenderProvenance(closed, opts);
+  const closureOptions = {
+    ...(opts?.context !== undefined ? { context: opts.context } : {}),
+    ...(opts?.binary !== undefined ? { binary: opts.binary } : {}),
+    ...(opts?.image !== undefined ? { image: opts.image } : {}),
+    ...(opts?.model !== undefined ? { model: opts.model } : internal?.model !== undefined ? { model: internal.model } : {}),
+    ...(opts?.sections !== undefined ? { sections: opts.sections } : {}),
+    ...(opts?.segments !== undefined ? { segments: opts.segments } : {}),
+    ...(opts?.regions !== undefined ? { regions: opts.regions } : {}),
+    ...(opts?.relocations !== undefined ? { relocations: opts.relocations } : {}),
+    ...(opts?.fileBytes !== undefined ? { fileBytes: opts.fileBytes } : {}),
+    ...(opts?.bytes !== undefined ? { bytes: opts.bytes } : {}),
+    ...(opts?.readBytes !== undefined ? { readBytes: opts.readBytes } : {}),
+    ...(opts?.readByte !== undefined ? { readByte: opts.readByte } : {}),
+    ...(opts?.byteAt !== undefined ? { byteAt: opts.byteAt } : {}),
+    ...(opts?.stringFor !== undefined ? { stringFor: opts.stringFor } : {}),
+    ...(opts?.addressRefs !== undefined ? { addressRefs: opts.addressRefs } : {}),
+    render: textOf,
+    onLinesChanged: noteLinesChanged,
+  };
+  const closed = closeFunctionOutput(withoutJumps, closureOptions);
+  if (linesChanged || internal.forceRefreshProvenance) refreshRenderProvenance(closed, opts, internal);
   return closed;
 }
 
@@ -208,6 +267,11 @@ function noteName(opts, addr, key) {
   try { return opts?.notes?.varName?.(addr, key) || null; } catch { return null; }
 }
 
+function sanitizeObjcCIdentPart(value, fallback = 'anon') {
+  const clean = String(value || '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+  return clean || fallback;
+}
+
 /* Keep the Objective-C symbol spelling while hiding implicit self/_cmd ABI args. */
 function restoreObjcMethodSignature(result, model, opts) {
   if (!result?.semantic) return result;
@@ -226,7 +290,17 @@ function restoreObjcMethodSignature(result, model, opts) {
   }
   let returnType = opts.returnType || noteType(opts, addr, 'ret') || result.types?.ret?.type || 'uint64';
   if (!returnType || returnType === 'unknown' || (returnType === 'void' && /\breturn\s+[^;]+;/.test(result.pseudocode || ''))) returnType = 'uint64';
-  const signature = `${returnType} ${method.raw}(${args.length ? args.join(', ') : 'void'})`;
+  let signature;
+  if (opts?.objcSyntax === 'c') {
+    const prefix = method.kind === '+' ? 'objc_cls' : 'objc_inst';
+    const clsPart = sanitizeObjcCIdentPart(method.className, 'Class');
+    const selPart = sanitizeObjcCIdentPart(method.selector, 'sel');
+    const cName = `${prefix}_${clsPart}_${selPart}`;
+    const cArgs = ['id self', 'void * _cmd', ...args];
+    signature = `${returnType} ${cName}(${cArgs.join(', ')})`;
+  } else {
+    signature = `${returnType} ${method.raw}(${args.length ? args.join(', ') : 'void'})`;
+  }
   result.signature = signature;
   const sig = result.lines?.find((l) => l.kind === 'sig');
   if (sig) sig.text = signature;
@@ -374,8 +448,13 @@ function ensureLegacyLabel(lines, row, label, address) {
       && (functionIndent == null || (l.indent ?? 0) === functionIndent));
   }
   if (at < 0) at = Math.min(floor, lines.length);
-  const indent = Math.max(1, lines[at]?.indent || 1);
-  lines.splice(at, 0, { kind: 'label', indent, text: `${label}:`, row, addr: address, note: null });
+  const targetLine = lines[at];
+  const indent = Math.max(1, targetLine?.indent || 1);
+  const insertItems = [{ kind: 'label', indent, text: `${label}:`, row, addr: address, note: null }];
+  if (targetLine?.kind === 'ctrl' && targetLine?.text === '}') {
+    insertItems.push({ kind: 'stmt', indent: indent + 1, text: ';', row, addr: address, note: null });
+  }
+  lines.splice(at, 0, ...insertItems);
 }
 
 export function ensureLegacyLabelForTesting(lines, row, label, address = null) {
@@ -462,9 +541,61 @@ function exactExceptionAssemblyLines(model, block) {
  * the separation explicit and prevent catch code from looking like normal code
  * that executes after a return.
  */
-function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, classification) {
+function cloneLegacyResult(legacy) {
+  if (!legacy) return legacy;
+  return {
+    ...legacy,
+    lines: Array.isArray(legacy.lines) ? legacy.lines.map((l) => ({ ...l })) : [],
+    warnings: Array.isArray(legacy.warnings) ? legacy.warnings.slice() : [],
+    evidence: Array.isArray(legacy.evidence) ? legacy.evidence.slice() : [],
+    ctx: legacy.ctx ? { ...legacy.ctx } : legacy.ctx,
+    coverage: legacy.coverage ? { ...legacy.coverage } : legacy.coverage,
+  };
+}
+
+function hasBalancedBraces(lines) {
+  const src = (lines || []).map((l) => String(l?.text || '')).join('\n');
+  let depth = 0;
+  let inStr = null;
+  let inLineComment = false;
+  let inBlockComment = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    const next = src[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') { inBlockComment = false; i++; }
+      continue;
+    }
+    if (inStr) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+    if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+    if (ch === '"' || ch === "'") { inStr = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth < 0) return false;
+    }
+  }
+  return depth === 0;
+}
+
+export function hasBalancedBracesForTesting(lines) {
+  return hasBalancedBraces(lines);
+}
+
+function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, classification, getLegacy) {
   if (!classification.components.length || !classification.allException) return null;
-  const legacy = legacyDecompile(model, opts);
+  const closeCheck = semantic.lines?.findLastIndex?.((l) => l.kind === 'ctrl' && l.text === '}') ?? -1;
+  if (closeCheck < 0) return null;
+  const legacy = getLegacy ? getLegacy({ readOnly: true }) : legacyDecompile(model, opts);
   const detachedBlocks = new Set(classification.components.flatMap((c) => c.blocks));
   const regionLines = [];
 
@@ -476,10 +607,12 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
     for (const block of blocks) {
       const rows = componentRows(semantic.ir, [block.index]);
       let rendered = (legacy.lines || []).filter((l) =>
-        l.kind !== 'sig' && !(l.kind === 'ctrl' && (l.text === '{' || l.text === '}')) && l.kind !== 'label' && lineBelongsToRows(l, rows, opts));
-      if (!rendered.length && block.endRow >= block.startRow) {
+        l.kind !== 'sig' && !(l.kind === 'ctrl' && (l.indent ?? 0) === 0 && (l.text === '{' || l.text === '}')) && l.kind !== 'label' && lineBelongsToRows(l, rows, opts));
+      if ((!rendered.length || !hasBalancedBraces(rendered)) && block.endRow >= block.startRow) {
         rendered = exactExceptionAssemblyLines(model, block);
         if (!rendered.length) return null; // never silently omit an EH block
+      } else if (rendered.length && !hasBalancedBraces(rendered)) {
+        return null;
       }
       regionLines.push({
         kind: 'label', indent: 1,
@@ -487,21 +620,32 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
         row: block.startRow, addr: blockAddress(semantic, semanticModel, opts, block.index), note: null,
       });
       for (const l of rendered) regionLines.push({ ...l, indent: Math.max(2, l.indent || 1) });
+      if (rendered.every((l) => l.kind === 'comment' || !String(l.text || '').trim())) {
+        regionLines.push({ kind: 'stmt', indent: 2, text: ';', row: block.startRow, addr: blockAddress(semantic, semanticModel, opts, block.index), note: null });
+      }
     }
   }
 
   // A landing pad may branch into the ordinary ARC cleanup tail. Those targets
   // need an explicit label in the semantic body so every preserved goto lands.
+  // Snapshot semantic.lines so a later failure rolls back any inserted labels.
+  const savedLines = semantic.lines.slice();
   for (const bi of detachedBlocks) {
     for (const succ of semantic.ir.blocks[bi]?.succ || []) {
       if (!detachedBlocks.has(succ) && classification.reachable.has(succ)) {
-        if (!ensureSemanticLabel(semantic, semanticModel, opts, succ)) return null;
+        if (!ensureSemanticLabel(semantic, semanticModel, opts, succ)) {
+          semantic.lines = savedLines;
+          return null;
+        }
       }
     }
   }
 
   const close = semantic.lines?.findLastIndex?.((l) => l.kind === 'ctrl' && l.text === '}') ?? -1;
-  if (close < 0) return null;
+  if (close < 0) {
+    semantic.lines = savedLines;
+    return null;
+  }
   semantic.lines.splice(close, 0,
     { kind: 'comment', indent: 1, text: '/* Exception landing pads — entered only by runtime unwinding. */', row: null, addr: null, note: null },
     ...regionLines,
@@ -535,9 +679,12 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
  * old false-loop bug without replacing an otherwise translatable function with
  * raw assembly.
  */
-function legacyWithIrCleanupEdges(model, semanticModel, opts, semantic, edges) {
+function legacyWithIrCleanupEdges(model, semanticModel, opts, semantic, edges, getLegacy) {
+  if (!edges.every((edge) => (edge.from.succ || []).length === 1 && edge.from.insts?.at(-1) && edge.to.insts?.[0])) {
+    return null;
+  }
   const fallback = augmentLegacy(
-    legacyDecompile(model, opts),
+    getLegacy ? getLegacy() : legacyDecompile(model, opts),
     'A backward control-flow edge is not a proven natural loop; Semantic IR supplies the shared-cleanup goto/label edge while legacy rendering handles statements.',
     semantic,
   );
@@ -553,24 +700,38 @@ function legacyWithIrCleanupEdges(model, semanticModel, opts, semantic, edges) {
   return fallback;
 }
 
-function preferLegacyForUnsupported(model, opts, semantic) {
+function preferLegacyForUnsupported(model, opts, semantic, getLegacy) {
   const unsupported = semantic?.ctx?.unknownInstructions || 0;
   if (!unsupported) return semantic;
-  if (asmCount(semantic) === 0) return semantic;
+  const semanticAsm = asmCount(semantic);
+  if (semanticAsm === 0) return semantic;
   const legacy = augmentLegacy(
-    legacyDecompile(model, opts),
+    getLegacy ? getLegacy() : legacyDecompile(model, opts),
     `Semantic IR has ${unsupported} unsupported instruction(s); only this unsupported function uses the isolated legacy expression fallback.`,
     semantic,
   );
   // The legacy path is a fallback, not an unconditional preference. If it is
   // actually less faithful (more raw assembly), keep the Semantic IR result.
-  return asmCount(legacy) < asmCount(semantic) ? legacy : semantic;
+  return asmCount(legacy) < semanticAsm ? legacy : semantic;
 }
 
 export function decompile(model, opts = {}) {
-  if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) return legacyDecompile(model, opts);
+  if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) {
+    return finalize(legacyDecompile(model, opts), model, opts);
+  }
   const semanticModel = semanticModelForDecompiler(model);
   const semanticOpts = semanticOptionsForModel(semanticModel, opts);
+  let cachedLegacy = null;
+  const getLegacy = ({ readOnly = false, consume = false } = {}) => {
+    if (!cachedLegacy) cachedLegacy = legacyDecompile(model, opts);
+    if (readOnly) return cachedLegacy;
+    if (consume) {
+      const owned = cachedLegacy;
+      cachedLegacy = null;
+      return owned;
+    }
+    return cloneLegacyResult(cachedLegacy);
+  };
   try {
     let result = decompileSemantic(semanticModel, semanticOpts);
     if (result) {
@@ -579,18 +740,18 @@ export function decompile(model, opts = {}) {
       if (total > reachable) {
         const detached = detachedExceptionComponents(result, semanticModel, semanticOpts);
         if (detached.allException && detached.components.length) {
-          const mixed = graftDetachedExceptionRegions(model, semanticModel, semanticOpts, result, detached);
+          const mixed = graftDetachedExceptionRegions(model, semanticModel, semanticOpts, result, detached, getLegacy);
           if (mixed) result = mixed;
           else {
             return finalize(augmentLegacy(
-              legacyDecompile(model, opts),
+              getLegacy({ consume: true }),
               `Semantic IR covers ${reachable}/${total} Basic Blocks; detached exception regions could not be preserved losslessly, so the isolated faithful fallback was used.`,
               result,
             ), model, opts);
           }
         } else {
           return finalize(augmentLegacy(
-            legacyDecompile(model, opts),
+            getLegacy({ consume: true }),
             `Semantic IR covers ${reachable}/${total} Basic Blocks; disconnected or indirect targets use the isolated faithful fallback.`,
             result,
           ), model, opts);
@@ -599,11 +760,11 @@ export function decompile(model, opts = {}) {
 
       const cleanupEdges = nonNaturalBackwardEdges(result);
       if (cleanupEdges.length) {
-        const mixed = legacyWithIrCleanupEdges(model, semanticModel, semanticOpts, result, cleanupEdges);
+        const mixed = legacyWithIrCleanupEdges(model, semanticModel, semanticOpts, result, cleanupEdges, getLegacy);
         if (mixed) return finalize(mixed, semanticModel, semanticOpts);
       }
 
-      result = preferLegacyForUnsupported(model, semanticOpts, result);
+      result = preferLegacyForUnsupported(model, semanticOpts, result, getLegacy);
       if (!result.semantic) return finalize(result, semanticModel, semanticOpts);
 
       result = repairCanonicalPostTestLoop(result, (bi) => blockAddress(result, semanticModel, semanticOpts, bi));
@@ -615,10 +776,11 @@ export function decompile(model, opts = {}) {
       return finalize(result, semanticModel, semanticOpts);
     }
   } catch (error) {
+    if (isAbortError(error)) throw error;
     return finalize(augmentLegacy(
-      legacyDecompile(model, opts),
+      getLegacy({ consume: true }),
       `Semantic IR decompiler fallback: ${error && error.message ? error.message : 'unknown error'}`,
     ), model, opts);
   }
-  return finalize(augmentLegacy(legacyDecompile(model, opts), 'Semantic IR is unavailable for this function.'), model, opts);
+  return finalize(augmentLegacy(getLegacy({ consume: true }), 'Semantic IR is unavailable for this function.'), model, opts);
 }

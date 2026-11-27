@@ -22,8 +22,12 @@ function finiteListMax(value, fallback = 50000) {
   return value;
 }
 
+function isCanonicalAddress(value) {
+  return typeof value === 'bigint' && value >= 0n;
+}
+
 function canonicalAddressKey(value) {
-  return typeof value === 'bigint' && value >= 0n ? value.toString() : null;
+  return isCanonicalAddress(value) ? value.toString() : null;
 }
 
 function canonicalMetadataAddress(value) {
@@ -44,21 +48,10 @@ export class SymbolIndex {
   static canonicalizeFunctionStarts(raw) {
     if (raw == null) return new BigUint64Array(0);
     if (raw instanceof BigUint64Array) return raw;
-    const canonicalElement = (value) => {
-      if (typeof value === 'bigint') return value;
-      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
-      if (typeof value === 'string') {
-        const text = value.trim();
-        if (/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(text)) {
-          try { return BigInt(text); } catch { return null; }
-        }
-      }
-      return null;
-    };
     if (Array.isArray(raw)) {
       const out = new BigUint64Array(raw.length);
       for (let index = 0; index < raw.length; index++) {
-        const canonical = canonicalElement(raw[index]);
+        const canonical = canonicalMetadataAddress(raw[index]);
         if (canonical == null) throw new TypeError('symbol-function-start-transport-invalid');
         out[index] = canonical;
       }
@@ -203,11 +196,21 @@ export class SymbolIndex {
     return best;
   }
 
+  /** addr 以上で最初の添字。なければ arr.length。 */
+  _lowerBound(arr, addr) {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (arr[mid] < addr) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
   /** ちょうどそのアドレスに付いた名前。なければ null。 */
   exact(addr) {
-    const k = canonicalAddressKey(addr);
-    if (k == null) return null;
-    const mine = this.renames.size ? this.renames.get(k) : null;
+    if (!isCanonicalAddress(addr)) return null;
+    const mine = this.renames.size ? this.renames.get(addr.toString()) : null;
     if (mine) return { name: mine, addr, kind: SYM_DEFINED, mine: true };
     const i = this._floor(this.addrs, addr);
     if (i < 0 || this.addrs[i] !== addr) return null;
@@ -224,7 +227,7 @@ export class SymbolIndex {
    * Rename は元 symbol table に無い関数にも付くため、rename index も同時に検索する。
    */
   nearest(addr, within = 0x40000n) {
-    if (canonicalAddressKey(addr) == null) return null;
+    if (!isCanonicalAddress(addr)) return null;
     const symbolIndex = this._floor(this.addrs, addr);
     const renameIndex = this._floor(this._renameAddrs, addr);
 
@@ -355,10 +358,16 @@ export class SymbolIndex {
    * 末尾関数など次が無い場合は null。
    */
   nextFunctionStart(addr) {
-    const i = this._floor(this.funcs, addr);
-    if (i < 0 || i + 1 >= this.funcs.length) return null;
-    const next = this.funcs[i + 1];
-    return next > addr ? next : null;
+    if (!isCanonicalAddress(addr)) return null;
+    const nextIndex = this._floor(this.funcs, addr) + 1;
+    if (nextIndex >= this.funcs.length) return null;
+    const next = this.funcs[nextIndex];
+    if (next <= addr) return null;
+    if (this.functionRegions.length) {
+      const region = this._functionRegion(addr);
+      if (!region || this._functionRegion(next) !== region) return null;
+    }
+    return next;
   }
 
   /**
@@ -475,16 +484,24 @@ export class SymbolIndex {
     const out = [];
     const lo = region ? BigInt(region.vmAddr) : 0n;
     const hi = region ? lo + BigInt(region.size) : null;
-    for (let i = 0; i < this.funcs.length && out.length < resultMax; i++) {
+    const startIdx = region ? this._lowerBound(this.funcs, lo) : 0;
+    let symIdx = region ? this._lowerBound(this.addrs, lo) : 0;
+    const addrs = this.addrs;
+    const addrsLen = addrs.length;
+    const hasRenames = this.renames.size > 0;
+    for (let i = startIdx; i < this.funcs.length && out.length < resultMax; i++) {
       const a = this.funcs[i];
-      if (a < lo) continue;
       if (hi != null && a >= hi) break;
       const trustedEnd = this._functionEnd(i);
       const end = trustedEnd != null && (hi == null || trustedEnd <= hi) ? trustedEnd : null;
-      const e = this.exact(a);
+      let name = hasRenames ? (this.renames.get(a.toString()) || null) : null;
+      if (!name) {
+        while (symIdx < addrsLen && addrs[symIdx] < a) symIdx++;
+        if (symIdx < addrsLen && addrs[symIdx] === a) name = this.names[symIdx];
+      }
       out.push({
         addr: a,
-        name: e ? e.name : null,
+        name,
         size: end != null && end > a ? end - a : null,
       });
     }
@@ -497,9 +514,10 @@ export class SymbolIndex {
     const out = [];
     const lo = region ? BigInt(region.vmAddr) : null;
     const hi = region ? lo + BigInt(region.size) : null;
-    for (let i = 0; i < this.addrs.length && out.length < resultMax; i++) {
+    const startIdx = lo != null ? this._lowerBound(this.addrs, lo) : 0;
+    for (let i = startIdx; i < this.addrs.length && out.length < resultMax; i++) {
       const a = this.addrs[i];
-      if (lo != null && (a < lo || a >= hi)) continue;
+      if (hi != null && a >= hi) break;
       if (kind != null && this.kinds[i] !== kind) continue;
       out.push({ addr: a, name: this.names[i], kind: this.kinds[i], exported: this.isExported(i) });
     }
@@ -514,32 +532,48 @@ export class SymbolIndex {
    */
   addNames(entries, provenance = { source: 'metadata', confidence: 0.9, confirmed: true }) {
     if (!entries || !entries.length) return 0;
-    const have = new Set();
-    for (let i = 0; i < this.addrs.length; i++) have.add(this.addrs[i]);
+    const oldAddrs = this.addrs;
+    const oldKinds = this.kinds;
+    const oldFlags = this.flags;
+    const oldNames = this.names;
+    const oldLen = oldAddrs.length;
+    const freshSet = new Set();
     const fresh = [];
     for (const e of entries) {
       if (!e || e.addr == null || !e.name) continue;
       const addr = canonicalMetadataAddress(e.addr);
-      if (addr == null || have.has(addr)) continue;
-      have.add(addr);
+      if (addr == null || freshSet.has(addr)) continue;
+      const existingIdx = oldLen ? this._floor(oldAddrs, addr) : -1;
+      if (existingIdx >= 0 && oldAddrs[existingIdx] === addr) continue;
+      freshSet.add(addr);
       fresh.push({ addr, name: e.name, provenance: e.provenance });
     }
     if (!fresh.length) return 0;
 
-    const merged = [];
-    for (let i = 0; i < this.addrs.length; i++) {
-      merged.push({ addr: this.addrs[i], name: this.names[i], kind: this.kinds[i], ext: this.flags[i] });
+    fresh.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
+    const total = oldLen + fresh.length;
+    const addrs = new BigUint64Array(total);
+    const kinds = new Uint8Array(total);
+    const flags = new Uint8Array(total);
+    const names = new Array(total);
+    let oi = 0, fi = 0, wi = 0;
+    while (oi < oldLen && fi < fresh.length) {
+      if (oldAddrs[oi] < fresh[fi].addr) {
+        addrs[wi] = oldAddrs[oi]; kinds[wi] = oldKinds[oi]; names[wi] = oldNames[oi]; flags[wi] = oldFlags[oi] || 0;
+        oi++;
+      } else {
+        addrs[wi] = fresh[fi].addr; kinds[wi] = SYM_DEFINED; names[wi] = fresh[fi].name; flags[wi] = 0;
+        fi++;
+      }
+      wi++;
     }
-    for (const e of fresh) merged.push({ addr: e.addr, name: e.name, kind: SYM_DEFINED, ext: 0 });
-    merged.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
-
-    const addrs = new BigUint64Array(merged.length);
-    const kinds = new Uint8Array(merged.length);
-    const flags = new Uint8Array(merged.length);
-    const names = new Array(merged.length);
-    for (let i = 0; i < merged.length; i++) {
-      addrs[i] = merged[i].addr; kinds[i] = merged[i].kind; names[i] = merged[i].name;
-      flags[i] = merged[i].ext || 0;
+    while (oi < oldLen) {
+      addrs[wi] = oldAddrs[oi]; kinds[wi] = oldKinds[oi]; names[wi] = oldNames[oi]; flags[wi] = oldFlags[oi] || 0;
+      oi++; wi++;
+    }
+    while (fi < fresh.length) {
+      addrs[wi] = fresh[fi].addr; kinds[wi] = SYM_DEFINED; names[wi] = fresh[fi].name; flags[wi] = 0;
+      fi++; wi++;
     }
     this.addrs = addrs; this.kinds = kinds; this.names = names; this.flags = flags;
     for (const e of fresh) this.nameProvenance.set(e.addr.toString(), { ...provenance, ...(e.provenance || {}) });
@@ -553,15 +587,9 @@ export class SymbolIndex {
    */
   addFunctions(list, provenance = { source: 'metadata', confidence: 0.7, confirmed: false }) {
     if (!list || !list.length) return 0;
-    const have = new Set();
-    const exactEnds = new Map();
-    for (let i = 0; i < this.funcs.length; i++) {
-      const start = this.funcs[i];
-      have.add(start);
-      const end = this.funcEnds && i < this.funcEnds.length ? this.funcEnds[i] : null;
-      if (end != null && end > start) exactEnds.set(start.toString(), end);
-    }
-    const all = Array.from(have);
+    const oldFuncs = this.funcs;
+    const oldEnds = this.funcEnds;
+    const oldLen = oldFuncs.length;
     // Scanner guesses cannot split an already-proven function body. Keep
     // independent confirmed metadata and explicit topology refinement separate.
     // Prefix maxima also cover overlapping source extents without a quadratic
@@ -569,36 +597,60 @@ export class SymbolIndex {
     const coveredEnds = [];
     let coveredEnd = 0n;
     if (provenance.source === 'heuristic' && provenance.confirmed !== true) {
-      for (let i = 0; i < this.funcs.length; i++) {
+      for (let i = 0; i < oldLen; i++) {
         const end = this._functionEnd(i);
         if (end != null && end > coveredEnd) coveredEnd = end;
         coveredEnds.push(coveredEnd);
       }
     }
-    let added = 0;
+    const freshSet = new Set();
+    const fresh = [];
     for (const a of list) {
       if (a == null) continue;
       const addr = canonicalMetadataAddress(a);
-      if (addr == null || have.has(addr)) continue;
-      const owner = coveredEnds.length ? this._floor(this.funcs, addr) : -1;
+      if (addr == null || freshSet.has(addr)) continue;
+      const existingIdx = oldLen ? this._floor(oldFuncs, addr) : -1;
+      if (existingIdx >= 0 && oldFuncs[existingIdx] === addr) continue;
+      const owner = coveredEnds.length ? existingIdx : -1;
       if (owner >= 0 && addr < coveredEnds[owner]) continue;
-      have.add(addr); all.push(addr); added++;
+      freshSet.add(addr); fresh.push(addr);
       this.functionProvenance.set(addr.toString(), { ...provenance });
     }
-    if (!added) return 0;
-    all.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
-    const out = new BigUint64Array(all.length);
-    const ends = new BigUint64Array(all.length);
+    if (!fresh.length) return 0;
+    fresh.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+    const total = oldLen + fresh.length;
+    const out = new BigUint64Array(total);
+    const ends = new BigUint64Array(total);
     let hasExactEnd = false;
-    for (let i = 0; i < all.length; i++) {
-      out[i] = all[i];
-      const end = exactEnds.get(all[i].toString());
-      if (end != null) { ends[i] = end; hasExactEnd = true; }
+    let oi = 0, fi = 0, wi = 0;
+    while (oi < oldLen && fi < fresh.length) {
+      if (oldFuncs[oi] < fresh[fi]) {
+        const start = oldFuncs[oi];
+        out[wi] = start;
+        const end = oldEnds && oi < oldEnds.length ? oldEnds[oi] : 0n;
+        if (end > start) { ends[wi] = end; hasExactEnd = true; }
+        oi++;
+      } else {
+        out[wi] = fresh[fi];
+        fi++;
+      }
+      wi++;
+    }
+    while (oi < oldLen) {
+      const start = oldFuncs[oi];
+      out[wi] = start;
+      const end = oldEnds && oi < oldEnds.length ? oldEnds[oi] : 0n;
+      if (end > start) { ends[wi] = end; hasExactEnd = true; }
+      oi++; wi++;
+    }
+    while (fi < fresh.length) {
+      out[wi] = fresh[fi];
+      fi++; wi++;
     }
     this.funcs = out;
     this.funcEnds = hasExactEnd ? ends : null;
     this.gen = ++SymbolIndex.gen;
-    return added;
+    return fresh.length;
   }
 
   /**
@@ -617,59 +669,79 @@ export class SymbolIndex {
    */
   applyFunctionTopologyRefinement(additions, provenance = { source: 'noreturn-continuation-refinement', confidence: 0.6, confirmed: false }) {
     const list = Array.isArray(additions) ? additions : [];
-    const have = new Set();
-    for (const start of this.funcs) have.add(start.toString());
+    const oldFuncs = this.funcs;
+    const oldEnds = this.funcEnds;
+    const oldLen = oldFuncs.length;
+    const freshSet = new Set();
     const canonical = [];
     for (const raw of list) {
       const value = raw && typeof raw === 'object' ? (raw.start ?? raw.address) : raw;
       const addr = canonicalMetadataAddress(value);
-      if (addr == null || have.has(addr.toString())) continue;
-      have.add(addr.toString());
+      if (addr == null || freshSet.has(addr)) continue;
+      const existingIdx = oldLen ? this._floor(oldFuncs, addr) : -1;
+      if (existingIdx >= 0 && oldFuncs[existingIdx] === addr) continue;
+      freshSet.add(addr);
       canonical.push({ start: addr, raw });
     }
+    if (!canonical.length) return { added: 0, revision: this.functionTopologyRevision };
     canonical.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
 
     /* Compute predecessor effective bounds from the pre-refinement topology so
        the split is derived from the state the refinement proposal was built on. */
-    const priorBound = new Map();
-    for (let i = 0; i < this.funcs.length; i++) {
-      const start = this.funcs[i];
+    const priorBounds = new Array(oldLen);
+    const prefixMaxBound = new Array(oldLen);
+    let maxBound = 0n;
+    for (let i = 0; i < oldLen; i++) {
+      const start = oldFuncs[i];
       const declared = this._functionEnd(i);
-      const next = i + 1 < this.funcs.length ? this.funcs[i + 1] : null;
+      const next = i + 1 < oldLen ? oldFuncs[i + 1] : null;
       const bound = declared != null ? declared : (next != null && next > start && next - start <= 0x40000n ? next : null);
-      priorBound.set(start.toString(), bound);
+      priorBounds[i] = bound;
+      if (bound != null && bound > maxBound) maxBound = bound;
+      prefixMaxBound[i] = maxBound;
     }
 
     for (const { start } of canonical) {
-      let predKey = null;
-      for (let i = 0; i < this.funcs.length; i++) {
-        const candidate = this.funcs[i];
-        if (candidate >= start) break;
-        const bound = priorBound.get(candidate.toString());
-        if (bound != null && start < bound) predKey = candidate.toString();
+      let predAddr = null;
+      for (let i = start > 0n && oldLen ? this._floor(oldFuncs, start - 1n) : -1; i >= 0; i--) {
+        if (prefixMaxBound[i] <= start) break;
+        const bound = priorBounds[i];
+        if (bound != null && start < bound) { predAddr = oldFuncs[i]; break; }
       }
-      if (predKey == null) continue;
+      if (predAddr == null) continue;
+      const predKey = predAddr.toString();
       const previous = this.functionTopologyEnds.get(predKey);
       if (previous == null || start < previous) this.functionTopologyEnds.set(predKey, start);
     }
 
-    if (!canonical.length) return { added: 0, revision: this.functionTopologyRevision };
-
-    const declaredEnds = new Map();
-    for (let i = 0; i < this.funcs.length; i++) {
-      const declared = this.funcEnds && i < this.funcEnds.length ? this.funcEnds[i] : null;
-      if (declared != null && declared > this.funcs[i]) declaredEnds.set(this.funcs[i].toString(), declared);
-    }
-    const all = Array.from(this.funcs);
-    for (const { start } of canonical) all.push(start);
-    all.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
-    const out = new BigUint64Array(all.length);
-    const ends = new BigUint64Array(all.length);
+    const total = oldLen + canonical.length;
+    const out = new BigUint64Array(total);
+    const ends = new BigUint64Array(total);
     let hasExactEnd = false;
-    for (let i = 0; i < all.length; i++) {
-      out[i] = all[i];
-      const declared = declaredEnds.get(all[i].toString());
-      if (declared != null) { ends[i] = declared; hasExactEnd = true; }
+    let oi = 0, ci = 0, wi = 0;
+    while (oi < oldLen && ci < canonical.length) {
+      if (oldFuncs[oi] < canonical[ci].start) {
+        const start = oldFuncs[oi];
+        out[wi] = start;
+        const declared = oldEnds && oi < oldEnds.length ? oldEnds[oi] : 0n;
+        if (declared > start) { ends[wi] = declared; hasExactEnd = true; }
+        oi++;
+      } else {
+        out[wi] = canonical[ci].start;
+        ci++;
+      }
+      wi++;
+    }
+    while (oi < oldLen) {
+      const start = oldFuncs[oi];
+      out[wi] = start;
+      const declared = oldEnds && oi < oldEnds.length ? oldEnds[oi] : 0n;
+      if (declared > start) { ends[wi] = declared; hasExactEnd = true; }
+      oi++; wi++;
+    }
+    while (ci < canonical.length) {
+      out[wi] = canonical[ci].start;
+      ci++; wi++;
     }
     this.funcs = out;
     this.funcEnds = hasExactEnd ? ends : null;
@@ -693,10 +765,12 @@ export class SymbolIndex {
   setGuessedFunctions(starts) {
     this.funcs = starts || new BigUint64Array(0);
     this.funcEnds = null;
+    this.functionTopologyEnds.clear();
     this.functionProvenance.clear();
     for (const addr of this.funcs) this.functionProvenance.set(addr.toString(), { source: 'heuristic', confidence: 0.55, confirmed: false });
     this.guessed = true;
     this.gen = ++SymbolIndex.gen;
+    this.functionTopologyRevision += 1;
   }
 }
 

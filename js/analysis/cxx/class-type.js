@@ -10,22 +10,23 @@ export const isCanonicalCppClassTypeEvidence = value => value !== null
 
 function classNameFromLifetimeSymbol(symbol) {
   const role = cxxAbiFunctionRole(symbol);
+  const normalized = typeof symbol === 'string' && symbol.startsWith('__Z') ? symbol.slice(1) : symbol;
   if (!role || !['constructor', 'destructor'].includes(role.kind)
-    || typeof symbol !== 'string' || !symbol.startsWith('_ZN')) return null;
+    || typeof normalized !== 'string' || !normalized.startsWith('_ZN')) return null;
   // Keep this independent class-name decoder small: ordinary ASCII qualified
   // names only. Templates, substitutions and adjusting thunks stay unsupported.
   let position = 3;
   const parts = [];
-  while (position < symbol.length && /[1-9]/.test(symbol[position])) {
-    const match = /^[1-9][0-9]{0,2}/.exec(symbol.slice(position));
+  while (position < normalized.length && /[1-9]/.test(normalized[position])) {
+    const match = /^[1-9][0-9]{0,2}/.exec(normalized.slice(position));
     if (!match || parts.length >= 16) return null;
     const size = Number(match[0]); position += match[0].length;
-    if (size > 240 || position + size > symbol.length) return null;
-    const part = symbol.slice(position, position + size); position += size;
+    if (size > 240 || position + size > normalized.length) return null;
+    const part = normalized.slice(position, position + size); position += size;
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) return null;
     parts.push(part);
   }
-  if (!parts.length || !/^(?:C[123]|D[012])E/.test(symbol.slice(position))) return null;
+  if (!parts.length || !/^(?:C[123]|D[012])E/.test(normalized.slice(position))) return null;
   return parts.join('::');
 }
 

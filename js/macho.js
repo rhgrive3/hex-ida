@@ -193,11 +193,25 @@
   // the first NUL inside the table and fail closed when the entry is not
   // terminated, instead of laundering a fixed-length prefix as a complete name
   // (#3806).
+  const MAX_U64 = 0xffffffffffffffffn;
+  const MAX_UNTERMINATED_SCAN = 64 * 1024;
+
   function cstrNul(u8, off, budget) {
     if (off < 0 || off >= u8.length) return null;
     let end = off;
-    while (end < u8.length && u8[end] !== 0) end++;
-    if (end >= u8.length) return null;
+    const scanCap = budget ? Math.min(u8.length, off + Math.max(1, budget.limit - budget.retained)) : Math.min(u8.length, off + MAX_UNTERMINATED_SCAN);
+    while (end < scanCap && u8[end] !== 0) end++;
+    if (end >= u8.length || u8[end] !== 0) {
+      if (budget) {
+        const scanned = end - off + SYMBOL_NAME_ROW_OVERHEAD;
+        if (budget.retained + scanned > budget.limit) {
+          budget.capped = true;
+          if (!budget.reason) budget.reason = 'decoded-name-budget';
+        }
+        budget.retained += scanned;
+      }
+      return null;
+    }
     return budget ? budgetedDecodeLatin1(u8, off, end, budget) : decodeLatin1(u8, off, end);
   }
 
@@ -225,8 +239,10 @@
    * CAFEBABE turns out to be something else (e.g. a Java class file).
    */
   function parseFat(buf, fileSize) {
+    if (!buf || buf.byteLength < 8) return null;
     const dv = new DataView(buf);
     const magic = dv.getUint32(0, false);
+    if (magic !== FAT_MAGIC && magic !== FAT_MAGIC_64) return null;
     const is64 = magic === FAT_MAGIC_64;
     const n = dv.getUint32(4, false);
     if (n === 0 || n > 32) return null;
@@ -305,8 +321,12 @@
     return String(cn.cpu || 'unknown').toLowerCase();
   }
 
+  function isArm32Architecture(arch) {
+    return arch === 'arm' || arch === 'armv7' || arch === 'armv7s' || arch === 'armv7k';
+  }
+
   function instructionAlignment(arch) {
-    return arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32' ? 4n : arch === 'arm' ? 2n : 1n;
+    return arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32' ? 4n : isArm32Architecture(arch) ? 2n : 1n;
   }
 
   function inRange(value, start, size) {
@@ -354,16 +374,17 @@
     const det = detect(buf);
     if (det.kind !== 'macho') throw new Error('Not a Mach-O image.');
     if (det.bigEndian) throw new Error('Big-endian Mach-O images are not supported.');
+    const is64 = det.is64;
+    const hdrSize = is64 ? 32 : 28;
+    if (buf.byteLength < hdrSize) throw new Error('Truncated Mach-O header');
     const dv = new DataView(buf);
     const u8 = new Uint8Array(buf);
-    const is64 = det.is64;
     const cputype = dv.getInt32(4, true);
     const cpusubtype = dv.getInt32(8, true);
     const filetype = dv.getUint32(12, true);
     const ncmds = dv.getUint32(16, true);
     const sizeofcmds = dv.getUint32(20, true);
     const flags = dv.getUint32(24, true);
-    const hdrSize = is64 ? 32 : 28;
     if (ncmds > 10000 || sizeofcmds > 64 * 1024 * 1024) throw new Error('Mach-O header looks corrupt (bad load command count).');
     if (hdrSize + sizeofcmds > buf.byteLength) throw new Error('Mach-O load command area is truncated.');
 
@@ -428,7 +449,7 @@
             break;
           }
           const fileEnd=fileoff+filesize, vmEnd=vmaddr+vmsize;
-          const validMapping = filesize <= vmsize && fileoff <= sliceSize && fileEnd >= fileoff && fileEnd <= sliceSize && vmEnd >= vmaddr;
+          const validMapping = filesize <= vmsize && fileoff <= sliceSize && fileEnd >= fileoff && fileEnd <= MAX_U64 && fileEnd <= sliceSize && vmEnd >= vmaddr && vmEnd <= MAX_U64;
           if (!validMapping) info.diagnostics.push(segname + ': invalid segment file/VM range');
           const seg={name:segname,vmaddr,vmsize,fileoff,filesize,maxprot,initprot,nsects,flags:segflags,sections:[],validMapping};
           for (let si=0; si<nsects; si++) {
@@ -452,8 +473,8 @@
             const vmExec=!!(initprot&4);
             const codeSection=!!(sflags&(S_ATTR_PURE_INSTRUCTIONS|S_ATTR_SOME_INSTRUCTIONS))||type===S_SYMBOL_STUBS;
             const secEnd=addr+size, secFileEnd=offset+size;
-            const vmInside=addr>=vmaddr && secEnd>=addr && secEnd<=vmEnd;
-            const fileInside=zerofill || (offset>=fileoff && secFileEnd>=offset && secFileEnd<=fileEnd && secFileEnd<=sliceSize);
+            const vmInside=addr>=vmaddr && secEnd>=addr && secEnd<=MAX_U64 && secEnd<=vmEnd;
+            const fileInside=zerofill || (offset>=fileoff && secFileEnd>=offset && secFileEnd<=MAX_U64 && secFileEnd<=fileEnd && secFileEnd<=sliceSize);
             const valid=validMapping && vmInside && fileInside;
             if (!valid) info.diagnostics.push((ssegname||segname)+','+sectname+': section outside parent/slice range');
             seg.sections.push({name:sectname,segment:ssegname||segname,addr,size,offset,align,flags:sflags,type,reserved1,reserved2,
@@ -594,15 +615,31 @@
 
   function rejectAmbiguousSegmentOwnership(info) {
     const owned = (info.segments || []).filter((segment) => segment.validMapping && segment.vmsize > 0n);
-    for (let i = 0; i < owned.length; i++) {
-      for (let j = i + 1; j < owned.length; j++) {
-        const a = owned[i], b = owned[j];
+    if (owned.length < 2) return;
+    const sorted = owned.slice().sort((a, b) => (a.vmaddr < b.vmaddr ? -1 : a.vmaddr > b.vmaddr ? 1 : 0));
+    const MAX_CONFLICT_DIAGS = 64;
+    let conflictDiags = 0;
+    let suppressedDiags = 0;
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i];
+      const aEnd = a.vmaddr + a.vmsize;
+      for (let j = i + 1; j < sorted.length; j++) {
+        const b = sorted[j];
+        if (b.vmaddr >= aEnd) break;
         if (!classicOwnershipAmbiguous(a, b)) continue;
         a.validMapping = false; b.validMapping = false;
         a.mappingConflict = true; b.mappingConflict = true;
         info.segmentOwnershipConflict = true;
-        info.diagnostics.push(`${b.name}: VM range overlaps segment ${a.name} with a conflicting file mapping (ambiguous ownership)`);
+        if (conflictDiags < MAX_CONFLICT_DIAGS) {
+          info.diagnostics.push(`${b.name}: VM range overlaps segment ${a.name} with a conflicting file mapping (ambiguous ownership)`);
+          conflictDiags++;
+        } else {
+          suppressedDiags++;
+        }
       }
+    }
+    if (suppressedDiags > 0) {
+      info.diagnostics.push(`segment ownership: ${suppressedDiags} additional overlap diagnostics suppressed`);
     }
   }
 
@@ -721,18 +758,53 @@
     // #8838: LC_DATA_IN_CODE declares ranges inside __text that are physically
     // data. Preserve that exclusion while applying the #8805 retention cap.
     const dataInCode=Array.isArray(options.dataInCode)?options.dataInCode:[];
-    const overlapsDataInCode=(value)=>{
-      const end=value+alignment;
-      return dataInCode.some((range)=>{
-        if(!Array.isArray(range)||range.length<2) return false;
-        const lo=BigInt(range[0]),hi=BigInt(range[1]);
-        return hi>lo && value<hi && end>lo;
-      });
+    const mergeBigIntervals=(raw)=>{
+      if(raw.length<=1) return raw;
+      raw.sort((a,b)=>(a.start<b.start?-1:a.start>b.start?1:a.end<b.end?-1:a.end>b.end?1:0));
+      const merged=[raw[0]];
+      for(let k=1;k<raw.length;k++){
+        const prev=merged[merged.length-1],cur=raw[k];
+        if(cur.start<=prev.end){ if(cur.end>prev.end) prev.end=cur.end; }
+        else merged.push(cur);
+      }
+      return merged;
     };
-    const valid=(value)=>value%alignment===0n
-      && regions.length>0 && regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size)
-      && !overlapsDataInCode(value);
+    const execRaw=[];
+    for(let k=0;k<regions.length;k++){
+      const r=regions[k];
+      if(r&&r.exec&&r.size>0n) execRaw.push({start:r.vmAddr,end:r.vmAddr+r.size});
+    }
+    const execIntervals=mergeBigIntervals(execRaw);
+    let dicIntervals=null;
+    const ensureDicIntervals=()=>{
+      if(dicIntervals!==null) return dicIntervals;
+      const dicRaw=[];
+      for(let k=0;k<dataInCode.length;k++){
+        const range=dataInCode[k];
+        if(!Array.isArray(range)||range.length<2) continue;
+        const lo=BigInt(range[0]),hi=BigInt(range[1]);
+        if(hi>lo) dicRaw.push({start:lo,end:hi});
+      }
+      dicIntervals=mergeBigIntervals(dicRaw);
+      return dicIntervals;
+    };
+    let execCursor=0,dicCursor=0;
+    const valid=(value)=>{
+      if(value%alignment!==0n||execIntervals.length===0) return false;
+      while(execCursor<execIntervals.length&&execIntervals[execCursor].end<=value) execCursor++;
+      if(execCursor>=execIntervals.length||execIntervals[execCursor].start>value) return false;
+      if(dataInCode.length===0) return true;
+      const dic=ensureDicIntervals();
+      const end=value+alignment;
+      while(dicCursor<dic.length&&dic[dicCursor].end<=value) dicCursor++;
+      return !(dicCursor<dic.length&&dic[dicCursor].start<end);
+    };
+    const maxSteps=Math.max(resultLimit*4, 2_000_000);
+    let steps=0;
     while(i<buf.length){
+      steps++;
+      if(shouldCancel&&((steps&63)===0)&&shouldCancel()){markTruncated(out,'cancelled');partialReason='cancelled';break;}
+      if(steps>maxSteps){markTruncated(out,'work-limit');partialReason='work-limit';break;}
       let delta=0n,shift=0n,byte=0;
       do {
         if(i>=buf.length){malformed=true;partialReason='truncated-leb';break;}
@@ -742,12 +814,11 @@
       if(malformed) break;
       if(delta===0n){terminated=true;break;}
       const next=addr+delta;
-      if(next<addr){malformed=true;partialReason='address-overflow';break;}
+      if(next<addr||next>MAX_U64){malformed=true;partialReason='address-overflow';break;}
       addr=next;
       if(!valid(addr)){rejected++;continue;}
       if(out.length>=resultLimit){markTruncated(out,'result-limit');partialReason='result-limit';break;}
       out.push(addr);
-      if(shouldCancel&&((out.length&63)===0)&&shouldCancel()){markTruncated(out,'cancelled');partialReason='cancelled';break;}
     }
     // #8822: only a fully read stream with an explicit zero terminator can be exact.
     // A result/cancel cap is already explicitly partial and must not be rewritten
@@ -819,7 +890,7 @@
         continue;
       }
       const hi = address + length;
-      if (hi < address) {
+      if (hi < address || hi > MAX_U64) {
         out.truncated = true;
         if (!out.partialReason) out.partialReason = 'address-overflow';
         continue;
@@ -1003,49 +1074,76 @@
     const local = entries.filter((e) => e && e.lsda >= vm && e.lsda < secEnd)
       .slice().sort((a, b) => (a.lsda < b.lsda ? -1 : a.lsda > b.lsda ? 1 : 0));
 
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    const maxLandingPads = boundedExpansionBudget(options.maxLandingPads, 400_000, 400_000);
+    const maxWork = 2_000_000;
+    let workUnits = 0;
+    const lsdaCache = new Map();
+    let groupEndIdx = 0;
     for (let i = 0; i < local.length; i++) {
+      if (out.size >= maxLandingPads || workUnits >= maxWork) break;
+      if (shouldCancel && ((i & 63) === 0) && shouldCancel()) break;
       const e = local[i];
-      let p = Number(e.lsda - vm);
-      const end = i + 1 < local.length ? Number(local[i + 1].lsda - vm) : buf.length;
-      if (p < 0 || p + 3 > end || end > buf.length) continue;
-      try {
-        const lpEncoding = u8[p++];
-        let lpBase = e.functionStart;
-        if (lpEncoding !== 0xff) {
-          const x = ehEncodedValue(dv, u8, p, end, lpEncoding, vm, options);
-          if (!x || x.value == null) continue;
-          lpBase = x.value; p = x.next;
-        }
-        if (p >= end) continue;
-        const typeEncoding = u8[p++];
-        if (typeEncoding !== 0xff) {
-          const typeOffset = ehReadULEB(u8, p, end);
-          if (!typeOffset) continue;
-          p = typeOffset.next; // type table itself is irrelevant to boundaries
-        }
-        if (p >= end) continue;
-        const callSiteEncoding = u8[p++];
-        const tableLen = ehReadULEB(u8, p, end);
-        if (!tableLen || tableLen.value > BigInt(Number.MAX_SAFE_INTEGER)) continue;
-        p = tableLen.next;
-        const tableEnd = p + Number(tableLen.value);
-        if (tableEnd > end) continue;
-        // Call-site offsets are relative to LPStart/functionStart. Preserve the
-        // representation format while ignoring application bits for offsets.
-        const offsetEncoding = callSiteEncoding & 0x0f;
-        while (p < tableEnd) {
-          const startX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
-          if (!startX) break; p = startX.next;
-          const lengthX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
-          if (!lengthX) break; p = lengthX.next;
-          const landingX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
-          if (!landingX) break; p = landingX.next;
-          const action = ehReadULEB(u8, p, tableEnd);
-          if (!action) break; p = action.next;
-          if (landingX.raw !== 0n) out.add(lpBase + landingX.raw);
-          void startX; void lengthX;
-        }
-      } catch { /* malformed LSDA: skip this bounded record */ }
+      if (groupEndIdx <= i) {
+        groupEndIdx = i + 1;
+        while (groupEndIdx < local.length && local[groupEndIdx].lsda === e.lsda) groupEndIdx++;
+      }
+      const pStart = Number(e.lsda - vm);
+      const end = groupEndIdx < local.length ? Number(local[groupEndIdx].lsda - vm) : buf.length;
+      if (pStart < 0 || pStart + 3 > end || end > buf.length) continue;
+      let parsed = lsdaCache.get(e.lsda);
+      if (parsed === undefined) {
+        parsed = null;
+        try {
+          let p = pStart;
+          const lpEncoding = u8[p++];
+          let explicitLpBase = null;
+          if (lpEncoding !== 0xff) {
+            const x = ehEncodedValue(dv, u8, p, end, lpEncoding, vm, options);
+            if (!x || x.value == null) { lsdaCache.set(e.lsda, null); continue; }
+            explicitLpBase = x.value; p = x.next;
+          }
+          if (p >= end) { lsdaCache.set(e.lsda, null); continue; }
+          const typeEncoding = u8[p++];
+          if (typeEncoding !== 0xff) {
+            const typeOffset = ehReadULEB(u8, p, end);
+            if (!typeOffset) { lsdaCache.set(e.lsda, null); continue; }
+            p = typeOffset.next;
+          }
+          if (p >= end) { lsdaCache.set(e.lsda, null); continue; }
+          const callSiteEncoding = u8[p++];
+          const tableLen = ehReadULEB(u8, p, end);
+          if (!tableLen || tableLen.value > BigInt(Number.MAX_SAFE_INTEGER)) { lsdaCache.set(e.lsda, null); continue; }
+          p = tableLen.next;
+          const tableEnd = p + Number(tableLen.value);
+          if (tableEnd > end) { lsdaCache.set(e.lsda, null); continue; }
+          const offsetEncoding = callSiteEncoding & 0x0f;
+          const offsets = [];
+          while (p < tableEnd) {
+            workUnits++;
+            if (workUnits >= maxWork) break;
+            const startX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
+            if (!startX) break; p = startX.next;
+            const lengthX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
+            if (!lengthX) break; p = lengthX.next;
+            const landingX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
+            if (!landingX) break; p = landingX.next;
+            const action = ehReadULEB(u8, p, tableEnd);
+            if (!action) break; p = action.next;
+            if (landingX.raw !== 0n) offsets.push(landingX.raw);
+            void startX; void lengthX;
+          }
+          parsed = { explicitLpBase, offsets };
+        } catch { parsed = null; }
+        lsdaCache.set(e.lsda, parsed);
+      }
+      if (!parsed) continue;
+      const lpBase = parsed.explicitLpBase != null ? parsed.explicitLpBase : e.functionStart;
+      for (const rawOffset of parsed.offsets) {
+        workUnits++;
+        if (out.size >= maxLandingPads || workUnits >= maxWork) break;
+        out.add(lpBase + rawOffset);
+      }
     }
     return Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   }
@@ -1070,7 +1168,8 @@
       value |= BigInt(b & 0x7f) << shift;
       shift += 7n;
       if (!(b & 0x80)) {
-        if ((b & 0x40) && shift < 64n) value |= (-1n) << shift;
+        if (b & 0x40) value |= (-1n) << shift;
+        if (value < -(1n << 63n) || value > (1n << 63n) - 1n) return null;
         return { value, next: p + 1 };
       }
     }
@@ -1128,11 +1227,64 @@
     return { value, raw, next };
   }
 
-  function fdeInExecutableMapping(start, end, options) {
+  function ehEncodedAdvance(u8, p, end, encoding, options = {}) {
+    if (encoding === 0xff) return p;
+    const format = encoding & 0x0f;
+    const application = encoding & 0x70;
+    if (application !== 0 && application !== 0x10 && application !== 0x20 &&
+        application !== 0x30 && application !== 0x40 && application !== 0x50) return null;
+    const ptrBytes = options.pointerSize === 4 ? 4 : 8;
+    if (application === 0x50) p = Math.ceil(p / ptrBytes) * ptrBytes;
+    if (format === 0x00) return p >= 0 && p + ptrBytes <= end ? p + ptrBytes : null;
+    if (format === 0x01) { const x = ehReadULEB(u8, p, end); return x ? x.next : null; }
+    if (format === 0x02 || format === 0x0a) return p >= 0 && p + 2 <= end ? p + 2 : null;
+    if (format === 0x03 || format === 0x0b) return p >= 0 && p + 4 <= end ? p + 4 : null;
+    if (format === 0x04 || format === 0x0c) return p >= 0 && p + 8 <= end ? p + 8 : null;
+    if (format === 0x09) { const x = ehReadSLEB(u8, p, end); return x ? x.next : null; }
+    return null;
+  }
+
+  function buildEhExecRangeIndex(ranges) {
+    if (!Array.isArray(ranges) || ranges.length < 4) return null;
+    const sorted = ranges.slice().sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
+    const starts = new Array(sorted.length);
+    const prefixMaxEnd = new Array(sorted.length);
+    let maxEnd = null;
+    for (let i = 0; i < sorted.length; i++) {
+      starts[i] = sorted[i].start;
+      if (maxEnd === null || sorted[i].end > maxEnd) maxEnd = sorted[i].end;
+      prefixMaxEnd[i] = maxEnd;
+    }
+    return { sorted, starts, prefixMaxEnd };
+  }
+
+  function fdeInExecutableMapping(start, end, options, execIndex = null) {
     const align = options && options.align;
     if (align && align > 1n && (start % align) !== 0n) return false;
     const ranges = options && options.execRanges;
     if (!Array.isArray(ranges)) return true;
+    if (execIndex) {
+      const { sorted, starts, prefixMaxEnd } = execIndex;
+      let lo = 0, hi = starts.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (starts[mid] <= start) lo = mid + 1;
+        else hi = mid;
+      }
+      const upper = lo;
+      if (upper === 0) return false;
+      lo = 0;
+      hi = upper;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (prefixMaxEnd[mid] >= end) hi = mid;
+        else lo = mid + 1;
+      }
+      for (let i = lo; i < upper; i++) {
+        if (end <= sorted[i].end) return true;
+      }
+      return false;
+    }
     return ranges.some((range) => range.start <= start && end <= range.end);
   }
 
@@ -1150,6 +1302,7 @@
     const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     const cies = new Map();
     const vm = BigInt(sectionVM);
+    const execIndex = buildEhExecRangeIndex(options && options.execRanges);
     let p = 0;
 
     while (p + 4 <= buf.length) {
@@ -1177,7 +1330,7 @@
           const version = u8[q++];
           let augmentation = '';
           while (q < recordEnd && u8[q] !== 0 && augmentation.length < 64) augmentation += String.fromCharCode(u8[q++]);
-          if (q >= recordEnd) { p = recordEnd; continue; }
+          if (q >= recordEnd || u8[q] !== 0) { p = recordEnd; continue; }
           q++; // NUL
           // CIE version 4 inserts address_size and segment_selector_size
           // between the augmentation string and code_alignment_factor; in the
@@ -1199,22 +1352,22 @@
             const augEnd = q + Number(augLen.value);
             if (!Number.isSafeInteger(augEnd) || augEnd > recordEnd) { p = recordEnd; continue; }
             for (const ch of augmentation.slice(1)) {
-              if (ch === 'L') { if (q >= augEnd) break; q++; }
-              else if (ch === 'R') { if (q >= augEnd) break; fdeEncoding = u8[q++]; }
+              if (ch === 'L') { if (q >= augEnd) { fdeEncoding = null; break; } q++; }
+              else if (ch === 'R') { if (q >= augEnd) { fdeEncoding = null; break; } fdeEncoding = u8[q++]; }
               else if (ch === 'P') {
-                if (q >= augEnd) break;
+                if (q >= augEnd) { fdeEncoding = null; break; }
                 const enc = u8[q++];
-                const x = ehEncodedValue(dv, u8, q, augEnd, enc, vm, options);
-                if (!x) { q = augEnd; break; }
-                q = x.next;
-              } else if (ch !== 'S') {
+                const nextQ = ehEncodedAdvance(u8, q, augEnd, enc, options);
+                if (nextQ == null) { fdeEncoding = null; q = augEnd; break; }
+                q = nextQ;
+              } else if (ch !== 'S' && ch !== 'B') {
                 // Unknown augmentation data has no self-describing size. The
                 // outer z-length still lets us skip this CIE safely.
-                q = augEnd; break;
+                fdeEncoding = null; q = augEnd; break;
               }
             }
           }
-          cies.set(recordStart, { fdeEncoding });
+          if (fdeEncoding != null) cies.set(recordStart, { fdeEncoding });
         } catch { /* malformed CIE: keep scanning the next bounded record */ }
       } else {
         try {
@@ -1234,7 +1387,7 @@
           if (!rangeX || rangeX.raw <= 0n) { p = recordEnd; continue; }
           const start = startX.value, end = start + rangeX.raw;
           if (start >= 0n && end > start) {
-            if (!fdeInExecutableMapping(start, end, options)) { p = recordEnd; continue; }
+            if (!fdeInExecutableMapping(start, end, options, execIndex)) { p = recordEnd; continue; }
             out.push({ start, end });
           }
         } catch { /* malformed FDE: fail closed */ }
@@ -1326,7 +1479,14 @@
     const regions = Array.isArray(options.regions) ? options.regions : [];
     const index = objcRegionIndex(options.regionIndex || regions);
     const imageBase = options.imageBase == null ? null : BigInt(options.imageBase);
-    const align = instructionAlignment(options.architecture || 'arm64');
+    const arch = options.architecture || 'arm64';
+    const is32 = options.pointerBits === 32 || options.bits === 32
+      || arch === 'arm64_32' || arch === 'arm' || arch === 'armv7' || arch === 'armv7s' || arch === 'armv7k'
+      || arch === 'x86' || arch === 'i386' || arch === 'ppc';
+    const ptrSize = is32 ? 4 : 8;
+    const minNonRelativeStride = ptrSize * 3;
+    const isArm32 = isArm32Architecture(arch);
+    const align = instructionAlignment(arch);
     const inside = (addr, rs) => {
       /* #8798: the authority sets are sorted disjoint interval lists, so an
        * address membership check is a binary search instead of a linear
@@ -1341,6 +1501,7 @@
       return found >= 0 && addr < rs[found][1];
     };
      const i32 = (p) => BigInt(dv.getInt32(p, true));
+     const u32 = (p) => BigInt(dv.getUint32(p, true));
      const u64 = (p) => dv.getBigUint64(p, true);
      const vm = BigInt(sectionVM);
 
@@ -1353,7 +1514,7 @@
        const relative = !!(raw & 0x80000000);
        const directSelector = !!(raw & 0x40000000);
        const stride = raw & 0xfffc;
-       if (relative ? (stride < 12 || stride > 256) : (stride < 24 || stride > 256)) continue;
+       if (relative ? (stride < 12 || stride > 256) : (stride < minNonRelativeStride || stride > 256)) continue;
        const bytes = 8 + count * stride;
        if (!Number.isSafeInteger(bytes) || p + bytes > buf.length) continue;
 
@@ -1374,15 +1535,17 @@
            const nameRanges = directSelector ? index.selectorText : index.selrefs;
            if (!inside(nameAddr, nameRanges)) { valid = false; break; }
          } else {
-           nameAddr = objcMethodPointer(u64(q), imageBase);
-           typeAddr = objcMethodPointer(u64(q + 8), imageBase);
-           imp = objcMethodPointer(u64(q + 16), imageBase);
+           const readPtr = is32 ? u32 : u64;
+           nameAddr = objcMethodPointer(readPtr(q), imageBase);
+           typeAddr = objcMethodPointer(readPtr(q + ptrSize), imageBase);
+           imp = objcMethodPointer(readPtr(q + ptrSize * 2), imageBase);
            if (!inside(nameAddr, index.selectorText)) { valid = false; break; }
          }
-         if (!inside(typeAddr, index.typeText) || !inside(imp, index.exec) || (imp % align) !== 0n) {
+         const normalizedImp = isArm32 && imp != null ? (imp & ~1n) : imp;
+         if (!inside(typeAddr, index.typeText) || !inside(normalizedImp, index.exec) || (normalizedImp % align) !== 0n) {
            valid = false; break;
          }
-         imps.push(imp);
+         imps.push(normalizedImp);
        }
        if (valid) {
          for (const imp of imps) {
@@ -1424,12 +1587,17 @@
      * mapping, marking the result truncated rather than over-allocating.
      */
     for (const seg of info.segments) {
+      if (seg.validMapping === false) continue;
       for (const sec of seg.sections) {
+        if (sec.validMapping === false) continue;
         if (!sec.stubs && !sec.pointers) continue;
         const entSize = sec.stubs ? (sec.reserved2 || 12) : pointerSize;
-        if (entSize <= 0) continue;
-        if (sec.reserved1 >= total) continue;                  // window starts outside the table
-        const count = Math.min(Number(sec.size / BigInt(entSize)), total - sec.reserved1);
+        if (!Number.isSafeInteger(entSize) || entSize <= 0) continue;
+        if (!Number.isSafeInteger(sec.reserved1) || sec.reserved1 < 0 || sec.reserved1 >= total) continue;
+        const remaining = total - sec.reserved1;
+        const maxEntriesBig = sec.size > 0n ? (sec.size / BigInt(entSize)) : 0n;
+        const count = maxEntriesBig >= BigInt(remaining) ? remaining : Number(maxEntriesBig);
+        const entSizeBig = BigInt(entSize);
         for (let i = 0; i < count; i++) {
           const idx = sec.reserved1 + i;
           if (idx >= total) break;
@@ -1438,7 +1606,7 @@
           const name = sym.names[symIdx];
           if (!name) continue;
           if (out.length >= STUB_SYMBOLS_MAX) { out.truncated = true; return out; }
-          out.push({ addr: sec.addr + BigInt(i * entSize), name, stub: !!sec.stubs });
+          out.push({ addr: sec.addr + BigInt(i) * entSizeBig, name, stub: !!sec.stubs });
         }
       }
     }

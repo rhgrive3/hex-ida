@@ -30,7 +30,11 @@ export function assertWireBudget(payload, capabilities = SAFE_PROVIDER_CAPABILIT
   const maxBytes = positiveLimit(capabilities.maxRequestBytes, SAFE_PROVIDER_CAPABILITIES.maxRequestBytes);
   const contextTokens = positiveLimit(capabilities.contextTokens, SAFE_PROVIDER_CAPABILITIES.contextTokens);
   const outputTokens = nonNegativeLimit(capabilities.maxOutputTokens, SAFE_PROVIDER_CAPABILITIES.maxOutputTokens);
-  const maxTokens = Math.max(1, contextTokens - outputTokens);
+  const inputTokens = contextTokens - outputTokens;
+  if (inputTokens <= 0) {
+    throw new AIError('context_too_large', 'The provider token window leaves no input-token capacity.', { ...usage, maxBytes, contextTokens, outputTokens, maxTokens: 0 });
+  }
+  const maxTokens = inputTokens;
   if (usage.wireBytes > maxBytes || usage.estimatedInputTokens > maxTokens) {
     throw new AIError('context_too_large', 'The complete provider payload exceeds the safe input budget.', { ...usage, maxBytes, maxTokens });
   }
@@ -81,6 +85,29 @@ function wireReplacer(_key, value) {
   return typeof value === 'bigint' ? `0x${value.toString(16)}` : value;
 }
 
+const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+function utf8ByteLength(str) {
+  let ascii = true;
+  for (let i = 0; i < str.length; i += 1) {
+    if (str.charCodeAt(i) >= 0x80) { ascii = false; break; }
+  }
+  if (ascii) return str.length;
+  if (UTF8_ENCODER) return UTF8_ENCODER.encode(str).byteLength;
+  let bytes = 0;
+  for (let i = 0; i < str.length; i += 1) {
+    const code = str.charCodeAt(i);
+    if (code <= 0x7f) { bytes += 1; continue; }
+    if (code <= 0x7ff) { bytes += 2; continue; }
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+      const next = str.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i += 1; continue; }
+    }
+    bytes += 3;
+  }
+  return bytes;
+}
+
 export function serializedByteLength(value) {
   let text;
   try {
@@ -90,7 +117,7 @@ export function serializedByteLength(value) {
     // rather than reporting a size for something that has none.
     throw new AIError('provider_error', 'The AI payload could not be serialized for budget measurement.', { reason: String(error?.message || error) });
   }
-  return new TextEncoder().encode(text ?? 'null').byteLength;
+  return utf8ByteLength(text ?? 'null');
 }
 function nonNegativeLimit(value, fallback) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback; }
 function positiveLimit(value, fallback) { return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback; }

@@ -2,7 +2,7 @@ import { createFunctionSandbox } from '../../symbolic/function-sandbox.js';
 import { evaluateExpression } from './equivalence.js';
 
 function envForArgs(args = [], names = []) {
-  const env = {};
+  const env = Object.create(null);
   for (let i = 0; i < args.length; i++) {
     const v = BigInt(args[i] ?? 0);
     env[`arg${i + 1}`] = v;

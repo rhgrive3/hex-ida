@@ -169,7 +169,7 @@ export function pointsToAlias(left, right, options = {}) {
         const hasCanonicalAddressA = addressA != null && addressA === a.address;
         const hasCanonicalAddressB = addressB != null && addressB === b.address;
 
-        if (hasCanonicalAddressA && hasCanonicalAddressB) {
+        if (spaceA != null && spaceB != null && hasCanonicalAddressA && hasCanonicalAddressB) {
           try {
             const absoluteA = absoluteInterval(a, widthA);
             const absoluteB = absoluteInterval(b, widthB);

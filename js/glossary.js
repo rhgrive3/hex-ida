@@ -83,6 +83,7 @@ export const GLOSSARY = {
   assembly: {
     term: 'アセンブリ',
     read: 'assembly',
+    aliases: ['アセンブリ言語', 'asm', '逆アセンブリ', '命令一覧'],
     short: '機械語を人間が読める形にしたもの。1 行が 1 命令。',
     body:
       '機械語の 1 命令に、人間向けの短い名前を付けたものがアセンブリです。\n\n' +
@@ -108,6 +109,7 @@ export const GLOSSARY = {
   register: {
     term: 'レジスタ',
     read: 'register',
+    aliases: ['一時入れ物', '汎用レジスタ', 'x0', 'w0'],
     short: 'CPU の中にある、ごく少数の超高速な入れ物。',
     body:
       'CPU が計算をするには、まず数を「手元」に置く必要があります。その手元の置き場がレジスタです。\n\n' +
@@ -304,6 +306,7 @@ export const GLOSSARY = {
   branch: {
     term: '分岐（ブランチ）',
     read: 'branch',
+    aliases: ['条件分岐', 'conditional branch', 'if文', 'ジャンプ'],
     short: '次に実行する場所を、順番どおりでない場所に変えること。',
     body:
       'CPU はふつう上から下へ 1 行ずつ進みます。それを変えるのが分岐命令です。\n\n' +
@@ -366,6 +369,7 @@ export const GLOSSARY = {
   immediate: {
     term: '即値（そくち）',
     read: 'immediate',
+    aliases: ['定数', '固定値', 'constant', 'リテラル'],
     short: '命令そのものに埋め込まれた定数。# が目印。',
     body:
       '#42 や #0x20 のように # が付いている値は、命令の中に直接書き込まれた数です。' +
@@ -809,16 +813,134 @@ export const GLOSSARY = {
       '流れを追うだけなら、まとめて 1 つの処理として読み飛ばして構いません。',
     related: ['float', 'register'],
   },
+
+  /* ── 初心者向け基本コンセプト ──────────────────────────── */
+
+  function: {
+    term: '関数（処理のかたまり）',
+    read: 'かんすう / function',
+    aliases: ['function', 'メソッド', '処理', 'サブルーチン', 'func'],
+    short: '「ダメージを計算する」など、1つの仕事をまとめた手順書。',
+    body:
+      'アプリの動きは、小さな手順書（関数）をたくさん組み合わせてできています。' +
+      'たとえば「ダメージを計算する関数」「課金済みか確認する関数」のように、1つ1つに役割があります。\n\n' +
+      '関数は「入力（引数）」を受け取り、計算や判定をして、最後に「結果（返り値）」を返します。' +
+      '中身を1行ずつ読む前に、まず「何を受け取って、何を返す関数か」をつかむのがコツです。',
+    related: ['argument', 'returnvalue', 'caller', 'callee', 'call'],
+  },
+
+  argument: {
+    term: '引数（入力データ）',
+    read: 'ひきすう / argument',
+    aliases: ['argument', 'param', 'パラメータ', '入力', '入力データ'],
+    short: '関数を呼ぶときに渡す材料（入力の値）。',
+    body:
+      '「ダメージを計算する」関数なら、攻撃力や防御力のように外から渡す材料が引数です。\n\n' +
+      '画面の初心者向け表示では「1番目の入力」「2番目の入力」のように言い換えています。' +
+      '技術的には x0・x1… という入れ物で渡されますが、名前を覚える必要はありません。',
+    related: ['function', 'returnvalue', 'abi'],
+  },
+
+  returnvalue: {
+    term: '返り値（戻り値）',
+    read: 'かえりち / return value',
+    aliases: ['return value', 'return', '戻り値', '結果', '出力'],
+    short: '関数が仕事を終えたあとに呼び出し元へ返す答え。',
+    body:
+      '計算結果の数値や、「成功した（1）／失敗した（0）」といった判定結果が返り値です。\n\n' +
+      'たとえば「購入済みか調べる関数」の返り値を常に 1 に書き換えると、呼び出し元からは常に「購入済み」に見えるようになります。',
+    related: ['function', 'caller', 'patch'],
+  },
+
+  caller: {
+    term: '呼び出し元',
+    read: 'よびだしもと / caller',
+    aliases: ['caller', 'コール元', '親関数', '呼び出し側'],
+    short: 'いま見ている関数を呼び出している側の処理。',
+    body:
+      '「この関数がどんな場面で使われるか」を知りたいときは、呼び出し元（caller）をたどります。\n\n' +
+      '関数単体では意味が分からなくても、呼び出し元を見ると「ボタンを押したとき」「ダメージを受けたとき」など場面がはっきりします。',
+    related: ['callee', 'function', 'call'],
+  },
+
+  callee: {
+    term: '呼び出し先',
+    read: 'よびだしさき / callee',
+    aliases: ['callee', 'コール先', '子関数', '呼ばれる側'],
+    short: 'いま見ている関数の中から呼び出している別の処理。',
+    body:
+      '大きな関数は、細かい仕事を別の関数（呼び出し先）に任せています。\n\n' +
+      '呼び出し先の名前（保存・通信・比較など）を見るだけで、元の関数が何をしているかおおよそ見当がつきます。',
+    related: ['caller', 'function', 'call'],
+  },
+
+  patch: {
+    term: 'パッチ（書き換え）',
+    read: 'patch',
+    aliases: ['書き換え', 'バイナリパッチ', '改造', 'NOP', '差し替え'],
+    short: '命令や数値を少しだけ書き換えて、動きを変えること。',
+    body:
+      '条件分岐を常に通過させたり、返り値を固定したり、計算に使う数値を変えたりする操作をパッチと呼びます。\n\n' +
+      'いきなり書き換える前に、「ここを変えると何が起きるか」とエミュレータでのお試し実行を確認すると安全です。',
+    related: ['branch', 'returnvalue', 'emulator'],
+  },
+
+  emulator: {
+    term: 'エミュレータ（仮想実行）',
+    read: 'emulate / emulator',
+    aliases: ['emulate', 'エミュレート', 'シミュレーション', 'お試し実行', '仮想実行'],
+    short: '実機を使わず、アプリ内の関数を仮想的に動かして結果を見る機能。',
+    body:
+      '入力の値を仮に入れて「この関数を動かしたらどんな答えが返るか」をブラウザ上で試せます。\n\n' +
+      'アセンブリや C 言語を読めなくても、入力を変えて出力がどう変わるかを見れば、その関数の働きを体感で理解できます。',
+    related: ['function', 'argument', 'returnvalue', 'patch'],
+  },
+
+  offset: {
+    term: 'オフセット（先頭からの距離）',
+    read: 'offset',
+    aliases: ['ずらし幅', '相対位置', '+0x', '位置ずれ'],
+    short: 'あるデータの先頭から何バイト離れているかを表す位置番号。',
+    body:
+      'キャラクターのデータの中に「先頭から 0 バイト目に名前、16 バイト目に HP、32 バイト目に攻撃力」のように項目が並んでいます。' +
+      'この「何バイト目か」がオフセットです。\n\n' +
+      '+0x20 と書いてあったら「先頭から 32 バイト目の項目（属性）」という意味になります。',
+    related: ['field', 'memory', 'fileoffset'],
+  },
+
+  field: {
+    term: 'フィールド（属性・メンバー）',
+    read: 'field',
+    aliases: ['属性', 'プロパティ', 'メンバー変数', 'property', 'ivar'],
+    short: 'オブジェクトの中に保存されている1つ1つの項目（HP・所持金など）。',
+    body:
+      'プレイヤーやアイテムといったデータのまとまり（オブジェクト）が持っている個別の項目をフィールドと呼びます。\n\n' +
+      '名前が残っていれば「BattleManager の hp」のように表示され、名前が消されている場合は「このオブジェクトの属性」のように表示されます。',
+    related: ['offset', 'memory', 'stripped'],
+  },
+
+  pseudocode: {
+    term: '擬似C（読みやすいコード表示）',
+    read: 'ぎじシー / pseudocode',
+    aliases: ['pseudocode', 'デコンパイル', 'decompile', '擬似コード', 'C風コード'],
+    short: '機械語を、人間が読みやすい計算式や if 文の形に自動翻訳したもの。',
+    body:
+      'アセンブリは何十行にも分かれて読みにくいため、計算や条件分岐をまとめて「もし〜なら〜する」という形に整理したものが擬似Cです。\n\n' +
+      'C 言語を知らなくても、「日本語の要約」で全体をつかみ、「擬似C」で条件や数値の式を確認する使い方がおすすめです。',
+    related: ['assembly', 'disassembly', 'function'],
+  },
 };
 
 /** 用語の一覧（表示順）。 */
 export const GLOSSARY_ORDER = [
+  'function', 'argument', 'returnvalue', 'branch', 'caller', 'callee',
+  'patch', 'emulator', 'offset', 'field', 'pseudocode',
   'cpu', 'bit', 'byte', 'binary', 'hex', 'machinecode', 'assembly', 'disassembly',
   'mnemonic', 'operand', 'compiler',
   'register', 'memory', 'address', 'virtualaddress', 'fileoffset',
   'stack', 'sp', 'framepointer',
   'call', 'lr', 'abi', 'calleesaved', 'prologue', 'epilogue',
-  'branch', 'compare', 'flags', 'loop', 'indirect',
+  'compare', 'flags', 'loop', 'indirect',
   'immediate', 'twoscomplement', 'signedness', 'endian',
   'bitwise', 'mask', 'shift', 'bitfield',
   'adrp', 'pcrelative', 'literalpool', 'data',
@@ -828,7 +950,7 @@ export const GLOSSARY_ORDER = [
 ];
 
 export function glossaryEntry(id) {
-  return GLOSSARY[id] || null;
+  return Object.hasOwn(GLOSSARY, id) ? GLOSSARY[id] : null;
 }
 
 /**
@@ -843,7 +965,8 @@ export function searchGlossary(query) {
   for (const id of GLOSSARY_ORDER) {
     const e = GLOSSARY[id];
     if (!e) continue;
-    if ((id + ' ' + e.term + ' ' + (e.read || '')).toLowerCase().includes(q)) head.push(id);
+    const aliasText = Array.isArray(e.aliases) ? e.aliases.join(' ') : '';
+    if ((id + ' ' + e.term + ' ' + (e.read || '') + ' ' + aliasText).toLowerCase().includes(q)) head.push(id);
     else if ((e.short + ' ' + e.body).toLowerCase().includes(q)) rest.push(id);
   }
   return head.concat(rest);

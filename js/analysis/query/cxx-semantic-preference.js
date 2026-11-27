@@ -5,24 +5,55 @@ import { cxxQueryTokens, cxxRecoveryTokens } from '../cxx/query-recovery.js';
 import { isCxxMemberField, isCxxMemberIndex } from '../cxx/member-index.js';
 import { isCanonicalCppMemberEvidence, isCanonicalCppReceiverEvidence, cxxBinarySymbolNameAt } from '../cxx/object-evidence.js';
 
-export function cxxSemanticScores(query, views) {
+const CXX_CTOR_RE = /^~?([A-Za-z_]\w*)$/;
+const CXX_MUTATOR_RE = /^(?:set|add|sub|inc|dec|apply|take|spend|consume|earn|gain|modify|update|change|reset|init|charge|drain)/i;
+
+export function cxxSemanticScores(query, views, { goal = null } = {}) {
   if (!Array.isArray(views) || views.length > 400) return [];
   const tokens = new Set(cxxQueryTokens(query));
+  const wantsStore = Boolean(goal?.expects?.store || ['increase', 'decrease', 'set'].includes(goal?.query?.action));
+  // Count how many distinct members of the same class each function touches (fan-out dilution).
+  const funcMemberCounts = new Map();
+  for (const view of views) {
+    if (view?.source !== 'cxx') continue;
+    for (const ctx of (view.functionContexts ?? []).slice(0, 64)) {
+      const fid = `${view.className || ''}@${ctx.address || ctx.name || ''}`;
+      funcMemberCounts.set(fid, (funcMemberCounts.get(fid) || 0) + 1);
+    }
+  }
   return views.map((view, index) => {
     let score = 0;
     if (view?.source === 'cxx' && view.conflict !== true) {
+      const leafClass = String(view.className || '').split('::').at(-1) || '';
       const owner = cxxQueryTokens(view.className);
       const classHits = owner.filter(token => tokens.has(token)).length;
-      let contextScore = 0;
+      let bestGetter = 0;
+      let bestSetter = 0;
+      let bestOther = 0;
       for (const ctx of (view.functionContexts ?? []).slice(0, 64)) {
         const method = ctx.name ? (demangleCxx(ctx.name) ?? ctx.name).split('(')[0].split('::').at(-1) : '';
+        const isCtorOrDtor = Boolean(leafClass && (method === leafClass || method === '~' + leafClass));
         const hits = cxxQueryTokens(method).filter(token => tokens.has(token) && !owner.includes(token)).length;
-        const returned=ctx.accessRoles?.includes('return-input')
-          ||ctx.accessRoles?.includes('computed-return-input')&&ctx.returnedMemberCount===1
-            &&ctx.returnExpressionIncomplete!==true;
-        contextScore = Math.max(contextScore, 4 * hits * (returned ? 2 : 1));
+        const fid = `${view.className || ''}@${ctx.address || ctx.name || ''}`;
+        const fanOut = funcMemberCounts.get(fid) || 1;
+        const dilution = fanOut > 3 ? 1 / Math.sqrt(fanOut / 2) : 1;
+        const ctorScale = isCtorOrDtor ? 0.35 : 1;
+        const returned = ctx.accessRoles?.includes('return-input')
+          || (ctx.accessRoles?.includes('computed-return-input') && ctx.returnedMemberCount === 1
+            && ctx.returnExpressionIncomplete !== true);
+        const hasWrite = (ctx.writtenArgumentRegisters?.length > 0)
+          || ctx.accessRoles?.includes('store-value')
+          || ctx.accessRoles?.includes('write')
+          || CXX_MUTATOR_RE.test(method);
+        const base = 4 * hits * dilution * ctorScale;
+        if (returned) bestGetter = Math.max(bestGetter, base * 2);
+        else if (hasWrite && !isCtorOrDtor) bestSetter = Math.max(bestSetter, base * (wantsStore ? 2.2 : 1.6));
+        else bestOther = Math.max(bestOther, base);
       }
-      score = 2 * classHits + contextScore;
+      // Combine getter + setter with damping instead of discarding one via Math.max.
+      const primary = Math.max(bestGetter, bestSetter, bestOther);
+      const pairBonus = (bestGetter > 0 && bestSetter > 0) ? Math.min(bestGetter, bestSetter) * 0.45 : 0;
+      score = 2 * classHits + primary + pairBonus;
     }
     return Object.freeze({ key: view?.key, index, score });
   });
@@ -31,9 +62,9 @@ export function cxxSemanticScores(query, views) {
 // Prospective comparator: an explicitly mentioned owning object precedes an
 // action word in an unrelated helper class. No offsets, gold names, particular
 // classes, learned confidence cutoffs, or external answers enter this rule.
-export function cxxObjectSemanticScores(query, views) {
+export function cxxObjectSemanticScores(query, views, opts = {}) {
   const tokens = new Set(cxxRecoveryTokens(query));
-  return cxxSemanticScores(query, views).map(row => Object.freeze({ ...row,
+  return cxxSemanticScores(query, views, opts).map(row => Object.freeze({ ...row,
     objectMatches: views[row.index]?.conflict ? 0
       : cxxRecoveryTokens(views[row.index]?.className?.split('::').at(-1))
         .filter(token => tokens.has(token)).length }));
@@ -84,7 +115,7 @@ export function cxxSemanticViews(candidates, symbols) {
   });
 }
 
-export function withCxxSemanticPreference(query, local, symbols, {policy='legacy'}={}) {
+export function withCxxSemanticPreference(query, local, symbols, {policy='legacy', goal=null}={}) {
   if(!['legacy','object-context-v4'].includes(policy))return local;
   if (!local || ['confirmed', 'likely'].includes(local.verdict)
     || !Array.isArray(local.candidates) || !local.candidates.length
@@ -92,7 +123,7 @@ export function withCxxSemanticPreference(query, local, symbols, {policy='legacy
   try {
     const views = cxxSemanticViews(local.candidates, symbols);
     if (!views || views.some(view => !view)) return local;
-    const scores = (policy==='object-context-v4'?cxxObjectSemanticScores:cxxSemanticScores)(query, views)
+    const scores = (policy==='object-context-v4'?cxxObjectSemanticScores:cxxSemanticScores)(query, views, { goal })
       .sort(compareCxxSemanticScores);
     if (!scores.length || scores[0].score <= 0 && (scores[0].objectMatches??0)<=0) return local;
     const candidates = scores.map(row => local.candidates[row.index]);
@@ -104,7 +135,7 @@ export function withCxxSemanticPreference(query, local, symbols, {policy='legacy
       changeSites: top === local.top ? local.changeSites : (top.sites ?? []),
       semanticPreference: Object.freeze({ source: 'binary-method-context', verdict: 'weak-preference',
         evidenceTopKey: local.top?.key ?? null, selectedKey: top.key,
-        decisive: scores.length === 1 || scores[0].score > scores[1].score,
+        decisive: scores.length === 1 || scores[0].score > scores[1].score || (policy === 'object-context-v4' && scores[0].score === scores[1].score && (scores[0].objectMatches ?? 0) > (scores[1].objectMatches ?? 0)),
         scores: Object.freeze(scores) }),
     };
   } catch (_) {
@@ -131,7 +162,12 @@ export function withCxxReturnedMemberPreference(local, selection, symbols, index
     if (!Array.isArray(shortlist) || shortlist.length>255 || !shortlist.length
       || new Set(shortlist.map(c=>c.key)).size!==shortlist.length
       || shortlist.some(c=>!local.candidates.includes(c))) return local;
-    const address=BigInt(selection.selectedAddress), owner=index.classInfo(selection.selectedClass);
+    const rawAddr = selection.selectedAddress;
+    const address = typeof rawAddr === 'bigint' ? rawAddr
+      : typeof rawAddr === 'number' && Number.isSafeInteger(rawAddr) ? BigInt(rawAddr)
+      : typeof rawAddr === 'string' && /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(rawAddr.trim()) ? BigInt(rawAddr.trim())
+      : -1n;
+    const owner=index.classInfo(selection.selectedClass);
     if (!owner || typeof selection.selectedClass!=='string' || address<0n
       || owner.ivars.length>400) return local;
     const views=cxxSemanticViews(local.candidates,symbols);

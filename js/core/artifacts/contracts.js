@@ -84,7 +84,10 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
     };
   }
   if (value instanceof ArrayBuffer) return { $bytes: Array.from(new Uint8Array(value)) };
-  if (value instanceof Date) return { $date: value.toISOString() };
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw new ArtifactError('artifact-key-invalid-date', 'Artifact key Date must be valid');
+    return { $date: value.toISOString() };
+  }
   if (typeof value !== 'object') return String(value);
   if (seen.has(value)) throw new ArtifactError('artifact-key-cyclic-value');
   seen.add(value);
@@ -224,6 +227,37 @@ function randomViewToken(index) {
   return `${index}-${noise}`;
 }
 
+function isArrayIndexKey(key) {
+  const len = key.length;
+  if (len === 0 || len > 10) return false;
+  const c0 = key.charCodeAt(0);
+  if (c0 < 0x30 || c0 > 0x39) return false;
+  if (c0 === 0x30) return len === 1;
+  let n = c0 - 0x30;
+  for (let i = 1; i < len; i += 1) {
+    const c = key.charCodeAt(i);
+    if (c < 0x30 || c > 0x39) return false;
+    n = n * 10 + (c - 0x30);
+  }
+  return n < 0xffffffff;
+}
+
+function canonicalJsonKeys(value) {
+  const keys = Object.keys(value);
+  const len = keys.length;
+  if (len <= 1) return keys;
+  const indexKeys = [];
+  const otherKeys = [];
+  for (let i = 0; i < len; i += 1) {
+    const k = keys[i];
+    if (isArrayIndexKey(k)) indexKeys.push(k);
+    else otherKeys.push(k);
+  }
+  indexKeys.sort((a, b) => Number(a) - Number(b));
+  otherKeys.sort();
+  return [...indexKeys, ...otherKeys];
+}
+
 function payloadViewSlice(value) {
   if (value instanceof Uint8Array) return value;
   try { return new Uint8Array(value.buffer, value.byteOffset, value.byteLength); }
@@ -262,7 +296,7 @@ function scanForStreamedViews(value, refs, seen, sorted) {
   }
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return false;
-  for (const key of Object.keys(value)) {
+  for (const key of canonicalJsonKeys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || !('value' in descriptor)) return false;
     if (!scanForStreamedViews(value[key], refs, seen, sorted)) return false;
@@ -291,7 +325,14 @@ function insertViewMarkers(value, tokens, slot) {
   if (value instanceof Set) return new Set([...value].map((entry) => insertViewMarkers(entry, tokens, slot)));
   if (Array.isArray(value)) return value.map((entry) => insertViewMarkers(entry, tokens, slot));
   const out = {};
-  for (const key of Object.keys(value)) out[key] = insertViewMarkers(value[key], tokens, slot);
+  for (const key of canonicalJsonKeys(value)) {
+    Object.defineProperty(out, key, {
+      value: insertViewMarkers(value[key], tokens, slot),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
   return out;
 }
 
@@ -359,12 +400,12 @@ export function encodeArtifactPayload(payload) {
   return encoder.encode(stableStringify(payload));
 }
 export function decodeArtifactPayload(bytes) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const view = normalizeArtifactPayloadBytes(bytes);
   try { return JSON.parse(decoder.decode(view)); }
   catch (error) { throw new ArtifactCorruptionError('artifact-payload-malformed', 'Artifact payload is not valid canonical JSON', { cause:String(error) }); }
 }
 export function artifactPayloadChecksum(bytes) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const view = normalizeArtifactPayloadBytes(bytes);
   return stableDigestBytes(view);
 }
 

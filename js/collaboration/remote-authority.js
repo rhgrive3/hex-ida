@@ -635,11 +635,18 @@ export class RemoteCollaborationGate {
     if (!snap) return Object.freeze({ status: 'rejected', reason: 'remote-ingress-snapshot-required' });
     this.seenMessages.add(snap.messageId);
     this.seenEnvelopeIds.add(snap.envelopeId);
+    this._replayWindowHead ??= 0;
     this.replayWindowOrder.push(Object.freeze({ messageId: snap.messageId, envelopeId: snap.envelopeId }));
-    while (this.replayWindowOrder.length > this.replayWindow) {
-      const oldest = this.replayWindowOrder.shift();
+    while (this.replayWindowOrder.length - this._replayWindowHead > this.replayWindow) {
+      const oldest = this.replayWindowOrder[this._replayWindowHead];
+      this.replayWindowOrder[this._replayWindowHead] = undefined;
+      this._replayWindowHead += 1;
       this.seenMessages.delete(oldest.messageId);
       this.seenEnvelopeIds.delete(oldest.envelopeId);
+    }
+    if (this._replayWindowHead > 0 && this._replayWindowHead * 2 >= this.replayWindowOrder.length) {
+      this.replayWindowOrder = this.replayWindowOrder.slice(this._replayWindowHead);
+      this._replayWindowHead = 0;
     }
     this.lastSequenceByActor.set(snap.actorIdentity, snap.sequence);
     return Object.freeze({ status: 'accepted', envelopeId: snap.envelopeId, operationCount: snap.operations.length });

@@ -6,6 +6,25 @@ const CANONICAL_VERDICTS = new Set([
   'confirmed', 'supported', 'likely', 'unverified', 'contradicted', 'unknown', 'inconclusive',
 ]);
 const MAX_EVIDENCE_ROWS = 5_000;
+const MAX_UPSTREAM_TOTAL_CACHE = 64;
+
+function abortIfNeeded(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error('AbortError');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function upstreamTotalCacheKey(snapshot, query) {
+  const snapshotId = typeof snapshot?.snapshotId === 'string' && snapshot.snapshotId ? snapshot.snapshotId : null;
+  if (!snapshotId) return null;
+  try {
+    return `${snapshotId}:${JSON.stringify(query ?? {}, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v))}`;
+  } catch {
+    return null;
+  }
+}
 
 function addressOf(value) {
   if (typeof value === 'bigint') return value >= 0n ? value : null;
@@ -67,6 +86,61 @@ function combinedCompleteness(base, functionResult, baseHasNext) {
 
 export function createAppAnalysisQueryAdapter(app) {
   const base = createProductAdapter(app);
+  const upstreamTotals = new Map();
+  const rememberUpstreamTotal = (key, total) => {
+    if (!key || total == null) return;
+    upstreamTotals.delete(key);
+    upstreamTotals.set(key, total);
+    while (upstreamTotals.size > MAX_UPSTREAM_TOTAL_CACHE) {
+      const oldest = upstreamTotals.keys().next().value;
+      if (oldest === undefined) break;
+      upstreamTotals.delete(oldest);
+    }
+  };
+  const resolveUnknownUpstreamTotal = async (snapshot, query, upperBound, options) => {
+    const key = upstreamTotalCacheKey(snapshot, query);
+    if (key && upstreamTotals.has(key)) {
+      const cached = upstreamTotals.get(key);
+      if (cached <= upperBound) return { total: cached, invalid: false };
+    }
+    // Upstream omitted page.total and returned an empty page past the end of
+    // its stream (upstreamOffset > 0). Binary-search [0, upperBound] with
+    // limit=1 probes to find the exact upstream boundary so suffixOffset
+    // advances monotonically instead of resetting to 0.
+    let lo = 0;
+    let hi = upperBound;
+    let steps = 0;
+    const MAX_BINARY_SEARCH_STEPS = 64;
+    while (lo < hi) {
+      if (++steps > MAX_BINARY_SEARCH_STEPS) return { total: null, invalid: true };
+      abortIfNeeded(options?.signal);
+      const mid = lo + Math.floor((hi - lo) / 2);
+      const probe = await base.evidence(snapshot, query, { offset: mid, limit: 1 }, options);
+      const probeTotal = pageOffset(probe?.page?.total);
+      if (probeTotal != null) {
+        rememberUpstreamTotal(key, probeTotal);
+        return { total: probeTotal, invalid: false };
+      }
+      const probeRows = Array.isArray(probe?.value) ? probe.value : [];
+      const rawProbeNext = probe?.page?.next ?? null;
+      const parsedProbeNext = rawProbeNext == null ? null : pageOffset(rawProbeNext);
+      if (rawProbeNext != null && (parsedProbeNext == null || parsedProbeNext <= mid)) {
+        return { total: null, invalid: true };
+      }
+      if (probeRows.length > 0) {
+        if (parsedProbeNext == null) {
+          const exact = mid + probeRows.length;
+          rememberUpstreamTotal(key, exact);
+          return { total: exact, invalid: false };
+        }
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    rememberUpstreamTotal(key, lo);
+    return { total: lo, invalid: false };
+  };
   return {
     ...base,
     async evidence(snapshot, query = {}, page = {}, options = {}) {
@@ -93,25 +167,9 @@ export function createAppAnalysisQueryAdapter(app) {
       const baseResult = await base.evidence(snapshot, query, { offset: upstreamOffset, limit: upstreamLimit }, options);
       const baseRows = (Array.isArray(baseResult?.value) ? baseResult.value : []).map((item) => projectEvidence('evidence', item));
 
-      let functionResult = null;
-      const suffix = [];
-      if (address != null) {
-        functionResult = await base.functionById(snapshot, address, options);
-        const value = functionResult?.value ?? null;
-        for (const evidence of Array.isArray(value?.evidence) ? value.evidence : []) suffix.push(projectEvidence('function-analysis', evidence, { address }));
-        for (const proof of Array.isArray(value?.rewriteProof) ? value.rewriteProof : []) suffix.push(projectEvidence('rewrite-proof', proof, { address, title: typeof proof?.rule === 'string' ? proof.rule : typeof proof?.name === 'string' ? proof.name : 'Decompiler rewrite' }));
-        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'unverified'));
-      }
-
-      // Preserve the existing supplemental row budget without applying it to
-      // upstream pagination. The old global cap made upstream row 5001+ forever
-      // unreachable; now only locally materialized supplemental evidence is capped.
-      const supplementalCapped = prefix.length + suffix.length > MAX_EVIDENCE_ROWS;
-      if (supplementalCapped) suffix.length = Math.max(0, MAX_EVIDENCE_ROWS - prefix.length);
-
       const rawBaseNext = baseResult?.page?.next ?? null;
       const parsedBaseNext = rawBaseNext == null ? null : pageOffset(rawBaseNext);
-      const baseContinuationInvalid = rawBaseNext != null && (parsedBaseNext == null || parsedBaseNext <= upstreamOffset);
+      let baseContinuationInvalid = rawBaseNext != null && (parsedBaseNext == null || parsedBaseNext <= upstreamOffset);
       const baseNext = baseContinuationInvalid ? null : parsedBaseNext;
       const baseHasNext = baseNext != null;
       const baseTotal = pageOffset(baseResult?.page?.total);
@@ -128,16 +186,49 @@ export function createAppAnalysisQueryAdapter(app) {
 
       let upstreamTotal = null;
       if (!baseHasNext && !baseContinuationInvalid) {
-        upstreamTotal = baseTotal ?? (upstreamOffset + baseRows.length);
-        if (remaining > 0) {
-          const suffixStart = prefix.length + upstreamTotal;
-          const localCursor = requested.offset + value.length;
-          const suffixOffset = Math.max(0, localCursor - suffixStart);
-          value.push(...suffix.slice(suffixOffset, suffixOffset + remaining));
+        const cacheKey = upstreamTotalCacheKey(snapshot, query);
+        if (baseTotal != null) {
+          upstreamTotal = baseTotal;
+          rememberUpstreamTotal(cacheKey, upstreamTotal);
+        } else if (upstreamOffset === 0 || baseRows.length > 0) {
+          upstreamTotal = upstreamOffset + baseRows.length;
+          rememberUpstreamTotal(cacheKey, upstreamTotal);
+        } else {
+          const resolved = await resolveUnknownUpstreamTotal(snapshot, query, upstreamOffset, options);
+          if (resolved.invalid) baseContinuationInvalid = true;
+          else upstreamTotal = resolved.total;
         }
       }
+      const localCursorBeforeSuffix = requested.offset + value.length;
+      const needsSuffix = address != null
+        && !baseHasNext
+        && !baseContinuationInvalid
+        && (remaining > 0 || localCursorBeforeSuffix >= prefix.length + upstreamTotal);
 
-      let completeness = combinedCompleteness(baseResult, functionResult, baseHasNext || baseContinuationInvalid);
+      let functionResult = null;
+      const suffix = [];
+      if (needsSuffix) {
+        functionResult = await base.functionById(snapshot, address, options);
+        const value = functionResult?.value ?? null;
+        for (const evidence of Array.isArray(value?.evidence) ? value.evidence : []) suffix.push(projectEvidence('function-analysis', evidence, { address }));
+        for (const proof of Array.isArray(value?.rewriteProof) ? value.rewriteProof : []) suffix.push(projectEvidence('rewrite-proof', proof, { address, title: typeof proof?.rule === 'string' ? proof.rule : typeof proof?.name === 'string' ? proof.name : 'Decompiler rewrite' }));
+        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'unverified'));
+      }
+
+      // Preserve the existing supplemental row budget without applying it to
+      // upstream pagination. The old global cap made upstream row 5001+ forever
+      // unreachable; now only locally materialized supplemental evidence is capped.
+      const supplementalCapped = prefix.length + suffix.length > MAX_EVIDENCE_ROWS;
+      if (supplementalCapped) suffix.length = Math.max(0, MAX_EVIDENCE_ROWS - prefix.length);
+
+      if (needsSuffix && remaining > 0) {
+        const suffixStart = prefix.length + upstreamTotal;
+        const suffixOffset = Math.max(0, localCursorBeforeSuffix - suffixStart);
+        value.push(...suffix.slice(suffixOffset, suffixOffset + remaining));
+      }
+
+      const suffixDeferred = address != null && !needsSuffix;
+      let completeness = combinedCompleteness(baseResult, functionResult, baseHasNext || baseContinuationInvalid || suffixDeferred);
       if (supplementalCapped) completeness = 'truncated';
       if ((prefix.length || baseRows.length || suffix.length) && completeness === 'unsupported') completeness = 'partial';
 
@@ -145,7 +236,7 @@ export function createAppAnalysisQueryAdapter(app) {
       const localCursor = requested.offset + value.length;
       if (value.length === requested.limit && localCursor <= prefix.length) {
         next = localCursor;
-      } else if (baseHasNext && consumedBaseRows > 0) {
+      } else if (baseHasNext && (consumedBaseRows > 0 || baseNext > upstreamOffset)) {
         next = prefix.length + baseNext;
       } else if (!baseContinuationInvalid && upstreamTotal != null) {
         const availableTotal = prefix.length + upstreamTotal + suffix.length;

@@ -128,34 +128,73 @@ export async function startEmbedChildRuntime(options = {}) {
     timeoutMs: options.attachTimeoutMs,
     allowedOrigins: options.allowedOrigins,
   }));
-  const bridge = stageSync('embed bridge proxy', () => createBridge({ port: attach.port }));
-  // The optional factory is an existing isolated-test seam, never the production default.
-  const devWorkerClient = createDevClient ? createOptionalDevWorkerClient(createDevClient, attach.port) : null;
-  globalObject.__HEX_CHATGPT_BRIDGE__ = bridge;
-  if (devWorkerClient) globalObject.__HEX_DEV_WORKER_CLIENT__ = devWorkerClient;
-  globalObject.__HEX_API_BASE__ = locationRef.origin;
-  globalObject.__HEX_AI_PROVIDER__ = readInitialProvider(locationRef, globalObject);
-
-  await stage('embed bridge cache refresh', () => bridge.refresh?.({ timeoutMs: options.refreshTimeoutMs }));
-  stageSync('embed UI root', () => {
-    setRoot(documentRef.documentElement);
-    if (documentRef?.documentElement && globalObject.navigator?.language) documentRef.documentElement.lang = globalObject.navigator.language;
-  });
-  stageSync('embed canonical CSS', () => installCanonicalCss(documentRef, cssText));
-  await stage('embed protected workers', () => installWorkers());
-  const authContext = await initializeAuth({ port: attach.port, apiOrigin: locationRef.origin });
-  try {
-  await stage('embed app import', () => importApp());
-  await stage('embed ux import', () => importUx());
-  await stage('embed app readiness', () => waitReady({
-    document: documentRef,
-    globalObject,
-    timeoutMs: options.appReadyTimeoutMs,
-    requiredSelectors: options.requiredSelectors,
+  const GLOBAL_KEYS = ['__HEX_CHATGPT_BRIDGE__', '__HEX_DEV_WORKER_CLIENT__', '__HEX_API_BASE__', '__HEX_AI_PROVIDER__'];
+  const savedGlobals = GLOBAL_KEYS.map((key) => ({
+    key,
+    hadOwn: Object.prototype.hasOwnProperty.call(globalObject, key),
+    value: globalObject[key],
   }));
-  stageSync('embed ready', () => sendReady(attach.port, { nonce: attach.nonce }));
-  return Object.freeze({ bridge, devWorkerClient: devWorkerClient || authContext.childExtension?.workerClient || null, authContext, nonce: attach.nonce, port: attach.port, generation, sandboxToken: attach.sandboxToken || null, close() { authContext.close(); bridge.close?.(); devWorkerClient?.close?.(); } });
-  } catch (error) { authContext.close(); throw error; }
+  const restoreGlobals = () => {
+    for (const { key, hadOwn, value } of savedGlobals) {
+      try {
+        if (hadOwn) globalObject[key] = value;
+        else delete globalObject[key];
+      } catch {}
+    }
+  };
+  const safeClose = (resource) => { try { resource?.close?.(); } catch {} };
+
+  let bridge = null;
+  let devWorkerClient = null;
+  let authContext = null;
+  try {
+    bridge = stageSync('embed bridge proxy', () => createBridge({ port: attach.port }));
+    // The optional factory is an existing isolated-test seam, never the production default.
+    devWorkerClient = createDevClient ? createOptionalDevWorkerClient(createDevClient, attach.port) : null;
+    globalObject.__HEX_CHATGPT_BRIDGE__ = bridge;
+    if (devWorkerClient) globalObject.__HEX_DEV_WORKER_CLIENT__ = devWorkerClient;
+    globalObject.__HEX_API_BASE__ = locationRef.origin;
+    globalObject.__HEX_AI_PROVIDER__ = readInitialProvider(locationRef, globalObject);
+
+    await stage('embed bridge cache refresh', () => bridge.refresh?.({ timeoutMs: options.refreshTimeoutMs }));
+    stageSync('embed UI root', () => {
+      setRoot(documentRef.documentElement);
+      if (documentRef?.documentElement && globalObject.navigator?.language) documentRef.documentElement.lang = globalObject.navigator.language;
+    });
+    stageSync('embed canonical CSS', () => installCanonicalCss(documentRef, cssText));
+    await stage('embed protected workers', () => installWorkers());
+    authContext = await initializeAuth({ port: attach.port, apiOrigin: locationRef.origin });
+    await stage('embed app import', () => importApp());
+    await stage('embed ux import', () => importUx());
+    await stage('embed app readiness', () => waitReady({
+      document: documentRef,
+      globalObject,
+      timeoutMs: options.appReadyTimeoutMs,
+      requiredSelectors: options.requiredSelectors,
+    }));
+    stageSync('embed ready', () => sendReady(attach.port, { nonce: attach.nonce }));
+    return Object.freeze({
+      bridge,
+      devWorkerClient: devWorkerClient || authContext.childExtension?.workerClient || null,
+      authContext,
+      nonce: attach.nonce,
+      port: attach.port,
+      generation,
+      sandboxToken: attach.sandboxToken || null,
+      close() {
+        safeClose(authContext);
+        safeClose(bridge);
+        safeClose(devWorkerClient);
+      },
+    });
+  } catch (error) {
+    safeClose(authContext);
+    safeClose(bridge);
+    safeClose(devWorkerClient);
+    safeClose(attach.port);
+    restoreGlobals();
+    throw error;
+  }
 }
 
 export function installCanonicalCss(documentRef, cssText) {

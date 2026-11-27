@@ -76,10 +76,17 @@ let fallbackInstallSeq = 1;
 let scriptSandboxPromise = null;
 function loadScriptSandbox() {
   if (!scriptSandboxPromise) {
-    scriptSandboxPromise = Promise.all([
+    const pending = Promise.all([
       import('./script.js'),
       import('./sandbox.js'),
-    ]).then(([script, sandbox]) => ({ createApi: script.createApi, runInSandbox: sandbox.runInSandbox }));
+    ]).then(
+      ([script, sandbox]) => ({ createApi: script.createApi, runInSandbox: sandbox.runInSandbox }),
+      (err) => {
+        if (scriptSandboxPromise === pending) scriptSandboxPromise = null;
+        throw err;
+      },
+    );
+    scriptSandboxPromise = pending;
   }
   return scriptSandboxPromise;
 }
@@ -110,6 +117,19 @@ function saveRegistryOrRollback(host, snapshot) {
   return saved;
 }
 
+function validatePluginUrl(raw) {
+  let parsed;
+  try {
+    parsed = new URL(String(raw ?? '').trim());
+  } catch {
+    return { ok: false, error: '有効な HTTPS URL を指定してください。' };
+  }
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, error: 'プラグインの URL は https:// のみ使用できます。' };
+  }
+  return { ok: true, href: parsed.href };
+}
+
 async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
   const rawLength = res.headers?.get?.('content-length');
   if (rawLength != null && rawLength !== '') {
@@ -117,6 +137,7 @@ async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
     if (Number.isFinite(n) && n > maxBytes) throw new Error('PLUGIN_TOO_LARGE');
   }
   if (!res.body?.getReader) {
+    if (rawLength == null || String(rawLength).trim() === '') throw new Error('PLUGIN_UNBOUNDED_RESPONSE');
     const n = Number(rawLength);
     if (!Number.isFinite(n) || n < 0 || n > maxBytes) throw new Error('PLUGIN_UNBOUNDED_RESPONSE');
     const text = await res.text();
@@ -184,6 +205,7 @@ export class PluginHost {
               || sourceBytes(p.source) > MAX_PLUGIN_SOURCE_BYTES) {
               await this.install(p.source, p.origin || '保存されたもの', {
                 silent: true,
+                fromLoad: true,
                 installationId: p.installationId,
                 enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
               });
@@ -202,6 +224,7 @@ export class PluginHost {
               origin: p.origin || '保存されたもの',
             }));
             const added = all.filter((plugin) => enabled.has(plugin.index));
+            this.plugins = this.plugins.filter((existing) => existing.installationId !== installationId);
             this.plugins.push(...added);
             this.installations.set(installationId, {
               v: 3,
@@ -224,6 +247,7 @@ export class PluginHost {
           }
           await this.install(p.source, p.origin || '保存されたもの', {
             silent: true,
+            fromLoad: true,
             installationId: p.installationId || newInstallId(),
             enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
           });
@@ -274,6 +298,7 @@ export class PluginHost {
   }
 
   async install(source, origin, opts = {}) {
+    if (!opts.fromLoad && this.ready) await this.ready;
     if (typeof source !== 'string' || !source.trim()) return { error: '中身が空です。' };
     if (sourceBytes(source) > MAX_PLUGIN_SOURCE_BYTES) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
     const { runInSandbox } = await loadScriptSandbox();
@@ -333,6 +358,7 @@ export class PluginHost {
       definitionsDigest,
     });
 
+    this.plugins = this.plugins.filter((existing) => existing.installationId !== installationId);
     this.plugins.push(...added);
     if (!opts.silent) {
       const saved = saveRegistryOrRollback(this, before);
@@ -344,6 +370,8 @@ export class PluginHost {
   }
 
   async installFromUrl(url, options = {}) {
+    const checked = validatePluginUrl(url);
+    if (!checked.ok) return { error: checked.error };
     // #8940: the byte cap only advances when the server actually produces bytes,
     // so a host that never returns headers, or returns headers then stalls the
     // body stream, left the returned Promise pending forever and pinned the
@@ -374,9 +402,20 @@ export class PluginHost {
       }, deadlineMs);
     }
     const exchange = (async () => {
-      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal });
-      if (!res.ok) return { error: '取り寄せられませんでした（' + res.status + '）。' };
-      return { ok: true, source: await boundedResponseText(res), origin: url, needsConfirmation: true };
+      const res = await fetch(checked.href, { credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal });
+      const finalUrl = typeof res?.url === 'string' && res.url.trim() !== '' ? res.url.trim() : '';
+      if (finalUrl) {
+        const finalChecked = validatePluginUrl(finalUrl);
+        if (!finalChecked.ok) {
+          try { await res.body?.cancel?.(); } catch {}
+          return { error: 'リダイレクト先の URL は https:// のみ使用できます。' };
+        }
+      }
+      if (!res.ok) {
+        try { await res.body?.cancel?.(); } catch {}
+        return { error: '取り寄せられませんでした（' + res.status + '）。' };
+      }
+      return { ok: true, source: await boundedResponseText(res), origin: finalUrl || checked.href, needsConfirmation: true };
     })();
     // Never leave the losing side of the race as an unhandled rejection: a
     // deadline/caller abort aborts the fetch, but a stalled reader that ignores
@@ -397,11 +436,14 @@ export class PluginHost {
   }
 
   remove(id) {
-    const before = this.plugins.slice();
+    const before = snapshotRegistryState(this);
     this.plugins = this.plugins.filter((p) => p.id !== id);
-    const saved = this.save();
+    const referenced = new Set(this.plugins.map((p) => p.installationId));
+    for (const instId of [...this.installations.keys()]) {
+      if (!referenced.has(instId)) this.installations.delete(instId);
+    }
+    const saved = saveRegistryOrRollback(this, before);
     if (!saved.ok) {
-      this.plugins = before;
       return { ok: false, error: saved.error, persistenceError: true };
     }
     return { ok: true };
@@ -419,6 +461,7 @@ export class PluginHost {
   }
 
   async run(id, out, options = {}) {
+    if (this.ready) await this.ready;
     const p = this.plugins.find((x) => x.id === id);
     if (!p) return { error: 'そのプラグインが見つかりません。' };
     // The manifest check protects restore, but the public registry objects can

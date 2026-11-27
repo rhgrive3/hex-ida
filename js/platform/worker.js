@@ -3,10 +3,11 @@ import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
+import { IncrementalSha256 } from '../cache/content-identity.js';
 import { compileBytePattern } from './byte-search.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
-import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
+import { analyzeDecodedSemanticFunction, releaseDecoderRevalidationWorker } from '../targets/architecture/x86_64/semantic-function.js';
 import { analyzeSemanticFunction } from '../analysis/semantic-function.js';
 import { resolveMachOPointer } from '../binary/macho-dyld.js';
 
@@ -17,6 +18,7 @@ const SCAN_BLOCK = 256 * 1024;
 const SEARCH_LIMIT = 1000;
 const STRINGS_LIMIT = 500_000;
 const MAX_STRING_CHARS = 400;
+const SUBTLE_SHA256_MAX_BYTES = 64 * 1024 * 1024;
 const decoder = new TextDecoder('utf-8', { fatal: false });
 
 let file = null;
@@ -24,13 +26,83 @@ let source = null;
 let image = null;
 let descriptor = null;
 let regions = new Map();
+let vmRegionIndex = [];
+let vmRegionList = [];
+let vmRegionIndexDisjoint = true;
 let pointerImages = new Map();
 let currentEpoch = 0;
 let openChain = Promise.resolve();
 const active = new Map();
 const scheduled = new Set();
+const foregroundWaiters = new Set();
 
-function cooperativeYield() { return new Promise((resolve) => setTimeout(resolve, 0)); }
+function hasActiveForeground(epoch) {
+  for (const entry of active.values()) {
+    if (entry.epoch === epoch && entry.priority !== 'background') return true;
+  }
+  return false;
+}
+
+function notifyForegroundWaiters() {
+  if (!foregroundWaiters.size) return;
+  const waiters = [...foregroundWaiters];
+  foregroundWaiters.clear();
+  for (const wake of waiters) wake();
+}
+
+function isNonAllocableRegion(region) {
+  if (!region) return true;
+  if (region.alloc === true) return false;
+  if (region.alloc === false || region.source === 'unmapped-section') return true;
+  if (region.source === 'section-header' && region.flags != null) {
+    return (BigInt(region.flags) & 0x2n) === 0n;
+  }
+  if (image?.format === 'elf' && region.kind === 'section' && Array.isArray(image.sections)) {
+    const start = BigInt(region.vmAddr ?? 0);
+    const size = BigInt(region.size ?? 0);
+    const fileOffset = BigInt(region.fileOffset ?? 0);
+    const matched = image.sections.find((sec) =>
+      sec?.name === region.name
+      && BigInt(sec.address ?? 0) === start
+      && BigInt(sec.fileOffset ?? 0) === fileOffset
+      && BigInt(sec.fileSize ?? sec.size ?? 0) === size);
+    if (matched) {
+      if (matched.source === 'unmapped-section') return true;
+      if (matched.source === 'section-header') return (BigInt(matched.flags || 0) & 0x2n) === 0n;
+    }
+  }
+  if (region.kind === 'section' && region.read === false && region.write === false && region.exec === false) {
+    return true;
+  }
+  if (region.kind === 'section' && BigInt(region.vmAddr ?? 0) === 0n
+    && region.read !== true && region.write !== true && region.exec !== true) {
+    const name = String(region.section || region.name || '');
+    if (/^\.(?:symtab|strtab|shstrtab|comment|debug(?:_|$)|gnu_debug|note\.)/i.test(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function rebuildVmRegionIndex() {
+  const list = [];
+  for (const region of regions.values()) {
+    if (!region || region.id === 'raw' || region.zerofill) continue;
+    if (isNonAllocableRegion(region)) continue;
+    const start = BigInt(region.vmAddr);
+    const size = BigInt(region.size);
+    if (size <= 0n) continue;
+    list.push({ start, end: start + size, fileOffset: BigInt(region.fileOffset), region });
+  }
+  vmRegionList = list;
+  const sorted = [...list].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  let disjoint = true;
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].start < sorted[i - 1].end) { disjoint = false; break; }
+  }
+  vmRegionIndex = sorted;
+  vmRegionIndexDisjoint = disjoint;
+}
 
 function selectedFatSliceIndex(binaryImage) {
   const fat = binaryImage?.metadata?.fat;
@@ -43,13 +115,34 @@ function selectedFatSliceIndex(binaryImage) {
     && slice.cpu === selected.cpu
     && slice.subtype === selected.subtype);
 }
-async function waitForForegroundDrain(epoch) {
+async function waitForForegroundDrain(epoch, { scheduledEntry = null, signal = null } = {}) {
   // Background metadata performs many small paged reads. Do not enqueue the
   // next page while any interactive request for the same binary epoch is live.
   // A currently executing page is bounded, so foreground work is never held
-  // behind an unbounded metadata scan.
-  while ([...active.values()].some((entry) => entry.epoch === epoch && entry.priority !== 'background')) {
-    await cooperativeYield();
+  // behind an unbounded metadata scan. Exit early on cancellation or epoch change.
+  while (
+    epoch === currentEpoch
+    && !scheduledEntry?.cancelled
+    && !signal?.aborted
+    && hasActiveForeground(epoch)
+  ) {
+    await new Promise((resolve) => {
+      const wake = () => {
+        foregroundWaiters.delete(wake);
+        signal?.removeEventListener?.('abort', wake);
+        resolve();
+      };
+      foregroundWaiters.add(wake);
+      signal?.addEventListener?.('abort', wake, { once: true });
+      if (
+        epoch !== currentEpoch
+        || scheduledEntry?.cancelled
+        || signal?.aborted
+        || !hasActiveForeground(epoch)
+      ) {
+        wake();
+      }
+    });
   }
 }
 
@@ -68,12 +161,14 @@ self.onmessage = async (event) => {
     for (const entry of active.values()) {
       if (cancellationMatches(msg, entry)) entry.controller.abort();
     }
+    notifyForegroundWaiters();
     return;
   }
   const serialized = msg.t === 'open' || msg.t === 'detect';
   if (serialized) {
     currentEpoch = msg.epoch;
     for (const entry of active.values()) if (entry.epoch !== currentEpoch) entry.controller.abort();
+    notifyForegroundWaiters();
   }
   const scheduledEntry = { id:msg.id, epoch:msg.epoch, cancelled:false };
   scheduled.add(scheduledEntry);
@@ -81,7 +176,7 @@ self.onmessage = async (event) => {
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
     if (scheduledEntry.cancelled) throw new Error('Platform request cancelled.');
     const priority = msg.priority === 'background' ? 'background' : 'current';
-    if (priority === 'background') await waitForForegroundDrain(msg.epoch);
+    if (priority === 'background') await waitForForegroundDrain(msg.epoch, { scheduledEntry });
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
     if (scheduledEntry.cancelled) throw new Error('Platform request cancelled.');
     const controller = new AbortController();
@@ -89,7 +184,12 @@ self.onmessage = async (event) => {
     if (requestKey != null && active.has(requestKey)) throw new Error(`Duplicate active request id ${msg.id} for epoch ${msg.epoch}.`);
     if (requestKey != null) active.set(requestKey, { id: msg.id, epoch: msg.epoch, controller, priority });
     try { return await handle(msg, controller.signal); }
-    finally { if (requestKey != null && active.get(requestKey)?.controller === controller) active.delete(requestKey); }
+    finally {
+      if (requestKey != null && active.get(requestKey)?.controller === controller) {
+        active.delete(requestKey);
+        if (priority !== 'background') notifyForegroundWaiters();
+      }
+    }
   };
   try {
     const result = serialized ? openChain.then(execute, execute) : openChain.then(execute);
@@ -182,9 +282,11 @@ async function handle(msg, signal) {
     case 'fieldAccess': return msg.offsets ? { groups: Object.fromEntries((msg.offsets || []).map((x) => [String(x), []])), unsupported: true } : { results: [], unsupported: true };
     case 'valueShapes': return { groups: [], unsupported: true };
     case 'metadata': return metadataPage(msg, signal);
-    case 'hash': return { hash: await hashByteSource(source, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'hash', done, total }) }) };
+    case 'hash': return { hash: await hashByteSource(source?.__rawSource || source, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'hash', done, total }) }) };
+    case 'sha256':
+    case 'digest': return sha256File(msg, signal);
     case 'memoryStats': return memoryStats();
-    case 'cleanupMemory': source?.clear?.(); return memoryStats();
+    case 'cleanupMemory': source?.clear?.(); releaseDecoderRevalidationWorker(); return memoryStats();
     case 'probe': return { ok: true, capability: descriptor?.capability || null };
     default: throw new Error(`Unknown platform request: ${msg.t}`);
   }
@@ -192,7 +294,58 @@ async function handle(msg, signal) {
 
 function createSource(input) {
   const base = asByteSource(input, { maxReadLength: 8 * 1024 * 1024 });
-  return new CachedByteSource(base, { pageSize: 256 * 1024, maxCachedBytes: 8 * 1024 * 1024 });
+  const cached = new CachedByteSource(base, { pageSize: 256 * 1024, maxCachedBytes: 8 * 1024 * 1024 });
+  cached.__rawSource = base;
+  return cached;
+}
+
+function sha256BytesToHex(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
+  return out;
+}
+
+async function sha256File(msg, signal) {
+  if (!file) throw new Error('No binary is open.');
+  if (signal?.aborted) throw signal.reason ?? Object.assign(new Error('SHA-256 cancelled'), { name: 'AbortError' });
+  const total = Number(file.size);
+  if (!Number.isSafeInteger(total) || total < 0) throw new TypeError('sha256 source must have a safe integer size');
+  const subtle = globalThis.crypto?.subtle;
+  if (total <= SUBTLE_SHA256_MAX_BYTES && typeof subtle?.digest === 'function' && (typeof file.slice === 'function' || typeof file.arrayBuffer === 'function')) {
+    const buffer = total === 0
+      ? new ArrayBuffer(0)
+      : (typeof file.arrayBuffer === 'function' ? await file.arrayBuffer() : await file.slice(0, total).arrayBuffer());
+    if (signal?.aborted) throw signal.reason ?? Object.assign(new Error('SHA-256 cancelled'), { name: 'AbortError' });
+    if (buffer.byteLength !== total) throw new Error(`sha256 truncated read: expected ${total}, received ${buffer.byteLength}`);
+    const digest = await subtle.digest('SHA-256', buffer);
+    if (signal?.aborted) throw signal.reason ?? Object.assign(new Error('SHA-256 cancelled'), { name: 'AbortError' });
+    const hex = sha256BytesToHex(new Uint8Array(digest));
+    progress(msg, 'sha256', total, total);
+    return { hex, sha256: hex, digest: hex, bytesRead: total };
+  }
+  const chunkBytes = Number.isSafeInteger(msg.chunkBytes) && msg.chunkBytes > 0 ? msg.chunkBytes : 1024 * 1024;
+  const raw = source?.__rawSource || asByteSource(file, { maxReadLength: 8 * 1024 * 1024 });
+  const hash = new IncrementalSha256();
+  let offset = 0;
+  while (offset < total) {
+    if (signal?.aborted) throw signal.reason ?? Object.assign(new Error('SHA-256 cancelled'), { name: 'AbortError' });
+    const take = Math.min(chunkBytes, total - offset);
+    let bytes;
+    if (typeof file.slice === 'function') {
+      const part = file.slice(offset, offset + take);
+      bytes = new Uint8Array(await part.arrayBuffer());
+      if (bytes.byteLength !== take) throw new Error(`sha256 truncated read: expected ${take}, received ${bytes.byteLength}`);
+    } else {
+      bytes = await raw.readExactly(BigInt(offset), take, { signal });
+    }
+    if (signal?.aborted) throw signal.reason ?? Object.assign(new Error('SHA-256 cancelled'), { name: 'AbortError' });
+    hash.update(bytes);
+    offset += bytes.byteLength;
+    progress(msg, 'sha256', offset, total);
+  }
+  if (signal?.aborted) throw signal.reason ?? Object.assign(new Error('SHA-256 cancelled'), { name: 'AbortError' });
+  const hex = hash.hexDigest();
+  return { hex, sha256: hex, digest: hex, bytesRead: offset };
 }
 
 async function detectFile(msg, signal) {
@@ -248,6 +401,7 @@ async function openFile(msg, signal) {
     image = candidateImage;
     descriptor = candidateDescriptor;
     regions = candidateRegions;
+    rebuildVmRegionIndex();
     pointerImages = new Map();
     const selectedSliceIndex = selectedFatSliceIndex(candidateImage);
     if (selectedSliceIndex >= 0) {
@@ -308,6 +462,7 @@ async function resolvePointer(msg, signal) {
 
 function setRegions(list) {
   for (const region of list || []) if (region?.id) regions.set(region.id, region);
+  rebuildVmRegionIndex();
   return { ok: true };
 }
 
@@ -325,7 +480,7 @@ async function getChunk({ regionId, chunk }, signal) {
   if (remaining <= 0n) return { regionId, chunk, bytes: new Uint8Array(0), mn: '', ops: '', rows: 0 };
   const length = chunkLength(remaining, CHUNK_BYTES);
   const bytes = await readFileRange(BigInt(region.fileOffset) + rel, length, signal);
-  const copy = bytes.slice();
+  const copy = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
   return { regionId, chunk, bytes: copy, mn: '', ops: '', rows: Math.ceil(copy.length / ROW_BYTES), __transfer: [copy.buffer] };
 }
 
@@ -368,19 +523,18 @@ async function scanStrings(msg, signal) {
   const regionBytes = regionSize(region.size);
   const total = msg.maxBytes == null ? regionBytes : boundedOffset(msg.maxBytes, regionBytes, 'maxBytes');
   const out = [];
-  let pos = 0n, runStart = null, runBytes = [], runChars = 0, runDropped = 0;
+  const runBuf = new Uint8Array(MAX_STRING_CHARS * 4);
+  let pos = 0n, runStart = null, runLen = 0, runChars = 0, runDropped = 0;
   const flush = () => {
-    if (runStart != null && runBytes.length) {
-      const byteLength = runBytes.length + runDropped;
-      const text = decoder.decode(new Uint8Array(runBytes)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
-      if (runChars >= minLength) {
-        const entry = { addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text, byteLength };
-        if (runDropped > 0) entry.truncated = true;
-        out.push(entry);
-      }
+    if (runStart != null && runLen > 0 && runChars >= minLength) {
+      const byteLength = runLen + runDropped;
+      const text = decoder.decode(runBuf.subarray(0, runLen)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
+      const entry = { addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text, byteLength };
+      if (runDropped > 0) entry.truncated = true;
+      out.push(entry);
     }
     runStart = null;
-    runBytes = [];
+    runLen = 0;
     runChars = 0;
     runDropped = 0;
   };
@@ -403,10 +557,10 @@ async function scanStrings(msg, signal) {
       const n = utf8Len(buffer, i);
       if (n === -1 && !last) break;
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
-      if (runStart == null) { runStart = base + BigInt(i); runBytes = []; runDropped = 0; }
+      if (runStart == null) { runStart = base + BigInt(i); runLen = 0; runDropped = 0; }
       runChars++;
-      if (runDropped === 0 && runBytes.length + n <= MAX_STRING_CHARS * 4) {
-        for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
+      if (runDropped === 0 && runLen + n <= runBuf.length) {
+        for (let k = 0; k < n; k++) runBuf[runLen++] = buffer[i + k];
       } else {
         runDropped += n;
       }
@@ -419,10 +573,11 @@ async function scanStrings(msg, signal) {
     await Promise.resolve();
   }
   flush();
+  const isCapped = out.length > cap;
   return {
-    results: out.slice(0, cap), cancelled: false, capped: out.length >= cap,
-    truncationReason: out.length >= cap ? 'result-limit' : (total < regionBytes ? 'input-budget' : null),
-    scannedBytes: exactExternalInteger(pos), complete: pos >= regionBytes && out.length < cap,
+    results: out.slice(0, cap), cancelled: false, capped: isCapped,
+    truncationReason: isCapped ? 'result-limit' : (total < regionBytes ? 'input-budget' : null),
+    scannedBytes: exactExternalInteger(pos), complete: pos >= regionBytes && !isCapped,
   };
 }
 
@@ -435,8 +590,15 @@ async function runSearch(msg, signal) {
   let pattern, mask = null;
   if (msg.kind === 'hex') {
     pattern = msg.hex?.bytes;
-    mask = msg.hex?.mask;
     if (!pattern?.length) throw new Error('Enter a hex pattern.');
+    const rawMask = msg.hex?.mask;
+    if (rawMask == null) {
+      mask = new Uint8Array(pattern.length).fill(0xff);
+    } else if ((Array.isArray(rawMask) || ArrayBuffer.isView(rawMask)) && rawMask.length === pattern.length) {
+      mask = rawMask;
+    } else {
+      throw new Error('Hex search mask length must match pattern length.');
+    }
   } else {
     const q = String(msg.query || '');
     if (!q) throw new Error('Enter text to search for.');
@@ -448,6 +610,9 @@ async function runSearch(msg, signal) {
     // operands with lower() during comparison; non-ASCII bytes remain exact.
     pattern = new TextEncoder().encode(q);
   }
+  const isText = msg.kind === 'text';
+  const isHex = msg.kind === 'hex';
+  const matcher = compileBytePattern(pattern, mask, isText);
   const results = [];
   let pos = start, carry = new Uint8Array(0), capped = false;
   while (pos < total && !capped) {
@@ -455,9 +620,6 @@ async function runSearch(msg, signal) {
     const block = await readFileRange(BigInt(region.fileOffset) + pos, chunkLength(total - pos, SCAN_BLOCK), signal);
     const joined = carry.length ? concat(carry, block) : block;
     const base = pos - BigInt(carry.length);
-    // Capture after each awaited read, so mutable caller data is not cached
-    // across chunks. Small/oversized or exotic patterns keep the old path.
-    const matcher = compileBytePattern(pattern, mask, msg.kind === 'text');
     for (let i = 0; i <= joined.length - pattern.length; i++) {
       if (matcher) {
         i = matcher.find(joined, i);
@@ -465,15 +627,15 @@ async function runSearch(msg, signal) {
       } else {
         let ok = true;
         for (let j = 0; j < pattern.length; j++) {
-          const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
-          const expected = msg.kind === 'text' ? lower(pattern[j]) : pattern[j];
-          if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
+          const actual = isText ? lower(joined[i + j]) : joined[i + j];
+          const expected = isText ? lower(pattern[j]) : pattern[j];
+          if (isHex ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
         }
         if (!ok) continue;
       }
       const byteOff = base + BigInt(i);
-      results.push({ row: exactExternalInteger(byteOff / BigInt(ROW_BYTES)), addr: BigInt(region.vmAddr) + byteOff, byteOff: exactExternalInteger(byteOff) });
       if (results.length >= SEARCH_LIMIT) { capped = true; break; }
+      results.push({ row: exactExternalInteger(byteOff / BigInt(ROW_BYTES)), addr: BigInt(region.vmAddr) + byteOff, byteOff: exactExternalInteger(byteOff) });
     }
     pos += BigInt(block.length);
     carry = pattern.length > 1 ? joined.slice(Math.max(0, joined.length - pattern.length + 1)) : new Uint8Array(0);
@@ -490,10 +652,22 @@ function concat(a, b) { const out = new Uint8Array(a.length + b.length); out.set
 
 function vmToFile(address) {
   const at = BigInt(address);
-  for (const region of regions.values()) {
-    if (region.id === 'raw' || region.zerofill) continue;
-    const start = BigInt(region.vmAddr), size = BigInt(region.size);
-    if (at >= start && at < start + size) return { region, offset: BigInt(region.fileOffset) + (at - start) };
+  if (vmRegionIndexDisjoint) {
+    let lo = 0, hi = vmRegionIndex.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const entry = vmRegionIndex[mid];
+      if (at < entry.start) hi = mid - 1;
+      else if (at >= entry.end) lo = mid + 1;
+      else if (!isNonAllocableRegion(entry.region)) return { region: entry.region, offset: entry.fileOffset + (at - entry.start) };
+      else break;
+    }
+  } else {
+    for (let i = 0; i < vmRegionList.length; i++) {
+      const entry = vmRegionList[i];
+      if (isNonAllocableRegion(entry.region)) continue;
+      if (at >= entry.start && at < entry.end) return { region: entry.region, offset: entry.fileOffset + (at - entry.start) };
+    }
   }
   const offset = image?.addressToOffset(at);
   return offset == null ? null : { region: null, offset };
@@ -502,11 +676,18 @@ function vmToFile(address) {
 async function readAtAddress(msg, signal) {
   const hit = vmToFile(msg.addr);
   if (!hit) return { found: false };
-  const requested = Math.min(Math.max(0, Number(msg.len) || 256), 1 << 20);
-  let available = image.fileSize - hit.offset;
-  if (hit.region) available = BigInt(hit.region.fileOffset) + BigInt(hit.region.size) - hit.offset;
+  const rawLen = msg.len == null ? 256 : Number(msg.len);
+  const requested = Math.min(Math.max(0, Number.isFinite(rawLen) ? Math.floor(rawLen) : 256), 1 << 20);
+  const fileSize = BigInt(image?.fileSize ?? source?.size ?? 0n);
+  let available = fileSize - hit.offset;
+  if (hit.region) {
+    const regionAvailable = BigInt(hit.region.fileOffset) + BigInt(hit.region.size) - hit.offset;
+    if (regionAvailable < available) available = regionAvailable;
+  }
+  if (hit.offset < 0n || available <= 0n) return { found: false };
   const length = Number(available < BigInt(requested) ? available : BigInt(requested));
-  const bytes = (await readFileRange(hit.offset, length, signal)).slice();
+  const rawBytes = await readFileRange(hit.offset, length, signal);
+  const bytes = rawBytes.byteOffset === 0 && rawBytes.byteLength === rawBytes.buffer.byteLength ? rawBytes : rawBytes.slice();
   const result = { found: true, region: hit.region?.name || null, fileOffset: hit.offset, bytes,
     transferredOwnedBytes: true };
   if (msg.text) {
@@ -543,7 +724,7 @@ async function metadataPage(msg, signal) {
       }).capability;
     return { summary:selected.summary(), metadata:selected.metadata, capability };
   }
-  const list = collections[msg.kind];
+  const list = Object.hasOwn(collections, msg.kind) ? collections[msg.kind] : null;
   if (!list) throw new Error(`Unknown metadata kind: ${msg.kind}`);
   const start = metadataPageInteger(msg.start, 0, 0, 'start');
   const limit = Math.min(5000, metadataPageInteger(msg.limit, 500, 1, 'limit'));

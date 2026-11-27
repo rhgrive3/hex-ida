@@ -106,6 +106,7 @@ function writeOrPartial(ctx, destination, value, reason, categories = ['register
 
 function liftAddSub(ctx, ops, mnemonic) {
   const widthBits = destinationBits(ops);
+  if (!widthBits) return ctx.partial(`arm64-${mnemonic}-width-unavailable`, ['registers', 'other']);
   const destination = ops[0];
   const lhsOperand = (mnemonic === 'neg' || mnemonic === 'negs' || mnemonic === 'ngc' || mnemonic === 'ngcs') ? null : ops[1];
   const rhsOperand = lhsOperand ? ops[2] : ops[1];
@@ -125,6 +126,7 @@ function liftAddSub(ctx, ops, mnemonic) {
 
 function liftLogical(ctx, ops, mnemonic) {
   const widthBits = destinationBits(ops);
+  if (!widthBits) return ctx.partial(`arm64-${mnemonic}-width-unavailable`, ['registers', 'other']);
   const destination = ops[0];
   let result;
   if (mnemonic === 'mvn') {
@@ -149,6 +151,7 @@ function liftLogical(ctx, ops, mnemonic) {
 
 function liftShift(ctx, ops, mnemonic) {
   const widthBits = destinationBits(ops);
+  if (!widthBits) return ctx.partial(`arm64-${mnemonic}-width-unavailable`, ['registers', 'other']);
   const source = ctx.readOperand(ops[1], widthBits);
   if (!source) return ctx.partial(`arm64-${mnemonic}-source-unmodelled`, ['registers','other']);
   const variable = mnemonic.endsWith('v') || ops[2]?.k === 'reg';
@@ -171,6 +174,7 @@ function liftShift(ctx, ops, mnemonic) {
 
 function liftMultiplyDivide(ctx, ops, mnemonic) {
   const widthBits = destinationBits(ops);
+  if (!widthBits) return ctx.partial(`arm64-${mnemonic}-width-unavailable`, ['registers', 'other']);
   const destination = ops[0];
   const read = (index, bits = instructionBits(ops[index], widthBits)) => ctx.readOperand(ops[index], bits);
   let result = null;
@@ -233,6 +237,7 @@ function moveImmediate(ctx, destination, immediate, shift, widthBits, mnemonic) 
 
 function liftMove(ctx, ops, mnemonic, instruction) {
   const widthBits = destinationBits(ops);
+  if (!widthBits) return ctx.partial(`arm64-${mnemonic}-width-unavailable`, ['registers', 'other']);
   const destination = ops[0];
   let result = null;
 
@@ -246,12 +251,18 @@ function liftMove(ctx, ops, mnemonic, instruction) {
     if (!result) return ctx.partial('arm64-mov-source-unmodelled', ['registers','other']);
   } else if (mnemonic === 'movz' || mnemonic === 'movn') {
     const immediate = immediateOf(ops[1]);
-    const shift = ops[1]?.shift?.op === 'lsl' ? ops[1].shift.amount : 0;
+    if (ops[1]?.shift != null && String(ops[1].shift.op || '').toLowerCase() !== 'lsl') {
+      return ctx.partial(`arm64-${mnemonic}-immediate-unmodelled`, ['registers','other']);
+    }
+    const shift = ops[1]?.shift != null ? ops[1].shift.amount : 0;
     result = moveImmediate(ctx, destination, immediate, shift, widthBits, mnemonic);
     if (!result) return ctx.partial(`arm64-${mnemonic}-immediate-unmodelled`, ['registers','other']);
   } else if (mnemonic === 'movk') {
     const immediate = immediateOf(ops[1]);
-    const shift = ops[1]?.shift?.op === 'lsl' ? Number(ops[1].shift.amount ?? 0) : 0;
+    if (ops[1]?.shift != null && String(ops[1].shift.op || '').toLowerCase() !== 'lsl') {
+      return ctx.partial('arm64-movk-immediate-unmodelled', ['registers','other']);
+    }
+    const shift = ops[1]?.shift != null ? Number(ops[1].shift.amount ?? 0) : 0;
     if (immediate == null || immediate < 0n || immediate > 0xffffn || ![0,16,32,48].includes(shift) || (widthBits === 32 && shift > 16)) {
       return ctx.partial('arm64-movk-immediate-unmodelled', ['registers','other']);
     }
@@ -275,6 +286,7 @@ function liftMove(ctx, ops, mnemonic, instruction) {
 
 function liftBitfield(ctx, ops, mnemonic) {
   const widthBits = destinationBits(ops);
+  if (!widthBits) return ctx.partial(`arm64-${mnemonic}-width-unavailable`, ['registers', 'other']);
   const destination = ops[0];
   if (mnemonic === 'extr') {
     const high = ctx.readOperand(ops[1], widthBits);
@@ -332,6 +344,7 @@ function liftBitfield(ctx, ops, mnemonic) {
 
 function liftUnary(ctx, ops, mnemonic) {
   const widthBits = destinationBits(ops);
+  if (!widthBits) return ctx.partial(`arm64-${mnemonic}-width-unavailable`, ['registers', 'other']);
   const sourceBitsByMnemonic = { sxtb:8, sxth:16, sxtw:32, uxtb:8, uxth:16, uxtw:32 };
   const sourceBits = sourceBitsByMnemonic[mnemonic] ?? widthBits;
   let source = ctx.readOperand(ops[1], instructionBits(ops[1], widthBits));
@@ -354,6 +367,7 @@ function liftUnary(ctx, ops, mnemonic) {
 
 function liftConditionalSelect(ctx, ops, mnemonic, instruction) {
   const widthBits = destinationBits(ops);
+  if (!widthBits) return ctx.partial(`arm64-${mnemonic}-width-unavailable`, ['registers', 'flags', 'other']);
   const condition = (instruction?.ops || []).find((op) => op?.k === 'cond')?.text;
   const cond = String(condition || '').toLowerCase();
   const conditionValue = emitArm64Condition(ctx, cond);

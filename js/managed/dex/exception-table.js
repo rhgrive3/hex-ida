@@ -6,7 +6,8 @@ import { dexTypeInfo } from './descriptor.js';
 
 // A handler_off is a byte offset from the encoded_catch_handler_list start,
 // including the list's leading ULEB count, not an IL/code-unit displacement.
-export function decodeDexExceptionTable(bytes, { methodId, insnsStart, insnsSize, triesSize, types, boundaries, limit = bytes.length }) {
+export function decodeDexExceptionTable(bytes, { methodId, insnsStart, insnsSize, triesSize, types, boundaries, limit = bytes.length, maxExceptionRegions = 1024 }) {
+  if (!Number.isSafeInteger(maxExceptionRegions) || maxExceptionRegions < 0) fail('dex-invalid-exception-region-budget');
   checkedRange(bytes.length, 0, limit, 'dex-invalid-exception-data-limit');
   if (triesSize === 0) return { regions:[], handlerOffsets:new Set() };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -61,6 +62,7 @@ export function decodeDexExceptionTable(bytes, { methodId, insnsStart, insnsSize
     previousEnd = end;
     const handler = byOffset.get(handlerOff);
     if (!handler) fail('dex-try-handler-offset-invalid');
+    if (regions.length + handler.targets.length > maxExceptionRegions) fail('dex-exception-region-budget-exceeded');
     const origin = createOriginSet({ byteRanges:[{start,end:start+8},{start:listStart,end:listHeaderEnd},{start:handler.start,end:handler.end}] });
     for (const target of handler.targets) {
       handlerOffsets.add(target.handlerOffset);

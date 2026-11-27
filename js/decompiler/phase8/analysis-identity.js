@@ -65,13 +65,31 @@ function token(value) {
 
 const NON_SEMANTIC_KEYS = new Set(['dst', 'uses']);
 const NO_SKIPPED_KEYS = new Set();
+const SKIP_ARTIFACT_KEY = new Set(['artifact']);
+const SKIP_MFC_KEY = new Set(['memoryForwardingContext']);
 const DEEPLY_FROZEN_CACHE = new WeakMap();
 // Values in the existing validator's true-cache have only deeply immutable
 // own data properties (no Map/Set/Date/accessor children). Keep their exact
 // typed spelling weakly, and cap individual entries to avoid retaining giant
 // strings beside large live graphs. Mutable/unvalidated data always re-encodes.
 const FROZEN_IDENTITY_TEXT = new WeakMap();
+const FROZEN_IDENTITY_BYTES = new WeakMap();
+const FROZEN_STREAM_CHUNKS = new WeakMap();
+const FROZEN_GRAPH_DIGEST = new WeakMap();
+const FROZEN_IR_SHAPE_DATA = new WeakMap();
+const DEEPLY_FROZEN_FINITE_CACHE = new WeakMap();
 const MAX_CACHED_IDENTITY_TEXT = 16 * 1024;
+const STREAM_CHUNK_TARGET = 64 * 1024;
+
+function encodeChunkForFastFeed(text) {
+  const len = text.length;
+  for (let i = 0; i < len; i += 1) {
+    if (text.charCodeAt(i) >= 256) return text;
+  }
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) bytes[i] = text.charCodeAt(i);
+  return bytes;
+}
 
 /* Semantic identity only accepts enumerable, own, data properties.  Reading a
  * getter while issuing an artifact ID would make identity depend on timing or
@@ -80,10 +98,18 @@ const MAX_CACHED_IDENTITY_TEXT = 16 * 1024;
  * non-enumerable `length` descriptor; all other descriptors are required to be
  * explicit enumerable data. */
 function semanticOwnKeys(value) {
+  // Objects certified in DEEPLY_FROZEN_CACHE are frozen plain objects/arrays
+  // whose own properties were already verified to be non-symbol enumerable data
+  // properties; Object.keys returns the exact same key list without allocating
+  // a property descriptor per key.
+  if (DEEPLY_FROZEN_CACHE.get(value) === true) return Object.keys(value);
+  const isArr = Array.isArray(value);
+  const rawKeys = Reflect.ownKeys(value);
   const keys = [];
-  for (const key of Reflect.ownKeys(value)) {
+  for (let i = 0; i < rawKeys.length; i += 1) {
+    const key = rawKeys[i];
     if (typeof key === 'symbol') throw new TypeError('identity-symbol-semantic-metadata');
-    if (Array.isArray(value) && key === 'length') continue;
+    if (isArr && key === 'length') continue;
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
       throw new TypeError('identity-unsupported-semantic-descriptor');
@@ -119,23 +145,30 @@ const DERIVED_IR_KEYS = new Set([
 // nested array could still be changed after an identity was issued.  Rejecting
 // accessors and host containers also keeps hostile metadata on the strict path.
 function deeplyFrozen(value, active = new Set()) {
-  if (value == null || ['string', 'boolean', 'number', 'bigint'].includes(typeof value)) return true;
-  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return false;
+  if (value == null) return true;
+  const t = typeof value;
+  if (t === 'string' || t === 'boolean' || t === 'number' || t === 'bigint') return true;
+  if (t !== 'object') return false;
   const cached = DEEPLY_FROZEN_CACHE.get(value);
   if (cached != null) return cached;
   if (!Object.isFrozen(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return false;
+  const isArr = Array.isArray(value);
+  if (!isArr) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+  }
   if (active.has(value)) return false;
   active.add(value);
   let result = true;
   try {
-    for (const key of Reflect.ownKeys(value)) {
+    const rawKeys = Reflect.ownKeys(value);
+    for (let i = 0; i < rawKeys.length; i += 1) {
+      const key = rawKeys[i];
       if (typeof key === 'symbol') {
         result = false;
         break;
       }
-      if (Array.isArray(value) && key === 'length') continue;
+      if (isArr && key === 'length') continue;
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable
           || !deeplyFrozen(descriptor.value, active)) {
@@ -152,18 +185,18 @@ function deeplyFrozen(value, active = new Set()) {
 }
 
 function fastJsonTextDigest(text) {
-  let hash0 = 0x811c9dc5;
-  let hash1 = 0x9e3779b9;
-  let hash2 = 0x243f6a88;
-  let hash3 = 0xb7e15162;
+  let hash0 = 0x811c9dc5 | 0;
+  let hash1 = 0x9e3779b9 | 0;
+  let hash2 = 0x243f6a88 | 0;
+  let hash3 = 0xb7e15162 | 0;
   for (let index = 0; index < text.length; index += 1) {
     const code = text.charCodeAt(index);
-    hash0 = Math.imul(hash0 ^ code, 0x01000193) >>> 0;
-    hash1 = Math.imul(hash1 ^ code, 0x85ebca6b) >>> 0;
-    hash2 = Math.imul(hash2 ^ code, 0xc2b2ae35) >>> 0;
-    hash3 = Math.imul(hash3 ^ code, 0x27d4eb2f) >>> 0;
+    hash0 = Math.imul(hash0 ^ code, 0x01000193);
+    hash1 = Math.imul(hash1 ^ code, 0x85ebca6b);
+    hash2 = Math.imul(hash2 ^ code, 0xc2b2ae35);
+    hash3 = Math.imul(hash3 ^ code, 0x27d4eb2f);
   }
-  return [hash0, hash1, hash2, hash3].map((hash) => hash.toString(16).padStart(8, '0')).join('');
+  return [hash0 >>> 0, hash1 >>> 0, hash2 >>> 0, hash3 >>> 0].map((hash) => hash.toString(16).padStart(8, '0')).join('');
 }
 
 function fastFrozenOriginDigest(value) {
@@ -234,18 +267,21 @@ function typedIdentityText(root) {
     try {
       const keys = semanticOwnKeys(value);
       const properties = (propertyKeys) => propertyKeys.length === 0 ? '' : `properties:${propertyKeys.length}{${propertyKeys.sort()
-        .map((key) => {
-          const descriptor = Object.getOwnPropertyDescriptor(value, key);
-          return `key:${key.length}:${key};${visit(descriptor.value)}`;
-        }).join('')}}`;
+        .map((key) => `key:${key.length}:${key};${visit(value[key])}`).join('')}}`;
       if (Array.isArray(value)) {
+        const len = value.length;
+        if (keys.length === len && (len === 0 || keys[len - 1] === String(len - 1))) {
+          let items = '';
+          for (let index = 0; index < len; index += 1) items += visit(value[index]);
+          return `array:${len}[${items}]`;
+        }
         const ownKeys = new Set(keys);
         let items = '';
-        for (let index = 0; index < value.length; index += 1) {
+        for (let index = 0; index < len; index += 1) {
           const key = String(index);
-          items += ownKeys.has(key) ? visit(Object.getOwnPropertyDescriptor(value, key).value) : 'hole;';
+          items += ownKeys.has(key) ? visit(value[key]) : 'hole;';
         }
-        return `array:${value.length}[${items}]${properties(keys.filter((key) => !arrayIndexKey(key)))}`;
+        return `array:${len}[${items}]${properties(keys.filter((key) => !arrayIndexKey(key)))}`;
       }
       if (value instanceof Map) {
         const entries = [...value.entries()]
@@ -266,10 +302,7 @@ function typedIdentityText(root) {
         throw new TypeError('identity-unsupported-semantic-metadata');
       }
       const sortedKeys = keys.sort();
-      return `object:${sortedKeys.length}{${sortedKeys.map((key) => {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        return `key:${key.length}:${key};${visit(descriptor.value)}`;
-      }).join('')}}`;
+      return `object:${sortedKeys.length}{${sortedKeys.map((key) => `key:${key.length}:${key};${visit(value[key])}`).join('')}}`;
     } finally {
       active.delete(value);
     }
@@ -277,8 +310,373 @@ function typedIdentityText(root) {
   return visit(root);
 }
 
-function fastJsonGraphDigest(value) {
-  return fastJsonTextDigest(typedIdentityText(value));
+function fastJsonGraphDigest(root) {
+  const rootFrozen = root != null && typeof root === 'object'
+    && (DEEPLY_FROZEN_CACHE.get(root) === true || (Object.isFrozen(root) && deeplyFrozen(root)));
+  if (rootFrozen) {
+    const cachedDigest = FROZEN_GRAPH_DIGEST.get(root);
+    if (cachedDigest !== undefined) return cachedDigest;
+  }
+  let hash0 = 0x811c9dc5 | 0;
+  let hash1 = 0x9e3779b9 | 0;
+  let hash2 = 0x243f6a88 | 0;
+  let hash3 = 0xb7e15162 | 0;
+  const feedText = (text) => {
+    let h0 = hash0;
+    let h1 = hash1;
+    let h2 = hash2;
+    let h3 = hash3;
+    const len = text.length;
+    const len4 = len - 3;
+    let index = 0;
+    for (; index < len4; index += 4) {
+      let code = text.charCodeAt(index);
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
+      code = text.charCodeAt(index + 1);
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
+      code = text.charCodeAt(index + 2);
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
+      code = text.charCodeAt(index + 3);
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
+    }
+    for (; index < len; index += 1) {
+      const code = text.charCodeAt(index);
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
+    }
+    hash0 = h0;
+    hash1 = h1;
+    hash2 = h2;
+    hash3 = h3;
+  };
+  const feedBytes = (bytes) => {
+    let h0 = hash0;
+    let h1 = hash1;
+    let h2 = hash2;
+    let h3 = hash3;
+    const len = bytes.length;
+    const len4 = len - 3;
+    let i = 0;
+    for (; i < len4; i += 4) {
+      let c = bytes[i];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+      c = bytes[i + 1];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+      c = bytes[i + 2];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+      c = bytes[i + 3];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+    }
+    for (; i < len; i += 1) {
+      const c = bytes[i];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+    }
+    hash0 = h0;
+    hash1 = h1;
+    hash2 = h2;
+    hash3 = h3;
+  };
+  const feedChunk = (chunk) => {
+    if (typeof chunk === 'string') feedText(chunk);
+    else feedBytes(chunk);
+  };
+  const active = new Set();
+  const buildFrozenChunks = (target) => {
+    const chunks = [];
+    let buffer = '';
+    const flushBuffer = () => {
+      if (buffer.length > 0) {
+        chunks.push(buffer);
+        buffer = '';
+      }
+    };
+    const push = (text) => {
+      if (text.length === 0) return;
+      if (buffer.length + text.length >= STREAM_CHUNK_TARGET) {
+        flushBuffer();
+        if (text.length >= STREAM_CHUNK_TARGET) {
+          chunks.push(text);
+          return;
+        }
+      }
+      buffer += text;
+    };
+    const pushEncoded = (encoded) => {
+      if (typeof encoded === 'string') {
+        push(encoded);
+        return;
+      }
+      flushBuffer();
+      chunks.push(encoded);
+    };
+    const emitValue = (value) => {
+      if (value === null) { push('null;'); return; }
+      switch (typeof value) {
+        case 'undefined': push('undefined;'); return;
+        case 'function':
+        case 'symbol': throw new TypeError('identity-invalid-semantic-metadata');
+        case 'string': push(`string:${value.length}:${value};`); return;
+        case 'boolean': push(value ? 'boolean:1;' : 'boolean:0;'); return;
+        case 'number':
+          if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
+          push(`number:${Object.is(value, -0) ? '-0' : String(value)};`);
+          return;
+        case 'bigint': push(`bigint:${value};`); return;
+        default: break;
+      }
+      if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+      const cachedText = FROZEN_IDENTITY_TEXT.get(value);
+      if (cachedText !== undefined) { push(cachedText); return; }
+      const cachedChunks = FROZEN_STREAM_CHUNKS.get(value);
+      if (cachedChunks !== undefined) {
+        for (let i = 0; i < cachedChunks.length; i += 1) pushEncoded(cachedChunks[i]);
+        return;
+      }
+      if (value !== target) {
+        let shouldSubChunk = false;
+        if (Array.isArray(value)) {
+          shouldSubChunk = value.length >= 16;
+        } else {
+          let keyCount = 0;
+          for (const _ in value) {
+            keyCount += 1;
+            if (keyCount >= 2) { shouldSubChunk = true; break; }
+          }
+        }
+        if (shouldSubChunk) {
+          const subChunks = buildFrozenChunks(value);
+          const smallText = FROZEN_IDENTITY_TEXT.get(value);
+          if (smallText !== undefined) { push(smallText); return; }
+          for (let i = 0; i < subChunks.length; i += 1) pushEncoded(subChunks[i]);
+          return;
+        }
+      }
+      active.add(value);
+      try {
+        const keys = semanticOwnKeys(value);
+        const emitProps = (propertyKeys) => {
+          if (propertyKeys.length === 0) return;
+          push(`properties:${propertyKeys.length}{`);
+          for (const key of propertyKeys.sort()) {
+            push(`key:${key.length}:${key};`);
+            emitValue(value[key]);
+          }
+          push('}');
+        };
+        if (Array.isArray(value)) {
+          const len = value.length;
+          if (keys.length === len && (len === 0 || keys[len - 1] === String(len - 1))) {
+            push(`array:${len}[`);
+            for (let index = 0; index < len; index += 1) emitValue(value[index]);
+            push(']');
+            return;
+          }
+          const ownKeys = new Set(keys);
+          push(`array:${len}[`);
+          for (let index = 0; index < len; index += 1) {
+            const key = String(index);
+            if (ownKeys.has(key)) emitValue(value[key]);
+            else push('hole;');
+          }
+          push(']');
+          emitProps(keys.filter((key) => !arrayIndexKey(key)));
+          return;
+        }
+        if (value instanceof Map) {
+          const entries = [...value.entries()]
+            .map(([key, item]) => `${typedIdentityText(key)}=>${typedIdentityText(item)}`)
+            .sort();
+          push(`map:${entries.length}{`);
+          for (const entry of entries) push(entry);
+          push('}');
+          emitProps(keys);
+          return;
+        }
+        if (value instanceof Set) {
+          const values = [...value.values()].map(typedIdentityText).sort();
+          push(`set:${values.length}{`);
+          for (const item of values) push(item);
+          push('}');
+          emitProps(keys);
+          return;
+        }
+        if (value instanceof Date) {
+          const iso = value.toISOString();
+          push(`date:${iso.length}:${iso};`);
+          emitProps(keys);
+          return;
+        }
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype !== Object.prototype && prototype !== null) {
+          throw new TypeError('identity-unsupported-semantic-metadata');
+        }
+        const sortedKeys = keys.sort();
+        push(`object:${sortedKeys.length}{`);
+        for (const key of sortedKeys) {
+          push(`key:${key.length}:${key};`);
+          emitValue(value[key]);
+        }
+        push('}');
+      } finally {
+        active.delete(value);
+      }
+    };
+    emitValue(target);
+    if (chunks.length === 0 && buffer.length <= MAX_CACHED_IDENTITY_TEXT) {
+      FROZEN_IDENTITY_TEXT.set(target, buffer);
+      return [buffer];
+    }
+    flushBuffer();
+    FROZEN_STREAM_CHUNKS.set(target, chunks);
+    return chunks;
+  };
+  const stream = (value) => {
+    if (value === null) { feedText('null;'); return; }
+    switch (typeof value) {
+      case 'undefined': feedText('undefined;'); return;
+      case 'function':
+      case 'symbol': throw new TypeError('identity-invalid-semantic-metadata');
+      case 'string': feedText(`string:${value.length}:${value};`); return;
+      case 'boolean': feedText(value ? 'boolean:1;' : 'boolean:0;'); return;
+      case 'number':
+        if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
+        feedText(`number:${Object.is(value, -0) ? '-0' : String(value)};`);
+        return;
+      case 'bigint': feedText(`bigint:${value};`); return;
+      default: break;
+    }
+    if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+    const certifiedFrozen = DEEPLY_FROZEN_CACHE.get(value) === true
+      || (Object.isFrozen(value) && deeplyFrozen(value));
+    if (certifiedFrozen) {
+      const cachedBytes = FROZEN_IDENTITY_BYTES.get(value);
+      if (cachedBytes !== undefined) { feedChunk(cachedBytes); return; }
+      const cachedText = FROZEN_IDENTITY_TEXT.get(value);
+      if (cachedText !== undefined) {
+        const encoded = cachedText.length >= 256 ? encodeChunkForFastFeed(cachedText) : cachedText;
+        FROZEN_IDENTITY_BYTES.set(value, encoded);
+        feedChunk(encoded);
+        return;
+      }
+      const cachedChunks = FROZEN_STREAM_CHUNKS.get(value);
+      if (cachedChunks !== undefined) {
+        for (let i = 0; i < cachedChunks.length; i += 1) {
+          if (typeof cachedChunks[i] === 'string' && cachedChunks[i].length >= 256) {
+            cachedChunks[i] = encodeChunkForFastFeed(cachedChunks[i]);
+          }
+          feedChunk(cachedChunks[i]);
+        }
+        return;
+      }
+      if (value !== root) {
+        const chunks = buildFrozenChunks(value);
+        for (let i = 0; i < chunks.length; i += 1) feedChunk(chunks[i]);
+        return;
+      }
+    }
+    active.add(value);
+    try {
+      const keys = semanticOwnKeys(value);
+      const streamProps = (propertyKeys) => {
+        if (propertyKeys.length === 0) return;
+        feedText(`properties:${propertyKeys.length}{`);
+        for (const key of propertyKeys.sort()) {
+          feedText(`key:${key.length}:${key};`);
+          stream(value[key]);
+        }
+        feedText('}');
+      };
+      if (Array.isArray(value)) {
+        const len = value.length;
+        if (keys.length === len && (len === 0 || keys[len - 1] === String(len - 1))) {
+          feedText(`array:${len}[`);
+          for (let index = 0; index < len; index += 1) stream(value[index]);
+          feedText(']');
+          return;
+        }
+        const ownKeys = new Set(keys);
+        feedText(`array:${len}[`);
+        for (let index = 0; index < len; index += 1) {
+          const key = String(index);
+          if (ownKeys.has(key)) stream(value[key]);
+          else feedText('hole;');
+        }
+        feedText(']');
+        streamProps(keys.filter((key) => !arrayIndexKey(key)));
+        return;
+      }
+      if (value instanceof Map) {
+        const entries = [...value.entries()]
+          .map(([key, item]) => `${typedIdentityText(key)}=>${typedIdentityText(item)}`)
+          .sort();
+        feedText(`map:${entries.length}{`);
+        for (const entry of entries) feedText(entry);
+        feedText('}');
+        streamProps(keys);
+        return;
+      }
+      if (value instanceof Set) {
+        const values = [...value.values()].map(typedIdentityText).sort();
+        feedText(`set:${values.length}{`);
+        for (const item of values) feedText(item);
+        feedText('}');
+        streamProps(keys);
+        return;
+      }
+      if (value instanceof Date) {
+        const iso = value.toISOString();
+        feedText(`date:${iso.length}:${iso};`);
+        streamProps(keys);
+        return;
+      }
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new TypeError('identity-unsupported-semantic-metadata');
+      }
+      const sortedKeys = keys.sort();
+      feedText(`object:${sortedKeys.length}{`);
+      for (const key of sortedKeys) {
+        feedText(`key:${key.length}:${key};`);
+        stream(value[key]);
+      }
+      feedText('}');
+    } finally {
+      active.delete(value);
+    }
+  };
+  stream(root);
+  const digest = [hash0 >>> 0, hash1 >>> 0, hash2 >>> 0, hash3 >>> 0].map((hash) => hash.toString(16).padStart(8, '0')).join('');
+  if (rootFrozen) FROZEN_GRAPH_DIGEST.set(root, digest);
+  return digest;
 }
 
 /**
@@ -289,6 +687,40 @@ function fastJsonGraphDigest(value) {
  * silently dropping a new semantic field would make stale artifacts look
  * current.
  */
+function isDeeplyFrozenFinite(value, active = new Set()) {
+  if (value == null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return false;
+  const cached = DEEPLY_FROZEN_FINITE_CACHE.get(value);
+  if (cached != null) return cached;
+  if (!Object.isFrozen(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return false;
+  if (active.has(value)) return false;
+  active.add(value);
+  let result = true;
+  try {
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key === 'symbol') { result = false; break; }
+      if (Array.isArray(value) && key === 'length') continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable
+          || !isDeeplyFrozenFinite(descriptor.value, active)) {
+        result = false;
+        break;
+      }
+    }
+  } catch {
+    result = false;
+  }
+  active.delete(value);
+  if (result) {
+    DEEPLY_FROZEN_FINITE_CACHE.set(value, true);
+    DEEPLY_FROZEN_CACHE.set(value, true);
+  }
+  return result;
+}
+
 function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = '$', memo = null) {
   if (value === null || typeof value === 'undefined' || typeof value === 'string' || typeof value === 'boolean'
       || typeof value === 'bigint') return value;
@@ -306,14 +738,17 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
   // memo on every identity request, so mutations between requests are seen.
   const memoizable = memo != null && skip === NO_SKIPPED_KEYS;
   if (memoizable && memo.has(value)) return memo.get(value);
+  if (skip === NO_SKIPPED_KEYS && isDeeplyFrozenFinite(value)) {
+    if (memoizable) memo.set(value, value);
+    return value;
+  }
   seen.add(value);
   const ownKeys = semanticOwnKeys(value);
   const semanticProperties = (keys, propertyPath = path) => {
     const properties = {};
     for (const key of keys.sort()) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       Object.defineProperty(properties, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${propertyPath}.${key}`, memo),
+        value: semanticObject(value[key], seen, NO_SKIPPED_KEYS, `${propertyPath}.${key}`, memo),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -326,9 +761,8 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
     result = [];
     result.length = value.length;
     for (const key of ownKeys.sort()) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       Object.defineProperty(result, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS,
+        value: semanticObject(value[key], seen, NO_SKIPPED_KEYS,
           arrayIndexKey(key) ? `${path}[${Number(key)}]` : `${path}.${key}`, memo),
         enumerable: true,
         configurable: true,
@@ -339,19 +773,27 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
     result = {
       type: 'Map',
       entries: [...value.entries()]
-        .map(([key, item], index) => [
-          semanticObject(key, seen, NO_SKIPPED_KEYS, `${path}.mapKey[${index}]`, memo),
-          semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.mapValue[${index}]`, memo),
-        ])
-        .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
+        .map(([key, item], index) => {
+          const entry = [
+            semanticObject(key, seen, NO_SKIPPED_KEYS, `${path}.mapKey[${index}]`, memo),
+            semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.mapValue[${index}]`, memo),
+          ];
+          return [canonicalSortText(entry), entry];
+        })
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map((pair) => pair[1]),
     };
     if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
   } else if (value instanceof Set) {
     result = {
       type: 'Set',
       values: [...value.values()]
-        .map((item, index) => semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.set[${index}]`, memo))
-        .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
+        .map((item, index) => {
+          const projected = semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.set[${index}]`, memo);
+          return [canonicalSortText(projected), projected];
+        })
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map((pair) => pair[1]),
     };
     if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
   } else if (value instanceof Date) {
@@ -365,12 +807,11 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
     result = {};
     for (const key of ownKeys.sort()) {
       if (skip.has(key)) continue;
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       // A skip list describes this known wrapper object only.  Applying it to
       // nested `extra`/metadata objects would silently erase a semantic field
       // whose name happens to be `uses` or `dst`.
       Object.defineProperty(result, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo),
+        value: semanticObject(value[key], seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -405,6 +846,37 @@ function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
   if (typeof value === 'object') {
     const cached = digests.get(value);
     if (cached != null) return cached;
+    if (!trustedFrozen && !Array.isArray(value)) {
+      const proto = Object.getPrototypeOf(value);
+      if ((proto === Object.prototype || proto === null) && Object.hasOwn(value, 'memoryForwardingContext')) {
+        const ctxDesc = Object.getOwnPropertyDescriptor(value, 'memoryForwardingContext');
+        if (!ctxDesc || !('value' in ctxDesc) || !ctxDesc.enumerable) {
+          throw new TypeError('identity-unsupported-semantic-descriptor');
+        }
+        const ctx = ctxDesc.value;
+        if (ctx != null && typeof ctx === 'object' && !Array.isArray(ctx)) {
+          const ctxProto = Object.getPrototypeOf(ctx);
+          if ((ctxProto === Object.prototype || ctxProto === null) && Object.hasOwn(ctx, 'artifact')) {
+            const artDesc = Object.getOwnPropertyDescriptor(ctx, 'artifact');
+            if (!artDesc || !('value' in artDesc) || !artDesc.enumerable) {
+              throw new TypeError('identity-unsupported-semantic-descriptor');
+            }
+            const artifact = artDesc.value;
+            if (artifact != null && typeof artifact === 'object' && isDeeplyFrozenFinite(artifact)) {
+              const rest = semanticObject(value, new Set(), SKIP_MFC_KEY, path, memo);
+              const ctxFields = semanticObject(ctx, new Set([value]), SKIP_ARTIFACT_KEY, `${path}.memoryForwardingContext`, memo);
+              const digest = `metadata-forwarding:${fastJsonGraphDigest({
+                rest,
+                ctxFields,
+                artifactDigest: fastJsonGraphDigest(artifact),
+              })}`;
+              digests.set(value, digest);
+              return digest;
+            }
+          }
+        }
+      }
+    }
     // Ordinary Phase 8 metadata (`extra`, effect summaries, and proofs) is a
     // plain graph in the canonical IR.  Hashing it directly keeps the strict
     // rejection behavior while avoiding an intermediate semantic copy and the
@@ -414,7 +886,12 @@ function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
       digests.set(value, digest);
       return digest;
     } catch {
-      // Maps/Sets/host objects use the generic semantic projection below.
+      // Maps/Sets/host objects or invalid values (functions, symbols, NaN,
+      // cycles) must go through the strict semanticObject validator below.
+      const canonical = semanticObject(value, new Set(), NO_SKIPPED_KEYS, path, memo);
+      const digest = stableDigest(canonical);
+      digests.set(value, digest);
+      return digest;
     }
   }
   // Canonical OriginSets are validated and deeply frozen by the producer.  A
@@ -422,7 +899,7 @@ function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
   // provenance arrays on large functions.  Untrusted/mutable metadata still
   // takes the strict semantic walk, which rejects functions, symbols and
   // cycles instead of letting jsonSafe erase them.
-  const canonical = trustedFrozen && typeof value === 'object' && Object.isFrozen(value)
+  const canonical = trustedFrozen && typeof value === 'object' && isDeeplyFrozenFinite(value)
     ? value : semanticObject(value, new Set(), NO_SKIPPED_KEYS, path, memo);
   const digest = stableDigest(canonical);
   if (typeof value === 'object') digests.set(value, digest);
@@ -503,16 +980,51 @@ function memoryLocationShape(location, memo, digests) {
   return shape;
 }
 
+function forwardingContextShape(definition, memo) {
+  const desc = Object.getOwnPropertyDescriptor(definition, 'memoryForwardingContext');
+  if (!desc || !('value' in desc) || !desc.enumerable) {
+    throw new TypeError('identity-unsupported-semantic-descriptor');
+  }
+  const ctx = desc.value;
+  const seen = new Set([definition]);
+  if (ctx != null && typeof ctx === 'object' && !Array.isArray(ctx)) {
+    const proto = Object.getPrototypeOf(ctx);
+    if ((proto === Object.prototype || proto === null) && Object.hasOwn(ctx, 'artifact')) {
+      const artDesc = Object.getOwnPropertyDescriptor(ctx, 'artifact');
+      if (!artDesc || !('value' in artDesc) || !artDesc.enumerable) {
+        throw new TypeError('identity-unsupported-semantic-descriptor');
+      }
+      const artifact = artDesc.value;
+      if (artifact != null && typeof artifact === 'object' && isDeeplyFrozenFinite(artifact)) {
+        if (seen.has(ctx)) throw new TypeError('identity-cyclic-semantic-ir:$.definition.memoryForwardingContext');
+        const fields = semanticObject(ctx, seen, SKIP_ARTIFACT_KEY, '$.definition.memoryForwardingContext', memo);
+        return {
+          kind: 'forwarding-context-ref',
+          fields,
+          artifactDigest: fastJsonGraphDigest(artifact),
+        };
+      }
+    }
+  }
+  return {
+    kind: 'forwarding-context-raw',
+    value: semanticObject(ctx, seen, NO_SKIPPED_KEYS, '$.definition.memoryForwardingContext', memo),
+  };
+}
+
 function definitionShape(definition, extraSkip = [], memo = null, digests = null, definitionCache = null) {
   if (definition == null || typeof definition !== 'object') return null;
   const cacheKey = extraSkip.length === 0 ? '' : [...extraSkip].sort().join('\u0000');
   const cached = definitionCache?.get(definition)?.get(cacheKey);
   if (cached != null) return cached;
+  const hasForwardingContext = !extraSkip.includes('memoryForwardingContext') && Object.hasOwn(definition, 'memoryForwardingContext');
   const shape = semanticObject(definition, new Set(), new Set([
     'args', 'incoming', 'addr', 'loc', 'conditionValue', 'selectorValue', 'returnTargetValue', 'extra', 'origin',
     'memUse', 'memDef', 'memDefs', 'memKills', 'reachingStore', 'unknownAliasBarrier',
+    ...(hasForwardingContext ? ['memoryForwardingContext'] : []),
     ...NON_SEMANTIC_KEYS, ...extraSkip,
   ]), '$.definition', memo);
+  if (hasForwardingContext) shape.memoryForwardingContext = forwardingContextShape(definition, memo);
   shape.args = Array.isArray(definition.args) ? definition.args.map((argument) => argumentShape(argument, memo, digests)) : null;
   shape.incoming = Array.isArray(definition.incoming)
     ? definition.incoming.map((incoming) => incomingShape(incoming, memo, digests)) : null;
@@ -562,8 +1074,8 @@ function valueShape(value, memo, digests, definitionCache) {
 
 function instructionShape(instruction, memo, digests, definitionCache) {
   if (instruction == null || typeof instruction !== 'object') return instruction ?? null;
-  const shape = definitionShape(instruction, ['conditionValue', 'selectorValue'], memo, digests, definitionCache);
-  return shape;
+  const base = definitionShape(instruction, [], memo, digests, definitionCache);
+  return base ? { ...base } : base;
 }
 
 function blockShape(block, memo, digests, definitionCache) {
@@ -713,7 +1225,7 @@ function hasMalformedIdentityFields(candidate) {
 function sameKnownSourceFields(identity, source) {
   if (source == null || typeof source !== 'object' || Array.isArray(source)) return true;
   for (const name of REQUIRED_FIELDS) {
-    const observed = field(source, name, name === 'semanticIrId' ? 'semanticIRId' : name);
+    const observed = name === 'semanticIrId' ? field(source, 'semanticIrId', 'semanticIRId') : name === 'analyzerVersion' ? field(source, 'analyzerVersion', 'semanticSchemaVersion') : field(source, name);
     if (observed != null && observed !== identity[name]) return false;
   }
   return true;
@@ -799,19 +1311,30 @@ export function canonicalAnalysisIdentity(context = {}) {
   }
   const irAnalysisIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'analysisIdentity')?.value;
   const irIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'identity')?.value;
-  const irSourceIdentity = irAnalysisIdentity ?? irIdentity ?? null;
+  const irArtifactIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'artifactIdentity')?.value;
+  const irSourceIdentity = irAnalysisIdentity ?? irIdentity ?? irArtifactIdentity ?? null;
   if (hasMalformedIdentityFields(source)
       || hasMalformedIdentityFields(irSourceIdentity)) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };
   }
-  const shape = irShape(ir);
-  if (shape == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
-  // `shape` is the acyclic plain projection assembled above. Use the same
-  // width-preserving typed serializer as canonical origins; malformed values
-  // fail closed instead of falling back to a lossy alternate representation.
+  const irFrozen = ir != null && typeof ir === 'object'
+    && (DEEPLY_FROZEN_CACHE.get(ir) === true || (Object.isFrozen(ir) && deeplyFrozen(ir)));
+  let cachedIrShape = irFrozen ? FROZEN_IR_SHAPE_DATA.get(ir) : undefined;
+  let shape;
   let shapeDigest;
-  try { shapeDigest = `shape:${fastJsonGraphDigest(shape)}`; }
-  catch { return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' }; }
+  if (cachedIrShape !== undefined) {
+    shape = cachedIrShape.shape;
+    shapeDigest = cachedIrShape.shapeDigest;
+  } else {
+    shape = irShape(ir);
+    if (shape == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
+    // `shape` is the acyclic plain projection assembled above. Use the same
+    // width-preserving typed serializer as canonical origins; malformed values
+    // fail closed instead of falling back to a lossy alternate representation.
+    try { shapeDigest = `shape:${fastJsonGraphDigest(shape)}`; }
+    catch { return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' }; }
+    if (irFrozen) FROZEN_IR_SHAPE_DATA.set(ir, { shape, shapeDigest });
+  }
   const functionId = field(source, 'functionId') ?? field(ir, 'functionId') ?? `function:${shapeDigest}`;
   const binaryId = field(source, 'binaryId') ?? field(ir, 'binaryId') ?? `binary:${stableDigest({ functionId, shapeDigest })}`;
   const snapshotId = field(source, 'snapshotId') ?? field(ir, 'snapshotId') ?? `snapshot:${stableDigest({ binaryId, functionId, shapeDigest })}`;

@@ -42,36 +42,64 @@ export class FunctionMatchIndex {
       this.complete = false;
       return [];
     }
-    const fp = fingerprinted ? input : fingerprintFunctionFast(input);
+    const fp = fingerprinted ? input : (this.mode === 'full' ? fingerprintFunction(input) : fingerprintFunctionFast(input));
     const rawMaxCandidates = Number(options.maxCandidates ?? 128);
     const maxCandidates = Number.isFinite(rawMaxCandidates) && rawMaxCandidates > 0 ? Math.max(1, Math.floor(rawMaxCandidates)) : 128;
     const rawMaxBucketScan = Number(options.maxBucketScan ?? 1024);
     const boundedBucketScan = Number.isFinite(rawMaxBucketScan) && rawMaxBucketScan > 0 ? Math.max(1, Math.floor(rawMaxBucketScan)) : 1024;
     const maxBucketScan = Math.max(maxCandidates, boundedBucketScan);
-    const tokenBuckets = coarseTokens(fp).map((token) => ({token,bucket:this.buckets.get(token)})).filter((x) => x.bucket?.length).sort((a,b) => a.bucket.length - b.bucket.length);
+    const tokens = coarseTokens(fp);
+    const tokenBuckets = [];
+    for (let t = 0; t < tokens.length; t += 1) {
+      const token = tokens[t];
+      const bucket = this.buckets.get(token);
+      if (bucket && bucket.length) tokenBuckets.push({ token, bucket });
+    }
     if (!tokenBuckets.length) return [];
+    tokenBuckets.sort((a, b) => a.bucket.length - b.bucket.length);
     const exact = tokenBuckets.find((x) => x.token.startsWith('nb:') && x.bucket.length <= maxCandidates);
     if (exact) return exact.bucket.slice();
     const scores = new Map();
-    const selected = tokenBuckets.slice(0, Math.min(6, tokenBuckets.length));
-    for (let rank = 0; rank < selected.length; rank++) {
-      const { bucket } = selected[rank]; const scan = Math.min(bucket.length, maxBucketScan);
+    const selectedCount = Math.min(6, tokenBuckets.length);
+    for (let rank = 0; rank < selectedCount; rank += 1) {
+      const { bucket } = tokenBuckets[rank];
+      const bucketLen = bucket.length;
+      const scan = Math.min(bucketLen, maxBucketScan);
       // For huge, low-information buckets, deterministic spread sampling avoids O(N) probes.
-      const step = bucket.length > scan ? bucket.length / scan : 1;
-      for (let k = 0; k < scan; k++) {
-        const idx = bucket[Math.min(bucket.length - 1, Math.floor(k * step))];
-        const current = scores.get(idx) || {hits:0, rarity:0}; current.hits++; current.rarity += 1 / Math.max(1,bucket.length); scores.set(idx,current);
+      const step = bucketLen > scan ? bucketLen / scan : 1;
+      const invLen = 1 / Math.max(1, bucketLen);
+      for (let k = 0; k < scan; k += 1) {
+        const idx = bucket[Math.min(bucketLen - 1, Math.floor(k * step))];
+        let current = scores.get(idx);
+        if (current === undefined) {
+          scores.set(idx, { hits: 1, rarity: invLen });
+        } else {
+          current.hits += 1;
+          current.rarity += invLen;
+        }
       }
     }
     return [...scores].sort((a,b) => b[1].hits-a[1].hits || b[1].rarity-a[1].rarity || a[0]-b[0]).slice(0,maxCandidates).map(([i])=>i);
   }
 }
 
-function neighborSet(fp) { return new Set([...(fp.callers || []), ...(fp.callees || [])].map(String)); }
-function neighborBonus(a, b, anchors) {
-  if (!anchors?.size) return 0;
-  const A = neighborSet(a), B = neighborSet(b);
-  if (!A.size || !B.size) return 0;
+function getNeighborSet(cache, list, idx) {
+  let set = cache[idx];
+  if (set !== undefined) return set;
+  const fp = list[idx];
+  const callers = fp.callers, callees = fp.callees;
+  if ((!callers || !callers.length) && (!callees || !callees.length)) {
+    cache[idx] = null;
+    return null;
+  }
+  set = new Set();
+  if (callers) for (let k = 0; k < callers.length; k += 1) set.add(String(callers[k]));
+  if (callees) for (let k = 0; k < callees.length; k += 1) set.add(String(callees[k]));
+  cache[idx] = set;
+  return set;
+}
+function neighborBonusFromSets(A, B, anchors) {
+  if (!A || !B || !anchors.size) return 0;
   let possible = 0, hits = 0;
   for (const from of A) {
     const to = anchors.get(from);
@@ -175,28 +203,80 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   // Anchor only unique, very strong matches before contextual refinement.
   // Ambiguous strong candidates are deliberately excluded to prevent graph feedback loops.
   const anchors = new Map();
+  const anchoredAfter = new Set();
   const byBefore = new Map(); const byAfter = new Map();
   for (const c of all) {
     let left=byBefore.get(c.i); if (!left) byBefore.set(c.i,left=[]); left.push(c);
     let right=byAfter.get(c.j); if (!right) byAfter.set(c.j,right=[]); right.push(c);
   }
+  for (const list of byAfter.values()) {
+    list.sort((a, b) => b.baseConfidence - a.baseConfidence || a.i - b.i);
+  }
+  let refineChecks = 0;
   for (const [i, choices] of byBefore) {
+    if ((++refineChecks & 63) === 0 && !budget.checkCandidateWall()) break;
     choices.sort((a,b)=>b.baseConfidence-a.baseConfidence || a.j-b.j); const top=choices[0], second=choices[1];
-    const reverse=(byAfter.get(top.j)||[]).slice().sort((a,b)=>b.baseConfidence-a.baseConfidence || a.i-b.i); const reverseSecond=reverse.find((x)=>x.i!==i);
     const uniqueLeft=!second || top.baseConfidence-second.baseConfidence>0.06;
-    const uniqueRight=!reverseSecond || top.baseConfidence-reverseSecond.baseConfidence>0.06;
-    if (top.baseConfidence>=0.9 && uniqueLeft && uniqueRight && before[top.i].address!=null && after[top.j].address!=null) anchors.set(String(before[top.i].address),String(after[top.j].address));
+    if (top.baseConfidence < 0.9 || !uniqueLeft || before[top.i].address == null || after[top.j].address == null) continue;
+    const reverse = byAfter.get(top.j);
+    const reverseSecond = reverse ? (reverse[0]?.i !== i ? reverse[0] : reverse[1]) : null;
+    const uniqueRight = !reverseSecond || top.baseConfidence - reverseSecond.baseConfidence > 0.06;
+    if (uniqueRight) {
+      const fromKey = String(before[top.i].address);
+      const toKey = String(after[top.j].address);
+      if (!anchors.has(fromKey) && !anchoredAfter.has(toKey)) {
+        anchors.set(fromKey, toKey);
+        anchoredAfter.add(toKey);
+      }
+    }
   }
   const iterations = Math.max(0, Math.min(3, options.neighborhoodIterations ?? 2));
-  for (let iter = 0; iter < iterations; iter++) {
+  const beforeNeighbors = anchors.size > 0 && iterations > 0 ? new Array(before.length) : null;
+  const afterNeighbors = anchors.size > 0 && iterations > 0 ? new Array(after.length) : null;
+  for (let iter = 0; iter < iterations && anchors.size > 0; iter++) {
+    if (budget.candidateGraphIncomplete || !budget.checkCandidateWall()) break;
     let changed = false;
     for (const c of all) {
+      if ((++refineChecks & 255) === 0 && !budget.checkCandidateWall()) break;
       if (c.baseConfidence < 0.55) continue;
-      const bonus = neighborBonus(before[c.i], after[c.j], anchors);
+      const bonus = neighborBonusFromSets(
+        getNeighborSet(beforeNeighbors, before, c.i),
+        getNeighborSet(afterNeighbors, after, c.j),
+        anchors,
+      );
       const next = Math.min(0.97, c.baseConfidence + bonus);
       if (next > c.confidence) { c.confidence = next; if (bonus > 0 && !c.reasons.includes('call-neighborhood')) c.reasons.push('call-neighborhood'); changed = true; }
     }
-    if (!changed) break;
+    if (!changed || iter + 1 >= iterations || budget.candidateGraphIncomplete) break;
+    let anchorsAdded = false;
+    for (const [i, choices] of byBefore) {
+      if ((++refineChecks & 63) === 0 && !budget.checkCandidateWall()) break;
+      if (before[i].address == null) continue;
+      const fromKey = String(before[i].address);
+      if (anchors.has(fromKey)) continue;
+      let top = null, secondConf = -Infinity;
+      for (const c of choices) {
+        if (!top || c.confidence > top.confidence || (c.confidence === top.confidence && c.j < top.j)) {
+          if (top) secondConf = Math.max(secondConf, top.confidence);
+          top = c;
+        } else if (c.confidence > secondConf) {
+          secondConf = c.confidence;
+        }
+      }
+      if (!top || top.confidence < 0.82 || after[top.j].address == null) continue;
+      const toKey = String(after[top.j].address);
+      if (anchoredAfter.has(toKey)) continue;
+      if (secondConf > -Infinity && top.confidence - secondConf <= 0.06) continue;
+      let reverseMaxOther = -Infinity;
+      for (const x of (byAfter.get(top.j) || [])) {
+        if (x.i !== i && x.confidence > reverseMaxOther) reverseMaxOther = x.confidence;
+      }
+      if (reverseMaxOther > -Infinity && top.confidence - reverseMaxOther <= 0.06) continue;
+      anchors.set(fromKey, toKey);
+      anchoredAfter.add(toKey);
+      anchorsAdded = true;
+    }
+    if (!anchorsAdded) break;
   }
   const eligible = all.filter((c) => {
     if (c.identity !== 'similar' || options.allowSimilar === true) return true;
@@ -212,7 +292,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   for (const list of eligibleByAfter.values()) list.sort((a,b)=>b.confidence-a.confidence || b.baseConfidence-a.baseConfidence || a.i-b.i);
 
   const solved = solveCandidateMatching(eligible, budget);
-  const selected = solved.selected;
+  const selected = budget.candidateGraphIncomplete ? [] : solved.selected;
   const truncatedComponents = solved.truncatedComponents.slice(0, 32);
   const incompletePostprocessing = () => {
     const matchingBudget = budget.snapshot();
@@ -286,7 +366,6 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
       match: { before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates },
     });
     usedBefore.add(c.i); usedAfter.add(c.j);
-    if (!ambiguous && c.confidence >= 0.82 && before[c.i].address != null && after[c.j].address != null) anchors.set(String(before[c.i].address), String(after[c.j].address));
     if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
   }
   try {
@@ -315,8 +394,15 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   }
   if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
   const matchingBudget = budget.snapshot();
+  const candidateGraphIncomplete = !!matchingBudget.candidateGraphIncomplete;
   const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
   const hasMatchAmbiguity = matches.some((match) => match.ambiguous);
+  const unresolvedBefore = candidateGraphIncomplete
+    ? deleted.slice()
+    : (truncated ? before.filter((_x, i) => solved.ambiguousLeft.has(i)) : []);
+  const unresolvedAfter = candidateGraphIncomplete
+    ? added.slice()
+    : (truncated ? after.filter((_x, i) => solved.ambiguousRight.has(i)) : []);
   return {
     matches, deleted, new: added,
     candidatesEvaluated: all.length,
@@ -324,14 +410,14 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     indexBuckets: index.buckets.size,
     truncated,
     ambiguous: truncated || hasMatchAmbiguity,
-    unresolvedBefore: truncated ? before.filter((_x, i) => solved.ambiguousLeft.has(i)) : [],
-    unresolvedAfter: truncated ? after.filter((_x, i) => solved.ambiguousRight.has(i)) : [],
+    unresolvedBefore,
+    unresolvedAfter,
     matching: {
       truncated,
-      candidateGraphIncomplete: false,
-      preprocessingIncomplete: false,
-      ambiguousBefore: solved.ambiguousLeft.size,
-      ambiguousAfter: solved.ambiguousRight.size,
+      candidateGraphIncomplete,
+      preprocessingIncomplete: !!matchingBudget.preprocessingIncomplete,
+      ambiguousBefore: candidateGraphIncomplete ? unresolvedBefore.length : solved.ambiguousLeft.size,
+      ambiguousAfter: candidateGraphIncomplete ? unresolvedAfter.length : solved.ambiguousRight.size,
       truncatedComponents,
       omittedTruncatedComponents: Math.max(0, solved.truncatedComponents.length - truncatedComponents.length),
       budget: matchingBudget,
@@ -358,12 +444,13 @@ export function recognitionMetrics(expectedPairs, result) {
 }
 
 export function calibrationReport(expectedPairs, result, options = {}) {
-  const bins = Math.max(2, Math.min(50, Number(options.bins) || 10));
+  const rawBins = Math.floor(Number(options.bins));
+  const bins = Number.isFinite(rawBins) && rawBins > 0 ? Math.max(2, Math.min(50, rawBins)) : 10;
   const expected = new Set((expectedPairs || []).map(([a,b]) => `${a}>${b}`));
   const buckets = Array.from({length:bins}, (_x,index) => ({ lower:index/bins, upper:(index+1)/bins, samples:0, correct:0, meanScore:0 }));
   for (const match of result.matches || []) {
     const score = Math.max(0, Math.min(1, Number(match.confidence) || 0));
-    const index = Math.min(bins-1, Math.floor(score*bins)); const bucket=buckets[index];
+    const index = Math.max(0, Math.min(bins - 1, Math.floor(score * bins))); const bucket=buckets[index];
     bucket.samples++; bucket.meanScore += score;
     if (expected.has(`${match.before.address}>${match.after.address}`)) bucket.correct++;
   }

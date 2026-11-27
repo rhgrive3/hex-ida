@@ -7,7 +7,7 @@
  *  1. run the existing public-benchmark subject runner (`runCase`) to collect
  *     decompiled function pseudocode (reuses tools/validation/public-benchmark);
  *  2. reconstruct one C translation unit from non-null pseudocode bodies
- *     (same rule as the investigation baseline: join in function order);
+ *     via `buildCTranslationUnit` (`js/analysis/query/translation-unit.js`);
  *  3. `clang -fsyntax-only` then `clang -O0 -c` object check with per-stage timeout.
  *
  * Case verdicts use the harness contract states (PASS | FAIL | TIMEOUT |
@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildCTranslationUnit } from '../../../js/analysis/query/translation-unit.js';
 import { loadManifest, verifyInputs } from '../public-benchmark/manifest.mjs';
 import { runCase } from '../public-benchmark/run-case.mjs';
 import { countFunctionStates } from '../public-benchmark/outcome.mjs';
@@ -42,13 +43,78 @@ function hasFlag(args, name) {
   return args.includes(name);
 }
 
-export function reconstructSource(functions) {
-  const bodies = [];
-  for (const fn of Array.isArray(functions) ? functions : []) {
-    if (typeof fn?.pseudocode === 'string' && fn.pseudocode.trim()) bodies.push(fn.pseudocode);
+function extractFunctionPseudocode(fn) {
+  if (typeof fn?.pseudocode === 'string' && fn.pseudocode.trim()) return fn.pseudocode;
+  if (typeof fn?.source === 'string' && fn.source.trim()) return fn.source;
+  if (typeof fn?.text === 'string' && fn.text.trim()) return fn.text;
+  if (Array.isArray(fn?.lines)) {
+    const joined = fn.lines
+      .map((line) => (typeof line === 'string' ? line : typeof line?.text === 'string' ? line.text : ''))
+      .join('\n');
+    if (joined.trim()) return joined;
   }
-  if (bodies.length === 0) return null;
-  return `${bodies.join('\n')}\n`;
+  return null;
+}
+
+function inferInlineSignature(pseudocode) {
+  for (const rawLine of pseudocode.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith('/*') || trimmed.startsWith('//') || trimmed.startsWith('#')) continue;
+    if (/^static\s+inline\b/.test(trimmed)) continue;
+    const braceIdx = trimmed.indexOf('{');
+    if (braceIdx > 0) {
+      const before = trimmed.slice(0, braceIdx).trim();
+      if (before && !/[;{}]/.test(before) && /^[A-Za-z_][A-Za-z0-9_\s*]*\s+[^\s(]+\s*\([^;{}]*\)\s*$/.test(before)) {
+        return before;
+      }
+    }
+    if (!trimmed.startsWith('typedef ') && !trimmed.startsWith('extern ')) break;
+  }
+  return null;
+}
+
+function adaptFunctionForTranslationUnit(fn) {
+  const pseudocode = extractFunctionPseudocode(fn);
+  if (!pseudocode) return null;
+  const adapted = {
+    ...fn,
+    pseudocode,
+  };
+  if (adapted.address == null) {
+    const addr = fn?.startAddress ?? fn?.startAddr ?? fn?.functionId ?? null;
+    if (addr != null) adapted.address = addr;
+  }
+  if (!adapted.signature) {
+    const inlineSig = inferInlineSignature(pseudocode);
+    if (inlineSig) adapted.signature = inlineSig;
+  }
+  return adapted;
+}
+
+export function reconstructTranslationUnit(functions) {
+  const adapted = [];
+  for (const fn of Array.isArray(functions) ? functions : []) {
+    const entry = adaptFunctionForTranslationUnit(fn);
+    if (entry) adapted.push(entry);
+  }
+  if (adapted.length === 0) return null;
+  const unit = buildCTranslationUnit(adapted);
+  const source = typeof unit?.source === 'string' && unit.source.trim() ? unit.source : null;
+  if (!source) return null;
+  const unitFunctions = Array.isArray(unit?.functions) ? unit.functions : [];
+  const syntaxOnlyCount = unitFunctions.filter((fn) => fn?.syntaxOnly === true).length;
+  const faithfulCount = unitFunctions.length - syntaxOnlyCount;
+  return { source, unit, syntaxOnlyCount, faithfulCount };
+}
+
+export function reconstructSource(functions, metaOut = null) {
+  const reconstructed = reconstructTranslationUnit(functions);
+  if (!reconstructed) return null;
+  if (metaOut && typeof metaOut === 'object') {
+    metaOut.syntaxOnlyCount = reconstructed.syntaxOnlyCount;
+    metaOut.faithfulCount = reconstructed.faithfulCount;
+  }
+  return reconstructed.source;
 }
 
 export function runClang({ clang, sourceFile, mode, timeoutMs, spawnRunner = spawnSync }) {
@@ -101,10 +167,15 @@ export function createGCaseRunner({
     if (subject.state !== 'PASS') {
       return { state: 'FAIL', reason: `subject-${subject.state.toLowerCase()}:${(subject.reason || 'no-reason').slice(0, 160)}`, functions: progress };
     }
-    const source = reconstructSource(subject.functions);
-    if (source === null) return { state: 'FAIL', reason: 'no-decompiled-bodies', functions: progress };
+    const reconstructed = reconstructTranslationUnit(subject.functions);
+    if (reconstructed === null) return { state: 'FAIL', reason: 'no-decompiled-bodies', functions: progress };
+    progress.extra.syntaxOnlyCount = reconstructed.syntaxOnlyCount;
+    progress.extra.faithfulCount = reconstructed.faithfulCount;
+    if (reconstructed.faithfulCount === 0 && reconstructed.syntaxOnlyCount > 0) {
+      return { state: 'FAIL', reason: 'syntax-only-placeholders', functions: progress };
+    }
     const sourceFile = path.join(scratch, `${Buffer.from(manifestCase.id).toString('hex')}.c`);
-    fs.writeFileSync(sourceFile, source);
+    fs.writeFileSync(sourceFile, reconstructed.source);
     const syntax = runClang({ clang, sourceFile, mode: 'syntax', timeoutMs: clangTimeoutMs, spawnRunner });
     if (syntax.timedOut) return { state: 'TIMEOUT', reason: 'clang-syntax-timeout', functions: progress };
     if (!syntax.ok) return { state: 'FAIL', reason: 'syntax-failed', functions: progress };

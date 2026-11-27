@@ -133,6 +133,9 @@ function canonicalCoverageForDigest(coverage) {
     const values = coverageList(coverage[key]);
     if (values) canonical[key] = [...values].sort();
   }
+  if (typeof coverage.module === 'string' && coverage.module.trim()) {
+    canonical.module = coverage.module.trim();
+  }
   return canonical;
 }
 

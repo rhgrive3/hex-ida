@@ -57,6 +57,10 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
   if (!dir || !dir.rva || dir.size < 4) return parseLoadConfigCore(r, dir, image, sharedBudget);
   const budget = ensureBudget(image, sharedBudget);
   const head = mappedFileSpanForRva(image, dir.rva, 4);
+  if (head && (!Number.isSafeInteger(head.start) || head.start < 0 || head.start + 4 > r.length)) {
+    budget.partial('load-config:truncated', 'PE load-config header extends past end of file');
+    return;
+  }
   const internalSize = head ? r.u32(head.start) : 0;
   if (head && internalSize > dir.size) {
     budget.partial(
@@ -64,25 +68,32 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
       `PE load-config Size ${internalSize} exceeds directory size ${dir.size}`,
     );
   }
-  const parseSafeSEH = () => {
+  const parseLoadConfigExtensions = () => {
     if (!head) return;
+    const declared = Math.min(internalSize, dir.size);
+    if (!Number.isSafeInteger(declared) || declared < 4) {
+      budget.partial('load-config:truncated', 'PE load-config declared size is smaller than 4 bytes');
+      return;
+    }
+    const full = mappedFileSpanForRva(image, dir.rva, declared);
+    if (!full) return;
+    if (!Number.isSafeInteger(full.start) || full.start < 0 || full.start + declared > r.length) {
+      budget.partial('load-config:truncated', 'PE load-config directory extends past end of file');
+      return;
+    }
     parseSafeSEHLoadConfig(
       r,
-      head.start,
-      Math.min(internalSize, dir.size),
+      full.start,
+      declared,
       image,
       budget,
       mappedFileRangeForRva,
       mappedFileSpanForRva,
     );
-  };
-
-  const parseCHPE = () => {
-    if (!head) return;
     parseCHPELoadConfig(
       r,
-      head.start,
-      Math.min(internalSize, dir.size),
+      full.start,
+      declared,
       image,
       budget,
       mappedFileRangeForRva,
@@ -93,8 +104,7 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
   const sectionAt = image.sectionAt;
   if (typeof sectionAt !== 'function') {
     const result = parseLoadConfigCore(r, dir, image, budget);
-    parseSafeSEH();
-    parseCHPE();
+    parseLoadConfigExtensions();
     return result;
   }
 
@@ -128,8 +138,7 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
   };
 
   const result = parseLoadConfigCore(r, dir, loadConfigImage, budget);
-  parseSafeSEH();
-  parseCHPE();
+  parseLoadConfigExtensions();
   return result;
 }
 
@@ -294,15 +303,35 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
   return publishTlsAddresses(parseTlsDirectoryCore(r, dir, tlsImage, budget));
 }
 
+const PE_LOADER_FAILED_STRING_SPANS = new WeakMap();
+function peLoaderFailedStringSpans(budget) {
+  let set = PE_LOADER_FAILED_STRING_SPANS.get(budget);
+  if (!set) { set = new Set(); PE_LOADER_FAILED_STRING_SPANS.set(budget, set); }
+  return set;
+}
+
 function mappedCStringAtRva(r, image, rva, budget, label) {
   const range = mappedFileRangeForRva(image, rva);
   if (!range) { budget.partial(`${label}:unmapped-string`, `Ignored ${label} string outside a file-backed mapping`); return ''; }
+  const rawMax = Math.min(1 << 16, range.end - range.start);
   const maxByStringBudget = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
-  const max = Math.min(1 << 16, range.end - range.start, maxByStringBudget);
+  const max = Math.min(rawMax, maxByStringBudget);
   if (max <= 0) return '';
+  const failed = peLoaderFailedStringSpans(budget);
+  const failKey = `${range.start}:${rawMax}`;
+  if (failed.has(failKey)) {
+    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+    return '';
+  }
   const nulAt = r.slice(range.start, max).indexOf(0);
   if (nulAt < 0) {
-    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+    budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+    if (maxByStringBudget < rawMax) {
+      budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+    } else {
+      failed.add(failKey);
+      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
+    }
     return '';
   }
   const value = r.cstring(range.start, max);
@@ -313,10 +342,25 @@ function mappedCStringAtRva(r, image, rva, budget, label) {
 
 function mappedCStringAtOffset(r, start, end, budget, label) {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= end || end > r.length) return '';
-  const max = Math.min(1 << 16, end-start, Math.max(1, Math.floor(budget.remainingStringBytes/2)+1));
+  const rawMax = Math.min(1 << 16, end - start);
+  const maxByStringBudget = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
+  const max = Math.min(rawMax, maxByStringBudget);
+  if (max <= 0) return '';
+  const failed = peLoaderFailedStringSpans(budget);
+  const failKey = `${start}:${rawMax}`;
+  if (failed.has(failKey)) {
+    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+    return '';
+  }
   const nulAt = r.slice(start, max).indexOf(0);
   if (nulAt < 0) {
-    budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+    budget.take({ inputBytes: max, operations: 1 }, `${label}-string-scan`);
+    if (maxByStringBudget < rawMax) {
+      budget.partial(`${label}:string-budget-exhausted`, `Ignored ${label} string exceeding remaining string budget`);
+    } else {
+      failed.add(failKey);
+      budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
+    }
     return '';
   }
   const value = r.cstring(start,max);

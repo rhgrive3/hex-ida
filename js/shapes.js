@@ -41,10 +41,31 @@ function newEntry(offset, size, identity, key) {
   return {
     key, offset, size, identity, identityKnown: identity != null,
     decreases: 0, increases: 0, clamped: 0, crossObject: 0, scaled: 0,
+    decreaseCrossObject: 0, decreaseAmountFromCall: 0,
     amountFrom: new Map(), amountFromCall: 0, amountFromImm: 0, sites: [],
     usedAsAmount: 0, usedAgainst: new Map(), usedScaled: 0, usedCross: 0,
     objectSpan: 0, events: 0, inBigObject: 0,
   };
+}
+
+function peerEntry(folded, e) {
+  if (!folded || !e || typeof folded.get !== 'function' || typeof e.key !== 'string') return null;
+  const otherRole = e.key.startsWith('target:') ? 'amount' : (e.key.startsWith('amount:') ? 'target' : null);
+  if (!otherRole) return null;
+  return folded.get(keyOf(e.identity, e.offset, null, otherRole)) || null;
+}
+
+function decreaseCrossCount(e) {
+  return typeof e?.decreaseCrossObject === 'number' ? e.decreaseCrossObject : (e?.crossObject || 0);
+}
+function decreaseCallCount(e) {
+  return typeof e?.decreaseAmountFromCall === 'number' ? e.decreaseAmountFromCall : (e?.amountFromCall || 0);
+}
+function isPrimaryResourceDrain(e) {
+  return decreaseCrossCount(e) > 0 || decreaseCallCount(e) > 0;
+}
+function isPureClampedDrain(e) {
+  return (e?.clamped || 0) > 0 && (e?.decreases || 0) >= 2 && (e?.increases || 0) === 0;
 }
 
 /**
@@ -82,10 +103,14 @@ export function foldShapes(scan) {
       if (span[i] >= BIG_OBJECT) e.inBigObject++;
     }
     const f = flags[i];
-    if (f & SHAPE.DECREASE) e.decreases++;
+    const isDecrease = !!(f & SHAPE.DECREASE);
+    if (isDecrease) e.decreases++;
     if (f & SHAPE.INCREASE) e.increases++;
     if (f & SHAPE.CLAMP) e.clamped++;
-    if (f & SHAPE.CROSS) e.crossObject++;
+    if (f & SHAPE.CROSS) {
+      e.crossObject++;
+      if (isDecrease) e.decreaseCrossObject++;
+    }
     if (f & SHAPE.SCALED) e.scaled++;
     if (e.sites.length < 8) e.sites.push({ addr: addr[i], flags: f });
     if (amtKind[i] === AMOUNT.FIELD) {
@@ -93,8 +118,10 @@ export function foldShapes(scan) {
       const amountIdentity = identityAt(amountBases, i);
       const sourceKey = amountIdentity != null ? `${amountIdentity}:${a}` : `unknown:${a}`;
       e.amountFrom.set(sourceKey, (e.amountFrom.get(sourceKey) || 0) + 1);
-    } else if (amtKind[i] === AMOUNT.CALL) e.amountFromCall++;
-    else if (amtKind[i] === AMOUNT.IMM) e.amountFromImm++;
+    } else if (amtKind[i] === AMOUNT.CALL) {
+      e.amountFromCall++;
+      if (isDecrease) e.decreaseAmountFromCall++;
+    } else if (amtKind[i] === AMOUNT.IMM) e.amountFromImm++;
   }
 
   const amtSize = scan.amtSize || null;
@@ -112,6 +139,7 @@ export function foldShapes(scan) {
     src.events++;
     if (sp >= BIG_OBJECT) src.inBigObject++;
     src.usedAsAmount++;
+    if (src.sites.length < 8) src.sites.push({ addr: addr[i], flags: flags[i] });
     const targetIdentity = identityAt(bases, i);
     const againstKey = locKey(targetIdentity, disp[i]);
     src.usedAgainst.set(againstKey, (src.usedAgainst.get(againstKey) || 0) + 1);
@@ -139,7 +167,7 @@ function resourceScore(e) {
   return Math.min(1, s) * provenancePenalty(e);
 }
 
-function damageSourceScore(e, resourceKeys) {
+function damageSourceScore(e, resourceKeys, peer = null) {
   if (!e.usedAsAmount || looksLikeContainerHead(e) || !plausibleStatSize(e)) return 0;
   let s = Math.min(1, e.usedAsAmount / 4) * 0.45;
   if (e.usedCross) s += Math.min(1, e.usedCross / 3) * 0.25;
@@ -150,7 +178,9 @@ function damageSourceScore(e, resourceKeys) {
     if (key.startsWith('unknown:') && resourceKeys.has(key.slice('unknown:'.length))) againstResource += n;
   }
   if (againstResource) s += Math.min(1, againstResource / 3) * 0.25;
-  if (e.decreases + e.increases > e.usedAsAmount) s *= 0.3;
+  const selfChanges = (e.decreases || 0) + (e.increases || 0)
+    + (peer ? ((peer.decreases || 0) + (peer.increases || 0)) : 0);
+  if (selfChanges > e.usedAsAmount) s *= 0.3;
   return Math.min(1, s) * provenancePenalty(e);
 }
 
@@ -160,7 +190,9 @@ function assignRoles(folded) {
   const draft = new Set();
   for (const e of folded.values()) if (resourceScore(e) > 0) { draft.add(locKey(e.identity, e.offset)); if (e.identity == null) draft.add(String(e.offset)); }
   for (const e of folded.values()) {
-    const res = resourceScore(e), dmg = damageSourceScore(e, draft);
+    const peer = peerEntry(folded, e);
+    const res = Math.max(resourceScore(e), peer ? resourceScore(peer) : 0);
+    const dmg = Math.max(damageSourceScore(e, draft, peer), peer ? damageSourceScore(peer, draft, e) : 0);
     let role = null;
     if (res > 0 || dmg > 0) {
       if (res >= dmg * ROLE_MARGIN) role = 'resource';
@@ -189,9 +221,17 @@ export function roleOf(folded, offset) {
   const roles = assignRoles(folded);
   const values = entries.map((e) => roles.get(e.key)).filter(Boolean);
   if (!values.length) return null;
-  const names = new Set(values.map((r) => r.role));
-  if (names.size > 1) return { role: 'ambiguous', resource: Math.max(...values.map((r) => r.resource)), damage: Math.max(...values.map((r) => r.damage)), multipleObjects: true };
-  return values.sort((a, b) => Math.max(b.resource, b.damage) - Math.max(a.resource, a.damage))[0];
+  if (values.length === 1) return values[0];
+  const nonNullNames = new Set(values.map((r) => r.role).filter((r) => r != null));
+  if (nonNullNames.size > 1 || nonNullNames.has('ambiguous')) {
+    return {
+      role: 'ambiguous',
+      resource: Math.max(...values.map((r) => r.resource)),
+      damage: Math.max(...values.map((r) => r.damage)),
+      multipleObjects: true,
+    };
+  }
+  return values.sort((a, b) => (b.role != null ? 1 : 0) - (a.role != null ? 1 : 0) || Math.max(b.resource, b.damage) - Math.max(a.resource, a.damage))[0];
 }
 
 export function resources(folded, limit = 12) {
@@ -199,7 +239,7 @@ export function resources(folded, limit = 12) {
   const roles = assignRoles(folded), out = [];
   for (const e of folded.values()) {
     const r = roles.get(e.key);
-    if (r?.role === 'resource') out.push(Object.assign({}, e, { score: r.resource, role: 'resource', roles: r, complete: folded.complete !== false }));
+    if (r?.role === 'resource' && resourceScore(e) > 0) out.push(Object.assign({}, e, { score: r.resource, role: 'resource', roles: r, complete: folded.complete !== false }));
   }
   out.sort((a, b) => b.score - a.score || (b.decreases + b.increases) - (a.decreases + a.increases));
   return out.slice(0, safeLimit);
@@ -213,7 +253,7 @@ export function damageSources(folded, res, limit = 12) {
   for (const e of folded.values()) {
     const r = roles.get(e.key);
     if (r?.role !== 'damage-source') continue;
-    const score = damageSourceScore(e, resourceKeys);
+    const score = damageSourceScore(e, resourceKeys, peerEntry(folded, e));
     if (score > 0) out.push(Object.assign({}, e, { score, role: 'damage-source', roles: r, complete: folded.complete !== false }));
   }
   out.sort((a, b) => b.score - a.score || b.usedAsAmount - a.usedAsAmount);
@@ -224,6 +264,7 @@ export function evidenceFor(folded, offset, goalId) {
   if (!folded?.size) return null;
   const e = bestAt(folded, offset);
   if (!e) return null;
+  const peer = peerEntry(folded, e);
   const codes = [];
   if (folded.capped) codes.push({ code: 'loc-scan-capped', strength: 1, detail: { offset, complete: false } });
   if (!e.identityKnown) codes.push({ code: 'loc-object-identity-unknown', strength: 1, detail: { offset } });
@@ -234,15 +275,42 @@ export function evidenceFor(folded, offset, goalId) {
   const res = resources(folded, 24);
   const resourceKeys = new Set();
   for (const r of res) { resourceKeys.add(locKey(r.identity, r.offset)); if (r.identity == null) resourceKeys.add(String(r.offset)); }
+  const offsetRole = roleOf(folded, offset);
+  if (offsetRole?.role === 'ambiguous') {
+    codes.push({
+      code: 'loc-role-conflict',
+      strength: 1,
+      detail: {
+        offset,
+        resource: offsetRole.resource,
+        damage: offsetRole.damage,
+        ...(offsetRole.multipleObjects ? { multipleObjects: true } : {}),
+      },
+    });
+    return { codes, shape: e, complete: folded.complete !== false };
+  }
   const role = assignRoles(folded).get(e.key) || { role: null };
-  if (role.role === 'ambiguous') codes.push({ code: 'loc-role-conflict', strength: 1, detail: { offset, resource: role.resource, damage: role.damage } });
   if (goalId === 'attack' || goalId === 'damage') {
-    const s = role.role === 'damage-source' ? damageSourceScore(e, resourceKeys) : 0;
-    if (s > 0) codes.push({ code: 'loc-damage-source', strength: s, detail: { offset, usedAsAmount: e.usedAsAmount, crossObject: e.usedCross, scaled: e.usedScaled, against: Array.from(e.usedAgainst.keys()).slice(0, 3), identityKnown: e.identityKnown } });
+    const dmgEntry = e.usedAsAmount > 0 ? e : (peer && peer.usedAsAmount > 0 ? peer : e);
+    const dmgPeer = peerEntry(folded, dmgEntry);
+    const s = role.role === 'damage-source' ? damageSourceScore(dmgEntry, resourceKeys, dmgPeer) : 0;
+    if (s > 0) codes.push({ code: 'loc-damage-source', strength: s, detail: { offset, usedAsAmount: dmgEntry.usedAsAmount, crossObject: dmgEntry.usedCross, scaled: dmgEntry.usedScaled, against: Array.from(dmgEntry.usedAgainst.keys()).slice(0, 3), identityKnown: dmgEntry.identityKnown } });
   } else if (goalId === 'hp' || goalId === 'stamina') {
-    if (role.role === 'resource' && (e.crossObject > 0 || e.amountFromCall > 0)) codes.push({ code: 'loc-resource-drain', strength: resourceScore(e), detail: { offset, decreases: e.decreases, increases: e.increases, clamped: e.clamped, crossObject: e.crossObject, identityKnown: e.identityKnown } });
-  } else if (goalId === 'money' || goalId === 'score' || goalId === 'item') {
-    if (role.role === 'resource' && e.crossObject === 0) codes.push({ code: 'loc-self-resource', strength: resourceScore(e), detail: { offset, decreases: e.decreases, increases: e.increases, clamped: e.clamped, identityKnown: e.identityKnown } });
+    const resEntry = e.decreases > 0 ? e : (peer && peer.decreases > 0 ? peer : e);
+    const decCross = decreaseCrossCount(resEntry);
+    const hasPrimary = res.some(isPrimaryResourceDrain);
+    const matchesDrain = isPrimaryResourceDrain(resEntry) || (!hasPrimary && isPureClampedDrain(resEntry));
+    if (role.role === 'resource' && matchesDrain) {
+      codes.push({ code: 'loc-resource-drain', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, crossObject: decCross, identityKnown: resEntry.identityKnown } });
+    }
+  } else if (goalId === 'cooldown') {
+    const resEntry = e.decreases > 0 ? e : (peer && peer.decreases > 0 ? peer : e);
+    if (role.role === 'resource' && (resEntry.clamped || 0) > 0 && (resEntry.decreases || 0) > 0) {
+      codes.push({ code: 'loc-self-resource', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, identityKnown: resEntry.identityKnown } });
+    }
+  } else if (goalId === 'money' || goalId === 'score' || goalId === 'item' || goalId === 'level') {
+    const resEntry = e.decreases > 0 ? e : (peer && peer.decreases > 0 ? peer : e);
+    if (role.role === 'resource' && resEntry.crossObject === 0) codes.push({ code: 'loc-self-resource', strength: resourceScore(resEntry), detail: { offset, decreases: resEntry.decreases, increases: resEntry.increases, clamped: resEntry.clamped, identityKnown: resEntry.identityKnown } });
   }
   return { codes, shape: e, complete: folded.complete !== false };
 }
@@ -252,7 +320,11 @@ export function byGoal(folded, goalId, limit = 8) {
   const res = resources(folded, 24);
   switch (goalId) {
     case 'attack': case 'damage': return damageSources(folded, res, safeLimit);
-    case 'hp': case 'stamina': return res.filter((e) => e.crossObject > 0 || e.amountFromCall > 0).slice(0, safeLimit);
+    case 'hp': case 'stamina': {
+      const primary = res.filter(isPrimaryResourceDrain);
+      return (primary.length ? primary : res.filter(isPureClampedDrain)).slice(0, safeLimit);
+    }
+    case 'cooldown': return res.filter((e) => (e.clamped || 0) > 0 && (e.decreases || 0) > 0).slice(0, safeLimit);
     case 'money': case 'score': return res.filter((e) => e.crossObject === 0).slice(0, safeLimit);
     case 'level': case 'item': return res.slice(0, safeLimit);
     default: return [];

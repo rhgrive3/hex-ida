@@ -1,6 +1,6 @@
 /* Protected admin application. Every resource and API also has a Worker gate. */
 const $ = (id) => document.getElementById(id);
-let offset = 0, auditOffset = 0, generation = 0;
+let offset = 0, auditOffset = 0, generation = 0, auditGeneration = 0;
 const limit = 25;
 async function request(path, method = 'GET', body) {
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
@@ -12,8 +12,10 @@ async function request(path, method = 'GET', body) {
       headers['x-hex-csrf'] = (await csrf.json()).csrfToken;
     }
     const response = await fetch(path, { method, headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Request failed');
+    let data = null;
+    try { data = await response.json(); } catch {}
+    if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
+    if (data === null) throw new Error('Invalid JSON response');
     return data;
   } finally { clearTimeout(timer); }
 }
@@ -61,9 +63,12 @@ async function loadUsers() {
   if (current === generation) renderUsers(data);
 }
 async function loadAudit() {
-  const data = await api(`/api/admin/audit?limit=${limit}&offset=${auditOffset}`);
+  const current = ++auditGeneration;
+  const requestOffset = auditOffset;
+  const data = await api(`/api/admin/audit?limit=${limit}&offset=${requestOffset}`);
+  if (current !== auditGeneration) return;
   $('audit').textContent = data.entries.map((entry) => `${new Date(entry.created_at).toISOString()} ${entry.actor_discord_id} → ${entry.target_discord_id} ${entry.action}\n${entry.old_value_json || 'new'} → ${entry.new_value_json}`).join('\n\n') || 'No entries';
-  $('audit-previous').disabled = auditOffset === 0; $('audit-next').disabled = !data.hasMore;
+  $('audit-previous').disabled = requestOffset === 0; $('audit-next').disabled = !data.hasMore;
 }
 $('search').onsubmit = (event) => { event.preventDefault(); offset = 0; void action(loadUsers); };
 $('register').onsubmit = (event) => { event.preventDefault(); void action(async () => { await api('/api/admin/users', 'POST', { discordId: $('discord-id').value.trim() }); $('discord-id').value = ''; await loadUsers(); await loadAudit(); }); };

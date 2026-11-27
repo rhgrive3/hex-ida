@@ -52,6 +52,11 @@ const facadeProjectedConstants = new WeakMap();
 const facadeProjectedMemoryOperands = new WeakMap();
 const facadeRegisterStateBindings = new WeakMap();
 const facadeReturnFaultBindings = new WeakMap();
+const irAbiAdapters = new WeakMap();
+
+export function abiAdapterForIr(ir) {
+  return ir && typeof ir === 'object' ? (irAbiAdapters.get(ir) ?? null) : null;
+}
 
 /** Canonical bundle membership only. No predicate is discharged by this API. */
 export function prepareCanonicalReturnFaultBindings(projected, identity) {
@@ -500,6 +505,23 @@ function retainFacadeArgumentWrites(fields, history) {
   }
 }
 
+const combinedWriteListCache = new WeakMap();
+function combinedWriteList(first, second) {
+  if (!second || second.length === 0) return first;
+  if (!first || first.length === 0) return second;
+  if (!Object.isFrozen(first) || !Object.isFrozen(second)) {
+    return Object.freeze([...first, ...second]);
+  }
+  let bySecond = combinedWriteListCache.get(first);
+  if (!bySecond) combinedWriteListCache.set(first, bySecond = new WeakMap());
+  let combined = bySecond.get(second);
+  if (!combined) {
+    combined = Object.freeze([...first, ...second]);
+    bySecond.set(second, combined);
+  }
+  return combined;
+}
+
 function sealFacadeStateTransitions(projected, history) {
   if (!history?.source || history.unavailable || !history.writes.length) return;
   const source = history.source, writes = Object.freeze(history.writes);
@@ -511,7 +533,7 @@ function sealFacadeStateTransitions(projected, history) {
     const output = observeProjectedOperationData(projected, definitions);
     const isCurrent = Object.freeze(Object.assign(() => source.matchesThroughWrites(writes) && output(), {
       matchesThroughWrites:following => Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes
-        && source.matchesThroughWrites([...writes, ...following]) && output.matchesThroughWrites(following),
+        && source.matchesThroughWrites(combinedWriteList(writes, following)) && output.matchesThroughWrites(following),
     }));
     if (!isCurrent()) return;
     const cached = new Map();
@@ -537,7 +559,7 @@ function sealFacadeProjectedOperations(projected, history, groups) {
           const current = Object.freeze(Object.assign(() => candidate.isCurrent.matchesThroughWrites(writes) && output(), {
             workItems:candidate.isCurrent.workItems + output.workItems + writes.length * 2,
             matchesThroughWrites:following => Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes
-              && candidate.isCurrent.matchesThroughWrites([...writes, ...following]) && output.matchesThroughWrites(following),
+              && candidate.isCurrent.matchesThroughWrites(combinedWriteList(writes, following)) && output.matchesThroughWrites(following),
           }));
           checks.set(candidate.isCurrent, current() ? current : null);
         }
@@ -700,31 +722,73 @@ function aapcs64RegionRootDescriptorProvider(options = {}, abiAdapter = null) {
   };
 }
 
+const legacyBlockInstIndexCache = new WeakMap();
+function legacyBlockInstIndexOf(blockInsts, inst) {
+  if (!Array.isArray(blockInsts) || !inst) return -1;
+  let entry = legacyBlockInstIndexCache.get(blockInsts);
+  if (!entry || entry.length !== blockInsts.length) {
+    const map = new Map();
+    for (let i = 0; i < blockInsts.length; i += 1) {
+      if (!map.has(blockInsts[i])) map.set(blockInsts[i], i);
+    }
+    entry = { length: blockInsts.length, map };
+    legacyBlockInstIndexCache.set(blockInsts, entry);
+  }
+  const idx = entry.map.get(inst);
+  if (idx !== undefined && blockInsts[idx] === inst) return idx;
+  return blockInsts.indexOf(inst);
+}
+
 function valueDominatesLegacyInstruction(value, inst, projected) {
   if (!value || !inst) return false;
   if (value.kind === LEGACY_VK.ARG) return true;
   const definition = value.def;
   if (!definition || definition === inst) return false;
-  if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);
+  if (definition.block === inst.block) {
+    if (inst.op === LEGACY_OP.PHI) return false;
+    if (definition.op === LEGACY_OP.PHI) return true;
+    const defRow = Number(definition.row);
+    const instRow = Number(inst.row);
+    if (defRow !== instRow) return defRow < instRow;
+    const blockInsts = projected.blocks?.[inst.block]?.insts;
+    if (!Array.isArray(blockInsts)) return false;
+    const defIdx = legacyBlockInstIndexOf(blockInsts, definition);
+    const instIdx = legacyBlockInstIndexOf(blockInsts, inst);
+    if (defIdx < 0 || instIdx < 0) return false;
+    return defIdx < instIdx;
+  }
   const dominators = projected.dominators?.[inst.block];
   return dominators instanceof Set && dominators.has(definition.block);
 }
 
 function legacyDefinitionRecency(value, inst, projected) {
-  if (!value || value.kind === LEGACY_VK.ARG || !value.def) return { scope:0, depth:0, row:Number.NEGATIVE_INFINITY };
+  if (!value || value.kind === LEGACY_VK.ARG || !value.def) {
+    return { scope:0, depth:0, row:Number.NEGATIVE_INFINITY, nonPhi:0, instIndex:-1 };
+  }
   const definition = value.def;
+  const nonPhi = definition.op === LEGACY_OP.PHI ? 0 : 1;
+  const blockInsts = projected.blocks?.[definition.block]?.insts;
+  const instIndex = nonPhi ? legacyBlockInstIndexOf(blockInsts, definition) : -1;
   if (definition.block === inst.block) {
-    return { scope:2, depth:Number.MAX_SAFE_INTEGER, row:Number(definition.row ?? Number.NEGATIVE_INFINITY) };
+    return {
+      scope:2,
+      depth:Number.MAX_SAFE_INTEGER,
+      row:Number(definition.row ?? Number.NEGATIVE_INFINITY),
+      nonPhi,
+      instIndex,
+    };
   }
   const dominators = projected.dominators?.[inst.block];
   if (!(dominators instanceof Set) || !dominators.has(definition.block)) {
-    return { scope:-1, depth:-1, row:Number.NEGATIVE_INFINITY };
+    return { scope:-1, depth:-1, row:Number.NEGATIVE_INFINITY, nonPhi:0, instIndex:-1 };
   }
   const definitionDominators = projected.dominators?.[definition.block];
   return {
     scope:1,
     depth:definitionDominators instanceof Set ? definitionDominators.size : 0,
     row:Number(definition.row ?? Number.NEGATIVE_INFINITY),
+    nonPhi,
+    instIndex,
   };
 }
 
@@ -737,26 +801,123 @@ function detachLegacyArguments(inst) {
   inst.args = [];
 }
 
-function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded = null, observation = null) {
-  const candidates = (projected.values ?? [])
-    .filter((value) => value !== excluded && value.reg === reg && value.kind !== LEGACY_VK.UNDEF
-      && valueDominatesLegacyInstruction(value, inst, projected))
-    .sort((left, right) => {
-      const leftRecency = legacyDefinitionRecency(left, inst, projected);
-      const rightRecency = legacyDefinitionRecency(right, inst, projected);
-      if (leftRecency.scope !== rightRecency.scope) return rightRecency.scope - leftRecency.scope;
-      if (leftRecency.depth !== rightRecency.depth) return rightRecency.depth - leftRecency.depth;
-      if (leftRecency.row !== rightRecency.row) return rightRecency.row - leftRecency.row;
-      const leftWidth = Number(bits) > 0 && left.bits === Number(bits) ? 1 : 0;
-      const rightWidth = Number(bits) > 0 && right.bits === Number(bits) ? 1 : 0;
-      if (leftWidth !== rightWidth) return rightWidth - leftWidth;
-      return (right.id ?? 0) - (left.id ?? 0);
-    });
-  if (observation && !observation.unavailable) {
-    if (candidates.length > 512) observation.unavailable = true;
-    else observation.candidates = Object.freeze(candidates.map(value => Object.freeze({ value,
-      definition:value.def, reg:value.reg, kind:value.kind, bits:value.bits, constant:value.const })));
+const projectedValuesByRegCache = new WeakMap();
+function valuesByRegFor(projected) {
+  const values = projected?.values;
+  if (!Array.isArray(values)) return new Map();
+  let entry = projectedValuesByRegCache.get(projected);
+  let stale = !entry || entry.valuesRef !== values || entry.length > values.length;
+  if (!stale) {
+    for (let i = 0; i < entry.length; i += 1) {
+      if (entry.items[i] !== values[i] || entry.regs[i] !== values[i]?.reg) {
+        stale = true;
+        break;
+      }
+    }
   }
+  if (stale) {
+    const byReg = new Map();
+    const items = new Array(values.length);
+    const regs = new Array(values.length);
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      const r = value?.reg;
+      items[i] = value;
+      regs[i] = r;
+      if (r == null) continue;
+      let list = byReg.get(r);
+      if (!list) { list = []; byReg.set(r, list); }
+      list.push(value);
+    }
+    entry = { valuesRef: values, length: values.length, byReg, items, regs };
+    projectedValuesByRegCache.set(projected, entry);
+    return byReg;
+  }
+  if (entry.length < values.length) {
+    const byReg = entry.byReg;
+    for (let i = entry.length; i < values.length; i += 1) {
+      const value = values[i];
+      const r = value?.reg;
+      entry.items.push(value);
+      entry.regs.push(r);
+      if (r == null) continue;
+      let list = byReg.get(r);
+      if (!list) { list = []; byReg.set(r, list); }
+      list.push(value);
+    }
+    entry.length = values.length;
+  }
+  return entry.byReg;
+}
+
+const projectedInstructionsByNodeIdCache = new WeakMap();
+function instructionsBySemanticNodeIdFor(projected) {
+  const instructions = projected?.instructions;
+  if (!Array.isArray(instructions)) return new Map();
+  let entry = projectedInstructionsByNodeIdCache.get(projected);
+  if (!entry || entry.instructionsRef !== instructions || entry.length !== instructions.length) {
+    const byNodeId = new Map();
+    for (let i = 0; i < instructions.length; i += 1) {
+      const inst = instructions[i];
+      const nodeId = inst?.semanticNodeId;
+      if (nodeId == null) continue;
+      let list = byNodeId.get(nodeId);
+      if (!list) { list = []; byNodeId.set(nodeId, list); }
+      list.push({ inst, pos: i });
+    }
+    entry = { instructionsRef: instructions, length: instructions.length, byNodeId };
+    projectedInstructionsByNodeIdCache.set(projected, entry);
+  }
+  return entry.byNodeId;
+}
+
+function compareReachingRegisterCandidate(left, right) {
+  if (left.recency.scope !== right.recency.scope) return right.recency.scope - left.recency.scope;
+  if (left.recency.depth !== right.recency.depth) return right.recency.depth - left.recency.depth;
+  if (left.recency.row !== right.recency.row) return right.recency.row - left.recency.row;
+  if (left.recency.nonPhi !== right.recency.nonPhi) return right.recency.nonPhi - left.recency.nonPhi;
+  if (left.recency.instIndex !== right.recency.instIndex) return right.recency.instIndex - left.recency.instIndex;
+  if (left.width !== right.width) return right.width - left.width;
+  return right.id - left.id;
+}
+
+function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded = null, observation = null) {
+  const regValues = reg == null ? (projected.values ?? []) : (valuesByRegFor(projected).get(reg) ?? []);
+  const bitsNum = Number(bits);
+  const observeAll = Boolean(observation && !observation.unavailable);
+  if (!observeAll) {
+    let best = null;
+    for (let i = 0; i < regValues.length; i += 1) {
+      const value = regValues[i];
+      if (value === excluded || value.reg !== reg || value.kind === LEGACY_VK.UNDEF) continue;
+      if (!valueDominatesLegacyInstruction(value, inst, projected)) continue;
+      const candidate = {
+        value,
+        recency: legacyDefinitionRecency(value, inst, projected),
+        width: bitsNum > 0 && value.bits === bitsNum ? 1 : 0,
+        id: value.id ?? 0,
+      };
+      if (best === null || compareReachingRegisterCandidate(candidate, best) < 0) best = candidate;
+    }
+    return best ? best.value : null;
+  }
+  const decorated = [];
+  for (let i = 0; i < regValues.length; i += 1) {
+    const value = regValues[i];
+    if (value === excluded || value.reg !== reg || value.kind === LEGACY_VK.UNDEF) continue;
+    if (!valueDominatesLegacyInstruction(value, inst, projected)) continue;
+    decorated.push({
+      value,
+      recency: legacyDefinitionRecency(value, inst, projected),
+      width: bitsNum > 0 && value.bits === bitsNum ? 1 : 0,
+      id: value.id ?? 0,
+    });
+  }
+  decorated.sort(compareReachingRegisterCandidate);
+  const candidates = decorated.map((item) => item.value);
+  if (candidates.length > 512) observation.unavailable = true;
+  else observation.candidates = Object.freeze(candidates.map(value => Object.freeze({ value,
+    definition:value.def, reg:value.reg, kind:value.kind, bits:value.bits, constant:value.const })));
   return candidates[0] ?? null;
 }
 
@@ -855,11 +1016,49 @@ function observePreservedStateSelection(projected) {
  * recover only a callee-preserved physical register state. Memory effects are
  * not changed.
  */
+function valueStillUsedByInstruction(inst, value) {
+  if (!inst || !value) return false;
+  if (Array.isArray(inst.args) && inst.args.some((arg) => arg?.value === value)) return true;
+  if (Array.isArray(inst.incoming) && inst.incoming.some((edge) => edge?.value === value)) return true;
+  if (inst.addr?.base === value || inst.addr?.index === value) return true;
+  if (inst.conditionValue === value || inst.returnTargetValue === value) return true;
+  return false;
+}
+
+function captureFieldSnapshots(entries, history) {
+  if (!history || history.unavailable) return null;
+  return entries.map(([object, key]) => {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    return { object, key, before:descriptor?.value, beforePresent:descriptor != null };
+  });
+}
+
 function restoreCanonicalPreservedStateReads(projected, adapter, history = null) {
   const observer = { records:[], sources:new WeakSet(), count:0, selection:null };
   let callerSaved = [];
   try { callerSaved = adapter?.callerSaved?.() ?? []; } catch { callerSaved = []; }
   const callerSavedSet = new Set(callerSaved.map(String));
+  const evidence = `canonical-${adapter?.id || 'abi'}-callee-preserved`;
+  const ensureSelection = () => {
+    if (observer.count === 0) {
+      try { observer.selection = observePreservedStateSelection(projected); } catch { /* bounded observation unavailable */ }
+    }
+  };
+  const recordPreservedStateEvent = (inst, unknown, reaching, call, reg, selection, extra = {}) => {
+    observer.count++;
+    observer.sources.add(inst);
+    if (!selection.unavailable) {
+      const inputs = Object.freeze([unknown, reaching].map(value => Object.freeze({ value, definition:value.def })));
+      observer.records.push(Object.freeze({ source:inst, output:inst.dst, input:reaching, call,
+        op:inst.op, sub:inst.sub, stage:'facade-preserved-state', ordinal:observer.count - 1,
+        before:unknown, after:reaching, registerId:reg, abiId:String(adapter?.id || 'abi'), evidence,
+        callerSaved:Object.freeze([...callerSavedSet]), candidates:selection.candidates, inputs,
+        beforeInputs:Object.freeze([...new Set([unknown, reaching, ...selection.candidates.map(item => item.value)])]),
+        ...extra }));
+    }
+  };
+
+  // 1. Existing MOV state-read restoration.
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.MOV || !inst.extra?.stateRead || inst.args?.length !== 1) continue;
     const identity = inst.extra.stateRead?.physicalIdentity;
@@ -872,29 +1071,127 @@ function restoreCanonicalPreservedStateReads(projected, adapter, history = null)
     const selection = { candidates:[], unavailable:observer.records.length >= 1024 || callerSavedSet.size > 512 };
     const reaching = selectReachingRegisterValue(projected, call, reg, inst.dst?.bits ?? unknown.bits, unknown, selection);
     if (!reaching) continue;
-    if (observer.count === 0) {
-      try { observer.selection = observePreservedStateSelection(projected); } catch { /* bounded observation unavailable */ }
-    }
+    ensureSelection();
     const argument = inst.args[0], beforeBits = argument.bits;
-    const fields = history && !history.unavailable ? [[argument, 'value'], [argument, 'bits'], [unknown, 'uses'],
-      [reaching, 'uses'], [inst.extra, 'abiPreservedState'], [inst.extra, 'abiPreservedStateEvidence']].map(([object, key]) => {
-      const descriptor = Object.getOwnPropertyDescriptor(object, key);
-      return { object, key, before:descriptor?.value, beforePresent:descriptor != null };
-    }) : null;
+    const fields = captureFieldSnapshots([[argument, 'value'], [argument, 'bits'], [unknown, 'uses'],
+      [reaching, 'uses'], [inst.extra, 'abiPreservedState'], [inst.extra, 'abiPreservedStateEvidence']], history);
     replaceLegacyArg(inst, unknown, reaching);
     inst.extra.abiPreservedState = true;
-    inst.extra.abiPreservedStateEvidence = `canonical-${adapter?.id || 'abi'}-callee-preserved`;
+    inst.extra.abiPreservedStateEvidence = evidence;
     retainFacadeArgumentWrites(fields, history);
-    observer.count++;
-    observer.sources.add(inst);
-    if (!selection.unavailable) {
-      const inputs = Object.freeze([unknown, reaching].map(value => Object.freeze({ value, definition:value.def })));
-      observer.records.push(Object.freeze({ source:inst, output:inst.dst, input:reaching, call,
-        op:inst.op, sub:inst.sub, stage:'facade-preserved-state', ordinal:observer.count - 1,
-        argument, before:unknown, after:reaching, beforeBits, afterBits:argument.bits,
-        registerId:reg, abiId:String(adapter?.id || 'abi'), evidence:inst.extra.abiPreservedStateEvidence,
-        callerSaved:Object.freeze([...callerSavedSet]), candidates:selection.candidates, inputs,
-        beforeInputs:Object.freeze([...new Set([unknown, reaching, ...selection.candidates.map(item => item.value)])]) }));
+    recordPreservedStateEvent(inst, unknown, reaching, call, reg, selection, {
+      kind:'state-read-mov', argument, beforeBits, afterBits:argument.bits,
+    });
+  }
+
+  // 2. PHI incoming edges across block.phis and OP.PHI in block.insts / projected.instructions.
+  const phiSet = new Set();
+  for (const block of projected.blocks ?? []) {
+    for (const phi of block?.phis ?? []) if (phi) phiSet.add(phi);
+    for (const inst of block?.insts ?? []) if (inst?.op === LEGACY_OP.PHI) phiSet.add(inst);
+  }
+  for (const inst of projected.instructions ?? []) {
+    if (inst?.op === LEGACY_OP.PHI) phiSet.add(inst);
+  }
+  for (const phi of phiSet) {
+    if (!Array.isArray(phi.incoming)) continue;
+    for (let edgeIdx = 0; edgeIdx < phi.incoming.length; edgeIdx += 1) {
+      const edge = phi.incoming[edgeIdx];
+      const unknown = edge?.value;
+      const call = unknown?.def;
+      if (unknown?.kind !== LEGACY_VK.UNDEF || call?.op !== LEGACY_OP.CALL) continue;
+      const reg = String(unknown.reg || phi.dst?.reg || phi.reg || '');
+      if (!reg || callerSavedSet.has(reg)) continue;
+      const selection = { candidates:[], unavailable:observer.records.length >= 1024 || callerSavedSet.size > 512 };
+      const reaching = selectReachingRegisterValue(projected, call, reg, phi.dst?.bits ?? unknown.bits, unknown, selection);
+      if (!reaching) continue;
+      ensureSelection();
+      if (!phi.extra) phi.extra = {};
+      const matchingArg = (phi.args?.[edgeIdx]?.value === unknown)
+        ? phi.args[edgeIdx]
+        : (phi.args ?? []).find((arg) => arg?.value === unknown) ?? null;
+      const beforeBits = matchingArg?.bits;
+      const snapshotPairs = [[edge, 'value'], [unknown, 'uses'], [reaching, 'uses'],
+        [phi.extra, 'abiPreservedState'], [phi.extra, 'abiPreservedStateEvidence']];
+      if (matchingArg) snapshotPairs.push([matchingArg, 'value'], [matchingArg, 'bits']);
+      const fields = captureFieldSnapshots(snapshotPairs, history);
+      edge.value = reaching;
+      if (matchingArg) {
+        matchingArg.value = reaching;
+        matchingArg.bits = reaching.bits || matchingArg.bits;
+      }
+      if (Array.isArray(unknown.uses) && !valueStillUsedByInstruction(phi, unknown)) {
+        unknown.uses = unknown.uses.filter((use) => use !== phi);
+      }
+      if (!Array.isArray(reaching.uses)) reaching.uses = [];
+      if (!reaching.uses.includes(phi)) reaching.uses.push(phi);
+      phi.extra.abiPreservedState = true;
+      phi.extra.abiPreservedStateEvidence = evidence;
+      retainFacadeArgumentWrites(fields, history);
+      recordPreservedStateEvent(phi, unknown, reaching, call, reg, selection, {
+        kind:'phi-edge', edge, argument:matchingArg, beforeBits, afterBits:matchingArg?.bits,
+      });
+    }
+  }
+
+  // 3. Direct uses of call-clobbered callee-saved UNDEF values in other instructions.
+  for (const inst of projected.instructions ?? []) {
+    if (!inst || inst.op === LEGACY_OP.PHI) continue;
+    for (const argument of inst.args ?? []) {
+      const unknown = argument?.value;
+      const call = unknown?.def;
+      if (unknown?.kind !== LEGACY_VK.UNDEF || call?.op !== LEGACY_OP.CALL) continue;
+      const reg = String(unknown.reg || '');
+      if (!reg || callerSavedSet.has(reg)) continue;
+      const selection = { candidates:[], unavailable:observer.records.length >= 1024 || callerSavedSet.size > 512 };
+      const reaching = selectReachingRegisterValue(projected, call, reg, argument.bits ?? unknown.bits, unknown, selection);
+      if (!reaching) continue;
+      ensureSelection();
+      if (!inst.extra) inst.extra = {};
+      const beforeBits = argument.bits;
+      const fields = captureFieldSnapshots([[argument, 'value'], [argument, 'bits'], [unknown, 'uses'],
+        [reaching, 'uses'], [inst.extra, 'abiPreservedState'], [inst.extra, 'abiPreservedStateEvidence']], history);
+      argument.value = reaching;
+      argument.bits = reaching.bits || argument.bits;
+      if (Array.isArray(unknown.uses) && !valueStillUsedByInstruction(inst, unknown)) {
+        unknown.uses = unknown.uses.filter((use) => use !== inst);
+      }
+      if (!Array.isArray(reaching.uses)) reaching.uses = [];
+      if (!reaching.uses.includes(inst)) reaching.uses.push(inst);
+      inst.extra.abiPreservedState = true;
+      inst.extra.abiPreservedStateEvidence = evidence;
+      retainFacadeArgumentWrites(fields, history);
+      recordPreservedStateEvent(inst, unknown, reaching, call, reg, selection, {
+        kind:'direct-arg', argument, beforeBits, afterBits:argument.bits,
+      });
+    }
+    if (inst.addr) {
+      for (const addrKey of ['base', 'index']) {
+        const unknown = inst.addr[addrKey];
+        const call = unknown?.def;
+        if (unknown?.kind !== LEGACY_VK.UNDEF || call?.op !== LEGACY_OP.CALL) continue;
+        const reg = String(unknown.reg || '');
+        if (!reg || callerSavedSet.has(reg)) continue;
+        const selection = { candidates:[], unavailable:observer.records.length >= 1024 || callerSavedSet.size > 512 };
+        const reaching = selectReachingRegisterValue(projected, call, reg, unknown.bits, unknown, selection);
+        if (!reaching) continue;
+        ensureSelection();
+        if (!inst.extra) inst.extra = {};
+        const fields = captureFieldSnapshots([[inst.addr, addrKey], [unknown, 'uses'],
+          [reaching, 'uses'], [inst.extra, 'abiPreservedState'], [inst.extra, 'abiPreservedStateEvidence']], history);
+        inst.addr[addrKey] = reaching;
+        if (Array.isArray(unknown.uses) && !valueStillUsedByInstruction(inst, unknown)) {
+          unknown.uses = unknown.uses.filter((use) => use !== inst);
+        }
+        if (!Array.isArray(reaching.uses)) reaching.uses = [];
+        if (!reaching.uses.includes(inst)) reaching.uses.push(inst);
+        inst.extra.abiPreservedState = true;
+        inst.extra.abiPreservedStateEvidence = evidence;
+        retainFacadeArgumentWrites(fields, history);
+        recordPreservedStateEvent(inst, unknown, reaching, call, reg, selection, {
+          kind:'direct-addr', addrKey,
+        });
+      }
     }
   }
   return observer;
@@ -910,8 +1207,15 @@ function sealFacadePreservedStateHistory(projected, observer, constants, typedRe
     if (!observer.selection?.(typedResults)) return;
     const written = new Map(constants.records.map(event => [event.output, event.afterConstant]));
     const valid = observer.records.filter(event => event.source.op === event.op && event.source.sub === event.sub
-      && event.source.dst === event.output && event.source.args?.length === 1 && event.source.args[0] === event.argument
-      && event.argument.value === event.after && event.argument.bits === event.afterBits
+      && event.source.dst === event.output
+      && (event.kind === 'phi-edge'
+        ? (event.edge?.value === event.after && (!event.argument || (event.argument.value === event.after && event.argument.bits === event.afterBits)))
+        : event.kind === 'direct-addr'
+          ? (event.source.addr?.[event.addrKey] === event.after)
+          : event.kind === 'direct-arg'
+            ? (event.source.args?.includes(event.argument) && event.argument.value === event.after && event.argument.bits === event.afterBits)
+            : (event.source.args?.length === 1 && event.source.args[0] === event.argument
+              && event.argument.value === event.after && event.argument.bits === event.afterBits))
       && event.source.extra?.abiPreservedState === true && event.source.extra?.abiPreservedStateEvidence === event.evidence
       && event.before.def === event.call && event.call.op === LEGACY_OP.CALL
       && event.inputs.every(input => input.value.def === input.definition)
@@ -930,9 +1234,11 @@ function sealFacadePreservedStateHistory(projected, observer, constants, typedRe
   } catch { /* Actual restoration is retained; unavailable history cannot become complete. */ }
 }
 
-function exactLegacyConstant(value, active = new Set(), observation = null) {
+const EXACT_LEGACY_CONST_MAX_DEPTH = 128;
+
+function exactLegacyConstant(value, active = new Set(), observation = null, depth = 0) {
   observeExactConstantRead(value, observation);
-  if (!value || active.has(value.id)) return null;
+  if (!value || depth > EXACT_LEGACY_CONST_MAX_DEPTH || active.has(value.id)) return null;
   if (value.const != null) {
     try { return BigInt(value.const); } catch { return null; }
   }
@@ -943,14 +1249,14 @@ function exactLegacyConstant(value, active = new Set(), observation = null) {
   if (def.op === LEGACY_OP.CONST || def.op === LEGACY_OP.ADDR) {
     try { result = BigInt(def.extra?.value ?? def.extra?.target); } catch { result = null; }
   } else if (def.op === LEGACY_OP.MOV && def.args?.length === 1) {
-    const inner = exactLegacyConstant(def.args[0]?.value, active, observation);
+    const inner = exactLegacyConstant(def.args[0]?.value, active, observation, depth + 1);
     if (inner != null) {
       if (def.sub === 'trunc' || def.sub === 'zext') result = BigInt.asUintN(Number(value.bits || 64), inner);
       else if (def.sub == null || def.sub === 'copy' || def.sub === 'bitcast') result = inner;
     }
   } else if (def.op === LEGACY_OP.BIN && def.args?.length >= 2) {
-    const left = exactLegacyConstant(def.args[0]?.value, active, observation);
-    const right = exactLegacyConstant(def.args[1]?.value, active, observation);
+    const left = exactLegacyConstant(def.args[0]?.value, active, observation, depth + 1);
+    const right = exactLegacyConstant(def.args[1]?.value, active, observation, depth + 1);
     if (left != null && right != null) {
       const bits = Number(value.bits || 64);
       if (def.sub === 'add') result = left + right;
@@ -959,8 +1265,11 @@ function exactLegacyConstant(value, active = new Set(), observation = null) {
       else if (def.sub === 'and') result = left & right;
       else if (def.sub === 'or') result = left | right;
       else if (def.sub === 'xor') result = left ^ right;
-      else if (def.sub === 'shl') result = left << right;
-      else if (def.sub === 'lshr') result = BigInt.asUintN(bits, left) >> right;
+      else if (def.sub === 'shl' || def.sub === 'lshr') {
+        if (Number.isSafeInteger(bits) && bits > 0 && right >= 0n && right < BigInt(bits)) {
+          result = def.sub === 'shl' ? (left << right) : (BigInt.asUintN(bits, left) >> right);
+        }
+      }
       if (result != null) result = BigInt.asUintN(bits, result);
     }
   }
@@ -1075,8 +1384,28 @@ function retainPublicLocation(observer, projected, source, before, details, hist
   const values = [...new Set([source.addr?.base, details.base, ...source.args.map(arg => arg.value)].filter(Boolean))];
   const memorySources = details.memory?.provenance?.sourceEntityIds || [];
   if (memorySources.length > 512) return;
-  const related = memorySources.length ? projected.instructions.filter(inst => memorySources.includes(inst.semanticNodeId)) : [];
-  if (memorySources.some(id => !related.some(inst => inst.semanticNodeId === id))) return;
+  let related = [];
+  if (memorySources.length) {
+    const byNodeId = instructionsBySemanticNodeIdFor(projected);
+    for (let i = 0; i < memorySources.length; i += 1) {
+      if (!byNodeId.has(memorySources[i])) return;
+    }
+    if (memorySources.length === 1) {
+      related = byNodeId.get(memorySources[0]).map((item) => item.inst);
+    } else {
+      const seenIds = new Set();
+      const matched = [];
+      for (let i = 0; i < memorySources.length; i += 1) {
+        const id = memorySources[i];
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+        const list = byNodeId.get(id);
+        if (list) for (let j = 0; j < list.length; j += 1) matched.push(list[j]);
+      }
+      matched.sort((a, b) => a.pos - b.pos);
+      related = matched.map((item) => item.inst);
+    }
+  }
   observer.records.push(Object.freeze({ source, output:source.dst, input:source.addr?.base,
     stage:'facade-public-location', ordinal:observer.count - 1, op:source.op, sub:source.sub,
     operation:details.operation, before:before.identity, after:publicLocationIdentity(source.loc),
@@ -1186,7 +1515,7 @@ function restoreAapcs64PublicLocations(projected, history = null) {
 }
 
 function abiBindingObserver(projected) {
-  const observer = { records:[], sources:new WeakSet(), count:0, selection:null, observations:new Map() };
+  const observer = { records:[], sources:new WeakSet(), count:0, selection:null, batchObservation:null };
   try { observer.selection = observePreservedStateSelection(projected); } catch { /* Bounded selection is unavailable. */ }
   return observer;
 }
@@ -1221,11 +1550,16 @@ function retainAbiBinding(projected, inst, binding, observer, history, direction
       inputs:Object.freeze(values.map(value => Object.freeze({ value, definition:value.def }))), beforeInputs:Object.freeze(values),
       object:Object.freeze({ beforeArguments:binding.beforeArguments, beforeExtra:binding.beforeExtra,
         afterArguments:inst.args, afterExtra:inst.extra, descriptors:binding.descriptors, selections:Object.freeze(binding.selections) }) });
-    const current = observeProjectedOperationData(projected, [event]);
-    if (!current()) return;
     observer.records.push(event);
-    observer.observations.set(event, { current, offset:history.writes.length });
   } catch { /* Actual argument writes remain; no later public object can reissue history. */ }
+}
+
+function observeAbiBindingBatch(projected, observer, history) {
+  if (!observer.records.length || !history || history.unavailable) return;
+  try {
+    const current = observeProjectedOperationData(projected, observer.records);
+    observer.batchObservation = { current, offset:history.writes.length };
+  } catch { /* Bounded observation is unavailable; no later public object can reissue history. */ }
 }
 
 function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) {
@@ -1235,27 +1569,32 @@ function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) 
   if (!expected.count || !writes || writes.unavailable) return;
   try {
     const valid = [], checks = [];
-    for (const [observer, following] of [[calls, typedResults], [returns, null]]) {
-      if (!observer.selection || !observer.selection(following)) continue;
-      checks.push(() => observer.selection(following));
-      for (const event of observer.records) {
-        const observed = observer.observations.get(event), chain = Object.freeze(writes.writes.slice(observed.offset));
+    for (const [observer, following, needsBatch] of [[calls, typedResults, true], [returns, null, false]]) {
+      if (!observer.selection || !observer.records.length || !observer.selection(following)) continue;
+      let batchCheck = null;
+      if (needsBatch) {
+        const observed = observer.batchObservation;
+        if (!observed) continue;
+        const chain = Object.freeze(writes.writes.slice(observed.offset));
         const current = Object.freeze(Object.assign(() => observed.current.matchesThroughWrites(chain), {
-          matchesThroughWrites:following => Array.isArray(following) && following.length + chain.length <= PROJECTION_LIMITS.nodes
-            && observed.current.matchesThroughWrites([...chain, ...following]),
+          matchesThroughWrites:followingWrites => Array.isArray(followingWrites) && followingWrites.length + chain.length <= PROJECTION_LIMITS.nodes
+            && observed.current.matchesThroughWrites(combinedWriteList(chain, followingWrites)),
         }));
         if (!current()) continue;
-        valid.push(event); checks.push(current);
+        batchCheck = current;
       }
+      checks.push(() => observer.selection(following));
+      if (batchCheck) checks.push(batchCheck);
+      for (const event of observer.records) valid.push(event);
     }
     if (!valid.length) return;
     const uses = [...new Set(valid.flatMap(event => event.beforeInputs))].map(value => value.uses);
     const output = observeProjectedOperationData(projected, [...valid, { beforeInputs:[], object:{ finalUses:uses } }]);
     const isCurrent = Object.freeze(Object.assign(() => output() && checks.every(check => check()), {
-      matchesThroughWrites:writes => output.matchesThroughWrites(writes)
-        && checks.every(check => check.matchesThroughWrites ? check.matchesThroughWrites(writes) : check()),
+      matchesThroughWrites:followingWrites => output.matchesThroughWrites(followingWrites)
+        && checks.every(check => check.matchesThroughWrites ? check.matchesThroughWrites(followingWrites) : check()),
     }));
-    if (!isCurrent()) return;
+    if (!output()) return;
     const history = Object.freeze({ events:Object.freeze(valid), isCurrent, completeness:valid.length === expected.count ? 'complete' : 'incomplete' });
     facadeAbiBindings.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
       Object.freeze({ events:Object.freeze([event]), isCurrent })])) });
@@ -1298,6 +1637,7 @@ function attachCanonicalCallArguments(projected, history = null) {
     retainFacadeArgumentWrites(before, history);
     retainAbiBinding(projected, inst, binding, observer, history, 'call', inst.args.length ? 'bound' : 'empty');
   }
+  observeAbiBindingBatch(projected, observer, history);
   return observer;
 }
 
@@ -1375,14 +1715,19 @@ function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, o
       || String(returnLocations[0]?.reg ?? '') !== String(result.returnReg)) continue;
     const reg = String(result.returnReg);
     const bits = Number(result.returnBits || 64);
-    const candidates = (projected.values ?? [])
-      .filter((value) => value?.reg === reg
-        && value?.sourceEntityId === inst.semanticNodeId
-        && value?.def == null)
-      .sort((left, right) => Number(right.id ?? -1) - Number(left.id ?? -1));
-    const priorVersion = Math.max(-1, ...(projected.values ?? [])
-      .filter((value) => value?.reg === reg)
-      .map((value) => Number(value.version ?? -1)));
+    const regValues = valuesByRegFor(projected).get(reg) ?? [];
+    const candidates = [];
+    let priorVersion = -1;
+    for (let i = 0; i < regValues.length; i += 1) {
+      const candidate = regValues[i];
+      if (candidate?.reg !== reg) continue;
+      const version = Number(candidate.version ?? -1);
+      if (version > priorVersion) priorVersion = version;
+      if (candidate.sourceEntityId === inst.semanticNodeId && candidate.def == null) {
+        candidates.push(candidate);
+      }
+    }
+    candidates.sort((left, right) => Number(right.id ?? -1) - Number(left.id ?? -1));
     const available = observer.records.length < 1024 && (projected.values?.length || 0) <= ABI_SELECTION_DIRECTORY_LIMIT
       && candidates.length <= 512 && (inst.args?.length || 0) <= 512;
     const before = available ? typedResultIdentity(candidates[0]) : null;
@@ -1566,6 +1911,83 @@ function invalidateEscapedStackForwarding(projected, history = null) {
   return observer;
 }
 
+function isCalleePreservedForReturn(adapter, reg) {
+  if (!reg) return false;
+  try {
+    if (typeof adapter?.isCalleeSaved === 'function') return Boolean(adapter.isCalleeSaved(reg));
+    if (Array.isArray(adapter?.calleeSavedRegisters)) return adapter.calleeSavedRegisters.includes(reg);
+  } catch { /* fall through */ }
+  return false;
+}
+
+function hasInterveningClobberingCall(projected, value, retInst, reg, adapter) {
+  if (!projected || !value || !retInst || !reg) return false;
+  const def = value.kind === LEGACY_VK.ARG ? null : (value.def ?? null);
+  const defIsPhiInRetBlock = Boolean(def && def.op === LEGACY_OP.PHI && def.block === retInst.block);
+  const defInRetBlock = Boolean(def && def.block === retInst.block);
+  const retBlock = projected.blocks?.[retInst.block];
+  const retInsts = Array.isArray(retBlock?.insts) ? retBlock.insts : [];
+  const retIdx = retInsts.indexOf(retInst);
+  const defIdx = defInRetBlock ? (defIsPhiInRetBlock ? -1 : retInsts.indexOf(def)) : -1;
+  const preserved = isCalleePreservedForReturn(adapter, reg);
+  const clobbersReg = (call) => {
+    if (!call || call.op !== LEGACY_OP.CALL || call === def || call.dst === value) return false;
+    if (call.dst?.reg === reg) return true;
+    return !preserved;
+  };
+  for (let i = 0; i < retInsts.length; i += 1) {
+    const inst = retInsts[i];
+    if (retIdx >= 0 ? i >= retIdx : Number(inst.row) >= Number(retInst.row)) break;
+    if (defInRetBlock && !defIsPhiInRetBlock) {
+      if (defIdx >= 0 ? i <= defIdx : Number(inst.row) <= Number(def.row)) continue;
+    }
+    if (clobbersReg(inst)) return true;
+  }
+  if (defInRetBlock) return false;
+  const blocks = Array.isArray(projected.blocks) ? projected.blocks : [];
+  const defBlock = def?.block ?? 0;
+  // Walk backwards from retInst.block predecessors to defBlock so any path
+  // (including non-dominating diamond arms) carrying a clobbering CALL is caught.
+  const canReachRet = new Set();
+  const backStack = [];
+  for (const pred of blocks[retInst.block]?.preds || []) {
+    if (!canReachRet.has(pred)) { canReachRet.add(pred); backStack.push(pred); }
+  }
+  while (backStack.length) {
+    const cur = backStack.pop();
+    if (cur === defBlock) continue;
+    for (const pred of blocks[cur]?.preds || []) {
+      if (!canReachRet.has(pred)) { canReachRet.add(pred); backStack.push(pred); }
+    }
+  }
+  const fromDef = new Set([defBlock]);
+  const fwdStack = [defBlock];
+  while (fwdStack.length) {
+    const cur = fwdStack.pop();
+    for (const succ of blocks[cur]?.succs || []) {
+      if (succ === retInst.block || fromDef.has(succ)) continue;
+      if (canReachRet.has(succ)) { fromDef.add(succ); fwdStack.push(succ); }
+    }
+  }
+  for (const blockIdx of fromDef) {
+    if (blockIdx === retInst.block) continue;
+    if (blockIdx !== defBlock && !canReachRet.has(blockIdx)) continue;
+    const domInsts = blocks[blockIdx]?.insts;
+    if (!Array.isArray(domInsts)) continue;
+    const startIdx = (blockIdx === defBlock && def && def.op !== LEGACY_OP.PHI)
+      ? domInsts.indexOf(def)
+      : -1;
+    for (let i = 0; i < domInsts.length; i += 1) {
+      const inst = domInsts[i];
+      if (blockIdx === defBlock && def && def.op !== LEGACY_OP.PHI) {
+        if (startIdx >= 0 ? i <= startIdx : Number(inst.row) <= Number(def.row)) continue;
+      }
+      if (clobbersReg(inst)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Semantic IR return nodes carry the architectural control target (for A64 RET,
  * typically the link register). That is not a source-language return value.
@@ -1609,7 +2031,10 @@ function attachCanonicalFunctionReturns(projected, adapter, options = {}, histor
       const result = locations[0];
       const selection = binding.available ? { candidates:[], unavailable:false } : null;
       const bits = result.bits ?? null;
-      const value = selectReachingRegisterValue(projected, inst, result.reg, bits, null, selection);
+      const candidate = selectReachingRegisterValue(projected, inst, result.reg, bits, null, selection);
+      const value = candidate && !hasInterveningClobberingCall(projected, candidate, inst, result.reg, adapter)
+        ? candidate
+        : null;
       outcome = value ? 'bound' : 'no-reaching-value';
       retainAbiSelection(binding, result, 0, result.reg, bits, selection, value, value ? 'selected' : 'no-reaching-value');
       if (!value) continue;
@@ -1636,7 +2061,9 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   const rowOfAddress = rowResolver(model, opts);
   const legacyCfg = opts.cfg ?? buildCfg(model, { rowOfAddress });
   const instructionByRow = new Map(model.instructions.map((instruction) => [instruction.row, instruction]));
-  const blocks = legacyCfg.nodes.map((node) => {
+  const rawNodes = [];
+  const validNodeIndices = new Set();
+  for (const node of legacyCfg.nodes) {
     const instructions = [];
     for (let row = node.startRow; row <= node.endRow; row++) {
       const instruction = instructionByRow.get(row);
@@ -1649,16 +2076,19 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       });
     }
     const first = instructions[0]?.decoded?.address;
-    if (first == null) throw new TypeError('semantic-v2-compat-empty-basic-block');
-    return {
-      key: `legacy-block-${node.index}`,
-      startAddress: first,
-      instructions,
-      successors: node.succ
-        .filter((successor) => successor.to >= 0)
-        .map((successor) => ({ to: `legacy-block-${successor.to}`, kind: edgeKind(successor) })),
-    };
-  });
+    if (first == null) continue;
+    validNodeIndices.add(node.index);
+    rawNodes.push({ node, first, instructions });
+  }
+  if (!rawNodes.length) return null;
+  const blocks = rawNodes.map(({ node, first, instructions }) => ({
+    key: `legacy-block-${node.index}`,
+    startAddress: first,
+    instructions,
+    successors: node.succ
+      .filter((successor) => successor.to >= 0 && validNodeIndices.has(successor.to))
+      .map((successor) => ({ to: `legacy-block-${successor.to}`, kind: edgeKind(successor) })),
+  }));
   const binaryId = String(opts.binaryId ?? model.binaryId ?? ephemeralBinaryId(model));
   const sliceId = String(opts.sliceId ?? model.sliceId ?? `migration-slice-${stableDigest({ binaryId, architecture: 'arm64' })}`);
   const abiAdapter = opts.abiAdapter ?? canonicalCompatibilityAbiAdapter(opts, binaryId, sliceId);
@@ -1668,8 +2098,10 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     binaryId,
     sliceId,
     addressWidthBits: 64,
-    canonicalStartIdentity: { address: model.startAddress ?? model.instructions[0].address },
-    entryBlockKey: legacyCfg.entry >= 0 ? `legacy-block-${legacyCfg.entry}` : blocks[0]?.key,
+    canonicalStartIdentity: { address: model.startAddress ?? blocks[0].startAddress },
+    entryBlockKey: (legacyCfg.entry >= 0 && validNodeIndices.has(legacyCfg.entry))
+      ? `legacy-block-${legacyCfg.entry}`
+      : blocks[0]?.key,
     blocks,
     abiAdapter,
     rootDescriptorProvider: aapcs64RegionRootDescriptorProvider(opts, abiAdapter),
@@ -1700,6 +2132,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
         const instruction = row == null ? null : instructionByRow.get(row);
         return instruction ? `${instruction.mnemonic} ${instruction.operands ?? ''}`.trim() : `semantic-v2 ${node.kind}`;
       },
+      ...(typeof opts.symbolFor === 'function' ? { symbolFor: opts.symbolFor } : {}),
       ...(opts.compatOptions ?? {}),
     },
   });
@@ -1803,6 +2236,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       context: item.memoryForwardingContext,
     })), null, 2) + '\n');
   }
+  if (result.legacyV1 && abiAdapter) irAbiAdapters.set(result.legacyV1, abiAdapter);
   lastSemanticV2Instrumentation = result.instrumentation;
   return result.legacyV1;
 }

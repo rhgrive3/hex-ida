@@ -142,7 +142,15 @@ export function classifyItem(item, context) {
 
   const newestForResource = resourceKey ? latestIndexByResource.get(resourceKey) : undefined;
   const newestForDigest = latestIndexByDigest.get(item.digest);
-  flags.resourceNewest = isProtectedNewest(item, { newestIdByResource: latestIndexByResource, countsByResource });
+  const effectiveNewestIdByResource =
+    context.newestIdByResource ||
+    (resourceKey && newestForResource !== undefined && context.items && context.items[newestForResource]
+      ? new Map([[resourceKey, context.items[newestForResource].id]])
+      : new Map());
+  flags.resourceNewest = isProtectedNewest(item, {
+    newestIdByResource: effectiveNewestIdByResource,
+    countsByResource,
+  });
   flags.superseded = Boolean(resourceKey) && SUPERSEDABLE_GROUPS.has(group) && newestForResource !== index;
   flags.duplicate = countsByDigest.get(item.digest) > 1 && newestForDigest !== index;
   flags.verbose = looksVerbose(text);
@@ -301,6 +309,7 @@ export function classifyAll(items, options = {}) {
 
   const latestIndexByDigest = new Map();
   const latestIndexByResource = new Map();
+  const newestIdByResource = new Map();
   const countsByDigest = new Map();
   const countsByResource = new Map();
 
@@ -310,6 +319,7 @@ export function classifyAll(items, options = {}) {
     const resourceKey = item.meta && item.meta.resourceKey;
     if (resourceKey) {
       latestIndexByResource.set(resourceKey, index);
+      newestIdByResource.set(resourceKey, item.id);
       countsByResource.set(resourceKey, (countsByResource.get(resourceKey) || 0) + 1);
     }
   });
@@ -320,6 +330,7 @@ export function classifyAll(items, options = {}) {
     prefixEnd,
     latestIndexByDigest,
     latestIndexByResource,
+    newestIdByResource,
     countsByDigest,
     countsByResource,
     keepRecentItems,

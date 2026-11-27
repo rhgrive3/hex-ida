@@ -10,6 +10,8 @@
 import { stableDigest } from '../../core/identity/index.js';
 import { queryRecord, queryArray } from '../memory/data-input.js';
 import { createQueryGuard, QueryFailure, sameMemoryIdentity } from '../memory/query-state.js';
+import { createByteMemory, assertMemoryExpr, isMemoryInitialSymbol } from '../memory/byte-memory.js';
+import { inspectMemoryExpressions } from '../memory/expression-contract.js';
 import { isExecutionResult } from '../memory/execution-snapshot.js';
 import { TERMINAL_CONTROL_SCHEMA } from '../memory/terminal-control.js';
 import { symbolicExecute } from '../executor.js';
@@ -21,7 +23,7 @@ import { isProvedEvidence } from '../evidence/symbolic-evidence.js';
 
 const receipts = new WeakMap();
 const LIMITS = Object.freeze({ workItems:50000, solverCalls:4 });
-const FORBIDDEN = new Set(['backend','session','proof','solverResult','executionSnapshot']);
+const FORBIDDEN = new Set(['backend','session','proof','solverResult','executionSnapshot','verified']);
 
 const conjunction = values => values.length ? createConnective('and', ...values) : createBool(true);
 const disjunction = values => values.length ? createConnective('or', ...values) : createBool(false);
@@ -81,17 +83,30 @@ export async function queryTerminalEffectEquivalence(request = {}) {
       inputBindings.push(Object.freeze({ before:pair.before, after:pair.after }));
     }
     const preconditions = queryArray(request.preconditions ?? [], guard, 256);
-    for (const condition of preconditions) if (condition?.sort?.kind !== 'bool') throw new QueryFailure('precondition-sort');
-    const execute = ir => {
-      const executionTimeoutMs = guard.deterministic() ? (request.timeoutMs ?? 1000)
-        : Math.max(1, Math.floor(guard.remainingMilliseconds()));
-      return symbolicExecute(ir, { captureValues:true, argumentExpressions,
-        deterministic: guard.deterministic(), timeoutMs:executionTimeoutMs, signal:request.signal,
-        isCancelled:request.isCancelled,
-        byteMemory:{ identity, addressBits:request.addressBits ?? 64, endian:request.endian ?? 'little',
-          deterministic: guard.deterministic(), timeoutMs:executionTimeoutMs, signal:request.signal,
-          isCancelled:request.isCancelled, getCurrentIdentity:request.getCurrentIdentity } });
-    };
+    for (const condition of preconditions) {
+      assertMemoryExpr(condition, guard);
+      if (condition?.sort?.kind !== 'bool') throw new QueryFailure('precondition-sort');
+    }
+    const memoryTimeoutMs = guard.deterministic() ? (request.timeoutMs ?? 1000)
+      : Math.max(1, Math.floor(guard.remainingMilliseconds()));
+    const addressBits = request.addressBits ?? 64;
+    const endian = request.endian ?? 'little';
+    const memory = createByteMemory({
+      identity,
+      addressBits,
+      endian,
+      deterministic: guard.deterministic(),
+      timeoutMs: memoryTimeoutMs,
+      signal: request.signal,
+      isCancelled: request.isCancelled,
+      getCurrentIdentity: request.getCurrentIdentity,
+    });
+    const execute = ir => symbolicExecute(ir, { captureValues:true, argumentExpressions,
+      deterministic: guard.deterministic(), timeoutMs:memoryTimeoutMs, signal:request.signal,
+      isCancelled:request.isCancelled,
+      byteMemory:{ identity, initialState:memory, addressBits, endian,
+        deterministic: guard.deterministic(), timeoutMs:memoryTimeoutMs, signal:request.signal,
+        isCancelled:request.isCancelled, getCurrentIdentity:request.getCurrentIdentity } });
     before = execute(beforeIr); guard.check();
     after = execute(afterIr); guard.check();
     if (!isExecutionResult(before, identity, beforeIr) || !isExecutionResult(after, identity, afterIr)) throw new QueryFailure('stale-execution');
@@ -113,9 +128,24 @@ export async function queryTerminalEffectEquivalence(request = {}) {
       obligations.push(createConnective('implies', conjunction([leftGuards[i], rightGuards[j]]), effectEquality(left[i], right[j])));
     }
     const obligation = conjunction(obligations);
-    const symbols = [...new Set([...argumentExpressions.values()])];
-    const tautology = conjunction(symbols.map(symbol => createCompare('eq', symbol, symbol)));
-    scope = Object.freeze({ kind:'terminal-control-effects', version:1, identity,
+    const inspected = inspectMemoryExpressions([obligation, ...preconditions], { maxExprNodes:25000, maxExprDepth:128, guard });
+    if (inspected.unsupportedReason || inspected.depthExceeded || inspected.limitExceeded) {
+      throw new QueryFailure('unsupported-or-budgeted-expression');
+    }
+    const allowedInputs = new Set(argumentExpressions.values());
+    const names = new Set();
+    for (const symbol of inspected.symbols) {
+      if (names.has(symbol.name)) throw new QueryFailure('ambiguous-symbol-name');
+      names.add(symbol.name);
+      if (!isMemoryInitialSymbol(memory, symbol) && !allowedInputs.has(symbol)) {
+        throw new QueryFailure('unbound-input-or-precondition');
+      }
+    }
+    const symbols = [...new Set([...allowedInputs, ...inspected.symbols])];
+    const tautology = conjunction(symbols.map(symbol => symbol.sort.kind === 'bool'
+      ? createConnective('eq', symbol, symbol)
+      : createCompare('eq', symbol, symbol)));
+    scope = Object.freeze({ kind:'terminal-control-effects', version:1, identity, addressBits, endian,
       effects:Object.freeze(['terminal-control-target','terminal-control-normal-completion','terminal-fault-predicates']),
       beforePathCount:left.length, afterPathCount:right.length, faultKinds:Object.freeze([...new Set([...left,...right]
         .flatMap(item => item.control.faults.map(fault => fault.kind)))].sort()), unmodeledEffects:'rejected' });
@@ -125,6 +155,13 @@ export async function queryTerminalEffectEquivalence(request = {}) {
     const solverTimeoutMs = guard.deterministic() ? (request.timeoutMs ?? 1000) : Math.max(1, Math.floor(guard.remainingMilliseconds()));
     const deterministic = guard.deterministic();
     session = backend.createSession({ timeoutMs:solverTimeoutMs, signal:request.signal, deterministic });
+    if (typeof session?.check === 'function') {
+      const origCheck = session.check.bind(session);
+      session.check = (...args) => {
+        guard.take('solverCalls', 1);
+        return origCheck(...args);
+      };
+    }
     const proof = await verifyBoundedEquivalence({ beforeTarget:tautology, afterTarget:obligation,
       correspondence:{ inputs:[] }, preconditions:preconditions.slice(), memoryRegions:[], session,
       options:{ proofScope:scope, architecture:identity.architecture,
@@ -138,7 +175,7 @@ export async function queryTerminalEffectEquivalence(request = {}) {
       scope, evidence:proof.evidence, bindingDigest:stableDigest(scope), metrics:guard.metrics() });
     guard.check();
     if (!isExecutionResult(before,identity,beforeIr) || !isExecutionResult(after,identity,afterIr)) throw new QueryFailure('stale-execution');
-    if (result.eligible) receipts.set(result, { beforeIr, afterIr, before, after, identity,
+    if (result.eligible) receipts.set(result, { beforeIr, afterIr, before, after, identity, addressBits, endian,
       inputs:Object.freeze(inputBindings), preconditions, signal:request.signal, isCancelled:request.isCancelled,
       getCurrentIdentity:request.getCurrentIdentity });
     return result;
@@ -153,7 +190,11 @@ export function isAdoptableTerminalEffectEquivalence(result, current = {}) {
   if (!receipt) return false;
   try {
     current = queryRecord(current); const identity = queryRecord(current.identity);
-    if (current.beforeIr !== receipt.beforeIr || current.afterIr !== receipt.afterIr || !sameMemoryIdentity(identity, receipt.identity)) return false;
+    const currentAddressBits = current.addressBits ?? 64;
+    const currentEndian = current.endian ?? 'little';
+    if (current.beforeIr !== receipt.beforeIr || current.afterIr !== receipt.afterIr
+        || currentAddressBits !== receipt.addressBits || currentEndian !== receipt.endian
+        || !sameMemoryIdentity(identity, receipt.identity)) return false;
     const inputs = queryArray(current.inputs ?? [], null, 64);
     if (inputs.length !== receipt.inputs.length) return false;
     for (let index = 0; index < inputs.length; index += 1) {
@@ -161,8 +202,11 @@ export function isAdoptableTerminalEffectEquivalence(result, current = {}) {
       if (pair.before !== prior.before || pair.after !== prior.after) return false;
     }
     const preconditions = current.preconditions ?? [];
-    if (!Array.isArray(preconditions) || preconditions.length !== receipt.preconditions.length
-        || preconditions.some((value,index) => value !== receipt.preconditions[index])) return false;
+    if (!Array.isArray(preconditions) || preconditions.length !== receipt.preconditions.length) return false;
+    for (let index = 0; index < preconditions.length; index += 1) {
+      const desc = Object.getOwnPropertyDescriptor(preconditions, String(index));
+      if (!desc || !Object.hasOwn(desc, 'value') || desc.value !== receipt.preconditions[index]) return false;
+    }
     return !receipt.signal?.aborted && !receipt.isCancelled?.()
       && (!receipt.getCurrentIdentity || sameMemoryIdentity(receipt.identity, receipt.getCurrentIdentity()))
       && isExecutionResult(receipt.before, receipt.identity, receipt.beforeIr)

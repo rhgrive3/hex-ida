@@ -45,12 +45,13 @@ function visit(value, schema, path, errors) {
     if (schema.pattern && !(new RegExp(schema.pattern).test(value))) errors.push(`${path} has an invalid format`);
   }
   if (Array.isArray(value)) {
+    if (schema.minItems != null && value.length < schema.minItems) errors.push(`${path} has too few items`);
     if (schema.maxItems != null && value.length > schema.maxItems) errors.push(`${path} has too many items`);
     if (schema.items) value.forEach((item, index) => visit(item, schema.items, `${path}[${index}]`, errors));
   } else if (value && typeof value === 'object') {
     for (const key of schema.required || []) if (!Object.prototype.hasOwnProperty.call(value, key)) errors.push(`${path}.${key} is required`);
     for (const [key, item] of Object.entries(value)) {
-      if (schema.properties && schema.properties[key]) visit(item, schema.properties[key], `${path}.${key}`, errors);
+      if (schema.properties && Object.hasOwn(schema.properties, key)) visit(item, schema.properties[key], `${path}.${key}`, errors);
       else if (schema.additionalProperties === false) errors.push(`${path}.${key} is not allowed`);
     }
   }
@@ -159,7 +160,7 @@ export function sanitizeActions(actions, { evidenceStore, proposalStore, address
 
 export function jsonSafe(value, depth = 0) {
   if (depth > 10) return '[truncated]';
-  if (typeof value === 'bigint') return `0x${value.toString(16)}`;
+  if (typeof value === 'bigint') return value < 0n ? `-0x${(-value).toString(16)}` : `0x${value.toString(16)}`;
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean' || value == null) return value;
   if (Array.isArray(value)) return value.slice(0, 1000).map((item) => jsonSafe(item, depth + 1));

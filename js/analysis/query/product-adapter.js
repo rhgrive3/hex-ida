@@ -1,4 +1,5 @@
 import { createAppAnalysisQueryAdapter as createBaseAdapter } from './app-adapter.js';
+import { scopedImmutableSourceIdentity } from './scoped-host.js';
 import { stableDigest, jsonSafe } from '../../core/identity/index.js';
 import { runtimeEvidenceForApp } from '../../runtime/app-runtime.js';
 
@@ -14,7 +15,9 @@ function abortIfNeeded(signal) {
 }
 
 function waitForProducer(promise, signal) {
-  abortIfNeeded(signal);
+  if (signal?.aborted) {
+    try { abortIfNeeded(signal); } catch (error) { return Promise.reject(error); }
+  }
   if (!signal) return promise;
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -121,7 +124,7 @@ function canonicalIdentityDimension(value, fallback) {
 function runtimeEvidenceIdentity(app) {
   let rows = null;
   try { rows = runtimeEvidenceForApp(app); } catch { rows = null; }
-  if (!Array.isArray(rows)) return 'unavailable';
+  if (!Array.isArray(rows)) return canonicalIdentityDimension([], []);
   return canonicalIdentityDimension(rows, []);
 }
 
@@ -151,25 +154,39 @@ async function canonicalIdentity(app, options = {}) {
   const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.activeProject ?? app?.project ?? null;
   let binaryId = backend?.binaryId ?? null;
 
-  // A live Backend can derive a content-addressed identity, so parser/project
-  // metadata must never short-circuit it. Metadata is only a compatibility
-  // fallback for adapter-shaped consumers without Backend identity support.
-  if (!binaryId && typeof backend?.ensureBinaryId === 'function') {
-    binaryId = await backend.ensureBinaryId({
-      signal: options.signal ?? null,
-      onProgress: options.onIdentityProgress ?? options.onProgress,
-    });
-  }
-  if (!binaryId) {
-    binaryId = fileInfo?.binaryId
-      ?? fileInfo?.sha256
-      ?? fileInfo?.hash
-      ?? project?.binaryHash
-      ?? project?.binary?.hash
-      ?? null;
-  }
-  if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
-    binaryId = await app.ensureAnalysisIdentity(options);
+  if (options.scopedSourceIdentity === true) {
+    // Scoped queries never force a full-file hash and do not treat a
+    // display/project hash or unverified backend.binaryId as proof of the
+    // current source's contents.
+    const local = scopedImmutableSourceIdentity(app, backend?.file ?? storeValue(app, 'file'));
+    if (!local) {
+      const error = new Error('scoped-analysis-disabled-or-source-unavailable');
+      error.code = 'ANALYSIS_QUERY_SCOPED_SOURCE_UNAVAILABLE';
+      throw error;
+    }
+    const verified = backend?.binaryId;
+    binaryId = typeof verified === 'string' && /^bin_sha256_[0-9a-f]{64}$/.test(verified) ? verified : local;
+  } else {
+    // A live Backend can derive a content-addressed identity, so parser/project
+    // metadata must never short-circuit it. Metadata is only a compatibility
+    // fallback for adapter-shaped consumers without Backend identity support.
+    if (!binaryId && typeof backend?.ensureBinaryId === 'function') {
+      binaryId = await backend.ensureBinaryId({
+        signal: options.signal ?? null,
+        onProgress: options.onIdentityProgress ?? options.onProgress,
+      });
+    }
+    if (!binaryId) {
+      binaryId = fileInfo?.binaryId
+        ?? fileInfo?.sha256
+        ?? fileInfo?.hash
+        ?? project?.binaryHash
+        ?? project?.binary?.hash
+        ?? null;
+    }
+    if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
+      binaryId = await app.ensureAnalysisIdentity(options);
+    }
   }
   abortIfNeeded(options.signal);
   if (!binaryId) {
@@ -205,12 +222,22 @@ function discoveryOptions(value) {
   return {};
 }
 
+function artifactIdentityFor(app) {
+  const binaryId = typeof app?.backend?.binaryId === 'string' ? app.backend.binaryId : '';
+  const rawSlice = storeValue(app, 'sliceIndex');
+  const sliceIndex = rawSlice == null || rawSlice === -1
+    ? -1
+    : nonNegativeSafeInteger(rawSlice, -1, 'demand-slice-index-invalid');
+  return `${binaryId}|slice:${sliceIndex}`;
+}
+
 function discoveryKey(app, region) {
   const epoch = nonNegativeSafeInteger(
     app?.backend?.gen ?? app?.analysisEpoch,
     0,
     'analysis-query-epoch-invalid',
   );
+  const artifact = artifactIdentityFor(app);
   let regions = [];
   try { regions = typeof app?.programRegions === 'function' ? app.programRegions() || [] : []; } catch { regions = []; }
 
@@ -231,7 +258,37 @@ function discoveryKey(app, region) {
 
   // JSON array framing is collision-free for arbitrary canonical string ids;
   // unlike join('|'), embedded delimiters cannot alias a different region set.
-  return `${epoch}:${JSON.stringify(ids)}`;
+  return `${epoch}:${artifact}:${JSON.stringify(ids)}`;
+}
+
+function expectedRegionDiscoveryKeyFor(app, region) {
+  const currentEpoch = nonNegativeSafeInteger(
+    app?.backend?.gen ?? app?.analysisEpoch,
+    0,
+    'analysis-query-epoch-invalid',
+  );
+  const currentArtifact = artifactIdentityFor(app);
+  let source = [];
+  try {
+    source = typeof app?.programRegions === 'function'
+      ? app.programRegions()
+      : (storeValue(app, 'regions') || []);
+  } catch {
+    source = [];
+  }
+  const seen = new Set();
+  const ids = [];
+  const consider = (item) => {
+    if (item?.exec !== true || typeof item?.id !== 'string' || item.id.length === 0) return;
+    let positiveSize = false;
+    try { positiveSize = BigInt(item.size ?? 0) > 0n; } catch { positiveSize = false; }
+    if (!positiveSize || seen.has(item.id)) return;
+    seen.add(item.id);
+    ids.push(item.id);
+  };
+  for (const item of Array.from(source || [])) consider(item);
+  consider(region);
+  return `${currentEpoch}:${currentArtifact}:${ids.join('|')}`;
 }
 
 function settleFunctionDiscoveryRoute(app) {
@@ -240,7 +297,9 @@ function settleFunctionDiscoveryRoute(app) {
   const producers = new Map();
   const safe = function singleFlightEnsureFunctions(region, rawOptions = {}) {
     const options = discoveryOptions(rawOptions);
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) {
+      try { abortIfNeeded(options.signal); } catch (error) { return Promise.reject(error); }
+    }
     const key = discoveryKey(app, region);
     if (key == null) {
       return waitForProducer(
@@ -267,11 +326,15 @@ function settleFunctionDiscoveryRoute(app) {
 async function ensureFunctionDiscovery(app, options = {}) {
   abortIfNeeded(options.signal);
   if (typeof app?.ensureFunctions !== 'function') return;
-  const symbols = app?.symbols ?? null;
-  if (symbols?.functionStartsComplete === true || symbols?.functionDiscovery?.complete === true) return;
   let region = null;
   try { region = typeof app?.codeRegion === 'function' ? app.codeRegion() : null; } catch { /* use current region */ }
   region ??= storeValue(app, 'currentRegion');
+  const symbols = app?.symbols ?? null;
+  const fd = symbols?.functionDiscovery ?? null;
+  if (symbols?.functionStartsComplete === true || fd?.complete === true) {
+    const expectedRegionDiscoveryKey = expectedRegionDiscoveryKeyFor(app, region);
+    if (fd?.discoveryKey == null || fd.discoveryKey === expectedRegionDiscoveryKey) return;
+  }
   await app.ensureFunctions(region ?? null, { signal: options.signal, onProgress: options.onProgress });
   abortIfNeeded(options.signal);
 }

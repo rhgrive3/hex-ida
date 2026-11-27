@@ -581,7 +581,7 @@ function constantFromNode(value, node) {
   for (const candidate of candidates) {
     if (candidate == null) continue;
     const value0 = parseInteger(candidate);
-    if (value0 == null) continue;
+    if (value0 == null) return unknown('canonical-address-constant-malformed');
     if (parsed != null && parsed !== value0) {
       return unknown('canonical-address-constant-conflict');
     }
@@ -765,18 +765,42 @@ function deriveStateRead(ctx, value, node, expectedAddressSpace, state) {
   return entryRoot(ctx, value, node, variable, expectedAddressSpace);
 }
 
-function addToRoot(proof, delta, widthBits, preserveSeparation) {
+function signedDisplacement(constantProof, targetWidth, subtract = false) {
+  if (constantProof?.kind !== 'constant') return null;
+  const constWidth = constantProof.widthBits ?? null;
+  if (constWidth != null && targetWidth != null && constWidth !== targetWidth) {
+    return null;
+  }
+  const width = targetWidth ?? constWidth;
+  let delta = constantProof.value;
+  if (width != null) {
+    delta = BigInt.asIntN(width, delta);
+  }
+  return subtract ? -delta : delta;
+}
+
+function addToRoot(proof, constantProof, widthBits, preserveSeparation, subtract = false) {
   if (proof.kind === 'root-only') return proof;
+  const width = widthBits ?? proof.widthBits ?? null;
+  const delta = typeof constantProof === 'bigint'
+    ? (subtract ? -constantProof : constantProof)
+    : signedDisplacement(constantProof, width, subtract);
+  if (delta == null) return unknown('canonical-address-wrap-incompatible');
   if (proof.kind === 'absolute') {
-    const width = widthBits ?? proof.widthBits;
     const address = normalizeModulo(proof.address + delta, width);
     return deepFreeze({ ...proof, address, widthBits: width });
   }
   if (!['rooted', 'stack-like'].includes(proof.kind)) return unknown('canonical-address-nonroot-offset');
-  const width = widthBits ?? proof.widthBits;
+  if (proof.widthBits != null && width != null && proof.widthBits !== width) {
+    return unknown('canonical-address-wrap-incompatible');
+  }
+  const nextOffset = proof.offset + delta;
+  if (width != null && BigInt.asIntN(width, nextOffset) !== nextOffset) {
+    return unknown('canonical-address-offset-wrap');
+  }
   return deepFreeze({
     ...proof,
-    offset: proof.offset + delta,
+    offset: nextOffset,
     widthBits: width,
     separationSafe: proof.separationSafe === true && preserveSeparation === true,
   });
@@ -800,12 +824,12 @@ function deriveArithmetic(ctx, value, node, expectedAddressSpace, state) {
       return scalarConstant(normalizeModulo(leftConstant + rightConstant, widthBits), widthBits, node.id);
     }
     if (rightConstant != null && left.kind !== 'unknown' && left.kind !== 'constant') {
-      if (rightConstant === 0n) return left;
-      return addToRoot(left, rightConstant, widthBits, node.kind === 'address');
+      if (rightConstant === 0n && (left.widthBits == null || widthBits == null || left.widthBits === widthBits)) return left;
+      return addToRoot(left, right, widthBits, node.kind === 'address', false);
     }
     if (leftConstant != null && right.kind !== 'unknown' && right.kind !== 'constant') {
-      if (leftConstant === 0n) return right;
-      return addToRoot(right, leftConstant, widthBits, node.kind === 'address');
+      if (leftConstant === 0n && (right.widthBits == null || widthBits == null || right.widthBits === widthBits)) return right;
+      return addToRoot(right, left, widthBits, node.kind === 'address', false);
     }
     return unknown('canonical-address-indexed-or-nonconstant-add');
   }
@@ -814,8 +838,8 @@ function deriveArithmetic(ctx, value, node, expectedAddressSpace, state) {
       return scalarConstant(normalizeModulo(leftConstant - rightConstant, widthBits), widthBits, node.id);
     }
     if (rightConstant != null && left.kind !== 'unknown' && left.kind !== 'constant') {
-      if (rightConstant === 0n) return left;
-      return addToRoot(left, -rightConstant, widthBits, node.kind === 'address');
+      if (rightConstant === 0n && (left.widthBits == null || widthBits == null || left.widthBits === widthBits)) return left;
+      return addToRoot(left, right, widthBits, node.kind === 'address', true);
     }
     return unknown('canonical-address-indexed-or-nonconstant-sub');
   }
@@ -855,12 +879,12 @@ function deriveAddWithCarry(ctx, value, node, expectedAddressSpace, state) {
     return scalarConstant(normalizeModulo(result, widthBits), widthBits, node.id);
   }
   if (rightConstant != null && left.kind !== 'unknown' && left.kind !== 'constant') {
-    if (rightConstant === 0n) return left;
-    return addToRoot(left, subtract ? -rightConstant : rightConstant, widthBits, true);
+    if (rightConstant === 0n && (left.widthBits == null || widthBits == null || left.widthBits === widthBits)) return left;
+    return addToRoot(left, right, widthBits, true, subtract);
   }
   if (!subtract && leftConstant != null && right.kind !== 'unknown' && right.kind !== 'constant') {
-    if (leftConstant === 0n) return right;
-    return addToRoot(right, leftConstant, widthBits, true);
+    if (leftConstant === 0n && (right.widthBits == null || widthBits == null || right.widthBits === widthBits)) return right;
+    return addToRoot(right, left, widthBits, true, false);
   }
   return unknown('canonical-address-add-with-carry-nonconstant-offset');
 }

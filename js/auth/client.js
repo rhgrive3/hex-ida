@@ -51,15 +51,18 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
     try { return await readAuthority(() => request('/api/auth/me')); } catch { return identity; }
   };
   let mutationTail = Promise.resolve(), mutationCount = 0;
-  function mutation(path, body) {
+  function mutation(path, body, { tokenOverride } = {}) {
     // A web CSRF token is rotated by the server; serialize fetch-token + mutate
     // within this client, rather than racing simultaneous privileged RPC calls.
     if (mutationCount >= 16) return Promise.reject(new Error('HEX authorization is busy.'));
     mutationCount++;
+    const transport = tokenOverride === undefined
+      ? request
+      : createAuthTransport({ apiOrigin, manager, fetchRef, web, timeoutMs, token: () => tokenOverride });
     const run = async () => {
       if (closed) throw new Error('HEX session closed.');
-      const csrf = web ? (await request('/api/auth/csrf')).csrfToken : null;
-      return request(path, { method: 'POST', body, csrf });
+      const csrf = web ? (await transport('/api/auth/csrf')).csrfToken : null;
+      return transport(path, { method: 'POST', body, csrf });
     };
     const result = mutationTail.then(run, run);
     mutationTail = result.then(() => {}, () => {});
@@ -114,7 +117,7 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
       const token = bearer;
       const generation = storageGeneration;
       invalidate();
-      try { await mutation('/auth/logout', {}); }
+      try { await mutation('/auth/logout', {}, { tokenOverride: token }); }
       finally {
         if (bearer === token) { bearer = null; storageGeneration = null; invalidate(); }
         if (!web && token && manager?.deleteValue) await privateStorageDeleteIfValue(manager, generation, token);
@@ -125,11 +128,15 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
     pollPairing: (transactionId, pollSecret, signal) => request('/api/auth/userscript/poll', { method: 'POST', body: { transactionId, pollSecret }, signal }),
     async completePairing(transactionId, pollSecret, completionProof, signal) {
       if (web || closed || !manager?.setValue) throw new Error('Userscript private storage unavailable.');
-      const current = epoch;
+      const current = ++epoch;
       const result = await request('/api/auth/userscript/complete', { method: 'POST', body: { transactionId, pollSecret, completionProof }, signal });
       if (typeof result?.token !== 'string' || !SECRET.test(result.token)) throw new Error('Invalid HEX session.');
-      if (closed || signal?.aborted || current !== epoch) throw new Error('Login was cancelled.');
+      if (closed || signal?.aborted || current !== epoch) {
+        try { await mutation('/auth/logout', {}, { tokenOverride: result.token }); } catch {}
+        throw new Error('Login was cancelled.');
+      }
       const token = result.token;
+      const pairingEpoch = ++epoch;
       bearer = token;
       const persistence = privateStorageMutation(manager, () => manager.setValue(STORAGE_KEY, token));
       storageGeneration = persistence.generation;
@@ -139,7 +146,7 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
         // physical write, but only while this pairing still owns the newest
         // storage generation.  A newer pairing must never be deleted by an
         // older failure path.
-        try { if (bearer === token) await mutation('/auth/logout', {}); }
+        try { if (bearer === token) await mutation('/auth/logout', {}, { tokenOverride: token }); }
         finally {
           if (bearer === token) {
             bearer = null;
@@ -150,9 +157,10 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
         }
         throw new Error('Unable to save the private HEX session.');
       }
-      if (closed || signal?.aborted || current !== epoch) {
+      if (closed || signal?.aborted || pairingEpoch !== epoch) {
         // Cancellation during asynchronous GM storage must not survive reload,
         // unless a newer lifecycle generation already owns the same storage.
+        try { await mutation('/auth/logout', {}, { tokenOverride: token }); } catch {}
         try { await privateStorageCleanup(manager, persistence.generation, () => manager.deleteValue(STORAGE_KEY)); }
         finally {
           if (bearer === token) {

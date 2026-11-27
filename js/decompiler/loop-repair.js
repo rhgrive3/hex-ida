@@ -23,7 +23,10 @@ function continuationCondition(iv) {
 
   let cond = term.cond || term.extra?.cond || null;
   if (!cond) return null;
-  if (!branchContinues) cond = inverseCondition(cond) || cond;
+  if (!branchContinues) {
+    cond = inverseCondition(cond);
+    if (!cond) return null;
+  }
   if (!COND[cond]) return null;
 
   const flags = valueOf(term.args?.[term.args.length - 1]);
@@ -31,7 +34,7 @@ function continuationCondition(iv) {
   if (!cmp || cmp.op !== OP.CMP || cmp.args.length < 2) return null;
   const inside = iv.inside || (iv.phi?.incoming || []).find((x) => loop.nodes.has(x.from))?.value || null;
   const render = (v) => {
-    if (same(v, iv.value) || same(v, inside)) return iv.name;
+    if (same(v, inside)) return iv.name;
     const c = constantText(v);
     return c != null ? c : null;
   };
@@ -120,7 +123,15 @@ function replacementRange(lines, term, label) {
     (l.row === term.row || /^if\s*\(/.test(l.text)));
   if (start >= 0) {
     let end = start + 1;
-    if (lines[end] && /^goto\s+loc_/.test(lines[end].text || '')) end++;
+    const exitGoto = lines[end] && /^\s*goto\s+(loc_[0-9A-Fa-f]+)\s*;\s*$/.exec(lines[end].text || '');
+    if (exitGoto) {
+      let nextIdx = end + 1;
+      while (nextIdx < lines.length && (!String(lines[nextIdx]?.text || '').trim() || lines[nextIdx]?.kind === 'comment')) {
+        nextIdx++;
+      }
+      const nextLabel = lines[nextIdx] && /^\s*(loc_[0-9A-Fa-f]+):\s*$/.exec(lines[nextIdx].text || '');
+      if (nextLabel && nextLabel[1].toLowerCase() === exitGoto[1].toLowerCase()) end++;
+    }
     return { start, end };
   }
 
@@ -173,6 +184,7 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
     if (!cond || !init) continue;
 
     const headerAddr = blockAddress(loop.header);
+    if (headerAddr == null) continue;
     const label = `loc_${hex(headerAddr)}`;
     const range = replacementRange(result.lines || [], term, label);
     if (!range) continue;
@@ -182,7 +194,7 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
     const step = iv.step === 1n ? `${iv.name}++;` : iv.step === -1n ? `${iv.name}--;` : `${iv.name} += ${iv.step};`;
     const indent = result.lines[range.start].indent || 1;
     const replacement = [
-      { kind: 'stmt', indent, text: `${typeName} ${iv.name} = ${init};`, row: block.startRow, addr: headerAddr, note: null },
+      { kind: 'decl', indent, text: `${typeName} ${iv.name} = ${init};`, row: block.startRow, addr: headerAddr, note: null },
       { kind: 'ctrl', indent, text: 'do {', row: block.startRow, addr: headerAddr, note: null },
       { kind: 'stmt', indent: indent + 1, text: step, row: term.row, addr: term.address ?? null, note: null },
       { kind: 'ctrl', indent, text: `} while (${cond});`, row: term.row, addr: term.address ?? null, note: null },
@@ -195,7 +207,6 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
     // control-flow warning would hide unrelated unresolved edges (#5135). Preserve
     // them fail-closed until diagnostics carry enough identity for scoped removal.
     result.ctx = { ...(result.ctx || {}), loopRepair: iv0.discoveredFrom || 'ssa-post-test' };
-    return result;
   }
   return result;
 }

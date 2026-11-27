@@ -141,7 +141,7 @@ export const SECTION_HINTS = {
 };
 
 export function sectionHint(name) {
-  const h = SECTION_HINTS[name];
+  const h = Object.hasOwn(SECTION_HINTS, name) ? SECTION_HINTS[name] : null;
   return h ? pick(h[0], h[1]) : "";
 }
 
@@ -307,6 +307,6 @@ const CMD_HINTS = {
   LC_RPATH: ["ライブラリを探す場所", "where to look for libraries"],
 };
 function commandHint(name) {
-  const h = CMD_HINTS[name];
+  const h = Object.hasOwn(CMD_HINTS, name) ? CMD_HINTS[name] : null;
   return h ? pick(h[0], h[1]) : null;
 }

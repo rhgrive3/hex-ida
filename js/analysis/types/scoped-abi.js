@@ -223,11 +223,11 @@ export async function queryScopedAbiPlacement(request, { world, assumptions, sna
     work.charge('workUnits');
     const entityId = createEntityId({ binaryId: binding.binaryId, kind: 'abi-physical-value-port',
       identity: { binding, index: entry.index, version: SCOPED_ABI_PLACEMENT_VERSION } });
-    if (entry.status === 'owner-declared' && !collision.rows.some((row) => row.left.argument === entry.index || row.right.argument === entry.index)) {
+    if (entry.status === 'owner-declared' && !collision.truncated && !collision.rows.some((row) => row.left.argument === entry.index || row.right.argument === entry.index)) {
       graph.addHardConstraint({ kind: 'abi-location', origin: 'abi-boundary', claim: { entityId, layer: 'abi',
         descriptor: { kind: 'physical-placement', widthBits: entry.bits, sizeBytes: entry.bytes, pieces: entry.pieces } },
         evidenceIds: [binding.producerArtifactId], providerVersion: raw.abiSemanticVersion,
-        abiProfile: raw.abiId, buildIdentity: { snapshotId, binaryId: binding.binaryId, functionId } });
+        abiProfile: raw.abiId, buildIdentity: stableDigest({ snapshotId, binaryId: binding.binaryId, functionId }) });
     }
     results.push({ ...entry, entityId, graph: graph.solveEntity(entityId, { signal: work.signal }), staticExact: false });
     await work.yieldIfNeeded();
@@ -239,6 +239,7 @@ export async function queryScopedAbiPlacement(request, { world, assumptions, sna
       registryDigest: raw.registryDigest, typeGraphVersion: TYPE_GRAPH_ANALYZER_VERSION },
     results, hiddenResult, conflicts: collision, exact: false, scope: 'supplied-canonical-physical-declarations',
     remaining: ['prototype-authority-not-established', 'machine-call-behavior-not-independently-verified',
-      'variadic-liveness-and-save-area-coverage', 'nominal-types-unrecovered'] }, { allowBigInt: true, maxNodes: 65536, maxBytes: 2097152 });
+      'variadic-liveness-and-save-area-coverage', 'nominal-types-unrecovered',
+      ...(collision.truncated ? ['abi-collision-check-truncated'] : [])] }, { allowBigInt: true, maxNodes: 65536, maxBytes: 2097152 });
   return deepFreeze({ ...body, digest: stableDigest({ body, typed: lossyTypeWitness(body) }), cost: work.cost() });
 }

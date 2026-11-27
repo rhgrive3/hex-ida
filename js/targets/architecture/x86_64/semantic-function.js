@@ -35,15 +35,42 @@ function rejectDecoderRevalidation(error) {
   decoderRevalidationWorker = null;
 }
 
+export function releaseDecoderRevalidationWorker() {
+  if (!decoderRevalidationWorker || decoderRevalidationPending.size > 0) return false;
+  try { decoderRevalidationWorker.terminate?.(); } catch { /* best effort */ }
+  decoderRevalidationWorker = null;
+  return true;
+}
+
+function resolveConfiguredWorkerURL(configured) {
+  if (typeof configured !== 'string' || !configured) {
+    return new URL('./semantic-revalidation-worker.js', import.meta.url);
+  }
+  const baseHref = typeof globalThis.location?.href === 'string' ? globalThis.location.href : import.meta.url;
+  let parsed;
+  try {
+    parsed = new URL(configured, baseHref);
+  } catch {
+    throw new Error('x86-semantic-function-decoder-revalidation-invalid-worker-url');
+  }
+  if (parsed.protocol === 'blob:') return configured;
+  const expectedOrigin = typeof globalThis.location?.origin === 'string' && globalThis.location.origin !== 'null'
+    ? globalThis.location.origin
+    : new URL(import.meta.url).origin;
+  if (parsed.origin !== expectedOrigin) {
+    throw new Error('x86-semantic-function-decoder-revalidation-cross-origin-worker-url');
+  }
+  return parsed;
+}
+
 function decoderWorker() {
   if (decoderRevalidationWorker) return decoderRevalidationWorker;
   if (typeof Worker !== 'function') throw new Error('x86-semantic-function-decoder-revalidation-unavailable');
   const configured = globalThis.__HEX_X86_SEMANTIC_REVALIDATION_WORKER_URL__;
-  const workerURL = typeof configured === 'string' && configured
-    ? configured
-    : new URL('./semantic-revalidation-worker.js', import.meta.url);
+  const workerURL = resolveConfiguredWorkerURL(configured);
   const worker = new Worker(workerURL);
   worker.onmessage = (event) => {
+    if (decoderRevalidationWorker !== worker) return;
     const message = event.data;
     const pending = decoderRevalidationPending.get(message?.id);
     if (!pending) return;
@@ -51,9 +78,12 @@ function decoderWorker() {
     if (message.ok === true) pending.resolve(message.result);
     else pending.reject(new Error(message?.error || 'x86-semantic-function-decoder-revalidation-failed'));
   };
-  const failed = (event) => rejectDecoderRevalidation(
-    event?.error instanceof Error ? event.error : new Error(event?.message || 'x86-semantic-function-decoder-revalidation-worker-failed'),
-  );
+  const failed = (event) => {
+    if (decoderRevalidationWorker !== worker) return;
+    rejectDecoderRevalidation(
+      event?.error instanceof Error ? event.error : new Error(event?.message || 'x86-semantic-function-decoder-revalidation-worker-failed'),
+    );
+  };
   worker.onerror = failed;
   worker.onmessageerror = failed;
   decoderRevalidationWorker = worker;
@@ -63,7 +93,12 @@ function decoderWorker() {
 function analyzeViaDecoderRevalidation(input, options = {}) {
   const signal = options.signal ?? null;
   if (signal?.aborted) return Promise.reject(revalidationAbortError(signal.reason));
-  const worker = decoderWorker();
+  let worker;
+  try {
+    worker = decoderWorker();
+  } catch (error) {
+    return Promise.reject(error);
+  }
   const id = decoderRevalidationSequence++;
   return new Promise((resolve, reject) => {
     const cleanup = () => signal?.removeEventListener?.('abort', abort);

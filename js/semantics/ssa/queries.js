@@ -58,8 +58,11 @@ function frozenQueryIndex(ssa) {
       }
     }
     const semanticValueId = definition.proof?.sourceSemanticValueId;
-    if (semanticValueId != null && !definitionBySemanticValue.has(semanticValueId)) {
-      definitionBySemanticValue.set(semanticValueId, definition);
+    if (semanticValueId != null) {
+      const existing = definitionBySemanticValue.get(semanticValueId);
+      if (!existing || (definition.proof?.kind === 'semantic-value-definition' && existing.proof?.kind !== 'semantic-value-definition')) {
+        definitionBySemanticValue.set(semanticValueId, definition);
+      }
     }
   }
   for (const use of useRows) {
@@ -71,17 +74,23 @@ function frozenQueryIndex(ssa) {
     bySource.push(use);
     usesBySourceEntity.set(use.sourceEntityId, bySource);
     const semanticValueId = use.proof?.sourceSemanticValueId;
-    if (semanticValueId != null && !useBySemanticValue.has(semanticValueId)) useBySemanticValue.set(semanticValueId, use);
+    if (semanticValueId != null) {
+      const existing = useBySemanticValue.get(semanticValueId);
+      if (!existing || (use.proof?.kind === 'semantic-value-use' && existing.proof?.kind !== 'semantic-value-use')) {
+        useBySemanticValue.set(semanticValueId, use);
+      }
+    }
   }
-  const byUseId = (a, b) => a.useId.localeCompare(b.useId);
+  const compareText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const byUseId = (a, b) => compareText(a.useId, b.useId);
   const byDefinitionPosition = (a, b) =>
-    String(a.blockId ?? '').localeCompare(String(b.blockId ?? '')) || a.valueId.localeCompare(b.valueId);
-  const byValueId = (a, b) => a.valueId.localeCompare(b.valueId);
-  for (const list of usesByValue.values()) list.sort(byUseId);
-  for (const list of usesBySourceEntity.values()) list.sort(byUseId);
-  for (const list of definitionsByVariable.values()) list.sort(byDefinitionPosition);
-  phiDefinitions.sort(byValueId);
-  for (const list of phiDefinitionsByBlock.values()) list.sort(byValueId);
+    compareText(String(a.blockId ?? ''), String(b.blockId ?? '')) || compareText(a.valueId, b.valueId);
+  const byValueId = (a, b) => compareText(a.valueId, b.valueId);
+  for (const list of usesByValue.values()) Object.freeze(list.sort(byUseId));
+  for (const list of usesBySourceEntity.values()) Object.freeze(list.sort(byUseId));
+  for (const list of definitionsByVariable.values()) Object.freeze(list.sort(byDefinitionPosition));
+  Object.freeze(phiDefinitions.sort(byValueId));
+  for (const list of phiDefinitionsByBlock.values()) Object.freeze(list.sort(byValueId));
 
   index = { definitionByValue, definitionById, useById, usesByValue, definitionsByVariable,
     phiDefinitions, phiDefinitionsByBlock, usesBySourceEntity, useBySemanticValue, definitionBySemanticValue };
@@ -120,7 +129,7 @@ export function getUsesForDefinition(ssa, definitionOrId) {
   if (!definition) return Object.freeze([]);
   const index = frozenQueryIndex(ssa);
   const rows = index ? index.usesByValue.get(definition.valueId) ?? []
-    : uses(ssa).filter((use) => use.valueId === definition.valueId).slice().sort((a, b) => a.useId.localeCompare(b.useId));
+    : uses(ssa).filter((use) => use.valueId === definition.valueId).slice().sort((a, b) => (a.useId < b.useId ? -1 : a.useId > b.useId ? 1 : 0));
   return Object.freeze(rows.slice());
 }
 
@@ -134,7 +143,7 @@ export function getDefinitionsForVariable(ssa, variableKey) {
   const index = frozenQueryIndex(ssa);
   const rows = index ? index.definitionsByVariable.get(key) ?? []
     : definitions(ssa).filter((definition) => definition.variableKey === key).slice().sort((a, b) =>
-      String(a.blockId ?? '').localeCompare(String(b.blockId ?? '')) || a.valueId.localeCompare(b.valueId));
+      (String(a.blockId ?? '') < String(b.blockId ?? '') ? -1 : String(a.blockId ?? '') > String(b.blockId ?? '') ? 1 : (a.valueId < b.valueId ? -1 : a.valueId > b.valueId ? 1 : 0)));
   return Object.freeze(rows.slice());
 }
 
@@ -143,7 +152,7 @@ export function getPhiDefinitions(ssa, blockId = null) {
   const index = frozenQueryIndex(ssa);
   const rows = index ? (id == null ? index.phiDefinitions : index.phiDefinitionsByBlock.get(id) ?? [])
     : definitions(ssa).filter((definition) => definition.kind === 'phi' && (id == null || definition.blockId === id))
-      .slice().sort((a, b) => a.valueId.localeCompare(b.valueId));
+      .slice().sort((a, b) => (a.valueId < b.valueId ? -1 : a.valueId > b.valueId ? 1 : 0));
   return Object.freeze(rows.slice());
 }
 
@@ -160,25 +169,61 @@ export function getSsaUsesForSourceEntity(ssa, sourceEntityId) {
   const id = nonEmpty(sourceEntityId, 'semantic-ssa-query-source-entity-required');
   const index = frozenQueryIndex(ssa);
   const rows = index ? index.usesBySourceEntity.get(id) ?? []
-    : uses(ssa).filter((use) => use.sourceEntityId === id).slice().sort((a, b) => a.useId.localeCompare(b.useId));
+    : uses(ssa).filter((use) => use.sourceEntityId === id).slice().sort((a, b) => (a.useId < b.useId ? -1 : a.useId > b.useId ? 1 : 0));
   return Object.freeze(rows.slice());
 }
 
 export function getSsaUseForSemanticValue(ssa, semanticValueId) {
   const id = nonEmpty(semanticValueId, 'semantic-ssa-query-semantic-value-required');
   const index = frozenQueryIndex(ssa);
-  return index ? index.useBySemanticValue.get(id) ?? null
-    : uses(ssa).find((use) => use.proof?.sourceSemanticValueId === id) ?? null;
+  if (index) return index.useBySemanticValue.get(id) ?? null;
+  const rows = uses(ssa).filter((use) => use.proof?.sourceSemanticValueId === id);
+  return rows.find((use) => use.proof?.kind === 'semantic-value-use') ?? rows[0] ?? null;
 }
 
 export function getSsaDefinitionForSemanticValue(ssa, semanticValueId) {
   const id = nonEmpty(semanticValueId, 'semantic-ssa-query-semantic-value-required');
   const index = frozenQueryIndex(ssa);
-  return index ? index.definitionBySemanticValue.get(id) ?? null
-    : definitions(ssa).find((definition) => definition.proof?.sourceSemanticValueId === id) ?? null;
+  if (index) return index.definitionBySemanticValue.get(id) ?? null;
+  const rows = definitions(ssa).filter((definition) => definition.proof?.sourceSemanticValueId === id);
+  return rows.find((definition) => definition.proof?.kind === 'semantic-value-definition') ?? rows[0] ?? null;
 }
 
+const EMPTY_FROZEN_LIST = Object.freeze([]);
+const ssaQueryIndexCache = new WeakMap();
+
 export function createSsaQueryIndex(ssa) {
+  const canonical = frozenQueryIndex(ssa);
+  if (canonical) {
+    const cached = ssaQueryIndexCache.get(ssa);
+    if (cached) return cached;
+    const facade = Object.freeze({
+      definition(valueId) {
+        const id = exactStringOrNull(valueId);
+        return id == null ? null : canonical.definitionByValue.get(id) ?? null;
+      },
+      definitionById(definitionId) {
+        const id = exactStringOrNull(definitionId);
+        return id == null ? null : canonical.definitionById.get(id) ?? null;
+      },
+      use(useId) {
+        const id = exactStringOrNull(useId);
+        return id == null ? null : canonical.useById.get(id) ?? null;
+      },
+      definitionForUse(useId) {
+        const id = exactStringOrNull(useId);
+        if (id == null) return null;
+        const use = canonical.useById.get(id);
+        return use ? canonical.definitionByValue.get(use.valueId) ?? null : null;
+      },
+      usesForValue(valueId) {
+        const id = exactStringOrNull(valueId);
+        return id == null ? EMPTY_FROZEN_LIST : canonical.usesByValue.get(id) ?? EMPTY_FROZEN_LIST;
+      },
+    });
+    ssaQueryIndexCache.set(ssa, facade);
+    return facade;
+  }
   const definitionByValue = new Map(definitions(ssa).map((definition) => [definition.valueId, definition]));
   const definitionById = new Map(definitions(ssa).map((definition) => [definition.definitionId, definition]));
   const useById = new Map(uses(ssa).map((use) => [use.useId, use]));
@@ -188,6 +233,7 @@ export function createSsaQueryIndex(ssa) {
     list.push(use);
     usesByValue.set(use.valueId, list);
   }
+  const sortedUsesByValue = new Map();
   return Object.freeze({
     definition(valueId) {
       const id = exactStringOrNull(valueId);
@@ -209,7 +255,14 @@ export function createSsaQueryIndex(ssa) {
     },
     usesForValue(valueId) {
       const id = exactStringOrNull(valueId);
-      return Object.freeze((id == null ? [] : usesByValue.get(id) ?? []).slice().sort((a, b) => a.useId.localeCompare(b.useId)));
+      if (id == null) return EMPTY_FROZEN_LIST;
+      let sorted = sortedUsesByValue.get(id);
+      if (sorted === undefined) {
+        const list = usesByValue.get(id);
+        sorted = list ? Object.freeze(list.slice().sort((a, b) => (a.useId < b.useId ? -1 : a.useId > b.useId ? 1 : 0))) : EMPTY_FROZEN_LIST;
+        sortedUsesByValue.set(id, sorted);
+      }
+      return sorted;
     },
   });
 }

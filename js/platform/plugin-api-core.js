@@ -180,22 +180,39 @@ function detachSharedBuffer(buffer) {
 // Only graphs that actually contain a SharedArrayBuffer need the
 // detach-preserving fallback clone; everything else keeps using the platform's
 // `structuredClone` unchanged so no existing snapshot behaviour or cost shifts.
-function containsSharedBuffer(value, seen = new WeakSet()) {
-  if (value == null || typeof value !== 'object') return false;
+function containsSharedBuffer(root) {
+  if (root == null || typeof root !== 'object') return false;
   if (SHARED_ARRAY_BUFFER_CTOR == null) return false;
-  if (isSharedBuffer(value)) return true;
-  if (ArrayBuffer.isView(value)) return isSharedBuffer(viewBackingBuffer(value));
-  if (ordinaryArrayBufferByteLength(value) != null) return false;
-  if (seen.has(value)) return false;
-  seen.add(value);
-  if (Array.isArray(value)) { for (const item of value) if (containsSharedBuffer(item, seen)) return true; return false; }
-  const mapEntries = intrinsicMapEntries(value);
-  if (mapEntries != null) { for (const [k, v] of mapEntries) { if (containsSharedBuffer(k, seen) || containsSharedBuffer(v, seen)) return true; } return false; }
-  const setValues = intrinsicSetValues(value);
-  if (setValues != null) { for (const v of setValues) if (containsSharedBuffer(v, seen)) return true; return false; }
-  for (const key of Reflect.ownKeys(value)) {
-    const desc = Object.getOwnPropertyDescriptor(value, key);
-    if (desc && 'value' in desc && containsSharedBuffer(desc.value, seen)) return true;
+  const seen = new WeakSet();
+  const stack = [[root, 0]];
+  const MAX_DEPTH = 64;
+  while (stack.length > 0) {
+    const [value, depth] = stack.pop();
+    if (value == null || typeof value !== 'object') continue;
+    if (isSharedBuffer(value)) return true;
+    if (ArrayBuffer.isView(value)) { if (isSharedBuffer(viewBackingBuffer(value))) return true; continue; }
+    if (ordinaryArrayBufferByteLength(value) != null) continue;
+    if (seen.has(value)) continue;
+    if (depth >= MAX_DEPTH) return true;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) stack.push([item, depth + 1]);
+      continue;
+    }
+    const mapEntries = intrinsicMapEntries(value);
+    if (mapEntries != null) {
+      for (const [k, v] of mapEntries) { stack.push([k, depth + 1]); stack.push([v, depth + 1]); }
+      continue;
+    }
+    const setValues = intrinsicSetValues(value);
+    if (setValues != null) {
+      for (const v of setValues) stack.push([v, depth + 1]);
+      continue;
+    }
+    for (const key of Reflect.ownKeys(value)) {
+      const desc = Object.getOwnPropertyDescriptor(value, key);
+      if (desc && 'value' in desc) stack.push([desc.value, depth + 1]);
+    }
   }
   return false;
 }
@@ -266,7 +283,14 @@ function strictIntegerBigInt(value, message = 'integer value is invalid') {
   if (typeof value === 'string') {
     const text = value.trim();
     if (!text || !/^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(text)) throw new TypeError(message);
-    try { return BigInt(text); } catch { throw new TypeError(message); }
+    try {
+      const neg = text[0] === '-';
+      const unsigned = (text[0] === '+' || text[0] === '-') ? text.slice(1) : text;
+      const mag = BigInt(unsigned);
+      return neg ? -mag : mag;
+    } catch {
+      throw new TypeError(message);
+    }
   }
   throw new TypeError(message);
 }
@@ -514,12 +538,14 @@ export class PlatformPluginRegistry {
     const signal = rawOptions.signal;
     const invocationController = new AbortController();
 
+    let pluginScope = null;
+    let pluginScopeName = null;
     try {
-      let pluginScope = null;
       if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
         const baseScopeName = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
         this.#budgetInvocationSequence += 1n;
-        pluginScope = context.resourceBudget.scope(`${baseScopeName}.r${this.#budgetScopeNamespace}.i${this.#budgetInvocationSequence}`);
+        pluginScopeName = `${baseScopeName}.r${this.#budgetScopeNamespace}.i${this.#budgetInvocationSequence}`;
+        pluginScope = context.resourceBudget.scope(pluginScopeName);
         if (!pluginScope) throw new Error('plugin resource budget scope unavailable');
       }
 
@@ -552,6 +578,13 @@ export class PlatformPluginRegistry {
         timeout: timedOut,
         ...(error?.executionMayContinue === true ? { executionMayContinue: true } : {}),
       };
+    } finally {
+      if (pluginScope && pluginScopeName && context.resourceBudget?.children instanceof Map) {
+        const registered = context.resourceBudget.children.get(pluginScopeName);
+        if (registered && (registered === pluginScope || registered.name === pluginScopeName)) {
+          context.resourceBudget.children.delete(pluginScopeName);
+        }
+      }
     }
   }
 

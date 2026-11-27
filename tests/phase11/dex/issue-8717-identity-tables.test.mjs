@@ -190,14 +190,25 @@ assert.deepEqual(validImage.methods.map((entry) => [entry.classType, entry.name,
   expectDexError(built.bytes, 'dex-method-ids-order-invalid');
 }
 
-// class_defs: class_idx must be strictly increasing, including duplicate
-// class definitions which otherwise resolve to the same canonical type.
+// class_defs: DEX spec requires topological ordering (superclass and
+// implemented interfaces defined before subclasses) and no duplicate
+// class_idx, while unrelated classes may appear in any order.
 {
   const built = cloneBuilt({ classNames: ['LDup;', 'LDup;'], fields: [], methods: [] });
   expectDexError(built.bytes, 'dex-class-defs-order-invalid');
 }
 {
   const built = cloneBuilt({ classNames: ['LB;', 'LA;'], fields: [], methods: [] });
+  const parsed = parseDex(built.bytes, { binaryId: 'dex-8717-unrelated-order' });
+  assert.deepEqual(parsed.classes.map((c) => c.classType), ['LB;', 'LA;']);
+}
+{
+  // Child (index 0) declaring superclass defined later (index 1) violates
+  // DEX class_defs topological order.
+  const built = cloneBuilt({ classNames: ['LChild;', 'LBase;'], fields: [], methods: [] });
+  const view = dataView(built.bytes);
+  const baseTypeIdx = view.getUint32(built.layout.classes + 32, true);
+  view.setUint32(built.layout.classes + 8, baseTypeIdx, true);
   expectDexError(built.bytes, 'dex-class-defs-order-invalid');
 }
 

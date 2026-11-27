@@ -98,14 +98,44 @@ export function mergeProgramScans(scans = [], options = {}) {
   const refAvailable = ordered.reduce((n,s) => n + boundedCount(s,'refCount',s.refFrom,s.refTo,s.refKind),0);
   const callCap = Math.max(0, Math.min(callsLimit, callAvailable));
   const refCap = Math.max(0, Math.min(refsLimit, refAvailable));
-  const callFrom=new BigUint64Array(callCap), callTo=new BigUint64Array(callCap);
-  const refFrom=new BigUint64Array(refCap), refTo=new BigUint64Array(refCap), refKind=new Uint8Array(refCap);
+  const sliceView = (arr, n) => (typeof arr.subarray === 'function' ? arr.subarray(0, n) : arr.slice(0, n));
+  const singleScan = ordered.length === 1 && callAvailable <= callsLimit && refAvailable <= refsLimit ? ordered[0] : null;
+  let callFrom, callTo, refFrom, refTo, refKind;
   let ci=0, ri=0;
-  for (const scan of ordered) {
-    const nc=boundedCount(scan,'callCount',scan.callFrom,scan.callTo), ct=Math.min(nc,callCap-ci);
-    if (ct>0) { callFrom.set(scan.callFrom.subarray(0,ct),ci); callTo.set(scan.callTo.subarray(0,ct),ci); ci+=ct; }
-    const nr=boundedCount(scan,'refCount',scan.refFrom,scan.refTo,scan.refKind), rt=Math.min(nr,refCap-ri);
-    if (rt>0) { refFrom.set(scan.refFrom.subarray(0,rt),ri); refTo.set(scan.refTo.subarray(0,rt),ri); refKind.set(scan.refKind.subarray(0,rt),ri); ri+=rt; }
+  if (singleScan) {
+    const nc=boundedCount(singleScan,'callCount',singleScan.callFrom,singleScan.callTo);
+    if (nc>0 && singleScan.callFrom instanceof BigUint64Array && singleScan.callTo instanceof BigUint64Array) {
+      callFrom = singleScan.callFrom.length === nc ? singleScan.callFrom : singleScan.callFrom.subarray(0, nc);
+      callTo = singleScan.callTo.length === nc ? singleScan.callTo : singleScan.callTo.subarray(0, nc);
+      ci = nc;
+    } else {
+      callFrom = new BigUint64Array(callCap);
+      callTo = new BigUint64Array(callCap);
+      const ct = Math.min(nc, callCap);
+      if (ct>0) { callFrom.set(sliceView(singleScan.callFrom, ct), 0); callTo.set(sliceView(singleScan.callTo, ct), 0); ci = ct; }
+    }
+    const nr=boundedCount(singleScan,'refCount',singleScan.refFrom,singleScan.refTo,singleScan.refKind);
+    if (nr>0 && singleScan.refFrom instanceof BigUint64Array && singleScan.refTo instanceof BigUint64Array && singleScan.refKind instanceof Uint8Array) {
+      refFrom = singleScan.refFrom.length === nr ? singleScan.refFrom : singleScan.refFrom.subarray(0, nr);
+      refTo = singleScan.refTo.length === nr ? singleScan.refTo : singleScan.refTo.subarray(0, nr);
+      refKind = singleScan.refKind.length === nr ? singleScan.refKind : singleScan.refKind.subarray(0, nr);
+      ri = nr;
+    } else {
+      refFrom = new BigUint64Array(refCap);
+      refTo = new BigUint64Array(refCap);
+      refKind = new Uint8Array(refCap);
+      const rt = Math.min(nr, refCap);
+      if (rt>0) { refFrom.set(sliceView(singleScan.refFrom, rt), 0); refTo.set(sliceView(singleScan.refTo, rt), 0); refKind.set(sliceView(singleScan.refKind, rt), 0); ri = rt; }
+    }
+  } else {
+    callFrom=new BigUint64Array(callCap); callTo=new BigUint64Array(callCap);
+    refFrom=new BigUint64Array(refCap); refTo=new BigUint64Array(refCap); refKind=new Uint8Array(refCap);
+    for (const scan of ordered) {
+      const nc=boundedCount(scan,'callCount',scan.callFrom,scan.callTo), ct=Math.min(nc,callCap-ci);
+      if (ct>0) { callFrom.set(sliceView(scan.callFrom,ct),ci); callTo.set(sliceView(scan.callTo,ct),ci); ci+=ct; }
+      const nr=boundedCount(scan,'refCount',scan.refFrom,scan.refTo,scan.refKind), rt=Math.min(nr,refCap-ri);
+      if (rt>0) { refFrom.set(sliceView(scan.refFrom,rt),ri); refTo.set(sliceView(scan.refTo,rt),ri); refKind.set(sliceView(scan.refKind,rt),ri); ri+=rt; }
+    }
   }
   if (callAvailable > callCap) reasons.push('global-call-edge-budget');
   if (refAvailable > refCap) reasons.push('global-reference-budget');
@@ -116,7 +146,16 @@ export function mergeProgramScans(scans = [], options = {}) {
     const regionWords=Math.max(0,Number(scan.words)||0), src=scan.kinds || new Uint8Array(0);
     const sourceCovered=Math.max(0,Math.min(Number(scan.kindsCovered ?? src.length)||0,src.length,regionWords));
     const take=Math.min(sourceCovered,remainingKinds);
-    const kinds=take>0 ? src.slice(0,take) : new Uint8Array(0);
+    let kinds;
+    if (singleScan) {
+      kinds = take>0 && src instanceof Uint8Array
+        ? (src.length === take ? src : src.subarray(0, take))
+        : (take>0 ? Uint8Array.from(src.slice(0, take)) : new Uint8Array(0));
+    } else {
+      kinds = take>0
+        ? (src instanceof Uint8Array ? src.slice(0, take) : Uint8Array.from(src.slice(0, take)))
+        : new Uint8Array(0);
+    }
     kindRegions.push({ regionId:scan.regionId ?? null, vmAddr:BigInt(scan.vmAddr ?? 0), words:regionWords, kinds, kindsCovered:take });
     words += regionWords; kindsCovered += take; remainingKinds -= take;
     if (take < sourceCovered || take < regionWords) reasons.push(`${scan.regionId || 'region'}:kind-stat-budget`);
@@ -297,7 +336,7 @@ export class ProgramIndex {
       const site = this.callFrom[k], caller = this.functionStartOf(site);
       const key = caller != null ? caller.toString() : 's' + site.toString();
       if (!seen.has(key)) {
-        if (seen.size >= limit) { queryLimited = true; break; }
+        if (seen.size >= limit) { queryLimited = true; if (seen.size === 0) break; continue; }
         seen.set(key, { addr: caller, site, count: 0 });
       }
       seen.get(key).count++;
@@ -311,7 +350,7 @@ export class ProgramIndex {
       const from = this.callFrom[i]; if (end != null && from >= end) break;
       const to = this.callTo[i], key = to.toString();
       if (!out.has(key)) {
-        if (out.size >= limit) { queryLimited = true; break; }
+        if (out.size >= limit) { queryLimited = true; if (out.size === 0) break; continue; }
         out.set(key, { addr: to, site: from, count: 0 });
       }
       out.get(key).count++;
@@ -367,7 +406,7 @@ export class ProgramIndex {
     return completeness(out, this.refsCapped, 'refs', queryLimited, this.queryIncompleteReason);
   }
   statsOf(start, end) {
-    const stats = { total: 0, covered: true, arith: 0, mul: 0, div: 0, logic: 0, shift: 0, farith: 0, fmul: 0, fconv: 0, simd: 0, load: 0, store: 0, cmp: 0, condbr: 0, branch: 0, call: 0, indcall: 0, ret: 0, csel: 0, atomic: 0, movimm: 0, adrp: 0, trap: 0, other: 0 };
+    const stats = { total: 0, covered: true, arith: 0, mul: 0, div: 0, logic: 0, shift: 0, farith: 0, fmul: 0, fconv: 0, simd: 0, load: 0, store: 0, cmp: 0, condbr: 0, branch: 0, call: 0, indcall: 0, ret: 0, csel: 0, atomic: 0, movimm: 0, adrp: 0, trap: 0, other: 0, numeric: 0, memory: 0 };
     if (this.unsupported) { stats.covered = false; stats.unsupported = true; stats.incompleteReason = 'unsupported-program-analysis'; return stats; }
     const lastAddr=end!=null?BigInt(end):BigInt(start)+4n;
     const spans=this.kindRegions.length?this.kindRegions:[{vmAddr:BigInt(this.vmAddr||0),words:this.words,kinds:this.kinds,kindsCovered:this.kindsCovered}];

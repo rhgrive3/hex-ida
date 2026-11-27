@@ -97,8 +97,10 @@ export class CanonicalQueryProjection {
     return this.#edges.get(this.#edgeOrder[index]) ?? null;
   }
   /** Only references to original owner entities, never a guessed variable. */
-  entityReference(owner, entityId) {
-    this.#check(); return this.#ownerReferences.get(`${owner}\u0000${entityId}`) ?? null;
+  entityReference(owner, entityId, functionId = null) {
+    this.#check();
+    if (functionId != null) return this.#ownerReferences.get(`${functionId}\u0000${owner}\u0000${entityId}`) ?? null;
+    return this.#ownerReferences.get(`${owner}\u0000${entityId}`) ?? null;
   }
   canonicalValue(valueId) { this.#check(); return this.#semanticValues.get(valueId) ?? null; }
   canonicalBlock(blockId) { this.#check(); return this.#blocks.get(blockId) ?? null; }
@@ -390,6 +392,15 @@ export async function composeCanonicalQueryProjections(projections, bridgeRows, 
       sources.set(record.id, projection.source(record.id));
       // Function prefixes intentionally prevent cross-function SSA ID aliasing.
       ownerReferences.set(`${record.functionId}\u0000${record.owner}\u0000${record.entityId}`, record.id);
+      const unscopedKey = `${record.owner}\u0000${record.entityId}`;
+      if (!ownerReferences.has(unscopedKey)) ownerReferences.set(unscopedKey, record.id);
+      if (record.owner === 'ssa') {
+        const src = sources.get(record.id);
+        for (const vid of new Set([src?.valueId, src?.proof?.sourceSemanticValueId].filter((v) => typeof v === 'string'))) {
+          if (!valueReferences.has(vid)) valueReferences.set(vid, []);
+          valueReferences.get(vid).push(record.id);
+        }
+      }
       await work.yieldIfNeeded();
     }
     for (const gap of projection.frontier) frontier.push({ ...gap, functionId: projection.functionId });

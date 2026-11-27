@@ -602,7 +602,11 @@ export class EvidenceStore {
   pinned(ids) { return (ids || []).map((id) => this.get(id)).filter(Boolean); }
   hasAddress(value) {
     const address = addressText(value);
-    return !!address && this.all().some((item) => item.address === address || item.functionAddress === address);
+    if (!address) return false;
+    for (const item of this.records.values()) {
+      if (item.address === address || item.functionAddress === address) return true;
+    }
+    return false;
   }
   verifiedIds() { return this.byStatus('verified').map((item) => item.id); }
   canonicalSnapshot() { return evidenceStoreToCanonicalGraph(this); }

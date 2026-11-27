@@ -42,7 +42,17 @@ function decodeBlockType(bytecode, pos, wasmModule, budget = null) {
   return { params: type.params, results: type.results, nextOffset: result.nextOffset };
 }
 
+function isTable64(tableType) {
+  if (!tableType) return false;
+  if (tableType.is64 === true) return true;
+  if (tableType.addressType === 'i64' || tableType.addressType === I64) return true;
+  if (tableType.indexType === 'i64' || tableType.indexType === I64) return true;
+  if (Number.isSafeInteger(tableType.flags) && (tableType.flags & 0x04) !== 0) return true;
+  return false;
+}
+
 function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleIndex(wasmModule)) {
+  if (!Number.isSafeInteger(funcIndex) || funcIndex < 0) fail('wasm-invalid-callee-index');
   const typeIndex = funcIndex < moduleIndex.importedFunctionCount
     ? moduleIndex.functionTypeIndices[funcIndex]
     : wasmModule.functions[funcIndex - moduleIndex.importedFunctionCount];
@@ -52,6 +62,7 @@ function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleInd
 }
 
 export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
+  if (!Number.isSafeInteger(funcIndex) || funcIndex < 0) fail('wasm-invalid-function-index');
   const moduleIndex = wasmModuleIndex(wasmModule);
   if (funcIndex < moduleIndex.importedFunctionCount) return Object.freeze({ complete: true });
 
@@ -63,7 +74,11 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
   if (!funcType) fail('wasm-invalid-function-type-index');
   const codeBody = wasmModule.codeBodies[internalIndex];
   const bytecode = codeBody.bytecode;
-  const locals = [...funcType.params, ...codeBody.locals];
+  const localParams = funcType.params;
+  const localDecls = codeBody.locals;
+  const localParamCount = localParams.length;
+  const localTotalCount = localParamCount + localDecls.length;
+  const localTypeAt = (index) => (index < localParamCount ? localParams[index] : localDecls[index - localParamCount]);
   const globals = moduleIndex.globals;
   const tables = moduleIndex.tables;
   const memoryContext = createWasmMemoryValidationContext(wasmModule);
@@ -195,6 +210,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         break;
       }
       case 0x0f:
+        budget.chargeValues(funcType.results.length);
         assertSuffix(funcType.results, 'wasm-stack-underflow-return');
         markUnreachable();
         break;
@@ -214,8 +230,9 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         const tableType = tables[table.value];
         if (!tableType) fail('wasm-invalid-call-indirect-table-index');
         if (tableType.elemType !== 0x70) fail('wasm-invalid-call-indirect-table-type');
+        const selectorType = isTable64(tableType) ? I64 : I32;
         budget.chargeValues(1 + type.params.length + type.results.length);
-        pop(I32, 'wasm-stack-underflow-call-indirect');
+        pop(selectorType, 'wasm-stack-underflow-call-indirect');
         popTypes(type.params, 'wasm-stack-underflow-call-indirect');
         pushTypes(type.results);
         break;
@@ -237,15 +254,16 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
       }
       case 0x20: {
         const local = decodeUleb128(bytecode, pos); pos = local.nextOffset;
-        if (local.value >= locals.length) fail('wasm-invalid-local-index');
-        stack.push(locals[local.value]);
+        if (local.value >= localTotalCount) fail('wasm-invalid-local-index');
+        stack.push(localTypeAt(local.value));
         break;
       }
       case 0x21: case 0x22: {
         const local = decodeUleb128(bytecode, pos); pos = local.nextOffset;
-        if (local.value >= locals.length) fail('wasm-invalid-local-index');
-        pop(locals[local.value]);
-        if (opcode === 0x22) stack.push(locals[local.value]);
+        if (local.value >= localTotalCount) fail('wasm-invalid-local-index');
+        const localType = localTypeAt(local.value);
+        pop(localType);
+        if (opcode === 0x22) stack.push(localType);
         break;
       }
       case 0x23: case 0x24: {
@@ -289,7 +307,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
       case 0x7c: case 0x7d: case 0x7e:
         pop(I64); pop(I64); stack.push(I64); break;
       default:
-        return Object.freeze({ complete: false });
+        return Object.freeze({ complete: false, selectTypes });
     }
   }
 

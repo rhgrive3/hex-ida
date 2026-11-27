@@ -147,7 +147,7 @@ test('local declarations do not change emitted executable statements', () => {
     .filter((line) => line.kind !== 'sig' && line.kind !== 'decl' && !(line.kind === 'ctrl' && (line.text === '{' || line.text === '}')))
     .map((line) => line.text);
 
-  assert.deepEqual(executable, ['var_m10 = a1 / a2;', 'return;']);
+  assert.deepEqual(executable, ['var_m10 = a1 / a2;', 'return 0;']);
 });
 
 

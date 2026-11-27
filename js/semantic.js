@@ -82,6 +82,14 @@ function fact(kind, inst, extra = {}) {
   };
 }
 
+const UNIDENTIFIED_VALUE_IDS = new WeakMap();
+let nextUnidentifiedValueId = 1;
+function semanticValueKey(v) {
+  if (v.id != null) return 'id:' + String(v.id);
+  let sid = UNIDENTIFIED_VALUE_IDS.get(v);
+  if (!sid) { sid = 'obj:' + (nextUnidentifiedValueId++); UNIDENTIFIED_VALUE_IDS.set(v, sid); }
+  return sid;
+}
 function sameSemanticValue(a, b, seen = new Set()) {
   if (!a || !b) return false;
   if (a === b) return true;
@@ -93,7 +101,7 @@ function sameSemanticValue(a, b, seen = new Set()) {
   }
   const bitsA = Number(a.bits || 64), bitsB = Number(b.bits || 64);
   if (bitsA !== bitsB) return false;
-  const pairKey = String(a.id ?? '?') + ':' + String(b.id ?? '?');
+  const pairKey = semanticValueKey(a) + ':' + semanticValueKey(b);
   if (seen.has(pairKey)) return false;
   const next = new Set(seen).add(pairKey);
   const ad = a.def, bd = b.def;
@@ -123,7 +131,7 @@ export function proveClampSelect(sel) {
   const whenFalse = sel.args?.[1]?.value || null;
   const flags = sel.args?.[2]?.value || sel.args?.[sel.args.length - 1]?.value || null;
   const cmp = flags?.def?.op === OP.CMP ? flags.def : null;
-  if (!whenTrue || !whenFalse || !cmp || cmp.sub !== 'sub') return null;
+  if (!whenTrue || !whenFalse || !cmp || cmp.sub !== 'sub' || isConditionalCompare(cmp)) return null;
   const lhs = cmp.args?.[0]?.value || null;
   const rhs = cmp.args?.[1]?.value || null;
   if (!lhs || !rhs) return null;
@@ -152,20 +160,36 @@ export function proveClampSelect(sel) {
   return { kind, condition:cond, lhs, rhs, bound, candidate, compare:cmp };
 }
 
-const THRESHOLD_OPERATOR = Object.freeze({
+const THRESHOLD_OPERATOR = Object.freeze(Object.assign(Object.create(null), {
   eq:'==', ne:'!=',
   lt:'<', le:'<=', gt:'>', ge:'>=',
   lo:'<', cc:'<', hi:'>', ls:'<=', hs:'>=', cs:'>=',
-});
-const SWAPPED_CONDITION = Object.freeze({
+}));
+const SWAPPED_CONDITION = Object.freeze(Object.assign(Object.create(null), {
   eq:'eq', ne:'ne', lt:'gt', gt:'lt', le:'ge', ge:'le',
   lo:'hi', cc:'hi', hi:'lo', ls:'hs', hs:'ls', cs:'ls',
-});
-const SWAPPED_OPERATOR = Object.freeze({ '<':'>', '<=':'>=', '>':'<', '>=':'<=', '==':'==', '!=':'!=' });
+}));
+const SWAPPED_OPERATOR = Object.freeze(Object.assign(Object.create(null), { '<':'>', '<=':'>=', '>':'<', '>=':'<=', '==':'==', '!=':'!=' }));
+
+function isConditionalCompare(cmp) {
+  return Boolean(cmp && (cmp.conditional === true || cmp.extra?.conditional === true || cmp.extra?.fallbackNzcv != null));
+}
+
+function isThresholdCompare(cmp) {
+  if (!cmp || isConditionalCompare(cmp)) return false;
+  const sub = typeof cmp.sub === 'string' ? cmp.sub.toLowerCase() : null;
+  return sub === 'sub' || sub === 'fsub';
+}
 
 /** Canonicalize a constant comparison to `subject operator threshold`. */
 export function canonicalThresholdComparison(c) {
   if (!c) return null;
+  if (c.cmp && !isThresholdCompare(c.cmp)) return null;
+  if (c.conditional === true) return null;
+  if (c.sub != null) {
+    const sub = typeof c.sub === 'string' ? c.sub.toLowerCase() : '';
+    if (sub !== 'sub' && sub !== 'fsub') return null;
+  }
   const left = c.value || null, right = c.other || null;
   const leftConst = left?.const != null, rightConst = right?.const != null;
   if (leftConst === rightConst) return null;
@@ -194,16 +218,21 @@ export function canonicalThresholdComparison(c) {
 function comparisonForBranch(branch) {
   if (!branch || branch.op !== OP.CBR || !branch.args || !branch.args.length) return null;
   if (branch.extra && (branch.extra.kind === 'cbz' || branch.extra.kind === 'cbnz')) {
-    return { cmp: null, value: branch.args[0].value || null, other: null, cond: branch.extra.kind };
+    return { cmp: null, value: branch.args[0].value || null, other: null, cond: branch.extra.kind, sub: null, conditional: false, isThresholdEligible: false };
   }
   const flags = branch.args[0] && branch.args[0].value;
   const cmp = flags && flags.def && flags.def.op === OP.CMP ? flags.def : null;
   if (!cmp) return null;
+  const sub = typeof cmp.sub === 'string' ? cmp.sub.toLowerCase() : null;
+  const conditional = isConditionalCompare(cmp);
   return {
     cmp,
     value: cmp.args[0] && cmp.args[0].value || null,
     other: cmp.args[1] && cmp.args[1].value || null,
     cond: branch.cond || null,
+    sub,
+    conditional,
+    isThresholdEligible: isThresholdCompare(cmp),
   };
 }
 
@@ -275,7 +304,7 @@ function sourceMemoryProvenance(value, opts = {}) {
   function optionsOf(v) {
     if (!v) return [[]];
     if (memo.has(v.id)) return memo.get(v.id);
-    if (active.has(v.id) || visited++ >= maxNodes) return [[]];
+    if (active.has(v.id) || visited++ >= maxNodes) return [];
     active.add(v.id);
     const d = v.def;
     let out;
@@ -456,7 +485,7 @@ function controlFacts(ir, out) {
       continue;
     }
 
-    const canonical = canonicalThresholdComparison(c);
+    const canonical = c.isThresholdEligible ? canonicalThresholdComparison(c) : null;
     if (canonical) {
       const normalized = {
         ...base,
@@ -519,17 +548,29 @@ function sourceSinkFacts(ir, out) {
   }
 }
 
+const factCacheWithProofs = new WeakMap();
 export function semanticFacts(ir, options = null) {
   if (!ir || !ir.instructions) return [];
-  if (factCache.has(ir)) return factCache.get(ir);
   const precomputedRmw = Array.isArray(options?.readModifyWriteProofs)
     ? options.readModifyWriteProofs
     : null;
+  if (precomputedRmw === null) {
+    if (factCache.has(ir)) return factCache.get(ir).slice();
+  } else {
+    const byProof = factCacheWithProofs.get(ir);
+    if (byProof?.has(precomputedRmw)) return byProof.get(precomputedRmw).slice();
+  }
   const out = [];
   memoryFacts(ir, out); rmwFacts(ir, out, precomputedRmw); controlFacts(ir, out); sourceSinkFacts(ir, out);
   out.sort((a, b) => (a.row == null ? -1 : a.row) - (b.row == null ? -1 : b.row) || String(a.kind).localeCompare(String(b.kind)));
-  factCache.set(ir, out);
-  return out;
+  if (precomputedRmw === null) {
+    factCache.set(ir, out);
+  } else {
+    let byProof = factCacheWithProofs.get(ir);
+    if (!byProof) { byProof = new WeakMap(); factCacheWithProofs.set(ir, byProof); }
+    byProof.set(precomputedRmw, out);
+  }
+  return out.slice();
 }
 
 export function semanticFactsFor(model, opts) {

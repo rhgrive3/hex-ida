@@ -25,14 +25,20 @@ function currentAbiTypeFieldOffsets(ptrSize) {
   };
 }
 
-function writeNameRecord(buf, off, name) {
+function writeNameRecord(buf, off, name, { legacy116 = false } = {}) {
   const bytes = new TextEncoder().encode(name);
   buf[off] = 0;
-  buf[off + 1] = bytes.length;
-  buf.set(bytes, off + 2);
+  if (legacy116) {
+    buf[off + 1] = (bytes.length >> 8) & 0xff;
+    buf[off + 2] = bytes.length & 0xff;
+    buf.set(bytes, off + 3);
+  } else {
+    buf[off + 1] = bytes.length;
+    buf.set(bytes, off + 2);
+  }
 }
 
-function buildType({ ptrSize, equalValue = DECOY_NAME_OFF, gcdataValue = 0 }) {
+function buildType({ ptrSize, equalValue = DECOY_NAME_OFF, gcdataValue = 0, legacy116 = false }) {
   const field = currentAbiTypeFieldOffsets(ptrSize);
   assert.equal(field.str, ptrSize === 8 ? 40 : 24);
   assert.equal(field.headerBytes, ptrSize === 8 ? 48 : 32);
@@ -55,8 +61,8 @@ function buildType({ ptrSize, equalValue = DECOY_NAME_OFF, gcdataValue = 0 }) {
   buf[field.fieldAlign] = ptrSize;
   buf[field.kind] = 2;
 
-  writeNameRecord(buf, TYPES_BASE + REAL_NAME_OFF, REAL_NAME);
-  writeNameRecord(buf, TYPES_BASE + DECOY_NAME_OFF, DECOY_NAME);
+  writeNameRecord(buf, TYPES_BASE + REAL_NAME_OFF, REAL_NAME, { legacy116 });
+  writeNameRecord(buf, TYPES_BASE + DECOY_NAME_OFF, DECOY_NAME, { legacy116 });
   return buf;
 }
 
@@ -82,8 +88,9 @@ assert.equal(
   nameOf(current64, { ptrSize: 8, little: true, typesBase: TYPES_BASE, version: '1.20.0' }),
   REAL_NAME,
 );
+const legacy116_32 = buildType({ ptrSize: 4, legacy116: true });
 assert.equal(
-  nameOf(current32, { ptrSize: 4, little: true, typesBase: TYPES_BASE, version: '1.16.0' }),
+  nameOf(legacy116_32, { ptrSize: 4, little: true, typesBase: TYPES_BASE, version: '1.16.0' }),
   REAL_NAME,
 );
 

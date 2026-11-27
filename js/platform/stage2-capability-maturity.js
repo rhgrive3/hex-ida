@@ -86,6 +86,7 @@ function profileEvidenceProof(proof, itemId, profileIds) {
 
 function stage1ArchitectureBase(architecture, options = {}) {
   const base = architectureMaturity(architecture, options);
+  if (base.features?.decode !== 'supported') return base;
   const profileId = profileValue(ARCH_PROFILE, base.id);
   if (!profileId || !exactStage1ProfileProof(options.stage1Proof, [profileId], 'A6')) return base;
   const limitations = (base.limitations || []).filter((item) => ![

@@ -179,6 +179,9 @@ function buildChains(ir, maxInstructions) {
       const reg = inst.dst?.reg;
       if (typeof reg === 'string' && FP_REGISTER.test(reg)) vectorTargets.add(dstId);
     }
+    if (dstId != null && inst.op === 'load' && typeof inst.dst?.reg === 'string' && FP_REGISTER.test(inst.dst.reg)) {
+      vectorTargets.add(dstId);
+    }
     if (inst.op === 'cmp' || inst.op === 'cbr') {
       const kind = inst.extra?.kind ?? inst.cond ?? null;
       const ids = (inst.args || [])
@@ -432,11 +435,17 @@ export function recoverMemberTypeEvidence({
     let boolLike = false;
     let pointerUse = false,storedRole=null,argumentBit=null;
     if (inst.op === 'load') {
-      fp = flowsInto(loadValueId, chains.vectorTargets, chains.consumers);
+      fp = (typeof inst.dst?.reg === 'string' && FP_REGISTER.test(inst.dst.reg))
+        || (loadValueId != null && chains.vectorTargets.has(loadValueId))
+        || flowsInto(loadValueId, chains.vectorTargets, chains.consumers);
       pointerUse = size === 8 && !indexed && loadValueId != null && (
         chains.addressUsed.has(loadValueId) || flowsInto(loadValueId, chains.addressUsed, chains.consumers)
       );
-      if (size === 1 && !fp) boolLike = flowsInto(loadValueId, chains.conditionValues, chains.consumers);
+      if (size === 1 && !fp) {
+        boolLike = loadValueId != null && (
+          chains.conditionValues.has(loadValueId) || flowsInto(loadValueId, chains.conditionValues, chains.consumers)
+        );
+      }
     } else {
       const storedId = valueId(inst.args?.[0]?.value ?? inst.args?.[0]);
       const storedConstant = constantValueOf(storedId, chains);
@@ -493,6 +502,7 @@ export function recoverMemberTypeEvidence({
     const representative = entry.accesses.find((access) => access.fp)
       || entry.accesses.find((access) => access.pointerUse)
       || entry.accesses.find((access) => access.boolLike)
+      || entry.accesses.find((access) => access.signed !== null)
       || entry.accesses[0];
     // An offset is only array-like when *every* access there is indexed with a
     // scale that matches the element width it proves. Two ways this fails:
@@ -503,8 +513,10 @@ export function recoverMemberTypeEvidence({
     const indexedAccesses = entry.accesses.filter((access) => access.indexed);
     const mixedIndexedShape = indexedAccesses.length > 0
       && indexedAccesses.length !== entry.accesses.length;
-    const indexedConsistent = indexedAccesses
-      .every((access) => (1 << (access.scale ?? 0)) === access.size);
+    const indexedConsistent = indexedAccesses.every((access) => {
+      const sc = access.scale ?? 0;
+      return Number.isSafeInteger(sc) && sc >= 0 && sc <= 3 && (1 << sc) === access.size;
+    });
     const classification = mixedWidths
       ? unclassified('mixed-access-widths')
       : mixedIndexedShape

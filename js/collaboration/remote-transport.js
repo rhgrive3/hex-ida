@@ -84,6 +84,7 @@ async function readBoundedResponseText(response, maxBytes, deadline = null) {
   if (typeof response.body?.getReader !== 'function') {
     try {
       const pending = Promise.resolve(response.text());
+      if (deadline) pending.catch(() => {});
       const text = await (deadline ? Promise.race([pending, deadline.timeout]) : pending);
       if (textEncoder.encode(text).byteLength > maxBytes) throw new Error('remote-transport-response-budget-exceeded');
       return text;
@@ -103,6 +104,7 @@ async function readBoundedResponseText(response, maxBytes, deadline = null) {
   try {
     for (;;) {
       const pending = Promise.resolve(reader.read());
+      if (deadline) pending.catch(() => {});
       const result = await (deadline ? Promise.race([pending, deadline.timeout]) : pending);
       const { done, value } = result;
       if (done) break;
@@ -379,7 +381,7 @@ export class RemoteCanonicalHttpTransport {
       deadline.assertActive();
       this.#rememberVerifiedBinding(proofIdentity, canonicalBinding);
       return createRemoteCollaborationEnvelope({
-        ...input,
+        ...provisional,
         transportProof:{ authenticated:true, confidentiality:'verified', integrity:'verified', proofIdentity },
       });
     } finally { deadline.cancel(); }

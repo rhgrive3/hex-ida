@@ -20,11 +20,48 @@ function resultOf(pseudocode, declared = []) {
   return { lines: linesOf(pseudocode, declared), pseudocode };
 }
 
-function clangSyntax(source, extraArgs) {
+let cachedCompiler = undefined;
+
+function resolveCCompiler() {
+  if (cachedCompiler !== undefined) return cachedCompiler;
+  const candidates = [process.env.CLANG, '/usr/bin/clang', 'clang', 'gcc', '/usr/bin/gcc'].filter(Boolean);
+  for (const bin of candidates) {
+    const probe = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 5000 });
+    if (!probe.error && probe.status === 0) {
+      const versionText = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`;
+      cachedCompiler = { bin, isClang: /clang/i.test(versionText) };
+      return cachedCompiler;
+    }
+  }
+  cachedCompiler = null;
+  return null;
+}
+
+function adaptCompilerArgs(extraArgs, isClang) {
+  if (isClang) return [...extraArgs, '-fsyntax-only', '-Wno-everything'];
+  const adapted = [];
+  for (let i = 0; i < extraArgs.length; i += 1) {
+    const arg = extraArgs[i];
+    if (arg === '-target') {
+      i += 1;
+      continue;
+    }
+    if (arg === '-Wno-everything') continue;
+    adapted.push(arg);
+  }
+  return [...adapted, '-fsyntax-only', '-w'];
+}
+
+function clangSyntax(source, extraArgs = []) {
+  const compiler = resolveCCompiler();
+  if (!compiler) {
+    return { ok: false, stderr: 'No C compiler (clang or gcc) found in environment' };
+  }
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hex-output-closure-')), 'case.c');
   fs.writeFileSync(file, `${source}\n`);
   try {
-    const out = spawnSync('/usr/bin/clang', [...extraArgs, '-fsyntax-only', '-w', '-x', 'c', file], { encoding: 'utf8', timeout: 30000 });
+    const args = [...adaptCompilerArgs(extraArgs, compiler.isClang), '-x', 'c', file];
+    const out = spawnSync(compiler.bin, args, { encoding: 'utf8', timeout: 30000 });
     return { ok: out.status === 0, stderr: String(out.stderr ?? '') };
   } finally {
     fs.rmSync(path.dirname(file), { recursive: true, force: true });

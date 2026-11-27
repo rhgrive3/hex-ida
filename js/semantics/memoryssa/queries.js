@@ -20,10 +20,12 @@ import {
   canonicalAccessBindingDigest,
   canonicalAccessProofDigest,
   canonicalAliasProofDigest,
+  canonicalIdentityDigest,
   canonicalMemorySsaDigest,
   canonicalStoreValueProofDigest,
 } from './proof.js';
 import { snapshotIdIdentity } from './contract.js';
+import { isCanonicalSemanticIrProducerArtifact } from '../ir/index.js';
 
 function fail(code) { throw new TypeError(code); }
 function assertNotAborted(options) {
@@ -69,13 +71,38 @@ function canonicalQueryIndex(memorySsa) {
     for (const item of state.exit ?? []) if (!exit.has(item.regionId)) exit.set(item.regionId, item.definitionId);
     blockVersions.set(state.blockId, { entry, exit });
   }
+  const uses = new Map(memorySsa.uses.map((use) => [use.id, use]));
+  let byteCoverageByUseId = null;
+  let byteCoverageMalformedReason = null;
+  if (Array.isArray(memorySsa.byteCoverage)) {
+    byteCoverageByUseId = new Map();
+    for (const coverage of memorySsa.byteCoverage) {
+      if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) {
+        byteCoverageMalformedReason = 'memory-forwarding-coverage-row-malformed';
+        break;
+      }
+      const coverageUseId = String(coverage.useId ?? '').trim();
+      if (!coverageUseId || byteCoverageByUseId.has(coverageUseId)) {
+        byteCoverageMalformedReason = 'memory-forwarding-coverage-use-duplicate';
+        break;
+      }
+      if (!uses.has(coverageUseId)) {
+        byteCoverageMalformedReason = 'memory-forwarding-coverage-use-missing';
+        break;
+      }
+      byteCoverageByUseId.set(coverageUseId, coverage);
+    }
+  }
   index = {
+    regions: new Map((memorySsa.regions ?? []).map((region) => [String(region.id), region])),
     definitions: new Map(memorySsa.definitions.map((definition) => [definition.id, definition])),
-    uses: new Map(memorySsa.uses.map((use) => [use.id, use])),
+    uses,
     defUseLinks: new Map((memorySsa.defUseLinks ?? []).map((link) => [link.definitionId, link.useIds])),
     definitionsByRegion,
     accessMetadata: new Map((memorySsa.accessMetadata ?? []).map((item) => [item.memorySsaEntityId, item])),
     blockVersions,
+    byteCoverageByUseId,
+    byteCoverageMalformedReason,
   };
   canonicalQueryIndexes.set(memorySsa, index);
   return index;
@@ -381,21 +408,66 @@ function forwardingRegionBase(region) {
   return null;
 }
 
+function compareText(left, right) {
+  const a = String(left ?? '');
+  const b = String(right ?? '');
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+const frozenIrIndexCache = new WeakMap();
+function frozenIrIndex(ir) {
+  if (!forwardingObject(ir) || !isCanonicalSemanticIrProducerArtifact(ir) || !Object.isFrozen(ir)) return null;
+  const existing = frozenIrIndexCache.get(ir);
+  if (existing !== undefined) return existing;
+  const nodes = ir.nodes;
+  const values = ir.values;
+  if ((nodes != null && (!Array.isArray(nodes) || !Object.isFrozen(nodes)))
+      || (values != null && (!Array.isArray(values) || !Object.isFrozen(values)))) {
+    return null;
+  }
+  const nodesById = new Map();
+  if (Array.isArray(nodes)) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      const id = String(node?.id ?? '');
+      if (!nodesById.has(id)) nodesById.set(id, node);
+    }
+  }
+  const valuesById = new Map();
+  if (Array.isArray(values)) {
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      const id = String(value?.id ?? '');
+      if (!valuesById.has(id)) valuesById.set(id, value);
+    }
+  }
+  const built = { nodesById, valuesById };
+  frozenIrIndexCache.set(ir, built);
+  return built;
+}
+
 function forwardingCanonicalSourceNode(metadata, options) {
   const sourceId = metadata?.sourceEntityId ?? metadata?.nodeId ?? null;
-  const nodes = options?.ir?.nodes;
+  const ir = options?.ir;
+  const nodes = ir?.nodes;
   if (sourceId == null || !Array.isArray(nodes)) return null;
-  const node = nodes.find((candidate) => String(candidate?.id ?? '') === String(sourceId));
+  const idx = frozenIrIndex(ir);
+  const node = idx
+    ? idx.nodesById.get(String(sourceId))
+    : nodes.find((candidate) => String(candidate?.id ?? '') === String(sourceId));
   return node && (node.kind === 'load' || node.kind === 'store') ? node : null;
 }
 
 function forwardingQualifierNormalizationAllowed(sourceMemory, memory) {
-  if (!forwardingObject(sourceMemory) || !forwardingObject(memory)
-      || sourceMemory.volatility !== 'unknown' || sourceMemory.atomic !== 'unknown') return false;
+  if (!forwardingObject(sourceMemory) || !forwardingObject(memory)) return false;
+  const volOk = sourceMemory.volatility === false || sourceMemory.volatility === 'unknown';
+  const atomicOk = sourceMemory.atomic === false || sourceMemory.atomic === 'unknown';
+  if (!volOk || !atomicOk) return false;
   const normalized = {
     ...sourceMemory,
     volatility: false,
     atomic: false,
+    ordering: sourceMemory.ordering ?? 'unknown',
   };
   return stableStringify(normalized) === stableStringify(memory);
 }
@@ -596,7 +668,7 @@ function forwardingCanonicalAliasProofIsValid(proof, relation, context = {}) {
   const identity = context.memorySsa?.identity;
   if (!forwardingObject(proof.identity)
       || String(proof.identity.functionId ?? '') !== String(context.memorySsa?.functionId ?? '')
-      || String(proof.identity.digest ?? '') !== stableDigest(identity ?? null)) return false;
+      || String(proof.identity.digest ?? '') !== canonicalIdentityDigest(identity)) return false;
   const provenance = proof.provenance;
   if (!forwardingObject(provenance)
       || String(provenance.functionId ?? '') !== String(context.memorySsa?.functionId ?? '')
@@ -692,7 +764,7 @@ function forwardingAliasProofIsNo(proof, context = {}, depth = 0) {
       && expectedRegionId != null
       && String(proof.regionId ?? '') === String(expectedRegionId)
       && String(proof.functionId ?? '') === String(context.memorySsa?.functionId ?? '')
-      && String(proof.identityDigest ?? '') === stableDigest(context.memorySsa?.identity ?? null)
+      && String(proof.identityDigest ?? '') === canonicalIdentityDigest(context.memorySsa?.identity)
       && forwardingObject(proof.evidence)
       && proof.evidence.source === 'canonical-semantic-stack-root'
       && proof.evidence.root === 'canonical-stack-root'
@@ -863,7 +935,7 @@ function forwardingValueForDefinition(definition, metadata, memorySsa, options) 
       || String(proof.sourceEntityId ?? '') !== String(definition.sourceEntityId ?? '')
       || !String(proof.valueId ?? '').trim()
       || String(proof.identity?.functionId ?? '') !== String(memorySsa.functionId ?? '')
-      || String(proof.identity?.digest ?? '') !== stableDigest(memorySsa.identity ?? null)
+      || String(proof.identity?.digest ?? '') !== canonicalIdentityDigest(memorySsa.identity ?? null)
       || !forwardingObject(proof.issuer)
       || proof.issuer.type !== 'canonical-semantic-value-provider'
       || String(proof.issuer.id ?? '') !== CANONICAL_STORE_VALUE_ISSUER
@@ -880,14 +952,21 @@ function forwardingValueForDefinition(definition, metadata, memorySsa, options) 
     throw new ForwardingStop('unknown', 'memory-forwarding-store-canonical-value-unproven');
   }
   if (options.ir != null) {
-    const storeNode = (options.ir.nodes ?? []).find((node) => String(node.id) === String(definition.sourceEntityId));
-    const semanticValue = (options.ir.values ?? []).find((value) => String(value.id) === String(proof.valueId));
+    const irIdx = frozenIrIndex(options.ir);
+    const storeNode = irIdx
+      ? irIdx.nodesById.get(String(definition.sourceEntityId))
+      : (options.ir.nodes ?? []).find((node) => String(node.id) === String(definition.sourceEntityId));
+    const semanticValue = irIdx
+      ? irIdx.valuesById.get(String(proof.valueId))
+      : (options.ir.values ?? []).find((value) => String(value.id) === String(proof.valueId));
     const hasResolvedValue = intrinsicObjectHasOwn(proof, 'resolvedValueId')
       || intrinsicObjectHasOwn(proof, 'resolvedSemanticValueDigest')
       || intrinsicObjectHasOwn(proof, 'resolvedWidthBits');
     let resolvedValueValid = true;
     if (hasResolvedValue) {
-      const resolved = (options.ir.values ?? []).find((value) => String(value.id) === String(proof.resolvedValueId));
+      const resolved = irIdx
+        ? irIdx.valuesById.get(String(proof.resolvedValueId))
+        : (options.ir.values ?? []).find((value) => String(value.id) === String(proof.resolvedValueId));
       const constant = resolved?.metadata?.constant;
       const sourceWidth = Number(proof.resolvedWidthBits);
       let sourceValue = null;
@@ -896,17 +975,23 @@ function forwardingValueForDefinition(definition, metadata, memorySsa, options) 
         else if (typeof constant?.value === 'number' && Number.isSafeInteger(constant.value)) sourceValue = BigInt(constant.value);
         else if (typeof constant?.value === 'string' && /^[+-]?(?:0|[1-9][0-9]*)$/.test(constant.value)) sourceValue = BigInt(constant.value);
       } catch { sourceValue = null; }
+      const validSourceWidth = Number.isSafeInteger(sourceWidth) && sourceWidth > 0 && sourceWidth % 8 === 0;
+      const sourceUnsigned = validSourceWidth && sourceValue != null ? BigInt.asUintN(sourceWidth, sourceValue) : null;
+      const sourceSigned = validSourceWidth && sourceValue != null ? BigInt.asIntN(sourceWidth, sourceValue) : null;
+      const targetWidth = Number(proof.widthBits);
       resolvedValueValid = !!resolved
         && String(proof.resolvedValueId ?? '').trim() !== ''
         && String(proof.resolvedSemanticValueDigest ?? '') === stableDigest(resolved)
         && String(proof.scalarSsaDigest ?? '') === String(memorySsa.identity?.scalarSsaDigest ?? '')
         && resolved.machineType?.kind === 'bitvector'
+        && validSourceWidth
         && Number(resolved.machineType?.widthBits) === sourceWidth
         && Number(constant?.widthBits) === sourceWidth
         && sourceValue != null
         && parsedValue != null
-        && BigInt.asUintN(sourceWidth, sourceValue) === sourceValue
-        && BigInt.asUintN(Number(proof.widthBits), sourceValue) === parsedValue;
+        && (sourceValue === sourceUnsigned || sourceValue === sourceSigned)
+        && (BigInt.asUintN(targetWidth, sourceUnsigned) === parsedValue
+          || BigInt.asUintN(targetWidth, sourceSigned) === parsedValue);
     }
     if (!storeNode || storeNode.kind !== 'store' || !Array.isArray(storeNode.inputs)
         || storeNode.inputs.length !== 2
@@ -1082,7 +1167,14 @@ function forwardingGateOptionKey(options) {
 }
 
 function forwardingValidationBudgetKey(options) {
-  return options.validationBudget == null ? '\u0000default' : String(options.validationBudget);
+  if (options.validationBudget == null) return '\u0000default';
+  try {
+    return typeof options.validationBudget === 'object'
+      ? stableStringify(options.validationBudget)
+      : `${typeof options.validationBudget}:${String(options.validationBudget)}`;
+  } catch {
+    return null;
+  }
 }
 
 function forwardingStatusFromArtifactFull(memorySsa, options) {
@@ -1254,7 +1346,7 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     && isCanonicalMemorySsaProducerArtifact(memorySsa)
     && Object.isFrozen(memorySsa);
   const ir = options.ir;
-  const irCacheable = ir == null || (forwardingObject(ir) && Object.isFrozen(ir));
+  const irCacheable = ir == null || (forwardingObject(ir) && isCanonicalSemanticIrProducerArtifact(ir) && Object.isFrozen(ir));
   const gateKey = canonicalArtifact && irCacheable && !options.skipValidation
     && options.accessMetadata == null
     && options.consumerId === CANONICAL_MEMORY_FORWARDING_CONSUMER
@@ -1351,8 +1443,23 @@ function forwardingContains(outer, inner) {
   return outer.domain === inner.domain && outer.start <= inner.start && outer.end >= inner.end;
 }
 
+const forwardingDefinitionMapCache = new WeakMap();
+function forwardingDefinitionMap(memorySsa) {
+  const qIndex = canonicalQueryIndex(memorySsa);
+  if (qIndex) return qIndex.definitions;
+  if (forwardingObject(memorySsa) && Object.isFrozen(memorySsa)
+      && Array.isArray(memorySsa.definitions) && Object.isFrozen(memorySsa.definitions)) {
+    let cached = forwardingDefinitionMapCache.get(memorySsa);
+    if (cached) return cached;
+    cached = new Map(memorySsa.definitions.map((definition) => [String(definition.id), definition]));
+    forwardingDefinitionMapCache.set(memorySsa, cached);
+    return cached;
+  }
+  return new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
+}
+
 function forwardingDefinitionChain(memorySsa, startId, state) {
-  const definitions = new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
+  const definitions = forwardingDefinitionMap(memorySsa);
   const chain = [];
   const visited = new Set();
   let currentId = String(startId ?? '');
@@ -1450,7 +1557,7 @@ function forwardingAccessProofIsCanonical(proof, metadata, memory, memorySsa = n
     && typeof issuer.version === 'string' && issuer.version === MEMORY_SSA_PROOF_VERSION
     && forwardingObject(proof.identity)
     && String(proof.identity.functionId ?? '') === String(memorySsa?.functionId ?? '')
-    && String(proof.identity.digest ?? '') === stableDigest(memorySsa?.identity ?? null)
+    && String(proof.identity.digest ?? '') === canonicalIdentityDigest(memorySsa?.identity)
     && forwardingObject(provenance)
     && String(provenance.functionId ?? '') === String(memorySsa?.functionId ?? '')
     && String(provenance.sourceEntityId ?? '') === String(sourceId)
@@ -1515,6 +1622,19 @@ function forwardingCheckRangeWidth(range, widthBits, code) {
   }
 }
 
+const frozenIrDigestCache = new WeakMap();
+function forwardingIrDigest(ir) {
+  if (ir == null) return null;
+  if (isCanonicalSemanticIrProducerArtifact(ir)) {
+    let digest = frozenIrDigestCache.get(ir);
+    if (digest !== undefined) return digest;
+    digest = stableDigest(ir);
+    frozenIrDigestCache.set(ir, digest);
+    return digest;
+  }
+  return stableDigest(ir);
+}
+
 function forwardingIdentity(memorySsa, use, loadMeta, winners, stores, coverage, context, options) {
   return {
     digest: stableDigest({
@@ -1566,7 +1686,7 @@ function forwardingIdentity(memorySsa, use, loadMeta, winners, stores, coverage,
       optionsIdentity: options.currentIdentity ?? null,
       consumerId: options.consumerId ?? null,
       purpose: options.purpose ?? null,
-      canonicalIrDigest: options.ir == null ? null : stableDigest(options.ir),
+      canonicalIrDigest: forwardingIrDigest(options.ir),
     }),
     functionId: memorySsa.functionId,
     snapshotId: memorySsa.snapshotId ?? options.snapshotId ?? null,
@@ -1666,10 +1786,13 @@ function forwardingFactBindingIsCurrent(fact, expectedContext = null) {
     if (!expectedRange
         || expectedRange.start.toString() !== binding.loadRange.start
         || expectedRange.end.toString() !== binding.loadRange.end) return false;
-    const use = (artifact.uses ?? []).find((item) => String(item?.id ?? '') === binding.useId);
+    const qIndex = canonicalQueryIndex(artifact);
+    const use = qIndex ? qIndex.uses.get(binding.useId)
+      : (artifact.uses ?? []).find((item) => String(item?.id ?? '') === binding.useId);
     if (!use || String(use.sourceEntityId ?? '') !== binding.sourceEntityId) return false;
-    const metadata = (artifact.accessMetadata ?? []).find((item) =>
-      String(item?.memorySsaEntityId ?? '') === binding.useId);
+    const metadata = qIndex ? qIndex.accessMetadata.get(binding.useId)
+      : (artifact.accessMetadata ?? []).find((item) =>
+        String(item?.memorySsaEntityId ?? '') === binding.useId);
     if (!metadata
         || String(metadata.sourceEntityId ?? '') !== binding.sourceEntityId
         || String(metadata.nodeId ?? '') !== binding.sourceEntityId
@@ -1864,7 +1987,7 @@ function forwardingCoverageStateForUse(memorySsa, use, context, coverage, state)
       || String(proof.regionId ?? '') !== String(use.regionId ?? '')
       || expectedBuildVersion == null
       || String(proof.buildVersion ?? '') !== String(expectedBuildVersion)
-      || String(proof.identityDigest ?? '') !== stableDigest(memorySsa.identity ?? null)) {
+      || String(proof.identityDigest ?? '') !== canonicalIdentityDigest(memorySsa.identity ?? null)) {
     throw new ForwardingStop('unknown', 'memory-forwarding-coverage-proof-invalid');
   }
   const proofRange = forwardingRawRange(proof.loadRange, context.loadRange.domain);
@@ -1940,6 +2063,9 @@ function forwardingCoverageStateForUse(memorySsa, use, context, coverage, state)
   }));
 }
 
+const coverageValidationCache = new WeakMap();
+const NO_IR_CACHE_KEY = Object.freeze({});
+
 function forwardingCoverageStates(memorySsa, use, context, options, state, metadataById, regionById, sourceById) {
   if (!Array.isArray(memorySsa.byteCoverage)) {
     // Without the producer's complete cross-region index there is no proof
@@ -1947,7 +2073,61 @@ function forwardingCoverageStates(memorySsa, use, context, options, state, metad
     // back to this use's region or a subset of canonical coverage.
     throw new ForwardingStop('unknown', 'memory-forwarding-coverage-index-missing');
   }
-  const usesById = new Map((memorySsa.uses ?? []).map((item) => [String(item.id), item]));
+  const cacheable = isCanonicalMemorySsaProducerArtifact(memorySsa)
+    && Object.isFrozen(memorySsa)
+    && sourceById.size === 0
+    && (options?.ir == null || canonicalMemorySsaProducerMatchesSemanticIr(memorySsa, options.ir));
+  const irCacheKey = options?.ir ?? NO_IR_CACHE_KEY;
+  if (cacheable) {
+    if (state.options.signal?.aborted) throw new ForwardingStop('cancelled', 'analysis-cancelled');
+    const useKey = String(use.id);
+    let perIr = coverageValidationCache.get(memorySsa);
+    let byUseId = perIr?.get(irCacheKey);
+    const cached = byUseId?.get(useKey);
+    if (cached !== undefined) {
+      if (cached.ticks > 0) {
+        if (state.deadlineMs != null && Date.now() >= state.deadlineMs) {
+          throw new ForwardingStop('budget-limited', 'memory-forwarding-deadline-exhausted');
+        }
+        if (state.iterations + cached.ticks > state.maxIterations) {
+          state.iterations = state.maxIterations + 1;
+          forwardingScanTick(state);
+        }
+        state.iterations += cached.ticks;
+      }
+      if (!cached.ok) {
+        throw new ForwardingStop(cached.error.status, cached.error.reason);
+      }
+      return cached.states;
+    }
+    const startIterations = state.iterations;
+    const qIndex = canonicalQueryIndex(memorySsa);
+    if (!perIr) { perIr = new WeakMap(); coverageValidationCache.set(memorySsa, perIr); }
+    if (!byUseId) { byUseId = new Map(); perIr.set(irCacheKey, byUseId); }
+    try {
+      forwardingScanTick(state);
+      if (qIndex?.byteCoverageMalformedReason) {
+        throw new ForwardingStop('unknown', qIndex.byteCoverageMalformedReason);
+      }
+      const coverage = qIndex?.byteCoverageByUseId?.get(useKey) ?? null;
+      if (!coverage) throw new ForwardingStop('unknown', 'memory-forwarding-coverage-missing');
+      const states = forwardingCoverageStateForUse(memorySsa, use, context, coverage, state);
+      byUseId.set(useKey, { ok: true, states, ticks: state.iterations - startIterations });
+      return states;
+    } catch (error) {
+      if (error instanceof ForwardingStop
+          && error.status !== 'cancelled' && error.status !== 'budget-limited') {
+        byUseId.set(useKey, {
+          ok: false,
+          error: { status: error.status, reason: error.reason },
+          ticks: state.iterations - startIterations,
+        });
+      }
+      throw error;
+    }
+  }
+  const qIndex = canonicalQueryIndex(memorySsa);
+  const usesById = qIndex ? qIndex.uses : new Map((memorySsa.uses ?? []).map((item) => [String(item.id), item]));
   const seenUseIds = new Set();
   let selectedStates = null;
   for (const coverage of memorySsa.byteCoverage) {
@@ -1973,6 +2153,8 @@ function forwardingCoverageStates(memorySsa, use, context, options, state, metad
 }
 
 function regionByIdForCoverage(memorySsa, regionId) {
+  const qIndex = canonicalQueryIndex(memorySsa);
+  if (qIndex) return qIndex.regions.has(regionId);
   return (memorySsa.regions ?? []).some((region) => String(region.id) === regionId);
 }
 
@@ -1987,7 +2169,6 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
     regionById,
     sourceById,
   );
-  const definitions = new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
   if (!states.every((item) => item.regionId && item.definitionId)) {
     throw new ForwardingStop('unknown', 'memory-forwarding-region-state-malformed');
   }
@@ -2047,6 +2228,9 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
           throw new ForwardingStop('unknown', 'memory-forwarding-store-memory-mismatch');
         }
       }
+      if (MEMORY_BARRIER_KINDS.has(definition.kind)) {
+        throw new ForwardingStop('unknown', `memory-forwarding-${definition.kind}-barrier`);
+      }
       const range = forwardingRange(region, memory, metadata, source, options);
       if (!range) {
         // An unknown-range clobber can touch any load byte.  A missing range
@@ -2054,9 +2238,6 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
         throw new ForwardingStop('unknown', `memory-forwarding-${definition.kind}-range-unproven`);
       }
       if (!forwardingOverlap(range, context.loadRange)) continue;
-      if (MEMORY_BARRIER_KINDS.has(definition.kind)) {
-        throw new ForwardingStop('unknown', `memory-forwarding-${definition.kind}-barrier`);
-      }
       if (definition.kind !== 'memory-def' || definition.aliasRelation !== 'must'
           || !forwardingObject(definition.proof)
           || definition.proof.kind !== 'must-alias-memory-write'
@@ -2173,7 +2354,7 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
     const validationCfg = options.cfg ?? NO_FORWARDING_CFG;
     let validated;
     if (pre != null && pre.validatedOk && pre.validatedCfg === validationCfg
-        && pre.validatedBudget === validationKey) {
+        && validationKey != null && pre.validatedBudget === validationKey) {
       validated = memorySsa;
     } else {
       validated = validateMemorySsa(memorySsa, {
@@ -2314,7 +2495,7 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
     // boundary must not race with an exact publication.
     forwardingScanTick(state);
     const winners = [...new Map([...byteMap.values()].map((lane) => [String(lane.definition.id), lane])).values()]
-      .sort((left, right) => left.order - right.order || String(left.definition.id).localeCompare(String(right.definition.id)));
+      .sort((left, right) => left.order - right.order || compareText(left.definition.id, right.definition.id));
     const coverage = coverageForUse();
     const proofIdentity = forwardingIdentity(artifact, use, context.useMeta, winners, stores, coverage, context, options);
     return forwardingRegisterExactFact(forwardingResult(FORWARD_EXACT, null, {
@@ -2439,22 +2620,26 @@ export function explainMemoryPath(memorySsa, useOrId, options = {}) {
   const definitions = definitionMap(memorySsa);
   const use = useFrom(memorySsa, useOrId);
   const visited = new Set();
+  const queued = new Set([use.reachingDefinitionId]);
   const work = [];
   memoryPathHeapPush(work, use.reachingDefinitionId);
   const nodes = [];
   const edges = [];
   while (work.length) {
     assertNotAborted(options);
-    if (visited.size >= maximum) fail('memory-ssa-query-budget-exceeded-max-definitions');
     const id = memoryPathHeapPop(work);
     if (visited.has(id)) continue;
+    if (visited.size >= maximum) fail('memory-ssa-query-budget-exceeded-max-definitions');
     visited.add(id);
     const definition = definitions.get(id);
     if (!definition) fail('memory-ssa-query-dangling-definition-link');
     nodes.push(definition);
     for (const previousId of definition.previousDefinitionIds) {
       edges.push({ from: definition.id, to: previousId, kind: 'previous' });
-      if (!visited.has(previousId)) memoryPathHeapPush(work, previousId);
+      if (!visited.has(previousId) && !queued.has(previousId)) {
+        queued.add(previousId);
+        memoryPathHeapPush(work, previousId);
+      }
     }
     for (const incoming of definition.incoming) {
       edges.push({
@@ -2463,13 +2648,16 @@ export function explainMemoryPath(memorySsa, useOrId, options = {}) {
         kind: 'phi-incoming',
         predecessorBlockId: incoming.predecessorBlockId,
       });
-      if (!visited.has(incoming.definitionId)) memoryPathHeapPush(work, incoming.definitionId);
+      if (!visited.has(incoming.definitionId) && !queued.has(incoming.definitionId)) {
+        queued.add(incoming.definitionId);
+        memoryPathHeapPush(work, incoming.definitionId);
+      }
     }
   }
-  nodes.sort((a, b) => a.id.localeCompare(b.id));
-  edges.sort((a, b) => a.from.localeCompare(b.from)
-    || a.to.localeCompare(b.to)
-    || a.kind.localeCompare(b.kind)
-    || String(a.predecessorBlockId ?? '').localeCompare(String(b.predecessorBlockId ?? '')));
+  nodes.sort((a, b) => compareText(a.id, b.id));
+  edges.sort((a, b) => compareText(a.from, b.from)
+    || compareText(a.to, b.to)
+    || compareText(a.kind, b.kind)
+    || compareText(a.predecessorBlockId ?? '', b.predecessorBlockId ?? ''));
   return deepFreeze({ use, nodes, edges });
 }

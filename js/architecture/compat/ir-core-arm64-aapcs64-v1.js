@@ -130,7 +130,7 @@ function regBits(op) {
  *   { t:'zero' }                       ← zr。値としては定数 0
  */
 
-const BIN_OF = {
+const BIN_OF = Object.assign(Object.create(null), {
   add: 'add', adds: 'add', sub: 'sub', subs: 'sub',
   mul: 'mul', mneg: 'mul', smull: 'smull', umull: 'umull',
   smulh: 'smulh', umulh: 'umulh', sdiv: 'sdiv', udiv: 'udiv',
@@ -138,21 +138,21 @@ const BIN_OF = {
   lsl: 'shl', lslv: 'shl', lsr: 'lshr', lsrv: 'lshr', asr: 'ashr', asrv: 'ashr',
   ror: 'ror', rorv: 'ror',
   fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
-};
+});
 
-const UN_OF = {
+const UN_OF = Object.assign(Object.create(null), {
   neg: 'neg', negs: 'neg', mvn: 'not', fneg: 'fneg', fabs: 'fabs', fsqrt: 'fsqrt',
   sxtb: 'sxt8', sxth: 'sxt16', sxtw: 'sxt32',
   uxtb: 'uxt8', uxth: 'uxt16', uxtw: 'uxt32',
   clz: 'clz', rbit: 'rbit', rev: 'rev', rev16: 'rev16', rev32: 'rev32',
   scvtf: 'i2f', ucvtf: 'u2f', fcvtzs: 'f2i', fcvtzu: 'f2u',
   fmov: 'fmov', abs: 'abs',
-};
+});
 
-const SEL_OF = { csel: 'sel', fcsel: 'sel', csinc: 'inc', csinv: 'inv', csneg: 'neg', cset: 'set', csetm: 'setm', cinc: 'cinc', cneg: 'cneg', cinv: 'cinv' };
+const SEL_OF = Object.assign(Object.create(null), { csel: 'sel', fcsel: 'sel', csinc: 'inc', csinv: 'inv', csneg: 'neg', cset: 'set', csetm: 'setm', cinc: 'cinc', cneg: 'cneg', cinv: 'cinv' });
 
 /* 条件コード → 比較の意味。signed が null のものは符号に関係しない。 */
-export const COND = {
+export const COND = Object.assign(Object.create(null), {
   eq: { op: '==', signed: null }, ne: { op: '!=', signed: null },
   hs: { op: '>=', signed: false }, cs: { op: '>=', signed: false },
   lo: { op: '<', signed: false }, cc: { op: '<', signed: false },
@@ -161,13 +161,13 @@ export const COND = {
   gt: { op: '>', signed: true }, le: { op: '<=', signed: true },
   mi: { op: '<', signed: true, vsZero: true }, pl: { op: '>=', signed: true, vsZero: true },
   vs: null, vc: null, al: null, nv: null,
-};
+});
 
-const INVERSE_COND = {
+const INVERSE_COND = Object.assign(Object.create(null), {
   eq: 'ne', ne: 'eq', hs: 'lo', lo: 'hs', cs: 'cc', cc: 'cs',
   hi: 'ls', ls: 'hi', ge: 'lt', lt: 'ge', gt: 'le', le: 'gt',
   mi: 'pl', pl: 'mi', vs: 'vc', vc: 'vs',
-};
+});
 
 export function inverseCondition(c) { return INVERSE_COND[c] || null; }
 
@@ -490,6 +490,36 @@ function lift(insn, opts = {}) {
     return out;
   }
 
+  /* ── PC相対リテラルロード (ldr / ldrsw Xt, #addr) ── */
+  if (!insn.memory && (base === 'ldr' || base === 'ldrsw') && ops.length === 2
+      && ops[0]?.k === 'reg' && ops[1]?.k === 'imm') {
+    const target = insn.pcRelTarget != null ? insn.pcRelTarget : ops[1].value;
+    if (target != null && target >= 0n) {
+      const signedLoad = base === 'ldrsw';
+      const each = signedLoad ? 4 : Math.max(1, (regBits(ops[0]) || 64) / 8);
+      push({
+        op: OP.LOAD,
+        dstReg: ops[0].cls !== 'zr' ? regKeyOf(ops[0]) : null,
+        dstBits: regBits(ops[0]),
+        addr: {
+          base: null,
+          disp: target,
+          index: null,
+          scale: 0,
+          extend: null,
+          mode: 'literal',
+          literalAddress: target,
+          stack: false,
+          size: each,
+        },
+        size: each,
+        signed: signedLoad,
+        srcs: [],
+      });
+      return out;
+    }
+  }
+
   /* ── メモリ ── */
   if (insn.memory) {
     const mem = ops.find((o) => o.k === 'mem');
@@ -497,7 +527,7 @@ function lift(insn, opts = {}) {
     const writebackDispOp = mem ? (mem.writebackDisp ?? (mem.mode === 'pre' ? addressDispOp : null)) : null;
     const addr = {
       base: mem ? regKeyOf(mem.base) : null,
-      disp: addressDispOp && addressDispOp.value != null ? addressDispOp.value : (mem?.mode === 'post' ? 0n : null),
+      disp: addressDispOp && addressDispOp.value != null ? addressDispOp.value : (mem?.mode === 'post' || (mem && mem.base && !mem.index) ? 0n : null),
       index: mem && mem.index ? regKeyOf(mem.index) : null,
       scale: mem && mem.shift ? (mem.shift.amount || 0) : 0,
       extend: mem && mem.shift && mem.shift.op !== 'lsl' ? mem.shift.op : null,
@@ -505,7 +535,9 @@ function lift(insn, opts = {}) {
       stack: !!insn.memory.stack,
       size: insn.memory.size,
     };
-    const pair = base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp' || base === 'ldpsw';
+    const isExclusiveStore = /^(stxr|stlxr|stxrb|stxrh|stlxrb|stlxrh|stxp|stlxp)$/.test(base);
+    const pair = base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp' || base === 'ldpsw' ||
+      base === 'stxp' || base === 'stlxp';
     const each = insn.memory.size && pair ? insn.memory.size / 2 : insn.memory.size;
     const signedLoad = /^(ldrs|ldurs|ldpsw)/.test(base);
     if (insn.memory.kind === 'load') {
@@ -518,8 +550,33 @@ function lift(insn, opts = {}) {
           size: each, signed: signedLoad, srcs: [],
         });
       });
+    } else if (insn.memory.kind === 'atomic') {
+      for (const w of insn.writes || []) {
+        if (mem && (mem.mode === 'pre' || mem.mode === 'post') && w === addr.base) continue;
+        const wOp = ops.find((o) => o.k === 'reg' && regKeyOf(o) === w) || null;
+        push({
+          op: OP.LOAD,
+          dstReg: w,
+          dstBits: wOp ? regBits(wOp) : (each ? each * 8 : 64),
+          addr: Object.assign({}, addr, { size: each }),
+          size: each,
+          signed: false,
+          srcs: [],
+          deferDef: true,
+        });
+      }
+      const isCas = /^cas(?:al|a|l)?(?:b|h)?$/.test(base);
+      const srcRegs = isCas ? [ops[1], ops[0]] : [ops[0]];
+      push({
+        op: OP.STORE,
+        addr: Object.assign({}, addr, { size: each }),
+        size: each,
+        srcs: srcRegs.map((r) => opnd(r)).filter(Boolean),
+      });
     } else {
-      const regs = pair ? [ops[0], ops[1]] : [ops[0]];
+      const regs = isExclusiveStore
+        ? (pair ? [ops[1], ops[2]] : [ops[1]])
+        : (pair ? [ops[0], ops[1]] : [ops[0]]);
       regs.forEach((r, i) => {
         push({
           op: OP.STORE,
@@ -527,6 +584,15 @@ function lift(insn, opts = {}) {
           size: each, srcs: [opnd(r)].filter(Boolean),
         });
       });
+      if (isExclusiveStore && ops[0] && ops[0].k === 'reg' && ops[0].cls !== 'zr') {
+        push({
+          op: OP.UNKNOWN,
+          mnemonic: base,
+          dstReg: regKeyOf(ops[0]),
+          dstBits: regBits(ops[0]) || 32,
+          srcs: [],
+        });
+      }
     }
     // 事前 / 事後インデックス付きは、ベースレジスタ自身も書き換わる
     const writebackDisp = writebackDispOp && writebackDispOp.value != null ? writebackDispOp.value : null;
@@ -613,11 +679,13 @@ function lift(insn, opts = {}) {
     return out;
   }
   if (base === 'movk') {
+    const dst = dstReg();
+    if (!dst) return out;
     const src = opnd(ops[1]);
     const lsb = src?.shift?.op === 'lsl' ? (src.shift.amount || 0) : 0;
     const insert = src ? { ...src, shift:null } : { t:'imm', value:0n };
-    push({ op:OP.BFI, dstReg:dstReg(), dstBits:dstBits(), lsb, width:16,
-      srcs:[{ t:'reg', reg:dstReg(), bits:dstBits() }, insert] });
+    push({ op:OP.BFI, dstReg:dst, dstBits:dstBits(), lsb, width:16,
+      srcs:[{ t:'reg', reg:dst, bits:dstBits() }, insert] });
     return out;
   }
 
@@ -636,8 +704,10 @@ function lift(insn, opts = {}) {
     const lsb = ops[2] && ops[2].value != null ? Number(ops[2].value) : null;
     const width = ops[3] && ops[3].value != null ? Number(ops[3].value) : null;
     if (base === 'bfi' || base === 'bfxil') {
-      push({ op:OP.BFI, dstReg:dstReg(), dstBits:dstBits(), lsb, width, bitfieldKind:base,
-        srcs:[{ t:'reg', reg:dstReg(), bits:dstBits() }, opnd(ops[1])].filter(Boolean) });
+      const dst = dstReg();
+      if (!dst) return out;
+      push({ op:OP.BFI, dstReg:dst, dstBits:dstBits(), lsb, width, bitfieldKind:base,
+        srcs:[{ t:'reg', reg:dst, bits:dstBits() }, opnd(ops[1])].filter(Boolean) });
     } else {
       push({ op: OP.BFX, dstReg: dstReg(), dstBits: dstBits(), lsb, width,
         signed: base[0] === 's', toward: /iz$/.test(base) ? 'left' : 'right',
@@ -665,7 +735,8 @@ function lift(insn, opts = {}) {
     const inst = push({ op: OP.BIN, sub: BIN_OF[base], dstReg: dstReg(), dstBits: dstBits(),
       negate: base === 'mneg', srcs: b ? [a, b] : [a] });
     if (/s$/.test(base) && /^(adds|subs|ands|bics)$/.test(base)) {
-      push(Object.assign(flags(), { op: OP.CMP, sub: BIN_OF[base] === 'add' ? 'add' : BIN_OF[base] === 'and' ? 'and' : 'sub',
+      const cmpSub = BIN_OF[base] === 'add' ? 'add' : BIN_OF[base] === 'and' ? 'and' : BIN_OF[base] === 'bic' ? 'bic' : 'sub';
+      push(Object.assign(flags(), { op: OP.CMP, sub: cmpSub,
         bits: dstBits(), srcs: inst.srcs.slice() }));
     }
     return out;
@@ -959,7 +1030,7 @@ export function buildIR(model, opts) {
     return null;
   };
 
-  const emit = (p) => {
+  const emit = (p, marks = null, deferredDefs = null) => {
     const inst = {
       id: ir.instructions.length,
       op: p.op, sub: p.sub || null, block: p.block,
@@ -996,11 +1067,17 @@ export function buildIR(model, opts) {
     if (p.dstReg) {
       const v = newValue(VK.DEF, { def: inst, bits: p.dstBits || 64 });
       inst.dst = v;
-      pushDef(p.dstReg, v);
+      if (p.deferDef && deferredDefs) {
+        deferredDefs.push({ reg: p.dstReg, value: v });
+      } else {
+        pushDef(p.dstReg, v);
+        if (marks) marks.push(p.dstReg);
+      }
     }
     for (const w of p.extraWrites || []) {
       const v = newValue(VK.DEF, { def: inst, bits: 64 });
       pushDef(w, v);
+      if (marks) marks.push(w);
     }
     for (const c of p.clobbers || []) {
       // Result registers carry real return-value definitions from this
@@ -1008,6 +1085,7 @@ export function buildIR(model, opts) {
       if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
       const v = newValue(VK.DEF, { def: inst, bits: 64, clobbered: true });
       pushDef(c, v);
+      if (marks) marks.push(c);
     }
     for (const c of p.wideClobbers || []) {
       // A CALL keeps only the callee-saved low 64 bits of v8–v15 (#4979): a
@@ -1017,6 +1095,14 @@ export function buildIR(model, opts) {
       if (!wideSimdDefReaches(stacks, c)) continue;
       const v = newValue(VK.DEF, { def: inst, bits: 64, clobbered: true });
       pushDef(c, v);
+      if (marks) marks.push(c);
+    }
+    if (!p.deferDef && deferredDefs && deferredDefs.length) {
+      for (const d of deferredDefs) {
+        pushDef(d.reg, d.value);
+        if (marks) marks.push(d.reg);
+      }
+      deferredDefs.length = 0;
     }
     ir.instructions.push(inst);
     ir.blocks[p.block].insts.push(inst);
@@ -1081,21 +1167,16 @@ function renameIterative(ir, children, phiSites, lifted, stacks, emit, topOf, pu
       }
     }
 
+    const deferredDefs = [];
     for (const p of lifted[bi]) {
-      emit(p);
-      if (p.dstReg) marks.push(p.dstReg);
-      for (const w of p.extraWrites || []) marks.push(w);
-      for (const c of p.clobbers || []) {
-        if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
-        marks.push(c);
+      emit(p, marks, deferredDefs);
+    }
+    if (deferredDefs.length) {
+      for (const d of deferredDefs) {
+        pushDef(d.reg, d.value);
+        marks.push(d.reg);
       }
-      for (const c of p.wideClobbers || []) {
-        // Must stay 1:1 with the conditional clobber def in emit(): a marked
-        // register without a pushed value would pop a foreign definition.
-        if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
-        if (!wideSimdDefReaches(stacks, c)) continue;
-        marks.push(c);
-      }
+      deferredDefs.length = 0;
     }
 
     for (const s of block.succ) {
@@ -1123,6 +1204,7 @@ function livenessOf(ir, lifted, allRegs) {
   const use = Array.from({ length: n }, () => new Set());
   const def = Array.from({ length: n }, () => new Set());
   for (let b = 0; b < n; b++) {
+    const deferredDefs = [];
     for (const p of lifted[b]) {
       for (const s of p.srcs || []) {
         if (s && s.t === 'reg' && s.reg && !def[b].has(s.reg)) use[b].add(s.reg);
@@ -1131,10 +1213,18 @@ function livenessOf(ir, lifted, allRegs) {
         if (p.addr.base && !def[b].has(p.addr.base)) use[b].add(p.addr.base);
         if (p.addr.index && !def[b].has(p.addr.index)) use[b].add(p.addr.index);
       }
-      if (p.dstReg) def[b].add(p.dstReg);
+      if (p.dstReg) {
+        if (p.deferDef) deferredDefs.push(p.dstReg);
+        else def[b].add(p.dstReg);
+      }
       for (const w of p.extraWrites || []) def[b].add(w);
       for (const c of p.clobbers || []) def[b].add(c);
+      if (!p.deferDef && deferredDefs.length) {
+        for (const r of deferredDefs) def[b].add(r);
+        deferredDefs.length = 0;
+      }
     }
+    for (const r of deferredDefs) def[b].add(r);
   }
   const liveIn = Array.from({ length: n }, () => new Set());
   const liveOut = Array.from({ length: n }, () => new Set());
@@ -1171,9 +1261,14 @@ function pointerShiftedConst(arg) {
   let v = arg.value.const;
   const shift = arg.shift;
   if (!shift) return v;
-  const amount = BigInt(shift.amount || 0);
+  const rawAmount = Number(shift.amount || 0);
+  if (!Number.isSafeInteger(rawAmount) || rawAmount < 0 || rawAmount >= 64) return null;
+  const amount = BigInt(rawAmount);
   if (shift.op === 'lsl') return v << amount;
-  if (shift.op === 'lsr') return v >> amount;
+  if (shift.op === 'lsr') {
+    const bits = Number(arg.bits || arg.value?.bits) === 32 ? 32 : 64;
+    return BigInt.asUintN(bits, v) >> amount;
+  }
   return null;
 }
 
@@ -1190,9 +1285,12 @@ const defaultPointerProvenanceMemo = new WeakMap();
  * distinct. Memory SSA passes a private memo because it runs before full value
  * propagation, while public consumers use the default post-build memo.
  */
-export function pointerProvenance(value, active = null, memo = defaultPointerProvenanceMemo) {
+const MAX_PROVENANCE_DEPTH = 128;
+
+export function pointerProvenance(value, active = null, memo = defaultPointerProvenanceMemo, depth = 0) {
   if (!value) return null;
   if (memo.has(value)) return memo.get(value);
+  if (depth >= MAX_PROVENANCE_DEPTH) return { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:false, valueId:value.id };
   const visiting = active || new Set();
   if (visiting.has(value)) return { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:false, valueId:value.id };
   visiting.add(value);
@@ -1225,11 +1323,11 @@ export function pointerProvenance(value, active = null, memo = defaultPointerPro
     if (movBits < 64) {
       out = { kind: 'unknown', root: 'value:' + value.id, rootValue: value, offset: 0n, must: false, valueId: value.id, via: 'mov-narrow' };
     } else {
-      const source = pointerProvenance(def.args[0].value, visiting, memo);
+      const source = pointerProvenance(def.args[0].value, visiting, memo, depth + 1);
       if (source) out = { ...source, valueId: value.id, via: 'mov' };
     }
   } else if (def && def.op === OP.PHI && def.args?.length) {
-    const alternatives = def.args.map((arg) => arg?.value ? pointerProvenance(arg.value, visiting, memo) : null);
+    const alternatives = def.args.map((arg) => arg?.value ? pointerProvenance(arg.value, visiting, memo, depth + 1) : null);
     const keys = alternatives.map(pointerProvenanceKey);
     if (keys[0] && keys.every((key) => key === keys[0])) {
       out = { ...alternatives[0], valueId:value.id, via:'phi', must:alternatives.every((x) => x && x.must !== false) };
@@ -1241,13 +1339,13 @@ export function pointerProvenance(value, active = null, memo = defaultPointerPro
     const a = def.args[0], b = def.args[1];
     const ac = pointerShiftedConst(a), bc = pointerShiftedConst(b);
     if (bc != null && a?.value) {
-      const source = pointerProvenance(a.value, visiting, memo);
+      const source = pointerProvenance(a.value, visiting, memo, depth + 1);
       if (source && source.kind !== 'phi') {
         const delta = def.sub === 'sub' ? -bc : bc;
         out = { ...source, offset:(source.offset || 0n) + delta, valueId:value.id, via:def.sub + '-constant' };
       }
     } else if (def.sub === 'add' && ac != null && b?.value) {
-      const source = pointerProvenance(b.value, visiting, memo);
+      const source = pointerProvenance(b.value, visiting, memo, depth + 1);
       if (source && source.kind !== 'phi') {
         out = { ...source, offset:(source.offset || 0n) + ac, valueId:value.id, via:'add-constant' };
       }
@@ -1271,12 +1369,16 @@ function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
   const a = inst.addr;
   if (!a) return null;
   const size = Number(a.size || inst.extra?.size || 0) || 0;
+  if (a.mode === 'literal' && a.literalAddress != null) {
+    const address = canonicalGlobalAddress(a.literalAddress);
+    return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size };
+  }
   if (a.index || a.disp == null || !a.base) return { key:`unknown:${inst.id}`, kind:MK.UNKNOWN, size };
   if (a.stack) {
     const baseReg = a.baseReg || a.base?.reg || 'stack';
     const frameEpoch = a.base?.id ?? -1;
     const proof = a.base ? stackPointerProvenanceOf(a.base) : null;
-    if (proof && proof.must === true && proof.offset != null) {
+    if (proof && proof.must === true && proof.root === 'sp' && proof.offset != null) {
       const cdisp = BigInt(proof.offset) + BigInt(a.disp);
       return { key:`stack:sp:c${cdisp.toString()}:s${size}`, kind:MK.STACK, baseReg:'sp', frameEpoch:0, disp:cdisp, size, base:a.base };
     }
@@ -1358,13 +1460,13 @@ function storeOverlapsRange(storeLoc, otherLoc) {
     if (pair.has(MK.FIELD) && pair.has(MK.STACK)) {
       const field = storeLoc.kind === MK.FIELD ? storeLoc : otherLoc;
       const stack = storeLoc.kind === MK.STACK ? storeLoc : otherLoc;
-      const baseReg = String(field.rawBase?.reg || field.base?.reg || '');
-      if (/^x[0-7]$/.test(baseReg) || field.base?.kind === VK.ARG) return true;
-      const proof = stackPointerProvenanceOf(field.rawBase || field.base);
-      if (!proof || proof.must !== true || proof.offset == null || field.disp == null || stack.disp == null) return false;
-      if (stack.baseReg && !['sp','x29'].includes(String(stack.baseReg))) return true;
-      const fieldStart = BigInt(proof.offset) + BigInt(field.disp);
-      return overlap(fieldStart, BigInt(field.size || 8), BigInt(stack.disp), BigInt(stack.size || 8));
+      const proof = stackPointerProvenanceOf(field.base);
+      if (proof && proof.must === true && proof.root === 'sp' && proof.offset != null && field.disp != null && stack.disp != null) {
+        if (stack.baseReg !== 'sp' || stack.frameEpoch !== 0) return true;
+        const fieldStart = BigInt(proof.offset) + BigInt(field.disp);
+        return overlap(fieldStart, BigInt(field.size || 8), BigInt(stack.disp), BigInt(stack.size || 8));
+      }
+      return true;
     }
     return false;
   }
@@ -1381,7 +1483,7 @@ function storeOverlapsRange(storeLoc, otherLoc) {
     }
     const pa = stackPointerProvenanceOf(storeLoc.base);
     const pb = stackPointerProvenanceOf(otherLoc.base);
-    if (pa?.must === true && pb?.must === true && pa.offset != null && pb.offset != null) {
+    if (pa?.must === true && pb?.must === true && pa.root != null && pa.root === pb.root && pa.offset != null && pb.offset != null) {
       return overlap(BigInt(pa.offset) + BigInt(storeLoc.disp),sa, BigInt(pb.offset) + BigInt(otherLoc.disp),sb);
     }
     return true;
@@ -1401,38 +1503,43 @@ function storeOverlapsRange(storeLoc, otherLoc) {
   return false;
 }
 
-export function stackPointerProvenanceOf(value, memo = new Map(), active = new Set()) {
+export function stackPointerProvenanceOf(value, memo = new Map(), active = new Set(), depth = 0) {
   if (!value) return null;
   if (memo.has(value.id)) return memo.get(value.id);
-  if (active.has(value.id)) return null;
+  if (depth >= MAX_PROVENANCE_DEPTH || active.has(value.id)) return null;
   active.add(value.id);
   let out = null;
   const reg = String(value.reg || '');
   const def = value.def;
-  if (value.kind === VK.ARG && (reg === 'sp' || reg === 'x29')) {
-    out = { offset: 0n, must: true, via: 'root' };
+  if (value.kind === VK.ARG && reg === 'sp') {
+    out = { root: 'sp', offset: 0n, must: true, via: 'root' };
+  } else if (value.kind === VK.ARG && reg === 'x29') {
+    out = { root: 'x29', offset: 0n, must: false, via: 'fp-root' };
   } else if (def?.op === OP.MOV && def.args?.[0]?.value) {
-    const p = stackPointerProvenanceOf(def.args[0].value, memo, active);
+    const p = stackPointerProvenanceOf(def.args[0].value, memo, active, depth + 1);
     if (p) out = { ...p, via: 'mov' };
   } else if (def?.op === OP.PHI && def.args?.length) {
-    const incoming = def.args.map((a) => stackPointerProvenanceOf(a?.value, memo, active));
+    const incoming = def.args.map((a) => stackPointerProvenanceOf(a?.value, memo, active, depth + 1));
     const stackIncoming = incoming.filter(Boolean);
     if (stackIncoming.length) {
       const first = stackIncoming[0].offset;
+      const firstRoot = stackIncoming[0].root;
+      const sameRoot = firstRoot != null && stackIncoming.every((p) => p.root === firstRoot);
       out = {
-        offset: stackIncoming.every((p) => p.offset === first) ? first : null,
-        must: stackIncoming.length === incoming.length && stackIncoming.every((p) => p.must !== false),
+        root: sameRoot ? firstRoot : null,
+        offset: sameRoot && stackIncoming.every((p) => p.offset === first) ? first : null,
+        must: sameRoot && stackIncoming.length === incoming.length && stackIncoming.every((p) => p.must !== false),
         via: 'phi',
       };
     }
   } else if (def?.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
     const left = def.args[0], right = def.args[1];
-    const lc = left?.value?.const, rc = right?.value?.const;
+    const lc = pointerShiftedConst(left), rc = pointerShiftedConst(right);
     if (rc != null && left?.value) {
-      const p = stackPointerProvenanceOf(left.value, memo, active);
+      const p = stackPointerProvenanceOf(left.value, memo, active, depth + 1);
       if (p) out = { ...p, offset: p.offset == null ? null : p.offset + (def.sub === 'sub' ? -rc : rc), via: def.sub };
     } else if (def.sub === 'add' && lc != null && right?.value) {
-      const p = stackPointerProvenanceOf(right.value, memo, active);
+      const p = stackPointerProvenanceOf(right.value, memo, active, depth + 1);
       if (p) out = { ...p, offset: p.offset == null ? null : p.offset + lc, via: 'add' };
     }
   }
@@ -1581,7 +1688,7 @@ function buildMemorySSA(ir, df, idom, children) {
       const sphis = phiFor.get(s);
       if (!sphis) continue;
       for (const [key, phi] of sphis) {
-        if (phi.node) phi.node.incoming.push({ from: bi, node: top(key) });
+        phi.incoming.push({ from: bi, node: top(key) });
       }
     }
 
@@ -1881,6 +1988,7 @@ function prototypeParameterSignature(param) {
   return JSON.stringify([
     param.type ?? '', param.name ?? '', param.abiClass ?? '', param.class ?? '', param.kind ?? '',
     param.pointer ?? '', param.isPointer ?? '', param.hfa ?? '', param.hva ?? '',
+    param.aggregate ?? '', param.alignment ?? '',
     param.members ?? '', param.elements ?? '', param.count ?? '',
     param.bits ?? '', param.sizeBits ?? '',
     param.mayContainPointers ?? '', param.containsPointers ?? '',
@@ -1894,6 +2002,7 @@ function prototypeSignature(proto) {
     proto.returnType ?? '', proto.ret ?? '', proto.result ?? '', proto.resultType ?? '',
     proto.returnClass ?? '', proto.abiClass ?? '', proto.resultClass ?? '',
     proto.returnsValue ?? '', proto.void ?? '', proto.indirectResult ?? '',
+    JSON.stringify(proto.aggregate ?? ''),
     proto.returnBits ?? '', proto.bits ?? '', proto.variadic ?? '', proto.varargs ?? '',
     ...args.map(prototypeParameterSignature),
   ].join('|');
@@ -1924,7 +2033,13 @@ export function irFor(model, opts) {
   if (key != null && entries.has(key)) return entries.get(key);
   let ir = null;
   try { ir = buildIR(model, opts); } catch { ir = null; }
-  if (ir != null && key != null) entries.set(key, ir);
+  if (ir != null && key != null) {
+    if (entries.size >= 64) {
+      const oldestKey = entries.keys().next().value;
+      if (oldestKey !== undefined) entries.delete(oldestKey);
+    }
+    entries.set(key, ir);
+  }
   return ir;
 }
 

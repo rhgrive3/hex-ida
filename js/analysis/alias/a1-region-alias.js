@@ -21,9 +21,9 @@
  * than picking the more useful one.
  */
 
-import { stableStringify } from '../../core/identity/index.js';
+import { sameCanonicalIdentityValue } from '../../core/identity/index.js';
 import { createAnalysisStatus } from '../status.js';
-import { FLAT_MEMORY_SPACE, canonicalAddressSpace, provenDistinctAddressSpace as provenDistinctCanonicalSpace } from './address-space.js';
+import { FLAT_MEMORY_SPACE, provenAddressSpaceToken, provenDistinctAddressSpace as provenDistinctCanonicalSpace } from './address-space.js';
 import { createAliasResult, mayAlias, reasonCodeForStopReason, unknownAlias } from './result.js';
 import { aliasMemoryRegions } from './legacy-safety-floor.js';
 import { isPreciseMemoryRegion, sameMemoryRegionIdentity } from './regions-v2.js';
@@ -42,8 +42,20 @@ const FLAT_MEMORY_KINDS = new Set(['stack-fixed', 'global-absolute', 'rooted-off
 const EXPLICIT_SPACE_KINDS = new Set(['tls', 'io', 'physical-space']);
 
 function toBigInt(value) {
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
-  catch { return null; }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) {
+      const negative = text.startsWith('-');
+      const body = negative || text.startsWith('+') ? text.slice(1) : text;
+      try {
+        const mag = BigInt(body);
+        return negative ? -mag : mag;
+      } catch { return null; }
+    }
+  }
+  return null;
 }
 
 function widthBytes(region) {
@@ -72,11 +84,12 @@ export function provenAddressSpace(region) {
   // rooted-offsets are flat memory by construction. The token is canonicalized
   // so a case/whitespace drift cannot name a second physical domain (#8879).
   if (region.kind === 'rooted-offset') {
-    return canonicalAddressSpace(region.addressSpace) ?? FLAT_MEMORY_SPACE;
+    if (region.addressSpace === undefined || region.addressSpace === null) return FLAT_MEMORY_SPACE;
+    return provenAddressSpaceToken(region.addressSpace);
   }
   if (FLAT_MEMORY_KINDS.has(region.kind)) return FLAT_MEMORY_SPACE;
   if (EXPLICIT_SPACE_KINDS.has(region.kind)) {
-    return canonicalAddressSpace(region.addressSpace);
+    return provenAddressSpaceToken(region.addressSpace);
   }
   return null;
 }
@@ -117,10 +130,14 @@ function explainRelation(relation, a, b) {
     if (offsetA != null && offsetA === offsetB && widthBytes(a) != null && widthBytes(a) === widthBytes(b)) {
       return ['identical-root-and-exact-offset'];
     }
-    if (EXPLICIT_SPACE_KINDS.has(a.kind) && a.kind === b.kind
-      && a.addressSpace === b.addressSpace
-      && a.rootIdentity != null && stableStringify(a.rootIdentity) === stableStringify(b.rootIdentity)) {
-      return ['identical-root-and-exact-offset'];
+    if (EXPLICIT_SPACE_KINDS.has(a.kind) && a.kind === b.kind) {
+      const spaceA = provenAddressSpaceToken(a.addressSpace);
+      const spaceB = provenAddressSpaceToken(b.addressSpace);
+      if (spaceA != null && spaceA === spaceB
+        && a.rootIdentity != null && b.rootIdentity != null
+        && sameCanonicalIdentityValue(a.rootIdentity, b.rootIdentity)) {
+        return ['identical-root-and-exact-offset'];
+      }
     }
     return [];
   }

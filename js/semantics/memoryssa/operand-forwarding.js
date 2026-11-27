@@ -8,6 +8,7 @@ import {
   CANONICAL_ALIAS_ISSUER_VERSIONS,
   MEMORY_SSA_PROOF_VERSION,
   canonicalAliasProofDigest,
+  canonicalIdentityDigest,
 } from './proof-core.js';
 
 /*
@@ -219,7 +220,7 @@ function aliasProofMatches(memorySsa, proof, relation, use, regionId, depth = 0)
   const sources = provenance?.sourceEntityIds;
   if (!record(identity)
       || String(identity.functionId ?? '') !== String(memorySsa.functionId ?? '')
-      || String(identity.digest ?? '') !== stableDigest(memorySsa.identity ?? null)
+      || String(identity.digest ?? '') !== canonicalIdentityDigest(memorySsa.identity)
       || !record(provenance)
       || String(provenance.functionId ?? '') !== String(memorySsa.functionId ?? '')
       || !String(provenance.purpose ?? '').trim()
@@ -254,7 +255,7 @@ function coverageFor(memorySsa, index, use, exactStore, exactStoreMetadata) {
       || !Array.isArray(aliases)
       || aliases.length !== memorySsa.regions.length
       || !uniqueBy(aliases, (item) => String(item?.regionId ?? ''))) return null;
-  const regionIds = new Set(memorySsa.regions.map((region) => String(region?.id ?? '')));
+  const regionIds = index.regionById;
   if (regionIds.has('') || aliases.some((item) => !regionIds.has(String(item?.regionId ?? ''))
       || !['must', 'no', 'may'].includes(String(item?.aliasRelation ?? '')))) return null;
   const relevant = aliases.filter((item) => item.aliasRelation !== 'no');

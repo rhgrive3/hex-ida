@@ -167,15 +167,17 @@ export class VariableInstructionIndex {
     if(!current)current=this.pages.values().next().value||null;
     if(!current)return Object.freeze([]);
 
-    const chain=[current]; let cursor=current;
+    const chain=[current]; const inChain=new Set([current]); let cursor=current;
     while(true){
-      const prev=Array.from(this.pages.values()).find((page)=>page.nextAddress===cursor.start&&page.entries.length>0);
-      if(!prev||chain.includes(prev))break; chain.unshift(prev); cursor=prev;
+      let prev=null;
+      for(const page of this.pages.values()){if(page.nextAddress===cursor.start&&page.entries.length>0){prev=page;break;}}
+      if(!prev||inChain.has(prev))break; chain.unshift(prev); inChain.add(prev); cursor=prev;
     }
     cursor=current;
     while(true){
-      const next=Array.from(this.pages.values()).find((page)=>page.start===cursor.nextAddress);
-      if(!next||chain.includes(next))break; chain.push(next); cursor=next;
+      let next=null;
+      for(const page of this.pages.values()){if(page.start===cursor.nextAddress){next=page;break;}}
+      if(!next||inChain.has(next))break; chain.push(next); inChain.add(next); cursor=next;
       if(next.entries.length===0)break;
     }
     const byAddress=new Map();
@@ -358,10 +360,13 @@ export class VariableInstructionIndex {
   }
 
   async prefetchForward(page,{signal=null}={}){
-    if(!page||this.maxPrefetchPages<=0||page.status!=='ok')return Object.freeze([]);
+    if(!page||this.maxPrefetchPages<=0||page.status!=='ok'||!this.region||page.generation!==this.generation)return Object.freeze([]);
+    const generation=this.generation, region=this.region;
     const out=[]; let next=page.nextAddress;
-    for(let i=0;i<this.maxPrefetchPages&&next<this.region.end;i++){
-      const candidate=await this.ensurePage(next,{signal,priority:'prefetch',protect:false}); out.push(candidate);
+    for(let i=0;i<this.maxPrefetchPages&&this.region===region&&this.generation===generation&&next<region.end;i++){
+      const candidate=await this.ensurePage(next,{signal,priority:'prefetch',protect:false});
+      if(this.region!==region||this.generation!==generation)break;
+      out.push(candidate);
       if(!candidate.entries.length||candidate.nextAddress<=next)break; next=candidate.nextAddress;
     }
     return Object.freeze(out);
@@ -369,29 +374,54 @@ export class VariableInstructionIndex {
 
   async navigate(address,{signal=null,trusted=false}={}){
     const target=BigInt(address); this._assertInRegion(target);
+    if(signal?.aborted)throw abortError(signal.reason);
+    const generation=this.generation, region=this.region;
     this.cancelExcept([target]);
     const exact=this.knownEntry(target);
-    if(exact){this.currentAddress=exact.address;return Object.freeze({status:'exact',address:exact.address,entry:exact,page:this._pageContaining(exact.address)});}
+    if(exact){
+      const page=this._pageContaining(exact.address);
+      if(page){page.lastUsed=++this._clock;this.currentPageKey=pageKey(this.generation,page.start);}
+      this.currentAddress=exact.address;
+      return Object.freeze({status:'exact',address:exact.address,entry:exact,page});
+    }
     const containing=this.containingEntry(target);
-    if(containing){this.currentAddress=containing.address;return Object.freeze({status:'inside-known',address:containing.address,entry:containing,page:this._pageContaining(containing.address)});}
-    if(trusted||target===this.region.start){
+    if(containing){
+      const page=this._pageContaining(containing.address);
+      if(page){page.lastUsed=++this._clock;this.currentPageKey=pageKey(this.generation,page.start);}
+      this.currentAddress=containing.address;
+      return Object.freeze({status:'inside-known',address:containing.address,entry:containing,page});
+    }
+    if(trusted||target===region.start){
       const page=await this.ensurePage(target,{signal,priority:'current',protect:true}),entry=page.entries[0]||null;
+      if(signal?.aborted)throw abortError(signal.reason);
+      if(this.generation!==generation||this.region!==region)throw abortError('region-changed');
       if(!entry||entry.address!==target)return Object.freeze({status:page.status==='undecodable'?'undecodable':'unknown',address:target,entry:null,page});
-      this.currentAddress=target; void this.prefetchForward(page).catch(()=>{});
+      this.currentAddress=target; void this.prefetchForward(page,{signal}).catch(()=>{});
       return Object.freeze({status:'decoded',address:target,entry,page});
     }
     const proven=await this.resynchronize(target,{signal});
+    if(signal?.aborted)throw abortError(signal.reason);
+    if(this.generation!==generation||this.region!==region)throw abortError('region-changed');
     if(proven.status!=='proven')return proven;
     const page=await this.ensurePage(proven.address,{signal,priority:'current',protect:true}),entry=page.entries[0]||null;
+    if(signal?.aborted)throw abortError(signal.reason);
+    if(this.generation!==generation||this.region!==region)throw abortError('region-changed');
     if(!entry||entry.address!==proven.address)return Object.freeze({status:'unknown',address:target,entry:null,page});
-    this.currentAddress=proven.address; void this.prefetchForward(page).catch(()=>{});
+    this.currentAddress=proven.address; void this.prefetchForward(page,{signal}).catch(()=>{});
     return Object.freeze({status:target===proven.address?'decoded':'resynchronized',address:proven.address,requestedAddress:target,entry,page});
   }
 
-  _pageContaining(address){for(const page of this.pages.values())if(page.entries.some((entry)=>entry.address===address))return page;return null;}
+  _pageContaining(address){
+    const owners=this.knownOwners.get(BigInt(address).toString(16));
+    if(!owners||!owners.size)return null;
+    if(owners.size===1)return this.pages.get(owners.keys().next().value)||null;
+    for(const[key,page]of this.pages)if(owners.has(key))return page;
+    return null;
+  }
 
   async previousBoundary(targetAddress,{signal=null}={}){
     const target=BigInt(targetAddress); this._assertInRegion(target,{allowEnd:true});
+    if(signal?.aborted)throw abortError(signal.reason);
     const rows=this.localRows(target),knownIndex=rows.findIndex((entry)=>entry.kind==='instruction'&&entry.address===target);
     if(knownIndex>0){
       for(let i=knownIndex-1;i>=0;i--)if(rows[i].kind==='instruction')return Object.freeze({status:'proven',address:rows[i].address,entry:rows[i],source:'known-page'});
@@ -401,18 +431,24 @@ export class VariableInstructionIndex {
 
   async resynchronize(targetAddress,{signal=null,requirePredecessor=false}={}){
     const target=BigInt(targetAddress); this._assertInRegion(target,{allowEnd:true});
-    const lower=target-BigInt(Math.min(this.resyncBytes,Number(target-this.region.start)));
-    const candidateFloor=target-BigInt(X86_MAX_INSTRUCTION_BYTES);
-    const first=lower>candidateFloor?lower:(candidateFloor>this.region.start?candidateFloor:this.region.start);
+    if(signal?.aborted)throw abortError(signal.reason);
+    const generation=this.generation, region=this.region;
+    const lower=target-BigInt(Math.min(this.resyncBytes,Number(target-region.start)));
+    const first=lower>region.start?lower:region.start;
     const candidates=[];
     for(let start=first;start<target;start++){
       if(signal?.aborted)throw abortError(signal.reason);
-      const remaining=this.region.end-start;
-      const length=Math.min(this.resyncBytes,Number(remaining>BigInt(this.resyncBytes)?BigInt(this.resyncBytes):remaining));
+      if(generation!==this.generation||this.region!==region)throw abortError('region-changed');
+      const toTarget=target-start;
+      const remaining=region.end-start;
+      const span=toTarget<remaining?toTarget:remaining;
+      const length=Math.min(this.resyncBytes,Number(span>BigInt(this.resyncBytes)?BigInt(this.resyncBytes):span));
       if(length<=0)continue;
       this._metrics.decodeRequestCount++; this._metrics.requestedDecodeBytes+=length;
       let response;
       try{response=await this.disassembleAt(start,{architecture:this.architecture,length,signal,priority:'current'});}catch(error){if(isAbort(error))throw error;continue;}
+      if(signal?.aborted)throw abortError(signal.reason);
+      if(generation!==this.generation||this.region!==region)throw abortError('region-changed');
       let cursor=start,predecessor=null,valid=true;
       for(const instruction of Array.isArray(response?.instructions)?response.instructions:[]){
         let addr,size;

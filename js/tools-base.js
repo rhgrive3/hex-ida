@@ -32,12 +32,23 @@ import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
 import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
 import { readableName, shortName, isMangled, findCxxClasses, readVtable, rttiPointerContextForSlice } from './rtti.js';
 import { importList, importsByFramework, exportList, findGlobals } from './linkage.js';
-import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange, instructionPatchArchitectureSupported } from './patch.js';
+import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange, validateMultiInstructionPatchRange, instructionPatchArchitectureSupported } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
 import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
 import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
 import { parseMetadataFileInWorker } from './il2cpp-runtime.js';
 import { brief } from './arm64.js';
+import { pick, lang } from './i18n.js';
+
+function captureAppEpoch(app) {
+  return { epoch: app?.backend?.gen, sliceIndex: app?.store?.get?.('sliceIndex') };
+}
+function isAppEpochCurrent(app, snap, sheet = null) {
+  if (sheet && sheet.root && sheet.root.isConnected === false) return false;
+  if (snap.epoch !== app?.backend?.gen) return false;
+  if (snap.sliceIndex !== app?.store?.get?.('sliceIndex')) return false;
+  return true;
+}
 
 /* ── 小道具 ─────────────────────────────────────────────── */
 
@@ -94,7 +105,7 @@ function fnName(app, addr) {
 function needFunction(app) {
   const addr = currentFunctionAddr(app);
   if (addr == null) {
-    toast('先に関数を選んでください（「関数」から選ぶか、命令をタップします）。');
+    toast(pick('先に関数を選んでください（「関数」から選ぶか、命令をタップします）。', 'Select a function first (from Functions or by tapping an instruction).'));
     return null;
   }
   return addr;
@@ -102,6 +113,7 @@ function needFunction(app) {
 
 /** 関数を解析して model を得る。 */
 export async function modelOf(app, addr) {
+  const snap = captureAppEpoch(app);
   const region = app.store.get('currentRegion');
   if (!region) return null;
   const owner = app.executableRegionFor?.(addr) ?? app.regionForAddress?.(addr) ?? null;
@@ -109,11 +121,14 @@ export async function modelOf(app, addr) {
   const fn = app.symbols?.functionAt?.(addr);
   if (!fn && owner?.exec && app.backend?.guessFunctions) {
     const res = await app.backend.guessFunctions(owner.id);
+    if (!isAppEpochCurrent(app, snap)) return null;
     if (res?.starts?.length && app.symbols?.addFunctions) {
       app.symbols.addFunctions(res.starts);
     }
   }
-  return app.analyzeFunctionAt(addr);
+  const result = await app.analyzeFunctionAt(addr);
+  if (!isAppEpochCurrent(app, snap)) return null;
+  return result;
 }
 
 function rowMapper(app) {
@@ -126,12 +141,69 @@ function rowMapper(app) {
 
 
 export function parseDebuggerArgument(value) {
-  const raw = String(value ?? '');
-  if (!raw || raw !== raw.trim() || !/^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
-    return { ok: false, value: null, error: '10進整数か0x付き16進整数を入力してください。' };
+  const raw = String(value ?? '').trim();
+  if (!raw || !/^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
+    return { ok: false, value: null, error: pick('10進整数か0x付き16進整数を入力してください。', 'Enter a decimal integer or a 0x-prefixed hex integer.') };
   }
-  try { return { ok: true, value: BigInt(raw), error: null }; }
-  catch { return { ok: false, value: null, error: '整数として読み取れません。' }; }
+  try {
+    if (/^-0[xX]/.test(raw)) return { ok: true, value: -BigInt(raw.slice(1)), error: null };
+    return { ok: true, value: BigInt(raw), error: null };
+  } catch { return { ok: false, value: null, error: pick('整数として読み取れません。', 'Could not parse as an integer.') }; }
+}
+
+export function explainEmulatorFault(code, message) {
+  const c = String(code || '').toLowerCase();
+  const msg = String(message || '');
+  const low = msg.toLowerCase();
+  if (c === 'program-return' || msg.includes('最初の呼び出し元まで戻ってきました')) {
+    return pick('関数が正常に終了して戻ってきました。', 'The function returned normally.');
+  }
+  if (c === 'max-steps' || c === 'step-limit' || c === 'invalid-step-budget' || msg.includes('命令ぶん進んだので、いったん止めました')) {
+    return pick(
+      '実行命令数の上限に達したため停止しました（無限ループ、または処理が長すぎる可能性があります）。\nヒント: 下の「通った道」で同じ場所を繰り返していないか確認し、分岐命令にパッチを当てて試してみてください。',
+      'Stopped after reaching the instruction step limit (possible infinite loop or long execution).\nHint: Check the trace below for repeating addresses, or patch a branch instruction to test.',
+    );
+  }
+  if (c === 'unmapped-memory' || c === 'memory-read-failed'
+      || low.includes('no backing memory') || low.includes('outside backed memory')
+      || low.includes('outside synthetic mapping') || low.includes('backing memory is unavailable')
+      || low.includes('write offset is outside page')) {
+    const addrMatch = /0x([0-9a-f]+)/i.exec(msg);
+    const faultAddr = addrMatch ? BigInt('0x' + addrMatch[1]) : null;
+    if (faultAddr != null && faultAddr < 0x1000n) {
+      return pick(
+        `NULL（0）付近のアドレス（0x${faultAddr.toString(16)}）を読み書きしようとして停止しました。ポインタ（アドレス）を引数に取る関数かもしれません。\nヒント: 「ダミー領域を引数にセット」を押して x0 などに仮のメモリ番地を入れてからもう一度試してみてください。`,
+        `Stopped on a memory access near NULL (0x${faultAddr.toString(16)}). This function may expect a pointer argument.\nHint: Use "Set dummy buffer as arg" to place a temporary address into x0 (or another register) and try again.`,
+      );
+    }
+    return pick(
+      `割り当てられていないメモリ領域${faultAddr != null ? `（0x${faultAddr.toString(16)}）` : ''}への読み書きが起きたため停止しました。\nヒント: 引数に不正なアドレスが入っていないか確認し、ポインタ引数には「ダミー領域を引数にセット」を試してください。`,
+      `Stopped on an access to unmapped memory${faultAddr != null ? ` (0x${faultAddr.toString(16)})` : ''}.\nHint: Check whether an argument holds an invalid address, or try "Set dummy buffer as arg" for pointer arguments.`,
+    );
+  }
+  if (c === 'unsupported-instruction' || c === 'pointer-authentication-unsupported'
+      || c === 'unsupported-operand' || c === 'unsupported-shift'
+      || c === 'unsupported-arrangement' || c === 'invalid-fmov-form'
+      || msg.includes('まだ実行できません') || low.includes('not modelled') || low.includes('unsupported')) {
+    return pick(
+      `このエミュレータがまだ対応していない命令に到達したため停止しました（${msg || c}）。\nヒント: 該当命令をパッチで nop に置き換えるか、直前にブレークポイントを置いて途中までの値を確認してみてください。`,
+      `Stopped on an instruction not yet supported by this emulator (${msg || c}).\nHint: Patch that instruction to nop, or set a breakpoint right before it to inspect intermediate values.`,
+    );
+  }
+  if (c === 'instruction-fetch-failed' || c === 'unmapped-tail-branch' || c === 'unknown-executable'
+      || msg.includes('の命令が読めませんでした') || msg.includes('間接分岐先')) {
+    return pick(
+      `実行できないアドレスへジャンプしたため停止しました（${msg || c}）。\nヒント: 分岐先や関数ポインタ（引数やメモリ上の値）が正しく設定されているか確認してください。`,
+      `Stopped after jumping to a non-executable address (${msg || c}).\nHint: Verify the branch target or function pointer values in registers and memory.`,
+    );
+  }
+  if (c === 'heap-exhausted' || c === 'allocation-overflow') {
+    return pick(
+      'エミュレータ内の仮想ヒープ容量を超えたため停止しました。\nヒント: 引数に渡しているサイズ値が大きすぎないか確認してください。',
+      'Stopped because the emulator virtual heap was exhausted.\nHint: Check whether a size argument is unusually large.',
+    );
+  }
+  return msg || pick('ブレークポイントで止まりました。', 'Stopped at a breakpoint.');
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -157,15 +229,19 @@ const FACT = 'fact';
 const INFER = 'infer';
 const HINT = 'hint';
 
-const LEVEL_WORD = { fact: '事実', infer: '推定', hint: '参考' };
+const levelWord = (level) => (
+  level === FACT ? pick('事実', 'Fact')
+    : level === INFER ? pick('推定', 'Inferred')
+      : pick('参考', 'Hint')
+);
 const LEVEL_CLASS = { fact: 'tag-fact', infer: 'tag-infer', hint: 'tag-hint' };
 
 export function showTools(app) {
-  const sheet = new Sheet('解析');
+  const sheet = new Sheet(pick('解析', 'Analysis Tools'));
   const addr = currentFunctionAddr(app);
 
   if (addr != null) {
-    const b = block('いま見ている関数');
+    const b = block(pick('いま見ている関数', 'Current function'));
     b.append(el('div', 'bigval mono', fnName(app, addr)));
     b.append(el('div', 'hint', addrHex(addr)));
     sheet.body.append(b);
@@ -174,7 +250,7 @@ export function showTools(app) {
   /** 1 行。level は「その結果をどこまで信じていいか」。 */
   const rowIn = (ul) => (level, label, sub, fn) => ul.append(tapRow(label, {
     sub,
-    tag: LEVEL_WORD[level],
+    tag: levelWord(level),
     tagClass: LEVEL_CLASS[level],
     right: '›',
     onTap: () => { sheet.close(); fn(); },
@@ -182,83 +258,102 @@ export function showTools(app) {
 
   /* ── 1. まず何をすればいいか ── */
   const first = list();
-  first.append(groupRow('まず、ここから'));
+  first.append(groupRow(pick('まず、ここから', 'Start here')));
   const item0 = rowIn(first);
-  item0(INFER, '自動解析（ぜんぶ自動で調べる）',
-    '開いてから終わるまで待つだけ。何が分かって、何が分からなかったかを最後にまとめて言います。',
+  item0(INFER, pick('自動解析（ぜんぶ自動で調べる）', 'Automatic analysis'),
+    pick('開いてから終わるまで待つだけ。何が分かって、何が分からなかったかを最後にまとめて言います。',
+      'Scan the whole binary automatically and summarise what was proved and what remained unknown.'),
     () => app.openOverview());
-  item0(INFER, '目的から探す（HP・所持金・攻撃力…）',
-    '探したいものを選ぶか、ふつうの言葉で書きます。名前・参照・命令の 3 方向から絞ります。',
+  item0(INFER, pick('目的から探す（HP・所持金・攻撃力…）', 'Investigate by goal (HP, currency, attack…)'),
+    pick('探したいものを選ぶか、ふつうの言葉で書きます。名前・参照・命令の 3 方向から絞ります。',
+      'Pick a goal or describe what you are looking for. Narrows candidates by names, xrefs, and instructions.'),
     () => app.openInvestigate());
-  item0(HINT, '使っている言葉から見る（機能一覧）',
-    '文字列を機能ごとに分けたものです。ここに出るのは手がかりで、答えではありません。',
+  item0(HINT, pick('使っている言葉から見る（機能一覧）', 'Browse by feature words'),
+    pick('文字列を機能ごとに分けたものです。ここに出るのは手がかりで、答えではありません。',
+      'Strings grouped by feature. Treat these as starting clues rather than final proof.'),
     () => app.openFeatures());
   sheet.body.append(first);
 
   /* ── 2. いま見ている関数 ── */
   const perFunction = list();
-  perFunction.append(groupRow('いま見ている関数を調べる'));
+  perFunction.append(groupRow(pick('いま見ている関数を調べる', 'Inspect current function')));
   const item = rowIn(perFunction);
   const withFn = (fn) => () => { const a = needFunction(app); if (a != null) fn(a); };
 
-  item(INFER, '逆コンパイル（C 風に読む）',
-    'アセンブリを if / while / 代入の形に直します。いちばん読みやすい形です。訳なので、元のソースそのものではありません。',
+  item(INFER, pick('逆コンパイル（C 風に読む）', 'Decompile (pseudo-C)'),
+    pick('アセンブリを if / while / 代入の形に直します。いちばん読みやすい形です。訳なので、元のソースそのものではありません。',
+      'Rewrite assembly into readable if / while / assignment form. This is a translation, not original source.'),
     withFn((a) => showDecompiler(app, a)));
-  item(FACT, '制御フロー図（分かれ道を絵にする）',
-    '命令の並びをそのまま絵にしたものです。ループの位置がひと目で分かります。',
+  item(FACT, pick('制御フロー図（分かれ道を絵にする）', 'Control-flow graph (CFG)'),
+    pick('命令の並びをそのまま絵にしたものです。ループの位置がひと目で分かります。',
+      'Visualise branches and basic blocks directly from the instruction stream.'),
     withFn((a) => showCfg(app, a)));
-  item(FACT, '呼び出し図（誰が誰を呼ぶか）',
-    'この関数を呼ぶ側・この関数が呼ぶ相手を、上下に広げて描きます。',
+  item(FACT, pick('呼び出し図（誰が誰を呼ぶか）', 'Call graph'),
+    pick('この関数を呼ぶ側・この関数が呼ぶ相手を、上下に広げて描きます。',
+      'Show callers above and callees below this function.'),
     withFn((a) => showCallGraphPanel(app, a)));
-  item(INFER, '引数・戻り値・変数の型',
-    '使われ方からの推定です。「4 バイトで比較されている」以上のことは言えません。',
+  item(INFER, pick('引数・戻り値・変数の型', 'Types & variables'),
+    pick('使われ方からの推定です。「4 バイトで比較されている」以上のことは言えません。',
+      'Inferred from how registers and stack slots are used.'),
     withFn((a) => showTypes(app, a)));
-  item(INFER, '構造体を組み立てる',
-    '[x0, #0x20] のような使い方から、オブジェクトの中身の並びを起こします。触られていない場所は空きのままです。',
+  item(INFER, pick('構造体を組み立てる', 'Recover struct layout'),
+    pick('[x0, #0x20] のような使い方から、オブジェクトの中身の並びを起こします。触られていない場所は空きのままです。',
+      'Reconstruct object fields from offset accesses such as [x0, #0x20]. Unaccessed gaps stay unknown.'),
     withFn((a) => showStructRecover(app, a)));
-  item(FACT, '実行してみる（1 命令ずつ・デバッガ）',
-    '命令のとおりに動かして、レジスタとメモリの変化を見ます。実機は使いません。',
+  item(FACT, pick('実行してみる（1 命令ずつ・デバッガ）', 'Emulate / Debugger (step by step)'),
+    pick('命令のとおりに動かして、レジスタとメモリの変化を見ます。実機は使いません。',
+      'Step through instructions in the browser emulator to inspect registers and memory.'),
     withFn((a) => showDebugger(app, a)));
-  item(FACT, '名前を付ける / メモを書く',
-    '分かったことにその場で名前を付けます。次に見たときに思い出せます。',
+  item(FACT, pick('名前を付ける / メモを書く', 'Rename / Add note'),
+    pick('分かったことにその場で名前を付けます。次に見たときに思い出せます。',
+      'Label symbols and attach notes as you analyse.'),
     withFn((a) => showRename(app, a)));
   sheet.body.append(perFunction);
 
   /* ── 3. ファイル全体 ── */
   const whole = list();
-  whole.append(groupRow('ファイル全体を調べる'));
+  whole.append(groupRow(pick('ファイル全体を調べる', 'Inspect whole binary')));
   const item2 = rowIn(whole);
-  item2(FACT, '外とのつながり（インポート / ライブラリ）',
-    'リンカの表をそのまま読んだものです。借りている関数から、アプリの性格が見えます。',
+  item2(FACT, pick('外とのつながり（インポート / ライブラリ）', 'External linkage (imports / libraries)'),
+    pick('リンカの表をそのまま読んだものです。借りている関数から、アプリの性格が見えます。',
+      'Read linker tables directly to see imported APIs and linked libraries.'),
     () => showLinkage(app));
-  item2(FACT, 'グローバル変数',
-    'どこからでも触れる置き場。所持金やログイン状態はここにあります。', () => showGlobals(app));
-  item2(FACT, 'C++ のクラス（RTTI / vtable）',
-    'バイナリに残っている型情報から、クラス名と仮想関数の並びを取り出します。', () => showCxxClasses(app));
-  item2(FACT, 'Unity（IL2CPP）の名前を戻す',
-    'global-metadata.dat を読み込むと、C# のクラス名とメソッド名が戻ります。', () => showIl2cpp(app));
+  item2(FACT, pick('グローバル変数', 'Global variables'),
+    pick('どこからでも触れる置き場。所持金やログイン状態はここにあります。',
+      'Shared static storage referenced across functions.'), () => showGlobals(app));
+  item2(FACT, pick('C++ のクラス（RTTI / vtable）', 'C++ classes (RTTI / vtable)'),
+    pick('バイナリに残っている型情報から、クラス名と仮想関数の並びを取り出します。',
+      'Extract class names and virtual method tables from binary RTTI.'), () => showCxxClasses(app));
+  item2(FACT, pick('Unity（IL2CPP）の名前を戻す', 'Restore Unity (IL2CPP) names'),
+    pick('global-metadata.dat を読み込むと、C# のクラス名とメソッド名が戻ります。',
+      'Load global-metadata.dat to recover C# class and method names.'), () => showIl2cpp(app));
   sheet.body.append(whole);
 
   /* ── 4. 書き換える・ためる・自動化する ── */
   const work = list();
-  work.append(groupRow('書き換える・自動化する'));
+  work.append(groupRow(pick('書き換える・自動化する', 'Patch & automate')));
   const item3 = rowIn(work);
-  item3(FACT, 'パッチ（命令の書き換え）',
-    '命令を書き換えて、結果を新しいファイルとして保存します。', () => showPatches(app));
-  item3(FACT, '自分で付けた名前とメモ',
-    '書き溜めたものの一覧・書き出し・読み込み。', () => showNotes(app));
-  item3(FACT, '構造体（自分で作ったもの）',
-    '作った型の一覧と、C のヘッダとしての書き出し。', () => showStructs(app));
-  item3(FACT, 'スクリプト（自動化）',
-    '同じ作業を何百回も繰り返すときに。IDAPython にあたるものです。', () => showScript(app));
-  item3(FACT, 'プラグイン', '自分で書いた機能を足します。', () => showPlugins(app));
+  item3(FACT, pick('パッチ（命令の書き換え）', 'Patches (edit instructions)'),
+    pick('命令を書き換えて、結果を新しいファイルとして保存します。',
+      'Modify instructions and export a patched binary.'), () => showPatches(app));
+  item3(FACT, pick('自分で付けた名前とメモ', 'Saved names & notes'),
+    pick('書き溜めたものの一覧・書き出し・読み込み。',
+      'View, export, and import your annotations.'), () => showNotes(app));
+  item3(FACT, pick('構造体（自分で作ったもの）', 'Custom structs'),
+    pick('作った型の一覧と、C のヘッダとしての書き出し。',
+      'List your struct definitions and export C headers.'), () => showStructs(app));
+  item3(FACT, pick('スクリプト（自動化）', 'Scripting (automation)'),
+    pick('同じ作業を何百回も繰り返すときに。IDAPython にあたるものです。',
+      'Automate repetitive analysis tasks with JavaScript.'), () => showScript(app));
+  item3(FACT, pick('プラグイン', 'Plugins'), pick('自分で書いた機能を足します。', 'Load and run custom extensions.'), () => showPlugins(app));
   sheet.body.append(work);
 
   /* ── 5. 札の意味 ── */
   const about = list();
-  about.append(groupRow('札の意味'));
-  about.append(tapRow('この結果はどこまで信用できるか', {
-    sub: '「事実」「推定」「参考」の違いと、機能ごとに測った精度。',
+  about.append(groupRow(pick('札の意味', 'Confidence labels')));
+  about.append(tapRow(pick('この結果はどこまで信用できるか', 'How much can I trust these results?'), {
+    sub: pick('「事実」「推定」「参考」の違いと、機能ごとに測った精度。',
+      'Differences between Fact, Inferred, and Hint, plus measured accuracy per tool.'),
     right: '›',
     onTap: () => { sheet.close(); app.openAccuracyNotes(); },
   }));
@@ -276,19 +371,22 @@ export function showTools(app) {
    ══════════════════════════════════════════════════════════ */
 
 export async function showDecompiler(app, addr) {
-  const sheet = new Sheet('逆コンパイル', { size: 'full' });
-  const status = el('div', 'hint', '解析しています…');
+  const snap = captureAppEpoch(app);
+  const sheet = new Sheet(pick('逆コンパイル', 'Decompile'), { size: 'full' });
+  const status = el('div', 'hint', pick('解析しています…', 'Analysing…'));
   sheet.body.append(status);
 
   const res = await modelOf(app, addr);
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
   if (!res || !res.model) {
-    status.textContent = 'この場所は関数として解析できませんでした。';
+    status.textContent = pick('この場所は関数として解析できませんでした。', 'Could not analyse this location as a function.');
     return;
   }
   const map = rowMapper(app);
   let showAsm = false;
   let showNotes = false;
   try { await app.ensureObjc?.(); } catch { /* ObjC metadata is optional */ }
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
 
   const out = decompile(res.model, {
     name: app.symbols.nameAt(addr),
@@ -351,13 +449,35 @@ export async function showDecompiler(app, addr) {
   const byRow = new Map();
   for (const i of res.model.instructions) byRow.set(i.row, i);
 
+  const preparedLines = out.lines.map((l) => {
+    if (l.kind === 'blank') return { l, blank: true };
+    const sourceRows = decompilerSourceRows(l);
+    const sourceInsns = [];
+    for (let i = 0; i < sourceRows.length; i++) {
+      const insn = byRow.get(sourceRows[i]);
+      if (insn) sourceInsns.push(insn);
+    }
+    return { l, blank: false, sourceInsns, primary: primaryDecompilerAddress(l) };
+  });
+
+  const rowLineMap = new WeakMap();
+  codeWrap.addEventListener('click', (event) => {
+    const target = event.target?.closest?.('.cl.tappable');
+    const info = target ? rowLineMap.get(target) : null;
+    if (info) lineMenu(app, sheet, info.l, info.sourceInsns);
+  });
+
   function render() {
-    codeWrap.replaceChildren();
-    for (const l of out.lines) {
-      if (l.kind === 'blank') { codeWrap.append(el('div', 'cl blank', ' ')); continue; }
-      const sourceRows = decompilerSourceRows(l);
-      const sourceInsns = sourceRows.map((r) => byRow.get(r)).filter(Boolean);
-      const primary = primaryDecompilerAddress(l);
+    const frag = typeof document.createDocumentFragment === 'function'
+      ? document.createDocumentFragment()
+      : null;
+    const container = frag || codeWrap;
+    if (!frag) codeWrap.replaceChildren();
+    for (let i = 0; i < preparedLines.length; i++) {
+      const entry = preparedLines[i];
+      const l = entry.l;
+      if (entry.blank) { container.append(el('div', 'cl blank', ' ')); continue; }
+      const { sourceInsns, primary } = entry;
       const row = el('div', 'cl ' + l.kind);
       const gutter = el('span', 'cl-addr mono', formatDecompilerSource(l, { maxGroups: 1 }));
       const text = el('span', 'cl-text mono');
@@ -366,23 +486,25 @@ export async function showDecompiler(app, addr) {
       if (primary != null) {
         row.classList.add('tappable');
         row.title = fullDecompilerSourceText(l);
-        row.addEventListener('click', () => lineMenu(app, sheet, l, sourceInsns));
+        rowLineMap.set(row, entry);
       }
-      codeWrap.append(row);
+      container.append(row);
       if (showNotes && l.note) {
         const n = el('div', 'cl note');
         n.append(el('span', 'cl-addr'), el('span', 'cl-text', '// ' + l.note));
-        codeWrap.append(n);
+        container.append(n);
       }
       if (showAsm) {
-        for (const insn of sourceInsns) {
+        for (let j = 0; j < sourceInsns.length; j++) {
+          const insn = sourceInsns[j];
           const a = el('div', 'cl asm');
           const asmAddr = insn.address != null ? insn.address.toString(16).toUpperCase().slice(-6).padStart(6, '0') : '';
           a.append(el('span', 'cl-addr mono', asmAddr), el('span', 'cl-text mono', '; ' + insn.mnemonic + ' ' + insn.operands));
-          codeWrap.append(a);
+          container.append(a);
         }
       }
     }
+    if (frag) codeWrap.replaceChildren(frag);
   }
   render();
 }
@@ -405,15 +527,19 @@ const CODE_TOKENS = new RegExp([
 
 function paintCode(node, text) {
   node.replaceChildren();
+  if (!text) return;
+  CODE_TOKENS.lastIndex = 0;
   let last = 0;
-  text.replace(CODE_TOKENS, (m, str, kw, type, num, call, cmt, at) => {
+  let m;
+  while ((m = CODE_TOKENS.exec(text)) !== null) {
+    const at = m.index;
     if (at > last) node.append(document.createTextNode(text.slice(last, at)));
-    const cls = str ? 'c-str' : kw ? 'c-kw' : type ? 'c-type'
-      : num ? 'c-num' : call ? 'c-call' : 'c-cmt';
-    node.append(el('span', cls, m));
-    last = at + m.length;
-    return m;
-  });
+    const cls = m[1] ? 'c-str' : m[2] ? 'c-kw' : m[3] ? 'c-type'
+      : m[4] ? 'c-num' : m[5] ? 'c-call' : 'c-cmt';
+    node.append(el('span', cls, m[0]));
+    last = at + m[0].length;
+    if (m[0].length === 0) CODE_TOKENS.lastIndex++;
+  }
   if (last < text.length) node.append(document.createTextNode(text.slice(last)));
 }
 
@@ -483,14 +609,16 @@ function fieldNameFor(app, funcAddr, baseReg, offset) {
    ══════════════════════════════════════════════════════════ */
 
 export async function showCfg(app, addr) {
+  const snap = captureAppEpoch(app);
   /* 図は画面いっぱいで見せる。小さい窓に押し込むと、結局そのたびに広げることになる。 */
-  const sheet = new Sheet('制御フロー図', { size: 'full' });
-  const status = el('div', 'hint', '解析しています…');
+  const sheet = new Sheet(pick('制御フロー図', 'Control Flow Graph'), { size: 'full' });
+  const status = el('div', 'hint', pick('解析しています…', 'Analysing…'));
   sheet.body.append(status);
   const res = await modelOf(app, addr);
-  if (!res || !res.model) { status.textContent = 'この場所は関数として解析できませんでした。'; return; }
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
+  if (!res || !res.model) { status.textContent = pick('この場所は関数として解析できませんでした。', 'Could not analyse this location as a function.'); return; }
   status.remove();
-  sheet.setTitle('制御フロー図 — ' + fnName(app, addr));
+  sheet.setTitle(pick('制御フロー図', 'Control Flow Graph') + ' — ' + fnName(app, addr));
 
   const map = rowMapper(app);
   const { nodes, edges } = cfgGraph(res.model, {
@@ -509,13 +637,15 @@ export async function showCfg(app, addr) {
 }
 
 export async function showCallGraphPanel(app, addr) {
-  const sheet = new Sheet('呼び出し図', { size: 'full' });
-  const status = el('div', 'hint', '呼び出し関係を集めています…');
+  const snap = captureAppEpoch(app);
+  const sheet = new Sheet(pick('呼び出し図', 'Call Graph'), { size: 'full' });
+  const status = el('div', 'hint', pick('呼び出し関係を集めています…', 'Collecting call relationships…'));
   sheet.body.append(status);
   await app.ensureProgram();
-  if (!app.program) { status.textContent = '呼び出し関係を作れませんでした。'; return; }
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
+  if (!app.program) { status.textContent = pick('呼び出し関係を作れませんでした。', 'Could not build call relationships.'); return; }
   status.remove();
-  sheet.setTitle('呼び出し図 — ' + fnName(app, addr));
+  sheet.setTitle(pick('呼び出し図', 'Call Graph') + ' — ' + fnName(app, addr));
 
   let depth = 1;
   const head = el('div', 'graph-head');
@@ -582,11 +712,13 @@ function showGraphHelp(kind) {
    ══════════════════════════════════════════════════════════ */
 
 export async function showTypes(app, addr) {
-  const sheet = new Sheet('引数・戻り値・変数');
-  const status = el('div', 'hint', '解析しています…');
+  const snap = captureAppEpoch(app);
+  const sheet = new Sheet(pick('引数・戻り値・変数', 'Arguments, Return & Variables'));
+  const status = el('div', 'hint', pick('解析しています…', 'Analysing…'));
   sheet.body.append(status);
   const res = await modelOf(app, addr);
-  if (!res || !res.model) { status.textContent = 'この場所は関数として解析できませんでした。'; return; }
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
+  if (!res || !res.model) { status.textContent = pick('この場所は関数として解析できませんでした。', 'Could not analyse this location as a function.'); return; }
   status.remove();
 
   const types = inferTypes(res.model);
@@ -672,11 +804,13 @@ function pickType(app, funcAddr, key, current, onDone) {
    ══════════════════════════════════════════════════════════ */
 
 export async function showStructRecover(app, addr) {
-  const sheet = new Sheet('構造体を組み立てる');
-  const status = el('div', 'hint', '解析しています…');
+  const snap = captureAppEpoch(app);
+  const sheet = new Sheet(pick('構造体を組み立てる', 'Recover Struct'));
+  const status = el('div', 'hint', pick('解析しています…', 'Analysing…'));
   sheet.body.append(status);
   const res = await modelOf(app, addr);
-  if (!res || !res.model) { status.textContent = '解析できませんでした。'; return; }
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
+  if (!res || !res.model) { status.textContent = pick('解析できませんでした。', 'Could not analyse.'); return; }
   status.remove();
 
   sheet.body.append(el('div', 'hint',
@@ -746,44 +880,51 @@ export function showStructs(app) {
 
 function showStructDetail(app, store, s, onChange) {
   const sheet = new Sheet(s.name);
-  sheet.body.append(codeBlock(store.toC(s.name)));
-  const l = list();
-  for (const m of s.members) {
-    l.append(tapRow('+0x' + m.offset.toString(16).toUpperCase() + '  ' + m.type + ' ' + m.name, {
-      sub: (m.size || 8) + ' バイト',
-      onTap: () => {
-        const nameIn = input('項目の名前', m.name);
-        const d = el('div');
-        d.append(para('この項目に名前を付けます。'), field(nameIn, '決定', () => {
-          try {
-            store.setMember(s.name, m.offset, { name: nameIn.value.trim() || m.name });
-          } catch (error) {
-            if (error?.name !== 'PersistenceError') throw error;
-            onChange(); notePersistenceFailure(app, '構造体'); return;
-          }
-          sheet.close();
-          onChange();
-          toast('名前を付けました');
-        }));
-        const sh = new Sheet('項目の名前');
-        sh.body.append(d);
-      },
-    }));
-  }
-  sheet.body.append(l);
-  const chips = el('div', 'chips');
-  chips.append(button('C としてコピー', 'chip', () => copyText(store.toC(s.name), '構造体')));
-  chips.append(button('削除', 'chip danger', () => {
-    try { store.remove(s.name); }
-    catch (error) {
-      if (error?.name !== 'PersistenceError') throw error;
-      onChange(); notePersistenceFailure(app, '構造体の削除'); return;
+  const render = () => {
+    sheet.body.replaceChildren();
+    const cur = store.list().find((x) => x.name === s.name) || s;
+    sheet.body.append(codeBlock(store.toC(cur.name)));
+    const l = list();
+    for (const m of cur.members) {
+      l.append(tapRow('+0x' + m.offset.toString(16).toUpperCase() + '  ' + m.type + ' ' + m.name, {
+        sub: (m.size || 8) + ' バイト',
+        onTap: () => {
+          const nameIn = input('項目の名前', m.name);
+          const d = el('div');
+          d.append(para('この項目に名前を付けます。'), field(nameIn, '決定', () => {
+            try {
+              store.setMember(cur.name, m.offset, { name: nameIn.value.trim() || m.name });
+            } catch (error) {
+              if (error?.name !== 'PersistenceError') throw error;
+              onChange(); notePersistenceFailure(app, '構造体'); return;
+            }
+            sh.back();
+            sheet.destroyForward();
+            render();
+            onChange();
+            toast('名前を付けました');
+          }));
+          const sh = new Sheet('項目の名前');
+          sh.body.append(d);
+        },
+      }));
     }
-    sheet.close();
-    onChange();
-    toast('削除しました');
-  }));
-  sheet.body.append(chips);
+    sheet.body.append(l);
+    const chips = el('div', 'chips');
+    chips.append(button('C としてコピー', 'chip', () => copyText(store.toC(cur.name), '構造体')));
+    chips.append(button('削除', 'chip danger', () => {
+      try { store.remove(cur.name); }
+      catch (error) {
+        if (error?.name !== 'PersistenceError') throw error;
+        onChange(); notePersistenceFailure(app, '構造体の削除'); return;
+      }
+      sheet.close();
+      onChange();
+      toast('削除しました');
+    }));
+    sheet.body.append(chips);
+  };
+  render();
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -810,10 +951,17 @@ export function showCxxClasses(app) {
   const status = el('div', 'hint', classes.length + ' 個のクラスが見つかりました。');
   const l = list();
   sheet.body.append(status, l);
+  const classNamesLower = classes.map((c) => c.name.toLowerCase());
 
   function render() {
     const q = search.value.trim().toLowerCase();
-    const hits = q ? classes.filter((c) => c.name.toLowerCase().includes(q)) : classes;
+    let hits = classes;
+    if (q) {
+      hits = [];
+      for (let i = 0; i < classes.length; i++) {
+        if (classNamesLower[i].includes(q)) hits.push(classes[i]);
+      }
+    }
     l.replaceChildren();
     for (const c of hits.slice(0, 300)) {
       l.append(tapRow(c.name, {
@@ -829,12 +977,13 @@ export function showCxxClasses(app) {
 }
 
 async function showVtable(app, cls) {
+  const snap = captureAppEpoch(app);
   const sheet = new Sheet(cls.name);
   if (cls.vtable == null) {
-    sheet.body.append(noteBox('このクラスには仮想関数の表がありません。'));
+    sheet.body.append(noteBox(pick('このクラスには仮想関数の表がありません。', 'This class has no virtual method table.')));
     return;
   }
-  const status = el('div', 'hint', '読み込んでいます…');
+  const status = el('div', 'hint', pick('読み込んでいます…', 'Loading…'));
   sheet.body.append(status);
   const read = (a, len) => app.backend.readAt(a, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
   const pointerContext = rttiPointerContextForSlice(
@@ -842,7 +991,8 @@ async function showVtable(app, cls) {
     app.pointerResolutionContextFor?.(cls.vtable) ?? {},
   );
   const vt = await readVtable(read, cls.vtable, app.symbols, 64, pointerContext);
-  if (!vt || !vt.slots.length) { status.textContent = '仮想関数の表を読めませんでした。'; return; }
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
+  if (!vt || !vt.slots.length) { status.textContent = pick('仮想関数の表を読めませんでした。', 'Could not read the virtual method table.'); return; }
   status.remove();
 
   const sampleOffset = 0x10;
@@ -876,8 +1026,9 @@ async function showVtable(app, cls) {
    ══════════════════════════════════════════════════════════ */
 
 export async function showLinkage(app) {
+  const snap = captureAppEpoch(app);
   const controller = new AbortController();
-  const sheet = new Sheet('外とのつながり', { onClose:() => controller.abort('linkage-sheet-closed') });
+  const sheet = new Sheet(pick('外とのつながり', 'External Linkage'), { onClose:() => controller.abort('linkage-sheet-closed') });
   sheet.body.append(el('div', 'hint',
     'アプリ単体では画面も出せません。iOS が用意したライブラリを借りて動いています。\n' +
     '何を借りているかを見るだけで、アプリが何をするものかが半分わかります。'));
@@ -958,7 +1109,7 @@ export async function showLinkage(app) {
   // Import/dylib facts are available immediately. ProgramIndex only enriches
   // call counts; closing the sheet detaches this consumer from late publish.
   Promise.resolve().then(() => app.ensureProgram?.()).then((program) => {
-    if (controller.signal.aborted || !sheet.root.isConnected || !program) return;
+    if (controller.signal.aborted || !isAppEpochCurrent(app, snap, sheet) || !program) return;
     imports = importList(app.symbols, program);
     groups = importsByFramework(imports);
     usageComplete = true;
@@ -971,10 +1122,12 @@ export async function showLinkage(app) {
    ══════════════════════════════════════════════════════════ */
 
 export async function showGlobals(app) {
-  const sheet = new Sheet('グローバル変数');
-  const status = el('div', 'hint', '参照関係を調べています…');
+  const snap = captureAppEpoch(app);
+  const sheet = new Sheet(pick('グローバル変数', 'Global Variables'));
+  const status = el('div', 'hint', pick('参照関係を調べています…', 'Scanning references…'));
   sheet.body.append(status);
   await app.ensureProgram().catch(() => null);
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
 
   const globals = findGlobals(app.symbols, app.program, app.store.get('regions') || [], { limit: 400 });
   status.remove();
@@ -1002,91 +1155,161 @@ export async function showGlobals(app) {
    名前とメモ
    ══════════════════════════════════════════════════════════ */
 
-function notePersistenceFailure(app, action = '変更') {
+function notePersistenceFailure(app, action = pick('変更', 'Changes')) {
   const code = app.notes?.lastSaveError?.code || 'STORAGE_ERROR';
-  alertDialog('保存できませんでした',
-    `${action}はこの画面には残っていますが、端末へ保存できていません（${code}）。\n` +
-    '「自分で付けた名前とメモ」を開くと保存の再試行と書き出しができます。ページを閉じる前にバックアップしてください。');
+  alertDialog(
+    pick('保存できませんでした', 'Could not save'),
+    pick(
+      `${action}はこの画面には残っていますが、端末へ保存できていません（${code}）。\n` +
+      '「自分で付けた名前とメモ」を開くと保存の再試行と書き出しができます。ページを閉じる前にバックアップしてください。',
+      `${action} remain active in this view, but could not be saved locally (${code}).\n` +
+      'Open "Saved names & notes" to retry saving or export a backup before closing the page.',
+    ),
+  );
 }
 
 export function showRename(app, addr) {
-  const sheet = new Sheet('名前を付ける');
+  const sheet = new Sheet(pick('名前を付ける', 'Rename'));
   const cur = app.symbols.nameAt(addr);
+  let initialName = app.notes.nameOf(addr) || '';
+  let initialComment = app.notes.comment(addr) || '';
   sheet.body.append(el('div', 'hint',
     addrHex(addr) + '\n' +
-    '分かったことに、その場で名前を付けておきます。\n' +
-    '命令一覧・関数一覧・呼び出し元まで、いっぺんに新しい名前になります。'));
-  if (cur) sheet.body.append(kvRow('いまの名前', readableName(cur)));
+    pick(
+      '分かったことに、その場で名前を付けておきます。\n命令一覧・関数一覧・呼び出し元まで、いっぺんに新しい名前になります。',
+      'Assign a custom name here. It updates disassembly, functions, and cross-references immediately.',
+    )));
+  if (cur) sheet.body.append(kvRow(pick('いまの名前', 'Current name'), readableName(cur)));
 
-  const nameIn = input('例: ダメージ計算', app.notes.nameOf(addr) || '');
-  sheet.body.append(field(nameIn, '決定', apply));
-  nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') apply(); });
-  setTimeout(() => nameIn.focus(), 50);
+  const nameIn = input(pick('例: ダメージ計算', 'e.g. calc_damage'), initialName);
+  sheet.body.append(field(nameIn, pick('決定', 'Save'), apply));
+  nameIn.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') apply();
+  });
+  setTimeout(() => { nameIn.focus(); nameIn.select?.(); }, 50);
 
-  const memo = textArea(app.notes.comment(addr) || '', 4);
-  sheet.body.append(heading('メモ（覚えておきたいこと）'), memo);
-  sheet.body.append(field(el('span'), 'メモを保存', () => {
-    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, 'メモ'); return; }
-    toast('メモを保存しました');
+  const memo = textArea(initialComment, 4);
+  sheet.body.append(heading(pick('メモ（覚えておきたいこと）', 'Comment')), memo);
+  sheet.body.append(field(el('span'), pick('メモを保存', 'Save comment'), () => {
+    const nextComment = memo.value.trim();
+    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
+    if (nextComment !== initialComment) {
+      app.recordUndo?.({ type: 'comment', addr, before: initialComment, after: nextComment });
+      initialComment = nextComment;
+    }
+    toast(nextComment ? pick('メモを保存しました', 'Comment saved') : pick('メモを削除しました', 'Comment deleted'));
   }));
 
-  if (app.notes.nameOf(addr)) {
-    sheet.body.append(button('付けた名前を消す', 'tb-btn danger', () => {
+  if (initialName) {
+    sheet.body.append(button(pick('付けた名前を消す', 'Remove custom name'), 'tb-btn danger', () => {
       const saved = app.notes.setName(addr, '');
       app.symbols.rename(addr, '');
       app.viewer.setSymbols(app.symbols);
-      if (!saved) { notePersistenceFailure(app, '名前の削除'); return; }
+      app.updateChrome?.();
+      if (initialName) {
+        app.recordUndo?.({ type: 'name', addr, before: initialName, after: '' });
+        initialName = '';
+      }
+      if (!saved) { notePersistenceFailure(app, pick('名前の削除', 'Name removal')); return; }
       sheet.close();
-      toast('元の名前に戻しました');
+      toast(pick('元の名前に戻しました', 'Restored original name'));
     }));
   }
 
   function apply() {
     const v = nameIn.value.trim();
-    const saved = app.notes.setName(addr, v);
+    const savedName = app.notes.setName(addr, v);
     app.symbols.rename(addr, v);
     app.viewer.setSymbols(app.symbols);
-    app.updateChrome();
-    if (!saved) { notePersistenceFailure(app, '名前'); return; }
+    const nextComment = memo.value.trim();
+    let savedComment = true;
+    if (nextComment !== initialComment) {
+      savedComment = app.notes.setComment(addr, memo.value);
+      app.recordUndo?.({ type: 'comment', addr, before: initialComment, after: nextComment });
+      initialComment = nextComment;
+    }
+    app.updateChrome?.();
+    if (v !== initialName) {
+      app.recordUndo?.({ type: 'name', addr, before: initialName, after: v });
+      initialName = v;
+    }
+    if (!savedName) { notePersistenceFailure(app, pick('名前', 'Name')); return; }
+    if (!savedComment) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
     sheet.close();
-    toast(v ? '「' + v + '」にしました' : '元の名前に戻しました');
+    toast(v ? pick('「' + v + '」にしました', `Renamed to "${v}"`) : pick('元の名前に戻しました', 'Restored original name'));
   }
 }
 
 export function showComment(app, addr) {
-  const sheet = new Sheet('メモ');
-  sheet.body.append(el('div', 'hint', addrHex(addr) + '\nこの行についてのメモを残します。'));
-  const memo = textArea(app.notes.comment(addr) || '', 5);
-  sheet.body.append(memo);
-  sheet.body.append(field(el('span'), '保存', () => {
-    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, 'メモ'); return; }
+  const sheet = new Sheet(pick('メモ', 'Comment'));
+  const before = app.notes.comment(addr) || '';
+  sheet.body.append(el('div', 'hint', addrHex(addr) + '\n' + pick('この行についてのメモを残します。', 'Attach a note to this address.')));
+  const memo = textArea(before, 5);
+  const save = () => {
+    const after = memo.value.trim();
+    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
+    if (after !== before) {
+      app.recordUndo?.({ type: 'comment', addr, before, after });
+    }
     sheet.close();
-    toast('保存しました');
-  }));
+    toast(after ? pick('保存しました', 'Comment saved') : pick('メモを削除しました', 'Comment deleted'));
+  };
+  memo.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      save();
+    }
+  });
+  sheet.body.append(memo);
+  const actions = field(el('span'), pick('保存', 'Save'), save);
+  if (before) {
+    actions.append(button(pick('削除', 'Delete'), 'chip danger', () => {
+      if (!app.notes.setComment(addr, '')) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
+      app.recordUndo?.({ type: 'comment', addr, before, after: '' });
+      sheet.close();
+      toast(pick('メモを削除しました', 'Comment deleted'));
+    }));
+  }
+  sheet.body.append(actions);
+  setTimeout(() => { memo.focus(); memo.select?.(); }, 50);
 }
 
 export function showNotes(app) {
-  const sheet = new Sheet('自分で付けた名前とメモ');
+  const sheet = new Sheet(pick('自分で付けた名前とメモ', 'Saved names & notes'));
   const render = () => {
     body.replaceChildren();
     if (app.notes.dirty) {
-      const warning = noteBox('まだ端末へ保存できていない変更があります。ページを閉じる前に再試行するか、下の「書き出す」でバックアップしてください。', 'warn');
+      const warning = noteBox(pick(
+        'まだ端末へ保存できていない変更があります。ページを閉じる前に再試行するか、下の「書き出す」でバックアップしてください。',
+        'Some changes have not been saved locally yet. Retry saving or export a backup before closing the page.',
+      ), 'warn');
       const retry = el('div', 'chips');
-      retry.append(button('保存を再試行', 'chip', () => {
-        if (app.notes.save()) { toast('保存しました'); render(); }
-        else notePersistenceFailure(app, '変更');
+      retry.append(button(pick('保存を再試行', 'Retry save'), 'chip', () => {
+        if (app.notes.save()) { toast(pick('保存しました', 'Saved')); render(); }
+        else notePersistenceFailure(app, pick('変更', 'Changes'));
       }));
       warning.append(retry);
       body.append(warning);
     }
     const names = app.notes.nameEntries();
-    body.append(el('div', 'hint',
+    const comments = [];
+    if (app.notes?.comments instanceof Map) {
+      for (const [k, v] of app.notes.comments) {
+        if (!v) continue;
+        try { comments.push({ addr: BigInt(k), text: v }); } catch { /* skip */ }
+      }
+    }
+    body.append(el('div', 'hint', pick(
       '名前 ' + names.length + ' 個、メモ ' + app.notes.commentCount() + ' 個。\n' +
-      'この端末のブラウザに保存されています（どこにも送信されません）。'));
+      'この端末のブラウザに保存されています（どこにも送信されません）。',
+      `${names.length} names, ${app.notes.commentCount()} comments.\n` +
+      'Stored locally in this browser (never uploaded).',
+    )));
 
     const l = list();
-    l.append(groupRow('名前'));
-    if (!names.length) l.append(tapRow('まだありません', { disabled: true }));
+    l.append(groupRow(pick('名前', 'Names')));
+    if (!names.length) l.append(tapRow(pick('まだありません', 'None yet'), { disabled: true }));
     for (const n of names.slice(0, 300)) {
       l.append(tapRow(n.name, {
         sub: addrHex(n.addr),
@@ -1095,38 +1318,67 @@ export function showNotes(app) {
     }
     body.append(l);
 
+    const cl = list();
+    cl.append(groupRow(pick('メモ', 'Comments')));
+    if (!comments.length) cl.append(tapRow(pick('まだありません', 'None yet'), { disabled: true }));
+    for (const c of comments.slice(0, 300)) {
+      const row = tapRow(c.text, {
+        sub: addrHex(c.addr),
+        onTap: () => { sheet.close(); app.goToAddress(c.addr, { announce: true }); },
+      });
+      const del = button(pick('削除', 'Delete'), 'chip danger', (e) => {
+        e.stopPropagation();
+        const prev = app.notes.comment(c.addr) || '';
+        if (!app.notes.setComment(c.addr, '')) { notePersistenceFailure(app, pick('メモ', 'Comment')); return; }
+        app.recordUndo?.({ type: 'comment', addr: c.addr, before: prev, after: '' });
+        render();
+        toast(pick('メモを削除しました', 'Comment deleted'));
+      });
+      del.addEventListener('keydown', (e) => e.stopPropagation());
+      row.append(del);
+      cl.append(row);
+    }
+    body.append(cl);
+
     const chips = el('div', 'chips');
-    chips.append(button('書き出す（バックアップ）', 'chip', () => {
-      copyText(app.notes.toJSON(), 'メモ');
+    chips.append(button(pick('書き出す（バックアップ）', 'Export (backup)'), 'chip', () => {
+      copyText(app.notes.toJSON(), pick('メモ', 'Notes'));
     }));
-    chips.append(button('読み込む', 'chip', () => {
-      const sh = new Sheet('読み込む');
-      sh.body.append(para('書き出した内容を貼り付けてください。いまの内容と合わさります。'));
+    chips.append(button(pick('読み込む', 'Import'), 'chip', () => {
+      const sh = new Sheet(pick('読み込む', 'Import notes'));
+      sh.body.append(para(pick('書き出した内容を貼り付けてください。いまの内容と合わさります。', 'Paste exported JSON. Entries will be merged with your current notes.')));
       const ta = textArea('', 8);
-      sh.body.append(ta, field(el('span'), '取り込む', () => {
+      sh.body.append(ta, field(el('span'), pick('取り込む', 'Import'), () => {
         try {
           const n = app.notes.fromJSON(ta.value);
           for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, e.name);
           app.viewer.setSymbols(app.symbols);
+          app.updateChrome?.();
           sh.close();
           render();
-          if (!app.notes.lastMutationSaved) { notePersistenceFailure(app, '取り込み'); return; }
-          toast(n + ' 件を取り込みました');
-        } catch (err) { alertDialog('読み込めません', userError(err, 'メモの形式を確認してください。')); }
+          if (!app.notes.lastMutationSaved) { notePersistenceFailure(app, pick('取り込み', 'Import')); return; }
+          toast(pick(n + ' 件を取り込みました', `Imported ${n} items`));
+        } catch (err) { alertDialog(pick('読み込めません', 'Import failed'), userError(err, pick('メモの形式を確認してください。', 'Check the JSON format.'))); }
       }));
     }));
-    chips.append(button('全部消す', 'chip danger', () => {
-      alertDialog('全部消しますか', 'このファイルに付けた名前とメモを消します。元に戻せません。', {
-        confirmLabel: '消す',
-        onConfirm: () => {
-          for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
-          const saved = app.notes.clear();
-          app.viewer.setSymbols(app.symbols);
-          render();
-          if (!saved) { notePersistenceFailure(app, '全消去'); return; }
-          toast('消しました');
+    chips.append(button(pick('全部消す', 'Clear all'), 'chip danger', () => {
+      alertDialog(
+        pick('全部消しますか', 'Clear all notes?'),
+        pick('このファイルに付けた名前とメモを消します。元に戻せません。', 'Delete all custom names and comments for this file? This cannot be undone.'),
+        {
+          confirmLabel: pick('消す', 'Clear'),
+          onConfirm: () => {
+            for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
+            const saved = app.notes.clear();
+            app.clearUndoHistory?.();
+            app.viewer.setSymbols(app.symbols);
+            app.updateChrome?.();
+            render();
+            if (!saved) { notePersistenceFailure(app, pick('全消去', 'Clear all')); return; }
+            toast(pick('消しました', 'Cleared'));
+          },
         },
-      });
+      );
     }));
     body.append(chips);
   };
@@ -1144,7 +1396,10 @@ function instructionPatchCapability(app) {
   const supported = instructionPatchArchitectureSupported(architecture);
   return {
     architecture, supported,
-    reason:supported ? null : `このCPU（${architecture || '不明'}）の命令パッチはまだ未対応です。`,
+    reason: supported ? null : pick(
+      `このCPU（${architecture || '不明'}）の命令パッチはまだ未対応です。`,
+      `Instruction patching is not yet supported for this CPU (${architecture || 'unknown'}).`,
+    ),
   };
 }
 
@@ -1155,54 +1410,93 @@ function patchRegionForAddress(app, addr) {
   return hasOwnerResolver ? null : app?.codeRegion?.() ?? null;
 }
 
-export function showPatches(app) {
-  const sheet = new Sheet('パッチ');
-  sheet.body.append(el('div', 'hint',
+export function showPatches(app, targetAddr = null) {
+  const sheet = new Sheet(pick('パッチ', 'Patches'));
+  sheet.body.append(el('div', 'hint', pick(
     '命令を書き換えて「こうしたらどうなるか」を試す道具です。\n' +
-    '元のファイルには書き込みません。保存を選んだときだけ、新しいファイルを作ります。'));
-  sheet.body.append(noteBox(
+    '元のファイルには書き込みません。保存を選んだときだけ、新しいファイルを作ります。',
+    'Rewrite instructions to test what-if changes.\n' +
+    'The original file is never modified; a new file is created only when you export.'
+  )));
+  sheet.body.append(noteBox(pick(
     'iOS の実行ファイルは署名されています。書き換えたものをそのまま実機で動かすことはできません。\n' +
-    '（このツールは解析と実験のためのものです。）'));
+    '（このツールは解析と実験のためのものです。）',
+    'iOS executables are code-signed; modified binaries cannot run directly on stock devices.\n' +
+    '(This tool is intended for analysis and experimentation.)'
+  )));
 
   const render = () => {
     body.replaceChildren();
     const items = app.patches.list();
     const l = list();
-    l.append(groupRow('書き換えの一覧（' + items.length + '）'));
-    if (!items.length) l.append(tapRow('まだありません', { disabled: true, sub: '命令を長押しして「書き換える」から作れます。' }));
+    l.append(groupRow(pick('書き換えの一覧（' + items.length + '）', 'Staged patches (' + items.length + ')')));
+    if (!items.length) l.append(tapRow(pick('まだありません', 'None yet'), { disabled: true, sub: pick('命令を長押しして「書き換える」から作れます。', 'Long-press an instruction and choose Patch to add one.') }));
     for (const it of items) {
-      l.append(tapRow((it.addr != null ? addrHex(it.addr) : '+' + it.offset) + '  ' + (it.text || ''), {
+      const row = tapRow((it.addr != null ? addrHex(it.addr) : '+' + it.offset) + '  ' + (it.text || ''), {
         sub: hexOf(it.before) + '  →  ' + hexOf(it.after),
         onTap: () => {
+          const rect = row.getBoundingClientRect?.();
+          const mx = rect ? Math.round(rect.left + rect.width / 2) : window.innerWidth / 2;
+          const my = rect ? Math.round(rect.bottom + 4) : 200;
           menu([
-            { label: 'この場所へ移動', action: () => { sheet.close(); if (it.addr != null) app.goToAddress(it.addr, { announce: true }); } },
-            { label: 'この書き換えを取り消す', action: () => { app.patches.remove(it.offset); render(); toast('取り消しました'); } },
-          ], window.innerWidth / 2, 200);
+            { label: pick('この場所へ移動', 'Jump to location'), action: () => { sheet.close(); if (it.addr != null) app.goToAddress(it.addr, { announce: true }); } },
+            { label: pick('この書き換えを取り消す', 'Undo this patch'), action: () => { app.patches.remove(it.offset); app.recordUndo?.({ type: 'patch', action: 'remove', offset: it.offset, before: it, after: null, meta: { addr: it.addr, text: it.text } }); app.store?.set?.({ patches: app.patches.size }); render(); toast(pick('取り消しました', 'Undone')); } },
+          ], mx, my);
         },
-      }));
+      });
+      l.append(row);
     }
     body.append(l);
 
     const chips = el('div', 'chips');
     const capability = instructionPatchCapability(app);
-    if (capability.supported) {
-      chips.append(button('アドレスを指定して書き換える', 'chip', () => {
-        const sh = new Sheet('場所を指定');
-        const a = input('0x100004000');
-        sh.body.append(para('書き換えたい命令のアドレスを入れてください。'), field(a, '進む', async () => {
+    if (capability.supported === true) {
+      if (targetAddr != null) {
+        chips.append(button(pick(`この関数を書き換える (${addrHex(targetAddr)})`, `Patch this function (${addrHex(targetAddr)})`), 'chip strong', async () => {
+          const insn = await instructionAt(app, targetAddr);
+          showPatchEditor(app, targetAddr, insn, { onChange: render });
+        }));
+      }
+      chips.append(button(pick('アドレスを指定して書き換える', 'Patch by address'), 'chip', () => {
+        const sh = new Sheet(pick('場所を指定', 'Choose address'));
+        const a = input('0x100004000', targetAddr != null ? addrHex(targetAddr) : undefined);
+        const goAddr = async () => {
           let addr;
-          try { addr = BigInt(a.value.trim()); } catch { toast('アドレスの形が違います'); return; }
+          const raw = a.value.trim();
+          if (!raw) { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
+          try { addr = BigInt(raw); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
           sh.close();
           const insn = await instructionAt(app, addr);
-          showPatchEditor(app, addr, insn);
-        }));
+          showPatchEditor(app, addr, insn, { onChange: render });
+        };
+        a.addEventListener('keydown', (e) => {
+          if (e.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter') { e.preventDefault(); goAddr(); }
+        });
+        sh.body.append(para(pick('書き換えたい命令のアドレスを入れてください。', 'Enter the address of the instruction to patch.')), field(a, pick('進む', 'Next'), goAddr));
+        setTimeout(() => { a.focus(); a.select?.(); }, 50);
       }));
     } else {
       body.append(noteBox(capability.reason));
     }
     if (items.length) {
-      chips.append(button('書き換えたファイルを保存', 'chip strong', () => savePatched(app)));
-      chips.append(button('全部取り消す', 'chip danger', () => { app.patches.clear(); render(); }));
+      chips.append(button(pick('書き換えたファイルを保存', 'Export patched file'), 'chip strong', () => savePatched(app)));
+      chips.append(button(pick('全部取り消す', 'Clear all'), 'chip danger', () => {
+        alertDialog(
+          pick('すべてのパッチを取り消しますか？', 'Clear all patches?'),
+          pick(`${items.length} 件の書き換えをすべて取り消します。元に戻せません。`, `Remove all ${items.length} staged patches? This cannot be undone.`),
+          {
+            confirmLabel: pick('全部取り消す', 'Clear all'),
+            onConfirm: () => {
+              app.patches.clear();
+              app.clearUndoHistory?.();
+              app.store?.set?.({ patches: app.patches.size });
+              render();
+              toast(pick('すべてのパッチを取り消しました', 'All patches cleared'));
+            },
+          },
+        );
+      }));
     }
     body.append(chips);
   };
@@ -1233,71 +1527,138 @@ async function instructionAt(app, addr) {
   } catch { return null; }
 }
 
-export async function showPatchEditor(app, addr, insnArg) {
-  const sheet = new Sheet('命令を書き換える');
+export async function showPatchEditor(app, addr, insnArg, options = {}) {
+  const snap = captureAppEpoch(app);
+  const onChange = typeof options?.onChange === 'function' ? options.onChange : null;
+  const sheet = new Sheet(pick('命令を書き換える', 'Patch instruction'));
   const capability = instructionPatchCapability(app);
-  if (!capability.supported) {
+  if (capability.supported !== true) {
     sheet.body.append(noteBox(capability.reason));
     return;
   }
   const insn = insnArg || await instructionAt(app, addr);
+  if (!isAppEpochCurrent(app, snap, sheet)) return;
   const region = patchRegionForAddress(app, addr);
-  if (!region) { sheet.body.append(noteBox('コードのセクションが見つかりません。')); return; }
+  if (!region) { sheet.body.append(noteBox(pick('コードのセクションが見つかりません。', 'Code section not found.'))); return; }
   const file = app.store.get('file');
   const range = validatePatchRange(region, addr, 4, file && file.size, true);
   if (range.error) { sheet.body.append(noteBox(range.error)); return; }
   const fileOffset = range.fileOffset;
 
-  sheet.body.append(el('div', 'hint', addrHex(addr) + '  ·  ファイルの中では +0x' + fileOffset.toString(16)));
+  sheet.body.append(el('div', 'hint', addrHex(addr) + pick('  ·  ファイルの中では +0x', '  ·  file +0x') + fileOffset.toString(16)));
   if (insn) {
-    const b = block('いまの命令');
+    const b = block(pick('いまの命令', 'Current instruction'));
     b.append(el('div', 'bigval mono', (insn.mnemonic + ' ' + insn.operands).trim()));
     try {
-      b.append(el('div', 'hint', brief(insn.mnemonic, insn.operands, 'ja', { address: addr })));
+      b.append(el('div', 'hint', brief(insn.mnemonic, insn.operands, lang(), { address: addr })));
     } catch { /* 説明が作れなくても続ける */ }
     sheet.body.append(b);
   }
 
-  const suggestions = suggestPatches(insn ? insn.mnemonic : '', insn ? insn.operands : '', addr);
+  const activePatch = app.patches?.at?.(fileOffset)
+    || app.patches?.byAddress?.(addr)
+    || (app.patches?.list?.() || []).find((it) => fileOffset >= it.offset && fileOffset < it.offset + BigInt(it.after.length))
+    || null;
+  if (activePatch) {
+    const activeBlock = block(pick('適用中のパッチ', 'Active patch'));
+    activeBlock.append(el('div', 'bigval mono', activePatch.text || hexOf(activePatch.after)));
+    activeBlock.append(el('div', 'hint mono', hexOf(activePatch.before) + '  →  ' + hexOf(activePatch.after)));
+    const undoBar = el('div', 'chips');
+    undoBar.append(button(pick('元に戻す (Undo)', 'Undo patch'), 'chip danger', () => {
+      app.patches.remove(activePatch.offset);
+      app.recordUndo?.({ type: 'patch', action: 'remove', offset: activePatch.offset, before: activePatch, after: null, meta: { addr: activePatch.addr, text: activePatch.text } });
+      app.store?.set?.({ patches: app.patches.size });
+      onChange?.();
+      sheet.close();
+      toast(pick('パッチを元に戻しました', 'Patch undone'));
+    }));
+    activeBlock.append(undoBar);
+    sheet.body.append(activeBlock);
+  }
+
+  const regionRem = Number(region.size - (addr - region.vmAddr));
+  const fileRem = file && Number.isFinite(Number(file.size)) ? Number(BigInt(file.size) - fileOffset) : regionRem;
+  const fnRange = app.symbols?.functionAt?.(addr);
+  const fnRem = fnRange && fnRange.end != null && BigInt(fnRange.end) > addr ? Number(BigInt(fnRange.end) - addr) : regionRem;
+  const availableBytes = Math.max(0, Math.min(regionRem, fileRem, fnRem));
+
+  const atFunctionStart = !fnRange || fnRange.start == null || BigInt(fnRange.start) === BigInt(addr);
+  const arch = app.store?.get?.('fileInfo')?.arch || '';
+  const suggestions = suggestPatches(insn ? insn.mnemonic : '', insn ? insn.operands : '', addr, { availableBytes, atFunctionStart, arch });
   const l = list();
-  l.append(groupRow('よく使う書き換え'));
+  l.append(groupRow(pick('よく使う書き換え', 'Common patches')));
   for (const s of suggestions) {
-    l.append(tapRow(s.label, { sub: s.why + '\n→ ' + s.text, onTap: () => apply(s.text) }));
+    l.append(tapRow(s.label, { sub: s.why + '\n→ ' + s.text, onTap: () => (s.hex ? applyRawHex(s.text) : apply(s.text)) }));
   }
   sheet.body.append(l);
 
-  sheet.body.append(heading('自分で書く'));
-  const asm = input('例: mov w0, #1');
-  sheet.body.append(field(asm, '書き換える', () => apply(asm.value)));
-  sheet.body.append(el('div', 'hint',
-    '使えるのは nop / ret / brk / mov / b / bl / b.条件 です。\n' +
-    'それ以外は 16 進で直接どうぞ（例: 1F 20 03 D5）。'));
+  sheet.body.append(heading(pick('自分で書く', 'Custom patch')));
+  const asm = input(pick('例: mov w0, #1 または mov w0, #1; ret', 'e.g. mov w0, #1 or mov w0, #1; ret'));
+  asm.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') { e.preventDefault(); apply(asm.value); }
+  });
+  sheet.body.append(field(asm, pick('書き換える', 'Patch'), () => apply(asm.value)));
+  sheet.body.append(el('div', 'hint', pick(
+    '使えるのは nop / ret / brk / mov / movz / movn / b / bl / b.条件 / cbz / cbnz / tbz / tbnz です（; 区切りで複数命令も可）。\n' +
+    'それ以外は 16 進で直接どうぞ（例: 1F 20 03 D5）。',
+    'Supports nop / ret / brk / mov / movz / movn / b / bl / b.<cond> / cbz / cbnz / tbz / tbnz (separate multiple instructions with ;).\n' +
+    'For other instructions, enter raw hex bytes below (e.g. 1F 20 03 D5).',
+  )));
 
   const hex = input('1F 20 03 D5');
-  sheet.body.append(field(hex, '16 進で書き換える', () => {
+  const applyHex = () => {
     const bytes = parseHexBytes(hex.value);
-    if (!bytes || bytes.length !== 4) { toast('4 バイト（8 桁）で指定してください'); return; }
+    if (!bytes || bytes.length < 4 || bytes.length % 4 !== 0) {
+      toast(pick('4 バイト単位（8 桁の倍数）で指定してください', 'Specify a multiple of 4 bytes (8 hex digits).'));
+      return;
+    }
     commit(bytes, hex.value);
-  }));
+  };
+  hex.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') { e.preventDefault(); applyHex(); }
+  });
+  sheet.body.append(field(hex, pick('16 進で書き換える', 'Patch hex'), applyHex));
+
+  function applyRawHex(text) {
+    const bytes = parseHexBytes(text);
+    if (!bytes || !bytes.length) { toast(pick('16進バイトの形式が不正です', 'Invalid hex bytes')); return; }
+    commit(bytes, text, { rawHex: true });
+  }
 
   async function apply(text) {
     const built = assemble(text, addr);
-    if (built.error) { alertDialog('組み立てられません', built.error); return; }
+    if (built.error) { alertDialog(pick('組み立てられません', 'Assembly error'), built.error); return; }
     commit(built.bytes, text);
   }
 
-  async function commit(bytes, text) {
-    const valid = validatePatchRange(region, addr, bytes.length, file && file.size, true);
-    if (valid.error) { alertDialog('登録できません', valid.error); return; }
+  async function commit(bytes, text, { rawHex = false } = {}) {
+    const valid = rawHex
+      ? validatePatchRange(region, addr, bytes.length, file && file.size, false)
+      : (bytes.length === 4
+        ? validatePatchRange(region, addr, bytes.length, file && file.size, true)
+        : validateMultiInstructionPatchRange(region, addr, bytes.length, file && file.size));
+    if (valid.error) { alertDialog(pick('登録できません', 'Cannot stage patch'), valid.error); return; }
     const before = await app.backend.readAt(addr, bytes.length)
       .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
+    if (!isAppEpochCurrent(app, snap, sheet)) return;
     if (!before || before.length !== bytes.length) {
-      alertDialog('登録できません', '元のバイトを読み取れませんでした。');
+      alertDialog(pick('登録できません', 'Cannot stage patch'), pick('元のバイトを読み取れませんでした。', 'Could not read original bytes.'));
       return;
     }
-    app.patches.add(valid.fileOffset, before, bytes, { addr, text });
+    const prevPatch = app.patches?.at?.(valid.fileOffset) || null;
+    try {
+      app.patches.add(valid.fileOffset, before, bytes, { addr, text });
+      app.recordUndo?.({ type: 'patch', action: 'add', offset: valid.fileOffset, before, after: bytes, prevPatch, meta: { addr, text } });
+      app.store?.set?.({ patches: app.patches.size });
+    } catch (err) {
+      alertDialog(pick('登録できません', 'Cannot stage patch'), userError(err, pick('既存のパッチと重なっています。先のパッチを元に戻してからお試しください。', 'Overlaps an existing patch. Undo the previous patch first.')));
+      return;
+    }
+    onChange?.();
     sheet.close();
-    toast('書き換えを登録しました（保存するまでファイルは変わりません）');
+    toast(pick('書き換えを登録しました（エミュレータでそのまま試せます）', 'Patch staged (ready to test in the emulator)'));
   }
 }
 
@@ -1326,44 +1687,89 @@ async function savePatched(app) {
    ══════════════════════════════════════════════════════════ */
 
 export function showDebugger(app, addr) {
+  const arch = String(app?.store?.get?.('fileInfo')?.arch || '').toLowerCase();
+  if (arch && !instructionPatchArchitectureSupported(arch)) {
+    toast(pick(`エミュレータは現在 ARM64 のみ対応しています（現在: ${arch}）。`, `Emulator currently supports ARM64 only (current: ${arch}).`));
+    return null;
+  }
   let activeRun = null;
   const abortRun = (reason = 'debugger-operation-replaced') => {
     if (activeRun && !activeRun.signal.aborted) activeRun.abort(reason);
     activeRun = null;
   };
-  const sheet = new Sheet('実行してみる', { onClose:() => abortRun('debugger-sheet-closed') });
-  const emu = makeEmulator(app);
+  const sheet = new Sheet(pick('実行してみる', 'Emulate / Debugger'), { onClose:() => abortRun('debugger-sheet-closed') });
+  const stagedPatchCount = () => (app?.patches?.size || 0);
+  let applyPatches = stagedPatchCount() > 0;
+  let emu = makeEmulator(app, { applyPatches });
   let args = [0n, 0n, 0n, 0n];
+  let lastArgsKey = '';
+  let focusedArgIndex = 0;
 
   sheet.body.append(el('div', 'hint',
     fnName(app, addr) + '\n' +
-    'この関数を、ブラウザの中で 1 命令ずつ動かします。実機のアプリは起動しません。\n' +
-    '危ないことは何も起きないので、安心して何度でも試せます。'));
-  sheet.body.append(noteBox(
-    'iOS のライブラリ（UIKit など）の中身はこのファイルに入っていないので、\n' +
-    'そこへ出たら「戻り値 0 で帰ってきた」ことにして先へ進みます。\n' +
-    '何をそう扱ったかは、下の「メモ」に出ます。'));
+    pick(
+      'この関数を、ブラウザの中で 1 命令ずつ動かします。実機のアプリは起動しません。\n危ないことは何も起きないので、安心して何度でも試せます。',
+      'Step through this function in the browser emulator without running the real app.\nNothing runs on a real device, so you can experiment safely.',
+    )));
+  sheet.body.append(noteBox(pick(
+    'iOS のライブラリ（UIKit など）の中身はこのファイルに入っていないので、\nそこへ出たら「戻り値 0 で帰ってきた」ことにして先へ進みます。\n何をそう扱ったかは、下の「メモ」に出ます。',
+    'External system libraries (such as UIKit) are not inside this binary, so calls to them return 0 and continue.\nStubbed calls are recorded in Notes below.',
+  )));
 
   /* 引数 */
   const argWrap = el('div', 'field wrap');
   const argInputs = [];
   for (let i = 0; i < 4; i++) {
     const n = input('x' + i, '0');
-    n.style.maxWidth = '80px';
+    n.style.maxWidth = '120px';
+    n.addEventListener('focus', () => { focusedArgIndex = i; });
     argInputs.push(n);
     argWrap.append(n);
   }
-  sheet.body.append(heading('引数（x0〜x3）'), argWrap);
+  const argPresetBar = el('div', 'chips');
+  argPresetBar.append(button(pick('ダミー領域を引数にセット', 'Set dummy buffer as arg'), 'chip', () => {
+    const targetIdx = focusedArgIndex >= 0 && focusedArgIndex < argInputs.length ? focusedArgIndex : 0;
+    const dummyAddr = '0x' + emu.heapBase.toString(16);
+    argInputs[targetIdx].value = dummyAddr;
+    start();
+    toast(pick(`x${targetIdx} にダミー領域（${dummyAddr}）をセットしました`, `Set x${targetIdx} to dummy buffer (${dummyAddr})`));
+  }));
+  sheet.body.append(heading(pick('引数（x0〜x3）', 'Arguments (x0–x3)')), argWrap, argPresetBar);
+
+  if (stagedPatchCount() > 0) {
+    const patchToggleWrap = el('label', 'chip');
+    patchToggleWrap.style.display = 'inline-flex';
+    patchToggleWrap.style.alignItems = 'center';
+    patchToggleWrap.style.gap = '6px';
+    patchToggleWrap.style.cursor = 'pointer';
+    const patchCheckbox = el('input');
+    patchCheckbox.type = 'checkbox';
+    patchCheckbox.checked = applyPatches;
+    const patchLabelText = el('span', '', pick(`パッチ適用状態で試す（${stagedPatchCount()} 件）`, `Run with staged patches (${stagedPatchCount()})`));
+    patchToggleWrap.append(patchCheckbox, patchLabelText);
+    patchCheckbox.addEventListener('change', () => {
+      applyPatches = !!patchCheckbox.checked;
+      const keep = new Set(emu.breakpoints);
+      emu = makeEmulator(app, { applyPatches });
+      emu.breakpoints = keep;
+      start();
+      toast(applyPatches
+        ? pick('パッチ適用状態で実行します', 'Running with staged patches enabled')
+        : pick('元の状態（パッチ無効）で実行します', 'Running original bytes (patches disabled)'));
+    });
+    const patchBar = el('div', 'chips');
+    patchBar.append(patchToggleWrap);
+    sheet.body.append(patchBar);
+  }
 
   const chips = el('div', 'chips');
-  const status = el('div', 'hint', 'まだ動かしていません。');
+  const status = el('div', 'hint', pick('まだ動かしていません。', 'Not started yet.'));
   const regTable = el('div', 'regs mono');
   const traceBox = el('div', 'codeview small');
   const logBox = el('div');
   const bpBox = el('div');
 
-  const start = () => {
-    abortRun('debugger-reset');
+  const parseAllArgs = () => {
     const parsed = argInputs.map((n) => parseDebuggerArgument(n.value));
     let invalid = false;
     parsed.forEach((result, i) => {
@@ -1373,46 +1779,106 @@ export function showDebugger(app, addr) {
       if (!result.ok) invalid = true;
     });
     if (invalid) {
-      status.textContent = '引数に読み取れない値があります。赤く示した欄を直してください。';
-      return false;
+      status.textContent = pick('引数に読み取れない値があります。赤く示した欄を直してください。', 'Some arguments are invalid. Fix the highlighted fields.');
+      return null;
     }
-    args = parsed.map((result) => result.value);
+    return parsed.map((result) => result.value);
+  };
+
+  const start = () => {
+    abortRun('debugger-reset');
+    const parsedValues = parseAllArgs();
+    if (!parsedValues) return false;
+    args = parsedValues;
+    lastArgsKey = args.map((v) => v.toString()).join(',');
     const keep = new Set(emu.breakpoints);   // 置いた目印は、やり直しても残す
     emu.reset();
     emu.breakpoints = keep;
     emu.setup(addr, args);
-    status.textContent = '準備しました。「1 命令進む」か「最後まで走らせる」を押してください。';
+    status.textContent = pick('準備しました。「1 命令進む」か「最後まで走らせる」を押してください。', 'Ready. Choose "Step 1" or "Run to end".');
     render();
+    return true;
   };
 
-  chips.append(button('はじめから', 'chip', start));
-  chips.append(button('1 命令進む', 'chip', async () => {
-    const r = await emu.step();
-    status.textContent = r.text ? ('実行: ' + r.text) : (r.reason || '');
-    if (r.reason) status.textContent += '\n' + r.reason;
-    render();
-  }));
-  chips.append(button('10 命令進む', 'chip', async () => {
-    for (let i = 0; i < 10 && !emu.stopped; i++) await emu.step();
-    status.textContent = emu.stopped || (emu.steps + ' 命令まで進みました。');
-    render();
-  }));
-  chips.append(button('最後まで走らせる', 'chip strong', async () => {
-    abortRun('debugger-run-replaced');
+  const ensureReadyForRun = () => {
+    const parsedValues = parseAllArgs();
+    if (!parsedValues) return false;
+    const nextKey = parsedValues.map((v) => v.toString()).join(',');
+    if (emu.stopped || nextKey !== lastArgsKey) {
+      return start();
+    }
+    return true;
+  };
+
+  chips.append(button(pick('はじめから', 'Reset'), 'chip', start));
+  chips.append(button(pick('1 命令進む', 'Step 1'), 'chip', async () => {
+    if (!ensureReadyForRun()) return;
+    abortRun('debugger-step-replaced');
     const controller = new AbortController();
     activeRun = controller;
-    status.textContent = '走らせています…';
     try {
-      await emu.run(50000, (n) => {
-        if (!controller.signal.aborted && sheet.root.isConnected) status.textContent = n + ' 命令…';
-      }, { signal:controller.signal });
+      const r = await emu.step({ signal: controller.signal });
       if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
-      status.textContent = (emu.stopped || 'ブレークポイントで止まりました。') +
-        '\n合計 ' + emu.steps + ' 命令、戻り値 x0 = ' + hexBig(emu.x[0]) + '（10 進で ' + emu.x[0].toString() + '）';
+      status.textContent = r.text ? (pick('実行: ', 'Executed: ') + r.text) : '';
+      if (r.reason || emu.stopped) {
+        const explained = explainEmulatorFault(r.code || emu.faultCode || emu.stopCode, r.reason || emu.stopped);
+        status.textContent = status.textContent ? (status.textContent + '\n' + explained) : explained;
+      }
       render();
     } catch (error) {
       if (!controller.signal.aborted && error?.name !== 'AbortError' && sheet.root.isConnected) {
-        status.textContent = '実行を続けられませんでした: ' + (error?.message || error);
+        status.textContent = explainEmulatorFault(error?.code, error?.message || String(error));
+      }
+    } finally {
+      if (activeRun === controller) activeRun = null;
+    }
+  }));
+  chips.append(button(pick('10 命令進む', 'Step 10'), 'chip', async () => {
+    if (!ensureReadyForRun()) return;
+    abortRun('debugger-step10-replaced');
+    const controller = new AbortController();
+    activeRun = controller;
+    try {
+      for (let i = 0; i < 10 && !emu.stopped; i++) {
+        if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
+        await emu.step({ signal: controller.signal });
+      }
+      if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
+      status.textContent = emu.stopped
+        ? explainEmulatorFault(emu.faultCode || emu.stopCode, emu.stopped)
+        : pick(emu.steps + ' 命令まで進みました。', 'Stepped to ' + emu.steps + ' instructions.');
+      render();
+    } catch (error) {
+      if (!controller.signal.aborted && error?.name !== 'AbortError' && sheet.root.isConnected) {
+        status.textContent = explainEmulatorFault(error?.code, error?.message || String(error));
+      }
+    } finally {
+      if (activeRun === controller) activeRun = null;
+    }
+  }));
+  chips.append(button(pick('最後まで走らせる', 'Run to end'), 'chip strong', async () => {
+    if (!ensureReadyForRun()) return;
+    abortRun('debugger-run-replaced');
+    const controller = new AbortController();
+    activeRun = controller;
+    status.textContent = pick('走らせています…', 'Running…');
+    try {
+      await emu.run(50000, (n) => {
+        if (!controller.signal.aborted && sheet.root.isConnected) status.textContent = pick(n + ' 命令…', n + ' instructions…');
+      }, { signal:controller.signal });
+      if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
+      const summary = emu.stopped
+        ? explainEmulatorFault(emu.faultCode || emu.stopCode, emu.stopped)
+        : pick('ブレークポイントで止まりました。', 'Stopped at a breakpoint.');
+      status.textContent = summary +
+        pick(
+          '\n合計 ' + emu.steps + ' 命令、戻り値 x0 = ' + hexBig(emu.x[0]) + '（10 進で ' + emu.x[0].toString() + '）',
+          '\nTotal ' + emu.steps + ' instructions, return x0 = ' + hexBig(emu.x[0]) + ' (decimal ' + emu.x[0].toString() + ')',
+        );
+      render();
+    } catch (error) {
+      if (!controller.signal.aborted && error?.name !== 'AbortError' && sheet.root.isConnected) {
+        status.textContent = explainEmulatorFault(error?.code, error?.message || String(error));
       }
     } finally {
       if (activeRun === controller) activeRun = null;
@@ -1421,27 +1887,30 @@ export function showDebugger(app, addr) {
   sheet.body.append(chips, status);
 
   /* ブレークポイント: そこへ来たら止まる目印 */
-  const bpInput = input('0x… 止めたい場所', '');
-  sheet.body.append(heading('ブレークポイント'), el('div', 'hint',
-    'そこへ来たら止まる目印です。「最後まで走らせる」で、ここに着いた時点で止まります。'));
-  sheet.body.append(field(bpInput, '置く', () => {
+  const bpInput = input(pick('0x… 止めたい場所', '0x… breakpoint address'), '');
+  sheet.body.append(heading(pick('ブレークポイント', 'Breakpoints')), el('div', 'hint',
+    pick('そこへ来たら止まる目印です。「最後まで走らせる」で、ここに着いた時点で止まります。',
+      'Execution pauses here when using "Run to end".')));
+  sheet.body.append(field(bpInput, pick('置く', 'Add'), () => {
     let a;
-    try { a = BigInt(bpInput.value.trim()); } catch { toast('アドレスの形が違います'); return; }
+    const raw = bpInput.value.trim();
+    if (!raw) { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
+    try { a = BigInt(raw); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
     emu.breakpoints.add(a.toString());
     bpInput.value = '';
     renderBreakpoints();
-    toast(addrHex(a) + ' に置きました');
+    toast(pick(addrHex(a) + ' に置きました', 'Added breakpoint at ' + addrHex(a)));
   }));
   sheet.body.append(bpBox);
 
   function renderBreakpoints() {
     bpBox.replaceChildren();
     const l = list();
-    if (!emu.breakpoints.size) l.append(tapRow('まだありません', { disabled: true }));
+    if (!emu.breakpoints.size) l.append(tapRow(pick('まだありません', 'None yet'), { disabled: true }));
     for (const key of emu.breakpoints) {
       const a = BigInt(key);
       l.append(tapRow(addrHex(a), {
-        sub: 'タップすると外します',
+        sub: pick('タップすると外します', 'Tap to remove'),
         onTap: () => { emu.breakpoints.delete(key); renderBreakpoints(); },
       }));
     }
@@ -1449,20 +1918,34 @@ export function showDebugger(app, addr) {
   }
   renderBreakpoints();
 
-  sheet.body.append(heading('レジスタ'), regTable);
-  sheet.body.append(heading('通った道（最後の 40 命令）'), traceBox);
-  sheet.body.append(heading('メモ'), logBox);
+  sheet.body.append(heading(pick('レジスタ', 'Registers')), regTable);
+  sheet.body.append(heading(pick('通った道（最後の 40 命令）', 'Trace (last 40 instructions)')), traceBox);
+  sheet.body.append(heading(pick('メモ', 'Notes')), logBox);
 
   const memWrap = el('div');
-  sheet.body.append(heading('メモリを覗く'), memWrap);
-  const memAddr = input('0x… または x0', '');
-  memWrap.append(field(memAddr, '見る', async () => {
+  sheet.body.append(heading(pick('メモリを覗く', 'Inspect memory')), memWrap);
+  const memAddr = input(pick('0x… または x0', '0x… or x0'), '');
+  memWrap.append(field(memAddr, pick('見る', 'Inspect'), async () => {
     let a;
     const v = memAddr.value.trim();
-    if (/^x\d+$/.test(v)) a = emu.get(v);
-    else { try { a = BigInt(v); } catch { toast('アドレスの形が違います'); return; } }
-    const bytes = await emu.dump(a, 64);
-    memOut.replaceChildren(codeBlock(dumpText(a, bytes)));
+    if (/^[xw]\d+$/i.test(v) || /^(sp|wsp|pc|xzr|wzr)$/i.test(v)) {
+      try { a = emu.get(v); } catch (err) {
+        toast(pick('レジスタ名が正しくありません', 'Invalid register name'));
+        memOut.replaceChildren(noteBox(explainEmulatorFault(err?.code, err?.message || String(err))));
+        return;
+      }
+    } else {
+      if (!v) { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
+      try { a = BigInt(v); } catch { toast(pick('アドレスの形が違います', 'Invalid address format')); return; }
+    }
+    try {
+      const bytes = await emu.dump(a, 64);
+      if (!sheet.root.isConnected) return;
+      memOut.replaceChildren(codeBlock(dumpText(a, bytes)));
+    } catch (err) {
+      if (!sheet.root.isConnected) return;
+      memOut.replaceChildren(noteBox(explainEmulatorFault(err?.code, err?.message || String(err))));
+    }
   }));
   const memOut = el('div');
   memWrap.append(memOut);
@@ -1489,7 +1972,7 @@ export function showDebugger(app, addr) {
     }
 
     logBox.replaceChildren();
-    if (!emu.log.length) logBox.append(el('div', 'hint', '（まだありません）'));
+    if (!emu.log.length) logBox.append(el('div', 'hint', pick('（まだありません）', '(None yet)')));
     for (const l of emu.log.slice(-20)) {
       logBox.append(el('div', 'hint', '· ' + l.call + ' — ' + l.note));
     }
@@ -1518,8 +2001,15 @@ function dumpText(addr, bytes) {
    ══════════════════════════════════════════════════════════ */
 
 export function showScript(app) {
-  const controller = new AbortController();
-  const sheet = new Sheet('スクリプト', { onClose:() => controller.abort('script-sheet-closed') });
+  const sheetController = new AbortController();
+  let runController = null;
+  const sheet = new Sheet(pick('スクリプト', 'Script'), {
+    onClose: () => {
+      sheetController.abort('script-sheet-closed');
+      runController?.abort('script-sheet-closed');
+      runController = null;
+    },
+  });
   sheet.body.append(el('div', 'hint',
     '同じ作業を何百回も繰り返すときの道具です（IDAPython にあたります）。\n' +
     '言語は JavaScript。hex.〜 で解析結果に触れて、print(…) で下に出します。'));
@@ -1543,21 +2033,37 @@ export function showScript(app) {
   sheet.body.append(heading('結果'), out);
 
   async function run() {
+    if (sheetController.signal.aborted || !sheet.root.isConnected) return;
+    runController?.abort('script-run-replaced');
+    const localController = new AbortController();
+    runController = localController;
+    const isCurrent = () => (
+      !sheetController.signal.aborted
+      && !localController.signal.aborted
+      && runController === localController
+      && sheet.root.isConnected
+    );
     out.replaceChildren();
     const write = (line) => {
+      if (!isCurrent()) return;
       const row = el('div', 'cl');
       row.append(el('span', 'cl-text mono', line));
       out.append(row);
       out.scrollTop = out.scrollHeight;
     };
-    write('— 実行しています —');
-    const res = await runScript(ta.value, app, write, { signal:controller.signal });
-    if (res.error) {
-      const row = el('div', 'cl warn');
-      row.append(el('span', 'cl-text mono', '⚠ ' + res.error));
-      out.append(row);
-    } else {
-      write('— おわり —');
+    write(pick('— 実行しています —', '— Running —'));
+    try {
+      const res = await runScript(ta.value, app, write, { signal: localController.signal });
+      if (!isCurrent()) return;
+      if (res.error) {
+        const row = el('div', 'cl warn');
+        row.append(el('span', 'cl-text mono', '⚠ ' + res.error));
+        out.append(row);
+      } else {
+        write(pick('— おわり —', '— Done —'));
+      }
+    } finally {
+      if (runController === localController) runController = null;
     }
   }
 }
@@ -1694,20 +2200,34 @@ export function showPlugins(app) {
   }
 
   function runPlugin(p) {
-    const s = new Sheet(p.name);
+    runController?.abort('plugin-run-replaced');
+    const controller = runController = new AbortController();
+    const s = new Sheet(p.name, {
+      onClose: () => {
+        if (!controller.signal.aborted) controller.abort('plugin-output-sheet-closed');
+        if (runController === controller) runController = null;
+      },
+    });
     const out = el('div', 'codeview small');
-    s.body.append(el('div', 'hint', '実行しています…'), out);
+    s.body.append(el('div', 'hint', pick('実行しています…', 'Running…')), out);
+    const isCurrent = () => (
+      !controller.signal.aborted
+      && runController === controller
+      && s.root.isConnected
+      && sheet.root.isConnected
+    );
     const write = (line) => {
+      if (!isCurrent()) return;
       const row = el('div', 'cl');
       row.append(el('span', 'cl-text mono', line));
       out.append(row);
     };
-    runController?.abort('plugin-run-replaced');
-    const controller = runController = new AbortController();
     app.plugins.run(p.id, write, { signal:controller.signal }).then((res) => {
-      if (controller.signal.aborted || !sheet.root.isConnected) return;
+      if (!isCurrent()) return;
       if (res.error) write('⚠ ' + res.error);
-      else write('— おわり —');
+      else write(pick('— おわり —', '— Done —'));
+    }).finally(() => {
+      if (runController === controller) runController = null;
     });
   }
 
@@ -1759,31 +2279,32 @@ export function showIl2cpp(app) {
         return;
       }
       abortActive();
+      const snap = captureAppEpoch(app);
       const controller = new AbortController();
       activeController = controller;
       body.replaceChildren(el('div', 'hint', '読み込んでいます…'));
       try {
         const meta = await parseMetadataFileInWorker(f, { signal:controller.signal });
-        if (controller.signal.aborted || !sheet.root.isConnected) return;
+        if (controller.signal.aborted || !isAppEpochCurrent(app, snap, sheet)) return;
         await bindMethodAddresses(meta, {
           regions: app.store.get('regions') || [], signal: controller.signal,
           read: (addr, len) => app.backend.readAt(addr, len)
             .then((r) => (r && r.found ? r.bytes : null)),
         });
-        if (controller.signal.aborted || !sheet.root.isConnected) return;
+        if (controller.signal.aborted || !isAppEpochCurrent(app, snap, sheet)) return;
         const named = meta.methods.filter((m) => m.address != null)
           .map((m) => ({ addr: m.address, name: m.full }));
-        if (named.length && !controller.signal.aborted && sheet.root.isConnected) {
+        if (named.length && !controller.signal.aborted && isAppEpochCurrent(app, snap, sheet)) {
           app.symbols.addNames(named);
           app.symbols.addFunctions(named.map((n) => n.addr));
           app.viewer.setSymbols(app.symbols);
         }
-        if (!controller.signal.aborted && sheet.root.isConnected) {
+        if (!controller.signal.aborted && isAppEpochCurrent(app, snap, sheet)) {
           show(meta);
         }
       } catch (err) {
         if (controller.signal.aborted || err?.code === 'ABORT_ERR' || err?.name === 'AbortError') return;
-        if (!sheet.root.isConnected) return;
+        if (!isAppEpochCurrent(app, snap, sheet)) return;
         body.replaceChildren(el('div', 'hint warn', userError(err,
           'IL2CPPメタデータを解析できませんでした。別の解析ツールは引き続き利用できます。')));
       } finally {
@@ -1807,6 +2328,16 @@ export function showIl2cpp(app) {
     const search = input('クラス名・メソッド名で絞り込む');
     const results = list();
     body.append(field(search, '探す', run), results);
+    let classLower = null;
+    let methodLower = null;
+    let literalLower = null;
+    const takeMatches = (source, lowered, q, limit) => {
+      const out = [];
+      for (let i = 0; i < source.length && out.length < limit; i++) {
+        if (lowered[i].includes(q)) out.push(source[i]);
+      }
+      return out;
+    };
 
     function run() {
       const q = search.value.trim().toLowerCase();
@@ -1818,9 +2349,14 @@ export function showIl2cpp(app) {
         }
         return;
       }
-      const cs = meta.classes.filter((c) => c.full.toLowerCase().includes(q)).slice(0, 60);
-      const ms = meta.methods.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 100);
-      const ls = meta.literals.filter((x) => x.text.toLowerCase().includes(q)).slice(0, 60);
+      if (!classLower) {
+        classLower = meta.classes.map((c) => c.full.toLowerCase());
+        methodLower = meta.methods.map((m) => m.name.toLowerCase());
+        literalLower = meta.literals.map((x) => x.text.toLowerCase());
+      }
+      const cs = takeMatches(meta.classes, classLower, q, 60);
+      const ms = takeMatches(meta.methods, methodLower, q, 100);
+      const ls = takeMatches(meta.literals, literalLower, q, 60);
       if (cs.length) results.append(groupRow('クラス'));
       for (const c of cs) results.append(tapRow(c.full, { sub: 'クラス', onTap: () => copyText(c.full, '名前') }));
       if (ms.length) results.append(groupRow('メソッド'));

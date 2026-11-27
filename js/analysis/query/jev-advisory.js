@@ -12,6 +12,95 @@ const argumentBitsFor = context => (context.writtenArgumentBits??[]).slice(0,8)
 
 // This pure projection accepts an already validated view; unknown properties
 // (including descriptions, source labels, and oracle objects) are ignored.
+const JEV_MAX_RESPONSE_BYTES = 512 * 1024;
+const JEV_DEFAULT_ENDPOINT = 'https://api.openjev.sh/v1/systemone';
+const JEV_CACHE_MAX = 64;
+const jevSessionCache = new Map();
+const cmpCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+export function resolveJevEndpoint(baseUrl = null) {
+  if (typeof baseUrl === 'string' && /^https?:\/\//i.test(baseUrl.trim())) return baseUrl.trim();
+  const runtimeOrigin = typeof globalThis === 'object' && globalThis !== null ? globalThis.__HEX_RUNTIME_ORIGIN__ : null;
+  const opaqueOrigin = typeof location === 'object' && location !== null && location.origin === 'null';
+  if (opaqueOrigin && typeof runtimeOrigin === 'string' && /^https?:\/\//i.test(runtimeOrigin)) {
+    return `${runtimeOrigin.replace(/\/+$/, '')}/api/jev/systemone`;
+  }
+  return JEV_DEFAULT_ENDPOINT;
+}
+
+function jevCacheKey(query, policy, candidates) {
+  const keys = candidates.map(c => c?.key || '').join('|');
+  return `${policy}::${query}::${keys.length}:${keys.slice(0, 256)}`;
+}
+
+function readJevCache(key) {
+  if (!jevSessionCache.has(key)) return null;
+  const hit = jevSessionCache.get(key);
+  jevSessionCache.delete(key);
+  jevSessionCache.set(key, hit);
+  return hit;
+}
+
+function writeJevCache(key, value) {
+  if (!value) return;
+  if (jevSessionCache.has(key)) jevSessionCache.delete(key);
+  jevSessionCache.set(key, value);
+  while (jevSessionCache.size > JEV_CACHE_MAX) {
+    const oldest = jevSessionCache.keys().next().value;
+    jevSessionCache.delete(oldest);
+  }
+}
+
+async function readBoundedJevJson(response) {
+  const cl = Number(response?.headers?.get?.('content-length'));
+  if (Number.isFinite(cl) && cl > JEV_MAX_RESPONSE_BYTES) return null;
+  if (response?.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+        total += bytes.byteLength;
+        if (total > JEV_MAX_RESPONSE_BYTES) {
+          await reader.cancel?.().catch?.(() => {});
+          return null;
+        }
+        chunks.push(bytes);
+      }
+    } finally {
+      reader.releaseLock?.();
+    }
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
+    try { return JSON.parse(new TextDecoder().decode(merged)); } catch { return null; }
+  }
+  if (typeof response?.text === 'function') {
+    const text = await response.text();
+    if (typeof text !== 'string' || new TextEncoder().encode(text).byteLength > JEV_MAX_RESPONSE_BYTES) return null;
+    try { return JSON.parse(text); } catch { return null; }
+  }
+  return response.json();
+}
+
+function validateJevChoicePayload(payload, candidates) {
+  const pick = payload?.answers?.pick, unique = payload?.answers?.unique;
+  const unit = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+  if (payload?.model !== 'openjev' || pick?.type !== 'choice' || !/^c(?:0|[1-9]\d*)$/.test(pick.choice ?? '')
+    || !unit(pick.confidence) || !pick.probabilities || typeof pick.probabilities !== 'object'
+    || Array.isArray(pick.probabilities) || Object.keys(pick.probabilities).length > candidates.length
+    || !unit(pick.probabilities[pick.choice]) || unique?.type !== 'noul' || !unit(unique.noul)) return null;
+  const index = Number(pick.choice.slice(1));
+  if (!Number.isSafeInteger(index) || index >= candidates.length || candidates[index].field.conflict) return null;
+  for (const [key, probability] of Object.entries(pick.probabilities)) {
+    if (!/^c(?:0|[1-9]\d*)$/.test(key) || Number(key.slice(1)) >= candidates.length || !unit(probability)) return null;
+  }
+  return { selectedKey: candidates[index].key, choiceIndex: index, confidence: pick.confidence, uniqueConfidence: unique.noul };
+}
+
 export function jevAdvisoryRequest(query, views) {
   const tokens = new Set(cxxQueryTokens(query));
   const criteria = Object.fromEntries(views.map((c, index) => {
@@ -20,8 +109,9 @@ export function jevAdvisoryRequest(query, views) {
       const method = ctx.name ? (demangleCxx(ctx.name) ?? ctx.name).split('(')[0].split('::').at(-1) : '';
       const hits = cxxQueryTokens(method).filter(t => tokens.has(t) && !owner.includes(t)).length;
       return { ctx, position, priority: hits * (ctx.accessRoles?.includes('return-input') ? 2 : 1) };
-    }).sort((a, b) => b.priority - a.priority || a.ctx.address.localeCompare(b.ctx.address) || a.position - b.position).slice(0, 8);
-    const parts = [`class: ${bounded(c.className)}`, `member: offset 0x${c.offset.toString(16)}`,
+    }).sort((a, b) => b.priority - a.priority || cmpCodeUnit(String(a.ctx.address ?? ''), String(b.ctx.address ?? '')) || a.position - b.position).slice(0, 8);
+    const offsetText = c.offset != null ? `0x${c.offset.toString(16)}` : 'unknown';
+    const parts = [`class: ${bounded(c.className)}`, `member: offset ${offsetText}`,
       `size: ${Number.isSafeInteger(c.size) && c.size > 0 ? c.size : 'unknown'}`,
       `recovered category: ${bounded(c.recoveredType?.category ?? c.type?.kind ?? 'unknown')}`,
       `type proven: ${c.recoveredType?.proven === true}`, `reads: ${c.readCount ?? 'unknown'}`, `writes: ${c.writeCount ?? 'unknown'}`];
@@ -149,7 +239,7 @@ export function jevMemberContextSignature(view) {
     byAddress.set(context.address,roles);
   }
   return JSON.stringify([view?.className,[...byAddress].map(([address,roles])=>[address,[...roles].sort()])
-    .sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
+    .sort((a,b)=>cmpCodeUnit(String(a[0]),String(b[0])))]);
 }
 
 export function jevArgumentContextSignature(view) {
@@ -165,7 +255,7 @@ export function jevArgumentContextSignature(view) {
   }
   return JSON.stringify([view?.className,[...byAddress].map(([address,entry])=>
     [address,[...entry.roles].sort(),[...entry.registers].sort(),[...entry.bits].sort(),[...entry.receiverRoles].sort(),entry.truncated])
-    .sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
+    .sort((a,b)=>cmpCodeUnit(String(a[0]),String(b[0])))]);
 }
 
 // The ambiguity veto may use only context actually shown to the remote model.
@@ -189,29 +279,26 @@ function memberRequestViews(candidates,contexts) {
   });
 }
 
-export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch,representation='value-flow-v3'}={}) {
+export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch,representation='value-flow-v3',baseUrl=null}={}) {
   if(typeof apiKey!=='string'||!apiKey.trim()||apiKey.length>4096)return null;
   if(!['value-flow-v3','argument-flow-v4'].includes(representation))return null;
+  const endpoint = resolveJevEndpoint(baseUrl);
   return Object.freeze({async call({query,candidates,signal}) {
     if(!Array.isArray(candidates)||candidates.length<2||candidates.length>255)return null;
     const contexts=cxxSemanticViews(candidates,symbols);
     if(!contexts||contexts.some(context=>!context))return null;
+    const cKey = jevCacheKey(query, representation, candidates);
+    const cached = readJevCache(cKey);
+    if (cached) return cached;
     const views=memberRequestViews(candidates,contexts);
-    const response=await fetchImpl('https://api.openjev.sh/v1/systemone',{
+    const response=await fetchImpl(endpoint,{
       method:'POST',headers:{authorization:`Bearer ${apiKey.trim()}`,'content-type':'application/json'},
       body:JSON.stringify((representation==='argument-flow-v4'?jevArgumentFlowRequest:jevValueFlowRequest)(query,views)),signal});
     if(!response.ok)return null;
-    const payload=await response.json(),pick=payload?.answers?.pick,unique=payload?.answers?.unique;
-    const unit=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=1;
-    if(payload?.model!=='openjev'||pick?.type!=='choice'||!/^c(?:0|[1-9]\d*)$/.test(pick.choice??'')
-      ||!unit(pick.confidence)||!pick.probabilities||typeof pick.probabilities!=='object'
-      ||Array.isArray(pick.probabilities)||Object.keys(pick.probabilities).length>candidates.length
-      ||!unit(pick.probabilities[pick.choice])||unique?.type!=='noul'||!unit(unique.noul))return null;
-    const index=Number(pick.choice.slice(1));
-    if(!Number.isSafeInteger(index)||index>=candidates.length||candidates[index].field.conflict)return null;
-    for(const [key,probability] of Object.entries(pick.probabilities))
-      if(!/^c(?:0|[1-9]\d*)$/.test(key)||Number(key.slice(1))>=candidates.length||!unit(probability))return null;
-    return {selectedKey:candidates[index].key,choiceIndex:index};
+    const payload = await readBoundedJevJson(response);
+    const parsed = validateJevChoicePayload(payload, candidates);
+    if (parsed) writeJevCache(cKey, parsed);
+    return parsed;
   }});
 }
 
@@ -256,27 +343,98 @@ export async function requestJevAlternative(query, local, options = {}) {
     || typeof query !== 'string' || query.length > 2048 || !Array.isArray(local?.candidates)
     || local.candidates.some(c => c.source !== 'cxx' || c.anonymous !== true || c.askedByName)) return fallback();
   } catch (_) { return fallback(); }
+  const endpoint = resolveJevEndpoint(options.baseUrl);
+  const eligible = { ...local, candidates: local.candidates.filter(c => !c?.field?.conflict) };
+  if (eligible.candidates.length < 2) return fallback();
   const client = { async call({ query: phrase, candidates, signal }) {
     const contexts = cxxSemanticViews(candidates, options.symbols);
     if (!contexts || contexts.some(c => !c)) return null;
+    const cKey = jevCacheKey(phrase, 'advisory-v2', candidates);
+    const cached = readJevCache(cKey);
+    if (cached) return cached;
     const views = candidates.map((c, i) => ({ ...contexts[i], offset: c.offset, size: c.size,
       recoveredType: c.recoveredType, type: c.type ?? c.field.type,
       readCount: c.field.readCount, writeCount: c.field.writeCount }));
-    const response = await (options.fetchImpl ?? fetch)('https://api.openjev.sh/v1/systemone', {
+    const response = await (options.fetchImpl ?? fetch)(endpoint, {
       method: 'POST', headers: { authorization: `Bearer ${options.apiKey.trim()}`, 'content-type': 'application/json' },
       body: JSON.stringify(jevAdvisoryRequest(phrase, views)), signal,
     });
     if (!response.ok) return null;
-    const payload = await response.json(), pick = payload?.answers?.pick, unique = payload?.answers?.unique;
-    const unit = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1;
-    if (payload?.model !== 'openjev' || pick?.type !== 'choice' || !/^c(?:0|[1-9]\d*)$/.test(pick.choice ?? '')
-      || !unit(pick.confidence) || !unit(pick.probabilities?.[pick.choice]) || unique?.type !== 'noul' || !unit(unique.noul)) return null;
-    const index = Number(pick.choice.slice(1));
-    if (!Number.isSafeInteger(index) || index >= candidates.length || candidates[index].field.conflict) return null;
-    for (const [key, probability] of Object.entries(pick.probabilities))
-      if (!/^c(?:0|[1-9]\d*)$/.test(key) || Number(key.slice(1)) >= candidates.length || !unit(probability)) return null;
-    return { selectedKey: candidates[index].key, choiceIndex: index };
+    const payload = await readBoundedJevJson(response);
+    const parsed = validateJevChoicePayload(payload, candidates);
+    if (parsed) writeJevCache(cKey, parsed);
+    return parsed;
   } };
-  return adviseWithJev(query, local, { enabled: true, mode: 'partial', maxChoices: 255,
-    timeoutMs: 15000, signal: options.signal, isCurrent: options.isCurrent, client });
+  return adviseWithJev(query, eligible, { enabled: true, mode: 'partial', maxChoices: 255,
+    timeoutMs: Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000, signal: options.signal, isCurrent: options.isCurrent, client });
+}
+
+function compactFunctionChoice(candidate, symbols) {
+  const addr = candidate?.addr;
+  const name = candidate?.name || (addr != null ? symbols?.nameAt?.(addr) : '') || (addr != null ? `sub_${BigInt(addr).toString(16)}` : 'unknown');
+  const strings = (candidate?.reasons || [])
+    .filter((r) => r?.code === 'string-ref' && r?.detail?.text)
+    .slice(0, 3)
+    .map((r) => String(r.detail.text).replace(/\s+/g, ' ').slice(0, 80));
+  const refs = (candidate?.reasons || [])
+    .filter((r) => (r?.code === 'callee-name' || r?.code === 'caller-name') && r?.detail?.name)
+    .slice(0, 3)
+    .map((r) => String(r.detail.name).replace(/\s+/g, ' ').slice(0, 60));
+  const parts = [`fn: ${String(name).slice(0, 120)}`];
+  if (strings.length) parts.push(`strings: ${strings.join(' | ')}`);
+  if (refs.length) parts.push(`refs: ${refs.join(', ')}`);
+  return parts.join(' ; ');
+}
+
+export async function requestJevFunctionAlternative(query, candidates, options = {}) {
+  const none = { advisory: { source: 'none', candidate: null, confidence: null } };
+  if (options.enabled !== true || typeof query !== 'string' || !query.trim() || query.length > 2048) return none;
+  if (!Array.isArray(candidates) || candidates.length < 2) return none;
+  const apiKey = typeof options.apiKey === 'string' ? options.apiKey.trim() : '';
+  if (!apiKey || apiKey.length > 4096) return none;
+  const shortlist = candidates.slice(0, 24);
+  const criteria = Object.fromEntries(shortlist.map((c, idx) => [`c${idx}`, compactFunctionChoice(c, options.symbols)]));
+  criteria.none = 'None of the listed functions clearly matches the requested gameplay or application behaviour.';
+  const body = {
+    model: 'openjev',
+    state: { userPhrase: query.trim(), queryKind: 'function-shortlist' },
+    questions: {
+      pick: {
+        type: 'choice',
+        instructions: 'Select the single function most likely to implement the requested behaviour based on its name, referenced strings, and nearby calls. Avoid logging, analytics, UI labels, ad SDKs, and allocators. Choose none if uncertain.',
+        criteria,
+      },
+    },
+  };
+  const timeoutMs = Number.isSafeInteger(options.timeoutMs) && options.timeoutMs > 0 ? Math.min(options.timeoutMs, 15000) : 5000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort('jev-timeout'), timeoutMs);
+  const onParentAbort = () => controller.abort(options.signal?.reason || 'jev-cancelled');
+  options.signal?.addEventListener?.('abort', onParentAbort, { once: true });
+  try {
+    const endpoint = resolveJevEndpoint(options.endpoint);
+    const fetchImpl = typeof options.fetchImpl === 'function' ? options.fetchImpl : fetch;
+    const response = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!response?.ok) return none;
+    const payload = await response.json().catch(() => null);
+    if (options.isCurrent && options.isCurrent() !== true) return none;
+    const pickAns = payload?.answers?.pick;
+    if (payload?.model !== 'openjev' || pickAns?.type !== 'choice') return none;
+    const choice = String(pickAns.choice || '');
+    if (!/^c(?:0|[1-9]\d*)$/.test(choice)) return none;
+    const idx = Number(choice.slice(1));
+    if (!Number.isSafeInteger(idx) || idx < 0 || idx >= shortlist.length) return none;
+    const confidence = typeof pickAns.confidence === 'number' && Number.isFinite(pickAns.confidence) ? pickAns.confidence : null;
+    return { advisory: { source: 'jev', candidate: shortlist[idx], confidence } };
+  } catch {
+    return none;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener?.('abort', onParentAbort);
+  }
 }

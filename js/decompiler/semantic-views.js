@@ -142,6 +142,23 @@ function performView(ir, writer, source, operation, before, after, inputs, relat
   writer.selections.push({ selection, offset:event.offset });
 }
 
+const combinedWriteListCache = new WeakMap();
+function combinedWriteList(first, second) {
+  if (!second || second.length === 0) return first;
+  if (!first || first.length === 0) return second;
+  if (!Object.isFrozen(first) || !Object.isFrozen(second)) {
+    return Object.freeze([...first, ...second]);
+  }
+  let bySecond = combinedWriteListCache.get(first);
+  if (!bySecond) combinedWriteListCache.set(first, bySecond = new WeakMap());
+  let combined = bySecond.get(second);
+  if (!combined) {
+    combined = Object.freeze([...first, ...second]);
+    bySecond.set(second, combined);
+  }
+  return combined;
+}
+
 function sealViewWriter(ir, writer) {
   if (writer.unavailable || !writer.events.length && !writer.prior) return;
   try {
@@ -153,8 +170,8 @@ function sealViewWriter(ir, writer) {
     const priorCheck = writer.prior?.history.isCurrent;
     const matches = following => (following == null || Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes)
       && (following == null ? output() : output.matchesThroughWrites(following))
-      && (!priorCheck || priorCheck.matchesThroughWrites([...writes, ...(following || [])]))
-      && selections.every(item => item.selection.matchesThroughWrites([...item.writes, ...(following || [])]));
+      && (!priorCheck || priorCheck.matchesThroughWrites(combinedWriteList(writes, following)))
+      && selections.every(item => item.selection.matchesThroughWrites(combinedWriteList(item.writes, following)));
     const isCurrent = Object.freeze(Object.assign(() => matches(null), { matchesThroughWrites:matches }));
     if (!isCurrent()) return;
     const checks = new Map();
@@ -163,7 +180,7 @@ function sealViewWriter(ir, writer) {
       const original = record.isCurrent;
       if (!checks.has(original)) {
         const through = following => (following == null || Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes) && (original.matchesThroughWrites
-          ? original.matchesThroughWrites([...writes, ...(following || [])]) : original())
+          ? original.matchesThroughWrites(combinedWriteList(writes, following)) : original())
           && (following == null ? isCurrent() : isCurrent.matchesThroughWrites(following));
         const current = Object.freeze(Object.assign(() => through(null), { matchesThroughWrites:through }));
         checks.set(original, current() ? current : null);
@@ -298,24 +315,27 @@ function storedViewProjectsIncoming(stored, incoming, store) {
   return suffix.every((step, index) => step === b.steps[index]);
 }
 
-function canonicalLocationBase(value, active = new Set()) {
-  if (!value || active.has(value.id)) return value;
+function canonicalLocationBase(value, active = new Set(), memo = new Map()) {
+  if (!value) return null;
+  if (memo.has(value.id)) return memo.get(value.id);
+  if (active.has(value.id)) return value;
   active.add(value.id);
   const trace = exactViewTrace(value);
   let root = trace?.root ?? value;
   const def = root?.def;
   if (def?.op === OP.LOAD && def.reachingStore?.args?.[0]?.value) {
-    root = canonicalLocationBase(def.reachingStore.args[0].value, active) ?? root;
+    root = canonicalLocationBase(def.reachingStore.args[0].value, active, memo) ?? root;
   } else if (isExactOperandForwardMove(def)) {
     // The forwarded operand is the exact stored identity of the load it
     // replaced; its location base is the stored value's base.
-    root = canonicalLocationBase(def.args[0]?.value, active) ?? root;
+    root = canonicalLocationBase(def.args[0]?.value, active, memo) ?? root;
   } else if (def?.op === OP.PHI && Array.isArray(def.incoming) && def.incoming.length) {
-    const roots = def.incoming.map((item) => canonicalLocationBase(item.value, new Set(active))).filter(Boolean);
+    const roots = def.incoming.map((item) => canonicalLocationBase(item.value, active, memo));
     const first = roots[0] ?? null;
-    if (first && roots.every((candidate) => candidate.id === first.id)) root = first;
+    if (first && roots.every((candidate) => candidate && candidate.id === first.id)) root = first;
   }
   active.delete(value.id);
+  if (active.size === 0) memo.set(value.id, root);
   return root;
 }
 
@@ -337,8 +357,15 @@ function sameCommittedFieldLocation(left, right) {
 }
 
 function hasBarrierAfterStore(block, store) {
-  return (block?.insts || []).some((inst) => Number(inst.row) > Number(store.row)
-    && (inst.op === OP.CALL || inst.op === OP.UNKNOWN || inst.op === OP.STORE));
+  const insts = block?.insts || [];
+  const storeIdx = insts.indexOf(store);
+  const storeRow = Number(store.row);
+  return insts.some((inst, idx) => {
+    if (inst === store) return false;
+    const instRow = Number(inst.row);
+    const isAfter = instRow > storeRow || (instRow === storeRow && storeIdx >= 0 && idx > storeIdx);
+    return isAfter && (inst.op === OP.CALL || inst.op === OP.UNKNOWN || inst.op === OP.STORE);
+  });
 }
 
 function committedStoreForIncoming(ir, incoming) {
@@ -381,6 +408,14 @@ function projectCommittedPhiSnapshots(ir, writer) {
       committedLocationKey: first.loc.key,
       committedViewBits: viewBits,
     };
+    for (const incoming of phi.incoming || []) {
+      const uses = incoming?.value?.uses;
+      if (Array.isArray(uses)) {
+        const idx = uses.indexOf(phi);
+        if (idx >= 0) uses.splice(idx, 1);
+      }
+    }
+    phi.incoming = [];
     phi.op = OP.LOAD;
     phi.sub = null;
     phi.loc = first.loc;

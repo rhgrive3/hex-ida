@@ -16,6 +16,7 @@ const BIN_NAME = {
   and: 'and', or: 'orr', xor: 'eor', bic: 'bic', orn: 'orn', eon: 'eon',
   shl: 'lsl', lshr: 'lsr', ashr: 'asr', ror: 'ror',
   fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
+  fmax: 'fmax', fmin: 'fmin', fmaxnm: 'fmaxnm', fminnm: 'fminnm',
 };
 
 const UN_NAME = {
@@ -25,6 +26,150 @@ const UN_NAME = {
 };
 
 const PASS_UN = new Set(['sxt8', 'sxt16', 'sxt32', 'uxt8', 'uxt16', 'uxt32', 'fmov']);
+
+function unwrapMov(val) {
+  let cur = val;
+  const seen = new Set();
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    const def = cur.def;
+    if (def && def.op === OP.MOV && (def.sub == null || def.sub === 'trunc' || def.sub === 'zext') && def.args?.[0]?.value) {
+      cur = def.args[0].value;
+      continue;
+    }
+    break;
+  }
+  return cur || null;
+}
+
+function valueBits(val) {
+  return typeof val?.bits === 'number' && Number.isSafeInteger(val.bits) && val.bits > 0 ? val.bits : null;
+}
+
+function signMaskShiftAmount(val, expectedBits = null) {
+  if (val == null || val.const == null) return null;
+  const amount = Number(val.const);
+  if (!Number.isSafeInteger(amount)) return null;
+  if (expectedBits != null) return amount === expectedBits - 1 && (amount === 31 || amount === 63) ? amount : null;
+  return amount === 31 || amount === 63 ? amount : null;
+}
+
+function matchAshrSignMask(val, expectedBits = null) {
+  const outerBits = valueBits(val);
+  const unwrapped = unwrapMov(val);
+  const def = unwrapped?.def;
+  if (!def || def.op !== OP.BIN || def.sub !== 'ashr') return null;
+  const args = (def.args || []).filter((a) => a && a.value);
+  if (args.length !== 2 || args[0].shift || args[1].shift) return null;
+  const dstBits = valueBits(def.dst) ?? valueBits(unwrapped);
+  const srcBits = valueBits(args[0].value);
+  if (outerBits != null && dstBits != null && outerBits !== dstBits) return null;
+  if (expectedBits != null && outerBits != null && outerBits !== expectedBits) return null;
+  if (expectedBits != null && dstBits != null && dstBits !== expectedBits) return null;
+  if (expectedBits != null && srcBits != null && srcBits !== expectedBits) return null;
+  if (dstBits != null && srcBits != null && dstBits !== srcBits) return null;
+  const width = expectedBits ?? outerBits ?? dstBits ?? srcBits;
+  const shiftAmount = signMaskShiftAmount(args[1].value, width);
+  if (shiftAmount == null) return null;
+  return { ashrInst: def, source: args[0].value, bits: width ?? (shiftAmount + 1) };
+}
+
+function matchSignMaskClamp(inst) {
+  if (!inst || inst.op !== OP.BIN) return null;
+  const args = (inst.args || []).filter((a) => a && a.value);
+  if (args.length !== 2) return null;
+
+  const instBits = valueBits(inst.dst);
+  const bits0 = valueBits(args[0].value);
+  const bits1 = valueBits(args[1].value);
+  if (instBits != null && bits0 != null && bits0 !== instBits) return null;
+  if (instBits != null && bits1 != null && bits1 !== instBits) return null;
+  if (bits0 != null && bits1 != null && bits0 !== bits1) return null;
+  const width = instBits ?? bits0 ?? bits1;
+
+  if (inst.sub === 'and') {
+    if (args[0].shift || args[1].shift) return null;
+    for (let i = 0; i < 2; i++) {
+      const maskArg = args[i].value;
+      const otherArg = args[1 - i].value;
+      const notVal = unwrapMov(maskArg);
+      const notDef = notVal?.def;
+      if (!notDef || notDef.op !== OP.UN || notDef.sub !== 'not' || !notDef.args?.[0]?.value || notDef.args[0].shift) continue;
+      const notBits = valueBits(notDef.dst) ?? valueBits(notVal);
+      if (width != null && notBits != null && notBits !== width) continue;
+      const effWidth = width ?? notBits;
+      const ashr = matchAshrSignMask(notDef.args[0].value, effWidth);
+      if (!ashr) continue;
+      const srcUnwrapped = unwrapMov(ashr.source);
+      const otherUnwrapped = unwrapMov(otherArg);
+      const srcId = srcUnwrapped?.id;
+      const otherId = otherUnwrapped?.id;
+      if (srcId != null && srcId === otherId) {
+        const srcBits = valueBits(srcUnwrapped);
+        const otherBits = valueBits(otherUnwrapped);
+        if (effWidth != null && srcBits != null && srcBits !== effWidth) continue;
+        if (effWidth != null && otherBits != null && otherBits !== effWidth) continue;
+        if (srcBits != null && otherBits != null && srcBits !== otherBits) continue;
+        return {
+          sourceArgIndex: 1 - i,
+          partInsts: [notDef, ashr.ashrInst],
+          partValueIds: [notDef.dst?.id, ashr.ashrInst.dst?.id].filter((id) => id != null),
+        };
+      }
+    }
+    return null;
+  }
+
+  if (inst.sub === 'bic') {
+    const isAsrShift = (a) => {
+      if (a?.shift?.op !== 'asr') return false;
+      const shiftAmount = a.shift.amount;
+      if (shiftAmount == null) return false;
+      const n = Number(shiftAmount);
+      if (!Number.isSafeInteger(n)) return false;
+      if (width != null) return n === width - 1 && (n === 31 || n === 63);
+      return n === 31 || n === 63;
+    };
+    const u0 = unwrapMov(args[0].value);
+    const u1 = unwrapMov(args[1].value);
+    const id0 = u0?.id;
+    const id1 = u1?.id;
+    if (id0 != null && id0 === id1 && !args[0].shift && isAsrShift(args[1])) {
+      const b0 = valueBits(u0);
+      const b1 = valueBits(u1);
+      if ((width == null || b0 == null || b0 === width) &&
+          (width == null || b1 == null || b1 === width) &&
+          (b0 == null || b1 == null || b0 === b1)) {
+        return {
+          sourceArgIndex: 0,
+          partInsts: [],
+          partValueIds: [],
+        };
+      }
+    }
+    if (!args[0].shift && !args[1].shift) {
+      const ashr = matchAshrSignMask(args[1].value, width);
+      if (ashr) {
+        const srcUnwrapped = unwrapMov(ashr.source);
+        const srcId = srcUnwrapped?.id;
+        if (srcId != null && srcId === id0) {
+          const srcBits = valueBits(srcUnwrapped);
+          const otherBits = valueBits(u0);
+          if ((width == null || srcBits == null || srcBits === width) &&
+              (width == null || otherBits == null || otherBits === width) &&
+              (srcBits == null || otherBits == null || srcBits === otherBits)) {
+            return {
+              sourceArgIndex: 0,
+              partInsts: [ashr.ashrInst],
+              partValueIds: [ashr.ashrInst.dst?.id].filter((id) => id != null),
+            };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
 
 function valueDependsOn(value, targetId, memo = new Map(), active = new Set()) {
   if (!value) return false;
@@ -134,7 +279,7 @@ function stableOrigin(value, callByRow, memo = new Map(), active = new Set()) {
   return out;
 }
 
-function stepFrom(inst, loadValue, callByRow, originMemo) {
+function stepFrom(inst, loadValue, callByRow, originMemo, signMaskInsts, clampPartNodes, clampPartIds) {
   if (inst?.op === OP.MOV && (
     inst.extra?.stateRead || inst.extra?.stateWrite ||
     ['trunc', 'zext', 'sext', 'bitcast'].includes(inst.sub)
@@ -143,9 +288,12 @@ function stepFrom(inst, loadValue, callByRow, originMemo) {
   if (!op) return null;
   const otherValue = otherInput(inst, loadValue);
   const otherOrigin = stableOrigin(otherValue, callByRow, originMemo);
-  return { op, imm: otherValue && otherValue.const != null ? otherValue.const : null, immFloat: null,
+  const step = { op, imm: otherValue && otherValue.const != null ? otherValue.const : null, immFloat: null,
     other: otherValue && otherValue.reg ? otherValue.reg : null, otherOrigin,
     row: inst.row, address: inst.address, engine: 'ir-ssa' };
+  if (signMaskInsts?.has(inst)) step.signMaskClamp = true;
+  else if (clampPartNodes?.has(inst) || (inst.dst && clampPartIds?.has(inst.dst.id))) step.signMaskClampPart = true;
+  return step;
 }
 
 function locationShape(rmw) {
@@ -200,10 +348,21 @@ export function findIrValueUpdates(model, opts, precomputed = null) {
     if (!location) continue;
     const load = rmw.load, store = rmw.store;
     if (!load || !store || !load.dst) continue;
+    const chain = rmw.chain || [];
+    const signMaskInsts = new Set();
+    const clampPartNodes = new Set();
+    const clampPartIds = new Set();
+    for (const inst of chain) {
+      const m = matchSignMaskClamp(inst);
+      if (!m) continue;
+      signMaskInsts.add(inst);
+      for (const p of m.partInsts) clampPartNodes.add(p);
+      for (const id of m.partValueIds) clampPartIds.add(id);
+    }
     // Preserve the proof chain exactly as constructed by readModifyWrite(); row
     // sorting is invalid across branches and loops.
-    const steps = (rmw.chain || [])
-      .map((inst) => stepFrom(inst, load.dst, callByRow, originMemo))
+    const steps = chain
+      .map((inst) => stepFrom(inst, load.dst, callByRow, originMemo, signMaskInsts, clampPartNodes, clampPartIds))
       .filter(Boolean);
     // One machine instruction may project into several exact v1 compatibility
     // nodes (for example state-read -> trunc -> add -> state-write). Those are

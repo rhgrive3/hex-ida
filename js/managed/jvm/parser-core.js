@@ -41,7 +41,8 @@ const CONSTANT_VALUE_TAGS = Object.freeze({
 });
 function classVersionInfo(major,minor){const version=JVM_CLASS_VERSIONS.get(major);if(!version||!Number.isInteger(minor)||minor<0||minor>version.maxMinor)return null;return version;}
 export function probeJvm(bytes){if(!bytes||bytes.length<10)return{supported:false,confidence:0,reason:'too-small'};const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);if(u8[0]!==0xca||u8[1]!==0xfe||u8[2]!==0xba||u8[3]!==0xbe)return{supported:false,confidence:0,reason:'invalid-magic'};const minor=(u8[4]<<8)|u8[5],major=(u8[6]<<8)|u8[7],formatVersion=`class-${major}.${minor}`,version=classVersionInfo(major,minor);if(!version)return{supported:false,confidence:0.95,reason:'unsupported-version',formatVersion};return{supported:true,confidence:1,formatVersion,vmSpecEdition:version.vmSpecEdition};}
-function decodeMutf8(bytes){let pos=0,chars=[];while(pos<bytes.length){const b1=bytes[pos++];if(b1>=0x01&&b1<=0x7f){chars.push(String.fromCharCode(b1));continue;}if((b1&0xe0)===0xc0){if(pos>=bytes.length)fail('jvm-invalid-modified-utf8');const b2=bytes[pos++];if((b2&0xc0)!==0x80)fail('jvm-invalid-modified-utf8');const value=((b1&0x1f)<<6)|(b2&0x3f);if(value===0){if(b1!==0xc0||b2!==0x80)fail('jvm-invalid-modified-utf8');}else if(value<0x80)fail('jvm-invalid-modified-utf8');chars.push(String.fromCharCode(value));continue;}if((b1&0xf0)===0xe0){if(pos+1>=bytes.length)fail('jvm-invalid-modified-utf8');const b2=bytes[pos++],b3=bytes[pos++];if((b2&0xc0)!==0x80||(b3&0xc0)!==0x80)fail('jvm-invalid-modified-utf8');const value=((b1&0x0f)<<12)|((b2&0x3f)<<6)|(b3&0x3f);if(value<0x800)fail('jvm-invalid-modified-utf8');chars.push(String.fromCharCode(value));continue;}fail('jvm-invalid-modified-utf8');}return chars.join('');}
+const ASCII_DECODER=new TextDecoder('ascii');
+function decodeMutf8(bytes){let pureAscii=true;for(let i=0;i<bytes.length;i++){const b=bytes[i];if(b===0||b>=0x80){pureAscii=false;break;}}if(pureAscii)return bytes.length===0?'':ASCII_DECODER.decode(bytes);let pos=0,chars=[];while(pos<bytes.length){const b1=bytes[pos++];if(b1>=0x01&&b1<=0x7f){chars.push(String.fromCharCode(b1));continue;}if((b1&0xe0)===0xc0){if(pos>=bytes.length)fail('jvm-invalid-modified-utf8');const b2=bytes[pos++];if((b2&0xc0)!==0x80)fail('jvm-invalid-modified-utf8');const value=((b1&0x1f)<<6)|(b2&0x3f);if(value===0){if(b1!==0xc0||b2!==0x80)fail('jvm-invalid-modified-utf8');}else if(value<0x80)fail('jvm-invalid-modified-utf8');chars.push(String.fromCharCode(value));continue;}if((b1&0xf0)===0xe0){if(pos+1>=bytes.length)fail('jvm-invalid-modified-utf8');const b2=bytes[pos++],b3=bytes[pos++];if((b2&0xc0)!==0x80||(b3&0xc0)!==0x80)fail('jvm-invalid-modified-utf8');const value=((b1&0x0f)<<12)|((b2&0x3f)<<6)|(b3&0x3f);if(value<0x800)fail('jvm-invalid-modified-utf8');chars.push(String.fromCharCode(value));continue;}fail('jvm-invalid-modified-utf8');}return chars.join('');}
 
 export function parseJvm(bytes,options={}){
   const probe=probeJvm(bytes);if(!probe.supported)fail(probe.reason==='unsupported-version'?'jvm-unsupported-version':'jvm-unsupported-binary');const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);const view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength);const ensure=(o,s,c='jvm-truncated-class')=>checkedRange(u8.length,o,s,c);ensure(0,10,'jvm-truncated-header');
@@ -186,17 +187,21 @@ export function parseJvm(bytes,options={}){
     if((mFlags&0x0008)===0){const parameterSlots=parsedMethodDescriptor.parameters.reduce((slots,type)=>slots+(type.kind==='base'&&(type.tag==='J'||type.tag==='D')?2:1),0);if(parameterSlots>=255)fail('jvm-invalid-method-descriptor');}claimMemberSignature(seenMethodSignatures,methodName,methodDescriptor,'jvm-duplicate-method-name-descriptor');methods.push({accessFlags:mFlags,name:methodName,descriptor:methodDescriptor,code:codeAttr});
   }
   const thisClassName=requireDefiningClassName(thisClassIdx,'jvm-invalid-this-class-index');
-  // JVMS §4.1 super_class contract: super_class=0 is reserved for the class
-  // Object; interfaces and ACC_MODULE class files must carry a nonzero
-  // super_class naming class Object. Cross-field violations fail closed (#4860).
+  // JVMS §4.1 super_class contract: for ACC_MODULE class files, super_class
+  // MUST be 0; for non-module class files, super_class=0 is reserved for
+  // java/lang/Object, and interfaces must carry a nonzero super_class naming
+  // java/lang/Object. Cross-field violations fail closed (#4860).
   const isInterfaceClass=(accessFlags&0x0200)!==0,isModuleClass=(accessFlags&0x8000)!==0;
   let superClassName;
-  if(superClassIdx===0){
-    if(isInterfaceClass||isModuleClass||thisClassName!=='java/lang/Object')fail('jvm-invalid-zero-super-class');
+  if(isModuleClass){
+    if(superClassIdx!==0)fail('jvm-invalid-module-super-class');
+    superClassName=null;
+  }else if(superClassIdx===0){
+    if(isInterfaceClass||thisClassName!=='java/lang/Object')fail('jvm-invalid-zero-super-class');
     superClassName=null;
   }else{
     superClassName=requireDefiningClassName(superClassIdx,'jvm-invalid-super-class-index');
-    if((isInterfaceClass||isModuleClass)&&superClassName!=='java/lang/Object')fail('jvm-super-class-must-be-object');
+    if(isInterfaceClass&&superClassName!=='java/lang/Object')fail('jvm-super-class-must-be-object');
   }
   ensure(pos,2,'jvm-truncated-class-attributes-count');const classAttrCount=view.getUint16(pos,false);pos+=2;let bootstrapMethodsCount=null;for(let a=0;a<classAttrCount;a++){ensure(pos,6,'jvm-truncated-class-attribute');const attrName=requireUtf8(view.getUint16(pos,false),'jvm-invalid-class-attribute-name-index'),attrLen=view.getUint32(pos+2,false),attrDataStart=pos+6;ensure(attrDataStart,attrLen,'jvm-truncated-class-attribute');pos=attrDataStart+attrLen;if(majorVersion>=51&&attrName==='BootstrapMethods'){if(bootstrapMethodsCount!==null)fail('jvm-duplicate-bootstrap-methods-attribute');const attrEnd=pos,ensureBootstrap=(o,s,c='jvm-truncated-bootstrap-methods-attribute')=>checkedRange(attrEnd,o,s,c);ensureBootstrap(attrDataStart,2);bootstrapMethodsCount=view.getUint16(attrDataStart,false);let bPos=attrDataStart+2;for(let b=0;b<bootstrapMethodsCount;b++){ensureBootstrap(bPos,4);const argumentCount=view.getUint16(bPos+2,false);bPos+=4;ensureBootstrap(bPos,argumentCount*2);bPos+=argumentCount*2;}if(bPos!==attrEnd)fail('jvm-invalid-bootstrap-methods-attribute-length');}}validateBootstrapMethodReferences(bootstrapMethodsCount);if(pos!==u8.length)fail('jvm-trailing-bytes');
   const binaryId=options.binaryId||'jvm-binary',imageId=createManagedImageId(binaryId),moduleId=createManagedModuleId(imageId,`${thisClassName}.class`);

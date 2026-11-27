@@ -569,22 +569,33 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
       const fieldList = view.getUint32(body + 4, true);
       const sizeOffset = leaf === LF_UNION ? body + 8 : body + 16;
       const numeric = readNumeric(view, bytes, sizeOffset, end);
-      if (!numeric) break;
+      if (!numeric || !Number.isSafeInteger(numeric.value) || numeric.value < 0) break;
       const { value: sizeBytes, next } = numeric;
       // Type names are NUL-terminated: a record that ends without one is
       // truncated, not a complete type with a shorter name (#5265).
       const nameEntry = cstringWithNext(bytes, next, end);
       if (!nameEntry) break;
+      let uniqueName = null;
+      if ((properties & CLASS_OPTION_HAS_UNIQUE_NAME) !== 0) {
+        const uniqueNameEntry = cstringWithNext(bytes, nameEntry.next, end);
+        if (!uniqueNameEntry) break;
+        uniqueName = uniqueNameEntry.value;
+      }
+      const knownProperties = (properties & ~CLASS_OPTIONS_KNOWN_MASK) === 0;
+      if (!knownProperties) unmodelled.add(leaf);
       const keyword = leaf === LF_UNION ? 'union' : leaf === LF_CLASS ? 'class' : 'struct';
       types.set(index, {
         leaf, kind: 'aggregate', keyword,
         // Bit 7 of the property field marks a forward reference: it names the
         // type but carries no layout, so it is not a complete fact.
         forwardReference: (properties & CLASS_OPTION_FORWARD_REFERENCE) !== 0,
+        knownProperties,
+        properties,
         memberCount: count,
         fieldList,
         sizeBytes,
         name: nameEntry.value,
+        uniqueName,
       });
     } else if (leaf === LF_POINTER) {
       types.set(index, { leaf, kind: 'pointer', referent: view.getUint32(body, true), attributes: view.getUint32(body + 4, true) });
@@ -601,9 +612,11 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
       });
     } else if (leaf === LF_ARRAY) {
       const numeric = readNumeric(view, bytes, body + 8, end);
-      if (!numeric) break;
+      if (!numeric || !Number.isSafeInteger(numeric.value) || numeric.value < 0) break;
+      const nameEntry = cstringWithNext(bytes, numeric.next, end);
+      if (!nameEntry) break;
       const { value: sizeBytes } = numeric;
-      types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes });
+      types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes, name: nameEntry.value });
     } else if (leaf === LF_ENUM) {
       // LF_ENUM is a TagRecord: NumEnumerators, Properties, UnderlyingType,
       // FieldListType, Name, and (when HasUniqueName is set) UniqueName.
@@ -772,7 +785,7 @@ function parseFieldList(view, bytes, start, end, unmodelled) {
       if (offset + 8 > end) { complete = false; break; }
       const typeIndex = view.getUint32(offset + 4, true);
       const numeric = readNumeric(view, bytes, offset + 8, end);
-      if (!numeric || numeric.value == null) { complete = false; break; }
+      if (!numeric || !Number.isSafeInteger(numeric.value) || numeric.value < 0) { complete = false; break; }
       const { value: fieldOffset, next } = numeric;
       nameEntry = cstringWithNext(bytes, next, end);
       if (!nameEntry) { complete = false; break; }
@@ -795,7 +808,11 @@ function parseFieldList(view, bytes, start, end, unmodelled) {
     }
     // Records are padded to a 4-byte boundary with 0xf1..0xf3 filler.
     let cursor = nameEntry.next;
-    while (cursor < end && bytes[cursor] >= 0xf0) cursor += 1;
+    let padCount = 0;
+    while (cursor < end && bytes[cursor] >= 0xf1 && bytes[cursor] <= 0xff && padCount < 3) {
+      cursor += 1;
+      padCount += 1;
+    }
     if (cursor <= offset) { complete = false; break; }
     offset = cursor;
   }
@@ -827,6 +844,7 @@ function createTypeRenderContext({
     outputChars: 0,
     memo: new Map(),
     active: new Set(),
+    cycleCount: 0,
     reasons: new Set(),
     exhaustedReason: null,
   };
@@ -881,6 +899,7 @@ function renderTypeIndex(index, types, depth, context) {
 
   const activeKey = String(index);
   if (context.active.has(activeKey)) {
+    context.cycleCount += 1;
     context.addReason(TYPE_RENDER_CYCLE_REASON);
     return unknownTypeDescriptor();
   }
@@ -888,9 +907,12 @@ function renderTypeIndex(index, types, depth, context) {
   const cached = context.memo.get(cacheKey);
   if (cached) return cached;
 
+  const cycleBefore = context.cycleCount;
   context.active.add(activeKey);
   const finish = (descriptor) => {
-    context.memo.set(cacheKey, descriptor);
+    if (context.cycleCount === cycleBefore && context.exhaustedReason == null) {
+      context.memo.set(cacheKey, descriptor);
+    }
     return descriptor;
   };
   try {
@@ -920,13 +942,15 @@ function renderTypeIndex(index, types, depth, context) {
       const sourceName = record.name ? record.name : '<anonymous>';
       if (typeof sourceName !== 'string') return finish(unknownTypeDescriptor());
       const name = context.admitName([keyword, ' ', sourceName]);
+      const fields = record.fieldList ? types?.get(record.fieldList) : null;
+      const fieldListOk = !record.fieldList || (fields?.kind === 'field-list' && fields.complete === true);
       return finish(name == null
         ? unknownTypeDescriptor()
         : {
           name,
           sizeBytes: record.sizeBytes,
           isAggregate: true,
-          complete: !record.forwardReference && record.sizeBytes != null,
+          complete: !record.forwardReference && record.knownProperties !== false && fieldListOk && record.sizeBytes != null,
         });
     }
     if (record.kind === 'pointer') {
@@ -1279,24 +1303,32 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       diagnostics.push('DBI module substream is malformed: the module list is incomplete');
     }
     for (const module of modules) {
+      if (signal?.aborted) {
+        return createDebugProviderResult({
+          ecosystem: 'pdb',
+          identity: { verdict: 'unsupported', providerId: this.id, providerVersion: this.version, method: 'cancelled' },
+          status: status('partial', 'cancelled'),
+        });
+      }
       const declaredSize = module.symbolByteSize;
+      if (module.streamIndex === 0xffff) {
+        // A nil ModuleSymStream is valid for modules with no private symbols
+        // (declaredSize === 0 or 4-byte signature only); any other declared
+        // size is malformed or missing evidence.
+        if (declaredSize !== 0 && declaredSize !== 4) symbols.complete = false;
+        continue;
+      }
       if (declaredSize < 4) {
         symbols.complete = false;
         continue;
       }
-      if (module.streamIndex === 0xffff) {
-        // A nil ModuleSymStream is valid for modules with no private symbols;
-        // a nonempty declared range is still missing evidence.
-        if (declaredSize > 4) symbols.complete = false;
-        continue;
-      }
       if (module.streamIndex >= msf.streams.length) {
-        if (declaredSize > 4) symbols.complete = false;
+        symbols.complete = false;
         continue;
       }
       const moduleBytes = msf.streams[module.streamIndex].read();
       if (!moduleBytes) {
-        if (declaredSize > 4) symbols.complete = false;
+        symbols.complete = false;
         continue;
       }
       if (declaredSize > moduleBytes.length) {
@@ -1320,6 +1352,13 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       for (const kind of moduleSymbols.unmodelled) symbols.unmodelled.add(kind);
     }
 
+    if (signal?.aborted) {
+      return createDebugProviderResult({
+        ecosystem: 'pdb',
+        identity: { verdict: 'unsupported', providerId: this.id, providerVersion: this.version, method: 'cancelled' },
+        status: status('partial', 'cancelled'),
+      });
+    }
     const tpi = parseTpiStreamWithBudget(msf.streams[2]?.read(), recordBudget, 'TPI stream');
     const sectionHeaderStream = parseSectionHeaderStream(findSectionHeaderStream(msf, dbi, dbiBytes));
     const sectionHeaders = sectionHeaderStream.headers;
@@ -1446,7 +1485,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     });
     // Procedures carry the type index that names a function's signature; that
     // is the record the type graph can actually use.
-    const typed = parsed.symbols.symbols.filter((symbol) => symbol.kind === 'procedure' && symbol.typeIndex);
+    const typed = typedSymbolsForPdb(parsed);
     const typePage = page(typed, cursor, pageSize, (symbol) => {
       const described = renderTypeIndex(symbol.typeIndex, parsed.tpi.types, 0, renderContext);
       return createDebugRecord({
@@ -1543,6 +1582,19 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
   const streamIndex = view.getUint16(entryOffset, true);
   if (streamIndex === 0xffff || streamIndex >= msf.streams.length) return null;
   return msf.streams[streamIndex].read();
+}
+
+const pdbTypedSymbolsCache = new WeakMap();
+
+function typedSymbolsForPdb(parsed) {
+  const symbols = parsed.symbols.symbols;
+  const cached = pdbTypedSymbolsCache.get(parsed);
+  if (cached && cached.symbolsRef === symbols && cached.count === symbols.length) {
+    return cached.typed;
+  }
+  const typed = symbols.filter((symbol) => symbol.kind === 'procedure' && symbol.typeIndex);
+  pdbTypedSymbolsCache.set(parsed, { symbolsRef: symbols, count: symbols.length, typed });
+  return typed;
 }
 
 function page(items, cursor, pageSize, map) {

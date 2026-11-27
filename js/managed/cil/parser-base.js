@@ -9,6 +9,8 @@ const CLI_DIRECTORY_INDEX = 14;
 const METHOD_DEF_TABLE = 0x06;
 const STANDALONE_SIG_TABLE = 0x11;
 const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const UTF8_DECODER = new TextDecoder('utf-8');
+const ASCII_DECODER = new TextDecoder('ascii');
 
 function checkedRange(bytes, offset, size, code) {
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > bytes.length - size) {
@@ -277,7 +279,7 @@ function parseMetadataTables(bytes, view, tableStream, stringStream = null) {
           let sPos = sStart;
           while (sPos < sEnd && bytes[sPos] !== 0) sPos++;
           if (sPos < sEnd) {
-            try { moduleName = new TextDecoder('utf-8').decode(bytes.subarray(sStart, sPos)); } catch {}
+            try { moduleName = UTF8_DECODER.decode(bytes.subarray(sStart, sPos)); } catch {}
           }
         }
       }
@@ -502,7 +504,7 @@ function localVarSignatureBlob(bytes, token, metadataInfo) {
   return heap.subarray(nextOffset, nextOffset + length);
 }
 
-function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
+function parseMetadataRoot(bytes, view, metadataOffset, metadataSize, { headerOnly = false } = {}) {
   checkedRange(bytes, metadataOffset, metadataSize, 'cil-metadata-root-out-of-bounds');
   const metadataEnd = metadataOffset + metadataSize;
   if (readU32(view, metadataOffset, 'cil-metadata-root-truncated') !== 0x424a5342) fail('cil-metadata-signature-invalid');
@@ -510,7 +512,7 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   const versionStart = metadataOffset + 16;
   if (versionLength > metadataEnd - versionStart) fail('cil-metadata-version-truncated');
   const versionBytes = bytes.subarray(versionStart, versionStart + versionLength);
-  const runtimeVersion = new TextDecoder('utf-8').decode(versionBytes).replace(/\0+$/, '');
+  const runtimeVersion = UTF8_DECODER.decode(versionBytes).replace(/\0+$/, '');
   const flagsOffset = align4(versionStart + versionLength);
   if (flagsOffset + 4 > metadataEnd) fail('cil-metadata-stream-header-truncated');
   const streamCount = readU16(view, flagsOffset + 2, 'cil-metadata-stream-header-truncated');
@@ -524,7 +526,7 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
     const nameStart = streamPos;
     while (streamPos < metadataEnd && bytes[streamPos] !== 0) streamPos++;
     if (streamPos >= metadataEnd) fail('cil-metadata-stream-name-truncated');
-    const name = new TextDecoder('ascii').decode(bytes.subarray(nameStart, streamPos));
+    const name = ASCII_DECODER.decode(bytes.subarray(nameStart, streamPos));
     streamPos = align4(streamPos + 1);
     if (relativeOffset > metadataSize || size > metadataSize - relativeOffset) fail('cil-metadata-stream-out-of-bounds');
     streams.push({ name, offset: metadataOffset + relativeOffset, size });
@@ -533,6 +535,9 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   const stringStream = streams.find((stream) => stream.name === '#Strings');
   const tableStream = streams.find((stream) => stream.name === '#~' || stream.name === '#-');
   const blobStream = streams.find((stream) => stream.name === '#Blob') ?? null;
+  if (headerOnly) {
+    return Object.freeze({ runtimeVersion, strings: [], moduleName: null, methodRvas: [], standAloneSigBlobIndexes: [], typeDefOrRefCounts: null, blobStream });
+  }
   const strings = stringStream ? parseStringsHeap(bytes, stringStream.offset, stringStream.size) : [];
   const tables = parseMetadataTables(bytes, view, tableStream, stringStream);
   return Object.freeze({
@@ -555,7 +560,7 @@ function parseRawMetadataRootHeader(bytes, view, metadataOffset, metadataSize) {
   if (versionLength === 0) fail('cil-metadata-version-empty');
   const versionStart = metadataOffset + 16;
   if (versionLength > metadataEnd - versionStart) fail('cil-metadata-version-truncated');
-  const runtimeVersion = new TextDecoder('utf-8').decode(bytes.subarray(versionStart, versionStart + versionLength)).replace(/\0+$/, '');
+  const runtimeVersion = UTF8_DECODER.decode(bytes.subarray(versionStart, versionStart + versionLength)).replace(/\0+$/, '');
   if (!runtimeVersion.trim()) fail('cil-metadata-version-empty');
 
   const flagsOffset = align4(versionStart + versionLength);
@@ -576,7 +581,7 @@ function parseRawMetadataRootHeader(bytes, view, metadataOffset, metadataSize) {
     if (streamPos === nameStart) fail('cil-metadata-stream-name-empty');
     const nameBytes = bytes.subarray(nameStart, streamPos);
     if (nameBytes.some((byte) => byte < 0x21 || byte > 0x7e)) fail('cil-metadata-stream-name-invalid');
-    const name = new TextDecoder('ascii').decode(nameBytes);
+    const name = ASCII_DECODER.decode(nameBytes);
     if (names.has(name)) fail('cil-metadata-stream-name-duplicate');
     names.add(name);
     streamPos = align4(streamPos + 1);
@@ -779,7 +784,7 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
   };
 }
 
-export function probeCil(bytes) {
+export function probeCil(bytes, options = {}) {
   if (!bytes || bytes.length < 64) return { supported: false, confidence: 0, reason: 'too-small' };
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
 
@@ -791,7 +796,7 @@ export function probeCil(bytes) {
       const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
       const layout = readPeCliLayout(u8, view);
       if (layout?.cliPresent) {
-        parseMetadataRoot(u8, view, layout.metadataOffset, layout.metadataSize);
+        parseMetadataRoot(u8, view, layout.metadataOffset, layout.metadataSize, { headerOnly: options?.headerOnly === true });
         return { supported: true, confidence: 1.0, formatVersion: 'pe-cli', vmSpecEdition: 'clr-v4' };
       }
       return { supported: false, confidence: 0, reason: layout?.cliPresent === false ? 'cli-directory-missing' : 'invalid-pe-cli' };

@@ -12,16 +12,56 @@ import { buildAppMap, buildStringMap } from './appmap.js';
 import { pinpointField, pinpointFunction, pinpointLocation } from './pinpoint.js';
 import { VERDICT, verdictRank } from './evidence.js';
 import { inferRole } from './role.js';
+import { runWasmStructuralAnalysis } from './analysis/wasm-suite.js';
 
 const SIGNALS = [
   { id: 'endpoint', level: 'high', re: /^https?:\/\/[^\s"']{4,}/i, max: 12 },
   { id: 'anticheat', level: 'high', re: /jailbr|jailbroken|cydia|frida|substrate|tamper|integrity|debugger|ptrace|sandbox_?check|不正|改造|チート/i, max: 8 },
   { id: 'crypto', level: 'normal', re: /\baes\b|\bsha(1|256|512)\b|\bhmac\b|\brsa\b|encrypt|decrypt|cipher|keychain|private_?key/i, max: 8 },
-  { id: 'ads', level: 'normal', re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adjust\.com|appsflyer|interstitial|rewarded/i, max: 6 },
+  { id: 'ads', level: 'normal', re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adjust\.com|appsflyer|interstitial|rewarded[\s_-]?(?:ads?|video|interstitial)/i, max: 6 },
   { id: 'purchase', level: 'high', re: /storekit|skpayment|receipt|verifyreceipt|subscription|in_?app_?purchase/i, max: 6 },
-  { id: 'debuglog', level: 'low', re: /\bdebug\b|verbose|assert|\bTODO\b|FIXME/i, max: 4 },
+  { id: 'debuglog', level: 'low', re: /\bdebug\b|verbose|assert|FIXME/i, caseRe: /\bTODO\b/, max: 4 },
   { id: 'path', level: 'low', re: /^\/(Users|var|private|tmp|Applications)\/[^\s"']{4,}/, max: 6 },
 ];
+
+function toSafeNonNegInt(v) {
+  let bi = null;
+  if (typeof v === 'bigint') bi = v;
+  else if (typeof v === 'number') bi = Number.isSafeInteger(v) ? BigInt(v) : null;
+  else if (typeof v === 'string' && v.trim()) {
+    try { bi = BigInt(v.trim()); } catch { bi = null; }
+  }
+  if (bi == null || bi < 0n || bi > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(bi);
+}
+
+function extractConstDataSectionsFromImage(image) {
+  if (!image || !Array.isArray(image.sections) || !(image.bytes instanceof Uint8Array)) return [];
+  const out = [];
+  for (let i = 0; i < image.sections.length; i++) {
+    const sec = image.sections[i];
+    if (!sec) continue;
+    const seg = typeof sec.segment === 'string' ? sec.segment : '';
+    const name = typeof sec.name === 'string' ? sec.name : '';
+    const isMachOConst = ((seg === '__DATA_CONST' || seg === '__TEXT' || seg === '__DATA') && name === '__const')
+      || name === '__DATA_CONST.__const'
+      || name === '__TEXT.__const'
+      || name === '__DATA.__const';
+    const isElfPeConst = name === '.rodata' || name === '.data.rel.ro' || name === '.rdata';
+    if (!isMachOConst && !isElfPeConst) continue;
+    const off = toSafeNonNegInt(sec.fileOffset);
+    const sz = toSafeNonNegInt(sec.fileSize ?? sec.size);
+    if (off == null || sz == null) continue;
+    if (off < 0 || sz < 16 || off + sz > image.bytes.length) continue;
+    const displayName = seg && !name.startsWith(`${seg}.`) ? `${seg}.${name}` : name;
+    out.push({
+      name: displayName,
+      bytes: image.bytes.subarray(off, off + sz),
+      va: sec.address ?? sec.va ?? null,
+    });
+  }
+  return out;
+}
 
 function lowerBoundBig(values, target) {
   let lo = 0, hi = values.length;
@@ -70,10 +110,27 @@ function fairFunctionList(symbols, region, max = 20000) {
       if (!seen.has(idx)) { seen.add(idx); indexes.push(idx); }
     }
   }
+  const hasDirectEnd = typeof symbols._functionEnd === 'function';
+  const hasDirectAddrs = symbols.addrs?.length > 0 && Array.isArray(symbols.names);
+  const renames = symbols.renames instanceof Map && symbols.renames.size > 0 ? symbols.renames : null;
+  let symCursor = hasDirectAddrs ? lowerBoundBig(symbols.addrs, symbols.funcs[indexes[0]]) : 0;
   const out = indexes.map((idx) => {
     const addr = symbols.funcs[idx];
-    const fn = symbols.functionAt(addr);
-    return { addr, name: symbols.nameAt(addr) || null, size: fn?.end != null ? fn.end - addr : null };
+    const end = hasDirectEnd ? symbols._functionEnd(idx) : (symbols.functionAt?.(addr)?.end ?? null);
+    let name = null;
+    if (renames) name = renames.get(addr.toString()) || null;
+    if (name == null) {
+      if (hasDirectAddrs) {
+        while (symCursor < symbols.addrs.length && symbols.addrs[symCursor] < addr) symCursor++;
+        while (symCursor + 1 < symbols.addrs.length && symbols.addrs[symCursor + 1] === addr) symCursor++;
+        if (symCursor < symbols.addrs.length && symbols.addrs[symCursor] === addr) {
+          name = symbols.names[symCursor] || null;
+        }
+      } else {
+        name = symbols.nameAt?.(addr) || null;
+      }
+    }
+    return { addr, name, size: end != null ? end - addr : null };
   });
   Object.defineProperties(out, {
     complete: { value: total <= max, enumerable: false },
@@ -113,7 +170,7 @@ export function notableFunctions(program, symbols, region, limit = 12) {
     if (score <= 6) continue;
     out.push({ addr: f.addr, name: f.name, score, reasons, stats, called, range, sampleComplete: list.complete !== false });
   }
-  out.sort((a, b) => b.score - a.score || (a.addr < b.addr ? -1 : 1));
+  out.sort((a, b) => b.score - a.score || (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
   const normalizedLimit = (typeof limit === 'number' && Number.isFinite(limit) && Number.isInteger(limit))
     ? Math.max(0, limit)
     : 12;
@@ -168,7 +225,23 @@ function producerByteExtentWindow(text) {
 // Returns the authoritative raw byte span, or null when the entry carries no
 // provable extent (missing byteLength falls back to the provable minimum; a
 // malformed/forged carried value gets no xref authority at all).
+function toBigIntAddress(addr) {
+  if (typeof addr === 'bigint') return addr >= 0n ? addr : null;
+  if (typeof addr === 'number') return Number.isSafeInteger(addr) && addr >= 0 ? BigInt(addr) : null;
+  if (typeof addr === 'string') {
+    const text = addr.trim();
+    if (/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(text)) {
+      try {
+        const v = BigInt(text);
+        return v >= 0n ? v : null;
+      } catch { return null; }
+    }
+  }
+  return null;
+}
+
 function stringByteSpan(s) {
+  if (typeof s?.text !== 'string') return null;
   const carried = s.byteLength;
   if (carried === undefined || carried === null) {
     const { minRaw } = producerByteExtentWindow(s.text);
@@ -184,23 +257,38 @@ function stringByteSpan(s) {
 
 export function findings(strings, program, symbols, limit = 40) {
   const out = [];
-  if (!program) return out;
-  for (const sig of SIGNALS) {
-    let taken = 0;
-    for (const s of strings || []) {
-      if (taken >= sig.max || out.length >= limit) break;
-      if (!sig.re.test(s.text)) continue;
+  if (!program || limit <= 0) return out;
+  const buckets = SIGNALS.map(() => []);
+  let activeSignals = SIGNALS.length;
+  for (const s of strings || []) {
+    if (activeSignals === 0) break;
+    if (typeof s?.text !== 'string') continue;
+    const text = s.text;
+    for (let si = 0; si < SIGNALS.length; si++) {
+      const sig = SIGNALS[si];
+      const bucket = buckets[si];
+      if (bucket.length >= sig.max) continue;
+      if (!sig.re.test(text) && !(sig.caseRe && sig.caseRe.test(text))) continue;
+      bucket.push(s);
+      if (bucket.length >= sig.max) activeSignals--;
+    }
+  }
+  for (let si = 0; si < SIGNALS.length && out.length < limit; si++) {
+    const sig = SIGNALS[si];
+    for (const s of buckets[si]) {
+      if (out.length >= limit) break;
       // The xref span is a virtual-address byte range (#5698): use the
       // string's authoritative raw byte extent; entries without one stay
       // visible as data but get no xref authority (no over-inclusive
       // display-derived span), so they cannot be marked referenced.
       const span = stringByteSpan(s);
-      const users = span == null
+      const addr = toBigIntAddress(s.addr);
+      const users = (span == null || addr == null)
         ? { length: 0, complete: false, map: () => [] }
-        : program.functionsReferencing(s.addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
+        : program.functionsReferencing(addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
       const actionable = users.length > 0;
       out.push({
-        id: sig.id, level: sig.level, text: s.text, addr: s.addr,
+        id: sig.id, level: sig.level, text: s.text, addr: addr ?? s.addr,
         actionable,
         status: actionable ? 'referenced' : 'unreferenced',
         xrefsComplete: users.complete !== false,
@@ -209,7 +297,6 @@ export function findings(strings, program, symbols, limit = 40) {
           name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
         })),
       });
-      taken++;
     }
   }
   // Proven/actionable findings always precede dead strings.
@@ -244,6 +331,7 @@ export async function autoAnalyze(opts) {
       statsComplete: program ? program.statsComplete : false,
       capped: !!(program && (program.callsCapped || program.refsCapped)),
     },
+    wasmAnalysis: null,
     notes: [],
   };
 
@@ -258,6 +346,48 @@ export async function autoAnalyze(opts) {
   report.engine = detectEngine(strings);
   report.features = groupByFeature(strings);
   report.findings = findings(strings, program, symbols);
+  const cryptoConstants = Array.isArray(o.cryptoConstants)
+    ? o.cryptoConstants
+    : (Array.isArray(o.cryptoScan?.constants) ? o.cryptoScan.constants : []);
+  const highEntropyWindows = Array.isArray(o.highEntropyWindows)
+    ? o.highEntropyWindows
+    : (Array.isArray(o.cryptoScan?.highEntropy) ? o.cryptoScan.highEntropy : []);
+  report.crypto = { constants: cryptoConstants, highEntropy: highEntropyWindows };
+  if (cryptoConstants.length) {
+    for (const hit of cryptoConstants.slice(0, 16)) {
+      const addr = toBigIntAddress(hit.address);
+      const span = Math.max(16, Math.min(Number(hit.length) || 16, 256));
+      const users = (program && addr != null)
+        ? program.functionsReferencing(addr, BigInt(span), 8)
+        : { length: 0, complete: false, map: () => [] };
+      const actionable = users.length > 0;
+      report.findings.push({
+        id: 'crypto', level: 'high',
+        text: `${hit.name} (${hit.id})${hit.section ? ` [${hit.section}]` : ''}`,
+        addr: addr ?? hit.address,
+        actionable,
+        status: actionable ? 'referenced' : 'unreferenced',
+        xrefsComplete: users.complete !== false,
+        users: users.map((u) => ({
+          addr: u.addr, site: u.site,
+          name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
+        })),
+      });
+    }
+  }
+  const packedWindows = highEntropyWindows.filter((w) => w && w.kind === 'encrypted-or-packed');
+  if (packedWindows.length) {
+    const top = packedWindows.slice().sort((a, b) => (b.entropy || 0) - (a.entropy || 0))[0];
+    report.findings.push({
+      id: 'crypto', level: 'medium',
+      text: `High-entropy region (${Number(top.entropy || 0).toFixed(2)} bits/byte, ${packedWindows.length} window${packedWindows.length > 1 ? 's' : ''})${top.section ? ` [${top.section}]` : ''}`,
+      addr: toBigIntAddress(top.address) ?? top.address,
+      actionable: false,
+      status: 'unreferenced',
+      xrefsComplete: true,
+      users: [],
+    });
+  }
 
   progress({ phase: 'map', done: 0, all: 1 });
   const fields = o.fields || null;
@@ -270,11 +400,12 @@ export async function autoAnalyze(opts) {
 
   const all = GOALS.length;
   const rankedByGoal = new Map();
+  const vendors = vendorsOf(fields);
   for (let i = 0; i < GOALS.length; i++) {
     if (cancelled()) { report.notes.push('cancelled'); return report; }
     progress({ phase: 'goals', done: i, all });
     const goal = goalFromPreset(GOALS[i].id);
-    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 12, vendors: vendorsOf(fields) });
+    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 12, vendors, cryptoConstants });
     rankedByGoal.set(goal.id, { goal, ranked });
     if (ranked.candidates.length) {
       report.goals.push({
@@ -318,9 +449,9 @@ export async function autoAnalyze(opts) {
     if (vv) return vv > 0;
     return pinIdentifying(next) > pinIdentifying(cur);
   };
-  const runWithBudget = async (max, fn, phase) => {
-    if (budget.left <= 0 || max <= 0) return null;
-    const purse = { left: Math.max(0, Math.min(max, perGoal, budget.left)) };
+  const runWithBudget = async (goalBudget, max, fn, phase) => {
+    if (budget.left <= 0 || goalBudget.left <= 0 || max <= 0) return null;
+    const purse = { left: Math.max(0, Math.min(max, goalBudget.left, budget.left)) };
     const before = purse.left;
     try {
       return await fn(purse);
@@ -328,7 +459,9 @@ export async function autoAnalyze(opts) {
       diagnose(phase || 'pinpoint', error);
       return null;
     } finally {
-      budget.left -= (before - purse.left);
+      const spent = Math.max(0, before - purse.left);
+      budget.left = Math.max(0, budget.left - spent);
+      goalBudget.left = Math.max(0, goalBudget.left - spent);
     }
   };
 
@@ -358,38 +491,46 @@ export async function autoAnalyze(opts) {
       const common = {
         goal, fields, program, symbols, strings, region, map: report.map,
         cxxFields: o.cxxFields || null,
+        binaryContextPreference: true,
         shapes: o.shapes || null, analyze: memo, scanAccess: o.scanAccess || null,
         isCancelled: cancelled, limit: 12,
       };
+      const goalBudget = { left: perGoal };
       const alternatives = [];
       let best = null;
 
       if (hasClasses) {
-        const fieldPin = await runWithBudget(fieldBudget,
-          (purse) => pinpointField({ ...common, budget: purse }), `pinpoint-field:${goal.id}`);
-        report.stats.pinpointModes.field++;
+        const fieldPin = await runWithBudget(goalBudget, fieldBudget,
+          (purse) => {
+            report.stats.pinpointModes.field++;
+            return pinpointField({ ...common, budget: purse });
+          }, `pinpoint-field:${goal.id}`);
         if (fieldPin) alternatives.push(fieldPin);
         if (beatsPin(fieldPin, best)) best = fieldPin;
       }
 
       const canLocate = memo && ((common.shapes && common.shapes.size) || ranked.length);
       if (canLocate && !((best && best.verdict === VERDICT.CONFIRMED) && best.kind === 'field')) {
-        const locPin = await runWithBudget(locationBudget,
-          (purse) => pinpointLocation({ ...common, ranked, budget: purse }), `pinpoint-location:${goal.id}`);
-        report.stats.pinpointModes.location++;
+        const locPin = await runWithBudget(goalBudget, locationBudget,
+          (purse) => {
+            report.stats.pinpointModes.location++;
+            return pinpointLocation({ ...common, ranked, budget: purse });
+          }, `pinpoint-location:${goal.id}`);
         if (locPin) alternatives.push(locPin);
         if (beatsPin(locPin, best)) best = locPin;
       }
 
-      const canFindFunction = memo && ranked.length;
+      const canFindFunction = memo && (ranked.length || (common.shapes && common.shapes.size));
       if (canFindFunction && !(best && best.verdict === VERDICT.CONFIRMED && best.kind === 'field')) {
         let fieldHint = null;
         const named = alternatives.find((p) => p && p.kind === 'field' && p.top && p.top.source !== 'cxx' && settledPin(p));
         if (named) fieldHint = { offset: named.top.offset, className: named.top.className, plain: named.top.plain, name: named.top.field?.name };
-        const fnPin = await runWithBudget(functionBudget,
-          (purse) => pinpointFunction({ ...common, ranked, budget: purse, functionCount: symbols ? symbols.functionCount : 0, field: fieldHint }),
+        const fnPin = await runWithBudget(goalBudget, functionBudget,
+          (purse) => {
+            report.stats.pinpointModes.function++;
+            return pinpointFunction({ ...common, ranked, budget: purse, functionCount: symbols ? symbols.functionCount : 0, field: fieldHint });
+          },
           `pinpoint-function:${goal.id}`);
-        report.stats.pinpointModes.function++;
         if (fnPin) alternatives.push(fnPin);
         if (beatsPin(fnPin, best)) best = fnPin;
       }
@@ -423,15 +564,55 @@ export async function autoAnalyze(opts) {
 
   progress({ phase: 'notable', done: 0, all: 1 });
   const recognized = Array.isArray(o.recognition?.records) ? o.recognition.records : [];
+  const regionLo = region && typeof region.vmAddr === 'bigint' ? region.vmAddr : null;
+  const regionHi = regionLo != null && typeof region.size === 'bigint' ? regionLo + region.size : null;
+  const inRegion = (addr) => {
+    const a = toBigIntAddress(addr);
+    if (a == null) return false;
+    if (regionLo == null || regionHi == null) return true;
+    return a >= regionLo && a < regionHi;
+  };
+  const compareNotable = (a, b) => {
+    const scoreDiff = (b.score || 0) - (a.score || 0);
+    if (scoreDiff) return scoreDiff;
+    if (a.addr === b.addr) return 0;
+    if (typeof a.addr === 'bigint' && typeof b.addr === 'bigint') return a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0;
+    const sa = String(a.addr ?? ''), sb = String(b.addr ?? '');
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  };
   const recognizedNotable = recognized
-    .filter((item) => item && (item.classification === 'APPLICATION' || item.classification === 'UNKNOWN'))
-    .slice(0, 24)
-    .map((item) => ({ addr:item.address, name:item.name||null, score:Math.round((item.score||0)*100), reasons:[{code:'recognition',points:Math.round((item.score||0)*100),detail:{classification:item.classification,confidence:item.confidence,knowledge:!!item.knowledge}}], recognition:item }));
+    .filter((item) => item && item.classification === 'APPLICATION' && inRegion(item.address))
+    .map((item) => {
+      const addr = toBigIntAddress(item.address);
+      const score = Number.isFinite(item.score) ? Math.round(item.score * 100) : 0;
+      return {
+        addr,
+        name: item.name || null,
+        score,
+        reasons: [{ code: 'recognition', points: score, detail: { classification: item.classification, confidence: item.confidence, knowledge: !!item.knowledge } }],
+        recognition: item,
+      };
+    })
+    .sort(compareNotable)
+    .slice(0, 24);
   const structuralNotable = notableFunctions(program, symbols, region);
   const seen = new Set();
-  report.notable = [...recognizedNotable, ...structuralNotable].filter((item) => {
-    const key=item?.addr==null?'':item.addr.toString(); if(!key||seen.has(key))return false; seen.add(key); return true;
-  }).slice(0, 24);
+  report.notable = [...recognizedNotable, ...structuralNotable]
+    .map((item) => {
+      if (!item) return null;
+      const norm = toBigIntAddress(item.addr);
+      if (norm == null) return null;
+      return item.addr === norm ? item : Object.assign({}, item, { addr: norm });
+    })
+    .filter(Boolean)
+    .sort(compareNotable)
+    .filter((item) => {
+      const key = item.addr.toString();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 24);
   Object.defineProperties(report.notable, {
     complete:{value:o.recognition ? o.recognition.complete===true && structuralNotable.complete!==false : structuralNotable.complete!==false,enumerable:false},
     sampled:{value:o.recognition?.complete===false || structuralNotable.sampled===true,enumerable:false},
@@ -480,7 +661,7 @@ export async function autoAnalyze(opts) {
       const role = inferRole({
         name: symbols ? symbols.nameAt(t.addr) : null, owner, updates,
         apis: f.apis || [], selectors,
-        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: [],
+        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: program?.callersOf ? program.callersOf(t.addr).slice(0, 12).map((a) => symbols?.nameAt?.(a)).filter(Boolean) : [],
         comparisons: compares.length, conditionals: f.conditionals || 0,
         calls: f.calls || 0, stores: f.stores || 0, verified: true,
       });
@@ -495,7 +676,48 @@ export async function autoAnalyze(opts) {
     report.deep.sort((a, b) => b.updates.length - a.updates.length || (b.goal ? 1 : 0) - (a.goal ? 1 : 0));
   }
 
-  progress({ phase: 'done', done: 1, all: 1 });
+  try {
+    const codeBytes = o.codeBytes
+      || (o.region && o.region.bytes instanceof Uint8Array ? o.region.bytes : null)
+      || (program && typeof program.textBytes === 'function' ? program.textBytes() : null);
+    const dataBytes = o.dataBytes
+      || (program && typeof program.dataBytes === 'function' ? program.dataBytes() : null);
+    const dataSections = Array.isArray(o.dataSections) && o.dataSections.length
+      ? o.dataSections
+      : extractConstDataSectionsFromImage(o.image);
+    const imageBase = o.imageBase ?? o.image?.imageBase ?? null;
+    if (codeBytes || dataBytes || program || (dataSections && dataSections.length > 0) || o.textConstBytes || o.image) {
+      const textVa = o.textVa ?? (o.region?.vmAddr != null ? o.region.vmAddr : 0n);
+      const textLo = o.textLo ?? (o.region?.vmAddr != null ? o.region.vmAddr : null);
+      const textHi = o.textHi ?? (o.region?.vmAddr != null && o.region?.size != null
+        ? BigInt(o.region.vmAddr) + BigInt(o.region.size)
+        : null);
+      const wa = runWasmStructuralAnalysis({
+        codeBytes,
+        dataBytes,
+        dataSections,
+        image: o.image,
+        textConstBytes: o.textConstBytes,
+        textConstVa: o.textConstVa,
+        dataVa: o.dataVa,
+        imageBase,
+        textVa,
+        textLo,
+        textHi,
+        arch: o.architecture || o.arch || program?.architecture || program?.arch || 'arm64',
+        ptrSize: o.ptrSize ?? 8,
+        program,
+        symbols,
+      });
+      if (wa.rmw || wa.x86Rmw || wa.vtables || wa.jumpTables || wa.constTables || wa.callgraph || wa.objcSwift || wa.xrefLinks) {
+        report.wasmAnalysis = wa;
+      }
+    }
+  } catch (error) {
+    diagnose('wasm-analysis', error);
+  }
+
+    progress({ phase: 'done', done: 1, all: 1 });
   return report;
 }
 
@@ -539,9 +761,10 @@ export function memoizeAnalysis(analyze) {
     // not collide with their primitive lookalikes through toString(), or a
     // malformed address would reuse another address's cached analysis.
     const keyPart = (value) => {
-      if (value == null) return 'null';
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
-      try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return null; }
+      if (value === null) return ['null', null];
+      if (value === undefined) return ['undefined', null];
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return [typeof value, String(value)];
+      try { return ['structured', stableDigest(jsonSafe(value))]; } catch { return null; }
     };
     const addrPart = keyPart(addr);
     const endPart = keyPart(end);
@@ -549,7 +772,7 @@ export function memoizeAnalysis(analyze) {
     // memoization preserves the analyzer's actual input and avoids sharing one
     // opaque sentinel across unrelated cyclic values (#3309).
     if (addrPart == null || endPart == null) return Promise.resolve().then(() => analyze(addr, end, options));
-    const key = `${addrPart}:${endPart}`;
+    const key = JSON.stringify([addrPart, endPart]);
     if (cache.has(key)) return cache.get(key);
     const p = Promise.resolve()
       .then(() => analyze(addr, end, options))

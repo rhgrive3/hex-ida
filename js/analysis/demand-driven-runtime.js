@@ -1,7 +1,7 @@
 import { AnalysisQueryAPI } from './query/api.js';
 import { createAppAnalysisQueryAdapter as createBaseQueryAdapter } from './query/app-adapter.js';
 import { createBinaryIdFromDigest } from '../core/identity/index.js';
-import { canonicalContentDigest } from './binary-identity-digest.js';
+import { canonicalContentDigest, canonicalSha256DigestOrNull } from './binary-identity-digest.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
 import { foldShapes } from '../shapes.js';
 import { executableByteCoverage } from './discovery/executable-coverage.js';
@@ -119,6 +119,10 @@ function demandArtifactIdentity(app) {
   const binaryId = typeof app?.backend?.binaryId === 'string' ? app.backend.binaryId : '';
   return `${binaryId}|slice:${recognitionSliceIndex(app)}`;
 }
+function sameDemandArtifactOrSettled(initial, current) {
+  if (initial === current) return true;
+  return typeof initial === 'string' && initial.startsWith('|slice:') && typeof current === 'string' && current.endsWith(initial);
+}
 function addressOf(value) {
   // Same canonical address-domain contract as the query adapter: an address
   // is a non-negative integer regardless of representation. Only the number
@@ -229,7 +233,7 @@ function waitForShared(entry, signal, onDetach = null) {
       try { entry.cancel?.(); } catch { /* cancellation is best-effort */ }
       try { entry.request?.cancel?.(); } catch { /* cancellation is best-effort */ }
     }
-    throw abortError(signal);
+    return Promise.reject(abortError(signal));
   }
   entry.waiters++;
   return new Promise((resolve, reject) => {
@@ -246,8 +250,9 @@ function waitForShared(entry, signal, onDetach = null) {
       if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1); detach();
       if (!entry.settled && entry.waiters === 0) {
         entry.cancelled = true;
-        entry.cancel?.();
-        entry.request?.cancel?.();
+        void Promise.resolve(entry.promise).catch(() => {});
+        try { entry.cancel?.(); } catch { /* cancellation is best-effort */ }
+        try { entry.request?.cancel?.(); } catch { /* cancellation is best-effort */ }
       }
       reject(abortError(signal));
     };
@@ -320,7 +325,7 @@ function installWorkerBackedIdentity(app) {
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
     // Do not create the first shared producer for a caller that has already
     // left. Cache hits remain usable without starting any new work (#4749).
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     let entry = this._binaryIdEntry;
     // #4611: a single-flight entry whose last waiter aborted is cancelled but
     // may not have settled yet; the owner must not hand it to a new caller.
@@ -335,15 +340,32 @@ function installWorkerBackedIdentity(app) {
         promise:null,
         cancel:() => { if (!controller.signal.aborted) controller.abort('binary-id-no-consumers'); },
       };
-      entry.promise = scheduleBackgroundIdentity(controller.signal)
-        .then(() => this.ensureContentHash(options.onProgress, controller.signal))
-        .then((hash) => {
+      const foreground = options.priority === 'current' || options.priority === 'foreground';
+      const digestPriority = foreground ? 'current' : 'background';
+      const schedule = foreground
+        ? Promise.resolve().then(() => abortIfNeeded(controller.signal))
+        : scheduleBackgroundIdentity(controller.signal);
+      entry.promise = schedule
+        .then(() => {
           abortIfNeeded(controller.signal);
           if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
-          // The platform content hash is an FNV cache key; `bin_sha256_` identities
-          // must bind an exact SHA-256 digest, so re-derive from the canonical
-          // full-content producer instead of laundering the cache hash (#7054).
-          return canonicalContentDigest(this, hash, controller.signal, options.onProgress);
+          const existingDigest = canonicalSha256DigestOrNull(this.contentHash);
+          if (existingDigest != null) return existingDigest;
+          // Avoid hashing the file twice (FNV-1a then SHA-256): when the platform
+          // worker is available or a non-SHA-256 contentHash is already present,
+          // derive the canonical SHA-256 directly via worker / subtle.digest.
+          if ((typeof this._callTo === 'function' && this.platformWorker) || this.contentHash != null) {
+            return canonicalContentDigest(this, this.contentHash, controller.signal, options.onProgress, { priority: digestPriority });
+          }
+          return this.ensureContentHash(options.onProgress, controller.signal)
+            .then((hash) => {
+              abortIfNeeded(controller.signal);
+              if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
+              // The platform content hash is an FNV cache key; `bin_sha256_` identities
+              // must bind an exact SHA-256 digest, so re-derive from the canonical
+              // full-content producer instead of laundering the cache hash (#7054).
+              return canonicalContentDigest(this, hash, controller.signal, options.onProgress, { priority: digestPriority });
+            });
         })
         .then((digest) => {
           abortIfNeeded(controller.signal);
@@ -412,6 +434,7 @@ function installDemandRecognition(app) {
 };
 if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
     const epoch = demandAnalysisEpoch(app); beginBootstrap(epoch);
+    acceptedKey = null;
     try {
       const result = originalApplySlice(...args); const clearBootstrap = () => endBootstrap(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
     } catch (error) {
@@ -419,7 +442,11 @@ if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
       throw error;
     }
   };
-  return () => `${RUNTIME_VERSION}:${acceptedKey ?? recognitionInputKey(app)}`;
+  return () => {
+    const currentKey = recognitionInputKey(app);
+    if (acceptedKey !== null && acceptedKey !== currentKey) acceptedKey = null;
+    return `${RUNTIME_VERSION}:${currentKey}`;
+  };
 }
 function installMultiRegionShapes(app) {
   if (!app?.backend || typeof app.backend.valueShapes !== 'function') return;
@@ -459,14 +486,14 @@ function installMultiRegionShapes(app) {
                 (error) => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(error); },
               );
             });
-            if (value && !value.cancelled && epoch === demandAnalysisEpoch(app)) regionCache.set(cacheKey, value);
+            if (value && !value.cancelled && epoch === demandAnalysisEpoch(app) && artifact === demandArtifactIdentity(app)) regionCache.set(cacheKey, value);
           } catch (error) { if (producerController.signal.aborted || error?.name === 'AbortError') throw error; reasons.push(`${region.id}:shape-scan-failed`); continue; }
           finally { producerController.signal.removeEventListener('abort', onAbort); }
         }
         if (!value || value.cancelled) { reasons.push(`${region.id}:shape-scan-cancelled`); continue; }
         folded.push(foldShapes(value));
       }
-      if (epoch !== demandAnalysisEpoch(app)) return null;
+      if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) return null;
       const merged = mergeShapeMaps(folded, reasons);
       // Partial results remain visible to this caller but are not pinned as the
       // epoch-wide canonical shapes. Missing regions can therefore be retried.
@@ -484,7 +511,7 @@ function installCancellableFunctionDiscovery(app) {
   discoveryProducersByApp.set(app, producers);
   app.ensureFunctions = function demandFunctionDiscovery(region, rawOptions = {}) {
     const options = typeof rawOptions === 'function' ? { onProgress:rawOptions, signal:null } : (rawOptions || {});
-    abortIfNeeded(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     const run = async () => {
       if (app.symbolsReady) {
         try { await app.symbolsReady; } catch { /* symbol seeds are optional */ }
@@ -495,7 +522,9 @@ function installCancellableFunctionDiscovery(app) {
       const symbols = app.symbols;
       if (!symbols) return symbols;
       const targets = executableRegions(app);
-      if (region?.exec === true && canonicalRegionId(region) != null && !targets.some((item) => item.id === region.id)) targets.push(region);
+      let regionPositiveSize = false;
+      try { regionPositiveSize = region?.exec === true && canonicalRegionId(region) != null && BigInt(region.size ?? 0) > 0n; } catch { regionPositiveSize = false; }
+      if (regionPositiveSize && !targets.some((item) => item.id === region.id)) targets.push(region);
       const unique = dedupeRegions(targets);
       if (!unique.length) return symbols;
       const regionSetKey = unique.map((item) => item.id).join('|');
@@ -515,12 +544,12 @@ function installCancellableFunctionDiscovery(app) {
       }
       if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.discoveryKey === discoveryKey) return symbols;
       let entry = producers.get(key);
-      if (entry?.cancelled) entry = null;
+      if (entry?.cancelled || entry?.symbols !== symbols) entry = null;
       if (!entry) {
         const producerController = new AbortController();
         entry = {
           request:{ cancel:() => producerController.abort('function-discovery-no-consumers') },
-          promise:null, settled:false, waiters:0,
+          promise:null, settled:false, waiters:0, symbols,
           // Every consumer's progress observer is registered here so the
           // shared producer notifies all of them, not only the consumer that
           // happened to create the entry (#5860).
@@ -541,7 +570,7 @@ function installCancellableFunctionDiscovery(app) {
           };
           for (let index = 0; index < unique.length; index++) {
             abortIfNeeded(producerController.signal);
-            if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+            if (epoch !== demandAnalysisEpoch(app) || !sameDemandArtifactOrSettled(artifact, demandArtifactIdentity(app))) throw Object.assign(new Error('stale function discovery'), { stale:true });
             const item = unique[index], size = BigInt(item.size);
             const share = remaining > 0 && remainingBytes > 0n
               ? Math.max(1, Math.min(remaining, Number((BigInt(remaining) * size + remainingBytes - 1n) / remainingBytes)))
@@ -557,7 +586,7 @@ function installCancellableFunctionDiscovery(app) {
             producerController.signal.addEventListener('abort', onAbort, { once:true });
             try {
               const result = await request;
-              if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+              if (epoch !== demandAnalysisEpoch(app) || !sameDemandArtifactOrSettled(artifact, demandArtifactIdentity(app))) throw Object.assign(new Error('stale function discovery'), { stale:true });
               if (result?.starts?.length) {
                 symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
                 symbols.guessed = true;
@@ -572,7 +601,7 @@ function installCancellableFunctionDiscovery(app) {
             remainingBytes -= size;
           }
           abortIfNeeded(producerController.signal);
-          if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+          if (epoch !== demandAnalysisEpoch(app) || !sameDemandArtifactOrSettled(artifact, demandArtifactIdentity(app))) throw Object.assign(new Error('stale function discovery'), { stale:true });
           const complete = results.length === unique.length && results.every((item) => item.complete === true);
           const coverage = await executableByteCoverage({
             regions:unique,
@@ -581,6 +610,18 @@ function installCancellableFunctionDiscovery(app) {
             architecture:architectureOf(app),
             endian:endiannessOf(app),
             signal:producerController.signal,
+            classifyGaps:typeof app.backend?.classifyExecutableCoverage === 'function'
+              ? async ({ gaps, architecture, endian }) => {
+                const request = app.backend.classifyExecutableCoverage({
+                  gaps,
+                  regionIds:unique.map((r) => r.id),
+                  architecture,
+                  endian,
+                });
+                if (request == null) return null;
+                return waitForSearchRequest(request, producerController.signal);
+              }
+              : null,
             readBytes:async (address, size) => {
               if (typeof app.backend.readAt !== 'function') return null;
               const read = await waitForSearchRequest(app.backend.readAt(address, Number(size), false), producerController.signal);
@@ -591,7 +632,7 @@ function installCancellableFunctionDiscovery(app) {
           // while the old read is in flight; only the current epoch may
           // publish functionDiscovery (#9219).
           abortIfNeeded(producerController.signal);
-          if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+          if (epoch !== demandAnalysisEpoch(app) || !sameDemandArtifactOrSettled(artifact, demandArtifactIdentity(app))) throw Object.assign(new Error('stale function discovery'), { stale:true });
           symbols.functionDiscovery = {
             complete, attempted:true, regionSetKey, discoveryKey, regions:results,
             reasons:[...new Set(reasons)], capped:results.some((item) => item.capped), coverage,
@@ -635,7 +676,7 @@ function installCancellableFunctionDiscovery(app) {
 }
 
 function installDemandQueryAPI(app, recognitionVersion) {
-  const base = createBaseQueryAdapter(app); const regionScans = new Map();
+  const base = createBaseQueryAdapter(app); const regionScans = new Map(); const localProgramCache = new Map();
   const scanRegion = async (region, options = {}, localCount = 1) => {
     const epoch = demandAnalysisEpoch(app);
     const limits = regionScanLimits(localCount);
@@ -673,18 +714,38 @@ function installDemandQueryAPI(app, recognitionVersion) {
     abortIfNeeded(options.signal); const address = addressOf(id); if (address == null) return { program:null, reason:'function-address-invalid', scannedRegionIds:[], unscannedRegionIds:[] };
     const { allRegions, target, local, unscanned } = localRegionPlan(app, address, kind);
     if (!local.length) return { program:null, reason:'program-region-unavailable', scannedRegionIds:[], unscannedRegionIds:allRegions.map((r) => r.id) };
+    const epoch = demandAnalysisEpoch(app);
+    const artifact = demandArtifactIdentity(app);
+    const symbolGen = demandSymbolGeneration(app);
+    const symbolsRef = objectId(app.symbols);
+    const architecture = architectureOf(app);
+    const primaryRegion = target ?? local[0];
+    const scannedRegionIds = local.map((r) => r.id);
+    const unscannedRegionIds = unscanned.map((r) => r.id);
+    const cacheKey = JSON.stringify([epoch, artifact, symbolGen, symbolsRef, architecture, kind, primaryRegion.id, scannedRegionIds, unscannedRegionIds]);
+    const cached = localProgramCache.get(cacheKey);
+    if (cached) {
+      localProgramCache.delete(cacheKey);
+      localProgramCache.set(cacheKey, cached);
+      return cached;
+    }
     const scans = []; for (const region of local) scans.push(await scanRegion(region, options, local.length)); abortIfNeeded(options.signal);
     // Outgoing callees are function-local once the function extent is proven; incoming
     // callers/xrefs still require the remaining executable regions for global absence.
     const reasons = kind === 'callees' ? [] : unscanned.map((region) => `program-region-unscanned:${region.id}`);
     const coverageRegions = kind === 'callees' ? local : allRegions;
     const merged = mergeProgramScans(scans, { regions:coverageRegions, reasons, limits:PROGRAM_MERGE_LIMITS });
-    return {
-      program:new ProgramIndex(merged, app.symbols, target ?? local[0]),
+    const built = {
+      program:new ProgramIndex(merged, app.symbols, primaryRegion),
       reason:reasons[0] ?? null,
-      scannedRegionIds:local.map((r) => r.id),
-      unscannedRegionIds:unscanned.map((r) => r.id),
+      scannedRegionIds,
+      unscannedRegionIds,
     };
+    if (epoch === demandAnalysisEpoch(app) && artifact === demandArtifactIdentity(app) && symbolGen === demandSymbolGeneration(app) && symbolsRef === objectId(app.symbols)) {
+      localProgramCache.set(cacheKey, built);
+      pruneCache(localProgramCache);
+    }
+    return built;
   };
   const graphUnsupported = (program) => program?.unsupported === true || (program?.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported));
   const adapter = {
@@ -707,9 +768,15 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const cumulativeLimit = cumulativePageLimit(offset, limit);
       if (cumulativeLimit == null) return paged([], page, 'unsupported', { reason:'page-range-overflow', scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
       const source = program.callersOf(addressOf(id), cumulativeLimit);
-      const relationReason=source?.incompleteReason ?? reason ?? null;
-      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
+      const queryLimited = source?.queryLimited === true;
+      const relationReason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : null) ?? reason ?? null;
+      const incomplete = source?.complete === false || queryLimited || !!reason;
+      const sourceRows = Array.from(source || []);
+      const result = paged(sourceRows, page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      if (queryLimited && result.page.next == null && sourceRows.length >= result.page.offset) {
+        result.page.next = result.page.offset + (result.page.returned > 0 ? result.page.returned : result.page.limit);
+      }
+      return result;
     },
     async callees(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id); const range = address == null ? null : app.validatedFunctionRange?.(address);
@@ -741,11 +808,21 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const address = addressOf(id); if (address == null) return unsupported('function-address-invalid');
       const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(address, 'xrefs', options); if (!program) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
-      const { offset, limit } = pageOf(page); const cap = Math.min(MAX_PAGE, offset + limit); const refs = program.refSitesTo?.(address, 1n, cap) || []; const calls = program.callSitesTo?.(address, cap) || [];
+      const { offset, limit } = pageOf(page);
+      const cap = cumulativePageLimit(offset, limit);
+      if (cap == null) {
+        return { value:[], page:{ offset, limit, returned:0, total:0, next:null }, status:{ completeness:'unsupported', reason:'page-range-overflow', paged:true } };
+      }
+      const refs = program.refSitesTo?.(address, 1n, cap) || []; const calls = program.callSitesTo?.(address, cap) || [];
       const rows = [...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })), ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null }))].sort((a,b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
-      const relationReason=refs.incompleteReason ?? calls.incompleteReason ?? reason ?? null;
-      const queryLimited=refs.queryLimited === true || calls.queryLimited === true;
-      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:queryLimited ? 'query-limit' : relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
+      const relationReason = refs.incompleteReason ?? calls.incompleteReason ?? (queryLimited ? 'query-limit' : null) ?? reason ?? null;
+      const incomplete = refs.complete === false || calls.complete === false || queryLimited || !!reason;
+      const result = paged(rows, page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:queryLimited ? 'query-limit' : relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      if (queryLimited && result.page.next == null && rows.length >= result.page.offset) {
+        result.page.next = result.page.offset + (result.page.returned > 0 ? result.page.returned : result.page.limit);
+      }
+      return result;
     },
     async search(_snapshot, query, page = {}, options = {}) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');

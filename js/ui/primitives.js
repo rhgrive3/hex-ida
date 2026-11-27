@@ -1,8 +1,13 @@
 /* Shared DOM primitives for canonical screens. No domain logic belongs here. */
 
 import { uiRoot } from '../ui-root.js';
+import { isJa as i18nIsJa } from '../i18n.js';
 
-const isJa = () => String(uiRoot()?.lang || globalThis.navigator?.language || 'ja').toLowerCase().startsWith('ja');
+const isJa = () => {
+  const rootLang = uiRoot()?.lang;
+  if (rootLang) return String(rootLang).toLowerCase().startsWith('ja');
+  return i18nIsJa();
+};
 
 /*
  * Plain-language text for the machine reason codes that analysis layers return
@@ -56,7 +61,8 @@ const REASON_CODE = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+$/;
 
 /** Plain-language explanation for a known reason code, or null. */
 export function reasonText(code) {
-  const entry = REASONS[String(code ?? '').trim()];
+  const key = String(code ?? '').trim();
+  const entry = Object.hasOwn(REASONS, key) ? REASONS[key] : null;
   return entry ? (isJa() ? entry[0] : entry[1]) : null;
 }
 
@@ -110,10 +116,11 @@ export function updateScreenTitle(root) {
 
 export function tabPanel(tabbar, cls) {
   const root = h('div', cls);
-  const selected = tabbar.querySelector('[aria-selected="true"]');
-  root.id = selected.getAttribute('aria-controls');
+  const selected = tabbar?.querySelector?.('[aria-selected="true"]') || null;
+  const controls = selected?.getAttribute?.('aria-controls');
+  if (controls) root.id = controls;
   root.setAttribute('role', 'tabpanel');
-  root.setAttribute('aria-labelledby', selected.id);
+  if (selected?.id) root.setAttribute('aria-labelledby', selected.id);
   root.tabIndex = 0;
   return root;
 }
@@ -135,7 +142,7 @@ export function emptyState(title, text, action) {
   return root;
 }
 
-export function loadingState(text = '読み込み中…') {
+export function loadingState(text = isJa() ? '読み込み中…' : 'Loading…') {
   const root = h('div', 'ui-state ui-loading-state');
   root.setAttribute('role', 'status');
   root.setAttribute('aria-live', 'polite');
@@ -161,8 +168,8 @@ const EVIDENCE = {
   contradicted: ['Contradicted', '矛盾あり'],
 };
 
-export function evidenceBadge(status, { ja = true, detail } = {}) {
-  const key = EVIDENCE[status] ? status : 'unverified';
+export function evidenceBadge(status, { ja = isJa(), detail } = {}) {
+  const key = typeof status === 'string' && Object.hasOwn(EVIDENCE, status) ? status : 'unverified';
   const node = h('span', 'evidence-badge evidence-' + key, ja ? EVIDENCE[key][1] : EVIDENCE[key][0]);
   node.dataset.evidence = key;
   node.setAttribute('aria-label', (ja ? EVIDENCE[key][1] : EVIDENCE[key][0]) + (detail ? ': ' + detail : ''));
@@ -197,7 +204,8 @@ export function tabs(items, active, onChange, { orientation = 'horizontal', labe
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
     const selected = item.id === active;
-    const b = uiButton(item.label, {
+    const labelText = !isJa() && item.labelEn ? item.labelEn : item.label;
+    const b = uiButton(labelText, {
       cls: 'ui-tab' + (selected ? ' active' : ''),
       onClick: () => activate(index, { focus: false }),
     });
@@ -221,7 +229,7 @@ export function tabs(items, active, onChange, { orientation = 'horizontal', labe
     else if (event.key === 'End') target = lastEnabled(buttons);
     else if (event.key === previousKey) target = nextEnabled(buttons, current, -1);
     else if (event.key === nextKey) target = nextEnabled(buttons, current, 1);
-    if (target == null) return;
+    if (target == null || target < 0) return;
     event.preventDefault();
     activate(target);
   });
@@ -254,7 +262,16 @@ export function scrollStrip(root, activeSelector = '.active, [aria-selected="tru
   };
   root.addEventListener('scroll', update, { passive: true });
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(reveal);
-  if (typeof ResizeObserver === 'function') new ResizeObserver(update).observe(root);
+  let observer = null;
+  if (typeof ResizeObserver === 'function') {
+    observer = new ResizeObserver(update);
+    observer.observe(root);
+  }
+  root.disposeScrollStrip = () => {
+    root.removeEventListener('scroll', update);
+    observer?.disconnect?.();
+    observer = null;
+  };
   return root;
 }
 
@@ -279,12 +296,25 @@ export function sectionTitle(title, detail) {
   return wrap;
 }
 
-export function listRow({ title, subtitle, meta, badge, onClick, mono = false }) {
-  const tag = onClick ? 'button' : 'div';
+export function listRow({ title, subtitle, meta, badge, action, onClick, mono = false }) {
+  const interactive = typeof onClick === 'function';
+  const useButton = interactive && !action;
+  const tag = useButton ? 'button' : 'div';
   const row = h(tag, 'ui-list-row' + (mono ? ' mono' : ''));
-  if (onClick) {
+  if (useButton) {
     row.type = 'button';
     row.addEventListener('click', onClick);
+  } else if (interactive) {
+    row.setAttribute('role', 'button');
+    row.tabIndex = 0;
+    row.addEventListener('click', onClick);
+    row.addEventListener('keydown', (event) => {
+      if (event.target !== row) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        onClick(event);
+      }
+    });
   }
   const main = h('span', 'ui-list-row-main');
   main.append(h('strong', 'ui-list-row-title', title));
@@ -293,7 +323,8 @@ export function listRow({ title, subtitle, meta, badge, onClick, mono = false })
   const tail = h('span', 'ui-list-row-tail');
   if (badge) tail.append(badge);
   if (meta) tail.append(h('span', 'ui-list-row-meta', meta));
-  if (onClick) tail.append(h('span', 'ui-chevron', '›'));
+  if (action) tail.append(action);
+  if (interactive) tail.append(h('span', 'ui-chevron', '›'));
   if (tail.childNodes.length) row.append(tail);
   return row;
 }
@@ -319,10 +350,12 @@ function sourceItem(value, index) {
  * The latter is important for 100k–300k function indexes on iPad: the UI can
  * expose every function without first allocating one JS object per function.
  */
+const MAX_SPACER_HEIGHT = 1_000_000;
+
 export class VirtualList {
-  constructor({ items = [], rowHeight = 60, overscan = 6, renderRow, ariaLabel = '一覧' } = {}) {
+  constructor({ items = [], rowHeight = 60, overscan = 6, renderRow, ariaLabel = isJa() ? '一覧' : 'List' } = {}) {
     this.items = items;
-    this.rowHeight = Math.max(44, rowHeight);
+    this.rowHeight = Number.isFinite(Number(rowHeight)) ? Math.max(44, Number(rowHeight)) : 44;
     this.overscan = overscan;
     this.renderRow = renderRow;
     this.root = h('div', 'ui-virtual-list');
@@ -334,17 +367,22 @@ export class VirtualList {
     this.root.append(this.spacer, this.window);
     this.onScroll = () => this.render();
     this.root.addEventListener('scroll', this.onScroll, { passive: true });
+    this._lastTranslateY = null;
     this.setItems(items);
   }
 
   setItems(items) {
     this.items = Array.isArray(items) || validLazySource(items) ? items : [];
-    const contentHeight = sourceLength(this.items) * this.rowHeight;
-    this.spacer.style.height = contentHeight + 'px'; // runtime geometry
+    const totalHeight = sourceLength(this.items) * this.rowHeight;
+    const spacerHeight = Math.min(totalHeight, MAX_SPACER_HEIGHT);
+    this.totalHeight = totalHeight;
+    this.spacerHeight = spacerHeight;
+    this.spacer.style.height = spacerHeight + 'px'; // runtime geometry
     // +2px for the list border: a short list is exactly as tall as its rows.
-    this.root.style.setProperty('--ui-virtual-content', (contentHeight + 2) + 'px');
+    this.root.style.setProperty('--ui-virtual-content', (spacerHeight + 2) + 'px');
     this.first = undefined;
     this.last = undefined;
+    this._lastTranslateY = null;
     this.render(true);
   }
 
@@ -354,11 +392,34 @@ export class VirtualList {
     if (reset) this.root.scrollTop = 0;
     const height = this.root.clientHeight || 480;
     const length = sourceLength(this.items);
-    const first = Math.max(0, Math.floor(this.root.scrollTop / this.rowHeight) - this.overscan);
+    const totalHeight = length * this.rowHeight;
+    const spacerHeight = Math.min(totalHeight, MAX_SPACER_HEIGHT);
+    const maxScroll = Math.max(0, spacerHeight - height);
+    const scrollTop = Math.max(0, Math.min(maxScroll, Number(this.root.scrollTop) || 0));
+    let first;
+    let translateY;
+    if (totalHeight > MAX_SPACER_HEIGHT) {
+      const maxVirtualScroll = Math.max(0, totalHeight - height);
+      const ratio = maxScroll > 0 ? scrollTop / maxScroll : 0;
+      const virtualTop = ratio * maxVirtualScroll;
+      const rawFirst = Math.floor(virtualTop / this.rowHeight);
+      first = Math.max(0, rawFirst - this.overscan);
+      translateY = Math.max(0, Math.round(scrollTop - (virtualTop - first * this.rowHeight)));
+    } else {
+      first = Math.max(0, Math.floor(scrollTop / this.rowHeight) - this.overscan);
+      translateY = first * this.rowHeight;
+    }
     const count = Math.ceil(height / this.rowHeight) + this.overscan * 2;
     const last = Math.min(length, first + count);
-    if (first === this.first && last === this.last) return;
+    if (first === this.first && last === this.last) {
+      if (translateY !== this._lastTranslateY) {
+        this._lastTranslateY = translateY;
+        this.window.style.transform = `translateY(${translateY}px)`; // virtualization geometry
+      }
+      return;
+    }
     this.first = first; this.last = last;
+    this._lastTranslateY = translateY;
     const frag = document.createDocumentFragment();
     for (let index = first; index < last; index++) {
       const row = this.renderRow(sourceItem(this.items, index), index);
@@ -370,7 +431,7 @@ export class VirtualList {
       frag.append(row);
     }
     this.window.replaceChildren(frag);
-    this.window.style.transform = `translateY(${first * this.rowHeight}px)`; // virtualization geometry
+    this.window.style.transform = `translateY(${translateY}px)`; // virtualization geometry
 
     if (Number.isInteger(focusedIndex)) {
       const replacement = this.window.querySelector(`[data-virtual-index="${focusedIndex}"]`);

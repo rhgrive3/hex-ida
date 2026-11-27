@@ -96,7 +96,7 @@ export async function recognizeWithKnowledgeDB({ db, input, packageEnvelope = nu
   const candidates = matches.map((match) => ({
     sourceEntityId: input.sourceEntityId || input.entityId || input.address || 'unknown-entity',
     packageEntryId: match.record.identityKey || match.record.id,
-    tier: match.identity === 'exact' ? 'exact-content' : match.identity === 'normalized' ? 'relocation-normalized' : match.identity === 'structural' ? 'structural' : 'semantic',
+    tier: match.identity === 'exact' ? 'exact-content' : match.identity === 'normalized-identical' ? 'relocation-normalized' : match.identity === 'structural' ? 'structural' : 'semantic',
     score: match.confidence,
     confidence: match.confidence,
     featuresUsed: match.reasons,
@@ -104,7 +104,9 @@ export async function recognizeWithKnowledgeDB({ db, input, packageEnvelope = nu
     packageContentHash: packageHash,
   }));
   if (!candidates.length) return Object.freeze({ status: 'no-match', completeness: matches.truncated ? 'partial' : 'complete', candidateSearchTruncated: matches.truncated === true, candidates: [] });
-  return createMatchResult({ ...input, packageContentHash: packageHash, candidates, candidateSearchTruncated: matches.truncated === true, ambiguityWindow: options.ambiguityWindow });
+  const topSourceEntityId = String(input?.sourceEntityId || input?.entityId || input?.address || candidates[0].sourceEntityId || 'unknown-entity');
+  const topPackageEntryId = String(input?.packageEntryId || input?.entryId || candidates[0].packageEntryId);
+  return createMatchResult({ ...input, sourceEntityId: topSourceEntityId, packageEntryId: topPackageEntryId, packageContentHash: packageHash, candidates, candidateSearchTruncated: matches.truncated === true, ambiguityWindow: options.ambiguityWindow });
 }
 
 // Host-held approval authority for L4 promotion (#5216, review R2–R5): a

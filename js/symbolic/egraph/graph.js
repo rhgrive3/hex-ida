@@ -28,9 +28,17 @@ export function orderEqualityProposals(pending,guard,ruleOrder = 'canonical') {
   return pending;
 }
 const MAX_TREE_SIZE=4096, MAX_TREE_DEPTH=64, MAX_FRONTIER=4;
-const expensive = node => ['mul','udiv','sdiv','urem','srem'].includes(node.op) ? 1 : 0;
+const EXPENSIVE_OPS = new Set(['mul','udiv','sdiv','urem','srem']);
+const expensive = node => EXPENSIVE_OPS.has(node.op) ? 1 : 0;
 const sameCost = (a,b) => a.treeNodes===b.treeNodes && a.depth===b.depth && a.expensiveOps===b.expensiveOps;
 const dominates = (a,b) => a.treeNodes<=b.treeNodes && a.depth<=b.depth && a.expensiveOps<=b.expensiveOps;
+function isStrictlyDominated(frontier, cost) {
+  for (let i = 0; i < frontier.length; i++) {
+    const oldCost = frontier[i].cost;
+    if (dominates(oldCost, cost) && !sameCost(oldCost, cost)) return true;
+  }
+  return false;
+}
 const compareCost = (a,b) => a.cost.expensiveOps-b.cost.expensiveOps || a.cost.treeNodes-b.cost.treeNodes || a.cost.depth-b.cost.depth || (a.digest<b.digest?-1:a.digest>b.digest?1:0);
 function header(node) {
   // A lossless enode key; structural hashes are used only for candidate ranking,
@@ -51,7 +59,16 @@ class CandidateEGraph {
     while(this.parents[id]!==id){const next=this.parents[id];this.parents[id]=root;id=next;}
     return root;
   }
-  key(head,children){return head+'|'+children.map(id=>this.find(id)).join(',');}
+  key(head,children){
+    const len=children.length;
+    if(len===0)return head+'|';
+    if(len===1)return head+'|'+this.find(children[0]);
+    if(len===2)return head+'|'+this.find(children[0])+','+this.find(children[1]);
+    if(len===3)return head+'|'+this.find(children[0])+','+this.find(children[1])+','+this.find(children[2]);
+    const ids=new Array(len);
+    for(let i=0;i<len;i++)ids[i]=this.find(children[i]);
+    return head+'|'+ids.join(',');
+  }
   add(expression) {
     const stack=[[expression,false]];
     while(stack.length) {
@@ -110,11 +127,25 @@ class CandidateEGraph {
     // Positive tree costs ensure a shortest finite derivation never needs to
     // revisit an e-class. Cyclic classes require a non-cyclic witness, not an
     // arbitrary cycle cut that would invent a value.
+    let prevChangedClasses=new Set();
+    let currChangedClasses=new Set();
     for(let pass=0;pass<=frontiers.size;pass++) {
       this.guard.take('extractionPasses');let changed=false;
       for(const node of this.nodes) {
-        this.guard.take('workItems');const inputs=node.children.map(id=>frontiers.get(this.find(id)));
-        if(inputs.some(frontier=>frontier.length===0))continue;
+        this.guard.take('workItems');
+        const childRoots=new Array(node.children.length);
+        const inputs=new Array(node.children.length);
+        let anyEmpty=false;
+        let anyChildChanged=pass===0;
+        for(let i=0;i<node.children.length;i++) {
+          const r=this.find(node.children[i]);
+          childRoots[i]=r;
+          const f=frontiers.get(r);
+          inputs[i]=f;
+          if(f.length===0)anyEmpty=true;
+          if(!anyChildChanged && (prevChangedClasses.has(r) || currChangedClasses.has(r)))anyChildChanged=true;
+        }
+        if(anyEmpty)continue;
         let choices=[[]];
         for(const input of inputs) {
           const next=[];
@@ -127,13 +158,21 @@ class CandidateEGraph {
           for(const child of choice){cost.treeNodes+=child.cost.treeNodes;cost.depth=Math.max(cost.depth,1+child.cost.depth);cost.expensiveOps+=child.cost.expensiveOps;}
           if(cost.treeNodes>MAX_TREE_SIZE || cost.depth>MAX_TREE_DEPTH)continue;
           this.guard.take('allocationUnits',choice.length+2);
-          const expression=rebuildCanonicalExpression(node.witness,choice.map(child=>child.expression));
           this.guard.take('workItems',cost.treeNodes);
-          const digest=E.computeStructuralHash(expression),frontier=frontiers.get(this.find(node.owner));
-          changed=this.insert(frontier,{expression,cost:Object.freeze(cost),digest})||changed;
+          const ownerRoot=this.find(node.owner);
+          const frontier=frontiers.get(ownerRoot);
+          if((pass>0 && !anyChildChanged) || isStrictlyDominated(frontier,cost))continue;
+          const expression=rebuildCanonicalExpression(node.witness,choice.map(child=>child.expression));
+          const digest=E.computeStructuralHash(expression);
+          if(this.insert(frontier,{expression,cost:Object.freeze(cost),digest})){
+            changed=true;
+            currChangedClasses.add(ownerRoot);
+          }
         }
       }
       if(!changed)return frontiers;
+      prevChangedClasses=currChangedClasses;
+      currChangedClasses=new Set();
     }
     throw new QueryFailure('egraph-extraction-not-converged');
   }

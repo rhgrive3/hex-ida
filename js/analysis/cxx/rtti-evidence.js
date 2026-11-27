@@ -217,7 +217,7 @@ export async function parseItaniumTypeInfo({ read, symbols, typeinfoAddress, poi
     const fromSymbol = classNameFromTypeinfoSymbol(ztsSymbol);
     if (fromSymbol) { className = fromSymbol; nameSource = 'zts-symbol'; }
     else {
-      const nameBytes = await read(namePointer, 64);
+      const nameBytes = await read(namePointer, MAX_TYPE_NAME_BYTES);
       const parsed = nameBytes ? parseItaniumTypeName(nameBytes) : null;
       if (parsed) { className = parsed; nameSource = 'zts-string'; }
     }
@@ -618,7 +618,10 @@ export function createCxxEvidenceCache({ maxEntries = 4 } = {}) {
       const key = String(cacheKey);
       const cached = entries.get(key);
       if (cached) return cached;
-      const pending = buildCxxClassEvidence(input);
+      const pending = buildCxxClassEvidence(input).catch((err) => {
+        if (entries.get(key) === pending) entries.delete(key);
+        throw err;
+      });
       entries.set(key, pending);
       while (entries.size > limit) entries.delete(entries.keys().next().value);
       return pending;

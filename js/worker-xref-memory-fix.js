@@ -71,6 +71,9 @@ async function __isSupplementalMemoryRef(region, site) {
 scanProgram = async function scanProgramCanonicalStringRefs(args) {
   const result = await __scanProgramWithExtendedMemoryRefs(args);
   if (!result || result.cancelled || !result.refCount) return result;
+  if (typeof __inlineStringRefFilteredResults !== 'undefined' && __inlineStringRefFilteredResults.has(result)) {
+    return result;
+  }
 
   const region = regions.get(args.regionId);
   const stringRanges = __programStringRanges();
@@ -88,7 +91,7 @@ scanProgram = async function scanProgramCanonicalStringRefs(args) {
   let kept = 0;
   let changed = false;
   for (let i = 0; i < count; i++) {
-    if (cancelled(args.requestId)) return { cancelled:true, __transfer:[] };
+    if (cancelled(args.requestId, args.epoch)) return { cancelled:true, __transfer:[] };
     const target = result.refTo[i];
     let drop = false;
     if (__inProgramStringRange(target, stringRanges)) {
@@ -143,7 +146,7 @@ findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, r
   };
 
   while (pos < total && out.length < cap) {
-    if (cancelled(requestId)) return { results:out, cancelled:true, capped:false };
+    if (cancelled(requestId, epoch)) return { results:out, cancelled:true, capped:false };
     const blk = await readRange(region.fileOffset + BigInt(pos), Math.min(1024 * 1024, total - pos));
     if (blk.length < 4) break;
     const words = Math.floor(blk.length / 4);
@@ -154,7 +157,7 @@ findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, r
       const byteOff = pos + i * 4;
       const pc = region.vmAddr + BigInt(byteOff);
       const direct = Words.wordTarget(w, pc);
-      if (direct != null && direct === want && pushHit(byteOff, pc, 'branch')) break;
+      if (direct != null && direct === want && pushHit(byteOff, pc, Words.classifyWord(w) === Words.KIND.LITERAL ? 'load' : 'branch')) break;
 
       /* Preserve worker-fixes.js control-boundary semantics exactly. */
       if (__controlBoundary(w)) {
@@ -164,8 +167,10 @@ findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, r
 
       const rel = Words.pcRelTarget(w, pc);
       if (rel) {
-        pageOf[rel.reg] = rel.value;
-        pageAt[rel.reg] = index;
+        if (rel.reg < 31) {
+          pageOf[rel.reg] = rel.value;
+          pageAt[rel.reg] = index;
+        }
         if (!rel.page && rel.value === want && pushHit(byteOff, pc, 'address')) break;
         continue;
       }
@@ -174,13 +179,15 @@ findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, r
       const pair = Words.pairedOffset(w);
       let propagated = -1;
       if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= __XREF_PAIR_WINDOW) {
-        const full = pageOf[pair.rn] + pair.imm;
+        const full = BigInt.asUintN(64, pageOf[pair.rn] + pair.imm);
         if (full === want && pushHit(byteOff, pc, pair.load ? 'load' : pair.store ? 'store' : 'address')) break;
-        if (!pair.load && !pair.store) {
-          pageOf[pair.rd] = full;
-          pageAt[pair.rd] = index;
-          propagated = pair.rd;
-        } else if (pair.load && pair.rd < 31) {
+        if (!pair.load && !pair.store && !pair.prefetch) {
+          if (pair.rd < 31) {
+            pageOf[pair.rd] = full;
+            pageAt[pair.rd] = index;
+            propagated = pair.rd;
+          }
+        } else if (pair.load && pair.gpDest !== false && pair.rd < 31) {
           pageOf[pair.rd] = null;
           pageAt[pair.rd] = -1;
         }
@@ -195,15 +202,29 @@ findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, r
       const mem = Words.memoryAccess(w);
       if (mem && !pair && !mem.indexed && mem.disp != null &&
           pageOf[mem.base] != null && index - pageAt[mem.base] <= __XREF_PAIR_WINDOW) {
-        const first = mem.mode === 'post' ? pageOf[mem.base] : pageOf[mem.base] + mem.disp;
+        const first = mem.mode === 'post' ? pageOf[mem.base] : BigInt.asUintN(64, pageOf[mem.base] + mem.disp);
         const hitKind = mem.rmw ? 'rmw' : mem.load ? 'load' : 'store';
         if (first === want && pushHit(byteOff, pc, hitKind)) break;
 
         // LDP/STP/LDPSW transfer the second element at the next element-size
         // address.  size is the whole pair; elementSize is decoder-authoritative.
         if (mem.pair && Number.isSafeInteger(mem.elementSize) && mem.elementSize > 0) {
-          const second = first + BigInt(mem.elementSize);
+          const second = BigInt.asUintN(64, first + BigInt(mem.elementSize));
           if (second === want && pushHit(byteOff, pc, hitKind)) break;
+        }
+      }
+      if (mem) {
+        if (mem.load && !mem.vector && mem.pair && mem.reg2 != null && mem.reg2 < 31) {
+          pageOf[mem.reg2] = null;
+          pageAt[mem.reg2] = -1;
+        }
+        if ((mem.mode === 'pre' || mem.mode === 'post') && mem.base != null && mem.base < 31) {
+          pageOf[mem.base] = null;
+          pageAt[mem.base] = -1;
+        }
+        if (mem.statusReg != null && mem.statusReg < 31) {
+          pageOf[mem.statusReg] = null;
+          pageAt[mem.statusReg] = -1;
         }
       }
 

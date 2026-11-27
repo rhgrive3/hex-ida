@@ -185,14 +185,15 @@ function observedFieldValue(observation, offset) {
 }
 
 export function compareExpected(caseSpec, observation) {
-  const expected = caseSpec && caseSpec.expected;
-  if (!expected) return { status:'inconclusive', reason:'no-machine-checkable-expectation' };
   const stop = observation && observation.stop && observation.stop.kind;
   if (stop === 'fault' || stop === 'exception' || stop === 'timeout' || stop === 'unsupported' || stop === 'cancelled') return { status:'unsupported', reason:`execution-${stop}` };
+  const expected = caseSpec && caseSpec.expected;
+  if (!expected) return { status:'inconclusive', reason:'no-machine-checkable-expectation' };
   if (expected.field) {
     const bits = fieldWidthBits(expected.field.bits);
     if (bits == null) return { status:'inconclusive', reason:'invalid-expected-field-bits', expected:expected.field.value };
-    const offset = BigInt(expected.field.offset);
+    const offset = strictMachineInteger(expected.field.offset);
+    if (offset == null) return { status:'inconclusive', reason:'invalid-expected-field-offset', expected:expected.field.value };
     const actual = observedFieldValue(observation, offset);
     if (!actual.observed) return { status:'inconclusive', reason:'expected-field-final-state-not-observed', expected:expected.field.value };
     // #5578: the observation width is part of the field contract —
@@ -208,8 +209,13 @@ export function compareExpected(caseSpec, observation) {
       return { status:'inconclusive', reason:'observed-field-width-mismatch', observedWidth:entrySize, expectedWidth:expectedBytes, expected:expected.field.value };
     }
     const signed = expected.field.signed !== false;
-    const observed = normalizeInteger(actual.value, bits, signed);
-    const wanted = normalizeInteger(expected.field.value, bits, signed);
+    const observedRaw = strictMachineInteger(actual.value);
+    const wantedRaw = strictMachineInteger(expected.field.value);
+    if (observedRaw == null || wantedRaw == null) {
+      return { status:'inconclusive', reason:'observed-field-value-not-an-integer', observed:actual.value, expected:expected.field.value };
+    }
+    const observed = normalizeInteger(observedRaw, bits, signed);
+    const wanted = normalizeInteger(wantedRaw, bits, signed);
     if (observed === wanted) return { status:'supported', reason:'observed-field-matches', observed, expected:wanted, source:actual.source };
     return { status:'contradicted', reason:'observed-field-mismatch', observed, expected:wanted, source:actual.source };
   }

@@ -6,6 +6,33 @@
   .product-ui-ready .statusbar { padding-bottom: calc(var(--ui-safe-bottom) + 58px); }
   .product-ui-ready .ui-card-grid { grid-template-columns: 1fr; }
   .product-ui-ready .ui-screen { max-width: 760px; }
+  .product-ui-ready .addrbar .addr-fn { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .product-ui-ready .addrbar .addr-pseudo { min-height: var(--ui-touch); padding: 6px 12px; }
+  .product-ui-ready .ui-command-results {
+    max-height: min(45dvh, calc(var(--ui-visual-height, 100dvh) - 110px - var(--ui-keyboard-inset, 0px)));
+  }
+}
+
+@media (max-width: 899px), (pointer: coarse) {
+  .product-ui-ready .ui-star-btn,
+  .product-ui-ready .ui-row-star,
+  .product-ui-ready .ui-delta-dismiss,
+  .product-ui-ready .ui-tok-nav button,
+  .product-ui-ready .ui-highlight-nav button {
+    min-width: var(--ui-touch);
+    min-height: var(--ui-touch);
+  }
+  .product-ui-ready .addrbar .addr-star {
+    flex: none;
+    min-width: var(--ui-touch);
+    min-height: var(--ui-touch);
+  }
+  .product-ui-ready .ui-delta-btn,
+  .product-ui-ready .ui-explorer-filter-chip,
+  .product-ui-ready .ui-explorer-sort,
+  .product-ui-ready .ui-command-result {
+    min-height: var(--ui-touch);
+  }
 }
 
 @media (max-width: 599px) {
@@ -27,6 +54,21 @@
   .product-ui-ready .titlebar .tb-title { text-align: left; }
   .product-ui-ready .titlebar .tb-btn { min-height: var(--ui-touch); min-width: var(--ui-touch); padding-inline: 8px; }
   .product-ui-ready .ui-product-chrome { min-height: 50px; padding-block: 3px; }
+  .product-ui-ready .ui-chrome-back,
+  .product-ui-ready .ui-chrome-forward { padding-inline: 8px; font-size: var(--ui-font-xs); }
+  .product-ui-ready .ui-command-results {
+    position: fixed;
+    left: var(--ui-space-3);
+    right: var(--ui-space-3);
+    top: var(--ui-omnibox-top, calc(var(--ui-safe-top, 0px) + 104px));
+  }
+  .product-ui-ready .ui-explorer-filter-bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .product-ui-ready .ui-explorer-filter-bar::-webkit-scrollbar { display: none; }
   .product-ui-ready .ui-command-go { display: none; }
   .product-ui-ready .ui-global-command { font-size: 16px; }
   .product-ui-ready .ui-route-host input,
@@ -62,8 +104,12 @@
   /* Phone code view: address + assembly. Bytes remain available in Hex mode. */
   .product-ui-ready .ui-code-route .addrbar { min-height: 34px; padding-block: 3px; }
   .product-ui-ready .ui-code-route .addr-range { display: none; }
-  /* The range is hidden here, so the search button takes the free space itself. */
+  /* The range is hidden here, so the quick action pills take the free space. */
+  .product-ui-ready .ui-code-route .addrbar .addr-fn { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .product-ui-ready .ui-code-route .addrbar .addr-pseudo { min-height: var(--ui-touch); padding: 6px 12px; }
+  .product-ui-ready .ui-code-route .addrbar .addr-pseudo:not([hidden]) { margin-left: auto; }
   .product-ui-ready .ui-code-route .addrbar .addr-search { margin-left: auto; }
+  .product-ui-ready .ui-code-route .addrbar .addr-pseudo:not([hidden]) + .addr-search { margin-left: 4px; }
   /* Only in assembly mode: Hex mode keeps its 16進 / 文字 headings. */
   .product-ui-ready .ui-code-route .colhead.mode-asm-head .c-hex,
   .product-ui-ready .ui-code-route .viewport.mode-asm .c-hex { display: none; }
@@ -95,7 +141,10 @@
 }
 
 @media (min-width: 600px) and (max-width: 899px) {
-  .product-ui-ready .ui-route-host { padding-inline: max(var(--ui-space-6), var(--ui-safe-left)); }
+  .product-ui-ready .ui-route-host {
+    padding-left: max(var(--ui-space-6), var(--ui-safe-left));
+    padding-right: max(var(--ui-space-6), var(--ui-safe-right));
+  }
   .product-ui-ready .ui-investigate-hero { padding: var(--ui-space-8); }
   .product-ui-ready .ui-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-ui-ready .ui-card-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
@@ -123,6 +172,7 @@
     padding: 3px max(3px, var(--ui-safe-right)) 3px 3px;
   }
   .product-ui-ready .ui-nav-item { min-height: var(--ui-touch); font-size: 10px; }
+  .product-ui-ready .ui-delta-strip { padding-right: calc(72px + var(--ui-safe-right, 0px)); }
   .product-ui-ready .ui-route-host { padding-top: var(--ui-space-2); padding-right: calc(72px + var(--ui-safe-right)); padding-bottom: var(--ui-space-2); }
   .product-ui-ready .ui-code-route .statusbar { padding-bottom: 0; padding-right: 70px; }
   .product-ui-ready .ui-code-route .viewwrap { margin-right: 66px; }
@@ -148,12 +198,36 @@
   .ai-panel[data-layout="sheet"] { bottom: calc(58px + var(--ui-safe-bottom)); }
   .product-ui-ready.ui-keyboard-open .ai-panel[data-layout="sheet"] { bottom: 0; }
   html.ai-open .ui-bottom-nav { display: none; }
+  .ai-panel .ai-icon-button { min-width: var(--ui-touch); min-height: var(--ui-touch); }
 }
 
 @media (max-width: 599px) {
   .ai-panel[data-layout="full"] { z-index: var(--ui-z-sheet); }
   .ai-panel .ai-panel-head { flex-wrap: nowrap; }
   .ai-panel .ai-seg { padding-inline: 8px; font-size: 12px; }
-  .ai-panel .ai-icon-button { min-width: 32px; }
+  .ai-panel .ai-icon-button { min-width: var(--ui-touch); min-height: var(--ui-touch); }
   .ai-turn-user { max-width: 100%; }
+}
+
+/* Wave 35: iPad & mobile touch ergonomics */
+@media (min-width: 700px) and (pointer: coarse) {
+  .sheet {
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 24px);
+  }
+}
+@media (max-width: 760px) {
+  .addrbar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .addrbar::-webkit-scrollbar { display: none; }
+  .addr-search,
+  .chip {
+    min-height: 44px;
+  }
+  input[type="password"],
+  .ui-pseudocode-find input {
+    font-size: 16px;
+  }
 }

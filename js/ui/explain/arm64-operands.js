@@ -25,6 +25,7 @@ function splitTop(s) {
 
 function bigOf(text) {
   try {
+    if (/^-0x/i.test(text)) return -BigInt(text.slice(1));
     if (/^0x/i.test(text)) return BigInt(text);
     if (/\./.test(text)) return null;              // 浮動小数点リテラル
     return BigInt(text);
@@ -107,7 +108,11 @@ function parseMem(text) {
     const reg = parseReg(p);
     if (reg) { if (mem.index) return null; mem.index = reg; continue; }
     const sh = SHIFT_RE.exec(p) || EXT_RE.exec(p);
-    if (sh) mem.shift = { op: sh[1].toLowerCase(), amount: sh[2] != null ? Number(bigOf(sh[2])) : null };
+    if (sh) {
+      const rawAmt = sh[2] != null ? bigOf(sh[2]) : null;
+      if (sh[2] != null && (rawAmt == null || rawAmt < 0n || rawAmt > BigInt(Number.MAX_SAFE_INTEGER))) return null;
+      mem.shift = { op: sh[1].toLowerCase(), amount: rawAmt != null ? Number(rawAmt) : null };
+    }
     // Keep unsupported address modifiers visible to the caller instead of
     // silently presenting the remaining components as a different address
     // (#4872, e.g. SVE's "MUL VL").
@@ -148,7 +153,10 @@ export function parseOperands(str) {
     }
     const sh = SHIFT_RE.exec(raw) || EXT_RE.exec(raw);
     if (sh && out.length) {
-      out[out.length - 1].shift = { op: sh[1].toLowerCase(), amount: sh[2] != null ? Number(bigOf(sh[2])) : null };
+      const rawAmt = sh[2] != null ? bigOf(sh[2]) : null;
+      if (sh[2] == null || (rawAmt != null && rawAmt >= 0n && rawAmt <= BigInt(Number.MAX_SAFE_INTEGER))) {
+        out[out.length - 1].shift = { op: sh[1].toLowerCase(), amount: rawAmt != null ? Number(rawAmt) : null };
+      }
       continue;
     }
     const imm = parseImm(raw);
@@ -296,7 +304,110 @@ const CONDS = {
 };
 
 export function condInfo(name) {
-  const c = CONDS[name];
+  const c = Object.hasOwn(CONDS, name) ? CONDS[name] : null;
   if (!c) return null;
   return { ja: c.ja, en: c.en, expr: c.expr, text: pick(c.ja, c.en) };
+}
+
+/**
+ * 初心者向けオペランド説明。
+ * C やアセンブリの前提知識なしで読める平易な日本語（summary）を先頭に出し、
+ * 生のレジスタ名や 16 進表記は副次情報（technical）に分離する。
+ */
+export function describeOperandPlain(op) {
+  if (!op) return { kind: "other", summary: pick("不明な値", "unknown value"), technical: "" };
+  switch (op.k) {
+    case "reg": {
+      if (op.cls === "sp") {
+        return { kind: "reg", summary: pick("一時作業エリアの位置", "local work area pointer"), technical: op.text };
+      }
+      if (op.cls === "zr") {
+        return { kind: "reg", summary: pick("常に 0（ゼロ）", "always 0"), technical: op.text };
+      }
+      if (op.cls === "gp") {
+        if (op.num === 0) {
+          return { kind: "reg", summary: pick("1番目の入力データ（返り値にも使用）", "1st input (also return value)"), technical: op.text };
+        }
+        if (op.num >= 1 && op.num <= 7) {
+          return { kind: "reg", summary: pick((op.num + 1) + "番目の入力データ", "input #" + (op.num + 1)), technical: op.text };
+        }
+        if (op.num >= 19 && op.num <= 28) {
+          return { kind: "reg", summary: pick("処理中に保持している値", "value kept across steps"), technical: op.text };
+        }
+        if (op.num === 29) {
+          return { kind: "reg", summary: pick("一時変数の基準位置", "local variable base"), technical: op.text };
+        }
+        if (op.num === 30) {
+          return { kind: "reg", summary: pick("呼び出し元への戻り先", "return address to caller"), technical: op.text };
+        }
+        return { kind: "reg", summary: pick("一時的な計算用の値", "temporary value"), technical: op.text };
+      }
+      if (op.cls === "fp") {
+        if (op.num <= 7) {
+          return { kind: "reg", summary: pick((op.num + 1) + "番目の小数データ", "decimal input #" + (op.num + 1)), technical: op.text };
+        }
+        if (op.num >= 8 && op.num <= 15) {
+          return { kind: "reg", summary: pick("処理中に保持している小数値", "carried decimal value"), technical: op.text };
+        }
+        return { kind: "reg", summary: pick("一時的な小数値", "temporary decimal value"), technical: op.text };
+      }
+      return { kind: "reg", summary: pick("複数の数値をまとめたデータ", "packed multi-value data"), technical: op.text };
+    }
+    case "imm": {
+      if (op.float != null) {
+        return { kind: "imm", summary: pick("固定の小数 " + op.float, "fixed decimal " + op.float), technical: op.text };
+      }
+      const dec = op.value != null ? op.value.toString(10) : op.text.replace(/^#/, "");
+      return { kind: "imm", summary: pick("固定の数値 " + dec, "fixed number " + dec), technical: op.text };
+    }
+    case "mem": {
+      const base = op.base;
+      const technical = "[" + memExpr(op) + "]";
+      if (base && (base.cls === "sp" || (base.cls === "gp" && base.num === 29))) {
+        return { kind: "mem", summary: pick("この関数の中の一時変数", "a temporary variable in this function"), technical };
+      }
+      if (base && base.cls === "gp" && base.num === 0) {
+        if (op.disp && op.disp.value != null && op.disp.value !== 0n) {
+          const absDec = (op.disp.value < 0n ? -op.disp.value : op.disp.value).toString(10);
+          return {
+            kind: "mem",
+            summary: pick("このオブジェクトの属性（先頭から " + absDec + " バイト目）", "a property of this object (byte " + absDec + ")"),
+            technical,
+          };
+        }
+        return { kind: "mem", summary: pick("このオブジェクトのデータ", "data of this object"), technical };
+      }
+      if (base && base.cls === "gp" && base.num >= 1 && base.num <= 7) {
+        return {
+          kind: "mem",
+          summary: pick((base.num + 1) + "番目の入力データの属性", "a property of input #" + (base.num + 1)),
+          technical,
+        };
+      }
+      return { kind: "mem", summary: pick("メモリ上のデータ", "data in memory"), technical };
+    }
+    case "cond": {
+      const info = condInfo(op.text);
+      return { kind: "cond", summary: info ? info.text : op.text, technical: op.text };
+    }
+    case "elem":
+      return {
+        kind: "elem",
+        summary: pick("まとめデータの " + (op.index + 1) + " 番目の要素", "element #" + (op.index + 1) + " of packed data"),
+        technical: op.text,
+      };
+    case "list":
+      return {
+        kind: "list",
+        summary: pick((op.regs ? op.regs.length : 0) + " 個のまとめデータ", (op.regs ? op.regs.length : 0) + " packed data items"),
+        technical: op.text,
+      };
+    default:
+      return { kind: op.k || "other", summary: pick("その他の指定", "other operand"), technical: op.text || "" };
+  }
+}
+
+/** Capstone 形式のオペランド文字列を、初心者向けの平易な説明配列に変換する。 */
+export function explainOperandsForBeginner(operandStr) {
+  return parseOperands(operandStr).map(describeOperandPlain);
 }

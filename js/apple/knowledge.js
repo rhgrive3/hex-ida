@@ -120,12 +120,14 @@ function hexBytes(bytes) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 function readCString(bytes, start, end) {
   if (!Number.isSafeInteger(start) || start < 0 || start >= end || end > bytes.length) return null;
   let cursor = start;
   while (cursor < end && bytes[cursor] !== 0) cursor++;
   if (cursor === end) return null;
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(start, cursor)); }
+  try { return UTF8_FATAL_DECODER.decode(bytes.subarray(start, cursor)); }
   catch { return null; }
 }
 
@@ -247,16 +249,22 @@ export function parseDyldSharedCache(input, options = {}) {
     });
   }
 
+  const MAX_DYLD_AMBIGUITIES = 256;
   const ambiguities = [];
-  for (let left = 0; left < mappings.length; left++) {
-    const a = mappings[left];
-    for (let right = left + 1; right < mappings.length; right++) {
-      const b = mappings[right];
+  const sortedMappings = [...mappings].sort((x, y) => (x.address < y.address ? -1 : x.address > y.address ? 1 : x.index - y.index));
+  for (let left = 0; left < sortedMappings.length && ambiguities.length < MAX_DYLD_AMBIGUITIES; left++) {
+    const a = sortedMappings[left];
+    const endA = a.address + a.size;
+    for (let right = left + 1; right < sortedMappings.length && ambiguities.length < MAX_DYLD_AMBIGUITIES; right++) {
+      const b = sortedMappings[right];
+      if (b.address >= endA) break;
       const start = a.address > b.address ? a.address : b.address;
-      const endA = a.address + a.size;
       const endB = b.address + b.size;
       const end = endA < endB ? endA : endB;
-      if (start < end) ambiguities.push({ kind: 'overlapping-vm-mappings', candidates: [a.index, b.index], start, end });
+      if (start < end) {
+        const candidates = a.index < b.index ? [a.index, b.index] : [b.index, a.index];
+        ambiguities.push({ kind: 'overlapping-vm-mappings', candidates, start, end });
+      }
     }
   }
 
@@ -799,7 +807,9 @@ export function buildAppleKnowledge({ image = null, binaryIdentity = null, slice
     if (signature.status === 'structurally-valid' && machoComplete) signatureStatus = 'supported';
     else if (signature.status === 'unsupported') signatureStatus = 'unsupported';
     else if (signature.status === 'malformed') signatureStatus = 'malformed';
+    else if (signature.status === 'partial') signatureStatus = 'partial';
     else if (signature.status === 'absent' && machoComplete) signatureStatus = 'absent';
+    else signatureStatus = 'partial';
   }
   const signingReasons = [
     ...(signature?.reasons || []),
@@ -928,6 +938,7 @@ export function parseSerializedAppleKnowledge(text) {
       || parsed.complete !== false
       || parsed.identity.authoritative !== false
       || parsed.serializedEvidence?.authority !== 'untrusted'
+      || typeof parsed.serializedEvidence?.assertedComplete !== 'boolean'
       || Object.values(sourceCells).some((value) => value.status !== 'unknown' || value.complete !== false)) {
     throw new TypeError('apple-knowledge-contract-invalid');
   }
@@ -954,6 +965,6 @@ export function parseSerializedAppleKnowledge(text) {
       ...(Array.isArray(parsed.reasons) ? parsed.reasons.filter((reason) => typeof reason === 'string') : []),
       'serialized-evidence-requires-source-reparse',
     ]),
-    serializedEvidence: { authority: 'untrusted', assertedComplete: parsed.complete },
+    serializedEvidence: { authority: 'untrusted', assertedComplete: parsed.serializedEvidence.assertedComplete },
   });
 }

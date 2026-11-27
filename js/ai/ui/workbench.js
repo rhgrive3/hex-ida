@@ -9,15 +9,50 @@
 import { addrHex } from '../../format.js';
 import { currentFunctionAddr, prettyName } from '../../tools.js';
 
+const MAX_PATCH_SUMMARIES = 8;
+
 function safe(fn, fallback = null) {
   try { return fn(); } catch { return fallback; }
+}
+
+function formatPatchAddress(item) {
+  const addr = item?.addr ?? item?.address ?? null;
+  if (addr != null) {
+    const formatted = safe(() => addrHex(addr));
+    if (formatted) return formatted;
+  }
+  if (item?.offset != null) {
+    const hex = safe(() => BigInt(item.offset).toString(16));
+    if (hex != null) return '+0x' + hex;
+  }
+  return null;
+}
+
+/** Concise summary of staged patches read from app.patches (without importing patch.js). */
+export function stagedPatchesOf(app) {
+  const patches = app?.patches;
+  if (!patches) return [];
+  const items = safe(() => (typeof patches.list === 'function' ? patches.list() : Array.isArray(patches) ? patches : null));
+  if (!Array.isArray(items) || !items.length) return [];
+  return items.slice(0, MAX_PATCH_SUMMARIES).map((item) => {
+    const address = formatPatchAddress(item);
+    const bytes = item?.after?.length ?? item?.before?.length ?? item?.length ?? null;
+    const byteLength = Number.isFinite(bytes) ? Number(bytes) : null;
+    const label = typeof item?.label === 'string' && item.label.trim()
+      ? item.label.trim()
+      : (typeof item?.text === 'string' && item.text.trim()
+        ? item.text.trim()
+        : (typeof item?.reason === 'string' && item.reason.trim() ? item.reason.trim() : null));
+    return { address, byteLength, label };
+  }).filter((entry) => entry.address || entry.byteLength != null || entry.label);
 }
 
 export function functionNameOf(app, addr) {
   if (addr == null) return null;
   const raw = safe(() => app.symbols && (app.symbols.nameAt?.(addr) || app.symbols.label?.(addr)));
   if (raw) return prettyName(raw);
-  return 'sub_' + BigInt(addr).toString(16).toUpperCase();
+  const hex = safe(() => BigInt(addr).toString(16).toUpperCase());
+  return hex != null ? 'sub_' + hex : null;
 }
 
 /** The instruction or range the user currently has selected, if any. */
@@ -75,10 +110,23 @@ export function workbenchContext(app) {
   const region = app.store.get('currentRegion');
   const fn = info ? currentFunctionOf(app) : null;
   const selection = info ? selectionOf(app) : null;
+  const patches = stagedPatchesOf(app);
+  const totalPatches = safe(() => (typeof app?.patches?.size === 'number' ? app.patches.size : patches.length), patches.length);
   const notes = [];
   if (region) notes.push('open region: ' + (region.section || region.name));
   if (app.lastGoal && app.lastGoal.text) notes.push('last investigation: ' + app.lastGoal.text);
   if (app.notes && safe(() => app.notes.commentCount())) notes.push('user comments: ' + app.notes.commentCount());
+  if (patches.length) {
+    const summary = patches.map((patch) => {
+      const parts = [];
+      if (patch.address) parts.push(patch.address);
+      if (patch.byteLength != null) parts.push(`${patch.byteLength}B`);
+      if (patch.label) parts.push(patch.label);
+      return parts.join(' ');
+    }).join(', ');
+    const suffix = totalPatches > patches.length ? ` (+${totalPatches - patches.length} more)` : '';
+    notes.push(`staged patches (${totalPatches}): ${summary}${suffix}`);
+  }
 
   return {
     binary: info ? {
@@ -88,6 +136,7 @@ export function workbenchContext(app) {
     } : null,
     function: fn,
     selection,
+    patches,
     notes,
     state: {
       fileOpen: !!info,

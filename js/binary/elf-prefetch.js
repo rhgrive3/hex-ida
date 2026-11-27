@@ -49,7 +49,7 @@ function vaToOffset(segments, va, size = 1) {
     if (seg.type !== PT_LOAD) continue;
     const start = seg.vaddr;
     const fileSize = seg.filesz;
-    if (fileSize <= 0n || addr < start || addr + len > start + fileSize) continue;
+    if (fileSize <= 0n || addr < start || (len === 0n ? addr >= start + fileSize : addr + len > start + fileSize)) continue;
     const delta = addr - start;
     const fileStart = seg.offset + delta;
     if (fileStart > BigInt(Number.MAX_SAFE_INTEGER)) return null;
@@ -87,7 +87,16 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   if (configuredPage != null && Number.isSafeInteger(configuredPage) && configuredPage > 0) {
     maxReadLimit = Math.min(maxReadLimit, configuredPage);
   }
-  const readChunk = (off, len) => readBoundedRange(source, off, len, signal, maxReadLimit);
+  const maxPrefetchReads = Number.isSafeInteger(options.maxReads) && options.maxReads > 0 ? options.maxReads : 4096;
+  let readsUsed = 0;
+  let metaBytesRead = 0;
+  const readChunk = (off, len) => {
+    if (readsUsed >= maxPrefetchReads) throw new Error('ELF prefetch read budget exceeded');
+    if (len > 0 && metaBytesRead + len > maxCachedBytes) throw new Error('ELF prefetch byte budget exceeded');
+    readsUsed++;
+    metaBytesRead += len;
+    return readBoundedRange(source, off, len, signal, maxReadLimit);
+  };
 
   if (source.size < 16n) return [];
   const headerPrefix = prefix.byteLength >= 64 ? prefix : await readChunk(0n, Math.min(64, Number(source.size)));
@@ -160,7 +169,7 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   const segments = [];
   let programHeaderBytes = null;
   const phTableSize = phnum * phentsize;
-  if (phoff !== 0n && phentsize >= minProgram && phnum > 0 && phnum <= 100000 && phoff + BigInt(phTableSize) <= source.size) {
+  if (phoff !== 0n && phentsize >= minProgram && phnum > 0 && phnum <= 100000 && Number.isSafeInteger(phTableSize) && phTableSize > 0 && phTableSize <= maxCachedBytes && phoff + BigInt(phTableSize) <= source.size) {
     programHeaderBytes = await readChunk(phoff, phTableSize);
     const pr = new ByteView(programHeaderBytes, { littleEndian });
     for (let i = 0; i < phnum; i++) {
@@ -192,7 +201,7 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   const sections = [];
   let sectionHeaderBytes = null;
   const shTableSize = shnum * shentsize;
-  if (shoff !== 0n && shentsize >= minSection && shnum > 0 && shnum <= 100000 && shoff + BigInt(shTableSize) <= source.size) {
+  if (shoff !== 0n && shentsize >= minSection && shnum > 0 && shnum <= 100000 && Number.isSafeInteger(shTableSize) && shTableSize > 0 && shTableSize <= maxCachedBytes && shoff + BigInt(shTableSize) <= source.size) {
     sectionHeaderBytes = await readChunk(shoff, shTableSize);
     const sr = new ByteView(sectionHeaderBytes, { littleEndian });
     for (let i = 0; i < shnum; i++) {
@@ -239,18 +248,30 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
     if (s.type === SHT_STRTAB && s.offset + s.size <= source.size) {
       shstrSec = s;
       const sizeNum = toSafeNumber(s.size);
-      if (sizeNum != null && sizeNum > 0 && sizeNum <= 10 * 1024 * 1024) {
+      if (sizeNum != null && sizeNum > 0 && sizeNum <= Math.min(10 * 1024 * 1024, maxCachedBytes)) {
         shstrtabBytes = await readChunk(s.offset, sizeNum);
         const strBytes = shstrtabBytes;
+        const MAX_SECTION_NAME_LEN = 1024;
+        const MAX_SHSTRTAB_SCAN_BYTES = Math.min(maxCachedBytes, 1024 * 1024);
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        const nameCache = new Map();
+        let scannedBytes = 0;
         for (const sec of sections) {
           const off = sec.nameOffset;
-          if (off < strBytes.length) {
-            let end = off;
-            while (end < strBytes.length && strBytes[end] !== 0) end++;
-            let name = '';
-            for (let k = off; k < end; k++) name += String.fromCharCode(strBytes[k]);
-            sec.name = name;
+          if (off >= strBytes.length) continue;
+          if (nameCache.has(off)) {
+            sec.name = nameCache.get(off);
+            continue;
           }
+          if (scannedBytes >= MAX_SHSTRTAB_SCAN_BYTES) break;
+          const remaining = Math.min(MAX_SECTION_NAME_LEN, strBytes.length - off, MAX_SHSTRTAB_SCAN_BYTES - scannedBytes);
+          const slice = strBytes.subarray(off, off + remaining);
+          const nul = slice.indexOf(0);
+          const len = nul >= 0 ? nul : remaining;
+          scannedBytes += len + (nul >= 0 ? 1 : 0);
+          const name = decoder.decode(slice.subarray(0, len));
+          nameCache.set(off, name);
+          sec.name = name;
         }
       }
     }
@@ -262,7 +283,7 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   const tags = new Map();
   if (dynamicSegment && dynamicSegment.offset + dynamicSegment.filesz <= source.size) {
     const dynSize = toSafeNumber(dynamicSegment.filesz);
-    if (dynSize != null && dynSize > 0 && dynSize <= 10 * 1024 * 1024) {
+    if (dynSize != null && dynSize > 0 && dynSize <= Math.min(10 * 1024 * 1024, maxCachedBytes)) {
       dynamicBytes = await readChunk(dynamicSegment.offset, dynSize);
       const dr = new ByteView(dynamicBytes, { littleEndian });
       const entSize = bits === 64 ? 16 : 8;
@@ -318,12 +339,17 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
     SHT_NOTE,
   ]);
 
+  const linkedStrtabIndices = new Set();
+  for (const other of sections) {
+    if (other.type === SHT_DYNSYM || other.type === SHT_SYMTAB || other.type === SHT_DYNAMIC) {
+      linkedStrtabIndices.add(other.link);
+    }
+  }
+
   for (const s of sections) {
     let matched = candidateSecTypes.has(s.type);
-    if (s.type === SHT_STRTAB) {
-      // Linked from dynsym or symtab?
-      const isLinked = sections.some((other) => (other.type === SHT_DYNSYM || other.type === SHT_SYMTAB || other.type === SHT_DYNAMIC) && other.link === s.index);
-      if (isLinked) matched = true;
+    if (s.type === SHT_STRTAB && linkedStrtabIndices.has(s.index)) {
+      matched = true;
     }
     if (s.name === '.eh_frame_hdr' || s.name === '.gnu_debuglink' || s.name === '.comment') {
       matched = true;
@@ -358,7 +384,7 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
           }
         }
       } else {
-        const hashSec = sections.find((s) => s.name === '.hash');
+        const hashSec = sections.find((s) => s.type === 5) || sections.find((s) => s.name === '.hash');
         if (hashSec) {
           addRange(hashSec.offset, hashSec.size, 2, 'DT_HASH-sec');
         } else {
@@ -395,28 +421,53 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
               const pr = new ByteView(probe, { littleEndian });
               const nbuckets = pr.u32(0), symOffset = pr.u32(4), bloomSize = pr.u32(8);
               const word = bits === 64 ? 8 : 4;
+              const MAX_GNU_HASH_BUCKETS = 1_000_000;
+              const MAX_GNU_HASH_CHAIN_STEPS = 100_000;
+              const bucketsByteLen = nbuckets * 4;
               const bucketsOff = gnuHashOff + 16 + bloomSize * word;
-              const chainsOff = bucketsOff + nbuckets * 4;
-              // read buckets
-              const bucketsBytes = await readChunk(BigInt(bucketsOff), nbuckets * 4);
-              const br = new ByteView(bucketsBytes, { littleEndian });
-              let max = null;
-              for (let i = 0; i < nbuckets; i++) {
-                const b = br.u32(i * 4);
-                if (b > 0 && (max == null || b > max)) max = b;
-              }
-              if (max != null) {
-                // read chain starting at max
-                let idx = max;
-                let cp = chainsOff + (idx - symOffset) * 4;
-                while (cp + 4 <= Number(source.size)) {
-                  const chainBytes = await readChunk(BigInt(cp), 4);
-                  const cr = new ByteView(chainBytes, { littleEndian });
-                  const chain = cr.u32(0);
-                  if (chain & 1) break;
-                  idx++; cp += 4;
+              const chainsOff = bucketsOff + bucketsByteLen;
+              if (
+                nbuckets > 0
+                && nbuckets <= MAX_GNU_HASH_BUCKETS
+                && Number.isSafeInteger(bucketsByteLen)
+                && bucketsByteLen <= maxCachedBytes
+                && Number.isSafeInteger(bucketsOff)
+                && Number.isSafeInteger(chainsOff)
+                && bucketsOff >= 0
+                && BigInt(bucketsOff) + BigInt(bucketsByteLen) <= source.size
+              ) {
+                // read buckets
+                const bucketsBytes = await readChunk(BigInt(bucketsOff), bucketsByteLen);
+                const br = new ByteView(bucketsBytes, { littleEndian });
+                let max = null;
+                for (let i = 0; i < nbuckets; i++) {
+                  const b = br.u32(i * 4);
+                  if (b > 0 && (max == null || b > max)) max = b;
                 }
-                count = idx + 1;
+                if (max != null && max >= symOffset) {
+                  // read chain starting at max
+                  let idx = max;
+                  let cp = chainsOff + (idx - symOffset) * 4;
+                  let steps = 0;
+                  let terminated = false;
+                  const CHAIN_CHUNK_ENTRIES = 1024;
+                  while (steps < MAX_GNU_HASH_CHAIN_STEPS && Number.isSafeInteger(cp) && cp >= 0 && BigInt(cp) + 4n <= source.size) {
+                    const maxStepsLeft = MAX_GNU_HASH_CHAIN_STEPS - steps;
+                    const maxFileEntries = Number((source.size - BigInt(cp)) / 4n);
+                    const batchEntries = Math.min(CHAIN_CHUNK_ENTRIES, maxStepsLeft, maxFileEntries);
+                    if (batchEntries <= 0) break;
+                    const chainBytes = await readChunk(BigInt(cp), batchEntries * 4);
+                    const cr = new ByteView(chainBytes, { littleEndian });
+                    for (let k = 0; k < batchEntries; k++) {
+                      const chain = cr.u32(k * 4);
+                      steps++;
+                      if (chain & 1) { terminated = true; break; }
+                      idx++; cp += 4;
+                    }
+                    if (terminated) break;
+                  }
+                  if (terminated) count = idx + 1;
+                }
               }
             } catch {
               // ignore
@@ -537,49 +588,91 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   // Coalesce intervals
   // Any gap < 64 KiB should be merged!
   const GAP_MERGE_THRESHOLD = 64 * 1024;
-  let admittedSpans = [];
-  let currentBudgetUsed = 0;
-
-  for (const item of candidateRanges) {
-    const start = item.offset;
-    const end = start + BigInt(item.size);
-
-    // Compute added bytes if we admit this interval
-    // Check overlap with existing admittedSpans
-    let overlap = 0n;
-    for (const span of admittedSpans) {
-      if (span.start >= end) continue;
-      if (span.end <= start) continue;
-      const lo = span.start > start ? span.start : start;
-      const hi = span.end < end ? span.end : end;
-      if (hi > lo) overlap += hi - lo;
-    }
-    const additional = item.size - Number(overlap);
-    if (additional <= 0) continue;
-    if (currentBudgetUsed + additional > maxCachedBytes) {
-      // Exceeds budget, stop
-      break;
-    }
-
-    // Merge into admittedSpans
-    currentBudgetUsed += additional;
-    admittedSpans.push({ start, end });
-    admittedSpans.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
-    // Consolidate overlapping / touching
-    const consolidated = [];
-    for (const span of admittedSpans) {
-      if (!consolidated.length) {
-        consolidated.push({ start: span.start, end: span.end });
+  const mergeSortedSpans = (left, right) => {
+    if (right.length === 0) return left;
+    if (left.length === 0) return right;
+    const merged = [];
+    let i = 0;
+    let j = 0;
+    while (i < left.length || j < right.length) {
+      const next = (j >= right.length || (i < left.length && left[i].start <= right[j].start))
+        ? left[i++]
+        : right[j++];
+      if (!merged.length) {
+        merged.push({ start: next.start, end: next.end });
       } else {
-        const last = consolidated[consolidated.length - 1];
-        if (span.start <= last.end) {
-          if (span.end > last.end) last.end = span.end;
+        const last = merged[merged.length - 1];
+        if (next.start <= last.end) {
+          if (next.end > last.end) last.end = next.end;
         } else {
-          consolidated.push({ start: span.start, end: span.end });
+          merged.push({ start: next.start, end: next.end });
         }
       }
     }
-    admittedSpans = consolidated;
+    return merged;
+  };
+
+  let admittedSpans = [];
+  let currentBudgetUsed = 0;
+  let idx = 0;
+  let budgetExhausted = false;
+
+  while (idx < candidateRanges.length && !budgetExhausted) {
+    const groupPriority = candidateRanges[idx].priority;
+    const groupSpans = [];
+    let prevIdx = 0;
+    let groupMaxEnd = -1n;
+
+    while (idx < candidateRanges.length && candidateRanges[idx].priority === groupPriority) {
+      const item = candidateRanges[idx++];
+      const start = item.offset;
+      const end = start + BigInt(item.size);
+
+      // Compute added bytes against already admitted spans in this priority group
+      // (monotonically non-decreasing start) and prior priority groups.
+      let overlap = 0n;
+      let effStart = start;
+      if (groupMaxEnd > start) {
+        const groupOverlapEnd = groupMaxEnd < end ? groupMaxEnd : end;
+        overlap += groupOverlapEnd - start;
+        effStart = groupOverlapEnd;
+      }
+
+      if (effStart < end) {
+        while (prevIdx < admittedSpans.length && admittedSpans[prevIdx].end <= effStart) {
+          prevIdx++;
+        }
+        for (let p = prevIdx; p < admittedSpans.length; p++) {
+          const span = admittedSpans[p];
+          if (span.start >= end) break;
+          const lo = span.start > effStart ? span.start : effStart;
+          const hi = span.end < end ? span.end : end;
+          if (hi > lo) overlap += hi - lo;
+        }
+      }
+
+      const additional = item.size - Number(overlap);
+      if (additional <= 0) continue;
+      if (currentBudgetUsed + additional > maxCachedBytes) {
+        // Exceeds budget; skip this range so smaller essential ranges can still fit
+        continue;
+      }
+
+      currentBudgetUsed += additional;
+      if (end > groupMaxEnd) groupMaxEnd = end;
+      if (!groupSpans.length) {
+        groupSpans.push({ start, end });
+      } else {
+        const last = groupSpans[groupSpans.length - 1];
+        if (start <= last.end) {
+          if (end > last.end) last.end = end;
+        } else {
+          groupSpans.push({ start, end });
+        }
+      }
+    }
+
+    admittedSpans = mergeSortedSpans(admittedSpans, groupSpans);
   }
 
   // Now coalesce adjacent spans where gap < GAP_MERGE_THRESHOLD

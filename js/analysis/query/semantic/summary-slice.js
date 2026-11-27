@@ -89,9 +89,18 @@ export class ScopedSummarySliceSession {
     if (!this.#linkIndex) this.#linkIndex = indexScopedFunctionEntries([...this.#projections.values()]);
     const member = this.#members[this.#linked], projection = this.#projections.get(member.functionId);
     if (projection) {
+      const maximumBindings = Math.min(SCOPED_SUMMARY_SLICE_LIMITS.callCandidateBindings - this.#bindings.length, work.remaining('results'));
+      if (maximumBindings <= 0) {
+        if (this.#linkGaps.length < SCOPED_SUMMARY_SLICE_LIMITS.callCandidateGaps) {
+          this.#linkGaps.push({ functionId: member.functionId, reason: 'call-candidate-binding-budget-exhausted' });
+        }
+        this.#linked++;
+        if (this.#linked >= this.#members.length) this.#phase = 'models';
+        return;
+      }
       const linked = await bindScopedSummaryCallCandidates(this.#locals.get(member.functionId), projection, this.#linkIndex,
         { world: this.#world, assumptions: this.#assumptions, snapshotId: this.#snapshotId, work,
-          maximumBindings: Math.min(SCOPED_SUMMARY_SLICE_LIMITS.callCandidateBindings - this.#bindings.length, work.remaining('results')) });
+          maximumBindings });
       this.#check(work);
       const gaps = linked.skipped.slice(0, SCOPED_SUMMARY_SLICE_LIMITS.callCandidateGaps - this.#linkGaps.length);
       const size = stableStringify(linked.bindings).length * 2 + stableStringify(gaps).length * 2;

@@ -92,8 +92,7 @@ export class DebugSession {
         throw new DebugAdapterError('stale-session-connect','debug session connect completed after the session lifecycle changed');
       }
       if (typeof this.adapter.onEvent === 'function') {
-        const subscriptionEpoch = this.epoch;
-        const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event,subscriptionEpoch));
+        const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event));
         if (unsubscribe != null && typeof unsubscribe !== 'function') throw new DebugAdapterError('event-subscription','adapter onEvent must return an unsubscribe function');
         this._unsubscribe=unsubscribe || null;
       }
@@ -219,7 +218,8 @@ export class DebugSession {
   }
   newEpoch() {
     if(this.closed) throw new DebugAdapterError('session-closed','cannot start a new epoch on a closed debug session');
-    const next = this.epoch + 1;
+    const prevEpoch = this.epoch;
+    const next = prevEpoch + 1;
     // #9008: open the bounded handoff capture around the external transition;
     // a failed transition discards the buffer (epoch stays committed-current),
     // an overflowing one fails closed, and a successful commit replays the
@@ -231,7 +231,30 @@ export class DebugSession {
     } finally {
       this._handoffCapture = null;
     }
-    if (capture.overflowed) throw new DebugAdapterError('runtime-epoch-handoff-overflow','next-generation events exceeded the handoff buffer; the epoch transition fails closed');
+    if (capture.overflowed) {
+      let rolledBack = false;
+      if (typeof this.adapter.setEpoch === 'function') {
+        try {
+          this.adapter.setEpoch(prevEpoch);
+          rolledBack = true;
+        } catch {}
+      }
+      if (!rolledBack) {
+        this._lifecycleGeneration++;
+        this.cancelAll('runtime-epoch-handoff-overflow');
+        if (typeof this._unsubscribe === 'function') { try { this._unsubscribe(); } catch {} }
+        this._unsubscribe = null;
+        this.connected = false;
+        this.closed = true;
+        if (typeof this.adapter.disconnect === 'function') {
+          try { Promise.resolve(this.adapter.disconnect()).catch(() => {}); } catch {}
+        }
+        const onClosed = this._onClosed;
+        this._onClosed = null;
+        if (onClosed) { try { onClosed(this); } catch {} }
+      }
+      throw new DebugAdapterError('runtime-epoch-handoff-overflow','next-generation events exceeded the handoff buffer; the epoch transition fails closed');
+    }
     this.epoch = next;
     this.cancelAll('session-epoch-changed'); this.traces.clear();
     for (const event of capture.events) this.acceptEvent(event);

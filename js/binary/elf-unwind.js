@@ -149,9 +149,11 @@ function domainOffset(domain, address) {
 }
 
 function domainContext(domain, image, bits) {
+  const ehFrameHdr = (image?.sections || []).find((s) => s?.name === '.eh_frame_hdr');
   return {
     secAddress:domain.address,
     secOffset:Number(domain.fileOffset),
+    dataBase:ehFrameHdr?.address ?? domain.address,
     textBase:(image.segments.find((s) => s.perms.execute) || image.segments[0] || { address:0n }).address,
     image,
     bits,
@@ -538,8 +540,15 @@ function decodeEhValue(r, p0, enc, ctx, end = r.length) {
     if (!Number.isSafeInteger(p) || !Number.isSafeInteger(end) || p < 0 || n < 0 || p > end || n > end - p)
       throw new Error('DW_EH_PE value crosses bounded record');
   };
+  const isRelative = application === 0x10 || application === 0x20 || application === 0x30 || application === 0x40;
   let raw, next;
-  if (format === 0x00) { requireSpan(ptrBytes); raw = ctx.bits === 64 ? r.u64(p) : BigInt(r.u32(p)); next = p + ptrBytes; }
+  if (format === 0x00) {
+    requireSpan(ptrBytes);
+    raw = isRelative
+      ? (ctx.bits === 64 ? r.i64(p) : BigInt(r.i32(p)))
+      : (ctx.bits === 64 ? r.u64(p) : BigInt(r.u32(p)));
+    next = p + ptrBytes;
+  }
   else if (format === 0x01) { const x = r.uleb(p, 10, end); raw = x.value; next = x.next; }
   else if (format === 0x02) { requireSpan(2); raw = BigInt(r.u16(p)); next = p + 2; }
   else if (format === 0x03) { requireSpan(4); raw = BigInt(r.u32(p)); next = p + 4; }
@@ -551,12 +560,12 @@ function decodeEhValue(r, p0, enc, ctx, end = r.length) {
   else throw new Error(`unsupported DW_EH_PE format 0x${format.toString(16)}`);
   let value = raw;
   const fieldAddress = ctx.secAddress + BigInt(p - ctx.secOffset);
-  if (application === 0x10) value += fieldAddress;
-  else if (application === 0x20) value += ctx.textBase;
-  else if (application === 0x30) value += ctx.secAddress;
+  if (application === 0x10) value = BigInt.asUintN(ctx.bits, value + fieldAddress);
+  else if (application === 0x20) value = BigInt.asUintN(ctx.bits, value + ctx.textBase);
+  else if (application === 0x30) value = BigInt.asUintN(ctx.bits, value + (ctx.dataBase ?? ctx.secAddress));
   else if (application === 0x40) {
     if (ctx.functionBase == null) throw new Error('DW_EH_PE_funcrel requires a function base');
-    value += ctx.functionBase;
+    value = BigInt.asUintN(ctx.bits, value + ctx.functionBase);
   } else if (application !== 0 && application !== 0x50) {
     throw new Error(`unsupported DW_EH_PE application 0x${application.toString(16)}`);
   }

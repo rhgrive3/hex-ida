@@ -309,8 +309,19 @@ function normalizeParams(value) {
   return sanitize(value);
 }
 
-function sanitize(value, depth = 0, seen = new WeakSet()) {
-  if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
+const MAX_SANITIZE_NODES = 256000;
+const MAX_SANITIZE_BYTES = 8 * 1024 * 1024;
+
+function sanitize(value, depth = 0, seen = new WeakSet(), budget = { nodes: 0, bytes: 0 }) {
+  if (++budget.nodes > MAX_SANITIZE_NODES) {
+    throw rpcError('transport-failure', 'Dev Worker RPC data exceeds node budget.');
+  }
+  if (value == null || typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    budget.bytes += value.length * 2;
+    if (budget.bytes > MAX_SANITIZE_BYTES) throw rpcError('transport-failure', 'Dev Worker RPC data exceeds byte budget.');
+    return value;
+  }
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (depth >= MAX_DEPTH || typeof value !== 'object' || seen.has(value)) {
     throw rpcError('transport-failure', 'Unsafe Dev Worker RPC data.');
@@ -319,7 +330,7 @@ function sanitize(value, depth = 0, seen = new WeakSet()) {
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((item) => sanitize(item, depth + 1, seen));
+      return value.map((item) => sanitize(item, depth + 1, seen, budget));
     }
     if (!isPlainRecord(value)) {
       throw rpcError('transport-failure', 'Unsafe Dev Worker RPC data.');
@@ -329,7 +340,9 @@ function sanitize(value, depth = 0, seen = new WeakSet()) {
       if (['__proto__', 'prototype', 'constructor'].includes(key)) {
         throw rpcError('transport-failure', 'Unsafe Dev Worker RPC key.');
       }
-      out[key] = sanitize(item, depth + 1, seen);
+      budget.bytes += key.length * 2;
+      if (budget.bytes > MAX_SANITIZE_BYTES) throw rpcError('transport-failure', 'Dev Worker RPC data exceeds byte budget.');
+      out[key] = sanitize(item, depth + 1, seen, budget);
     }
     return out;
   } finally {

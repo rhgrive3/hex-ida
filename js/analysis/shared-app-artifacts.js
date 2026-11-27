@@ -45,10 +45,10 @@ function evictSettledEntry(root, app, key, entry) {
   const map = mapFor(root, app);
   if (map.get(key) === entry) map.delete(key);
 }
-function pruneStaleEntries(root, app, epoch) {
+function pruneStaleEntries(root, app, epoch, artifact) {
   const map = mapFor(root, app);
   for (const [key, entry] of map) {
-    if (entry.epoch === epoch) continue;
+    if (entry.epoch === epoch && entry.artifact === artifact) continue;
     entry.evictWhenSettled = true;
     if (entry.settled) {
       map.delete(key);
@@ -81,7 +81,7 @@ function publishProgress(entry, value) {
   }
 }
 function attach(entry, options) {
-  throwIfAborted(options.signal);
+  if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
   const subscriber = { onProgress:options.onProgress, priority:options.priority, budget:options.budget };
   entry.subscribers.add(subscriber);
   entry.waiters++;
@@ -94,6 +94,7 @@ function attach(entry, options) {
       entry.subscribers.delete(subscriber);
       entry.waiters = Math.max(0, entry.waiters - 1);
       if (cancelled && entry.waiters === 0 && !entry.settled && !entry.controller.signal.aborted) {
+        entry.promise?.catch?.(() => {});
         entry.controller.abort(options.signal?.reason ?? 'no-active-consumers');
       }
       fn(value);
@@ -106,8 +107,14 @@ function attach(entry, options) {
   });
 }
 function requestWithSignal(request, signal) {
-  throwIfAborted(signal);
+  if (signal?.aborted) {
+    if (request && typeof request.then === 'function') Promise.resolve(request).catch(() => {});
+    try { request?.cancel?.(); } catch { /* best effort */ }
+    return Promise.reject(abortError(signal));
+  }
   if (!request || typeof request.then !== 'function') return Promise.resolve(request);
+  const settledRequest = Promise.resolve(request);
+  settledRequest.catch(() => {});
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {
@@ -143,9 +150,21 @@ function yieldMainRealm(signal) {
   });
 }
 function epochOf(app) { return Number(app?.backend?.gen ?? app?.analysisEpoch ?? -1); }
+function artifactIdentityOf(app) {
+  const binaryId = typeof app?.backend?.binaryId === 'string' ? app.backend.binaryId : '';
+  const rawSlice = storeValue(app, 'sliceIndex');
+  const sliceIndex = rawSlice == null || rawSlice === -1
+    ? -1
+    : (typeof rawSlice === 'number' && Number.isSafeInteger(rawSlice) && rawSlice >= 0 ? rawSlice : -1);
+  return `${binaryId}|slice:${sliceIndex}`;
+}
+function sameArtifactOrSettled(initial, current) {
+  if (initial === current) return true;
+  return typeof initial === 'string' && initial.startsWith('|slice:') && typeof current === 'string' && current.endsWith(initial);
+}
 function symbolsGenerationOf(app) { return app?.symbols?.gen ?? 0; }
-function programCacheKey(epoch, symbolsGeneration, key) {
-  return `${epoch}:${symbolsGeneration}:${key}`;
+function programCacheKey(epoch, artifact, symbolsGeneration, key) {
+  return `${epoch}:${artifact}:${symbolsGeneration}:${key}`;
 }
 async function ensureCurrentProgramForInvestigation(app, options = {}) {
   // A shared ProgramIndex is intentionally generation-bound: if another
@@ -243,14 +262,14 @@ function dataRanges(app) {
   ranges.sort((a, b) => a.lo < b.lo ? -1 : a.lo > b.lo ? 1 : 0);
   return { ranges, complete };
 }
-function dataRegionFor(ranges, address) {
+function dataRangeFor(ranges, address) {
   let lo = 0, hi = ranges.length - 1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     const range = ranges[mid];
     if (address < range.lo) hi = mid - 1;
     else if (address >= range.hi) lo = mid + 1;
-    else return range.region;
+    else return range;
   }
   return null;
 }
@@ -258,20 +277,45 @@ function boundedRefCount(scan) {
   const requested = Number.isSafeInteger(scan?.refCount) ? scan.refCount : (scan?.refTo?.length || 0);
   return Math.max(0, Math.min(requested, scan?.refFrom?.length || 0, scan?.refTo?.length || 0, scan?.refKind?.length || 0));
 }
-async function accumulateGlobalRefs(counts, scan, ranges, { signal = null, yieldEvery = REF_YIELD_EVERY } = {}) {
+async function accumulateGlobalRefs(counts, scan, ranges, { signal = null, yieldEvery = null } = {}) {
   const count = boundedRefCount(scan);
-  const cadence = Math.max(1, Number(yieldEvery) || REF_YIELD_EVERY);
+  if (!ranges?.length) {
+    if (count > 0) throwIfAborted(signal);
+    return count;
+  }
+  const explicitCadence = yieldEvery != null ? Math.max(1, Number(yieldEvery) || REF_YIELD_EVERY) : null;
+  const now = explicitCadence == null
+    ? (typeof performance !== 'undefined' && typeof performance.now === 'function' ? () => performance.now() : Date.now)
+    : null;
+  let lastYield = now ? now() : 0;
+  let cachedRange = null;
+  const refTo = scan.refTo;
   for (let index = 0; index < count; index++) {
-    throwIfAborted(signal);
-    const address = BigInt(scan.refTo[index]);
-    const region = dataRegionFor(ranges, address);
+    if (signal?.aborted) throw abortError(signal);
+    const raw = refTo[index];
+    const address = typeof raw === 'bigint' ? raw : BigInt(raw);
+    let region = null;
+    if (cachedRange && address >= cachedRange.lo && address < cachedRange.hi) {
+      region = cachedRange.region;
+    } else {
+      const matched = dataRangeFor(ranges, address);
+      if (matched) {
+        cachedRange = matched;
+        region = matched.region;
+      }
+    }
     if (region) {
       const key = address.toString();
       const previous = counts.get(key);
       if (previous) previous.refs++;
       else counts.set(key, { addr:address, refs:1, region:region.name || region.section || region.id || '' });
     }
-    if (index > 0 && index % cadence === 0) await yieldMainRealm(signal);
+    if (explicitCadence != null) {
+      if (index > 0 && index % explicitCadence === 0) await yieldMainRealm(signal);
+    } else if (index > 0 && (index & 0xfff) === 0 && (now() - lastYield) >= 16) {
+      await yieldMainRealm(signal);
+      lastYield = now();
+    }
   }
   return count;
 }
@@ -309,12 +353,13 @@ function canonicalStringResultRow(item) {
 
 function createStringEntry(app, key, initialOptions = {}) {
   const controller = new AbortController();
+  const epoch = epochOf(app);
+  const artifact = artifactIdentityOf(app);
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
     producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
-    epoch:epochOf(app), evictWhenSettled:false,
+    epoch, artifact, evictWhenSettled:false,
   };
-  const epoch = epochOf(app);
   entry.promise = (async () => {
     const budget = new StringCollectionBudget(STRING_SCAN_BUDGET);
     const targets = stringTargets(app);
@@ -328,17 +373,20 @@ function createStringEntry(app, key, initialOptions = {}) {
     }
     if (!use.length && current) {
       const bytes = budget.requestBytes(Number(current.size));
-      if (bytes > 0) use.push({ region:current, bytes });
+      if (bytes > 0) {
+        use.push({ region:current, bytes });
+        if (bytes < Number(current.size)) skipped.push(current);
+      }
     }
     const rows = [];
     let scannedBytes = 0, backendIncomplete = false, backendMalformed = false;
     for (let index = 0; index < use.length; index++) {
       throwIfAborted(controller.signal);
-      if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
+      if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared strings'), { stale:true });
       if (budget.exhausted) { skipped.push(...use.slice(index).map((item) => item.region)); break; }
       const { region, bytes } = use[index];
       const limit = budget.requestLimit();
-      if (limit <= 0) break;
+      if (limit <= 0) { skipped.push(...use.slice(index).map((item) => item.region)); break; }
       const request = app.backend.strings({
         regionId:region.id, min:4, maxBytes:bytes, limit,
         analysisPriority:String(entry.producerOptions.priority || 'user-visible'),
@@ -370,7 +418,7 @@ function createStringEntry(app, key, initialOptions = {}) {
       if (!backendMalformed && result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';
     }
     throwIfAborted(controller.signal);
-    if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
+    if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared strings'), { stale:true });
     const truncated = !!budget.truncationReason || skipped.length > 0 || backendIncomplete;
     Object.assign(rows, {
       complete:!truncated,
@@ -387,6 +435,10 @@ function createStringEntry(app, key, initialOptions = {}) {
     // transient backend partial must not pin: the next caller retries (#5337).
     // Backend-partial regions are also listed in skipped, so only the local
     // budget verdict decides terminality here.
+    Object.defineProperties(rows, {
+      __hexEpoch: { value: epoch, enumerable: false, configurable: true },
+      __hexArtifact: { value: artifact, enumerable: false, configurable: true },
+    });
     entry.retryableIncomplete = backendIncomplete === true && budget.truncationReason == null;
     app.stringIndex = rows;
     entry.result = rows;
@@ -413,16 +465,16 @@ function createStringEntry(app, key, initialOptions = {}) {
 
 function createProgramEntry(app, key, regions, initialOptions = {}) {
   const controller = new AbortController();
+  const epoch = epochOf(app);
+  const artifact = artifactIdentityOf(app);
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
     producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
-    epoch:epochOf(app), evictWhenSettled:false,
+    epoch, artifact, evictWhenSettled:false,
   };
-  const epoch = epochOf(app);
   const requestedSymbolsGeneration = symbolsGenerationOf(app);
-  const initialCacheKey = programCacheKey(epoch, requestedSymbolsGeneration, key);
+  const initialCacheKey = programCacheKey(epoch, artifact, requestedSymbolsGeneration, key);
   let cacheKey = initialCacheKey;
-  let symbolsGenerationConflict = false;
   entry.promise = (async () => {
     const primary = regions.find((region) => region.section === '__text') || regions[0];
     const discovery = app.ensureFunctions?.(primary, {
@@ -443,22 +495,20 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     // symbols (#4487).
     await discovery;
     throwIfAborted(controller.signal);
-    if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
+    if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared program'), { stale:true });
     const symbolsGeneration = symbolsGenerationOf(app);
-    const nextCacheKey = programCacheKey(epoch, symbolsGeneration, key);
+    const nextCacheKey = programCacheKey(epoch, artifact, symbolsGeneration, key);
     if (nextCacheKey !== initialCacheKey) {
       const live = mapFor(PROGRAM_ENTRIES, app);
       const existing = live.get(nextCacheKey);
       if (existing && existing !== entry) {
-        // A newer-generation producer has already claimed this key. Keep this
-        // producer on its original key so it can finish and reject at the
-        // publication boundary instead of publishing under newer symbols.
-        symbolsGenerationConflict = true;
-      } else {
-        if (live.get(initialCacheKey) === entry) live.delete(initialCacheKey);
-        cacheKey = nextCacheKey;
-        live.set(cacheKey, entry);
+        // A newer-generation producer has already claimed this key. Abort early
+        // before running redundant region scans.
+        throw Object.assign(new Error('stale shared program symbols'), { stale:true });
       }
+      if (live.get(initialCacheKey) === entry) live.delete(initialCacheKey);
+      cacheKey = nextCacheKey;
+      live.set(cacheKey, entry);
     }
     const scans = [], failures = [];
     const dataRangeUniverse = dataRanges(app);
@@ -469,6 +519,8 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     let remainingBytes = regions.reduce((sum, region) => sum + BigInt(region.size), 0n);
     for (let index = 0; index < regions.length; index++) {
       throwIfAborted(controller.signal);
+      if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared program'), { stale:true });
+      if (symbolsGeneration !== symbolsGenerationOf(app)) throw Object.assign(new Error('stale shared program symbols'), { stale:true });
       const region = regions[index], size = BigInt(region.size);
       const request = app.backend.scanProgram(region.id, (progress) => publishProgress(entry, {
         phase:'program', region:region.id,
@@ -497,14 +549,18 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     }
     if (app.symbols?.functionStartsComplete !== true) failures.push('function-discovery-incomplete');
     throwIfAborted(controller.signal);
-    if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
-    if (symbolsGenerationConflict || symbolsGeneration !== symbolsGenerationOf(app)) {
+    if (epoch !== epochOf(app) || !sameArtifactOrSettled(artifact, artifactIdentityOf(app))) throw Object.assign(new Error('stale shared program'), { stale:true });
+    if (symbolsGeneration !== symbolsGenerationOf(app)) {
       throw Object.assign(new Error('stale shared program symbols'), { stale:true });
     }
     const merged = mergeProgramScans(scans, { regions, reasons:failures, limits:PROGRAM_MERGE_LIMITS });
     const program = new ProgramIndex(merged, app.symbols, primary);
     const stats = statsFor(program, counts, scannedRefs, entry.producerOptions, dataRangeUniverse.complete);
     Object.defineProperty(program, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
+    Object.defineProperties(program, {
+      __hexEpoch: { value: epoch, enumerable: false, configurable: true },
+      __hexArtifact: { value: artifact, enumerable: false, configurable: true },
+    });
     Object.defineProperty(merged, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
     // Permanent caps stay cached, but transient producer failures must not
     // pin: the next caller retries and can upgrade to complete (#5312).
@@ -626,13 +682,18 @@ export function installSharedAppArtifacts(app) {
 
   app.ensureStrings = function sharedStrings(rawOptions = {}) {
     const options = normalizeOptions(rawOptions);
-    throwIfAborted(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     const epoch = epochOf(app);
-    const key = String(epoch);
-    const map = pruneStaleEntries(STRING_ENTRIES, app, epoch);
+    const artifact = artifactIdentityOf(app);
+    const key = `${epoch}:${artifact}`;
+    const map = pruneStaleEntries(STRING_ENTRIES, app, epoch, artifact);
     // Only a complete artifact short-circuits: a pinned partial would make a
-    // transient backend gap permanent (#5337).
-    if (app.stringIndex?.complete === true) return Promise.resolve(app.stringIndex);
+    // transient backend gap permanent (#5337). External preset caches without
+    // stamps remain compatible (#5279); stamped caches must match epoch & artifact.
+    const cachedStrings = app.stringIndex;
+    const stringsStampMatches = (cachedStrings?.__hexEpoch === undefined && cachedStrings?.__hexArtifact === undefined)
+      || (cachedStrings?.__hexEpoch === epoch && cachedStrings?.__hexArtifact === artifact);
+    if (cachedStrings?.complete === true && stringsStampMatches) return Promise.resolve(cachedStrings);
     let entry = liveEntry(map, key, map.get(key));
     if (!entry) {
       entry = createStringEntry(app, key, options);
@@ -644,7 +705,7 @@ export function installSharedAppArtifacts(app) {
         entry.controller.abort(options.signal.reason ?? 'consumer-aborted-during-producer-start');
         entry.promise?.catch?.(() => { /* no waiters left: swallow the abort */ });
         if (map.get(key) === entry) map.delete(key);
-        if (app.stringsBusyEpoch === epoch) { app.stringsBusy = null; app.stringsBusyEpoch = -1; }
+        if (app.stringsBusyEpoch === epoch && app.stringsBusy === entry.promise) { app.stringsBusy = null; app.stringsBusyEpoch = -1; }
       }
     }
     return attach(entry, options);
@@ -652,15 +713,19 @@ export function installSharedAppArtifacts(app) {
 
   app.ensureProgram = function sharedProgram(rawOptions = {}) {
     const options = normalizeOptions(rawOptions);
-    throwIfAborted(options.signal);
+    if (options.signal?.aborted) return Promise.reject(abortError(options.signal));
     const regions = executableRegions(app);
     if (!regions.length) return Promise.resolve(null);
     const epoch = epochOf(app);
+    const artifact = artifactIdentityOf(app);
     const key = regions.map((region) => region.id).join('|');
-    const mapKey = programCacheKey(epoch, symbolsGenerationOf(app), key);
-    const map = pruneStaleEntries(PROGRAM_ENTRIES, app, epoch);
-    if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen && app.program.globalReferenceStats
-      && app.program.completeness?.complete === true) return Promise.resolve(app.program);
+    const mapKey = programCacheKey(epoch, artifact, symbolsGenerationOf(app), key);
+    const map = pruneStaleEntries(PROGRAM_ENTRIES, app, epoch, artifact);
+    const cachedProgram = app.program;
+    const programStampMatches = (cachedProgram?.__hexEpoch === undefined && cachedProgram?.__hexArtifact === undefined)
+      || (cachedProgram?.__hexEpoch === epoch && cachedProgram?.__hexArtifact === artifact);
+    if (cachedProgram && app.programKey === key && cachedProgram.gen === app.symbols?.gen && cachedProgram.globalReferenceStats
+      && cachedProgram.completeness?.complete === true && programStampMatches) return Promise.resolve(cachedProgram);
     let entry = liveEntry(map, mapKey, map.get(mapKey));
     if (!entry) {
       entry = createProgramEntry(app, key, regions, options);
@@ -670,7 +735,7 @@ export function installSharedAppArtifacts(app) {
         entry.controller.abort(options.signal.reason ?? 'consumer-aborted-during-producer-start');
         entry.promise?.catch?.(() => { /* no waiters left: swallow the abort */ });
         if (map.get(mapKey) === entry) map.delete(mapKey);
-        if (app.programBusyEpoch === epoch) { app.programBusy = null; app.programBusyEpoch = -1; }
+        if (app.programBusyEpoch === epoch && app.programBusy === entry.promise) { app.programBusy = null; app.programBusyEpoch = -1; }
       }
     }
     return attach(entry, options);

@@ -56,10 +56,11 @@ export function typeBits(type, fallback = 64) {
    * specifier and must be resolved before the 32-bit `long` token can match
    * its first token (issue #5977). */
   const text = String(type || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  if (/\b(?:bool|char|int8|uint8)\b/.test(text)) return 8;
-  if (/\b(?:short|int16|uint16)\b/.test(text)) return 16;
-  if (/\b(?:unsigned\s+)?long long\b|\b(?:double|int64|uint64|pointer|ptr)\b|\*/.test(text)) return 64;
-  if (/\b(?:int|unsigned int|long|unsigned long|int32|uint32|float)\b/.test(text)) return 32;
+  if (/\*|\b(?:pointer|ptr)\b/.test(text)) return 64;
+  if (/\b(?:bool|_bool|char|int8(?:_t)?|uint8(?:_t)?|i8|u8|byte)\b/.test(text)) return 8;
+  if (/\b(?:short|int16(?:_t)?|uint16(?:_t)?|i16|u16|half|fp16)\b/.test(text)) return 16;
+  if (/\b(?:unsigned\s+)?long long\b|\b(?:double|int64(?:_t)?|uint64(?:_t)?|i64|u64|f64)\b/.test(text)) return 64;
+  if (/\b(?:int|unsigned int|long|unsigned long|int32(?:_t)?|uint32(?:_t)?|i32|u32|float|f32)\b/.test(text)) return 32;
   return fallback;
 }
 
@@ -73,10 +74,10 @@ export function parameterClass(parameter) {
     || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   /* AVX-512 intrinsics are vector types exactly like `__m128`/`__m256`;
    * omitting `__m512` sent 512-bit values down the integer scalar path. */
-  const intrinsicBits = /__m512/.test(type) ? 512 : /__m256/.test(type) ? 256 : /__m128/.test(type) ? 128 : null;
-  const vector = parameter?.vector === true || intrinsicBits != null
-    || /vector|simd|sse|__m128|__m256|__m512/.test(`${type} ${abiClass}`);
-  const floating = !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
+  const intrinsicBits = !pointer ? (/__m512/.test(type) ? 512 : /__m256/.test(type) ? 256 : /__m128/.test(type) ? 128 : null) : null;
+  const vector = !pointer && (parameter?.vector === true || intrinsicBits != null
+    || /vector|simd|sse|__m128|__m256|__m512/.test(`${type} ${abiClass}`));
+  const floating = !aggregate && !pointer && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
   const aggregateLayoutPresent = aggregate && aggregateLayoutDescriptorPresent(parameter);
   const aggregateLayout = aggregate && aggregateLayoutPresent ? canonicalAggregateLayout(parameter) : null;
   const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
@@ -152,7 +153,7 @@ function conservativeUnknownArguments(extra = {}) {
   return {
     srcs,
     arguments:srcs.map((source, index) => ({
-      index:index % 4,
+      index,
       location:'register',
       reg:source.reg,
       bits:source.bits,
@@ -199,7 +200,7 @@ export function microsoftX64AggregateReturnDecision(descriptor, prototype, optio
       pieces:[{ pieceIndex:0, order:0, reg:'rax', abiClass:'integer-aggregate', bits, bytes, byteOffset:0 }],
     };
   }
-  if (nonTrivial || (bitsProven && !physicalPadding && ![8,16,32,64].includes(bits))) {
+  if (nonTrivial || (bitsProven && ((physicalBytes != null && physicalBytes > 8) || bits > 64 || (!physicalPadding && ![8,16,32,64].includes(bits))))) {
     return {
       kind:'indirect', bits:64, aggregate:true,
       pointeeBits:bitsProven ? bits : null,
@@ -262,7 +263,8 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
       reason:'microsoft-x64-aggregate-return-layout-not-proven' };
   }
   if (explicitlyIndirect) return { kind:'indirect', bits:64, reason:'explicit-indirect-result' };
-  const isPointerType = /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
+  const isPointerType = prototype.pointer === true || prototype.isPointer === true || options.pointer === true || options.isPointer === true
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
   const aggregate = !isPointerType && (prototype.aggregate === true || prototype.isAggregate === true
     || aggregateLayoutDescriptorPresent(prototype)
     || (prototype.returnAggregate && typeof prototype.returnAggregate === 'object')
@@ -275,15 +277,16 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   // The return-side vector recognizer matches the parameter-side one (#5997):
   // `__m256*` spellings are 256-bit vectors, not 128-bit or integer scalars.
   const typeAndClass = `${type} ${abiClass}`;
-  const vector = prototype?.vector === true || /vector|simd|sse|__m128|__m256/.test(typeAndClass);
-  const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(typeAndClass);
+  const vector = !isPointerType && (prototype?.vector === true || /vector|simd|sse|__m128|__m256|__m512/.test(typeAndClass));
+  const floating = !isPointerType && (vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(typeAndClass));
   // A call-site options.returnBits is a return-width override with the same
   // authority as options.returnType/returnClass (#5636): it must outrank the
   // prototype's own (possibly stale/coarser) width metadata, matching the
   // aggregate return path's override-first order.
   const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, vector ? 128 : 64));
   const bitsProven = prototype.returnBits != null || prototype.bits != null || options.returnBits != null;
-  const wideVectorBits = /__m256/.test(typeAndClass) ? 256
+  const wideVectorBits = /__m512/.test(typeAndClass) ? 512
+    : /__m256/.test(typeAndClass) ? 256
     : vector && bitsProven && Number.isSafeInteger(rawBits) && rawBits > 128 ? rawBits : null;
   if (wideVectorBits != null) {
     return { kind:'unknown', partial:true, unsupported:true, vector:true, bits:wideVectorBits,
@@ -562,7 +565,8 @@ export const MICROSOFT_X64_ABI = new ABIPlugin({
   classifyCallReturn:classifyMicrosoftX64CallReturn,
   classifyFunctionReturn:classifyMicrosoftX64FunctionReturn,
   classifyEntryRegister:(reg) => {
-    const id = String(reg || '').toLowerCase();
+    if (typeof reg !== 'string') return { kind:'incoming-register-state', reg:'' };
+    const id = reg.toLowerCase();
     const integerIndex = INTEGER_ARGUMENT_REGISTERS.indexOf(id);
     if (integerIndex >= 0) return { kind:'argument', reg:id, index:integerIndex, abiClass:'integer' };
     const vectorIndex = VECTOR_ARGUMENT_REGISTERS.indexOf(id);

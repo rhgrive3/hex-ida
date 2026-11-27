@@ -373,8 +373,8 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       || paramSlots.some(rid => rid < 1 || rid > params.length))) fail('cil-param-pointer-table-invalid');
   const paramOwners = new Map();
   for (let i = 0; i < methods.length; i++) {
-    const first = methods[i].paramList || paramSlots.length + 1;
-    const last = methods[i + 1]?.paramList || paramSlots.length + 1;
+    const first = methods[i].paramList ?? (paramSlots.length + 1);
+    const last = methods[i + 1]?.paramList ?? (paramSlots.length + 1);
     if (first < 1 || last < first || last > paramSlots.length + 1 || (i === 0 && first !== 1)) {
       fail('cil-param-list-invalid');
     }
@@ -946,8 +946,9 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
     // Validate the entire CustomMod* Type production with the canonical Type
     // parser before deriving the raw lead byte needed for Constant.Type
     // agreement. This rejects truncated payloads and trailing garbage.
+    let decoded;
     try {
-      parseCilTypeSpecSignature(blob.subarray(1), typeDefOrRefRowCounts);
+      decoded = parseCilTypeSpecSignature(blob.subarray(1), typeDefOrRefRowCounts);
     } catch (error) {
       if (error instanceof TypeError && String(error.message ?? error).startsWith('cil-type-spec-signature-invalid')) {
         fail('cil-field-signature-invalid');
@@ -961,7 +962,7 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
         pos = readCompressedUnsigned(blob, pos + 1, 'cil-field-signature-invalid').next;
         continue;
       }
-      return { elementType: lead, offset: pos };
+      return { elementType: lead, offset: pos, decoded };
     }
   };
   const primitiveConstantTypes = new Set([0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e]);
@@ -982,8 +983,8 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
     const base = enumType?.extendsTypeRef ?? null;
     if (base?.namespace === 'System' && base?.name === 'Enum' && base.resolutionScope?.table === 0x23) {
       isEnum = coreLibraryNames.has(assemblyRefs?.[base.resolutionScope.rid - 1]?.name);
-    } else if (typeof enumType?.extendsToken === 'string' && enumType.extendsToken.startsWith('0x0200')) {
-      const baseRid = Number.parseInt(enumType.extendsToken.slice(6), 16);
+    } else if (typeof enumType?.extendsToken === 'string' && /^0x02[0-9a-f]{6}$/i.test(enumType.extendsToken)) {
+      const baseRid = Number.parseInt(enumType.extendsToken.slice(4), 16);
       const baseType = types[baseRid - 1];
       isEnum = coreLibraryNames.has(assembly?.name) && baseType?.namespace === 'System' && baseType?.name === 'Enum';
     }
@@ -1037,19 +1038,25 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
       const signature = readCilMetadataBlob(blobHeap, field.signatureBlobIndex, 'cil-field-signature-blob-invalid');
       const declaredElement = fieldSignatureElement(signature);
       const declared = declaredElement.elementType;
-      if (primitiveConstantTypes.has(declared)) {
+      if (declared === 0x0e) {
+        if (row.type !== 0x0e && row.type !== 0x12) fail('cil-constant-type-mismatch');
+      } else if (primitiveConstantTypes.has(declared)) {
         if (row.type !== declared) fail('cil-constant-type-mismatch');
       } else if (declared === 0x11) {
         const underlying = enumUnderlyingElementType(signature, declaredElement);
         if (underlying == null || row.type !== underlying) fail('cil-constant-type-mismatch');
-      } else if (row.type !== 0x12 || (declared !== 0x12 && declared !== 0x1c)) {
-        fail('cil-constant-type-mismatch');
+      } else {
+        const isRefType = declared === 0x12 || declared === 0x1c || declared === 0x1d || declared === 0x14
+          || (declared === 0x15 && declaredElement.decoded?.stackType === 'object-ref');
+        if (row.type !== 0x12 || !isRefType) {
+          fail('cil-constant-type-mismatch');
+        }
       }
     } else if (row.parent.table === 0x08 || row.parent.table === 0x17) {
       const declaredElement = (decoded) => {
         const primitiveCodes = { boolean: 0x02, char: 0x03, i1: 0x04, u1: 0x05, i2: 0x06, u2: 0x07, i4: 0x08, u4: 0x09, i8: 0x0a, u8: 0x0b, r4: 0x0c, r8: 0x0d };
         if (decoded?.primitive != null && primitiveCodes[decoded.primitive] != null) return primitiveCodes[decoded.primitive];
-        if (decoded?.stackType === 'object-ref' && decoded.typeToken == null && decoded.genericIndex == null) return 'reference';
+        if (decoded?.stackType === 'object-ref') return 'reference';
         return null;
       };
       let declared = null;
@@ -1075,8 +1082,8 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
       if (declared === null) fail('cil-constant-parent-type-unprovable');
       if (declared === 'reference') {
         if (declaredExact === 0x0e) {
-          if (row.type !== 0x0e) fail('cil-constant-type-mismatch');
-        } else if (declaredExact === 0x1c || declaredExact === 0x1d || declaredExact === 0x14) {
+          if (row.type !== 0x0e && row.type !== 0x12) fail('cil-constant-type-mismatch');
+        } else if (declaredExact === 0x12 || declaredExact === 0x1c || declaredExact === 0x1d || declaredExact === 0x14 || declaredExact === 0x15) {
           if (row.type !== 0x12) fail('cil-constant-type-mismatch');
         } else {
           fail('cil-constant-type-mismatch');
@@ -1175,19 +1182,30 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
     return true;
   };
   const signatureIdentityBuckets = new Map();
+  const signatureBlobCache = new Map();
+  const readCachedSignatureBlob = (blobIndex, blobCode) => {
+    const cached = signatureBlobCache.get(blobIndex);
+    if (cached) return cached;
+    const raw = readCilMetadataBlob(blobHeap, blobIndex, blobCode);
+    admission?.chargeOperations(raw.length);
+    let hash = 0x811c9dc5;
+    for (const byte of raw) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+    const entry = { raw, hash };
+    signatureBlobCache.set(blobIndex, entry);
+    return entry;
+  };
   const assertUniqueSignatureRows = (rows, prefixOf, blobIndexOf, code, blobCode) => {
     for (const row of rows ?? []) {
+      admission?.chargeOperations(1);
       const prefix = prefixOf(row);
       if (prefix === null) continue;
       if (!blobHeap) fail(blobCode);
-      const raw = readCilMetadataBlob(blobHeap, blobIndexOf(row), blobCode);
+      const { raw, hash } = readCachedSignatureBlob(blobIndexOf(row), blobCode);
       // The hash only narrows the exact-byte candidates; a collision never
       // becomes duplicate authority without the byte-for-byte comparison.
-      let hash = 0x811c9dc5;
-      for (const byte of raw) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
       const bucketKey = `${prefix}\u0000${raw.length}\u0000${hash}`;
       const bucket = signatureIdentityBuckets.get(bucketKey);
-      if (bucket?.some((previous) => sameDefinitionBlob(previous, raw))) fail(code);
+      if (bucket?.some((previous) => previous === raw || sameDefinitionBlob(previous, raw))) fail(code);
       if (bucket) bucket.push(raw);
       else signatureIdentityBuckets.set(bucketKey, [raw]);
     }

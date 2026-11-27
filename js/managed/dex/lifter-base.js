@@ -13,6 +13,34 @@ function fail(code) { throw new TypeError(code); }
 // losslessly, synchronized methods must fail closed instead of collapsing into
 // plain-method-equivalent exact semantics (#7896; #7854 JVM precedent).
 const SYNCHRONIZED_MONITOR_REASON = 'dex-synchronized-method-monitor-unrepresented';
+const interfaceTypesByFrozenClasses = new WeakMap();
+
+function resolveModuleInterfaceTypes(dexImage, budget) {
+  const classes = dexImage?.classes;
+  if (!Array.isArray(classes) || classes.length === 0) return Object.freeze([]);
+  if (Object.isFrozen(classes)) {
+    const cached = interfaceTypesByFrozenClasses.get(classes);
+    if (cached) {
+      budget?.chargeValues(cached.length);
+      return cached;
+    }
+  }
+  const list = [];
+  for (const cls of classes) {
+    budget?.chargeOperation();
+    if (Array.isArray(cls?.interfaceTypes)) {
+      for (const iface of cls.interfaceTypes) {
+        budget?.chargeValues(1);
+        list.push(iface);
+      }
+    }
+  }
+  const frozen = Object.freeze(list);
+  if (Object.isFrozen(classes) && classes.every((cls) => cls != null && typeof cls === 'object' && Object.isFrozen(cls) && (!Array.isArray(cls.interfaceTypes) || Object.isFrozen(cls.interfaceTypes)))) {
+    interfaceTypesByFrozenClasses.set(classes, frozen);
+  }
+  return frozen;
+}
 const DEX_ACC_STATIC = 0x0008;
 const DEX_ACC_SYNCHRONIZED = 0x0020;
 const DEX_ACC_DECLARED_SYNCHRONIZED = 0x0020000;
@@ -414,8 +442,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
             // candidate evidence with dispatch left unresolved — a receiver
             // may implement interfaces this file never declares. No per-site
             // assignability fact is published from caller authority.
-            callEffect.interfaceTypes = dexImage.classes
-              .flatMap((cls) => Array.isArray(cls.interfaceTypes) ? cls.interfaceTypes : []);
+            callEffect.interfaceTypes = resolveModuleInterfaceTypes(dexImage, budget);
             callEffect.unresolved = true;
           }
           if (targetResolved && callEffect.unresolved !== true) {
@@ -466,6 +493,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vA, bits: 32 });
           locationReads.push({ kind: 'register', index: vB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vA, bits: 32 });
+          producedValues.push({ bits: 32 });
           if (opcode === 0xb3 || opcode === 0xb4) {
             possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
           }
@@ -484,7 +512,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           mnemonic = 'binop-lit8';
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
-          producedValues.push({ bits: 32, constant: lit8 });
+          producedValues.push({ bits: 32 });
           if (opcode === 0xdb || opcode === 0xdc) {
             possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
           }

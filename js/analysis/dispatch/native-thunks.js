@@ -40,6 +40,7 @@ export async function nativeThunkCandidates(seeds, index, request, { world, proj
       chain.push({ from: current.functionId, to: next.functionId, family: 'thunk-chain', evidenceIds: [branch.id],
         requirements: ['native-thunk-code-validity-and-trap-domain-unqualified'] });
       current = next;
+      if (seen.has(current.functionId)) { requirements.push('native-thunk-cycle'); cycle = true; break; }
       if (depth + 1 === request.maxHops && pureBranch(current, work)) requirements.push('native-thunk-hop-budget');
       await work.yieldIfNeeded();
     }

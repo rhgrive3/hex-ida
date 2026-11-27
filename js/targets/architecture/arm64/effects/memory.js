@@ -96,7 +96,12 @@ function immediateValue(operand) {
   const value = operand?.value;
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(trimmed)) {
+      try { return trimmed.startsWith('-') ? -BigInt(trimmed.slice(1)) : BigInt(trimmed); } catch { return null; }
+    }
+  }
   return null;
 }
 
@@ -256,7 +261,7 @@ function storeValueFromRegister(regInput, widthBits, idPrefix) {
   // an explicit truncation, matching the integer-effects path and W writes.
   // This keeps generic SSA architecture-neutral and prevents parallel 32/64
   // state variants for one physical GP register.
-  const physicalBits = reg.kind === 'gp' && reg.bits === 32 ? 64 : reg.bits;
+  const physicalBits = reg.kind === 'gp' && reg.bits === 32 ? 64 : (reg.kind === 'vector' && reg.bits < 128 ? 128 : reg.bits);
   const read = createArm64RegisterRead(reg, `${idPrefix}.source`, physicalBits);
   const operations = [read.operation];
   let value = read.value;
@@ -264,7 +269,7 @@ function storeValueFromRegister(regInput, widthBits, idPrefix) {
   if (valueBits !== reg.bits) {
     const view = valueOp('truncate', value, valueBits, reg.bits, `${idPrefix}.view`, {
       purpose:'memory-store-register-view',
-      reason:'a64-w-register-read-is-low-32-of-physical-x',
+      reason: reg.kind === 'vector' ? 'a64-scalar-vector-view-of-physical-v' : 'a64-w-register-read-is-low-32-of-physical-x',
     });
     operations.push(view.operation);
     value = view.output;
@@ -612,8 +617,9 @@ function literalTargetEvidence(decoded, targetOperand, context = null) {
     let target;
     if (typeof value === 'bigint') target = value;
     else if (typeof value === 'number' && Number.isSafeInteger(value)) target = BigInt(value);
-    else if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value)) {
-      try { target = BigInt(value); } catch { return null; }
+    else if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) {
+      const trimmed = value.trim();
+      try { target = trimmed.startsWith('-') ? -BigInt(trimmed.slice(1)) : BigInt(trimmed); } catch { return null; }
     } else return null;
     if (target < MIN_SIGNED_ADDRESS_64 || target > MAX_UNSIGNED_ADDRESS_64) return null;
     return BigInt.asUintN(64, target);
@@ -782,8 +788,8 @@ function prefetch(decoded, context, mnemonic) {
     operations:[
       ...addressing.readOperations,
       prefetchIntrinsic(prfop, addressValue, addressing.addressExpr, [
-        addressing.base.physicalId, ...(addressing.index ? [addressing.index.physicalId] : []),
-      ]),
+        addressing.base.physicalId, addressing.index?.physicalId,
+      ].filter(Boolean)),
     ],
     possibleFaults:[],
     completeness:'exact-with-intrinsic',

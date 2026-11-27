@@ -7,7 +7,7 @@ export const CAPABILITY_SCOPES = Object.freeze(['instruction', 'basic-block', 'f
 const FORBIDDEN_PATH_PARTS = new Set(['__proto__', 'prototype', 'constructor']);
 
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
-function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
+function list(value) { return [...new Set((Array.isArray(value) ? value : []).filter((item) => item != null).map(String).filter(Boolean))].sort(); }
 function getPath(root, path) {
   let value = root;
   for (const part of String(path || '').split('.').filter(Boolean)) {
@@ -84,11 +84,12 @@ function numericValue(value) {
   }
   if (typeof value === 'string') {
     const text = value.trim();
+    if (!text) return null;
     if (/^-?\d+$/.test(text)) {
       try { return { kind: 'bigint', value: BigInt(text) }; } catch { return null; }
     }
     const n = Number(text);
-    if (Number.isFinite(n)) return { kind: 'number', value: n };
+    if (Number.isFinite(n) && (!Number.isInteger(n) || Number.isSafeInteger(n))) return { kind: 'number', value: n };
   }
   return null;
 }
@@ -98,14 +99,24 @@ function compareNumeric(leftValue, rightValue) {
   if (!left || !right) return null;
   if (left.kind === 'bigint' && right.kind === 'bigint') return left.value < right.value ? -1 : left.value > right.value ? 1 : 0;
   if (left.kind === 'bigint' && right.kind === 'number') {
-    if (!Number.isSafeInteger(right.value)) return null;
-    const converted = BigInt(right.value);
-    return left.value < converted ? -1 : left.value > converted ? 1 : 0;
+    if (Number.isInteger(right.value)) {
+      if (!Number.isSafeInteger(right.value)) return null;
+      const converted = BigInt(right.value);
+      return left.value < converted ? -1 : left.value > converted ? 1 : 0;
+    }
+    const floorVal = Math.floor(right.value);
+    if (!Number.isSafeInteger(floorVal)) return null;
+    return left.value <= BigInt(floorVal) ? -1 : 1;
   }
   if (left.kind === 'number' && right.kind === 'bigint') {
-    if (!Number.isSafeInteger(left.value)) return null;
-    const converted = BigInt(left.value);
-    return converted < right.value ? -1 : converted > right.value ? 1 : 0;
+    if (Number.isInteger(left.value)) {
+      if (!Number.isSafeInteger(left.value)) return null;
+      const converted = BigInt(left.value);
+      return converted < right.value ? -1 : converted > right.value ? 1 : 0;
+    }
+    const floorVal = Math.floor(left.value);
+    if (!Number.isSafeInteger(floorVal)) return null;
+    return BigInt(floorVal) < right.value ? -1 : 1;
   }
   return left.value < right.value ? -1 : left.value > right.value ? 1 : 0;
 }
@@ -135,7 +146,7 @@ function equalityResult(equal, undecidedReason = 'capability-rule-equality-type-
 function evaluateExpression(expression, features, budget) {
   if (!budget.consumeWork()) return { value: false, complete: false, reason: budget.stopped?.reason || 'budget' };
   if (!budget.consumeNodes()) return { value: false, complete: false, reason: budget.stopped?.reason || 'budget' };
-  const op = expression.op;
+  const op = typeof expression.op === 'string' ? expression.op.trim() : expression.op;
   if (op === 'all' || op === 'any') {
     const results = [];
     let definite = false;
@@ -228,7 +239,7 @@ export function evaluateCapabilityRule(rule, snapshot = {}, options = {}) {
   const verdict = !result.complete || partialUpstream ? 'partial' : result.value ? 'supported' : 'not-detected';
   return deepFreeze({
     id: `capability-fact:${stable({ rule: compiled.compiledId, snapshotId: snapshot.snapshotId || null, evidenceIds, verdict })}`,
-    capabilityId: compiled.capabilityId, scope: compiled.scope, targetEntityIds: list(snapshot.targetEntityIds || [snapshot.entityId]).filter(Boolean),
+    capabilityId: compiled.capabilityId, scope: compiled.scope, targetEntityIds: list(snapshot.targetEntityIds || (snapshot.entityId != null ? [snapshot.entityId] : [])).filter(Boolean),
     ruleId: compiled.id, ruleVersion: compiled.version, packageContentHash: compiled.packageContentHash,
     dependencyRuleIds: Object.freeze([...compiled.dependencies]), requiredFeatures: Object.freeze([...compiled.requiredFeatures]),
     evidenceIds, contradictingEvidenceIds: list(snapshot.contradictingEvidenceIds), assumptions,

@@ -8,6 +8,7 @@
 
 const __legacyRunSearch = runSearch;
 const __legacyGuessFunctions = guessFunctions;
+const __activeGuessEpochByReq = new Map();
 
 const __utf8Encoder = new TextEncoder();
 const __utf8Decoder = new TextDecoder('utf-8', { fatal: false });
@@ -27,7 +28,8 @@ runSearch = async function runSearchHardened(args) {
   if (!region) throw new Error('Unknown region.');
   const results = [];
   const total = Number(region.size);
-  const startByte = Math.max(0, Math.min(total, Number(args.from || 0)));
+  const rawFrom = Number(args.from ?? 0);
+  const startByte = Math.max(0, Math.min(total, Number.isFinite(rawFrom) ? rawFrom : 0));
   const query = String(args.query || '');
   if (!query) throw new Error('Enter text to search for.');
 
@@ -43,7 +45,7 @@ runSearch = async function runSearchHardened(args) {
   let carry = new Uint8Array(0);
 
   while (pos < total) {
-    if (cancelled(args.requestId)) return { cancelled: true, results, scanned, capped: false };
+    if (cancelled(args.requestId, args.epoch)) return { cancelled: true, results, scanned, capped: false };
     const want = Math.min(blockSize, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), want);
     if (!blk.length) break;
@@ -144,7 +146,7 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
   let index = 0, pos = 0;
 
   while (pos < total && out.length < cap) {
-    if (cancelled(requestId)) return { results: out, cancelled: true, capped: false };
+    if (cancelled(requestId, epoch)) return { results: out, cancelled: true, capped: false };
     const blk = await readRange(region.fileOffset + BigInt(pos), Math.min(1024 * 1024, total - pos));
     if (blk.length < 4) break;
     const words = Math.floor(blk.length / 4);
@@ -155,7 +157,7 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
       const pc = region.vmAddr + BigInt(byteOff);
       const direct = Words.wordTarget(w, pc);
       if (direct != null && direct === want) {
-        out.push({ row: byteOff / 4, addr: pc, kind: 'branch' });
+        out.push({ row: byteOff / 4, addr: pc, kind: Words.classifyWord(w) === Words.KIND.LITERAL ? 'load' : 'branch' });
         if (out.length >= cap) break;
       }
 
@@ -168,8 +170,10 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
 
       const rel = Words.pcRelTarget(w, pc);
       if (rel) {
-        pageOf[rel.reg] = rel.value;
-        pageAt[rel.reg] = index;
+        if (rel.reg < 31) {
+          pageOf[rel.reg] = rel.value;
+          pageAt[rel.reg] = index;
+        }
         if (!rel.page && rel.value === want) {
           out.push({ row: byteOff / 4, addr: pc, kind: 'address' });
           if (out.length >= cap) break;
@@ -180,7 +184,7 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
       const pair = Words.pairedOffset(w);
       let propagated = -1;
       if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= __XREF_PAIR_WINDOW) {
-        const full = pageOf[pair.rn] + pair.imm;
+        const full = BigInt.asUintN(64, pageOf[pair.rn] + pair.imm);
         if (full === want) {
           out.push({
             row: byteOff / 4, addr: pc,
@@ -188,11 +192,13 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
           });
           if (out.length >= cap) break;
         }
-        if (!pair.load && !pair.store) {
-          pageOf[pair.rd] = full;
-          pageAt[pair.rd] = index;
-          propagated = pair.rd;
-        } else if (pair.load && pair.rd < 31) {
+        if (!pair.load && !pair.store && !pair.prefetch) {
+          if (pair.rd < 31) {
+            pageOf[pair.rd] = full;
+            pageAt[pair.rd] = index;
+            propagated = pair.rd;
+          }
+        } else if (pair.load && pair.gpDest !== false && pair.rd < 31) {
           pageOf[pair.rd] = null;
           pageAt[pair.rd] = -1;
         }
@@ -272,10 +278,34 @@ function __addressBitmap(region) {
       const index = indexOf(addr);
       return index >= 0 && !!(bits[index >> 3] & (1 << (index & 7)));
     },
+    forEach(fn) {
+      const lo = region.vmAddr;
+      for (let byteIdx = 0; byteIdx < bits.length; byteIdx++) {
+        let b = bits[byteIdx];
+        if (!b) continue;
+        const base = byteIdx * 8;
+        for (let bit = 0; bit < 8 && b; bit++, b >>>= 1) {
+          if (!(b & 1)) continue;
+          const idx = base + bit;
+          if (idx >= rows) return;
+          fn(lo + BigInt(idx) * 4n);
+        }
+      }
+    },
   };
 }
 
 async function __functionEvidence(region, slice, requestId, unwindLimit = 200_000) {
+  const epoch = arguments.length > 4 && arguments[4] !== undefined
+    ? arguments[4]
+    : ((requestId != null ? __activeGuessEpochByReq.get(requestId) : undefined) ?? (typeof currentEpoch !== 'undefined' ? currentEpoch : undefined));
+  const readMeta = typeof readMetadataRange === 'function'
+    ? (off, len) => readMetadataRange(off, len, requestId, epoch)
+    : readRange;
+  const reqCache = requestId != null && typeof __metaReadCacheByReq !== 'undefined'
+    ? __metaReadCacheByReq.get(requestKey(epoch ?? currentEpoch, requestId))
+    : null;
+  const validCache = reqCache && reqCache.file === file && reqCache.epoch === currentEpoch ? reqCache : null;
   const lo = region.vmAddr, hi = region.vmAddr + region.size;
   const imageBase = slice && slice.info ? slice.info.textVM : null;
   const data = new Set(), structured = new Set(), relativeCodeCandidates = new Set(), imageRelativeCodeCandidates = new Set();
@@ -312,34 +342,41 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
     // Merge exact runtime metadata collectors from the current branch with
     // the hardened boundary evidence below. These helpers parse ABI-defined
     // Objective-C, initializer, and Swift reflection function references.
-    const methodStarts = await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId);
+    const methodStarts = await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId, epoch);
     for (const a of methodStarts) exactMetadata.add(a);
     if (methodStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'objc-methodlist-' + (methodStarts.truncationReason || 'truncated'); }
-    const initStarts = await initializerFunctionStarts(slice, lo, hi, imageBase, requestId);
+    const initStarts = await initializerFunctionStarts(slice, lo, hi, imageBase, requestId, epoch);
     for (const a of initStarts) exactMetadata.add(a);
     if (initStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'legacy-init-' + (initStarts.truncationReason || 'truncated'); }
-    const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId);
+    const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId, epoch);
     for (const a of swiftStarts) exactMetadata.add(a);
     if (swiftStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'swift-reflection-' + (swiftStarts.truncationReason || 'truncated'); }
     const unwindRegion = (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n);
     let unwindLsdaEntries = [];
     if (unwindRegion && unwindRegion.size < 16n * 1024n * 1024n) {
       try {
-        const buf = await readRange(unwindRegion.fileOffset, Number(unwindRegion.size));
-        const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit, shouldCancel: () => cancelled(requestId) });
+        const buf = await readMeta(unwindRegion.fileOffset, Number(unwindRegion.size));
+        const unwindKey = `${unwindRegion.fileOffset}:${unwindRegion.size}:${imageBase}:${boundedUnwindLimit}`;
+        let unwindStarts = validCache?.unwind?.get(unwindKey);
+        if (!unwindStarts) {
+          unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit, shouldCancel: () => cancelled(requestId, epoch) });
+          if (validCache && unwindStarts.truncationReason !== 'cancelled') {
+            validCache.unwind.set(unwindKey, unwindStarts);
+          }
+        }
         for (const a of unwindStarts) if (a >= lo && a < hi) unwind.add(a);
         if (unwindStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated'); }
-        unwindLsdaEntries = MachO.parseUnwindLsdaEntries(buf, imageBase, { maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit, shouldCancel: () => cancelled(requestId) });
+        unwindLsdaEntries = MachO.parseUnwindLsdaEntries(buf, imageBase, { maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit, shouldCancel: () => cancelled(requestId, epoch) });
         if (unwindLsdaEntries.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'unwind-lsda-' + (unwindLsdaEntries.truncationReason || 'truncated'); }
         await yieldToQueue();
-        if (cancelled(requestId)) return { cancelled: true, incomplete: true, truncationReason: 'cancelled' };
+        if (cancelled(requestId, epoch)) return { cancelled: true, incomplete: true, truncationReason: 'cancelled' };
       } catch { /* malformed unwind metadata is not evidence */ }
     }
 
     const exceptRegion = (slice.regions || []).find((r) => r.section === '__gcc_except_tab' && r.size > 0n);
     if (exceptRegion && unwindLsdaEntries.length && exceptRegion.size < 16n * 1024n * 1024n) {
       try {
-        const buf = await readRange(exceptRegion.fileOffset, Number(exceptRegion.size));
+        const buf = await readMeta(exceptRegion.fileOffset, Number(exceptRegion.size));
         for (const a of MachO.parseLsdaLandingPads(buf, exceptRegion.vmAddr, unwindLsdaEntries, {
           pointerSize: slice.info?.is64 === false ? 4 : 8, textBase: imageBase,
         })) if (a >= lo && a < hi) exceptionLandingPads.add(a);
@@ -353,7 +390,7 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
     const ehFrameRegion = (slice.regions || []).find((r) => r.section === '__eh_frame' && r.size > 0n);
     if (ehFrameRegion && ehFrameRegion.size < 16n * 1024n * 1024n) {
       try {
-        const buf = await readRange(ehFrameRegion.fileOffset, Number(ehFrameRegion.size));
+        const buf = await readMeta(ehFrameRegion.fileOffset, Number(ehFrameRegion.size));
         ehFrameRanges = MachO.parseEhFrameRanges(buf, ehFrameRegion.vmAddr, {
           pointerSize: slice.info?.is64 === false ? 4 : 8, textBase: imageBase,
           execRanges: __executableCodeRanges(slice), align: __execInstructionAlign(slice),
@@ -368,7 +405,7 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
     for (const r of slice.regions || []) {
       if (r.section !== '__init_offsets' || r.size <= 0n || r.size > 16n * 1024n * 1024n) continue;
       try {
-        const buf = await readRange(r.fileOffset, Number(r.size));
+        const buf = await readMeta(r.fileOffset, Number(r.size));
         const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
         for (let p = 0; p + 4 <= buf.byteLength; p += 4) {
           const target = imageBase + BigInt(dv.getUint32(p, true));
@@ -380,10 +417,10 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
     for (const r of slice.regions || []) {
       if (r.section !== '__objc_methlist' || r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
       try {
-        const buf = await readRange(r.fileOffset, Number(r.size));
+        const buf = await readMeta(r.fileOffset, Number(r.size));
         const starts = MachO.parseObjcMethodStarts(buf, r.vmAddr, {
           regions: slice.regions || [], imageBase, architecture: slice.info?.architecture || 'arm64',
-          shouldCancel: () => cancelled(requestId),
+          shouldCancel: () => cancelled(requestId, epoch),
         });
         for (const a of starts) {
           if (a >= lo && a < hi) { structured.add(a); exactMetadata.add(a); }
@@ -401,14 +438,14 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
       if (r.segment !== '__DATA_CONST' || r.section !== '__const' ||
           r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
       try {
-        const buf = await readRange(r.fileOffset, Number(r.size));
+        const buf = await readMeta(r.fileOffset, Number(r.size));
         const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
         for (let p = 0; p + 4 <= buf.byteLength; p += 4) {
           const target = imageBase + BigInt(dv.getUint32(p, true));
           if (target >= lo && target < hi && !(target & 3n)) imageRelativeCodeCandidates.add(target);
         }
       } catch { /* malformed metadata is not evidence */ }
-      if (cancelled(requestId)) break;
+      if (cancelled(requestId, epoch)) break;
     }
 
     // Apple runtimes frequently store code references as signed 32-bit
@@ -421,7 +458,7 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
         (sec === '__const' && (r.segment === '__TEXT' || r.segment === '__DATA_CONST'));
       if (!relativeMetadata) continue;
       try {
-        const buf = await readRange(r.fileOffset, Number(r.size));
+        const buf = await readMeta(r.fileOffset, Number(r.size));
         const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
         for (let p = 0; p + 4 <= buf.byteLength; p += 4) {
           const delta = dv.getInt32(p, true);
@@ -429,14 +466,14 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
           if (target >= lo && target < hi && !(target & 3n)) relativeCodeCandidates.add(target);
         }
       } catch { /* malformed metadata is not evidence */ }
-      if (cancelled(requestId)) break;
+      if (cancelled(requestId, epoch)) break;
     }
 
     for (const r of slice.regions || []) {
       if (r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
       if (!/^__(const|data|objc_const|cfstring)$/.test(r.section || '')) continue;
       try {
-        const buf = await readRange(r.fileOffset, Number(r.size));
+        const buf = await readMeta(r.fileOffset, Number(r.size));
         const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
         const q = Math.floor(buf.byteLength / 8);
         const raw = new Array(q);
@@ -467,7 +504,7 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
           i = Math.max(i, j - 1);
         }
       } catch { /* unreadable metadata is ignored */ }
-      if (cancelled(requestId)) break;
+      if (cancelled(requestId, epoch)) break;
     }
   }
 
@@ -556,9 +593,12 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
     }
     trapRunStart = null; trapRunValues = [];
   };
+  const scanReader = typeof readScanBlock === 'function' ? readScanBlock : readRange;
+  const scanBlockSize = typeof STREAM_SCAN_BLOCK === 'number' ? STREAM_SCAN_BLOCK : 1024 * 1024;
+  const maybeYield = typeof createYielder === 'function' ? createYielder(16) : yieldToQueue;
   while (pos < Number(region.size)) {
-    if (cancelled(requestId)) break;
-    const blk = await readRange(region.fileOffset + BigInt(pos), Math.min(1024 * 1024, Number(region.size) - pos));
+    if (cancelled(requestId, epoch)) break;
+    const blk = await scanReader(region.fileOffset + BigInt(pos), Math.min(scanBlockSize, Number(region.size) - pos));
     if (blk.length < 4) break;
     const n = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, n * 4);
@@ -737,7 +777,6 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
         if (trapRunValues.length < 4097) trapRunValues.push(w);
       } else {
         flushTrapRun();
-        flushAdrpReturnRun();
       }
       if (lastIndirectBranch != null && betweenIndirectKinds.length <= 12) betweenIndirectKinds.push(currentKind);
       if (Words.isBr(w)) {
@@ -763,12 +802,13 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
       prevWord = w;
     }
     pos += n * 4;
-    await yieldToQueue();
+    await maybeYield();
   }
   flushRepeatedThunks();
   flushRepeatedDirectTails();
   flushInlineUdfRun();
   flushTrapRun();
+  flushAdrpReturnRun();
   for (const [target, count] of tailCallCounts) {
     if (count >= 2 || prologues.has(target) || terminalStarts.has(target)) tailCalls.add(target);
   }
@@ -825,7 +865,7 @@ async function __budgetedLegacyGuessFunctions(args) {
 
   try {
     for (let coreStart = 0n; coreStart < region.size && merged.size < cap; coreStart += __FUNCTION_CHUNK_BYTES) {
-      if (cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true };
+      if (cancelled(args.requestId, args.epoch)) return { starts: new BigUint64Array(0), cancelled: true };
       const coreEnd = __minBigInt(region.size, coreStart + __FUNCTION_CHUNK_BYTES);
       const scanStart = coreStart > __FUNCTION_CHUNK_OVERLAP ? coreStart - __FUNCTION_CHUNK_OVERLAP : 0n;
       const scanEnd = __minBigInt(region.size, coreEnd + __FUNCTION_CHUNK_OVERLAP);
@@ -836,14 +876,16 @@ async function __budgetedLegacyGuessFunctions(args) {
         vmAddr: region.vmAddr + scanStart,
         size: scanEnd - scanStart,
       };
+      const tempSlice = { ...slice, regions: [...originalRegions, temp] };
       regions.set(temp.id, temp);
-      slice.regions = [...originalRegions, temp];
+      slices.push(tempSlice);
       let part;
       try {
         part = await __legacyGuessFunctions({ ...args, regionId: temp.id, limit: cap });
       } finally {
         regions.delete(temp.id);
-        slice.regions = originalRegions;
+        const tempIdx = slices.indexOf(tempSlice);
+        if (tempIdx >= 0) slices.splice(tempIdx, 1);
       }
       if (!part || part.cancelled) return part || { starts: new BigUint64Array(0), cancelled: true };
 
@@ -860,7 +902,7 @@ async function __budgetedLegacyGuessFunctions(args) {
       await yieldToQueue();
     }
   } finally {
-    slice.regions = originalRegions;
+    // original slice.regions is never mutated
   }
 
   const list = Array.from(merged).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -910,14 +952,73 @@ function __strictlyInsideFunctionRange(ranges, addr) {
  * independent signal confirms them. A terminal boundary remains independent
  * evidence even when another branch also targets the same entry; branch-target
  * status must not negate stronger evidence. */
+async function __precollectDataPointers(region, slice, requestId, epoch) {
+  const imageBase = slice?.info?.textVM;
+  if (!region || !slice || imageBase == null) return null;
+  const lo = region.vmAddr, hi = region.vmAddr + region.size;
+  const cap = typeof META_DATA_PTR_CAP === 'number' ? META_DATA_PTR_CAP : 1_000_000;
+  const seen = new Set();
+  const readMeta = typeof readMetadataRange === 'function'
+    ? (off, len) => readMetadataRange(off, len, requestId, epoch)
+    : readRange;
+  for (const r of slice.regions || []) {
+    if (r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
+    if (!/^__(const|data|objc_const|cfstring)$/.test(r.section || '')) continue;
+    try {
+      const buf = await readMeta(r.fileOffset, Number(r.size));
+      const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      for (let p = 0; p + 8 <= buf.byteLength; p += 8) {
+        const t = sanitizeStubPointer(dv.getBigUint64(p, true), imageBase);
+        if (t == null || t < lo || t >= hi || (t & 3n)) continue;
+        if (!seen.has(t)) {
+          if (seen.size >= cap) return null;
+          seen.add(t);
+        }
+      }
+    } catch { /* unreadable section skipped */ }
+    if (cancelled(requestId, epoch)) return null;
+  }
+  const out = new BigUint64Array(seen.size);
+  let i = 0;
+  for (const t of seen) out[i++] = t;
+  return out;
+}
+
 guessFunctions = async function guessFunctionsHardened(args) {
-  const result = await __budgetedLegacyGuessFunctions(args);
-  if (!result || result.cancelled || !result.starts || !result.starts.length) return result;
   const region = regions.get(args.regionId);
   const slice = slices.find((s) => (s.regions || []).some((r) => r.id === args.regionId));
-  if (!region) return result;
-  const ev = await __functionEvidence(region, slice, args.requestId, result.cap);
-  if (!ev || ev.cancelled || cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true };
+  const reqEpoch = args.epoch ?? (typeof currentEpoch !== 'undefined' ? currentEpoch : undefined);
+  let cacheKey = null;
+  if (args.requestId != null) {
+    __activeGuessEpochByReq.set(requestKey(reqEpoch, args.requestId), reqEpoch);
+    __activeGuessEpochByReq.set(args.requestId, reqEpoch);
+    if (typeof __metaReadCacheByReq !== 'undefined') {
+      cacheKey = requestKey(reqEpoch, args.requestId);
+      const metaEntry = {
+        file,
+        epoch: currentEpoch,
+        buffers: new Map(),
+        bytes: 0,
+        unwind: new Map(),
+        dataPointers: null,
+      };
+      __metaReadCacheByReq.set(cacheKey, metaEntry);
+    }
+  }
+  try {
+    if (cacheKey != null && region && region.size > __FUNCTION_DIRECT_BYTES && slice && slice.info?.textVM != null) {
+      const ptrs = await __precollectDataPointers(region, slice, args.requestId, reqEpoch);
+      if (cancelled(args.requestId, reqEpoch)) return { starts: new BigUint64Array(0), cancelled: true };
+      const entry = __metaReadCacheByReq.get(cacheKey);
+      if (entry && entry.file === file && entry.epoch === currentEpoch && ptrs != null) {
+        entry.dataPointers = ptrs;
+      }
+    }
+    const result = await __budgetedLegacyGuessFunctions(args);
+    if (!result || result.cancelled || !result.starts || !result.starts.length) return result;
+    if (!region) return result;
+    const ev = await __functionEvidence(region, slice, args.requestId, result.cap, reqEpoch);
+    if (!ev || ev.cancelled || cancelled(args.requestId, reqEpoch)) return { starts: new BigUint64Array(0), cancelled: true };
 
   const kept = new Set();
   let filteredDataCandidates = 0;
@@ -961,9 +1062,8 @@ guessFunctions = async function guessFunctionsHardened(args) {
   }
   // Two or more independent epilogues restoring FP/LR and branching to the
   // same address are strong evidence of a shared tail-called function entry.
-  for (let off = 0n; off < region.size; off += 4n) {
-    const a = region.vmAddr + off;
-    if (ev.tailCalls.has(a) || ev.indirectThunkStarts.has(a) || ev.repeatedThunkStarts.has(a) || ev.repeatedDirectTailStarts.has(a)) kept.add(a);
+  for (const bm of [ev.tailCalls, ev.indirectThunkStarts, ev.repeatedThunkStarts, ev.repeatedDirectTailStarts]) {
+    bm.forEach((a) => kept.add(a));
   }
   // Propagate function identity through short, independently proven tail
   // wrappers.  If an exact function is <=32 bytes and its final instruction
@@ -1082,4 +1182,13 @@ guessFunctions = async function guessFunctionsHardened(args) {
     capped, truncated: capped, complete: !capped, truncationReason, completeness,
     __transfer: [starts.buffer],
   };
+  } finally {
+    if (cacheKey != null && typeof __metaReadCacheByReq !== 'undefined') __metaReadCacheByReq.delete(cacheKey);
+    if (args.requestId != null) {
+      __activeGuessEpochByReq.delete(requestKey(reqEpoch, args.requestId));
+      if (__activeGuessEpochByReq.get(args.requestId) === reqEpoch) {
+        __activeGuessEpochByReq.delete(args.requestId);
+      }
+    }
+  }
 };

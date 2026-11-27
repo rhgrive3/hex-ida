@@ -181,7 +181,7 @@ export function classifyTieredQuery(query, options = {}) {
   const values = {};
   try {
     for (const [name, fallback] of Object.entries(DEFAULTS)) {
-      const value = Object.hasOwn(captured, name) ? captured[name] : fallback;
+      const value = captured[name] !== undefined ? captured[name] : fallback;
       values[name] = requirePositiveSafeInteger(value, name);
     }
     if (values.exhaustiveMaxBvWidth > values.maxBvWidth) throw new TypeError('exhaustiveMaxBvWidth cannot exceed maxBvWidth');
@@ -218,14 +218,35 @@ export function classifyTieredQuery(query, options = {}) {
 
 function providerEligible(provider, route, role, limits) {
   const cap = provider.contract;
-  if (route.analysis.maxBvWidth > cap.maxBvWidth) return false;
+  const bvWidthCaps = [
+    cap.maxBvWidth,
+    limits?.maxBvWidth,
+    ...(role === 'narrow' ? [limits?.exhaustiveMaxBvWidth] : []),
+  ].filter((value) => value != null);
+  const effectiveMaxBvWidth = bvWidthCaps.length ? Math.min(...bvWidthCaps) : cap.maxBvWidth;
+  if (route.analysis.maxBvWidth > effectiveMaxBvWidth) return false;
   if (route.analysis.symbols.some((symbol) => !cap.supportedSorts.includes(symbol.sort.kind))) return false;
-  if (cap.maxConstraints != null && route.constraintCount > cap.maxConstraints) return false;
-  if (cap.maxExprNodes != null && route.analysis.nodeCount > cap.maxExprNodes) return false;
-  if (cap.maxExprDepth != null && route.analysis.maxDepth > cap.maxExprDepth) return false;
+  const effectiveMaxConstraints = limits?.maxConstraints != null
+    ? Math.min(cap.maxConstraints ?? limits.maxConstraints, limits.maxConstraints)
+    : cap.maxConstraints;
+  if (effectiveMaxConstraints != null && route.constraintCount > effectiveMaxConstraints) return false;
+  const effectiveMaxExprNodes = limits?.maxExprNodes != null
+    ? Math.min(cap.maxExprNodes ?? limits.maxExprNodes, limits.maxExprNodes)
+    : cap.maxExprNodes;
+  if (effectiveMaxExprNodes != null && route.analysis.nodeCount > effectiveMaxExprNodes) return false;
+  const effectiveMaxExprDepth = limits?.maxExprDepth != null
+    ? Math.min(cap.maxExprDepth ?? limits.maxExprDepth, limits.maxExprDepth)
+    : cap.maxExprDepth;
+  if (effectiveMaxExprDepth != null && route.analysis.maxDepth > effectiveMaxExprDepth) return false;
   if (role === 'narrow') {
-    if (cap.maxAssignments != null && route.exhaustiveDomainSize &&
-        BigInt(route.exhaustiveDomainSize) > BigInt(cap.maxAssignments)) return false;
+    const assignmentCaps = [
+      cap.maxAssignments,
+      limits?.exhaustiveMaxAssignments,
+      limits?.maxAssignments,
+    ].filter((value) => value != null);
+    const effectiveMaxAssignments = assignmentCaps.length ? Math.min(...assignmentCaps) : null;
+    if (effectiveMaxAssignments != null && route.exhaustiveDomainSize &&
+        BigInt(route.exhaustiveDomainSize) > BigInt(effectiveMaxAssignments)) return false;
   }
   return true;
 }
@@ -244,13 +265,71 @@ function failurePriority(attempts) {
   return SOLVER_STATUS.UNKNOWN;
 }
 
+function isValidTimeoutMs(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validateAbortSignal(signal, label) {
+  if (signal == null || typeof signal !== 'object' ||
+      typeof signal.addEventListener !== 'function' ||
+      typeof signal.removeEventListener !== 'function') {
+    throw new TypeError(`${label} must be AbortSignal-compatible`);
+  }
+  return signal;
+}
+
+function checkCancelledFn(fn) {
+  if (typeof fn !== 'function') return false;
+  try { return Boolean(fn()); }
+  catch { return true; }
+}
+
+function makeChildAbortController() {
+  if (typeof AbortController === 'function') return new AbortController();
+  let aborted = false;
+  const listeners = new Map();
+  const signal = {
+    get aborted() { return aborted; },
+    addEventListener(type, listener, opts = undefined) {
+      if (type !== 'abort' || listener == null || aborted) return;
+      if (!listeners.has(listener)) listeners.set(listener, Boolean(opts && typeof opts === 'object' && opts.once));
+    },
+    removeEventListener(type, listener) { if (type === 'abort') listeners.delete(listener); },
+  };
+  return {
+    signal,
+    abort() {
+      if (aborted) return;
+      aborted = true;
+      for (const [listener, once] of listeners) {
+        if (once) listeners.delete(listener);
+        try {
+          if (typeof listener === 'function') listener.call(signal);
+          else if (typeof listener?.handleEvent === 'function') listener.handleEvent.call(listener);
+        } catch { /* listener errors are isolated */ }
+      }
+      listeners.clear();
+    },
+  };
+}
+
 class TieredSolverSession extends SolverSession {
   async _executeCheck(query, options = {}, _token, signal) {
     const names = Object.keys(DEFAULTS);
     const limits = {};
     try {
-      for (const name of names) limits[name] = effectivePositiveSafeInteger(options, name, this.options[name], this.backend[name]);
+      const effectiveBudgetOptions = {};
+      for (const name of names) {
+        if (options[name] !== undefined) effectiveBudgetOptions[name] = options[name];
+      }
+      for (const name of names) limits[name] = effectivePositiveSafeInteger(effectiveBudgetOptions, name, this.options[name], this.backend[name]);
       if (limits.exhaustiveMaxBvWidth > limits.maxBvWidth) throw new TypeError('exhaustiveMaxBvWidth cannot exceed maxBvWidth');
+      if (options.deterministic !== undefined && typeof options.deterministic !== 'boolean') {
+        throw new TypeError('deterministic must be a boolean');
+      }
+      if (options.isCancelled !== undefined && typeof options.isCancelled !== 'function') {
+        throw new TypeError('isCancelled must be a function');
+      }
     } catch (error) {
       return resultFor(this.backend, null, SOLVER_STATUS.INVALID_QUERY, `invalid-budget:${error.message}`);
     }
@@ -282,75 +361,160 @@ class TieredSolverSession extends SolverSession {
       'no-exact-tier-eligible', { eligibility, attempts: [], engineBackend: null });
 
     const timeoutMs = options.timeoutMs;
-    const deterministic = (options.deterministic === true || this.options.deterministic === true) && timeoutMs > 0;
+    const effectiveDeterministic = options.deterministic !== undefined ? options.deterministic === true : this.options.deterministic === true;
+    const deterministic = effectiveDeterministic && timeoutMs > 0;
     const deadline = !deterministic && timeoutMs > 0 ? (globalThis.performance?.now?.() ?? Date.now()) + timeoutMs : Infinity;
-    const attempts = [];
-    for (const { role, provider } of selected) {
-      if (signal?.aborted) return resultFor(this.backend, querySnapshot.queryHash, SOLVER_STATUS.CANCELLED,
-        'exact-tier-agreement-cancelled', { eligibility, attempts, engineBackend: null }, { cancelled: true });
-      if (!deterministic && (globalThis.performance?.now?.() ?? Date.now()) >= deadline) return resultFor(this.backend, querySnapshot.queryHash,
-        SOLVER_STATUS.TIMEOUT, 'exact-tier-agreement-timeout', { eligibility, attempts, engineBackend: null }, { timedOut: true });
-      const captured = this.backend._providerContracts[role];
-      if (!sameProviderContract(captured)) return resultFor(this.backend, querySnapshot.queryHash,
-        SOLVER_STATUS.PROVIDER_FAILURE, `tier-provider-contract-mismatch:${role}`,
-        { eligibility, attempts, engineBackend: null });
-      let childSession, raw, normalized;
-      try {
-        const createSession = dataMethod(provider, 'createSession');
-        childSession = createSession.call(provider, { timeoutMs: 0 });
-        if (!childSession || typeof childSession !== 'object' || typeof childSession.check !== 'function') {
-          throw new TypeError('exact provider returned an invalid session');
-        }
-        const cap = captured.contract;
-        const childLimits = {
-          ...limits,
-          maxBvWidth: Math.min(limits.maxBvWidth, cap.maxBvWidth),
-          maxConstraints: Math.min(limits.maxConstraints, cap.maxConstraints ?? limits.maxConstraints),
-          maxExprNodes: Math.min(limits.maxExprNodes, cap.maxExprNodes ?? limits.maxExprNodes),
-          maxExprDepth: Math.min(limits.maxExprDepth, cap.maxExprDepth ?? limits.maxExprDepth),
-          maxVariables: Math.min(limits.maxVariables, cap.maxVariables ?? limits.maxVariables),
-          maxClauses: Math.min(limits.maxClauses, cap.maxClauses ?? limits.maxClauses),
-          maxDecisions: Math.min(limits.maxDecisions, cap.maxDecisions ?? limits.maxDecisions),
-          maxPropagations: Math.min(limits.maxPropagations, cap.maxPropagations ?? limits.maxPropagations),
-          exhaustiveMaxAssignments: Math.min(limits.exhaustiveMaxAssignments, cap.maxAssignments ?? limits.exhaustiveMaxAssignments),
-        };
-        const remaining = deadline === Infinity ? timeoutMs : Math.max(1, Math.floor(deadline - (globalThis.performance?.now?.() ?? Date.now())));
-        if (role === 'narrow') childLimits.maxAssignments = childLimits.exhaustiveMaxAssignments;
-        raw = await childSession.check(querySnapshot, { ...options, ...childLimits, timeoutMs: remaining, signal });
-      } catch (error) {
-        attempts.push({ backend: captured.id, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: error?.message || 'provider-unavailable' });
-        try { await childSession?.dispose?.(); } catch { /* provider cleanup is best effort */ }
-        if (signal?.aborted) return resultFor(this.backend, querySnapshot.queryHash, SOLVER_STATUS.CANCELLED,
-          'exact-tier-agreement-cancelled', { eligibility, attempts, engineBackend: null }, { cancelled: true });
-        continue;
+    const sessionSignal = this.options.signal || null;
+    const sessionIsCancelled = typeof this.options.isCancelled === 'function' ? this.options.isCancelled : null;
+    const queryIsCancelled = typeof options.isCancelled === 'function' ? options.isCancelled : null;
+    const isCancelledNow = () => Boolean(
+      signal?.aborted ||
+      sessionSignal?.aborted ||
+      checkCancelledFn(sessionIsCancelled) ||
+      checkCancelledFn(queryIsCancelled)
+    );
+    const childController = makeChildAbortController();
+    const onParentAbort = () => { try { childController.abort(); } catch { /* best effort */ } };
+    const detachListeners = [];
+    const seenSignals = new Set();
+    for (const parentSig of [signal, sessionSignal]) {
+      if (!parentSig || seenSignals.has(parentSig)) continue;
+      seenSignals.add(parentSig);
+      if (parentSig.aborted) onParentAbort();
+      else if (typeof parentSig.addEventListener === 'function') {
+        parentSig.addEventListener('abort', onParentAbort, { once: true });
+        detachListeners.push(() => {
+          try { parentSig.removeEventListener('abort', onParentAbort); } catch { /* best effort */ }
+        });
       }
-      try { await childSession.dispose?.(); } catch { /* completed provider cleanup is best effort */ }
-      if (signal?.aborted) return resultFor(this.backend, querySnapshot.queryHash, SOLVER_STATUS.CANCELLED,
-        'exact-tier-agreement-cancelled', { eligibility, attempts, engineBackend: null }, { cancelled: true });
-      if ((globalThis.performance?.now?.() ?? Date.now()) >= deadline) return resultFor(this.backend, querySnapshot.queryHash,
-        SOLVER_STATUS.TIMEOUT, 'exact-tier-agreement-timeout', { eligibility, attempts, engineBackend: null }, { timedOut: true });
-      if (!sameProviderContract(captured)) return resultFor(this.backend, querySnapshot.queryHash,
-        SOLVER_STATUS.PROVIDER_FAILURE, `tier-provider-contract-mismatch:${role}`,
-        { eligibility, attempts, engineBackend: null });
-      try {
-        normalized = createSolverResult(raw);
-        if (!isValidSolverResult(normalized, { query: querySnapshot, backend: provider })) {
-          throw new TypeError('provider result identity mismatch');
+    }
+    const hasCancelCallback = Boolean(sessionIsCancelled || queryIsCancelled);
+    if (hasCancelCallback) {
+      if (isCancelledNow()) onParentAbort();
+      const pollTimer = setInterval(() => {
+        if (!childController.signal.aborted && isCancelledNow()) {
+          onParentAbort();
+          clearInterval(pollTimer);
         }
-        if (normalized.status === SOLVER_STATUS.SAT) {
-          const binding = validateExactModelBindings(snapshotRoute.analysis.symbols, normalized.model);
-          const semantic = binding.valid ? validateSatModel(querySnapshot, normalized.model) : binding;
-          if (!semantic.valid) throw new TypeError(`tier-model-binding-validation-failed:model-validation-failed:${semantic.reason}`);
+      }, 5);
+      pollTimer.unref?.();
+      detachListeners.push(() => clearInterval(pollTimer));
+    }
+    const childSignal = hasCancelCallback
+      ? {
+          get aborted() {
+            if (!childController.signal.aborted && isCancelledNow()) onParentAbort();
+            return childController.signal.aborted;
+          },
+          get reason() { return childController.signal.reason; },
+          throwIfAborted() {
+            if (!childController.signal.aborted && isCancelledNow()) onParentAbort();
+            if (typeof childController.signal.throwIfAborted === 'function') childController.signal.throwIfAborted();
+            else if (childController.signal.aborted) throw childController.signal.reason || new Error('Aborted');
+          },
+          addEventListener(type, listener, opts) { return childController.signal.addEventListener(type, listener, opts); },
+          removeEventListener(type, listener, opts) { return childController.signal.removeEventListener(type, listener, opts); },
         }
-      } catch (error) {
-        const reason = String(error?.message || 'provider-result-invalid');
-        attempts.push({ backend: captured.id, status: SOLVER_STATUS.PROVIDER_FAILURE, reason });
-        continue;
-      }
-      attempts.push({ backend: captured.id, status: normalized.status, result: normalized, role });
+      : childController.signal;
+    const forwardedOptions = {};
+    for (const [key, value] of Object.entries(options)) {
+      if (key === 'isCancelled' || value === undefined) continue;
+      forwardedOptions[key] = value;
     }
 
-    if (signal?.aborted) return resultFor(this.backend, querySnapshot.queryHash, SOLVER_STATUS.CANCELLED,
+    const attempts = [];
+    try {
+      for (const { role, provider } of selected) {
+        if (isCancelledNow()) {
+          onParentAbort();
+          return resultFor(this.backend, querySnapshot.queryHash, SOLVER_STATUS.CANCELLED,
+            'exact-tier-agreement-cancelled', { eligibility, attempts, engineBackend: null }, { cancelled: true });
+        }
+        if (!deterministic && (globalThis.performance?.now?.() ?? Date.now()) >= deadline) return resultFor(this.backend, querySnapshot.queryHash,
+          SOLVER_STATUS.TIMEOUT, 'exact-tier-agreement-timeout', { eligibility, attempts, engineBackend: null }, { timedOut: true });
+        const captured = this.backend._providerContracts[role];
+        if (!sameProviderContract(captured)) return resultFor(this.backend, querySnapshot.queryHash,
+          SOLVER_STATUS.PROVIDER_FAILURE, `tier-provider-contract-mismatch:${role}`,
+          { eligibility, attempts, engineBackend: null });
+        let childSession, raw, normalized;
+        try {
+          const createSession = dataMethod(provider, 'createSession');
+          childSession = createSession.call(provider, { timeoutMs: 0 });
+          if (!childSession || typeof childSession !== 'object' || typeof childSession.check !== 'function') {
+            throw new TypeError('exact provider returned an invalid session');
+          }
+          const cap = captured.contract;
+          const effectiveNarrowAssignments = Math.min(
+            limits.exhaustiveMaxAssignments,
+            limits.maxAssignments ?? limits.exhaustiveMaxAssignments,
+            cap.maxAssignments ?? limits.exhaustiveMaxAssignments,
+          );
+          const childLimits = {
+            ...limits,
+            maxBvWidth: role === 'narrow'
+              ? Math.min(limits.exhaustiveMaxBvWidth, limits.maxBvWidth, cap.maxBvWidth)
+              : Math.min(limits.maxBvWidth, cap.maxBvWidth),
+            maxConstraints: Math.min(limits.maxConstraints, cap.maxConstraints ?? limits.maxConstraints),
+            maxExprNodes: Math.min(limits.maxExprNodes, cap.maxExprNodes ?? limits.maxExprNodes),
+            maxExprDepth: Math.min(limits.maxExprDepth, cap.maxExprDepth ?? limits.maxExprDepth),
+            maxVariables: Math.min(limits.maxVariables, cap.maxVariables ?? limits.maxVariables),
+            maxClauses: Math.min(limits.maxClauses, cap.maxClauses ?? limits.maxClauses),
+            maxDecisions: Math.min(limits.maxDecisions, cap.maxDecisions ?? limits.maxDecisions),
+            maxPropagations: Math.min(limits.maxPropagations, cap.maxPropagations ?? limits.maxPropagations),
+            exhaustiveMaxAssignments: effectiveNarrowAssignments,
+          };
+          const remaining = deadline === Infinity ? timeoutMs : Math.max(1, Math.floor(deadline - (globalThis.performance?.now?.() ?? Date.now())));
+          if (role === 'narrow') childLimits.maxAssignments = effectiveNarrowAssignments;
+          raw = await childSession.check(querySnapshot, {
+            ...forwardedOptions,
+            ...childLimits,
+            deterministic: effectiveDeterministic,
+            timeoutMs: remaining,
+            signal: childSignal,
+          });
+        } catch (error) {
+          attempts.push({ backend: captured.id, status: SOLVER_STATUS.PROVIDER_FAILURE, reason: error?.message || 'provider-unavailable' });
+          try { await childSession?.dispose?.(); } catch { /* provider cleanup is best effort */ }
+          if (isCancelledNow()) {
+            onParentAbort();
+            return resultFor(this.backend, querySnapshot.queryHash, SOLVER_STATUS.CANCELLED,
+              'exact-tier-agreement-cancelled', { eligibility, attempts, engineBackend: null }, { cancelled: true });
+          }
+          continue;
+        }
+        try { await childSession.dispose?.(); } catch { /* completed provider cleanup is best effort */ }
+        if (isCancelledNow()) {
+          onParentAbort();
+          return resultFor(this.backend, querySnapshot.queryHash, SOLVER_STATUS.CANCELLED,
+            'exact-tier-agreement-cancelled', { eligibility, attempts, engineBackend: null }, { cancelled: true });
+        }
+        if ((globalThis.performance?.now?.() ?? Date.now()) >= deadline) return resultFor(this.backend, querySnapshot.queryHash,
+          SOLVER_STATUS.TIMEOUT, 'exact-tier-agreement-timeout', { eligibility, attempts, engineBackend: null }, { timedOut: true });
+        if (!sameProviderContract(captured)) return resultFor(this.backend, querySnapshot.queryHash,
+          SOLVER_STATUS.PROVIDER_FAILURE, `tier-provider-contract-mismatch:${role}`,
+          { eligibility, attempts, engineBackend: null });
+        try {
+          normalized = createSolverResult(raw);
+          if (!isValidSolverResult(normalized, { query: querySnapshot, backend: provider })) {
+            throw new TypeError('provider result identity mismatch');
+          }
+          if (normalized.status === SOLVER_STATUS.SAT) {
+            const binding = validateExactModelBindings(snapshotRoute.analysis.symbols, normalized.model);
+            const semantic = binding.valid ? validateSatModel(querySnapshot, normalized.model) : binding;
+            if (!semantic.valid) throw new TypeError(`tier-model-binding-validation-failed:model-validation-failed:${semantic.reason}`);
+          }
+        } catch (error) {
+          const reason = String(error?.message || 'provider-result-invalid');
+          attempts.push({ backend: captured.id, status: SOLVER_STATUS.PROVIDER_FAILURE, reason });
+          continue;
+        }
+        attempts.push({ backend: captured.id, status: normalized.status, result: normalized, role });
+      }
+    } finally {
+      for (const detach of detachListeners) detach();
+    }
+
+    if (isCancelledNow()) return resultFor(this.backend, querySnapshot.queryHash, SOLVER_STATUS.CANCELLED,
       'exact-tier-agreement-cancelled', { eligibility, attempts, engineBackend: null }, { cancelled: true });
     if ((globalThis.performance?.now?.() ?? Date.now()) >= deadline) return resultFor(this.backend, querySnapshot.queryHash,
       SOLVER_STATUS.TIMEOUT, 'exact-tier-agreement-timeout', { eligibility, attempts, engineBackend: null }, { timedOut: true });
@@ -403,18 +567,26 @@ export class TieredBvBackend extends SolverBackend {
     const captured = safeOptions(options, 'tiered backend options');
     const values = {};
     for (const [name, fallback] of Object.entries(DEFAULTS)) values[name] = requirePositiveSafeInteger(
-      Object.hasOwn(captured, name) ? captured[name] : fallback, name);
+      captured[name] !== undefined ? captured[name] : fallback, name);
     if (values.exhaustiveMaxBvWidth > values.maxBvWidth) throw new TypeError('exhaustiveMaxBvWidth cannot exceed maxBvWidth');
-    const id = Object.hasOwn(captured, 'id') ? captured.id : TIERED_BACKEND_ID;
-    const version = Object.hasOwn(captured, 'version') ? captured.version : TIERED_BACKEND_VERSION;
+    const id = captured.id !== undefined ? captured.id : TIERED_BACKEND_ID;
+    const version = captured.version !== undefined ? captured.version : TIERED_BACKEND_VERSION;
     if (typeof id !== 'string' || !id || typeof version !== 'string' || !version) throw new TypeError('tiered backend id/version must be nonempty strings');
-    const narrow = Object.hasOwn(captured, 'narrowBackend') ? captured.narrowBackend
-      : Object.hasOwn(captured, 'exhaustiveBackend') ? captured.exhaustiveBackend
+    const timeoutMs = captured.timeoutMs !== undefined ? captured.timeoutMs : undefined;
+    if (timeoutMs !== undefined && !isValidTimeoutMs(timeoutMs)) {
+      throw new TypeError('timeoutMs must be a primitive non-negative safe integer');
+    }
+    const deterministic = captured.deterministic !== undefined ? captured.deterministic : undefined;
+    if (deterministic !== undefined && typeof deterministic !== 'boolean') {
+      throw new TypeError('deterministic must be a boolean');
+    }
+    const narrow = captured.narrowBackend !== undefined ? captured.narrowBackend
+      : captured.exhaustiveBackend !== undefined ? captured.exhaustiveBackend
         : new ExhaustiveBvBackend({ maxBvWidth: values.exhaustiveMaxBvWidth,
           maxAssignments: values.exhaustiveMaxAssignments, maxConstraints: values.maxConstraints,
           maxExprNodes: values.maxExprNodes, maxExprDepth: values.maxExprDepth, yieldEvery: values.yieldEvery });
-    const wide = Object.hasOwn(captured, 'wideBackend') ? captured.wideBackend
-      : Object.hasOwn(captured, 'bitblastBackend') ? captured.bitblastBackend
+    const wide = captured.wideBackend !== undefined ? captured.wideBackend
+      : captured.bitblastBackend !== undefined ? captured.bitblastBackend
         : new BitBlastBvBackend({ maxBvWidth: values.maxBvWidth, maxConstraints: values.maxConstraints,
           maxExprNodes: values.maxExprNodes, maxExprDepth: values.maxExprDepth,
           maxVariables: values.maxVariables, maxClauses: values.maxClauses,
@@ -423,6 +595,8 @@ export class TieredBvBackend extends SolverBackend {
     const wideProvider = capabilityData(wide);
     super({ id, version, proofAuthority: PROOF_AUTHORITY.EXACT, isRemote: false, isWasm: false });
     Object.assign(this, values);
+    this.timeoutMs = timeoutMs;
+    this.deterministic = deterministic;
     this.narrowBackend = narrow;
     this.wideBackend = wide;
     this.exhaustiveBackend = narrow;
@@ -468,9 +642,30 @@ export class TieredBvBackend extends SolverBackend {
 
   createSession(options = {}) {
     const captured = safeOptions(options, 'tiered session options', SESSION_OPTION_NAMES);
-    const sessionOptions = { ...DEFAULTS };
+    const sessionOptions = {};
+    for (const name of Object.keys(DEFAULTS)) sessionOptions[name] = this[name];
+    if (this.timeoutMs !== undefined) sessionOptions.timeoutMs = this.timeoutMs;
+    if (this.deterministic !== undefined) sessionOptions.deterministic = this.deterministic;
     for (const [key, value] of Object.entries(captured)) {
-      if (key === 'timeoutMs' || Object.hasOwn(DEFAULTS, key)) sessionOptions[key] = value;
+      if (value === undefined) continue;
+      if (Object.hasOwn(DEFAULTS, key)) {
+        sessionOptions[key] = requirePositiveSafeInteger(value, key);
+      } else if (key === 'timeoutMs') {
+        if (!isValidTimeoutMs(value)) throw new TypeError('timeoutMs must be a primitive non-negative safe integer');
+        sessionOptions.timeoutMs = value;
+      } else if (key === 'deterministic') {
+        if (typeof value !== 'boolean') throw new TypeError('deterministic must be a boolean');
+        sessionOptions.deterministic = value;
+      } else if (key === 'signal') {
+        if (value !== null) validateAbortSignal(value, 'session signal');
+        sessionOptions.signal = value;
+      } else if (key === 'isCancelled') {
+        if (typeof value !== 'function') throw new TypeError('isCancelled must be a function');
+        sessionOptions.isCancelled = value;
+      }
+    }
+    if (sessionOptions.exhaustiveMaxBvWidth > sessionOptions.maxBvWidth) {
+      throw new TypeError('exhaustiveMaxBvWidth cannot exceed maxBvWidth');
     }
     return new TieredSolverSession(this, sessionOptions);
   }

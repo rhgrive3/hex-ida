@@ -498,7 +498,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
     rowOfAddress: (a) => {
       if (a == null) return null;
       const rel = a - region.vmAddr;
-      if (rel < 0n || rel >= region.size) return null;
+      if (rel < 0n || rel >= region.size || rel % 4n !== 0n) return null;
       return Number(rel / 4n);
     },
   });
@@ -625,6 +625,7 @@ function makeShared(map, key, producer) {
     entry.progressListeners.clear();
     entry.promise = Promise.reject(error);
     if (map.get(key) === entry) map.delete(key);
+    return entry;
   }
   map.set(key, entry);
   return entry;
@@ -706,7 +707,10 @@ function cancelShared(map, reason) {
   map.clear();
 }
 
+let analysisCacheEpoch = 0;
+
 export function clearAnalysisCache() {
+  analysisCacheEpoch += 1;
   cache.clear();
   cancelShared(analysisInflight, 'analysis-cache-cleared');
   cancelShared(textInflight, 'analysis-cache-cleared');
@@ -746,13 +750,16 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   } else {
     let entry = analysisInflight.get(key);
     if (!entry) {
+      const epoch = analysisCacheEpoch;
       entry = makeShared(analysisInflight, key, async (producerSignal, dispatchProgress) => {
         const value = await analyzeFunction(
           backend, region, startRow, endRow, symbols, dispatchProgress,
           { ...opts, maxRows: budget, signal: producerSignal },
         );
         value.textsResolved = false;
-        cache.set(key, value);
+        if (!producerSignal.aborted && epoch === analysisCacheEpoch) {
+          cache.set(key, value);
+        }
         return value;
       });
     }
@@ -803,12 +810,16 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   const pointerWidth = resolvePointerBytes(pointerContext);
   const wanted = [];
   const seen = new Set();
+  const hasDirectRef = new Set();
+  const hasLoadRef = new Set();
   for (const r of model.addressRefs) {
     const k = r.addr.toString();
+    if (r.load) hasLoadRef.add(k);
+    else hasDirectRef.add(k);
     if (seen.has(k)) continue;
+    if (wanted.length >= limit) continue;
     seen.add(k);
     wanted.push(r.addr);
-    if (wanted.length >= limit) break;
   }
   // Transient backend failures are tolerated per reference, but they make the
   // resolution incomplete: the caller must be able to tell "no text here" from
@@ -825,15 +836,26 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   };
   const texts = new Map();
   const indirect = new Set();
+  const rawBytesByKey = new Map();
   const got = await mapBounded(wanted, MODEL_TEXT_READ_CONCURRENCY, read, signal);
   throwIfAborted(signal);
   const deref = [];
   got.forEach((g, i) => {
-    if (looksLikeText(g)) { texts.set(wanted[i].toString(), g.text); return; }
+    const key = wanted[i].toString();
+    if (hasLoadRef.has(key) && isReadOnlyRead(g) && g.bytes && g.bytes.length >= 4) {
+      rawBytesByKey.set(key, Array.from(g.bytes.slice(0, 8)));
+    }
+    if (looksLikeText(g, { allowShortRoData: hasDirectRef.has(key) })) {
+      texts.set(key, g.text);
+      return;
+    }
     if (pointerWidth != null && g && g.found && g.bytes && g.bytes.length >= pointerWidth) deref.push({ i, bytes: g.bytes });
   });
   if (deref.length) {
-    const ptrs = deref.map((d) => pointerAt(d.bytes, pointerContext));
+    const ptrs = deref.map((d) => {
+      const p = pointerAt(d.bytes, pointerContext);
+      return p != null && p >= 0x40n ? p : null;
+    });
     const got2 = await mapBounded(
       ptrs,
       MODEL_TEXT_READ_CONCURRENCY,
@@ -842,7 +864,7 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     );
     throwIfAborted(signal);
     got2.forEach((g, k) => {
-      if (!looksLikeText(g)) return;
+      if (!looksLikeText(g, { allowShortRoData: true })) return;
       const key = wanted[deref[k].i].toString();
       texts.set(key, g.text);
       indirect.add(key);
@@ -850,15 +872,79 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   }
   throwIfAborted(signal);
   const resolved = attachTexts(model, texts, indirect);
+  // attachTexts() skips empty strings via truthy check; attach 0-char .rodata strings here
+  // and preserve raw 4/8-byte read-only literal pool bytes for non-string loads.
+  for (const r of resolved.addressRefs || []) {
+    const key = r.addr.toString();
+    if (r.text === undefined && texts.has(key)) {
+      const text = texts.get(key);
+      r.text = text;
+      r.viaPointer = indirect.has(key);
+      if (r.value) {
+        r.value.kind = 'string';
+        r.value.text = text;
+        r.value.viaPointer = indirect.has(key);
+      }
+    }
+    if (r.load) {
+      const raw = rawBytesByKey.get(key);
+      if (raw && raw.length >= 4) r.bytes = raw;
+    }
+  }
+  for (const b of resolved.semantic || []) {
+    for (const ref of b.refs || []) {
+      const key = ref.addr.toString();
+      if (ref.text === undefined && texts.has(key)) ref.text = texts.get(key);
+    }
+  }
+  if (resolved.facts?.stringRefs) {
+    let attachedEmpty = false;
+    for (const s of resolved.facts.stringRefs) {
+      const key = s.addr.toString();
+      if (s.text === undefined && texts.has(key)) {
+        s.text = texts.get(key);
+        attachedEmpty = true;
+      }
+    }
+    if (attachedEmpty) {
+      resolved.facts.strings = resolved.facts.stringRefs
+        .filter((s) => typeof s.text === 'string')
+        .map((s) => s.text);
+    }
+  }
   modelTextsComplete.set(resolved, readFailures === 0);
   return resolved;
 }
 
-function looksLikeText(g) {
-  if (!g || !g.found || !g.text) return false;
+function isReadOnlySectionName(region) {
+  if (typeof region !== 'string' || !region) return false;
+  return /(?:^|,)\.(?:rodata|rdata)(?:\.|\$|$)|(?:^|,)__(?:cstring|const|ustring|oslog)(?:$|\b)/i.test(region);
+}
+
+function isReadOnlyRead(g) {
+  if (!g || !g.found) return false;
+  if (g.readOnly === true) return true;
+  return isReadOnlySectionName(g.region);
+}
+
+function looksLikeText(g, { allowShortRoData = false } = {}) {
+  if (!g || !g.found || typeof g.text !== 'string') return false;
   if (!g.terminated) return false;
-  if (g.text.length < 2) return false;
-  return /[\p{L}\p{N}]/u.test(g.text);
+  if (g.text.length >= 2) {
+    return /[\p{L}\p{N}]/u.test(g.text);
+  }
+  if (!allowShortRoData || !isReadOnlyRead(g)) return false;
+  if (g.text.length === 0) {
+    if (g.bytes && g.bytes.length > 0 && g.bytes[0] !== 0) return false;
+    return true;
+  }
+  if (g.text.length === 1) {
+    const code = g.text.charCodeAt(0);
+    if (code < 0x20 || code > 0x7e) return false;
+    if (g.bytes && g.bytes.length >= 2 && (g.bytes[0] !== code || g.bytes[1] !== 0)) return false;
+    return true;
+  }
+  return false;
 }
 
 export function pointerAt(bytes, opts = {}) {

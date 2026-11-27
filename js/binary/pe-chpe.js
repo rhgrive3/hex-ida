@@ -8,6 +8,16 @@ export function parseCHPELoadConfig(
   mappedFileSpanForRva,
 ) {
   if (image.metadata?._chpeParsed) return;
+  if (
+    !Number.isSafeInteger(declared)
+    || declared < 4
+    || !Number.isSafeInteger(off)
+    || off < 0
+    || off + declared > r.length
+  ) {
+    budget?.partial?.('load-config:truncated', 'PE CHPE load-config extends past end of file');
+    return;
+  }
   image.metadata._chpeParsed = true;
 
   const targetImage = (Object.getPrototypeOf(image) && Object.getPrototypeOf(image).format === 'pe')
@@ -15,9 +25,9 @@ export function parseCHPELoadConfig(
     : image;
 
   const is64 = image.bits === 64;
-  // Offset of CHPEMetadataPointer: 200 (0xC8) in 64-bit, 140 or 124 in 32-bit
+  // Offset of CHPEMetadataPointer: 200 (0xC8) in 64-bit, 124 (0x7C) in 32-bit
   const ptrSize = is64 ? 8 : 4;
-  const chpeOffset = is64 ? 200 : (declared >= 144 ? 140 : 124);
+  const chpeOffset = is64 ? 200 : 124;
 
   if (declared < chpeOffset + ptrSize) return;
 
@@ -31,12 +41,12 @@ export function parseCHPELoadConfig(
   image.metadata.hybrid = true;
   image.metadata.isHybrid = true;
   image.metadata.chpe = true;
-  image.arch = 'arm64ec';
-  targetImage.arch = 'arm64ec';
 
   let chpeMetadataRva = null;
-  if (image.imageBase != null && chpePointerVa >= image.imageBase && chpePointerVa - image.imageBase <= 0xffffffffn) {
-    chpeMetadataRva = Number(chpePointerVa - image.imageBase);
+  if (image.imageBase != null) {
+    if (chpePointerVa >= image.imageBase && chpePointerVa - image.imageBase <= 0xffffffffn) {
+      chpeMetadataRva = Number(chpePointerVa - image.imageBase);
+    }
   } else if (chpePointerVa > 0n && chpePointerVa <= 0xffffffffn) {
     chpeMetadataRva = Number(chpePointerVa);
   }
@@ -143,6 +153,10 @@ export function parseCHPELoadConfig(
     });
   }
 
+  if (is64) {
+    image.arch = 'arm64ec';
+    targetImage.arch = 'arm64ec';
+  }
   image.chpeCodeMap = codeMapEntries;
   targetImage.chpeCodeMap = codeMapEntries;
   image.metadata.loadConfig = {

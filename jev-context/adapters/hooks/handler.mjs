@@ -116,7 +116,15 @@ export async function handleHookEvent(payload, options = {}) {
     const toolName = String(payload.tool_name || payload.toolName || "unknown");
     const meta = deriveMetaFromHook(toolName, payload.tool_input || payload.toolInput);
 
-    const scope = `${host}:${sessionId}`;
+    let scope = options.scope || `${host}:${sessionId}`;
+    if (!options.scope && host === "codex") {
+      const upstream = options.proxyUpstream || process.env.JEV_PROXY_UPSTREAM || "https://api.openai.com";
+      try {
+        scope = `proxy:${new URL(upstream).host}`;
+      } catch {
+        scope = "proxy:api.openai.com";
+      }
+    }
     const remembered = store.remember(sessionId, {
       tool: toolName,
       group: meta.group,
@@ -124,13 +132,20 @@ export async function handleHookEvent(payload, options = {}) {
       chars: output.length,
       digest: contentDigest(output, toolName, scope, engine.policyVersion),
     });
-    options.onObserved?.({ sessionId, toolName, meta, output, remembered });
+    const priorDigests = new Map();
+    for (const entry of remembered.slice(0, -1)) {
+      if (entry && entry.digest) priorDigests.set(entry.digest, (priorDigests.get(entry.digest) || 0) + 1);
+    }
+    options.onObserved?.({ sessionId, toolName, meta, output, remembered, scope });
 
     // Detached: the host answers this tool call immediately while OpenJEV is
     // consulted in the background. Nothing in this branch can block the agent.
     if (options.pipelineAvailable !== false) {
-      spawnPrewarm({
+      const dispatch = typeof options.spawnPrewarm === "function" ? options.spawnPrewarm : spawnPrewarm;
+      dispatch({
         scope,
+        writeTime: true,
+        priorDigests: [...priorDigests.entries()],
         items: [
           {
             id: String(payload.tool_use_id || payload.toolUseId || `tool_${Date.now()}`),

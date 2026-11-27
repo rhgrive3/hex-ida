@@ -28,10 +28,13 @@
  *
  * 日本語は作らない。返すのは構造と、掛け算の内訳だけ。
  */
+import { analyzeCryptoInsnDensity } from './analysis/crypto-entropy.js';
+import { scanArm64RmwFields, classifyArm64Behavior, inferArm64Abi, fingerprintArm64Func } from './analysis/wasm-suite.js';
 import {
   matchField, typeFits, accessorKind, matchText, matchName, normalizeFieldName, fieldRole,
+  extractCallableLeaf, numericSymbolRole,
 } from './goals.js';
-import { evidence, exclusiveLR, rarityLR, EXCLUSIVE_MAX_STRINGS, fuse, decide, explain, starsOf, VERDICT } from './evidence.js';
+import { evidence, exclusiveLR, rarityLR, EXCLUSIVE_MAX_STRINGS, fuse, decide, explain, starsOf, VERDICT, verdictRank } from './evidence.js';
 import { verifyAccessor, verifyFunctionHandlesField, selfRegisters } from './verify.js';
 import { findValueUpdates, constantComparisons } from './dataflow.js';
 import { plainFieldName } from './fields.js';
@@ -76,6 +79,7 @@ const MAX_LEXICAL_RESCUE = 64;
  */
 const byRecallLane = (a, b) => ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
   || (b.fusion.logOdds - a.fusion.logOdds)
+  || ((b.fusion.rawLogOdds ?? b.fusion.logOdds) - (a.fusion.rawLogOdds ?? a.fusion.logOdds))
   || (a.source === 'cxx' || b.source === 'cxx'
     ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
     : 0);
@@ -87,6 +91,29 @@ const MAX_ROUNDS = 3;            // 決着が付くまで、最大この回数�
  * この opts を渡さない。field 専用の例外を location へ誤適用しないこと。
  */
 const FIELD_LIKELY_OPTS = Object.freeze({ allowTrustedTwoGroup: true });
+const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+function utf8ByteLength(text) {
+  if (typeof text !== 'string' || !text.length) return 0;
+  if (UTF8_ENCODER) return UTF8_ENCODER.encode(text).byteLength;
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i++; }
+      else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+function resultLimit(value, fallback = 12) {
+  if (value == null) return fallback;
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
 
 /**
  * 目的から、値（フィールド）を 1 個に決める。
@@ -126,7 +153,7 @@ export async function pinpointField(opts) {
   if (o.map && o.map.classes) {
     for (const c of o.map.classes) categoryOf.set(c.name, c);
   }
-  const wantCategories = GOAL_TO_CATEGORY[goal.id] || [];
+  const wantCategories = Object.hasOwn(GOAL_TO_CATEGORY, goal.id) ? GOAL_TO_CATEGORY[goal.id] : [];
 
   // その目的の文字列を参照しているクラス（実際の参照関係から）
   const classStringHits = classesReferencingGoalStrings(goal, o);
@@ -156,7 +183,7 @@ export async function pinpointField(opts) {
       if (!cxx && fit === 'conflict' && !nameHit && !propHit) continue;
       // 名前も当たらず、クラスの担当も違うなら、証拠が 1 つもないので候補にしない
       if (!cxx && !nameHit && !propHit && !ctx.categoryHit && !ctx.nameHit) continue;
-      raw.push({ cls, iv, nameHit, fit, ctx });
+      raw.push({ cls, iv, nameHit, propHit, fit, ctx });
     }
   }
   if (!raw.length) {
@@ -210,7 +237,7 @@ export async function pinpointField(opts) {
   } else {
     asked = candidates.filter((c) => c.askedBySequence || c.askedByWords);
   }
-  const narrowed = asked.length > 0 && asked.length < candidates.length;
+  const narrowed = asked.length > 0 && (asked.length < candidates.length || asked.length < universe);
   if (asked.length) {
     const keys = new Set(asked.map((c) => c.key));
     // Anonymous C++ fields keep their binary identity even when their names
@@ -255,24 +282,29 @@ export async function pinpointField(opts) {
         .slice(0, VERIFY_ROUND);
       if (!targets.length) break;
 
+      const dirty = [];
       for (let i = 0; i < targets.length; i++) {
         if (cancelled() || spent(o)) break;
         progress({ phase: 'verify', done: checked, all: checked + targets.length - i });
         const c = targets[i];
         verified.add(c.key);
+        const beforeLen = c.evidence.length;
         try {
           /*
            * アクセサを読むのは 2 命令ぶんなので全員に対してやるが、
            * クラスのメソッドを何本も読むのは重い。それは上位 2 つだけにする。
            * 3 位以下を深追いしても、決着には効かないので。
            */
-          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 2 });
+          await verifyCandidate(c, goal, o, { deep: ranked.indexOf(c) < 4 }, fields);
         } catch { /* 1 個読めなくても、ほかは確かめる */ }
+        if (c.evidence.length !== beforeLen) dirty.push(c);
         checked++;
       }
-      for (const c of ranked) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
-      ranked.sort(byRecallLane);
-      result = decide(ranked, FIELD_LIKELY_OPTS);
+      if (dirty.length) {
+        for (const c of dirty) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
+        ranked.sort(byRecallLane);
+        result = decide(ranked, FIELD_LIKELY_OPTS);
+      }
     }
   }
 
@@ -281,9 +313,9 @@ export async function pinpointField(opts) {
 
   let changeSites = [];
   const top = result.top;
-  if (top && top.source !== 'cxx' && o.scanAccess) {
+  if (top && top.source !== 'cxx' && o.scanAccess && !cancelled()) {
     try {
-      changeSites = await collectChangeSites(top, o);
+      changeSites = await collectChangeSites(top, o, fields);
     } catch { changeSites = []; }
   } else if (top) {
     changeSites = top.sites || [];
@@ -303,7 +335,7 @@ export async function pinpointField(opts) {
     margin: result.margin,
     marginRatio: result.marginRatio,
     missing: result.missing,
-    candidates: ranked.slice(0, o.limit || 12),
+    candidates: ranked.slice(0, resultLimit(o.limit, 12)),
     universe,
     checked,
     changeSites,
@@ -315,12 +347,14 @@ export async function pinpointField(opts) {
 function classContext(cls, goal, categoryOf, classStringHits, vendors) {
   const cxx = cls.source === 'cxx';
   const info = cxx ? null : categoryOf.get(cls.name) || null;
-  const wanted = GOAL_TO_CATEGORY[goal.id] || [];
+  const wanted = Object.hasOwn(GOAL_TO_CATEGORY, goal.id) ? GOAL_TO_CATEGORY[goal.id] : [];
   const nameHit = cxx && cls.classIdentity?.kind !== 'named' ? null : matchText(goal, cls.name);
   // 同じクラスに、その目的の仲間の値がいくつあるか（hp があるクラスには attack もある）
   let siblings = 0;
   for (const iv of cls.ivars || []) {
-    if ((!cxx || !iv.anonymous) && matchField(goal, iv.name)) siblings++;
+    const ivHit = (!cxx || !iv.anonymous) && matchField(goal, iv.name);
+    const prHit = iv.property ? matchField(goal, iv.property.name) : null;
+    if (ivHit || prHit) siblings++;
   }
   // その目的の言葉を含むメソッドが、このクラスにあるか
   let selectors = 0;
@@ -356,7 +390,10 @@ function classesReferencingGoalStrings(goal, o) {
   matched.sort((a, b) => b.m.score - a.m.score);
 
   for (const { s } of matched.slice(0, 120)) {
-    const span = BigInt(Math.max(1, Math.min(s.text.length, 256)));
+    const bytes = Number.isSafeInteger(s.byteLength) && s.byteLength > 0
+      ? s.byteLength
+      : utf8ByteLength(s.text);
+    const span = BigInt(Math.max(1, Math.min(bytes, 256)));
     for (const u of program.functionsReferencing(s.addr, span, 20)) {
       if (u.addr == null) continue;
       const owner = fields.ownerOf(u.addr);
@@ -369,38 +406,51 @@ function classesReferencingGoalStrings(goal, o) {
 
 /* ── 候補 1 つぶんの証拠 ─────────────────────────────────── */
 
-function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
+function isPointerFieldType(type) {
+  if (!type) return false;
+  const kind = type.kind;
+  return kind === 'pointer' || kind === 'object' || kind === 'cstring' ||
+    kind === 'class' || kind === 'selector' || kind === 'block';
+}
+
+function buildFieldCandidate({ cls, iv, nameHit, propHit, fit, ctx }, goal) {
   const ev = [];
   const cxx = isCxxMemberField(iv, cls);
 
   /* 名前 — いちばん直接的だが、これだけでは確定にしない（evidence.js が上限を掛ける） */
-  if (nameHit) {
+  const isPreset = !!(goal && goal.isPreset);
+  const prop = iv.property || null;
+  const pm = propHit !== undefined ? propHit : (prop ? matchField(goal, prop.name) : null);
+  const primaryNameHit = (!nameHit || (!isPreset && pm && pm.literal && pm.exact && !(nameHit.literal && nameHit.exact)))
+    ? (pm || nameHit)
+    : nameHit;
+  const primaryName = primaryNameHit === pm && prop ? prop.name : iv.name;
+  if (primaryNameHit) {
     /*
      * 打ち込まれた名前と、変数の名前が、そっくりそのまま同じ。
      * 探しものの名前を知っている人が名前で探しているのだから、
      * これ以上の手がかりは無い。語彙ごしの一致とは別格に扱う。
+     * プリセット選択（goal.isPreset）はラベル文字のリテラル一致にしない。
      */
-    if (nameHit.literal && nameHit.exact) {
-      ev.push(evidence('field-name-asked', 1, { name: iv.name, term: nameHit.term }));
-    } else if (nameHit.literal && nameHit.sequence) {
-      ev.push(evidence('field-name-contains', 1, { name: iv.name, term: nameHit.term }));
-    } else if (nameHit.literal && nameHit.words) {
-      ev.push(evidence('field-name-words', 1, { name: iv.name, term: nameHit.term }));
-    } else if (nameHit.exact) ev.push(evidence('field-name-exact', nameHit.score, { name: iv.name, term: nameHit.term }));
-    else if (nameHit.score >= 0.6) ev.push(evidence('field-name-strong', nameHit.score, { name: iv.name, term: nameHit.term }));
-    else ev.push(evidence('field-name-weak', Math.max(0.3, nameHit.score), { name: iv.name, term: nameHit.term }));
+    if (!isPreset && primaryNameHit.literal && primaryNameHit.exact) {
+      ev.push(evidence('field-name-asked', 1, { name: primaryName, term: primaryNameHit.term }));
+    } else if (!isPreset && primaryNameHit.literal && primaryNameHit.sequence) {
+      ev.push(evidence('field-name-contains', 1, { name: primaryName, term: primaryNameHit.term }));
+    } else if (!isPreset && primaryNameHit.literal && primaryNameHit.words) {
+      ev.push(evidence('field-name-words', 1, { name: primaryName, term: primaryNameHit.term }));
+    } else if (primaryNameHit.exact) ev.push(evidence('field-name-exact', primaryNameHit.score, { name: primaryName, term: primaryNameHit.term }));
+    else if (primaryNameHit.score >= 0.6) ev.push(evidence('field-name-strong', primaryNameHit.score, { name: primaryName, term: primaryNameHit.term }));
+    else ev.push(evidence('field-name-weak', Math.max(0.3, primaryNameHit.score), { name: primaryName, term: primaryNameHit.term }));
   }
-  const askedByName = !!(nameHit && nameHit.literal && nameHit.exact);
-  const askedBySequence = !!(nameHit && nameHit.literal && nameHit.sequence);
-  const askedByWords = !!(nameHit && nameHit.literal && nameHit.words);
+  const askedByName = !isPreset && !!((nameHit && nameHit.literal && nameHit.exact) || (pm && pm.literal && pm.exact));
+  const askedBySequence = !isPreset && !!((nameHit && nameHit.literal && nameHit.sequence) || (pm && pm.literal && pm.sequence));
+  const askedByWords = !isPreset && !!((nameHit && nameHit.literal && nameHit.words) || (pm && pm.literal && pm.words));
 
   /*
    * プロパティとして宣言された名前。ivar 名とは別の場所に書いてあるので、
    * 名前が 2 通り取れることになる（`_a1` のように ivar 名が潰されていても拾える）。
    */
-  const prop = iv.property || null;
   if (prop) {
-    const pm = matchField(goal, prop.name);
     if (pm) {
       ev.push(evidence('property-name', pm.score, {
         name: prop.name, term: pm.term, ivar: iv.name,
@@ -408,7 +458,7 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
     }
     const pfit = typeFits(goal, prop.type || iv.declaredType);
     if (pfit === 'fit') ev.push(evidence('type-declared', 1, { type: prop.type }));
-    else if (pfit === 'conflict' && !nameHit) {
+    else if (pfit === 'conflict' && !nameHit && !pm) {
       ev.push(evidence('type-conflict', 1, { type: prop.type }));
     }
   }
@@ -416,7 +466,9 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
   /* 宣言された型 */
   if (fit === 'fit') ev.push(evidence('type-numeric', 1, { type: iv.type }));
   else if (fit === 'conflict') ev.push(evidence('type-conflict', 1, { type: iv.type }));
-  if (iv.size && iv.size <= 8) ev.push(evidence('size-fits', 0.6, { size: iv.size }));
+  if (iv.size && iv.size <= 8 && fit !== 'conflict' && !isPointerFieldType(iv.type)) {
+    ev.push(evidence('size-fits', 0.6, { size: iv.size }));
+  }
 
   /* まわり — 値の名前とは独立した手がかり */
   if (ctx.categoryHit) {
@@ -438,7 +490,7 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
    * 組み込んだ SDK のクラスなら、ここで打ち消す。
    * 名前がどれだけ完璧に一致していても、それはゲームの値ではない。
    */
-  if (ctx.vendorConflict && !askedByName) {
+  if (ctx.vendorConflict && (!askedByName || isPreset)) {
     const sure = ctx.vendor.confidence === 'high';
     ev.push(evidence(sure ? 'third-party-class' : 'library-prefix-class', 1, {
       className: cls.name, vendor: ctx.vendor.vendor, kind: ctx.vendor.kind,
@@ -458,7 +510,7 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
 
   // Reuse proven accesses only when there is an independent intent match.
   // Unnamed members retain structural provenance without a semantic claim.
-  if (cxx && !iv.conflict && (nameHit || ctx.nameHit || ctx.categoryHit)) {
+  if (cxx && !iv.anonymous && !iv.conflict && (nameHit || pm || ctx.nameHit || ctx.categoryHit)) {
     ev.push(evidence('access-verified', 1, {
       className: cls.name, offset: iv.offset, size: iv.size,
       provenance: iv.provenance,
@@ -514,11 +566,20 @@ function findAccessors(cls, iv) {
   const prop = iv.property || null;
   const wantGet = prop ? prop.getter : null;
   const wantSet = prop ? prop.setter : null;
+  const methods = cls.methods || [];
 
-  for (const m of (cls.methods || [])) {
+  if (wantGet || wantSet) {
+    for (const m of methods) {
+      if (!m.sel || m.addr == null) continue;
+      if (wantGet && m.sel === wantGet && !out.getter) out.getter = m;
+      if (wantSet && m.sel === wantSet && !out.setter) out.setter = m;
+      if ((!wantGet || out.getter) && (!wantSet || out.setter)) break;
+    }
+  }
+  if (out.getter && out.setter) return out;
+
+  for (const m of methods) {
     if (!m.sel || m.addr == null) continue;
-    if (wantGet && m.sel === wantGet && !out.getter) { out.getter = m; continue; }
-    if (wantSet && m.sel === wantSet && !out.setter) { out.setter = m; continue; }
     const kind = accessorKind(m.sel, iv.name) ||
       (prop ? accessorKind(m.sel, prop.name) : null);
     if (kind === 'getter' && !out.getter) out.getter = m;
@@ -553,7 +614,7 @@ function charge(o, n) {
   if (o.budget && o.budget.left != null) o.budget.left -= (n || 1);
 }
 
-async function verifyCandidate(c, goal, o, how) {
+async function verifyCandidate(c, goal, o, how, fields = o.fields) {
   const analyze = o.analyze;
   const program = o.program;
   if (!analyze) return;
@@ -566,8 +627,10 @@ async function verifyCandidate(c, goal, o, how) {
   };
 
   /* 1. アクセサ */
+  const analyzedAccessors = new Set();
   for (const [which, m] of [['getter', c.accessors.getter], ['setter', c.accessors.setter]]) {
     if (!m || m.addr == null || spent(o)) continue;
+    analyzedAccessors.add(m.addr.toString());
     charge(o);
     const model = await analyze(m.addr, endOf(m.addr));
     if (!model) continue;
@@ -580,8 +643,12 @@ async function verifyCandidate(c, goal, o, how) {
         offset: c.offset, size: v.size, exclusive: v.exclusive,
       }));
       // 実測した大きさが、表に書いてある大きさと合っているか
-      if (v.size && c.size && v.size === c.size) {
-        c.evidence.push(evidence('size-fits', 1, { size: v.size, measured: true }));
+      if (v.size && c.size && v.size === c.size &&
+          !isPointerFieldType(c.type) && typeFits(goal, c.type) !== 'conflict') {
+        const measured = evidence('size-fits', 1, { size: v.size, measured: true });
+        const existingIdx = c.evidence.findIndex((e) => e.code === 'size-fits');
+        if (existingIdx >= 0) c.evidence[existingIdx] = measured;
+        else c.evidence.push(measured);
       }
     }
     if (which === 'setter' && v.setter) {
@@ -598,8 +665,9 @@ async function verifyCandidate(c, goal, o, how) {
    *    アクセサがない（直接メンバ変数を使っている）クラスではこちらが決め手になる。
    */
   if (deep && (!c.verified || !c.rmwFound)) {
-    const methods = (c.context.info && c.context.info.info ? c.context.info.info.methods : null) ||
-      methodsOfClass(o.fields, c.className);
+    const methods = ((c.context.info && c.context.info.info ? c.context.info.info.methods : null) ||
+      methodsOfClass(fields, c.className))
+      .filter((m) => m && m.addr != null && !analyzedAccessors.has(m.addr.toString()));
     const pick = pickMethodsToRead(methods, goal, 3);
     for (const m of pick) {
       if (m.addr == null || spent(o)) continue;
@@ -655,8 +723,8 @@ export function pickMethodsToRead(methods, goal, n) {
     if (m.addr == null || !m.sel) continue;
     let score = 0;
     if (matchName(goal, m.sel)) score += 3;
-    if (/^(set|add|sub|inc|dec|update|apply|consume|gain|use|reset|init|recover|heal|damage|take|spend|earn)/i.test(m.sel)) score += 2;
-    if (/^(init|dealloc|description|copyWith|encodeWith|isEqual|hash)$/i.test(m.sel)) score -= 3;
+    if (/^(set|add|sub|inc|dec|update|apply|consume|gain|use|reset|recover|heal|damage|take|spend|earn)/i.test(m.sel)) score += 2;
+    if (/^(?:init(?:$|With|:)|copyWith|encodeWith|(?:dealloc|description|isEqual:?|hash)$)/i.test(m.sel)) score -= 3;
     scored.push({ m, score });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -667,10 +735,37 @@ export function pickMethodsToRead(methods, goal, n) {
    決まった値について、コード全体からその位置を触っている命令を集め、
    関数ごとにまとめる。同じクラスのメソッドの中にあるものが本命。 */
 
-async function collectChangeSites(top, o) {
-  const res = await o.scanAccess([{ offset: top.offset, size: top.size || 0 }]);
-  const list = (res && (res.get ? res.get(String(top.offset)) : res[String(top.offset)])) || [];
-  return groupSites(list, o.program, o.fields, top.className);
+function accessGroupKey(offset, size) {
+  const offKey = offset.toString();
+  const wanted = Number(size) || 0;
+  return wanted > 0 ? `${offKey}:${wanted}` : offKey;
+}
+
+function readAccessGroup(groups, offset, size) {
+  if (!groups) return null;
+  const offKey = offset.toString();
+  const wanted = Number(size) || 0;
+  const compKey = wanted > 0 ? `${offKey}:${wanted}` : offKey;
+  const hasKey = (k) => (groups.has ? groups.has(k) : Object.hasOwn(groups, k));
+  const getKey = (k) => (groups.get ? groups.get(k) : groups[k]);
+  if (hasKey(compKey)) {
+    const hit = getKey(compKey);
+    return Array.isArray(hit) ? hit : null;
+  }
+  if (compKey !== offKey && hasKey(offKey)) {
+    const hit = getKey(offKey);
+    if (!Array.isArray(hit)) return null;
+    if (wanted <= 0) return hit;
+    return hit.filter((site) => site?.size == null || site.size === wanted || (wanted > 8 && site.size === 8));
+  }
+  return null;
+}
+
+async function collectChangeSites(top, o, fields = o.fields) {
+  const req = [{ offset: top.offset, size: top.size || 0 }];
+  const res = o.signal ? await o.scanAccess(req, { signal: o.signal }) : await o.scanAccess(req);
+  const list = readAccessGroup(res, top.offset, top.size || 0) || [];
+  return groupSites(list, o.program, fields, top.className);
 }
 
 /**
@@ -763,9 +858,11 @@ export async function pinpointLocation(opts) {
   /* 1. 目的に関係する関数を読んで、触っている場所を集める */
   const byKey = new Map();
   let checked = 0;
-  for (const cand of (o.analyze ? ranked.slice(0, 8) : [])) {
+  const orderedRanked = ranked.filter((cand) => !(cand.vendor && vendorConflicts(goal.id, cand.vendor)));
+  const toAnalyze = o.analyze ? orderedRanked.slice(0, 8) : [];
+  for (const cand of toAnalyze) {
     if (cancelled() || spent(o)) break;
-    progress({ phase: 'verify-loc', done: checked, all: Math.min(8, ranked.length) });
+    progress({ phase: 'verify-loc', done: checked, all: toAnalyze.length });
     charge(o);
     const range = program ? program.functionRange(cand.addr) : null;
     let model = null;
@@ -773,16 +870,20 @@ export async function pinpointLocation(opts) {
     if (!model) continue;
     checked++;
 
+    const owner = o.fields ? o.fields.ownerOf(cand.addr) : null;
+    const ownerClass = owner ? owner.className : null;
     const goalStrings = (cand.strings || []).length;
-    const touched = [];
+    const rmwTouched = [];
     for (const u of findValueUpdates(model)) {
       const loc = u.location;
       // スタックの一時置き場は「アプリが持っている値」ではないので採らない
       if (loc.stack || loc.key == null) continue;
-      const key = loc.base + '@' + loc.disp.toString();
+      const locIdentity = loc.identity != null ? String(loc.identity) : (ownerClass || null);
+      const key = (locIdentity != null ? locIdentity + ':' : '') + loc.base + '@' + loc.disp.toString();
       if (!byKey.has(key)) {
         byKey.set(key, {
           key, kind: 'location',
+          className: ownerClass, identity: locIdentity,
           base: loc.base, offset: loc.disp, size: loc.size,
           functions: [], updates: [], compares: [],
           goalStringRefs: 0, evidence: [], verifications: [],
@@ -790,18 +891,20 @@ export async function pinpointLocation(opts) {
         });
       }
       const e = byKey.get(key);
-      touched.push(e);
       if (!e.functions.some((f) => f.addr === cand.addr)) {
         e.functions.push({ addr: cand.addr, name: cand.name || null, strings: goalStrings });
         if (goalStrings) e.goalStringRefs++;
       }
-      if (u.kind === 'read-modify-write' && e.updates.length < 4) e.updates.push(u);
+      if (u.kind === 'read-modify-write') {
+        if (e.updates.length < 4) e.updates.push(u);
+        rmwTouched.push(e);
+      }
     }
     // どの場所と比べているかまでは命令からは決められないので、
-    // 同じ関数の中で見つかった場所にだけ、しきい値の判定を添える。
-    if (touched.length) {
+    // 同じ関数の中で RMW が見つかった場所にだけ、しきい値の判定を添える。
+    if (rmwTouched.length) {
       const cmps = constantComparisons(model).slice(0, 4);
-      for (const e of new Set(touched)) {
+      for (const e of new Set(rmwTouched)) {
         for (const cmp of cmps) if (e.compares.length < 4) e.compares.push(cmp);
       }
     }
@@ -816,10 +919,12 @@ export async function pinpointLocation(opts) {
    */
   if (o.shapes && o.shapes.size) {
     for (const sh of shapesByGoal(o.shapes, goal.id, 8)) {
-      const key = 'shape@' + sh.offset;
+      const shIdentity = sh.identityKnown && sh.identity != null ? String(sh.identity) : null;
+      const key = shIdentity != null ? ('shape@' + shIdentity + '@' + sh.offset) : ('shape@' + sh.offset);
       if (byKey.has(key)) continue;
       byKey.set(key, {
         key, kind: 'location', fromShape: true,
+        className: null, identity: shIdentity,
         base: null, offset: BigInt(sh.offset), size: sh.size || 4,
         functions: [], updates: [], compares: [],
         goalStringRefs: 0, evidence: [], verifications: [],
@@ -836,14 +941,17 @@ export async function pinpointLocation(opts) {
 
   /* 2. コード全体で、同じ場所を触っている命令がいくつあるかを数える */
   let list = Array.from(byKey.values());
-  if (o.scanAccess) {
+  if (o.scanAccess && !cancelled()) {
     try {
-      const groups = await o.scanAccess(list.slice(0, 8).map((e) => ({
-        offset: e.offset, size: e.size || 0,
-      })));
+      const toScan = list.slice(0, 8);
+      const scannedKeys = new Set(toScan.map((e) => accessGroupKey(e.offset, e.size || 0)));
+      const req = toScan.map((e) => ({ offset: e.offset, size: e.size || 0 }));
+      const groups = o.signal ? await o.scanAccess(req, { signal: o.signal }) : await o.scanAccess(req);
       for (const e of list) {
-        const sites = (groups && (groups.get ? groups.get(e.offset.toString())
-          : groups[e.offset.toString()])) || [];
+        const key = accessGroupKey(e.offset, e.size || 0);
+        if (!scannedKeys.has(key)) continue;
+        const sites = readAccessGroup(groups, e.offset, e.size || 0);
+        if (sites == null) continue;
         e.siteCount = sites.length;
         e.sites = groupSites(sites, program, o.fields, null);
       }
@@ -861,7 +969,7 @@ export async function pinpointLocation(opts) {
    * 「0x1002f4aa0 の 5 命令がそれだ」というところまで持っていく。
    * 確かめられなかった候補は、確かめられなかったぶん点を下げる。
    */
-  await verifyShapes(list, o, progress, cancelled);
+  if (!cancelled()) await verifyShapes(list, o, progress, cancelled);
 
   /*
    * 2'''. 同じ場所を指している候補を 1 つにまとめる。
@@ -926,9 +1034,13 @@ export async function pinpointLocation(opts) {
          * 珍しさは測れるのだから、測った値を使う。
          */
         for (const c of sh.codes) {
-          const lr = SHAPE_CODES.has(c.code)
-            ? rarityLR(o.shapes.size, shapeMatchCount(o.shapes, goal.id))
-            : null;
+          let lr = null;
+          if (SHAPE_CODES.has(c.code)) {
+            const matched = shapeMatchCount(o.shapes, goal.id);
+            if (matched <= 0) continue;
+            lr = rarityLR(o.shapes.size, matched);
+            if (!(lr > 0)) continue;
+          }
           e.evidence.push(evidence(c.code, c.strength, c.detail, lr));
         }
       }
@@ -1017,7 +1129,7 @@ export async function pinpointLocation(opts) {
   const result = decide(list, { maxVerdict: VERDICT.LIKELY });
   for (const e of list) {
     e.probability = e.fusion.probability;
-    e.stars = starsOf(e.fusion.probability, null);
+    e.stars = starsOf(e.fusion.probability, e === result.top ? result.verdict : null);
     e.why = explain(e.fusion);
   }
 
@@ -1029,7 +1141,7 @@ export async function pinpointLocation(opts) {
     margin: result.margin,
     marginRatio: result.marginRatio,
     missing: result.missing,
-    candidates: list.slice(0, o.limit || 10),
+    candidates: list.slice(0, resultLimit(o.limit, 10)),
     universe: list.length,
     checked,
     changeSites: result.top ? (result.top.sites || []) : [],
@@ -1049,6 +1161,49 @@ export async function pinpointLocation(opts) {
  *   ranked  rank.js の候補（あれば再利用する）
  *   field   決まった値（あれば、それを触っているかで決め手にする）
  */
+function goalShapesFor(o, goal) {
+  if (!o || !goal) return [];
+  if (Array.isArray(o.shapesByGoal)) return o.shapesByGoal;
+  if (o.shapesByGoal instanceof Map) return o.shapesByGoal.get(goal.id) || [];
+  if (typeof o.shapesByGoal === 'function') return o.shapesByGoal(o.shapes, goal.id, 8) || [];
+  if (o.shapesByGoal && typeof o.shapesByGoal === 'object' && Array.isArray(o.shapesByGoal[goal.id])) {
+    return o.shapesByGoal[goal.id];
+  }
+  if (o.shapes && o.shapes.size) return shapesByGoal(o.shapes, goal.id, 8);
+  return [];
+}
+
+function collectShapeSeedFunctions(o, goal) {
+  const byKey = new Map();
+  const list = goalShapesFor(o, goal);
+  for (const sh of list.slice(0, 8)) {
+    if (!sh) continue;
+    const sites = Array.isArray(sh.sites) ? sh.sites : [];
+    for (const s of sites) {
+      const siteAddr = typeof s === 'object' && s != null ? s.addr : s;
+      if (siteAddr == null) continue;
+      let addr;
+      try { addr = typeof siteAddr === 'bigint' ? siteAddr : BigInt(siteAddr); } catch { continue; }
+      const range = o.program?.functionRange?.(addr);
+      const start = range?.start ?? o.program?.functionStartOf?.(addr) ?? o.symbols?.functionStartAt?.(addr) ?? addr;
+      let fnAddr;
+      try { fnAddr = typeof start === 'bigint' ? start : BigInt(start); } catch { continue; }
+      const key = fnAddr.toString();
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.sites++;
+        if ((sh.score ?? 0) > existing.score) {
+          existing.score = sh.score ?? existing.score;
+          existing.offset = sh.offset ?? existing.offset;
+        }
+      } else if (byKey.size < 12) {
+        byKey.set(key, { addr: fnAddr, offset: sh.offset ?? null, score: sh.score ?? 0.7, sites: 1 });
+      }
+    }
+  }
+  return byKey;
+}
+
 export async function pinpointFunction(opts) {
   const o = opts || {};
   const goal = o.goal;
@@ -1056,7 +1211,8 @@ export async function pinpointFunction(opts) {
   const progress = o.onProgress || (() => {});
   const cancelled = o.isCancelled || (() => false);
 
-  if (!goal || !ranked.length) {
+  const shapeSeeds = goal ? collectShapeSeedFunctions(o, goal) : new Map();
+  if (!goal || (!ranked.length && !shapeSeeds.size)) {
     return { goal, kind: 'function', verdict: VERDICT.NONE, top: null, candidates: [], checked: 0 };
   }
 
@@ -1064,9 +1220,65 @@ export async function pinpointFunction(opts) {
   const universe = Math.max(50, o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 2000);
 
   const candidates = ranked.slice(0, 40).map((c) => buildFunctionCandidate(c, goal, o));
+  const candByKey = new Map(candidates.map((c) => [c.key, c]));
+
+  // Attach shape-site seeds (works even when ranked is empty / zero-string binaries).
+  for (const [key, seed] of shapeSeeds.entries()) {
+    const strength = Math.max(0.4, Math.min(1, seed.score || 0.7));
+    const evItem = evidence('fn-shape-site', strength, {
+      offset: seed.offset, goal: goal.id, sites: seed.sites,
+    });
+    const existing = candByKey.get(key);
+    if (existing) {
+      if (!existing.evidence.some((e) => e.code === 'fn-shape-site')) existing.evidence.push(evItem);
+    } else {
+      const name = typeof o.symbols?.nameAt === 'function' ? (o.symbols.nameAt(seed.addr) || null) : null;
+      const cand = buildFunctionCandidate({ addr: seed.addr, name, reasons: [], strings: [] }, goal, o);
+      cand.evidence.push(evItem);
+      candidates.push(cand);
+      candByKey.set(key, cand);
+    }
+  }
+
   for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: universe });
   candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
   let result = decide(candidates);
+
+  // 1-hop stripped caller RMW expansion for top string-seeded candidates (max 2/seed, max 6 total).
+  const expandedCallers = [];
+  if (o.analyze && o.program && typeof o.program.callersOf === 'function' && goal.expects?.store) {
+    const stringSeeds = candidates.filter((c) => (c.strings || []).length > 0).slice(0, 4);
+    for (const seed of stringSeeds) {
+      if (expandedCallers.length >= 6) break;
+      let addedForSeed = 0;
+      const callers = o.program.callersOf(seed.addr, 8) || [];
+      for (const caller of callers) {
+        if (addedForSeed >= 2 || expandedCallers.length >= 6) break;
+        const rawAddr = typeof caller === 'object' && caller != null ? caller.addr : caller;
+        if (rawAddr == null) continue;
+        let callerAddr;
+        try { callerAddr = typeof rawAddr === 'bigint' ? rawAddr : BigInt(rawAddr); } catch { continue; }
+        if (callerAddr === seed.addr) continue;
+        const callerKey = callerAddr.toString();
+        if (candByKey.has(callerKey)) continue;
+        const callerName = typeof o.symbols?.nameAt === 'function' ? (o.symbols.nameAt(callerAddr) || null) : null;
+        if (callerName) continue;
+        const cand = buildFunctionCandidate({ addr: callerAddr, name: null, reasons: [], strings: [] }, goal, o);
+        cand.evidence.push(evidence('fn-callee-match', 0.45, {
+          to: seed.addr, toName: seed.name || null, site: caller?.site ?? null, via: '1-hop-caller',
+        }));
+        cand.fusion = fuse(cand.evidence, { candidates: universe });
+        candidates.push(cand);
+        candByKey.set(callerKey, cand);
+        expandedCallers.push(cand);
+        addedForSeed++;
+      }
+    }
+    if (expandedCallers.length) {
+      candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+      result = decide(candidates);
+    }
+  }
 
   let checked = 0;
   if (o.analyze) {
@@ -1076,17 +1288,41 @@ export async function pinpointFunction(opts) {
       if (cancelled() || spent(o)) break;
       const targets = candidates.filter((c) => !seen.has(c.key)).slice(0, VERIFY_ROUND);
       if (!targets.length) break;
+      const dirty = [];
       for (const c of targets) {
         if (cancelled() || spent(o)) break;
         seen.add(c.key);
         progress({ phase: 'verify-fn', done: checked, all: checked + targets.length });
         charge(o);
+        const beforeLen = c.evidence.length;
         try { await verifyFunctionCandidate(c, goal, o); } catch { /* 読めなくても続ける */ }
+        if (c.evidence.length !== beforeLen) dirty.push(c);
         checked++;
       }
-      for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: universe });
-      candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
-      result = decide(candidates);
+      if (dirty.length) {
+        for (const c of dirty) c.fusion = fuse(c.evidence, { candidates: universe });
+        candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+        result = decide(candidates);
+      }
+    }
+    if (expandedCallers.length && result.verdict !== VERDICT.CONFIRMED && !cancelled() && !spent(o)) {
+      const pendingCallers = expandedCallers.filter((c) => !seen.has(c.key));
+      const dirty = [];
+      for (const c of pendingCallers) {
+        if (cancelled() || spent(o)) break;
+        seen.add(c.key);
+        progress({ phase: 'verify-fn', done: checked, all: checked + pendingCallers.length });
+        charge(o);
+        const beforeLen = c.evidence.length;
+        try { await verifyFunctionCandidate(c, goal, o); } catch { /* 読めなくても続ける */ }
+        if (c.evidence.length !== beforeLen) dirty.push(c);
+        checked++;
+      }
+      if (dirty.length) {
+        for (const c of dirty) c.fusion = fuse(c.evidence, { candidates: universe });
+        candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+        result = decide(candidates);
+      }
     }
   }
 
@@ -1117,7 +1353,7 @@ export async function pinpointFunction(opts) {
     marginRatio: result.marginRatio,
     missing: result.missing,
     tiedVerified,
-    candidates: candidates.slice(0, o.limit || 12),
+    candidates: candidates.slice(0, resultLimit(o.limit, 12)),
     universe, checked,
   };
 }
@@ -1199,13 +1435,41 @@ async function verifyShapes(list, o, progress, cancelled) {
  * 読んだ命令と比較を持っているので、そちらを台にして、ふるまい側の
  * 裏取り（proof / shape / 走査で数えた場所）を足し込む。
  */
+function locationIdentityOf(e) {
+  if (!e) return null;
+  if (e.className) return String(e.className);
+  if (e.identity != null) return String(e.identity);
+  if (e.shape && e.shape.identityKnown && e.shape.identity != null) return String(e.shape.identity);
+  return null;
+}
+
 function mergeByOffset(list) {
   const byOffset = new Map();
   const out = [];
   for (const e of list) {
     const key = e.offset != null ? e.offset.toString() : e.key;
-    const hit = byOffset.get(key);
-    if (!hit) { byOffset.set(key, e); out.push(e); continue; }
+    const buckets = byOffset.get(key);
+    const eId = locationIdentityOf(e);
+    let hit = null;
+    if (buckets) {
+      if (eId != null) {
+        hit = buckets.find((b) => locationIdentityOf(b) === eId) ||
+          buckets.find((b) => locationIdentityOf(b) == null) ||
+          null;
+      } else if (buckets.length === 1) {
+        hit = buckets[0];
+      } else {
+        hit = buckets.find((b) => locationIdentityOf(b) == null) || null;
+      }
+    }
+    if (!hit) {
+      if (buckets) buckets.push(e);
+      else byOffset.set(key, [e]);
+      out.push(e);
+      continue;
+    }
+    if (!hit.className && e.className) hit.className = e.className;
+    if (hit.identity == null && e.identity != null) hit.identity = e.identity;
     // 大きさは、実際に開いて数えたほうを優先する（見出しと裏取りを食い違わせない）
     if (e.sizeVerified && !hit.sizeVerified) { hit.size = e.size; hit.sizeVerified = true; }
     else if (!hit.size && e.size) hit.size = e.size;
@@ -1219,11 +1483,13 @@ function mergeByOffset(list) {
     } else {
       hit.updates = hit.updates.concat(e.updates);
       hit.compares = hit.compares.concat(e.compares);
-      hit.goalStringRefs += e.goalStringRefs;
     }
     for (const f of e.functions) {
-      if (!hit.functions.some((x) => x.addr === f.addr)) hit.functions.push(f);
+      const existing = hit.functions.find((x) => x.addr === f.addr);
+      if (!existing) hit.functions.push(f);
+      else if ((f.strings || 0) > (existing.strings || 0)) existing.strings = f.strings;
     }
+    hit.goalStringRefs = hit.functions.filter((f) => (f.strings || 0) > 0).length;
     if ((e.siteCount || 0) > (hit.siteCount || 0)) {
       hit.siteCount = e.siteCount;
       if (e.sites && e.sites.length) hit.sites = e.sites;
@@ -1243,7 +1509,7 @@ const shapeMatchCache = new WeakMap();
 function shapeMatchCount(shapes, goalId) {
   let per = shapeMatchCache.get(shapes);
   if (!per) { per = new Map(); shapeMatchCache.set(shapes, per); }
-  if (!per.has(goalId)) per.set(goalId, Math.max(1, shapesByGoal(shapes, goalId, 64).length));
+  if (!per.has(goalId)) per.set(goalId, shapesByGoal(shapes, goalId, 64).length);
   return per.get(goalId);
 }
 
@@ -1254,11 +1520,12 @@ const REASON_TO_EVIDENCE = {
   'name-match': 'fn-name-match',
   'callee-name': 'fn-callee-match',
   'caller-name': 'fn-caller-match',
-  'calls-match': 'fn-caller-match',
-  'called-by-match': 'fn-callee-match',
+  'calls-match': 'fn-callee-match',
+  'called-by-match': 'fn-caller-match',
   numeric: 'fn-numeric',
   popular: 'fn-called-often',
   'size-penalty': 'fn-too-large',
+  vendor: 'third-party-class',
 };
 
 function buildFunctionCandidate(c, goal, o) {
@@ -1266,8 +1533,16 @@ function buildFunctionCandidate(c, goal, o) {
   const owner = o.fields ? o.fields.ownerOf(c.addr) : null;
 
   for (const r of c.reasons || []) {
-    const code = REASON_TO_EVIDENCE[r.code];
+    let code = Object.hasOwn(REASON_TO_EVIDENCE, r.code) ? REASON_TO_EVIDENCE[r.code] : null;
     if (!code) continue;
+    if (r.code === 'vendor') {
+      code = c.vendor && c.vendor.confidence && c.vendor.confidence !== 'high'
+        ? 'library-prefix-class'
+        : 'third-party-class';
+      ev.push(evidence(code, 1, r.detail));
+      continue;
+    }
+    if (code === 'fn-numeric' && ev.some((e) => e.code === 'fn-numeric')) continue;
     // 元の配点を 0..1 の濃さに直す（配点の最大で割る）
     const strength = Math.max(0.2, Math.min(1, Math.abs(r.points) / 25));
     ev.push(evidence(code, strength, r.detail));
@@ -1284,12 +1559,14 @@ function buildFunctionCandidate(c, goal, o) {
    *
    * 別々の文言はそれぞれ独立した観測として数える（同じ文言の重複は数えない）。
    */
-  const total = o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 0;
-  if (total > 0) {
+  const fnRole = c.name ? numericSymbolRole(goal, c.name) : 'neutral';
+  const hasVendorConflict = !!(c.vendor && vendorConflicts(goal.id, c.vendor));
+  const total = Math.max(50, o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 2000);
+  if (total > 0 && fnRole !== 'non-value' && !hasVendorConflict) {
     const seenText = new Set();
     const named = [];
     for (const s of c.strings || []) {
-      if (!s || s.users == null || seenText.has(s.text)) continue;
+      if (!s || s.users == null || s.users <= 0 || seenText.has(s.text)) continue;
       seenText.add(s.text);
       const lr = exclusiveLR(total, s.users, s.score || 0, s.text);
       if (lr <= 1) continue;
@@ -1308,10 +1585,15 @@ function buildFunctionCandidate(c, goal, o) {
     const cm = matchText(goal, owner.className);
     if (cm) ev.push(evidence('fn-owner-class', cm.score, { className: owner.className }));
   }
-  if (c.name && matchName(goal, c.name)) {
-    const norm = normalizeFieldName(c.name.replace(/^[-+]\[[^\s]+\s|\]$/g, ''));
-    const m = matchField(goal, norm);
-    if (m && m.exact) ev.push(evidence('fn-name-exact', 1, { name: c.name }));
+  if (c.name) {
+    const leaf = extractCallableLeaf(c.name).leaf;
+    if (matchName(goal, c.name) || (leaf && matchName(goal, leaf))) {
+      const norm = normalizeFieldName(leaf || c.name.replace(/^[-+]\[[^\s]+\s|\]$/g, ''));
+      const m = matchField(goal, norm);
+      if ((m && m.exact) || numericSymbolRole(goal, c.name) === 'value') {
+        ev.push(evidence('fn-name-exact', 1, { name: c.name }));
+      }
+    }
   }
 
   return {
@@ -1340,12 +1622,284 @@ function buildFunctionCandidate(c, goal, o) {
  */
 const FORMULA_MIN_CONST = 10;
 
-function verifyFormula(c, insns) {
+const FORMULA_ASSET_EXT_RE = /(?:^|[\s"'(\[])(?:[\w.%/-]+\/)?[\w.%-]+\.(?:png|jpe?g|webp|gif|svg|bmp|tga|dds|pvr|astc|ktx|mp3|wav|ogg|m4a|aac|mp4|mov|json|xml|plist|yaml|yml|ini|cfg|csv|tsv|txt|bin|dat|db|sqlite|sql|lua|js|ts|py|rb|sh|cpp|cxx|cc|c|h|hpp|hh|mm|m|swift|kt|java|cs|rs|go|dll|so|dylib|a|o|obj|exe|apk|ipa|zip|gz|tar|pak|bundle|asset|prefab|unity|fbx|ttf|otf|woff2?|fnt|shader|glsl|metal|hlsl|vert|frag|html?|css)(?:$|\b|[\s"')\]:])/i;
+const FORMULA_RTTI_RE = /(?:^|\b)_?Z(?:N\d+[A-Za-z_]|K\d+|St|T[A-Z])/;
+const FORMULA_LOG_TAG_RE = /^\s*(?:\[[^\]]{1,40}\]\s*|<[A-Za-z0-9_.:-]{1,32}>\s*|(?:ERROR|WARN(?:ING)?|INFO|DEBUG|TRACE|FATAL|LOG|ASSERT(?:ION)?)\s*[:\[])/i;
+const FORMULA_SOURCE_LINE_RE = /\.(?:c|cc|cpp|cxx|h|hpp|m|mm|swift|java|kt|cs|rs|go):\d+/i;
+const FORMULA_CXX_SIG_RE = /(?:\b[A-Za-z_]\w*::[A-Za-z_~]\w*\s*\(|\b(?:const\s+)?(?:void|bool|int|float|double|char|size_t|u?int\d+_t|auto|std::\w+)\s+[A-Za-z_]\w*::|::[A-Za-z_]\w*<[^>]*>)/;
+const FORMULA_SYNTAX_RE = /(?:[+×÷*=<≥≤>]|(?:\d|\)|%[diuoxXfFeEgG])\s*[-\/]\s*(?:\d|\(|%[A-Za-z])|%[-+0 #]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|z|t|j|L)?[diuoxXfFeEgG]|\d+\s*%|\b(?:min|max|clamp|floor|ceil|round|mod)\s*\()/i;
+const FORMULA_INSN_RE = /^(?:add|adds|sub|subs|cmp|cmn|ccmp|ccmn|fcmp|fadd|fsub|fmul|fdiv|mov|movz|movn|movk|movzx|movsx|movsxd|fmov|tst|test|imul|mul|idiv|div|inc|dec|lea|addss|subss|mulss|divss|addsd|subsd|mulsd|divsd|comiss|comisd|ucomiss|ucomisd)$/i;
+const NUMERIC_MUL_DIV_RE = /^(mul|imul|madd|msub|sdiv|udiv|idiv|div|fmul|fdiv|mulss|divss|mulsd|divsd)$/i;
+const NUMERIC_ADD_SUB_RE = /^(add|adds|sub|subs|inc|dec|fadd|fsub|addss|subss|addsd|subsd)$/i;
+const CTRL_BOUNDARY_RE = /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retq$|retaa$|retab$|jmp$|jmpq$|j[a-z]{1,4}$|call$|callq$)/i;
+
+function isFormulaString(text) {
+  if (typeof text !== 'string') return false;
+  const s = text.trim();
+  if (!s) return false;
+  if (FORMULA_RTTI_RE.test(s)) return false;
+  if (FORMULA_LOG_TAG_RE.test(s)) return false;
+  if (FORMULA_SOURCE_LINE_RE.test(s)) return false;
+  if (FORMULA_ASSET_EXT_RE.test(s)) return false;
+  if (FORMULA_CXX_SIG_RE.test(s)) return false;
+  return FORMULA_SYNTAX_RE.test(s);
+}
+
+function regIdentity(op) {
+  if (!op) return null;
+  if (typeof op === 'string') {
+    const s = op.trim().toLowerCase();
+    if (s === 'wzr' || s === 'xzr') return 'zr';
+    if (s === 'sp' || s === 'wsp') return 'sp';
+    if (s === 'fp' || s === 'x29' || s === 'w29') return 'fp';
+    const m = /^[wx](\d+)$/.exec(s);
+    if (m) return 'x' + m[1];
+    if (s === 'rsp' || s === 'esp') return 'sp';
+    if (s === 'rbp' || s === 'ebp') return 'fp';
+    const x86 = /^(?:[re]?([abcd])x|([abcd])[hl]|[re]?(si|di)l?|r(8|9|1[0-5])[dwb]?|xmm(\d+))$/.exec(s);
+    if (x86) {
+      if (x86[1] || x86[2]) return 'r' + (x86[1] || x86[2]) + 'x';
+      if (x86[3]) return 'r' + x86[3];
+      if (x86[4]) return 'r' + x86[4];
+      if (x86[5]) return 'xmm' + x86[5];
+    }
+    return null;
+  }
+  if (op.k === 'reg') {
+    const name = String(op.text || op.name || '').trim().toLowerCase();
+    if (op.cls === 'zr' || name === 'wzr' || name === 'xzr') return 'zr';
+    if (op.cls === 'sp' || name === 'sp' || name === 'wsp') return 'sp';
+    if ((op.cls === 'gp' && op.num === 29) || name === 'fp' || name === 'x29' || name === 'w29') return 'fp';
+    if (op.cls === 'gp' && op.num != null) return 'x' + op.num;
+    if (name) return regIdentity(name);
+  }
+  return null;
+}
+
+function isImmOperand(op) {
+  if (!op) return false;
+  if (typeof op === 'string') {
+    const s = op.trim();
+    return s.startsWith('#') || /pageoff/i.test(s) || /^-?(?:0x[0-9a-f]+|\d+)$/i.test(s);
+  }
+  return op.k === 'imm';
+}
+
+function operandListOf(insn) {
+  if (Array.isArray(insn?.ops) && insn.ops.length) return insn.ops;
+  if (typeof insn?.operands === 'string' && insn.operands.trim()) {
+    return insn.operands.split(',').map((s) => s.trim());
+  }
+  return [];
+}
+
+function countPureNumericArithmetic(insns) {
+  let count = 0;
+  const adrpRegs = new Set();
+  let prevWasAdrp = false;
+  let prevAdrpReg = null;
+
+  for (const insn of insns || []) {
+    const mn = String(insn?.mnemonic || '').trim();
+    if (!mn) {
+      prevWasAdrp = false;
+      prevAdrpReg = null;
+      continue;
+    }
+    const ops = operandListOf(insn);
+    const dstKey = regIdentity(ops[0]);
+
+    if (/^adrp$/i.test(mn)) {
+      if (dstKey && dstKey !== 'zr') adrpRegs.add(dstKey);
+      prevWasAdrp = true;
+      prevAdrpReg = dstKey;
+      continue;
+    }
+
+    if (NUMERIC_MUL_DIV_RE.test(mn)) {
+      count++;
+      if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+      prevWasAdrp = false;
+      prevAdrpReg = null;
+      continue;
+    }
+
+    if (NUMERIC_ADD_SUB_RE.test(mn)) {
+      if (/^f(?:add|sub)$/i.test(mn)) {
+        count++;
+      } else {
+        const src1Key = regIdentity(ops[1]);
+        const src2Key = regIdentity(ops[2]);
+        const isZeroDst = dstKey === 'zr';
+        const isStackOrFp = dstKey === 'sp' || dstKey === 'fp' ||
+          src1Key === 'sp' || src1Key === 'fp' ||
+          src2Key === 'sp' || src2Key === 'fp';
+        const isAdrpPageAdd = /^add$/i.test(mn) &&
+          isImmOperand(ops[2]) &&
+          ((src1Key && adrpRegs.has(src1Key)) || (prevWasAdrp && (!prevAdrpReg || prevAdrpReg === src1Key)));
+        if (!isZeroDst && !isStackOrFp && !isAdrpPageAdd) {
+          count++;
+        }
+      }
+      if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+      prevWasAdrp = false;
+      prevAdrpReg = null;
+      continue;
+    }
+
+    if (CTRL_BOUNDARY_RE.test(mn)) {
+      adrpRegs.clear();
+    } else {
+      if (Array.isArray(insn?.writes)) {
+        for (const w of insn.writes) {
+          const wk = regIdentity(w);
+          if (wk) adrpRegs.delete(wk);
+        }
+      }
+      if (!insn?.memory || insn.memory.kind !== 'store') {
+        if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+      }
+    }
+    prevWasAdrp = false;
+    prevAdrpReg = null;
+  }
+  return count;
+}
+
+const RMW_STACK_REGS = new Set(['sp', 'fp', 'x29', 'w29', 'rsp', 'rbp', 'esp', 'ebp', 'rip', 'eip']);
+const RMW_LOAD_RE = /^(?:ldr|ldur|ldrsw|ldrh|ldrb|ldursw|mov|movsx|movsxd|movzx|movss|movsd)$/i;
+const RMW_STORE_RE = /^(?:str|stur|strh|strb|mov|movss|movsd)$/i;
+const RMW_DIRECT_MEM_OP_RE = /^(?:add|sub|adc|sbb|inc|dec)$/i;
+const RMW_SUB_RE = /^(?:sub|subs|fsub|subss|subsd|dec|sbb)$/i;
+const RMW_ADD_RE = /^(?:add|adds|fadd|addss|addsd|inc|adc)$/i;
+const RMW_CLAMP_RE = /^(?:cmp|cmn|fcmp|csel|csinc|csinv|csneg|fmax|fmin|fmaxnm|fminnm|cmov\w+|b\.(?:le|lt|ge|gt|ls|lo|hi|hs|eq|ne)|cbz|cbnz|tbz|tbnz|j(?:le|l|ge|g|be|b|ae|a|s|ns|e|ne))$/i;
+const RMW_CALL_RE = /^(?:bl|blr|blraa|blrab|call|callq)$/i;
+
+function parseFieldMemRef(insn) {
+  if (insn?.memory && !insn.memory.stack && insn.memory.base) {
+    const base = String(insn.memory.base).toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    const rawOff = insn.memory.disp ?? insn.memory.offset;
+    const off = rawOff != null ? String(rawOff) : '0';
+    return { base, offset: off, kind: insn.memory.kind || null };
+  }
+  const ops = String(insn?.operands || insn?.ops || '');
+  const mArm = /\[([xw]\d+|sp|fp)(?:,\s*#(-?0x[0-9a-f]+|-?\d+))?\]/i.exec(ops);
+  if (mArm) {
+    const base = mArm[1].toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    return { base, offset: (mArm[2] || '0').toLowerCase(), kind: null };
+  }
+  const mX86 = /\[([re]?(?:ax|bx|cx|dx|si|di|bp|sp)|r(?:[89]|1[0-5])d?)(?:\s*([+-])\s*(0x[0-9a-f]+|\d+))?\]/i.exec(ops);
+  if (mX86) {
+    const base = mX86[1].toLowerCase();
+    if (RMW_STACK_REGS.has(base)) return null;
+    const sign = mX86[2] === '-' ? '-' : '';
+    const off = mX86[3] ? `${sign}${mX86[3].toLowerCase()}` : '0';
+    return { base, offset: off, kind: null };
+  }
+  return null;
+}
+
+/**
+ * General-purpose Read-Modify-Write (+ clamp/bounds-check) field detector for
+ * ARM64 and x86-64 instruction streams. Excludes stack/frame slots.
+ */
+export function detectFieldRmwPatterns(insns) {
+  const list = Array.isArray(insns) ? insns : [];
+  const loads = new Map();
+  const fields = [];
+  let subRmwCount = 0;
+  let addRmwCount = 0;
+  let clampedRmwCount = 0;
+
+  for (let i = 0; i < list.length; i++) {
+    const insn = list[i];
+    const mn = String(insn?.mnemonic || insn?.mn || '').trim().toLowerCase();
+    if (!mn) continue;
+    if (RMW_CALL_RE.test(mn)) { loads.clear(); continue; }
+    const opsText = String(insn?.operands || insn?.ops || '').trim();
+    const firstComma = opsText.indexOf(',');
+    const dstOp = (firstComma >= 0 ? opsText.slice(0, firstComma) : opsText).trim();
+    const mem = parseFieldMemRef(insn);
+    const dstIsMem = dstOp.includes('[');
+
+    if (mem && RMW_DIRECT_MEM_OP_RE.test(mn) && dstIsMem) {
+      const hasSub = RMW_SUB_RE.test(mn);
+      const hasAdd = RMW_ADD_RE.test(mn);
+      let clamped = false;
+      for (let k = i + 1; k < Math.min(list.length, i + 5); k++) {
+        const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+        if (RMW_CLAMP_RE.test(km)) { clamped = true; break; }
+      }
+      if (hasSub) subRmwCount++; else if (hasAdd) addRmwCount++;
+      if (clamped) clampedRmwCount++;
+      fields.push({
+        base: mem.base, offset: mem.offset, kind: hasSub ? 'sub' : 'add', clamped,
+        loadAddr: insn.address ?? insn.addr ?? null,
+        storeAddr: insn.address ?? insn.addr ?? null,
+      });
+      continue;
+    }
+
+    if (mem) {
+      const key = `${mem.base}:${mem.offset}`;
+      const isStore = mem.kind === 'store'
+        || (RMW_STORE_RE.test(mn) && (mn.startsWith('st') || dstIsMem));
+      const isLoad = !isStore && (mem.kind === 'load' || RMW_LOAD_RE.test(mn));
+      if (isLoad) {
+        loads.set(key, { idx: i, addr: insn.address ?? insn.addr ?? null });
+        continue;
+      }
+      if (isStore) {
+        const prev = loads.get(key);
+        if (prev && i - prev.idx <= 16) {
+          let hasSub = false, hasAdd = false, clamped = false;
+          for (let k = prev.idx + 1; k < i; k++) {
+            const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+            if (RMW_SUB_RE.test(km)) hasSub = true;
+            if (RMW_ADD_RE.test(km)) hasAdd = true;
+            if (RMW_CLAMP_RE.test(km)) clamped = true;
+          }
+          if (hasSub || hasAdd) {
+            if (!clamped) {
+              for (let k = i + 1; k < Math.min(list.length, i + 4); k++) {
+                const km = String(list[k]?.mnemonic || list[k]?.mn || '').trim().toLowerCase();
+                if (RMW_CLAMP_RE.test(km)) { clamped = true; break; }
+              }
+            }
+            if (hasSub) subRmwCount++; else addRmwCount++;
+            if (clamped) clampedRmwCount++;
+            fields.push({
+              base: mem.base, offset: mem.offset, kind: hasSub ? 'sub' : 'add', clamped,
+              loadAddr: prev.addr,
+              storeAddr: insn.address ?? insn.addr ?? null,
+            });
+            loads.delete(key);
+          }
+        }
+        continue;
+      }
+    }
+
+    if (!dstIsMem && dstOp) {
+      const dstBase = dstOp.toLowerCase();
+      for (const key of loads.keys()) {
+        if (key.startsWith(`${dstBase}:`)) loads.delete(key);
+      }
+    }
+  }
+  return { rmwCount: fields.length, subRmwCount, addRmwCount, clampedRmwCount, fields };
+}
+
+function verifyFormula(c, insns, goal) {
+  if (!goal?.expects?.numeric) return null;
   const wanted = new Map();          // 定数 → それを書いている文言
   for (const s of c.strings || []) {
     if (!s || !s.text || s.users == null || s.users > 2) continue;
-    for (const m of String(s.text).matchAll(/\d+/g)) {
-      const v = Number(m[0]);
+    if (!isFormulaString(s.text)) continue;
+    for (const m of String(s.text).matchAll(/(?<![A-Za-z0-9_.])(\d+)(?![A-Za-z0-9_]|\.\d)/g)) {
+      const v = Number(m[1]);
       if (!(v >= FORMULA_MIN_CONST) || !Number.isSafeInteger(v)) continue;
       if (!wanted.has(v)) wanted.set(v, s.text);
     }
@@ -1353,13 +1907,48 @@ function verifyFormula(c, insns) {
   if (!wanted.size) return null;
 
   const seen = new Map();
-  for (const i of insns) {
-    for (const op of i.ops || []) {
-      if (!op || op.k !== 'imm') continue;
+  const adrpRegs = new Set();
+  for (const i of insns || []) {
+    const mn = String(i?.mnemonic || '').trim();
+    const ops = operandListOf(i);
+    const dstKey = regIdentity(ops[0]);
+    if (/^adrp$/i.test(mn)) {
+      if (dstKey && dstKey !== 'zr') adrpRegs.add(dstKey);
+      continue;
+    }
+    if (i?.memory || !FORMULA_INSN_RE.test(mn)) {
+      if (CTRL_BOUNDARY_RE.test(mn)) adrpRegs.clear();
+      else if (dstKey && dstKey !== 'zr' && (!i?.memory || i.memory.kind !== 'store')) adrpRegs.delete(dstKey);
+      continue;
+    }
+    if (/^(?:add|adds|sub|subs)$/i.test(mn)) {
+      const src1Key = regIdentity(ops[1]);
+      if (dstKey === 'sp' || dstKey === 'fp' || src1Key === 'sp' || src1Key === 'fp') {
+        if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+        continue;
+      }
+      if (/^add$/i.test(mn) && src1Key && adrpRegs.has(src1Key)) {
+        if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+        continue;
+      }
+    }
+    if (/^movn$/i.test(mn)) {
+      if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+      continue;
+    }
+    const rawOps = Array.isArray(i.ops) ? i.ops : [];
+    const maxImmIdx = /^(?:movk|movz|ccmp|ccmn)$/i.test(mn)
+      ? 1
+      : (/^(?:add|adds|sub|subs)$/i.test(mn) ? 2 : rawOps.length - 1);
+    for (let idx = 0; idx < rawOps.length; idx++) {
+      if (idx > maxImmIdx) break;
+      const op = rawOps[idx];
+      if (!op || op.k !== 'imm' || op.shift || op.kind === 'shift') continue;
       const v = Number(op.value);
       if (!wanted.has(v)) continue;
       seen.set(v, (seen.get(v) || 0) + 1);
     }
+    if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
   }
   if (!seen.size) return null;
 
@@ -1384,7 +1973,12 @@ async function verifyFunctionCandidate(c, goal, o) {
   c.instructions = (model.instructions || []).length;
 
   const field = o.field || null;
-  if (field && field.source !== 'cxx') {
+  const ownerMismatch = !!(
+    field && c.owner && c.owner.className && field.className &&
+    c.owner.className !== field.className &&
+    !isRelated(o.fields, c.owner.className, field.className)
+  );
+  if (field && field.source !== 'cxx' && !ownerMismatch) {
     const use = verifyFunctionHandlesField(model, BigInt(field.offset));
     if (use.touches) {
       c.evidence.push(evidence(use.writes ? 'fn-writes-field' : 'fn-touches-field', 1, {
@@ -1399,25 +1993,108 @@ async function verifyFunctionCandidate(c, goal, o) {
   /* 目的が期待している命令の形が、本当にあるか（統計ではなく実物で） */
   const expects = goal.expects || {};
   const insns = model.instructions || [];
-  if (expects.store) {
-    const { set } = selfRegisters(model);
+  if (!field && expects.store) {
+    let set = new Set(['x0', 'rdi', 'rcx']);
+    try { const sr = selfRegisters(model); if (sr?.set) set = sr.set; } catch { /* lightweight model */ }
     const stores = insns.filter((i) => i.memory && i.memory.kind === 'store' &&
       !i.memory.stack && set.has(i.memory.base));
     if (stores.length) {
-      c.evidence.push(evidence('fn-writes-field', 0.55, { n: stores.length, self: true }));
-      c.verified = true;
+      c.evidence.push(evidence('fn-store-observed', 0.55, { n: stores.length, self: true }));
     }
   }
-  if (!field && expects.numeric) {
-    const use = insns.filter((i) => /^(mul|madd|msub|sdiv|udiv|fmul|fdiv)/i.test(i.mnemonic || ''));
-    if (use.length) c.evidence.push(evidence('fn-numeric', Math.min(1, use.length / 3), { n: use.length }));
+  if (!field && expects.numeric && !c.evidence.some((e) => e.code === 'fn-numeric')) {
+    const numCount = countPureNumericArithmetic(insns);
+    if (numCount) c.evidence.push(evidence('fn-numeric', Math.min(1, numCount / 3), { n: numCount }));
+  }
+  if (expects.store) {
+    const rmw = detectFieldRmwPatterns(insns);
+    if (rmw.clampedRmwCount > 0) {
+      c.evidence.push(evidence('fn-field-rmw-clamped', Math.min(1, 0.7 + 0.15 * rmw.clampedRmwCount), {
+        count: rmw.clampedRmwCount, fields: rmw.fields.slice(0, 6),
+      }));
+      c.verifications.push({ what: 'field-rmw', clamped: true, fields: rmw.fields.slice(0, 6) });
+    } else if (rmw.rmwCount > 0) {
+      c.evidence.push(evidence('fn-field-rmw', Math.min(1, 0.55 + 0.15 * rmw.rmwCount), {
+        count: rmw.rmwCount, fields: rmw.fields.slice(0, 6),
+      }));
+      c.verifications.push({ what: 'field-rmw', clamped: false, fields: rmw.fields.slice(0, 6) });
+    }
+  }
+
+  // Optional WASM per-function structural analysis when raw ARM64 bytes are available.
+  try {
+    const fnRawBytes = (() => {
+      if (model.rawBytes instanceof Uint8Array && model.rawBytes.length >= 4) return model.rawBytes;
+      if (o.codeBytes instanceof Uint8Array && range && o.region?.vmAddr != null) {
+        const base = BigInt(o.region.vmAddr);
+        const startOff = Number(BigInt(c.addr) - base);
+        const endOff = range.end != null ? Number(BigInt(range.end) - base) : startOff;
+        if (startOff >= 0 && endOff > startOff && endOff <= o.codeBytes.length) {
+          return o.codeBytes.subarray(startOff, endOff);
+        }
+      }
+      return null;
+    })();
+    if (fnRawBytes && fnRawBytes.length >= 4) {
+      const fnArch = o.architecture || o.arch || model.architecture || model.arch || program?.architecture || program?.arch || 'arm64';
+      if (expects.store) {
+        const wasmRmw = scanArm64RmwFields(fnRawBytes, { arch: fnArch });
+        if (!wasmRmw.unsupportedArch && wasmRmw.hits.length) {
+          const hasClamped = c.evidence.some((e) => e.code === 'fn-field-rmw-clamped');
+          const hasAnyRmw = hasClamped || c.evidence.some((e) => e.code === 'fn-field-rmw');
+          const wasmClamped = wasmRmw.hits.filter((h) => h.clamped);
+          if (wasmClamped.length && !hasClamped) {
+            const prevIdx = c.evidence.findIndex((e) => e.code === 'fn-field-rmw');
+            const clampedEv = evidence('fn-field-rmw-clamped', Math.min(1, 0.7 + 0.15 * wasmClamped.length), {
+              count: wasmClamped.length,
+              fields: wasmClamped.slice(0, 6).map((h) => ({
+                base: 'x' + h.baseReg, offset: h.disp, kind: h.opKind === 1 ? 'sub' : 'add', clamped: true,
+              })),
+            });
+            if (prevIdx >= 0) c.evidence[prevIdx] = clampedEv;
+            else c.evidence.push(clampedEv);
+            c.verifications.push({ what: 'field-rmw', clamped: true, engine: wasmRmw.engine, count: wasmClamped.length });
+          } else if (!hasAnyRmw) {
+            c.evidence.push(evidence('fn-field-rmw', Math.min(1, 0.55 + 0.15 * wasmRmw.hits.length), {
+              count: wasmRmw.hits.length,
+              fields: wasmRmw.hits.slice(0, 6).map((h) => ({
+                base: 'x' + h.baseReg, offset: h.disp, kind: h.opKind === 1 ? 'sub' : 'add', clamped: false,
+              })),
+            }));
+            c.verifications.push({ what: 'field-rmw', clamped: false, engine: wasmRmw.engine, count: wasmRmw.hits.length });
+          }
+        }
+      }
+      const beh = classifyArm64Behavior(fnRawBytes, { arch: fnArch });
+      if (beh.valid) c.wasmBehavior = beh;
+      const abi = inferArm64Abi(fnRawBytes, { arch: fnArch });
+      if (abi.valid) c.wasmAbi = abi;
+      const fp = fingerprintArm64Func(fnRawBytes, { arch: fnArch });
+      if (fp.valid) c.wasmFingerprint = fp;
+    }
+  } catch { /* non-fatal: keep disassembly-based verification intact */ }
+
+  if (expects.crypto || goal?.id === 'crypto') {
+    const cd = analyzeCryptoInsnDensity(insns);
+    if (cd.hwCryptoCount > 0) {
+      c.evidence.push(evidence('fn-crypto-hw-insn', Math.min(1, 0.75 + 0.1 * cd.hwCryptoCount), {
+        hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount,
+      }));
+      c.verifications.push({ what: 'crypto-insn', hwCryptoCount: cd.hwCryptoCount, bitwiseCount: cd.bitwiseCount });
+    } else if (cd.highBitwiseDensity || cd.hasXorLoop) {
+      c.evidence.push(evidence('fn-crypto-bitwise', Math.min(1, 0.55 + Math.max(cd.bitwiseRatio, cd.hasXorLoop ? 0.25 : 0)), {
+        bitwiseCount: cd.bitwiseCount, bitwiseRatio: Math.round(cd.bitwiseRatio * 100) / 100,
+        xorCount: cd.xorCount, rotateCount: cd.rotateCount, hasXorLoop: cd.hasXorLoop,
+      }));
+      c.verifications.push({ what: 'crypto-bitwise', bitwiseCount: cd.bitwiseCount, xorCount: cd.xorCount, rotateCount: cd.rotateCount, hasXorLoop: cd.hasXorLoop });
+    }
   }
 
   /*
    * 文言が書いている計算式を、命令の即値で確かめる。
    * クラス表が無いアプリでは、これが唯一の「逆アセンブルで確かめた」になる。
    */
-  const formula = verifyFormula(c, insns);
+  const formula = verifyFormula(c, insns, goal);
   if (formula) {
     c.evidence.push(evidence('fn-formula-verified', formula.strength, formula.detail));
     c.verifications.push(Object.assign({ what: 'formula' }, formula.detail));
@@ -1435,24 +2112,25 @@ async function verifyFunctionCandidate(c, goal, o) {
  */
 export async function pinpoint(opts) {
   const o = opts || {};
+  const cancelled = () => Boolean(o.signal?.aborted || o.isCancelled?.());
   let field = await pinpointField(o);
 
   /*
    * クラス表がなくて名前から特定できなかったときは、形から場所を特定しにいく。
    * ここで諦めると、Swift だけのアプリや名前を潰したアプリで何も言えなくなる。
    */
-  if (!field.top && o.ranked && o.ranked.length) {
+  if (!cancelled() && !field.top && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size))) {
     const loc = await pinpointLocation(o);
     if (loc.top) field = loc;
   }
 
   let fn = null;
-  if (o.ranked && o.ranked.length) {
+  if (!cancelled() && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size) || o.shapesByGoal)) {
     fn = await pinpointFunction(Object.assign({}, o, {
       // Offset-only function verification cannot establish a C++ owner.
       field: field.top && field.top.source !== 'cxx' ? {
         offset: field.top.offset, className: field.top.className,
-        plain: field.top.plain, name: field.top.field.name,
+        plain: field.top.plain, name: field.top?.field?.name ?? null,
       } : null,
     }));
   }
@@ -1467,10 +2145,9 @@ export async function pinpoint(opts) {
 }
 
 function bestVerdict(field, fn) {
-  const order = { confirmed: 3, likely: 2, ambiguous: 1, none: 0 };
   const a = field ? field.verdict : VERDICT.NONE;
   const b = fn ? fn.verdict : VERDICT.NONE;
-  return (order[a] || 0) >= (order[b] || 0) ? a : b;
+  return verdictRank(a) >= verdictRank(b) ? a : b;
 }
 
 export { VERDICT };

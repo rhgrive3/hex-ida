@@ -272,6 +272,7 @@ export class AiSession {
 
   /** Re-run the previous question with the current mode/style/scope. */
   retry(options = {}) {
+    if (this.busy) return null;
     const conversation = this.current;
     const turns = conversation.turns;
     if (!turns.length) return null;
@@ -352,15 +353,21 @@ export class AiSession {
     const signal = controller ? controller.signal : null;
     this.emit({ type: 'turn', turn, conversation });
 
+    const MAX_STREAM_ACTIVITY = 256;
+    const MAX_STREAM_TEXT = 262144;
     const onActivity = (event) => {
       if (turn.status !== 'running') return;
       const item = typeof event === 'string' ? { label: event } : (event || {});
+      if (turn.activity.length >= MAX_STREAM_ACTIVITY) turn.activity.shift();
       turn.activity.push({ id: nextId('v'), label: String(item.label || ''), detail: item.detail == null ? '' : String(item.detail), state: item.state || 'done' });
       this.emit({ type: 'activity', turn, conversation });
     };
     const onText = (chunk) => {
       if (turn.status !== 'running') return;
-      turn.text += String(chunk || '');
+      const piece = String(chunk || '');
+      if (turn.text.length < MAX_STREAM_TEXT) {
+        turn.text += piece.slice(0, MAX_STREAM_TEXT - turn.text.length);
+      }
       this.emit({ type: 'stream', turn, conversation });
     };
 
@@ -398,7 +405,9 @@ export class AiSession {
 
   /** Compact history handed to the engine: text only, bounded. */
   historyFor(limit = 8, conversation = this.current) {
-    return conversation.turns.slice(-limit * 2).map((turn) => ({
+    const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+    if (boundedLimit === 0) return [];
+    return conversation.turns.slice(-boundedLimit * 2).map((turn) => ({
       role: turn.role,
       text: turn.role === 'user' ? turn.text : (turn.response ? turn.response.answerText : turn.text),
     })).filter((item) => item.text);
@@ -453,6 +462,7 @@ export class AiSession {
   }
 
   flushSave(space) {
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
     if (!this.storage) return false;
     try { return this.storage.save(this.conversations, space || this.namespace); } catch { return false; }
   }

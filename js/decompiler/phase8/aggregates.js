@@ -52,9 +52,11 @@ export const AGGREGATE_SUMMARY_VERSION = 1;
 export const AGGREGATE_KINDS = Object.freeze([
   'struct', 'array', 'array-of-struct', 'struct-of-array', 'union', 'embedded-object', 'object', 'unknown',
 ]);
+const AGGREGATE_KIND_SET = new Set(AGGREGATE_KINDS);
 
 /** Certainty ladder. Nothing climbs it on soft evidence alone. */
 export const CERTAINTIES = Object.freeze(['candidate', 'supported', 'confirmed']);
+const CERTAINTY_SET = new Set(CERTAINTIES);
 
 const DEFAULT_LIMITS = Object.freeze({ maxAccesses: 4096, maxRegions: 256, maxCopyChain: 8 });
 
@@ -136,6 +138,8 @@ function accessOf(instruction, limits) {
   const offset = toBigInt(instruction?.loc?.disp ?? instruction?.addr?.disp ?? null);
   const index = instruction?.addr?.index ?? null;
   const scaleShift = Number(instruction?.addr?.scale ?? 0);
+  const validScaleShift = Number.isInteger(scaleShift) && scaleShift >= 0 && scaleShift <= 16;
+  const byteWidth = Number.isInteger(widthBits) && widthBits > 0 && widthBits % 8 === 0 ? widthBits / 8 : 0;
   return {
     instructionId: instruction.id ?? null,
     // The value a load produced, carried here rather than looked up later: an
@@ -145,12 +149,12 @@ function accessOf(instruction, limits) {
     op: instruction.op,
     offset,
     widthBits,
-    byteWidth: widthBits > 0 ? widthBits / 8 : 0,
+    byteWidth,
     indexed: index != null,
     indexValueId: index?.id ?? null,
     // A shift of n means the index is scaled by 2^n. A shift of 0 with an index
     // present means a byte stride, which is a real stride, not a missing one.
-    strideBytes: index == null ? null : BigInt(1) << BigInt(scaleShift),
+    strideBytes: index == null || !validScaleShift ? null : BigInt(1) << BigInt(scaleShift),
     base: unwrapCopies(instruction?.addr?.base ?? null, limits),
     origin: originIdsOf(instruction),
   };
@@ -387,7 +391,10 @@ export function runAggregatePass(context = {}, budget = {}, area = null) {
   const cfg = analysis?.get('cfg');
   const inductionFacts = analysis?.get('induction');
   const recoveredTypes = analysis?.get('types')?.recovered ?? null;
-  const limits = { ...DEFAULT_LIMITS, ...(budget.limits ?? {}) };
+  const limits = Object.fromEntries(Object.entries(DEFAULT_LIMITS).map(([k, def]) => {
+    const v = budget?.limits?.[k];
+    return [k, typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : def];
+  }));
 
   const abortedNow = () => {
     try { return typeof budget.shouldAbort === 'function' && budget.shouldAbort() === true; }
@@ -653,10 +660,10 @@ export function forcedContradictions(facts) {
       if (entry.certainty === 'confirmed' && !entry.support.some((fact) => fact.tier === 'hard')) {
         forced.push({ regionKey: region.regionKey, kind: entry.kind, problem: 'confirmed-without-hard-evidence', detail: 'certainty was reached on soft evidence alone' });
       }
-      if (!CERTAINTIES.includes(entry.certainty)) {
+      if (!CERTAINTY_SET.has(entry.certainty)) {
         forced.push({ regionKey: region.regionKey, kind: entry.kind, problem: 'unknown-certainty', detail: String(entry.certainty) });
       }
-      if (!AGGREGATE_KINDS.includes(entry.kind)) {
+      if (!AGGREGATE_KIND_SET.has(entry.kind)) {
         forced.push({ regionKey: region.regionKey, kind: entry.kind, problem: 'unknown-kind', detail: String(entry.kind) });
       }
     }

@@ -40,13 +40,18 @@ export function applyAarch64MappingSymbols(image) {
   }
   mappings.sort((left, right) => left.sectionIndex - right.sectionIndex || (left.address < right.address ? -1 : left.address > right.address ? 1 : 0));
   const accepted = [];
+  const spanEntries = [];
   for (let i = 0; i < mappings.length;) {
     let j = i + 1;
     while (j < mappings.length && mappings[j].sectionIndex === mappings[i].sectionIndex && mappings[j].address === mappings[i].address) j++;
     const group = mappings.slice(i, j);
     if (new Set(group.map((entry) => entry.kind)).size !== 1) {
       markPartial(image, 'aarch64-mapping-symbol-conflict', `ELF AArch64 mapping symbols disagree at 0x${group[0].address.toString(16)}`);
-    } else accepted.push(group[0]);
+      spanEntries.push({ ...group[0], kind: 'conflict' });
+    } else {
+      accepted.push(group[0]);
+      spanEntries.push(group[0]);
+    }
     i = j;
   }
   const sections = executableSections.map((section) => ({
@@ -57,7 +62,7 @@ export function applyAarch64MappingSymbols(image) {
   image.metadata.aarch64MappingSymbols = { mappings:accepted, sections, evidence:accepted.length ? 'mapping-symbol' : 'missing' };
 
   const grouped = new Map();
-  for (const mapping of accepted) {
+  for (const mapping of spanEntries) {
     let list = grouped.get(mapping.sectionIndex);
     if (!list) grouped.set(mapping.sectionIndex, list = []);
     list.push(mapping);

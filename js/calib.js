@@ -33,6 +33,10 @@ function nonNegativeFinite(value, fallback) {
   return fallback;
 }
 const LN = Math.log;
+const DEFAULT_GROUP_LOG_CAP = LN(20);
+const GROUP_LOG_CAP = Object.freeze(
+  Object.fromEntries(Object.entries(GROUP_CAP).map(([k, v]) => [k, LN(v)]))
+);
 
 export function groupedFusion(items, opts) {
   const o = opts || {};
@@ -44,27 +48,38 @@ export function groupedFusion(items, opts) {
     : 1 / n;
   let logOdds = LN(prior / (1 - prior));
   const byGroup = new Map();
+  const posByGroup = new Map();
   const counted = new Map();
   const applied = [];
   let verified = 0;
 
-  const sorted = (items || []).filter((x) => x && x.code).slice().sort((a, b) => {
-    const ea = Math.abs(LN(Math.max(1e-6, likelihoodRatio(a.lr))) * boundedStrength(a.strength));
-    const eb = Math.abs(LN(Math.max(1e-6, likelihoodRatio(b.lr))) * boundedStrength(b.strength));
-    return eb - ea;
-  });
+  const prepared = [];
+  if (Array.isArray(items)) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (!item || !item.code) continue;
+      const rawDelta = LN(Math.max(1e-6, likelihoodRatio(item.lr))) * boundedStrength(item.strength);
+      prepared.push({ item, rawDelta, absDelta: Math.abs(rawDelta) });
+    }
+  }
+  prepared.sort((a, b) => b.absDelta - a.absDelta);
 
-  for (const item of sorted) {
+  for (let i = 0; i < prepared.length; i++) {
+    const { item, rawDelta } = prepared[i];
     const group = groupOf(item);
-    const nth = counted.get(group) || 0;
-    counted.set(group, nth + 1);
-    let delta = LN(Math.max(1e-6, likelihoodRatio(item.lr))) * boundedStrength(item.strength);
-    if (delta > 0) delta *= damp(nth);
-    const cap = LN(GROUP_CAP[group] != null ? GROUP_CAP[group] : 20);
-    const already = byGroup.get(group) || 0;
-    if (delta > 0) delta = Math.min(delta, Math.max(0, cap - already));
+    let delta = rawDelta;
+    let nth = 0;
+    if (delta > 0) {
+      nth = counted.get(group) || 0;
+      counted.set(group, nth + 1);
+      delta *= damp(nth);
+      const cap = Object.hasOwn(GROUP_LOG_CAP, group) ? GROUP_LOG_CAP[group] : DEFAULT_GROUP_LOG_CAP;
+      const posAlready = posByGroup.get(group) || 0;
+      delta = Math.min(delta, Math.max(0, cap - posAlready));
+      posByGroup.set(group, posAlready + delta);
+    }
     if (delta === 0) continue;
-    byGroup.set(group, already + delta);
+    byGroup.set(group, (byGroup.get(group) || 0) + delta);
     logOdds += delta;
     if (item.kind === 'verified' && delta > 0) verified++;
     applied.push(Object.assign({}, item, { group, applied: delta, factor: Math.exp(delta), nth }));
@@ -88,7 +103,7 @@ export function groupedFusion(items, opts) {
 }
 
 function booleanLabelRows(samples) {
-  return (samples || []).filter((s) => s && typeof s.correct === 'boolean');
+  return (Array.isArray(samples) ? samples : []).filter((s) => s && typeof s.correct === 'boolean');
 }
 
 function finiteProbabilityRows(samples) {
@@ -154,12 +169,12 @@ export function accuracyReport(rows) {
   const total = all.length;
   if (!total) {
     return { total: 0, top1: null, top3: null, precision: null, recall: null,
-      brier: null, ece: null, falseConfirmRate: null, confirmed: 0, abstentions: 0 };
+      brier: null, ece: null, falseConfirmRate: null, confirmed: 0, abstentions: 0, abstentionAccuracy: null };
   }
   const answered = all.filter((r) => r.verdict && r.verdict !== 'none');
   const confirmed = all.filter((r) => r.verdict === 'confirmed');
   const confirmedWrong = confirmed.filter((r) => !r.correct);
-  const inTop = (r, k) => r.rank != null && r.rank >= 1 && r.rank <= k;
+  const inTop = (r, k) => Number.isSafeInteger(r.rank) && r.rank >= 1 && r.rank <= k;
   return {
     total,
     top1: all.filter((r) => inTop(r, 1)).length / total,

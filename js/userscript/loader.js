@@ -76,7 +76,7 @@ async function loadRuntime() {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ nonce, loaderVersion: LOADER_VERSION, buildId: EXPECTED_BUILD, requestId, sessionIdentity, clientPublicKey }),
   }));
-  if (!bootstrap || bootstrap.buildId !== EXPECTED_BUILD || Date.parse(bootstrap.expiry) <= Date.now()) throw new Error('Runtime bootstrap identity or expiry could not be verified.');
+  if (!bootstrap || bootstrap.buildId !== EXPECTED_BUILD || typeof bootstrap.expiry !== 'string' || !(Date.parse(bootstrap.expiry) > Date.now())) throw new Error('Runtime bootstrap identity or expiry could not be verified.');
   const manifest = bootstrap.manifest;
   if (!manifest || manifest.buildId !== EXPECTED_BUILD) throw new Error('The protected runtime manifest build identity does not match the pinned loader build.');
   if (manifest.runtimeVersion !== EXPECTED_RUNTIME_VERSION) throw new Error('The protected runtime manifest version does not match the pinned runtime version.');

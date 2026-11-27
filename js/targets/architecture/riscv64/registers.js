@@ -91,10 +91,16 @@ export const RISCV64_ABI_NAMES = ABI_NAMES;
  * floating-point register file, which is outside the frozen Phase 6 profile.
  */
 export function riscv64RegisterDescriptor(value) {
-  if (value && typeof value === 'object') {
-    return riscv64RegisterDescriptor(value.physicalId ?? value.id ?? value.registerId ?? value.name ?? null);
+  let cur = value;
+  const seen = new WeakSet();
+  let depth = 0;
+  while (cur && typeof cur === 'object') {
+    if (depth >= 32 || seen.has(cur)) return null;
+    seen.add(cur);
+    cur = cur.physicalId ?? cur.id ?? cur.registerId ?? cur.name ?? null;
+    depth += 1;
   }
-  const name = String(value ?? '').trim().toLowerCase();
+  const name = String(cur ?? '').trim().toLowerCase();
   if (!name) return null;
   return DESCRIPTORS.get(name) ?? null;
 }

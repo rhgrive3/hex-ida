@@ -4,15 +4,42 @@ import { ownDataEntries, PROJECTION_LIMITS, captureProjectionIrData, createProje
 import { readDominanceViewInputs } from '../../controlflow.js';
 export { PROJECTION_LIMITS, captureProjectionIrData } from '../../core/identity/live-data.js';
 
+// A frozen plain object or frozen Array whose own data entries have already
+// passed `ownDataEntries` cannot have its prototype, own keys, array length,
+// or own data property descriptors mutated. Cache its verified shallow
+// metadata so repeated projection captures and `matches()` checks do not
+// re-enumerate `Reflect.ownKeys` and property descriptors for immutable nodes.
+const frozenObjectEntriesCache = new WeakMap();
+
+function cachedOwnDataEntries(value, maxEntries) {
+  if (value !== null && typeof value === 'object') {
+    const cached = frozenObjectEntriesCache.get(value);
+    if (cached !== undefined) {
+      if (cached.entries.length > maxEntries) throw new TypeError('data-entry-budget-exceeded');
+      return cached.entries;
+    }
+  }
+  const entries = ownDataEntries(value, maxEntries);
+  if (value !== null && typeof value === 'object' && Object.isFrozen(value)) {
+    frozenObjectEntriesCache.set(value, {
+      prototype: Object.getPrototypeOf(value),
+      arrayLength: Array.isArray(value) ? value.length : null,
+      entries,
+    });
+  }
+  return entries;
+}
+
 // Dominance uses native Sets or the control-flow producer's issued lazy views.
 // Observe their backing data; never convert or recompute the canonical facts.
 export function captureRecoveryDominators(value, shouldAbort = null) {
   if (value == null) return { edges:0, matches:() => true };
   if (!Array.isArray(value)) throw new TypeError('recovery-dominators-array-required');
-  const entries = ownDataEntries(value, PROJECTION_LIMITS.nodes), length = value.length;
+  const entries = cachedOwnDataEntries(value, PROJECTION_LIMITS.nodes), length = value.length;
+  const arrayFrozen = Object.isFrozen(value);
   const size = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
   let edges = entries.length;
-  const nativeSets = new Map(), roots = [];
+  const nativeSets = new Map(), seenIdoms = new Set(), seenViews = new Map(), roots = [];
   const captureSet = set => {
     if (nativeSets.has(set)) return;
     if (Object.getPrototypeOf(set) !== Set.prototype || Reflect.ownKeys(set).length) throw new TypeError('recovery-dominator-set-required');
@@ -24,21 +51,52 @@ export function captureRecoveryDominators(value, shouldAbort = null) {
   };
   const sets = entries.map(([key, set]) => {
     if (shouldAbort?.()) throw new TypeError('recovery-dominators-cancelled');
-    const view = readDominanceViewInputs(set);
-    if (view) { captureSet(view.reachable); roots.push(view.idom, view.index); }
-    else captureSet(set);
-    return { key, set, view };
+    let view;
+    if (seenViews.has(set)) {
+      view = seenViews.get(set);
+    } else {
+      view = readDominanceViewInputs(set);
+      seenViews.set(set, view);
+      if (view) {
+        captureSet(view.reachable);
+        if (!seenIdoms.has(view.idom)) {
+          seenIdoms.add(view.idom);
+          roots.push(view.idom);
+        }
+        roots.push(view.index);
+      } else {
+        captureSet(set);
+      }
+    }
+    return { key, set, view, viewKeys: view ? Object.keys(view) : null };
   });
   const data = captureProjectionIrData(roots, shouldAbort); edges += data.metrics.edges;
   if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-dominators-budget');
   return { edges, matches() {
     try {
-      const current = ownDataEntries(value, PROJECTION_LIMITS.nodes);
-      return value.length === length && current.length === entries.length && sets.every(({ key, set, view }, index) =>
-        current[index][0] === key && current[index][1] === set
-        && (!view || (() => { const now = readDominanceViewInputs(set); return now && Object.keys(view).every(key => now[key] === view[key]); })()))
-        && [...nativeSets].every(([set, members]) => Object.getPrototypeOf(set) === Set.prototype && !Reflect.ownKeys(set).length
-          && size.call(set) === members.length && members.every(member => Set.prototype.has.call(set, member))) && data.matches();
+      const current = arrayFrozen ? entries : cachedOwnDataEntries(value, PROJECTION_LIMITS.nodes);
+      if (!arrayFrozen && (value.length !== length || current.length !== entries.length)) return false;
+      const checkedViews = new Map();
+      for (let index = 0; index < sets.length; index++) {
+        const { key, set, view, viewKeys } = sets[index];
+        if (current[index][0] !== key || current[index][1] !== set) return false;
+        if (view) {
+          let ok = checkedViews.get(set);
+          if (ok === undefined) {
+            const now = readDominanceViewInputs(set);
+            ok = !!now && viewKeys.every(k => now[k] === view[k]);
+            checkedViews.set(set, ok);
+          }
+          if (!ok) return false;
+        }
+      }
+      for (const [set, members] of nativeSets) {
+        if (Object.getPrototypeOf(set) !== Set.prototype || Reflect.ownKeys(set).length
+          || size.call(set) !== members.length || !members.every(member => Set.prototype.has.call(set, member))) {
+          return false;
+        }
+      }
+      return data.matches();
     } catch { return false; }
   } };
 }
@@ -48,6 +106,7 @@ export function captureRecoveryDominators(value, shouldAbort = null) {
 // indexes. Preserve their own-data descriptors so getters cannot replay a root.
 export function captureRecoveryIrData(ir, extraRoots, shouldAbort = null) {
   const keys = ['instructions', 'values', 'blocks', 'idom', 'dominators'];
+  const irFrozen = ir !== null && typeof ir === 'object' && Object.isFrozen(ir);
   const prototype = Object.getPrototypeOf(ir);
   const descriptors = keys.map(key => Object.getOwnPropertyDescriptor(ir, key));
   if (descriptors.some(descriptor => descriptor && (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable))) {
@@ -64,11 +123,11 @@ export function captureRecoveryIrData(ir, extraRoots, shouldAbort = null) {
   if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-binding-budget');
   return Object.freeze({ metrics:Object.freeze({ ...observation.metrics, edges }), matches() {
     try {
-      return Object.getPrototypeOf(ir) === prototype && keys.every((key, index) => {
+      return (irFrozen || (Object.getPrototypeOf(ir) === prototype && keys.every((key, index) => {
         const current = Object.getOwnPropertyDescriptor(ir, key), prior = descriptors[index];
         return prior ? !!current && Object.hasOwn(current, 'value') && current.enumerable
           && Object.is(current.value, prior.value) : current === undefined;
-      }) && dominance.matches() && observation.matches();
+      }))) && dominance.matches() && observation.matches();
     } catch { return false; }
   } });
 }
@@ -107,7 +166,7 @@ export function captureProjectionData(roots, shouldAbort = null) {
     }
     if (nodes >= PROJECTION_LIMITS.nodes) throw new TypeError('projection-node-budget');
     nodes++; active.add(value);
-    const entries = ownDataEntries(value,PROJECTION_LIMITS.edges-edges);
+    const entries = cachedOwnDataEntries(value,PROJECTION_LIMITS.edges-edges);
     edges += entries.length;
     let cost = 1, height = 1; const fields=[];
     for (const [key,child] of entries) {
@@ -124,7 +183,9 @@ export function captureProjectionData(roots, shouldAbort = null) {
     const signature = JSON.stringify([Array.isArray(value)?'array':Object.getPrototypeOf(value)===null?'null-object':'object',fields.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0)]);
     if (!structuralTokens.has(signature)) structuralTokens.set(signature,structuralTokens.size);
     const entry = {cost,height,token:`node:${structuralTokens.get(signature)}`}; memo.set(value,entry); active.delete(value);
-    records.push({value,prototype:Object.getPrototypeOf(value),entries,arrayLength:Array.isArray(value)?value.length:null});
+    if (!frozenObjectEntriesCache.has(value)) {
+      records.push({value,prototype:Object.getPrototypeOf(value),entries,arrayLength:Array.isArray(value)?value.length:null,verifiedFrozen:false});
+    }
     return entry;
   }
   let expandedUnits=0;
@@ -136,7 +197,9 @@ export function captureProjectionData(roots, shouldAbort = null) {
   check();
   return Object.freeze({metrics:Object.freeze({nodes,edges,expandedUnits}),tokenOf(value) { return memo.get(value)?.token ?? null; },matches() {
     try {
-      for (const {value,prototype,entries,arrayLength} of records) {
+      for (const record of records) {
+        if (record.verifiedFrozen) continue;
+        const {value,prototype,entries,arrayLength} = record;
         if (Object.getPrototypeOf(value)!==prototype || arrayLength!=null && value.length!==arrayLength) return false;
         const keys=Reflect.ownKeys(value);
         if(keys.length!==entries.length+(arrayLength!=null?1:0)) return false;
@@ -144,6 +207,7 @@ export function captureProjectionData(roots, shouldAbort = null) {
           const descriptor=Object.getOwnPropertyDescriptor(value,key);
           if(!descriptor || !Object.hasOwn(descriptor,'value') || !descriptor.enumerable || !Object.is(descriptor.value,previous)) return false;
         }
+        if (Object.isFrozen(value)) record.verifiedFrozen = true;
       }
       return true;
     } catch { return false; }

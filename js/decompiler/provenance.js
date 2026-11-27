@@ -31,25 +31,28 @@ export function primaryDecompilerAddress(line) {
 }
 
 export function groupDecompilerAddresses(lineOrAddresses, step = 4n) {
+  const stepBig = BigInt(step);
   const addresses = Array.isArray(lineOrAddresses)
     ? uniqueSortedBigInts(lineOrAddresses)
     : decompilerSourceAddresses(lineOrAddresses);
   const groups = [];
   for (const address of addresses) {
     const last = groups[groups.length - 1];
-    if (last && address === last.end + step) last.end = address;
+    if (last && address === last.end + stepBig) last.end = address;
     else groups.push({ start: address, end: address });
   }
   return groups;
 }
 
 function hex(address, digits = 0, prefix = '') {
-  const body = BigInt(address).toString(16).toUpperCase();
+  const value = BigInt(address);
+  const negative = value < 0n;
+  const body = (negative ? -value : value).toString(16).toUpperCase();
   // `digits` is the compact display's minimum width.  It must not turn into
   // a maximum width: dropping significant high bits aliases distinct source
   // instructions in the gutter.
   const visible = digits > 0 ? body.padStart(digits, '0') : body;
-  return prefix + visible;
+  return (negative ? '-' : '') + prefix + visible;
 }
 
 function groupText(group, { digits = 6, prefix = '' } = {}) {

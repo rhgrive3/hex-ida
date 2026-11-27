@@ -8,6 +8,13 @@ import {
   normalizeCxxEvidenceInput,
 } from './cxx/project.js';
 import {
+  getEngineMode,
+  isWasmEngineAvailable,
+  recordFallback,
+  wasmDecompileX86_64Function,
+  wasmDecompileX86_64SemanticFunction,
+} from '../core/hex-engine-bridge.js';
+import {
   SEMANTIC_FUNCTION_ROUTE,
   canonicalDecodedInstructions,
   decompilerSnapshot,
@@ -127,11 +134,12 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
       const targets = Array.isArray(candidate?.targets) ? candidate.targets
         .map(target => canonicalInstructionAddress(target, 'semantic-function-switch-target-invalid')) : [];
       const cases = Array.isArray(candidate?.cases) ? candidate.cases : [];
+      const caseAddresses = cases.map((entry) => canonicalInstructionAddress(entry?.address, 'semantic-function-switch-case-address-invalid'));
       if (!source || controlKind(architecturePlugin, source) !== 'branch' || directTarget(architecturePlugin, source) != null
           || targets.length === 0 || targets.some(target => !byAddress.has(target.toString()))
-          || cases.length === 0 || cases.some(entry => !targets.some(target => target === BigInt(entry?.address)))) continue;
+          || caseAddresses.length === 0 || caseAddresses.some(addr => !targets.some(target => target === addr))) continue;
       const uniqueTargets = [...new Set(targets.map(String))].map(BigInt);
-      if (uniqueTargets.length !== new Set(cases.map(entry => String(entry?.address))).size) continue;
+      if (uniqueTargets.length !== new Set(caseAddresses.map(String)).size) continue;
       switchByAddress.set(branchAddress.toString(), Object.freeze({
         ...candidate,
         instructionAddress:branchAddress,
@@ -313,6 +321,33 @@ function normalizedProtocolSelector(value, code) {
   return text;
 }
 
+function extractContiguousInstructionBytes(orderedInstructions) {
+  if (!Array.isArray(orderedInstructions) || orderedInstructions.length === 0) return null;
+  const baseAddr = addressOf(orderedInstructions[0]);
+  let expectedAddr = baseAddr;
+  let totalBytes = 0;
+  const chunks = [];
+  for (const insn of orderedInstructions) {
+    const addr = addressOf(insn);
+    if (addr !== expectedAddr) return null;
+    const raw = insn?.rawBytes ?? insn?.bytes;
+    if (!(raw instanceof Uint8Array || Array.isArray(raw)) || raw.length === 0) return null;
+    const len = Number(insn?.length ?? raw.length);
+    if (!Number.isSafeInteger(len) || len !== raw.length) return null;
+    chunks.push(raw);
+    totalBytes += len;
+    expectedAddr += BigInt(len);
+  }
+  if (totalBytes === 0) return null;
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return { bytes, baseAddr };
+}
+
 export function analyzeSemanticFunction(input = {}, options = {}) {
   abortIfRequested(options.signal);
   const architectureId = normalizedProtocolSelector(input.architecture, 'semantic-function-architecture-required');
@@ -333,84 +368,183 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
   });
   const cfgOptions = { callPrototypeAuthority, memorySegments:input.memorySegments };
   const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, cfgOptions);
-  const controlUnknowns = semanticControlUnknowns(blocks, architecturePlugin, cfgOptions);
-  const abiAdapter = semanticAbiAdapter(abiPlugin, input, { callPrototypeAuthority });
-  let defaultMode = null;
-  try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
-  const pipeline = buildSemanticV2CompatibilityPipeline({
-    architecturePlugin,
-    decoderSemanticVersion,
-    binaryId,
-    sliceId,
-    addressWidthBits:addressWidthBitsFor(architecturePlugin),
-    mode:input.mode ?? defaultMode ?? 'default',
-    entryBlockKey:blocks[0].key,
-    blocks,
-    completeness: controlUnknowns.length ? 'partial' : 'complete',
-    unknowns: controlUnknowns,
-    functionPrototype:input.functionPrototype ?? null,
-    abiAdapter,
-    machineEffectsContext:semanticMachineEffectsContext(input, endianness),
-  }, { signal:options.signal, abiAdapter,
-    ...(options.canonicalProjectionOnly === true
-      ? { snapshotId: assertRequiredString(input.snapshotId, 'snapshot-id') } : {}),
-  });
-  abortIfRequested(options.signal);
-  // Opt-in first-party query transport: canonical owners have finished, but a
-  // focused SSA/MSSA query does not need pseudocode or a presentation model.
-  // The ordinary decompiler path below remains unchanged. No second lifter,
-  // CFG, SSA, or MemorySSA is introduced by this projection-only return.
-  if (options.canonicalProjectionOnly === true) {
-    if (architectureId !== 'arm64') throw new TypeError('scoped-canonical-arm64-required');
-    // Only an in-process first-party consumer can borrow the actual owner.
-    // No message-supplied callback or serialized IR becomes an owner context.
-    if (options.captureCanonicalOwner != null) {
-      if (typeof options.captureCanonicalOwner !== 'function') throw new TypeError('scoped-owner-capture-callback');
-      // The pipeline establishes the canonical function identity. Rebind the
-      // SAME registered classifier through its existing adapter now that this
-      // identity is known; do not patch serialized ABI result envelopes.
-      const scopedAbiAdapter = semanticAbiAdapter(abiPlugin, { ...input, functionId: pipeline.functionId }, { callPrototypeAuthority });
-      const owner = Object.freeze({ pipeline, abiAdapter: scopedAbiAdapter, decodedInstructions: input.instructions, snapshotId: input.snapshotId });
-      SCOPED_DECOMPILER_OWNERS.set(owner, { input, orderedInstructions, signal:options.signal });
-      options.captureCanonicalOwner(owner);
-      abortIfRequested(options.signal);
+  const engineMode = getEngineMode(options);
+  const x86FastPathEligible = architectureId === 'x86_64'
+    && options.canonicalProjectionOnly !== true
+    && !input.cxxEvidence
+    && !input.cxxEvidenceProvider
+    && !input.functionPrototype
+    && !input.callPrototype
+    && !input.callPrototypeFor
+    && !input.memorySegments;
+
+  if (x86FastPathEligible && engineMode !== 'js') {
+    const supportedAbiId = abiPlugin.id === 'sysv-amd64'
+      ? 0
+      : ((abiPlugin.id === 'microsoft-x64' || abiPlugin.id === 'microsoft-vectorcall') ? 1 : -1);
+    if (supportedAbiId < 0) {
+      recordFallback('x86_64_decompile:unsupported_abi');
+    } else {
+      const contiguous = extractContiguousInstructionBytes(orderedInstructions);
+      if (!contiguous) {
+        recordFallback('x86_64_decompile:non_contiguous_bytes');
+      } else {
+        const funcName = typeof input.name === 'string' ? input.name : '';
+        let wasmResult = !funcName
+          ? wasmDecompileX86_64SemanticFunction({
+            bytes: contiguous.bytes,
+            baseAddr: contiguous.baseAddr,
+            abiId: supportedAbiId,
+            insns: orderedInstructions,
+            _engine: options._engine ?? null,
+          })
+          : null;
+        if (!wasmResult) {
+          wasmResult = wasmDecompileX86_64Function({
+            bytes: contiguous.bytes,
+            baseAddr: contiguous.baseAddr,
+            funcName,
+            abiId: supportedAbiId,
+            insns: orderedInstructions,
+            _engine: options._engine ?? null,
+          });
+        }
+        if (wasmResult) {
+          abortIfRequested(options.signal);
+          const cfg = {
+            entryBlockId: blocks[0].key,
+            blocks: blocks.map((block) => ({
+              id: block.key,
+              successors: block.successors.map((edge) => ({ to: edge.to, kind: edge.kind })),
+            })),
+          };
+        return Object.freeze({
+          route: SEMANTIC_FUNCTION_ROUTE,
+          version: String(input.analysisVersion ?? options.analysisVersion ?? '1'),
+          architectureId,
+          architectureSemanticVersion: architecturePlugin.semanticVersion,
+          abiId: abiPlugin.id,
+          abiSemanticVersion: abiPlugin.semanticVersion,
+          decoderSemanticVersion,
+          analysisContext: Object.freeze({
+            dataEndianness: endianness.dataEndianness,
+            instructionEndianness: endianness.instructionEndianness,
+            architectureProfile: input.architectureProfile ?? null,
+          }),
+          pipeline: { cfg },
+          decompiler: {
+            semantic: true,
+            wasmAccelerated: true,
+            pseudocode: wasmResult.pseudocode,
+            lines: wasmResult.lines,
+            sourceMap: wasmResult.sourceMap,
+            warnings: [],
+            evidence: [],
+            labels: [],
+            unknownInstructions: [],
+          },
+          });
+        }
+      }
     }
-    return Object.freeze({
-      route: SEMANTIC_FUNCTION_ROUTE,
-      version: String(input.analysisVersion ?? options.analysisVersion ?? '1'),
-      architectureId,
-      architectureSemanticVersion: architecturePlugin.semanticVersion,
-      abiId: abiPlugin.id,
-      abiSemanticVersion: abiPlugin.semanticVersion,
-      decoderSemanticVersion,
-      analysisContext: Object.freeze({
-        dataEndianness: endianness.dataEndianness,
-        instructionEndianness: endianness.instructionEndianness,
-        architectureProfile: input.architectureProfile ?? null,
-      }),
-      pipeline: pipelineSnapshot(pipeline),
-      decompiler: null,
-      projection: 'canonical-only',
-    });
   }
-  const decompiler = decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAdapter, { shouldAbort:() => options.signal?.aborted === true });
-  if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
-  return Object.freeze({
-    route:SEMANTIC_FUNCTION_ROUTE,
-    version:String(input.analysisVersion ?? options.analysisVersion ?? '1'),
-    architectureId,
-    architectureSemanticVersion:architecturePlugin.semanticVersion,
-    abiId:abiPlugin.id,
-    abiSemanticVersion:abiPlugin.semanticVersion,
-    decoderSemanticVersion,
-    analysisContext:Object.freeze({
-      dataEndianness:endianness.dataEndianness,
-      instructionEndianness:endianness.instructionEndianness,
-      architectureProfile:input.architectureProfile ?? null,
-    }),
-    pipeline:pipelineSnapshot(pipeline),
-    decompiler:decompilerSnapshot(decompiler),
-  });
+
+  const scopeJsEngine = engineMode === 'js';
+  const hadPrevEngineMode = scopeJsEngine && Object.prototype.hasOwnProperty.call(globalThis, '__HEX_ENGINE_MODE__');
+  const prevEngineMode = scopeJsEngine ? globalThis.__HEX_ENGINE_MODE__ : undefined;
+  const hadPrevHexEngine = scopeJsEngine && Object.prototype.hasOwnProperty.call(globalThis, 'HEX_ENGINE');
+  const prevHexEngine = scopeJsEngine ? globalThis.HEX_ENGINE : undefined;
+  if (scopeJsEngine) {
+    globalThis.__HEX_ENGINE_MODE__ = 'js';
+    globalThis.HEX_ENGINE = 'js';
+  }
+  try {
+    const controlUnknowns = semanticControlUnknowns(blocks, architecturePlugin, cfgOptions);
+    const abiAdapter = semanticAbiAdapter(abiPlugin, input, { callPrototypeAuthority });
+    let defaultMode = null;
+    try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
+    const pipeline = buildSemanticV2CompatibilityPipeline({
+      architecturePlugin,
+      decoderSemanticVersion,
+      binaryId,
+      sliceId,
+      addressWidthBits:addressWidthBitsFor(architecturePlugin),
+      mode:input.mode ?? defaultMode ?? 'default',
+      entryBlockKey:blocks[0].key,
+      blocks,
+      completeness: controlUnknowns.length ? 'partial' : 'complete',
+      unknowns: controlUnknowns,
+      functionPrototype:input.functionPrototype ?? null,
+      abiAdapter,
+      machineEffectsContext:semanticMachineEffectsContext(input, endianness),
+    }, { signal:options.signal, abiAdapter,
+      ...(options.canonicalProjectionOnly === true
+        ? { snapshotId: assertRequiredString(input.snapshotId, 'snapshot-id') } : {}),
+    });
+    abortIfRequested(options.signal);
+    // Opt-in first-party query transport: canonical owners have finished, but a
+    // focused SSA/MSSA query does not need pseudocode or a presentation model.
+    // The ordinary decompiler path below remains unchanged. No second lifter,
+    // CFG, SSA, or MemorySSA is introduced by this projection-only return.
+    if (options.canonicalProjectionOnly === true) {
+      if (architectureId !== 'arm64') throw new TypeError('scoped-canonical-arm64-required');
+      // Only an in-process first-party consumer can borrow the actual owner.
+      // No message-supplied callback or serialized IR becomes an owner context.
+      if (options.captureCanonicalOwner != null) {
+        if (typeof options.captureCanonicalOwner !== 'function') throw new TypeError('scoped-owner-capture-callback');
+        // The pipeline establishes the canonical function identity. Rebind the
+        // SAME registered classifier through its existing adapter now that this
+        // identity is known; do not patch serialized ABI result envelopes.
+        const scopedAbiAdapter = semanticAbiAdapter(abiPlugin, { ...input, functionId: pipeline.functionId }, { callPrototypeAuthority });
+        const owner = Object.freeze({ pipeline, abiAdapter: scopedAbiAdapter, decodedInstructions: input.instructions, snapshotId: input.snapshotId });
+        SCOPED_DECOMPILER_OWNERS.set(owner, { input, orderedInstructions, signal:options.signal });
+        options.captureCanonicalOwner(owner);
+        abortIfRequested(options.signal);
+      }
+      return Object.freeze({
+        route: SEMANTIC_FUNCTION_ROUTE,
+        version: String(input.analysisVersion ?? options.analysisVersion ?? '1'),
+        architectureId,
+        architectureSemanticVersion: architecturePlugin.semanticVersion,
+        abiId: abiPlugin.id,
+        abiSemanticVersion: abiPlugin.semanticVersion,
+        decoderSemanticVersion,
+        analysisContext: Object.freeze({
+          dataEndianness: endianness.dataEndianness,
+          instructionEndianness: endianness.instructionEndianness,
+          architectureProfile: input.architectureProfile ?? null,
+        }),
+        pipeline: pipelineSnapshot(pipeline),
+        decompiler: null,
+        projection: 'canonical-only',
+      });
+    }
+    const decompiler = decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAdapter, { shouldAbort:() => options.signal?.aborted === true });
+    if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
+    return Object.freeze({
+      route:SEMANTIC_FUNCTION_ROUTE,
+      version:String(input.analysisVersion ?? options.analysisVersion ?? '1'),
+      architectureId,
+      architectureSemanticVersion:architecturePlugin.semanticVersion,
+      abiId:abiPlugin.id,
+      abiSemanticVersion:abiPlugin.semanticVersion,
+      decoderSemanticVersion,
+      analysisContext:Object.freeze({
+        dataEndianness:endianness.dataEndianness,
+        instructionEndianness:endianness.instructionEndianness,
+        architectureProfile:input.architectureProfile ?? null,
+      }),
+      pipeline:pipelineSnapshot(pipeline),
+      decompiler:decompilerSnapshot(decompiler),
+    });
+  } finally {
+    if (scopeJsEngine) {
+      if (hadPrevEngineMode) globalThis.__HEX_ENGINE_MODE__ = prevEngineMode;
+      else delete globalThis.__HEX_ENGINE_MODE__;
+      if (hadPrevHexEngine) globalThis.HEX_ENGINE = prevHexEngine;
+      else delete globalThis.HEX_ENGINE;
+    }
+  }
 }
 
 // Owners are in-process capabilities, never deserialized protocol data.
@@ -493,7 +627,6 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
       ops:String(decoded.opStr || ''),
     });
   }
-  const maximumRow = Math.max(...legacyRows.keys());
   for (const block of pipeline.legacyV1.blocks) {
     const proven = (block.insts || []).map((instruction) => instruction.address).filter((address) => address != null).map(BigInt)
       .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)[0];
@@ -501,6 +634,8 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     const prior = legacyRows.get(block.startRow);
     legacyRows.set(block.startRow, { ...(prior || { row:block.startRow, size:0, mn:'', ops:'' }), address:proven });
   }
+  let maximumRow = -1;
+  for (const key of legacyRows.keys()) { if (key > maximumRow) maximumRow = key; }
   const model = {
     name:String(input.name || `sub_${addressOf(orderedInstructions[0]).toString(16)}`),
     instructions:Array.from({ length:maximumRow + 1 }, (_unused, row) => legacyRows.get(row) ?? {
@@ -508,6 +643,19 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     }),
     switches:[],
   };
+  // Record explicit structured fallback reason for the canonical semantic-v2
+  // projection path so no silent fallback occurs while preserving 0-bit
+  // provenance/evidence fidelity.
+  const requestedEngine = projectionOptions?._engine ? String(projectionOptions._engine).toLowerCase() : null;
+  if (requestedEngine === 'js' || getEngineMode() === 'js') {
+    recordFallback('decompile:wasm_disabled');
+  } else if (!isWasmEngineAvailable()) {
+    recordFallback('decompile:wasm_unavailable');
+  } else if (pipeline.architectureId !== 'arm64') {
+    recordFallback(`decompile:non_arm64_arch:${pipeline.architectureId}`);
+  } else {
+    recordFallback('decompile:semantic_v2_canonical_projection');
+  }
   const cxxEvidence = cxxEvidenceForProjection(input, pipeline, orderedInstructions, projectionOptions);
   const decompiler = decompileSemanticProjection(model, {
     ...projectionOptions,

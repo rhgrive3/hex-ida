@@ -50,6 +50,9 @@ export function renderGraph(nodes, edges, opts) {
   }
   svg.append(defs);
 
+  const edgeMeta = new WeakMap();
+  const nodeAction = new WeakMap();
+
   /* 線を先に描く。各線には halo と太い透明 hit-area を持たせる。 */
   for (const route of routes) {
     const e = route.edge;
@@ -58,12 +61,13 @@ export function renderGraph(nodes, edges, opts) {
     const d = roundedOrthogonalPath(route.points);
     const group = svgEl('g', { class: 'g-edge-group' });
 
+    const haloBase = e.kind === 'back' ? 7 : 5.5;
     const hit = svgEl('path', {
       d, fill: 'none', stroke: 'transparent', 'stroke-width': 14,
       'pointer-events': 'stroke',
     });
     const halo = svgEl('path', {
-      d, fill: 'none', stroke: 'var(--surface-2)', 'stroke-width': e.kind === 'back' ? 7 : 5.5,
+      d, fill: 'none', stroke: 'var(--surface-2)', 'stroke-width': haloBase,
       'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none',
     });
     const path = svgEl('path', {
@@ -72,20 +76,7 @@ export function renderGraph(nodes, edges, opts) {
       'marker-end': 'url(#' + markerPrefix + markerId + ')',
       'pointer-events': 'none',
     });
-
-    const baseWidth = e.kind === 'back' ? 2.5 : 1.6;
-    const emphasize = () => {
-      path.style.strokeWidth = String(baseWidth + 1.6);
-      halo.style.strokeWidth = String((e.kind === 'back' ? 7 : 5.5) + 2.4);
-    };
-    const normalize = () => {
-      path.style.strokeWidth = '';
-      halo.style.strokeWidth = String(e.kind === 'back' ? 7 : 5.5);
-    };
-    hit.addEventListener('pointerenter', emphasize);
-    hit.addEventListener('pointerleave', normalize);
-    hit.addEventListener('focus', emphasize);
-    hit.addEventListener('blur', normalize);
+    edgeMeta.set(hit, { path, halo, baseWidth: e.kind === 'back' ? 2.5 : 1.6, haloBase });
 
     group.append(hit, halo, path);
 
@@ -130,17 +121,47 @@ export function renderGraph(nodes, edges, opts) {
     }
     if (n.onTap || o.onNode) {
       g.style.cursor = 'pointer';
-      const activate = () => (n.onTap ? n.onTap() : o.onNode(n));
-      g.addEventListener('click', activate);
-      g.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
-      });
+      nodeAction.set(g, () => (n.onTap ? n.onTap() : o.onNode(n)));
     }
     svg.append(g);
   }
 
+  const delegationController = typeof AbortController === 'function' ? new AbortController() : null;
+  const sigOpts = delegationController ? { signal: delegationController.signal } : undefined;
+  const onEmphasize = (event) => {
+    const meta = edgeMeta.get(event.target);
+    if (!meta) return;
+    meta.path.style.strokeWidth = String(meta.baseWidth + 1.6);
+    meta.halo.style.strokeWidth = String(meta.haloBase + 2.4);
+  };
+  const onNormalize = (event) => {
+    const meta = edgeMeta.get(event.target);
+    if (!meta) return;
+    meta.path.style.strokeWidth = '';
+    meta.halo.style.strokeWidth = String(meta.haloBase);
+  };
+  svg.addEventListener('pointerover', onEmphasize, sigOpts);
+  svg.addEventListener('pointerout', onNormalize, sigOpts);
+  svg.addEventListener('focusin', onEmphasize, sigOpts);
+  svg.addEventListener('focusout', onNormalize, sigOpts);
+  svg.addEventListener('click', (event) => {
+    const node = event.target?.closest?.('.g-node');
+    const action = node ? nodeAction.get(node) : null;
+    if (action) action();
+  }, sigOpts);
+  svg.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const node = event.target?.closest?.('.g-node');
+    const action = node ? nodeAction.get(node) : null;
+    if (action) { event.preventDefault(); action(); }
+  }, sigOpts);
+
   wrap.append(svg);
-  attachPanZoom(wrap, svg, layout);
+  const panZoom = attachPanZoom(wrap, svg, layout);
+  wrap.dispose = () => {
+    delegationController?.abort();
+    panZoom.dispose?.();
+  };
   return wrap;
 }
 
@@ -156,7 +177,14 @@ function attachPanZoom(wrap, svg, layout) {
     if (pctBtn) pctBtn.textContent = Math.round(scale * 100) + '%';
   };
 
+  let rafId = 0;
+  let fitRafId = 0;
+  let pendingPanX = 0;
+  let pendingPanY = 0;
+  let pendingZoom = null;
+
   const zoomTo = (next, cx, cy) => {
+    pendingZoom = null;
     const box = wrap.getBoundingClientRect();
     const px = (cx == null ? box.width / 2 : cx - box.left);
     const py = (cy == null ? box.height / 2 : cy - box.top);
@@ -168,7 +196,41 @@ function attachPanZoom(wrap, svg, layout) {
     wrap.scrollTop = gy * scale - py;
   };
 
+  const flushFrame = () => {
+    rafId = 0;
+    if (pendingZoom) {
+      const z = pendingZoom;
+      pendingZoom = null;
+      zoomTo(z.nextScale, z.cx, z.cy);
+    }
+    if (pendingPanX || pendingPanY) {
+      wrap.scrollLeft += pendingPanX;
+      wrap.scrollTop += pendingPanY;
+      pendingPanX = 0;
+      pendingPanY = 0;
+    }
+  };
+
+  const scheduleFrame = () => {
+    if (!rafId) rafId = requestAnimationFrame(flushFrame);
+  };
+
+  const queueZoom = (factor, cx, cy) => {
+    const base = pendingZoom ? pendingZoom.nextScale : scale;
+    pendingZoom = { nextScale: Math.max(MIN, Math.min(MAX, base * factor)), cx, cy };
+    scheduleFrame();
+  };
+
+  const queuePan = (dx, dy) => {
+    pendingPanX += dx;
+    pendingPanY += dy;
+    scheduleFrame();
+  };
+
   const fit = () => {
+    pendingZoom = null;
+    pendingPanX = 0;
+    pendingPanY = 0;
     const w = wrap.clientWidth || 320;
     const h = wrap.clientHeight || 320;
     scale = Math.max(MIN, Math.min(1, Math.min((w - 24) / layout.width, (h - 24) / layout.height)));
@@ -224,7 +286,7 @@ function attachPanZoom(wrap, svg, layout) {
       const now = spread(points);
       if (pinch > 0 && now > 0) {
         const c = centre(points);
-        zoomTo(scale * (now / pinch), c.x, c.y);
+        queueZoom(now / pinch, c.x, c.y);
       }
       pinch = now;
       e.preventDefault();
@@ -237,8 +299,7 @@ function attachPanZoom(wrap, svg, layout) {
       last.moved = true;
       try { wrap.setPointerCapture(last.pointerId); } catch { /* pointer already released */ }
     }
-    wrap.scrollLeft -= dx;
-    wrap.scrollTop -= dy;
+    queuePan(-dx, -dy);
     last.x = e.clientX;
     last.y = e.clientY;
     e.preventDefault();
@@ -264,17 +325,32 @@ function attachPanZoom(wrap, svg, layout) {
 
   wrap.addEventListener('wheel', (e) => {
     if (e.ctrlKey || e.metaKey) {
-      zoomTo(scale * (e.deltaY > 0 ? 0.9 : 1.1), e.clientX, e.clientY);
+      queueZoom(e.deltaY > 0 ? 0.9 : 1.1, e.clientX, e.clientY);
       e.preventDefault();
       return;
     }
-    wrap.scrollLeft += e.deltaX;
-    wrap.scrollTop += e.deltaY;
+    queuePan(e.deltaX, e.deltaY);
     e.preventDefault();
   }, { passive: false });
 
-  requestAnimationFrame(fit);
-  return { apply, fit, zoomTo };
+  fitRafId = requestAnimationFrame(() => {
+    fitRafId = 0;
+    fit();
+  });
+  const dispose = () => {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    if (fitRafId) {
+      cancelAnimationFrame(fitRafId);
+      fitRafId = 0;
+    }
+    pendingZoom = null;
+    pendingPanX = 0;
+    pendingPanY = 0;
+  };
+  return { apply, fit, zoomTo, dispose };
 }
 
 function spread(points) {
@@ -325,7 +401,25 @@ export function cfgGraph(model, opts) {
   const byRow = new Map();
   for (const i of model.instructions) byRow.set(i.row, i);
 
+  let blocksSorted = true;
+  for (let i = 1; i < blocks.length; i++) {
+    if (blocks[i].startRow < blocks[i - 1].startRow || blocks[i].startRow <= blocks[i - 1].endRow) {
+      blocksSorted = false;
+      break;
+    }
+  }
   const nodeOfRow = (row) => {
+    if (blocksSorted) {
+      let lo = 0, hi = blocks.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        const b = blocks[mid];
+        if (row < b.startRow) hi = mid - 1;
+        else if (row > b.endRow) lo = mid + 1;
+        else return b.index;
+      }
+      return -1;
+    }
     for (const b of blocks) if (row >= b.startRow && row <= b.endRow) return b.index;
     return -1;
   };
@@ -357,7 +451,11 @@ export function cfgGraph(model, opts) {
     return !!target && backEdges.has(`${terminalRow}:${target.startRow}`);
   };
   for (const b of blocks) {
-    const last = [...b.rows].reverse().map((r) => byRow.get(r)).find((i) => i && !i.data);
+    let last = null;
+    for (let ri = b.rows.length - 1; ri >= 0; ri--) {
+      const insn = byRow.get(b.rows[ri]);
+      if (insn && !insn.data) { last = insn; break; }
+    }
     if (!last) continue;
     const base = (last.mnemonic || '').toLowerCase();
     if (last.isReturn || last.isTailCall) continue;
@@ -423,6 +521,7 @@ export function callGraph(program, symbols, addr, opts) {
   add(addr, 'entry');
 
   let frontier = [addr];
+  const expandedCallers = new Set([idOf(addr)]);
   for (let d = 0; d < depth; d++) {
     const next = [];
     for (const a of frontier) {
@@ -430,15 +529,19 @@ export function callGraph(program, symbols, addr, opts) {
       for (const c of callers) {
         const start = c.addr;
         if (start == null) continue;
-        add(start, 'caller');
-        addEdge(idOf(start), idOf(a), 'call');
-        next.push(start);
+        const startId = add(start, 'caller');
+        addEdge(startId, idOf(a), 'call');
+        if (!expandedCallers.has(startId)) {
+          expandedCallers.add(startId);
+          next.push(start);
+        }
       }
     }
     frontier = next;
   }
 
   frontier = [addr];
+  const expandedCallees = new Set([idOf(addr)]);
   for (let d = 0; d < depth; d++) {
     const next = [];
     for (const a of frontier) {
@@ -448,9 +551,12 @@ export function callGraph(program, symbols, addr, opts) {
       for (const c of callees) {
         const target = c.addr;
         if (target == null) continue;
-        add(target, 'callee');
-        addEdge(idOf(a), idOf(target), 'call');
-        next.push(target);
+        const targetId = add(target, 'callee');
+        addEdge(idOf(a), targetId, 'call');
+        if (!expandedCallees.has(targetId)) {
+          expandedCallees.add(targetId);
+          next.push(target);
+        }
       }
     }
     frontier = next;

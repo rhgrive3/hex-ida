@@ -173,12 +173,18 @@ export const JevPrunePlugin = async () => {
           scope: String(scope),
           taskText,
           mode: pipeline.config.mode,
+          allowBlockingRequests: !pipeline.config.background,
         });
 
         // Background classification of items that were kept only because their
         // judgement was not ready. Deliberately not awaited on this path.
         if (pipeline.config.background && plan.stats.cacheMisses > 0) {
-          void pipeline.prewarm(items, { scope: String(scope), taskText });
+          void pipeline.prewarm(items, { scope: String(scope), taskText, mode: pipeline.config.mode });
+        }
+
+        if (pipeline.config.mode !== "active") {
+          pipeline.saveState();
+          return;
         }
 
         const dropped = plan.decisions.filter((decision) => decision.action === "drop");
@@ -187,19 +193,25 @@ export const JevPrunePlugin = async () => {
           return;
         }
 
+        const plannedById = new Map((plan.items || []).map((item) => [item.id, item]));
         if (tombstoneEnabled) {
           for (const decision of dropped) {
             const ref = refs.get(decision.id);
             if (!ref || ref.kind !== "tool") continue;
-            const item = items.find((candidate) => candidate.id === decision.id);
+            const item = plannedById.get(decision.id) || items.find((candidate) => candidate.id === decision.id);
             if (!item || !ref.part.state) continue;
-            ref.part.state.output = tombstone(item, plan);
+            ref.part.state.output = tombstone({ ...item, tokens: decision.tokens ?? item.tokens ?? 0 }, plan);
           }
         } else {
-          const dropIds = new Set(dropped.map((decision) => decision.id));
+          const droppedParts = new Set(
+            dropped
+              .map((decision) => refs.get(decision.id))
+              .filter((ref) => ref && ref.kind === "tool" && ref.part)
+              .map((ref) => ref.part),
+          );
           for (const message of output.messages) {
             if (!Array.isArray(message.parts)) continue;
-            message.parts = message.parts.filter((part) => !(part && part.type === "tool" && dropIds.has(String(part.id))));
+            message.parts = message.parts.filter((part) => !droppedParts.has(part));
           }
         }
 

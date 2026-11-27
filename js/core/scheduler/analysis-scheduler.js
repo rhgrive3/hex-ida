@@ -48,7 +48,7 @@ function canonicalDependencies(request, artifactId) {
     const id = rawId;
     if (!byId.has(id)) byId.set(id, dependency);
   }
-  const dependencies = [...byId.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, dependency]) => dependency);
+  const dependencies = [...byId.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, dependency]) => dependency);
   const actual = dependencies.map((dependency) => requireArtifactId(dependency.descriptor.artifactId, 'artifact-dependency-id-invalid'));
   const upstream = request.descriptor?.upstreamArtifactIds;
   if (upstream != null && !Array.isArray(upstream)) throw new SchedulerDependencyIdentityError(artifactId, ['<invalid-upstream-list>'], actual);
@@ -98,8 +98,52 @@ function inflightRequirementsCompatible(producerRequest, consumerRequest) {
   return requestCompleteness(producerRequest) === requestCompleteness(consumerRequest);
 }
 function isStorageFailure(error) { return error?.name === 'ArtifactStorageError' || String(error?.code || '').startsWith('artifact-storage-'); }
+const knownDeeplyFrozenJsonSafe = new WeakSet();
+function isDeeplyFrozenJsonSafe(value, seen = new Set()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value) && !Object.is(value, -0);
+  if (typeof value !== 'object') return false;
+  if (knownDeeplyFrozenJsonSafe.has(value)) return true;
+  if (!Object.isFrozen(value) || seen.has(value)) return false;
+  if ('toJSON' in value) return false;
+  if (Array.isArray(value)) {
+    const ownKeys = Object.keys(value);
+    if (ownKeys.length !== value.length || Object.getOwnPropertyNames(value).length !== value.length + 1) return false;
+    seen.add(value);
+    for (let i = 0; i < value.length; i++) {
+      if (ownKeys[i] !== String(i)) { seen.delete(value); return false; }
+      const desc = Object.getOwnPropertyDescriptor(value, i);
+      if (!desc || desc.get || desc.set || !isDeeplyFrozenJsonSafe(desc.value, seen)) {
+        seen.delete(value);
+        return false;
+      }
+    }
+    seen.delete(value);
+    knownDeeplyFrozenJsonSafe.add(value);
+    return true;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  seen.add(value);
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i++) {
+    const desc = Object.getOwnPropertyDescriptor(value, keys[i]);
+    if (!desc || desc.get || desc.set || !isDeeplyFrozenJsonSafe(desc.value, seen)) {
+      seen.delete(value);
+      return false;
+    }
+  }
+  seen.delete(value);
+  knownDeeplyFrozenJsonSafe.add(value);
+  return true;
+}
+
 function detachedArtifactValue(value) {
-  if (value == null) return value;
+  if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value) && !Object.is(value, -0)) return value;
+  if (typeof value === 'object' && typeof globalThis.structuredClone === 'function' && isDeeplyFrozenJsonSafe(value)) {
+    return globalThis.structuredClone(value);
+  }
   return decodeArtifactPayload(encodeArtifactPayload(value));
 }
 
@@ -137,7 +181,7 @@ export class AnalysisScheduler {
     this.onEvent = onEvent;
     this.seq = 0;
     this.inflight=new Map(); this.running=0; this.dispatchEpoch=0; this.dag=new Map(); this.dagEdgeCount=0; this.dagInbound=new Map(); this.states=new Map(); this.terminalHistory=new Map(); this.terminalRoots=new Set(); this.activeConsumers=0;
-    this.queue=new IndexedMinHeap((a,b)=>a.orderKey<b.orderKey?-1:a.orderKey>b.orderKey?1:a.artifactId.localeCompare(b.artifactId));
+    this.queue=new IndexedMinHeap((a,b)=>a.orderKey<b.orderKey?-1:a.orderKey>b.orderKey?1:(a.artifactId<b.artifactId?-1:a.artifactId>b.artifactId?1:0));
     this.metrics={ requests:0,cacheHits:0,producerInvocations:0,coalescedRequests:0,queueOperations:0,completedJobs:0,failedJobs:0,cancelledJobs:0,cancelledConsumers:0,orphanCancellations:0,budgetExhaustions:0,dependencyFailures:0,producerFailures:0,storageFailures:0,cycleErrors:0,cycleChecks:0,cycleTraversalSteps:0,dependencyIdentityErrors:0,maxObservedRunning:0,observerFailures:0 };
   }
 
@@ -176,14 +220,14 @@ export class AnalysisScheduler {
 
   #request(request, ancestry, parentSignal, options = {}) {
     const descriptor=request?.descriptor;
-    let artifactId;
+    let artifactId, priority;
     try {
       artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required');
       assertCanonicalArtifactDescriptor(descriptor);
+      priority=priorityValue(request.priority);
     } catch (error) { return Promise.reject(error); }
     const firstAttempt=options.retry!==true;
     if (firstAttempt) this.metrics.requests++;
-    const priority = priorityValue(request.priority);
     // Lifecycle contract (#1189 / #3313): request.received fires exactly once
     // per externally visible request() call. Dependency recursion re-enters
     // this path internally and must not re-announce the request.
@@ -468,10 +512,12 @@ export class AnalysisScheduler {
   }
 
   #registerDag(artifactId, dependencyIds) {
-    const ids=[...dependencyIds].sort((a,b)=>a.localeCompare(b));
+    const ids=[...dependencyIds].sort((a,b)=>(a<b?-1:a>b?1:0));
+    const skipCycleDfs=(this.dagInbound.get(artifactId)||0)===0&&this.dag.size===this.dagInbound.size;
     for (const dependencyId of ids) {
       this.metrics.cycleChecks++;
       if (dependencyId===artifactId) { this.metrics.cycleErrors++; throw new SchedulerCycleError([artifactId,artifactId]); }
+      if (skipCycleDfs) continue;
       const path=this.#pathBetween(dependencyId,artifactId);
       if (path) { this.metrics.cycleErrors++; throw new SchedulerCycleError([artifactId,...path]); }
     }
@@ -524,7 +570,7 @@ export class AnalysisScheduler {
     const pending=[rootArtifactId];
     while (pending.length&&this.terminalHistory.size>this.terminalHistoryLimit) {
       const artifactId=pending.pop();
-      if (!this.terminalHistory.has(artifactId)||this.inflight.has(artifactId)||(this.dagInbound.get(artifactId)||0)!==0) continue;
+      if (!this.terminalHistory.has(artifactId)||this.inflight.has(artifactId)||(this.dagInbound.get(artifactId)||0)!==0) { this.terminalRoots.delete(artifactId); continue; }
       this.terminalHistory.delete(artifactId);
       this.terminalRoots.delete(artifactId);
       this.states.delete(artifactId);
@@ -639,13 +685,13 @@ export class AnalysisScheduler {
       this.metrics.failedJobs++;
       this.metrics.storageFailures++;
       task.state='failed'; this.states.set(task.artifactId,'failed');
-      this.#emit('storage.failed', task, { code: error.code || null });
+      this.#emit('storage.failed', task, { code: error?.code || null });
       return;
     }
     this.metrics.failedJobs++;
     if (task.phase==='producer') this.metrics.producerFailures++;
     task.state='failed'; this.states.set(task.artifactId,'failed');
-    this.#emit('job.failed', task, { code: error.code || null, name: error.name || 'Error' });
+    this.#emit('job.failed', task, { code: error?.code || null, name: error?.name || 'Error' });
   }
 
   #cancelQueuedTask(task) {

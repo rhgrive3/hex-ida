@@ -14,6 +14,7 @@ const BIN_NAME = {
   and: 'and', or: 'orr', xor: 'eor', bic: 'bic', orn: 'orn', eon: 'eon',
   shl: 'lsl', lshr: 'lsr', ashr: 'asr', ror: 'ror',
   fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
+  fmax: 'fmax', fmin: 'fmin', fmaxnm: 'fmaxnm', fminnm: 'fminnm',
 };
 const UN_NAME = {
   neg: 'neg', not: 'mvn', fneg: 'fneg', fmov: 'fmov',
@@ -24,6 +25,150 @@ const PASS_UN = new Set([
   'sxt8', 'sxt16', 'sxt32', 'uxt8', 'uxt16', 'uxt32', 'fmov',
   'sext', 'zext', 'trunc', 'bitcast',
 ]);
+
+function unwrapMov(val) {
+  let cur = val;
+  const seen = new Set();
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    const def = cur.def;
+    if (def && def.op === OP.MOV && (def.sub == null || def.sub === 'trunc' || def.sub === 'zext') && def.args?.[0]?.value) {
+      cur = def.args[0].value;
+      continue;
+    }
+    break;
+  }
+  return cur || null;
+}
+
+function valueBits(val) {
+  return typeof val?.bits === 'number' && Number.isSafeInteger(val.bits) && val.bits > 0 ? val.bits : null;
+}
+
+function signMaskShiftAmount(val, expectedBits = null) {
+  if (val == null || val.const == null) return null;
+  const amount = Number(val.const);
+  if (!Number.isSafeInteger(amount)) return null;
+  if (expectedBits != null) return amount === expectedBits - 1 && (amount === 31 || amount === 63) ? amount : null;
+  return amount === 31 || amount === 63 ? amount : null;
+}
+
+function matchAshrSignMask(val, expectedBits = null) {
+  const outerBits = valueBits(val);
+  const unwrapped = unwrapMov(val);
+  const def = unwrapped?.def;
+  if (!def || def.op !== OP.BIN || def.sub !== 'ashr') return null;
+  const args = (def.args || []).filter((a) => a && a.value);
+  if (args.length !== 2 || args[0].shift || args[1].shift) return null;
+  const dstBits = valueBits(def.dst) ?? valueBits(unwrapped);
+  const srcBits = valueBits(args[0].value);
+  if (outerBits != null && dstBits != null && outerBits !== dstBits) return null;
+  if (expectedBits != null && outerBits != null && outerBits !== expectedBits) return null;
+  if (expectedBits != null && dstBits != null && dstBits !== expectedBits) return null;
+  if (expectedBits != null && srcBits != null && srcBits !== expectedBits) return null;
+  if (dstBits != null && srcBits != null && dstBits !== srcBits) return null;
+  const width = expectedBits ?? outerBits ?? dstBits ?? srcBits;
+  const shiftAmount = signMaskShiftAmount(args[1].value, width);
+  if (shiftAmount == null) return null;
+  return { ashrInst: def, source: args[0].value, bits: width ?? (shiftAmount + 1) };
+}
+
+function matchSignMaskClamp(inst) {
+  if (!inst || inst.op !== OP.BIN) return null;
+  const args = (inst.args || []).filter((a) => a && a.value);
+  if (args.length !== 2) return null;
+
+  const instBits = valueBits(inst.dst);
+  const bits0 = valueBits(args[0].value);
+  const bits1 = valueBits(args[1].value);
+  if (instBits != null && bits0 != null && bits0 !== instBits) return null;
+  if (instBits != null && bits1 != null && bits1 !== instBits) return null;
+  if (bits0 != null && bits1 != null && bits0 !== bits1) return null;
+  const width = instBits ?? bits0 ?? bits1;
+
+  if (inst.sub === 'and') {
+    if (args[0].shift || args[1].shift) return null;
+    for (let i = 0; i < 2; i++) {
+      const maskArg = args[i].value;
+      const otherArg = args[1 - i].value;
+      const notVal = unwrapMov(maskArg);
+      const notDef = notVal?.def;
+      if (!notDef || notDef.op !== OP.UN || notDef.sub !== 'not' || !notDef.args?.[0]?.value || notDef.args[0].shift) continue;
+      const notBits = valueBits(notDef.dst) ?? valueBits(notVal);
+      if (width != null && notBits != null && notBits !== width) continue;
+      const effWidth = width ?? notBits;
+      const ashr = matchAshrSignMask(notDef.args[0].value, effWidth);
+      if (!ashr) continue;
+      const srcUnwrapped = unwrapMov(ashr.source);
+      const otherUnwrapped = unwrapMov(otherArg);
+      const srcId = srcUnwrapped?.id;
+      const otherId = otherUnwrapped?.id;
+      if (srcId != null && srcId === otherId) {
+        const srcBits = valueBits(srcUnwrapped);
+        const otherBits = valueBits(otherUnwrapped);
+        if (effWidth != null && srcBits != null && srcBits !== effWidth) continue;
+        if (effWidth != null && otherBits != null && otherBits !== effWidth) continue;
+        if (srcBits != null && otherBits != null && srcBits !== otherBits) continue;
+        return {
+          sourceArgIndex: 1 - i,
+          partInsts: [notDef, ashr.ashrInst],
+          partValueIds: [notDef.dst?.id, ashr.ashrInst.dst?.id].filter((id) => id != null),
+        };
+      }
+    }
+    return null;
+  }
+
+  if (inst.sub === 'bic') {
+    const isAsrShift = (a) => {
+      if (a?.shift?.op !== 'asr') return false;
+      const shiftAmount = a.shift.amount;
+      if (shiftAmount == null) return false;
+      const n = Number(shiftAmount);
+      if (!Number.isSafeInteger(n)) return false;
+      if (width != null) return n === width - 1 && (n === 31 || n === 63);
+      return n === 31 || n === 63;
+    };
+    const u0 = unwrapMov(args[0].value);
+    const u1 = unwrapMov(args[1].value);
+    const id0 = u0?.id;
+    const id1 = u1?.id;
+    if (id0 != null && id0 === id1 && !args[0].shift && isAsrShift(args[1])) {
+      const b0 = valueBits(u0);
+      const b1 = valueBits(u1);
+      if ((width == null || b0 == null || b0 === width) &&
+          (width == null || b1 == null || b1 === width) &&
+          (b0 == null || b1 == null || b0 === b1)) {
+        return {
+          sourceArgIndex: 0,
+          partInsts: [],
+          partValueIds: [],
+        };
+      }
+    }
+    if (!args[0].shift && !args[1].shift) {
+      const ashr = matchAshrSignMask(args[1].value, width);
+      if (ashr) {
+        const srcUnwrapped = unwrapMov(ashr.source);
+        const srcId = srcUnwrapped?.id;
+        if (srcId != null && srcId === id0) {
+          const srcBits = valueBits(srcUnwrapped);
+          const otherBits = valueBits(u0);
+          if ((width == null || srcBits == null || srcBits === width) &&
+              (width == null || otherBits == null || otherBits === width) &&
+              (srcBits == null || otherBits == null || srcBits === otherBits)) {
+            return {
+              sourceArgIndex: 0,
+              partInsts: [ashr.ashrInst],
+              partValueIds: [ashr.ashrInst.dst?.id].filter((id) => id != null),
+            };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
 
 function operationName(inst) {
   if (!inst) return null;
@@ -119,13 +264,17 @@ function originFingerprint(origin) {
   if (!origin) return 'none';
   const value = origin.value != null ? String(origin.value) : '';
   const address = origin.address != null ? String(origin.address) : '';
-  const location = origin.location ? String(origin.location.key || origin.location.address || origin.location.disp || '') : '';
+  const location = origin.location
+    ? String(origin.location.key || origin.location.address || origin.location.disp || '')
+    : [origin.base || '', origin.disp != null ? String(origin.disp) : '', origin.size != null ? String(origin.size) : ''].filter(Boolean).join(':');
   return [origin.kind || '', origin.reg || '', origin.op || '', origin.sub || '', value, address, location].join('|');
 }
 
 function sameSemanticStep(a, b) {
   if (!a || !b) return a === b;
   return a.op === b.op && a.imm === b.imm && a.immFloat === b.immFloat &&
+    Boolean(a.signMaskClamp) === Boolean(b.signMaskClamp) &&
+    Boolean(a.signMaskClampPart) === Boolean(b.signMaskClampPart) &&
     (a.sourceOperandIndex ?? null) === (b.sourceOperandIndex ?? null) &&
     (a.other || null) === (b.other || null) && originFingerprint(a.otherOrigin) === originFingerprint(b.otherOrigin);
 }
@@ -139,33 +288,55 @@ function sameComputationPath(a, b) {
  * Follow the stored SSA value back to a memory source while preserving the
  * computation chain. This is def-use traversal, not a second ARM64 scanner.
  */
-function computationPath(value, active = new Set()) {
-  if (!value || active.has(value.id)) return null;
+const MAX_TRAVERSAL_DEPTH = 64;
+const MAX_TRAVERSAL_STEPS = 4096;
+
+function computationPath(value, active = new Set(), clampPartNodes = new Set(), clampPartIds = new Set(), memo = new Map(), budget = { steps: 0 }, depth = 0) {
+  if (!value || active.has(value.id) || depth > MAX_TRAVERSAL_DEPTH) return null;
+  const useMemo = clampPartNodes.size === 0 && clampPartIds.size === 0;
+  if (useMemo && memo.has(value.id)) return memo.get(value.id);
+  if (++budget.steps > MAX_TRAVERSAL_STEPS) return null;
   active.add(value.id);
   const def = value.def;
   let out = null;
   if (def && def.op === OP.LOAD && def.loc && def.loc.kind !== MK.UNKNOWN) {
     out = { load: def, steps: [] };
   } else if (def && def.op === OP.MOV && def.args[0]) {
-    out = computationPath(def.args[0].value, active);
+    out = computationPath(def.args[0].value, active, clampPartNodes, clampPartIds, memo, budget, depth + 1);
   } else if (def && def.op === OP.UN && PASS_UN.has(def.sub) && def.args[0]) {
-    out = computationPath(def.args[0].value, active);
-    if (out && !out.ambiguous) out = { load: out.load, steps: out.steps.concat([{
-      op: operationName(def), imm: null, immFloat: null, other: null, otherOrigin: null,
-      row: def.row, address: def.address, engine: 'ir-semantic',
-    }]) };
+    out = computationPath(def.args[0].value, active, clampPartNodes, clampPartIds, memo, budget, depth + 1);
+    if (out && !out.ambiguous) {
+      const step = {
+        op: operationName(def), imm: null, immFloat: null, other: null, otherOrigin: null,
+        row: def.row, address: def.address, engine: 'ir-semantic',
+      };
+      if (clampPartNodes.has(def) || (def.dst && clampPartIds.has(def.dst.id))) step.signMaskClampPart = true;
+      out = { load: out.load, steps: out.steps.concat([step]) };
+    }
   } else if (def && def.op === OP.PHI && def.args && def.args.length) {
-    const paths = def.args.map((a) => computationPath(a && a.value, new Set(active))).filter(Boolean);
+    const paths = def.args.map((a) => computationPath(a && a.value, active, clampPartNodes, clampPartIds, memo, budget, depth + 1)).filter(Boolean);
     if (paths.length === def.args.length && paths.length && paths.every((p) => sameLoadLocation(paths[0].load, p.load))) {
       if (paths.every((p) => sameComputationPath(paths[0], p))) out = paths[0];
       else out = { load: paths[0].load, steps: [], ambiguous: true, alternatives: paths };
     }
   } else if (def && [OP.BIN, OP.MAC, OP.UN, OP.SEL].includes(def.op)) {
     const args = (def.args || []).filter((a) => a && a.value);
+    const signMask = matchSignMaskClamp(def);
+    let nextPartNodes = clampPartNodes;
+    let nextPartIds = clampPartIds;
+    if (signMask && (signMask.partInsts.length || signMask.partValueIds.length)) {
+      nextPartNodes = new Set(clampPartNodes);
+      nextPartIds = new Set(clampPartIds);
+      for (const p of signMask.partInsts) nextPartNodes.add(p);
+      for (const id of signMask.partValueIds) nextPartIds.add(id);
+    }
+    const order = signMask
+      ? [signMask.sourceArgIndex, ...args.map((_, idx) => idx).filter((idx) => idx !== signMask.sourceArgIndex)]
+      : args.map((_, idx) => idx);
     let chosen = -1;
     let path = null;
-    for (let i = 0; i < args.length; i++) {
-      const p = computationPath(args[i].value, new Set(active));
+    for (const i of order) {
+      const p = computationPath(args[i].value, active, nextPartNodes, nextPartIds, memo, budget, depth + 1);
       if (p) { chosen = i; path = p; break; }
     }
     if (path) {
@@ -185,21 +356,25 @@ function computationPath(value, active = new Set()) {
           row: def.row,
           address: def.address,
           engine: 'ir-semantic',
+          ...(signMask ? { signMaskClamp: true } : {}),
+          ...(!signMask && (clampPartNodes.has(def) || (def.dst && clampPartIds.has(def.dst.id))) ? { signMaskClampPart: true } : {}),
         } : null;
         out = { load: path.load, steps: step ? path.steps.concat([step]) : path.steps.slice() };
       }
     }
   }
   active.delete(value.id);
+  if (useMemo && budget.steps <= MAX_TRAVERSAL_STEPS) memo.set(value.id, out);
   return out;
 }
 
-function directWrites(ir, facts, rmwRows) {
+function directWrites(ir, facts, rmwRows, opts) {
   const out = [];
+  const includeGlobals = opts?.includeGlobals === true;
   const transferRows = new Set(facts.filter((f) => f.kind === FACT.TRANSFER).map((f) => f.row));
   for (const inst of ir.instructions || []) {
     if (inst.op !== OP.STORE || rmwRows.has(inst.row) || !inst.loc) continue;
-    if (inst.loc.kind === MK.UNKNOWN || inst.loc.kind === MK.STACK || inst.loc.kind === MK.GLOBAL) continue;
+    if (inst.loc.kind === MK.UNKNOWN || inst.loc.kind === MK.STACK || (!includeGlobals && inst.loc.kind === MK.GLOBAL)) continue;
     const location = locationShape(inst, inst.loc);
     if (!location || location.key == null) continue;
     const value = inst.args[0] && inst.args[0].value || null;
@@ -213,7 +388,10 @@ function directWrites(ir, facts, rmwRows) {
     const alternatives = ambiguous ? (path.alternatives || []).map((candidate) => ({
       from: candidate.load ? { row: candidate.load.row, address: candidate.load.address } : null,
       steps: candidate.steps.map((s) => ({ op: s.op, imm: s.imm, immFloat: s.immFloat, otherOrigin: s.otherOrigin || null,
-        sourceOperandIndex: s.sourceOperandIndex ?? null, sourceOnLeft: s.sourceOnLeft ?? null, row: s.row, address: s.address })),
+        sourceOperandIndex: s.sourceOperandIndex ?? null, sourceOnLeft: s.sourceOnLeft ?? null,
+        ...(s.signMaskClamp ? { signMaskClamp: true } : {}),
+        ...(s.signMaskClampPart ? { signMaskClampPart: true } : {}),
+        row: s.row, address: s.address })),
     })) : null;
     out.push({
       kind,
@@ -248,20 +426,25 @@ function directWrites(ir, facts, rmwRows) {
   return out;
 }
 
-function rootLoad(value, active = new Set()) {
-  if (!value || active.has(value.id)) return null;
+function rootLoad(value, active = new Set(), memo = new Map(), budget = { steps: 0 }, depth = 0) {
+  if (!value || active.has(value.id) || depth > MAX_TRAVERSAL_DEPTH) return null;
+  if (memo.has(value.id)) return memo.get(value.id);
+  if (++budget.steps > MAX_TRAVERSAL_STEPS) return null;
   active.add(value.id);
   const def = value.def;
-  if (!def) return null;
-  if (def.op === OP.LOAD) return def;
-  if ((def.op === OP.MOV || (def.op === OP.UN && PASS_UN.has(def.sub))) && def.args[0]) {
-    return rootLoad(def.args[0].value, active);
+  let result = null;
+  if (def) {
+    if (def.op === OP.LOAD) result = def;
+    else if ((def.op === OP.MOV || (def.op === OP.UN && PASS_UN.has(def.sub))) && def.args[0]) {
+      result = rootLoad(def.args[0].value, active, memo, budget, depth + 1);
+    } else if (def.op === OP.PHI && def.args && def.args.length) {
+      const loads = def.args.map((a) => rootLoad(a && a.value, active, memo, budget, depth + 1)).filter(Boolean);
+      if (loads.length === def.args.length && loads.every((l) => sameLoadLocation(loads[0], l))) result = loads[0];
+    }
   }
-  if (def.op === OP.PHI && def.args && def.args.length) {
-    const loads = def.args.map((a) => rootLoad(a && a.value, new Set(active))).filter(Boolean);
-    if (loads.length === def.args.length && loads.every((l) => sameLoadLocation(loads[0], l))) return loads[0];
-  }
-  return null;
+  active.delete(value.id);
+  if (budget.steps <= MAX_TRAVERSAL_STEPS) memo.set(value.id, result);
+  return result;
 }
 
 function returnedReads(ir) {
@@ -376,6 +559,7 @@ function helperLocation(offsetValue) {
 const PROPERTY_HELPER_ABI = Object.freeze({
   getProperty: Object.freeze({ kind: 'read', offsetReg: 'x2', valueReg: 'x0' }),
   setProperty: Object.freeze({ kind: 'write', offsetReg: 'x2', valueReg: 'x3' }),
+  setProperty4: Object.freeze({ kind: 'write', offsetReg: 'x3', valueReg: 'x2' }),
 });
 
 const PROPERTY_HELPER_FAMILY_BY_SYMBOL = new Map([
@@ -383,14 +567,14 @@ const PROPERTY_HELPER_FAMILY_BY_SYMBOL = new Map([
   ['_objc_getProperty', 'getProperty'],
   ['objc_setProperty', 'setProperty'],
   ['_objc_setProperty', 'setProperty'],
-  ['objc_setProperty_atomic', 'setProperty'],
-  ['_objc_setProperty_atomic', 'setProperty'],
-  ['objc_setProperty_nonatomic', 'setProperty'],
-  ['_objc_setProperty_nonatomic', 'setProperty'],
-  ['objc_setProperty_atomic_copy', 'setProperty'],
-  ['_objc_setProperty_atomic_copy', 'setProperty'],
-  ['objc_setProperty_nonatomic_copy', 'setProperty'],
-  ['_objc_setProperty_nonatomic_copy', 'setProperty'],
+  ['objc_setProperty_atomic', 'setProperty4'],
+  ['_objc_setProperty_atomic', 'setProperty4'],
+  ['objc_setProperty_nonatomic', 'setProperty4'],
+  ['_objc_setProperty_nonatomic', 'setProperty4'],
+  ['objc_setProperty_atomic_copy', 'setProperty4'],
+  ['_objc_setProperty_atomic_copy', 'setProperty4'],
+  ['objc_setProperty_nonatomic_copy', 'setProperty4'],
+  ['_objc_setProperty_nonatomic_copy', 'setProperty4'],
 ]);
 
 function propertyHelperUpdates(model, ir) {
@@ -439,7 +623,7 @@ export function findIrSemanticUpdates(model, opts, rmwUpdates, precomputed = nul
   });
   const rmwRows = new Set((rmwUpdates || []).filter((u) => u.store).map((u) => u.store.row));
   const out = [
-    ...directWrites(ir, facts, rmwRows),
+    ...directWrites(ir, facts, rmwRows, opts),
     ...returnedReads(ir),
     ...propertyHelperUpdates(model, ir),
   ];

@@ -39,7 +39,11 @@ export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
     matchBudget:options.matchBudget,
   });
   const matches=matched.matches.map((m)=>{
-    const sameAddress=m.before.address!=null&&m.after.address!=null&&m.before.address===m.after.address;
+    let sameAddress=false;
+    if (m.before.address!=null&&m.after.address!=null) {
+      try { sameAddress=BigInt(m.before.address)===BigInt(m.after.address); }
+      catch { sameAddress=m.before.address===m.after.address; }
+    }
     let changeType;
     if (m.identity==='exact'||m.identity==='normalized-identical') changeType=sameAddress?'same':'moved';
     else if (m.identity==='semantic-equivalent'||m.identity==='probable-same') changeType='changed';

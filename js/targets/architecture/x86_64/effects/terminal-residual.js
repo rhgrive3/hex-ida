@@ -52,7 +52,7 @@ const SIMPLE_FLAG = Object.freeze({
 
 function liftNullPrefixFixed(instruction, context, family) {
   const ctx = createX86EffectContext(instruction, context);
-  const spec = SIMPLE_FLAG[family];
+  const spec = Object.hasOwn(SIMPLE_FLAG, family) ? SIMPLE_FLAG[family] : null;
   if (spec && nullPrefixFixed(instruction, spec.opcode) && ctx.operands.length === 0) {
     const value = spec.toggle
       ? ctx.valueOp('xor', [ctx.readFlag(spec.flag), ctx.constant(1, 1n)], 1, { semantic:`x86-${family}-toggle-${spec.flag}` })
@@ -146,7 +146,7 @@ function ioAccess(direction, widthBits) {
   return Object.freeze({ space:'io', addressExpr:Object.freeze({ kind:'x86-io-port-register', register:'dx' }), widthBits, endian:'little' });
 }
 function liftStringIo(instruction, context, family) {
-  const widthBits = STRING_IO_WIDTH[family];
+  const widthBits = Object.hasOwn(STRING_IO_WIDTH, family) ? STRING_IO_WIDTH[family] : null;
   if (!widthBits || !validStringIoBytes(family, raw(instruction))) return null;
   const ctx = createX86EffectContext(instruction, context);
   const input = family.startsWith('ins');
@@ -187,13 +187,15 @@ function cetMemoryFaults(operation, widthBits, extra = []) {
   ]);
 }
 
+const WRSS_SPECS = Object.freeze({
+  wrssd:Object.freeze({ prefix:Object.freeze([]), opcode:Object.freeze([0x0f,0x38,0xf6]), width:32, user:false }),
+  wrssq:Object.freeze({ prefix:Object.freeze([0x48]), opcode:Object.freeze([0x0f,0x38,0xf6]), width:64, user:false }),
+  wrussd:Object.freeze({ prefix:Object.freeze([0x66]), opcode:Object.freeze([0x0f,0x38,0xf5]), width:32, user:true }),
+  wrussq:Object.freeze({ prefix:Object.freeze([0x66,0x48]), opcode:Object.freeze([0x0f,0x38,0xf5]), width:64, user:true }),
+});
+
 function liftWrss(instruction, context, family) {
-  const spec = {
-    wrssd:{ prefix:[], opcode:[0x0f,0x38,0xf6], width:32, user:false },
-    wrssq:{ prefix:[0x48], opcode:[0x0f,0x38,0xf6], width:64, user:false },
-    wrussd:{ prefix:[0x66], opcode:[0x0f,0x38,0xf5], width:32, user:true },
-    wrussq:{ prefix:[0x66,0x48], opcode:[0x0f,0x38,0xf5], width:64, user:true },
-  }[family];
+  const spec = Object.hasOwn(WRSS_SPECS, family) ? WRSS_SPECS[family] : null;
   if (!spec) return null;
   const bytes = raw(instruction);
   const expectedPrefixAndOpcode = [...spec.prefix, ...spec.opcode];
@@ -219,15 +221,13 @@ function liftRstorssp(instruction, context) {
   const address = memoryAddress(ctx, operand);
   if (!address) return null;
   const token = ctx.readMemory(address.expression, 64, { space:'memory', alignment:8, atomic:true, metadata:{ operation:'rstorssp', tokenRead:true } });
-  const [replacement, cf] = ctx.intrinsic('x86.cet.rstorssp', [token], [64,1], {
+  const [replacement] = ctx.intrinsic('x86.cet.rstorssp', [token], [64], {
     registersRead:[SSP_STATE,CET_STATE,SHADOW_STACK_STATE,EXECUTION_ENV,...addressRegisters(operand)],
     registersWritten:[SSP_STATE,SHADOW_STACK_STATE],
     memoryRead:{ scope:'none' }, memoryWrite:{ scope:'none' }, determinism:'input-dependent', symbolicDetail:'summary-only',
     metadata:{ operation:'rstorssp', exactArchitecturalSummary:true, tokenValidation:true, restoredSsp:'effective-address', previousSspTokenReplacement:true },
   });
   ctx.writeMemory(address.expression,64,replacement,{ space:'memory', alignment:8, atomic:true, metadata:{ operation:'rstorssp', previousSspToken:true } });
-  ctx.writeFlag('CF',cf,{ operation:'rstorssp', semantic:'restore-token-alignment-hole' });
-  for (const flag of ['ZF','PF','AF','OF','SF']) ctx.writeFlag(flag,ctx.constant(1,0n),{ operation:'rstorssp', fixedValue:0 });
   return ctx.finish({ family:'system', possibleFaults:[udFault('rstorssp','CET shadow stack disabled or LOCK prefix'),gpFault('rstorssp','unaligned or non-canonical address'),cpFault('rstorssp','restore token mode/address validation failure'),...x86MemoryFaults('read',64),...x86MemoryFaults('write',64)], metadata:{ operation:'rstorssp', cetStateModeled:true, shadowStackTokenRmw:true } });
 }
 

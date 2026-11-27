@@ -97,6 +97,71 @@ export function projectedReturnFaultBindingCandidates(projected) {
 
 // A bundle association issued where canonical nodes and their actual projection
 // coexist. This is not a no-fault proof; the executor and solver still own that.
+function isSafeJsonPrimitive(value) {
+  if (value === null || value === undefined) return true;
+  const t = typeof value;
+  return t === 'boolean' || t === 'string' || (t === 'number' && Number.isFinite(value));
+}
+function isUnsafeJsonValue(value) {
+  const t = typeof value;
+  return t === 'bigint' || t === 'symbol' || t === 'function' || (t === 'number' && !Number.isFinite(value));
+}
+function sameCanonicalJson(a, b, depth = 0) {
+  if (isSafeJsonPrimitive(a) && isSafeJsonPrimitive(b)) return a === b;
+  if (isUnsafeJsonValue(a) || isUnsafeJsonValue(b)) return stableStringify(a) === stableStringify(b);
+  if (a == null || b == null || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (depth > 32 || typeof a.toJSON === 'function' || typeof b.toJSON === 'function') {
+    return stableStringify(a) === stableStringify(b);
+  }
+  const aArr = Array.isArray(a);
+  const bArr = Array.isArray(b);
+  if (aArr !== bArr) {
+    const protoA = Object.getPrototypeOf(a);
+    const protoB = Object.getPrototypeOf(b);
+    if ((!aArr && protoA !== Object.prototype && protoA !== null) || (!bArr && protoB !== Object.prototype && protoB !== null)) {
+      return stableStringify(a) === stableStringify(b);
+    }
+    return false;
+  }
+  if (aArr) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      const av = a[i];
+      const bv = b[i];
+      if (isUnsafeJsonValue(av) || isUnsafeJsonValue(bv)) return stableStringify(a) === stableStringify(b);
+      if (!sameCanonicalJson(av === undefined ? null : av, bv === undefined ? null : bv, depth + 1)) return false;
+    }
+    return true;
+  }
+  const protoA = Object.getPrototypeOf(a);
+  const protoB = Object.getPrototypeOf(b);
+  if ((protoA !== Object.prototype && protoA !== null) || (protoB !== Object.prototype && protoB !== null)) {
+    return stableStringify(a) === stableStringify(b);
+  }
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  let aCount = 0;
+  for (let i = 0; i < aKeys.length; i += 1) {
+    const k = aKeys[i];
+    const av = a[k];
+    if (av === undefined) continue;
+    if (isUnsafeJsonValue(av)) return stableStringify(a) === stableStringify(b);
+    aCount += 1;
+    if (!Object.hasOwn(b, k)) return false;
+    const bv = b[k];
+    if (isUnsafeJsonValue(bv)) return stableStringify(a) === stableStringify(b);
+    if (bv === undefined) return false;
+    if (!sameCanonicalJson(av, bv, depth + 1)) return false;
+  }
+  let bCount = 0;
+  for (let i = 0; i < bKeys.length; i += 1) {
+    const bv = b[bKeys[i]];
+    if (bv === undefined) continue;
+    if (isUnsafeJsonValue(bv)) return stableStringify(a) === stableStringify(b);
+    bCount += 1;
+  }
+  return aCount === bCount;
+}
 function sealReturnFaultBindings(projected, ir, ssa, context, loweredSources) {
   const obligations = ir.nodes.filter(node => node.attributes?.machineEffects?.possibleFaults?.length);
   canonicalFaultObligations.set(projected, Object.freeze(obligations));
@@ -110,8 +175,8 @@ function sealReturnFaultBindings(projected, ir, ssa, context, loweredSources) {
     }
     for (const node of ir.nodes) {
       const lowering = loweredSources.get(node.id);
-      if (!lowering || stableStringify(node.attributes?.machineEffects) !== stableStringify(lowering.node.attributes?.machineEffects)
-          || stableStringify(node.sourceEffectIds) !== stableStringify(lowering.node.sourceEffectIds)) continue;
+      if (!lowering || !sameCanonicalJson(node.attributes?.machineEffects, lowering.node.attributes?.machineEffects)
+          || !sameCanonicalJson(node.sourceEffectIds, lowering.node.sourceEffectIds)) continue;
       if (!groups.has(lowering.bundle)) groups.set(lowering.bundle, []);
       groups.get(lowering.bundle).push(node);
     }
@@ -127,9 +192,9 @@ function sealReturnFaultBindings(projected, ir, ssa, context, loweredSources) {
       const canonicalReturn = returns[0], metadata = canonicalReturn.metadata?.returnControlTarget;
       const machine = canonicalReturn.attributes?.machineEffects;
       if (metadata?.state !== 'resolved' || !machine?.possibleFaults?.length
-          || stableStringify(canonicalReturn.attributes?.machineControlEffect) !== stableStringify(machineBundle.controlEffect)
-          || stableStringify(metadata) !== stableStringify(loweredSources.get(canonicalReturn.id).node.metadata?.returnControlTarget)
-          || stableStringify(machine.possibleFaults) !== stableStringify(machineBundle.possibleFaults)) continue;
+          || !sameCanonicalJson(canonicalReturn.attributes?.machineControlEffect, machineBundle.controlEffect)
+          || !sameCanonicalJson(metadata, loweredSources.get(canonicalReturn.id).node.metadata?.returnControlTarget)
+          || !sameCanonicalJson(machine.possibleFaults, machineBundle.possibleFaults)) continue;
       const uses = returnUses.get(canonicalReturn.id);
       if (uses?.length !== 1 || uses[0].proof.sourceSemanticValueId !== metadata.valueId) continue;
       const faultIdentity = stableStringify(machine.possibleFaults), members = [];
@@ -140,15 +205,15 @@ function sealReturnFaultBindings(projected, ir, ssa, context, loweredSources) {
         if (!source || !op || source.op !== op || node.blockId !== canonicalReturn.blockId
             || node.completeness !== 'complete' || effect?.bundleCompleteness !== 'exact'
             || effect.architectureId !== machine.architectureId || effect.mode !== machine.mode
-            || stableStringify(effect.possibleFaults) !== faultIdentity
+            || !sameCanonicalJson(effect.possibleFaults, machine.possibleFaults)
             || source.extra?.semanticNodeId !== node.id || source.extra?.completeness !== 'complete'
-            || stableStringify(source.extra.attributes) !== stableStringify(node.attributes)) break;
+            || !sameCanonicalJson(source.extra.attributes, node.attributes)) break;
         members.push(Object.freeze({ source, canonicalNode:node }));
       }
       if (members.length !== nodes.length) continue;
       const source = members.find(member => member.canonicalNode === canonicalReturn).source;
       const target = source.returnTargetValue, binding = source.extra.returnControlTarget;
-      if (!target || stableStringify(binding) !== stableStringify(metadata)
+      if (!target || !sameCanonicalJson(binding, metadata)
           || source.extra.returnControlTargetValueId !== metadata.valueId) continue;
       // Compaction already recorded the actual target replacement. Consume that
       // issued transition instead of resolving register/temporary names again.
@@ -209,9 +274,9 @@ function sealRegisterStateBindings(projected, ir, ssa, context) {
           || output.bits !== input.bits || fact.proof?.machineType?.widthBits !== input.bits
           || source.args[0].bits != null && source.args[0].bits !== input.bits
           || extra.publicStateIdentity !== identity || extra.semanticNodeId !== node.id
-          || stableStringify(extra[key]) !== stableStringify(node.variable)
-          || stableStringify(extra[proofKey]) !== stableStringify(fact.proof)
-          || stableStringify(extra.attributes) !== stableStringify(node.attributes)
+          || !sameCanonicalJson(extra[key], node.variable)
+          || !sameCanonicalJson(extra[proofKey], fact.proof)
+          || !sameCanonicalJson(extra.attributes, node.attributes)
           || machine?.bundleCompleteness !== 'exact'
           || machine.operationKind !== (read ? 'register-read' : 'register-write')) continue;
       const stateAliases = read && input.semanticSsaValueId !== fact.valueId ? projectedStateTransitionCandidates(projected) : null;
@@ -765,19 +830,47 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   let unsupportedInstructionCount = 0;
   const conditionalFalseTargetByBlock = new Map();
 
+  const blockNodeIdSets = new Map();
+  const blockOriginLists = new Map();
   function mergeBlock(fragmentBlock) {
     const prior = blocks.get(fragmentBlock.id);
     if (!prior) {
+      const nodeIds = fragmentBlock.nodeIds.slice();
       blocks.set(fragmentBlock.id, {
         id: fragmentBlock.id,
-        nodeIds: fragmentBlock.nodeIds.slice(),
+        nodeIds,
         ...(fragmentBlock.origin == null ? {} : { origin: fragmentBlock.origin }),
       });
+      blockNodeIdSets.set(fragmentBlock.id, new Set(nodeIds));
+      if (fragmentBlock.origin != null) blockOriginLists.set(fragmentBlock.id, [fragmentBlock.origin]);
       return;
     }
-    prior.nodeIds.push(...fragmentBlock.nodeIds.filter((id) => !prior.nodeIds.includes(id)));
-    if (prior.origin != null || fragmentBlock.origin != null) {
-      prior.origin = mergeOriginSets(prior.origin ?? createOriginSet({}), fragmentBlock.origin ?? createOriginSet({}));
+    let idSet = blockNodeIdSets.get(fragmentBlock.id);
+    if (!idSet) {
+      idSet = new Set(prior.nodeIds);
+      blockNodeIdSets.set(fragmentBlock.id, idSet);
+    }
+    for (let i = 0; i < fragmentBlock.nodeIds.length; i += 1) {
+      const id = fragmentBlock.nodeIds[i];
+      if (!idSet.has(id)) {
+        idSet.add(id);
+        prior.nodeIds.push(id);
+      }
+    }
+    if (fragmentBlock.origin != null || prior.origin != null || blockOriginLists.has(fragmentBlock.id)) {
+      let list = blockOriginLists.get(fragmentBlock.id);
+      if (!list) {
+        list = prior.origin != null ? [prior.origin] : [createOriginSet({})];
+        blockOriginLists.set(fragmentBlock.id, list);
+      }
+      list.push(fragmentBlock.origin ?? createOriginSet({}));
+    }
+  }
+  function finalizeMergedBlocks() {
+    for (const [blockId, list] of blockOriginLists) {
+      if (list.length > 1) {
+        blocks.get(blockId).origin = mergeOriginSets(...list);
+      }
     }
   }
 
@@ -890,6 +983,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
 
   if (!bundles.length) fail('semantic-v2-integration-function-has-no-instructions');
   const functionOrigin = mergeOriginSets(...bundles.map((bundle) => bundle.origin));
+  finalizeMergedBlocks();
   for (const block of blockRecords) {
     const merged = blocks.get(block.id);
     if (merged && block.origin != null) merged.origin = mergeOriginSets(merged.origin ?? createOriginSet({}), block.origin);

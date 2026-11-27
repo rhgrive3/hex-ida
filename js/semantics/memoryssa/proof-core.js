@@ -57,31 +57,51 @@ function weakObject(value) {
 const deeplyFrozenObjects = new WeakSet();
 const memorySsaDigestCache = new WeakMap();
 const accessBindingCache = new WeakMap();
+const identityDigestCache = new WeakMap();
+const subRecordDigestCache = new WeakMap();
+const NULL_DIGEST = stableDigest(null);
 
-function isDeeplyFrozenPlainData(value, active = new WeakSet()) {
+function cachedSubRecordDigest(value) {
+  if (value == null) return NULL_DIGEST;
+  if (typeof value === 'object' && isDeeplyFrozenPlainData(value)) {
+    const cached = subRecordDigestCache.get(value);
+    if (cached !== undefined) return cached;
+    const digest = stableDigest(value);
+    subRecordDigestCache.set(value, digest);
+    return digest;
+  }
+  return stableDigest(value);
+}
+
+function isDeeplyFrozenPlainData(value, active = null) {
   if (value == null || typeof value !== 'object') return true;
   if (deeplyFrozenObjects.has(value)) return true;
-  if (active.has(value)) return false;
+  if (active !== null && active.has(value)) return false;
   try {
     const array = Array.isArray(value);
-    const prototype = Object.getPrototypeOf(value);
-    if (!array && prototype !== Object.prototype && prototype !== null) return false;
+    if (!array) {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) return false;
+    }
     if (!Object.isFrozen(value)) return false;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    active.add(value);
-    for (const key of Reflect.ownKeys(descriptors)) {
-      const descriptor = descriptors[key];
-      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')
-          || !isDeeplyFrozenPlainData(descriptor.value, active)) {
-        active.delete(value);
+    const seen = active ?? new WeakSet();
+    seen.add(value);
+    const keys = Reflect.ownKeys(value);
+    for (let i = 0; i < keys.length; i += 1) {
+      const key = keys[i];
+      if (array && key === 'length') continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+          || !isDeeplyFrozenPlainData(descriptor.value, seen)) {
+        seen.delete(value);
         return false;
       }
     }
-    active.delete(value);
+    seen.delete(value);
     deeplyFrozenObjects.add(value);
     return true;
   } catch {
-    active.delete(value);
+    if (active !== null) active.delete(value);
     return false;
   }
 }
@@ -96,13 +116,53 @@ function isCacheablePlainRecord(value) {
   return isDeeplyFrozenPlainData(value);
 }
 
+let producerArtifactVerifier = null;
+export function bindMemorySsaProducerVerifier(verifier) {
+  if (producerArtifactVerifier === null && typeof verifier === 'function') {
+    producerArtifactVerifier = verifier;
+  }
+}
+
+export function registerPublishedMemorySsaCaches(published, canonicalDigest, accessMetadata, canonicalAccessBindings) {
+  if (producerArtifactVerifier === null || !producerArtifactVerifier(published)) return;
+  if (!published || typeof published !== 'object' || !Object.isFrozen(published)) return;
+  deeplyFrozenObjects.add(published);
+  if (typeof canonicalDigest === 'string') memorySsaDigestCache.set(published, canonicalDigest);
+  if (Array.isArray(accessMetadata) && Array.isArray(canonicalAccessBindings)) {
+    const bindingByKey = new Map();
+    for (let i = 0; i < canonicalAccessBindings.length; i += 1) {
+      const b = canonicalAccessBindings[i];
+      if (b && typeof b === 'object') {
+        bindingByKey.set(`${b.memorySsaEntityId}\u0000${b.regionId}`, b);
+      }
+    }
+    for (let i = 0; i < accessMetadata.length; i += 1) {
+      const m = accessMetadata[i];
+      if (m && typeof m === 'object' && Object.isFrozen(m)) {
+        deeplyFrozenObjects.add(m);
+        const b = bindingByKey.get(`${m.memorySsaEntityId}\u0000${m.regionId}`);
+        if (b) accessBindingCache.set(m, b);
+      }
+    }
+  }
+}
+
 function withoutDigest(value, key = 'proofDigest') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const proto = Object.getPrototypeOf(value);
+  if ((proto === Object.prototype || proto === null) && !Object.hasOwn(value, key)) return value;
   const { [key]: ignored, ...rest } = value;
   return rest;
 }
 
 export function canonicalIdentityDigest(identity) {
+  if (identity != null && typeof identity === 'object' && isCacheablePlainRecord(identity)) {
+    const cached = identityDigestCache.get(identity);
+    if (cached !== undefined) return cached;
+    const digest = stableDigest(identity);
+    identityDigestCache.set(identity, digest);
+    return digest;
+  }
   return stableDigest(identity ?? null);
 }
 
@@ -217,15 +277,15 @@ export function canonicalAccessBinding(access) {
     accessIndex: Number(accessIndex),
     order: order == null ? null : Number(order),
     broad: broad === true,
-    memoryDigest: stableDigest(memory ?? null),
-    sequencingDigest: stableDigest(sequencing ?? null),
-    originDigest: stableDigest(origin ?? null),
-    byteRangeDigest: stableDigest(byteRange ?? null),
-    rangeProofDigest: stableDigest(rangeProof ?? null),
-    accessProofDigest: stableDigest(accessProof ?? null),
+    memoryDigest: cachedSubRecordDigest(memory),
+    sequencingDigest: cachedSubRecordDigest(sequencing),
+    originDigest: cachedSubRecordDigest(origin),
+    byteRangeDigest: cachedSubRecordDigest(byteRange),
+    rangeProofDigest: cachedSubRecordDigest(rangeProof),
+    accessProofDigest: cachedSubRecordDigest(accessProof),
     aliasRelation: String(aliasRelation ?? ''),
-    aliasProofDigest: stableDigest(aliasProof ?? null),
-    canonicalValueDigest: stableDigest(canonicalValue ?? null),
+    aliasProofDigest: cachedSubRecordDigest(aliasProof),
+    canonicalValueDigest: cachedSubRecordDigest(canonicalValue),
   };
   const binding = {
     ...base,
@@ -438,8 +498,10 @@ export function canonicalStoreValueProof({
     if (!Number.isSafeInteger(sourceWidth) || sourceWidth <= 0 || sourceWidth % 8 !== 0) return null;
     const constantUnsigned = BigInt.asUintN(sourceWidth, canonicalConstant);
     const constantSigned = BigInt.asIntN(sourceWidth, canonicalConstant);
+    const zeroExtended = BigInt.asUintN(width, constantUnsigned);
+    const signExtended = BigInt.asUintN(width, constantSigned);
     if ((canonicalConstant !== constantUnsigned && canonicalConstant !== constantSigned)
-        || BigInt.asUintN(width, constantUnsigned) !== canonicalValue) return null;
+        || (zeroExtended !== canonicalValue && signExtended !== canonicalValue)) return null;
     if (resolvedSemanticValue != null) {
       if (resolvedValueId == null || String(resolvedSemanticValue.id ?? '') !== String(resolvedValueId)
           || String(resolvedValueId).trim() === '') return null;

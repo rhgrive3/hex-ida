@@ -45,7 +45,10 @@ export class AIRuntime {
   }
 
   storesFor(session, binaryId) {
-    const key = `${binaryId == null ? '<none>' : String(binaryId)}::${String(session.id)}`;
+    const binTag = binaryId == null
+      ? '<none>'
+      : String(binaryId).replace(/%/g, '%25').replace(/::/g, '%3A%3A').replace(/^<none>$/, '%3Cnone%3E');
+    const key = `${binTag}::${String(session.id)}`;
     let stores = this.storeNamespaces.get(key);
     if (stores) return stores;
     const hasPersistedState = (session.confirmedFindings?.length || 0) > 0

@@ -1,14 +1,17 @@
-import { installProductUI as installBaseProductUI } from './product.js';
+import { installProductUI as installBaseProductUI, editBookmarkNote, makeStarButton, bookmarkLabel, syncRouteNavigation } from './product.js';
 import { createProductSurfaceQueries } from '../analysis/query/product-surface.js';
 import { FUNCTION_TABS, EXPLORER_SCOPES } from './registry.js';
 import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, tabPanel, updateScreenTitle, listRow, VirtualList, scrollStrip } from './primitives.js';
 import { addrHex } from '../format.js';
+import { menu } from '../ui.js';
+import { showRename, showComment, showPatches } from '../tools.js';
+import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 
 import { uiRoot } from '../ui-root.js';
 
 // Follow the in-app language setting (the UI root's lang), not only the
 // browser locale, so these screens switch language with the rest of Hex.
-const ja = () => (uiRoot()?.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
+const ja = () => (uiRoot()?.lang || globalThis.navigator?.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
 const CLAIM_PAGE_SIZE = 500;
 const STRING_PAGE_SIZE = 200;
@@ -20,6 +23,25 @@ function addressText(value) {
 
 function currentFunctionName(app, address) {
   return app.symbols?.nameAt?.(address) || `sub_${BigInt(address).toString(16).toUpperCase()}`;
+}
+
+function noFileActions(app) {
+  const actions = h('div', 'ui-actions');
+  actions.append(
+    uiButton(text('ファイルを開く', 'Open file'), {
+      cls: 'ui-primary-action',
+      onClick: () => {
+        const registry = window.__hexUi?.actions;
+        if (registry?.has?.('file.open') && typeof registry.run === 'function') registry.run('file.open');
+        else document.getElementById('file-input')?.click();
+      },
+    }),
+    uiButton(text('サンプルで試す', 'Try sample'), {
+      cls: 'ui-secondary-action',
+      onClick: () => app.openSample?.(),
+    }),
+  );
+  return actions;
 }
 
 function verdictBadge(verdict) {
@@ -46,14 +68,22 @@ export function baseClassificationBadge(value, result) {
   return 'confirmed';
 }
 
+const MAX_CANONICAL_ITEMS = 5000;
+const MAX_CANONICAL_PAGES = 100;
+
 export async function loadCanonicalClaims(queries, snapshot, detailId = null, options = {}) {
   if (detailId != null) {
     return queries.claims(snapshot, { claimId:detailId }, { offset:0, limit:1 }, options);
   }
   const value = [];
   let offset = 0;
+  let pages = 0;
   let completeness = 'complete';
   while (true) {
+    if (pages >= MAX_CANONICAL_PAGES || value.length >= MAX_CANONICAL_ITEMS) {
+      return { value: value.slice(0, MAX_CANONICAL_ITEMS), completeness: 'partial' };
+    }
+    pages += 1;
     const result = await queries.claims(snapshot, {}, { offset, limit:CLAIM_PAGE_SIZE }, options);
     const rows = Array.isArray(result?.value) ? result.value : [];
     value.push(...rows);
@@ -76,9 +106,14 @@ export async function loadCanonicalClaims(queries, snapshot, detailId = null, op
 export async function loadCanonicalStrings(queries, snapshot, filter = {}, options = {}) {
   const value = [];
   let offset = 0;
+  let pages = 0;
   let completeness = 'complete';
   let status = null;
   while (true) {
+    if (pages >= MAX_CANONICAL_PAGES || value.length >= MAX_CANONICAL_ITEMS) {
+      return { value: value.slice(0, MAX_CANONICAL_ITEMS), completeness: 'partial', status };
+    }
+    pages += 1;
     const result = await queries.strings(snapshot, filter, { offset, limit:STRING_PAGE_SIZE }, options);
     const rows = Array.isArray(result?.value) ? result.value : null;
     if (!rows) return { value, completeness:'partial', status:result?.status || status };
@@ -177,8 +212,9 @@ const COMPLETENESS_LABELS = {
 };
 
 function labelFrom(table, value) {
-  const entry = table[String(value ?? '')];
-  return entry ? text(entry[0], entry[1]) : String(value ?? '');
+  const key = String(value ?? '');
+  const entry = Object.hasOwn(table, key) ? table[key] : null;
+  return entry ? text(entry[0], entry[1]) : key;
 }
 function classificationLabel(value) { return labelFrom(CLASSIFICATION_LABELS, value || 'UNKNOWN'); }
 function refinementLabel(value) { return value ? labelFrom(REFINEMENT_LABELS, value) : ''; }
@@ -186,7 +222,7 @@ function completenessLabel(value) { return labelFrom(COMPLETENESS_LABELS, value)
 function evidenceList(items) {
   return (Array.isArray(items) ? items : []).map((item) => {
     const raw = String(item);
-    if (EVIDENCE_LABELS[raw]) return labelFrom(EVIDENCE_LABELS, raw);
+    if (Object.hasOwn(EVIDENCE_LABELS, raw)) return labelFrom(EVIDENCE_LABELS, raw);
     const [kind, ...rest] = raw.split(':');
     const detail = rest.join(':');
     if (kind === 'signature-hint' && detail) return text(`既知の関数に似ている: ${detail}`, `signature hint: ${detail}`);
@@ -216,8 +252,9 @@ function wrapRouteView(view, routeHost) {
 function prepareRouteShell(appRoot, routeHost, route) {
   appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
   appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
+  const activeNavId = route.route.id === 'finding' ? 'results' : route.route.id;
   for (const button of appRoot.querySelectorAll('.ui-bottom-nav [data-route-id]')) {
-    button.setAttribute('aria-current', button.dataset.routeId === route.route.id ? 'page' : 'false');
+    button.setAttribute('aria-current', button.dataset.routeId === activeNavId ? 'page' : 'false');
   }
   routeHost.hidden = false;
   routeHost.replaceChildren();
@@ -231,17 +268,54 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
     s.body.append(errorState(text('関数アドレスが不正です', 'Invalid function address'), String(route.params.address || '')));
     return { root:s.root };
   }
-  const s = screen(currentFunctionName(app, address), { id:'function', subtitle:addressText(address) });
+  app.setUiResume?.({ lastFunctionTab: 'overview' });
+  const actions = h('div', 'ui-screen-actions');
+  const starBtn = makeStarButton(app, address, currentFunctionName(app, address));
+  const unsubBookmarks = app.bookmarks?.subscribe?.(() => starBtn._syncStar?.()) || null;
+  actions.append(starBtn, uiButton('•••', {
+    cls: 'ui-icon-action',
+    ariaLabel: text('関数の操作', 'Function actions'),
+    onClick: (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      const assistant = window.__hexAi;
+      menu([
+        ...(assistant ? [askAiMenuItem(assistant, functionAiItems(assistant, { address, name: currentFunctionName(app, address) }), { x: r.left + r.width / 2, y: r.bottom + 4 })] : []),
+        { label: text('ブックマークメモを編集', 'Edit bookmark note'), action: () => editBookmarkNote(app, address, currentFunctionName(app, address)) },
+        { label: text('名前を付ける', 'Rename'), action: () => showRename(app, address) },
+        { label: text('メモを書く', 'Comment'), action: () => showComment(app, address) },
+        { label: text('パッチ（命令の書き換え）', 'Patch instructions'), action: () => showPatches(app, address) },
+        { label: text('アセンブリへ', 'Open assembly'), action: () => router.navigate(`/code/${address.toString()}`) },
+      ], r.left + r.width / 2, r.bottom + 4);
+    },
+  }));
+  const s = screen(currentFunctionName(app, address), { id:'function', subtitle:addressText(address), actions });
+  let unsubNotes = null;
+  let overviewDisposed = false;
+  const syncLiveName = () => {
+    if (overviewDisposed) return;
+    const liveName = currentFunctionName(app, address);
+    if (s.heading) s.heading.textContent = liveName;
+    updateScreenTitle(s.root);
+    router.setCurrentLabel?.(liveName);
+  };
+  const bindNotesSub = () => {
+    if (typeof unsubNotes === 'function') { unsubNotes(); unsubNotes = null; }
+    unsubNotes = app.notes?.subscribe?.(syncLiveName) || null;
+  };
+  bindNotesSub();
+  const onNotesAttached = () => { if (!overviewDisposed) { bindNotesSub(); syncLiveName(); } };
+  document.addEventListener('hex:notes-attached', onNotesAttached);
   const tabbar = tabs(FUNCTION_TABS, 'overview', (next) => router.navigate(`/function/${address.toString()}/${next}`), { panelId:'ui-function-panel', label:text('関数の表示', 'Function views') });
   s.body.append(tabbar);
   const content = tabPanel(tabbar, 'ui-workspace-content');
   content.append(loadingState(text('分類根拠を統合しています…', 'Combining classification evidence…')));
   s.body.append(content);
 
+  const signal = signalOf(meta);
   (async () => {
     try {
-      const result = await withCurrentSnapshot(queries, meta.signal, (snapshot) => queries.classification(snapshot, address, { signal:meta.signal }));
-      if (meta.signal.aborted) return;
+      const result = await withCurrentSnapshot(queries, signal, (snapshot) => queries.classification(snapshot, address, { signal }));
+      if (signal?.aborted) return;
       const value = result.value || {};
       const grid = h('div', 'ui-card-grid');
       const identity = card(text('コードの分類', 'Code identity'), {
@@ -253,20 +327,27 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
         subtitle:[evidenceList(value.evidence) || text('十分な分類根拠がありません', 'Not enough classification evidence'), text('確からしさ ', 'confidence ') + confidenceText(value.confidence)].join(' · '),
         badge:evidenceBadge(value.classification === 'UNKNOWN' ? 'unverified' : 'likely'),
       }));
-      if (value.base) {
-        identity.body.append(listRow({
-          title:text('基本の分類', 'Base classification'),
-          subtitle:classificationLabel(value.base.classification),
-          meta:value.base.knowledgeSourceId ? `knowledge ${value.base.knowledgeSourceId}` : '',
-          badge:evidenceBadge(baseClassificationBadge(value, result)),
-        }));
-      }
-      if (value.refinement) {
-        identity.body.append(listRow({
-          title:text('意味解析による確認', 'Semantic refinement'),
-          subtitle:[refinementLabel(value.refinementReason), evidenceList(value.refinement.evidence)].filter(Boolean).join(' — '),
-          badge:evidenceBadge(result.completeness === 'complete' ? 'confirmed' : 'likely'),
-        }));
+      if (value.base || value.refinement) {
+        const diagnostics = h('details', 'ui-diagnostics-disclosure');
+        diagnostics.append(h('summary', null, text('分類の詳しい内訳（技術情報）', 'Classification details (diagnostics)')));
+        const diagList = h('div', 'ui-list');
+        if (value.base) {
+          diagList.append(listRow({
+            title:text('基本の分類', 'Base classification'),
+            subtitle:classificationLabel(value.base.classification),
+            meta:'',
+            badge:evidenceBadge(baseClassificationBadge(value, result)),
+          }));
+        }
+        if (value.refinement) {
+          diagList.append(listRow({
+            title:text('意味解析による確認', 'Semantic refinement'),
+            subtitle:[refinementLabel(value.refinementReason), evidenceList(value.refinement.evidence)].filter(Boolean).join(' — '),
+            badge:evidenceBadge(result.completeness === 'complete' ? 'confirmed' : 'likely'),
+          }));
+        }
+        diagnostics.append(diagList);
+        identity.body.append(diagnostics);
       }
       grid.append(identity.root);
 
@@ -290,20 +371,22 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
       grid.append(facts.root);
 
       const next = card(text('次に見る', 'Next steps'));
-      for (const [tabId, label] of [
-        ['pseudocode', text('疑似Cで読む', 'Read pseudocode')],
-        ['flow', text('分岐とループを見る', 'Inspect branches and loops')],
-        ['evidence', text('なぜそう言えるか', 'Review evidence')],
-        ['runtime', text('実行して確かめる', 'Verify at runtime')],
-      ]) next.body.append(listRow({ title:label, onClick:() => router.navigate(`/function/${address.toString()}/${tabId}`) }));
+      for (const [dest, label] of [
+        [`/function/${address.toString()}/pseudocode`, text('疑似Cで読む', 'Read pseudocode')],
+        [`/code/${address.toString()}`, text('アセンブリへ', 'Open assembly')],
+        [`/function/${address.toString()}/flow`, text('分岐とループを見る', 'Inspect branches and loops')],
+        [`/function/${address.toString()}/calls`, text('呼び出し', 'Call graph')],
+        [`/function/${address.toString()}/evidence`, text('なぜそう言えるか', 'Review evidence')],
+        [`/function/${address.toString()}/runtime`, text('実行して確かめる', 'Verify at runtime')],
+      ]) next.body.append(listRow({ title:label, onClick:() => router.navigate(dest) }));
       grid.append(next.root);
       content.replaceChildren(grid);
     } catch (error) {
-      if (!meta.signal.aborted) content.replaceChildren(errorState(text('分類を表示できませんでした', 'Could not render classification'), String(error?.message || error)));
+      if (!signal?.aborted) content.replaceChildren(errorState(text('分類を表示できませんでした', 'Could not render classification'), String(error?.message || error)));
     }
   })();
 
-  return { root:s.root };
+  return { root:s.root, dispose:() => { overviewDisposed = true; document.removeEventListener('hex:notes-attached', onNotesAttached); if (typeof unsubBookmarks === 'function') unsubBookmarks(); if (typeof unsubNotes === 'function') unsubNotes(); } };
 }
 
 function renderCanonicalClaims(app, router, route, meta, queries) {
@@ -313,13 +396,25 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
     subtitle:detailId ? text('見つかった結果と、その根拠の状態です。', 'Shows the canonical claim and evidence verdict.') : text('自動解析で見つかった結果です。状態は解析エンジンの判定をそのまま表示します。', 'Shows analysed claims using canonical verdicts without UI confidence thresholds.'),
   });
   const host = h('div', 'ui-stack');
+  if (!detailId && !app.store?.get?.('fileInfo')) {
+    host.append(emptyState(
+      text('ファイルが開かれていません', 'No binary open'),
+      text('バイナリを開いて自動解析を実行すると、見つかった結果と根拠がここに並びます。', 'Open a binary or try the sample to see analysis findings and evidence here.'),
+      noFileActions(app),
+    ));
+    s.body.append(host);
+    return { root:s.root };
+  }
   host.append(loadingState(text('結果を確認しています…', 'Loading results…')));
   s.body.append(host);
 
+  const signal = signalOf(meta);
+  let disposed = false;
+  let activeList = null;
   (async () => {
     try {
-      const result = await withCurrentSnapshot(queries, meta.signal, (snapshot) => loadCanonicalClaims(queries, snapshot, detailId, { signal:meta.signal }));
-      if (meta.signal.aborted) return;
+      const result = await withCurrentSnapshot(queries, signal, (snapshot) => loadCanonicalClaims(queries, snapshot, detailId, { signal }));
+      if (disposed || signal?.aborted) return;
       const claims = result.value || [];
       if (detailId) {
         const claim = claims[0];
@@ -352,7 +447,7 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
         const run = uiButton(text('自動解析を実行する', 'Run automatic analysis'), { cls:'ui-primary-action', onClick:() => runAutomaticAnalysis(app, router) });
         host.replaceChildren(emptyState(
           text('まだ結果がありません', 'No results yet'),
-          text('ここには自動解析で見つかった結果が並びます。ファイル全体を調べて、HP・攻撃力などの目的ごとに答えを探します。', 'Investigate a goal to create claims.'),
+          text('ここには自動解析で見つかった結果が並びます。ファイル全体を調べて、HP・攻撃力などの目的ごとに答えを探します。', 'Automatic analysis findings appear here. Run automatic analysis to scan the binary for goals such as HP and attack.'),
           run,
         ));
         return;
@@ -364,6 +459,8 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
         onClick:() => router.navigate(`/finding/${encodeURIComponent(claim.claimId)}`),
       });
       const list = claims.length > 80 ? new VirtualList({ items:claims, rowHeight:64, ariaLabel:text('解析結果', 'Analysis results'), renderRow }) : null;
+      activeList?.dispose?.();
+      activeList = list;
       if (list) host.replaceChildren(list.root);
       else {
         const rows = h('div', 'ui-list');
@@ -372,21 +469,29 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
       }
       if (result.completeness !== 'complete') host.prepend(h('p', 'ui-partial-note', text('結果は一部だけです。まだ処理していない結果を「無い」とは判断しません。', 'The claim set is partial; unprocessed claims are not treated as absent.')));
     } catch (error) {
-      if (!meta.signal.aborted) host.replaceChildren(errorState(text('結果を表示できませんでした', 'Could not show results'), String(error?.message || error)));
+      if (!disposed && !signal?.aborted) host.replaceChildren(errorState(text('結果を表示できませんでした', 'Could not show results'), String(error?.message || error)));
     }
   })();
-  return { root:s.root };
+  return { root:s.root, dispose:() => { disposed = true; activeList?.dispose?.(); activeList = null; } };
+}
+
+function signalOf(meta) {
+  const signal = meta && typeof meta === 'object' ? meta.signal : null;
+  return signal && typeof signal === 'object' ? signal : undefined;
 }
 
 function linkedController(parentSignal) {
   const controller = new AbortController();
-  if (parentSignal?.aborted) {
-    controller.abort(parentSignal.reason);
-  } else if (parentSignal) {
-    const onParentAbort = () => controller.abort(parentSignal.reason);
-    parentSignal.addEventListener('abort', onParentAbort, { once:true });
+  const signal = parentSignal && typeof parentSignal === 'object' ? parentSignal : null;
+  if (signal?.aborted) {
+    controller.abort(signal.reason);
+  } else if (typeof signal?.addEventListener === 'function') {
+    const onParentAbort = () => controller.abort(signal.reason);
+    signal.addEventListener('abort', onParentAbort, { once:true });
     controller.signal.addEventListener('abort', () => {
-      parentSignal.removeEventListener('abort', onParentAbort);
+      if (typeof signal.removeEventListener === 'function') {
+        signal.removeEventListener('abort', onParentAbort);
+      }
     }, { once:true });
   }
   return controller;
@@ -417,8 +522,8 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
   search.type = 'search';
   search.placeholder = text('文字列を検索', 'Search strings');
   search.setAttribute('aria-label', text('文字列を検索', 'Search strings'));
-  search.value = meta.restoredState?.query ?? route.query.get('q') ?? '';
-  let pendingVirtualState = meta.restoredState?.virtual ?? null;
+  search.value = meta?.restoredState?.query ?? route.query.get('q') ?? '';
+  let pendingVirtualState = meta?.restoredState?.virtual ?? null;
   controls.append(scopes, search);
   s.body.append(controls);
   const host = tabPanel(scopes, 'ui-explorer-content');
@@ -430,7 +535,16 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
 
   const run = async () => {
     queryController?.abort('query-replaced');
-    queryController = linkedController(meta.signal);
+    if (!app.store?.get?.('fileInfo')) {
+      virtual?.dispose(); virtual = null;
+      host.replaceChildren(emptyState(
+        text('ファイルが開かれていません', 'No binary open'),
+        text('バイナリを開くと、ファイル内の文字列を一覧から検索できます。', 'Open a binary or try the sample to search strings in the file.'),
+        noFileActions(app),
+      ));
+      return;
+    }
+    queryController = linkedController(signalOf(meta));
     const signal = queryController.signal;
     const filter = { text:search.value.trim() };
     host.replaceChildren(loadingState(text('文字列を検索しています…', 'Searching string artifact…')));
@@ -443,12 +557,36 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
         host.replaceChildren(emptyState(text('見つかりません', 'Nothing found'), result.completeness === 'complete' ? text('完全走査済みです。', 'The relevant scope was completely scanned.') : text('まだ未走査領域があります。', 'There are still unscanned regions.')));
         return;
       }
-      const renderRow = (item) => listRow({
-        title:item.text,
-        subtitle:addressText(item.addr),
-        meta:item.region?.section || item.region?.name || '',
-        onClick:() => router.navigate(`/code/${BigInt(item.addr).toString()}`),
-      });
+      const renderRow = (item) => {
+        let bigAddr = null;
+        try { bigAddr = item.addr != null ? BigInt(item.addr) : null; } catch { bigAddr = null; }
+        let rowAction = null;
+        if (bigAddr != null) {
+          const wrap = h('span', 'ui-row-actions');
+          const xrefBtn = uiButton('Xrefs', {
+            cls: 'ui-secondary-action ui-row-xrefs',
+            ariaLabel: text('参照元を見る', 'Show cross-references'),
+            onClick: (event) => {
+              event.stopPropagation();
+              import('../panels.js').then((panels) => panels.showXrefs?.(app, bigAddr));
+            },
+          });
+          xrefBtn.title = text('参照元を見る (X)', 'Show cross-references (X)');
+          const star = makeStarButton(app, bigAddr, bookmarkLabel(app, bigAddr), {
+            cls: 'ui-icon-action ui-star-btn ui-row-star',
+            stopPropagation: true,
+          });
+          wrap.append(xrefBtn, star);
+          rowAction = wrap;
+        }
+        return listRow({
+          title:item.text,
+          subtitle:addressText(item.addr),
+          meta:item.region?.section || item.region?.name || '',
+          action:rowAction,
+          onClick:() => router.navigate(`/code/${BigInt(item.addr).toString()}`),
+        });
+      };
       virtual = new VirtualList({ items, rowHeight:64, ariaLabel:text('文字列検索結果', 'String search results'), renderRow });
       const nodes = [];
       if (result.completeness !== 'complete') {
@@ -488,18 +626,20 @@ export function installHardenedProductUI(app) {
   if (!appRoot || !routeHost) return installed;
 
   router.onRoute = (route, meta = {}) => {
+    const safeMeta = meta && typeof meta === 'object' ? meta : {};
     const targetOverview = route.route.id === 'function' && (!route.params.tab || route.params.tab === 'overview');
     const targetClaims = route.route.id === 'results' || route.route.id === 'finding';
     const targetStrings = route.route.id === 'explorer' && route.params.scope === 'strings';
-    if (!targetOverview && !targetClaims && !targetStrings) return originalOnRoute(route, meta);
+    if (!targetOverview && !targetClaims && !targetStrings) return originalOnRoute(route, safeMeta);
     prepareRouteShell(appRoot, routeHost, route);
     const view = targetOverview
-      ? renderCanonicalFunctionOverview(app, router, route, meta, queries)
+      ? renderCanonicalFunctionOverview(app, router, route, safeMeta, queries)
       : targetClaims
-        ? renderCanonicalClaims(app, router, route, meta, queries)
-        : renderCanonicalStrings(app, router, route, meta, queries);
+        ? renderCanonicalClaims(app, router, route, safeMeta, queries)
+        : renderCanonicalStrings(app, router, route, safeMeta, queries);
     routeHost.append(view.root);
     updateScreenTitle(view.root);
+    syncRouteNavigation(app, router, route, safeMeta);
     requestAnimationFrame(() => routeHost.focus({ preventScroll:true }));
     return wrapRouteView(view, routeHost);
   };

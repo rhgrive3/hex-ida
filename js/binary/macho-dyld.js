@@ -62,17 +62,23 @@ function rememberChainedPointerSite(image, address, fileOffset, raw, pointerForm
   let sites = CHAINED_POINTER_SITES.get(image);
   if (!sites) { sites = new Map(); CHAINED_POINTER_SITES.set(image, sites); }
   advancePointerMetadata(image);
-  const key = BigInt(address);
-  const candidates = sites.get(key) ?? [];
+  const key = typeof address === 'bigint' ? address : BigInt(address);
+  const sliceOff = typeof fileOffset === 'bigint' ? fileOffset : BigInt(fileOffset);
+  const imgOff = typeof image.fileOffset === 'bigint' ? image.fileOffset : BigInt(image.fileOffset ?? 0);
+  const rawBig = typeof raw === 'bigint' ? raw : BigInt(raw);
+  let candidates = sites.get(key);
+  if (!candidates) {
+    candidates = [];
+    sites.set(key, candidates);
+  }
   candidates.push({
     address: key,
-    fileOffset: BigInt(image.fileOffset ?? 0) + BigInt(fileOffset),
-    sliceFileOffset: BigInt(fileOffset),
-    raw: BigInt(raw),
+    fileOffset: imgOff + sliceOff,
+    sliceFileOffset: sliceOff,
+    raw: rawBig,
     pointerFormat,
     decoded: { ...decoded, authentication: decoded.authentication ? { ...decoded.authentication } : null },
   });
-  sites.set(key, candidates);
   return candidates.length > 1;
 }
 
@@ -289,10 +295,29 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
       addend = r.u64(p + 8);
     }
     const strp = stringsBase + nameOffset;
-    if (strp < base || strp >= base + dc.size) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-name-offset';continue; }
-    const span = r.bytes.subarray(strp, base + dc.size);
-    if (span.indexOf(0) === -1) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'non-terminated-import-name';continue; }
-    const name = r.cstring(strp, base + dc.size - strp);
+    const poolEnd = base + dc.size;
+    if (strp < base || strp >= poolEnd) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-name-offset';continue; }
+    const maxNameScan = Math.min(poolEnd - strp, budget.remaining('inputBytes'), budget.remaining('stringBytes') * 2 + 1);
+    const nul = maxNameScan > 0 ? r.findZero(strp, strp + maxNameScan) : -1;
+    if (nul < 0) {
+      if (maxNameScan > 0) budget.take({ inputBytes: maxNameScan }, 'chained-import-name-scan');
+      if (strp + maxNameScan < poolEnd || budget.stopped) {
+        if (!budget.stopped) {
+          if (budget.remaining('inputBytes') === 0) budget.take({ inputBytes: 1 }, 'chained-import-name-scan');
+          else budget.take({ stringBytes: budget.remaining('stringBytes') + 1 }, 'chained-import-name');
+        }
+        status.complete = false; status.importsComplete = false; status.importsPartialReason = 'metadata-budget';
+        break;
+      }
+      status.complete = false; status.importsComplete = false; status.importsPartialReason ||= 'non-terminated-import-name';
+      continue;
+    }
+    const rawLen = nul - strp;
+    if (!budget.take({ inputBytes: rawLen + 1 }, 'chained-import-name-scan')) {
+      status.complete = false; status.importsComplete = false; status.importsPartialReason = 'metadata-budget';
+      break;
+    }
+    const name = r.decodeString(strp, nul);
     if (!name) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-import-name';continue; }
     if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
     // A positive library ordinal is a 1-based index into the dependent dylib
@@ -461,8 +486,23 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
 
     if (!width) { fail(`segment ${segIndex} uses unsupported pointer format ${pointerFormat}`); continue; }
 
+    const widthBig = BigInt(width);
+    const segFileEndOff = segFileOffset + segFileSize;
+    const rLenBig = BigInt(r.length);
+    const imgFileOffsetBig = typeof image.fileOffset === 'bigint' ? image.fileOffset : BigInt(image.fileOffset ?? 0);
+    const chainedPageCost = { inputBytes: 2, records: 1, operations: 1, estimatedHeapBytes: 16 };
+    const chainedPtrCost = { inputBytes: width, records: 1, operations: 1, estimatedHeapBytes: 16 };
+    const chainedBindSiteCost = { objects: 1, operations: 1, estimatedHeapBytes: 112 };
+    const decodeOpts = {
+      maxValidPointer,
+      dyldCache: image.metadata?.dyldCache ?? null,
+      binaryIdentity: internalIdentity?.dyldCacheBinding?.binaryIdentity ?? null,
+      sliceIdentity: internalIdentity?.dyldCacheBinding?.sliceIdentity ?? null,
+      architecture: internalIdentity?.architecture ?? internalIdentity?.dyldCacheBinding?.architecture ?? null,
+    };
+
     for (let page = 0; page < pageCount; page++) {
-      if(!budget.take({inputBytes:2,records:1,operations:1,estimatedHeapBytes:16},'chained-page')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
+      if(!budget.take(chainedPageCost,'chained-page')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
       const start = r.u16(p + 22 + page * 2);
       if (start === 0xffff) continue;
       const pageFailureEpoch = failureEpoch;
@@ -489,30 +529,25 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
       const pageAddressEnd = segAddress + pageVmEnd;
       const fileBackedAddressEnd = segAddress + pageFileEnd;
       for (const chainStart of starts) {
-        if (chainStart >= pageSize || BigInt(chainStart) + BigInt(width) > pageVmEnd - pageOffset || BigInt(chainStart) + BigInt(width) > pageFileEnd - pageOffset) {
+        const chainStartBig = BigInt(chainStart);
+        if (chainStart >= pageSize || chainStartBig + widthBig > pageVmEnd - pageOffset || chainStartBig + widthBig > pageFileEnd - pageOffset) {
           fail(`segment ${segIndex} page ${page} chain start 0x${chainStart.toString(16)} is outside file-backed page data`);
           continue;
         }
-        let address = pageAddress + BigInt(chainStart);
+        let address = pageAddress + chainStartBig;
         let terminated = false;
         for (let guard = 0; guard < 100000; guard++) {
-          if(!budget.take({inputBytes:width,records:1,operations:1,estimatedHeapBytes:16},'chained-pointer')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pointer chain');status.bindingSites=decoded;return status;}
-          if (address < pageAddress || address + BigInt(width) > pageAddressEnd || address + BigInt(width) > fileBackedAddressEnd) {
+          if(!budget.take(chainedPtrCost,'chained-pointer')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pointer chain');status.bindingSites=decoded;return status;}
+          if (address < pageAddress || address + widthBig > pageAddressEnd || address + widthBig > fileBackedAddressEnd) {
             fail(`segment ${segIndex} page ${page} chain leaves its page or file-backed segment range`); break;
           }
           const off = image.addressToOffset(address);
           const expectedOff = segFileOffset + (address - segAddress);
-          if (off == null || BigInt(off) !== expectedOff || expectedOff + BigInt(width) > segFileOffset + segFileSize || expectedOff + BigInt(width) > BigInt(r.length)) {
+          if (off == null || (typeof off === 'bigint' ? off : BigInt(off)) !== expectedOff || expectedOff + widthBig > segFileEndOff || expectedOff + widthBig > rLenBig) {
             fail(`segment ${segIndex} page ${page} chain address is not backed by its owning segment`); break;
           }
           const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
-          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, {
-            maxValidPointer,
-            dyldCache: image.metadata?.dyldCache ?? null,
-            binaryIdentity: internalIdentity?.dyldCacheBinding?.binaryIdentity ?? null,
-            sliceIdentity: internalIdentity?.dyldCacheBinding?.sliceIdentity ?? null,
-            architecture: internalIdentity?.architecture ?? internalIdentity?.dyldCacheBinding?.architecture ?? null,
-          });
+          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, decodeOpts);
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
           if (d.invalidReason) { fail(`segment ${segIndex} pointer format ${pointerFormat} has ${d.invalidReason}`); break; }
           if (rememberChainedPointerSite(image, address, expectedOff, raw, pointerFormat, d)) {
@@ -526,12 +561,12 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             if (!imp) {
               fail(`invalid bind ordinal ${d.ordinal} does not reference a parsed chained import`);
             } else {
-              if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
+              if(!budget.take(chainedBindSiteCost,'chained-bind-site')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
               imp.sites.push({
                 address,
                 offset: expectedOff,
                 sliceOffset: expectedOff,
-                containerOffset: BigInt(image.fileOffset ?? 0) + expectedOff,
+                containerOffset: imgFileOffsetBig + expectedOff,
                 kind: 'chained-bind',
                 pointerFormat,
                 storageWidth: d.storageWidth,
@@ -543,9 +578,9 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             }
           }
           if (!d.next) { terminated = true; break; }
-          const delta = BigInt(d.next) * BigInt(d.stride);
+          const delta = BigInt(d.next * d.stride);
           const nextAddress = address + delta;
-          if (delta <= 0n || nextAddress <= address || nextAddress + BigInt(width) > pageAddressEnd || nextAddress + BigInt(width) > fileBackedAddressEnd) {
+          if (delta <= 0n || nextAddress <= address || nextAddress + widthBig > pageAddressEnd || nextAddress + widthBig > fileBackedAddressEnd) {
             fail(`segment ${segIndex} page ${page} chained next leaves its page`); break;
           }
           address = nextAddress;
@@ -608,6 +643,13 @@ export function decodeChainedPointer(raw, format, imageBase = null, options = {}
     const target = base + offset;
     return target <= 0xffffffffffffffffn ? target : undefined;
   };
+  const taggedOffsetTarget = (offset, high8) => {
+    const baseTarget = offsetTarget(offset);
+    if (baseTarget === undefined) return undefined;
+    if (baseTarget === null) return null;
+    if (high8 !== 0n && baseTarget > 0x00ffffffffffffffn) return undefined;
+    return (baseTarget | (high8 << 56n)) & 0xffffffffffffffffn;
+  };
   if (format === 3) {
     const bind = !!((raw >> 31n) & 1n);
     const next = Number((raw >> 26n) & 0x1fn);
@@ -640,8 +682,9 @@ export function decodeChainedPointer(raw, format, imageBase = null, options = {}
     if (!bind) {
       const target = raw & 0xfffffffffn;
       const high8 = (raw >> 36n) & 0xffn;
-      const reconstructed = target | (high8 << 56n);
-      const resolved = format === 6 ? offsetTarget(reconstructed) : reconstructed;
+      const resolved = format === 6
+        ? taggedOffsetTarget(target, high8)
+        : ((target | (high8 << 56n)) & 0xffffffffffffffffn);
       if (resolved === undefined) return null;
       return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, storageWidth: width, target: resolved, authenticated: false, authentication: null };
     }
@@ -670,7 +713,7 @@ export function decodeChainedPointer(raw, format, imageBase = null, options = {}
       if (a & 0x40000) a -= 0x80000;
       addend = BigInt(a);
     }
-    const stride = format === 7 || format === 10 ? 4 : 8;
+    const stride = format === 1 ? 8 : 4;
     const authCompat = auth ? { authenticationKey: keyIndex, discriminator: diversity, addressDiversity } : {};
     if (bind) return { bind, ordinal, addend, next, stride, storageWidth: width, target: null, authenticated: auth, authentication, ...authCompat };
     if (auth) {
@@ -680,9 +723,10 @@ export function decodeChainedPointer(raw, format, imageBase = null, options = {}
     }
     const target = raw & 0x7ffffffffffn;
     const high8 = (raw >> 43n) & 0xffn;
-    const reconstructed = target | (high8 << 56n);
     const vmOffset = format === 7 || format === 9 || format === 12;
-    const resolved = vmOffset ? offsetTarget(reconstructed) : reconstructed;
+    const resolved = vmOffset
+      ? taggedOffsetTarget(target, high8)
+      : ((target | (high8 << 56n)) & 0xffffffffffffffffn);
     if (resolved === undefined) return null;
     return { bind, ordinal: -1, addend: 0n, next, stride, storageWidth: width, target: resolved, authenticated: false, authentication: null };
   }
@@ -722,10 +766,15 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   const status = { source, complete: true, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [] };
   image.metadata.dyldBindings ||= { complete: true, streams: {} };
   image.metadata.dyldBindings.streams[source] = status;
+  const seenWarnings = new Set(image.warnings || []);
   const fail = (message, opcode = null) => {
     status.complete = false; image.metadata.dyldBindings.complete = false;
     if (opcode != null && !status.unsupportedOpcodes.includes(opcode)) status.unsupportedOpcodes.push(opcode);
-    image.warnings.push(`${source}: ${message}`);
+    const warning = `${source}: ${message}`;
+    if (!seenWarnings.has(warning)) {
+      seenWarnings.add(warning);
+      budget.warn(warning);
+    }
   };
   const validDylibOrdinal = () => {
     if (!Number.isSafeInteger(libOrdinal)) { fail('dylib ordinal exceeds safe integer range'); return false; }
@@ -740,25 +789,47 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     return !!seg && segOffset >= 0n && segOffset <= seg.size && width <= seg.size - segOffset;
   };
   const bind = () => {
-    if (!symbol) { fail('bind encountered before a symbol was set'); return; }
-    if (!validDylibOrdinal()) return;
+    if (!budget.take({ operations: 1 }, 'classic-bind-step')) { fail('shared metadata budget exhausted while recording bind'); return false; }
+    if (!symbol) { fail('bind encountered before a symbol was set'); return false; }
+    if (!validDylibOrdinal()) return false;
     if (threadedTable) {
-      if (type !== 1) { fail(`unknown threaded bind type ${type}`); return; }
-      if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
+      if (type !== 1) { fail(`unknown threaded bind type ${type}`); return false; }
+      if (threadedTable.length < threadedTableLimit) {
+        if (!budget.take({ objects: 1, estimatedHeapBytes: 256 }, 'classic-bind-threaded-entry')) { fail('shared metadata budget exhausted while recording threaded bind'); return false; }
+        threadedTable.push(snapshotImport());
+        return true;
+      }
       fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);
-      return;
+      return false;
     }
-    if (type !== 1 && type !== 2 && type !== 3) { fail(`unknown bind type ${type} at bind site`); return; }
-    if (!libraryOrdinalSet) { fail('missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL'); return; }
-    if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return; }
+    if (type !== 1 && type !== 2 && type !== 3) { fail(`unknown bind type ${type} at bind site`); return false; }
+    if (!libraryOrdinalSet) { fail('missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL'); return false; }
+    if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return false; }
     const seg = segments[segIndex];
     const address = seg.address + segOffset;
     const imp = snapshotImport();
     imp.sites.push({ address, offset: image.addressToOffset(address), kind: source, type, addend, weak: imp.weak });
     // The retained import name is resident metadata: account its string bytes
     // alongside the fixed object cost (issue #6303).
-    if(!budget.take({objects:2,operations:1,stringBytes:symbol.length*2,estimatedHeapBytes:320+symbol.length*2},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
+    if(!budget.take({objects:2,stringBytes:symbol.length*2,estimatedHeapBytes:320+symbol.length*2},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return false;}
     image.imports.push(imp); status.decodedBinds++;
+    return true;
+  };
+  let threadedSortedMappings = null;
+  const ensureThreadedMappings = () => {
+    if (threadedSortedMappings !== null) return threadedSortedMappings;
+    const items = [];
+    for (const mapping of image.sections || []) {
+      if (mapping && mapping.size > 0n && mapping.address != null) items.push(mapping);
+    }
+    for (const mapping of image.segments || []) {
+      if (mapping && mapping.size > 0n && mapping.address != null) items.push(mapping);
+    }
+    items.sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
+    const starts = new Array(items.length);
+    for (let i = 0; i < items.length; i++) starts[i] = items[i].address;
+    threadedSortedMappings = { items, starts };
+    return threadedSortedMappings;
   };
   const threadedPointerFileOffset = (address) => {
     const width = 8n;
@@ -774,14 +845,18 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       // contiguous (#4296).
       const owner = first.mapping;
       const end = address + width;
-      const crossesNarrowerMapping = (mappings) => {
-        for (const mapping of mappings || []) {
-          if (mapping === owner || mapping.size <= 0n || mapping.size >= owner.size) continue;
-          if (mapping.address > address && mapping.address < end) return true;
-        }
-        return false;
-      };
-      if (crossesNarrowerMapping(image.sections) || crossesNarrowerMapping(image.segments)) return null;
+      const { items, starts } = ensureThreadedMappings();
+      let lo = 0, hi = starts.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (starts[mid] <= address) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < items.length; i++) {
+        const mapping = items[i];
+        if (mapping.address >= end) break;
+        if (mapping !== owner && mapping.size < owner.size) return null;
+      }
       return first.offset;
     }
 
@@ -840,7 +915,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     // dyld's lazy-bind decoder accepts only DONE, the dylib-ordinal setters,
     // SET_SYMBOL_TRAILING_FLAGS_IMM, SET_ADDEND_SLEB, SET_SEGMENT_AND_OFFSET_ULEB
     // and DO_BIND; everything else is "bad lazy bind opcode" (issue #5889).
-    if (source === 'lazy-bind' && ![0x00, 0x10, 0x20, 0x30, 0x40, 0x60, 0x70, 0x90].includes(op)) {
+    if (source === 'lazy-bind' && !LAZY_BIND_OPCODES.has(op)) {
       fail(`bad lazy bind opcode 0x${byte.toString(16)}`, byte);
       break;
     }
@@ -862,12 +937,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     }
     else if (op === 0x40) {
       if ((imm & ~BIND_SYMBOL_FLAGS_KNOWN_MASK) !== 0) { fail(`reserved symbol flags 0x${imm.toString(16)}`); break; }
-      const x = rawCString(r, p, end);
-      // The symbol C-string is a variable-length cost: charge its raw bytes to
-      // inputBytes and the decoded string to the shared string budget before
-      // retaining it, otherwise a crafted stream routes unbounded metadata
-      // past the declared stringBytes ceiling (issue #6303).
-      if (!budget.take({ inputBytes:x.bytes, stringBytes:x.text.length*2, estimatedHeapBytes:x.text.length*2+32 }, 'classic-bind-symbol')) { fail('shared metadata budget exhausted while decoding bind symbol'); break; }
+      // Bound the symbol C-string scan by remaining budget before allocating or
+      // decoding any slice, mirroring readBudgetedExportTrieCString().
+      const x = readBudgetedExportTrieCString(r, p, end, budget, 'classic-bind-symbol');
+      if (!x) { fail('shared metadata budget exhausted while decoding bind symbol'); break; }
       symbol = x.text; symbolFlags = imm; p = x.next;
     }
     else if (op === 0x50) type = imm;
@@ -884,8 +957,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       const maxBySegment=owner&&step>0n&&segOffset>=0n&&segOffset+ptrSize<=owner.size?Number(((owner.size-segOffset-ptrSize)/step)+1n):0;
       const maxByBudget=Math.min(budget.remaining('operations'),Math.floor(budget.remaining('objects')/2));
       const allowed=Math.max(0,Math.min(repeat,maxBySegment,maxByBudget));
-      for(let i=0;i<allowed;i++){bind();addSegOffset(step);}
-      if(allowed<repeat){fail(`bind repeat count ${repeat} exceeds segment/shared metadata capacity ${allowed}`);break;}
+      let stoppedByError = false;
+      for(let i=0;i<allowed;i++){const ok=bind();addSegOffset(step);if(!ok){stoppedByError=true;break;}}
+      if(budget.stopped)break;
+      if(!stoppedByError && allowed<repeat){fail(`bind repeat count ${repeat} exceeds segment/shared metadata capacity ${allowed}`);break;}
     } else if (op === 0xd0) {
       if (imm === 0) {
         const x = r.uleb(p, 10, end); p = x.next;
@@ -1058,34 +1133,43 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
   return status;
 }
 
+const LAZY_BIND_OPCODES = new Set([0x00, 0x10, 0x20, 0x30, 0x40, 0x60, 0x70, 0x90]);
+let utf8LossyDecoder = null;
+function getUtf8LossyDecoder() {
+  if (!utf8LossyDecoder) utf8LossyDecoder = new TextDecoder('utf-8', { fatal: false });
+  return utf8LossyDecoder;
+}
+
 function stopExportTrieBudget(budget, key, label) {
   return budget.take({ [key]: budget.remaining(key) + 1 }, label);
 }
 
-function utf8CodeUnitsAt(r, p, end) {
-  const b0 = r.u8(p);
-  const cont = (value) => value >= 0x80 && value <= 0xbf;
-  if (b0 < 0x80) return { width: 1, units: 1 };
+function isUtf8Cont(value) {
+  return value >= 0x80 && value <= 0xbf;
+}
+
+function utf8CodeUnitsPacked(r, b0, p, end) {
+  if (b0 < 0x80) return (1 << 2) | 1;
   if (b0 >= 0xc2 && b0 <= 0xdf && p + 1 < end) {
     const b1 = r.u8(p + 1);
-    if (cont(b1)) return { width: 2, units: 1 };
+    if (isUtf8Cont(b1)) return (2 << 2) | 1;
   } else if (b0 >= 0xe0 && b0 <= 0xef && p + 2 < end) {
     const b1 = r.u8(p + 1), b2 = r.u8(p + 2);
     const validB1 = b0 === 0xe0 ? b1 >= 0xa0 && b1 <= 0xbf
       : b0 === 0xed ? b1 >= 0x80 && b1 <= 0x9f
-        : cont(b1);
-    if (validB1 && cont(b2)) return { width: 3, units: 1 };
+        : isUtf8Cont(b1);
+    if (validB1 && isUtf8Cont(b2)) return (3 << 2) | 1;
   } else if (b0 >= 0xf0 && b0 <= 0xf4 && p + 3 < end) {
     const b1 = r.u8(p + 1), b2 = r.u8(p + 2), b3 = r.u8(p + 3);
     const validB1 = b0 === 0xf0 ? b1 >= 0x90 && b1 <= 0xbf
       : b0 === 0xf4 ? b1 >= 0x80 && b1 <= 0x8f
-        : cont(b1);
-    if (validB1 && cont(b2) && cont(b3)) return { width: 4, units: 2 };
+        : isUtf8Cont(b1);
+    if (validB1 && isUtf8Cont(b2) && isUtf8Cont(b3)) return (4 << 2) | 2;
   }
   // TextDecoder({fatal:false}) replaces malformed input. Advancing one byte
   // at a time can only overestimate the resulting UTF-16 length, so it is a
   // safe pre-allocation bound without accepting an oversized string (#4154).
-  return { width: 1, units: 1 };
+  return (1 << 2) | 1;
 }
 
 function readBudgetedExportTrieCString(r, start, end, budget, label) {
@@ -1102,17 +1186,26 @@ function readBudgetedExportTrieCString(r, start, end, budget, label) {
       if (!budget.take({ operations: 1 }, `${label}-scan`)) return null;
       nextScanCheck = p + 4096;
     }
-    if (r.u8(p) === 0) {
+    const b0 = r.u8(p);
+    if (b0 === 0) {
       const inputBytes = p + 1 - start;
       const stringBytes = utf16Units * 2;
       const estimatedHeapBytes = stringBytes + 32;
       if (!budget.take({ inputBytes, stringBytes, estimatedHeapBytes }, label)) return null;
       const raw = r.slice(start, p - start);
-      const text = new TextDecoder('utf-8', { fatal: false }).decode(raw);
+      const text = getUtf8LossyDecoder().decode(raw);
       return { text, next: p + 1, bytes: inputBytes };
     }
-    const next = utf8CodeUnitsAt(r, p, scanEnd);
-    const nextUnits = utf16Units + next.units;
+    let width, units;
+    if (b0 < 0x80) {
+      width = 1;
+      units = 1;
+    } else {
+      const packed = utf8CodeUnitsPacked(r, b0, p, scanEnd);
+      width = packed >>> 2;
+      units = packed & 3;
+    }
+    const nextUnits = utf16Units + units;
     if (nextUnits > maxStringUnits) {
       stopExportTrieBudget(budget, 'stringBytes', label);
       return null;
@@ -1122,7 +1215,7 @@ function readBudgetedExportTrieCString(r, start, end, budget, label) {
       return null;
     }
     utf16Units = nextUnits;
-    p += next.width;
+    p += width;
   }
   if (scanEnd < end) {
     stopExportTrieBudget(budget, 'inputBytes', label);
@@ -1153,7 +1246,7 @@ function rawCString(r, p, end) {
   if (p >= end) throw new Error('unterminated C string');
   const raw = r.slice(start, p - start);
   let text;
-  try { text = new TextDecoder('utf-8', { fatal: false }).decode(raw); }
+  try { text = getUtf8LossyDecoder().decode(raw); }
   catch { text = Array.from(raw, (c) => c >= 0x20 && c <= 0x7e ? String.fromCharCode(c) : '\uFFFD').join(''); }
   return { text, next: p + 1, bytes: p + 1 - start };
 }

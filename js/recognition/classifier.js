@@ -1,9 +1,9 @@
 import { fingerprintFunction } from '../fingerprint/index.js';
 export const FUNCTION_CLASSES = Object.freeze(['APPLICATION','SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED','UNKNOWN']);
 
-const RUNTIME_IMPORTS = [/^_?objc_/, /^_?swift_/, /^_?dyld_/, /^_?__?cxa_/, /^_?pthread_/, /^_?malloc$/, /^_?free$/];
-const GENERATED = [/\bthunk\b/i, /^outlined(?: function)?\b/i, /block_invoke/i, /partial apply/i, /witness thunk/i, /metadata accessor/i];
-const RUNTIME_NAMES = [/^_?(?:objc_|swift_|dyld_|__?cxa_|pthread_)/i];
+const RUNTIME_IMPORTS = [/^_?objc_/, /^_?swift_/, /^_?dyld_/, /^_?__?cxa_/, /^_?pthread_/, /^_?malloc$/, /^_?free$/, /^il2cpp_/, /^mono_/];
+const GENERATED = [/\bthunk\b/i, /^outlined(?: function)?\b/i, /block_invoke/i, /partial apply/i, /witness thunk/i, /metadata accessor/i, /@plt$/i, /^__stub_helper/i, /^j_/, /^___cxx_global_var_init/i, /^il2cpp_codegen_/i, /^_?\$s.*T[aoWm]$/];
+const RUNTIME_NAMES = [/^_?(?:objc_|swift_|dyld_|__?cxa_|pthread_|il2cpp_(?!codegen_)|mono_|_?ZNSt|_?ZSt)/i, /^(?:std::|System\.|mscorlib\.|UnityEngine\.)/];
 
 function libraryBasename(value) {
   const text = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
@@ -11,20 +11,37 @@ function libraryBasename(value) {
   return text.slice(text.lastIndexOf('/') + 1);
 }
 
+const APPLE_SYSTEM_FRAMEWORKS = [
+  'Foundation', 'CoreFoundation', 'UIKit', 'AppKit', 'CoreGraphics', 'QuartzCore',
+  'Security', 'CFNetwork', 'AVFoundation', 'AVFAudio', 'CoreAudio', 'AudioToolbox',
+  'CoreData', 'CoreMedia', 'CoreVideo', 'CoreText', 'CoreImage', 'CoreLocation',
+  'CoreMotion', 'CoreServices', 'Metal', 'MetalKit', 'SpriteKit', 'SceneKit',
+  'GameKit', 'StoreKit', 'WebKit', 'SystemConfiguration', 'ImageIO', 'Accelerate',
+  'SwiftUI', 'Combine', 'CloudKit', 'UserNotifications', 'CryptoKit', 'IOKit',
+  'OpenGLES', 'GLKit',
+].join('|');
+const APPLE_FRAMEWORK_BASE_RE = new RegExp(`^(?:${APPLE_SYSTEM_FRAMEWORKS})$`, 'i');
+const APPLE_FRAMEWORK_PATH_RE = new RegExp(`(?:^|/)(${APPLE_SYSTEM_FRAMEWORKS})\\.framework/(?:Versions/[A-Za-z0-9._-]+/)?\\1$`, 'i');
+
 function isAppleSystemLibrary(value) {
   const text = String(value || '').replace(/\\/g, '/');
   const base = libraryBasename(text);
   /* #5438: macOS keeps every framework binary under
      <Name>.framework/Versions/<V>/<Name> (otool -L output), so the version
-     segment must not disqualify the canonical Foundation pair. */
-  if (/^(Foundation|CoreFoundation)$/i.test(base)) {
-    return /(?:^|\/)(?:Foundation|CoreFoundation)\.framework\/(?:Versions\/[A-Za-z0-9._-]+\/)?(?:Foundation|CoreFoundation)$/i.test(text) || !text.includes('/');
+     segment must not disqualify canonical Apple frameworks; \1 enforces
+     that the framework bundle name and binary name match. */
+  if (APPLE_FRAMEWORK_BASE_RE.test(base)) {
+    return APPLE_FRAMEWORK_PATH_RE.test(text) || !text.includes('/');
   }
   if (/^libobjc(?:\.A)?\.dylib$/i.test(base)) return true;
   // Accept canonical Darwin libSystem names such as libSystem.B.dylib and
   // libsystem_kernel.dylib without restoring the old loose substring match.
   if (/^libsystem(?:(?:\.[a-z0-9]+)|(?:_[a-z0-9]+))?\.dylib$/i.test(base)) return true;
+  if (/^libc\+\+(?:abi)?(?:\.[0-9]+)?\.dylib$/i.test(base)) return true;
+  if (/^libdispatch\.dylib$/i.test(base)) return true;
   if (/^libswift[a-z0-9_]*\.dylib$/i.test(base)) return true;
+  if (/^(?:libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s|libart)\.so(?:\.\d+)*$/i.test(base)) return true;
+  if (/^(?:kernel32|ntdll|user32|advapi32|ucrtbase|msvcrt|vcruntime\d+)\.dll$/i.test(base)) return true;
   return false;
 }
 
@@ -33,8 +50,16 @@ function boundedConfidence(value) {
   return Math.max(0, Math.min(1, value));
 }
 
-export function classifyFunction(input = {}, context = {}) {
-  const fp = fingerprintFunction(input);
+function vendorConfidenceOf(vendor) {
+  const v = vendor?.confidence;
+  if (typeof v === 'number') return boundedConfidence(v);
+  if (v === 'high') return 0.85;
+  if (v === 'medium') return 0.6;
+  if (v === 'low') return 0.3;
+  return 0;
+}
+
+function classifyFingerprint(fp, context = {}) {
   const evidence = [];
   const signature = context.signature?.classification && FUNCTION_CLASSES.includes(context.signature.classification) ? context.signature : null;
   const signatureConfidence = boundedConfidence(signature?.confidence ?? 0);
@@ -48,14 +73,14 @@ export function classifyFunction(input = {}, context = {}) {
   if (GENERATED.some((rx) => rx.test(name))) return { classification:'GENERATED', confidence:0.9, evidence:['compiler-generated-name'], hardSuppress:true };
   if (RUNTIME_NAMES.some((rx) => rx.test(name))) return { classification:'RUNTIME', confidence:0.88, evidence:['runtime-symbol-name'], hardSuppress:true };
   const runtimeImports = fp.imports.filter((x) => RUNTIME_IMPORTS.some((rx) => rx.test(String(x))));
-  const vendorConfidence = boundedConfidence(context.vendor?.confidence ?? 0);
+  const vendorConfidence = vendorConfidenceOf(context.vendor);
   if (context.vendor && vendorConfidence >= 0.8) {
     const classification = FUNCTION_CLASSES.includes(context.vendor.classification) ? context.vendor.classification : context.vendor.kind === 'runtime' ? 'RUNTIME' : context.vendor.kind === 'library' ? 'LIBRARY' : 'SDK';
     return { classification, confidence: vendorConfidence, evidence: context.vendor.evidence || [], hardSuppress:true };
   }
   let appScore = 0;
-  if (fp.objc.class && !context.vendor) { appScore += 0.22; evidence.push('custom-objc-type'); }
-  if (fp.swift.typeDescriptor && !context.vendor) { appScore += 0.22; evidence.push('custom-swift-type'); }
+  if (fp.objc.class && !context.vendor) { appScore += 0.24; evidence.push('custom-objc-type'); }
+  if (fp.swift.typeDescriptor && !context.vendor) { appScore += 0.24; evidence.push('custom-swift-type'); }
   if (fp.strings.some((s) => context.appStrings?.has?.(s))) { appScore += 0.18; evidence.push('app-specific-string'); }
   if (fp.semantic.writes.length) { appScore += 0.16; evidence.push('state-writes'); }
   if (context.calledFromApplication) { appScore += 0.16; evidence.push('application-entry-path'); }
@@ -66,8 +91,11 @@ export function classifyFunction(input = {}, context = {}) {
   return { classification:'UNKNOWN', confidence:0.35, evidence, hardSuppress:false };
 }
 
-export function applicationCodeScore(input = {}, context = {}) {
-  const fp = fingerprintFunction(input); const cls = classifyFunction(fp, context);
+export function classifyFunction(input = {}, context = {}) {
+  return classifyFingerprint(fingerprintFunction(input), context);
+}
+
+function scoreFingerprint(fp, cls, context = {}) {
   let score = cls.classification === 'APPLICATION' ? 0.45 : cls.classification === 'UNKNOWN' ? 0.2 : 0;
   if (context.notKnownVendor) score += 0.12;
   if (fp.objc.class || fp.swift.typeDescriptor) score += 0.1;
@@ -76,28 +104,37 @@ export function applicationCodeScore(input = {}, context = {}) {
   if (context.calledFromApplication) score += 0.08;
   const penalties = { SYSTEM:0.7, RUNTIME:0.7, SDK:0.65, LIBRARY:0.65, GENERATED:0.75 };
   const hard = cls.hardSuppress === true && cls.confidence >= 0.8;
-  score -= hard ? (penalties[cls.classification] || 0) : (['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) ? 0.08 * Math.max(0,Math.min(1,cls.confidence || 0)) : 0);
-  if (boundedConfidence(context.vendor?.confidence ?? 0) >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
+  score -= hard ? (Object.hasOwn(penalties, cls.classification) ? penalties[cls.classification] : 0) : (['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) ? 0.08 * Math.max(0,Math.min(1,cls.confidence || 0)) : 0);
+  if (vendorConfidenceOf(context.vendor) >= 0.8 && cls.classification !== 'APPLICATION') score -= 0.15;
   return Math.max(0, Math.min(1, score));
+}
+
+export function applicationCodeScore(input = {}, context = {}) {
+  const fp = fingerprintFunction(input);
+  const cls = classifyFingerprint(fp, context);
+  return scoreFingerprint(fp, cls, context);
 }
 
 const SUBSYSTEM_RULES = {
   UI: { strings: [/button|view|screen|menu|dialog|label/i], calls: [/ui(view|button|label)|presentview|layout/i] },
-  network: { strings: [/https?:|api\.|socket|request|response/i], calls: [/urlsession|http|socket|connect|send|recv/i] },
-  persistence: { strings: [/database|sqlite|save|load|preferences|keychain/i], calls: [/sqlite|write|read|serialize|deserialize|userdefaults|keychain/i] },
+  network: { strings: [/https?:|api\.|socket|request|response/i], calls: [/urlsession|http|socket|connect|(?<!objc_msg)send|recv/i] },
+  persistence: { strings: [/database|sqlite|save|load|preferences|keychain/i], calls: [/sqlite|write|serialize|deserialize|userdefaults|keychain/i, /(?:^|[_:\s])[fp]?[Rr]ead(?:[A-Z_:\]\(\s]|$)/] },
   gameplay: { strings: [/player|enemy|battle|stage|damage|attack/i], calls: [/update|tick|physics|collision/i] },
-  'economy/reward': { strings: [/coin|gem|reward|currency|purchase|gacha|xp|experience/i], calls: [/purchase|reward|inventory|wallet/i] },
+  'economy/reward': { strings: [/coin(?!cid)|gem(?!ent)|reward|currency|purchase|gacha|\bxp\b|experience/i], calls: [/purchase|reward|inventory|wallet/i] },
   'security/integrity': { strings: [/integrity|jailbreak|tamper|signature|checksum|receipt/i], calls: [/seccode|crypto|hash|verify|attest/i] },
   ads: { strings: [/rewarded.?ad|interstitial|admob|applovin|ironsource|unityads/i], calls: [/loadad|showad|adrequest/i] },
-  analytics: { strings: [/analytics|event|telemetry|firebase|appsflyer|adjust/i], calls: [/logevent|track|telemetry/i] },
+  analytics: { strings: [/analytics|event|telemetry|firebase|appsflyer|adjust(?:sdk|\.com|attribution)/i], calls: [/logevent|track|telemetry/i] },
+  crypto: { strings: [/aes[-_]?\d*|sha[-_]?\d+|hmac|chacha|rsa|cipher|decrypt|encrypt|secret[_-]?key/i], calls: [/cccrypt|evp_|aes_|sha\d+_|hmac|chacha|cipher|encrypt|decrypt/i] },
+  serialization: { strings: [/protobuf|flatbuffers|msgpack|json|base64|zlib/i], calls: [/parsefrom|serializeto|tojson|fromjson|base64|inflate|deflate/i] },
 };
-export function discoverSubsystems(input = {}) {
-  const fp = fingerprintFunction(input), hayStrings = fp.strings, hayCalls = [...fp.calls, ...fp.imports];
+function discoverSubsystemsFromFingerprint(fp) {
+  const hayStrings = fp.strings;
+  const hayCalls = fp.name ? [fp.name, ...fp.calls, ...fp.imports] : [...fp.calls, ...fp.imports];
   const out = [];
   for (const [name, rule] of Object.entries(SUBSYSTEM_RULES)) {
     const stringHits = hayStrings.filter((s) => rule.strings.some((rx) => rx.test(s)));
     const callHits = hayCalls.filter((s) => rule.calls.some((rx) => rx.test(s)));
-    const semanticHit = name === 'economy/reward' && fp.semantic.writes.length && fp.semantic.thresholds.length;
+    const semanticHit = name === 'economy/reward' && (stringHits.length > 0 || callHits.length > 0) && fp.semantic.writes.length > 0 && fp.semantic.thresholds.length > 0;
     const independent = Number(stringHits.length > 0) + Number(callHits.length > 0) + Number(semanticHit);
     if (!independent) continue;
     const confidence = independent >= 2 ? Math.min(0.92, 0.6 + 0.12 * independent) : 0.48;
@@ -106,14 +143,19 @@ export function discoverSubsystems(input = {}) {
   return out.sort((a,b) => b.confidence - a.confidence);
 }
 
+export function discoverSubsystems(input = {}) {
+  return discoverSubsystemsFromFingerprint(fingerprintFunction(input));
+}
+
 export function clusterFunctions(functions = []) {
   const groups = new Map();
   for (const raw of functions) {
     const fp = fingerprintFunction(raw);
-    const cls = classifyFunction(fp, raw.context || {});
-    const subs = discoverSubsystems(fp);
+    const cls = classifyFingerprint(fp, raw.context || {});
+    const subs = discoverSubsystemsFromFingerprint(fp);
     const suppressed = ['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) && cls.hardSuppress === true && cls.confidence >= 0.8;
-    const key = suppressed ? `class:${cls.classification}` : subs[0]?.confidence >= 0.6 ? `sub:${subs[0].subsystem}` : fp.cfgHash ? `cfg:${fp.cfgHash}` : cls.classification === 'APPLICATION' ? 'class:APPLICATION' : `unknown:size:${Math.floor(Math.log2(Math.max(1,fp.size)))}`;
+    const safeSize = typeof fp.size === 'number' && Number.isFinite(fp.size) && fp.size > 0 ? fp.size : 1;
+    const key = suppressed ? `class:${cls.classification}` : subs[0]?.confidence >= 0.6 ? `sub:${subs[0].subsystem}` : fp.cfgHash ? `cfg:${fp.cfgHash}` : cls.classification === 'APPLICATION' ? 'class:APPLICATION' : `unknown:size:${Math.floor(Math.log2(Math.max(1,safeSize)))}`;
     let group = groups.get(key); if (!group) groups.set(key, group = { key, classification: cls.classification, subsystem: subs[0]?.subsystem || null, functions: [] });
     group.functions.push(fp);
   }
@@ -123,14 +165,17 @@ export function clusterFunctions(functions = []) {
 export function rankApplicationFunctions(functions = [], contextFor = () => ({})) {
   return functions.map((fn, index) => {
     const context = contextFor(fn, index);
-    return { function: fingerprintFunction(fn), index, score: applicationCodeScore(fn, context), classification: classifyFunction(fn, context) };
+    const fp = fingerprintFunction(fn);
+    const classification = classifyFingerprint(fp, context);
+    const score = scoreFingerprint(fp, classification, context);
+    return { function: fp, index, score, classification };
   }).sort((a,b) => b.score - a.score);
 }
 
 export function classificationMetrics(results = []) {
   const total = results.length || 1;
   const counts = Object.fromEntries(FUNCTION_CLASSES.map((x) => [x, 0]));
-  for (const item of results) { const c = item.classification?.classification || item.classification || 'UNKNOWN'; if (c in counts) counts[c]++; }
+  for (const item of results) { const c = item.classification?.classification || item.classification || 'UNKNOWN'; if (Object.hasOwn(counts, c)) counts[c]++; }
   const suppressed = counts.SYSTEM + counts.RUNTIME + counts.SDK + counts.LIBRARY + counts.GENERATED;
   return { total: results.length, counts, librarySuppressionRate: suppressed / total, applicationCodeReduction: suppressed / total, applicationVisibleRate: counts.APPLICATION / total };
 }

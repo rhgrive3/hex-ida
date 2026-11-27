@@ -75,12 +75,12 @@ async function absorbTransactionFailure(done) {
   try { await done; } catch { /* request error is mapped by the caller */ }
 }
 
-function storedRow(record, payload) {
+function storedRow(record, payload, { ownPayloadBuffer = false } = {}) {
   return {
     artifactId:requireArtifactId(record.artifactId),
     ...createStorageEnvelopeFields(record),
     record:clone(record),
-    payload:exactArrayBuffer(payload),
+    payload:ownPayloadBuffer && payload instanceof ArrayBuffer ? payload : exactArrayBuffer(payload),
   };
 }
 
@@ -135,16 +135,17 @@ export class MemoryArtifactBackend {
   async putAtomic(record, payload, { signal } = {}) {
     if (signal?.aborted) throw abortError(signal);
     const id = requireArtifactId(record.artifactId);
-    const buffer = exactArrayBuffer(payload);
+    const view = normalizeArtifactPayloadBytes(payload);
     const previous = this.entries.get(id);
     if (previous) {
-      if (!compatiblePublishedArtifact(previous.record, record, previous.payload, buffer)) {
+      if (!compatiblePublishedArtifact(previous.record, record, previous.payload, view)) {
         throw new ArtifactStorageError('artifact-immutable-conflict', `Artifact ${id} is already published with different content`);
       }
       this.metrics.duplicatePuts++;
       return { duplicate:true, ...cloneRaw(previous) };
     }
-    const row = storedRow(record, buffer);
+    const buffer = exactArrayBuffer(view);
+    const row = storedRow(record, buffer, { ownPayloadBuffer:true });
     this.entries.set(id, row);
     this.metrics.writes++;
     this.metrics.writeBytes += buffer.byteLength;
@@ -342,7 +343,7 @@ export class IndexedDbArtifactBackend {
         this.metrics.duplicatePuts++;
         return { duplicate:true, ...cloneRaw(previous) };
       }
-      const row = storedRow(record, buffer);
+      const row = storedRow(record, buffer, { ownPayloadBuffer:true });
       await requestPromise(store.add(row));
       await done;
       this.metrics.writes++;

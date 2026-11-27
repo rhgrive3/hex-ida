@@ -142,6 +142,10 @@ async function classifyGap(gap, options) {
 
   const alignedStart = (gap.start + 3n) & ~3n;
   const alignedEnd = gap.end & ~3n;
+  if (alignedStart > alignedEnd) {
+    appendClassified(out, gap.start, gap.end, 'unknown');
+    return out;
+  }
   if (gap.start < alignedStart) appendClassified(out, gap.start, alignedStart < gap.end ? alignedStart : gap.end, 'unknown');
   if (alignedStart < alignedEnd) {
     let cursor = alignedStart;
@@ -178,16 +182,57 @@ async function classifyGap(gap, options) {
  */
 export async function executableByteCoverage({
   regions = [], functions = null, functionEnds = null,
-  architecture = '', endian = 'little', readBytes = null, signal = null,
+  architecture = '', endian = 'little', readBytes = null, classifyGaps = null, signal = null,
 } = {}) {
   const executable = executableRanges(regions);
   const exact = exactFunctionRanges(functions, functionEnds);
   const attributed = intersectRanges(executable, exact);
   const gaps = subtractRanges(executable, attributed);
   const unclassified = [];
-  for (const gap of gaps) {
+  const classifiedPieces = [];
+  let remainingGaps = gaps;
+  if (typeof classifyGaps === 'function' && gaps.length > 0 && isAarch64(architecture)) {
+    if (signal?.aborted) throw Object.assign(new Error('Function discovery coverage cancelled'), { name:'AbortError' });
+    let result = null;
+    try {
+      result = await classifyGaps({ gaps, architecture, endian, signal });
+    } catch (error) {
+      const unsupported = /Unknown request:\s*classifyExecutableCoverage/i.test(String(error?.message || error || ''));
+      if (signal?.aborted || !unsupported) throw error;
+      result = null;
+    }
+    if (signal?.aborted || result?.cancelled) {
+      throw Object.assign(new Error('Function discovery coverage cancelled'), { name:'AbortError' });
+    }
+    const spans = Array.isArray(result) ? result : (Array.isArray(result?.spans) ? result.spans : null);
+    if (spans) {
+      const rawPadding = [];
+      const rawUnknown = [];
+      for (const range of spans) {
+        if (!range) continue;
+        const start = asNonNegativeBigInt(range.start);
+        const end = asNonNegativeBigInt(range.end);
+        if (start != null && end != null && end > start) {
+          if (range.class === 'padding') rawPadding.push({ start, end });
+          else rawUnknown.push({ start, end });
+        }
+      }
+      const clippedPadding = intersectRanges(gaps, mergeRanges(rawPadding));
+      const clippedUnknown = intersectRanges(gaps, mergeRanges(rawUnknown));
+      const cleanPadding = subtractRanges(clippedPadding, clippedUnknown);
+      for (const range of cleanPadding) classifiedPieces.push({ start:range.start, end:range.end, class:'padding' });
+      for (const range of clippedUnknown) classifiedPieces.push({ start:range.start, end:range.end, class:'unknown' });
+      const covered = mergeRanges([...cleanPadding, ...clippedUnknown]);
+      remainingGaps = subtractRanges(gaps, covered);
+    }
+  }
+  for (const gap of remainingGaps) {
     const classified = await classifyGap(gap, { architecture, endian, readBytes, signal });
-    for (const range of classified) appendClassified(unclassified, range.start, range.end, range.class);
+    for (const range of classified) classifiedPieces.push(range);
+  }
+  classifiedPieces.sort(compareRange);
+  for (const range of classifiedPieces) {
+    appendClassified(unclassified, range.start, range.end, range.class);
   }
   return {
     executableBytes:safeByteCount(sumBytes(executable)),

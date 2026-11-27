@@ -85,10 +85,14 @@ export function materializeCompactFunctionSet(input) {
   for (let i = 0; i < count; i++) {
     const address = functions[i];
     const next = i + 1 < functions.length ? functions[i + 1] : null;
+    const addrKey = canonicalAddressKey(address);
+    const nextKey = next != null ? canonicalAddressKey(next) : null;
+    const addrBig = addrKey != null ? BigInt(addrKey) : null;
+    const nextBig = nextKey != null ? BigInt(nextKey) : null;
     out[i] = {
       address,
-      name: names.get(canonicalAddressKey(address)) || null,
-      size: next != null && next > address ? Number(next - address) : 0,
+      name: names.get(addrKey) || null,
+      size: addrBig != null && nextBig != null && nextBig > addrBig ? Number(nextBig - addrBig) : 0,
       architecture: input.architecture,
       strings: [], calls: [], imports: [], semantic: { writes: [], thresholds: [] }, fieldAccessShape: [],
       evidenceProfile: input.evidenceProfile,

@@ -67,9 +67,32 @@ function assertJumpsResolveAndBracesBalance(output) {
   assert.equal(depth, 0, `unbalanced output:\n${render(output.lines).join('\n')}`);
 }
 
+let cachedCompiler = undefined;
+
+function resolveCCompiler() {
+  if (cachedCompiler !== undefined) return cachedCompiler;
+  const candidates = [process.env.CLANG, '/usr/bin/clang', 'clang', 'gcc', '/usr/bin/gcc'].filter(Boolean);
+  for (const bin of candidates) {
+    const probe = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 5000 });
+    if (!probe.error && probe.status === 0) {
+      const versionText = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`;
+      cachedCompiler = { bin, isClang: /clang/i.test(versionText) };
+      return cachedCompiler;
+    }
+  }
+  cachedCompiler = null;
+  return null;
+}
+
 function clangSyntaxOk(source) {
-  const out = spawnSync('/usr/bin/clang', ['-target', 'aarch64-linux-gnu', '-fsyntax-only', '-w', '-x', 'c', '-'],
-    { input: source, encoding: 'utf8', timeout: 30000 });
+  const compiler = resolveCCompiler();
+  if (!compiler) {
+    return { ok: false, stderr: 'No C compiler (clang or gcc) found in environment' };
+  }
+  const args = compiler.isClang
+    ? ['-target', 'aarch64-linux-gnu', '-fsyntax-only', '-Wno-everything', '-x', 'c', '-']
+    : ['-fsyntax-only', '-w', '-x', 'c', '-'];
+  const out = spawnSync(compiler.bin, args, { input: source, encoding: 'utf8', timeout: 30000 });
   return { ok: out.status === 0, stderr: String(out.stderr ?? '') };
 }
 

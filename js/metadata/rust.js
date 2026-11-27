@@ -182,9 +182,10 @@ function v0CacheComposedRender(state, kind, entryPos, depth, length, build) {
  * Parses a Rust v0 base-62 integer.
  */
 function parseV0Base62(str, pos) {
-  let val = 0;
+  if (pos >= str.length) return null;
+  if (str[pos] === '_') return { value: 0, nextPos: pos + 1 };
+  let val = 0n;
   let i = pos;
-  if (i < str.length && str[i] === '_') return { value: 0, nextPos: i + 1 };
   while (i < str.length) {
     const c = str.charCodeAt(i);
     let digit = -1;
@@ -192,9 +193,12 @@ function parseV0Base62(str, pos) {
     else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61 + 10; // a-z -> 10-35
     else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41 + 36; // A-Z -> 36-61
     else if (c === 0x5f) { // '_' delimiter
-      return { value: val + 1, nextPos: i + 1 };
+      const result = val + 1n;
+      return { value: result <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(result) : result, nextPos: i + 1 };
     } else break;
-    val = val * 62 + digit;
+    const nextVal = val * 62n + BigInt(digit);
+    if (nextVal > 0xffffffffffffffffn) return null;
+    val = nextVal;
     i++;
   }
   return null;
@@ -212,14 +216,19 @@ function decodePunycode(input, state) {
   const damp = 700;
   const initialBias = 72;
   const initialN = 128;
+  const maxInt = 0x7fffffff;
 
   if (!v0ChargePunycode(state, { encodedBytes: input.length })) return null;
 
   function adapt(delta, numpoints, firsttime) {
+    if (!Number.isSafeInteger(delta) || delta < 0 || !Number.isSafeInteger(numpoints) || numpoints <= 0) {
+      return null;
+    }
     let d = firsttime ? Math.floor(delta / damp) : Math.floor(delta / 2);
     d += Math.floor(d / numpoints);
     let k = 0;
     while (d > Math.floor(((base - tmin) * tmax) / 2)) {
+      if (!Number.isFinite(d)) return null;
       d = Math.floor(d / (base - tmin));
       k += base;
     }
@@ -256,16 +265,23 @@ function decodePunycode(input, state) {
       else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41;
       else return null;
 
+      if (digit > Math.floor((maxInt - i) / w)) return null;
       i += digit * w;
       const t = k <= bias ? tmin : k >= bias + tmax ? tmax : k - bias;
       if (digit < t) break;
-      w *= (base - t);
+      const factor = base - t;
+      if (w > Math.floor(maxInt / factor)) return null;
+      w *= factor;
       k += base;
     }
     const outLen = output.length + 1;
-    bias = adapt(i - oldi, outLen, oldi === 0);
-    n += Math.floor(i / outLen);
-    if (n > 0x10ffff) return null;
+    const nextBias = adapt(i - oldi, outLen, oldi === 0);
+    if (nextBias == null) return null;
+    bias = nextBias;
+    const deltaN = Math.floor(i / outLen);
+    if (deltaN > 0x10ffff - n) return null;
+    n += deltaN;
+    if (n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff)) return null;
     i = i % outLen;
     if (!v0ChargePunycode(state, { scalars: 1, spliceWork: outLen })) return null;
     output.splice(i, 0, String.fromCodePoint(n));
@@ -305,10 +321,19 @@ function parseV0Identifier(str, pos, state) {
     len = 0;
     p += 1;
   } else {
-    const lenMatch = str.slice(p).match(/^[1-9][0-9]*/);
-    if (!lenMatch) return null;
-    len = Number(lenMatch[0]);
-    p += lenMatch[0].length;
+    if (p >= str.length) return null;
+    const first = str.charCodeAt(p);
+    if (first < 0x31 || first > 0x39) return null;
+    let parsedLen = 0;
+    const maxRemaining = str.length - p;
+    while (p < str.length) {
+      const code = str.charCodeAt(p);
+      if (code < 0x30 || code > 0x39) break;
+      parsedLen = parsedLen * 10 + (code - 0x30);
+      if (!Number.isSafeInteger(parsedLen) || parsedLen > maxRemaining) return null;
+      p++;
+    }
+    len = parsedLen;
   }
   if (p < str.length && str[p] === '_') {
     p++;
@@ -339,11 +364,14 @@ function parseV0Identifier(str, pos, state) {
  * `<const-data>` is `[n] <hex>* _` and `p` is a standalone placeholder.
  */
 function parseV0Const(str, state, depth = 0) {
-  if (state.pos >= str.length || depth > 32) return null;
+  if (state.pos >= str.length) return null;
+  const limit = Number.isSafeInteger(state.maxDepth) ? state.maxDepth : 32;
+  if (depth > limit) { state.depthExceeded = true; return null; }
   if (depth > state.maxSeenDepth) state.maxSeenDepth = depth;
   if (!v0ChargeOp(state)) return null;
   if (str[state.pos] === 'p') {
     state.pos++;
+    if (!v0ChargeOutput(state, 1)) return null;
     return '_';
   }
   if (str[state.pos] === 'B') {
@@ -361,16 +389,30 @@ function parseV0Const(str, state, depth = 0) {
     isNegative = true;
     state.pos++;
   }
-  let hexStr = '';
-  while (state.pos < str.length && /[0-9a-fA-F]/.test(str[state.pos])) {
-    hexStr += str[state.pos++];
+  const MAX_CONST_HEX_DIGITS = 64;
+  const hexStart = state.pos;
+  while (state.pos < str.length) {
+    const cc = str.charCodeAt(state.pos);
+    const isHex = (cc >= 0x30 && cc <= 0x39) || (cc >= 0x61 && cc <= 0x66) || (cc >= 0x41 && cc <= 0x46);
+    if (!isHex) break;
+    state.pos++;
+    if (state.pos - hexStart > MAX_CONST_HEX_DIGITS) {
+      state.budget.exceeded = true;
+      return null;
+    }
   }
   if (state.pos >= str.length || str[state.pos] !== '_') return null;
+  const hexStr = str.slice(hexStart, state.pos);
   state.pos++;
-  if (hexStr === '') return '0';
+  if (hexStr === '') {
+    if (!v0ChargeOutput(state, 1)) return null;
+    return '0';
+  }
   try {
     const val = BigInt('0x' + hexStr);
-    return isNegative ? `-${val.toString()}` : val.toString();
+    const text = isNegative ? `-${val.toString()}` : val.toString();
+    if (!v0ChargeOutput(state, text.length)) return null;
+    return text;
   } catch {
     return null;
   }
@@ -651,17 +693,35 @@ export function isRustCandidateSymbol(text) {
 /**
  * Demangles a Rust legacy symbol, including the single Mach-O decoration.
  */
-export function demangleRustLegacy(symbol) {
+const RUST_LEGACY_DEFAULT_MAX_COMPONENTS = 512;
+
+export function demangleRustLegacy(symbol, budgetOverrides, budgetCeilings = null) {
   const original = String(symbol || '');
   const s = stripLegacyRustPrefix(original);
   if (s == null) {
-    return { original, demangled: original, parsed: false, reason: 'not-legacy-rust-symbol' };
+    return {
+      original,
+      demangled: original,
+      parsed: false,
+      reason: 'not-legacy-rust-symbol',
+      stats: { ops: 0, outputChars: 0, scalars: 0, encodedBytes: 0, spliceWork: 0 },
+    };
   }
 
+  const budget = createDemangleBudget(budgetOverrides, budgetCeilings);
+  const stats = () => ({
+    ops: budget.ops,
+    outputChars: budget.outputChars,
+    scalars: budget.scalars,
+    encodedBytes: budget.encodedBytes,
+    spliceWork: budget.spliceWork,
+  });
+  const maxComponents = positiveBudget(budgetOverrides?.maxComponents, RUST_LEGACY_DEFAULT_MAX_COMPONENTS);
   const components = [];
   let i = 2;
   let hash = null;
   let terminated = false;
+  let outputChars = 0;
 
   while (i < s.length) {
     if (s[i] === 'E') {
@@ -669,41 +729,63 @@ export function demangleRustLegacy(symbol) {
       terminated = true;
       break;
     }
-    const match = s.slice(i).match(/^(\d+)/);
-    if (!match) break;
-    const len = Number(match[1]);
-    i += match[1].length;
-    if (i + len > s.length) break;
+    if (budget.ops >= budget.maxOps || components.length >= maxComponents) {
+      budget.exceeded = true;
+      return { original, demangled: original, parsed: false, reason: 'legacy-resource-budget-exceeded', resourceLimited: true, stats: stats() };
+    }
+    budget.ops++;
+    const digitStart = i;
+    let len = 0;
+    while (i < s.length) {
+      const cc = s.charCodeAt(i);
+      if (cc < 0x30 || cc > 0x39) break;
+      len = len * 10 + (cc - 0x30);
+      i++;
+      if (!Number.isSafeInteger(len) || len > s.length - i) {
+        len = -1;
+        break;
+      }
+    }
+    if (i === digitStart || len < 0 || i + len > s.length) break;
 
     const part = s.slice(i, i + len);
     i += len;
 
     // Check if this part is the trailing Rust hash (e.g. `17h<16 hex digits>`)
-    const hashMatch = part.match(/^17h([0-9a-f]{16})$/i) || part.match(/^h([0-9a-f]{16})$/i);
+    const hashMatch = part.length <= 20 && (part.match(/^17h([0-9a-f]{16})$/i) || part.match(/^h([0-9a-f]{16})$/i));
     if (hashMatch) {
       hash = hashMatch[1];
     } else {
+      const sepLen = components.length > 0 ? 2 : 0;
+      if (part.length + sepLen > budget.maxOutputChars - outputChars) {
+        budget.exceeded = true;
+        return { original, demangled: original, parsed: false, reason: 'legacy-resource-budget-exceeded', resourceLimited: true, stats: stats() };
+      }
       // Decode $ characters
-      const clean = part
-        .replace(/\$SP\$/g, '@')
-        .replace(/\$BP\$/g, '*')
-        .replace(/\$RF\$/g, '&')
-        .replace(/\$LT\$/g, '<')
-        .replace(/\$GT\$/g, '>')
-        .replace(/\$LP\$/g, '(')
-        .replace(/\$RP\$/g, ')')
-        .replace(/\$C\$/g, ',')
-        .replace(/\$u20\$/g, ' ')
-        .replace(/\$u27\$/g, "'");
+      const clean = part.includes('$')
+        ? part
+          .replace(/\$SP\$/g, '@')
+          .replace(/\$BP\$/g, '*')
+          .replace(/\$RF\$/g, '&')
+          .replace(/\$LT\$/g, '<')
+          .replace(/\$GT\$/g, '>')
+          .replace(/\$LP\$/g, '(')
+          .replace(/\$RP\$/g, ')')
+          .replace(/\$C\$/g, ',')
+          .replace(/\$u20\$/g, ' ')
+          .replace(/\$u27\$/g, "'")
+        : part;
+      outputChars += clean.length + sepLen;
+      budget.outputChars = outputChars;
       components.push(clean);
     }
   }
 
   if (!terminated || components.length === 0) {
-    return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
+    return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure', stats: stats() };
   }
   if (i !== s.length) {
-    return { original, demangled: original, parsed: false, reason: 'unconsumed-legacy-trailing-bytes' };
+    return { original, demangled: original, parsed: false, reason: 'unconsumed-legacy-trailing-bytes', stats: stats() };
   }
 
   const demangled = components.join('::');
@@ -715,6 +797,7 @@ export function demangleRustLegacy(symbol) {
     hash,
     crate: components[0] || null,
     generation: 'legacy',
+    stats: stats(),
   };
 }
 
@@ -730,8 +813,15 @@ export function demangleRustSymbol(symbol, budgetOverrides, budgetCeilings = nul
     return demangleRustV0(text, 32, budgetOverrides, budgetCeilings);
   }
   if (stripLegacyRustPrefix(text) != null) {
-    const leg = demangleRustLegacy(text);
-    if (leg.parsed) return leg;
+    const leg = demangleRustLegacy(text, budgetOverrides, budgetCeilings);
+    if (leg.parsed || leg.resourceLimited) return leg;
+    return {
+      original: text,
+      demangled: text,
+      parsed: false,
+      reason: 'not-rust-symbol',
+      ...(leg.stats ? { stats: leg.stats } : {}),
+    };
   }
   return { original: text, demangled: text, parsed: false, reason: 'not-rust-symbol' };
 }
@@ -914,6 +1004,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const toolchainVersion = findRustcVersion(this.commentBuffer);
     const hasEvidence = rustSymbols.length > 0 || toolchainVersion != null || unreadable > 0 || invalidEntries > 0;
 
+    this.cachedParsed = null;
     if (!hasEvidence) {
       return createLanguageMetadataResult({
         providerId: this.id,

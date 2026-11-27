@@ -210,7 +210,7 @@ function indexFromReport(report, symbols, architecture, snapshotId) {
   for(let i=0;i<(symbols?.names?.length??0);i++) {
     const address=symbols.addrs?.[i];if(address==null)continue;
     const key=String(address),name=symbols.names[i];
-    const argumentProof=/^_ZL?[1-9]/.test(name)?createCppTypedArgumentEvidence({symbol:name,functionAddress:BigInt(address),architecture}):null;
+    const argumentProof=/^_?_ZL?[1-9]/.test(name)?createCppTypedArgumentEvidence({symbol:name,functionAddress:BigInt(address),architecture}):null;
     if(!firstSymbol.has(key)){
       firstSymbol.set(key,name);if(argumentProof)typedArguments.set(key,argumentProof);continue;
     }
@@ -311,6 +311,7 @@ export function createCxxEvidenceProvider(input = {}) {
 
   let index = null;
   let pending = null;
+  let epoch = 0;
   let builds = 0;
   let attempts = 0;
   let provided = 0;
@@ -349,17 +350,20 @@ export function createCxxEvidenceProvider(input = {}) {
         return index;
       }
       builds++;
-      pending = (async () => {
+      const buildEpoch = epoch;
+      const buildPending = (async () => {
         const report = cache
           ? await cache.get(producerInput(), cacheKey)
           : await buildCxxClassEvidence(producerInput());
-        index = report ? indexFromReport(report,symbols,architecture,snapshotId) : EMPTY_INDEX;
-        return index;
+        const built = report ? indexFromReport(report, symbols, architecture, snapshotId) : EMPTY_INDEX;
+        if (epoch === buildEpoch) index = built;
+        return built;
       })();
+      pending = buildPending;
       try {
-        return await pending;
+        return await buildPending;
       } finally {
-        pending = null;
+        if (pending === buildPending) pending = null;
       }
     },
 
@@ -400,22 +404,18 @@ export function createCxxEvidenceProvider(input = {}) {
       if (functionId == null && functionAddress == null) return bind(null);
       const binarySymbol=index.symbolNameFor?.(functionAddress)??null;
 
+      let canonicalAddressKey = null;
+      if (functionAddress != null) {
+        try { canonicalAddressKey = BigInt(functionAddress).toString(); } catch { canonicalAddressKey = null; }
+      }
       // Only the vtables that actually reference this address can prove
       // membership, so a function is never attributed to an unrelated class.
       const vtables = [];
       const vtableClassNames = [];
-      if (functionAddress != null) {
-        let key;
-        try {
-          key = BigInt(functionAddress).toString();
-        } catch {
-          key = null;
-        }
-        if (key != null) {
-          for (const vtableIndex of index.bySlotAddress.get(key) || []) {
-            vtables.push(index.vtables[vtableIndex]);
-            vtableClassNames.push(index.vtableClassNames[vtableIndex] ?? null);
-          }
+      if (canonicalAddressKey != null) {
+        for (const vtableIndex of index.bySlotAddress.get(canonicalAddressKey) || []) {
+          vtables.push(index.vtables[vtableIndex]);
+          vtableClassNames.push(index.vtableClassNames[vtableIndex] ?? null);
         }
       }
 
@@ -425,9 +425,9 @@ export function createCxxEvidenceProvider(input = {}) {
       if (new Set(vtableClassNames).size > 1) {
         const symbol = binarySymbol;
         const info = analyzeFunctionSymbol(symbol);
-        const owner = !info.isAdjustedThunk
-          ? index.primaryOwnerFor(BigInt(functionAddress), info.className) : null;
-        const aliases = index.symbolOwners?.get(String(functionAddress));
+        const owner = !info.isAdjustedThunk && canonicalAddressKey != null
+          ? index.primaryOwnerFor(BigInt(canonicalAddressKey), info.className) : null;
+        const aliases = canonicalAddressKey != null ? index.symbolOwners?.get(canonicalAddressKey) : null;
         if (owner && (!aliases?.size || aliases.size === 1 && aliases.has(owner.className))) {
           for (let i = vtables.length - 1; i >= 0; i--) {
             if (vtableClassNames[i] !== owner.className) { vtables.splice(i, 1); vtableClassNames.splice(i, 1); }
@@ -437,7 +437,7 @@ export function createCxxEvidenceProvider(input = {}) {
 
       let report;
       try {
-        const typed=index.typedArguments?.get(String(functionAddress));
+        const typed = canonicalAddressKey != null ? index.typedArguments?.get(canonicalAddressKey) : null;
         const symbol=binarySymbol;
         const lifetimeClass=enableTypedArguments===true&&typed?index.classTypeFor?.(typed.className):null;
         // A conflicting primary-vtable identity cannot be repaired by a name.
@@ -502,7 +502,7 @@ export function createCxxEvidenceProvider(input = {}) {
       // one owner. The decompiler's conservative anonymous projection remains
       // available, but it cannot mint a member of the first table for Pinpoint.
       const owner = receiver.classIdentity;
-      const symbolOwners=functionAddress!=null?index.symbolOwners?.get(String(functionAddress)):null;
+      const symbolOwners = canonicalAddressKey != null ? index.symbolOwners?.get(canonicalAddressKey) : null;
       const symbolBindingValid=!symbolOwners?.size||(symbolOwners.size===1&&symbolOwners.has(owner?.className));
       const publishOwner = symbolBindingValid && (owner?.kind === 'named'
         || (vtables.length === 1 && vtableClassNames.every((name) => !name)));
@@ -561,6 +561,7 @@ export function createCxxEvidenceProvider(input = {}) {
     },
 
     clear() {
+      epoch++;
       index = null;
       pending = null;
       lastAttempt = null;

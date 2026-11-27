@@ -37,15 +37,40 @@ export function plainFieldName(name) {
   return String(name || '').replace(/^_+/, '');
 }
 
+function normalizeAddressKey(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value).toString() : null;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+    const m = /^([+-]?)(0[xX][0-9a-fA-F]+|\d+)$/.exec(text);
+    if (!m) return null;
+    try {
+      const mag = BigInt(m[2]);
+      return (m[1] === '-' ? -mag : mag).toString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function isValidNumericKey(value) {
   if (value == null) return false;
   if (typeof value === 'number') return Number.isFinite(value);
   if (typeof value === 'bigint') return true;
   if (typeof value === 'string') {
     const text = value.trim();
-    return text.length > 0 && /^[+-]?(?:0x[0-9a-fA-F]+|\d+)$/.test(text);
+    return text.length > 0 && /^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text);
   }
   return false;
+}
+
+function effectiveFieldType(field) {
+  if (!field) return null;
+  if (field.type && field.type.kind !== 'unknown') return field.type;
+  return field.declaredType || field.type || null;
 }
 
 export class FieldIndex {
@@ -60,7 +85,13 @@ export class FieldIndex {
     // for every insertion is Θ(M²) and a valid 60 000-method Objective-C image
     // blocks the analysis loop for seconds. Insertion order and the exact
     // duplicate identity (className, sel, kind) stay unchanged.
-    this._ownerIdentities = new Set();
+    const ownerIdentities = new Set();
+    const AMBIGUOUS = Symbol('ambiguous');
+    const addUnique = (map, key, iv) => {
+      const existing = map.get(key);
+      if (existing === undefined) map.set(key, iv);
+      else if (existing !== iv) map.set(key, AMBIGUOUS);
+    };
     this.classOfName = new Map();  // クラス名 -> クラス情報（別名）
     /*
      * 「位置が書いてある場所」→ フィールド。
@@ -75,12 +106,19 @@ export class FieldIndex {
     for (const c of list) {
       if (!c || !c.name) continue;
       const byOffset = new Map();
+      const sizedIvars = [];
+      let minOwnOffset = Infinity;
       const ivars = (c.ivars || []).filter((iv) =>
         objcIvarRangeWithinInstance(iv?.offset, iv?.size ?? null, c.instanceSize));
       for (const iv of ivars) {
-        byOffset.set(Number(iv.offset), iv);
+        const ivOff = Number(iv.offset);
+        byOffset.set(ivOff, iv);
+        if (iv.offset != null && Number.isFinite(ivOff)) {
+          if (ivOff < minOwnOffset) minOwnOffset = ivOff;
+        }
         if (iv.offsetVar != null) {
-          this.byOffsetVar.set(iv.offsetVar.toString(), { className: c.name, field: iv });
+          const offsetKey = normalizeAddressKey(iv.offsetVar);
+          if (offsetKey != null) this.byOffsetVar.set(offsetKey, { className: c.name, field: iv });
         }
         this.fieldCount++;
       }
@@ -91,9 +129,15 @@ export class FieldIndex {
        */
       const propByIvar = new Map();
       for (const p of c.properties || []) {
-        const key = p.ivar || ('_' + p.name);
-        if (!propByIvar.has(key)) propByIvar.set(key, p);
+        if (!p) continue;
+        const key = (typeof p.ivar === 'string' && p.ivar)
+          ? p.ivar
+          : (typeof p.name === 'string' && p.name ? '_' + p.name : null);
+        if (key && !propByIvar.has(key)) propByIvar.set(key, p);
       }
+      const customBySel = new Map();
+      const defaultGetterByPlain = new Map();
+      const defaultSetterBySel = new Map();
       for (const iv of ivars) {
         const p = propByIvar.get(iv.name);
         if (p) {
@@ -101,13 +145,40 @@ export class FieldIndex {
           // 宣言された型の方が具体的なら、そちらも持っておく（上書きはしない）
           if (p.type && (!iv.type || iv.type.kind === 'unknown')) iv.declaredType = p.type;
         }
+        if (iv.offset != null && Number.isFinite(Number(iv.offset))) {
+          const size = iv.size || (iv.type && iv.type.bytes) || 0;
+          if (size > 0) sizedIvars.push(iv);
+        }
+        if (typeof iv.property?.getter === 'string' && iv.property.getter.length > 0) {
+          addUnique(customBySel, iv.property.getter, iv);
+        }
+        if (typeof iv.property?.setter === 'string' && iv.property.setter.length > 0) {
+          addUnique(customBySel, iv.property.setter, iv);
+        }
+        if (typeof iv.name === 'string' && iv.name.length > 0) {
+          const plain = plainFieldName(iv.name);
+          if (plain) {
+            addUnique(defaultGetterByPlain, plain, iv);
+            addUnique(defaultSetterBySel, `set${plain[0].toUpperCase()}${plain.slice(1)}:`, iv);
+          }
+        }
+        if (typeof iv.property?.name === 'string' && iv.property.name.length > 0) {
+          const plain = plainFieldName(iv.property.name);
+          if (plain) {
+            addUnique(defaultGetterByPlain, plain, iv);
+            addUnique(defaultSetterBySel, `set${plain[0].toUpperCase()}${plain.slice(1)}:`, iv);
+          }
+        }
       }
 
+      const instanceSize = c.instanceSize || 0;
       const entry = {
         name: c.name,
         superName: c.superName || null,
-        instanceSize: c.instanceSize || 0,
+        instanceSize,
+        firstOwnOffset: Number.isFinite(minOwnOffset) ? minOwnOffset : instanceSize,
         ivars,
+        sizedIvars,
         properties: c.properties || [],
         propertyByIvar: propByIvar,
         byOffset,
@@ -123,30 +194,32 @@ export class FieldIndex {
          but the runtime metadata still states what `foo` / `setFoo:` means. */
       const accessorField = (sel) => {
         const text = String(sel || '');
-        const setter = /^set(.+):$/.test(text);
-        if (!text || (!setter && text.includes(':'))) return null;
-
-        const matches = [];
-        for (const iv of ivars) {
-          const names = [iv.name, iv.property && iv.property.name]
-            .filter(Boolean).map((x) => plainFieldName(x)).filter(Boolean);
-          const matched = setter
-            ? names.some((name) => `set${name[0].toUpperCase()}${name.slice(1)}:` === text)
-            : names.includes(plainFieldName(text));
-          if (matched) matches.push(iv);
+        if (!text) return null;
+        const customHit = customBySel.get(text);
+        if (customHit === AMBIGUOUS) return null;
+        const setter = /^set([^:]+):$/.test(text);
+        const hasColon = text.includes(':');
+        let defaultHit;
+        if (setter || !hasColon) {
+          defaultHit = setter
+            ? defaultSetterBySel.get(text)
+            : defaultGetterByPlain.get(text);
         }
-        return matches.length === 1 ? matches[0] : null;
+        if (defaultHit === AMBIGUOUS) return null;
+        if (customHit && defaultHit && customHit !== defaultHit) return null;
+        return customHit || defaultHit || null;
       };
       const addMethodOwner = (m, defaultKind, allowInstanceAccessor) => {
         if (m.addr == null) return;
-        const key = m.addr.toString();
+        const key = normalizeAddressKey(m.addr);
+        if (key == null) return;
         const owner = {
           className: c.name, sel: m.sel || null, kind: m.kind || defaultKind,
           accessorField: allowInstanceAccessor ? accessorField(m.sel) : null,
         };
         const identity = `${key}\u0000${owner.className}\u0000${owner.sel ?? ''}\u0000${owner.kind ?? ''}`;
-        if (this._ownerIdentities.has(identity)) return;
-        this._ownerIdentities.add(identity);
+        if (ownerIdentities.has(identity)) return;
+        ownerIdentities.add(identity);
         const owners = this.methodOwner.get(key) || [];
         owners.push(owner);
         this.methodOwner.set(key, owners);
@@ -168,8 +241,9 @@ export class FieldIndex {
 
   /** 同じIMPを共有する全owner。呼び出し側が文脈で絞り込めるよう保持する。 */
   ownersOf(funcAddr) {
-    if (!isValidNumericKey(funcAddr)) return [];
-    return (this.methodOwner.get(funcAddr.toString()) || []).slice();
+    const key = normalizeAddressKey(funcAddr);
+    if (key == null) return [];
+    return (this.methodOwner.get(key) || []).slice();
   }
 
   /** クラスの情報。 */
@@ -181,8 +255,11 @@ export class FieldIndex {
    */
   fieldAt(className, offset) {
     if (!isValidNumericKey(offset)) return null;
-    const off = Number(offset);
-    if (!Number.isFinite(off)) return null;
+    const normalizedKey = typeof offset === 'string' ? normalizeAddressKey(offset) : null;
+    const offBig = normalizedKey != null ? BigInt(normalizedKey) : (typeof offset === 'bigint' ? offset : null);
+    if (offBig != null && (offBig < BigInt(Number.MIN_SAFE_INTEGER) || offBig > BigInt(Number.MAX_SAFE_INTEGER))) return null;
+    const off = offBig != null ? Number(offBig) : Number(offset);
+    if (!Number.isSafeInteger(off)) return null;
     const visited = new Set();
     let currentName = className;
     let depth = 0;
@@ -193,17 +270,14 @@ export class FieldIndex {
       if (!c) return null;
       const exact = c.byOffset.get(off);
       if (exact) return { field: exact, className: currentName, exact: true, delta: 0 };
-      for (const iv of c.ivars) {
-        if (iv.offset == null || !Number.isFinite(Number(iv.offset))) continue;
+      for (const iv of c.sizedIvars) {
         const ivOffset = Number(iv.offset);
         const size = iv.size || (iv.type && iv.type.bytes) || 0;
         if (size > 0 && off > ivOffset && off < ivOffset + size) {
           return { field: iv, className: currentName, exact: false, delta: off - ivOffset };
         }
       }
-      const firstLocated = c.ivars.find((iv) => iv.offset != null && Number.isFinite(Number(iv.offset)));
-      const firstOwnOffset = firstLocated ? Number(firstLocated.offset) : c.instanceSize;
-      if (!c.superName || !(off < firstOwnOffset)) return null;
+      if (!c.superName || !(off < c.firstOwnOffset)) return null;
       currentName = c.superName;
     }
     return null;
@@ -215,14 +289,24 @@ export class FieldIndex {
    * @returns {Array<{className:string, field:object}>}
    */
   findFields(query, limit = 200) {
-    const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
+    const re = query instanceof RegExp
+      ? (query.global || query.sticky ? new RegExp(query.source, query.flags) : query)
+      : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
     const maxResults = resultLimit(limit, 200);
     if (maxResults <= 0) return out;
     for (const c of this.classes.values()) {
       for (const iv of c.ivars) {
-        re.lastIndex = 0;
-        if (!re.test(iv.name)) continue;
+        let matched = false;
+        if (typeof iv.name === 'string') {
+          re.lastIndex = 0;
+          matched = re.test(iv.name);
+        }
+        if (!matched && typeof iv.property?.name === 'string') {
+          re.lastIndex = 0;
+          matched = re.test(iv.property.name);
+        }
+        if (!matched) continue;
         out.push({ className: c.name, field: iv });
         if (out.length >= maxResults) return out;
       }
@@ -232,7 +316,9 @@ export class FieldIndex {
 
   /** クラスを名前で探す。 */
   findClasses(query, limit = 200) {
-    const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
+    const re = query instanceof RegExp
+      ? (query.global || query.sticky ? new RegExp(query.source, query.flags) : query)
+      : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
     const maxResults = resultLimit(limit, 200);
     if (maxResults <= 0) return out;
@@ -258,8 +344,9 @@ export class FieldIndex {
    * `adrp/ldr` で _OBJC_IVAR_$_… を読んだアドレスをそのまま渡す。
    */
   fieldAtOffsetVar(addr) {
-    if (!isValidNumericKey(addr)) return null;
-    return this.byOffsetVar.get(addr.toString()) || null;
+    const key = normalizeAddressKey(addr);
+    if (key == null) return null;
+    return this.byOffsetVar.get(key) || null;
   }
 
   resolveAccess(access, className) {
@@ -277,7 +364,7 @@ export class FieldIndex {
           plain: plainFieldName(via.field.name),
           offset: via.field.offset,
           size: via.field.size,
-          type: via.field.type,
+          type: effectiveFieldType(via.field),
           exact: true,
           certain: access.self === true,
           viaRegister: access.base,
@@ -301,7 +388,7 @@ export class FieldIndex {
       plain: plainFieldName(hit.field.name),
       offset: hit.field.offset,
       size: hit.field.size,
-      type: hit.field.type,
+      type: effectiveFieldType(hit.field),
       exact: hit.exact,
       // A physical x0 name is not provenance: a call or definition may have replaced entry self.
       certain: access.self === true,

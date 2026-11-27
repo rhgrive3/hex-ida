@@ -41,17 +41,24 @@ function sameIdentity(left, right) {
   return String(a) === String(b);
 }
 
-function sameIdentityValue(left, right) {
+function sameIdentityValue(left, right, seen = new WeakMap(), depth = 0) {
   if (Object.is(left, right)) return true;
+  if (depth > 64) return false;
+  if (left && typeof left === 'object' && right && typeof right === 'object') {
+    let paired = seen.get(left);
+    if (paired?.has(right)) return true;
+    if (!paired) { paired = new WeakSet(); seen.set(left, paired); }
+    paired.add(right);
+  }
   if (Array.isArray(left) || Array.isArray(right)) {
     if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    return left.every((value, index) => sameIdentityValue(value, right[index]));
+    return left.every((value, index) => sameIdentityValue(value, right[index], seen, depth + 1));
   }
   if (record(left) || record(right)) {
     if (!record(left) || !record(right)) return false;
     const keys = Object.keys(right);
     return keys.length === Object.keys(left).length
-      && keys.every((key) => Object.hasOwn(left, key) && sameIdentityValue(left[key], right[key]));
+      && keys.every((key) => Object.hasOwn(left, key) && sameIdentityValue(left[key], right[key], seen, depth + 1));
   }
   return sameIdentity(left, right);
 }
@@ -417,7 +424,8 @@ function classifyArguments(ctx, functionPrototype) {
 
 function registerCandidates(ctx) {
   if (!ctx.supported) return new Map();
-  const cached = REGISTER_CANDIDATE_CACHE.get(ctx.cacheKey);
+  const adapterKey = ctx.adapter && typeof ctx.adapter === 'object' ? ctx.adapter : ctx.cacheKey;
+  const cached = adapterKey ? REGISTER_CANDIDATE_CACHE.get(adapterKey) : null;
   if (cached) return cached;
   const out = new Map();
   const add = (reg, entry = {}) => {
@@ -443,7 +451,7 @@ function registerCandidates(ctx) {
       for (const reg of regs) if (typeof reg === 'string') add(reg, entry);
     }
   }
-  REGISTER_CANDIDATE_CACHE.set(ctx.cacheKey, out);
+  if (adapterKey && ctx.classifierState !== 'failed') REGISTER_CANDIDATE_CACHE.set(adapterKey, out);
   return out;
 }
 
@@ -493,15 +501,17 @@ function physicalArgumentView(argument, reg, pieceIndex, value) {
   };
 }
 
-function physicalArgumentBanks(registerArgs, ir) {
+function physicalArgumentBanks(registerArgs, ir, ctx = null) {
   const physical = [];
   for (const argument of registerArgs) {
     const regs = Array.isArray(argument.regs) && argument.regs.length ? argument.regs : [argument.reg];
     for (let index = 0; index < regs.length; index++) {
       const reg = regs[index];
+      const canonicalTarget = ctx ? ctx.canonical(reg) : String(reg);
       let value = null;
       for (const [rawReg, entryValue] of ir?.args?.entries?.() || []) {
-        if (String(rawReg) === String(reg)) { value = entryValue; break; }
+        const canonicalRaw = ctx ? ctx.canonical(rawReg) : String(rawReg);
+        if (canonicalRaw === canonicalTarget) { value = entryValue; break; }
       }
       physical.push(physicalArgumentView(argument, reg, index, value));
     }
@@ -622,7 +632,7 @@ function registerArguments(ir, types, opts, ctx) {
       ...(candidate.canonicalLocation ? { canonicalLocation:candidate.canonicalLocation } : {}),
       ...(candidate.pointer != null ? { pointer:candidate.pointer } : {}),
       ...(candidate.bits != null ? { bits:candidate.bits } : {}),
-      name:opts.argNames?.[reg] || opts.argNames?.[fallbackIndex] || `${bank === 'fp' ? 'fpArg' : 'arg'}${fallbackIndex + 1}`,
+      name:(opts.argNames && Object.hasOwn(opts.argNames, reg) ? opts.argNames[reg] : null) || (opts.argNames && Object.hasOwn(opts.argNames, fallbackIndex) ? opts.argNames[fallbackIndex] : null) || `${bank === 'fp' ? 'fpArg' : 'arg'}${fallbackIndex + 1}`,
       type:tname(recovered), confidence:recovered?.confidence || 0.45,
       valueId:value.id ?? null, used:true, sourceOrderKnown:false,
       ...(!canonicalEntries ? {
@@ -697,10 +707,11 @@ function registerArguments(ir, types, opts, ctx) {
 
 function stackLayout(ctx) {
   if (!ctx.supported || !ctx.stackPointers.size) return null;
-  if (STACK_LAYOUT_CACHE.has(ctx.cacheKey)) return STACK_LAYOUT_CACHE.get(ctx.cacheKey);
+  const adapterKey = ctx.adapter && typeof ctx.adapter === 'object' ? ctx.adapter : ctx.cacheKey;
+  if (adapterKey && STACK_LAYOUT_CACHE.has(adapterKey)) return STACK_LAYOUT_CACHE.get(adapterKey);
   let rules = {};
-  try { rules = ctx.adapter.stackRules?.() || ctx.plugin.stackRules?.() || {}; } catch { rules = {}; }
-  if (rules.unknown === true) { STACK_LAYOUT_CACHE.set(ctx.cacheKey, null); return null; }
+  try { rules = ctx.adapter.stackRules?.() || ctx.plugin.stackRules?.() || {}; } catch { return null; }
+  if (rules.unknown === true) return null;
   const explicit = Number(rules.firstStackArgumentOffset);
   const derived = Number(rules.returnAddressBytes || 0) + Number(rules.shadowSpaceBytes || 0);
   const firstStackArgumentOffset = Number.isSafeInteger(explicit) && explicit >= 0 ? explicit
@@ -711,7 +722,7 @@ function stackLayout(ctx) {
     returnAddressBytes:Number(rules.returnAddressBytes || 0),
     shadowSpaceBytes:Number(rules.shadowSpaceBytes || 0),
   };
-  STACK_LAYOUT_CACHE.set(ctx.cacheKey, layout);
+  if (adapterKey) STACK_LAYOUT_CACHE.set(adapterKey, layout);
   return layout;
 }
 
@@ -726,12 +737,19 @@ function entryStackArguments(ir, types, ctx, opts = {}) {
   const layout = stackLayout(ctx);
   const canonicalEntries = canonicalFunctionArgumentEntries(ctx, opts);
   if (!layout || ctx.classifierState) return [];
+  const entrySpByBase = new Map();
+  for (const [rawReg, value] of ir?.args?.entries?.() || []) {
+    const canonical = ctx.canonical(rawReg);
+    if (ctx.stackPointers.has(canonical) && !entrySpByBase.has(canonical)) {
+      entrySpByBase.set(canonical, value);
+    }
+  }
   const byKey = new Map();
   for (const inst of ir?.instructions || []) {
     if (inst?.op !== 'load' || inst.loc?.kind !== 'stack') continue;
     const baseReg = ctx.canonical(inst.loc?.baseReg);
     if (!ctx.stackPointers.has(baseReg)) continue;
-    const entrySp = entryValueForBase(ir, ctx, baseReg);
+    const entrySp = entrySpByBase.get(baseReg) ?? null;
     if (!entrySp || inst.loc.frameEpoch !== entrySp.id || inst.loc.disp == null) continue;
     const disp = BigInt(inst.loc.disp);
     if (disp < layout.firstStackArgumentOffset || inst.memUse?.kind !== 'entry') continue;
@@ -1056,7 +1074,7 @@ export function recoverFunctionPrototype(ir, types, opts = {}) {
   const recoveredStackArgs = entryStackArguments(ir, types, ctx, opts);
   const split = mergeCanonicalSplitArguments(recoveredRegisterArgs, recoveredStackArgs);
   const registerArgs = split.registerArgs;
-  const physicalArgs = physicalArgumentBanks(registerArgs, ir);
+  const physicalArgs = physicalArgumentBanks(registerArgs, ir, ctx);
   const integerArgs = physicalArgs.filter((arg) => !isFpAbiClass(arg.abiClass));
   const fpArgs = physicalArgs.filter((arg) => isFpAbiClass(arg.abiClass));
   const stackArgs = split.stackArgs;

@@ -176,13 +176,10 @@ export function applyJvmObjectIdentitySemantics(lifted, jvmClass, options = {}) 
             receiverAllocationId: receiver.allocationId,
             initializesAllocation: true,
           } : effect);
-          // #1138: `invokespecial <init>` pushes its own objectref back onto the
-          // stack, so the freshly initialized object is the value the following
-          // bytecode sees. Carry the receiver's allocation identity across that
-          // push instead of dropping it with the popped slot.
-          producedValues = original.producedValues.map((value) => value?.aliasConsumedReceiver === true
-            ? withAllocation(value, { ...receiver, allocationState: 'initialized' })
-            : value);
+          // JVMS §6.5: `invokespecial <init>` is void-returning and does not
+          // re-push objectref onto the operand stack. Reflect the
+          // `uninitialized -> initialized` transition on all surviving copies of
+          // the same allocation on the operand stack (e.g. from a preceding `dup`).
           for (const fact of stackFacts) {
             if (fact?.allocationId === receiver.allocationId) fact.allocationState = 'initialized';
           }
@@ -204,12 +201,16 @@ export function applyJvmObjectIdentitySemantics(lifted, jvmClass, options = {}) 
     bundles.push(bundle);
 
     for (let index = 0; index < bundle.consumedValues.length; index += 1) stackFacts.pop();
-    for (const value of bundle.producedValues) stackFacts.push(allocationFact(value));
+    if (bundle.mnemonic !== 'iinc') {
+      for (const value of bundle.producedValues) {
+        if (!value?.stackNeutral) stackFacts.push(allocationFact(value));
+      }
+    }
 
     const freshNew = bundle.mnemonic === 'new'
       && bundle.producedValues.some((value) => allocationFact(value)?.allocationState === 'uninitialized');
     if (bundle.completeness !== 'exact' && !freshNew) stackFactsTrusted = false;
-    if (bundle.mnemonic.startsWith('invoke')) stackFactsTrusted = false;
+    if (bundle.mnemonic.startsWith('invoke') && !bundle.callEffects?.[0]?.initializesAllocation) stackFactsTrusted = false;
     if (bundle.controlEffects.some((effect) =>
       effect?.kind === 'branch' || effect?.kind === 'conditional-branch'
       || effect?.kind === 'switch' || effect?.kind === 'return' || effect?.kind === 'throw')) {

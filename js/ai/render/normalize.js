@@ -66,12 +66,13 @@ export function normalizeStatus(value, confidence) {
 }
 
 export function statusText(status, ja = true) {
-  const item = STATUS_TEXT[status] || STATUS_TEXT.unknown;
+  const item = (typeof status === 'string' && Object.hasOwn(STATUS_TEXT, status)) ? STATUS_TEXT[status] : STATUS_TEXT.unknown;
   return ja ? item.ja : item.en;
 }
 
 export function statusMark(status) {
-  return (STATUS_TEXT[status] || STATUS_TEXT.unknown).mark;
+  const item = (typeof status === 'string' && Object.hasOwn(STATUS_TEXT, status)) ? STATUS_TEXT[status] : STATUS_TEXT.unknown;
+  return item.mark;
 }
 
 /* `Number(null)` is 0, so a missing score would otherwise read as "0% sure"
@@ -99,8 +100,13 @@ function schemaStringIds(value) {
 /** Core addresses are already `0x…` strings; anything else is coerced once. */
 export function addressString(value) {
   if (value == null) return null;
-  if (typeof value === 'string') return /^0x[0-9a-f]+$/i.test(value.trim()) ? value.trim().toLowerCase() : null;
-  try { return '0x' + BigInt(value).toString(16); } catch { return null; }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return /^0x[0-9a-f]+$/i.test(trimmed) ? trimmed.toLowerCase() : null;
+  }
+  if (typeof value === 'bigint') return value >= 0n ? '0x' + value.toString(16) : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? '0x' + BigInt(value).toString(16) : null;
+  return null;
 }
 
 export function addressBigInt(value) {
@@ -178,6 +184,7 @@ export function parseAnswer(value) {
 const ACTION_KINDS = new Set([
   'open-function', 'open-address', 'show-xrefs', 'show-callers', 'show-callees',
   'show-cfg', 'show-pseudocode', 'open-evidence', 'trace-value', 'run-agent', 'review-proposal',
+  'emulate-function', 'open-patch-editor',
 ]);
 
 const ACTION_LABELS = Object.freeze({
@@ -192,10 +199,12 @@ const ACTION_LABELS = Object.freeze({
   'trace-value': { ja: '値を追う', en: 'Trace value' },
   'run-agent': { ja: 'エージェントで調べる', en: 'Investigate with Agent' },
   'review-proposal': { ja: '変更案を確認', en: 'Review proposal' },
+  'emulate-function': { ja: 'この関数を試す', en: 'Try this function' },
+  'open-patch-editor': { ja: 'ここを書き換える', en: 'Edit this instruction' },
 });
 
 export function actionLabel(kind, ja = true) {
-  const item = ACTION_LABELS[kind];
+  const item = typeof kind === 'string' && Object.hasOwn(ACTION_LABELS, kind) ? ACTION_LABELS[kind] : null;
   return item ? (ja ? item.ja : item.en) : kind;
 }
 

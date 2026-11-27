@@ -65,8 +65,15 @@
       const remain = BigInt(r.size) - pageRel;
       const len = Number(remain < BigInt(PAGE) ? remain : BigInt(PAGE));
       if (!budget.takeRead(len) || !budget.takeResident(len)) return null;
-      const chunk = await readRange(BigInt(r.fileOffset) + pageRel, len);
-      if (isCancelled()) { budget.releaseResident(chunk?.length || 0); return null; }
+      let chunk;
+      try {
+        chunk = await readRange(BigInt(r.fileOffset) + pageRel, len);
+      } catch (error) {
+        budget.releaseResident(len);
+        throw error;
+      }
+      if (isCancelled() || !chunk || !chunk.length) { budget.releaseResident(len); return null; }
+      if (chunk.length < len) budget.releaseResident(len - chunk.length);
       pages.set(key, chunk);
       while (pages.size > MAX_PAGES) {
         const oldest = pages.keys().next().value, evicted = pages.get(oldest);
@@ -80,7 +87,7 @@
         const vm = BigInt(r.vmAddr), end = vm + BigInt(r.size);
         if (addr < vm || addr + 8n > end) continue;
         const p = await pageFor(r, addr);
-        if (!p || p.offset + 8 > p.bytes.length) return null;
+        if (!p || !p.bytes || p.offset + 8 > p.bytes.length) return null;
         let v = 0n;
         for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(p.bytes[p.offset + i]);
         return v;
@@ -146,7 +153,8 @@
         const kind = Words.classifyWord(w);
         if (kind === Words.KIND.BRANCH || kind === Words.KIND.RET) {
           if (start !== null && selref != null) {
-            const p = sanitizePointer(await slotOf(selref), imageBase);
+            const rawSelref = await slotOf(selref);
+            const p = rawSelref == null ? null : sanitizePointer(rawSelref, imageBase);
             const sel = p == null ? null : await textAt(p);
             if (sel && budget.takeName()) {
               const via = target == null ? null : gotName.get(target.toString());

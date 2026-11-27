@@ -38,17 +38,16 @@ export function createOpenJevClient(config, deps = {}) {
 
     const started = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, config.timeoutMs);
     const onAbort = () => controller.abort();
     if (signal) {
       if (signal.aborted) controller.abort();
       else signal.addEventListener("abort", onAbort, { once: true });
     }
-
-    let timedOut = false;
-    const timeoutGuard = setTimeout(() => {
-      timedOut = true;
-    }, config.timeoutMs);
 
     try {
       const response = await fetchImpl(`${config.baseUrl}${config.endpointPath}`, {
@@ -70,7 +69,16 @@ export function createOpenJevClient(config, deps = {}) {
 
       let payload;
       try {
-        payload = await response.json();
+        const MAX_BODY = 512 * 1024;
+        if (typeof response.text === "function") {
+          const text = await response.text();
+          if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > MAX_BODY) {
+            return { ok: false, reason: "response-too-large", latencyMs };
+          }
+          payload = JSON.parse(text);
+        } else {
+          payload = await response.json();
+        }
       } catch (error) {
         return { ok: false, reason: "malformed-json", latencyMs };
       }
@@ -99,16 +107,16 @@ export function createOpenJevClient(config, deps = {}) {
       };
     } catch (error) {
       const latencyMs = Date.now() - started;
-      const aborted = timedOut || (error && error.name === "AbortError");
+      const isAbort = Boolean(error && error.name === "AbortError");
+      const reason = timedOut ? "timeout" : (isAbort || signal?.aborted ? "aborted" : "network-error");
       return {
         ok: false,
-        reason: aborted ? "timeout" : "network-error",
+        reason,
         detail: sanitizeError(error),
         latencyMs,
       };
     } finally {
       clearTimeout(timer);
-      clearTimeout(timeoutGuard);
       if (signal) signal.removeEventListener("abort", onAbort);
     }
   }

@@ -135,7 +135,7 @@ function canonicalBytes(value) {
     // or `new DataView(bytes.buffer)` (data-view) from the result, so a partial
     // view must collapse to a dedicated exact-extent copy.
     const bytes = value instanceof Uint8Array ? value : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
+    return bytes.slice();
   }
   const entries = wireArray(value);
   for (const entry of entries) {
@@ -557,48 +557,53 @@ export function decodeWorkerAnalysisPayload(payload, { rejectSparseArrays = fals
 // rejected with a bounded BudgetExceededError before the allocations, mirroring
 // how producers already charge their own results. Small results stay untouched
 // to keep the charge free of measurable overhead.
-function walkWorkerEnvelopeForCharge(value, state, seen) {
-  if (state.stopped) return;
-  if (value === null || typeof value !== 'object') {
-    if (typeof value === 'string') state.textBytes += value.length;
-    state.nodes += 1;
-    if (state.nodes > 4 * 1024 * 1024) state.stopped = true;
-    return;
-  }
-  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
-    try {
-      state.viewBytes += Number(value.byteLength) || 0;
-    } catch {
-      state.stopped = true;
+function walkWorkerEnvelopeForCharge(root, state, seen) {
+  const stack = [root];
+  while (stack.length && !state.stopped) {
+    const value = stack.pop();
+    if (value === null || typeof value !== 'object') {
+      if (typeof value === 'string') state.textBytes += value.length;
+      state.nodes += 1;
+      if (state.nodes > 4 * 1024 * 1024) state.stopped = true;
+      continue;
     }
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+      try {
+        state.viewBytes += Number(value.byteLength) || 0;
+      } catch {
+        state.stopped = true;
+      }
+      state.nodes += 1;
+      continue;
+    }
+    if (seen.has(value)) continue;
+    seen.add(value);
     state.nodes += 1;
-    return;
+    if (state.nodes > 4 * 1024 * 1024) { state.stopped = true; break; }
+    if (value instanceof Map) {
+      for (const [key, entry] of value) { stack.push(entry, key); }
+    } else if (value instanceof Set) {
+      for (const entry of value) stack.push(entry);
+    } else if (Array.isArray(value)) {
+      for (let i = value.length - 1; i >= 0; i--) stack.push(value[i]);
+    } else {
+      const keys = Object.keys(value);
+      for (let i = keys.length - 1; i >= 0; i--) stack.push(value[keys[i]]);
+    }
   }
-  if (seen.has(value)) return;
-  seen.add(value);
-  state.nodes += 1;
-  if (state.nodes > 4 * 1024 * 1024) { state.stopped = true; return; }
-  if (value instanceof Map) {
-    for (const [key, entry] of value) { walkWorkerEnvelopeForCharge(key, state, seen); walkWorkerEnvelopeForCharge(entry, state, seen); }
-    return;
-  }
-  if (value instanceof Set) {
-    for (const entry of value) walkWorkerEnvelopeForCharge(entry, state, seen);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const entry of value) walkWorkerEnvelopeForCharge(entry, state, seen);
-    return;
-  }
-  for (const key of Object.keys(value)) walkWorkerEnvelopeForCharge(value[key], state, seen);
 }
 
 function chargeWorkerPayloadMaterialization(budget, envelope) {
   if (typeof budget?.consume !== 'function') return;
   const state = { viewBytes:0, textBytes:0, nodes:0, stopped:false };
   walkWorkerEnvelopeForCharge(envelope, state, new WeakSet());
-  if (state.stopped || state.viewBytes < PAYLOAD_CHARGE_MIN_VIEW_BYTES) return;
-  budget.consume('residentBytes', 4096 + state.viewBytes * 4 + state.textBytes * 4);
+  const estimatedBytes = state.viewBytes + state.textBytes * 2 + state.nodes * 32;
+  if (state.viewBytes >= PAYLOAD_CHARGE_MIN_VIEW_BYTES || estimatedBytes >= PAYLOAD_CHARGE_MIN_VIEW_BYTES) {
+    budget.consume('residentBytes', 4096 + state.viewBytes * 4 + state.textBytes * 4 + state.nodes * 32);
+  }
+  if (state.stopped) {
+    throw new TypeError('analysis-artifact-payload-charge-aborted');
+  }
 }
 
 /**
@@ -619,6 +624,7 @@ export function awaitCancellableProducer(operation, signal) {
 
   if (signal.aborted) {
     cancelProducer();
+    promise.catch(() => {});
     return Promise.reject(abortError(signal));
   }
 
@@ -752,6 +758,10 @@ export class ArtifactAnalysisOrchestrator {
     if (typeof produce !== 'function') return Promise.reject(new TypeError('analysis-artifact-producer-required'));
     this.metrics.requests++;
 
+    let hasValidated = false;
+    let validatedPayload;
+    let validatedRawPayload;
+
     const request = this.scheduler.request({
       descriptor,
       signal,
@@ -759,7 +769,19 @@ export class ArtifactAnalysisOrchestrator {
       priority,
       completeness,
       validate:typeof validate === 'function'
-        ? (encodedPayload, record, context) => validate(decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true }), record, context)
+        ? async (encodedPayload, record, context) => {
+          hasValidated = false;
+          validatedPayload = undefined;
+          validatedRawPayload = undefined;
+          const decoded = decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true });
+          const verdict = await validate(decoded, record, context);
+          if (verdict === true) {
+            validatedPayload = decoded;
+            validatedRawPayload = encodedPayload;
+            hasValidated = true;
+          }
+          return verdict;
+        }
         : null,
       creation:{
         ...(creation || {}),
@@ -768,8 +790,12 @@ export class ArtifactAnalysisOrchestrator {
         sourceRoute:ANALYSIS_ORCHESTRATION_ROUTE.CURRENT,
       },
       produce:async (context) => {
+        hasValidated = false;
+        validatedPayload = undefined;
+        validatedRawPayload = undefined;
         this.metrics.producerInvocations++;
-        const envelope = encodeWorkerAnalysisPayload(await produce(context), { rejectSparseArrays:true });
+        const raw = await produce(context);
+        const envelope = encodeWorkerAnalysisPayload(raw, { rejectSparseArrays:true });
         chargeWorkerPayloadMaterialization(context.budget, envelope);
         return envelope;
       },
@@ -778,7 +804,12 @@ export class ArtifactAnalysisOrchestrator {
     return request.then((result) => {
       if (result.reused) this.metrics.warmReuses++;
       else this.metrics.coldPublishes++;
-      return { ...result, payload:decodeWorkerAnalysisPayload(result.payload, { rejectSparseArrays:true }) };
+      const payload = result.reused === true && hasValidated && result.payload === validatedRawPayload
+        ? validatedPayload
+        : decodeWorkerAnalysisPayload(result.payload, { rejectSparseArrays:true });
+      validatedPayload = undefined;
+      validatedRawPayload = undefined;
+      return { ...result, payload };
     }, (error) => {
       this.metrics.failures++;
       if (error?.name === 'AbortError') this.metrics.cancellations++;

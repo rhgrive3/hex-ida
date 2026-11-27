@@ -10,6 +10,7 @@ export function installViewerDragReturnGuard(viewer, { moveTolerance = DEFAULT_M
 
   const pointerdown = (event) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (event.isPrimary === false) { if (gesture) gesture.moved = true; return; }
     const row = event.target?.closest?.('.row');
     if (!row || row._row == null || row._row < 0) { gesture = null; return; }
     gesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
@@ -28,10 +29,26 @@ export function installViewerDragReturnGuard(viewer, { moveTolerance = DEFAULT_M
     if (!gesture || event?.pointerId == null || event.pointerId === gesture.pointerId) gesture = null;
   };
 
-  viewport.addEventListener('pointerdown', pointerdown, { capture: true, passive: true });
-  viewport.addEventListener('pointermove', pointermove, { capture: true, passive: true });
-  viewport.addEventListener('pointerup', pointerup, { capture: true, passive: true });
-  viewport.addEventListener('pointercancel', pointercancel, { capture: true, passive: true });
-  Object.defineProperty(viewer, '__dragReturnGuardInstalled', { value: true });
+  const ac = typeof AbortController === 'function' ? new AbortController() : null;
+  const opts = ac ? { capture: true, passive: true, signal: ac.signal } : { capture: true, passive: true };
+  viewport.addEventListener('pointerdown', pointerdown, opts);
+  viewport.addEventListener('pointermove', pointermove, opts);
+  viewport.addEventListener('pointerup', pointerup, opts);
+  viewport.addEventListener('pointercancel', pointercancel, opts);
+  let disposed = false;
+  const cleanup = () => {
+    if (disposed) return;
+    disposed = true;
+    gesture = null;
+    ac?.abort();
+    viewport.removeEventListener?.('pointerdown', pointerdown, true);
+    viewport.removeEventListener?.('pointermove', pointermove, true);
+    viewport.removeEventListener?.('pointerup', pointerup, true);
+    viewport.removeEventListener?.('pointercancel', pointercancel, true);
+    delete viewer.__dragReturnGuardInstalled;
+    delete viewer.__disposeDragReturnGuard;
+  };
+  Object.defineProperty(viewer, '__dragReturnGuardInstalled', { value: true, configurable: true });
+  Object.defineProperty(viewer, '__disposeDragReturnGuard', { value: cleanup, configurable: true });
   return true;
 }

@@ -258,13 +258,24 @@ function hasProjectedConsumerBeyondLoad(source) {
   return false;
 }
 
-function valueDependsOnProjectedPhi(value, active = new Set()) {
-  if (!value || active.has(value)) return false;
-  if (value.kind === V1_VK.PHI || value.def?.op === V1_OP.PHI) return true;
-  active.add(value);
-  const result = (value.def?.args ?? []).some((arg) => valueDependsOnProjectedPhi(arg?.value, active));
-  active.delete(value);
-  return result;
+function valueDependsOnProjectedPhi(root) {
+  if (!root) return false;
+  const visited = new Set();
+  const stack = [root];
+  while (stack.length) {
+    const value = stack.pop();
+    if (!value || visited.has(value)) continue;
+    if (value.kind === V1_VK.PHI || value.def?.op === V1_OP.PHI) return true;
+    visited.add(value);
+    const args = value.def?.args;
+    if (args) {
+      for (let i = 0; i < args.length; i++) {
+        const next = args[i]?.value;
+        if (next && !visited.has(next)) stack.push(next);
+      }
+    }
+  }
+  return false;
 }
 
 function storedValueComesFromCfgJoin(projected, operandProof, instructionBySemanticId) {
@@ -446,13 +457,17 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
         purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
       });
-      const mergedFact = mergeForwardingFacts(source.memoryForwarding, fact);
+      const previousFact = source.memoryForwarding;
+      const mergedFact = mergeForwardingFacts(previousFact, fact);
+      const mergedContext = (mergedFact === previousFact && source.memoryForwardingContext)
+        ? source.memoryForwardingContext
+        : currentContext;
       source.memoryForwarding = mergedFact;
-      source.memoryForwardingContext = currentContext;
+      source.memoryForwardingContext = mergedContext;
       source.extra = {
         ...source.extra,
         memoryForwarding: mergedFact,
-        memoryForwardingContext: currentContext,
+        memoryForwardingContext: mergedContext,
       };
 
       let forwardedStackOperand = false;
@@ -556,6 +571,7 @@ export function attachFallbackMemory(projected) {
 export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, instructionBySemanticId) {
   if (!ssa) return;
   const phiDefinitions = ssa.definitions.filter((definition) => definition.kind === 'phi');
+  const phiInstructions = [];
   for (const definition of phiDefinitions) {
     const value = valuesById.get(definition.valueId);
     if (!value) continue;
@@ -603,7 +619,18 @@ export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, ins
     value.reg = publicIdentity;
     value.def = inst;
     projected.blocks[block].phis.push(inst);
-    projected.instructions.unshift(inst);
+    phiInstructions.push(inst);
+  }
+  if (phiInstructions.length) {
+    const offset = phiInstructions.length;
+    const oldLength = projected.instructions.length;
+    projected.instructions.length = oldLength + offset;
+    for (let index = oldLength - 1; index >= 0; index -= 1) {
+      projected.instructions[index + offset] = projected.instructions[index];
+    }
+    for (let index = 0; index < offset; index += 1) {
+      projected.instructions[index] = phiInstructions[offset - 1 - index];
+    }
   }
 
   for (const definition of ssa.definitions) {
@@ -681,11 +708,18 @@ export function appendFunctionUnknowns(projected, ir) {
 export function assignInstructionIds(projected) {
   projected.instructions.forEach((inst, index) => { inst.id = index; });
   projected.byRow.clear();
-  for (const block of projected.blocks) block.insts = block.insts.filter((inst) => inst.op !== V1_OP.PHI);
+  const blockInstSets = projected.blocks.map((block) => {
+    block.insts = block.insts.filter((inst) => inst.op !== V1_OP.PHI);
+    return new Set(block.insts);
+  });
   for (const inst of projected.instructions) {
     if (inst.op !== V1_OP.PHI) {
       const block = projected.blocks[inst.block];
-      if (block && !block.insts.includes(inst)) block.insts.push(inst);
+      const seen = blockInstSets[inst.block];
+      if (block && seen && !seen.has(inst)) {
+        seen.add(inst);
+        block.insts.push(inst);
+      }
     }
     let list = projected.byRow.get(inst.row);
     if (!list) { list = []; projected.byRow.set(inst.row, list); }

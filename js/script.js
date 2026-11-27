@@ -26,12 +26,12 @@
 import { decompile, decompiledText } from './decompile.js';
 import { readableName } from './rtti.js';
 import { inferTypes, recoverStruct } from './types.js';
-import { parseHexBytes, isHexBytes, validatePatchRange } from './patch.js';
+import { parseHexBytes, isHexBytes, validatePatchRange, decodeArm64PatchWord } from './patch.js';
 import { architectureAdapter, unsupportedArchitectureResult, UnsupportedArchitectureError } from './architecture/index.js';
 import { Emulator } from './emu.js';
 
 export { UnsupportedArchitectureError } from './architecture/index.js';
-import { runInSandbox } from './sandbox.js';
+import { runInSandbox, SANDBOX_EXECUTION_CONTEXT } from './sandbox.js';
 import { investigationServiceFor } from './analysis/investigation-service.js';
 
 function executableRegionForAddress(app, address) {
@@ -47,8 +47,12 @@ function executableRegionForAddress(app, address) {
 }
 
 
+function isHostExecutionContext(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && value[SANDBOX_EXECUTION_CONTEXT] === true;
+}
 function isExecutionContext(value) {
-  return !!value && typeof value === 'object' && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, 'signal');
+  return isHostExecutionContext(value)
+    || (!!value && typeof value === 'object' && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, 'signal'));
 }
 function scriptPage(result) {
   const status = result?.status || {};
@@ -83,7 +87,11 @@ function abortError(signal) {
 }
 function throwIfAborted(signal) { if (signal?.aborted) throw abortError(signal); }
 function awaitRequest(request, signal) {
-  throwIfAborted(signal);
+  if (signal?.aborted) {
+    try { request?.cancel?.(); } catch {}
+    if (request && typeof request.then === 'function') Promise.resolve(request).catch(() => {});
+    throw abortError(signal);
+  }
   if (!signal || !request || typeof request.then !== 'function') return Promise.resolve(request);
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -104,7 +112,39 @@ export function createApi(app, out, options = {}) {
   const print = (...args) => {
     out(args.map((a) => format(a)).join(' '));
   };
-  const signalOf = (context) => isExecutionContext(context) ? context.signal : (options.signal ?? null);
+  const MAX_STRING_SCAN = 10_000;
+  const MAX_SCRIPT_READ_BYTES = 1024 * 1024;
+  const boundedReadLength = (value, fallback) => {
+    if (value == null) return fallback;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.min(MAX_SCRIPT_READ_BYTES, Math.trunc(n));
+  };
+  const signalOf = (context) => (isExecutionContext(context) && context.signal != null)
+    ? context.signal
+    : (options.signal ?? null);
+  const resolveExecution = (rawArgs, maxPositional) => {
+    const args = Array.from(rawArgs);
+    if (args.length > 0 && isHostExecutionContext(args[args.length - 1])) {
+      const hostContext = args.pop();
+      return {
+        args,
+        context: hostContext,
+        signal: hostContext.signal ?? (options.signal ?? null),
+        hasHostContext: true,
+      };
+    }
+    let context = null;
+    if (args.length > maxPositional && isExecutionContext(args[args.length - 1])) {
+      context = args.pop();
+    }
+    return {
+      args,
+      context,
+      signal: signalOf(context),
+      hasHostContext: false,
+    };
+  };
 
   const region = () => app.codeRegion();
   const architecture = () => String(
@@ -169,9 +209,12 @@ export function createApi(app, out, options = {}) {
     /* ── 関数 ─────────────────────────────────────────── */
 
     /** 関数の一覧。legacy Array shapeを維持しつつpartial/capを明示する。 */
-    functions(limit = 100000, context = null) {
-      if (isExecutionContext(limit)) { context = limit; limit = 100000; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    functions(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 1);
+      let [limit = 100000, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 100000; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const max=Math.max(1,Math.min(400000,Math.trunc(Number(limit)||100000)));
       const regions = app.store?.get?.('regions') || [];
       const execRegions = regions.filter((r) => r && r.exec);
@@ -197,10 +240,15 @@ export function createApi(app, out, options = {}) {
     },
 
     /** Paged canonical function query for >100k automation. */
-    async queryFunctions(page = {}, query = {}, context = null) {
-      if (isExecutionContext(page)) { context=page; page={}; query={}; }
-      else if (isExecutionContext(query)) { context=query; query={}; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async queryFunctions(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [page = {}, query = {}, userContext = null] = args;
+      if (!hasHostContext && !trailingContext) {
+        if (isExecutionContext(page)) { userContext = page; page = {}; query = {}; }
+        else if (isExecutionContext(query)) { userContext = query; query = {}; }
+      }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const snapshot=await app.analysisQueries.snapshot({signal});
       const result=await app.analysisQueries.functions(snapshot,query,page,{signal});
       return scriptPage(result);
@@ -219,7 +267,9 @@ export function createApi(app, out, options = {}) {
     },
 
     /** 名前を付ける（IDA の Rename）。 */
-    rename(addr, name) {
+    rename(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [addr, name] = args;
       const a = BigInt(addr);
       if (app.notes.setName(a, name) === false) return false;
       app.symbols.rename(a, name);
@@ -228,7 +278,9 @@ export function createApi(app, out, options = {}) {
     },
 
     /** その行にメモを書く。 */
-    comment(addr, text) {
+    comment(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [addr, text] = args;
       return app.notes.setComment(BigInt(addr), text) !== false;
     },
 
@@ -242,23 +294,34 @@ export function createApi(app, out, options = {}) {
     /* ── 中身を読む ───────────────────────────────────── */
 
     /** 生バイトを読む。 */
-    async bytes(addr, len = 16, context = null) {
-      if (isExecutionContext(len)) { context=len; len=16; }
-      const r = await awaitRequest(app.backend.readAt(BigInt(addr), len), signalOf(context));
+    async bytes(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, len = 16, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(len)) { userContext = len; len = 16; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      const clampedLen = boundedReadLength(len, 16);
+      const r = await awaitRequest(app.backend.readAt(BigInt(addr), clampedLen), signal);
       return r && r.found ? r.bytes : null;
     },
 
     /** 0 終端の文字列として読む。 */
-    async string(addr, max = 200, context = null) {
-      if (isExecutionContext(max)) { context=max; max=200; }
-      const r = await awaitRequest(app.backend.readAt(BigInt(addr), max, true), signalOf(context));
+    async string(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, max = 200, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(max)) { userContext = max; max = 200; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      const clampedMax = boundedReadLength(max, 200);
+      const r = await awaitRequest(app.backend.readAt(BigInt(addr), clampedMax, true), signal);
       return r && r.found ? (r.text || null) : null;
     },
 
     /** 逆アセンブル。[{addr, mn, ops}] */
-    async disasm(addr, count = 16, context = null) {
-      if (isExecutionContext(count)) { context=count; count=16; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async disasm(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, count = 16, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(count)) { userContext = count; count = 16; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const a = BigInt(addr);
       const r = executableRegionForAddress(app, a);
       if (!r) return [];
@@ -304,8 +367,10 @@ export function createApi(app, out, options = {}) {
     },
 
     /** 逆コンパイル結果（文字列）。 */
-    async decompile(addr, context = null) {
-      const signal=signalOf(context); throwIfAborted(signal);
+    async decompile(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 1);
+      const [addr] = args;
+      throwIfAborted(signal);
       const a = BigInt(addr);
       const arch = architecture();
       const archAdapter = adapter();
@@ -334,63 +399,88 @@ export function createApi(app, out, options = {}) {
     },
 
     /** 引数・戻り値・ローカル変数の推定。 */
-    async types(addr, context = null) {
-      const res = await app.analyzeFunctionAt(BigInt(addr), { signal:signalOf(context) });
+    async types(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 1);
+      const [addr] = args;
+      throwIfAborted(signal);
+      const res = await app.analyzeFunctionAt(BigInt(addr), { signal });
       return res ? inferTypes(res.model) : null;
     },
 
     /** 構造体の自動復元。 */
-    async struct(addr, reg, context = null) {
-      if (isExecutionContext(reg)) { context=reg; reg=null; }
-      const res = await app.analyzeFunctionAt(BigInt(addr), { signal:signalOf(context) });
+    async struct(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, reg, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(reg)) { userContext = reg; reg = null; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
+      const res = await app.analyzeFunctionAt(BigInt(addr), { signal });
       return res ? recoverStruct(res.model, reg) : null;
     },
 
     /* ── 参照関係 ─────────────────────────────────────── */
 
     /** Canonical typed incoming references. */
-    async queryXrefsTo(addr, page = {}, context = null) {
-      if (isExecutionContext(page)) { context=page; page={}; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async queryXrefsTo(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, page = {}, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(page)) { userContext = page; page = {}; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const snapshot=await app.analysisQueries.snapshot({signal});
       return scriptPage(await app.analysisQueries.xrefs(snapshot,BigInt(addr),page,{signal}));
     },
 
     /** Legacy Array compatibility; completeness is preserved as metadata. */
-    async xrefsTo(addr, limit = 200, context = null) {
-      if (isExecutionContext(limit)) { context=limit; limit=200; }
+    async xrefsTo(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, limit = 200, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 200; }
+      const context = hasHostContext ? trailingContext : (trailingContext ?? userContext);
       const page=await api.queryXrefsTo(addr,{offset:0,limit:Math.max(1,Math.min(5000,Number(limit)||200))},context);
       return legacyRows(page);
     },
 
     /** Canonical typed outgoing calls. */
-    async queryXrefsFrom(addr, page = {}, context = null) {
-      if (isExecutionContext(page)) { context=page; page={}; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async queryXrefsFrom(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, page = {}, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(page)) { userContext = page; page = {}; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const snapshot=await app.analysisQueries.snapshot({signal});
       return scriptPage(await app.analysisQueries.callees(snapshot,BigInt(addr),page,{signal}));
     },
 
-    async xrefsFrom(addr, limit = 200, context = null) {
-      if (isExecutionContext(limit)) { context=limit; limit=200; }
+    async xrefsFrom(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [addr, limit = 200, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 200; }
+      const context = hasHostContext ? trailingContext : (trailingContext ?? userContext);
       const page=await api.queryXrefsFrom(addr,{offset:0,limit:Math.max(1,Math.min(5000,Number(limit)||200))},context);
       return legacyRows(page);
     },
 
     /** Global statistic: demand-start the shared Program producer, never read warm-cache presence. */
-    async queryMostCalled(limit = 20, context = null) {
-      if (isExecutionContext(limit)) { context=limit; limit=20; }
-      const signal=signalOf(context); throwIfAborted(signal);
+    async queryMostCalled(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 1);
+      let [limit = 20, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 20; }
+      const signal = hasHostContext ? (trailingContext.signal ?? (options.signal ?? null)) : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const program=await investigationServiceFor(app).buildProgram({signal});
       throwIfAborted(signal);
       if (!program) return {results:[],complete:false,completeness:'unsupported',reason:'program-index-unavailable',page:null};
       const results=Array.from(program.mostCalled(Math.max(1,Math.min(5000,Number(limit)||20))) || []);
-      const complete=program.graphCompleteness?.complete !== false && program.unsupported !== true && program.queryIncompleteReason == null;
+      const complete=program.graphCompleteness?.callsComplete !== false && program.unsupported !== true && program.queryIncompleteReason == null;
       return {results,complete,completeness:complete?'complete':'partial',reason:complete?null:(program.queryIncompleteReason||program.graphCompleteness?.reasons?.[0]||'program-partial'),page:null};
     },
 
-    async mostCalled(limit = 20, context = null) {
-      if (isExecutionContext(limit)) { context=limit; limit=20; }
+    async mostCalled(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 1);
+      let [limit = 20, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(limit)) { userContext = limit; limit = 20; }
+      const context = hasHostContext ? trailingContext : (trailingContext ?? userContext);
       return legacyRows(await api.queryMostCalled(limit,context));
     },
 
@@ -399,23 +489,33 @@ export function createApi(app, out, options = {}) {
     /** 集めた文字列（あらかじめ「文字列」画面を開くか、await hex.loadStrings() が要る）。 */
     strings() { return app.stringIndex || []; },
 
-    async loadStrings(context = null) { return investigationServiceFor(app).collectStrings({ signal:signalOf(context) }); },
+    async loadStrings(...rawArgs) {
+      const { signal } = resolveExecution(rawArgs, 0);
+      throwIfAborted(signal);
+      return investigationServiceFor(app).collectStrings({ signal });
+    },
 
     /** 文字列を検索する。既定で最大10,000件を走査し、256件ごとにyieldする。 */
-    async findStrings(query, limit = 200, context = null) {
+    async findStrings(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [query, limit = 200, userContext = null] = args;
+      let userOptions = userContext;
       if (limit && typeof limit === 'object' && !Array.isArray(limit)) {
-        context = limit;
+        userOptions = limit;
         limit = limit.limit ?? 200;
       }
-      const signal = signalOf(context);
+      const signal = hasHostContext
+        ? (trailingContext.signal ?? (options.signal ?? null))
+        : signalOf(trailingContext ?? userOptions);
       throwIfAborted(signal);
       const q = String(query ?? '').toLowerCase();
       const max = Math.max(1, Math.min(5000, Number(limit) || 200));
       const source = app.stringIndex || (app.strings?.items) || [];
       const results = [];
-      const maxScanned = Number.isSafeInteger(context?.maxScanned) && context.maxScanned > 0
-        ? context.maxScanned
-        : 10_000;
+      const requestedScan = userOptions?.maxScanned ?? trailingContext?.maxScanned;
+      const maxScanned = Number.isSafeInteger(requestedScan) && requestedScan > 0
+        ? Math.min(MAX_STRING_SCAN, requestedScan)
+        : MAX_STRING_SCAN;
       const total = source.length;
       let scanned = 0;
       while (scanned < total && scanned < maxScanned) {
@@ -458,7 +558,9 @@ export function createApi(app, out, options = {}) {
     /* ── 書き換え ─────────────────────────────────────── */
 
     /** 現在のarchitecture用に命令を組み立てる。 */
-    assemble(text, at) {
+    assemble(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [text, at = 0n] = args;
       const arch = architecture();
       const archAdapter = adapter();
       if (typeof archAdapter.assemble !== 'function') return unsupportedArchitectureResult('assemble', arch);
@@ -466,7 +568,10 @@ export function createApi(app, out, options = {}) {
     },
 
     /** 書き換えを登録する（保存するまでファイルは変わりません）。 */
-    async patch(addr, textOrHex, context = null) {
+    async patch(...rawArgs) {
+      const { args, context, signal } = resolveExecution(rawArgs, 2);
+      const [addr, textOrHex] = args;
+      throwIfAborted(signal);
       const a = BigInt(addr);
       const r = executableRegionForAddress(app, a);
       if (!r) return { error: 'セクションが選ばれていません。' };
@@ -481,8 +586,15 @@ export function createApi(app, out, options = {}) {
       }
       if (!built?.bytes) return built;
       if (!raw) {
-        const placement = archAdapter.validateInstructionPlacement(r, a, built.bytes.length);
-        if (!placement?.ok) return placement;
+        if (built.bytes.length > 4 && built.bytes.length % 4 === 0 && archAdapter.fixedInstructionSize === 4) {
+          for (let off = 0; off < built.bytes.length; off += 4) {
+            const placement = archAdapter.validateInstructionPlacement(r, a + BigInt(off), 4);
+            if (!placement?.ok) return placement;
+          }
+        } else {
+          const placement = archAdapter.validateInstructionPlacement(r, a, built.bytes.length);
+          if (!placement?.ok) return placement;
+        }
       }
       const file = app.store.get('file');
       // Explicit raw bytes are ISA-neutral and may be any in-range length/alignment.
@@ -492,6 +604,7 @@ export function createApi(app, out, options = {}) {
       if (!before || before.length !== built.bytes.length) return { error: '元のバイトを読み取れません。' };
       const mode = raw ? 'raw' : 'assembly';
       app.patches.add(valid.fileOffset, before, built.bytes, { addr:a, text:textOrHex, mode, architecture:arch });
+      app.store?.set?.({ patches: app.patches.size });
       return { ok:true, bytes:built.bytes, mode, architecture:arch };
     },
 
@@ -501,19 +614,26 @@ export function createApi(app, out, options = {}) {
      * 関数を動かしてみる。
      * @returns {{x0, steps, stopped, log}}
      */
-    async run(addr, args = [], maxSteps = 20000, context = null) {
-      if (isExecutionContext(args)) {
-        context = args;
-        args = [];
-        maxSteps = 20000;
-      } else if (isExecutionContext(maxSteps)) {
-        context = maxSteps;
-        maxSteps = 20000;
+    async run(...rawArgs) {
+      const { args: callArgs, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 3);
+      let [addr, args = [], maxSteps = 20000, userContext = null] = callArgs;
+      if (!hasHostContext && !trailingContext) {
+        if (isExecutionContext(args)) {
+          userContext = args;
+          args = [];
+          maxSteps = 20000;
+        } else if (isExecutionContext(maxSteps)) {
+          userContext = maxSteps;
+          maxSteps = 20000;
+        }
       }
       if (!Array.isArray(args)) throw new TypeError('run args must be an array');
-      const signal = signalOf(context);
+      const signal = hasHostContext
+        ? (trailingContext.signal ?? (options.signal ?? null))
+        : signalOf(trailingContext ?? userContext);
       throwIfAborted(signal);
-      const emu = makeEmulator(app);
+      const applyPatches = (userContext?.applyPatches ?? trailingContext?.applyPatches) !== false;
+      const emu = makeEmulator(app, { applyPatches });
       emu.setup(BigInt(addr), args.map((v) => BigInt(v)));
       await emu.run(boundedSteps(maxSteps), { signal });
       return {
@@ -526,10 +646,13 @@ export function createApi(app, out, options = {}) {
      * Stateful emulator for scripts. Only the handle crosses the sandbox RPC;
      * sandbox.js presents it as an object with setup/step/run/get/set/... methods.
      */
-    emulatorCreate(addr = null, args = []) {
+    emulatorCreate(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 3);
+      throwIfAborted(signal);
+      const [addr = null, emuArgs = [], emuOptions = null] = args;
       if (emulators.size >= MAX_EMULATORS) throw new Error('同時に作れるエミュレータは16個までです。');
-      const emu = makeEmulator(app);
-      if (addr != null) emu.setup(BigInt(addr), (args || []).map((v) => BigInt(v)));
+      const emu = makeEmulator(app, { applyPatches: emuOptions?.applyPatches !== false });
+      if (addr != null) emu.setup(BigInt(addr), (emuArgs || []).map((v) => BigInt(v)));
       const id = 'emu' + emulatorSeq++;
       emulators.set(id, emu);
       return { id, state: emulatorState(emu) };
@@ -537,58 +660,108 @@ export function createApi(app, out, options = {}) {
 
     /* Direct callers get the same clone-safe descriptor. In the sandbox, the
        special `hex.emulator()` proxy calls emulatorCreate automatically. */
-    emulator(addr = null, args = []) { return api.emulatorCreate(addr, args); },
+    emulator(...rawArgs) { return api.emulatorCreate(...rawArgs); },
 
-    emulatorSetup(id, addr, args = []) {
+    emulatorSetup(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 3);
+      throwIfAborted(signal);
+      const [id, addr, emuArgs = []] = args;
       const emu = emulatorOf(id);
-      emu.setup(BigInt(addr), (args || []).map((v) => BigInt(v)));
+      emu.setup(BigInt(addr), (emuArgs || []).map((v) => BigInt(v)));
       return emulatorState(emu);
     },
 
-    async emulatorStep(id) {
+    async emulatorStep(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 1);
+      const [id] = args;
+      throwIfAborted(signal);
       const emu = emulatorOf(id);
-      const result = await emu.step();
+      const result = await emu.step({ signal });
       return { result, state: emulatorState(emu) };
     },
 
-    async emulatorRun(id, maxSteps = 20000) {
+    async emulatorRun(...rawArgs) {
+      const { args, context: trailingContext, hasHostContext } = resolveExecution(rawArgs, 2);
+      let [id, maxSteps = 20000, userContext = null] = args;
+      if (!hasHostContext && !trailingContext && isExecutionContext(maxSteps)) {
+        userContext = maxSteps;
+        maxSteps = 20000;
+      }
+      const signal = hasHostContext
+        ? (trailingContext.signal ?? (options.signal ?? null))
+        : signalOf(trailingContext ?? userContext);
+      throwIfAborted(signal);
       const emu = emulatorOf(id);
-      const result = await emu.run(boundedSteps(maxSteps));
+      const result = await emu.run(boundedSteps(maxSteps), { signal });
       return { result, state: emulatorState(emu) };
     },
 
-    emulatorState(id) { return emulatorState(emulatorOf(id)); },
-    emulatorGetRegister(id, reg) { return emulatorOf(id).get(String(reg || '')); },
-    emulatorSetRegister(id, reg, value) {
+    emulatorState(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 1);
+      const [id] = args;
+      return emulatorState(emulatorOf(id));
+    },
+    emulatorGetRegister(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [id, reg] = args;
+      return emulatorOf(id).get(String(reg || ''));
+    },
+    emulatorSetRegister(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 3);
+      const [id, reg, value] = args;
       const emu = emulatorOf(id);
       emu.set(String(reg || ''), BigInt(value));
       return emu.get(String(reg || ''));
     },
 
-    async emulatorDump(id, addr, len = 64) {
+    async emulatorDump(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 3);
+      throwIfAborted(signal);
+      const [id, addr, len = 64] = args;
       const n = Math.max(0, Math.min(MAX_EMULATOR_DUMP, Math.trunc(Number(len) || 0)));
-      return emulatorOf(id).dump(BigInt(addr), n);
+      return awaitRequest(emulatorOf(id).dump(BigInt(addr), n), signal);
     },
 
-    async emulatorStore(id, addr, size, value) {
+    async emulatorStore(...rawArgs) {
+      const { args, signal } = resolveExecution(rawArgs, 4);
+      throwIfAborted(signal);
+      const [id, addr, size, value] = args;
       const n = Math.trunc(Number(size));
       if (![1, 2, 4, 8].includes(n)) throw new Error('書き込みサイズは 1 / 2 / 4 / 8 バイトだけ使えます。');
-      await emulatorOf(id).store(BigInt(addr), n, BigInt(value));
+      await awaitRequest(emulatorOf(id).store(BigInt(addr), n, BigInt(value)), signal);
       return true;
     },
 
-    emulatorAddBreakpoint(id, addr) {
+    emulatorAddBreakpoint(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [id, addr] = args;
       const emu = emulatorOf(id);
       emu.breakpoints.add(BigInt(addr).toString());
       return true;
     },
-    emulatorRemoveBreakpoint(id, addr) {
+    emulatorRemoveBreakpoint(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 2);
+      const [id, addr] = args;
       const emu = emulatorOf(id);
       return emu.breakpoints.delete(BigInt(addr).toString());
     },
-    emulatorBreakpoints(id) { return Array.from(emulatorOf(id).breakpoints, (v) => BigInt(v)); },
-    emulatorReset(id) { const emu = emulatorOf(id); emu.reset(); return emulatorState(emu); },
-    emulatorDestroy(id) { return emulators.delete(String(id || '')); },
+    emulatorBreakpoints(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 1);
+      const [id] = args;
+      return Array.from(emulatorOf(id).breakpoints, (v) => BigInt(v));
+    },
+    emulatorReset(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 1);
+      const [id] = args;
+      const emu = emulatorOf(id);
+      emu.reset();
+      return emulatorState(emu);
+    },
+    emulatorDestroy(...rawArgs) {
+      const { args } = resolveExecution(rawArgs, 1);
+      const [id] = args;
+      return emulators.delete(String(id || ''));
+    },
 
     /* ── 画面を動かす ─────────────────────────────────── */
 
@@ -600,22 +773,139 @@ export function createApi(app, out, options = {}) {
   return { api, print };
 }
 
+function patchVirtualAddress(item, regions) {
+  if (!item) return null;
+  if (item.addr != null) {
+    try { return BigInt(item.addr); } catch { return null; }
+  }
+  if (item.offset == null) return null;
+  const off = BigInt(item.offset);
+  for (const r of regions || []) {
+    if (!r || r.zerofill || r.fileOffset == null || r.vmAddr == null || r.size == null) continue;
+    try {
+      if (r.fileSize != null && BigInt(r.fileSize) <= 0n) continue;
+      const fileStart = BigInt(r.fileOffset);
+      const size = r.fileSize != null ? BigInt(r.fileSize) : BigInt(r.size);
+      if (size > 0n && off >= fileStart && off < fileStart + size) {
+        return BigInt(r.vmAddr) + (off - fileStart);
+      }
+    } catch { /* ignore malformed region */ }
+  }
+  return null;
+}
+
+/** ステージング中のパッチをメモリ読み取りバイト列へ重ねる。 */
+export function overlayStagedPatches(patches, regions, addr, bytes) {
+  if (!bytes || !bytes.length || !patches || typeof patches.list !== 'function' || !(patches.size > 0)) return bytes;
+  const start = BigInt(addr);
+  const end = start + BigInt(bytes.length);
+  let out = null;
+  for (const item of patches.list()) {
+    if (!item?.after?.length) continue;
+    const patchStart = patchVirtualAddress(item, regions);
+    if (patchStart == null) continue;
+    const patchEnd = patchStart + BigInt(item.after.length);
+    if (patchEnd <= start || patchStart >= end) continue;
+    if (!out) out = Uint8Array.from(bytes);
+    const lo = patchStart > start ? patchStart : start;
+    const hi = patchEnd < end ? patchEnd : end;
+    for (let cur = lo; cur < hi; cur++) {
+      out[Number(cur - start)] = item.after[Number(cur - patchStart)];
+    }
+  }
+  return out || bytes;
+}
+
+function patchedTextSlot(item, patchStart, addr) {
+  if (!item || typeof item.text !== 'string' || isHexBytes(item.text)) return null;
+  const rel = Number(addr - patchStart);
+  if (rel < 0 || rel % 4 !== 0) return null;
+  const slot = rel / 4;
+  const parts = item.text.split(/[;\n]+/).map((s) => s.trim()).filter(Boolean);
+  const line = parts[slot];
+  if (!line) return null;
+  const sp = line.indexOf(' ');
+  return sp < 0 ? { mn: line.toLowerCase(), ops: '' } : { mn: line.slice(0, sp).toLowerCase(), ops: line.slice(sp + 1).trim() };
+}
+
+async function patchedInstructionAt(app, regions, addr, readMemory, adapter = null) {
+  const patches = app?.patches;
+  if (!patches || typeof patches.list !== 'function' || !(patches.size > 0)) {
+    return { patched: false, insn: null };
+  }
+  const target = BigInt(addr);
+  const targetEnd = target + 4n;
+  let overlapping = null;
+  let covering = null;
+  let coveringStart = null;
+  for (const item of patches.list()) {
+    if (!item?.after?.length) continue;
+    const patchStart = patchVirtualAddress(item, regions);
+    if (patchStart == null) continue;
+    const patchEnd = patchStart + BigInt(item.after.length);
+    if (patchEnd <= target || patchStart >= targetEnd) continue;
+    overlapping = item;
+    if (patchStart <= target && patchEnd >= targetEnd) {
+      covering = item;
+      coveringStart = patchStart;
+      break;
+    }
+  }
+  if (!overlapping) return { patched: false, insn: null };
+  let four = null;
+  if (covering && coveringStart != null) {
+    const off = Number(target - coveringStart);
+    four = covering.after.slice(off, off + 4);
+  } else {
+    four = await readMemory(target, 4);
+  }
+  if (four && four.length === 4) {
+    const word = (four[0] | (four[1] << 8) | (four[2] << 16) | (four[3] << 24)) >>> 0;
+    const decoded = decodeArm64PatchWord(word, target);
+    if (decoded) return { patched: true, insn: decoded };
+    if (typeof adapter?.disassemble === 'function') {
+      try {
+        const dis = await adapter.disassemble(four, target);
+        const first = Array.isArray(dis) ? dis[0] : dis?.instructions?.[0] || dis;
+        const mn = first?.mn || first?.mnemonic || '';
+        if (mn) return { patched: true, insn: { mn, ops: first?.ops ?? first?.operands ?? '' } };
+      } catch { /* fall through to fail closed */ }
+    }
+  }
+  if (covering && coveringStart != null) {
+    const fallback = patchedTextSlot(covering, coveringStart, target);
+    if (fallback) return { patched: true, insn: fallback };
+  }
+  return { patched: true, insn: null };
+}
+
 /** app からエミュレータを作る（画面側でも使う）。 */
-export function makeEmulator(app) {
+export function makeEmulator(app, options = {}) {
   // Legacy callers predate architecture metadata and were ARM64-only. Keep that
   // compatibility path, while explicit unknown/foreign architectures fail closed.
   const detectedArchitecture = app.store.get('architecture') || app.currentSlice?.()?.capability?.architecture;
   const architecture = String(detectedArchitecture || 'arm64').toLowerCase();
   const adapter = architectureAdapter(architecture);
   if (adapter.id !== 'arm64') throw new UnsupportedArchitectureError('emulate', architecture);
-  const regions = (app.store.get('regions') || []).filter((r) => r.exec && r.size > 0n);
+  const applyPatches = options?.applyPatches !== false;
+  const allRegions = app.store.get('regions') || [];
+  const regions = allRegions.filter((r) => r.exec && r.size > 0n);
   const regionAt = (addr) => regions.find((r) => addr >= r.vmAddr && addr < r.vmAddr + r.size) || null;
+  const readMemory = (addr, len) => app.backend.readAt(addr, len)
+    .then((r) => {
+      if (!r || !r.found || !r.bytes) return null;
+      if (!applyPatches || !(app?.patches?.size > 0)) return r.bytes;
+      return overlayStagedPatches(app.patches, allRegions, BigInt(addr), r.bytes);
+    }).catch(() => null);
   return new Emulator({
-    read: (addr, len) => app.backend.readAt(addr, len)
-      .then((r) => (r && r.found ? r.bytes : null)).catch(() => null),
+    read: readMemory,
     fetch: async (addr) => {
       const r = regionAt(addr);
       if (!r) return null;
+      if (applyPatches && app?.patches?.size > 0) {
+        const result = await patchedInstructionAt(app, allRegions, BigInt(addr), readMemory, adapter);
+        if (result.patched) return result.insn;
+      }
       const row = adapter.rowForAddress(r, addr);
       if (row == null) return null;
       const chunk = Math.floor(row / 1024);

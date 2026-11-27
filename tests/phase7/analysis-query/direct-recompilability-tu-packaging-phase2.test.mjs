@@ -161,7 +161,7 @@ test('an arity-unknown call is faithful only against an unprototyped callee decl
     && entry.reason?.startsWith('arity-unknown-call-contradicts-selected-signature')),
     JSON.stringify(unit.unresolved));
   // Without recovered parameters, the caller body is emitted faithfully.
-  const callee2 = fn('uint32 callee(void)\n{\n  return 1;\n}', { address:0x200n, name:'callee' });
+  const callee2 = fn('uint32 callee()\n{\n  return 1;\n}', { address:0x200n, name:'callee' });
   const caller2 = fn('void caller(void)\n{\n  callee(1);\n}', { address:0x100n, name:'caller' });
   const unit2 = buildCTranslationUnit([caller2, callee2]);
   const callerRow2 = unit2.functions.find((row) => row.name === 'caller');

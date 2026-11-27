@@ -11,7 +11,7 @@ export const ARM64_ARCHITECTURE_ID = 'arm64';
 export const ARM64_MODE = 'a64';
 export const ARM64_INSTRUCTION_BYTES = 4n;
 
-const REGISTER_EXTEND_MNEMONICS = new Set(['add','adds','sub','subs']);
+const REGISTER_EXTEND_MNEMONICS = new Set(['add','adds','sub','subs','cmp','cmn']);
 
 // Canonical MachineEffects identity is a primitive string. Values that merely
 // survive `String()` coercion (arrays, objects, malformed wrappers) are
@@ -120,7 +120,7 @@ function strictInteger(value) {
   if (typeof value === 'string') {
     const text = value.trim();
     if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
-      try { return BigInt(text); } catch { return null; }
+      try { return text.startsWith('-') ? -BigInt(text.slice(1)) : BigInt(text); } catch { return null; }
     }
   }
   return null;
@@ -142,7 +142,7 @@ export function canonicalAddressValue(value) {
   if (typeof value === 'string') {
     const text = value.trim();
     if (!ADDRESS_EVIDENCE_TEXT.test(text)) return null;
-    try { return BigInt(text); } catch { return null; }
+    try { return text.startsWith('-') ? -BigInt(text.slice(1)) : BigInt(text); } catch { return null; }
   }
   return null;
 }
@@ -220,7 +220,7 @@ export function directTargetOf(instruction, kind = 'branch') {
   const ops = instruction?.ops || [];
   for (let i = ops.length - 1; i >= 0; i--) {
     const value = decodedAbsoluteTargetOf(ops[i]);
-    if (value != null) return value;
+    if (value != null && value >= 0n) return value;
   }
   return null;
 }
@@ -400,10 +400,11 @@ export function createArm64EffectContext(instruction, options = {}) {
     const kind = modifier.op.toLowerCase();
     const amount = modifier.amount == null ? 0 : modifier.amount;
     if (typeof amount !== 'number' || !Number.isInteger(amount)) return null;
-    const extendBits = {
+    const extendTable = Object.assign(Object.create(null), {
       uxtb: 8, uxth: 16, uxtw: 32, uxtx: 64,
       sxtb: 8, sxth: 16, sxtw: 32, sxtx: 64,
-    }[kind];
+    });
+    const extendBits = extendTable[kind];
     if (extendBits != null) {
       if (!Number.isInteger(amount) || amount < 0 || amount > 4 || extendBits > sourceBits) return null;
       let out = sourceBits === extendBits ? value : truncate(value, sourceBits, extendBits);

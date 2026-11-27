@@ -65,8 +65,9 @@ let cs = null;                        // { M, handle, hp }
 let csError = null;
 let currentEpoch = 0;
 let openChain = Promise.resolve();
-const activeRequests = new Map();             // request id -> epoch
-const cancelledRequests = new Set();
+const activeRequests = new Map();             // "${epoch}:${id}" -> { id, epoch }
+const cancelledRequests = new Set();          // "${epoch}:${id}"
+const requestKey = (epoch, id) => `${epoch}:${id}`;
 
 const blocks = new Map();             // blockIndex -> Uint8Array (insertion-ordered LRU)
 const blockInflight = new Map();       // blockIndex -> { epoch, file, promise }
@@ -77,16 +78,17 @@ self.onmessage = async (e) => {
   const msg = e.data;
   if (!msg || typeof msg.t !== 'string') return;
   if (msg.t === 'cancel' || msg.t === 'cancelSearch') {
-    for (const [id, epoch] of activeRequests) {
-      if ((msg.requestId == null || msg.requestId === id) &&
-          (msg.epoch == null || msg.epoch === epoch)) cancelledRequests.add(id);
+    for (const [key, entry] of activeRequests) {
+      if ((msg.requestId == null || msg.requestId === entry.id) &&
+          (msg.epoch == null || msg.epoch === entry.epoch)) cancelledRequests.add(key);
     }
     return;
   }
+  const reqKey = msg.id != null ? requestKey(msg.epoch, msg.id) : null;
   const run = async () => {
     if (msg.t === 'open') currentEpoch = msg.epoch;
     if (msg.epoch !== currentEpoch) throw new Error('Stale analysis request.');
-    if (msg.id != null) activeRequests.set(msg.id, msg.epoch);
+    if (reqKey != null) activeRequests.set(reqKey, { id: msg.id, epoch: msg.epoch });
     return handle(msg);
   };
   try {
@@ -98,14 +100,17 @@ self.onmessage = async (e) => {
     if (msg.id != null) post({ t: 'err', id: msg.id, epoch: msg.epoch, error: errText(err) });
     else post({ t: 'fatal', error: errText(err) });
   } finally {
-    if (msg.id != null) {
-      activeRequests.delete(msg.id);
-      cancelledRequests.delete(msg.id);
+    if (reqKey != null) {
+      activeRequests.delete(reqKey);
+      cancelledRequests.delete(reqKey);
     }
   }
 };
 
-function cancelled(requestId) { return requestId != null && cancelledRequests.has(requestId); }
+function cancelled(requestId, epoch = currentEpoch) {
+  if (epoch != null && epoch !== currentEpoch) return true;
+  return requestId != null && cancelledRequests.has(requestKey(epoch, requestId));
+}
 function scanProgress(requestId, epoch, done, all, hits) {
   self.postMessage({ t: 'scanProgress', requestId, epoch, done, all, hits });
 }
@@ -142,8 +147,111 @@ async function handle(msg) {
     case 'scanProgram': return scanProgram(msg);
     case 'fieldAccess': return findFieldAccess(msg);
     case 'valueShapes': return scanValueShapes(msg);
+    case 'getScanMeta': return getScanMeta(msg);
+    case 'classifyExecutableCoverage': return classifyExecutableCoverage(msg);
     default: throw new Error('Unknown request: ' + msg.t);
   }
+}
+
+/* ── Worker-private scan caches & streaming helpers (below handle for VM test slice) ── */
+
+const STREAM_SCAN_BLOCK = 4 * 1024 * 1024;
+const META_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const META_DATA_PTR_CAP = 1_000_000;
+const __inlineStringRefFilteredResults = new WeakSet();
+const __inlineCanonicalKindsResults = new WeakSet();
+const __metaReadCacheByReq = new Map();
+
+function minBigInt(a, b) {
+  return a < b ? a : b;
+}
+
+function buildSortedStringRanges(ranges) {
+  if (!ranges || !ranges.length) return [];
+  const sorted = [];
+  for (const r of ranges) {
+    if (!r) continue;
+    const start = typeof r.start === 'bigint' ? r.start : BigInt(r.start);
+    const end = typeof r.end === 'bigint' ? r.end : BigInt(r.end);
+    if (end > start) sorted.push({ start, end });
+  }
+  if (!sorted.length) return [];
+  sorted.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
+  const merged = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const cur = sorted[i];
+    const last = merged[merged.length - 1];
+    if (cur.start <= last.end) {
+      if (cur.end > last.end) last.end = cur.end;
+    } else {
+      merged.push(cur);
+    }
+  }
+  return merged;
+}
+
+function inSortedRanges(addr, sortedRanges) {
+  let lo = 0, hi = sortedRanges.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const r = sortedRanges[mid];
+    if (addr < r.start) hi = mid - 1;
+    else if (addr >= r.end) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
+function canonicalProgramKind(w, fastKind) {
+  w >>>= 0;
+  if (w === 0) return Words.KIND.TRAP;
+  if (((w & 0x7f20001f) >>> 0) === 0x6a20001f) return Words.KIND.LOGIC;
+  if (((w & 0x7f800000) >>> 0) === 0x13800000) return Words.KIND.SHIFT;
+  if (((w & 0x5f200000) >>> 0) === 0x1e000000) return Words.KIND.FCONV;
+  if (((w & 0xff3fe000) >>> 0) === 0x04000000) return Words.KIND.ARITH;
+  return fastKind === Words.KIND.LITERAL ? Words.KIND.LOAD : fastKind;
+}
+
+function createYielder(intervalMs = 16) {
+  const now = typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? () => performance.now()
+    : () => Date.now();
+  let lastYield = now();
+  return async function maybeYield() {
+    const t = now();
+    if (t - lastYield >= intervalMs) {
+      lastYield = t;
+      await yieldToQueue();
+    }
+  };
+}
+
+async function readScanBlock(offset, length) {
+  const sourceFile = file;
+  const size = num(fileSize);
+  const start = num(offset);
+  if (length <= 0 || start < 0 || start >= size) return new Uint8Array(0);
+  if (!sourceFile || typeof sourceFile.slice !== 'function') return readRange(offset, length);
+  const end = Math.min(start + length, size);
+  return new Uint8Array(await sourceFile.slice(start, end).arrayBuffer());
+}
+
+async function readMetadataRange(offset, length, requestId, epoch = currentEpoch) {
+  if (requestId == null) return readRange(offset, length);
+  const reqEntry = __metaReadCacheByReq.get(requestKey(epoch ?? currentEpoch, requestId));
+  if (!reqEntry || reqEntry.file !== file || reqEntry.epoch !== currentEpoch) {
+    return readRange(offset, length);
+  }
+  const spanKey = `${offset}:${length}`;
+  const cached = reqEntry.buffers.get(spanKey);
+  if (cached) return cached;
+  const buf = await readRange(offset, length);
+  if (reqEntry.file === file && reqEntry.epoch === currentEpoch &&
+      reqEntry.bytes + buf.byteLength <= META_CACHE_MAX_BYTES) {
+    reqEntry.buffers.set(spanKey, buf);
+    reqEntry.bytes += buf.byteLength;
+  }
+  return buf;
 }
 
 /* ── Capstone ───────────────────────────────────────────────── */
@@ -309,6 +417,7 @@ async function openFile(f) {
   fileSize = BigInt(f.size);
   blocks.clear();
   blockInflight.clear();
+  __metaReadCacheByReq.clear();
   regions = new Map();
   slices = [];
 
@@ -446,7 +555,7 @@ async function getChunk({ regionId, chunk, wantAsm }) {
  *
  * 結果は転送可能な型付き配列で返す。数十万件あっても main 側でコピーが起きない。
  */
-async function analyzeSlice({ sliceIndex, id: requestId }) {
+async function analyzeSlice({ sliceIndex, id: requestId, epoch }) {
   const slice = slices[sliceIndex];
   if (!slice || !slice.info) {
     return {
@@ -624,7 +733,7 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
       try {
         const list = MachO.parseFunctionStarts(buf, info.textVM,
           { regions: slice.regions || [], architecture: info.architecture || 'arm64',
-            dataInCode: dataInCodeRanges, shouldCancel: () => cancelled(requestId) });
+            dataInCode: dataInCodeRanges, shouldCancel: () => cancelled(requestId, epoch) });
         // Positive ULEB deltas make `list` strictly increasing. Insert the entry
         // seed in place instead of copy + linear membership scan + full re-sort.
         if (info.entry != null) {
@@ -753,7 +862,7 @@ function sanitizeStubPointer(v, base) {
  * entry before accepting a list.  A malformed/unknown list is skipped rather
  * than guessed.
  */
-async function objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId) {
+async function objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId, epoch = currentEpoch) {
   const out = new Set();
   if (!slice) return out;
   let truncationReason = null;
@@ -769,7 +878,7 @@ async function objcMethodImplementationStarts(slice, lo, hi, imageBase, requestI
     if (work + entries > LEGACY_METADATA_WORK_MAX) { truncationReason = 'work-limit'; break; }
     work += entries;
     let buf;
-    try { buf = await readRange(r.fileOffset, Number(r.size)); }
+    try { buf = await readMetadataRange(r.fileOffset, Number(r.size), requestId, epoch); }
     catch { continue; }
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     for (let p = 0; p + 8 <= buf.byteLength; p += 4) {
@@ -803,10 +912,10 @@ async function objcMethodImplementationStarts(slice, lo, hi, imageBase, requestI
       p += bytes - 4;
       /* #8770: observe cancellation with bounded latency inside a large section
          rather than only after it completes. */
-      if ((p & 0x1fff) === 0 && cancelled(requestId)) { truncationReason = 'cancelled'; break; }
+      if ((p & 0x1fff) === 0 && cancelled(requestId, epoch)) { truncationReason = 'cancelled'; break; }
     }
     if (truncationReason === 'cancelled') break;
-    if (cancelled(requestId)) { truncationReason = 'cancelled'; break; }
+    if (cancelled(requestId, epoch)) { truncationReason = 'cancelled'; break; }
   }
   if (truncationReason) { out.truncated = true; out.truncationReason = truncationReason; }
   return out;
@@ -842,7 +951,7 @@ async function readMappedVM(slice, vm, len) {
  * This metadata remains valid when the symbol table and LC_FUNCTION_STARTS are
  * absent, so every validated entry is exact function-boundary evidence.
  */
-async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId) {
+async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId, epoch = currentEpoch) {
   const out = new Set();
   if (!slice || imageBase == null) return out;
   let truncationReason = null;
@@ -861,14 +970,14 @@ async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId) {
     if (work + entries > LEGACY_METADATA_WORK_MAX) { truncationReason = 'work-limit'; break; }
     work += entries;
     let b;
-    try { b = await readRange(r.fileOffset, Number(r.size)); } catch { continue; }
+    try { b = await readMetadataRange(r.fileOffset, Number(r.size), requestId, epoch); } catch { continue; }
     const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
     for (let p = 0; p + 4 <= b.byteLength; p += 4) {
       const target = BigInt(imageBase) + BigInt(dv.getUint32(p, true));
       if (target >= lo && target < hi && !(target & 3n)) out.add(target);
-      if ((p & 0x1fff) === 0 && cancelled(requestId)) { truncationReason = 'cancelled'; break; }
+      if ((p & 0x1fff) === 0 && cancelled(requestId, epoch)) { truncationReason = 'cancelled'; break; }
     }
-    if (cancelled(requestId)) { truncationReason = 'cancelled'; break; }
+    if (cancelled(requestId, epoch)) { truncationReason = 'cancelled'; break; }
   }
   if (truncationReason) { out.truncated = true; out.truncationReason = truncationReason; }
   return out;
@@ -901,7 +1010,7 @@ const SWIFT_REFLECTION_WORK_MAX = 200_000;
  * span cannot multiply total byte/entry work proportionally to their count. */
 const LEGACY_METADATA_WORK_MAX = 2_000_000;
 
-async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
+async function swiftReflectionFunctionStarts(slice, lo, hi, requestId, epoch = currentEpoch) {
   const out = new Set();
   if (!slice) return out;
   let truncationReason = null;
@@ -917,7 +1026,7 @@ async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
   for (const sec of typeSections) {
     if (sec.size > 16n * 1024n * 1024n) continue;
     let records;
-    try { records = await readRange(sec.fileOffset, Number(sec.size)); } catch { continue; }
+    try { records = await readMetadataRange(sec.fileOffset, Number(sec.size), requestId, epoch); } catch { continue; }
     const rv = new DataView(records.buffer, records.byteOffset, records.byteLength);
     for (let p = 0; p + 4 <= records.byteLength; p += 4) {
       const rel = rv.getInt32(p, true);
@@ -999,7 +1108,7 @@ async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
          * first parse of a physical descriptor merges into the output. */
         for (const t of targets) out.add(t);
       }
-      if (cancelled(requestId)) return finish();
+      if (cancelled(requestId, epoch)) { markTruncated('cancelled'); return finish(); }
     }
   }
   function finish() {
@@ -1059,17 +1168,26 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   let swiftMetadataReason = null;
   let legacyMetadataTruncated = false;
   let legacyMetadataReason = null;
+  const reqCache = requestId != null ? __metaReadCacheByReq.get(requestKey(epoch ?? currentEpoch, requestId)) : null;
+  const validCache = reqCache && reqCache.file === file && reqCache.epoch === currentEpoch ? reqCache : null;
   if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
     try {
-      const buf = await readRange(unwind.fileOffset, Number(unwind.size));
+      const buf = await readMetadataRange(unwind.fileOffset, Number(unwind.size), requestId, epoch);
       const remaining = Math.max(0, cap - found.size);
       if (remaining > 0) {
-        const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: remaining, maxWork: remaining, shouldCancel: () => cancelled(requestId) });
+        const unwindKey = `${unwind.fileOffset}:${unwind.size}:${imageBase}:${remaining}`;
+        let unwindStarts = validCache?.unwind?.get(unwindKey);
+        if (!unwindStarts) {
+          unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: remaining, maxWork: remaining, shouldCancel: () => cancelled(requestId, epoch) });
+          if (validCache && unwindStarts.truncationReason !== 'cancelled') {
+            validCache.unwind.set(unwindKey, unwindStarts);
+          }
+        }
         for (const a of unwindStarts) if (a >= lo && a < hi && found.size < cap) found.add(a);
         if (unwindStarts.truncated) { unwindMetadataTruncated = true; unwindMetadataReason = 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated'); }
       }
       await yieldToQueue();
-      if (cancelled(requestId)) return { starts: new BigUint64Array(0), cancelled: true };
+      if (cancelled(requestId, epoch)) return { starts: new BigUint64Array(0), cancelled: true };
     } catch { /* 読めなければ推測だけで進む */ }
   }
 
@@ -1077,20 +1195,20 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   /* Objective-C method-list IMPs are exact metadata evidence independent of
      LC_FUNCTION_STARTS. They are especially important for tiny accessors that
      are never reached by a direct BL. */
-  const methodStarts = await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId);
+  const methodStarts = await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId, epoch);
   for (const a of methodStarts) {
     if (found.size >= cap) break;
     found.add(a);
   }
   if (methodStarts.truncated) { legacyMetadataTruncated = true; legacyMetadataReason = 'objc-methodlist-' + (methodStarts.truncationReason || 'truncated'); }
 
-  const initStarts = await initializerFunctionStarts(slice, lo, hi, imageBase, requestId);
+  const initStarts = await initializerFunctionStarts(slice, lo, hi, imageBase, requestId, epoch);
   for (const a of initStarts) {
     if (found.size >= cap) break;
     found.add(a);
   }
   if (initStarts.truncated) { legacyMetadataTruncated = true; legacyMetadataReason ||= 'legacy-init-' + (initStarts.truncationReason || 'truncated'); }
-  const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId);
+  const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId, epoch);
   for (const a of swiftStarts) {
     if (found.size >= cap) break;
     found.add(a);
@@ -1113,19 +1231,28 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
    */
   const dataCandidates = new Set();
   if (slice && imageBase != null) {
-    for (const r of slice.regions || []) {
-      if (r.size <= 0n || r.size > BigInt(32 * 1024 * 1024)) continue;
-      if (!/^__(const|data|objc_const|cfstring)$/.test(r.section || '')) continue;
-      try {
-        const buf = await readRange(r.fileOffset, Number(r.size));
-        const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-        for (let p = 0; p + 8 <= buf.byteLength; p += 8) {
-          const t = sanitizeStubPointer(dv.getBigUint64(p, true), imageBase);
-          if (t == null || t < lo || t >= hi || (t & 3n)) continue;
-          if (dataCandidates.size < cap) addAux(dataCandidates, t);
-        }
-      } catch { /* 読めない区画は飛ばす */ }
-      if (cancelled(requestId)) return { starts: [], cancelled: true };
+    if (validCache && validCache.dataPointers != null) {
+      const ptrs = validCache.dataPointers;
+      for (let i = 0; i < ptrs.length; i++) {
+        const t = ptrs[i];
+        if (t < lo || t >= hi) continue;
+        if (dataCandidates.size < cap) addAux(dataCandidates, t);
+      }
+    } else {
+      for (const r of slice.regions || []) {
+        if (r.size <= 0n || r.size > BigInt(32 * 1024 * 1024)) continue;
+        if (!/^__(const|data|objc_const|cfstring)$/.test(r.section || '')) continue;
+        try {
+          const buf = await readMetadataRange(r.fileOffset, Number(r.size), requestId, epoch);
+          const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+          for (let p = 0; p + 8 <= buf.byteLength; p += 8) {
+            const t = sanitizeStubPointer(dv.getBigUint64(p, true), imageBase);
+            if (t == null || t < lo || t >= hi || (t & 3n)) continue;
+            if (dataCandidates.size < cap) addAux(dataCandidates, t);
+          }
+        } catch { /* 読めない区画は飛ばす */ }
+        if (cancelled(requestId, epoch)) return { starts: [], cancelled: true };
+      }
     }
   }
 
@@ -1168,10 +1295,11 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     arr.push(c); pendingWindows.push(c);
   };
 
+  const maybeYield = createYielder(16);
   while (pos < total) {
-    if (cancelled(requestId)) return { starts: [], cancelled: true };
-    const want = Math.min(SCAN_BLOCK, total - pos);
-    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (cancelled(requestId, epoch)) return { starts: [], cancelled: true };
+    const want = Math.min(STREAM_SCAN_BLOCK, total - pos);
+    const blk = await readScanBlock(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
     const words = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, words * 4);
@@ -1233,7 +1361,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     }
     pos += words * 4;
     scanProgress(requestId, epoch, pos, total, found.size);
-    await yieldToQueue();
+    await maybeYield();
   }
 
   const isBlocked = (c) => conditionalTargets.has(c.addr) || directBranchTargets.has(c.addr);
@@ -1576,23 +1704,39 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
   let index = 0;
   let pos = 0;
 
+  const inlineStringRefFilter = typeof __programStringRanges === 'function';
+  const stringRanges = inlineStringRefFilter ? buildSortedStringRanges(__programStringRanges()) : null;
+  const inlineCanonicalKinds = typeof __crossBinaryExactKind === 'function';
+  const maybeYield = createYielder(16);
+
   const allocatedBytes = () => callFrom.byteLength + callTo.byteLength + refFrom.byteLength + refTo.byteLength + refKind.byteLength + kinds.byteLength;
   const canGrow = (temporaryBytes) => WORKER_BUDGET.withinProgramBudget(allocatedBytes(), temporaryBytes) && allocatedBytes() + temporaryBytes <= PROGRAM_INDEX_BUDGET_BYTES;
+  let reusableBlockWords = null;
 
   while (pos < total) {
-    if (cancelled(requestId)) return { cancelled: true, __transfer: [] };
-    const want = Math.min(SCAN_BLOCK, total - pos);
-    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (cancelled(requestId, epoch)) return { cancelled: true, __transfer: [] };
+    const want = Math.min(STREAM_SCAN_BLOCK, total - pos);
+    const blk = await readScanBlock(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
     const n = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, n * 4);
+    let blockWords = null;
+    let blockKinds = null;
+    if (n >= 64 && typeof Words.classifyWordsBatch === 'function') {
+      if (!reusableBlockWords || reusableBlockWords.length < n) {
+        reusableBlockWords = new Uint32Array(n);
+      }
+      blockWords = reusableBlockWords.length === n ? reusableBlockWords : reusableBlockWords.subarray(0, n);
+      for (let i = 0; i < n; i++) blockWords[i] = dv.getUint32(i * 4, true);
+      blockKinds = Words.classifyWordsBatch(blockWords);
+    }
 
     for (let i = 0; i < n; i++, index++) {
-      const w = dv.getUint32(i * 4, true);
+      const w = blockWords ? blockWords[i] : dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
       provenance.enter(pc);
-      const kind = Words.classifyWord(w);
-      if (index < kinds.length) kinds[index] = kind;
+      const kind = blockKinds ? blockKinds[i] : Words.classifyWord(w);
+      if (index < kinds.length) kinds[index] = inlineCanonicalKinds ? canonicalProgramKind(w, kind) : kind;
 
       if (kind === Words.KIND.CALL || kind === Words.KIND.INDCALL) {
         if (kind === Words.KIND.CALL) {
@@ -1647,7 +1791,9 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
           ? provenance.base(memWrite.base, index, { allowEntryFallback: true }) : null;
         if (knownBase != null) {
           const full = memWrite.mode === 'post' ? knownBase : knownBase + memWrite.disp;
-          addRef(pc, full, memWrite.rmw ? 3 : memWrite.load ? 1 : memWrite.store ? 2 : 0);
+          if (!inlineStringRefFilter || !inSortedRanges(BigInt.asUintN(64, full), stringRanges)) {
+            addRef(pc, full, memWrite.rmw ? 3 : memWrite.load ? 1 : memWrite.store ? 2 : 0);
+          }
         }
         // FP/SIMD register numbers share the low encoding bits with xN/wN, but
         // writing d8/q8 must not destroy an address held in x8.  Integer pair
@@ -1668,17 +1814,20 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
 
     pos += n * 4;
     scanProgress(requestId, epoch, pos, total, nCalls + nRefs);
-    await yieldToQueue();
+    await maybeYield();
   }
 
   const truncationReasons = [];
   if (callsCapped) truncationReasons.push('call-edge-memory-budget');
   if (refsCapped) truncationReasons.push('reference-memory-budget');
   if (kinds.length < words) truncationReasons.push('kind-stat-budget');
-  const outCallFrom=callFrom.slice(0,nCalls), outCallTo=callTo.slice(0,nCalls);
-  const outRefFrom=refFrom.slice(0,nRefs), outRefTo=refTo.slice(0,nRefs), outRefKind=refKind.slice(0,nRefs);
-  const outKinds=kinds.slice(0,Math.min(words,kinds.length));
-  return {
+  const outCallFrom = nCalls === callFrom.length ? callFrom : callFrom.slice(0, nCalls);
+  const outCallTo = nCalls === callTo.length ? callTo : callTo.slice(0, nCalls);
+  const outRefFrom = nRefs === refFrom.length ? refFrom : refFrom.slice(0, nRefs);
+  const outRefTo = nRefs === refTo.length ? refTo : refTo.slice(0, nRefs);
+  const outRefKind = nRefs === refKind.length ? refKind : refKind.slice(0, nRefs);
+  const outKinds = kinds.length <= words ? kinds : kinds.slice(0, words);
+  const result = {
     regionId,
     vmAddr: region.vmAddr,
     words,
@@ -1694,6 +1843,9 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
     completeness: { complete: truncationReasons.length === 0, reasons: truncationReasons, memoryBudgetBytes: PROGRAM_INDEX_BUDGET_BYTES, allocatedBytes: allocatedBytes() },
     __transfer: [outCallFrom.buffer, outCallTo.buffer, outRefFrom.buffer, outRefTo.buffer, outRefKind.buffer, outKinds.buffer],
   };
+  if (inlineStringRefFilter) __inlineStringRefFilteredResults.add(result);
+  if (inlineCanonicalKinds) __inlineCanonicalKindsResults.add(result);
+  return result;
 
   function addRef(pc, target, k) {
     if (target == null || refsCapped) return;
@@ -1859,7 +2011,7 @@ async function scanValueShapes({ regionId, requestId, epoch }) {
     // 別のものを入れたのだから、それまでの「入れ物の大きさ」も引き継がない
     spanOf[r] = 0;
   };
-  const forgetAll = () => { pBase.fill(-1); };
+  const forgetAll = () => { pBase.fill(-1); pAmtKind.fill(AMT_NONE); };
   const copy = (d, s) => {
     if (d === 31) return;
     if (d !== s) spanOf[d] = spanOf[s];
@@ -1877,11 +2029,12 @@ async function scanValueShapes({ regionId, requestId, epoch }) {
     pAmtSize[d] = size || 0; pAmtSpan[d] = span || 0;
   };
 
+  const maybeYield = createYielder(16);
   let pos = 0;
   while (pos < total) {
-    if (cancelled(requestId)) return { cancelled: true, __transfer: [] };
-    const want = Math.min(SCAN_BLOCK, total - pos);
-    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (cancelled(requestId, epoch)) return { cancelled: true, __transfer: [] };
+    const want = Math.min(STREAM_SCAN_BLOCK, total - pos);
+    const blk = await readScanBlock(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
     const words = Math.floor(blk.length / 4);
     const dv = new DataView(blk.buffer, blk.byteOffset, words * 4);
@@ -1945,14 +2098,16 @@ if (r != null && r !== 31) {
 continue;
         }
 
-        if (mem.load) {
-const r = mem.reg;
-if (r !== 31) {
-  spanOf[r] = 0;
-  pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
-  pDir[r] = 0; pClamp[r] = 0;
-  pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
-  pAmtSize[r] = 0; pAmtSpan[r] = 0;
+        if (mem.load || mem.prefetch) {
+if (mem.load && !mem.vector && !mem.prefetch) {
+  const r = mem.reg;
+  if (r !== 31) {
+    spanOf[r] = 0;
+    pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
+    pDir[r] = 0; pClamp[r] = 0;
+    pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
+    pAmtSize[r] = 0; pAmtSpan[r] = 0;
+  }
 }
 continue;
         }
@@ -2059,7 +2214,7 @@ if (n >= MAX_SHAPE_EVENTS) capped = true;
 
     pos += words * 4;
     scanProgress(requestId, epoch, pos, total, n);
-    await yieldToQueue();
+    await maybeYield();
   }
 
   const addr = evAddr.slice(0, n), disp = evDisp.slice(0, n), size = evSize.slice(0, n);
@@ -2117,7 +2272,7 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
   let found = 0;
   let pos = 0;
   while (pos < total && !allFull()) {
-    if (cancelled(requestId)) return { results: firstOf(), groups: groupsOf(), cancelled: true, capped: false, complete: false };
+    if (cancelled(requestId, epoch)) return { results: firstOf(), groups: groupsOf(), cancelled: true, capped: false, complete: false };
     const wantBytes = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
     if (blk.length < 4) break;
@@ -2129,24 +2284,30 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
       if (kind !== Words.KIND.LOAD && kind !== Words.KIND.STORE && kind !== Words.KIND.ATOMIC) continue;
       const mem = Words.memoryAccess(w);
       if (!mem || mem.disp == null || mem.indexed) continue;
-      const slot = wanted.get(mem.disp.toString());
-      if (!slot || slot.out.length >= cap) continue;
-      // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
-      if (slot.size > 0 && mem.size !== slot.size && !(slot.size > 8 && mem.size === 8)) continue;
+      const hasPairElement = mem.pair && Number.isSafeInteger(mem.elementSize) && mem.elementSize > 0;
+      const accessSize = hasPairElement ? mem.elementSize : mem.size;
+      const baseDisp = mem.mode === 'post' ? 0n : mem.disp;
+      const disps = hasPairElement ? [baseDisp, baseDisp + BigInt(mem.elementSize)] : [baseDisp];
       const byteOff = pos + i * 4;
       const accessKinds = mem.rmw ? ['load', 'store'] : [mem.load ? 'load' : 'store'];
-      for (const accessKind of accessKinds) {
-        if (slot.out.length >= cap) break;
-        slot.out.push({
-          row: byteOff / 4,
-          addr: region.vmAddr + BigInt(byteOff),
-          kind: accessKind,
-          base: mem.base,
-          size: mem.size,
-          atomic: !!mem.atomic,
-          rmw: !!mem.rmw,
-        });
-        found++;
+      for (const disp of disps) {
+        const slot = wanted.get(disp.toString());
+        if (!slot || slot.out.length >= cap) continue;
+        // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
+        if (slot.size > 0 && accessSize !== slot.size && !(slot.size > 8 && accessSize === 8)) continue;
+        for (const accessKind of accessKinds) {
+          if (slot.out.length >= cap) break;
+          slot.out.push({
+            row: byteOff / 4,
+            addr: region.vmAddr + BigInt(byteOff),
+            kind: accessKind,
+            base: mem.base,
+            size: accessSize,
+            atomic: !!mem.atomic,
+            rmw: !!mem.rmw,
+          });
+          found++;
+        }
       }
     }
     pos += words * 4;
@@ -2233,7 +2394,8 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   const minLen = Math.max(2, Number(min) || STRINGS_MIN);
   const cap = Math.min(Number(limit) || STRINGS_LIMIT, STRINGS_LIMIT);
   const regionBytes = Number(region.size);
-  const total = Math.min(regionBytes, Math.max(0, Number(maxBytes == null ? regionBytes : maxBytes)));
+  const rawMaxBytes = maxBytes == null ? regionBytes : Number(maxBytes);
+  const total = Math.min(regionBytes, Math.max(0, Number.isFinite(rawMaxBytes) ? rawMaxBytes : regionBytes));
   const out = [];
   let pos = 0;                 // 次に読むファイル内の位置（region 先頭から）
   let runStart = -1;           // いま伸びている文字列の先頭
@@ -2268,7 +2430,7 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   let carry = new Uint8Array(0);
   let carryAt = 0;
   while (pos < total && out.length < cap) {
-    if (cancelled(requestId)) return { results: out, cancelled: true, capped: false, scannedBytes: pos, complete: false };
+    if (cancelled(requestId, epoch)) return { results: out, cancelled: true, capped: false, scannedBytes: pos, complete: false };
     const want = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), want);
     if (!blk.length) break;
@@ -2341,7 +2503,7 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
 
   let pos = 0;
   while (pos < total && out.length < cap) {
-    if (cancelled(requestId)) return { results: out, cancelled: true, capped: false };
+    if (cancelled(requestId, epoch)) return { results: out, cancelled: true, capped: false };
     const wantBytes = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
     if (blk.length < 4) break;
@@ -2353,12 +2515,12 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
       const pc = region.vmAddr + BigInt(byteOff);
       provenance.enter(pc);
 
+      const kind = Words.classifyWord(w);
       const direct = wordTarget(w, pc);
       if (direct !== null && direct === want) {
-        out.push({ row: byteOff / 4, addr: pc, kind: 'branch' });
+        out.push({ row: byteOff / 4, addr: pc, kind: kind === Words.KIND.LITERAL ? 'load' : 'branch' });
         if (out.length >= cap) break;
       }
-      const kind = Words.classifyWord(w);
       if (kind === Words.KIND.CALL || kind === Words.KIND.INDCALL ||
           kind === Words.KIND.CONDBR || kind === Words.KIND.BRANCH ||
           kind === Words.KIND.RET || kind === Words.KIND.TRAP) {
@@ -2424,9 +2586,30 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
 /* ── 任意のアドレスを読む ───────────────────────────────────── */
 
 /** 仮想アドレス → ファイル内の位置。見つからなければ null。 */
+function isNonAllocableRegion(region) {
+  if (!region) return true;
+  if (region.alloc === true) return false;
+  if (region.alloc === false || region.source === 'unmapped-section') return true;
+  if (region.source === 'section-header' && region.flags != null) {
+    return (BigInt(region.flags) & 0x2n) === 0n;
+  }
+  if (region.kind === 'section' && region.read === false && region.write === false && region.exec === false) {
+    return true;
+  }
+  if (region.kind === 'section' && BigInt(region.vmAddr ?? 0) === 0n
+    && region.read !== true && region.write !== true && region.exec !== true) {
+    const name = String(region.section || region.name || '');
+    if (/^\.(?:symtab|strtab|shstrtab|comment|debug(?:_|$)|gnu_debug|note\.)/i.test(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function vmToFile(addr) {
   for (const r of regions.values()) {
     if (r.id === 'raw' || r.zerofill) continue;
+    if (isNonAllocableRegion(r)) continue;
     if (addr >= r.vmAddr && addr < r.vmAddr + r.size) {
       return { offset: r.fileOffset + (addr - r.vmAddr), region: r };
     }
@@ -2439,6 +2622,7 @@ function vmToFile(addr) {
  * 「adrp + add で作ったアドレスに何があるか」を見せるために使う。
  */
 async function readAtAddress({ addr, len, text }) {
+  if (addr == null || typeof addr === 'boolean' || (typeof addr === 'string' && !addr.trim())) return { found: false };
   const at = BigInt(addr);
   const hit = vmToFile(at);
   if (!hit) return { found: false };
@@ -2464,20 +2648,264 @@ async function readAtAddress({ addr, len, text }) {
     const end = result.bytes.indexOf(0);
     const body = end >= 0 ? result.bytes.subarray(0, end) : result.bytes;
     result.text = decodeUtf8Text(body);
-    result.terminated = end >= 0;
+    // Distinguish a true 0-char NUL-terminated string (end === 0) from non-printable binary
+    // bytes before the first NUL that decodeUtf8Text() rejected to empty string.
+    result.terminated = end >= 0 && (end === 0 || result.text.length > 0);
   }
   result.__transfer = [result.bytes.buffer];
   return result;
 }
 
+function getScanMeta({ regionId }) {
+  const region = regions.get(regionId);
+  if (!region) throw new Error('Unknown region.');
+  const vmAddr = BigInt(region.vmAddr);
+  const size = BigInt(region.size);
+  const fileOffset = BigInt(region.fileOffset);
+  const end = vmAddr + size;
+  const rawStarts = Array.from(functionStartsForRegion(region) || [], (value) => {
+    try { return typeof value === 'bigint' ? value : BigInt(value); } catch { return null; }
+  }).filter((value) => value != null && value >= vmAddr && value < end)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const functionStarts = new BigUint64Array(rawStarts.length);
+  for (let i = 0; i < rawStarts.length; i++) functionStarts[i] = rawStarts[i];
+  const stringRanges = typeof __programStringRanges === 'function'
+    ? buildSortedStringRanges(__programStringRanges())
+    : [];
+  return {
+    region: {
+      id: region.id,
+      fileOffset,
+      vmAddr,
+      size,
+      section: region.section || '',
+      segment: region.segment || '',
+    },
+    functionStarts,
+    stringRanges,
+    hasDataInCode: Boolean(region?.dataInCode?.length),
+    __transfer: [functionStarts.buffer],
+  };
+}
+
+const COVERAGE_AARCH64_NOP = 0xd503201f;
+const COVERAGE_ORACLE_CHUNK_BYTES = 256 * 1024;
+
+async function classifyExecutableCoverage({ gaps, regionIds, endian = 'little', requestId, epoch }) {
+  const spans = [];
+  const isBigEndian = endian === 'big';
+  const useScoped = Array.isArray(regionIds) && regionIds.length > 0;
+  let scopedRegions = null;
+  if (useScoped) {
+    scopedRegions = [];
+    for (const id of regionIds) {
+      const r = regions.get(id);
+      if (!r || r.id === 'raw' || r.zerofill || !(r.size > 0n)) continue;
+      scopedRegions.push(r);
+    }
+    scopedRegions.sort((a, b) => (a.vmAddr < b.vmAddr ? -1 : a.vmAddr > b.vmAddr ? 1 : 0));
+  }
+
+  const resolveAt = (addr) => {
+    if (scopedRegions) {
+      for (let i = 0; i < scopedRegions.length; i++) {
+        const r = scopedRegions[i];
+        if (addr >= r.vmAddr && addr < r.vmAddr + r.size) {
+          return { offset: r.fileOffset + (addr - r.vmAddr), region: r };
+        }
+      }
+      return null;
+    }
+    return vmToFile(addr);
+  };
+
+  const nextRegionStartAfter = (addr) => {
+    let best = null;
+    const iter = scopedRegions || regions.values();
+    for (const r of iter) {
+      if (!r || r.id === 'raw' || r.zerofill || !(r.size > 0n)) continue;
+      if (r.vmAddr > addr && (best == null || r.vmAddr < best)) best = r.vmAddr;
+    }
+    return best;
+  };
+
+  const appendSpan = (start, end, klass) => {
+    if (end <= start) return;
+    const last = spans[spans.length - 1];
+    if (last && last.class === klass && last.end === start) last.end = end;
+    else spans.push({ start, end, class: klass });
+  };
+
+  const readWord4 = (bytes, offset) => {
+    if (isBigEndian) {
+      return (((bytes[offset] << 24) >>> 0) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+    }
+    return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | ((bytes[offset + 3] << 24) >>> 0)) >>> 0;
+  };
+
+  const classifySliceWords = (bytes, baseOffset, length, startVm) => {
+    for (let off = 0; off + 4 <= length; off += 4) {
+      const word = readWord4(bytes, baseOffset + off);
+      const wordStart = startVm + BigInt(off);
+      appendSpan(wordStart, wordStart + 4n, (word === 0 || word === COVERAGE_AARCH64_NOP) ? 'padding' : 'unknown');
+    }
+  };
+
+  const maybeYield = createYielder(16);
+
+  for (const gap of gaps || []) {
+    if (!gap) continue;
+    const gapStart = typeof gap.start === 'bigint' ? gap.start : BigInt(gap.start);
+    const gapEnd = typeof gap.end === 'bigint' ? gap.end : BigInt(gap.end);
+    if (gapEnd <= gapStart) continue;
+
+    const alignedStart = (gapStart + 3n) & ~3n;
+    const alignedEnd = gapEnd & ~3n;
+
+    if (alignedStart > alignedEnd) {
+      appendSpan(gapStart, gapEnd, 'unknown');
+      continue;
+    }
+
+    if (gapStart < alignedStart) {
+      appendSpan(gapStart, alignedStart, 'unknown');
+    }
+
+    let cursor = alignedStart;
+    while (cursor < alignedEnd) {
+      if (cancelled(requestId, epoch)) return { spans, cancelled: true };
+      const hit = resolveAt(cursor);
+      if (!hit) {
+        const nextStart = nextRegionStartAfter(cursor);
+        const nextAligned = nextStart != null && nextStart > cursor
+          ? minBigInt(alignedEnd, (nextStart + 3n) & ~3n)
+          : alignedEnd;
+        appendSpan(cursor, nextAligned, 'unknown');
+        cursor = nextAligned;
+        continue;
+      }
+
+      const regionEnd = hit.region.vmAddr + hit.region.size;
+      const availEnd = minBigInt(alignedEnd, regionEnd);
+      const availBytes = availEnd - cursor;
+
+      if (availBytes >= 4n) {
+        const alignedSubEnd = availEnd - (availBytes & 3n);
+        const take = Math.min(STREAM_SCAN_BLOCK, Number(alignedSubEnd - cursor));
+        const blk = await readScanBlock(hit.offset, take);
+        if (blk.length === take) {
+          classifySliceWords(blk, 0, take, cursor);
+        } else {
+          for (let subOff = 0; subOff < take; subOff += COVERAGE_ORACLE_CHUNK_BYTES) {
+            const subLen = Math.min(COVERAGE_ORACLE_CHUNK_BYTES, take - subOff);
+            const subVm = cursor + BigInt(subOff);
+            if (subOff + subLen <= blk.length) {
+              classifySliceWords(blk, subOff, subLen, subVm);
+            } else {
+              const readable = subOff < blk.length ? ((Math.min(subLen, blk.length - subOff)) & ~3) : 0;
+              if (readable > 0) classifySliceWords(blk, subOff, readable, subVm);
+              if (readable < subLen) appendSpan(subVm + BigInt(readable), subVm + BigInt(subLen), 'unknown');
+            }
+          }
+        }
+        cursor += BigInt(take);
+      } else {
+        const stitched = new Uint8Array(4);
+        let got = 0;
+        let stitchCursor = cursor;
+        while (got < 4) {
+          const sh = resolveAt(stitchCursor);
+          if (!sh) break;
+          const shAvail = Number(minBigInt(BigInt(4 - got), sh.region.vmAddr + sh.region.size - stitchCursor));
+          if (shAvail <= 0) break;
+          const part = await readScanBlock(sh.offset, shAvail);
+          if (part.length < shAvail) break;
+          stitched.set(part, got);
+          got += shAvail;
+          stitchCursor += BigInt(shAvail);
+        }
+        if (got === 4) {
+          const word = readWord4(stitched, 0);
+          appendSpan(cursor, cursor + 4n, (word === 0 || word === COVERAGE_AARCH64_NOP) ? 'padding' : 'unknown');
+        } else {
+          appendSpan(cursor, cursor + 4n, 'unknown');
+        }
+        cursor += 4n;
+      }
+      await maybeYield();
+    }
+
+    if (alignedEnd < gapEnd) {
+      appendSpan(alignedEnd, gapEnd, 'unknown');
+    }
+  }
+
+  return { spans, cancelled: false };
+}
+
 /* ── search ─────────────────────────────────────────────────── */
+
+function compileLegacyBytePattern(pattern, mask, foldAscii) {
+  const length = pattern && pattern.length;
+  if (!Number.isInteger(length) || length < 3 || length > 4096) return null;
+  const lowerByte = (b) => (b >= 65 && b <= 90 ? b + 32 : b);
+  const expected = new Uint8Array(length);
+  const masks = foldAscii ? null : new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    const pb = pattern[i];
+    if (typeof pb !== 'number' || !Number.isInteger(pb) || pb < 0 || pb > 255) return null;
+    expected[i] = foldAscii ? lowerByte(pb) : pb;
+    if (masks) {
+      const mb = mask && mask[i];
+      if (typeof mb !== 'number' || !Number.isInteger(mb) || mb < 0 || mb > 255) return null;
+      masks[i] = mb;
+    }
+  }
+  if (masks) {
+    let allZero = true;
+    for (let i = 0; i < length; i++) if (masks[i] !== 0) { allZero = false; break; }
+    if (allZero) {
+      let matches = true;
+      for (let i = 0; i < length; i++) if (expected[i] !== 0) { matches = false; break; }
+      return { find(bytes, from) { return matches && from <= bytes.length - length ? from : -1; } };
+    }
+  }
+  const skip = new Uint32Array(256);
+  skip.fill(length);
+  for (let i = 0; i < length - 1; i++) {
+    const distance = length - 1 - i;
+    if (!masks || masks[i] === 255) skip[expected[i]] = distance;
+    else {
+      const m = masks[i], e = expected[i];
+      for (let byte = 0; byte < 256; byte++) if ((byte & m) === e) skip[byte] = distance;
+    }
+  }
+  return {
+    find(bytes, from) {
+      const last = length - 1;
+      const end = bytes.length - length;
+      for (let at = from; at <= end;) {
+        const tail = foldAscii ? lowerByte(bytes[at + last]) : bytes[at + last];
+        let idx = last;
+        for (; idx >= 0; idx--) {
+          const actual = foldAscii ? lowerByte(bytes[at + idx]) : bytes[at + idx];
+          if (masks ? (actual & masks[idx]) !== expected[idx] : actual !== expected[idx]) break;
+        }
+        if (idx < 0) return at;
+        at += skip[tail];
+      }
+      return -1;
+    },
+  };
+}
 
 async function runSearch({ regionId, kind, query, hex, from, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
   const results = [];
   const total = Number(region.size);
-  const startByte = Math.max(0, Math.min(total, Number(from || 0)));
+  const rawFrom = Number(from ?? 0);
+  const startByte = Math.max(0, Math.min(total, Number.isFinite(rawFrom) ? rawFrom : 0));
   let scanned = 0;
   let capped = false;
 
@@ -2485,10 +2913,11 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     const pat = hex;
     if (!pat || !pat.bytes.length) throw new Error('Enter a hex pattern such as “FD 7B” or “D1??00”.');
     const plen = pat.bytes.length;
+    const matcher = compileLegacyBytePattern(pat.bytes, pat.mask, false);
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
-      if (cancelled(requestId)) return { cancelled: true, results, scanned };
+      if (cancelled(requestId, epoch)) return { cancelled: true, results, scanned };
       const want = Math.min(SEARCH_BLOCK_HEX, total - pos);
       const blk = await readRange(region.fileOffset + BigInt(pos), want);
       if (!blk.length) break;
@@ -2496,15 +2925,19 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
       const base = pos - carry.length;
       const limit = joined.length - plen + 1;
       for (let i = 0; i < limit; i++) {
-        let ok = true;
-        for (let j = 0; j < plen; j++) {
-          if ((joined[i + j] & pat.mask[j]) !== pat.bytes[j]) { ok = false; break; }
+        if (matcher) {
+          i = matcher.find(joined, i);
+          if (i < 0) break;
+        } else {
+          let ok = true;
+          for (let j = 0; j < plen; j++) {
+            if ((joined[i + j] & pat.mask[j]) !== pat.bytes[j]) { ok = false; break; }
+          }
+          if (!ok) continue;
         }
-        if (ok) {
-          const byteOff = base + i;
-          push(results, byteOff, region, joined, i, plen);
-          if (results.length >= SEARCH_LIMIT) { capped = true; break; }
-        }
+        const byteOff = base + i;
+        push(results, byteOff, region, joined, i, plen);
+        if (results.length >= SEARCH_LIMIT) { capped = true; break; }
       }
       pos += blk.length;
       scanned = pos - startByte;
@@ -2522,10 +2955,11 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     const lower = (b) => (b >= 65 && b <= 90 ? b + 32 : b);
     for (let i = 0; i < pat.length; i++) pat[i] = lower(pat[i]);
     const plen = pat.length;
+    const matcher = compileLegacyBytePattern(pat, null, true);
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
-      if (cancelled(requestId)) return { cancelled: true, results, scanned };
+      if (cancelled(requestId, epoch)) return { cancelled: true, results, scanned };
       const want = Math.min(SEARCH_BLOCK_HEX, total - pos);
       const blk = await readRange(region.fileOffset + BigInt(pos), want);
       if (!blk.length) break;
@@ -2533,11 +2967,16 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
       const base = pos - carry.length;
       const limit = joined.length - plen + 1;
       for (let i = 0; i < limit; i++) {
-        let ok = true;
-        for (let j = 0; j < plen; j++) {
-          if (lower(joined[i + j]) !== pat[j]) { ok = false; break; }
+        if (matcher) {
+          i = matcher.find(joined, i);
+          if (i < 0) break;
+        } else {
+          let ok = true;
+          for (let j = 0; j < plen; j++) {
+            if (lower(joined[i + j]) !== pat[j]) { ok = false; break; }
+          }
+          if (!ok) continue;
         }
-        if (!ok) continue;
         const byteOff = base + i;
         // 前後を少し添えて、どんな文字列の中の一致か分かるようにする
         let text = '';
@@ -2562,7 +3001,7 @@ async function runSearch({ regionId, kind, query, hex, from, requestId, epoch })
     if (!needle) throw new Error('Enter text to search for.');
     let pos = Math.floor(startByte / INSN_SIZE) * INSN_SIZE;
     while (pos < total) {
-      if (cancelled(requestId)) return { cancelled: true, results, scanned };
+      if (cancelled(requestId, epoch)) return { cancelled: true, results, scanned };
       const want = Math.min(SEARCH_BLOCK_ASM, total - pos);
       const blk = await readRange(region.fileOffset + BigInt(pos), want);
       if (!blk.length) break;

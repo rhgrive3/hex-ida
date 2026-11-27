@@ -24,7 +24,10 @@ import {
   canonicalAccessProof,
   canonicalAccessBinding,
   canonicalAliasProof,
+  bindMemorySsaProducerVerifier,
+  canonicalIdentityDigest,
   canonicalMemorySsaDigest,
+  registerPublishedMemorySsaCaches,
   canonicalStoreValueProof,
   isCanonicalAccessProvider,
   MEMORY_SSA_PROOF_VERSION,
@@ -80,6 +83,7 @@ class CanonicalMemorySsaArtifact {
 export function isCanonicalMemorySsaProducerArtifact(artifact) {
   return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.has(artifact);
 }
+bindMemorySsaProducerVerifier(isCanonicalMemorySsaProducerArtifact);
 
 export function canonicalMemorySsaProducerMatchesSemanticIr(artifact, ir) {
   return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.matchesSemanticIr(artifact, ir);
@@ -234,8 +238,8 @@ function memoryRangeProof(memorySsaEntityId, sourceEntityId, regionId, range, me
   };
 }
 
-function canonicalStackNoEscapeProof(identity, functionId, useId, nodeId, regionId) {
-  const identityDigest = stableDigest(identity ?? null);
+function canonicalStackNoEscapeProof(identity, functionId, useId, nodeId, regionId, precomputedIdentityDigest = null) {
+  const identityDigest = precomputedIdentityDigest ?? stableDigest(identity ?? null);
   const proof = {
     kind: 'canonical-memory-stack-no-escape',
     version: MEMORY_SSA_PROOF_VERSION,
@@ -320,7 +324,7 @@ function normalizeResolution(raw, fallback) {
     if (prior && stableStringify(prior) !== stableStringify(region)) fail('memory-ssa-build-conflicting-region-id');
     byId.set(region.id, region);
   }
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return [...byId.values()].sort((a, b) => compareText(a.id, b.id));
 }
 function callResolver(resolver, memory, context, fallback) {
   if (typeof resolver !== 'function') return [fallback];
@@ -376,17 +380,29 @@ function disjointIntervalReason(leftRegion, rightRegion) {
   return 'disjoint-memory-ranges';
 }
 
-function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, purpose, identity, functionId) {
+function rangeDisjointAlias(
+  descriptor,
+  sourceRegion,
+  targetRegion,
+  relation,
+  purpose,
+  identity,
+  functionId,
+  regionMetaById = null,
+  skipProofIfNo = false,
+) {
   // Region identity is the canonical storage root.  For a non-identical
   // precise region, however, an instruction displacement can place the
   // actual access wholly outside that root's interval.  Refine only this
   // positive, independently computed byte-range fact; unknown/broad regions
   // remain conservative and an identity (`must`) answer is never weakened.
   if (relation?.relation === 'must' || !descriptor?.memory || descriptor.broad) return relation;
-  const sourceBase = memoryRegionBase(sourceRegion);
+  const sourceMeta = regionMetaById?.get(sourceRegion.id) ?? null;
+  const targetMeta = regionMetaById?.get(targetRegion.id) ?? null;
+  const sourceBase = sourceMeta ? sourceMeta.base : memoryRegionBase(sourceRegion);
   const sourceWidthBits = Number(descriptor.memory.widthBits);
-  const sourceDomain = memoryRegionDomain(sourceRegion);
-  const targetRange = memoryRegionByteRange(targetRegion);
+  const sourceDomain = sourceMeta ? sourceMeta.domain : memoryRegionDomain(sourceRegion);
+  const targetRange = targetMeta ? targetMeta.byteRange : memoryRegionByteRange(targetRegion);
   if (sourceBase == null || sourceDomain == null || !targetRange
       || sourceDomain !== targetRange.domain
       || !Number.isSafeInteger(sourceWidthBits) || sourceWidthBits <= 0 || sourceWidthBits % 8 !== 0) {
@@ -401,6 +417,14 @@ function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, pu
   if (reason == null) return relation;
   const reasonCodes = [reason];
   const evidenceIds = ['canonical-memory-byte-range-disjoint'];
+  if (skipProofIfNo) {
+    return {
+      relation: 'no',
+      reasonCodes,
+      evidenceIds,
+      proof: null,
+    };
+  }
   const provider = {
     analyzerId: 'phase7.alias.a1-region',
     analyzerVersion: '1.0.0',
@@ -472,7 +496,15 @@ function makeDescriptor(node, role, sourceKind, index, memory, extra = {}) {
  * registers-core tables; this set only re-states the frame/stack root names
  * those tables already normalize.
  */
-const STACK_POINTER_REGISTER_IDS = new Set(['sp', 'fp', 'x29', 'rsp', 'rbp']);
+function compareText(left, right) {
+  const a = String(left ?? '');
+  const b = String(right ?? '');
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+const FRAME_POINTER_REGISTER_IDS = new Set(['fp', 'x29', 'rbp', 'ebp', 'x8', 's0']);
+const STACK_POINTER_ONLY_REGISTER_IDS = new Set(['sp', 'rsp', 'esp', 'x2']);
+const STACK_POINTER_REGISTER_IDS = new Set([...STACK_POINTER_ONLY_REGISTER_IDS, ...FRAME_POINTER_REGISTER_IDS]);
 const STACK_POINTER_REGISTER_SUFFIXES = ['_sp', '_fp'];
 
 /*
@@ -485,7 +517,20 @@ const STACK_POINTER_REGISTER_SUFFIXES = ['_sp', '_fp'];
  * 64-bit ABIs, each mapping to its parameter slot.
  */
 const X86_64_ARGUMENT_REGISTER_SLOTS = new Map([
-  ['rdi', 'arg0'], ['rsi', 'arg1'], ['rdx', 'arg2'], ['rcx', 'arg3'], ['r8', 'arg4'], ['r9', 'arg5'],
+  ['rdi', 'arg0'], ['edi', 'arg0'], ['di', 'arg0'], ['dil', 'arg0'],
+  ['rsi', 'arg1'], ['esi', 'arg1'], ['si', 'arg1'], ['sil', 'arg1'],
+  ['rdx', 'arg2'], ['edx', 'arg2'], ['dx', 'arg2'], ['dl', 'arg2'],
+  ['rcx', 'arg3'], ['ecx', 'arg3'], ['cx', 'arg3'], ['cl', 'arg3'],
+  ['r8', 'arg4'], ['r8d', 'arg4'], ['r8w', 'arg4'], ['r8b', 'arg4'],
+  ['r9', 'arg5'], ['r9d', 'arg5'], ['r9w', 'arg5'], ['r9b', 'arg5'],
+]);
+const RISCV_INT_ARGUMENT_REGISTER_SLOTS = new Map([
+  ['x10', 'arg0'], ['x11', 'arg1'], ['x12', 'arg2'], ['x13', 'arg3'],
+  ['x14', 'arg4'], ['x15', 'arg5'], ['x16', 'arg6'], ['x17', 'arg7'],
+]);
+const RISCV_FP_ARGUMENT_REGISTER_SLOTS = new Map([
+  ['f10', 'arg0'], ['f11', 'arg1'], ['f12', 'arg2'], ['f13', 'arg3'],
+  ['f14', 'arg4'], ['f15', 'arg5'], ['f16', 'arg6'], ['f17', 'arg7'],
 ]);
 
 function expressionContainsStackRegister(expression, active = new Set()) {
@@ -511,6 +556,39 @@ function expressionContainsStackRegister(expression, active = new Set()) {
 function stackDerivedValueIds(irFunction) {
   const valuesById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
   const nodesById = new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
+  const stateWritesByVarKey = new Map();
+  const stateWritesByRegisterId = new Map();
+  for (const node of irFunction.nodes ?? []) {
+    if (node?.kind !== 'state-write') continue;
+    const varKey = node.variable?.key;
+    if (varKey != null) {
+      let list = stateWritesByVarKey.get(varKey);
+      if (!list) { list = []; stateWritesByVarKey.set(varKey, list); }
+      list.push(node);
+    }
+    const regId = String(node.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
+    if (regId) {
+      let list = stateWritesByRegisterId.get(regId);
+      if (!list) { list = []; stateWritesByRegisterId.set(regId, list); }
+      list.push(node);
+    }
+  }
+  const stackStores = [];
+  for (const node of irFunction.nodes ?? []) {
+    if (node?.kind === 'store') {
+      stackStores.push({
+        addressValueId: memoryAddressExpr(node.memory)?.valueId ?? node.inputs?.[0],
+        storedValueId: node.inputs?.[1],
+      });
+    } else if (node?.intrinsic?.memoryWrite?.accesses) {
+      for (const access of node.intrinsic.memoryWrite.accesses) {
+        stackStores.push({
+          addressValueId: access.addressExpr?.valueId,
+          storedValueId: access.valueId ?? null,
+        });
+      }
+    }
+  }
   const memo = new Map();
   const active = new Set();
   const derives = (valueId) => {
@@ -528,6 +606,24 @@ function stackDerivedValueIds(irFunction) {
     if (!result && definition?.variable?.physicalIdentity) {
       const registerId = definition.variable.physicalIdentity.registerId;
       result = STACK_POINTER_REGISTER_IDS.has(String(registerId ?? '').toLowerCase());
+    }
+    if (!result && definition?.kind === 'state-read') {
+      const varKey = definition.variable?.key;
+      const regId = String(definition.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
+      const writes = [
+        ...(varKey != null ? (stateWritesByVarKey.get(varKey) ?? []) : []),
+        ...(regId ? (stateWritesByRegisterId.get(regId) ?? []) : []),
+      ];
+      result = writes.some((sw) => Array.isArray(sw.inputs) && sw.inputs.some((input) => derives(input)));
+    }
+    if (!result && definition?.kind === 'load') {
+      const loadAddrId = memoryAddressExpr(definition.memory)?.valueId ?? definition.inputs?.[0];
+      if (loadAddrId != null && derives(loadAddrId)) {
+        result = stackStores.some((st) => st.storedValueId != null
+          && derives(st.storedValueId)
+          && st.addressValueId != null
+          && derives(st.addressValueId));
+      }
     }
     if (!result && Array.isArray(definition?.inputs)) {
       result = definition.inputs.some((input) => derives(input));
@@ -553,69 +649,285 @@ function stackDerivedValueIds(irFunction) {
   };
 }
 
-function callMayExposeStackAddress(node, orderedNodes, stackValues, nodeIndex) {
+const FP_SIMD_ARGUMENT_REGISTER_PATTERN = /^(?:v|d|s|q|h|b|f|fa|xmm|ymm|zmm)([0-7])$/;
+const INT_ARGUMENT_REGISTER_PATTERN = /^(?:arg|param|[a-z])([0-7])$/;
+const INDIRECT_RESULT_REGISTER_PATTERN = /^[xw]8$/;
+
+function argumentRegisterSlot(candidate) {
+  if (candidate?.kind !== 'state-write') return null;
+  const rawRegisterId = String(candidate.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
+  // legacy `argN`/`paramN`/`xN` spellings map to `int:argN`; FP/SIMD registers
+  // (`v0`..`v7`, `d0`..`d7`, `xmm0`..`xmm7`, etc.) map to `fp:argN` so they
+  // never collide with or kill integer argument slots; x86-64 SysV integer
+  // argument registers map to their positional `int:argN` slot; indirect
+  // result buffer pointer registers (`x8` and its 32-bit lower alias) map to
+  // `int:sret` so passing a local stack buffer address blocks no-escape.
+  const x86IntSlot = X86_64_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId);
+  if (x86IntSlot != null) return `int:${x86IntSlot}`;
+  const riscvIntSlot = RISCV_INT_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId);
+  if (riscvIntSlot != null) return `int:${riscvIntSlot}`;
+  const riscvFpSlot = RISCV_FP_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId);
+  if (riscvFpSlot != null) return `fp:${riscvFpSlot}`;
+  if (INDIRECT_RESULT_REGISTER_PATTERN.test(rawRegisterId)) return 'int:sret';
+  const fpMatch = rawRegisterId.match(FP_SIMD_ARGUMENT_REGISTER_PATTERN);
+  if (fpMatch) return `fp:arg${fpMatch[1]}`;
+  const intMatch = rawRegisterId.match(INT_ARGUMENT_REGISTER_PATTERN);
+  if (intMatch) return `int:arg${intMatch[1]}`;
+  return null;
+}
+
+function stateWriteMayExposeStack(candidate, stackValues) {
+  const valueId = candidate.inputs?.[0];
+  const value = stackValues.valuesById.get(String(valueId));
+  return stackValues.derives(valueId)
+    || value == null
+    || value.kind === 'unknown'
+    || value.kind === 'undef'
+    || stackValues.nodesById.get(String(value.definitionNodeId))?.completeness !== 'complete';
+}
+
+function buildStackEscapeCfgIndex(irFunction, cfg, stackValues) {
+  const cfgBlockById = new Map((cfg?.blocks ?? []).map((block) => [String(block.id), block]));
+  const irBlockById = new Map((irFunction?.blocks ?? []).map((block) => [String(block.id), block]));
+  const lastArgWriteByBlock = new Map();
+  const writtenArgRegisters = new Set();
+  const nodePosByBlock = new Map();
+  const firstStackPublishPosByBlock = new Map();
+  const blockHasStackPublish = new Set();
+  for (const block of irFunction?.blocks ?? []) {
+    const blockId = String(block.id);
+    const writes = new Map();
+    const posMap = new Map();
+    const nodeIds = block.nodeIds ?? [];
+    for (let index = 0; index < nodeIds.length; index++) {
+      const nodeIdStr = String(nodeIds[index]);
+      if (!posMap.has(nodeIdStr)) posMap.set(nodeIdStr, index);
+      const candidate = stackValues.nodesById.get(nodeIdStr);
+      if (!firstStackPublishPosByBlock.has(blockId) && nodePublishesStackAddress(candidate, stackValues)) {
+        firstStackPublishPosByBlock.set(blockId, index);
+        blockHasStackPublish.add(blockId);
+      }
+      const register = argumentRegisterSlot(candidate);
+      if (register == null) continue;
+      writtenArgRegisters.add(register);
+      writes.set(register, stateWriteMayExposeStack(candidate, stackValues));
+    }
+    nodePosByBlock.set(blockId, posMap);
+    if (writes.size > 0) lastArgWriteByBlock.set(blockId, writes);
+  }
+  const forwardSuccessors = new Map();
+  if (blockHasStackPublish.size > 0 || writtenArgRegisters.size > 0) {
+    for (const [blockId, cfgBlock] of cfgBlockById) {
+      for (const pred of cfgBlock.predecessors ?? []) {
+        const predId = String(pred);
+        let list = forwardSuccessors.get(predId);
+        if (!list) { list = []; forwardSuccessors.set(predId, list); }
+        list.push(blockId);
+      }
+    }
+  }
+  const stackPublishReachesBlockEntry = new Set();
+  if (blockHasStackPublish.size > 0) {
+    const queue = [];
+    for (const publisherBlockId of blockHasStackPublish) {
+      for (const succId of forwardSuccessors.get(publisherBlockId) ?? []) {
+        if (!stackPublishReachesBlockEntry.has(succId)) {
+          stackPublishReachesBlockEntry.add(succId);
+          queue.push(succId);
+        }
+      }
+    }
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const current = queue[cursor];
+      for (const succId of forwardSuccessors.get(current) ?? []) {
+        if (!stackPublishReachesBlockEntry.has(succId)) {
+          stackPublishReachesBlockEntry.add(succId);
+          queue.push(succId);
+        }
+      }
+    }
+  }
+  const argExposeAtEntryByRegister = new Map();
+  const getArgExposeAtEntry = (register) => {
+    let exposed = argExposeAtEntryByRegister.get(register);
+    if (exposed) return exposed;
+    exposed = new Set();
+    const queue = [];
+    for (const [blockId, writes] of lastArgWriteByBlock) {
+      if (writes.get(register) === true) {
+        for (const succId of forwardSuccessors.get(blockId) ?? []) {
+          if (!exposed.has(succId)) {
+            exposed.add(succId);
+            if (!lastArgWriteByBlock.get(succId)?.has(register)) queue.push(succId);
+          }
+        }
+      }
+    }
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const current = queue[cursor];
+      for (const succId of forwardSuccessors.get(current) ?? []) {
+        if (!exposed.has(succId)) {
+          exposed.add(succId);
+          if (!lastArgWriteByBlock.get(succId)?.has(register)) queue.push(succId);
+        }
+      }
+    }
+    argExposeAtEntryByRegister.set(register, exposed);
+    return exposed;
+  };
+  return {
+    cfgBlockById,
+    irBlockById,
+    lastArgWriteByBlock,
+    writtenArgRegisters,
+    nodePosByBlock,
+    firstStackPublishPosByBlock,
+    stackPublishReachesBlockEntry,
+    getArgExposeAtEntry,
+    callExposeCache: new Map(),
+  };
+}
+
+function callMayExposeStackAddress(node, stackValues, escapeCfgIndex) {
   if (node?.kind !== 'call') return false;
+  const nodeKey = String(node.id);
+  const cached = escapeCfgIndex.callExposeCache.get(nodeKey);
+  if (cached !== undefined) return cached;
+  const finish = (result) => {
+    escapeCfgIndex.callExposeCache.set(nodeKey, result);
+    return result;
+  };
   const explicitArguments = [
     ...(node.call?.arguments ?? []),
     ...(node.call?.memoryRead?.accesses ?? []).map((access) => access.addressExpr?.valueId),
     ...(node.call?.memoryWrite?.accesses ?? []).map((access) => access.addressExpr?.valueId),
   ];
-  if (explicitArguments.some((valueId) => stackValues.derives(valueId))) return true;
-  const callIndex = nodeIndex.get(String(node.id));
-  if (callIndex == null) return true;
+  if (explicitArguments.some((valueId) => stackValues.derives(valueId))) return finish(true);
+  if (escapeCfgIndex.writtenArgRegisters.size === 0) return finish(false);
+  const callBlockId = node.blockId == null ? null : String(node.blockId);
+  const callCfgBlock = callBlockId == null ? null : escapeCfgIndex.cfgBlockById.get(callBlockId);
+  const callIrBlock = callBlockId == null ? null : escapeCfgIndex.irBlockById.get(callBlockId);
+  const callPos = callBlockId == null ? -1 : (escapeCfgIndex.nodePosByBlock.get(callBlockId)?.get(nodeKey) ?? -1);
+  if (!callCfgBlock || !callIrBlock || callPos < 0) return finish(true);
   // A canonical call summary may omit ABI arguments.  Recover only the
-  // current argument definitions from canonical Semantic IR + scalar SSA
-  // state-write nodes; this is still producer evidence, not a projected
-  // instruction walk.  An unknown argument conservatively prevents the
-  // no-escape claim as well.
-  const seenRegisters = new Set();
-  for (let index = callIndex - 1; index >= 0 && seenRegisters.size < 8; index--) {
-    const candidate = orderedNodes[index];
-    if (candidate?.kind !== 'state-write') continue;
-    const rawRegisterId = String(candidate.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
-    // legacy `argN`/`paramN`/`xN` spellings map to `argN`; x86-64 SysV
-    // argument registers map to their positional slot. Unrecognized register
-    // names never authorize a no-escape claim — they are skipped as
-    // non-argument state so the conservative outcome survives.
-    const slot = X86_64_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId)
-      ?? rawRegisterId.match(/^(?:arg|param|[a-z])([0-7])$/)?.[1];
-    if (slot == null) continue;
-    const register = typeof slot === 'string' && slot.startsWith('arg') ? slot : `arg${slot}`;
-    if (seenRegisters.has(register)) continue;
-    seenRegisters.add(register);
-    const valueId = candidate.inputs?.[0];
-    const value = stackValues.valuesById.get(String(valueId));
-    if (stackValues.derives(valueId)
-        || value == null
-        || value.kind === 'unknown'
-        || value.kind === 'undef'
-        || stackValues.nodesById.get(String(value.definitionNodeId))?.completeness !== 'complete') return true;
+  // reaching argument definitions from canonical Semantic IR + scalar SSA
+  // state-write nodes along CFG predecessors; this is still producer
+  // evidence, not a projected instruction walk.  A non-stack overwrite only
+  // kills earlier definitions on that path, never across sibling branches.
+  const killedInCallBlock = new Set();
+  for (let index = callPos - 1; index >= 0; index--) {
+    const candidate = stackValues.nodesById.get(String(callIrBlock.nodeIds[index]));
+    const register = argumentRegisterSlot(candidate);
+    if (register == null || killedInCallBlock.has(register)) continue;
+    killedInCallBlock.add(register);
+    if (stateWriteMayExposeStack(candidate, stackValues)) return finish(true);
+  }
+  for (const register of escapeCfgIndex.writtenArgRegisters) {
+    if (killedInCallBlock.has(register)) continue;
+    if (escapeCfgIndex.getArgExposeAtEntry(register).has(callBlockId)) return finish(true);
+  }
+  return finish(false);
+}
+
+function constantSignedOffset(valueId, stackValues) {
+  const value = stackValues.valuesById.get(String(valueId ?? ''));
+  const def = value?.definitionNodeId == null ? null : stackValues.nodesById.get(String(value.definitionNodeId));
+  if (def?.kind !== 'const') return null;
+  const raw = def.attributes?.bitvectorValue?.value;
+  if (raw == null) return null;
+  const widthBits = def.attributes?.bitvectorValue?.widthBits ?? value?.machineType?.widthBits;
+  if (!Number.isInteger(widthBits) || widthBits <= 0) return null;
+  try {
+    return BigInt.asIntN(widthBits, BigInt(raw));
+  } catch {
+    return null;
+  }
+}
+
+function stackRootRegisterKind(identity) {
+  if (!identity || typeof identity !== 'object') return null;
+  const role = String(identity.role ?? identity.storageRole ?? '').toLowerCase();
+  if (role === 'frame-pointer') return 'frame-pointer';
+  if (role === 'stack-pointer') return 'stack-pointer';
+  const registerId = String(identity.physicalId ?? identity.registerId ?? identity.name ?? '').toLowerCase();
+  if (FRAME_POINTER_REGISTER_IDS.has(registerId) || registerId.endsWith('_fp')) return 'frame-pointer';
+  if (STACK_POINTER_ONLY_REGISTER_IDS.has(registerId) || registerId.endsWith('_sp')) return 'stack-pointer';
+  return null;
+}
+
+function provenStackRootOffset(valueId, stackValues, active = new Set()) {
+  if (valueId == null) return null;
+  const id = String(valueId);
+  if (!id || active.has(id)) return null;
+  const value = stackValues.valuesById.get(id);
+  if (!value) return null;
+  const def = value.definitionNodeId == null ? null : stackValues.nodesById.get(String(value.definitionNodeId));
+  if (def == null) {
+    if (value.kind === 'entry' && value.metadata?.machineValue?.kind === 'register') {
+      const rootKind = stackRootRegisterKind(value.metadata.machineValue);
+      if (rootKind != null) return { rootKind, offset: 0n };
+    }
+    return null;
+  }
+  if (def.kind === 'state-read') {
+    const rootKind = stackRootRegisterKind(def.variable?.physicalIdentity);
+    if (rootKind != null) return { rootKind, offset: 0n };
+  }
+  if (def.kind === 'binary' && Array.isArray(def.inputs) && def.inputs.length === 2
+    && (def.operator === 'add' || def.operator === 'sub')) {
+    const offset = constantSignedOffset(def.inputs[1], stackValues);
+    if (offset == null) return null;
+    active.add(id);
+    const base = provenStackRootOffset(def.inputs[0], stackValues, active);
+    active.delete(id);
+    if (base == null) return null;
+    return {
+      rootKind: base.rootKind,
+      offset: def.operator === 'add' ? base.offset + offset : base.offset - offset,
+    };
+  }
+  return null;
+}
+
+function isProvenLocalFrameSlot(addressValueId, stackValues) {
+  const root = provenStackRootOffset(addressValueId, stackValues);
+  if (root == null) return false;
+  // On downward-growing stacks, only negative offsets from a frame pointer
+  // (fp/rbp/ebp/x29) are proven to lie inside the current local frame.
+  // Negative offsets from a stack pointer (sp/rsp/esp, i.e. sp - k) reach
+  // below the active stack top into callee/red-zone/push space, and
+  // non-negative offsets (sp + k) can reach outgoing stack arguments.
+  return root.rootKind === 'frame-pointer' && root.offset < 0n;
+}
+
+function nodePublishesStackAddress(upstream, stackValues) {
+  if (!upstream) return false;
+  const stores = [
+    ...(upstream.kind === 'store' ? [{ addressValueId: memoryAddressExpr(upstream.memory)?.valueId ?? upstream.inputs?.[0], storedValueId: upstream.inputs?.[1] }] : []),
+    ...(upstream.intrinsic?.memoryWrite?.accesses ?? []).map((access) => ({
+      addressValueId: access.addressExpr?.valueId,
+      storedValueId: access.valueId ?? null,
+    })),
+  ];
+  for (const store of stores) {
+    const stored = store.storedValueId;
+    if (stored == null || !stackValues.derives(stored)) continue;
+    if (!stackValues.derives(store.addressValueId) || !isProvenLocalFrameSlot(store.addressValueId, stackValues)) {
+      return true;
+    }
   }
   return false;
 }
 
-function stackAddressPublishedBeforeCall(node, orderedNodes, stackValues, nodeIndex) {
-  const callIndex = nodeIndex.get(String(node.id)) ?? -1;
-  if (callIndex < 0) return true;
-  const stores = (upstream) => {
-    const list = [
-      ...(upstream.kind === 'store' ? [{ addressValueId: memoryAddressExpr(upstream.memory)?.valueId ?? upstream.inputs?.[0], storedValueId: upstream.inputs?.[1] }] : []),
-      ...(upstream.intrinsic?.memoryWrite?.accesses ?? []).map((access) => ({
-        addressValueId: access.addressExpr?.valueId,
-        storedValueId: access.valueId ?? null,
-      })),
-    ];
-    return list;
-  };
-  for (let index = 0; index < callIndex; index++) {
-    const upstream = orderedNodes[index];
-    if (!upstream) continue;
-    for (const store of stores(upstream)) {
-      const stored = store.storedValueId;
-      if (stored == null || !stackValues.derives(stored)) continue;
-      if (!stackValues.derives(store.addressValueId)) return true;
-    }
-  }
+function stackAddressPublishedBeforeCall(node, stackValues, escapeCfgIndex) {
+  const callBlockId = node?.blockId == null ? null : String(node.blockId);
+  const callCfgBlock = callBlockId == null ? null : escapeCfgIndex.cfgBlockById.get(callBlockId);
+  const callIrBlock = callBlockId == null ? null : escapeCfgIndex.irBlockById.get(callBlockId);
+  const callPos = callBlockId == null ? -1 : (escapeCfgIndex.nodePosByBlock.get(callBlockId)?.get(String(node.id)) ?? -1);
+  if (!callCfgBlock || !callIrBlock || callPos < 0) return true;
+  const firstPublishPos = escapeCfgIndex.firstStackPublishPosByBlock.get(callBlockId);
+  if (firstPublishPos !== undefined && firstPublishPos < callPos) return true;
+  if (escapeCfgIndex.stackPublishReachesBlockEntry.has(callBlockId)) return true;
   return false;
 }
 
@@ -662,18 +974,18 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNo
   }
 
   const stackValues = stackDerivedValueIds(irFunction);
-  let stackNodeIndex = null;
-  const stackIndex = () => {
-    if (stackNodeIndex == null) stackNodeIndex = new Map(nodes.map((candidate, index) => [String(candidate.id), index]));
-    return stackNodeIndex;
+  let escapeCfgIndex = null;
+  const getEscapeCfgIndex = () => {
+    if (escapeCfgIndex == null) escapeCfgIndex = buildStackEscapeCfgIndex(irFunction, cfg, stackValues);
+    return escapeCfgIndex;
   };
   for (const descriptor of descriptors) {
     if (descriptor.role === 'write' && descriptor.broad
         && (descriptor.sourceKind === 'call'
           || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
         && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
-        && !callMayExposeStackAddress(descriptor.node, nodes, stackValues, stackIndex())
-        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, stackValues, stackIndex())) {
+        && !callMayExposeStackAddress(descriptor.node, stackValues, getEscapeCfgIndex())
+        && !stackAddressPublishedBeforeCall(descriptor.node, stackValues, getEscapeCfgIndex())) {
       descriptor.noEscapeStack = true;
     }
   }
@@ -733,17 +1045,46 @@ function unreachableComponents(cfg, options) {
   }
   return Object.freeze({ roots, componentSeedByBlock });
 }
-function mapEqual(left, right, regionIds) {
-  if (!left || !right) return false;
-  return regionIds.every((regionId) => left.get(regionId) === right.get(regionId));
-}
-function cloneState(state) { return new Map(state); }
-function blockStateArray(blockId, state) {
+function createIndexMinHeap() {
+  const heap = [];
+  const push = (value) => {
+    heap.push(value);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      if (heap[index] >= heap[parent]) break;
+      const tmp = heap[index];
+      heap[index] = heap[parent];
+      heap[parent] = tmp;
+      index = parent;
+    }
+  };
+  const pop = () => {
+    if (heap.length === 0) return -1;
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && heap[left] < heap[smallest]) smallest = left;
+        if (right < heap.length && heap[right] < heap[smallest]) smallest = right;
+        if (smallest === index) break;
+        const tmp = heap[index];
+        heap[index] = heap[smallest];
+        heap[smallest] = tmp;
+        index = smallest;
+      }
+    }
+    return top;
+  };
   return {
-    blockId,
-    regions: [...state.entries()]
-      .map(([regionId, definitionId]) => ({ regionId, definitionId }))
-      .sort((a, b) => a.regionId.localeCompare(b.regionId)),
+    push,
+    pop,
+    get size() { return heap.length; },
   };
 }
 function effectSummary(descriptor, relation) {
@@ -970,7 +1311,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   // are established independently by the canonical access provider below.
   if (!regionById.size) addRegion(regionById, fallbackRegion);
   if (regionById.size > budgetLimit(options, 'maxRegions')) fail('memory-ssa-build-budget-exceeded-maxRegions');
-  const regions = [...regionById.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const regions = [...regionById.values()].sort((a, b) => compareText(a.id, b.id));
   const regionIds = regions.map((region) => region.id);
   // The serialized identity describes the canonical build, but is not an
   // authority for publication. The exact artifact object is bound privately
@@ -987,6 +1328,14 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
     analyzerVersion: MEMORY_SSA_BUILD_VERSION,
   }));
+  const identityDigest = canonicalIdentityDigest(identity);
+  const accessProofCache = new Map();
+  const cachedMemoryAccessProof = (descriptor) => {
+    if (accessProofCache.has(descriptor)) return accessProofCache.get(descriptor);
+    const proof = memoryAccessProof(descriptor, options, identity);
+    accessProofCache.set(descriptor, proof);
+    return proof;
+  };
 
   // The Semantic IR access provider is the canonical producer for the
   // decoder's intentionally-unknown ordinary-access qualifiers. Normalize the
@@ -998,7 +1347,17 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const proof = memoryAccessProof(descriptor, options, identity);
     if (!proof
         || proof.volatility !== false || proof.atomic !== false
-        || (proof.ordering != null && proof.ordering !== 'unknown')) continue;
+        || (proof.ordering != null && proof.ordering !== 'unknown')) {
+      accessProofCache.set(descriptor, proof);
+      continue;
+    }
+    const alreadyNormalized = descriptor.memory.volatility === false
+      && descriptor.memory.atomic === false
+      && descriptor.memory.ordering != null;
+    if (alreadyNormalized) {
+      accessProofCache.set(descriptor, proof);
+      continue;
+    }
     descriptor.memory = {
       ...descriptor.memory,
       volatility: false,
@@ -1007,10 +1366,17 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     };
   }
 
+  const regionMetaById = new Map(regions.map((region) => [region.id, {
+    base: memoryRegionBase(region),
+    domain: memoryRegionDomain(region),
+    byteRange: memoryRegionByteRange(region),
+  }]));
   const aliasCache = new Map();
-  const queryAlias = (left, right, purpose) => {
+  const aliasNoProofCache = new Map();
+  const queryAlias = (left, right, purpose, skipProofIfNo = false) => {
     const key = `${left.key}\u0000${right.key}\u0000${purpose}`;
     if (aliasCache.has(key)) return aliasCache.get(key);
+    if (skipProofIfNo && aliasNoProofCache.has(key)) return aliasNoProofCache.get(key);
     aliasTick();
     let raw = null;
     if (typeof options.querySpecialAlias === 'function') {
@@ -1041,6 +1407,11 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     }
     if (raw == null) raw = 'unknown';
     const result = normalizeAliasResult(raw);
+    if (skipProofIfNo && result.relation === 'no') {
+      result.proof = null;
+      aliasNoProofCache.set(key, result);
+      return result;
+    }
     const canonicalProof = canonicalAliasProof({
       result,
       identity,
@@ -1054,14 +1425,18 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     aliasCache.set(key, result);
     return result;
   };
-  const descriptorToRegionAlias = (descriptor, targetRegion, purpose) => combineAliasResults(
-    descriptor.regions.map((sourceRegion) => {
+  const descriptorToRegionAlias = (descriptor, targetRegion, purpose) => {
+    const skipProofIfNo = purpose === 'write-region-impact' && descriptor.regions.length === 1;
+    if (skipProofIfNo) {
+      const sourceRegion = descriptor.regions[0];
       const queried = queryAlias(
         { key: `${descriptor.key}\u0000${sourceRegion.id}`, region: sourceRegion, descriptor },
         { key: `region\u0000${targetRegion.id}`, region: targetRegion, descriptor: null },
         purpose,
+        true,
       );
-      return rangeDisjointAlias(
+      if (queried.relation === 'no') return queried;
+      const refined = rangeDisjointAlias(
         descriptor,
         sourceRegion,
         targetRegion,
@@ -1069,9 +1444,32 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
         purpose,
         identity,
         irFunction.functionId,
+        regionMetaById,
+        true,
       );
-    }),
-  );
+      if (refined.relation === 'no') return refined;
+      return combineAliasResults([refined]);
+    }
+    return combineAliasResults(
+      descriptor.regions.map((sourceRegion) => {
+        const queried = queryAlias(
+          { key: `${descriptor.key}\u0000${sourceRegion.id}`, region: sourceRegion, descriptor },
+          { key: `region\u0000${targetRegion.id}`, region: targetRegion, descriptor: null },
+          purpose,
+        );
+        return rangeDisjointAlias(
+          descriptor,
+          sourceRegion,
+          targetRegion,
+          queried,
+          purpose,
+          identity,
+          irFunction.functionId,
+          regionMetaById,
+        );
+      }),
+    );
+  };
   const descriptorAlias = (leftDescriptor, rightDescriptor, purpose) => {
     const results = [];
     for (const leftRegion of leftDescriptor.regions) {
@@ -1122,9 +1520,9 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   }
   for (const events of eventsByNode.values()) {
     events.sort((a, b) => a.descriptor.index - b.descriptor.index
-      || a.descriptor.key.localeCompare(b.descriptor.key)
-      || a.regionId.localeCompare(b.regionId)
-      || a.id.localeCompare(b.id));
+      || compareText(a.descriptor.key, b.descriptor.key)
+      || compareText(a.regionId, b.regionId)
+      || compareText(a.id, b.id));
   }
 
   const entryDefinitionIds = new Map(regionIds.map((regionId) => [
@@ -1161,60 +1559,167 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       ? entryDefinitionIds.get(regionId)
       : unreachableEntryDefinitionIds.get(componentSeed).get(regionId);
   };
-  const initialStateFor = (blockId) => new Map(regionIds.map((regionId) => [
-    regionId,
-    seedDefinitionIdFor(blockId, regionId),
-  ]));
-  const inStateByBlock = new Map();
-  const outStateByBlock = new Map(cfg.blocks.map((block) => [block.id, initialStateFor(block.id)]));
-
-  const mergeBlockState = (blockId) => {
-    const block = cfgBlockById.get(blockId);
-    const state = new Map();
-    for (const regionId of regionIds) {
-      tick();
-      const candidates = block.predecessors.map((pred) => outStateByBlock.get(pred)?.get(regionId)
-        ?? seedDefinitionIdFor(pred, regionId));
-      if (syntheticRoots.has(blockId)) candidates.push(seedDefinitionIdFor(blockId, regionId));
-      if (!candidates.length) candidates.push(seedDefinitionIdFor(blockId, regionId));
-      const unique = [...new Set(candidates)];
-      state.set(regionId, unique.length === 1 ? unique[0] : phiId(blockId, regionId));
+  const blockCount = traversal.length;
+  const regionCount = regionIds.length;
+  const blockIndexById = new Map(traversal.map((blockId, index) => [blockId, index]));
+  const regionIndexById = new Map(regionIds.map((regionId, index) => [regionId, index]));
+  const predIndices = traversal.map((blockId) => cfgBlockById.get(blockId).predecessors.map((pred) => blockIndexById.get(pred)));
+  const succSets = Array.from({ length: blockCount }, () => new Set());
+  for (let b = 0; b < blockCount; b += 1) {
+    const preds = predIndices[b];
+    for (let p = 0; p < preds.length; p += 1) {
+      const predIdx = preds[p];
+      if (predIdx != null) succSets[predIdx].add(b);
     }
-    return state;
-  };
-  const applyBlockEvents = (blockId, input) => {
-    const state = cloneState(input);
-    const irBlock = irBlockById.get(blockId);
+  }
+  const succIndices = succSets.map((set) => [...set].sort((a, b) => a - b));
+  const isSyntheticRoot = new Uint8Array(blockCount);
+  const blockComponentSeed = new Array(blockCount);
+  for (let b = 0; b < blockCount; b += 1) {
+    const blockId = traversal[b];
+    isSyntheticRoot[b] = syntheticRoots.has(blockId) ? 1 : 0;
+    blockComponentSeed[b] = componentSeedByBlock.get(blockId) ?? null;
+  }
+  const hasUnreachableComponents = componentSeeds.length > 0;
+  const blockWritesByRegion = Array.from({ length: regionCount }, () => new Map());
+  for (let b = 0; b < blockCount; b += 1) {
+    const irBlock = irBlockById.get(traversal[b]);
     for (const nodeId of irBlock.nodeIds) {
       for (const event of eventsByNode.get(nodeId) ?? []) {
         tick();
-        state.set(event.regionId, event.id);
+        blockWritesByRegion[regionIndexById.get(event.regionId)].set(b, event.id);
       }
     }
-    return state;
+  }
+  const seedDefForIndex = (bIdx, rIdx) => {
+    const componentSeed = blockComponentSeed[bIdx];
+    const regionId = regionIds[rIdx];
+    return componentSeed == null
+      ? entryDefinitionIds.get(regionId)
+      : unreachableEntryDefinitionIds.get(componentSeed).get(regionId);
   };
 
   const maxRounds = budgetLimit(options, 'maxRounds', Math.max(32, cfg.blocks.length * 4 + 16));
-  let converged = false;
-  for (let round = 0; round < maxRounds; round++) {
-    let changed = false;
-    for (const blockId of traversal) {
-      tick();
-      const input = mergeBlockState(blockId);
-      const output = applyBlockEvents(blockId, input);
-      inStateByBlock.set(blockId, input);
-      if (!mapEqual(outStateByBlock.get(blockId), output, regionIds)) {
-        outStateByBlock.set(blockId, output);
-        changed = true;
+  const regionInDefs = new Array(regionCount).fill(null);
+  const regionOutDefs = new Array(regionCount).fill(null);
+  const phiRegionsByBlock = Array.from({ length: blockCount }, () => []);
+  const inCurrent = new Uint8Array(blockCount);
+  const inNext = new Uint8Array(blockCount);
+  const currentHeap = createIndexMinHeap();
+  const phiSentinels = Array.from({ length: blockCount }, (_, b) => Symbol(b));
+
+  for (let rIdx = 0; rIdx < regionCount; rIdx += 1) {
+    const regionId = regionIds[rIdx];
+    const writes = blockWritesByRegion[rIdx];
+    if (writes.size === 0 && !hasUnreachableComponents) continue;
+    const inDefs = new Array(blockCount);
+    const outDefs = new Array(blockCount);
+    for (let b = 0; b < blockCount; b += 1) {
+      const seed = seedDefForIndex(b, rIdx);
+      inDefs[b] = seed;
+      outDefs[b] = seed;
+    }
+    for (const b of writes.keys()) {
+      if (!inCurrent[b]) {
+        inCurrent[b] = 1;
+        currentHeap.push(b);
       }
     }
-    if (!changed) {
-      converged = true;
-      break;
+    if (hasUnreachableComponents) {
+      for (let b = 0; b < blockCount; b += 1) {
+        if (inCurrent[b]) continue;
+        const seed = outDefs[b];
+        const preds = predIndices[b];
+        for (let p = 0; p < preds.length; p += 1) {
+          if (outDefs[preds[p]] !== seed) {
+            inCurrent[b] = 1;
+            currentHeap.push(b);
+            break;
+          }
+        }
+      }
     }
+    if (currentHeap.size > 0) {
+      let converged = false;
+      let nextDirty = [];
+      for (let round = 0; round < maxRounds; round += 1) {
+        let roundChanged = false;
+        while (currentHeap.size > 0) {
+          const b = currentHeap.pop();
+          inCurrent[b] = 0;
+          tick();
+          const preds = predIndices[b];
+          let firstVal = null;
+          let hasMultiple = false;
+          for (let p = 0; p < preds.length; p += 1) {
+            const val = outDefs[preds[p]];
+            if (firstVal === null) firstVal = val;
+            else if (val !== firstVal) {
+              hasMultiple = true;
+              break;
+            }
+          }
+          if (!hasMultiple && (isSyntheticRoot[b] || preds.length === 0)) {
+            const seed = seedDefForIndex(b, rIdx);
+            if (firstVal === null) firstVal = seed;
+            else if (seed !== firstVal) hasMultiple = true;
+          }
+          const merged = hasMultiple ? phiSentinels[b] : firstVal;
+          inDefs[b] = merged;
+          const nextOut = writes.get(b) ?? merged;
+          if (nextOut !== outDefs[b]) {
+            outDefs[b] = nextOut;
+            roundChanged = true;
+            const succs = succIndices[b];
+            for (let s = 0; s < succs.length; s += 1) {
+              const succ = succs[s];
+              if (succ > b) {
+                if (!inCurrent[succ]) {
+                  inCurrent[succ] = 1;
+                  currentHeap.push(succ);
+                }
+              } else if (!inNext[succ]) {
+                inNext[succ] = 1;
+                nextDirty.push(succ);
+              }
+            }
+          }
+        }
+        if (!roundChanged || nextDirty.length === 0) {
+          converged = true;
+          break;
+        }
+        for (let i = 0; i < nextDirty.length; i += 1) {
+          const idx = nextDirty[i];
+          inNext[idx] = 0;
+          if (!inCurrent[idx]) {
+            inCurrent[idx] = 1;
+            currentHeap.push(idx);
+          }
+        }
+        nextDirty = [];
+      }
+      if (!converged) fail('memory-ssa-build-did-not-converge');
+    }
+    const phiIdBySentinel = new Map();
+    for (let b = 0; b < blockCount; b += 1) {
+      if (inDefs[b] === phiSentinels[b]) {
+        const canonicalId = phiId(traversal[b], regionId);
+        phiIdBySentinel.set(phiSentinels[b], canonicalId);
+        phiRegionsByBlock[b].push(rIdx);
+      }
+    }
+    if (phiIdBySentinel.size > 0) {
+      for (let b = 0; b < blockCount; b += 1) {
+        if (typeof inDefs[b] === 'symbol') inDefs[b] = phiIdBySentinel.get(inDefs[b]);
+        if (typeof outDefs[b] === 'symbol') outDefs[b] = phiIdBySentinel.get(outDefs[b]);
+      }
+    }
+    regionInDefs[rIdx] = inDefs;
+    regionOutDefs[rIdx] = outDefs;
   }
-  if (!converged) fail('memory-ssa-build-did-not-converge');
-  for (const blockId of traversal) inStateByBlock.set(blockId, mergeBlockState(blockId));
+  const getInDef = (bIdx, rIdx) => (regionInDefs[rIdx] ? regionInDefs[rIdx][bIdx] : seedDefForIndex(bIdx, rIdx));
+  const getOutDef = (bIdx, rIdx) => (regionOutDefs[rIdx] ? regionOutDefs[rIdx][bIdx] : seedDefForIndex(bIdx, rIdx));
 
   const definitions = [];
   const definitionById = new Map();
@@ -1268,17 +1773,20 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       });
     }
   }
-  for (const blockId of traversal) {
+  for (let bIdx = 0; bIdx < blockCount; bIdx += 1) {
+    const blockId = traversal[bIdx];
     const block = cfgBlockById.get(blockId);
-    for (const regionId of regionIds) {
-      const expectedPhiId = phiId(blockId, regionId);
-      if (inStateByBlock.get(blockId).get(regionId) !== expectedPhiId) continue;
+    const phiRegions = phiRegionsByBlock[bIdx];
+    for (let p = 0; p < phiRegions.length; p += 1) {
+      const rIdx = phiRegions[p];
+      const regionId = regionIds[rIdx];
+      const expectedPhiId = getInDef(bIdx, rIdx);
       const incoming = block.predecessors.map((pred) => ({
         predecessorBlockId: pred,
-        definitionId: outStateByBlock.get(pred).get(regionId),
+        definitionId: getOutDef(blockIndexById.get(pred), rIdx),
       }));
-      const previousDefinitionIds = syntheticRoots.has(blockId)
-        ? [seedDefinitionIdFor(blockId, regionId)]
+      const previousDefinitionIds = isSyntheticRoot[bIdx]
+        ? [seedDefForIndex(bIdx, rIdx)]
         : [];
       const baseOrigin = irBlockById.get(blockId)?.origin ?? irFunction.origin;
       addDefinition({
@@ -1296,16 +1804,19 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
           producedEntityIds: [expectedPhiId],
           proofKind: 'cfg-memory-merge',
         }),
-        proof: { kind: 'cfg-memory-merge', syntheticEntry: syntheticRoots.has(blockId) },
+        proof: { kind: 'cfg-memory-merge', syntheticEntry: Boolean(isSyntheticRoot[bIdx]) },
       });
     }
   }
-  for (const blockId of traversal) {
-    const state = cloneState(inStateByBlock.get(blockId));
+  for (let bIdx = 0; bIdx < blockCount; bIdx += 1) {
+    const blockId = traversal[bIdx];
+    const blockOverrides = new Map();
     const block = irBlockById.get(blockId);
     for (const nodeId of block.nodeIds) {
       for (const event of eventsByNode.get(nodeId) ?? []) {
-        const prior = state.get(event.regionId);
+        const prior = blockOverrides.has(event.regionId)
+          ? blockOverrides.get(event.regionId)
+          : getInDef(bIdx, regionIndexById.get(event.regionId));
         const id = event.id;
         addDefinition({
           id,
@@ -1330,7 +1841,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             providerProof: event.aliasProof,
           },
         });
-        state.set(event.regionId, id);
+        blockOverrides.set(event.regionId, id);
       }
     }
   }
@@ -1340,11 +1851,33 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const sourceDescriptorByDefinitionId = new Map([...eventById.entries()].map(([id, event]) => [id, event.descriptor]));
   const reachingForRead = (readDescriptor, startDefinitionId) => {
     let definitionId = startDefinitionId;
-    const visited = new Set();
+    let v0 = null;
+    let v1 = null;
+    let v2 = null;
+    let step = 0;
+    let visited = null;
     while (definitionId != null) {
       tick();
-      if (visited.has(definitionId)) return { definitionId, relation: 'unknown' };
-      visited.add(definitionId);
+      if (visited !== null) {
+        if (visited.has(definitionId)) return { definitionId, relation: 'unknown' };
+        visited.add(definitionId);
+      } else if (step === 0) {
+        v0 = definitionId;
+        step = 1;
+      } else if (step === 1) {
+        if (definitionId === v0) return { definitionId, relation: 'unknown' };
+        v1 = definitionId;
+        step = 2;
+      } else if (step === 2) {
+        if (definitionId === v0 || definitionId === v1) return { definitionId, relation: 'unknown' };
+        v2 = definitionId;
+        step = 3;
+      } else {
+        if (definitionId === v0 || definitionId === v1 || definitionId === v2) {
+          return { definitionId, relation: 'unknown' };
+        }
+        visited = new Set([v0, v1, v2, definitionId]);
+      }
       const definition = definitionById.get(definitionId);
       if (!definition) fail('memory-ssa-build-missing-definition');
       const sourceDescriptor = sourceDescriptorByDefinitionId.get(definitionId);
@@ -1357,20 +1890,61 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     fail('memory-ssa-build-read-without-initial-definition');
   };
 
+  const conservativeWriteRegionIds = new Set();
+  for (let i = 0; i < descriptors.length; i += 1) {
+    const descriptor = descriptors[i];
+    if (descriptor.role !== 'write') continue;
+    if ((descriptor.sourceKind === 'call'
+        || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
+      && descriptor.noEscapeStack === true) continue;
+    for (let j = 0; j < descriptor.regions.length; j += 1) {
+      conservativeWriteRegionIds.add(descriptor.regions[j].id);
+    }
+  }
+
+  const descriptorSnapshots = new Map();
+  const snapshotForDescriptor = (descriptor) => {
+    let snap = descriptorSnapshots.get(descriptor);
+    if (snap) return snap;
+    const memory = descriptor.memory == null ? null : deepFreeze(jsonSafe(descriptor.memory));
+    const sequencing = descriptor.memory == null ? null : deepFreeze(jsonSafe({
+      volatility: descriptor.memory.volatility,
+      atomic: descriptor.memory.atomic,
+      ordering: descriptor.memory.ordering,
+      alignment: descriptor.memory.alignment,
+    }));
+    const origin = deepFreeze(jsonSafe(descriptor.node.origin));
+    snap = { memory, sequencing, origin };
+    descriptorSnapshots.set(descriptor, snap);
+    return snap;
+  };
+
+  const maxUsesBudget = budgetLimit(options, 'maxUses');
   const uses = [];
   const accessMetadata = [];
-  const byteCoverageInputs = [];
-  for (const blockId of traversal) {
-    const state = cloneState(inStateByBlock.get(blockId));
+  const byteCoverage = [];
+  for (let bIdx = 0; bIdx < blockCount; bIdx += 1) {
+    const blockId = traversal[bIdx];
+    const blockOverrides = new Map();
+    const currentDefForRegion = (regionId) => (blockOverrides.has(regionId)
+      ? blockOverrides.get(regionId)
+      : getInDef(bIdx, regionIndexById.get(regionId)));
     const block = irBlockById.get(blockId);
     for (const nodeId of block.nodeIds) {
       const nodeReads = readsByNode.get(nodeId) ?? [];
       for (const descriptor of nodeReads) {
-        const targets = descriptor.broad ? regions : descriptor.regions;
-        const uniqueTargets = [...new Map(targets.map((region) => [region.id, region])).values()].sort((a, b) => a.id.localeCompare(b.id));
+        let uniqueTargets;
+        if (descriptor.broad) {
+          uniqueTargets = regions;
+        } else if (descriptor.regions.length <= 1) {
+          uniqueTargets = descriptor.regions;
+        } else {
+          uniqueTargets = [...new Map(descriptor.regions.map((region) => [region.id, region])).values()].sort((a, b) => compareText(a.id, b.id));
+        }
+        const descriptorSnap = snapshotForDescriptor(descriptor);
         for (const region of uniqueTargets) {
           tick();
-          const reaching = reachingForRead(descriptor, state.get(region.id));
+          const reaching = reachingForRead(descriptor, currentDefForRegion(region.id));
           const id = entityId('memuse', {
             functionId: irFunction.functionId,
             nodeId,
@@ -1391,13 +1965,73 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
               proofKind: 'memory-use-def-link',
             }),
           });
+          if (uses.length > maxUsesBudget) fail('memory-ssa-build-budget-exceeded-maxUses');
+          const byteRange = memoryByteRange(region, descriptor.memory, descriptor.node);
           if (descriptor.sourceKind === 'load') {
-            byteCoverageInputs.push({
+            const stackRoot = descriptor.regions.some((r) => String(r.kind).startsWith('stack'));
+            const regionAliases = new Array(regionCount);
+            const regionStates = [];
+            for (let rIdx = 0; rIdx < regionCount; rIdx += 1) {
+              const candidate = regions[rIdx];
+              let aliasState;
+              if (stackRoot && candidate.kind === 'unknown' && !conservativeWriteRegionIds.has(candidate.id)) {
+                aliasState = {
+                  regionId: candidate.id,
+                  aliasRelation: 'no',
+                  aliasProof: canonicalStackNoEscapeProof(
+                    identity,
+                    irFunction.functionId,
+                    id,
+                    nodeId,
+                    candidate.id,
+                    identityDigest,
+                  ),
+                };
+              } else {
+                const alias = descriptorToRegionAlias(descriptor, candidate, 'load-byte-region');
+                aliasState = {
+                  regionId: candidate.id,
+                  aliasRelation: alias.relation,
+                  aliasProof: alias.proof,
+                };
+              }
+              regionAliases[rIdx] = aliasState;
+              if (aliasState.aliasRelation !== 'no') {
+                const definitionId = currentDefForRegion(candidate.id) ?? null;
+                const definition = definitionId == null ? null : definitionById.get(definitionId);
+                regionStates.push({
+                  regionId: candidate.id,
+                  definitionId,
+                  order: definition?.sourceEntityId == null
+                    ? null
+                    : nodeOrderById.get(definition.sourceEntityId) ?? null,
+                  aliasRelation: aliasState.aliasRelation,
+                  aliasProof: aliasState.aliasProof,
+                });
+              }
+            }
+            const coverageProof = {
+              kind: 'memoryssa-byte-state',
+              version: MEMORY_SSA_PROOF_VERSION,
+              buildVersion: MEMORY_SSA_BUILD_VERSION,
+              functionId: irFunction.functionId,
               useId: id,
               nodeId,
               regionId: region.id,
-              descriptor,
-              state: cloneState(state),
+              loadRange: byteRange,
+              identityDigest,
+            };
+            byteCoverage.push({
+              useId: id,
+              nodeId,
+              regionId: region.id,
+              loadRange: byteRange,
+              coverageState: byteRange != null && regionStates.every((item) => item.definitionId != null)
+                ? 'complete'
+                : 'partial',
+              regionAliasStates: regionAliases,
+              regionStates,
+              proof: coverageProof,
             });
           }
           accessMetadata.push({
@@ -1410,31 +2044,18 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             role: descriptor.role,
             accessIndex: descriptor.index,
             broad: descriptor.broad,
-            memory: descriptor.memory == null ? null : jsonSafe(descriptor.memory),
-            sequencing: descriptor.memory == null ? null : jsonSafe({
-              volatility: descriptor.memory.volatility,
-              atomic: descriptor.memory.atomic,
-              ordering: descriptor.memory.ordering,
-              alignment: descriptor.memory.alignment,
-            }),
+            memory: descriptorSnap.memory,
+            sequencing: descriptorSnap.sequencing,
             aliasProof: reaching.proof ?? null,
             aliasRelation: reaching.relation === 'no' ? 'unknown' : reaching.relation,
-            accessProof: memoryAccessProof(descriptor, options, identity),
-            ...(descriptor.sourceKind === 'load' || descriptor.sourceKind === 'store'
-              ? (() => {
-                const canonicalValue = descriptor.role === 'write'
-                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id, options.ssa, irNodeById, scalarSsaIndex)
-                  : null;
-                return canonicalValue == null ? {} : { canonicalValue };
-              })()
-              : {}),
-            origin: jsonSafe(descriptor.node.origin),
-            byteRange: memoryByteRange(region, descriptor.memory, descriptor.node),
+            accessProof: cachedMemoryAccessProof(descriptor),
+            origin: descriptorSnap.origin,
+            byteRange,
             rangeProof: memoryRangeProof(
               id,
               nodeId,
               region.id,
-              memoryByteRange(region, descriptor.memory, descriptor.node),
+              byteRange,
               descriptor.memory,
               descriptor.node,
               region,
@@ -1443,12 +2064,12 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
           });
         }
       }
-      for (const event of eventsByNode.get(nodeId) ?? []) state.set(event.regionId, event.id);
+      for (const event of eventsByNode.get(nodeId) ?? []) blockOverrides.set(event.regionId, event.id);
     }
   }
-  if (uses.length > budgetLimit(options, 'maxUses')) fail('memory-ssa-build-budget-exceeded-maxUses');
 
   for (const event of eventById.values()) {
+    const eventSnap = snapshotForDescriptor(event.descriptor);
     accessMetadata.push({
       memorySsaEntityId: event.id,
       entityKind: 'definition',
@@ -1459,16 +2080,11 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       role: event.descriptor.role,
       accessIndex: event.descriptor.index,
       broad: event.descriptor.broad,
-      memory: event.descriptor.memory == null ? null : jsonSafe(event.descriptor.memory),
-      sequencing: event.descriptor.memory == null ? null : jsonSafe({
-        volatility: event.descriptor.memory.volatility,
-        atomic: event.descriptor.memory.atomic,
-        ordering: event.descriptor.memory.ordering,
-        alignment: event.descriptor.memory.alignment,
-      }),
+      memory: eventSnap.memory,
+      sequencing: eventSnap.sequencing,
       aliasProof: event.aliasProof,
       aliasRelation: event.aliasRelation,
-      accessProof: memoryAccessProof(event.descriptor, options, identity),
+      accessProof: cachedMemoryAccessProof(event.descriptor),
       ...(event.descriptor.role === 'write'
         ? (() => {
           const canonicalValue = canonicalStoreOperand(
@@ -1484,89 +2100,30 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
           return canonicalValue == null ? {} : { canonicalValue };
         })()
         : {}),
-      origin: jsonSafe(event.descriptor.node.origin),
-      byteRange: memoryByteRange(regionById.get(event.regionId), event.descriptor.memory, event.descriptor.node),
-      rangeProof: memoryRangeProof(
-        event.id,
-        event.descriptor.node.id,
-        event.regionId,
-        memoryByteRange(regionById.get(event.regionId), event.descriptor.memory, event.descriptor.node),
-        event.descriptor.memory,
-        event.descriptor.node,
-        regionById.get(event.regionId),
-      ),
+      origin: eventSnap.origin,
+      ...(() => {
+        const eventRegion = regionById.get(event.regionId);
+        const byteRange = event.aliasRelation === 'may'
+          ? null
+          : memoryByteRange(eventRegion, event.descriptor.memory, event.descriptor.node);
+        return {
+          byteRange,
+          rangeProof: memoryRangeProof(
+            event.id,
+            event.descriptor.node.id,
+            event.regionId,
+            byteRange,
+            event.descriptor.memory,
+            event.descriptor.node,
+            eventRegion,
+          ),
+        };
+      })(),
       order: nodeOrderById.get(event.descriptor.node.id) ?? null,
     });
   }
 
-  const definitionByIdForCoverage = new Map(definitions.map((definition) => [definition.id, definition]));
-  const byteCoverage = byteCoverageInputs.map((input) => {
-    const region = regionById.get(input.regionId) ?? null;
-    const loadRange = memoryByteRange(region, input.descriptor.memory, input.descriptor.node);
-    const regionAliases = regions.map((candidate) => {
-      const alias = descriptorToRegionAlias(input.descriptor, candidate, 'load-byte-region');
-      const stackRoot = input.descriptor.regions.some((region) => String(region.kind).startsWith('stack'));
-      const hasConservativeStackWrite = descriptors.some((descriptor) => descriptor.role === 'write'
-        && descriptor.regions.some((region) => region.id === candidate.id)
-        && !(descriptor.sourceKind === 'call' && descriptor.noEscapeStack === true));
-      if (stackRoot && candidate.kind === 'unknown' && !hasConservativeStackWrite) {
-        return {
-          regionId: candidate.id,
-          aliasRelation: 'no',
-          aliasProof: canonicalStackNoEscapeProof(
-            identity,
-            irFunction.functionId,
-            input.useId,
-            input.nodeId,
-            candidate.id,
-          ),
-        };
-      }
-      return {
-        regionId: candidate.id,
-        aliasRelation: alias.relation,
-        aliasProof: alias.proof,
-      };
-    });
-    const regionStates = regionAliases.map((aliasState) => {
-      if (aliasState.aliasRelation === 'no') return null;
-      const candidate = regionById.get(aliasState.regionId);
-      const definitionId = input.state.get(candidate.id) ?? null;
-      const definition = definitionId == null ? null : definitionByIdForCoverage.get(definitionId);
-      return {
-        regionId: candidate.id,
-        definitionId,
-        order: definition?.sourceEntityId == null
-          ? null
-          : nodeOrderById.get(definition.sourceEntityId) ?? null,
-        aliasRelation: aliasState.aliasRelation,
-        aliasProof: aliasState.aliasProof,
-      };
-    }).filter(Boolean);
-    const coverageProof = {
-      kind: 'memoryssa-byte-state',
-      version: MEMORY_SSA_PROOF_VERSION,
-      buildVersion: MEMORY_SSA_BUILD_VERSION,
-      functionId: irFunction.functionId,
-      useId: input.useId,
-      nodeId: input.nodeId,
-      regionId: input.regionId,
-      loadRange,
-      identityDigest: stableDigest(identity),
-    };
-    return {
-      useId: input.useId,
-      nodeId: input.nodeId,
-      regionId: input.regionId,
-      loadRange,
-      coverageState: loadRange != null && regionStates.every((item) => item.definitionId != null)
-        ? 'complete'
-        : 'partial',
-      regionAliasStates: regionAliases,
-      regionStates,
-      proof: coverageProof,
-    };
-  });
+
 
   const contract = createMemorySsaContract({
     functionId: irFunction.functionId,
@@ -1579,19 +2136,17 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   for (const link of useDefLinks) useIdsByDefinition.get(link.definitionId).push(link.useId);
   const defUseLinks = [...useIdsByDefinition.entries()]
     .map(([definitionId, useIds]) => ({ definitionId, useIds: useIds.sort() }))
-    .sort((a, b) => a.definitionId.localeCompare(b.definitionId));
-  const blockStates = traversal.map((blockId) => ({
+    .sort((a, b) => compareText(a.definitionId, b.definitionId));
+  const blockStates = traversal.map((blockId, bIdx) => ({
     blockId,
-    entry: blockStateArray(blockId, inStateByBlock.get(blockId)).regions,
-    exit: blockStateArray(blockId, outStateByBlock.get(blockId)).regions,
+    entry: regionIds.map((regionId, rIdx) => ({ regionId, definitionId: getInDef(bIdx, rIdx) })),
+    exit: regionIds.map((regionId, rIdx) => ({ regionId, definitionId: getOutDef(bIdx, rIdx) })),
   }));
 
-  accessMetadata.sort((a, b) => a.memorySsaEntityId.localeCompare(b.memorySsaEntityId)
-    || a.regionId.localeCompare(b.regionId));
+  accessMetadata.sort((a, b) => compareText(a.memorySsaEntityId, b.memorySsaEntityId)
+    || compareText(a.regionId, b.regionId));
   const canonicalAccessBindings = accessMetadata
-    .map((metadata) => canonicalAccessBinding(metadata))
-    .sort((a, b) => a.memorySsaEntityId.localeCompare(b.memorySsaEntityId)
-      || a.regionId.localeCompare(b.regionId));
+    .map((metadata) => canonicalAccessBinding(metadata));
   const artifact = {
     ...contract,
     buildVersion: MEMORY_SSA_BUILD_VERSION,
@@ -1615,5 +2170,6 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     canonicalDigest: canonicalMemorySsaDigest(artifact),
   };
   const published = deepFreeze(new CanonicalMemorySsaArtifact(unpublished, irFunction));
+  registerPublishedMemorySsaCaches(published, unpublished.canonicalDigest, published.accessMetadata, published.canonicalAccessBindings);
   return published;
 }

@@ -72,7 +72,12 @@ function toBigIntString(value) {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (/^[+-]?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(trimmed)) {
-      try { return BigInt(trimmed).toString(); } catch {}
+      const negative = trimmed.startsWith('-');
+      const body = negative || trimmed.startsWith('+') ? trimmed.slice(1) : trimmed;
+      try {
+        const mag = BigInt(body);
+        return (negative ? -mag : mag).toString();
+      } catch {}
     }
   }
   return null;
@@ -155,15 +160,22 @@ function memoryNodeDisplacement(node) {
     if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
     const text = String(raw).trim();
     if (!/^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) return null;
-    return BigInt(text);
+    const negative = text.startsWith('-');
+    const body = negative || text.startsWith('+') ? text.slice(1) : text;
+    const mag = BigInt(body);
+    return negative ? -mag : mag;
   } catch {
     return null;
   }
 }
 
-function canonicalMemoryAccessRow(memorySsa, entityId, nodeId, sourceKind, role) {
-  const metadata = (memorySsa?.accessMetadata ?? []).find((item) =>
-    String(item?.memorySsaEntityId ?? '') === String(entityId));
+function canonicalMemoryAccessRow(memorySsa, entityId, nodeId, sourceKind, role, memorySsaIndex = null) {
+  const key = String(entityId);
+  const metadata = memorySsaIndex
+    ? memorySsaIndex.firstAccessMetaByEntityId.get(key)
+    : (Array.isArray(memorySsa?.accessMetadata)
+      ? memorySsa.accessMetadata.find((item) => String(item?.memorySsaEntityId ?? '') === key)
+      : undefined);
   if (!metadata
       || String(metadata.sourceEntityId ?? '') !== String(nodeId)
       || String(metadata.nodeId ?? '') !== String(nodeId)
@@ -258,6 +270,85 @@ function irIndexFor(ir) {
     index = { valuesById, nodesById, blockIdByNode };
     irIndexMemo.set(ir, index);
   }
+  return index;
+}
+
+const ssaIndexMemo = new WeakMap();
+const memorySsaIndexMemo = new WeakMap();
+
+function ssaIndexFor(ssa) {
+  const uses = Array.isArray(ssa?.uses) ? ssa.uses : [];
+  const definitions = Array.isArray(ssa?.definitions) ? ssa.definitions : [];
+  const canCache = ssa != null && typeof ssa === 'object'
+    && Object.isFrozen(ssa)
+    && Array.isArray(ssa.uses) && Object.isFrozen(ssa.uses)
+    && Array.isArray(ssa.definitions) && Object.isFrozen(ssa.definitions);
+  if (canCache) {
+    const cached = ssaIndexMemo.get(ssa);
+    if (cached !== undefined) return cached;
+  }
+  const usesBySourceEntityId = new Map();
+  for (const use of uses) {
+    const key = String(use?.sourceEntityId ?? '');
+    let list = usesBySourceEntityId.get(key);
+    if (!list) {
+      list = [];
+      usesBySourceEntityId.set(key, list);
+    }
+    list.push(use);
+  }
+  const defsByValueId = new Map();
+  for (const definition of definitions) {
+    const key = String(definition?.valueId ?? '');
+    let list = defsByValueId.get(key);
+    if (!list) {
+      list = [];
+      defsByValueId.set(key, list);
+    }
+    list.push(definition);
+  }
+  const index = { usesBySourceEntityId, defsByValueId };
+  if (canCache) ssaIndexMemo.set(ssa, index);
+  return index;
+}
+
+function memorySsaIndexFor(memorySsa) {
+  const uses = Array.isArray(memorySsa?.uses) ? memorySsa.uses : [];
+  const definitions = Array.isArray(memorySsa?.definitions) ? memorySsa.definitions : [];
+  const accessMetadata = Array.isArray(memorySsa?.accessMetadata) ? memorySsa.accessMetadata : [];
+  const canCache = memorySsa != null && typeof memorySsa === 'object'
+    && Object.isFrozen(memorySsa)
+    && Array.isArray(memorySsa.uses) && Object.isFrozen(memorySsa.uses)
+    && Array.isArray(memorySsa.definitions) && Object.isFrozen(memorySsa.definitions)
+    && Array.isArray(memorySsa.accessMetadata) && Object.isFrozen(memorySsa.accessMetadata);
+  if (canCache) {
+    const cached = memorySsaIndexMemo.get(memorySsa);
+    if (cached !== undefined) return cached;
+  }
+  const mustUsesBySourceEntityId = new Map();
+  for (const use of uses) {
+    if (use?.aliasRelation !== 'must') continue;
+    const key = String(use.sourceEntityId ?? '');
+    let list = mustUsesBySourceEntityId.get(key);
+    if (!list) {
+      list = [];
+      mustUsesBySourceEntityId.set(key, list);
+    }
+    list.push(use);
+  }
+  const firstMemoryDefById = new Map();
+  for (const definition of definitions) {
+    if (definition?.kind !== 'memory-def') continue;
+    const key = String(definition.id ?? '');
+    if (!firstMemoryDefById.has(key)) firstMemoryDefById.set(key, definition);
+  }
+  const firstAccessMetaByEntityId = new Map();
+  for (const item of accessMetadata) {
+    const key = String(item?.memorySsaEntityId ?? '');
+    if (!firstAccessMetaByEntityId.has(key)) firstAccessMetaByEntityId.set(key, item);
+  }
+  const index = { mustUsesBySourceEntityId, firstMemoryDefById, firstAccessMetaByEntityId };
+  if (canCache) memorySsaIndexMemo.set(memorySsa, index);
   return index;
 }
 
@@ -415,7 +506,14 @@ export function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     const constantIndex = inputValues.findIndex((value) => value?.metadata?.constant?.kind === 'bitvector');
     const baseIndex = constantIndex === 0 ? 1 : constantIndex === 1 ? 0 : -1;
     if (baseIndex >= 0) {
-      const constant = memoryInteger(inputValues[constantIndex]?.metadata?.constant?.value);
+      const constValObj = inputValues[constantIndex];
+      const rawConstant = memoryInteger(constValObj?.metadata?.constant?.value);
+      const constWidth = constValObj?.metadata?.constant?.widthBits ?? constValObj?.machineType?.widthBits ?? null;
+      const constant = rawConstant == null
+        ? null
+        : (typeof constWidth === 'number' && Number.isSafeInteger(constWidth) && constWidth > 0
+          ? BigInt.asIntN(constWidth, rawConstant)
+          : null);
       const baseValue = inputValues[baseIndex];
       if (constant != null && baseValue?.definitionNodeId != null) {
         addressOffset = constant;
@@ -428,30 +526,28 @@ export function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     return null;
   }
 
-  const stateUses = ssa.uses.filter((use) => String(use.sourceEntityId ?? '') === String(addressRead.id)
-    && use.proof?.kind === 'renamed-use'
+  const ssaIndex = ssaIndexFor(ssa);
+  const memorySsaIndex = memorySsaIndexFor(memorySsa);
+  const stateUses = (ssaIndex.usesBySourceEntityId.get(String(addressRead.id)) ?? []).filter((use) =>
+    use.proof?.kind === 'renamed-use'
     && String(use.proof?.sourceSemanticValueId ?? addressReadValueId) === String(addressReadValueId)
     && genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode, { ssa, binding }));
   const candidates = [];
   for (const stateUse of stateUses) {
-    const scalarDefinition = ssa.definitions.find((definition) =>
-      String(definition.valueId ?? '') === String(stateUse.valueId ?? '')
-      && definition.proof?.kind === 'renamed-definition'
+    const scalarDefinition = (ssaIndex.defsByValueId.get(String(stateUse.valueId ?? '')) ?? []).find((definition) =>
+      definition.proof?.kind === 'renamed-definition'
       && genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, definition?.proof?.sourceSemanticValueId, nodesById, { ssa, binding }));
     const loadedSemanticValueId = scalarDefinition?.proof?.sourceSemanticValueId;
     const loadedValue = loadedSemanticValueId == null ? null : valuesById.get(String(loadedSemanticValueId));
     const loadNode = loadedValue?.definitionNodeId == null
       ? null : nodesById.get(String(loadedValue.definitionNodeId));
     if (!loadNode || loadNode.kind !== 'load') continue;
-    const loadUses = memorySsa.uses.filter((use) => String(use.sourceEntityId ?? '') === String(loadNode.id)
-      && use.aliasRelation === 'must');
+    const loadUses = memorySsaIndex.mustUsesBySourceEntityId.get(String(loadNode.id)) ?? [];
     if (loadUses.length !== 1) continue;
     const loadUse = loadUses[0];
-    const loadMetadata = canonicalMemoryAccessRow(memorySsa, loadUse.id, loadNode.id, 'load', 'read');
+    const loadMetadata = canonicalMemoryAccessRow(memorySsa, loadUse.id, loadNode.id, 'load', 'read', memorySsaIndex);
     if (!loadMetadata) continue;
-    const reachingDefinition = memorySsa.definitions.find((definition) =>
-      String(definition.id ?? '') === String(loadUse.reachingDefinitionId ?? '')
-      && definition.kind === 'memory-def');
+    const reachingDefinition = memorySsaIndex.firstMemoryDefById.get(String(loadUse.reachingDefinitionId ?? ''));
     if (!reachingDefinition) continue;
     const storeNode = nodesById.get(String(reachingDefinition.sourceEntityId ?? ''));
     if (!storeNode || storeNode.kind !== 'store' || !Array.isArray(storeNode.inputs)
@@ -462,6 +558,7 @@ export function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
       storeNode.id,
       'store',
       'write',
+      memorySsaIndex,
     );
     if (!storeMetadata) continue;
     // Semantic memory stores use [address, value]; the reloaded pointer is

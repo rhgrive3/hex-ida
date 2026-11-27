@@ -170,7 +170,8 @@ export class AgentJobManager {
         } catch {}
         throw error;
       }
-      mergeResult(job, result);
+      const attemptElapsedMs = monotonicNow() - attemptStartedMs;
+      mergeResult(job, result, attemptElapsedMs);
       const failureReason = nonBudgetFailureReason(result);
       if (failureReason) job.status = hardLimit(job) ? 'hard-limit' : 'checkpointed';
       else if (!result?.limits?.exhausted) job.status = 'complete';
@@ -217,7 +218,7 @@ export class AgentJobManager {
       throw error;
     }
     this.pendingCheckpoints.delete(job.id);
-    forgetCompletedExecutionOutcome(job.id);
+    forgetCompletedExecutionOutcome(job.id, job.executionScopeId);
     delete job.checkpointSavePending;
     delete job.checkpointSaveError;
   }
@@ -229,7 +230,7 @@ export class AgentJobManager {
     marker.executionRecoveryPending = true;
     try {
       await this.save(marker);
-      forgetCompletedExecutionOutcome(job.id);
+      forgetCompletedExecutionOutcome(job.id, job.executionScopeId);
     } catch {
       // The original persistence error is the actionable failure. A later
       // manager can still classify an unmarked running checkpoint as an
@@ -291,7 +292,7 @@ export class AgentJobManager {
   async save(job) { await this.persistence?.save?.(checkpoint(job)); }
 }
 
-function mergeResult(job, result) {
+function mergeResult(job, result, attemptElapsedMs = 0) {
   job.sessionId = result?.sessionId || job.sessionId;
   job.effectiveScope = result?.scope?.effective || job.effectiveScope;
   job.evidenceIds = unique([...job.evidenceIds, ...(result?.evidence || []).map((item) => identityString(item?.id)).filter(Boolean)]);
@@ -313,7 +314,15 @@ function mergeResult(job, result) {
   // runSlice, #5205), so successful and failed attempts share one hard-limit
   // denominator; mergeResult only aggregates the provider-reported usage.
   job.budgetUsage.modelCalls += usageDelta(usage.modelCalls); job.budgetUsage.toolCalls += usageDelta(usage.toolCalls);
-  job.budgetUsage.elapsedMs += usageDelta(usage.elapsedMs); job.budgetUsage.contextBytes += usageDelta(usage.contextBytes);
+  const hasExplicitElapsed = usage != null && Object.hasOwn(usage, 'elapsedMs') && usage.elapsedMs !== undefined && usage.elapsedMs !== null;
+  const reportedElapsedMs = usageDelta(usage.elapsedMs);
+  const measuredElapsedMs = typeof attemptElapsedMs === 'number' && Number.isFinite(attemptElapsedMs) && attemptElapsedMs >= 0
+    ? attemptElapsedMs
+    : 0;
+  job.budgetUsage.elapsedMs += (!hasExplicitElapsed || usage.elapsedMs === 0)
+    ? Math.max(reportedElapsedMs, measuredElapsedMs)
+    : reportedElapsedMs;
+  job.budgetUsage.contextBytes += usageDelta(usage.contextBytes);
   job.lastResult = compactResult(result);
 }
 function nonBudgetFailureReason(result) {
@@ -355,12 +364,45 @@ function withElapsedDeadline(options, remainingElapsedMs) {
   return turnOptions;
 }
 function hardLimit(job) { return job.budgetUsage.slices >= job.limits.maxSlices || job.budgetUsage.elapsedMs >= job.limits.maxElapsedMs; }
-function compactResult(result) { return { answer: result?.answer || '', confidence: result?.confidence ?? null, limits: result?.limits || { exhausted: false }, usage: result?.usage || {}, sessionId: result?.sessionId || null }; }
+function jsonSafeValue(value, seen = new WeakSet(), depth = 0) {
+  if (value === null || value === undefined) return null;
+  const t = typeof value;
+  if (t === 'string' || t === 'boolean') return value;
+  if (t === 'number') return Number.isFinite(value) ? value : null;
+  if (t === 'bigint') return value.toString();
+  if (t !== 'object' || depth > 16 || seen.has(value)) return null;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) return value.slice(0, 256).map((item) => jsonSafeValue(item, seen, depth + 1));
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (v === undefined || typeof v === 'function' || typeof v === 'symbol') continue;
+      out[k] = jsonSafeValue(v, seen, depth + 1);
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
+}
+function compactResult(result) {
+  return {
+    answer: typeof result?.answer === 'string' ? result.answer : String(result?.answer || ''),
+    confidence: typeof result?.confidence === 'number' && Number.isFinite(result.confidence) ? result.confidence : null,
+    limits: jsonSafeValue(result?.limits || { exhausted: false }) || { exhausted: false },
+    usage: jsonSafeValue(result?.usage || {}) || {},
+    sessionId: typeof result?.sessionId === 'string' ? result.sessionId : null,
+  };
+}
 function checkpoint(job) { return JSON.parse(JSON.stringify(job)); }
 function unique(values) { return [...new Set(values)]; }
+function completedOutcomeKey(jobId, executionScopeId) {
+  const scope = typeof executionScopeId === 'string' && executionScopeId ? executionScopeId : 'legacy';
+  return `${scope}:${jobId}`;
+}
 function rememberCompletedExecutionOutcome(job, leaseId, completedCheckpoint) {
   if (typeof leaseId !== 'string' || !leaseId) return;
-  completedExecutionOutcomes.set(job.id, {
+  const key = completedOutcomeKey(job.id, job.executionScopeId);
+  completedExecutionOutcomes.set(key, {
     scopeId: typeof job.executionScopeId === 'string' && job.executionScopeId ? job.executionScopeId : null,
     leaseId,
     checkpoint: completedCheckpoint,
@@ -372,7 +414,9 @@ function rememberCompletedExecutionOutcome(job, leaseId, completedCheckpoint) {
     completedExecutionOutcomes.delete(oldest);
   }
 }
-function forgetCompletedExecutionOutcome(jobId) { completedExecutionOutcomes.delete(jobId); }
+function forgetCompletedExecutionOutcome(jobId, executionScopeId = null) {
+  completedExecutionOutcomes.delete(completedOutcomeKey(jobId, executionScopeId));
+}
 function executionLeaseScope(runtime, persistence, jobId, executionScopeId) {
   void runtime;
   void persistence;
@@ -416,11 +460,11 @@ function recoverPersistedRunningCheckpoint(value) {
     return recovered;
   }
   if (isLiveRunningCheckpoint(value)) return value;
-  const completed = completedExecutionOutcomes.get(value.id);
+  const completed = completedExecutionOutcomes.get(completedOutcomeKey(value.id, value.executionScopeId));
   if (completed
     && completed.leaseId === value.executionLeaseId
     && (completed.scopeId === null || completed.scopeId === value.executionScopeId)) {
-    return { ...completed.checkpoint, executionRecoveryPending: true };
+    return { ...checkpoint(completed.checkpoint), executionRecoveryPending: true };
   }
   // Only a running checkpoint whose process-local execution lease is no
   // longer active is treated as interrupted. A second manager in the same

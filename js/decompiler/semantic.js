@@ -7,27 +7,21 @@ import {
   recoverInductionVariables as recoverInductionVariablesCore,
 } from './semantic-core.js';
 
+const DECOMPILER_IR_OPTION_KEYS = [
+  'rowOfAddress', 'returnType', 'functionPrototype', 'prototype', 'returnClass',
+  'returnBits', 'returnsValue', 'decoderSemanticVersion', 'binaryId', 'sliceId',
+  'abiAdapter', 'rootDescriptorProvider', 'regionOptions', 'semanticIrOptions',
+  'ssaOptions', 'memorySsaOptions', 'compatOptions', 'signal',
+  'symbolFor', 'callPrototypeFor', 'callPrototype', 'prototypeFor',
+];
+
 function irOptionsFromDecompilerOptions(opts = {}) {
-  return {
-    rowOfAddress: opts.rowOfAddress,
-    returnType: opts.returnType,
-    functionPrototype: opts.functionPrototype,
-    prototype: opts.prototype,
-    returnClass: opts.returnClass,
-    returnBits: opts.returnBits,
-    returnsValue: opts.returnsValue,
-    decoderSemanticVersion: opts.decoderSemanticVersion,
-    binaryId: opts.binaryId,
-    sliceId: opts.sliceId,
-    abiAdapter: opts.abiAdapter,
-    rootDescriptorProvider: opts.rootDescriptorProvider,
-    regionOptions: opts.regionOptions,
-    semanticIrOptions: opts.semanticIrOptions,
-    ssaOptions: opts.ssaOptions,
-    memorySsaOptions: opts.memorySsaOptions,
-    compatOptions: opts.compatOptions,
-    signal: opts.signal,
-  };
+  const out = {};
+  for (let i = 0; i < DECOMPILER_IR_OPTION_KEYS.length; i += 1) {
+    const key = DECOMPILER_IR_OPTION_KEYS[i];
+    if (opts[key] !== undefined) out[key] = opts[key];
+  }
+  return out;
 }
 
 /*
@@ -82,7 +76,7 @@ function recoverCompatInductionVariables(ir, ctx = null) {
       } else if (stepDef.sub === 'add' && rightRoot?.id === phi.dst.id && left?.const != null) {
         step = left.const;
       }
-      if (step == null) continue;
+      if (step == null || step === 0n) continue;
       const term = compatBlockTerm(block);
       if (!term || term.op !== OP.CBR) continue;
       const name = `i${out.length || ''}`;
@@ -118,9 +112,12 @@ export function recoverInductionVariables(ir, ctx = null) {
 export function decompileSemantic(model, opts = {}) {
   const semanticOpts = canonicalRuntimeOptions(opts);
   const v2Requested = getSemanticMigrationMode() === 'semantic-v2-compat';
-  let ir = semanticOpts.ir || irFor(model, v2Requested
-    ? irOptionsFromDecompilerOptions(semanticOpts)
-    : { rowOfAddress: semanticOpts.rowOfAddress });
+  let ir = semanticOpts.ir != null
+    ? semanticOpts.ir
+    : irFor(model, v2Requested
+      ? { rowOfAddress: semanticOpts.rowOfAddress, ...irOptionsFromDecompilerOptions(semanticOpts) }
+      : { rowOfAddress: semanticOpts.rowOfAddress });
+  if (!ir) return null;
   const isV2Compat = ir?.compat?.projection === 'semantic-ir-v2-to-v1';
   if (isV2Compat) {
     ir = projectSemanticViews(ir, semanticOpts);

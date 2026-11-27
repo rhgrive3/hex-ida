@@ -319,6 +319,7 @@ function admitPayloadResources(value, budget, seen, control = null) {
   control?.check();
   if (value === null || typeof value !== 'object') {
     budget.nodes += 1;
+    if (typeof value === 'string') budget.bytes += value.length * 2;
   } else {
     const binaryBytesUsed = binaryLeafResource(value);
     if (binaryBytesUsed !== null) {
@@ -349,7 +350,7 @@ function admitPayloadResources(value, budget, seen, control = null) {
 }
 
 function payloadRetainedBytes(value, seen = new WeakSet()) {
-  if (value === null || typeof value !== 'object') return 0;
+  if (value === null || typeof value !== 'object') return typeof value === 'string' ? value.length * 2 : 0;
   const leaf = binaryLeafResource(value);
   if (leaf !== null) return leaf;
   if (seen.has(value)) return 0;
@@ -538,11 +539,14 @@ function typeTagged(value, seen = new WeakSet(), control = null) {
   }
   const binaryInfo = canonicalBinaryInfo(value, control);
   if (binaryInfo) return canonicalBinaryIdentityMaterial(binaryInfo, control);
-  if (seen.has(value)) fail('runtime-observation-cyclic-payload');
+  if (seen.has(value)) throw new TypeError('runtime-observation-cyclic-payload');
   seen.add(value);
   const nested = (item) => typeTagged(item, seen, control);
   let out;
-  if (value instanceof Date) out = { $t: 'date', v: value.toISOString() };
+  if (value instanceof Date) {
+    const time = value.getTime();
+    out = { $t: 'date', v: Number.isFinite(time) ? value.toISOString() : 'Invalid Date' };
+  }
   else if (ArrayBuffer.isView(value)) {
     out = binaryIdentityMaterial(value.constructor?.name ?? 'view', new Uint8Array(value.buffer, value.byteOffset, value.byteLength), control);
   } else if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
@@ -788,7 +792,12 @@ export class RuntimeAuthorityTracker {
     const checked = validateRuntimeObservation(this.binding, observation, { ...options, minimumSequence: this.lastSequence + 1 });
     if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
     const retained = payloadRetainedBytes(observation.payload);
-    if (this.#retainedBytes + retained > this.maxRetainedPayloadBytes) {
+    let evictedBytes = 0;
+    const evictCount = Math.max(0, (this.#observations.length + 1) - this.maxObservations);
+    for (let i = 0; i < evictCount; i++) {
+      evictedBytes += payloadRetainedBytes(this.#observations[i].payload);
+    }
+    if ((this.#retainedBytes - evictedBytes) + retained > this.maxRetainedPayloadBytes) {
       return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-retained-payload-bytes-exceeded' });
     }
     this.lastSequence = observation.sequence;

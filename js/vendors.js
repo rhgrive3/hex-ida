@@ -30,9 +30,14 @@
  * まず使われない（"vungle" という名前の自作クラスを書く人はいない）。
  */
 const VENDOR_PATTERNS = [
-  { vendor: 'IronSource', kind: 'ads', re: /ironsource|supersonic|levelplay/i },
+  { vendor: 'IronSource', kind: 'ads', re: /ironsource|supersonic|levelplay|IS_AD_UNIT_|LPM_AD_FORMAT_|\b(?:IS(?:Prog|Banner|Rewarded|Interstitial|Adapter|Mediation|DemandOnly|Expired)|LPM)[A-Z]/i },
+  { vendor: 'Apple Swift/Foundation', kind: 'system', re: /^_?\$s(?:10Foundation|7SwiftUI|5UIKit|12CoreGraphics|7Combine|10ObjectiveC|8Dispatch|So\d+|ST|s\d+)/, textRe: /NSFoundation|SwiftUI/i },
+  { vendor: 'Apple System', kind: 'system', re: /^_+(?:nw_|objc_|swift_|SCNetwork|UIScrollView|UIView|UIApplication|NSLocale|NSDate|NSURL|NSTemporary|CFRunLoop|kCF|CGContext|CGRect|CGPoint|CGSize|CGImage|kCG|CAAnimation|CMTime|CMClock|dispatch_|SKAdNetwork)/, textRe: /nw_path_enumerate_interfaces/i },
+  { vendor: 'Abseil', kind: 'system', re: /\babsl::|\babsl_|low_level_alloc/i },
+  { vendor: 'Apple Security', kind: 'crypto', re: /^_+Sec(?:Key|Trust|Item|Random|Certificate|Policy)/ },
+  { vendor: 'Apple StoreKit', kind: 'purchase', re: /^_?\$s8StoreKit|^_+SK(?:Payment|Product|Receipt|Storefront|Store)/ },
   { vendor: 'AppLovin', kind: 'ads', re: /applovin|\bmax(mediation|adview|reward)/i },
-  { vendor: 'Google Mobile Ads', kind: 'ads', re: /admob|googlemobileads|gadmob|interstitialad/i },
+  { vendor: 'Google Mobile Ads', kind: 'ads', re: /admob|googlemobileads|gadmob|interstitialad/i, textRe: /admob|googlemobileads|gadmob/i },
   { vendor: 'Unity Ads', kind: 'ads', re: /unityads|unityservices|unityanalytics/i },
   { vendor: 'Vungle', kind: 'ads', re: /vungle|liftoff/i },
   { vendor: 'Tapjoy', kind: 'ads', re: /tapjoy/i },
@@ -43,7 +48,7 @@ const VENDOR_PATTERNS = [
   { vendor: 'InMobi', kind: 'ads', re: /inmobi/i },
   { vendor: 'Fyber', kind: 'ads', re: /fyber|digitalturbine/i },
   { vendor: 'Smaato', kind: 'ads', re: /smaato/i },
-  { vendor: 'PubMatic', kind: 'ads', re: /pubmatic|openwrap/i },
+  { vendor: 'PubMatic', kind: 'ads', re: /pubmatic|openwrap|\bPOB(?:Location|Banner|Ad|Bid|Interstitial|Rewarded|Monitor|Manager|Looper)[A-Z]/i },
   { vendor: 'Moloco', kind: 'ads', re: /moloco/i },
   { vendor: 'BidMachine', kind: 'ads', re: /bidmachine/i },
   { vendor: 'Ogury', kind: 'ads', re: /ogury/i },
@@ -51,16 +56,16 @@ const VENDOR_PATTERNS = [
   { vendor: 'Meta Audience Network', kind: 'ads', re: /audiencenetwork|fbaudience|fbnativead|fbadwebkit/i },
   { vendor: 'Yandex Ads', kind: 'ads', re: /yandexmobileads/i },
 
-  { vendor: 'Adjust', kind: 'analytics', re: /\badjust(sdk)?\b|adjustattribution/i },
+  { vendor: 'Adjust', kind: 'analytics', re: /\badjust(sdk)?\b|adjustattribution/i, textRe: /\badjust(?:sdk|attribution|event|config|tracker)\b|adjust\.com|com\.adjust\./i },
   { vendor: 'AppsFlyer', kind: 'analytics', re: /appsflyer/i },
   { vendor: 'Branch', kind: 'analytics', re: /branchsdk|branchuniversal/i },
   { vendor: 'Singular', kind: 'analytics', re: /singularsdk/i },
   { vendor: 'Kochava', kind: 'analytics', re: /kochava/i },
   { vendor: 'Tenjin', kind: 'analytics', re: /tenjin/i },
-  { vendor: 'Amplitude', kind: 'analytics', re: /amplitude/i },
+  { vendor: 'Amplitude', kind: 'analytics', re: /amplitude/i, textRe: /amplitude(?:\.com|[\s._-]?(?:sdk|analytics|client|api|event|ios|android))|com\.amplitude\./i },
   { vendor: 'Mixpanel', kind: 'analytics', re: /mixpanel/i },
   { vendor: 'GameAnalytics', kind: 'analytics', re: /gameanalytics/i },
-  { vendor: 'Flurry', kind: 'analytics', re: /flurry/i },
+  { vendor: 'Flurry', kind: 'analytics', re: /flurry/i, textRe: /flurry(?:\.com|[\s._-]?(?:sdk|analytics|session|agent|ad))|com\.flurry\./i },
   { vendor: 'Adobe', kind: 'analytics', re: /adobemobile|adbmobile/i },
   { vendor: 'Firebase', kind: 'analytics', re: /firebase|\bfirapp\b|firanalytics|googleutilities|googledatatransport/i },
   { vendor: 'Crashlytics', kind: 'analytics', re: /crashlytics/i },
@@ -76,9 +81,46 @@ const VENDOR_PATTERNS = [
 
   { vendor: 'Google Toolbox', kind: 'library', re: /gtmsession|gtmapp|googletoolbox/i },
   { vendor: 'Protocol Buffers', kind: 'library', re: /swiftprotobuf|google_protobuf/i },
+  { vendor: 'Protocol Buffers', kind: 'library', re: /\bgoogle::protobuf\b|_ZN6google8protobuf|(?:^_?|\b)upb_/ },
   { vendor: 'AFNetworking', kind: 'library', re: /afnetworking|afhttp|afurl/i },
   { vendor: 'Alamofire', kind: 'library', re: /alamofire/i },
   { vendor: 'Realm', kind: 'library', re: /realmswift|rlmobject/i },
+
+  /* 非衝突 C/C++ サードパーティライブラリ（std:: / _ZNSt / _ZSt / __cxa_ は登録しない） */
+  { vendor: 'Boost', kind: 'library', re: /\bboost::|_ZN5boost/ },
+  { vendor: 'FFmpeg', kind: 'library', re: /\blibav[a-z]*\b|^_?(?:av(?:codec|format|filter|util|io|packet|frame|dict|opt|log|pix|sample|hw|buf|mem)_|sws_|swr_|swri_)/ },
+  { vendor: 'Qt', kind: 'library', re: /\b(?:QtCore|QtGui|QtWidgets|QtNetwork|QCoreApplication|QWidget|QSaveFile|QAbstract\w+|QXmlStream\w+|QIOS[A-Z][a-z]\w*|QUI[A-Z][a-z]\w*)\b|\bQtPrivate::/ },
+  { vendor: 'SDL', kind: 'library', re: /^_?(?:SDL_|HIDAPI_)/ },
+  { vendor: 'FreeType', kind: 'library', re: /^_?FTC?_/ },
+  { vendor: 'SQLite', kind: 'library', re: /^_?sqlite3_/ },
+  { vendor: 'OpenSSL', kind: 'library', re: /^_?(?:SSL|EVP|CRYPTO|OPENSSL|X509|ASN1|BIO|PEM|HMAC|OSSL|BORINGSSL)_|\bbssl::/ },
+  { vendor: 'libpng', kind: 'library', re: /^_?png_(?:create|destroy|read|write|set|get)/ },
+  { vendor: 'Skia', kind: 'library', re: /\bSk(?:Canvas|Paint|Bitmap|Image|Surface|Shader|Path)\b/ },
+  { vendor: 'ICU', kind: 'library', re: /\bicu(?:_\d+)?::/ },
+  { vendor: 'libcurl', kind: 'library', re: /^_?curl_(?:easy|multi|share|global)_/ },
+  { vendor: 'gRPC', kind: 'library', re: /^_?grpc_|\bgrpc::/ },
+  { vendor: 'double-conversion', kind: 'library', re: /\bdouble_conversion::/ },
+  { vendor: 'TBB', kind: 'library', re: /\btbb::/ },
+  { vendor: 'Unity', kind: 'engine', re: /\bUnityEngine(?:::|\.)|_ZN11UnityEngine|\bUnity(?:Player|AppController|View|Main|SendMessage)\b/ },
+  { vendor: 'IL2CPP', kind: 'runtime', re: /^_?il2cpp_|\bil2cpp::|_ZN6il2cpp/ },
+  { vendor: 'Unreal Engine', kind: 'engine', re: /\b(?:FEngineLoop|UGameEngine|UEngine|UWorld|AActor|UObjectBase|FMemory|FName|FString|TArray)::|_ZN(?:11FEngineLoop|11UGameEngine|7UEngine|11UObjectBase)|\bUnrealEngine\b/ },
+  { vendor: 'Cocos2d-x', kind: 'engine', re: /\bcocos2d::|_ZN7cocos2d|\bCC(?:Director|Scene|Layer|Sprite|Node|Action|Texture2D|Application)\b/ },
+  { vendor: 'Spine', kind: 'media', re: /\bspine::|_ZN5spine|^_?sp(?:Skeleton|AnimationState|TrackEntry|Atlas|Bone|Slot)_/ },
+  { vendor: 'Box2D', kind: 'library', re: /\bb2(?:World|Body|Fixture|Shape|PolygonShape|CircleShape|Joint|Contact|BroadPhase|DynamicTree)\b|_ZN\d+b2(?:World|Body|Fixture|Shape|Joint|Contact)/ },
+  { vendor: 'Lua', kind: 'runtime', re: /^_?lua(?:L)?_(?:open|close|newstate|pcall|call|push|to|get|set|raw|load|do|check|opt|register|error|next|type|typename|gc|sethook)/ },
+  { vendor: 'V8', kind: 'runtime', re: /\bv8::(?:internal::)?(?:Isolate|Context|Local|Value|Object|Function|String|Script|Heap|Handle)|_ZN2v88internal|_ZN2v87Isolate/ },
+  { vendor: 'nlohmann::json', kind: 'library', re: /\bnlohmann::|_ZN8nlohmann/ },
+  { vendor: 'RapidJSON', kind: 'library', re: /\brapidjson::|_ZN9rapidjson/ },
+  { vendor: 'FlatBuffers', kind: 'library', re: /\bflatbuffers::|_ZN11flatbuffers/ },
+  { vendor: 'GoogleTest', kind: 'test', re: /\btesting::(?:Test|AssertionResult|UnitTest|internal::)|_ZN7testing(?:4Test|8internal|8UnitTest)/ },
+  { vendor: 'XCTest', kind: 'test', re: /\bXCTest(?:Case|Suite|Expectation|Run|Observer)?\b|_XCT(?:Assert|Fail|RegisterFailure)/ },
+
+  /* Apple システム FW（C++ の C* クラスや UI* と衝突しない明示 API 列挙のみ） */
+  { vendor: 'CoreFoundation', kind: 'library', re: /^_?CF(?:String|Array|Dictionary|Data|Number|URL|Bundle|RunLoop|Allocator|Release|Retain|Equal|Hash|Copy|GetTypeID|Preferences|Stream|ReadStream|WriteStream|Socket|NotificationCenter|Error|Date|TimeZone|Locale|Calendar|Set|Bag|Tree|BitVector|BinaryHeap|UUID|PlugIn|MachPort|MessagePort|FileDescriptor)\w*/ },
+  { vendor: 'Metal', kind: 'library', re: /^_?MTL(?:Device|CommandQueue|CommandBuffer|CommandEncoder|RenderPipeline|ComputePipeline|Buffer|Texture|Sampler|Library|Function|Heap|Fence|Event)\w*/ },
+  { vendor: 'CoreGraphics', kind: 'library', re: /^_?(?:CGContext|CGImage|CGColor|CGPath|CGBitmapContext)\w*/ },
+  { vendor: 'AVFoundation', kind: 'library', re: /^_?AVAudio(?:Player|Engine|Session|Node|Format|PCMBuffer|Unit)\w*/ },
+  { vendor: 'Darwin Runtime', kind: 'runtime', re: /^_?(?:dispatch_(?:async|sync|once|after|queue|group|semaphore|source|main)|objc_(?:msgSend|retain|release|autorelease|alloc|init|destroyWeak|loadWeak|storeWeak|copyWeak|getClass|lookUpClass|getAssociatedObject|setAssociatedObject)|pthread_(?:create|join|mutex|cond|rwlock|key|once|self|exit|attr))\w*/ },
 ];
 
 /*
@@ -151,21 +193,29 @@ const VENDOR_PREFIXES = {
 /** ゲームの数値を探しているのに、SDK の値を答えてはいけない目的。 */
 const GAME_VALUE_GOALS = new Set([
   'hp', 'attack', 'defense', 'damage', 'money', 'level', 'stamina',
-  'item', 'score', 'gacha',
+  'item', 'score', 'gacha', 'speed', 'cooldown',
+]);
+
+/** 広告以外の目的（自由入力を含む）で衝突とみなす SDK 種別。 */
+const NON_ADS_CONFLICT_KINDS = new Set([
+  'ads', 'analytics', 'marketing', 'support', 'media', 'ui', 'test', 'system',
 ]);
 
 /**
  * Swift の記号名から、それが属するモジュール（フレームワーク）名を取り出す。
  *
  *   _TtC12VungleAdsSDK14FirstPartyData  →  VungleAdsSDK
+ *   $s12VungleAdsSDK14FirstPartyDataC   →  VungleAdsSDK
+ *   $S10IronSource12AdControllerC       →  IronSource
+ *   _T012VungleAdsSDK14FirstPartyDataC  →  VungleAdsSDK
  *
- * `_TtC` のあとは「長さ＋名前」の繰り返しになっている。最初の 1 個がモジュール。
+ * プレフィックスのあとは「長さ＋名前」の繰り返しになっている。最初の 1 個がモジュール。
  * 読めない形なら null（当てずっぽうの名前は返さない）。
  */
 export function swiftModuleOf(name) {
   if (typeof name !== 'string') return null;
   const s = name;
-  const m = /^_TtC[VOP]?(\d+)/.exec(s);
+  const m = /^(?:_TtC[VOP]?|_?\$[sS]|_?_T0)(\d+)/.exec(s);
   if (!m) return null;
   const len = Number(m[1]);
   if (!(len > 0) || len > 64) return null;
@@ -180,41 +230,277 @@ export function swiftModuleOf(name) {
  * `ISLWSProgRvManager` は `ISLWS` とも `IS` とも読める。片方だけ見ていると
  * IronSource の `IS` を取り逃がすので、2〜5 文字を全部候補に出して、
  * どれが実際にまとまっているかは数で決める。
+ *
+ * 先頭 `_` は剥がし、`UPPER_` 形式（例: `SDL_Init`）は `_` 手前を単一トークン（`SDL_`）
+ * 扱いにして `SD` → `SDWebImage` のような誤分割や `SDLoader` との混同を防ぐ。
  */
+function buildPrefilter(patterns, forText) {
+  const ciSources = [];
+  const csSources = [];
+  for (const p of patterns) {
+    const rx = forText && p.textRe ? p.textRe : p.re;
+    const flags = rx.flags;
+    if ((flags && flags !== 'i') || /\\[1-9]/.test(rx.source)) return null;
+    if (flags === 'i') ciSources.push(`(?:${rx.source})`);
+    else csSources.push(`(?:${rx.source})`);
+  }
+  return {
+    ci: ciSources.length ? new RegExp(ciSources.join('|'), 'i') : null,
+    cs: csSources.length ? new RegExp(csSources.join('|')) : null,
+  };
+}
+
+const NAME_PREFILTER = buildPrefilter(VENDOR_PATTERNS, false);
+const TEXT_PREFILTER = buildPrefilter(VENDOR_PATTERNS, true);
+
 function prefixesOf(name) {
   if (typeof name !== 'string') return [];
-  const s = name;
-  if (!/^[A-Z]{2}/.test(s)) return [];
+  const totalLen = name.length;
+  let start = 0;
+  while (start < totalLen && name.charCodeAt(start) === 95) start++;
+  const len = totalLen - start;
+  if (len < 2) return [];
+  let upperLen = 0;
+  while (start + upperLen < totalLen) {
+    const c = name.charCodeAt(start + upperLen);
+    if (c < 65 || c > 90) break;
+    upperLen++;
+  }
+  if (upperLen < 2) return [];
+  if (start + upperLen < totalLen && name.charCodeAt(start + upperLen) === 95) {
+    return upperLen <= 5 ? [name.slice(start, start + upperLen) + '_'] : [];
+  }
   const out = [];
-  for (let n = Math.min(5, s.length - 1); n >= 2; n--) {
-    const head = s.slice(0, n);
-    if (!/^[A-Z]+$/.test(head)) continue;
-    const next = s[n];
+  for (let n = Math.min(5, upperLen, len - 1); n >= 2; n--) {
+    const next = name.charCodeAt(start + n);
     // 接頭辞の直後は「大文字＋小文字」か「大文字の続き」。数字始まりは採らない。
-    if (!/[A-Za-z]/.test(next)) continue;
-    out.push(head);
+    if (!((next >= 65 && next <= 90) || (next >= 97 && next <= 122))) continue;
+    out.push(name.slice(start, start + n));
   }
   return out;
 }
 
 /** 名前そのものから当てる（第 1 段階）。 */
-function matchPattern(name) {
+function matchPattern(name, opts) {
   if (typeof name !== 'string') return null;
   const s = name;
+  const forText = !!(opts && opts.forText);
+  const pf = forText ? TEXT_PREFILTER : NAME_PREFILTER;
+  if (pf && !(pf.ci && pf.ci.test(s)) && !(pf.cs && pf.cs.test(s))) return null;
   for (const p of VENDOR_PATTERNS) {
-    if (p.re.test(s)) return { vendor: p.vendor, kind: p.kind, via: 'name' };
+    const rx = forText && p.textRe ? p.textRe : p.re;
+    if (rx.test(s)) return { vendor: p.vendor, kind: p.kind, via: 'name' };
   }
   return null;
 }
 
+/** Itanium C++ マングル名の入れ子テンプレート引数 `I...E` を安全にスキップする。 */
+function skipItaniumTemplate(s, pos) {
+  if (s[pos] !== 'I') return pos;
+  let i = pos + 1;
+  let depth = 1;
+  while (i < s.length && depth > 0) {
+    const ch = s[i];
+    if (ch >= '0' && ch <= '9') {
+      let len = 0;
+      while (i < s.length && s[i] >= '0' && s[i] <= '9') {
+        len = len * 10 + (s.charCodeAt(i) - 48);
+        i++;
+      }
+      if (len <= 0 || i + len > s.length) return -1;
+      i += len;
+      continue;
+    }
+    if (ch === 'L') {
+      depth++;
+      i++;
+      if (i < s.length && s[i] >= 'a' && s[i] <= 'z') {
+        i++;
+        if (i < s.length && s[i] === 'n') i++;
+        while (i < s.length && s[i] >= '0' && s[i] <= '9') i++;
+      }
+      continue;
+    }
+    if (ch === 'S' || ch === 'T') {
+      i++;
+      if (i < s.length && (s[i] === '_' || (ch === 'S' && s[i] >= 'a' && s[i] <= 'z'))) {
+        i++;
+      } else {
+        while (i < s.length && s[i] !== '_') i++;
+        if (i < s.length && s[i] === '_') i++;
+      }
+      continue;
+    }
+    if (ch === 'I' || ch === 'N' || ch === 'X' || ch === 'J') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === 'E') {
+      depth--;
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return depth === 0 ? i : -1;
+}
+
+const ITANIUM_OPERATOR_CODES = new Set([
+  'nw', 'na', 'dl', 'da', 'aw',
+  'ps', 'ng', 'ad', 'de', 'co',
+  'pl', 'mi', 'ml', 'dv', 'rm',
+  'an', 'or', 'eo',
+  'aS', 'pL', 'mI', 'mL', 'dV', 'rM', 'aN', 'oR', 'eO',
+  'ls', 'rs', 'lS', 'rS',
+  'eq', 'ne', 'lt', 'gt', 'le', 'ge', 'ss',
+  'nt', 'aa', 'oo',
+  'pp', 'mm',
+  'cm', 'pm', 'pt', 'cl', 'ix', 'qu',
+  'cv', 'li',
+]);
+
+/** Itanium C++ マングル名 `_ZN...` / `__ZN...` から所有者クラス名を取り出す。 */
+function itaniumOwnerOf(name) {
+  const m = /^_?_ZN[rVK]*[RO]?/.exec(name);
+  if (!m) return null;
+  let i = m[0].length;
+  const parts = [];
+  let isSpecialMember = false;
+  while (i < name.length) {
+    const ch = name[i];
+    if (ch === 'E') break;
+    if (ch === 'S' && name[i + 1] === 't') {
+      parts.push('std');
+      i += 2;
+      continue;
+    }
+    if (ch >= '0' && ch <= '9') {
+      let len = 0;
+      while (i < name.length && name[i] >= '0' && name[i] <= '9') {
+        len = len * 10 + (name.charCodeAt(i) - 48);
+        i++;
+      }
+      if (len <= 0 || i + len > name.length) return null;
+      parts.push(name.slice(i, i + len));
+      i += len;
+      while (i < name.length && name[i] === 'B') {
+        i++;
+        let tagLen = 0;
+        while (i < name.length && name[i] >= '0' && name[i] <= '9') {
+          tagLen = tagLen * 10 + (name.charCodeAt(i) - 48);
+          i++;
+        }
+        if (tagLen <= 0 || i + tagLen > name.length) return null;
+        i += tagLen;
+      }
+      if (i < name.length && name[i] === 'I') {
+        i = skipItaniumTemplate(name, i);
+        if (i < 0) return null;
+      }
+      continue;
+    }
+    if ((ch === 'C' && (name[i + 1] === '1' || name[i + 1] === '2' || name[i + 1] === '3')) ||
+        (ch === 'D' && (name[i + 1] === '0' || name[i + 1] === '1' || name[i + 1] === '2'))) {
+      isSpecialMember = true;
+      i += 2;
+      if (i < name.length && name[i] === 'I') {
+        i = skipItaniumTemplate(name, i);
+        if (i < 0) return null;
+      }
+      break;
+    }
+    if (ch === 'C' && name[i + 1] === 'I' && (name[i + 2] === '1' || name[i + 2] === '2')) {
+      isSpecialMember = true;
+      i += 3;
+      break;
+    }
+    if (i + 1 < name.length && ITANIUM_OPERATOR_CODES.has(name.slice(i, i + 2))) {
+      isSpecialMember = true;
+      i += 2;
+      break;
+    }
+    if (ch === 'I') {
+      i = skipItaniumTemplate(name, i);
+      if (i < 0) return null;
+      continue;
+    }
+    break;
+  }
+  if (isSpecialMember) return parts.length >= 1 ? parts.join('::') : null;
+  return parts.length >= 2 ? parts.slice(0, -1).join('::') : null;
+}
+
+/** デマングル済み C++ 記号名 `ns::Cls::fn` から所有者クラス名を取り出す。 */
+function demangledCxxOwnerOf(name) {
+  if (!name.includes('::')) return null;
+  let angle = 0;
+  let paramStart = name.length;
+  for (let i = 0; i < name.length; i++) {
+    const ch = name[i];
+    if (ch === '<') angle++;
+    else if (ch === '>' && angle > 0) angle--;
+    else if (ch === '(' && angle === 0) {
+      const before = name.slice(0, i).trimEnd();
+      if (before.endsWith('operator') && name[i + 1] === ')') {
+        i++;
+        continue;
+      }
+      paramStart = i;
+      break;
+    }
+  }
+  let head = name.slice(0, paramStart).trim();
+  if (!head.includes('::')) return null;
+
+  // 先頭の戻り値型・修飾子（例: `void `, `std::string `）を外す
+  angle = 0;
+  let splitWs = -1;
+  for (let i = 0; i < head.length; i++) {
+    const ch = head[i];
+    if (ch === '<') angle++;
+    else if (ch === '>' && angle > 0) angle--;
+    else if ((ch === ' ' || ch === '\t') && angle === 0) {
+      const before = head.slice(0, i).trimEnd();
+      if (before.endsWith('operator')) continue;
+      splitWs = i;
+    }
+  }
+  if (splitWs >= 0) head = head.slice(splitWs + 1).trim();
+  head = head.replace(/^[*&]+/, '');
+  if (!head.includes('::')) return null;
+
+  const parts = [];
+  angle = 0;
+  let segStart = 0;
+  for (let i = 0; i < head.length; i++) {
+    const ch = head[i];
+    if (ch === '<') angle++;
+    else if (ch === '>' && angle > 0) angle--;
+    else if (ch === ':' && head[i + 1] === ':' && angle === 0) {
+      const seg = head.slice(segStart, i).trim();
+      if (seg) parts.push(seg);
+      i++;
+      segStart = i + 1;
+    }
+  }
+  const last = head.slice(segStart).trim();
+  if (last) parts.push(last);
+  return parts.length >= 2 ? parts.slice(0, -1).join('::') : null;
+}
+
 /**
- * `-[BattleManager hp]` → `BattleManager`。Objective-C のメソッド名から持ち主を取る。
+ * `-[BattleManager hp]` → `BattleManager`、`ns::Cls::fn` → `ns::Cls`、
+ * `_ZN2ns3Cls2fnEv` → `ns::Cls`。Objective-C / C++ の記号名から持ち主を取る。
  * その形でなければ null（当てずっぽうは返さない）。
  */
 export function classFromSymbol(name) {
   if (typeof name !== 'string') return null;
-  const m = /^[-+]\s*\[\s*([^\s\]]+)/.exec(name);
-  return m ? m[1] : null;
+  const objc = /^[-+]\s*\[\s*([^\s\]]+)/.exec(name);
+  if (objc) return objc[1];
+  const itanium = itaniumOwnerOf(name);
+  if (itanium) return itanium;
+  return demangledCxxOwnerOf(name);
 }
 
 /**
@@ -226,7 +512,7 @@ export function classFromSymbol(name) {
  * ——「文字列の中にたまたま `IS` が入っていた」で SDK 扱いされては困るため。
  */
 export function vendorInText(text) {
-  const direct = matchPattern(text);
+  const direct = matchPattern(text, { forText: true });
   return direct ? Object.assign({ confidence: 'high' }, direct) : null;
 }
 
@@ -272,7 +558,12 @@ export function learnVendors(classNames) {
     if (mod && !modules.has(mod)) {
       modules.set(mod, Object.assign({}, hit, { via: 'module', confidence: 'high' }));
     }
-    for (const p of prefixesOf(n)) seed(p, hit);
+    // 未登録の2文字接頭辞は誤爆源（CF / FT / QU 等）になるため3文字以上のみ自動昇格
+    for (const p of prefixesOf(n)) {
+      const baseLen = p.endsWith('_') ? p.length - 1 : p.length;
+      if (baseLen < 3 && !Object.hasOwn(VENDOR_PREFIXES, p)) continue;
+      seed(p, hit);
+    }
   }
   for (const [mod, n] of moduleCount) {
     if (n < 4 || modules.has(mod)) continue;
@@ -290,7 +581,8 @@ export function learnVendors(classNames) {
    * ただし名前で裏が取れていないぶん、確信は下げておく（打ち消しも弱くする）。
    */
   for (const [p, n] of prefixCount) {
-    if (n < CLUSTER_MIN || prefixes.has(p) || p.length > 4) continue;
+    const baseLen = p.endsWith('_') ? p.length - 1 : p.length;
+    if (n < CLUSTER_MIN || prefixes.has(p) || baseLen > 4) continue;
     prefixes.set(p, {
       vendor: p, kind: 'library', via: 'cluster', prefix: p,
       classes: n, confidence: 'low',
@@ -310,7 +602,12 @@ export function vendorsOf(fields) {
   if (!fields || !fields.classes) return null;
   let learned = LEARNED.get(fields);
   if (!learned) {
-    learned = learnVendors(Array.from(fields.classes.keys()));
+    const names = [];
+    for (const [k, v] of fields.classes.entries()) {
+      const name = typeof v?.name === 'string' ? v.name : (typeof k === 'string' ? k : null);
+      if (name) names.push(name);
+    }
+    learned = learnVendors(names);
     LEARNED.set(fields, learned);
   }
   return learned;
@@ -336,10 +633,20 @@ export function vendorOf(className, learned) {
      * `ISLWSProgRvManager` は `ISLWS` とも `IS` とも読める。どちらも当たったら、
      * 名前で裏の取れているほう（IronSource の `IS`）を採る。長さでは決めない。
      */
+    let start = 0;
+    while (start < name.length && name.charCodeAt(start) === 95) start++;
     let best = null;
     for (const p of prefixesOf(name)) {
       const hit = learned.prefixes ? learned.prefixes.get(p) : null;
       if (!hit) continue;
+      if (!p.endsWith('_') && !Object.hasOwn(VENDOR_PREFIXES, p)) {
+        let hasLower = false;
+        for (let i = start + p.length; i < name.length; i++) {
+          const c = name.charCodeAt(i);
+          if (c >= 97 && c <= 122) { hasLower = true; break; }
+        }
+        if (!hasLower) continue;
+      }
       if (!best || (best.confidence !== 'high' && hit.confidence === 'high')) {
         best = Object.assign({}, hit, { via: hit.via, prefix: p });
       }
@@ -357,7 +664,10 @@ export function vendorOf(className, learned) {
  */
 export function vendorConflicts(goalId, vendor) {
   if (!vendor) return false;
-  if (!GAME_VALUE_GOALS.has(goalId)) return false;
-  if (vendor.via === 'cluster' || vendor.confidence === 'low') return false;
-  return true;
+  if (vendor.kind === 'system') return true;
+  if (GAME_VALUE_GOALS.has(goalId)) return true;
+  if (goalId === 'ads') return false;
+  if (goalId === 'crypto' && vendor.kind === 'crypto') return false;
+  if (goalId === 'purchase' && (vendor.kind === 'purchase' || vendor.kind === 'ads')) return false;
+  return NON_ADS_CONFLICT_KINDS.has(vendor.kind);
 }

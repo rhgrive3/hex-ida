@@ -45,6 +45,7 @@ function backendFixture() {
     stringIndex:null,
     stringsBusy:null,
     stringsBusyEpoch:-1,
+    persistAnalysisSession() {},
     store:{
       get(key) {
         return key === 'regions'

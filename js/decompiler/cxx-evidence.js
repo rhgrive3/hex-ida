@@ -90,24 +90,53 @@ function receiverAliasClosure(rec, ir) {
   if (byReceiver.has(key)) return byReceiver.get(key);
 
   const aliasIds = new Set([String(rec.canonicalValueId)]);
-  const spilled = new Map();
+  const stackStores = [];
+  let unknownStackStore = false;
+  const storeBytes = (inst) => {
+    const s = Number(inst?.loc?.size ?? inst?.size);
+    if (Number.isSafeInteger(s) && s > 0) return s;
+    const srcBits = Number(inst?.args?.[0]?.value?.bits ?? inst?.args?.[0]?.bits);
+    if (Number.isSafeInteger(srcBits) && srcBits > 0 && srcBits % 8 === 0) return srcBits / 8;
+    return 8;
+  };
+  const loadBytes = (inst) => {
+    const s = Number(inst?.loc?.size ?? inst?.size);
+    if (Number.isSafeInteger(s) && s > 0) return s;
+    const dstBits = Number(inst?.dst?.bits);
+    if (Number.isSafeInteger(dstBits) && dstBits > 0 && dstBits % 8 === 0) return dstBits / 8;
+    return 8;
+  };
+  const toOffsetBig = (v) => {
+    if (typeof v === 'bigint') return v;
+    if (typeof v === 'number' && Number.isSafeInteger(v)) return BigInt(v);
+    if (typeof v === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(v.trim())) {
+      try { return BigInt(v.trim()); } catch { return null; }
+    }
+    return null;
+  };
   for (const inst of ir.instructions) {
     if (inst?.op !== 'store') continue;
     const loc = inst.loc ?? null;
     const base = loc?.base ?? inst.addr?.base ?? null;
+    if (base?.reg === 'x29' || base?.reg === 'fp' || loc?.kind === 'unknown') {
+      unknownStackStore = true;
+      continue;
+    }
     if (base?.reg !== 'sp') continue;
-    const disp = loc?.disp ?? inst.addr?.disp ?? null;
-    if (disp == null) continue;
+    const disp = toOffsetBig(loc?.disp ?? inst.addr?.disp);
+    if (disp == null) {
+      unknownStackStore = true;
+      continue;
+    }
+    const width = BigInt(storeBytes(inst));
     const source = inst.args?.[0]?.value ?? inst.args?.[0] ?? null;
-    const slot = String(disp);
-    const sources = spilled.get(slot) ?? new Set();
-    sources.add(source?.id == null ? null : String(source.id));
-    spilled.set(slot, sources);
+    stackStores.push({ start: disp, end: disp + width, width, sourceId: source?.id == null ? null : String(source.id) });
   }
 
   // This intentionally mirrors the producer-side receiver closure: stack
-  // reloads only become `this` aliases when *every* visible store to that slot
-  // is already a proven receiver alias. Stack-slot reuse therefore fails closed.
+  // reloads only become `this` aliases when *every* visible overlapping store
+  // to that slot is an exact-span proven receiver alias. Stack-slot reuse or
+  // partial overlap therefore fails closed.
   for (let pass = 0; pass < 6; pass++) {
     let changed = false;
     for (const inst of ir.instructions) {
@@ -118,13 +147,16 @@ function receiverAliasClosure(rec, ir) {
         if (source.id == null || !aliasIds.has(String(source.id))) continue;
         if (dst.bits != null && source.bits != null && Number(dst.bits) !== Number(source.bits)) continue;
       } else if (inst.op === 'load') {
+        if (unknownStackStore) continue;
         const loc = inst.loc ?? null;
         const base = loc?.base ?? inst.addr?.base ?? null;
         if (base?.reg !== 'sp') continue;
-        const disp = loc?.disp ?? inst.addr?.disp ?? null;
+        const disp = toOffsetBig(loc?.disp ?? inst.addr?.disp);
         if (disp == null) continue;
-        const sources = spilled.get(String(disp));
-        if (!sources?.size || ![...sources].every(id => id !== null && aliasIds.has(id))) continue;
+        const width = BigInt(loadBytes(inst));
+        const end = disp + width;
+        const overlapping = stackStores.filter(st => st.start < end && st.end > disp);
+        if (!overlapping.length || !overlapping.every(st => st.start === disp && st.end === end && st.sourceId !== null && aliasIds.has(st.sourceId))) continue;
       } else {
         continue;
       }
@@ -154,7 +186,9 @@ export function isCppReceiverAlias(value, rec, ir = null) {
     visited.add(current);
     if (sameId(current.id, rec.canonicalValueId)) return true;
     const source = receiverAliasSource(current.def, current);
-    if (source) pending.push(source);
+    if (source && (current.bits == null || source.bits == null || Number(current.bits) === Number(source.bits))) {
+      pending.push(source);
+    }
   }
   return false;
 }
@@ -167,14 +201,18 @@ export function currentCppVirtualSlot(opts = {}, ir = null, inst = null, callRec
   const source = opts?.cxxEvidence?.virtualSlots;
   const slots = Array.isArray(source) ? source
     : source instanceof Map ? [...source.values()] : [];
-  return slots.find(slot => {
+  const matches = slots.filter(slot => {
     if (!isCanonicalCppVirtualSlotEvidence(slot) || slot.virtualSlotKnown !== true) return false;
+    if (slot.functionId != null && !sameId(slot.functionId, receiver.functionId)) return false;
+    if (slot.receiverDigest != null && slot.receiverDigest !== receiver.digest) return false;
+    if (slot.snapshotId != null && slot.snapshotId !== receiver.snapshotId) return false;
     const slotReceiver = ir.values?.find?.(value => sameId(value?.id, slot.receiverValueId)) ?? null;
     if (!slotReceiver || !isCppReceiverAlias(slotReceiver, receiver, ir)) return false;
     if (slot.callSiteId != null && sameId(slot.callSiteId, inst.id)) return true;
     return slot.callSiteAddress != null && inst.address != null
       && sameAddress(slot.callSiteAddress, inst.address);
-  }) ?? null;
+  });
+  return matches.length === 1 ? matches[0] : null;
 }
 
 

@@ -93,7 +93,51 @@ function liftCilMethodWithManagedFamily(bodyIndex, cilImage, options, methodAuth
         bytecode, offset:globalUnsupportedOffset, codeBase, cilImage, methodId:segment.methodId,
         operationId, nativePointerBits, profileId:cilImage.vmSpecEdition, options,
       });
-      merged.push(lifted.bundle);
+      let liftedBundle = lifted.bundle;
+      const prefixKeys = ['readonly', 'volatile', 'unaligned', 'constrained', 'tail'];
+      const prefixMetadata = {};
+      for (const key of prefixKeys) {
+        if (last.metadata && last.metadata[key] != null) prefixMetadata[key] = last.metadata[key];
+      }
+      const prefixUnknowns = (last.unknownEffects || []).filter((effect) =>
+        typeof effect?.reason === 'string' && effect.reason.startsWith('cil-prefix-modifier-unmodeled:'));
+      if (Object.keys(prefixMetadata).length > 0 || prefixUnknowns.length > 0) {
+        const lastRange = last.origin?.byteRanges?.[0];
+        const liftedRange = liftedBundle.origin?.byteRanges?.[0];
+        const mergedRanges = lastRange && liftedRange
+          ? [{ start: Math.min(lastRange.start, liftedRange.start), end: Math.max(lastRange.end, liftedRange.end) }]
+          : (liftedBundle.origin?.byteRanges || last.origin?.byteRanges || []);
+        const volatileModifier = prefixMetadata.volatile;
+        const readonlyModifier = prefixMetadata.readonly;
+        const unalignedModifier = prefixMetadata.unaligned;
+        const constrainedModifier = prefixMetadata.constrained;
+        const tailModifier = prefixMetadata.tail;
+        const memoryEffects = (volatileModifier || readonlyModifier || unalignedModifier)
+          ? (liftedBundle.memoryEffects || []).map((effect, index) => index !== 0 ? effect : ({
+            ...effect,
+            ...(volatileModifier ? { volatile: true } : {}),
+            ...(readonlyModifier ? { readonly: true } : {}),
+            ...(unalignedModifier ? { alignment: unalignedModifier.alignment } : {}),
+          }))
+          : liftedBundle.memoryEffects;
+        const callEffects = (constrainedModifier || tailModifier)
+          ? (liftedBundle.callEffects || []).map((effect, index) => index !== 0 ? effect : ({
+            ...effect,
+            ...(tailModifier ? { tailCall: true } : {}),
+            ...(constrainedModifier ? { constrainedTypeToken: constrainedModifier.typeToken } : {}),
+          }))
+          : liftedBundle.callEffects;
+        liftedBundle = {
+          ...liftedBundle,
+          metadata: { ...liftedBundle.metadata, ...prefixMetadata },
+          origin: createOriginSet({ operationIds: [operationId], byteRanges: mergedRanges }),
+          memoryEffects,
+          callEffects,
+          unknownEffects: [...(liftedBundle.unknownEffects || []), ...prefixUnknowns],
+          completeness: liftedBundle.completeness === 'unknown' ? 'unknown' : 'partial',
+        };
+      }
+      merged.push(liftedBundle);
       baseOffset = lifted.end;
       continue;
     }

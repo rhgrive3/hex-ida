@@ -18,9 +18,15 @@ function originalHasImmediate(sourceByRow, row) {
   return !!(insn && (insn.ops || []).some((o) => o && o.k === 'imm' && (o.value != null || o.float != null)));
 }
 
+function validBits(bits) {
+  return Number.isInteger(bits) && bits >= 1 && bits <= 64 ? bits : null;
+}
+
 function mask(v, bits) {
   if (v == null) return null;
-  return BigInt.asUintN(bits || 64, BigInt(v));
+  const w = bits == null ? 64 : validBits(bits);
+  if (w == null) return null;
+  return BigInt.asUintN(w, BigInt(v));
 }
 
 /**
@@ -39,7 +45,23 @@ function provenConstant(value, memo, active = new Set()) {
   let result = null;
   const def = value.def;
   if (def && def.op === OP.MOV && def.args && def.args[0]) {
-    result = provenConstant(def.args[0].value, memo, active);
+    const srcVal = def.args[0].value;
+    const inner = provenConstant(srcVal, memo, active);
+    if (inner != null) {
+      const dstBits = value.bits != null ? validBits(value.bits) : (srcVal?.bits != null ? validBits(srcVal.bits) : 64);
+      if (dstBits != null) {
+        const sub = def.sub;
+        if (sub == null || sub === 'copy' || sub === 'memory-forward' || sub === 'trunc') {
+          result = mask(inner, dstBits);
+        } else if (sub === 'zext') {
+          const srcBits = validBits(def.extra?.srcBits ?? srcVal?.bits);
+          if (srcBits != null) result = mask(BigInt.asUintN(srcBits, BigInt(inner)), dstBits);
+        } else if (sub === 'sext') {
+          const srcBits = validBits(def.extra?.srcBits ?? srcVal?.bits);
+          if (srcBits != null) result = mask(BigInt.asIntN(srcBits, BigInt(inner)), dstBits);
+        }
+      }
+    }
   } else if (def && def.op === OP.PHI && def.args && def.args.length) {
     const vals = def.args.map((a) => provenConstant(a && a.value, memo, active));
     if (vals.length && vals.every((v) => v != null && v === vals[0])) result = vals[0];
@@ -133,7 +155,32 @@ export function findIrConstantComparisons(model, opts) {
     const variables = evaluated.filter((x) => x.constant == null);
     if (constants.length !== 1 || variables.length !== 1) continue;
 
-    const c = constants[0].constant;
+    const varShift = variables[0].arg.shift;
+    if (varShift != null) {
+      const varOp = typeof varShift.op === 'string' ? varShift.op.toLowerCase() : '';
+      const varAmt = typeof varShift.amount === 'bigint' ? Number(varShift.amount) : varShift.amount;
+      if (!['lsl', 'lsr', 'asr', 'ror'].includes(varOp) || varAmt !== 0) continue;
+    }
+
+    let c = constants[0].constant;
+    const constArg = constants[0].arg;
+    if (constArg.shift != null) {
+      const rawBits = constArg.bits ?? constArg.value?.bits ?? inst.bits;
+      const bits = rawBits == null ? 64 : validBits(rawBits);
+      if (bits == null) continue;
+      const shiftOp = typeof constArg.shift.op === 'string' ? constArg.shift.op.toLowerCase() : '';
+      const rawAmt = constArg.shift.amount;
+      const amt = typeof rawAmt === 'bigint'
+        ? (rawAmt >= 0n && rawAmt < BigInt(bits) ? rawAmt : null)
+        : (typeof rawAmt === 'number' && Number.isSafeInteger(rawAmt) && rawAmt >= 0 && rawAmt < bits ? BigInt(rawAmt) : null);
+      if (amt == null) continue;
+      const u = BigInt.asUintN(bits, BigInt(c));
+      if (shiftOp === 'lsl') c = BigInt.asUintN(bits, u << amt);
+      else if (shiftOp === 'lsr') c = u >> amt;
+      else if (shiftOp === 'asr') c = BigInt.asUintN(bits, BigInt.asIntN(bits, u) >> amt);
+      else if (shiftOp === 'ror') c = amt === 0n ? u : BigInt.asUintN(bits, (u >> amt) | (u << (BigInt(bits) - amt)));
+      else continue;
+    }
     const v = variables[0].arg.value;
     out.push({
       row: inst.row,

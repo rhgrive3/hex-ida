@@ -7,20 +7,25 @@ function fail(code) { throw new TypeError(code); }
 // Decode the GenericParam / GenericParamConstraint authority after the shared
 // metadata layout has been validated. Raw table row order stays lossless;
 // bound TypeDef/MethodDef semantic views are canonicalized by Number/token.
-export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs) {
+export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs, admission = null) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
   const s = heapSizes & 1 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
   const requiredText = (value) => {
     if (value === 0 || !stringsStream || value >= stringsStream.size) fail('cil-generic-param-name-required');
-    const valueText = readInternedCilHeapString(bytes, stringsStream, null, value, utf8);
+    const valueText = readInternedCilHeapString(bytes, stringsStream, admission, value, utf8);
     if (valueText.length === 0) fail('cil-generic-param-name-required');
     return valueText;
   };
-  const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
-    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
-    return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
-  });
+  const readRows = (table, decode) => {
+    const rowCount = counts[table];
+    admission?.chargeObjects(rowCount);
+    return Array.from({ length: rowCount }, (_, i) => {
+      admission?.chargeOperations(1);
+      const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
+      return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
+    });
+  };
 
   const ownerSize = codedIndexSize(counts, [0x02, 0x06], 1);
   const genericParams = readRows(0x2a, pos => {

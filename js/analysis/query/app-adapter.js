@@ -22,6 +22,7 @@ const MAX_FUNCTION_SCAN = 400_000;
 
 const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
   'profile',
+  'objcSyntax',
   'decompilerTimeBudgetMs',
   'phase8TimeBudgetMs',
   'phase8WorkBudget',
@@ -29,11 +30,76 @@ const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
   'renderProvenanceBindingBudget',
 ]);
 
+const normalizeObjcSyntax = (v) => (v === 'c' ? 'c' : 'objc');
+
+const GLOBAL_EVIDENCE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const GLOBAL_EVIDENCE_ADDR_RE = /^(?:0[xX][0-9A-Fa-f]+|\d+)$/;
+
+function normalizeGlobalEvidenceAddress(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!GLOBAL_EVIDENCE_ADDR_RE.test(trimmed)) return null;
+    try { return BigInt(trimmed); } catch { return null; }
+  }
+  return null;
+}
+
+function normalizeGlobalEvidenceEntries(source) {
+  if (!source || typeof source !== 'object') return [];
+  const entries = [];
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      if (item && typeof item === 'object') entries.push({ ...item });
+    }
+    return entries;
+  }
+  const pairs = source instanceof Map ? source.entries() : Object.entries(source);
+  for (const [key, value] of pairs) {
+    if (!value || typeof value !== 'object') continue;
+    const entry = { ...value };
+    if (entry.address == null && normalizeGlobalEvidenceAddress(key) != null) {
+      entry.address = key;
+    }
+    if (entry.name == null && typeof key === 'string' && GLOBAL_EVIDENCE_IDENT_RE.test(key)) {
+      entry.name = key;
+    }
+    entries.push(entry);
+  }
+  return entries;
+}
+
+function mergeGlobalEvidence(primary, secondary) {
+  if (primary == null) return secondary ?? null;
+  if (secondary == null || secondary === primary) return primary;
+  const merged = [];
+  const seenNames = new Set();
+  const seenAddresses = new Set();
+  const addEntry = (entry) => {
+    const name = typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : null;
+    const addr = normalizeGlobalEvidenceAddress(entry.address);
+    if ((name != null && seenNames.has(name)) || (addr != null && seenAddresses.has(addr))) {
+      return;
+    }
+    if (name != null) seenNames.add(name);
+    if (addr != null) seenAddresses.add(addr);
+    merged.push(entry);
+  };
+  for (const entry of normalizeGlobalEvidenceEntries(primary)) addEntry(entry);
+  for (const entry of normalizeGlobalEvidenceEntries(secondary)) addEntry(entry);
+  return merged;
+}
+
 // Cache by the immutable source object, then by loaded slice index. An entry
 // also records the reader and SymbolIndex identities because either can be
 // replaced while an app object or source wrapper is reused.
 const SLICE_CXX_PROVIDERS = new WeakMap();
 const CXX_QUERY_PLANNERS = new WeakMap();
+const FILE_BYTES_CACHE = new WeakMap();
+const ELF_RELATIVE_RELOCATIONS_CACHE = new WeakMap();
+const MAX_ELF_RELOCATIONS = 200_000;
+const MAX_ELF_DYNAMIC_ENTRIES = 16_384;
 
 // An explicit interactive operation, separate from ordinary Fast decompilation
 // and candidate enumeration. It reuses the scoped query owner's existing
@@ -229,6 +295,318 @@ function ensureCxxEvidenceProviderForApp(app) {
     slices.set(sliceKey, entry);
   }
   return entry;
+}
+
+function fileSourceForApp(app) {
+  return app?.backend?.file ?? storeValue(app, 'file') ?? null;
+}
+
+function cachedFileBytesForApp(app) {
+  const file = fileSourceForApp(app);
+  if (!file) return null;
+  if (file instanceof Uint8Array) return file;
+  if (file instanceof ArrayBuffer) return new Uint8Array(file);
+  if (typeof file === 'object' || typeof file === 'function') {
+    const cached = FILE_BYTES_CACHE.get(file);
+    if (cached instanceof Uint8Array) return cached;
+  }
+  return null;
+}
+
+async function ensureFileBytesForApp(app, options = {}) {
+  const explicit = options.fileBytes ?? options.bytes ?? null;
+  if (explicit instanceof Uint8Array) return explicit;
+  const file = fileSourceForApp(app);
+  if (!file) return null;
+  if (file instanceof Uint8Array) return file;
+  if (file instanceof ArrayBuffer) return new Uint8Array(file);
+  if ((typeof file !== 'object' && typeof file !== 'function') || typeof file.arrayBuffer !== 'function') {
+    return null;
+  }
+  const cached = FILE_BYTES_CACHE.get(file);
+  if (cached instanceof Uint8Array) return cached;
+  if (cached && typeof cached.then === 'function') return cached;
+  const task = Promise.resolve()
+    .then(() => file.arrayBuffer())
+    .then((buf) => {
+      let bytes = null;
+      if (buf instanceof Uint8Array) bytes = buf;
+      else if (buf instanceof ArrayBuffer) bytes = new Uint8Array(buf);
+      else if (ArrayBuffer.isView(buf)) bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      if (bytes) FILE_BYTES_CACHE.set(file, bytes);
+      else FILE_BYTES_CACHE.delete(file);
+      return bytes;
+    })
+    .catch(() => {
+      FILE_BYTES_CACHE.delete(file);
+      return null;
+    });
+  FILE_BYTES_CACHE.set(file, task);
+  return task;
+}
+
+function currentPlatformSlice(app) {
+  const slices = app?.backend?.platformInfo?.slices;
+  if (!Array.isArray(slices) || !slices.length) return null;
+  const index = validSliceIndex(storeValue(app, 'sliceIndex'));
+  if (index !== null && index >= 0 && slices[index]) return slices[index];
+  return slices[0] ?? null;
+}
+
+function normalizeRegionAsSection(region) {
+  if (!region || typeof region !== 'object') return null;
+  const addr = region.addr ?? region.vaddr ?? region.va ?? region.start ?? region.address ?? region.vmAddr ?? null;
+  const zerofill = region.zerofill === true || region.nobits === true;
+  const size = (zerofill && (region.size == null || region.size === 0 || region.size === 0n))
+    ? (region.declaredSize ?? region.memsz ?? region.size)
+    : (region.size ?? region.memsz ?? region.declaredSize ?? region.length ?? null);
+  if (addr == null || size == null) return region;
+  const fileOffset = region.offset ?? region.fileOffset ?? null;
+  const readOnly = region.readOnly === true || region.readonly === true
+    || (region.read === true && region.write === false && region.exec === false);
+  return {
+    ...region,
+    addr,
+    size,
+    ...(fileOffset != null ? { offset: fileOffset, fileOffset } : {}),
+    ...(zerofill ? { nobits: true, zerofill: true } : {}),
+    ...(readOnly ? { readOnly: true } : {}),
+  };
+}
+
+function parseElfRelativeRelocations(fileBytes) {
+  if (!(fileBytes instanceof Uint8Array)) return [];
+  const cached = ELF_RELATIVE_RELOCATIONS_CACHE.get(fileBytes);
+  if (cached) return cached;
+  const relocations = [];
+  try {
+    const byteLen = fileBytes.byteLength;
+    if (byteLen < 64) {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+    if (fileBytes[0] !== 0x7f || fileBytes[1] !== 0x45 || fileBytes[2] !== 0x4c || fileBytes[3] !== 0x46) {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+    if (fileBytes[4] !== 2) {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+    const dataEncoding = fileBytes[5];
+    if (dataEncoding !== 1 && dataEncoding !== 2) {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+    const le = dataEncoding === 1;
+    const view = new DataView(fileBytes.buffer, fileBytes.byteOffset, byteLen);
+    const machine = view.getUint16(18, le);
+    let targetRelocType = null;
+    let targetTypeName = null;
+    if (machine === 183) {
+      targetRelocType = 1027;
+      targetTypeName = 'R_AARCH64_RELATIVE';
+    } else if (machine === 62) {
+      targetRelocType = 8;
+      targetTypeName = 'R_X86_64_RELATIVE';
+    } else {
+      ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+      return relocations;
+    }
+
+    const byteLenBig = BigInt(byteLen);
+    const MAX_ELF_RELOCATIONS_SCANNED = MAX_ELF_RELOCATIONS * 2;
+    let scannedEntries = 0;
+    const seenSpans = new Set();
+    const seen = new Set();
+    const scanRelaTable = (tableOffset, tableSize, entSize) => {
+      if (relocations.length >= MAX_ELF_RELOCATIONS || scannedEntries >= MAX_ELF_RELOCATIONS_SCANNED) return;
+      if (tableOffset < 0n || tableSize <= 0n || entSize < 24n) return;
+      if (tableOffset > byteLenBig || tableSize > byteLenBig - tableOffset) return;
+      const spanKey = `${tableOffset}:${tableSize}:${entSize}`;
+      if (seenSpans.has(spanKey)) return;
+      seenSpans.add(spanKey);
+      const countBig = tableSize / entSize;
+      const remainingScanned = BigInt(MAX_ELF_RELOCATIONS_SCANNED - scannedEntries);
+      const limit = Number(countBig < remainingScanned ? countBig : remainingScanned);
+      for (let i = 0; i < limit; i += 1) {
+        if (relocations.length >= MAX_ELF_RELOCATIONS || scannedEntries >= MAX_ELF_RELOCATIONS_SCANNED) break;
+        scannedEntries += 1;
+        const entryOffBig = tableOffset + BigInt(i) * entSize;
+        if (entryOffBig + 24n > byteLenBig) break;
+        const off = Number(entryOffBig);
+        const rInfo = view.getBigUint64(off + 8, le);
+        const rType = Number(rInfo & 0xffffffffn);
+        if (rType !== targetRelocType) continue;
+        const rOffset = view.getBigUint64(off, le);
+        if (seen.has(rOffset)) continue;
+        seen.add(rOffset);
+        const rAddend = view.getBigUint64(off + 16, le);
+        relocations.push({ type: targetTypeName, address: rOffset, target: rAddend });
+      }
+    };
+
+    const ePhoff = view.getBigUint64(32, le);
+    const eShoff = view.getBigUint64(40, le);
+    const ePhentsize = view.getUint16(54, le);
+    const ePhnum = view.getUint16(56, le);
+    const eShentsize = view.getUint16(58, le);
+    const eShnum = view.getUint16(60, le);
+
+    if (eShoff > 0n && eShnum > 0 && eShentsize >= 64) {
+      const shTableSize = BigInt(eShnum) * BigInt(eShentsize);
+      if (eShoff <= byteLenBig && shTableSize <= byteLenBig - eShoff) {
+        for (let i = 0; i < eShnum; i += 1) {
+          const shOffBig = eShoff + BigInt(i) * BigInt(eShentsize);
+          if (shOffBig + 64n > byteLenBig) break;
+          const sh = Number(shOffBig);
+          const shType = view.getUint32(sh + 4, le);
+          if (shType !== 4) continue; // SHT_RELA
+          const secOffset = view.getBigUint64(sh + 24, le);
+          const secSize = view.getBigUint64(sh + 32, le);
+          const rawEntSize = view.getBigUint64(sh + 56, le);
+          const entSize = rawEntSize === 0n ? 24n : rawEntSize;
+          scanRelaTable(secOffset, secSize, entSize);
+        }
+      }
+    }
+
+    if (ePhoff > 0n && ePhnum > 0 && ePhentsize >= 56) {
+      const phTableSize = BigInt(ePhnum) * BigInt(ePhentsize);
+      if (ePhoff <= byteLenBig && phTableSize <= byteLenBig - ePhoff) {
+        const ptLoads = [];
+        let dynSeg = null;
+        for (let i = 0; i < ePhnum; i += 1) {
+          const phOffBig = ePhoff + BigInt(i) * BigInt(ePhentsize);
+          if (phOffBig + 56n > byteLenBig) break;
+          const ph = Number(phOffBig);
+          const pType = view.getUint32(ph, le);
+          const pOffset = view.getBigUint64(ph + 8, le);
+          const pVaddr = view.getBigUint64(ph + 16, le);
+          const pFilesz = view.getBigUint64(ph + 32, le);
+          if (pType === 1 && pFilesz > 0n && pOffset <= byteLenBig && pFilesz <= byteLenBig - pOffset) {
+            ptLoads.push({ pOffset, pVaddr, pFilesz });
+          } else if (pType === 2 && !dynSeg && pFilesz >= 16n && pOffset <= byteLenBig && pFilesz <= byteLenBig - pOffset) {
+            dynSeg = { pOffset, pFilesz };
+          }
+        }
+        if (dynSeg && ptLoads.length > 0) {
+          let relaVaddr = null;
+          let relaSize = null;
+          let relaEnt = 24n;
+          const dynCountBig = dynSeg.pFilesz / 16n;
+          const dynLimit = Number(dynCountBig < BigInt(MAX_ELF_DYNAMIC_ENTRIES) ? dynCountBig : BigInt(MAX_ELF_DYNAMIC_ENTRIES));
+          for (let i = 0; i < dynLimit; i += 1) {
+            const dynOffBig = dynSeg.pOffset + BigInt(i) * 16n;
+            if (dynOffBig + 16n > byteLenBig) break;
+            const off = Number(dynOffBig);
+            const dTag = view.getBigInt64(off, le);
+            if (dTag === 0n) break; // DT_NULL
+            const dVal = view.getBigUint64(off + 8, le);
+            if (dTag === 7n) relaVaddr = dVal; // DT_RELA
+            else if (dTag === 8n) relaSize = dVal; // DT_RELASZ
+            else if (dTag === 9n && dVal >= 24n) relaEnt = dVal; // DT_RELAENT
+          }
+          if (relaVaddr != null && relaSize != null && relaSize > 0n) {
+            for (const seg of ptLoads) {
+              if (relaVaddr >= seg.pVaddr && relaVaddr < seg.pVaddr + seg.pFilesz) {
+                const delta = relaVaddr - seg.pVaddr;
+                const fileOff = seg.pOffset + delta;
+                const maxAvail = seg.pFilesz - delta;
+                if (relaSize <= maxAvail) {
+                  scanRelaTable(fileOff, relaSize, relaEnt);
+                }
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // Fail closed on malformed ELF bytes.
+  }
+  ELF_RELATIVE_RELOCATIONS_CACHE.set(fileBytes, relocations);
+  return relocations;
+}
+
+function normalizeArchitectureId(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return null;
+  if (trimmed === 'aarch64') return 'arm64';
+  if (trimmed === 'amd64') return 'x86_64';
+  return trimmed;
+}
+
+function architectureDecompilerOptions(app, model, resultValue = null, options = {}) {
+  const slice = currentSlice(app);
+  const platformSlice = currentPlatformSlice(app);
+  const rawArch = options.architectureId ?? options.architecture ?? options.arch
+    ?? resultValue?.architectureId ?? resultValue?.architecture ?? resultValue?.arch
+    ?? model?.architectureId ?? model?.architecture ?? model?.arch
+    ?? (architectureOf(app) || null)
+    ?? slice?.arch ?? slice?.architecture ?? slice?.architectureId
+    ?? platformSlice?.capability?.architecture ?? platformSlice?.arch ?? platformSlice?.architecture
+    ?? app?.backend?.platformInfo?.capability?.architecture
+    ?? app?.architectureId ?? app?.architecture ?? app?.arch ?? null;
+  const architectureId = normalizeArchitectureId(rawArch);
+  const abiAdapter = options.abiAdapter ?? resultValue?.abiAdapter ?? model?.abiAdapter ?? app?.abiAdapter ?? null;
+  return {
+    ...(architectureId ? { architectureId } : {}),
+    ...(abiAdapter ? { abiAdapter } : {}),
+  };
+}
+
+function imageDecompilerOptions(app, model, options = {}) {
+  const slice = currentSlice(app);
+  const platformSlice = currentPlatformSlice(app);
+  const info = currentInfo(app);
+  const image = app?.image ?? app?.backend?.image ?? storeValue(app, 'image') ?? null;
+  const regions = options.regions ?? model?.regions ?? slice?.regions ?? platformSlice?.regions
+    ?? storeValue(app, 'regions') ?? image?.regions ?? app?.backend?.regions ?? app?.regions ?? null;
+  const explicitSections = options.sections ?? model?.sections ?? slice?.sections ?? platformSlice?.sections ?? info?.sections
+    ?? storeValue(app, 'sections') ?? image?.sections ?? app?.backend?.sections ?? app?.sections ?? null;
+  const sections = explicitSections
+    ?? (Array.isArray(regions) && regions.length ? regions.map(normalizeRegionAsSection).filter(Boolean) : null);
+  const fileBytes = options.fileBytes ?? options.bytes ?? model?.fileBytes ?? model?.bytes
+    ?? slice?.fileBytes ?? slice?.bytes ?? platformSlice?.fileBytes ?? platformSlice?.bytes
+    ?? info?.fileBytes ?? info?.bytes
+    ?? storeValue(app, 'fileBytes') ?? storeValue(app, 'bytes')
+    ?? image?.fileBytes ?? image?.bytes ?? app?.backend?.fileBytes ?? app?.backend?.bytes
+    ?? app?.fileBytes ?? app?.bytes ?? cachedFileBytesForApp(app) ?? null;
+  const explicitRelocations = options.relocations ?? model?.relocations ?? slice?.relocations ?? platformSlice?.relocations ?? info?.relocations
+    ?? storeValue(app, 'relocations') ?? image?.relocations ?? app?.backend?.relocations ?? app?.relocations ?? null;
+  const parsedRelocations = explicitRelocations == null && fileBytes instanceof Uint8Array
+    ? parseElfRelativeRelocations(fileBytes)
+    : null;
+  const relocations = explicitRelocations ?? (parsedRelocations?.length ? parsedRelocations : null);
+  const readBytes = options.readBytes
+    ?? (typeof model?.readBytes === 'function' ? model.readBytes.bind(model) : null)
+    ?? (typeof image?.readBytes === 'function' ? image.readBytes.bind(image) : null)
+    ?? (typeof app?.readBytes === 'function' ? app.readBytes.bind(app) : null)
+    ?? (typeof app?.backend?.readBytes === 'function' ? app.backend.readBytes.bind(app.backend) : null);
+  const readByte = options.readByte
+    ?? (typeof model?.readByte === 'function' ? model.readByte.bind(model) : null)
+    ?? (typeof image?.readByte === 'function' ? image.readByte.bind(image) : null)
+    ?? (typeof app?.readByte === 'function' ? app.readByte.bind(app) : null)
+    ?? (typeof app?.backend?.readByte === 'function' ? app.backend.readByte.bind(app.backend) : null);
+  const stringFor = options.stringFor
+    ?? (typeof model?.stringFor === 'function' ? model.stringFor.bind(model) : null)
+    ?? (typeof image?.stringFor === 'function' ? image.stringFor.bind(image) : null)
+    ?? (typeof app?.stringFor === 'function' ? app.stringFor.bind(app) : null)
+    ?? (typeof app?.backend?.stringFor === 'function' ? app.backend.stringFor.bind(app.backend) : null);
+  const addressRefs = options.addressRefs ?? model?.addressRefs ?? slice?.addressRefs ?? platformSlice?.addressRefs ?? app?.addressRefs ?? null;
+  return {
+    ...(sections != null ? { sections } : {}),
+    ...(regions != null ? { regions } : {}),
+    ...(relocations != null ? { relocations } : {}),
+    ...(fileBytes != null ? { fileBytes } : {}),
+    ...(typeof readBytes === 'function' ? { readBytes } : {}),
+    ...(typeof readByte === 'function' ? { readByte } : {}),
+    ...(typeof stringFor === 'function' ? { stringFor } : {}),
+    ...(addressRefs != null ? { addressRefs } : {}),
+  };
 }
 
 export function decompilerOptionsFromQuery(options = {}) {
@@ -585,6 +963,7 @@ export const DECOMPILE_INTERNAL_FIELDS = Object.freeze([
   'semanticSuppressionHistory', 'semanticControlRenderHistory',
   'semanticStatementRenderHistory',
   'semanticStoreRenderHistory', 'switchRenderHistory', 'legacyFallback',
+  'objcSyntax', 'globalEvidence', 'wasmAccelerated',
 ]);
 
 const DECOMPILE_PUBLIC_FIELD_SET = new Set(DECOMPILE_PUBLIC_FIELDS);
@@ -762,7 +1141,7 @@ function installRoutes(app, directFetch) {
 export function createAppAnalysisQueryAdapter(app) {
   const existingFetch = typeof app?._fetchFunctionModel === 'function' ? app._fetchFunctionModel : null;
   const directFetch = existingFetch?.[QUERY_ROUTED_FETCH] ?? (existingFetch ? existingFetch.bind(app) : null);
-  let metadataEpoch = null;
+  let metadataKey = null;
   let metadataTask = null;
 
   const metadataSummary = () => {
@@ -770,12 +1149,34 @@ export function createAppAnalysisQueryAdapter(app) {
       app?.backend?.gen ?? app?.analysisEpoch ?? 0,
       'analysis-query-epoch-invalid',
     );
-    if (metadataEpoch === epoch && metadataTask) return metadataTask;
-    metadataEpoch = epoch;
-    metadataTask = typeof app?.backend?.binaryMetadata === 'function'
-      ? Promise.resolve(app.backend.binaryMetadata('summary')).catch(() => null)
-      : Promise.resolve(null);
-    return metadataTask;
+    const binaryId = typeof app?.backend?.binaryId === 'string' ? app.backend.binaryId : '';
+    const rawSlice = storeValue(app, 'sliceIndex');
+    const sliceIndex = rawSlice == null || rawSlice === -1
+      ? -1
+      : (typeof rawSlice === 'number' && Number.isSafeInteger(rawSlice) && rawSlice >= 0 ? rawSlice : -1);
+    const key = `${epoch}:${binaryId}|slice:${sliceIndex}`;
+    if (metadataKey === key && metadataTask) return metadataTask;
+    if (typeof app?.backend?.binaryMetadata !== 'function') {
+      metadataKey = key;
+      metadataTask = Promise.resolve(null);
+      return metadataTask;
+    }
+    let raw;
+    try {
+      raw = app.backend.binaryMetadata('summary');
+    } catch {
+      return Promise.resolve(null);
+    }
+    metadataKey = key;
+    const task = Promise.resolve(raw).catch(() => {
+      if (metadataTask === task) {
+        metadataKey = null;
+        metadataTask = null;
+      }
+      return null;
+    });
+    metadataTask = task;
+    return task;
   };
 
   const abiFor = async (architecture) => {
@@ -837,8 +1238,9 @@ export function createAppAnalysisQueryAdapter(app) {
       if (rowOffset > MAX_ROW || endRowExact > MAX_ROW || maxRowExact > MAX_ROW) {
         return unsupported(id, 'function-row-index-unrepresentable');
       }
+      if (maxRowExact < 0n) return unsupported(id, 'function-range-empty');
       const startRow = Number(rowOffset);
-      const maxRow = Math.max(0, Number(maxRowExact));
+      const maxRow = Number(maxRowExact);
       const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
       const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, { ...options, architecture });
@@ -903,18 +1305,45 @@ export function createAppAnalysisQueryAdapter(app) {
     const returnsValue=(result?.value?.setsReturnValue??result?.value?.model?.facts?.setsReturnValue)===true?true:undefined;
     let projectionIr=null,cxxEvidence=null;
     if(result?.value?.model&&supportsArm64SemanticAnalysis(architectureOf(app))){
-      try {projectionIr=irFor(result.value.model,returnsValue?{returnsValue}:{});} catch {projectionIr=null;}
-      if(projectionIr){
-        const entry=ensureCxxEvidenceProviderForApp(app);
-        if(entry){
-          await entry.buildPromise;
-          throwIfAborted(options.signal);
-          if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+      const entry=ensureCxxEvidenceProviderForApp(app);
+      if(entry){
+        const builtIndex=await entry.buildPromise;
+        throwIfAborted(options.signal);
+        if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+        if(builtIndex&&!builtIndex.empty){
+          let addrBig = null; try { addrBig = address != null ? BigInt(address) : null; } catch { addrBig = null; }
+          const addrKey = addrBig != null ? addrBig.toString() : null;
+          const fnSymName = addrBig == null ? null : app?.symbols?.nameAt?.(addrBig);
+          const isCxxCandidate = addrKey != null && (
+            Boolean(builtIndex.bySlotAddress?.has(addrKey)) ||
+            Boolean(builtIndex.symbolOwners?.has(addrKey)) ||
+            Boolean(builtIndex.typedArguments?.has(addrKey)) ||
+            builtIndex.symbolNameFor?.(addrBig) != null ||
+            (typeof fnSymName === 'string' && fnSymName.startsWith('_Z'))
+          );
+          if(isCxxCandidate){
+            try {projectionIr=irFor(result.value.model,{...architectureDecompilerOptions(app,result.value.model,result.value,options),...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
+            if(projectionIr){
+              try {
+                cxxEvidence=entry.provider.projectForFunction({functionAddress:addrBig,
+                  functionName:fnSymName,ir:projectionIr,
+                  enableTypedArguments:options.typedArgumentRecovery===true});
+              } catch {cxxEvidence=null;}
+            }
+          } else {
+            try {
+              entry.provider.projectForFunction({functionAddress:addrBig,
+                functionName:fnSymName,ir:null,
+                enableTypedArguments:options.typedArgumentRecovery===true});
+            } catch { cxxEvidence=null; }
+          }
+        } else {
           try {
-            cxxEvidence=entry.provider.projectForFunction({functionAddress:address!=null?BigInt(address):null,
-              functionName:address==null?null:app?.symbols?.nameAt?.(address),ir:projectionIr,
+            const addrBig = address != null ? BigInt(address) : null;
+            entry.provider.projectForFunction({functionAddress:addrBig,
+              functionName:addrBig==null?null:app?.symbols?.nameAt?.(addrBig),ir:null,
               enableTypedArguments:options.typedArgumentRecovery===true});
-          } catch {cxxEvidence=null;}
+          } catch { cxxEvidence=null; }
         }
       }
     }
@@ -924,9 +1353,7 @@ export function createAppAnalysisQueryAdapter(app) {
   const adapter = {
     async currentIdentity(options = {}) {
       if (options.signal?.aborted) {
-        const error = options.signal.reason instanceof Error ? options.signal.reason : new Error('AbortError');
-        error.name = 'AbortError';
-        throw error;
+        throw abortError(options.signal);
       }
       const fileInfo = currentInfo(app);
       const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
@@ -1199,7 +1626,8 @@ export function createAppAnalysisQueryAdapter(app) {
         return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
       }
       const { offset, limit } = pageOf(page);
-      const cap = Math.min(MAX_PAGE, offset + limit);
+      const cap = cumulativePageLimit(offset, limit);
+      if (cap == null) return unsupportedPage(id, page, 'page-range-overflow');
       const refs = program.refSitesTo?.(address, 1n, cap) || [];
       const calls = program.callSitesTo?.(address, cap) || [];
       const rows = [
@@ -1208,10 +1636,18 @@ export function createAppAnalysisQueryAdapter(app) {
       ].sort((a, b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
       const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
       const complete = refs.complete !== false && calls.complete !== false && !queryLimited;
-      return paged(rows, page, complete ? 'complete' : 'partial', {
+      const result = paged(rows, page, complete ? 'complete' : 'partial', {
         reason:refs.incompleteReason ?? calls.incompleteReason ?? (queryLimited ? 'query-limit' : null),
         ...(queryLimited ? { truncationReason:'query-limit' } : {}),
       });
+      if (queryLimited && result.page.next == null && rows.length >= result.page.offset) {
+        const next = nextPageOffset(
+          result.page.offset,
+          result.page.returned > 0 ? result.page.returned : result.page.limit,
+        );
+        if (next != null) result.page.next = next;
+      }
+      return result;
     },
 
     async types(_snapshot, scope, _page = {}, options = {}) {
@@ -1326,7 +1762,15 @@ export function createAppAnalysisQueryAdapter(app) {
         reason:result?.status?.reason ?? functionCompleteness?.reason ?? null,
         ...(functionCompleteness?.provenance != null ? { provenance:functionCompleteness.provenance } : {}),
       };
-      if (result?.value?.decompiler) {
+      const requestedObjcSyntax = options.objcSyntax != null ? normalizeObjcSyntax(options.objcSyntax) : null;
+      if (
+        result?.value?.decompiler
+        && (
+          requestedObjcSyntax == null
+          || normalizeObjcSyntax(result.value.decompiler.objcSyntax) === requestedObjcSyntax
+          || !result.value.model
+        )
+      ) {
         return publish(result.value.decompiler, result.status?.completeness, functionStatus);
       }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
@@ -1339,12 +1783,24 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
         ({projectionIr,cxxEvidence}=await projectCxxFunction(result,id,options));
       }
+      const cachedFileBytes = await ensureFileBytesForApp(app, options);
+      throwIfAborted(options.signal);
+      const imageOptions = imageDecompilerOptions(
+        app,
+        result.value.model,
+        cachedFileBytes ? { ...options, fileBytes:options.fileBytes ?? cachedFileBytes } : options,
+      );
+      const archOptions = architectureDecompilerOptions(app, result.value.model, result.value, options);
       const projection = decompile(result.value.model, {
+        ...imageOptions,
+        ...archOptions,
         ...decompilerOptionsFromQuery(options),
+        ...(requestedObjcSyntax != null ? { objcSyntax: requestedObjcSyntax } : {}),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
+        symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null,
         ...(returnsValue ? { returnsValue } : {}),
-        ...(projectionIr ? { ir:projectionIr } : {}),
+        ...(cxxEvidence && projectionIr ? { ir:projectionIr } : {}),
         ...(cxxEvidence ? { cxxEvidence } : {}),
       });
       return publish(projection, result.status?.completeness, functionStatus);
@@ -1356,16 +1812,42 @@ export function createAppAnalysisQueryAdapter(app) {
       // streaming/export owner rather than making one query clone unbounded.
       if (ids.length > 256) return unsupported(null, 'translation-unit-function-limit');
 
+      const symbolFor = (addr) => {
+        if (addr == null) return null;
+        try {
+          const parsed = BigInt(addr);
+          return app?.symbols?.nameAt?.(parsed) ?? app?.symbols?.label?.(parsed) ?? null;
+        } catch {
+          return null;
+        }
+      };
+
+      const cachedFileBytes = await ensureFileBytesForApp(app, options);
+      throwIfAborted(options.signal);
       const functions = [];
+      const completenesses = [];
+      let functionReason = null;
       for (const id of ids) {
         throwIfAborted(options.signal);
         const result = await loadFunction(id, options);
         if (result?.status?.completeness === 'unsupported' || result?.value == null) {
           return unsupported(id, result?.status?.reason || 'translation-unit-function-unavailable');
         }
+        const loadedCompleteness = result?.status?.completeness ?? completenessOf(result.value, 'complete');
+        completenesses.push(loadedCompleteness);
+        if (loadedCompleteness !== 'complete' && !functionReason) {
+          functionReason = result?.status?.reason ?? result?.value?.completeness?.reason ?? null;
+        }
         const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress ?? null;
-        const name = address == null ? null : app?.symbols?.nameAt?.(address) ?? app?.symbols?.label?.(address) ?? null;
-        let producer = result.value.decompiler ?? null;
+        const name = address == null ? null : symbolFor(address);
+        const requestedObjcSyntax = options.objcSyntax != null ? normalizeObjcSyntax(options.objcSyntax) : 'c';
+        const cachedDecompiler = result.value.decompiler ?? null;
+        let producer = cachedDecompiler && (
+          normalizeObjcSyntax(cachedDecompiler.objcSyntax) === requestedObjcSyntax
+          || !result.value.model
+        )
+          ? cachedDecompiler
+          : null;
         if (!producer && result.value.model) {
           // Only positive return evidence is forwarded: `false` would force a void
           // return, while an absent fact must leave return inference to the IR.
@@ -1375,28 +1857,60 @@ export function createAppAnalysisQueryAdapter(app) {
           if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
             const entry = ensureCxxEvidenceProviderForApp(app);
             if (entry) {
-              await entry.buildPromise;
-              try {
-                projectionIr = irFor(result.value.model, returnsValue ? { returnsValue } : {});
-                cxxEvidence = entry.provider.projectForFunction({
-                  functionAddress: address != null ? BigInt(address) : null,
-                  functionName: name,
-                  ir: projectionIr,
-                });
-              } catch {
-                cxxEvidence = null;
+              const builtIndex = await entry.buildPromise;
+              throwIfAborted(options.signal);
+              if (cxxMemberIndexForApp(app) !== entry.provider.memberIndex()) {
+                throw new Error('C++ recovery binding changed');
+              }
+              let addrBig = null;
+              try { addrBig = address != null ? BigInt(address) : null; } catch { addrBig = null; }
+              const addrKey = addrBig != null ? addrBig.toString() : null;
+              const isCxxCandidate = Boolean(builtIndex && !builtIndex.empty && addrKey != null && (
+                Boolean(builtIndex.bySlotAddress?.has(addrKey)) ||
+                Boolean(builtIndex.symbolOwners?.has(addrKey)) ||
+                Boolean(builtIndex.typedArguments?.has(addrKey)) ||
+                builtIndex.symbolNameFor?.(addrBig) != null ||
+                (typeof name === 'string' && name.startsWith('_Z'))
+              ));
+              if (isCxxCandidate) {
+                try {
+                  projectionIr = irFor(result.value.model, { ...architectureDecompilerOptions(app, result.value.model, result.value, options), ...(returnsValue ? { returnsValue } : {}), symbolFor });
+                  cxxEvidence = entry.provider.projectForFunction({
+                    functionAddress: addrBig,
+                    functionName: name,
+                    ir: projectionIr,
+                  });
+                } catch {
+                  cxxEvidence = null;
+                }
               }
             }
           }
+          const imageOptions = imageDecompilerOptions(
+            app,
+            result.value.model,
+            cachedFileBytes ? { ...options, fileBytes:options.fileBytes ?? cachedFileBytes } : options,
+          );
+          const archOptions = architectureDecompilerOptions(app, result.value.model, result.value, options);
           producer = decompile(result.value.model, {
+            ...imageOptions,
+            ...archOptions,
+            ...decompilerOptionsFromQuery(options),
+            objcSyntax: requestedObjcSyntax,
             name,
             addr:address,
+            symbolFor,
             ...(returnsValue ? { returnsValue } : {}),
             ...(projectionIr ? { ir:projectionIr } : {}),
             ...(cxxEvidence ? { cxxEvidence } : {}),
           });
         }
         producer ??= result.value;
+        const producerCompleteness = completenessOf(producer, 'complete');
+        completenesses.push(producerCompleteness);
+        if (producerCompleteness !== 'complete' && !functionReason) {
+          functionReason = producer?.status?.reason ?? producer?.completeness?.reason ?? producer?.reason ?? null;
+        }
         const pseudocode = producer?.pseudocode ?? producer?.text ?? producer?.code ?? null;
         if (typeof pseudocode !== 'string' || !pseudocode.trim()) {
           return unsupported(id, 'translation-unit-pseudocode-unavailable');
@@ -1413,14 +1927,17 @@ export function createAppAnalysisQueryAdapter(app) {
           semanticIR:producer.semanticIR ?? result.value.semanticIR ?? null,
           types:producer.types ?? result.value.types ?? null,
           locationTypes:producer.locationTypes ?? result.value.locationTypes ?? null,
-          globalEvidence:producer.globalEvidence ?? result.value.globalEvidence ?? null,
+          globalEvidence:mergeGlobalEvidence(result.value.globalEvidence, producer.globalEvidence),
         });
       }
 
-      const unit = buildCTranslationUnit(functions, {
-        symbolFor:(address) => app?.symbols?.nameAt?.(BigInt(address)) ?? app?.symbols?.label?.(BigInt(address)) ?? null,
-      });
-      return wrap(unit, unit.completeness, { reason:unit.reason, schema:unit.schema });
+      const unit = buildCTranslationUnit(functions, { symbolFor });
+      const completeness = weakestCompleteness([...completenesses, unit.completeness]);
+      const reason = unit.reason ?? (completeness !== 'complete' ? functionReason : null);
+      const publishedUnit = completeness === unit.completeness && reason === unit.reason
+        ? unit
+        : { ...unit, completeness, reason };
+      return wrap(publishedUnit, completeness, { reason, schema:unit.schema });
     },
 
     async search(_snapshot, query, page = {}, options = {}) {

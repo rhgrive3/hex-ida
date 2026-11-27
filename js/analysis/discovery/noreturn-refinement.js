@@ -58,10 +58,16 @@ function statusComplete(summary) {
  * @param {object} [input.limits]
  */
 export function buildNoreturnContinuationProposal({ binding, calls, authority, limits = {} } = {}) {
-  const maxCandidates = Number.isSafeInteger(limits.maxCandidates) ? limits.maxCandidates : NORETURN_REFINEMENT_LIMITS.maxCandidates;
-  if (!binding || typeof binding !== 'object' || typeof authority !== 'object' || authority == null) {
+  if (!binding || typeof binding !== 'object' || typeof authority !== 'object' || authority == null
+    || !limits || typeof limits !== 'object' || Array.isArray(limits)) {
     return incompleteProposal(binding, 'invalid-input');
   }
+  if (limits.maxCandidates !== undefined && (!Number.isSafeInteger(limits.maxCandidates) || limits.maxCandidates <= 0)) {
+    return incompleteProposal(binding, 'invalid-input');
+  }
+  const maxCandidates = limits.maxCandidates !== undefined
+    ? Math.min(NORETURN_REFINEMENT_LIMITS.maxCandidates, limits.maxCandidates)
+    : NORETURN_REFINEMENT_LIMITS.maxCandidates;
   const required = ['functionStartAt', 'isLocalFunctionStart', 'declaredEndOf', 'callInstructionEnd',
     'summaryOf', 'predecessorProof', 'isExecutable', 'isInstructionBoundary'];
   for (const method of required) {

@@ -98,13 +98,16 @@ const MAX_LOOP_WRAP_ROUNDS = 512;
 // that is refused only at its last line — cannot put back the quadratic cost
 // this revision removed.  A region larger than this is refused, not guessed.
 const MAX_REGION_WALK = 256;
+const EMPTY_GOTO_TARGETS = Object.freeze([]);
 
 function textOf(line) {
   return typeof line?.text === 'string' ? line.text : '';
 }
 
 function labelNameOf(line) {
-  const match = LABEL_RE.exec(textOf(line));
+  const text = textOf(line);
+  if (!text.includes('loc_')) return null;
+  const match = LABEL_RE.exec(text);
   return match ? match[1] : null;
 }
 
@@ -136,25 +139,6 @@ function mayCarryBraces(text) {
   return text.includes('{') || text.includes('}');
 }
 
-/**
- * For every `}` line, the text of the construct it closes.  Null when the line
- * closes nothing (unbalanced input), which the callers treat as "not provable".
- */
-function closerOpenerTexts(lines) {
-  const stack = [];
-  const openers = new Array(lines.length).fill(null);
-  for (let index = 0; index < lines.length; index += 1) {
-    const text = textOf(lines[index]);
-    if (!mayCarryBraces(text)) continue;
-    const code = stripNonCode(text);
-    for (const character of code) {
-      if (character === '{') stack.push(text);
-      else if (character === '}') openers[index] = stack.pop() ?? null;
-    }
-  }
-  return openers;
-}
-
 function isCloserText(text) {
   return text.trim() === '}';
 }
@@ -169,11 +153,14 @@ function startsWithCloseBrace(value) {
 }
 
 function gotoTargetsIn(text) {
-  const targets = [];
+  if (!text.includes('goto')) return EMPTY_GOTO_TARGETS;
+  let targets = null;
   ANY_GOTO_RE.lastIndex = 0;
   let match;
-  while ((match = ANY_GOTO_RE.exec(text)) !== null) targets.push(match[1].toLowerCase());
-  return targets;
+  while ((match = ANY_GOTO_RE.exec(text)) !== null) {
+    (targets ??= []).push(match[1].toLowerCase());
+  }
+  return targets ?? EMPTY_GOTO_TARGETS;
 }
 
 /** Smallest element of a sorted ascending number list that is > value, or null. */
@@ -211,7 +198,7 @@ function analyzeLines(lines) {
     braceCache: new Array(count),
     occurrences: new Map(), labelAt: new Map(), jumpsTo: new Map(),
   };
-  const openers = closerOpenerTexts(lines);
+  const braceStack = [];
   for (let index = 0; index < count; index += 1) {
     info.steps += 1;
     const line = lines[index];
@@ -220,13 +207,41 @@ function analyzeLines(lines) {
     info.raw[index] = text;
     info.trim[index] = trimmed;
     info.indent[index] = indentOf(line);
-    if (!trimmed) info.blank[index] = 1;
-    else if (COMMENT_RE.test(trimmed)) info.comment[index] = 1;
-    if (trimmed) {
-      if (CASE_PREFIX_RE.test(trimmed)) info.caseLine[index] = 1;
-      else if (KEYWORD_STATEMENT_RE.test(trimmed)) info.keywordLine[index] = 1;
+    let opener = null;
+    let hasOpenBrace = false;
+    if (mayCarryBraces(text)) {
+      const code = stripNonCode(text);
+      let seq = null;
+      for (let ci = 0; ci < code.length; ci += 1) {
+        const ch = code.charCodeAt(ci);
+        if (ch === 123 /* '{' */) {
+          braceStack.push(text);
+          hasOpenBrace = true;
+          (seq ??= []).push(1);
+        } else if (ch === 125 /* '}' */) {
+          opener = braceStack.pop() ?? null;
+          (seq ??= []).push(-1);
+        }
+      }
+      info.braceCache[index] = seq;
+    } else {
+      info.braceCache[index] = null;
     }
-    const label = LABEL_RE.exec(text);
+    if (!trimmed) {
+      info.blank[index] = 1;
+    } else {
+      const c0 = trimmed.charCodeAt(0);
+      if (c0 === 47 /* '/' */ && trimmed.charCodeAt(1) === 42 /* '*' */ && COMMENT_RE.test(trimmed)) {
+        info.comment[index] = 1;
+      }
+      if ((c0 === 99 /* 'c' */ || c0 === 100 /* 'd' */) && CASE_PREFIX_RE.test(trimmed)) {
+        info.caseLine[index] = 1;
+      } else if ((c0 === 98 /* 'b' */ || c0 === 99 /* 'c' */) && KEYWORD_STATEMENT_RE.test(trimmed)) {
+        info.keywordLine[index] = 1;
+      }
+    }
+    const label = trimmed.length >= 5 && trimmed.charCodeAt(trimmed.length - 1) === 58 /* ':' */
+      && trimmed.startsWith('loc_') ? LABEL_RE.exec(text) : null;
     if (label) {
       info.labelRaw[index] = label[1];
       info.labelLower[index] = label[1].toLowerCase();
@@ -238,18 +253,23 @@ function analyzeLines(lines) {
     info.closer[index] = trimmed === '}' ? 1 : 0;
     const targets = gotoTargetsIn(text);
     info.gotoTargets[index] = targets;
-    for (const target of targets) {
-      const at = info.jumpsTo.get(target);
-      if (at) at.push(index); else info.jumpsTo.set(target, [index]);
+    if (targets.length > 0) {
+      for (const target of targets) {
+        const at = info.jumpsTo.get(target);
+        if (at) at.push(index); else info.jumpsTo.set(target, [index]);
+      }
+      info.uncond[index] = UNCOND_GOTO_RE.exec(text);
+      info.cond[index] = COND_GOTO_RE.exec(text);
+    } else {
+      info.uncond[index] = null;
+      info.cond[index] = null;
     }
-    info.uncond[index] = UNCOND_GOTO_RE.exec(text);
-    info.cond[index] = COND_GOTO_RE.exec(text);
     const transparent = info.labelKind[index] === 1 || info.comment[index] === 1
-      || (info.closer[index] === 1 && openers[index] != null && !LOOP_OPENER_RE.test(openers[index]));
+      || (info.closer[index] === 1 && opener != null && !LOOP_OPENER_RE.test(opener));
     if (info.blank[index]) info.walk[index] = WALK_SKIP;
     else if (info.labelLower[index] != null) info.walk[index] = WALK_LABEL;
     else if (info.comment[index]) info.walk[index] = WALK_SKIP;
-    else if (transparent) info.walk[index] = mayCarryBraces(text) && stripNonCode(text).includes('{') ? WALK_STOP : WALK_SKIP;
+    else if (transparent) info.walk[index] = hasOpenBrace ? WALK_STOP : WALK_SKIP;
     else info.walk[index] = WALK_STOP;
     if (info.walk[index] === WALK_STOP) info.walkStops.push(index);
   }
@@ -449,10 +469,11 @@ function structuralLine(indent, kind, text, source) {
  * of this pass plus what it changed; a pass that changes nothing reports
  * `progress: false` and ends the fixpoint.
  */
-function closurePass(result) {
+function closurePass(result, precomputedInfo = null) {
   const lines = result.lines;
   const ir = result.ir;
-  const info = analyzeLines(lines);
+  const info = precomputedInfo ?? analyzeLines(lines);
+  const startSteps = precomputedInfo ? precomputedInfo.steps : 0;
   const raw = info.raw;
   const out = [];
   const stats = { removedGotos: 0, removedLabels: 0, guardBlocks: 0, ifElseRegions: 0, loopWraps: 0 };
@@ -535,7 +556,7 @@ function closurePass(result) {
 
   const progress = stats.removedGotos > 0 || stats.removedLabels > 0
     || stats.guardBlocks > 0 || stats.ifElseRegions > 0;
-  return { lines: kept, stats, progress, steps: info.steps };
+  return { lines: progress ? kept : lines, stats, progress, steps: info.steps - startSteps };
 }
 
 /**
@@ -573,11 +594,11 @@ function buildIfElse({ lines, info, index, cond, target }) {
         if (depth < 0) return null;
       }
     }
-    if (depth !== 0) return null;
     thenLines.push(lines[end]);
-    if (info.uncond[end]) { tailIndex = end; end += 1; break; }
+    if (depth === 0 && info.uncond[end]) { tailIndex = end; end += 1; break; }
     if (end - index > MAX_REGION_WALK) return null;
   }
+  if (depth !== 0) return null;
   const tailJump = tailIndex >= 0 ? info.uncond[tailIndex] : null;
   if (!tailJump) return null;
   const joinLabel = info.labelLower[end] ?? null;
@@ -600,7 +621,7 @@ function buildIfElse({ lines, info, index, cond, target }) {
     if (info.blank[close]) continue;
     const name = info.labelLower[close];
     if (name != null) {
-      if (name === join) break;
+      if (name === join && depth === 0) break;
       return null;
     }
     if (info.caseLine[close] || info.indent[close] < base) return null;
@@ -611,10 +632,10 @@ function buildIfElse({ lines, info, index, cond, target }) {
         if (depth < 0) return null;
       }
     }
-    if (depth !== 0) return null;
     elseLines.push(lines[close]);
     if (close - end > MAX_REGION_WALK) return null;
   }
+  if (depth !== 0) return null;
   const endLabel = info.labelLower[close] ?? null;
   if (endLabel == null || endLabel !== join || !elseLines.length || !thenLines.length) return null;
   // Each region becomes the tail of a new compound statement, so neither may end
@@ -710,7 +731,7 @@ function backwardLoopProof(ir, info, labelIndex, jumpIndex) {
   }
   if (!proven) return false;
   const dominators = ir.dominators;
-  if (Array.isArray(dominators)) return dominators[header]?.has?.(latch) === true;
+  if (Array.isArray(dominators)) return dominators[latch]?.has?.(header) === true;
   return true;
 }
 
@@ -804,31 +825,53 @@ function wrapLoop(lines, candidate) {
  * from the end of the body so an inner loop is adopted before the outer region
  * that contains it.
  */
+function applyLoopWave(lines, descendingCandidates) {
+  if (descendingCandidates.length === 1) return wrapLoop(lines, descendingCandidates[0]);
+  const out = [];
+  let pos = 0;
+  for (let i = descendingCandidates.length - 1; i >= 0; i -= 1) {
+    const candidate = descendingCandidates[i];
+    for (let j = pos; j < candidate.labelIndex; j += 1) out.push(lines[j]);
+    if (candidate.keepLabel) out.push(lines[candidate.labelIndex]);
+    const source = mergeSource(lines[candidate.labelIndex].source, lines[candidate.jumpIndex].source);
+    out.push(structuralLine(candidate.base, 'ctrl', 'while (1) {', source));
+    const shifted = shiftLines(lines.slice(candidate.labelIndex + 1, candidate.jumpIndex), candidate.shift);
+    for (let j = 0; j < shifted.length; j += 1) out.push(shifted[j]);
+    out.push(structuralLine(candidate.base, 'ctrl', '}', source));
+    pos = candidate.jumpIndex + 1;
+  }
+  for (let j = pos; j < lines.length; j += 1) out.push(lines[j]);
+  return out;
+}
+
 function wrapBackwardLoops(lines, ir, shouldAbort) {
   const stats = { loopWraps: 0, loopCandidates: 0, refusedLoopProof: 0, scanSteps: 0, rounds: 0 };
   let current = lines;
-  for (let round = 0; round < MAX_LOOP_WRAP_ROUNDS; round += 1) {
+  for (let round = 0; round < MAX_LOOP_WRAP_ROUNDS && stats.loopWraps < MAX_LOOP_WRAP_ROUNDS; round += 1) {
     if (shouldAbort?.()) break;
     const info = analyzeLines(current);
-    let wrapped = false;
+    const wave = [];
+    let minAdoptedStart = current.length;
     for (let index = current.length - 1; index >= 0; index -= 1) {
       if (shouldAbort?.()) break;
       if (info.labelLower[index] == null) continue;
       const candidate = loopWrapCandidate(info, index);
       if (!candidate) continue;
+      if (candidate.jumpIndex >= minAdoptedStart) continue;
       stats.loopCandidates += 1;
       if (!backwardLoopProof(ir, info, index, candidate.jumpIndex)) {
         stats.refusedLoopProof += 1;
         continue;
       }
-      current = wrapLoop(current, candidate);
-      stats.loopWraps += 1;
-      stats.scanSteps += info.steps;
-      stats.rounds += 1;
-      wrapped = true;
-      break;
+      wave.push(candidate);
+      minAdoptedStart = candidate.labelIndex;
+      if (stats.loopWraps + wave.length >= MAX_LOOP_WRAP_ROUNDS) break;
     }
-    if (!wrapped) { stats.scanSteps += info.steps; stats.rounds += 1; break; }
+    stats.scanSteps += info.steps;
+    stats.rounds += 1;
+    if (!wave.length) break;
+    current = applyLoopWave(current, wave);
+    stats.loopWraps += wave.length;
   }
   return { lines: current, stats };
 }
@@ -880,16 +923,19 @@ export function eliminateAvoidableGotos(result, opts = {}, stats = null) {
   if (!hasRuleInput) return finish(result);
   let current = lines;
 
-  const runTextFixpoint = () => {
+  const runTextFixpoint = (initialInfo = null) => {
+    let nextInfo = initialInfo;
     for (let pass = 0; pass < MAX_PASSES; pass += 1) {
       if (opts.shouldAbort?.() === true) return;
-      const outcome = closurePass({ ...result, lines: current });
+      const outcome = closurePass({ ...result, lines: current }, nextInfo);
       totals.passes += 1;
       totals.scanSteps += outcome.steps;
+      if (!outcome.progress && nextInfo != null) return;
+      const afterInfo = analyzeLines(outcome.lines);
       // A rewrite that would publish a label without a statement is a bug in the
       // rule that produced it, not a licence to emit the label.  The whole pass
       // is discarded and the fixpoint stops at the last text that was provably C.
-      if (labelAtEndOfBlock(outcome.lines)) { totals.refusedPasses += 1; return; }
+      if (labelAtEndOfBlock(outcome.lines, afterInfo)) { totals.refusedPasses += 1; return; }
       totals.removedGotos += outcome.stats.removedGotos;
       totals.removedLabels += outcome.stats.removedLabels;
       totals.guardBlocks += outcome.stats.guardBlocks;
@@ -897,24 +943,30 @@ export function eliminateAvoidableGotos(result, opts = {}, stats = null) {
       totals.loopWraps += outcome.stats.loopWraps;
       current = outcome.lines;
       if (!outcome.progress) return;
+      totals.scanSteps += afterInfo.steps;
+      nextInfo = afterInfo;
     }
   };
 
   // Text rules first, so their IR-bound proofs (the pure-condition no-op
   // branch) still see the original line objects; then the IR-proven loop wraps;
   // then one more text fixpoint for the text the wraps rewrote.
-  runTextFixpoint();
+  runTextFixpoint(entryInfo);
   const wrap = wrapBackwardLoops(current, result.ir, opts.shouldAbort);
-  totals.loopWraps += wrap.stats.loopWraps;
   totals.loopCandidates += wrap.stats.loopCandidates;
   totals.refusedLoopProof += wrap.stats.refusedLoopProof;
   totals.scanSteps += wrap.stats.scanSteps;
-  current = wrap.lines;
   if (wrap.stats.loopWraps > 0) {
-    const afterWrap = analyzeLines(current);
+    const candidate = wrap.lines;
+    const afterWrap = analyzeLines(candidate);
     totals.scanSteps += afterWrap.steps;
-    if (!labelAtEndOfBlock(current, afterWrap)) runTextFixpoint();
-    else totals.refusedPasses += 1;
+    if (!labelAtEndOfBlock(candidate, afterWrap)) {
+      current = candidate;
+      totals.loopWraps += wrap.stats.loopWraps;
+      runTextFixpoint(afterWrap);
+    } else {
+      totals.refusedPasses += 1;
+    }
   }
   if (current === lines || (totals.removedGotos === 0 && totals.removedLabels === 0
       && totals.guardBlocks === 0 && totals.ifElseRegions === 0 && totals.loopWraps === 0)) return finish(result);

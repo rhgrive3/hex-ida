@@ -1,0 +1,12 @@
+{
+  "recordedAt": "2026-11-25",
+  "baseCommit": "ddb742e42",
+  "branch": "feat/cpp-wasm-engine",
+  "note": "Pre-existing test failures verified on unmodified origin/main prior to C++/WASM migration.",
+  "baselineFailures": [
+    { "suite": "performance:test", "file": "tests/performance/analysis-identity.test.mjs", "observedStatus": "1 fail / 3 tests" },
+    { "suite": "performance:test", "file": "tests/performance/ssa-query-indexing.test.mjs", "observedStatus": "1 fail / 2 tests" },
+    { "suite": "performance:test", "file": "tests/scan-parallel-equivalence.test.mjs", "observedStatus": "1 fail / 18 tests" },
+    { "suite": "ai:test", "file": "tests/ai-analysis-boundary.mjs", "observedStatus": "AssertionError: registry must restore its execution signal after timeout" }
+  ]
+}

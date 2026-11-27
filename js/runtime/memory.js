@@ -123,7 +123,14 @@ export class RuntimeMemoryMap {
       }
     }
     if (!this.regions.length) { this.regions = incoming; return this; }
-    for (const region of incoming) this.map(region);
+    const merged = [...this.regions, ...incoming].sort(startCompare);
+    for (let i = 1; i < merged.length; i++) {
+      const prev = merged[i - 1], region = merged[i];
+      if (region.start < prev.end) {
+        throw new MemoryAccessError('overlap', 'memory regions may not overlap', { region:region.toJSON(), existing:prev.toJSON() });
+      }
+    }
+    this.regions = merged;
     return this;
   }
   unmap(start) {
@@ -168,7 +175,7 @@ export function createSandboxMemoryMap({ objectBase = 0x600000001000n, objectSiz
   // its AbortSignal (#8983). Regions are then normalised once and bulk-loaded (single sort + one
   // adjacency overlap pass) instead of a full scan + full sort per insertion.
   const collected = [];
-  let count = 0;
+  let count = base.length;
   const consume = (value, name, normalize) => {
     for (const item of regionCollection(value, name)) {
       if (signal && signal.aborted) throw new DebugAdapterError('cancelled', 'sandbox memory map build was cancelled', { kind:'cancelled' });

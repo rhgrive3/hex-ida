@@ -205,7 +205,14 @@ function canonicalImmutableContent(value, path = []) {
   try {
     if (Array.isArray(value)) return value.map((item) => canonicalImmutableContent(item, path));
     const out = {};
-    for (const key of Object.keys(value)) out[key] = canonicalImmutableContent(value[key], path);
+    for (const key of Object.keys(value)) {
+      Object.defineProperty(out, key, {
+        value: canonicalImmutableContent(value[key], path),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
     return out;
   } finally {
     path.pop();
@@ -347,6 +354,8 @@ function checkpointPayloadDigest(state, operationIds, pendingOperations, resolut
     : { state, operationIds, pendingOperations });
 }
 
+function isCheckpointPlaceholder(op) { return op?.provenance?.source === 'checkpoint' && op?.targetEntityId === 'checkpoint' && op?.factKind === 'checkpoint'; }
+
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
   for (const input of operations) {
@@ -358,14 +367,50 @@ export function orderOperations(operations = [], existingIds = new Set()) {
     }
     unique.set(operation.operationId, operation);
   }
-  const remaining = new Map(unique);
   const seen = new Set(existingIds);
+  const inDegree = new Map();
+  const dependents = new Map();
+  let ready = [];
+  for (const [opId, operation] of unique) {
+    let missing = 0;
+    for (const parent of operation.causalParents) {
+      if (seen.has(parent)) continue;
+      missing += 1;
+      if (unique.has(parent)) {
+        let list = dependents.get(parent);
+        if (!list) { list = []; dependents.set(parent, list); }
+        list.push(opId);
+      }
+    }
+    inDegree.set(opId, missing);
+    if (missing === 0) ready.push(operation);
+  }
+  ready.sort(compareOperations);
   const ordered = [];
+  const processed = new Set();
+  while (ready.length) {
+    const nextReady = [];
+    for (const operation of ready) {
+      ordered.push(operation);
+      processed.add(operation.operationId);
+      seen.add(operation.operationId);
+      const children = dependents.get(operation.operationId);
+      if (!children) continue;
+      for (const childId of children) {
+        const deg = inDegree.get(childId) - 1;
+        inDegree.set(childId, deg);
+        if (deg === 0) nextReady.push(unique.get(childId));
+      }
+    }
+    nextReady.sort(compareOperations);
+    ready = nextReady;
+  }
   const unresolved = [];
-  while (remaining.size) {
-    const ready = [...remaining.values()].filter((operation) => operation.causalParents.every((parent) => seen.has(parent))).sort(compareOperations);
-    if (!ready.length) { unresolved.push(...[...remaining.values()].sort(compareOperations)); break; }
-    for (const operation of ready) { remaining.delete(operation.operationId); ordered.push(operation); seen.add(operation.operationId); }
+  if (processed.size < unique.size) {
+    for (const [opId, operation] of unique) {
+      if (!processed.has(opId)) unresolved.push(operation);
+    }
+    unresolved.sort(compareOperations);
   }
   return Object.freeze({ ordered, unresolved });
 }
@@ -495,6 +540,13 @@ export class ChangeLog {
       if (!this.allowRemote) return { status: 'rejected', reason: 'remote-transport-security-gate-required' };
       if (!operation.authorIdentity || !this.authorizedAuthors.has(operation.authorIdentity)) return { status: 'rejected', reason: 'unauthorized-remote-actor' };
     }
+    if (this.operations.has(operation.operationId)) {
+      const existing = this.operations.get(operation.operationId);
+      if (!isCheckpointPlaceholder(existing) && semanticDigest(existing) !== semanticDigest(operation)) {
+        return { status: 'rejected', reason: 'operation-id-content-mismatch', operationId: operation.operationId };
+      }
+      return { status: 'duplicate', operationId: operation.operationId };
+    }
     if (operation.causalParents.some((parent) => !this.operations.has(parent))) return { status: 'unresolved', reason: 'missing-causal-parent' };
     return null;
   }
@@ -508,13 +560,6 @@ export class ChangeLog {
         return this.#pendingBudgetRejection(operation);
       }
       return validation;
-    }
-    if (this.operations.has(operation.operationId)) {
-      const existing = this.operations.get(operation.operationId);
-      if (semanticDigest(existing) !== semanticDigest(operation)) {
-        return { status: 'rejected', reason: 'operation-id-content-mismatch', operationId: operation.operationId };
-      }
-      return { status: 'duplicate', operationId: operation.operationId };
     }
     // A tombstone-protected operation is intentionally parked until an
     // explicit resurrection. Replaying the same pending operation must not
@@ -629,6 +674,9 @@ export class ChangeLog {
         stateDigest: this.digest(),
       });
     }
+    const stateSnapshot = cloneState(this.state);
+    const operationsSnapshot = new Map(this.operations);
+    const pendingSnapshot = new Map(this.pending);
     const result = this.#applyOne(operation);
     if (result.status === 'unresolved') {
       if (!existingPending) this.pending.set(operation.operationId, operation);
@@ -639,7 +687,12 @@ export class ChangeLog {
     if (result.status !== 'rejected') {
       const drained = this.#drainPending();
       const drainRejection = drained.find((entry) => entry.status === 'rejected');
-      if (drainRejection) surfaced = drainRejection;
+      if (drainRejection) {
+        this.state = stateSnapshot;
+        this.operations = operationsSnapshot;
+        this.pending = pendingSnapshot;
+        surfaced = drainRejection;
+      }
     }
     return Object.freeze({ ...surfaced, operationId: surfaced.operationId ?? operation.operationId, stateDigest: this.digest() });
   }
@@ -906,7 +959,7 @@ export function replayOperations({ projectIdentity, binaryIdentity = null, opera
     maxPendingOperationsPerActor,
     maxPendingBytes,
   });
-  const filtered = normalizedCheckpoint ? operations.filter((operation) => !appliedIds.has(operation.operationId)) : operations;
+  const filtered = normalizedCheckpoint ? operations.filter((operation) => !(operation && typeof operation === 'object' && appliedIds.has(operation.operationId))) : operations;
   const result = log.applyBatch(filtered);
   return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : result.unresolvedOperationIds || [] });
 }
@@ -931,7 +984,7 @@ export function restoreCheckpoint(checkpoint, options = {}) {
   const appliedIds = new Set(normalizedCheckpoint.operationIds);
   const restoreResults = [];
   for (const operation of options.operations || []) {
-    if (appliedIds.has(operation.operationId)) continue;
+    if (operation && typeof operation === 'object' && appliedIds.has(operation.operationId)) continue;
     const result = log.applyOperation(operation);
     restoreResults.push(result);
     // A rejected incremental operation must reach the caller: returning the

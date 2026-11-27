@@ -31,7 +31,7 @@
  * recovery later — the merge blocker this artifact exists to prevent.
  */
 
-import { maxSigned, maxUnsigned, minSigned, signedOf, unsignedOf } from './bitvector.js';
+import { isSupportedWidth, maxSigned, maxUnsigned, minSigned, signedOf, unsignedOf } from './bitvector.js';
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { analysisIdentityMatches, canonicalAnalysisIdentity, isValidatedAnalysisIdentity } from './analysis-identity.js';
 
@@ -289,8 +289,8 @@ export function resolveStep(incomingValue, phiValue, {
     return { step: null, reason: 'the step is a variable value', origins: updateOrigins, copies: chain.length, update: resolved };
   }
   const bits = phiValue?.bits ?? resolved?.bits ?? null;
-  if (bits == null) {
-    return { step: null, reason: 'the loop variable has no declared width', origins: updateOrigins, copies: chain.length, update: resolved };
+  if (bits == null || !isSupportedWidth(bits)) {
+    return { step: null, reason: bits == null ? 'the loop variable has no declared width' : `the loop variable width ${bits} is not supported`, origins: updateOrigins, copies: chain.length, update: resolved };
   }
   const magnitude = signedOf(constant, bits);
   const step = definition.sub === 'sub' ? -magnitude : magnitude;
@@ -485,7 +485,10 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
     });
   }
   const dominates = createDominance(analysis?.get('dominators'));
-  const limits = { ...DEFAULT_LIMITS, ...(budget.limits ?? {}) };
+  const limits = Object.fromEntries(Object.entries(DEFAULT_LIMITS).map(([k, def]) => {
+    const v = budget?.limits?.[k];
+    return [k, typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : def];
+  }));
 
   const blocks = cfg?.blocks ?? [];
   const byIndex = new Map(blocks.map((block) => [block.index, block]));
@@ -509,11 +512,20 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
   for (const entry of prepared) {
     if (entry.nodes == null) continue;
     let best = null;
+    const entrySize = entry.nodes.size;
+    const firstNode = entrySize > 0 ? entry.nodes.values().next().value : null;
     for (const other of prepared) {
       if (other === entry || other.nodes == null) continue;
-      if (other.nodes.size <= entry.nodes.size) continue;
-      if (![...entry.nodes].every((node) => other.nodes.has(node))) continue;
-      if (best == null || other.nodes.size < best.nodes.size) best = other;
+      const otherSize = other.nodes.size;
+      if (otherSize <= entrySize) continue;
+      if (best !== null && otherSize >= best.nodes.size) continue;
+      if (entrySize > 0 && !other.nodes.has(firstNode)) continue;
+      let containsAll = true;
+      for (const node of entry.nodes) {
+        if (!other.nodes.has(node)) { containsAll = false; break; }
+      }
+      if (!containsAll) continue;
+      best = other;
     }
     parentOf.set(entry.loop, best?.loop ?? null);
   }
@@ -575,18 +587,22 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
     // latch. Anything else that leaves the loop is an early exit, and a loop
     // where neither of those two shapes is present has no single guard — which
     // is reported rather than resolved by picking one.
-    const exiting = nodeList.filter((index) => {
+    const exitingSet = new Set();
+    for (let ni = 0; ni < nodeList.length; ni += 1) {
+      const index = nodeList[ni];
       const block = byIndex.get(index);
-      if (terminatorOf(block)?.op !== 'cbr') return false;
+      if (terminatorOf(block)?.op !== 'cbr') continue;
       const successors = block.succ ?? [];
-      if (successors.length !== 2) return false;
-      return successors.filter((target) => nodes.has(target)).length === 1;
-    });
+      if (successors.length !== 2) continue;
+      const in0 = nodes.has(successors[0]);
+      const in1 = nodes.has(successors[1]);
+      if (in0 !== in1) exitingSet.add(index);
+    }
     let guardBlock = null;
     let guardBlockReason = null;
-    if (exiting.includes(header)) guardBlock = header;
+    if (exitingSet.has(header)) guardBlock = header;
     else {
-      const exitingLatches = latches.filter((latch) => exiting.includes(latch));
+      const exitingLatches = latches.filter((latch) => exitingSet.has(latch));
       if (exitingLatches.length === 1) [guardBlock] = exitingLatches;
       else guardBlockReason = exitingLatches.length === 0
         ? 'neither the header nor a latch decides whether the loop repeats'

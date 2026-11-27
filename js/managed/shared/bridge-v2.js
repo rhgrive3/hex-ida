@@ -144,7 +144,7 @@ export function lowerVMEffectsToSemanticIr(value, options = {}) {
   const lowered = overlayJvmControlLowering(representable, overlayWasmSelect(representable, lowerCore(representable, options), options), options);
   const jvmLowered = overlayJvmObjectLowering(representable, lowered, options);
   const wasmLowered = overlayWasmNarrowLoadExtensions(representable, jvmLowered, options);
-  const locallyOverlaid = overlayJvmLocalLowering(representable, overlayDexLowering(representable, wasmLowered), options);
+  const locallyOverlaid = overlayJvmLocalLowering(representable, overlayDexLowering(representable, wasmLowered, options), options);
   const overlaid = overlayManagedI32ShiftCounts(representable, locallyOverlaid, options);
   const hasUnrepresentedFunctionExit = representable.bundles?.some((bundle) =>
     bundle.controlEffects?.some((effect) => effect.kind === 'switch'

@@ -4,6 +4,7 @@ import { createMemorySsaContract } from '../memoryssa/contract.js';
 import {
   V1_OP, V1_VK, V1_MK, firstAddress, sourceInstructionIds, blockOrder, explicitTargetsForBlock,
   graphFacts, buildLegacyValues, buildStateProjectionIndex, legacyPublicStateIdentity, makeArg, addUse,
+  classifyCallWithAbi, safeBigInt,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectNode } from './semantic-ir-v2-to-v1-nodes.js';
 import { finalizeLegacyProjection } from './semantic-ir-v2-to-v1-finalize.js';
@@ -12,6 +13,7 @@ import {
   assignInstructionIds, memorySafetySummary,
 } from './semantic-ir-v2-to-v1-memory.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
+import { isCanonicalSemanticSsaProducerArtifact } from '../ssa/build.js';
 import { createProjectionIrObserver, PROJECTION_LIMITS } from '../../core/identity/live-data.js';
 import { observedRangeAnnotationsMatch } from './legacy-value-ranges.js';
 
@@ -55,20 +57,91 @@ export function observeProjectedOperationData(projected, transitions) {
   const rootKeys = ['instructions', 'values', 'blocks', 'compat', 'functionId', 'semanticIrVersion', 'origin'];
   const prototype = Object.getPrototypeOf(projected);
   const roots = rootKeys.map(key => own(projected, key));
-  const locations = [...new Set(transitions.flatMap(({ source, store, input, beforeInputs }) => [source, store, input?.def,
-    ...beforeInputs.map(value => value.def)]).filter(Boolean))].map(instruction => {
-    const blockIndex = projected.blocks.findIndex(block => block.index === instruction.block);
-    const block = projected.blocks[blockIndex], key = block?.phis?.includes(instruction) ? 'phis' : 'insts';
-    const list = block?.[key], index = list?.indexOf(instruction), flatIndex = projected.instructions.indexOf(instruction);
+  const blockById = new Map();
+  for (let i = 0; i < projected.blocks.length; i += 1) {
+    const b = projected.blocks[i];
+    if (!blockById.has(b.index)) blockById.set(b.index, { block: b, blockIndex: i, phiIndex: null, instIndex: null });
+  }
+  const flatIndexByInst = new Map();
+  for (let i = 0; i < projected.instructions.length; i += 1) {
+    const inst = projected.instructions[i];
+    if (!flatIndexByInst.has(inst)) flatIndexByInst.set(inst, i);
+  }
+  const valueIndexByVal = new Map();
+  for (let i = 0; i < projected.values.length; i += 1) {
+    const val = projected.values[i];
+    if (!valueIndexByVal.has(val)) valueIndexByVal.set(val, i);
+  }
+  const uniqueInsts = new Set();
+  const uniqueVals = new Set();
+  for (let i = 0; i < transitions.length; i += 1) {
+    const t = transitions[i];
+    if (t.source) {
+      uniqueInsts.add(t.source);
+      if (t.source.dst) uniqueVals.add(t.source.dst);
+    }
+    if (t.store) uniqueInsts.add(t.store);
+    if (t.input) {
+      uniqueVals.add(t.input);
+      if (t.input.def) uniqueInsts.add(t.input.def);
+    }
+    const bi = t.beforeInputs;
+    if (bi) {
+      for (let j = 0; j < bi.length; j += 1) {
+        const v = bi[j];
+        if (v) {
+          uniqueVals.add(v);
+          if (v.def) uniqueInsts.add(v.def);
+        }
+      }
+    }
+  }
+  const locations = [];
+  const blockListChecks = [];
+  const seenBlockList = new Map();
+  for (const instruction of uniqueInsts) {
+    const bInfo = blockById.get(instruction.block);
+    const block = bInfo?.block;
+    const blockIndex = bInfo ? bInfo.blockIndex : -1;
+    let key = 'insts';
+    let index = -1;
+    if (block) {
+      if (block.phis && block.phis.length > 0) {
+        if (bInfo.phiIndex === null) {
+          const m = new Map();
+          for (let i = 0; i < block.phis.length; i += 1) if (!m.has(block.phis[i])) m.set(block.phis[i], i);
+          bInfo.phiIndex = m;
+        }
+        const pi = bInfo.phiIndex.get(instruction);
+        if (pi !== undefined) { key = 'phis'; index = pi; }
+      }
+      if (index < 0 && block.insts) {
+        if (bInfo.instIndex === null) {
+          const m = new Map();
+          for (let i = 0; i < block.insts.length; i += 1) if (!m.has(block.insts[i])) m.set(block.insts[i], i);
+          bInfo.instIndex = m;
+        }
+        const ii = bInfo.instIndex.get(instruction);
+        if (ii !== undefined) index = ii;
+      }
+    }
+    const list = block?.[key];
+    const flatIndex = flatIndexByInst.get(instruction) ?? -1;
     if (!(index >= 0) || flatIndex < 0) throw new Error('compat-transition-definition-missing');
-    return { instruction, blockIndex, block, blockId:block.index, key, list, index, flatIndex };
-  });
-  const values = [...new Set(transitions.flatMap(({ source, input, beforeInputs }) => [source?.dst, input, ...beforeInputs]).filter(Boolean))]
-    .map(value => {
-      const index = projected.values.indexOf(value);
-      if (index < 0) throw new Error('compat-transition-value-missing');
-      return { value, index };
-    });
+    const blKey = `${blockIndex}:${key}`;
+    if (!seenBlockList.has(blKey)) {
+      const check = { blockIndex, block, blockId: block.index, key, list };
+      seenBlockList.set(blKey, check);
+      blockListChecks.push(check);
+    }
+    locations.push({ instruction, blockIndex, block, blockId: block.index, key, list, index, flatIndex });
+  }
+  const values = [];
+  for (const value of uniqueVals) {
+    const index = valueIndexByVal.get(value) ?? -1;
+    if (index < 0) throw new Error('compat-transition-value-missing');
+    values.push({ value, index });
+  }
   // Transition roots are vertices of one cyclic SSA graph. Observe every
   // mutable field by distance from these exact roots, with a fresh observer.
   // Immutable descriptions have separately bounded data certificates; origins
@@ -77,15 +150,31 @@ export function observeProjectedOperationData(projected, transitions) {
   // Unrelated projection members are not additional observation roots.
   const captured = createProjectionIrObserver().captureCertifiedDataGraph([projected.compat,
     ...transitions.flatMap(({ source, store, input, beforeInputs, memory, object, emptyUses }) => [source, store, input, ...beforeInputs, memory, object, emptyUses])]);
-  const matches = (writes = null) => (writes == null || Array.isArray(writes) && writes.length <= PROJECTION_LIMITS.nodes)
-    && Object.getPrototypeOf(projected) === prototype && rootKeys.every((key, i) => own(projected, key) === roots[i])
-    && values.every(({ value, index }) => own(roots[1], index) === value)
-    && locations.every(({ instruction, blockIndex, block, blockId, key, list, index, flatIndex }) =>
-      own(roots[2], blockIndex) === block && own(block, 'index') === blockId && own(block, key) === list && own(list, index) === instruction
-      && own(roots[0], flatIndex) === instruction)
-    && (writes == null ? captured.matches() || observedRangeAnnotationsMatch(projected, captured)
+  const matches = (writes = null) => {
+    if (writes != null && (!Array.isArray(writes) || writes.length > PROJECTION_LIMITS.nodes)) return false;
+    if (Object.getPrototypeOf(projected) !== prototype) return false;
+    for (let i = 0; i < rootKeys.length; i += 1) {
+      if (own(projected, rootKeys[i]) !== roots[i]) return false;
+    }
+    const rootValues = roots[1];
+    for (let i = 0; i < values.length; i += 1) {
+      const v = values[i];
+      if (own(rootValues, v.index) !== v.value) return false;
+    }
+    const rootBlocks = roots[2];
+    for (let i = 0; i < blockListChecks.length; i += 1) {
+      const b = blockListChecks[i];
+      if (own(rootBlocks, b.blockIndex) !== b.block || own(b.block, 'index') !== b.blockId || own(b.block, b.key) !== b.list) return false;
+    }
+    const rootInsts = roots[0];
+    for (let i = 0; i < locations.length; i += 1) {
+      const loc = locations[i];
+      if (own(loc.list, loc.index) !== loc.instruction || own(rootInsts, loc.flatIndex) !== loc.instruction) return false;
+    }
+    return writes == null ? captured.matches() || observedRangeAnnotationsMatch(projected, captured)
       : captured.matchesThroughWrites(writes) || observedRangeAnnotationsMatch(projected,
-        { matchesThroughWrites:ranges => captured.matchesThroughWrites(combinedWriteList(writes, ranges)) }));
+        { matchesThroughWrites:ranges => captured.matchesThroughWrites(combinedWriteList(writes, ranges)) });
+  };
   // The ordinary predicate remains strict even if a caller passes arguments.
   // The separate method is only a pure-data comparison, never write authority.
   const workItems = captured.metrics.nodes + captured.metrics.edges + roots.length
@@ -219,11 +308,21 @@ function sealStateTransitions(projected, observer) {
     const valid = [...accepted];
     const observation = observeProjectedOperationData(projected, valid);
     const locations = projected.locations;
-    const mapped = valid.filter(event => event.path === 'locations:base').flatMap(event => {
-      const entries = [...Map.prototype.entries.call(locations)].filter(([, value]) => value === event.object);
-      if (!entries.length) throw new Error('state-alias-location-missing');
-      return entries;
-    });
+    const locBaseEvents = valid.filter(event => event.path === 'locations:base');
+    let mapped = [];
+    if (locBaseEvents.length > 0) {
+      const entriesByValue = new Map();
+      for (const entry of Map.prototype.entries.call(locations)) {
+        let bucket = entriesByValue.get(entry[1]);
+        if (!bucket) { bucket = []; entriesByValue.set(entry[1], bucket); }
+        bucket.push(entry);
+      }
+      for (let i = 0; i < locBaseEvents.length; i += 1) {
+        const entries = entriesByValue.get(locBaseEvents[i].object);
+        if (!entries || !entries.length) throw new Error('state-alias-location-missing');
+        for (let j = 0; j < entries.length; j += 1) mapped.push(entries[j]);
+      }
+    }
     const mappedCurrent = () => !mapped.length || own(projected, 'locations') === locations
       && mapped.every(([key, value]) => Map.prototype.get.call(locations, key) === value);
     const isCurrent = () => observation() && mappedCurrent();
@@ -403,12 +502,41 @@ function preserveExactStateWriteSourceIdentity(ir, producerByValueId, stateProje
   }
 }
 
+const compatBlockInstIndexCache = new WeakMap();
+function compatBlockInstIndexOf(blockInsts, inst) {
+  if (!Array.isArray(blockInsts) || !inst) return -1;
+  let entry = compatBlockInstIndexCache.get(blockInsts);
+  if (!entry || entry.length !== blockInsts.length) {
+    const map = new Map();
+    for (let i = 0; i < blockInsts.length; i += 1) {
+      if (!map.has(blockInsts[i])) map.set(blockInsts[i], i);
+    }
+    entry = { length: blockInsts.length, map };
+    compatBlockInstIndexCache.set(blockInsts, entry);
+  }
+  const idx = entry.map.get(inst);
+  if (idx !== undefined && blockInsts[idx] === inst) return idx;
+  return blockInsts.indexOf(inst);
+}
+
 function valueDominatesInstruction(value, inst, projected) {
   if (!value || !inst) return false;
   if (value.kind === V1_VK.ARG) return true;
   const definition = value.def;
   if (!definition || definition === inst) return false;
-  if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);
+  if (definition.block === inst.block) {
+    if (inst.op === V1_OP.PHI) return false;
+    if (definition.op === V1_OP.PHI) return true;
+    const defRow = Number(definition.row);
+    const instRow = Number(inst.row);
+    if (defRow !== instRow) return defRow < instRow;
+    const blockInsts = projected.blocks?.[inst.block]?.insts;
+    if (!Array.isArray(blockInsts)) return false;
+    const defIdx = compatBlockInstIndexOf(blockInsts, definition);
+    const instIdx = compatBlockInstIndexOf(blockInsts, inst);
+    if (defIdx < 0 || instIdx < 0) return false;
+    return defIdx < instIdx;
+  }
   const dominators = projected.dominators?.[inst.block];
   return dominators instanceof Set && dominators.has(definition.block);
 }
@@ -420,24 +548,92 @@ function abiRegisterDescriptors(argument) {
   return argument.regs.filter(Boolean).map((reg) => ({ reg: String(reg), bits: Number(argument.bits ?? 0) || null }));
 }
 
-function projectedAbiArgumentValue(argument, inst, projected) {
+function buildValuesByRegIndex(projected) {
+  const valuesByReg = new Map();
+  for (const value of projected.values) {
+    if (value.reg == null) continue;
+    let bucket = valuesByReg.get(value.reg);
+    if (!bucket) {
+      bucket = [];
+      valuesByReg.set(value.reg, bucket);
+    }
+    bucket.push(value);
+  }
+  return valuesByReg;
+}
+
+function dominanceRankForArgument(value, inst, projected, targetBits) {
+  const width = targetBits == null || value.bits === targetBits ? 1 : 0;
+  const version = value.version ?? 0;
+  const id = value.id ?? 0;
+  if (value.kind === V1_VK.ARG || !value.def) {
+    return { scope: 0, depth: 0, row: Number.NEGATIVE_INFINITY, nonPhi: 0, instIndex: -1, width, version, id };
+  }
+  const definition = value.def;
+  const nonPhi = definition.op === V1_OP.PHI ? 0 : 1;
+  const blockInsts = projected.blocks?.[definition.block]?.insts;
+  const instIndex = nonPhi ? compatBlockInstIndexOf(blockInsts, definition) : -1;
+  const row = Number(definition.row ?? Number.NEGATIVE_INFINITY);
+  if (definition.block === inst.block) {
+    return { scope: 2, depth: Number.MAX_SAFE_INTEGER, row, nonPhi, instIndex, width, version, id };
+  }
+  const defDominators = projected.dominators?.[definition.block];
+  const depth = defDominators instanceof Set ? defDominators.size : 0;
+  return { scope: 1, depth, row, nonPhi, instIndex, width, version, id };
+}
+
+function isBetterDominanceRank(candidate, best) {
+  if (!best) return true;
+  if (candidate.scope !== best.scope) return candidate.scope > best.scope;
+  if (candidate.depth !== best.depth) return candidate.depth > best.depth;
+  if (candidate.row !== best.row) return candidate.row > best.row;
+  if (candidate.nonPhi !== best.nonPhi) return candidate.nonPhi > best.nonPhi;
+  if (candidate.instIndex !== best.instIndex) return candidate.instIndex > best.instIndex;
+  if (candidate.width !== best.width) return candidate.width > best.width;
+  if (candidate.version !== best.version) return candidate.version > best.version;
+  return candidate.id > best.id;
+}
+
+function projectedAbiArgumentValue(argument, inst, projected, valuesByReg) {
   if (argument && typeof argument === 'object' && Array.isArray(argument.uses) && argument.kind) {
     return valueDominatesInstruction(argument, inst, projected) ? argument : null;
   }
   const descriptors = abiRegisterDescriptors(argument);
   for (const descriptor of descriptors) {
-    const candidates = projected.values
-      .filter((value) => value.reg === descriptor.reg && valueDominatesInstruction(value, inst, projected))
-      .sort((left, right) => {
-        const leftWidth = descriptor.bits != null && left.bits === descriptor.bits ? 1 : 0;
-        const rightWidth = descriptor.bits != null && right.bits === descriptor.bits ? 1 : 0;
-        if (leftWidth !== rightWidth) return rightWidth - leftWidth;
-        if ((left.version ?? 0) !== (right.version ?? 0)) return (right.version ?? 0) - (left.version ?? 0);
-        return (right.id ?? 0) - (left.id ?? 0);
-      });
-    if (candidates.length) return candidates[0];
+    const bucket = valuesByReg.get(descriptor.reg);
+    if (!bucket) continue;
+    let bestValue = null;
+    let bestRank = null;
+    for (let i = 0; i < bucket.length; i += 1) {
+      const value = bucket[i];
+      if (!valueDominatesInstruction(value, inst, projected)) continue;
+      const rank = dominanceRankForArgument(value, inst, projected, descriptor.bits);
+      if (isBetterDominanceRank(rank, bestRank)) {
+        bestRank = rank;
+        bestValue = value;
+      }
+    }
+    if (bestValue != null) return bestValue;
   }
   return null;
+}
+
+function resolveTailCallBranchTarget(inst, projected, options) {
+  const targetBlock = inst.extra?.targetBlock;
+  const isExternalTarget = targetBlock == null || (projected.blocks?.[targetBlock]?.insts?.length ?? 0) === 0;
+  if (!isExternalTarget) return null;
+  const machineTarget = inst.extra?.attributes?.machineControlEffect?.target ?? null;
+  const symbolicTarget = machineTarget?.kind === 'symbolic-code-reference'
+    && typeof machineTarget.name === 'string'
+    && /^[A-Za-z_.$][A-Za-z0-9_.$@]{0,255}$/.test(machineTarget.name)
+    ? machineTarget.name : null;
+  const target = inst.extra?.target ?? safeBigInt(machineTarget);
+  let symbolName = inst.extra?.name || symbolicTarget || null;
+  if (!symbolName && target != null && typeof options?.symbolFor === 'function') {
+    try { symbolName = options.symbolFor(target) || null; } catch { symbolName = null; }
+  }
+  if (!symbolName) return null;
+  return { target, symbolName };
 }
 
 /**
@@ -453,14 +649,87 @@ function projectedAbiArgumentValue(argument, inst, projected) {
  * for variadic calls, so dropping them because one explicit argument already
  * exists would sever the real def-use edge and allow its producer to disappear.
  */
-function attachAbiProjectedArguments(projected) {
+function attachAbiProjectedArguments(projected, ir = null, valuesById = null, blockIndexById = null, options = {}) {
+  const targets = [];
+  let cfgMutated = false;
   for (const inst of projected.instructions) {
-    if (inst.op !== V1_OP.CALL || !Array.isArray(inst.callArguments)) continue;
+    if (inst.op === V1_OP.CALL && Array.isArray(inst.callArguments)) {
+      targets.push({ inst, callArguments: inst.callArguments });
+    } else if (inst.op === V1_OP.BR) {
+      const tailTarget = resolveTailCallBranchTarget(inst, projected, options);
+      if (!tailTarget) continue;
+      inst.extra = inst.extra || {};
+      inst.extra.name = tailTarget.symbolName;
+      inst.extra.isTailCall = true;
+      if (inst.extra.target == null && tailTarget.target != null) inst.extra.target = tailTarget.target;
+      const block = projected.blocks?.[inst.block];
+      if (block && Array.isArray(block.succ) && block.succ.length) {
+        for (const succIdx of block.succ) {
+          const succBlock = projected.blocks?.[succIdx];
+          if (succBlock && Array.isArray(succBlock.pred)) {
+            succBlock.pred = succBlock.pred.filter((p) => p !== block.index);
+          }
+        }
+        block.succ = [];
+        block.isExit = true;
+        cfgMutated = true;
+      }
+      let callArguments = null;
+      if (Array.isArray(inst.callArguments)) {
+        callArguments = inst.callArguments;
+      } else {
+        const abi = classifyCallWithAbi({
+          id: inst.semanticNodeId,
+          call: {
+            target: tailTarget.target,
+            targetValueIds: [],
+            targetEntityIds: [],
+            arguments: [],
+            returns: [],
+            stateWrites: [],
+          },
+        }, ir, valuesById, options);
+        if (Array.isArray(abi?.callArguments) && abi.callArguments.length) {
+          callArguments = abi.callArguments;
+          inst.callArguments = callArguments;
+        }
+      }
+      if (Array.isArray(callArguments)) targets.push({ inst, callArguments });
+    }
+  }
+
+  if (cfgMutated && Array.isArray(projected.blocks) && projected.blocks.length) {
+    const resolvedBlockIndex = blockIndexById instanceof Map
+      ? blockIndexById
+      : new Map(projected.blocks.map((block, index) => [block.semanticBlockId, index]));
+    for (const block of projected.blocks) block.isLoopHeader = false;
+    const updatedGraph = graphFacts(
+      projected.blocks,
+      resolvedBlockIndex,
+      projected.entry ?? 0,
+      ir?.functionId ?? projected.functionId ?? 'semantic-v2-v1-compat',
+      null,
+    );
+    for (const block of projected.blocks) block.isExit = block.succ.length === 0;
+    projected.reachable = updatedGraph.reachable;
+    projected.loops = updatedGraph.loops;
+    projected.backEdges = updatedGraph.backEdges;
+    projected.idom = updatedGraph.idom;
+    projected.dominators = updatedGraph.dominators;
+    if (projected.compat) {
+      projected.compat.controlEdges = updatedGraph.edges;
+      projected.compat.canonicalCfg = false;
+    }
+  }
+
+  if (!targets.length) return;
+  const valuesByReg = buildValuesByRegIndex(projected);
+  for (const { inst, callArguments } of targets) {
     const existing = (inst.args || []).map((argument) => argument?.value).filter(Boolean);
     const seen = new Set(existing.map((value) => value.id));
     const values = existing.slice();
-    for (const argument of inst.callArguments) {
-      const value = projectedAbiArgumentValue(argument, inst, projected);
+    for (const argument of callArguments) {
+      const value = projectedAbiArgumentValue(argument, inst, projected, valuesByReg);
       if (!value || seen.has(value.id)) continue;
       seen.add(value.id);
       values.push(value);
@@ -509,7 +778,9 @@ function addComparisonCarriers(ir, values, valuesById) {
 
   const byNodeId = new Map();
   for (const node of ir.nodes) {
-    if (node.kind === 'compare' && node.outputs[0]) {
+    if ((node.kind === 'compare'
+        || (node.kind === 'intrinsic' && (node.operator === 'arm64.fp.fcmp' || node.operator === 'arm64.fp.fcmpe')))
+        && node.outputs[0]) {
       const value = valuesById.get(node.outputs[0]);
       if (value) byNodeId.set(node.id, value);
       continue;
@@ -559,21 +830,31 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     ? input
     : validateSemanticIrFunction(input, options.validationOptions || {});
   const ssaInput = options.ssa ?? options.semanticSsa ?? null;
-  const ssa = ssaInput == null ? null : createSemanticSsaContract(
-    semanticSsaContractInput(ssaInput), options.ssaValidationOptions || {},
-  );
+  const ssa = ssaInput == null ? null
+    : (isCanonicalSemanticSsaProducerArtifact(ssaInput) && options.ssaValidationOptions == null
+      ? ssaInput
+      : createSemanticSsaContract(
+        semanticSsaContractInput(ssaInput), options.ssaValidationOptions || {},
+      ));
   const memorySsaInput = options.memorySsa ?? null;
-  const memorySsaContract = memorySsaInput == null ? null : createMemorySsaContract(
-    memorySsaContractInput(memorySsaInput), options.memorySsaValidationOptions || {},
-  );
   // Keep the exact object issued by the canonical builder.  A validated
   // compatibility copy is intentionally unbound: serialized/process-boundary
   // clones must be rebuilt by the true producer before exact forwarding can be
   // consumed.
-  const memorySsa = memorySsaInput == null ? null
-    : (isCanonicalMemorySsaProducerArtifact(memorySsaInput)
-      ? memorySsaInput
-      : memorySsaProjectionArtifact(memorySsaInput, memorySsaContract));
+  let memorySsa = null;
+  if (memorySsaInput != null) {
+    const isCanonicalMemorySsa = isCanonicalMemorySsaProducerArtifact(memorySsaInput);
+    if (isCanonicalMemorySsa && options.memorySsaValidationOptions == null) {
+      memorySsa = memorySsaInput;
+    } else {
+      const memorySsaContract = createMemorySsaContract(
+        memorySsaContractInput(memorySsaInput), options.memorySsaValidationOptions || {},
+      );
+      memorySsa = isCanonicalMemorySsa
+        ? memorySsaInput
+        : memorySsaProjectionArtifact(memorySsaInput, memorySsaContract);
+    }
+  }
   const canonicalCfg = options.cfg ?? options.semanticCfg ?? null;
   if (ssa && ssa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-ssa-function-mismatch');
   if (memorySsa && memorySsa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-memoryssa-function-mismatch');
@@ -584,6 +865,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   const registerStateWriteValueIds = new Set();
   const firstConsumerNodeByValueId = new Map();
   const multiConsumerNodeValueIds = new Set();
+  const consumersByValueId = new Map();
   for (const node of ir.nodes) {
     for (const valueId of node.outputs || []) producerByValueId.set(valueId, node);
     if (node.kind === 'state-write' && node.variable?.physicalIdentity?.kind === 'register' && node.inputs?.[0] != null) {
@@ -592,6 +874,9 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     for (const valueId of node.inputs || []) {
       if (!firstConsumerNodeByValueId.has(valueId)) firstConsumerNodeByValueId.set(valueId, node.id);
       else if (firstConsumerNodeByValueId.get(valueId) !== node.id) multiConsumerNodeValueIds.add(valueId);
+      let list = consumersByValueId.get(valueId);
+      if (!list) { list = []; consumersByValueId.set(valueId, list); }
+      list.push(node);
     }
   }
   const orderedBlocks = blockOrder(ir);
@@ -637,9 +922,34 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     if (use.semanticValueId) canonicalValueUseIds.add(use.semanticValueId);
     if (use.proof?.sourceSemanticValueId) canonicalValueUseIds.add(use.proof.sourceSemanticValueId);
   }
+  let projectedArch = ir.architectureId
+    ?? ir.origin?.architectureId
+    ?? options.architectureId
+    ?? options.arch
+    ?? options.architecture
+    ?? options.abiAdapter?.architectureId
+    ?? options.abiAdapter?.targetArchitecture
+    ?? options.abiAdapter?.arch
+    ?? null;
+  if (typeof projectedArch !== 'string' || !projectedArch.trim()) {
+    projectedArch = null;
+    for (const node of ir.nodes) {
+      const candidate = node?.attributes?.machineEffects?.architectureId
+        ?? node?.attributes?.machineEffects?.operationMetadata?.architecture
+        ?? node?.attributes?.machineEffects?.bundleMetadata?.architecture
+        ?? null;
+      if (typeof candidate === 'string' && candidate.trim()) {
+        projectedArch = candidate.trim();
+        break;
+      }
+    }
+  } else {
+    projectedArch = projectedArch.trim();
+  }
   const projected = {
     name: options.name ?? ir.functionId,
     functionId: ir.functionId,
+    ...(projectedArch ? { arch: projectedArch, architectureId: projectedArch } : {}),
     startAddress: firstAddress(ir.origin),
     truncated: ir.completeness !== 'complete',
     values,
@@ -661,6 +971,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
       projection: 'semantic-ir-v2-to-v1',
       version: '1.3.0',
       semanticFunctionId: ir.functionId,
+      ...(projectedArch ? { architectureId: projectedArch } : {}),
       scalarSsa: !!ssa,
       memorySsa: !!memorySsa,
       canonicalCfg: canonicalCfg != null,
@@ -691,6 +1002,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     let firstRow = null;
     let lastRow = null;
     const physicalStateCurrent = new Map();
+    const stateReadComparisonCarrierByValueId = new Map();
     for (const nodeId of block.semanticNodeIds) {
       const node = nodeById.get(nodeId);
       if (!node) continue;
@@ -711,7 +1023,9 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
         registerStateWriteValueIds,
         firstConsumerNodeByValueId,
         multiConsumerNodeValueIds,
+        consumersByValueId,
         physicalStateCurrent,
+        stateReadComparisonCarrierByValueId,
         blockBySemanticId,
         options,
       });
@@ -753,7 +1067,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     if (!list) list = projected.compat.semanticNodeToLegacyInstructionIds[semanticId] = [];
     list.push(inst.id);
   }
-  attachAbiProjectedArguments(projected);
+  attachAbiProjectedArguments(projected, ir, valuesById, blockIndexById, options);
   finalizeLegacyProjection(projected, constantObserver, stateObserver);
   populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);

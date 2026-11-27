@@ -211,6 +211,7 @@ export function unrolledTablesFromFixed(fixed) {
       if (run.length < 3) continue;
       const sorted = run.slice().sort((a, b) => a.row - b.row);
       const offsets = sorted.map((f) => f.disp);
+      if (offsets.some((off) => typeof off !== 'number' || !Number.isFinite(off) || off < 0)) continue;
       const stride = offsets[1] - offsets[0];
       if (!(stride > 0) || offsets.some((off, i) => i > 0 && off - offsets[i - 1] !== stride)) continue;
       if (new Set(offsets).size !== offsets.length) continue;
@@ -287,7 +288,7 @@ function makeIndexedTable(t) {
     kind: 'indexed', columns: t.columns, columnStride: t.stride, columnSize: t.size,
     recordStride: t.recordStride, records: t.records, consistent: t.consistent,
     storeAddr: t.storeAddr, scaled: t.scaled, fromCall: t.fromCall,
-    offsetOf(i) { if (!(i >= 0) || (t.columns != null && i >= t.columns)) return null; return i * t.stride; },
+    offsetOf(i) { if (!Number.isInteger(i) || i < 0 || (t.columns != null && i >= t.columns)) return null; return i * t.stride; },
   };
 }
 
@@ -464,10 +465,12 @@ export function columnToOffset(schema, column) { const t = tableOf(schema); retu
 export function offsetToColumn(schema, offset) {
   const t = tableOf(schema);
   if (!t) return null;
+  if (typeof offset !== 'number' || !Number.isFinite(offset) || offset < 0) return null;
   if (t.kind === 'unrolled') { const i = (t.offsets || []).indexOf(offset); return i < 0 ? null : i; }
   const stride = t.columnStride;
-  if (!stride || offset % stride !== 0) return null;
+  if (!(typeof stride === 'number' && Number.isFinite(stride) && stride > 0) || offset % stride !== 0) return null;
   const i = offset / stride;
+  if (!Number.isSafeInteger(i) || i < 0) return null;
   if (t.columns != null && i >= t.columns) return null;
-  return i;
+  return i === 0 ? 0 : i;
 }

@@ -5,6 +5,7 @@
 import { findValueUpdates, constantComparisons, regKeyOf, selfRegisters } from './dataflow.js';
 
 const ARG2 = 'x2';
+const FP_ARG0 = 'v0';
 export { selfRegisters };
 
 function explicitBigInt(value) {
@@ -61,58 +62,169 @@ export function verifyAccessor(model, hyp, opts) {
   out.otherOffsets = others;
   out.exclusive = others === 0;
 
+  if (out.getter) {
+    // Only verify return-register flow when load instructions actually expose
+    // output register writes (preserving #4139 minimal mock compatibility where
+    // load instructions have `writes: []`).
+    const loads = insns.filter((i) => memoryTouchesSelf(i, isSelf, offset, 'load'));
+    const hasLoadWrites = loads.some((l) => (l.writes || []).length > 0);
+    if (hasLoadWrites) {
+      out.getter = loads.some((l) => (l.writes || []).length === 0 || flowsToReturn(insns, l));
+    }
+  }
+
   if (out.setter) {
-    // Objective-C property setters have exactly one explicit argument: x2/w2.
-    // Do not treat x3-x7 as interchangeable argument provenance: those can be
-    // unrelated temporaries/additional parameters in non-property methods.
-    const store = insns.find((i) => memoryTouchesSelf(i, isSelf, offset, 'store'));
-    if (store) {
-      const src = regKeyOf(store.ops[0]);
-      out.fromArgument = !!src && (wideOf(src) === ARG2 || tracesToArgument(insns, store.row, src));
+    // Objective-C property setters have one explicit argument: x2/w2 (GP) or
+    // s0/d0 (scalar FP). Always check for intervening overwrites back to entry
+    // and check all matching stores.
+    const stores = insns.filter((i) => memoryTouchesSelf(i, isSelf, offset, 'store'));
+    if (stores.length) {
+      out.fromArgument = stores.some((store) => tracesToArgument(insns, store.row, store.ops?.[0]));
     }
   }
   return out;
 }
 
 function wideOf(reg) {
-  const m = /^[wx](\d+)$/.exec(String(reg || ''));
+  const m = /^[wx](\d+)$/.exec(String(reg || '').toLowerCase());
   return m ? 'x' + m[1] : null;
+}
+
+function regNorm(reg) {
+  const s = String(reg || '').toLowerCase();
+  const gp = /^[wx](\d+)$/.exec(s);
+  if (gp) return 'x' + gp[1];
+  const fp = /^[bhsdqv](\d+)(?:\.[0-9]+[bhsd])?$/.exec(s);
+  if (fp) return 'v' + fp[1];
+  return null;
 }
 
 function gpView(value) {
   const text = typeof value === 'string' ? value : value?.text;
   const m = /^([wx])(\d+)$/.exec(String(text || '').toLowerCase());
-  return m ? { key: 'x' + m[2], bits: m[1] === 'x' ? 64 : 32 } : null;
+  return m ? { cls: 'gp', key: 'x' + m[2], bits: m[1] === 'x' ? 64 : 32 } : null;
 }
 
-function tracesToArgument(insns, row, reg) {
-  let want = wideOf(reg);
+function fpView(value) {
+  const text = typeof value === 'string' ? value : value?.text;
+  const m = /^([bhsdqv])(\d+)(?:\.[0-9]+[bhsd])?$/.exec(String(text || '').toLowerCase());
+  if (!m) return null;
+  const bits = m[1] === 'b' ? 8 : m[1] === 'h' ? 16 : m[1] === 's' ? 32 : m[1] === 'd' ? 64 : 128;
+  return { cls: 'fp', key: 'v' + m[2], bits };
+}
+
+function zeroView(value) {
+  const text = typeof value === 'string' ? value : value?.text;
+  const s = String(text || '').toLowerCase();
+  if (s === 'wzr') return { cls: 'zr', bits: 32 };
+  if (s === 'xzr') return { cls: 'zr', bits: 64 };
+  return null;
+}
+
+function regView(value) {
+  return gpView(value) || fpView(value);
+}
+
+function isReturnReg(view) {
+  if (!view) return false;
+  return (view.cls === 'gp' && view.key === 'x0') || (view.cls === 'fp' && view.key === 'v0');
+}
+
+function sameWidthCopyPair(insn) {
+  const mn = String(insn?.mnemonic || '').toLowerCase();
+  const ops = insn?.ops || [];
+  if (mn === 'mov') {
+    const dst = gpView(ops[0]);
+    const src = gpView(ops[1]);
+    if (dst && src && dst.bits === src.bits) return { dst, src };
+    return null;
+  }
+  if (mn === 'orr' && ops.length === 3) {
+    const dst = gpView(ops[0]);
+    const zero = zeroView(ops[1]);
+    const src = gpView(ops[2]);
+    const shift = ops[2]?.shift;
+    const noShift = shift == null || (shift.op === 'lsl' && Number(shift.amount) === 0);
+    if (dst && zero && src && dst.bits === zero.bits && dst.bits === src.bits && noShift) {
+      return { dst, src };
+    }
+    return null;
+  }
+  if (mn === 'fmov') {
+    const dst = fpView(ops[0]);
+    const src = fpView(ops[1]);
+    if (dst && src && dst.bits === src.bits) return { dst, src };
+    return null;
+  }
+  return null;
+}
+
+function flowsToReturn(insns, load) {
+  const dst = regView(load.ops?.[0]) || regView(load.writes?.[0]);
+  if (!dst) return false;
+  const start = insns.findIndex((x) => x.row === load.row);
+  if (start < 0) return isReturnReg(dst);
+  let cur = dst;
+  for (let i = start + 1; i < insns.length; i++) {
+    const insn = insns[i];
+    const mn = String(insn?.mnemonic || '').toLowerCase();
+    if (/^(ret|retaa|retab)$/.test(mn)) return isReturnReg(cur);
+    if (/^(bl|blr|br)$/.test(mn)) return false;
+    if (controlBoundary(insn)) return false;
+    const copy = sameWidthCopyPair(insn);
+    if (copy && copy.src.cls === cur.cls && copy.src.key === cur.key && copy.src.bits === cur.bits) {
+      cur = copy.dst;
+      continue;
+    }
+    if ((insn.writes || []).some((written) => regNorm(written) === cur.key)) return false;
+  }
+  return isReturnReg(cur);
+}
+
+function tracesToArgument(insns, row, srcOp) {
+  let want = regView(srcOp);
   if (!want) return false;
-  for (let i = insns.findIndex((x) => x.row === row) - 1; i >= 0; i--) {
+  const start = insns.findIndex((x) => x.row === row);
+  if (start < 0) return false;
+  for (let i = start - 1; i >= 0; i--) {
     const insn = insns[i];
     if (controlBoundary(insn)) return false;
-    if (!(insn.writes || []).some((written) => wideOf(written) === want)) continue;
+    if (!(insn.writes || []).some((written) => regNorm(written) === want.key)) continue;
     if (insn.memory) return false;
 
     // Setter identity proof is intentionally stricter than general dataflow:
-    // only an explicit same-width GP MOV preserves the exact argument value.
-    // Single-source arithmetic/shift/extend operations are transformations,
-    // not copies, even when their only read happens to be x2/w2.
-    if (String(insn.mnemonic || '').toLowerCase() !== 'mov') return false;
-    const dst = gpView(insn.ops?.[0]);
-    const src = gpView(insn.ops?.[1]);
-    if (!dst || !src || dst.key !== want || dst.bits !== src.bits) return false;
-
-    if (src.key === ARG2) return true;
-    if (/^x[3-7]$/.test(src.key)) return false;
-    want = src.key;
+    // only an explicit same-width copy (`mov`, same-width `orr dst, wzr/xzr, src`,
+    // or same-width `fmov`) preserves the exact argument value. Width/sign-extend
+    // operations (`sxtw`, `uxtw`, `uxtb`, `uxth`, etc.) are transformations, not copies (#813).
+    const copy = sameWidthCopyPair(insn);
+    if (!copy || copy.dst.cls !== want.cls || copy.dst.key !== want.key || copy.dst.bits !== want.bits) {
+      return false;
+    }
+    if (copy.src.cls === 'gp' && /^x[3-7]$/.test(copy.src.key)) return false;
+    if (copy.src.cls === 'fp' && /^v[1-7]$/.test(copy.src.key)) return false;
+    want = copy.src;
   }
-  return false;
+  return (want.cls === 'gp' && want.key === ARG2) || (want.cls === 'fp' && want.key === FP_ARG0);
 }
 
 function controlBoundary(insn) {
   const mn = String(insn?.mnemonic || '').toLowerCase();
   return /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retaa$|retab$)/.test(mn);
+}
+
+const FLAG_WRITER = /^(cmp|cmn|tst|subs|adds|ands|bics|ccmp|ccmn|fcmp|fcmpe|fccmp|fccmpe)$/;
+const FLAG_CONSUMER = /^(b\.[a-z]+|csel|csinc|csinv|csneg|cset|csetm|cinc|cinv|cneg|ccmp|ccmn|fccmp|fccmpe)$/;
+
+function hasFlagConsumer(byRow, startRow) {
+  for (let r = startRow + 1; r <= startRow + 8; r++) {
+    const insn = byRow.get(r);
+    if (!insn) continue;
+    const mn = String(insn.mnemonic || '').toLowerCase();
+    if (FLAG_CONSUMER.test(mn)) return true;
+    if (FLAG_WRITER.test(mn)) return false;
+    if (controlBoundary(insn)) return false;
+  }
+  return false;
 }
 
 /** Count how self+offset is used, preserving only proven same-control-path guards. */
@@ -137,7 +249,7 @@ export function fieldUse(model, offset, opts) {
   if (!out.sites.length) return out;
 
   for (const u of findValueUpdates(model)) {
-    if (u.kind !== 'read-modify-write' || u.location.disp !== want) continue;
+    if (u.kind !== 'read-modify-write' || !u.location || u.location.stack || u.location.disp !== want) continue;
     if (selfOnly && !u.location.self) continue;
     out.rmw.push(u);
   }
@@ -153,18 +265,42 @@ export function fieldUse(model, offset, opts) {
     for (let r = site.row + 1; r <= site.row + 8; r++) {
       const next = byRow.get(r);
       if (!next) continue;
+      const mn = String(next.mnemonic || '').toLowerCase();
+      // Check fused compare-and-branch instructions before breaking at controlBoundary.
+      if (/^(cbz|cbnz|tbz|tbnz)$/.test(mn)) {
+        if ((next.reads || []).includes(reg) || regKeyOf(next.ops?.[0]) === reg) {
+          const fact = comparisonByRow.get(next.row) || null;
+          const ssaFact = fact && fact.register === reg ? fact : null;
+          const isZeroBranch = mn === 'cbz' || mn === 'cbnz';
+          const bitOp = !isZeroBranch ? next.ops?.[1] : null;
+          const bitImm = bitOp && bitOp.k === 'imm' && bitOp.value != null ? bitOp.value : null;
+          out.compares.push({
+            row: next.row, address: next.address, mnemonic: mn,
+            value: isZeroBranch ? (ssaFact && ssaFact.value != null ? ssaFact.value : 0n) : (bitImm != null ? bitImm : (ssaFact ? ssaFact.value : null)),
+            float: ssaFact ? ssaFact.float : null,
+            engine: ssaFact ? ssaFact.engine : null,
+            propagated: !!(ssaFact && ssaFact.propagated),
+          });
+        }
+        break;
+      }
       // Never jump across a call/branch/return just because the numeric row is
       // nearby. That was enough to attach guards from a different CFG path.
       if (controlBoundary(next)) break;
-      const mn = String(next.mnemonic || '').toLowerCase();
       if (!/^(cmp|cmn|subs|adds|ccmp|fcmp|tst)$/.test(mn)) {
         // An in-place transform such as `sub w8, w8, w2` still carries the
         // loaded field value. A write that does not read the tracked register
         // is a new definition and ends the chain.
-        if (next.writes.includes(reg) && !next.reads.includes(reg)) break;
+        if ((next.writes || []).includes(reg) && !(next.reads || []).includes(reg)) break;
         continue;
       }
-      if (!next.reads.includes(reg)) continue;
+      if (!(next.reads || []).includes(reg)) {
+        if ((next.writes || []).includes(reg)) break;
+        continue;
+      }
+      if ((mn === 'subs' || mn === 'adds') && !zeroView(next.ops?.[0]) && !hasFlagConsumer(byRow, next.row)) {
+        continue;
+      }
       const imm = next.ops.find((op) => op.k === 'imm' && (op.value != null || op.float != null));
       const fact = comparisonByRow.get(next.row) || null;
       const ssaFact = fact && fact.register === reg ? fact : null;

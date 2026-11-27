@@ -42,6 +42,7 @@ export const WORK = {
   DECREASE: 'decrease',     // 決まった量だけ減らす
   INCREASE: 'increase',     // 決まった量だけ増やす
   SCALE: 'scale',           // 倍率を掛ける
+  SHRINK: 'shrink',         // 割り算・右シフトで減らす
   SET: 'set',               // 別の値をそのまま入れる
   CLEAR: 'clear',           // 0 を入れる
   READ: 'read',             // 読んで返すだけ
@@ -52,6 +53,7 @@ const DOWN_OPS = new Set(['sub', 'subs', 'msub', 'fsub']);
 const UP_OPS = new Set(['add', 'adds', 'madd', 'fadd']);
 const MUL_OPS = new Set(['mul', 'fmul', 'lsl']);
 const DIV_OPS = new Set(['sdiv', 'udiv', 'fdiv', 'lsr', 'asr']);
+const NON_COMMUTATIVE_OPS = new Set(['sub', 'subs', 'fsub', 'sdiv', 'udiv', 'fdiv', 'lsl', 'lsr', 'asr']);
 
 /**
  * 1 件の更新を「何をしたか」に畳む。
@@ -66,16 +68,30 @@ function workOf(u, amt) {
     if (imm != null && (imm === 0 || imm === 0n)) return WORK.CLEAR;
     return WORK.SET;
   }
+  const stepEntries = Array.isArray(u.steps) && u.steps.length
+    ? u.steps
+        .filter((s) => s && s.op && !s.signMaskClampPart)
+        .map((s) => ({ op: s.op, sourceOnLeft: s.sourceOnLeft }))
+    : (amt.ops || []).map((op) => ({
+        op,
+        sourceOnLeft: amt.amount && amt.amount.op === op ? amt.amount.sourceOnLeft : null,
+      }));
   let dir = null;
-  for (const op of amt.ops) {
+  let scaleKind = null;
+  for (const { op, sourceOnLeft } of stepEntries) {
+    const inverted = NON_COMMUTATIVE_OPS.has(op) &&
+      (sourceOnLeft === false || (sourceOnLeft == null && amt.amount && amt.amount.op === op && amt.amount.sourceOnLeft === false));
+    if (inverted) continue;
     if (DOWN_OPS.has(op)) dir = 'down';
     else if (UP_OPS.has(op)) dir = 'up';
+    else if (MUL_OPS.has(op)) scaleKind = WORK.SCALE;
+    else if (DIV_OPS.has(op)) scaleKind = WORK.SHRINK;
   }
   const cross = amt.amount && amt.amount.kind === 'field' &&
     amt.amount.base && amt.amount.base !== u.location.base;
   if (dir === 'down') return cross ? WORK.DRAIN : WORK.DECREASE;
   if (dir === 'up') return cross ? WORK.FEED : WORK.INCREASE;
-  if (amt.ops.some((op) => MUL_OPS.has(op) || DIV_OPS.has(op))) return WORK.SCALE;
+  if (scaleKind) return scaleKind;
   return WORK.SET;
 }
 
@@ -90,7 +106,7 @@ function workOf(u, amt) {
 const WORK_WEIGHT = {
   [WORK.DRAIN]: 100, [WORK.FEED]: 80,
   [WORK.DECREASE]: 60, [WORK.INCREASE]: 55,
-  [WORK.SCALE]: 40, [WORK.CLEAR]: 20, [WORK.SET]: 15, [WORK.READ]: 10,
+  [WORK.SCALE]: 40, [WORK.SHRINK]: 40, [WORK.CLEAR]: 20, [WORK.SET]: 15, [WORK.READ]: 10,
 };
 
 function changeWeight(c) {
@@ -117,7 +133,32 @@ function changeWeight(c) {
 }
 
 /* 書式文字列。「%d」を埋めて文を組み立てる関数は、値そのものは触らない。 */
-const FORMAT_RE = /%[-+ #0]*[\d.*]*(?:hh|h|ll|l|j|z|t|L)?[diouxXeEfFgGaAcspn@]/;
+const FORMAT_RE = /%(?:[-+#0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|j|z|t|L)?[diouxXeEfFgGaAcspn@]| +[-+#0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|j|z|t|L)?[diouxXeEfFgGaA](?![A-Za-z]))/;
+
+function isFormatString(text) {
+  if (typeof text !== 'string' || !text.includes('%')) return false;
+  // エスケープ済み %% を取り除き、数値直後の割合表記（50% off 等）や
+  // URL 中のパーセントエンコード（%20, %2F 等）を除外してから判定する
+  let stripped = text.replace(/%%/g, '');
+  stripped = stripped.replace(/(\d)%(?=\s|$|[,.;:!?\)\]）」。、])/g, '$1');
+  if (/https?:\/\//i.test(stripped)) {
+    stripped = stripped.replace(/%[0-9A-Fa-f]{2}/g, '');
+  }
+  return FORMAT_RE.test(stripped);
+}
+
+function amountKey(a) {
+  if (!a) return 'none';
+  switch (a.kind) {
+    case 'imm': return 'imm:' + String(a.value);
+    case 'field': return 'field:' + (a.base || '') + '@' + (a.disp != null ? a.disp.toString() : '');
+    case 'call': return 'call:' + (a.name || '');
+    case 'arg': return 'arg:' + (a.index != null ? a.index : '');
+    case 'stack': return 'stack:' + (a.disp != null ? a.disp.toString() : '');
+    case 'global': return 'global:' + (a.addr != null ? a.addr.toString() : '');
+    default: return String(a.kind || 'other');
+  }
+}
 
 /**
  * 関数 1 つが「何をしているか」を、命令から確かめられる形で組み立てる。
@@ -135,7 +176,7 @@ export function describePurpose(o) {
   const model = o && o.model;
   if (!model) return null;
   const f = model.facts || {};
-  const updates = findValueUpdates(model);
+  const updates = Array.isArray(o.updates) ? o.updates : findValueUpdates(model);
 
   const changes = [];
   let locals = 0;
@@ -164,24 +205,27 @@ export function describePurpose(o) {
       loadAddress: u.from ? u.from.address : null,
       confidence: u.confidence,
     };
-    if (o.fields && o.owner) {
+    if (o.fields && o.owner && o.owner.className != null) {
       /*
        * dataflow が証明した access provenance（self / 位置変数番地）を
        * そのまま resolver へ渡す。ここで落とすと、証明済み self が
        * ヒューリスティック certain:false に降格し、位置変数の ivar は
        * まったく解けなくなる（fields.js の certainty boundary と食い違う）。
+       * また purpose.js は事実のみを扱うため certain === true の解決のみ採用する。
        */
-      c.field = o.fields.resolveAccess({ base: c.base, disp: c.disp, self: c.self, indexAddr: c.indexAddr }, o.owner.className) || null;
+      const resolved = o.fields.resolveAccess({ base: c.base, disp: c.disp, self: c.self, indexAddr: c.indexAddr }, o.owner.className);
+      c.field = resolved && resolved.certain === true ? resolved : null;
     }
     changes.push(c);
   }
   /*
    * 同じ場所への同じ変更が何度も出てくる（インライン展開された関数）。
-   * まとめて 1 件にして、何回あったかだけ残す。
+   * 変更量が異なる場合は別件として残し、同じものだけをまとめて回数を残す。
    */
   const merged = new Map();
   for (const c of changes) {
-    const key = c.base + '@' + (c.disp != null ? c.disp.toString() : 'iv' + c.indexAddr) + '@' + c.work;
+    const key = c.base + '@' + (c.disp != null ? c.disp.toString() : 'iv' + c.indexAddr) +
+      '@' + c.work + '@' + amountKey(c.amount);
     const hit = merged.get(key);
     if (!hit) { c.n = 1; merged.set(key, c); continue; }
     hit.n++;
@@ -198,15 +242,23 @@ export function describePurpose(o) {
   }));
 
   const callNames = [];
+  const seenCallNames = new Set();
+  const seenSelectors = new Set();
   const apis = [];
+  const seenApis = new Set();
   for (const c of (f.calledNames || [])) {
-    if (!c.name || callNames.some((x) => x.name === c.name)) continue;
+    if (!c.name || seenCallNames.has(c.name)) continue;
+    seenCallNames.add(c.name);
     callNames.push({ name: c.name, row: c.row });
     const api = apiInfo(c.name);
-    if (api && !apis.some((a) => a.id === api.id)) apis.push({ id: api.id, cat: api.cat });
+    if (api && !seenApis.has(api.id)) {
+      seenApis.add(api.id);
+      apis.push({ id: api.id, cat: api.cat });
+    }
   }
   for (const c of (model.calls || [])) {
-    if (c.selector && !callNames.some((x) => x.selector === c.selector)) {
+    if (c.selector && !seenSelectors.has(c.selector)) {
+      seenSelectors.add(c.selector);
       callNames.push({ selector: c.selector, row: c.row });
     }
   }
@@ -220,6 +272,9 @@ export function describePurpose(o) {
    */
   const textAt = o.textAt || null;
   const texts = [];
+  const seenTexts = new Set();
+  const formatTexts = [];
+  const seenFormatTexts = new Set();
   let formats = 0;
   for (const s of (f.stringRefs || [])) {
     let text = s.text || null;
@@ -228,8 +283,15 @@ export function describePurpose(o) {
       text = hit ? hit.text : null;
     }
     if (!text) continue;
-    if (FORMAT_RE.test(text)) formats++;
-    if (texts.length < 6 && !texts.some((x) => x.text === text)) {
+    if (isFormatString(text)) {
+      formats++;
+      if (formatTexts.length < 6 && !seenFormatTexts.has(text)) {
+        seenFormatTexts.add(text);
+        formatTexts.push({ text, addr: s.addr, row: s.row });
+      }
+    }
+    if (texts.length < 6 && !seenTexts.has(text)) {
+      seenTexts.add(text);
       texts.push({ text, addr: s.addr, row: s.row });
     }
   }
@@ -243,11 +305,13 @@ export function describePurpose(o) {
     stores: f.stores || 0,
     loads: f.loads || 0,
     changes: list.slice(0, 6),
+    allChanges: list,
     locals,
     compares,
     callNames: callNames.slice(0, 8),
     apis,
     texts,
+    formatTexts,
     formats,
     headline: null,
   };
@@ -279,25 +343,37 @@ function headlineOf(p) {
    * 「攻撃力の処理」とだけ言うと、読む人は計算式を探しに行って必ず迷う。
    * 書式文字列を埋めているという事実は命令から確かめられるので、そう言う。
    */
-  if (p.formats >= 1 && p.calls >= 1 && !strong) {
-    return { code: 'work-format', n: p.formats, texts: p.texts.slice(0, 2) };
-  }
-  if (p.loops && p.changes.some((c) => c.indexAddr != null || c.work === WORK.SET)) {
-    return { code: 'work-fill', change: p.changes[0], loops: p.loops };
-  }
-  if (top) return { code: 'work-change', change: top };
-  if (!p.changes.length && p.calls >= 1 && p.instructions <= 64) {
-    return { code: 'work-dispatch', calls: p.calls, names: p.callNames.slice(0, 3) };
-  }
   /*
    * 大きすぎて 1 つの処理として言えない。
    *
    * インライン展開で 6000 命令になった関数に「何をする処理か」を 1 行で
-   * 付けるのは、当てずっぽうにしかならない。分からないときは分からないと言う
-   * — このツールで唯一やってはいけないのは、それらしい嘘をつくこと。
+   * 付けるのは、当てずっぽうにしかならない。決定的な変更（strong）が無いなら、
+   * 弱い書き込みや繰り返しより先に「大きすぎる」と言う。
    */
   if (p.instructions >= 1200) {
     return { code: 'work-too-big', n: p.instructions, calls: p.calls };
+  }
+  /*
+   * 文言を組み立てる処理。
+   * 書式文字列に該当した文言だけを texts へ渡す。
+   */
+  if (p.formats >= 1 && p.calls >= 1 && !strong) {
+    const fmtTexts = Array.isArray(p.formatTexts)
+      ? p.formatTexts.slice(0, 2)
+      : (p.texts || []).filter((x) => x && isFormatString(x.text)).slice(0, 2);
+    return { code: 'work-format', n: p.formats, texts: fmtTexts };
+  }
+  // ObjC の非脆弱 ivar オフセット変数（indexAddr != null）や解決済み単一フィールドは
+  // 配列への詰め込み（work-fill）ではないため除外する。
+  const fillChange = p.loops
+    ? p.changes.find((c) => c.work === WORK.SET && c.indexAddr == null && !c.field)
+    : null;
+  if (fillChange) {
+    return { code: 'work-fill', change: fillChange, loops: p.loops };
+  }
+  if (top) return { code: 'work-change', change: top };
+  if (!p.changes.length && p.calls >= 1 && p.instructions <= 64) {
+    return { code: 'work-dispatch', calls: p.calls, names: p.callNames.slice(0, 3) };
   }
   if (p.compares.length && p.conditionals) {
     return { code: 'work-check', compares: p.compares.slice(0, 2), n: p.conditionals };
@@ -315,7 +391,8 @@ function headlineOf(p) {
 export function changeAt(purpose, disp) {
   if (!purpose || disp == null) return null;
   const want = BigInt(disp);
-  for (const c of purpose.changes) {
+  const list = purpose.allChanges || purpose.changes || [];
+  for (const c of list) {
     if (c.disp != null && BigInt(c.disp) === want) return c;
   }
   return null;

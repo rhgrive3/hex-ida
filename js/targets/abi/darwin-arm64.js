@@ -10,7 +10,12 @@ import {
   classifyAAPCS64FunctionReturn,
 } from './aapcs64.js';
 
-const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ios-simulator','ipados','ipados-simulator','macos','maccatalyst','tvos','tvos-simulator','watchos','watchos-simulator','visionos','visionos-simulator','maccatalyst']);
+const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ios-simulator','ipados','ipados-simulator','macos','macosx','maccatalyst','tvos','tvos-simulator','watchos','watchos-simulator','visionos','visionos-simulator']);
+function isPowerOfTwoAlignment(value) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return false;
+  const big = BigInt(value);
+  return (big & (big - 1n)) === 0n;
+}
 const DARWIN_VARIADIC_STACK_SLOT_ALIGNMENT = 8;
 
 function callPrototypeOf(insn, opts) {
@@ -56,7 +61,7 @@ function aggregateAlignmentEvidence(parameter, layoutEvidence) {
         .filter((key) => Object.hasOwn(owner, key))
         .map((key) => {
           const value = owner[key];
-          return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+          return isPowerOfTwoAlignment(value) ? value : null;
         }));
     if (!values.length) return { present:false, value:null };
     const flattened = values.flat();
@@ -74,7 +79,7 @@ function aggregateAlignmentEvidence(parameter, layoutEvidence) {
     if (!evidence.present || evidence.value == null) return { proven:false, alignment:1 };
     memberAlignments.push(evidence.value);
   }
-  return { proven:true, alignment:Math.max(8, ...memberAlignments) };
+  return { proven:true, alignment:Math.max(1, ...memberAlignments) };
 }
 
 function pointerSpelling(value) {
@@ -95,15 +100,15 @@ function parameterClass(param) {
   const hvaMeta = descriptorBoolean(param, 'hva');
   const aggregateMetadataInvalid = (hfaMeta.present && hfaMeta.value === null)
     || (hvaMeta.present && hvaMeta.value === null);
-  const hfa = hfaMeta.value === true || param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
-  const hva = hvaMeta.value === true || cls.includes('hva');
+  const hfa = !pointer && (hfaMeta.value === true || param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous'));
+  const hva = !pointer && (hvaMeta.value === true || cls.includes('hva'));
   const homogeneous = hfa || hva;
   const aggregateDescriptorPresent = aggregateLayoutDescriptorPresent(param);
   const aggregateHint = param?.aggregate === true || param?.isAggregate === true
     || aggregateDescriptorPresent || /aggregate|struct|union|record|array|composite/.test(`${type} ${cls}`);
-  const vector = !aggregateHint && (param?.vector === true || cls.includes('vector') || /vector|simd/.test(type));
+  const vector = !pointer && !aggregateHint && (param?.vector === true || cls.includes('vector') || /vector|simd/.test(type));
   const aggregate = !pointer && !homogeneous && !appleLongDouble && aggregateHint;
-  const fp = !aggregate && (appleLongDouble || hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
+  const fp = !pointer && !aggregate && (appleLongDouble || hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
   // A nested layout descriptor is the canonical aggregate source.  Resolve it
   // before reading legacy aliases so a classifier cannot publish bits/member
   // lanes from one descriptor while the validated physical layout comes from
@@ -151,9 +156,9 @@ function parameterClass(param) {
     : bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
   const rawExplicitAlignment = param?.alignmentBytes || param?.alignBytes || param?.alignment || 0;
   const explicitAlignment = typeof rawExplicitAlignment === 'number' ? rawExplicitAlignment : 0;
-  const explicitAlignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0
+  const explicitAlignmentBytes = isPowerOfTwoAlignment(explicitAlignment)
     ? explicitAlignment : null;
-  const explicitAlignmentProven = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0;
+  const explicitAlignmentProven = isPowerOfTwoAlignment(explicitAlignment);
   const aggregateAlignment = aggregateAlignmentEvidence(param, layoutEvidence);
   let alignmentBytes = explicitAlignmentProven ? explicitAlignment : 1;
   if (!explicitAlignmentProven) {
@@ -197,6 +202,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
   let stackOffset = 0;
   let stackArgsMayContainPointers = false;
   let aggregatePartial = false;
+  let allocationUncertain = false;
 
   if (!params) {
     for (let i = 0; i < 8; i++) {
@@ -230,8 +236,18 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       || (fixedCount != null && index >= fixedCount)
     );
     const forceStack = anonymousVararg === true;
+    if (allocationUncertain) {
+      aggregatePartial = true;
+      arguments_.push({
+        index, location:'unknown', abiClass:'argument-layout-unproven',
+        partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+        reason:'preceding-argument-layout-not-proven',
+      });
+      continue;
+    }
     if (c.appleLongDoubleWidthConflict) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({ index, location:'unknown', abiClass:'darwin-long-double-width-conflict',
         bits:c.bits, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'darwin-arm64-long-double-width-conflicts-with-apple-binary64' });
@@ -239,6 +255,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.aggregateMetadataInvalid) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({ index, location:'unknown', abiClass:'aggregate-metadata-unproven', aggregate:true,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'aggregate-hfa-hva-metadata-invalid' });
@@ -246,6 +263,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.homogeneous && !c.homogeneousLayoutProven) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({
         index, location:'unknown', abiClass:c.hfa ? 'hfa-unproven' : 'hva-unproven',
         aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
@@ -255,6 +273,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.aggregate && !c.aggregateLayoutProven) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({
         index, location:'unknown', abiClass:'aggregate-unproven', aggregate:true,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
@@ -290,6 +309,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.aggregate && !c.aggregateAlignmentProven) {
       aggregatePartial = true;
+      allocationUncertain = true;
       arguments_.push({
         index, location:'unknown', abiClass:'aggregate-alignment-unproven', aggregate:true,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
@@ -340,13 +360,15 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       if (c.homogeneous) fp = 8;
     } else {
       const regsNeeded = Math.max(1, Math.ceil(c.bits / 64));
+      if (!forceStack && c.alignmentBytes >= 16 && (gp & 1) !== 0) gp += 1;
       // A padded aggregate needs a physical lane proof that differs from its
       // logical bit width.  Do not publish an invented register split until a
       // dedicated register-padding representation exists; the stack path
       // below carries the complete canonical extent exactly.
       if (c.aggregate && c.aggregateBytes > Math.ceil(c.bits / 8)
-        && gp + regsNeeded <= 8) {
+        && gp + regsNeeded <= 8 && !forceStack) {
         aggregatePartial = true;
+        allocationUncertain = true;
         arguments_.push({ index, location:'unknown', abiClass:'aggregate-padding-register-layout-unproven',
           aggregate:true, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
           reason:'aggregate-physical-padding-register-layout-not-represented' });
@@ -377,13 +399,14 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           ...(c.aggregate ? { aggregate:true, alignmentBytes:c.alignmentBytes } : {}),
           possible:false,
           mustUse:true,
-          ...(c.bits < 32 && !c.pointer ? {
+          ...(c.bits < 32 && !c.pointer && !c.aggregate ? {
             callerExtended:true,
             extension:c.signed ? 'sign-extend-to-32' : 'zero-extend-to-32',
           } : {}),
         });
         continue;
       }
+      gp = 8;
     }
 
     const naturalStackAlignmentBytes = c.homogeneous
@@ -457,8 +480,8 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     srcs,
     arguments:arguments_,
     stackArguments,
-    stackArgsUnknown:variadic,
-    stackArgsMayContainPointers:stackArgsMayContainPointers || variadic,
+    stackArgsUnknown:variadic || allocationUncertain,
+    stackArgsMayContainPointers:stackArgsMayContainPointers || variadic || allocationUncertain,
     possibleRegisterInputs:[],
     variadicTail:variadic ? {
       location:'stack',
@@ -502,20 +525,34 @@ function appleLongDoubleReturnConflict(proto, opts = {}) {
     reason:'darwin-arm64-long-double-width-conflicts-with-apple-binary64' };
 }
 
+function normalizeAppleReturnOptions(proto, opts = {}) {
+  const source = opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '';
+  const sourceClass = opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '';
+  if (!isAppleLongDoubleScalar(source, sourceClass)) return opts;
+  const normalized = { ...opts };
+  if (opts?.returnType || !proto) normalized.returnType = 'double';
+  if (Object.hasOwn(normalized, 'returnClass')) normalized.returnClass = 'fp';
+  return normalized;
+}
+
 function classifyDarwinArm64CallReturn(insn, opts = {}) {
   const proto = callPrototypeOf(insn, opts);
   const conflict = appleLongDoubleReturnConflict(proto, opts);
   if (conflict) return conflict;
   const normalized = normalizeAppleReturnType(proto, opts);
-  if (!proto || normalized === proto) return classifyAAPCS64CallReturn(insn, opts);
-  return classifyAAPCS64CallReturn({ ...(insn || {}), callPrototype:normalized }, opts);
+  const normalizedOpts = normalizeAppleReturnOptions(proto, opts);
+  if (normalized === proto) return classifyAAPCS64CallReturn(insn, normalizedOpts);
+  return classifyAAPCS64CallReturn({ ...(insn || {}), callPrototype:normalized }, normalizedOpts);
 }
 
 function classifyDarwinArm64FunctionReturn(opts = {}) {
   const proto = opts?.functionPrototype || opts?.prototype || null;
   const conflict = appleLongDoubleReturnConflict(proto, opts);
   if (conflict) return conflict;
-  return classifyAAPCS64FunctionReturn({ ...opts, functionPrototype:normalizeAppleReturnType(proto, opts) });
+  const normalizedOpts = normalizeAppleReturnOptions(proto, opts);
+  const normalizedProto = normalizeAppleReturnType(proto, opts);
+  if (normalizedProto === proto) return classifyAAPCS64FunctionReturn(normalizedOpts);
+  return classifyAAPCS64FunctionReturn({ ...normalizedOpts, functionPrototype:normalizedProto });
 }
 
 export const DARWIN_ARM64_ABI = new ABIPlugin({

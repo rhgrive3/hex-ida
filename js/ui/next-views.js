@@ -62,7 +62,22 @@ export function viewLabel(id, ja = true) {
 
 function addressOf(address) {
   if (address == null) return null;
-  try { return BigInt(address).toString(); } catch { return null; }
+  if (typeof address === 'bigint') return address >= 0n ? address.toString() : null;
+  if (typeof address === 'number') {
+    if (!Number.isSafeInteger(address) || address < 0) return null;
+    return BigInt(address).toString();
+  }
+  if (typeof address === 'string') {
+    const trimmed = address.trim();
+    if (!trimmed) return null;
+    try {
+      const value = BigInt(trimmed);
+      return value >= 0n ? value.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -110,7 +125,7 @@ export function functionViews({ address, capability = {}, include, exclude = [],
  */
 export function openFunctionView(view, { router, legacy = {}, address } = {}) {
   if (!view || !view.available) return false;
-  const target = address == null ? view.address : addressOf(address);
+  const target = address == null ? addressOf(view.address) : addressOf(address);
   if (target == null) return false;
   const route = address == null
     ? view.route
