@@ -149,19 +149,27 @@ export function scanHighEntropyWindows(bytes, {
   const threshX1000 = Math.max(0, Math.min(8000, Math.round(threshold * 1000)));
   const base = BigInt(baseAddress ?? 0n);
 
-  const ex = u8.length <= SCRATCH_CHUNK_MAX ? getWasmExports(engine ? { engine } : null) : null;
+  const ex = windowSize <= SCRATCH_CHUNK_MAX ? getWasmExports(engine ? { engine } : null) : null;
   if (ex) {
     try {
-      ex.hex_engine_scratch_reset();
-      const inPtr = ex.hex_engine_scratch_alloc(u8.length);
-      const outPtr = ex.hex_engine_scratch_alloc(maxHits * 8);
-      if (inPtr && outPtr) {
-        new Uint8Array(ex.memory.buffer, inPtr, u8.length).set(u8);
-        const count = ex.hex_scan_high_entropy_windows(inPtr, u8.length, windowSize, stepSize, threshX1000, outPtr, maxHits) >>> 0;
+      const out = [];
+      const maxStepSpan = Math.floor((SCRATCH_CHUNK_MAX - windowSize) / stepSize) * stepSize;
+      const chunkBody = maxStepSpan + windowSize;
+      let pos = 0;
+      while (pos + windowSize <= u8.length && out.length < maxHits) {
+        const end = Math.min(u8.length, pos + chunkBody);
+        const chunkLen = end - pos;
+        if (chunkLen < windowSize) break;
+        const remain = maxHits - out.length;
+        ex.hex_engine_scratch_reset();
+        const inPtr = ex.hex_engine_scratch_alloc(chunkLen);
+        const outPtr = ex.hex_engine_scratch_alloc(remain * 8);
+        if (!inPtr || !outPtr) throw new Error('scratch_alloc_failed');
+        new Uint8Array(ex.memory.buffer, inPtr, chunkLen).set(u8.subarray(pos, end));
+        const count = ex.hex_scan_high_entropy_windows(inPtr, chunkLen, windowSize, stepSize, threshX1000, outPtr, remain) >>> 0;
         const pairs = new Uint32Array(ex.memory.buffer, outPtr, count * 2);
-        const out = [];
         for (let i = 0; i < count; i++) {
-          const offset = pairs[i * 2];
+          const offset = pos + pairs[i * 2];
           out.push({
             offset,
             address: base + BigInt(offset),
@@ -170,9 +178,11 @@ export function scanHighEntropyWindows(bytes, {
             kind: classifyHighEntropyKind(u8, offset),
           });
         }
-        recordWasmCall('crypto_entropy');
-        return out;
+        const windowsInChunk = Math.floor((chunkLen - windowSize) / stepSize) + 1;
+        pos += windowsInChunk * stepSize;
       }
+      recordWasmCall('crypto_entropy');
+      return out;
     } catch {
       recordFallback('crypto_entropy:wasm_exception');
     }
