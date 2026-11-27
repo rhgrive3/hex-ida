@@ -1535,6 +1535,133 @@ void test_wave33_track_a_readability() {
   hex::decompiler::passes::set_general_scratch_arena(nullptr);
 }
 
+
+void test_track2_movk_folding_and_dead_fp_sync() {
+  hex::Arena arena;
+  arena.init_fixed(g_arena_buf, sizeof(g_arena_buf));
+  const char* txt = nullptr;
+  uint32_t len = 0u;
+  const HexLineMapEntry* lm = nullptr;
+  uint32_t lm_cnt = 0u;
+  constexpr uint32_t kRet = 0xD65F03C0u;
+
+  // (1) 64-bit MOVZ + MOVK + MOVK folds to 0x6FC23AC00ULL
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0xD2958001u,  // movz x1, #0xAC00
+      0xF2BF8461u,  // movk x1, #0xFC23, lsl #16
+      0xF2C000C1u,  // movk x1, #0x0006, lsl #32
+      0x8B010000u,  // add x0, x0, x1
+      kRet,
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 5u, 0x100070000ULL, "t2_movk_64", 10u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "x1 = 0x6FC23AC00ULL;"));
+    assert(!contains(txt, len, "(x1 & 0x"));
+  }
+
+  // (2) 32-bit MOVZ w8 + MOVK w8, 64-bit MOVN + MOVK, and 32-bit MOVN + MOVK fold accurately
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0x528ACF08u,  // movz w8, #0x5678
+      0x72A24688u,  // movk w8, #0x1234, lsl #16 -> 0x12345678
+      0x92801FE9u,  // movn x9, #0x00FF (~0xFF = 0xFFFFFFFFFFFFFF00)
+      0xF2A24689u,  // movk x9, #0x1234, lsl #16 -> 0xFFFFFFFF1234FF00ULL
+      0x1280002Au,  // movn w10, #0x0001 (0xFFFFFFFE)
+      0x72B579AAu,  // movk w10, #0xABCD, lsl #16 -> 0xABCDFFFE
+      0x8B080120u,  // add x0, x9, x8
+      0x8B0A0000u,  // add x0, x0, x10
+      kRet,
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 9u, 0x100071000ULL, "t2_movk_32_movn", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "x8 = 0x12345678;"));
+    assert(contains(txt, len, "x9 = 0xFFFFFFFF1234FF00ULL;"));
+    assert(contains(txt, len, "x10 = 0xABCDFFFE;"));
+    assert(!contains(txt, len, "(x8 & 0x"));
+    assert(!contains(txt, len, "(x9 & 0x"));
+    assert(!contains(txt, len, "(x10 & 0x"));
+  }
+
+  // (3) MOVK that is a branch target (is_label[j] != 0) MUST NOT fold into preceding MOVZ
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0xB4000040u,  // cbz x0, +8 -> idx 2 (MOVK)
+      0xD2958001u,  // movz x1, #0xAC00
+      0xF2BF8461u,  // loc: movk x1, #0xFC23, lsl #16
+      0xAA0103E0u,  // mov x0, x1
+      kRet,
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 5u, 0x100072000ULL, "t2_movk_label", 13u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "x1 = 0xAC00;"));
+    assert(contains(txt, len, "x1 = (x1 & 0xFFFFFFFF0000FFFFULL) | 0xFC230000ULL;"));
+    assert(!contains(txt, len, "0xFC23AC00"));
+  }
+
+  // (4a) Dead emit_sync_q_to_d omitted when d0 is never read and function returns uint64
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0x1E6E1000u,  // fmov d0, #1.0 (marks fp_used & fp_written, but NOT fp_read)
+      0x3DC00000u,  // ldr q0, [x0] (would emit dead sync d0 = __hex_u64_to_f64((uint64_t)q0))
+      0x3D800020u,  // str q0, [x1]
+      0xD2800540u,  // mov x0, #42 (returns uint64)
+      kRet,
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 5u, 0x100073000ULL, "t2_dead_fp_sync", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "uint64 t2_dead_fp_sync("));
+    assert(!contains(txt, len, "__hex_u64_to_f64((uint64_t)q0)"));
+    assert(!contains(txt, len, "__hex_u32_to_f32((uint32_t)q0)"));
+  }
+
+  // (4b) Live emit_sync_q_to_d preserved when d0 is read (fadd d0, d0, d1)
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0x3DC00000u,  // ldr q0, [x0]
+      0x1E612800u,  // fadd d0, d0, d1 (marks fp_read for d0 and d1)
+      0x9E660000u,  // fmov x0, d0
+      kRet,
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 4u, 0x100073100ULL, "t2_live_fp_read", 15u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "d0 = __hex_u64_to_f64((uint64_t)q0);"));
+    assert(contains(txt, len, "d0 = d0 + d1;"));
+  }
+
+  // (4c) Live emit_sync_q_to_d preserved when d0 is returned (return d0;)
+  {
+    arena.reset();
+    const uint32_t w[] = {
+      0x1E6E1000u,  // fmov d0, #1.0 (marks fp_used & fp_written, sets last_ret_is_fp)
+      0x3DC00000u,  // ldr q0, [x0] (must sync q0 -> d0 because d0 is returned)
+      kRet,
+    };
+    assert(hex::decompiler::passes::try_emit_arm64_general(
+               w, 3u, 0x100073200ULL, "t2_live_fp_ret", 14u, 0u,
+               arena, &txt, &len, &lm, &lm_cnt) == HEX_OK);
+    assert_parens_balanced(txt, len);
+    assert(contains(txt, len, "double t2_live_fp_ret("));
+    assert(contains(txt, len, "d0 = __hex_u64_to_f64((uint64_t)q0);"));
+    assert(contains(txt, len, "return d0;"));
+  }
+}
+
 int main() {
   test_frame_adrp_bl_ret();
   test_adrp_invalidation_and_xzr_and_q_store();
@@ -1551,6 +1678,7 @@ int main() {
   test_wave31_zero_goto_state_machine();
   test_wave32_readability_upgrades();
   test_wave33_track_a_readability();
+  test_track2_movk_folding_and_dead_fp_sync();
   std::puts("test_arm64_general_emit_native: PASS");
   return 0;
 }

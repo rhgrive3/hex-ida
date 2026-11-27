@@ -2653,7 +2653,83 @@ export function wasmSha256Hash(bytes, opts = {}) {
     return noteFallback('sha256', 'invalid_bytes');
   }
   if (bytes.length > SHA256_MAX_HASH_BYTES) {
-    return noteFallback('sha256', 'input_too_large');
+    if (typeof ex.hex_sha256_compress_blocks !== 'function') {
+      return noteFallback('sha256', 'input_too_large');
+    }
+
+    try {
+      const state = new Uint32Array([
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+      ]);
+      const fullBlocks = Math.floor(bytes.length / 64);
+      let remaining = fullBlocks;
+      let curOff = 0;
+
+      while (remaining > 0) {
+        const chunkBlocks = Math.min(SHA256_MAX_CHUNK_BLOCKS, remaining);
+        const chunkBytes = chunkBlocks * 64;
+
+        ex.hex_identity_reset();
+        const statePtr = ex.hex_identity_alloc(32);
+        const blocksPtr = ex.hex_identity_alloc(chunkBytes);
+        if (!statePtr || !blocksPtr) {
+          return noteFallback('sha256', 'oom');
+        }
+
+        new Uint32Array(ex.memory.buffer, statePtr, 8).set(state);
+        new Uint8Array(ex.memory.buffer, blocksPtr, chunkBytes).set(
+          bytes.subarray(curOff, curOff + chunkBytes),
+        );
+
+        const status = ex.hex_sha256_compress_blocks(statePtr, blocksPtr, chunkBlocks >>> 0);
+        if (status !== HEX_OK) {
+          return noteFallback('sha256', `wasm_status_${status}`);
+        }
+
+        state.set(new Uint32Array(ex.memory.buffer, statePtr, 8));
+        curOff += chunkBytes;
+        remaining -= chunkBlocks;
+      }
+
+      const rem = bytes.length % 64;
+      const tailBlocks = rem >= 56 ? 2 : 1;
+      const tailLen = tailBlocks * 64;
+      const tail = new Uint8Array(tailLen);
+      if (rem > 0) {
+        tail.set(bytes.subarray(curOff));
+      }
+      tail[rem] = 0x80;
+      const tailView = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+      tailView.setBigUint64(tailLen - 8, BigInt(bytes.length) * 8n, false);
+
+      ex.hex_identity_reset();
+      const statePtr = ex.hex_identity_alloc(32);
+      const tailPtr = ex.hex_identity_alloc(tailLen);
+      if (!statePtr || !tailPtr) {
+        return noteFallback('sha256', 'oom');
+      }
+
+      new Uint32Array(ex.memory.buffer, statePtr, 8).set(state);
+      new Uint8Array(ex.memory.buffer, tailPtr, tailLen).set(tail);
+
+      const status = ex.hex_sha256_compress_blocks(statePtr, tailPtr, tailBlocks >>> 0);
+      if (status !== HEX_OK) {
+        return noteFallback('sha256', `wasm_status_${status}`);
+      }
+
+      state.set(new Uint32Array(ex.memory.buffer, statePtr, 8));
+
+      const out = new Uint8Array(32);
+      const outView = new DataView(out.buffer);
+      for (let i = 0; i < 8; i += 1) {
+        outView.setUint32(i * 4, state[i], false);
+      }
+      recordWasmCall('sha256');
+      return out;
+    } catch {
+      return noteFallback('sha256', 'wasm_exception');
+    }
   }
 
   try {

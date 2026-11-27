@@ -287,6 +287,7 @@ struct AnalysisCtx {
   uint32_t fp_read_before_write;   // bits 0..31 (d0..d31)
   uint32_t fp_written;             // bits 0..31
   uint32_t fp_used;                // bits 0..31
+  uint32_t fp_read;                // bits 0..31
   uint32_t q_used;                 // bits 0..31
   bool uses_sp;
   bool uses_uint8;
@@ -370,6 +371,7 @@ struct AnalysisCtx {
   void mark_fp_read(uint32_t r, int width = 0) {
     r &= 31u;
     fp_used |= (1u << r);
+    fp_read |= (1u << r);
     if ((fp_written & (1u << r)) == 0u) {
       fp_read_before_write |= (1u << r);
       if (width == 1) fp_param_single_mask |= (1u << r);
@@ -1083,6 +1085,7 @@ static void emit_sync_d_to_q(TextBuf* tb, const AnalysisCtx& ctx, uint32_t r, bo
 
 static void emit_sync_q_to_d(TextBuf* tb, const AnalysisCtx& ctx, uint32_t r, bool prefer_double = false) {
   if (!tb || r >= 32u || (ctx.fp_used & (1u << r)) == 0u) return;
+  if ((ctx.fp_read & (1u << r)) == 0u && !(r == 0u && (ctx.returns_float || ctx.returns_double))) return;
   const bool use_double = prefer_double || (((ctx.fp_double_mask & (1u << r)) != 0u) && ((ctx.fp_single_mask & (1u << r)) == 0u));
   tb->put_str("    ");
   tb->put_reg_d(r);
@@ -9137,6 +9140,52 @@ HexStatus try_emit_arm64_general(
         has_pending_cmp = true;
         if (tb.overflow) return HEX_ERR_OOM;
         continue;
+      }
+    }
+    // Fold adjacent MOVZ/MOVN + MOVK sequence targeting the same register and width.
+    {
+      const uint32_t w = words[i];
+      const uint32_t opc = (w >> 29u) & 3u;
+      if ((w & 0x1F800000u) == 0x12800000u && (opc == 0u || opc == 2u)) {
+        const uint32_t rd = w & 31u;
+        const bool is64 = ((w >> 31u) & 1u) != 0u;
+        const uint32_t hw = (w >> 21u) & 3u;
+        if (rd < 31u && (is64 || hw < 2u)) {
+          const uint64_t imm16 = static_cast<uint64_t>((w >> 5u) & 0xFFFFu);
+          uint64_t val = imm16 << (hw * 16u);
+          if (opc == 0u) val = ~val;
+          if (!is64) val &= 0xFFFFFFFFULL;
+          uint32_t j = i + 1u;
+          while (j < word_count && is_label[j] == 0u && (!has_pending_cmp || j != pending_consumer)) {
+            const uint32_t wj = words[j];
+            if ((wj & 0x1F800000u) != 0x12800000u || ((wj >> 29u) & 3u) != 3u) break;
+            if ((wj & 31u) != rd) break;
+            if ((((wj >> 31u) & 1u) != 0u) != is64) break;
+            const uint32_t hw_j = (wj >> 21u) & 3u;
+            if (!is64 && hw_j >= 2u) break;
+            const uint64_t imm16_j = static_cast<uint64_t>((wj >> 5u) & 0xFFFFu);
+            const uint32_t shift_j = hw_j * 16u;
+            val = (val & ~(0xFFFFULL << shift_j)) | (imm16_j << shift_j);
+            if (!is64) val &= 0xFFFFFFFFULL;
+            ++j;
+          }
+          if (j > i + 1u) {
+            tb.record_line(pc);
+            tb.put_str("    ");
+            tb.put_reg_x(rd);
+            tb.put_str(" = ");
+            tb.put_imm(val);
+            tb.put_str(";\n");
+            ctx.clear_adrp(rd);
+            pending_label = false;
+            if (consumed_pending) {
+              cmp = ctx.uses_nzcv ? make_nzcv_cmp(false) : CmpState{};
+            }
+            if (tb.overflow) return HEX_ERR_OOM;
+            i = j - 1u;
+            continue;
+          }
+        }
       }
     }
     const uint32_t before_len = tb.len;
