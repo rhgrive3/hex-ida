@@ -778,7 +778,7 @@ export async function pinpoint(opts = {}) {
   }
 
   let fn = null;
-  if (!cancelled() && o.ranked && o.ranked.length) {
+  if (!cancelled() && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size) || o.shapesByGoal)) {
     fn = await pinpointFunction(Object.assign({}, o, {
       // Offset-only function verification cannot establish a C++ owner.
       field: field.top && field.top.source !== 'cxx' ? {

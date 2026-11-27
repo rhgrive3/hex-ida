@@ -1013,6 +1013,11 @@ export function reasonText(r) {
         'ゲームの数値の答えにはなりません',
       proof + ' shows this belongs to ' + who + ', a bundled SDK — not to the game itself');
     }
+    case 'crypto-const': {
+      const label = d.name || d.algo || pick('暗号定数テーブル', 'a cryptographic constant table');
+      return pick('暗号アルゴリズムの定数（' + trim(label, 32) + '）を参照している',
+        'references a cryptographic constant (' + trim(label, 32) + ')');
+    }
     default:
       return '';
   }
@@ -2104,8 +2109,35 @@ export function proofText(item) {
         : pick('自分が持っている値へ ' + d.n + ' 回書き込んでいる',
           'it writes its own fields ' + d.n + ' times');
     case 'fn-store-observed':
-      return pick('オブジェクト領域への書き込み命令が ' + d.n + ' 回ある',
-        'it performs ' + d.n + ' non-stack store(s)');
+      return pick('オブジェクト領域への書き込み命令が ' + (d.n ?? 0) + ' 回ある',
+        'it performs ' + (d.n ?? 0) + ' non-stack store(s)');
+    case 'fn-shape-site': {
+      const off = d.offset != null ? hexOffset(d.offset) : '';
+      return pick(
+        (off ? 'オフセット ' + off + ' の' : '') + '目的に合う値更新の形（形状サイト）を含む処理である',
+        'contains a value-update shape site matching the goal' + (off ? ' at ' + off : ''));
+    }
+    case 'fn-field-rmw': {
+      const n = Number.isFinite(d.count) ? d.count : (Number.isFinite(d.n) ? d.n : 1);
+      return pick('オブジェクトの値を読み出して計算し書き戻す処理（RMW）が ' + n + ' か所ある',
+        'performs ' + n + ' object-field read-modify-write update(s)');
+    }
+    case 'fn-field-rmw-clamped': {
+      const n = Number.isFinite(d.count) ? d.count : (Number.isFinite(d.n) ? d.n : 1);
+      return pick('上下限チェック（クランプ）付きでオブジェクトの値を更新する処理が ' + n + ' か所ある',
+        'performs ' + n + ' clamped object-field read-modify-write update(s)');
+    }
+    case 'fn-crypto-bitwise': {
+      const n = Number.isFinite(d.bitwiseCount) ? d.bitwiseCount : (Number.isFinite(d.n) ? d.n : 0);
+      return pick(
+        (d.hasXorLoop ? 'XOR を含む繰り返し演算と' : '') + '高密度なビット演算（' + n + ' 命令）が観測された',
+        'shows high-density bitwise operations (' + n + ' instructions' + (d.hasXorLoop ? ', including an XOR loop' : '') + ')');
+    }
+    case 'fn-crypto-hw-insn': {
+      const n = Number.isFinite(d.hwCryptoCount) ? d.hwCryptoCount : (Number.isFinite(d.n) ? d.n : 1);
+      return pick('ハードウェア暗号命令（AES / SHA 等）を ' + n + ' 回実行している',
+        'executes ' + n + ' hardware cryptographic instruction(s)');
+    }
     case 'fn-owner-class':
       return pick('この処理を持っているクラスの名前が目的に合う', 'the owning class name fits');
     case 'fn-numeric':
