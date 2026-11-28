@@ -305,7 +305,22 @@ export class KnowledgeDB {
         if (!neg.indexNames.contains('candidateName')) neg.createIndex('candidateName','candidateName',{unique:false});
         if (!neg.indexNames.contains('candidateIdentity')) neg.createIndex('candidateIdentity','candidateIdentity',{unique:false});
       };
-      req.onsuccess=()=>{ this._db = req.result; resolve(req.result); };
+      req.onsuccess=()=>{
+        const db = req.result;
+        if (db) {
+          db.onversionchange = () => {
+            try { db.close(); } catch {}
+            this._db = null;
+            this._dbOpenPromise = null;
+          };
+        }
+        this._db = db;
+        resolve(db);
+      };
+      req.onblocked=()=>{
+        this._dbOpenPromise = null;
+        reject(new Error('Knowledge database open blocked by another connection'));
+      };
       req.onerror=()=>{ this._dbOpenPromise = null; reject(req.error); };
     });
     return this._dbOpenPromise;

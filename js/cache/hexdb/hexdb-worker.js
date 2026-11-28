@@ -287,6 +287,7 @@ export class HexDbWorkerHost {
           await this._backend.close();
           this._backend = null;
         }
+        this._memoryBudget.setUsage(MEMORY_CATEGORY_HEXDB, 0);
         return { closed: true };
       }
 
@@ -413,6 +414,7 @@ export class HexDbWorkerHost {
       await this._backend.close();
       this._backend = null;
     }
+    this._memoryBudget.setUsage(MEMORY_CATEGORY_HEXDB, 0);
     this._inFlightIds.clear();
     this._cancelledIds.clear();
   }

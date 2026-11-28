@@ -30,6 +30,14 @@ function fileFromWords(name, words) {
   assert.equal(fields.results.length, 1);
   assert.equal(fields.results[0].size, 8);
   assert.equal(fields.results[0].kind, 'load');
+  const elem0 = await b.fieldAccess({ regionId: id, offset: 4n, size: 4, limit: 8 });
+  assert.equal(elem0.results.length, 1);
+  assert.equal(elem0.results[0].size, 4);
+  assert.equal(elem0.results[0].kind, 'load');
+  const elem1 = await b.fieldAccess({ regionId: id, offset: 8n, size: 4, limit: 8 });
+  assert.equal(elem1.results.length, 1);
+  assert.equal(elem1.results[0].size, 4);
+  assert.equal(elem1.results[0].kind, 'load');
   const xrefs = await b.xrefs({ regionId: id, target: 4n, limit: 8 });
   assert.ok(xrefs.results.some((x) => x.addr === 4n && x.kind === 'load'));
 }

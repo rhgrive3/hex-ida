@@ -63,6 +63,23 @@ export class AuthRepository {
       )`, staleBefore, OAUTH_TRANSACTION_PRUNE_PER_INDEX, staleBefore, OAUTH_TRANSACTION_PRUNE_PER_INDEX).run();
     return { deleted: result.meta?.changes ?? 0, limit: OAUTH_TRANSACTION_PRUNE_BATCH_SIZE };
   }
+  async pruneSessions(batchSize = 200) {
+    const limit = Math.max(1, Math.floor(Number(batchSize) || 200));
+    const expiredLimit = Math.ceil(limit / 2);
+    const revokedLimit = Math.floor(limit / 2);
+    const now = this.now();
+    const result = await this.statement(`WITH expired AS (
+        SELECT token_hash FROM sessions
+        WHERE expires_at <= ? ORDER BY expires_at LIMIT ?
+      ), revoked AS (
+        SELECT token_hash FROM sessions
+        WHERE revoked_at IS NOT NULL AND revoked_at <= ? ORDER BY revoked_at LIMIT ?
+      )
+      DELETE FROM sessions WHERE token_hash IN (
+        SELECT token_hash FROM expired UNION ALL SELECT token_hash FROM revoked
+      )`, now, expiredLimit, now, revokedLimit).run();
+    return { deleted: result.meta?.changes ?? 0, limit };
+  }
   transaction(id) { return this.statement('SELECT * FROM oauth_transactions WHERE transaction_id = ?', id).first(); }
   transactionForState(stateHash) { return this.statement('SELECT * FROM oauth_transactions WHERE state_hash = ?', stateHash).first(); }
   claimCallback(stateHash) {
