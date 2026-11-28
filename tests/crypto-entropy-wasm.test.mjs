@@ -144,7 +144,10 @@ test('rankCandidates + pinpointFunction surface stripped crypto routines via cry
   const symbols = { symbolCount: 0, functionCount: 2, addrs: [], names: [], renames: new Map(), nameAt: () => '' };
   const cryptoConstants = [{ id: 'aes-sbox', name: 'AES S-Box', offset: 0x40, address: 0x90040n, length: 256 }];
   const program = {
-    functionsReferencing: (addr) => (BigInt(addr) === 0x90040n ? [{ addr: 0x2000n, site: 0x2004n }] : []),
+    functionsReferencing: (addr, span) => {
+      if (typeof span !== 'bigint') throw new TypeError(`functionsReferencing span must be bigint, got ${typeof span}`);
+      return BigInt(addr) === 0x90040n ? [{ addr: 0x2000n, site: 0x2004n }] : [];
+    },
     calleesOf: () => [],
     callersOf: () => [],
     callCountOf: () => 2,
@@ -246,7 +249,8 @@ test('scanBinaryRegionsCrypto + autoAnalyze wire crypto constants & high-entropy
     callCount: 0,
     refCount: 1,
     statsComplete: true,
-    functionsReferencing(addr) {
+    functionsReferencing(addr, span) {
+      if (typeof span !== 'bigint') throw new TypeError(`functionsReferencing span must be bigint, got ${typeof span}`);
       if (addr === 0x20080n) return [{ addr: fnAddr, site: fnAddr + 4n }];
       return [];
     },

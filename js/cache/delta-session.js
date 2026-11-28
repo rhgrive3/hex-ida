@@ -30,6 +30,9 @@ const HEX_RE = /^0x[0-9a-f]+$/i;
 export const VALID_EXPLORER_FILTERS = new Set(['all', 'saved', 'edited']);
 export const VALID_EXPLORER_SORTS = new Set(['address', 'name', 'size', 'priority']);
 export const VALID_FUNCTION_TABS = new Set(['overview', 'pseudocode', 'flow', 'calls', 'evidence', 'runtime']);
+export const STAGED_AUTO_ANALYSIS_STAGES = Object.freeze(['names', 'strings', 'callgraph', 'goals']);
+const MAX_CACHED_RECOVERED_NAMES = 256;
+const MAX_CACHED_GOAL_CANDIDATES = 32;
 
 /* ── Address & Value Helpers ─────────────────────────────────── */
 
@@ -276,6 +279,124 @@ function normalizeLastGoal(goal) {
   return null;
 }
 
+function toSafeNonNegInt(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(n));
+}
+
+function toSafeTimestampOrNull(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
+}
+
+export function normalizeStagedAutoAnalysis(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const rawStages = raw.stages && typeof raw.stages === 'object' && !Array.isArray(raw.stages)
+    ? raw.stages
+    : {};
+
+  const normNames = rawStages.names && typeof rawStages.names === 'object' ? rawStages.names : {};
+  const normStrings = rawStages.strings && typeof rawStages.strings === 'object' ? rawStages.strings : {};
+  const normCallgraph = rawStages.callgraph && typeof rawStages.callgraph === 'object' ? rawStages.callgraph : {};
+  const normGoals = rawStages.goals && typeof rawStages.goals === 'object' ? rawStages.goals : {};
+
+  const stages = {
+    names: {
+      completed: Boolean(normNames.completed),
+      recovered: toSafeNonNegInt(normNames.recovered ?? normNames.named, 0),
+      total: toSafeNonNegInt(normNames.total, 0),
+      objcCount: toSafeNonNegInt(normNames.objcCount ?? normNames.objc, 0),
+      swiftCount: toSafeNonNegInt(normNames.swiftCount ?? normNames.swift, 0),
+      hexsigCount: toSafeNonNegInt(normNames.hexsigCount ?? normNames.hexsig, 0),
+      completedAt: toSafeTimestampOrNull(normNames.completedAt),
+    },
+    strings: {
+      completed: Boolean(normStrings.completed),
+      count: toSafeNonNegInt(normStrings.count ?? normStrings.completedCount, 0),
+      completedAt: toSafeTimestampOrNull(normStrings.completedAt),
+    },
+    callgraph: {
+      completed: Boolean(normCallgraph.completed),
+      functionCount: toSafeNonNegInt(normCallgraph.functionCount, 0),
+      callCount: toSafeNonNegInt(normCallgraph.callCount, 0),
+      refCount: toSafeNonNegInt(normCallgraph.refCount, 0),
+      completedAt: toSafeTimestampOrNull(normCallgraph.completedAt),
+    },
+    goals: {
+      completed: Boolean(normGoals.completed),
+      count: toSafeNonNegInt(normGoals.count, 0),
+      completedAt: toSafeTimestampOrNull(normGoals.completedAt),
+    },
+  };
+
+  const rawNamesSummary = raw.recoveredNamesSummary && typeof raw.recoveredNamesSummary === 'object' && !Array.isArray(raw.recoveredNamesSummary)
+    ? raw.recoveredNamesSummary
+    : {};
+  const rawEntries = Array.isArray(rawNamesSummary.entries) ? rawNamesSummary.entries : [];
+  const entries = [];
+  const seenVa = new Set();
+  for (const item of rawEntries) {
+    if (entries.length >= MAX_CACHED_RECOVERED_NAMES) break;
+    if (!item || typeof item !== 'object') continue;
+    const vaBig = toBigIntAddress(item.va ?? item.vaHex ?? item.addr);
+    const name = stringOrNull(item.name, 160);
+    if (vaBig == null || !name) continue;
+    const va = `0x${vaBig.toString(16)}`;
+    if (seenVa.has(va)) continue;
+    seenVa.add(va);
+    entries.push({
+      va,
+      name,
+      source: stringOrNull(item.source, 40) || 'auto',
+    });
+  }
+
+  const recoveredNamesSummary = {
+    named: toSafeNonNegInt(rawNamesSummary.named ?? stages.names.recovered, stages.names.recovered),
+    total: toSafeNonNegInt(rawNamesSummary.total ?? stages.names.total, stages.names.total),
+    objc: toSafeNonNegInt(rawNamesSummary.objc ?? stages.names.objcCount, stages.names.objcCount),
+    swift: toSafeNonNegInt(rawNamesSummary.swift ?? stages.names.swiftCount, stages.names.swiftCount),
+    hexsig: toSafeNonNegInt(rawNamesSummary.hexsig ?? stages.names.hexsigCount, stages.names.hexsigCount),
+    entries,
+  };
+
+  const rawGoalsSummary = Array.isArray(raw.goalCandidatesSummary) ? raw.goalCandidatesSummary : [];
+  const goalCandidatesSummary = [];
+  const seenGoalVa = new Set();
+  for (const item of rawGoalsSummary) {
+    if (goalCandidatesSummary.length >= MAX_CACHED_GOAL_CANDIDATES) break;
+    if (!item || typeof item !== 'object') continue;
+    const vaBig = toBigIntAddress(item.vaHex ?? item.va ?? item.addr);
+    if (vaBig == null) continue;
+    const vaHex = `0x${vaBig.toString(16)}`;
+    if (seenGoalVa.has(vaHex)) continue;
+    seenGoalVa.add(vaHex);
+    const scoreNum = Number(item.score);
+    goalCandidatesSummary.push({
+      vaHex,
+      name: stringOrNull(item.name ?? item.displayName, 160) || `sub_${vaBig.toString(16)}`,
+      score: Number.isFinite(scoreNum) ? Math.round(scoreNum * 100) / 100 : 0,
+      reason: stringOrNull(item.reason, 200) || '',
+      goal: stringOrNull(item.goal, 80),
+    });
+  }
+
+  const anyStageCompleted = STAGED_AUTO_ANALYSIS_STAGES.some((k) => stages[k].completed);
+  if (!anyStageCompleted && entries.length === 0 && goalCandidatesSummary.length === 0) {
+    return null;
+  }
+
+  return {
+    version: 1,
+    updatedAt: toSafeTimestampOrNull(raw.updatedAt) ?? Date.now(),
+    stages,
+    recoveredNamesSummary,
+    goalCandidatesSummary,
+  };
+}
+
 function normalizeDeltaForStorage(input) {
   const src = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const rawDelta = src.delta && typeof src.delta === 'object' && !Array.isArray(src.delta) ? src.delta : {};
@@ -416,6 +537,7 @@ function normalizeDeltaForStorage(input) {
     explorerFilter,
     explorerSort,
     lastFunctionTab,
+    stagedAutoAnalysis: normalizeStagedAutoAnalysis(rawResume.stagedAutoAnalysis),
   };
 
   const updatedAt = Number.isFinite(Number(src.updatedAt)) ? Number(src.updatedAt) : Date.now();
@@ -470,6 +592,7 @@ function hydrateDeltaRecord(stored) {
       explorerFilter: normalized.resume.explorerFilter,
       explorerSort: normalized.resume.explorerSort,
       lastFunctionTab: normalized.resume.lastFunctionTab,
+      stagedAutoAnalysis: normalized.resume.stagedAutoAnalysis,
     },
   };
 }

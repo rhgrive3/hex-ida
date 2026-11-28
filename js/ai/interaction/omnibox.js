@@ -1,5 +1,5 @@
 /*
- * Omnibox intent classification.
+ * Omnibox intent classification, relevance-ranked search scoring, and goal bridging.
  *
  * One field replaces the old search / jump / command / question split. The
  * rules stay small and predictable on purpose: a user must be able to guess
@@ -13,10 +13,19 @@
  *   ? コインはどこで増える -> ai
  *   reward             -> search (symbol + string index)
  *
- * Pure module — no DOM. Tested by tests/ai-ui-omnibox.mjs.
+ * Pure module — no DOM. Tested by tests/ai-ui-mode.mjs and
+ * tests/ux-review-55-search-relevance.test.mjs.
  */
+import { parseGoal, goalLabel } from '../../goals.js';
 
 export const KINDS = Object.freeze(['empty', 'address', 'symbol', 'string', 'command', 'ai', 'search']);
+
+export const SEARCH_CATEGORIES = Object.freeze({
+  function: '関数',
+  string: '文字列',
+  class: 'クラス',
+  field: 'フィールド',
+});
 
 export const COMMANDS = Object.freeze([
   { id: 'code', ja: 'コードを開く', en: 'Open code', match: /^(code|コード|asm|アセンブリ)$/i },
@@ -44,6 +53,199 @@ const JA_QUESTION = /(どこ|どれ|なに|何|なぜ|どうやって|教えて|
 const IDENTIFIER = /^[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*$/;
 const OBJC_METHOD = /^[+-]\s*\[[^\]]+\]$/;
 const ADDR_EXPR = /^(?:(?:0[xX][0-9a-fA-F]+|(?=[0-9a-fA-F]{6,16}\b)(?=[0-9a-fA-F]*[0-9])[0-9a-fA-F]{6,16})\s*[+-]\s*(?:0[xX][0-9a-fA-F]+|\d+)|[A-Za-z_$][\w$]*(?:(?:::|\.|->)[\w$]+)*\s*(?:\+\s*(?:0[xX][0-9a-fA-F]+|\d+)|-\s*0[xX][0-9a-fA-F]+))$/;
+const WORD_SEP_RE = /[\s_\-:[\]/.(),<>*&+?!@#$%^=\\|;'"`~・、。]/;
+
+function isLower(ch) { return ch >= 'a' && ch <= 'z'; }
+function isUpper(ch) { return ch >= 'A' && ch <= 'Z'; }
+function isDigit(ch) { return ch >= '0' && ch <= '9'; }
+function isWordSep(ch) { return !ch || WORD_SEP_RE.test(ch); }
+
+function isWordStartBoundary(str, idx) {
+  if (idx <= 0) return true;
+  const prev = str[idx - 1];
+  const curr = str[idx];
+  if (isWordSep(prev)) return true;
+  if (isLower(prev) && isUpper(curr)) return true;
+  if (isDigit(prev) && (isLower(curr) || isUpper(curr))) return true;
+  if (isUpper(prev) && isUpper(curr) && idx + 1 < str.length && isLower(str[idx + 1])) return true;
+  return false;
+}
+
+function isWordEndBoundary(str, end) {
+  if (end >= str.length) return true;
+  const prev = str[end - 1];
+  const next = str[end];
+  if (isWordSep(next)) return true;
+  if (isLower(prev) && isUpper(next)) return true;
+  if ((isLower(prev) || isUpper(prev)) && isDigit(next)) return true;
+  if (isUpper(prev) && isUpper(next) && end + 1 < str.length && isLower(str[end + 1])) return true;
+  return false;
+}
+
+/**
+ * Relevance-ranked search match scorer (word boundary first):
+ *   Tier 1 (400): Exact match (case-insensitive)
+ *   Tier 2 (300-310): Word-boundary token match (separator or camelCase boundary)
+ *   Tier 3 (200): Prefix match
+ *   Tier 4 (100): Substring match (e.g., "flushPlayer" matching "HP" across "hP")
+ *   0: No match
+ *
+ * @param {string} name
+ * @param {string} query
+ * @returns {number}
+ */
+export function scoreSearchMatch(name, query) {
+  if (typeof name !== 'string' || typeof query !== 'string') return 0;
+  const rawQuery = query.trim();
+  if (!name || !rawQuery) return 0;
+
+  const lowerName = name.toLowerCase();
+  const lowerQuery = rawQuery.toLowerCase();
+  if (lowerName === lowerQuery) return 400;
+
+  let pos = lowerName.indexOf(lowerQuery);
+  if (pos < 0) return 0;
+
+  let best = 100;
+  while (pos >= 0) {
+    const end = pos + lowerQuery.length;
+    if (isWordStartBoundary(name, pos) && isWordEndBoundary(name, end)) {
+      const boundaryScore = pos === 0 ? 310 : 300;
+      if (boundaryScore > best) best = boundaryScore;
+    } else if (pos === 0 && best < 200) {
+      best = 200;
+    }
+    pos = lowerName.indexOf(lowerQuery, pos + 1);
+  }
+  return best;
+}
+
+function toComparableAddr(addr) {
+  if (addr == null) return null;
+  if (typeof addr === 'bigint') return addr;
+  if (typeof addr === 'number' && Number.isSafeInteger(addr)) return BigInt(addr);
+  if (typeof addr === 'string' && addr.trim()) {
+    try { return BigInt(addr.trim()); } catch { return null; }
+  }
+  return null;
+}
+
+/**
+ * Sort comparator: relevance score descending, then shorter name, then address ascending.
+ */
+export function compareSearchResults(a, b) {
+  const scoreDiff = (b?.score ?? 0) - (a?.score ?? 0);
+  if (scoreDiff !== 0) return scoreDiff;
+
+  const nameA = String(a?.name ?? a?.text ?? '');
+  const nameB = String(b?.name ?? b?.text ?? '');
+  const lenDiff = nameA.length - nameB.length;
+  if (lenDiff !== 0) return lenDiff;
+
+  const addrA = toComparableAddr(a?.addr);
+  const addrB = toComparableAddr(b?.addr);
+  if (addrA != null && addrB != null) {
+    if (addrA < addrB) return -1;
+    if (addrA > addrB) return 1;
+  } else if (addrA != null) {
+    return -1;
+  } else if (addrB != null) {
+    return 1;
+  }
+
+  return nameA.localeCompare(nameB);
+}
+
+/**
+ * Score, filter, and sort search candidates by relevance.
+ *
+ * @template T
+ * @param {T[]} items
+ * @param {string} query
+ * @param {(item: T) => string} [getName]
+ * @returns {Array<T & { score: number }>}
+ */
+export function rankSearchResults(items, query, getName = (item) => String(item?.name ?? item?.text ?? '')) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const ranked = [];
+  for (const item of items) {
+    const score = scoreSearchMatch(getName(item), query);
+    if (score > 0) ranked.push({ ...item, score });
+  }
+  ranked.sort(compareSearchResults);
+  return ranked;
+}
+
+/**
+ * Match a search query against preset goals in js/goals.js.
+ * Returns a goal-bridge action descriptor or null when no preset goal matches.
+ *
+ * @param {string} query
+ * @returns {{ goal: object, id: string, label: string, actionLabel: string } | null}
+ */
+export function matchGoalForQuery(query) {
+  const raw = String(query ?? '').trim();
+  if (!raw) return null;
+  const goal = parseGoal(raw);
+  if (!goal || goal.free || goal.id === 'free') return null;
+  const label = goalLabel(goal);
+  return {
+    goal,
+    id: goal.id,
+    label,
+    actionLabel: `目的として調べる: ${label}`,
+  };
+}
+
+/**
+ * Build unified omnibox/search items from categorized candidates and prepend
+ * the goal-investigation bridge row when the query matches a preset goal.
+ *
+ * @param {string} query
+ * @param {Array<{category?:string, kind?:string, name?:string, text?:string, addr?:bigint|number|null, sub?:string}>} candidates
+ * @returns {Array<object>}
+ */
+export function buildOmniboxSearchItems(query, candidates = []) {
+  const ranked = [];
+  for (const item of candidates || []) {
+    if (!item) continue;
+    const category = item.category || item.kind || 'function';
+    const badge = item.badge || SEARCH_CATEGORIES[category] || SEARCH_CATEGORIES.function;
+    const primaryName = String(item.name ?? item.text ?? '');
+    let score = scoreSearchMatch(primaryName, query);
+    if (item.altName) {
+      const altScore = scoreSearchMatch(String(item.altName), query);
+      if (altScore > score) score = altScore;
+    }
+    if (score <= 0) continue;
+    ranked.push({
+      ...item,
+      kind: item.kind || category,
+      category,
+      badge,
+      name: primaryName,
+      score,
+    });
+  }
+  ranked.sort(compareSearchResults);
+
+  const goalMatch = matchGoalForQuery(query);
+  if (!goalMatch) return ranked;
+  return [
+    {
+      kind: 'goal',
+      category: 'goal',
+      badge: '目的',
+      name: goalMatch.actionLabel,
+      label: goalMatch.actionLabel,
+      goal: goalMatch.goal,
+      goalId: goalMatch.id,
+      goalLabel: goalMatch.label,
+      score: Infinity,
+    },
+    ...ranked,
+  ];
+}
 
 function stripPrefix(value, re) {
   return value.replace(re, '').trim();

@@ -2,7 +2,7 @@ import { StringCollectionBudget, STRING_SCAN_BUDGET } from '../string-budget.js'
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
 import { rankCandidates } from '../rank.js';
 import { vendorsOf } from '../vendors.js';
-import { pinpointField, pinpointFunction, pinpointLocation } from '../pinpoint.js';
+import { DEFAULT_PER_FUNCTION_BUDGET_MS, pinpointField, pinpointFunction, pinpointLocation } from '../pinpoint.js';
 import { VERDICT, verdictRank } from '../evidence.js';
 import { stringLookup } from '../role.js';
 import { makePinpointAnalyzer } from '../ui/pinpoint-runtime.js';
@@ -228,10 +228,17 @@ function pinEvidenceCoverageMatches(cached, request) {
     && Object.is(cached.strings, request.strings)
     && Object.is(cached.region, request.region);
 }
+function effectivePerFunctionBudgetMs(options) {
+  const raw = options?.perFunctionBudgetMs ?? options?.budget?.perFunctionBudgetMs;
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric) || numeric <= 0) return DEFAULT_PER_FUNCTION_BUDGET_MS;
+  return Math.max(1, Math.min(120_000, Math.floor(numeric)));
+}
 function pinRequestIdentity(context, goal, options, rankingLimit = effectiveRankingLimit(options)) {
   return {
     expectsDigest: canonicalExpectsDigest(goal),
     pinpointBudget: boundedBudget(options?.budget?.pinpoint, 48),
+    perFunctionBudgetMs: effectivePerFunctionBudgetMs(options),
     rankingLimit,
     shapesCollected: needsShapeEvidence(goal) === true,
     evidenceCoverage:pinEvidenceCoverage(context),
@@ -241,6 +248,7 @@ function pinRequestMatches(cached, request) {
   if (!cached) return false;
   return cached.expectsDigest === request.expectsDigest
     && cached.pinpointBudget === request.pinpointBudget
+    && cached.perFunctionBudgetMs === request.perFunctionBudgetMs
     && cached.rankingLimit === request.rankingLimit
     && cached.shapesCollected === request.shapesCollected
     && pinEvidenceCoverageMatches(cached.evidenceCoverage, request.evidenceCoverage);
@@ -623,6 +631,7 @@ export class InvestigationService {
   #addressAwareAnalyzer(signal) {
     const cache = new Map();
     return async (address, end, options = {}) => {
+      abortIfNeeded(signal);
       const region = regionForAddress(this.app, address) || this.app.codeRegion?.();
       if (!region) return null;
       let analyzer = cache.get(region.id);
@@ -735,20 +744,24 @@ export class InvestigationService {
         analyze:this.#addressAwareAnalyzer(options.signal || null),
         scanAccess:this.#globalAccessScanner(options.signal || null),
         budget:{ left:boundedBudget(options?.budget?.pinpoint, 48) },
+        perFunctionBudgetMs:effectivePerFunctionBudgetMs(options),
         limit:12,
         onProgress:(value) => progress(options, { phase:'pinpoint', ...value }),
       };
       let candidate = null;
       const attempt = async (fn) => {
+        abortIfNeeded(options.signal);
         try { return await fn(); }
         catch (error) { if (options.signal?.aborted) throw error; return null; }
       };
       if (context.fields?.classCount || context.cxxFields?.fieldCount) candidate = await attempt(() => pinpointField(common));
+      abortIfNeeded(options.signal);
       const undecided = (value) => !value?.top || verdictRank(value.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
       if (undecided(candidate) && (ranked.candidates.length || context.shapes?.size)) {
         const location = await attempt(() => pinpointLocation({ ...common, ranked:ranked.candidates }));
         if (beats(location, candidate)) candidate = location;
       }
+      abortIfNeeded(options.signal);
       if (undecided(candidate) && ranked.candidates.length) {
         const fn = await attempt(() => pinpointFunction({ ...common, ranked:ranked.candidates }));
         if (beats(fn, candidate)) candidate = fn;

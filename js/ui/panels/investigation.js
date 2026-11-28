@@ -4,6 +4,7 @@ import { goalLabel } from '../../goals.js';
 import { VERDICT } from '../../evidence.js';
 import { investigationServiceFor } from '../../analysis/investigation-service.js';
 import { pick } from '../../i18n.js';
+import { reasonText, statusNotice } from '../primitives.js';
 import { showField } from './field-access.js';
 import { appendJevAlternativeAction } from '../jev-advisory.js';
 import { showPatchEditor } from '../../tools.js';
@@ -20,20 +21,179 @@ function verdictLabel(verdict) {
   return pick('未確認', 'Unverified');
 }
 const REASON_LABELS = {
-  'string-ref':['文字列を参照', 'string reference'],
-  'name-match':['名前が一致', 'name match'],
-  'callee-name':['呼び先の名前が一致', 'callee name match'],
-  'caller-name':['呼び元の名前が一致', 'caller name match'],
-  'calls-match':['有力候補を呼ぶ', 'calls a candidate'],
-  'called-by-match':['有力候補から呼ばれる', 'called by a candidate'],
-  numeric:['数値の計算', 'arithmetic'],
-  store:['メモリへ書き込む', 'memory writes'],
-  compare:['値を比べる', 'comparisons'],
-  popular:['よく呼ばれる', 'widely called'],
+  'string-ref':['文字列を参照', 'Refers to a string'],
+  'name-match':['名前が一致', 'Name match'],
+  'callee-name':['呼び先の名前が一致', 'Callee name match'],
+  'caller-name':['呼び元の名前が一致', 'Caller name match'],
+  'calls-match':['有力候補を呼ぶ', 'Calls a candidate'],
+  'called-by-match':['有力候補から呼ばれる', 'Called by a candidate'],
+  'crypto-const':['暗号定数を参照', 'References crypto constant'],
+  'size-penalty':['関数が大きい', 'Large function'],
+  vendor:['外部ライブラリ', 'Vendor library'],
+  numeric:['数値の計算', 'Arithmetic'],
+  store:['メモリへ書き込む', 'Memory writes'],
+  compare:['値を比べる', 'Comparisons'],
+  popular:['よく呼ばれる', 'Widely called'],
 };
+function clipDetail(value, max = 36) {
+  const s = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+function safeAddrHex(value) {
+  if (value == null) return '';
+  try { return addrHex(BigInt(value)); } catch { return String(value); }
+}
 function reasonLabel(code) {
-  const entry = REASON_LABELS[code];
+  const entry = Object.hasOwn(REASON_LABELS, code) ? REASON_LABELS[code] : null;
   return entry ? pick(entry[0], entry[1]) : String(code ?? '');
+}
+
+export function formatCandidateReason(reason) {
+  if (!reason) return '';
+  if (typeof reason === 'string') return reasonLabel(reason);
+  const code = String(reason.code || '');
+  const d = (reason.detail && typeof reason.detail === 'object') ? reason.detail : {};
+  const strText = clipDetail(d.text ?? d.string ?? reason.text ?? reason.string ?? '');
+  const symName = clipDetail(d.name ?? reason.name ?? '');
+  const fieldName = clipDetail(d.field ?? reason.field ?? '');
+  const callerName = clipDetail(d.fromName ?? d.caller ?? reason.caller ?? (code === 'caller-name' && symName ? symName : null) ?? safeAddrHex(d.from));
+  const calleeName = clipDetail(d.toName ?? d.callee ?? reason.callee ?? (code === 'callee-name' && symName ? symName : null) ?? safeAddrHex(d.to));
+  const algoName = clipDetail(d.name ?? d.algo ?? reason.algo ?? '');
+
+  switch (code) {
+    case 'string-ref':
+      return strText
+        ? pick(`"${strText}" を参照`, `Refers to "${strText}"`)
+        : reasonLabel(code);
+    case 'name-match': {
+      const target = symName || clipDetail(d.term ?? '');
+      return target
+        ? pick(`関数名 "${target}" が一致`, `Name matches "${target}"`)
+        : reasonLabel(code);
+    }
+    case 'callee-name':
+    case 'calls-match':
+      return calleeName
+        ? pick(`${calleeName} を呼ぶ`, `Calls ${calleeName}`)
+        : reasonLabel(code);
+    case 'caller-name':
+    case 'called-by-match':
+      return callerName
+        ? pick(`${callerName} から呼ばれる`, `Called by ${callerName}`)
+        : reasonLabel(code);
+    case 'crypto-const':
+      return algoName
+        ? pick(`暗号定数 (${algoName}) を参照`, `References crypto constant (${algoName})`)
+        : reasonLabel(code);
+    case 'store': {
+      if (fieldName) return pick(`${fieldName} へ書き込む`, `Writes ${fieldName}`);
+      const n = Number(d.n);
+      return Number.isFinite(n) && n > 0
+        ? pick(`メモリへ書き込む (${n}か所)`, `Memory writes (${n})`)
+        : reasonLabel(code);
+    }
+    case 'compare': {
+      const n = Number(d.n);
+      return Number.isFinite(n) && n > 0
+        ? pick(`値を比べる (${n}か所)`, `Comparisons (${n})`)
+        : reasonLabel(code);
+    }
+    case 'numeric': {
+      const ops = [d.mul, d.div, d.fmul, d.farith].map(Number).filter((x) => Number.isFinite(x) && x > 0).reduce((a, b) => a + b, 0);
+      return ops > 0
+        ? pick(`数値の計算 (${ops}回)`, `Arithmetic (${ops} ops)`)
+        : reasonLabel(code);
+    }
+    case 'popular': {
+      const n = Number(d.n);
+      return Number.isFinite(n) && n > 0
+        ? pick(`${n}か所から呼ばれる`, `Called from ${n} places`)
+        : reasonLabel(code);
+    }
+    case 'vendor': {
+      const vendor = clipDetail(d.vendor ?? symName ?? '');
+      return vendor
+        ? pick(`外部ライブラリ (${vendor})`, `Vendor library (${vendor})`)
+        : reasonLabel(code);
+    }
+    case 'size-penalty': {
+      const n = Number(d.n);
+      return Number.isFinite(n) && n > 0
+        ? pick(`関数が大きい (${n}命令)`, `Large function (${n} insns)`)
+        : reasonLabel(code);
+    }
+    default: {
+      const base = reasonLabel(code);
+      const concrete = fieldName || symName || strText || algoName;
+      if (concrete && base) return `${base} (${concrete})`;
+      return concrete || base;
+    }
+  }
+}
+
+export function formatCandidateReasons(reasons, maxCount = 2) {
+  if (!Array.isArray(reasons) || !reasons.length) return [];
+  const limit = Number.isInteger(maxCount) && maxCount > 0 ? maxCount : 2;
+  const ordered = [...reasons].sort((a, b) => {
+    const ap = Number.isFinite(Number(a?.points)) ? Number(a.points) : 0;
+    const bp = Number.isFinite(Number(b?.points)) ? Number(b.points) : 0;
+    if ((ap > 0) !== (bp > 0)) return ap > 0 ? -1 : 1;
+    return bp - ap;
+  });
+  const picked = [];
+  const seenCodes = new Set();
+  const seenTexts = new Set();
+  const deferredSameCode = [];
+
+  for (const reason of ordered) {
+    const formatted = formatCandidateReason(reason);
+    if (!formatted || seenTexts.has(formatted)) continue;
+    const code = String(reason?.code || '');
+    if (code && seenCodes.has(code)) {
+      deferredSameCode.push({ code, formatted, hasDetail: formatted !== reasonLabel(code) });
+      continue;
+    }
+    seenTexts.add(formatted);
+    if (code) seenCodes.add(code);
+    picked.push(formatted);
+    if (picked.length >= limit) return picked;
+  }
+
+  for (const item of deferredSameCode) {
+    if (!item.hasDetail || seenTexts.has(item.formatted)) continue;
+    seenTexts.add(item.formatted);
+    picked.push(item.formatted);
+    if (picked.length >= limit) break;
+  }
+  return picked;
+}
+
+export function describeStrongestAnswer(app, goal, pin, rankedCandidates = []) {
+  const rawAddr = pin?.top?.addr ?? pin?.top?.function ?? pin?.top?.address ?? null;
+  let matchedCandidate = null;
+  if (rawAddr != null && Array.isArray(rankedCandidates)) {
+    try {
+      const target = BigInt(rawAddr);
+      matchedCandidate = rankedCandidates.find((c) => c?.addr != null && BigInt(c.addr) === target) || null;
+    } catch { /* ignore */ }
+  }
+  if (!matchedCandidate && Array.isArray(rankedCandidates) && rankedCandidates.length > 0) {
+    matchedCandidate = rankedCandidates[0];
+  }
+  const address = rawAddr ?? matchedCandidate?.addr ?? null;
+  const answerField = address == null ? fieldOf(pin?.top) : null;
+  const title = pin?.top?.name
+    || (address != null ? functionLabel(app, address) : (answerField ? fieldLabel(answerField) : pin?.top?.field?.name))
+    || matchedCandidate?.name
+    || goalLabel(goal);
+  const addrText = address != null ? safeAddrHex(address) : '';
+  const reasonsSource = pin?.top?.reasons?.length
+    ? pin.top.reasons
+    : (pin?.reasons?.length ? pin.reasons : (matchedCandidate?.reasons || []));
+  const strongestReason = formatCandidateReasons(reasonsSource, 1)[0]
+    || (answerField ? pick(`${fieldLabel(answerField)} のフィールド参照`, `Field access on ${fieldLabel(answerField)}`) : '');
+  return { address, title: String(title), addrText, strongestReason, answerField };
 }
 function progressView(body, onCancel = null) {
   const wrap = el('div', 'analysis-progress');
@@ -66,24 +226,20 @@ function progressView(body, onCancel = null) {
     done() { wrap.remove(); },
   };
 }
-const COMPLETENESS_LABELS = {
-  'strings-partial': ['文字列スキャン途中', 'string scan in progress'],
-  'program-partial': ['呼び出し解析途中', 'call graph in progress'],
-  'functions-partial': ['関数一覧スキャン途中', 'function scan in progress'],
-  'budget-exhausted': ['探索上限に到達', 'search budget reached'],
-  'aborted': ['中断されました', 'cancelled'],
-};
-function completenessReasonText(reason) {
-  const entry = COMPLETENESS_LABELS[String(reason || '')];
-  return entry ? pick(entry[0], entry[1]) : String(reason || '');
-}
-function appendCompleteness(body, result) {
-  if (result?.completeness?.complete) return;
-  const reasons = (result?.completeness?.reasons || []).map(completenessReasonText).filter(Boolean);
-  body.append(para(pick(
-    `一部のみ確認済み${reasons.length ? `（${reasons.join('・')}）` : ''}。未走査の範囲にも候補がある可能性があります。`,
-    `Partial scan${reasons.length ? ` (${reasons.join(', ')})` : ''}. Unscanned areas may still contain matches.`
-  ), 'sub'));
+export function appendCompleteness(body, result, { onContinue = null } = {}) {
+  if (result?.completeness?.complete) return null;
+  const rawReasons = (result?.completeness?.reasons || []).map((r) => String(r || '').trim()).filter(Boolean);
+  const hasIncompleteDiscovery = rawReasons.some((r) => r.includes('function-discovery-incomplete') || r === 'functions-partial');
+  const lead = rawReasons.length
+    ? ''
+    : pick('一部のみ確認済みです。未走査の範囲にも候補がある可能性があります。', 'Partial scan. Unscanned areas may still contain matches.');
+  const notice = statusNotice(rawReasons, {
+    lead,
+    actionLabel: pick('続きを調べる', 'Continue scanning'),
+    onAction: typeof onContinue === 'function' && (hasIncompleteDiscovery || rawReasons.length > 0) ? onContinue : null,
+  });
+  body.append(notice);
+  return notice;
 }
 function productRouter() {
   return (typeof window !== 'undefined' && window.__hexUi?.router) || null;
@@ -138,16 +294,43 @@ export function showCandidates(app, goal) {
   }).then((result) => {
     progress.done();
     if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
-    appendCompleteness(host, result);
+    const candidates = result.ranked?.candidates || [];
+    appendCompleteness(host, result, {
+      onContinue: () => { sheet.close(); showCandidates(app, goal); },
+    });
     const pin = result.pin;
+    const findCandidateByAddr = (targetAddr) => {
+      if (targetAddr == null) return null;
+      try {
+        const target = BigInt(targetAddr);
+        return candidates.find((c) => {
+          if (c?.addr == null) return false;
+          try { return BigInt(c.addr) === target; } catch { return false; }
+        }) || null;
+      } catch { return null; }
+    };
+    const openCandidateFunction = (targetAddr, candidate = null, tab = 'pseudocode') => {
+      if (targetAddr == null) return;
+      const resolvedCandidate = candidate || findCandidateByAddr(targetAddr);
+      app.lastGoalContext = {
+        targetAddr: BigInt(targetAddr),
+        goal,
+        candidate: resolvedCandidate,
+        pinpoint: pin,
+        fields: result.context?.fields || null,
+        setAt: Date.now(),
+      };
+      openFunction(app, sheet, targetAddr, tab);
+    };
     if (pin?.top && pin.verdict !== VERDICT.NONE) {
       const answer = el('section', 'answer-summary');
       answer.append(el('h3', null, pick('最も強い答え', 'Strongest answer')));
-      const address = pin.top.addr ?? pin.top.function ?? pin.top.address ?? null;
-      const title = pin.top.name || (address != null ? functionLabel(app, address) : pin.top.field?.name) || goalLabel(goal);
-      answer.append(el('div', 'fn-name', String(title)));
-      answer.append(el('div', 'hint', verdictLabel(pin.verdict)));
-      const answerField = address == null ? fieldOf(pin.top) : null;
+      const strongest = describeStrongestAnswer(app, goal, pin, candidates);
+      const { address, title, addrText, strongestReason, answerField } = strongest;
+      const headingText = addrText && !title.includes(addrText) ? `${title} (${addrText})` : title;
+      answer.append(el('div', 'fn-name', headingText));
+      const hintParts = [verdictLabel(pin.verdict), strongestReason].filter(Boolean);
+      answer.append(el('div', 'hint', hintParts.join(' · ')));
       if (answerField) {
         const fieldRow = list();
         fieldRow.append(tapRow(pick('このフィールドを使う場所', 'Where this field is used'), {
@@ -159,7 +342,7 @@ export function showCandidates(app, goal) {
         const quick = el('div', 'row');
         const pseudoBtn = el('button', 'btn sm', pick('疑似C', 'Pseudo-C'));
         pseudoBtn.type = 'button';
-        pseudoBtn.addEventListener('click', () => openFunction(app, sheet, address, 'pseudocode'));
+        pseudoBtn.addEventListener('click', () => openCandidateFunction(address, null, 'pseudocode'));
         const asmBtn = el('button', 'btn sm', pick('アセンブリ', 'Assembly'));
         asmBtn.type = 'button';
         asmBtn.addEventListener('click', () => openAddress(app, sheet, address));
@@ -178,10 +361,9 @@ export function showCandidates(app, goal) {
 
     appendJevAlternativeAction(app, goal, pin, host, controller.signal, {
       rankedCandidates: result.ranked?.candidates || [],
-      onOpenFunction: (addr) => openFunction(app, sheet, addr, 'pseudocode'),
+      onOpenFunction: (addr) => openCandidateFunction(addr, null, 'pseudocode'),
     });
 
-    const candidates = result.ranked?.candidates || [];
     if (!candidates.length) {
       host.append(para(pick('条件に合う候補が見つかりませんでした。別の言い方や英単語で試してください。', 'No matching candidates found. Try different keywords.')));
       return;
@@ -189,12 +371,12 @@ export function showCandidates(app, goal) {
     host.append(el('div', 'sec-title', pick('候補一覧', 'Ranked candidates')));
     const rows = list();
     candidates.forEach((candidate, idx) => {
-      const reasons = (candidate.reasons || []).slice(0, 2).map((reason) => reasonLabel(reason.code)).join(' · ');
+      const reasons = formatCandidateReasons(candidate.reasons, 2).join(' · ');
       const rankTag = idx < 3 ? `#${idx + 1}` : '';
       rows.append(tapRow(`${rankTag ? `${rankTag} ` : ''}${functionLabel(app, candidate.addr)}`, {
         sub:[addrHex(candidate.addr), reasons].filter(Boolean).join(' · '),
         right:'›',
-        onTap:() => openFunction(app, sheet, candidate.addr, 'pseudocode'),
+        onTap:() => openCandidateFunction(candidate.addr, candidate, 'pseudocode'),
       }));
     });
     host.append(rows);
@@ -204,7 +386,9 @@ export function showCandidates(app, goal) {
     const retryBtn = el('button', 'btn sm', pick('再試行', 'Retry'));
     retryBtn.type = 'button';
     retryBtn.addEventListener('click', () => { sheet.close(); showCandidates(app, goal); });
-    host.replaceChildren(para(pick('解析に失敗しました: ', 'Analysis failed: ') + String(error?.message || error)), retryBtn);
+    const rawMsg = String(error?.message || error);
+    const friendly = reasonText(rawMsg);
+    host.replaceChildren(friendly ? statusNotice(rawMsg) : para(pick('解析に失敗しました: ', 'Analysis failed: ') + rawMsg), retryBtn);
   });
   run();
   return sheet;
@@ -228,7 +412,9 @@ export function showOverview(app) {
     if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
     app.autoReport = { report:result.report, key:result.context.region?.id ?? null, gen:app.symbols?.gen, snapshotId:result.snapshotId };
     void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
-    appendCompleteness(host, result);
+    appendCompleteness(host, result, {
+      onContinue: () => { sheet.close(); showOverview(app); },
+    });
     const report = result.report;
     const summary = list();
     summary.append(tapRow(pick('関数', 'Functions'), { right:String(report?.stats?.functions ?? 0), disabled:true }));
@@ -289,7 +475,9 @@ export function showOverview(app) {
   }).catch((error) => {
     progress.done();
     if (isAbort(error) || !sheet.root.isConnected) return;
-    host.replaceChildren(para(pick('解析に失敗しました: ', 'Analysis failed: ') + String(error?.message || error)));
+    const rawMsg = String(error?.message || error);
+    const friendly = reasonText(rawMsg);
+    host.replaceChildren(friendly ? statusNotice(rawMsg) : para(pick('解析に失敗しました: ', 'Analysis failed: ') + rawMsg));
   });
   return sheet;
 }

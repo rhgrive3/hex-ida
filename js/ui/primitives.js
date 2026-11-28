@@ -55,26 +55,145 @@ const REASONS = {
     '関数のアドレスが正しくありません。',
     'The function address is invalid.',
   ],
+  'result-limit': [
+    '表示件数の上限に達したため、一部の結果のみ表示しています。条件を絞ると目的の項目を見つけやすくなります。',
+    'Reached the display limit, so only part of the results are shown. Narrow your query to find specific matches.',
+  ],
+  'function-discovery-incomplete': [
+    '関数をまだ全部は見つけていません。引き続き探索できます。',
+    'Not all functions have been discovered yet. You can continue scanning.',
+  ],
+  'function-scan-budget': [
+    '一度に調べる関数数の上限に達したため、途中までの結果を表示しています。',
+    'Reached the function scan limit, so partial results are shown.',
+  ],
+  'function-filter-page-bounded': [
+    '現在のページ範囲内だけを絞り込んで表示しています。',
+    'Filtering is bounded to the current page window.',
+  ],
+  'analysis-query-binary-unbound': [
+    'ファイルが開かれていないため、解析結果を表示できません。前回のファイルを開くか、新しくバイナリを選択してください。',
+    'No binary is currently loaded, so analysis results cannot be shown. Open your previous file or choose a binary.',
+  ],
+  'per-function-budget-exceeded': [
+    'この関数は規模が大きいため、解析の計算上限に達しました。一部のみ表示しています。',
+    'This function is large and reached the per-function analysis budget. Partial results are shown.',
+  ],
+  'strings-partial': [
+    '文字列のスキャンが途中です。未走査の範囲にも候補がある可能性があります。',
+    'String scanning is still in progress. Unscanned regions may contain matches.',
+  ],
+  'program-partial': [
+    '呼び出し関係の解析が途中です。',
+    'Call graph analysis is still in progress.',
+  ],
+  'functions-partial': [
+    '関数一覧のスキャンが途中です。',
+    'Function list scanning is still in progress.',
+  ],
+  'budget-exhausted': [
+    '探索の上限に達したため、ここまでの結果を表示しています。',
+    'Reached the search budget; showing results found so far.',
+  ],
+  'scan-budget': [
+    'スキャン上限に達したため、途中までの結果を表示しています。',
+    'Reached the scan budget; showing partial results.',
+  ],
+  'function-budget': [
+    '対象関数数の上限に達したため、一部の関数のみ処理しました。',
+    'Reached the function count limit; only a subset of functions was processed.',
+  ],
+  'aborted': [
+    '解析は中断されました。',
+    'Analysis was cancelled.',
+  ],
 };
 
 const REASON_CODE = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+$/;
 
+export function normalizeStatusCode(code) {
+  const raw = String(code ?? '').trim();
+  if (!raw) return '';
+  if (Object.hasOwn(REASONS, raw)) return raw;
+  const colonIdx = raw.lastIndexOf(':');
+  if (colonIdx > 0) {
+    const suffix = raw.slice(colonIdx + 1).trim();
+    if (Object.hasOwn(REASONS, suffix)) return suffix;
+  }
+  return raw;
+}
+
 /** Plain-language explanation for a known reason code, or null. */
 export function reasonText(code) {
-  const key = String(code ?? '').trim();
+  const key = normalizeStatusCode(code);
   const entry = Object.hasOwn(REASONS, key) ? REASONS[key] : null;
   return entry ? (isJa() ? entry[0] : entry[1]) : null;
+}
+
+/** Collapsible details block for raw internal status/error codes. */
+export function statusCodeDetails(codes) {
+  const rawList = (Array.isArray(codes) ? codes : [codes])
+    .map((item) => String(item ?? '').trim())
+    .filter(Boolean);
+  const unique = [...new Set(rawList)];
+  if (!unique.length) return null;
+  const details = h('details', 'ui-status-details');
+  details.append(h('summary', null, isJa() ? 'くわしい情報' : 'Details'));
+  const code = h('code', 'ui-state-code', unique.join(', '));
+  code.title = isJa() ? '内部の理由コード' : 'Internal reason code';
+  details.append(code);
+  return details;
+}
+
+/** Friendly status notice for one or more internal codes, with collapsible details and optional continuation button. */
+export function statusNotice(codes, { actionLabel, onAction, lead = '' } = {}) {
+  const rawList = (Array.isArray(codes) ? codes : [codes])
+    .map((item) => String(item ?? '').trim())
+    .filter(Boolean);
+  const uniqueRaw = [...new Set(rawList)];
+  const messages = [];
+  const seenMsg = new Set();
+  for (const raw of uniqueRaw) {
+    const plain = reasonText(raw);
+    const msg = plain || (REASON_CODE.test(raw)
+      ? (isJa() ? '一部の処理が完了していないか、上限に達しました。' : 'Part of the analysis is incomplete or reached a limit.')
+      : raw);
+    if (msg && !seenMsg.has(msg)) {
+      seenMsg.add(msg);
+      messages.push(msg);
+    }
+  }
+  const root = h('div', 'ui-partial-note ui-status-notice');
+  root.setAttribute('role', 'status');
+  const mainText = [lead, ...messages].filter(Boolean).join(' ');
+  if (mainText) root.append(h('p', 'ui-status-message', mainText));
+  if (typeof onAction === 'function') {
+    const label = actionLabel || (isJa() ? '続きを調べる' : 'Continue scanning');
+    root.append(uiButton(label, { cls: 'ui-secondary-action ui-status-action', onClick: onAction }));
+  }
+  const internalCodes = uniqueRaw.filter((raw) => {
+    const norm = normalizeStatusCode(raw);
+    return Object.hasOwn(REASONS, norm) || REASON_CODE.test(norm);
+  });
+  if (internalCodes.length) {
+    const details = statusCodeDetails(internalCodes);
+    if (details) root.append(details);
+  }
+  return root;
 }
 
 function appendStateText(root, text) {
   if (text == null || text === '') return;
   const raw = String(text).trim();
-  if (!REASON_CODE.test(raw)) { root.append(h('p', 'ui-state-text', raw)); return; }
+  const norm = normalizeStatusCode(raw);
+  if (!REASON_CODE.test(raw) && !Object.hasOwn(REASONS, norm)) {
+    root.append(h('p', 'ui-state-text', raw));
+    return;
+  }
   const plain = reasonText(raw);
-  if (plain) root.append(h('p', 'ui-state-text', plain));
-  const code = h('code', 'ui-state-code', raw);
-  code.title = isJa() ? '内部の理由コード' : 'Internal reason code';
-  root.append(code);
+  root.append(h('p', 'ui-state-text', plain || (isJa() ? '処理の一部が完了していないか、制限に達しました。' : 'The operation could not complete or reached a limit.')));
+  const details = statusCodeDetails(raw);
+  if (details) root.append(details);
 }
 
 export function h(tag, cls, text) {
