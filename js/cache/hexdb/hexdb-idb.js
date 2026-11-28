@@ -190,6 +190,7 @@ export class HexDbIdbBackend {
 
   _openDatabase(factory) {
     return new Promise((resolve, reject) => {
+      let settled = false;
       const req = factory.open(this._dbName, IDB_DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -211,19 +212,34 @@ export class HexDbIdbBackend {
       };
       req.onsuccess = () => {
         const db = req.result;
+        if (settled) {
+          if (db) { try { db.close(); } catch { /* ignore */ } }
+          return;
+        }
+        settled = true;
         if (db) {
           db.onversionchange = () => {
             try { db.close(); } catch { /* ignore */ }
+            if (this._db === db) {
+              this._db = null;
+              this._open = false;
+            }
           };
         }
         resolve(db);
       };
       req.onblocked = () => {
+        if (settled) return;
+        settled = true;
         const err = new Error('HEXDB_IDB_OPEN_BLOCKED: IndexedDB upgrade blocked by another connection');
         err.code = 'HEXDB_IDB_OPEN_BLOCKED';
         reject(err);
       };
-      req.onerror = () => reject(req.error || new Error('HEXDB_IDB_OPEN_FAILED'));
+      req.onerror = () => {
+        if (settled) return;
+        settled = true;
+        reject(req.error || new Error('HEXDB_IDB_OPEN_FAILED'));
+      };
     });
   }
 

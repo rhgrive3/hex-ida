@@ -227,8 +227,6 @@ export class Backend {
   constructor(options = {}) {
     this._legacyWorker = null;
     this._platformWorker = null;
-    this._legacyWorkerRespawn = false;
-    this._platformWorkerRespawn = false;
     this.seq = 1;
     this.analysisEpoch = 0;
     this.transportEpoch = 0;
@@ -280,17 +278,12 @@ export class Backend {
   }
 
   get legacyWorker() {
-    if (!this._legacyWorker && this._legacyWorkerRespawn && !this.disposed && typeof Worker === 'function') {
-      this._legacyWorkerRespawn = false;
-      return this._worker('legacy');
-    }
     return this._legacyWorker;
   }
 
   set legacyWorker(worker) {
     this._legacyWorker = worker;
     if (worker) {
-      this._legacyWorkerRespawn = false;
       worker.onmessage = (event) => this._onMessage(event.data, 'legacy');
       const failed = (event) => {
         if (this._legacyWorker !== worker) return;
@@ -299,7 +292,6 @@ export class Backend {
         worker.onmessageerror = null;
         try { worker.terminate(); } catch {}
         this._legacyWorker = null;
-        this._legacyWorkerRespawn = !this.disposed;
         const error = workerFailureError('legacy', event, 'The analysis worker failed.');
         this._rejectWorkerPending('legacy', error);
         if (this.onFatal) this.onFatal(error.message);
@@ -310,17 +302,12 @@ export class Backend {
   }
 
   get platformWorker() {
-    if (!this._platformWorker && this._platformWorkerRespawn && !this.disposed && typeof Worker === 'function') {
-      this._platformWorkerRespawn = false;
-      return this._worker('platform');
-    }
     return this._platformWorker;
   }
 
   set platformWorker(worker) {
     this._platformWorker = worker;
     if (worker) {
-      this._platformWorkerRespawn = false;
       worker.onmessage = (event) => this._onMessage(event.data, 'platform');
       const failed = (event) => {
         if (this._platformWorker !== worker) return;
@@ -329,7 +316,6 @@ export class Backend {
         worker.onmessageerror = null;
         try { worker.terminate(); } catch {}
         this._platformWorker = null;
-        this._platformWorkerRespawn = !this.disposed;
         const error = workerFailureError('platform', event, 'The analysis worker failed.');
         this._rejectWorkerPending('platform', error);
         if (this.onFatal) this.onFatal(error.message);
@@ -1929,8 +1915,6 @@ export class Backend {
     }
     this._legacyWorker = null;
     this._platformWorker = null;
-    this._legacyWorkerRespawn = false;
-    this._platformWorkerRespawn = false;
     this._artifactOrchestrator?.close?.().catch?.(() => {});
     if (typeof document !== 'undefined' && this._memoryPressureHandler) {
       document.removeEventListener('visibilitychange', this._memoryPressureHandler);

@@ -283,11 +283,14 @@ export class HexDbWorkerHost {
       case 'close': {
         this._converger.stop();
         this._clearEvictor();
-        if (this._backend) {
-          await this._backend.close();
+        try {
+          if (this._backend) {
+            await this._backend.close();
+          }
+        } finally {
           this._backend = null;
+          this._memoryBudget.setUsage(MEMORY_CATEGORY_HEXDB, 0);
         }
-        this._memoryBudget.setUsage(MEMORY_CATEGORY_HEXDB, 0);
         return { closed: true };
       }
 
@@ -410,11 +413,14 @@ export class HexDbWorkerHost {
     this._unsubscribePressure?.();
     this._clearEvictor();
     this._converger.dispose();
-    if (this._backend) {
-      await this._backend.close();
+    try {
+      if (this._backend) {
+        await this._backend.close();
+      }
+    } finally {
       this._backend = null;
+      this._memoryBudget.setUsage(MEMORY_CATEGORY_HEXDB, 0);
     }
-    this._memoryBudget.setUsage(MEMORY_CATEGORY_HEXDB, 0);
     this._inFlightIds.clear();
     this._cancelledIds.clear();
   }

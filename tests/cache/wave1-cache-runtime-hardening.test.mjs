@@ -656,3 +656,153 @@ test('managed: connected wrappers are shallow-frozen so session.dispose() works,
   rtRes.provider.close();
   assert.equal(liveProvider.state, 'closed');
 });
+
+// ---------------------------------------------------------------------------
+// Gate 2 hardening regressions: pure worker getters, IDB settled/versionchange,
+// OPFS rollback error preservation, and worker close() budget reset on failure
+// ---------------------------------------------------------------------------
+test('backend: getter does not auto-respawn worker after crash even when global Worker exists', async () => {
+  const prevWorker = globalThis.Worker;
+  let constructed = 0;
+  class FakeWorker {
+    constructor() {
+      constructed++;
+      this.terminated = false;
+      this.onmessage = null;
+      this.onerror = null;
+      this.onmessageerror = null;
+    }
+    postMessage() {}
+    terminate() { this.terminated = true; }
+  }
+  globalThis.Worker = FakeWorker;
+  try {
+    const b = new Backend();
+    const first = b._worker('legacy');
+    assert.equal(constructed, 1);
+    first.onerror({ message: 'boom' });
+    assert.equal(first.terminated, true);
+    // Pure getter must return null and MUST NOT spawn a new Worker
+    assert.equal(b.legacyWorker, null);
+    assert.equal(constructed, 1);
+    // Explicit _worker('legacy') respawns cleanly
+    const second = b._worker('legacy');
+    assert.equal(constructed, 2);
+    assert.notEqual(second, first);
+    b.dispose();
+  } finally {
+    if (prevWorker === undefined) delete globalThis.Worker;
+    else globalThis.Worker = prevWorker;
+  }
+});
+
+test('hexdb-idb: onversionchange resets _db/_open to fail closed, and late onsuccess after onblocked closes db', async () => {
+  let lateClosed = false;
+  let lateReq = null;
+  const blockedFactory = {
+    open() {
+      const req = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
+      lateReq = req;
+      queueMicrotask(() => req.onblocked?.());
+      return req;
+    },
+  };
+  const b1 = new HexDbIdbBackend({ indexedDB: blockedFactory, binaryKey: 'bin-late' });
+  await assert.rejects(() => b1.open(), /HEXDB_IDB_OPEN_BLOCKED/);
+  // Late onsuccess fires after onblocked: must close db immediately
+  lateReq.result = { close() { lateClosed = true; } };
+  lateReq.onsuccess();
+  assert.equal(lateClosed, true);
+
+  // onversionchange closes db AND resets _db/_open so subsequent put() fails closed with HEXDB_NOT_OPEN
+  let versionClosed = false;
+  let capturedDb = null;
+  const okFactory = {
+    open() {
+      const req = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
+      queueMicrotask(() => {
+        const store = {
+          indexNames: { contains: () => false },
+          getAll: () => {
+            const r = { result: [], onsuccess: null, onerror: null };
+            queueMicrotask(() => r.onsuccess?.());
+            return r;
+          },
+          get: () => {
+            const r = { result: null, onsuccess: null, onerror: null };
+            queueMicrotask(() => r.onsuccess?.());
+            return r;
+          },
+        };
+        const db = {
+          objectStoreNames: { contains: () => true },
+          onversionchange: null,
+          close() { versionClosed = true; },
+          transaction() { return { objectStore: () => store, oncomplete: null, onerror: null, onabort: null }; },
+        };
+        capturedDb = db;
+        req.result = db;
+        req.onsuccess?.();
+      });
+      return req;
+    },
+  };
+  const b2 = new HexDbIdbBackend({ indexedDB: okFactory, binaryKey: 'bin-vc' });
+  await b2.open();
+  capturedDb.onversionchange();
+  assert.equal(versionClosed, true);
+  assert.equal(b2._db, null);
+  assert.equal(b2._open, false);
+  await assert.rejects(() => b2.put('s', 'k', new Uint8Array([1])), /HEXDB_NOT_OPEN/);
+});
+
+test('hexdb-opfs: _rollbackMutation preserves original write error even if WAL restoreState throws', async () => {
+  const opfs = new HexDbOpfsBackend('bin-opfs-err');
+  opfs._open = true;
+  opfs._shards = new Map();
+  opfs._totalBytes = 0;
+  opfs._dirtyShards = new Set();
+  opfs._walHandle = { flush() {} };
+  opfs._wal = {
+    snapshotState() { return { byteLength: 0, chunkCount: 0, frameCount: 0, lastLsn: 0, lastCheckpointLsn: 0 }; },
+    appendPut() { throw new Error('ORIGINAL_WRITE_ERROR'); },
+    restoreState() { throw new Error('SECONDARY_TRUNCATE_ERROR'); },
+    needsCompaction() { return false; },
+  };
+  await assert.rejects(() => opfs.put('s1', 'k1', new Uint8Array([1, 2, 3])), /ORIGINAL_WRITE_ERROR/);
+});
+
+test('hexdb-worker: close() and dispose() still reset MEMORY_CATEGORY_HEXDB to 0 when backend.close() rejects', async () => {
+  const budget = new MemoryBudget({ softCapBytes: 1024 * 1024, hardCapBytes: 2 * 1024 * 1024, emergencyCapBytes: 3 * 1024 * 1024 });
+  const worker = new HexDbWorkerHost({ memoryBudget: budget });
+  budget.setUsage(MEMORY_CATEGORY_HEXDB, 4096);
+  worker._backend = { async close() { throw new Error('CLOSE_BOOM'); } };
+  await assert.rejects(() => worker.dispatch('close', {}), /CLOSE_BOOM/);
+  assert.equal(worker._backend, null);
+  assert.equal(budget.getSnapshot().categories[MEMORY_CATEGORY_HEXDB], 0);
+
+  budget.setUsage(MEMORY_CATEGORY_HEXDB, 8192);
+  worker._backend = { async close() { throw new Error('DISPOSE_BOOM'); } };
+  await assert.rejects(() => worker.dispose(), /DISPOSE_BOOM/);
+  assert.equal(worker._backend, null);
+  assert.equal(budget.getSnapshot().categories[MEMORY_CATEGORY_HEXDB], 0);
+});
+
+test('knowledge: late onsuccess after onblocked closes leaked db without clobbering _db', async () => {
+  let leakedClosed = false;
+  let capturedReq = null;
+  const fakeIDB = {
+    open() {
+      const req = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
+      capturedReq = req;
+      queueMicrotask(() => req.onblocked?.());
+      return req;
+    },
+  };
+  const kdb = new KnowledgeDB({ indexedDB: fakeIDB, dbName: 'test-late-onsuccess' });
+  await assert.rejects(() => kdb.remember({ name: 'foo', address: 0x1000 }), /blocked/i);
+  capturedReq.result = { close() { leakedClosed = true; } };
+  capturedReq.onsuccess();
+  assert.equal(leakedClosed, true);
+  assert.equal(kdb._db, null);
+});

@@ -584,7 +584,9 @@ export class HexDbOpfsBackend {
     }
     this._totalBytes = snap.prevTotalBytes;
     this._dirtyShards = snap.prevDirty;
-    this._wal.restoreState(snap.walSnap);
+    try {
+      this._wal.restoreState(snap.walSnap);
+    } catch { /* best-effort WAL rollback; preserve original write error */ }
     try {
       this._walHandle?.flush?.();
     } catch { /* best-effort WAL flush after rollback */ }
