@@ -748,8 +748,11 @@ function rejectAmbiguousSegmentOwnership(image, label, address, fileOffset, file
 }
 
 const MAX_OBJECT_SECTION_RELOCS = 200_000;
+const MAX_RAW_SYMBOL_NAME_BYTES = 8 * 1024 * 1024;
+const CPU_TYPE_ARM64 = 0x0100000c;
+const CPU_TYPE_ARM64_32 = 0x0200000c;
 
-function readRawMachOSymbolNames(r, symtabs, bits, maxSymbols = 200_000) {
+function readRawMachOSymbolNames(r, symtabs, bits, maxSymbols = 200_000, maxDecodedBytes = MAX_RAW_SYMBOL_NAME_BYTES) {
   const names = [];
   if (!Array.isArray(symtabs) || symtabs.length === 0) return names;
   const st = symtabs[0];
@@ -757,10 +760,25 @@ function readRawMachOSymbolNames(r, symtabs, bits, maxSymbols = 200_000) {
   const nsyms = Math.min(st.nsyms >>> 0, maxSymbols);
   if (nsyms === 0 || st.symoff + nsyms * entrySize > r.length || st.stroff > r.length) return names;
   const strEnd = Math.min(r.length, st.stroff + (st.strsize >>> 0));
+  const intern = new Map();
+  let decodedBytes = 0;
   for (let i = 0; i < nsyms; i++) {
     const strx = r.u32(st.symoff + i * entrySize);
     if (strx > 0 && st.stroff + strx < strEnd) {
-      names.push(r.cstring(st.stroff + strx, strEnd - (st.stroff + strx)));
+      if (intern.has(strx)) {
+        names.push(intern.get(strx));
+      } else {
+        const remaining = maxDecodedBytes - decodedBytes;
+        if (remaining <= 0) {
+          names.push('');
+          continue;
+        }
+        const maxLen = Math.min(strEnd - (st.stroff + strx), remaining);
+        const decoded = r.cstring(st.stroff + strx, maxLen);
+        decodedBytes += decoded.length + 1;
+        intern.set(strx, decoded);
+        names.push(decoded);
+      }
     } else {
       names.push('');
     }
@@ -774,6 +792,12 @@ function parseObjectRelocations(r, symtabs, image, bits, sharedBudget = null) {
   if (sectionsWithRelocs.length === 0) return;
   const rawNames = readRawMachOSymbolNames(r, symtabs, bits);
   const is64 = bits === 64;
+  const arch = String(image.arch || image.architecture || '').toLowerCase();
+  const isArm64 = arch === 'arm64'
+    || arch === 'arm64e'
+    || arch === 'arm64_32'
+    || image.metadata?.cpu === CPU_TYPE_ARM64
+    || image.metadata?.cpu === CPU_TYPE_ARM64_32;
   for (const sec of sectionsWithRelocs) {
     const reloff = sec.reloff >>> 0;
     const declared = sec.nreloc >>> 0;
@@ -800,7 +824,7 @@ function parseObjectRelocations(r, symtabs, image, bits, sharedBudget = null) {
       const length = (rInfo >>> 25) & 3;
       const extern = !!((rInfo >>> 27) & 1);
       const type = (rInfo >>> 28) & 0xf;
-      const isAddend = type === 10 && !extern;
+      const isAddend = isArm64 && type === 10 && !extern;
       const addend = isAddend
         ? ((symbolIndex & 0x800000) ? (symbolIndex - 0x1000000) : symbolIndex)
         : 0;

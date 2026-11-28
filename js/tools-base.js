@@ -40,6 +40,7 @@ import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_META
 import { parseMetadataFileInWorker } from './il2cpp-runtime.js';
 import { brief } from './arm64.js';
 import { pick, lang } from './i18n.js';
+import { EMPTY_INDEX } from './symbols.js';
 
 function captureAppEpoch(app) {
   return { epoch: app?.backend?.gen, sliceIndex: app?.store?.get?.('sliceIndex') };
@@ -1386,8 +1387,12 @@ export function showNotes(app) {
       sh.body.append(ta, field(el('span'), pick('取り込む', 'Import'), () => {
         try {
           const n = app.notes.fromJSON(ta.value);
-          if (typeof app.symbols.renameMany === 'function') app.symbols.renameMany(app.notes.nameEntries(), { replace: true });
-          else for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, e.name);
+          if (typeof app._applySymbolRenames === 'function') {
+            app._applySymbolRenames(app.notes.nameEntries(), { replace: true });
+          } else if (app.symbols && app.symbols !== EMPTY_INDEX) {
+            if (typeof app.symbols.renameMany === 'function') app.symbols.renameMany(app.notes.nameEntries(), { replace: true });
+            else for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, e.name);
+          }
           app.viewer.setSymbols(app.symbols);
           app.updateChrome?.();
           sh.close();
@@ -1404,8 +1409,12 @@ export function showNotes(app) {
         {
           confirmLabel: pick('消す', 'Clear'),
           onConfirm: () => {
-            if (typeof app.symbols.renameMany === 'function') app.symbols.renameMany([], { replace: true });
-            else for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
+            if (typeof app._applySymbolRenames === 'function') {
+              app._applySymbolRenames([], { replace: true });
+            } else if (app.symbols && app.symbols !== EMPTY_INDEX) {
+              if (typeof app.symbols.renameMany === 'function') app.symbols.renameMany([], { replace: true });
+              else for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
+            }
             const saved = app.notes.clear();
             app.clearUndoHistory?.();
             app.viewer.setSymbols(app.symbols);

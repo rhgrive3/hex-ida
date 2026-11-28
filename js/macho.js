@@ -453,6 +453,7 @@
       info.commands.push({ cmd, name: LC_NAMES[cmd] || ('0x' + (cmd >>> 0).toString(16)), size: cmdsize });
       const minimum = commandMinSize(cmd);
       if (cmdsize < minimum) {
+        info.truncated = true;
         info.diagnostics.push((LC_NAMES[cmd] || 'load command') + ' shorter than ABI minimum');
         off = commandEnd;
         continue;
@@ -560,21 +561,21 @@
           const indirectsymoff=dv.getUint32(off+56,true),nindirectsyms=dv.getUint32(off+60,true);
           const valid=selectedSliceContainsRange(indirectsymoff,BigInt(nindirectsyms)*4n,sliceSize);
           info.dysymtab={indirectsymoff,nindirectsyms,valid};
-          if(!valid) info.diagnostics.push('LC_DYSYMTAB indirect symbol table is outside the selected slice');
+          if(!valid) { info.truncated = true; info.diagnostics.push('LC_DYSYMTAB indirect symbol table is outside the selected slice'); }
           break;
         }
         case LC.FUNCTION_STARTS: {
           const dataoff=dv.getUint32(off+8,true),datasize=dv.getUint32(off+12,true);
           const valid=selectedSliceContainsRange(dataoff,datasize,sliceSize);
           info.functionStarts={dataoff,datasize,valid};
-          if(!valid) info.diagnostics.push('LC_FUNCTION_STARTS is outside the selected slice');
+          if(!valid) { info.truncated = true; info.diagnostics.push('LC_FUNCTION_STARTS is outside the selected slice'); }
           break;
         }
         case LC.DATA_IN_CODE: {
           const dataoff=dv.getUint32(off+8,true),datasize=dv.getUint32(off+12,true);
           const valid=selectedSliceContainsRange(dataoff,datasize,sliceSize);
           info.dataInCode={dataoff,datasize,valid};
-          if(!valid) info.diagnostics.push('LC_DATA_IN_CODE is outside the selected slice');
+          if(!valid) { info.truncated = true; info.diagnostics.push('LC_DATA_IN_CODE is outside the selected slice'); }
           break;
         }
         case LC.CODE_SIGNATURE: info.hasCodeSignature=true; break;
@@ -586,7 +587,7 @@
           // An out-of-slice crypt range must not mint encryption evidence, even
           // when cryptid is nonzero: the bytes it names are not this slice's (#8835).
           info.encrypted=cryptid!==0&&valid;
-          if(!valid) info.diagnostics.push('LC_ENCRYPTION_INFO crypt range is outside the selected slice');
+          if(!valid) { info.truncated = true; info.diagnostics.push('LC_ENCRYPTION_INFO crypt range is outside the selected slice'); }
           break;
         }
         default: break;
@@ -1651,7 +1652,28 @@
    * Resolves r_extern === 1 via rawSymbolNames[r_symbolnum] (including N_UNDF)
    * and r_extern === 0 via 1-based sections[r_symbolnum - 1].name.
    */
-  function parseSectionRelocations(relocBytes, section, rawSymbolNames = [], sections = [], is64 = true) {
+  function isArm64RelocArchitecture(archOrOpts, is64) {
+    if (typeof archOrOpts === 'number') {
+      return archOrOpts === CPU_TYPE_ARM64 || archOrOpts === CPU_TYPE_ARM64_32;
+    }
+    if (typeof archOrOpts === 'string') {
+      const a = archOrOpts.toLowerCase();
+      return a === 'arm64' || a === 'arm64e' || a === 'arm64_32';
+    }
+    if (archOrOpts && typeof archOrOpts === 'object') {
+      if (typeof archOrOpts.isArm64 === 'boolean') return archOrOpts.isArm64;
+      if (archOrOpts.cputype != null) {
+        return archOrOpts.cputype === CPU_TYPE_ARM64 || archOrOpts.cputype === CPU_TYPE_ARM64_32;
+      }
+      if (typeof archOrOpts.architecture === 'string' && archOrOpts.architecture.length > 0) {
+        const a = archOrOpts.architecture.toLowerCase();
+        return a === 'arm64' || a === 'arm64e' || a === 'arm64_32';
+      }
+    }
+    return Boolean(is64);
+  }
+
+  function parseSectionRelocations(relocBytes, section, rawSymbolNames = [], sections = [], is64 = true, archOrOpts = null) {
     const out = attachTruncatedFlag([]);
     if (!relocBytes || !section) return out;
     const u8 = relocBytes instanceof Uint8Array
@@ -1665,6 +1687,7 @@
     const baseAddr = typeof section.addr === 'bigint' ? section.addr : BigInt(section.addr ?? section.address ?? 0);
     const secName = section.name || '';
     const secSeg = section.segment || '';
+    const isArm64 = isArm64RelocArchitecture(archOrOpts, is64);
     for (let i = 0; i < count; i++) {
       const p = i * 8;
       const rawAddrU32 = dv.getUint32(p, true);
@@ -1678,7 +1701,7 @@
       const length = (rInfo >>> 25) & 3;
       const extern = !!((rInfo >>> 27) & 1);
       const type = (rInfo >>> 28) & 0xf;
-      const isAddend = type === 10 && !extern;
+      const isAddend = isArm64 && type === 10 && !extern;
       const addend = isAddend
         ? ((symbolIndex & 0x800000) ? (symbolIndex - 0x1000000) : symbolIndex)
         : 0;

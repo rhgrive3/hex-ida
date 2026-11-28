@@ -295,3 +295,28 @@ test('normalizeIntegrityWarnings: catches PE truncation wording and relocation-o
   assert.equal(relocResult.truncated, true);
   assert.ok(relocResult.warnings.includes('__text: relocation table outside slice'));
 });
+
+test('normalizeIntegrityWarnings: excludes budget/limit warnings from truncation while catching ABI minimum and EOF warnings', () => {
+  const budgetWarnings = [
+    'dylib install name exceeds the decoded-name budget',
+    'section table exceeds materialization limit',
+    'symbol table exceeds record limit',
+    'cache limit exceeded during decode',
+    'dyld shared cache slide info 0 exceeds bounded parser limit',
+  ];
+  for (const msg of budgetWarnings) {
+    const res = normalizeIntegrityWarnings({ format: 'Mach-O 64-bit', warnings: [] }, [msg], false);
+    assert.equal(res.truncated, false, `expected truncated=false for budget/limit warning "${msg}"`);
+    assert.deepEqual(res.warnings, [msg]);
+  }
+
+  const truncationWarnings = [
+    'LC_SYMTAB shorter than ABI minimum',
+    'segment __TEXT extends past end of file',
+  ];
+  for (const msg of truncationWarnings) {
+    const res = normalizeIntegrityWarnings({ format: 'Mach-O 64-bit', warnings: [] }, [msg], false);
+    assert.equal(res.truncated, true, `expected truncated=true for "${msg}"`);
+    assert.deepEqual(res.warnings, [msg]);
+  }
+});

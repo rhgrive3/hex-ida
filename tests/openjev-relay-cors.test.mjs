@@ -78,12 +78,17 @@ test('worker-entry handleOpenJevSystemOne enforces full origin x method x status
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     };
 
+    function assertOpenJevVaryNoStore(res) {
+      assert.match(res.headers.get('vary') || '', /Origin/i);
+      assert.equal(res.headers.get('cache-control'), 'no-store');
+    }
+
     function assertAllowedCorsHeaders(res, origin) {
       assert.equal(res.headers.get('access-control-allow-origin'), origin);
       assert.equal(res.headers.get('access-control-allow-methods'), 'POST, OPTIONS');
       assert.equal(res.headers.get('access-control-allow-headers'), 'Content-Type, Authorization');
       assert.equal(res.headers.get('access-control-allow-credentials'), null);
-      assert.match(res.headers.get('vary') || '', /Origin/i);
+      assertOpenJevVaryNoStore(res);
       assert.equal(res.headers.get('cross-origin-resource-policy'), 'cross-origin');
       assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
       assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
@@ -111,6 +116,7 @@ test('worker-entry handleOpenJevSystemOne enforces full origin x method x status
       }));
       assert.equal(res.status, 403, 'OPTIONS should reject evil/missing origin');
       assertNoCorsOrigin(res);
+      assertOpenJevVaryNoStore(res);
     }
 
     // 2. Disallowed origin is rejected with 403 across all methods (POST, GET) before method/auth checks
@@ -122,6 +128,7 @@ test('worker-entry handleOpenJevSystemOne enforces full origin x method x status
       });
       assert.equal(res.status, 403, method + ' from evil origin must return 403');
       assertNoCorsOrigin(res);
+      assertOpenJevVaryNoStore(res);
       assert.equal((await res.json()).error.code, 'origin_not_allowed');
     }
 
@@ -140,6 +147,7 @@ test('worker-entry handleOpenJevSystemOne enforces full origin x method x status
       assert.equal(res.status, 405, 'GET without Origin must return 405');
       assert.equal(res.headers.get('allow'), 'POST, OPTIONS');
       assertNoCorsOrigin(res);
+      assertOpenJevVaryNoStore(res);
     }
 
     // 4. POST matrix (401 unauthorized, 413 payload_too_large, 200 ok) for allowed origins + missing Origin
@@ -156,7 +164,10 @@ test('worker-entry handleOpenJevSystemOne enforces full origin x method x status
       assert.equal(res401.status, 401);
       assert.equal((await res401.json()).error.code, 'unauthorized');
       if (origin !== null) assertAllowedCorsHeaders(res401, origin);
-      else assertNoCorsOrigin(res401);
+      else {
+        assertNoCorsOrigin(res401);
+        assertOpenJevVaryNoStore(res401);
+      }
 
       // 4b. 413 payload_too_large
       const res413 = await handleOpenJevSystemOne(new Request(ENDPOINT, {
@@ -167,7 +178,10 @@ test('worker-entry handleOpenJevSystemOne enforces full origin x method x status
       assert.equal(res413.status, 413);
       assert.equal((await res413.json()).error.code, 'payload_too_large');
       if (origin !== null) assertAllowedCorsHeaders(res413, origin);
-      else assertNoCorsOrigin(res413);
+      else {
+        assertNoCorsOrigin(res413);
+        assertOpenJevVaryNoStore(res413);
+      }
 
       // 4c. 200 normal proxy
       const res200 = await handleOpenJevSystemOne(new Request(ENDPOINT, {
@@ -180,6 +194,7 @@ test('worker-entry handleOpenJevSystemOne enforces full origin x method x status
       if (origin !== null) assertAllowedCorsHeaders(res200, origin);
       else {
         assertNoCorsOrigin(res200);
+        assertOpenJevVaryNoStore(res200);
         assert.equal(res200.headers.get('x-content-type-options'), 'nosniff');
       }
     }
@@ -221,6 +236,57 @@ test('worker-entry handleOpenJevSystemOne enforces full origin x method x status
       assert.equal(res504.status, 504);
       assert.equal((await res504.json()).error.code, 'upstream_timeout');
       assertAllowedCorsHeaders(res504, 'null');
+    }
+
+    // 4e. 400 invalid_request (body read error) includes vary: Origin and cache-control: no-store
+    for (const origin of ['null', null]) {
+      const headers = origin !== null ? { origin, authorization: AUTH } : { authorization: AUTH };
+      const brokenReq = {
+        url: ENDPOINT,
+        method: 'POST',
+        headers: new Headers(headers),
+        body: {
+          getReader() {
+            return {
+              async read() { throw new Error('stream failure'); },
+              async cancel() {},
+              releaseLock() {},
+            };
+          },
+        },
+      };
+      const res400 = await handleOpenJevSystemOne(brokenReq, {
+        fetchImpl: async () => { throw new Error('must not fetch'); },
+      });
+      assert.equal(res400.status, 400);
+      assert.equal((await res400.json()).error.code, 'invalid_request');
+      if (origin !== null) assertAllowedCorsHeaders(res400, origin);
+      else {
+        assertNoCorsOrigin(res400);
+        assertOpenJevVaryNoStore(res400);
+      }
+    }
+
+    // 4f. Upstream null-body statuses (204, 205, 304) pass through safely without TypeError -> 502
+    for (const status of [204, 205, 304]) {
+      for (const origin of ['null', 'https://chatgpt.com', null]) {
+        const headers = origin !== null ? { origin, authorization: AUTH } : { authorization: AUTH };
+        const resNullBody = await handleOpenJevSystemOne(new Request(ENDPOINT, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ prompt: 'null-body-' + status }),
+        }), {
+          fetchImpl: async () => new Response(null, { status }),
+        });
+        assert.equal(resNullBody.status, status, 'upstream ' + status + ' must not turn into 502');
+        assert.equal(resNullBody.body, null);
+        assert.equal(await resNullBody.text(), '');
+        if (origin !== null) assertAllowedCorsHeaders(resNullBody, origin);
+        else {
+          assertNoCorsOrigin(resNullBody);
+          assertOpenJevVaryNoStore(resNullBody);
+        }
+      }
     }
 
     // 5. Top-level worker.fetch routing: /api/jev/systemone allows Origin: null while other endpoints stay strict

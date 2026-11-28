@@ -73,7 +73,8 @@ function semanticFunctionTarget(architecture) {
   return target;
 }
 
-const INTEGRITY_TRUNCATION_RE = /truncat(?:ed|ion)|invalid segment file\/vm range|exceeds|damaged header|could not be parsed|invalid load-command|outside (?:parent\/slice|the selected slice|slice|file)/i;
+const INTEGRITY_BUDGET_LIMIT_RE = /\b(?:budget|materialization\s+limit|record\s+limit|cache\s+limit|parser\s+limit|memory\s+limit|size\s+limit|count\s+limit|entry\s+limit|rate\s+limit|wall-clock|estimated\s+memory)\b/i;
+const INTEGRITY_TRUNCATION_RE = /truncat(?:ed|ion)|invalid segment file\/vm range|exceeds\s+(?:the\s+)?(?:file|image|slice|command|section|segment|buffer|input|declared|available|header|table|bounds?|size|length|range|end)|damaged header|could not be parsed|invalid load-command|outside (?:parent\/slice|the selected slice|slice|file)|shorter than abi minimum|extends past end of file/i;
 
 export function normalizeIntegrityWarnings(result, extraWarnings = [], forceTruncated = false) {
   if (!result || typeof result !== 'object') return result;
@@ -93,7 +94,7 @@ export function normalizeIntegrityWarnings(result, extraWarnings = [], forceTrun
     if (!raw) return;
     const text = raw.trim();
     if (!text) return;
-    if (INTEGRITY_TRUNCATION_RE.test(text)) truncated = true;
+    if (!INTEGRITY_BUDGET_LIMIT_RE.test(text) && INTEGRITY_TRUNCATION_RE.test(text)) truncated = true;
     if (!seen.has(text)) {
       seen.add(text);
       warnings.push(text);

@@ -964,28 +964,39 @@ function renderDetail(app, sheet, root, d, row, region) {
       if (a == null) return null;
       let key;
       try { key = BigInt(a).toString(); } catch { return null; }
-      const hit = app.viewer?._relocMap?.get?.(key);
-      if (hit) return hit;
+      const relocMap = app.viewer?._relocMap;
+      if (relocMap) {
+        const hit = relocMap.get?.(key) || null;
+        return hit && !hit.isAddend ? hit : null;
+      }
       if (Array.isArray(sliceRelocs)) {
         const priorityOf = (item) => {
-          if (!item) return -1;
-          const isAddend = Boolean(item.isAddend || (item.type === 10 && !item.extern));
-          if (isAddend) return 0;
+          if (!item || item.isAddend) return -1;
           return item.symbol != null ? (item.extern ? 3 : 2) : 1;
         };
         let best = null;
         let bestPri = -1;
+        let addend = 0;
         for (const r of sliceRelocs) {
           if (r?.address != null) {
             try {
               if (BigInt(r.address).toString() === key) {
+                if (r.isAddend) {
+                  const val = Number(r.addend);
+                  if (Number.isFinite(val) && val !== 0) addend = val;
+                  continue;
+                }
                 const pri = priorityOf(r);
                 if (pri > bestPri) { best = r; bestPri = pri; }
               }
             } catch { /* ignore */ }
           }
         }
-        if (best) return best;
+        if (best) {
+          return addend !== 0 && (best.addend == null || best.addend === 0)
+            ? { ...best, addend }
+            : best;
+        }
       }
       return null;
     },
