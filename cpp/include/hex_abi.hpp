@@ -39,11 +39,16 @@ namespace hex {
 
 class Arena {
  public:
-  Arena() : base_(nullptr), cursor_(0), capacity_(0), allow_wasm_grow_(true) {}
+  Arena() : base_(nullptr), cursor_(0), capacity_(0), allow_wasm_grow_(false) {}
 
   void init_external(uint8_t* buffer, size_t capacity, bool allow_wasm_grow = true) {
     base_ = buffer;
     cursor_ = 0;
+    if (!buffer) {
+      capacity_ = 0;
+      allow_wasm_grow_ = false;
+      return;
+    }
     capacity_ = capacity;
     allow_wasm_grow_ = allow_wasm_grow;
   }
@@ -51,6 +56,11 @@ class Arena {
   void init_fixed(uint8_t* buffer, size_t capacity) {
     base_ = buffer;
     cursor_ = 0;
+    if (!buffer) {
+      capacity_ = 0;
+      allow_wasm_grow_ = false;
+      return;
+    }
     capacity_ = capacity;
     allow_wasm_grow_ = false;
   }
@@ -66,27 +76,38 @@ class Arena {
   bool allow_wasm_grow() const { return allow_wasm_grow_; }
 
   void* alloc_bytes(size_t bytes, size_t align = 8) {
-    if (bytes == 0) return nullptr;
+    if (!base_ || bytes == 0) return nullptr;
     if (align < 8) align = 8;
     if ((align & (align - 1)) != 0) return nullptr;
-    const size_t mask = align - 1;
-    const size_t aligned = (cursor_ + mask) & ~mask;
-    if (aligned < cursor_) return nullptr;
+    const uintptr_t base_addr = reinterpret_cast<uintptr_t>(base_);
+    if (cursor_ > static_cast<size_t>(-1) - base_addr) return nullptr;
+    const uintptr_t cur_addr = base_addr + cursor_;
+    const uintptr_t mask = static_cast<uintptr_t>(align - 1);
+    const uintptr_t aligned_addr = (cur_addr + mask) & ~mask;
+    if (aligned_addr < cur_addr) return nullptr;
+    const size_t aligned = static_cast<size_t>(aligned_addr - base_addr);
     if (bytes > static_cast<size_t>(-1) - aligned) return nullptr;
     const size_t next = aligned + bytes;
     if (next > capacity_) {
 #if defined(__wasm__)
       if (!allow_wasm_grow_) return nullptr;
-      const size_t cur_mem_bytes = static_cast<size_t>(__builtin_wasm_memory_size(0)) * 65536u;
-      const size_t base_addr = reinterpret_cast<uintptr_t>(base_);
-      if (base_addr > cur_mem_bytes || next > static_cast<size_t>(-1) - base_addr) return nullptr;
-      if (base_addr + next > cur_mem_bytes) {
-        const size_t diff = (base_addr + next) - cur_mem_bytes;
-        const size_t pages = (diff + 65535u) / 65536u;
+      const uint64_t cur_mem_bytes = static_cast<uint64_t>(__builtin_wasm_memory_size(0)) * 65536ULL;
+      const uint64_t base_u64 = static_cast<uint64_t>(base_addr);
+      const uint64_t next_u64 = static_cast<uint64_t>(next);
+      if (base_u64 > cur_mem_bytes || next_u64 > static_cast<uint64_t>(UINT32_MAX) - base_u64) return nullptr;
+      const uint64_t end_u64 = base_u64 + next_u64;
+      if (end_u64 > cur_mem_bytes) {
+        const uint64_t diff = end_u64 - cur_mem_bytes;
+        const uint64_t pages = (diff + 65535ULL) / 65536ULL;
+        if (pages == 0ULL || pages > 65536ULL) return nullptr;
         if (__builtin_wasm_memory_grow(0, static_cast<int32_t>(pages)) < 0) return nullptr;
-        capacity_ = static_cast<size_t>(__builtin_wasm_memory_size(0)) * 65536u - base_addr;
+        const uint64_t new_mem_bytes = static_cast<uint64_t>(__builtin_wasm_memory_size(0)) * 65536ULL;
+        if (new_mem_bytes < base_u64) return nullptr;
+        const uint64_t avail = new_mem_bytes - base_u64;
+        capacity_ = static_cast<size_t>(avail > static_cast<uint64_t>(SIZE_MAX) ? static_cast<uint64_t>(SIZE_MAX) : avail);
       } else {
-        capacity_ = cur_mem_bytes - base_addr;
+        const uint64_t avail = cur_mem_bytes - base_u64;
+        capacity_ = static_cast<size_t>(avail > static_cast<uint64_t>(SIZE_MAX) ? static_cast<uint64_t>(SIZE_MAX) : avail);
       }
       if (next > capacity_) return nullptr;
 #else
