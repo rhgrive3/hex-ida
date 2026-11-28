@@ -208,6 +208,7 @@ function createEmptyStats() {
     arcOpsFolded: 0,
     arcLinesRemoved: 0,
     symbolsDemangled: 0,
+    duplicateAsmCollapsed: 0,
   };
 }
 
@@ -215,11 +216,14 @@ function createEmptyStats() {
  * Formats an array of decompiler line objects (or strings) using the Clean View pipeline.
  * Preserves line metadata (`indent`, `kind`, `row`, `addr`, `note`, etc.).
  */
+const SEMANTIC_V2_ASM_RE = /^__asm\("semantic-v2[^"]*"\);$/;
+
 export function formatCleanViewLines(lines, options = {}) {
   const {
     hideTypedefPrelude = true,
     elideDeadSpills = true,
     refineAppleSwift = true,
+    collapseDuplicateAsm = true,
   } = options;
 
   const stats = createEmptyStats();
@@ -305,6 +309,33 @@ export function formatCleanViewLines(lines, options = {}) {
       }
     }
     current = refined;
+  }
+
+  // 4. Collapse consecutive identical __asm("semantic-v2 ...") placeholder lines
+  if (collapseDuplicateAsm && current.length > 1) {
+    const deduped = [];
+    let i = 0;
+    while (i < current.length) {
+      const item = current[i];
+      const rawText = getLineText(item);
+      const trimmed = rawText.trim();
+      if (SEMANTIC_V2_ASM_RE.test(trimmed)) {
+        let j = i + 1;
+        while (j < current.length && getLineText(current[j]).trim() === trimmed) {
+          j++;
+        }
+        const count = j - i;
+        if (count > 1) {
+          stats.duplicateAsmCollapsed += count - 1;
+          deduped.push(setLineText(item, `${rawText} /* ×${count} */`));
+          i = j;
+          continue;
+        }
+      }
+      deduped.push(item);
+      i++;
+    }
+    current = deduped;
   }
 
   return { lines: current, stats };
