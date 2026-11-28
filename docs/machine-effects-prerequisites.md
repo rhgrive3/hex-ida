@@ -1,26 +1,30 @@
-# MachineEffects prerequisites
+# MachineEffects Prerequisites
 
-MachineEffects validation is intentionally fail-closed. The native oracle and historical baseline are part of the proof, not optional acceleration. A missing executable, shallow/ZIP checkout, or substituted baseline must fail before semantic assertions run.
+Last updated: 2026-11-28
 
-## Required native toolchain
+MachineEffects validation (`npm run effects:test`) is intentionally fail-closed. The native LLVM 18 oracle and historical Git baseline are part of the proof contract, not optional acceleration. A missing executable, shallow/ZIP checkout, or substituted baseline must fail before semantic assertions run.
 
-The canonical Linux CI provider is LLVM/Clang 18. Install it on Ubuntu with:
+## Required Native Toolchain
+
+The canonical Linux CI provider is **LLVM/Clang 18**:
 
 ```sh
 sudo apt-get update
 sudo apt-get install -y clang-18 llvm-18
 ```
 
-The preflight requires LLVM 18 `llvm-mc`, `clang`, `llvm-objdump`, and `llvm-objcopy`. It proves AArch64 support by assembling a real AArch64 probe with both `llvm-mc` and Clang's integrated assembler, then exercising `llvm-objdump` and `llvm-objcopy` on the resulting objects. Versioned executables are preferred (`/usr/bin/llvm-mc-18`, `/usr/bin/clang-18`, `/usr/bin/llvm-objdump-18`, `/usr/bin/llvm-objcopy-18`). The `LLVM_MC`, `CLANG`, `LLVM_OBJDUMP`, and `LLVM_OBJCOPY` environment variables may point to equivalent LLVM 18 binaries.
+The preflight (`tools/validation/machine-effects/prerequisites.mjs`) requires LLVM 18 `llvm-mc`, `clang`, `llvm-objdump`, and `llvm-objcopy`. It verifies AArch64 support by assembling a real AArch64 probe with both `llvm-mc` and Clang's integrated assembler, then exercising `llvm-objdump` and `llvm-objcopy` on the resulting objects.
 
-## Required Git history
+Versioned executables (`/usr/bin/llvm-mc-18`, `/usr/bin/clang-18`, `/usr/bin/llvm-objdump-18`, `/usr/bin/llvm-objcopy-18`) are preferred. Equivalent LLVM 18 binaries may be pointed to via `LLVM_MC`, `CLANG`, `LLVM_OBJDUMP`, and `LLVM_OBJCOPY`.
 
-A ZIP archive is not sufficient for the historical denominator. A shallow checkout must be deepened before validation. The fixed baseline is commit `3f3778e5f2bef638456da19609d616d71a3daedc`, including these exact blobs:
+## Required Git History
+
+A ZIP archive is not sufficient for the historical A2 denominator, and shallow checkouts must be deepened before validation. The pinned baseline is commit `3f3778e5f2bef638456da19609d616d71a3daedc`, requiring these exact blobs:
 
 - `js/targets/architecture/arm64e/effects.js` → `56a7b2bb6fa34d2d4206f5b463770e6f2726efbc`
 - `tools/validation/phase6/profile.json` → `7f8e893d4645a20a7be309f071d1b3a18653b5d1`
 
-For a normal clone, use a full checkout. For an existing shallow clone, either fetch the fixed commit directly or unshallow the repository:
+For an existing shallow clone, fetch the fixed commit or unshallow the repository:
 
 ```sh
 git fetch --no-tags origin 3f3778e5f2bef638456da19609d616d71a3daedc
@@ -28,19 +32,19 @@ git fetch --no-tags origin 3f3778e5f2bef638456da19609d616d71a3daedc
 git fetch --unshallow
 ```
 
-GitHub Actions paths that execute MachineEffects use `actions/checkout` with `fetch-depth: 0`.
+CI workflows that execute MachineEffects check out with `fetch-depth: 0`.
 
-## Preflight and identity record
+## Preflight and Validation Commands
 
-Run this before MachineEffects validation:
+Run the preflight directly before validation:
 
 ```sh
 node tools/validation/machine-effects/prerequisites.mjs
 ```
 
-On success it prints a JSON record containing the exact resolved executable/version identities, AArch64 probe result, baseline commit, and baseline blob identities. On failure it names the missing prerequisite and remediation. `tests/machine-effects/run.mjs` invokes the same preflight automatically, and the A2 historical denominator independently verifies the fixed Git objects before using them.
+On success it outputs a JSON identity record containing the resolved executable/version identities, AArch64 probe result, baseline commit, and baseline blob hashes. On failure it reports the missing prerequisite and remediation. `tests/machine-effects/run.mjs` (`npm run effects:test`) invokes this preflight automatically, and `tests/machine-effects/a2-denominator.test.mjs` independently verifies the pinned Git objects.
 
-After the preflight succeeds, the eleven environment-sensitive checks tracked by #8299 can be rerun directly:
+The eleven environment-sensitive denominator checks can also be run individually after preflight passes:
 
 ```sh
 node tests/machine-effects/arm64-a64-control-denominator.test.mjs
@@ -56,4 +60,4 @@ node tests/machine-effects/independent-oracle-denominator-preservation.test.mjs
 node tests/machine-effects/independent-oracle-report.test.mjs
 ```
 
-A failure after preflight is a semantic/test failure and must remain blocking; it must not be converted to skip/PASS or satisfied with fabricated history, executable shims, or a substitute oracle.
+Any failure after preflight is a blocking semantic or test failure and must never be downgraded to skip/PASS or bypassed with fabricated history, shims, or substitute oracles.
