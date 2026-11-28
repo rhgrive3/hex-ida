@@ -4044,7 +4044,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       const controller = new AbortController();
       dropdownController = controller;
       try {
-        const fns = await matchingFunctionItems(app, raw, { limit: 24, signal: controller.signal });
+        const fns = await matchingFunctionItems(app, raw, { limit: 1000, signal: controller.signal });
         if (serial !== dropdownSerial || controller.signal.aborted || document.activeElement !== input) return;
         const len = Number(fns?.length || 0);
         const rawFns = [];
