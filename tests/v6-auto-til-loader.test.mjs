@@ -490,14 +490,14 @@ describe('til-auto-loader (Track 1)', () => {
       assert.equal(mgr.getMountedSlots().A?.packId, 'existing-pack');
     });
 
-    it('releases evictedPackId on cache-fallback abort and rolls back mounted slots', async () => {
+    it('blocks cache fallback on abort and preserves existing mounted slots untouched', async () => {
       const rawHash = await sha256Hex(SAMPLE_TIL1_BYTES);
       const ac = new AbortController();
       const releasedIds = [];
 
       const mgr = new TilPackManager({
         fetcher: async () => {
-          // Remote fetch fails and triggers abort; TilPackManager falls back to cache!
+          // Remote fetch fails and triggers abort; TilPackManager must NOT fall back to cache!
           ac.abort();
           return makeFakeResponse(new Uint8Array(0), 500);
         },
@@ -524,10 +524,8 @@ describe('til-auto-loader (Track 1)', () => {
 
       const res = await loader.run({ binaryMeta: { platform: 'linux' }, signal: ac.signal });
       assert.equal(res.status, AUTO_ANALYSIS_STATUS.ABORTED);
-      assert.ok(releasedIds.includes('pack-a'), 'evicted pack-a TID base must be released even on cache-fallback abort');
-      // pack-c mounted during aborted call must be rolled back (unmounted & TID released)
-      assert.ok(releasedIds.includes('pack-c'), 'rolled-back pack-c TID base must be released');
-      assert.equal(mgr.getMountedSlots().A, null);
+      assert.deepEqual(releasedIds, [], 'aborted fetch must not trigger cache-fallback eviction or TID release');
+      assert.equal(mgr.getMountedSlots().A?.packId, 'pack-a');
       assert.equal(mgr.getMountedSlots().B?.packId, 'pack-b');
     });
 

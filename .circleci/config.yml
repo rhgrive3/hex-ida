@@ -82,7 +82,7 @@ jobs:
 
   ai-eval-contract:
     docker:
-      - image: cimg/node:20.19
+      - image: cimg/node:22.23
     resource_class: small
     steps:
       - configure-public-repository-checkout
@@ -573,7 +573,7 @@ jobs:
               # present to register its exact Phase 7 cross-lane inventory.
               run_it=false
             else
-              run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/decompiler/|tests/phase8/|tools/validation/phase8/|tools/validation/phase8-ownership\.mjs$|tools/validation/phase-ownership/phase8\.json$|reports/phase8/|docs/PHASE8_CHECKPOINT\.md$|docs/PHASE8_HANDOFF\.md$|\.github/workflows/phase8-ownership\.yml$|\.github/workflows/phase8-release-validation\.yml$|tools/validation/phase5-ownership\.mjs$|tools/validation/scpa-integration-ownership\.mjs$|tools/validation/phase-ownership/scpa-integration\.json$|tests/ci/scpa-integration-ownership\.test\.mjs$)')"
+              run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/decompiler/|tests/phase8/|tools/validation/phase8/|tools/validation/phase8-ownership\.mjs$|tools/validation/phase-ownership/phase8\.json$|reports/phase8/|\.github/workflows/phase8-ownership\.yml$|\.github/workflows/phase8-release-validation\.yml$|tools/validation/phase5-ownership\.mjs$|tools/validation/scpa-integration-ownership\.mjs$|tools/validation/phase-ownership/scpa-integration\.json$|tests/ci/scpa-integration-ownership\.test\.mjs$)')"
             fi
             echo "export RUN_PHASE8_OWNERSHIP=$run_it" >> "$BASH_ENV"
       - run:

@@ -865,6 +865,7 @@ export class InvestigationService {
       });
     } catch (error) { if (options.signal?.aborted) throw error; }
     this.#syncPinSnapshot(context.snapshotId);
+    const sliceInfo = this.app.currentSlice?.()?.info || null;
     const overviewAnalyzer = this.#addressAwareAnalyzer(options.signal || null, this.functionModelCache);
     let report;
     try {
@@ -878,6 +879,17 @@ export class InvestigationService {
         shapes:context.shapes,
         cryptoScan:context.cryptoScan || null,
         recognition,
+        image:this.app.image ?? this.app.backend?.image ?? null,
+        dataSections:Array.isArray(this.app.dataSections) ? this.app.dataSections : null,
+        objcModel:context.metadata?.objc ?? this.app.objcModel ?? null,
+        swiftModel:context.metadata?.swift ?? this.app.swiftModel ?? null,
+        codeBytes:this.app.codeBytes ?? null,
+        dataBytes:this.app.dataBytes ?? null,
+        textConstBytes:this.app.textConstBytes ?? null,
+        textConstVa:this.app.textConstVa ?? null,
+        dataVa:this.app.dataVa ?? null,
+        imageBase:this.app.imageBase ?? this.app.image?.imageBase ?? sliceInfo?.textVM ?? null,
+        architecture:storeValue(this.app, 'architecture') || this.app.currentSlice?.()?.capability?.architecture || sliceInfo?.architecture || null,
         analyze:overviewAnalyzer,
         scanAccess:this.#globalAccessScanner(options.signal || null),
         isCancelled:() => !!options.signal?.aborted,

@@ -141,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: mcr.microsoft.com/playwright:v1.55.0-noble
+      image: mcr.microsoft.com/playwright:v1.65.1-noble
       options: --ipc=host
     steps:
       - uses: actions/checkout@v7
@@ -155,7 +155,7 @@ jobs:
       - name: Build secure userscript runtime
         run: npm run userscript:build
       - name: Install matching Playwright package
-        run: npm install --no-save --save-exact playwright@1.55.0
+        run: npm install --no-save --save-exact playwright@1.65.1
       - name: Verify pinned Chromium and WebKit image
         shell: bash
         run: |

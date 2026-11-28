@@ -116,7 +116,9 @@ function prepareAnalysisState(app, snapshot) {
     sym.guessed = !!snapshot.symbols.guessed;
     sym.functionTopologyRevision = Number(snapshot.symbols.functionTopologyRevision || 0);
     sym.functionTopologyEnds = new Map(snapshot.symbols.functionTopologyEnds || []);
-    for (const entry of app.notes?.nameEntries?.() || []) sym.rename(entry.addr, entry.name);
+    const noteEntries = app.notes?.nameEntries?.() || [];
+    if (typeof sym.renameMany === 'function') sym.renameMany(noteEntries, { replace: true });
+    else for (const entry of noteEntries) sym.rename(entry.addr, entry.name);
     prepared.symbols = sym;
     symbols = sym;
   }
@@ -332,7 +334,15 @@ export class AnalysisResumeStore {
         [LAST_FILE_KEY, record],
         [LAST_FILE_META_KEY, baseMeta],
       ]);
-      if (saved) void this.requestPersistentStorage();
+      if (saved) {
+        void this.requestPersistentStorage();
+        if (meta.binaryId && supersededBinaryId && supersededBinaryId !== meta.binaryId) {
+          const cleanupTask = () => this.deleteSessionsForBinary(supersededBinaryId).catch(() => false);
+          const queued = this.writeChain.then(cleanupTask, cleanupTask);
+          this.writeChain = queued.catch(() => false);
+          await queued;
+        }
+      }
       return saved;
     };
     const pending = this.fileWriteChain.then(task, task);

@@ -77,6 +77,8 @@ export class CodeViewer {
     this._onDocKeyDown = null;
     this.blockOverlay = null;
     this.blockRegionId = null;
+    this._relocMap = null;
+    this._isRelocatableObject = false;
     this._ctx = null;
     this.totalRows = 0;
     this.totalRowsBig = 0n;
@@ -433,16 +435,67 @@ export class CodeViewer {
     el._opsHlReg = target;
   }
 
+  setRelocations(list, { isRelocatableObject = false } = {}) {
+    const map = new Map();
+    const addends = new Map();
+    const priorityOf = (item) => {
+      if (!item) return -1;
+      return item.symbol != null ? (item.extern ? 3 : 2) : 1;
+    };
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        if (!item || item.address == null) continue;
+        try {
+          const key = BigInt(item.address).toString();
+          if (item.isAddend) {
+            const val = Number(item.addend);
+            if (Number.isFinite(val) && val !== 0) addends.set(key, val);
+            continue;
+          }
+          const existing = map.get(key);
+          if (!existing || priorityOf(item) > priorityOf(existing)) {
+            map.set(key, item);
+          }
+        } catch { /* ignore malformed address */ }
+      }
+    }
+    for (const [key, addend] of addends) {
+      const primary = map.get(key);
+      if (primary && (primary.addend == null || primary.addend === 0)) {
+        map.set(key, { ...primary, addend });
+      }
+    }
+    this._relocMap = map.size > 0 ? map : null;
+    this._isRelocatableObject = Boolean(isRelocatableObject);
+    this._ctx = null;
+  }
+
   _noteFor(row, idx, mn, ops, asmEntry) {
     const arch = this.architectureId();
     if (!supportsBeginnerInstructionNotes(arch)) return '';
-    const previous = idx > 0 && asmEntry?.mn ? { mnemonic:asmEntry.mn[idx - 1], operands:asmEntry.ops[idx - 1] || '' } : null;
+    const prevRowIdx = typeof row === 'bigint' ? row - 1n : row - 1;
+    const previous = idx > 0 && asmEntry?.mn
+      ? { mnemonic:asmEntry.mn[idx - 1], operands:asmEntry.ops[idx - 1] || '', address:this.rowAddress(prevRowIdx) }
+      : null;
     return instructionNote(arch, { mnemonic:mn, operands:ops, address:this.rowAddress(row), style:this.noteStyle, context:this._explainCtx(), previous });
   }
   _explainCtx() {
     if (!this._ctx || this._ctx.gen !== this.symbols.gen || this._ctx.lang !== lang()) {
       const sym = this.symbols;
-      this._ctx = { gen:sym.gen, lang:lang(), symbolFor:(addr) => sym.nameAt(addr) };
+      const relocMap = this._relocMap;
+      const isRelocatableObject = this._isRelocatableObject;
+      this._ctx = {
+        gen: sym.gen,
+        lang: lang(),
+        symbolFor: (addr) => sym.nameAt(addr),
+        isRelocatableObject,
+        relocationFor: relocMap
+          ? (addr) => {
+              if (addr == null) return null;
+              try { return relocMap.get(BigInt(addr).toString()) || null; } catch { return null; }
+            }
+          : null,
+      };
     }
     return this._ctx;
   }

@@ -8,7 +8,8 @@ import {
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
 import * as formatMod from '../format.js';
-import { pick, isJa as i18nIsJa } from '../i18n.js';
+import { pick, isJa as i18nIsJa, lang as i18nLang } from '../i18n.js';
+import { formatProjectError } from '../project/errors.js';
 import { menu, copyText, toast, closeAllSheets, closeMenu, Sheet, el, button, alertDialog } from '../ui.js';
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals, showPatches,
@@ -282,7 +283,51 @@ function currentAddress(app) {
   return region.vmAddr;
 }
 
+function isFileLoading(app) {
+  return !!app?.store?.get?.('fileLoading');
+}
+
+function guardFileLoading(app) {
+  if (!isFileLoading(app)) return false;
+  toast(text('ファイルを読み込み中です。完了してから操作してください。', 'Loading file. Please wait until it finishes.'));
+  return true;
+}
+
+export function isTruncatedWithoutFunctions(app) {
+  const info = app?.store?.get?.('fileInfo') || null;
+  if (!info) return false;
+  const sliceIndex = app?.store?.get?.('sliceIndex') ?? -1;
+  const slice = sliceIndex >= 0 ? info?.slices?.[sliceIndex] || null : null;
+  const truncated = Boolean(info?.truncated || slice?.info?.truncated || slice?.truncated);
+  if (!truncated) return false;
+  const canDisassemble = app?.store?.get?.('canDisassemble');
+  const symbolsReady = app?.store?.get?.('symbolsReady');
+  if (canDisassemble !== false && symbolsReady !== true) return false;
+  const fnCount = Number(app?.symbols?.functionCount ?? app?.symbols?.funcs?.length ?? 0);
+  return fnCount === 0;
+}
+
+function guardGoalAction(app) {
+  if (guardFileLoading(app)) return false;
+  if (isTruncatedWithoutFunctions(app)) {
+    toast(text('ファイルが途中で切れているため、コードや関数を解析できません。完全なファイルを開き直してください。', 'This file is truncated, so code and functions cannot be analyzed. Please re-open the complete file.'));
+    return false;
+  }
+  return true;
+}
+
+function buildTruncatedGoalWarning() {
+  return statusNotice(
+    text(
+      'このファイルは途中で切れているか破損しており、解析可能な関数が見つかりません。完全なファイルを開き直してください。',
+      'This file appears truncated or damaged and no analyzable functions were found. Re-open the complete file.',
+    ),
+    'warn',
+  );
+}
+
 function requireFile(app, action) {
+  if (guardFileLoading(app)) return null;
   if (app.store.get('fileInfo')) return action();
   toast(text('先にファイルを開いてください。', 'Open a file first.'));
   return null;
@@ -464,6 +509,7 @@ export function buildInitialLandingCard(app, router, { onDismiss = null } = {}) 
 
   const goalsWrap = h('div', 'ui-quickstart-section ui-quickstart-goals');
   goalsWrap.append(h('h3', 'ui-quickstart-heading', text('目的から探す', 'Start by goal')));
+  if (isTruncatedWithoutFunctions(app)) goalsWrap.append(buildTruncatedGoalWarning());
   const goalBar = h('div', 'ui-goal-suggestions');
   for (const preset of [
     { label: text('HP・体力', 'HP / health'), query: text('HPを書き換える処理', 'where HP is written') },
@@ -479,6 +525,7 @@ export function buildInitialLandingCard(app, router, { onDismiss = null } = {}) 
   goalBar.append(uiButton(text('アプリ全体を解析', 'Full overview'), {
     cls: 'ui-primary-action ui-quickstart-overview-btn',
     onClick: () => {
+      if (!guardGoalAction(app)) return;
       if (typeof app?.openOverview === 'function') app.openOverview();
       else router?.navigate?.('/investigate');
     },
@@ -616,6 +663,7 @@ function rememberQuery(query, app) {
  * domain boundary; only the candidate presentation remains a compatibility Sheet.
  */
 function runInvestigation(app, query) {
+  if (!guardGoalAction(app)) return null;
   return requireFile(app, () => {
     try {
       const compiled = compileGoal(String(query || '').trim());
@@ -677,6 +725,7 @@ for (const preset of [
     onClick:() => { input.value = preset.query; rememberQuery(preset.query, app); runInvestigation(app, preset.query); },
   }));
 }
+if (isTruncatedWithoutFunctions(app)) hero.body.append(buildTruncatedGoalWarning());
 hero.body.append(suggestions, sectionTitle(text('よくある目的', 'Common goals')), commonGoals);
 let disposed = false;
 if (!app.store?.get?.('fileInfo')) {
@@ -3372,15 +3421,18 @@ function downloadBlob(blob,name) {
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 async function exportProjectFromProduct(app) {
+  if (guardFileLoading(app)) return;
   try { const blob=await app.exportProjectFile(); downloadBlob(blob,(app.store.get('fileInfo')?.name||'analysis')+'.hexproj'); toast(text('プロジェクトを書き出しました。','Project exported.')); }
-  catch(error){toast(text('プロジェクトを書き出せませんでした: ','Could not export project: ')+String(error?.message||error));}
+  catch(error){toast(formatProjectError(error, i18nLang()));}
 }
 async function importProjectFromProduct(app) {
+  if (guardFileLoading(app)) return;
   const file=await pickOneFile('.hexproj,application/json'); if(!file)return;
   try { await app.importProjectFile(file); toast(text('プロジェクトを復元しました。','Project restored.')); }
-  catch(error){const mismatch=error?.code==='HEX_PROJECT_BINARY_MISMATCH';toast(mismatch?text('このプロジェクトは現在のバイナリ/スライス用ではありません。','This project belongs to a different binary or slice.'):text('プロジェクトを読み込めませんでした: ','Could not import project: ')+String(error?.message||error));}
+  catch(error){toast(formatProjectError(error, i18nLang()));}
 }
 async function exportDeltaFromProduct(app) {
+  if (guardFileLoading(app)) return;
   if (typeof app.exportDeltaJson !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session export is unavailable.')); return; }
   try {
     const data = await app.exportDeltaJson();
@@ -3392,7 +3444,7 @@ async function exportDeltaFromProduct(app) {
     downloadBlob(blob, filename);
     toast(text('差分を書き出しました。', 'Delta exported.'));
   } catch (error) {
-    toast(text('差分を書き出せませんでした: ', 'Could not export delta: ') + String(error?.message || error));
+    toast(formatProjectError(error, i18nLang()));
   }
 }
 function confirmActionDialog(title, message, confirmLabel, cancelLabel) {
@@ -3413,6 +3465,7 @@ function confirmActionDialog(title, message, confirmLabel, cancelLabel) {
 }
 
 async function importDeltaFromProduct(app, router = null) {
+  if (guardFileLoading(app)) return false;
   if (typeof app.importDeltaJson !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session import is unavailable.')); return false; }
   const file = await pickOneFile('.json,application/json');
   if (!file) return false;
@@ -3441,7 +3494,7 @@ async function importDeltaFromProduct(app, router = null) {
       res = await app.importDeltaJson(raw, { allowMismatch: true });
     }
     if (!res?.ok) {
-      toast(text('差分を読み込めませんでした: ', 'Could not import delta: ') + String(res?.error || text('無効な差分ファイルです。', 'Invalid delta file.')));
+      toast(formatProjectError(res?.error || { code: 'HEX_PROJECT_INVALID' }, i18nLang()));
       return false;
     }
     toast(text('差分を読み込みました。', 'Delta imported.'));
@@ -3452,11 +3505,12 @@ async function importDeltaFromProduct(app, router = null) {
     }
     return true;
   } catch (error) {
-    toast(text('差分を読み込めませんでした: ', 'Could not import delta: ') + String(error?.message || error));
+    toast(formatProjectError(error, i18nLang()));
     return false;
   }
 }
 async function resetDeltaFromProduct(app) {
+  if (guardFileLoading(app)) return false;
   if (typeof app.resetDeltaSession !== 'function') { toast(text('差分セッション機能は利用できません。', 'Delta session reset is unavailable.')); return false; }
   const confirmed = await confirmActionDialog(
     text('差分セッションをリセットしますか？', 'Reset delta session?'),
@@ -3473,7 +3527,7 @@ async function resetDeltaFromProduct(app) {
     toast(text('差分セッションをリセットしました。', 'Delta session reset.'));
     return true;
   } catch (error) {
-    toast(text('差分セッションをリセットできませんでした: ', 'Could not reset delta session: ') + String(error?.message || error));
+    toast(formatProjectError(error, i18nLang()));
     return false;
   }
 }
@@ -4677,6 +4731,7 @@ export function installProductUI(app) {
     };
   }
   const shortcut = (event) => {
+    if (isFileLoading(app)) { event.preventDefault(); return; }
     const target = event.target;
     const tag = target?.tagName || '';
     const typing = !!(target && (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || target.isContentEditable));

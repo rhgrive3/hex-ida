@@ -522,6 +522,7 @@ function parseThin(bytes, opts) {
   }
 
   for (const st of symtabs) parseSymbolTable(r, st, image, bits, metadataBudget);
+  if (filetype === 1) parseObjectRelocations(r, symtabs, image, bits, metadataBudget);
   const hadFunctionStarts = !!linkeditData.functionStarts;
   if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image, metadataBudget);
   parseCompactUnwind(r, image, metadataBudget);
@@ -746,6 +747,115 @@ function rejectAmbiguousSegmentOwnership(image, label, address, fileOffset, file
   }
 }
 
+const MAX_OBJECT_SECTION_RELOCS = 200_000;
+const MAX_RAW_SYMBOL_NAME_BYTES = 8 * 1024 * 1024;
+const CPU_TYPE_ARM64 = 0x0100000c;
+const CPU_TYPE_ARM64_32 = 0x0200000c;
+
+function readRawMachOSymbolNames(r, symtabs, bits, maxSymbols = 200_000, maxDecodedBytes = MAX_RAW_SYMBOL_NAME_BYTES) {
+  const names = [];
+  if (!Array.isArray(symtabs) || symtabs.length === 0) return names;
+  const st = symtabs[0];
+  const entrySize = bits === 64 ? 16 : 12;
+  const nsyms = Math.min(st.nsyms >>> 0, maxSymbols);
+  if (nsyms === 0 || st.symoff + nsyms * entrySize > r.length || st.stroff > r.length) return names;
+  const strEnd = Math.min(r.length, st.stroff + (st.strsize >>> 0));
+  const intern = new Map();
+  let decodedBytes = 0;
+  for (let i = 0; i < nsyms; i++) {
+    const strx = r.u32(st.symoff + i * entrySize);
+    if (strx > 0 && st.stroff + strx < strEnd) {
+      if (intern.has(strx)) {
+        names.push(intern.get(strx));
+      } else {
+        const remaining = maxDecodedBytes - decodedBytes;
+        if (remaining <= 0) {
+          names.push('');
+          continue;
+        }
+        const maxLen = Math.min(strEnd - (st.stroff + strx), remaining);
+        const decoded = r.cstring(st.stroff + strx, maxLen);
+        decodedBytes += decoded.length + 1;
+        intern.set(strx, decoded);
+        names.push(decoded);
+      }
+    } else {
+      names.push('');
+    }
+  }
+  return names;
+}
+
+function parseObjectRelocations(r, symtabs, image, bits, sharedBudget = null) {
+  const budget = ensureMachOMetadataBudget(image, sharedBudget);
+  const sectionsWithRelocs = image.sections.filter((sec) => sec && sec.nreloc > 0);
+  if (sectionsWithRelocs.length === 0) return;
+  const rawNames = readRawMachOSymbolNames(r, symtabs, bits);
+  const is64 = bits === 64;
+  const arch = String(image.arch || image.architecture || '').toLowerCase();
+  const isArm64 = arch === 'arm64'
+    || arch === 'arm64e'
+    || arch === 'arm64_32'
+    || image.metadata?.cpu === CPU_TYPE_ARM64
+    || image.metadata?.cpu === CPU_TYPE_ARM64_32;
+  for (const sec of sectionsWithRelocs) {
+    const reloff = sec.reloff >>> 0;
+    const declared = sec.nreloc >>> 0;
+    if (reloff >= r.length) {
+      image.warnings.push(`section ${sec.name} relocation table at ${reloff} exceeds image size ${r.length}`);
+      continue;
+    }
+    const maxFitting = Math.floor((r.length - reloff) / 8);
+    if (declared > maxFitting) {
+      image.warnings.push(`section ${sec.name} relocation table (${declared} entries) is truncated to ${maxFitting}`);
+    }
+    const count = Math.min(declared, maxFitting, MAX_OBJECT_SECTION_RELOCS);
+    const baseAddr = typeof sec.address === 'bigint' ? sec.address : BigInt(sec.address ?? 0);
+    for (let i = 0; i < count; i++) {
+      if (!budget.take({ records: 1, objects: 1, operations: 1, estimatedHeapBytes: 96 }, 'object-relocation')) break;
+      const p = reloff + i * 8;
+      const rawAddrU32 = r.u32(p);
+      if (!is64 && (rawAddrU32 & 0x80000000) !== 0) continue;
+      const rAddress = r.i32(p);
+      if (rAddress < 0) continue;
+      const rInfo = r.u32(p + 4);
+      const symbolIndex = rInfo & 0xffffff;
+      const pcrel = !!((rInfo >>> 24) & 1);
+      const length = (rInfo >>> 25) & 3;
+      const extern = !!((rInfo >>> 27) & 1);
+      const type = (rInfo >>> 28) & 0xf;
+      const isAddend = isArm64 && type === 10 && !extern;
+      const addend = isAddend
+        ? ((symbolIndex & 0x800000) ? (symbolIndex - 0x1000000) : symbolIndex)
+        : 0;
+      let symbol = null;
+      if (isAddend) {
+        symbol = null;
+      } else if (extern) {
+        const name = rawNames[symbolIndex];
+        symbol = typeof name === 'string' && name.length > 0 ? name : null;
+      } else if (symbolIndex >= 1 && symbolIndex <= image.sections.length) {
+        const target = image.sections[symbolIndex - 1];
+        if (target) {
+          symbol = target.segment && target.name ? `${target.segment},${target.name}` : (target.name || null);
+        }
+      }
+      image.relocations.push({
+        address: baseAddr + BigInt(rAddress),
+        section: sec.name || '',
+        segment: sec.segment || '',
+        type,
+        extern,
+        symbolIndex,
+        symbol,
+        ...(isAddend ? { isAddend: true, addend } : {}),
+        pcrel,
+        length,
+      });
+    }
+  }
+}
+
 function parseSegment64(r, p, cmdsize, image, order, sharedBudget = null) {
   const budget = ensureMachOMetadataBudget(image, sharedBudget);
   if (cmdsize < 72) throw new Error(`invalid LC_SEGMENT_64 size ${cmdsize}`);
@@ -772,11 +882,14 @@ function parseSegment64(r, p, cmdsize, image, order, sharedBudget = null) {
     const saddr = r.u64(q + 32);
     const ssize = r.u64(q + 40);
     const offset = r.u32(q + 48);
+    const reloff = r.u32(q + 56);
+    const nreloc = r.u32(q + 60);
     const sflags = r.u32(q + 64);
     const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
     const sectionFileOffset = BigInt(offset), sectionFileSize = zeroFill ? 0n : ssize;
     validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill, sflags);
-    image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
+    const sec = image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
+    if (sec && nreloc > 0) { sec.reloff = reloff; sec.nreloc = nreloc; }
   }
 }
 
@@ -810,11 +923,14 @@ function parseSegment32(r, p, cmdsize, image, order, sharedBudget = null) {
     const saddr = BigInt(r.u32(q + 32));
     const ssize = BigInt(r.u32(q + 36));
     const offset = r.u32(q + 40);
+    const reloff = r.u32(q + 48);
+    const nreloc = r.u32(q + 52);
     const sflags = r.u32(q + 56);
     const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
     const sectionFileOffset = BigInt(offset), sectionFileSize = zeroFill ? 0n : ssize;
     validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill, sflags);
-    image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
+    const sec = image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
+    if (sec && nreloc > 0) { sec.reloff = reloff; sec.nreloc = nreloc; }
   }
 }
 

@@ -34,8 +34,8 @@ const AUTHENTICATED_LOAD_OFFSET_SCALE = 8n;
 // form. They are ARM64e extension-owned memory semantics, not PAC encodings,
 // so they stay outside the PAC encoding registry on purpose.
 const AUTHENTICATED_LOADS = Object.freeze({
-  ldraa: { key: 'ia', keyId: 'APIAKey' },
-  ldrab: { key: 'ib', keyId: 'APIBKey' },
+  ldraa: { key: 'da', keyId: 'APDAKey' },
+  ldrab: { key: 'db', keyId: 'APDBKey' },
 });
 
 export const ARM64E_AUTHENTICATED_LOAD_MNEMONICS = Object.freeze(Object.keys(AUTHENTICATED_LOADS));
@@ -83,23 +83,39 @@ const DESTINATION_TEXT = /^(?:xzr|(x(?:[0-9]|[12][0-9]|30)))$/i;
 
 function structuredOperandList(decoded) {
   if (Array.isArray(decoded?.ops) || Array.isArray(decoded?.operands)) return operandList(decoded);
+  const rawOpStr = typeof decoded?.opStr === 'string'
+    ? decoded.opStr
+    : typeof decoded?.op_str === 'string'
+      ? decoded.op_str
+      : typeof decoded?.operandString === 'string'
+        ? decoded.operandString
+        : typeof decoded?.operands === 'string'
+          ? decoded.operands
+          : typeof decoded?.args === 'string'
+            ? decoded.args
+            : null;
   let parts = [];
-  if (typeof decoded?.opStr === 'string') {
+  if (rawOpStr !== null) {
     // Bracket-aware split: LDRA operand text contains a comma inside the
     // memory operand, so the naive presentation split cannot be reused.
     let depth = 0;
     let current = '';
-    for (const character of decoded.opStr) {
+    for (const character of rawOpStr) {
       if (character === '[') depth += 1;
-      else if (character === ']') depth -= 1;
+      else if (character === ']') {
+        depth -= 1;
+        if (depth < 0) return [];
+      }
       if (character === ',' && depth === 0) { parts.push(current); current = ''; continue; }
       current += character;
     }
+    if (depth !== 0) return [];
     parts.push(current);
     parts = parts.map((part) => part.trim()).filter(Boolean);
   } else {
     parts = operandList(decoded);
   }
+  if (parts.length !== 2) return parts;
   const [destinationText, memoryText] = parts;
   if (typeof destinationText !== 'string' || typeof memoryText !== 'string') return parts;
   const destinationMatch = DESTINATION_TEXT.exec(destinationText.trim());
@@ -122,7 +138,7 @@ function structuredOperandList(decoded) {
     text: memoryText.trim(),
     base: { k: 'reg', text: baseText, cls: baseIsSp ? 'sp' : 'gp', bits: POINTER_BITS, num: baseNumber },
     index: null,
-    disp: displacement == null ? null : { k: 'imm', text: `#${memoryMatch[2]}`, value: displacement },
+    disp: displacement == null ? null : { k: 'imm', text: memoryMatch[2] == null ? '#0' : `#${memoryMatch[2]}`, value: displacement },
     addressDisp: displacement,
     writebackDisp: preIndex ? displacement : null,
     shift: null,

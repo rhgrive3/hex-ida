@@ -62,6 +62,9 @@ const GOAL_TO_CATEGORY = {
   stamina: ['character', 'battle'],
   item: ['item'],
   anticheat: ['anticheat'],
+  speed: ['character', 'battle'],
+  cooldown: ['battle', 'character'],
+  crypto: ['anticheat', 'save', 'network'],
 };
 
 const MAX_CANDIDATES = 400;      // 証拠を組むところまで進める数
@@ -1526,6 +1529,7 @@ const REASON_TO_EVIDENCE = {
   popular: 'fn-called-often',
   'size-penalty': 'fn-too-large',
   vendor: 'third-party-class',
+  'crypto-const': 'fn-crypto-const',
 };
 
 function buildFunctionCandidate(c, goal, o) {

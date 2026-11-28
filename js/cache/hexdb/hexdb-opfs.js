@@ -139,7 +139,14 @@ export function encodeCheckpointSlot({ generation, checkpointLsn, shardNames = [
   const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
   const metaJson = TEXT_ENCODER.encode(JSON.stringify({ shardNames, binaryKey }));
   const maxMeta = OPFS_CHECKPOINT_SLOT_SIZE - 32 - 4;
-  const metaLen = Math.min(metaJson.byteLength, maxMeta);
+  if (metaJson.byteLength > maxMeta) {
+    const err = new Error(
+      `HEXDB_CHECKPOINT_META_OVERFLOW: checkpoint metadata (${metaJson.byteLength} bytes) exceeds slot limit (${maxMeta} bytes)`,
+    );
+    err.code = 'HEXDB_CHECKPOINT_META_OVERFLOW';
+    throw err;
+  }
+  const metaLen = metaJson.byteLength;
 
   view.setUint32(0x00, OPFS_CHECKPOINT_MAGIC, true);
   view.setUint32(0x04, 1, true);
@@ -307,10 +314,10 @@ export class HexDbOpfsBackend {
     return slotA || slotB || null;
   }
 
-  _writeCheckpointSlot(checkpointLsn) {
+  _writeCheckpointSlot(checkpointLsn, prebuiltSlotBytes = null) {
     const nextGen = this._checkpointGeneration + 1;
     const slotIndex = nextGen % 2;
-    const slotBytes = encodeCheckpointSlot({
+    const slotBytes = prebuiltSlotBytes || encodeCheckpointSlot({
       generation: nextGen,
       checkpointLsn,
       shardNames: [...this._shards.keys()],
@@ -519,6 +526,15 @@ export class HexDbOpfsBackend {
   }
 
   async _checkpointUnlocked() {
+    // Pre-build & validate checkpoint slot metadata BEFORE touching any shard file on disk.
+    const durableLsn = this._wal.lastLsn;
+    const prebuiltSlotBytes = encodeCheckpointSlot({
+      generation: this._checkpointGeneration + 1,
+      checkpointLsn: durableLsn,
+      shardNames: [...this._shards.keys()],
+      binaryKey: this._binaryKey,
+    });
+
     // Crash-safe 3-step order:
     // (1) Flush all dirty shard files
     for (const shardName of this._dirtyShards) {
@@ -527,8 +543,7 @@ export class HexDbOpfsBackend {
     this._dirtyShards.clear();
 
     // (2) Write & flush alternating A/B checkpoint slot BEFORE compacting WAL
-    const durableLsn = this._wal.lastLsn;
-    this._writeCheckpointSlot(durableLsn);
+    this._writeCheckpointSlot(durableLsn, prebuiltSlotBytes);
 
     // (3) Compact WAL atomically via single-buffer write-before-truncate
     const compactRes = this._wal.compact({ writeCheckpointMarker: true });
@@ -544,6 +559,39 @@ export class HexDbOpfsBackend {
     };
   }
 
+  _snapshotMutation(shardNames) {
+    const savedShards = new Map();
+    for (const name of shardNames) {
+      if (savedShards.has(name)) continue;
+      const existing = this._shards.get(name);
+      savedShards.set(name, existing ? new Map(existing) : null);
+    }
+    return {
+      walSnap: this._wal.snapshotState(),
+      savedShards,
+      prevTotalBytes: this._totalBytes,
+      prevDirty: new Set(this._dirtyShards),
+    };
+  }
+
+  _rollbackMutation(snap) {
+    for (const [name, prevMap] of snap.savedShards.entries()) {
+      if (prevMap === null) {
+        this._shards.delete(name);
+      } else {
+        this._shards.set(name, prevMap);
+      }
+    }
+    this._totalBytes = snap.prevTotalBytes;
+    this._dirtyShards = snap.prevDirty;
+    try {
+      this._wal.restoreState(snap.walSnap);
+    } catch { /* best-effort WAL rollback; preserve original write error */ }
+    try {
+      this._walHandle?.flush?.();
+    } catch { /* best-effort WAL flush after rollback */ }
+  }
+
   async put(shard, key, value) {
     return this._enqueueWrite(async () => {
       this._assertOpen();
@@ -554,17 +602,24 @@ export class HexDbOpfsBackend {
       // Pre-check 4 MiB shard boundary BEFORE appending to WAL
       this._assertShardFitsPut(s, k, bytes);
 
-      const { lsn } = this._wal.appendPut(s, k, bytes);
-      let map = this._shards.get(s);
-      if (!map) {
-        map = new Map();
-        this._shards.set(s, map);
+      const snap = this._snapshotMutation([s]);
+      let lsn;
+      try {
+        ({ lsn } = this._wal.appendPut(s, k, bytes));
+        let map = this._shards.get(s);
+        if (!map) {
+          map = new Map();
+          this._shards.set(s, map);
+        }
+        const prev = map.get(k);
+        if (prev) this._totalBytes -= prev.byteLength;
+        map.set(k, bytes);
+        this._totalBytes += bytes.byteLength;
+        this._dirtyShards.add(s);
+      } catch (err) {
+        this._rollbackMutation(snap);
+        throw err;
       }
-      const prev = map.get(k);
-      if (prev) this._totalBytes -= prev.byteLength;
-      map.set(k, bytes);
-      this._totalBytes += bytes.byteLength;
-      this._dirtyShards.add(s);
 
       if (this._wal.needsCompaction()) {
         await this._checkpointUnlocked();
@@ -578,17 +633,24 @@ export class HexDbOpfsBackend {
       this._assertOpen();
       const s = String(shard);
       const k = String(key);
-      const { lsn } = this._wal.appendDel(s, k);
-      const map = this._shards.get(s);
+      const snap = this._snapshotMutation([s]);
+      let lsn;
       let deleted = false;
-      if (map && map.has(k)) {
-        const prev = map.get(k);
-        this._totalBytes -= prev.byteLength;
-        map.delete(k);
-        if (map.size === 0) this._shards.delete(s);
-        deleted = true;
+      try {
+        ({ lsn } = this._wal.appendDel(s, k));
+        const map = this._shards.get(s);
+        if (map && map.has(k)) {
+          const prev = map.get(k);
+          this._totalBytes -= prev.byteLength;
+          map.delete(k);
+          if (map.size === 0) this._shards.delete(s);
+          deleted = true;
+        }
+        this._dirtyShards.add(s);
+      } catch (err) {
+        this._rollbackMutation(snap);
+        throw err;
       }
-      this._dirtyShards.add(s);
 
       if (this._wal.needsCompaction()) {
         await this._checkpointUnlocked();
@@ -621,34 +683,40 @@ export class HexDbOpfsBackend {
       // Pre-check 4 MiB shard cap across all affected shards BEFORE any WAL append
       this._assertBatchFitsShards(normalized);
 
+      const snap = this._snapshotMutation(normalized.map((item) => item.shard));
       let applied = 0;
-      for (let i = 0; i < normalized.length; i++) {
-        const item = normalized[i];
-        if (item.op === 'put') {
-          this._wal.appendPut(item.shard, item.key, item.bytes);
-          let map = this._shards.get(item.shard);
-          if (!map) {
-            map = new Map();
-            this._shards.set(item.shard, map);
-          }
-          const prev = map.get(item.key);
-          if (prev) this._totalBytes -= prev.byteLength;
-          map.set(item.key, item.bytes);
-          this._totalBytes += item.bytes.byteLength;
-          this._dirtyShards.add(item.shard);
-          applied += 1;
-        } else {
-          this._wal.appendDel(item.shard, item.key);
-          const map = this._shards.get(item.shard);
-          if (map && map.has(item.key)) {
+      try {
+        for (let i = 0; i < normalized.length; i++) {
+          const item = normalized[i];
+          if (item.op === 'put') {
+            this._wal.appendPut(item.shard, item.key, item.bytes);
+            let map = this._shards.get(item.shard);
+            if (!map) {
+              map = new Map();
+              this._shards.set(item.shard, map);
+            }
             const prev = map.get(item.key);
-            this._totalBytes -= prev.byteLength;
-            map.delete(item.key);
-            if (map.size === 0) this._shards.delete(item.shard);
+            if (prev) this._totalBytes -= prev.byteLength;
+            map.set(item.key, item.bytes);
+            this._totalBytes += item.bytes.byteLength;
+            this._dirtyShards.add(item.shard);
+            applied += 1;
+          } else {
+            this._wal.appendDel(item.shard, item.key);
+            const map = this._shards.get(item.shard);
+            if (map && map.has(item.key)) {
+              const prev = map.get(item.key);
+              this._totalBytes -= prev.byteLength;
+              map.delete(item.key);
+              if (map.size === 0) this._shards.delete(item.shard);
+            }
+            this._dirtyShards.add(item.shard);
+            applied += 1;
           }
-          this._dirtyShards.add(item.shard);
-          applied += 1;
         }
+      } catch (err) {
+        this._rollbackMutation(snap);
+        throw err;
       }
 
       if (this._wal.needsCompaction()) {

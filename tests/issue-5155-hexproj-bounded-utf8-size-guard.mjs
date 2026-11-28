@@ -89,7 +89,7 @@ function projectText(filler) {
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     binary: { hash: null, metadata: null, embedded: false },
-    user: { names: [filler] },
+    projectAnnotations: [filler],
   });
 }
 
@@ -118,7 +118,7 @@ test('#5155 ASCII text exactly at the byte limit is accepted and one byte more i
   assert.equal(oracleBytes(atLimit), MAX_PROJECT_BYTES);
   const { result, calls } = withBoundedByteCountProbe(() => tryParseHexProject(atLimit));
   assert.equal(result.ok, true, `at-limit project must parse: ${result.error}`);
-  assert.equal(result.project.user.names[0].length, room);
+  assert.equal(result.project.projectAnnotations[0].length, room);
   assertBounded(calls);
 
   const over = projectText('x'.repeat(room + 1));
@@ -140,7 +140,7 @@ test('#5155 astral text is counted byte-exactly across bounded chunks', () => {
   assert.ok(atLimit.length < MAX_PROJECT_BYTES, 'byte-exact accounting must exceed the code-unit count');
   const { result, calls } = withBoundedByteCountProbe(() => tryParseHexProject(atLimit));
   assert.equal(result.ok, true, `at-limit astral project must parse: ${result.error}`);
-  assert.equal(result.project.user.names[0], filler);
+  assert.equal(result.project.projectAnnotations[0], filler);
   assertBounded(calls);
 
   const over = projectText(`${filler}x`);
@@ -155,7 +155,7 @@ test('#5155 a below-limit multibyte project still parses', () => {
   const text = projectText('\u{1f600}'.repeat(1000) + 'あ'.repeat(1000));
   const project = parseHexProject(text);
   assert.equal(project.format, 'hexproj');
-  assert.equal(project.user.names.length, 1);
+  assert.equal(project.projectAnnotations.length, 1);
 });
 
 test('#5155 oversized serialize rejects without a second full copy', () => {
@@ -163,7 +163,7 @@ test('#5155 oversized serialize rejects without a second full copy', () => {
     format: 'hexproj',
     version: 2,
     binary: { hash: null, metadata: null, embedded: false },
-    user: { names: ['x'.repeat(MAX_PROJECT_BYTES)] },
+    projectAnnotations: ['x'.repeat(MAX_PROJECT_BYTES)],
   };
   let error = null;
   const { calls } = withBoundedByteCountProbe(() => {
@@ -189,7 +189,7 @@ test('#5155 byte inputs keep the pre-decode preflight and the UTF-8 error codes'
     (error) => error?.code === 'HEX_PROJECT_INVALID_UTF8',
   );
   const project = parseHexProject(new TextEncoder().encode(projectText('ok')));
-  assert.equal(project.user.names[0], 'ok');
+  assert.equal(project.projectAnnotations[0], 'ok');
 });
 
 test('#5155 the size guard helper stays bounded against full-copy regressions', () => {

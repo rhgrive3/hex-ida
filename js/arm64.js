@@ -315,7 +315,7 @@ export function explain(mn, opsStr, address, ctx) {
       mn ? 'The ' + mn + ' instruction. No plain-language description yet.' : '');
     out.pseudo = (mn || '') + (opsStr ? ' ' + opsStr : '');
   }
-  if (out.target == null) out.target = referenceTargetFromOps(base, ops);
+  if (out.target == null && !out.relocation && !out.unresolvedRelocation) out.target = referenceTargetFromOps(base, ops);
   return out;
 }
 
@@ -577,7 +577,34 @@ HANDLERS.add = (o, ops, base, addr, c) => {
     && sameGeneralRegister(n, parseOperands(c.prev.ops)[0])) {
     const page = referenceTarget('adrp', c.prev.ops);
     const immOff = shiftedImmValue(m);
-    if (page != null && immOff != null) {
+    const curReloc = addr != null ? c.relocationFor?.(addr) : null;
+    const prevReloc = c.prev.address != null ? c.relocationFor?.(c.prev.address) : null;
+    const reloc = (curReloc && !curReloc.isAddend ? curReloc : null)
+      || (prevReloc && !prevReloc.isAddend ? prevReloc : null);
+    if (reloc) {
+      const sym = formatRelocTarget(reloc);
+      o.target = null;
+      o.relocation = reloc;
+      o.pseudo = opShort(d) + ' = &' + sym;
+      o.summary = J(
+        '1 行上の adrp と組で、「' + sym + '」のアドレスを ' + opShort(d) + ' に入れる（リンク時の再配置により解決）。',
+        'Together with the adrp above, put the relocated address of ' + sym + ' into ' + opShort(d) + '.');
+      o.detail.push(J(
+        '1 行上の adrp と組で、再配置先「' + sym + '」のアドレスを作っています。未リンクのオブジェクトファイル（.o）のため、リンク時に実アドレスへ解決されます。',
+        'Together with the adrp above, this builds the relocated address of ' + sym + ' in an unlinked object file (.o).'));
+      o.terms.push('adrp');
+    } else if (c.isRelocatableObject && (page === 0n || (c.prev?.address != null && page === (BigInt(c.prev.address) & ~0xfffn)))) {
+      o.target = null;
+      o.unresolvedRelocation = true;
+      o.pseudo = opShort(d) + ' = &<reloc>';
+      o.summary = J(
+        '1 行上の adrp と組で、リンク時の再配置で決まるアドレスを ' + opShort(d) + ' に入れる（未リンクの .o オブジェクト）。',
+        'Together with the adrp above, put a linker-relocated address into ' + opShort(d) + ' (unresolved .o object).');
+      o.detail.push(J(
+        '未リンクのオブジェクトファイル（.o）では adrp の 0 番地は仮の値であり、0 番地の関数を指しているわけではありません。',
+        'In a relocatable object file (.o), adrp page 0 is a placeholder, not a function at address 0.'));
+      o.terms.push('adrp');
+    } else if (page != null && immOff != null) {
       const full = page + immOff;
       o.target = full;
       o.detail.push(J(
@@ -1262,6 +1289,38 @@ HANDLERS.ldr = (o, ops, base, addr, c) => {
     return;
   }
   plainLdr(o, ops, base, addr, c);
+  if (c && c.prev && /^adrp$/i.test(c.prev.mn) && ops[1] && ops[1].k === 'mem'
+    && sameGeneralRegister(ops[1].base, parseOperands(c.prev.ops)[0])) {
+    const page = referenceTarget('adrp', c.prev.ops);
+    const curReloc = addr != null ? c.relocationFor?.(addr) : null;
+    const prevReloc = c.prev.address != null ? c.relocationFor?.(c.prev.address) : null;
+    const reloc = (curReloc && !curReloc.isAddend ? curReloc : null)
+      || (prevReloc && !prevReloc.isAddend ? prevReloc : null);
+    if (reloc) {
+      const sym = formatRelocTarget(reloc);
+      o.target = null;
+      o.relocation = reloc;
+      o.pseudo = opShort(ops[0]) + ' = *(' + sym + ')';
+      o.summary = J(
+        '1 行上の adrp と組で、「' + sym + '」から値を読み込んで ' + opShort(ops[0]) + ' に入れる（リンク時の再配置により解決）。',
+        'Together with the adrp above, load from relocated symbol ' + sym + ' into ' + opShort(ops[0]) + '.');
+      o.detail.push(J(
+        '1 行上の adrp と組で、再配置先「' + sym + '」のメモリを読み込んでいます。未リンクのオブジェクトファイル（.o）のため、リンク時に実アドレスへ解決されます。',
+        'Together with the adrp above, this loads from relocated symbol ' + sym + ' in an unlinked object file (.o).'));
+      o.terms.push('adrp');
+    } else if (c.isRelocatableObject && (page === 0n || (c.prev?.address != null && page === (BigInt(c.prev.address) & ~0xfffn)))) {
+      o.target = null;
+      o.unresolvedRelocation = true;
+      o.pseudo = opShort(ops[0]) + ' = *(<reloc>)';
+      o.summary = J(
+        '1 行上の adrp と組で、リンク時の再配置で決まる場所から値を読み込んで ' + opShort(ops[0]) + ' に入れる（未リンクの .o オブジェクト）。',
+        'Together with the adrp above, load from a linker-relocated address into ' + opShort(ops[0]) + ' (unresolved .o object).');
+      o.detail.push(J(
+        '未リンクのオブジェクトファイル（.o）では adrp の 0 番地は仮の値であり、0 番地の関数を指しているわけではありません。',
+        'In a relocatable object file (.o), adrp page 0 is a placeholder, not a function at address 0.'));
+      o.terms.push('adrp');
+    }
+  }
 };
 
 function pairLoadStore(isLoad, options = {}) {
@@ -1375,10 +1434,55 @@ HANDLERS.adr = (o, ops, base, addr, c) => {
   o.terms = ['address', 'pcrelative'];
 };
 
+function formatRelocTarget(reloc) {
+  const base = reloc?.symbol || J('外部シンボル', 'external symbol');
+  const addend = typeof reloc?.addend === 'bigint' ? reloc.addend : Number(reloc?.addend || 0);
+  if (!addend) return base;
+  if (typeof addend === 'bigint') {
+    return addend > 0n
+      ? `${base} + 0x${addend.toString(16)}`
+      : `${base} - 0x${(-addend).toString(16)}`;
+  }
+  if (!Number.isFinite(addend)) return base;
+  const abs = Math.abs(Math.trunc(addend));
+  return addend > 0
+    ? `${base} + 0x${abs.toString(16)}`
+    : `${base} - 0x${abs.toString(16)}`;
+}
+
 HANDLERS.adrp = (o, ops, base, addr, c) => {
   const [d, imm] = ops;
   const at = imm && imm.value;
   o.title = J('遠くのアドレスの「ページ」を作る', 'Address of a 4 KB page');
+  const rawReloc = addr != null ? c?.relocationFor?.(addr) : null;
+  const reloc = rawReloc && !rawReloc.isAddend ? rawReloc : null;
+  if (reloc) {
+    const sym = formatRelocTarget(reloc);
+    o.pseudo = opShort(d) + ' = page(' + sym + ')';
+    o.summary = J(
+      opShort(d) + ' に「' + sym + '」のページアドレスを入れる（リンク前の再配置により解決）。',
+      'Put the 4 KB page address of ' + sym + ' into ' + opShort(d) + ' (resolved by linker relocation).');
+    o.detail.push(J(
+      'このファイルは未リンクのオブジェクトファイル（.o）のため、adrp の即値は仮の 0 です。実際のアドレスはリンク時の再配置（「' + sym + '」）で確定します。',
+      'In a relocatable object file (.o), the adrp immediate is a placeholder 0; the linker resolves it to the page of ' + sym + '.'));
+    o.target = null;
+    o.relocation = reloc;
+    o.terms = ['address', 'adrp', 'pcrelative'];
+    return;
+  }
+  if (c?.isRelocatableObject && (at === 0n || (addr != null && at === (BigInt(addr) & ~0xfffn)))) {
+    o.unresolvedRelocation = true;
+    o.pseudo = opShort(d) + ' = page(<reloc>)';
+    o.summary = J(
+      opShort(d) + ' にリンク時の再配置で決まるページアドレスを入れる（未リンクの .o オブジェクトのためアドレス未確定）。',
+      'Put a linker-relocated 4 KB page address into ' + opShort(d) + ' (unresolved in relocatable .o object).');
+    o.detail.push(J(
+      '未リンクのオブジェクトファイル（.o）では adrp の即値が仮の 0 になっており、0 番地の関数を指しているわけではありません。',
+      'In an unlinked object file (.o), adrp holds a placeholder 0 and does not refer to a function at address 0.'));
+    o.target = null;
+    o.terms = ['address', 'adrp', 'pcrelative'];
+    return;
+  }
   o.pseudo = opShort(d) + ' = 0x' + (at != null ? at.toString(16).toUpperCase() : '?');
   o.summary = J(
     opShort(d) + ' に ' + tgt(at, c) + ' を入れる。これは 4096 バイト単位に切り下げた「おおまかな住所」です。',
@@ -1397,6 +1501,35 @@ HANDLERS.adrp = (o, ops, base, addr, c) => {
 HANDLERS.b = (o, ops, base, addr, c) => {
   const at = ops[0] && ops[0].value;
   o.title = J('ジャンプ', 'Branch');
+  const rawReloc = addr != null ? c?.relocationFor?.(addr) : null;
+  const reloc = rawReloc && !rawReloc.isAddend ? rawReloc : null;
+  if (reloc) {
+    const sym = formatRelocTarget(reloc);
+    o.pseudo = 'goto ' + sym;
+    o.summary = J(
+      '無条件で「' + sym + '」へ飛ぶ（リンク時の再配置により解決）。',
+      'Jump to ' + sym + ' unconditionally (resolved by linker relocation).');
+    o.detail.push(J(
+      'このファイルは未リンクのオブジェクトファイル（.o）のため、飛び先はリンク時の再配置（「' + sym + '」）で確定します。',
+      'In a relocatable object file (.o), the branch target is resolved by the linker to ' + sym + '.'));
+    o.target = null;
+    o.relocation = reloc;
+    o.terms.push('branch');
+    return;
+  }
+  if (c?.isRelocatableObject && (at === 0n || (addr != null && at === BigInt(addr)))) {
+    o.unresolvedRelocation = true;
+    o.pseudo = 'goto <reloc>';
+    o.summary = J(
+      '無条件でリンク時の再配置先（<reloc>）へ飛ぶ（未リンクの .o オブジェクト）。',
+      'Jump unconditionally to a linker-relocated target (<reloc>) in an unresolved .o object.');
+    o.detail.push(J(
+      '未リンクのオブジェクトファイル（.o）では分岐先の即値が仮の 0 になっており、0 番地の関数を指しているわけではありません。',
+      'In an unlinked object file (.o), the branch immediate is a placeholder 0 and does not refer to a function at address 0.'));
+    o.target = null;
+    o.terms.push('branch');
+    return;
+  }
   o.pseudo = 'goto 0x' + (at != null ? at.toString(16).toUpperCase() : '?');
   const dir = at != null && addr != null ? (at < addr ? J('前（上）', 'backwards') : J('後ろ（下）', 'forwards')) : '';
   o.summary = J(
@@ -1425,8 +1558,37 @@ HANDLERS.b = (o, ops, base, addr, c) => {
 
 HANDLERS.bl = (o, ops, base, addr, c) => {
   const at = ops[0] && ops[0].value;
-  const sym = at != null && c && c.symbolFor ? c.symbolFor(at) : null;
   o.title = J('関数を呼ぶ', 'Call a function');
+  const rawReloc = addr != null ? c?.relocationFor?.(addr) : null;
+  const reloc = rawReloc && !rawReloc.isAddend ? rawReloc : null;
+  if (reloc) {
+    const sym = formatRelocTarget(reloc);
+    o.pseudo = sym + '()';
+    o.summary = J(
+      '「' + sym + '」を呼び出す（リンク時の再配置により解決）。終わったらこの次の行に戻ってきます。',
+      'Call ' + sym + ' (resolved by linker relocation); execution returns to the next line.');
+    o.detail.push(J(
+      'このファイルは未リンクのオブジェクトファイル（.o）のため、呼び出し先はリンク時の再配置（「' + sym + '」）で確定します。',
+      'In a relocatable object file (.o), the call target is resolved by the linker to ' + sym + '.'));
+    o.target = null;
+    o.relocation = reloc;
+    o.terms = ['call', 'lr', 'abi'];
+    return;
+  }
+  if (c?.isRelocatableObject && (at === 0n || (addr != null && at === BigInt(addr)))) {
+    o.unresolvedRelocation = true;
+    o.pseudo = '<reloc>()';
+    o.summary = J(
+      'リンク時の再配置で決まる関数（<reloc>）を呼び出す（未リンクの .o オブジェクト）。',
+      'Call a linker-relocated function (<reloc>) in an unresolved .o object.');
+    o.detail.push(J(
+      '未リンクのオブジェクトファイル（.o）では分岐先の即値が仮の 0 になっており、0 番地の関数を指しているわけではありません。',
+      'In an unlinked object file (.o), the branch immediate is a placeholder 0 and does not refer to a function at address 0.'));
+    o.target = null;
+    o.terms = ['call', 'lr', 'abi'];
+    return;
+  }
+  const sym = at != null && c && c.symbolFor ? c.symbolFor(at) : null;
   o.pseudo = (sym ? sym : '0x' + (at != null ? at.toString(16).toUpperCase() : '?')) + '()';
   o.summary = sym
     ? J(sym + ' を呼び出す。終わったらこの次の行に戻ってきます。',
@@ -2844,9 +3006,10 @@ const BRIEF_CACHE_MAX = 4000;
 /**
  * @param {string} style 'ja' | 'pseudo' | 'both'
  */
-export function brief(mn, ops, style, ctx) {
+export function brief(mn, ops, style, ctx, address = null) {
   if (!mn) return '';
-  const cacheable = !(ctx && ctx.prev);
+  const hasRelocCtx = !!(ctx && (ctx.isRelocatableObject || typeof ctx.relocationFor === 'function'));
+  const cacheable = !(ctx && ctx.prev) && !hasRelocCtx;
   const gen = (ctx && ctx.gen) || 0;
   const key = cacheable ? (gen + '\0' + style + '\0' + (ctx && ctx.lang ? ctx.lang : '') + '\0' + mn + '\0' + (ops || '')) : null;
   if (cacheable) {
@@ -2854,7 +3017,7 @@ export function brief(mn, ops, style, ctx) {
     if (hit !== undefined) return hit;
   }
 
-  const e = explain(mn, ops, null, ctx);
+  const e = explain(mn, ops, address, ctx);
   let text;
   if (style === 'pseudo') text = e.pseudo;
   else if (style === 'both') text = e.pseudo + (e.title ? '   — ' + e.title : '');

@@ -2336,7 +2336,8 @@ static bool optimize_ssa(PipelineCtx& ctx) {
   };
   uint32_t* single_user_blk = ctx.scratch.alloc<uint32_t>(ni + 1u);
   uint8_t* used_by_phi = hex::arena_alloc_zeroed<uint8_t>(ctx.scratch, ni + 1u);
-  if (!single_user_blk || !used_by_phi) return false;
+  uint8_t* no_inline = hex::arena_alloc_zeroed<uint8_t>(ctx.scratch, ni + 1u);
+  if (!single_user_blk || !used_by_phi || !no_inline) return false;
   for (uint32_t i = 0u; i < ni; ++i) single_user_blk[i] = kNoVal;
 
   auto record_user = [&](uint32_t v, uint32_t user_blk, bool is_phi_user) {
@@ -2346,6 +2347,11 @@ static bool optimize_ssa(PipelineCtx& ctx) {
     if (single_user_blk[v] == kNoVal) single_user_blk[v] = user_blk;
     else if (single_user_blk[v] != user_blk) single_user_blk[v] = 0xFFFFFFFEu;
   };
+  auto forbid_inline = [&](uint32_t v) {
+    if (v == kNoVal || v >= ni) return;
+    const IrOp op = ctx.insts[v].op;
+    if (op != OP_CONST && op != OP_PARAM) no_inline[v] = 1u;
+  };
 
   for (uint32_t i = 0u; i < ni; ++i) {
     const IrInst& ins = ctx.insts[i];
@@ -2353,6 +2359,10 @@ static bool optimize_ssa(PipelineCtx& ctx) {
     record_user(ins.src0, ins.block, false);
     record_user(ins.src1, ins.block, false);
     record_user(ins.src2, ins.block, false);
+    if (ins.op == OP_SDIV || ins.op == OP_UDIV || ins.op == OP_ROR) {
+      forbid_inline(ins.src0);
+      forbid_inline(ins.src1);
+    }
     if (ins.op == OP_PHI) {
       for (uint32_t k = 0u; k < ins.phi_cnt; ++k) {
         const PhiArg& pa = ctx.phi_args[ins.phi_off + k];
@@ -2396,7 +2406,7 @@ static bool optimize_ssa(PipelineCtx& ctx) {
     if (d2 > md) md = d2;
     depth[i] = static_cast<uint8_t>(md + 1u);
 
-    if (ins.use_count == 1u && !used_by_phi[i] &&
+    if (ins.use_count == 1u && !used_by_phi[i] && !no_inline[i] &&
         single_user_blk[i] == ins.block && depth[i] <= kMaxInlineDepth) {
       ins.inlined = 1u;
     }
@@ -2937,7 +2947,11 @@ static void emit_phi_copies(PipelineCtx& ctx, TextWriter& w, uint32_t from_blk, 
     for (uint32_t a = 0u; a < phi.phi_cnt; ++a) {
       const PhiArg& pa = ctx.phi_args[phi.phi_off + a];
       if (pa.pred_blk == from_blk) {
-        if (pa.val != pid && nc < kMaxSlots) {
+        if (pa.val != pid) {
+          if (nc >= kMaxSlots) {
+            ctx.struct_failed = true;
+            return;
+          }
           copies[nc++] = CopyPair{pid, pa.val, false};
         }
         break;
@@ -2978,18 +2992,18 @@ static void emit_phi_copies(PipelineCtx& ctx, TextWriter& w, uint32_t from_blk, 
       uint32_t pick = 0u;
       while (pick < nc && copies[pick].done) ++pick;
       const IrInst& dst_ins = ctx.insts[copies[pick].dst_id];
-      const bool w32 = (dst_ins.width == 32u);
-      ctx.used_types |= w32 ? kTypeU32 : kTypeU64;
+      ctx.used_types |= kTypeU64;
       w.put_indent(indent);
-      w.puts(w32 ? "{ uint32 __t = v" : "{ uint64 __t = v");
+      w.puts("{ uint64 __t = (uint64)v");
       w.put_u64_dec(static_cast<uint64_t>(dst_ins.var_idx));
       w.puts("; ");
       // Emit chain starting at pick
       uint32_t cur = pick;
       uint32_t guard = 0u;
       while (guard++ < nc) {
+        const IrInst& cur_dst = ctx.insts[copies[cur].dst_id];
         w.putc('v');
-        w.put_u64_dec(static_cast<uint64_t>(ctx.insts[copies[cur].dst_id].var_idx));
+        w.put_u64_dec(static_cast<uint64_t>(cur_dst.var_idx));
         w.puts(" = ");
         uint32_t next_idx = nc;
         for (uint32_t j = 0u; j < nc; ++j) {
@@ -2999,7 +3013,12 @@ static void emit_phi_copies(PipelineCtx& ctx, TextWriter& w, uint32_t from_blk, 
           }
         }
         if (copies[cur].src_id == copies[pick].dst_id) {
-          w.puts("__t; ");
+          if (cur_dst.width == 32u) {
+            ctx.used_types |= kTypeU32;
+            w.puts("(uint32)__t; ");
+          } else {
+            w.puts("__t; ");
+          }
           copies[cur].done = true;
           --remaining;
           break;

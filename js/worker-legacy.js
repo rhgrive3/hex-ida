@@ -432,22 +432,36 @@ async function openFile(f) {
     format: 'Raw binary',
     slices: [],
     warnings: [],
+    truncated: false,
+  };
+  const pushWarning = (msg) => {
+    if (msg && !out.warnings.includes(msg)) out.warnings.push(msg);
   };
 
   if (det.kind === 'fat') {
     const fatHead = await readRange(0, Math.min(8 + 32 * 32, f.size));
-    const arches = MachO.parseFat(fatHead.buffer.slice(fatHead.byteOffset, fatHead.byteOffset + fatHead.byteLength), fileSize);
-    if (arches) {
+    const fatBuf = fatHead.buffer.slice(fatHead.byteOffset, fatHead.byteOffset + fatHead.byteLength);
+    const fatDetail = typeof MachO.parseFatDetailed === 'function'
+      ? MachO.parseFatDetailed(fatBuf, fileSize)
+      : { arches: MachO.parseFat(fatBuf, fileSize), truncated: false, warnings: [] };
+    if (fatDetail.truncated) {
+      out.truncated = true;
+      for (const w of fatDetail.warnings || []) pushWarning(w);
+    }
+    if (fatDetail.arches) {
       out.format = 'Mach-O universal (fat)';
-      for (const a of arches) {
+      for (const a of fatDetail.arches) {
         try {
           out.slices.push(await readSlice(a.offset, a.size, a.name));
         } catch (err) {
-          out.slices.push({ name: a.name, error: errText(err), offset: a.offset, size: a.size, regions: [] });
+          const msg = errText(err);
+          out.truncated = true;
+          pushWarning('Slice ' + a.name + ' could not be parsed: ' + msg);
+          out.slices.push({ name: a.name, error: msg, truncated: true, offset: a.offset, size: a.size, regions: [] });
         }
       }
-    } else {
-      out.warnings.push('File begins with 0xCAFEBABE but is not a Mach-O universal binary.');
+    } else if (!fatDetail.truncated) {
+      pushWarning('File begins with 0xCAFEBABE but is not a Mach-O universal binary.');
     }
   } else if (det.kind === 'macho') {
     out.format = det.is64 ? 'Mach-O 64-bit' : 'Mach-O 32-bit';
@@ -457,8 +471,16 @@ async function openFile(f) {
       // A damaged header should not cost the user the whole file: fall back to
       // the raw view and say why.
       out.format += ' (damaged header)';
-      out.warnings.push('The Mach-O header could not be parsed (' + errText(err) +
-                        ') — showing the file as raw bytes.');
+      out.truncated = true;
+      pushWarning('The Mach-O header could not be parsed (' + errText(err) +
+                  ') — showing the file as raw bytes.');
+    }
+  }
+
+  for (const s of out.slices) {
+    if (s.error || s.truncated || s.info?.truncated) out.truncated = true;
+    if (Array.isArray(s.info?.diagnostics)) {
+      for (const d of s.info.diagnostics) pushWarning(d);
     }
   }
 
@@ -492,6 +514,64 @@ async function openFile(f) {
   }
 }
 
+async function readObjectRelocationsForSlice(info, offset, size) {
+  const relocations = [];
+  if (!info || info.filetype !== 1 || typeof MachO.parseSectionRelocations !== 'function') return relocations;
+  const allSections = [];
+  for (const seg of info.segments || []) {
+    for (const sec of seg.sections || []) allSections.push(sec);
+  }
+  const hasAnyReloc = allSections.some((sec) => sec && sec.nreloc > 0);
+  if (!hasAnyReloc) return relocations;
+
+  let rawSymbolNames = [];
+  if (info.symtab && info.symtab.nsyms > 0 && info.symtab.valid !== false) {
+    const entrySize = info.is64 ? 16 : 12;
+    const nsyms = Math.min(info.symtab.nsyms, SYMBOL_MAX);
+    const symBytes = BigInt(nsyms) * BigInt(entrySize);
+    const strLen = Math.min(info.symtab.strsize || 0, STRTAB_MAX);
+    const symOff = BigInt(info.symtab.symoff);
+    const strOff = BigInt(info.symtab.stroff);
+    if (symOff + symBytes <= size && strOff + BigInt(strLen) <= size) {
+      try {
+        const [symBuf, strBuf] = await Promise.all([
+          readRange(offset + symOff, nsyms * entrySize),
+          readRange(offset + strOff, strLen),
+        ]);
+        if (symBuf.length >= entrySize && strBuf.length > 0) {
+          const parsed = MachO.parseSymbols(symBuf, strBuf, info.is64);
+          if (parsed && Array.isArray(parsed.names)) rawSymbolNames = parsed.names;
+        }
+      } catch { /* best-effort symbol resolution for relocations */ }
+    }
+  }
+
+  const MAX_RELOCS = 200_000;
+  for (const sec of allSections) {
+    if (!sec || !sec.nreloc || sec.nreloc <= 0) continue;
+    const relOff = BigInt(sec.reloff || 0);
+    if (relOff >= size) {
+      info.truncated = true;
+      info.diagnostics.push((sec.name || 'section') + ': relocation table outside slice');
+      continue;
+    }
+    const availableEntries = Number((size - relOff) / 8n);
+    const declared = sec.nreloc >>> 0;
+    if (declared > availableEntries) {
+      info.truncated = true;
+      info.diagnostics.push((sec.name || 'section') + ': relocation table is truncated');
+    }
+    const count = Math.min(declared, availableEntries, MAX_RELOCS);
+    if (count <= 0) continue;
+    try {
+      const relocBuf = await readRange(offset + relOff, count * 8);
+      const parsed = MachO.parseSectionRelocations(relocBuf, sec, rawSymbolNames, allSections, info.is64);
+      for (const r of parsed) relocations.push(r);
+    } catch { /* skip unreadable relocation range */ }
+  }
+  return relocations;
+}
+
 async function readSlice(offset, size, label) {
   const head32 = await readRange(offset, 32);
   if (head32.length < 32) throw new Error('Slice is truncated.');
@@ -500,6 +580,9 @@ async function readSlice(offset, size, label) {
   const total = Math.min(32 + sizeofcmds, HEADER_MAX, num(size));
   const hdr = await readRange(offset, total);
   const info = MachO.parseSlice(hdr.buffer.slice(hdr.byteOffset, hdr.byteOffset + hdr.byteLength), offset, size);
+  if (info.filetype === 1) {
+    info.relocations = await readObjectRelocationsForSlice(info, offset, size);
+  }
   const regs = MachO.regionsFrom(info, offset, size, fileSize);
   // Region ids must be unique across slices.
   const prefix = 's' + offset.toString(16) + '_';
@@ -2325,11 +2408,15 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
       const disps = hasPairElement ? [baseDisp, baseDisp + BigInt(mem.elementSize)] : [baseDisp];
       const byteOff = pos + i * 4;
       const accessKinds = mem.rmw ? ['load', 'store'] : [mem.load ? 'load' : 'store'];
-      for (const disp of disps) {
+      for (let idx = 0; idx < disps.length; idx++) {
+        const disp = disps[idx];
         const slot = wanted.get(disp.toString());
         if (!slot || slot.out.length >= cap) continue;
         // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
-        if (slot.size > 0 && accessSize !== slot.size && !(slot.size > 8 && accessSize === 8)) continue;
+        const elemMatches = accessSize === slot.size || (slot.size > 8 && accessSize === 8);
+        const pairMatches = hasPairElement && idx === 0 && mem.size === slot.size;
+        if (slot.size > 0 && !elemMatches && !pairMatches) continue;
+        const matchedSize = (slot.size > 0 && pairMatches) ? mem.size : accessSize;
         for (const accessKind of accessKinds) {
           if (slot.out.length >= cap) break;
           slot.out.push({
@@ -2337,7 +2424,7 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
             addr: region.vmAddr + BigInt(byteOff),
             kind: accessKind,
             base: mem.base,
-            size: accessSize,
+            size: matchedSize,
             atomic: !!mem.atomic,
             rmw: !!mem.rmw,
           });

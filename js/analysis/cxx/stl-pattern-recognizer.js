@@ -132,7 +132,7 @@ function evaluateStlCandidates(input) {
       hasFieldAt(fields, 0, ptrSize)
       && hasFieldAt(fields, ptrSize, ptrSize)
       && hasFieldAt(fields, ptrSize * 2, ptrSize)
-      && (hasAccessPattern(accesses, 'rb_tree_walk') || hasAccessPattern(accesses, 'rb_color_bit'))
+      && (hasAccessPattern(accesses, 'rb_color_bit') || totalSize === 0 || totalSize >= ptrSize * 3)
     ) {
       evidence.push('layout_rb_tree_node');
     }
@@ -160,7 +160,11 @@ function evaluateStlCandidates(input) {
   // 5. std::unordered_map (bucket_list + bucket_count + size + max_load_factor)
   {
     const evidence = [];
-    if (hasFieldAt(fields, 0, ptrSize) && hasFieldAt(fields, ptrSize, ptrSize) && hasAccessPattern(accesses, 'hash_mod_bucket_count')) {
+    if (
+      hasFieldAt(fields, 0, ptrSize)
+      && hasFieldAt(fields, ptrSize, ptrSize)
+      && (hasFieldAt(fields, ptrSize * 2, ptrSize) || totalSize === 0 || totalSize >= ptrSize * 3)
+    ) {
       evidence.push('layout_hash_bucket_table');
     }
     if (hasAccessPattern(accesses, 'hash_mod_bucket_count')) {
@@ -215,6 +219,39 @@ function evaluateStlCandidates(input) {
     }
   }
 
+  // 7. std::unique_ptr<T> — { T* ptr (+0) } + deleter/reset idiom or symbol
+  {
+    const evidence = [];
+    if (
+      hasFieldAt(fields, 0, ptrSize)
+      && (totalSize === 0 || totalSize === ptrSize)
+    ) {
+      evidence.push('layout_unique_ptr_single');
+    }
+    if (
+      hasAccessPattern(accesses, 'unique_ptr_deleter_call')
+      || hasAccessPattern(accesses, 'unique_ptr_reset')
+    ) {
+      evidence.push('unique_ptr_deleter_idiom');
+    }
+    if (hasSymbolMatch(symbols, /std::(__1::)?unique_ptr|default_delete/)) {
+      evidence.push('symbol_unique_ptr');
+    }
+    if (evidence.length >= 2) {
+      results.push({
+        kind: STL_CONTAINER_KIND.UNIQUE_PTR,
+        abiFamily: hasSymbolMatch(symbols, /__1::/) ? 'libc++' : 'generic',
+        confidence: Math.min(0.99, 0.65 + 0.15 * evidence.length),
+        evidence,
+        pathA1Overlay: {
+          fieldNames: { 0: '__ptr_' },
+          methodHint: 'uptr.get()',
+        },
+        pathBC11Struct: 'struct hex_std_unique_ptr { void* ptr; };',
+      });
+    }
+  }
+
   results.sort((a, b) => b.confidence - a.confidence);
   return results;
 }
@@ -229,7 +266,9 @@ export class StlPatternRecognizer {
   }
 
   recognize(funcKey, input) {
-    const key = String(funcKey);
+    const key = input?.binaryKey != null
+      ? `${String(input.binaryKey)}:${String(funcKey)}`
+      : String(funcKey);
     if (this._cache.has(key)) {
       const hit = this._cache.get(key);
       this._cache.delete(key);

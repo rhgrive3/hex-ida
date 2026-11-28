@@ -235,14 +235,14 @@ bool is_runtime_arm64_word_supported(uint32_t w, bool js_parity_mode) {
   if (!hex_arm64_is_decompiler_supported(w)) return false;
 
   // Variable shifts (LSLV/LSRV/ASRV): require rn != rm.
-  // In non-parity mode, reject ASRV (op2 == 2) so arm64_general_emit emits a
-  // signed arithmetic shift instead of c_emitter's unsigned CEMIT_BIN_SHR.
+  // Always reject ASRV (op2 == 2) regardless of js_parity_mode so arm64_general_emit
+  // emits a signed arithmetic shift instead of c_emitter's unsigned CEMIT_BIN_SHR.
   if (kind == HEX_ARM64_KIND_SHIFT) {
     const uint32_t rn = (w >> 5) & 0x1fu;
     const uint32_t rm = (w >> 16) & 0x1fu;
     if (rn == rm) return false;
     const uint32_t op2 = (w >> 10) & 3u;
-    if (!js_parity_mode && op2 == 2u) return false;
+    if (op2 == 2u) return false;
   }
 
   // Reject flag-setting ADDS/SUBS under JS parity (only plain ADD/SUB).
@@ -730,7 +730,12 @@ HexStatus hex_engine_decompile_arm64(
     primary_supported = parity.supported;
   }
 
-  if (!primary_supported) {
+  auto fallback_to_specialized = [&](HexIrHandle& active_ir) -> HexStatus {
+    if (active_ir != 0u) {
+      hex::ir::default_store().release(active_ir);
+      active_ir = 0u;
+    }
+    clear_last_output();
 #if defined(HEX_HAS_DECOMP_PASSES)
     g_scratch_arena.restore(scratch_entry_mark);
     hex::decompiler::passes::set_ir_pipeline_scratch_arena(&g_scratch_arena);
@@ -741,6 +746,11 @@ HexStatus hex_engine_decompile_arm64(
     (void)scratch_entry_mark;
     return HEX_ERR_UNSUPPORTED;
 #endif
+  };
+
+  if (!primary_supported) {
+    HexIrHandle no_ir = 0u;
+    return fallback_to_specialized(no_ir);
   }
 
   // Stage 2: Basic block partitioning.
@@ -864,7 +874,7 @@ HexStatus hex_engine_decompile_arm64(
     for (size_t idx = 0u; idx < fn->insts.size(); ++idx) {
       const hex::ir::IrInst& ins = fn->insts[idx];
       if (ins.op == HEX_IR_OP_CONST && !is_js_parity_imm_exact(ins.imm64_or_sym)) {
-        return fail_cleanup(HEX_ERR_UNSUPPORTED);
+        return fallback_to_specialized(ir_handle);
       }
     }
   }
@@ -969,14 +979,24 @@ HexStatus hex_engine_decompile_arm64(
           ei.op = CEMIT_IR_COPY;
           ei.flags = 0u;
           break;
-        case HEX_IR_OP_BIN:
+        case HEX_IR_OP_BIN: {
+          const uint16_t sub = static_cast<uint16_t>(ins.flags & HEX_IR_SUBOP_MASK);
+          if (sub == HEX_IR_BIN_ASR || sub == HEX_IR_BIN_UREM) {
+            return fallback_to_specialized(ir_handle);
+          }
           ei.op = CEMIT_IR_BINOP;
           ei.flags = map_bin_subop(ins.flags);
           break;
-        case HEX_IR_OP_UN:
+        }
+        case HEX_IR_OP_UN: {
+          const uint16_t sub = static_cast<uint16_t>(ins.flags & HEX_IR_SUBOP_MASK);
+          if (sub == HEX_IR_UN_SEXT32) {
+            return fallback_to_specialized(ir_handle);
+          }
           ei.op = CEMIT_IR_UNOP;
           ei.flags = map_un_subop(ins.flags);
           break;
+        }
         case HEX_IR_OP_CMP:
           ei.op = CEMIT_IR_CMP;
           ei.flags = CEMIT_CMP_NE;

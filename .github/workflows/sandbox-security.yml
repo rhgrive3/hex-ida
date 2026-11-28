@@ -31,7 +31,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-1.55.0-chromium-v1
+          key: playwright-${{ runner.os }}-1.65.1-chromium-v1
       - name: Ensure pinned Playwright Chromium is runnable
         shell: bash
         run: |

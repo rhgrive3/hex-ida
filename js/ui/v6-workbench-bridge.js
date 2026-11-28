@@ -760,6 +760,10 @@ export class V6Workbench {
           xrefFunctions: 0,
           callgraphNodes: 0,
           objcSwiftSections: 0,
+          cxxClasses: 0,
+          virtualTreeFolders: 0,
+          semanticNames: 0,
+          classFieldLayouts: 0,
         },
       };
     }
@@ -853,6 +857,79 @@ export class V6Workbench {
       }
     }
 
+    const cxxRtti = wasmAnalysis.cxxRtti && typeof wasmAnalysis.cxxRtti === 'object'
+      ? wasmAnalysis.cxxRtti
+      : null;
+    const unifiedMetadata = wasmAnalysis.unifiedMetadata && typeof wasmAnalysis.unifiedMetadata === 'object'
+      ? wasmAnalysis.unifiedMetadata
+      : null;
+    const virtualTree = wasmAnalysis.virtualTree && typeof wasmAnalysis.virtualTree === 'object'
+      ? wasmAnalysis.virtualTree
+      : null;
+    const semanticNames = wasmAnalysis.semanticNames && typeof wasmAnalysis.semanticNames === 'object'
+      ? wasmAnalysis.semanticNames
+      : null;
+    const classFields = wasmAnalysis.classFields && typeof wasmAnalysis.classFields === 'object'
+      ? wasmAnalysis.classFields
+      : null;
+
+    const cxxClassByFunc = new Map();
+    const rawCxxByFunc = cxxRtti?.byFunction;
+    const hasLazyCxxMap = rawCxxByFunc instanceof Map;
+    if (!hasLazyCxxMap && rawCxxByFunc && typeof rawCxxByFunc === 'object') {
+      for (const [k, entry] of Object.entries(rawCxxByFunc)) {
+        const key = normalizeVaHex(entry?.fnVa ?? k);
+        if (key && entry && typeof entry === 'object') cxxClassByFunc.set(key, entry);
+      }
+    }
+
+    const semanticNameByFunc = new Map();
+    const rawSemByFunc = semanticNames?.byFunction;
+    const hasLazySemMap = rawSemByFunc instanceof Map;
+    if (!hasLazySemMap && rawSemByFunc && typeof rawSemByFunc === 'object') {
+      for (const [k, entry] of Object.entries(rawSemByFunc)) {
+        const key = normalizeVaHex(entry?.addr ?? k);
+        if (key && entry && typeof entry === 'object') semanticNameByFunc.set(key, entry);
+      }
+    }
+
+    const folderPathByFunc = new Map();
+    const rawFnToFolder = virtualTree?.functionToFolderId;
+    const hasLazyFolderMap = rawFnToFolder instanceof Map;
+    const treeNodes = virtualTree?.nodes;
+    const resolveFolderPath = (folderId) => {
+      if (typeof folderId !== 'string' || !folderId) return null;
+      const node = treeNodes instanceof Map
+        ? treeNodes.get(folderId)
+        : (treeNodes && typeof treeNodes === 'object' && Object.hasOwn(treeNodes, folderId) ? treeNodes[folderId] : null);
+      if (node && typeof node === 'object') {
+        if (typeof node.fullPath === 'string' && node.fullPath) return node.fullPath;
+        if (typeof node.label === 'string' && node.label) return node.label;
+      }
+      return folderId;
+    };
+    if (!hasLazyFolderMap && rawFnToFolder && typeof rawFnToFolder === 'object') {
+      for (const [k, folderId] of Object.entries(rawFnToFolder)) {
+        const key = normalizeVaHex(k);
+        const path = resolveFolderPath(folderId);
+        if (key && path) folderPathByFunc.set(key, path);
+      }
+    }
+
+    const classFieldsByName = new Map();
+    const rawLayouts = classFields?.layouts;
+    if (rawLayouts instanceof Map) {
+      for (const [k, layout] of rawLayouts.entries()) {
+        const name = typeof layout?.className === 'string' && layout.className ? layout.className : (typeof k === 'string' ? k : null);
+        if (name && layout && typeof layout === 'object') classFieldsByName.set(name, layout);
+      }
+    } else if (rawLayouts && typeof rawLayouts === 'object') {
+      for (const [k, layout] of Object.entries(rawLayouts)) {
+        const name = typeof layout?.className === 'string' && layout.className ? layout.className : k;
+        if (name && layout && typeof layout === 'object') classFieldsByName.set(name, layout);
+      }
+    }
+
     this._wasmAnalysis = wasmAnalysis;
     this._wasmIndex = {
       rmwHits,
@@ -861,15 +938,29 @@ export class V6Workbench {
       jumpTables: jumpTableList,
       constTables: constTableList,
       objcSwift,
+      cxxRtti,
+      unifiedMetadata,
+      virtualTree,
+      semanticNames,
+      classFields,
       xrefByFunc,
       vtablesByFunc,
       rmwCountByFunc,
       jumpTablesByFunc,
       callgraphByFunc,
+      cxxClassByFunc,
+      semanticNameByFunc,
+      folderPathByFunc,
+      resolveFolderPath,
+      classFieldsByName,
       textVa: toBigIntVa(wasmAnalysis.textVa),
     };
 
     const objcSwiftSections = Array.isArray(objcSwift?.sectionsScanned) ? objcSwift.sectionsScanned.length : 0;
+    const cxxClassesCount = Array.isArray(cxxRtti?.classes) ? cxxRtti.classes.length : 0;
+    const virtualTreeFolders = treeNodes instanceof Map
+      ? treeNodes.size
+      : (treeNodes && typeof treeNodes === 'object' ? Object.keys(treeNodes).length : 0);
     return {
       ok: true,
       counts: {
@@ -881,8 +972,45 @@ export class V6Workbench {
         xrefFunctions: xrefByFunc.size,
         callgraphNodes: callgraphByFunc.size,
         objcSwiftSections,
+        cxxClasses: cxxClassesCount,
+        virtualTreeFolders,
+        semanticNames: hasLazySemMap ? rawSemByFunc.size : semanticNameByFunc.size,
+        classFieldLayouts: classFieldsByName.size,
       },
     };
+  }
+
+  getCxxRtti() {
+    return this._wasmIndex?.cxxRtti ?? this._wasmAnalysis?.cxxRtti ?? null;
+  }
+
+  getVirtualTree() {
+    return this._wasmIndex?.virtualTree ?? this._wasmAnalysis?.virtualTree ?? null;
+  }
+
+  getSemanticName(va) {
+    const idx = this._wasmIndex;
+    if (!idx || va == null) return null;
+    const vaHex = normalizeVaHex(va);
+    if (vaHex && idx.semanticNameByFunc?.has(vaHex)) {
+      return idx.semanticNameByFunc.get(vaHex) || null;
+    }
+    const rawMap = idx.semanticNames?.byFunction;
+    if (rawMap instanceof Map) {
+      const vaBig = toBigIntVa(va);
+      if (vaBig != null && rawMap.has(vaBig)) return rawMap.get(vaBig) || null;
+      if (vaHex && rawMap.has(vaHex)) return rawMap.get(vaHex) || null;
+    }
+    return null;
+  }
+
+  getClassFields(className) {
+    if (typeof className !== 'string') return null;
+    const trimmed = className.trim();
+    if (!trimmed) return null;
+    const byName = this._wasmIndex?.classFieldsByName;
+    if (!byName) return null;
+    return byName.get(className) ?? byName.get(trimmed) ?? null;
   }
 
   _countRmwInRange(vaHex, startBig, endBig, textVaBig) {
@@ -982,6 +1110,22 @@ export class V6Workbench {
       stl = this._stlByFunc.get(vaHex) || null;
     }
 
+    const rawCxxMap = idx?.cxxRtti?.byFunction instanceof Map ? idx.cxxRtti.byFunction : null;
+    const cxxClass = (vaHex && idx?.cxxClassByFunc?.get(vaHex))
+      || (rawCxxMap && ((vaBig != null ? rawCxxMap.get(vaBig) : null) || (vaHex ? rawCxxMap.get(vaHex) : null)))
+      || (xref?.cxxClass && typeof xref.cxxClass === 'object' ? xref.cxxClass : null);
+    const rawSemMap = idx?.semanticNames?.byFunction instanceof Map ? idx.semanticNames.byFunction : null;
+    const semanticName = (vaHex && idx?.semanticNameByFunc?.get(vaHex))
+      || (rawSemMap && ((vaBig != null ? rawSemMap.get(vaBig) : null) || (vaHex ? rawSemMap.get(vaHex) : null)))
+      || null;
+    const rawFolderMap = idx?.virtualTree?.functionToFolderId instanceof Map ? idx.virtualTree.functionToFolderId : null;
+    const rawFolderId = rawFolderMap
+      ? ((vaBig != null ? rawFolderMap.get(vaBig) : null) || (vaHex ? rawFolderMap.get(vaHex) : null))
+      : null;
+    const virtualFolderPath = (vaHex && idx?.folderPathByFunc?.get(vaHex))
+      || (rawFolderId && typeof idx?.resolveFolderPath === 'function' ? idx.resolveFolderPath(rawFolderId) : null)
+      || (typeof semanticName?.folderPath === 'string' && semanticName.folderPath ? semanticName.folderPath : null);
+
     return {
       funcVa: vaHex,
       rawName,
@@ -1011,6 +1155,9 @@ export class V6Workbench {
         summary: overlaySummary,
       },
       stl,
+      cxxClass,
+      semanticName,
+      virtualFolderPath,
     };
   }
 

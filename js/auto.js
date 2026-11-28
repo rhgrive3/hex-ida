@@ -461,6 +461,14 @@ export async function autoAnalyze(opts) {
       users: [],
     });
   }
+  const FINDING_LEVEL_RANK = { high: 0, medium: 1, normal: 1, low: 2 };
+  report.findings.sort((a, b) => {
+    const actionableDiff = (b?.actionable === true ? 1 : 0) - (a?.actionable === true ? 1 : 0);
+    if (actionableDiff !== 0) return actionableDiff;
+    const rankA = Object.hasOwn(FINDING_LEVEL_RANK, a?.level) ? FINDING_LEVEL_RANK[a.level] : 3;
+    const rankB = Object.hasOwn(FINDING_LEVEL_RANK, b?.level) ? FINDING_LEVEL_RANK[b.level] : 3;
+    return rankA - rankB;
+  });
 
   progress({ phase: 'map', done: 0, all: 1 });
   const fields = o.fields || null;
@@ -471,14 +479,125 @@ export async function autoAnalyze(opts) {
   report.stats.fields = fields ? fields.fieldCount : 0;
   await tick();
 
+  try {
+    const codeBytes = o.codeBytes
+      || (o.region && o.region.bytes instanceof Uint8Array ? o.region.bytes : null)
+      || (program && typeof program.textBytes === 'function' ? program.textBytes() : null);
+    const dataBytes = o.dataBytes
+      || (program && typeof program.dataBytes === 'function' ? program.dataBytes() : null);
+    const dataSections = Array.isArray(o.dataSections) && o.dataSections.length
+      ? o.dataSections
+      : extractConstDataSectionsFromImage(o.image);
+    const imageBase = o.imageBase ?? o.image?.imageBase ?? null;
+    const hasWasmBinaryInputs = Boolean(
+      codeBytes
+      || dataBytes
+      || (dataSections && dataSections.length > 0)
+      || o.textConstBytes
+      || o.image
+      || o.objcModel
+      || o.swiftModel
+    );
+    if (hasWasmBinaryInputs && cancelled()) {
+      report.notes.push('cancelled');
+      return report;
+    }
+    if (hasWasmBinaryInputs || program) {
+      let imgTextLo = null;
+      let imgTextHi = null;
+      if (Array.isArray(o.image?.sections)) {
+        for (const s of o.image.sections) {
+          if (!s || typeof s !== 'object') continue;
+          const sName = String(s.name || '');
+          const segName = String(s.segment || s.segname || '');
+          if (sName === '__text' || sName === '.text' || (segName === '__TEXT' && sName === '__text')) {
+            const addr = s.address ?? s.vaddr ?? s.addr ?? s.vmAddr ?? s.va;
+            const size = s.size ?? s.byteLength ?? s.fileSize;
+            if (addr != null && size != null) {
+              imgTextLo = BigInt(addr);
+              imgTextHi = imgTextLo + BigInt(size);
+              break;
+            }
+          }
+        }
+      }
+      const textVa = o.textVa ?? (o.region?.vmAddr != null ? o.region.vmAddr : (imgTextLo ?? 0n));
+      const textLo = o.textLo ?? (o.region?.vmAddr != null ? o.region.vmAddr : imgTextLo);
+      const textHi = o.textHi ?? (o.region?.vmAddr != null && o.region?.size != null
+        ? BigInt(o.region.vmAddr) + BigInt(o.region.size)
+        : imgTextHi);
+      const wa = runWasmStructuralAnalysis({
+        codeBytes,
+        dataBytes,
+        dataSections,
+        image: o.image,
+        textConstBytes: o.textConstBytes,
+        textConstVa: o.textConstVa,
+        dataVa: o.dataVa,
+        imageBase,
+        textVa,
+        textLo,
+        textHi,
+        arch: o.architecture || o.arch || program?.architecture || program?.arch || 'arm64',
+        ptrSize: o.ptrSize ?? 8,
+        pointerFormat: o.pointerFormat ?? null,
+        resolveBindSymbol: typeof o.resolveBindSymbol === 'function' ? o.resolveBindSymbol : null,
+        stringsByFunc: (() => {
+          if (o.stringsByFunc != null) return o.stringsByFunc;
+          if (!Array.isArray(strings) || strings.length === 0 || !program || typeof program.functionsReferencing !== 'function') {
+            return null;
+          }
+          const map = new Map();
+          const maxStrScan = Math.min(strings.length, 10000);
+          for (let si = 0; si < maxStrScan; si++) {
+            const st = strings[si];
+            if (!st || st.addr == null || typeof st.text !== 'string' || st.text.length < 3) continue;
+            const refs = program.functionsReferencing(st.addr);
+            if (!Array.isArray(refs) || refs.length === 0) continue;
+            for (let ri = 0; ri < refs.length; ri++) {
+              const fnAddr = refs[ri]?.addr ?? refs[ri];
+              if (typeof fnAddr !== 'bigint') continue;
+              let list = map.get(fnAddr);
+              if (!list) {
+                list = [];
+                map.set(fnAddr, list);
+              }
+              if (list.length < 16) list.push(st.text);
+            }
+          }
+          return map.size > 0 ? map : null;
+        })(),
+        apisByFunc: o.apisByFunc ?? null,
+        cryptoHints: o.cryptoHints ?? null,
+        objcModel: o.objcModel ?? null,
+        swiftModel: o.swiftModel ?? null,
+        accessesByFunc: o.accessesByFunc ?? null,
+        program,
+        symbols,
+      });
+      if (
+        wa.rmw || wa.x86Rmw || wa.vtables || wa.jumpTables || wa.constTables
+        || wa.callgraph || wa.objcSwift || wa.xrefLinks
+        || wa.cxxRtti || wa.vtableRefOwners || wa.objcMethods || wa.unifiedMetadata || wa.virtualTree || wa.semanticNames || wa.classFields
+      ) {
+        report.wasmAnalysis = wa;
+      }
+    }
+  } catch (error) {
+    diagnose('wasm-analysis', error);
+  }
+
   const all = GOALS.length;
   const rankedByGoal = new Map();
   const vendors = vendorsOf(fields);
+  const classOwners = report.wasmAnalysis?.cxxRtti?.byFunction ?? null;
   for (let i = 0; i < GOALS.length; i++) {
     if (cancelled()) { report.notes.push('cancelled'); return report; }
     progress({ phase: 'goals', done: i, all });
     const goal = goalFromPreset(GOALS[i].id);
-    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 12, vendors, cryptoConstants });
+    const ranked = rankCandidates({
+      goal, strings, program, symbols, region, limit: 12, vendors, cryptoConstants, classOwners,
+    });
     rankedByGoal.set(goal.id, { goal, ranked });
     if (ranked.candidates.length) {
       report.goals.push({
@@ -749,7 +868,7 @@ export async function autoAnalyze(opts) {
       const role = inferRole({
         name: symbols ? symbols.nameAt(t.addr) : null, owner, updates,
         apis: f.apis || [], selectors,
-        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: program?.callersOf ? program.callersOf(t.addr).slice(0, 12).map((a) => symbols?.nameAt?.(a)).filter(Boolean) : [],
+        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: program?.callersOf ? program.callersOf(t.addr).slice(0, 12).map((a) => (a && a.addr != null ? symbols?.nameAt?.(a.addr) : null)).filter(Boolean) : [],
         comparisons: compares.length, conditionals: f.conditionals || 0,
         calls: f.calls || 0, stores: f.stores || 0, verified: true,
       });
@@ -764,48 +883,7 @@ export async function autoAnalyze(opts) {
     report.deep.sort((a, b) => b.updates.length - a.updates.length || (b.goal ? 1 : 0) - (a.goal ? 1 : 0));
   }
 
-  try {
-    const codeBytes = o.codeBytes
-      || (o.region && o.region.bytes instanceof Uint8Array ? o.region.bytes : null)
-      || (program && typeof program.textBytes === 'function' ? program.textBytes() : null);
-    const dataBytes = o.dataBytes
-      || (program && typeof program.dataBytes === 'function' ? program.dataBytes() : null);
-    const dataSections = Array.isArray(o.dataSections) && o.dataSections.length
-      ? o.dataSections
-      : extractConstDataSectionsFromImage(o.image);
-    const imageBase = o.imageBase ?? o.image?.imageBase ?? null;
-    if (codeBytes || dataBytes || program || (dataSections && dataSections.length > 0) || o.textConstBytes || o.image) {
-      const textVa = o.textVa ?? (o.region?.vmAddr != null ? o.region.vmAddr : 0n);
-      const textLo = o.textLo ?? (o.region?.vmAddr != null ? o.region.vmAddr : null);
-      const textHi = o.textHi ?? (o.region?.vmAddr != null && o.region?.size != null
-        ? BigInt(o.region.vmAddr) + BigInt(o.region.size)
-        : null);
-      const wa = runWasmStructuralAnalysis({
-        codeBytes,
-        dataBytes,
-        dataSections,
-        image: o.image,
-        textConstBytes: o.textConstBytes,
-        textConstVa: o.textConstVa,
-        dataVa: o.dataVa,
-        imageBase,
-        textVa,
-        textLo,
-        textHi,
-        arch: o.architecture || o.arch || program?.architecture || program?.arch || 'arm64',
-        ptrSize: o.ptrSize ?? 8,
-        program,
-        symbols,
-      });
-      if (wa.rmw || wa.x86Rmw || wa.vtables || wa.jumpTables || wa.constTables || wa.callgraph || wa.objcSwift || wa.xrefLinks) {
-        report.wasmAnalysis = wa;
-      }
-    }
-  } catch (error) {
-    diagnose('wasm-analysis', error);
-  }
-
-    progress({ phase: 'done', done: 1, all: 1 });
+  progress({ phase: 'done', done: 1, all: 1 });
   return report;
 }
 

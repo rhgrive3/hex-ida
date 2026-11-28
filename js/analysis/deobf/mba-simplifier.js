@@ -13,6 +13,8 @@ export const MBA_MAX_DEPTH = 12;
 export const MBA_MAX_NODES = 64;
 
 const PURE_OPS = new Set(['var', 'const', 'add', 'sub', 'mul', 'xor', 'and', 'or', 'not', 'neg']);
+const BITWISE_OPS = new Set(['and', 'or', 'xor', 'not']);
+const ARITH_OPS = new Set(['add', 'sub', 'neg', 'mul']);
 const MASK64 = 0xffffffffffffffffn;
 const MASK32 = 0xffffffffn;
 
@@ -66,6 +68,17 @@ function makeSplitMix64(seed = 0x123456789abcdef0n) {
   };
 }
 
+function isConstOnly(node, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > MBA_MAX_DEPTH) return false;
+  if (node.op === 'const') return true;
+  if (node.op === 'var') return false;
+  if (node.op === 'not' || node.op === 'neg') return isConstOnly(node.a, depth + 1);
+  if (node.op === 'add' || node.op === 'sub' || node.op === 'mul' || node.op === 'xor' || node.op === 'and' || node.op === 'or') {
+    return isConstOnly(node.a, depth + 1) && isConstOnly(node.b, depth + 1);
+  }
+  return false;
+}
+
 export function inspectMbaDag(root) {
   if (!root || typeof root !== 'object') {
     return { eligible: false, reason: 'invalid_root' };
@@ -82,15 +95,7 @@ export function inspectMbaDag(root) {
   let maxDepth = 0;
   let isLinearMba = true;
 
-  function isConstOnly(node) {
-    if (!node) return false;
-    if (node.op === 'const') return true;
-    if (node.op === 'var') return false;
-    if (node.op === 'not' || node.op === 'neg') return isConstOnly(node.a);
-    return isConstOnly(node.a) && isConstOnly(node.b);
-  }
-
-  function visit(node, depth) {
+  function visit(node, depth, insideBitwise = false) {
     if (!node || typeof node !== 'object') return 'invalid_node';
     if (!PURE_OPS.has(node.op)) return `disallowed_op:${node.op}`;
     if (node.width !== width) return 'mixed_width';
@@ -102,6 +107,11 @@ export function inspectMbaDag(root) {
       nodeCount++;
       if (nodeCount > MBA_MAX_NODES) return 'max_nodes_exceeded';
     }
+
+    if (insideBitwise && ARITH_OPS.has(node.op)) {
+      isLinearMba = false;
+    }
+    const childInsideBitwise = insideBitwise || BITWISE_OPS.has(node.op);
 
     if (node.op === 'var') {
       const name = String(node.name ?? '');
@@ -116,32 +126,35 @@ export function inspectMbaDag(root) {
     if (node.op === 'const') return null;
 
     if (node.op === 'not' || node.op === 'neg') {
-      return visit(node.a, depth + 1);
+      return visit(node.a, depth + 1, childInsideBitwise);
     }
 
     if (node.op === 'mul') {
-      if (!isConstOnly(node.a) && !isConstOnly(node.b)) {
+      if (!isConstOnly(node.a, depth + 1) && !isConstOnly(node.b, depth + 1)) {
         isLinearMba = false;
       }
     }
 
-    const errA = visit(node.a, depth + 1);
+    const errA = visit(node.a, depth + 1, childInsideBitwise);
     if (errA) return errA;
-    return visit(node.b, depth + 1);
+    return visit(node.b, depth + 1, childInsideBitwise);
   }
 
-  const err = visit(root, 0);
+  const err = visit(root, 0, false);
   if (err) return { eligible: false, reason: err };
   if (vars.length === 0) return { eligible: false, reason: 'constant_only' };
   vars.sort();
   return { eligible: true, width, vars, nodeCount, maxDepth, isLinearMba };
 }
 
-export function evalMbaDag(node, env, evalWidth = node.width) {
+export function evalMbaDag(node, env, evalWidth = node?.width) {
+  if (!Number.isInteger(evalWidth) || evalWidth < 1 || evalWidth > 256) {
+    throw new RangeError(`Invalid MBA evalWidth: ${evalWidth}`);
+  }
   const mask = (1n << BigInt(evalWidth)) - 1n;
   function ev(n) {
     switch (n.op) {
-      case 'var': return BigInt(env[n.name] ?? 0n) & mask;
+      case 'var': return BigInt((env && Object.hasOwn(env, n.name)) ? env[n.name] : 0n) & mask;
       case 'const': return BigInt(n.value ?? 0n) & mask;
       case 'not': return (~ev(n.a)) & mask;
       case 'neg': return (-ev(n.a)) & mask;
@@ -164,16 +177,22 @@ export function mbaDagCost(node) {
   return opCost + mbaDagCost(node.a) + mbaDagCost(node.b);
 }
 
-function sameExpr(a, b) {
+function sameExpr(a, b, budget = { rem: 512 }) {
+  if (budget.rem <= 0) return false;
+  budget.rem--;
   if (a === b) return true;
   if (!a || !b || a.op !== b.op || a.width !== b.width) return false;
   if (a.op === 'var') return a.name === b.name;
-  if (a.op === 'const') return BigInt(a.value) === BigInt(b.value);
-  if (a.op === 'not' || a.op === 'neg') return sameExpr(a.a, b.a);
-  if (a.op === 'add' || a.op === 'mul' || a.op === 'xor' || a.op === 'and' || a.op === 'or') {
-    return (sameExpr(a.a, b.a) && sameExpr(a.b, b.b)) || (sameExpr(a.a, b.b) && sameExpr(a.b, b.a));
+  if (a.op === 'const') {
+    const mask = maskForWidth(a.width);
+    return (BigInt(a.value) & mask) === (BigInt(b.value) & mask);
   }
-  return sameExpr(a.a, b.a) && sameExpr(a.b, b.b);
+  if (a.op === 'not' || a.op === 'neg') return sameExpr(a.a, b.a, budget);
+  if (a.op === 'add' || a.op === 'mul' || a.op === 'xor' || a.op === 'and' || a.op === 'or') {
+    return (sameExpr(a.a, b.a, budget) && sameExpr(a.b, b.b, budget))
+      || (sameExpr(a.a, b.b, budget) && sameExpr(a.b, b.a, budget));
+  }
+  return sameExpr(a.a, b.a, budget) && sameExpr(a.b, b.b, budget);
 }
 
 function stageAPatternMatch(root) {
@@ -233,7 +252,7 @@ function stageBMobiusSynthesize(root, vars, width) {
   const f = new Array(n);
 
   for (let m = 0; m < n; m++) {
-    const env = {};
+    const env = Object.create(null);
     for (let i = 0; i < k; i++) env[vars[i]] = (m & (1 << i)) ? 1n : 0n;
     f[m] = evalMbaDag(root, env, width);
   }
@@ -329,7 +348,7 @@ export function verifyMbaEquiv(origDag, candDag, opts = {}) {
   // Layer 1: Exact 2^k truth-table on {0, 1}^k at full width
   const corners = 1 << k;
   for (let m = 0; m < corners; m++) {
-    const env = {};
+    const env = Object.create(null);
     for (let i = 0; i < k; i++) env[vars[i]] = (m & (1 << i)) ? 1n : 0n;
     if (evalMbaDag(origDag, env, width) !== evalMbaDag(candDag, env, width)) {
       return { proved: false, failedLayer: 1, reason: 'truth_table_mismatch', counterexample: env };
@@ -340,7 +359,7 @@ export function verifyMbaEquiv(origDag, candDag, opts = {}) {
   // Layer 2: Full 8-bit & 64-bit basis verification evaluated at FULL expression width (no constant truncation!)
   let l2Tested = 0;
   function checkTuple(vals) {
-    const env = {};
+    const env = Object.create(null);
     for (let i = 0; i < k; i++) env[vars[i]] = vals[i];
     l2Tested++;
     if (evalMbaDag(origDag, env, width) !== evalMbaDag(candDag, env, width)) {
@@ -398,7 +417,7 @@ export function verifyMbaEquiv(origDag, candDag, opts = {}) {
   // Layer 3: Deterministic SplitMix64 64-bit verification (256 vectors)
   const nextRand = makeSplitMix64(0x9e3779b97f4a7c15n);
   for (let i = 0; i < 256; i++) {
-    const env = {};
+    const env = Object.create(null);
     for (let j = 0; j < k; j++) env[vars[j]] = nextRand();
     if (evalMbaDag(origDag, env, width) !== evalMbaDag(candDag, env, width)) {
       return { proved: false, failedLayer: 3, reason: 'splitmix64_mismatch', counterexample: env };
@@ -436,7 +455,7 @@ function flattenDagToWasmNodes(root, vars) {
     }
     if (n.op === 'not' || n.op === 'neg') {
       const l = emit(n.a);
-      if (l < 0) return -1;
+      if (l < 0 || nodes.length >= MBA_MAX_NODES) return -1;
       const idx = nodes.length;
       nodes.push({ op: HEX_MBA_OP[n.op], lhs: l, rhs: 0, flags: flag, imm: 0n });
       return idx;
@@ -446,16 +465,18 @@ function flattenDagToWasmNodes(root, vars) {
       let constVal = null;
       if (n.a.op === 'const') { constVal = BigInt(n.a.value); exprNode = n.b; }
       else if (n.b.op === 'const') { constVal = BigInt(n.b.value); exprNode = n.a; }
+      else if (isConstOnly(n.a)) { constVal = evalMbaDag(n.a, Object.create(null), root.width); exprNode = n.b; }
+      else if (isConstOnly(n.b)) { constVal = evalMbaDag(n.b, Object.create(null), root.width); exprNode = n.a; }
       else return -1;
       const l = emit(exprNode);
-      if (l < 0) return -1;
+      if (l < 0 || nodes.length >= MBA_MAX_NODES) return -1;
       const idx = nodes.length;
       nodes.push({ op: HEX_MBA_OP.mul_const, lhs: l, rhs: 0, flags: flag, imm: constVal });
       return idx;
     }
     const l = emit(n.a);
     const r = emit(n.b);
-    if (l < 0 || r < 0) return -1;
+    if (l < 0 || r < 0 || nodes.length >= MBA_MAX_NODES) return -1;
     const idx = nodes.length;
     nodes.push({ op: HEX_MBA_OP[n.op], lhs: l, rhs: r, flags: flag, imm: 0n });
     return idx;
@@ -465,20 +486,61 @@ function flattenDagToWasmNodes(root, vars) {
   return rootIdx >= 0 ? { nodes, rootIdx } : null;
 }
 
-function unflattenWasmNodes(nodes, idx, vars, width) {
+function unflattenWasmNodes(nodes, idx, vars, width, depth = 0) {
+  if (depth > MBA_MAX_DEPTH || !Array.isArray(nodes) || !Number.isInteger(idx) || idx < 0 || idx >= nodes.length) {
+    return null;
+  }
   const n = nodes[idx];
+  if (!n || typeof n !== 'object') return null;
   switch (n.op) {
-    case HEX_MBA_OP.var: return { op: 'var', name: vars[n.lhs] ?? `v${n.lhs}`, width };
-    case HEX_MBA_OP.const: return { op: 'const', value: n.imm & maskForWidth(width), width };
-    case HEX_MBA_OP.neg: return { op: 'neg', a: unflattenWasmNodes(nodes, n.lhs, vars, width), width };
-    case HEX_MBA_OP.not: return { op: 'not', a: unflattenWasmNodes(nodes, n.lhs, vars, width), width };
-    case HEX_MBA_OP.add: return { op: 'add', a: unflattenWasmNodes(nodes, n.lhs, vars, width), b: unflattenWasmNodes(nodes, n.rhs, vars, width), width };
-    case HEX_MBA_OP.sub: return { op: 'sub', a: unflattenWasmNodes(nodes, n.lhs, vars, width), b: unflattenWasmNodes(nodes, n.rhs, vars, width), width };
-    case HEX_MBA_OP.and: return { op: 'and', a: unflattenWasmNodes(nodes, n.lhs, vars, width), b: unflattenWasmNodes(nodes, n.rhs, vars, width), width };
-    case HEX_MBA_OP.or: return { op: 'or', a: unflattenWasmNodes(nodes, n.lhs, vars, width), b: unflattenWasmNodes(nodes, n.rhs, vars, width), width };
-    case HEX_MBA_OP.xor: return { op: 'xor', a: unflattenWasmNodes(nodes, n.lhs, vars, width), b: unflattenWasmNodes(nodes, n.rhs, vars, width), width };
-    case HEX_MBA_OP.mul_const: return { op: 'mul', a: { op: 'const', value: n.imm & maskForWidth(width), width }, b: unflattenWasmNodes(nodes, n.lhs, vars, width), width };
-    default: return null;
+    case HEX_MBA_OP.var:
+      return { op: 'var', name: vars[n.lhs] ?? `v${n.lhs}`, width };
+    case HEX_MBA_OP.const:
+      return { op: 'const', value: n.imm & maskForWidth(width), width };
+    case HEX_MBA_OP.neg: {
+      const a = unflattenWasmNodes(nodes, n.lhs, vars, width, depth + 1);
+      return a ? { op: 'neg', a, width } : null;
+    }
+    case HEX_MBA_OP.not: {
+      const a = unflattenWasmNodes(nodes, n.lhs, vars, width, depth + 1);
+      return a ? { op: 'not', a, width } : null;
+    }
+    case HEX_MBA_OP.add: {
+      const a = unflattenWasmNodes(nodes, n.lhs, vars, width, depth + 1);
+      if (!a) return null;
+      const b = unflattenWasmNodes(nodes, n.rhs, vars, width, depth + 1);
+      return b ? { op: 'add', a, b, width } : null;
+    }
+    case HEX_MBA_OP.sub: {
+      const a = unflattenWasmNodes(nodes, n.lhs, vars, width, depth + 1);
+      if (!a) return null;
+      const b = unflattenWasmNodes(nodes, n.rhs, vars, width, depth + 1);
+      return b ? { op: 'sub', a, b, width } : null;
+    }
+    case HEX_MBA_OP.and: {
+      const a = unflattenWasmNodes(nodes, n.lhs, vars, width, depth + 1);
+      if (!a) return null;
+      const b = unflattenWasmNodes(nodes, n.rhs, vars, width, depth + 1);
+      return b ? { op: 'and', a, b, width } : null;
+    }
+    case HEX_MBA_OP.or: {
+      const a = unflattenWasmNodes(nodes, n.lhs, vars, width, depth + 1);
+      if (!a) return null;
+      const b = unflattenWasmNodes(nodes, n.rhs, vars, width, depth + 1);
+      return b ? { op: 'or', a, b, width } : null;
+    }
+    case HEX_MBA_OP.xor: {
+      const a = unflattenWasmNodes(nodes, n.lhs, vars, width, depth + 1);
+      if (!a) return null;
+      const b = unflattenWasmNodes(nodes, n.rhs, vars, width, depth + 1);
+      return b ? { op: 'xor', a, b, width } : null;
+    }
+    case HEX_MBA_OP.mul_const: {
+      const b = unflattenWasmNodes(nodes, n.lhs, vars, width, depth + 1);
+      return b ? { op: 'mul', a: { op: 'const', value: n.imm & maskForWidth(width), width }, b, width } : null;
+    }
+    default:
+      return null;
   }
 }
 
@@ -496,13 +558,14 @@ function trySimplifyMbaWasm(root, info, opts) {
     const scratchSize = ex.hex_deobf_scratch_size();
     const inBytes = flat.nodes.length * 24;
     const outBytes = MBA_MAX_NODES * 24;
-    const needed = inBytes + outBytes + 8 + 96 + 64;
+    const alignPad = (8 - (base & 7)) & 7;
+    const needed = alignPad + inBytes + outBytes + 8 + 96 + 64;
     if (scratchSize < needed) {
       recordFallback('MBA_SCRATCH_OOM');
       return null;
     }
-    const inPtr = base;
-    const outPtr = base + inBytes + 8;
+    const inPtr = (base + 7) & ~7;
+    const outPtr = inPtr + inBytes + 8;
     const outRootPtr = outPtr + outBytes;
     const proofPtr = (outRootPtr + 8 + 7) & ~7;
 
@@ -522,16 +585,22 @@ function trySimplifyMbaWasm(root, info, opts) {
       recordFallback('MBA_WASM_STATUS_ERR');
       return null;
     }
-    recordWasmCall('mba_simplifier');
 
-    const l1Ok = dv.getUint32(proofPtr + 0, true) === 1;
-    const l2Ok = dv.getUint32(proofPtr + 4, true) === 1;
-    const l3Ok = dv.getUint32(proofPtr + 8, true) === 1;
-    const committed = dv.getUint32(proofPtr + 16, true) === 1;
-    const origCost = dv.getUint32(proofPtr + 20, true);
-    const simpCost = dv.getUint32(proofPtr + 24, true);
-    const outCount = dv.getUint32(proofPtr + 28, true);
-    const outRoot = dv.getUint32(outRootPtr, true);
+    const outDv = new DataView(ex.memory.buffer);
+    const l1Ok = outDv.getUint32(proofPtr + 0, true) === 1;
+    const l2Ok = outDv.getUint32(proofPtr + 4, true) === 1;
+    const l3Ok = outDv.getUint32(proofPtr + 8, true) === 1;
+    const committed = outDv.getUint32(proofPtr + 16, true) === 1;
+    const origCost = outDv.getUint32(proofPtr + 20, true);
+    const simpCost = outDv.getUint32(proofPtr + 24, true);
+    const outCount = outDv.getUint32(proofPtr + 28, true);
+    const outRoot = outDv.getUint32(outRootPtr, true);
+
+    if (outCount > MBA_MAX_NODES) {
+      recordFallback('MBA_WASM_STATUS_ERR');
+      return null;
+    }
+    recordWasmCall('mba_simplifier');
 
     if (!committed || outCount === 0 || outRoot >= outCount) {
       return {
@@ -548,11 +617,11 @@ function trySimplifyMbaWasm(root, info, opts) {
     for (let i = 0; i < outCount; i++) {
       const o = outPtr + i * 24;
       outNodes.push({
-        op: dv.getUint32(o + 0, true),
-        lhs: dv.getUint32(o + 4, true),
-        rhs: dv.getUint32(o + 8, true),
-        flags: dv.getUint32(o + 12, true),
-        imm: dv.getBigUint64(o + 16, true),
+        op: outDv.getUint32(o + 0, true),
+        lhs: outDv.getUint32(o + 4, true),
+        rhs: outDv.getUint32(o + 8, true),
+        flags: outDv.getUint32(o + 12, true),
+        imm: outDv.getBigUint64(o + 16, true),
       });
     }
     const expr = unflattenWasmNodes(outNodes, outRoot, info.vars, info.width);

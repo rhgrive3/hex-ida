@@ -1,13 +1,29 @@
 import { artifactIndexFromProject, isArtifactRef } from './artifact-index.js';
 import {
+  MAX_COMMENT_LENGTH,
+  MAX_NAME_LENGTH,
+  MAX_PATCH_ENTRIES,
+  MAX_PROJECT_BYTES,
+  MAX_TYPE_LENGTH,
+  MAX_VAR_KEY_LENGTH,
+} from './limits.js';
+import {
   migrateHexProject,
   ProjectMigrationError,
   PROJECT_MIGRATIONS,
 } from './migrations.js';
 
+export {
+  MAX_COMMENT_LENGTH,
+  MAX_NAME_LENGTH,
+  MAX_PATCH_ENTRIES,
+  MAX_PROJECT_BYTES,
+  MAX_TYPE_LENGTH,
+  MAX_VAR_KEY_LENGTH,
+};
+
 export const HEX_PROJECT_VERSION = 2;
 export const HEX_PROJECT_MIME = 'application/vnd.hex.project+json';
-export const MAX_PROJECT_BYTES = 16 * 1024 * 1024;
 const MAX_COLLECTION_ITEMS = 1_000_000;
 const MAX_LEGACY_CACHE_REFERENCE_LENGTH = 512;
 
@@ -169,10 +185,14 @@ export function createHexProject(input = {}) {
     createdAt: input.createdAt || now, updatedAt: now,
     binary: { hash: input.binaryHash || input.binary?.hash || null, metadata: input.binaryMetadata || input.binary?.metadata || null, embedded: false },
     user: {
-      names: validateAnnotationEntries(input.userNames ?? input.user?.names, 'user.names'), comments: validateAnnotationEntries(input.comments ?? input.user?.comments, 'user.comments'),
-      types: list(input.types ?? input.user?.types, 'user.types'), vars: list(input.vars ?? input.user?.vars ?? input.varNames ?? input.user?.varNames, 'user.vars'), varsPresent: true,
+      names: validateAnnotationEntries(input.userNames ?? input.user?.names, 'user.names', MAX_NAME_LENGTH, 'HEX_PROJECT_NAME_TOO_LONG'),
+      comments: validateAnnotationEntries(input.comments ?? input.user?.comments, 'user.comments', MAX_COMMENT_LENGTH, 'HEX_PROJECT_COMMENT_TOO_LONG'),
+      types: validateKeyValueEntries(input.types ?? input.user?.types, 'user.types', MAX_TYPE_LENGTH, 'HEX_PROJECT_TYPE_TOO_LONG'),
+      vars: validateKeyValueEntries(input.vars ?? input.user?.vars ?? input.varNames ?? input.user?.varNames, 'user.vars', MAX_NAME_LENGTH, 'HEX_PROJECT_VAR_TOO_LONG'),
+      varsPresent: true,
       structs: list(input.structs ?? input.user?.structs, 'user.structs'),
-      bookmarks: list(input.bookmarks ?? input.user?.bookmarks, 'user.bookmarks'), patches: list(input.patches ?? input.user?.patches, 'user.patches'),
+      bookmarks: list(input.bookmarks ?? input.user?.bookmarks, 'user.bookmarks'),
+      patches: validatePatchEntries(input.patches ?? input.user?.patches, 'user.patches'),
     },
     findings: {
       confirmed: list(input.confirmedFindings ?? input.findings?.confirmed, 'findings.confirmed'),
@@ -198,6 +218,11 @@ function normalizeCursorIndex(value) {
 
 const DECIMAL_ADDRESS = /^(?:0|[1-9][0-9]*)$/;
 const HEX_ADDRESS = /^0[xX][0-9a-fA-F]+$/;
+// Hex projects persist machine integers (addresses/offsets/ids, ≤ 64–128 bits).
+// A per-value magnitude budget checked BEFORE BigInt() keeps a hostile scalar
+// inside the size-limited file from paying unbounded conversion cost (#5906).
+const MAX_BIGINT_HEX_DIGITS = 128;
+const MAX_BIGINT_DECIMAL_DIGITS = 160;
 
 function canonicalAnnotationAddressKey(value, field = 'address') {
   if (typeof value === 'bigint') {
@@ -212,8 +237,16 @@ function canonicalAnnotationAddressKey(value, field = 'address') {
   }
   if (typeof value === 'string') {
     const text = value.trim();
-    if (!DECIMAL_ADDRESS.test(text) && !HEX_ADDRESS.test(text)) {
+    const isHex = HEX_ADDRESS.test(text);
+    const isDecimal = !isHex && DECIMAL_ADDRESS.test(text);
+    if (!isHex && !isDecimal) {
       throw new ProjectFormatError(`${field} must be a canonical decimal or hex address`);
+    }
+    if (isHex && text.length - 2 > MAX_BIGINT_HEX_DIGITS) {
+      throw new ProjectFormatError(`${field} exceeds the project resource limit`, 'resource-limit');
+    }
+    if (isDecimal && text.length > MAX_BIGINT_DECIMAL_DIGITS) {
+      throw new ProjectFormatError(`${field} exceeds the project resource limit`, 'resource-limit');
     }
     try {
       return BigInt(text).toString();
@@ -224,20 +257,246 @@ function canonicalAnnotationAddressKey(value, field = 'address') {
   throw new ProjectFormatError(`${field} must be a bigint, safe integer, or canonical address string`);
 }
 
-function validateAnnotationEntries(entries, name) {
+function defaultAnnotationLimits(name) {
+  if (name === 'user.comments') {
+    return { maxLength: MAX_COMMENT_LENGTH, tooLongCode: 'HEX_PROJECT_COMMENT_TOO_LONG' };
+  }
+  return { maxLength: MAX_NAME_LENGTH, tooLongCode: 'HEX_PROJECT_NAME_TOO_LONG' };
+}
+
+function validateAnnotationEntries(entries, name, maxLength, tooLongCode) {
+  const defaults = defaultAnnotationLimits(name);
+  const effectiveMax = maxLength ?? defaults.maxLength;
+  const effectiveCode = tooLongCode ?? defaults.tooLongCode;
   const items = list(entries, name);
   for (let index = 0; index < items.length; index += 1) {
     const entry = items[index];
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-    if (entry.address == null || entry.value == null) continue;
-    canonicalAnnotationAddressKey(entry.address, `${name}[${index}].address`);
-    if (typeof entry.value !== 'string') throw new ProjectFormatError(`${name}[${index}].value must be a string`);
+    if (!isPlainRecord(entry)) {
+      throw new ProjectFormatError(`${name}[${index}] must be an object`);
+    }
+    const hasValue = Object.prototype.hasOwnProperty.call(entry, 'value');
+    const hasAddress = Object.prototype.hasOwnProperty.call(entry, 'address');
+    const legacyText = Object.prototype.hasOwnProperty.call(entry, 'name')
+      ? entry.name
+      : (Object.prototype.hasOwnProperty.call(entry, 'text') ? entry.text : undefined);
+    if (hasValue || (hasAddress && legacyText === undefined)) {
+      if (entry.address == null || entry.value == null) {
+        throw new ProjectFormatError(`${name}[${index}] must include both address and value`);
+      }
+      canonicalAnnotationAddressKey(entry.address, `${name}[${index}].address`);
+      if (typeof entry.value !== 'string') {
+        throw new ProjectFormatError(`${name}[${index}].value must be a string`);
+      }
+      if (entry.value.length > effectiveMax) {
+        throw new ProjectFormatError(
+          `${name}[${index}].value exceeds maximum length of ${effectiveMax}`,
+          effectiveCode,
+        );
+      }
+      continue;
+    }
+    // Legacy fixture shape: `{ addr|address, name }` or `{ addr?, text }` (#4818).
+    if (legacyText === undefined) {
+      throw new ProjectFormatError(`${name}[${index}] must include address and value`);
+    }
+    if (entry.address != null) {
+      canonicalAnnotationAddressKey(entry.address, `${name}[${index}].address`);
+    }
+    if (entry.addr != null) {
+      canonicalAnnotationAddressKey(entry.addr, `${name}[${index}].addr`);
+    }
+    if (typeof legacyText !== 'string') {
+      throw new ProjectFormatError(`${name}[${index}] text value must be a string`);
+    }
+    if (legacyText.length > effectiveMax) {
+      throw new ProjectFormatError(
+        `${name}[${index}] exceeds maximum length of ${effectiveMax}`,
+        effectiveCode,
+      );
+    }
   }
   return items;
 }
 
-export function projectAnnotationCommitList(entries, name) {
-  const items = validateAnnotationEntries(entries, name);
+export function validateKeyValueEntries(entries, name, maxValueLength, tooLongCode) {
+  const items = list(entries, name);
+  for (let index = 0; index < items.length; index += 1) {
+    const entry = items[index];
+    if (!isPlainRecord(entry)) {
+      throw new ProjectFormatError(`${name}[${index}] must be an object`);
+    }
+    const hasKeyValue = Object.prototype.hasOwnProperty.call(entry, 'key')
+      || Object.prototype.hasOwnProperty.call(entry, 'value');
+    if (hasKeyValue) {
+      if (typeof entry.key !== 'string' || !entry.key) {
+        throw new ProjectFormatError(`${name}[${index}].key must be a non-empty string`);
+      }
+      if (entry.key.length > MAX_VAR_KEY_LENGTH) {
+        throw new ProjectFormatError(
+          `${name}[${index}].key exceeds maximum length of ${MAX_VAR_KEY_LENGTH}`,
+          tooLongCode,
+        );
+      }
+      if (typeof entry.value !== 'string') {
+        throw new ProjectFormatError(`${name}[${index}].value must be a string`);
+      }
+      if (entry.value.length > maxValueLength) {
+        throw new ProjectFormatError(
+          `${name}[${index}].value exceeds maximum length of ${maxValueLength}`,
+          tooLongCode,
+        );
+      }
+      continue;
+    }
+    // Legacy `user.types` fixture shape: `{ addr, type }`.
+    if (name === 'user.types' && Object.prototype.hasOwnProperty.call(entry, 'type')) {
+      if (entry.addr != null) {
+        canonicalAnnotationAddressKey(entry.addr, `${name}[${index}].addr`);
+      }
+      if (typeof entry.type !== 'string') {
+        throw new ProjectFormatError(`${name}[${index}].type must be a string`);
+      }
+      if (entry.type.length > maxValueLength) {
+        throw new ProjectFormatError(
+          `${name}[${index}].type exceeds maximum length of ${maxValueLength}`,
+          tooLongCode,
+        );
+      }
+      continue;
+    }
+    throw new ProjectFormatError(`${name}[${index}] must include key and value`);
+  }
+  return items;
+}
+
+const HEX_PATCH_BYTES = /^(?:0[xX])?([0-9a-fA-F]+)$/;
+
+function patchBytesLength(value) {
+  if (value instanceof Uint8Array) return value.length > 0 ? value.length : -1;
+  if (typeof value === 'string') {
+    const match = HEX_PATCH_BYTES.exec(value);
+    if (!match) return -1;
+    const digits = match[1];
+    if (digits.length === 0 || (digits.length % 2) !== 0) return -1;
+    return digits.length / 2;
+  }
+  if (!Array.isArray(value) || value.length === 0) return -1;
+  for (let i = 0; i < value.length; i += 1) {
+    const byte = value[i];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 255) {
+      return -1;
+    }
+  }
+  return value.length;
+}
+
+function isValidPatchBytes(value) {
+  return patchBytesLength(value) > 0;
+}
+
+function normalizePatchOffset(value, field) {
+  if (typeof value === 'bigint') {
+    if (value < 0n) {
+      throw new ProjectFormatError(`${field} must be a non-negative integer`, 'HEX_PROJECT_INVALID_PATCH');
+    }
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
+      throw new ProjectFormatError(`${field} must be a non-negative safe integer`, 'HEX_PROJECT_INVALID_PATCH');
+    }
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    const isHex = HEX_ADDRESS.test(text);
+    const isDecimal = !isHex && DECIMAL_ADDRESS.test(text);
+    if (!isHex && !isDecimal) {
+      throw new ProjectFormatError(`${field} must be a non-negative canonical decimal or hex integer`, 'HEX_PROJECT_INVALID_PATCH');
+    }
+    if (isHex && text.length - 2 > MAX_BIGINT_HEX_DIGITS) {
+      throw new ProjectFormatError(`${field} exceeds the project resource limit`, 'resource-limit');
+    }
+    if (isDecimal && text.length > MAX_BIGINT_DECIMAL_DIGITS) {
+      throw new ProjectFormatError(`${field} exceeds the project resource limit`, 'resource-limit');
+    }
+    try {
+      return BigInt(text);
+    } catch {
+      throw new ProjectFormatError(`${field} must be a non-negative canonical decimal or hex integer`, 'HEX_PROJECT_INVALID_PATCH');
+    }
+  }
+  throw new ProjectFormatError(`${field} must be a non-negative integer or bigint`, 'HEX_PROJECT_INVALID_PATCH');
+}
+
+export function validatePatchEntries(entries, name = 'user.patches') {
+  if (entries == null) return [];
+  if (!Array.isArray(entries)) {
+    throw new ProjectFormatError(`${name} must be an array`, 'HEX_PROJECT_INVALID_PATCH');
+  }
+  if (entries.length > MAX_PATCH_ENTRIES) {
+    throw new ProjectFormatError(`${name} exceeds maximum of ${MAX_PATCH_ENTRIES} entries`, 'HEX_PROJECT_INVALID_PATCH');
+  }
+  const items = [...entries];
+  const ranges = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const entry = items[index];
+    if (!isPlainRecord(entry)) {
+      throw new ProjectFormatError(`${name}[${index}] must be a plain object`, 'HEX_PROJECT_INVALID_PATCH');
+    }
+    // Preserve legacy `{ addr, bytes }` roundtrip fixtures when no canonical patch keys exist.
+    const hasCanonicalKeys = Object.prototype.hasOwnProperty.call(entry, 'offset')
+      || Object.prototype.hasOwnProperty.call(entry, 'before')
+      || Object.prototype.hasOwnProperty.call(entry, 'after');
+    const legacyBytesLen = Object.prototype.hasOwnProperty.call(entry, 'bytes')
+      ? patchBytesLength(entry.bytes)
+      : -1;
+    if (!hasCanonicalKeys
+      && entry.addr != null
+      && legacyBytesLen > 0) {
+      let start;
+      try {
+        start = BigInt(canonicalAnnotationAddressKey(entry.addr, `${name}[${index}].addr`));
+      } catch (err) {
+        if (err instanceof ProjectFormatError && err.code === 'resource-limit') throw err;
+        throw new ProjectFormatError(`${name}[${index}].addr is invalid`, 'HEX_PROJECT_INVALID_PATCH');
+      }
+      ranges.push({ start, end: start + BigInt(legacyBytesLen), index });
+      continue;
+    }
+    const start = normalizePatchOffset(entry.offset, `${name}[${index}].offset`);
+    const beforeLen = patchBytesLength(entry.before);
+    if (beforeLen <= 0) {
+      throw new ProjectFormatError(`${name}[${index}].before must be a non-empty byte array or hex string`, 'HEX_PROJECT_INVALID_PATCH');
+    }
+    const afterLen = patchBytesLength(entry.after);
+    if (afterLen <= 0) {
+      throw new ProjectFormatError(`${name}[${index}].after must be a non-empty byte array or hex string`, 'HEX_PROJECT_INVALID_PATCH');
+    }
+    if (beforeLen !== afterLen) {
+      throw new ProjectFormatError(`${name}[${index}] before/after length mismatch`, 'HEX_PROJECT_INVALID_PATCH');
+    }
+    ranges.push({ start, end: start + BigInt(afterLen), index });
+  }
+  if (ranges.length > 1) {
+    ranges.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+    for (let i = 1; i < ranges.length; i += 1) {
+      if (ranges[i - 1].end > ranges[i].start) {
+        throw new ProjectFormatError(
+          `${name}[${ranges[i].index}] overlaps another patch range`,
+          'HEX_PROJECT_INVALID_PATCH',
+        );
+      }
+    }
+  }
+  return items;
+}
+
+export function projectAnnotationCommitList(entries, name, options = {}) {
+  const defaults = defaultAnnotationLimits(name);
+  const maxLength = options?.maxLength ?? defaults.maxLength;
+  const tooLongCode = options?.tooLongCode ?? defaults.tooLongCode;
+  const items = validateAnnotationEntries(entries, name, maxLength, tooLongCode);
   const out = [];
   for (const entry of items) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
@@ -259,8 +518,19 @@ function normalizeCurrentFunction(value) {
     }
     return BigInt(value);
   }
-  if (typeof value !== 'string' || (!DECIMAL_ADDRESS.test(value) && !HEX_ADDRESS.test(value))) {
+  if (typeof value !== 'string') {
     throw new ProjectFormatError('navigation.currentFunction must be an integer');
+  }
+  const isHex = HEX_ADDRESS.test(value);
+  const isDecimal = !isHex && DECIMAL_ADDRESS.test(value);
+  if (!isHex && !isDecimal) {
+    throw new ProjectFormatError('navigation.currentFunction must be an integer');
+  }
+  if (isHex && value.length - 2 > MAX_BIGINT_HEX_DIGITS) {
+    throw new ProjectFormatError('navigation.currentFunction exceeds the project resource limit', 'resource-limit');
+  }
+  if (isDecimal && value.length > MAX_BIGINT_DECIMAL_DIGITS) {
+    throw new ProjectFormatError('navigation.currentFunction exceeds the project resource limit', 'resource-limit');
   }
   try {
     return BigInt(value);
@@ -306,11 +576,6 @@ const BIGINT_TAG = '$hexBigInt';
 const ESCAPED_TAG = /^\$(\$*)\$hexBigInt$/;
 const BIGINT_ENCODING_FIELD = 'bigIntEncoding';
 const BIGINT_ENCODING_VERSION = 1;
-// Hex projects persist machine integers (addresses/offsets/ids, ≤ 64–128 bits).
-// A per-value magnitude budget checked BEFORE BigInt() keeps a hostile scalar
-// inside the size-limited file from paying unbounded conversion cost (#5906).
-const MAX_BIGINT_HEX_DIGITS = 128;
-
 function escapeBigIntTag(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const keys = Object.keys(value);
@@ -375,14 +640,17 @@ function hasSupportedBigIntEncoding(raw) {
   return true;
 }
 
-export function serializeHexProject(project) {
+export function serializeHexProject(project, { compact = false } = {}) {
   const normalized = {
     ...validateHexProject(project),
     [BIGINT_ENCODING_FIELD]: BIGINT_ENCODING_VERSION,
   };
-  const text = JSON.stringify(normalized, (_key, value) => (
+  const replacer = (_key, value) => (
     typeof value === 'bigint' ? { [BIGINT_TAG]: value.toString(16) } : escapeBigIntTag(value)
-  ), 2);
+  );
+  const text = compact
+    ? JSON.stringify(normalized, replacer)
+    : JSON.stringify(normalized, replacer, 2);
   assertProjectSize(encodedByteLength(text));
   return text;
 }
@@ -476,14 +744,14 @@ export function normalizeHexProjectV1(project) {
       embedded: false,
     },
     user: {
-      names: validateAnnotationEntries(project.user?.names, 'user.names'),
-      comments: validateAnnotationEntries(project.user?.comments, 'user.comments'),
-      types: list(project.user?.types, 'user.types'),
-      vars: list(project.user?.vars ?? project.user?.varNames, 'user.vars'),
+      names: validateAnnotationEntries(project.user?.names, 'user.names', MAX_NAME_LENGTH, 'HEX_PROJECT_NAME_TOO_LONG'),
+      comments: validateAnnotationEntries(project.user?.comments, 'user.comments', MAX_COMMENT_LENGTH, 'HEX_PROJECT_COMMENT_TOO_LONG'),
+      types: validateKeyValueEntries(project.user?.types, 'user.types', MAX_TYPE_LENGTH, 'HEX_PROJECT_TYPE_TOO_LONG'),
+      vars: validateKeyValueEntries(project.user?.vars ?? project.user?.varNames, 'user.vars', MAX_NAME_LENGTH, 'HEX_PROJECT_VAR_TOO_LONG'),
       varsPresent: project.user?.varsPresent !== false && (Object.prototype.hasOwnProperty.call(project.user || {}, 'vars') || Object.prototype.hasOwnProperty.call(project.user || {}, 'varNames')),
       structs: list(project.user?.structs, 'user.structs'),
       bookmarks: list(project.user?.bookmarks, 'user.bookmarks'),
-      patches: list(project.user?.patches, 'user.patches'),
+      patches: validatePatchEntries(project.user?.patches, 'user.patches'),
     },
     findings: {
       confirmed: list(project.findings?.confirmed, 'findings.confirmed'),

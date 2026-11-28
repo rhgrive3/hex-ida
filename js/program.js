@@ -365,7 +365,8 @@ export class ProgramIndex {
   refSitesTo(addr, span = 1n, limit = 500) {
     limit = queryLimit(limit, 500);
     const order = this._refToOrder(), out = []; let i = lowerBound(this.refTo, order, addr), queryLimited = false;
-    const hi = addr + (span > 0n ? span : 1n);
+    const spanBig = typeof span === 'bigint' ? span : (Number.isSafeInteger(span) ? BigInt(span) : 1n);
+    const hi = addr + (spanBig > 0n ? spanBig : 1n);
     for (; i < order.length; i++) {
       const k = order[i]; if (this.refTo[k] >= hi) break;
       if (out.length >= limit) { queryLimited = true; break; }
@@ -377,7 +378,8 @@ export class ProgramIndex {
     limit = queryLimit(limit, 200);
     const order = this._refToOrder(), seen = new Map();
     let i = lowerBound(this.refTo, order, addr), queryLimited = false;
-    const hi = addr + (span > 0n ? span : 1n);
+    const spanBig = typeof span === 'bigint' ? span : (Number.isSafeInteger(span) ? BigInt(span) : 1n);
+    const hi = addr + (spanBig > 0n ? spanBig : 1n);
     for (; i < order.length; i++) {
       const k = order[i];
       if (this.refTo[k] >= hi) break;
@@ -408,14 +410,16 @@ export class ProgramIndex {
   statsOf(start, end) {
     const stats = { total: 0, covered: true, arith: 0, mul: 0, div: 0, logic: 0, shift: 0, farith: 0, fmul: 0, fconv: 0, simd: 0, load: 0, store: 0, cmp: 0, condbr: 0, branch: 0, call: 0, indcall: 0, ret: 0, csel: 0, atomic: 0, movimm: 0, adrp: 0, trap: 0, other: 0, numeric: 0, memory: 0 };
     if (this.unsupported) { stats.covered = false; stats.unsupported = true; stats.incompleteReason = 'unsupported-program-analysis'; return stats; }
-    const lastAddr=end!=null?BigInt(end):BigInt(start)+4n;
+    const s=BigInt(start);
+    const lastAddr=end!=null?BigInt(end):s+4n;
+    if(lastAddr<=s){stats.covered=false;return stats;}
     const spans=this.kindRegions.length?this.kindRegions:[{vmAddr:BigInt(this.vmAddr||0),words:this.words,kinds:this.kinds,kindsCovered:this.kindsCovered}];
-    const span=spans.find((k)=>BigInt(start)>=k.vmAddr && BigInt(start)<k.vmAddr+BigInt(k.words)*4n);
+    const span=spans.find((k)=>s>=k.vmAddr && s<k.vmAddr+BigInt(k.words)*4n);
     if(!span || !span.kinds.length){stats.covered=false;return stats;}
     const spanEnd=span.vmAddr+BigInt(span.words)*4n;
     const boundedEnd=lastAddr>spanEnd?spanEnd:lastAddr;
     if(lastAddr>spanEnd)stats.covered=false;
-    const first=Number((BigInt(start)-span.vmAddr)/4n);
+    const first=Number((s-span.vmAddr)/4n);
     let last=Number((boundedEnd-span.vmAddr+3n)/4n);
     if(!(first>=0)){stats.covered=false;return stats;}
     if(last>span.kindsCovered){last=span.kindsCovered;stats.covered=false;}
@@ -439,8 +443,8 @@ export class ProgramIndex {
   mostCalled(limit = 20) {
     limit = queryLimit(limit, 20);
     const counts = new Map();
-    for (let i = 0; i < this.callTo.length; i++) { const key = this.callTo[i].toString(); counts.set(key, (counts.get(key) || 0) + 1); }
-    const out = []; for (const [key, n] of counts) out.push({ addr: BigInt(key), count: n });
+    for (let i = 0; i < this.callTo.length; i++) { const key = this.callTo[i]; counts.set(key, (counts.get(key) || 0) + 1); }
+    const out = []; for (const [addr, n] of counts) out.push({ addr, count: n });
     out.sort((a, b) => b.count - a.count);
     return completeness(out.slice(0, limit), this.callsCapped, 'calls', out.length > limit, this.queryIncompleteReason);
   }

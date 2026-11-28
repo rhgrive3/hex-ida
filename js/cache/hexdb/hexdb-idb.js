@@ -23,7 +23,7 @@ import {
 } from './hexdb-memory.js';
 
 export const IDB_DEFAULT_DB_NAME = 'hex-db-v1';
-export const IDB_DB_VERSION = 1;
+export const IDB_DB_VERSION = 2;
 export const IDB_STORE_SHARDS = 'shards';
 export const IDB_STORE_WAL = 'wal';
 export const IDB_STORE_META = 'meta';
@@ -190,11 +190,18 @@ export class HexDbIdbBackend {
 
   _openDatabase(factory) {
     return new Promise((resolve, reject) => {
+      let settled = false;
       const req = factory.open(this._dbName, IDB_DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
+        let shardStore;
         if (!db.objectStoreNames.contains(IDB_STORE_SHARDS)) {
-          db.createObjectStore(IDB_STORE_SHARDS, { keyPath: 'id' });
+          shardStore = db.createObjectStore(IDB_STORE_SHARDS, { keyPath: 'id' });
+        } else {
+          shardStore = req.transaction?.objectStore?.(IDB_STORE_SHARDS);
+        }
+        if (typeof shardStore?.createIndex === 'function' && !shardStore.indexNames?.contains?.('binaryKey')) {
+          shardStore.createIndex('binaryKey', 'binaryKey', { unique: false });
         }
         if (!db.objectStoreNames.contains(IDB_STORE_WAL)) {
           db.createObjectStore(IDB_STORE_WAL, { keyPath: 'binaryKey' });
@@ -203,8 +210,36 @@ export class HexDbIdbBackend {
           db.createObjectStore(IDB_STORE_META, { keyPath: 'binaryKey' });
         }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error || new Error('HEXDB_IDB_OPEN_FAILED'));
+      req.onsuccess = () => {
+        const db = req.result;
+        if (settled) {
+          if (db) { try { db.close(); } catch { /* ignore */ } }
+          return;
+        }
+        settled = true;
+        if (db) {
+          db.onversionchange = () => {
+            try { db.close(); } catch { /* ignore */ }
+            if (this._db === db) {
+              this._db = null;
+              this._open = false;
+            }
+          };
+        }
+        resolve(db);
+      };
+      req.onblocked = () => {
+        if (settled) return;
+        settled = true;
+        const err = new Error('HEXDB_IDB_OPEN_BLOCKED: IndexedDB upgrade blocked by another connection');
+        err.code = 'HEXDB_IDB_OPEN_BLOCKED';
+        reject(err);
+      };
+      req.onerror = () => {
+        if (settled) return;
+        settled = true;
+        reject(req.error || new Error('HEXDB_IDB_OPEN_FAILED'));
+      };
     });
   }
 
@@ -283,7 +318,11 @@ export class HexDbIdbBackend {
       this._totalBytes = 0;
 
       const readTx = this._db.transaction([IDB_STORE_SHARDS, IDB_STORE_WAL, IDB_STORE_META], 'readonly');
-      const allShards = await idbRequestToPromise(readTx.objectStore(IDB_STORE_SHARDS).getAll());
+      const shardStore = readTx.objectStore(IDB_STORE_SHARDS);
+      const useBinaryKeyIndex = typeof shardStore.index === 'function' && Boolean(shardStore.indexNames?.contains?.('binaryKey'));
+      const allShards = await idbRequestToPromise(
+        useBinaryKeyIndex ? shardStore.index('binaryKey').getAll(this._binaryKey) : shardStore.getAll(),
+      );
       const walRec = await idbRequestToPromise(readTx.objectStore(IDB_STORE_WAL).get(this._binaryKey));
       const metaRec = await idbRequestToPromise(readTx.objectStore(IDB_STORE_META).get(this._binaryKey));
 
