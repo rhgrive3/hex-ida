@@ -1465,6 +1465,91 @@ export class App {
     return { named, total, objcCount, swiftCount, hexsigCount, entries };
   }
 
+  _extractArm64MagicConstants(codeBytes, maxInsns = 64, maxConstants = 64) {
+    if (!codeBytes || codeBytes.length < 4) return [];
+    const insnCount = Math.min(Math.floor(codeBytes.length / 4), maxInsns);
+    const regVal = new Array(31).fill(null);
+    const seen = new Set();
+    const out = [];
+    const pushConst = (val) => {
+      if (val === null || val === undefined || out.length >= maxConstants) return;
+      const v = BigInt(val) & 0xffffffffffffffffn;
+      if (v <= 16n || v === 0xffffffffn || v === 0xffffffffffffffffn) return;
+      if (seen.has(v)) return;
+      seen.add(v);
+      out.push(v);
+    };
+
+    for (let i = 0; i < insnCount; i++) {
+      const off = i * 4;
+      const word = (
+        codeBytes[off]
+        | (codeBytes[off + 1] << 8)
+        | (codeBytes[off + 2] << 16)
+        | (codeBytes[off + 3] << 24)
+      ) >>> 0;
+
+      // Move wide immediate: MOVN (opc=0), MOVZ (opc=2), MOVK (opc=3)
+      if (((word >>> 23) & 0x3f) === 0x25) {
+        const sf = (word >>> 31) & 1;
+        const opc = (word >>> 29) & 3;
+        const hw = (word >>> 21) & 3;
+        const rd = word & 0x1f;
+        if (rd < 31 && (sf === 1 || hw <= 1)) {
+          const imm16 = BigInt((word >>> 5) & 0xffff);
+          const shift = BigInt(hw * 16);
+          const mask = sf ? 0xffffffffffffffffn : 0xffffffffn;
+          if (opc === 2) {
+            if (regVal[rd] !== null) pushConst(regVal[rd]);
+            regVal[rd] = (imm16 << shift) & mask;
+          } else if (opc === 0) {
+            if (regVal[rd] !== null) pushConst(regVal[rd]);
+            regVal[rd] = (~(imm16 << shift)) & mask;
+          } else if (opc === 3) {
+            const laneMask = 0xffffn << shift;
+            const base = regVal[rd] !== null ? regVal[rd] : 0n;
+            regVal[rd] = ((base & ~laneMask) | (imm16 << shift)) & mask;
+          }
+        }
+        continue;
+      }
+
+      // PC-relative literal pool load: LDR Wt (0x18xxxxxx) / LDR Xt (0x58xxxxxx)
+      const top = word & 0xff000000;
+      if (top === 0x18000000 || top === 0x58000000) {
+        const is64 = top === 0x58000000;
+        const byteWidth = is64 ? 8 : 4;
+        const imm19 = (word >>> 5) & 0x7ffff;
+        const rel = ((imm19 & 0x40000) ? (imm19 - 0x80000) : imm19) * 4;
+        const targetOff = off + rel;
+        if (targetOff >= 0 && targetOff + byteWidth <= codeBytes.length) {
+          const lo = BigInt((
+            codeBytes[targetOff]
+            | (codeBytes[targetOff + 1] << 8)
+            | (codeBytes[targetOff + 2] << 16)
+            | (codeBytes[targetOff + 3] << 24)
+          ) >>> 0);
+          if (is64) {
+            const hi = BigInt((
+              codeBytes[targetOff + 4]
+              | (codeBytes[targetOff + 5] << 8)
+              | (codeBytes[targetOff + 6] << 16)
+              | (codeBytes[targetOff + 7] << 24)
+            ) >>> 0);
+            pushConst((hi << 32n) | lo);
+          } else {
+            pushConst(lo);
+          }
+        }
+      }
+    }
+
+    for (let r = 0; r < 31; r++) {
+      if (regVal[r] !== null) pushConst(regVal[r]);
+    }
+    return out;
+  }
+
   _buildV6AutoProviders(epoch, sliceIndex) {
     const openedFileInfo = this.store?.get?.('fileInfo') ?? null;
     const isCurrent = () => (
@@ -1476,6 +1561,194 @@ export class App {
     const cachedStagedAnalysis = this.lastDeltaRestore?.record?.resume?.stagedAutoAnalysis
       ?? this.v6Workbench?.exportStagedAutoAnalysisCache?.()
       ?? null;
+    const recentBytesCache = new Map();
+    const cacheFunctionBytes = (vaBig, bytes) => {
+      if (!(bytes instanceof Uint8Array) || bytes.length === 0) return;
+      if (recentBytesCache.size >= 8 && !recentBytesCache.has(vaBig)) {
+        const oldest = recentBytesCache.keys().next().value;
+        recentBytesCache.delete(oldest);
+      }
+      recentBytesCache.set(vaBig, bytes);
+    };
+    const readFunctionBytes = async (va, size) => {
+      if (!isCurrent() || !this.backend || typeof this.backend.readAt !== 'function') return null;
+      try {
+        const vaBig = typeof va === 'bigint' ? va : BigInt(va);
+        const region = this.executableRegionFor?.(vaBig);
+        if (!region) return null;
+        const regionStart = BigInt(region.vmAddr);
+        const regionEnd = regionStart + BigInt(region.size ?? 0);
+        if (vaBig < regionStart || vaBig >= regionEnd) return null;
+        const remaining = regionEnd - vaBig;
+        const requested = BigInt(Math.min(Math.max(1, Number(size || 256)), 4096));
+        const readLen = Number(remaining < requested ? remaining : requested);
+        if (!Number.isFinite(readLen) || readLen <= 0) return null;
+        const res = await this.backend.readAt(vaBig, readLen, false, { priority: 'background' });
+        if (!isCurrent()) return null;
+        const bytes = res instanceof Uint8Array
+          ? res
+          : (res && res.found && res.bytes instanceof Uint8Array ? res.bytes : null);
+        if (bytes) cacheFunctionBytes(vaBig, bytes);
+        return bytes;
+      } catch {
+        return null;
+      }
+    };
+    let cachedStringIndexRef = null;
+    let cachedStringByAddr = null;
+    const getStringByAddrMap = () => {
+      const idx = this.stringIndex;
+      if (!Array.isArray(idx) || idx.length === 0) return null;
+      if (idx === cachedStringIndexRef && cachedStringByAddr) return cachedStringByAddr;
+      const map = new Map();
+      for (let i = 0; i < idx.length; i++) {
+        const item = idx[i];
+        if (!item || typeof item.text !== 'string' || !item.text) continue;
+        let addrBig;
+        try {
+          addrBig = typeof item.addr === 'bigint' ? item.addr : BigInt(item.addr);
+        } catch {
+          continue;
+        }
+        if (!map.has(addrBig)) map.set(addrBig, item.text);
+      }
+      cachedStringIndexRef = idx;
+      cachedStringByAddr = map;
+      return map;
+    };
+    const getFunctionAnchors = async (fnOrVa, maybeFn) => {
+      try {
+        if (!isCurrent()) return { strings: [], constants: [] };
+        const fnObj = (maybeFn && typeof maybeFn === 'object')
+          ? maybeFn
+          : (fnOrVa && typeof fnOrVa === 'object' ? fnOrVa : null);
+        const rawVa = fnObj
+          ? (fnObj.va ?? fnObj.vaHex ?? fnObj.addr ?? fnObj.start ?? fnObj.address ?? fnOrVa)
+          : fnOrVa;
+        if (rawVa === null || rawVa === undefined || rawVa === '') {
+          return { strings: [], constants: [] };
+        }
+        const vaBig = typeof rawVa === 'bigint' ? rawVa : BigInt(rawVa);
+
+        // 1. Extract referenced strings via ProgramIndex + stringIndex
+        const strings = [];
+        const seenStrings = new Set();
+        const addStr = (val) => {
+          const text = typeof val === 'string' ? val : (typeof val?.text === 'string' ? val.text : null);
+          if (!text) return;
+          const trimmed = text.trim();
+          if (!trimmed || seenStrings.has(trimmed) || strings.length >= 64) return;
+          seenStrings.add(trimmed);
+          strings.push(trimmed);
+        };
+
+        const program = this.program || null;
+        if (program) {
+          if (typeof program.stringsInFunction === 'function') {
+            const directStrings = program.stringsInFunction(vaBig);
+            if (Array.isArray(directStrings)) {
+              for (const s of directStrings) addStr(s);
+            }
+          }
+          if (typeof program.refsFrom === 'function') {
+            let end = null;
+            if (typeof program.functionRange === 'function') {
+              const range = program.functionRange(vaBig);
+              if (range && BigInt(range.start) === vaBig && range.end != null) {
+                end = BigInt(range.end);
+              }
+            }
+            if (end === null && fnObj?.end != null) {
+              try {
+                const candidateEnd = BigInt(fnObj.end);
+                if (candidateEnd > vaBig) end = candidateEnd;
+              } catch { /* ignore */ }
+            }
+            if (end === null && fnObj?.size != null) {
+              try {
+                const sz = BigInt(fnObj.size);
+                if (sz > 0n) end = vaBig + sz;
+              } catch { /* ignore */ }
+            }
+            if (end === null && typeof this.symbols?.functionAt === 'function') {
+              const symFn = this.symbols.functionAt(vaBig);
+              if (symFn && symFn.start === vaBig) {
+                if (symFn.end != null) {
+                  end = BigInt(symFn.end);
+                } else if (
+                  Number.isInteger(symFn.index)
+                  && symFn.index >= 0
+                  && this.symbols.funcs
+                  && symFn.index + 1 < this.symbols.funcs.length
+                ) {
+                  const nextStart = BigInt(this.symbols.funcs[symFn.index + 1]);
+                  if (nextStart > vaBig) {
+                    const maxEnd = vaBig + 0x4000n;
+                    end = nextStart < maxEnd ? nextStart : maxEnd;
+                  }
+                } else {
+                  const region = this.executableRegionFor?.(vaBig);
+                  if (region && region.size != null) {
+                    const regionEnd = BigInt(region.vmAddr) + BigInt(region.size);
+                    const maxEnd = vaBig + 0x4000n;
+                    if (regionEnd > vaBig) {
+                      end = regionEnd < maxEnd ? regionEnd : maxEnd;
+                    }
+                  }
+                }
+              }
+            }
+            if (end !== null && end > vaBig) {
+              const strMap = getStringByAddrMap();
+              const hasStringAt = typeof program.stringAt === 'function';
+              if (strMap || hasStringAt) {
+                const refs = program.refsFrom(vaBig, end, 64) || [];
+                for (let i = 0; i < refs.length; i++) {
+                  const target = refs[i]?.target;
+                  if (target === null || target === undefined) continue;
+                  let tBig;
+                  try {
+                    tBig = typeof target === 'bigint' ? target : BigInt(target);
+                  } catch {
+                    continue;
+                  }
+                  const hit = strMap?.get(tBig) ?? (hasStringAt ? program.stringAt(tBig) : null);
+                  if (hit) addStr(hit);
+                }
+              }
+            }
+          }
+        }
+
+        // 2. Extract bounded ARM64 immediate/literal magic constants (<= 256 bytes / 64 insns)
+        let constants = [];
+        const arch = String(
+          this.store?.get?.('architecture')
+          || this.currentSlice?.()?.info?.architecture
+          || '',
+        ).toLowerCase();
+        if (!arch || arch.includes('arm64') || arch.includes('aarch64')) {
+          let desiredLen = 256;
+          if (fnObj?.size != null) {
+            const n = Number(fnObj.size);
+            if (Number.isFinite(n) && n > 0) {
+              desiredLen = Math.min(256, Math.max(4, Math.floor(n)));
+            }
+          }
+          const cached = recentBytesCache.get(vaBig);
+          const codeBytes = (cached && cached.length >= desiredLen)
+            ? cached.subarray(0, desiredLen)
+            : await readFunctionBytes(vaBig, desiredLen);
+          if (codeBytes && codeBytes.length >= 4) {
+            constants = this._extractArm64MagicConstants(codeBytes, 64, 64);
+          }
+        }
+
+        return { strings, constants };
+      } catch {
+        return { strings: [], constants: [] };
+      }
+    };
     return {
       isCurrent,
       cachedStagedAnalysis,
@@ -1500,26 +1773,8 @@ export class App {
         const list = typeof this.symbols.functionList === 'function' ? this.symbols.functionList() : [];
         return Array.isArray(list) ? list : [];
       },
-      readFunctionBytes: async (va, size) => {
-        if (!isCurrent() || !this.backend || typeof this.backend.readAt !== 'function') return null;
-        try {
-          const vaBig = typeof va === 'bigint' ? va : BigInt(va);
-          const region = this.executableRegionFor?.(vaBig);
-          if (!region) return null;
-          const regionStart = BigInt(region.vmAddr);
-          const regionEnd = regionStart + BigInt(region.size ?? 0);
-          if (vaBig < regionStart || vaBig >= regionEnd) return null;
-          const remaining = regionEnd - vaBig;
-          const requested = BigInt(Math.min(Math.max(1, Number(size || 256)), 4096));
-          const readLen = Number(remaining < requested ? remaining : requested);
-          if (!Number.isFinite(readLen) || readLen <= 0) return null;
-          const res = await this.backend.readAt(vaBig, readLen, false, { priority: 'background' });
-          if (res instanceof Uint8Array) return res;
-          return res && res.found && res.bytes instanceof Uint8Array ? res.bytes : null;
-        } catch {
-          return null;
-        }
-      },
+      readFunctionBytes,
+      getFunctionAnchors,
       getDeobfCandidates: () => {
         if (!isCurrent() || !this.symbols || this.symbols === EMPTY_INDEX) return [];
         const list = typeof this.symbols.functionList === 'function' ? this.symbols.functionList() : [];
