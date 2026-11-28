@@ -194,7 +194,7 @@ Standard events include:
 tool-start
 tool-result
 candidate-update
-scope-expanded
+scope-expand
 verification
 budget-warning
 cancelled

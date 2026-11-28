@@ -1,12 +1,12 @@
 # Hex UI Audit — Current Reference Pointer
 
-> **Historical pre-product-shell audit:** [`archive/ui/ui-audit-pre-diff-route.md`](archive/ui/ui-audit-pre-diff-route.md)  
 > **Owning route registry:** `js/ui/registry.js`  
 > **Canonical UI contract:** [`ui-information-architecture.md`](ui-information-architecture.md)
 
-The archived audit preserves the legacy 54-entry screen inventory and initial
-migration rationale. Use the live code and canonical architecture document for
-all current UI decisions:
+The legacy 54-entry screen migration mapping is maintained directly in
+`LEGACY_MIGRATION` inside `js/ui/registry.js`. For current UI architecture and
+decisions, refer to [`ui-information-architecture.md`](ui-information-architecture.md)
+and the live code:
 
 - **Canonical routes:** **11** routes/workspaces defined in `js/ui/registry.js`
   (`/investigate`, `/code/:address?`, `/explorer/:scope?`, `/results`, `/diff`,
