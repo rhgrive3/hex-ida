@@ -210,8 +210,7 @@ test('guardedAnalyze: bounded 512-entry cache evicts oldest entry on 513th disti
     calls++;
     return { addr, end, calls };
   };
-  const shapes = {};
-  const wrapped = __guardedAnalyzeForTest(rawAnalyze, { shapes, maxUniqueAnalyses: 1000 });
+  const wrapped = guardedAnalyze(rawAnalyze, {});
   for (let i = 0; i < 513; i++) {
     await wrapped(BigInt(0x1000 + i * 4), BigInt(0x1004 + i * 4));
   }
