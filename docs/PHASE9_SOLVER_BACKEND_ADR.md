@@ -1,118 +1,46 @@
-# ADR-0009: Solver Backend Provider Selection for Phase 9
+# ADR-0009: Solver Backend Architecture and Provider Selection
 
-- **Status**: Accepted for the initial browser-safe exact scope; Z3 remains a future candidate
-- **Deciders**: Hex Architecture Team / Phase 9 Owner
-- **Date**: 2026-08-20
-- **Scope**: Master Architecture Phase 9 — Solver-backed Verification
+- **Status**: Accepted (live production implementation)
+- **Last Updated**: 2026-11-28
+- **Scope**: `js/symbolic/solver/` — Local-first exact QF_BV solver backend architecture
 
----
+## 1. Context and Constraints
 
-## 1. Context and Problem Statement
+Hex performs targeted formal verification (conditional edge feasibility, global reachability, bounded equivalence, and patch verification) over Semantic IR v2 under strict platform constraints:
 
-Phase 9 introduces solver-backed formal verification into Hex for conditional edge feasibility, bounded equivalence, and patch verification over Semantic IR.
-Hex is designed under strict environment and product constraints:
-1. **Browser & iPad-first**: Primary target is Safari / WebKit on iPadOS and modern desktop browsers.
-2. **Offline-first & Privacy**: Hex analyzes proprietary or sensitive binary binaries locally; project-derived constraints, symbol names, and addresses **must not egress** to remote third-party servers by default.
-3. **Resource & Memory Safety**: iOS WebKit tabs operate under strict memory caps (typically 1.5GB to 2GB before tab discard). Solver execution must be bounded, measured, cancellable, and recyclable.
-4. **Deterministic & Replayable**: Verification evidence must be reproducible with deterministic seeds, options, and fixed-width bitvector semantics.
+1. **Browser & iPad-first (No COOP/COEP dependency)**: Must run reliably in Safari/WebKit on iPadOS, desktop browsers, userscript/CSP contexts, and Node/CI without requiring cross-origin isolation (`SharedArrayBuffer`).
+2. **Offline-first & Privacy**: Binary structures, addresses, and derived constraints must stay local; remote solver egress is prohibited by default.
+3. **Bounded & Cancellable Execution**: Solver runs must enforce explicit expression, clause, decision, assignment, and wall-time budgets, and support cancellation and worker teardown.
+4. **Deterministic Exact Proof Authority**: Production defaults must only permit exact decision procedures (`PROOF_AUTHORITY.EXACT`) verified by `isExactProofBackend()`.
 
-We need to evaluate candidate solver providers for Hex's `SolverBackend` interface.
+## 2. Decision
 
----
+Hex adopts a **pure-JS local-first exact QF_BV tiered solver architecture** with optional WebWorker isolation, rather than bundling Z3/cvc5/Bitwuzla WASM as the default production provider:
 
-## 2. Candidate Evaluation
+| Backend | ID / Version | Proof Authority | Role |
+| :--- | :--- | :--- | :--- |
+| `ExhaustiveBvBackend` | `hex-exhaustive-bv` `1.0.0` | `exact` | Deterministic finite-domain complete enumeration oracle for narrow (`<= 8`-bit) Bool/BV queries. |
+| `BitBlastBvBackend` | `hex-bitblast-qfbv` `1.0.0` | `exact` | Exact bit-blasting QF_BV decision procedure supporting up to 64-bit bitvectors with explicit SAT/clause/decision/propagation budgets. |
+| `TieredBvBackend` | `hex-tiered-qfbv` `1.0.0` | `exact` | Production QF_BV router combining `ExhaustiveBvBackend` (narrow oracle tier) and `BitBlastBvBackend` (wide tier up to 64-bit). |
+| `WorkerSolverBackend` / `TieredWorkerSolverBackend` | `hex-exhaustive-bv-worker` / `hex-tiered-qfbv-worker` `1.0.0` | `exact` | Browser WebWorker isolation transports (`worker-entry.js`, `tiered-worker-entry.js`, `worker-protocol.js`) enabling responsive UI and hard worker termination. |
+| `HeuristicSolverBackend` | (non-exact) | `heuristic` | Non-proof heuristic backend; ineligible as production default. |
+| `FakeSolverBackend` | `test-fake-solver` `1.0.0` | `test-only` | Deterministic test double (`createTestSolverRegistry()` only). |
 
-### Candidate 1: Z3 WASM (`z3-solver` / Emscripten WebAssembly)
-- **License**: MIT
-- **Capabilities**: Full SMT-LIB 2.6, industry standard for QF_BV (Quantifier-Free Bitvectors), arrays, uninterpreted functions, arithmetic, and quantifiers.
-- **WASM Support**: Mature Emscripten build (`z3-solver` npm package / custom minimal build).
-- **Pros**:
-  - Extremely reliable and mature QF_BV theory solving and model generation.
-  - Robust C/C++ codebase compiled to WASM.
-  - Broad community support and reproducible seed options.
-- **Cons / Risks**:
-  - Full WASM bundle is relatively large (~15-25MB uncompressed, ~5MB gzip/brotli).
-  - Emscripten heap allocation requires careful lifecycle management to prevent memory leaks across sessions.
-  - Must run inside a dedicated WebWorker to avoid blocking the main UI thread during intensive checks.
+### Production Registry Selection (`js/symbolic/solver/registry.js`)
 
-### Candidate 2: cvc5 WASM
-- **License**: BSD 3-Clause
-- **Capabilities**: Strong SMT solving, proof production, extensive bitvector & string theories.
-- **WASM Support**: Available via Emscripten.
-- **Pros**:
-  - High performance, modern proof generation architecture.
-- **Cons / Risks**:
-  - Larger WASM footprint and complex compilation pipeline compared to Z3.
-  - Memory consumption in WebKit is comparatively higher during initialization.
+`defaultSolverRegistry = createProductionSolverRegistry()` enforces `allowNonExactDefault: false`:
 
-### Candidate 3: Bitwuzla WASM
-- **License**: MIT
-- **Capabilities**: World-class SMT solver specifically tailored for Quantifier-Free Bitvectors (QF_BV), Floating-Point, and Arrays.
-- **WASM Support**: Can be built via Emscripten.
-- **Pros**:
-  - Extremely fast QF_BV solving on symbolic execution benchmarks.
-  - Lean codebase and smaller potential WASM binary.
-- **Cons / Risks**:
-  - Less widespread JS/WASM packaging in standard npm ecosystem; requires maintaining a custom WASM build pipeline.
+- **Browser targets (`typeof globalThis.Worker === 'function'`)**: Selects `WorkerSolverBackend({ maxBvWidth: 64 })`.
+- **Node / CI targets**: Selects `TieredBvBackend` directly.
+- Any query outside supported sorts (`bool`, `bv`) or configured limits fails closed with `UNSUPPORTED` or `RESOURCE_LIMIT` under the strict 9-status `SOLVER_STATUS` taxonomy (`sat`, `unsat`, `unknown`, `timeout`, `resource-limit`, `unsupported`, `cancelled`, `provider-failure`, `invalid-query`).
 
-### Candidate 4: Remote SMT Solver Gateway (HTTP / WebSocket RPC)
-- **License**: N/A (Server-side)
-- **Capabilities**: Unbounded compute on native server clusters.
-- **Pros**:
-  - Zero browser WASM bundle overhead.
-  - Can leverage massive multi-core native SMT instances.
-- **Cons / Risks**:
-  - **Violates core Hex privacy and offline-first invariants**: Binary structures, control flow offsets, and semantic constraints would leak over the network.
-  - Network latency and transport timeouts.
-  - Hard dependency on remote availability.
+## 3. Rationale Against External WASM / Remote Defaults
 
----
+- **Z3 / cvc5 / Bitwuzla WASM**: Standard browser builds (e.g., `z3-solver`) require COOP/COEP (`SharedArrayBuffer`), large multi-megabyte WASM bundles, and Emscripten heap lifecycle handling incompatible with iPad/userscript CSP constraints. External WASM adapters remain optional future extensions behind explicit capability verification.
+- **Remote SMT Gateways**: Violate Hex's offline-first and binary-privacy invariants; strictly prohibited as default or silent fallback.
 
-## 3. Decision Matrix
+## 4. Consequences
 
-| Criteria | Z3 WASM | cvc5 WASM | Bitwuzla WASM | Remote RPC |
-| :--- | :--- | :--- | :--- | :--- |
-| **Offline & Privacy** | **Pass (100% Local)** | **Pass (100% Local)** | **Pass (100% Local)** | **FAIL (Data Egress)** |
-| **iPad/WebKit Compatibility** | **Pass (Worker WASM)**| Pass (Worker WASM) | Pass (Worker WASM) | Pass (Network fetch) |
-| **BV Semantics & Accuracy** | **Exemplary** | Exemplary | Exemplary | Exemplary |
-| **Bundle & Init Overhead** | ~5 MB compressed | ~8 MB compressed | ~3 MB compressed | 0 MB (Remote) |
-| **Cancellation & Teardown** | Worker `terminate()` | Worker `terminate()` | Worker `terminate()` | HTTP abort |
-| **Ecosystem Maturity** | **High** | Medium | Medium | High |
-
----
-
-## 4. Decision Outcome
-
-1. **Local-first WASM Architecture**: Hex adopts a local-first WebAssembly solver architecture executing in an isolated WebWorker.
-2. **Primary Provider (historical Wave 1 candidate)**: **Z3 WASM** was selected for evaluation due to its proven stability, MIT license, and standard SMT-LIB compliance; the live implementation amendment below supersedes this as the production default.
-3. **Secondary / Specialized Candidate**: **Bitwuzla WASM** is designated as the preferred target for high-performance bitvector-only optimization in subsequent phases.
-4. **Remote Solver Policy**: Remote solvers are **strictly forbidden** as default or silent fallback. Any future remote solver interface will require explicit user opt-in, policy disclosure, and strict redaction of binary provenance.
-
----
-
-## 5. Implementation Roadmap for P9-2 / Wave 1
-
-1. Create `Z3WasmBackend` and `Z3WorkerSession` implementing `SolverBackend` and `SolverSession`.
-2. Worker lifecycle management:
-   - Worker creation with structured messaging (`check`, `cancel`, `dispose`).
-   - Hard cancellation via WebWorker `terminate()` if cooperative interrupt exceeds safety budget.
-3. Lowering from Hex solver-neutral Expr DAG to SMT-LIB 2.6 / Z3 AST within the worker.
-4. Model extraction and normalization into Hex `SolverResult.model`.
-
-## 6. Live implementation amendment (Phase 9 hardening)
-
-The candidate matrix above is an evaluation baseline, not evidence that a Z3
-bundle is present. The live implementation uses `hex-exhaustive-bv` as the
-initial exact provider. It is a deterministic finite-domain Bool/BV decision
-procedure with an explicit BV width/assignment budget, model extraction, and
-complete-enumeration UNSAT semantics. It runs directly in Node/CI and through
-`WorkerSolverBackend` in browser builds; its memory budget is reported as
-`measured-only`, never as an unenforceable hard cap.
-
-The currently available `z3-solver` browser package was not promoted as the
-production default because its browser integration requires cross-origin
-isolation (`SharedArrayBuffer`/COOP-COEP) and a worker asset lifecycle that is
-not guaranteed by Hex's iPad/userscript CSP path. A future Z3 adapter may be
-added only after those runtime requirements are independently verified. The
-finite backend therefore returns `RESOURCE_LIMIT`/`UNSUPPORTED` outside its
-explicit scope rather than pretending to be an unbounded SMT engine.
+- Zero external WASM or network runtime dependencies for exact Bool/QF_BV verification up to 64-bit.
+- Uniform deterministic behavior across browsers and Node/CI, with explicit `measured-only` memory reporting rather than unenforceable hard memory cap claims.
+- Clear fail-closed boundary (`RESOURCE_LIMIT` / `UNSUPPORTED`) when queries exceed finite QF_BV budgets or unsupported theories.
