@@ -16,7 +16,7 @@
   - **マネージド / VM フロントエンド**: WebAssembly (`wasm`)、Android Dalvik (`dex`)、.NET (`cil`)、Java (`jvm`)
   - 詳細な成熟度と制約は [`docs/SUPPORT_MATRIX.md`](docs/SUPPORT_MATRIX.md)（`js/platform/capability-maturity.js` の機械可読プロファイルから投影）を参照してください。
 - **統合 C++20/WASM エンジン (`wasm/hex_engine.wasm`)**
-  - Emscripten 不使用の Freestanding C++20 エンジン（62 ユニット・214 エクスポート・0 外部インポート・`bulk-memory` 対応）。
+  - Emscripten 不使用の Freestanding C++20 エンジン（61 ユニット [本体 58 + デマングラ 3]・214 エクスポート・0 外部インポート・`bulk-memory` 対応）。
   - Identity ハッシュ、CFG / ループ解析、バイナリ画像ストア、文字列・バイト検索、SHA-256（>1 MiB ストリーミング対応）、ARM64 / x86_64 / RISC-V64 デコード、Resident IR・SSA・最適化・C コード生成、暗号・エントロピー解析、Callgraph / 行動分類、難読化解除（CFF Unflatten / MBA Simplifier）までを単一 WASM で高速実行。
   - `HEX_ENGINE=js` または `globalThis.HEX_ENGINE = 'js'` による即時 JS フォールバックに対応（[`ROLLBACK.md`](ROLLBACK.md)）。
 - **iOS / Apple 高度なメタデータ・型ライブラリ・シグネチャ認識**
@@ -63,7 +63,7 @@ python3 -m http.server 8080
 ```text
 .
 ├── index.html                  # Web アプリケーションエントリーポイント
-├── worker.js / worker-entry.js # Web Worker / Cloudflare Worker エントリーポイント
+├── worker.js / worker-entry.js # Cloudflare Worker（AI/推論ハンドラ / エントリーポイント）
 ├── capstone.js / capstone.wasm # Capstone 5 WebAssembly ビルド
 ├── css/                        # スタイルシート（テーマ・レスポンシブ・iPad 最適化）
 ├── cpp/
@@ -73,7 +73,7 @@ python3 -m http.server 8080
 ├── wasm/
 │   └── hex_engine.wasm         # 統合 C++20/WASM エンジン成果物
 ├── js/
-│   ├── app.js / backend.js     # アプリ初期化・Worker ブリッジ
+│   ├── app.js / backend.js / worker.js # アプリ初期化・Worker ブリッジ・ブラウザ解析 Web Worker
 │   ├── core/                   # Identity・予算・証拠・`hex-engine-bridge.js`・`hex-engine-wasm.js`
 │   ├── binary/                 # Mach-O / ELF / PE / Fat ローダ・文字列・マッピング
 │   ├── targets/                # アーキテクチャ (ARM64/x86_64/RISC-V64)・ABI・プラットフォーム定義

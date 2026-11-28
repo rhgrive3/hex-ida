@@ -36,12 +36,12 @@ For broad tests, do not stream thousands of successful test lines into the model
 - Rerun only the smallest failing command with `HEX_TEST_OUTPUT=verbose` when full diagnostics are needed.
 - Quiet mode changes output only. Never weaken, skip, replace, or shrink canonical tests, verifiers, denominators, exact-head checks, or release gates to save tokens.
 
-## Graft — GitHub Codespaces only
+## Graft — VS Code only
 
-Use Graft **only** when running inside GitHub Codespaces and a `graft/` index is available.
+Use Graft **only** when running inside VS Code (consistent with `AGENTS.md`) and a `graft/` index is available.
 
-- **Inside GitHub Codespaces (when `graft/` exists):** follow the Graft workflow in `AGENTS.md`. If unavailable, continue with normal repository tools.
-- **Outside GitHub Codespaces:** do **not** install, invoke, emulate, or require Graft. Use normal repository inspection/search tools instead.
+- **Inside VS Code (when `graft/` exists):** follow the Graft workflow in `AGENTS.md`. If unavailable, continue with normal repository tools.
+- **Outside VS Code or when `graft/` is absent:** do **not** install, invoke, emulate, or require Graft. Use normal repository inspection/search tools instead.
 
 ## Speed and subagent delegation
 

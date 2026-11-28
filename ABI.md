@@ -1,8 +1,8 @@
 # hex-ida Unified C++/WASM Engine C ABI Specification
 
-- **ABI Version**: `HEX_ABI_VERSION = 0x00010000` (`hex_engine_version()`)
-- **Distribution Artifact**: `wasm/hex_engine.wasm` & `js/core/hex-engine-wasm.js` (Base64-embedded freestanding `hex_engine.wasm`, **1,129,165 bytes**, **62 freestanding C++20 units**, **214 exports** [1 linear memory + 213 functions], **0 external imports**, **9.3125 MiB [149 pages]** initial linear memory, built via `node scripts/build-wasm.mjs` using `clang++ --target=wasm32 -std=c++20 -O3 -nostdlib -fno-exceptions -fno-rtti -mbulk-memory` + `wasm-opt -O3 --enable-bulk-memory`, zero Emscripten)
-- **Host Boundary**: `js/ui/`, `js/ai/`, `js/auth/`, `js/userscript/` MUST NOT import internal engine modules directly; all WASM access goes through `js/core/hex-engine-bridge.js` and `js/core/hex-engine-wasm.js`.
+- **ABI Version**: `HEX_ENGINE_ABI_VERSION = 0x00010000` (`hex_engine_version()`, `cpp/src/engine_runtime.hpp`)
+- **Distribution Artifact**: `wasm/hex_engine.wasm` & `js/core/hex-engine-wasm.js` (Base64-embedded freestanding `hex_engine.wasm`, **1,129,165 bytes**, **61 freestanding C++20 units** (58 core/target/analysis units + 3 demangler units), **214 exports** [1 linear memory + 213 functions], **0 external imports**, **9.3125 MiB [149 pages]** initial linear memory, built via `node scripts/build-wasm.mjs` using `clang++ --target=wasm32 -std=c++20 -O3 -nostdlib -fno-exceptions -fno-rtti -mbulk-memory` + `wasm-opt -O3 --enable-bulk-memory`, zero Emscripten)
+- **Host Boundary**: `js/ui/`, `js/ai/`, `js/auth/`, `js/userscript/` MUST access WASM exclusively through `js/core/hex-engine-bridge.js`. `js/core/hex-engine-wasm.js` is a bridge-internal implementation detail and MUST NOT be imported directly from Host layers (enforced by `tests/performance/wave6-release-gates.test.mjs`).
 
 ## 1. Error Codes (`HexStatus`, `int32_t`)
 
