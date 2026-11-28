@@ -1,94 +1,83 @@
 # Hex Master Architecture Specification
 
-> **Status:** Canonical target architecture amendment  
-> **Version:** 1.1  
-> **Repository:** `rhgrive3/hex`  
+> **Status:** Canonical target architecture specification  
+> **Updated:** 2026-11-28  
+> **Repository:** `rhgrive3/hex-ida`  
 > **Primary product constraint:** Browser/iPad-first, universal binary analysis, beginner-to-expert, evidence-first  
-> **Normative body:** [`archive/architecture/HEX_MASTER_ARCHITECTURE-v1.0-574429289786c9d3d8998c8240b67d56c8029b1b.md`](archive/architecture/HEX_MASTER_ARCHITECTURE-v1.0-574429289786c9d3d8998c8240b67d56c8029b1b.md)  
-> **Current capability truth:** [`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md), projected from `js/platform/capability-maturity.js`  
-> **Research evidence:** [`SOURCES.md`](SOURCES.md) and the historical research snapshot
-
-## 0. How this specification is composed
-
-The archived v1.0 document remains the full normative architecture body and is incorporated here by reference. This v1.1 amendment exists so that durable architecture invariants are not mixed with stale observational statements about a rapidly moving implementation.
-
-Unless this file explicitly overrides a v1.0 statement, the corresponding v1.0 requirement remains normative. If an archived sentence describes what Hex **currently** implements, what a current module **currently** owns, which route is **currently** the default, or which stage is **currently** unsupported, that observational statement is historical and MUST be revalidated against current source/tests and the machine-readable capability truth before being used.
-
-Normative architecture changes still require an accepted ADR or an update to this specification. Historical implementation snapshots never outrank live source/tests for present behavior.
+> **Current capability truth:** [`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md), projected from `js/platform/capability-maturity.js` (and evidence-gated promotions in `js/platform/stage2-capability-maturity.js`)  
+> **Research evidence:** [`SOURCES.md`](SOURCES.md)
 
 ## 1. Authority and source-of-truth order
 
 Use the following order when documents disagree:
 
-1. This v1.1 amendment together with the incorporated v1.0 normative body.
-2. An accepted Architecture Decision Record merged after the relevant specification text.
-3. Versioned public API/schema contracts.
-4. Current source code and tests, for what Hex actually does today.
-5. `js/platform/capability-maturity.js` and `docs/SUPPORT_MATRIX.md`, for graded support claims.
-6. `docs/SOURCES.md`, for durable external research evidence.
-7. Historical research/checkpoint documents, for context only.
-
-`REFERENCES.md` is not a current repository authority. Older references to it mean `SOURCES.md` unless a future reviewed document explicitly introduces a new durable reference index.
+1. This specification (`docs/HEX_MASTER_ARCHITECTURE.md`).
+2. Versioned public API and schema contracts (including [`../ABI.md`](../ABI.md) for the C++/WASM engine).
+3. Current source code and automated tests, for what Hex actually implements today.
+4. `js/platform/capability-maturity.js`, `js/platform/stage2-capability-maturity.js`, and [`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md), for graded capability claims.
+5. [`ENGINEERING_PROCESS_GUARDRAILS.md`](ENGINEERING_PROCESS_GUARDRAILS.md) and [`MIGRATION_GUARDRAILS.md`](MIGRATION_GUARDRAILS.md), for process and compatibility boundaries.
+6. [`SOURCES.md`](SOURCES.md), for durable external technical references.
 
 ## 2. Non-negotiable architectural invariants
 
-All invariants in the incorporated v1.0 body remain normative, including in particular:
+1. **One semantic truth with inspectable provenance**: Disassembly, CFG, SSA/MemorySSA, decompiled C, Clean View, and AI projections derive from the same canonical semantic analysis with explicit source provenance.
+2. **Explicit unknown and unsupported states**: Missing decoding, partial effects, budget exhaustion, or unsupported extensions remain explicit (`partial`, `unsupported`, `unavailable`, `unknown`) rather than silently succeeding.
+3. **Conservative alias, call, control-flow, and memory reasoning**: Unknown memory locations never collapse to `MustAlias`; unknown stores act as proof barriers.
+4. **Architecture, ABI, platform, and language separation**: Generic semantic middle-end, decompiler core (`js/decompiler/pipeline-core.js`), and UI layers must not hardcode decoder internals or raw instruction-text parsing.
+5. **Parser/loader separation & bounded I/O**: Native binary loaders (`js/binary/`) operate over bounded range reads (`js/bytesource/`) and hostile-input budgets without assuming whole-file memory residency.
+6. **Runtime evidence never silently overwrites static truth**: Dynamic observations (`js/runtime/`, `js/runtime-evidence/`, `js/trace/`) refine or contradict static candidates with explicit provenance without mutating immutable static facts.
+7. **No semantic authority for model prose**: AI outputs (`js/ai/`) cannot mint verified facts; mutations require evidence-backed proposals, explicit approval tokens, and approval-gated `CapabilityExecutor` execution.
+8. **One analysis truth for beginner and expert projections**: Guided workflows (Investigate / Pinpoint / Japanese explanations) and expert views (Code / GraphView / Clean View / V6 Workbench) share the same underlying analysis model.
+9. **Graded capability rather than boolean support**: Maturity levels (`A0–A7`, `F0–F6`, `M0–M6`) are cumulative; no target skips an incomplete prerequisite.
+10. **Demand-driven, cancellable, and budgeted execution**: Heavy analysis, decompilation, and scanning honor cancellation signals and resource budgets to keep browser and iPad Safari responsive.
+11. **Separation of user/project facts from derived artifacts**: `.hexproj` exchange data (`js/project/`) stays distinct from rebuildable caches and derived artifacts (`js/cache/`).
+12. **Performance work must not trade correctness for confidence**: C++/WASM acceleration (`wasm/hex_engine.wasm`) must maintain 0-diff parity with JS or fail closed with structured fallback telemetry (`js/core/wasm-telemetry.js`).
 
-- one semantic truth with inspectable provenance;
-- explicit unknown/unsupported states;
-- conservative alias, call, control-flow and memory reasoning;
-- architecture, ABI, platform and language separation;
-- parser/loader separation;
-- runtime evidence never silently overwriting static truth;
-- no semantic authority for model prose;
-- one analysis truth for beginner and expert projections;
-- graded capability rather than boolean support;
-- demand-driven, cancellable and budgeted work;
-- separation of user/project facts from derived analysis artifacts;
-- no big-bang semantic rewrite;
-- performance work must not trade correctness for confidence.
+## 3. System architecture overview
 
-The archived text is retained precisely so these detailed contracts, schemas, phases and rationale remain reviewable without rewriting history.
+```text
+Browser / iPad Safari UI (js/ui/, js/viewer/, js/graphview*.js, index.html)
+  │  Default route: /code (Code), with one-tap Investigate, GraphView, Omnibox, Clean View, V6 Workbench
+  ▼
+Host & Orchestration Layer (js/app.js, js/backend.js, js/worker.js, js/ai/, js/userscript/)
+  │  Strict module boundary -> js/core/hex-engine-bridge.js + js/core/hex-engine-wasm.js
+  ▼
+Unified Analysis & Execution Engine
+  ├── Freestanding C++20/WASM Engine (wasm/hex_engine.wasm, 62 units, 214 exports, 0 imports)
+  │     ├── Core: Identity (FNV-1a/digest), Byte Search, Streaming SHA-256
+  │     ├── Binary & Targets: ImageStore, String/ELF/Crypto Scanners, ARM64/ARM64e, x86_64, RISC-V64
+  │     ├── CFG / IR / Decompiler: CFG, Loops, Resident IR/SSA, IR Optimizer, C Emitter, ARM64 Passes
+  │     └── Analysis & Recovery: TypeArena, TIL, HEX-SIG, 4-ABI Demangler, MiniArm64Emu, CFF/MBA, Manual Recovery
+  ├── Native & Managed Frontends
+  │     ├── Native formats (js/binary/): Mach-O (Fat/Thin/MH_OBJECT/Chained Fixups), ELF, PE/PE32+, Raw
+  │     ├── Target semantics (js/targets/, js/semantics/): MachineEffects, Semantic IR v2, CFG, SSA, MemorySSA
+  │     └── Managed frontends (js/managed/): WebAssembly (wasm), Dalvik (dex), .NET (cil), JVM (jvm)
+  ├── Middle-End, Decompiler & Verification
+  │     ├── js/decompiler/: Shared pipeline, Clean View, Apple ARC/Swift pass, provenance & verification
+  │     ├── js/analysis/: Types, TIL/HEX-SIG, ObjC/Swift5/C++/Go/Rust/IL2CPP metadata, Pinpoint, SCPA
+  │     └── js/symbolic/: Bounded symbolic evaluator, e-graph, solver abstraction, taint
+  └── Platform, Persistence & Extensions
+        ├── js/platform/: capability-maturity.js, stage2-capability-maturity.js, plugin-api.js
+        ├── js/project/ & js/collaboration/: .hexproj v1 exchange, local ChangeLog
+        └── js/auth/ & worker-entry.js: Discord auth, Cloudflare Worker, Userscript host
+```
 
-## 3. Current implementation state
+## 4. Current implementation state
 
-This section is an observational summary, not a frozen release promise. When exact current state matters, inspect the current source/test evidence and `js/platform/capability-maturity.js`.
+Exact support truth always comes from `js/platform/capability-maturity.js` and automated tests. High-level summary as of 2026-11-28:
 
-The following statements supersede stale v1.0 current-state/debt descriptions:
+1. **Semantic IR v2 is the production default**: `js/ir-core.js` is a compatibility facade; the legacy ARM64/AAPCS64 implementation remains only as an explicit compatibility/oracle path (`js/architecture/compat/ir-core-arm64-aapcs64-v1.js`).
+2. **Multi-architecture vertical coverage**: `arm64`, `arm64e`, `x86_64`, and `riscv64` (RV64IMC/LP64) all reach implemented depth **A6** through the shared Semantic IR / CFG / SSA / Decompiler pipeline. Because full-ISA exact `MachineEffects` coverage is still partial, cumulative maturity in the base matrix remains **A1** (with evidence-gated Stage 2 promotion modeled in `js/platform/stage2-capability-maturity.js`).
+3. **Multi-format & Managed coverage**: Native loaders cover Mach-O (F2 cumulative / F5 implemented), ELF (F2 / F4), and PE/PE32+ (F2 / F4). Managed frontends (`wasm`, `dex`, `cil`, `jvm`) reach **M5** (detect, metadata, VMEffects, CFG/SSA, types/interprocedural, decompiler), with M6 runtime debugging deferred.
+4. **Unified C++20/WASM acceleration**: `wasm/hex_engine.wasm` accelerates identity hashing, binary/string/byte/SHA-256 scanning, multi-arch decoding, CFG/loops, ARM64 & x86_64 decompilation, TIL, HEX-SIG, 4-ABI demangling (Itanium/Rust/Swift5/MSVC), and `MiniArm64Emu` (including SIMD&FP and ARM64e PAC), with instant JS rollback via `HEX_ENGINE=js`.
+5. **UI & Plugin contracts**: The canonical default route is **Code** (`/code`), paired with Clean View, i18n GraphView, Omnibox exact jump, cancellable decompile, and V6 Workbench wiring. Plugin contribution categories are defined in `js/platform/plugin-api.js`.
 
-1. `js/ir-core.js` is now a **compatibility facade**. Semantic IR v2 compatibility is the production default; the legacy ARM64 implementation remains an explicit compatibility/oracle mode. It is no longer correct to describe the current file as one monolithic mixed core that itself owns ARM64 lifting, AAPCS64 interpretation and SSA/MemorySSA as the only production path.
-2. x86-64 is not decode-only. Current capability truth carries x86-64 through implemented depth **A6** (Semantic IR/CFG, SSA/MemorySSA and shared decompiler are present for the proven corpus), while cumulative maturity remains **A1** because complete A2 exact MachineEffects coverage is not yet proven for the whole ISA contract.
-3. RISC-V64 has a first-class Phase 6 vertical for the frozen RV64IMC/LP64 profile and likewise reaches implemented depth **A6**, with cumulative maturity **A1** for the same conservative A2 reason.
-4. ARM64/ARM64e retain substantial semantic/decompiler capability, but incomplete exact MachineEffects coverage keeps cumulative maturity at A1. No architecture may be promoted past an incomplete prerequisite merely because later-stage implementation exists.
-5. The canonical product UI default route is **Code** (`/code`), not Investigate. Investigate remains a primary one-tap workflow.
-6. Current plugin contribution truth comes from `js/platform/plugin-api.js`; the registry includes format, architecture, analyzer, knowledge, signature, recognition, view and goal contribution categories. Future categories must be added explicitly rather than inferred from prose.
+## 5. Maintenance rule
 
-## 4. Current architectural debt
+When implementation maturity or architecture boundaries change:
 
-The highest-value remaining debt is boundary completeness and proof coverage, not the absence of an analysis stack.
-
-The two-stage execution sequence for closing the remaining Phase 1–12 debt is consolidated in [`POST_PHASE_COMPLETION_TWO_STAGE_PLAYBOOK.md`](./POST_PHASE_COMPLETION_TWO_STAGE_PLAYBOOK.md). Its mandatory proof-hardening amendment is [`POST_PHASE_COMPLETION_100_PERCENT_HARDENING.md`](./POST_PHASE_COMPLETION_100_PERCENT_HARDENING.md). Completion work MUST read both. Within that planning set, the hardening amendment wins over weaker execution wording and specifically forbids scope reduction, denominator shrinkage, skipped validators, optional physical-iPad proof, hidden fallback, or head-only release proof as routes to a `100%` verdict. Both documents are subordinate to this specification and current source/test/capability truth; neither defines a Phase 13/14 architecture extension.
-
-- Complete architecture-wide exact MachineEffects coverage sufficiently to satisfy A2 cumulatively, while retaining explicit unsupported/partial semantics.
-- Continue removing architecture/ABI assumptions from generic semantic, type-recovery and decompiler code without creating a second semantic engine.
-- Improve points-to/alias precision, region reasoning, interprocedural summaries and global type/prototype constraints conservatively.
-- Finish variable-length architecture viewer/product integration rather than treating working semantic pipelines as if they were decode-only.
-- Scale project/artifact persistence beyond `.hexproj` v1 while preserving the v1 exchange contract.
-- Expand stable plugin contracts only where ownership, isolation, budgets and versioning are defined.
-- Increase symbolic/runtime/debugger/emulation depth without allowing observations to mutate static truth silently.
-- Add managed/VM frontends only through the same graded capability and evidence model.
-- Keep iOS/WebKit memory, DOM, cancellation and target-platform behavior as release constraints rather than desktop-only afterthoughts.
-
-## 5. Current-state maintenance rule
-
-A document that records an old branch, phase, commit, corpus or research snapshot MAY remain historical, but it MUST identify itself as historical and MUST NOT use unqualified words such as `current`, `next`, `unsupported`, `not started`, or `default` to override live evidence.
-
-When implementation maturity changes:
-
-1. update the owning source/schema and tests first;
-2. update `js/platform/capability-maturity.js` when support truth changes;
-3. update `SUPPORT_MATRIX.md` as its human projection;
-4. update any current-facing architecture/UI/platform/AI document in the same change;
-5. retain old checkpoints under `docs/archive/` or clearly label them historical rather than rewriting their evidence.
-
-This amendment deliberately separates durable architecture from moving implementation truth so that the same stale-document failure does not recur.
+1. Update the owning source modules, schemas, and automated tests first.
+2. Update `js/platform/capability-maturity.js` (and `js/platform/stage2-capability-maturity.js` if applicable) when capability truth changes.
+3. Update [`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md) as the human projection of that machine-readable truth.
+4. Update [`../ABI.md`](../ABI.md) whenever `wasm/hex_engine.wasm` exports or memory contracts change.
+5. Keep this document synchronized with live code and remove superseded statements rather than accumulating historical logs here.

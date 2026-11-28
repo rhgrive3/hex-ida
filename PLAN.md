@@ -1,44 +1,34 @@
-# PLAN: Hex-IDA C++20/WASM 統合エンジン移行計画
+# PLAN: Hex-IDA C++20/WASM 統合エンジン設計・運用方針
 
-## 1. 実バイナリ V8 CPU プロファイル結果（移行優先度の根拠）
+## 1. 設計方針
 
-6 本の ARM64 実バイナリ（26 関数・合計 **113,114 サンプル**）に対する V8 CPU プロファイル計測結果は以下の通り：
+Hex-IDA は、ブラウザおよび iPad Safari 上でネイティブ解析ツールに匹敵する速度と決定性（determinism）を両立するため、高負荷な解析ホットパスを **Freestanding C++20/WASM 統合エンジン (`wasm/hex_engine.wasm`)** に集約し、JavaScript Host 層と厳格な境界で分離している。
 
-| ホットスポット領域 | サンプル占有率 | 主なボトルネック | 移行方針 |
-|---|---:|---|---|
-| `js/core/identity/` | **50.0%** | `stableStringify` / FNV-1a 64-bit / 構造ダイジェスト生成 | **最優先 WASM 化** (`identity_engine`) |
-| `js/decompiler/` | **21.8%** | SSA 最適化反復・制御構造化・C コード生成 | **WASM 化** (`ir_optimizer`, `c_emitter`) |
-| `js/semantics/` | **21.5%** | IR/SSA 構築・支配木／支配境界・Def-Use チェーン | **WASM 化** (`resident_ir`) |
-| V8 GC | **8.3%** | 短命 JS オブジェクト・Map/Set・BigInt 大量割当 | **3-Arena + POD SoA/CSR で抜本削減** |
-| `js/targets/` | **2.4%** | 命令デコード・分類・ビット操作 | **WASM 化** (`arm64_decode`, `x86_64_decode`) |
-| `js/analysis/` | **1.7%** | セマンティック関数オーケストレーション | Host 層（JS ファサード＋境界ブリッジ） |
-| `js/controlflow.js` | **0.5%** | Lengauer-Tarjan 支配木・Tarjan SCC・自然ループ検出 | **WASM 化** (`cfg_engine`, `loop_engine`) |
-| `js/binary/` | **0.4%** | ELF/Mach-O/PE パーサ・セクション索引 | **WASM 化** (`image_store`) |
+### 移行済み・稼働中の主要ドメイン
+| ドメイン | C++20/WASM モジュール (`cpp/src/`) | 役割 |
+|---|---|---|
+| Core | `core/{identity_engine,byte_search,sha256}.cpp` | FNV-1a 64-bit・構造ダイジェスト・マスク付きバイト検索・SHA-256（>1 MiB ストリーミング対応） |
+| Binary | `binary/{image_store,string_scanner,elf_symbols,crypto_entropy_scanner}.cpp` | バイナリ画像ストア・UTF-8/16 文字列スキャン・ELF シンボル抽出・暗号定数/エントロピー検出 |
+| Targets | `targets/{arm64,x86_64,riscv64}_decode.cpp`, `targets/x86_64_{decomp,semantic_emit}.cpp` | ARM64/ARM64e・x86_64・RISC-V64 デコード、x86_64 デコンパイル・セマンティック出力 |
+| CFG & Semantics | `cfg/{cfg_engine,loop_engine,cff_unflatten}.cpp`, `semantics/resident_ir.cpp` | 支配木・SCC・ループ解析・CFF 平坦化解除・Resident IR/SSA |
+| Decompiler | `decompiler/{ir_optimizer,c_emitter,region_decomp,stack_web,asm_island,typed_emit_ctx,mba_simplifier}.cpp`, `decompiler/passes/*.cpp` | IR 最適化・制御構造化・C 生成・ARM64 専用パス群（ObjC / PAC / フレーム / FP・Atomic 等）・MBA 簡約 |
+| Analysis & v6 | `analysis/{type_arena,til_engine,hexsig_engine,sig_prop_wasm,mini_arm64_emu,deobf_eval_arm64,objc_swift_metadata_scanner,vtable_rtti_scanner,llvm_demangle_wasm,swift_demangle_wasm,msvc_demangle_wasm,...}.cpp` | 型アリーナ・TIL・HEX-SIG・4-ABI デマングラ・MiniArm64Emu（SIMD&FP / PAC）・ObjC/Swift5・RTTI/vtable・行動分類 |
+| Manual Recovery | `recovery/{manual_segment_map,func_chunk_cfg,custom_abi_spec}.cpp` | 手動セグメント配置・関数チャンク CFG 結合・カスタム ABI / スタック上書き / シフトポインタ |
 
-## 2. アーキテクチャ設計
+## 2. メモリ分離と Host 層境界
 
-### 2.1 3-Arena メモリ分離設計
-WASM 線形メモリを責務・寿命の異なる 3 つの独立 Arena に分離し、動的 `malloc`/`free` と GC を完全排除する：
-1. **Scratch Arena (`init_fixed`)**: 単一 API 呼び出し内の一時作業領域。`ArenaScope`（RAII）と `hex_scratch_reset()` で O(1) 回収。隣接 Arena への越境を防ぐため `memory.grow` 禁止の固定境界で運用。
-2. **Persistent Binary Arena (`init_fixed`, 2 MiB)**: バイナリバイト列および `ImageStore` のセクションメタデータを保持。
-3. **Persistent Resident IR Arena (`init_external`, growable)**: `IrStore`（最大 256 スロット・世代タグ付きハンドル）の常駐 IR / CFG / SSA / Def-Use CSR を保持。`memory.grow` 発生時は ABI 契約に基づき JS 側で毎 WASM 呼び出し後に `DataView`/`TypedArray` ビューを再取得する。
+### 固定境界 Arena 設計
+- 動的 `malloc`/`free`・C++ 例外・RTTI・Emscripten グルーを一切使わず、固定境界の独立 Arena（`g_image_arena`, `g_ir_arena`, `g_scratch_arena`, `g_emit_arena` および `TypeArena`・`Recovery`・`Deobf`・`Demangle` 向け専用領域）で運用する。
+- `g_scratch_arena` は RAII（`ArenaScope`）と `hex_engine_scratch_reset()` で O(1) 回収し、`g_emit_arena` と物理分離することで出力バッファ破壊を防ぐ。
 
-### 2.2 Host 層境界とフォールバック設計
-- **Host ブリッジ**: `js/core/hex-engine-bridge.js`（ルーティング・機能ゲート・出力整合）、`js/core/hex-engine-wasm.js`（単一統合 WASM ローダ＋`bulk-memory` 検証）、`js/core/wasm-telemetry.js`（モジュール別呼び出し回数・フォールバック理由集計）。
-- **モード切替**: `opts._engine` > `globalThis.HEX_ENGINE` > `process.env.HEX_ENGINE` > `'auto'`（`'wasm' | 'js' | 'auto'`）。
-- **フォールバック原則（サイレントフォールバック禁止）**:
-  - すべての JS フォールバック経路で構造化理由コード（`decompile:wasm_disabled`, `UNSUPPORTED_PIPELINE:*`, `UNSUPPORTED_ARCH:*`, `decompile:unsupported_insn:*`, `UNSUPPORTED_OPTION:*`, `UNSUPPORTED_MULTI_BLOCK`, `WASM_UNSUPPORTED`, `WASM_STATUS_*`, `WASM_EXCEPTION`）を `recordFallback(...)` に必ず記録する。
-  - 厳密ゲート（`hex_arm64_is_decompiler_supported`, `hex_x86_64_is_decompiler_supported`）により、未対応命令（例: ARM64 `ORR imm`/`FMOV imm`/`MOVK`/`MNEG`/`SMULL`/`RETAA`、x86_64 `LOCK`/`REP`/トランケート命令）は必ず JS へ安全にフォールバックさせる。
+### Host 境界と Fail-Closed フォールバック
+- **境界**: `js/ui/`, `js/ai/`, `js/auth/`, `js/userscript/` は内部エンジンモジュールを直接 import せず、`js/core/hex-engine-bridge.js` および `js/core/hex-engine-wasm.js` を経由する（`npm run module-boundaries:test` で強制）。
+- **モード解決優先順位**: `opts._engine` > `globalThis.HEX_ENGINE` > `process.env.HEX_ENGINE` > `'auto'`（`'wasm' | 'js' | 'auto'`）。
+- **サイレントフォールバック禁止**: すべての JS フォールバック経路で `js/core/wasm-telemetry.js` の `recordFallback(...)` に構造化理由コードを記録する。
 
-### 2.3 未検証アーキテクチャの扱い
-- **`riscv64` および `arm64e`**: 独立した実バイナリフィクスチャがリポジトリ未収載のため、WASM デコンパイル対象外とし、明示的な理由コード（`UNSUPPORTED_ARCH:riscv64`, `UNSUPPORTED_ARCH:arm64e` 等）を記録して JS パスへフォールバックする。
+## 3. 今後の重点改善テーマ
 
-## 3. Wave 0〜6 段階的実装計画
-
-- **Wave 0（基盤・ゴールデン・マニフェスト）**: `hex_core`（`Arena`, `Vec`, `OrderedMap`, `StringView`, `js_compat`, `stable_sort`）、`hex_abi.hpp`（`HEX_WASM_EXPORT`）、19 バイナリ（実 13 + 破損 6）ゴールデンフィクスチャ、`MANIFEST.json`。
-- **Wave 1（コアエンジン群）**: `identity_engine`, `cfg_engine`, `loop_engine`, `image_store`, `arm64_decode`, `resident_ir` の独立 freestanding C++20/WASM 実装と ASan/UBSan ネイティブ検証。
-- **Wave 2（デコンパイラ最適化・C 生成・統合ランタイム）**: `ir_optimizer`（定数畳み込み・コピー伝播・DCE の不動点反復）、`c_emitter`（制御構造化・`break`/`continue`/`goto` 遷移元ソースマップ・`HEX_EMIT_decompile:wasm_disabled_PARITY`）、`engine_runtime`（3-Arena 統合垂直パイプライン）。
-- **Wave 3（単一統合 WASM ビルド & JS ブリッジ接続）**: `scripts/build-wasm.mjs` による `js/core/hex-engine-wasm.js (Base64-embedded hex_engine.wasm)` 生成と `js/core/hex-engine-bridge.js` 接続。
-- **Wave 4（E2E 差分検証 & 独立レビュー修正ループ）**: 13 実バイナリ + 6 破損バイナリの JS vs WASM E2E 差分テスト（`e2e-decompile-differential.test.mjs`）、`extractSourceMap` 非空検証、命令ゲート厳格化、ロールバック検証。
-- **Wave 5（x86_64 デコーダ & パリティ検証）**: `x86_64_decode`（命令長・主要命令デコーダ・命令クラス対応表）実装と実 x86_64 バイナリ 3 本（76 命令）＋トランケート境界テスト。
-- **Wave 6（リリースゲート・ファズ堅牢性・ドキュメント整備）**: 2,785+ バイナリファズ＋5,000 ランダム関数ファズ、全テストスイート・最終ベンチマーク・5観点独立レビューによる出荷判定。
+1. **Exact MachineEffects 網羅率の継続拡大**: ARM64 / ARM64e / x86_64 / RISC-V64 における未対応命令・拡張命令（RISC-V A/F/D/V 等）の正確なセマンティックカバレッジ拡充（`docs/SUPPORT_MATRIX.md` と同期）。
+2. **デコンパイラ可読性と Clean View の深化**: ObjC / Swift 5 ARC 畳み込み・callee-saved 畳み込み・型伝播精度のさらなる向上（completeness と provenance を犠牲にしない範囲）。
+3. **iOS / Safari 制約下での低メモリ・高応答性維持**: 初期線形メモリ（現在 9.3125 MiB）とピークヒープの抑制、キャンセル可能な解析パイプラインの徹底。
+4. **ネイティブ ASan/UBSan と JS/WASM 差分テストの継続**: すべての C++ 変更に対しネイティブ ASan/UBSan テストおよび Node 差分テストで 0-diff・0-UB を維持する。
