@@ -53,6 +53,8 @@ import {
   parseDeltaJson,
 } from './cache/delta-session.js';
 import { attachV6Workbench } from './ui/v6-workbench-bridge.js';
+import { installFunctionAnalysisPresentation } from './ui/function-analysis-presentation.js';
+import { isStrippedFunctionName, normalizeVaHex } from './analysis/common/v6-auto-contracts.js';
 
 
 let _panelsModulePromise = null;
@@ -440,6 +442,8 @@ export class App {
     this.v6 = attachV6Workbench(this);
     this.v6Workbench = this.v6;
     this._lastIngestedWasmAnalysis = null;
+    installFunctionAnalysisPresentation(this);
+    this._reinstallPresentationWrapper = () => installFunctionAnalysisPresentation(this);
 
     this.applyTheme(this.prefs.theme || 'system');
     this.applyTextSize(this.prefs.textSize || 'm');
@@ -1298,7 +1302,7 @@ export class App {
 
   _syncAutoReportWasmAnalysis(report = this.autoReport?.report) {
     const wa = report && typeof report === 'object' ? report.wasmAnalysis : null;
-    if (wa && wa !== this._lastIngestedWasmAnalysis) {
+    if (wa && (wa !== this._lastIngestedWasmAnalysis || !this.v6Workbench?._wasmAnalysis)) {
       this._lastIngestedWasmAnalysis = wa;
       try { this.v6Workbench?.ingestWasmAnalysis?.(wa); } catch { /* non-fatal */ }
     }
@@ -1311,6 +1315,165 @@ export class App {
   getFunctionEnrichment(funcVa, opts = {}) {
     this._syncAutoReportWasmAnalysis();
     return this.v6Workbench?.getFunctionEnrichment?.(funcVa, opts) ?? null;
+  }
+
+  _scheduleV6PostAnalyzeHook(funcVa, decorated) {
+    if (!decorated || !this.v6Workbench) return;
+    try {
+      this._syncAutoReportWasmAnalysis();
+      if (funcVa != null && typeof this.v6Workbench.notifyAutoAnalysisUpdate === 'function') {
+        this.v6Workbench.notifyAutoAnalysisUpdate();
+      }
+    } catch {
+      // Best-effort non-fatal UI refresh.
+    }
+  }
+
+  _buildV6AutoProviders(epoch, sliceIndex) {
+    const isCurrent = () => epoch === this.backend.gen && this.store.get('sliceIndex') === sliceIndex;
+    const cfg = this.v6Workbench?._autoAnalysisConfig || {};
+    return {
+      tilManifestUrl: cfg.tilManifestUrl ?? 'til-hub/manifest.json',
+      tilBaseUrl: cfg.tilBaseUrl ?? 'til-hub',
+      hexsigManifestUrl: cfg.hexsigManifestUrl ?? 'hexsig-hub/manifest.json',
+      hexsigBaseUrl: cfg.hexsigBaseUrl ?? 'hexsig-hub',
+      getBinaryMeta: () => {
+        const slice = this.currentSlice?.();
+        const info = slice?.info || this.store.get('fileInfo') || {};
+        return {
+          platform: info.platform || info.os || null,
+          arch: this.store.get('architecture') || info.architecture || info.arch || null,
+          format: info.format || null,
+          dylibs: Array.isArray(info.dylibs) ? info.dylibs : [],
+          frameworks: Array.isArray(info.frameworks) ? info.frameworks : [],
+          hints: Array.isArray(info.hints) ? info.hints : [],
+        };
+      },
+      getFunctions: () => {
+        if (!isCurrent() || !this.symbols || this.symbols === EMPTY_INDEX) return [];
+        const list = typeof this.symbols.functionList === 'function' ? this.symbols.functionList() : [];
+        return Array.isArray(list) ? list : [];
+      },
+      readFunctionBytes: async (va, size) => {
+        if (!isCurrent() || !this.backend || typeof this.backend.readAt !== 'function') return null;
+        try {
+          const vaBig = typeof va === 'bigint' ? va : BigInt(va);
+          const region = this.executableRegionFor?.(vaBig);
+          if (!region) return null;
+          const regionStart = BigInt(region.vmAddr);
+          const regionEnd = regionStart + BigInt(region.size ?? 0);
+          if (vaBig < regionStart || vaBig >= regionEnd) return null;
+          const remaining = regionEnd - vaBig;
+          const requested = BigInt(Math.min(Math.max(1, Number(size || 256)), 4096));
+          const readLen = Number(remaining < requested ? remaining : requested);
+          if (!Number.isFinite(readLen) || readLen <= 0) return null;
+          const res = await this.backend.readAt(vaBig, readLen, false, { priority: 'background' });
+          if (res instanceof Uint8Array) return res;
+          return res && res.found && res.bytes instanceof Uint8Array ? res.bytes : null;
+        } catch {
+          return null;
+        }
+      },
+      getDeobfCandidates: () => {
+        if (!isCurrent() || !this.symbols || this.symbols === EMPTY_INDEX) return [];
+        const list = typeof this.symbols.functionList === 'function' ? this.symbols.functionList() : [];
+        return Array.isArray(list) ? list : [];
+      },
+      loadDeobfCandidateInput: () => null,
+      onAutoNamedBatch: (matches) => {
+        if (!isCurrent() || !this.symbols || this.symbols === EMPTY_INDEX) return [];
+        if (!Array.isArray(matches) || matches.length === 0) return [];
+        const seenVas = new Set();
+        const candidates = [];
+        const toAdd = [];
+        for (const m of matches) {
+          const vaHex = normalizeVaHex(m?.vaHex);
+          if (!vaHex || seenVas.has(vaHex) || typeof m?.newName !== 'string' || !m.newName) continue;
+          seenVas.add(vaHex);
+          let vaBig;
+          try { vaBig = BigInt(vaHex); } catch { continue; }
+          const decKey = vaBig.toString();
+          // Guard 3: NoteStore user name protection
+          const noteName = this.notes?.nameOf?.(vaBig)
+            ?? this.notes?.names?.get?.(vaHex)
+            ?? this.notes?.names?.get?.(decKey)
+            ?? null;
+          if (typeof noteName === 'string' && noteName.trim()) continue;
+          // Guard 4: SymbolIndex user rename protection
+          if (this.symbols.renamedAt?.(vaBig) || this.symbols.renames?.has?.(decKey)) continue;
+          // Guard 5: Non-stripped existing symbol name protection
+          const existingName = this.symbols.nameAt?.(vaBig) ?? null;
+          if (existingName && !isStrippedFunctionName(existingName)) continue;
+
+          candidates.push({ match: { ...m, vaHex }, vaBig });
+          const rawScore = Number(m.score ?? 900);
+          const confidence = Number.isFinite(rawScore)
+            ? (rawScore > 100
+              ? Math.min(1, Math.max(0, rawScore / 1000))
+              : (rawScore > 1 ? Math.min(1, rawScore / 100) : Math.max(0, rawScore)))
+            : 0.9;
+          toAdd.push({
+            addr: vaBig,
+            name: m.newName,
+            provenance: { source: 'hexsig', confidence, confirmed: false },
+          });
+        }
+        if (toAdd.length > 0 && typeof this.symbols.addNames === 'function') {
+          const added = this.symbols.addNames(toAdd, { source: 'hexsig', confidence: 0.9, confirmed: false });
+          if (added > 0) {
+            try { this.viewer?.setSymbols?.(this.symbols); } catch { /* non-fatal */ }
+            try { this.viewer?.invalidate?.(); } catch { /* non-fatal */ }
+          }
+        }
+        // Only return entries actually reflected in SymbolIndex so _autoNamedFunctions stays consistent.
+        const accepted = [];
+        for (const item of candidates) {
+          if (typeof this.symbols.nameAt === 'function') {
+            if (this.symbols.nameAt(item.vaBig) === item.match.newName) {
+              accepted.push(item.match);
+            }
+          } else {
+            accepted.push(item.match);
+          }
+        }
+        return accepted;
+      },
+    };
+  }
+
+  _startV6AutoAnalysis(epoch, sliceIndex) {
+    if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return;
+    try {
+      this.v6?.onBinaryReady?.(
+        this._currentDeltaFingerprint?.(),
+        this._buildV6AutoProviders(epoch, sliceIndex),
+      );
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  getAutoAnalysisState() {
+    return this.v6Workbench?.getAutoAnalysisState?.() ?? null;
+  }
+
+  subscribeAutoAnalysis(fn) {
+    return this.v6Workbench?.subscribeAutoAnalysis?.(fn) ?? (() => {});
+  }
+
+  getBeginnerAutoGuide(opts = {}) {
+    this._syncAutoReportWasmAnalysis();
+    return this.v6Workbench?.getBeginnerAutoGuide?.(opts) ?? null;
+  }
+
+  getBeginnerFunctionGuide(funcVa, opts = {}) {
+    this._syncAutoReportWasmAnalysis();
+    return this.v6Workbench?.getBeginnerFunctionGuide?.(funcVa, opts) ?? null;
+  }
+
+  mountBeginnerWorkflowPanel(container, opts = {}) {
+    this._syncAutoReportWasmAnalysis();
+    return this.v6Workbench?.mountBeginnerWorkflowPanel?.(container, opts) ?? null;
   }
 
   async persistAnalysisSession(fields = null) {
@@ -1959,16 +2122,26 @@ export class App {
     const baseSymbolsReady = this.analysisBaseSymbolsReady || this.symbolsReady || Promise.resolve();
     if (!sampleOpen && !restoredOpen) void this.analysisResume.saveLastFile(file, { sliceIndex }).catch(() => {});
     this.analysisResumeReady = Promise.allSettled([projectReady, baseSymbolsReady]).then(async () => {
-      try { this.v6?.onBinaryReady?.(this._currentDeltaFingerprint?.()); } catch { /* non-fatal */ }
       if (openEpoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
       let binaryId = this.backend.binaryId;
       if (!binaryId) {
-        try { binaryId = await this.backend.ensureBinaryId({ priority: 'current' }); } catch { return false; }
+        try {
+          binaryId = await this.backend.ensureBinaryId({ priority: 'current' });
+        } catch {
+          if (openEpoch === this.backend.gen && this.store.get('sliceIndex') === sliceIndex) {
+            this._startV6AutoAnalysis(openEpoch, sliceIndex);
+          }
+          return false;
+        }
       }
       if (openEpoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
       if (!sampleOpen) void this.analysisResume.updateLastFileMeta({ binaryId, sliceIndex }).catch(() => {});
-      const restored = await this.restoreAnalysisSession(binaryId, sliceIndex, openEpoch);
-      if (!sampleOpen) await this.restoreDeltaSession(openEpoch, sliceIndex);
+      let restored = false;
+      try { restored = await this.restoreAnalysisSession(binaryId, sliceIndex, openEpoch); } catch { /* non-fatal */ }
+      if (!sampleOpen) {
+        try { await this.restoreDeltaSession(openEpoch, sliceIndex); } catch { /* non-fatal */ }
+      }
+      this._startV6AutoAnalysis(openEpoch, sliceIndex);
       if (!restored && !sampleOpen) void this.persistAnalysisSession(['symbols']);
       if (restored && restoredOpen) toast(pick('前回の解析結果を復元しました', 'Restored the previous analysis results'));
       return restored;
@@ -2357,10 +2530,23 @@ export class App {
     this.analysisResumeReady = Promise.allSettled([projectReady, baseSymbolsReady]).then(async () => {
       if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== index) return false;
       let binaryId = this.backend.binaryId;
-      if (!binaryId) { try { binaryId = await this.backend.ensureBinaryId(); } catch { return false; } }
+      if (!binaryId) {
+        try {
+          binaryId = await this.backend.ensureBinaryId();
+        } catch {
+          if (epoch === this.backend.gen && this.store.get('sliceIndex') === index) {
+            this._startV6AutoAnalysis(epoch, index);
+          }
+          return false;
+        }
+      }
       if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== index) return false;
-      const restored = await this.restoreAnalysisSession(binaryId, index, epoch);
-      if (!this.sampleOpen) await this.restoreDeltaSession(epoch, index);
+      let restored = false;
+      try { restored = await this.restoreAnalysisSession(binaryId, index, epoch); } catch { /* non-fatal */ }
+      if (!this.sampleOpen) {
+        try { await this.restoreDeltaSession(epoch, index); } catch { /* non-fatal */ }
+      }
+      this._startV6AutoAnalysis(epoch, index);
       if (!restored) void this.persistAnalysisSession(['symbols']);
       return restored;
     }).catch(() => false);
