@@ -338,7 +338,7 @@ function isKnownStructPointerType(baseType) {
 }
 
 function cStringLiteral(text) {
-  return JSON.stringify(text).replace(/\\\\([nrt])/g, '\\$1');
+  return JSON.stringify(text);
 }
 
 function isProvablyReadOnlyDataSection(sec) {
@@ -392,11 +392,13 @@ function readBytesFromSection(sec, target, start, maxLen, state) {
   const fileOffset = sec.offset ?? sec.fileOffset;
   const fileBytes = state.opts?.fileBytes ?? state.opts?.bytes ?? state.opts?.binary?.bytes;
   if (fileOffset != null && fileBytes) {
-    const pos = Number(BigInt(fileOffset) + (target - start));
-    if (pos >= 0 && pos < fileBytes.length) {
-      const end = Math.min(fileBytes.length, pos + maxLen);
-      return fileBytes.slice(pos, end);
-    }
+    try {
+      const pos = Number(BigInt(fileOffset) + (target - start));
+      if (pos >= 0 && pos < fileBytes.length) {
+        const end = Math.min(fileBytes.length, pos + maxLen);
+        return fileBytes.slice(pos, end);
+      }
+    } catch { /* malformed fileOffset */ }
   }
   try {
     const buf = state.opts?.readBytes?.(target, maxLen) ?? state.opts?.binary?.readBytes?.(target, maxLen);
@@ -559,11 +561,21 @@ function resolveConstantAddressValue(v, depth = 0, seen = null) {
     if (visited.has(v.id)) return null;
     visited.add(v.id);
   }
-  if (v.const != null) return v.const;
+  if (v.const != null) {
+    try { return BigInt(v.const); } catch { return null; }
+  }
   const d = v.def;
   if (!d) return null;
-  if (d.op === 'addr') return d.extra?.value ?? d.extra?.target ?? null;
-  if (d.op === 'const') return d.extra?.value ?? null;
+  if (d.op === 'addr') {
+    const raw = d.extra?.value ?? d.extra?.target ?? null;
+    if (raw == null) return null;
+    try { return BigInt(raw); } catch { return null; }
+  }
+  if (d.op === 'const') {
+    const raw = d.extra?.value ?? null;
+    if (raw == null) return null;
+    try { return BigInt(raw); } catch { return null; }
+  }
   if (d.op === 'mov' || d.op === 'cast' || (d.op === 'un' && ['zext', 'sext', 'trunc', 'cast'].includes(d.sub))) {
     return resolveConstantAddressValue(valueOf(d.args?.[0]), depth + 1, visited);
   }
@@ -571,7 +583,9 @@ function resolveConstantAddressValue(v, depth = 0, seen = null) {
     const lc = resolveConstantAddressValue(valueOf(d.args?.[0]), depth + 1, visited);
     const rc = resolveConstantAddressValue(valueOf(d.args?.[1]), depth + 1, visited);
     if (lc != null && rc != null) {
-      return d.sub === 'add' ? BigInt(lc) + BigInt(rc) : BigInt(lc) - BigInt(rc);
+      try {
+        return d.sub === 'add' ? BigInt(lc) + BigInt(rc) : BigInt(lc) - BigInt(rc);
+      } catch { return null; }
     }
     return null;
   }
@@ -584,7 +598,8 @@ function resolveConstantAddressValue(v, depth = 0, seen = null) {
     for (const inc of nonSelf) {
       const c = resolveConstantAddressValue(inc, depth + 1, visited);
       if (c == null) return null;
-      const bi = BigInt(c);
+      let bi;
+      try { bi = BigInt(c); } catch { return null; }
       if (resolved == null) resolved = bi;
       else if (resolved !== bi) return null;
     }
@@ -2905,8 +2920,31 @@ function semanticFacts(state, result) {
  * the spill address base. This keeps ordinary locals/address-taken slots
  * visible while avoiding an invalid duplicate `var_* = expr; return expr;`.
  */
+function loadUsesOnlyFeedReturn(loadValue, ret) {
+  if (!loadValue) return false;
+  const pending = [loadValue];
+  const seen = new Set();
+  while (pending.length) {
+    if (seen.size >= 64) return false;
+    const current = pending.pop();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+    for (const use of current.uses || []) {
+      if (!use || use.clobbered) continue;
+      if (use === ret) continue;
+      if (use.dst && (use.op === 'mov' || use.op === 'cast' || use.op === 'phi' || use.op === 'un' || use.op === 'bin')) {
+        pending.push(use.dst);
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
 function isElidableReturnSpillStore(store, state) {
   if (!store || store.op !== 'store' || store.loc?.kind !== 'stack' || !store.loc?.key) return false;
+  if (hasEscapedStackFrame(state)) return false;
   const idx = getIrQueryIndex(state.ir);
   const sameLocationMemory = idx?.memByLocKey.get(store.loc.key) || EMPTY_LIST;
   const storeDefinitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
@@ -2921,10 +2959,32 @@ function isElidableReturnSpillStore(store, state) {
   });
   if (loads.length !== 1 || sameLocationMemory.some((inst) => inst.op === 'store' && inst !== store)) return false;
   const load = loads[0];
-  if (store.row == null || load.row == null || Number(load.row) <= Number(store.row) || !load.dst) return false;
+  if (store.row == null || load.row == null || !load.dst) return false;
+  if (store.block != null && load.block != null) {
+    if (store.block === load.block) {
+      if (Number(load.row) <= Number(store.row)) return false;
+    } else if (!defBlockDominates(state.ir, store.block, load.block)) {
+      return false;
+    }
+  } else if (Number(load.row) <= Number(store.row)) {
+    return false;
+  }
 
-  const calls = (idx?.callInsts || EMPTY_LIST).filter((inst) => inst.row != null
-    && Number(inst.row) > Number(store.row) && Number(inst.row) < Number(load.row));
+  const calls = (idx?.callInsts || EMPTY_LIST).filter((inst) => {
+    if (inst.row == null) return false;
+    if (store.block != null && load.block != null && inst.block != null) {
+      if (store.block === load.block) {
+        return inst.block === store.block
+          && Number(inst.row) > Number(store.row)
+          && Number(inst.row) < Number(load.row);
+      }
+      if (inst.block === store.block && Number(inst.row) <= Number(store.row)) return false;
+      if (inst.block === load.block && Number(inst.row) >= Number(load.row)) return false;
+      return blockCanReach(state.ir, store.block, inst.block)
+        && blockCanReach(state.ir, inst.block, load.block);
+    }
+    return Number(inst.row) > Number(store.row) && Number(inst.row) < Number(load.row);
+  });
   if (!calls.length) return false;
 
   const addressBaseId = store.addr?.base?.id ?? null;
@@ -2942,9 +3002,19 @@ function isElidableReturnSpillStore(store, state) {
   if (!storedKey) return false;
 
   for (const ret of idx?.retInsts || EMPTY_LIST) {
-    if (ret.row == null || Number(ret.row) <= Number(load.row)) continue;
+    if (ret.row == null) continue;
+    if (load.block != null && ret.block != null) {
+      if (load.block === ret.block) {
+        if (Number(ret.row) <= Number(load.row)) continue;
+      } else if (!defBlockDominates(state.ir, load.block, ret.block)) {
+        continue;
+      }
+    } else if (Number(ret.row) <= Number(load.row)) {
+      continue;
+    }
     const returned = returnValueAt(ret, state);
     if (!returned || valueDependsOnAny(returned, loadIds, { shouldAbort:state.opts?.shouldAbort }) !== true) continue;
+    if (!loadUsesOnlyFeedReturn(load.dst, ret)) continue;
     if (structuralKey(expressionFor(returned, state)) === storedKey) return { ret, returned, load, storedValue };
   }
   return false;
@@ -3254,6 +3324,7 @@ function cAstFromLines(result, state) {
     const switched = switchHistory && readSwitchLineHistory(line, state.ir);
     if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
     const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic, ...(typeof line.block === 'number' ? { block: line.block } : {}) };
+    const originalText = node.text;
     node.text = explicitProvenCppFieldOffsets(node.text, state);
     const initial = initialStatement || initialControl;
     const virtualSlot = initialStatement?.instruction
@@ -3316,11 +3387,19 @@ function cAstFromLines(result, state) {
       const consumer = readExpressionHistoryConsumer(node.semantic, state.ir), binding = initialStatement.resultBinding;
       const budget = consumerObservationBudget(state);
       try {
-        if (!consumer || budget.edges <= 0 || node.text !== `${binding.name} = ${binding.callText}`) throw new Error('call-result-spelling-unavailable');
+        const expectedOriginal = `${binding.name} = ${binding.callText}`;
+        const lhsPrefix = `${binding.name} = `;
+        const matchesAnnotated = originalText === expectedOriginal && node.text.startsWith(lhsPrefix);
+        if (!consumer || budget.edges <= 0 || (node.text !== expectedOriginal && !matchesAnnotated)) {
+          throw new Error('call-result-spelling-unavailable');
+        }
+        const effectiveCallText = node.text === expectedOriginal
+          ? binding.callText
+          : node.text.slice(lhsPrefix.length);
         const observation = captureConsumerIrData([node], state);
         budget.edges -= observation.metrics.edges;
         if (budget.edges < 0) throw new Error('call-result-spelling-budget');
-        callResultSpellingProducers.set(node, Object.freeze({ ir:state.ir, consumer, observation, ...binding }));
+        callResultSpellingProducers.set(node, Object.freeze({ ir:state.ir, consumer, observation, ...binding, callText: effectiveCallText }));
       } catch { budget.reasons.add('call-result-spelling-unavailable'); }
     }
     body.push(node);
