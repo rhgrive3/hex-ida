@@ -13,7 +13,10 @@ export function instructionNote(architecture, { mnemonic, operands, address, sty
   if (arch !== 'arm64' && arch !== 'arm64e') return '';
   const base = String(mnemonic || '').toLowerCase();
   if ((base === 'add' || base === 'ldr') && previous && /^adrp$/i.test(previous.mnemonic || '')) {
-    const e = explain(mnemonic, operands, address, { ...(context || {}), prev:{ mn:previous.mnemonic, ops:previous.operands || '' } });
+    const e = explain(mnemonic, operands, address, {
+      ...(context || {}),
+      prev: { mn: previous.mnemonic, ops: previous.operands || '', address: previous.address ?? null },
+    });
     let text = style === 'pseudo' ? e.pseudo
       : style === 'both' ? e.pseudo + '   — ' + e.title
       : (e.summary || e.title);
@@ -23,7 +26,7 @@ export function instructionNote(architecture, { mnemonic, operands, address, sty
     }
     return text.replace(/\s+/g, ' ').trim();
   }
-  return brief(mnemonic, operands, style, context || {});
+  return brief(mnemonic, operands, style, context || {}, address);
 }
 
 export function supportsBeginnerInstructionNotes(architecture) {

@@ -951,11 +951,44 @@ function renderDetail(app, sheet, root, d, row, region) {
   }
   root.dataset.filled = '1';
 
+  const activeSlice = app.currentSlice?.() || null;
+  const sliceRelocs = activeSlice?.info?.relocations || null;
+  const isRelocatableObject = activeSlice?.info?.filetype === 1 || app.viewer?._isRelocatableObject === true;
   const ctx = {
     symbolFor: (a) => sym.nameAt(a),
     gen: sym.gen,
     prev: prevRow(app, row),
     next: null,
+    isRelocatableObject,
+    relocationFor: (a) => {
+      if (a == null) return null;
+      let key;
+      try { key = BigInt(a).toString(); } catch { return null; }
+      const hit = app.viewer?._relocMap?.get?.(key);
+      if (hit) return hit;
+      if (Array.isArray(sliceRelocs)) {
+        const priorityOf = (item) => {
+          if (!item) return -1;
+          const isAddend = Boolean(item.isAddend || (item.type === 10 && !item.extern));
+          if (isAddend) return 0;
+          return item.symbol != null ? (item.extern ? 3 : 2) : 1;
+        };
+        let best = null;
+        let bestPri = -1;
+        for (const r of sliceRelocs) {
+          if (r?.address != null) {
+            try {
+              if (BigInt(r.address).toString() === key) {
+                const pri = priorityOf(r);
+                if (pri > bestPri) { best = r; bestPri = pri; }
+              }
+            } catch { /* ignore */ }
+          }
+        }
+        if (best) return best;
+      }
+      return null;
+    },
   };
   const e = canExplain ? explain(mn, ops, d.address, ctx) : null;
 
@@ -1167,7 +1200,7 @@ function prevRow(app, row) {
   if (row <= 0) return null;
   const d = app.viewer.rowData(row - 1);
   if (!d || d.mnemonic == null) return null;
-  return { mn: d.mnemonic, ops: d.operands || '' };
+  return { mn: d.mnemonic, ops: d.operands || '', address: d.address ?? null };
 }
 
 /** "FD 7B BF A9" → CPU から見た 1 個の 32 ビット値。 */

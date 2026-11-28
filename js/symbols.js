@@ -34,6 +34,22 @@ function canonicalAddressKey(value) {
   return isCanonicalAddress(value) ? value.toString() : null;
 }
 
+function canonicalRenameAddress(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^(?:0|[1-9][0-9]*|0[xX][0-9a-fA-F]+)$/.test(text)) {
+      try {
+        const big = BigInt(text);
+        return big >= 0n ? big : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
 function canonicalMetadataAddress(value) {
   let big = null;
   if (typeof value === 'bigint') big = value;
@@ -147,11 +163,20 @@ export class SymbolIndex {
   }
 
   _refreshRenameAddrs() {
-    const out = [];
+    const out = new Array(this.renames.size);
+    let n = 0;
+    let sorted = true;
+    let prev = null;
     for (const key of this.renames.keys()) {
-      try { out.push(BigInt(key)); } catch { /* malformed persisted key: ignore */ }
+      try {
+        const big = BigInt(key);
+        if (prev !== null && big < prev) sorted = false;
+        prev = big;
+        out[n++] = big;
+      } catch { /* malformed persisted key: ignore */ }
     }
-    out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    if (n !== out.length) out.length = n;
+    if (!sorted) out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     this._renameAddrs = out;
   }
 
@@ -160,12 +185,70 @@ export class SymbolIndex {
    * ここを通すと、命令一覧・関数一覧・呼び出し元まで一斉に新しい名前になる。
    */
   rename(addr, name) {
-    const k = canonicalAddressKey(addr);
-    if (k == null) return;
-    if (name) this.renames.set(k, name);
-    else this.renames.delete(k);
-    this._refreshRenameAddrs();
+    const big = canonicalRenameAddress(addr);
+    if (big == null) return;
+    const k = big.toString();
+    const had = this.renames.has(k);
+    if (name) {
+      this.renames.set(k, name);
+      if (!had) {
+        const idx = this._lowerBound(this._renameAddrs, big);
+        if (this._renameAddrs[idx] !== big) this._renameAddrs.splice(idx, 0, big);
+      }
+    } else {
+      if (!had) return;
+      this.renames.delete(k);
+      const idx = this._lowerBound(this._renameAddrs, big);
+      if (idx < this._renameAddrs.length && this._renameAddrs[idx] === big) {
+        this._renameAddrs.splice(idx, 1);
+      }
+    }
     this.gen = ++SymbolIndex.gen;
+  }
+
+  /**
+   * 複数のリネームを一括適用する。
+   * ループ後に _refreshRenameAddrs() と gen 更新を 1 回だけ行う（O(N log N)）。
+   */
+  renameMany(entries, { replace = false } = {}) {
+    let changed = false;
+    if (replace && this.renames.size > 0) {
+      this.renames.clear();
+      changed = true;
+    }
+    let applied = 0;
+    if (entries != null && typeof entries[Symbol.iterator] === 'function') {
+      for (const entry of entries) {
+        if (entry == null) continue;
+        let rawAddr;
+        let rawName;
+        if (Array.isArray(entry)) {
+          rawAddr = entry[0];
+          rawName = entry[1];
+        } else if (typeof entry === 'object') {
+          rawAddr = entry.addr ?? entry.address;
+          rawName = entry.name ?? entry.value;
+        } else {
+          continue;
+        }
+        const big = canonicalRenameAddress(rawAddr);
+        if (big == null) continue;
+        const k = big.toString();
+        if (rawName) {
+          this.renames.set(k, rawName);
+          changed = true;
+          applied++;
+        } else if (this.renames.delete(k)) {
+          changed = true;
+          applied++;
+        }
+      }
+    }
+    if (changed || replace) {
+      this._refreshRenameAddrs();
+      this.gen = ++SymbolIndex.gen;
+    }
+    return applied;
   }
 
   /** 自分で付けた名前だけを引く。 */

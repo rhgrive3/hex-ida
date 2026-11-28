@@ -270,7 +270,7 @@ function fileLike(bytes, name = 'game.bin') {
   assert.ok(new TextEncoder().encode(baseText).byteLength + new TextEncoder().encode(newDelta).byteLength > maxBytes);
   localStorage.setItem(primaryKey, baseText);
   localStorage.setItem(primaryKey + '.delta.names.0', oldDelta);
-  const notes = new NoteStore(id);
+  const notes = new NoteStore(id, [], { maxBytes });
   assert.equal(notes.setName(0n, 'y'.repeat(40)), true);
   assert.equal(notes.lastMutationSaved, true);
   assert.equal(JSON.parse(localStorage.getItem(primaryKey)).names['0'], 'y'.repeat(40));
@@ -371,7 +371,7 @@ function fileLike(bytes, name = 'game.bin') {
 // MAX_BYTES must fail closed and preserve dirty/export state.
 {
   localStorage.clear();
-  const notes = new NoteStore('oversize-case');
+  const notes = new NoteStore('oversize-case', [], { maxBytes: 2 * 1024 * 1024 });
   notes.structs = [{ name: 'huge', members: [], note: 'x'.repeat(2 * 1024 * 1024 + 4096) }];
   notes.dirty = true;
   assert.equal(notes.save(), false);
