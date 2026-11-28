@@ -4,6 +4,7 @@ import {
   LINE_H, PAD_X, PAD_Y, MAX_LINES, MAX_CHARS,
   layoutNodes, routeEdges, roundedOrthogonalPath, graphRoutingDiagnostics,
 } from './graph-routing.js';
+import { pick } from './i18n.js';
 
 export { graphRoutingDiagnostics };
 
@@ -100,7 +101,7 @@ export function renderGraph(nodes, edges, opts) {
     const label = [n.title, ...(n.lines || []).slice(0, 2)].filter(Boolean).join(' — ');
     const g = svgEl('g', {
       class: 'g-node' + (n.kind ? ' ' + n.kind : ''), tabindex: 0,
-      role: n.onTap || o.onNode ? 'button' : 'img', 'aria-label': label || '関係図のノード',
+      role: n.onTap || o.onNode ? 'button' : 'img', 'aria-label': label || pick('関係図のノード', 'Graph node'),
     });
     g.append(svgEl('rect', { x: p.x, y: p.y, width: p.w, height: p.h, rx: 8, class: 'g-box' }));
     if (n.title) {
@@ -116,7 +117,8 @@ export function renderGraph(nodes, edges, opts) {
     });
     if ((n.lines || []).length > MAX_LINES) {
       const t = svgEl('text', { x: p.x + PAD_X, y: start + MAX_LINES * LINE_H, class: 'g-line dim' });
-      t.textContent = '… ほか ' + (n.lines.length - MAX_LINES) + ' 行';
+      const extra = n.lines.length - MAX_LINES;
+      t.textContent = pick('… ほか ' + extra + ' 行', '… ' + extra + ' more line' + (extra === 1 ? '' : 's'));
       g.append(t);
     }
     if (n.onTap || o.onNode) {
@@ -251,12 +253,12 @@ function attachPanZoom(wrap, svg, layout) {
     b.addEventListener('click', fn);
     return b;
   };
-  const pctBtn = mk('100%', '等倍に戻す', () => zoomTo(1));
+  const pctBtn = mk('100%', pick('等倍に戻す', 'Reset zoom to 100%'), () => zoomTo(1));
   bar.append(
-    mk('－', '縮小', () => zoomTo(scale - 0.2)),
+    mk('－', pick('縮小', 'Zoom out'), () => zoomTo(scale - 0.2)),
     pctBtn,
-    mk('＋', '拡大', () => zoomTo(scale + 0.2)),
-    mk('全体', '全体を画面に収める', fit));
+    mk('＋', pick('拡大', 'Zoom in'), () => zoomTo(scale + 0.2)),
+    mk(pick('全体', 'Fit'), pick('全体を画面に収める', 'Fit graph to view'), fit));
   wrap.append(bar);
 
   const points = new Map();
@@ -376,14 +378,14 @@ export function graphLegend(kind) {
     wrap.append(s);
   };
   if (kind === 'call') {
-    add('lg-call', '呼んでいる向き（上が呼ぶ側・下が呼ばれる側）');
+    add('lg-call', pick('呼んでいる向き（上が呼ぶ側・下が呼ばれる側）', 'Call direction (caller above, callee below)'));
   } else {
-    add('lg-true', '条件が成り立つとき');
-    add('lg-false', '成り立たないとき');
-    add('lg-back', 'ここへ戻る（ループ）');
+    add('lg-true', pick('条件が成り立つとき', 'When condition is true'));
+    add('lg-false', pick('成り立たないとき', 'When condition is false'));
+    add('lg-back', pick('ここへ戻る（ループ）', 'Loop (back edge)'));
   }
   const tip = document.createElement('span');
-  tip.textContent = '押したまま動かす／2 本指でつまむと拡大縮小';
+  tip.textContent = pick('押したまま動かす／2 本指でつまむと拡大縮小', 'Drag to pan · pinch to zoom');
   wrap.append(tip);
   return wrap;
 }
@@ -435,7 +437,7 @@ export function cfgGraph(model, opts) {
     return {
       id: b.index,
       title: (addr != null ? '0x' + addr.toString(16).toUpperCase() : '#' + b.index) +
-        (b.isLoopHeader ? '  ← ここへ戻ってくる' : ''),
+        (b.isLoopHeader ? pick('  ← ここへ戻ってくる', '  ← loop header') : ''),
       lines,
       kind: b.isLoopHeader ? 'loop' : (b.index === 0 ? 'entry' : ''),
       addr,
@@ -464,8 +466,8 @@ export function cfgGraph(model, opts) {
     const next = b.index + 1 < blocks.length ? b.index + 1 : null;
 
     if (last.isConditional || /^(cbz|cbnz|tbz|tbnz)$/.test(base) || /^b\./.test(base)) {
-      if (ti >= 0) edges.push({ from: b.index, to: ti, kind: isBackEdge(b.index, ti, last.row) ? 'back' : 'true', label: '成り立つ' });
-      if (next != null) edges.push({ from: b.index, to: next, kind: 'false', label: '成り立たない' });
+      if (ti >= 0) edges.push({ from: b.index, to: ti, kind: isBackEdge(b.index, ti, last.row) ? 'back' : 'true', label: pick('成り立つ', 'true') });
+      if (next != null) edges.push({ from: b.index, to: next, kind: 'false', label: pick('成り立たない', 'false') });
       continue;
     }
     if (base === 'b') {

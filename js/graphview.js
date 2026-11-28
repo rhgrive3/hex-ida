@@ -4,6 +4,7 @@
  * carries the canonical CFG. Edge truth comes from that CFG, never mnemonic
  * re-inference. */
 import { cfgGraph as legacyCfgGraph } from './graphview-base.js';
+import { pick } from './i18n.js';
 
 export * from './graphview-base.js';
 
@@ -44,13 +45,13 @@ function compactSemanticLine(inst) {
 
 function edgeStyle(kind) {
   switch (kind) {
-    case 'conditional-true': return { kind:'true', label:'成り立つ' };
-    case 'conditional-false': return { kind:'false', label:'成り立たない' };
-    case 'exception': return { kind:'jump', label:'例外' };
-    case 'indirect-candidate': return { kind:'jump', label:'間接候補' };
-    case 'unknown': return { kind:'jump', label:'未確定' };
-    case 'call': return { kind:'call', label:'呼び出し' };
-    case 'tail-call': return { kind:'call', label:'末尾呼び出し' };
+    case 'conditional-true': return { kind:'true', label:pick('成り立つ', 'true') };
+    case 'conditional-false': return { kind:'false', label:pick('成り立たない', 'false') };
+    case 'exception': return { kind:'jump', label:pick('例外', 'exception') };
+    case 'indirect-candidate': return { kind:'jump', label:pick('間接候補', 'indirect') };
+    case 'unknown': return { kind:'jump', label:pick('未確定', 'unknown') };
+    case 'call': return { kind:'call', label:pick('呼び出し', 'call') };
+    case 'tail-call': return { kind:'call', label:pick('末尾呼び出し', 'tail call') };
     default: return { kind:'jump', label:null };
   }
 }
@@ -76,7 +77,7 @@ function canonicalCfgGraph(model, cfg, opts = {}) {
     return {
       id: String(block.id),
       title: (addr != null ? `0x${addr.toString(16).toUpperCase()}` : String(block.id))
-        + (isLoopHeader ? '  ← ここへ戻ってくる' : ''),
+        + (isLoopHeader ? pick('  ← ここへ戻ってくる', '  ← loop header') : ''),
       lines,
       kind: isLoopHeader ? 'loop' : (String(block.id) === String(cfg.entryBlockId) ? 'entry' : ''),
       addr,

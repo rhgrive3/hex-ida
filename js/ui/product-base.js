@@ -102,7 +102,7 @@ export function isFunctionStart(app, rawAddr) {
     const start = sym.functionStartAt?.(big);
     if (start != null && BigInt(start) === big) return true;
   } catch { /* ignore */ }
-  if (Array.isArray(sym.funcs) && sym.funcs.length) {
+  if ((Array.isArray(sym.funcs) || ArrayBuffer.isView(sym.funcs)) && sym.funcs.length) {
     const idx = lowerBoundBigInt(sym.funcs, big);
     if (idx < sym.funcs.length) {
       try { if (BigInt(sym.funcs[idx]) === big) return true; } catch { /* ignore */ }
@@ -1739,6 +1739,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   let activeProvenanceView = null;
   let activeFallbackTokHl = null;
   let activeFindBar = null;
+  let activeDecompileCleanup = null;
   let unsubNotes = null;
   const syncLiveName = () => {
     if (disposed) return;
@@ -2016,11 +2017,94 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   };
 
   const renderPseudocodeTab = async () => {
-    if (app.analysisQueries) {
-      try {
-        const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
-        const res = await app.analysisQueries.decompile(snapshot, addr, { signal: routeSignal });
-        if (!viewCurrent()) return;
+    activeDecompileCleanup?.();
+    activeDecompileCleanup = null;
+    if (!viewCurrent() || routeSignal.aborted) return;
+
+    if (!app.analysisQueries) {
+      const map = rowMapper();
+      if (!map.supported) {
+        content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+        return;
+      }
+    }
+
+    const localController = new AbortController();
+    const localSignal = localController.signal;
+    let cancelledByUser = false;
+    let timerId = null;
+
+    const clearTimer = () => {
+      if (timerId != null) {
+        clearInterval(timerId);
+        timerId = null;
+      }
+    };
+    const onRouteAbort = () => {
+      clearTimer();
+      if (!localController.signal.aborted) localController.abort(routeSignal.reason || 'route-aborted');
+    };
+    const cleanup = () => {
+      clearTimer();
+      routeSignal.removeEventListener('abort', onRouteAbort);
+      if (activeDecompileCleanup === teardown) activeDecompileCleanup = null;
+    };
+    const teardown = () => {
+      cleanup();
+      if (!localController.signal.aborted) localController.abort('superseded');
+    };
+    activeDecompileCleanup = teardown;
+    routeSignal.addEventListener('abort', onRouteAbort, { once: true });
+
+    const baseLabel = text('関数を解析しています…', 'Analysing function…');
+    const loadingEl = loadingState(baseLabel);
+    const labelEl = loadingEl.querySelector('span:last-child');
+    const cancelBtn = uiButton(text('キャンセル', 'Cancel'), {
+      cls: 'ui-secondary-action',
+      onClick: () => {
+        if (localController.signal.aborted) return;
+        cancelledByUser = true;
+        cleanup();
+        localController.abort('user-cancelled');
+        if (viewCurrent() && !routeSignal.aborted) {
+          content.replaceChildren(emptyState(
+            text('逆コンパイルをキャンセルしました', 'Decompilation cancelled'),
+            text('解析を中断しました。必要なときに再試行できます。', 'Analysis was stopped. You can retry whenever you are ready.'),
+            uiButton(text('再試行', 'Retry'), {
+              cls: 'ui-primary-action',
+              onClick: () => {
+                void renderPseudocodeTab().catch((retryErr) => {
+                  if (viewCurrent() && !routeSignal.aborted) {
+                    content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(retryErr && retryErr.message || retryErr)));
+                  }
+                });
+              },
+            }),
+          ));
+        }
+      },
+    });
+    loadingEl.append(cancelBtn);
+    content.replaceChildren(loadingEl);
+
+    const startedAt = Date.now();
+    timerId = setInterval(() => {
+      if (disposed || routeSignal.aborted || localSignal.aborted || !viewCurrent()) {
+        clearTimer();
+        return;
+      }
+      const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+      if (elapsedSec >= 2 && labelEl) {
+        labelEl.textContent = text(`関数を解析しています… (${elapsedSec}秒)`, `Analysing function… (${elapsedSec}s)`);
+      }
+    }, 500);
+
+    try {
+      if (app.analysisQueries) {
+        const snapshot = await app.analysisQueries.snapshot({ signal: localSignal });
+        if (!viewCurrent() || localSignal.aborted || routeSignal.aborted) return;
+        const res = await app.analysisQueries.decompile(snapshot, addr, { signal: localSignal });
+        if (!viewCurrent() || localSignal.aborted || routeSignal.aborted) return;
         if (res.completeness === 'unsupported' || !res.value) {
           content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
           return;
@@ -2087,20 +2171,18 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         }
         if (pendingPseudoState) applyPseudoState(pendingPseudoState);
         return;
-      } catch (err) {
-        if (routeSignal.aborted) return;
-        throw err;
       }
+
+      const res = await app.analyzeFunctionAt(addr, { signal: localSignal });
+      if (!viewCurrent() || localSignal.aborted || routeSignal.aborted) return;
+      if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
+      renderPseudocode(res);
+    } catch (err) {
+      if (cancelledByUser || localSignal.aborted || routeSignal.aborted) return;
+      throw err;
+    } finally {
+      cleanup();
     }
-    const map = rowMapper();
-    if (!map.supported) {
-      content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
-      return;
-    }
-    const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
-    if (!viewCurrent()) return;
-    if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
-    renderPseudocode(res);
   };
 
   const renderFlow = (res) => {
@@ -2559,6 +2641,8 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       activeFallbackTokHl?.destroy?.();
       activeFallbackTokHl = null;
       activeFindBar = null;
+      activeDecompileCleanup?.();
+      activeDecompileCleanup = null;
       document.removeEventListener('hex:notes-attached', onNotesAttached);
       if (typeof unsubBookmarks === 'function') unsubBookmarks();
       if (typeof unsubNotes === 'function') unsubNotes();
@@ -3099,35 +3183,80 @@ function installAddressBar(app, router, addrbar) {
 
 const symbolLookupCache = new WeakMap();
 
-function getSymbolLookupMap(sym) {
+function getSymbolLookupEntry(sym) {
   const gen = sym.gen ?? 0;
-  const renameSize = sym.renames instanceof Map ? sym.renames.size : 0;
+  const renameEntries = sym.renames instanceof Map
+    ? [...sym.renames.entries()]
+    : (sym.renames && typeof sym.renames === 'object' ? Object.entries(sym.renames) : []);
+  const renameSize = renameEntries.length;
   const cached = symbolLookupCache.get(sym);
-  if (cached && cached.gen === gen && cached.renameSize === renameSize) return cached.map;
+  if (cached && cached.gen === gen && cached.renameSize === renameSize) return cached;
 
   const map = new Map();
-  const addAliases = (rawName, addr, overwrite = false) => {
+  const exact = new Map();
+  const addExact = (lower, addr) => {
+    if (!lower || addr == null) return;
+    let big;
+    try { big = BigInt(addr); } catch { return; }
+    let set = exact.get(lower);
+    if (!set) { set = new Set(); exact.set(lower, set); }
+    set.add(big);
+  };
+  const addAliases = (rawName, addr, overwrite = false, indexExact = true) => {
     const lower = String(rawName || '').trim().toLowerCase();
     if (!lower) return;
+    if (indexExact) addExact(lower, addr);
     if (overwrite || !map.has(lower)) map.set(lower, addr);
     const stripped = lower.replace(/^(?:_|j_|imp_)+/, '');
     if (stripped && stripped !== lower && (overwrite || !map.has(stripped))) {
       map.set(stripped, addr);
     }
   };
+  const renamedAddrs = new Set();
+  for (const [addrKey, renameVal] of renameEntries) {
+    if (!renameVal || !String(renameVal).trim()) continue;
+    try { renamedAddrs.add(BigInt(addrKey)); } catch { /* ignore */ }
+  }
   const names = Array.isArray(sym.names) ? sym.names : [];
-  const addrs = Array.isArray(sym.addrs) ? sym.addrs : [];
+  const addrs = (Array.isArray(sym.addrs) || ArrayBuffer.isView(sym.addrs)) ? sym.addrs : [];
   for (let i = 0; i < names.length && i < addrs.length; i++) {
-    addAliases(names[i], addrs[i], false);
-  }
-  if (sym.renames instanceof Map) {
-    for (const [addrKey, renameVal] of sym.renames) {
-      if (!renameVal) continue;
-      try { addAliases(renameVal, BigInt(addrKey), true); } catch { /* ignore */ }
+    let isRenamed = false;
+    if (renamedAddrs.size && addrs[i] != null) {
+      try { isRenamed = renamedAddrs.has(BigInt(addrs[i])); } catch { isRenamed = false; }
     }
+    addAliases(names[i], addrs[i], false, !isRenamed);
   }
-  symbolLookupCache.set(sym, { gen, renameSize, map });
-  return map;
+  for (const [addrKey, renameVal] of renameEntries) {
+    if (!renameVal || !String(renameVal).trim()) continue;
+    try { addAliases(renameVal, BigInt(addrKey), true, true); } catch { /* ignore */ }
+  }
+  const entry = { gen, renameSize, map, exact };
+  symbolLookupCache.set(sym, entry);
+  return entry;
+}
+
+function getSymbolLookupMap(sym) {
+  return getSymbolLookupEntry(sym).map;
+}
+
+function resolveUniqueExactSymbol(app, name, { requireFunction = false } = {}) {
+  const wanted = String(name || '').trim().toLowerCase();
+  if (!wanted) return { addr: null, ambiguous: false };
+  const sym = app?.symbols;
+  if (!sym) return { addr: null, ambiguous: false };
+  const { exact } = getSymbolLookupEntry(sym);
+  const candidates = wanted.startsWith('_') ? [wanted] : [wanted, '_' + wanted];
+  for (const key of candidates) {
+    const set = exact.get(key);
+    if (!set || !set.size) continue;
+    const matches = requireFunction ? [...set].filter((a) => isFunctionStart(app, a)) : [...set];
+    if (!matches.length) continue;
+    if (matches.length === 1) return { addr: matches[0], ambiguous: false };
+    const fnMatches = requireFunction ? matches : matches.filter((a) => isFunctionStart(app, a));
+    if (fnMatches.length === 1) return { addr: fnMatches[0], ambiguous: false };
+    return { addr: null, ambiguous: true };
+  }
+  return { addr: null, ambiguous: false };
 }
 
 function symbolAddress(app, name) {
@@ -3522,13 +3651,20 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       // Navigate only when the address exists; a failed jump already explained why.
       if (addr != null) { if (app.goToAddress(addr, { announce: true })) router.navigate('/code/' + addr.toString()); return; }
     }
-    if (intent.kind === 'symbol') {
-      const addr = symbolAddress(app, intent.value);
-      if (addr != null) { openAddressTarget(app, router, addr); return; }
-    }
     if (intent.kind === 'string') {
       router.navigate('/explorer/strings?q=' + encodeURIComponent(intent.value));
       return;
+    }
+    if (intent.kind === 'symbol' || intent.kind === 'search') {
+      const exact = resolveUniqueExactSymbol(app, intent.value, { requireFunction: intent.kind !== 'symbol' });
+      if (exact.addr != null && (intent.kind === 'symbol' || isFunctionStart(app, exact.addr))) {
+        openAddressTarget(app, router, exact.addr, { preferTab: 'pseudocode' });
+        return;
+      }
+      if (!exact.ambiguous && intent.kind === 'symbol') {
+        const addr = symbolAddress(app, intent.value);
+        if (addr != null) { openAddressTarget(app, router, addr, { preferTab: 'pseudocode' }); return; }
+      }
     }
     router.navigate('/explorer/functions?q=' + encodeURIComponent(intent.value));
   });
