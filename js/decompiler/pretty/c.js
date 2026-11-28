@@ -1,4 +1,4 @@
-import { effectOf } from '../ast/nodes.js';
+import { effectOf, children } from '../ast/nodes.js';
 
 const PREC = { select: 2, oror: 3, '||': 3, andand: 4, '&&': 4, or: 5, '|': 5, xor: 6, '^': 6, and: 7, '&': 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, shr: 10, add: 11, sub: 11, fadd: 11, fsub: 11, mul: 12, smull: 12, umull: 12, div: 12, fmul: 12, fdiv: 12, sdiv: 12, udiv: 12, mod: 12, rem: 12, smod: 12, umod: 12, srem: 12, urem: 12, unary: 13, primary: 15 };
 const OP_TEXT = { add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', smull: '*', umull: '*', fmul: '*', and: '&', or: '|', xor: '^', andand: '&&', oror: '||', shl: '<<', lshr: '>>', ashr: '>>', shr: '>>', div: '/', fdiv: '/', sdiv: '/', udiv: '/', mod: '%', rem: '%', smod: '%', umod: '%', srem: '%', urem: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
@@ -95,9 +95,10 @@ export function integerText(v, bits = 64, signed = null) {
   const sv = BigInt.asIntN(width, n);
   if (signed === true && sv >= -9n && sv <= 99n) return sv.toString();
   if (width <= 64) {
-    if (n >= 0n && n <= 99n) return n.toString();
-    if (sv < 0n && signed === true) return sv.toString();
-    return `0x${BigInt.asUintN(width, n).toString(16).toUpperCase()}`;
+    if (signed === true && sv < 0n) return sv.toString();
+    const uv = BigInt.asUintN(width, n);
+    if (uv <= 99n) return uv.toString();
+    return `0x${uv.toString(16).toUpperCase()}`;
   }
 
   // C has no portable integer-literal suffix for __int128.  Build the value
@@ -183,16 +184,42 @@ function moduloArithmeticExpression(n, opts, parentPrec, ptrSet, ptrMemo) {
 // select that restores the architectural result (#4689). The constant-zero
 // divisor is already folded by the truth evaluator and never reaches a
 // printed division, so this guard only fires where the divisor is unknown.
+function exprHasSideEffect(node, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 64) return false;
+  if (node.kind === 'call') return true;
+  const eff = effectOf(node);
+  if (eff !== 'pure' && eff !== 'read') return true;
+  for (const child of children(node)) {
+    if (exprHasSideEffect(child, depth + 1)) return true;
+  }
+  return false;
+}
+
 function guardedDivision(n, opts, parentPrec, ptrSet, ptrMemo) {
   if (!GUARDED_DIV_OPS.has(n.op)) return null;
   const bits = normalizedIntegerWidth(n.bits || n.left?.bits || n.right?.bits || 64);
   const signed = n.op === 'sdiv' && n.compareSigned !== false ? true : false;
+  const divType = signed ? exactSignedType(bits) : exactUnsignedType(bits);
   // A divisor statically known to be 0 makes the whole quotient the
   // architectural 0; printing any division there would be UB-in-C.
   const divisor = n.right;
-  if (divisor?.kind === 'const' && divisor.value === 0n) return '0';
-  if (divisor?.kind === 'const') return null;
-  const divType = signed ? exactSignedType(bits) : exactUnsignedType(bits);
+  if (divisor?.kind === 'const') {
+    let constVal = null;
+    if (typeof divisor.value === 'bigint') constVal = divisor.value;
+    else if (typeof divisor.value === 'number' && Number.isSafeInteger(divisor.value)) constVal = BigInt(divisor.value);
+    else if (typeof divisor.value === 'string') {
+      try { constVal = BigInt(divisor.value.trim()); } catch { constVal = null; }
+    }
+    if (constVal !== null) {
+      if (BigInt.asUintN(bits, constVal) === 0n) {
+        if (exprHasSideEffect(n.left)) {
+          return wrap(`((void)(${printExpr(n.left, 0, opts, ptrSet, ptrMemo)}), (${divType})0)`, PREC.primary, parentPrec);
+        }
+        return '0';
+      }
+      return null;
+    }
+  }
   const matchesUnsignedVar = (node) => !signed && node?.kind === 'var'
     && node.bits != null && normalizedIntegerWidth(node.bits) === bits
     && node.signed === false;
@@ -390,14 +417,16 @@ function printExpr(n, parentPrec, opts, ptrSet, ptrMemo) {
     case 'var': return n.name || 'value';
     case 'field': {
       const rawBase = printExpr(n.base, PREC.primary, opts, ptrSet, ptrMemo);
-      const baseText = /^\s*&/.test(rawBase) ? `(${rawBase})` : rawBase;
+      const baseText = (/^\s*&/.test(rawBase) || PTR_CAST_VAR_RE.test(rawBase.trim())) ? `(${rawBase})` : rawBase;
       return `${baseText}->${n.name || `field_${BigInt(n.offset || 0).toString(16).toUpperCase()}`}`;
     }
     case 'index': {
       const idxText = printExpr(n.index, 0, opts, ptrSet, ptrMemo);
       const mustCast = opts.indexBaseIsPointer !== true;
       if (!mustCast) {
-        return `${printExpr(n.base, PREC.primary, opts, ptrSet, ptrMemo)}[${idxText}]`;
+        const rawBase = printExpr(n.base, PREC.primary, opts, ptrSet, ptrMemo);
+        const baseText = (/^\s*&/.test(rawBase) || PTR_CAST_VAR_RE.test(rawBase.trim())) ? `(${rawBase})` : rawBase;
+        return `${baseText}[${idxText}]`;
       }
       const elemBits = [8, 16, 32, 64, 128].includes(Number(n.bits)) ? Number(n.bits) : 8;
       const elemType = (typeof n.elemType === 'string' && n.elemType)
@@ -424,10 +453,11 @@ function printExpr(n, parentPrec, opts, ptrSet, ptrMemo) {
       const opLower = String(n.op || '').toLowerCase();
       const op = SIMPLE_UNARY_OPS[opLower];
       if (op) {
-        if ((opLower === 'not' || opLower === 'neg') && exprIsPointerTypedInternal(n.arg, ptrSet, ptrMemo)) {
-          return wrap(`${op}${printPointerAsUintptr(n.arg, opts, ptrSet, ptrMemo)}`, PREC.unary, parentPrec);
-        }
-        return wrap(`${op}${printExpr(n.arg, PREC.unary, opts, ptrSet, ptrMemo)}`, PREC.unary, parentPrec);
+        const inner = ((opLower === 'not' || opLower === 'neg') && exprIsPointerTypedInternal(n.arg, ptrSet, ptrMemo))
+          ? printPointerAsUintptr(n.arg, opts, ptrSet, ptrMemo)
+          : printExpr(n.arg, PREC.unary, opts, ptrSet, ptrMemo);
+        const exprText = op === '-' && inner.startsWith('-') ? `-(${inner})` : `${op}${inner}`;
+        return wrap(exprText, PREC.unary, parentPrec);
       }
       if (opLower === 'is-zero' || opLower === 'is_zero') {
         const inner = parenthesizeBitwiseOperand(printExpr(n.arg, PREC.eq, opts, ptrSet, ptrMemo));
@@ -466,17 +496,17 @@ function printExpr(n, parentPrec, opts, ptrSet, ptrMemo) {
         }
         return wrap(`(${type})${argText}`, PREC.unary, parentPrec);
       }
-      const isFpUnary = FP_UNARY_OPS.has(n.op);
+      const isFpUnary = FP_UNARY_OPS.has(opLower);
       const effectiveArg = (isFpUnary && n.arg?.kind === 'unary' && (n.arg.op === 'trunc' || n.arg.op === 'zext')) ? n.arg.arg : n.arg;
       const arg = printExpr(effectiveArg, 0, opts, ptrSet, ptrMemo);
       const is32 = Number(n.bits) === 32;
-      const srcBits = n.arg?.bits ?? (/^s\d+$/i.test(String(n.arg?.name || '')) ? 32 : 64);
+      const srcBits = effectiveArg?.bits ?? (/^s\d+$/i.test(String(effectiveArg?.name || '')) ? 32 : 64);
       const srcIsFloat = Number(srcBits) === 32;
       const dstIsFloat = n.bits != null ? is32 : srcIsFloat;
       const sintType = is32 ? 'int32_t' : 'int64_t';
       const uintType = is32 ? 'uint32_t' : 'uint64_t';
       if (opLower === 'fabs') return `${dstIsFloat ? 'fabsf' : 'fabs'}(${arg})`;
-      if (opLower === 'abs') return `abs(${arg})`;
+      if (opLower === 'abs') return `${Number(n.bits || 32) > 32 ? 'llabs' : 'abs'}(${arg})`;
       if (opLower === 'fsqrt' || opLower === 'sqrt') return `${dstIsFloat ? 'sqrtf' : 'sqrt'}(${arg})`;
       if (opLower === 'frinta' || opLower === 'frintn') return `${dstIsFloat ? 'roundf' : 'round'}(${arg})`;
       if (opLower === 'frintm') return `${dstIsFloat ? 'floorf' : 'floor'}(${arg})`;

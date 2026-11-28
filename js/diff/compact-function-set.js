@@ -20,7 +20,7 @@ function canonicalAddressKey(value) {
     const text = value.trim();
     const isHex = /^0[xX][0-9a-fA-F]+$/.test(text);
     const isDecimal = /^[0-9]+$/.test(text);
-    if ((!isHex && !isDecimal) || (isHex ? text.length > 18 : text.length > 20)) return null;
+    if ((!isHex && !isDecimal) || text.length > 66) return null;
     try { address = BigInt(text); } catch { return null; }
   } else return null;
   if (address < 0n || address > MAX_U64_ADDRESS) return null;
@@ -52,9 +52,21 @@ function snapshotColumn(column) {
 }
 
 export function createCompactFunctionSet(symbols, architecture, limit = 350000) {
-  const functionAddresses = snapshotColumn(symbols?.funcs || []);
-  const total = Number(functionAddresses.length || 0);
-  const count = boundedFunctionCount(limit, total);
+  const rawFunctions = snapshotColumn(symbols?.funcs || []);
+  const total = Number(rawFunctions.length || 0);
+  let hasInvalid = false;
+  for (let i = 0; i < total; i++) {
+    if (canonicalAddressKey(rawFunctions[i]) == null) { hasInvalid = true; break; }
+  }
+  let functionAddresses = rawFunctions;
+  if (hasInvalid) {
+    const safeFunctions = [];
+    for (let i = 0; i < total; i++) {
+      if (canonicalAddressKey(rawFunctions[i]) != null) safeFunctions.push(rawFunctions[i]);
+    }
+    functionAddresses = Object.freeze(safeFunctions);
+  }
+  const count = boundedFunctionCount(limit, functionAddresses.length);
   const symbolsForIdentity = symbolColumns(symbols?.addrs, symbols?.names);
   return Object.freeze({
     schema: COMPACT_DIFF_FUNCTION_SET_SCHEMA,
@@ -65,8 +77,12 @@ export function createCompactFunctionSet(symbols, architecture, limit = 350000) 
     symbolNames: snapshotColumn(symbolsForIdentity.names),
     count,
     total,
-    complete: count === total && symbols?.functionStartsComplete === true,
-    truncationReason: count < total ? 'function-budget' : symbols?.functionStartsComplete === true ? null : 'function-discovery-incomplete',
+    complete: !hasInvalid && count === total && symbols?.functionStartsComplete === true,
+    truncationReason: hasInvalid
+      ? 'invalid-function-entry'
+      : count < total
+        ? 'function-budget'
+        : symbols?.functionStartsComplete === true ? null : 'function-discovery-incomplete',
   });
 }
 
@@ -77,9 +93,10 @@ export function materializeCompactFunctionSet(input) {
   const symbolsForIdentity = symbolColumns(input.symbolAddresses, input.symbolNames);
   const names = new Map();
   for (let i = 0; i < symbolsForIdentity.count; i++) {
-    const name = symbolsForIdentity.names[i];
+    const rawName = symbolsForIdentity.names[i];
+    const trimmed = typeof rawName === 'string' ? rawName.trim() : '';
     const key = canonicalAddressKey(symbolsForIdentity.addresses[i]);
-    if (key != null && name) names.set(key, name);
+    if (key != null && trimmed && !names.has(key)) names.set(key, rawName);
   }
   const out = new Array(count);
   for (let i = 0; i < count; i++) {
@@ -89,10 +106,11 @@ export function materializeCompactFunctionSet(input) {
     const nextKey = next != null ? canonicalAddressKey(next) : null;
     const addrBig = addrKey != null ? BigInt(addrKey) : null;
     const nextBig = nextKey != null ? BigInt(nextKey) : null;
+    const diff = addrBig != null && nextBig != null && nextBig > addrBig ? (nextBig - addrBig) : 0n;
     out[i] = {
       address,
       name: names.get(addrKey) || null,
-      size: addrBig != null && nextBig != null && nextBig > addrBig ? Number(nextBig - addrBig) : 0,
+      size: diff > 0n && diff <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(diff) : 0,
       architecture: input.architecture,
       strings: [], calls: [], imports: [], semantic: { writes: [], thresholds: [] }, fieldAccessShape: [],
       evidenceProfile: input.evidenceProfile,
@@ -113,8 +131,10 @@ export function demoteLowInformationAbsenceClaims(result) {
     new: [],
     unresolved: [...(result.unresolved || []), ...demoted],
     changes: [...keep, ...demoted].sort((a, b) => {
-      const x = a.before?.address ?? a.after?.address ?? 0n;
-      const y = b.before?.address ?? b.after?.address ?? 0n;
+      const keyA = canonicalAddressKey(a.before?.address ?? a.after?.address);
+      const keyB = canonicalAddressKey(b.before?.address ?? b.after?.address);
+      const x = keyA != null ? BigInt(keyA) : 0n;
+      const y = keyB != null ? BigInt(keyB) : 0n;
       return x < y ? -1 : x > y ? 1 : 0;
     }),
   };

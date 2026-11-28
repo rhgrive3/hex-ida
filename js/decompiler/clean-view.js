@@ -336,9 +336,16 @@ export function elideDeadStackSpills(lines) {
     }
   };
 
+  const sanitizedLines = sanitizeLinesForAnalysis(lines);
+  let prevLineBracelessCtrl = false;
+
   for (let i = 0; i < lines.length; i++) {
-    const raw = getLineText(lines[i]);
-    const clean = stripCommentsPreservingStrings(raw);
+    const clean = sanitizedLines[i];
+    const trimmed = clean.trim();
+    if (!trimmed) continue;
+
+    const isAfterBraceless = prevLineBracelessCtrl;
+    prevLineBracelessCtrl = BRACELESS_CTRL_RE.test(trimmed);
 
     const declMatch = LOCAL_DECL_RE.exec(clean);
     if (declMatch) {
@@ -355,6 +362,11 @@ export function elideDeadStackSpills(lines) {
       const varName = assignMatch[1];
       const rhs = assignMatch[2];
       if (VAR_NAME_RE.test(varName)) {
+        if (isAfterBraceless) {
+          readOrAddrTaken.add(varName);
+          markReads(rhs);
+          continue;
+        }
         if (!assignEntries.has(varName)) assignEntries.set(varName, []);
         assignEntries.get(varName).push({ index: i, rhs });
         markReads(rhs);
@@ -467,200 +479,215 @@ export function foldCalleeSavedStackSpills(lines) {
     }
   }
 
-  const slotOps = new Map(); // numeric byte offset -> Array<{ index, kind: 'save'|'restore', reg }>
-  const externalAccessOffsets = new Set(); // numeric byte offsets
-  const spWriteIndices = [];
-  let spEscaped = false;
-
-  const recordSlotOp = (offset, op) => {
-    if (!slotOps.has(offset)) slotOps.set(offset, []);
-    slotOps.get(offset).push(op);
-  };
-
-  for (let i = 0; i < sanitizedLines.length; i++) {
-    const clean = sanitizedLines[i];
-    if (!clean.trim()) continue;
-
-    if (lineWritesReg(clean, 'sp')) {
-      spWriteIndices.push(i);
+  const funcOpenBraces = [];
+  const funcLineIndices = new Map();
+  for (let i = 0; i < lineFuncOpenBrace.length; i++) {
+    const ob = lineFuncOpenBrace[i];
+    if (ob === -1) continue;
+    if (!funcLineIndices.has(ob)) {
+      funcLineIndices.set(ob, []);
+      funcOpenBraces.push(ob);
     }
-
-    const saveMatch = CALLEE_SAVE_RE.exec(clean);
-    if (saveMatch) {
-      const offset = parseStackOffset(saveMatch[1], saveMatch[2]);
-      const reg = saveMatch[3];
-      if (offset !== null) {
-        if (reg === 'sp') {
-          spEscaped = true;
-        } else if (CALLEE_SAVED_REGS.has(reg)) {
-          recordSlotOp(offset, { index: i, kind: 'save', reg });
-        } else {
-          externalAccessOffsets.add(offset);
-        }
-        continue;
-      }
-    }
-
-    const restoreMatch = CALLEE_RESTORE_RE.exec(clean);
-    if (restoreMatch) {
-      const reg = restoreMatch[1];
-      const offset = parseStackOffset(restoreMatch[2], restoreMatch[3]);
-      if (offset !== null) {
-        if (reg === 'sp') {
-          spEscaped = true;
-        } else if (CALLEE_SAVED_REGS.has(reg)) {
-          recordSlotOp(offset, { index: i, kind: 'restore', reg });
-        } else {
-          externalAccessOffsets.add(offset);
-        }
-        continue;
-      }
-    }
-
-    if (!SP_TOKEN_RE.test(clean)) {
-      continue;
-    }
-
-    if (isRecognizedSpAdjustmentOrDecl(clean)) {
-      continue;
-    }
-
-    STACK_SLOT_REF_RE.lastIndex = 0;
-    let m;
-    let stripped = '';
-    let lastPos = 0;
-    while ((m = STACK_SLOT_REF_RE.exec(clean)) !== null) {
-      const prefix = clean.slice(0, m.index);
-      if (/&\s*(?:\(\s*)*$/.test(prefix)) {
-        spEscaped = true;
-      }
-      const offset = parseStackOffset(m[1], m[2]);
-      if (offset !== null) {
-        externalAccessOffsets.add(offset);
-      } else {
-        spEscaped = true;
-      }
-      stripped += clean.slice(lastPos, m.index) + ' ';
-      lastPos = m.index + m[0].length;
-    }
-    stripped += clean.slice(lastPos);
-
-    if (SP_TOKEN_RE.test(stripped)) {
-      spEscaped = true;
-    }
+    funcLineIndices.get(ob).push(i);
   }
 
   const foldIndices = new Set();
   const elideDeclIndices = new Set();
+  const foldedByFunc = new Map();
+  const recordFold = (funcOpenBrace, idx) => {
+    foldIndices.add(idx);
+    if (!foldedByFunc.has(funcOpenBrace)) foldedByFunc.set(funcOpenBrace, new Set());
+    foldedByFunc.get(funcOpenBrace).add(idx);
+  };
 
-  if (!spEscaped && slotOps.size > 0) {
-    const allSlotOffsets = Array.from(slotOps.keys());
-    const allExternalOffsets = Array.from(externalAccessOffsets);
+  for (const funcOpenBrace of funcOpenBraces) {
+    const indices = funcLineIndices.get(funcOpenBrace) || [];
+    const funcEndIdx = indices.length > 0 ? indices[indices.length - 1] : funcOpenBrace;
+    const slotOps = new Map(); // numeric byte offset -> Array<{ index, kind: 'save'|'restore', reg }>
+    const externalAccessOffsets = new Set(); // numeric byte offsets
+    const spWriteIndices = [];
+    let spEscaped = false;
 
-    const hasOverlappingAccess = (off) => {
-      for (const extOff of allExternalOffsets) {
-        if (extOff >= off - 15 && extOff <= off + 7) {
-          return true;
-        }
-      }
-      for (const otherOff of allSlotOffsets) {
-        if (otherOff !== off && otherOff >= off - 7 && otherOff <= off + 7) {
-          return true;
-        }
-      }
-      return false;
+    const recordSlotOp = (offset, op) => {
+      if (!slotOps.has(offset)) slotOps.set(offset, []);
+      slotOps.get(offset).push(op);
     };
 
-    for (const [offset, ops] of slotOps.entries()) {
-    if (hasOverlappingAccess(offset)) continue;
+    for (const i of indices) {
+      const clean = sanitizedLines[i];
+      if (!clean.trim()) continue;
 
-    const regs = new Set(ops.map((op) => op.reg));
-    if (regs.size !== 1) continue;
-    const reg = ops[0].reg;
-    if (!CALLEE_SAVED_REGS.has(reg)) continue;
-
-    const saves = ops.filter((op) => op.kind === 'save');
-    const restores = ops.filter((op) => op.kind === 'restore');
-    if (saves.length !== 1) continue;
-
-    const saveIdx = saves[0].index;
-    if (
-      lineDepth[saveIdx] !== 1 ||
-      lineFuncOpenBrace[saveIdx] === -1 ||
-      lineAfterBracelessCtrl[saveIdx]
-    ) {
-      continue;
-    }
-
-    let writtenBeforeSave = false;
-    for (let j = 0; j < saveIdx; j++) {
-      if (lineWritesReg(sanitizedLines[j], reg)) {
-        writtenBeforeSave = true;
-        break;
+      if (lineWritesReg(clean, 'sp')) {
+        spWriteIndices.push(i);
       }
-    }
-    if (writtenBeforeSave) continue;
 
-    if (restores.length > 0) {
-      const firstRestoreIdx = restores[0].index;
-      const lastRestoreIdx = restores[restores.length - 1].index;
-      if (saveIdx >= firstRestoreIdx) continue;
-      if (spWriteIndices.some((spIdx) => spIdx > saveIdx && spIdx < lastRestoreIdx)) {
+      const saveMatch = CALLEE_SAVE_RE.exec(clean);
+      if (saveMatch) {
+        const offset = parseStackOffset(saveMatch[1], saveMatch[2]);
+        const reg = saveMatch[3];
+        if (offset !== null) {
+          if (reg === 'sp') {
+            spEscaped = true;
+          } else if (CALLEE_SAVED_REGS.has(reg)) {
+            recordSlotOp(offset, { index: i, kind: 'save', reg });
+          } else {
+            externalAccessOffsets.add(offset);
+          }
+          continue;
+        }
+      }
+
+      const restoreMatch = CALLEE_RESTORE_RE.exec(clean);
+      if (restoreMatch) {
+        const reg = restoreMatch[1];
+        const offset = parseStackOffset(restoreMatch[2], restoreMatch[3]);
+        if (offset !== null) {
+          if (reg === 'sp') {
+            spEscaped = true;
+          } else if (CALLEE_SAVED_REGS.has(reg)) {
+            recordSlotOp(offset, { index: i, kind: 'restore', reg });
+          } else {
+            externalAccessOffsets.add(offset);
+          }
+          continue;
+        }
+      }
+
+      if (!SP_TOKEN_RE.test(clean)) {
         continue;
       }
 
-      let allRestoresSound = true;
-      for (const r of restores) {
-        const rIdx = r.index;
-        const isTopLevel =
-          lineDepth[rIdx] === 1 &&
-          lineFuncOpenBrace[rIdx] === lineFuncOpenBrace[saveIdx] &&
-          !lineAfterBracelessCtrl[rIdx];
+      if (isRecognizedSpAdjustmentOrDecl(clean)) {
+        continue;
+      }
 
-        const isEarlyReturn =
-          !isTopLevel &&
-          lineDepth[rIdx] >= 2 &&
-          lineFuncOpenBrace[rIdx] === lineFuncOpenBrace[saveIdx] &&
-          !lineAfterBracelessCtrl[rIdx] &&
-          isEarlyReturnRestore(sanitizedLines, rIdx);
-        if (!isTopLevel && !isEarlyReturn) {
-          allRestoresSound = false;
-          break;
+      STACK_SLOT_REF_RE.lastIndex = 0;
+      let m;
+      let stripped = '';
+      let lastPos = 0;
+      while ((m = STACK_SLOT_REF_RE.exec(clean)) !== null) {
+        const prefix = clean.slice(0, m.index);
+        if (/&\s*(?:\(\s*)*$/.test(prefix)) {
+          spEscaped = true;
+        }
+        const offset = parseStackOffset(m[1], m[2]);
+        if (offset !== null) {
+          externalAccessOffsets.add(offset);
+        } else {
+          spEscaped = true;
+        }
+        stripped += clean.slice(lastPos, m.index) + ' ';
+        lastPos = m.index + m[0].length;
+      }
+      stripped += clean.slice(lastPos);
+
+      if (SP_TOKEN_RE.test(stripped)) {
+        spEscaped = true;
+      }
+    }
+
+    if (!spEscaped && slotOps.size > 0) {
+      const allSlotOffsets = Array.from(slotOps.keys());
+      const allExternalOffsets = Array.from(externalAccessOffsets);
+
+      const hasOverlappingAccess = (off) => {
+        for (const extOff of allExternalOffsets) {
+          if (extOff >= off - 15 && extOff <= off + 7) {
+            return true;
+          }
+        }
+        for (const otherOff of allSlotOffsets) {
+          if (otherOff !== off && otherOff >= off - 7 && otherOff <= off + 7) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      for (const [offset, ops] of slotOps.entries()) {
+        if (hasOverlappingAccess(offset)) continue;
+
+        const regs = new Set(ops.map((op) => op.reg));
+        if (regs.size !== 1) continue;
+        const reg = ops[0].reg;
+        if (!CALLEE_SAVED_REGS.has(reg)) continue;
+
+        const saves = ops.filter((op) => op.kind === 'save');
+        const restores = ops.filter((op) => op.kind === 'restore');
+        if (saves.length !== 1) continue;
+
+        const saveIdx = saves[0].index;
+        if (
+          lineDepth[saveIdx] !== 1 ||
+          lineFuncOpenBrace[saveIdx] !== funcOpenBrace ||
+          lineAfterBracelessCtrl[saveIdx]
+        ) {
+          continue;
         }
 
-        for (let k = rIdx + 1; k < sanitizedLines.length; k++) {
-          if (lineReadsReg(sanitizedLines[k], reg)) {
-            allRestoresSound = false;
+        let writtenBeforeSave = false;
+        for (let j = funcOpenBrace + 1; j < saveIdx; j++) {
+          if (lineFuncOpenBrace[j] !== funcOpenBrace) continue;
+          if (lineWritesReg(sanitizedLines[j], reg)) {
+            writtenBeforeSave = true;
             break;
           }
         }
-        if (!allRestoresSound) break;
-      }
+        if (writtenBeforeSave) continue;
 
-      if (!allRestoresSound) continue;
+        if (restores.length > 0) {
+          const firstRestoreIdx = restores[0].index;
+          const lastRestoreIdx = restores[restores.length - 1].index;
+          if (saveIdx >= firstRestoreIdx) continue;
+          if (spWriteIndices.some((spIdx) => spIdx > saveIdx && spIdx < lastRestoreIdx)) {
+            continue;
+          }
 
-      for (const op of ops) {
-        foldIndices.add(op.index);
+          let allRestoresSound = true;
+          for (const r of restores) {
+            const rIdx = r.index;
+            const isTopLevel =
+              lineDepth[rIdx] === 1 &&
+              lineFuncOpenBrace[rIdx] === funcOpenBrace &&
+              !lineAfterBracelessCtrl[rIdx];
+
+            const isEarlyReturn =
+              !isTopLevel &&
+              lineDepth[rIdx] >= 2 &&
+              lineFuncOpenBrace[rIdx] === funcOpenBrace &&
+              !lineAfterBracelessCtrl[rIdx] &&
+              isEarlyReturnRestore(sanitizedLines, rIdx);
+            if (!isTopLevel && !isEarlyReturn) {
+              allRestoresSound = false;
+              break;
+            }
+
+            for (let k = rIdx + 1; k <= funcEndIdx; k++) {
+              if (lineFuncOpenBrace[k] !== funcOpenBrace) continue;
+              if (lineReadsReg(sanitizedLines[k], reg)) {
+                allRestoresSound = false;
+                break;
+              }
+            }
+            if (!allRestoresSound) break;
+          }
+
+          if (!allRestoresSound) continue;
+
+          for (const op of ops) {
+            recordFold(funcOpenBrace, op.index);
+          }
+        } else if (PROLOGUE_ONLY_CALLEE_SAVED_REGS.has(reg)) {
+          if (spWriteIndices.some((spIdx) => spIdx > saveIdx)) {
+            continue;
+          }
+          recordFold(funcOpenBrace, saveIdx);
+        }
       }
-    } else if (PROLOGUE_ONLY_CALLEE_SAVED_REGS.has(reg)) {
-      if (spWriteIndices.some((spIdx) => spIdx > saveIdx)) {
-        continue;
-      }
-      foldIndices.add(saveIdx);
-    }
     }
   }
 
   // Independent SSA callee-saved spill folding (`local_[mp]<hex> = local_<reg>;`)
-  const funcOpenBraces = [];
-  const seenOpenBraces = new Set();
-  for (let i = 0; i < lineFuncOpenBrace.length; i++) {
-    const ob = lineFuncOpenBrace[i];
-    if (ob !== -1 && !seenOpenBraces.has(ob)) {
-      seenOpenBraces.add(ob);
-      funcOpenBraces.push(ob);
-    }
-  }
 
   const ssaSaveCandidates = [];
   for (const funcOpenBrace of funcOpenBraces) {
@@ -744,9 +771,9 @@ export function foldCalleeSavedStackSpills(lines) {
     const regCheck = verifySsaVarSound(regVar);
     if (!regCheck.ok) continue;
 
-    foldIndices.add(saveIdx);
+    recordFold(funcOpenBrace, saveIdx);
     for (const rIdx of matchedRestores) {
-      foldIndices.add(rIdx);
+      recordFold(funcOpenBrace, rIdx);
     }
     if (slotCheck.declIdx !== -1) {
       elideDeclIndices.add(slotCheck.declIdx);
@@ -764,57 +791,64 @@ export function foldCalleeSavedStackSpills(lines) {
     };
   }
 
-  const firstFoldedIdx = Math.min(...foldIndices);
-  const firstFoldedItem = lines[firstFoldedIdx];
-  const origOpenBraceIdx = lineFuncOpenBrace[firstFoldedIdx];
   const outLines = [];
-  let openBraceIdxInOut = -1;
+  const openBraceOutIdxByFunc = new Map();
   for (let i = 0; i < lines.length; i++) {
     if (foldIndices.has(i) || elideDeclIndices.has(i)) continue;
-    if (i === origOpenBraceIdx) {
-      openBraceIdxInOut = outLines.length;
+    if (foldedByFunc.has(i)) {
+      openBraceOutIdxByFunc.set(i, outLines.length);
     }
     outLines.push(lines[i]);
   }
 
-  const summaryText = `/* [Clean View: folded ${count} callee-saved prologue/epilogue spill ops] */`;
-  let summaryLine;
-  if (usesLineObjects) {
-    const indent = typeof firstFoldedItem?.indent === 'number' ? firstFoldedItem.indent : 1;
-    summaryLine = {
-      kind: 'comment',
-      indent,
-      text: summaryText,
-      row: null,
-      addr: null,
-      note: null,
-      _origIdx: -1,
-    };
-  } else {
-    const leadingWsMatch = /^(\s*)/.exec(getLineText(firstFoldedItem));
-    const indentStr = leadingWsMatch && leadingWsMatch[1] ? leadingWsMatch[1] : '  ';
-    summaryLine = `${indentStr}${summaryText}`;
-  }
-
-  // Insert right after the function's opening `{` (depth 0 -> 1) and any local declarations
-  let insertIdx = 0;
-  if (openBraceIdxInOut !== -1) {
-    let idx = openBraceIdxInOut + 1;
-    while (idx < outLines.length) {
-      const item = outLines[idx];
-      const text = getLineText(item);
-      const trimmed = text.trim();
-      const isDeclObj = usesLineObjects && item && typeof item === 'object' && item.kind === 'decl';
-      if (trimmed === '' || isDeclObj || ANY_LOCAL_DECL_RE.test(stripCommentsPreservingStrings(text))) {
-        idx++;
-        continue;
-      }
-      break;
+  // Insert one summary comment per function that had folded spills (reverse order preserves indices)
+  const funcEntries = Array.from(foldedByFunc.entries()).sort((a, b) => b[0] - a[0]);
+  for (const [funcOpenBrace, funcFolds] of funcEntries) {
+    const funcCount = funcFolds.size;
+    if (funcCount === 0) continue;
+    const firstFoldedIdx = Math.min(...funcFolds);
+    const firstFoldedItem = lines[firstFoldedIdx];
+    const summaryText = `/* [Clean View: folded ${funcCount} callee-saved prologue/epilogue spill ops] */`;
+    let summaryLine;
+    if (usesLineObjects) {
+      const indent = typeof firstFoldedItem?.indent === 'number' ? firstFoldedItem.indent : 1;
+      summaryLine = {
+        kind: 'comment',
+        indent,
+        text: summaryText,
+        row: null,
+        addr: null,
+        note: null,
+        _origIdx: -1,
+      };
+    } else {
+      const leadingWsMatch = /^(\s*)/.exec(getLineText(firstFoldedItem));
+      const indentStr = leadingWsMatch && leadingWsMatch[1] ? leadingWsMatch[1] : '  ';
+      summaryLine = `${indentStr}${summaryText}`;
     }
-    insertIdx = idx;
-  }
 
-  outLines.splice(insertIdx, 0, summaryLine);
+    const openBraceIdxInOut = openBraceOutIdxByFunc.has(funcOpenBrace)
+      ? openBraceOutIdxByFunc.get(funcOpenBrace)
+      : -1;
+    let insertIdx = 0;
+    if (openBraceIdxInOut !== -1) {
+      let idx = openBraceIdxInOut + 1;
+      while (idx < outLines.length) {
+        const item = outLines[idx];
+        const text = getLineText(item);
+        const trimmed = text.trim();
+        const isDeclObj = usesLineObjects && item && typeof item === 'object' && item.kind === 'decl';
+        if (trimmed === '' || isDeclObj || ANY_LOCAL_DECL_RE.test(stripCommentsPreservingStrings(text))) {
+          idx++;
+          continue;
+        }
+        break;
+      }
+      insertIdx = idx;
+    }
+
+    outLines.splice(insertIdx, 0, summaryLine);
+  }
 
   return {
     lines: outLines,
@@ -911,13 +945,15 @@ export function formatCleanViewLines(lines, options = {}) {
   // 4. Apple ObjC / Swift / ARC / 4-ABI demangle pass (preserving line metadata)
   if (refineAppleSwift) {
     const refined = [];
+    let appleState = { inBlockComment: false, prevLineBracelessCtrl: false };
     for (const item of current) {
       const text = getLineText(item);
       if (text.trim() === '') {
         refined.push(item);
         continue;
       }
-      const res = refineAppleSwiftDecompile(text);
+      const res = refineAppleSwiftDecompile(text, { state: appleState });
+      appleState = res.state;
       stats.objcStubsRewritten += res.stats.objcStubsRewritten;
       stats.objcDirectRewritten += res.stats.objcDirectRewritten;
       stats.arcOpsFolded += res.stats.arcOpsFolded;

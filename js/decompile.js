@@ -68,11 +68,58 @@ function detectModelArchitecture(model, opts) {
   return 'unknown';
 }
 
+function toBigIntSafe(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) return null;
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try { return BigInt(trimmed); } catch { return null; }
+  }
+  return null;
+}
+
+function hasActiveUserNotes(notes) {
+  if (!notes || typeof notes !== 'object') return false;
+  const isStandardStore = notes.names instanceof Map
+    || notes.comments instanceof Map
+    || notes.vars instanceof Map
+    || notes.types instanceof Map
+    || Array.isArray(notes.structs);
+  if (isStandardStore) {
+    return (notes.names instanceof Map && notes.names.size > 0)
+      || (notes.comments instanceof Map && notes.comments.size > 0)
+      || (notes.vars instanceof Map && notes.vars.size > 0)
+      || (notes.types instanceof Map && notes.types.size > 0)
+      || (Array.isArray(notes.structs) && notes.structs.length > 0);
+  }
+  return typeof notes.nameOf === 'function'
+    || typeof notes.typeOf === 'function'
+    || typeof notes.varName === 'function';
+}
+
 function extractArm64Words(insns) {
   if (!Array.isArray(insns) || insns.length === 0) return null;
   const words = new Uint32Array(insns.length);
+  const hasFirstAddr = insns[0]?.address != null;
+  let expectedAddr = null;
+  if (hasFirstAddr) {
+    expectedAddr = toBigIntSafe(insns[0].address);
+    if (expectedAddr === null) return null;
+  }
   for (let i = 0; i < insns.length; i += 1) {
     const ins = insns[i];
+    if (hasFirstAddr) {
+      if (ins?.address == null) return null;
+      const addr = toBigIntSafe(ins.address);
+      if (addr === null || addr !== expectedAddr) return null;
+      expectedAddr += 4n;
+    } else if (ins?.address != null) {
+      return null;
+    }
     if (typeof ins?.word === 'number' && Number.isFinite(ins.word)) {
       words[i] = ins.word >>> 0;
     } else if (ins?.rawBytes instanceof Uint8Array && ins.rawBytes.length === 4) {
@@ -89,14 +136,23 @@ function extractX86_64Bytes(insns) {
   if (!Array.isArray(insns) || insns.length === 0) return null;
   let totalBytes = 0;
   const chunks = [];
-  let expectedAddr = insns[0]?.address != null ? BigInt(insns[0].address) : null;
+  const hasFirstAddr = insns[0]?.address != null;
+  let expectedAddr = null;
+  if (hasFirstAddr) {
+    expectedAddr = toBigIntSafe(insns[0].address);
+    if (expectedAddr === null) return null;
+  }
   for (let i = 0; i < insns.length; i += 1) {
     const ins = insns[i];
     const raw = ins?.rawBytes ?? ins?.bytes;
     if (!(raw instanceof Uint8Array || Array.isArray(raw)) || raw.length === 0) return null;
-    if (expectedAddr !== null) {
-      if (ins?.address == null || BigInt(ins.address) !== expectedAddr) return null;
+    if (hasFirstAddr) {
+      if (ins?.address == null) return null;
+      const addr = toBigIntSafe(ins.address);
+      if (addr === null || addr !== expectedAddr) return null;
       expectedAddr += BigInt(raw.length);
+    } else if (ins?.address != null) {
+      return null;
     }
     chunks.push(raw);
     totalBytes += raw.length;
@@ -115,6 +171,26 @@ function tryWasmDecompile(model, opts) {
   const effectiveMode = getEngineMode(opts);
   if (effectiveMode === 'js') {
     recordFallback('decompile:wasm_disabled');
+    return null;
+  }
+  if (opts?.forceLegacyDecompiler === true || opts?.semanticIR === false) {
+    recordFallback('decompile:legacy_or_no_semantic_ir');
+    return null;
+  }
+  if (opts?.phase8PrepareProof === true || opts?.phase8ProofOnlyRewrites === true) {
+    recordFallback('decompile:proof_mode');
+    return null;
+  }
+  if (hasActiveUserNotes(opts?.notes)) {
+    recordFallback('decompile:active_user_notes');
+    return null;
+  }
+  if (opts?.objcSyntax === 'c') {
+    recordFallback('decompile:objc_c_syntax');
+    return null;
+  }
+  if (typeof opts?.shouldAbort === 'function') {
+    recordFallback('decompile:abortable_request');
     return null;
   }
   if (!isWasmEngineAvailable()) {
@@ -137,9 +213,20 @@ function tryWasmDecompile(model, opts) {
     return null;
   }
   const insns = model?.instructions;
-  const baseAddr = opts?.addr != null
-    ? BigInt(opts.addr)
-    : (insns?.[0]?.address != null ? BigInt(insns[0].address) : 0n);
+  let baseAddr = 0n;
+  if (opts?.addr != null) {
+    baseAddr = toBigIntSafe(opts.addr);
+    if (baseAddr === null) {
+      recordFallback('decompile:invalid_base_addr');
+      return null;
+    }
+  } else if (insns?.[0]?.address != null) {
+    baseAddr = toBigIntSafe(insns[0].address);
+    if (baseAddr === null) {
+      recordFallback('decompile:invalid_base_addr');
+      return null;
+    }
+  }
   const funcName = String(opts?.name ?? model?.name ?? '');
 
   if (isX86_64) {
