@@ -16,7 +16,7 @@ import { runWasmStructuralAnalysis } from './analysis/wasm-suite.js';
 
 const SIGNALS = [
   { id: 'endpoint', level: 'high', re: /^https?:\/\/[^\s"']{4,}/i, max: 12 },
-  { id: 'anticheat', level: 'high', re: /jailbr|jailbroken|cydia|frida(?!y)|substrate|tamper|integrity|debugger|ptrace|sandbox_?check|不正|改造|チート/i, max: 8 },
+  { id: 'anticheat', level: 'high', re: /cheat|jailbr|jailbroken|cydia|frida(?!y)|substrate|tamper|integrity|debugger|ptrace|sandbox_?check|不正|改造|チート/i, max: 8 },
   { id: 'crypto', level: 'normal', re: /\baes\b|\bsha(1|256|512)\b|\bhmac\b|\brsa\b|encrypt|decrypt|cipher|keychain|private_?key/i, max: 8 },
   { id: 'ads', level: 'normal', re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adjust\.com|appsflyer|interstitial|rewarded[\s_-]?(?:ads?|video|interstitial)/i, max: 6 },
   { id: 'purchase', level: 'high', re: /storekit|skpayment|receipt|verifyreceipt|subscription|in_?app_?purchase/i, max: 6 },
@@ -281,7 +281,7 @@ function stringByteSpan(s) {
   return carried;
 }
 
-export function findings(strings, program, symbols, limit = 40) {
+export function findings(strings, program, symbols, limit = 50) {
   const out = [];
   if (!program || limit <= 0) return out;
   // Collect referenced (actionable) matches first per signal so dead/unreferenced
@@ -291,7 +291,7 @@ export function findings(strings, program, symbols, limit = 40) {
     unreferenced: [],
     byText: new Map(),
     probes: 0,
-    maxProbes: Math.max(sig.max * 64, 256),
+    maxProbes: Math.max(sig.max * 512, 2048),
     done: false,
   }));
   let activeSignals = SIGNALS.length;
@@ -366,18 +366,15 @@ export function findings(strings, program, symbols, limit = 40) {
       }
     }
   }
-  for (let si = 0; si < SIGNALS.length && out.length < limit; si++) {
+  for (let si = 0; si < SIGNALS.length; si++) {
     const sig = SIGNALS[si];
     const bucket = buckets[si];
     const combined = bucket.actionable.concat(bucket.unreferenced).slice(0, sig.max);
-    for (const entry of combined) {
-      if (out.length >= limit) break;
-      out.push(entry);
-    }
+    for (const entry of combined) out.push(entry);
   }
-  // Proven/actionable findings always precede dead strings.
+  // Proven/actionable findings always precede dead strings before applying total limit.
   out.sort((a, b) => Number(b.actionable) - Number(a.actionable) || b.users.length - a.users.length);
-  return out;
+  return out.slice(0, limit);
 }
 
 export async function autoAnalyze(opts) {

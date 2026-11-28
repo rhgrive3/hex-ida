@@ -6,20 +6,21 @@ import { groupByFeature } from '../js/features.js';
 import { goalFromPreset } from '../js/goals.js';
 import { buildStringMap } from '../js/appmap.js';
 
-test('anticheat signal and classifiers ignore Friday/FRIDAY while matching real Frida tokens', () => {
+test('anticheat signal and classifiers ignore Friday/FRIDAY while matching real Frida and cheat tokens', () => {
   const strings = [
     { addr: 0x1000n, text: 'Friday', byteLength: 6 },
     { addr: 0x1100n, text: 'NAME_DAY_OF_WEEK_FRIDAY', byteLength: 23 },
     { addr: 0x1200n, text: 'frida-server', byteLength: 12 },
     { addr: 0x1300n, text: 'checkFridaHook', byteLength: 14 },
+    { addr: 0x1400n, text: 'CheatCheckValue', byteLength: 15 },
   ];
   const program = {
     functionsReferencing() { return []; },
   };
 
-  const hits = findings(strings, program, null, 40);
+  const hits = findings(strings, program, null, 50);
   const anticheatTexts = hits.filter((h) => h.id === 'anticheat').map((h) => h.text);
-  assert.deepEqual(anticheatTexts, ['frida-server', 'checkFridaHook']);
+  assert.deepEqual(anticheatTexts, ['frida-server', 'checkFridaHook', 'CheatCheckValue']);
 
   const grouped = groupByFeature(strings, 20);
   const featureAnticheat = grouped.find((g) => g.id === 'anticheat');
@@ -27,6 +28,7 @@ test('anticheat signal and classifiers ignore Friday/FRIDAY while matching real 
   assert.equal(featureTexts.includes('Friday'), false);
   assert.equal(featureTexts.includes('NAME_DAY_OF_WEEK_FRIDAY'), false);
   assert.equal(featureTexts.includes('frida-server'), true);
+  assert.equal(featureTexts.includes('CheatCheckValue'), true);
 
   const smap = buildStringMap({
     strings,
@@ -66,7 +68,7 @@ test('findings() prioritizes referenced (actionable) matches even after sig.max 
     },
   };
 
-  const hits = findings(strings, program, symbols, 40);
+  const hits = findings(strings, program, symbols, 50);
   const referenced = hits.filter((h) => h.id === 'anticheat' && h.actionable);
   assert.equal(referenced.length, 1);
   assert.equal(referenced[0].text, 'ptrace_deny_attach');
@@ -86,7 +88,7 @@ test('findings() deduplicates identical text per signal while merging and promot
     },
   };
 
-  const hits = findings(strings, program, null, 40);
+  const hits = findings(strings, program, null, 50);
   const endpoints = hits.filter((h) => h.id === 'endpoint');
   assert.equal(endpoints.length, 2);
   const checkHit = endpoints.find((h) => h.text === 'https://api.example.com/v1/check');
@@ -94,6 +96,36 @@ test('findings() deduplicates identical text per signal while merging and promot
   assert.equal(checkHit.status, 'referenced');
   assert.equal(checkHit.users.length, 1);
   assert.equal(checkHit.users[0].addr, 0x200000n);
+});
+
+test('findings() sorts actionable entries across all signals before slicing by limit', () => {
+  const strings = [];
+  for (let i = 0; i < 12; i++) {
+    strings.push({ addr: BigInt(0x1000 + i * 0x40), text: `https://unreferenced${i}.example.com`, byteLength: 34 });
+  }
+  strings.push({ addr: 0x9000n, text: '/Users/dev/secret/build.cpp', byteLength: 27 });
+  const program = {
+    functionsReferencing(addr) {
+      return addr === 0x9000n ? [{ addr: 0x300000n, site: 0x300010n }] : [];
+    },
+  };
+
+  const hits = findings(strings, program, null, 8);
+  assert.equal(hits.length, 8);
+  assert.equal(hits[0].id, 'path');
+  assert.equal(hits[0].actionable, true);
+});
+
+test('features.js save category ignores UI progress indicators while keeping save progress', () => {
+  const strings = [
+    { addr: 0x1000n, text: 'void FlashMotion::Node::showProgressBar(float, bool)', byteLength: 52 },
+    { addr: 0x1100n, text: 'Initialization in progress.', byteLength: 27 },
+    { addr: 0x1200n, text: 'progress\\meter\\layer_1', byteLength: 22 },
+    { addr: 0x1300n, text: 'save_player_progress', byteLength: 20 },
+  ];
+  const grouped = groupByFeature(strings, 20);
+  const saveTexts = (grouped.find((g) => g.id === 'save')?.items || []).map((i) => i.text);
+  assert.deepEqual(saveTexts, ['save_player_progress']);
 });
 
 test('notableFunctions() falls back to next function boundary when range.end is null (Mach-O LC_FUNCTION_STARTS)', () => {
