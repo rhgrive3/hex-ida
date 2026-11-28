@@ -1728,6 +1728,7 @@ export function showOverview(app) {
     const publishedCxx = cxxMemberIndexForApp(app);
     if (cached && region && cached.key === region.id && cached.gen === app.symbols.gen &&
         (cached.cxxFields || null) === publishedCxx && (cached.cxxRevision || 0) === (publishedCxx?.revision || 0)) {
+      app._syncAutoReportWasmAnalysis?.(cached.report);
       renderAutoReport(app, sheet, later, cached.report, region);
       return;
     }
@@ -1750,10 +1751,22 @@ export function showOverview(app) {
       if (isStale()) return;
       const cxxFields = cxxMemberIndexForApp(app);
       const cxxRevision = cxxFields?.revision || 0;
+      const sliceInfo = app.currentSlice?.()?.info || null;
       const report = await autoAnalyze({
         cxxFields,
         strings, program, symbols: app.symbols, region, fields: app.fields,
         shapes, cryptoScan, recognition,
+        image: app.image ?? app.backend?.image ?? null,
+        dataSections: Array.isArray(app.dataSections) ? app.dataSections : null,
+        objcModel: app.objcModel ?? null,
+        swiftModel: app.swiftModel ?? null,
+        codeBytes: app.codeBytes ?? null,
+        dataBytes: app.dataBytes ?? null,
+        textConstBytes: app.textConstBytes ?? null,
+        textConstVa: app.textConstVa ?? null,
+        dataVa: app.dataVa ?? null,
+        imageBase: app.imageBase ?? app.image?.imageBase ?? sliceInfo?.textVM ?? null,
+        architecture: app.store?.get?.('architecture') || app.currentSlice?.()?.capability?.architecture || sliceInfo?.architecture || null,
         analyze: makeAnalyzer(app, region, runController.signal),
         scanAccess: makeAccessScanner(app, region, runController.signal),
         isCancelled: () => isStale(),
@@ -1771,6 +1784,7 @@ export function showOverview(app) {
       box.done();
       if (isStale()) return;
       app.autoReport = { report, key: region ? region.id : null, gen: app.symbols.gen, cxxFields, cxxRevision };
+      app._syncAutoReportWasmAnalysis?.(report);
       void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
       renderAutoReport(app, sheet, later, report, region);
     }).catch((err) => {

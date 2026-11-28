@@ -556,5 +556,29 @@ describe('Track 5: ProductWorkspace resilience & SHA-256 identity', () => {
     assert.ok(idb2.projects.has(keyA2), 'debounced autosave must be persisted to IDB when invalidate() runs');
     assert.match(idb2.projects.get(keyA2).payload, /flushed_on_switch/);
   });
+
+  it('rejects empty/mismatched patches with same non-zero length message and malformed session binaryId before mutation', () => {
+    const app = createMockApp({ fileSize: 4096 });
+    app.notes.names.set('4096', 'keep_me');
+
+    const emptyPatchProject = createHexProject({ binary: binaryIdentity(app) });
+    emptyPatchProject.user.patches = [{ offset: 0n, before: [], after: [] }];
+    assert.throws(
+      () => applyWorkspaceProject(app, emptyPatchProject),
+      (err) => err?.code === 'HEX_PROJECT_INVALID_PATCH' && /same non-zero length/.test(err.message),
+    );
+    assert.equal(app.notes.names.get('4096'), 'keep_me');
+
+    app.aiRuntime = { sessionStore: { sessions: new Map(), register() {} } };
+    for (const badId of [{}, [], 123, '   ']) {
+      const badSessionProject = createHexProject({ binary: binaryIdentity(app) });
+      badSessionProject.findings.investigationSessions = [{ id: 'sess-bad', binaryId: badId, turns: [] }];
+      assert.throws(
+        () => applyWorkspaceProject(app, badSessionProject),
+        (err) => err?.code === 'HEX_PROJECT_INVALID' && /binaryId/.test(err.message) && /must be/.test(err.message),
+      );
+      assert.equal(app.notes.names.get('4096'), 'keep_me');
+    }
+  });
 });
 

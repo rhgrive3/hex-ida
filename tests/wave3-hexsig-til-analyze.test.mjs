@@ -436,6 +436,129 @@ test('hexsig-auto-scanner: aborts cleanly after getFunctionAnchors and flushes p
   assert.equal(batchRecords[0].newName, '_fn_one');
 });
 
+test('hexsig-auto-scanner: flushes chunkBatch on abort when only onBatchNamed is provided (onNamed omitted)', async () => {
+  const code1 = makeArm64Code(64, 11);
+  const code2 = makeArm64Code(64, 12);
+  const q1 = buildHexSigMatchQuery(code1, HEXSIG_ARCH_ARM64);
+  const q2 = buildHexSigMatchQuery(code2, HEXSIG_ARCH_ARM64);
+
+  const makeIndex = () => new HexSigIndex(
+    [
+      {
+        arch: HEXSIG_ARCH_ARM64,
+        symbolName: '_fn_one',
+        libId: 0,
+        pattern: q1.pattern,
+        mask: new Uint8Array(32).fill(0xff),
+        prologueLen: 32,
+        patternHash64: q1.patternHash64,
+        crc16: q1.crc16,
+        tailLen: q1.tailLen,
+      },
+      {
+        arch: HEXSIG_ARCH_ARM64,
+        symbolName: '_fn_two',
+        libId: 0,
+        pattern: q2.pattern,
+        mask: new Uint8Array(32).fill(0xff),
+        prologueLen: 32,
+        patternHash64: q2.patternHash64,
+        crc16: q2.crc16,
+        tailLen: q2.tailLen,
+      },
+    ],
+    [{ libId: 0, name: 'libtest' }],
+  );
+
+  const functions = [
+    { vaHex: '0x1000', name: 'sub_1000' },
+    { vaHex: '0x2000', name: 'sub_2000' },
+    { vaHex: '0x3000', name: 'sub_3000' },
+  ];
+
+  // Case A: abort before next loop iteration (after first function is matched)
+  {
+    const ac = new AbortController();
+    const batchRecords = [];
+    const scanner = createHexSigAutoScanner({
+      hexSigIndex: makeIndex(),
+      chunkSize: 10,
+      matchOpts: { preferWasm: false },
+      extractQuery: (bytes, archId, anchorCtx) => {
+        const q = buildHexSigMatchQuery(bytes, archId, null, anchorCtx);
+        ac.abort('stop-after-first-iteration');
+        return q;
+      },
+    });
+    const out = await scanner.run({
+      binaryMeta: { arch: 'arm64' },
+      functions,
+      readFunctionBytes: async (vaHex) => (vaHex === '0x1000' ? code1 : code2),
+      signal: ac.signal,
+      onBatchNamed: (batch) => batchRecords.push(...batch),
+    });
+    assert.equal(out.status, AUTO_ANALYSIS_STATUS.ABORTED);
+    assert.equal(out.named, 1);
+    assert.equal(batchRecords.length, 1, 'loop-entry abort must flush chunkBatch with onBatchNamed only');
+    assert.equal(batchRecords[0].newName, '_fn_one');
+  }
+
+  // Case B: abort during readFunctionBytes on second function
+  {
+    const ac = new AbortController();
+    const batchRecords = [];
+    const scanner = createHexSigAutoScanner({
+      hexSigIndex: makeIndex(),
+      chunkSize: 10,
+      matchOpts: { preferWasm: false },
+    });
+    const out = await scanner.run({
+      binaryMeta: { arch: 'arm64' },
+      functions,
+      readFunctionBytes: async (vaHex) => {
+        if (vaHex === '0x2000') {
+          ac.abort('stop-during-read');
+        }
+        return vaHex === '0x1000' ? code1 : code2;
+      },
+      signal: ac.signal,
+      onBatchNamed: (batch) => batchRecords.push(...batch),
+    });
+    assert.equal(out.status, AUTO_ANALYSIS_STATUS.ABORTED);
+    assert.equal(out.named, 1);
+    assert.equal(batchRecords.length, 1, 'readFunctionBytes abort must flush chunkBatch with onBatchNamed only');
+    assert.equal(batchRecords[0].newName, '_fn_one');
+  }
+
+  // Case C: abort during getFunctionAnchors on second function
+  {
+    const ac = new AbortController();
+    const batchRecords = [];
+    const scanner = createHexSigAutoScanner({
+      hexSigIndex: makeIndex(),
+      chunkSize: 10,
+      matchOpts: { preferWasm: false },
+      getFunctionAnchors: async (vaHex) => {
+        if (vaHex === '0x2000') {
+          ac.abort('stop-during-anchors');
+        }
+        return null;
+      },
+    });
+    const out = await scanner.run({
+      binaryMeta: { arch: 'arm64' },
+      functions,
+      readFunctionBytes: async (vaHex) => (vaHex === '0x1000' ? code1 : code2),
+      signal: ac.signal,
+      onBatchNamed: (batch) => batchRecords.push(...batch),
+    });
+    assert.equal(out.status, AUTO_ANALYSIS_STATUS.ABORTED);
+    assert.equal(out.named, 1);
+    assert.equal(batchRecords.length, 1, 'getFunctionAnchors abort must flush chunkBatch with onBatchNamed only');
+    assert.equal(batchRecords[0].newName, '_fn_one');
+  }
+});
+
 test('til-auto-loader & til-pack-manager: signal propagation and AbortError non-fallback', async () => {
   const seenFetchSignals = [];
   let cacheGetCalled = false;

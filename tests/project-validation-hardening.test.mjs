@@ -137,12 +137,14 @@ test('malformed annotation and key-value entries are rejected instead of silentl
   );
 });
 
-test('validatePatchEntries accepts valid BigInt and safe-integer patches and rejects malformed or overlapping patches', () => {
+test('validatePatchEntries accepts valid BigInt, safe-integer, and canonical string/hex patches and rejects malformed or overlapping patches', () => {
   const valid = validatePatchEntries([
     { offset: 0, before: [0x1f, 0x20, 0x03, 0xd5], after: [0x00, 0x00, 0x80, 0x52] },
     { offset: 4n, before: new Uint8Array([1, 2]), after: new Uint8Array([3, 4]) },
+    { offset: '16', before: '00', after: '01' },
+    { offset: '0x20', before: '0x0a1b', after: '0x0c1d' },
   ]);
-  assert.equal(valid.length, 2);
+  assert.equal(valid.length, 4);
 
   const invalidCases = [
     'not-an-array',
@@ -152,8 +154,15 @@ test('validatePatchEntries accepts valid BigInt and safe-integer patches and rej
     [{ offset: -1, before: [1], after: [2] }],
     [{ offset: -1n, before: [1], after: [2] }],
     [{ offset: 1.5, before: [1], after: [2] }],
-    [{ offset: '0', before: [1], after: [2] }],
+    [{ offset: 'not-an-offset', before: [1], after: [2] }],
+    [{ offset: '-1', before: [1], after: [2] }],
+    [{ offset: '01', before: [1], after: [2] }],
+    [{ offset: '0x', before: [1], after: [2] }],
     [{ offset: 0, before: [], after: [] }],
+    [{ offset: 0, before: '', after: '' }],
+    [{ offset: 0, before: '0', after: '1' }],
+    [{ offset: 0, before: 'zz', after: '00' }],
+    [{ offset: 0, before: '00', after: '0102' }],
     [{ offset: 0, before: [1, 2], after: [1] }],
     [{ offset: 0, before: [256], after: [0] }],
     [{ offset: 0, before: [-1], after: [0] }],
@@ -162,7 +171,19 @@ test('validatePatchEntries accepts valid BigInt and safe-integer patches and rej
       { offset: 10, before: [1, 2, 3, 4], after: [5, 6, 7, 8] },
       { offset: 12n, before: [3, 4], after: [9, 10] },
     ], // overlap
+    [
+      { offset: '0x10', before: '0001', after: '0203' },
+      { offset: '17', before: '04', after: '05' },
+    ], // hex-string overlap
   ];
+
+  // Oversized canonical offset strings hit resource-limit before BigInt()
+  for (const overOffset of ['0x' + 'f'.repeat(129), '9'.repeat(161)]) {
+    assert.throws(
+      () => validatePatchEntries([{ offset: overOffset, before: '00', after: '01' }]),
+      (err) => err instanceof ProjectFormatError && err.code === 'resource-limit',
+    );
+  }
 
   for (const bad of invalidCases) {
     assert.throws(

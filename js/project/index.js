@@ -369,16 +369,29 @@ export function validateKeyValueEntries(entries, name, maxValueLength, tooLongCo
   return items;
 }
 
-function isValidPatchBytes(value) {
-  if (value instanceof Uint8Array) return value.length > 0;
-  if (!Array.isArray(value) || value.length === 0) return false;
+const HEX_PATCH_BYTES = /^(?:0[xX])?([0-9a-fA-F]+)$/;
+
+function patchBytesLength(value) {
+  if (value instanceof Uint8Array) return value.length > 0 ? value.length : -1;
+  if (typeof value === 'string') {
+    const match = HEX_PATCH_BYTES.exec(value);
+    if (!match) return -1;
+    const digits = match[1];
+    if (digits.length === 0 || (digits.length % 2) !== 0) return -1;
+    return digits.length / 2;
+  }
+  if (!Array.isArray(value) || value.length === 0) return -1;
   for (let i = 0; i < value.length; i += 1) {
     const byte = value[i];
     if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 255) {
-      return false;
+      return -1;
     }
   }
-  return true;
+  return value.length;
+}
+
+function isValidPatchBytes(value) {
+  return patchBytesLength(value) > 0;
 }
 
 function normalizePatchOffset(value, field) {
@@ -393,6 +406,25 @@ function normalizePatchOffset(value, field) {
       throw new ProjectFormatError(`${field} must be a non-negative safe integer`, 'HEX_PROJECT_INVALID_PATCH');
     }
     return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    const isHex = HEX_ADDRESS.test(text);
+    const isDecimal = !isHex && DECIMAL_ADDRESS.test(text);
+    if (!isHex && !isDecimal) {
+      throw new ProjectFormatError(`${field} must be a non-negative canonical decimal or hex integer`, 'HEX_PROJECT_INVALID_PATCH');
+    }
+    if (isHex && text.length - 2 > MAX_BIGINT_HEX_DIGITS) {
+      throw new ProjectFormatError(`${field} exceeds the project resource limit`, 'resource-limit');
+    }
+    if (isDecimal && text.length > MAX_BIGINT_DECIMAL_DIGITS) {
+      throw new ProjectFormatError(`${field} exceeds the project resource limit`, 'resource-limit');
+    }
+    try {
+      return BigInt(text);
+    } catch {
+      throw new ProjectFormatError(`${field} must be a non-negative canonical decimal or hex integer`, 'HEX_PROJECT_INVALID_PATCH');
+    }
   }
   throw new ProjectFormatError(`${field} must be a non-negative integer or bigint`, 'HEX_PROJECT_INVALID_PATCH');
 }
@@ -416,10 +448,12 @@ export function validatePatchEntries(entries, name = 'user.patches') {
     const hasCanonicalKeys = Object.prototype.hasOwnProperty.call(entry, 'offset')
       || Object.prototype.hasOwnProperty.call(entry, 'before')
       || Object.prototype.hasOwnProperty.call(entry, 'after');
+    const legacyBytesLen = Object.prototype.hasOwnProperty.call(entry, 'bytes')
+      ? patchBytesLength(entry.bytes)
+      : -1;
     if (!hasCanonicalKeys
       && entry.addr != null
-      && Object.prototype.hasOwnProperty.call(entry, 'bytes')
-      && isValidPatchBytes(entry.bytes)) {
+      && legacyBytesLen > 0) {
       let start;
       try {
         start = BigInt(canonicalAnnotationAddressKey(entry.addr, `${name}[${index}].addr`));
@@ -427,20 +461,22 @@ export function validatePatchEntries(entries, name = 'user.patches') {
         if (err instanceof ProjectFormatError && err.code === 'resource-limit') throw err;
         throw new ProjectFormatError(`${name}[${index}].addr is invalid`, 'HEX_PROJECT_INVALID_PATCH');
       }
-      ranges.push({ start, end: start + BigInt(entry.bytes.length), index });
+      ranges.push({ start, end: start + BigInt(legacyBytesLen), index });
       continue;
     }
     const start = normalizePatchOffset(entry.offset, `${name}[${index}].offset`);
-    if (!isValidPatchBytes(entry.before)) {
-      throw new ProjectFormatError(`${name}[${index}].before must be a non-empty byte array`, 'HEX_PROJECT_INVALID_PATCH');
+    const beforeLen = patchBytesLength(entry.before);
+    if (beforeLen <= 0) {
+      throw new ProjectFormatError(`${name}[${index}].before must be a non-empty byte array or hex string`, 'HEX_PROJECT_INVALID_PATCH');
     }
-    if (!isValidPatchBytes(entry.after)) {
-      throw new ProjectFormatError(`${name}[${index}].after must be a non-empty byte array`, 'HEX_PROJECT_INVALID_PATCH');
+    const afterLen = patchBytesLength(entry.after);
+    if (afterLen <= 0) {
+      throw new ProjectFormatError(`${name}[${index}].after must be a non-empty byte array or hex string`, 'HEX_PROJECT_INVALID_PATCH');
     }
-    if (entry.before.length !== entry.after.length) {
+    if (beforeLen !== afterLen) {
       throw new ProjectFormatError(`${name}[${index}] before/after length mismatch`, 'HEX_PROJECT_INVALID_PATCH');
     }
-    ranges.push({ start, end: start + BigInt(entry.after.length), index });
+    ranges.push({ start, end: start + BigInt(afterLen), index });
   }
   if (ranges.length > 1) {
     ranges.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
