@@ -365,7 +365,8 @@ export class ProgramIndex {
   refSitesTo(addr, span = 1n, limit = 500) {
     limit = queryLimit(limit, 500);
     const order = this._refToOrder(), out = []; let i = lowerBound(this.refTo, order, addr), queryLimited = false;
-    const hi = addr + (span > 0n ? span : 1n);
+    const spanBig = typeof span === 'bigint' ? span : (Number.isSafeInteger(span) ? BigInt(span) : 1n);
+    const hi = addr + (spanBig > 0n ? spanBig : 1n);
     for (; i < order.length; i++) {
       const k = order[i]; if (this.refTo[k] >= hi) break;
       if (out.length >= limit) { queryLimited = true; break; }
@@ -377,7 +378,8 @@ export class ProgramIndex {
     limit = queryLimit(limit, 200);
     const order = this._refToOrder(), seen = new Map();
     let i = lowerBound(this.refTo, order, addr), queryLimited = false;
-    const hi = addr + (span > 0n ? span : 1n);
+    const spanBig = typeof span === 'bigint' ? span : (Number.isSafeInteger(span) ? BigInt(span) : 1n);
+    const hi = addr + (spanBig > 0n ? spanBig : 1n);
     for (; i < order.length; i++) {
       const k = order[i];
       if (this.refTo[k] >= hi) break;
