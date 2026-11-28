@@ -33,6 +33,8 @@ const DEFAULT_ACCESS_SCAN_TIMEOUT_MS = 45_000;
 const MAX_ACCESS_SCAN_TIMEOUT_MS = 120_000;
 const DEFAULT_AUTO_UNIQUE_ANALYSES = 48;
 const MAX_AUTO_UNIQUE_ANALYSES = 256;
+const ANALYZE_CACHE_MAX_ENTRIES = 512;
+const ANALYZE_CACHE_ALLOWED_OPT_KEYS = new Set(['signal', 'perFunctionBudgetMs']);
 const ANALYZE_GUARDS = new WeakMap();
 const ACCESS_BATCHES = new WeakMap();
 
@@ -334,6 +336,46 @@ function analysisKey(args) {
   return args.slice(0, 2).map((value) => value == null ? 'null' : value.toString()).join(':');
 }
 
+function serializeTypedCacheArg(value) {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undef';
+  const type = typeof value;
+  if (type === 'bigint') return `b:${value}`;
+  if (type === 'number') return `n:${Object.is(value, -0) ? '-0' : value}`;
+  if (type === 'string') return `s:${JSON.stringify(value)}`;
+  if (type === 'boolean') return `bool:${value}`;
+  return null;
+}
+
+function analyzeCacheKey(args) {
+  if (args.length > 3) return null;
+  if (args.length === 3 && args[2] !== undefined) {
+    const third = args[2];
+    if (third === null || typeof third !== 'object') return null;
+    const proto = Object.getPrototypeOf(third);
+    if (proto !== Object.prototype && proto !== null) return null;
+    for (const k of Object.keys(third)) {
+      if (!ANALYZE_CACHE_ALLOWED_OPT_KEYS.has(k)) return null;
+    }
+  }
+  const k0 = serializeTypedCacheArg(args[0]);
+  if (k0 === null) return null;
+  const k1 = serializeTypedCacheArg(args[1]);
+  if (k1 === null) return null;
+  return `${k0}|${k1}`;
+}
+
+function cacheAnalyzeResult(cache, key, value) {
+  if (key === null || value == null) return;
+  if (cache.has(key)) {
+    cache.delete(key);
+  } else if (cache.size >= ANALYZE_CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, value);
+}
+
 function analyzeArgsWithSignal(args, signal, budgetMs) {
   const out = args.slice();
   const third = out[2];
@@ -450,19 +492,28 @@ function linkParentSignal(controller, parentSignal) {
  */
 function guardedAnalyze(analyze, opts, budgetTracker = null) {
   if (typeof analyze !== 'function') return analyze;
+  const burstScoped = isObjectKey(opts?.shapes);
   const state = burstScopedState(ANALYZE_GUARDS, analyze, opts,
-    () => ({ uniqueKeys: new Set() }));
+    () => (burstScoped ? { uniqueKeys: new Set(), resultCache: new Map() } : { uniqueKeys: new Set() }));
+  const resultCache = burstScoped
+    ? (state.resultCache || (state.resultCache = new Map()))
+    : new Map();
   const ms = timeoutMs(opts);
   const uniqueLimit = uniqueAnalysisLimit(opts);
   let callCount = 0;
   return async (...args) => {
-    if (opts?.signal?.aborted || opts?.isCancelled?.()) {
-      throw abortError(opts?.signal?.reason);
+    const argSignal = args[2] && typeof args[2] === 'object' ? args[2].signal : null;
+    if (opts?.signal?.aborted || opts?.isCancelled?.() || argSignal?.aborted) {
+      throw abortError(argSignal?.aborted ? argSignal.reason : opts?.signal?.reason);
+    }
+    const cacheKey = analyzeCacheKey(args);
+    if (cacheKey !== null && resultCache.has(cacheKey)) {
+      return resultCache.get(cacheKey);
     }
     if (callCount > 0) {
       await yieldToEventLoop(opts?.signal || null);
-      if (opts?.signal?.aborted || opts?.isCancelled?.()) {
-        throw abortError(opts?.signal?.reason);
+      if (opts?.signal?.aborted || opts?.isCancelled?.() || argSignal?.aborted) {
+        throw abortError(argSignal?.aborted ? argSignal.reason : opts?.signal?.reason);
       }
     }
     callCount++;
@@ -474,6 +525,7 @@ function guardedAnalyze(analyze, opts, budgetTracker = null) {
     const startedAt = Date.now();
     const controller = new AbortController();
     const unlinkParent = linkParentSignal(controller, opts?.signal || null);
+    const unlinkArg = linkParentSignal(controller, argSignal || null);
     let timer = null;
     let operation = null;
     let onControllerAbort = null;
@@ -500,6 +552,9 @@ function guardedAnalyze(analyze, opts, budgetTracker = null) {
         recordBudgetExceeded(budgetTracker, args[0], elapsedMs, ms);
         throw timeoutError(ms);
       }
+      if (res != null && !controller.signal.aborted && !opts?.isCancelled?.() && !argSignal?.aborted) {
+        cacheAnalyzeResult(resultCache, cacheKey, res);
+      }
       return res;
     } catch (error) {
       if (error?.code === 'pinpoint-analysis-timeout' || error?.reason === PER_FUNCTION_BUDGET_EXCEEDED_REASON) {
@@ -509,6 +564,7 @@ function guardedAnalyze(analyze, opts, budgetTracker = null) {
     } finally {
       if (timer != null) clearTimeout(timer);
       if (onControllerAbort) controller.signal.removeEventListener('abort', onControllerAbort);
+      unlinkArg();
       unlinkParent();
     }
   };
@@ -912,3 +968,5 @@ export async function pinpoint(opts = {}) {
     ...(budgetExceeded.length ? { budgetExceeded, unconfirmedFunctions: budgetExceeded } : {}),
   };
 }
+
+export { guardedAnalyze as __guardedAnalyzeForTests };

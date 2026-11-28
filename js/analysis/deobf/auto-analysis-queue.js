@@ -126,6 +126,19 @@ export function prioritizeDeobfCandidates(candidates = [], { maxFunctions = DEFA
   const cap = Math.floor(normalizeNonNegativeLimit(maxFunctions, DEFAULT_MAX_FUNCTIONS));
   if (cap <= 0) return [];
 
+  const mergeUniqueStrings = (a, b) => {
+    const out = [];
+    const seen = new Set();
+    for (const list of [a, b]) {
+      if (!Array.isArray(list)) continue;
+      for (const item of list) {
+        if (item == null || seen.has(item)) continue;
+        seen.add(item);
+        out.push(item);
+      }
+    }
+    return out;
+  };
   const deduped = new Map();
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
@@ -134,8 +147,30 @@ export function prioritizeDeobfCandidates(candidates = [], { maxFunctions = DEFA
     if (!vaHex) continue;
     const priorityScore = computeCandidatePriorityScore(c);
     const existing = deduped.get(vaHex);
-    if (!existing || priorityScore > existing.priorityScore) {
-      deduped.set(vaHex, { ...c, vaHex, priorityScore });
+    if (!existing) {
+      deduped.set(vaHex, {
+        ...c,
+        vaHex,
+        priorityScore,
+        ...(Array.isArray(c.tags) ? { tags: mergeUniqueStrings(c.tags) } : {}),
+        ...(Array.isArray(c.reasons) ? { reasons: mergeUniqueStrings(c.reasons) } : {}),
+      });
+    } else {
+      const winner = priorityScore > existing.priorityScore ? c : existing;
+      const loser = priorityScore > existing.priorityScore ? existing : c;
+      const mergedTags = (Array.isArray(existing.tags) || Array.isArray(c.tags))
+        ? mergeUniqueStrings(winner.tags, loser.tags)
+        : undefined;
+      const mergedReasons = (Array.isArray(existing.reasons) || Array.isArray(c.reasons))
+        ? mergeUniqueStrings(winner.reasons, loser.reasons)
+        : undefined;
+      deduped.set(vaHex, {
+        ...winner,
+        vaHex,
+        priorityScore: Math.max(existing.priorityScore, priorityScore),
+        ...(mergedTags !== undefined ? { tags: mergedTags } : {}),
+        ...(mergedReasons !== undefined ? { reasons: mergedReasons } : {}),
+      });
     }
   }
 
