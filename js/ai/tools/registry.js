@@ -18,7 +18,7 @@ function replace(registry, name, execute) {
 }
 
 async function canonicalVerificationIr(registry, functionAddress) {
-  if (!functionAddress) return null;
+  if (functionAddress == null || functionAddress === '') return null;
   const model = await registry.legacyTools?.__loader?.get(functionAddress);
   return model ? irFor(model) : null;
 }
@@ -74,10 +74,14 @@ function installVerificationBoundary(registry) {
     const ir = await canonicalVerificationIr(registry, args.functionAddress);
     if (!ir) return result;
     const instructions = Array.isArray(ir.instructions) ? ir.instructions : [];
+    const byId = new Map();
+    for (const inst of instructions) {
+      if (inst?.id != null && !byId.has(inst.id)) byId.set(inst.id, inst);
+    }
     return {
       ...result,
       results: result.results.map((row) => {
-        const candidate = instructions.find((inst) => row?.id != null && inst?.id === row.id);
+        const candidate = row?.id != null ? byId.get(row.id) : null;
         if (!candidate) return row;
         return {
           ...row,
@@ -89,7 +93,7 @@ function installVerificationBoundary(registry) {
     };
   });
 
-  replace(registry, 'verify_edge_feasibility', async ({ functionAddress, fromBlock, toBlock, edgeCondition, preconditions }, callOptions = {}) => {
+  replace(registry, 'verify_edge_feasibility', async ({ functionAddress, fromBlock, toBlock, edgeCondition, preconditions } = {}, callOptions = {}) => {
     const ir = await canonicalVerificationIr(registry, functionAddress);
     if (!ir) {
       throw new AIError('invalid_tool_call', 'verify_edge_feasibility requires functionAddress to resolve to canonical Semantic IR.');
@@ -106,7 +110,7 @@ function installVerificationBoundary(registry) {
     });
   });
 
-  replace(registry, 'verify_bounded_equivalence', async ({ beforeFunctionAddress, afterFunctionAddress, beforeTarget, afterTarget, preconditions }, callOptions = {}) => {
+  replace(registry, 'verify_bounded_equivalence', async ({ beforeFunctionAddress, afterFunctionAddress, beforeTarget, afterTarget, preconditions } = {}, callOptions = {}) => {
     const beforeIr = await canonicalVerificationIr(registry, beforeFunctionAddress);
     const afterIr = await canonicalVerificationIr(registry, afterFunctionAddress);
     if (!beforeIr || !afterIr) {
@@ -129,7 +133,7 @@ function installVerificationBoundary(registry) {
   // would make either the Expr fast path or a forged Semantic-IR instruction
   // proof authority. Until the tool can bind both sides to a trusted producer,
   // it must fail closed rather than mint PROVED/REFUTED authority (#4132).
-  replace(registry, 'verify_patch_equivalence', async ({ originalTarget, patchedTarget }) => {
+  replace(registry, 'verify_patch_equivalence', async ({ originalTarget, patchedTarget } = {}) => {
     rejectUntrustedExpr(originalTarget, 'originalTarget');
     rejectUntrustedExpr(patchedTarget, 'patchedTarget');
     throw new AIError(
@@ -184,12 +188,14 @@ export function createHexToolRegistry(context = {}, options = {}) {
   if (context?.analysisAuthority !== 'AnalysisQueryAPI') return registry;
 
   if (typeof context.getDecompile === 'function') {
-    replace(registry, 'decompile_function', async ({ functionAddress }, execution = {}) => {
+    replace(registry, 'decompile_function', async ({ functionAddress } = {}, execution = {}) => {
       const value = await context.getDecompile(functionAddress, { signal:execution.signal ?? null });
-      const text = typeof value?.text === 'string' ? value.text : '';
+      const text = typeof value === 'string'
+        ? value
+        : (typeof value?.text === 'string' ? value.text : (typeof value?.code === 'string' ? value.code : ''));
       const preview = text.slice(0, 30000);
       const previewTruncated = text.length > preview.length;
-      const complete = value?.complete === true && !previewTruncated;
+      const complete = (typeof value === 'string' ? true : value?.complete === true) && !previewTruncated;
       return {
         functionAddress:addressText(functionAddress),
         pseudocodeExcerpt:preview,

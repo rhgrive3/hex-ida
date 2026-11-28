@@ -252,6 +252,8 @@ export class App {
     this.schemasBusy = null;
     this.schemasBusyEpoch = -1;
     this.schemasBusyGeneration = -1;
+    this.functionsBusy = null;
+    this.functionsBusyEpoch = -1;
     this.stringsBusy = null;
     this.stringsBusyEpoch = -1;
     this.cryptoScan = null;
@@ -264,7 +266,7 @@ export class App {
     this.objcRuntime = null;
     this.objcBusy = null;
     this.objcBusyEpoch = -1;
-    this.objcRuntime = null;
+    this._lifecycleController = typeof AbortController === 'function' ? new AbortController() : null;
     this.swiftModel = null;
     this.swiftRuntime = null;
     this.swiftBusy = null;
@@ -476,19 +478,20 @@ export class App {
     const startupRestore = this.restoreLastAnalysisFile().catch(() => false);
     if (!this.prefs.guideSeen) setTimeout(() => {
       startupRestore.then((restored) => {
-        if (!restored && !this.store.get('fileInfo')) showWelcome(this);
+        if (!restored && !this.store.get('fileInfo') && !this.store.get('fileLoading')) showWelcome(this);
       }).catch(() => {});
     }, 300);
     if (typeof window !== 'undefined') {
+      const lifecycleSignal = this._lifecycleController?.signal;
       this._analysisResumePageHide = () => {
         this.workspace?.autosave({ immediate: true });
         void this.flushDeltaSave();
         void this.persistAnalysisSession();
       };
-      window.addEventListener('pagehide', this._analysisResumePageHide, { passive:true });
+      window.addEventListener('pagehide', this._analysisResumePageHide, { passive:true, ...(lifecycleSignal ? { signal: lifecycleSignal } : {}) });
       document?.addEventListener?.('visibilitychange', () => {
         if (document.hidden) this._analysisResumePageHide();
-      }, { passive:true });
+      }, { passive:true, ...(lifecycleSignal ? { signal: lifecycleSignal } : {}) });
     }
   }
 
@@ -596,17 +599,29 @@ export class App {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => { this.layout(); this.viewer.measure(); }, 80);
     };
-    window.addEventListener('resize', onResize);
-    window.addEventListener('orientationchange', onResize);
+    const listenerOpts = this._lifecycleController?.signal ? { signal: this._lifecycleController.signal } : undefined;
+    window.addEventListener('resize', onResize, listenerOpts);
+    window.addEventListener('orientationchange', onResize, listenerOpts);
 
-    document.addEventListener('keydown', (e) => this.onKey(e));
+    document.addEventListener('keydown', (e) => this.onKey(e), listenerOpts);
 
-    document.addEventListener('dragover', (e) => { e.preventDefault(); });
+    document.addEventListener('dragover', (e) => { e.preventDefault(); }, listenerOpts);
     document.addEventListener('drop', (e) => {
       e.preventDefault();
       const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       if (f) this.openFile(f);
-    });
+    }, listenerOpts);
+  }
+
+  dispose() {
+    this._lifecycleController?.abort('app-disposed');
+    this._unsubAutoAnalysisStatus?.();
+    this._unsubAutoAnalysisStatus = null;
+    this._resetDeltaReadiness();
+    this.noteAttachController?.abort('app-disposed');
+    this.notes?.dispose?.();
+    this.notes = EMPTY_NOTES;
+    this.forgetSemantics(true);
   }
 
   onKey(e) {
@@ -1045,6 +1060,8 @@ export class App {
       this.schemasBusy = null;
       this.schemasBusyEpoch = -1;
       this.schemasBusyGeneration = -1;
+      this.functionsBusy = null;
+      this.functionsBusyEpoch = -1;
       this.stringsBusy = null;
       this.stringsBusyEpoch = -1;
       this.objcBusyState?.controller?.abort('objc-reset');
@@ -1110,37 +1127,42 @@ export class App {
     if(this.symbols===EMPTY_INDEX){this.symbols = new SymbolIndex({ regions: this.store.get('regions') || [] });this.viewer.setSymbols(this.symbols);this.syncSymbolsStore();}
     const sym=this.symbols;
     if(!sym || sym.functionStartsComplete===true || sym.functionDiscovery?.complete===true)return sym;
+    if(this.functionsBusy && this.functionsBusyEpoch===epoch)return this.functionsBusy;
     const targets=this.programRegions();
     if(region && region.exec && !targets.some((r)=>r.id===region.id))targets.push(region);
     if(!targets.length)return sym;
     const regionSetKey=targets.map((r)=>r.id).join('|');
-
-    let remaining= Math.max(0, FUNCTION_DISCOVERY_GLOBAL_CAP - Math.min(FUNCTION_DISCOVERY_GLOBAL_CAP, sym.functionCount||0));
-    let remainingBytes=targets.reduce((n,r)=>n+BigInt(r.size),0n);
-    const results=[], reasons=[];
-    for(let i=0;i<targets.length;i++){
-      if(epoch!==this.backend.gen)return null;
-      const r=targets[i], size=BigInt(r.size), share=remaining>0&&remainingBytes>0n
-        ? Math.max(1,Math.min(remaining,Number((BigInt(remaining)*size+remainingBytes-1n)/remainingBytes))) : 0;
-      if(share<=0){reasons.push(`function-global-budget:${r.id}`);results.push({regionId:r.id,complete:false,skipped:true});remainingBytes-=size;continue;}
-      try{
-        const res=await this.backend.guessFunctions(r.id,share,progressFn&&((p)=>progressFn({phase:'functions',done:i+(p.all?Math.min(1,p.done/p.all):0),all:targets.length,region:r.id})));
+    this.functionsBusyEpoch=epoch;
+    this.functionsBusy=(async()=>{
+      let remaining= Math.max(0, FUNCTION_DISCOVERY_GLOBAL_CAP - Math.min(FUNCTION_DISCOVERY_GLOBAL_CAP, sym.functionCount||0));
+      let remainingBytes=targets.reduce((n,r)=>n+BigInt(r.size),0n);
+      const results=[], reasons=[];
+      for(let i=0;i<targets.length;i++){
         if(epoch!==this.backend.gen)return null;
-        if(res?.starts?.length){sym.addFunctions(res.starts,{source:'heuristic',confidence:0.55,confirmed:false});sym.guessed=true;remaining=Math.max(0,remaining-res.starts.length);}
-        const complete=res?.discoveryComplete===true || res?.completeness?.complete===true || res?.complete===true;
-        results.push({regionId:r.id,complete,capped:!!res?.capped,discovered:res?.starts?.length||0});
-        if(!complete)reasons.push(`${r.id}:${res?.completeness?.reason||res?.truncationReason||'function-discovery-incomplete'}`);
-      }catch{results.push({regionId:r.id,complete:false,error:true});reasons.push(`${r.id}:function-discovery-failed`);}
-      remainingBytes-=size;
-    }
-    const complete=results.length===targets.length && results.every((x)=>x.complete===true);
-    sym.functionDiscovery={complete,attempted:true,regionSetKey,regions:results,reasons:[...new Set(reasons)],capped:results.some((x)=>x.capped)};
-    sym.functionStartsComplete=complete;
-    sym.functionStartsCapped=sym.functionDiscovery.capped || reasons.some((x)=>x.includes('budget'));
-    this.viewer.setSymbols(sym);
-    this.syncSymbolsStore();
-    void this.persistAnalysisSession(['symbols']);
-    return sym;
+        const r=targets[i], size=BigInt(r.size), share=remaining>0&&remainingBytes>0n
+          ? Math.max(1,Math.min(remaining,Number((BigInt(remaining)*size+remainingBytes-1n)/remainingBytes))) : 0;
+        if(share<=0){reasons.push(`function-global-budget:${r.id}`);results.push({regionId:r.id,complete:false,skipped:true});remainingBytes-=size;continue;}
+        try{
+          const res=await this.backend.guessFunctions(r.id,share,progressFn&&((p)=>progressFn({phase:'functions',done:i+(p.all?Math.min(1,p.done/p.all):0),all:targets.length,region:r.id})));
+          if(epoch!==this.backend.gen)return null;
+          if(res?.starts?.length){sym.addFunctions(res.starts,{source:'heuristic',confidence:0.55,confirmed:false});sym.guessed=true;remaining=Math.max(0,remaining-res.starts.length);}
+          const complete=res?.discoveryComplete===true || res?.completeness?.complete===true || res?.complete===true;
+          results.push({regionId:r.id,complete,capped:!!res?.capped,discovered:res?.starts?.length||0});
+          if(!complete)reasons.push(`${r.id}:${res?.completeness?.reason||res?.truncationReason||'function-discovery-incomplete'}`);
+        }catch{results.push({regionId:r.id,complete:false,error:true});reasons.push(`${r.id}:function-discovery-failed`);}
+        remainingBytes-=size;
+      }
+      if(epoch!==this.backend.gen)return null;
+      const complete=results.length===targets.length && results.every((x)=>x.complete===true);
+      sym.functionDiscovery={complete,attempted:true,regionSetKey,regions:results,reasons:[...new Set(reasons)],capped:results.some((x)=>x.capped)};
+      sym.functionStartsComplete=complete;
+      sym.functionStartsCapped=sym.functionDiscovery.capped || reasons.some((x)=>x.includes('budget'));
+      this.viewer.setSymbols(sym);
+      this.syncSymbolsStore();
+      void this.persistAnalysisSession(['symbols']);
+      return sym;
+    })().finally(()=>{if(this.functionsBusyEpoch===epoch){this.functionsBusy=null;this.functionsBusyEpoch=-1;}});
+    return this.functionsBusy;
   }
 
   /** Build one global ProgramIndex from every executable region. */
@@ -1241,11 +1263,12 @@ export class App {
     this.schemasBusyEpoch = epoch;
     this.schemasBusyGeneration = generation;
     this.schemasBusy = (async () => {
+      let boundGeneration = generation;
       try {
         const strings = await this.ensureStrings(onProgress);
         const program = await this.ensureProgram(onProgress);
         if (epoch !== this.backend.gen) return null;
-        const boundGeneration = Number.isSafeInteger(program?.gen) ? program.gen : generation;
+        boundGeneration = Number.isSafeInteger(program?.gen) ? program.gen : generation;
         const isCurrent = epoch === this.backend.gen && boundGeneration === schemaDependencyGeneration(this);
         if (!program) {
           if (isCurrent) this.schemas = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas, dependencyGeneration: boundGeneration });
@@ -1261,8 +1284,8 @@ export class App {
           void this.persistAnalysisSession(['schemas']);
         }
       } catch {
-        if (epoch === this.backend.gen && generation === schemaDependencyGeneration(this)) {
-          this.schemas = annotateSchemaResult([], { complete:false, reasons:['schema-recovery-failed'] }, { epoch, maxSchemas, dependencyGeneration: generation });
+        if (epoch === this.backend.gen && boundGeneration === schemaDependencyGeneration(this)) {
+          this.schemas = annotateSchemaResult([], { complete:false, reasons:['schema-recovery-failed'] }, { epoch, maxSchemas, dependencyGeneration: boundGeneration });
         }
       } finally {
         if (this.schemasBusyEpoch === epoch && this.schemasBusyGeneration === generation) {
@@ -1368,6 +1391,7 @@ export class App {
         }
         const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes, limit: remaining },
           progressFn && ((p) => progressFn({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
+        if (epoch !== this.backend.gen) return null;
         scannedBytes += res.scannedBytes || 0;
         if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
         for (const s of res.results || []) {
@@ -2206,7 +2230,8 @@ export class App {
   _applyUndoEntry(entry, direction) {
     const isUndo = direction === 'undo';
     if (entry.type === 'name') {
-      const addr = BigInt(entry.addr);
+      let addr;
+      try { addr = BigInt(entry.addr); } catch { return false; }
       const value = isUndo ? (entry.before ?? '') : (entry.after ?? '');
       if (this.notes && this.notes !== EMPTY_NOTES) this.notes.setName(addr, value);
       if (this.symbols && this.symbols !== EMPTY_INDEX) this.symbols.rename(addr, value);
@@ -2217,7 +2242,8 @@ export class App {
       return true;
     }
     if (entry.type === 'comment') {
-      const addr = BigInt(entry.addr);
+      let addr;
+      try { addr = BigInt(entry.addr); } catch { return false; }
       const value = isUndo ? (entry.before ?? '') : (entry.after ?? '');
       if (this.notes && this.notes !== EMPTY_NOTES) this.notes.setComment(addr, value);
       this.viewer?.invalidate?.();
@@ -2226,7 +2252,8 @@ export class App {
       return true;
     }
     if (entry.type === 'patch') {
-      const offset = BigInt(entry.offset);
+      let offset;
+      try { offset = BigInt(entry.offset); } catch { return false; }
       const isRemoval = entry.action === 'remove' || entry.after == null;
       try {
         const metaOf = (p, fallback) => p?.meta || (p && (p.addr != null || p.text != null) ? { addr: p.addr, text: p.text } : fallback);
@@ -2443,7 +2470,6 @@ export class App {
     try {
       const { delta, resume = {} } = record;
       const notes = this.notes;
-      const previousNoteNames = notes && notes !== EMPTY_NOTES ? [...notes.names.keys()] : [];
       if (notes && notes !== EMPTY_NOTES) {
         const preNames = mergeExisting ? new Map(notes.names) : null;
         const preComments = mergeExisting ? new Map(notes.comments) : null;
@@ -2574,11 +2600,17 @@ export class App {
       }
 
       if (restoreNavigation && resume.lastAddress != null) {
-        const regions = this.store.get('regions') || [];
-        const target = regions.find(
-          (r) => !r.zerofill && r.size > 0n && resume.lastAddress >= r.vmAddr && resume.lastAddress < r.vmAddr + r.size,
-        );
-        if (target) this.goToAddress(resume.lastAddress, { history: false });
+        let lastAddr = null;
+        try {
+          lastAddr = typeof resume.lastAddress === 'bigint' ? resume.lastAddress : BigInt(resume.lastAddress);
+        } catch { lastAddr = null; }
+        if (lastAddr != null) {
+          const regions = this.store.get('regions') || [];
+          const target = regions.find(
+            (r) => !r.zerofill && r.size > 0n && lastAddr >= r.vmAddr && lastAddr < r.vmAddr + r.size,
+          );
+          if (target) this.goToAddress(lastAddr, { history: false });
+        }
       } else if (restoreNavigation && resume.lastRegionId) {
         const regions = this.store.get('regions') || [];
         const target = regions.find((r) => r.id === resume.lastRegionId && !r.zerofill && r.size > 0n);
@@ -2726,7 +2758,6 @@ export class App {
     }
     this._applyingDelta = true;
     try {
-      const previousNoteNames = this.notes && this.notes !== EMPTY_NOTES ? [...this.notes.names.keys()] : [];
       if (this.notes && this.notes !== EMPTY_NOTES) this.notes.clear();
       this._undoStack.length = 0;
       this._redoStack.length = 0;
@@ -2781,10 +2812,11 @@ export class App {
       this.updateChrome();
       try { info = await this.backend.open(file); }
       catch (err) {
-        if (err && err.stale) return;
+        if (openSeq !== this._openSequence || (err && err.stale)) return;
         alertDialog(t('err.openTitle'), friendly(err.message));
         return;
       }
+      if (openSeq !== this._openSequence) return;
       const openEpoch=this.backend.gen;
       resolvedOpenEpoch = openEpoch;
       this.analysisResumeReady = Promise.resolve(false);
@@ -2830,6 +2862,7 @@ export class App {
       }
     }
     const openEpoch = resolvedOpenEpoch;
+    if (openSeq !== this._openSequence || openEpoch !== this.backend.gen) return;
     const projectReady = this.attachNotes(file,info,sliceIndex,openEpoch)
       .then(()=>this.workspace?.bind())
       .then((project)=>{if(project)this.activeProject=project; return project;})
@@ -3251,6 +3284,7 @@ export class App {
     this.store.set({ symbolsGen: 0, symbolsReady: false });
     this._undoStack.length = 0;
     this._redoStack.length = 0;
+    this.notes?.dispose?.();
     this.notes=EMPTY_NOTES;
     this.projectAnnotations = [];
     this.bookmarks?.clear?.({ silent: true });

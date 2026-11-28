@@ -479,7 +479,8 @@ export class V6Workbench {
       transactionManager: this.typeTx,
     });
 
-    this._hexsigHubLoader = options.hexsigHubLoader || null;
+    this._injectedHexSigHubLoader = options.hexsigHubLoader || null;
+    this._hexsigHubLoader = this._injectedHexSigHubLoader;
     this._hexsigHubConfig = options.hexsigHubConfig || null;
     this._mountedHexSigPacks = new Map();
     this._deobfSummaries = new Map();
@@ -512,7 +513,9 @@ export class V6Workbench {
     const mergedOpts = {
       hideTypedefPrelude: safeOpts.hideTypedefPrelude ?? cleanViewHints.hideTypedefPrelude ?? hints.hideTypedefPrelude ?? true,
       elideDeadSpills: safeOpts.elideDeadSpills ?? cleanViewHints.elideDeadSpills ?? hints.elideDeadSpills ?? true,
+      foldCalleeSavedSpills: safeOpts.foldCalleeSavedSpills ?? cleanViewHints.foldCalleeSavedSpills ?? hints.foldCalleeSavedSpills ?? true,
       refineAppleSwift: safeOpts.refineAppleSwift ?? cleanViewHints.refineAppleSwift ?? hints.refineAppleSwift ?? true,
+      collapseDuplicateAsm: safeOpts.collapseDuplicateAsm ?? cleanViewHints.collapseDuplicateAsm ?? hints.collapseDuplicateAsm ?? true,
       ...safeOpts,
     };
     return formatCleanViewText(pseudoC, mergedOpts);
@@ -580,6 +583,19 @@ export class V6Workbench {
     }
 
     const packId = String(meta?.packId || `pack_${this._mountedHexSigPacks.size + 1}`);
+    if (this._mountedHexSigPacks.has(packId)) {
+      const existing = this._mountedHexSigPacks.get(packId);
+      return {
+        ok: true,
+        packId: existing.packId,
+        entryCount: existing.entryCount,
+        archMask: existing.archMask,
+        wasmMounted: existing.wasmMounted,
+        wasmMount: existing.wasmMount,
+        decoded: existing.decoded,
+        alreadyMounted: true,
+      };
+    }
     if (meta && meta.libId != null && Number.isInteger(meta.libId) && meta.libId >= 0) {
       this.hexsigIndex.libs[meta.libId] = {
         libId: meta.libId,
@@ -635,6 +651,7 @@ export class V6Workbench {
 
     const mbaResults = [];
     const pendingAnnotations = [];
+    const writtenVas = new Set();
     let simplifiedCount = 0;
     let nodesEliminated = 0;
     if (Array.isArray(mbaNodes)) {
@@ -661,14 +678,17 @@ export class V6Workbench {
             };
             pendingAnnotations.push(ann);
             if (shouldCommit) {
-              this.deobfOverlay.setAnnotation(ann);
+              if (this.deobfOverlay.setAnnotation(ann)) {
+                writtenVas.add(nodeVa);
+              }
+            } else {
+              writtenVas.add(nodeVa);
             }
           }
         }
       }
     }
 
-    let overlayCount = 0;
     const summaryParts = [];
     if (cffRecovered) {
       summaryParts.push(`CFF recovered (real=${cffResult.stats?.realBlocks ?? 0}, spine=${cffResult.stats?.spineBlocks ?? 0})`);
@@ -686,15 +706,14 @@ export class V6Workbench {
       };
       pendingAnnotations.push(fnAnn);
       if (shouldCommit) {
-        const wrote = this.deobfOverlay.setAnnotation(fnAnn);
-        if (wrote) overlayCount++;
+        if (this.deobfOverlay.setAnnotation(fnAnn)) {
+          writtenVas.add(vaHex);
+        }
       } else {
-        overlayCount++;
+        writtenVas.add(vaHex);
       }
     }
-    for (const r of mbaResults) {
-      if (r.simplified && r.insnVa && r.insnVa !== vaHex) overlayCount++;
-    }
+    const overlayCount = writtenVas.size;
 
     const summary = {
       funcVa: vaHex,
@@ -1188,16 +1207,18 @@ export class V6Workbench {
       };
       return { kind, controller, mounted: false };
     }
+    const userOnClose = typeof options.onClose === 'function' ? options.onClose : null;
     const mounted = renderFn(controller, {
       document: doc,
       container,
+      ...options,
       onClose: () => {
         if (this._activePopoverKind === kind) {
           this._activePopoverCleanup = null;
           this._activePopoverKind = null;
         }
+        safeInvokeCallback(userOnClose);
       },
-      ...options,
     });
     this._activePopoverCleanup = () => {
       mounted?.destroy?.();
@@ -1271,35 +1292,134 @@ export class V6Workbench {
     };
   }
 
+  _clearRecoveryStores() {
+    if (typeof this.manualSegments?.clear === 'function') {
+      this.manualSegments.clear();
+    } else if (Array.isArray(this.manualSegments?.entries)) {
+      this.manualSegments.entries.length = 0;
+    }
+
+    if (typeof this.funcChunks?.clear === 'function') {
+      this.funcChunks.clear();
+    } else if (this.funcChunks) {
+      this.funcChunks.byOwner?.clear?.();
+      if (Array.isArray(this.funcChunks.globalIndex)) this.funcChunks.globalIndex.length = 0;
+      this.funcChunks.detachedBlocklist?.clear?.();
+    }
+
+    if (typeof this.customAbis?.clear === 'function') {
+      this.customAbis.clear();
+    } else {
+      this.customAbis?.specs?.clear?.();
+    }
+
+    if (typeof this.stackOverrides?.clear === 'function') {
+      this.stackOverrides.clear();
+    } else {
+      this.stackOverrides?.byFunc?.clear?.();
+    }
+
+    if (typeof this.shiftedPtrs?.clear === 'function') {
+      this.shiftedPtrs.clear();
+    } else {
+      this.shiftedPtrs?.byFunc?.clear?.();
+    }
+  }
+
+  _resetBinaryScopedState({ clearInjectedHexSigLoader = false } = {}) {
+    this._clearRecoveryStores();
+    if (this.globalTypeMap) {
+      this.globalTypeMap.entries?.clear?.();
+      if (Array.isArray(this.globalTypeMap._sortedVas)) this.globalTypeMap._sortedVas.length = 0;
+      this.globalTypeMap._sortedDirty = false;
+    }
+    this.displayHints = Object.create(null);
+    this.pinnedMasks = Object.create(null);
+    this._hexsigHubLoader = clearInjectedHexSigLoader ? null : this._injectedHexSigHubLoader;
+  }
+
   exportV2DeltaFields() {
-    const segments = typeof this.manualSegments.list === 'function'
-      ? this.manualSegments.list().map((s) => ({
-        startVa: normalizeVaHex(s.startVa ?? s.baseVa) || '0x0',
-        size: Number(s.size ?? 0),
-        fileOffset: Number(s.fileOffset ?? 0),
-        kind: s.kind ?? 0,
-        flags: s.flags ?? 0,
-        name: s.name || '',
-      }))
-      : [];
-    const chunks = typeof this.funcChunks.list === 'function'
-      ? this.funcChunks.list().map((c) => ({
-        ownerVa: normalizeVaHex(c.ownerVa ?? c.ownerFnVa) || '0x0',
-        startVa: normalizeVaHex(c.startVa) || '0x0',
-        endVa: normalizeVaHex(c.endVa) || '0x0',
-        kind: c.kind ?? c.chunkKind ?? 0,
-        flags: c.flags ?? 0,
-      }))
-      : [];
-    const customAbis = typeof this.customAbis.list === 'function'
-      ? this.customAbis.list().map((a) => ({ ...a }))
-      : [];
-    const stackSlotOverrides = typeof this.stackOverrides.list === 'function'
-      ? this.stackOverrides.list().map((o) => ({ ...o }))
-      : [];
-    const shiftedPtrs = typeof this.shiftedPtrs.list === 'function'
-      ? this.shiftedPtrs.list().map((p) => ({ ...p }))
-      : [];
+    const rawSegments = typeof this.manualSegments?.list === 'function'
+      ? this.manualSegments.list()
+      : (Array.isArray(this.manualSegments?.entries) ? this.manualSegments.entries : []);
+    const segments = rawSegments.map((s) => ({
+      startVa: normalizeVaHex(s.startVa ?? s.baseVa) || '0x0',
+      size: Number(s.size ?? s.byteLen ?? 0),
+      byteLen: Number(s.byteLen ?? s.size ?? 0),
+      fileOffset: Number(s.fileOffset ?? 0),
+      kind: s.kind ?? 0,
+      flags: s.flags ?? 0,
+      name: s.name || '',
+    }));
+
+    const chunks = [];
+    if (typeof this.funcChunks?.list === 'function') {
+      for (const c of this.funcChunks.list()) {
+        chunks.push({
+          ownerVa: normalizeVaHex(c.ownerVa ?? c.ownerFnVa) || '0x0',
+          startVa: normalizeVaHex(c.startVa) || '0x0',
+          endVa: normalizeVaHex(c.endVa) || '0x0',
+          kind: c.kind ?? c.chunkKind ?? 0,
+          flags: c.flags ?? 0,
+        });
+      }
+    } else if (this.funcChunks?.byOwner instanceof Map) {
+      for (const [ownerVa, list] of this.funcChunks.byOwner.entries()) {
+        const ownerHex = normalizeVaHex(ownerVa) || '0x0';
+        for (const c of (Array.isArray(list) ? list : [])) {
+          chunks.push({
+            ownerVa: normalizeVaHex(c.ownerVa ?? c.ownerFnVa ?? ownerHex) || ownerHex,
+            startVa: normalizeVaHex(c.startVa) || '0x0',
+            endVa: normalizeVaHex(c.endVa) || '0x0',
+            kind: c.kind ?? c.chunkKind ?? 0,
+            flags: c.flags ?? 0,
+          });
+        }
+      }
+    } else if (Array.isArray(this.funcChunks?.globalIndex)) {
+      for (const c of this.funcChunks.globalIndex) {
+        chunks.push({
+          ownerVa: normalizeVaHex(c.ownerVa ?? c.ownerFnVa) || '0x0',
+          startVa: normalizeVaHex(c.startVa) || '0x0',
+          endVa: normalizeVaHex(c.endVa) || '0x0',
+          kind: c.kind ?? c.chunkKind ?? 0,
+          flags: c.flags ?? 0,
+        });
+      }
+    }
+
+    const customAbis = [];
+    if (typeof this.customAbis?.list === 'function') {
+      for (const a of this.customAbis.list()) customAbis.push({ ...a });
+    } else if (this.customAbis?.specs instanceof Map) {
+      for (const [funcVa, spec] of this.customAbis.specs.entries()) {
+        const vaHex = normalizeVaHex(spec?.funcVa ?? spec?.fnVa ?? funcVa) || '0x0';
+        customAbis.push({ ...spec, funcVa: vaHex });
+      }
+    }
+
+    const stackSlotOverrides = [];
+    if (typeof this.stackOverrides?.list === 'function') {
+      for (const o of this.stackOverrides.list()) stackSlotOverrides.push({ ...o });
+    } else if (this.stackOverrides?.byFunc instanceof Map) {
+      for (const [funcVa, list] of this.stackOverrides.byFunc.entries()) {
+        const vaHex = normalizeVaHex(funcVa) || '0x0';
+        for (const o of (Array.isArray(list) ? list : [])) {
+          stackSlotOverrides.push({ ...o, funcVa: normalizeVaHex(o?.funcVa ?? o?.fnVa ?? vaHex) || vaHex });
+        }
+      }
+    }
+
+    const shiftedPtrs = [];
+    if (this.shiftedPtrs?.byFunc instanceof Map) {
+      for (const [funcVa, fnMap] of this.shiftedPtrs.byFunc.entries()) {
+        const vaHex = normalizeVaHex(funcVa) || '0x0';
+        const iter = fnMap instanceof Map ? fnMap.values() : (Array.isArray(fnMap) ? fnMap : []);
+        for (const p of iter) {
+          shiftedPtrs.push({ ...p, funcVa: normalizeVaHex(p?.funcVa ?? p?.fnVa ?? vaHex) || vaHex });
+        }
+      }
+    }
 
     return {
       displayHints: { ...this.displayHints },
@@ -1331,8 +1451,9 @@ export class V6Workbench {
       }
     }
 
-    if (typeof this.manualSegments.clear === 'function') this.manualSegments.clear();
-    if (Array.isArray(delta.manualSegments) && typeof this.manualSegments.add === 'function') {
+    this._clearRecoveryStores();
+
+    if (Array.isArray(delta.manualSegments) && typeof this.manualSegments?.add === 'function') {
       for (const seg of delta.manualSegments) {
         if (!seg || typeof seg !== 'object') continue;
         try {
@@ -1343,23 +1464,26 @@ export class V6Workbench {
       }
     }
 
-    if (typeof this.funcChunks.clear === 'function') this.funcChunks.clear();
-    if (Array.isArray(delta.funcChunks) && typeof this.funcChunks.add === 'function') {
-      for (const chunk of delta.funcChunks) {
-        if (!chunk || typeof chunk !== 'object') continue;
-        try {
-          this.funcChunks.add(chunk);
-        } catch {
-          // Ignore malformed persisted chunk entries.
+    if (Array.isArray(delta.funcChunks)) {
+      const attachFn = typeof this.funcChunks?.attachChunk === 'function'
+        ? (ownerVa, chunk) => this.funcChunks.attachChunk(ownerVa, chunk)
+        : (typeof this.funcChunks?.add === 'function' ? (_ownerVa, chunk) => this.funcChunks.add(chunk) : null);
+      if (attachFn) {
+        for (const chunk of delta.funcChunks) {
+          if (!chunk || typeof chunk !== 'object') continue;
+          try {
+            attachFn(chunk.ownerVa ?? chunk.ownerFnVa, chunk);
+          } catch {
+            // Ignore malformed persisted chunk entries.
+          }
         }
       }
     }
 
-    if (typeof this.customAbis.clear === 'function') this.customAbis.clear();
     const abiItems = Array.isArray(delta.customAbis)
       ? delta.customAbis
       : (delta.customAbis && typeof delta.customAbis === 'object' ? Object.values(delta.customAbis) : []);
-    if (typeof this.customAbis.set === 'function') {
+    if (typeof this.customAbis?.set === 'function') {
       for (const abi of abiItems) {
         if (!abi || typeof abi !== 'object') continue;
         try {
@@ -1370,30 +1494,34 @@ export class V6Workbench {
       }
     }
 
-    if (typeof this.stackOverrides.clear === 'function') this.stackOverrides.clear();
     const stackItems = Array.isArray(delta.stackSlotOverrides)
       ? delta.stackSlotOverrides
       : (delta.stackSlotOverrides && typeof delta.stackSlotOverrides === 'object' ? Object.values(delta.stackSlotOverrides) : []);
-    if (typeof this.stackOverrides.set === 'function') {
+    const setOverrideFn = typeof this.stackOverrides?.setOverride === 'function'
+      ? (va, ov) => this.stackOverrides.setOverride(va, ov)
+      : (typeof this.stackOverrides?.set === 'function' ? (va, ov) => this.stackOverrides.set(va, ov) : null);
+    if (setOverrideFn) {
       for (const ov of stackItems) {
         if (!ov || typeof ov !== 'object') continue;
         try {
-          this.stackOverrides.set(ov.fnVa ?? ov.funcVa, ov);
+          setOverrideFn(ov.fnVa ?? ov.funcVa, ov);
         } catch {
           // Ignore malformed persisted stack override entries.
         }
       }
     }
 
-    if (typeof this.shiftedPtrs.clear === 'function') this.shiftedPtrs.clear();
     const shiftedItems = Array.isArray(delta.shiftedPtrs)
       ? delta.shiftedPtrs
       : (delta.shiftedPtrs && typeof delta.shiftedPtrs === 'object' ? Object.values(delta.shiftedPtrs) : []);
-    if (typeof this.shiftedPtrs.set === 'function') {
+    const registerShiftedFn = typeof this.shiftedPtrs?.register === 'function'
+      ? (va, sp) => this.shiftedPtrs.register(va, sp)
+      : (typeof this.shiftedPtrs?.set === 'function' ? (va, sp) => this.shiftedPtrs.set(va, sp) : null);
+    if (registerShiftedFn) {
       for (const sp of shiftedItems) {
         if (!sp || typeof sp !== 'object') continue;
         try {
-          this.shiftedPtrs.set(sp.fnVa ?? sp.funcVa ?? sp.key, sp);
+          registerShiftedFn(sp.fnVa ?? sp.funcVa ?? sp.key, sp);
         } catch {
           // Ignore malformed persisted shifted-ptr entries.
         }
@@ -1462,8 +1590,16 @@ export class V6Workbench {
       this.hexsigIndex = new HexSigIndex();
       this._wasmAnalysis = null;
       this._wasmIndex = null;
+      this._resetBinaryScopedState({ clearInjectedHexSigLoader: false });
 
-      if (this._autoMountedTilSlots.size > 0 && typeof this.tilPackManager?.getMountedSlots === 'function') {
+      if (typeof this.tilPackManager?.purgeAllSlots === 'function') {
+        try {
+          this.tilPackManager.purgeAllSlots({ releaseTidBases: true });
+        } catch {
+          // Non-fatal purge failure during reset.
+        }
+        this._autoMountedTilSlots.clear();
+      } else if (this._autoMountedTilSlots.size > 0 && typeof this.tilPackManager?.getMountedSlots === 'function') {
         const slots = this.tilPackManager.getMountedSlots();
         for (const [slot, entry] of this._autoMountedTilSlots.entries()) {
           const slotInfo = slots ? slots[slot] : null;
@@ -1602,7 +1738,14 @@ export class V6Workbench {
 
   cancelStagedAutoAnalysis() {
     this.cancelAutoAnalysis({ resetState: false });
-    const staged = this._autoAnalysisState?.staged;
+    const state = this._autoAnalysisState;
+    for (const phaseKey of ['til', 'hexsig', 'deobf']) {
+      const ph = state?.[phaseKey];
+      if (ph && (ph.status === AUTO_ANALYSIS_STATUS.IDLE || ph.status === AUTO_ANALYSIS_STATUS.RUNNING)) {
+        ph.status = AUTO_ANALYSIS_STATUS.ABORTED;
+      }
+    }
+    const staged = state?.staged;
     if (staged && staged.stages) {
       for (const stageId of STAGED_AUTO_ANALYSIS_STAGES) {
         const st = staged.stages[stageId];
@@ -1906,7 +2049,7 @@ export class V6Workbench {
           binaryMeta,
           signal: tilCtrl.signal,
           onProgress: (ev) => {
-            if (gen !== this._autoGen) return;
+            if (!isStillCurrent()) return;
             this._autoAnalysisState.til = {
               ...this._autoAnalysisState.til,
               status: ev.status,
@@ -1917,7 +2060,7 @@ export class V6Workbench {
             this._emitAutoAnalysisUpdate();
           },
         });
-        if (gen !== this._autoGen) return;
+        if (!isStillCurrent()) return;
         if (Array.isArray(tilRes.mountedSlots)) {
           for (const entry of tilRes.mountedSlots) {
             if (entry && entry.slot && entry.packId) {
@@ -1938,7 +2081,7 @@ export class V6Workbench {
       };
       this._emitAutoAnalysisUpdate();
     } catch (err) {
-      if (gen !== this._autoGen) return;
+      if (gen !== this._autoGen || (typeof providers.isCurrent === 'function' && providers.isCurrent() === false)) return;
       this._autoAnalysisState.til = {
         ...this._autoAnalysisState.til,
         status: signal.aborted ? AUTO_ANALYSIS_STATUS.ABORTED : AUTO_ANALYSIS_STATUS.ERROR,
@@ -2048,7 +2191,7 @@ export class V6Workbench {
           signal,
           onBatchNamed: applyAutoNamedBatch,
           onProgress: (ev) => {
-            if (gen !== this._autoGen) return;
+            if (!isStillCurrent()) return;
             this._autoAnalysisState.hexsig = {
               ...this._autoAnalysisState.hexsig,
               status: ev.status,
@@ -2060,7 +2203,7 @@ export class V6Workbench {
           },
         });
 
-        if (gen !== this._autoGen) return;
+        if (!isStillCurrent()) return;
         this._autoAnalysisState.hexsig = {
           status: hexRes.status,
           completed: hexRes.scanned ?? 0,
@@ -2072,7 +2215,7 @@ export class V6Workbench {
         this._emitAutoAnalysisUpdate();
       }
     } catch (err) {
-      if (gen !== this._autoGen) return;
+      if (gen !== this._autoGen || (typeof providers.isCurrent === 'function' && providers.isCurrent() === false)) return;
       this._autoAnalysisState.hexsig = {
         ...this._autoAnalysisState.hexsig,
         status: signal.aborted ? AUTO_ANALYSIS_STATUS.ABORTED : AUTO_ANALYSIS_STATUS.ERROR,
@@ -2331,7 +2474,7 @@ export class V6Workbench {
           }
         },
         onProgress: (ev) => {
-          if (gen !== this._autoGen) return;
+          if (!isStillCurrent()) return;
           this._autoAnalysisState.deobf = {
             ...this._autoAnalysisState.deobf,
             status: ev.status,
@@ -2343,7 +2486,7 @@ export class V6Workbench {
         },
       });
 
-      if (gen !== this._autoGen) return;
+      if (!isStillCurrent()) return;
       this._autoAnalysisState.deobf = {
         status: queueRes.status,
         completed: queueRes.processed ?? 0,
@@ -2355,7 +2498,7 @@ export class V6Workbench {
       };
       this._emitAutoAnalysisUpdate();
     } catch (err) {
-      if (gen !== this._autoGen) return;
+      if (gen !== this._autoGen || (typeof providers.isCurrent === 'function' && providers.isCurrent() === false)) return;
       this._autoAnalysisState.deobf = {
         ...this._autoAnalysisState.deobf,
         status: signal.aborted ? AUTO_ANALYSIS_STATUS.ABORTED : AUTO_ANALYSIS_STATUS.ERROR,
@@ -2641,6 +2784,7 @@ export class V6Workbench {
   detach() {
     this.closeActivePopover();
     this.cancelAutoAnalysis({ resetState: true });
+    this._hexsigHubLoader = null;
     this._binaryKey = null;
     this.dirtyCone?.clear?.();
     this.typeTx?.clear?.();
