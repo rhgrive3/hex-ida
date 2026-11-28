@@ -30,6 +30,15 @@ const MAX_READ_BYTES = 256;
 const MIN_ANCHOR_STRING_LEN = 6;
 const MASK64 = 0xffffffffffffffffn;
 
+function safeMask64(value) {
+  if (value === null || value === undefined) return 0n;
+  try {
+    return BigInt(value) & MASK64;
+  } catch {
+    return 0n;
+  }
+}
+
 function defaultYield() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -206,10 +215,10 @@ function hasCorroboratingAnchor(query, entry) {
   if (!query || !entry) return false;
   const qFp = query.fingerprint || {};
   const eFp = entry.fingerprint || {};
-  const qStrHash = BigInt(qFp.l3StrHash64 ?? 0n) & MASK64;
-  const eStrHash = BigInt(eFp.l3StrHash64 ?? 0n) & MASK64;
-  const qConstHash = BigInt(qFp.l3ConstHash64 ?? 0n) & MASK64;
-  const eConstHash = BigInt(eFp.l3ConstHash64 ?? 0n) & MASK64;
+  const qStrHash = safeMask64(qFp.l3StrHash64);
+  const eStrHash = safeMask64(eFp.l3StrHash64);
+  const qConstHash = safeMask64(qFp.l3ConstHash64);
+  const eConstHash = safeMask64(eFp.l3ConstHash64);
 
   if (qStrHash !== 0n && eStrHash !== 0n && qStrHash === eStrHash) return true;
   if (qConstHash !== 0n && eConstHash !== 0n && qConstHash === eConstHash) return true;
@@ -219,7 +228,7 @@ function hasCorroboratingAnchor(query, entry) {
   if (qStrings.length > 0 && eStrings.length > 0) {
     const qStrSet = new Set(qStrings);
     for (const es of eStrings) {
-      if (es.length >= MIN_ANCHOR_STRING_LEN && qStrSet.has(es)) {
+      if (typeof es === 'string' && es.length >= MIN_ANCHOR_STRING_LEN && qStrSet.has(es)) {
         return true;
       }
     }
@@ -232,7 +241,7 @@ function hasCorroboratingAnchor(query, entry) {
     let matchedConsts = 0;
     let hasLargeConst = false;
     for (const ec of eConstants) {
-      const v = BigInt(ec) & MASK64;
+      const v = safeMask64(ec);
       if (v > 16n && qConstSet.has(v)) {
         matchedConsts++;
         if (v >= 0x10000n) hasLargeConst = true;
@@ -259,8 +268,8 @@ function matchByAnchors(hexSigIndex, codeBytes, archId, query, matchOpts = {}) {
   }
 
   const qFp = query?.fingerprint || {};
-  const qStrHash = BigInt(qFp.l3StrHash64 ?? 0n) & MASK64;
-  const qConstHash = BigInt(qFp.l3ConstHash64 ?? 0n) & MASK64;
+  const qStrHash = safeMask64(qFp.l3StrHash64);
+  const qConstHash = safeMask64(qFp.l3ConstHash64);
   const qStrings = normalizeAnchorStrings(query?.strings);
   const qConstants = normalizeAnchorConstants(query?.constants);
 
@@ -288,15 +297,23 @@ function matchByAnchors(hexSigIndex, codeBytes, archId, query, matchOpts = {}) {
 
   // Track how many entries match each query anchor to guard against ambiguous anchors.
   const candidates = [];
-  for (let i = 0; i < hexSigIndex.entries.length; i++) {
+  const archIndices = hexSigIndex.byArch instanceof Map
+    ? (hexSigIndex.byArch.get(archId) || [])
+    : null;
+  const scanIndices = archIndices
+    ? archIndices
+    : Array.from({ length: hexSigIndex.entries.length }, (_, idx) => idx);
+  for (const i of scanIndices) {
     const entry = hexSigIndex.entries[i];
     if (!entry) continue;
-    const entryArch = entry.arch ?? entry.archId ?? HEXSIG_ARCH_ARM64;
-    if (entryArch !== archId) continue;
+    if (!archIndices) {
+      const entryArch = entry.arch ?? entry.archId ?? HEXSIG_ARCH_ARM64;
+      if (entryArch !== archId) continue;
+    }
 
     const eFp = entry.fingerprint || {};
-    const eStrHash = BigInt(eFp.l3StrHash64 ?? 0n) & MASK64;
-    const eConstHash = BigInt(eFp.l3ConstHash64 ?? 0n) & MASK64;
+    const eStrHash = safeMask64(eFp.l3StrHash64);
+    const eConstHash = safeMask64(eFp.l3ConstHash64);
 
     const exactStrHashHit = qStrHash !== 0n && eStrHash !== 0n && qStrHash === eStrHash;
     const exactConstHashHit = qConstHash !== 0n && eConstHash !== 0n && qConstHash === eConstHash;
@@ -307,7 +324,7 @@ function matchByAnchors(hexSigIndex, codeBytes, archId, query, matchOpts = {}) {
     const eStrings = Array.isArray(entry.strings) ? entry.strings : [];
     if (eStrings.length > 0 && qStrSet.size > 0) {
       for (const es of eStrings) {
-        if (es.length >= MIN_ANCHOR_STRING_LEN && qStrSet.has(es)) {
+        if (typeof es === 'string' && es.length >= MIN_ANCHOR_STRING_LEN && qStrSet.has(es)) {
           matchedStrings++;
           if (es.length > maxMatchedStrLen) maxMatchedStrLen = es.length;
         }
@@ -320,7 +337,7 @@ function matchByAnchors(hexSigIndex, codeBytes, archId, query, matchOpts = {}) {
     const eConstants = Array.isArray(entry.constants) ? entry.constants : [];
     if (eConstants.length > 0 && qConstSet.size > 0) {
       for (const ec of eConstants) {
-        const v = BigInt(ec) & MASK64;
+        const v = safeMask64(ec);
         if (v > 16n && qConstSet.has(v)) {
           matchedConstants++;
           if (v >= 0x10000n) hasLargeConstHit = true;
@@ -777,7 +794,7 @@ export function createHexSigAutoScanner({
           if (checkPackMounted(pack.packId)) continue;
 
           try {
-            const loaded = await hubLoader.loadPack(pack.packId);
+            const loaded = await hubLoader.loadPack(pack.packId, { signal });
             if (signal?.aborted) {
               safeInvokeCallback(onProgress, {
                 phase: 'hexsig',
@@ -840,7 +857,13 @@ export function createHexSigAutoScanner({
             } else {
               const meta = loaded?.meta || pack;
               const decoded = loaded?.decoded;
-              if (meta && meta.libId !== undefined && Array.isArray(hexSigIndex.libs)) {
+              if (
+                meta
+                && Number.isSafeInteger(meta.libId)
+                && meta.libId >= 0
+                && meta.libId < 0xffff
+                && Array.isArray(hexSigIndex.libs)
+              ) {
                 hexSigIndex.libs[meta.libId] = {
                   libId: meta.libId,
                   packId: meta.packId,
@@ -941,6 +964,7 @@ export function createHexSigAutoScanner({
 
       for (let i = 0; i < totalFuncs; i++) {
         if (signal?.aborted) {
+          if (typeof onNamed === 'function') flushChunkBatch();
           safeInvokeCallback(onProgress, {
             phase: 'hexsig',
             status: AUTO_ANALYSIS_STATUS.ABORTED,
@@ -1004,6 +1028,7 @@ export function createHexSigAutoScanner({
                 }
 
                 if (signal?.aborted) {
+                  if (typeof onNamed === 'function') flushChunkBatch();
                   safeInvokeCallback(onProgress, {
                     phase: 'hexsig',
                     status: AUTO_ANALYSIS_STATUS.ABORTED,
@@ -1023,47 +1048,76 @@ export function createHexSigAutoScanner({
                 if (!readFailed) {
                   const codeBytes = toUint8ArrayOrNull(rawBytes);
                   if (codeBytes && codeBytes.length >= 4) {
-                    scanned++;
-                    try {
-                      let anchorContext = null;
-                      if (
-                        Array.isArray(fn.strings)
-                        || Array.isArray(fn.constants)
-                        || typeof fn.cryptoMask === 'number'
-                        || typeof fn.libHintMask === 'number'
-                        || (fn.fingerprint && typeof fn.fingerprint === 'object')
-                      ) {
-                        anchorContext = {
-                          strings: fn.strings,
-                          constants: fn.constants,
-                          cryptoMask: fn.cryptoMask,
-                          libHintMask: fn.libHintMask,
-                          fingerprint: fn.fingerprint,
+                    let anchorContext = null;
+                    if (
+                      Array.isArray(fn.strings)
+                      || Array.isArray(fn.constants)
+                      || typeof fn.cryptoMask === 'number'
+                      || typeof fn.libHintMask === 'number'
+                      || (fn.fingerprint && typeof fn.fingerprint === 'object')
+                    ) {
+                      anchorContext = {
+                        strings: fn.strings,
+                        constants: fn.constants,
+                        cryptoMask: fn.cryptoMask,
+                        libHintMask: fn.libHintMask,
+                        fingerprint: fn.fingerprint,
+                      };
+                    }
+                    if (effectiveGetAnchors) {
+                      try {
+                        const extraAnchors = await effectiveGetAnchors(vaHex, fn, { signal });
+                        if (extraAnchors && typeof extraAnchors === 'object') {
+                          if (anchorContext) {
+                            const mergedFingerprint = (
+                              anchorContext.fingerprint
+                              && typeof anchorContext.fingerprint === 'object'
+                              && extraAnchors.fingerprint
+                              && typeof extraAnchors.fingerprint === 'object'
+                            )
+                              ? { ...anchorContext.fingerprint, ...extraAnchors.fingerprint }
+                              : (extraAnchors.fingerprint !== undefined ? extraAnchors.fingerprint : anchorContext.fingerprint);
+                            anchorContext = {
+                              ...anchorContext,
+                              ...extraAnchors,
+                              ...(mergedFingerprint !== undefined ? { fingerprint: mergedFingerprint } : {}),
+                              strings: [
+                                ...(Array.isArray(anchorContext.strings) ? anchorContext.strings : []),
+                                ...(Array.isArray(extraAnchors.strings) ? extraAnchors.strings : []),
+                              ],
+                              constants: [
+                                ...(Array.isArray(anchorContext.constants) ? anchorContext.constants : []),
+                                ...(Array.isArray(extraAnchors.constants) ? extraAnchors.constants : []),
+                              ],
+                            };
+                          } else {
+                            anchorContext = extraAnchors;
+                          }
+                        }
+                      } catch {
+                        // Ignore optional anchor provider errors and proceed with prologue matching.
+                      }
+                      if (signal?.aborted) {
+                        if (typeof onNamed === 'function') flushChunkBatch();
+                        safeInvokeCallback(onProgress, {
+                          phase: 'hexsig',
+                          status: AUTO_ANALYSIS_STATUS.ABORTED,
+                          completed: i,
+                          total: totalFuncs,
+                        });
+                        return {
+                          status: AUTO_ANALYSIS_STATUS.ABORTED,
+                          scanned,
+                          named,
+                          skippedNamed,
+                          results,
+                          errors,
                         };
                       }
-                      if (effectiveGetAnchors) {
-                        try {
-                          const extraAnchors = await effectiveGetAnchors(vaHex, fn);
-                          if (extraAnchors && typeof extraAnchors === 'object') {
-                            anchorContext = anchorContext
-                              ? {
-                                  ...anchorContext,
-                                  ...extraAnchors,
-                                  strings: [
-                                    ...(Array.isArray(anchorContext.strings) ? anchorContext.strings : []),
-                                    ...(Array.isArray(extraAnchors.strings) ? extraAnchors.strings : []),
-                                  ],
-                                  constants: [
-                                    ...(Array.isArray(anchorContext.constants) ? anchorContext.constants : []),
-                                    ...(Array.isArray(extraAnchors.constants) ? extraAnchors.constants : []),
-                                  ],
-                                }
-                              : extraAnchors;
-                          }
-                        } catch {
-                          // Ignore optional anchor provider errors and proceed with prologue matching.
-                        }
-                      }
+                    }
+
+                    scanned++;
+                    try {
 
                       const query = buildHexSigMatchQuery(codeBytes, archId, extractQuery, anchorContext);
                       let res = hexSigIndex.match(query, {
@@ -1078,6 +1132,32 @@ export function createHexSigAutoScanner({
                         && res?.engine === 'js'
                       ) {
                         sessionPreferWasm = false;
+                      }
+
+                      // Promote high-confidence WASM prologue-only matches (VENDOR_FOLD_ONLY) to AUTO_NAME
+                      // when corroborated by a string or constant anchor (e.g., tailLen=0 entries after callgraph/xref pass).
+                      if (
+                        res
+                        && res.engine === 'wasm'
+                        && res.matched === true
+                        && res.verdict === HEXSIG_VERDICT.VENDOR_FOLD_ONLY
+                        && Boolean(res.symbolName)
+                        && (res.score1 ?? 0) >= HEXSIG_THRESHOLDS.AUTO_NAME_SCORE
+                        && (res.margin ?? 0) >= HEXSIG_THRESHOLDS.AUTO_NAME_MARGIN
+                      ) {
+                        const matchedEntry = (
+                          typeof res.entryIndex === 'number'
+                          && res.entryIndex >= 0
+                          && Array.isArray(hexSigIndex.entries)
+                        )
+                          ? hexSigIndex.entries[res.entryIndex]
+                          : null;
+                        if (matchedEntry && hasCorroboratingAnchor(query, matchedEntry)) {
+                          res = {
+                            ...res,
+                            verdict: HEXSIG_VERDICT.AUTO_NAME,
+                          };
+                        }
                       }
 
                       // Gate generic-prologue (`requireAnchor`) entries: never promote to AUTO_NAME

@@ -190,7 +190,7 @@ export class MiniArm64Emu {
   constructor(segs = [], stubs = [], cfg = {}) {
     this.segs = segs.map((s) => ({
       va: BigInt(s.va),
-      size: s.size ?? (s.bytes ? s.bytes.length : 0),
+      size: s.size ?? s.memsz ?? (s.bytes ? s.bytes.length : 0),
       bytes: s.bytes ? (s.bytes instanceof Uint8Array ? s.bytes : new Uint8Array(s.bytes)) : null,
       prot: s.prot ?? (HEX_EMU_PROT.R | HEX_EMU_PROT.X),
     }));
@@ -234,7 +234,7 @@ export class MiniArm64Emu {
       for (const [k, v] of Object.entries(this.cfg.initialRegs)) {
         const idx = Number(k);
         if (Number.isInteger(idx) && idx >= 0 && idx <= 31) {
-          this.setGpr(idx, BigInt(v) & MASK64);
+          this.setGpr(idx, BigInt(v) & MASK64, idx === 31);
         }
       }
     }
@@ -308,10 +308,19 @@ export class MiniArm64Emu {
           const sOff = Number(ovStart - segStart);
           const len = Number(ovEnd - ovStart);
           if (seg.bytes) {
-            data.set(seg.bytes.subarray(sOff, sOff + len), pOff);
-            for (let i = 0; i < len; i++) {
-              const b = pOff + i;
-              initBitmap[b >> 3] |= 1 << (b & 7);
+            const copyLen = Math.min(len, Math.max(0, seg.bytes.length - sOff));
+            if (copyLen > 0) {
+              data.set(seg.bytes.subarray(sOff, sOff + copyLen), pOff);
+              for (let i = 0; i < copyLen; i++) {
+                const b = pOff + i;
+                initBitmap[b >> 3] |= 1 << (b & 7);
+              }
+            }
+            if (copyLen < len && (seg.prot & HEX_EMU_PROT.BSS)) {
+              for (let i = copyLen; i < len; i++) {
+                const b = pOff + i;
+                initBitmap[b >> 3] |= 1 << (b & 7);
+              }
             }
           } else if (seg.prot & HEX_EMU_PROT.BSS) {
             for (let i = 0; i < len; i++) {
@@ -344,7 +353,13 @@ export class MiniArm64Emu {
       this.stopReason = HEX_EMU_STOP_REASON.UNINIT_READ;
       return null;
     }
-    if (seg.bytes) return seg.bytes[Number(va - seg.va)];
+    if (seg.bytes) {
+      const segOff = Number(va - seg.va);
+      if (segOff >= 0 && segOff < seg.bytes.length) return seg.bytes[segOff];
+      if (seg.prot & HEX_EMU_PROT.BSS) return 0;
+      this.stopReason = HEX_EMU_STOP_REASON.UNINIT_READ;
+      return null;
+    }
     if (seg.prot & HEX_EMU_PROT.BSS) return 0;
     this.stopReason = HEX_EMU_STOP_REASON.UNINIT_READ;
     return null;
@@ -365,7 +380,7 @@ export class MiniArm64Emu {
   readInt(va, widthBytes) {
     let acc = 0n;
     for (let i = 0; i < widthBytes; i++) {
-      const b = this.readByte(va + BigInt(i));
+      const b = this.readByte((va + BigInt(i)) & MASK64);
       if (b === null) return null;
       acc |= BigInt(b) << BigInt(i * 8);
     }
@@ -394,7 +409,7 @@ export class MiniArm64Emu {
   writeInt(va, val, widthBytes, writerInsnOff = 0) {
     const v = BigInt(val) & MASK64;
     for (let i = 0; i < widthBytes; i++) {
-      if (!this.writeByte(va + BigInt(i), Number((v >> BigInt(i * 8)) & 0xffn), writerInsnOff)) {
+      if (!this.writeByte((va + BigInt(i)) & MASK64, Number((v >> BigInt(i * 8)) & 0xffn), writerInsnOff)) {
         return false;
       }
     }
@@ -402,11 +417,12 @@ export class MiniArm64Emu {
   }
 
   _fetchWord(va) {
-    if (!this._isExecVa(va)) return null;
-    const b0 = this.readByte(va);
-    const b1 = this.readByte(va + 1n);
-    const b2 = this.readByte(va + 2n);
-    const b3 = this.readByte(va + 3n);
+    const v = va & MASK64;
+    if ((v & 3n) !== 0n || !this._isExecVa(v) || !this._isExecVa((v + 3n) & MASK64)) return null;
+    const b0 = this.readByte(v);
+    const b1 = this.readByte((v + 1n) & MASK64);
+    const b2 = this.readByte((v + 2n) & MASK64);
+    const b3 = this.readByte((v + 3n) & MASK64);
     if (b0 === null || b1 === null || b2 === null || b3 === null) return null;
     return ((b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) >>> 0);
   }
@@ -418,7 +434,7 @@ export class MiniArm64Emu {
     if (kind === HEX_EMU_STUB_KIND.STRLEN) {
       let len = 0;
       while (len < HEX_EMU_MAX_STUB_LEN) {
-        const b = this.readByte(x0 + BigInt(len));
+        const b = this.readByte((x0 + BigInt(len)) & MASK64);
         if (b === null) return false;
         if (b === 0) break;
         len++;
@@ -439,7 +455,7 @@ export class MiniArm64Emu {
     if (kind === HEX_EMU_STUB_KIND.MEMSET) {
       const fill = Number(x1 & 0xffn);
       for (let i = 0; i < n; i++) {
-        if (!this.writeByte(x0 + BigInt(i), fill, writerInsnOff)) return false;
+        if (!this.writeByte((x0 + BigInt(i)) & MASK64, fill, writerInsnOff)) return false;
       }
       this.setGpr(0, x0);
       return true;
@@ -448,12 +464,12 @@ export class MiniArm64Emu {
     if (kind === HEX_EMU_STUB_KIND.MEMCPY || kind === HEX_EMU_STUB_KIND.MEMMOVE) {
       const tmp = new Uint8Array(n);
       for (let i = 0; i < n; i++) {
-        const b = this.readByte(x1 + BigInt(i));
+        const b = this.readByte((x1 + BigInt(i)) & MASK64);
         if (b === null) return false;
         tmp[i] = b;
       }
       for (let i = 0; i < n; i++) {
-        if (!this.writeByte(x0 + BigInt(i), tmp[i], writerInsnOff)) return false;
+        if (!this.writeByte((x0 + BigInt(i)) & MASK64, tmp[i], writerInsnOff)) return false;
       }
       this.setGpr(0, x0);
       return true;
@@ -516,6 +532,12 @@ export class MiniArm64Emu {
         const rn = (w >>> 5) & 0x1f;
         const target = this.getGpr(rn);
         if (target === null) break;
+        const stubKind = (this.cfg.flags & 0x01) ? this.stubsByVa.get(target) : undefined;
+        if (stubKind) {
+          if (!this._execPureStub(stubKind, insnOff)) break;
+          this.pc = nextPc;
+          continue;
+        }
         if (!this._isExecVa(target)) {
           this.stopReason = HEX_EMU_STOP_REASON.EXT_CALL;
           break;
@@ -618,6 +640,10 @@ export class MiniArm64Emu {
         const sf = (w >>> 31) & 1;
         const opc = (w >>> 29) & 3;
         const hw = (w >>> 21) & 3;
+        if ((!sf && hw >= 2) || opc === 1) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
         const imm16 = BigInt((w >>> 5) & 0xffff);
         const rd = w & 0x1f;
         const shift = BigInt(hw * 16);
@@ -681,6 +707,10 @@ export class MiniArm64Emu {
         const setFlags = Boolean((w >>> 29) & 1);
         const shiftType = (w >>> 22) & 3;
         const shiftAmt = (w >>> 10) & 0x3f;
+        if (shiftType === 3 || (!is64 && shiftAmt >= 32)) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
         const rm = (w >>> 16) & 0x1f;
         const rn = (w >>> 5) & 0x1f;
         const rd = w & 0x1f;
@@ -708,6 +738,10 @@ export class MiniArm64Emu {
         const shiftType = (w >>> 22) & 3;
         const invert = Boolean((w >>> 21) & 1);
         const shiftAmt = (w >>> 10) & 0x3f;
+        if (!is64 && shiftAmt >= 32) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
         const rm = (w >>> 16) & 0x1f;
         const rn = (w >>> 5) & 0x1f;
         const rd = w & 0x1f;
@@ -923,22 +957,35 @@ export class MiniArm64Emu {
       // Integer LDR / STR unsigned offset (bit 26 V=0)
       if ((w & 0x3f000000) === 0x39000000) {
         const size = (w >>> 30) & 3;
+        const opc = (w >>> 22) & 3;
+        if ((size === 3 && opc === 2) || (opc === 3 && size >= 2)) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
         const width = 1 << size;
-        const isLoad = Boolean((w >>> 22) & 1);
         const imm = BigInt(((w >>> 10) & 0xfff) * width);
         const rn = (w >>> 5) & 0x1f;
         const rt = w & 0x1f;
         const base = this.getGpr(rn, true);
         if (base === null) break;
         const addr = (base + imm) & MASK64;
-        if (isLoad) {
-          const v = this.readInt(addr, width);
-          if (v === null) break;
-          this.setGpr(rt, v);
-        } else {
+        if (opc === 0) {
           const v = this.getGpr(rt);
           if (v === null) break;
-          if (!this.writeInt(addr, v, width, insnOff)) break;
+          if (!this.writeInt(addr, size === 3 ? v : (v & MASK32), width, insnOff)) break;
+        } else if (opc === 1) {
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, size === 3 ? v : (v & MASK32));
+        } else if (opc === 2) {
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, BigInt.asUintN(64, signExtendBig(v, width * 8)));
+        } else {
+          // opc === 3 && size < 2: 32-bit sign-extending LDRSB/LDRSH Wt
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, BigInt.asUintN(32, signExtendBig(v, width * 8)));
         }
         this.pc = nextPc;
         continue;
@@ -947,8 +994,12 @@ export class MiniArm64Emu {
       // Integer LDR / STR post-index & pre-index (bit 26 V=0)
       if ((w & 0x3f200400) === 0x38000400) {
         const size = (w >>> 30) & 3;
+        const opc = (w >>> 22) & 3;
+        if ((size === 3 && opc === 2) || (opc === 3 && size >= 2)) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
         const width = 1 << size;
-        const isLoad = Boolean((w >>> 22) & 1);
         const isPre = Boolean((w >>> 11) & 1);
         const simm9 = BigInt(signExtend((w >>> 12) & 0x1ff, 9));
         const rn = (w >>> 5) & 0x1f;
@@ -956,14 +1007,23 @@ export class MiniArm64Emu {
         const base = this.getGpr(rn, true);
         if (base === null) break;
         const addr = isPre ? ((base + simm9) & MASK64) : base;
-        if (isLoad) {
-          const v = this.readInt(addr, width);
-          if (v === null) break;
-          this.setGpr(rt, v);
-        } else {
+        if (opc === 0) {
           const v = this.getGpr(rt);
           if (v === null) break;
-          if (!this.writeInt(addr, v, width, insnOff)) break;
+          if (!this.writeInt(addr, size === 3 ? v : (v & MASK32), width, insnOff)) break;
+        } else if (opc === 1) {
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, size === 3 ? v : (v & MASK32));
+        } else if (opc === 2) {
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, BigInt.asUintN(64, signExtendBig(v, width * 8)));
+        } else {
+          // opc === 3 && size < 2: 32-bit sign-extending LDRSB/LDRSH Wt
+          const v = this.readInt(addr, width);
+          if (v === null) break;
+          this.setGpr(rt, BigInt.asUintN(32, signExtendBig(v, width * 8)));
         }
         this.setGpr(rn, (base + simm9) & MASK64, true);
         this.pc = nextPc;
@@ -1045,53 +1105,6 @@ export class MiniArm64Emu {
           if (v === null) break;
           this.setGpr(rt, BigInt.asUintN(64, signExtendBig(v, width * 8)) & MASK32);
         }
-        this.pc = nextPc;
-        continue;
-      }
-
-      // Minimal NEON: LDR Qt / STR Qt
-      if (((w & 0xffc00000) >>> 0) === 0x3dc00000 || ((w & 0xffc00000) >>> 0) === 0x3d800000) {
-        const isLoad = ((w & 0xffc00000) >>> 0) === 0x3dc00000;
-        const imm = BigInt(((w >>> 10) & 0xfff) * 16);
-        const rn = (w >>> 5) & 0x1f;
-        const rt = w & 0x1f;
-        const base = this.getGpr(rn, true);
-        if (base === null) break;
-        const addr = (base + imm) & MASK64;
-        if (isLoad) {
-          const buf = new Uint8Array(16);
-          let ok = true;
-          for (let i = 0; i < 16; i++) {
-            const b = this.readByte(addr + BigInt(i));
-            if (b === null) { ok = false; break; }
-            buf[i] = b;
-          }
-          if (!ok) break;
-          this.setVec(rt, buf);
-        } else {
-          const vec = this.getVec(rt);
-          if (vec === null) break;
-          let ok = true;
-          for (let i = 0; i < 16; i++) {
-            if (!this.writeByte(addr + BigInt(i), vec[i], insnOff)) { ok = false; break; }
-          }
-          if (!ok) break;
-        }
-        this.pc = nextPc;
-        continue;
-      }
-
-      // Minimal NEON: EOR Vd.16B, Vn.16B, Vm.16B
-      if (((w & 0xffe0fc00) >>> 0) === 0x6e201c00) {
-        const rd = w & 0x1f;
-        const rn = (w >>> 5) & 0x1f;
-        const rm = (w >>> 16) & 0x1f;
-        const va = this.getVec(rn);
-        const vb = this.getVec(rm);
-        if (!va || !vb) break;
-        const out = new Uint8Array(16);
-        for (let i = 0; i < 16; i++) out[i] = va[i] ^ vb[i];
-        this.setVec(rd, out);
         this.pc = nextPc;
         continue;
       }
@@ -1270,10 +1283,11 @@ export class MiniArm64Emu {
   }
 
   extractDirtySpans() {
-    const spans = [];
     const partialFlag = this.stopReason !== HEX_EMU_STOP_REASON.RETURN_OK ? 0x01 : 0x00;
+    const sortedPages = Array.from(this.cowPages.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    const merged = [];
 
-    for (const [pageBase, page] of this.cowPages.entries()) {
+    for (const [pageBase, page] of sortedPages) {
       let off = 0;
       while (off < HEX_EMU_PAGE_SIZE) {
         const isDirty = Boolean(page.dirtyBitmap[off >> 3] & (1 << (off & 7)));
@@ -1285,32 +1299,61 @@ export class MiniArm64Emu {
         while (off < HEX_EMU_PAGE_SIZE && (page.dirtyBitmap[off >> 3] & (1 << (off & 7)))) {
           off++;
         }
-        const raw = page.data.slice(start, off);
-        let strLen = raw.length;
-        let nulTerm = false;
-        if (strLen > 0 && raw[strLen - 1] === 0) {
-          nulTerm = true;
-          strLen--;
+        const segVa = pageBase + BigInt(start);
+        const chunk = page.data.slice(start, off);
+        const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+        if (prev && (prev.va + BigInt(prev.totalLen)) === segVa) {
+          prev.chunks.push(chunk);
+          prev.totalLen += chunk.length;
+          prev.writerInsnOff = page.writerInsnOff;
+        } else {
+          merged.push({
+            va: segVa,
+            chunks: [chunk],
+            totalLen: chunk.length,
+            writerInsnOff: page.writerInsnOff,
+          });
         }
-        let printableCount = 0;
-        for (let i = 0; i < strLen; i++) {
-          if (isPrintableAscii(raw[i])) printableCount++;
-        }
-        const isStr = strLen >= 3 && printableCount === strLen;
-        const kind = isStr ? HEX_EMU_SPAN_KIND.EMU_STR
-          : (raw.length >= 16 && (raw.length % 4 === 0)) ? HEX_EMU_SPAN_KIND.EMU_TABLE
-            : HEX_EMU_SPAN_KIND.EMU_RAW;
-
-        spans.push({
-          va: pageBase + BigInt(start),
-          payloadLen: raw.length,
-          payload: raw,
-          text: isStr ? new TextDecoder().decode(raw.subarray(0, strLen)) : null,
-          kind,
-          flags: partialFlag | (nulTerm ? 0x02 : 0x00),
-          writerInsnOff: page.writerInsnOff,
-        });
       }
+    }
+
+    const spans = [];
+    for (const entry of merged) {
+      let raw;
+      if (entry.chunks.length === 1) {
+        raw = entry.chunks[0];
+      } else {
+        raw = new Uint8Array(entry.totalLen);
+        let pos = 0;
+        for (const c of entry.chunks) {
+          raw.set(c, pos);
+          pos += c.length;
+        }
+      }
+      let strLen = raw.length;
+      let nulTerm = false;
+      if (strLen > 0 && raw[strLen - 1] === 0) {
+        nulTerm = true;
+        strLen--;
+      }
+      let printableCount = 0;
+      for (let i = 0; i < strLen; i++) {
+        if (isPrintableAscii(raw[i])) printableCount++;
+      }
+      const isStr = strLen >= 3 && printableCount === strLen;
+      const kind = isStr ? HEX_EMU_SPAN_KIND.EMU_STR
+        : (raw.length >= 16 && (raw.length % 4 === 0)) ? HEX_EMU_SPAN_KIND.EMU_TABLE
+          : HEX_EMU_SPAN_KIND.EMU_RAW;
+
+      spans.push({
+        va: entry.va,
+        payloadLen: raw.length,
+        payload: raw,
+        text: isStr ? new TextDecoder().decode(raw.subarray(0, strLen)) : null,
+        kind,
+        flags: partialFlag | (nulTerm ? 0x02 : 0x00),
+        writerInsnOff: entry.writerInsnOff,
+      });
     }
     return spans;
   }
@@ -1355,6 +1398,9 @@ export function runMiniArm64EmuWasm(codeBytes, cfg = {}) {
     }
 
     const dv = new DataView(ex.memory.buffer);
+    if ((cfg.flags ?? 0) & 0x04) {
+      dv.setBigUint64(statePtr + 0, BigInt(cfg.arg0Val ?? cfg.arg0_val ?? 0n) & MASK64, true);
+    }
     if (cfg.initialRegs) {
       for (const [k, v] of Object.entries(cfg.initialRegs)) {
         const idx = Number(k);
@@ -1369,11 +1415,12 @@ export function runMiniArm64EmuWasm(codeBytes, cfg = {}) {
     ex.hex_arm64_emu_run(statePtr, codePtr, codeBytes.length >>> 0);
     recordWasmCall('mini_arm64_emu');
 
-    const x0 = dv.getBigUint64(statePtr + 0, true);
-    const sp = dv.getBigUint64(statePtr + 0xf8, true);
-    const nzcv = dv.getUint32(statePtr + 0x108, true);
-    const stepCount = dv.getUint32(statePtr + 0x10c, true);
-    const faultCode = dv.getUint32(statePtr + 0x114, true);
+    const dvOut = new DataView(ex.memory.buffer);
+    const x0 = dvOut.getBigUint64(statePtr + 0, true);
+    const sp = dvOut.getBigUint64(statePtr + 0xf8, true);
+    const nzcv = dvOut.getUint32(statePtr + 0x108, true);
+    const stepCount = dvOut.getUint32(statePtr + 0x10c, true);
+    const faultCode = dvOut.getUint32(statePtr + 0x114, true);
 
     return {
       engine: 'wasm',
@@ -1386,6 +1433,9 @@ export function runMiniArm64EmuWasm(codeBytes, cfg = {}) {
             : HEX_EMU_STOP_REASON.UNSUPPORTED_INSN,
       faultCode,
       stepsUsed: stepCount,
+      cowPagesUsed: 0,
+      partialRun: faultCode !== 1,
+      dirtySpans: [],
       x0,
       sp,
       flags: {
@@ -1402,9 +1452,17 @@ export function runMiniArm64EmuWasm(codeBytes, cfg = {}) {
 }
 
 export function runMiniArm64Emu(segs, stubs, cfg = {}) {
-  if (cfg.preferWasm && segs.length === 1 && (!stubs || stubs.length === 0) && segs[0].bytes) {
-    const wasmRes = runMiniArm64EmuWasm(segs[0].bytes, { ...cfg, codeVa: segs[0].va });
-    if (wasmRes !== null) return wasmRes;
+  const seg0 = segs[0];
+  const seg0MemSize = seg0?.memsz ?? seg0?.size ?? seg0?.bytes?.length ?? 0;
+  if (
+    cfg.preferWasm
+    && segs.length === 1
+    && (!stubs || stubs.length === 0)
+    && seg0?.bytes
+    && !(seg0MemSize > seg0.bytes.length)
+  ) {
+    const wasmRes = runMiniArm64EmuWasm(seg0.bytes, { ...cfg, codeVa: seg0.va });
+    if (wasmRes !== null && wasmRes.faultCode !== 5) return wasmRes;
   }
   const emu = new MiniArm64Emu(segs, stubs, cfg);
   return emu.run();

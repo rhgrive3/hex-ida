@@ -176,13 +176,29 @@ bool decode_bitmask_imm(bool is64, uint32_t N, uint32_t immr, uint32_t imms, uin
   return true;
 }
 
+bool mem_can_write(const HexArm64EmuState* s, uint64_t addr, uint32_t width) {
+  if (width == 0u || width > 8u) return false;
+  if (addr >= s->stack_base && addr < s->stack_top && (s->stack_top - addr) >= width) {
+    const uint64_t off64 = addr - s->stack_base;
+    if (off64 <= static_cast<uint64_t>(HEX_ARM64_EMU_STACK_SIZE) &&
+        static_cast<uint64_t>(width) <= static_cast<uint64_t>(HEX_ARM64_EMU_STACK_SIZE) - off64) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool mem_read(const HexArm64EmuState* s, const uint8_t* code_ptr, uint32_t code_len,
               uint64_t addr, uint32_t width, uint64_t& out_val) {
   if (width == 0u || width > 8u) return false;
   if (addr >= s->stack_base && addr < s->stack_top && (s->stack_top - addr) >= width) {
-    const uint32_t off = static_cast<uint32_t>(addr - s->stack_base);
-    out_val = read_le_bytes(s->stack + off, width);
-    return true;
+    const uint64_t off64 = addr - s->stack_base;
+    if (off64 <= static_cast<uint64_t>(HEX_ARM64_EMU_STACK_SIZE) &&
+        static_cast<uint64_t>(width) <= static_cast<uint64_t>(HEX_ARM64_EMU_STACK_SIZE) - off64) {
+      const uint32_t off = static_cast<uint32_t>(off64);
+      out_val = read_le_bytes(s->stack + off, width);
+      return true;
+    }
   }
   if (code_ptr != nullptr && addr >= s->code_va &&
       (addr - s->code_va) <= static_cast<uint64_t>(code_len) &&
@@ -195,13 +211,10 @@ bool mem_read(const HexArm64EmuState* s, const uint8_t* code_ptr, uint32_t code_
 }
 
 bool mem_write(HexArm64EmuState* s, uint64_t addr, uint32_t width, uint64_t val) {
-  if (width == 0u || width > 8u) return false;
-  if (addr >= s->stack_base && addr < s->stack_top && (s->stack_top - addr) >= width) {
-    const uint32_t off = static_cast<uint32_t>(addr - s->stack_base);
-    write_le_bytes(s->stack + off, width, val);
-    return true;
-  }
-  return false;
+  if (!mem_can_write(s, addr, width)) return false;
+  const uint32_t off = static_cast<uint32_t>(addr - s->stack_base);
+  write_le_bytes(s->stack + off, width, val);
+  return true;
 }
 
 HexStatus set_fault(HexArm64EmuState* s, HexArm64EmuFault fault, HexStatus status) {
@@ -304,7 +317,7 @@ HexStatus hex_arm64_emu_step(
     const bool is_bl = ((insn >> 31) & 1u) != 0u;
     const int64_t delta = sign_extend(insn & 0x03FFFFFFu, 26u) << 2;
     if (is_bl) state->x[30] = next_pc;
-    state->pc = static_cast<uint64_t>(static_cast<int64_t>(cur_pc) + delta);
+    state->pc = cur_pc + static_cast<uint64_t>(delta);
     return HEX_OK;
   }
 
@@ -313,7 +326,7 @@ HexStatus hex_arm64_emu_step(
     const uint32_t cond = insn & 0xFu;
     if (eval_cond(state->nzcv, cond)) {
       const int64_t delta = sign_extend((insn >> 5) & 0x7FFFFu, 19u) << 2;
-      next_pc = static_cast<uint64_t>(static_cast<int64_t>(cur_pc) + delta);
+      next_pc = cur_pc + static_cast<uint64_t>(delta);
     }
     state->pc = next_pc;
     return HEX_OK;
@@ -328,7 +341,7 @@ HexStatus hex_arm64_emu_step(
     const bool taken = is_nz ? (val != 0ULL) : (val == 0ULL);
     if (taken) {
       const int64_t delta = sign_extend((insn >> 5) & 0x7FFFFu, 19u) << 2;
-      next_pc = static_cast<uint64_t>(static_cast<int64_t>(cur_pc) + delta);
+      next_pc = cur_pc + static_cast<uint64_t>(delta);
     }
     state->pc = next_pc;
     return HEX_OK;
@@ -345,7 +358,7 @@ HexStatus hex_arm64_emu_step(
     const bool bit_set = ((val >> bit_pos) & 1ULL) != 0ULL;
     if (is_nz ? bit_set : !bit_set) {
       const int64_t delta = sign_extend((insn >> 5) & 0x3FFFu, 14u) << 2;
-      next_pc = static_cast<uint64_t>(static_cast<int64_t>(cur_pc) + delta);
+      next_pc = cur_pc + static_cast<uint64_t>(delta);
     }
     state->pc = next_pc;
     return HEX_OK;
@@ -362,7 +375,7 @@ HexStatus hex_arm64_emu_step(
     if (is_adrp) {
       res = (cur_pc & ~0xFFFULL) + static_cast<uint64_t>(imm21 << 12);
     } else {
-      res = static_cast<uint64_t>(static_cast<int64_t>(cur_pc) + imm21);
+      res = cur_pc + static_cast<uint64_t>(imm21);
     }
     write_gpr(state, rd, res, false, true);
     state->pc = next_pc;
@@ -583,7 +596,7 @@ HexStatus hex_arm64_emu_step(
   if ((insn & 0x3F000000u) == 0x18000000u) {
     const uint32_t opc = (insn >> 30) & 3u;
     const int64_t delta = sign_extend((insn >> 5) & 0x7FFFFu, 19u) << 2;
-    const uint64_t addr = static_cast<uint64_t>(static_cast<int64_t>(cur_pc) + delta);
+    const uint64_t addr = cur_pc + static_cast<uint64_t>(delta);
     const uint32_t rt = insn & 31u;
     uint64_t val = 0ULL;
     if (opc == 0u) {
@@ -623,27 +636,32 @@ HexStatus hex_arm64_emu_step(
     const uint32_t rn = (insn >> 5) & 31u;
     const uint32_t rt = insn & 31u;
     const uint64_t base = read_gpr(state, rn, true, true);
-    const uint64_t addr =
-        (mode == 1u) ? base : static_cast<uint64_t>(static_cast<int64_t>(base) + imm7);
+    const uint64_t addr = (mode == 1u) ? base : (base + static_cast<uint64_t>(imm7));
+    if (addr > UINT64_MAX - static_cast<uint64_t>(width)) {
+      return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
+    }
+    const uint64_t addr2 = addr + static_cast<uint64_t>(width);
 
     if (is_load) {
       uint64_t v1 = 0ULL;
       uint64_t v2 = 0ULL;
       if (!mem_read(state, code_ptr, eff_len, addr, width, v1) ||
-          !mem_read(state, code_ptr, eff_len, addr + width, width, v2)) {
+          !mem_read(state, code_ptr, eff_len, addr2, width, v2)) {
         return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
       }
       write_gpr(state, rt, v1, false, is64);
       write_gpr(state, rt2, v2, false, is64);
     } else {
-      const uint64_t v1 = read_gpr(state, rt, false, is64);
-      const uint64_t v2 = read_gpr(state, rt2, false, is64);
-      if (!mem_write(state, addr, width, v1) || !mem_write(state, addr + width, width, v2)) {
+      if (!mem_can_write(state, addr, width) || !mem_can_write(state, addr2, width)) {
         return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
       }
+      const uint64_t v1 = read_gpr(state, rt, false, is64);
+      const uint64_t v2 = read_gpr(state, rt2, false, is64);
+      mem_write(state, addr, width, v1);
+      mem_write(state, addr2, width, v2);
     }
     if (mode == 1u || mode == 3u) {
-      write_gpr(state, rn, static_cast<uint64_t>(static_cast<int64_t>(base) + imm7), true, true);
+      write_gpr(state, rn, base + static_cast<uint64_t>(imm7), true, true);
     }
     state->pc = next_pc;
     return HEX_OK;
@@ -653,8 +671,8 @@ HexStatus hex_arm64_emu_step(
   if ((insn & 0x3F000000u) == 0x39000000u) {
     const uint32_t size = (insn >> 30) & 3u;
     const uint32_t opc = (insn >> 22) & 3u;
-    // Reject PRFM (size==3 && opc==2)
-    if (size == 3u && opc == 2u) {
+    // Reject PRFM (size==3 && opc==2) and unallocated (opc==3 && size>=2)
+    if ((size == 3u && opc == 2u) || (opc == 3u && size >= 2u)) {
       return set_fault(state, HEX_ARM64_FAULT_UNSUPPORTED_INSN, HEX_ERR_UNSUPPORTED);
     }
     const uint32_t width = 1u << size;
@@ -681,7 +699,12 @@ HexStatus hex_arm64_emu_step(
       }
       write_gpr(state, rt, static_cast<uint64_t>(sign_extend(v, width * 8u)), false, true);
     } else {
-      return set_fault(state, HEX_ARM64_FAULT_UNSUPPORTED_INSN, HEX_ERR_UNSUPPORTED);
+      // opc == 3u && size < 2u: 32-bit sign-extending LDRSB/LDRSH Wt
+      uint64_t v = 0ULL;
+      if (!mem_read(state, code_ptr, eff_len, addr, width, v)) {
+        return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
+      }
+      write_gpr(state, rt, static_cast<uint64_t>(sign_extend(v, width * 8u)), false, false);
     }
     state->pc = next_pc;
     return HEX_OK;
@@ -691,14 +714,16 @@ HexStatus hex_arm64_emu_step(
   if ((insn & 0x3F200400u) == 0x38000400u) {
     const uint32_t size = (insn >> 30) & 3u;
     const uint32_t opc = (insn >> 22) & 3u;
+    if ((size == 3u && opc == 2u) || (opc == 3u && size >= 2u)) {
+      return set_fault(state, HEX_ARM64_FAULT_UNSUPPORTED_INSN, HEX_ERR_UNSUPPORTED);
+    }
     const uint32_t mode = (insn >> 10) & 3u;
     const uint32_t width = 1u << size;
     const int64_t imm9 = sign_extend((insn >> 12) & 0x1FFu, 9u);
     const uint32_t rn = (insn >> 5) & 31u;
     const uint32_t rt = insn & 31u;
     const uint64_t base = read_gpr(state, rn, true, true);
-    const uint64_t addr =
-        (mode == 1u) ? base : static_cast<uint64_t>(static_cast<int64_t>(base) + imm9);
+    const uint64_t addr = (mode == 1u) ? base : (base + static_cast<uint64_t>(imm9));
 
     if (opc == 0u) {
       const uint64_t v = read_gpr(state, rt, false, size == 3u);
@@ -711,10 +736,21 @@ HexStatus hex_arm64_emu_step(
         return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
       }
       write_gpr(state, rt, v, false, size == 3u);
+    } else if (opc == 2u) {
+      uint64_t v = 0ULL;
+      if (!mem_read(state, code_ptr, eff_len, addr, width, v)) {
+        return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
+      }
+      write_gpr(state, rt, static_cast<uint64_t>(sign_extend(v, width * 8u)), false, true);
     } else {
-      return set_fault(state, HEX_ARM64_FAULT_UNSUPPORTED_INSN, HEX_ERR_UNSUPPORTED);
+      // opc == 3u && size < 2u: 32-bit sign-extending LDRSB/LDRSH Wt (pre/post-index)
+      uint64_t v = 0ULL;
+      if (!mem_read(state, code_ptr, eff_len, addr, width, v)) {
+        return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
+      }
+      write_gpr(state, rt, static_cast<uint64_t>(sign_extend(v, width * 8u)), false, false);
     }
-    write_gpr(state, rn, static_cast<uint64_t>(static_cast<int64_t>(base) + imm9), true, true);
+    write_gpr(state, rn, base + static_cast<uint64_t>(imm9), true, true);
     state->pc = next_pc;
     return HEX_OK;
   }
@@ -724,8 +760,8 @@ HexStatus hex_arm64_emu_step(
     const uint32_t size = (insn >> 30) & 3u;
     const uint32_t opc = (insn >> 22) & 3u;
     const uint32_t opt = (insn >> 13) & 7u;
-    // Reject PRFM (size==3 && opc==2) and invalid extend option (must be 2, 3, 6, or 7)
-    if ((size == 3u && opc == 2u) ||
+    // Reject PRFM (size==3 && opc==2), unallocated (opc==3 && size>=2), and invalid extend option (must be 2, 3, 6, or 7)
+    if ((size == 3u && opc == 2u) || (opc == 3u && size >= 2u) ||
         (opt != 2u && opt != 3u && opt != 6u && opt != 7u)) {
       return set_fault(state, HEX_ARM64_FAULT_UNSUPPORTED_INSN, HEX_ERR_UNSUPPORTED);
     }
@@ -758,7 +794,12 @@ HexStatus hex_arm64_emu_step(
       }
       write_gpr(state, rt, static_cast<uint64_t>(sign_extend(v, width * 8u)), false, true);
     } else {
-      return set_fault(state, HEX_ARM64_FAULT_UNSUPPORTED_INSN, HEX_ERR_UNSUPPORTED);
+      // opc == 3u && size < 2u: 32-bit sign-extending LDRSB/LDRSH Wt (register offset)
+      uint64_t v = 0ULL;
+      if (!mem_read(state, code_ptr, eff_len, addr, width, v)) {
+        return set_fault(state, HEX_ARM64_FAULT_MEM_OOB, HEX_ERR_RESOURCE_LIMIT);
+      }
+      write_gpr(state, rt, static_cast<uint64_t>(sign_extend(v, width * 8u)), false, false);
     }
     state->pc = next_pc;
     return HEX_OK;

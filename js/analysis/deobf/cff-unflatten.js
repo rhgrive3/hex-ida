@@ -3,7 +3,7 @@
 // 64-bit state width + env updates, and optional WASM `hex_cff_unflatten` bridge + telemetry.
 // INV-005: ZERO direct imports from js/targets/architecture/ or js/targets/abi/.
 
-import { simplifyMbaDag, evalMbaDag } from './mba-simplifier.js';
+import { simplifyMbaDag, evalMbaDag, MBA_MAX_DEPTH, MBA_MAX_NODES } from './mba-simplifier.js';
 import { getHexEngineExports } from '../../core/hex-engine-wasm.js';
 import { recordWasmCall, recordFallback } from '../../core/wasm-telemetry.js';
 
@@ -40,7 +40,59 @@ export const CFF_DEFAULT_CONFIG = Object.freeze({
 });
 
 const SIDE_EFFECT_OPS = new Set(['call', 'store_global', 'syscall', 'atomic', 'trap']);
+const MBA_UNARY_OPS = new Set(['not', 'neg']);
+const MBA_BINARY_OPS = new Set(['add', 'sub', 'mul', 'xor', 'and', 'or']);
 const MASK64 = 0xffffffffffffffffn;
+const STRICT_INT_RE = /^([+-]?)(0[xX][0-9a-fA-F]+|[0-9]+)$/;
+
+function safeBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) ? BigInt(value) : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const m = STRICT_INT_RE.exec(trimmed);
+    if (!m) return null;
+    try {
+      const mag = BigInt(m[2]);
+      return m[1] === '-' ? -mag : mag;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function validateMbaDagForStateVar(root, stateVar) {
+  if (!root || typeof root !== 'object') return false;
+  const seen = new Set();
+  let nodeCount = 0;
+
+  function visit(node, depth) {
+    if (!node || typeof node !== 'object' || depth > MBA_MAX_DEPTH) return false;
+    if (!seen.has(node)) {
+      seen.add(node);
+      nodeCount++;
+      if (nodeCount > MBA_MAX_NODES) return false;
+    }
+    if (node.op === 'var') {
+      return node.name === stateVar;
+    }
+    if (node.op === 'const') {
+      return safeBigInt(node.value) !== null;
+    }
+    if (MBA_UNARY_OPS.has(node.op)) {
+      return visit(node.a, depth + 1);
+    }
+    if (MBA_BINARY_OPS.has(node.op)) {
+      return visit(node.a, depth + 1) && visit(node.b, depth + 1);
+    }
+    return false;
+  }
+
+  return visit(root, 0);
+}
 
 function findSccs(blockIds, succMap) {
   let index = 0;
@@ -92,8 +144,9 @@ function computeDominators(entryId, blockIds, succMap, predMap) {
   const reachable = new Set();
   const q = [entryId];
   reachable.add(entryId);
-  while (q.length > 0) {
-    const cur = q.shift();
+  let head = 0;
+  while (head < q.length) {
+    const cur = q[head++];
     for (const s of (succMap.get(cur) || [])) {
       if (!reachable.has(s)) {
         reachable.add(s);
@@ -136,7 +189,12 @@ function computeDominators(entryId, blockIds, succMap, predMap) {
 
 function evalRealBlockTransition(block, stateVar, stateVal, opts) {
   const stateMask = opts.stateWidthBits === 32 ? 0xffffffffn : MASK64;
-  const env = { [stateVar]: BigInt(stateVal) & stateMask };
+  const parsedStateVal = safeBigInt(stateVal);
+  if (parsedStateVal === null) {
+    return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps: 0 };
+  }
+  const env = Object.create(null);
+  env[stateVar] = parsedStateVal & stateMask;
   let steps = 0;
   let nextUncond = null;
   let condTransition = null;
@@ -172,28 +230,64 @@ function evalRealBlockTransition(block, stateVar, stateVal, opts) {
 
     if (inst.dst === stateVar) {
       if (inst.op === 'const' || inst.op === 'mov_const') {
-        nextUncond = BigInt(inst.value) & stateMask;
+        const parsedVal = safeBigInt(inst.value);
+        if (parsedVal === null) {
+          return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+        }
+        nextUncond = parsedVal & stateMask;
         env[stateVar] = nextUncond;
         condTransition = null;
       } else if (inst.op === 'csel' || inst.op === 'select') {
+        const parsedTrue = safeBigInt(inst.trueVal);
+        const parsedFalse = safeBigInt(inst.falseVal);
+        if (parsedTrue === null || parsedFalse === null) {
+          return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+        }
         condTransition = {
           condInstId: inst.condInstId ?? inst.id ?? 0,
-          nextStateTrue: BigInt(inst.trueVal) & stateMask,
-          nextStateFalse: BigInt(inst.falseVal) & stateMask,
+          nextStateTrue: parsedTrue & stateMask,
+          nextStateFalse: parsedFalse & stateMask,
           isInvertedCond: inst.isInvertedCond ? 1 : 0,
         };
         nextUncond = null;
       } else if (inst.op === 'mba_expr' && inst.dag) {
-        const dag = (opts.flags & 0x04) ? simplifyMbaDag(inst.dag, { preferWasm: false }).expr : inst.dag;
-        nextUncond = evalMbaDag(dag, env, dag.width ?? 64) & stateMask;
+        if (condTransition !== null) {
+          return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+        }
+        if (!validateMbaDagForStateVar(inst.dag, stateVar)) {
+          return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+        }
+        try {
+          const dag = (opts.flags & 0x04) ? simplifyMbaDag(inst.dag, { preferWasm: false }).expr : inst.dag;
+          if (!validateMbaDagForStateVar(dag, stateVar)) {
+            return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+          }
+          nextUncond = evalMbaDag(dag, env, dag.width ?? 64) & stateMask;
+        } catch {
+          return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+        }
         env[stateVar] = nextUncond;
         condTransition = null;
       } else if (inst.op === 'add_const') {
-        nextUncond = (env[stateVar] + BigInt(inst.imm ?? 0n)) & stateMask;
+        if (condTransition !== null) {
+          return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+        }
+        const parsedImm = safeBigInt(inst.imm ?? 0n);
+        if (parsedImm === null) {
+          return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+        }
+        nextUncond = (env[stateVar] + parsedImm) & stateMask;
         env[stateVar] = nextUncond;
         condTransition = null;
       } else if (inst.op === 'xor_const') {
-        nextUncond = (env[stateVar] ^ BigInt(inst.imm ?? 0n)) & stateMask;
+        if (condTransition !== null) {
+          return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+        }
+        const parsedImm = safeBigInt(inst.imm ?? 0n);
+        if (parsedImm === null) {
+          return { ok: false, guardReason: CFF_GUARD_REASON.UNRESOLVED_TRANSITION, steps };
+        }
+        nextUncond = (env[stateVar] ^ parsedImm) & stateMask;
         env[stateVar] = nextUncond;
         condTransition = null;
       } else {
@@ -252,6 +346,9 @@ function evalRealBlockTransition(block, stateVar, stateVal, opts) {
  * Optional WASM bridge check for `hex_cff_unflatten` (`cpp/include/hex_deobf.hpp`).
  */
 export function runCffUnflattenWasm(blocks, edges, opts = {}) {
+  if (!Array.isArray(blocks) || !Array.isArray(edges)) {
+    return null;
+  }
   const ex = opts.wasmExports ?? getHexEngineExports(opts);
   if (!ex || typeof ex.hex_cff_unflatten !== 'function' || typeof ex.hex_deobf_scratch_ptr !== 'function') {
     recordFallback('CFF_JS_FALLBACK');
@@ -303,29 +400,36 @@ export function runCffUnflattenWasm(blocks, edges, opts = {}) {
       recordFallback('CFF_WASM_STATUS_ERR');
       return null;
     }
+
+    const outDv = new DataView(ex.memory.buffer);
+    const recoveredEdgeCount = outDv.getUint32(resPtr + 0x18, true);
+    if (recoveredEdgeCount > maxOutEdges) {
+      recordFallback('CFF_WASM_STATUS_ERR');
+      return null;
+    }
     recordWasmCall('cff_unflatten');
 
     const result = {
       engine: 'wasm',
-      statusCode: dv.getUint32(resPtr + 0x00, true),
-      guardFailReason: dv.getUint32(resPtr + 0x04, true),
-      dispatcherBlock: dv.getUint32(resPtr + 0x08, true),
-      stateVarId: dv.getUint32(resPtr + 0x0c, true),
-      realBlockCount: dv.getUint32(resPtr + 0x10, true),
-      spineBlockCount: dv.getUint32(resPtr + 0x14, true),
-      recoveredEdgeCount: dv.getUint32(resPtr + 0x18, true),
-      uncondEdgeCount: dv.getUint32(resPtr + 0x1c, true),
-      condEdgeCount: dv.getUint32(resPtr + 0x20, true),
-      exitBlockCount: dv.getUint32(resPtr + 0x24, true),
+      statusCode: outDv.getUint32(resPtr + 0x00, true),
+      guardFailReason: outDv.getUint32(resPtr + 0x04, true),
+      dispatcherBlock: outDv.getUint32(resPtr + 0x08, true),
+      stateVarId: outDv.getUint32(resPtr + 0x0c, true),
+      realBlockCount: outDv.getUint32(resPtr + 0x10, true),
+      spineBlockCount: outDv.getUint32(resPtr + 0x14, true),
+      recoveredEdgeCount,
+      uncondEdgeCount: outDv.getUint32(resPtr + 0x1c, true),
+      condEdgeCount: outDv.getUint32(resPtr + 0x20, true),
+      exitBlockCount: outDv.getUint32(resPtr + 0x24, true),
       recoveredEdges: [],
     };
     for (let i = 0; i < result.recoveredEdgeCount; i++) {
       const o = outEdgePtr + i * 16;
       result.recoveredEdges.push({
-        srcBlock: dv.getUint32(o + 0x00, true),
-        dstBlock: dv.getUint32(o + 0x04, true),
-        kind: dv.getUint32(o + 0x08, true),
-        condId: dv.getUint32(o + 0x0c, true),
+        srcBlock: outDv.getUint32(o + 0x00, true),
+        dstBlock: outDv.getUint32(o + 0x04, true),
+        kind: outDv.getUint32(o + 0x08, true),
+        condId: outDv.getUint32(o + 0x0c, true),
       });
     }
     return result;
@@ -343,6 +447,7 @@ export function unflattenCffIr(irFn, userConfig = {}) {
     maxEvalSteps: userConfig.maxEvalSteps ?? CFF_DEFAULT_CONFIG.maxEvalSteps,
     stateWidthBits: userConfig.stateWidthBits ?? 64,
   };
+  const stateMask = cfg.stateWidthBits === 32 ? 0xffffffffn : MASK64;
 
   const makeResult = (statusCode, guardFailReason, extra = {}) => ({
     engine: 'js',
@@ -432,9 +537,12 @@ export function unflattenCffIr(irFn, userConfig = {}) {
   for (const inst of (preBlock?.insts || [])) {
     if (inst.dst === stateVar) {
       if (inst.op === 'const' || inst.op === 'mov_const') {
-        initState = BigInt(inst.value) & (cfg.stateWidthBits === 32 ? 0xffffffffn : MASK64);
+        const parsedInit = safeBigInt(inst.value);
+        initState = parsedInit === null ? null : (parsedInit & stateMask);
       } else if (inst.op === 'arg' || inst.op === 'load_global' || inst.op === 'call') {
         return makeResult(CFF_STATUS.ABORT_GUARD, CFF_GUARD_REASON.NATURAL_FSM_STATE_ORIGIN);
+      } else {
+        initState = null;
       }
     }
   }
@@ -445,8 +553,12 @@ export function unflattenCffIr(irFn, userConfig = {}) {
   const stateToBlock = new Map();
   const realBlockToState = new Map();
   for (const [kStr, targetBid] of Object.entries(dispatcher.dispatchCases)) {
-    const k = BigInt(kStr) & (cfg.stateWidthBits === 32 ? 0xffffffffn : MASK64);
-    if (!blockMap.has(targetBid)) {
+    const parsedKey = safeBigInt(kStr);
+    if (parsedKey === null) {
+      return makeResult(CFF_STATUS.ABORT_GUARD, CFF_GUARD_REASON.DRAFT_CFG_INTEGRITY_ERROR);
+    }
+    const k = parsedKey & stateMask;
+    if (!blockMap.has(targetBid) || stateToBlock.has(k) || realBlockToState.has(targetBid)) {
       return makeResult(CFF_STATUS.ABORT_GUARD, CFF_GUARD_REASON.DRAFT_CFG_INTEGRITY_ERROR);
     }
     stateToBlock.set(k, targetBid);
@@ -540,22 +652,47 @@ export function unflattenCffIr(irFn, userConfig = {}) {
   }
 
   const firstReal = stateToBlock.get(initState);
-  if (!firstReal) {
+  if (firstReal == null) {
     return makeResult(CFF_STATUS.ABORT_GUARD, CFF_GUARD_REASON.DRAFT_CFG_INTEGRITY_ERROR, { evalStepsUsed });
   }
   const preDraft = draftBlocks.get(prePreds[0]);
-  preDraft.succs = [firstReal];
+  const rewrittenPreSuccs = [];
+  const seenPreSuccs = new Set();
+  for (const s of preDraft.succs) {
+    const mapped = s === dispatcher.id ? firstReal : s;
+    if (!seenPreSuccs.has(mapped)) {
+      seenPreSuccs.add(mapped);
+      rewrittenPreSuccs.push(mapped);
+    }
+  }
+  preDraft.succs = rewrittenPreSuccs;
+  if (preDraft.terminator && typeof preDraft.terminator === 'object') {
+    preDraft.terminator = { ...preDraft.terminator };
+    if (preDraft.terminator.target === dispatcher.id) preDraft.terminator.target = firstReal;
+    if (preDraft.terminator.trueDst === dispatcher.id) preDraft.terminator.trueDst = firstReal;
+    if (preDraft.terminator.falseDst === dispatcher.id) preDraft.terminator.falseDst = firstReal;
+  }
   preDraft.insts = preDraft.insts.filter((i) => i.dst !== stateVar);
 
   for (const tr of transitions) {
     const db = draftBlocks.get(tr.realBlockId);
+    if (!db) {
+      return makeResult(CFF_STATUS.ABORT_GUARD, CFF_GUARD_REASON.DRAFT_CFG_INTEGRITY_ERROR, { evalStepsUsed });
+    }
     db.insts = db.insts.filter((i) => i.dst !== stateVar);
     if (tr.kind === CFF_TRANSITION_KIND.UNCOND) {
-      db.succs = [stateToBlock.get(tr.nextStateTrue)];
-      db.terminator = { op: 'br', target: db.succs[0] };
+      const dst = stateToBlock.get(tr.nextStateTrue);
+      if (dst == null) {
+        return makeResult(CFF_STATUS.ABORT_GUARD, CFF_GUARD_REASON.DRAFT_CFG_INTEGRITY_ERROR, { evalStepsUsed });
+      }
+      db.succs = [dst];
+      db.terminator = { op: 'br', target: dst };
     } else if (tr.kind === CFF_TRANSITION_KIND.COND) {
       const trueDst = stateToBlock.get(tr.nextStateTrue);
       const falseDst = stateToBlock.get(tr.nextStateFalse);
+      if (trueDst == null || falseDst == null) {
+        return makeResult(CFF_STATUS.ABORT_GUARD, CFF_GUARD_REASON.DRAFT_CFG_INTEGRITY_ERROR, { evalStepsUsed });
+      }
       db.succs = tr.isInvertedCond ? [falseDst, trueDst] : [trueDst, falseDst];
       db.terminator = {
         op: 'cbr',

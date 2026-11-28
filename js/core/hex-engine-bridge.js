@@ -1545,7 +1545,7 @@ function findRodataSlice({ fileBytes, sections, readBytes, words, baseAddr }) {
             }
             const relOff = Number(rel.offset - sliceVaLo);
             if (relOff >= 0 && relOff + 8 <= len) {
-              sdv.setBigInt64(relOff, rel.addend, true);
+              sdv.setBigUint64(relOff, BigInt.asUintN(64, rel.addend), true);
             }
           }
         }
@@ -2243,12 +2243,24 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
 export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null, symbolFor = null, readBytes = null, fileBytes = null, sections = null, allowHelperInlining = true } = {}) {
   if (getEngineMode() === 'js') return noteFallback('decompile', 'wasm_disabled');
   const ex = getHexEngineExportsSafe();
+  const hasTextPtr = Boolean(
+    ex && (
+      typeof ex.hex_engine_decompile_get_text_ptr === 'function'
+      || typeof ex.hex_decomp_get_text_ptr === 'function'
+    ),
+  );
+  const hasTextLen = Boolean(
+    ex && (
+      typeof ex.hex_engine_decompile_get_text_len === 'function'
+      || typeof ex.hex_decomp_get_text_len === 'function'
+    ),
+  );
   if (
     !isWasmBulkMemorySupported()
     || !ex
     || typeof ex.hex_engine_decompile_arm64 !== 'function'
-    || typeof ex.hex_decomp_get_text_ptr !== 'function'
-    || typeof ex.hex_decomp_get_text_len !== 'function'
+    || !hasTextPtr
+    || !hasTextLen
   ) {
     return noteFallback('decompile', 'wasm_unavailable');
   }
@@ -2270,11 +2282,13 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
   }
 
   try {
-    resetScratch(ex);
-    const wordsPtr = allocScratch(ex, count * 4);
+    resetEngineScratch(ex);
+    const wordsPtr = allocEngineScratch(ex, count * 4);
     if (!wordsPtr) return noteFallback('decompile', 'oom');
-    const wordsView = new Uint32Array(ex.memory.buffer, wordsPtr, count);
-    for (let i = 0; i < count; i += 1) wordsView[i] = words[i] >>> 0;
+    {
+      const wordsView = new Uint32Array(ex.memory.buffer, wordsPtr, count);
+      for (let i = 0; i < count; i += 1) wordsView[i] = words[i] >>> 0;
+    }
 
     let namePtr = 0;
     let nameLen = 0;
@@ -2294,16 +2308,17 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     if (nameStr.length > 0) {
       const nameBytes = textEncoder.encode(nameStr);
       nameLen = nameBytes.length;
-      namePtr = allocScratch(ex, nameLen + 1);
+      namePtr = allocEngineScratch(ex, nameLen + 1);
       if (!namePtr) return noteFallback('decompile', 'oom');
       const memView = new Uint8Array(ex.memory.buffer, namePtr, nameLen + 1);
       memView.set(nameBytes, 0);
       memView[nameLen] = 0;
     }
 
+    const freshWordsView = new Uint32Array(ex.memory.buffer, wordsPtr, count);
     let hasIndirectBranch = false;
     for (let i = 0; i < count; i += 1) {
-      const w = wordsView[i];
+      const w = freshWordsView[i];
       if (
         ((w & 0xFFFFFC1F) >>> 0) === 0xD61F0000
         || ((w & 0xFFFFF81F) >>> 0) === 0xD61F081F
@@ -2315,9 +2330,9 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     }
     let rodataSet = false;
     if (hasIndirectBranch && typeof ex.hex_engine_decompile_set_rodata_slice === 'function') {
-      const roSlice = findRodataSlice({ fileBytes, sections, readBytes, words: wordsView, baseAddr });
+      const roSlice = findRodataSlice({ fileBytes, sections, readBytes, words: freshWordsView, baseAddr });
       if (roSlice && roSlice.bytes.length > 0) {
-        const roPtr = allocScratch(ex, roSlice.bytes.length);
+        const roPtr = allocEngineScratch(ex, roSlice.bytes.length);
         if (roPtr) {
           new Uint8Array(ex.memory.buffer, roPtr, roSlice.bytes.length).set(roSlice.bytes);
           const roVa = BigInt(roSlice.vaLo);
@@ -2362,12 +2377,13 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
     const mem = ex.memory.buffer;
     const rawPseudocode = textDecoder.decode(new Uint8Array(mem, textPtr, textLen));
     const extractedLm = [];
-    if (
-      typeof ex.hex_decomp_get_linemap_ptr === 'function'
-      && typeof ex.hex_decomp_get_linemap_count === 'function'
-    ) {
-      const getLP = ex.hex_engine_decompile_get_linemap_ptr || ex.hex_decomp_get_linemap_ptr;
-      const getLC = ex.hex_engine_decompile_get_linemap_count || ex.hex_decomp_get_linemap_count;
+    const getLP = typeof ex.hex_engine_decompile_get_linemap_ptr === 'function'
+      ? ex.hex_engine_decompile_get_linemap_ptr
+      : ex.hex_decomp_get_linemap_ptr;
+    const getLC = typeof ex.hex_engine_decompile_get_linemap_count === 'function'
+      ? ex.hex_engine_decompile_get_linemap_count
+      : ex.hex_decomp_get_linemap_count;
+    if (typeof getLP === 'function' && typeof getLC === 'function') {
       const lmPtr = getLP();
       const lmCount = getLC();
       if (lmPtr && lmCount > 0) {
@@ -2572,7 +2588,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       lossFlags |= 1;
       lossReasonSet.add('unresolved-indirect-branch');
     }
-    if (hasUnknownCallArgs) {
+    if ((rawLossFlags & 2) !== 0 || hasUnknownCallArgs) {
       lossFlags |= 2;
       lossReasonSet.add('unknown-call-arguments');
     }
