@@ -5,7 +5,7 @@
 ## 1. 統合 C++20/WASM エンジン (`wasm/hex_engine.wasm`)
 
 - **成果物**: `wasm/hex_engine.wasm`（1,129,165 bytes）および Base64 埋め込みラッパー `js/core/hex-engine-wasm.js`
-- **ビルド構成**: Freestanding C++20（62 ユニット・214 エクスポート・0 外部インポート・初期線形メモリ 9.3125 MiB [149 pages]・Emscripten 不使用）
+- **ビルド構成**: Freestanding C++20（61 ユニット [本体 58 + デマングラ 3]・214 エクスポート・0 外部インポート・初期線形メモリ 9.3125 MiB [149 pages]・Emscripten 不使用）
 - **ABI バージョン**: `0x00010000`（[`ABI.md`](ABI.md)）
 - **ロールバック**: `HEX_ENGINE=js` / `globalThis.HEX_ENGINE = 'js'` / `{ _engine: 'js' }` で即時 JS フォールバック可能（[`ROLLBACK.md`](ROLLBACK.md)）
 

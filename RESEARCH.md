@@ -8,7 +8,7 @@ Hex-IDA の統合 WASM エンジン (`wasm/hex_engine.wasm`) では、Emscripten
 
 1. **ランタイムオーバーヘッドと外部インポートの排除**
    - Emscripten の標準グルー（`embind` / `cwrap` / 仮想 FS / `libc` / `libcxx`）は初期化コストとバンドルサイズを増大させ、Web Worker や Userscript の保護ランタイムに不要な依存を持ち込む。
-   - Freestanding C++20（`cpp/include/hex_core/` の自作 `Arena` / `Vec` / `OrderedMap` / `StringView` / `stable_sort`）により、動的ヒープ・C++ 例外・RTTI・外部インポート（0 imports）を完全に排除し、決定的な単一 `.wasm`（62 ユニット・214 エクスポート・1,129,165 bytes）として配信できる。
+   - Freestanding C++20（`cpp/include/hex_core/` の自作 `Arena` / `Vec` / `OrderedMap` / `StringView` / `stable_sort`）により、動的ヒープ・C++ 例外・RTTI・外部インポート（0 imports）を完全に排除し、決定的な単一 `.wasm`（61 ユニット [本体 58 + デマングラ 3]・214 エクスポート・1,129,165 bytes）として配信できる。
    - LLVM Itanium/Rust/MSVC Demangle や Apple Swift 5 Demangle のような大規模上流 C++ コードも、最小の freestanding スタブヘッダと `-Os` / `-ffunction-sections` / `--gc-sections` により外部ランタイムなしで統合できる。
 2. **JS ⇄ WASM 境界往復の最小化とメモリ所有権の明確化**
    - 細粒度オブジェクト変換による V8 GC 圧迫を避け、物理分離された固定容量 Arena（Image / IR / Scratch / Emit 等）とフラットな POD 構造体・CSR 配列でデータをやり取りする。
