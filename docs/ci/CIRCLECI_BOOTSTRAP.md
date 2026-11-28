@@ -1,51 +1,77 @@
-# CircleCI offload
+# CircleCI CI Offload & Routing
 
-GitHub remains the repository, pull-request, review, and merge source of truth. CircleCI provides an additional hosted CI lane so selected checks do not consume the GitHub-hosted runner concurrency pool.
+GitHub remains the repository, pull-request, review, and merge source of truth.
+CircleCI (`.circleci/config.yml`) runs selected CI lanes so they do not
+consume the GitHub-hosted runner concurrency pool, while preserving manual
+GitHub Actions fallbacks.
 
-## Wave 1 automatic lanes
+## Active CircleCI jobs (`.circleci/config.yml`)
 
-The following checks run automatically on CircleCI when their existing path scope is affected:
+All jobs run under the `ci` workflow and configure HTTPS checkout via
+`configure-public-repository-checkout` (verified by
+`tests/ci/circleci-checkout.test.mjs`):
 
-- `migration-guardrails` — Node 22; `npm run migration:test` and `npm run binary:source-test`.
-- `agent-loop-resilience` — Node 22; unattended agent-loop regression.
-- `issue-2528-canonical-claims` — Node 22; canonical-claims authority regression.
-- `ai-eval-contract` — Node 20; trigger coverage, corpus self-test, grader, and incomplete-corpus rejection.
+| CircleCI job | Docker image | Impact mode | What it runs | Corresponding GitHub workflow |
+| --- | --- | --- | --- | --- |
+| `migration-guardrails` | `cimg/node:22.23` | `pr-only` | `tests/ci/circleci-checkout.test.mjs`, `tests/ci/circleci-impact.test.mjs`, `npm run migration:test`, `npm run binary:source-test` | `.github/workflows/migration-guardrails.yml` (`workflow_dispatch` fallback) |
+| `agent-loop-resilience` | `cimg/node:22.23` | `main-and-branch` | `tests/dev-agent/agent-loop-trigger-coverage.mjs`, `tests/dev-agent/agent-loop-resilience.mjs` | `.github/workflows/agent-loop-resilience.yml` (`workflow_dispatch` fallback) |
+| `issue-2528-canonical-claims` | `cimg/node:22.23` | `pr-only` | `tests/issue-2528-canonical-claims.mjs` | `.github/workflows/issue-2528-canonical-claims.yml` (`workflow_dispatch` fallback) |
+| `ai-eval-contract` | `cimg/node:20.19` | `main-and-branch` | `tests/ai-eval/workflow-trigger.mjs`, `tests/ai-eval/selftest.mjs`, `tests/ai-eval/grade.mjs` (example trace + `--require-all` rejection) | `.github/workflows/ai-eval-contract.yml` (`workflow_dispatch` fallback) |
+| `phase7-ownership` | `cimg/node:22.23` | `pr-only` | `tools/validation/phase7-ownership.mjs --check-manifest`, exact ownership inventory validation, forbidden-path negative check | `.github/workflows/phase7-ownership.yml` (`workflow_dispatch` fallback) |
+| `phase8-ownership` | `cimg/node:22.23` | `pr-only` | `tools/validation/phase8-ownership.mjs --check-manifest`, exact ownership inventory validation, forbidden/out-of-lane negative checks | `.github/workflows/phase8-ownership.yml` (`workflow_dispatch` fallback) |
+| `universal-platform-verify` | `cimg/node:22.23` | `main-and-branch` | `tests/capability-maturity.mjs`, `tests/issue-495-elf-relocation-budget.mjs`, `tests/issue-513-elf-symbol-budget.mjs`, `npm run binary:test`, `npm run binary:gate` | `.github/workflows/universal-platform.yml` (runs on `push` / `workflow_dispatch`) |
+| `universal-platform-benchmark` | `cimg/node:22.23` | `pr-only` (requires `universal-platform-verify`) | `npm run fixtures:fetch`, `npm run fixtures:check`, `npm run binary:benchmark`, `tools/benchmark/compare.mjs`, stores `universal-platform-benchmark.json` | `.github/workflows/universal-platform.yml` (`benchmark` job on `pull_request` / `workflow_dispatch`) |
 
-The corresponding GitHub Actions workflows deliberately keep their existing automatic trigger declarations. Their jobs have a `workflow_dispatch`-only job guard, so automatic GitHub events produce a skipped check without allocating a GitHub-hosted runner. Manual `workflow_dispatch` remains the emergency fallback and runs the original GitHub job body.
+For the offloaded lanes (`migration-guardrails`, `agent-loop-resilience`,
+`issue-2528-canonical-claims`, `ai-eval-contract`, `phase7-ownership`,
+`phase8-ownership`), the GitHub Actions workflows retain their automatic event
+triggers with a job-level `if: ${{ github.event_name == 'workflow_dispatch' }}`
+guard. Automatic GitHub events therefore resolve as `skipped` without
+allocating a GitHub-hosted runner, while manual `workflow_dispatch` executes
+the full fallback job.
 
-## Routing
+## Impact routing (`scripts/ci/circleci-impact.sh`)
 
-`.circleci/config.yml` calls `scripts/ci/circleci-impact.sh` before expensive work.
+`.circleci/config.yml` invokes `scripts/ci/circleci-impact.sh` before running
+install or test steps.
 
-The router has two modes:
+Modes:
 
-- `pr-only`: run affected branch/PR changes and skip `main`.
-- `main-and-branch`: run affected branch/PR changes and affected `main` commits.
+- `pr-only`: runs affected non-`main` branch/PR changes and skips `main`.
+- `main-and-branch`: runs affected branch/PR changes and affected `main` commits.
 
-The router also:
+Routing guarantees (locked by `tests/ci/circleci-impact.test.mjs`):
 
 - compares branch work against the merge base with `origin/main`;
 - compares each `main` pipeline against that exact commit's first parent;
-- self-skips stale **non-main** branch heads when a newer commit exists on the same remote branch, because the newest branch head validates the cumulative merge-base diff;
-- never stale-suppresses `main`, because a later docs-only commit cannot prove an earlier gated commit;
-- fails open when it cannot establish a trustworthy comparison, preferring an unnecessary CI run over a silent validation gap.
+- self-skips stale **non-main** branch heads when a newer commit exists on the
+  same remote branch, because the newest branch head validates the cumulative
+  merge-base diff;
+- never stale-suppresses `main`, because a later docs-only commit cannot prove
+  an earlier gated commit;
+- fails open when it cannot establish a trustworthy comparison, preferring an
+  extra CI run over a silent validation gap.
 
-`tests/ci/circleci-impact.test.mjs` locks the temporal routing contract with two counterexamples: main `A(gated) -> B(docs-only)` requires A to run while B may skip, whereas feature `C(gated) -> D(docs-only)` permits stale C to skip because D's cumulative branch diff still contains C. It also verifies that a failed stale-head refresh falls through to normal impact routing instead of producing a false skip.
-
-Adding or changing `.circleci/config.yml`, the migrated GitHub workflow, or the routing script itself intentionally exercises the corresponding CircleCI lane.
-
-## Validation performed before Wave 1
-
-The migration lane exposed a stale ARM64 `.xdata` aggregate-test expectation. Production decoding and its dedicated regression already treated bit 22 as the low bit of Epilog Count rather than a fragment flag. The stale aggregate regression was corrected before offload.
-
-Each Wave 1 job was executed successfully on CircleCI. On the final migration head, the four CircleCI jobs passed while the corresponding GitHub Actions automatic jobs completed as `skipped`, confirming that the GitHub-hosted runner pool is not allocated for these lanes. The router regression runs at the start of the CircleCI migration job.
+Changes to `.circleci/config.yml`, the corresponding `.github/workflows/*.yml`
+file, or `scripts/ci/circleci-impact.sh` intentionally trigger the associated
+CircleCI lane.
 
 ## Rollback and outage handling
 
-For an isolated CircleCI problem, manually dispatch the corresponding GitHub Actions workflow; its original runner-backed implementation is preserved.
+- **Single-lane outage:** manually trigger the corresponding GitHub Actions
+  workflow via `workflow_dispatch`; its runner-backed job definition is
+  preserved in `.github/workflows/`.
+- **Provider-wide outage:** remove the `workflow_dispatch` job guards in the
+  offloaded `.github/workflows/*.yml` files (or revert the offload config) so
+  GitHub Actions resumes automatic execution, and disable the CircleCI project
+  trigger if needed. Keep the GitHub fallback workflows in place while CircleCI
+  is an external dependency.
 
-For a provider-wide rollback, revert the Wave 1 offload commit (restoring automatic GitHub job execution) and disable the CircleCI project trigger if necessary. Do not remove the GitHub fallback workflows while CircleCI is an external dependency.
+## Workflows remaining on GitHub Actions
 
-## Deferred lanes
-
-Longer or more environment-sensitive workflows are intentionally not in Wave 1. In particular, `phase9-preflight` and browser/Playwright-heavy `sandbox-security` stay on GitHub until separately parity-tested on CircleCI.
+Other CI workflows — including `pr-fast-gate.yml`, `invariant-gates.yml`,
+`ui-regression.yml`, `userscript-host.yml`, `sandbox-security.yml`,
+`phase9-preflight.yml`, `phase*-release-validation.yml`,
+`stage1-release-validation.yml`, `stage2-release-validation.yml`,
+`cross-binary-accuracy.yml`, `ghidra-differential.yml`, `codeql-*.yml`, and
+`final-head-admission.yml` — continue to run on GitHub Actions.

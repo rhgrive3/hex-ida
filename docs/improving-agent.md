@@ -1,8 +1,8 @@
 # Hex Autonomous Dev Supervisor — Agent Operating Contract
 
 **Status:** Canonical operational specification for the Admin Dev Agent  
-**Version:** 2.3  
-**Repository:** `rhgrive3/hex`  
+**Version:** 2.4  
+**Repository:** `rhgrive3/hex-ida`  
 **Canonical repository path:** `docs/improving-agent.md`  
 **Primary environment:** ChatGPT Web + Hex Userscript + Cloudflare + GitHub  
 **Primary platform:** iOS / iPadOS first  
@@ -58,30 +58,21 @@ Every reusable state fact SHOULD carry provenance and freshness. If a cached fac
 
 ---
 
-## 2. Current campaign checkpoint
+## 2. Current implemented capabilities
 
-This section is a **mutable observational snapshot**, never a permanent invariant and never a substitute for run-start observation.
+This section summarizes the capabilities implemented in the current source tree. It is never a substitute for run-start runtime identity observation.
 
-Review baseline observed from live GitHub before this revision:
+- **Bootstrap & self-improvement activation gate:** implemented (`js/ai/dev/bootstrap/dev-bootstrap-gate.js`, `self-update-gate.js`, `production-bootstrap.js`, `bootstrap-diagnostic.js`).
+- **Phase 1 — Versioned DOM Skill System:** implemented (`js/userscript/dev/skills/dom-skill-registry.js`, `automation-program.js`).
+- **Phase 2 — Same-origin max-6 iframe Worker Pool:** implemented (`js/userscript/dev/frame-mesh/iframe-worker-pool.js`, `worker-identity.js`, `dedicated-worker-coordinator.js`).
+- **Phase 3 — Dynamic Task Graph & event-driven completion bridge:** implemented (`js/userscript/dev/task-graph/dynamic-task-graph.js`, `js/userscript/dev/frame-mesh/iframe-worker-completion-bridge.js`), with structured completion delivery and regression coverage in `npm run dev-agent:test`.
+- **Context Engineering & Supervisor protocol:** implemented (`js/ai/dev/protocol/context-packet.js`, `context-selection.js`, `dev-tool-contracts.js`, `dev-supervisor-prompt.js` supporting bootstrap/continuation modes and `worker.graph.*` tool contracts, plus `js/ai/dev/supervisor/tool-error-recovery.js`).
+- **Phase 9 — Discord Authentication & Admin-only source gating:** implemented (`js/auth/server/*`, `js/auth/client.js`, `js/auth/rpc.js`, `js/auth/privileged/parent-entry.js`, `child-entry.js`, `js/auth/admin-app.js`, and fail-closed `DenyAllAdminProvider` default in `js/ai/dev/auth/admin-provider.js`).
+- **Phase 4 — ChatGPT Project Automation:** next product campaign target.
 
-- source baseline: `4e03ea8a8b3be36e61f91ac4aa6657fd95f382b9` (`chore: correct RV64C repair idempotence gate`);
-- the commit that installs this revision will necessarily be newer than that baseline; this SHA is provenance for the review, not a runtime/current-main promise;
-- Bootstrap / Round 4 self-improvement gate: previously implemented/proven;
-- Phase 1 — Versioned DOM Skill System: implemented;
-- Phase 2 — same-origin max-6 iframe Worker Pool: implemented;
-- Worker iframe initial-document rebinding defect: repaired by PR `#818`;
-- Phase 3 — Dynamic Task Graph: merged by PR `#796`;
-- Phase 4 — ChatGPT Project Automation: next product campaign target;
-- cross-cutting completion-delivery durability, Context Engineering, and critical-path observability hardening: specified by this revision and **must not be reported as implemented until source/runtime proof exists**.
+Do not hard-code a committed userscript `buildId`/`serial` here as runtime truth. Read current source release identity from `userscript/release-version.json` and active executing identity from `dev.runtime.identity` when the objective depends on it.
 
-Do not hard-code a committed userscript buildId/serial here as runtime truth. Read current source identity from GitHub/build outputs and active identity from `dev.runtime.identity` when the objective depends on it.
-
-At run start, refresh only the state facts needed for the objective. Do not inject this entire checkpoint into every Worker.
-
-Review-baseline implementation notes:
-
-- the current `DynamicTaskGraph` still observes long Worker turns through a fixed `50ms` result-poll loop and applies a default `180000ms` task timeout. Those are implementation facts, not the desired completion contract. Phase 3 core graph capability remains implemented, but event/state-driven completion delivery and full-turn timeout semantics remain hardening debt until source tests and active-runtime proof show otherwise;
-- the current Supervisor prompt is transitional: it bounds history by count (`history.slice(-12)`) but does not yet implement the structured ContextPacket/byte-budget contract, still carries legacy single-slot/multi-Worker-proof wording and a `size: 6` pool example, and does not emit argument-contract lines for `worker.graph.*`. Do not treat those prompt strings as newer architectural authority. Reconcile the prompt with the active capability inventory, graph tool contracts, and measured effective concurrency before using it as performance/Phase-4 proof.
+At run start, refresh only the state facts needed for the objective. Do not inject this entire summary into every Worker.
 
 ---
 
@@ -891,15 +882,15 @@ Required durable behavior:
 
 Do not claim a future Skill change accepted until candidate -> validation -> active -> real use -> rollback path remains proven where applicable.
 
-### Phase 2 — max-6 Multi-Worker iframe Pool — IMPLEMENTED, PRODUCTION PROOF MUST REMAIN CURRENT
+### Phase 2 — max-6 Multi-Worker iframe Pool — IMPLEMENTED
 
 The old tab-pool design is obsolete.
 
-Current architecture is same-origin iframe Workers. PR `#818` repairs the initial-document rebinding failure. Any future ChatGPT embedding/composer change must be re-proven on the target browser/device.
+Current architecture is same-origin hidden iframe Workers (`js/userscript/dev/frame-mesh/iframe-worker-pool.js`). Any future ChatGPT embedding or composer change must be re-proven on the target browser/device.
 
-### Phase 3 — Dynamic Task Graph — IMPLEMENTED CORE; COMPLETION HARDENING PENDING
+### Phase 3 — Dynamic Task Graph — IMPLEMENTED
 
-PR `#796` merged the first production graph. Reuse it rather than replacing it. The graph's dependency/ownership/concurrency core is implemented; fixed-interval result polling, durable completion delivery across Supervisor wait/run-transition races, full-turn timeout semantics, and explicit separation between execution `SUCCEEDED` and Supervisor acceptance remain cross-cutting hardening concerns. Do not describe the current graph as already event-driven or independently verified merely because its execution state is green.
+`DynamicTaskGraph` (`js/userscript/dev/task-graph/dynamic-task-graph.js`) and `iframe-worker-completion-bridge.js` provide dependency ordering, bounded concurrency, retries, lease cleanup, and event-driven completion delivery (`onWorkerCompletion`), covered by `npm run dev-agent:test`. Reuse this graph rather than replacing it, and continue to treat execution `SUCCEEDED` as distinct from Supervisor verification/acceptance.
 
 ### Phase 4 — ChatGPT Project Automation — NEXT
 
@@ -1050,17 +1041,14 @@ Target:
 - repository/web/UI/automation/deployment work;
 - attach Hex binary context only when needed.
 
-### Phase 9 — Authentication and source gating — DEFERRED
+### Phase 9 — Authentication and source gating — IMPLEMENTED
 
-Target:
+Implemented in `js/auth/`, `migrations/auth/`, `worker-entry.js`, and `scripts/build-userscript.mjs`:
 
-- Discord OAuth2;
-- Discord User ID as authority;
-- normal/admin distinction;
-- private repository/public Cloudflare delivery;
-- privileged modules not delivered to non-admin clients where secrecy matters.
-
-Current `AllowAllAdminProvider` remains a temporary replaceable development provider, not the final auth model.
+- Discord OAuth2 (`identify` scope only) with Discord User ID as identity key;
+- Cloudflare D1 (`AUTH_DB`) role/enabled authority (`free` / `vip` / `admin`) and fail-closed `HEX_OWNER_DISCORD_ID` bootstrap;
+- fail-closed `DenyAllAdminProvider` default in `js/ai/dev/auth/admin-provider.js` (`AllowAllAdminProvider` is restricted to isolated unit/dev tests only);
+- Admin-only server-gated delivery of privileged Dev Agent parent/child bundles (`js/auth/privileged/parent-entry.js`, `child-entry.js`) and Admin UI (`js/auth/admin-app.js`), excluded from Standard builds and verified by `npm run auth:test` and `npm run auth:build-test`.
 
 ---
 
