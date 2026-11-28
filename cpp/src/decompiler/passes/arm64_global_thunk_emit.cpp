@@ -1,4 +1,5 @@
 #include "decompiler/passes/arm64_global_thunk_emit.hpp"
+#include "decompiler/passes/arm64_general_emit.hpp"
 
 #include "hex_core/vec.hpp"
 
@@ -85,96 +86,6 @@ static inline bool is_external_target(uint64_t target, uint64_t base_addr, uint3
   const uint64_t fn_bytes = static_cast<uint64_t>(word_count) * 4ULL;
   if (target < base_addr) return true;
   if (base_addr <= UINT64_MAX - fn_bytes && target >= base_addr + fn_bytes) return true;
-  return false;
-}
-
-// Check if instruction is a pure side-effect-free register/load op and track read/written GPRs.
-// Returns false for any store, branch, call, system op, or pre/post-index writeback.
-static bool classify_pure_reg_or_load(uint32_t w, uint32_t* read_mask_out, uint32_t* write_mask_out) {
-  uint32_t rmask = 0u;
-  uint32_t wmask = 0u;
-  auto add_r = [&](uint32_t r) { if (r < 31u) rmask |= (1u << r); };
-  auto add_w = [&](uint32_t r) { if (r < 31u) wmask |= (1u << r); };
-
-  // MOVZ / MOVN / MOVK (32/64-bit)
-  if ((w & 0x1f800000u) == 0x12800000u) {
-    const uint32_t opc = (w >> 29u) & 3u;
-    if (opc == 0u || opc == 2u || opc == 3u) {
-      const uint32_t rd = w & 0x1fu;
-      if (opc == 3u) add_r(rd);  // MOVK reads prior rd
-      add_w(rd);
-      *read_mask_out = rmask;
-      *write_mask_out = wmask;
-      return true;
-    }
-    return false;
-  }
-
-  // ADRP / ADR
-  if ((w & 0x1f000000u) == 0x10000000u) {
-    add_w(w & 0x1fu);
-    *read_mask_out = rmask;
-    *write_mask_out = wmask;
-    return true;
-  }
-
-  // ADD / SUB (immediate, non-flag-setting): op=0/1, S=0
-  if ((w & 0x3f800000u) == 0x11000000u) {
-    const uint32_t rd = w & 0x1fu;
-    const uint32_t rn = (w >> 5u) & 0x1fu;
-    if (rd == 31u) return false;  // Writing SP
-    add_r(rn);
-    add_w(rd);
-    *read_mask_out = rmask;
-    *write_mask_out = wmask;
-    return true;
-  }
-
-  // ORR / AND / EOR / MOV (shifted register, non-flag-setting)
-  if ((w & 0x1f000000u) == 0x0a000000u) {
-    const uint32_t opc = (w >> 29u) & 3u;
-    if (opc == 3u) return false;  // ANDS sets flags
-    add_r((w >> 5u) & 0x1fu);
-    add_r((w >> 16u) & 0x1fu);
-    add_w(w & 0x1fu);
-    *read_mask_out = rmask;
-    *write_mask_out = wmask;
-    return true;
-  }
-
-  // ADD / SUB (shifted register, non-flag-setting)
-  if ((w & 0x3f200000u) == 0x0b000000u) {
-    add_r((w >> 5u) & 0x1fu);
-    add_r((w >> 16u) & 0x1fu);
-    add_w(w & 0x1fu);
-    *read_mask_out = rmask;
-    *write_mask_out = wmask;
-    return true;
-  }
-
-  // Unsigned-offset LDR / LDRB / LDRH / LDRSW (32/64-bit, no writeback, non-SIMD)
-  // Bits [29:27]=111, [26]=0 (V=0), [25:24]=01, [23:22]=opc (01=LDR, 10=LDRSW/LDRSH/LDRSB, 11=LDRSH/LDRSB32)
-  if ((w & 0x3f000000u) == 0x39000000u) {
-    const uint32_t size = (w >> 30u) & 3u;
-    const uint32_t opc = (w >> 22u) & 3u;
-    if (opc == 0u || (size == 3u && opc >= 2u) || (size == 2u && opc == 3u)) return false;
-    add_r((w >> 5u) & 0x1fu);
-    add_w(w & 0x1fu);
-    *read_mask_out = rmask;
-    *write_mask_out = wmask;
-    return true;
-  }
-
-  // LDP (signed offset, no writeback, non-SIMD): [29:27]=101, [26]=0, [25:22]=0101 (L=1)
-  if ((w & 0x3fc00000u) == 0x29400000u) {
-    add_r((w >> 5u) & 0x1fu);
-    add_w(w & 0x1fu);
-    add_w((w >> 10u) & 0x1fu);
-    *read_mask_out = rmask;
-    *write_mask_out = wmask;
-    return true;
-  }
-
   return false;
 }
 
@@ -269,50 +180,6 @@ HexStatus try_emit_arm64_global_thunk(
   }
 
   // -------------------------------------------------------------------------
-  // Pattern 2: Pure register/load-only tail-call thunk ending in external B
-  //            with ZERO argument registers (x0..x7) read before definition.
-  // -------------------------------------------------------------------------
-  {
-    uint64_t tail_target = 0ULL;
-    const uint64_t last_pc = base_addr + static_cast<uint64_t>(word_count - 1u) * 4ULL;
-    if (decode_b_or_bl(words[word_count - 1u], last_pc, false, &tail_target) &&
-        is_external_target(tail_target, base_addr, word_count)) {
-      uint32_t defined_mask = 0u;
-      bool all_pure = true;
-      bool reads_undef_arg = false;
-      for (uint32_t i = 0u; i + 1u < word_count; ++i) {
-        uint32_t rmask = 0u;
-        uint32_t wmask = 0u;
-        if (!classify_pure_reg_or_load(words[i], &rmask, &wmask)) {
-          all_pure = false;
-          break;
-        }
-        const uint32_t undef_reads = rmask & ~defined_mask;
-        if ((undef_reads & 0xffu) != 0u) {
-          reads_undef_arg = true;
-          break;
-        }
-        defined_mask |= wmask;
-      }
-      if (all_pure && !reads_undef_arg) {
-        hex::Vec<char> out(&emit_arena);
-        hex::Vec<HexLineMapEntry> lm(&emit_arena);
-        if (!append_cstr(out, "void ") ||
-            !append_func_name(out, func_name_utf8, func_name_len, base_addr) ||
-            !append_cstr(out, "(void)\n{\n}")) {
-          return HEX_ERR_OOM;
-        }
-        if (!lm.push_back({1u, 0u, base_addr}) ||
-            !lm.push_back({2u, 0u, 0ULL}) ||
-            !lm.push_back({3u, 0u, 0ULL})) {
-          return HEX_ERR_OOM;
-        }
-        return finalize_output(emit_arena, out, lm, out_text, out_text_len, out_linemap, out_linemap_count);
-      }
-    }
-  }
-
-  // -------------------------------------------------------------------------
   // Pattern 3: 5-instruction frame + BL + tail B wrapper:
   //   stp x29, x30, [sp, #-0x10]!  (0xa9bf7bfd)
   //   mov x29, sp                  (0x910003fd)
@@ -367,6 +234,7 @@ HexStatus try_emit_arm64_global_thunk(
           !lm.push_back({5u, 0u, 0ULL})) {
         return HEX_ERR_OOM;
       }
+      add_general_loss_flags(HEX_DECOMP_LOSS_UNKNOWN_CALL_ARGS | HEX_DECOMP_LOSS_DROPPED_TAIL_CALL);
       return finalize_output(emit_arena, out, lm, out_text, out_text_len, out_linemap, out_linemap_count);
     }
   }

@@ -7,6 +7,13 @@
 
 namespace hex::decompiler::passes {
 
+void set_general_scratch_arena(hex::Arena* scratch);
+void set_general_rodata_slice(uint64_t va, const uint8_t* ptr, uint32_t len);
+void clear_general_rodata_slice();
+void reset_general_loss_flags();
+void add_general_loss_flags(uint32_t flags);
+uint32_t get_general_loss_flags();
+
 // General freestanding C++20 ARM64 decompiler pass.
 // Handles arbitrary real-world ARM64 functions (frames, globals, calls,
 // branches, loops, memory, FP/SIMD, atomics, bitmasks, conditional selects)

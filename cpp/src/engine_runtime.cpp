@@ -13,11 +13,16 @@
 #include "decompiler/passes/arm64_objc_emit.hpp"
 #include "decompiler/passes/arm64_udf_emit.hpp"
 #include "decompiler/passes/arm64_global_thunk_emit.hpp"
+#include "decompiler/passes/arm64_ir_pipeline.hpp"
 #include "decompiler/passes/arm64_general_emit.hpp"
 namespace hex {
 namespace decompiler {
 namespace passes {
 void set_general_scratch_arena(hex::Arena* scratch);
+void set_general_rodata_slice(uint64_t va, const uint8_t* ptr, uint32_t len);
+void clear_general_rodata_slice();
+void reset_general_loss_flags();
+uint32_t get_general_loss_flags();
 }  // namespace passes
 }  // namespace decompiler
 }  // namespace hex
@@ -43,6 +48,7 @@ const char* g_last_text = nullptr;
 uint32_t g_last_text_len = 0u;
 const HexLineMapEntry* g_last_linemap = nullptr;
 uint32_t g_last_linemap_count = 0u;
+static uint32_t g_last_loss_flags = HEX_DECOMP_LOSS_NONE;
 
 constexpr uint32_t kFlagVarId = 32u;
 constexpr uint32_t kTempVarBase = 64u;
@@ -77,6 +83,7 @@ HexStatus try_specialized_arm64_passes(
     {&hex::decompiler::passes::try_emit_arm64_objc,             8u,  14u},
     {&hex::decompiler::passes::try_emit_arm64_udf_tail,         3u,  64u},
     {&hex::decompiler::passes::try_emit_arm64_global_thunk,     2u,  64u},
+    {&hex::decompiler::passes::try_emit_arm64_ir_pipeline,      1u, 512u},
     {&hex::decompiler::passes::try_emit_arm64_general,          1u,  HEX_ENGINE_MAX_DECOMP_WORDS},
   };
   // O(1) pre-filter: passes 0..11 all reject word_count > 64; jump straight to general.
@@ -85,7 +92,13 @@ HexStatus try_specialized_arm64_passes(
     if (word_count < kPasses[i].min_words || word_count > kPasses[i].max_words) {
       continue;
     }
+    if (kPasses[i].fn == &hex::decompiler::passes::try_emit_arm64_ir_pipeline &&
+        ((emit_flags & HEX_EMIT_FLAG_DISABLE_IR_PIPELINE) != 0u ||
+         (emit_flags & HEX_EMIT_FLAG_JS_PARITY) != 0u)) {
+      continue;
+    }
     g_emit_arena.reset();
+    hex::decompiler::passes::reset_general_loss_flags();
     const char* txt = nullptr;
     uint32_t txt_len = 0u;
     const HexLineMapEntry* lm = nullptr;
@@ -98,6 +111,7 @@ HexStatus try_specialized_arm64_passes(
       g_last_text_len = txt_len;
       g_last_linemap = lm;
       g_last_linemap_count = lm_cnt;
+      g_last_loss_flags = hex::decompiler::passes::get_general_loss_flags();
       return HEX_OK;
     }
   }
@@ -110,6 +124,10 @@ void clear_last_output() {
   g_last_text_len = 0u;
   g_last_linemap = nullptr;
   g_last_linemap_count = 0u;
+  g_last_loss_flags = HEX_DECOMP_LOSS_NONE;
+#if defined(HEX_HAS_DECOMP_PASSES)
+  hex::decompiler::passes::reset_general_loss_flags();
+#endif
 }
 
 void bind_all_subsystems() {
@@ -639,6 +657,9 @@ HexStatus hex_engine_init(void) {
   g_scratch_arena.init_fixed(g_scratch_storage, sizeof(g_scratch_storage));
   g_emit_arena.init_fixed(g_emit_storage, sizeof(g_emit_storage));
   bind_all_subsystems();
+#if defined(HEX_HAS_DECOMP_PASSES)
+  hex::decompiler::passes::clear_general_rodata_slice();
+#endif
   clear_last_output();
   g_initialized = true;
   return HEX_OK;
@@ -659,6 +680,9 @@ void* hex_engine_scratch_alloc(uint32_t bytes) {
 HEX_WASM_EXPORT("hex_engine_scratch_reset")
 void hex_engine_scratch_reset(void) {
   ensure_initialized();
+#if defined(HEX_HAS_DECOMP_PASSES)
+  hex::decompiler::passes::clear_general_rodata_slice();
+#endif
   g_scratch_arena.reset();
 }
 
@@ -709,6 +733,7 @@ HexStatus hex_engine_decompile_arm64(
   if (!primary_supported) {
 #if defined(HEX_HAS_DECOMP_PASSES)
     g_scratch_arena.restore(scratch_entry_mark);
+    hex::decompiler::passes::set_ir_pipeline_scratch_arena(&g_scratch_arena);
     hex::decompiler::passes::set_general_scratch_arena(&g_scratch_arena);
     return try_specialized_arm64_passes(
         words, word_count, base_addr, func_name_utf8, func_name_len, emit_flags);
@@ -1036,6 +1061,32 @@ const HexLineMapEntry* hex_engine_decompile_get_linemap_ptr(void) {
 HEX_WASM_EXPORT("hex_engine_decompile_get_linemap_count")
 uint32_t hex_engine_decompile_get_linemap_count(void) {
   return g_last_linemap_count;
+}
+
+HEX_WASM_EXPORT("hex_engine_decompile_get_loss_flags")
+uint32_t hex_engine_decompile_get_loss_flags(void) {
+  return g_last_loss_flags;
+}
+
+HEX_WASM_EXPORT("hex_engine_decompile_set_rodata_slice")
+void hex_engine_decompile_set_rodata_slice(
+    uint32_t va_lo, uint32_t va_hi, const uint8_t* ptr, uint32_t len) {
+#if defined(HEX_HAS_DECOMP_PASSES)
+  const uint64_t va = static_cast<uint64_t>(va_lo) | (static_cast<uint64_t>(va_hi) << 32);
+  hex::decompiler::passes::set_general_rodata_slice(va, ptr, len);
+#else
+  (void)va_lo;
+  (void)va_hi;
+  (void)ptr;
+  (void)len;
+#endif
+}
+
+HEX_WASM_EXPORT("hex_engine_decompile_clear_rodata_slice")
+void hex_engine_decompile_clear_rodata_slice(void) {
+#if defined(HEX_HAS_DECOMP_PASSES)
+  hex::decompiler::passes::clear_general_rodata_slice();
+#endif
 }
 
 }  // extern "C"

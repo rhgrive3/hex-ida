@@ -759,6 +759,9 @@ function completenessOf(value, fallback = 'complete') {
   if (value?.unsupported === true) evidence.push('unsupported');
   if (value?.truncated === true) evidence.push('truncated');
   if (topLevelCompleteness?.complete === false || value?.complete === false || value?.partial === true) evidence.push('partial');
+  if ((typeof value?.lossFlags === 'number' && value.lossFlags !== 0) || (Array.isArray(value?.lossReasons) && value.lossReasons.length > 0)) {
+    evidence.push('partial');
+  }
 
   const recognized = evidence.filter((item) => COMPLETENESS.has(item));
   const hasInvalidString = evidence.some((item) => typeof item === 'string' && !COMPLETENESS.has(item));
@@ -947,6 +950,7 @@ export const DECOMPILE_PUBLIC_FIELDS = Object.freeze([
   'semantic', 'signature', 'summary', 'pseudocode', 'text', 'code',
   'lines', 'evidence', 'warnings', 'labels', 'coverage',
   'renderProvenance', 'unknownInstructions',
+  'completeness', 'partial', 'lossFlags', 'lossReasons',
 ]);
 
 // Producer-owned analysis state that is never published. A field is listed here
@@ -1742,18 +1746,27 @@ export function createAppAnalysisQueryAdapter(app) {
       // ARM64 decompiler cannot drift apart.
       const publish = (value, completeness = null, status = {}) => {
         const { value:published, withheld, unexpected } = publicDecompilerProjection(value);
-        if (!withheld.length && !unexpected.length) return wrap(published, completeness, status);
+        const valueCompleteness = completenessOf(value, 'complete');
+        const baseCompleteness = completeness != null
+          ? weakestCompleteness([completeness, valueCompleteness])
+          : valueCompleteness;
+        const lossReasons = Array.isArray(value?.lossReasons) && value.lossReasons.length > 0
+          ? value.lossReasons.slice()
+          : null;
+        const enrichedStatus = lossReasons
+          ? { ...status, lossReasons, ...(!status.reason ? { reason: lossReasons[0] } : {}) }
+          : status;
+        if (!withheld.length && !unexpected.length) return wrap(published, baseCompleteness, enrichedStatus);
         // Every field the projection gave up is an explicit availability loss
         // reported with the schema and the field names, never a silent drop.
         // A withheld deep field is `truncated`; an unknown field is schema
         // drift, so the published value is a `partial` projection of it.
         const truncated = withheld.length > 0;
         const projectionCompleteness = truncated ? 'truncated' : 'partial';
-        const producerCompleteness = completeness ?? completenessOf(value, 'complete');
-        const combinedCompleteness = weakestCompleteness([producerCompleteness, projectionCompleteness]);
+        const combinedCompleteness = weakestCompleteness([baseCompleteness, projectionCompleteness]);
         return wrap(published, combinedCompleteness, {
-          ...status,
-          reason:status.reason ?? (truncated ? 'decompile-projection-withheld' : 'decompile-projection-schema-drift'),
+          ...enrichedStatus,
+          reason:enrichedStatus.reason ?? (truncated ? 'decompile-projection-withheld' : 'decompile-projection-schema-drift'),
           projection:{ schema:DECOMPILE_DTO_SCHEMA, withheld, unexpected },
         });
       };
@@ -1914,7 +1927,7 @@ export function createAppAnalysisQueryAdapter(app) {
         const producerCompleteness = completenessOf(producer, 'complete');
         completenesses.push(producerCompleteness);
         if (producerCompleteness !== 'complete' && !functionReason) {
-          functionReason = producer?.status?.reason ?? producer?.completeness?.reason ?? producer?.reason ?? null;
+          functionReason = producer?.status?.reason ?? producer?.completeness?.reason ?? producer?.reason ?? (Array.isArray(producer?.lossReasons) && producer.lossReasons.length > 0 ? producer.lossReasons[0] : null);
         }
         const pseudocode = producer?.pseudocode ?? producer?.text ?? producer?.code ?? null;
         if (typeof pseudocode !== 'string' || !pseudocode.trim()) {

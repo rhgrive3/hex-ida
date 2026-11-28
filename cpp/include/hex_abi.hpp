@@ -23,6 +23,13 @@ typedef enum HexStatus {
   HEX_ERR_INTERNAL = 5,
 } HexStatus;
 
+static const uint32_t HEX_DECOMP_LOSS_NONE = 0u;
+static const uint32_t HEX_DECOMP_LOSS_UNRESOLVED_INDIRECT_BRANCH = 1u << 0;
+static const uint32_t HEX_DECOMP_LOSS_UNKNOWN_CALL_ARGS = 1u << 1;
+static const uint32_t HEX_DECOMP_LOSS_DROPPED_TAIL_CALL = 1u << 2;
+static const uint32_t HEX_DECOMP_LOSS_UNSUPPORTED_INSN = 1u << 3;
+static const uint32_t HEX_DECOMP_LOSS_INDIRECT_CALL = 1u << 4;
+
 #ifdef __cplusplus
 }
 #endif

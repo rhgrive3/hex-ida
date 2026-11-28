@@ -3,8 +3,43 @@
 namespace hex::decompiler::passes {
 
 static hex::Arena* g_general_scratch_arena = nullptr;
+static uint64_t g_rodata_va = 0ULL;
+static const uint8_t* g_rodata_ptr = nullptr;
+static uint32_t g_rodata_len = 0u;
+static uint32_t g_general_loss_flags = 0u;
+
+static constexpr uint32_t kLossUnresolvedIndirectBranch = (1u << 0);
+static constexpr uint32_t kLossUnknownCallArgs          = (1u << 1);
+[[maybe_unused]] static constexpr uint32_t kLossDroppedTailCall = (1u << 2);
+static constexpr uint32_t kLossUnsupportedInsn          = (1u << 3);
+static constexpr uint32_t kLossIndirectCall             = (1u << 4);
+
 void set_general_scratch_arena(hex::Arena* scratch) {
   g_general_scratch_arena = scratch;
+}
+
+void set_general_rodata_slice(uint64_t va, const uint8_t* ptr, uint32_t len) {
+  g_rodata_va = va;
+  g_rodata_ptr = ptr;
+  g_rodata_len = len;
+}
+
+void clear_general_rodata_slice() {
+  g_rodata_va = 0ULL;
+  g_rodata_ptr = nullptr;
+  g_rodata_len = 0u;
+}
+
+void reset_general_loss_flags() {
+  g_general_loss_flags = 0u;
+}
+
+void add_general_loss_flags(uint32_t flags) {
+  g_general_loss_flags |= flags;
+}
+
+uint32_t get_general_loss_flags() {
+  return g_general_loss_flags;
 }
 
 namespace {
@@ -16,6 +51,143 @@ static constexpr uint32_t kMaxGlobals = 2048u;
 static constexpr uint32_t kMaxCallees = 2048u;
 static constexpr uint32_t kMaxTextCap = 131072u;
 static constexpr uint32_t kMaxLineMapCap = 8192u;
+static constexpr uint32_t kMaxJumpTables = 32u;
+static constexpr uint32_t kMaxJumpTableCases = 256u;
+static constexpr uint32_t kMaxSpSlots = 48u;
+
+static bool read_rodata_bytes(
+    uint64_t va,
+    uint32_t nbytes,
+    const uint32_t* words,
+    uint32_t word_count,
+    uint64_t base_addr,
+    uint8_t* out) {
+  if (!out || nbytes == 0u) return false;
+  if (g_rodata_ptr && g_rodata_len > 0u && va >= g_rodata_va) {
+    const uint64_t off = va - g_rodata_va;
+    const uint64_t rlen = static_cast<uint64_t>(g_rodata_len);
+    if (off <= rlen && static_cast<uint64_t>(nbytes) <= rlen - off) {
+      for (uint32_t k = 0u; k < nbytes; ++k) out[k] = g_rodata_ptr[off + k];
+      return true;
+    }
+  }
+  if (words && word_count > 0u && va >= base_addr) {
+    const uint64_t off = va - base_addr;
+    const uint64_t clen = static_cast<uint64_t>(word_count) * 4ULL;
+    if (off <= clen && static_cast<uint64_t>(nbytes) <= clen - off) {
+      for (uint32_t k = 0u; k < nbytes; ++k) {
+        const uint64_t bo = off + k;
+        out[k] = static_cast<uint8_t>((words[bo >> 2u] >> ((bo & 3u) * 8u)) & 0xFFu);
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool read_rodata_u8(uint64_t va, const uint32_t* words, uint32_t word_count, uint64_t base_addr, uint8_t* out) {
+  return read_rodata_bytes(va, 1u, words, word_count, base_addr, out);
+}
+
+static bool read_rodata_s8(uint64_t va, const uint32_t* words, uint32_t word_count, uint64_t base_addr, int8_t* out) {
+  uint8_t b = 0u;
+  if (!read_rodata_u8(va, words, word_count, base_addr, &b)) return false;
+  *out = static_cast<int8_t>(b);
+  return true;
+}
+
+static bool read_rodata_u16(uint64_t va, const uint32_t* words, uint32_t word_count, uint64_t base_addr, uint16_t* out) {
+  uint8_t b[2];
+  if (!read_rodata_bytes(va, 2u, words, word_count, base_addr, b)) return false;
+  *out = static_cast<uint16_t>(static_cast<uint16_t>(b[0]) | (static_cast<uint16_t>(b[1]) << 8u));
+  return true;
+}
+
+static bool read_rodata_s16(uint64_t va, const uint32_t* words, uint32_t word_count, uint64_t base_addr, int16_t* out) {
+  uint16_t v = 0u;
+  if (!read_rodata_u16(va, words, word_count, base_addr, &v)) return false;
+  *out = static_cast<int16_t>(v);
+  return true;
+}
+
+static bool read_rodata_u32(uint64_t va, const uint32_t* words, uint32_t word_count, uint64_t base_addr, uint32_t* out) {
+  uint8_t b[4];
+  if (!read_rodata_bytes(va, 4u, words, word_count, base_addr, b)) return false;
+  *out = static_cast<uint32_t>(b[0]) |
+         (static_cast<uint32_t>(b[1]) << 8u) |
+         (static_cast<uint32_t>(b[2]) << 16u) |
+         (static_cast<uint32_t>(b[3]) << 24u);
+  return true;
+}
+
+static bool read_rodata_s32(uint64_t va, const uint32_t* words, uint32_t word_count, uint64_t base_addr, int32_t* out) {
+  uint32_t v = 0u;
+  if (!read_rodata_u32(va, words, word_count, base_addr, &v)) return false;
+  *out = static_cast<int32_t>(v);
+  return true;
+}
+
+static bool read_rodata_u64(uint64_t va, const uint32_t* words, uint32_t word_count, uint64_t base_addr, uint64_t* out) {
+  uint8_t b[8];
+  if (!read_rodata_bytes(va, 8u, words, word_count, base_addr, b)) return false;
+  *out = static_cast<uint64_t>(b[0]) |
+         (static_cast<uint64_t>(b[1]) << 8u) |
+         (static_cast<uint64_t>(b[2]) << 16u) |
+         (static_cast<uint64_t>(b[3]) << 24u) |
+         (static_cast<uint64_t>(b[4]) << 32u) |
+         (static_cast<uint64_t>(b[5]) << 40u) |
+         (static_cast<uint64_t>(b[6]) << 48u) |
+         (static_cast<uint64_t>(b[7]) << 56u);
+  return true;
+}
+
+struct JumpTableInfo {
+  uint32_t br_idx;
+  uint32_t load_idx;
+  uint8_t br_reg;
+  uint8_t index_reg;
+  bool index_is32;
+  bool index_clobbered;
+  bool resolved;
+  bool is_func_table;
+  bool is_indirect_tail;
+  bool has_default_target;
+  uint64_t default_target;
+  uint32_t case_count;
+  uint64_t* case_targets;
+};
+
+struct SpSlot {
+  int64_t canon_off;
+  uint32_t slot_id;
+  uint8_t width;
+  bool is_fp;
+  bool conflicted;
+};
+
+struct SpPromoState {
+  static constexpr int64_t kUnvisited = (-9223372036854775807LL - 1LL);
+  bool active;
+  bool all_sp_promoted;
+  bool omit_x29_sp_mov;
+  int64_t min_sp_off;
+  int64_t* insn_sp_off;
+  SpSlot slots[kMaxSpSlots];
+  uint32_t slot_count;
+
+  const SpSlot* find_promoted(int64_t canon_off, uint8_t width, bool is_fp) const {
+    if (!active) return nullptr;
+    for (uint32_t i = 0u; i < slot_count; ++i) {
+      if (slots[i].canon_off == canon_off) {
+        if (!slots[i].conflicted && slots[i].width == width && slots[i].is_fp == is_fp) {
+          return &slots[i];
+        }
+        return nullptr;
+      }
+    }
+    return nullptr;
+  }
+};
 
 static inline bool is_ascii_alpha(char c) {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
@@ -305,6 +477,7 @@ struct AnalysisCtx {
   uint32_t fp_param_single_mask;
   uint32_t fp_param_double_mask;
   bool uses_nzcv;
+  bool uses_sw_idx;
   bool uses_fp_bitcast;
   bool uses_math;
   bool has_unknown_call;
@@ -328,6 +501,11 @@ struct AnalysisCtx {
   uint32_t norm_len;
   uint32_t int_param_count;
   uint32_t fp_param_count;
+  const JumpTableInfo* jts;
+  uint32_t jt_count;
+  const uint8_t* call_argc;
+  const SpPromoState* sp_promo;
+  uint32_t cur_insn_idx;
   uint64_t adrp_page[31];
   bool adrp_valid[31];
   uint64_t saved_adrp_page[31];
@@ -532,19 +710,48 @@ static bool try_decode_fusable_cmp(uint32_t w, CmpState* out) {
   return false;
 }
 
-static bool try_decode_fusable_addsub_zn(uint32_t w, CmpState* out) {
-  // SUBS / ADDS immediate (S=1, rd < 31) -> Z/N flags match CMP rd, #0
+static bool try_decode_fusable_addsub(uint32_t w, CmpState* out, bool* out_zn_only) {
+  // SUBS / ADDS immediate (S=1, rd < 31)
   if ((w & 0x1F800000u) == 0x11000000u && ((w >> 29u) & 1u) != 0u && (w & 31u) < 31u) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
+    const bool is_sub = ((w >> 30u) & 1u) != 0u;
+    const uint32_t sh = (w >> 22u) & 1u;
+    const uint64_t imm = static_cast<uint64_t>((w >> 10u) & 0xFFFu) << (sh ? 12u : 0u);
+    const uint32_t rn = (w >> 5u) & 31u;
     const uint32_t rd = w & 31u;
+    if (imm == 0ULL) {
+      // rn +/- 0 has V=0, N=sign(rd), Z=(rd==0); for SUBS C=1 matches CMP rd,#0,
+      // for ADDS C=0 matches CMN rd,#0 (EQ/NE/MI/PL/GE/LT/GT/LE exact).
+      *out = CmpState{true, !is64, false, true, !is_sub, false, false, rd, 0u, 0ULL, false, false, false, 0u, nullptr};
+      if (out_zn_only) *out_zn_only = false;
+      return true;
+    }
+    if (rd != rn) {
+      // Pre-operation operand rn is preserved after writing rd, so flags match CMP/CMN rn, #imm.
+      *out = CmpState{true, !is64, false, true, !is_sub, false, rn == 31u, rn, 0u, imm, false, false, false, 0u, nullptr};
+      if (out_zn_only) *out_zn_only = false;
+      return true;
+    }
     *out = CmpState{true, !is64, false, true, false, false, false, rd, 0u, 0ULL, false, false, false, 0u, nullptr};
+    if (out_zn_only) *out_zn_only = true;
     return true;
   }
-  // SUBS / ADDS shifted register (S=1, rd < 31) -> Z/N flags match CMP rd, #0
+  // SUBS / ADDS shifted register (S=1, rd < 31)
   if ((w & 0x1F200000u) == 0x0B000000u && ((w >> 29u) & 1u) != 0u && (w & 31u) < 31u) {
     const bool is64 = ((w >> 31u) & 1u) != 0u;
+    const bool is_sub = ((w >> 30u) & 1u) != 0u;
+    const uint32_t imm6 = (w >> 10u) & 0x3Fu;
+    const uint32_t rm = (w >> 16u) & 31u;
+    const uint32_t rn = (w >> 5u) & 31u;
     const uint32_t rd = w & 31u;
+    if (imm6 == 0u && is_sub && rd != rn && rd != rm) {
+      // Pre-subtraction operands rn and rm are both preserved, so flags match CMP rn, rm.
+      *out = CmpState{true, !is64, false, false, false, false, false, rn, rm, 0ULL, false, false, false, 0u, nullptr};
+      if (out_zn_only) *out_zn_only = false;
+      return true;
+    }
     *out = CmpState{true, !is64, false, true, false, false, false, rd, 0u, 0ULL, false, false, false, 0u, nullptr};
+    if (out_zn_only) *out_zn_only = true;
     return true;
   }
   return false;
@@ -1143,6 +1350,41 @@ static uint64_t decode_advsimd_imm64(uint32_t op, uint32_t cmode, uint32_t imm8)
          (b ? (0xFFULL << 54u) : 0ULL) | (static_cast<uint64_t>(cdefgh) << 48u);
 }
 
+static const JumpTableInfo* find_jump_table(const AnalysisCtx& ctx, uint32_t insn_idx) {
+  if (!ctx.jts) return nullptr;
+  for (uint32_t i = 0u; i < ctx.jt_count; ++i) {
+    if (ctx.jts[i].br_idx == insn_idx) return &ctx.jts[i];
+  }
+  return nullptr;
+}
+
+static void emit_indirect_call_expr(TextBuf& tb, const char* ret_type, uint32_t fn_reg, uint32_t argc) {
+  tb.put_str("((");
+  tb.put_str(ret_type);
+  tb.put_str(" (*)(");
+  if (argc == 0u) {
+    tb.put_str("void");
+  } else {
+    for (uint32_t a = 0u; a < argc; ++a) {
+      if (a > 0u) tb.put_str(", ");
+      tb.put_str("uint64");
+    }
+  }
+  tb.put_str("))(uintptr_t)");
+  tb.put_reg_x(fn_reg);
+  tb.put_str(")(");
+  for (uint32_t a = 0u; a < argc; ++a) {
+    if (a > 0u) tb.put_str(", ");
+    tb.put_reg_x(a);
+  }
+  tb.put_char(')');
+}
+
+static void emit_local_sp_name(TextBuf& tb, uint32_t slot_id) {
+  tb.put_str("local_sp_");
+  tb.put_u64_hex(static_cast<uint64_t>(slot_id), false);
+}
+
 // Single-instruction processor used in both analysis pass (emit=false) and emission pass (emit=true).
 static void process_insn(
     uint32_t w,
@@ -1243,6 +1485,7 @@ static void process_insn(
         ctx.add_callee(target);
       } else if (tb) {
         rec();
+        g_general_loss_flags |= kLossUnknownCallArgs;
         if (ctx.returns_value && !ctx.returns_double) {
           tb->put_str("    return sub_");
           tb->put_u64_hex(target, true);
@@ -1301,6 +1544,7 @@ static void process_insn(
         }
         tb->put_str(");\n");
       } else {
+        g_general_loss_flags |= kLossUnknownCallArgs;
         tb->put_str("    x0 = sub_");
         tb->put_u64_hex(target, true);
         tb->put_str("(/* arguments unknown */);\n");
@@ -1317,31 +1561,133 @@ static void process_insn(
     const bool has_rm = ((w & 0xFFFFF800u) == 0xD73F0800u);
     const uint32_t rm = w & 31u;
     if (!emit) {
-      ctx.has_unknown_call = true;
+      ctx.uses_uintptr = true;
       ctx.mark_gpr_read(rn);
       if (has_rm && rm < 31u) ctx.mark_gpr_read(rm);
-      ctx.mark_gpr_read(0u);
       ctx.mark_gpr_write(0u);
       for (uint32_t r = 0u; r < 19u; ++r) ctx.clear_adrp(r);
     } else if (tb) {
       rec();
-      tb->put_str("    x0 = unknown_call(x0);\n");
+      g_general_loss_flags |= kLossIndirectCall;
+      const uint32_t argc = ctx.call_argc ? static_cast<uint32_t>(ctx.call_argc[ctx.cur_insn_idx]) : 1u;
+      tb->put_str("    x0 = ");
+      emit_indirect_call_expr(*tb, "uint64", rn, argc);
+      tb->put_str(";\n");
       for (uint32_t r = 0u; r < 19u; ++r) ctx.clear_adrp(r);
     }
     if (!cmp.is_nzcv_var) cmp.valid = false;
     return;
   }
 
-  // BR Xn / BRAAZ / BRABZ / BRAA / BRAB (indirect branch / jump table)
+  // BR Xn / BRAAZ / BRABZ / BRAA / BRAB (indirect branch / jump table / indirect tail call)
   if ((w & 0xFFFFFC1Fu) == 0xD61F0000u || (w & 0xFFFFF81Fu) == 0xD61F081Fu || (w & 0xFFFFF800u) == 0xD71F0800u) {
     const uint32_t rn = (w >> 5u) & 31u;
+    const JumpTableInfo* jt = find_jump_table(ctx, ctx.cur_insn_idx);
     if (!emit) {
       ctx.mark_gpr_read(rn);
+      if (jt && jt->resolved) {
+        if (jt->index_reg < 31u) ctx.mark_gpr_read(jt->index_reg);
+        ctx.uses_uint64_t = true;
+        if (jt->index_is32) ctx.uses_uint32 = true;
+        if (jt->index_clobbered) ctx.uses_sw_idx = true;
+        if (jt->is_func_table && jt->case_targets) {
+          for (uint32_t c = 0u; c < jt->case_count; ++c) {
+            if (jt->case_targets[c] != base_addr) ctx.add_callee(jt->case_targets[c]);
+          }
+        }
+      } else if (jt && jt->is_indirect_tail) {
+        ctx.uses_uintptr = true;
+      }
     } else if (tb) {
       rec();
-      tb->put_str("    (void)");
-      tb->put_reg_x(rn);
-      tb->put_str("; /* indirect branch */\n");
+      if (jt && jt->resolved && jt->case_targets && jt->case_count > 0u) {
+        if (jt->index_clobbered) {
+          tb->put_str("    switch (__hex_sw_idx) {\n");
+        } else {
+          tb->put_str(jt->index_is32 ? "    switch ((uint64_t)(uint32_t)" : "    switch ((uint64_t)");
+          tb->put_reg_x(jt->index_reg < 31u ? jt->index_reg : rn);
+          tb->put_str(") {\n");
+        }
+        if (jt->is_func_table) {
+          g_general_loss_flags |= kLossUnknownCallArgs;
+        }
+        for (uint32_t c = 0u; c < jt->case_count; ++c) {
+          tb->put_str("        case ");
+          tb->put_u64_dec(c);
+          if (jt->is_func_table) {
+            if (ctx.returns_value && !ctx.returns_double && !ctx.returns_float) {
+              tb->put_str(": return sub_");
+              tb->put_u64_hex(jt->case_targets[c], true);
+              tb->put_str("(/* arguments unknown */);\n");
+            } else if (ctx.returns_float) {
+              tb->put_str(": sub_");
+              tb->put_u64_hex(jt->case_targets[c], true);
+              tb->put_str("(/* arguments unknown */); return (float)d0;\n");
+            } else if (ctx.returns_double) {
+              tb->put_str(": sub_");
+              tb->put_u64_hex(jt->case_targets[c], true);
+              tb->put_str("(/* arguments unknown */); return d0;\n");
+            } else {
+              tb->put_str(": sub_");
+              tb->put_u64_hex(jt->case_targets[c], true);
+              tb->put_str("(/* arguments unknown */); return;\n");
+            }
+          } else {
+            tb->put_str(": goto loc_");
+            tb->put_u64_hex(jt->case_targets[c], true);
+            tb->put_str(";\n");
+          }
+        }
+        if (jt->has_default_target) {
+          tb->put_str("        default: goto loc_");
+          tb->put_u64_hex(jt->default_target, true);
+          tb->put_str(";\n");
+        } else if (ctx.returns_float) {
+          tb->put_str("        default: return 0.0f;\n");
+        } else if (ctx.returns_double) {
+          tb->put_str("        default: return 0.0;\n");
+        } else if (ctx.returns_value) {
+          tb->put_str("        default: return 0;\n");
+        } else {
+          tb->put_str("        default: return;\n");
+        }
+        tb->put_str("    }\n");
+      } else if (jt && jt->is_indirect_tail && rn != 30u) {
+        g_general_loss_flags |= kLossIndirectCall;
+        const uint32_t argc = ctx.call_argc ? static_cast<uint32_t>(ctx.call_argc[ctx.cur_insn_idx]) : 0u;
+        if (ctx.returns_float) {
+          tb->put_str("    return ");
+          emit_indirect_call_expr(*tb, "float", rn, argc);
+          tb->put_str(";\n");
+        } else if (ctx.returns_double) {
+          tb->put_str("    return ");
+          emit_indirect_call_expr(*tb, "double", rn, argc);
+          tb->put_str(";\n");
+        } else if (ctx.returns_int32) {
+          tb->put_str("    return ");
+          emit_indirect_call_expr(*tb, "int32_t", rn, argc);
+          tb->put_str(";\n");
+        } else if (ctx.returns_value) {
+          tb->put_str("    return ");
+          emit_indirect_call_expr(*tb, "uint64", rn, argc);
+          tb->put_str(";\n");
+        } else {
+          tb->put_str("    ");
+          emit_indirect_call_expr(*tb, "void", rn, argc);
+          tb->put_str(";\n    return;\n");
+        }
+      } else {
+        g_general_loss_flags |= kLossUnresolvedIndirectBranch;
+        tb->put_str("    __asm__ volatile(\"\" : : \"r\"(");
+        tb->put_reg_x(rn);
+        tb->put_str(")); /* unresolved indirect branch br ");
+        tb->put_reg_x(rn);
+        tb->put_str(" */\n");
+        if (ctx.returns_float) tb->put_str("    return 0.0f;\n");
+        else if (ctx.returns_double) tb->put_str("    return 0.0;\n");
+        else if (ctx.returns_value) tb->put_str("    return 0;\n");
+        else tb->put_str("    return;\n");
+      }
     }
     return;
   }
@@ -1647,6 +1993,10 @@ static void process_insn(
         emit_nzcv_addsub_tail(*tb, is64, is_sub, rd);
         if (rd < 31u) ctx.clear_adrp(rd);
         return;
+      }
+      if (ctx.sp_promo && ctx.sp_promo->all_sp_promoted) {
+        if (rn == 31u && rd == 31u) return;
+        if (rn == 31u && rd == 29u && !is_sub && ctx.sp_promo->omit_x29_sp_mov) return;
       }
       tb->put_str("    ");
       tb->put_reg_x_or_sp(rd);
@@ -2189,7 +2539,8 @@ static void process_insn(
         else { ctx.mark_gpr_read(rt); ctx.mark_gpr_read(rt2); }
       }
     } else if (tb) {
-      if (mode == 3u && disp != 0) {
+      const bool omit_sp_wb = (rn == 31u && ctx.sp_promo && ctx.sp_promo->all_sp_promoted);
+      if (mode == 3u && disp != 0 && !omit_sp_wb) {
         rec();
         tb->put_str("    ");
         tb->put_reg_x_or_sp(rn);
@@ -2201,8 +2552,17 @@ static void process_insn(
       }
       const int64_t eff0 = (mode == 0u || mode == 2u) ? disp : 0;
       const int64_t eff1 = eff0 + static_cast<int64_t>(scale);
+      const bool has_sp_off = (rn == 31u && ctx.sp_promo && ctx.sp_promo->active &&
+                               ctx.sp_promo->insn_sp_off &&
+                               ctx.sp_promo->insn_sp_off[ctx.cur_insn_idx] != SpPromoState::kUnvisited);
+      const int64_t sp_base = has_sp_off
+          ? (ctx.sp_promo->insn_sp_off[ctx.cur_insn_idx] + ((mode == 3u) ? disp : 0LL))
+          : 0LL;
       auto emit_one = [&](uint32_t reg, int64_t off) {
         if (!is_fp && is_load && reg == 31u) return;
+        const SpSlot* slot = (has_sp_off && bits <= 64u)
+            ? ctx.sp_promo->find_promoted(sp_base + off, static_cast<uint8_t>(bits >> 3u), is_fp)
+            : nullptr;
         rec();
         tb->put_str("    ");
         if (is_load) {
@@ -2212,11 +2572,23 @@ static void process_insn(
           } else {
             tb->put_reg_x(reg);
           }
-          tb->put_str(is_ldpsw ? " = (uint64)(int64_t)" : " = ");
-          emit_mem_deref(*tb, bits, is_ldpsw, is_fp, rn, off);
-          tb->put_str(";\n");
+          if (slot) {
+            if (is_ldpsw) tb->put_str(" = (uint64)(int64_t)(int32_t)");
+            else if (is_fp && bits == 32u) tb->put_str(" = (double)");
+            else tb->put_str(" = ");
+            emit_local_sp_name(*tb, slot->slot_id);
+            tb->put_str(";\n");
+          } else {
+            tb->put_str(is_ldpsw ? " = (uint64)(int64_t)" : " = ");
+            emit_mem_deref(*tb, bits, is_ldpsw, is_fp, rn, off);
+            tb->put_str(";\n");
+          }
         } else {
-          emit_mem_deref(*tb, bits, false, is_fp, rn, off);
+          if (slot) {
+            emit_local_sp_name(*tb, slot->slot_id);
+          } else {
+            emit_mem_deref(*tb, bits, false, is_fp, rn, off);
+          }
           tb->put_str(" = ");
           if (is_fp) {
             if (bits == 128u) tb->put_reg_q(reg);
@@ -2241,7 +2613,7 @@ static void process_insn(
         if (rt2 < 31u) ctx.clear_adrp(rt2);
       }
       if ((mode == 1u || mode == 3u) && rn < 31u) ctx.clear_adrp(rn);
-      if (mode == 1u && disp != 0) {
+      if (mode == 1u && disp != 0 && !omit_sp_wb) {
         rec();
         tb->put_str("    ");
         tb->put_reg_x_or_sp(rn);
@@ -2420,6 +2792,10 @@ static void process_insn(
     const bool is_fp_bh = is_fp && (bits == 8u || bits == 16u);
     if (!emit) {
       mark_mem_types(ctx, bits, is_signed, is_fp_bh ? false : is_fp);
+      if (is_signed && !is_fp) {
+        if (opc == 2u) ctx.uses_int64_t = true;
+        else { ctx.uses_int32 = true; ctx.uses_uint32 = true; }
+      }
       if (rn == 31u) ctx.uses_sp = true;
       else {
         ctx.mark_gpr_read(rn);
@@ -2435,7 +2811,8 @@ static void process_insn(
         else ctx.mark_gpr_read(rt);
       }
     } else if (tb) {
-      if (idx_mode == 3u && disp != 0) {
+      const bool omit_sp_wb = (rn == 31u && ctx.sp_promo && ctx.sp_promo->all_sp_promoted);
+      if (idx_mode == 3u && disp != 0 && !omit_sp_wb) {
         rec();
         tb->put_str("    ");
         tb->put_reg_x_or_sp(rn);
@@ -2445,12 +2822,20 @@ static void process_insn(
         tb->put_imm(disp > 0 ? static_cast<uint64_t>(disp) : static_cast<uint64_t>(-disp));
         tb->put_str(";\n");
       }
+      const bool raw_q_sub = is_fp_bh || (is_fp && (bits == 32u || bits == 64u) && ((ctx.q_used & (1u << rt)) != 0u));
+      const SpSlot* sp_slot = nullptr;
+      if (rn == 31u && !is_regoff && !raw_q_sub && bits <= 64u && ctx.sp_promo && ctx.sp_promo->active &&
+          ctx.sp_promo->insn_sp_off &&
+          ctx.sp_promo->insn_sp_off[ctx.cur_insn_idx] != SpPromoState::kUnvisited) {
+        const int64_t sp_base = ctx.sp_promo->insn_sp_off[ctx.cur_insn_idx] + ((idx_mode == 3u) ? disp : 0LL);
+        const int64_t eff_disp = (idx_mode == 1u || idx_mode == 3u) ? 0LL : disp;
+        sp_slot = ctx.sp_promo->find_promoted(sp_base + eff_disp, static_cast<uint8_t>(bits >> 3u), is_fp);
+      }
       if (!is_fp && is_load && rt == 31u) {
         // Discard load to XZR.
       } else {
         rec();
         tb->put_str("    ");
-        const bool raw_q_sub = is_fp_bh || (is_fp && (bits == 32u || bits == 64u) && ((ctx.q_used & (1u << rt)) != 0u));
         if (is_load) {
           if (is_fp) {
             if (bits == 128u || raw_q_sub) tb->put_reg_q(rt);
@@ -2458,26 +2843,39 @@ static void process_insn(
           } else {
             tb->put_reg_x(rt);
           }
-          tb->put_str(raw_q_sub ? " = (uint128)(" : " = ");
-          if (is_regoff) {
-            emit_mem_load_type(*tb, bits, raw_q_sub ? false : is_signed, raw_q_sub ? false : is_fp);
-            tb->put_str("(uintptr_t)(");
-            tb->put_reg_x_or_sp(rn);
-            tb->put_str(") + ");
-            if (rm_scaled && scale > 1u) {
-              tb->put_char('(');
-              tb->put_reg_x(rm);
-              tb->put_str(" * ");
-              tb->put_u64_dec(scale);
-              tb->put_char(')');
-            } else {
-              tb->put_reg_x(rm);
+          if (sp_slot) {
+            tb->put_str(" = ");
+            if (is_fp) {
+              if (bits == 32u) tb->put_str("(double)");
+            } else if (is_signed) {
+              if (bits == 8u) tb->put_str((opc == 2u) ? "(uint64)(int64_t)(int8_t)" : "(uint32_t)(int32_t)(int8_t)");
+              else if (bits == 16u) tb->put_str((opc == 2u) ? "(uint64)(int64_t)(int16_t)" : "(uint32_t)(int32_t)(int16_t)");
+              else if (bits == 32u) tb->put_str("(uint64)(int64_t)(int32_t)");
             }
-            tb->put_str(raw_q_sub ? "));\n" : ");\n");
+            emit_local_sp_name(*tb, sp_slot->slot_id);
+            tb->put_str(";\n");
           } else {
-            emit_mem_deref(*tb, bits, raw_q_sub ? false : is_signed, raw_q_sub ? false : is_fp, rn,
-                           (idx_mode == 1u || idx_mode == 3u) ? 0LL : disp);
-            tb->put_str(raw_q_sub ? ");\n" : ";\n");
+            tb->put_str(raw_q_sub ? " = (uint128)(" : " = ");
+            if (is_regoff) {
+              emit_mem_load_type(*tb, bits, raw_q_sub ? false : is_signed, raw_q_sub ? false : is_fp);
+              tb->put_str("(uintptr_t)(");
+              tb->put_reg_x_or_sp(rn);
+              tb->put_str(") + ");
+              if (rm_scaled && scale > 1u) {
+                tb->put_char('(');
+                tb->put_reg_x(rm);
+                tb->put_str(" * ");
+                tb->put_u64_dec(scale);
+                tb->put_char(')');
+              } else {
+                tb->put_reg_x(rm);
+              }
+              tb->put_str(raw_q_sub ? "));\n" : ");\n");
+            } else {
+              emit_mem_deref(*tb, bits, raw_q_sub ? false : is_signed, raw_q_sub ? false : is_fp, rn,
+                             (idx_mode == 1u || idx_mode == 3u) ? 0LL : disp);
+              tb->put_str(raw_q_sub ? ");\n" : ";\n");
+            }
           }
           if (is_fp) {
             if (bits == 128u || raw_q_sub) emit_sync_q_to_d(tb, ctx, rt, bits == 64u);
@@ -2486,7 +2884,10 @@ static void process_insn(
             ctx.clear_adrp(rt);
           }
         } else {
-          if (is_regoff) {
+          if (sp_slot) {
+            emit_local_sp_name(*tb, sp_slot->slot_id);
+            tb->put_str(" = ");
+          } else if (is_regoff) {
             emit_mem_load_type(*tb, bits, false, raw_q_sub ? false : is_fp);
             tb->put_str("(uintptr_t)(");
             tb->put_reg_x_or_sp(rn);
@@ -2528,7 +2929,7 @@ static void process_insn(
         }
       }
       if ((idx_mode == 1u || idx_mode == 3u) && rn < 31u) ctx.clear_adrp(rn);
-      if (idx_mode == 1u && disp != 0) {
+      if (idx_mode == 1u && disp != 0 && !omit_sp_wb) {
         rec();
         tb->put_str("    ");
         tb->put_reg_x_or_sp(rn);
@@ -5337,6 +5738,7 @@ static void process_insn(
   // (safe directly after a label before '}' under -std=c11, and carries a valid linemap stmt).
   if (emit && tb) {
     rec();
+    g_general_loss_flags |= kLossUnsupportedInsn;
     tb->put_str("    (void)0; /* arm64 insn 0x");
     tb->put_u64_hex(w, true);
     tb->put_str(" */\n");
@@ -5498,6 +5900,21 @@ static bool emit_flat_state_machine(
           return 2u;
         }
       }
+    } else if (llen > 20u && (starts_with(s, llen, "        case ", 13u) || starts_with(s, llen, "        default: ", 17u)) && s[llen - 1u] == ';') {
+      for (uint32_t k = 8u; k + 11u < llen; ++k) {
+        if (starts_with(s + k, llen - k, ": goto loc_", 11u)) {
+          const uint32_t h_off = k + 11u;
+          const uint32_t h_len = llen - 1u - h_off;
+          uint64_t lid = 0ULL;
+          if (parse_hex_u64(s + h_off, h_len, &lid)) {
+            *out_lid = lid;
+            *out_cond_rel = 0u;
+            *out_cond_len = k + 2u;
+            return 4u;
+          }
+          break;
+        }
+      }
     }
     return 0u;
   };
@@ -5514,7 +5931,7 @@ static bool emit_flat_state_machine(
       uint32_t cr = 0u, cl = 0u;
       const uint8_t kind = parse_flat_line(tb.data + cur, nl - cur, &lid, &cr, &cl);
       if (kind == 1u) ++label_cnt;
-      else if (kind == 2u || kind == 3u) ++goto_cnt;
+      else if (kind == 2u || kind == 3u || kind == 4u) ++goto_cnt;
       cur = (nl < tb.len) ? (nl + 1u) : tb.len;
     }
   }
@@ -5576,7 +5993,7 @@ static bool emit_flat_state_machine(
       uint64_t lid = 0ULL;
       uint32_t cr = 0u, cl = 0u;
       const uint8_t kind = parse_flat_line(tb.data + cur, nl - cur, &lid, &cr, &cl);
-      if (kind == 2u || kind == 3u) ht_mark_ref(lid);
+      if (kind == 2u || kind == 3u || kind == 4u) ht_mark_ref(lid);
       cur = (nl < tb.len) ? (nl + 1u) : tb.len;
     }
   }
@@ -5761,6 +6178,24 @@ static bool emit_flat_state_machine(
         ++out_line;
         case_has_stmt = true;
         last_was_term = false;
+      } else if (kind == 4u) {
+        first_seen = true;
+        if (cur_line <= max_orig && line_remap[cur_line] == 0u) line_remap[cur_line] = out_line;
+        const int64_t sid = find_state(lid);
+        if (sid >= 0) {
+          put_mem("        ", 8u);
+          put_mem(s + cr, cl);
+          put_mem("{ __hex_state = ", 16u);
+          put_u32(static_cast<uint32_t>(sid));
+          put_mem("u; continue; }\n", 15u);
+        } else {
+          put_mem("        ", 8u);
+          put_mem(s, llen);
+          put_ch('\n');
+        }
+        ++out_line;
+        case_has_stmt = true;
+        last_was_term = false;
       } else {
         first_seen = true;
         if (cur_line <= max_orig && line_remap[cur_line] == 0u) line_remap[cur_line] = out_line;
@@ -5923,6 +6358,19 @@ static bool structurize_c_body(
           sl.cond_len = static_cast<uint32_t>(found) - 8u;
         }
       }
+    } else if (llen > 20u && (starts_with(s, llen, "        case ", 13u) || starts_with(s, llen, "        default: ", 17u)) && s[llen - 1u] == ';') {
+      for (uint32_t k = 8u; k + 11u < llen; ++k) {
+        if (starts_with(s + k, llen - k, ": goto loc_", 11u)) {
+          const uint32_t h_off = k + 11u;
+          const uint32_t h_len = llen - 1u - h_off;
+          uint64_t lid = 0ULL;
+          if (parse_hex_u64(s + h_off, h_len, &lid)) {
+            sl.kind = 6u;
+            sl.label_id = lid;
+          }
+          break;
+        }
+      }
     }
     stmts[n++] = sl;
     cur = (nl < tb.len) ? (nl + 1u) : tb.len;
@@ -5935,7 +6383,7 @@ static bool structurize_c_body(
     const uint32_t mask = ht_cap - 1u;
     for (uint32_t k = 0u; k < acount; ++k) {
       const SLine& x = stmts[active[k]];
-      if (x.kind != 2u && x.kind != 3u) continue;
+      if (x.kind != 2u && x.kind != 3u && x.kind != 6u) continue;
       const uint64_t key = x.label_id;
       uint32_t idx = static_cast<uint32_t>((key * 0x9E3779B97F4A7C15ULL) >> 32u) & mask;
       for (uint32_t probe = 0u; probe < ht_cap; ++probe) {
@@ -5968,7 +6416,7 @@ static bool structurize_c_body(
     uint32_t rc = 0u;
     for (uint32_t k = 0u; k < acount; ++k) {
       const SLine& x = stmts[active[k]];
-      if ((x.kind == 2u || x.kind == 3u) && x.label_id == lid) ++rc;
+      if ((x.kind == 2u || x.kind == 3u || x.kind == 6u) && x.label_id == lid) ++rc;
     }
     return rc;
   };
@@ -6229,12 +6677,21 @@ static bool structurize_c_body(
         const uint64_t l1 = sl.label_id;
         const uint64_t l2 = sb.label_id;
         if (count_refs(l1, acount) > 0u) {
+          bool has_case_ref = false;
           for (uint32_t k = 0u; k < acount; ++k) {
-            SLine& sk = stmts[active[k]];
-            if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == l1) {
-              sk.label_id = l2;
-              changed = true;
-              any_change = true;
+            if (stmts[active[k]].kind == 6u && stmts[active[k]].label_id == l1) {
+              has_case_ref = true;
+              break;
+            }
+          }
+          if (!has_case_ref) {
+            for (uint32_t k = 0u; k < acount; ++k) {
+              SLine& sk = stmts[active[k]];
+              if ((sk.kind == 2u || sk.kind == 3u) && sk.label_id == l1) {
+                sk.label_id = l2;
+                changed = true;
+                any_change = true;
+              }
             }
           }
         }
@@ -8489,6 +8946,732 @@ static bool structurize_c_body(
   return true;
 }
 
+static uint32_t scan_arm64_jumptables(
+    const uint32_t* words,
+    uint32_t word_count,
+    uint64_t base_addr,
+    uint8_t* is_label,
+    uint8_t* has_back_edge,
+    hex::Arena& work_arena,
+    JumpTableInfo* out_jts,
+    uint32_t max_jts) {
+  uint32_t jt_count = 0u;
+  constexpr uint32_t kMaxLookback = 32u;
+  constexpr uint32_t kMaxCmpLookback = 4u;
+
+  for (uint32_t i = 0u; i < word_count && jt_count < max_jts; ++i) {
+    const uint32_t w = words[i];
+    if (!((w & 0xFFFFFC1Fu) == 0xD61F0000u || (w & 0xFFFFF81Fu) == 0xD61F081Fu || (w & 0xFFFFF800u) == 0xD71F0800u)) {
+      continue;
+    }
+    const uint8_t br_reg = static_cast<uint8_t>((w >> 5u) & 31u);
+    const uint64_t br_pc = base_addr + static_cast<uint64_t>(i) * 4ULL;
+    JumpTableInfo& jt = out_jts[jt_count++];
+    jt = JumpTableInfo{};
+    jt.br_idx = i;
+    jt.load_idx = 0xFFFFFFFFu;
+    jt.br_reg = br_reg;
+    jt.index_reg = 0xFFu;
+    if (br_reg == 30u || br_reg == 31u) continue;
+
+    bool has_rel_add = false;
+    uint32_t add_idx = 0xFFFFFFFFu;
+    uint8_t add_rn = 0xFFu;
+    uint8_t add_rm = 0xFFu;
+    uint32_t add_shift = 0u;
+    bool add_is_ext = false;
+    uint32_t add_option = 0u;
+
+    bool has_load = false;
+    uint32_t load_idx = 0xFFFFFFFFu;
+    uint8_t load_rt = 0xFFu;
+    uint8_t table_reg = 0xFFu;
+    uint8_t index_reg = 0xFFu;
+    bool index_is32 = false;
+    uint8_t elem_width = 0u;
+    bool elem_signed = false;
+    uint8_t base_reg = 0xFFu;
+
+    bool has_tbl_pending_add = false;
+    uint64_t tbl_pending_imm = 0ULL;
+    uint8_t tbl_adrp_reg = 0xFFu;
+    bool has_table_va = false;
+    uint64_t table_va = 0ULL;
+
+    bool has_base_pending_add = false;
+    uint64_t base_pending_imm = 0ULL;
+    uint8_t base_adrp_reg = 0xFFu;
+    bool has_base_va = false;
+    uint64_t base_va = 0ULL;
+
+    bool has_bounds = false;
+    uint32_t entry_count = 0u;
+    bool has_default = false;
+    uint64_t default_target = 0ULL;
+    bool crossed_ret = false;
+    uint64_t ret_pc = 0ULL;
+
+    for (uint32_t step = 1u; step <= kMaxLookback && step <= i; ++step) {
+      const uint32_t idx = i - step;
+      const uint32_t iw = words[idx];
+      const uint64_t ipc = base_addr + static_cast<uint64_t>(idx) * 4ULL;
+      if ((iw & 0xFFFFFC1Fu) == 0xD65F0000u || iw == 0xD65F0BFFu || iw == 0xD65F0FFFu) {
+        if (crossed_ret || (!has_load && !has_rel_add)) break;
+        crossed_ret = true;
+        ret_pc = ipc;
+        continue;
+      }
+
+      if (!crossed_ret) {
+        // 1. Relative target ADD: add xTgt, xBase, xOff[, lsl/sxtw]
+        if (!has_load && !has_rel_add) {
+          if ((iw & 0x1F200000u) == 0x0B000000u && ((iw >> 30u) & 1u) == 0u &&
+              ((iw >> 22u) & 3u) == 0u && (iw & 31u) == br_reg) {
+            has_rel_add = true;
+            add_idx = idx;
+            add_rn = static_cast<uint8_t>((iw >> 5u) & 31u);
+            add_rm = static_cast<uint8_t>((iw >> 16u) & 31u);
+            add_shift = (iw >> 10u) & 0x3Fu;
+            add_is_ext = false;
+            add_option = 0u;
+            base_reg = add_rn;
+            base_adrp_reg = base_reg;
+            continue;
+          }
+          if ((iw & 0x1FE00000u) == 0x0B200000u && ((iw >> 30u) & 1u) == 0u && (iw & 31u) == br_reg) {
+            has_rel_add = true;
+            add_idx = idx;
+            add_rn = static_cast<uint8_t>((iw >> 5u) & 31u);
+            add_rm = static_cast<uint8_t>((iw >> 16u) & 31u);
+            add_shift = (iw >> 10u) & 7u;
+            add_is_ext = true;
+            add_option = (iw >> 13u) & 7u;
+            base_reg = add_rn;
+            base_adrp_reg = base_reg;
+            continue;
+          }
+        }
+
+        // 2. Indexed table load: ldr/ldrsw/ldrh/ldrsh/ldrb/ldrsb Rt, [Rn, Rm, ...]
+        if (!has_load && (iw & 0x3B200C00u) == 0x38200800u && ((iw >> 26u) & 1u) == 0u) {
+          const uint32_t size_f = (iw >> 30u) & 3u;
+          const uint32_t opc = (iw >> 22u) & 3u;
+          if (opc != 0u && !(size_f == 3u && opc == 2u)) {
+            const uint8_t rt = static_cast<uint8_t>(iw & 31u);
+            const bool rt_match = (rt == br_reg) || (has_rel_add && (rt == add_rn || rt == add_rm));
+            if (rt_match) {
+              has_load = true;
+              load_idx = idx;
+              load_rt = rt;
+              table_reg = static_cast<uint8_t>((iw >> 5u) & 31u);
+              index_reg = static_cast<uint8_t>((iw >> 16u) & 31u);
+              const uint32_t opt = (iw >> 13u) & 7u;
+              if (opt == 2u || opt == 6u) index_is32 = true;
+              elem_width = static_cast<uint8_t>(1u << size_f);
+              elem_signed = (opc >= 2u);
+              tbl_adrp_reg = table_reg;
+              if (has_rel_add) {
+                base_reg = (rt == add_rn) ? add_rm : add_rn;
+                base_adrp_reg = base_reg;
+              }
+              continue;
+            }
+          }
+        }
+
+        // 3a. Resolve table_va via (adrp + add_imm) or adrp or adr
+        bool matched_addr = false;
+        if (has_load && !has_table_va && tbl_adrp_reg < 31u) {
+          if (!has_tbl_pending_add && (iw & 0x1F800000u) == 0x11000000u &&
+              ((iw >> 30u) & 1u) == 0u && ((iw >> 29u) & 1u) == 0u && (iw & 31u) == tbl_adrp_reg) {
+            const uint32_t sh = (iw >> 22u) & 1u;
+            tbl_pending_imm = static_cast<uint64_t>((iw >> 10u) & 0xFFFu) << (sh ? 12u : 0u);
+            has_tbl_pending_add = true;
+            tbl_adrp_reg = static_cast<uint8_t>((iw >> 5u) & 31u);
+            matched_addr = true;
+          } else if ((iw & 0x9F000000u) == 0x90000000u && (iw & 31u) == tbl_adrp_reg) {
+            const uint64_t immhi = static_cast<uint64_t>((iw >> 5u) & 0x7FFFFu);
+            const uint64_t immlo = static_cast<uint64_t>((iw >> 29u) & 3u);
+            const int64_t delta = sign_extend((immhi << 2u) | immlo, 21u) << 12u;
+            table_va = (ipc & ~0xFFFULL) + static_cast<uint64_t>(delta) + (has_tbl_pending_add ? tbl_pending_imm : 0ULL);
+            has_table_va = true;
+            matched_addr = true;
+          } else if ((iw & 0x9F000000u) == 0x10000000u && (iw & 31u) == tbl_adrp_reg) {
+            const uint64_t immhi = static_cast<uint64_t>((iw >> 5u) & 0x7FFFFu);
+            const uint64_t immlo = static_cast<uint64_t>((iw >> 29u) & 3u);
+            const int64_t delta = sign_extend((immhi << 2u) | immlo, 21u);
+            table_va = ipc + static_cast<uint64_t>(delta) + (has_tbl_pending_add ? tbl_pending_imm : 0ULL);
+            has_table_va = true;
+            matched_addr = true;
+          }
+        }
+
+        // 3b. Resolve base_va via (adrp + add_imm) or adrp or adr
+        if (has_rel_add && !has_base_va && base_adrp_reg < 31u) {
+          if (has_load && has_table_va && base_reg == table_reg) {
+            base_va = table_va;
+            has_base_va = true;
+          } else if (!has_base_pending_add && (iw & 0x1F800000u) == 0x11000000u &&
+                     ((iw >> 30u) & 1u) == 0u && ((iw >> 29u) & 1u) == 0u && (iw & 31u) == base_adrp_reg) {
+            const uint32_t sh = (iw >> 22u) & 1u;
+            base_pending_imm = static_cast<uint64_t>((iw >> 10u) & 0xFFFu) << (sh ? 12u : 0u);
+            has_base_pending_add = true;
+            base_adrp_reg = static_cast<uint8_t>((iw >> 5u) & 31u);
+            matched_addr = true;
+          } else if ((iw & 0x9F000000u) == 0x90000000u && (iw & 31u) == base_adrp_reg) {
+            const uint64_t immhi = static_cast<uint64_t>((iw >> 5u) & 0x7FFFFu);
+            const uint64_t immlo = static_cast<uint64_t>((iw >> 29u) & 3u);
+            const int64_t delta = sign_extend((immhi << 2u) | immlo, 21u) << 12u;
+            base_va = (ipc & ~0xFFFULL) + static_cast<uint64_t>(delta) + (has_base_pending_add ? base_pending_imm : 0ULL);
+            has_base_va = true;
+            matched_addr = true;
+          } else if ((iw & 0x9F000000u) == 0x10000000u && (iw & 31u) == base_adrp_reg) {
+            const uint64_t immhi = static_cast<uint64_t>((iw >> 5u) & 0x7FFFFu);
+            const uint64_t immlo = static_cast<uint64_t>((iw >> 29u) & 3u);
+            const int64_t delta = sign_extend((immhi << 2u) | immlo, 21u);
+            base_va = ipc + static_cast<uint64_t>(delta) + (has_base_pending_add ? base_pending_imm : 0ULL);
+            has_base_va = true;
+            matched_addr = true;
+          }
+        }
+        if (matched_addr) continue;
+      }
+
+      // 4. Bounds check:
+      //    (a) cmp w/xIdx, #imm; b.hi/b.hs default (forward bounds check)
+      //    (b) cmp w/xIdx, #imm; b.ls/b.lo table_block (inverted bounds check, fallthrough is default/early-ret)
+      if (!has_bounds && (iw & 0xFF000010u) == 0x54000000u) {
+        const uint32_t cond = iw & 0xFu;
+        const bool is_hi_hs = (!crossed_ret && (cond == 0x8u || cond == 0x2u));
+        const bool is_ls_lo = (cond == 0x9u || cond == 0x3u);
+        if (is_hi_hs || is_ls_lo) {
+          const int64_t bdelta = sign_extend((iw >> 5u) & 0x7FFFFu, 19u) * 4LL;
+          const uint64_t btgt = ipc + static_cast<uint64_t>(bdelta);
+          bool valid_branch = true;
+          if (is_ls_lo) {
+            valid_branch = (btgt > ipc && btgt <= br_pc && (!crossed_ret || btgt > ret_pc));
+          }
+          if (valid_branch) {
+            const bool is_inclusive = (cond == 0x8u || cond == 0x9u);
+            const uint64_t def_tgt = is_ls_lo ? (ipc + 4ULL) : btgt;
+            for (uint32_t k = 1u; k <= kMaxCmpLookback && k <= idx; ++k) {
+              const uint32_t cw = words[idx - k];
+              if ((cw & 0xFFFFFC1Fu) == 0xD65F0000u) break;
+              if ((cw & 0x1F800000u) == 0x11000000u && ((cw >> 29u) & 3u) == 3u && (cw & 31u) == 31u) {
+                const uint8_t cmp_rn = static_cast<uint8_t>((cw >> 5u) & 31u);
+                const uint32_t sh = (cw >> 22u) & 1u;
+                const uint32_t imm = ((cw >> 10u) & 0xFFFu) << (sh ? 12u : 0u);
+                if (!has_load || cmp_rn == index_reg) {
+                  const uint32_t ec = is_inclusive ? (imm + 1u) : imm;
+                  if (ec >= 2u && ec <= kMaxJumpTableCases) {
+                    has_bounds = true;
+                    entry_count = ec;
+                    has_default = true;
+                    default_target = def_tgt;
+                    if (index_reg == 0xFFu) index_reg = cmp_rn;
+                    if (((cw >> 31u) & 1u) == 0u) index_is32 = true;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (has_rel_add && has_load && has_table_va && !has_base_va && base_reg == table_reg) {
+      base_va = table_va;
+      has_base_va = true;
+    }
+
+    // Attempt to resolve case targets for Pattern A, B, or C.
+    uint64_t tmp_targets[kMaxJumpTableCases];
+    uint32_t resolved_n = 0u;
+    bool all_ok = false;
+    bool is_func_table = false;
+
+    if (has_rel_add && has_load && has_table_va && has_base_va && elem_width > 0u) {
+      // Pattern A: relative offset table (1/2/4/8 byte entries)
+      const uint32_t limit = has_bounds ? entry_count : 64u;
+      const bool do_sext = elem_signed || (add_is_ext && add_option >= 4u);
+      all_ok = true;
+      for (uint32_t c = 0u; c < limit; ++c) {
+        const uint64_t eva = table_va + static_cast<uint64_t>(c) * static_cast<uint64_t>(elem_width);
+        int64_t sval = 0;
+        uint64_t uval = 0ULL;
+        bool ok = false;
+        if (elem_width == 4u) {
+          if (do_sext) { int32_t v = 0; ok = read_rodata_s32(eva, words, word_count, base_addr, &v); sval = v; }
+          else { uint32_t v = 0u; ok = read_rodata_u32(eva, words, word_count, base_addr, &v); uval = v; }
+        } else if (elem_width == 2u) {
+          if (do_sext) { int16_t v = 0; ok = read_rodata_s16(eva, words, word_count, base_addr, &v); sval = v; }
+          else { uint16_t v = 0u; ok = read_rodata_u16(eva, words, word_count, base_addr, &v); uval = v; }
+        } else if (elem_width == 1u) {
+          if (do_sext) { int8_t v = 0; ok = read_rodata_s8(eva, words, word_count, base_addr, &v); sval = v; }
+          else { uint8_t v = 0u; ok = read_rodata_u8(eva, words, word_count, base_addr, &v); uval = v; }
+        } else if (elem_width == 8u) {
+          ok = read_rodata_u64(eva, words, word_count, base_addr, &uval);
+          sval = static_cast<int64_t>(uval);
+        }
+        if (!ok) { all_ok = false; break; }
+        const uint64_t delta = do_sext
+            ? static_cast<uint64_t>(static_cast<uint64_t>(sval) << add_shift)
+            : (uval << add_shift);
+        const uint64_t tgt = base_va + delta;
+        if (!is_internal_target(tgt, base_addr, word_count, nullptr)) {
+          if (!has_bounds && resolved_n >= 2u) { all_ok = true; break; }
+          all_ok = false;
+          break;
+        }
+        tmp_targets[resolved_n++] = tgt;
+      }
+    } else if (!has_rel_add && has_load && elem_width == 8u && has_table_va) {
+      // Pattern B: absolute 64-bit pointer table (internal jump labels OR external function-table tail-call dispatch)
+      if (has_bounds) {
+        bool read_ok = true;
+        bool all_internal = true;
+        bool all_external_code = true;
+        for (uint32_t c = 0u; c < entry_count; ++c) {
+          const uint64_t eva = table_va + static_cast<uint64_t>(c) * 8ULL;
+          uint64_t tgt = 0ULL;
+          if (!read_rodata_u64(eva, words, word_count, base_addr, &tgt)) {
+            read_ok = false;
+            break;
+          }
+          tmp_targets[c] = tgt;
+          const bool is_int = is_internal_target(tgt, base_addr, word_count, nullptr);
+          if (!is_int) all_internal = false;
+          const bool is_ext_code = (!is_int && tgt != 0ULL && (tgt & 3ULL) == 0ULL && (tgt >> 56u) == 0ULL);
+          if (!is_ext_code) all_external_code = false;
+        }
+        if (read_ok && (all_internal || all_external_code)) {
+          all_ok = true;
+          resolved_n = entry_count;
+          is_func_table = !all_internal && all_external_code;
+        }
+      } else {
+        all_ok = true;
+        for (uint32_t c = 0u; c < 64u; ++c) {
+          const uint64_t eva = table_va + static_cast<uint64_t>(c) * 8ULL;
+          uint64_t tgt = 0ULL;
+          if (!read_rodata_u64(eva, words, word_count, base_addr, &tgt) ||
+              !is_internal_target(tgt, base_addr, word_count, nullptr)) {
+            if (resolved_n >= 2u) { all_ok = true; break; }
+            all_ok = false;
+            break;
+          }
+          tmp_targets[resolved_n++] = tgt;
+        }
+      }
+    } else if (has_rel_add && !has_load && has_base_va && has_bounds && add_shift >= 2u && add_shift <= 6u) {
+      // Pattern C: computed inline dispatch (adr + add xTgt, xBase, xIdx, lsl #shift; br xTgt)
+      if (index_reg == 0xFFu) index_reg = add_rm;
+      const uint64_t stride = 1ULL << add_shift;
+      all_ok = true;
+      for (uint32_t c = 0u; c < entry_count; ++c) {
+        const uint64_t tgt = base_va + static_cast<uint64_t>(c) * stride;
+        if (!is_internal_target(tgt, base_addr, word_count, nullptr)) {
+          all_ok = false;
+          break;
+        }
+        tmp_targets[resolved_n++] = tgt;
+      }
+    }
+
+    if (all_ok && resolved_n >= 2u && index_reg < 31u) {
+      uint64_t* tgts = work_arena.alloc<uint64_t>(resolved_n);
+      if (tgts) {
+        for (uint32_t c = 0u; c < resolved_n; ++c) {
+          tgts[c] = tmp_targets[c];
+          uint32_t tidx = 0u;
+          if (is_internal_target(tgts[c], base_addr, word_count, &tidx)) {
+            is_label[tidx] = 1u;
+            if (tidx <= i) has_back_edge[tidx] = 1u;
+          }
+        }
+        jt.resolved = true;
+        jt.is_func_table = is_func_table;
+        jt.index_reg = index_reg;
+        jt.index_is32 = index_is32;
+        const uint32_t cap_idx = has_load ? load_idx : (has_rel_add ? add_idx : 0xFFFFFFFFu);
+        jt.load_idx = cap_idx;
+        if (cap_idx < i) {
+          bool clobbered = has_load ? (load_rt == index_reg) : (br_reg == index_reg);
+          for (uint32_t k = cap_idx + 1u; !clobbered && k < i; ++k) {
+            const uint32_t kw = words[k];
+            if ((kw & 0xFC000000u) == 0x94000000u ||
+                (kw & 0xFFFFFC1Fu) == 0xD63F0000u ||
+                (kw & 0xFFFFF81Fu) == 0xD63F081Fu ||
+                (kw & 0xFFFFF800u) == 0xD73F0800u) {
+              if (index_reg < 19u) clobbered = true;
+              continue;
+            }
+            if ((kw & 0xFC000000u) == 0x14000000u ||
+                (kw & 0xFF000010u) == 0x54000000u ||
+                (kw & 0x7E000000u) == 0x34000000u ||
+                (kw & 0x7E000000u) == 0x36000000u ||
+                (kw & 0xFFFFFC1Fu) == 0xD65F0000u ||
+                (kw & 0xFFFFF000u) == 0xD5032000u) {
+              continue;
+            }
+            if (((kw & 0x3B000000u) == 0x39000000u || (kw & 0x3B200000u) == 0x38000000u || (kw & 0x3B200C00u) == 0x38200800u) &&
+                ((kw >> 22u) & 3u) == 0u) {
+              continue;
+            }
+            if ((kw & 0x3B000000u) == 0x28000000u) {
+              if (((kw >> 22u) & 1u) != 0u &&
+                  ((kw & 31u) == index_reg || (((kw >> 10u) & 31u) == index_reg))) {
+                clobbered = true;
+              }
+              continue;
+            }
+            if ((kw & 31u) == index_reg) clobbered = true;
+          }
+          jt.index_clobbered = clobbered;
+        }
+        jt.case_count = resolved_n;
+        jt.case_targets = tgts;
+        uint32_t didx = 0u;
+        if (has_default && is_internal_target(default_target, base_addr, word_count, &didx)) {
+          jt.has_default_target = true;
+          jt.default_target = default_target;
+          is_label[didx] = 1u;
+          if (didx <= i) has_back_edge[didx] = 1u;
+        }
+      }
+    } else if (!has_rel_add && !has_bounds && !has_table_va) {
+      // No jump-table pattern: treat as external indirect tail call (vtable / GOT / funcptr).
+      jt.is_indirect_tail = true;
+    }
+  }
+  return jt_count;
+}
+
+static void analyze_sp_promotion(
+    const uint32_t* words,
+    uint32_t word_count,
+    uint64_t base_addr,
+    const JumpTableInfo* jts,
+    uint32_t jt_count,
+    AnalysisCtx& ctx,
+    hex::Arena& work_arena,
+    SpPromoState* out) {
+  __builtin_memset(out, 0, sizeof(SpPromoState));
+  if (!ctx.uses_sp || word_count == 0u) return;
+
+  static constexpr int64_t kUnvisited = SpPromoState::kUnvisited;
+  int64_t* sp_off = work_arena.alloc<int64_t>(word_count);
+  if (!sp_off) return;
+  for (uint32_t i = 0u; i < word_count; ++i) sp_off[i] = kUnvisited;
+  sp_off[0] = 0LL;
+
+  // Step 1: Forward constant SP-delta propagation across the CFG.
+  bool converged = false;
+  for (uint32_t iter = 0u; iter < 32u; ++iter) {
+    bool changed = false;
+    for (uint32_t i = 0u; i < word_count; ++i) {
+      if (sp_off[i] == kUnvisited) continue;
+      const uint32_t w = words[i];
+      const uint64_t pc = base_addr + static_cast<uint64_t>(i) * 4ULL;
+      int64_t next_off = sp_off[i];
+
+      if ((w & 0x1F800000u) == 0x11000000u) {
+        const bool is_sub = ((w >> 30u) & 1u) != 0u;
+        const bool sets_flags = ((w >> 29u) & 1u) != 0u;
+        const uint32_t rn = (w >> 5u) & 31u;
+        const uint32_t rd = w & 31u;
+        if (!sets_flags && rd == 31u) {
+          if (rn != 31u) return;  // mov sp, xN / add sp, xN, #imm -> dynamic SP
+          const uint32_t sh = (w >> 22u) & 1u;
+          const int64_t imm = static_cast<int64_t>(static_cast<uint64_t>((w >> 10u) & 0xFFFu) << (sh ? 12u : 0u));
+          next_off += is_sub ? -imm : imm;
+        }
+      } else if ((w & 0x1F800000u) == 0x12000000u && ((w >> 29u) & 3u) != 3u && (w & 31u) == 31u) {
+        return;  // logical imm writing sp
+      } else if ((w & 0x1FE00000u) == 0x0B200000u && (((w >> 5u) & 31u) == 31u || (((w >> 29u) & 1u) == 0u && (w & 31u) == 31u))) {
+        return;  // extended reg add/sub touching sp
+      } else if ((w & 0x3A000000u) == 0x28000000u) {
+        const uint32_t mode = (w >> 23u) & 3u;
+        const uint32_t rn = (w >> 5u) & 31u;
+        if (rn == 31u && (mode == 1u || mode == 3u)) {
+          const uint32_t opc = (w >> 30u) & 3u;
+          const bool is_fp = ((w >> 26u) & 1u) != 0u;
+          const int64_t imm7 = sign_extend((w >> 15u) & 0x7Fu, 7u);
+          uint32_t scale = is_fp ? (4u << opc) : ((opc == 2u) ? 8u : 4u);
+          next_off += imm7 * static_cast<int64_t>(scale);
+        }
+      } else if ((w & 0x3B200000u) == 0x38000000u && (w & 0x3B200C00u) != 0x38200800u) {
+        const uint32_t idx_mode = (w >> 10u) & 3u;
+        const uint32_t rn = (w >> 5u) & 31u;
+        if (rn == 31u && (idx_mode == 1u || idx_mode == 3u)) {
+          next_off += sign_extend((w >> 12u) & 0x1FFu, 9u);
+        }
+      }
+
+      auto prop = [&](uint32_t tgt_idx) -> bool {
+        if (tgt_idx >= word_count) return true;
+        if (sp_off[tgt_idx] == kUnvisited) {
+          sp_off[tgt_idx] = next_off;
+          changed = true;
+          return true;
+        }
+        return sp_off[tgt_idx] == next_off;
+      };
+
+      const bool is_ret = ((w & 0xFFFFFC1Fu) == 0xD65F0000u || w == 0xD65F0BFFu || w == 0xD65F0FFFu);
+      const bool is_brk = ((w & 0xFFE0001Fu) == 0xD4200000u || (w & 0xFFFF0000u) == 0x00000000u);
+      const bool is_b = ((w & 0xFC000000u) == 0x14000000u);
+      const bool is_br = ((w & 0xFFFFFC1Fu) == 0xD61F0000u || (w & 0xFFFFF81Fu) == 0xD61F081Fu || (w & 0xFFFFF800u) == 0xD71F0800u);
+      if (is_ret || is_brk) continue;
+      if (is_b) {
+        const uint64_t tgt = pc + static_cast<uint64_t>(sign_extend(w & 0x03FFFFFFu, 26u) * 4LL);
+        uint32_t tidx = 0u;
+        if (is_internal_target(tgt, base_addr, word_count, &tidx) && !prop(tidx)) return;
+        continue;
+      }
+      if (is_br) {
+        for (uint32_t j = 0u; j < jt_count; ++j) {
+          if (jts[j].br_idx == i && jts[j].resolved) {
+            for (uint32_t c = 0u; c < jts[j].case_count; ++c) {
+              uint32_t tidx = 0u;
+              if (is_internal_target(jts[j].case_targets[c], base_addr, word_count, &tidx) && !prop(tidx)) return;
+            }
+            if (jts[j].has_default_target) {
+              uint32_t didx = 0u;
+              if (is_internal_target(jts[j].default_target, base_addr, word_count, &didx) && !prop(didx)) return;
+            }
+          }
+        }
+        continue;
+      }
+      if ((w & 0x7E000000u) == 0x34000000u || (w & 0xFF000010u) == 0x54000000u) {
+        const uint64_t tgt = pc + static_cast<uint64_t>(sign_extend((w >> 5u) & 0x7FFFFu, 19u) * 4LL);
+        uint32_t tidx = 0u;
+        if (is_internal_target(tgt, base_addr, word_count, &tidx) && !prop(tidx)) return;
+      } else if ((w & 0x7E000000u) == 0x36000000u) {
+        const uint64_t tgt = pc + static_cast<uint64_t>(sign_extend((w >> 5u) & 0x3FFFu, 14u) * 4LL);
+        uint32_t tidx = 0u;
+        if (is_internal_target(tgt, base_addr, word_count, &tidx) && !prop(tidx)) return;
+      }
+      if (i + 1u < word_count && !prop(i + 1u)) return;
+    }
+    if (!changed) {
+      converged = true;
+      break;
+    }
+  }
+  if (!converged) return;
+
+  // Step 2: Check for SP escape and collect all fixed [sp, #imm] accesses.
+  bool has_x29_sp_mov = false;
+  bool unpromoted_sp_access = false;
+  int64_t min_off = 0LL;
+  for (uint32_t i = 0u; i < word_count; ++i) {
+    if (sp_off[i] != kUnvisited && sp_off[i] < min_off) min_off = sp_off[i];
+  }
+
+  auto record_slot = [&](int64_t canon_off, uint8_t width, bool is_fp) {
+    if (canon_off < min_off) min_off = canon_off;
+    for (uint32_t s = 0u; s < out->slot_count; ++s) {
+      if (out->slots[s].canon_off == canon_off) {
+        if (out->slots[s].width != width || out->slots[s].is_fp != is_fp) {
+          out->slots[s].conflicted = true;
+        }
+        return;
+      }
+    }
+    if (out->slot_count < kMaxSpSlots) {
+      out->slots[out->slot_count++] = SpSlot{canon_off, 0u, width, is_fp, false};
+    } else {
+      unpromoted_sp_access = true;
+    }
+  };
+
+  for (uint32_t i = 0u; i < word_count; ++i) {
+    const uint32_t w = words[i];
+    if (sp_off[i] == kUnvisited) {
+      const uint32_t rn = (w >> 5u) & 31u;
+      const uint32_t rd = w & 31u;
+      const bool addsub_sp = ((w & 0x1F800000u) == 0x11000000u) &&
+                             (rn == 31u || (((w >> 29u) & 1u) == 0u && rd == 31u));
+      const bool logimm_sp = ((w & 0x1F800000u) == 0x12000000u) &&
+                             (((w >> 29u) & 3u) != 3u) && (rd == 31u);
+      const bool extreg_sp = ((w & 0x1FE00000u) == 0x0B200000u) &&
+                             (rn == 31u || (((w >> 29u) & 1u) == 0u && rd == 31u));
+      const bool ldstp_sp = ((w & 0x3A000000u) == 0x28000000u) && (rn == 31u);
+      const bool ldst_sp = (((w & 0x3B000000u) == 0x39000000u) ||
+                            ((w & 0x3B200000u) == 0x38000000u) ||
+                            ((w & 0x3B200C00u) == 0x38200800u)) && (rn == 31u);
+      const bool atom_simd_sp = (((w & 0x3F000000u) == 0x08000000u) ||
+                                 ((w & 0x3FA07C00u) == 0x08A07C00u) ||
+                                 ((w & 0x3F208C00u) == 0x38200000u) ||
+                                 ((w & 0x3F20FC00u) == 0x38208000u) ||
+                                 ((w & 0xBFBF0000u) == 0x0C000000u) ||
+                                 ((w & 0xBFA00000u) == 0x0C800000u) ||
+                                 ((w & 0xBF9F0000u) == 0x0D000000u)) && (rn == 31u);
+      if (addsub_sp || logimm_sp || extreg_sp || ldstp_sp || ldst_sp || atom_simd_sp) {
+        return;
+      }
+      continue;
+    }
+    // ADD / SUB imm touching SP
+    if ((w & 0x1F800000u) == 0x11000000u) {
+      const bool is_sub = ((w >> 30u) & 1u) != 0u;
+      const bool sets_flags = ((w >> 29u) & 1u) != 0u;
+      const uint32_t rn = (w >> 5u) & 31u;
+      const uint32_t rd = w & 31u;
+      if (rn == 31u) {
+        if (!sets_flags && rd == 31u) continue;  // constant sp adjust
+        if (!sets_flags && !is_sub && rd == 29u) {
+          has_x29_sp_mov = true;
+          continue;
+        }
+        return;  // sp address escapes into a register or cmp sp
+      }
+      continue;
+    }
+    // LDP / STP
+    if ((w & 0x3A000000u) == 0x28000000u) {
+      const uint32_t rn = (w >> 5u) & 31u;
+      if (rn != 31u) continue;
+      const uint32_t opc = (w >> 30u) & 3u;
+      const bool is_fp = ((w >> 26u) & 1u) != 0u;
+      const uint32_t mode = (w >> 23u) & 3u;
+      const bool is_load = ((w >> 22u) & 1u) != 0u;
+      const int64_t imm7 = sign_extend((w >> 15u) & 0x7Fu, 7u);
+      uint32_t scale = 4u, bits = 32u;
+      bool valid = true;
+      if (is_fp) {
+        if (opc == 0u) { scale = 4u; bits = 32u; }
+        else if (opc == 1u) { scale = 8u; bits = 64u; }
+        else if (opc == 2u) { scale = 16u; bits = 128u; }
+        else valid = false;
+      } else {
+        if (opc == 2u) { scale = 8u; bits = 64u; }
+        else if (opc == 0u) { scale = 4u; bits = 32u; }
+        else if (opc == 1u && is_load) { scale = 4u; bits = 32u; }
+        else valid = false;
+      }
+      if (!valid || bits > 64u) { unpromoted_sp_access = true; continue; }
+      const int64_t disp = imm7 * static_cast<int64_t>(scale);
+      const int64_t base = sp_off[i] + ((mode == 3u) ? disp : 0LL);
+      const int64_t eff0 = (mode == 0u || mode == 2u) ? disp : 0LL;
+      const int64_t eff1 = eff0 + static_cast<int64_t>(scale);
+      record_slot(base + eff0, static_cast<uint8_t>(bits >> 3u), is_fp);
+      record_slot(base + eff1, static_cast<uint8_t>(bits >> 3u), is_fp);
+      continue;
+    }
+    // LDR / STR
+    if ((w & 0x3B000000u) == 0x39000000u || (w & 0x3B200000u) == 0x38000000u || (w & 0x3B200C00u) == 0x38200800u) {
+      const uint32_t rn = (w >> 5u) & 31u;
+      if (rn != 31u) continue;
+      const uint32_t size_f = (w >> 30u) & 3u;
+      const bool is_fp = ((w >> 26u) & 1u) != 0u;
+      const uint32_t opc = (w >> 22u) & 3u;
+      const uint32_t rt = w & 31u;
+      if (!is_fp && size_f == 3u && opc == 2u) continue;  // PRFM
+      const bool is_uoff = ((w & 0x3B000000u) == 0x39000000u);
+      const bool is_regoff = (!is_uoff && (w & 0x3B200C00u) == 0x38200800u);
+      if (is_regoff) return;  // dynamic [sp, xM] escapes SP
+      uint32_t bits = 64u, scale = 8u;
+      if (is_fp) {
+        if (size_f == 0u && (opc & 2u) != 0u) { unpromoted_sp_access = true; continue; }
+        if (size_f == 0u || size_f == 1u) { unpromoted_sp_access = true; continue; }
+        bits = (size_f == 2u) ? 32u : 64u;
+        scale = (size_f == 2u) ? 4u : 8u;
+        if ((ctx.q_used & (1u << rt)) != 0u) { unpromoted_sp_access = true; continue; }
+      } else {
+        bits = 8u << size_f;
+        scale = 1u << size_f;
+      }
+      const uint32_t idx_mode = (!is_uoff) ? ((w >> 10u) & 3u) : 0u;
+      const int64_t disp = is_uoff
+          ? static_cast<int64_t>(((w >> 10u) & 0xFFFu) * scale)
+          : sign_extend((w >> 12u) & 0x1FFu, 9u);
+      const int64_t base = sp_off[i] + ((idx_mode == 3u) ? disp : 0LL);
+      const int64_t eff = (idx_mode == 1u || idx_mode == 3u) ? 0LL : disp;
+      record_slot(base + eff, static_cast<uint8_t>(bits >> 3u), is_fp);
+      continue;
+    }
+    // Atomics or SIMD LD/ST touching SP -> SP escapes
+    if (((w & 0x3F000000u) == 0x08000000u || (w & 0x3FA07C00u) == 0x08A07C00u ||
+         (w & 0x3F208C00u) == 0x38200000u || (w & 0x3F20FC00u) == 0x38208000u ||
+         (w & 0xBFBF0000u) == 0x0C000000u || (w & 0xBFA00000u) == 0x0C800000u ||
+         (w & 0xBF9F0000u) == 0x0D000000u) && (((w >> 5u) & 31u) == 31u)) {
+      return;
+    }
+  }
+
+  // If mov x29, sp was present, check whether x29 is ever read outside prologue stp/ldp on sp.
+  if (has_x29_sp_mov) {
+    bool x29_read_non_save = false;
+    AnalysisCtx* tmp_ctx = work_arena.alloc<AnalysisCtx>(1u);
+    if (!tmp_ctx) return;
+    for (uint32_t i = 0u; i < word_count; ++i) {
+      const uint32_t w = words[i];
+      // Allow prologue/epilogue stp/ldp x29, ... on sp
+      if ((w & 0x3A000000u) == 0x28000000u && (((w >> 5u) & 31u) == 31u)) continue;
+      if ((w & 0x1F800000u) == 0x11000000u && ((w >> 5u) & 31u) == 31u && (w & 31u) == 29u &&
+          ((w >> 30u) & 1u) == 0u && ((w >> 29u) & 1u) == 0u) continue;
+      __builtin_memset(tmp_ctx, 0, offsetof(AnalysisCtx, globals));
+      tmp_ctx->global_count = 0u;
+      tmp_ctx->callee_count = 0u;
+      CmpState tcmp{};
+      process_insn(w, base_addr + static_cast<uint64_t>(i) * 4ULL, base_addr, word_count, *tmp_ctx, tcmp, false, nullptr);
+      if ((tmp_ctx->gpr_read_before_write & (1u << 29u)) != 0u) {
+        x29_read_non_save = true;
+        break;
+      }
+    }
+    if (x29_read_non_save) return;  // x29 aliases sp and is used -> sp escapes
+    out->omit_x29_sp_mov = true;
+  }
+
+  if (out->slot_count == 0u) return;
+
+  // Sort slots by canon_off and detect overlapping byte ranges.
+  for (uint32_t i = 1u; i < out->slot_count; ++i) {
+    const SpSlot key = out->slots[i];
+    uint32_t j = i;
+    while (j > 0u && out->slots[j - 1u].canon_off > key.canon_off) {
+      out->slots[j] = out->slots[j - 1u];
+      --j;
+    }
+    out->slots[j] = key;
+  }
+  uint32_t promoted_count = 0u;
+  uint32_t conflicted_count = 0u;
+  for (uint32_t i = 0u; i < out->slot_count; ++i) {
+    for (uint32_t j = i + 1u; j < out->slot_count; ++j) {
+      if (out->slots[i].canon_off + static_cast<int64_t>(out->slots[i].width) > out->slots[j].canon_off) {
+        out->slots[i].conflicted = true;
+        out->slots[j].conflicted = true;
+      }
+    }
+    out->slots[i].slot_id = static_cast<uint32_t>(out->slots[i].canon_off - min_off);
+    if (out->slots[i].conflicted) {
+      ++conflicted_count;
+    } else {
+      ++promoted_count;
+      if (!out->slots[i].is_fp) {
+        if (out->slots[i].width == 1u) ctx.uses_uint8 = true;
+        else if (out->slots[i].width == 2u) ctx.uses_uint16 = true;
+        else if (out->slots[i].width == 4u) ctx.uses_uint32 = true;
+      }
+    }
+  }
+  if (promoted_count == 0u) return;
+
+  out->active = true;
+  out->min_sp_off = min_off;
+  out->insn_sp_off = sp_off;
+  out->all_sp_promoted = (!unpromoted_sp_access && conflicted_count == 0u);
+  if (out->all_sp_promoted) {
+    ctx.uses_sp = false;
+  }
+}
+
 HexStatus try_emit_arm64_general(
     const uint32_t* words,
     uint32_t word_count,
@@ -8576,7 +9759,23 @@ HexStatus try_emit_arm64_general(
     }
   }
 
-  // Pass 1: Collect register usage, globals, callees, and types with identical ADRP invalidation at labels.
+  // Pass 0b: Resolve internal ARM64 jump tables (Patterns A/B/C) and mark all case/default targets as labels.
+  JumpTableInfo* jts = work_arena.alloc<JumpTableInfo>(kMaxJumpTables);
+  const uint32_t jt_count = jts
+      ? scan_arm64_jumptables(words, word_count, base_addr, is_label, has_back_edge, work_arena, jts, kMaxJumpTables)
+      : 0u;
+  ctx.jts = jts;
+  ctx.jt_count = jt_count;
+
+  // Pass 1: Collect register usage, globals, callees, types, and live argument masks for BLR/indirect BR.
+  uint8_t* raw_arg_mask = work_arena.alloc<uint8_t>(word_count);
+  uint8_t* pre_call_flag = work_arena.alloc<uint8_t>(word_count);
+  uint8_t* call_argc = work_arena.alloc<uint8_t>(word_count);
+  if (raw_arg_mask) __builtin_memset(raw_arg_mask, 0, word_count);
+  if (pre_call_flag) __builtin_memset(pre_call_flag, 0, word_count);
+  if (call_argc) __builtin_memset(call_argc, 0, word_count);
+  uint32_t running_arg_mask = 0u;
+  bool seen_any_call = false;
   CmpState cmp{};
   for (uint32_t i = 0u; i < word_count; ++i) {
     if (is_label[i] != 0u) {
@@ -8592,8 +9791,24 @@ HexStatus try_emit_arm64_general(
         }
       }
     }
+    ctx.cur_insn_idx = i;
+    ctx.gpr_written_insn = 0u;
+    const uint32_t wi = words[i];
+    const bool is_bl = ((wi & 0xFC000000u) == 0x94000000u);
+    const bool is_blr = ((wi & 0xFFFFFC1Fu) == 0xD63F0000u || (wi & 0xFFFFF81Fu) == 0xD63F081Fu || (wi & 0xFFFFF800u) == 0xD73F0800u);
+    const bool is_br = ((wi & 0xFFFFFC1Fu) == 0xD61F0000u || (wi & 0xFFFFF81Fu) == 0xD61F081Fu || (wi & 0xFFFFF800u) == 0xD71F0800u);
+    if ((is_blr || is_br) && raw_arg_mask && pre_call_flag) {
+      raw_arg_mask[i] = static_cast<uint8_t>(running_arg_mask & 0xFFu);
+      pre_call_flag[i] = seen_any_call ? 0u : 1u;
+    }
     const uint64_t pc = base_addr + static_cast<uint64_t>(i) * 4ULL;
-    process_insn(words[i], pc, base_addr, word_count, ctx, cmp, false, nullptr);
+    process_insn(wi, pc, base_addr, word_count, ctx, cmp, false, nullptr);
+    if (is_bl || is_blr) {
+      seen_any_call = true;
+      running_arg_mask = 1u;  // x0 holds call return value; x1..x7 clobbered
+    } else {
+      running_arg_mask |= (ctx.gpr_written_insn & 0xFFu);
+    }
   }
   if (ctx.table_overflow) return HEX_ERR_RESOURCE_LIMIT;
   if ((ctx.q_used & ctx.fp_used) != 0u) {
@@ -8715,6 +9930,23 @@ HexStatus try_emit_arm64_general(
             uint8_t on = 0u;
             if (b_s0[b] >= 0) { og |= b_in_g[b_s0[b]]; of |= b_in_f[b_s0[b]]; on |= b_in_nzcv[b_s0[b]]; }
             if (b_s1[b] >= 0) { og |= b_in_g[b_s1[b]]; of |= b_in_f[b_s1[b]]; on |= b_in_nzcv[b_s1[b]]; }
+            for (uint32_t j = 0u; j < jt_count; ++j) {
+              if (!jts[j].resolved || blk_id[jts[j].br_idx] != static_cast<uint32_t>(b)) continue;
+              for (uint32_t c = 0u; c < jts[j].case_count; ++c) {
+                uint32_t tidx = 0u;
+                if (is_internal_target(jts[j].case_targets[c], base_addr, word_count, &tidx)) {
+                  const uint32_t tb_id = blk_id[tidx];
+                  og |= b_in_g[tb_id]; of |= b_in_f[tb_id]; on |= b_in_nzcv[tb_id];
+                }
+              }
+              if (jts[j].has_default_target) {
+                uint32_t didx = 0u;
+                if (is_internal_target(jts[j].default_target, base_addr, word_count, &didx)) {
+                  const uint32_t db_id = blk_id[didx];
+                  og |= b_in_g[db_id]; of |= b_in_f[db_id]; on |= b_in_nzcv[db_id];
+                }
+              }
+            }
             const uint32_t ng = b_use_g[b] | (og & ~b_def_g[b]);
             const uint32_t nf = b_use_f[b] | (of & ~b_def_f[b]);
             const uint8_t nn = static_cast<uint8_t>(b_use_nzcv[b] | (on & static_cast<uint8_t>(~b_def_nzcv[b])));
@@ -8782,8 +10014,8 @@ HexStatus try_emit_arm64_general(
             CmpState fcmp{};
             bool is_addsub_zn = false;
             if (!try_decode_fusable_cmp(words[idx], &fcmp)) {
-              if (try_decode_fusable_addsub_zn(words[idx], &fcmp)) {
-                is_addsub_zn = true;
+              if (try_decode_fusable_addsub(words[idx], &fcmp, &is_addsub_zn)) {
+                // is_addsub_zn is false when imm==0 or rd!=rn (full condition fusion)
               } else {
                 // A3: CCMP/CCMN + adjacent single-use consumer (B.cc / CSET / CSEL / FCSEL)
                 if (fuse_ccmp && is_label[idx + 1u] == 0u) {
@@ -8889,6 +10121,36 @@ HexStatus try_emit_arm64_general(
   ctx.norm_len = norm_len;
   ctx.int_param_count = int_param_count;
   ctx.fp_param_count = fp_param_count;
+
+  // Finalize live argument counts for BLR and indirect tail-call BR instructions.
+  if (call_argc && raw_arg_mask && pre_call_flag) {
+    const uint32_t param_mask = (int_param_count > 0u) ? ((1u << int_param_count) - 1u) : 0u;
+    for (uint32_t i = 0u; i < word_count; ++i) {
+      const uint32_t wi = words[i];
+      const bool is_blr = ((wi & 0xFFFFFC1Fu) == 0xD63F0000u || (wi & 0xFFFFF81Fu) == 0xD63F081Fu || (wi & 0xFFFFF800u) == 0xD73F0800u);
+      const JumpTableInfo* jt = find_jump_table(ctx, i);
+      const bool is_ind_tail = (jt && !jt->resolved && jt->is_indirect_tail);
+      if (!is_blr && !is_ind_tail) continue;
+      uint32_t m = static_cast<uint32_t>(raw_arg_mask[i]);
+      if (pre_call_flag[i] != 0u) m |= param_mask;
+      uint8_t argc = 0u;
+      for (uint32_t r = 0u; r < 8u; ++r) {
+        if ((m & (1u << r)) != 0u) argc = static_cast<uint8_t>(r + 1u);
+      }
+      if (argc == 0u && is_blr && (int_param_count > 0u || (ctx.gpr_used & 1u) != 0u)) {
+        argc = 1u;
+      }
+      call_argc[i] = argc;
+      if (argc > 0u) ctx.gpr_used |= ((1u << argc) - 1u);
+      ctx.uses_uintptr = true;
+    }
+    ctx.call_argc = call_argc;
+  }
+
+  // Analyze non-escaping [sp, #const] stack slots for local variable promotion.
+  SpPromoState sp_promo{};
+  analyze_sp_promotion(words, word_count, base_addr, jts, jt_count, ctx, work_arena, &sp_promo);
+  ctx.sp_promo = sp_promo.active ? &sp_promo : nullptr;
 
   TextBuf tb{text_mem, text_cap, 0u, 1u, false, lm_mem, lm_cap, 0u};
 
@@ -9001,6 +10263,7 @@ HexStatus try_emit_arm64_general(
 
   // Snapshot local declaration flags on stack before work_arena.restore() can reuse ctx storage.
   const bool orig_uses_nzcv = ctx.uses_nzcv;
+  const bool orig_uses_sw_idx = ctx.uses_sw_idx;
   const bool orig_uses_sp = ctx.uses_sp;
   const uint32_t orig_gpr_used = ctx.gpr_used;
   const uint32_t orig_fp_used = ctx.fp_used;
@@ -9011,9 +10274,29 @@ HexStatus try_emit_arm64_general(
     if (emit_nzcv) {
       dst.put_str("    uint32_t __hex_nzcv = 0;\n");
     }
+    if (orig_uses_sw_idx) {
+      dst.put_str("    uint64_t __hex_sw_idx = 0;\n");
+    }
     if (orig_uses_sp) {
       dst.put_str("    uint8_t __hex_stack_frame[4096] = {0};\n");
       dst.put_str("    uint64 sp = (uintptr_t)(__hex_stack_frame + sizeof(__hex_stack_frame));\n");
+    }
+    if (sp_promo.active) {
+      for (uint32_t s = 0u; s < sp_promo.slot_count; ++s) {
+        if (sp_promo.slots[s].conflicted) continue;
+        if (sp_promo.slots[s].is_fp) {
+          dst.put_str(sp_promo.slots[s].width == 4u ? "    float " : "    double ");
+          emit_local_sp_name(dst, sp_promo.slots[s].slot_id);
+          dst.put_str(sp_promo.slots[s].width == 4u ? " = 0.0f;\n" : " = 0.0;\n");
+        } else {
+          if (sp_promo.slots[s].width == 1u) dst.put_str("    uint8_t ");
+          else if (sp_promo.slots[s].width == 2u) dst.put_str("    uint16_t ");
+          else if (sp_promo.slots[s].width == 4u) dst.put_str("    uint32_t ");
+          else dst.put_str("    uint64 ");
+          emit_local_sp_name(dst, sp_promo.slots[s].slot_id);
+          dst.put_str(" = 0;\n");
+        }
+      }
     }
     for (uint32_t r = 0u; r < 8u; ++r) {
       if ((gpr_mask & (1u << r)) != 0u) {
@@ -9131,7 +10414,8 @@ HexStatus try_emit_arm64_general(
         has_pending_cmp = true;
         continue;
       }
-      if (try_decode_fusable_addsub_zn(words[i], &fcmp)) {
+      bool addsub_zn_only = false;
+      if (try_decode_fusable_addsub(words[i], &fcmp, &addsub_zn_only)) {
         const uint32_t before_len = tb.len;
         emit_fused_addsub_clean(words[i], pc, ctx, tb);
         if (tb.len > before_len) pending_label = false;
@@ -9189,6 +10473,19 @@ HexStatus try_emit_arm64_general(
       }
     }
     const uint32_t before_len = tb.len;
+    if (ctx.jts) {
+      for (uint32_t j = 0u; j < ctx.jt_count; ++j) {
+        if (ctx.jts[j].resolved && ctx.jts[j].index_clobbered && ctx.jts[j].load_idx == i && ctx.jts[j].index_reg < 31u) {
+          tb.put_str("    __hex_sw_idx = ");
+          tb.put_str(ctx.jts[j].index_is32 ? "(uint64_t)(uint32_t)" : "(uint64_t)");
+          tb.put_reg_x(ctx.jts[j].index_reg);
+          tb.put_str(";\n");
+          pending_label = false;
+          break;
+        }
+      }
+    }
+    ctx.cur_insn_idx = i;
     process_insn(words[i], pc, base_addr, word_count, ctx, cmp, true, &tb);
     if (tb.len > before_len) pending_label = false;
     if (consumed_pending) {
