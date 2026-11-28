@@ -1386,7 +1386,8 @@ export function showNotes(app) {
       sh.body.append(ta, field(el('span'), pick('取り込む', 'Import'), () => {
         try {
           const n = app.notes.fromJSON(ta.value);
-          for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, e.name);
+          if (typeof app.symbols.renameMany === 'function') app.symbols.renameMany(app.notes.nameEntries(), { replace: true });
+          else for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, e.name);
           app.viewer.setSymbols(app.symbols);
           app.updateChrome?.();
           sh.close();
@@ -1403,7 +1404,8 @@ export function showNotes(app) {
         {
           confirmLabel: pick('消す', 'Clear'),
           onConfirm: () => {
-            for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
+            if (typeof app.symbols.renameMany === 'function') app.symbols.renameMany([], { replace: true });
+            else for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
             const saved = app.notes.clear();
             app.clearUndoHistory?.();
             app.viewer.setSymbols(app.symbols);

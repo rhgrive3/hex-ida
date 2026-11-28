@@ -90,6 +90,7 @@
   const UNWIND_LSDA_MAX   = 200_000;   // #8816 deduplicated LSDA (functionStart, lsda) pairs
   const STUB_SYMBOLS_MAX  = 200_000;   // #8800 indirect stub/GOT symbol mappings
   const OBJC_METHOD_STARTS_MAX = 200_000;  // #8811 validated ObjC method entries / unique starts
+  const MAX_SECTION_RELOCS = 200_000;
 
   // Attach the truncation signal as a NON-enumerable property so the returned
   // value stays a plain array for deep-equality callers/tests (#5371 asserts
@@ -238,45 +239,71 @@
    * Returns [{offset, size, cputype, cpusubtype, name}] or null when the
    * CAFEBABE turns out to be something else (e.g. a Java class file).
    */
-  function parseFat(buf, fileSize) {
-    if (!buf || buf.byteLength < 8) return null;
+  function parseFatDetailed(buf, fileSize) {
+    if (!buf || buf.byteLength < 8) return { arches: null, truncated: false, warnings: [] };
     const dv = new DataView(buf);
     const magic = dv.getUint32(0, false);
-    if (magic !== FAT_MAGIC && magic !== FAT_MAGIC_64) return null;
+    if (magic !== FAT_MAGIC && magic !== FAT_MAGIC_64) return { arches: null, truncated: false, warnings: [] };
     const is64 = magic === FAT_MAGIC_64;
     const n = dv.getUint32(4, false);
-    if (n === 0 || n > 32) return null;
+    if (n === 0 || n > 32) return { arches: null, truncated: false, warnings: [] };
     const entry = is64 ? 32 : 20;
-    if (8 + n * entry > buf.byteLength) return null;
+    if (8 + n * entry > buf.byteLength) {
+      return {
+        arches: null,
+        truncated: true,
+        warnings: ['Mach-O universal (fat) header table is truncated.'],
+      };
+    }
     const headerEnd = BigInt(8 + n * entry);
     const staged = [];
+    const warnings = [];
+    let truncated = false;
     for (let i = 0; i < n; i++) {
       const o = 8 + i * entry;
       const cputype = dv.getInt32(o, false);
       const cpusubtype = dv.getInt32(o + 4, false);
       const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
       const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
-      if (offset < headerEnd || size <= 0n || offset + size > fileSize) return null;
+      if (offset < headerEnd || size <= 0n) return { arches: null, truncated: false, warnings: [] };
+      if (offset + size > fileSize) {
+        truncated = true;
+        const cn = cpuName(cputype, cpusubtype);
+        const label = cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '');
+        warnings.push('Mach-O universal (fat) slice ' + label + ' exceeds file size (file is truncated).');
+        continue;
+      }
       staged.push({ cputype, cpusubtype, offset, size });
+    }
+    if (truncated) {
+      return { arches: null, truncated: true, warnings };
     }
     const seen = new Set();
     for (const e of staged) {
       const key = canonicalFatArchKey(e.cputype, e.cpusubtype);
-      if (seen.has(key)) return null;
+      if (seen.has(key)) return { arches: null, truncated: false, warnings: [] };
       seen.add(key);
     }
     for (let i = 0; i < staged.length; i++) {
       const a = staged[i];
       for (let j = i + 1; j < staged.length; j++) {
         const b = staged[j];
-        if (a.offset < b.offset + b.size && b.offset < a.offset + a.size) return null;
+        if (a.offset < b.offset + b.size && b.offset < a.offset + a.size) {
+          return { arches: null, truncated: false, warnings: [] };
+        }
       }
     }
-    return staged.map((e) => {
+    const arches = staged.map((e) => {
       const cn = cpuName(e.cputype, e.cpusubtype);
       return { offset:e.offset, size:e.size, cputype:e.cputype, cpusubtype:e.cpusubtype,
         name:cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') };
     });
+    return { arches, truncated: false, warnings: [] };
+  }
+
+  function parseFat(buf, fileSize) {
+    const res = parseFatDetailed(buf, fileSize);
+    return res.arches;
   }
 
   /**
@@ -400,7 +427,7 @@
       ncmds, sizeofcmds, flags, uuid: null, entry: null, entryFileOff: null, entrySource: null,
       platform: null, minos: null, sdk: null, dylibCount: 0, encrypted: false, encryption: null,
       hasCodeSignature: false, commands: [], segments: [], dylibs: [], symtab: null, dysymtab: null,
-      functionStarts: null, textVM: null, textFileOff: null, diagnostics: [],
+      functionStarts: null, textVM: null, textFileOff: null, diagnostics: [], truncated: false, relocations: [],
     };
     let off = hdrSize;
     const end = hdrSize + sizeofcmds;
@@ -409,7 +436,7 @@
     const lcStrings = createStringDecodingBudget(LC_STRINGS_MAX);
 
     for (let i = 0; i < ncmds; i++) {
-      if (off + 8 > end) { info.diagnostics.push('truncated load-command header'); break; }
+      if (off + 8 > end) { info.truncated = true; info.diagnostics.push('truncated load-command header'); break; }
       const cmd = dv.getUint32(off, true);
       const cmdsize = dv.getUint32(off + 4, true);
       // mach-o/loader.h requires cmdsize to be a multiple of 4 for 32-bit and
@@ -418,6 +445,7 @@
       // violation stops the stream instead of publishing a clean parse (#3849).
       const cmdAlign = is64 ? 8 : 4;
       if (cmdsize < 8 || (cmdsize % cmdAlign) !== 0 || off + cmdsize > end) {
+        info.truncated = true;
         info.diagnostics.push('invalid load-command size/alignment');
         break;
       }
@@ -446,12 +474,13 @@
           const segflags=dv.getUint32(p,true); p+=4;
           const sectionBytes = BigInt(nsects) * BigInt(secSize);
           if (sectionBytes > BigInt(Number.MAX_SAFE_INTEGER) || BigInt(baseSize) + sectionBytes > BigInt(cmdsize)) {
+            info.truncated = true;
             info.diagnostics.push(segname + ': section table exceeds command');
             break;
           }
           const fileEnd=fileoff+filesize, vmEnd=vmaddr+vmsize;
           const validMapping = filesize <= vmsize && fileoff <= sliceSize && fileEnd >= fileoff && fileEnd <= MAX_U64 && fileEnd <= sliceSize && vmEnd >= vmaddr && vmEnd <= MAX_U64;
-          if (!validMapping) info.diagnostics.push(segname + ': invalid segment file/VM range');
+          if (!validMapping) { info.truncated = true; info.diagnostics.push(segname + ': invalid segment file/VM range'); }
           const seg={name:segname,vmaddr,vmsize,fileoff,filesize,maxprot,initprot,nsects,flags:segflags,sections:[],validMapping};
           for (let si=0; si<nsects; si++) {
             const so=off+baseSize+si*secSize;
@@ -461,7 +490,9 @@
             if (wide) { addr=dv.getBigUint64(q,true); q+=8; size=dv.getBigUint64(q,true); q+=8; }
             else { addr=BigInt(dv.getUint32(q,true)); q+=4; size=BigInt(dv.getUint32(q,true)); q+=4; }
             const offset=BigInt(dv.getUint32(q,true)); q+=4;
-            const align=dv.getUint32(q,true); q+=4; q+=8;
+            const align=dv.getUint32(q,true); q+=4;
+            const reloff=dv.getUint32(q,true); q+=4;
+            const nreloc=dv.getUint32(q,true); q+=4;
             const sflags=dv.getUint32(q,true); q+=4;
             const reserved1=dv.getUint32(q,true); q+=4;
             const reserved2=dv.getUint32(q,true);
@@ -477,8 +508,8 @@
             const vmInside=addr>=vmaddr && secEnd>=addr && secEnd<=MAX_U64 && secEnd<=vmEnd;
             const fileInside=zerofill || (offset>=fileoff && secFileEnd>=offset && secFileEnd<=MAX_U64 && secFileEnd<=fileEnd && secFileEnd<=sliceSize);
             const valid=validMapping && vmInside && fileInside;
-            if (!valid) info.diagnostics.push((ssegname||segname)+','+sectname+': section outside parent/slice range');
-            seg.sections.push({name:sectname,segment:ssegname||segname,addr,size,offset,align,flags:sflags,type,reserved1,reserved2,
+            if (!valid) { info.truncated = true; info.diagnostics.push((ssegname||segname)+','+sectname+': section outside parent/slice range'); }
+            seg.sections.push({name:sectname,segment:ssegname||segname,addr,size,offset,align,reloff,nreloc,flags:sflags,type,reserved1,reserved2,
               zerofill,exec:vmExec&&codeSection,vmExec,code:codeSection,cstrings:type===S_CSTRING_LITERALS,
               stubs:type===S_SYMBOL_STUBS,pointers:type===S_LAZY_SYMBOL_POINTERS||type===S_NON_LAZY_SYMBOL_POINTERS,validMapping:valid});
           }
@@ -522,7 +553,7 @@
           const strValid=selectedSliceContainsRange(stroff,strsize,sliceSize);
           const valid=symValid&&strValid;
           info.symtab={symoff,nsyms,stroff,strsize,valid};
-          if(!valid) info.diagnostics.push('LC_SYMTAB tables are outside the selected slice');
+          if(!valid) { info.truncated = true; info.diagnostics.push('LC_SYMTAB tables are outside the selected slice'); }
           break;
         }
         case LC.DYSYMTAB: {
@@ -1615,9 +1646,75 @@
     return out;
   }
 
+  /**
+   * Parse Mach-O section relocation entries (8 bytes each).
+   * Resolves r_extern === 1 via rawSymbolNames[r_symbolnum] (including N_UNDF)
+   * and r_extern === 0 via 1-based sections[r_symbolnum - 1].name.
+   */
+  function parseSectionRelocations(relocBytes, section, rawSymbolNames = [], sections = [], is64 = true) {
+    const out = attachTruncatedFlag([]);
+    if (!relocBytes || !section) return out;
+    const u8 = relocBytes instanceof Uint8Array
+      ? relocBytes
+      : (relocBytes instanceof ArrayBuffer ? new Uint8Array(relocBytes) : null);
+    if (!u8 || u8.byteLength < 8) return out;
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const totalEntries = Math.floor(u8.byteLength / 8);
+    const count = Math.min(totalEntries, MAX_SECTION_RELOCS);
+    if (totalEntries > MAX_SECTION_RELOCS) markTruncated(out, 'relocation-budget');
+    const baseAddr = typeof section.addr === 'bigint' ? section.addr : BigInt(section.addr ?? section.address ?? 0);
+    const secName = section.name || '';
+    const secSeg = section.segment || '';
+    for (let i = 0; i < count; i++) {
+      const p = i * 8;
+      const rawAddrU32 = dv.getUint32(p, true);
+      // 32-bit scattered relocation entries set bit 31 (R_SCATTERED).
+      if (!is64 && (rawAddrU32 & 0x80000000) !== 0) continue;
+      const rAddress = dv.getInt32(p, true);
+      if (rAddress < 0) continue;
+      const rInfo = dv.getUint32(p + 4, true);
+      const symbolIndex = rInfo & 0xffffff;
+      const pcrel = !!((rInfo >>> 24) & 1);
+      const length = (rInfo >>> 25) & 3;
+      const extern = !!((rInfo >>> 27) & 1);
+      const type = (rInfo >>> 28) & 0xf;
+      const isAddend = type === 10 && !extern;
+      const addend = isAddend
+        ? ((symbolIndex & 0x800000) ? (symbolIndex - 0x1000000) : symbolIndex)
+        : 0;
+      let symbol = null;
+      if (isAddend) {
+        symbol = null;
+      } else if (extern) {
+        const name = Array.isArray(rawSymbolNames) ? rawSymbolNames[symbolIndex] : null;
+        symbol = typeof name === 'string' && name.length > 0 ? name : null;
+      } else if (symbolIndex >= 1 && Array.isArray(sections)) {
+        const target = sections[symbolIndex - 1];
+        if (target) {
+          const tName = target.name || '';
+          const tSeg = target.segment || '';
+          symbol = tSeg && tName ? `${tSeg},${tName}` : (tName || null);
+        }
+      }
+      out.push({
+        address: baseAddr + BigInt(rAddress),
+        section: secName,
+        segment: secSeg,
+        type,
+        extern,
+        symbolIndex,
+        symbol,
+        ...(isAddend ? { isAddend: true, addend } : {}),
+        pcrel,
+        length,
+      });
+    }
+    return out;
+  }
+
   root.MachO = {
-    detect, parseFat, parseSlice, regionsFrom, cpuName,
-    parseSymbols, definedSymbols, parseFunctionStarts, parseDataInCode, parseUnwindStarts, parseUnwindLsdaEntries, parseLsdaLandingPads, parseEhFrameRanges, parseObjcMethodStarts, stubSymbols,
+    detect, parseFat, parseFatDetailed, parseSlice, regionsFrom, cpuName,
+    parseSymbols, definedSymbols, parseSectionRelocations, parseFunctionStarts, parseDataInCode, parseUnwindStarts, parseUnwindLsdaEntries, parseLsdaLandingPads, parseEhFrameRanges, parseObjcMethodStarts, stubSymbols,
     CPU_TYPE_ARM64, CPU_TYPE_ARM64_32,
   };
 })(typeof self !== 'undefined' ? self : globalThis);

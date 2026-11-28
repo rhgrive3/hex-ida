@@ -116,7 +116,9 @@ function prepareAnalysisState(app, snapshot) {
     sym.guessed = !!snapshot.symbols.guessed;
     sym.functionTopologyRevision = Number(snapshot.symbols.functionTopologyRevision || 0);
     sym.functionTopologyEnds = new Map(snapshot.symbols.functionTopologyEnds || []);
-    for (const entry of app.notes?.nameEntries?.() || []) sym.rename(entry.addr, entry.name);
+    const noteEntries = app.notes?.nameEntries?.() || [];
+    if (typeof sym.renameMany === 'function') sym.renameMany(noteEntries, { replace: true });
+    else for (const entry of noteEntries) sym.rename(entry.addr, entry.name);
     prepared.symbols = sym;
     symbols = sym;
   }

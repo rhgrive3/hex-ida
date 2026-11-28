@@ -319,20 +319,21 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     if (sameOrigin(request.url())) errors.push(`request failed ${request.url()}: ${request.failure()?.errorText || 'unknown'}`);
   });
   try {
-    // Hold the optional remote font response until the real application has booted.
-    // This catches a render-blocking stylesheet even when the test runner is online.
-    const heldFonts = [];
-    let fontsReleased = false;
-    const fontResponse = { contentType: 'text/css', body: ':root { --hex-test-font-loaded: 1; }' };
-    await page.route('https://fonts.googleapis.com/**', (route) => fontsReleased ? route.fulfill(fontResponse) : heldFonts.push(route));
+    // Startup must not contact external Google Fonts origins and must enforce CSP.
+    const remoteFontRequests = [];
+    await page.route(/^https:\/\/fonts\.(?:googleapis|gstatic)\.com\//, (route) => {
+      remoteFontRequests.push(route.request().url());
+      route.abort();
+    });
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.__hexUi, null, { timeout: 10000 });
-    check(`${browserName}/${viewportName}: startup does not wait for remote fonts`, heldFonts.length > 0);
-    fontsReleased = true;
-    await Promise.all(heldFonts.map((route) => route.fulfill(fontResponse)));
-    await page.waitForFunction(() => document.getElementById('hex-optional-fonts')?.media === 'all'
-      && getComputedStyle(document.documentElement).getPropertyValue('--hex-test-font-loaded').trim() === '1');
-    check(`${browserName}/${viewportName}: optional font stylesheet activates after loading`, true);
+    check(`${browserName}/${viewportName}: startup makes zero remote Google Fonts requests`, remoteFontRequests.length === 0);
+    const hasCspMeta = await page.evaluate(() => {
+      const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+      const content = meta?.getAttribute('content') || '';
+      return content.includes("default-src 'self'") && content.includes('script-src') && !document.getElementById('hex-optional-fonts');
+    });
+    check(`${browserName}/${viewportName}: CSP meta tag is present and optional fonts link is removed`, hasCspMeta);
     await page.waitForTimeout(350);
     await closeTransient(page);
     await checkUiRootContract(page, browserName, viewportName);

@@ -72,6 +72,7 @@ const STRINGS = {
     'status.analyzing': '解析中…',
     'status.rowOf': '{cur} / {total}',
     'status.data': 'データ',
+    'status.saveFailed': '自動保存に失敗',
 
     /* ── ファイル情報 ── */
     'file.title': 'ファイル情報',
@@ -377,6 +378,11 @@ const STRINGS = {
       '復号された（実機から取り出した）ものを開く必要があります。',
     'err.copyFailed': 'コピーできませんでした。値を長押しして選択してください。',
     'err.openFirst': '先にファイルを開いてください。',
+    'err.fileLoading': 'ファイルを読み込み中です。完了してから操作してください。',
+    'err.truncatedBannerTitle': 'ファイルが途中で切れているか、一部が破損しています',
+    'err.warningBannerTitle': 'ファイル解析に関する警告',
+    'err.truncatedBannerDetail': 'ヘッダまたはデータが不完全なため、関数やコードの解析結果が欠落する可能性があります。完全なファイルを開き直してください。',
+    'err.truncatedNoFunctions': 'ファイルが途中で切れているため、コードや関数を解析できません。完全なファイルを開き直してください。',
 
     'toast.copied': '{what}をコピーしました',
     'toast.copyAddress': 'アドレス',
@@ -453,6 +459,7 @@ const STRINGS = {
     'status.analyzing': 'Analysing…',
     'status.rowOf': '{cur} / {total}',
     'status.data': 'data',
+    'status.saveFailed': 'Autosave failed',
 
     'file.title': 'File',
     'file.group.file': 'FILE',
@@ -736,6 +743,11 @@ const STRINGS = {
       'exactly as stored, but they will not disassemble into meaningful code until the image is decrypted.',
     'err.copyFailed': 'Could not copy. Long-press the value to select it.',
     'err.openFirst': 'Open a file first.',
+    'err.fileLoading': 'Loading file. Please wait until it finishes.',
+    'err.truncatedBannerTitle': 'This file appears truncated or partially damaged',
+    'err.warningBannerTitle': 'File analysis warnings',
+    'err.truncatedBannerDetail': 'Because the header or payload is incomplete, functions and disassembly may be missing. Re-open the complete file.',
+    'err.truncatedNoFunctions': 'This file is truncated, so code and functions cannot be analyzed. Please re-open the complete file.',
 
     'toast.copied': '{what} — copied',
     'toast.copyAddress': 'Address',
