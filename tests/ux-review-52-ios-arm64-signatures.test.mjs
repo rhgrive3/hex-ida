@@ -534,4 +534,157 @@ describe('Review Item 5.2 — iOS arm64 Game Library Signatures', () => {
     assert.equal(out.named, 0, `expected 0 false-positive AUTO_NAME matches, got: ${JSON.stringify(out.results)}`);
     assert.deepEqual(out.results, []);
   });
+
+  it('App._buildV6AutoProviders.getFunctionAnchors extracts referenced strings from ProgramIndex/stringIndex and ARM64 MOVZ/MOVK/LDR constants safely', async () => {
+    const { App } = await import('../js/app.js');
+    const { Store } = await import('../js/state.js');
+    const { SymbolIndex } = await import('../js/symbols.js');
+    const { ProgramIndex } = await import('../js/program.js');
+
+    const store = new Store();
+    const regions = [{ id: 'text', name: '__TEXT.__text', section: '__text', vmAddr: 0x10000n, size: 0x4000n, exec: true }];
+    store.set({
+      fileInfo: { name: 'AnchorUnitBin', format: 'Mach-O', slices: [{ info: { platform: 'ios', architecture: 'arm64' }, regions }] },
+      sliceIndex: 0,
+      regions,
+      currentRegion: regions[0],
+      architecture: 'arm64',
+    });
+
+    const syms = new SymbolIndex({
+      funcs: [0x10000n, 0x10100n],
+      addrs: [],
+      names: [],
+      regions,
+    });
+
+    // Build ARM64 instructions:
+    //   movz w8, #0xe667            -> 0x529ccce8
+    //   movk w8, #0x6a09, lsl #16   -> 0x72ad4128  => w8 = 0x6a09e667
+    //   movz w9, #0x8b1f            -> 0x529163e9  => w9 = 0x00008b1f
+    //   ldr  w10, #0x10 (PC+16)     -> 0x1800008a  => loads 0xedb88320 from offset +28
+    //   nop                         -> 0xd503201f
+    //   ret                         -> 0xd65f03c0
+    //   nop                         -> 0xd503201f
+    //   .word 0xedb88320
+    const words = [
+      0x529ccce8,
+      0x72ad4128,
+      0x529163e9,
+      0x1800008a,
+      0xd503201f,
+      0xd65f03c0,
+      0xd503201f,
+      0xedb88320,
+    ];
+    const fnBytes = new Uint8Array(words.length * 4);
+    const dv = new DataView(fnBytes.buffer);
+    words.forEach((w, idx) => dv.setUint32(idx * 4, w >>> 0, true));
+
+    const app = Object.create(App.prototype);
+    app.store = store;
+    app.symbols = syms;
+    app.program = null;
+    app.stringIndex = null;
+    app.backend = {
+      gen: 1,
+      readAt: async (va) => (BigInt(va) === 0x10000n ? { found: true, bytes: fnBytes } : { found: false, bytes: null }),
+    };
+
+    const providers = app._buildV6AutoProviders(1, 0);
+    assert.equal(typeof providers.getFunctionAnchors, 'function');
+
+    // Before stringIndex/program are ready: never throws, still extracts ARM64 constants
+    const early = await providers.getFunctionAnchors({ va: 0x10000n, name: 'sub_10000', size: 64 });
+    assert.deepEqual(early.strings, []);
+    assert.ok(early.constants.includes(0x6a09e667n), `expected SHA256 H0 constant, got: ${early.constants}`);
+    assert.ok(early.constants.includes(0x8b1fn), `expected gzip magic 0x8b1f, got: ${early.constants}`);
+    assert.ok(early.constants.includes(0xedb88320n), `expected CRC32 literal pool constant, got: ${early.constants}`);
+
+    // After stringIndex + ProgramIndex are populated: extracts referenced strings for both object and (vaHex, fn) signatures
+    app.stringIndex = [
+      { addr: 0x20000n, text: 'CCDirector' },
+      { addr: 0x20020n, text: 'cocos2d: CCDirector' },
+      { addr: 0x20060n, text: 'other_function_string' },
+    ];
+    app.program = new ProgramIndex({
+      vmAddr: 0x10000n,
+      refFrom: new BigUint64Array([0x10008n, 0x10014n, 0x10110n]),
+      refTo: new BigUint64Array([0x20000n, 0x20020n, 0x20060n]),
+      refKind: new Uint8Array([1, 1, 1]),
+      refCount: 3,
+      callCount: 0,
+    }, syms, regions[0]);
+
+    const byObj = await providers.getFunctionAnchors({ va: '0x10000', name: 'sub_10000', size: 64 });
+    assert.deepEqual(byObj.strings, ['CCDirector', 'cocos2d: CCDirector']);
+    assert.ok(!byObj.strings.includes('other_function_string'), 'must not leak strings from neighboring functions');
+
+    const byScannerSig = await providers.getFunctionAnchors('0x10000', { addr: 0x10000n, name: 'sub_10000', size: 64n });
+    assert.deepEqual(byScannerSig.strings, ['CCDirector', 'cocos2d: CCDirector']);
+    assert.ok(byScannerSig.constants.includes(0x6a09e667n));
+  });
+
+  it('V6Workbench wires getFunctionAnchors into createHexSigAutoScanner and refines requireAnchor signatures after callgraph stage', async () => {
+    const { V6Workbench } = await import('../js/ui/v6-workbench-bridge.js');
+    const db = buildBuiltinHexSigDb();
+    const inflateEntry = db.entries.find((e) => e.symbolName === 'inflateInit2_' && e.archId === HEXSIG_ARCH_ARM64);
+    assert.ok(inflateEntry?.requireAnchor, 'inflateInit2_ must be requireAnchor: true');
+
+    const wb = new V6Workbench(null, {
+      hexdbFactory: () => ({ open: async () => {}, close: async () => {} }),
+    });
+    wb.hexsigIndex.libs = db.libs;
+    for (const entry of db.entries) wb.hexsigIndex.addEntry(entry);
+
+    let xrefsReady = false;
+    let anchorCalls = 0;
+    const inflateBytes = materializeArm64FromEntry(inflateEntry);
+
+    wb.onBinaryReady({ sha256: 'v6_anchor_e2e_bin', sliceIndex: 0 }, {
+      getBinaryMeta: () => ({ platform: 'ios', arch: 'arm64', format: 'macho' }),
+      getFunctions: () => [
+        { vaHex: '0x100004000', name: 'sub_100004000', size: 64 },
+        { vaHex: '0x100004100', name: 'sub_100004100', size: 64 },
+      ],
+      readFunctionBytes: async (vaHex) => {
+        if (vaHex === '0x100004000') return inflateBytes;
+        if (vaHex === '0x100004100') return ALT_IOS_ARM64_PROLOGUE;
+        return null;
+      },
+      getFunctionAnchors: async (vaHex) => {
+        anchorCalls += 1;
+        if (!xrefsReady) return { strings: [], constants: [] };
+        if (vaHex === '0x100004000') return { strings: inflateEntry.strings.slice(0, 1), constants: [] };
+        return { strings: ['unrelated_app_string'], constants: [] };
+      },
+      getDeobfCandidates: () => [],
+      recoverNames: async () => ({ named: 0, total: 2, objcCount: 0, swiftCount: 0, hexsigCount: 0, entries: [] }),
+      indexStrings: async () => ({ count: 2 }),
+      indexCallGraph: async () => {
+        xrefsReady = true;
+        return { functionCount: 2, callCount: 0, refCount: 2 };
+      },
+      rankGoalCandidates: async () => ({ count: 0, candidates: [] }),
+    });
+
+    await new Promise((r) => setTimeout(r, 120));
+
+    const st = wb.getAutoAnalysisState().staged;
+    assert.equal(st.status, AUTO_ANALYSIS_STATUS.DONE);
+    assert.ok(anchorCalls >= 2, 'getFunctionAnchors must be passed to HexSig scanner in Stage 1 and post-callgraph pass');
+    assert.equal(st.stages.names.hexsigCount, 1);
+    assert.equal(st.stages.names.completed, 1);
+    assert.equal(st.recoveredNamesSummary.named, 1);
+    assert.ok(
+      st.recoveredNamesSummary.entries.some((e) => e.va === '0x100004000' && e.name === 'inflateInit2_' && e.source === 'hexsig'),
+      `expected inflateInit2_ in recoveredNamesSummary.entries, got: ${JSON.stringify(st.recoveredNamesSummary.entries)}`,
+    );
+    assert.equal(
+      st.recoveredNamesSummary.entries.some((e) => e.va === '0x100004100'),
+      false,
+      'unrelated stripped function must not be misnamed',
+    );
+    wb.dispose();
+  });
 });

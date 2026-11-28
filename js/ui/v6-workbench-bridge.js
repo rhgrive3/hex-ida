@@ -1538,6 +1538,79 @@ export class V6Workbench {
           t.unref?.();
         }));
     const namesAlreadyDone = staged.stages.names.status === AUTO_ANALYSIS_STATUS.DONE;
+    const callgraphAlreadyDone = staged.stages.callgraph.status === AUTO_ANALYSIS_STATUS.DONE;
+    const getFunctionAnchors = typeof providers.getFunctionAnchors === 'function'
+      ? providers.getFunctionAnchors
+      : (typeof cfg.hexsigGetFunctionAnchors === 'function' ? cfg.hexsigGetFunctionAnchors : null);
+    const applyAutoNamedBatch = (batch) => {
+      if (gen !== this._autoGen || signal.aborted) return;
+      let accepted = batch;
+      if (typeof providers.onAutoNamedBatch === 'function') {
+        try {
+          const res = providers.onAutoNamedBatch(batch);
+          if (Array.isArray(res)) accepted = res;
+        } catch {
+          accepted = [];
+        }
+      }
+      for (const m of accepted) {
+        const vaHex = normalizeVaHex(m?.vaHex);
+        if (vaHex && m?.newName) {
+          this._autoNamedFunctions.set(vaHex, m);
+        }
+      }
+    };
+    const syncHexSigToStagedNames = () => {
+      const hexsigAdded = this._autoNamedFunctions.size;
+      if (hexsigAdded <= 0) return 0;
+      const prevHexsigCount = Number.isFinite(staged.stages.names.hexsigCount)
+        ? Math.max(0, Math.trunc(staged.stages.names.hexsigCount))
+        : 0;
+      const nextHexsigCount = Math.max(prevHexsigCount, hexsigAdded);
+      const hexsigDelta = nextHexsigCount - prevHexsigCount;
+
+      staged.stages.names.hexsigCount = nextHexsigCount;
+      staged.recoveredNamesSummary.hexsig = nextHexsigCount;
+      if (hexsigDelta > 0) {
+        staged.stages.names.completed = Math.max(0, (staged.stages.names.completed || 0) + hexsigDelta);
+        const hexsigTotal = Number.isFinite(this._autoAnalysisState.hexsig?.total)
+          ? Math.max(0, Math.trunc(this._autoAnalysisState.hexsig.total))
+          : 0;
+        if (staged.stages.names.total < staged.stages.names.completed) {
+          staged.stages.names.total = Math.max(staged.stages.names.completed, hexsigTotal);
+        }
+        staged.recoveredNamesSummary.named = Math.max(
+          staged.recoveredNamesSummary.named || 0,
+          staged.stages.names.completed,
+        );
+        staged.recoveredNamesSummary.total = Math.max(
+          staged.recoveredNamesSummary.total || 0,
+          staged.stages.names.total,
+        );
+      }
+
+      const existingEntries = Array.isArray(staged.recoveredNamesSummary.entries)
+        ? staged.recoveredNamesSummary.entries.slice(0, 256)
+        : [];
+      const seenVas = new Set();
+      for (const entry of existingEntries) {
+        const normVa = normalizeVaHex(entry?.va ?? entry?.vaHex ?? entry?.addr);
+        if (normVa) seenVas.add(normVa);
+      }
+      for (const [vaHex, matchRec] of this._autoNamedFunctions.entries()) {
+        if (existingEntries.length >= 256) break;
+        const normVa = normalizeVaHex(vaHex);
+        if (!normVa || seenVas.has(normVa) || !matchRec?.newName) continue;
+        seenVas.add(normVa);
+        existingEntries.push({
+          va: normVa,
+          name: String(matchRec.newName).slice(0, 160),
+          source: 'hexsig',
+        });
+      }
+      staged.recoveredNamesSummary.entries = existingEntries;
+      return hexsigDelta;
+    };
 
     try {
       const [
@@ -1813,6 +1886,7 @@ export class V6Workbench {
           mountPack: (loaded) => this.mountHexSigPack(loaded.rawBytes, loaded.meta),
           isPackMounted: (packId) => this._mountedHexSigPacks.has(packId),
           extractQuery: cfg.hexsigExtractQuery || null,
+          getFunctionAnchors,
           chunkSize: cfg.hexsigChunkSize ?? 32,
           maxBudgetMs: cfg.hexsigMaxBudgetMs ?? 800,
           maxPacks: cfg.hexsigMaxPacks ?? 2,
@@ -1825,24 +1899,7 @@ export class V6Workbench {
           functions,
           readFunctionBytes,
           signal,
-          onBatchNamed: (batch) => {
-            if (gen !== this._autoGen || signal.aborted) return;
-            let accepted = batch;
-            if (typeof providers.onAutoNamedBatch === 'function') {
-              try {
-                const res = providers.onAutoNamedBatch(batch);
-                if (Array.isArray(res)) accepted = res;
-              } catch {
-                accepted = [];
-              }
-            }
-            for (const m of accepted) {
-              const vaHex = normalizeVaHex(m?.vaHex);
-              if (vaHex && m?.newName) {
-                this._autoNamedFunctions.set(vaHex, m);
-              }
-            }
-          },
+          onBatchNamed: applyAutoNamedBatch,
           onProgress: (ev) => {
             if (gen !== this._autoGen) return;
             this._autoAnalysisState.hexsig = {
@@ -1880,55 +1937,7 @@ export class V6Workbench {
     // ── Complete Stage 1 (names) ──────────────────────────────────────────
     if (!isStillCurrent()) return;
     if (hasStagedHooks && !namesAlreadyDone) {
-      const hexsigAdded = this._autoNamedFunctions.size;
-      if (hexsigAdded > 0) {
-        const prevHexsigCount = Number.isFinite(staged.stages.names.hexsigCount)
-          ? Math.max(0, Math.trunc(staged.stages.names.hexsigCount))
-          : 0;
-        const nextHexsigCount = Math.max(prevHexsigCount, hexsigAdded);
-        const hexsigDelta = nextHexsigCount - prevHexsigCount;
-
-        staged.stages.names.hexsigCount = nextHexsigCount;
-        staged.recoveredNamesSummary.hexsig = nextHexsigCount;
-        if (hexsigDelta > 0) {
-          staged.stages.names.completed = Math.max(0, (staged.stages.names.completed || 0) + hexsigDelta);
-          const hexsigTotal = Number.isFinite(this._autoAnalysisState.hexsig?.total)
-            ? Math.max(0, Math.trunc(this._autoAnalysisState.hexsig.total))
-            : 0;
-          if (staged.stages.names.total < staged.stages.names.completed) {
-            staged.stages.names.total = Math.max(staged.stages.names.completed, hexsigTotal);
-          }
-          staged.recoveredNamesSummary.named = Math.max(
-            staged.recoveredNamesSummary.named || 0,
-            staged.stages.names.completed,
-          );
-          staged.recoveredNamesSummary.total = Math.max(
-            staged.recoveredNamesSummary.total || 0,
-            staged.stages.names.total,
-          );
-        }
-
-        const existingEntries = Array.isArray(staged.recoveredNamesSummary.entries)
-          ? staged.recoveredNamesSummary.entries.slice(0, 256)
-          : [];
-        const seenVas = new Set();
-        for (const entry of existingEntries) {
-          const normVa = normalizeVaHex(entry?.va ?? entry?.vaHex ?? entry?.addr);
-          if (normVa) seenVas.add(normVa);
-        }
-        for (const [vaHex, matchRec] of this._autoNamedFunctions.entries()) {
-          if (existingEntries.length >= 256) break;
-          const normVa = normalizeVaHex(vaHex);
-          if (!normVa || seenVas.has(normVa) || !matchRec?.newName) continue;
-          seenVas.add(normVa);
-          existingEntries.push({
-            va: normVa,
-            name: String(matchRec.newName).slice(0, 160),
-            source: 'hexsig',
-          });
-        }
-        staged.recoveredNamesSummary.entries = existingEntries;
-      }
+      syncHexSigToStagedNames();
 
       if (namesStageFailed) {
         staged.stages.names.status = AUTO_ANALYSIS_STATUS.ERROR;
@@ -2024,6 +2033,91 @@ export class V6Workbench {
         }
       } else {
         staged.stages.callgraph.status = AUTO_ANALYSIS_STATUS.SKIPPED;
+      }
+      await yieldStage();
+      if (!isStillCurrent()) return;
+    }
+
+    // ── Post-Callgraph Anchor-Assisted HexSig Refinement Pass ─────────────
+    // Stage 1 (names) runs before Stage 2 (strings) and Stage 3 (callgraph),
+    // so string/xref anchors may only become available once callgraph finishes.
+    if (
+      isStillCurrent()
+      && hasStagedHooks
+      && !callgraphAlreadyDone
+      && staged.stages.callgraph.status === AUTO_ANALYSIS_STATUS.DONE
+      && typeof getFunctionAnchors === 'function'
+      && this.hexsigIndex?.entries?.length > 0
+      && this._autoAnalysisState.hexsig.status !== AUTO_ANALYSIS_STATUS.OFFLINE
+    ) {
+      try {
+        const allFunctions = typeof providers.getFunctions === 'function'
+          ? (providers.getFunctions() || [])
+          : (Array.isArray(providers.functions) ? providers.functions : []);
+        const readFunctionBytes = typeof providers.readFunctionBytes === 'function'
+          ? providers.readFunctionBytes
+          : null;
+        const remainingFunctions = [];
+        for (const fn of allFunctions) {
+          if (!fn || typeof fn !== 'object') continue;
+          const vaHex = normalizeVaHex(fn.vaHex ?? fn.va ?? fn.addr ?? fn.address);
+          if (!vaHex || this._autoNamedFunctions.has(vaHex)) continue;
+          const fnName = typeof fn.name === 'string'
+            ? fn.name
+            : (fn.name == null ? null : String(fn.name));
+          if (!isStrippedFunctionName(fnName)) continue;
+          remainingFunctions.push(fn);
+        }
+
+        if (remainingFunctions.length > 0 && readFunctionBytes) {
+          const beforeNamedCount = this._autoNamedFunctions.size;
+          const refineScanner = createHexSigAutoScanner({
+            hexSigIndex: this.hexsigIndex,
+            extractQuery: cfg.hexsigExtractQuery || null,
+            getFunctionAnchors,
+            chunkSize: cfg.hexsigChunkSize ?? 32,
+            maxBudgetMs: cfg.hexsigAnchorRefineMaxBudgetMs ?? 1200,
+            maxPacks: 0,
+            yieldFn: cfg.yieldFn || null,
+            nowFn: cfg.nowFn || (() => Date.now()),
+          });
+
+          const refineRes = await refineScanner.run({
+            binaryMeta,
+            functions: remainingFunctions,
+            readFunctionBytes,
+            signal,
+            onBatchNamed: applyAutoNamedBatch,
+            onProgress: (ev) => {
+              if (gen !== this._autoGen || signal.aborted) return;
+              this._autoAnalysisState.hexsig = {
+                ...this._autoAnalysisState.hexsig,
+                status: ev.status,
+                named: this._autoNamedFunctions.size,
+                detail: ev.detail || 'anchor_refinement',
+              };
+              this._emitAutoAnalysisUpdate();
+            },
+          });
+
+          if (!isStillCurrent()) return;
+          const newlyNamed = this._autoNamedFunctions.size - beforeNamedCount;
+          this._autoAnalysisState.hexsig = {
+            ...this._autoAnalysisState.hexsig,
+            status: refineRes.status === AUTO_ANALYSIS_STATUS.DONE
+              ? AUTO_ANALYSIS_STATUS.DONE
+              : (this._autoAnalysisState.hexsig.status || refineRes.status),
+            scanned: (this._autoAnalysisState.hexsig.scanned ?? 0) + (refineRes.scanned ?? 0),
+            named: this._autoNamedFunctions.size,
+            detail: refineRes.errors?.length ? String(refineRes.errors[0].reason || '') : '',
+          };
+          if (newlyNamed > 0) {
+            syncHexSigToStagedNames();
+          }
+          this._emitAutoAnalysisUpdate();
+        }
+      } catch {
+        // Non-fatal: anchor refinement must not block downstream goal ranking.
       }
       await yieldStage();
       if (!isStillCurrent()) return;

@@ -603,3 +603,103 @@ test('Review 5.1: failed names stage is marked ERROR (not DONE) and all-failed r
   assert.equal(exported, null, 'all-failed stages must not be cached as completed');
   wb.dispose();
 });
+
+test('Review 5.1 + 5.2: post-callgraph anchor refinement pass auto-names requireAnchor iOS arm64 functions and persists them', async () => {
+  const { buildBuiltinHexSigDb } = await import('../js/analysis/signature/hexsig-db-data.js');
+  const { HEXSIG_ARCH_ARM64 } = await import('../js/analysis/signature/hex-sig-extractor.js');
+  const { ProgramIndex } = await import('../js/program.js');
+
+  const db = buildBuiltinHexSigDb();
+  const ccDirEntry = db.entries.find((e) => e.symbolName === 'CCDirector::sharedDirector' && e.archId === HEXSIG_ARCH_ARM64);
+  const inflateEntry = db.entries.find((e) => e.symbolName === 'inflateInit2_' && e.archId === HEXSIG_ARCH_ARM64);
+  assert.ok(ccDirEntry?.requireAnchor, 'CCDirector::sharedDirector must be requireAnchor: true');
+  assert.ok(inflateEntry?.requireAnchor, 'inflateInit2_ must be requireAnchor: true');
+
+  const materialize = (entry) => {
+    const len = entry.prologueLen ?? entry.length;
+    const buf = new Uint8Array(Math.max(48, len + 16));
+    for (let i = 0; i < len; i++) {
+      buf[i] = entry.mask[i] === 0xff ? entry.pattern[i] : ((0x14 + i * 3) & 0xff);
+    }
+    for (let off = len; off + 4 <= buf.length - 4; off += 4) {
+      buf[off] = 0x1f; buf[off + 1] = 0x20; buf[off + 2] = 0x03; buf[off + 3] = 0xd5;
+    }
+    buf[buf.length - 4] = 0xc0; buf[buf.length - 3] = 0x03; buf[buf.length - 2] = 0x5f; buf[buf.length - 1] = 0xd6;
+    return buf;
+  };
+
+  const ccDirBytes = materialize(ccDirEntry);
+  const inflateBytes = materialize(inflateEntry);
+  const unrelatedBytes = new Uint8Array([
+    0x7f, 0x23, 0x03, 0xd5, 0xff, 0x43, 0x02, 0xd1,
+    0xf4, 0x4f, 0x07, 0xa9, 0xfd, 0x7b, 0x08, 0xa9,
+    0xfd, 0x03, 0x02, 0x91, 0x1f, 0x20, 0x03, 0xd5,
+    0xe0, 0x03, 0x1f, 0xaa, 0xc0, 0x03, 0x5f, 0xd6,
+  ]);
+
+  const app = createHarnessApp({ sha256: 'anchor_refine_bin_01', name: 'TsumTsumMock' });
+  app.symbols = new SymbolIndex({
+    funcs: [0x1000n, 0x1100n, 0x1200n, 0x1300n],
+    addrs: [0x1000n],
+    names: ['_main'],
+    regions: app.store.get('regions'),
+  });
+  app.v6.hexsigIndex.libs = db.libs;
+  for (const entry of db.entries) app.v6.hexsigIndex.addEntry(entry);
+
+  app.backend.readAt = async (va) => {
+    const addr = BigInt(va);
+    if (addr === 0x1100n) return { found: true, bytes: ccDirBytes };
+    if (addr === 0x1200n) return { found: true, bytes: inflateBytes };
+    if (addr === 0x1300n) return { found: true, bytes: unrelatedBytes };
+    return { found: false, bytes: null };
+  };
+
+  // Stage 1 has no strings/program yet; Stage 2 populates stringIndex; Stage 3 populates ProgramIndex xrefs
+  app.ensureObjcIndex = async () => {};
+  app.ensureSwift = async () => {};
+  app.ensureStrings = async () => {
+    app.stringIndex = [
+      { addr: 0x8000n, text: ccDirEntry.strings[0] },
+      { addr: 0x8040n, text: inflateEntry.strings[0] },
+      { addr: 0x8080n, text: 'unrelated_game_ui_label' },
+    ];
+    return app.stringIndex;
+  };
+  app.ensureProgram = async () => {
+    const region = app.store.get('regions')[0];
+    app.program = new ProgramIndex({
+      vmAddr: region.vmAddr,
+      refFrom: new BigUint64Array([0x1110n, 0x1210n, 0x1310n]),
+      refTo: new BigUint64Array([0x8000n, 0x8040n, 0x8080n]),
+      refKind: new Uint8Array([1, 1, 1]),
+      refCount: 3,
+      callCount: 0,
+    }, app.symbols, region);
+    return app.program;
+  };
+
+  app._startV6AutoAnalysis(1, 0);
+  await waitTick(140);
+
+  const st = app.getAutoAnalysisState().staged;
+  assert.equal(st.status, AUTO_ANALYSIS_STATUS.DONE);
+  assert.equal(st.stages.callgraph.status, AUTO_ANALYSIS_STATUS.DONE);
+  assert.equal(st.stages.names.hexsigCount, 2, 'post-callgraph pass must recover both requireAnchor functions');
+  assert.equal(st.recoveredNamesSummary.hexsig, 2);
+  assert.equal(app.symbols.nameAt(0x1100n), 'CCDirector::sharedDirector');
+  assert.equal(app.symbols.nameAt(0x1200n), 'inflateInit2_');
+  assert.equal(app.symbols.nameAt(0x1300n), null, 'unrelated stripped function must remain unnamed (zero false positives)');
+  assert.ok(
+    st.recoveredNamesSummary.entries.some((e) => e.va === '0x1100' && e.name === 'CCDirector::sharedDirector' && e.source === 'hexsig'),
+    `expected CCDirector::sharedDirector in entries: ${JSON.stringify(st.recoveredNamesSummary.entries)}`,
+  );
+  assert.ok(
+    st.recoveredNamesSummary.entries.some((e) => e.va === '0x1200' && e.name === 'inflateInit2_' && e.source === 'hexsig'),
+    `expected inflateInit2_ in entries: ${JSON.stringify(st.recoveredNamesSummary.entries)}`,
+  );
+
+  // Already-named _main at 0x1000 must stay untouched
+  assert.equal(app.symbols.nameAt(0x1000n), '_main');
+  app.v6.dispose();
+});
