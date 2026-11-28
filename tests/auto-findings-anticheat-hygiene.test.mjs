@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { findings, notableFunctions } from '../js/auto.js';
 import { groupByFeature } from '../js/features.js';
-import { goalFromPreset } from '../js/goals.js';
+import { goalFromPreset, matchName } from '../js/goals.js';
 import { buildStringMap } from '../js/appmap.js';
 
 test('anticheat signal and classifiers ignore Friday/FRIDAY while matching real Frida and cheat tokens', () => {
@@ -163,4 +163,21 @@ test('notableFunctions() falls back to next function boundary when range.end is 
   assert.equal(notable[0].addr, 0x100000n);
   assert.equal(notable[0].range.end, 0x100200n);
   assert.ok(notable[0].score > 6);
+});
+
+test('goals.js avoid rules and matchName() suppress ad-SDK false positives without suppressing real game methods', () => {
+  const gacha = goalFromPreset('gacha');
+  const level = goalFromPreset('level');
+  const item = goalFromPreset('item');
+
+  assert.equal(matchName(gacha, '-[MarketingAdUnit updateDraw]'), null);
+  assert.equal(matchName(gacha, '-[MarketingAdProviderManager updateDraw:rect:]'), null);
+  assert.equal(matchName(level, '-[MarketingAdError setLevel:]'), null);
+  assert.equal(matchName(item, '-[AdUserStatus setInventoryId:]'), null);
+  assert.equal(matchName(item, '-[AdUnitMeta setInventoryType:]'), null);
+
+  assert.notEqual(matchName(gacha, '-[GachaManager updateDraw]'), null);
+  assert.notEqual(matchName(level, '-[Player setLevel:]'), null);
+  assert.notEqual(matchName(item, '-[InventoryManager setInventoryId:]'), null);
+  assert.equal(item.avoid.some((re) => re.test('-[ItemInventory setInventoryType:]')), false);
 });
