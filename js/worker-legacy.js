@@ -618,7 +618,7 @@ async function analyzeSlice({ sliceIndex, id: requestId, epoch }) {
 
   const entries = [];
   if (sym) {
-    for (const d of MachO.definedSymbols(sym)) entries.push({ addr: d.addr, name: d.name, kind: 0, ext: d.ext });
+    for (const d of MachO.definedSymbols(sym, { allowZero: info.filetype === 1 })) entries.push({ addr: d.addr, name: d.name, kind: 0, ext: d.ext });
     if (info.dysymtab && info.dysymtab.nindirectsyms > 0) {
       const n = Math.min(info.dysymtab.nindirectsyms, SYMBOL_MAX);
       const indStart = sliceRelativeRange(info.dysymtab.indirectsymoff, n * 4);
@@ -658,8 +658,18 @@ async function analyzeSlice({ sliceIndex, id: requestId, epoch }) {
     }
   } catch { /* 読めなければ名前を足さないだけ */ }
 
-  // 同じアドレスに複数の名前が付くことがある。先に来たものを優先。
-  entries.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : a.kind - b.kind));
+  // 同じアドレスに複数の名前が付くことがある。外部シンボル・実名を ltmp* 一時ラベルより優先。
+  const isTempLabel = (name) => typeof name === 'string' && /^(?:ltmp|Ltmp|L_)\d*$/.test(name);
+  entries.sort((a, b) => {
+    if (a.addr !== b.addr) return a.addr < b.addr ? -1 : 1;
+    if (a.kind !== b.kind) return a.kind - b.kind;
+    const at = isTempLabel(a.name) ? 1 : 0;
+    const bt = isTempLabel(b.name) ? 1 : 0;
+    if (at !== bt) return at - bt;
+    const ae = a.ext ? 0 : 1;
+    const be = b.ext ? 0 : 1;
+    return ae - be;
+  });
   const addrs = new BigUint64Array(entries.length);
   const kinds = new Uint8Array(entries.length);
   const flags = new Uint8Array(entries.length);     // 1 = 外へ公開されている名前
@@ -754,10 +764,35 @@ async function analyzeSlice({ sliceIndex, id: requestId, epoch }) {
     }
   }
 
-  if ((!info.functionStarts || !info.functionStarts.datasize) && info.entry != null) {
-    slice.functionStarts = [info.entry];
-    funcs = new BigUint64Array([info.entry]);
-    functionStartsExact = false;
+  if (!info.functionStarts || !info.functionStarts.datasize) {
+    const fallbackSeeds = [];
+    const seenSeed = new Set();
+    const align = BigInt(info.instructionAlignment || (info.isArm64 ? 4 : 1));
+    const execRegions = (slice.regions || []).filter((rg) => rg && rg.exec && rg.size > 0n);
+    const inExec = (addr) => execRegions.some((rg) => addr >= rg.vmAddr && addr < rg.vmAddr + rg.size);
+    const inDataInCode = (addr) => dataInCodeRanges.some((d) => addr >= d[0] && addr < d[1]);
+    if (info.entry != null && (!execRegions.length || inExec(info.entry))) {
+      fallbackSeeds.push(info.entry);
+      seenSeed.add(info.entry.toString());
+    }
+    for (let i = 0; i < n; i++) {
+      if (kinds[i] !== 0) continue;
+      const addr = addrs[i];
+      const name = names[i];
+      if (!name || name === '__mh_execute_header' || isTempLabel(name)) continue;
+      if (align > 1n && (addr % align) !== 0n) continue;
+      if (!inExec(addr) || inDataInCode(addr)) continue;
+      const key = addr.toString();
+      if (seenSeed.has(key)) continue;
+      seenSeed.add(key);
+      fallbackSeeds.push(addr);
+    }
+    if (fallbackSeeds.length > 0) {
+      fallbackSeeds.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      slice.functionStarts = fallbackSeeds;
+      funcs = new BigUint64Array(fallbackSeeds);
+      functionStartsExact = false;
+    }
   }
 
   /* Known noreturn imports make the instruction after a call a strong boundary
