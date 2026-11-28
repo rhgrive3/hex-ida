@@ -138,7 +138,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       if (hit?.address == null) continue;
       const addr = BigInt(hit.address);
       const bytes = Number.isSafeInteger(hit.length) && hit.length > 0 ? hit.length : 16;
-      const users = program.functionsReferencing(addr, bytes);
+      const users = program.functionsReferencing(addr, BigInt(bytes));
       if (!users || !users.length) continue;
       for (const u of users) {
         const c = candidate(u.addr != null ? u.addr : u.site, u.site);

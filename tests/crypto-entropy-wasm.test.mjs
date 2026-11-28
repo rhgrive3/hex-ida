@@ -144,7 +144,12 @@ test('rankCandidates + pinpointFunction surface stripped crypto routines via cry
   const symbols = { symbolCount: 0, functionCount: 2, addrs: [], names: [], renames: new Map(), nameAt: () => '' };
   const cryptoConstants = [{ id: 'aes-sbox', name: 'AES S-Box', offset: 0x40, address: 0x90040n, length: 256 }];
   const program = {
-    functionsReferencing: (addr) => (BigInt(addr) === 0x90040n ? [{ addr: 0x2000n, site: 0x2004n }] : []),
+    // ProgramIndex.functionsReferencing does `addr + span`, so a Number span
+    // throws "Cannot mix BigInt and other types" in the real index.
+    functionsReferencing: (addr, span) => {
+      assert.equal(typeof span, 'bigint', 'functionsReferencing span must be a BigInt');
+      return BigInt(addr) === 0x90040n ? [{ addr: 0x2000n, site: 0x2004n }] : [];
+    },
     calleesOf: () => [],
     callersOf: () => [],
     callCountOf: () => 2,
