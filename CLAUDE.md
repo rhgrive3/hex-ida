@@ -37,12 +37,9 @@ For broad tests, do not stream thousands of successful test lines into the model
 - Rerun only the smallest failing command with `HEX_TEST_OUTPUT=verbose` when full diagnostics are needed.
 - Quiet mode changes output only. Never weaken, skip, replace, or shrink canonical tests, verifiers, denominators, exact-head checks, or release gates to save tokens.
 
-## Graft — GitHub Codespaces only
+## Graft
 
-Use Graft **only** when running inside GitHub Codespaces.
-
-- **Inside GitHub Codespaces:** follow the Graft-first workflow in `AGENTS.md`. If Graft is unexpectedly unavailable, continue with the normal repository tools available in that Codespace rather than blocking the task.
-- **Outside GitHub Codespaces:** do **not** install, invoke, emulate, or require Graft. Its absence is never a blocker. Use the repository inspection/search tools available in the current environment instead.
+Use the Graft-first workflow in `AGENTS.md` in every environment. If Graft is not installed, install it (`npm install -g @nanonets/graft`, then `graft build`). If Graft is unexpectedly unavailable, continue with the normal repository tools rather than blocking the task.
 
 ## Speed and subagent delegation
 
