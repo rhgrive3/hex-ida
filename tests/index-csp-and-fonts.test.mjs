@@ -103,3 +103,11 @@ test('index.html includes #integrity-banner and css/app.css defines loading lock
   assert.ok(viewwrapStart >= 0 && overlaysIdx > viewwrapStart, 'index.html must contain .viewwrap before #overlays');
   assert.ok(loadingIdx > overlaysIdx, '#loading must be placed outside .viewwrap as a sibling of #overlays under <body>');
 });
+
+test('scripts/build-userscript.mjs emits bundled CSS asset and links it in dist/index.html <head>', () => {
+  const buildSrc = fs.readFileSync(new URL('../scripts/build-userscript.mjs', import.meta.url), 'utf8');
+  assert.match(buildSrc, /const cssName = `style\.\$\{sha256\(css\)\.slice\(0, 12\)\}\.css`;/);
+  assert.match(buildSrc, /writeFile\(resolve\(dist, 'assets', cssName\), css\);/);
+  assert.match(buildSrc, /standaloneIndex\(htmlSource, `\/assets\/\$\{loaderName\}`, `\/assets\/\$\{cssName\}`\)/);
+  assert.match(buildSrc, /<link rel="stylesheet" href="\$\{cssPath\}">/);
+});

@@ -479,7 +479,15 @@ export function inlineImports(path, sources, stack = []) {
 function normalizePath(value) { const path = posix.normalize(String(value).replaceAll('\\', '/')).replace(/^\.\//, '').replace(/^\//, ''); if (!path || path.startsWith('../')) throw new Error(`Path escapes repository: ${value}`); return path; }
 
 function extractBody(html) { const match = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i); if (!match) throw new Error('index.html has no body'); return match[1].replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '').trim(); }
-function standaloneIndex(html, loaderPath) { return html.replace(/<link\s+rel="stylesheet"\s+href="\.\/css\/(?:app|ux)\.css">\s*/g, '').replace(/<script\s+type="module"\s+src="\.\/js\/(?:app|ux)\.js"><\/script>\s*/g, '').replace('</body>', `<script type="module" src="${loaderPath}"></script>\n</body>`); }
+function standaloneIndex(html, loaderPath, cssPath = null) {
+  let out = html
+    .replace(/<link\s+rel="stylesheet"\s+href="\.\/css\/(?:app|ux)\.css">\s*/g, '')
+    .replace(/<script\s+type="module"\s+src="\.\/js\/(?:app|ux)\.js"><\/script>\s*/g, '');
+  if (cssPath) {
+    out = out.replace('</head>', `<link rel="stylesheet" href="${cssPath}">\n</head>`);
+  }
+  return out.replace('</body>', `<script type="module" src="${loaderPath}"></script>\n</body>`);
+}
 function scopeCss(source) {
   const translated = source
     .replace(/(^|[{},])\s*:root\b/g, '$1:scope')
@@ -567,13 +575,15 @@ export async function buildUserscript() {
   if (Buffer.byteLength(publicLoader) > MAX_LOADER_BYTES) throw new Error(`Tiny loader exceeds ${MAX_LOADER_BYTES} bytes.`);
   const loaderName = `loader.${sha256(publicLoader).slice(0, 12)}.js`;
   await writeFile(resolve(dist, 'assets', loaderName), publicLoader);
+  const cssName = `style.${sha256(css).slice(0, 12)}.css`;
+  await writeFile(resolve(dist, 'assets', cssName), css);
 
   const metadata = userscriptMetadata(LOADER_VERSION);
   const template = metadata + loaderForOrigin(ORIGIN_TOKEN);
   if (Buffer.byteLength(template) > MAX_LOADER_BYTES) throw new Error(`hex.user.js template exceeds ${MAX_LOADER_BYTES} bytes.`);
   await writeFile(resolve(dist, 'userscript/hex.user.template.js'), template);
 
-  const index = standaloneIndex(htmlSource, `/assets/${loaderName}`);
+  const index = standaloneIndex(htmlSource, `/assets/${loaderName}`, `/assets/${cssName}`);
   await writeFile(resolve(dist, 'index.html'), index);
   await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
   await buildTilHub({ outDir: resolve(dist, 'til-hub'), quiet: true });
