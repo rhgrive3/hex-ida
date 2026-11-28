@@ -190,6 +190,15 @@ function readRegs(op, into) {
   }
 }
 
+function toBigIntOrNull(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && value.trim() !== '') {
+    try { return BigInt(value.trim()); } catch { return null; }
+  }
+  return null;
+}
+
 function arm64AddSubImmediateValue(op) {
   if (op?.k !== 'imm' || op.value == null) return null;
   const shift = op.shift;
@@ -209,11 +218,13 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   if (rows <= 0) throw new Error('analysis-range-empty');
   const truncated = requestedRows > rows;
   const end = startRow + rows - 1;
+  const regionVmAddr = toBigIntOrNull(region?.vmAddr) ?? 0n;
+  const regionSize = toBigIntOrNull(region?.size);
 
   const res = {
     startRow, endRow: end, truncated,
-    startAddr: region.vmAddr + BigInt(startRow) * 4n,
-    endAddr: region.vmAddr + BigInt(end) * 4n,
+    startAddr: regionVmAddr + BigInt(startRow) * 4n,
+    endAddr: regionVmAddr + BigInt(end) * 4n,
     instructions: 0, dataRows: 0, frameBytes: 0,
     savesLr: false, savesCallee: [], calls: [], indirectCalls: 0,
     loops: [], condBranches: 0, returns: 0, loads: 0, stores: 0,
@@ -232,8 +243,9 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const flowEdges = new Map();
   let flowIsClosed = true;
   const absoluteRowOf = (addr) => {
-    if (addr == null) return null;
-    const rel = addr - region.vmAddr;
+    const addrBig = toBigIntOrNull(addr);
+    if (addrBig == null) return null;
+    const rel = addrBig - regionVmAddr;
     if (rel < 0n || rel % 4n !== 0n) return null;
     return Number(rel / 4n);
   };
@@ -263,7 +275,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       const mn = entry.mn ? (entry.mn[idx] || '') : '';
       const opsStr = entry.ops ? (entry.ops[idx] || '') : '';
       if (!mn) continue;
-      const addr = region.vmAddr + BigInt(row) * 4n;
+      const addr = regionVmAddr + BigInt(row) * 4n;
       // Carry the fixed-width encoding word alongside the printed text. The
       // disassembler drops some architecturally defined fields from its operand
       // string (PRFM's unnamed prfop values print as nothing at all), and a
@@ -361,14 +373,12 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
         res.condBranches++;
         const t = referenceTarget(b, opsStr);
-        if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
         const tr = absoluteRowOf(t);
         spEdges.set(row, { target: tr, targetKnown: t != null && tr != null, fall: true });
         if (tr == null) flowIsClosed = false;
         else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: true });
       } else if (b === 'b') {
         const t = referenceTarget(b, opsStr);
-        if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
         const tr = absoluteRowOf(t);
         spEdges.set(row, { target: tr, targetKnown: t != null && tr != null, fall: false });
         if (tr == null) flowIsClosed = false;
@@ -436,8 +446,10 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         queue.push(row);
       }
     };
-    while (queue.length) {
-      const row = queue.shift();
+    let head = 0;
+    while (head < queue.length) {
+      if ((head & 255) === 0) throwIfAborted(signal);
+      const row = queue[head++];
       const state = states.get(row);
       if (state.depth == null) spExact = false;
       else spPeak = Math.max(spPeak, state.peak);
@@ -484,21 +496,15 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   } else {
     res.setsReturnValue = x0WriteRows.length > 0;
   }
-  const seen = new Set();
-  res.loops = res.loops.filter((l) => {
-    const k = l.from + ':' + l.to;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
   const name = symbols && symbols.nameAt ? symbols.nameAt(res.startAddr) : null;
   res.model = buildSemanticModel(rawInsns, {
     startRow, endRow: end, name,
     symbolFor: (a) => (symbols ? (symbols.nameAt(a) || null) : null),
     rowOfAddress: (a) => {
-      if (a == null) return null;
-      const rel = a - region.vmAddr;
-      if (rel < 0n || rel >= region.size || rel % 4n !== 0n) return null;
+      const addrBig = toBigIntOrNull(a);
+      if (addrBig == null) return null;
+      const rel = addrBig - regionVmAddr;
+      if (rel < 0n || (regionSize != null && rel >= regionSize) || rel % 4n !== 0n) return null;
       return Number(rel / 4n);
     },
   });
@@ -514,8 +520,8 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const loopSeen = new Set();
   res.loops = [];
   for (const e of res.model?.backEdges || []) {
-    const from = region.vmAddr + BigInt(e.from) * 4n;
-    const to = region.vmAddr + BigInt(e.to) * 4n;
+    const from = regionVmAddr + BigInt(e.from) * 4n;
+    const to = regionVmAddr + BigInt(e.to) * 4n;
     const key = from + ':' + to;
     if (loopSeen.has(key)) continue;
     loopSeen.add(key);
@@ -796,6 +802,7 @@ async function mapBounded(items, limit, mapper, signal) {
 
 export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opts = {}) {
   const signal = opts?.signal || null;
+  assertAbortSignalCompatible(signal);
   throwIfAborted(signal);
   if (!model || !backend || !model.addressRefs.length) {
     if (model) modelTextsComplete.set(model, true);
@@ -996,9 +1003,10 @@ const HINTS = [
 ];
 
 export function guessPurpose(calls) {
+  if (!Array.isArray(calls)) return [];
   const hits = [];
   for (const c of calls) {
-    if (!c.name) continue;
+    if (!c?.name) continue;
     for (const [re, label] of HINTS) if (re.test(c.name) && !hits.includes(label)) hits.push(label);
   }
   return hits;
@@ -1008,11 +1016,11 @@ export function describeFunction(res, name) {
   const lines = [];
   const ja = pick(true, false);
   const who = name ? '「' + name + '」' : 'この関数';
+  const directCalls = Array.isArray(res.calls) ? res.calls : [];
+  const indirectCalls = Number.isSafeInteger(res.indirectCalls) && res.indirectCalls > 0
+    ? res.indirectCalls
+    : 0;
   if (!ja) {
-    const directCalls = Array.isArray(res.calls) ? res.calls : [];
-    const indirectCalls = Number.isSafeInteger(res.indirectCalls) && res.indirectCalls > 0
-      ? res.indirectCalls
-      : 0;
     const hasCalls = directCalls.length > 0 || indirectCalls > 0;
     lines.push(`${name || 'This function'} spans ${res.instructions} instructions.`);
     if (res.savesLr) lines.push('It saves the return address.');
@@ -1037,19 +1045,19 @@ export function describeFunction(res, name) {
   else if (res.instructions < 400) lines.push(who + 'は命令 ' + res.instructions + ' 個。それなりの処理をしています。');
   else lines.push(who + 'は命令 ' + res.instructions + ' 個もあります。大きな処理か、コンパイラが他の関数を取り込んだ結果でしょう。');
 
-  if (res.savesLr || res.calls.length || res.indirectCalls) {
-    if (res.calls.length) {
-      const named = res.calls.filter((c) => c.name);
+  if (res.savesLr || directCalls.length || indirectCalls) {
+    if (directCalls.length) {
+      const named = directCalls.filter((c) => c?.name);
       if (named.length) {
         const list = [];
         for (const c of named) if (!list.includes(c.name)) list.push(c.name);
         lines.push('中で ' + list.slice(0, 6).map((n) => '「' + n + '」').join('、') + (list.length > 6 ? ' などあわせて ' + list.length + ' 種類' : '') + ' を呼んでいます。');
-      } else lines.push(res.calls.length + ' 回、別の関数を呼んでいます（名前の情報は残っていません）。');
+      } else lines.push(directCalls.length + ' 回、別の関数を呼んでいます（名前の情報は残っていません）。');
     }
-    if (res.indirectCalls) lines.push('レジスタ経由の呼び出しが ' + res.indirectCalls + ' か所あります。行き先は実行してみないと分かりません（関数ポインタや Objective-C のメソッド呼び出しです）。');
+    if (indirectCalls) lines.push('レジスタ経由の呼び出しが ' + indirectCalls + ' か所あります。行き先は実行してみないと分かりません（関数ポインタや Objective-C のメソッド呼び出しです）。');
   } else lines.push('他の関数は呼んでいません。自分だけで完結する末端の処理です。');
 
-  const purpose = guessPurpose(res.calls);
+  const purpose = guessPurpose(directCalls);
   if (purpose.length) lines.push('呼んでいる相手から推測すると、' + purpose.slice(0, 4).join('・') + '、といったことをしていそうです。');
   if (res.loops.length) lines.push('前の行へ戻る分岐が ' + res.loops.length + ' か所あるので、ループが入っています。同じ処理を何度も繰り返す関数です。');
   else if (res.condBranches === 0) lines.push('条件分岐がないので、上から下へ一直線に流れます。いちばん読みやすい形です。');
