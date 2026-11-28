@@ -23,8 +23,8 @@ Hex adopts a **pure-JS local-first exact QF_BV tiered solver architecture** with
 | `BitBlastBvBackend` | `hex-bitblast-qfbv` `1.0.0` | `exact` | Exact bit-blasting QF_BV decision procedure supporting up to 64-bit bitvectors with explicit SAT/clause/decision/propagation budgets. |
 | `TieredBvBackend` | `hex-tiered-qfbv` `1.0.0` | `exact` | Production QF_BV router combining `ExhaustiveBvBackend` (narrow oracle tier) and `BitBlastBvBackend` (wide tier up to 64-bit). |
 | `WorkerSolverBackend` / `TieredWorkerSolverBackend` | `hex-exhaustive-bv-worker` / `hex-tiered-qfbv-worker` `1.0.0` | `exact` | Browser WebWorker isolation transports (`worker-entry.js`, `tiered-worker-entry.js`, `worker-protocol.js`) enabling responsive UI and hard worker termination. |
-| `HeuristicSolverBackend` | (non-exact) | `heuristic` | Non-proof heuristic backend; ineligible as production default. |
-| `FakeSolverBackend` | `test-fake-solver` `1.0.0` | `test-only` | Deterministic test double (`createTestSolverRegistry()` only). |
+| `HeuristicSolverBackend` | `heuristic-solver` `1.0.0` | `heuristic` | Non-proof heuristic backend; ineligible as production default. |
+| `FakeSolverBackend` | `fake-solver` `1.0.0` (`test-fake-solver` in `createTestSolverRegistry()`) | `test-only` | Deterministic test double (`createTestSolverRegistry()` only). |
 
 ### Production Registry Selection (`js/symbolic/solver/registry.js`)
 
