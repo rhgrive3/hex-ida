@@ -30,7 +30,18 @@ function isDefaultUpdateQuery(opts) {
   return opts == null || Object.keys(opts).length === 0;
 }
 function rememberUpdates(model, updates, opts) {
-  if (isDefaultUpdateQuery(opts) && model && typeof model === 'object') updateCache.set(model, updates || []);
+  if (isDefaultUpdateQuery(opts) && model && typeof model === 'object') {
+    updateCache.set(model, Object.freeze([...(updates || [])]));
+  }
+  return updates;
+}
+
+function finalizeUpdates(updates) {
+  for (const u of updates) {
+    if (u?.location) u.location.self = u.location.self || selfFromIr(u);
+  }
+  updates.sort((a, b) => b.confidence - a.confidence ||
+    ((a.store && a.store.row) || 0) - ((b.store && b.store.row) || 0));
   return updates;
 }
 
@@ -72,15 +83,10 @@ export function findValueUpdates(model, opts) {
     // IR existed but a consumer adapter failed. Do not silently replace a proven
     // semantic model with a different heuristic truth; expose the safe subset
     // without caching the partial failure result.
-    return rmw;
+    return finalizeUpdates(rmw);
   }
 
-  const out = [...rmw, ...direct];
-  for (const u of out) {
-    if (u.location) u.location.self = u.location.self || selfFromIr(u);
-  }
-  out.sort((a, b) => b.confidence - a.confidence ||
-    ((a.store && a.store.row) || 0) - ((b.store && b.store.row) || 0));
+  const out = finalizeUpdates([...rmw, ...direct]);
   return rememberUpdates(model, out, opts);
 }
 
@@ -91,6 +97,7 @@ export function findValueUpdates(model, opts) {
 // comparison through the ambiguity gate (#5365). SSA-backed updates expose the
 // canonical Memory-SSA key as `irKey`; the display key is only a fallback.
 export function candidateLocationIdentity(loc) {
+  if (!loc || typeof loc !== 'object') return null;
   if (loc.irKey != null) return 'ir:' + String(loc.irKey);
   if (loc.key != null) return String(loc.key);
   return null;

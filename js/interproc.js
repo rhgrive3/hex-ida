@@ -41,7 +41,11 @@ function returnDescriptor(value) {
   if (value.const != null) return { kind: 'constant', value: value.const, bits: value.bits || null, signed: value.signed ?? null };
   const origin = originOf(value);
   if (!origin) return { kind: 'unknown' };
-  if (origin.kind === 'argument') return { kind: 'argument', reg: origin.reg, index: Number(origin.reg.slice(1)), bits: value.bits || null, signed: value.signed ?? null };
+  if (origin.kind === 'argument') {
+    const m = /^x([0-7])$/.exec(String(origin.reg || ''));
+    if (!m) return { kind: 'unknown' };
+    return { kind: 'argument', reg: origin.reg, index: Number(m[1]), bits: value.bits || null, signed: value.signed ?? null };
+  }
   if (origin.kind === 'field' || origin.kind === 'stack') return { kind: origin.kind, location: origin.location || null, bits: value.bits || null, signed: value.signed ?? null };
   if (origin.kind === 'global') return { kind: 'global', address: origin.address, bits: value.bits || null, signed: value.signed ?? null };
   if (origin.kind === 'call') return { kind: 'call', target: origin.target, instructionId: origin.instructionId, bits: value.bits || null, signed: value.signed ?? null };
@@ -265,8 +269,6 @@ export function summarizeFunction(model, opts) {
   const branches = facts.filter((f) => f.kind === FACT.BRANCH);
   const unknownPointerStores = facts.filter((f) => f.kind === FACT.POINTER_STORE);
   const nonStackWrites = writes.filter((l) => l.kind !== 'stack');
-  const nonStackReads = reads.filter((l) => l.kind !== 'stack');
-  void nonStackReads;
   const oneReturn = returns.length === 1 ? returns[0] : null;
   const trustedReturn = oneReturn && oneReturn.trusted ? oneReturn : null;
 
@@ -320,10 +322,46 @@ function actualForArgument(call, index) {
   return a.origin || { kind: 'unknown' };
 }
 
+function toSafeBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  return null;
+}
+
 function normalizeBitvector(value, bits, signed) {
   const width = Number(bits || 64);
   if (!Number.isSafeInteger(width) || width < 1 || width > 64) return value;
   return signed === true ? BigInt.asIntN(width, value) : BigInt.asUintN(width, value);
+}
+
+function remapFieldLocation(location, call) {
+  if (!location || typeof location !== 'object') return null;
+  let baseReg = typeof location.base === 'string' ? location.base : null;
+  if (!baseReg && location.base && typeof location.base === 'object') {
+    const baseOrigin = originOf(location.base);
+    if (baseOrigin?.kind === 'argument' && typeof baseOrigin.reg === 'string') {
+      baseReg = baseOrigin.reg;
+    } else if (typeof location.base.reg === 'string') {
+      baseReg = location.base.reg;
+    } else if (typeof location.base.def?.extra?.publicStateIdentity === 'string') {
+      baseReg = location.base.def.extra.publicStateIdentity;
+    }
+  }
+  const baseMatch = /^x([0-7])$/.exec(baseReg || '');
+  if (!baseMatch) return null;
+  const actual = actualForArgument(call, Number(baseMatch[1]));
+  if (actual.kind !== 'argument') return null;
+  const actualReg = typeof actual.reg === 'string' && /^x[0-7]$/.test(actual.reg)
+    ? actual.reg
+    : (Number.isSafeInteger(actual.index) && actual.index >= 0 && actual.index <= 7 ? 'x' + actual.index : null);
+  if (!actualReg) return null;
+  const remapped = { ...location, base: actualReg };
+  if (typeof location.key === 'string' && location.key.startsWith(baseReg)) {
+    remapped.key = actualReg + location.key.slice(baseReg.length);
+  } else if (location.disp != null) {
+    remapped.key = `${actualReg}+${location.disp}`;
+  }
+  return remapped;
 }
 
 function composeReturn(wrapper, callee) {
@@ -338,19 +376,24 @@ function composeReturn(wrapper, callee) {
   if (r.kind === 'argument') {
     const actual = actualForArgument(call, r.index);
     if (actual.kind === 'unknown') return null;
+    const inheritedBits = r.bits ?? actual.bits ?? null;
+    const inheritedSigned = r.signed ?? actual.signed ?? null;
     if (actual.kind === 'argument') {
       const index = actual.index == null
         ? (/^x[0-7]$/.test(String(actual.reg || '')) ? Number(String(actual.reg).slice(1)) : null)
         : actual.index;
       if (index == null) return null;
-      return { ...actual, index, trusted: true, via: 'callee-summary' };
+      return { ...actual, index, bits: inheritedBits, signed: inheritedSigned, trusted: true, via: 'callee-summary' };
     }
-    return { ...actual, trusted: true, via: 'callee-summary' };
+    return { ...actual, bits: inheritedBits, signed: inheritedSigned, trusted: true, via: 'callee-summary' };
   }
   if (r.kind === 'argument-arithmetic') {
     const actual = actualForArgument(call, r.argument);
     if (actual.kind === 'constant') {
-      const raw = r.op === 'sub' ? actual.value - r.constant : actual.value + r.constant;
+      const av = toSafeBigInt(actual.value);
+      const cv = toSafeBigInt(r.constant);
+      if (av == null || cv == null) return null;
+      const raw = r.op === 'sub' ? av - cv : av + cv;
       return { kind: 'constant', value: normalizeBitvector(raw, r.bits, r.signed), bits: r.bits || null, signed: r.signed ?? null, trusted: true, via: 'callee-summary' };
     }
     if (actual.kind === 'argument') {
@@ -362,7 +405,12 @@ function composeReturn(wrapper, callee) {
     }
     return null;
   }
-  if (r.kind === 'field' || r.kind === 'global') return { ...r, via: 'callee-summary' };
+  if (r.kind === 'global') return { ...r, via: 'callee-summary' };
+  if (r.kind === 'field') {
+    const remappedLocation = remapFieldLocation(r.location, call);
+    if (!remappedLocation) return null;
+    return { ...r, location: remappedLocation, via: 'callee-summary' };
+  }
   return null;
 }
 
@@ -386,13 +434,18 @@ function calleeOptions(opts, depth) {
   return next;
 }
 
+function clampMaxDepth(value) {
+  if (value == null) return 3;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) return 3;
+  return Math.min(16, Math.max(0, value));
+}
+
 export class FunctionSummaryCache {
   constructor(context, opts) {
     this.context = context || {};
     this.maxEntries = summaryCacheLimit(opts?.maxEntries);
-    this.maxDepth = Math.max(0, (opts && opts.maxDepth) == null ? 3 : opts.maxDepth);
+    this.maxDepth = clampMaxDepth(opts?.maxDepth);
     this.cache = new Map();
-    this.active = new Set();
   }
 
   _touch(key, value) {
@@ -401,7 +454,7 @@ export class FunctionSummaryCache {
     while (this.cache.size > this.maxEntries) this.cache.delete(this.cache.keys().next().value);
   }
 
-  clear() { this.cache.clear(); this.active.clear(); }
+  clear() { this.cache.clear(); }
 
   async summaryFor(address, opts) {
     if (address == null) return null;
@@ -426,33 +479,47 @@ export class FunctionSummaryCache {
       const analyze = this.context.analyze;
       if (typeof analyze !== 'function') return null;
       const model = await analyze(address, range ? range.end : null);
-      if (!model) return null;
+      if (!model || cancelled()) return null;
       let returnEvidence = opts && opts.returnEvidence;
       if (returnEvidence == null && typeof this.context.returnEvidenceFor === 'function') {
         try { returnEvidence = await this.context.returnEvidenceFor(address, model); } catch { returnEvidence = null; }
+        if (cancelled()) return null;
       }
       const summaryOpts = { ...functionLocalSummaryOptions(opts), address };
       if (returnEvidence != null) summaryOpts.returnEvidence = returnEvidence;
       const summary = summarizeFunction(model, summaryOpts);
       if (!summary) return null;
 
+      let depthTruncated = false;
+      let cycleBlocked = false;
       const singleReturn = summary.returns.length === 1 ? summary.returns[0] : null;
-      if (depth < this.maxDepth && summary.calls.length === 1 && summary.classification.forwarding
-          && singleReturn && singleReturn.trusted && singleReturn.kind === 'call') {
-        const target = summary.calls[0].target;
-        if (target != null && !cancelled()) {
-          const nextOpts = calleeOptions(opts, depth + 1);
-          nextOpts[SUMMARY_ACTIVE_PATH] = nextActivePath;
-          const callee = await this.summaryFor(target, nextOpts);
-          const propagated = composeReturn(summary, callee);
-          if (propagated) {
-            summary.propagatedReturn = propagated;
-            summary.returns = [propagated];
+      const wantsForwarding = summary.calls.length === 1 && summary.classification.forwarding
+          && singleReturn && singleReturn.trusted && singleReturn.kind === 'call'
+          && summary.calls[0].target != null;
+      if (wantsForwarding) {
+        if (depth < this.maxDepth) {
+          const target = summary.calls[0].target;
+          if (!cancelled()) {
+            const nextOpts = calleeOptions(opts, depth + 1);
+            nextOpts[SUMMARY_ACTIVE_PATH] = nextActivePath;
+            const callee = await this.summaryFor(target, nextOpts);
+            if (cancelled()) return null;
+            if (callee?.cycle) {
+              cycleBlocked = true;
+            } else {
+              const propagated = composeReturn(summary, callee);
+              if (propagated) {
+                summary.propagatedReturn = propagated;
+                summary.returns = [propagated];
+              }
+              if (callee) summary.forwardedEffects = callee.effects;
+            }
           }
-          if (callee && !callee.cycle) summary.forwardedEffects = callee.effects;
+        } else {
+          depthTruncated = true;
         }
       }
-      if (cacheable) this._touch(key, summary);
+      if (cacheable && !depthTruncated && !cycleBlocked && !cancelled()) this._touch(key, summary);
       return summary;
     } finally {
       nextActivePath.delete(addressKey);

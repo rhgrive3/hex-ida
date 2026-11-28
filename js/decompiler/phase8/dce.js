@@ -91,11 +91,11 @@ export function observableEffectReason(instruction) {
     }
     if (access.volatility === true) return 'the access is known to be volatile';
     if (access.atomic !== false) return `access atomicity is ${access.atomic === true ? 'yes' : 'unknown'}`;
-    if (access.ordering != null && access.ordering !== 'relaxed') {
-      return access.ordering === 'unknown' ? 'access ordering is unproved' : `access imposes ordering: ${access.ordering}`;
-    }
     if (Array.isArray(access.faults) && access.faults.length > 0) {
       return `access can fault: ${access.faults.map((fault) => fault?.kind ?? String(fault)).join(', ')}`;
+    }
+    if (access.ordering != null && access.ordering !== 'relaxed') {
+      return access.ordering === 'unknown' ? 'access ordering is unproved' : `access imposes ordering: ${access.ordering}`;
     }
   }
 
@@ -107,6 +107,10 @@ export function observableEffectReason(instruction) {
   if (op === 'bin' && ['udiv', 'sdiv', 'urem', 'srem'].includes(instruction.sub)) {
     const faults = instruction.extra?.faults;
     if (!Array.isArray(faults) || faults.length > 0) return `${instruction.sub} can trap on a zero divisor`;
+  }
+
+  if (Array.isArray(instruction.extra?.faults) && instruction.extra.faults.length > 0) {
+    return `operation can fault: ${instruction.extra.faults.map((fault) => fault?.kind ?? String(fault)).join(', ')}`;
   }
 
   if (instruction.extra?.stateWrite != null || instruction.writesState === true) {
@@ -193,7 +197,7 @@ export function runDcePass(context = {}, budget = {}, area = null) {
   while (changed && !budgetExhausted) {
     changed = false;
     rounds += 1;
-    if (rounds > values.length + 2) break;
+    if (rounds > values.length + 2) { budgetExhausted = true; break; }
     for (const value of values) {
       if (abortedNow()) { budgetExhausted = true; break; }
       if (removable.has(value.id) || !unobservable.has(value.id)) continue;
@@ -216,11 +220,20 @@ export function runDcePass(context = {}, budget = {}, area = null) {
     .filter((value) => !unobservable.has(value.id) && liveUseCount(value, removable) === 0 && instructionOf.has(value.id))
     .map((value) => ({ valueId: value.id, reason: keptReasons.get(value.id) }));
 
+  const readOnlyKeptReasons = new Map(keptReasons);
+  const denyKeptReasonsMutation = () => { throw new TypeError('keptReasons is read-only'); };
+  Object.defineProperties(readOnlyKeptReasons, {
+    set: { value: denyKeptReasonsMutation, writable: false, enumerable: false, configurable: false },
+    delete: { value: denyKeptReasonsMutation, writable: false, enumerable: false, configurable: false },
+    clear: { value: denyKeptReasonsMutation, writable: false, enumerable: false, configurable: false },
+  });
+  Object.freeze(readOnlyKeptReasons);
+
   const facts = Object.freeze({
     passVersion: DCE_PASS.version,
     candidates: Object.freeze(candidates),
     deadButObservable: Object.freeze(deadButObservable),
-    keptReasons,
+    keptReasons: readOnlyKeptReasons,
     rounds,
     completeness: budgetExhausted ? 'partial' : 'complete',
   });

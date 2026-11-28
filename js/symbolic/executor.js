@@ -13,7 +13,7 @@ import { valueBefore } from '../dataflow-semantic.js';
 import { createByteMemory, forkByteMemoryForExecution } from './memory/byte-memory.js';
 import { QueryFailure, monotonicNow, boundedLimit } from './memory/query-state.js';
 import { translateExecutionValue, translateMemoryAccess, translateMemoryScalar, foldMemoryScalarExpression } from './translate/memory.js';
-import { createBv, createConnective, computeStructuralHash } from './expr/index.js';
+import { createBool, createBv, createConnective, computeStructuralHash } from './expr/index.js';
 import { lowerDirectBranchCondition } from './translate/scalar.js';
 
 import { createExecutionCapture } from './memory/execution-snapshot.js';
@@ -139,9 +139,14 @@ function cmp(name, a, b, options = {}) {
   const signed = options.signed === true ? true : options.signed === false ? false : null;
   if (a?.kind === SYM.CONST && b?.kind === SYM.CONST) {
     const au = BigInt.asUintN(bits, a.value), bu = BigInt.asUintN(bits, b.value);
-    const av = signed === true ? BigInt.asIntN(bits, au) : au;
-    const bv = signed === true ? BigInt.asIntN(bits, bu) : bu;
-    const yes = name === '==' ? au === bu : name === '!=' ? au !== bu : name === '<' ? av < bv : name === '<=' ? av <= bv : name === '>' ? av > bv : name === '>=' ? av >= bv : null;
+    let yes = null;
+    if (name === '==') yes = au === bu;
+    else if (name === '!=') yes = au !== bu;
+    else if (signed != null) {
+      const av = signed === true ? BigInt.asIntN(bits, au) : au;
+      const bv = signed === true ? BigInt.asIntN(bits, bu) : bu;
+      yes = name === '<' ? av < bv : name === '<=' ? av <= bv : name === '>' ? av > bv : name === '>=' ? av >= bv : null;
+    }
     if (yes != null) return { ...c(yes ? 1n : 0n), boolean:true, bits, signed };
   }
   return { kind: SYM.OP, op: name, args: [a, b], boolean: true, bits, signed };
@@ -155,15 +160,33 @@ function conditionIdentity(condition) {
 }
 function negate(condition) {
   if (!condition) return unknown('missing-condition');
-  if (condition.sort) return createConnective('not', condition);
+  if (condition.sort) {
+    if (condition.kind === 'const' && condition.sort.kind === 'bool') return createBool(!condition.value);
+    if (condition.sort.kind === 'bool' && ((condition.kind === 'connective' && condition.op === 'not') || condition.kind === 'not') && condition.args?.length === 1) {
+      return condition.args[0];
+    }
+    return createConnective('not', condition);
+  }
   if (condition.kind === SYM.CONST && condition.boolean) return { ...c(condition.value === 0n ? 1n : 0n), boolean:true };
+  if (condition.kind === SYM.OP && condition.op === 'not' && condition.args?.length === 1) return condition.args[0];
   const inverseMap = { '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' };
   const inverse = Object.hasOwn(inverseMap, condition.op) ? inverseMap[condition.op] : null;
   if (condition.kind === SYM.OP && inverse) return { ...condition, op: inverse };
   return { kind: SYM.OP, op: 'not', args: [condition], boolean: true };
 }
 function constraintAllowed(existing, condition) {
-  if (condition?.sort) return !(condition.kind === 'const' && condition.sort.kind === 'bool' && condition.value === false);
+  if (condition?.sort) {
+    if (condition.kind === 'const' && condition.sort.kind === 'bool' && condition.value === false) return false;
+    if (!existing || !existing.length) return true;
+    const condHash = computeStructuralHash(condition);
+    const negHash = computeStructuralHash(negate(condition));
+    for (const prior of existing) {
+      if (!prior?.sort) continue;
+      if (prior.kind === 'const' && prior.sort.kind === 'bool' && prior.value === false) return false;
+      if (computeStructuralHash(prior) === negHash || computeStructuralHash(negate(prior)) === condHash) return false;
+    }
+    return true;
+  }
   if (condition?.kind === SYM.CONST && condition.boolean) return condition.value !== 0n;
   const key = conditionIdentity(condition);
   for (const prior of existing || []) {
@@ -292,7 +315,52 @@ function evalValue(value, state, ir, opts, memo, active) {
   else if (!value.def) out = unknown('value-without-definition', { value: value.id });
   else {
     const d = value.def;
-    if (d.op === OP.MOV && d.args[0]) out = evalValue(d.args[0].value, state, ir, opts, memo, active);
+    if (d.op === OP.MOV && d.args[0]) {
+      const subRaw = d.sub == null ? '' : String(d.sub).toLowerCase();
+      const dstBitsCandidate = d.dst?.bits ?? value?.bits;
+      const srcBitsCandidate = d.args[0].bits ?? d.args[0].value?.bits;
+      const needsWidthCheck = subRaw !== '' || (dstBitsCandidate != null && srcBitsCandidate != null && dstBitsCandidate !== srcBitsCandidate);
+      if (!needsWidthCheck) {
+        out = evalValue(d.args[0].value, state, ir, opts, memo, active);
+      } else {
+        const toResolved = resolveWidth([d.dst?.bits, value?.bits]);
+        const toRejected = unsupportedWidth(toResolved);
+        if (toRejected) out = toRejected;
+        else {
+          const mSub = /^(sxt|uxt)(8|16|32|64)?$/.exec(subRaw);
+          const fromCandidates = (d.args[0].bits != null || d.args[0].value?.bits != null)
+            ? [d.args[0].bits, d.args[0].value?.bits]
+            : [toResolved.width];
+          const fromResolved = mSub && mSub[2] != null
+            ? { width: Number(mSub[2]) }
+            : resolveWidth(fromCandidates);
+          const fromRejected = unsupportedWidth(fromResolved);
+          if (fromRejected) out = fromRejected;
+          else {
+            const toBits = toResolved.width;
+            const fromBits = fromResolved.width;
+            let opKind = null;
+            if (subRaw === 'sext' || (mSub && mSub[1] === 'sxt')) opKind = 'sext';
+            else if (subRaw === 'zext' || (mSub && mSub[1] === 'uxt')) opKind = 'zext';
+            else if (subRaw === 'trunc') opKind = 'trunc';
+            else if (subRaw === '') opKind = toBits < fromBits ? 'trunc' : (toBits > fromBits ? 'zext' : null);
+            if (subRaw !== '' && !opKind) {
+              out = unknown('unsupported-value-op', { op: d.op, sub: d.sub, instruction: d.id });
+            } else {
+              const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
+              if (!opKind || x.kind === SYM.UNKNOWN) out = x;
+              else if (x.kind === SYM.CONST) {
+                if (opKind === 'sext') out = c(BigInt.asUintN(toBits, BigInt.asIntN(fromBits, x.value)));
+                else if (opKind === 'zext') out = c(BigInt.asUintN(toBits, BigInt.asUintN(fromBits, x.value)));
+                else out = c(BigInt.asUintN(toBits, x.value));
+              } else {
+                out = { kind: SYM.OP, op: opKind, args: [x], fromBits, toBits };
+              }
+            }
+          }
+        }
+      }
+    }
     else if (d.op === OP.PHI) {
       const chosen = phiValue(d, state);
       out = chosen ? evalValue(chosen, state, ir, opts, memo, active) : unknown('ambiguous-phi', { instruction: d.id });
@@ -309,9 +377,9 @@ function evalValue(value, state, ir, opts, memo, active) {
         else if (d.args[1].shift && rhs.kind === SYM.UNKNOWN) out = rhs;
         else out = binOp(d.sub, lhs, rhs, resolved.width);
       }
-    } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
+    } else if (d.op === OP.UN && d.args[0] && (d.sub === 'neg' || /^(sxt|uxt)(8|16|32|64)?$/.test(d.sub || ''))) {
       const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
-      const m = /^(sxt|uxt)(8|16|32|64)?/.exec(d.sub || '');
+      const m = /^(sxt|uxt)(8|16|32|64)?$/.exec(d.sub || '');
       const toResolved = resolveWidth([d.dst?.bits, value?.bits]);
       const toRejected = unsupportedWidth(toResolved);
       if (toRejected) out = toRejected;
@@ -332,18 +400,26 @@ function evalValue(value, state, ir, opts, memo, active) {
               out = c(BigInt.asUintN(toBits, narrowed));
             } else out = { kind:SYM.OP, op:m[1] === 'sxt' ? 'sext' : 'zext', args:[x], fromBits, toBits };
           }
-        } else out = x;
+        } else {
+          out = unknown('unsupported-value-op', { op: d.op, sub: d.sub, instruction: d.id });
+        }
       }
     } else if (d.op === OP.LOAD && d.loc) {
       out = loadExpression(d, state, opts);
     } else if (d.op === OP.SEL && d.args.length >= 2) {
       const condition = conditionFromFlags(d, state, ir, opts, memo, active);
-      out = {
-        kind: SYM.ITE,
-        condition,
-        then: evalValue(d.args[0].value, state, ir, opts, memo, active),
-        else: evalValue(d.args[1].value, state, ir, opts, memo, active),
-      };
+      if (condition.kind === SYM.UNKNOWN) {
+        out = condition;
+      } else if (condition.kind === SYM.CONST && condition.boolean) {
+        out = evalValue(condition.value !== 0n ? d.args[0].value : d.args[1].value, state, ir, opts, memo, active);
+      } else {
+        out = {
+          kind: SYM.ITE,
+          condition,
+          then: evalValue(d.args[0].value, state, ir, opts, memo, active),
+          else: evalValue(d.args[1].value, state, ir, opts, memo, active),
+        };
+      }
     } else if (d.op === OP.ADDR && value.const != null) out = c(value.const);
     else out = unknown('unsupported-value-op', { op: d.op, sub: d.sub, instruction: d.id });
   }
@@ -632,6 +708,9 @@ function executePaths(ir, opts) {
 
     const instructions = block.insts || [];
     for (let instructionIndex = 0; instructionIndex < instructions.length; instructionIndex++) {
+      if ((instructionIndex & 63) === 63 && (cancelled() || (!deterministic && Date.now() > deadline))) {
+        truncated = true; transferred = true; break;
+      }
       const inst = instructions[instructionIndex];
       state.executingInstruction = inst;
       if (state.byteMemory) {
@@ -639,10 +718,9 @@ function executePaths(ir, opts) {
         if (!BYTE_EXECUTION_OPS.has(inst.op)) throw new QueryFailure('unsupported-instruction');
       }
       if (state.byteMemory) state.byteMemory.chargeExecution();
-      if (state.byteMemory && state.steps >= maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
+      if (state.steps >= maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
       state.steps++;
       stats.stepsPerPath = Math.max(stats.stepsPerPath, state.steps);
-      if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
 
       if (inst.op === OP.LOAD) {
         if (!inst.dst || !inst.loc) {
@@ -702,9 +780,11 @@ function executePaths(ir, opts) {
       }
       if (inst.op === OP.RET) {
         const explicit = inst.args[0]?.value || null;
-        let candidate = explicit;
+        let value = null;
         let inferredReturn = false;
-        if (!candidate) {
+        if (explicit) {
+          value = evalValue(explicit, state, ir, opts, memo, new Set());
+        } else {
           const terminal = valueBefore(ir, inst, 'x0');
           // Keep #130's ABI truth intact: RET has no implicit x0 operand. The
           // symbolic layer may expose a local terminal x0 expression only when
@@ -714,11 +794,10 @@ function executePaths(ir, opts) {
           if (terminal?.def && terminal.kind !== 'arg' && terminal.def.row != null && inst.row != null && terminal.def.row < inst.row) {
             const evaluated = evalValue(terminal, state, ir, opts, memo, new Set());
             if (evaluated && evaluated.kind !== SYM.UNKNOWN && evaluated.kind !== SYM.CONST) {
-              candidate = terminal; inferredReturn = true;
+              value = evaluated; inferredReturn = true;
             }
           }
         }
-        const value = candidate ? evalValue(candidate, state, ir, opts, memo, new Set()) : null;
         if (state.byteMemory && value) state.byteMemory.validateExpression(value);
         const control = state.byteMemory ? readReturnControl(inst, state.byteMemory) : null;
         const terminalControl = control ? observeReturnControl(control,
@@ -753,7 +832,7 @@ function executePaths(ir, opts) {
         opts._executionCapture?.observeBranch(inst,state);
         const next = successorsForBranch(ir, block, inst, addressMap);
         if (next.target == null || next.fallthrough == null) { paths.push(stopResult(state, 'unresolved-branch-target', inst)); transferred = true; break; }
-        const inverse = cond.sort && cond.kind === 'const' ? Object.freeze({ ...cond, value: !cond.value }) : negate(cond);
+        const inverse = cond.sort && cond.kind === 'const' ? createBool(!cond.value) : negate(cond);
         if (state.byteMemory) {
           const needed = Number(constraintAllowed(state.constraints, cond)) + Number(constraintAllowed(state.constraints, inverse));
           if (paths.length + queue.length + needed > maxPaths) throw new QueryFailure('budget:paths');
@@ -784,6 +863,7 @@ function executePaths(ir, opts) {
       }
     }
 
+    if (truncated) break;
     if (!transferred) {
       const succ = block.succ || [];
       if (succ.length === 1) {

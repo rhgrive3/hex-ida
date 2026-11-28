@@ -3,15 +3,20 @@ import { expr, sameExpr, isPure } from '../ast/nodes.js';
 /* These recognizers operate on semantic expressions, not instruction adjacency. */
 export function recoverArm64ClangIdiom(root) {
   if (!root) return root;
-  if (root.kind === 'binary' && root.op === 'sub' && root.right?.kind === 'binary' && root.right.op === 'mul' && isPure(root.right)) {
+  const rootBits = Number(root.bits || 64);
+  if (root.kind === 'binary' && root.op === 'sub' && root.right?.kind === 'binary' && root.right.op === 'mul'
+      && Number(root.right.bits || 64) === rootBits && isPure(root.right)) {
     return expr.intrinsic('msub', [root.right.left, root.right.right, root.left], root.bits, root.signed, root.source);
   }
-  if (root.kind === 'binary' && root.op === 'add' && root.left?.kind === 'binary' && root.left.op === 'mul' && isPure(root.left)) {
+  if (root.kind === 'binary' && root.op === 'add' && root.left?.kind === 'binary' && root.left.op === 'mul'
+      && Number(root.left.bits || 64) === rootBits && isPure(root.left)) {
     return expr.intrinsic('madd', [root.left.left, root.left.right, root.right], root.bits, root.signed, root.source);
   }
   if (root.kind === 'binary' && root.op === 'and' && root.left?.kind === 'binary' && root.left.op === 'lshr' && root.right?.kind === 'const') {
     const mask = root.right.value;
-    if (mask > 0n && (mask & (mask + 1n)) === 0n && root.left.right?.kind === 'const') {
+    const shift = root.left.right?.kind === 'const' ? root.left.right.value : null;
+    if (Number(root.left.bits || 64) === rootBits && typeof mask === 'bigint' && mask > 0n && (mask & (mask + 1n)) === 0n
+        && typeof shift === 'bigint' && shift >= 0n && shift < BigInt(rootBits)) {
       let width = 0n; for (let x = mask; x; x >>= 1n) width++;
       return expr.intrinsic('bit_extract', [root.left.left, root.left.right, expr.constant(width, root.bits)], root.bits, false, root.source);
     }
@@ -22,8 +27,9 @@ export function recoverArm64ClangIdiom(root) {
   // proof point so negative values and INT_MIN retain correct two's-complement semantics.
   if (root.kind === 'binary' && root.op === 'and' && root.right?.kind === 'unary' && root.right.op === 'not') {
     const shifted = root.right.arg;
-    if (shifted?.kind === 'binary' && shifted.op === 'ashr' && shifted.right?.kind === 'const'
-        && shifted.right.value === BigInt((root.bits || 64) - 1) && sameExpr(root.left, shifted.left) && isPure(root.left)) {
+    if (shifted?.kind === 'binary' && shifted.op === 'ashr' && Number(shifted.bits || 64) === rootBits
+        && shifted.right?.kind === 'const' && shifted.right.value === BigInt(rootBits - 1)
+        && sameExpr(root.left, shifted.left) && isPure(root.left)) {
       return expr.intrinsic('max', [root.left, expr.constant(0, root.bits, true)], root.bits, true, root.source, { proof: 'clang-bic-sign-mask' });
     }
   }
@@ -31,9 +37,10 @@ export function recoverArm64ClangIdiom(root) {
 }
 
 export function recognizeDivisionByConstant(root) {
-  if (!root || root.kind !== 'binary') return null;
-  if ((root.op === 'sdiv' || root.op === 'udiv') && root.right?.kind === 'const') return { kind: 'division-constant', divisor: root.right.value, signed: root.op === 'sdiv' };
-  if ((root.op === 'smod' || root.op === 'umod') && root.right?.kind === 'const') return { kind: 'modulo-constant', divisor: root.right.value, signed: root.op === 'smod' };
+  if (!root || root.kind !== 'binary' || root.right?.kind !== 'const') return null;
+  if (typeof root.right.value !== 'bigint' || root.right.value === 0n) return null;
+  if (root.op === 'sdiv' || root.op === 'udiv') return { kind: 'division-constant', divisor: root.right.value, signed: root.op === 'sdiv' };
+  if (root.op === 'smod' || root.op === 'umod') return { kind: 'modulo-constant', divisor: root.right.value, signed: root.op === 'smod' };
   return null;
 }
 
